@@ -77,8 +77,8 @@ fn model_tool_health_zero_calls_branch_yields_zero_rate() {
         let db_path = path.to_string_lossy().to_string();
         let raw = rusqlite::Connection::open(&db_path).expect("raw conn");
         // 行日期相对今天回退 30 天：查询窗 60 天，行日期随 cutoff 同步
-        // 移动、永在窗内。硬编码日历日是午夜定时炸弹——'2026-09-01' 被
-        // now-60d 在 2026-11-01 00:00Z 越过，coverage 真红（00:40Z 实录）。
+        // 移动、永在窗内。硬编码日历日是午夜定时炸弹——'' 被
+        // now-60d 在 00:00Z 越过，coverage 真红（00:40Z）。
         let day = (chrono::Local::now() - chrono::Duration::days(30))
             .format("%Y-%m-%d")
             .to_string();
@@ -369,7 +369,7 @@ fn session_aggregates_exact_and_task_suffix() {
         .aggregate_session_usage("agent:main:s1")
         .expect("session agg");
     assert_eq!(agg.requests, 2);
-    // R2 2026-10-22：完整输入口径 = prompt + cache_creation + cache_read
+    // 完整输入口径 = prompt + cache_creation + cache_read
     // （w4_log 三列 100/10/30）。
     assert_eq!(agg.input_tokens, (100 + 10 + 30) * 2, "完整输入三列相加");
     assert_eq!(agg.output_tokens, 80);
@@ -382,7 +382,7 @@ fn session_aggregates_exact_and_task_suffix() {
     assert_eq!(zero.requests, 0);
     assert_eq!(zero.total_cost_usd, 0.0);
 
-    // 按任务后缀：两种身份形态都收进来；input 口径同上（R2）。
+    // 按任务后缀：两种身份形态都收进来；input 口径同上。
     let task = store
         .aggregate_session_usage_by_task("t-uuid")
         .expect("task agg");
@@ -471,7 +471,7 @@ fn retention_sweep_rollups_trims_and_noops() {
     let _ = std::fs::remove_file(path);
 }
 
-/// 边界日不部分 rollup（2026-10-24 回归锁）：cutoff 未按 UTC 日界对齐时，
+/// 边界日不部分 rollup（回归锁）：cutoff 未按 UTC 日界对齐时，
 /// GROUP BY 会把 cutoff 所在日切成部分聚合经 INSERT OR REPLACE 写入
 /// daily_rollups——gateway 每 6h 一轮 sweep，同一边界日被前后多轮 sweep
 /// 分批 rollup+删除，前几轮的贡献被最后一轮 REPLACE 静默抹掉（永久史账
@@ -573,7 +573,7 @@ fn cost_breakdown_wrapper_some_and_none() {
     let _ = std::fs::remove_file(path);
 }
 
-/// A2（2026-10-21 引入）：record_guard_events 落账 +
+/// （引入）：record_guard_events 落账 +
 /// query_model_tool_health 并入。同日同模型 upsert 累加；0 事件不写行；
 /// 无守卫事件的模型保持 0（并入查询不制造幽灵行）。
 #[test]
@@ -607,8 +607,8 @@ fn guard_events_recorded_and_merged_into_health() {
 }
 
 // ===========================================================================
-// BUG-20261105-013：insert_request_log_dedup（trace_id 幂等插入）。
-// 集群回调记账场景：同一 task_id 的重复回调（worker 重试 / G5 恢复轮询
+// insert_request_log_dedup（trace_id 幂等插入）。
+// 集群回调记账场景：同一 task_id 的重复回调（worker 重试 / 恢复轮询
 // 重放）不得翻倍 token 账本。
 // ===========================================================================
 

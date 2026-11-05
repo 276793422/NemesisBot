@@ -1,6 +1,6 @@
-//! 桥帧 RPC 通道（goal 二期批次六）。
+//! 桥帧 RPC 通道（goal 二期）。
 //!
-//! 职责：把 `cluster_rpc` 桥帧变成 [`nemesis_cluster::rpc::client::RpcClient`]
+//! 职责：把 `cluster_rpc` 桥帧变成 [`nemesis_cluster::rpc:client::RpcClient`]
 //! 的可用传输路径——hub 与设备两侧对称，共用 [`BridgeRpcChannel`] pending 表
 //! （请求 id → oneshot 唤醒）：
 //!
@@ -17,7 +17,7 @@
 //! [`rpc_response_from_wire`]（对齐 `Frame::decode_response`）；request 方向
 //! 喂 [`RpcServer::handle_wire_message`]（与 TCP 服务端共用同一 handler 链）。
 //!
-//! **路由语义（三期批次九定稿）**：`to` 为空或等于本机集群 node_id →
+//! **路由语义（三期定稿）**：`to` 为空或等于本机集群 node_id →
 //! 本地处理；`to` 指向其它节点 → hub 侧查桥↔集群映射：目标有桥链路且
 //! 在线（非来源链路自环）→ 原帧转发目标桥（A→hub→B），B 的响应 `to`
 //! 即发起方集群 id，按同款映射回程（无中转表——无状态、无泄漏）；映射
@@ -102,7 +102,7 @@ impl BridgeRpcChannel {
     }
 
     /// 下行响应帧按 id 唤醒 pending。false = 无匹配（迟到/未知响应——
-    /// hub 侧随后按 `to` 判定是否跨桥转发回发起方，三期批次九）。
+    /// hub 侧随后按 `to` 判定是否跨桥转发回发起方，三期）。
     fn deliver(&self, resp: &WireMessage) -> bool {
         match self
             .pending
@@ -179,7 +179,7 @@ impl HubBridgeRpc {
         }
     }
 
-    /// 三期批次九：跨桥转发（请求方向与响应回程共用）。
+    /// 三期：跨桥转发（请求方向与响应回程共用）。
     ///
     /// 判定链：目标集群 id 有桥链路（集群↔桥映射命中）→ 目标桥链路在线
     /// → `from_bridge` 防自环闸（请求方向传来源链路，目标==来源 = 病态
@@ -278,7 +278,7 @@ impl ClusterFrameSink for HubBridgeRpc {
             // 响应方向：hub 主动发往设备的请求回来了 → 唤醒 pending。
             if is_response(&wire) {
                 if !self.channel.deliver(&wire) {
-                    // 三期批次九：pending miss 且 `to` 指向其它节点 = 桥入
+                    // 三期：pending miss 且 `to` 指向其它节点 = 桥入
                     // 设备 A 发往设备 B 的请求之响应回程（B 的响应 to=A）
                     // → 按映射转发回发起方桥链路。仍 miss → 迟到/未知，丢弃。
                     if wire.to.is_empty()
@@ -303,7 +303,7 @@ impl ClusterFrameSink for HubBridgeRpc {
                 return None;
             }
 
-            // 请求方向：`to` 路由三分支（三期批次九定稿）：
+            // 请求方向：`to` 路由三分支（三期定稿）：
             // 1. `to` 空 / 本机 → 喂本地 RPC 链（下方）；
             // 2. `to` 有桥链路且在线（且非来源链路自环）→ 原帧转发目标桥；
             // 3. 其余（未知目标 / 目标桥离线 / 自环）→ 诚实 error 回帧。
@@ -342,12 +342,12 @@ pub struct DeviceBridgeRpc {
     rpc_server: Arc<RpcServer>,
     /// 本机集群 node_id（`to` 路由判定锚点）。
     self_node_id: String,
-    /// 宿主集群句柄（三期批次八：member_sync 成员合并进 registry；装配时
+    /// 宿主集群句柄（三期：member_sync 成员合并进 registry；装配时
     /// 由 gateway 注入——仅集群构建，与本模块 cfg 门一致）。
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     /// 桥成员表：hub 广播摘要里的**在线**成员 node_id（含 hub 自己；自己
     /// 除外）。经桥可达的判定面——detach（hub 离线）即清空 = 成员表失效
-    /// 降级（goal 批次八；仲裁只问 [`BridgeSend::bridge_online`]）。
+    /// 降级（goal；仲裁只问 [`BridgeSend::bridge_online`]）。
     bridge_members: Mutex<std::collections::HashSet<String>>,
     /// 桥上行出口（session() 启动时挂载 cmd_tx，结束 detach——装配早于
     /// 会话建立，运行期插拔）。
@@ -395,7 +395,7 @@ impl DeviceBridgeRpc {
     }
 
     /// session() 收尾：摘除上行出口 + 清 pending（在途请求按链路死亡收口）
-    /// 与清成员表（goal 批次八「hub 离线后成员表失效降级」——hub 不可达时
+    /// 与清成员表（goal 「hub 离线后成员表失效降级」——hub 不可达时
     /// 经桥成员表一并失效，仲裁回落直连）。
     pub fn detach_uplink(&self) {
         *self.uplink.lock().expect("桥上行出口锁中毒") = None;
@@ -403,7 +403,7 @@ impl DeviceBridgeRpc {
         self.bridge_members.lock().expect("桥成员表锁中毒").clear();
     }
 
-    /// 三期批次八：下行 `member_sync` 帧合并（bridge_client 下行泵调用）。
+    /// 三期：下行 `member_sync` 帧合并（bridge_client 下行泵调用）。
     ///
     /// 语义（goal 定稿）：members 里 `online=true` 且非本机的成员 →
     /// `cluster.handle_discovered_node` 合并（tags 加 `via-bridge` 哨兵，
@@ -474,7 +474,7 @@ impl DeviceBridgeRpc {
                 .and_then(|v| v.as_str())
                 .unwrap_or("agent")
                 .to_string();
-            // via-bridge 哨兵：标「经 hub 广播得知」的路径来源（goal 批次八）。
+            // via-bridge 哨兵：标「经 hub 广播得知」的路径来源（goal）。
             let tags = vec!["via-bridge".to_string()];
             cluster.handle_discovered_node(
                 node_id,
@@ -543,7 +543,7 @@ impl DeviceBridgeRpc {
 impl BridgeSend for DeviceBridgeRpc {
     fn bridge_online(&self, peer_id: &str) -> bool {
         // 设备视角：经桥可达 = 上行出口挂载（桥会话活着）**且** peer 在
-        // hub 广播的在线成员表里（三期批次八；hub 自己也在摘要里）。表空
+        // hub 广播的在线成员表里（三期；hub 自己也在摘要里）。表空
         // = 尚未收到 sync / 已 detach——按不可达处理，仲裁回落直连。
         self.uplink.lock().expect("桥上行出口锁中毒").is_some()
             && self

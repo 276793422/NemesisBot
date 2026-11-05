@@ -1,6 +1,6 @@
 //! WebSocket API handlers for all dashboard modules.
 //!
-//! Each module handler implements [`ModuleHandler`](crate::ws_router::ModuleHandler)
+//! Each module handler implements [`ModuleHandler`](crate::ws_router:ModuleHandler)
 //! and is registered via [`register_all`]. Handlers are pure business logic and
 //! transport-agnostic — they read/write configuration files and workspace data.
 
@@ -23,7 +23,7 @@ pub mod deliveries;
 // nemesisbot/src/board_unavailable.rs）。
 #[cfg(feature = "board")]
 pub mod board_unavailable;
-// Swarm （§5.4/）：看板资产下载端点（HTTP，非 WSAPI；token 即凭据）。
+// Swarm：看板资产下载端点（HTTP，非 WSAPI；token 即凭据）。
 #[cfg(feature = "board")]
 pub mod board_asset;
 pub mod channels;
@@ -45,7 +45,7 @@ pub mod automations;
 pub mod coding;
 pub mod commands;
 pub mod config;
-// 行动代理 ：connector 数据面（connectors.list /
+// 行动代理：connector 数据面（connectors.list /
 // connectors.receipts.list / paperbroker.ledger，只读——执行入口是 agent
 // 的 connector_invoke 工具，走完整安全管线）。`connectors` feature 门控——
 // nemesis-connectors 是 optional 依赖，被它无条件依赖的 nemesis-security
@@ -88,7 +88,7 @@ pub mod plugins_wasm;
 // rename）+ resolve_session_loop 会话归属解析。无 feature 闸——bridge 槽
 // 未装配时 handler 诚实报「未装配」。
 pub mod projects;
-// （凭据 vault §7）：凭据索要卡 WSAPI（credential.respond /
+// （凭据 vault）：凭据索要卡 WSAPI（credential.respond /
 // credential.pending）。无 feature 闸——responder trait 在 nemesis-types，
 // broker 槽（静态注入）未装配时 handler 诚实报「not wired」。
 pub mod credential;
@@ -119,7 +119,7 @@ pub mod security;
 pub mod sessions;
 #[cfg(feature = "skins")]
 pub mod skins;
-// 签名验证启动自验状态类型（接入计划 §4）。刻意不门控——
+// 签名验证启动自验状态类型（接入计划）。刻意不门控——
 // 纯数据透传，AppState 字段在默认 feature 下也必须编译；WSAPI 命令本体
 // 在上方的 security handler。
 pub mod signature_status;
@@ -129,7 +129,7 @@ pub mod tasks;
 // 角色目录 WSAPI（角色目录与分档供给）：roles.list——委派卡
 // 角色下拉数据源（目录全量 + tier 分档可见性，与 dispatch 闸同源裁决）。
 pub mod roles;
-// 子代理任务注册表 WSAPI（子代理可见性 /）：subagents.list/
+// 子代理任务注册表 WSAPI（子代理可见性）：subagents.list/
 // detail/cancel——三形态统一台账读面 + 用户面终止。
 pub mod subagents;
 // 子代理 WSAPI handler 测试（全局注册表纯内存态；断言按唯一 marker 过滤）。
@@ -157,7 +157,7 @@ pub mod workflow;
 #[cfg(test)]
 mod sessions_extra_tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): sessions
+// (, quality-hardening goal 冲刺 web): sessions
 // success arms (list prefix-strip, clear/delete/export) — create/rename
 // happy paths stay excluded per the note above.
 #[cfg(test)]
@@ -196,7 +196,7 @@ mod sessions_l22_tests;
 #[cfg(test)]
 mod projects_tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): shared path/file
+// (, quality-hardening goal 冲刺 web): shared path/file
 // utility arms (absolute/traversal rejection, canonicalize fallback, atomic
 // write fallback) + ConfigHandler error arms and CORS stubs.
 #[cfg(test)]
@@ -272,7 +272,7 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(credential::CredentialHandler));
     // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
     router.register(Arc::new(profile::ProfileHandler::new()));
-    // 行动代理 ：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
+    // 行动代理：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
     #[cfg(feature = "connectors")]
     {
         router.register(Arc::new(connectors::ConnectorsHandler));
@@ -588,7 +588,7 @@ pub fn resolve_path(workspace: &str, relative: &str) -> Result<PathBuf, String> 
         return Err("path traversal denied".to_string());
     }
 
-    // Canonicalize both paths for accurate comparison (handles .., symlinks, etc.)
+    // Canonicalize both paths for accurate comparison (handles.., symlinks, etc.)
     let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
     let canonical_resolved = match resolved.canonicalize() {
         Ok(p) => p,
@@ -727,10 +727,10 @@ mod tests;
 mod cluster_extra_tests;
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_more_tests;
-// web3 : cluster.rs deep coverage — runtime metrics, real TCP
+// web3: cluster.rs deep coverage — runtime metrics, real TCP
 // ping probes, nodes.refresh full arms, tasks log enrichment, topology real
 // connections, config fallbacks, firewall AddrInUse, persona_generate/apply.
-// / : chat.todo_get 读路径同构性测试。
+// /: chat.todo_get 读路径同构性测试。
 #[cfg(test)]
 mod chat_todo_tests;
 // chat.set_mode / chat.get_mode（plan/build 双模式）测试。
@@ -767,7 +767,7 @@ mod skills_more_tests;
 // uninstall 联动/verify 漂移检测的 WSAPI 面。
 #[cfg(all(test, feature = "workflow"))]
 mod skills_ws4_tests;
-// 学得技能 manifest（机会项）：learned_list/learned_remove
+// 学得技能 manifest：learned_list/learned_remove
 // 管理面 + manifest 成员资格护栏（registry 技能保护）。
 #[cfg(all(test, feature = "workflow"))]
 mod skills_learned_tests;

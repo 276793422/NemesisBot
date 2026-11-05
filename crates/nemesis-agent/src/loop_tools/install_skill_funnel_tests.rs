@@ -1,6 +1,6 @@
 //! `install_skill` 工具 漏斗接线回归。
 //!
-//! 旧形态裸 `RegistryManager:install` 直落 skills/，绕过验签/安全
+//! 旧形态裸 `RegistryManager::install` 直落 skills/，绕过验签/安全
 //! 扫描/审批门/lockfile 记账/staging 全漏斗——web/CLI 同
 //! 操作均走 `SkillInstaller`，工具面是唯一旁路。本文件钉住：
 //! - 漏斗路径生效（lockfile/origin 记账 = 走过漏斗的凭证）；

@@ -93,7 +93,7 @@ fn test_thinking_cancel() {
     // Cancel should signal the receiver
     cancel.cancel();
     // The receiver should get the signal (or be errored because sender was dropped)
-    // tokio::sync::oneshot::Receiver doesn't have is_ok()/is_err() until awaited
+    // tokio::sync:oneshot::Receiver doesn't have is_ok()/is_err() until awaited
     let _ = rx;
 }
 
@@ -503,12 +503,12 @@ fn test_telegram_config_proxy_support() {
 }
 
 // ---------------------------------------------------------------------------
-// T7（多模态）：photo 下载落盘 → 本地路径引用（mock Telegram API 单测）
+// （多模态）：photo 下载落盘 → 本地路径引用（mock Telegram API 单测）
 // ---------------------------------------------------------------------------
 
 /// 极简 mock Telegram Bot API：阻塞线程逐连接应答。
 /// - `POST …/getFile` → `{"ok":true,"result":{"file_path":"photos/<file>.jpg"}}`
-/// - `GET  …/file/photos/<file>.jpg` → 传入的字节
+/// - `GET …/file/photos/<file>.jpg` → 传入的字节
 /// 返回 (api_url_base, 关闭句柄)。监听 127.0.0.1:0（系统分配端口）。
 fn spawn_mock_telegram_api(file_bytes: Vec<u8>) -> String {
     use std::io::{Read, Write};
@@ -598,7 +598,7 @@ async fn t7_photo_download_lands_local_path_reference() {
     );
     let on_disk = std::fs::read(&dest).expect("file readable back");
     assert_eq!(on_disk, png, "落盘字节与下载内容一致");
-    // base64 水合可读（T5 build_messages 语义的前置保证）。
+    // base64 水合可读（build_messages 语义的前置保证）。
     assert_eq!(
         base64::engine::general_purpose::STANDARD.encode(&on_disk[..8]),
         base64::engine::general_purpose::STANDARD.encode(&png[..8])
@@ -654,7 +654,7 @@ async fn t7_photo_download_without_http_returns_none() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-267：download_voice_file 状态码前置闸——404/500 错误体不得
+// download_voice_file 状态码前置闸——404/500 错误体不得
 // 被当语音 OGG 落盘送转写。本地 loopback TCP mock（无新 dev-dep）。
 // ---------------------------------------------------------------------------
 
@@ -715,7 +715,7 @@ async fn t7_voice_download_writes_success_body() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-277：send() 长消息分块——mock Telegram API 功能实跑
+// send() 长消息分块——mock Telegram API 功能实跑
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -802,7 +802,7 @@ async fn send_splits_long_message_into_multiple_api_calls() {
     assert_eq!(total, 7500, "分块不得丢字：三块文本总长必须等于原文");
 }
 
-// --- BUG-20261101-280：入站 preview 截断必须字符安全 ---
+// ---：入站 preview 截断必须字符安全 ---
 
 #[test]
 fn bug280_message_preview_multibyte_safe() {

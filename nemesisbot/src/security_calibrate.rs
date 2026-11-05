@@ -1,4 +1,4 @@
-//! A4（2026-10-21 引入）：安全校准——规则层 × guardian LLM
+//! （2026-10-21 引入）：安全校准——规则层 × guardian LLM
 //! 二审的一致性标定。
 //!
 //! 借鉴前代实现的形态：同一批样本分别过规则
@@ -15,7 +15,7 @@
 //!    `apply_dlp_config` / `apply_security_layer_switches` /
 //!    `load_security_rules`；审批 pattern 记忆表同源接
 //!    `<workspace>/config/approval_rules.json` 热载器），但**只读**——不走
-//!    F3 自愈写入、审计链/审计日志恒 off（plugin 无文件组件）= 零磁盘副作用；
+//!    自愈写入、审计链/审计日志恒 off（plugin 无文件组件）= 零磁盘副作用；
 //! 3. `--judge-model` 给定时，另请 guardian LLM（同 gateway 的
 //!    `GatewayLlmJudge` 提示词与解析，固定审计宪法）对同批样本出
 //!    三值结论；`deny→block`、`allow→allow`、`ask`/解析失败→**单列
@@ -36,10 +36,10 @@ use std::path::{Path, PathBuf};
 /// 单条校准样本（JSONL 一行）。
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct CalibrateSample {
-    /// 工具名（`exec` / `write_file` / ...——与管线静态危级表同名）。
+    /// 工具名（`exec` / `write_file` /...——与管线静态危级表同名）。
     pub tool: String,
     /// 工具入参（JSON 对象；字符串 args 先按 JSON 解析，失败再包成
-    /// `{"raw": ...}`——与真实 dispatch 的宽松口径一致）。
+    /// `{"raw":...}`——与真实 dispatch 的宽松口径一致）。
     pub args: Value,
     /// 人工标注的期望结果：`block` / `allow`（大小写不敏感；其他值该行
     /// 跳过并计数——脏数据不进混淆矩阵）。
@@ -48,15 +48,15 @@ pub struct CalibrateSample {
     #[serde(default)]
     pub note: String,
     /// 样本在 JSONL 文件里的真实行号（解析后回填，不从 JSON 读；跳行
-    /// 存在时报告「行」列与文件行号保持一致——上轮回查修正 2026-10-21）。
+    /// 存在时报告「行」列与文件行号保持一致——上轮回查修正）。
     #[serde(default)]
     pub src_line: usize,
 }
 
-/// ⑲（七轮回查 2026-10-21）：exec 族样本缺 `command` 键时管线 target
+/// ⑲（七轮回查）：exec 族样本缺 `command` 键时管线 target
 /// 静默为空，规则匹配整体失真（真实踩坑：手写样本用 `cmd` 键 → FN 假象，
 /// 排查 15 分钟）。报告「备注」列诚实提示，不让失真矩阵被误读成规则盲区。
-/// op 判定复用 [`nemesis_security::tool_to_operation`] 单一真相源，不复制名单。
+/// op 判定复用 [`nemesis_security::tool_to_operation`] 统一定义，不复制名单。
 fn annotate_sample_note(tool: &str, args: &serde_json::Value, note: &str) -> String {
     use nemesis_security::types::OperationType;
     let mut out = note.to_string();
@@ -83,7 +83,7 @@ fn parse_samples<R: std::io::BufRead>(reader: R) -> anyhow::Result<(Vec<Calibrat
         let line = line.with_context(|| format!("第 {} 行读取失败", i + 1))?;
         let mut t = line.trim();
         // 首行 BOM（PowerShell `Out-File -Encoding utf8BOM` 常见产物）不
-        // 该吞掉第一份样本——剥掉再解析（六轮回查 2026-10-21）。
+        // 该吞掉第一份样本——剥掉再解析（六轮回查）。
         if let Some(rest) = t.strip_prefix('\u{feff}') {
             t = rest.trim();
         }
@@ -121,18 +121,18 @@ fn parse_samples<R: std::io::BufRead>(reader: R) -> anyhow::Result<(Vec<Calibrat
 #[derive(Debug, Clone, Serialize)]
 pub struct RuleOutcome {
     pub blocked: bool,
-    /// 三轮回查修正（2026-10-21）：deny 实为「需审批」（auditor 判
+    /// 三轮回查修正：deny 实为「需审批」（auditor 判
     /// RequireApproval、calibrate 无审批管理器 → execute 返回 block）。
     /// 矩阵仍按 block 口径计入（对无人值守场景「不自动放行」等价于
     /// block），但明细与 JSON 以此字段明示，不与硬拦混同。
     pub approval_required: bool,
-    /// F5 DenyInfo 的 layer/policy/summary（blocked 时有）。
+    /// DenyInfo 的 layer/policy/summary（blocked 时有）。
     pub layer: Option<String>,
     pub policy: Option<String>,
     pub summary: Option<String>,
 }
 
-/// guardian 二审判定（--judge-model 时有）。
+/// guardian 二审判定（judge-model 时有）。
 #[derive(Debug, Clone, Serialize)]
 pub struct JudgeOutcome {
     /// deny / allow / ask / parse_error / call_error。
@@ -239,7 +239,7 @@ pub async fn run_calibrate(
     // 与 ABAC 规则（构造后 load_security_rules）都来自
     // <home>/config/config.security.json——与 gateway `build_security_plugin`
     // 同一批装配函数、同一份文件，校准矩阵描述的是**部署面**而非出厂默认。
-    // 红线不变：只读——不触发 F3 自愈写入（不走 ensure_security_config）、
+    // 红线不变：只读——不触发 自愈写入（不走 ensure_security_config）、
     // 不初始化审计链/审计日志（audit_* 恒 off，plugin 无文件组件），样本
     // 永不执行。文件缺失/解析失败 = 出厂默认规则集（诚实降级）。
     let mut plugin_config = SecurityPluginConfig {
@@ -264,7 +264,7 @@ pub async fn run_calibrate(
             sec_config_path.display()
         );
     }
-    // F3 审批 pattern 记忆表（三轮回查修正 2026-10-21）：与 gateway
+    // 审批 pattern 记忆表（三轮回查修正）：与 gateway
     // runtime.rs 同源——同一磁盘文件 `<workspace>/config/approval_rules.json`
     // + 同一 loader。「总是允许」pattern 的自动放行是生产判定面的一部分；
     // 不接它，有 pattern 的部署会把真实放行报成误拦（假 FP）。只读：
@@ -276,7 +276,7 @@ pub async fn run_calibrate(
         nemesis_security::approval_rules::load_rules,
     ));
     plugin.auditor().set_approval_rules(approval_rules_hot);
-    // 四轮回查修正（2026-10-21，④/⑨ 横向扫描补完）：gateway 对判定面的
+    // 四轮回查修正（④/⑨ 横向扫描补完）：gateway 对判定面的
     // 其余派生接线逐项补齐——
     // ① 自毁硬拦保护路径（home / workspace root / `~`）+ workspace 豁免
     //    （security_setup.rs 同一构造：打保护路径的样本生产必拦，不接则

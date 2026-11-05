@@ -7,9 +7,9 @@
 //! 回灌对话——provider 消息对完整性优先，模型永远看到显式记录而不是
 //! 凭空假设工具效果。
 //!
-//! 与既有设施的关系（单一真相源纪律）：
+//! 与既有设施的关系（统一定义纪律）：
 //! - 前缀对齐 [`TOOL_OUTCOME_UNKNOWN`]：合成内容以 `[TOOL_OUTCOME_UNKNOWN]`
-//!   开头，使 [`crate:loop_continuation:merge_real_tool_result`] 的占位
+//!   开头，使 [`crate::loop_continuation:merge_real_tool_result`] 的占位
 //!   识别纪律原样生效——真实结果后来到达时**替换**折算（而非追加成同 id
 //!   双 tool 消息被严格 provider 400 拒绝）；真实结果不可达时，快照带上
 //!   诚实 interrupted 注记等待用户确认继续。

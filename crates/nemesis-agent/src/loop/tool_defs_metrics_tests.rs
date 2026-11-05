@@ -64,7 +64,7 @@ fn metrics_loop() -> AgentLoop {
 }
 
 /// ① 空注册面 = 0 工具、字节为空 JSON 数组 2 字节；注册后计数与字节同步
-/// 增长，且 bytes 严格等于 build_tool_defs 序列化字节（单一真相源）。
+/// 增长，且 bytes 严格等于 build_tool_defs 序列化字节。
 #[test]
 fn tool_defs_metrics_tracks_registry_and_serialization() {
     let mut agent_loop = metrics_loop();

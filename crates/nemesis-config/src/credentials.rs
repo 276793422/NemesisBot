@@ -362,7 +362,7 @@ pub fn migrate_inline_keys_to_yaml(
 /// `credentials.yaml` 持盘判定：migrated/conflicts 非空才真正往别名账本里
 /// 插过条目（reused 只复用不插入）。config 是否需要回写由 migrated 判定。
 /// CLI（run_import）与 WSAPI（models.migrate_keys target=yaml）共用同一
-/// 判定——单一真相源。
+/// 判定——统一定义。
 pub fn creds_file_dirty(report: &ImportReport) -> bool {
     !report.migrated.is_empty() || !report.conflicts.is_empty()
 }

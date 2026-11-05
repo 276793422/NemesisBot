@@ -1,13 +1,13 @@
 //! 文件系统韧性小工具（crate 内共享）。
 //!
-//! 实现已提升到 `nemesis_utils::fsutil`（全仓共享单一真相源——board/sandbox/
+//! 实现已提升到 `nemesis_utils::fsutil`（全仓共享单一权威定义——board/sandbox/
 //! skills 等不依赖 cluster 的 crate 同样需要韧性删除）；本模块保留 re-export，
 //! crate 内既有调用点零改动。
 
-/// 远端可控 task_id → 安全文件名成分（crate 内单一包装，T7/T8/T9/T10 同族
-/// 修复的统一入口，2026-10-17 三轮审计）。
+/// 远端可控 task_id → 安全文件名成分（crate 内单一包装，/// 同族
+/// 修复的统一入口， 三轮审计）。
 ///
-/// 委托仓内单一真相源 [`nemesis_utils::sanitize::sanitize_path_segment`]
+/// 委托仓内统一定义 [`nemesis_utils::sanitize:sanitize_path_segment`]
 /// 白名单消毒（兜 `..` / 路径分隔符 / 超长）；消毒改变原值时 WARN 留痕
 /// （可观测性：正常 UUID/单号 task_id 映射恒等，见 WARN 即有对端发来
 /// 异形 id）。读侧消费者（nemesis-board dossier / nemesisbot
@@ -21,9 +21,9 @@ pub(crate) fn safe_task_file_name(task_id: &str) -> String {
     safe
 }
 
-/// 带退避重试的**单文件**删除，返回是否删除成功（LOW-5，2026-10-17 四轮
+/// 带退避重试的**单文件**删除，返回是否删除成功（LOW-5， 四轮
 /// 审计）：Windows 瞬时句柄（AV/索引器）对单文件同样成立——裸
-/// `std::fs::remove_file` 单发必胜假设与目录树版同理不成立，影响 = 残留
+/// `std::fs:remove_file` 单发必胜假设与目录树版同理不成立，影响 = 残留
 /// 文件 + WARN（清理类调用点维持「尽力而为」语义：NotFound 视为成功，
 /// 不向上传播错误）。目录树版已在 `nemesis_utils::fsutil`（全仓共享，
 /// 见上方 re-export）；单文件版消费面目前全在本 crate，留此待共享面

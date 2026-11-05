@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
 
-/// D3 换节点重派目标决策结果。
+/// 换节点重派目标决策结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RedispatchTargetChoice {
     /// 维持同 worker（首轮/失败未满 2 连/无次优候选回落）。
@@ -25,14 +25,14 @@ impl RedispatchTargetChoice {
     }
 }
 
-/// D3 换节点重派目标选择（决策逻辑集中此处；单测钉死决策表）：
+/// 换节点重派目标选择（决策逻辑集中此处；单测钉死决策表）：
 /// - 无历史派发 → Err（调用方诚实报错，同旧行为）。
-/// - 尾部连续同 worker 派发 <2 → 维持该 worker（同 worker 整改，会话
+/// - 尾部连续同 worker 派发 <2 → 维持该 worker（同 worker，会话
 ///   上下文天然延续）。
 /// - 连续 ≥2 次派发同一 worker（同 worker 反复 FAIL/无法定案）→ 向
 ///   匹配器要全量在线排序，取历史未用过的次优节点；无候选 → 回落同
 ///   worker（WARN 留痕，不阻塞流程）。
-/// - P34：`board.fingerprint_weighting=true` 时匹配器排序先过指纹稳定
+/// - `board.fingerprint_weighting=true` 时匹配器排序先过指纹稳定
 ///   加权（[`fingerprint_weighted_ranked`]：prefer 提前 / avoid 靠后，
 ///   非排除），再取历史未用者——成功率先行，匹配器名次是基础序。
 pub(crate) fn pick_redispatch_target(
@@ -57,7 +57,7 @@ pub(crate) fn pick_redispatch_target(
     let ranked =
         nemesis_web::handlers::board::rank_dispatch_candidates(&deps.store, &deps.cluster, issue);
     let ranked = fingerprint_weighted_ranked(deps, issue, ranked);
-    // A1（2026-10-21 引入）：耗时估计次级重排——指纹
+    // （引入）：耗时估计次级重排——指纹
     // （成功率）先行，速度在成功率中性段内细分；正交信号按此序叠加。
     let ranked = duration_weighted_ranked(&deps.store, issue, ranked);
     match ranked
@@ -72,7 +72,7 @@ pub(crate) fn pick_redispatch_target(
             Ok(RedispatchTargetChoice::Switch(next))
         }
         None => {
-            // 候选为空的两因区分（2026-10-08 NB-4 根修的可观测面）：file:
+            // 候选为空的两因区分（根修的可观测面）：file:
             // 锚点单是拓扑约束过滤（永远如此，不是瞬态），其余是候选确实
             // 不在线（瞬态，节点上线后换节点面恢复）。
             let why = if nemesis_board::anchor::has_file_anchor(
@@ -91,7 +91,7 @@ pub(crate) fn pick_redispatch_target(
     }
 }
 
-/// AOR 批三 5.2（sweep 监察环策略化）：换节点目标选取——在线 ranked 候选
+/// （sweep 监察环策略化）：换节点目标选取——在线 ranked 候选
 /// 经指纹/耗时加权排序后，取第一个非排除节点（排除 = 刚失败/离线的
 /// worker）。`pick_redispatch_target` 的「连续 <2 次 → Same」决策表面向
 /// 评审重派（同 worker 偶发失败优先原地重试），监察环的失败形态是
@@ -116,7 +116,7 @@ pub(crate) fn pick_sweep_switch_target(
     picked
 }
 
-/// P34 指纹稳定加权（`pick_redispatch_target` 的次级重排）：`board.
+/// 指纹稳定加权（`pick_redispatch_target` 的次级重排）：`board.
 /// fingerprint_weighting=true` 时按 (worker, 任务类型) 历史成功率把候选
 /// 分 prefer → neutral → avoid 三段（段内保匹配器序）。旗标 off / 配置
 /// 读失败 / 指纹读取失败 / 候选不足 2 / 无指纹数据 → 原序返回（默认态
@@ -152,8 +152,8 @@ fn fingerprint_weighted_ranked(
     ordered
 }
 
-/// A1（2026-10-21 引入）：耗时估计次级重排（指纹加权之后的
-/// 第三段排序）：按 (worker, required_profession) 历史耗时中位数把「同类
+/// （引入）：耗时估计次级重排（指纹加权之后的
+/// 排序）：按 (worker, required_profession) 历史耗时中位数把「同类
 /// 任务跑得快」的节点提前——借鉴前代实现运行时估计器（滑窗中位数 +
 /// 欠采样回落全局 + 无数据零干预）。数据面 = 本仓现成的 `issue_dispatch`
 /// 完结派发表（master 侧单钟），无新计时埋点、无新配置旗标（数据即闸：
@@ -188,7 +188,7 @@ pub(super) fn duration_weighted_ranked(
     }
 }
 
-/// P34 指纹记账（评审定案唯一写点，见模块头注释）：PASS=成功 / FAIL=
+/// 指纹记账（评审定案唯一写点，见模块头注释）：PASS=成功 / FAIL=
 /// 失败记入 (worker, 任务类型) 计数；UNSURE 不记（没定案不配记成败）。
 /// 无派发历史（人工转入 in_review）无从记账。幂等键 = task_id（一派发
 /// 轮一条：评审重放 / estop 复评同轮重评不重复计数）。记账与
@@ -227,7 +227,7 @@ pub(super) fn record_fingerprint_outcome(
     }
 }
 
-/// P34：重派换节点评论的档位注记（可审计：「档位 prefer，成功率 5/6」
+/// 重派换节点评论的档位注记（可审计：「档位 prefer，成功率 5/6」
 /// 形态，调用方包括号）。开关关 / 配置读失败 → None（评论与现状字节
 /// 一致）；开关开 → 有样本给档位+成功率，无样本诚实注明（不虚构 0/0）。
 pub(super) fn fingerprint_note_text(
@@ -249,7 +249,7 @@ pub(super) fn fingerprint_note_text(
     Some(nemesis_board::tier_note(success, total))
 }
 
-/// E1 预算保险丝检查（`board.budget` 四维：子单数/累计派发/墙钟/token；
+/// 预算保险丝检查（`board.budget` 四维：子单数/累计派发/墙钟/token；
 /// 单测钉死矩阵）。返回
 /// `Some(说明)` = 超预算。0 值 = 该维关闭。unlimited_mode 不改变本函数
 /// 结果——调用方决定 breach 时停（默认）还是 WARN 继续（unlimited）。
@@ -285,9 +285,9 @@ pub(crate) fn budget_breach(
     // 维度 3：墙钟预算（created_at 起算；checked 防时钟倒挂下溢——倒挂
     // 视为未超时，不炸流程；超大预算秒数过 i64::try_from 截到 i64::MAX，
     // 防 u64::MAX as i64 回绕成 -1 让任何存活时间都误判超支）。
-    // D9-1（2026-10-13 第 6 轮审计）：created_at 是 store::now() 的 unix
+    // （第 6 轮审计）：created_at 是 store::now() 的 unix
     // **秒**（store.rs:111），曾直接从毫秒 now 里减——差值恒带 ~1.77e12
-    // ms 的单位偏移，配了墙钟预算的父单**刚建单即报超支**，E1 保险丝第
+    // ms 的单位偏移，配了墙钟预算的父单**刚建单即报超支**， 保险丝第
     // 三维形同虚设且永远误熔断。秒→毫秒显式换算后作差。
     if budget.wall_clock_budget_secs > 0 {
         let now_ms = std::time::SystemTime::now()
@@ -308,7 +308,7 @@ pub(crate) fn budget_breach(
             ));
         }
     }
-    // 维度 4（E1 二期）：父单全链 token 预算。聚合口径 = master 账本里
+    // 维度 4（二期）：父单全链 token 预算。聚合口径 = master 账本里
     // 该父链全部派发（cluster_rpc:{worker}/{task_id} 精确键）的
     // input+output 累计（worker 回调回传，见 gateway.rs record_cluster_usage）。
     // 无 DataStore / 聚合失败 = 预算检查不完整 → 诚实按无预算放行（同维度 2）。
@@ -324,7 +324,7 @@ pub(crate) fn budget_breach(
     None
 }
 
-/// E1 维度 4 的全链 token 聚合入口：从评审依赖解出 master DataStore
+/// 维度 4 的全链 token 聚合入口：从评审依赖解出 master DataStore
 ///（评审 loop 未装配 / 未后置 → None = 该维诚实放行）。
 fn chain_token_usage(deps: &BoardReviewDeps, issue: &nemesis_board::Issue) -> Option<u64> {
     let ds = deps.moderator_loop.get()?.data_store()?;
@@ -335,10 +335,10 @@ fn chain_token_usage(deps: &BoardReviewDeps, issue: &nemesis_board::Issue) -> Op
     ))
 }
 
-/// E1 维度 4 的纯聚合：`root` 及全部子单的派发行 → worker 回传用量
-/// （input+output）之和。按 `/{task_id}` 后缀聚合（[`nemesis_data::DataStore::aggregate_session_usage_by_task`]）：
+/// 维度 4 的纯聚合：`root` 及全部子单的派发行 → worker 回传用量
+/// （input+output）之和。按 `/{task_id}` 后缀聚合（[`nemesis_data::DataStore:aggregate_session_usage_by_task`]）：
 /// 账本键 worker 段 = 传输层运行时节点 id，派发行 worker_id = 派发时 peer 名，
-/// 两者不同源，精确键必失配（T37 run 4 真机实证）——task_id 是唯一稳定锚。
+/// 两者不同源，精确键必失配（run 4 真机实证）——task_id 是唯一稳定锚。
 /// 单测直接喂临时 DataStore 钉死矩阵。
 pub(crate) fn chain_token_usage_ds(
     ds: &nemesis_data::DataStore,
@@ -365,7 +365,7 @@ pub(crate) fn chain_token_usage_ds(
     total
 }
 
-/// E1 维度 2 的全链派发计数：根（顶层父单）自身 + 全部子单的 dispatch
+/// 维度 2 的全链派发计数：根（顶层父单）自身 + 全部子单的 dispatch
 /// 行数总和。非父单（无子单）= 自身行数。
 fn chain_dispatch_count(
     store: &nemesis_board::BoardStore,
@@ -394,9 +394,9 @@ pub(crate) enum ReviewAction {
     EscalateHuman,
 }
 
-/// 三态处置决策表（§6.2；`round` = 已发生重派次数 = 派发行数 − 1）。
-/// `unlimited` = board.unlimited_mode（全自动流转 P1/E3，用户裁定
-/// 2026-09-10）：FAIL 重派预算视为 ∞、UNSURE 不转人工继续重派——无条件
+/// 三态处置决策表（`round` = 已发生重派次数 = 派发行数 − 1）。
+/// `unlimited` = board.unlimited_mode（全自动流转 /，用户裁定
+/// ）：FAIL 重派预算视为 ∞、UNSURE 不转人工继续重派——无条件
 /// 强制流程运转。estop 不受影响（保险丝非护栏）。
 pub(crate) fn decide_review_action(
     verdict: nemesis_board::ReviewVerdict,
@@ -418,14 +418,14 @@ pub(crate) fn decide_review_action(
 }
 
 // ---------------------------------------------------------------------------
-// P2A 能力类失败保护（2026-09-12 双端真机 NB-15 根修）：worker 上报的结构化
+// P2A 能力类失败保护（双端真机 根修）：worker 上报的结构化
 // fail_class 驱动重派决策——能力类失败（validation_budget / escalation）在
-// 同一 worker/模型上是确定性失败形态，同目标重派大概率原样复现（NB-15：
+// 同一 worker/模型上是确定性失败形态，同目标重派大概率原样复现（
 // 校验预算耗尽连烧两轮重派预算）。
 // ---------------------------------------------------------------------------
 
-/// ② 分类→重派策略映射（AOR 批一b 泛化，替代原 CAPABILITY_FAIL_CLASSES
-/// 三值集合）：fail_class → 重派处置语义的单一真相源。分类存在时映射表
+/// ② 分类→重派策略映射（b 泛化，替代原 CAPABILITY_FAIL_CLASSES
+/// 三值集合）：fail_class → 重派处置语义的统一定义。分类存在时映射表
 /// 优先于纯预算逻辑；无分类（None）保持现状预算逻辑（兼容不变）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FailClassPolicy {
@@ -465,8 +465,8 @@ pub(crate) fn redispatch_policy(fc: &str) -> FailClassPolicy {
 ///（旧 worker / 无失败评论路径）。扫描自最新评论起——重派轮次取最新失败。
 pub(crate) fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str> {
     // 与 classify_terminal_failure 的值集同步演化（该函数发出什么，这里才
-    // 认什么；llm_rate_limit 2026-09-17 补认、token_budget 2026-10-10 P8、
-    // ② AOR 批一b 2026-11-04 补 environmental/resource_conflict/
+    // 认什么；llm_rate_limit 补认、token_budget、
+    // ② b 补 environmental/resource_conflict/
     // unknown_side_effect——环境特征细分 + worker 六词自报桥）。
     const KNOWN: [&str; 12] = [
         "validation_budget",
@@ -476,11 +476,11 @@ pub(crate) fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&
         "empty_result",
         "escalation",
         "token_budget",
-        // L13-b（2026-11-03 三期）：worker 侧 mandate 执行面守卫终局
+        // b（三期）：worker 侧 mandate 执行面守卫终局
         //（授权面/时限/预算违规——同目标重派授权状态不变，大概率复现）。
         "mandate_violation",
         "exec_failed",
-        // ② AOR 批一b（2026-11-04）：环境/资源类（worker 六词自报 + exec
+        // ② b：环境/资源类（worker 六词自报 + exec
         // 兜底环境特征细分——换节点重试有意义）与副作用不明类（当前无 B 端
         // 自动生产者，识别即冻结不自动重派，防伪造面同步收口）。
         "environmental",
@@ -496,7 +496,7 @@ pub(crate) fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&
     })
 }
 
-/// 失败类别的转人工建议文案（与类值一一对应；未知类走兜底）。② 批一b
+/// 失败类别的转人工建议文案（与类值一一对应；未知类走兜底）。② b
 /// 起 caption 文案随 redispatch_policy 映射同步扩展（映射新增闸类别 =
 /// hint 必有对应条目）。
 pub(super) fn capability_fail_hint(fc: &str) -> &'static str {
@@ -526,10 +526,10 @@ pub(super) fn capability_fail_hint(fc: &str) -> &'static str {
     }
 }
 
-/// 评审上下文（P4）：一段评审 fresh（`allow_selfcheck=true`，配置闸在
-/// review_issue 内现读）；B2b 二段评审带 evidence 且 `allow_selfcheck=false`
+/// 评审上下文：一段评审 fresh（`allow_selfcheck=true`，配置闸在
+/// review_issue 内现读）； 二段评审带 evidence 且 `allow_selfcheck=false`
 /// ——取证只带一程，二段结论直接处置（防取证-评审乒乓死循环）。
-/// N2（2026-10-12）：`retry` = 已消耗的评审自身失败自动重评次数
+/// `retry` = 已消耗的评审自身失败自动重评次数
 ///（failure_retries 预算记账，随重评链传递）。
 #[derive(Debug, Clone)]
 pub(super) struct ReviewCtx {
@@ -553,12 +553,12 @@ impl ReviewCtx {
 /// fire-and-forget spawn 共用。任务 panic（JoinError）不再无声——ERROR
 /// 日志 + issue 系统评论留痕（`issue_id=None` 的项目级任务只记日志——
 /// 项目没有单一 issue 可挂）；任务被取消（关机/estop）= 正常流不留痕。
-/// 2026-10-11 事故固化：planner 截断 panic 杀死规划任务、看板零留痕，
+/// 事故固化：planner 截断 panic 杀死规划任务、看板零留痕，
 /// 用户体感「建了不动」——无人值守链路的后台任务死亡必须看板可见
 /// （日志只有翻日志的人看得到）。
 /// 后台任务 panic 看护（评审/重规划等 fire-and-forget 任务共用）：任务
 /// panic → 日志 + issue 评论显形；取消（关机/estop）= 正常流静默。
-/// pub(crate)：board_replan.rs 重规划起草共用（AOR 批三 5.3）。
+/// pub(crate)：board_replan.rs 重规划起草共用。
 pub(crate) fn spawn_watched<F>(
     store: Arc<nemesis_board::BoardStore>,
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
@@ -603,12 +603,12 @@ pub(crate) fn spawn_board_review(deps: BoardReviewDeps, issue_id: i64) {
     });
 }
 
-/// N2（2026-10-12）：评审自身失败自动重评的延迟（秒）。给评审侧基础设施
+/// 评审自身失败自动重评的延迟（秒）。给评审侧基础设施
 /// 故障（LLM 限流/端点抖动）一个自愈窗口——立即重跑大概率撞同一个故障。
 pub(super) const REVIEW_RETRY_DELAY_SECS: u64 = 60;
 
-/// N2：延迟重评（fire-and-forget）。睡眠后重入 review_issue 同一入口——
-/// estop 挂起闸、in_review 状态闸（人工已改状态让位）、S-O2 迟到守卫全部
+/// 延迟重评（fire-and-forget）。睡眠后重入 review_issue 同一入口——
+/// estop 挂起闸、in_review 状态闸（人工已改状态让位）、S- 迟到守卫全部
 /// 天然生效；ctx.retry 记账让重评再失败时预算判定继续累积。
 pub(super) fn spawn_review_retry(deps: BoardReviewDeps, issue_id: i64, attempt: u32) {
     let store = deps.store.clone();
@@ -627,11 +627,11 @@ pub(super) fn spawn_review_retry(deps: BoardReviewDeps, issue_id: i64, attempt: 
     });
 }
 
-/// U-A（2026-10-12 停车现场工程 §9.1）：停车现场落盘（机器可读侧车
+/// U-A（停车现场工程）：停车现场落盘（机器可读侧车
 /// `<workspace>/board/handoffs/<NB-x>.json`）+ 返回人可读评论的档案注记
 /// 尾巴。verdict_chain 从 U-C timeline 聚合提取（每轮决策全程链，单一
 /// 真相源）。写失败只 WARN + 返回空串——停车评论照发（停车优先，档案
-/// 缺席诚实）；全部停车分支收口本函数（单一真相源）。
+/// 缺席诚实）；全部停车分支收口本函数。
 pub(crate) fn park_with_handoff(
     deps: &BoardReviewDeps,
     issue_number: &str,

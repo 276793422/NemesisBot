@@ -6,19 +6,19 @@ use super::*;
 /// worker 端按普通任务 prompt 走自己的 agent（工具/安全层照常生效），
 /// 结尾固定要求结果汇报——最终回复是唯一回传渠道（经 callback 写回看板）。
 #[cfg(feature = "cluster")]
-/// 汇报格式五段真相源在 nemesis-board::report（交付线程首评 / 验收
+/// 汇报格式五段以 nemesis-board::report 为准（交付线程首评 / 验收
 /// agent 同源解析；此处只引用）。
 use nemesis_board::report::REPORT_FORMAT_SECTION;
 
-/// 派发提示词（impl-plan §3.3 结构化 PRD 模板）：背景/验收/交付物要求/
+/// 派发提示词（impl-plan 结构化 PRD 模板）：背景/验收/交付物要求/
 /// 汇报格式五段。description 是自由文本（人写）或结构化分段（planner 写），
 /// 原文放「背景」段不做二次加工。唯一调用方 dispatch_issue_core（cluster），
 /// 同 cfg 门控（REPORT_FORMAT_SECTION 是 cluster-only const）。
 #[cfg(feature = "cluster")]
 /// `review_feedback`（Swarm）：FAIL 重派时验收 agent 的差距意见，渲染
 /// 成「上轮验收意见」段——worker 必须知道为什么被打回，否则重派就是掷
-/// 骰子（§6.1 检视 2）。首派传 `None`。
-/// `experience_section`（Swarm .5）：团队过往经验注入段（注入端已渲染），
+/// 骰子（检视 2）。首派传 `None`。
+/// `experience_section`（Swarm.5）：团队过往经验注入段（注入端已渲染），
 /// 无匹配传 `None`——不塞空段，保持提示词字节与无经验时一致。
 /// `attempt`（机制加固）：本次派发序号（1 起；首派 `None`
 /// 不渲染，prompt 字节与历史一致）。重派任务卡告知轮次 + 循环升级契约：
@@ -52,7 +52,7 @@ pub(super) fn build_dispatch_prompt(
             _ => "（未提供——完成判据以背景描述为准，无法客观判定时在自检结果中说明）",
         }
     ));
-    // Swarm （§6.1 检视 2）：重派上下文延续——上轮验收差距原文随包走。
+    // Swarm （检视 2）：重派上下文延续——上轮验收差距原文随包走。
     if let Some(feedback) = review_feedback
         && !feedback.trim().is_empty()
     {
@@ -69,12 +69,12 @@ pub(super) fn build_dispatch_prompt(
             n - 1
         ));
     }
-    // Swarm （§5.4 层 1）：issue 名下资产随包走（引用+签名 token；
+    // Swarm （层 1）：issue 名下资产随包走（引用+签名 token；
     // 内容对端按需 HTTP 拉）。
     if let Some(section) = assets_section {
         p.push_str(section);
     }
-    // Swarm .5（§6.5.2）：scope 匹配的团队经验随包走（经验段是参考，
+    // Swarm.5：scope 匹配的团队经验随包走（经验段是参考，
     // 不是验收标准——提示词里写明）。
     if let Some(section) = experience_section {
         p.push_str(section);
@@ -146,9 +146,9 @@ pub(super) async fn issue_dispatch(
 
     let cluster = ctx.state.cluster.clone();
     let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor, None)?;
-    // §6.4D：手动重派 = 人类明确意图 → 失败账清零（「人工处理后计数作废」
+    // D：手动重派 = 人类明确意图 → 失败账清零（「人工处理后计数作废」
     // 在手动路径成真；熔断停车后 reopen 重派不再因存量 count 秒熔断）。与评
-    // 审链同源同一 JSON（nemesis-board fail_streak 单一真相源）；清账失败不
+    // 审链同源同一 JSON（以 nemesis-board fail_streak 为准）；清账失败不
     // 阻断派发结果（护栏非主路径）。workspace 未注入 = 跳过（测试形态）。
     if let Some(ws) = ctx.state.workspace.as_deref() {
         nemesis_board::fail_streak::FailStreakLedger::load(std::path::Path::new(ws)).clear(id);
@@ -156,7 +156,7 @@ pub(super) async fn issue_dispatch(
     Ok(Some(out))
 }
 
-/// dispatch prompt 的「## 任务资产」段渲染（Swarm §5.4 层 1）。签发
+/// dispatch prompt 的「## 任务资产」段渲染（Swarm 层 1）。签发
 /// 上下文挂 store（gateway 装配 set 一次）——未注入 / issue 无资产逐级
 /// 诚实降级为 None。
 #[cfg(feature = "cluster")]
@@ -175,7 +175,7 @@ pub(super) fn render_dispatch_assets_section(
     ))
 }
 
-/// 派发经验注入的检索（.5 §6.5.2）：查库（滤 deprecated）→ scope 对
+/// 派发经验注入的检索（.5）：查库（滤 deprecated）→ scope 对
 /// 任务文本（标题+描述+验收标准）与 required_tags 匹配 → top-N。返回
 /// （渲染好的注入段, 命中条目 id——发车成功后由调用方计 use_count）。
 /// 查库失败诚实降级为无注入（经验是增值段，任何异常都不阻断派发主线）。
@@ -516,7 +516,7 @@ pub(super) fn push_dispatch_baseline(
 
 /// 派发闸 → 登记 task + 派发绑定 → 推进 in_progress → fire-and-forget 发
 /// peer_chat RPC。`issue.dispatch`（WSAPI）与 gateway 的 autopilot 定时
-/// 触发共用（单一真相源）。`target="self"` 在入口即委托本地执行面
+/// 触发共用。`target="self"` 在入口即委托本地执行面
 /// [`dispatch_issue_local`]（BUG 单点下沉，全部调用方生效）。
 /// `cluster` 传 `None` 时本地闸先行、集群缺失
 /// 最后报（校验矩阵不依赖集群实例，可单测）。`review_feedback`（Swarm
@@ -627,7 +627,7 @@ pub fn dispatch_issue_core(
         return Err("集群 RPC client 未就绪（启动窗口），请稍后重试派发".to_string());
     }
 
-    // 单一真相源（双身份失配第三处落点）：账本 worker_id
+    // 身份口径统一（双身份失配第三处落点）：账本 worker_id
     // 必须与 worker 上报的传输层身份（_rpc.from = 运行时节点 id）同形态
     // 人工指派/兜底可能给 peer 名（"Alex"），不归一化则 task.started /
     // delivery.files 的 worker 校验永远失配。matcher 产出已是节点 id，此
@@ -932,7 +932,7 @@ pub fn dispatch_issue_core(
                 issue_id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
-                    // 前缀走单一真相源常量（sweep 重试候选按前缀识别，
+                    // 前缀走统一常量（sweep 重试候选按前缀识别，
                     // 字面量漂移 = 重试静默失效）。
                     "{}: [{}] RPC 送达失败（{detail}）",
                     nemesis_board::SEND_FAILURE_MARK,
@@ -1025,7 +1025,7 @@ pub(super) fn inflight_full(
 }
 
 /// 子单自动派发（依赖闸 + 匹配器选节点；confirm 派发波、补派触发器与
-/// 停车场 sweep 共用——单一真相源）。返回：`Ok(Some(out))` 已派出；
+/// 停车场 sweep 共用的统一定义）。返回：`Ok(Some(out))` 已派出；
 /// `Ok(None)` 暂缓（非待派状态 / 已有在途派发 / 依赖未满足 / 无匹配节点）；
 /// `Err` 硬错误（集群缺失、派发核心失败）。
 ///
@@ -1135,7 +1135,7 @@ pub fn dispatch_subissue_auto_with_config(
                     if let Some((fb_target, reason)) =
                         pick_fallback_target(board_cfg, store, cluster, &issue)
                     {
-                        // E（goal /）：标签授予——把 relaxed 掉的缺失标签
+                        // E（goal）：标签授予——把 relaxed 掉的缺失标签
                         // 授予目标节点（board_meta 台账；同类后续任务正常匹配，
                         // 降级路径越走越少）。
                         let granted_new = store
@@ -1158,7 +1158,7 @@ pub fn dispatch_subissue_auto_with_config(
                         fb_target
                     } else {
                         // 诚实留痕：不悄悄留 backlog。sweep 静默路径（!notify_park）
-                        // 不落评论不动父单。：评论附匹配明细（差什么一眼可见）。
+                        // 不落评论不动父单。：评论附匹配明细（差什么一眼可）。
                         if notify_park {
                             // 去重：最后一条 system 评论已是暂缓说明 → 不重复落。
                             let already_noted = store
@@ -1209,7 +1209,7 @@ pub fn dispatch_subissue_auto_with_config(
         }
     };
 
-    // 单一真相源：target 归一化为节点 id（与账本 worker_id / worker 上报
+    // 身份口径统一：target 归一化为节点 id（与账本 worker_id / worker 上报
     // 身份 _rpc.from 同形态； 负载表键随之统一，防同一 worker 名字/id
     // 双键分裂计数）。 双身份失配第三处落点。
     let target = cluster
@@ -1274,7 +1274,7 @@ pub fn dispatch_subissue_auto_with_config(
 /// 停车场父单受阻联动：停车单的父单尚未开工（backlog/todo）且
 /// 所有兄弟子单都没派出过（无在途派发）→ 父单转 blocked + 系统评论。
 /// 「整条链都在等节点」在看板受阻列显形，而不是停在 backlog 假装没发生
-/// （生产实测 ：用户建任务后"然后就没了"）。后续任一子单
+/// （生产实测：用户建任务后"然后就没了"）。后续任一子单
 /// 派出时由派发侧父单联动（bump 条件含 blocked）推回 in_progress。
 #[cfg(feature = "cluster")]
 pub(super) fn mark_parent_blocked_if_stalled(
@@ -1368,7 +1368,7 @@ pub fn sweep_parked_dispatches_with_config(
     if board_estop_engaged() {
         return (0, 0, 0);
     }
-    // U-B（§9.2）：LLM 端点不可用封存中——派发重试 sweep 短路（worker 与
+    // U-B：LLM 端点不可用封存中——派发重试 sweep 短路（worker 与
     // master 共享端点，发车必然烧在不可用端点上；恢复后 sweep 自然续跑，
     // 停车候选语义不变）。
     if super::super::board_unavailable::frozen_now() {
@@ -1488,7 +1488,7 @@ pub fn sweep_parked_dispatches_with_config(
                     // 评审 FAIL 重派回流形态：直派单点（不做松弛阶梯——
                     // 评审已经认可原目标的能力面，先原地重试）。差距意见
                     // 从评论找回随包重发（worker 必须知道为什么被打回，
-                    // 否则重派就是掷骰子——§6.1 检视 2 同源纪律）。
+                    // 否则重派就是掷骰子—— 检视 2 同源纪律）。
                     // 在途闸（闭环-13 补齐：backlog 臂经
                     // dispatch_subissue_auto_with_config 自带此闸，本直派
                     // 臂此前绕过——目标 worker 在途满载仍硬塞， 的
@@ -1686,7 +1686,7 @@ pub(super) fn pick_send_failure_redispatch_target(
 /// **开头**的用户评论**整段原文**作 review_feedback——不解析差距/reasons
 /// 边界，整段随「上轮验收意见」段重发（信息只多不少）。前缀锚定而非
 /// contains（多角度审计-13）：人工评审意见若引用「## 差距」
-/// 字样（引用 worker 自述/粘贴旧意见），contains 会把人工评论误当自动
+/// 字样（引用 worker 自述/粘贴旧意），contains 会把人工评论误当自动
 /// 重派差距重发。无此类评论（人工 in_review 直派送达失败等形态）返回
 /// None——不造空意见。
 #[cfg(feature = "cluster")]
@@ -1707,7 +1707,7 @@ pub(super) fn recover_review_feedback(store: &Arc<BoardStore>, issue_id: i64) ->
 /// 「已派未开跑」（dispatched 且未 running）的排队单，按空闲 slot 挪给本
 /// 节点——只从超载者（活跃 = 在途+排队 > cap，排队单存在即满载证据）偷
 /// 队首；running 单不可迁移。新 worker 需满足该单角色/标签要求（同匹配器
-/// 语义）。**file: 锚点单不偷**（[`nemesis_board::anchor::has_file_anchor`]，
+/// 语义）。**file: 锚点单不偷**（[`nemesis_board::anchor:has_file_anchor`]，
 /// 拓扑约束：转派远端必被派发拓扑闸拒绝——真机 / 实证取消后无法
 /// 重派）。转派失败补偿：原排队派发已被取消，系统评论诚实留痕（issue 保
 /// 留可重派状态，人工/autopilot 一发即活），不无声死透。竞态诚实边界：
@@ -1765,10 +1765,10 @@ pub async fn rebalance_queued_to_worker(
         let Ok(issue) = store.get_issue(d.issue_id) else {
             continue;
         };
-        // 拓扑约束（/ 根修①）：file: 锚点单只能在派发端
+        // 拓扑约束（/ 根）：file: 锚点单只能在派发端
         // workspace 实核，转派远端必被 dispatch_issue_core 拓扑闸拒绝——
         // 而本函数 cancel 先行、失败不可逆。跳过不偷（留在原队列，原节点
-        // 空闲后自然出队），谓词单一真相源 = has_file_anchor。
+        // 空闲后自然出队），谓词统一定义 = has_file_anchor。
         if nemesis_board::anchor::has_file_anchor(
             issue.acceptance_criteria.as_deref().unwrap_or(""),
         ) {
@@ -1832,7 +1832,7 @@ pub async fn rebalance_queued_to_worker(
             }
             Err(e) => {
                 tracing::warn!("[Board] D0b 重平衡重派 issue {} 失败：{e}", d.issue_id);
-                // 补偿（/ 根修②）：取消已落库且不可逆，
+                // 补偿（/ 根）：取消已落库且不可逆，
                 // issue 此时无活跃派发——系统评论诚实留痕，把「无声死透」
                 // 变成「可见停车」。状态机 in_progress → todo 非法（不走
                 // 回退）；issue 保留 in_progress 可被 dispatch_issue_core
@@ -1856,9 +1856,9 @@ pub async fn rebalance_queued_to_worker(
 }
 
 /// 在线节点 → PeerCandidate 投影（[`rank_dispatch_candidates`] 与兜底
-/// 松弛排序 [`pick_fallback_target`] 共用的单一真相源）：数据源 = 注册表
+/// 松弛排序 [`pick_fallback_target`] 共用的统一定义）：数据源 = 注册表
 /// 真实 tags ∪ category（后 announce/静态 peers/get_info 的 tags 全链
-/// 落地；曾长期降级为 `tags := [category]`，planner 的 required_tags 天然
+/// 落地；曾长期降级为 `tags:= [category]`，planner 的 required_tags 天然
 /// 不可满足 → 全部停车）。
 #[cfg(feature = "cluster")]
 pub(super) fn project_dispatch_candidates(
@@ -1897,7 +1897,7 @@ pub(super) fn project_dispatch_candidates(
         .collect()
 }
 
-/// required_role 归一（单一真相源）：角色词表（worker/coordinator）外的
+/// required_role 归一：角色词表（worker/coordinator）外的
 /// 非空词转标签语义（追加进 required_tags）——词表内原样保留。四个派发
 /// 匹配面共用（rank_dispatch_candidates / rebalance_queued_to_worker /
 /// pick_fallback_target / match_failure_detail）。此前 pick_fallback_target
@@ -1923,7 +1923,7 @@ fn normalize_dispatch_role(
 }
 
 /// 匹配器全量排序（换节点重派的候选来源 + [`pick_target_by_matcher`]
-/// 的单一真相源）：在线节点（不含本机）→ 投影 →
+/// 的统一定义）：在线节点（不含本机）→ 投影 →
 /// [`nemesis_board::rank_peers`] 匹配度降序全量返回。节点角色词表只有
 /// worker/coordinator，planner 给的其他角色词（如 "qa"）转标签语义与
 /// tags/category 匹配。**file: 锚点单返回空候选**（拓扑约束，见函数内
@@ -1939,11 +1939,11 @@ pub fn rank_dispatch_candidates(
         normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
 
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
-    // 拓扑约束（// 根修③）：file: 锚点单只能本节点
+    // 拓扑约束（// 根）：file: 锚点单只能本节点
     // 执行，而候选投影全是远端节点（excluding_self）——返回空候选，让
     // 消费方走各自的「无候选」路径（换节点决策回落 Same(本节点) / 匹配器
     // 停车 / 冲突解决同节点重派），不产出注定被拓扑闸拒绝的非法目标。
-    // 谓词单一真相源 = has_file_anchor。
+    // 谓词统一定义 = has_file_anchor。
     if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
         return Vec::new();
     }
@@ -1955,7 +1955,7 @@ pub fn rank_dispatch_candidates(
         required_backend: issue.required_backend.as_deref(),
         description: &issue.description,
     };
-    // E（goal /）：候选 tags 合并 master 授予标签（granted_tags 台账）。
+    // E（goal）：候选 tags 合并 master 授予标签（granted_tags 台账）。
     let candidates = merge_granted_tags(store, project_dispatch_candidates(cluster));
     nemesis_board::rank_peers(&input, &candidates, &load)
         .into_iter()
@@ -2013,7 +2013,7 @@ pub(super) fn duration_weighted_candidates(
     }
 }
 
-/// 停车场兜底目标（集群完备性加固 ； 三档化）。自动
+/// 停车场兜底目标（集群完备性加固； 三档化）。自动
 /// 派发匹配不到节点时，为了任务做下去由「一个客户端」推进。返回
 /// `(节点 id, 兜底说明)`；None = 不兜底（调用方走原停车路径）。
 ///
@@ -2032,9 +2032,9 @@ pub(super) fn pick_fallback_target(
     issue: &nemesis_board::Issue,
 ) -> Option<(String, &'static str)> {
     use nemesis_config::DispatchFallbackMode;
-    // 拓扑约束（根修④）：file: 锚点单只能本节点执行，兜底候选
+    // 拓扑约束（根）：file: 锚点单只能本节点执行，兜底候选
     // 全是远端节点——兜底产物必被拓扑闸拒绝，直接 None 走停车路径（与
-    // 匹配器无候选同语义）。谓词单一真相源 = has_file_anchor。
+    // 匹配器无候选同语义）。谓词统一定义 = has_file_anchor。
     if nemesis_board::anchor::has_file_anchor(issue.acceptance_criteria.as_deref().unwrap_or("")) {
         return None;
     }
@@ -2069,7 +2069,7 @@ pub(super) fn pick_fallback_target(
     let load = store.count_active_dispatch_by_worker().unwrap_or_default();
     // 2. 松弛排序（阶梯 = matcher::pick_relaxed：②保职能丢标签 →
     //    ③丢职能（保角色/标签）→ ④全松弛；无职能子单 ② 蜕化为旧「保
-    //    角色丢标签」，行为不变）。角色归一走单一真相源
+    //    角色丢标签」，行为不变）。角色归一走统一定义
     //    normalize_dispatch_role（词表外角色词转 tags——此前这里独家丢词，
     //    松弛丢标签后零约束，任意在线节点可接单）。
     let (role, tags) =
@@ -2085,7 +2085,7 @@ pub(super) fn pick_fallback_target(
     nemesis_board::pick_relaxed(&base, &candidates, &load, depth)
 }
 
-/// E（goal /）：候选投影合并 master 授予标签（tags ∪ granted_tags）。
+/// E（goal）：候选投影合并 master 授予标签（tags ∪ granted_tags）。
 /// 查询失败按无授予处理（不阻塞派发）。
 #[cfg(feature = "cluster")]
 fn merge_granted_tags(
@@ -2116,7 +2116,7 @@ pub(super) fn match_failure_detail(
     issue: &nemesis_board::Issue,
     candidates: &[nemesis_board::PeerCandidate],
 ) -> String {
-    // 角色归一（单一真相源 normalize_dispatch_role）：词表外角色词转标签。
+    // 角色归一（统一定义 normalize_dispatch_role）：词表外角色词转标签。
     let (required_role, required_tags) =
         normalize_dispatch_role(issue.required_role.as_deref(), &issue.required_tags);
     if candidates.is_empty() {

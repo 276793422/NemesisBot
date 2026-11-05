@@ -14,7 +14,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// summarize —— 汇总计数（私有类型经子模块可见）
+// summarize —— 汇总计数（私有类型经子模块可）
 // ---------------------------------------------------------------------------
 
 fn tag_with(findings: LayerFindings) -> ToolTag {
@@ -216,7 +216,7 @@ mod layers {
         assert!(f.credentials_out.is_none());
     }
 
-    // ── r9（覆盖率补测批 2026-08-27）：dlp 入站命中臂。既有 layers 夹具只
+    // ── r9（覆盖率补测-27）：dlp 入站命中臂。既有 layers 夹具只
     //    钉过出站(dlp_out)与无命中两侧，scan_tool_input 的 has_matches=true
     //    路径（346 行）从未点亮——Luhn 通过的确定性卡号样本补上这块。
     #[tokio::test]
@@ -381,15 +381,15 @@ fn tool_tag_serializes_with_all_report_fields() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：run() 入口错误路径。
-// 成功路径需要真 LLM（结构性，eval 命令的 e2e 在 S11b 批次覆盖）；
+// 补测（quality-hardening goal 冲刺）：run() 入口错误路径。
+// 成功路径需要真 LLM（结构性，eval 命令的 e2e 在 批次覆盖）；
 // 这里钉三段失败链：①env 未设 ②config.json 坏 ③agent 工厂失败——
 // 全部要求 worker_error.txt 落盘（盒内 stderr 被 Start.exe 吞掉，这个
 // 文件是唯一诊断线索）。
 // =========================================================================
 
 // 整 mod Windows 形态（3/3 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod run_error_paths {
     use super::super::*;
 
@@ -412,7 +412,7 @@ mod run_error_paths {
         }
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn run_err_when_workspace_env_missing() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -436,7 +436,7 @@ mod run_error_paths {
         }
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn run_err_on_broken_config_writes_worker_error_and_alive_marker() {
         let tmp = tempfile::tempdir().unwrap();
@@ -465,12 +465,12 @@ mod run_error_paths {
         assert!(werr.contains("load eval config"), "werr: {werr}");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_unconfigured_model_surfaces_loop_error_writes_worker_error() {
         let tmp = tempfile::tempdir().unwrap();
         // config.json 合法但没有可用模型（load 回落默认 zhipu 无 key）。
-        // 双击直启降级语义（2026-09-17）：工厂降级 NullProvider 装配 Ok，
+        // 双击直启降级语义：工厂降级 NullProvider 装配 Ok，
         // 错误延迟到 LLM 调用时诚实报「未配置模型」→ run() 映射为
         // agent loop error → worker_error.txt 照常落盘（盒内唯一诊断线索）。
         // （须多线程 flavor：observer 注册走 block_in_place，current-thread
@@ -498,7 +498,7 @@ mod run_error_paths {
 }
 
 // =========================================================================
-// 覆盖率补测 wave B（2026-08-27）：run_inner 成功链 + agent loop 错误映射
+// 覆盖率补测 wave B：run_inner 成功链 + agent loop 错误映射
 // + run_layers 补充分支 + Observer::name。
 //
 // - 成功链用进程内 mock LLM：std TcpListener 手写一发 HTTP/1.1 应答
@@ -516,18 +516,18 @@ mod wave_b {
     use nemesis_observer::Observer;
     // 下面三组只被 Windows 形态的 mock LLM server 测试使用，随之门控
     // （Observer/Arc 被跨平台裸测试使用，保持无条件导入）。
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::io::{Read, Write};
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::net::TcpListener;
     use std::sync::Arc;
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// RAII：设置 NEMESISBOT_EVAL_WORKSPACE，Drop 按 prev-value Option 恢复。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct WaveBEvalEnvGuard(Option<String>);
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl WaveBEvalEnvGuard {
         fn set_workspace(path: &std::path::Path) -> Self {
             let saved = std::env::var("NEMESISBOT_EVAL_WORKSPACE").ok();
@@ -535,7 +535,7 @@ mod wave_b {
             Self(saved)
         }
     }
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl Drop for WaveBEvalEnvGuard {
         fn drop(&mut self) {
             match self.0.take() {
@@ -545,12 +545,12 @@ mod wave_b {
         }
     }
 
-    /// 最小可解析 config.json：模型带【非 openai】provider 前缀（wbprov/），
+    /// 最小可解析 config.json：模型带【非 openai】provider 前缀（wbprov），
     /// 工厂 resolve 落 HttpCompat(HttpProvider)，base_url 即给定 api_base、
     /// 端点 /chat/completions。⚠️ 不能用裸名：parse_model_ref 对无前缀名
     /// 默认 provider="openai" → 工厂映射 Codex（POST {base}/responses,
     /// Chat 补全格式解析为空 → 3 次空 final → turn_guard 放弃文案）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn wave_b_write_llm_config(ws: &std::path::Path, api_base: &str) {
         let cfg = serde_json::json!({
             "agents": {"defaults": {"llm": "wbprov/waveb-probe"}},
@@ -568,12 +568,12 @@ mod wave_b {
         .unwrap();
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn wave_b_header_end(buf: &[u8]) -> Option<usize> {
         buf.windows(4).position(|w| w == b"\r\n\r\n")
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn wave_b_content_length(headers: &[u8]) -> usize {
         String::from_utf8_lossy(headers)
             .lines()
@@ -589,7 +589,7 @@ mod wave_b {
 
     /// 进程内 mock LLM：任何请求都回一条 finish_reason=stop 的补全。
     /// accept 用 nonblocking+轮询以便 stop 置位后退出线程；served 上限兜底。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn wave_b_spawn_mock_llm() -> (String, Arc<AtomicBool>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let addr = listener.local_addr().unwrap();
@@ -643,7 +643,7 @@ mod wave_b {
         (format!("http://{addr}"), stop)
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_worker_writes_full_report_after_successful_llm_round() {
         let ws = tempfile::tempdir().unwrap();
@@ -699,12 +699,12 @@ mod wave_b {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_worker_maps_agent_loop_llm_error_into_worker_error_txt() {
         let ws = tempfile::tempdir().unwrap();
         // 127.0.0.1:1 连接拒绝 → LLM 层瞬态重试烧尽 → Error 事件、无 Done →
-        // process_direct Err → :119 map_err 成 "agent loop error: ..."。
+        // process_direct Err →:119 map_err 成 "agent loop error:..."。
         wave_b_write_llm_config(ws.path(), "http://127.0.0.1:1/v1");
 
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -776,7 +776,7 @@ mod wave_b {
         let (_d, obs) = wave_b_observer_in_tmp_home();
         // 1.1.1.1 是公网字面量：非 loopback/metadata/private/link-local/
         // reserved 且 blocked_nets 默认空 → resolver.rs 对 IP 直判短路（不
-        // 发 DNS 不建连接）→ validate_url Ok(())。既有夹具只钉过拦截面。
+        // 发 DNS 不建连接）→ validate_url Ok()。既有夹具只钉过拦截面。
         let args = serde_json::json!({"url": "http://1.1.1.1/dns-query"});
         let f = obs
             .run_layers("web_fetch", &args, &args.to_string(), "")
@@ -806,29 +806,29 @@ mod wave_b {
         let result = "key=AKIAIOSFODNN7EXAMPLE123456 Card: 4111111111111111";
         let f = obs.run_layers("exec", &args, args_str, result).await;
 
-        // L1 注入：总是产出 finding 结构。
+        // 注入：总是产出 finding 结构。
         assert!(f.injection.is_some(), "L1 注入层必须产出 finding");
         if let Some(inj) = &f.injection {
-            // level 序列化契约（plan C2 修复）：小写字符串，非双重引号包装。
+            // level 序列化契约（plan 修复）：小写字符串，非双重引号包装。
             assert!(
                 !inj.level.starts_with('"'),
                 "level 不得带字面引号: {}",
                 inj.level
             );
         }
-        // L2 command guard：rm -rf / 确定性拦截。
+        // command guard：rm -rf / 确定性拦截。
         let cg = f.command_guard.expect("command 字段 → guard finding");
         assert!(cg.blocked, "rm -rf / 必须拦");
         assert!(!cg.reason.is_empty());
-        // L3 credentials：双向命中。
+        // credentials：双向命中。
         let cin = f.credentials_in.expect("入站凭据命中");
         assert!(!cin.is_empty());
         let cout = f.credentials_out.expect("出站凭据命中");
         assert!(!cout.is_empty());
-        // L5 SSRF：metadata 地址确定性拦截。
+        // SSRF：metadata 地址确定性拦截。
         let s = f.ssrf.expect("url 字段 → ssrf finding");
         assert!(s.blocked);
-        // L4 DLP 出站（卡号）在此一并走通；入站方向布尔两臂均已由
+        // DLP 出站（卡号）在此一并走通；入站方向布尔两臂均已由
         // 既有/上句夹具覆盖，此处不再加约束钉死检测器灵敏度。
         let dout = f.dlp_out.expect("出站 DLP 命中");
         assert!(!dout.is_empty());

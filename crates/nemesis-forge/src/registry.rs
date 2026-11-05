@@ -13,7 +13,7 @@ use crate::types::RegistryConfig;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Monotonic counter for unique atomic-write temp filenames (F-D4). Unique per
+/// Monotonic counter for unique atomic-write temp filenames (F-). Unique per
 /// write so concurrent writes to the same path (e.g. parallel tests sharing the
 /// default index) don't collide on the temp file.
 static REGISTRY_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -56,7 +56,7 @@ impl Registry {
             .iter_mut()
             .find(|a| a.name == artifact.name && a.kind == artifact.kind)
         {
-            // 版本 bump = 新一代产物（BUG-20261029-188）：评估账本
+            // 版本 bump = 新一代产物：评估账本
             // （usage_count/success_rate/consecutive_observing_rounds/
             // last_degraded_at/last_efficacy）是 per-version 状态，必须重置
             // ——跨代残留会让重建（Degraded/Archived 重蒸馏、dedup 过期
@@ -196,7 +196,7 @@ impl Registry {
             serde_json::to_string_pretty(&*arts)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
         };
-        // F-D4: atomic write (unique temp + rename).
+        // F-: atomic write (unique temp + rename).
         let tmp = atomic_tmp_path(&self.config.index_path);
         tokio::fs::write(&tmp, &json).await?;
         tokio::fs::rename(&tmp, &self.config.index_path).await?;

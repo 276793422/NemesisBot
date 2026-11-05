@@ -1856,7 +1856,7 @@ async fn test_list_windows_no_title_does_not_set_title_contains() {
 }
 
 // ============================================================
-// W4a coverage gap closure (standalone PowerShell read-only
+// coverage gap closure (standalone PowerShell read-only
 // lane). Same weak-assertion pattern as the existing
 // test_desktop_tool_list_windows_no_mcp above: with no MCP
 // backend, find_window falls back to enumerate_windows_ps,
@@ -1865,7 +1865,7 @@ async fn test_list_windows_no_title_does_not_set_title_contains() {
 // host window state, so only "does not panic / returns a
 // ToolResult" can be asserted hermetically.
 //
-// NOT exercised here (structural exemption, see goal doc §9.4):
+// NOT exercised here (structural exemption, see goal doc):
 // standalone_click_at (moves the real mouse via mouse_event),
 // standalone_type_text (sends real keystrokes via SendKeys) and
 // standalone_screenshot (real CopyFromScreen) physically act on
@@ -1887,7 +1887,7 @@ async fn w4a_find_window_without_mcp_runs_standalone_enumeration() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): screenshot without MCP caller (standalone
+// coverage: screenshot without MCP caller (standalone
 // fall-through) + find_window without MCP caller (read-only PS enumeration)
 // ===========================================================================
 

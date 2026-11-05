@@ -1022,7 +1022,7 @@ fn test_tool_execution_context_custom() {
 }
 
 // ============================================================
-// W4a coverage gap closure (register_with_plugin[_simple],
+// coverage gap closure (register_with_plugin[_simple],
 // PluginableTool::parameters passthrough, and the is_error warn
 // arms of execute / execute_with_context / execute_with_full_context)
 // ============================================================
@@ -1143,7 +1143,7 @@ async fn w4a_execute_with_full_context_success_and_error_arms() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): tracing field arms across register/execute APIs
+// coverage: tracing field arms across register/execute APIs
 // (field expressions only evaluate with a subscriber active)
 // ===========================================================================
 

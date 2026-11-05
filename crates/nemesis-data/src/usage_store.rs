@@ -79,7 +79,7 @@ impl DataStore {
     }
 
     /// Layered cost computation with per-component breakdown
-    /// (A3 明细表分项成本). Unknown model → `None`（调用方记空
+    /// (明细表分项成本). Unknown model → `None`（调用方记空
     /// `pricing_model` + 全 0 分项）。
     pub fn compute_cost_breakdown(
         &self,
@@ -146,9 +146,9 @@ impl DataStore {
     }
 
     /// Idempotent insert: skip the write when a row with the same `trace_id`
-    /// already exists (BUG-20261105-013). Cluster callback usage rows use
+    /// already exists. Cluster callback usage rows use
     /// `trace_id = "cluster-callback:{task_id}"`（单任务一笔聚合账），worker
-    /// 回调重试（send_callback 至多 3 次）/ G5 恢复轮询重复回调时同一
+    /// 回调重试（send_callback 至多 3 次）/ 恢复轮询重复回调时同一
     /// trace_id 重放——裸 INSERT 会把 token 记账翻倍，预算闸
     /// （`board.budget.max_tokens_per_parent`）提前耗尽错误冻结单据。
     /// 单语句 SELECT-INSERT 原子去重；返回 `false` = 命中重复已跳过。
@@ -158,7 +158,7 @@ impl DataStore {
     /// 专用，不会与常规请求 trace_id 碰撞。
     ///
     /// usage-store 关：no-op stub（返回 `false` = 未落账，与
-    /// [`Self::insert_request_log`] 的空账本语义一致）。
+    /// [`Self:insert_request_log`] 的空账本语义一致）。
     #[cfg(not(feature = "usage-store"))]
     pub fn insert_request_log_dedup(&self, _log: &RequestLog) -> Result<bool, String> {
         Ok(false)
@@ -362,7 +362,7 @@ impl DataStore {
     }
 
     /// Query request logs with pagination and optional orthogonal filters
-    /// (model 子串 / status 精确 / session_key 子串，A3 请求明细 tab)。
+    /// (model 子串 / status 精确 / session_key 子串， 请求明细 tab)。
     ///
     /// usage-store 关：空列表 + 总数 0。
     #[cfg(not(feature = "usage-store"))]
@@ -392,10 +392,10 @@ impl DataStore {
 
         // WHERE 动态拼装：时间范围恒在（?1/?2），过滤条件按需追加。
         // 参数占位序号 = 绑定序（1-based），与 params_vec 压入顺序一致。
-        // BUG-20261101-284：用户搜索词 LIKE 字面化（对齐 R221/BUG-163 board
+        // 用户搜索词 LIKE 字面化（对齐 /BUG-163 board
         // 口径）——`%`/`_` 是 SQL LIKE 通配符，不转义时 `%q%` 包裹的搜索词
         // 会按通配符解释（搜 `_` 命中全部单字符位、搜字面 `%` 变全量）。
-        // 转义与 `ESCAPE '\'` 子句成对（单一真相源 nemesis_utils::sanitize）。
+        // 转义与 `ESCAPE '\'` 子句成对（统一定义 nemesis_utils::sanitize）。
         let mut conds: Vec<String> = vec![
             "created_at >= ?1".to_string(),
             "created_at < ?2".to_string(),
@@ -463,7 +463,7 @@ impl DataStore {
         Ok((logs, total))
     }
 
-    /// Fetch a single request-log row by id（A3 请求明细详情面板）。
+    /// Fetch a single request-log row by id（请求明细详情面板）。
     ///
     /// usage-store 关：None（空账本无行）。
     #[cfg(not(feature = "usage-store"))]
@@ -495,7 +495,7 @@ impl DataStore {
         }
     }
 
-    /// 单会话用量聚合（M5 会话级 cost/context 常驻）。
+    /// 单会话用量聚合（会话级 cost/context 常驻）。
     ///
     /// `session_key` **精确匹配**（调用方已持完整键，如
     /// `agent:main:session:{sid}`——与 loop.rs 写入 RequestLog 的
@@ -503,9 +503,9 @@ impl DataStore {
     /// 会话无请求行 → 全零聚合（不是错误）。
     ///
     /// `input_tokens` 口径 = 完整输入（prompt + cache_creation +
-    /// cache_read；R2 2026-10-22 补全 cache_creation——prompt 列是 provider
+    /// cache_read； 补全 cache_creation——prompt 列是 provider
     /// 非缓存纯输入，Anthropic 形态漏计 creation 会话预算系统性偏低），
-    /// 与 loop 侧 `usage_full_input`（P8 预算 delta / 压缩信号）同口径。
+    /// 与 loop 侧 `usage_full_input`（预算 delta / 压缩信号）同口径。
     ///
     /// usage-store 关：恒全零聚合（空账本语义）。
     #[cfg(not(feature = "usage-store"))]
@@ -542,17 +542,17 @@ impl DataStore {
         .map_err(|e| format!("aggregate_session_usage: {e}"))
     }
 
-    /// 按任务后缀聚合集群委派用量（E1 维度 4 全链 token 聚合专用）。
+    /// 按任务后缀聚合集群委派用量（维度 4 全链 token 聚合专用）。
     ///
     /// master 记账键 `cluster_rpc:{worker}/{task_id}` 的 worker 段是**传输层
     /// 运行时节点 id**（回调帧 `_rpc.from`），而派发行 `issue_dispatch.worker_id`
     /// 存的是**派发时 peer 名**（如 `Node-B`）——两者不同源，精确键匹配必落空
-    /// （T37 真机 run 4 实证：聚合恒 0 → token 闸永不熔断）。task_id（UUID）
+    /// （真机 run 4 实证：聚合恒 0 → token 闸永不熔断）。task_id（UUID）
     /// 是 per-dispatch 唯一锚，按 `/{task_id}` 后缀匹配对两种身份形态都稳。
     /// 无请求行 → 全零聚合（不是错误）。
     ///
     /// `input_tokens` 口径 = 完整输入（prompt + cache_creation +
-    /// cache_read，与 `aggregate_session_usage` 同式，R2 2026-10-22 补全）。
+    /// cache_read，与 `aggregate_session_usage` 同式， 补全）。
     ///
     /// usage-store 关：恒全零聚合（空账本语义；token 预算闸读到的恒是
     /// 0 占用——闸本身 0=关默认，不受影响）。
@@ -597,7 +597,7 @@ impl DataStore {
         .map_err(|e| format!("aggregate_session_usage_by_task: {e}"))
     }
 
-    /// P2B（2026-09-12 NB-15 根修配套）：记一笔工具调用与参数校验结果
+    /// P2B（根修配套）：记一笔工具调用与参数校验结果
     /// （天×模型 upsert 增量）。`failed` = 本次调用 args_validator 判 Invalid。
     /// Valid/Fixed 都算成功（Fixed 已自动修复，不是模型失败证据）。
     /// 调用方对错误只 warn——审计是增值动作，不反压轮次。
@@ -672,7 +672,7 @@ impl DataStore {
             .map_err(|e| format!("query_model_tool_health: {e}"))?
             .filter_map(|r| r.ok())
             .collect();
-        // A2（2026-10-21 引入）：守卫事件并入（同窗口聚合）。
+        // （引入）：守卫事件并入（同窗口聚合）。
         // 并集语义：守卫事件是独立观测面——只有守卫事件、没有工具调用的
         // 模型（空答复/文本重复型打转）也要出现在健康行里（guard_events
         // 驱动的 hint 正是为它准备的），不允许静默丢弃。
@@ -712,7 +712,7 @@ impl DataStore {
         Ok(rows)
     }
 
-    /// A2（2026-10-21 引入）：记一笔守卫事件计数（天×模型
+    /// （引入）：记一笔守卫事件计数（天×模型
     /// upsert 增量）。`events` = 本 turn 实际发出的 loop-guard nudge 总数，
     /// 0 不写行（与「无事件即无记录」语义一致，turn 频次远高于守卫事件）。
     /// 调用方对错误只 warn——审计是增值动作，不反压轮次。
@@ -742,7 +742,7 @@ impl DataStore {
     }
 
     /// Roll up request logs older than 30 days into daily_rollups and delete originals.
-    /// Retention sweep（A3 保留策略，可配置）：把 `retention_days` 天前的
+    /// Retention sweep（保留策略，可配置）：把 `retention_days` 天前的
     /// 明细行 rollup 进 `daily_rollups` 后删除（`None` = 跳过按天清理，
     /// 对应 config `usage.retention_days = 0`）；`max_rows` 给定时再按
     /// created_at 最旧优先裁掉超额行（防膨胀；聚合已由按天步做掉，

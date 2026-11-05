@@ -77,7 +77,7 @@ fn test_write_file_atomic_no_temp_file_left() {
 
     write_file_atomic(&path, b"content", 0o644).unwrap();
 
-    // No .tmp files should remain
+    // No.tmp files should remain
     let entries: Vec<_> = fs::read_dir(dir.path())
         .unwrap()
         .filter_map(|e| e.ok())
@@ -216,7 +216,7 @@ fn test_write_file_atomic_concurrent() {
 
 /// 空路径的 `Path::parent()` 返回 None → 落到 "." 分支。tmp 文件落在当前
 /// 目录（"."），最终 rename 到 "" 确定性失败；helper 自身清理临时文件
-/// （REL-002 失败清理保证），测试仍兜底清扫 CWD 残留。
+/// （失败清理保证），测试仍兜底清扫 CWD 残留。
 #[test]
 fn test_write_file_atomic_empty_path_skips_parent_creation() {
     let result = write_file_atomic("", b"data", 0o644);
@@ -234,7 +234,7 @@ fn test_write_file_atomic_empty_path_skips_parent_creation() {
 }
 
 // ============================================================
-// REL-002（2026-09-23）：失败注入 / 并发 / 权限验收
+// 失败注入 / 并发 / 权限验收
 // ============================================================
 
 /// 替换失败臂：目标是已存在的目录 → rename 失败；原目录原样、无 tmp 残留。
@@ -331,7 +331,7 @@ fn test_write_file_atomic_concurrent_no_interleave() {
 }
 
 // ============================================================
-// BUG-20261104-356：临时名形态单一真相钉死
+// 临时名形态单一真相钉死
 // ============================================================
 
 /// 临时名形态契约（消费方依赖面）：[`atomic_tmp_path`] 产出的名字以

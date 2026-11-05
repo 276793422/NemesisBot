@@ -281,7 +281,7 @@ fn extra_save_config_local_mode_tilde_workspace() {
     let res = save_config(&config_path, &mut config);
     assert!(res.is_ok());
     // 波浪号自定义路径不是默认形态，落盘必须原样保留
-    // （旧 `~/` 宽匹配会把它静默改写成 .nemesisbot/workspace）。
+    // （旧 `~/` 宽匹配会把它静默改写成.nemesisbot/workspace）。
     assert_eq!(config.agents.defaults.workspace, "~/some/path");
 
     std::env::set_current_dir(original).unwrap();
@@ -867,7 +867,7 @@ fn extra_workspace_resolver_env_var_with_absolute_no_tilde() {
         std::env::set_var("NEMESISBOT_HOME", "/opt/nemesis");
     }
     let p = WorkspaceResolver::resolve(false);
-    // No tilde; expansion returns the path as-is, joined with .nemesisbot.
+    // No tilde; expansion returns the path as-is, joined with.nemesisbot.
     assert!(p.starts_with("/opt/nemesis") || p.to_string_lossy().contains("opt"));
     assert!(p.to_string_lossy().ends_with(".nemesisbot"));
     unsafe {
@@ -1180,7 +1180,7 @@ fn extra_config_loader_load_embedded_default_success() {
 #[test]
 fn extra_is_local_mode_returns_false_when_local_dir_missing() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
-    // cwd is the workspace root which (typically) has no .nemesisbot at the root.
+    // cwd is the workspace root which (typically) has no.nemesisbot at the root.
     let dir = tempfile::tempdir().unwrap();
     let original = std::env::current_dir().unwrap();
     std::env::set_current_dir(dir.path()).unwrap();
@@ -1241,7 +1241,7 @@ fn extra_adjust_paths_ends_with_nemesisbot_workspace() {
     let mut cfg = Config::default();
     cfg.agents.defaults.workspace = "/something/.nemesisbot/workspace".into();
     cfg.adjust_paths_for_environment();
-    // 以 .nemesisbot/workspace 结尾的**绝对路径**是自定义
+    // 以.nemesisbot/workspace 结尾的**绝对路径**是自定义
     // 形态，加载期必须原样保留（旧 ends_with 后缀匹配会强改回默认值）。
     assert_eq!(
         cfg.agents.defaults.workspace,
@@ -1492,7 +1492,7 @@ fn extra_save_config_local_mode_home_prefix_workspace() {
     let res = save_config(&config_path, &mut config);
     assert!(res.is_ok());
     // home 下的自定义路径不是默认工作区，落盘必须原样
-    // 保留（旧 starts_with(home) 宽匹配会把它静默改写成 .nemesisbot/workspace）。
+    // 保留（旧 starts_with(home) 宽匹配会把它静默改写成.nemesisbot/workspace）。
     assert_eq!(config.agents.defaults.workspace, home_workspace);
 
     std::env::set_current_dir(original).unwrap();
@@ -1539,7 +1539,7 @@ fn extra_save_config_local_mode_default_workspace_path() {
     std::env::set_current_dir(original).unwrap();
 }
 
-// vault（计划 §4）：security.limits serde 语义
+// vault（计划）：security.limits serde 语义
 
 /// limits 段 round-trip：落盘形态稳定，未配置时空表不写键（字节不变）。
 #[test]

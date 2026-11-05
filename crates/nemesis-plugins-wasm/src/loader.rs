@@ -1,6 +1,6 @@
 //! 宿主 DLL 装载器（libloading；load-once-never-unload）。
 //!
-//! 路径解析单一真相源 = [`resolve_host_dll_path`]（纯扫描）：`NEMESIS_WASM_HOST_DLL`
+//! 路径解析单一权威 = [`resolve_host_dll_path`]（纯扫描）：`NEMESIS_WASM_HOST_DLL`
 //! 环境变量**权威覆盖**（显式指定 = 只认该路径，不再回落探测——缺席/装载
 //! 失败即失败，错误文本如实列出；测试注入与部署替换的确定性通道）→ exe
 //! 同目录 → exe 旁 `plugins/`（部署布局）→ 开发路径
@@ -87,9 +87,9 @@ fn candidate_paths() -> Vec<std::path::PathBuf> {
 /// 宿主壳 DLL 路径解析（**纯扫描**：env 权威覆盖 → exe 同目录 → exe 旁
 /// `plugins/` → 开发路径，首个存在者。不装载、不触进程装载缓存）。
 ///
-/// 单一真相源：native_plugins 闸（enforce 态验签对象）与本装载器的实际
+/// 统一定义：native_plugins 闸（enforce 态验签对象）与本装载器的实际
 /// 装载对象都消费这里——`Allow { path }` 携带的文件就是 `open_at` 装载的
-/// 文件（R1 整改：验签对象 = 实际装载对象，二者不得各自选路）。
+/// 文件（验签对象 = 实际装载对象，二者不得各自选路）。
 pub fn resolve_host_dll_path() -> Option<std::path::PathBuf> {
     candidate_paths().into_iter().find(|p| p.is_file())
 }
@@ -146,7 +146,7 @@ unsafe fn open_at_impl(path: &std::path::Path) -> Result<Arc<HostDll>, String> {
 /// # Safety
 /// 自动选路装载；内部委托 [`open_at_impl`]。
 unsafe fn open_impl() -> Result<Arc<HostDll>, String> {
-    // 选路单一真相源：resolve_host_dll_path 定文件（首个存在者），装载只
+    // 选路统一定义：resolve_host_dll_path 定文件（首个存在者），装载只
     // 对该文件。不再逐候选回落——高优先位置一个损坏/不兼容 DLL 静默换
     // 低优先文件，正是「验签对象 ≠ 装载对象」漂移的同类土壤；loud 失败
     // 诚实（调用方按 NotAvailable 整体关闭子系统）。
@@ -234,7 +234,7 @@ unsafe fn bind_symbols(lib: libloading::Library) -> Result<HostDll, String> {
 }
 
 impl HostDll {
-    /// 引擎初始化（幂等；回调表 = [`crate::callbacks::callbacks_table`]）。
+    /// 引擎初始化（幂等；回调表 = [`crate::callbacks:callbacks_table`]）。
     pub(crate) fn engine_init(
         &self,
         cache_root: Option<&std::path::Path>,
@@ -251,7 +251,7 @@ impl HostDll {
             )
         };
         if h != ENGINE_HANDLE {
-            // C4（2026-10-24）：host 未设 last_error 时给诚实占位——空串
+            // host 未设 last_error 时给诚实占位——空串
             // 错误消息（实测「init failed: 」）对排障零信息量。
             let detail = self.take_last_error();
             let detail = if detail.is_empty() {

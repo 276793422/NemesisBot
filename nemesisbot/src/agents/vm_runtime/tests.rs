@@ -1,6 +1,6 @@
 //! [`vm_runtime`] 单测（CI 面：纯函数 + 文件系统 registry + config 现读 +
 //! 禁用/孤儿收敛——**不 spawn QEMU**；真机链路归 `vm_smoke` 与实机 IT，
-//! 分层见实施计划 §9）。
+//! 分层见实施计划）。
 
 use std::time::Duration;
 
@@ -57,7 +57,7 @@ fn record_roundtrip() {
     assert_eq!(back, r);
 }
 
-/// 旧记录（无 display_port 键）= serde default None（P5-R2 字段后补兼容——
+/// 旧记录（无 display_port 键）= serde default None（字段后补兼容——
 /// 既有工作区 registry 不炸）。
 #[test]
 fn record_without_display_port_key_loads_as_none() {
@@ -149,9 +149,9 @@ fn identity_check_matches_image_path() {
 }
 
 /// paths_equiv canonicalize 兜底（8.3 短名误判「pid 复用」的回归锁）：
-/// gateway 经 `std::env::temp_dir()` 拿到 `LOCALA~1` 短名 spawn 路径，而
+/// gateway 经 `std::env:temp_dir()` 拿到 `LOCALA~1` 短名 spawn 路径，而
 /// `QueryFullProcessImageNameW` 返回 kernel 展开长名——字面比较必失配，
-/// 会把真孤儿误判成 pid 复用而拒绝清理（VM-ON-2 实录）。用 canonicalize
+/// 会把真孤儿误判成 pid 复用而拒绝清理（VM-ON-2）。用 canonicalize
 /// 的 verbatim `\\?\` 形态作「字面失配但同指一文件」的确定性代理。
 #[cfg(windows)]
 #[test]
@@ -297,13 +297,13 @@ fn gc_decision_table() {
 }
 
 // ---------------------------------------------------------------------------
-// 磁盘 GC：孤儿 overlay / 陈旧换装残留（P5-R4）
+// 磁盘 GC：孤儿 overlay / 陈旧换装残留
 // ---------------------------------------------------------------------------
 
 /// 三碰 [`IMAGE_SWAP_GATE`] 的测试（决策表 + bug196 两臂）用模块级锁串行：
 /// sweep_disk_garbage 对该闸是 `try_lock` 撞闸即跳过（闸忙返回 0），cargo
 /// 并行调度下持闸测试与验「闸空闲」测试同跑会互踩假红（同
-/// background_registry TEST_LOCK 先例，2026-11-04 全量实录）。
+/// background_registry TEST_LOCK 先例， 全量）。
 static GC_GATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// sweep_disk_garbage 决策表：引用三族（run 目录名 / 记录 sanitize id /
@@ -390,7 +390,7 @@ async fn disk_garbage_sweep_decision_table() {
     assert!(vm_images_root(ws).join("base.new.qcow2").exists());
 }
 
-/// BUG-20261030-196 红证：换装闸被持（promote 在飞）时 sweep 不得删
+/// 红证：换装闸被持（promote 在飞）时 sweep 不得删
 /// base.new——canonical 与 base.new 同时在场正是 promote ①→③ 相位的
 /// 工作形态，此时删它 = 删掉换装在飞的新 base（rebase 断链、overlay
 /// 悬空）。闸忙 = GC 本轮整体跳过（best-effort，watchdog 下轮重试）。
@@ -417,7 +417,7 @@ async fn bug196_sweep_disk_garbage_skipped_while_swap_gate_held() {
     assert!(!vm_images_root(ws).join("base.new.qcow2").exists());
 }
 
-/// BUG-20261030-196 对照：闸空闲时既有回收行为不变（与决策表测试的
+/// 对照：闸空闲时既有回收行为不变（与决策表测试的
 /// 「canonical 在场 → base.new 回收」臂同义，钉住闸不改变空闲路径）。
 #[tokio::test]
 async fn bug196_sweep_disk_garbage_still_collects_when_gate_free() {
@@ -490,7 +490,7 @@ async fn vm_settings_reads_and_gates() {
     assert_eq!(s.max_instances, 2);
     assert_eq!(s.resources.ram_mb, 2048);
     assert_eq!(s.idle_sleep_secs, 300);
-    // P5-R4：配置未写 ready_budget_secs 键 = 字段级缺省 240（原编译期
+    // 配置未写 ready_budget_secs 键 = 字段级缺省 240（原编译期
     // 常量行为字节不变的回归锚——现读面与闸/超时消费同源）。
     assert_eq!(s.ready_budget_secs, 240);
 }
@@ -546,7 +546,7 @@ async fn stop_without_slot_is_failed_not_unavailable() {
 }
 
 // ---------------------------------------------------------------------------
-// F2（2026-10-21 三轮复评）：逐出两段式状态机（无须 QEMU——无槽形态下
+// （三轮复评）：逐出两段式状态机（无须 QEMU——无槽形态下
 // prepare 纯状态转换；断言面 = ensure_running 的生命周期拒绝文案）。
 // ---------------------------------------------------------------------------
 
@@ -699,12 +699,12 @@ fn process_image_path_resolves_own_pid() {
 }
 
 // ---------------------------------------------------------------------------
-// P5 第 4 步：执行接入面——guest 子集闸（先于一切 config/IO）
+// 第 4 步：执行接入面——guest 子集闸（先于一切 config/IO）
 // ---------------------------------------------------------------------------
 
 /// 子集闸双臂：超子集工具（grep）= ToolFailed **不回落**（VM 与宿主两套
 /// 文件视图混用 = 正确性事故）；子集内工具（exec）在 config 关 = Unavailable
-/// 且 host_fallback=false（R1：vm 档 guest 异文件视图，宿主回落被错误位
+/// 且 host_fallback=false（vm 档 guest 异文件视图，宿主回落被错误位
 /// 禁止——「可安全回落」只对 process 档成立）。两臂都无需 QEMU/镜像——闸
 /// 先于一切 IO。
 #[test]
@@ -757,7 +757,7 @@ fn persistent_execution_subset_gate_and_config_off() {
     );
 }
 
-// R1 回归锁（原 review 探针反转，2026-10-20）：VM enabled 但镜像缺席时，
+// 回归锁（原 review 探针反转）：VM enabled 但镜像缺席时，
 // vm 档不可用错误携带 host_fallback=false——RemoteExecutorTool 必须上抛诚实
 // 错误（含回落禁用说明），绝不静默落宿主 per-call 通道（宿主标记文件不可被
 // 读出）。通道 exe 指向不存在路径：正确实现下永不被触碰；若回落（回归），
@@ -819,7 +819,7 @@ async fn unavailable_vm_does_not_fallback_to_host() {
     );
 }
 
-/// B9-1 内部方法通道双钉（gateway 同步引擎的闸位契约）：
+/// 内部方法通道双钉（gateway 同步引擎的闸位契约）：
 /// ① `internal_call` **不走** agent 工具面子集闸——bulk_write 等内部方法
 ///   未就绪环境的失败必须是诚实 Unavailable（可回落），错误里绝不出现
 ///   「子集」措辞（闸位置钉死：子集闸永远拦不到同步引擎）；
@@ -870,7 +870,7 @@ fn internal_call_gate_position_pins() {
 }
 
 // ---------------------------------------------------------------------------
-// B6 快速试玩族（VmBridge trait 面；真机链路仍归 vm_smoke——这里钉闸）
+// 快速试玩族（VmBridge trait 面；真机链路仍归 vm_smoke——这里钉闸）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -943,8 +943,8 @@ fn try_family_enabled_gates_arch_then_image() {
 }
 
 // ---------------------------------------------------------------------------
-// B6 热修（try.start 发起即返回）：启动在途状态机 + 在途闸
-// （真机教训 2026-10-19：冷启动同步等 30-60s 撞前端 30s WSAPI 超时）
+// 热修（try.start 发起即返回）：启动在途状态机 + 在途闸
+// （真机冷启动同步等 30-60s 撞前端 30s WSAPI 超时）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1028,7 +1028,7 @@ fn try_family_starting_gates_exec_and_stop_lands_request() {
 
 // ---------------------------------------------------------------------------
 // 启动在途闸（starting 集）：同 agent 并发 ensure 互斥 + 失败路径 Drop 释放
-// + sweep 跳过在途 agent（2026-10-20 复查批回归锁）
+// + sweep 跳过在途 agent（复查批回归锁）
 // ---------------------------------------------------------------------------
 
 /// 在途拒绝 + 失败路径自动释放：hypervisor 非法值让 start_or_wake 在 spawn
@@ -1128,7 +1128,7 @@ async fn sweep_skips_inflight_starting_agent() {
 }
 
 // ---------------------------------------------------------------------------
-// 第六轮复查（2026-10-20）：ensure 路由顺序（活槽短路拒新闸）+ registry
+// 复查：ensure 路由顺序（活槽短路拒新闸）+ registry
 // 原子写（spawn 前锚如实报错）+ spawn 前活 QEMU 防线
 // ---------------------------------------------------------------------------
 
@@ -1182,7 +1182,7 @@ fn ensure_route_order_table() {
 }
 
 /// registry 原子写：roundtrip + 成功路径 run 目录只剩 instance.json（无
-/// 孤儿 .tmp——临时文件已被 rename 消费；修前裸 write 失败会留半截 JSON）。
+/// 孤儿.tmp——临时文件已被 rename 消费；修前裸 write 失败会留半截 JSON）。
 #[test]
 fn registry_save_roundtrip_leaves_no_tmp() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -1251,7 +1251,7 @@ fn ensure_no_live_qemu_gate_table() {
 /// 全 workspace 活 QEMU 扫描核（[`any_live_qemu_scan`] 可注入形态四态表，
 /// 镜像换装闸 promote 侧的判定核）：run 根缺席 / pid 已死 / 身份不匹配 /
 /// run 根下的散文件 = 无活；任一 agent 目录身份命中 = 有活（跨进程哨兵
-/// ——CLI 前台臂 / 另一 gateway 进程的活实例同样可见）。镜像解析用
+/// ——CLI 前台臂 / 另一 gateway 进程的活实例同样可）。镜像解析用
 /// current_exe 注入（本测试进程自身 = 平凡活体；自然解析在 Windows 上
 /// 解析出的是裸名，与测试 exe 镜像路径永不相等，故必须注入）。
 #[test]
@@ -1331,7 +1331,7 @@ fn starting_marker_guard_drop_removes() {
 }
 
 // ---------------------------------------------------------------------------
-// P5-R1：browser 不进 guest 子集（独立 VmBrowserTool 通道的唯一性锚）
+// browser 不进 guest 子集（独立 VmBrowserTool 通道的唯一性锚）
 // ---------------------------------------------------------------------------
 
 #[test]

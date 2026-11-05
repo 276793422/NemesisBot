@@ -163,7 +163,7 @@ impl std::error::Error for JSONRPCError {}
 // MCP domain types
 // ---------------------------------------------------------------------------
 
-/// MCP protocol tool annotations（B3，2026-10-19 治理补全）：server 对工具
+/// MCP protocol tool annotations（治理补全）：server 对工具
 /// 行为的自述提示（hint——**不是承诺**，纯声明供宿主定基线）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct McpToolAnnotations {
@@ -186,13 +186,13 @@ pub struct McpTool {
     /// JSON Schema describing the expected input.
     #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
-    /// Server 自述行为提示（B3）；老 server 不带 = None，反序列化零破坏。
+    /// Server 自述行为提示；老 server 不带 = None，反序列化零破坏。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<McpToolAnnotations>,
 }
 
 /// MCP 规范 EmbeddedResource——tools/call 返回的 resource content 的嵌套对象
-/// （BUG-20261104-380：此前 ToolContent 缺 resource 字段，真实 server 的资源
+/// （此前 ToolContent 缺 resource 字段，真实 server 的资源
 /// content 反序列化后被静默丢弃，adapter 恒产空占位）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EmbeddedResource {
@@ -219,7 +219,7 @@ pub struct ToolContent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// Image/audio content 的 base64 载荷（MCP 规范 `data` 字段；
-    /// BUG-20261104-380：此前缺字段，真实 server 的图像 content 数据被
+    /// 此前缺字段，真实 server 的图像 content 数据被
     /// serde 静默丢弃）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
@@ -466,7 +466,7 @@ pub struct PromptResult {
 /// Configuration for spawning an external MCP server process (or connecting
 /// to an HTTP one).
 ///
-/// **2026-08-31 单一真相源收敛**：本 crate 与 nemesis-config 曾各自定义一份
+/// ** 单一真相源收敛**：本 crate 与 nemesis-config 曾各自定义一份
 /// MCP 服务器配置结构（`env: Option<Vec<_>>` vs `Vec<_>`、`timeout_secs` vs
 /// `timeout`）——同一份 config.mcp.json 出现两种解析结果，Dashboard 侧的
 /// `"env": null` 直接解析崩溃而 runtime 一切正常。现在唯一定义在

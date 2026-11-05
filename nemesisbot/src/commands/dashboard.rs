@@ -87,11 +87,11 @@ async fn start_and_wait(
 
     let mut cmd = std::process::Command::new(&exe);
     if cfg!(test) {
-        // BUG #48（2026-08-28）：测试二进制的 main 是 libtest，CLI 参数会被
+        // 测试二进制的 main 是 libtest，CLI 参数会被
         // 当成测试过滤器——`["gateway"]` 让直调单测 spawn 出一个嵌套重跑全部
         // commands::gateway 测试（217 个）的 rogue 子进程：双倍 live 负载 +
         // 幻影 result 行污染全量闸门（曾致随机 live 测试 60s 窗超时失败）。
-        // 测试形态改传 libtest 空过滤器（--exact 不存在的名字）→ 子进程
+        // 测试形态改传 libtest 空过滤器（exact 不存在的名字）→ 子进程
         // 0 测试秒退、stdio 归零、零副作用。生产二进制走 else 分支，
         // --local/gateway argv 字节不变（cfg!(test) 编译期常量）。
         cmd.arg("--exact").arg("__dashboard_start_and_wait_stub__");
@@ -111,7 +111,7 @@ async fn start_and_wait(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    // A4 装配纪律：保留子进程句柄，等待循环经 nemesis_utils::wait_ready
+    // 装配纪律：保留子进程句柄，等待循环经 nemesis_utils::wait_ready
     // 耦合存活断言——gateway 半路崩（坏配置/端口被占/AV 拦截）立即报退出码
     // 现场，不再傻等满 30s 只给一句笼统超时。句柄 drop = 脱管继续跑（std
     // Child drop 不杀进程），与旧行为一致：就绪后的 gateway 生命周期独立。

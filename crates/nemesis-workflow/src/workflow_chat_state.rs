@@ -7,13 +7,13 @@
 //! history.
 //!
 //! [`WorkflowChatState`] solves this by holding:
-//! 1. A per-workflow `tokio::sync::Mutex` (`mutexes`) — acquired at send time
+//! 1. A per-workflow `tokio::sync:Mutex` (`mutexes`) — acquired at send time
 //!    so concurrent sends to the same workflow queue up.
 //! 2. A pending-execution map (`pending_guards`) keyed by execution_id that
 //!    owns the guard until the workflow completes — released by the reply
 //!    observer when it sees the matching Completed/Failed/Cancelled event.
 //!
-//! Lives inside [`crate::engine::WorkflowEngine`] so the engine, the WebSocket
+//! Lives inside [`crate::engine:WorkflowEngine`] so the engine, the WebSocket
 //! handler, and the reply observer all share one instance without plumbing a
 //! second Arc through AppState (which would require touching ~40 test
 //! constructors).

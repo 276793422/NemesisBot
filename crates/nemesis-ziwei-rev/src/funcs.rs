@@ -1,4 +1,4 @@
-//! funcs —— 递归下降函数边界识别（T3.1）。
+//! funcs —— 递归下降函数边界识别（.1）。
 //!
 //! 种子 = 入口点 + 导出 + 直接调用目标（xref 前置：先逐种子线性解码）。
 //! 停块条件（保守闭包——宁可欠识别不误识别）：坏字节 / ret 后跟非代码
@@ -46,7 +46,7 @@ impl FunctionSet {
     }
 }
 
-/// 单函数解码上限（防御：数据被误当代码时 bounded 停，不烧穿 .text）。
+/// 单函数解码上限（防御：数据被误当代码时 bounded 停，不烧穿.text）。
 const MAX_INSNS_PER_FUNC: usize = 8192;
 
 /// 递归下降恢复。
@@ -87,7 +87,7 @@ pub fn recover(arch: Arch, image: &ImageMap, seeds: &[u32], text_range: (u32, u3
             truncated: insns.len() >= MAX_INSNS_PER_FUNC,
         };
         for insn in &insns {
-            let next = insn.rva.saturating_add(insn.len); // saturating 防溢出（BUG-20261029-154 同族）
+            let next = insn.rva.saturating_add(insn.len); // saturating 防溢出（同族）
             // 撞已识别函数体：本函数在此截断（重叠让位，先到先得）
             if set.contains(next) {
                 break;
@@ -97,12 +97,12 @@ pub fn recover(arch: Arch, image: &ImageMap, seeds: &[u32], text_range: (u32, u3
                     if !info.calls.contains(&t) {
                         info.calls.push(t);
                     }
-                    // 直接调用目标 = 新种子（在 .text 内才追）
+                    // 直接调用目标 = 新种子（在.text 内才追）
                     if t >= text_range.0 && t < text_range.1 && !set.contains(t) {
                         work.push(t);
                     }
                 } else if !(t >= text_range.0 && t < text_range.1) {
-                    // jmp 出 .text：结束（表尾/尾调用到数据边界），保守停
+                    // jmp 出.text：结束（表尾/尾调用到数据边界），保守停
                     info.insns.push(insn.clone());
                     info.end_rva = next;
                     break;
@@ -158,7 +158,7 @@ pub fn leading_nops(arch: Arch, image: &ImageMap, f: &FunctionInfo, min: usize) 
 }
 
 /// nopsled 预埋标记扫描（种子补充）：可执行节内 ≥4 连续 0x90 的游程起点。
-/// dummy-draw 类夹具以「入口 8×0x90」预埋锚点（T0.8 契约）——x86 无
+/// dummy-draw 类夹具以「入口 8×0x90」预埋锚点（.8 契约）——x86 无
 /// .pdata、递归下降又够不到经 std `lang_start` 间接进入的用户函数，
 /// 由此入册。纯启发式：误报只多一个种子（recover 重叠让位兜底），
 /// 不破坏正确性；函数内真实的成串 nop 指令在实践里罕见。
@@ -175,7 +175,7 @@ pub fn nopsled_seed_rvas(image: &ImageMap) -> Vec<u32> {
                 continue;
             }
             if run >= 4 {
-                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                // saturating 防 u32 加法溢出（同族）
                 out.push(sec.rva.saturating_add((i - run) as u32));
             }
             run = 0;

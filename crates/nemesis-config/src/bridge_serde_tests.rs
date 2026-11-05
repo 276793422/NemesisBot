@@ -1,4 +1,4 @@
-//! `bridge` 配置段 serde 测试（goal：节点显示名 + 反向桥，一期批次一）。
+//! `bridge` 配置段 serde 测试（goal：节点显示名 + 反向桥，一期）。
 //!
 //! 语义锚点：`bridge` 缺省 = None（零行为变化）；`bridge` 段内每字段
 //! `#[serde(default)]` 全可省；空 token = 接入门不开放（fail-closed）；

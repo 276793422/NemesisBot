@@ -1,6 +1,6 @@
 //! 第 4 步 — `vm.*` WSAPI + 桌面级 VM 管理面。
 //!
-//! 依赖方向（同 [`crate::handlers::agents`] 先例）：nemesis-web 不反向依赖
+//! 依赖方向（同 [`crate::handlers:agents`] 先例）：nemesis-web 不反向依赖
 //! nemesisbot（[`VmSupervisor`](../..) 与 QEMU 管线在那边），所以这里定义
 //! [`VmBridge`] trait + 模块级槽，nemesisbot 在 gateway 装配时把实现装进
 //! 槽。加速器探针（WHPX/KVM）也在 bridge 侧完成——本 crate 的 `vm` feature

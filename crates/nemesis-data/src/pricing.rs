@@ -151,11 +151,11 @@ impl PricingTable {
 /// Compute `total_cost_usd` for one LLM request against the embedded table.
 /// Unknown model → `0.0` (degrade, never guess).
 ///
-/// `input_tokens` 语义（账本不变量，2026-10-20 修复；R2 2026-10-22 补全
+/// `input_tokens` 语义（账本不变量， 修复； 补全
 /// 口径注记）：**非缓存纯输入**（Anthropic 语义）。三条出站 lane 的
 /// provider 层统一归一后喂入；缓存读写单列各自计价。合并形态的账本聚合
 /// = `SUM(input_tokens + cache_creation_tokens + cache_read_tokens)`
-/// （R2 前漏 creation 列）；分列聚合（UsageSummary / TrendPoint /
+/// （前漏 creation 列）；分列聚合（UsageSummary / TrendPoint /
 /// daily_rollups）三列各自独立，消费方按需相加。此前「input 含缓存
 /// 总量、公式内做减法」的旧语义已废弃。
 pub fn compute_cost_usd(
@@ -177,7 +177,7 @@ pub fn compute_cost_usd(
     )
 }
 
-/// 阶梯选档口径的单一真相源（F3，2026-10-21）：`min_prompt_tokens` 的语义
+/// 阶梯选档口径的统一定义：`min_prompt_tokens` 的语义
 /// 是**完整 prompt 长度**（含缓存部分——缓存读写就是真实上下文，长会话的
 /// 阶梯价正该由它触发），在当前统一口径（`input_tokens` = 非缓存纯输入）
 /// 下 = 非缓存输入 + 缓存创建 + 缓存读取。各分量防御性钳 0 + 饱和加法
@@ -194,7 +194,7 @@ pub fn tier_selection_tokens(
         .saturating_add(cache_read_tokens.max(0))
 }
 
-/// Prompt-length 阶梯解析（L3，2026-10-12 内部专项 T0）：`prompt_tokens`
+/// Prompt-length 阶梯解析（内部专项）：`prompt_tokens`
 /// 达到某档 `min_prompt_tokens` 即该档生效；多条命中取阈值最大的一档；
 /// 档内 `None` 价目字段继承基础价。**单一真相源**——`cost_from_pricing`
 /// 与 `cost_breakdown_from_pricing` 共同消费，两条口径永不分叉。
@@ -340,6 +340,6 @@ mod cov_tests;
 #[cfg(test)]
 mod cov_wave6b_tests;
 
-// L3（2026-10-12 内部专项 T0）：prompt-length 阶梯价解析/计价/透传测试。
+// （内部专项）：prompt-length 阶梯价解析/计价/透传测试。
 #[cfg(test)]
 mod tier_tests;

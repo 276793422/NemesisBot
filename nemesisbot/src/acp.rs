@@ -1,14 +1,14 @@
-//! L7 ACP server（devtool-upgrade 阶段 7）—— Agent Client Protocol agent 侧。
+//! ACP server（devtool-upgrade）—— Agent Client Protocol agent 侧。
 //!
 //! `nemesisbot acp` 以 stdio JSON-RPC（ndjson 帧，一行一帧）说 ACP v1，
-//! 编辑器等 ACP 客户端直接接入。每个 ACP session = 一次完整 K1 式装配
+//! 编辑器等 ACP 客户端直接接入。每个 ACP session = 一次完整 式装配
 //! （`build_security_plugin` + `SharedResources` + `build_agent_loop`，
 //! 与 `commands/run.rs` 逐行同构）——安全 8 层 + guardian + tier 过滤 +
 //! spill + turn_guard 与 gateway **同源生效**，编辑器不是安全旁路。
 //! session cwd 即 workspace（编辑器打开的项目目录），多轮对话靠 session
-//! 持久 `AgentInstance`（与 K1 临时 instance 的唯一实质分叉）。
+//! 持久 `AgentInstance`（与 临时 instance 的唯一实质分叉）。
 //!
-//! 事件映射（M1a broadcast + `run_with_trace` 返回 Vec，run.rs json 模式
+//! 事件映射（broadcast + `run_with_trace` 返回 Vec，run.rs json 模式
 //! 同款 select 模式）：
 //! - `ToolStarted`（实时）→ `session/update` `tool_call`（status=in_progress）
 //! - `ToolFinished`（实时）→ `tool_call_update`（completed/failed）
@@ -16,15 +16,15 @@
 //! - `Error(e)` → 错误文本 chunk + `stopReason=refusal`
 //! - cancel token 触发 → `stopReason=cancelled`
 //!
-//! permission 映射 M7：[`AcpApprovalManager`] 实现
-//! `nemesis_security::auditor::ApprovalManager`，审批请求经
+//! permission 映射：[`AcpApprovalManager`] 实现
+//! `nemesis_security::auditor:ApprovalManager`，审批请求经
 //! `session/request_permission` 发给编辑器用户阻塞等裁决（ACP 进程无
 //! dashboard，编辑器即唯一审批面；v1 只供 allow_once/reject_once 两选项
-//! ——无 F3 规则表背书，不假供 always 记忆）。
+//! ——无 规则表背书，不假供 always 记忆）。
 //!
 //! 诚实边界（v1）：
 //! - **文本无增量流式**：`AgentEvent::Message`（nemesis-agent）在 loop.rs
-//!   从未构造，M1a broadcast 无文本事件——文本只在 Done 整段到达（K2
+//!   从未构造， broadcast 无文本事件——文本只在 Done 整段到达（
 //!   NDJSON 同界）。工具流实时、文本收尾送达。
 //! - `loadSession=false`：进程重启会话即失（instance 在内存）；
 //!   session/resume/list/close/delete 不宣告，未知方法 → -32601。
@@ -57,7 +57,7 @@ use tokio_util::sync::CancellationToken;
 pub const PROTOCOL_VERSION: u16 = 1;
 
 /// 入站帧长度上限：成帧层必须有字节闸——失控客户端发一条无换行的超大
-/// 「行」时，`lines()`/`next_line()` 会无限物化直到 OOM（BUG-20261029-160）。
+/// 「行」时，`lines()`/`next_line()` 会无限物化直到 OOM。
 /// 64MB 远超合法 ACP 帧（session prompt 随上下文增长）所需。
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
@@ -228,7 +228,7 @@ pub fn make_request(id: &str, method: &str, params: Value) -> Value {
 }
 
 // ---------------------------------------------------------------------------
-// permission 闸（M7 → ACP 桥）
+// permission 闸（ACP 桥）
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,7 +241,7 @@ pub enum PermissionOutcome {
 #[derive(Default)]
 pub struct PendingPermissions {
     inner: Mutex<HashMap<String, oneshot::Sender<PermissionOutcome>>>,
-    /// 全局 rpc_id 计数（BUG-20261029-177）：id 铸造收编到登记表本体——
+    /// 全局 rpc_id 计数：id 铸造收编到登记表本体——
     /// per-gate 计数在共享登记表上撞车（两个 session 的首个审批同为
     /// "perm-0"，insert 互相覆盖 oneshot sender）。
     next_id: AtomicU64,
@@ -253,7 +253,7 @@ impl PendingPermissions {
     }
 
     /// 铸造全局唯一 rpc_id。id 由登记表统一发放：铸造器与登记表同体，
-    /// 结构上杜绝跨 gate 撞车（BUG-20261029-177：旧实现每 gate 各自从
+    /// 结构上杜绝跨 gate 撞车（旧实现每 gate 各自从
     /// "perm-0" 起计数，两个 session 的并发审批在共享登记表上互相覆盖——
     /// 前者的 oneshot sender 被 insert 顶掉 = 未经裁决即 Denied，其失败
     /// 清理臂再误摘后者的条目；用户对 A 卡的裁决也可能路由进 B 的在飞
@@ -347,7 +347,7 @@ impl PermissionGate {
         });
         let frame = make_request(&rpc_id, "session/request_permission", params);
         if self.outbound.send(frame).await.is_err() {
-            // 客户端已断开：登记表同步自清（M13 同族——register 先于 send，
+            // 客户端已断开：登记表同步自清（同族——register 先于 send，
             // 失败早退不摘条目就是泄漏）。
             self.pending.resolve(&rpc_id, None);
             return PermissionOutcome::Denied;
@@ -355,7 +355,7 @@ impl PermissionGate {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(outcome)) => outcome,
             // 超时 / oneshot 发送端已 drop（登记表被清）/ 接收失败 → 拒绝。
-            // M13（2026-10-27 整改批次四）：失败臂摘除自身 rpc_id（复用
+            // 失败臂摘除自身 rpc_id（复用
             // resolve 的 remove 路径，传 None = 结果 Denied、sender 丢弃）——
             // 否则编辑器侧从不回帧时超时条目滞留登记表恒久泄漏。
             _ => {
@@ -366,8 +366,8 @@ impl PermissionGate {
     }
 }
 
-/// M7 审批 → ACP permission 桥：实现
-/// `nemesis_security::auditor::ApprovalManager`（sync 阻塞 trait）。
+/// 审批 → ACP permission 桥：实现
+/// `nemesis_security::auditor:ApprovalManager`（sync 阻塞 trait）。
 /// 装配进该 session 的 `approval_slot`——auditor 发起审批时经
 /// [`PermissionGate`] 走 `session/request_permission`，编辑器即审批 UI。
 /// 阻塞桥接用 block_in_place（WebQuestionBroker 同款；要求 multi-thread
@@ -377,7 +377,7 @@ impl PermissionGate {
 #[cfg(feature = "security")]
 pub struct AcpApprovalManager {
     gate: Arc<PermissionGate>,
-    /// P1 审批台账（tasks.db approvals 表；broker="acp"）。None = 本工作区
+    /// 审批台账（tasks.db approvals 表；broker="acp"）。None = 本工作区
     /// tasks.db 打不开（open 失败已 loud warn）——审批照常走编辑器，仅丢
     /// 重启补裁记账能力（诚实降级）。
     journal: Option<std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>>,
@@ -398,7 +398,7 @@ impl nemesis_security::auditor::ApprovalManager for AcpApprovalManager {
         reason: &str,
         timeout_secs: u64,
     ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
-        // P1：pending 记账（尽力而为，失败 loud error 不阻断审批主链路）。
+        // pending 记账（尽力而为，失败 loud error 不阻断审批主链路）。
         if let Some(j) = self.journal.as_ref() {
             let entry = nemesis_types::approval_journal::ApprovalJournalEntry {
                 id: request_id.to_string(),
@@ -435,7 +435,7 @@ impl nemesis_security::auditor::ApprovalManager for AcpApprovalManager {
                 .await
             })
         });
-        // P1：裁决记账（幂等条件更新；失败 warn 不阻断——裁决已生效）。
+        // 裁决记账（幂等条件更新；失败 warn 不阻断——裁决已生效）。
         if let Some(j) = self.journal.as_ref() {
             let decision = match outcome {
                 PermissionOutcome::Allowed => {
@@ -483,7 +483,7 @@ pub trait PromptDriver: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = TurnOutcome> + Send + 'a>>;
 }
 
-/// session 装配方（生产 = RealSessionFactory 的 K1 同源装配；测试 = 假）。
+/// session 装配方（生产 = RealSessionFactory 的 同源装配；测试 = 假）。
 pub trait SessionFactory: Send + Sync {
     fn create<'a>(
         &'a self,
@@ -908,11 +908,11 @@ async fn serve_with_frame_cap(
 }
 
 // ---------------------------------------------------------------------------
-// 生产装配：RealSessionFactory + LoopDriver（K1 同源）
+// 生产装配：RealSessionFactory + LoopDriver（同源）
 // ---------------------------------------------------------------------------
 
-/// 生产 session 装配：以 cwd 为 workspace 走完整 K1 式装配
-/// （run.rs 逐行同构），审批槽填 [`AcpApprovalManager`]（M7 → ACP 桥）。
+/// 生产 session 装配：以 cwd 为 workspace 走完整 式装配
+/// （run.rs 逐行同构），审批槽填 [`AcpApprovalManager`]（ACP 桥）。
 pub struct RealSessionFactory {
     pub home: PathBuf,
 }
@@ -935,11 +935,11 @@ impl SessionFactory for RealSessionFactory {
             }
             let cfg = nemesis_config::load_config(&config_path)
                 .map_err(|e| format!("failed to load config: {e}"))?;
-            // U15：模型 API key 走 credentials.yaml（与 gateway 同一解析路径）。
+            // 模型 API key 走 credentials.yaml（与 gateway 同一解析路径）。
             nemesis_config::credentials::set_global_credentials_path(
                 nemesis_config::credentials::credentials_path_for_home(&self.home),
             );
-            // P0 vault（B1）：`vault:<alias>` 解析器同点注入。
+            // vault：`vault:<alias>` 解析器同点注入。
             #[cfg(feature = "security")]
             crate::vault_runtime::install(&self.home);
             let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
@@ -972,11 +972,11 @@ impl SessionFactory for RealSessionFactory {
                 .map_err(|e| format!("failed to build agent loop: {e}"))?;
             // 急停跟随任务进程级一次性 spawn（幂等，每会话装配都调也不泄漏）。
             crate::estop_follower::ensure_spawned(self.home.clone());
-            // M7 审批桥：ACP 进程无 dashboard，编辑器即唯一审批面。
-            // security feature 关闭时槽是 () 占位，审批整层不存在。
+            // 审批桥：ACP 进程无 dashboard，编辑器即唯一审批面。
+            // security feature 关闭时槽是 占位，审批整层不存在。
             #[cfg(feature = "security")]
             {
-                // P1：审批台账（本会话工作区的 tasks.db；开失败诚实降级为
+                // 审批台账（本会话工作区的 tasks.db；开失败诚实降级为
                 // None——审批照常，仅丢重启补裁记账）。
                 let journal = {
                     let db_path = nemesis_path::resolve_tasks_db_path_in_workspace(
@@ -1018,7 +1018,7 @@ impl SessionFactory for RealSessionFactory {
 }
 
 /// 生产驱动：持久 `AgentInstance` 跑 `run_with_trace`（多轮上下文延续），
-/// M1a broadcast 实时消费工具事件（run.rs json 模式同款 select 模式——
+/// broadcast 实时消费工具事件（run.rs json 模式同款 select 模式——
 /// JoinHandle 完成态在 select 分支内接住，完成后再 poll 即 panic）。
 struct LoopDriver {
     agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
@@ -1027,7 +1027,7 @@ struct LoopDriver {
     session_key: String,
 }
 
-/// M1a hook 事件 → `session/update` 载荷。TodoUpdated/ModeChanged/审批/
+/// hook 事件 → `session/update` 载荷。TodoUpdated/ModeChanged/审批/
 /// 提问事件 v1 不透（审批走 request_permission 交互；TodoUpdated 无 ACP
 /// 对应 update 形态，诚实跳过）。
 fn map_hook_event(ev: &nemesis_types::agent::AgentEvent) -> Option<Value> {
@@ -1148,15 +1148,15 @@ impl PromptDriver for LoopDriver {
 /// 测试纪律：测试不得借用本函数的默认 stdio 形态——宿主给 cargo test 一条
 /// 「打开、无数据、永不 EOF」的管道时，serve 的 blocking 读会永久占住
 /// stdin 锁并拖死整个测试进程
-/// （docs/REPORT/2026-10-13_stdin-eof-assumption-test-deadlock-fix.md），
-/// 测试一律走 `commands::acp::run_with_io` 喂 duplex。
+/// （stdin-eof-assumption-test-deadlock-fix），
+/// 测试一律走 `commands::acp:run_with_io` 喂 duplex。
 pub async fn run_server_with_io(
     home: PathBuf,
     reader: impl AsyncRead + Unpin,
     writer: impl AsyncWrite + Unpin + Send + 'static,
 ) -> Result<(), String> {
-    // D-3（复核 2026-09-16）：会话日志平化迁移（SAN-01/D4）与 gateway 同源
-    // （幂等 best-effort）——ACP 每会话 K1 式装配会读写 session_logs，
+    // D-3（复核）：会话日志平化迁移（SAN-01）与 gateway 同源
+    // （幂等 best-effort）——ACP 每会话 式装配会读写 session_logs，
     // 旧嵌套目录历史先平化再服务。
     nemesis_agent::chat_log::migrate_nested_session_logs();
     let factory = Arc::new(RealSessionFactory { home });

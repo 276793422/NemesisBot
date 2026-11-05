@@ -6,7 +6,7 @@
 // 最后一环：`retry_after_context_error` 的**有界耗尽臂**——context 错误触
 // 发的压缩重试环里，摘要 LLM 与重呼 LLM 全部失败时：
 //   ① 重试预算有界（2 轮 × 摘要+重呼，不多烧）；
-//   ② 返回 Err(AgentEvent:Error) 携带原始错误（不静默、不假装成功）；
+//   ② 返回 Err(AgentEvent::Error) 携带原始错误（不静默、不假装成功）；
 //   ③ 错误落 history（assistant "Error:..." 行，可观测/可审计）；
 //   ④ 失败的摘要不推进 covers_up_to（上下文不静默丢失）；
 // 另补一臂：第 1 轮重呼成功即恢复（有界环的正向用途）。

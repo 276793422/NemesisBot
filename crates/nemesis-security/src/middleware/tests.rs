@@ -4,7 +4,7 @@ use crate::auditor::AuditorConfig;
 /// 跨平台测试路径拼接。禁止 `format!("{}\\file", ws)`：`\` 在 Linux 是合法
 /// 文件名字符，拼出的路径末组件是整个怪名（落在 workspace 外的父目录里），
 /// component 级 `starts_with` 判外 → 29 个 file_wrapper 测试在 Linux 全军
-/// 覆没（2026-09-01 远端首跑暴露）。统一走 PathBuf::push。
+/// 覆没（远端首跑暴露）。统一走 PathBuf::push。
 fn ws_path(ws: &str, rel: &str) -> String {
     let mut p = std::path::PathBuf::from(ws);
     for c in rel.split('/') {

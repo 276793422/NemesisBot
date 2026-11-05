@@ -3,8 +3,8 @@
 //! Formats experience statistics, insights, and learning cycle data
 //! into human-readable markdown reports. Supports:
 //! - Rich reflection reports with top/low-success pattern tables
-//! - Phase 5 trace insights (tool chains, retries, signals)
-//! - Phase 6 learning cycle insights (patterns, actions, deployment feedback)
+//! - trace insights (tool chains, retries, signals)
+//! - learning cycle insights (patterns, actions, deployment feedback)
 
 #[cfg(test)]
 use crate::reflector::{PatternInsight, ReflectionStats, RetryPattern, ToolChainPattern};
@@ -25,7 +25,7 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
     // 截断点回退到字符边界：裸 `&escaped[..max_len-3]` 在多字节文本
     // （LLM 生成的中文建议/链名）上会 panic，砸掉整份反思报告
-    // （2026-10-11 横扫修复，与 planner/review 截断事故同族）。
+    // （横扫修复，与 planner/review 截断事故同族）。
     let mut cut = max_len.saturating_sub(3);
     while cut > 0 && !escaped.is_char_boundary(cut) {
         cut -= 1;
@@ -114,7 +114,7 @@ pub fn format_report_from_report(report: &ReflectionReport) -> String {
         sb.push_str("\n\n");
     }
 
-    // Phase 5: Trace insights
+    // Trace insights
     if let Some(ref trace_stats) = report.trace_stats {
         let trace_section = format_trace_insights(trace_stats);
         if !trace_section.is_empty() {
@@ -122,7 +122,7 @@ pub fn format_report_from_report(report: &ReflectionReport) -> String {
         }
     }
 
-    // Phase 6: Learning cycle
+    // Learning cycle
     if let Some(ref cycle) = report.learning_cycle {
         let learning_section = format_learning_insights_full(
             cycle,
@@ -247,7 +247,7 @@ pub fn format_existing_artifacts(artifacts: &[Artifact]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// format_trace_insights (Phase 5)
+// format_trace_insights
 // ---------------------------------------------------------------------------
 
 /// Format conversation-level trace insights for inclusion in a report.
@@ -341,7 +341,7 @@ pub fn format_learning_insights(
 }
 
 // ---------------------------------------------------------------------------
-// format_learning_insights_full (Phase 6)
+// format_learning_insights_full
 // ---------------------------------------------------------------------------
 
 /// A learning action for report formatting.
@@ -362,7 +362,7 @@ pub struct DeploymentOutcomeReport {
     pub sample_size: usize,
 }
 
-/// Format full learning cycle insights with detailed tables (Phase 6).
+/// Format full learning cycle insights with detailed tables.
 pub fn format_learning_insights_full(
     cycle: &LearningCycle,
     actions: &[LearningActionReport],

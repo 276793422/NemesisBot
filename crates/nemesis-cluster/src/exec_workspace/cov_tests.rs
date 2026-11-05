@@ -1,5 +1,5 @@
 // exec_workspace.rs 覆盖率补充测试（receive 解包失败诚实 None / trait 委托
-// 面 / sweep 跳过形态（文件位、.cs- 前缀、无 sidecar）/ sweep finish 失败
+// 面 / sweep 跳过形态（文件位、.cs 前缀、无 sidecar）/ sweep finish 失败
 // warn 臂 + find_source 反查成功与落空）。
 //
 // 豁免：334（`dir.file_name()` 对真实目录项恒 Some，`..` 形态读目录枚举

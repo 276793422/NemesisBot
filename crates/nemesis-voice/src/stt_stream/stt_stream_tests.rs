@@ -3,7 +3,7 @@
 //! 无 DLL 时 sherpa_fn 包装器在符号查找处 panic "sherpa-onnx not
 //! initialized"——夹具测试正好钉住文件校验与 config 组装路径。
 //! 真模型往返测试用 `NEMESIS_VOICE_STREAM_MODEL_DIR` 环境变量显式开启
-//! （M4 真机验证钩子；CI 无该变量时 eprintln 跳过）。
+//! （真机验证钩子；CI 无该变量时 eprintln 跳过）。
 
 use super::StreamSttEngine;
 use std::path::PathBuf;
@@ -123,7 +123,7 @@ fn stream_drop_null_engine_panics_at_destroy() {
 }
 
 // ---------------------------------------------------------------------------
-// 真模型往返（M4 真机钩子；默认跳过）
+// 真模型往返（真机钩子；默认跳过）
 // ---------------------------------------------------------------------------
 
 #[test]

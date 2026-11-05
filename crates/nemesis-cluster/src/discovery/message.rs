@@ -14,7 +14,7 @@ pub const PROTOCOL_VERSION: &str = "1.0";
 ///
 /// The 120-second threshold is intentionally chosen for LAN scenarios
 /// (RTT <1ms, clock skew <1s). It can be overridden per deployment via
-/// `config.cluster.json` 的 `announce_expiry_secs`（G3，≤0 = 关闭过期丢弃）；
+/// `config.cluster.json` 的 `announce_expiry_secs`（≤0 = 关闭过期丢弃）；
 /// 此常量是该配置的默认值与协议层 fallback。
 pub const DEFAULT_EXPIRY_THRESHOLD_SECS: i64 = 120;
 
@@ -93,37 +93,37 @@ pub struct DiscoveryMessage {
     /// Node type: "agent" (full with LLM) or "node" (lightweight, no LLM).
     #[serde(default)]
     pub node_type: String,
-    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug）。旧节点 /
+    /// 自报职能清单（集群专业职能框架；`family[:spec]` slug）。旧节点 /
     /// Go 节点的 announce 无此字段 → serde default 空 = 未宣告（wire 兼容）。
     #[serde(default)]
     pub professions: Vec<String>,
     /// 节点自报档位（role_tier 口径：mini/normal/big；None = 未宣告）。
     #[serde(default)]
     pub tier: Option<String>,
-    /// 自报 agent 实体清单（P2 2026-10-16）。旧节点 / Go 节点的 announce
+    /// 自报 agent 实体清单。旧节点 / Go 节点的 announce
     /// 无此字段 → serde default 空 = 未宣告（wire 兼容，同 professions 先例）。
     #[serde(default)]
     pub agents: Vec<crate::types::AgentAnnouncement>,
-    /// 自报 iroh 漫游身份 hex（A1 跨网 P2P 叠加层；对端据此拼 `iroh:<hex>`
+    /// 自报 iroh 漫游身份 hex（跨网 P2P 叠加层；对端据此拼 `iroh:<hex>`
     /// 拨号候选入池）。旧节点 / Go 节点的 announce 无此字段 → serde
     /// default `None` = 未宣告（wire 兼容，同 professions 先例）。
     #[serde(default)]
     pub iroh_id: Option<String>,
-    /// 节点自报运行时后端形态（P5 第 4 步 ③；如 `"process"` / `"vm"`）。
+    /// 节点自报运行时后端形态（如 `"process"` / `"vm"`）。
     /// 旧节点 / Go 节点的 announce 无此字段 → serde default None = 未宣告
-    /// （wire 兼容，同 professions 先例）。本批只宣告不做 matcher 闸（P6 上位）。
+    /// （wire 兼容，同 professions 先例）。本批只宣告不做 matcher 闸（上位）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
-    /// 自报构建号（git 短 hash；运行时硬化批 A1 2026-10-19）。旧节点 /
+    /// 自报构建号（git 短 hash；运行时硬化批）。旧节点 /
     /// Go 节点的 announce 无此字段 → serde default 空 = 未宣告（wire
     /// 兼容，同 professions 先例）。三机换装偏斜可见性：注册表透传后
     /// Dashboard 节点面直接展示对端构建号，人工 sha 比对退役。
     #[serde(default)]
     pub build: String,
-    /// 自报 mandate 签名公钥（L13-a 2026-11-03；P-256 SEC1 hex 66/130）。
+    /// 自报 mandate 签名公钥（a；P-256 SEC1 hex 66/130）。
     /// 旧节点 / Go 节点的 announce 无此字段 → serde default None = 未宣告
     /// （wire 兼容，同 iroh_id 先例）。对端据此 TOFU 首见钉存进
-    /// trust.toml `[mandate_keys]`（验签消费在 L13-b）。
+    /// trust.toml `[mandate_keys]`（验签消费在 -b）。
     #[serde(default)]
     pub mandate_pubkey: Option<String>,
     /// Unix timestamp (seconds since epoch).
@@ -170,7 +170,7 @@ impl DiscoveryMessage {
         }
     }
 
-    /// 附自报职能与档位（profession framework M2；生产 announce 构造点
+    /// 附自报职能与档位（profession framework；生产 announce 构造点
     /// 链式调用。保持 [`Self::new_announce`] 既有签名不变——避免波及
     /// 数十个既有测试构造点）。
     pub fn with_professions(mut self, professions: Vec<String>, tier: Option<String>) -> Self {
@@ -179,15 +179,15 @@ impl DiscoveryMessage {
         self
     }
 
-    /// 附自报 agent 实体清单（P2 2026-10-16；生产 announce 构造点
+    /// 附自报 agent 实体清单（生产 announce 构造点
     /// `build_announce_from_callbacks` 链式调用——UDP 广播与 ping-probe
-    /// TCP 回退共用该单一真相源，两通道字段集必须一致）。
+    /// TCP 回退共用该统一定义，两通道字段集必须一致）。
     pub fn with_agents(mut self, agents: Vec<crate::types::AgentAnnouncement>) -> Self {
         self.agents = agents;
         self
     }
 
-    /// 附自报 iroh 漫游身份 hex（A1；`None` = 未启用漫游叠加层，不带字段
+    /// 附自报 iroh 漫游身份 hex（`None` = 未启用漫游叠加层，不带字段
     /// 语义。生产 announce 构造点 `build_announce_from_callbacks` 链式
     /// 调用——与 agents 同一单一真相源纪律）。
     pub fn with_iroh_id(mut self, iroh_id: Option<String>) -> Self {
@@ -195,14 +195,14 @@ impl DiscoveryMessage {
         self
     }
 
-    /// 附自报运行时后端形态（P5 第 4 步 ③；None = 未宣告——执行体能力
+    /// 附自报运行时后端形态（None = 未宣告——执行体能力
     /// 未装配时不宣告，不猜）。保持 [`Self::new_announce`] 既有签名不变。
     pub fn with_runtime_backend(mut self, backend: Option<String>) -> Self {
         self.runtime_backend = backend;
         self
     }
 
-    /// 附自报构建号（A1 运行时硬化批；生产 announce 构造点
+    /// 附自报构建号（运行时硬化批；生产 announce 构造点
     /// `build_announce_from_callbacks` 链式调用——与 agents 同一单一真相
     /// 源纪律）。空串 = 未宣告，wire 上省略语义。
     pub fn with_build(mut self, build: String) -> Self {
@@ -210,7 +210,7 @@ impl DiscoveryMessage {
         self
     }
 
-    /// 附自报 mandate 签名公钥（L13-a；`None` = 未宣告——静态 config 未
+    /// 附自报 mandate 签名公钥（a；`None` = 未宣告——静态 config 未
     /// 声明语义。生产 announce 构造点 `build_announce_from_callbacks` 链式
     /// 调用，与 with_build 同一单一真相源纪律）。
     pub fn with_mandate_pubkey(mut self, pubkey: Option<String>) -> Self {
@@ -289,7 +289,7 @@ impl DiscoveryMessage {
         self.is_expired_with_threshold(DEFAULT_EXPIRY_THRESHOLD_SECS)
     }
 
-    /// G3: 用可配置阈值判断消息是否过期。
+    /// 用可配置阈值判断消息是否过期。
     ///
     /// `threshold <= 0` 视为关闭过期丢弃（恒返回 false），与
     /// `announce_expiry_secs` 配置语义一致。
@@ -300,7 +300,7 @@ impl DiscoveryMessage {
         self.age_secs() > threshold
     }
 
-    /// G3: 消息年龄（当前 Unix 时间 − 消息时间戳，秒）。时钟回拨时可为负。
+    /// 消息年龄（当前 Unix 时间 − 消息时间戳，秒）。时钟回拨时可为负。
     pub fn age_secs(&self) -> i64 {
         now_unix() - self.timestamp
     }

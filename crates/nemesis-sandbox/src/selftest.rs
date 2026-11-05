@@ -1,4 +1,4 @@
-//! Userland sandbox self-test probes (G7 / U-sandbox UI D2).
+//! Userland sandbox self-test probes (/ U-sandbox UI).
 //!
 //! One-shot probe runner executed inside a dedicated child process
 //! (`nemesisbot sandbox selftest-child`): the parent (gateway WSAPI

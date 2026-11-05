@@ -1,4 +1,4 @@
-//! 微信个人微信通道（P29，Wave 3）：iLink Bot API（合规路径）。
+//! 微信个人微信通道（Wave 3）：iLink Bot API（合规路径）。
 //!
 //! ⚠️ **协议形态是实现假设（D-3 决策点 fallback 形态）**：实施时无法网络探测
 //! iLink Bot API 的真实申请门槛与协议细节，本模块基于公开资料按「HTTPS
@@ -850,8 +850,8 @@ impl Channel for WeChatChannel {
         self.base.record_sent();
         debug!(chat_id = %msg.chat_id, "[WeChatChannel] sending message");
         self.send_text(&msg.chat_id, &msg.content).await?;
-        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        // 出站同步镜像（mqtt/websocket 镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（回环防护）。
         self.base.sync_outbound(&msg).await;
         Ok(())
     }

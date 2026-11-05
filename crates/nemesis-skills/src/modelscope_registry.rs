@@ -142,7 +142,7 @@ struct SkillDetailData {
     read_me_content: String,
 }
 
-/// File-tree listing response (`GET .../repo/files[?Root=]`).
+/// File-tree listing response (`GET.../repo/files[?Root=]`).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct RepoFilesResponse {
@@ -169,7 +169,7 @@ struct RepoFileEntry {
     entry_type: String,
 }
 
-/// Single-file content response (`GET .../repo/raw?Revision=&FilePath=`).
+/// Single-file content response (`GET.../repo/raw?Revision=&FilePath=`).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct RepoRawResponse {
@@ -451,7 +451,7 @@ impl ModelScopeRegistry {
     }
 
     /// Recursively fetch every file of a skill — SKILL.md plus its companion
-    /// files (`references/`, `scripts/`, ...). ModelScope mirrors the entire
+    /// files (`references/`, `scripts/`,...). ModelScope mirrors the entire
     /// skill directory, so this works for all `Source` types.
     ///
     /// The tree API does not flatten, so directories (`Type:"tree"`) are walked

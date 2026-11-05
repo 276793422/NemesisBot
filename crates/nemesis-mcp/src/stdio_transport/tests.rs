@@ -365,7 +365,7 @@ async fn send_to_nonexistent_after_connect_returns_send_error() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：真子进程驱动 stdio 协议错误臂——stdout EOF /
+// 补测：真子进程驱动 stdio 协议错误臂——stdout EOF /
 // 读超时 / 响应解析失败 / stdin 写失败（对端关闭读端）
 // ===========================================================================
 
@@ -404,8 +404,8 @@ for line in sys.stdin:
     assert!(resp.result.is_some());
 
     // 第二次 send：进程活着（stdin 可写）但 stdout 已关 → 预期诚实失败。
-    // 断言锁「诚实失败」本意，不锁具体分支（2026-09-23 环境性假红根修）：
-    // PATH 上的 `python` 可能是 PyManager shim（2026-09-22 装入本机
+    // 断言锁「诚实失败」本意，不锁具体分支（环境性假红根修）：
+    // PATH 上的 `python` 可能是 PyManager shim（装入本机
     // `C:\Program Files\PyManager`，先于真实 runtime）——shim 再拉真 runtime
     // 作子进程并持有 stdout 写句柄的继承副本，`os.close(1)` 只关 runtime
     // 自己那份 → 父进程读端 EOF 永不到来（直到 shim 退出），只能等超时。
@@ -538,7 +538,7 @@ async fn test_small_payload_write_completes_then_read_times_out() {
 
 #[tokio::test]
 async fn test_w4c_stdio_garbage_line_skipped_times_out() {
-    // J3 起（devtool-upgrade 阶段 4）：服务器回一行非 JSON → 跳过继续读
+    // 起（devtool-upgrade）：服务器回一行非 JSON → 跳过继续读
     // （旧行为=解析失败 send_failed；垃圾行当 banner 容忍是本变更语义）。
     // 没有后续有效响应 → 按 deadline 超时。
     let script = r#"
@@ -571,7 +571,7 @@ time.sleep(30)
 
 #[tokio::test]
 async fn test_w4c_stdio_garbage_line_then_response_succeeds() {
-    // J3：垃圾行（banner/日志）之后的响应行正常被采纳——跳过逻辑不吞真响应。
+    // 垃圾行（banner/日志）之后的响应行正常被采纳——跳过逻辑不吞真响应。
     let script = r#"
 import sys, json, time
 line = sys.stdin.readline()
@@ -600,7 +600,7 @@ time.sleep(30)
 
 #[tokio::test]
 async fn test_w4c_stdio_notification_before_response_skipped() {
-    // J3：服务器先发 progress 通知（无 id）再回响应 → 通知记 trace 跳过，
+    // 服务器先发 progress 通知（无 id）再回响应 → 通知记 trace 跳过，
     // 响应正常返回（旧行为=通知行反序列化失败，整个请求 send_failed）。
     let script = r#"
 import sys, json, time
@@ -630,7 +630,7 @@ time.sleep(30)
 
 #[tokio::test]
 async fn bug56_stdio_server_request_before_response_not_consumed() {
-    // BUG-20261025-56：server→client 请求（id+method 并存，sampling 形态）
+    // server→client 请求（id+method 并存，sampling 形态）
     // 先于真响应到达，且 id 撞车（客户端与服务器请求计数器都从 1 起）。
     // 旧形态：该行误归 Response → 被当成本请求的响应吞掉（result=None）→
     // 断言 unwrap panic；修复后：跳过，真响应正常返回。
@@ -683,7 +683,7 @@ fn classify_line_kinds() {
     assert!(matches!(classify_line("banner text"), LineKind::Garbage));
 }
 
-// BUG-20261025-56：id + method 并存 = server→client 请求（sampling/roots/
+// id + method 并存 = server→client 请求（sampling/roots/
 // elicitation 形态）——JSON-RPC 响应永不携带 method，旧形态误归 Response。
 #[test]
 fn bug56_classify_server_to_client_request() {
@@ -711,7 +711,7 @@ async fn test_w4c_stdio_write_to_closed_stdin_fails() {
     // 子进程启动后立刻关闭自己的 stdin 读端（进程保持存活）→ 写 stdin 失败。
     // 同样必须用 os.close(0)（sys.stdin.close() 不关底层 fd）。
     //
-    // 2026-09-23 断言放宽（环境性假红根修）：PATH 上的 `python` 若是
+    // 断言放宽（环境性假红根修）：PATH 上的 `python` 若是
     // PyManager shim（shim→真 runtime 父子链），shim 持有 stdin 读端句柄
     // 的继承副本 → runtime `os.close(0)` 后父进程写入仍成功（管道还有活的
     // 读端：shim，只是永远不读）→ 写失败检测不到，只能等超时。超时兜底
@@ -747,7 +747,7 @@ time.sleep(30)
     t.close().await.unwrap();
 }
 
-/// S1 coverage batch (2026-08-26): stdin write failure arm (lines 147-149).
+/// coverage batch: stdin write failure arm (lines 147-149).
 ///
 /// The child closes its read end (fd 0) first thing and then stays alive, so
 /// the parent's `write_all` deterministically hits a broken pipe instead of
@@ -755,7 +755,7 @@ time.sleep(30)
 /// start and close fd 0 (typical startup < 200ms; child lives 5s). Skips when
 /// python is unavailable, matching the e2e_jsonrpc_echo convention.
 ///
-/// 2026-09-23 断言放宽（同 test_w4c_stdio_write_to_closed_stdin_fails）：
+/// 断言放宽（同 test_w4c_stdio_write_to_closed_stdin_fails）：
 /// PATH 上的 `python` 若是 PyManager shim（shim→runtime 父子链），shim 持有
 /// stdin 读端继承副本 → `os.close(0)` 检测不到，写不失败只能等超时；超时
 /// 兜底同样是诚实失败。
@@ -798,7 +798,7 @@ time.sleep(5)
 }
 
 // ---------------------------------------------------------------------------
-// P0 vault（B3）：env 引用解析（纯函数 resolved_env）
+// vault：env 引用解析（纯函数 resolved_env）
 // ---------------------------------------------------------------------------
 
 /// 字面量原样、vault:/env:/yaml: 引用现查、失败变量跳过（不毒化其余变量）。
@@ -833,7 +833,7 @@ fn resolved_env_literals_references_and_skip() {
     );
 }
 
-/// 第十三轮语法闸后的运行期语义：非法行（缺 '=' / 键含空白）loud WARN +
+/// 语法闸后的运行期语义：非法行（缺 '=' / 键含空白）loud WARN +
 /// 跳过（不再静默消失）；合法行的键值两侧 trim（与 headers 侧及写入面
 /// 校验同源）；字面量值不受影响。
 #[test]
@@ -849,7 +849,7 @@ fn resolved_env_ignores_malformed_pair() {
     assert_eq!(out, vec![("K".into(), "v".into())]);
 }
 
-// --- 第十五轮缺陷 18：stderr 管道必须排水（话痨 server 不挂死）---------
+// --- 缺陷 18：stderr 管道必须排水（话痨 server 不挂死）---------
 
 #[tokio::test]
 async fn r15_stderr_chatty_server_does_not_deadlock() {
@@ -893,7 +893,7 @@ for line in sys.stdin:
 }
 
 // ---------------------------------------------------------------------------
-// P3 T6 + G2: per-agent browser profile injection（args_with_browser_profile）
+// +: per-agent browser profile injection（args_with_browser_profile）
 // ---------------------------------------------------------------------------
 
 /// opt-in server + profile 在场：追加 `--user-data-dir <dir>`。
@@ -914,7 +914,7 @@ fn browser_profile_args_appended_when_opted_in() {
     );
 }
 
-/// 未 opt-in（G2 闸，默认形态）：即使 profile 在场也不注入——普通 MCP
+/// 未 opt-in（闸，默认形态）：即使 profile 在场也不注入——普通 MCP
 /// 零变化，共享 server 不被塞身份。
 #[test]
 fn browser_profile_args_untouched_without_opt_in() {
@@ -932,7 +932,7 @@ fn browser_profile_args_untouched_without_opt_in() {
 }
 
 /// 空串 profile（防御臂）与已显式配置 `--user-data-dir`（空格与 `=` 两
-/// 形态，G2 修正补 `=` 判重）都不注入、不重复。
+/// 形态， 修正补 `=` 判重）都不注入、不重复。
 #[test]
 fn browser_profile_args_skip_on_empty_or_user_configured() {
     let args = vec!["server.js".to_string()];
@@ -948,7 +948,7 @@ fn browser_profile_args_skip_on_empty_or_user_configured() {
         configured
     );
 
-    // `=` 形态（G2 修正：旧实现只判空格形态，会把用户配置挤成第二份
+    // `=` 形态（修正：旧实现只判空格形态，会把用户配置挤成第二份
     // user-data-dir——Chromium 取后者，用户配置被静默覆盖）。
     let configured_eq = vec!["node".to_string(), "--user-data-dir=/mine".to_string()];
     assert_eq!(
@@ -957,7 +957,7 @@ fn browser_profile_args_skip_on_empty_or_user_configured() {
     );
 }
 
-/// G2：transport 字段接线——opt-in 闸从 server 配置走，显式 profile 覆盖
+/// transport 字段接线——opt-in 闸从 server 配置走，显式 profile 覆盖
 /// 只经 `from_config_with_profile`；裸 `new()`（一次性探测）恒不注入。
 #[test]
 fn stdio_transport_profile_field_wiring() {
@@ -996,7 +996,7 @@ fn stdio_transport_profile_field_wiring() {
 
 #[tokio::test]
 async fn stale_response_after_timeout_is_not_misattributed() {
-    // BUG-HUNT R39：send 无 id 匹配闸——请求 1 超时后其迟到响应挂在
+    // send 无 id 匹配闸——请求 1 超时后其迟到响应挂在
     // stdout 缓冲，下一个请求会把它当自己的答案捞走（工具结果张冠李戴）。
     // 服务器：响应 1 故意迟到（1s，越过请求 1 的 300ms 超时），请求 2
     // 秒回。修复后：请求 2 应跳过 id=1 的迟到响应、拿到 id=2 的真答案。
@@ -1065,7 +1065,7 @@ time.sleep(30)
 
 #[tokio::test]
 async fn bug87_notification_send_no_response_no_wait() {
-    // BUG-20261025-87：通知（id=None）按 JSON-RPC 语义无响应可等——send
+    // 通知（id=None）按 JSON-RPC 语义无响应可等——send
     // 写入即返回，不进读循环空转满 deadline。旧实现：notifications/initialized
     // 每次连接固定烧满 1s 才 Err(timeout)（被 send_notification 吞掉），
     // 启动全量挂载逐 server 串行放大成 N×1s 纯延迟。判别式取 Ok/Err

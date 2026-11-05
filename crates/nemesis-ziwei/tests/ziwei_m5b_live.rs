@@ -1,5 +1,5 @@
 #![cfg(windows)]
-//! M5b 实弹（BUG-20261028-98 红证+回归锁）：recover_confirm 锚重生必须
+//! 实弹（红证+回归锁）：recover_confirm 锚重生必须
 //! 忠实于锚自身。
 //!
 //! 两个缺陷同段（verify.rs recover_confirm 重生分支）：
@@ -10,7 +10,7 @@
 //!    （"909090…"，parse_byte_pattern 明确接受的常态输入，candidates 的
 //!    payload 即无空格形态）算出 1 而非字节数，重生 pattern 被截断成单字节。
 //!
-//! V1 镜像字节未变 → 全接受找回的正确语义 = regenerated_anchors == 0 且
+//! 镜像字节未变 → 全接受找回的正确语义 = regenerated_anchors == 0 且
 //! 锚集 pattern 逐字保持（m5 主测试腿 E 是单函数单锚空格形态，本测试补
 //! 多锚同函数 + 连续形态两个缺口）。
 //!
@@ -116,7 +116,7 @@ async fn recover_confirm_regen_keeps_anchors_faithful() {
             exe_name: "dummy-draw.exe".into(),
             exe_path_hint: None,
             machine: Machine::X64,
-            file_sha256: Some("f".repeat(64)), // 与 V1 无关——confirm 不看 hash
+            file_sha256: Some("f".repeat(64)), // 与 无关——confirm 不看 hash
             version_resource: Default::default(),
             verify_policy: VerifyPolicy::HashOrVersion,
         },
@@ -134,7 +134,7 @@ async fn recover_confirm_regen_keeps_anchors_faithful() {
     };
     profile.status = ProfileStatus::Stale; // 找回入口前提（直接摆位；confirm 只认 Stale）
 
-    // twin_a：同函数双 byte_pattern 锚（V1 中都命中、位置不同）；
+    // twin_a：同函数双 byte_pattern 锚（中都命中、位置不同）；
     // compact_fn：单锚，连续 hex 形态（无空格）。
     let a = |function: &str, pattern: &str| Anchor {
         function: function.into(),

@@ -928,7 +928,7 @@ fn test_is_same_subnet_invalid_ip2() {
 
 #[test]
 fn test_is_same_subnet_ipv4_with_ipv6_target() {
-    // IP1 is IPv4, IP2 is IPv6 — different families → false.
+    // is IPv4, is IPv6 — different families → false.
     assert!(!is_same_subnet("192.168.1.1", "::1", "255.255.255.0"));
 }
 
@@ -959,7 +959,7 @@ fn test_is_same_subnet_partial_byte_mask() {
 }
 
 // ===========================================================================
-// RpcClientError Display and From<std::io::Error>
+// RpcClientError Display and From<std::io:Error>
 // ===========================================================================
 
 #[test]
@@ -1280,7 +1280,7 @@ fn test_rate_limiter_window_tracks_multiple_peers_independently() {
 }
 
 // ===========================================================================
-// S4 coverage: tracing field lines (need an installed subscriber), acquire
+// coverage: tracing field lines (need an installed subscriber), acquire
 // exhaustion, rate-limited early return, call timeout fields, success/fail
 // result-log fields, fallback break/RemoteError, decrypt-failure path.
 // ===========================================================================

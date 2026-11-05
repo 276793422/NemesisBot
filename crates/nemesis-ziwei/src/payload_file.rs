@@ -1,4 +1,4 @@
-//! payload_file —— payload DLL 落盘与版本戳（T1.6）。
+//! payload_file —— payload DLL 落盘与版本戳（.6）。
 //!
 //! 决议 9：payload 双架构 DLL 编译期内嵌（feature 关 = 零字节），**首次使用**
 //! 写到 `<workspace>/tools/ziwei/`，`ziwei.payload_dir` 可显式覆盖。

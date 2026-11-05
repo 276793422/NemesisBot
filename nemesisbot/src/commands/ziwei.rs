@@ -1,14 +1,14 @@
-//! ziwei CLI —— 紫微系统命令面（总控 §8.2；feature=`ziwei` 门控）。
+//! ziwei CLI —— 紫微系统命令面（总控；feature=`ziwei` 门控）。
 //!
 //! 双闸之二（运行闸）：config `ziwei.enabled` 默认 false——开启前全部子命令
 //! 诚实报未启用（对齐 WSAPI GATE_CLOSED 文案口径）。
 //!
-//! M1 范围：list / show / remove（数据层）+ attach / detach / status 实装
+//! 范围：list / show / remove（数据层）+ attach / detach / status 实装
 //! ——会话管理器常驻 gateway 进程（管道 server 生命周期与一次性 CLI 进程
 //! 解耦），CLI 经 `/api/internal` 直连转发（estop 同款跨进程模式）。
-//! invoke 已实装（M2，poll 一次性快照）；setup 步骤化子命令已实装（M3，
+//! invoke 已实装（poll 一次性快照）；setup 步骤化子命令已实装（
 //! 六步向导：select-target → snapshot → analyze → diff/candidates →
-//! annotate/define-struct/define-tool → commit）；refresh（找回）随 M5。
+//! annotate/define-struct/define-tool → commit）；refresh（找回）随 。
 
 use anyhow::{Result, bail};
 use clap::Subcommand;
@@ -28,12 +28,12 @@ pub enum ZiweiCommand {
         /// profile id（zw-pro-xxxx）
         id: String,
     },
-    /// 进入配置期（M3：步骤化子命令，可脚本化；向导状态在常驻 gateway）
+    /// 进入配置期（步骤化子命令，可脚本化；向导状态在常驻 gateway）
     Setup {
         #[command(subcommand)]
         step: SetupStep,
     },
-    /// 使用期附加（M1 实装；经 gateway 转发）
+    /// 使用期附加（实装；经 gateway 转发）
     Attach {
         /// profile id
         id: String,
@@ -48,7 +48,7 @@ pub enum ZiweiCommand {
     },
     /// 活动会话列表
     Status,
-    /// 手动触发子工具（M2 实装）
+    /// 手动触发子工具（实装）
     Invoke {
         /// profile id
         id: String,
@@ -57,7 +57,7 @@ pub enum ZiweiCommand {
         /// 工具入参（JSON 对象，可选）
         args: Option<String>,
     },
-    /// 手动触发附加验证链（M5 T5.1：hash→version→锚投票→状态机）
+    /// 手动触发附加验证链（.1：hash→version→锚投票→状态机）
     Verify {
         /// profile id
         id: String,
@@ -65,7 +65,7 @@ pub enum ZiweiCommand {
         #[arg(long)]
         exe: Option<String>,
     },
-    /// 对 stale profile 发起找回（M5 T5.3：逐锚重扫 + 找回报告）
+    /// 对 stale profile 发起找回（.3：逐锚重扫 + 找回报告）
     Refresh {
         /// profile id
         id: String,
@@ -73,7 +73,7 @@ pub enum ZiweiCommand {
         #[arg(long)]
         exe: Option<String>,
     },
-    /// 找回确认（M5 T5.3 后半：用户逐条确认后入库；全接受 = 恢复 active）
+    /// 找回确认（.3 后半：用户逐条确认后入库；全接受 = 恢复 active）
     RefreshConfirm {
         /// profile id
         id: String,
@@ -84,7 +84,7 @@ pub enum ZiweiCommand {
         #[arg(long)]
         accept: Option<String>,
     },
-    /// 吊销 profile（M5 状态机终态：不可自动复活；资产记录保留）
+    /// 吊销 profile（状态机终态：不可自动复活；资产记录保留）
     Revoke {
         /// profile id
         id: String,
@@ -108,7 +108,7 @@ pub enum SetupStep {
         /// 目标 exe 文件名（如 dummy-draw.exe）或 PID
         target: String,
     },
-    /// 第 2 步：内存快照（头页 + .text/.rdata/.data）
+    /// 第 2 步：内存快照（头页 +.text/.rdata/.data）
     Snapshot,
     /// 第 3 步：分析（函数恢复 / xref / CRT 折叠）
     Analyze,
@@ -117,7 +117,7 @@ pub enum SetupStep {
         /// 取现值前等待秒数（默认 2，上限 60）
         #[arg(long)]
         wait_secs: Option<u64>,
-        /// T4.4：观测窗并入临时 hook 计数（draft 已标注函数命中数）
+        /// .4：观测窗并入临时 hook 计数（draft 已标注函数命中数）
         #[arg(long)]
         hook: bool,
     },
@@ -415,8 +415,8 @@ pub async fn run(action: ZiweiCommand, local: bool) -> Result<()> {
             }
         }
         ZiweiCommand::Invoke { id, tool, args: _ } => {
-            // M2：一次性 poll 快照（gateway internal 直连——会话在常驻进程里）。
-            // call_fn/hook_capture 由服务端诚实报（随 M4 实装）。
+            // 一次性 poll 快照（gateway internal 直连——会话在常驻进程里）。
+            // call_fn/hook_capture 由服务端诚实报（随 实装）。
             let resp = gateway_internal(
                 &home,
                 serde_json::json!({ "cmd": "ziwei_invoke", "profile_id": id, "tool": tool }),
@@ -439,7 +439,7 @@ pub async fn run(action: ZiweiCommand, local: bool) -> Result<()> {
             }
         }
         ZiweiCommand::Verify { id, exe } => {
-            // M5 T5.1：验证链本地执行（纯文件面 + profile 存储，不依赖 gateway）。
+            // .1：验证链本地执行（纯文件面 + profile 存储，不依赖 gateway）。
             let profile = store.load(&id)?;
             let exe_path = resolve_exe(exe.as_deref(), &profile)?;
             let out =
@@ -475,7 +475,7 @@ pub async fn run(action: ZiweiCommand, local: bool) -> Result<()> {
             }
         }
         ZiweiCommand::Refresh { id, exe } => {
-            // M5 T5.3：找回重扫 + 报告（本地执行；授权点在 confirm）。
+            // .3：找回重扫 + 报告（本地执行；授权点在 confirm）。
             let profile = store.load(&id)?;
             let exe_path = resolve_exe(exe.as_deref(), &profile)?;
             let out = nemesis_ziwei::verify::recover_start(&store, &workspace, &id, &exe_path)
@@ -494,7 +494,7 @@ pub async fn run(action: ZiweiCommand, local: bool) -> Result<()> {
             );
         }
         ZiweiCommand::RefreshConfirm { id, exe, accept } => {
-            // M5 T5.3 后半：用户显式 confirm = 授权凭据。
+            // .3 后半：用户显式 confirm = 授权凭据。
             let profile = store.load(&id)?;
             let exe_path = resolve_exe(exe.as_deref(), &profile)?;
             let accept_list: Vec<String> = match accept.as_deref() {
@@ -543,7 +543,7 @@ pub async fn run(action: ZiweiCommand, local: bool) -> Result<()> {
             }
         }
         ZiweiCommand::Revoke { id } => {
-            // M5 状态机终态：Active/Stale → Revoked；Revoked 不可自动复活
+            // 状态机终态：Active/Stale → Revoked；Revoked 不可自动复活
             // （重建或删除后重配）。本地执行（纯 profile 存储面）。
             let mut profile = store.load(&id)?;
             profile

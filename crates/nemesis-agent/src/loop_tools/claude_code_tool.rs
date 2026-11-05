@@ -4,7 +4,7 @@
 //! Delegates a self-contained task to the local Claude Code CLI:
 //! `claude --print -p "<prompt>" --output-format text --permission-mode <tier>`,
 //! stdout collected as the result. The spawn/timeout/tree-kill plumbing lives
-//! in [`super:cli_delegation`] (/ — this file is now the
+//! in [`super::cli_delegation`] (/ — this file is now the
 //! "argument construction + config" shell).
 //!
 //! (original item): the permission mode is a FIXED config tier
@@ -95,7 +95,7 @@ impl Tool for ClaudeCodeTool {
 
         let cwd: std::path::PathBuf = cli_delegation::delegation_cwd(&context.session_key);
 
-        // : `--permission-mode <tier>` keeps the child deterministic
+        // `--permission-mode <tier>` keeps the child deterministic
         // per deployment config. (originally passed no permission flag and
         // let the CLI's own settings govern the child; the original
         // acceptance requires a fixed non-interactive tier instead.)

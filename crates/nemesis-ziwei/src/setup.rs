@@ -1,4 +1,4 @@
-//! setup —— 配置期引擎 SetupManager（M3，总控 §5.1 / `docs/PLAN/2026-10-23_紫微系统M3配置期引擎技术方案.md`）。
+//! setup —— 配置期引擎 SetupManager（总控 / `紫微系统M3配置期引擎技术方案`）。
 //!
 //! 六步向导的 bot 侧状态机：选目标 → 快照 → 分析 → 候选/差分 → 标注 → 提交。
 //! 分析计算全在 [`nemesis_ziwei_rev`]（纯函数、进程无关）；本模块只做编排：
@@ -7,7 +7,7 @@
 //! draft 纪律（不走 `ProfileStore::save`）：draft 允许中途形态（tools 空、
 //! functions 空），全量校验只在 commit 时跑；commit = validate → 迁移到
 //! `workspace/ziwei/profiles/<id>/`（ProfileStore 写 profile.json + anchors.json）
-//! → setup 快照迁移到 profile 名下（M5 找回消费）→ 删 draft 目录。
+//! → setup 快照迁移到 profile 名下（找回消费）→ 删 draft 目录。
 //!
 //! 单向导会话：同一 gateway 进程同时只允许一个活跃 draft（`select_target`
 //! 幂等拒绝）。状态在内存；gateway 重启后 draft 目录仍在——`analyze` 可重算
@@ -74,7 +74,7 @@ const SNAP_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
 #[cfg(windows)]
 const SNAP_MAX_KEPT: usize = 8;
 
-// ── 查询面硬上限（单一真相源；bridge/未来 WSAPI 同源引用）──────────────
+// ── 查询面硬上限（统一定义；bridge/未来 WSAPI 同源引用）──────────────
 
 /// 单次反汇编指令上限。
 pub const DISASM_MAX_INSNS: usize = 512;
@@ -102,19 +102,19 @@ struct AnalysisCache {
     exports: Vec<pe::Export>,
     /// .pdata 异常表（None = 无该数据目录；pe 查询/pdata 对账消费）。
     pdata: Option<Vec<(u32, u32)>>,
-    /// CFG 合法间接调用目标表（B2 存表；v2 池 vtable 先验，查询面暂不暴露）。
+    /// CFG 合法间接调用目标表（存表；v2 池 vtable 先验，查询面暂不暴露）。
     #[allow(dead_code)] // v2 池消费（summary 对账面已用界内计数）
     cfg_funcs: Vec<u32>,
-    /// TLS 回调 RVA（B2；None = 目录缺席；pe tls 查询消费）。
+    /// TLS 回调 RVA（None = 目录缺席；pe tls 查询消费）。
     tls_callbacks: Option<Vec<u32>>,
-    /// Debug 目录（B2；PDB 路径白送语义；pe debug 查询消费）。
+    /// Debug 目录（PDB 路径白送语义；pe debug 查询消费）。
     debug: Option<pe::DebugInfo>,
-    /// Rich 头工具链指纹（B2；pe rich 查询消费）。
+    /// Rich 头工具链指纹（pe rich 查询消费）。
     rich: Option<pe::RichInfo>,
-    /// 重定位表（B2 存表；v2 池 vtable 扫描先验，查询面不暴露）。
+    /// 重定位表（存表；v2 池 vtable 扫描先验，查询面不暴露）。
     #[allow(dead_code)] // v2 池消费
     relocs: Option<pe::RelocTable>,
-    #[allow(dead_code)] // M5 找回实装时消费（rescan 需要 arch）
+    #[allow(dead_code)] // 找回实装时消费（rescan 需要 arch）
     arch: Arch,
 }
 
@@ -241,7 +241,7 @@ impl SetupManager {
         }
         #[cfg(windows)]
         {
-            // BUG-20261105-019：在册检查与预占**同一把锁**内完成——旧形态
+            // 在册检查与预占**同一把锁**内完成——旧形态
             // 检查后锁即释放，中间隔 exe 指纹读取 + attach await 才落位
             // state，两个并发 select_target 可双过闸（双 draft + 重复注入
             // 会话）。预占后后来者在锁上即被拒；本函数到收尾之间任何失败
@@ -287,7 +287,7 @@ impl SetupManager {
         }
     }
 
-    /// [`Self::select_target`] 的续体（预占已成立；pid/exe 指纹/draft/attach
+    /// [`Self:select_target`] 的续体（预占已成立；pid/exe 指纹/draft/attach
     /// 全在无锁区执行，失败由调用方回收预占）。
     #[cfg(windows)]
     async fn select_target_reserved(
@@ -404,7 +404,7 @@ impl SetupManager {
 
     // ── Step 2：snapshot ────────────────────────────────────────────────
 
-    /// 内存快照：头页 + .text/.rdata/.data 按 ≤1MB 分块读（MAX_FRAME 留余）。
+    /// 内存快照：头页 +.text/.rdata/.data 按 ≤1MB 分块读（MAX_FRAME 留余）。
     pub async fn snapshot(&self, workspace: &Path) -> Result<serde_json::Value, String> {
         #[cfg(not(windows))]
         {
@@ -522,7 +522,7 @@ impl SetupManager {
         let img = ImageMap::new(pe, section_blobs).map_err(|e| e.to_string())?;
         let bounds = container::pe_text_bounds(&img).ok_or("无可执行节（.text）")?;
 
-        // 种子装配（P0 供给器化：入口/导出/pdata/CFG/TLS/nopsled 六源全部
+        // 种子装配（供给器化：入口/导出/pdata/CFG/TLS/nopsled 六源全部
         // 可选，缺席来源诚实缺席；界内过滤在供给器内完成）。
         let contribs = container::pe_seed_contribs(&img, &exe_file);
         let mut seeds: Vec<u32> = Vec::new();
@@ -538,14 +538,14 @@ impl SetupManager {
         let set = funcs::recover(arch, &img, &seeds, bounds);
         let mut imports = pe::parse_imports_file(&exe_file, &img.pe).unwrap_or_default();
         // 延迟导入并入同形清单：xref 的 call [iat] 归因与 import_dlls 计数
-        // 自动覆盖 dd[13]（B2 失名补全）。
+        // 自动覆盖 dd[13]（失名补全）。
         let delay = pe::parse_delay_imports_file(&exe_file, &img.pe).unwrap_or_default();
         imports.extend(delay);
         let idx = xref::build(&img, &set, &imports);
         let reverse = xref::build_reverse(&idx, &set);
         let crt = crtsigs::fold(&img, &set, &imports);
 
-        // B2 目录解析面（缓存进 AnalysisCache；pe tls/debug/rich 查询与
+        // 目录解析面（缓存进 AnalysisCache；pe tls/debug/rich 查询与
         // v2 池消费）。pdata/exports 单独取全量清单（对账与 pe 查询要
         // 未过滤形态——供给器里那份是界内过滤后的）。
         let exports = pe::parse_exports_file(&exe_file, &img.pe).unwrap_or_default();
@@ -558,7 +558,7 @@ impl SetupManager {
 
         let rows = nemesis_ziwei_rev::package::function_table(&set, &idx, &crt, 128);
         let table = function_table_json(&rows);
-        // pdata 对账（§5-3）：.pdata 界内起点数（权威表）vs discovered——
+        // pdata 对账（3）：.pdata 界内起点数（权威表）vs discovered——
         // 差值 = 递归下降漏网函数线索（locate/gaps 交叉探查）；x86 恒 null。
         let pdata_funcs = pdata.as_ref().map(|v| {
             v.iter()
@@ -567,7 +567,7 @@ impl SetupManager {
                 .collect::<std::collections::BTreeSet<u32>>()
                 .len()
         });
-        // CFG 对账（B2）：CFG 表声明为合法间接调用目标的界内起点数 vs
+        // CFG 对账：CFG 表声明为合法间接调用目标的界内起点数 vs
         // discovered——guard:cf 目标上两者应高度一致，差值即漏网线索。
         let cfg_funcs_inb = cfg_funcs
             .iter()
@@ -603,7 +603,7 @@ impl SetupManager {
                 json!("无 .pdata 异常目录（x86 目标或快照无该数据目录）"),
             );
         }
-        // T3.6 LLM 建议标注：hook 已装才尝试（gateway ctx.rs 装桥）。
+        // .6 LLM 建议标注：hook 已装才尝试（gateway ctx.rs 装桥）。
         // 仅建议不落库——候选与注释进 profile 的唯一通路 = 显式 annotate；
         // 失败诚实注记，分析照常成功。
         if let Some(hook) = nemesis_ziwei_rev::package::llm_hook() {
@@ -725,7 +725,7 @@ impl SetupManager {
         Ok(f(cache))
     }
 
-    /// 查询面形态：闭包内部 `?`/`Err` 直通（ Result 闭包 + 扁平化，
+    /// 查询面形态：闭包内部 `?`/`Err` 直通（Result 闭包 + 扁平化，
     /// 避免 `Result<Result<Value>>>` 双层包裹漏出）。
     fn with_analysis_res<T>(
         &self,
@@ -735,7 +735,7 @@ impl SetupManager {
         self.with_analysis(workspace, f).and_then(|r| r)
     }
 
-    // ── 查询面（B1 计划 §2/§3 Phase B）：只读、无审批、有界返回 ─────────
+    // ── 查询面（计划 Phase B）：只读、无审批、有界返回 ─────────
 
     /// disasm：函数体反汇编投影（体内地址自动按起点 + 注记；无主地址诚实报错）。
     pub fn query_disasm(
@@ -1234,8 +1234,8 @@ impl SetupManager {
         })
     }
 
-    /// pe：结构清单投影（sections/exports/imports/pdata 四值 B1 实现；
-    /// tls/debug/rich 三值 schema 已定型、解析器 B2 填充）。
+    /// pe：结构清单投影（sections/exports/imports/pdata 四值 实现；
+    /// tls/debug/rich 三值 schema 已定型、解析器 填充）。
     pub fn query_pe(&self, workspace: &Path, what: &str) -> Result<serde_json::Value, String> {
         match what {
             "sections" | "exports" | "imports" | "pdata" | "tls" | "debug" | "rich" => {}
@@ -1635,7 +1635,7 @@ impl SetupManager {
 
     /// 差分窗口：各节当前内存 vs 最新快照（等待 `wait_secs` 秒后取现值）。
     /// 可写节（.data）的页单独归入 data_pages（DataArea 线索）。
-    /// T4.4 增强：`hook=true` 时观测窗并入临时 hook 计数——draft 已标注
+    /// .4 增强：`hook=true` 时观测窗并入临时 hook 计数——draft 已标注
     /// 函数逐个武装，窗末拉取命中数并退订（无函数/锚未命中诚实注记不阻断）。
     pub async fn diff_window(
         &self,
@@ -1663,11 +1663,11 @@ impl SetupManager {
                 .map_err(|e| e.to_string())?
                 .ok_or("无快照：先 snapshot")?;
 
-            // T4.4：观测窗前武装临时 hook（已标注函数；失败诚实注记不阻断）。
-            // BUG-20261105-015：向导期 profile 只在 drafts/（profile_id 是
+            // .4：观测窗前武装临时 hook（已标注函数；失败诚实注记不阻断）。
+            // 向导期 profile 只在 drafts/（profile_id 是
             // 本向导新造的毫秒戳，已提交库 ziwei/profiles/<id>/ 必不存在，
-            // ProfileStore::load 恒 NotFound → hook=true 整条死路）——读
-            // draft（load_draft 单一真相源），解析走 profile 注入形态。
+            // ProfileStore:load 恒 NotFound → hook=true 整条死路）——读
+            // draft（load_draft 统一定义），解析走 profile 注入形态。
             let hook_on = hook.unwrap_or(false);
             let mut hook_notes: Vec<String> = Vec::new();
             let mut armed: Vec<String> = Vec::new();
@@ -1704,7 +1704,7 @@ impl SetupManager {
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
             }
 
-            // T4.4：窗末拉取命中计数 + 逐个退订
+            // .4：窗末拉取命中计数 + 逐个退订
             let mut hook_counts: Vec<serde_json::Value> = Vec::new();
             if hook_on {
                 let bindings = session.hooks();
@@ -1830,7 +1830,7 @@ impl SetupManager {
             .get("note")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        // B4：参数签名（LLM 推断的参数数/类型/描述——define_tool/call_fn 消费）。
+        // 参数签名（LLM 推断的参数数/类型/描述——define_tool/call_fn 消费）。
         let params_in = data.get("params").and_then(|v| v.as_array());
         let args: Vec<ArgSpec> = match params_in {
             None => Vec::new(),
@@ -1937,7 +1937,7 @@ impl SetupManager {
                             kind: LocateKind::BytePattern,
                             module: Some(info.exe_name.clone()),
                             pattern: anchor.pattern.clone(),
-                            // 发现地 RVA 作提示一并记录（M5 找回以 pattern 为准；
+                            // 发现地 RVA 作提示一并记录（找回以 pattern 为准；
                             // rva 字段让重复标注检查有据可依）
                             rva: Some(rva_u),
                         });
@@ -2050,7 +2050,7 @@ impl SetupManager {
             let type_ = nemesis_ziwei_profile::FieldType::parse(ty_raw).ok_or_else(|| {
                 format!("fields[{i}] type {ty_raw:?} 无法解析（如 u32/f64/char[16]）")
             })?;
-            // BUG-20261028-123：size_of 现为 u64 真值（u32 乘法回绕曾把
+            // size_of 现为 u64 真值（u32 乘法回绕曾把
             // `u64[536870913]` 缩成 8 溜过此闸）——向导 1MB size 上限自然
             // 拒掉溢出数组。
             if offset as u64 + type_.size_of() > size as u64 {
@@ -2227,7 +2227,7 @@ impl SetupManager {
             .save(&profile, Some(&anchor_set))
             .map_err(|e| format!("profile 落盘失败：{e}"))?;
 
-        // setup 快照迁到 profile 名下（M5 找回消费）
+        // setup 快照迁到 profile 名下（找回消费）
         let setup_dir = workspace.join("ziwei").join("setup").join(&info.profile_id);
         let setup_snaps = setup_dir.join("snapshots");
         let target_snaps = store.snapshots_dir(&info.profile_id);
@@ -2397,7 +2397,7 @@ fn function_table_json(rows: &[nemesis_ziwei_rev::package::FuncRow]) -> Vec<serd
         .collect()
 }
 
-// ── 查询面辅助（B1：入参容错 / 函数归属 / 语义名投影 / 可执行节界）────
+// ── 查询面辅助（入参容错 / 函数归属 / 语义名投影 / 可执行节界）────
 
 /// 十六进制解析（`0x` 前缀可选，全 hex）。pub：bridge 层 rva 入参归一同源引用。
 pub fn parse_hex_u32(s: &str) -> Option<u32> {

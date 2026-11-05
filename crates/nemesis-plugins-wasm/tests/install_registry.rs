@@ -1,9 +1,9 @@
 //! 2026-09-29 交付审查修复的回归钉（宿主 crate 公开面）：
-//! - egress 私网闸边界（H1：v4-mapped / NAT64 归一 + v4 段表）；
+//! - egress 私网闸边界（v4-mapped / NAT64 归一 + v4 段表）；
 //! - 开关记录真相源 `config.plugin.wasm.json`（3.2：幽灵/穿越拒绝 +
 //!   config/enabled 独立读写 + 卸载摘除 + 损坏 fail-closed；2026-10-22
 //!   「默认不加载」语义）；
-//! - install 漏斗 wasm 载荷文件名穿越拒绝（L1）。
+//! - install 漏斗 wasm 载荷文件名穿越拒绝。
 //!
 //! ```text
 //! cargo test -p nemesis-plugins-wasm --test install_registry
@@ -49,7 +49,7 @@ fn fresh_manager() -> (tempfile::TempDir, Arc<PluginManager>) {
 }
 
 // ---------------------------------------------------------------------------
-// H1：egress 私网闸边界（is_private_ip 段表逐项钉死）
+// egress 私网闸边界（is_private_ip 段表逐项钉死）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -73,7 +73,7 @@ fn egress_private_ip_boundary() {
     }
     assert!(!is_private_ip(IpAddr::V4(v4(8, 8, 8, 8))));
 
-    // H1 主案：IPv4-mapped 归一回 v4 判定（裸 v6 五项检查全不命中的绕过面）。
+    // 主案：IPv4-mapped 归一回 v4 判定（裸 v6 五项检查全不命中的绕过面）。
     let mapped = |o: [u8; 4]| {
         IpAddr::V6(Ipv6Addr::from_segments([
             0,
@@ -104,7 +104,7 @@ fn egress_private_ip_boundary() {
     // v4-mapped 公网地址不误伤。
     assert!(!is_private_ip(mapped([8, 8, 8, 8])));
 
-    // NAT64 64:ff9b::/96 内嵌 IPv4 归一。
+    // NAT64 64:ff9b:/96 内嵌 IPv4 归一。
     let nat64 = |o: [u8; 4]| {
         let [a, b, c, d] = o;
         IpAddr::V6(Ipv6Addr::new(
@@ -140,7 +140,7 @@ fn egress_private_ip_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// 出站代理臂（2026-11-04 SC 套件批）：proxy 配置在场 = DNS 解析/私网闸/
+// 出站代理臂（SC 套件批）：proxy 配置在场 = DNS 解析/私网闸/
 // 钉地址整体移交代理侧——无真实代理也能行为区分（死代理端口秒级拒绝 vs
 // 直连路径先走 DNS）。`.invalid` TLD 是 RFC 6761 保留域（名字服务器应
 // NXDOMAIN），直连臂必然落「dns resolution failed」。
@@ -208,7 +208,7 @@ async fn egress_proxy_arm_skips_local_dns() {
     );
 }
 
-// BUG-20261103-346：egress allowlist IPv6 条目形态（钉端口此前永不命中）
+// egress allowlist IPv6 条目形态（钉端口此前永不命中）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -240,7 +240,7 @@ fn egress_allowlist_ipv6_entry_forms() {
         !allowlisted(&pol, "2001:db8::10", 80),
         "裸地址 host 不同不命中"
     );
-    // `::1:8080` 整串是合法 IPv6 地址（末组 hex 8080）——按裸地址语义
+    // `:1:8080` 整串是合法 IPv6 地址（末组 hex 8080）——按裸地址语义
     // 任意端口，钉端口必须走 bracketed 形态。
     let pol = EgressPolicy::from_permissions(vec!["::1:8080".into()], true);
     assert!(allowlisted(&pol, "::1:8080", 80));
@@ -276,7 +276,7 @@ fn egress_allowlist_ipv6_entry_forms() {
 }
 
 // ---------------------------------------------------------------------------
-// 3.2 / L6：开关记录写路径（config.plugin.wasm.json 单一真相源；2026-10-22
+// 3.2 /：开关记录写路径（config.plugin.wasm.json 单一权威定义；
 // 「默认不加载」语义——开关写经 installer.set_enabled，配置键经 manager）
 // ---------------------------------------------------------------------------
 
@@ -400,7 +400,7 @@ async fn corrupt_switch_file_fails_closed() {
 
 #[test]
 fn disk_manifest_rejects_traversal_slug_before_path_use() {
-    // BUG-HUNT R37：读写对称性——set_enabled / set_config_key /
+    // 读写对称性——set_enabled / set_config_key /
     // unset_config_key 都先 valid_slug 再碰路径，disk_manifest
     // （wasm.config.get 读路径）曾漏。闸必须在拼路径**前**生效：错误是
     // slug 拒绝而非文件系统读取错（后者回显解析后绝对路径 = 存在性
@@ -432,7 +432,7 @@ fn disk_manifest_rejects_traversal_slug_before_path_use() {
 }
 
 // ---------------------------------------------------------------------------
-// L1：install 漏斗 wasm 载荷文件名穿越拒绝
+// install 漏斗 wasm 载荷文件名穿越拒绝
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
@@ -462,7 +462,7 @@ async fn install_rejects_traversal_wasm_filename() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-23 开关补漏斗收口：手工拷入无签名载荷的容忍判定
+// 开关补漏斗收口：手工拷入无签名载荷的容忍判定
 //（set_enabled 补漏斗路径；install_registry 钉从紧面，卡面救援全链归
 // e2e_guest::hand_copied_unsigned_rescued_by_card_approval）
 // ---------------------------------------------------------------------------
@@ -496,7 +496,7 @@ async fn hand_copied_unsigned_without_card_stays_strict() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-23 工具接管层（接口可插拔托管）：manifest 声明校验 + deny-list +
+// 工具接管层（接口可插拔托管）：manifest 声明校验 + deny-list +
 // registry 接管裁决
 // ---------------------------------------------------------------------------
 
@@ -603,7 +603,7 @@ fn config_schema_entry_two_forms_and_defaults() {
     )));
     assert!(detail.contains(&("empty".to_string(), "声明无缺省".to_string(), None)));
 
-    // x- 前缀键照拒（保留命名空间 = 凭据面；明文缺省值冒充凭据声明 loud 拒）。
+    // x 前缀键照拒（保留命名空间 = 凭据面；明文缺省值冒充凭据声明 loud 拒）。
     let raw = format!(
         "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"cfg-c\"\nkind = \"tool\"\n\
          name = \"C\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
@@ -724,7 +724,7 @@ fn takeover_owner_multi_declarer_arbitration_is_deterministic() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-31 面板扩展批：manifest 声明校验（kind 门 + 视图词汇/绑定形态 +
+// 面板扩展批：manifest 声明校验（kind 门 + 视图词汇/绑定形态 +
 // 剧本步骤词表/on_fail 分支 + 纯声明式插件最低声明面）
 // ---------------------------------------------------------------------------
 
@@ -955,7 +955,7 @@ fn panel_flow_template_validation_matrix() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-01 决策 C：面板 LLM 总闸——manifest `x-llm` 声明位校验矩阵。
+// 决策 C：面板 LLM 总闸——manifest `x-llm` 声明位校验矩阵。
 // （授予裁决本体在 registry::build_frame，端到端归 e2e_guest::panel_llm_dual_gate。）
 // ---------------------------------------------------------------------------
 
@@ -1004,7 +1004,7 @@ fn x_llm_manifest_validation_matrix() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-31 面板扩展批：面板注册面（声明式载荷诚实报错 + 路由跨插件唯一）
+// 面板扩展批：面板注册面（声明式载荷诚实报错 + 路由跨插件唯一）
 // ---------------------------------------------------------------------------
 
 /// 面板 manifest 组装器（actions 视图 = 声明面最小合法形态）。
@@ -1086,7 +1086,7 @@ fn panel_route_collision_rejected_across_plugins() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-03 guest step 批：`plugin:<slug>:<op>` 引用解析纯函数矩阵
+// guest step 批：`plugin:<slug>:<op>` 引用解析纯函数矩阵
 // （valid_slug / valid_step_op / parse_plugin_step_ref）。安装期空词表/
 // 非法词表的对账闸在 probe_and_reconcile FlowStep 臂，其 fixture 级覆盖
 // 受 probe_frame 固定 InstanceConfig::default() 限制（无法经 config 种子
@@ -1170,7 +1170,7 @@ fn flow_step_manifest_rejects_empty_kinds_at_probe_level_shape() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-03 域侧批 H：connector 装配自动注册（install_core ①.5 预检 +
+// 域侧批 H：connector 装配自动注册（install_core ①.5 预检 +
 // ⑥.5 注册 + lockfile 记账 + 卸载保留提示）
 // ---------------------------------------------------------------------------
 
@@ -1407,9 +1407,9 @@ fn lockfile_connectors_field_backward_compat() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-04 自持批 3c：issue-import 0.2.0 两件套（plugin.toml + guest 载荷）
+// 自持c：issue-import 0.2.0 两件套（plugin.toml + guest 载荷）
 // 盘上真相 drift 锁——shipped 原文永远可解析可装配，清单/哈希不同步时 CI
-// 当场响（install 步骤③哈希对账吃真文件，不用等用户装机才红）
+// 当场响（install 哈希对账吃真文件，不用等用户装机才红）
 // ---------------------------------------------------------------------------
 
 /// 仓库内 shipped 真相（`../../` = crate dir → 仓库根；测试只在本仓跑）。
@@ -1610,7 +1610,7 @@ fn shipped_jira_fix_manifest_is_valid() {
 }
 
 // ---------------------------------------------------------------------------
-// shipped jira-gitlab-flow 域插件 drift 锁（2026-11-04；两件套照 jira-fix/
+// shipped jira-gitlab-flow 域插件 drift 锁（两件套照 jira-fix/
 // bugfix-flow 样板——Jira 取数 + GitLab 仓副本修复 + MR 发布全链；改动清单/
 // 哈希不同步时 CI 当场响）
 // ---------------------------------------------------------------------------
@@ -1772,7 +1772,7 @@ fn shipped_jira_gitlab_flow_manifest_is_valid() {
 async fn shipped_jira_gitlab_flow_install_e2e() {
     let (_ws, mgr) = fresh_manager();
     // shipped 原文 + 真载荷直接过漏斗（零改写 = drift 锁的装配半边；
-    // 清单/哈希不同步在步骤③当场拒）。
+    // 清单/哈希不同步在哈希对账步骤当场拒）。
     let tmp = tempfile::tempdir().expect("stage tmp");
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).expect("stage dir");
@@ -1813,7 +1813,7 @@ async fn shipped_jira_gitlab_flow_install_e2e() {
 }
 
 // ---------------------------------------------------------------------------
-// shipped sc-bugfix 域插件 drift 锁（2026-11-04；两件套照 jira-gitlab-flow
+// shipped sc-bugfix 域插件 drift 锁（两件套照 jira-gitlab-flow
 // 样板——Jira 取数 + GitLab/Gerrit 双臂仓副本修复 + MR/change 发布全链；
 // 改动清单/哈希不同步时 CI 当场响）
 // ---------------------------------------------------------------------------
@@ -2075,7 +2075,7 @@ fn shipped_sc_bugfix_manifest_is_valid() {
 async fn shipped_sc_bugfix_install_e2e() {
     let (_ws, mgr) = fresh_manager();
     // shipped 原文 + 真载荷直接过漏斗（零改写 = drift 锁的装配半边；
-    // 清单/哈希不同步在步骤③当场拒）。
+    // 清单/哈希不同步在哈希对账步骤当场拒）。
     let tmp = tempfile::tempdir().expect("stage tmp");
     let src = tmp.path().join("src");
     std::fs::create_dir_all(&src).expect("stage dir");
@@ -2116,7 +2116,7 @@ async fn shipped_sc_bugfix_install_e2e() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-03 自持写通道批：egress `{{config.<key>}}` 整条目 token——
+// 自持写通道批：egress `{{config.<key>}}` 整条目 token——
 // manifest 校验（声明闸，validate 顺序在 x-secret 冲突检查之前）+
 // render_egress_tokens（渲染丢弃语义：配置缺席 = 条目丢弃不破
 // deny-by-default）
@@ -2214,7 +2214,7 @@ fn egress_token_render_matrix() {
         render_egress_tokens(&["{{config.base_host}}".to_string()], &BTreeMap::new()).is_empty()
     );
 
-    // URL 形态配置值提取 host:port（2026-11-03 demo 实证缺口：自持故事
+    // URL 形态配置值提取 host:port（demo 实证缺口：自持故事
     // 操作员贴的自然是完整 URL——scheme 前缀混进 host 段会让 allowlisted
     // 永不匹配）。
     cfg.insert("base_url".to_string(), "http://127.0.0.1:46395".to_string());
@@ -2237,7 +2237,7 @@ fn egress_token_render_matrix() {
         render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg),
         vec!["10.0.0.9:8123".to_string()]
     );
-    // 含 :// 但解析失败（空 host）= 条目丢弃。
+    // 含:// 但解析失败（空 host）= 条目丢弃。
     cfg.insert("base_url".to_string(), "http://:46395".to_string());
     assert!(render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg).is_empty());
     // 空值 = 条目丢弃（未配置语义，deny-by-default）。
@@ -2255,7 +2255,7 @@ fn egress_token_render_matrix() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-03 组合 world 批：register 的 step 元数据闸矩阵。组合形态
+// 组合 world 批：register 的 step 元数据闸矩阵。组合形态
 // （kind=panel 双导出 flow-step）的组件同报 step 快照——注册面按快照认，
 // manifest 仍是 kind=panel。
 // ---------------------------------------------------------------------------
@@ -2350,7 +2350,7 @@ fn register_step_meta_gate_matrix() {
     assert!(reg.step_meta.is_none(), "纯面板不得带 step 快照");
 }
 
-// BUG-20261103-334 横向排查定性钉（非缺陷修复）：三方开发者以记事本
+// 横向排查定性钉（非缺陷修复）：三方开发者以记事本
 // （带 BOM UTF-8）手写 plugin.toml 后，manifest 装载照常解析（canonical
 // loader 单点：load_from_dir）。实测 toml crate parse 容忍前导 BOM——
 // 本测试把容忍行为钉死，crate 升级若翻转此处先行红出来。

@@ -1,6 +1,6 @@
-//! U-B（§9.2 无人值守）：LLM 端点不可用**恢复探针**。
+//! U-B（无人值守）：LLM 端点不可用**恢复探针**。
 //!
-//! 封存判定与中断档案在 web 侧（[`nemesis_web::handlers::board_unavailable`]，
+//! 封存判定与中断档案在 web 侧（[`nemesis_web::handlers:board_unavailable`]，
 //! master 拆解/评审/重派三闸同 crate）。本模块补全恢复闭环：
 //!
 //! - **探测**：封存期间周期性发最小真实 completion（TCP 通 ≠ LLM 活——
@@ -14,7 +14,7 @@
 //! - **probe_interval_secs=0** = 只封存不探测（恢复靠人工
 //!   `board.unavailable.release` 或端点恢复后的自然评审成功）。
 //!
-//! 探针 spawn 于 gateway 装配（post_agent.rs N1 恢复同块）；全部节点装配
+//! 探针 spawn 于 gateway 装配（post_agent.rs 恢复同块）；全部节点装配
 //! 但 loop 内角色闸——非 master 只记账不续做（board 写路径是 master 专属，
 //! worker 镜像不跑评审/拆解）。
 
@@ -181,7 +181,7 @@ fn resume_interruptions(deps: &UnavailableProbeDeps, is_master: bool) {
     }
 }
 
-/// plan 档案续拆：经 web 侧 [`nemesis_web::handlers::board::respawn_plan_chain`]
+/// plan 档案续拆：经 web 侧 [`nemesis_web::handlers:board::respawn_plan_chain`]
 /// （RUNNING_PLANS 在途同单让位 + 恢复评论 + 新 plan_id 链）。agent 槽
 /// 未就绪/单子已查不到 = false（档案保留）。
 fn resume_plan_chain(deps: &UnavailableProbeDeps, issue_id: i64) -> bool {

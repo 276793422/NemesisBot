@@ -165,7 +165,7 @@ fn find_subslice_boundaries() {
     assert_eq!(find_subslice(&hay, &miss), None);
 }
 
-// ---- R1 coverage: CJK-boundary buffer flush + snippet hit path ----
+// ---- coverage: CJK-boundary buffer flush + snippet hit path ----
 
 #[test]
 fn tokens_flushes_latin_run_before_cjk() {
@@ -187,7 +187,7 @@ fn make_snippet_centers_on_first_hit() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：make_snippet 无命中臂——terms 都不在文本里
+// AGT 覆盖率批次：make_snippet 无命中臂——terms 都不在文本里
 // → hit 保持 None → 从文本头部开窗（unwrap_or(0) 臂）。
 // ---------------------------------------------------------------------------
 

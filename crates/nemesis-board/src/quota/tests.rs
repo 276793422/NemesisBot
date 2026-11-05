@@ -108,7 +108,7 @@ fn test_denial_leaves_no_side_effect() {
     assert_eq!(QuotaDenied::RateLimited.error_code(), "rate_limited");
 }
 
-/// live provider 语义（G10 回归）：改额度即时生效，无需重建台账——
+/// live provider 语义（回归）：改额度即时生效，无需重建台账——
 /// gateway 接 ConfigStore live 句柄后，config.json 热改额度不重启生效。
 #[test]
 fn test_live_provider_quota_change_applies_without_rebuild() {

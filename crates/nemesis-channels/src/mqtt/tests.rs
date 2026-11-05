@@ -1,6 +1,6 @@
 //! mqtt 通道测试（独立测试文件——生产文件零内联 `#[cfg(test)]` 纪律）。
 //!
-//! 契约测试策略：rumqttc 无内建 mock/loopback 测试模式（其 `AsyncClient::
+//! 契约测试策略：rumqttc 无内建 mock/loopback 测试模式（其 `AsyncClient:
 //! from_senders` 需要引入 flume 依赖且只覆盖出站半边），故用 **tokio TCP mock
 //! 最小 broker**：手解 MQTT 3.1.1 最小帧集（CONNECT/CONNACK/SUBSCRIBE/SUBACK/
 //! PUBLISH/PUBACK/PINGREQ/PINGRESP），驱动**真实 rumqttc 客户端**走完整双向
@@ -34,7 +34,7 @@ fn mqtt_string(s: &str) -> Vec<u8> {
     v
 }
 
-/// 剩余长度 varint 编码（MQTT 3.1.1 §2.2.3）。
+/// 剩余长度 varint 编码（MQTT 3.1.1）。
 fn encode_remaining_len(mut len: usize) -> Vec<u8> {
     let mut out = Vec::new();
     loop {

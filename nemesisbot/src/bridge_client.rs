@@ -1,4 +1,4 @@
-//! 反向桥客户端（goal：节点显示名 + 反向桥与多设备汇聚，一期批次二）。
+//! 反向桥客户端（goal：节点显示名 + 反向桥与多设备汇聚，一期）。
 //!
 //! 职责：出站连远端中继服务端（`relay_url` + `/bridge`），hello 握手（token
 //! 走 hello 帧不走 URL query——避免进访问日志）、断线指数退避重连（5s→60s
@@ -9,7 +9,7 @@
 //! **桥为旁路**：桥客户端任何失败（连不上/被拒/重连循环）都不影响本机
 //! dashboard 与 Bot 主功能——失败只打日志 + 退避重试。
 //!
-//! 帧类型与 conn 语义复用 `nemesis_web::relay::protocol`（与服务端同一
+//! 帧类型与 conn 语义复用 `nemesis_web::relay:protocol`（与服务端同一
 //! 套定义，两端天然对齐）：
 //! - 短 conn（HTTP）：服务端整段请求 `ConnData{fin:true}` 下发（fin 仅为
 //!   信息性提示，请求完整性由 content-length 界定——写半**不** shutdown，
@@ -60,7 +60,7 @@ const CONN_WRITE_CAPACITY: usize = 16;
 // 参数与时序（时序参数化 = 测试可毫秒级跑完假死/退避路径）
 // ---------------------------------------------------------------------------
 
-/// 桥 RPC 枢纽句柄（二期批次六）。cluster 构建 = [`crate::bridge_rpc::
+/// 桥 RPC 枢纽句柄（二期）。cluster 构建 = [`crate::bridge_rpc:
 /// DeviceBridgeRpc`]；非 cluster 构建无此子系统，别名退化 `()`——消除
 /// `BridgeClientParams` 字段类型的 cfg 门重复书写。
 #[cfg(feature = "cluster")]
@@ -68,7 +68,7 @@ pub type BridgeRpcHandle = std::sync::Arc<crate::bridge_rpc::DeviceBridgeRpc>;
 #[cfg(not(feature = "cluster"))]
 pub type BridgeRpcHandle = ();
 
-/// 二期批次六 helper（cfg 双实现）：挂载桥 RPC 上行出口。
+/// 二期 helper（cfg 双实现）：挂载桥 RPC 上行出口。
 /// 非 cluster 构建无此子系统，no-op。
 #[cfg(feature = "cluster")]
 fn bridge_rpc_attach(handle: &BridgeRpcHandle, tx: mpsc::UnboundedSender<BridgeFrame>) {
@@ -79,7 +79,7 @@ fn bridge_rpc_attach(handle: &BridgeRpcHandle, _tx: mpsc::UnboundedSender<Bridge
     let _ = handle;
 }
 
-/// 二期批次六 helper（cfg 双实现）：摘除桥 RPC 上行出口 + 清 pending。
+/// 二期 helper（cfg 双实现）：摘除桥 RPC 上行出口 + 清 pending。
 #[cfg(feature = "cluster")]
 fn bridge_rpc_detach(handle: &BridgeRpcHandle) {
     handle.detach_uplink();
@@ -89,7 +89,7 @@ fn bridge_rpc_detach(handle: &BridgeRpcHandle) {
     let _ = handle;
 }
 
-/// 二期批次六 helper（cfg 双实现）：下行 `cluster_rpc` 帧分流。
+/// 二期 helper（cfg 双实现）：下行 `cluster_rpc` 帧分流。
 #[cfg(feature = "cluster")]
 async fn bridge_rpc_downstream(
     handle: &BridgeRpcHandle,
@@ -106,7 +106,7 @@ async fn bridge_rpc_downstream(
     None
 }
 
-/// 三期批次八 helper（cfg 双实现）：下行 `member_sync` 帧合并。
+/// 三期 helper（cfg 双实现）：下行 `member_sync` 帧合并。
 /// 非 cluster 构建无集群 registry，no-op（维持一期忽略语义）。
 #[cfg(feature = "cluster")]
 fn bridge_rpc_member_sync(handle: &BridgeRpcHandle, payload: &serde_json::Value) {
@@ -137,7 +137,7 @@ pub struct BridgeClientParams {
     /// 同权组网；None = 纯隧道设备语义）。gateway 装配处按 cluster 存在
     /// 且 rpc_port>0 构造。
     pub cluster_identity: Option<nemesis_web::relay::BridgeClusterIdentity>,
-    /// 二期批次六：桥帧 RPC 枢纽（Some = 集群构建——下行 `cluster_rpc`
+    /// 二期：桥帧 RPC 枢纽（Some = 集群构建——下行 `cluster_rpc`
     /// 帧分流到本地 RPC 链 / pending 表；None = 一期语义，下行帧 WARN 忽略）。
     /// gateway 装配处与 RpcClient::set_bridge_transport 同源注入。
     pub bridge_rpc: Option<BridgeRpcHandle>,
@@ -374,7 +374,7 @@ enum SessionEnd {
     /// 连接层断开。`welcomed` = 本次会话是否曾配对成功（true = 重置退避：
     /// 长连接后断开从 5s 重新爬；false = 握手期就断，退避继续爬升）。
     Disconnected { welcomed: bool },
-    /// 通道页手动重连按钮踢断（批次三）。用户明确意图 = 立即以最小退避
+    /// 通道页手动重连按钮踢断。用户明确意图 = 立即以最小退避
     /// 重连；**跳过**本轮退避等待直接 connect（kick permit 已在 session
     /// 内消费，循环尾的 select 等不到它了，必须显式 continue）。
     Kicked,
@@ -383,7 +383,7 @@ enum SessionEnd {
 /// 桥客户端主循环：连接 → 握手 → session，失败退避重试，永续。
 /// 旁路纪律：本函数 panic/卡死都不允许波及主功能（全部路径有界等待）。
 ///
-/// 状态上报（批次三）：状态迁移点写 [`nemesis_web::relay::report_client_status`]
+/// 状态上报：状态迁移点写 [`nemesis_web::relay:report_client_status`]
 /// 全局槽——通道页 `GET /api/relay/overview` 读取；手动重连经
 /// `reconnect_notify()` 的 Notify 踢醒（session 主 select 与循环尾退避
 /// 两处监听）。
@@ -490,7 +490,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
     // welcome ok 后置 true（run_loop 据此重置退避）。
     let mut welcomed = false;
 
-    // ---- 阶段 1：hello + 等 welcome（有界等待，服务端收到即回）----
+    // ----：hello + 等 welcome（有界等待，服务端收到即回）----
     // 二期：集群身份快照展开进 hello（None = 纯隧道设备，字段省略——
     // 服务端按缺省 None 处理，老版本互连兼容）。
     let identity = params.cluster_identity.clone();
@@ -578,10 +578,10 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
         }
     }
 
-    // ---- 阶段 2：主循环 ----
+    // ----：主循环 ----
     // conn 泵上行帧统一出口（泵不持有 ws 写半——主循环单点写，串行化）。
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<BridgeFrame>();
-    // 二期批次六：挂载桥 RPC 上行出口（BridgeSend 发帧 + hub 请求的响应
+    // 二期：挂载桥 RPC 上行出口（BridgeSend 发帧 + hub 请求的响应
     // 回上行都经此）；会话收尾 detach（在途桥请求按链路死亡收口）。
     if let Some(bridge_rpc) = &params.bridge_rpc {
         bridge_rpc_attach(bridge_rpc, cmd_tx.clone());
@@ -642,7 +642,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                 };
                                 // fin=true = 请求方向最后一包数据（短 conn：
                                 // 整段请求单帧 fin=true）。**不半关闭写半**
-                                // ——2026-09-19 真机彩排实测：写半 shutdown
+                                // —— 真机彩排实测：写半 shutdown
                                 // 会让 hyper 服务端在处理请求前读到 EOF 直接
                                 // 断连（零字节响应）；请求完整性由
                                 // content-length 界定（serialize_http_request
@@ -679,7 +679,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                             | BridgeFrame::BridgeWelcome { .. } | BridgeFrame::AccessResult { .. } => {
                                 tracing::warn!("[Bridge] 收到不该由服务端发的帧，忽略");
                             }
-                            // 二期批次六：下行 cluster_rpc 帧 → 桥 RPC 枢纽分流
+                            // 二期：下行 cluster_rpc 帧 → 桥 RPC 枢纽分流
                             // （response → 唤醒本地 pending；request → 喂本地
                             // RPC 链，响应回上行）。未装配枢纽（一期形态）维持
                             // WARN 忽略。
@@ -699,7 +699,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                                 }
                             },
                             BridgeFrame::MemberSync { payload } => {
-                                // 三期批次八：成员表合并（集群装配的设备才
+                                // 三期：成员表合并（集群装配的设备才
                                 // 消费；纯设备/`--relay` 链路维持忽略语义）。
                                 if let Some(bridge_rpc) = &params.bridge_rpc {
                                     bridge_rpc_member_sync(bridge_rpc, &payload);
@@ -744,7 +744,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                     break SessionEnd::Disconnected { welcomed };
                 }
             }
-            // 批次三：手动重连踢——断开当前会话立即重连（permits 存续语义
+            // 手动重连踢——断开当前会话立即重连（permits 存续语义
             // 见 Notify 文档；握手中的会话不响应，最长 welcome_timeout 后
             // 由循环尾的退避 select 立即消费）。
             _ = nemesis_web::relay::reconnect_notify().notified() => {
@@ -756,7 +756,7 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
     for conn_id in conns.keys().copied().collect::<Vec<_>>() {
         drop_conn(conn_id, &mut conns);
     }
-    // 二期批次六：摘除桥 RPC 上行出口 + 清 pending（在途桥请求按链路死亡收口
+    // 二期：摘除桥 RPC 上行出口 + 清 pending（在途桥请求按链路死亡收口
     // ——RpcClient 仲裁按「桥路径失败」走兜底/诚实报错，不悬挂）。
     if let Some(bridge_rpc) = &params.bridge_rpc {
         bridge_rpc_detach(bridge_rpc);

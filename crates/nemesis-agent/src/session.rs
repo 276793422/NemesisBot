@@ -5,10 +5,10 @@
 //! - `SessionStore` for persistent conversation history with disk storage
 //! - Self-heal rebuild: a store entry missing past the 7-day TTL is
 //!   reconstructed from the append-only chat_log on next access (see
-//!   [`SessionStore:rebuild_from_chat_log`])
+//!   [`SessionStore::rebuild_from_chat_log`])
 //! - Token estimation and force compression utilities
 //!
-//! （对话摘要的 LLM 驱动实现已收敛到 `loop:compact` 的六节结构化摘要——
+//! （对话摘要的 LLM 驱动实现已收敛到 `loop::compact` 的六节结构化摘要——
 //! 旧 `Summarizer` 批式路径 2026-09-28 随真源归一退役。）
 
 use std::collections::HashMap;
@@ -212,7 +212,7 @@ pub struct StoredSession {
     pub created: DateTime<Local>,
     /// When this session was last updated.
     pub updated: DateTime<Local>,
-    /// 项目归属缓存镜像（真相源 = chat_log sidecar meta；None =
+    /// 项目归属缓存镜像（权威 = chat_log sidecar meta；None =
     /// 对话组/未绑定）。旧文件无此键 → default None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
@@ -235,16 +235,16 @@ pub struct StoredMessage {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
     /// (projection prune): tool name for role="tool" turns (feeds the
-    /// deterministic prune-marker recompute). See `ConversationTurn:tool_name`.
+    /// deterministic prune-marker recompute). See `ConversationTurn::tool_name`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_name: Option<String>,
     /// (projection prune): recorded model-facing override for oversized
     /// tool results (spill locator / guard nudges). Must round-trip the store
     /// or a reload would silently change what the model sees. See
-    /// `ConversationTurn:tool_result_projection`.
+    /// `ConversationTurn::tool_result_projection`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_result_projection: Option<String>,
-    /// /（多模态）：图片路径引用（与 `ConversationTurn.image_refs` 同源，
+    /// （多模态）：图片路径引用（与 `ConversationTurn.image_refs` 同源，
     /// store round-trip 必须保留否则重载后图片丢失）。旧文件无此键 → default 空。
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub image_refs: Vec<String>,
@@ -353,7 +353,7 @@ impl SessionStore {
         }
         drop(sessions);
 
-        // : disk fallback on an in-memory miss. A session file
+        // disk fallback on an in-memory miss. A session file
         // can legitimately appear AFTER this store was constructed — the
         // canonical case is `nemesisbot session fork`, which a CLI process
         // writes while the gateway keeps running. Without this fallback the
@@ -580,7 +580,7 @@ impl SessionStore {
     /// summary-covered prefix (`index < summary_covers_up_to`), and the index is
     /// adjusted down by the number dropped so the cache stays coherent. The
     /// verbatim tail (`index >= covers_up_to`, ≈ K_target ≪ this limit) is never
-    /// touched. See [`SessionStore:trim_to_limit`].
+    /// touched. See [`SessionStore::trim_to_limit`].
     pub(crate) const MAX_STORED_MESSAGES: usize = 1000;
 
     /// Drop oldest messages when a session exceeds [`MAX_STORED_MESSAGES`],
@@ -628,7 +628,7 @@ impl SessionStore {
     /// becomes `_`. Prevents path traversal / key injection from the WS client
     /// (the id flows into filenames: `sessions/{key}.json`, `session_logs/{key}.jsonl`).
     ///
-    /// D-6（复核）：与 `nemesis_utils:sanitize:sanitize_path_segment`
+    /// D-6（复核）：与 `nemesis_utils::sanitize:sanitize_path_segment`
     /// （SAN-05 真相源）是**两道串联防线**而非重复实现：本 fn 先消毒客户端
     /// 注入的 id 段（防 session_key 结构注入——key 形如 `chan:{id}`，id 里
     /// 混入 `:` 会伪造通道前缀），key 整体落盘前再过白名单真相源。本输出
@@ -750,7 +750,7 @@ impl SessionStore {
         let session_path = storage_dir.join(format!("{}.json", filename));
 
         // 落盘委托 权威 helper（唯一 tmp + fsync + 失败清理），与
-        // nemesis-session:save_chat_session 同源（BUG-51 同族迁移）。旧手搓
+        // nemesis-session::save_chat_session 同源（BUG-51 同族迁移）。旧手搓
         // 版无 fsync：rename 落盘后进程崩溃可能留下空/半截 JSON；且错误文案、
         // tmp 命名与权威 helper 双源分裂。helper 内部唯一 tmp 同样防同键并发
         // save（主循环 + summarize 任务）互相踩 tmp。
@@ -854,7 +854,7 @@ impl SessionStore {
     /// `logs/trash/sessions/` for restore, while the context store does NOT
     /// (it is derivable from the jsonl via the self-heal rebuild path, so
     /// restoring doesn't need it). Returns whether the session was present
-    /// in memory (same contract as [`Self:delete_session`]).
+    /// in memory (same contract as [`Self::delete_session`]).
     pub fn detach_session(&self, key: &str) -> bool {
         let existed = self.sessions.write().unwrap().remove(key).is_some();
 
@@ -970,13 +970,13 @@ impl SessionStore {
     /// evicted session keeps its UI history while model context is gone.
     /// That asymmetry used to produce 失忆会话 and permanent store↔log
     /// divergence; it is now healed on next access by
-    /// [`SessionStore:rebuild_from_chat_log`] (store = rebuildable cache,
+    /// [`SessionStore::rebuild_from_chat_log`] (store = rebuildable cache,
     /// chat_log = source of truth).
     pub fn cleanup_old_sessions(&self, max_age_days: u64) -> usize {
         self.cleanup_old_sessions_detailed(max_age_days).len()
     }
 
-    /// 同 [`Self:cleanup_old_sessions`]，但返回被删会话的**原始 session key**
+    /// 同 [`Self::cleanup_old_sessions`]，但返回被删会话的**原始 session key**
     /// （供方言 `SessionEnd` 钩子逐会话触发）。
     pub fn cleanup_old_sessions_detailed(&self, max_age_days: u64) -> Vec<String> {
         let storage_dir = match &self.storage_dir {
@@ -1189,7 +1189,7 @@ pub fn force_compress_turns(history: &[ConversationTurn]) -> Vec<ConversationTur
 
 /// Check if a channel is internal (not user-facing).
 ///
-/// 委托仓内单一真相源 `nemesis_types:is_internal_channel`
+/// 委托仓内统一定义 `nemesis_types::is_internal_channel`
 /// （收编，本文件原为手抄 `matches!` 副本）。
 pub fn is_internal_channel(channel: &str) -> bool {
     nemesis_types::is_internal_channel(channel)
@@ -1197,18 +1197,18 @@ pub fn is_internal_channel(channel: &str) -> bool {
 
 /// fork: shared "jsonl rows → StoredMessage" mapping for
 /// EVERY path that materializes store content FROM the chat_log (the
-/// self-heal rebuild AND `session_fork:fork_session`'s new-session store
+/// self-heal rebuild AND `session_fork::fork_session`'s new-session store
 /// side). One mapping, two consumers — the fork's store must be
 /// byte-identical to what a later self-heal rebuild of the fork's jsonl
 /// would produce, or the fork's model context would silently change the
 /// day its store json ages out of the 7-day TTL.
 ///
 /// Semantics (identical to the original inline rebuild code): rows pass the
-/// single-source-of-truth predicate [`crate:chat_log:is_projected_chat_row`]
+/// single-source-of-truth predicate [`crate::chat_log:is_projected_chat_row`]
 /// (empty-content assistant intermediates skipped); tool_calls stay empty
 /// (chat_log never recorded them); timestamps keep their jsonl values.
 /// F-E（四轮盲审）：行内 `"images": [路径...]` 数组（起写入）
-/// 必须还原进 `image_refs`——硬编码 `Vec:new()` 会让 self-heal 重建和
+/// 必须还原进 `image_refs`——硬编码 `Vec::new()` 会让 self-heal 重建和
 /// fork_session 的图片引用凭空消失（store 里有图、jsonl 里也有图、重建后
 /// 没图；vision=no 投影/重水合都失去依据）。
 pub(crate) fn projected_messages_from_rows(rows: &[serde_json::Value]) -> Vec<StoredMessage> {
@@ -1254,7 +1254,7 @@ pub(crate) fn projected_messages_from_rows(rows: &[serde_json::Value]) -> Vec<St
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 

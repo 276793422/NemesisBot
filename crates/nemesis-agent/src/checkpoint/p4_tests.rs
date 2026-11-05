@@ -211,7 +211,7 @@ fn capture_does_not_disturb_workspace() {
 }
 
 // ---------------------------------------------------------------------------
-// ②typed 证据块：delivery.files 清单
+// typed 证据块：delivery.files 清单
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -359,7 +359,7 @@ fn capture_files_truncates_at_max_with_honest_flag() {
 }
 
 // 回归锁（发布链实证）：capture patch 必须能被
-// `Diff:from_buffer` 回读并 apply 到基线副本——print 回调对 context/add/
+// `Diff::from_buffer` 回读并 apply 到基线副本——print 回调对 context/add/
 // del 三类漏补 origin 前缀字节时，patch 是不可解析的残文（"invalid patch
 // hunk"），发布链在 git 半边第一跳就断。此测试把「patch 字节 = 合法
 // unified diff」钉死，print 配方回归此处必红。

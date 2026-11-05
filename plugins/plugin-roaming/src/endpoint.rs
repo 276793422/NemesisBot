@@ -11,7 +11,7 @@
 //!   过渡面——`identity_payload` 不再带 `secret_key_hex`）。
 //! - **通路模型**：ALPN `nemesis-cluster/1`；一条 bi-stream = 一次帧交换
 //!   会话（4B 长度前缀 + AEAD 载荷——帧协议在宿主，插件是协议无关字节泵）。
-//! - **交接（拍板 9 流粒度）**：dial 臂开一次性 loopback TCP 监听回
+//! - **交接（决策 9 流粒度）**：dial 臂开一次性 loopback TCP 监听回
 //!   `{port, conn_id}`，宿主 `TcpStream::connect` 后帧协议照跑；accept 臂对
 //!   每条入站 bi-stream 开一次性 loopback TCP 并 `notify_incoming(conn_id,
 //!   port, remote_hex)` 通知宿主受理。TCP EOF = 终止信号（splice 收尾）。
@@ -618,7 +618,7 @@ async fn read_up_to(recv: &mut RecvStream, buf: &mut [u8]) -> Result<usize, Read
 /// 单条入站 bi-stream 的判别与交接：
 /// 1. 读首 7 字节判 PING（不足 7 = 短包/EOF：按帧流转发，帧层诚实报文法错）；
 /// 2. PING = 探针回显（写回 + finish + 等对端 ack——accept() 返回即 drop 连接，
-///    与旧宿主 echo 同款「等 stopped 防 connection lost 竞争」实录教训）；
+///    与旧宿主 echo 同款「等 stopped 防 connection lost 竞争」案例教训）；
 /// 3. 非 PING = 开一次性 loopback 端口 + `notify_incoming` + 等宿主拨入 +
 ///    首 7 字节转进 TCP + 双向泵（splice）。
 async fn handle_inbound_stream(

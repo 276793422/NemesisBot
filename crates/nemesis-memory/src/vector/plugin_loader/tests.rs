@@ -378,10 +378,10 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
 #[test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 fn it_real_plugin_full_lifecycle() {
@@ -405,7 +405,7 @@ fn it_real_plugin_full_lifecycle() {
     let non_zero = v1.iter().filter(|&&v| v != 0.0).count();
     assert!(non_zero > 0, "embedding should have non-zero values");
 
-    // --- Embed: L2 normalized ---
+    // --- Embed: normalized ---
     let l2_norm: f32 = v1.iter().map(|v| v * v).sum::<f32>().sqrt();
     assert!(
         (l2_norm - 1.0).abs() < 1e-3,
@@ -455,10 +455,10 @@ fn it_real_plugin_full_lifecycle() {
 
 #[test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 fn it_real_plugin_via_boxed_trait() {
@@ -472,7 +472,7 @@ fn it_real_plugin_via_boxed_trait() {
     plugin.close();
 }
 
-// ---- S5 coverage: Debug impls (display-layer, no DLL needed) ----
+// ---- coverage: Debug impls (display-layer, no DLL needed) ----
 
 #[test]
 fn debug_impls_render_unloaded_plugin_state() {
@@ -499,7 +499,7 @@ fn debug_impls_render_unloaded_plugin_state() {
     );
 }
 
-// ---- R1 coverage: Library::new failure on an existing non-library file ----
+// ---- coverage: Library::new failure on an existing non-library file ----
 
 #[test]
 fn load_rejects_existing_non_library_file() {
@@ -521,7 +521,7 @@ fn load_rejects_existing_non_library_file() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：NativePlugin::load 对「存在但非动态库」文件
+// AGT 覆盖率批次：NativePlugin::load 对「存在但非动态库」文件
 // 的诚实失败（Library::new err → LoadFailed，非 file-not-found）。
 // init/embed/dim/close/drop 全需真实 plugin DLL（进程内 dlopen + 符号校验），
 // 单测不可达，由 plugin-onnx-test E2E 覆盖。

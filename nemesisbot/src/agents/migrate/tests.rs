@@ -1,4 +1,4 @@
-//! P6-R2 迁移模块单测（纯函数 + 真实临时目录面；零内联纪律独立文件）。
+//! 迁移模块单测（纯函数 + 真实临时目录面；零内联纪律独立文件）。
 
 use std::path::PathBuf;
 
@@ -65,7 +65,7 @@ fn rewrite_record_rewires_node_and_paths() {
     let ws = PathBuf::from("C:\\target\\workspace");
     let mut rec = selfbuilt_record(AGENT_ID, "node-a");
     rec.memory_namespace = format!("agents/{AGENT_ID}");
-    // B 端真实收到的形态：A 端步骤③已置 migrating——改写应翻回 active。
+    // B 端真实收到的形态：A 端哈希对账步骤已置 migrating——改写应翻回 active。
     rec.status = agent_status::MIGRATING.to_string();
 
     let changed = rewrite_record_for_target(&mut rec, "node-b", &ws);
@@ -282,7 +282,7 @@ fn sweep_migrating_converges_both_ways() {
     rec2.status = agent_status::MIGRATING.to_string();
     store.upsert(&rec2).unwrap();
 
-    // 案例三（R7）：migrating + 意图日志在场、无墓碑 = commit 已发出
+    // 案例三：migrating + 意图日志在场、无墓碑 = commit 已发出
     // （B 端可能已激活）→ 冻结转人工，绝不自动回滚。
     let frozen_id = "ffffffffffffffffffffffffffffffff";
     let mut rec3 = selfbuilt_record(frozen_id, "node-a");
@@ -345,7 +345,7 @@ fn sweep_migrating_converges_both_ways() {
 }
 
 // ---------------------------------------------------------------------------
-// A 端编排失败分轨（2026-10-24 N2 根修回归锁）：post-ACK 失败保持
+// A 端编排失败分轨（根修回归锁）：post-ACK 失败保持
 // migrating 等墓碑收敛；pre-commit 失败照旧回滚 active。transport 用本地
 // 假实现——push_dir 走 copy_dir_recursive、call 直调真 commit handler，
 // 除网络层外全链路真实（B 端落位/改写/落库都是真代码）。
@@ -401,7 +401,7 @@ impl super::MigrateTransport for LocalTransport {
     }
 }
 
-/// N2 回归锁（外评 2026-10-23 探针反演）：commit ACK 已达（B 端真活）后
+/// 回归锁（外评 探针反演）：commit ACK 已达（B 端真活）后
 /// 本地 store.remove 失败（SQLite trigger 注入 RAISE(ABORT)）——修复前外
 /// 层一视同仁回滚 active = 同 uuid 双活且 sweep 失明（ACTIVE 不在收敛射
 /// 程）；修复后错误带 post-ACK 标记、源端**保持 migrating** + 墓碑在场，
@@ -484,7 +484,7 @@ async fn migrate_post_ack_delete_failure_stays_migrating_and_sweep_converges() {
     assert!(!tombstone_exists(&source_ws, AGENT_ID), "墓碑已清");
 }
 
-/// pre-commit 失败（push_dir 报错）照旧回滚 active——N2 分轨只作用于
+/// pre-commit 失败（push_dir 报错）照旧回滚 active—— 分轨只作用于
 /// post-ACK，此钉子防「分轨扩大化」把可安全回滚的失败也卡在 migrating。
 #[tokio::test]
 async fn migrate_pre_commit_failure_rolls_back_active() {
@@ -568,12 +568,12 @@ fn vault_alias_mapping_strips_prefix() {
 }
 
 // ---------------------------------------------------------------------------
-// R7（2026-10-24 复核，外评探针反演）：post-ACK「墓碑全败 + 记录删除全败」
+// （复核，外评探针反演）：post-ACK「墓碑全败 + 记录删除全败」
 // 复合失败——修复前 sweep 按无墓碑回滚 active = 同 uuid 双活且永久失明；
 // 修复后 sweep 冻结 migrating 转人工，绝不自动回滚。
 // ---------------------------------------------------------------------------
 
-/// R7 回归锁：墓碑路径占位成目录（全部写墓碑失败）+ 源库 DELETE trigger
+/// 回归锁：墓碑路径占位成目录（全部写墓碑失败）+ 源库 DELETE trigger
 /// （store.remove 失败）→ post-ACK 复合失败；解除注入后 sweep 必须**冻结**
 /// （migrating 保持 + frozen_migrating 上报），绝不回滚 active；人工落墓碑
 /// 后 sweep 收敛删记录。
@@ -624,7 +624,7 @@ async fn migrate_post_ack_marker_and_delete_failure_sweep_freezes_not_reactivate
         .await
         .unwrap_err();
 
-    // B 端已激活、A 端保持 migrating（N2 语义），墓碑缺席 + 意图日志在场。
+    // B 端已激活、A 端保持 migrating（语义），墓碑缺席 + 意图日志在场。
     assert!(error.starts_with(super::POST_ACK_ERR_MARK), "{error}");
     assert_eq!(
         source_store.get(AGENT_ID).unwrap().unwrap().status,
@@ -679,7 +679,7 @@ async fn migrate_post_ack_marker_and_delete_failure_sweep_freezes_not_reactivate
     assert!(!journal_exists(&source_ws, AGENT_ID), "收敛时清意图日志");
 }
 
-/// R7 对照臂：意图日志在场、人工确认 B 未收到 commit → 删日志 → sweep
+/// 对照臂：意图日志在场、人工确认 B 未收到 commit → 删日志 → sweep
 /// 回滚 active 照常服务（三分支的人工路径 B）。
 #[test]
 fn sweep_journal_removed_by_human_then_reactivates() {
@@ -725,10 +725,10 @@ fn sweep_journal_removed_by_human_then_reactivates() {
 }
 
 // ---------------------------------------------------------------------------
-// R79 残余面（2026-10-24 台账复核）：commit call **模糊类**失败（超时/取消/
+// 残余面（台账复核）：commit call **模糊类**失败（超时/取消/
 // 连接中断——请求可能已达 B 且被处理）——修复前 ⑫ 删意图日志 + 回滚 active，
 // B 端恰好已激活时 = 同 uuid 双活且 sweep 永久失明（v1 诚实窗口）；修复后
-// 标记 COMMIT_ACK_LOST_MARK 走冻结轨（与 R7 同机制）。明确拒绝/确定未发出
+// 标记 COMMIT_ACK_LOST_MARK 走冻结轨（与 同机制）。明确拒绝/确定未发出
 // 类照旧回滚（防冻结轨扩大化）。
 // ---------------------------------------------------------------------------
 

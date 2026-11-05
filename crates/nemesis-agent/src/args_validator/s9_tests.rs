@@ -3,7 +3,7 @@
 //!   violations 里含 UnknownField 且 schema 有非空 properties。
 //!   经由 `check()` 走歧义 typo 碰撞（两个未知字段最近邻同一目标 →
 //!   try_autofix 返 None → Invalid 路径）触达，最贴近生产调用链。
-//! - 105：`serde_json:to_string(&fixed)` 失败分支为结构性不可达
+//! - 105：`serde_json::to_string(&fixed)` 失败分支为结构性不可达
 //!   （合法 Value 序列化永不失败，见报告豁免组）。
 
 use super::*;

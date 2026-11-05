@@ -114,7 +114,7 @@ fn prompt_renderer_covers_every_type() {
 
 #[test]
 fn honest_failure_and_credential_contract_text_is_pinned() {
-    // 2026-09-23 计划 A/B/C：契约与凭据引用进能力表，防漂移钉扎——
+    // 计划 A/B/C：契约与凭据引用进能力表，防漂移钉扎——
     // 这些文案是生成器的第一道防线，删除/改写必须同步本测试。
     let caps = crate::capabilities::capabilities();
     let llm = caps

@@ -2,38 +2,38 @@
 //!
 //! 本 crate 是签名验证体系的核心：
 //! - **lib**：签发/验证原语 + 数据结构（codec / envelope / crypto / cert + CRL / SignedResponse）
-//! - **cdylib**（T3 加）：C ABI 导出 `nv_*`，产物 `nemesis_verify.dll` / `libnemesis_verify.so` / `.dylib`
+//! - **cdylib**（加）：C ABI 导出 `nv_*`，产物 `nemesis_verify.dll` / `libnemesis_verify.so` / `.dylib`
 //!
 //! # v3 vs v1/v2（revoke-common）
 //! - envelope **去 AEAD**（明文 body，像 PKCS#7），加 `pubkey` + `cert_chain`（**公钥随签名走**）
 //! - 验证用 envelope 自带 pubkey 验签（取代"内置公钥验"），链到内置根公钥确认可信
 //! - 破坏性升级，不兼容 v1/v2；旧签名全部重签
 //!
-//! 详见 `docs/PLAN/2026-07-20_signature-strength-hardening.md`。
+//! 详见 `signature-strength-hardening`。
 
-// 批1 迁移：格式解析 + content_hash（v3 逻辑不变）
+// 迁移：格式解析 + content_hash（v3 逻辑不变）
 pub mod codec;
 pub mod elf;
 pub mod hex_util;
 pub mod pe;
-// 批2：v3 核心
+// v3 核心
 pub mod bundle; // 密钥分包（BundleKind 四形态 + SigningMaterial/IssuingMaterial/RootMaterial 装载即校验 + 铸叶/拆分/锚提取）
 pub mod c_abi; // C ABI 导出（cdylib 产物：nv_* 接口）
 pub mod cert; // 证书 + 链验证（envelope.cert_chain 的解析与链到根验证）
 pub mod crypto; // v4：ECDSA P-256 + SHA-256（RFC 6979 确定式签名）
 pub mod envelope; // v3：明文 body + pubkey + cert_chain
 pub mod keygen; // 密钥体系生成（根/CA/发行方 + 证书链 + 存加载）
-pub mod revocation; // P2a：DLL 联网查 CRL（数据模式 + 根验签 + 缓存 + 四维度查）
+pub mod revocation; // DLL 联网查 CRL（数据模式 + 根验签 + 缓存 + 四维度查）
 pub mod verify; // 验证流程（v4 Authenticode 管线：链到根锚 + EKU + digest + 签名 + 吊销）
 pub mod view; // 查看接口（离线展示签名 + 证书链，不下结论）
 
-// ===== 根锚注入（S4-2 定稿：单一真相源；c_abi 与未来宿主集成同源消费）=====
+// ===== 根锚注入（定稿：单一权威定义；c_abi 与未来宿主集成同源消费）=====
 
 /// 编译期固化根锚 hex（build 时 `NEMESIS_BUILD_ROOT_ANCHOR` 注入）。
 ///
-/// **值形态（S4-2 定稿）= 自签根证书 SHA-256 指纹 hex（64 字符）**——v3 的
+/// **值形态（定稿）= 自签根证书 SHA-256 指纹 hex（64 字符）**——v3 的
 /// `NEMESIS_BUILD_ROOT_PUBKEY`（公钥本体 32B/65B）作废：v4 信任终止条件 = 链
-/// 根证书 SHA-256 指纹匹配（S0-5 实测：发行锚不可作信任锚，必须自签根）。
+/// 根证书 SHA-256 指纹匹配（实测：发行锚不可作信任锚，必须自签根）。
 /// `None` = 未固化（占位，运行时 env fallback）。
 pub(crate) const BUILTIN_ROOT_ANCHOR_HEX: Option<&str> = option_env!("NEMESIS_BUILD_ROOT_ANCHOR");
 
@@ -43,7 +43,7 @@ pub(crate) const BUILTIN_ROOT_ANCHOR_HEX: Option<&str> = option_env!("NEMESIS_BU
 /// - `runtime`：运行时 env 值（部署灵活 / 测试用）。
 /// - **fail-closed**：固化值存在但非法（非 64 hex 字符）= 装配失败 → 空锚集，
 ///   **不回落 runtime**（防固化值被废后 env 顶替信任根）；双臂皆缺/非法 → 空集
-///   = 默认不可信状态（D7：一切签名 Untrusted，`nv_self_verify` 拒 -5）。
+///   = 默认不可信状态（一切签名 Untrusted，`nv_self_verify` 拒 -5）。
 pub fn resolve_root_anchors(builtin: Option<&str>, runtime: Option<&str>) -> Vec<[u8; 32]> {
     let parse = |hex: &str| hex_util::hex_decode_32(hex.trim()).ok();
     match builtin {
@@ -67,7 +67,7 @@ use anyhow::{Result, anyhow};
 use p256::ecdsa::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
-// ===== SC0：数据模型（云端吊销 / trusted_keys / 签名响应）=====
+// =====：数据模型（云端吊销 / trusted_keys / 签名响应）=====
 
 /// 吊销维度（核心四维度）。
 ///
@@ -151,7 +151,7 @@ pub fn crl_match<'a>(crl: &'a Crl, dim: RevDim, value: &str) -> Option<&'a CrlEn
         .find(|e| e.dim == dim && e.value == value)
 }
 
-// ===== SC1：根密钥签名 / 验签（云端签数据，客户端验）=====
+// =====：根密钥签名 / 验签（云端签数据，客户端验）=====
 
 /// hex 编码（本地实现，避免引 hex crate）。
 fn hex_encode(bytes: &[u8]) -> String {
@@ -206,11 +206,11 @@ pub fn verify_response<T: Serialize>(
 }
 
 #[cfg(test)]
-mod fixtures; // v4 测试夹具（S4-1：verify / c_abi / revocation 共用真链签名器，无 #[test]）
+mod fixtures; // v4 测试夹具（verify / c_abi / revocation 共用真链签名器，无 #[test]）
 #[cfg(test)]
 mod tests;
 
-/// 跨模块共享的测试串行锁（S6 覆盖率批次引入）。
+/// 跨模块共享的测试串行锁（覆盖率批次引入）。
 ///
 /// env（NEMESIS_ROOT_ANCHOR / NEMESIS_REVOCATION_URL / NEMESIS_STRICT_OFFLINE）
 /// 与全局 CRL_CACHE 是进程级可变状态：revocation / verify / c_abi / keygen 的

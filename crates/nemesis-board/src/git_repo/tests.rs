@@ -1,4 +1,4 @@
-//! git_repo 测试（P4/E1+E4）。
+//! git_repo 测试。
 //!
 //! 覆盖：幂等 init/首 commit/.gitignore 边界、工作集 commit 变更检测、
 //! HEAD 树导出（只含跟踪树）、三方合并矩阵（不同区域自动合/同行真冲突/
@@ -61,7 +61,7 @@ fn commit_count(root: &Path) -> usize {
 }
 
 // ---------------------------------------------------------------------------
-// E1：ensure_repo + commit_worktree
+// ensure_repo + commit_worktree
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -82,7 +82,7 @@ fn ensure_repo_is_idempotent_and_respects_gitignore() {
     );
     // .gitignore 自排除（publish 内容等值臂的前提）：未跟踪 + 命中自身
     // 规则 → 首 commit 不得把它带进跟踪树（否则 add_all 每次 pre-merge
-    // 落定都会把它入树，master 树 = 交付树 + .gitignore → 漂移误拒）。
+    // 落定都会把它入树，master 树 = 交付树 +.gitignore → 漂移误拒）。
     assert!(
         tree.get_path(Path::new(".gitignore")).is_err(),
         ".gitignore 必须自排除，不入跟踪树"
@@ -93,7 +93,7 @@ fn ensure_repo_is_idempotent_and_respects_gitignore() {
 
 #[test]
 fn ensure_repo_adopts_existing_files_as_initial_baseline() {
-    // B5：用户选已有目录 → 现有文件作为初始基线录入（首 commit）。
+    // 用户选已有目录 → 现有文件作为初始基线录入（首 commit）。
     let root = temp_dir("existing");
     write(&root, "docs/notes.md", "# 用户已有笔记\n");
     ensure_repo(&root).unwrap();
@@ -127,7 +127,7 @@ fn commit_worktree_detects_changes_and_skips_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// E2：HEAD 树导出
+// HEAD 树导出
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -146,7 +146,7 @@ fn export_head_tree_writes_tracked_files_only() {
 }
 
 // ---------------------------------------------------------------------------
-// E4：三方合并矩阵
+// 三方合并矩阵
 // ---------------------------------------------------------------------------
 
 /// 建基线 commit → 返回 (root, baseline_oid)。
@@ -256,7 +256,7 @@ fn merge_same_line_conflict_detected_without_mutation() {
 
 #[test]
 fn merge_binary_conflict_flagged() {
-    // 二进制基线（含 NUL）；双方写不同字节 → 冲突 + binary 标记（E5）。
+    // 二进制基线（含 NUL）；双方写不同字节 → 冲突 + binary 标记。
     let root = seeded_repo("binary");
     let blob_a: Vec<u8> = vec![0x89, 0x50, 0x4E, 0x47, 0x00, 0x01];
     std::fs::create_dir_all(root.join("assets")).unwrap();
@@ -411,7 +411,7 @@ fn merge_against_stale_baseline_still_works() {
 // 路径自防御
 // ---------------------------------------------------------------------------
 
-/// NB-54 复原（压测⑤）：变更集带工作区前缀 `board-projects/<项目名>/…` 时
+/// 复原（压测⑤）：变更集带工作区前缀 `board-projects/<项目名>/…` 时
 /// 合并落点必须是项目根相对（剥前缀），不得双重嵌套。
 #[test]
 fn merge_strips_workspace_prefix_from_changeset_paths() {
@@ -459,7 +459,7 @@ fn normalize_repo_path_matrix() {
     let strip = |p: &str| normalize_repo_path(root, p);
     assert_eq!(strip("board-projects/demo/周报模板.md"), "周报模板.md");
     assert_eq!(strip("board-projects/demo/docs/plan.md"), "docs/plan.md");
-    // 正确项目相对路径不动（NB-62 对照组）。
+    // 正确项目相对路径不动（对照组）。
     assert_eq!(strip("docs/plan.md"), "docs/plan.md");
     // 同首段但项目名不同（别的项目的路径）不动——宁嵌套不误剥。
     assert_eq!(
@@ -481,7 +481,7 @@ fn normalize_repo_path_matrix() {
         normalize_repo_path(ext, "board-projects/myproj/a.md"),
         "a.md"
     );
-    // 但第二段不等档案目录名（别的项目路径）不剥。
+    // 但不等档案目录名（别的项目路径）不剥。
     assert_eq!(
         normalize_repo_path(ext, "board-projects/other/a.md"),
         "board-projects/other/a.md"
@@ -533,7 +533,7 @@ fn looks_binary_matches_git_heuristic() {
 }
 
 // ---------------------------------------------------------------------------
-// P5/F5：commit_resolution（AI 硬解落盘单一出口）
+// /：commit_resolution（AI 硬解落盘单一出口）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -587,7 +587,7 @@ fn commit_resolution_rejects_traversal_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// 评审证据：commit_changed_files（F-U3-1 根修）
+// 评审证据：commit_changed_files（F- 根修）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -649,7 +649,7 @@ fn commit_changed_files_rejects_bad_oid_and_missing_commit() {
 }
 
 // ---------------------------------------------------------------------------
-// F-U3-7：commit_blob_text（评审证据段内容注入的数据源）
+// F-：commit_blob_text（评审证据段内容注入的数据源）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -683,7 +683,7 @@ fn commit_blob_text_reads_text_and_degrades_honestly() {
 }
 
 // ---------------------------------------------------------------------------
-// P1 外循环：clone_repo 幂等 + 钉 HEAD；push_branch 快进与非快进
+// 外循环：clone_repo 幂等 + 钉 HEAD；push_branch 快进与非快进
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -789,14 +789,14 @@ fn push_branch_missing_local_branch_is_honest_error() {
         None,
     )
     .unwrap_err();
-    // libgit2 文案：`src refspec ... does not match any`——诚实透传即可，
+    // libgit2 文案：`src refspec... does not match any`——诚实透传即可，
     // 断言只钉「失败 + 原因可读」。
     assert!(err.contains("推送"), "{err}");
     assert!(!err.trim().ends_with("失败"), "{err}");
 }
 
 // ---------------------------------------------------------------------------
-// P3 外循环：branch_at_head（第三臂——交付已并入副本，发布分支直取 HEAD）
+// 外循环：branch_at_head（第三臂——交付已并入副本，发布分支直取 HEAD）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -835,7 +835,7 @@ fn branch_at_head_unborn_head_is_err() {
 }
 
 // ---------------------------------------------------------------------------
-// P3 外循环：branch_tree_if_exists（分支指向查询——发布重试幂等判断用）
+// 外循环：branch_tree_if_exists（分支指向查询——发布重试幂等判断用）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -870,7 +870,7 @@ fn branch_tree_if_exists_present_reports_commit_and_tree() {
 }
 
 // ---------------------------------------------------------------------------
-// P3 外循环：apply_patch_new_branch（patch → 副本内交付分支，工作区回原位）
+// 外循环：apply_patch_new_branch（patch → 副本内交付分支，工作区回原位）
 // ---------------------------------------------------------------------------
 
 /// 从「已修改的工作区」产 unified diff 文本（复刻 worker 侧交付捕获形态：
@@ -976,7 +976,7 @@ fn apply_patch_new_branch_existing_same_content_reuses_commit() {
     let patch = workdir_patch(&root);
     reset_worktree_to_head(&root);
     let first = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
-    // F1 续作：同基线 + 同内容 → 幂等复用既有 commit（push/PR 阶段失败后
+    // 续作：同基线 + 同内容 → 幂等复用既有 commit（push/PR 阶段失败后
     // 重试不被自己上次的分支挡死）。
     let again = apply_patch_new_branch(&root, "nemesis/task-x", &patch, "m").unwrap();
     assert_eq!(again, first, "同内容重放必须复用同一 commit，不新建");
@@ -1128,8 +1128,8 @@ fn reset_worktree_to_head(root: &Path) {
         .unwrap();
 }
 
-/// 克隆产物工作树必须与 HEAD blob 字节一致（回归锁：2026-11-01 T1 全文件
-/// 伪冲突实录——clone 自带的 checkout 先于 autocrlf 钉落执行，local config
+/// 克隆产物工作树必须与 HEAD blob 字节一致（回归锁： 全文件
+/// 伪冲突案例——clone 自带的 checkout 先于 autocrlf 钉落执行，local config
 /// 尚无键时 libgit2 落到系统级配置（本机 autocrlf=true），LF blob 被
 /// smudge 成 CRLF 工作树；合并三方 base(blob LF) 与 ours/theirs(工作树
 /// CRLF) 行尾不同源，未触及行全部伪冲突）。修复 = 钉完 config 对 HEAD
@@ -1164,7 +1164,7 @@ fn clone_worktree_matches_blob_bytes_no_smudge() {
 }
 
 // ---------------------------------------------------------------------------
-// sync_repo_remote（2026-11-04 jira-gitlab-flow 批：确定性 clone-or-pull）
+// sync_repo_remote（jira-gitlab-flow 批：确定性 clone-or-pull）
 // ---------------------------------------------------------------------------
 
 /// bare 推送靶（libgit2 本地传输不支持推非 bare，同 push_branch 测试纪律）。
@@ -1306,8 +1306,8 @@ fn sync_repo_clones_into_scaffolded_dir_preserving_files() {
     assert!(dest.join("docs/review").is_dir());
     assert!(dest.join("artifacts").is_dir());
     assert!(dest.join("records").is_dir());
-    // 仓库内容 + 字节契约 + 洁净态（scaffold .gitignore 恰好豁免投影件，
-    // artifacts/ 空目录对 git 不可见）。
+    // 仓库内容 + 字节契约 + 洁净态（scaffold.gitignore 恰好豁免投影件，
+    // artifacts/ 空目录对 git 不可）。
     assert_eq!(read(&dest, "src/main.rs"), read(&origin, "src/main.rs"));
     let repo = Repository::open(&dest).unwrap();
     assert_eq!(repo.config().unwrap().get_bool("core.autocrlf"), Ok(false));
@@ -1483,11 +1483,11 @@ fn sync_repo_dirty_workdir_rejected_with_sample() {
 #[test]
 fn sync_repo_swaps_stale_origin_to_declared_url() {
     // 步骤 url 是单一意图表达：既有 origin 指向别处（形态切换/迁移）必须
-    // 改写后 fetch——回归锁（2026-11-04 repo_sync 沿用旧 origin 缺陷）。
+    // 改写后 fetch——回归锁（repo_sync 沿用旧 origin 缺陷）。
     let (origin_a, bare_a) = bare_origin("swap-a");
     // B 直接裸克隆 A：两处 bare_origin 各自 ensure_repo 的首 commit 带
-    // Signature::now 墙钟（秒级粒度），两次建仓跨秒则 seed commit id 不同、
-    // A/B 历史分叉 → FF 判定误落 Merged（2026-11-05 CI coverage 实录：
+    // Signature:now 墙钟（秒级粒度），两次建仓跨秒则 seed commit id 不同、
+    // A/B 历史分叉 → FF 判定误落 Merged（CI coverage
     // 「B 的 commit 应快进进来 left: Merged right: FastForward」）。裸克隆
     // 保证 seed commit id 逐位一致，测试不再吃建仓速度竞态。
     let bare_b = temp_dir("sync-swap-b-bare");
@@ -1553,7 +1553,7 @@ fn sync_repo_swaps_stale_origin_to_declared_url() {
 }
 
 // ---------------------------------------------------------------------------
-// Gerrit 发布支撑原语（2026-11-04 SC 套件批）：Change-Id 派生 + 交付树反查
+// Gerrit 发布支撑原语（SC 套件批）：Change-Id 派生 + 交付树反查
 // + 单提交 atop（fast / 三方合并 / 冲突 / no-diff / 检出守卫 / 缺目标分支）
 // ---------------------------------------------------------------------------
 

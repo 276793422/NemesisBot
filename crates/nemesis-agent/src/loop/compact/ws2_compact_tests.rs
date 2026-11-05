@@ -1,9 +1,9 @@
 //! compact 域测试。
 //!
-//! -：token 预算尾巴（`token_budget_boundary` + fresh-read 配置 +
+//! -token 预算尾巴（`token_budget_boundary` + fresh-read 配置 +
 //!   `maybe_update_summary` 接线 + 0=旧按条数回退 + tool 对安全）；
-//! -：六节 schema 指令/解析/回退 + UPDATE 迭代语义（前缀形状不破）；
-//! -：文件操作台账聚合/注入/累积/上限。
+//! -六节 schema 指令/解析/回退 + UPDATE 迭代语义（前缀形状不破）；
+//! -文件操作台账聚合/注入/累积/上限。
 //!
 //! 独立测试文件（生产文件只保留声明行，仓库 2026-08-25 纪律）。本文件自建
 //! 捕获型 mock provider 与 turn 构造器——`loop/tests.rs` 的同名辅助是模块
@@ -200,7 +200,7 @@ fn p5_fresh_read_config_default_and_override() {
     // 改盘即生效（无缓存/无重启）。
     std::fs::write(
         &cfg_path,
-        // ：条目带 context_window=100——窗口已知才不禁自动压缩。
+        // 条目带 context_window=100——窗口已知才不禁自动压缩。
         serde_json::json!({
             "agents": {"defaults": {"compact_keep_recent_tokens": 0}},
             "model_list": [{"model_name": "test-model", "context_window": 100}]
@@ -219,7 +219,7 @@ async fn p5_zero_budget_falls_back_to_count_semantics() {
         std::env::temp_dir().join(format!("nemesis_test_ws2_zero_{}.json", std::process::id()));
     std::fs::write(
         &cfg_path,
-        // ：条目带 context_window=100——窗口已知才不禁自动压缩。
+        // 条目带 context_window=100——窗口已知才不禁自动压缩。
         serde_json::json!({
             "agents": {"defaults": {"compact_keep_recent_tokens": 0}},
             "model_list": [{"model_name": "test-model", "context_window": 100}]
@@ -274,7 +274,7 @@ async fn p5_maybe_update_summary_token_budget_tail() {
     ));
     std::fs::write(
         &cfg_path,
-        // ：条目带 context_window=100——窗口已知才不禁自动压缩。
+        // 条目带 context_window=100——窗口已知才不禁自动压缩。
         serde_json::json!({
             "agents": {"defaults": {"compact_keep_recent_tokens": 60}},
             "model_list": [{"model_name": "test-model", "context_window": 100}]

@@ -1,4 +1,4 @@
-//! W2c batch tests (Phase 3 / quality-hardening goal).
+//! batch tests (/ quality-hardening goal).
 //!
 //! Targets vector/embedding.rs try_load_plugin error staging not covered by
 //! tests.rs (which only covers the empty / nonexistent plugin-path guards):

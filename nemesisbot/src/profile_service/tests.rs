@@ -1,5 +1,5 @@
 //! profile_service 单测：collect_user_messages_after 的时间序与证据窗边界
-//! （BUG-20261025-21：此前按文件序返回，反思通道「近期」采样取到的是
+//! （此前按文件序返回，反思通道「近期」采样取到的是
 //! session key 字典序尾部的会话尾巴，不是时间上最新的消息）。
 
 use super::*;
@@ -68,7 +68,7 @@ fn collect_respects_window_start_boundary() {
             ("2026-10-25T09:00:00Z", "窗外"),
         ],
     );
-    // 2026-10-25T10:00:00Z = 1792922400000 ms。
+    // 25T10:00:00Z = 1792922400000 ms。
     let out = collect_user_messages_after(ws, 1_792_922_400_000).unwrap();
     assert_eq!(out, vec!["窗内"]);
     // 窗起点 = 窗外消息自身的时间戳（09:00Z）→ 恰好含（>= 语义），时间升序。

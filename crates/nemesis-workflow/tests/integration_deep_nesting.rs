@@ -1,4 +1,4 @@
-//! 1c-G6 integration: deep nesting across multiple sub_workflow layers.
+//! 1c integration: deep nesting across multiple sub_workflow layers.
 //!
 //! Verifies that nesting works correctly when workflows chain through several
 //! sub_workflow nodes, with focus on the invariants the spike tests promised

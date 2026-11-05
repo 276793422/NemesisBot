@@ -7,7 +7,7 @@
 // `default = [...]` 数组分叉，「TUI 默认全量」与 `cargo build` 默认全量
 // 两个入口产出不同功能面。
 //
-// 实录：vm-display 首提（ee7604d9，2026-10-21）清单 default = true，
+// 案例：vm-display 首提（ee7604d9，2026-10-21）清单 default = true，
 // Cargo default 数组从未收录——check 只对账 id 集合（STALE/MISSING）故
 // 恒绿，TUI 从零保存的 .config 比 cargo 默认构建多出 VNC 显示通道；且
 // `init` 的 scaffold 按 Cargo 实况刷新 default，跑一次 init 会把

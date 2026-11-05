@@ -21,7 +21,7 @@ pub mod utils;
 pub mod workflow;
 
 // Re-export commonly used constants
-// （BUG-20261029-184：零消费死常量已删除；运行参数唯一真相源在各子系统，
+// （零消费死常量已删除；运行参数唯一依据在各子系统，
 // 见 constants.rs 模块注释。）
 pub use constants::{
     BUS_CHANNEL_CAPACITY, CLEANUP_INTERVAL_SECS, CLUSTER_CONTINUATION_PREFIX, INTERNAL_CHANNELS,

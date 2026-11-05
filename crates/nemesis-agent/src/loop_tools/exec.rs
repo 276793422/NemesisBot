@@ -63,7 +63,7 @@ impl Tool for ExecTool {
         // Workspace restriction check
         if self.restrict {
             // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
-            // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
+            // 归一化（nemesis-path 统一定义）——组件级比较防前缀误判，
             // workspace 侧归一化防 8.3 短名/大小写失配。
             let target = if Path::new(cwd).is_absolute() {
                 PathBuf::from(cwd)
@@ -80,13 +80,13 @@ impl Tool for ExecTool {
             }
         }
 
-        // ：stdout/stderr 改为显式 piped——超时收尸后要从管道
+        // stdout/stderr 改为显式 piped——超时收尸后要从管道
         // 缓冲区读回进程被杀前已产生的残余输出（旧 `cmd.output()` 的管道随
         // future 取消一起丢弃，超时即全丢）。stdin 保持 null（见下）。
         // 平台 shell 形态抽到 `make_piped_shell_command`（与 run_checks
-        // 共用单一真相源）。
+        // 共用同一定义）。
         let mut cmd = make_piped_shell_command(command);
-        // ：workspace-dacl 受限模式下 piped→文件重定向
+        // workspace-dacl 受限模式下 piped→文件重定向
         // （std 匿名管道创建在受限令牌下必死，见 ShellOutputCapture 注释）。
         let mut capture = ShellOutputCapture::current()
             .map_err(|e| format!("Failed to prepare executor output capture: {e}"))?;
@@ -200,13 +200,13 @@ impl Tool for ExecTool {
     }
 }
 
-/// ：exec 超时解析——默认 30s、上限 600s（对齐
+/// exec 超时解析——默认 30s、上限 600s（对齐
 /// nemesis-tools shell.rs 的 cap）。模型传 999999 之类不再被照单全收。
 pub(super) fn exec_timeout_secs(v: Option<u64>) -> u64 {
     v.unwrap_or(30).min(600)
 }
 
-/// ExecTool 输出成败判定的**单一真相源**（协议消费者共用）：三种失败
+/// ExecTool 输出成败判定的**统一定义**（协议消费者共用）：三种失败
 /// 形态——非零退出 = `Ok("Exit code: N\n…")`；超时收尸 =
 /// `Ok("Command timed out …")`；进程无法启动 = `Err`。成功路径 = 裸
 /// stdout 或 `(no output)`。纪律证伪钩子（discipline）按此判定 pass/fail
@@ -215,7 +215,7 @@ pub(crate) fn exec_output_passed(output: &str) -> bool {
     !output.starts_with("Exit code:") && !output.starts_with("Command timed out")
 }
 
-/// ：workspace-dacl 受限令牌下的 shell 输出捕获形态。
+/// workspace-dacl 受限令牌下的 shell 输出捕获形态。
 ///
 /// **为什么存在**：std 匿名管道在 Windows 上是命名管道实现（
 /// NtCreateNamedPipeFile）——受限令牌下创建 = 对 `\Device\NamedPipe` 目录
@@ -290,7 +290,7 @@ impl ShellOutputCapture {
         }
     }
 
-    /// [`apply_to`] 的 `std:process:Command` 形态（GitTool 等同步 spawn
+    /// [`apply_to`] 的 `std::process:Command` 形态（GitTool 等同步 spawn
     /// 点用）——同一捕获文件、同一读回路径，形态差异只在 Command 类型。
     pub(super) fn apply_to_std(&mut self, cmd: &mut std::process::Command) {
         if let Some(f) = self.out_file.take() {
@@ -333,7 +333,7 @@ impl ShellOutputCapture {
 }
 
 /// exec / exec_async / run_checks / run_script / git 五处共用的 console
-/// creation flags 决策**单一真相源**（建立； 黑窗
+/// creation flags 决策**统一定义**（建立；黑窗
 /// 修复收编默认臂）。
 ///
 /// **默认臂 = `Some(CREATE_NO_WINDOW)`（黑窗根修）**：release 版 gateway 是
@@ -388,7 +388,7 @@ async fn read_shell_output(
     }
 }
 
-/// ：平台 shell 形态的单一真相源——ExecTool 与 RunChecksTool
+/// 平台 shell 形态的统一定义——ExecTool 与 RunChecksTool
 /// 共用。逐字保留 语义：Windows `cmd /C` + raw_arg（.arg() 的自动加引号
 /// 会搅乱 cmd.exe 自身的引号处理）；stdin null（交互式命令立即 EOF 不挂满
 /// 超时）；stdout/stderr piped；kill_on_drop（挂死命令不留孤儿）。
@@ -432,7 +432,7 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
-        // 树杀前提（与 background_registry:build_platform_shell
+        // 树杀前提（与 background_registry::build_platform_shell
         // 同款）：子进程自成一进程组（pgid == pid），超时收尸的
         // `tree_kill` 才能用 `kill -TERM -- -PGID` 一锅端 shell 的孙进程
         // （cargo/rustc 等），否则进程组号不存在、树杀静默落空。
@@ -911,7 +911,7 @@ async fn run_one_stage_guarded(
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    // ：workspace-dacl 受限模式下 piped→文件重定向（同 exec）。
+    // workspace-dacl 受限模式下 piped→文件重定向（同 exec）。
     let mut capture = match ShellOutputCapture::current() {
         Ok(c) => c,
         Err(e) => {
@@ -991,7 +991,7 @@ async fn run_one_stage_guarded(
 /// separation is enabled it runs in the executor subprocess (Layer 1) or the
 /// Sandboxie box (Layer 2) — identical containment to `exec`. The workflow
 /// `script` node delegates to this tool to gain sandbox awareness: the spawn is
-/// byte-identical to `ScriptNodeExecutor`'s direct spawn (`Command:new(interp).
+/// byte-identical to `ScriptNodeExecutor`'s direct spawn (`Command::new(interp).
 /// arg(flag).arg(script)`), so enabling the sandbox changes only *where* the
 /// script runs, not *how*.
 ///
@@ -1008,7 +1008,7 @@ pub struct RunScriptTool {
 
 impl RunScriptTool {
     /// Create a new run_script tool. `workspace` is the default cwd; `restrict`
-    /// confines cwd to the workspace (mirrors [`ExecTool:new`]).
+    /// confines cwd to the workspace (mirrors [`ExecTool::new`]).
     pub fn new(workspace: &str, restrict: bool) -> Self {
         Self {
             workspace: workspace.to_string(),
@@ -1077,7 +1077,7 @@ impl Tool for RunScriptTool {
         // Workspace restriction (mirrors ExecTool).
         if self.restrict {
             // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
-            // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
+            // 归一化（nemesis-path 统一定义）——组件级比较防前缀误判，
             // workspace 侧归一化防 8.3 短名/大小写失配。
             let target = if Path::new(cwd).is_absolute() {
                 PathBuf::from(cwd)
@@ -1099,7 +1099,7 @@ impl Tool for RunScriptTool {
         // children don't survive the timeout.
         // Windows：裸 "bash"/"sh" 经 PATH 恒命中 System32 的 WSL launcher
         // （feature 启用但无发行版 = exit 1 空壳， CI 实证）→
-        // 解析到 Git/MSYS2 的真 bash。单一真相源 nemesis-tools:shell。
+        // 解析到 Git/MSYS2 的真 bash。统一定义 nemesis-tools::shell。
         let interpreter = nemesis_tools::shell::resolve_posix_shell_path(interpreter);
         let mut cmd = tokio::process::Command::new(&interpreter);
         if !flag.is_empty() {
@@ -1122,7 +1122,7 @@ impl Tool for RunScriptTool {
         {
             cmd.process_group(0);
         }
-        // console flags 单一真相源（黑窗根修后默认臂即
+        // console flags 统一定义（黑窗根修后默认臂即
         // CREATE_NO_WINDOW，此前的普通模式硬编码分叉收回——语义不变）。
         // workspace-dacl 受限模式下 CREATE_NO_WINDOW 的隐藏 console 也是新
         // 分配（\Device\ConDrv 写类访问）必死 0xC0000142（token_tests
@@ -1134,7 +1134,7 @@ impl Tool for RunScriptTool {
             }
         }
 
-        // ：workspace-dacl 受限模式下 output() 的隐式 piped
+        // workspace-dacl 受限模式下 output() 的隐式 piped
         // 必死（std 匿名管道创建受限令牌下被拒）→ spawn+wait+文件读回形态，
         // 结果契约（{stdout, stderr, exit_code} JSON）不变。
         let mut capture = ShellOutputCapture::current()
@@ -1298,7 +1298,7 @@ impl Tool for AsyncExecTool {
         // Workspace restriction check
         if self.restrict {
             // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
-            // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
+            // 归一化（nemesis-path 统一定义）——组件级比较防前缀误判，
             // workspace 侧归一化防 8.3 短名/大小写失配。
             let target = if Path::new(cwd).is_absolute() {
                 PathBuf::from(cwd)
@@ -1330,7 +1330,7 @@ impl Tool for AsyncExecTool {
                 c.arg("-c").arg(command);
                 c
             };
-            // ：workspace-dacl 受限模式下 std piped 必死
+            // workspace-dacl 受限模式下 std piped 必死
             //（ShellOutputCapture 注释）；本工具本就不读输出 → 直接 null。
             c.current_dir(cwd);
             // console 治理与五工具同源（黑窗根修：普通模式默认臂

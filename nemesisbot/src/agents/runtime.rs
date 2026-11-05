@@ -1,39 +1,39 @@
-//! P3 T4：常驻执行体监督器（AgentRuntimeSupervisor）。
+//! 常驻执行体监督器（AgentRuntimeSupervisor）。
 //!
 //! per-agent 长驻子进程：每个 agent id 一个 executor 角色的 `nemesisbot`
 //! 子进程（[`NEMESISBOT_EXECUTOR_AGENT_ID`] 标识），跨工具调用存活；home
 //! 即状态（journal / 配置 / 浏览器 profile 全落 agent home），sleep = 进程
 //! 退出（状态已落盘），wake / 下次 execute = 重新 spawn。
 //!
-//! 隔离纪律（P3 ①）：spawn 用 `env_clear()` + OS 运行时基线白名单
-//! （[`nemesis_agent::remote_executor_tool::filter_env_allowlist`]，剥离
+//! 隔离纪律（①）：spawn 用 `env_clear()` + OS 运行时基线白名单
+//! （[`nemesis_agent::remote_executor_tool:filter_env_allowlist`]，剥离
 //! 宿主凭据 / token / NEMESISBOT_*）+ home 族重定向（HOME/USERPROFILE/
 //! APPDATA/… 全指 agent home）——子进程内 `$HOME` 即 agent home，宿主
 //! 凭据不可见。
 //!
-//! 盒分支（P3 ②，`sandbox` feature + Windows）：Sandboxie 引擎就绪时子进程
+//! 盒分支（②，`sandbox` feature + Windows）：Sandboxie 引擎就绪时子进程
 //! 经 `Start.exe /box:NemesisAgent_<id>` 进 per-agent 常驻盒（transport 换
 //! 具名管道，journal / 浏览器 profile 走 OpenFilePath 写穿透）；引擎未就绪
 //! 退化纯 stdio（⑥ 兼容回退）。非 Windows：`executor.sandbox=true` 时挂
 //! `NEMESISBOT_EXECUTOR_SANDBOX` 标记，子进程 exec_worker 启动自装
-//! landlock/bwrap（U11 与 per-call 同源语义，stdio 传输不变）。
+//! landlock/bwrap（与 per-call 同源语义，stdio 传输不变）。
 //!
-//! 幂等纪律（P3 ⑤，T2 journal 消费方 + R2 两相账）：每次调用生成新
+//! 幂等纪律（⑤， journal 消费方 + 两相账）：每次调用生成新
 //! call_id（v2 协议行）；子进程死亡（Eof）时**一次**重建会话并**原样
 //! 重发**同 call_id 请求——裁决在子进程两相账：已完成回缓存结果
 //! （at-most-once）；未决意图属只读白名单（read_file/list_dir/grep）→
 //! 安全重执行；其余（有副作用）→ 回「结果未知」诚实错误（不盲重试，
 //! 重试权交还模型以新 call_id 显式发起）。
 //!
-//! 槽位看护（T9）：watchdog（15s tick）发现死槽 → 清理 → 按同 exec_root
+//! 槽位看护：watchdog（15s tick）发现死槽 → 清理 → 按同 exec_root
 //! 自动重拉（home 即状态，journal/profile 从盘回载）；连续失败超
 //! [`MAX_AUTO_RELAUNCH`] 熔断，一次成功 execute/wake 复位预算。idle 到点
 //! 自动睡眠**不重拉**（有意的停）；sleep（显式）同理——睡着的槽已离开
 //! map，watchdog 看不见它，不会误拉。
 //!
-//! 失败分型（T7 回落判据）：[`SupervisorError::Unavailable`] = 常驻路径
+//! 失败分型（回落判据）：[`SupervisorError::Unavailable`] = 常驻路径
 //! 没跑起来（config 关闭 / 满员 / spawn 失败）——此时**本调用尚未发生**，
-//! 调用方按兼容语义回落 per-call（T9）；[`SupervisorError::ToolFailed`]
+//! 调用方按兼容语义回落 per-call；[`SupervisorError::ToolFailed`]
 //! = 调用已尝试（可能已有副作用）——原样上抛，**绝不回落**（per-call 是
 //! 另一个 journal 禁用的进程，回落 = 有副作用工具的重复执行）。
 
@@ -55,11 +55,11 @@ use nemesis_path::resolve_agent_home_in_workspace;
 const FALLBACK_CALL_TIMEOUT_SECS: u64 = 600;
 
 /// 常驻执行体 spawn 的基础 env 对（stdio / 盒两条路径共用的单一装配点，
-/// 防 drift）：执行体角色 + 双根（T7：`WORKSPACE` = **exec_root**——工具
+/// 防 drift）：执行体角色 + 双根（`WORKSPACE` = **exec_root**——工具
 /// cwd 锚，main=workspace / project=项目目录 / selfbuilt=home，与
 /// `AgentLoopSpec.exec_root` 同一语义；`HOME` = agent home——隔离根，home
 /// 族重定向都锚它。两根只在 selfbuilt 形态重合）+ agent id + 常驻标记 +
-/// 浏览器身份目录（P3 ④/T6：`NEMESISBOT_BROWSER_PROFILE` 是 MCP 启动链
+/// 浏览器身份目录（④/：`NEMESISBOT_BROWSER_PROFILE` 是 MCP 启动链
 /// 注入 `--user-data-dir` 的上下文标记——gateway 进程不设它，共享 MCP
 /// server 行为零变化；仅执行体上下文内 spawn 的浏览器类 server 拿到
 /// per-agent profile）。运输层专用键由调用方按路径补（PIPE /
@@ -92,10 +92,10 @@ fn base_executor_env(
             home.join("browser-profile").to_string_lossy().into_owned(),
         ),
     ];
-    // B1（2026-10-31 项目 home 收编）：隔离根与 exec_root 分离时（项目
+    // （项目 home 收编）：隔离根与 exec_root 分离时（项目
     // 镜像形态：exec_root=项目目录、home=agents home），home 作为围栏第二
     // 根透传（`NEMESISBOT_EXECUTOR_EXTRA_ROOTS`）——子进程侧 exec_worker
-    // 解析合并，写 home 与主进程围栏行为一致（拍板⑤）。两根重合
+    // 解析合并，写 home 与主进程围栏行为一致。两根重合
     // （selfbuilt）= 不设 env，零变化；main 形态 home 本就在 workspace 内
     // （透传是冗余白名单项，不放大可写集）。join 失败（路径含平台分隔
     // 符）= 子进程围栏降级单根（拒绝方向），warn 留痕不静默。
@@ -116,12 +116,12 @@ fn base_executor_env(
 /// 优雅关停等待（sleep/watchdog：EOF 信号 → 进程自行退出 → 超时 kill）。
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
-/// 崩溃自动重拉连续预算（T9 槽位看护）：执行体「起来又立刻死」的循环
+/// 崩溃自动重拉连续预算（槽位看护）：执行体「起来又立刻死」的循环
 /// 不放大多烧 CPU——超预算后停手，等下一次显式调用（execute/wake 不受限，
 /// lazy spawn 路径与看护无关）。
 const MAX_AUTO_RELAUNCH: u32 = 3;
 
-/// 槽位实际隔离形态（R1 能力记录面）：spawn 时按当时的策略判读落定，
+/// 槽位实际隔离形态（能力记录面）：spawn 时按当时的策略判读落定，
 /// `slot_states()` 暴露 + `execute()` strict 复检消费。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum Isolation {
@@ -144,11 +144,11 @@ struct AgentSlot {
     /// 生命周期观测（watchdog/诊断日志用）；idle 判定以 last_used 为准。
     spawned_at: Instant,
     last_used: Instant,
-    /// 本槽的 exec_root（T9 槽位看护：崩溃自动重拉用——槽没了记录还在，
+    /// 本槽的 exec_root（槽位看护：崩溃自动重拉用——槽没了记录还在，
     /// 重拉无需回查 agents 表；与 spawn 时传给 [`base_executor_env`] 的
     /// 同一值）。
     exec_root: std::path::PathBuf,
-    /// spawn 时判定的实际隔离形态（R1：strict 复检 + slot_states 观测）。
+    /// spawn 时判定的实际隔离形态（strict 复检 + slot_states 观测）。
     isolation: Isolation,
 }
 
@@ -169,7 +169,7 @@ impl AgentSlot {
     /// 非 Eof 调用失败（Timeout/Io/Protocol）后的判死收尾：杀 child +
     /// 收尸，返回拼好诊断的 ToolFailed。慢工具超时后子进程仍活着，迟到
     /// 响应滞留管道——会话若继续复用（is_alive=true 不触发重建），下次
-    /// 调用读到上一次的迟到行，call_id 永久错位一格（BUG-HUNT R18 实录：
+    /// 调用读到上一次的迟到行，call_id 永久错位一格（
     /// 超时一次该执行体对后续所有调用报废）。杀掉后由既有「死进程先重
     /// 建」路径在下次调用接手（journal 两相账兜在途副作用语义）；协议级
     /// 串话同理更不该在同一会话上继续。
@@ -203,11 +203,11 @@ pub enum SupervisorError {
     /// 常驻路径不可用（config 关闭 / 满员 / spawn 失败）——调用未发生，
     /// 调用方可安全回落 per-call。
     Unavailable(String),
-    /// F1（2026-10-21 三轮复评）：身份生命周期已终结（删除/注销/代次失效）的
+    /// （三轮复评）：身份生命周期已终结（删除/注销/代次失效）的
     /// 拒绝——调用未发生**且**该身份不该再执行任何工具。与 [`Self::Unavailable`]
     /// 的本质区别：Unavailable 是「本次没执行成，换个路径可以」，本变体是
     /// 「这个身份永远不该再执行」——**禁止回落**（回落 per-call = 已删身份的
-    /// 工具照常执行，探针实证的 F1 事故面）。
+    /// 工具照常执行，探针实证的 事故面）。
     LifecycleRejected(String),
     /// 调用已尝试且失败（工具报错 / 传输失败）——可能已有副作用，绝不回落。
     ToolFailed(String),
@@ -227,13 +227,13 @@ impl std::fmt::Display for SupervisorError {
 
 impl std::error::Error for SupervisorError {}
 
-/// 槽位快照（T8 节点宣告观测面：AgentAnnouncement.state 的数据源）。
+/// 槽位快照（节点宣告观测面：AgentAnnouncement.state 的数据源）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct SlotState {
     pub agent_id: String,
     pub alive: bool,
     pub idle_secs: u64,
-    /// 实际隔离形态（R1 能力记录面：`boxed` / `userland` / `stdio`）。
+    /// 实际隔离形态（能力记录面：`boxed` / `userland` / `stdio`）。
     /// 调用中的槽取不到锁 = 观测不到，`None`（不猜——隔离形态谎报比
     /// 缺报更糟）。
     pub isolation: Option<Isolation>,
@@ -243,7 +243,7 @@ pub struct SlotState {
 /// 同 agent 的调用被槽位互斥串行（协议是严格逐请求应答）。
 pub struct AgentRuntimeSupervisor {
     exe_path: PathBuf,
-    /// 宿主 APP home（`<home>/workspace/tools/sandboxie/` 的定位锚——P3 ②
+    /// 宿主 APP home（`<home>/workspace/tools/sandboxie/` 的定位锚—— ②
     /// 常驻盒的 SandboxPaths 从这里派生，与 exec_world 通道装配同源）。
     ///
     /// `#[allow(dead_code)]`：唯一读取点在 `try_spawn_boxed_session`
@@ -254,24 +254,24 @@ pub struct AgentRuntimeSupervisor {
     home: PathBuf,
     workspace: PathBuf,
     config_path: PathBuf,
-    /// R1 隔离策略判读（spawn 决策 + execute 复检共用；磁盘现读纪律与
+    /// 隔离策略判读（spawn 决策 + execute 复检共用；磁盘现读纪律与
     /// `persistent_settings` 同源）。
     isolation: crate::exec_world::ExecutorIsolationPolicy,
     slots: Mutex<HashMap<String, std::sync::Arc<tokio::sync::Mutex<AgentSlot>>>>,
-    /// 崩溃自动重拉计数（T9 槽位看护熔断）：按 agent 连续计数，一次真实
+    /// 崩溃自动重拉计数（槽位看护熔断）：按 agent 连续计数，一次真实
     /// execute 成功或显式 wake 复位。idle/sleep 不计数（那是有意的停）。
     respawn_attempts: Mutex<HashMap<String, u32>>,
-    /// R4（2026-10-18 三方复评）：注册表存在性检查（`None` = 放行）。boot
+    /// （三方复评）：注册表存在性检查（`None` = 放行）。boot
     /// 装配闭包查 agents 表——已删除的 agent 崩溃后不得被看护循环重拉
     /// （注册删除联动常驻进程生命周期）。
     registration_check: Mutex<Option<std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>>>,
-    /// F3（二轮复评 2026-10-18）：删除在途旗标（agent_id 集合）。删除编排
+    /// （二轮复评）：删除在途旗标（agent_id 集合）。删除编排
     /// （`AgentManager::remove`）经 [`Self::evict_begin`] 置位 + 排空旧槽、
     /// 记录删除后 [`Self::evict_end`] 清位——旗标覆盖「旧槽已摘、排空等待
     /// 中」与「排空完成、记录未删」两个窗口，`get_or_spawn` 两处锁内复核
     /// 拒新，删除等待期不再造出 evict 覆盖不到的替代槽。
     evicting: Mutex<HashSet<String>>,
-    /// R3（2026-10-20 复评）：身份代次表（删除 = 身份事件，代次 +1 且单调
+    /// （复评）：身份代次表（删除 = 身份事件，代次 +1 且单调
     /// 不清零）。旗标只能拦「删除进行中」，拦不住「删除已完成」——早退检查
     /// 后、插入点前的窗口里删除完整走完（begin→end）即 ABA 复活：spawn 是
     /// 长 await，插表时旗标已清、map 已空，旧检查全部通过。插入点对代次
@@ -300,7 +300,7 @@ impl AgentRuntimeSupervisor {
         }
     }
 
-    /// R4：注入注册表存在性检查（幂等覆盖）。`None` 期间 = 放行（headless
+    /// 注入注册表存在性检查（幂等覆盖）。`None` 期间 = 放行（headless
     /// /测试形态零改动）。
     pub fn set_registration_check(
         &self,
@@ -312,7 +312,7 @@ impl AgentRuntimeSupervisor {
             .unwrap_or_else(|e| e.into_inner()) = Some(check);
     }
 
-    /// R4：注册表仍在？未装配检查闭包 = 放行（不猜不拦）。
+    /// 注册表仍在？未装配检查闭包 = 放行（不猜不拦）。
     fn registered(&self, agent_id: &str) -> bool {
         match self
             .registration_check
@@ -325,7 +325,7 @@ impl AgentRuntimeSupervisor {
         }
     }
 
-    /// R4：注册删除联动停机——停进程（拿槽锁等在途调用收尾，删除不与
+    /// 注册删除联动停机——停进程（拿槽锁等在途调用收尾，删除不与
     /// execute 并发脱管）+ 清重拉预算（watchdog 不再为已删 agent 记账）。
     /// 幂等：槽不在 = 只清预算，不报错。
     pub async fn evict(&self, agent_id: &str) {
@@ -333,7 +333,7 @@ impl AgentRuntimeSupervisor {
         self.clear_relaunch_counter(agent_id);
     }
 
-    /// F3：删除编排第一段——**代次 +1**（R3，先于旗标与排空：删除是身份
+    /// 删除编排——**代次 +1**（先于旗标与排空：删除是身份
     /// 事件，begin 与 end 之间抵达的 spawn 由旗标拦，begin 前已过早退检查、
     /// 在 spawn 中途的由插入点代次复核拦）+ 置在途旗标 + 排空既有槽。幂等：
     /// 重复 begin 只重复排空（evict 本身幂等；代次继续 +1 无害——单调）。
@@ -346,7 +346,7 @@ impl AgentRuntimeSupervisor {
         self.evict(agent_id).await;
     }
 
-    /// F3：删除编排收尾——清在途旗标（**不清代次**——R3：代次单调，删除
+    /// 删除编排收尾——清在途旗标（**不清代次**——：代次单调，删除
     /// 已完成的事实由代次表达，`get_or_spawn` 插入点复核对它裁决）。调用
     /// 时机 = 注册记录已删、loop 已停之后（`AgentManager::remove`）：此刻
     /// 起该 agent 的新请求走正常路径（解析面「agent 不存在」诚实报错），
@@ -358,7 +358,7 @@ impl AgentRuntimeSupervisor {
             .remove(agent_id);
     }
 
-    /// R3：代次 +1 并返回新值（叶锁，持锁不嵌套）。
+    /// 代次 +1 并返回新值（叶锁，持锁不嵌套）。
     fn bump_generation(&self, agent_id: &str) -> u64 {
         let mut g = self.generations.lock().unwrap_or_else(|e| e.into_inner());
         let entry = g.entry(agent_id.to_string()).or_insert(0);
@@ -366,7 +366,7 @@ impl AgentRuntimeSupervisor {
         *entry
     }
 
-    /// R3：当前代次（无记录 = 0）。
+    /// 当前代次（无记录 = 0）。
     fn generation(&self, agent_id: &str) -> u64 {
         self.generations
             .lock()
@@ -376,7 +376,7 @@ impl AgentRuntimeSupervisor {
             .unwrap_or(0)
     }
 
-    /// F3：删除在途？（get_or_spawn 两处锁内复核的判据。）
+    /// 删除在途？（get_or_spawn 两处锁内复核的判据。）
     fn is_evicting(&self, agent_id: &str) -> bool {
         self.evicting
             .lock()
@@ -385,7 +385,7 @@ impl AgentRuntimeSupervisor {
     }
 
     /// config.json **现读**（与 tier `check_config_reload` 同纪律：磁盘是
-    /// 唯一真相源，dashboard/CLI 改键即时生效，无快照表）。None = 持久化
+    /// 唯一依据，dashboard/CLI 改键即时生效，无快照表）。None = 持久化
     /// 档关闭（enabled=false / 键缺失 / 文件缺失 / 解析失败——全部归「不可
     /// 用」，不猜不兜底）。
     fn persistent_settings(&self) -> Option<ExecutorPersistentConfig> {
@@ -396,19 +396,19 @@ impl AgentRuntimeSupervisor {
         cfg.enabled.then_some(cfg)
     }
 
-    /// T7 接线判断面：持久化档当前是否开启。
+    /// 接线判断面：持久化档当前是否开启。
     pub fn persistent_enabled(&self) -> bool {
         self.persistent_settings().is_some()
     }
 
-    /// agent home（物理布局单一真相源 = nemesis-path）。
+    /// agent home（物理布局单一权威 = nemesis-path）。
     pub fn agent_home(&self, agent_id: &str) -> PathBuf {
         resolve_agent_home_in_workspace(&self.workspace, agent_id)
     }
 
     /// 在常驻执行体内执行一次工具调用。失败分型见模块文档。
     ///
-    /// `exec_root` 是本次调用的工作区锚（T7：来自 agents 表记录的
+    /// `exec_root` 是本次调用的工作区锚（来自 agents 表记录的
     /// `exec_root` 字段——main=workspace / project=项目目录 /
     /// selfbuilt=home，调用方经常驻路由闭包现查 manager 传入；spawn 时
     /// 写进子进程 `NEMESISBOT_EXECUTOR_WORKSPACE`）。同 agent 的并发调用
@@ -443,7 +443,7 @@ impl AgentRuntimeSupervisor {
                 .await
                 .map_err(|e| SupervisorError::Unavailable(format!("rebuild dead session: {e}")))?;
         }
-        // R1 strict 复检：spawn 后 strict/后端态变化（dashboard 运行中改键）
+        // strict 复检：spawn 后 strict/后端态变化（dashboard 运行中改键）
         // 可能让现槽的无隔离形态（stdio）不再满足契约——重建重判。spawn_session
         // 里 strict 预检不满足会 Err → Unavailable → per-call 回落链的 strict
         // 闸诚实拒绝；Boxed/Userland 槽满足 strict，无需重建。
@@ -479,7 +479,7 @@ impl AgentRuntimeSupervisor {
             }
             // 子进程死在调用中途：一次重建 + 原样重发同 call_id。裁决在
             // 子进程两相账：已完成回缓存（at-most-once）；未决只读白名单
-            // 重执行；未决有副作用回「结果未知」诚实错误（R2——不盲重试）。
+            // 重执行；未决有副作用回「结果未知」诚实错误（不盲重试）。
             // 重建失败 = ToolFailed（不回落——调用已发生）。
             Err(TransportError::Eof) => {
                 tracing::warn!(
@@ -513,7 +513,7 @@ impl AgentRuntimeSupervisor {
         }
     }
 
-    /// sleep（P3 ⑤）：进程优雅退出，状态全在 home 落盘（home 即状态）。
+    /// sleep（⑤）：进程优雅退出，状态全在 home 落盘（home 即状态）。
     /// 返回 false = 槽本来就不在。
     pub async fn sleep_agent(&self, agent_id: &str) -> bool {
         let slot = {
@@ -534,7 +534,7 @@ impl AgentRuntimeSupervisor {
         true
     }
 
-    /// wake（P3 ⑤）：只 spawn 不调用（journal/ home 从盘上回载即状态）。
+    /// wake（⑤）：只 spawn 不调用（journal/ home 从盘上回载即状态）。
     /// `exec_root` 语义同 [`Self::execute`]。
     pub async fn wake_agent(
         &self,
@@ -552,7 +552,7 @@ impl AgentRuntimeSupervisor {
         Ok(())
     }
 
-    /// 槽位快照（T8 宣告面）。调用中的槽取不到锁 = 活跃，按 alive 计。
+    /// 槽位快照（宣告面）。调用中的槽取不到锁 = 活跃，按 alive 计。
     pub fn slot_states(&self) -> Vec<SlotState> {
         let map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
         map.iter()
@@ -573,7 +573,7 @@ impl AgentRuntimeSupervisor {
             .collect()
     }
 
-    /// 启动看护循环：死槽清理 + idle 自动睡眠（[`ExecutorPersistentConfig::
+    /// 启动看护循环：死槽清理 + idle 自动睡眠（[`ExecutorPersistentConfig:
     /// idle_shutdown_secs`]，0=关）。持弱引用：supervisor 全体 drop 后循环
     /// 自行退出。
     pub fn start_watchdog(self: &std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -621,13 +621,13 @@ impl AgentRuntimeSupervisor {
         }
     }
 
-    /// 崩溃槽自动重拉（T9 槽位看护）：watchdog 清走死槽后按同一 exec_root
+    /// 崩溃槽自动重拉（槽位看护）：watchdog 清走死槽后按同一 exec_root
     /// 重新 spawn（home 即状态——journal/浏览器 profile 从盘上回载）。连续
     /// 失败超 [`MAX_AUTO_RELAUNCH`] 熔断停手（等下一次显式调用复位预算）；
     /// 常驻档已关（运行中改键/配置损坏）不拉——槽位就此回收，节点宣告态
     /// 随 roster_state 自然降级。idle 睡眠不走这里（那是有意的停）。
     async fn auto_relaunch(&self, agent_id: &str, exec_root: &std::path::Path) {
-        // R4：注册表已删除的 agent 不重拉（注册删除联动——否则 watchdog
+        // 注册表已删除的 agent 不重拉（注册删除联动——否则 watchdog
         // 会让孤儿进程在删除后复活）。放回 = 重新注册后走显式 wake。
         if !self.registered(agent_id) {
             tracing::info!(
@@ -717,10 +717,10 @@ impl AgentRuntimeSupervisor {
     }
 
     /// 取槽或 spawn 新槽（容量闸：满员 = Unavailable，并发插入在 map 锁内
-    /// 复核防超卖；输掉的竞态 spawn 会被优雅关停）。F3：删除在途旗标两处
+    /// 复核防超卖；输掉的竞态 spawn 会被优雅关停）。：删除在途旗标两处
     /// 复核（早退查询处 + 插入处，均在 map 锁内）——删除编排窗口内一律
     /// Unavailable（「agent is being removed」），不给删除等待期造出 evict
-    /// 覆盖不到的替代槽。R3：插入点再对**代次**与**在册**复核——spawn 是
+    /// 覆盖不到的替代槽。：插入点再对**代次**与**在册**复核——spawn 是
     /// 长 await，早退检查后删除完整走完（begin→end、旗标已清、map 已空）
     /// 的 ABA 窗口由代次变化与注册表在册双保险封死。
     async fn get_or_spawn(
@@ -732,7 +732,7 @@ impl AgentRuntimeSupervisor {
         let (existing, gen0) = {
             let map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
             if self.is_evicting(agent_id) {
-                // F1：删除在途 = 生命周期拒绝（不落 Unavailable，禁宿主回落）。
+                // 删除在途 = 生命周期拒绝（不落 Unavailable，禁宿主回落）。
                 return Err(SupervisorError::LifecycleRejected(
                     "agent is being removed".into(),
                 ));
@@ -760,9 +760,9 @@ impl AgentRuntimeSupervisor {
         let winner = {
             let mut map = self.slots.lock().unwrap_or_else(|e| e.into_inner());
             if self.is_evicting(agent_id) || self.generation(agent_id) != gen0 {
-                // F3：插入复核——spawn 期间删除编排开始了；R3：或删除编排已
+                // 插入复核——spawn 期间删除编排开始了；或删除编排已
                 // 完整走完（代次已变、旗标已清）。刚 spawn 的会话优雅关停防
-                // 孤儿进程（镜像下方输者路径），再诚实拒绝。F1：生命周期
+                // 孤儿进程（镜像下方输者路径），再诚实拒绝。：生命周期
                 // 拒绝（不落 Unavailable，禁宿主回落）。
                 drop(map);
                 let mut g = arc_ref.lock().await;
@@ -772,9 +772,9 @@ impl AgentRuntimeSupervisor {
                 ));
             }
             if !self.registered(agent_id) {
-                // R3：注册表在册复核（独立第二保险）——记录已删而代次路径
+                // 注册表在册复核（独立第二保险）——记录已删而代次路径
                 // 因任何原因漏接时兜底；语义 = 「记录仍在册」（生产接线
-                // `store.get(id).is_some()`）。F1：生命周期拒绝（禁宿主回落
+                // `store.get(id).is_some()`）。：生命周期拒绝（禁宿主回落
                 // ——已删身份的工具不得在宿主照常执行）。
                 drop(map);
                 let mut g = arc_ref.lock().await;
@@ -805,9 +805,9 @@ impl AgentRuntimeSupervisor {
 
     /// spawn 一个 persistent executor 子进程（隔离纪律见模块文档）。
     /// `exec_root` 写进子进程 `NEMESISBOT_EXECUTOR_WORKSPACE`（工具 cwd 锚，
-    /// T7 双根拆分）；agent home 照旧从 agent_id 派生（HOME 重定向根）。
+    /// 双根拆分）；agent home 照旧从 agent_id 派生（HOME 重定向根）。
     ///
-    /// R1 隔离契约（判读本侧结构 [`ExecutorIsolationPolicy`]——与 per-call
+    /// 隔离契约（判读本侧结构 [`ExecutorIsolationPolicy`]——与 per-call
     /// 通道**同语义两实现**：同键同缺省同就绪探针，非共享代码，见
     /// exec_world.rs 模块文档）：
     /// - strict 预检平台无关先行：`executor.strict` 请求在场而后端当前不可用
@@ -868,10 +868,10 @@ impl AgentRuntimeSupervisor {
         cmd.envs(filter_env_allowlist(std::env::vars()));
         cmd.envs(home_redirect_env_pairs(&home));
         cmd.envs(base_executor_env(exec_root, &home, agent_id));
-        // PLAN P3 Linux 项：`executor.sandbox=true` 时挂 U11 标记——子进程
+        // PLAN Linux 项：`executor.sandbox=true` 时挂 标记——子进程
         // exec_worker 启动自装 landlock/bwrap（与 per-call 非 Windows 臂同源
         // 语义，stdio 传输不变）。Windows 的盒臂在上面处理隔离；引擎未就绪
-        // 退化 stdio 不挂标记（P24 ACL 档的 persistent 接入是后续项）。
+        // 退化 stdio 不挂标记（ACL 档的 persistent 接入是后续项）。
         #[cfg(not(windows))]
         let isolation = if self.executor_sandbox_requested() {
             cmd.env("NEMESISBOT_EXECUTOR_SANDBOX", "1");
@@ -918,14 +918,14 @@ impl AgentRuntimeSupervisor {
 
     /// executor.sandbox 现读（非 Windows persistent stdio 臂是否挂
     /// `NEMESISBOT_EXECUTOR_SANDBOX` 标记——子进程 exec_worker 启动时自装
-    /// landlock/bwrap，U11 与 per-call 同源语义；缺键/缺段/文件缺失 =
+    /// landlock/bwrap， 与 per-call 同源语义；缺键/缺段/文件缺失 =
     /// false，与 `ExecutorSeparationConfig` 的 serde default 一致）。
     #[cfg(not(windows))]
     fn executor_sandbox_requested(&self) -> bool {
         self.isolation.sandbox_requested()
     }
 
-    /// P3 ②：Sandboxie 就绪时把常驻执行体 spawn 进 per-agent 盒
+    /// ②：Sandboxie 就绪时把常驻执行体 spawn 进 per-agent 盒
     /// （`NemesisAgent_<agent_id>`，经 Start.exe wrap，stdio 换具名管道——
     /// Start.exe 不转发 stdio，与 per-call 盒路径同约束）。
     ///
@@ -1051,7 +1051,7 @@ impl AgentRuntimeSupervisor {
 
     /// 测试观测面：槽内子进程 pid（无槽 = None）。消费者全在
     /// `#[cfg(windows)]` 真子进程测试组——Linux 测试编译面无引用，随
-    /// windows+test 门裁剪（CI Linux clippy -D warnings dead_code 实录）。
+    /// windows+test 门裁剪（CI Linux clippy -D warnings dead_code）。
     #[cfg(all(test, windows))]
     pub async fn slot_pid(&self, agent_id: &str) -> Option<u32> {
         let slot = {
@@ -1064,10 +1064,10 @@ impl AgentRuntimeSupervisor {
 }
 
 // ---------------------------------------------------------------------------
-// T7 依赖倒置桥：supervisor 实现 agent crate 侧的 PersistentExecutor trait
+// 依赖倒置桥：supervisor 实现 agent crate 侧的 PersistentExecutor trait
 // （nemesis-agent 不依赖 nemesisbot——trait 在 agent 侧定义，bot 侧实现；
 // RemoteExecutorTool 经 Arc<dyn PersistentExecutor> 调进来）。分型转译是
-// 纯映射：Unavailable 保持（回落判据），LifecycleRejected 保持（F1：身份
+// 纯映射：Unavailable 保持（回落判据），LifecycleRejected 保持（身份
 // 已终结，工具侧终止本次调用），ToolFailed 保持（绝不回落）。
 // ---------------------------------------------------------------------------
 
@@ -1085,13 +1085,13 @@ impl nemesis_agent::remote_executor_tool::PersistentExecutor for AgentRuntimeSup
         self.execute(agent_id, exec_root, tool, args, context)
             .await
             .map_err(|e| match e {
-                // R1：process 常驻执行体与宿主同文件视图——Unavailable 时宿主
+                // process 常驻执行体与宿主同文件视图——Unavailable 时宿主
                 // 回落安全，host_fallback=true。
                 SupervisorError::Unavailable(m) => PersistentCallError::Unavailable {
                     message: m,
                     host_fallback: true,
                 },
-                // F1（2026-10-21 三轮复评）：删除/注销/代次失效拒绝——身份已
+                // （三轮复评）：删除/注销/代次失效拒绝——身份已
                 // 终结，宿主回落 = 已删身份的工具照常执行（探针实证）。转译
                 // LifecycleRejected，工具侧终止本次调用。
                 SupervisorError::LifecycleRejected(m) => PersistentCallError::LifecycleRejected(m),

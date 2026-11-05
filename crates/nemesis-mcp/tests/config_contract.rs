@@ -14,7 +14,7 @@
 use nemesis_config::load_mcp_config;
 use nemesis_mcp::manager::McpManager;
 
-/// 用户实盘崩溃文件（2026-08-30）的精确形状。
+/// 用户实盘崩溃文件的精确形状。
 const USER_LIVE_FILE: &str = r#"{
   "enabled": true,
   "timeout": 30,

@@ -1,4 +1,4 @@
-//! P24（2026-09-25 能力扩展 WS1）：Windows 用户态 ACL 轻量沙盒档（实验性）。
+//! （2026-09-25）：Windows 用户态 ACL 轻量沙盒档（实验性）。
 //!
 //! ## 围栏机制（半档隔离的诚实边界）
 //!
@@ -20,7 +20,7 @@
 //!   `lower_current_process_integrity`（令牌侧）+ `label_tree`（存量文件
 //!   一次性递归重标——新建对象靠 OICI 继承，存量 Medium 文件必须显式重标，
 //!   Low 令牌才写得了）。
-//! - **DACL 定向拒绝（已接线，独立档，D1-D3 2026-09-27）**：定向档已由
+//! - **DACL 定向拒绝（已接线，独立档，- 2026-09-27）**：定向档已由
 //!   workspace-dacl 路线落地——`derive_workspace_sid`（workspace SID 确定性
 //!   派生，sid.rs）+ `ensure_grant_ace_tree`（幂等 standing GRANT ACE 树，
 //!   本文件）+ 受限令牌（`create_write_restricted_token`：白名单
@@ -88,7 +88,7 @@ use windows_sys::Win32::Security::{
     TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenIntegrityLevel,
 };
 // FILE_DELETE_CHILD 仅状态面 deny 观测消费；DELETE 无生产消费者——基线 mask
-// 保含 DELETE 且不做「掐 DELETE」分拣（2026-09-28 证伪，见 GRANT_MASK 文档）。
+// 保含 DELETE 且不做「掐 DELETE」分拣（证伪，见 GRANT_MASK 文档）。
 use windows_sys::Win32::Storage::FileSystem::{FILE_DELETE_CHILD, WRITE_DAC, WRITE_OWNER};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -159,7 +159,7 @@ fn last_err(op: &str) -> String {
 
 /// 读一个**已打开**令牌的完整性级别（RID）。供
 /// [`current_process_integrity`] 与 [`lower_current_process_integrity`]
-/// 共用（单一真相源，避免两份 FFI 探针漂移）。
+/// 共用（统一定义，避免两份 FFI 探针漂移）。
 fn token_integrity_level(token: HANDLE) -> Result<u32, String> {
     unsafe {
         // 先探长度（返回 0 + ERROR_INSUFFICIENT_BUFFER 是预期路径）。
@@ -468,7 +468,7 @@ pub fn add_deny_write_ace(path: &Path, sid: &str) -> Result<(), String> {
 
 /// 撤销该 SID 在 DACL 上的全部 ACE（deny 与 allow 一起撤——测试/回滚用）。
 ///
-/// **不走 `SetEntriesInAclW(REVOKE_ACCESS)`**：实测（2026-09-26，Win11
+/// **不走 `SetEntriesInAclW(REVOKE_ACCESS)`**：实测（Win11
 /// 26200）REVOKE 条目对 DACL 现存的 deny/allow ACE 全部不命中——new DACL
 /// 与旧 DACL 逐条相同、一条不删（SetEntriesInAclW 照常返回成功）。改为
 /// **确定性重建**：读旧 DACL → 逐 ACE 转 EXPLICIT_ACCESS、用 [`EqualSid`]
@@ -681,7 +681,7 @@ pub(super) fn existing_files_gap(reason: &str) -> String {
     )
 }
 
-/// P24 Windows 用户态 ACL 轻量档（SelfApply 形态——与 landlock 同款：
+/// Windows 用户态 ACL 轻量档（SelfApply 形态——与 landlock 同款：
 /// executor 子进程启动时对自身装配，后代全继承）。
 ///
 /// **实验性档位**：半档隔离（禁不了网、读不设防；存量文件打标已接线，
@@ -833,12 +833,12 @@ impl SandboxBackend for AclBackend {
 }
 
 // ---------------------------------------------------------------------------
-// DACL 定向档 D2（2026-09-27）：workspace SID standing GRANT ACE 树
+// DACL 定向档：workspace SID standing GRANT ACE 树
 // ---------------------------------------------------------------------------
 
 /// winnt.h 的 `FILE_GENERIC_ALL`（0x1F01FF）——windows-sys 0.59 未导出该组合
 /// 常量（FILE_ACCESS_RIGHTS 单项在 Storage::FileSystem，组合值缺位），本地
-/// 定义（同 ML_ACE_TYPE 先例：本地常量免拖依赖面）。
+/// 定义（同 ML_ACE_TYPE 本地常量免拖依赖面）。
 const FILE_GENERIC_ALL: u32 = 0x001F_01FF;
 
 /// standing GRANT ACE 的权限位：`FILE_GENERIC_ALL & !(WRITE_DAC | WRITE_OWNER)`
@@ -847,8 +847,8 @@ const FILE_GENERIC_ALL: u32 = 0x001F_01FF;
 /// 改属主——WRITE_DAC 在手可给树外路径翻 DACL，翻转 restricting 侧的合取
 /// 评估放行树外写，这是唯一必须掐的理由。
 ///
-/// **为什么没有「掐 DELETE」的加固档**（2026-09-28 真进程证伪， Fence
-/// 证据见 ACL 定向档报告 §3.9）：write-restricted 的 restricting 侧评估
+/// **为什么没有「掐 DELETE」的加固档**（真进程证伪， Fence
+/// 证据见 ACL 定向档报告）：write-restricted 的 restricting 侧评估
 /// **只覆盖写类访问权，DELETE 不在其中**——子进程对树外对象（无任何
 /// ws_sid GRANT）请求 DELETE 照样成功（token fence 实测），所以 restricting
 /// 侧 mask 掐 DELETE / deny `FILE_DELETE_CHILD`（trustee=ws_sid 只影响
@@ -858,10 +858,10 @@ const FILE_GENERIC_ALL: u32 = 0x001F_01FF;
 /// 结论：「内核强制树内不许删」在用户态 write-restricted 机制内不存在
 /// 可行通路（trustee=Everyone 的 deny 会伤及用户自己的进程，违反定向承诺；
 /// minifilter/Sandboxie 级别才做得到），树内删除/改名治理归 8 层策略层与
-/// 审批——见 ACL 定向档报告 §5 已知边界。
+/// 审批——见 ACL 定向档报告 已知边界。
 pub const GRANT_MASK: u32 = FILE_GENERIC_ALL & !(WRITE_DAC | WRITE_OWNER);
 
-/// 递归给整棵树打 workspace SID 的 standing GRANT ACE（DACL 定向档 D2）。
+/// 递归给整棵树打 workspace SID 的 standing GRANT ACE（DACL 定向档）。
 /// 返回处理的对象数（含根；达标跳过的也计入——语义同 [`label_tree`]）。
 ///
 /// 每个对象的目标 DACL 形态：
@@ -1098,7 +1098,7 @@ fn ensure_grant_ace_single(path: &Path, ws_sid: PSID, is_dir: bool) -> Result<()
     }
 }
 
-/// DACL 定向档 D4 状态面（2026-09-27）：只读查根对象的 standing ACE 达标态
+/// DACL 定向档 状态面：只读查根对象的 standing ACE 达标态
 /// ——**不打标、不写回、零副作用**（与 [`ensure_grant_ace_tree`] 的幂等写
 /// 路径区分：状态查询绝不能触发打标）。返回
 /// `(grant 达标, deny 现存, 是否目录)`；grant 达标按 [`GRANT_MASK`] 覆盖判

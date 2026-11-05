@@ -128,7 +128,7 @@ impl Forge {
     /// - **cleanup_loop**: periodically removes old data.
     ///
     /// The former collector_loop (periodic buffer flush) was removed together
-    /// with the aggregate line (2026-10-22): `record()` writes through to disk
+    /// with the aggregate line: `record()` writes through to disk
     /// directly, so there is no buffered channel left to drain.
     pub async fn start(self: Arc<Self>) {
         {
@@ -146,7 +146,7 @@ impl Forge {
         let reflect_interval = self.config.reflection.interval_secs;
         let cleanup_interval = self.config.storage.cleanup_interval_secs;
 
-        // 0=关 惯例（2026-10-16 R16 缺陷 22）：reflector/cleanup 循环对
+        // 0=关 惯例（缺陷 22）：reflector/cleanup 循环对
         // interval=0 不 spawn——旧实现 `elapsed >= 0` 恒真，反思（use_llm
         // =true 时含 LLM 调用）与清理每秒各跑一轮，成本与磁盘 churn 失控；
         // 本仓 0=关 惯例（board.budget/sweep 等同款）下用户设 0 的意图是
@@ -210,9 +210,9 @@ impl Forge {
     /// Run a single reflection cycle: read experiences → reflect → learn → write report → share.
     async fn run_reflection_cycle(&self) {
         let store = crate::experience_store::ExperienceStore::from_forge_dir(&self.forge_dir);
-        // F-P2: parse only the most-recent experiences (bounded by
+        // F-: parse only the most-recent experiences (bounded by
         // collection.max_experiences) instead of the whole file each cycle.
-        // (File size itself is age-bounded by cleanup — F-D2.)
+        // (File size itself is age-bounded by cleanup — F-.)
         let limit = self.config.collection.max_experiences.max(1);
         let experiences = match store.read_recent(limit).await {
             Ok(exps) if !exps.is_empty() => exps,
@@ -228,7 +228,7 @@ impl Forge {
             return;
         };
 
-        // Step 1: Learning cycle first（语义反思接入 2026-09-28 时序修正）：
+        // Step 1: Learning cycle first（语义反思接入 时序修正）：
         // 先跑学习闭环（模式检出 + 技能生成），本轮 LearningCycle 产出后
         // 再做语义反思——报告首次携带**本轮**闭环状态（旧序传 None，语义
         // 分析看到的永远是上一轮的闭环，时序错位）。
@@ -245,7 +245,7 @@ impl Forge {
         // （旧调用面只传统计不传产物——LLM 看不到已部署技能会重复提名）、
         // 本轮 learning_cycle、统一杂务预算（thinking 系防烧穿）。桥接护栏
         // 空输出 → Err → warn+skip，报告无 insights 节，诚实降级不炸循环。
-        // use_llm=false = 纯统计反思（2026-10-15 第十一轮修复：该键文档契约
+        // use_llm=false = 纯统计反思（修复：该键文档契约
         // 「是否用 LLM 做语义分析」，此前 gateway 无条件走 LLM、键只在 CLI
         // 被消费——用户设 false 省成本的意图被静默无视）。
         let report = if self.config.reflection.use_llm {
@@ -280,19 +280,19 @@ impl Forge {
                 }
             }
         } else {
-            // P2 诚实化（2026-10-16）：报告落盘失败此前静默——反思明明跑完，
+            // 诚实化：报告落盘失败此前静默——反思明明跑完，
             // 盘上却无新报告，用户只看到「latest report 停在旧日期」。loud warn。
             tracing::warn!("[Forge] failed to write reflection report (see prior errors)");
         }
 
-        // Step 5: auto_skill 蒸馏（2026-10-15 W2 生成面）。`learning.enabled`
+        // Step 5: auto_skill 蒸馏（生成面）。`learning.enabled`
         // 保持关（自动部署闭环风险面不动）；本步只产出 **draft** 状态草稿
         // （落 forge skills 目录 + 注册表），不自动启用——启用/部署是人工
-        // 评审后的显式动作。Arc 锁内取即放（guard 不跨 await，F-M7 同款）。
-        // use_llm=false 时蒸馏一并关（2026-10-15 第十一轮）：蒸馏是 LLM 工作，
+        // 评审后的显式动作。Arc 锁内取即放（guard 不跨 await，F- 同款）。
+        // use_llm=false 时蒸馏一并关：蒸馏是 LLM 工作，
         // 与 CLI 同语义（CLI use_llm=false 不挂 provider → 蒸馏诚实报
         // no LLM provider）——语义分析关而蒸馏开会自相矛盾；caller=None
-        // 从静默跳过改诚实 WARN（配置陷阱此前不可见）。
+        // 从静默跳过改诚实 WARN（配置陷阱此前不可）。
         let caller = self.reflector.as_ref().and_then(|r| r.llm_caller().clone());
         if self.config.artifacts.auto_skill {
             if !self.config.reflection.use_llm {
@@ -367,7 +367,7 @@ impl Forge {
             return None;
         }
         // dedup：同名**非降级**产物已存在则跳过（反思 6h 一轮，同题材不
-        // 重复出草稿）。2026-10-16 复查（F-R4）：此前 find_by_name 匹配任意
+        // 重复出草稿）。 复查（F）：此前 find_by_name 匹配任意
         // 状态——Degraded/Archived 的旧产物也会挡住重蒸馏，与
         // disable_degraded_skills 的「降级产物应能被替代品顶替」语义矛盾
         // （旧技能已被禁用却永远阻止新版本诞生）。现对齐
@@ -396,10 +396,10 @@ impl Forge {
                 }
             );
         }
-        // F-S1 安全闸（2026-10-16 R16 缺陷 20）：LLM 蒸馏产物写盘前过
+        // F- 安全闸（缺陷 20）：LLM 蒸馏产物写盘前过
         // security_errors——蒸馏提示词喂的是经验摘要（外部交互的衍生物，
         // 潜在注入面），产出的 SKILL.md 可能被引导写入危险命令/硬编码密钥。
-        // 与 `create_skill` 同一闸同一规则（F-S1 承诺覆盖所有 artifact kind
+        // 与 `create_skill` 同一闸同一规则（F- 承诺覆盖所有 artifact kind
         // 的写盘点，此前本路径漏配）。拦下 = 本轮放弃（与名字非法/skip 同面，
         // 6h 后下轮反思可能产出不同草稿）。
         let sec_errors =
@@ -463,7 +463,7 @@ impl Forge {
             tracing::info!(removed, "[Forge] cleaned up old learning cycles");
         }
 
-        // Trace events (P0-F1 接线的盘上产物)：按 trace.max_trace_age_days
+        // Trace events (- 接线的盘上产物)：按 trace.max_trace_age_days
         // 滚动清理 JSONL（读-滤-重写）。验证轮二接线——此前该配置键零消费者，
         // traces 目录只增不删。清理 Forge 实际持有的那个 store（未 init 时
         // 无写入，无需清理）。
@@ -479,7 +479,7 @@ impl Forge {
     ///
     /// Sets the running flag to false (which causes background loops to exit
     /// within 1 second). No final flush is needed: `record()` writes through
-    /// to disk directly (the buffered collector was removed 2026-10-22).
+    /// to disk directly (the buffered collector was removed).
     pub async fn stop(&self) {
         *self.running.lock() = false;
         *self.bg_running.lock() = false; // Signal background loops to exit
@@ -594,7 +594,7 @@ impl Forge {
         self.reflector.as_ref()
     }
 
-    /// Set the skill behavior-test runner (A 线回归闸执行器，2026-10-14)。
+    /// Set the skill behavior-test runner (A 线回归闸执行器，)。
     /// Pipeline 在 Skill artifact 校验时调用；未注入 = 带 tests 段的
     /// artifact 诚实失败（fail-closed，不允许无执行器的静默跳过）。
     pub fn set_skill_test_runner(
@@ -606,7 +606,7 @@ impl Forge {
         }
     }
 
-    /// Set the Stage 2 judge-layer caller（杂务模型回落链注入点，2026-10-14
+    /// Set the Stage 2 judge-layer caller（杂务模型回落链注入点，
     /// 三轮复查对齐 CLI/WSAPI/部署闸三入口口径）。级联到 pipeline 的
     /// judge 专用槽；Stage 3 质量评估维持主模型语义不受影响。
     pub fn set_judge_caller(&self, caller: std::sync::Arc<dyn crate::reflector_llm::LLMCaller>) {
@@ -654,11 +654,11 @@ impl Forge {
 
     /// Record a trace event: direct JSONL append to the TraceStore.
     ///
-    /// Tool-dispatch 侧的低频喂入口（审计 P0-F1 修复，2026-10-22：
+    /// Tool-dispatch 侧的低频喂入口（审计 - 修复，
     /// TraceStore 原先零生产调用）。trace 是观测数据——写失败只 warn，
     /// 绝不反过来影响工具执行链。
     ///
-    /// 2026-10-22 验证轮二：不再同步喂 in-memory `TraceCollector`——该
+    /// 验证轮二：不再同步喂 in-memory `TraceCollector`——该
     /// collector 全仓零读者（getter 无生产调用方），喂它等于制造无上界
     /// write-only 内存增长（每笔工具调用永久驻留 Vec）；盘上 TraceStore
     /// 是学习引擎的唯一输入真相源（learning_engine 轨迹臂读盘）。
@@ -707,7 +707,7 @@ impl Forge {
 
     /// Initialize the trace subsystem.
     ///
-    /// 2026-10-22 验证轮二：只收 TraceStore。原 collector 参数随 write-only
+    /// 验证轮二：只收 TraceStore。原 collector 参数随 write-only
     /// 内存面移除（见 `record_trace_event` 注记）。
     pub fn init_trace(&mut self, store: TraceStore) {
         tracing::info!("[Forge] Trace subsystem initialized");
@@ -721,9 +721,9 @@ impl Forge {
         monitor: Arc<DeploymentMonitor>,
         store: CycleStore,
     ) {
-        // Inject pipeline + monitor into the learning engine so the Phase 6
+        // Inject pipeline + monitor into the learning engine so the
         // closed loop (learn -> validate -> deploy -> monitor -> feedback)
-        // actually runs. Previously never injected (F-C1).（LE3：skill_creator
+        // actually runs. Previously never injected (F-).（skill_creator
         // 注入已随 write-only 死接线删除，无需补线。）
         if let Some(p) = &self.pipeline {
             engine.set_pipeline(p.clone());
@@ -797,7 +797,7 @@ impl Forge {
     ) -> Result<nemesis_types::forge::Artifact, String> {
         use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
 
-        // 防御纵深（2026-10-16 R18 路径穿越修复）：name 是路径段
+        // 防御纵深（路径穿越修复）：name 是路径段
         // （`skills/{name}` 与下方 `skills/{name}-forge` 两处 join），在
         // 本体入口归一，覆盖所有调用方（工具执行器已在入口 slugify，这里
         // 兜底 learning_engine 等其余 caller 与历史回归）。空名诚实报错。
@@ -806,7 +806,7 @@ impl Forge {
             return Err("skill name contains no usable characters (need [a-z0-9_-])".into());
         }
 
-        // F-M11: frontmatter must be at the very start — `contains("---")`
+        // F-: frontmatter must be at the very start — `contains("---")`
         // treated any Markdown horizontal rule as existing frontmatter and
         // skipped adding the wrapper.
         let skill_content = if content.starts_with("---") {
@@ -818,7 +818,7 @@ impl Forge {
             )
         };
 
-        // Security gate (F-S1): block dangerous commands (rm -rf /, curl|bash)
+        // Security gate (F-): block dangerous commands (rm -rf /, curl|bash)
         // and hardcoded secrets BEFORE writing the file — previously the file
         // was written first with only a weak post-write check, so such content
         // became an active agent instruction. Length/frontmatter are quality,
@@ -940,7 +940,7 @@ impl Forge {
 /// 蒸馏草稿名是 LLM 自由文本，落盘前归一：小写、非 `[a-z0-9_-]` 折叠为
 /// `-`、压缩连续 `-`、去首尾 `-`、截断 48 字符。空名/全非法字符返回空串
 /// （调用方据以跳过，不猜不救）。pub(crate)：learning_engine 的
-/// execute_create_skill 落盘点共用同一规则（R17 防御纵深）。
+/// execute_create_skill 落盘点共用同一规则（防御纵深）。
 pub(crate) fn slugify_skill_name(name: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;
@@ -969,7 +969,7 @@ pub(crate) fn slugify_skill_name(name: &str) -> String {
     slug
 }
 
-/// 技能目录名合法性围栏（跨入口单一真相源，R18）：必须是单段 kebab 目录
+/// 技能目录名合法性围栏（跨入口统一定义）：必须是单段 kebab 目录
 /// 名。`../x` 直拼 join 有穿越面；`C:evil` 盘符相对形态 `is_absolute()==false`
 /// 且无分隔符，但 join 会整段换基座（Windows）；`.`/`..`/空串同理拒。
 /// 合法域 = `slugify_skill_name` 的产物域。web `forge.test` 与 CLI

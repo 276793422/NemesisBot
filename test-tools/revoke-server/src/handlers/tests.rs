@@ -947,7 +947,7 @@ async fn sign_upload_default_issuer_full_circle() {
         .unwrap();
     assert!(disp.starts_with("attachment; filename="), "disp: {disp}");
     let signed = resp_bytes(resp).await;
-    // content_hash 先行（v4_content_digest 单一真相源，与 handler registry 记账
+    // content_hash 先行（v4_content_digest 统一定义，与 handler registry 记账
     // 同口径——raw = SHA-256 全文件；PE 会走 authenticode digest，见 PE 专项测试）
     let expected_ch: [u8; 32] =
         nemesis_verify::verify::v4_content_digest(content).expect("v4_content_digest raw");

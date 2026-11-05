@@ -93,7 +93,7 @@ pub struct AppState {
     pub cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     #[cfg(not(feature = "cluster"))]
     pub cluster: Option<()>,
-    /// QUIC 中继运行面句柄（QUIC 插件化 ：运行面在 plugin_roaming C-ABI
+    /// QUIC 中继运行面句柄（QUIC 插件化：运行面在 plugin_roaming C-ABI
     /// 插件——宿主 nemesisbot 装载后注入；fn 指针 Copy，直接持值不 Arc）。
     /// None = 插件未装载（诚实降级：启停/成员查询报 not loaded）。
     /// 恒编译（cluster-roaming feature 已删）。
@@ -132,7 +132,7 @@ pub struct AppState {
     /// scheduler (add/list/update/delete/toggle/run) instead of raw file I/O.
     /// nemesis-cron is an unconditional dependency, so no cfg gate.
     pub cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
-    /// Managed-agent board service . `board` feature 门控（nemesis-board
+    /// Managed-agent board service. `board` feature 门控（nemesis-board
     /// 是本 crate 的 optional 依赖）；gateway 注入 `Some` only when the
     /// `board` feature is enabled and the store opened successfully. Carries
     /// the node role (goal 硬约束①：复用 NodeRole) — worker 节点 board 只读。
@@ -142,7 +142,7 @@ pub struct AppState {
     #[cfg(not(feature = "board"))]
     #[allow(dead_code)]
     pub board: Option<()>,
-    /// 签名验证启动自验状态（接入计划 §4）。gateway 启动时从
+    /// 签名验证启动自验状态（接入计划）。gateway 启动时从
     /// verify_policy 快照映射注入；None = 未注入（`--relay` 纯中继 / 测试
     /// 装配），`security.signature_verify_status` 回 `injected: false`。
     pub signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
@@ -504,7 +504,7 @@ pub async fn handle_sdk_export() -> axum::response::Response {
 }
 
 /// `GET /api/sdk/pip` — sdist-layout zip (single `nemesisbot-<version>/`
-/// top-level dir) installable via `pip install ./<file>.zip`.
+/// top-level dir) installable via `pip install./<file>.zip`.
 pub async fn handle_sdk_pip() -> axum::response::Response {
     sdk_zip_response(
         crate::sdk_embed::SDK_SDIST_ZIP,
@@ -634,7 +634,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             }
         }
         "llm" => {
-            // Phase : 将来由 nemesis-providers 写 logs/llm/ 流式摘要（避免污染 request_logs 的 Markdown 目录）。
+            // Phase: 将来由 nemesis-providers 写 logs/llm/ 流式摘要（避免污染 request_logs 的 Markdown 目录）。
             // 在那之前 fallback 到 request_logs 最新目录，返回其 00.request.md（首条 user 消息）。
             let dir = nemesis_path::resolve_request_logs_dir_in_workspace(std::path::Path::new(
                 workspace,
@@ -642,7 +642,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             find_latest_request_summary(&dir)
         }
         "security" => {
-            // Phase : audit.jsonl 是固定文件名（不是 glob），路径在 logs/security_logs/
+            // Phase: audit.jsonl 是固定文件名（不是 glob），路径在 logs/security_logs/
             let audit_file =
                 nemesis_path::resolve_audit_log_dir_in_workspace(std::path::Path::new(workspace))
                     .join("audit.jsonl");
@@ -653,7 +653,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             }
         }
         "cluster" => {
-            // Phase : cluster_logs/ 下既有平面 cluster_YYYY-MM-DD.log（流式事件），
+            // Phase: cluster_logs/ 下既有平面 cluster_YYYY-MM-DD.log（流式事件），
             // 也有 {device}/{ts}_{task}/ 子目录（LLM 详情）。这里只取平面日志文件。
             let cluster_dir = nemesis_path::resolve_cluster_logs_dir_in_workspace(
                 std::path::Path::new(workspace),
@@ -682,7 +682,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
 /// Find the most recently modified `.md` file inside the latest `request_logs` subdirectory.
 ///
 /// Each LLM call is stored as `{ts}_{NNN}/` containing multiple Markdown files
-/// (00.request.md, 01.AI.Request.md, 02.AI.Response.md, NN.Local.md, ...).
+/// (00.request.md, 01.AI.Request.md, 02.AI.Response.md, NN.Local.md,...).
 /// Here we pick the latest subdir by mtime, then the latest `.md` inside it.
 fn find_latest_request_summary(dir: &std::path::Path) -> Option<String> {
     let entries = std::fs::read_dir(dir).ok()?;
@@ -876,7 +876,7 @@ fn sanitize_value(value: &mut serde_json::Value) {
 ///
 /// 实现已下沉 nemesis-utils 单一真相源（nemesis-channels
 /// websocket 升级闸需跨 crate 消费同一恒时比较； XOR 折叠形态不变）。
-/// 此处 re-export 保持 `crate::api_handlers::verify_token` 路径兼容。
+/// 此处 re-export 保持 `crate::api_handlers:verify_token` 路径兼容。
 pub use nemesis_utils::verify::verify_token;
 
 /// Write a JSON response body from a serializable value.
@@ -916,7 +916,7 @@ async fn vm_sync_internal(cmd: &str, project: &str) -> Result<serde_json::Value,
 ///
 /// Requires `X-Auth-Token` header matching `web.auth_token`.
 /// Body: `{ "cmd": "open_dashboard" }` or `{ "cmd": "shutdown" }`
-/// (, quality-hardening goal 冲刺 : `shutdown` = graceful-stop
+/// (, quality-hardening goal 冲刺: `shutdown` = graceful-stop
 /// request from the CLI; open_dashboard's InternalCommand path is shared).
 pub async fn handle_api_internal(
     headers: axum::http::HeaderMap,
@@ -984,11 +984,11 @@ pub async fn handle_api_internal(
                 Err(error) => serde_json::json!({ "status": "error", "error": error }),
             }));
         }
-        // Ziwei（紫微系统 /）：CLI `ziwei attach/detach/status/invoke`
+        // Ziwei（紫微系统）：CLI `ziwei attach/detach/status/invoke`
         // 转发面——会话管理器常驻 gateway 进程（管道 server 生命周期与一次性
         // CLI 进程解耦），与 estop/vm_sync 同款直连（不经 fire-and-forget
         // attach 是请求-响应形态，注入+握手结果必须带回）。恒 HTTP 200
-        // `{status: ok|error, ...}`，业务失败不是传输错误。
+        // `{status: ok|error,...}`，业务失败不是传输错误。
         #[cfg(feature = "ziwei")]
         "ziwei_attach" | "ziwei_detach" | "ziwei_status" | "ziwei_invoke" | "ziwei_setup" => {
             let Some(manager) = nemesis_ziwei::session::global() else {
@@ -1206,7 +1206,7 @@ pub async fn handle_api_internal(
                 })?;
         }
         // selfupdate：CLI apply 触发（九步编排全在 gateway 侧；受理即回，
-        // v4 验签是安全闸，执行进度经 selfupdate-progress SSE / tracing / 审计链可见）。
+        // v4 验签是安全闸，执行进度经 selfupdate-progress SSE / tracing / 审计链可）。
         "selfupdate_apply" => {
             let allow_downgrade = body
                 .get("allow_downgrade")
@@ -1265,12 +1265,12 @@ fn chat_session_id(key: &str) -> String {
 
 /// Resolve the store the fork WRITE path materializes the new session into
 /// (round 3: the turns endpoint reads jsonl directly and no longer needs a
-/// store; only `POST .../fork` comes through here):
+/// store; only `POST.../fork` comes through here):
 /// 1. the LIVE agent's store when the agent is running (authoritative — it
 ///    holds the in-memory map the running gateway appends to), else
 /// 2. a fresh store over `<home>/workspace/sessions` (agent stopped).
 ///    `new_with_storage` loads existing session files at construction and
-///    `get_or_create` falls back to disk on an in-memory miss , so fork
+///    `get_or_create` falls back to disk on an in-memory miss, so fork
 ///    files created by other processes are visible — and a fork made against
 ///    this fallback store survives a running gateway that later re-reads the
 ///    same directory instead of overwriting it.
@@ -1339,7 +1339,7 @@ pub async fn handle_api_chat_session_turns(
         ));
     }
 
-    // ROUND-3: read the chat_log rows — the same source `fork_session`
+    // read the chat_log rows — the same source `fork_session`
     // cuts on and the Dashboard renders. Counting on any other store would
     // re-create the coordinate-mismatch bug this round fixed.
     let key = chat_session_key(&session_id);
@@ -1598,7 +1598,7 @@ mod sdk_route_tests;
 #[cfg(test)]
 mod fork_route_tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): pure helpers
+// (, quality-hardening goal 冲刺 web): pure helpers
 // (request-summary walk, daily-log matcher, log tail reader, sanitize_map,
 // first_line_trunc, resolve_fork_store) + api_key masking arms + turns
 // leading-row arm + fork title arm. No feature gate needed (same shape as

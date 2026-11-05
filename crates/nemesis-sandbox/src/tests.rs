@@ -1,9 +1,9 @@
-//! `crate::SandboxPaths` 路径布局与 `verify_runtime`（S6 覆盖率批次）。
+//! `crate::SandboxPaths` 路径布局与 `verify_runtime`（覆盖率批次）。
 
 use super::*;
 
 // SandboxPaths 的 Windows 路径形态断言（反斜杠分隔符字面量），Linux join
-// 语义不同 → cfg(windows) 门控（2026-09-01 Linux 首跑暴露）。
+// 语义不同 → cfg(windows) 门控（Linux 首跑暴露）。
 #[cfg(windows)]
 #[test]
 fn sandbox_paths_layout_under_home() {

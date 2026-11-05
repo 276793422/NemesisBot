@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): ConfigHandler error arms and
+//! (quality-hardening goal 冲刺, web): ConfigHandler error arms and
 //! CORS stubs the gated `mod tests` skips — missing config.json load failure,
 //! invalid save payload, empty-path / invalid-result set_field, and the four
 //! "CORS manager not connected" stub commands.

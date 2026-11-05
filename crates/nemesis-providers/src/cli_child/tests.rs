@@ -1,6 +1,6 @@
 //! cli_child 真子进程测试：stdin 送达 + EOF 收尾 + 早退容错。
 //!
-//! 回显命令跨平台选择（不引入外部依赖、不碰 .cmd）：
+//! 回显命令跨平台选择（不引入外部依赖、不碰.cmd）：
 //! - unix: `sh -c 'cat'`（cat 原样回显，EOF 退出——若 stdin 未关闭则
 //!   永远不退，timeout 守卫会让测试红而不是挂）；
 //! - windows: `cmd /c findstr NEMESIS_STDIN_PROBE`（findstr 从 stdin 逐行

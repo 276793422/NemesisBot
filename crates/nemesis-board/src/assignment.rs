@@ -1,4 +1,4 @@
-//! 多态指派 + 操作者类型（开发计划 §1.3）。
+//! 多态指派 + 操作者类型（开发计划）。
 //!
 //! MVP 两级简化：`assignee_type ∈ {manager_self, worker}`。`manager_self`
 //! 指 coordinator 自己执行（assignee_id = coordinator 节点 id）；`worker`
@@ -24,7 +24,7 @@ impl AssignmentType {
         }
     }
 
-    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str:FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "manager_self" => Some(AssignmentType::ManagerSelf),

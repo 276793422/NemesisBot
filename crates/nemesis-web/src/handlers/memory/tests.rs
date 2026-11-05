@@ -5,7 +5,7 @@
 //!
 //! Why a dedicated module: `memory_extra_tests` hangs off `handlers`
 //! (sibling module), which cannot see `handlers::memory`'s private fns;
-//! this file IS a child of `handlers::memory`, so `super::` reaches them.
+//! this file IS a child of `handlers::memory`, so `super:` reaches them.
 
 use super::{migrate_legacy_vector_store, vector_store_jsonl_path};
 
@@ -71,7 +71,7 @@ fn missing_legacy_file_is_noop() {
 }
 
 // ============================================================
-// coverage : main-switch read/write, status,
+// coverage: main-switch read/write, status,
 // documents / document.get / document.save, vector.status direct-path testing.
 // Private methods callable directly (this file is a child of the memory module).
 // ============================================================
@@ -274,7 +274,7 @@ fn env_check_local_model_paths_mark_ready() {
     assert_eq!(out["main_switch"], true);
     assert_eq!(out["sub_switch"], true);
     // No plugin DLL in the test environment → degraded (the ready arm structurally
-    // depends on the plugin artifact existing on disk; see §9.4).
+    // depends on the plugin artifact existing on disk; see).
     assert_eq!(out["overall"], "degraded");
 
     // Absent local path and no model.onnx under the data directory → not ready.

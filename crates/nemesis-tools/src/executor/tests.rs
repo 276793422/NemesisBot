@@ -315,7 +315,7 @@ async fn test_execute_with_custom_timeout() {
 }
 
 // ============================================================
-// W4a coverage gap closure (the is_error warn arm of
+// coverage gap closure (the is_error warn arm of
 // ToolExecutor::execute — only success/timeout arms were covered)
 // ============================================================
 
@@ -348,7 +348,7 @@ async fn w4a_execute_tool_returning_error_hits_warn_arm() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): executor tracing field arms (duration_ms)
+// coverage: executor tracing field arms (duration_ms)
 // ===========================================================================
 
 fn s2_enable_tracing() {

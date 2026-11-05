@@ -152,7 +152,7 @@ impl ConversationMemory {
 /// division which overestimates by 3x for CJK content.
 ///
 /// 已知边界：相对真实分词器（CJK ≈ 1 token/char）仍**低估 ~2.5 倍**，
-/// 详见 `session.rs:estimate_tokens` 的注记（不改估算器的理由同源）。
+/// 详见 `session.rs::estimate_tokens` 的注记（不改估算器的理由同源）。
 fn estimate_tokens(text: &str) -> usize {
     text.chars().count() * 2 / 5
 }
@@ -332,6 +332,6 @@ impl MemoryStore {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

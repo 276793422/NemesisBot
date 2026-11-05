@@ -1,4 +1,4 @@
-//! matcher 纯函数测试（Swarm M1）：硬条件过滤 / 加分 / 负载排序 / 确定性。
+//! matcher 纯函数测试（Swarm）：硬条件过滤 / 加分 / 负载排序 / 确定性。
 
 use super::*;
 
@@ -26,7 +26,7 @@ fn prof_peer(
     }
 }
 
-/// backend 宣告节点 fixture（P6-R1；其余字段全空 = 只测 backend 闸）。
+/// backend 宣告节点 fixture（其余字段全空 = 只测 backend 闸）。
 fn backend_peer(id: &str, backend: Option<&str>) -> PeerCandidate {
     PeerCandidate {
         id: id.to_string(),
@@ -297,7 +297,7 @@ fn ranking_is_deterministic_for_full_ties() {
 }
 
 // -----------------------------------------------------------------------
-// 职能匹配（集群专业职能框架 M2）：硬条件 3（精确命中）+ 硬条件 4（tier 闸）
+// 职能匹配（集群专业职能框架）：硬条件 3（精确命中）+ 硬条件 4（tier 闸）
 // -----------------------------------------------------------------------
 
 #[test]
@@ -412,7 +412,7 @@ fn tier_gate_blocks_known_lower_tier_and_fails_open_on_unknown() {
             &["architecture"],
             Some("normal"),
         ),
-        // 未知档位（None，旧节点）：fail-open 放行（D3）。
+        // 未知档位（None，旧节点）：fail-open 放行。
         prof_peer("legacy", "worker", &[], &[], &["architecture"], None),
     ];
     let ranked = rank_peers(
@@ -451,7 +451,7 @@ fn tier_gate_does_not_apply_without_profession() {
 }
 
 // -----------------------------------------------------------------------
-// D13 松弛阶梯：②保职能丢标签 → ③丢职能（保角色/标签）→ ④全松弛；
+// 松弛阶梯：②保职能丢标签 → ③丢职能（保角色/标签）→ ④全松弛；
 // tier 门槛随职能走、不单独松弛。
 // -----------------------------------------------------------------------
 
@@ -519,7 +519,7 @@ fn relaxed_ladder_rung4_full_relaxation() {
         required_backend: None,
         description: "",
     };
-    // Role 档（2026-09-29 三档化）④不可达：只有④能救的局诚实返回 None。
+    // Role 档（三档化）④不可达：只有④能救的局诚实返回 None。
     assert!(
         pick_relaxed(&base, &peers, &load(&[]), RelaxDepth::Role).is_none(),
         "Role 档不得走到④全松弛（角色纪律保留）"
@@ -551,7 +551,7 @@ fn relaxed_ladder_without_profession_preserves_old_behavior() {
 #[test]
 fn relaxed_ladder_never_relaxes_profession_via_tier() {
     // tier 闸在松弛级照常生效：唯一候选 tier 已知且低于 min_tier →
-    // ②保职能级不因松弛放行（D13：tier 不参与松弛），最终落到④丢职能。
+    // ②保职能级不因松弛放行（tier 不参与松弛），最终落到④丢职能。
     let peers = vec![prof_peer(
         "small",
         "worker",
@@ -591,7 +591,7 @@ fn relaxed_ladder_returns_none_when_nothing_matches() {
 }
 
 // -----------------------------------------------------------------------
-// 环境能力硬条件 5（NB-122 批 2026-10-16）：全量命中硬闸、大小写不敏感、
+// 环境能力硬条件 5（16）：全量命中硬闸、大小写不敏感、
 // **不参与松弛**（环境缺口松弛不出来）。
 // -----------------------------------------------------------------------
 
@@ -707,7 +707,7 @@ fn relaxed_ladder_works_normally_when_caps_satisfied() {
 }
 
 // -----------------------------------------------------------------------
-// 硬条件 6（P6-R1 backend 派发闸）：精确命中 + fail-closed + 不参与松弛。
+// 硬条件 6（backend 派发闸）：精确命中 + fail-closed + 不参与松弛。
 // -----------------------------------------------------------------------
 
 #[test]

@@ -1,19 +1,19 @@
-//! 审批 pattern 记忆（F3，devtool-upgrade 阶段 5，「总是允许」语义）。
+//! 审批 pattern 记忆（devtool-upgrade，「总是允许」语义）。
 //!
 //! 「总是允许」规则表：`{op, pattern, action: "allow"}` 持久化在
 //! `<workspace>/config/approval_rules.json`（[`resolve_rules_path`]）。
 //! auditor 命中 require_approval 时先查本表，命中（且层级安全门放行）则
-//! 自动放行并在审计事件标注 `auto_by_rule`；M7 审批卡「总是允许」按钮
+//! 自动放行并在审计事件标注 `auto_by_rule`； 审批卡「总是允许」按钮
 //! respond 时写入规则。读取走 `nemesis_config::HotReloader` 热载（模式照
 //! commands）——本模块只提供加载/保存/匹配纯函数，装载与消费在
 //! auditor（查）与 web_approval（写）。
 //!
-//! pattern 形态：exec 类操作（process_exec/process_spawn）用 B5
+//! pattern 形态：exec 类操作（process_exec/process_spawn）用
 //! `reduce_command` 归约前缀（`cargo test *`），其余操作用完整 target
 //! 精确匹配。层级安全：**CRITICAL 操作规则不生效**（永远人工）——唯一
 //! 豁免是 `process_exec`（前缀 pattern 本身就是作用域，这正是本机制的
 //! 存在意义；`cargo test` 批准 always → `cargo test --release` 自动放行、
-//! `cargo publish` 不放行，即 F4 验收）。
+//! `cargo publish` 不放行，即 验收）。
 
 use std::path::Path;
 
@@ -25,10 +25,10 @@ use crate::command_arity::reduce_command;
 /// deny 的记忆就是再次弹卡）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ApprovalRule {
-    /// 操作类型（`process_exec` / `file_write` / ...，与
+    /// 操作类型（`process_exec` / `file_write` /...，与
     /// `OperationRequest.op_type` 字符串一致）。
     pub op: String,
-    /// 匹配 pattern：exec 类为 B5 归约前缀（`cargo test *`），其余为完整
+    /// 匹配 pattern：exec 类为 归约前缀（`cargo test *`），其余为完整
     /// target 精确串。
     pub pattern: String,
     /// 动作，v1 恒为 `allow`。
@@ -37,29 +37,29 @@ pub struct ApprovalRule {
     pub created_at: String,
 }
 
-/// exec 类操作：target 是命令行，pattern 走 B5 归约。
+/// exec 类操作：target 是命令行，pattern 走 归约。
 fn is_command_op(op: &str) -> bool {
     op == "process_exec" || op == "process_spawn"
 }
 
 /// 安装类操作（装代码进系统）：target 是来源目录/URL，不是载荷内容——
 /// 同一 target 明天可以放进不同 sha 的载荷，「目录记忆」对装任意代码
-/// 天然不安全（2026-09-30 复查 #12）。
+/// 天然不安全（复查 #12）。
 fn is_install_op(op: &str) -> bool {
     op == "plugins.install" || op == "skills.install"
 }
 
-/// 由操作 + target 生成规则 pattern（单一真相源：写入侧与展示侧都用它）。
+/// 由操作 + target 生成规则 pattern（统一定义：写入侧与展示侧都用它）。
 ///
-/// exec 类 → B5 归约前缀且**恒带 ` *`**（`cargo test --release` →
+/// exec 类 → 归约前缀且**恒带 ` *`**（`cargo test --release` →
 /// `cargo test *`；`cargo publish` 归约后无参数也补 ` *`——「总是允许」
-/// 的意图是「这条命令 + 任意参数」，退化为精确串就丢了 F4 前缀粒度；
+/// 的意图是「这条命令 + 任意参数」，退化为精确串就丢了 前缀粒度；
 /// [`matches_rule`] 对带 ` *` 的 pattern 做 token 前缀匹配，裸命令照常
 /// 命中，无回退损失）。归约结果为空（target 全是 env 前缀）→ 空串
 /// （不构成规则——空 token 前缀若带 ` *` 会变成全放行，绝不产生）。
 /// **复合命令**（顶层 `&&`/`||`/`;`/`|`/`&` 多段）→ 空串：单一前缀
 /// pattern 表达不了「全段命中」语义（`cd *` 罩不住 `cd x && rm -rf y`
-/// 的删除段），宁拒绝写规则不放宽——CMD-12（2026-10-13）。
+/// 的删除段），宁拒绝写规则不放宽——CMD-12。
 /// 其余 → 完整 target（精确匹配）；空 target → 空串（不构成规则）。
 pub fn pattern_for(op: &str, target: &str) -> String {
     let target = target.trim();
@@ -107,12 +107,12 @@ pub fn rule_permitted_for(op: &str, risk: &str) -> bool {
 ///   罩住 `cd /tmp && rm -rf y` 的删除段——按顶层段切分后逐段做
 ///   token 前缀匹配，任一段不命中即不放行；存量时期按旧语义写入的
 ///   复合来源规则随之自然失效（对复合命令重新弹卡，安全方向收紧）；
-///   **逐段剥 env 前缀**（闭环批 2026-10-13，与写侧归约端同语义）：
+///   **逐段剥 env 前缀**（闭环-13，与写侧归约端同语义）：
 ///   `pattern_for`/`reduce_command` 产出的 pattern 永无 env 头，读侧
 ///   不剥则 `FOO=1 cargo test` 永远弹卡——ABAC 侧（auditor）已剥，
 ///   两侧不一致 = ABAC 放行、审批记忆不放行的重复打扰；
 /// - 其余 → exec 类 token 向量相等（pattern 侧 tokenize、target 侧
-///   tokenize+剥 env 头——D12-5：与写侧归约同源，引号/多余空白两侧归一；
+///   tokenize+剥 env 头——：与写侧归约同源，引号/多余空白两侧归一；
 ///   非 exec 类 target 是路径/URL，精确相等）；
 /// - 手写裸 `*` pattern 永不命中（防规则文件被改成全放行）。
 pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -> bool {
@@ -130,7 +130,7 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
                 return false;
             }
             let prefix_hits = |seg: &str| {
-                // D12-5：tokenize 之后剥 env 头（[`strip_env_tokens`]）——
+                // tokenize 之后剥 env 头（[`strip_env_tokens`]）——
                 // 在原串上剥会漏引号形 env 头（`"FOO=1" cargo test`），
                 // 写侧归约剥了读侧没剥 = 规则永远弹卡。
                 let seg_tokens_v = crate::command_arity::tokenize_command(seg);
@@ -153,7 +153,7 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
         }
         None => {
             if is_command_op(rule_op) {
-                // D12-5：token 向量比较（写侧归约 = tokenize+剥 env+join，
+                // token 向量比较（写侧归约 = tokenize+剥 env+join，
                 // 手写 pattern 侧只 tokenize 不剥——引号/多余空白两侧归一，
                 // env 头剥离与写侧同源）。
                 let pattern_tokens = crate::command_arity::tokenize_command(rule_pattern);
@@ -241,25 +241,25 @@ pub fn save_rules(path: &Path, rules: &[ApprovalRule]) -> Result<(), String> {
             .map_err(|e| format!("create rules dir {}: {}", parent.display(), e))?;
     }
     let raw = serde_json::to_string_pretty(rules).map_err(|e| format!("serialize rules: {}", e))?;
-    // REL-002：统一原子写入（审批规则表是安全配置，半截文件 = 规则集损坏）
+    // 统一原子写入（审批规则表是安全配置，半截文件 = 规则集损坏）
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), raw.as_bytes(), 0o600)
         .map_err(|e| format!("write rules {}: {e}", path.display()))
 }
 
-/// 规则落盘进程级串行闸（M7「总是允许」写入与 §2 免打扰集群来源持久化
+/// 规则落盘进程级串行闸（「总是允许」写入与 免打扰集群来源持久化
 /// 双写者共用——防 read-modify-write 交错 last-write-wins 丢规则）。
 static RULES_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// 层级安全门 + pattern 生成 + upsert + save **单一收口**（M7「总是允许」
-/// 与 §2 免打扰集群来源持久化共用——写入语义单点，web_approval 的
+/// 层级安全门 + pattern 生成 + upsert + save **单一收口**（「总是允许」
+/// 与 免打扰集群来源持久化共用——写入语义单点，web_approval 的
 /// save_always_rule 与 auditor auto-approve 都走这里）。config 家族写
 /// 串行锁在此叠加：approval_rules.json 的另一写者（security.approvals
-/// .clear）持 config_write_lock——双写者互斥（同类横扫四期，2026-10-13）。
+/// .clear）持 config_write_lock——双写者互斥（同类横扫四期）。
 /// 锁序单向 RULES_WRITE_LOCK → config_write_lock，无环。
 ///
 /// 返回 `Some(pattern)` = 已落盘；`Ok(None)` = 层级门不过（CRITICAL 仅
 /// process_exec 豁免 + 安装类永不入规则），调用方 warn 忽略；`Err` = 写盘
-/// 失败（调用方裁决是否影响主流程——M7 主流程批准已生效不回滚，§2 同）。
+/// 失败（调用方裁决是否影响主流程—— 主流程批准已生效不回滚， 同）。
 pub fn persist_auto_allow_rule(
     path: &Path,
     operation: &str,

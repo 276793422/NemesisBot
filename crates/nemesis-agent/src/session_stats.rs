@@ -2,7 +2,7 @@
 //! （LLM 重试 / args 校验失败回灌 / 压缩成功）经本 trait 上抛给宿主聚合器。
 //!
 //! 分工：有事件载体的计数（工具开始/结束、审批产生/裁决）由宿主
-//! （nemesisbot `session_stats:SessionStatsAggregator`）订阅
+//! （nemesisbot `session_stats::SessionStatsAggregator`）订阅
 //! `AgentEvent` broadcast 自行累计，不经本 trait；本 trait 只补
 //! loop 内部计数器的缺口。`None`（standalone / 未注入）= 不统计，
 //! 调用点零开销。

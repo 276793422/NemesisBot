@@ -1078,7 +1078,7 @@ fn test_handle_message_with_allowed_user() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：BaseChannel Clone 保留运行态（enabled/running 快照 +
+// 补测：BaseChannel Clone 保留运行态（enabled/running 快照 +
 // stats Arc 共享 + sync_targets 独立副本）
 // ===========================================================================
 
@@ -1119,13 +1119,13 @@ async fn test_w4c_clone_preserves_state_and_shares_stats() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): tracing field arms in sync_to_targets
+// coverage: tracing field arms in sync_to_targets
 // ===========================================================================
 
 /// Enable a global tracing subscriber for this test binary (idempotent).
 /// Tracing macro field expressions only evaluate when a subscriber is
 /// active; existing tests already exercise the code path but without a
-/// subscriber the `content_len = ...`-style field lines never run.
+/// subscriber the `content_len =...`-style field lines never run.
 fn s2_enable_tracing() {
     let _ = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::DEBUG)
@@ -1149,7 +1149,7 @@ async fn s2_sync_to_targets_logs_field_arms_with_subscriber() {
 }
 
 // ===========================================================================
-// BUG-20261025-57: sync 镜像回环防护（sync_via 标记 + sync_outbound 守卫）
+// sync 镜像回环防护（sync_via 标记 + sync_outbound 守卫）
 // ===========================================================================
 
 #[tokio::test]
@@ -1265,7 +1265,7 @@ async fn bug57_mutual_sync_config_does_not_ping_pong() {
     );
 }
 
-// BUG-20261031-261：出站 client 单一构造点必须可构造（TLS backend 初始化
+// 出站 client 单一构造点必须可构造（TLS backend 初始化
 // 成功路径）。超时值本身 reqwest 不暴露 getter，行为由 reqwest 保证；
 // 此处钉的是「构造不 panic + 返回 Result 通道错误形态」这一契约。
 #[test]

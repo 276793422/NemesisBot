@@ -2,11 +2,11 @@
 //! restore 正常+冲突结构化返回+web 键改名恢复+复合键诚实拒绝 / purge /
 //! purge_all / 同键二次删除双条目并存 / 孤儿目录列表与恢复语义。
 //!
-//! 隔离纪律：核心函数全部走 [`TrashLocations:with_dirs`] 注入——**每个测试
+//! 隔离纪律：核心函数全部走 [`TrashLocations::with_dirs`] 注入——**每个测试
 //! 一套 tempdir 三目录**（trash/session_logs/boundary），不触碰进程单例
 //! home（OnceLock 固化不可重定向；真实 home 是在用数据目录，写它=污染）。
 //! 夹具直接按 loc 寻址写盘（文件行格式自洽即可，trash 逻辑只数非空行），
-//! 不经 chat_log:append_chat_log 单例。故无需串行锁。
+//! 不经 chat_log::append_chat_log 单例。故无需串行锁。
 
 use super::*;
 use std::io::Write as _;

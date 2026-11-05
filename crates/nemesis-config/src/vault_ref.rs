@@ -1,4 +1,4 @@
-//! `vault:<alias>` 引用解析钩子（vault 计划 ，2026-09-22 计划 §2.2）。
+//! `vault:<alias>` 引用解析钩子（vault 计划，2026-09-22 计划）。
 //!
 //! 依赖环约束：vault 的加密实现住在 nemesis-security，而 nemesis-security
 //! 依赖本 crate（nemesis-config）——所以本 crate **不能**反向依赖它。约定：

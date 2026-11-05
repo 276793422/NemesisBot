@@ -1,4 +1,4 @@
-//! C ABI（nv_*）单测（M5 补测，quality-hardening goal 2026-08-25）。
+//! C ABI（nv_*）单测（补测，quality-hardening goal 2026-08-25）。
 //!
 //! 导出函数是 `unsafe extern "C" fn`（not_unsafe_ptr_arg_deref 公共契约要求），
 //! lib target 下进程内调用需 unsafe 包裹（契约同真实 C 调用方：指针合法），
@@ -6,7 +6,7 @@
 //! publisher 128B）——真正跨 DLL 边界（libloading 加载）的链路由
 //! test-tools/verify-loader 覆盖（真机 bin）。
 //!
-//! env 说明：`builtin_root_anchors()`（lib.rs 单一真相源，S4-2）读运行时
+//! env 说明：`builtin_root_anchors()`（lib.rs 统一定义）读运行时
 //! `NEMESIS_ROOT_ANCHOR`（值形态 = 根证书 SHA-256 指纹 hex，64 字符）。
 //! 涉及 env 的测试共享一把锁串行；不涉及
 //! env 的测试只断言 NoSignature/参数错误（在信任判定之前出结果），不受 env 值影响。
@@ -20,7 +20,7 @@ use p256::ecdsa::{SigningKey, VerifyingKey};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-/// env 串行锁：指向 crate 根唯一 GLOBAL_STATE_LOCK（S6 批次统一）——
+/// env 串行锁：指向 crate 根唯一 GLOBAL_STATE_LOCK（批次统一）——
 /// 本模块设 NEMESIS_ROOT_ANCHOR，而 verify 流程同时读 NEMESIS_REVOCATION_URL /
 /// NEMESIS_STRICT_OFFLINE / CRL_CACHE，跨模块并行会互踩，必须共享一把。
 use crate::GLOBAL_STATE_LOCK as ENV_LOCK;
@@ -32,7 +32,7 @@ fn keypair(seed: u8) -> (SigningKey, VerifyingKey) {
     (sk, vk)
 }
 
-/// env 根注入值：根证书 SHA-256 指纹 hex（64 字符，S4-1 形态）。
+/// env 根注入值：根证书 SHA-256 指纹 hex（64 字符， 形态）。
 fn anchor_hex(h: &V4Harness) -> String {
     crate::hex_util::hex_encode(&h.h.root_anchor_fingerprint())
 }
@@ -120,7 +120,7 @@ fn put32(b: &mut [u8], off: usize, v: u32) {
     b[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-/// 无证书表的最小 PE32+：1 个 section（0x200 @ 0x400），nrva=16。
+/// 无证书表的最小 +：1 个 section（0x200 @ 0x400），nrva=16。
 fn base_pe() -> Vec<u8> {
     let size_of_opt: usize = 240;
     let sec_tbl = P + 24 + size_of_opt;
@@ -142,9 +142,9 @@ fn base_pe() -> Vec<u8> {
 
 #[test]
 fn nv_verify_target_valid_pe_certificate_table() {
-    // S4-5：C ABI 走 PE Certificate Table 正路径——nv_self_verify 对 PE 形态
+    // C ABI 走 PE Certificate Table 正路径——nv_self_verify 对 PE 形态
     // DLL 的定位判据与之同源（verify_bytes::locate_primary）；libloading 真机
-    // 跨 DLL 边界链路归 verify-loader（S5-3 四通路回归）。
+    // 跨 DLL 边界链路归 verify-loader（四通路回归）。
     if crate::BUILTIN_ROOT_ANCHOR_HEX.is_some() {
         return;
     }
@@ -221,7 +221,7 @@ fn nv_verify_current_exe_is_unsigned_in_tests() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：run_verify 状态映射全臂、
+// 覆盖率批次（quality-hardening goal）：run_verify 状态映射全臂、
 // 非法 env 根 hex 的空列表回退、nv_self_verify IO 错误码。
 // （注意：lib+cdylib 双编译单元下 nv_* 的行覆盖数字不可信——lcov 对
 // no_mangle 同名符号只保留一条记录；测试本身仍验证真实行为。）
@@ -264,7 +264,7 @@ fn nv_verify_target_maps_all_outcome_statuses() {
     let sig_bad = h.sign_raw_with(b"map target", 1000, &foreign, &h.h.chain());
     assert_eq!(status_of(&sig_bad, &mut out), NV_SIGNATURE_INVALID);
 
-    // UnsupportedVersion：SignedData.version V2（version 不在签名覆盖面，可改）
+    // UnsupportedVersion：SignedData.version （version 不在签名覆盖面，可改）
     let cms = h.build_cms(b"map target", 1000, &h.h.leaf_sk, &h.h.chain());
     let mut ci = ContentInfo::from_der(cms.as_slice()).unwrap();
     let mut sd = SignedData::from_der(ci.content.to_der().unwrap().as_slice()).unwrap();
@@ -563,8 +563,8 @@ fn nv_get_signature_detail_with_chain_and_truncation() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：C ABI 剩余状态码臂——nv_list_signatures 非
-// UTF-8 路径（-2）；nv_get_signature null 参数（-1）/ 非 UTF-8 路径（-2）/
+// AGT 覆盖率批次：C ABI 剩余状态码臂——nv_list_signatures 非
+// UTF-8 路径（2）；nv_get_signature null 参数（1）/ 非 UTF-8 路径（2）/
 // publisher（opus programName）穿透与 128B 截断臂。
 // ---------------------------------------------------------------------------
 
@@ -619,7 +619,7 @@ fn agt_nv_get_signature_arg_errors_and_publisher_passthrough() {
     assert_eq!(detail.publisher_len, "org-publisher".len() as u32);
     assert_eq!(&detail.publisher[.."org-publisher".len()], b"org-publisher");
 
-    // 128B 截断臂：超长 publisher 只写前 128 字节（opus programName 是 IA5=ASCII）
+    // 128B 截断臂：超长 publisher 只写前 128 字节（opus programName 是 =ASCII）
     let long_pub = "pub:".repeat(50);
     let signed_long = h.sign_raw_opus(
         b"long publisher",
@@ -639,10 +639,10 @@ fn agt_nv_get_signature_arg_errors_and_publisher_passthrough() {
     assert_eq!(&detail2.publisher[..], &long_pub.as_bytes()[..128]);
 }
 
-/// BUG-20261104-378 伴随修复回归锁：truncate_utf8 必须在字符边界截断——
+/// 伴随修复回归锁：truncate_utf8 必须在字符边界截断——
 /// 多字节字符骑在 max_bytes 边界上时回退而非切碎（按字节硬切产非法 UTF-8
 /// 尾巴，FFI 消费方按 UTF-8 解码即炸）。ASCII 超长形态与旧 min(len,max) 硬切
-/// 逐字节一致（L510-561 既有断言继续锚定该等价性）。
+/// 逐字节一致（既有断言继续锚定该等价性）。
 #[test]
 fn truncate_utf8_never_splits_multibyte_char() {
     // 多字节字符骑在边界：64B 边界前是 21 个 3 字节汉字（63B）+ 1 字节落入

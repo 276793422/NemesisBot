@@ -244,7 +244,7 @@ async fn set_config_merges_field_by_field() {
         .expect_err("empty payload must be rejected");
 }
 
-// 批次 18：parse_selection / current_executor 回退 /
+// parse_selection / current_executor 回退 /
 // home_of / 只读探测命令（status/check/pending）/ set_network 缺参。
 // 真 Sandboxie 交互（install/start/stop/open_box 提权子进程）→ 结构性豁免。
 

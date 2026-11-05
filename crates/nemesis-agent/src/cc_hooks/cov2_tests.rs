@@ -140,7 +140,7 @@ fn notification_payload_merges_extra_object() {
 // ---------------------------------------------------------------------------
 
 /// workspace config 路径被**文件**占用 → create_dir_all 静默失败 →
-/// fs:copy 失败 → warn（不 panic，legacy 保留）。
+/// fs::copy 失败 → warn（不 panic，legacy 保留）。
 #[test]
 fn migrate_legacy_copy_failure_warns_and_keeps_legacy() {
     let _logs = capture_logs();

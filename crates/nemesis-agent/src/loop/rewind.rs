@@ -30,7 +30,7 @@ pub(crate) struct RewindUndoEntry {
     /// verbatim 回填进无关对话；指纹维度补上「行数未变但内容已变」的
     /// 陈旧性判定。
     kept_rows_hash: String,
-    /// ：undo 完成时刻的**实时盘面**影子 tree（文件
+    /// undo 完成时刻的**实时盘面**影子 tree（文件
     /// 恢复已生效后的工作区快照）。redo 冲突预检以它为基线 diff 当前盘面
     /// ——基线必须是「回退刚结束时的盘」而不是 forward_tree：回退本身就
     /// 会把文件搬离前向目标（恢复到 begin 态），拿 forward_tree 当基线会
@@ -45,7 +45,7 @@ pub(crate) struct RewindUndoEntry {
     redo_partial_written: Vec<String>,
 }
 
-/// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json:to_string` 后
+/// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json::to_string` 后
 /// `'\n'` 连接进 sha256（与 `truncate_chat_log_rows` 落盘侧同序列化形态，
 /// 同 key 排序/转义，逐字节可比）。空行集 = 空 blob 的 sha256（恒定值，
 /// kept_count=0 的 redo 语义不变）。
@@ -62,8 +62,8 @@ fn kept_rows_fingerprint(rows: &[serde_json::Value]) -> String {
 }
 
 /// forward_tree 的 gc 在途保护 guard。采集后立即注册进
-/// [`AgentLoop:gc_inflight_trees`]（gc 保留集经 `undo_stack_tree_refs` 读
-/// 到它），压栈成功后 [`Self:defuse`]（栈条目接管保护）；任何早退路径
+/// [`AgentLoop::gc_inflight_trees`]（gc 保留集经 `undo_stack_tree_refs` 读
+/// 到它），压栈成功后 [`Self::defuse`]（栈条目接管保护）；任何早退路径
 /// （恢复失败 blocked / 提交失败 blocked / no-op 不压栈）drop 自动注销。
 struct GcInflightGuard<'a> {
     al: &'a AgentLoop,
@@ -98,7 +98,7 @@ impl AgentLoop {
         *self.security.checkpoint_store.write() = Some(store);
     }
 
-    /// ：checkpoint store 只读口——项目 loop 工厂测试用
+    /// checkpoint store 只读口——项目 loop 工厂测试用
     /// 它断言影子库落在主 workspace（`logs/project_checkpoints/{pid}`）而非
     /// 用户项目目录。
     pub fn checkpoint_store(&self) -> Option<Arc<crate::checkpoint::CheckpointStore>> {
@@ -135,10 +135,10 @@ impl AgentLoop {
 
     /// 消息级回退：会话截断到 `message_index` 所在 turn 结束（该消息
     /// 及其 turn 的回复**保留**，其后所有行截掉），文件恢复到其后第一个
-    /// checkpoint turn 开始时的状态，并压入 undo 栈供 [`Self:redo_rewind`]
+    /// checkpoint turn 开始时的状态，并压入 undo 栈供 [`Self::redo_rewind`]
     /// 反向。
     ///
-    /// 定位契约：`message_index` 是 [`crate:chat_log:read_chat_log`]（=
+    /// 定位契约：`message_index` 是 [`crate::chat_log:read_chat_log`]（=
     /// `sessions.export` / `logs.session_detail` 的行序，同一 jsonl）里该
     /// 会话消息数组的下标。行→turn 精确定位靠 user 行的 `checkpoint_turn`
     /// 标记（本 turn begin 序号随 admission 穿针写入）；无标记的旧行退化为
@@ -158,7 +158,7 @@ impl AgentLoop {
     /// 复树内仍会被碾——这正是 other_session_paths 要拦的事，强过即用户
     /// 意志）。
     ///
-    /// 会话闸：经 [`Self:under_history_gate`] 真互斥（旧
+    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（旧
     /// peek 存在「检查后、截断前」窗口，在飞回合的行会被陈旧快照截丢）。
     ///
     /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
@@ -205,7 +205,7 @@ impl AgentLoop {
 
         // 对话截断点：index 之后第一个 user 行（turn 边界——assistant 行
         // 属于所在 turn，必须随 turn 一起保留/截掉）。轮边界判定走
-        // [`crate:chat_log:is_user_turn_boundary`] 单一真相源（steer 注入
+        // [`crate::chat_log:is_user_turn_boundary`] 单一真相源（steer 注入
         // 行是轮中间的 user 形态行，不算轮首）。
         let cut = rows[message_index + 1..]
             .iter()
@@ -219,14 +219,14 @@ impl AgentLoop {
     /// 行动代理 撤销一等动词后端：回退**最后一个用户轮**。
     /// 语义 = 把 jsonl 截到最后一个 user 行之前（该 user 行及其回复一并移
     /// 除）+ 文件还原到该轮开始前的 checkpoint 态 + 压 undo 栈（redo 可反
-    /// 向）。与 [`Self:rewind_to_message`] 共享 [`Self:rewind_from_cut`]
+    /// 向）。与 [`Self::rewind_to_message`] 共享 [`Self::rewind_from_cut`]
     /// 机体；差异只在截断点计算——本入口允许 cut=0（首轮即可撤销，单轮会
     /// 话「下单→撤销」剧本的主路径，`rewind_to_message` 的「保留 index 所
     /// 在轮」契约表达不了这个形态）。
     ///
     /// busy 检查省略：唯一调用方是会话维护尾巴（gate 已获取会话 = 串行保
     /// 证，会话正忙根本进不到这里）；WSAPI 面的同语义入口走
-    /// [`Self:undo_last_turn`]（会话闸 + 委托本方法）。
+    /// [`Self::undo_last_turn`]（会话闸 + 委托本方法）。
     pub(crate) async fn rewind_last_turn(
         &self,
         session_key: &str,
@@ -255,8 +255,8 @@ impl AgentLoop {
     }
 
     /// 行动代理 （收官-15）WSAPI 撤销入口：会话闸
-    /// （[`Self:under_history_gate`] 真互斥）+ 委托
-    /// [`Self:rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
+    /// （[`Self::under_history_gate`] 真互斥）+ 委托
+    /// [`Self::rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
     /// （对话与文件都不动）——`connectors.undo` 的域 B（write 无 undo 声
     /// 明）走此入口回退最后一轮。维护尾巴调用方不经此入口（gate 已持会
     /// 话），直接走内部方法。
@@ -267,10 +267,10 @@ impl AgentLoop {
 
     /// 重新生成支撑（chat-regenerate-rewind-buttons-mismatch）：
     /// 回退到 `message_index` 行**之前**（`cut = message_index`——保留
-    /// `rows[..cut]`，该行及其后所有行移除）。与 [`Self:rewind_to_message`]
+    /// `rows[..cut]`，该行及其后所有行移除）。与 [`Self::rewind_to_message`]
     /// （turn 对齐：index 所在整轮保留）的差异只在截断点计算；本入口能表
     /// 达「保留提问、撤掉回复」（前端重新生成）与 cut=0（首轮重新生成，
-    /// 现有 turn 对齐入口表达不了的形态，[`Self:rewind_last_turn`] 注释
+    /// 现有 turn 对齐入口表达不了的形态，[`Self::rewind_last_turn`] 注释
     /// 为证）。
     ///
     /// 文件恢复锚零新增：cut 落在提问行上时，提问行自带本轮
@@ -279,7 +279,7 @@ impl AgentLoop {
     ///
     /// 契约：`message_index` 必须指向 user 行——assistant 行落点会产生
     /// 「删提问留回复」的破碎轮，loud 拒绝。会话闸与边界检查同
-    /// [`Self:rewind_to_message`]；共享 [`Self:rewind_from_cut`] 机体
+    /// [`Self::rewind_to_message`]；共享 [`Self::rewind_from_cut`] 机体
     /// （冲突预检 / undo 栈 / 审计全量复用）。
     pub async fn rewind_before_message(
         &self,
@@ -336,7 +336,7 @@ impl AgentLoop {
     }
 
     /// rewind 共享机体（`rewind_to_message` / `rewind_last_turn` 两入口的
-    /// 单一真相源）：`rows` 是全量行快照、`cut` 是保留/截断分界（
+    /// 统一定义）：`rows` 是全量行快照、`cut` 是保留/截断分界（
     /// `rows[..cut]` 保留、`rows[cut..]` 移除）、`report_index` 是回执与
     /// 回退谱系引用的消息下标。调用方负责 busy 检查与边界检查。
     async fn rewind_from_cut(
@@ -362,7 +362,7 @@ impl AgentLoop {
         });
         let removed: Vec<serde_json::Value> = rows[cut..].to_vec();
 
-        // ：冲突预检——restore 锚之后各 turn 封印
+        // 冲突预检——restore 锚之后各 turn 封印
         // 的「变更后指纹」vs 现盘内容。只读不突变（零副作用），冲突且未
         // force = 拒绝并列结构化清单；force = 强过（审计留痕）。
         // （会话回退波及面收窄）：scoped 预检——回退区间内
@@ -516,7 +516,7 @@ impl AgentLoop {
         // 2b) 提交成功 → 检查点退役（从步骤 1 移来）。
         // scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）原样
         // 保留，其回退历史不被本会话的回退摧毁。
-        // ：post 基线 = scoped 截断后的真实索引态，
+        // post 基线 = scoped 截断后的真实索引态，
         // 两侧同读截断后索引（redo 守卫 2 对照 latest_tree_hex 即同口径；
         // 截断前其他会话 turn ≥ t 的条目带树会被误判「undo 后工作区变了」）。
         if let (Some(t), Some(cp)) = (restore_turn, self.attached_checkpoint()) {
@@ -524,7 +524,7 @@ impl AgentLoop {
             post_tree = cp.latest_tree_hex();
         }
 
-        // ：force 强过的强恢复动作落审计链台账——跳过冲突
+        // force 强过的强恢复动作落审计链台账——跳过冲突
         // 预检覆盖外部修改是高影响操作，warn! 日志轮转即失，Merkle
         // append-only 审计链才是「留痕」的诚实形态。截断成功后记账（文件
         // 恢复 + 截断都已生效，不为未发生的恢复记账）；审计链未启用（默认
@@ -551,7 +551,7 @@ impl AgentLoop {
             }
         }
 
-        // 3) SessionStore 丢缓存（jsonl 是单一真相源，下次 get_or_create
+        // 3) SessionStore 丢缓存（jsonl 是统一定义，下次 get_or_create
         // 从截断后的 jsonl 自愈重建——sessions.delete/clear 同款纪律）。
         if let Some(store) = self.session_store() {
             store.clear_session(session_key);
@@ -626,7 +626,7 @@ impl AgentLoop {
         }))
     }
 
-    /// ：checkpoint gc 的**下界查询口**——
+    /// checkpoint gc 的**下界查询口**——
     /// 全会话 undo/redo 栈条目引用的全部影子 tree hex（forward/post/undo
     /// 盘面三族）+ 回退中尚未压栈的 forward_tree 在途保护集
     /// 。gc 据此把这些 tree 并入保留集（栈是内存态，
@@ -661,12 +661,12 @@ impl AgentLoop {
     ///
     /// 诚实边界：redo 不重建 checkpoint 索引（undo 时 turn-*.json 已清），
     /// redo 过的区间无法再次 rewind；文件只恢复工作区内（tree 覆盖范围）。
-    /// 会话闸：经 [`Self:under_history_gate`] 真互斥（同 rewind 家族）。
+    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（同 rewind 家族）。
     pub async fn redo_rewind(&self, session_key: &str) -> Result<serde_json::Value, String> {
         self.redo_rewind_with_force(session_key, false).await
     }
 
-    /// ：带 force 的 redo——冲突预检（见
+    /// 带 force 的 redo——冲突预检（见
     /// `redo_rewind_inner`）检出外部漂移且未 force 时拒绝（结构化 blocked
     /// 回执，对齐 rewind 冲突块形态）；force=true 强过（审计留痕，回执带
     /// `forced: true`）。
@@ -730,7 +730,7 @@ impl AgentLoop {
             return Err("回退后工作区发生了新的变化，redo 已失效".to_string());
         }
 
-        // ：redo 冲突预检——undo→redo 窗口内的外部
+        // redo 冲突预检——undo→redo 窗口内的外部
         // 改动（IDE 手改等）不产生新 checkpoint turn，上面三守卫全盲
         // （守卫 2 的基线在 undo 时已被截断索引钉住，索引外漂移不可）。
         // 以 **undo 完成时刻的实时盘面**（undo_disk_tree）为基线 diff 当前

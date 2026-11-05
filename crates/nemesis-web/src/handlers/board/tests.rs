@@ -1871,7 +1871,7 @@ fn auto_dispatch_gate_requires_switch_and_worker() {
 #[tokio::test]
 async fn assign_worker_default_stays_pending_no_dispatch() {
     // 默认（无全局 config store → live_board_config None）：指派给 worker
-    // 只写 assignee 元数据，不触发派发——行为与 .5 之前完全一致
+    // 只写 assignee 元数据，不触发派发——行为与.5 之前完全一致
     //（不要求集群、状态不推进、无 ⛔ 评论）。
     let dir = unique_dir("assign-default-off");
     let ctx = make_ctx_with_board(&dir);
@@ -1987,7 +1987,7 @@ async fn auto_dispatch_on_without_cluster_leaves_trace_comment() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// Swarm ：issue.plan 两段式拆解 + 依赖补派（cluster 编译时；无真实集群的
+// Swarm：issue.plan 两段式拆解 + 依赖补派（cluster 编译时；无真实集群的
 // 路径全部走诚实降级断言——自动派发的正路径由真机矩阵 / 覆盖）
 
 /// 取 ctx 里 board store 的 Arc。
@@ -2695,7 +2695,7 @@ async fn test_channel_post_routes_through_ingress() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 全自动流转 ：board.config.get / board.config.set 配置 TAB 读写。
+// 全自动流转：board.config.get / board.config.set 配置 TAB 读写。
 
 #[tokio::test]
 async fn test_board_config_get_set_roundtrip() {
@@ -3123,7 +3123,7 @@ async fn test_board_config_set_profession_preset_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 全自动流转 ： autopilot auto_plan / project auto_start / 项目
+// 全自动流转： autopilot auto_plan / project auto_start / 项目
 // 状态联动
 
 /// 建一条 target 空（不预指派）+ 可调 auto_plan 的规则（经 store 落库——
@@ -3463,7 +3463,7 @@ async fn test_issue_plan_via_handler_one_shot_planning() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 全自动流转 ： 项目收口触发面（eligible 矩阵 + notify 守卫）+ config
+// 全自动流转： 项目收口触发面（eligible 矩阵 + notify 守卫）+ config
 // review/budget 新键回读
 
 /// eligible 夹具：项目 + 若干顶层父单（前 done_parents 个落 done）。
@@ -3722,7 +3722,7 @@ async fn test_board_config_review_budget_keys_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 停车场复活（//）：tags 匹配、sweep 重试、⏸ 去重、
+// 停车场复活：tags 匹配、sweep 重试、⏸ 去重、
 // 父单受阻联动、级联取消、无派发取消。
 
 /// 独立 workspace 的离线 Cluster（不 start()，纯注册表/任务账本内存态；
@@ -5937,7 +5937,7 @@ async fn test_dispatch_backfills_assignee() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 看板项目档案 ：project.progress 档案完整性投影
+// 看板项目档案：project.progress 档案完整性投影
 
 #[test]
 fn test_project_progress_projects_archive_integrity_projection() {
@@ -6077,7 +6077,7 @@ async fn test_sync_parent_status_propagates_up_through_terminal() {
 
 /// SAN-08：级联遍历穿过终态中间节点——done 子单之下的孙子单和依赖该
 /// done 单的下游单都必须被级联取消（旧手搓 BFS 在终态单上截断，死链
-/// 从此不可见）；终态单本身不动。
+/// 从此不可）；终态单本身不动。
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_cascade_cancels_through_terminal_middle_node() {
@@ -9883,7 +9883,7 @@ fn w5_render_assets_section_with_signing_context() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// 集群专业职能框架 ：confirm_plan 降级评论 + required_profession 落库
+// 集群专业职能框架：confirm_plan 降级评论 + required_profession 落库
 
 /// 末轮宽和降级：downgrades 明细逐条落被降级子单的系统评论；合法职能
 /// 原样落库。
@@ -10894,7 +10894,7 @@ async fn project_create_duplicate_name_friendly_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// §1.1 拆解超时重拆链 / superseded 双闸 / 重启恢复（计划 Part 1）
+// 拆解超时重拆链 / superseded 双闸 / 重启恢复（计划 Part 1）
 
 /// 本批 Part 1 测试串行闸：RUNNING_PLANS 是进程级全局，而各测试的独立
 /// BoardStore 里 issue id 都从 1 起——并行跑会跨 store 误匹配 issue_id
@@ -11416,7 +11416,7 @@ async fn plan_chain_superseded_failure_path_is_silent() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// issue.list planning 投影（§1.1 A）：命中 RUNNING_PLANS 的单带
+/// issue.list planning 投影（A）：命中 RUNNING_PLANS 的单带
 /// planning{elapsed_secs, attempt}（重拆后 attempt 正确）；未命中单无该键。
 #[cfg(feature = "cluster")]
 #[tokio::test]
@@ -11630,7 +11630,7 @@ async fn recover_interrupted_plans_scans_and_respects_guards() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// U-C（§9.3）：issue.timeline 表面契约 ---
+// U-C：issue.timeline 表面契约 ---
 
 #[tokio::test]
 async fn test_issue_timeline_surface_contract() {

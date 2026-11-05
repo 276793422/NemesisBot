@@ -1,7 +1,7 @@
-//! Swarm M4：三态处置决策表单测（纯函数，零 I/O）。
+//! Swarm：三态处置决策表单测（纯函数，零 I/O）。
 //!
-//! 评审 I/O 链路（评论/状态转移/重派）由 cluster-uat T28 端到端覆盖；
-//! 此处钉死决策表的全部边界组合，防三态语义回归。全自动流转 P1/E3 追加
+//! 评审 I/O 链路（评论/状态转移/重派）由 cluster-uat 端到端覆盖；
+//! 此处钉死决策表的全部边界组合，防三态语义回归。全自动流转 / 追加
 //! `unlimited`（无限模式）维度用例。
 
 use super::*;
@@ -79,7 +79,7 @@ fn unsure_always_escalates() {
     );
 }
 
-// ---------- 无限模式（board.unlimited_mode，P1/E3）----------
+// ---------- 无限模式（board.unlimited_mode）----------
 
 #[test]
 fn unlimited_ignores_redispatch_budget() {
@@ -128,7 +128,7 @@ fn empty_reasons_get_honest_note() {
 
 // ---------- #0 前置修复回归：AutoAccept → on_issue_settled 补派链 ----------
 //
-// T1-2 断链回归（全自动流转 P2 交付物 #0）：AutoAccept 收货必须触发
+// 断链回归（全自动流转 交付物 #0）：AutoAccept 收货必须触发
 // `on_issue_settled`（父单状态同步 + 依赖子单补派）——修复前
 // `transition_issue(done)` 后直接返回，依赖子单停在 backlog 永不派出、
 // 父单永不收口。夹具：parent + sub1 + sub2（sub2 依赖 sub1，显式 worker
@@ -170,7 +170,7 @@ fn settle_deps_with_store(
         node_name: String::new(),
     }));
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
-    // F1（2026-09-30 派发目标校验前置）：dispatch_issue_core 现在在解析
+    // （派发目标校验前置）：dispatch_issue_core 现在在解析
     // 失败处显式拒绝（「未知节点」），注册表为空会让派发/重派折戟。脚手架
     // 注册测试常用的 worker 节点（保持原测试意图：测派发决策链，不是测
     // 未注册目标容忍度）。
@@ -307,10 +307,10 @@ async fn auto_accept_settle_spares_unrelated_sub() {
     );
 }
 
-// ---------- P2（B1）锚点双检两臂：短路 FAIL / 全过进语义项 ----------
+// ---------- 锚点双检两臂：短路 FAIL / 全过进语义项 ----------
 //
 // 夹具刻意不带模型（moderator_loop 留空）：短路臂必须不触碰 LLM 照样闭环；
-// 语义项在 loop 闸处诚实跳过（Ok(false)）。LLM 臂本体由 cluster-uat T29
+// 语义项在 loop 闸处诚实跳过（Ok(false)）。LLM 臂本体由 cluster-uat
 // 端到端覆盖。
 
 /// 验收测试夹具：无 config.json（embedded defaults：auto_review=true、
@@ -344,7 +344,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
         node_name: String::new(),
     }));
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
-    // F1（2026-09-30 派发目标校验前置）：dispatch_issue_core 现在在解析
+    // （派发目标校验前置）：dispatch_issue_core 现在在解析
     // 失败处显式拒绝（「未知节点」），注册表为空会让派发/重派折戟。脚手架
     // 注册测试常用的 worker 节点（保持原测试意图：测派发决策链，不是测
     // 未注册目标容忍度）。
@@ -401,7 +401,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
     (deps, workspace)
 }
 
-/// G4 交付证据闸夹具（2026-10-18 批六）：与 [`review_deps`] 同构，但
+/// 交付证据闸夹具：与 [`review_deps`] 同构，但
 /// Cluster 走 `with_workspace`（生产路径）→ tasks.db 在场（deliveries
 /// 记账可读写）。`Cluster::new` 的 task_db=None 内存态验证不了「交付记录
 /// 在场 → PASS 放行」臂——缺失会退化成夹具缺 db 的巧合而非账本事实。
@@ -493,8 +493,8 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
     use nemesis_board::IssueStatus;
 
     let (deps, ws) = review_deps("anchor-fail");
-    // 失败锚点用 re: 形态（交付文本不含该标志 → FAIL）。P1 拓扑硬闸
-    //（2026-09-12）拒绝 远端目标 + file: 锚点 派发，重派臂要真发车，
+    // 失败锚点用 re: 形态（交付文本不含该标志 → FAIL）。 拓扑硬闸
+    //拒绝 远端目标 + file: 锚点 派发，重派臂要真发车，
     // 锚点集必须对远端合法。
     let issue = issue_in_review(
         &deps.store,
@@ -523,7 +523,7 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
         .expect("锚点短路 FAIL 必须闭环不报错");
     assert!(reviewed, "短路 FAIL 应完成评审闭环（非跳过）");
 
-    // 明细评论落库：逐条差距条目可读（批一c：锚点短路输出恒带 criteria，
+    // 明细评论落库：逐条差距条目可读（c：锚点短路输出恒带 criteria，
     // 差距评论为缺口清账条目形态——失败锚点原文在 G 条目行，实核明细在
     // 条目内联证据段）。
     let comments = deps.store.list_comments(issue.id).unwrap();
@@ -551,7 +551,7 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
     assert_eq!(deps.store.list_dispatches(issue.id).unwrap().len(), 2);
 }
 
-// T30 回归锁（2026-11-05 ET 实录根修）：锚点短路输出是确定性 FAIL，
+// T30 回归锁（2026-11-05 ET 案例根修）：锚点短路输出是确定性 FAIL，
 // 不得被 B2b 的 F6 强制臂合成取证请求拖进取证尝试——强制臂语义是
 // 「锚点已过 + 语义评审仍嫌疑」，短路 = 锚点未过，不属强制臂射程。
 // 旧行为下强制臂对短路输出合成请求 → 真机集群取证派发成功 → 单据
@@ -635,7 +635,7 @@ async fn anchor_pass_falls_through_to_semantic_gate() {
         !comments.iter().any(|c| c.content.contains("逐条差距")),
         "锚点全过不得落失败差距评论"
     );
-    // PASS 摘要评论（T2-1：验收评论含锚点摘要，确定性审计痕迹）。
+    // PASS 摘要评论（验收评论含锚点摘要，确定性审计痕迹）。
     let pass = comments
         .iter()
         .find(|c| c.content.contains("客观锚点检查通过"))
@@ -652,7 +652,7 @@ async fn anchor_pass_falls_through_to_semantic_gate() {
     );
 }
 
-// 任务卡回显不是交付（2026-09-12 UAT T30 回归锁）：回显评论（含任务卡头）
+// 任务卡回显不是交付（UAT 回归锁）：回显评论（含任务卡头）
 // 即便锚点行剥离后，上轮失败明细引文散文里的裸词仍会二阶自命中——评审
 // 取文本必须整条排除任务卡回显，回显 worker 诚实 FAIL 走重派臂。
 #[tokio::test]
@@ -758,8 +758,8 @@ async fn parent_anchor_fail_blocks_auto_close_without_llm() {
 
 #[tokio::test]
 async fn parent_finish_gate_blocks_on_pending_unknown_then_admin_adjudication_proceeds() {
-    // AOR 批二b ⑥：review_parent_issue 入口的 FINISH 谓词——子单存在未
-    // 裁决 unknown → 阻塞收口 + 缺口评论（谓词在锚点/M8/LLM 之前）；admin
+    // b ⑥：review_parent_issue 入口的 FINISH 谓词——子单存在未
+    // 裁决 unknown → 阻塞收口 + 缺口评论（谓词在锚点//LLM 之前）；admin
     // 评论回应即裁决 → 谓词放行走既有链（本测用锚点 FAIL 短路保无 LLM）。
     use nemesis_board::{Actor, CommentType, IssueStatus, NewComment, NewIssue};
 
@@ -934,7 +934,7 @@ async fn parent_finish_gate_blocks_on_cancelled_child_with_gap_comment() {
 async fn malicious_anchor_falls_back_with_warning_comment() {
     use nemesis_board::IssueStatus;
 
-    // T2-3：路径形态不安全的锚点行（`..` 穿越）= 解析期拒绝 → 回落语义
+    // 路径形态不安全的锚点行（`..` 穿越）= 解析期拒绝 → 回落语义
     // 项 + 系统告警评论，不短路 FAIL（标准自身的毛病不惩罚执行者）。剩余
     // 合法锚点全过 → 进语义项；loop 缺位 → 诚实跳过。
     let (deps, ws) = review_deps("anchor-malicious");
@@ -1053,11 +1053,11 @@ async fn parent_anchor_pass_falls_through_to_semantic_gate() {
 }
 
 // ---------------------------------------------------------------------------
-// 全自动流转 P4：B2a 工具模式 / D3 换节点重派 / E1 预算保险丝 / B2b 取证
-// 提示词与路由表 / estop 三态停车 / F3 项目收口落盘
+// 全自动流转： 工具模式 / 换节点重派 / 预算保险丝 / 取证
+// 提示词与路由表 / estop 三态停车 / 项目收口落盘
 // ---------------------------------------------------------------------------
 
-// ---------- B2a：pick_review_tool_mode 决策表 ----------
+// ----------：pick_review_tool_mode 决策表 ----------
 
 #[test]
 fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
@@ -1066,8 +1066,8 @@ fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
         pick_review_tool_mode(Some("node-a"), "node-a", 3),
         ReviewToolMode::ReadOnly { max_turns: 3 }
     );
-    // 远端 worker → EvidenceOnly（evidence-on-demand，2026-10-15）：交付
-    // 档案已由系统合并到本机（board-projects/<项目>/），档案围栏工具按
+    // 远端 worker → EvidenceOnly（evidence-on-demand）：交付
+    // 档案已由系统合并到本机（board-projects/<项目>），档案围栏工具按
     // 单号解析档案根读到的就是本次交付——旧「工件不在本机一律纯文本」
     // 的张冠李戴顾虑对档案根工具不成立。
     assert_eq!(
@@ -1089,7 +1089,7 @@ fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
         pick_review_tool_mode(Some("node-b"), "node-a", 1),
         ReviewToolMode::NoTools
     );
-    // max_turns=0 = 不限取证轮数（2026-10-09 C1 预算耗尽根修②）：本机
+    // max_turns=0 = 不限取证轮数（预算耗尽根）：本机
     // worker 开只读取证，u32::MAX 为 DetachedOpts 层「实践不限」哨兵
     //（DetachedOpts 的 0 = 回落主配置默认，不能直传）。
     assert_eq!(
@@ -1112,7 +1112,7 @@ fn b2a_tool_mode_only_for_local_worker_with_multi_turns() {
     );
 }
 
-// ---------- PR4：评审预算感知注入块 ----------
+// ----------：评审预算感知注入块 ----------
 
 #[test]
 fn review_budget_block_matches_tool_mode() {
@@ -1182,9 +1182,9 @@ fn unattached_note_gives_tool_pointer_only_when_available() {
     assert!(!no_tool.contains("board_evidence_read"), "{no_tool}");
 }
 
-// ---------- D3：pick_redispatch_target 决策表 ----------
+// ----------：pick_redispatch_target 决策表 ----------
 
-/// 给 issue 落一条已完结派发行（D3 历史链构造件）。
+/// 给 issue 落一条已完结派发行（历史链构造件）。
 fn seed_dispatch(store: &nemesis_board::BoardStore, task: &str, issue_id: i64, worker: &str) {
     store
         .insert_dispatch(
@@ -1222,7 +1222,7 @@ async fn d3_single_dispatch_stays_same_worker() {
 async fn d3_two_consecutive_same_switches_to_unused_ranked_peer() {
     let (deps, _ws) = review_deps("d3-switch");
     // 注入一个在线 worker 节点（handle_discovered_node 置 Online；rpc_port=0
-    // 会被 G14 闸拒绝，必须给非零端口）。
+    // 会被 闸拒绝，必须给非零端口）。
     deps.cluster.handle_discovered_node(
         "node-b",
         "Node-B",
@@ -1286,7 +1286,7 @@ async fn d3_switch_skips_historically_used_workers() {
     assert_eq!(choice, RedispatchTargetChoice::Switch("node-c".to_string()));
 }
 
-/// file: 锚点单的换节点死锁回归锁（2026-10-08 NB-4 实证）：即使有匹配的
+/// file: 锚点单的换节点死锁回归锁（实证）：即使有匹配的
 /// 在线远端 worker，连续 ≥2 次同 worker 也必须回落 Same（拓扑约束——远端
 /// 候选全被 rank_dispatch_candidates 过滤，Switch 产物必被派发拓扑闸拒绝
 /// 成死锁停车），且不得误伤无锚点单的换节点面。
@@ -1323,14 +1323,14 @@ async fn d3_file_anchor_issue_stays_same_despite_online_peers() {
     assert!(!choice.is_switch());
 }
 
-// ---------- P34：重派决策量化（worker × 任务类型指纹三档）----------
+// ----------：重派决策量化（worker × 任务类型指纹三档）----------
 //
 // 纯逻辑（分桶/三档边界/稳定分区）与记账幂等在 nemesis-board
 // `fingerprint` 模块单测；此处钉决策表接入的行为面：成功率改变换节点
 // 人选 / 评论带档位可审计 / 开关默认关行为与现状字节一致 / 样本不足
 // neutral 不插队。双节点真流挂账 cluster-uat（主会话跑）。
 
-/// P34 夹具：node-c 连败 2 轮（锚点短路 FAIL 标准形态）+ 在线候选
+/// 夹具：node-c 连败 2 轮（锚点短路 FAIL 标准形态）+ 在线候选
 /// node-b/node-d（字典序 b 在前 = 无加权时必选 b）；指纹按同款
 /// task_type_of 算出（无标签 → 标题分桶，与评审侧记账同一真相源）。
 fn p34_deps(name: &str, title: &str) -> (BoardReviewDeps, nemesis_board::Issue, String) {
@@ -1494,7 +1494,7 @@ async fn p34_sample_starved_high_rate_stays_neutral() {
     );
 }
 
-// ---------- E1：budget_breach 三维矩阵 ----------
+// ----------：budget_breach 三维矩阵 ----------
 
 #[tokio::test]
 async fn e1_subissue_cap_dimension() {
@@ -1589,7 +1589,7 @@ async fn e1_wall_clock_dimension_and_saturating_arithmetic() {
         budget_breach(&deps, &issue, &cfg).is_none(),
         "刚建的单不可能超 u64::MAX 秒"
     );
-    // D9-1 单位回归锁：created_at 是 store::now() 的 unix 秒，曾直接从
+    // 单位回归锁：created_at 是 store::now() 的 unix 秒，曾直接从
     // 毫秒 now 里减——差值恒带 ~1.77e12 ms 偏移，1h 预算对刚建的单也
     // 即刻误报超支。真实单位语义下新单不得报 1h 墙钟超支。
     cfg.budget.wall_clock_budget_secs = 3600;
@@ -1604,7 +1604,7 @@ async fn e1_wall_clock_dimension_and_saturating_arithmetic() {
     assert!(breach.contains("wall_clock_budget_secs"), "got: {breach}");
 }
 
-// ---------- B2b：SelfcheckRegistry 路由表 + 取证提示词 ----------
+// ----------：SelfcheckRegistry 路由表 + 取证提示词 ----------
 
 #[test]
 fn selfcheck_registry_routes_task_to_issue() {
@@ -1656,7 +1656,7 @@ fn selfcheck_prompt_carries_marker_request_and_ac() {
         prompt.contains("不要下验收结论"),
         "执行 worker 不得越权下结论"
     );
-    // 2026-10-17 契约更新（NB-125 根修）：store 创建时自动生成 AC——
+    // 契约更新（根修）：store 创建时自动生成 AC——
     // 「无 AC」单如今带推导判据，取证 prompt 直接拿它当对照。
     let bare = store
         .create_issue(NewIssue {
@@ -1728,7 +1728,7 @@ async fn estop_parks_project_review_with_kind() {
     );
 }
 
-// BUG-6 回归锁（2026-10-13）：停车去重键必须是 (kind, issue_id) 而非裸
+// BUG-6 回归锁：停车去重键必须是 (kind, issue_id) 而非裸
 // issue_id——同一单先走子单评审停车（Issue）、后走父单收口停车（Parent）
 // 时，后者不得被前者吞号（吞号 = 该维度永不复评）。
 #[tokio::test]
@@ -1766,7 +1766,7 @@ async fn estop_park_dedup_does_not_swallow_cross_kind() {
     );
 }
 
-// ---------- F3：review_project_completion 跳过路径（不触 LLM） ----------
+// ----------：review_project_completion 跳过路径（不触 LLM） ----------
 
 #[tokio::test]
 async fn f3_config_gate_skips_project_review() {
@@ -1862,9 +1862,9 @@ async fn f3_non_done_parent_and_cancelled_child_skip_review() {
     assert_eq!(deps.store.get_project(pid2).unwrap().status, "active");
 }
 
-// ---------- F3：apply_project_review_outcome 三态落盘（不经 LLM） ----------
+// ----------：apply_project_review_outcome 三态落盘（不经 LLM） ----------
 
-/// F3 落盘夹具：项目 + 1 个顶层父单（返回三者）。
+/// 落盘夹具：项目 + 1 个顶层父单（返回三者）。
 fn f3_fixture(deps: &BoardReviewDeps, name: &str) -> (i64, nemesis_board::Issue) {
     use nemesis_board::NewIssue;
     let pid = deps
@@ -1967,7 +1967,7 @@ async fn f3_fail_rolls_back_completed_and_comments_parents() {
         "边界声明必须在: {}",
         c.content
     );
-    // 父单状态不动（F3 不自动重开）：落盘前后 status 必须一致。
+    // 父单状态不动（不自动重开）：落盘前后 status 必须一致。
     let before = deps.store.get_issue(parent.id).unwrap().status;
     assert_eq!(
         deps.store.get_issue(parent.id).unwrap().status,
@@ -2039,7 +2039,7 @@ async fn f3_archived_project_never_rolled_back() {
     );
 }
 
-// ===== P5/B3 多检查员聚合（aggregate_verdicts 纯函数穷举）=====
+// ===== / 多检查员聚合（aggregate_verdicts 纯函数穷举）=====
 
 fn pv(verdict: ReviewVerdict) -> nemesis_board::ReviewOutput {
     nemesis_board::ReviewOutput {
@@ -2109,7 +2109,7 @@ fn aggregate_majority_fail_2_1() {
 
 #[test]
 fn aggregate_tie_goes_unsure_and_keeps_evidence() {
-    // 平票 1:1 → Unsure 转人工；任一路 need_evidence 保留（B2b 挂起可用）。
+    // 平票 1:1 → Unsure 转人工；任一路 need_evidence 保留（挂起可用）。
     let mut o = pv(ReviewVerdict::Fail);
     o.need_evidence = Some(true);
     o.evidence_request = Some("回报关键输出原文".into());
@@ -2174,7 +2174,7 @@ fn aggregate_single_checker_passthrough() {
     assert_eq!(out.gap, "");
 }
 
-// ===== AOR 批一c §③：聚合逐条三态（criteria 取首个非空 / unknowns 合并）=====
+// ===== c §③：聚合逐条三态（criteria 取首个非空 / unknowns 合并）=====
 
 fn pvc(
     verdict: ReviewVerdict,
@@ -2242,7 +2242,7 @@ fn aggregate_unknowns_merge_dedup_preserve_order() {
 #[test]
 fn aggregate_pass_majority_with_fail_criteria_passes_through() {
     // 少数意见透传：2 PASS + 1 FAIL(带 FAIL 条) → 多数裁决 PASS，
-    // FAIL 路的条目照实进聚合（渲染层照列少数意见），不在聚合层强制改判
+    // FAIL 路的条目照实进聚合（渲染层照列少数意），不在聚合层强制改判
     // （parse_review 的互斥校验只管单路 LLM 输出，聚合是系统合成）。
     let fail_route = pvc(
         ReviewVerdict::Fail,
@@ -2260,7 +2260,7 @@ fn aggregate_pass_majority_with_fail_criteria_passes_through() {
     assert!(rendered.contains("[FAIL] branch 名"), "{rendered}");
 }
 
-// ===== AOR 批一c §③：unknowns 落盘（persist_unknowns 直测 store 流）=====
+// ===== c §③：unknowns 落盘（persist_unknowns 直测 store 流）=====
 
 #[test]
 fn persist_unknowns_writes_system_comment_with_markers() {
@@ -2355,7 +2355,7 @@ fn persist_unknowns_noop_when_empty_or_all_deduped() {
     );
 }
 
-/// 并行面板保序（goal B3 测试项）：Semaphore 限并发 + join_all 汇集后，
+/// 并行面板保序（goal 测试项）：Semaphore 限并发 + join_all 汇集后，
 /// 各检查员产出经聚合仍按输入序参与裁决（首个非空 gap/experience 取
 /// 输入序首位）。用面板同构的并发形态验证组合语义。
 #[tokio::test]
@@ -2379,7 +2379,7 @@ async fn panel_pipeline_preserves_checker_order() {
     );
 }
 
-// ===== P4/F3 回归：项目级验收标准聚合（join_project_review_ac 纯函数）=====
+// ===== / 回归：项目级验收标准聚合（join_project_review_ac 纯函数）=====
 
 fn parent_with_ac(number: &str, ac: Option<&str>) -> nemesis_board::Issue {
     use nemesis_board::NewIssue;
@@ -2406,7 +2406,7 @@ fn parent_with_ac(number: &str, ac: Option<&str>) -> nemesis_board::Issue {
 
 #[test]
 fn join_project_ac_project_first_then_parents() {
-    // 2026-10-17 契约更新：store 建单自动生成 AC——要测聚合函数的 None 臂
+    // 契约更新：store 建单自动生成 AC——要测聚合函数的 None 臂
     // （空 AC 父单不产生空段）必须显式抹掉生成值，模拟存量缺 AC 单。
     let mut nb2 = parent_with_ac("NB-2", None);
     nb2.acceptance_criteria = None;
@@ -2416,7 +2416,7 @@ fn join_project_ac_project_first_then_parents() {
         parent_with_ac("NB-3", Some("  标准三  ")),
     ];
     let joined = join_project_review_ac(Some("项目级标准"), &parents);
-    // 【label】独立成行（2026-09-12 根修）：拼进 AC 首行会把每段第一条
+    // 【label】独立成行（根修）：拼进 AC 首行会把每段第一条
     // [CHECK] 锚点挤离行首，被 parse_anchors 静默吞掉——label 必须自成
     // 一行，AC 原样顶格。
     assert!(
@@ -2430,7 +2430,7 @@ fn join_project_ac_project_first_then_parents() {
 }
 
 /// 锚点行顶格保全：AC 内的 [CHECK] 行经聚合后必须仍在行首（否则锚点
-/// 被吞、客观核验静默失效——S2 真机实证过 re:index.html 蒸发）。
+/// 被吞、客观核验静默失效—— 真机实证过 re:index.html 蒸发）。
 #[test]
 fn join_project_ac_preserves_anchor_line_positions() {
     let parents = vec![parent_with_ac(
@@ -2462,12 +2462,12 @@ fn join_project_ac_empty_project_ac_skipped() {
     assert_eq!(none, "");
 }
 
-// ---------- E2 决策审计词表（全自动流转 P5）----------
+// ---------- 决策审计词表（全自动流转）----------
 
 /// 单一写入点词表断言：全部 8 个处置臂（auto_accept/suggest_manual/
 /// redispatch/escalate_human/parent_auto_close/parent_escalate_human/
 /// project_complete/project_escalate_human）都经 `record_auto_decide`
-/// 落 `auto_decide` 活动，details = `{decision, verdict, ..extra}` 合并，
+/// 落 `auto_decide` 活动，details = `{decision, verdict,..extra}` 合并，
 /// actor = agent(node_id)。本测试钉死写入点的 action 词、details 形状
 /// 与 extra 键合并语义（审计流 board.audit.list / rollback 依赖它）。
 #[test]
@@ -2509,9 +2509,9 @@ fn record_auto_decide_writes_action_word_and_details_shape() {
     assert!(details.get("gap").is_some(), "extra 键合并进 details");
 }
 
-// ---------- E1 二期：token 预算维度（board.budget.max_tokens_per_parent）----------
+// ---------- 二期：token 预算维度（board.budget.max_tokens_per_parent）----------
 
-/// 纯聚合：父链全部派发行的 worker 回传用量求和。回归锚（T37 run 4 真机
+/// 纯聚合：父链全部派发行的 worker 回传用量求和。回归锚（run 4 真机
 /// bug）：派发行 worker_id = 派发时 peer 名（`node-b`），账本键 worker 段 =
 /// 传输层运行时节点 id（`node-laptop-runtime-b`）——两者不同源，按
 /// `/{task_id}` 后缀聚合才能对上；无 usage 行的派发计 0；陌生键的行不计入。
@@ -2680,7 +2680,7 @@ async fn e1_token_breach_gate_matrix_through_moderator_loop() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 // ------------------------------------------------------------------
-// estop × 集群回归（集群完备性加固 2026-09-11）：
+// estop × 集群回归（集群完备性加固）：
 // park_sweep_gate（estop 短路 + 节流，gateway sweep 回调的触发闸）
 // + spawn_estop_resume_watcher（release → 队列 drain → 按维路由复评）。
 // ------------------------------------------------------------------
@@ -2792,7 +2792,7 @@ async fn estop_release_watcher_drains_parked_queue() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ===== 项目收口聚合下钻 + 转人工评论去重（2026-09-12 双端真机 S2 根修）=====
+// ===== 项目收口聚合下钻 + 转人工评论去重（双端真机 根修）=====
 
 /// 项目收口的锚点实核文本必须含叶子子单的交付评论：worker 交付落在子单、
 /// 父单自身无 Delivery 时，聚合下钻后 `re:` 锚点应 PASS（进入 LLM 臂；loop
@@ -2999,7 +2999,7 @@ fn reasons_skipped_when_gap_carries_details() {
     assert!(c2.contains("理由："), "gap 空时 reasons 是唯一理由来源");
 }
 
-// ---------- P2A 能力类失败保护（2026-09-12，NB-15 根修） ----------
+// ---------- P2A 能力类失败保护（根修） ----------
 
 /// 构造一条最小评论（latest_fail_class 只看 content）。
 fn p2a_comment(content: &str) -> nemesis_board::Comment {
@@ -3066,7 +3066,7 @@ fn p2a_latest_fail_class_none_without_marker() {
 
 #[test]
 fn p2a_fail_class_policy_and_hints_contract() {
-    // ② 批一b：分类→重派策略映射矩阵（全值钉死——分类存在时映射表优先于
+    // ② b：分类→重派策略映射矩阵（全值钉死——分类存在时映射表优先于
     // 纯预算逻辑）；每类都有对应的人工处置建议。
     let matrix: [(&str, FailClassPolicy); 12] = [
         ("validation_budget", FailClassPolicy::CapabilitySwitch),
@@ -3123,7 +3123,7 @@ fn p2a_fail_class_policy_and_hints_contract() {
 
 #[test]
 fn p2a_latest_fail_class_recognizes_aor_batch1b_classes() {
-    // ② 批一b：三类新值进 KNOWN 白名单（防伪造面同步收口——识别即进
+    // ② b：三类新值进 KNOWN 白名单（防伪造面同步收口——识别即进
     // redispatch_policy 映射，冻结类直接停车）。
     for fc in ["environmental", "resource_conflict", "unknown_side_effect"] {
         let c = vec![p2a_comment(&worker_fail_comment("现象描述", fc))];
@@ -3138,7 +3138,7 @@ async fn p2a_capability_fail_blocks_blind_same_target_redispatch() {
     use nemesis_board::{CommentType, IssueStatus, NewComment};
 
     let (deps, _ws) = review_deps("p2a-cap-block");
-    // re: 失败锚点（远端派发合法形态，P1 拓扑硬闸不拦）——闸的拦截效果
+    // re: 失败锚点（远端派发合法形态， 拓扑硬闸不拦）——闸的拦截效果
     // 由此可完全归因于能力类失败保护，而非拓扑硬闸误伤。
     let issue = issue_in_review(
         &deps.store,
@@ -3279,7 +3279,7 @@ async fn p2a_capability_fail_unlimited_mode_warns_but_continues() {
     let _ = std::fs::remove_dir_all(&deps.home);
 }
 
-/// ② 批一b：冻结类失败（unknown_side_effect）——即使 unlimited_mode 也
+/// ② b：冻结类失败（unknown_side_effect）——即使 unlimited_mode 也
 /// 停车不重派（unlimited 放大的是重派次数，不是副作用知情权；与能力类
 /// unlimited WARN-继续形成判别面）。
 #[tokio::test]
@@ -3355,11 +3355,11 @@ async fn p2a_freeze_class_blocks_even_in_unlimited_mode() {
     let _ = std::fs::remove_dir_all(&deps.home);
 }
 
-// ---------- PR5：worker 循环升级标记 ----------
+// ----------：worker 循环升级标记 ----------
 
 /// `detect_worker_loop_marker` 语义钉死：只认 worker 侧（kind=agent 且
 /// id≠评审方）评论的行首标记；评审员/系统评论引用原文不触发（防自触发，
-/// M8 同哲学）；缩进也算（trim_start 语义）；多次喊停取最后一条说明。
+/// 同哲学）；缩进也算（trim_start 语义）；多次喊停取最后一条说明。
 #[test]
 fn worker_loop_marker_detection_semantics() {
     let dir = std::env::temp_dir().join(format!("nb-pr5-marker-{}", std::process::id()));
@@ -3464,7 +3464,7 @@ fn worker_loop_marker_detection_semantics() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 轮次绑定语义（2026-10-16 NB-121 死循环根修）：`dispatched_before` 之后
+/// 轮次绑定语义（死循环根修）：`dispatched_before` 之后
 /// 写入的 worker 标记才生效；最新派发之前的旧轮标记已由重派动作答复，
 /// 不得阻塞换条件后的新轮（cutoff 用哨兵值验证，不依赖真实时钟）。
 #[test]
@@ -3511,7 +3511,7 @@ fn worker_loop_marker_stale_after_redispatch() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// PR5 worker 循环升级：worker 交付带 `REDISPATCH_LOOP:` 标记 → FAIL 决策
+/// worker 循环升级：worker 交付带 `REDISPATCH_LOOP:` 标记 → FAIL 决策
 /// 链跳过重派直接转人工（不新增派发行；unlimited_mode 覆盖不了——喊停
 /// 必须被尊重）。锚点 FAIL 短路提供确定性 verdict，全程无 LLM。
 #[tokio::test]
@@ -3594,7 +3594,7 @@ async fn worker_loop_marker_stops_redispatch_even_unlimited() {
     let _ = std::fs::remove_dir_all(&deps.home);
 }
 
-/// P8 会话 token 预算（2026-10-10 集群无人值守硬化 A2）：⛔ 失败评论带
+/// 会话 token 预算（集群无人值守硬化）：⛔ 失败评论带
 /// `fail_class: token_budget` 标记行 → Redispatch 决策链不重派直接转人工
 /// （unlimited_mode 覆盖不了——预算耗尽是资源闸不是行为异常：重派会被
 /// worker 入口拒接原样退回，换节点也不解，只有人工裁决能解）。锚点 FAIL
@@ -3688,7 +3688,7 @@ async fn token_budget_fail_class_stops_redispatch_even_unlimited() {
 }
 
 // ---------------------------------------------------------------------------
-// 看板项目档案 P6（F9）：收口总结纯函数（facts/tree/root 守门）
+// 看板项目档案：收口总结纯函数（facts/tree/root 守门）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3806,7 +3806,7 @@ fn test_render_archive_tree_lists_dirs_hides_dotfiles() {
     let tree = super::render_archive_tree(&dir, 2);
     assert!(tree.contains("docs/"), "目录应带斜杠: {tree}");
     assert!(tree.contains("summary.md"), "文件应列出: {tree}");
-    // depth=2 语义：records/ 的子目录（NB-1/）可见，孙子（execution/）以 …
+    // depth=2 语义：records/ 的子目录可见，孙子（execution）以 …
     // 语义截断——附录只概览两层。
     assert!(tree.contains("NB-1/"), "二层目录应列出: {tree}");
     assert!(!tree.contains("execution/"), "三层目录应截断: {tree}");
@@ -3817,7 +3817,7 @@ fn test_render_archive_tree_lists_dirs_hides_dotfiles() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------- F9 收口总结：失败不阻塞收口（goal P6 判据单测）----------
+// ---------- 收口总结：失败不阻塞收口（goal 判据单测）----------
 //
 // run_project_summary 的前置检查在任何 LLM 调用之前失败（本测：主 agent
 // 未就绪——moderator_loop 空槽）→ 返回 Err；summarize_fail_note 落
@@ -3938,7 +3938,7 @@ async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------- 启动重放守卫（R4-BUG-2：评审链非重启韧性） ----------
+// ---------- 启动重放守卫（BUG-2：评审链非重启韧性） ----------
 
 /// 重放守卫夹具：建一张临时 store + 一个走到 in_review 的单据，
 /// 返回 (store, issue_id, actor)。
@@ -4076,7 +4076,7 @@ fn replay_guard_project_conclusion_probe() {
     let store =
         Arc::new(nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
     let actor = Actor::agent("node-a");
-    // 引用完整性闸（2026-10-17 系统性检查）后 create_issue 校验 project 存在——
+    // 引用完整性闸（系统性检查）后 create_issue 校验 project 存在——
     // fixture 必须先建真实项目再用其 id。
     let proj7 = store
         .create_project("重放项目7", "", None, "📌", "", None)
@@ -4146,8 +4146,8 @@ fn replay_guard_project_conclusion_probe() {
     ));
 }
 
-// ---------- render_project_artifacts_evidence（F-U3-6，2026-09-15 U3）----------
-// 父单收口评审输入此前只有 worker Delivery 声明摘要——U3 真机实证评审员
+// ---------- render_project_artifacts_evidence（F）----------
+// 父单收口评审输入此前只有 worker Delivery 声明摘要—— 真机实证评审员
 // 因「产物内容未随报提供」对齐全在案的产物判 UNSURE 转人工。证据段把
 // 项目目录真实清单+内容节选交给评审员，声明 vs 实物可对照。
 
@@ -4245,8 +4245,8 @@ fn artifacts_evidence_skips_large_and_binary_files_from_content_but_lists_them()
     let root = std::env::temp_dir().join(format!("u3f6-d-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
-    // 大文本（> 64KB 节选上限）：列清单不附内容。2026-10-17 上限 8KB→64KB
-    // （NB-101 项目收口误升级根修：白盒验收报告 12.9KB 被旧上限整文件排除）。
+    // 大文本（> 64KB 节选上限）：列清单不附内容。 上限 8KB→64KB
+    // （项目收口误升级根修：白盒验收报告 12.9KB 被旧上限整文件排除）。
     let big = "x".repeat(70 * 1024);
     std::fs::write(root.join("big.txt"), &big).unwrap();
     // 二进制扩展名：列清单不附内容。
@@ -4265,7 +4265,7 @@ fn artifacts_evidence_skips_large_and_binary_files_from_content_but_lists_them()
 
 #[test]
 fn artifacts_evidence_excerpts_follow_mtime_desc_final_evidence_first() {
-    // NB-101 项目收口误升级根修（2026-10-17）：旧实现按路径字母序消耗节选
+    // 项目收口误升级根修：旧实现按路径字母序消耗节选
     // 预算，外围产物（design/*、evidence/*.json）吃光 12 文件预算，最终
     // 验收报告从未进入评审视野。节选必须按修改时间倒序——收口期最后触碰
     // 的文件（最终证据）排最前；「early.md」路径序在前但 mtime 更早。
@@ -4296,10 +4296,10 @@ fn artifacts_evidence_excerpts_follow_mtime_desc_final_evidence_first() {
 
 #[test]
 fn artifacts_evidence_walk_not_amputated_by_listing_cap() {
-    // NB-101 项目收口四轮误升级根修（2026-10-17）：旧实现用清单上限 200
+    // 项目收口四轮误升级根修：旧实现用清单上限 200
     // 早停 walk——清单展示与节选候选池共用同一截断，路径序靠后的文件既
     // 不进清单也不进节选池，评审员据「报告引用的测试源文件不在清单」误判
-    // 交付不一致（实录：清单停在 test/ 第 3 个文件，integration/regression/
+    // 交付不一致（清单停在 test/ 第 3 个文件，integration/regression/
     // sim/ui/world 测试全缺席）。修后：候选池吃满全树，清单截断只是展示
     // 预算且注记显式否定「不在清单=不存在」。
     let root = std::env::temp_dir().join(format!("u3f6-walk-{}", std::process::id()));
@@ -4332,7 +4332,7 @@ fn artifacts_evidence_walk_not_amputated_by_listing_cap() {
 // ---------- render_discipline_evidence（件4 组件5，纪律闭环评审注入）----------
 // 变更集携带 `.discipline/` 时注入声明+证伪证据（抗糊弄二道闸：闸门保证
 // 存在性/证伪真跑过，声明质量交评审员对照判断）；非纪律任务诚实跳过。
-// 数据源 = 合并 commit 内 blob 原文（F-U3-7 同源，非执行者自述）。
+// 数据源 = 合并 commit 内 blob 原文（F- 同源，非执行者自述）。
 
 #[test]
 fn discipline_evidence_renders_declaration_and_falsification_from_commit() {
@@ -4392,7 +4392,7 @@ fn discipline_evidence_renders_declaration_and_falsification_from_commit() {
     assert!(out.contains("cargo test parse_expr"), "证伪命令在场");
     assert!(out.contains("评审提示"), "抗糊弄二道闸评审提示在场");
 
-    // 变更集不含 .discipline/（非纪律任务）→ None 诚实跳过（不拿陈旧
+    // 变更集不含.discipline/（非纪律任务）→ None 诚实跳过（不拿陈旧
     // 产物污染无关任务评审）。
     let non_disc: Vec<_> = files
         .iter()
@@ -4403,7 +4403,7 @@ fn discipline_evidence_renders_declaration_and_falsification_from_commit() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// ---- S-O2 迟到评审守卫（2026-09-16 showcase 复跑 NB-2 实证）----
+// ---- S- 迟到评审守卫（showcase 复跑 实证）----
 
 #[test]
 fn stale_review_guard_passes_in_review_and_discards_after_manual_move() {
@@ -4416,7 +4416,7 @@ fn stale_review_guard_passes_in_review_and_discards_after_manual_move() {
         "in_review 单据的评审结论应放行"
     );
 
-    // 人工干预在先（cancel→reopen，NB-2 实证路径）→ 结论丢弃 + 审计留痕。
+    // 人工干预在先（cancel→reopen， 实证路径）→ 结论丢弃 + 审计留痕。
     let reviewer = nemesis_board::Actor::agent("human-admin");
     deps.store
         .transition_issue(issue.id, IssueStatus::Cancelled, &reviewer)
@@ -4451,7 +4451,7 @@ fn stale_review_guard_passes_in_review_and_discards_after_manual_move() {
     assert_eq!(details["verdict"], "PASS");
 }
 
-/// 复刻 NB-2 实证全链（2026-09-16 showcase 复跑）：mock provider 在评审
+/// 复刻 实证全链（showcase 复跑）：mock provider 在评审
 /// LLM「在飞」期间执行人工 cancel→reopen（真实时序——起点校验时单据还在
 /// in_review，结论返回时已被人工改走），并返回合法 PASS 结论 → 迟到 PASS
 /// 必须整体让位：不落「验收通过」评论、不置 done、不重派（backlog→done
@@ -4529,7 +4529,7 @@ async fn stale_review_anchor_fail_yields_to_manual_intervention() {
         .expect("守卫让位是正常闭环，不报错");
     assert!(!reviewed, "迟到结论让位应返回未处置");
 
-    // 状态停在 backlog：迟到 PASS 不置 done（NB-2 实证的核心断言）。
+    // 状态停在 backlog：迟到 PASS 不置 done（实证的核心断言）。
     assert_eq!(
         deps.store.get_issue(issue.id).unwrap().status,
         IssueStatus::Backlog,
@@ -4563,7 +4563,7 @@ async fn stale_review_anchor_fail_yields_to_manual_intervention() {
 }
 
 // ===========================================================================
-// 2026-09-24 覆盖率补测（board_review.rs 未覆盖行 sweep）
+// 覆盖率补测（board_review.rs 未覆盖行 sweep）
 //
 // 复用既有夹具（review_deps / issue_in_review / seed_dispatch），新增脚本化
 // mock LLM 注入 moderator_loop，把此前只有 cluster-uat 端到端才碰得到的
@@ -4842,7 +4842,7 @@ async fn sweep_worker_report_falls_back_to_latest_agent_comment() {
     );
 }
 
-// ---------- B2b 二段评审证据注入（miss 571-575）+ F-U3 变更集注入（584-649） ----------
+// ---------- 二段评审证据注入（miss 571-575）+ F- 变更集注入（584-649） ----------
 
 /// 搭一个带 git 仓库的项目档案目录（脚手架 + 基线 commit），返回 (root, base_oid)。
 fn git_project_root(name: &str) -> (std::path::PathBuf, String) {
@@ -4992,7 +4992,7 @@ async fn sweep_merged_changeset_and_discipline_evidence_injected() {
     assert!(prompts.contains("waive 审计"), "waive 留痕须呈现");
 }
 
-// NB-102 真机实证（2026-10-15）：旧节选上限 2000 字符把 PRD 截在「核心玩法
+// 真机实证：旧节选上限 2000 字符把 PRD 截在「核心玩法
 // 循环」开头，评审员以「未展示功能需求/非功能需求/逐条验收标准，无法对照
 // 验收标准确认」确定性 UNSURE → max_unsure_streak 2 轮即停车。回归锁：
 // 单文件 12000 字符预算内的交付文本全文呈现（2000 字之后的段落必须在场）。
@@ -5015,7 +5015,7 @@ async fn sweep_merged_changeset_content_beyond_old_snippet_cap_is_injected() {
     assert!(body.chars().count() > 2000, "夹具须超过旧 2000 上限");
     // 生产同形：工作集 seed commit（gitignore 尊重 /docs/，走 commit_worktree）
     // + worker 变更集经 merge_changeset 合入（内存 index 绕 gitignore——真实
-    // NB-102 的 docs/prd-variant-A.md 正是经此路径入库）。
+    // 的 docs/prd-variant-A.md 正是经此路径入库）。
     std::fs::write(root.join("README.md"), "# demo\n").unwrap();
     let baseline = nemesis_board::git_repo::commit_worktree(&root, "工作集 seed")
         .unwrap()
@@ -5134,7 +5134,7 @@ fn sweep_discipline_evidence_degenerate_forms_honest_notes() {
         "commit 内缺失的证伪记录须注记读取失败"
     );
     assert!(out.contains("waive 审计"), "waive 审计须呈现");
-    // 无 .discipline/ → None 诚实跳过。
+    // 无.discipline/ → None 诚实跳过。
     assert_eq!(
         render_discipline_evidence(&root, &oid, &[("src/lib.rs".to_string(), "M".to_string())]),
         None,
@@ -5315,7 +5315,7 @@ async fn sweep_run_review_llm_retries_then_succeeds_and_readonly_mode() {
         }),
     );
     let mut prompt = "评审一下".to_string();
-    // ReadOnly 模式（B2a 本机 worker 多轮取证面）照常走同一解析回灌。
+    // ReadOnly 模式（本机 worker 多轮取证面）照常走同一解析回灌。
     let out = run_review_llm(
         deps.moderator_loop.get().unwrap(),
         &mut prompt,
@@ -5414,7 +5414,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
 
 #[tokio::test]
 async fn sweep_run_review_panel_overload_rejects_whole_batch_without_llm() {
-    // L19 手法3：单 prompt 超 PANEL_MAX_INPUT_BYTES → 首次 try_submit 即
+    // 手法3：单 prompt 超 PANEL_MAX_INPUT_BYTES → 首次 try_submit 即
     // 类型化拒绝（overload 臂在 LLM 之前短路——不触模型、不部分执行）。
     let (deps, _ws) = review_deps("sweep-panel-overload");
     attach_loop(
@@ -5446,12 +5446,12 @@ async fn sweep_run_review_panel_overload_rejects_whole_batch_without_llm() {
     assert!(err.contains("8388608"), "字节上限事实在场: {err}");
 }
 
-// ===== review_issue LLM 语义臂全链（2026-09-25 覆盖补齐） =====
+// ===== review_issue LLM 语义臂全链（覆盖补齐） =====
 //
 // 既有锚点短路/注入段测试覆盖了 review_issue 的判定前半程；本节把
 // 「LLM 结论 → 三态处置」后半程通过真 review_issue 链路钉死：AutoAccept
 // 收货、UNSURE 转人工、预算耗尽转人工、预算内重派、调用失败诚实评论、
-// unlimited 解析失败重派、B2b 取证派发失败兜底、经验蒸馏。
+// unlimited 解析失败重派、 取证派发失败兜底、经验蒸馏。
 
 fn decided_word(store: &nemesis_board::BoardStore, issue_id: i64) -> Option<String> {
     store
@@ -5706,7 +5706,7 @@ async fn llm_call_failure_posts_honest_review_failed_comment() {
     );
 }
 
-// ===== G4 交付证据闸（2026-10-18 批六） =====
+// ===== 交付证据闸 =====
 //
 // issue.requires_evidence（AC 含 file: 锚点建单自动置位）∪ 全局
 // board.review.require_delivery_evidence：PASS 放行前强制校验最新派发
@@ -5723,7 +5723,7 @@ async fn evidence_gate_missing_delivery_downgrades_pass_to_fail() {
     std::fs::create_dir_all(ws.join("out")).unwrap();
     std::fs::write(ws.join("out").join("result.md"), "产物").unwrap();
     // max_redispatch=0：降级 FAIL 直接转人工（file: 锚点本就进不了重派臂
-    // ——P1 拓扑硬闸拒绝远端目标 + file: 锚点派发）。
+    // —— 拓扑硬闸拒绝远端目标 + file: 锚点派发）。
     write_board_config(&deps.home, r#"{"max_redispatch":0}"#);
     let issue = issue_in_review(
         &deps.store,
@@ -5791,9 +5791,9 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
         "## 结论\n交付完成",
     );
     seed_dispatch(&deps.store, "t-evidence-hit", issue.id, "node-b");
-    // worker 回调已落账（生产真相源 = peer_chat 回调收据的 branch_delivery_inner：
+    // worker 回调已落账（生产权威 = peer_chat 回调收据的 branch_delivery_inner：
     // kind=branch、幂等键=`{task_id}:branch`、payload = delivery JSON **直接形态**
-    // ——BUG 2026-11-01 B 根修：旧夹具想象的 cluster_result+嵌套形态在生产
+    // —— B 根修：旧夹具想象的 cluster_result+嵌套形态在生产
     // 从未成立，on_complete 零接线）。capture：commit/tree 不可变交付点 +
     // patch_path 留底，空壳行不满足闸。
     deps.cluster
@@ -5839,7 +5839,7 @@ async fn evidence_gate_present_delivery_passes_and_anchor_summary_merged() {
         "在场时不得落降级留痕评论"
     );
     // anchor_summary 注记：锚点双检结果已合并进交付 payload（审计单行可
-    // 读），且浅合并不覆盖既有键（读生产真相源 branch 行——BUG 2026-11-01
+    // 读），且浅合并不覆盖既有键（读生产真相源 branch 行——
     // A 根修：裸键查不到 branch 行，注记自上线起从未工作过）。
     let rec = deps
         .cluster
@@ -5921,7 +5921,7 @@ async fn evidence_gate_global_switch_applies_to_plain_issues() {
     );
 }
 
-// ===== F5 结构完整性升级（二轮复评 2026-10-18）：空壳记录不再满足闸 =====
+// ===== 结构完整性升级（二轮复评）：空壳记录不再满足闸 =====
 //
 // 完成回调无条件记账（payload 可为 Null），「记录在场」不足以证明走了
 // 交付管线。闸升级：payload.delivery 必须在场 + commit/tree 非空 +
@@ -5990,7 +5990,7 @@ async fn evidence_gate_null_payload_shell_row_downgrades() {
 async fn evidence_gate_truncated_with_patch_path_passes() {
     use nemesis_board::IssueStatus;
 
-    // 截断 + patch_path 留底在场：结构完整 → 放行（G4 契约：截断必有留底）。
+    // 截断 + patch_path 留底在场：结构完整 → 放行（契约：截断必有留底）。
     let (deps, _ws, issue_id) = evidence_gate_fixture(
         serde_json::json!({
             "node": "node-b",
@@ -6019,7 +6019,7 @@ async fn evidence_gate_truncated_with_patch_path_passes() {
 async fn evidence_gate_truncated_without_patch_path_downgrades() {
     use nemesis_board::IssueStatus;
 
-    // 截断但无 patch_path（G4 契约破坏形态）：降级 FAIL。
+    // 截断但无 patch_path（契约破坏形态）：降级 FAIL。
     let (deps, _ws, issue_id) = evidence_gate_fixture(
         serde_json::json!({
             "node": "node-b",
@@ -6107,7 +6107,7 @@ async fn evidence_gate_stale_attempt_record_does_not_satisfy() {
     );
 }
 
-// ===== ②typed 证据块（诚实边界收口 2026-10-19） =====
+// ===== typed 证据块 =====
 //
 // delivery.files / delivery.checks 在场时无论开关都验形态（path 复用
 // anchor 形态闸 + sha256 64-hex + checks wire 契约）；缺席块行为不变。
@@ -6135,7 +6135,7 @@ fn typed_blocks_json() -> serde_json::Value {
     })
 }
 
-// R5 回归锁（原诊断探针翻转）：真实「纯删除」交付在 R5 后是完整的证据面——
+// 回归锁（原诊断探针翻转）：真实「纯删除」交付在 后是完整的证据面——
 // capture 侧 files 恒序列化且含 delete 条目（old_sha256 承载证据），形态闸
 // kind 分臂放行，评审通过离开 InReview。
 #[tokio::test]
@@ -6343,7 +6343,7 @@ async fn evidence_typed_checks_bad_entry_fails() {
 async fn evidence_typed_absent_with_strict_on_fails() {
     use nemesis_board::IssueStatus;
 
-    // 严格闸开 + files 缺席（旧 F5 形态交付）= FAIL：git 交付都应可派生
+    // 严格闸开 + files 缺席（旧 形态交付）= FAIL：git 交付都应可派生
     // files，缺席 = 证据面残缺。checks 缺席照常可选（不因 checks 拦人）。
     let (deps, _ws, issue_id) = evidence_gate_fixture(
         serde_json::json!({
@@ -6418,7 +6418,7 @@ async fn evidence_typed_absent_with_strict_off_passes() {
     );
 }
 
-// ===== P2 外循环：版本绑定 + 必检计划 + coding_delivery（2026-10-25） =====
+// ===== 外循环：版本绑定 + 必检计划 + coding_delivery =====
 
 #[tokio::test]
 async fn check_plan_unran_item_downgrades_pass_to_fail() {
@@ -6594,7 +6594,7 @@ async fn check_plan_covered_allows_auto_accept_and_coding_delivery_row() {
                     "patch_path": "logs/deliveries/t-checkplan-ok.patch",
                     "repo_base_sha": "a".repeat(40),
                     "checks": [
-                        // 归一子串覆盖：跑得比计划更细（--lib）也算覆盖。
+                        // 归一子串覆盖：跑得比计划更细（lib）也算覆盖。
                         {"tool": "exec", "cmd": "cargo test -p demo --lib", "ok": true, "summary": "5 passed"}
                     ],
                     "checks_binds": {
@@ -6816,7 +6816,7 @@ async fn llm_need_evidence_selfcheck_dispatch_failure_falls_back() {
     );
 }
 
-// F6（2026-09-30）：AC 含 re: 交付文本锚点的单按需强制自检——全局
+// AC 含 re: 交付文本锚点的单按需强制自检——全局
 // board.review.selfcheck 关（默认）也触发；无锚点单维持默认关。
 #[tokio::test]
 async fn anchor_ac_forces_selfcheck_even_when_global_switch_off() {
@@ -6878,8 +6878,8 @@ async fn anchor_ac_forces_selfcheck_even_when_global_switch_off() {
     assert!(!deps.selfcheck.has_inflight(plain.id));
 }
 
-// ===== 降级交付游标不得被验收流程评论抢走（2026-10-08 NB-21 子单 22）=====
-// worker 非结构化交付走 write_back 降级臂落 Comment 形态；F6 自检挂起评论
+// ===== 降级交付游标不得被验收流程评论抢走（子单 22）=====
+// worker 非结构化交付走 write_back 降级臂落 Comment 形态； 自检挂起评论
 //（author=评审节点，同为 agent+Comment 形态）晚于交付写入时，二段验收的
 // worker_report 游标曾被它抢走 → 锚点对「⏳ 验收暂缓…」文本判定必 FAIL，
 // 重派/换节点均不可自愈（三连败转人工）。修复：fallback 限定作者 = 最新
@@ -6919,7 +6919,7 @@ async fn degraded_delivery_cursor_survives_review_meta_comments() {
         })
         .unwrap();
     seed_dispatch(&deps.store, "t-degraded-cursor-1", issue.id, "node-b");
-    // 验收流程评论晚于交付写入（= F6 挂起后的二段验收现场），走真实出口。
+    // 验收流程评论晚于交付写入（= 挂起后的二段验收现场），走真实出口。
     post_review_comment(
         &deps.store,
         issue.id,
@@ -7052,7 +7052,7 @@ impl nemesis_agent::r#loop::LlmProvider for EstopMidLlm {
 
 #[tokio::test]
 async fn parent_llm_pass_estop_mid_review_parks_not_closes() {
-    // EST-03 父单收口 PASS 臂回归锁（R528）：收口评审 LLM 长跑期间挂急停
+    // EST-03 父单收口 PASS 臂回归锁：收口评审 LLM 长跑期间挂急停
     // ——发起时未生效（入口①过）、结束时已挂起，PASS 臂落 done +
     // on_issue_settled 级联前必须复查停车，不越过急停继续自动收口。
     use nemesis_board::IssueStatus;
@@ -7150,7 +7150,7 @@ async fn parent_llm_fail_escalates_with_gap_comment() {
     );
 }
 
-/// 父单收口 FAIL 自动返工承接（2026-10-16 NB-101「FAIL 弹回人工」根修）：
+/// 父单收口 FAIL 自动返工承接（「FAIL 弹回人工」根修）：
 /// 差距具体（gap 非空）+ 默认配置（parent_remediation_max=2）→ 自动创建
 /// 「返工：」子单（挂父单名下、差距原文进描述、继承项目/职能），父单保持
 /// in_review 不弹人工，决策词 parent_auto_remediate，评论带返工单号与差距。
@@ -7314,7 +7314,7 @@ async fn parent_llm_parse_failure_posts_honest_comment() {
     );
 }
 
-/// N4（§6.3 2026-10-12）：review_issue 父单分流——review.retrigger 对收口
+/// review_issue 父单分流——review.retrigger 对收口
 /// 失败转人工（保持 in_review）的父单一键重评时，review_issue 必须识别
 /// 「有子单」并分流 review_parent_issue（收口汇总语义），不得跑子单式
 /// 评审（父单自身无交付汇报，跑出来的是无依据结论；PASS 臂还会错误
@@ -7376,9 +7376,9 @@ async fn review_issue_diverts_parent_with_children_to_parent_review() {
     );
 }
 
-// ===== N2（2026-10-12）：评审自身失败自动重评（failure_retries） =====
+// =====：评审自身失败自动重评（failure_retries） =====
 
-/// N2 决策面共用：in_review 单 + 恒失败 LLM。
+/// 决策面共用：in_review 单 + 恒失败 LLM。
 fn n2_fail_fixture(deps: &BoardReviewDeps, name: &str) -> nemesis_board::Issue {
     let issue = issue_in_review(&deps.store, name, "", "## 结论\n交付完成");
     attach_loop(
@@ -7714,7 +7714,7 @@ async fn replay_stuck_reviews_skips_concluded_and_undelivered() {
     );
 }
 
-/// 4a（2026-09-30 17 场景观察点⑥根修）回归锁：writeback 评论三形态中，
+/// 4a（17 场景观察点⑥根修）回归锁：writeback 评论三形态中，
 /// 降级 ✅ Comment（parse_delivery_report 不中的无格式写回）与失败 ⛔
 /// Comment（error 回调）形态的 in_review 单同样必须被重放——修复前
 /// delivered 闸只认 Delivery，这两类单重启后永久卡死无自愈。
@@ -7823,7 +7823,7 @@ async fn selfcheck_second_stage_error_escalates_honestly() {
 #[tokio::test]
 async fn selfcheck_suspension_comment_never_serves_as_worker_report() {
     use nemesis_board::{CommentType, IssueStatus};
-    // 2026-10-08 Extended Tests T30/T-MRG in_review 停车根因回归锁：F6 锚
+    // Extended Tests /T-MRG in_review 停车根因回归锁： 锚
     // 点强制自检在二段评审前挂「⏳ 验收暂缓」（评审者自己 agent 署名），
     // 二段的交付回退（无结构化 Delivery → 最近 agent 评论）此前抓到这张
     // 比 worker 汇报更新的自述评论 → re: 交付文本锚点必假红 → FAIL → 重
@@ -7994,8 +7994,8 @@ async fn run_project_summary_success_writes_summary_doc() {
 }
 
 // -------------------------------------------------------------------------
-// Wave5 round2 batch4: 重派漏斗深水区 —— pick Err 停车 / 预算保险丝双臂
-// （非 unlimited 停车转人工 / unlimited WARN 续派发车）/ D3 换节点发车
+// Wave5 batch4: 重派漏斗深水区 —— pick Err 停车 / 预算保险丝双臂
+// （非 unlimited 停车转人工 / unlimited WARN 续派发车）/ 换节点发车
 // 全链 / dispatch_issue_core 重复闸拒绝的诚实留痕 / 停滞 WARN 前置两轮
 // 同差距 / 解析失败（评审 LLM 自身故障）unlimited 与护栏双臂 /
 // load_board_flags fail-closed。
@@ -8121,13 +8121,13 @@ async fn w5_redispatch_budget_breach_warns_and_continues_when_unlimited() {
     );
 }
 
-/// 重派决策④：D3 换节点发车全链 —— node-c 连败 2 轮 + 在线 node-b →
+/// 重派决策④： 换节点发车全链 —— node-c 连败 2 轮 + 在线 node-b →
 /// 🔁 换节点评论 + 派发记账落到新 worker。
 #[tokio::test]
 async fn w5_redispatch_switch_comment_and_dispatch_to_fresh_node() {
     use nemesis_board::IssueStatus;
     let (deps, _ws) = review_deps("w5-switch");
-    // 在线候选（rpc_port 非 0 过 G14 闸；node-c 已是历史，ranked 次优 = node-b）。
+    // 在线候选（rpc_port 非 0 过 闸；node-c 已是历史，ranked 次优 = node-b）。
     deps.cluster.handle_discovered_node(
         "node-b",
         "Node-B",
@@ -8167,9 +8167,9 @@ async fn w5_redispatch_switch_comment_and_dispatch_to_fresh_node() {
     );
 }
 
-/// 重派决策⑤：活跃派发在途 → 闭环批 2026-10-13 的并发让位预检先命中 →
+/// 重派决策⑤：活跃派发在途 → 闭环-13 的并发让位预检先命中 →
 /// **静默让位不落评论**（「请人工派发」文案对瞬时竞态是误导——数秒后并发
-/// 触发源自己完成派发，且 ⛔ 会打断 F2/停车去重锚定的 system 评论链），
+/// 触发源自己完成派发，且 ⛔ 会打断 /停车去重锚定的 system 评论链），
 /// 不发车不炸流程。旧契约「dispatch_issue_core 重复闸拒绝 → ⛔ 留痕」
 /// 已被让位预检取代，此锁钉住新契约防回退。
 #[tokio::test]
@@ -8217,7 +8217,7 @@ async fn w5_redispatch_active_dispatch_yields_silently() {
 }
 
 /// 重派决策⑥：停滞可观测前置态 —— unlimited 两轮评审差距文本完全一致
-/// （第二轮进 stale 分支），各落一条「## 差距」评论、每轮照常发车。
+/// （进 stale 分支），各落一条「## 差距」评论、每轮照常发车。
 #[tokio::test]
 async fn w5_redispatch_stale_gap_second_round_with_identical_gap_text() {
     use nemesis_board::IssueStatus;
@@ -8234,7 +8234,7 @@ async fn w5_redispatch_stale_gap_second_round_with_identical_gap_text() {
     assert_eq!(deps.store.list_dispatches(issue.id).unwrap().len(), 3);
 
     // run 1 发车的派发行仍在途（state=dispatched）→ 置终态（模拟 worker
-    // 回报完结），否则第二轮重派被 has_active_dispatch 闸诚实拒绝。
+    // 回报完结），否则重派被 has_active_dispatch 闸诚实拒绝。
     let seeded = ["t-w5-st-1", "t-w5-st-2"];
     let inflight = deps
         .store
@@ -8250,7 +8250,7 @@ async fn w5_redispatch_stale_gap_second_round_with_identical_gap_text() {
         )
         .unwrap();
 
-    // 派发把单转 in_progress → 拉回 in_review 触发第二轮同差距评审。
+    // 派发把单转 in_progress → 拉回 in_review 触发同差距评审。
     deps.store
         .transition_issue(
             issue.id,
@@ -8296,7 +8296,7 @@ async fn w5_redispatch_stale_gap_second_round_with_identical_gap_text() {
 
 /// 解析失败臂①：评审 LLM 一路输出非 JSON + unlimited → 评审自身故障 ≠
 /// 质量结论：恒转人工（🤷 评论），**不重派 worker**——unlimited_mode 只
-/// 治理真实 verdict 的重派（2026-10-09 web-FPS C1 无限重写循环根修）。
+/// 治理真实 verdict 的重派（web-FPS 无限重写循环根修）。
 #[tokio::test]
 async fn w5_parse_failed_unlimited_escalates_without_redispatch() {
     use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
@@ -8396,7 +8396,7 @@ async fn w5_parse_failed_guardrail_escalates_to_human() {
     }
 
     let (mut deps, _ws) = review_deps("w5-parse-guard");
-    // N2 默认 failure_retries=1：首轮解析失败落「自动重评」延迟链（60s 后
+    // 默认 failure_retries=1：首轮解析失败落「自动重评」延迟链（60s 后
     // 异步重跑），不会同步出现转人工评论。本测试钉的是重评预算耗尽臂——
     // 关掉重评（0=关）直达转人工（与 n2_review_failure_retries_zero 同款
     // pin）。
@@ -8443,7 +8443,7 @@ async fn w5_review_issue_fails_closed_when_config_unreadable() {
 }
 
 // ===========================================================================
-// wave5 round2（2026-09-25）：review_parent_issue 前置跳过四臂 + 子单汇总/
+// wave5：review_parent_issue 前置跳过四臂 + 子单汇总/
 // 项目目录实物证据/锚点 PASS 评论臂 + 锚点 FAIL 确定性短路（免 LLM 直达
 // 转人工）、spawn_selfcheck_second_stage error 臂、spawn_project_review
 // Err/Ok(false) spawn 臂、review_project_completion 空父单 + 交付摘要 +
@@ -8930,7 +8930,7 @@ mod w5r2parent {
                 reply: String::new(),
             }),
         );
-        // 真实契约（wave5_findings_B F-B7）：空回复在 loop 内被 turn_guard
+        // 真实契约（wave5_findings_B F）：空回复在 loop 内被 turn_guard
         // 退化三判拦截并 nudge 重试，max_turns=1 无续轮 → 报兜底 Done 文本；
         // run_detached「Done 优先」恒 Ok(非空)——board_review.rs:2946 的
         // 「LLM 返回空内容」Err 臂结构性不可达。这里固化真实行为：兜底文本
@@ -8942,7 +8942,7 @@ mod w5r2parent {
         assert!(summary.exists(), "兜底总结必须落盘: {}", summary.display());
     }
 
-    /// ⑫ run_project_summary 成功臂：summary.md 落盘（docs/）+ timeline。
+    /// ⑫ run_project_summary 成功臂：summary.md 落盘（docs）+ timeline。
     #[tokio::test]
     async fn w5_run_project_summary_success_writes_docs_summary() {
         let (deps, dir) = w5_deps("summary-success");
@@ -9067,10 +9067,10 @@ fn system_terminal_text_does_not_flag_legit_review_output() {
     assert!(!super::is_system_terminal_text("   \n"));
 }
 
-// ---------- 双根锚点核验（2026-10-09 NB-22 根修回归锁）----------
+// ---------- 双根锚点核验（根修回归锁）----------
 // 档案管线把 worker 产物合并在项目目录（主 workspace 根没有文件）——
 // 挂项目单子的 file: 锚点必须能经项目目录 fallback 核验通过，否则合格
-// 交付被锚点短路 FAIL 无限重派（NB-22 web-FPS C2 实证：5 锚点全败 os
+// 交付被锚点短路 FAIL 无限重派（web-FPS 实证：5 锚点全败 os
 // error 2 → 首派即重派）。
 
 #[tokio::test]
@@ -9081,7 +9081,7 @@ async fn subissue_file_anchor_passes_via_project_dir_fallback() {
     let reviewer = Actor::agent("node-a");
 
     // 项目目录（档案管线合并产物落点）带锚点文件；主 workspace 根刻意不写
-    //（= NB-22 现场：worker 只在 exec 副本产出，合并只进项目目录）。
+    //（= 现场：worker 只在 exec 副本产出，合并只进项目目录）。
     let proj_dir = ws.parent().unwrap().join("anchor-dual-root-projdir");
     std::fs::create_dir_all(proj_dir.join("fps-game/src")).unwrap();
     std::fs::write(
@@ -9148,7 +9148,7 @@ async fn subissue_file_anchor_passes_via_project_dir_fallback() {
     let _ = std::fs::remove_dir_all(&proj_dir);
 }
 
-// ---------- M4-A 交付守卫（write_back_board_dispatch，2026-10-10） ----------
+// ---------- -A 交付守卫（write_back_board_dispatch） ----------
 
 /// 守卫测试夹具：临时 store + issue + 一条 RUNNING 派发行。
 fn wb_store(
@@ -9190,7 +9190,7 @@ fn wb_store(
     (dir, store, issue.id, task_id)
 }
 
-/// M4-A：status 成功但回传是系统终态文本（急停）→ 交付守卫拦截，
+/// A：status 成功但回传是系统终态文本（急停）→ 交付守卫拦截，
 /// 按任务失败处置（FAILED + ⛔ 评论 + fail_class 标记），单据仍进
 /// in_review（失败走同一验收决策链，不是悄悄吞掉）。
 #[test]
@@ -9231,7 +9231,7 @@ fn delivery_guard_blocks_system_terminal_text() {
     );
 }
 
-/// M4-A：空串回传同样触发守卫（worker 没说话不等于任务完成）。
+/// A：空串回传同样触发守卫（worker 没说话不等于任务完成）。
 #[test]
 fn delivery_guard_blocks_empty_response() {
     let (dir, store, issue_id, task_id) = wb_store("empty");
@@ -9251,7 +9251,7 @@ fn delivery_guard_blocks_empty_response() {
     assert!(comments.iter().any(|c| c.content.contains("交付守卫拦截")));
 }
 
-/// M4-A 对照组：status=error 时系统终态文本走既有失败路径（⛔ worker
+/// A 对照组：status=error 时系统终态文本走既有失败路径（⛔ worker
 /// 汇报失败），守卫不重复触发（守卫只在 status 成功臂生效）。
 #[test]
 fn error_status_bypasses_guard_uses_plain_failure_path() {
@@ -9288,7 +9288,7 @@ fn error_status_bypasses_guard_uses_plain_failure_path() {
     );
 }
 
-/// M4-A 对照组：正常交付（有内容、非系统终态）不触发守卫，DONE + 交付
+/// A 对照组：正常交付（有内容、非系统终态）不触发守卫，DONE + 交付
 /// 评论，in_review 照常。
 #[test]
 fn normal_delivery_skips_guard() {
@@ -9319,10 +9319,10 @@ fn normal_delivery_skips_guard() {
     );
 }
 
-// ---------- M8 缺陷闸门（2026-10-10 机制加固）：扫描语义 + 父单/项目闸 ----------
+// ---------- 缺陷闸门（机制加固）：扫描语义 + 父单/项目闸 ----------
 
-/// 扫描纯语义：trim_start 后**行首** `[P0]`/`[P1]` 算声明（缩进也算——
-/// trim_start 语义；正文提及、`[P2]` 非、`[FIXEDX]` 非）；`[FIXED]` FIFO
+/// 扫描纯语义：trim_start 后**行首** `[]`/`[]` 算声明（缩进也算——
+/// trim_start 语义；正文提及、`[]` 非、`[FIXEDX]` 非）；`[FIXED]` FIFO
 /// 只关最早一条在账缺陷，多余 FIXED 无在账 = 空操作。
 #[test]
 fn defect_scan_line_start_and_fifo_semantics() {
@@ -9365,14 +9365,14 @@ fn defect_scan_line_start_and_fifo_semantics() {
     assert_eq!(open.len(), 3, "三条声明都在账: {open:?}");
 
     // FIFO：一条 FIXED 只关最早（崩溃一），其余保持在账。闭环只认
-    // Delivery（D11-3：拆闸方向只走正式交付通道）。
+    // Delivery（拆闸方向只走正式交付通道）。
     comment("[FIXED] 崩溃一已修复", CommentType::Delivery);
     let open = scan_unclosed_defects(&store, std::slice::from_ref(&issue)).unwrap();
     assert_eq!(open.len(), 2, "FIFO 只关最早一条: {open:?}");
     assert_eq!(open[0].snippet, "崩溃一乙", "剩余的应是后声明那些");
     assert_eq!(open[1].snippet, "崩溃二", "剩余的应是后声明那些");
 
-    // D11-3 负向锁：非 Delivery（Discussion/Comment/system…）评论行首
+    // 负向锁：非 Delivery（Discussion/Comment/system…）评论行首
     // [FIXED] 不闭环——任何能落讨论评论的路径不得借此清空在账缺陷。
     comment("[FIXED] 崩溃一乙讨论区闭环", CommentType::Comment);
     let open = scan_unclosed_defects(&store, std::slice::from_ref(&issue)).unwrap();
@@ -9386,7 +9386,7 @@ fn defect_scan_line_start_and_fifo_semantics() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 父单缺陷闸门：子单交付行首 [P0] → 自动收口确定性转人工（不进语义评审
+/// 父单缺陷闸门：子单交付行首 [] → 自动收口确定性转人工（不进语义评审
 /// ——否则 loop 缺位臂会 Ok(false) 跳过而非转人工），评论留痕 + 审计入账。
 #[tokio::test]
 async fn parent_defect_gate_blocks_auto_close() {
@@ -9536,7 +9536,7 @@ async fn parent_defect_gate_fixed_recovers_auto_flow() {
     );
 }
 
-/// 项目级缺陷闸门：父单全 done 但子树下有未闭环 [P1] → 项目收口确定性
+/// 项目级缺陷闸门：父单全 done 但子树下有未闭环 [] → 项目收口确定性
 /// 转人工，缺口评论落顶层父单（项目无 comment 载体），项目保持 active。
 #[tokio::test]
 async fn project_defect_gate_blocks_completion() {
@@ -9619,7 +9619,7 @@ async fn project_defect_gate_blocks_completion() {
     );
 }
 
-// ---- U-A（2026-10-12 停车现场工程）：停车档案落盘断言 ----
+// ---- U-A（停车现场工程）：停车档案落盘断言 ----
 // 三个代表臂（UNSURE 闸 / token 预算 / 缺陷闸门）经完整 review 链跑通后，
 // 断言 `<workspace>/board/handoffs/<NB-x>.json` 在场且字段正确——停车档案
 // 是「继续 NB-x」LLM 接手链路的数据源，缺席 = 接手断链。
@@ -9766,7 +9766,7 @@ async fn ua_defect_gate_park_writes_handoff_archive() {
     assert_eq!(doc["environment"]["unclosed_defects"], 1);
 }
 
-// ---------- B3 禁令节预取（extract_ban_section / prefetch_ban_section）----------
+// ---------- 禁令节预取（extract_ban_section / prefetch_ban_section）----------
 
 #[test]
 fn extract_ban_section_stops_at_next_section() {
@@ -9805,7 +9805,7 @@ fn prefetch_ban_section_prefers_main_root_then_falls_back() {
     // 双根都缺 → None。
     assert_eq!(prefetch_ban_section(ws.path(), Some(proj.path())), None);
 
-    // 仅 fallback 有 → 走 fallback（NB-22 双根形态：交付集合并在项目目录）。
+    // 仅 fallback 有 → 走 fallback（双根形态：交付集合并在项目目录）。
     let proj_docs = proj.path().join("docs");
     std::fs::create_dir_all(&proj_docs).unwrap();
     std::fs::write(
@@ -9932,7 +9932,7 @@ fn execution_evidence_bounded() {
     assert!(ev.ends_with("..."), "截断带省略号注记");
 }
 
-// NB-105 真机熔断回归锁（2026-10-15）：评审员照清单逐个 board_evidence_read，
+// 真机熔断回归锁：评审员照清单逐个 board_evidence_read，
 // 裸文件名清单让全部读取落空（「档案文件不存在或不可达」）→ UNSURE×3 转
 // 人工、整条依赖链一宿不动。钉死：清单行 = 档案根相对路径，且该路径能
 // 原样过取证工具读回原文（往返闭环）。
@@ -9972,9 +9972,9 @@ fn execution_evidence_inventory_paths_roundtrip_through_evidence_tool() {
     );
 }
 
-/// 循环升级防抖（2026-10-16 用户裁决）：升级停车（最近 auto_decide =
+/// 循环升级防抖（用户裁决）：升级停车（最近 auto_decide =
 /// parent_escalate_human）且其后无 admin 活动 = 人工未表态——钩子触发的
-/// 复评必须跳过：不烧 LLM、不落新评论、决策词不被反复覆盖。NB-101 实证
+/// 复评必须跳过：不烧 LLM、不落新评论、决策词不被反复覆盖。 实证
 /// 的 20:45/20:50/22:01 三连升级就是本测钉死的病灶。
 #[tokio::test]
 async fn parent_escalated_park_blocks_hook_rereview_until_admin() {
@@ -10069,7 +10069,7 @@ async fn parent_admin_activity_after_escalation_unblocks_rereview() {
 }
 
 /// UNSURE 带可行动证据缺口（gap 空、reasons 非空）→ 自动承接返工（理由
-/// 渲染进返工单描述），父单保持 in_review 不弹人工（2026-10-16 放宽：
+/// 渲染进返工单描述），父单保持 in_review 不弹人工（放宽：
 /// 补证据 = 补差距，「无法核实」的归档/取证缺口是可派发的工作）。
 #[tokio::test]
 async fn parent_unsure_with_reasons_auto_remediates() {
@@ -10142,7 +10142,7 @@ async fn parent_unsure_no_actionable_gap_escalates_with_reopen_hint() {
     );
 }
 
-/// 打回重开（2026-10-16）：预算耗尽（2 个历史返工单）+ retrigger 写入
+/// 打回重开：预算耗尽（2 个历史返工单）+ retrigger 写入
 /// 纪元键 → 历史返工单不再计轮，复评 FAIL 重新承接「第 1/2 轮」——人工
 /// 重新决策 = 自动验收重新开始，不再死锁在转人工。
 #[tokio::test]
@@ -10214,7 +10214,7 @@ async fn parent_retrigger_resets_remediation_budget() {
 
 #[test]
 fn parent_ac_section_injected_for_rework_children() {
-    // NB-123 误升级根修（2026-10-17）：返工单评审 prompt 必须带父单 AC
+    // 误升级根修：返工单评审 prompt 必须带父单 AC
     // 口径参照——口径行（「待人工签核……不阻塞自动验收判定」）只存在于
     // 父单验收标准，子单评审此前看不到，口径豁免事项被误判 FAIL。
     let dir = std::env::temp_dir().join(format!(
@@ -10248,7 +10248,7 @@ fn parent_ac_section_injected_for_rework_children() {
     assert!(section.contains("不阻塞自动验收判定"), "口径原文必须在场");
     assert!(section.contains("以口径为准"), "冲突裁决指引必须在场");
 
-    // 真·空 AC 父单 = 诚实跳过（None，不注入空节）。2026-10-17 契约更新：
+    // 真·空 AC 父单 = 诚实跳过（None，不注入空节）。 契约更新：
     // store 建单自动生成 AC——须本地抹掉生成值才能测 None 臂。
     let mut bare = store
         .create_issue(nemesis_board::NewIssue {
@@ -10266,7 +10266,7 @@ fn parent_ac_section_injected_for_rework_children() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------- A1 duration_weighted_ranked 接线（指纹加权后的第三段排序）----------
+// ---------- duration_weighted_ranked 接线（指纹加权后的排序）----------
 //
 // 核心重排语义由 nemesis-board node_perf 单测覆盖；这里钉接线语义：
 // 单候选/无样本/跨类别零干预 + 有样本时重排真实生效。conn 私有无法回拨
@@ -10358,10 +10358,10 @@ fn a1_duration_weighted_ranked_wiring() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Fix 3 回归锁（NB-1 重派本地臂断裂）：本地单历史派发 worker_id="self"
+/// Fix 3 回归锁（重派本地臂断裂）：本地单历史派发 worker_id="self"
 /// 的 FAIL 重派必须走本地执行面 dispatch_issue_local，不得回落集群
 /// dispatch_issue_core——canonical_peer_id("self") 必然无解，旧行为以
-/// 「未知节点：self」⛔ 停车，本地单重派全断（实录 NB-1）。空集群注册表
+/// 「未知节点：self」⛔ 停车，本地单重派全断。空集群注册表
 /// 下旧行为必报该错；新行为 stub 执行器被调 + 派发行存续 + 无 ⛔ 停车。
 #[tokio::test]
 async fn fail_redispatch_to_self_uses_local_executor_not_cluster() {
@@ -10443,7 +10443,7 @@ async fn fail_redispatch_to_self_uses_local_executor_not_cluster() {
 }
 
 // ===========================================================================
-// BUG-20261105-012：自检取证路由持久层（selfcheck_pending）
+// 自检取证路由持久层（selfcheck_pending）
 //
 // 修复前：内存注册表是 gateway 进程态，重启清零 → worker 取证回调 miss →
 // master 照样回 Ok("received") → worker 销毁唯一持久副本 → 证据蒸发、

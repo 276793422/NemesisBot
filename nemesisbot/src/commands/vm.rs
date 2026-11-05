@@ -2,9 +2,9 @@
 //!
 //! `install` / `enable-accel` / `build-image` 是系统侧动作：`executor.vm.enabled`
 //! 关闭时诚实拒绝（与 WSAPI `vm.bootstrap.*` 同款闸——关闭态零激活铁律；
-//! 闸判定面单一真相源 = [`crate::agents::vm_runtime::VmSupervisor::vm_settings`]）。
+//! 闸判定面单一权威 = [`crate::agents:vm_runtime::VmSupervisor:vm_settings`]）。
 //! `status` 只读探针无闸（查询不是安装动作）。安装链本体在 nemesis-sandbox
-//! `vm::install`（B1 下载链 / B2 平台链），本模块只做装配与呈现。
+//! `vm::install`（下载链 / 平台链），本模块只做装配与呈现。
 
 use std::time::Duration;
 
@@ -33,18 +33,18 @@ pub enum VmCommand {
         #[arg(long)]
         update: bool,
     },
-    /// 项目工作副本同步状态（B9-3；只读——不开闸、不拽起睡眠实例）。
+    /// 项目工作副本同步状态（只读——不开闸、不拽起睡眠实例）。
     SyncStatus {
         /// 项目 id 或名称。
         project: String,
     },
-    /// 项目工作副本一键提交（B9-3；VM 侧修改回拉宿主 + 基线刷新；冲突
+    /// 项目工作副本一键提交（VM 侧修改回拉宿主 + 基线刷新；冲突
     /// 落 Dashboard 提问卡裁决——CLI 见冲突即报并指向 Dashboard）。
     Commit {
         /// 项目 id 或名称。
         project: String,
     },
-    /// 强制重同步（B9-3；清空 VM 工作副本后以宿主当前内容整体覆盖重建
+    /// 强制重同步（清空 VM 工作副本后以宿主当前内容整体覆盖重建
     /// 基线——VM 内未回传的改动将丢失；交互确认后执行）。
     Resync {
         /// 项目 id 或名称。
@@ -95,7 +95,7 @@ pub async fn run(action: VmCommand, local: bool) -> Result<()> {
     }
 }
 
-/// 系统侧动作的统一闸（判定面单一真相源：`vm_settings()` typed 现读 +
+/// 系统侧动作的统一闸（判定面统一定义：`vm_settings()` typed 现读 +
 /// enabled 过滤——与 WSAPI bootstrap 命令族同源）。
 fn require_vm_enabled(home: &std::path::Path, what: &str) -> Result<()> {
     let sup = VmSupervisor::new(home.join("workspace"), common::config_path(home));
@@ -220,7 +220,7 @@ async fn build_image(
         inputs.script.display()
     );
     // 与 WSAPI 同一执行体（后台任务 + 日志落盘 + 单飞闸）；CLI 额外前台
-    // 等任务槽清位，然后以成功收尾日志行裁决成败（单一真相源常量）。
+    // 等任务槽清位，然后以成功收尾日志行裁决成败（统一定义常量）。
     sup.image_build(update).await.map_err(anyhow::Error::msg)?;
     println!(
         "[vm] 构建进行中（前台等待；日志 {}）",
@@ -250,9 +250,9 @@ async fn build_image(
     }
 }
 
-/// B9-3 同步命令的 gateway 转发（VM 实例常驻 gateway 进程，CLI 进程不
+/// 同步命令的 gateway 转发（VM 实例常驻 gateway 进程，CLI 进程不
 /// 持有 supervisor——与 estop 同一条 /api/internal 通道；请求-响应形态，
-/// 恒 200 `{status: ok|error, ...}` 按体解析：业务失败（项目不存在 /
+/// 恒 200 `{status: ok|error,...}` 按体解析：业务失败（项目不存在 /
 /// 非 VM 档 / 冲突）不是传输错误）。
 async fn sync_via_gateway(home: &std::path::Path, cmd: &str, project: &str) -> Result<()> {
     let config_path = home.join("config.json");

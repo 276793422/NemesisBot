@@ -3,7 +3,7 @@
 //
 // 聚合面（pattern_count/process_record/flush/aggregates.jsonl）、ForgePlugin、
 // SessionPositions、summarize_value/truncate_str、compute_pattern_hash
-// 2026-10-22 随生产代码整体移除（审计 P2-a），对应测试同步删除。
+// 随生产代码整体移除（审计 -a），对应测试同步删除。
 
 use std::collections::HashSet;
 
@@ -38,9 +38,9 @@ async fn test_record_always_stores() {
     let exp2 = make_experience("file_read", "read b.txt", true);
     let exp3 = make_experience("file_read", "read a.txt", false);
 
-    // record() synthesizes args {input_summary: ...}; dedup_hash uses key
+    // record() synthesizes args {input_summary:...}; dedup_hash uses key
     // names only, so all three share one hash — but all are stored (Go-style
-    // always-store behavior; the aggregate layer was removed 2026-10-22).
+    // always-store behavior; the aggregate layer was removed).
     collector.record(exp1.clone()).await;
     collector.record(exp2).await;
     collector.record(exp3).await;
@@ -450,7 +450,7 @@ fn test_sanitize_args_non_object_passthrough() {
     assert_eq!(Collector::sanitize_args(&arr, &["password"]), arr);
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[test]
 fn test_s8_collector_new_evaluates_tracing_field_expressions() {

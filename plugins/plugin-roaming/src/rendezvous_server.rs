@@ -46,7 +46,7 @@ pub fn sanitize_member(mut m: RendezvousMember) -> Result<RendezvousMember, Regi
         )));
     }
     m.iroh_id = m.iroh_id.trim().to_lowercase();
-    // 64-hex 校验（镜像宿主 endpoint 单一真相源——非法身份对谁都没用）。
+    // 64-hex 校验（镜像宿主 endpoint 单一权威定义——非法身份对谁都没用）。
     if let Err(e) = valid_iroh_id(&m.iroh_id) {
         return Err(RegisterError::Invalid(format!("iroh_id 非法: {e}")));
     }

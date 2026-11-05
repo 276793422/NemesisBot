@@ -4,7 +4,7 @@
 //! 与 plugin-vm（老式功能插件）的三点差异：
 //! 1. **常驻服务**：插件自持 tokio runtime，中继/名册常驻监听——宿主侧
 //!    句柄落 [`HANDLE`] 槽复用（不是装载即完事）；
-//! 2. **同步 FFI**：插件导出内部 `block_on` 投 runtime（拍板 10），宿主
+//! 2. **同步 FFI**：插件导出内部 `block_on` 投 runtime，宿主
 //!    调用侧一律 [`call_roaming`]（`spawn_blocking` 包装，不卡 executor 线程）；
 //! 3. **vtable 必须static**：契约要求 vtable 所指内存进程生命周期有效
 //!    （[`HOST_VTABLE`]——插件侧虽只拷字段，宿主侧照契约给稳态）。
@@ -12,7 +12,7 @@
 //! 装载链（任一步失败 = 诚实拒绝 + warn/error 留痕，绝不静默降级）：
 //! 0. 名册开关闸：`config.plugin.native.json` 的 plugin_roaming 键
 //!    （缺省启用）——关 = `DisabledBySwitch`（vm/onnx/ui 同款义务）；
-//! 1. 在场探测：[`crate::plugin_lib`]（单一真相源，VM 同款查找链）——
+//! 1. 在场探测：[`crate::plugin_lib`]（统一定义，VM 同款查找链）——
 //!    缺席 = `Absent`（常态；服务端面诚实降级，装载失败才是错误）；
 //! 2. v4 签名闸：Valid 放行 / Unsigned dev warn 放行 release 拒 / 其余拒；
 //! 3. dlopen → `Box::leak`（进程生命周期——插件持 runtime/线程，unload
@@ -70,7 +70,7 @@ static HANDLE: OnceLock<RoamingPluginHandle> = OnceLock::new();
 // ---------------------------------------------------------------------------
 
 extern "C" fn host_log(level: i32, tag: *const c_char, msg: *const c_char) {
-    // tracing target 必须字面量——tag 并入消息体（拍板 5：转发不落盘，
+    // tracing target 必须字面量——tag 并入消息体（转发不落盘，
     // 插件不落自己的日志文件）。
     let tag = unsafe { CStr::from_ptr(tag) }.to_string_lossy();
     let msg = unsafe { CStr::from_ptr(msg) }.to_string_lossy();
@@ -110,17 +110,17 @@ fn write_cstr(buf: *mut c_char, buf_len: usize, s: &str) -> i32 {
 }
 
 extern "C" fn host_audit_event(event: *const c_char, detail: *const c_char) {
-    // M1：审计事件透传 tracing（审计链接线随 M2/M3 拨号/入站面一起进）。
+    // 审计事件透传 tracing（审计链接线随 / 拨号/入站面一起进）。
     let event = unsafe { CStr::from_ptr(event) }.to_string_lossy();
     let detail = unsafe { CStr::from_ptr(detail) }.to_string_lossy();
     tracing::info!(target: "plugin_roaming", "[audit] {event} {detail}");
 }
 
 extern "C" fn host_notify_incoming(conn_id: u64, port: u16, remote_hex: *const c_char) {
-    // M3 接线：插件 accept iroh 连接后开 loopback 端口 → 宿主受理
+    // 接线：插件 accept iroh 连接后开 loopback 端口 → 宿主受理
     // （TcpStream::connect + 帧协议照跑）。v2 追加 remote_hex（对端
     // EndpointId hex）——经桥分发给受理器漏斗（server 臂消费），日志留痕。
-    // BUG-20261025-20：桥面随 cluster feature——关裁剪形态无受理器，事件
+    // 桥面随 cluster feature——关裁剪形态无受理器，事件
     // 无消费方，留痕丢弃（插件下 tick 自愈语义不受影响）。
     let remote = if remote_hex.is_null() {
         String::new()
@@ -140,10 +140,10 @@ extern "C" fn host_notify_incoming(conn_id: u64, port: u16, remote_hex: *const c
 }
 
 extern "C" fn host_notify_members(json: *const c_char) {
-    // QUIC 插件化 M2 接线：名册循环拉到成员 → 桥漏斗（集群
+    // QUIC 插件化 接线：名册循环拉到成员 → 桥漏斗（集群
     // merge_rendezvous_members）。漏斗未挂载（集群装配前/已停机）时桥内
     // debug 丢弃——插件下 tick 重推全量包，自愈语义无需补发。
-    // BUG-20261025-20：桥面随 cluster feature——关裁剪形态留痕丢弃。
+    // 桥面随 cluster feature——关裁剪形态留痕丢弃。
     let json = unsafe { CStr::from_ptr(json) }.to_string_lossy();
     #[cfg(feature = "cluster")]
     nemesis_cluster::roaming::plugin_bridge::dispatch_members_json(&json);
@@ -185,7 +185,7 @@ pub fn roaming_plugin_present() -> bool {
 /// ——与 plugin_vm/post_agent 闸同款名册消费义务（Dashboard 开关不是
 /// 摆设）；签名裁决不在此闸（enforce 策略语义属五老插件装载点，本装载
 /// 器自带更严的无条件 v4 四分支闸，叠罗汉只会造矛盾）。功能闸
-/// （relay.enabled 等）不在此——既有拍板「文件在场即加载」，功能开关在
+/// （relay.enabled 等）不在此——既有「文件在场即加载」，功能开关在
 /// 各自消费点判。
 /// init 配置构造单点：读 config.quic.json 取 `relay` 段 **raw 直传**，
 /// 包成 `{"relay": <原节>}` 字符串（[`load_roaming_plugin`] 的 `config_json`
@@ -337,9 +337,9 @@ pub fn load_roaming_plugin(
 
     match HANDLE.set(handle) {
         Ok(()) => {
-            // QUIC 插件化 M2：装载成功即注入 nemesis-cluster 桥——集群/WSAPI/
+            // QUIC 插件化：装载成功即注入 nemesis-cluster 桥——集群/WSAPI/
             // CLI 消费面统一走桥（`HANDLE.get()` 的引用即 'static）。
-            // BUG-20261025-20：桥注入随 cluster feature——关裁剪形态无桥可注，
+            // 桥注入随 cluster feature——关裁剪形态无桥可注，
             // 装载照常成功（插件自持面不受影响）。
             #[cfg(feature = "cluster")]
             if let Some(h) = HANDLE.get() {
@@ -361,7 +361,7 @@ pub fn plugin_handle() -> Option<&'static RoamingPluginHandle> {
 }
 
 // ---------------------------------------------------------------------------
-// 调用辅助（拍板 10：同步 FFI 内 block_on 插件 runtime——宿主侧 spawn_blocking）
+// 调用辅助（同步 FFI 内 block_on 插件 runtime——宿主侧 spawn_blocking）
 // ---------------------------------------------------------------------------
 
 /// 插件调用统一入口：`spawn_blocking` 包装 + JSON 解析 + `ok:false` 展开。
@@ -398,8 +398,8 @@ pub async fn roaming_stop() -> Result<serde_json::Value, String> {
 }
 
 /// 运行态快照（running/http_addr/quic_addr/registry_addr/registry_members）。
-/// 静态槽形态（读当前进程装载的插件）——M1 消费面全走 handle 参数化
-/// （nemesis-web plugin_call / web 面持 AppState 句柄），本入口供 M2 客户端
+/// 静态槽形态（读当前进程装载的插件）—— 消费面全走 handle 参数化
+/// （nemesis-web plugin_call / web 面持 AppState 句柄），本入口供 客户端
 /// 控制面与未来无句柄上下文消费；现无 bin 调用点，保留对称 API 面。
 #[allow(dead_code)]
 pub async fn roaming_status() -> Result<serde_json::Value, String> {

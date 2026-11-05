@@ -1,4 +1,4 @@
-//! setup 单测（M3，T3.2-T3.7 文件面）。
+//! setup 单测（.2-.7 文件面）。
 //!
 //! 纯文件步骤（annotate/define_struct/define_tool/commit/abort/status）
 //! 跨平台直测；select_target/snapshot/diff 依赖真实进程 + payload 管道，
@@ -390,14 +390,14 @@ fn normalize_pattern_shapes_hex() {
     cleanup(&ws);
 }
 
-// ── BUG-20261105-015：draft 与已提交库的隔离根因钉死 ────────────────────
+// ──：draft 与已提交库的隔离根因钉死 ────────────────────
 
 /// 根因不对称：向导期 profile_id 只存在于 `ziwei/drafts/<id>/`（本向导
 /// 新造的毫秒戳 id，已提交库 `ziwei/profiles/<id>/` 必不存在）——旧 hook
-/// 臂用 `ProfileStore::load`（只读已提交库）恒 NotFound → hook_notes
+/// 臂用 `ProfileStore:load`（只读已提交库）恒 NotFound → hook_notes
 /// 「draft profile 不可用」+ fn_addrs 永不设置 = hook=true 臂整条死路。
 /// 修复后 hook 臂走 `load_draft`（本测试钉死：同一 id load_draft 成功、
-/// ProfileStore::load 诚实 NotFound）。
+/// ProfileStore:load 诚实 NotFound）。
 #[test]
 fn draft_only_id_is_invisible_to_committed_store() {
     let ws = temp_ws("draft-only");

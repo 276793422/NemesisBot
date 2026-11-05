@@ -11,7 +11,7 @@ use super::*;
 /// create_dir/delete_dir）此前不走本入口，exe 直启（cwd=部署目录）形态下
 /// 相对路径全部 File not found，且 restrict=true 时无第二道闸。
 /// 起 loop 写后钩子（format-on-save / 诊断回灌）同源
-/// 消费本入口——执行器与钩子单一真相源，故 pub(crate)。
+/// 消费本入口——执行器与钩子统一定义，故 pub(crate)。
 pub(crate) fn resolve_tool_path(
     path: &str,
     boundary: Option<&WorkspaceBoundary>,
@@ -163,7 +163,7 @@ pub(super) fn binary_file_summary(path: &Path) -> String {
 
 /// 文件工具的围栏操作族（editor 开关 × 围栏修复）：开关闸按族
 /// 分判——读族只受开关一（Full Access）管辖，写删族受开关一+二管辖，口径
-/// 与 nemesis-security `editor_access:WRITE_DELETE_OPS` 一致。
+/// 与 nemesis-security `editor_access::WRITE_DELETE_OPS` 一致。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FenceOpFamily {
     /// 读族：read_file / list_dir（及只读消费方：LSP、诊断回灌钩子）。
@@ -174,7 +174,7 @@ pub enum FenceOpFamily {
 }
 
 impl FenceOpFamily {
-    /// 闸门布尔契约（`EditorAccessState:fence_gate`：true = 写删族）。
+    /// 闸门布尔契约（`EditorAccessState::fence_gate`：true = 写删族）。
     fn is_write_delete(self) -> bool {
         matches!(self, Self::WriteDelete)
     }
@@ -198,7 +198,7 @@ pub struct WorkspaceBoundary {
     pub extra_roots: Vec<PathBuf>,
     /// editor 放行开关闸（两层不认账修复）：Some 时界外路径
     /// 拒绝前先问闸（`(归一后路径, 是否写删族) -> 放行`），判定与审批层
-    /// `EditorAccessState:evaluate` 同源——审批层认开关，围栏同一裁决；
+    /// `EditorAccessState::evaluate` 同源——审批层认开关，围栏同一裁决；
     /// 开关全关恒 false = 旧行为。None（主会话按暂不接线 /
     /// executor 子进程无开关通路）= 旧行为一概拒绝。闭包签名纯原始类型，
     /// 不引 security 类型（`--no-default-features` 裁剪编译不受影响）。
@@ -223,7 +223,7 @@ impl std::fmt::Debug for WorkspaceBoundary {
 /// 目标不存在时按最长存在祖先解析（write 新文件路径合法）。
 ///
 /// 界外且 restrict 时，先问 editor 开关闸（`family` 决定读
-/// 族/写删族口径，见 [`WorkspaceBoundary:editor_gate`]），闸放行即放；
+/// 族/写删族口径，见 [`WorkspaceBoundary::editor_gate`]），闸放行即放；
 /// 闸缺席或说拒 = 旧行为拒绝。
 pub fn validate_workspace_path(
     path: &str,
@@ -267,7 +267,7 @@ pub fn validate_workspace_path(
 
 /// A tool that writes content to a file on disk.
 ///
-/// ：可携带工作区边界（`with_boundary`，生产形态）；
+/// 可携带工作区边界（`with_boundary`，生产形态）；
 /// `default()` 无界（基线注册 / 测试形态，行为同边界引入前）。
 #[derive(Default)]
 pub struct WriteFileTool {
@@ -309,7 +309,7 @@ impl Tool for WriteFileTool {
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let (path, content) = extract_path_and_content(args)?;
 
-        // ：工作区边界（纵深防御，不单靠安全 8 层管线）。
+        // 工作区边界（纵深防御，不单靠安全 8 层管线）。
         let path = match &self.boundary {
             Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
             None => PathBuf::from(&path),
@@ -549,7 +549,7 @@ pub(super) fn extract_edit_args(args: &str) -> Result<(String, String, String, b
     Ok((path, old_text, new_text, replace_all))
 }
 
-/// ：单条编辑替换决策的**单一真相源**（纯函数）——
+/// 单条编辑替换决策的**单一真相源**（纯函数）——
 /// `edit_file`与 `multiedit`共用同一套匹配语义： 多命中
 /// 歧义提示 → 全量替换 → 五级模糊级联。错误文案与历史 edit_file
 /// 行为逐字一致（测试锁死）。
@@ -610,7 +610,7 @@ pub(crate) fn apply_edit_to_content(
     }
 
     // replace_all=true → 全部替换。注意 Rust 语义：`replacen(…, 0)` 是
-    // 「最多换 0 处」（什么都不换）而非全量——全量是 `str:replace`
+    // 「最多换 0 处」（什么都不换）而非全量——全量是 `str::replace`
     // （实施计划该处笔误，已按 核实现修订）。
     let new_content = if replace_all {
         content.replace(old_text, new_text)
@@ -629,7 +629,7 @@ pub(crate) fn apply_edit_to_content(
 /// By default old_text must occur exactly once; `replace_all=true` replaces
 /// every occurrence.
 ///
-/// ：可携带工作区边界（`with_boundary`，生产形态）；
+/// 可携带工作区边界（`with_boundary`，生产形态）；
 /// `default()` 无界（基线注册 / 测试形态，行为同边界引入前）。
 #[derive(Default)]
 pub struct EditFileTool {
@@ -669,7 +669,7 @@ impl Tool for EditFileTool {
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let (path, old_text, new_text, replace_all) = extract_edit_args(args)?;
 
-        // ：工作区边界（纵深防御，不单靠安全 8 层管线）。
+        // 工作区边界（纵深防御，不单靠安全 8 层管线）。
         let path = match &self.boundary {
             Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
             None => PathBuf::from(&path),
@@ -685,7 +685,7 @@ impl Tool for EditFileTool {
             .map_err(|e| format!("Failed to read file: {}", e))?;
 
         // // 匹配语义已抽出为 [`apply_edit_to_content`]（起与
-        // multiedit 共用单一真相源）；此处只做 IO 与回执组装。
+        // multiedit 共用统一定义）；此处只做 IO 与回执组装。
         let outcome = apply_edit_to_content(
             &content,
             &old_text,
@@ -698,7 +698,7 @@ impl Tool for EditFileTool {
             .await
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
-        // ：成功回 unified diff（模型自检 + 前端渲染 +
+        // 成功回 unified diff（模型自检 + 前端渲染 +
         // 审计可读；超长回退统计摘要，全量语义由 loop 层 spill 兜底）。
         let diff = edit_hint::unified_diff(&path.to_string_lossy(), &content, &outcome.new_content);
         // replace_all 在头部报替换计数（count>=1 恒成立——0 已被 not-found
@@ -730,12 +730,12 @@ impl Tool for EditFileTool {
     }
 }
 
-/// ：multiedit 批量编辑——`edits: [{path, old_text,
+/// multiedit 批量编辑——`edits: [{path, old_text,
 /// new_text, replace_all?},...]`，**原子性**：全部编辑先在内存完成（同
 /// 文件多条编辑按序累积生效），任一失败则整批不落盘并回灌首个失败详情 +
 /// 逐条状态清单；全部成功才统一写盘（只写内容实际变化的文件），逐文件
 /// 回 unified diff。匹配语义与 `edit_file` 共用 [`apply_edit_to_content`]
-/// 单一真相源。
+/// 统一定义。
 ///
 /// 同款边界形态：`with_boundary` 生产 / `default()` 基线。
 #[derive(Default)]
@@ -978,7 +978,7 @@ impl Tool for MultiEditTool {
     }
 
     fn preview(&self, _args: &str) -> Option<FileChange> {
-        // multiedit 的 checkpoint 预检走 [`Tool:preview_all`]（多文件）；
+        // multiedit 的 checkpoint 预检走 [`Tool::preview_all`]（多文件）；
         // 单点 `preview` 无从选代表文件，诚实返回 None。
         None
     }
@@ -1003,7 +1003,7 @@ impl Tool for MultiEditTool {
 /// A tool that appends content to the end of a file.
 /// A tool that appends content to the end of a file.
 ///
-/// ：可携带工作区边界（`with_boundary`，生产形态）；
+/// 可携带工作区边界（`with_boundary`，生产形态）；
 /// `default()` 无界（基线注册 / 测试形态，行为同边界引入前）。
 #[derive(Default)]
 pub struct AppendFileTool {
@@ -1032,7 +1032,7 @@ impl Tool for AppendFileTool {
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let (path, content) = extract_path_and_content(args)?;
 
-        // ：工作区边界（纵深防御，不单靠安全 8 层管线）。
+        // 工作区边界（纵深防御，不单靠安全 8 层管线）。
         let path = match &self.boundary {
             Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
             None => PathBuf::from(&path),
@@ -1058,7 +1058,7 @@ impl Tool for AppendFileTool {
         file.write_all(content.as_bytes())
             .await
             .map_err(|e| format!("Failed to append to file: {}", e))?;
-        // tokio fs:File 的 write_all 只提交到后台任务，不 flush 则数据可能
+        // tokio fs::File 的 write_all 只提交到后台任务，不 flush 则数据可能
         // 尚未写入文件（drop 不等待未完成 IO）。
         file.flush()
             .await

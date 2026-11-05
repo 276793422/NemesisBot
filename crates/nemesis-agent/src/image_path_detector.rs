@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 pub const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 
 /// 每消息图片张数上限（8 张， 用户定值；两来源合计、去重后计）。
-/// 超出部分不附加，由附加层聚合成一条诚实注记（[`super:attach_turn_images`]）。
+/// 超出部分不附加，由附加层聚合成一条诚实注记（[`super::attach_turn_images`]）。
 pub const MAX_IMAGES_PER_MESSAGE: usize = 8;
 
 /// 扩展名白名单（小写比较）。
@@ -93,7 +93,7 @@ impl ImagePathCandidate {
 ///   匹配后剥离成对包裹字符再解析（[`strip_path_quotes`]）。
 ///
 /// 段字符类其余部分：字母数字/下划线/`~`（**8.3 短名** `RUNNER~1`——CI
-/// runner 与开启短名生成的机器上 `std:env:temp_dir()` 真实返回这种路径，
+/// runner 与开启短名生成的机器上 `std::env:temp_dir()` 真实返回这种路径，
 /// `~` 曾不在类内导致文本点名路径全部失明）/CJK/谚文/拉丁扩展/点/括号/
 /// 连字符；不含分隔符与 Windows 文件名非法字符（`:*?"<>|`）。
 /// 扩展名要求前置点号 + 白名单词（防 "C:\\tempng" 之类吞段误报）。
@@ -147,7 +147,7 @@ fn strip_path_quotes(raw: &str) -> &str {
 }
 
 /// 扩展名是否在白名单（大小写不敏感）。
-/// pub： Web 上传端点复用同一白名单（单一真相源）。
+/// pub： Web 上传端点复用同一白名单。
 pub fn has_image_extension(candidate: &str) -> bool {
     let lower = candidate.to_lowercase();
     IMAGE_EXTENSIONS
@@ -168,14 +168,14 @@ fn url_span_regex() -> &'static regex::Regex {
 }
 
 /// magic byte 嗅探（防文本伪装扩展名）。
-/// pub： Web 上传端点落盘**前**复用同一嗅探（单一真相源，勿在他处重抄签名表）。
+/// pub： Web 上传端点落盘**前**复用同一嗅探（统一定义，勿在他处重抄签名表）。
 pub fn sniff_magic(bytes: &[u8]) -> bool {
     ext_from_magic(bytes).is_some()
 }
 
 /// magic byte → 白名单扩展名（二次回归：URL 下载落盘按**内容**
 /// 定扩展名——Content-Type 可伪造/缺失、URL 后缀可说谎；与 [`sniff_magic`]
-/// 同一张签名表 = 单一真相源，勿在他处重抄）。
+/// 同一张签名表 = 统一定义，勿在他处重抄）。
 pub fn ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
     // PNG: 89 50 4E 47
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
@@ -202,7 +202,7 @@ pub fn ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
 /// （四轮盲审）：分隔符归一同样**仅 Windows**——POSIX 上 `\`
 /// 是合法文件名字符（`dir\a.png` 与 `dir/a.png` 是两个不同文件），归一会把
 /// 同消息里的两个不同文件错误去重掉一个。
-/// pub： 检测器与 附加层（文本来源 + media 引用来源）共用同一键。
+/// pub：检测器与附加层（文本来源 + media 引用来源）共用同一键。
 pub fn dedup_key(resolved: &Path) -> String {
     let s = resolved.to_string_lossy();
     if cfg!(windows) {
@@ -213,7 +213,7 @@ pub fn dedup_key(resolved: &Path) -> String {
 }
 
 /// 单候选验真：存在性 + 大小上限 + magic byte。
-/// pub(crate)： 统一附加流程对 media 引用路径复用同一验真链。
+/// pub(crate)：统一附加流程对 media 引用路径复用同一验真链。
 pub fn verify(resolved: &Path) -> CandidateStatus {
     let metadata = match std::fs::metadata(resolved) {
         Ok(m) => m,

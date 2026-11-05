@@ -104,7 +104,7 @@ struct Section {
 
 // Category mapping
 
-/// 目录名 → 中文分类展示名（单一真相源；CLI `persona search` 同源消费）。
+/// 目录名 → 中文分类展示名（统一定义；CLI `persona search` 同源消费）。
 pub fn map_category(dir: &str) -> &'static str {
     match dir {
         "engineering" => "开发",
@@ -129,7 +129,7 @@ pub fn map_category(dir: &str) -> &'static str {
 
 // File filtering & parsing
 
-/// 超市 .md 路径筛选（CLI `persona search` 同源消费； 前
+/// 超市.md 路径筛选（CLI `persona search` 同源消费； 前
 /// CLI 侧简化版漏 `filename == id` 臂）。
 pub fn is_agent_file(path: &str) -> bool {
     if !path.ends_with(".md") {
@@ -304,7 +304,7 @@ async fn fetch_tree() -> Result<Vec<(String, i64)>, String> {
 static FM_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, Frontmatter>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-/// cache: full .md content downloaded from GitHub.
+/// cache: full.md content downloaded from GitHub.
 static CONTENT_CACHE: std::sync::LazyLock<std::sync::Mutex<HashMap<String, String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
@@ -739,7 +739,7 @@ pub fn ensure_persona_store(workspace: &str) -> Result<(), String> {
 }
 
 /// 人格激活完整生命周期（web activate/restore 与 CLI activate/remove 共享
-/// 的单一真相源）：归档当前人格 → 清理 workspace 根 → 恢复目标人格 →
+/// 的统一定义）：归档当前人格 → 清理 workspace 根 → 恢复目标人格 →
 /// 原子写激活标记。
 pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), String> {
     ensure_persona_store(workspace)?;
@@ -857,7 +857,7 @@ pub fn activate_persona_workspace(workspace: &str, name: &str) -> Result<(), Str
         .map_err(|e| format!("failed to write _active.json: {}", e))
 }
 
-/// 超市 agent md → 人格五件套的完整转换产物（install 转换单一真相源）。
+/// 超市 agent md → 人格五件套的完整转换产物（install 转换统一定义）。
 pub struct ConvertedPersona {
     pub identity: String,
     pub soul: String,
@@ -866,7 +866,7 @@ pub struct ConvertedPersona {
     pub persona_json: String,
 }
 
-/// 把超市 .md 原文转换为五件套：IDENTITY/SOUL 全量替换；AGENT/TOOLS =
+/// 把超市.md 原文转换为五件套：IDENTITY/SOUL 全量替换；AGENT/TOOLS =
 /// 系统默认模板 + 人格附加段；PERSONA.json 含 color/tools/vibe/frontmatter
 /// 扩展字段（前 CLI 简化版缺这些字段与 HEARTBEAT.md）。
 pub fn convert_agent_content(content: &str) -> ConvertedPersona {
@@ -1607,7 +1607,7 @@ fn hire_write_cluster_persona(
 #[cfg(test)]
 pub(crate) mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): uncovered
+// (, quality-hardening goal 冲刺 web): uncovered
 // helpers + offline cache-injected shop paths + activate/restore archive
 // arms.
 #[cfg(test)]

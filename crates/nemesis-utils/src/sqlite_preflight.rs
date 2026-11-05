@@ -1,10 +1,10 @@
-//! B10（2026-10-18 存储韧性三手法）：SQLite 打开面前置守卫——能力准入 /
+//! （2026-10-18 存储韧性三手法）：SQLite 打开面前置守卫——能力准入 /
 //! schema 漂移对账 / 迁移前轮换备份 / WAL 降级。
 //!
 //! 供 nemesis-data（usage 账本）与 nemesis-board（board.db）同源消费
 //! （feature `sqlite-preflight` 门控 rusqlite 依赖，未启用方零成本）。
 //!
-//! 动机（P0 盘点，两高危存储的手法版加固）：
+//! 动机（盘点，两高危存储的手法版加固）：
 //! - `Connection::open` 对任意可读文件惰性成功——被覆盖/截断的垃圾文件
 //!   要到第一条语句才炸，且报错面模糊；
 //! - `user_version` 高于程序支持值的库（来自更新版本的程序）此前会被
@@ -104,7 +104,7 @@ fn backup_path(db_path: &Path, generation: u8) -> std::path::PathBuf {
 /// 失败 warn 继续拷——纯拷主文件在 checkpoint 失败时可能少最新帧，但
 /// 旧备份仍远好于无备份）→ 删 bak.2 → bak.1 改名 bak.2 → 拷当前库 →
 /// bak.1（留 2 份）。所有备份步骤失败 = warn 不阻断迁移（保护措施
-/// 失败不改变库本身的风险，但日志要响——评审可见）。
+/// 失败不改变库本身的风险，但日志要响——评审可）。
 pub fn backup_before_migrate(conn: &rusqlite::Connection, db_path: &Path, store_label: &str) {
     if let Err(e) = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);") {
         tracing::warn!(store = store_label, error = %e, "迁移前 checkpoint 失败，备份可能不含最新 WAL 帧（继续备份）");
@@ -153,7 +153,7 @@ pub fn set_wal_lenient(conn: &rusqlite::Connection, store_label: &str) {
     }
 }
 
-/// ⑤ 原子迁移步（R221 BUG-166，补齐模块动机第 4 条点名的洞）：单个
+/// ⑤ 原子迁移步（BUG-166，补齐模块动机第 4 条点名的洞）：单个
 /// 版本步的全部语句 + `user_version` 版本戳在**同一事务**内原子落库。
 ///
 /// 旧行为（裸 execute_batch：语句各自隐式提交；版本戳只在链末落一次）
@@ -190,7 +190,7 @@ pub fn migrate_step(
 }
 
 // ---------------------------------------------------------------------------
-// L20 存储族装配门面（改进项三期 2026-11-03，拍板轻量版：接口化 + 漂移检测，
+// 存储族装配门面（轻量版：接口化 + 漂移检测，
 // 不引入第二引擎——`open_sqlite_store` 就是将来引擎分叉点，加引擎 = 新增
 // 构造函数，调用方 spec 不变）。
 // ---------------------------------------------------------------------------
@@ -223,7 +223,7 @@ pub struct StoreSpec {
 
 /// 单一装配点：能力准入 → 打开 → WAL（lenient）→ 语义 PRAGMA（硬失败）→
 /// drift 对账 → 迁移前轮换备份 → 迁移链 → 版本戳。行为与 board/db.rs、
-/// data/db.rs 既有 open 序列等价（L20 重构非重写）；差异经 `StoreSpec`
+/// data/db.rs 既有 open 序列等价（重构非重写）；差异经 `StoreSpec`
 /// 携带：错误文案（`db_noun`）、WAL/日志标签（`label`）、迁移链与成功
 /// 日志正文。
 ///

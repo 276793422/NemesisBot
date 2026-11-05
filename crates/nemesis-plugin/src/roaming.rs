@@ -6,9 +6,9 @@
 //!
 //! # 版本史
 //!
-//! - v1（QUIC 插件化 M1/M2）：生命周期/identity/trust/registry 17 导出 +
+//! - v1（QUIC 插件化）：生命周期/identity/trust/registry 17 导出 +
 //!   `notify_incoming(conn_id, port)` / `notify_members`；
-//! - v2（M3）：`notify_incoming` 增 `remote_hex`（宿主受理器日志/审计带对端身份，
+//! - v2：`notify_incoming` 增 `remote_hex`（宿主受理器日志/审计带对端身份，
 //!   插件 accept 时已握有远端 EndpointId，顺手携带零成本）；追加
 //!   `roaming_endpoint_start`/`roaming_endpoint_stop`（客户端连接面端点生命周期——
 //!   dial/accept 两臂的 iroh 承载搬插件，宿主只控启停与拨号）。
@@ -24,13 +24,13 @@
 //! # 线程纪律
 //!
 //! 所有导出函数（除 `roaming_abi_version`/`roaming_shutdown`）内部投插件自持 runtime
-//! 阻塞等结果——宿主调用侧必须 `spawn_blocking`，不卡 async executor 线程（拍板 10）。
+//! 阻塞等结果——宿主调用侧必须 `spawn_blocking`，不卡 async executor 线程。
 //!
 //! # 返回 JSON 约定
 //!
-//! 除 `roaming_abi_version`（→ u32）与 `roaming_shutdown`（→ void）外，全部导出返回
+//! 除 `roaming_abi_version`（u32）与 `roaming_shutdown`（void）外，全部导出返回
 //! `*const c_char`，指向插件内静态 JSON 缓冲（per-call 覆盖，单线程串行纪律）：
-//! - 成功：`{"ok":true, ...载荷}`（start 携带 http_addr/quic_addr/registry_addr；
+//! - 成功：`{"ok":true,...载荷}`（start 携带 http_addr/quic_addr/registry_addr；
 //!   dial 携带 port/conn_id；status 携带运行态 + registry_members 数组）；
 //! - 失败：`{"ok":false,"err_code":"...","err_msg":"..."}`。
 //!
@@ -56,7 +56,7 @@ pub const ROAMING_LOG_INFO: i32 = 2;
 pub const ROAMING_LOG_WARN: i32 = 3;
 pub const ROAMING_LOG_ERROR: i32 = 4;
 
-/// 日志回调：插件日志转发回宿主 tracing（拍板 5：转发不落盘，插件不落自己的日志文件）。
+/// 日志回调：插件日志转发回宿主 tracing（转发不落盘，插件不落自己的日志文件）。
 /// tag 为短标签（如 "relay" / "rendezvous"），宿主负责并入消息体。
 pub type RoamingLogFn = extern "C" fn(level: i32, tag: *const c_char, msg: *const c_char);
 
@@ -117,7 +117,7 @@ pub type RoamingAbiVersionFn = extern "C" fn() -> u32;
 pub type RoamingInitFn =
     unsafe extern "C" fn(vtable: *const HostRoamingVTable, config_json: *const c_char) -> c_int;
 
-/// 启动常驻服务（中继/endpoint/名册循环，按配置与后续 M2/M3 接线逐面生效）。
+/// 启动常驻服务（中继/endpoint/名册循环，按配置与后续 / 接线逐面生效）。
 /// 返回静态 JSON：`{"ok":true,...}` 或 `{"ok":false,"err_code","err_msg"}`。
 pub type RoamingStrFn = unsafe extern "C" fn() -> *const c_char;
 
@@ -125,7 +125,7 @@ pub type RoamingStrFn = unsafe extern "C" fn() -> *const c_char;
 /// 传输设施不是 agent 活动面）。断通道不卸库（Library 进程生命周期，防 UB）。
 pub type RoamingShutdownFn = extern "C" fn();
 
-// --- transport（集群数据路径用，2；M3 接线生效） ---
+// --- transport（集群数据路径用，2； 接线生效） ---
 
 pub const ROAMING_DIAL_SYMBOL: &str = "roaming_dial";
 pub const ROAMING_CLOSE_CONN_SYMBOL: &str = "roaming_close_conn";
@@ -138,7 +138,7 @@ pub type RoamingDialFn = unsafe extern "C" fn(addr: *const c_char) -> *const c_c
 /// 按连接 id 显式关闭（半开兜底）。
 pub type RoamingCloseConnFn = unsafe extern "C" fn(conn_id: u64) -> *const c_char;
 
-// --- identity（4；M2 接线） ---
+// --- identity（4； 接线） ---
 
 pub const ROAMING_IDENTITY_KEYGEN_SYMBOL: &str = "roaming_identity_keygen";
 pub const ROAMING_IDENTITY_LOAD_SYMBOL: &str = "roaming_identity_load";
@@ -150,14 +150,14 @@ pub const ROAMING_SET_IDENTITY_SYMBOL: &str = "roaming_identity_set";
 /// set 入参：`{"secret_key_hex":"..."}`（node.update_identity 热更新同步）。
 pub type RoamingJsonFn = unsafe extern "C" fn(arg: *const c_char) -> *const c_char;
 
-// --- trust（4；M3 起插件内实作裁决与文件操作） ---
+// --- trust（4； 起插件内实作裁决与文件操作） ---
 
 pub const ROAMING_TRUST_TRUST_SYMBOL: &str = "roaming_trust_trust";
 pub const ROAMING_TRUST_REVOKE_SYMBOL: &str = "roaming_trust_revoke";
 pub const ROAMING_TRUST_UNREVOKE_SYMBOL: &str = "roaming_trust_unrevoke";
 pub const ROAMING_TRUST_LIST_SYMBOL: &str = "roaming_trust_list";
 
-// --- registry（2；M2 接线） ---
+// --- registry（2； 接线） ---
 
 pub const ROAMING_REGISTRY_START_SYMBOL: &str = "roaming_registry_start";
 pub const ROAMING_REGISTRY_STOP_SYMBOL: &str = "roaming_registry_stop";
@@ -166,7 +166,7 @@ pub const ROAMING_REGISTRY_STOP_SYMBOL: &str = "roaming_registry_stop";
 /// start 入参：注册载荷 JSON（成员字段 + registry_url）；stop 无入参。
 pub type RoamingRegistryStartFn = unsafe extern "C" fn(config: *const c_char) -> *const c_char;
 
-// --- endpoint（2；M3 接线，v2 追加） ---
+// --- endpoint（2； 接线，v2 追加） ---
 
 pub const ROAMING_ENDPOINT_START_SYMBOL: &str = "roaming_endpoint_start";
 pub const ROAMING_ENDPOINT_STOP_SYMBOL: &str = "roaming_endpoint_stop";
@@ -190,7 +190,7 @@ pub type RoamingEndpointStartFn = unsafe extern "C" fn(config: *const c_char) ->
 ///
 /// 纯 fn 指针载体——nemesis-plugin 契约 crate 零依赖（不引 libloading）；
 /// Library 由 loader `Box::leak`（进程生命周期），fn 指针因此恒有效。
-/// 所有方法为阻塞调用，宿主侧必须 `spawn_blocking`（拍板 10）。
+/// 所有方法为阻塞调用，宿主侧必须 `spawn_blocking`。
 #[derive(Clone, Copy)]
 pub struct RoamingPluginHandle {
     pub init: RoamingInitFn,
@@ -257,12 +257,12 @@ impl RoamingPluginHandle {
         self.call_str(self.status, "roaming_status")
     }
 
-    /// M3 接线：拨号 → `{"ok":true,"port","conn_id"}`。
+    /// 接线：拨号 → `{"ok":true,"port","conn_id"}`。
     pub fn dial(self, addr: &str) -> Result<String, String> {
         self.call_json(self.dial, addr, "roaming_dial")
     }
 
-    /// M3 接线：按连接 id 显式关闭（半开兜底）。
+    /// 接线：按连接 id 显式关闭（半开兜底）。
     pub fn close_conn(self, conn_id: u64) -> Result<String, String> {
         let raw = unsafe { (self.close_conn)(conn_id) };
         json_from_raw(raw, "roaming_close_conn")

@@ -1,8 +1,8 @@
-//! LiteLLM 价目表解析器（A2 在线更新，2026-08-31）。
+//! LiteLLM 价目表解析器（在线更新，2026-08-31）。
 //!
 //! LiteLLM `model_prices_and_context_window.json` 是价目表在线更新的事实
 //! 标准源（3,400+ 条 / MIT / raw.githubusercontent 直拉）。它的形状是
-//! `model_name → {input_cost_per_token, output_cost_per_token, ...}`
+//! `model_name → {input_cost_per_token, output_cost_per_token,...}`
 //! 的扁平 map，**per-token 计价**——本项目 [`ModelPricing`] 是 per-million，
 //! 转换时 ×1e6。
 //!
@@ -60,7 +60,7 @@ pub fn parse_litellm_json(raw: &str) -> Result<Vec<ModelPricing>, String> {
             // 精选补充层条目带 aliases（`deepseek/deepseek-chat` 等）；上游
             // 条目无此字段 → 空表（同义名靠 lookup 的后缀匹配兜底）。
             aliases: e.aliases.unwrap_or_default(),
-            // LiteLLM 原始表无阶梯价字段（阶梯价是自定义层语义，L3）。
+            // LiteLLM 原始表无阶梯价字段（阶梯价是自定义层语义）。
             price_tiers: None,
         });
     }

@@ -1,4 +1,4 @@
-//! 桥集群身份注册（goal 二期批次五，hub 侧）。
+//! 桥集群身份注册（goal 二期，hub 侧）。
 //!
 //! 职责：实现 [`BridgeIdentitySink`]——把桥 hello 携带的集群身份事件落进
 //! 本机集群 registry：上线 → [`Cluster::handle_discovered_node`]（同权注册，
@@ -38,7 +38,7 @@ impl BridgeClusterSink {
         }
     }
 
-    /// 二期批次六：集群 node_id → 桥链路 node_id 反查（hub 侧 BridgeSend
+    /// 二期：集群 node_id → 桥链路 node_id 反查（hub 侧 BridgeSend
     /// 出口寻址用——RpcClient 仲裁按 registry 集群 id 说话，relay 下行按
     /// 桥链路 id 投递）。设备数小（桥拓扑单 hub 直连），线性扫即可。
     pub fn bridge_of(&self, cluster_id: &str) -> Option<String> {
@@ -71,7 +71,7 @@ impl BridgeIdentitySink for BridgeClusterSink {
                 .lock()
                 .expect("桥↔集群映射表锁中毒")
                 .insert(event.bridge_node_id.clone(), identity.node_id.clone());
-            // via-bridge 哨兵（hub 侧对称标记，2026-09-20）：设备侧经
+            // via-bridge 哨兵（hub 侧对称标记）：设备侧经
             // member_sync 得知的成员已带同款哨兵（bridge_rpc
             // handle_member_sync），hub 侧补齐 = 两侧 registry 都能回答
             // 「这个 peer 是怎么接入的」。追加而非覆盖——设备自报 tags 保留。

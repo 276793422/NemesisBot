@@ -2,7 +2,7 @@
 //! 2026-09-23_.md /4a-4e）。
 //! 语义零变化：首呼 select 超时包装、context 压缩环（4a）、429 预算环（4b）、
 //! transient 退避环（4c）、LLM post-hooks 受守卫重呼（4d）；四处 tool_defs
-//! 重建（4a/4b/4c/ 凭据卡重试）统一走 [`AgentLoop:effective_tool_defs`]——
+//! 重建（4a/4b/4c/ 凭据卡重试）统一走 [`AgentLoop::effective_tool_defs`]——
 //! 与主调用同源同闸（根修：此前走 rebuild_full_tool_defs
 //! 全量无闸重建，恢复重试请求绕过 tier/hidden/plan/connector 供给闸，且
 //! 过滤激活场景 prompt cache 前缀断裂）。
@@ -18,7 +18,7 @@ use super::*;
 ///
 /// ⚠ 分层约束：`nemesis-providers` 只是 agent 的 dev-dependency（生产依赖
 /// 图不含），跨层通道只有 Display 文本——本常量为**字面量副本**，与
-/// providers 侧 `failover:STREAM_PARTIAL_SEPARATOR` /
+/// providers 侧 `failover::STREAM_PARTIAL_SEPARATOR` /
 /// `STREAM_TOOL_CALLS_TRUNCATED_MARK` 同文互锚（providers 侧测试钉
 /// 「Display contains 常量」，本 crate 测试钉字面量值——任一端改文本两端
 /// 测试必红）。提取只对头行（首个 `\n` 前）做标记判定，模型任意输出
@@ -84,7 +84,7 @@ impl AgentLoop {
         let active_provider_base = instance
             .detached_model_provider()
             .unwrap_or_else(|| self.provider.read().clone());
-        // ：流式观测 lane——包装后本函数五个调用点（首捕 +
+        // 流式观测 lane——包装后本函数五个调用点（首捕 +
         // 四重试环）共享同一包装实例；重试 = 新流（seq 从 0 重开 + start 帧
         // 重置前端缓冲）。双闸不满足（event tx 未接线 / provider_stream_
         // events 关）→ None → 原 provider 原字节路径，零额外开销。
@@ -107,7 +107,7 @@ impl AgentLoop {
         // 注意：subscribe() 返回的是 owned Receiver（不借用 guard），所以这里
         // 拿完就能放掉 estop 的读锁。
         let mut estop_rx = self.security.subscribe();
-        // Use tokio:select! to allow cancellation / e-stop during the LLM call.
+        // Use tokio::select! to allow cancellation / e-stop during the LLM call.
         // P3B 撞墙检测起点：首次调用的失败时长供 transient 重试链比对。
         let first_call_start = std::time::Instant::now();
         // ②A：首捕同样包超时——挂死连接不再无限等（cancel/estop 臂
@@ -164,7 +164,7 @@ impl AgentLoop {
                 //     gRPC "deadline exceeded" 等旧词表不认即终局的文案）。
                 //   Format/None → 不借分类器分流（Format 终局与词表时代同
                 //     宿），走既有词表路径原样兜底。
-                // 分类器单点在 nemesis_utils:llm_error_class（providers 侧
+                // 分类器单点在 nemesis_utils::llm_error_class（providers 侧
                 // classify_error 同源委托；nemesis-agent 生产代码看不见
                 // providers——后者只是 dev-dependency）。
                 let classified = nemesis_utils::llm_error_class::classify_llm_error(&err);
@@ -291,10 +291,10 @@ impl AgentLoop {
                         // 格式。真机实证（安卓端 glm-5.3-flash）：
                         // GLM anthropic lane 间歇 500 api_error「网络错误，
                         // 请稍后重试」，一次终局直接抛给用户；providers 侧
-                        // error_classifier:classify_by_status 早已把 500 归
+                        // error_classifier::classify_by_status 早已把 500 归
                         // Overloaded（可重试），loop 侧词表必须同口径。
                         "status 500",
-                        // ：流中断兜底——前缀短路之外的
+                        // 流中断兜底——前缀短路之外的
                         // 词表双保险（与 "connect error" 同款）：词表判定
                         // 不依赖 classify_llm_error 的入口短路也能独立命中
                         // transient 环。
@@ -698,7 +698,7 @@ impl AgentLoop {
 
     /// 不可重试类（认证/计费）终局收尾——observer 错误事件 + history
     /// 落账 + capture flush 保留原始错误全文（诊断保真），用户可见文案换
-    /// 可行动提示。终局仪式与 [`Self:call_llm_with_recovery`] 词表终局
+    /// 可行动提示。终局仪式与 [`Self::call_llm_with_recovery`] 词表终局
     /// 块同构（capture 事件名同为 "llm_call_failed"）。
     // allow 理由（clippy too_many_arguments）：9 参签名与既有词表终局块
     // 同构（observer 事件/history/capture 各需独立实参），聚合 struct 反而
@@ -751,7 +751,7 @@ impl AgentLoop {
     /// 器官 4b：429 限流预算环（原 is_rate_limit_error 臂整体搬入）。梯子 +
     /// Retry-After 取 max + 显式进度 + 实时快照 + 预算硬上限（②B）；调用全
     /// 部包超时（②A）。成功返回 `(Some(resp), 最终 last_err)`；次数/预算
-    /// 耗尽返回 `(None, 终局文案)`（裁决④「终局诚实」结构化标注，文案
+    /// 耗尽返回 `(None, 终局文案)`（「终局诚实」结构化标注，文案
     /// 逐字节保持）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn retry_rate_limited(
@@ -767,7 +767,7 @@ impl AgentLoop {
         let mut maybe_resp: Option<LlmResponse> = None;
         let max_retries = self.current_rate_limit_retries().max(0) as u32;
         let mut retries = 0u32;
-        // BUG ②B：总预算（等待 + 调用累计）——
+        // 总预算（等待 + 调用累计）——
         // 0 = 不限；②A：单次调用超时——0 = 不设。
         let budget_secs = self.current_rate_limit_budget_secs();
         let call_timeout = self.current_provider_call_timeout_secs();
@@ -808,7 +808,7 @@ impl AgentLoop {
             );
             let wait = rate_limit_wait_secs(&last_err, retries);
             let label = rate_limit_display_label(&last_err);
-            // 裁决③「显式进度」：每次重试对用户可见；B 端
+            // 「显式进度」：每次重试对用户可见；B 端
             // outbound_tx 未装配 → 静默重试。
             self.send_retry_progress(
                 context,
@@ -859,7 +859,7 @@ impl AgentLoop {
             // move，同 transient 环纪律）。
             let r_msgs = self.build_messages(instance);
             let r_tools = self.effective_tool_defs(instance);
-            // BUG ②A：单次调用包超时（统一走
+            // 单次调用包超时（统一走
             // chat_call_bounded）——上游 429 后连接挂起
             // （不回响应体）时不再无限等待（实测挂死 27
             // 分钟）；超时按该次重试失败计，走既有环
@@ -893,7 +893,7 @@ impl AgentLoop {
         // 路径由读侧过期兜底）。
         self.clear_rate_limit_status(&context.session_key);
         if maybe_resp.is_none() {
-            // 裁决④「终局诚实」：结构化标注，不再裸抛
+            // 「终局诚实」：结构化标注，不再裸抛
             // 原始错误。标签按最后错误的真类（限流/过载）。
             let label = rate_limit_display_label(&last_err);
             last_err = if budget_exhausted {
@@ -939,7 +939,7 @@ impl AgentLoop {
         // ②A：transient 环内调用同样包超时——挂死的
         // 「真网络等待」形态不再把有限重试环变成无限挂。
         let call_timeout = self.current_provider_call_timeout_secs();
-        // ：流中断拼接续写——首错为流中断且
+        // 流中断拼接续写——首错为流中断且
         // partial 可续（非空、无半截 tool_calls）且开关开（默认开，
         // `agents.stream_concat_retry` 可回退）时，每次重试请求在末尾追加
         // assistant(partial) + user(续写提示)（同族语义），成功后把
@@ -1159,7 +1159,7 @@ impl AgentLoop {
                             reasoning_content: None,
                             images: Vec::new(),
                         });
-                        // : fold the retry call's defs with
+                        // fold the retry call's defs with
                         // the same gates/rendering as the main call —
                         // same query ⇒ same fold bytes.
                         let r_tools = self.effective_tool_defs(instance);

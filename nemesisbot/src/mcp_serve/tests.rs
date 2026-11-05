@@ -1,5 +1,5 @@
 //! [`crate::mcp_serve`] 单元测试：工具清单契约 / 协议通知判定 / 轻量记忆
-//! 检索 / K1 装配结构断言（security on/off 行为差异——安全同源证据之一，
+//! 检索 / 装配结构断言（security on/off 行为差异——安全同源证据之一，
 //! 端到端行为证据见 `tests/mcp_serve_stdio.rs` 审计链用例）。
 
 use super::*;
@@ -128,7 +128,7 @@ fn search_memory_files_respects_limit() {
 fn collect_markdown_files_walks_in_sorted_order() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
-    // BUG-20261101-268：≤200 截断发生在收集过程中（提前 return），收集序
+    // ≤200 截断发生在收集过程中（提前 return），收集序
     // 曾跟随 read_dir 平台序（NTFS 字典序 vs ext4 哈希序）——大记忆库下
     // 哪些文件参与轻量检索会跨平台漂移。每层按文件名排序后必须确定。
     write_file(&ws.join("memory").join("zeta.md"), "z");
@@ -167,7 +167,7 @@ fn search_memory_files_miss_returns_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// K1 装配结构断言（security on/off 行为差异）
+// 装配结构断言（security on/off 行为差异）
 // ---------------------------------------------------------------------------
 
 /// 最小可装配 config（死地址 provider——装配不拨号，与 run/tests.rs 同款）。

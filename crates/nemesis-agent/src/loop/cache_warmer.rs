@@ -9,7 +9,7 @@
 //!
 //! 计划原文设想「TTL 两档（anthropic 5min/1h）从 provider 元数据读」。
 //! 实查结论：`nemesis-providers` 现网请求**不发** anthropic
-//! `cache_control`（`anthropic.rs:build_request_body` 无该键；OpenAI 兼容
+//! `cache_control`（`anthropic.rs::build_request_body` 无该键；OpenAI 兼容
 //! lane 的自动缓存 TTL 无文档），全仓库也不存在任何 prompt cache TTL 元
 //! 数据（`nemesis-config` 的 `cache_ttl_seconds` 属 Skills 搜索缓存，无
 //! 关）。「无源可读」→ 按计划自身的诚实降级条款执行：TTL 唯一可诚实来源
@@ -21,7 +21,7 @@
 //! # 开关语义（D-4：成本敏感 opt-in）
 //!
 //! `agents.cache_warmer.enabled` 默认 **false**——gateway 启动时
-//! [`AgentLoop:spawn_cache_warmer_if_enabled`] 一次新鲜读后直接返回：
+//! [`AgentLoop::spawn_cache_warmer_if_enabled`] 一次新鲜读后直接返回：
 //! 无定时器、无任务对象（零副作用）。运行中改 false → 下一 tick 退出
 //! （热关生效）；启动时关、运行中改 true **不热开**（无任务可感知，重启
 //! gateway 生效——刻意的诚实不对称，见 spawn 点注释）。
@@ -120,8 +120,8 @@ pub(crate) fn warm_cost_allowed(estimated_usd: Option<f64>, cost_limit_usd: f64)
 }
 
 /// 解析 `agents.cache_warmer` 配置节（宽松：段缺失 / 形态非法 → 类型默认
-/// 值 `CacheWarmerConfig:default()` = 关 + $0.05）。类型与默认值单一真相
-/// 源在 `nemesis_config:CacheWarmerConfig`，此处只做容错解包。
+/// 值 `CacheWarmerConfig::default()` = 关 + $0.05）。类型与默认值单一真相
+/// 源在 `nemesis_config::CacheWarmerConfig`，此处只做容错解包。
 pub(crate) fn parse_cache_warmer_config(
     agents: Option<&serde_json::Value>,
 ) -> nemesis_config::CacheWarmerConfig {
@@ -146,7 +146,7 @@ impl AgentLoop {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
     }
 
-    /// `agents.cache_warmer` 新鲜读（config.json 唯一真相源；无 config /
+    /// `agents.cache_warmer` 新鲜读（config.json 唯一依据；无 config /
     /// 段缺失 → 默认关——零副作用）。
     pub(crate) fn current_cache_warmer_config(&self) -> nemesis_config::CacheWarmerConfig {
         self.read_config_json()
@@ -209,7 +209,7 @@ impl AgentLoop {
 
     /// warm 周期扫描主循环。每 tick：停机 / 热关 → 退出；estop → 跳过；
     /// 模型未声明 TTL → 跳过（诚实降级）；否则扫描到期候选（见
-    /// [`Self:warm_scan_once`]）。
+    /// [`Self::warm_scan_once`]）。
     pub(crate) async fn run_cache_warmer_loop(self: Arc<Self>) {
         info!(
             "[cache-warmer] active (scan every {}s; cost_limit from agents.cache_warmer)",
@@ -364,7 +364,7 @@ impl AgentLoop {
 
     /// warm 重放成本保守估算（USD）。`None` = 价目表未命中（调用方保守
     /// 跳过）。口径：messages 文本 / tool_calls 参数 / 工具 defs schema 全
-    /// 按**全价 input** 计（token 估算同 `session:estimate_tokens` 的
+    /// 按**全价 input** 计（token 估算同 `session::estimate_tokens` 的
     /// chars×2/5），外加 1 个 output token——不假设任何 cache read 折扣。
     fn estimate_warm_cost_usd(
         &self,

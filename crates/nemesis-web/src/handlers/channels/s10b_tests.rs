@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): ChannelsHandler error arms
+//! (quality-hardening goal 冲刺, web): ChannelsHandler error arms
 //! and sensitive-field masking the gated `mod tests` skips — missing
 //! config.json load failure, update without a config payload, update whose
 //! payload fails channels re-parse, and `mask_sensitive_fields` recursion.

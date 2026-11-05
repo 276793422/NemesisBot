@@ -4,7 +4,7 @@
 //! Delegates a self-contained task to the local OpenAI Codex CLI:
 //! `codex exec --skip-git-repo-check --sandbox <tier> --ask-for-approval never "<prompt>"`
 //! (one-shot non-interactive execution; stdout collected as the result).
-//! The spawn/timeout/tree-kill plumbing lives in [`super:cli_delegation`]
+//! The spawn/timeout/tree-kill plumbing lives in [`super::cli_delegation`]
 //! (/ — this file is now the "argument construction + config" shell).
 //!
 //! (original item): the sandbox is a FIXED config tier

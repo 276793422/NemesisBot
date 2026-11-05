@@ -1,4 +1,4 @@
-//! sandbox CLI 命令纯函数测试（M2 补测，2026-08-25）。
+//! sandbox CLI 命令纯函数测试（补测，2026-08-25）。
 //!
 //! 其余函数（start/stop/install/kill/ensure_ready/...）与真实 Windows 服务/
 //! UAC 提权/Sandboxie 引擎交互，属结构性不可单测——真机链路由
@@ -98,7 +98,7 @@ fn relaunch_args_shape() {
 }
 
 // ---------------------------------------------------------------------------
-// user_profile / workspace_dir / ensure_sandbox_ready 决策表 Row 1-2（M2 补测）
+// user_profile / workspace_dir / ensure_sandbox_ready 决策表 Row 1-2（补测）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -138,28 +138,28 @@ fn ensure_sandbox_ready_missing_runtime_skips_engine_ensure() {
 }
 
 // =========================================================================
-// S11b 覆盖率冲刺：sandbox run() 分发 arm（Status/Pending/Commit/Clear/Kill）
+// 覆盖率冲刺：sandbox run() 分发 arm（Status/Pending/Commit/Clear/Kill）
 // + pending/commit 假盒路径 + kill 全分支 + run_startexe_timeout 三分支
 // + stop_service_if_ours。
 // 豁免（真引擎/真 UAC/真下载，不测）：Install / Start / Stop /
 // EnsureReady（internal=ensure_installed 真装；external=relaunch_elevated UAC）。
-// 假 Start.exe 用 .bat（CreateProcess 经 cmd 自动执行）。
+// 假 Start.exe 用.bat（CreateProcess 经 cmd 自动执行）。
 // =========================================================================
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct S11bTempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for S11bTempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_temp_home_env() -> S11bTempHomeEnv {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -168,14 +168,14 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
     S11bTempHomeEnv { _tmp: tmp, home }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_paths(home: &std::path::Path) -> nemesis_sandbox::SandboxPaths {
     nemesis_sandbox::SandboxPaths::new(home)
 }
 
 /// 真路径 → 盒内镜像路径（`C:\a\b` → `<box_root>/drive/C/a/b`）。
 /// 注意 real_path_for_box 期望 `drive/<L>` 的 L 不带冒号。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_box_mirror(real: &std::path::Path, box_root: &std::path::Path) -> std::path::PathBuf {
     let s = real.to_string_lossy().replace('/', "\\");
     let (drive, rest) = s.split_at(2);
@@ -189,9 +189,9 @@ fn s11b_box_mirror(real: &std::path::Path, box_root: &std::path::Path) -> std::p
 
 /// 放一个假 Start.exe：复制系统 cmd.exe（真 PE）——
 /// `Start.exe /box:X delete_sandbox` / `/box:X /silent /terminate` 实测 rc=0。
-/// 注意不能用「.bat 内容改名为 .exe」：CreateProcess 按 .exe 后缀做 PE 加载，
+/// 注意不能用「.bat 内容改名为.exe」：CreateProcess 按.exe 后缀做 PE 加载，
 /// 批处理文本会报 os error 216（版本不兼容）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_fake_start_exe(paths: &nemesis_sandbox::SandboxPaths) -> bool {
     let src = std::path::PathBuf::from(
         std::env::var_os("SystemRoot")
@@ -206,7 +206,7 @@ fn s11b_fake_start_exe(paths: &nemesis_sandbox::SandboxPaths) -> bool {
 
 // ------------------------------ status ------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_status_fresh_home() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -226,7 +226,7 @@ fn test_s11b_stop_service_if_ours_no_side_effects() {
     stop_service_if_ours(tmp.path());
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_s11b_workspace_dir_env_resolution() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -238,7 +238,7 @@ fn test_s11b_workspace_dir_env_resolution() {
 
 // -------------------------- pending / commit ------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_pending_and_commit_paths() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -332,7 +332,7 @@ async fn test_s11b_run_pending_and_commit_paths() {
 
 // -------------------------------- clear -----------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_clear_force_and_missing_startexe() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -366,7 +366,7 @@ async fn test_s11b_run_clear_force_and_missing_startexe() {
 
 // -------------------------------- kill ------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_kill_all_branches() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -418,7 +418,7 @@ async fn test_s11b_kill_all_branches() {
 
 // ----------------------- run_startexe_timeout 三分支 -----------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_s11b_run_startexe_timeout_fast_exit_true() {
     let tmp = tempfile::tempdir().unwrap();
@@ -460,8 +460,8 @@ fn test_s11b_run_startexe_timeout_hang_tree_killed_false() {
     );
     assert!(!ok);
     // 30s 界只钉「树杀会返回、不悬挂」（真悬挂=永不返回，任何有界超时都能
-    // 抓），不钉 taskkill 速度——超时路径同步 .status() 等 taskkill，满载
-    // 并发下单发可达秒级（B4 假红同模式，CLAUDE.md 已记载）。若树杀整体
+    // 抓），不钉 taskkill 速度——超时路径同步.status() 等 taskkill，满载
+    // 并发下单发可达秒级（假红同模式，CLAUDE.md 已记载）。若树杀整体
     // 失效，ping 会在 ~30s 自然退出 → 返回 true → 上面 !ok 在正确位置判败，
     // 放宽本界不遮蔽任何失效。
     assert!(
@@ -471,13 +471,13 @@ fn test_s11b_run_startexe_timeout_hang_tree_killed_false() {
 }
 
 // =========================================================================
-// wave_b（覆盖率补测 2026-08-27）：CLI 编排层剩余可测臂。沿用 S11b 夹具
+// wave_b（覆盖率补测）：CLI 编排层剩余可测臂。沿用 夹具
 // （临时 NEMESISBOT_HOME + GLOBAL_STATE_LOCK + 假 Start.exe），零 UAC /
 // 零真实引擎触碰：
 //   1) commit 失败臂：真落盘路径的父目录被普通文件占位 → commit_file 的
 //      create_dir_all 必然失败 → CLI 打印 FAILED 行并继续（sandbox.rs:182）；
 //   2) kill 指定盒且该盒确在 ini（vec![b.clone()] 臂，sandbox.rs:281-282）；
-//   3) kill 全量但 ini 无任何 NemesisEvalBox_* 段（早退提示臂 :294-295）；
+//   3) kill 全量但 ini 无任何 NemesisEvalBox_* 段（早退提示臂:294-295）；
 //   4) kill 时 Start.exe 为非法 PE（垃圾字节）→ spawn 秒败 → term_ok=false
 //      → 打印「无响应跳过」臂（sandbox.rs:328-331）——全程不产生任何进程；
 //   5) status 三 present 分支（Start.exe / Sandboxie.ini / runtime 目录都
@@ -490,7 +490,7 @@ fn test_s11b_run_startexe_timeout_hang_tree_killed_false() {
 // run_startexe_timeout 的 try_wait Err 臂（句柄有效后 Windows 几乎不会 Err）。
 // =========================================================================
 // 整 mod Windows 形态（5/5 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod wave_b {
     use super::*;
 
@@ -499,7 +499,7 @@ mod wave_b {
         s11b_box_mirror(real, box_root)
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_commit_failed_line_when_real_parent_is_regular_file() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -541,7 +541,7 @@ mod wave_b {
         assert!(ws.join("zed").is_file(), "占位文件保持为文件");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_kill_specific_box_present_in_ini_runs_terminate_chain() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -565,7 +565,7 @@ mod wave_b {
 
         // 指定盒在 ini 且 FileRootPath 存活 → vec![b.clone()] 后走完整
         // /terminate + delete_sandbox_silent（假 Start.exe = cmd.exe 副本，
-        // 与 S11b 已实证的同款调用形态，秒退无副作用）。
+        // 与 已实证的同款调用形态，秒退无副作用）。
         run(
             SandboxCommand::Kill {
                 box_name: Some("WaveBBox".into()),
@@ -578,7 +578,7 @@ mod wave_b {
         assert!(root.exists(), "kill 只清盒内容登记，不删 FileRootPath 本体");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_kill_all_with_no_eval_sections_returns_early_hint() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -600,7 +600,7 @@ mod wave_b {
             .unwrap();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_kill_with_unspawnable_startexe_reports_no_response_and_skips() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -633,7 +633,7 @@ mod wave_b {
         assert!(paths.start_exe().is_file(), "垃圾 Start.exe 保持原样");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_status_present_arms_when_runtime_ini_startexe_exist() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -657,7 +657,7 @@ mod wave_b {
 }
 
 // ---------------------------------------------------------------------------
-// wave_a（2026-09-25）：selftest_child 全分支（env 驱动、无网络依赖面）。
+// wave_a：selftest_child 全分支（env 驱动、无网络依赖面）。
 // - WORKSPACE 缺失 → 错误 verdict + Ok；
 // - WORKSPACE 在、不 engage → 三探针 + ok verdict；
 // - ENGAGE=1 且无 BOXED：Windows 上无 userland backend → "no userland
@@ -666,7 +666,7 @@ mod wave_b {
 // 自检契约：永远 Ok + stdout JSON verdict；断言 Ok 与探针对工作区的副作用。
 // ---------------------------------------------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod wave_a_selftest {
     /// 自检 env 夹具：NEMESISBOT_HOME 指向临时家 + WORKSPACE 指向其 workspace。
     struct SelftestEnv {
@@ -676,10 +676,10 @@ mod wave_a_selftest {
     }
     use std::sync::MutexGuard;
 
-    // 环境互斥用 crate::GLOBAL_STATE_LOCK（与 S11b/wave_b 系同锁）：本夹具
+    // 环境互斥用 crate::GLOBAL_STATE_LOCK（与 /wave_b 系同锁）：本夹具
     // 与它们一样做进程级 set_var/remove_var(NEMESISBOT_HOME)，曾经用模块
     // 私有锁导致两组测试并行时 env 被互相拆除——wave_b commit 的 run() 读
-    // 到已移除的 home → pending 扫描落空 → "No pending" 假红（2026-09-27
+    // 到已移除的 home → pending 扫描落空 → "No pending" 假红（
     // workspace 全量并行实绩）。动同一环境变量的测试必须同一把锁。
     impl Drop for SelftestEnv {
         fn drop(&mut self) {
@@ -693,7 +693,7 @@ mod wave_a_selftest {
 
     fn selftest_env() -> SelftestEnv {
         // set_var/remove_var 是进程级操作，Drop 也会污染并发测试 → 必须持
-        // crate::GLOBAL_STATE_LOCK（2026-09-28：原私有 SELFTEST_ENV_LOCK 与
+        // crate::GLOBAL_STATE_LOCK（原私有 SELFTEST_ENV_LOCK 与
         // GLOBAL_STATE_LOCK 不互斥，wave_a 的 env 改动与 wave_b 的 env 夹具
         // 并发交错，造成 wave_b_commit_failed... 假红）。
         let guard = crate::GLOBAL_STATE_LOCK

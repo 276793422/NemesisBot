@@ -1,6 +1,6 @@
-//! worker 侧持久化发件箱（看板项目档案 goal P3/D2）。
+//! worker 侧持久化发件箱（看板项目档案 goal）。
 //!
-//! 任务任一终态（交付成功/FAIL/取消/超时）经 [`super::rpc::peer_chat_handler::TaskResultPersister::on_task_terminal`]
+//! 任务任一终态（交付成功/FAIL/取消/超时）经 [`super::rpc:peer_chat_handler::TaskResultPersister:on_task_terminal`]
 //! 钩子入队：把 `workspace/logs/cluster_logs/{source_node}/{ts}_{task_id}/`
 //! 执行记录**先复制落盘**到 `<workspace>/cluster/outbox/<task_id>/`（防日志
 //! 轮换丢原件），后台推送循环再分块推给 master；master 落盘 ACK（end ok）
@@ -10,9 +10,9 @@
 //!   Notify 即时踢）；worker 重启 → [`TransferOutbox::sweep_startup`]
 //!   把 `pushing` 重置回 `pending` 续推，并对「有执行残留但无发件箱记录」
 //!   的任务目录补入队（崩溃兜底）。
-//! - **幂等**：master 侧 `(task_id, content_hash)` 去重（D3）+ end 幂等
+//! - **幂等**：master 侧 `(task_id, content_hash)` 去重+ end 幂等
 //!   重放标记——at-least-once 语义下重复投递无害。
-//! - **D4 体积护栏（worker 侧同适用）**：载荷超 `max_bytes`（现读 provider，
+//! - ** 体积护栏（worker 侧同适用）**：载荷超 `max_bytes`（现读 provider，
 //!   热生效）→ 本地标记 `over_limit` + 向 master 发 `transfer_overlimit`
 //!   通知（决策流出卡），**绝不截断**。护栏调大后启动清扫自动重新武装。
 //! - **transfer_id 确定性**：`{task_id}-{content_hash12}-{chunk_size}`——
@@ -44,7 +44,7 @@ const PUSH_TICK_SECS: u64 = 15;
 /// 路径读取）。全速推送 17 块 ≈240ms 就完（每 RPC 仅 4-8ms，无限速），
 /// master 侧 staging 非空窗口小于 UAT 的 500ms 轮询周期，T-XFER-3 的
 /// 「master 半程死亡 → staging 持久 → 重启 have 续传」场景永远制造不出来
-/// （2026-09-18 第六轮取证：A 端档案安置/合并/B 发件箱清空全链正常，
+/// （取证：A 端档案安置/合并/B 发件箱清空全链正常，
 /// 纯测试窗口竞争）。UAT 由此拉长推送窗口；生产默认 0 = 零 sleep，行为
 /// 与钩子引入前逐字节一致。
 fn chunk_delay_ms() -> u64 {
@@ -54,22 +54,22 @@ fn chunk_delay_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// -- CD6（2026-09-17 用户裁决⑨⑩⑪）：退避封顶 + 死信 + 日志降频 -----------
+// -- （用户⑪）：退避封顶 + 死信 + 日志降频 -----------
 
 /// 推送失败退避起步（秒）——15s 起步指数爬升（= PUSH_TICK_SECS）。
 const PUSH_BACKOFF_BASE_SECS: u64 = 15;
-/// 退避封顶（秒）——10 分钟（裁决⑩）。
+/// 退避封顶（秒）——10 分钟。
 const PUSH_BACKOFF_CAP_SECS: u64 = 600;
-/// 死信 age 闸（秒）——7 天，对齐 task_result TTL（裁决⑨）。
+/// 死信 age 闸（秒）——7 天，对齐 task_result TTL。
 const DEAD_LETTER_AGE_SECS: i64 = 7 * 24 * 3600;
-/// 死信 attempts 闸——与 age 先到先死（裁决⑨）。
+/// 死信 attempts 闸——与 age 先到先死。
 const DEAD_LETTER_MAX_ATTEMPTS: u32 = 1000;
 /// 日志降频阈值——attempts 超过此后每 [`PUSH_WARN_EVERY`] 次一条 WARN
 /// （裁决⑪；封顶退避下 ≈ 10 分钟一条）。
 const PUSH_WARN_QUIET_AFTER: u32 = 50;
 const PUSH_WARN_EVERY: u32 = 40;
 
-/// CD6：推送失败退避秒数——15s 起步指数爬升，600s（10 分钟）封顶。
+/// 推送失败退避秒数——15s 起步指数爬升，600s（10 分钟）封顶。
 /// `attempts` 从 1 起计（首次失败 = 第 1 次）。
 fn push_backoff_secs(attempts: u32) -> u64 {
     let shift = attempts.saturating_sub(1).min(6);
@@ -78,7 +78,7 @@ fn push_backoff_secs(attempts: u32) -> u64 {
         .min(PUSH_BACKOFF_CAP_SECS)
 }
 
-/// CD6：条目年龄（秒；created_at 距今）。created_at 解析失败 = None。
+/// 条目年龄（秒；created_at 距今）。created_at 解析失败 = None。
 fn entry_age_secs(entry: &OutboxEntry) -> Option<i64> {
     let created = chrono::DateTime::parse_from_rfc3339(&entry.created_at).ok()?;
     Some(
@@ -93,12 +93,12 @@ fn entry_age_secs(entry: &OutboxEntry) -> Option<i64> {
 /// （ts 格式由 cluster_request_logger_observer 决定；变更须同步这里。）
 const TASK_DIR_TS_PREFIX: usize = 24;
 
-/// F-NEW-3（2026-10-17 四轮审计）：启动清扫补入队的**年龄闸**。已送达任务
+/// F-NEW-3（四轮审计）：启动清扫补入队的**年龄闸**。已送达任务
 /// 的发件箱条目被双删而 cluster_logs 原件保留，「已送达」与「崩溃残留」在
 /// 磁盘上不可区分——无闸时每次 worker 重启把保留期内全部历史重新入队重推
-/// （master ingest 搬走落地实体后 dedup 放行，T8 刻意语义）。年龄闸语义：
+/// （master ingest 搬走落地实体后 dedup 放行， 刻意语义）。年龄闸语义：
 /// 只补「新近」目录（崩溃窗口兜底的本来意图），更早的历史不自动重推——
-/// master 侧 D5 `request_pull` 兜底拉取语义不变，仍可点名救取。
+/// master 侧 `request_pull` 兜底拉取语义不变，仍可点名救取。
 const RESIDUAL_BACKFILL_MAX_AGE_SECS: i64 = 24 * 3600;
 
 /// 目录名 ts 前缀（`%Y-%m-%d_%H-%M-%S-%3f`，本地时区）距今是否超龄。
@@ -122,7 +122,7 @@ pub(crate) fn residual_dir_older_than(
     }
 }
 
-/// 进程级入队互斥（BUG-20261104-365）：enqueue 的 check→remove→copy→write
+/// 进程级入队互斥：enqueue 的 check→remove→copy→write
 /// 序列必须原子——四路触发源（终态钩子 `finish_task_exec` / master 兜底
 /// pull 的 RPC handler / 启动清扫 / 周期残留清扫的独立线程）可对同一
 /// task_id 并发入队，无锁时 B 侧 `remove_dir_all` 会删掉 A 侧复制到一半
@@ -175,7 +175,7 @@ impl TransferTransport for RpcTransferTransport {
             id: uuid::Uuid::new_v4().to_string(),
             action: crate::rpc_types::ActionType::Custom(action.to_string()),
             payload,
-            // 发送方身份必须显式填：RpcClient 不代填（T37 真机教训——留空
+            // 发送方身份必须显式填：RpcClient 不代填（真机教训——留空
             // 对端 `_rpc.from` 拿空串，master 无法定位回执/记账）。
             source: self.self_node_id.clone(),
             target: Some(peer.to_string()),
@@ -196,14 +196,14 @@ impl TransferTransport for RpcTransferTransport {
 // 条目（磁盘形态：`<outbox>/<task_id>/entry.json`）
 // ---------------------------------------------------------------------------
 
-/// 通用目录推送结果（[`push_transfer_dir`]；outbox 与 P4 基线推送共用）。
+/// 通用目录推送结果（[`push_transfer_dir`]；outbox 与 基线推送共用）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PushDirOutcome {
     /// master/对端已落盘确认（或 dedup——对端已有同档）。
     Delivered,
     /// 目录为空 → 无档可传。
     NothingToSend,
-    /// 超 D4 护栏（不发 overlimit 通知——调用方决定语义：outbox 标记
+    /// 超 护栏（不发 overlimit 通知——调用方决定语义：outbox 标记
     /// over_limit + 出卡；基线推送 = 派发诚实停车）。
     Overlimit { total_bytes: u64, limit: u64 },
 }
@@ -211,7 +211,7 @@ pub enum PushDirOutcome {
 // ---------------------------------------------------------------------------
 
 /// 发件箱条目。entry.json 在场 = 载荷复制完整（enqueue 先写 payload 后写
-/// entry.json）；状态机 `pending → pushing → (删) | over_limit`，CD6 后
+/// entry.json）；状态机 `pending → pushing → (删) | over_limit`， 后
 /// pending 失败侧新增 `→ dead`（age 7 天 / attempts 1000 死信停车，可见
 /// + 可手动重放——与零丢失红线不冲突：死信是可见的诚实停车，不是静默丢弃）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -219,7 +219,7 @@ pub struct OutboxEntry {
     pub task_id: String,
     /// 推送目标（派发来源节点 id；cluster_logs device 目录名同源）。
     pub source_node: String,
-    /// pending | pushing | over_limit | dead（CD6）。
+    /// pending | pushing | over_limit | dead。
     pub state: String,
     pub created_at: String,
     pub attempts: u32,
@@ -227,8 +227,8 @@ pub struct OutboxEntry {
     pub total_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
-    /// CD6：下次重试时刻（RFC3339）——退避窗口内跳过该条目。None/缺省 =
-    /// 立即可推（存量条目兼容，裁决⑦：保留原地不迁移）。
+    /// 下次重试时刻（RFC3339）——退避窗口内跳过该条目。None/缺省 =
+    /// 立即可推（存量条目兼容，保留原地不迁移）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_retry_at: Option<String>,
 }
@@ -240,13 +240,13 @@ enum PushOutcome {
     Delivered,
     /// 载荷为空（无执行记录）→ 无档可传，删本地。
     NothingToSend,
-    /// 超 D4 护栏 → 携带实测载荷与护栏值；调用方先落盘 over_limit 再通知
+    /// 超 护栏 → 携带实测载荷与护栏值；调用方先落盘 over_limit 再通知
     /// master（顺序倒转：master 出卡出现时本地状态必已就位）。
     Overlimit { total_bytes: u64, limit: u64 },
 }
 
 // ---------------------------------------------------------------------------
-// CD6：死信面（Dashboard 可见 + 手动重放口）
+// 死信面（Dashboard 可见 + 手动重放口）
 //
 // 状态全在磁盘（entry.json），不需要活实例——web 层持 outbox 根路径即可
 // 操作；重放只翻状态落盘，推送循环下一 tick（≤15s）自然拾取。
@@ -305,7 +305,7 @@ pub fn replay_dead_letter_entry(outbox_root: &Path, task_id: &str) -> Result<Out
 fn write_entry_json(dir: &Path, entry: &OutboxEntry) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("建目录失败: {e}"))?;
     let json = serde_json::to_string_pretty(entry).map_err(|e| e.to_string())?;
-    // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.entry.json.tmp`
+    // 委托唯一临时名权威 helper（固定 `.entry.json.tmp`
     // 同目录并发写互踩——两个任务同时落 entry 即撞名）。
     nemesis_utils::file::write_file_atomic(
         &dir.join("entry.json").to_string_lossy(),
@@ -325,15 +325,15 @@ pub struct TransferOutbox {
     outbox_root: PathBuf,
     /// `<workspace>/logs/cluster_logs`（入队源；nemesis-path 唯一拼接点）。
     logs_root: PathBuf,
-    /// `<workspace>/cluster/exec`（档案管线工作副本根；D5 兜底拉取的装配
-    /// 观望探针用，BUG-20261104-361）。
+    /// `<workspace>/cluster/exec`（档案管线工作副本根； 兜底拉取的装配
+    /// 观望探针用）。
     exec_root: PathBuf,
     self_node_id: String,
     transport: Arc<dyn TransferTransport>,
-    /// D4 护栏现读 provider（gateway 从 config 现读注入，热生效；0=不限）。
+    /// 护栏现读 provider（gateway 从 config 现读注入，热生效；0=不限）。
     max_bytes: Box<dyn Fn() -> u64 + Send + Sync>,
     kick: tokio::sync::Notify,
-    /// CD6（裁决）：健康联动——目标对端离线时暂停该条目（跳过本轮，不计数
+    /// （裁决）：健康联动——目标对端离线时暂停该条目（跳过本轮，不计数
     /// 不打日志不推进退避），回 Online 后下一 tick（≤15s）自然恢复推送。
     /// 注入口 = RpcClient 在线状态只读口（`is_peer_online`）；None = 不联动
     /// （旧行为照发）。`Option<bool>` 语义由注入方裁决（未知节点建议 true，
@@ -362,7 +362,7 @@ impl TransferOutbox {
         }
     }
 
-    /// CD6：注入健康联动查询（见字段 doc）。gateway 装配时注入一次。
+    /// 注入健康联动查询（见字段 doc）。gateway 装配时注入一次。
     pub fn set_online_check(&self, check: Box<dyn Fn(&str) -> bool + Send + Sync>) {
         *self.online_check.lock().unwrap_or_else(|e| e.into_inner()) = Some(check);
     }
@@ -371,7 +371,7 @@ impl TransferOutbox {
         &self.outbox_root
     }
 
-    /// 传输通路（P4/E2：master 基线推送复用节点同一 RPC 通路，不另装配）。
+    /// 传输通路（/：master 基线推送复用节点同一 RPC 通路，不另装配）。
     pub fn transport(&self) -> &Arc<dyn TransferTransport> {
         &self.transport
     }
@@ -389,7 +389,7 @@ impl TransferOutbox {
         self.enqueue_with_changeset(task_id, source_node, None)
     }
 
-    /// 任务终态入队（P4/E3 扩展）：执行记录之外，把 `changeset_dir`（变更集，
+    /// 任务终态入队（/ 扩展）：执行记录之外，把 `changeset_dir`（变更集，
     /// `changeset.json` + `files/`，见 [`crate::changeset`]）搭进同一载荷——
     /// 同一次分块传输原子落地，master 收到回执时变更集必已随行（保序：
     /// 合并不可能抢在交付前）。`None` = 等价 [`Self::enqueue`]（纯记录交付）。
@@ -411,7 +411,7 @@ impl TransferOutbox {
                 cs.display()
             ));
         }
-        // BUG-20261104-365：入队全程互斥（见 OUTBOX_ENQUEUE_LOCK）。
+        // 入队全程互斥（见 OUTBOX_ENQUEUE_LOCK）。
         let _enqueue = OUTBOX_ENQUEUE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -457,14 +457,14 @@ impl TransferOutbox {
         Ok(())
     }
 
-    /// D5 兜底拉取（master → worker 的 transfer_pull 落地处）：全设备目录
+    /// 兜底拉取（master → worker 的 transfer_pull 落地处）：全设备目录
     /// 找该任务执行记录，找到即入队 + 踢循环。返回 wire 状态（queued /
     /// no_archive / dead / over_limit，诚实回答）。
     pub fn request_pull(&self, task_id: &str) -> &'static str {
         if task_id.is_empty() {
             return "no_archive";
         }
-        // BUG-20261030-201：停车条目诚实报——dead/over_limit 不会被推送
+        // 停车条目诚实报——dead/over_limit 不会被推送
         // 循环拾取，回 "queued" 会让 master sweep 每轮空拉（master 对
         // "queued" 无停车闸，只有非 queued 才落 no_archive_seen 停拉）。
         // 手动重放（翻回 pending）后档案到达收件箱，由收件箱重灌腿恢复
@@ -472,7 +472,7 @@ impl TransferOutbox {
         if let Some(state) = self.parked_state(task_id) {
             return state;
         }
-        // BUG-20261104-361（T-MRG-1 吞变更集）：档案管线装配未完（基线
+        // （T-MRG-1 吞变更集）：档案管线装配未完（基线
         // sidecar + `.assembling-*` 标记在场，见
         // `exec_workspace::finish_task_exec`）时不得兜底重推——此刻入队
         // 只会送出无变更集的执行记录，发件箱幂等闸随后吞掉带变更集的正
@@ -519,7 +519,7 @@ impl TransferOutbox {
         "no_archive"
     }
 
-    /// 条目停车态探针（BUG-20261030-201）：dead/over_limit → Some(态词)；
+    /// 条目停车态探针：dead/over_limit → Some(态词)；
     /// 无条目 / 在途态（pending/pushing）→ None。entry.json 缺失或损坏 =
     /// None（走原路径——不因坏条目误报停车，enqueue 会诚实报错或入队）。
     fn parked_state(&self, task_id: &str) -> Option<&'static str> {
@@ -571,7 +571,7 @@ impl TransferOutbox {
                 }
                 if dev_name == "_unknown" {
                     // 无主记录（source 未知）不可寻址——补入队只会永久重试
-                    // 失败。诚实跳过（D5 反向兜底拉取仍可救：master 知道
+                    // 失败。诚实跳过（反向兜底拉取仍可救：master 知道
                     // task_id 时主动来拉）。
                     continue;
                 }
@@ -586,11 +586,11 @@ impl TransferOutbox {
                     let Some(task_id) = derive_task_id_from_dir(&name) else {
                         continue;
                     };
-                    // F-NEW-3（2026-10-17 四轮审计）：年龄闸——只补「新近」
+                    // F-NEW-3（四轮审计）：年龄闸——只补「新近」
                     // 目录（崩溃窗口兜底本来意图）；更早的历史不自动重推，
                     // 否则每次重启全量重放保留期内所有已送达任务（master
                     // ingest 搬走落地实体后 dedup 放行）。超龄仍可由 master
-                    // D5 `request_pull` 点名救取。
+                    // `request_pull` 点名救取。
                     if residual_dir_older_than(
                         &name,
                         chrono::Local::now(),
@@ -645,7 +645,7 @@ impl TransferOutbox {
             if entry.state != "pending" {
                 continue;
             }
-            // CD6：死信双闸（age 7 天 / attempts 1000，先到先死）——诚实转
+            // 死信双闸（age 7 天 / attempts 1000，先到先死）——诚实转
             // dead 停车态，不再推送。死信可见（Dashboard）+ 可手动重放，不是
             // 静默丢弃；在推送尝试前判定，存量卡死条目下一 tick 即归位。
             if entry.attempts >= DEAD_LETTER_MAX_ATTEMPTS || self.dead_letter_age_due(&entry) {
@@ -660,14 +660,14 @@ impl TransferOutbox {
                 );
                 continue;
             }
-            // CD6：退避窗口内跳过（不计数、不打日志）。
+            // 退避窗口内跳过（不计数、不打日志）。
             if let Some(next) = entry.next_retry_at.as_deref() {
                 match chrono::DateTime::parse_from_rfc3339(next) {
                     Ok(next) if chrono::Local::now() < next => continue,
                     _ => {}
                 }
             }
-            // CD6：健康联动——对端离线 → 安静跳过（不计数、不打日志、不推进
+            // 健康联动——对端离线 → 安静跳过（不计数、不打日志、不推进
             // 退避窗口），回 Online 后下一 tick（≤15s）自然恢复推送，省必败
             // RPC 调用与刷屏日志。
             let online = match self
@@ -731,7 +731,7 @@ impl TransferOutbox {
                     );
                 }
                 Err(e) => {
-                    // 留 pending 重试；attempts 记账 + 退避调度（CD6：15s
+                    // 留 pending 重试；attempts 记账 + 退避调度（15s
                     // 起步指数爬升、10 分钟封顶）+ 日志降频（裁决⑪）。
                     entry.state = "pending".into();
                     entry.attempts = entry.attempts.saturating_add(1);
@@ -757,13 +757,13 @@ impl TransferOutbox {
         }
     }
 
-    /// CD6：死信 age 闸——created_at 距今 ≥ 7 天。created_at 解析失败按
+    /// 死信 age 闸——created_at 距今 ≥ 7 天。created_at 解析失败按
     /// 未到期处理（条目仍受 attempts 闸兜底）。
     fn dead_letter_age_due(&self, entry: &OutboxEntry) -> bool {
         entry_age_secs(entry).is_some_and(|age| age >= DEAD_LETTER_AGE_SECS)
     }
 
-    /// 推送单个条目：D4 护栏（+ overlimit 通知）→ [`push_transfer_dir`]
+    /// 推送单个条目： 护栏（+ overlimit 通知）→ [`push_transfer_dir`]
     /// 全序列（begin dedup/have → 逐块 → end）。
     async fn attempt_push(&self, entry: &OutboxEntry) -> Result<PushOutcome, String> {
         let payload = self.entry_dir(&entry.task_id).join("payload");
@@ -784,7 +784,7 @@ impl TransferOutbox {
             PushDirOutcome::Overlimit {
                 total_bytes: total, ..
             } => {
-                // D4 worker 侧护栏：携带实测值返回，通知 master 的动作上移到
+                // worker 侧护栏：携带实测值返回，通知 master 的动作上移到
                 // process_once（先落盘 over_limit 后出卡，关闭「卡已出现而
                 // 本地状态未就位」的时序窗）。
                 Ok(PushOutcome::Overlimit {
@@ -830,7 +830,7 @@ impl TransferOutbox {
         self.write_entry_at(&self.entry_dir(&entry.task_id), entry)
     }
 
-    /// entry.json 原子写（读侧以在场为完整标记；BUG-20261025-51 起委托
+    /// entry.json 原子写（读侧以在场为完整标记； 起委托
     /// 唯一临时名权威 helper——固定 `.entry.json.tmp` 并发互踩）。
     fn write_entry_at(&self, dir: &Path, entry: &OutboxEntry) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| format!("建目录失败: {e}"))?;
@@ -871,7 +871,7 @@ impl TransferOutbox {
 }
 
 // ---------------------------------------------------------------------------
-// 通用分块目录推送（outbox 执行记录与 P4/E2 基线推送的单一真相源）
+// 通用分块目录推送（outbox 执行记录与 / 基线推送的统一定义）
 // ---------------------------------------------------------------------------
 
 /// `dir` 全量分块推给 `peer`：begin（dedup/have 续传/对端 over_limit 拒收）

@@ -21,7 +21,7 @@ pub struct InboundMessage {
 }
 
 // ---------------------------------------------------------------------------
-// I5（devtool-upgrade 阶段 7）：客户端上报的「当前打开文件」
+// （devtool-upgrade）：客户端上报的「当前打开文件」
 // ---------------------------------------------------------------------------
 
 /// 打开文件列表条数上限。超出保留前 N 条（协议约定顺序 = 上报顺序，
@@ -68,10 +68,10 @@ pub fn open_files_from_metadata(
 }
 
 // ---------------------------------------------------------------------------
-// 对话生成（2026-09-22）：workflow_edit 注入目标
+// 对话生成：workflow_edit 注入目标
 // ---------------------------------------------------------------------------
 
-/// `chat.send` 附带的 workflow_edit 注入目标（照抄 open_files/I5 的
+/// `chat.send` 附带的 workflow_edit 注入目标（照抄 open_files/ 的
 /// metadata 通道模式：前端序列化为 JSON 字符串塞 metadata，AgentLoop 读取）。
 ///
 /// `workflow_name = None` 表示 `_new` 共享引导会话（所有「新建工作流」对话
@@ -99,11 +99,11 @@ pub fn workflow_edit_from_metadata(
 }
 
 // ---------------------------------------------------------------------------
-// principal 映射（P6-R4，D4 预留）：通道会话 → 主体标识
+// principal 映射（预留）：通道会话 → 主体标识
 // ---------------------------------------------------------------------------
 
 /// 通道会话 → principal 映射（**单一真相源**；形态 `{channel}/{sender_id}`，
-/// 与集群跨节点复合键同形）。D4 预留：只立映射与绑定，租户闸不做——
+/// 与集群跨节点复合键同形）。 预留：只立映射与绑定，租户闸不做——
 /// 消费方（未来多租户授权）出现前任何代码不得读取本值做行为分叉。
 ///
 /// `sender_id` 为空（cron/heartbeat/system 等无主体来源）→ 空串 = 不绑定。
@@ -129,37 +129,37 @@ pub struct OutboundMeta {
     /// model generated each reply. Other channels ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// L2（devtool-upgrade 阶段 6）：产生本回复的 agent 会话键
+    /// （devtool-upgrade）：产生本回复的 agent 会话键
     /// （`agent:main:session:{sid}`）。web 通道用它做 chat_event_log 断线
     /// 补拉的环形缓冲键——chat_id 在 web 通道是**连接级** id（重连即变），
     /// 补拉必须按**会话**跨连接寻址。其他通道忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_key: Option<String>,
-    /// 集群续行归属（2026-09-23）：实际执行任务的 worker 节点名。集群
+    /// 集群续行归属：实际执行任务的 worker 节点名。集群
     /// `cluster_rpc` 派发的续行回复由主 LLM 转述，但**干活的是远端节点**
     /// ——web 通道据此渲染「节点 X」徽章，与模型徽章并列（各说各的真话）。
     /// 缺席 = 非集群回复 / 旧快照，出站帧不带该键，与历史行为逐字节一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_node: Option<String>,
-    /// 通知送达关联（项 C，2026-10-22）：本出站消息的投递结果要记账到
+    /// 通知送达关联（项 C）：本出站消息的投递结果要记账到
     /// 哪笔交付（deliveries.idempotency_key = 任务 id）。只有集群续行的
     /// **最终回复**携带（中途工具回执不挂——通知义务针对任务结果本身）。
     /// None = 无关联，出站帧不带该键，与历史行为逐字节一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
-    /// 通道 sync 镜像回环标记（BUG-20261025-57）：本消息由某通道的
+    /// 通道 sync 镜像回环标记：本消息由某通道的
     /// `sync_to` 镜像产出，值 = 镜像发起通道名。接收通道的 `send()` 见到
     /// 该标记不再二次 sync 扩散——互配 `sync_to` 的两通道（send 均镜像）
     /// 会无限乒乓，每轮都是一次真实外部投递的消息风暴。None = 非镜像
     /// 消息，出站帧不带该键，与历史行为逐字节一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_via: Option<String>,
-    /// 非回合产物标记（2026-11-05 NB-1）：本出站是系统回执（busy 排队/
+    /// 非回合产物标记：本出站是系统回执（busy 排队/
     /// 拒绝/drain/estop 冻结/slash 静态确认/压缩与限流进度/续行中途回执/
     /// connector 凭条卡），不是 agent 对任务文本的回合回复。按
     /// `meta.session_key` 匹配出站等终局回复的消费方（看板本地派发回复
     /// 捕获）必须跳过 receipt=true——queue-ack 与终局回复在内容上都是
-    /// 文本，生产者打标是唯一真相源（不做文本匹配）。false = 正常回合
+    /// 文本，生产者打标是唯一依据（不做文本匹配）。false = 正常回合
     /// 回复（含错误终局），缺省 false，出站帧不带该键，与历史行为逐字节
     /// 一致。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

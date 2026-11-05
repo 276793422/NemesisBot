@@ -54,7 +54,7 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
     cfg["gateway"]["port"] = serde_json::json!(0);
     cfg["devices"]["enabled"] = serde_json::json!(true);
     cfg["heartbeat"]["interval"] = serde_json::json!(1); // >0 → 构造器钳制臂（1 分钟被钳到 5 分钟下限）
-    // F-B10（2026-09-25）：interval>0 的换算在构造期完成，enabled=false
+    // F-：interval>0 的换算在构造期完成，enabled=false
     // 保证 start() 直通不排 tick——插桩跑（本测 >60s）下真 tick 会驱动
     // process_heartbeat 对死端点 LLM 重试，runtime 关停与退避 sleep 竞态
     // 触发 tokio 关停断言 panic，毒化 GLOBAL_STATE_LOCK 级联 165 败。
@@ -76,7 +76,7 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
     }]);
     std::fs::write(guard_env.home.join("config.json"), cfg.to_string()).unwrap();
 
-    // 全相位链（run() 的 B1–B6 编排骨架就地展开；B7 run_runtime 会停在
+    // 全相位链（run() 的 – 编排骨架就地展开； run_runtime 会停在
     // wait_for_shutdown，故不调用——init_services 产物即断言面）。
     let ctx: GatewayCtx = GatewayCtx::assemble(false, false, false, &[])
         .await
@@ -148,7 +148,7 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
     .await
     .expect("init_services");
 
-    // web server 真实 bind（:0 → OS 分配临时端口）且 state 落盘回读一致。
+    // web server 真实 bind（0 → OS 分配临时端口）且 state 落盘回读一致。
     assert!(services.real_port > 0, "real_port 必须是真实绑定端口");
     let state_path = nemesis_path::resolve_gateway_state_path_in_workspace(
         &crate::common::workspace_path(&guard_env.home),
@@ -176,7 +176,7 @@ fn guard_last_job_count(ctx: &GatewayCtx) -> usize {
     ctx.cron_service.lock().unwrap().list_jobs(true).len()
 }
 
-/// enabled 集群形态补测（2026-09-25 wave5）：bridge 反向桥 spawn 块
+/// enabled 集群形态补测（wave5）：bridge 反向桥 spawn 块
 /// （cluster 身份快照 + 桥 RPC 枢纽 + pump spawn）与资产对外基址 /
 /// node_id 落盘（enabled cluster 必走；disabled 形态 cluster_adapter
 /// 在场但 lan_ip 选择/落盘同样执行——本测聚焦 enabled + bridge Some）。
@@ -198,7 +198,7 @@ async fn init_services_enabled_cluster_bridge_identity_and_asset_persist() {
         }
     };
 
-    // 配置：网络面归零（web :0 = OS 分配；cluster port/rpc_port :0 同理），
+    // 配置：网络面归零（web:0 = OS 分配；cluster port/rpc_port:0 同理），
     // 死端点模型，无外网。
     let mut cfg: serde_json::Value =
         serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
@@ -206,8 +206,8 @@ async fn init_services_enabled_cluster_bridge_identity_and_asset_persist() {
     cfg["channels"]["web"]["port"] = serde_json::json!(0);
     cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
     cfg["gateway"]["port"] = serde_json::json!(0);
-    // F-B10：heartbeat 首拍 1s（interval 无关），关停窗口重叠即 tokio 关停
-    // 断言 panic——插桩测量线的中毒源，测试域一律关掉（同文件 :61 同因）。
+    // F-：heartbeat 首拍 1s（interval 无关），关停窗口重叠即 tokio 关停
+    // 断言 panic——插桩测量线的中毒源，测试域一律关掉（同文件:61 同因）。
     cfg["heartbeat"]["enabled"] = serde_json::json!(false);
     // 集群主开关（config.json 的 cluster.enabled 与 config.cluster.json 的
     // enabled 是双闸——cluster_should_start = 两者相与）。
@@ -236,7 +236,7 @@ async fn init_services_enabled_cluster_bridge_identity_and_asset_persist() {
 
     // enabled 集群 + 静态身份（node_id 断言锚点）。rpc_port 必须非 0
     // （0 = RPC server 不启动的语义值，bridge 身份块依赖它）——先用一次性
-    // listener 占一个空闲端口再放手（:0 会撞语义）。
+    // listener 占一个空闲端口再放手（0 会撞语义）。
     let rpc_port = {
         let l = std::net::TcpListener::bind("127.0.0.1:0").expect("probe rpc port");
         l.local_addr().expect("rpc probe addr").port()
@@ -322,7 +322,7 @@ async fn init_services_enabled_cluster_bridge_identity_and_asset_persist() {
         node_id, "cov-node-a",
         "node_id 必须取自 peers.toml 静态身份"
     );
-    // RPC server 起服（:0 → 真实端口）→ bridge 身份快照与桥 RPC 枢纽非空。
+    // RPC server 起服（0 → 真实端口）→ bridge 身份快照与桥 RPC 枢纽非空。
     let cluster_arc = ctx
         .autopilot_cluster_slot
         .get()
@@ -339,13 +339,13 @@ async fn init_services_enabled_cluster_bridge_identity_and_asset_persist() {
 }
 
 // ---------------------------------------------------------------------------
-// wave6（2026-09-25）：ctx.rs `set_on_job` 闭包体（assemble 装配后经
+// wave6：ctx.rs `set_on_job` 闭包体（assemble 装配后经
 // execute_job 即时驱动，不等调度 tick）——
 // - `board-ap:` 分流的急停跳过臂（estop.trigger → 诚实跳过、不建单）；
 // - `board-ap:` 分流的正常触发臂（fire_board_autopilot → store 建单）；
 // - message 任务的 InboundMessage 发布臂（channel/to 缺省、session_key
 //   回落、max_rounds 元数据注入）。
-// 复用本文件 SvcEnv 守卫；全网络面归零（web/gateway :0、死端点模型），
+// 复用本文件 SvcEnv 守卫；全网络面归零（web/gateway:0、死端点模型），
 // 无 LLM 调用；闭包在 assemble 内接线，无需 init_services 全链。
 // ---------------------------------------------------------------------------
 mod wave6 {
@@ -368,7 +368,7 @@ mod wave6 {
             }
         };
 
-        // 配置：网络面归零 + 心跳关（F-B10 测试域禁真 tick）+ 死端点模型。
+        // 配置：网络面归零 + 心跳关（F- 测试域禁真 tick）+ 死端点模型。
         let mut cfg: serde_json::Value =
             serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
         cfg["channels"]["web"]["host"] = serde_json::json!("127.0.0.1");
@@ -481,7 +481,7 @@ mod wave6 {
 
         // ④ message 任务：session_key + to + max_rounds 齐备 → 路由 miss 回落
         //    `to`（conv_router 无绑定 tab）+ max_rounds 元数据注入臂。
-        //    W3（2026-10-25）：session_key 指向的父会话必须真实在场，否则
+        //    session_key 指向的父会话必须真实在场，否则
         //    触发被判停——先造 sessions/{safe}.json 充当在场会话。
         let w6_sess_json = guard_env
             .home
@@ -536,7 +536,7 @@ mod wave6 {
 }
 
 // ---------------------------------------------------------------------------
-// W3（2026-10-25 加固）：ctx.rs 触发闭包的父会话
+// （加固）：ctx.rs 触发闭包的父会话
 // 存在性闸——
 // - 父会话已删除（磁盘双臂全 miss）→ execute 后 job 自动停用（enabled=
 //   false）+ last_status=error（原因在 last_error）——「僵尸复活」根除；
@@ -818,7 +818,7 @@ async fn w6_boot_master_cluster_arms_board_review_hooks() {
 //    model_list 且不含任何可推断厂商关键词（claude/gpt/glm/...）的名字 →
 //    resolve_model_config Err → warn + ProviderResolution::default() 降级
 //    启动（双击直启「未配置模型」目标行为，不硬退）；
-// ② U10 执行世界 Ok(Some) 臂（ctx.rs 375-377）：executor.enabled=true。
+// ② 执行世界 Ok(Some) 臂（ctx.rs 375-377）：executor.enabled=true。
 //    本 home 无 Sandboxie runtime（Start.exe 缺）→ build_executor_channel
 //    落 stdio 车道（Layer 1），零引擎/UAC 触碰；
 // ③ workflow 定义装载 n>0（ctx.rs 396-400）+ cron 触发器注册 n>0（413-419）：

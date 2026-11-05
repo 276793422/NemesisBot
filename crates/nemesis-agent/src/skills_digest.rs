@@ -97,7 +97,7 @@ impl DigestState {
         Some(rendered.to_string())
     }
 
-    /// : touch-driven invalidation. Structurally a no-op since
+    /// touch-driven invalidation. Structurally a no-op since
     /// round-5 (sections re-read from disk on every build — there is no
     /// cached rendering to invalidate); kept for the call-chain shape and
     /// as the anchor if change-gating returns.

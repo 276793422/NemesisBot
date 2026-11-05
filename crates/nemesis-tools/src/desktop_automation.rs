@@ -591,7 +591,7 @@ $results | ConvertTo-Json -Compress
             "[Tools] Running PowerShell script"
         );
 
-        // (BUG #33, quality-hardening goal 冲刺 S13) Windows PowerShell 5.1 对
+        // (, quality-hardening goal 冲刺) Windows PowerShell 5.1 对
         // 重定向管道的 stdout 用 OEM 代码页（中文系统 cp936）+ best-fit 回退：
         // 窗口标题里的不可映射字符（emoji/PUA 字形等）会被替换成控制字节
         // （实测 0x18/0x19），from_utf8_lossy 原样保留后 serde_json 拒绝字符
@@ -731,7 +731,7 @@ impl Tool for DesktopTool {
     }
 }
 
-// 测试整体 Windows-only（2026-09-01 远端首跑暴露）：生产 execute() 入口有
+// 测试整体 Windows-only（远端首跑暴露）：生产 execute() 入口有
 // 平台闸——非 Windows 一律提前返回 "desktop automation is only supported on
 // Windows"（desktop_automation 是 Windows-only 功能：MCP 后端是 window-mcp
 // .exe，standalone 后备是 PowerShell）。工具级测试断言的全是闸后的分发/包装

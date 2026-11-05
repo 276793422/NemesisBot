@@ -4,7 +4,7 @@
 //!   交付物按 session_key 分桶落入 `turn_deliverables`（工具登记、loop
 //!   drain 双侧同一 Arc 的接缝验证）。
 //! - **drain 语义**：`drain_turn_deliverables` 取走即清（第二次 drain 为
-//!   空）+ 去重走 `chat_log:dedup_presented_files`（title/note 取最后
+//!   空）+ 去重走 `chat_log::dedup_presented_files`（title/note 取最后
 //!   登记）。
 //! - **emit 事件**：`emit_deliverables_registered` 经 agent_event_tx 广播
 //!   `DeliverablesRegistered`（web pump → SSE/WS 的上游），字段与访问器

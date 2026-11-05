@@ -106,12 +106,12 @@ pub struct HostCallbacks {
         out_content: *mut *mut c_char,
         out_detail: *mut *mut c_char,
     ) -> c_int,
-    /// 布局哨兵：`std::mem::size_of::<HostCallbacks>()`，壳握手校验。
-    /// **位固定**——新增槽一律追加在本字段之后（批 3 实证教训：哨兵漂移 =
+    /// 布局哨兵：`std::mem:size_of:<HostCallbacks>`，壳握手校验。
+    /// **位固定**——新增槽一律追加在本字段之后（实证哨兵漂移 =
     /// 旧布局上越界读栈垃圾，判定随机翻转）。
     pub struct_size: usize,
     /// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
-    /// （2026-10-22 批 3 壳侧增补槽的宿主镜像；**追加在哨兵之后**）。
+    /// （壳侧增补槽的宿主镜像；**追加在哨兵之后**）。
     /// 宿主镜像恒填 `Some(cb_llm_complete)`（见 `callbacks.rs`）。
     pub llm_complete: Option<
         unsafe extern "C" fn(
@@ -122,7 +122,7 @@ pub struct HostCallbacks {
             out_detail: *mut *mut c_char,
         ) -> c_int,
     >,
-    /// `secret-set(name, value) -> result<_, host-error>`（2026-11-03 自持
+    /// `secret-set(name, value) -> result<_, host-error>`（自持
     /// 写通道增补槽的宿主镜像；追加 pattern 同上）。宿主镜像恒填
     /// `Some(cb_secret_set)`（见 `callbacks.rs`）。
     pub secret_set: Option<

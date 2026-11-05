@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -92,7 +92,7 @@ impl Cluster {
 
     /// 负载感知路由：记账一次 A 端观测的任务结局（complete/fail 单一漏斗，
     /// 覆盖评审/看板回调臂与 chat 回调臂——两个臂都经本方法收口）。委托
-    /// [`record_route_outcome_core`]（记账语义单一真相源，与旁路 settle 点
+    /// [`record_route_outcome_core`]（记账语义统一定义，与旁路 settle 点
     /// 经 TaskManager 路由钩子的补记账同核）。
     fn record_route_outcome(&self, task_id: &str, ok: bool) {
         record_route_outcome_core(
@@ -106,7 +106,7 @@ impl Cluster {
     }
 
     /// 构造期安装 TaskManager 路由钩子：恢复轮询 sweep 三分支、默认回调
-    /// handler 兜底臂与 G4 清理 tick 的 H4 安全网判死（都是拿不到
+    /// handler 兜底臂与 清理 tick 的 安全网判死（都是拿不到
     /// `&Cluster` 的旁路 settle 点）经 `task_manager.fire_route_record(...)`
     /// 补记账。闭包捕获 Arc 化的 route_stats/route_recorded——与回调漏斗
     /// 共用同一状态与去重集，双路径绝不双计。幂等覆盖（重复构造/重启安全）。
@@ -180,7 +180,7 @@ impl Cluster {
 
         // Production path: use the async RPC client.
         // Since call_with_context is synchronous, we bridge to async via
-        // tokio::runtime::Handle::block_on when a runtime is available.
+        // tokio::runtime:Handle::block_on when a runtime is available.
         let rpc_client = self.rpc_client.lock().clone();
         match rpc_client {
             Some(client) => {
@@ -382,8 +382,8 @@ impl Cluster {
             None => return,
         };
 
-        // P1 统一任务层：结果回传 delivery 记账（deliveries 表首个消费者；
-        // idempotency_key=task_id 天然去重——G5 恢复轮询/重复回调不重复记账）。
+        // 统一任务层：结果回传 delivery 记账（deliveries 表首个消费者；
+        // idempotency_key=task_id 天然去重—— 恢复轮询/重复回调不重复记账）。
         // 记账失败只留痕不阻断回传（记账是辅助台账，回传是主链路）。
         // 项 C：任务有原始来源通道（original_channel 非空）才有出站通知
         // 义务（notify_expected）——无源任务（纯 RPC/内部）记 none，不进
@@ -437,7 +437,7 @@ impl Cluster {
 
     // -- Accessors ------------------------------------------------------------
 
-    // 注：config() 已删除（LOW-19，2026-10-17 四轮审计）——返回 OnceLock
+    // 注：config() 已删除（LOW-19， 四轮审计）——返回 OnceLock
     // 静态 DEFAULT 的死 API，与实例真实配置（config.cluster.json / peers.toml
     // 装载态）零关联，唯一「调用方」是断言其返回假默认值的测试；留着只会
     // 误导读者以为能拿到运行时配置。
@@ -545,14 +545,14 @@ impl Cluster {
             logger::log_error("cluster", &format!("register hello: {}", e), "");
         }
 
-        // H4: Register query_task_result handler (B-side responds to A's polling)
+        // Register query_task_result handler (B-side responds to A's polling)
         if let Err(e) =
             self.register_rpc_handler("query_task_result", self.build_query_task_result_handler())
         {
             logger::log_error("cluster", &format!("register query_task_result: {}", e), "");
         }
 
-        // H4: Register confirm_task_delivery handler
+        // Register confirm_task_delivery handler
         if let Err(e) = self.register_rpc_handler(
             "confirm_task_delivery",
             self.build_confirm_task_delivery_handler(),
@@ -565,7 +565,7 @@ impl Cluster {
         }
     }
 
-    /// Register only the H4 task-recovery handlers (query_task_result +
+    /// Register only the task-recovery handlers (query_task_result +
     /// confirm_task_delivery).
     ///
     /// Gateway mode never calls [`Self::set_rpc_channel`]（该入口在 gateway
@@ -573,7 +573,7 @@ impl Cluster {
     /// gateway 只自行注册 peer_chat / peer_chat_callback / task_cancel——
     /// 不覆盖本函数注册的两个恢复 handler。缺失时 A 侧
     /// `poll_stale_pending_tasks`（120s 周期）永远收到 "no handler"，B 重启
-    /// 丢结果后的 stale 恢复链路断裂（2026-09-01 跨机 E2E 实测发现）。
+    /// 丢结果后的 stale 恢复链路断裂（跨机 E2E 实测发现）。
     /// gateway 在 `Arc<Cluster>` 就绪后调用本函数；与
     /// [`Self::register_peer_chat_handlers`] 共用同一对私有 builder（单一
     /// 真相源），不重复实现。
@@ -618,7 +618,7 @@ impl Cluster {
                 let mut resp = serde_json::json!({
                     "status": "pong",
                     "node_id": node_id,
-                    // G2: 供主动探针交叉校验对端时钟漂移（additive 字段，
+                    // 供主动探针交叉校验对端时钟漂移（additive 字段，
                     // 旧客户端忽略）。
                     "timestamp": chrono::Utc::now().timestamp(),
                 });
@@ -658,9 +658,9 @@ impl Cluster {
         let tags = self.tags.read().clone();
         let professions = self.professions.read().clone();
         let tier = self.tier.read().clone();
-        // P5 第 4 步 ③：自报运行时后端形态（静态身份，构造期捕获同 tier）。
+        // 自报运行时后端形态（静态身份，构造期捕获同 tier）。
         let runtime_backend = self.runtime_backend.read().clone();
-        // P2 agent roster：Arc 过闭包读活值（提供者每次现读 AgentManager，
+        // agent roster：Arc 过闭包读活值（提供者每次现读 AgentManager，
         // 运行期增删 agent 无需重启即反映）。
         let roster_slot = self.agent_roster.clone();
         let node_type = self.node_type.clone();
@@ -683,13 +683,13 @@ impl Cluster {
                     "category": category,
                     "tags": tags,
                     "capabilities": capabilities,
-                    // 职能框架 M2：自报职能/档位（旧对端不读未知键，兼容）。
+                    // 职能框架：自报职能/档位（旧对端不读未知键，兼容）。
                     "professions": professions,
                     "tier": tier,
-                    // P5 第 4 步 ③：自报运行时后端形态（None = 未宣告，
+                    // 自报运行时后端形态（None = 未宣告，
                     // 旧对端不读未知键，兼容）。
                     "runtime_backend": runtime_backend,
-                    // P2：自报 agent 实体清单（announce 子对象同源携带）。
+                    // 自报 agent 实体清单（announce 子对象同源携带）。
                     "agents": agents,
                     "node_type": node_type,
                     "status": "online",
@@ -1033,7 +1033,7 @@ impl Cluster {
 
             match result_store.get(task_id) {
                 Some(entry) => {
-                    // G5 修复（2026-09-01）：set_running 占位条目
+                    // 修复：set_running 占位条目
                     // （gateway ClusterResultPersisterAdapter，result 内含
                     // "status":"running"）曾在此被误报为 done+空回复 —— A 端
                     // 恢复轮询会拿着空内容过早完成任务。running 条目必须
@@ -1120,7 +1120,7 @@ impl Cluster {
         // non-reentrant parking_lot Mutex across call_with_context, which re-locks
         // the same mutex at its override check → guaranteed self-deadlock on the
         // fallback branch (the production path when no test override is set).
-        // (BUG #19, quality-hardening goal 冲刺 S4)
+        // (, quality-hardening goal 冲刺)
         let call_fn = self.call_with_context_fn.lock().clone();
         if let Some(f) = call_fn.as_ref() {
             let _ = f(peer_id, "confirm_task_delivery", payload);
@@ -1183,15 +1183,15 @@ fn record_route_outcome_core(
 /// time it out.
 ///
 /// Uses the real RPC client when available, falling back to the synchronous
-/// test override (`call_fn`).  This matches Go's `pollStalePendingTasks`
+/// test override (`call_fn`). This matches Go's `pollStalePendingTasks`
 /// which calls `c.CallWithContext()`.
-/// G5: `bus` 非空时，done / not_found / 安全网超时分支会按 gateway Route 2
+/// `bus` 非空时，done / not_found / 安全网超时分支会按 gateway Route 2
 /// 的形状向总线重发 `cluster_continuation:{task_id}`（含真实响应内容 +
 /// metadata），唤醒 A 端主 agent 的续行恢复——生产装配不接
 /// TaskManager.on_complete，仅靠 complete_callback 只会更新任务状态、不会
-/// 唤醒 agent。（CD2，2026-09-17：安全网分支补齐 publish。）
+/// 唤醒 agent。（安全网分支补齐 publish。）
 ///
-/// CD3: `delivery_cb` 非空时，done 分支先触发交付回调（看板写回 / chat
+/// `delivery_cb` 非空时，done 分支先触发交付回调（看板写回 / chat
 /// 交付判定，路由在 gateway 注入的闭包里），回调返回 true 才向 worker 发
 /// confirm 删除其本地副本；false 跳过 confirm（宁留勿丢）。
 pub(super) async fn poll_stale_pending_tasks(
@@ -1201,16 +1201,16 @@ pub(super) async fn poll_stale_pending_tasks(
     >,
     rpc_client: Option<&RpcClient>,
     safety_net: chrono::Duration,
-    // G5+P1（T19 根修）：bus / delivery_cb 传句柄不传快照——publish 与交付
+    // （根修）：bus / delivery_cb 传句柄不传快照——publish 与交付
     // 回调在分支内**取用时现读**。此前每 tick 开头快照一次，而首 tick 快照
     // 必早于 set_message_bus / set_on_recovered_delivery（gateway 装配顺序
     // cluster.start() 先于二者），秒级 RPC 查询跨越注入窗口后 done 分支拿
-    // 过期 None 静默跳过 publish。P1 sqlite 持久化使在途任务直接出现在首
-    // tick（此前 in-memory store 重启为空、G5 重建注册只能赶上第二 tick），
-    // 该竞态被 T19 实证暴露。
+    // 过期 None 静默跳过 publish。 sqlite 持久化使在途任务直接出现在首
+    // tick（此前 in-memory store 重启为空、 重建注册只能赶上第二 tick），
+    // 该竞态被 实证暴露。
     bus: &Arc<Mutex<Option<Arc<dyn MessageBus>>>>,
     include_young: bool,
-    // CD3（2026-09-17）：恢复交付回调——done 分支 confirm 前置闸，见
+    // 恢复交付回调——done 分支 confirm 前置闸，见
     // Cluster::set_on_recovered_delivery。未注册 = 旧行为（无条件 confirm）。
     delivery_cb: &Arc<
         Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>,
@@ -1230,7 +1230,7 @@ pub(super) async fn poll_stale_pending_tasks(
         };
         let age = chrono::Local::now() - created;
 
-        // Skip tasks younger than 2 minutes. P6b（2026-09-11 日志）：恢复
+        // Skip tasks younger than 2 minutes. （日志）：恢复
         // loop 的首 tick 传 include_young=true 绕过此闸——重启后立即查询，
         // 不用白等 2 分钟（tokio interval 首 tick 本就即时，此前被这个
         // 年龄闸架空）。
@@ -1238,9 +1238,9 @@ pub(super) async fn poll_stale_pending_tasks(
             continue;
         }
 
-        // Timeout tasks past the safety net (G4: 可配置，默认 max(24h, 2×LLM超时)).
+        // Timeout tasks past the safety net (可配置，默认 max(24h, 2×LLM超时)).
         if age > safety_net {
-            // CD2（2026-09-17）：错误文案先落变量——complete_callback 与
+            // 错误文案先落变量——complete_callback 与
             // publish_continuation_to_bus 两处共用，保证任务状态与 agent
             // 唤醒消息里的错误一致。
             let timeout_error = format!(
@@ -1257,7 +1257,7 @@ pub(super) async fn poll_stale_pending_tasks(
             // 负载感知路由：安全网判死也是任务终态 settle，经路由钩子补记账
             // 失败样本（慢/坏节点信号）；与回调漏斗共用同一去重集，不双计。
             task_manager.fire_route_record(&task.id, false);
-            // CD2（2026-09-17）：安全网超时同样要发 bus 唤醒 agent（error
+            // 安全网超时同样要发 bus 唤醒 agent（error
             // 形态，形状对齐下方 not_found 分支）。此前只 complete_callback
             // 不 publish——任务状态标 Failed 了，但等回复的 agent 永远不知
             // 道，续行快照悬挂到永远。
@@ -1351,8 +1351,8 @@ pub(super) async fn poll_stale_pending_tasks(
                 // 负载感知路由：恢复回灌 settle 补记账（判据对齐 gateway
                 // Route 3：status=="error" 记失败，其余记成功）。
                 task_manager.fire_route_record(&task.id, result_status != "error");
-                // G5: 唤醒 A 端主 agent（形状对齐 gateway Route 2）。
-                // 句柄现读（T19 根修）：RPC 查询跨越 set_message_bus 注入
+                // 唤醒 A 端主 agent（形状对齐 gateway Route 2）。
+                // 句柄现读（根修）：RPC 查询跨越 set_message_bus 注入
                 // 窗口时，tick 开头的旧快照是 None——必须在 publish 前重读。
                 // 先落绑再判：MutexGuard 临时值不得跨 await（非 Send）。
                 let bus_snapshot = bus.lock().clone();
@@ -1367,7 +1367,7 @@ pub(super) async fn poll_stale_pending_tasks(
                     )
                     .await;
                 }
-                // CD3（2026-09-17）：交付回调成功（或未注册回调 = 旧行为）才
+                // 交付回调成功（或未注册回调 = 旧行为）才
                 // confirm——写回成功才删 worker 端副本，宁留勿丢。回调返回
                 // false（如看板写回失败）时跳过 confirm + WARN，副本走 worker
                 // 端 7 天 TTL 兜底（TaskManager 已完成，下轮 poll 不会再查）。
@@ -1405,7 +1405,7 @@ pub(super) async fn poll_stale_pending_tasks(
                 // 负载感知路由：worker 丢任务（典型：重启）= 该节点失败样本，
                 // 经路由钩子补记账。
                 task_manager.fire_route_record(&task.id, false);
-                // N3c（2026-10-12）：not_found = worker 明确说「没这任务」
+                // not_found = worker 明确说「没这任务」
                 //（典型：worker 重启丢内存任务表）——确定性判死信号，board
                 // 派发必须立即走交付回调（write_back FAILED + ⛔ 评论 +
                 // in_review + spawn 评审），不等 dispatch_timeout sweep
@@ -1422,8 +1422,8 @@ pub(super) async fn poll_stale_pending_tasks(
                         );
                     }
                 }
-                // G5: not_found 同样要唤醒 agent（带 error metadata），
-                // 否则续行快照永远悬着直到安全网清理。句柄现读（T19 根修）。
+                // not_found 同样要唤醒 agent（带 error metadata），
+                // 否则续行快照永远悬着直到安全网清理。句柄现读（根修）。
                 // 先落绑再判：MutexGuard 临时值不得跨 await（非 Send）。
                 let bus_snapshot = bus.lock().clone();
                 if let Some(bus) = bus_snapshot {
@@ -1446,18 +1446,18 @@ pub(super) async fn poll_stale_pending_tasks(
     }
 }
 
-/// G5: 按 gateway Route 2 的形状把恢复出的任务结果发回总线，唤醒 A 端
+/// 按 gateway Route 2 的形状把恢复出的任务结果发回总线，唤醒 A 端
 /// 主 agent 的 `cluster_continuation` 续行恢复。
 ///
 /// - `sender_id` = `cluster_continuation:{task_id}`（AgentLoop 拦截前缀）
 /// - `content` = B 端真实响应（恢复的 LLM 回复）
 /// - `metadata` = status / source_node / error（与 Route 2 字段一致）
 ///
-/// T19 二层根修（2026-10-16）：恢复首 tick 的 publish 可能早于 AgentLoop
+/// 二层根修：恢复首 tick 的 publish 可能早于 AgentLoop
 /// 订阅总线（gateway 装配顺序 cluster.start() → … → AgentLoop，实测订阅
-/// 晚 ~131ms；P1 sqlite 持久化把恢复动作从第二 tick 提到首 tick 后暴露
+/// 晚 ~131ms； sqlite 持久化把恢复动作从第二 tick 提到首 tick 后暴露
 /// ——此前动作落 120s 后的第二 tick，订阅早已就位，两层竞态同被掩盖）。
-/// broadcast send 对无接收者是**静默丢弃**（publish_inbound 返回 ()），
+/// broadcast send 对无接收者是**静默丢弃**（publish_inbound 返回），
 /// 故发布前等待接收者就位，上界 15s（150×100ms 轮询）——超时照发不吞
 /// （宁试勿丢；总线侧仍有 no-receiver WARN 可观测）。
 async fn publish_continuation_to_bus(
@@ -1544,13 +1544,13 @@ pub(super) fn string_value(v: Option<&serde_json::Value>) -> String {
 pub(super) struct ClusterPeerResolver {
     pub(super) registry: Arc<PeerRegistry>,
     pub(super) node_id: String,
-    /// 本节点 RPC 端口（R4 自投递防护：候选端点 ip:port 与自身 endpoint
+    /// 本节点 RPC 端口（自投递防护：候选端点 ip:port 与自身 endpoint
     /// 全匹配 = 注册表混池污染面，剔除——只按裸 IP 判定会误杀同机多节点
     /// 拓扑，端口是它们的唯一区分维度）。
     pub(super) rpc_port: u16,
 }
 
-/// R4 纯函数核：候选端点是否落在本节点自身 endpoint 上。
+/// 纯函数核：候选端点是否落在本节点自身 endpoint 上。
 ///
 /// 判定 = **端口全匹配** 且（主机为回环 或 主机在本机 IP 集合内）。
 /// 同机多节点（cluster-uat / 本地双实例）靠端口区分——裸 IP 判定会把
@@ -1606,12 +1606,12 @@ impl PeerResolver for ClusterPeerResolver {
 impl ClusterPeerResolver {
     /// 由注册表条目推导拨号候选 `(addresses, rpc_port, is_online)`。
     ///
-    /// R3 拨号兜底：`base.address`（静态 peers.toml 的地址 / announce
+    /// 拨号兜底：`base.address`（静态 peers.toml 的地址 / announce
     /// primary）**始终参与拨号**——池非空也不丢（旧实现池非空时完全不
     /// 消费 base.address，静态 pin 被池刷新挤掉后即彻底失联）。host 去重
     /// 后追加在池尾兜底。
     ///
-    /// R4 自投递防护：候选端点与本节点自身 endpoint（本机 IP × 本节点
+    /// 自投递防护：候选端点与本节点自身 endpoint（本机 IP × 本节点
     /// RPC 端口，含回环）全匹配 = 注册表把本节点历史上报地址混进对端池
     /// （Win↔Win 验收实证的自投递劫持面：同端口布局下拨回自己 RPC
     /// server，dispatch 报成功实际本节点执行、交付作者身份漂移）。剔除
@@ -1626,11 +1626,11 @@ impl ClusterPeerResolver {
     /// 不等但候选全撞本地端点），豁免只钉住 id 全等这一条路。
     fn resolve_dial_candidates(&self, info: &ExtendedNodeInfo) -> Option<(Vec<String>, u16, bool)> {
         let is_online = info.status == NodeStatus::Online;
-        // A1（QUIC 中继钉址实测 2026-10-21）：iroh 形态 base.address 是原子
+        // （QUIC 中继钉址实测）：iroh 形态 base.address 是原子
         // （node_id+可选 relay_url），按冒号拆 host 会拆出
         // `iroh:<hex>@http://127.0.0.1` 截断垃圾候选（全址 best 失败后 junk
         // 白撞一次拨号 + 失败链 last error 用垃圾地址误导排障）——与
-        // handle_discovered_node_impl pin 路径（:1739 同病同修「整条入 pin」）
+        // handle_discovered_node_impl pin 路径（1739 同病同修「整条入 pin」）
         // 同族。iroh 形态整条作 host 候选参与去重，port=0（iroh 地址内无
         // RPC 端口语义；`:33440` 是中继端口，绝不能当 rpc_port 派生给
         // host-only 候选拼对）。
@@ -1723,7 +1723,7 @@ pub(super) fn generate_node_id() -> String {
     format!("node-{}-{}", hostname.to_lowercase(), uuid::Uuid::new_v4())
 }
 
-/// 批次四：显示名 hostname 链（COMPUTERNAME → HOSTNAME，与
+/// 显示名 hostname 链（COMPUTERNAME → HOSTNAME，与
 /// `generate_node_id` 同款）。空 / `unknown`（纯容器环境）= None——
 /// 调用方落 `Bot {id8}` 兜底。
 pub(crate) fn hostname_display_name() -> Option<String> {
@@ -1738,7 +1738,7 @@ pub(crate) fn hostname_display_name() -> Option<String> {
     }
 }
 
-/// 批次四：显示名自动解析链（goal 钉死优先级）的**纯函数核**：
+/// 显示名自动解析链（goal 钉死优先级）的**纯函数核**：
 /// `config.cluster.json node_name` 非空 →（用它，显式免疫撞名后缀）；
 /// 否则 hostname 链（由调用方注入 `hostname_display_name()` 结果）；
 /// 空 / `unknown` → `Bot {id8}` 兜底（纯容器环境）。
@@ -1761,7 +1761,7 @@ pub(crate) fn resolve_auto_node_name(
         return (h, false);
     }
     // node_id 可能含多字节文本（中文主机名等），裸字节截断会 panic
-    // （2026-10-11 横扫修复），走边界安全版。
+    // （横扫修复），走边界安全版。
     (
         format!(
             "Bot {}",
@@ -1771,17 +1771,17 @@ pub(crate) fn resolve_auto_node_name(
     )
 }
 
-/// 批次四：解析链的 env 薄包装——生产路径（`new` / `with_workspace`）
+/// 解析链的 env 薄包装——生产路径（`new` / `with_workspace`）
 /// 调这个；测试直接调 `resolve_auto_node_name` 纯函数核。
 pub(crate) fn resolve_node_name_from_env(config_name: &str, node_id: &str) -> (String, bool) {
     resolve_auto_node_name(config_name, hostname_display_name(), node_id)
 }
 
-/// 批次四：撞名后缀来源——node_id **末段**前 4 字符。
+/// 撞名后缀来源——node_id **末段**前 4 字符。
 ///
 /// goal 字面是「node_id 前 4 位」，但生产 id 形如 `node-{hostname}-{uuid}`
 /// （`generate_node_id`），前 4 位恒为 `"node"`——真机撞名双方各自算出的
-/// 后缀相同，收敛失效（2026-09-19 真机彩排实测）。末段（uuid 段）前 4
+/// 后缀相同，收敛失效（真机彩排实测）。末段（uuid 段）前 4
 /// 保留 goal 意图：稳定（id 不变则后缀不变，重启不变）+ 有区分度
 /// （uuid 随机段；4 hex 碰撞 ≈ 1/65536，对「显示名给人看」量级足够）。
 pub(crate) fn name_suffix_from_node_id(node_id: &str) -> String {
@@ -1789,7 +1789,7 @@ pub(crate) fn name_suffix_from_node_id(node_id: &str) -> String {
     last.chars().take(4).collect()
 }
 
-/// Atomic write helper — REL-002（2026-09-23）起委托统一 helper
+/// Atomic write helper — 起委托统一 helper
 /// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理 +
 /// unix 0600 创建即挂）。保留签名兼容：`merge_real_node_info` 重写
 /// peers.toml（占位 subtable 移除后回填 real_id）的唯一调用点。

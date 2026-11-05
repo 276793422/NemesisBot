@@ -1,4 +1,4 @@
-//! §2 免打扰运行时态单测（2026-10-11 无人值守计划 Part 2）。
+//! 免打扰运行时态单测（2026-10-11 Part 2）。
 
 use super::ApprovalAutoApproveState;
 

@@ -1,4 +1,4 @@
-//! `nemesisbot run` — headless 单任务执行（K1，devtool-upgrade 阶段 4）。
+//! `nemesisbot run` — headless 单任务执行（devtool-upgrade）。
 //!
 //! 一条命令、一个任务、跑完即退——无端口、
 //! 无 gateway、无 web/通道/集群装配。与 `nemesisbot agent --message` 的
@@ -11,14 +11,14 @@
 //!
 //! - 任务来源：位置参数，或 `-` / 缺省 = 从 stdin 读（管道友好）。
 //! - `--workspace DIR`：工作区覆盖（config.json 仍从 home 解析）。
-//! - `--mode plan|build`：F1 双模式，plan 只读 + plans/ 写放行。
+//! - `--mode plan|build`： 双模式，plan 只读 + plans/ 写放行。
 //! - `--model ALIAS`：本次运行覆盖模型（须在 model_list 内）。
-//! - `--format json`：K2 NDJSON 事件流（schema 见
-//!   `docs/INFO/2026-09-06_k2-ndjson-event-stream-schema.md`）——
+//! - `--format json`： NDJSON 事件流（schema 见
+//!   `k2-ndjson-event-stream-schema`）——
 //!   tool_start/tool_end 实时逐行输出，turn/final/error 任务结束后按序输出；
 //!   stdout 只承载 NDJSON 行，日志/告警一律 stderr。
-//! - `--thinking`：思考链开关（默认关，D11 拍板 opt-in）。开启后轮级
-//!   reasoning（AgentEvent::RoundText 的 reasoning 字段，批次一全模型捕获）
+//! - `--thinking`：思考链开关（默认关， opt-in）。开启后轮级
+//!   reasoning（AgentEvent::RoundText 的 reasoning 字段，全模型捕获）
 //!   随执行输出：json 模式新增 `thinking` NDJSON type；text 模式逐行打
 //!   `[thinking] ` 前缀行到 stderr（stdout 仍只承载最终回复/NDJSON）。
 //! - 退出码：0 = agent 正常完成；1 = 装配失败或 agent 报错（stderr）。
@@ -47,7 +47,7 @@ pub enum TaskSource {
 pub enum OutputFormat {
     /// 人类可读：stdout 只输出最终回复。
     Text,
-    /// K2 NDJSON 事件流：tool_start/tool_end 实时、turn/final/error 收尾
+    /// NDJSON 事件流：tool_start/tool_end 实时、turn/final/error 收尾
     /// （schema 固定，供脚本消费；见 docs/INFO 契约文档）。
     Json,
 }
@@ -126,7 +126,7 @@ pub fn fold_text(events: &[nemesis_agent::types::AgentEvent]) -> (Option<String>
 }
 
 // ---------------------------------------------------------------------------
-// K2：NDJSON 序列化（纯函数，schema 固定进 docs/INFO 契约文档）
+// NDJSON 序列化（纯函数，schema 固定进 docs/INFO 契约文档）
 // ---------------------------------------------------------------------------
 
 /// 实时事件 → NDJSON 行。只输出 schema 内的 `tool_start` / `tool_end`；
@@ -134,7 +134,7 @@ pub fn fold_text(events: &[nemesis_agent::types::AgentEvent]) -> (Option<String>
 /// （不向脚本发送未知 type——消费方按固定 type 解析）。
 ///
 /// `thinking`（`--thinking` 开关）：开启时 `RoundText` 携带非空 reasoning
-/// → 额外输出 `{"type":"thinking","text":…}` 行（批次四：思考链 opt-in）；
+/// → 额外输出 `{"type":"thinking","text":…}` 行（思考链 opt-in）；
 /// 关闭 = 行为与现状逐字节一致（RoundText 全部落 `_` 跳过）。
 pub fn serialize_live_event(
     ev: &nemesis_types::agent::AgentEvent,
@@ -225,13 +225,13 @@ pub fn serialize_terminal_events(events: &[nemesis_agent::types::AgentEvent]) ->
 }
 
 // ---------------------------------------------------------------------------
-// 急停接线（2026-10-24 R75 补齐，BUG-20261024-05）
+// 急停接线（补齐）
 // ---------------------------------------------------------------------------
 
 /// headless 进程的急停态绑定：进程级共享 EstopState + 跨进程跟随器一次性
 /// spawn（幂等）。此前 `..Default::default()` 给本进程一个**孤立**的新建
 /// EstopState——loop 的急停闸全部在位却永远无人触发，gateway 全局急停对
-/// headless 不可达（与 2026-09-27 修复的 mcp-serve/acp 同一缺陷类，本入口
+/// headless 不可达（与 修复的 mcp-serve/acp 同一缺陷类，本入口
 /// 被遗漏）。绑定 `shared_estop()` 后，gateway 急停经 `/api/internal`
 /// 镜像进来；无 gateway（gateway.json 缺失 / web_port=0）时 discover=None
 /// 纯 no-op，headless 行为零变化。
@@ -250,7 +250,7 @@ fn bind_estop(home: &std::path::Path) -> Arc<nemesis_agent::estop::EstopState> {
 
 /// Run the headless task. Setup failures and agent errors both bubble as
 /// `Err`（dispatch 臂统一 eprintln + exit 1）；正常完成 = 打印最终回复 +
-/// `Ok(())`（exit 0）。
+/// `Ok()`（exit 0）。
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     home: &std::path::Path,
@@ -300,15 +300,15 @@ pub async fn run(
     }
     let cfg = nemesis_config::load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("failed to load config: {}", e))?;
-    // U15：模型 API key 走 credentials.yaml（与 gateway 同一解析路径）。
+    // 模型 API key 走 credentials.yaml（与 gateway 同一解析路径）。
     nemesis_config::credentials::set_global_credentials_path(
         nemesis_config::credentials::credentials_path_for_home(home),
     );
-    // P0 vault（B1）：`vault:<alias>` 解析器同点注入。
+    // vault：`vault:<alias>` 解析器同点注入。
     #[cfg(feature = "security")]
     crate::vault_runtime::install(home);
 
-    // D-3（复核 2026-09-16）：会话日志平化迁移（SAN-01/D4）——headless 入口
+    // D-3（复核）：会话日志平化迁移（SAN-01）——headless 入口
     // 与 gateway 同源执行。写 session_logs 的路径不止 gateway（loop 持久化/
     // 续行回复都落盘），旧嵌套目录里的历史在任何入口都该可见。幂等 +
     // best-effort，成本近零。
@@ -325,14 +325,14 @@ pub async fn run(
         None => common::workspace_path(home),
     };
 
-    // 3. SecurityPlugin——与 gateway 完全同一构造（K1 提取的单一真相源）。
+    // 3. SecurityPlugin——与 gateway 完全同一构造（提取的统一定义）。
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
     let security_plugin =
         crate::security_setup::build_security_plugin(home, security_enabled).await;
 
-    // 3.5 事件通道（M1a broadcast——Some 时工厂给 AgentLoop 装 ToolEventHook）：
-    //     json 模式消费 tool_start/tool_end 实时流（K2）；`--thinking` 消费
-    //     RoundText 的轮级 reasoning。两者都不需要时保持 K1 形态 None =
+    // 3.5 事件通道（broadcast——Some 时工厂给 AgentLoop 装 ToolEventHook）：
+    //     json 模式消费 tool_start/tool_end 实时流；`--thinking` 消费
+    //     RoundText 的轮级 reasoning。两者都不需要时保持 形态 None =
     //     零 hook 开销。
     let (agent_event_tx, event_rx) = if v.format == OutputFormat::Json || v.thinking {
         let (tx, rx) = tokio::sync::broadcast::channel(256);
@@ -404,7 +404,7 @@ pub async fn run(
 
     // 7. 跑任务（depth 0 = 顶层；全治理链路同 spawn 子代理）。
     //     json / `--thinking` 模式：run_detached_events 放进独立任务，主任务
-    //     边执行边从 M1a broadcast 消费实时事件逐行输出（json = NDJSON stdout；
+    //     边执行边从 broadcast 消费实时事件逐行输出（json = NDJSON stdout；
     //     text+thinking = `[thinking]` 行 stderr）；执行完成后排干残余、再按
     //     序输出终结行——broadcast send 同步入缓冲 + 任务完成先行发生于
     //     排干，顺序有保证（实时行不会落在终结行之后）。
@@ -468,14 +468,14 @@ pub async fn run(
     }
 }
 
-/// 共享的「边执行边消费实时事件」驱动器（K2 json 与 text+thinking 两分支
-/// 同构部分，批次四提取）：执行任务放进独立任务，主任务从 M1a broadcast
+/// 共享的「边执行边消费实时事件」驱动器（json 与 text+thinking 两分支
+/// 同构部分，提取）：执行任务放进独立任务，主任务从 broadcast
 /// 实时消费（每事件交 `emit` 决定映射与去向），执行完成后排干残余、返回
 /// 全量事件集（终结行/折叠由调用方输出）。
 ///
-/// 类型注记：broadcast 通道承载 `nemesis_types::agent::AgentEvent`（实时
+/// 类型注记：broadcast 通道承载 `nemesis_types::agent:AgentEvent`（实时
 /// 遥测枚举：ToolStarted/ToolFinished/RoundText/…），`run_detached_events`
-/// 返回 `nemesis_agent::types::AgentEvent`（loop 内部枚举：Message/…/
+/// 返回 `nemesis_agent::types:AgentEvent`（loop 内部枚举：Message/…/
 /// Done/Error）——两个同名不同形的类型，别混。
 async fn run_detached_streaming(
     agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,

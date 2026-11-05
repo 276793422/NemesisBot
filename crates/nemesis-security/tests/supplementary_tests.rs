@@ -1048,7 +1048,7 @@ mod resolver_extra {
 
     #[test]
     fn test_parse_url_empty_host_rejected() {
-        // BUG-20261102-322：名字承诺 rejected——此前 `let _ = result;` 零断言。
+        // 名字承诺 rejected——此前 `let _ = result;` 零断言。
         // 真正的空 host 形态是 `http:///`（url crate EmptyHost → Err）。
         let err = parse_url("http:///").expect_err("bare empty host must be rejected");
         let msg = err.to_string().to_lowercase();
@@ -1096,7 +1096,7 @@ mod resolver_extra {
 
     #[test]
     fn test_is_private_ipv6_unique_local() {
-        // fc00::/7
+        // fc00:/7
         assert!(is_private_ip(&"fc00::1".parse().unwrap()));
         assert!(is_private_ip(&"fd00::1".parse().unwrap()));
     }

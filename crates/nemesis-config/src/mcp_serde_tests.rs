@@ -262,7 +262,7 @@ fn load_mcp_config_claude_desktop_shape_via_loader() {
     assert_eq!(cfg.servers[0].name, "fs");
 }
 
-// validate_mcp_header_line（头行语法单一真相源——
+// validate_mcp_header_line（头行语法单一权威定义——
 // CLI `mcp add` / Dashboard server.add·update 写入面 / HTTP transport
 // 运行期 WARN 跳过同源）
 
@@ -310,7 +310,7 @@ fn header_line_rejects_empty_or_padded_reference_names() {
     assert!(validate_mcp_header_line("X-Key: yaml: a").is_err());
 }
 
-// validate_mcp_env_line（env 行语法单一真相源——
+// validate_mcp_env_line（env 行语法单一权威定义——
 // CLI `mcp add` / Dashboard server.add·update 写入面 / stdio 运行期
 // resolved_env WARN 跳过同源）
 

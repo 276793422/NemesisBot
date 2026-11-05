@@ -339,7 +339,7 @@ fn catalog_info_reports_cache_state() {
     assert_eq!(info["exists"], false);
     assert_eq!(info["entries"], 0);
 
-    // 真相源 = nemesis_path::models_catalog_cache_path（与 CLI 写盘位置同源）。
+    // 权威 = nemesis_path::models_catalog_cache_path（与 CLI 写盘位置同源）。
     let seeded = nemesis_path::models_catalog_cache_path(dir.path());
     std::fs::create_dir_all(seeded.parent().unwrap()).unwrap();
     std::fs::write(
@@ -436,7 +436,7 @@ fn list_attaches_extras_and_catalog_match() {
     }
 
     // Catalog cache with an entry whose key EXACTLY matches m1's `model`.
-    // 真相源 = nemesis_path::models_catalog_cache_path（与 CLI 写盘位置同源）。
+    // 权威 = nemesis_path::models_catalog_cache_path（与 CLI 写盘位置同源）。
     let seeded = nemesis_path::models_catalog_cache_path(dir.path());
     std::fs::create_dir_all(seeded.parent().unwrap()).unwrap();
     std::fs::write(
@@ -470,7 +470,7 @@ fn list_attaches_extras_and_catalog_match() {
     assert_eq!(m2["catalog_match"], serde_json::Value::Null);
 }
 
-// Raw-RMW migration : add/delete/set_default must NOT erase the raw
+// Raw-RMW migration: add/delete/set_default must NOT erase the raw
 // extras — the reason they no longer go through a typed save.
 
 /// RequestContext for set_default (agent_loop None → no runtime swap; only
@@ -541,7 +541,7 @@ pub(super) fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestCont
 }
 
 fn write_catalog(home: &std::path::Path, entries_json: &str) {
-    // 真相源 = nemesis_path::models_catalog_cache_path（与 CLI 共用，见
+    // 权威 = nemesis_path::models_catalog_cache_path（与 CLI 共用，见
     // models.rs catalog_info 注释）。
     let path = nemesis_path::models_catalog_cache_path(home);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

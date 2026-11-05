@@ -1,9 +1,9 @@
-//! [`crate:history`] 共享组装件测试：字段 golden + 解析行为。
+//! [`crate::history`] 共享组装件测试：字段 golden + 解析行为。
 
 use crate::history::{HistoryRequest, history_response_json};
 
 // ---------------------------------------------------------------------
-// HistoryRequest:parse
+// HistoryRequest::parse
 // ---------------------------------------------------------------------
 
 #[test]

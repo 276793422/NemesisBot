@@ -1,4 +1,4 @@
-//! eval_rules 命令组单测（第九轮 AA1：此前只有会话内手测，无自动化）。
+//! eval_rules 命令组单测（此前只有会话内手测，无自动化）。
 //!
 //! cmd_* 函数都是 path 参数化的纯文件操作，直接对临时目录测。
 //! `run()` 本身（home 解析 + clap 分派）不在这里——那是 CLI 层。
@@ -128,7 +128,7 @@ fn cmd_edit_replaces_in_place() {
 
 #[test]
 fn cmd_edit_rejects_multi_rule_file() {
-    // R5 回归（自动化）：多条规则的文件走 edit → 明确拒绝。
+    // 回归（自动化）：多条规则的文件走 edit → 明确拒绝。
     let (_tmp, path) = temp_rules();
     eval_assessor::load_rules(&path).unwrap();
 
@@ -160,7 +160,7 @@ fn cmd_reset_force_restores_defaults() {
 
 #[test]
 fn cmd_reset_non_force_aborts_on_eof_stdin() {
-    // BB2b 回归：非 force + stdin EOF（cargo test 的 stdin）→ read_line 得
+    // 回归：非 force + stdin EOF（cargo test 的 stdin）→ read_line 得
     // 空串 → 非 y → Aborted，规则文件**保持原样**（不重置）。
     let (_tmp, path) = temp_rules();
     eval_assessor::load_rules(&path).unwrap();
@@ -176,8 +176,8 @@ fn cmd_reset_non_force_aborts_on_eof_stdin() {
     );
 }
 
-// ── M1 补测（quality-hardening goal 2026-08-25）：向导纯函数 + cmd_show +
-//    add 空 rules 拒绝 + BB4 run() 双分支 ─────────────────────────────────
+// ── 补测（quality-hardening goal）：向导纯函数 + cmd_show +
+//    add 空 rules 拒绝 + run() 双分支 ─────────────────────────────────
 
 #[test]
 fn keyword_to_pattern_escapes_metachars_and_matches_literal() {
@@ -333,10 +333,10 @@ fn cmd_add_rejects_empty_rules_file() {
     assert_eq!(file.rules.len(), defaults.rules.len());
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn bb4_local_missing_write_rejected_readonly_degrades() {
-    // BB4 防静默建家回归：--local home 不存在时——写命令 bail（且不创建
+    // 防静默建家回归：--local home 不存在时——写命令 bail（且不创建
     // .nemesisbot）；只读命令降级展示内置默认集（零落盘）。
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
@@ -391,8 +391,8 @@ async fn bb4_local_missing_write_rejected_readonly_degrades() {
 }
 
 // ===========================================================================
-// S11c（quality-hardening goal 冲刺 S11）：cmd_new 的 EOF 取消臂（stdin 管道
-// EOF → ask 返回 "" → kind 默认 1 → 路径空 → bail）+ run() 非 BB4 的正常
+// （quality-hardening goal 冲刺）：cmd_new 的 EOF 取消臂（stdin 管道
+// EOF → ask 返回 "" → kind 默认 1 → 路径空 → bail）+ run() 非 的正常
 // 分发臂（既有测试只跑过 local-missing 分支）。env home 隔离。
 // ===========================================================================
 
@@ -405,7 +405,7 @@ fn cmd_new_eof_stdin_cancels_with_path_empty_error() {
     assert!(!path.exists(), "取消路径绝不落盘");
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn run_dispatch_list_toggle_and_remove_via_env_home() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -500,7 +500,7 @@ async fn run_dispatch_list_toggle_and_remove_via_env_home() {
 }
 
 // ===========================================================================
-// wave_b（覆盖率补测 2026-08-27）：run() 分发的元组/臂缺口（98/100/104 +
+// wave_b（覆盖率补测）：run() 分发的元组/臂缺口（98/100/104 +
 // 142/143/144/148）+ print_rule_table 空集直调（197-199）。stdin 只能 EOF
 // （cargo test 的 stdin 是管道），向导的交互深度分支（kind 2/3、去重循环、
 // 预览确认、ask_level）属结构性不可测 → EXEMPT，见任务报告。
@@ -513,12 +513,12 @@ mod wave_b {
     /// NEMESISBOT_HOME 守卫：prev-value 按 Option 恢复（纪律要求）。调用方必须持
     /// crate::GLOBAL_STATE_LOCK；#[tokio::test] 不要求 Send，守卫可跨 await 存活
     /// （同文件 run_dispatch_list_toggle_and_remove_via_env_home 先例）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct WaveBHomeGuard {
         prev: Option<std::ffi::OsString>,
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl WaveBHomeGuard {
         fn set(root: &std::path::Path) -> Self {
             let prev = std::env::var_os("NEMESISBOT_HOME");
@@ -527,7 +527,7 @@ mod wave_b {
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl Drop for WaveBHomeGuard {
         fn drop(&mut self) {
             match self.prev.take() {
@@ -537,7 +537,7 @@ mod wave_b {
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn wave_b_seeded_home() -> (tempfile::TempDir, std::path::PathBuf, String) {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join(".nemesisbot");
@@ -563,9 +563,9 @@ mod wave_b {
     }
 
     /// tuple-98 + dispatch-142：New 子命令经 run() 分发。stdin EOF → 向导 kind
-    /// 默认 path 分支 → 关键词读空 → bail「路径为空」，且绝不落盘（S11c 直调
+    /// 默认 path 分支 → 关键词读空 → bail「路径为空」，且绝不落盘（直调
     /// cmd_new 已钉行为；这里补的是 run() 这层分派桥）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_run_new_wizard_eof_stdin_cancels() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -588,7 +588,7 @@ mod wave_b {
 
     /// dispatch-144（Edit 臂经 run()）+ dispatch-143（Add 臂经 run()）：
     /// 全链路替换与追加都以落盘后的文件内容断言。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_run_edit_then_add_dispatch_persist_effects() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -650,7 +650,7 @@ mod wave_b {
     }
 
     /// tuple-104 + dispatch-148：Reset --force 经 run() 分发回默认集。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_run_reset_force_dispatch_restores_defaults() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -690,7 +690,7 @@ mod wave_b {
 }
 
 // ===========================================================================
-// r9（覆盖率补测批 2026-08-27）：eval_rules 向导/CLI 全管道（子进程级）。
+// r9（覆盖率补测-27）：eval_rules 向导/CLI 全管道（子进程级）。
 //
 // wave_b 曾把向导交互深分支判 EXEMPT（理由：进程内 stdin 是管道 EOF，喂不
 // 进答案序列）。本组换武器：test_harness::run_cli_with_stdin 起**真二进制**
@@ -698,9 +698,9 @@ mod wave_b {
 // -2 后缀循环、reset 确认 y/n、list/show/enable/disable 各臂全部真实点亮。
 //
 // 夹具纪律：
-//   * TestWorkspace 起手只有空 tempdir → BB4 会拦写命令，必须先 create_dir_all(home)；
+//   * TestWorkspace 起手只有空 tempdir → 会拦写命令，必须先 create_dir_all(home)；
 //   * run_cli* 自动 prepend --local + cwd=tempdir → 每测试独立 home，互不污染；
-//   * 父进程环境变量零改动（--local/cwd 已隔离一切）→ 无需 GLOBAL_STATE_LOCK，
+//   * 父进程环境变量零改动（local/cwd 已隔离一切）→ 无需 GLOBAL_STATE_LOCK，
 //     与同文件 env-home 测试天然正交；
 //   * 二进制经 resolve_nemesisbot_bin 解析 target/release/nemesisbot.exe，
 //     未构建/非 Windows → 打印 SKIP early-return（跨平台测试文件不能硬 panic）；
@@ -720,7 +720,7 @@ mod r9_wizard_pipeline {
         }
     }
 
-    /// 建 home 的隔离工作区 + 二进制；home 不建会被 BB4 写命令 bail。
+    /// 建 home 的隔离工作区 + 二进制；home 不建会被 写命令 bail。
     /// 二进制解析不了（未构建 / 非 Windows）→ None（调用方 SKIP 早退）。
     fn r9_ws() -> Option<(
         test_harness::TestWorkspace,
@@ -754,7 +754,7 @@ mod r9_wizard_pipeline {
             .len()
     }
 
-    // ── B1：kind=3（subject 静态文本层）完整向导流 ────────────────────────
+    // ──：kind=3（subject 静态文本层）完整向导流 ────────────────────────
     #[tokio::test]
     async fn r9_wizard_kind3_creates_subject_rule_persisted() {
         let Some((tw, bin, home)) = r9_ws() else {
@@ -788,7 +788,7 @@ mod r9_wizard_pipeline {
         assert_eq!(r["enabled"], true);
     }
 
-    // ── B2：kind=2（命令关键词层）+ ask_level 选 medium ───────────────────
+    // ──：kind=2（命令关键词层）+ ask_level 选 medium ───────────────────
     #[tokio::test]
     async fn r9_wizard_kind2_level_choice_maps_to_medium() {
         let Some((tw, bin, home)) = r9_ws() else {
@@ -819,7 +819,7 @@ mod r9_wizard_pipeline {
         assert_eq!(r["conditions"][0]["value"], "(?i)curl upload");
     }
 
-    // ── B3：预览确认 n → 取消不写入（只剩 load_rules 在去重步骤种下的默认集）┐
+    // ──：预览确认 n → 取消不写入（只剩 load_rules 在去重步骤种下的默认集）┐
     #[tokio::test]
     async fn r9_wizard_confirm_n_aborts_without_write() {
         let Some((tw, bin, home)) = r9_ws() else {
@@ -857,7 +857,7 @@ mod r9_wizard_pipeline {
         assert!(!file.rules.iter().any(|r| r.id == "subject-keep-out"));
     }
 
-    // ── B5：同一 id 连开两次向导 → 第二次自动 -2 后缀 ─────────────────────
+    // ──：同一 id 连开两次向导 → 第二次自动 -2 后缀 ─────────────────────
     #[tokio::test]
     async fn r9_wizard_same_id_second_run_gets_minus_two_suffix() {
         let Some((tw, bin, home)) = r9_ws() else {
@@ -891,7 +891,7 @@ mod r9_wizard_pipeline {
         );
     }
 
-    // ── B4：CLI 面各一发——list / show / disable / enable 全链路状态翻转 ──
+    // ──：CLI 面各一发——list / show / disable / enable 全链路状态翻转 ──
     #[tokio::test]
     async fn r9_cli_list_show_disable_enable_roundtrip_on_seeded_defaults() {
         let Some((tw, bin, home)) = r9_ws() else {
@@ -947,7 +947,7 @@ mod r9_wizard_pipeline {
         assert!(path.exists());
     }
 
-    // ── B6：reset 确认双答（n 拦停 / y 执行）────────────────────────────────
+    // ──：reset 确认双答（n 拦停 / y 执行）────────────────────────────────
     #[tokio::test]
     async fn r9_cli_reset_confirm_n_blocks_then_y_restores_defaults() {
         let Some((tw, bin, home)) = r9_ws() else {
@@ -1010,7 +1010,7 @@ mod r9_wizard_pipeline {
 }
 
 // ===========================================================================
-// r10（覆盖率补测批 2026-08-27）：eval_rules 向导 A 类 miss 行收口。
+// r10（覆盖率补测-27）：eval_rules 向导 A 类 miss 行收口。
 // 目标行（生产 eval_rules.rs）：ask_choice 重试环 361-366、三种空关键词
 // bail 臂 408/430/452-453、kind=1 完整向导流 455-486（OR 拆两条
 // probe-<slug>/probe-<slug>-path）、ask_level 三臂 532(critical)/534(low)/
@@ -1032,7 +1032,7 @@ mod r10_wizard_deep_branches {
         }
     }
 
-    /// 建 home 的隔离工作区 + 二进制（home 不建会被 BB4 写命令拦停）。
+    /// 建 home 的隔离工作区 + 二进制（home 不建会被 写命令拦停）。
     fn r10_ws() -> Option<(
         test_harness::TestWorkspace,
         std::path::PathBuf,
@@ -1066,12 +1066,12 @@ mod r10_wizard_deep_branches {
 
     // ── ⭐ kind=1（回车取默认 kind）完整向导流：ask_choice 重试环 + OR 拆分
     //    双规则块一次点亮。stdin 时序：
-    //      "9"           → 选择越界 → 重试提示（361-366）
-    //      ""            → 回车默认 kind=1
-    //      "id_ed25519"  → 保护路径关键词（非空 → 推进到 455-486）
-    //      "1"           → ask_level 选 critical（532 臂）
-    //      ""            → 描述自动生成
-    //      "Y"           → 确认保存
+    //      "9" → 选择越界 → 重试提示（361-366）
+    //      "" → 回车默认 kind=1
+    //      "id_ed25519" → 保护路径关键词（非空 → 推进到 455-486）
+    //      "1" → ask_level 选 critical（532 臂）
+    //      "" → 描述自动生成
+    //      "Y" → 确认保存
     #[tokio::test]
     async fn r10_wizard_kind1_default_enter_full_flow_creates_or_split_probe_pair() {
         let Some((tw, bin, home)) = r10_ws() else {

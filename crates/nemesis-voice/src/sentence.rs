@@ -1,6 +1,6 @@
 //! Sentence splitting for TTS relay — pure functions, cross-platform.
 //!
-//! 语音 realtime P1（W2 前级）：把 LLM 回复切成适合逐句合成的句子序列。
+//! 语音 realtime （前级）：把 LLM 回复切成适合逐句合成的句子序列。
 //! 终结标点（。！？；!?; 换行）必切；ASCII 句点仅在「后随空白且前非数字」时切
 //! （避开小数/URL/缩写误切）；超长句再按逗号级标点二次切（首句首声延迟优化）。
 

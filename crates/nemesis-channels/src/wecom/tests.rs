@@ -1,4 +1,4 @@
-//! wecom 通道契约测试（P25）。
+//! wecom 通道契约测试。
 //!
 //! 覆盖三面：
 //! 1. 加解密协议面：签名（排序归一/篡改拒绝）、EncodingAESKey 派生、
@@ -553,7 +553,7 @@ async fn test_callback_message_json_post_publishes_inbound() {
     let client = reqwest::Client::new();
     wait_http_ready(&client, &base).await;
 
-    // JSON 形态（智能机器人）：{"encrypt": ...}
+    // JSON 形态（智能机器人）：{"encrypt":...}
     let msg_json = serde_json::json!({
         "msgtype": "text",
         "text": {"content": "你好机器人"},

@@ -734,7 +734,7 @@ fn test_capture_mode_from_str_error_message() {
 }
 
 // ============================================================
-// W4a coverage gap closure:
+// coverage gap closure:
 // - prepare_output_path create_dir_all failure arm (workspace
 //   path is a regular file, so {workspace}/temp cannot be made)
 // - execute_capture timeout arm (set_timeout shorter than
@@ -742,7 +742,7 @@ fn test_capture_mode_from_str_error_message() {
 //   the child is killed — no screen content is ever captured)
 // - region mode MCP-Err arm (warn + fall through to PowerShell)
 // - window mode find_window_by_title non-JSON parse arm
-// NOT exercised here (structural exemption, goal doc §9.4):
+// NOT exercised here (structural exemption, goal doc):
 // successful real captures (CopyFromScreen arms 158-180 and the
 // PowerShell success paths write real screenshots of the live
 // desktop) and the powershell.exe spawn-failure arm 138-139
@@ -767,9 +767,9 @@ async fn w4a_workspace_pointing_at_a_file_fails_to_create_temp_dir() {
     );
 }
 
-// 前提 = Windows 宿主（2026-09-01 远端首跑暴露）：1ms timeout 打到
+// 前提 = Windows 宿主（远端首跑暴露）：1ms timeout 打到
 // "screen capture timed out" 臂的前提是 powershell.exe 能被 spawn（只是
-// 启动慢）；Linux 上 spawn 直接 ENOENT，走的是 "screen capture failed: ..."
+// 启动慢）；Linux 上 spawn 直接 ENOENT，走的是 "screen capture failed:..."
 // 臂，断言文案对不上。无可移植等价（没有跨平台慢启动 shell）→ 整测门控。
 #[cfg(windows)]
 #[tokio::test]
@@ -777,7 +777,7 @@ async fn w4a_capture_times_out_when_timeout_shorter_than_powershell_startup() {
     let dir = tempfile::TempDir::new().unwrap();
     let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), None);
     // 1ms is far below any powershell.exe startup time, so the
-    // tokio::time::timeout arm must fire deterministically.
+    // tokio::time:timeout arm must fire deterministically.
     tool.set_timeout(Duration::from_millis(1)).await;
     let result = tool
         .execute(&serde_json::json!({"mode": "full_screen"}))
@@ -875,7 +875,7 @@ async fn w4a_window_mode_title_find_returning_garbage_captures_without_hwnd() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): region capture with no MCP caller (PowerShell
+// coverage: region capture with no MCP caller (PowerShell
 // fallback + success info! fields), window capture with a disconnected MCP
 // caller (skip block -> PowerShell fallback, bogus hwnd errors)
 // ===========================================================================

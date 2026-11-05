@@ -14,9 +14,9 @@ use std::path::PathBuf;
 use crate::r#loop::FileChange;
 use crate::work_timeline::WorkTimeline;
 
-/// ：交付物条目单一真相源在 `nemesis_types:agent`
-/// （`AgentEvent:DeliverablesRegistered` 载荷与本字段共用同一 serde 形态，
-/// 不维护两份镜像 struct）；本模块 re-export 保持 `crate:chat_log:
+/// 交付物条目的权威定义在 `nemesis_types::agent`
+/// （`AgentEvent::DeliverablesRegistered` 载荷与本字段共用同一 serde 形态，
+/// 不维护两份镜像 struct）；本模块 re-export 保持 `crate::chat_log:
 /// PresentedFile` 路径稳定。与 `file_changes` 的分工：file_changes 是
 /// 「改了什么」（消息↔文件变更映射，服务 rewind/diff），deliverables 是
 /// 「该看什么」（结果面向用户的产物指引，服务前端交付物卡片）。路径引用
@@ -24,7 +24,7 @@ use crate::work_timeline::WorkTimeline;
 pub use nemesis_types::agent::PresentedFile;
 
 /// （devtool-upgrade）：chat_log 条目在 `role`/`content` 之外的
-/// 可选元数据。jsonl 行 shape 的单一真相源仍是 [`write_chat_entry`]；本
+/// 可选元数据。jsonl 行 shape 的权威定义仍是 [`write_chat_entry`]；本
 /// struct 是**写入 API** 的单一入口——扩字段只动这里，不再加位置参数
 /// （`append_chat_log_full*` 旧签名保留为薄包装，存量调用点不动）。
 #[derive(Debug, Clone, Copy, Default)]
@@ -43,7 +43,7 @@ pub struct ChatLogMeta<'a> {
     /// 会话级 diff 查看器的数据源。空切片不写——旧条目/无变更解析
     /// 不受影响。
     pub file_changes: &'a [FileChange],
-    /// ：`"deliverables"` 字段——本 turn 的交付物
+    /// `"deliverables"` 字段——本 turn 的交付物
     /// 清单（`[{path, title, note}]`；`present_files` 工具登记，assistant
     /// 最终回复落盘时去重随行）。与 `file_changes` 并列不重叠：前者服务
     /// 变更映射（rewind/diff），后者服务交付展示。空切片不写。
@@ -62,7 +62,7 @@ pub struct ChatLogMeta<'a> {
     /// 一律按轮边界处理，与旧行为逐字节一致）。
     pub steer: bool,
     /// Work 时间线（ChatPanel 长任务时间线改造）：本 turn 的
-    /// 「中间轮叙述+工具调用」交错时间线（`work_timeline:WorkTimeline`），
+    /// 「中间轮叙述+工具调用」交错时间线（`work_timeline::WorkTimeline`），
     /// assistant 最终回复行随行落盘（`"work"` 键）。`None` 不写——直答
     /// （无中间轮）与旧条目读侧不受影响（与 file_changes 同一宽容读契约）。
     pub work: Option<&'a WorkTimeline>,
@@ -326,12 +326,12 @@ fn write_chat_entry(
         entry["steer"] = serde_json::Value::Bool(true);
     }
     // Work 时间线（ChatPanel 长任务时间线改造）：本 turn 中间
-    // 过程交错时间线（work_timeline:WorkTimeline serde 形态）。缺字段 =
+    // 过程交错时间线（work_timeline::WorkTimeline serde 形态）。缺字段 =
     // 直答/旧条目，读侧宽容（与 file_changes 同纪律）。
     if let Some(w) = work {
         entry["work"] = serde_json::to_value(w).unwrap_or(Value::Null);
     }
-    // ：整行（含换行）先序列化成 String 再**单次**
+    // 整行（含换行）先序列化成 String 再**单次**
     // write_all。此前 `writeln!(file, "{}", entry)` 对 Value 走 Display 的
     // 逐片段写（append 模式每片段独立定位 EOF），同会话并发写（spawned
     // 续行 final vs 主循环下一条 user 行）可把别人的行插进本行 JSON 片段
@@ -349,7 +349,7 @@ fn write_chat_entry(
         return;
     }
     // （扩展计划）：append 记账——旁路事件账本，sha-only（chat_log
-    // 本体是正文真相源，账本职责是完整性证据）。best-effort，失败不阻断。
+    // 正文以 chat_log 本体为准，账本职责是完整性证据）。best-effort，失败不阻断。
     crate::event_ledger::ledger_record(
         session_key,
         crate::event_ledger::LedgerOp::Append,
@@ -381,7 +381,7 @@ fn write_chat_entry(
 /// 全文件扫两遍（几十 MB 日志在慢盘 + Defender 实时扫描下旧实现秒级）。
 /// `total`/`oldest_index` 保持 raw 行号坐标（分页契约： rewind 的
 /// message_index 锚 + 前端行编号链的基准），与旧两遍实现逐字段一致。
-/// 全量读者形态（fork/rewind/export/share/CLI 传 `usize:MAX`）解析行直接
+/// 全量读者形态（fork/rewind/export/share/CLI 传 `usize::MAX`）解析行直接
 /// 滑入窗口（`Option` 占位保持 raw 行号对齐——不可解析行也占一位），无
 /// 驱逐、内存与旧实现持平；小窗口形态存 raw 行、EOF 后只解析窗口。
 pub fn read_chat_log(
@@ -390,8 +390,8 @@ pub fn read_chat_log(
     before_index: Option<usize>,
 ) -> (Vec<Value>, usize, bool, usize) {
     let path = log_path(session_key);
-    // is_file 而非 exists：Linux 上 File:open 对目录成功（O_RDONLY 合法），
-    // 而下面 BufReader:lines() 的 count/filter_map 在 read Err（目录 fd 每次
+    // is_file 而非 exists：Linux 上 File::open 对目录成功（O_RDONLY 合法），
+    // 而下面 BufReader::lines() 的 count/filter_map 在 read Err（目录 fd 每次
     // read 都 EISDIR，Lines 迭代器不熔断）上会无限自旋。目录占位按缺失处理
     // （Windows 上 open 目录本就失败走同臂）。（Linux 首跑暴露）
     if !path.is_file() {
@@ -494,11 +494,11 @@ pub fn read_boundary_events(session_key: &str) -> Vec<Value> {
 }
 
 /// Resolve the JSONL file path for a session key.
-/// `pub(crate)`：[`crate:chat_trash`] 的回收站 move/restore 按同键寻址
-/// 同一三件套（路径真相源仍是本模块）。
+/// `pub(crate)`：[`crate::chat_trash`] 的回收站 move/restore 按同键寻址
+/// 同一三件套（路径解析仍以本模块为准）。
 pub(crate) fn log_path(session_key: &str) -> PathBuf {
-    // SAN-01/SAN-05：白名单消毒（单一真相源
-    // `nemesis_utils:sanitize:sanitize_path_segment`）。旧 `replace(':')`
+    // SAN-01/SAN-05：白名单消毒（权威定义
+    // `nemesis_utils::sanitize::sanitize_path_segment`）。旧 `replace(':')`
     // 对 B 端复合键 `{node}/{chat}` 会拆出嵌套目录（F- 同根因）；对
     // 无 `/` 的键新旧映射一致，存量平面文件零迁移（嵌套目录由
     // [`migrate_nested_session_logs`] 启动平化）。
@@ -509,7 +509,7 @@ pub(crate) fn log_path(session_key: &str) -> PathBuf {
 }
 
 /// Does this session have a chat_log jsonl on disk? (fork)
-/// `session_fork:unique_key` consults this so a fork never APPENDS onto a
+/// `session_fork::unique_key` consults this so a fork never APPENDS onto a
 /// previous fork's surviving jsonl after its store json aged out of the
 /// 7-day TTL (append would duplicate the whole prefix).
 pub fn chat_log_exists(session_key: &str) -> bool {
@@ -628,7 +628,7 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     let mut written_rows: Vec<&Value> = Vec::new();
     // fork 复制的落盘失败不再无痕——open/write 失败与
     // write_chat_entry 同款 warn + 降级登记（健康面可）；fork 侧据
-    // 返回值诚实 Err 并原子回退（session_fork:fork_session_opts）。
+    // 返回值诚实 Err 并原子回退（session_fork::fork_session_opts）。
     let mut f = match OpenOptions::new().create(true).append(true).open(&target) {
         Ok(f) => f,
         Err(e) => {
@@ -644,7 +644,7 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
             return 0;
         }
     };
-    // ：整批先拼成一个缓冲再**单次** write_all
+    // 整批先拼成一个缓冲再**单次** write_all
     // （同 write_chat_entry 的行原子性理由；批写还把 fork 复制从每行
     // 两次系统调用收敛成一次）。序列化失败的行跳过；write_all 失败 =
     // 整批未落盘（记账按 0 处理，不许多记）。
@@ -702,12 +702,12 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
 }
 
 /// （devtool-upgrade）：把会话 jsonl **原位截断**为 `kept` 里
-/// 的行（VERBATIM 逐字节保留）。消息级回退/重做（`AgentLoop:rewind_to_message`
+/// 的行（VERBATIM 逐字节保留）。消息级回退/重做（`AgentLoop::rewind_to_message`
 /// / `redo_rewind`）的落盘原语。
 ///
 /// 崩溃安全：先写 `.rewinding` 临时文件再 rename 覆盖原文件——中途崩溃
 /// 要么原文件完好、要么截断后完好，不会出现半截文件。与 fork 的
-/// [`write_chat_log_rows`] 同一宽容边界：不走 `history_search:index_append`
+/// [`write_chat_log_rows`] 同一宽容边界：不走 `history_search::index_append`
 /// （原样重写不加新词），FTS 懒索引下次全量重建时自愈。
 ///
 /// 返回写入行数。`kept` 为空 = 清空文件（保留文件本身，会话仍可用）。
@@ -764,7 +764,7 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
             }
         }
     }
-    // Windows 上 std:fs:rename 走 MOVEFILE_REPLACE_EXISTING，可覆盖已存在
+    // Windows 上 std::fs:rename 走 MOVEFILE_REPLACE_EXISTING，可覆盖已存在
     // 目标；失败时保留原文件（会话不损）并清掉 tmp。
     if let Err(e) = fs::rename(&tmp, &path) {
         tracing::warn!(
@@ -781,7 +781,7 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
     }
     // rename 生效后才记账（截断真正发生）。原行按序与 kept 序列化串
     // 前缀匹配；未匹配上的 = 被删行，全文（含解析不出 JSON 的裸行）入账。
-    // 序列化两侧同走 serde_json:to_string(Value)（同 key 排序/转义），字节
+    // 序列化两侧同走 serde_json::to_string(Value)（同 key 排序/转义），字节
     // 可比。差集记账是保守方向：匹配错位只会多记「被删」，不会漏记。
     ledger_truncate_diff(session_key, &raw_lines, &kept_lines);
     written
@@ -817,7 +817,7 @@ fn ledger_truncate_diff(session_key: &str, raw_lines: &[String], kept_lines: &[S
     }
 }
 
-/// : copy the first `at_turn` COMPLETE user turns of
+/// copy the first `at_turn` COMPLETE user turns of
 /// `source_key`'s chat log to `new_key`, lines VERBATIM (original
 /// timestamps and extra fields preserved — a fork must not re-stamp
 /// history). Uses the same user-turn counting as the SessionStore-side
@@ -871,7 +871,7 @@ pub fn copy_chat_log_prefix(source_key: &str, new_key: &str, at_turn: usize) -> 
 
 /// FIX: single source of truth for "which rows become visible
 /// chat rows" — used by the self-heal rebuild / fork store mapping
-/// (`session:projected_messages_from_rows`) AND the turns endpoint's
+/// (`session::projected_messages_from_rows`) AND the turns endpoint's
 /// `end_preview` computation (api_handlers). The call sites must never
 /// drift apart, or the fork dialog's "分叉末条" preview would disagree with
 /// what the fork actually ends on — the exact class of bug this round
@@ -886,7 +886,7 @@ pub fn is_projected_chat_row(role: &str, content: &str) -> bool {
     }
 }
 
-/// 轮边界判定单一真相源：jsonl 行是否开启一个完整
+/// 轮边界判定的统一定义：jsonl 行是否开启一个完整
 /// user 轮。`role == "user"` 且非 steer 注入行——steer 是轮中间注入的
 /// user 形态行（`"steer": true` 标记，run_loop 注入路径写入），不是轮首；
 /// 把它当轮边界会把 rewind/fork 的截断点切进轮中间（「撤销最后一轮」只
@@ -913,7 +913,7 @@ pub fn is_user_turn_boundary(row: &Value) -> bool {
 /// defect (truncated history, tool-intermediate pollution, folded turns),
 /// producing garbage forks on real production sessions. `fork_session` now
 /// copies the jsonl rows verbatim (`write_chat_log_rows`) and derives the
-/// store FROM those rows (`session:projected_messages_from_rows`) — the
+/// store FROM those rows (`session::projected_messages_from_rows`) — the
 /// store→jsonl direction is dead. Kept (not deleted) per the code-change
 /// discipline.
 ///
@@ -1058,7 +1058,7 @@ pub(crate) fn meta_path(session_key: &str) -> PathBuf {
 
 /// Write the conversation title to the sidecar meta file.
 ///
-/// : read-modify-write UPSERT — preserves `parent` /
+/// read-modify-write UPSERT — preserves `parent` /
 /// `forked_at_turn` already recorded by `write_session_parent` (fork writes
 /// lineage first, then the fork endpoint writes a title; a blind overwrite
 /// would erase the lineage).
@@ -1100,7 +1100,7 @@ pub const DEFAULT_SESSION_TITLE: &str = "新对话";
 /// 「手动改名永不覆盖」契约。与 [`write_session_branch_summary`] 的
 /// detach 封印位同构（检查必须在 upsert 闭包/锁内，锁外预检只配当
 /// 优化）。判定逻辑与 [`auto_title_eligible`] 共用 [`auto_title_writable`]
-/// 单一真相源——两消费点不得漂移。
+/// 的统一定义——两消费点不得漂移。
 pub fn write_session_meta_auto_title(session_key: &str, title: &str) -> bool {
     let _guard = META_LOCK.lock();
     let path = meta_path(session_key);
@@ -1124,7 +1124,7 @@ pub fn write_session_meta_auto_title(session_key: &str, title: &str) -> bool {
     true
 }
 
-/// /：自动标题资格判定的单一真相源（纯函数，无 IO）。
+/// 自动标题资格判定的统一定义（纯函数，无 IO）。
 /// `auto_title_eligible`（读侧预检，锁外——只配当优化）与
 /// [`write_session_meta_auto_title`]（写点裁决，锁内）共用。
 fn auto_title_writable(meta: &SessionMeta) -> bool {
@@ -1181,10 +1181,10 @@ pub fn write_session_parent(session_key: &str, parent: &str, forked_at_turn: usi
 }
 
 /// 分支摘要落盘的硬上限（chars，非 bytes；`write_session_branch_summary`
-/// 截断用）。/ 生成侧同用此常量，双保险单一真相源。
+/// 截断用）。生成侧同用此常量，双保险一致口径。
 pub const BRANCH_SUMMARY_MAX_CHARS: usize = 4000;
 
-/// /：记录分叉缘由（fork_session 侧「为什么分出去」的一段话）。
+/// ：记录分叉缘由（fork_session 侧「为什么分出去」的一段话）。
 /// Upsert——已有 title/血缘/项目归属等字段全部保留；空串不写（无意义的
 /// 缘由不落盘，保持 meta 精简）。
 pub fn write_session_fork_reason(session_key: &str, reason: &str) {
@@ -1197,7 +1197,7 @@ pub fn write_session_fork_reason(session_key: &str, reason: &str) {
     });
 }
 
-/// /：记录一次消息级回退（rewind 也是谱系事件——本会话在此丢掉了
+/// ：记录一次消息级回退（rewind 也是谱系事件——本会话在此丢掉了
 /// 哪些行/轮）。Upsert；只保留**最近一次**（`last_rewind` 语义，完整历史
 /// 在 undo 栈/审计里，不重复记账）。
 pub fn write_session_rewind(
@@ -1216,7 +1216,7 @@ pub fn write_session_rewind(
     });
 }
 
-/// /：把分支摘要落盘（fork/rewind 丢弃后缀 ≥3 turn 时由小模型通道
+/// ：把分支摘要落盘（fork/rewind 丢弃后缀 ≥3 turn 时由小模型通道
 /// 生成；这里 trim + 空跳过 + 硬上限截断兜底——生成侧已按预算裁剪，此处
 /// 防御性二次钳制，两边共用 [`BRANCH_SUMMARY_MAX_CHARS`]）。
 /// detach 封印位在册时拒绝落盘——摘要 spawn 于
@@ -1240,7 +1240,7 @@ pub fn write_session_branch_summary(session_key: &str, summary: &str) {
 
 /// meta 文件原子落盘单一出口：序列化 → 同目录 temp 唯一
 /// 后缀 → rename 替换（Windows `MoveFileEx(REPLACE_EXISTING)` 语义）。此前
-/// 六处 meta 写全部直写 `fs:write`：进程中途死 = 半截 JSON（读取侧按
+/// 六处 meta 写全部直写 `fs::write`：进程中途死 = 半截 JSON（读取侧按
 /// corrupt 起空 meta 静默吃掉），写失败 = 吞错。调用方决定 warn 还是上浮。
 fn write_meta_file_atomic(path: &std::path::Path, meta: &SessionMeta) -> Result<(), String> {
     let data = serde_json::to_string(meta).map_err(|e| format!("serialize: {e}"))?;
@@ -1289,7 +1289,7 @@ fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
     }
 }
 
-/// ：项目归属烧入（创建项目会话时一次写入；归属不可变
+/// 项目归属烧入（创建项目会话时一次写入；归属不可变
 /// ——无改移 API，改归属 = 新会话，行业共识）。Upsert 语义同
 /// write_session_parent（已写过的 title 等字段保留）。
 pub fn write_session_project(session_key: &str, project_id: &str, project_path: &str) {
@@ -1383,7 +1383,7 @@ pub fn read_session_meta(session_key: &str) -> Option<String> {
 
 /// （真机日志）：assistant 回复实时推送失败时 +1——会话没有
 /// 活动 WS 连接（如恢复回复回到已断开的 ws-send 驱动端）时内容仍照常落盘
-/// （chat_log 是真相源），本标记只承载「有未读」这一通知事实。
+/// （以 chat_log 为准），本标记只承载「有未读」这一通知事实。
 pub fn mark_undelivered_reply(session_key: &str) {
     upsert_meta(session_key, |m| {
         m.undelivered = m.undelivered.saturating_add(1);
@@ -1641,7 +1641,7 @@ pub(crate) fn delete_session_pending(session_key: &str) {
 }
 
 /// session PR：聚合会话内全部 `file_changes`（assistant 行 meta 的
-/// 去重路径清单，按首次出现序）。分支对比视图的文件清单真相源——前端
+/// 去重路径清单，按首次出现序）。分支对比视图的文件清单以此为准——前端
 /// 拿清单逐文件调 `sessions.file_diff` 展示 unified diff。
 pub fn session_file_changes(session_key: &str) -> Vec<String> {
     let (rows, _, _, _) = read_chat_log(session_key, 100_000, None);
@@ -1669,11 +1669,11 @@ pub fn session_file_changes(session_key: &str) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 /// 写会话级全部放行的 sidecar 持久位（WSAPI set 的持久半边；运行态内存半边
-/// 在 `nemesis_security:SessionAllowAllState`，由 handler 双写）。
+/// 在 `nemesis_security::SessionAllowAllState`，由 handler 双写）。
 ///
 /// - enabled=true：记 `allow_all=true` + `allow_all_since=since` +
 ///   `session_key`（真实键随行烧入——hydrate 靠它，文件名 stem 是 sanitize
-///   有损形态）。`since` 由调用方传入（内存态 `set()` 的返回值——单一真相，
+///   有损形态）。`since` 由调用方传入（内存态 `set()` 的返回值——以此为准，
 ///   两半边不各打各的时间戳）；空串回落现在（防御性，正常调用不触发）。
 /// - enabled=false：摘除 `allow_all`/`allow_all_since`（关闭即回默认，不留
 ///   陈旧真值；`session_key` 字段保留无害）。无 meta / 本就没开 = no-op
@@ -1804,7 +1804,7 @@ pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "is_false")]
     pub title_manual: bool,
     /// 项目归属（创建项目会话时烧入，不可变；None = 对话组）。
-    /// 真相源 = 本 sidecar；`StoredSession` 的同名字段只是缓存镜像。
+    /// 以本 sidecar 为准；`StoredSession` 的同名字段只是缓存镜像。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     /// canonical 项目目录绝对路径（与 project_id 同批写入）。
@@ -1815,15 +1815,15 @@ pub struct SessionMeta {
     /// `sessions.mark_delivered` 清零。0 不落盘，兼容旧文件形态。
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub undelivered: u32,
-    /// /：分叉缘由（fork_session 时的一段说明文字；None = 旧分叉无
+    /// ：分叉缘由（fork_session 时的一段说明文字；None = 旧分叉无
     /// 记录，谱系视图回退显示「fork」）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fork_reason: Option<String>,
-    /// /：最近一次消息级回退的谱系记录（回退也是谱系事件；只记最近
+    /// ：最近一次消息级回退的谱系记录（回退也是谱系事件；只记最近
     /// 一次）。None = 本会话从未回退过。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_rewind: Option<RewindLineage>,
-    /// /：分支摘要（fork/rewind 丢弃后缀 ≥3 turn 时由小模型生成的
+    /// ：分支摘要（fork/rewind 丢弃后缀 ≥3 turn 时由小模型生成的
     /// 六节结构化前情提要；新会话首轮 build_messages 注入）。None = 无摘要
     /// （未达阈值 / 小模型未配置——诚实跳过）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1845,14 +1845,14 @@ pub struct SessionMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snooze_note: Option<String>,
     /// （预留）：会话首绑 principal（`{channel}/{sender_id}`，映射
-    /// 单一真相源 `nemesis_types:channel:principal_for_channel`）。只写
+    /// 权威定义 `nemesis_types::channel::principal_for_channel`）。只写
     /// 不读——多租户闸不做，消费方出现前任何代码不得据它分叉行为。
     /// None = 未绑定（cron/heartbeat/system 等无主体来源，或旧文件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub principal: Option<String>,
     /// 会话级全部放行（长任务）：true = 本会话的
     /// 安全审批卡全自动放行（含 CRITICAL 与 ziwei force 卡；硬 deny / estop
-    /// 不受影响）。持久真相源 = 本字段；gateway 的 SessionAllowAllState 是
+    /// 不受影响）。持久权威 = 本字段；gateway 的 SessionAllowAllState 是
     /// 运行期镜像（启动 hydrate 回载）。无 TTL 无自动关闭（用户裁决）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub allow_all: bool,
@@ -1864,13 +1864,13 @@ pub struct SessionMeta {
     /// 有损形态还原不了，hydrate 直接读本字段）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_key: Option<String>,
-    /// ：会话执行统计（聚合器累加，节流落盘；重启读回
+    /// 会话执行统计（聚合器累加，节流落盘；重启读回
     /// 不归零）。全零不落盘，兼容旧文件形态。
     #[serde(default, skip_serializing_if = "is_default_exec_stats")]
     pub stats: SessionExecStats,
 }
 
-/// ：会话执行统计（session sidecar meta 的 `stats` 字段）。
+/// 会话执行统计（session sidecar meta 的 `stats` 字段）。
 /// 计数语义：tool_calls=工具调用发起数；tool_failures=执行失败数；
 /// retries=LLM 瞬态错误重试次数；validation_failures=args 校验失败回灌次数；
 /// compactions=上下文压缩成功次数（auto+manual）；approvals_*=审批卡
@@ -1928,21 +1928,21 @@ fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
-/// ：会话执行统计累加（聚合器节流调用的唯一写入口）。
+/// 会话执行统计累加（聚合器节流调用的唯一写入口）。
 /// 读 meta（缺省 Default）→ 闭包改 stats → 原子替换，与
 /// `write_session_project` 同款模式（META_LOCK 互斥 + upsert 语义）。
 pub fn update_session_stats(session_key: &str, f: impl FnOnce(&mut SessionExecStats)) {
     upsert_meta(session_key, |m| f(&mut m.stats));
 }
 
-/// ：读会话执行统计（meta 缺失/字段缺席 = Default）。
+/// 读会话执行统计（meta 缺失/字段缺席 = Default）。
 pub fn read_session_stats(session_key: &str) -> SessionExecStats {
     read_meta_full(session_key)
         .map(|m| m.stats)
         .unwrap_or_default()
 }
 
-/// /：一次消息级回退的谱系记录（`last_rewind` 的载荷）。
+/// ：一次消息级回退的谱系记录（`last_rewind` 的载荷）。
 /// `dropped_rows == 0`（末尾 no-op 回退）不落盘——回退未发生时没有谱系
 /// 事实可记（rewind 侧 no-op 路径本就不调用写入）。
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -1961,7 +1961,7 @@ pub struct RewindLineage {
     pub ts: String,
 }
 
-/// /：`skip_serializing_if` 助手（0 不落盘，兼容旧文件形态）。
+/// ：`skip_serializing_if` 助手（0 不落盘，兼容旧文件形态）。
 fn is_zero_usize(v: &usize) -> bool {
     *v == 0
 }
@@ -1980,7 +1980,7 @@ fn is_false(b: &bool) -> bool {
 mod tests;
 
 // ---------------------------------------------------------------------------
-// : boundary events (round-5 fix: sidecar file)
+// boundary events (round-5 fix: sidecar file)
 // ---------------------------------------------------------------------------
 
 /// Resolve the boundary-events SIDECAR path (`logs/boundary/<safe_key>.jsonl`).
@@ -2028,7 +2028,7 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
         "detail": detail,
         "timestamp": Local::now().to_rfc3339(),
     });
-    // ：与 write_chat_entry 同一行原子性理由——
+    // 与 write_chat_entry 同一行原子性理由——
     // 整行含换行单次 write_all，boundary 侧车并发写不撕行。
     if let Ok(line) = serde_json::to_string(&entry) {
         let mut buf = line;
@@ -2053,7 +2053,7 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
 /// 平化到顶层。B 端复合键 `{node}/{chat}` 在旧 `replace(':', "_")` 映射下
 /// 会落成 `<root>/{node}/{chat}.jsonl`（目录逃逸，SAN-01； 真机
 /// F- 同根因在 todo 路径已修、本族漏网）；白名单消毒
-/// （[`nemesis_utils:sanitize:sanitize_path_segment`]）写平面
+/// （[`nemesis_utils::sanitize:sanitize_path_segment`]）写平面
 /// `<root>/{node}_{chat}.jsonl`。本函数按「目录名_文件名」拼接平移，与
 /// 新白名单对原始键的映射一致。
 ///
@@ -2134,7 +2134,7 @@ fn flatten_legacy_nested_dirs(root: &std::path::Path) {
     }
 }
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 
@@ -2162,7 +2162,7 @@ mod cov_tests;
 #[cfg(test)]
 mod cov2_tests;
 
-// ：deliverables 字段写入 + dedup_presented_files
+// deliverables 字段写入 + dedup_presented_files
 // 投影 + PresentedFile serde 缺省契约测试。
 #[cfg(test)]
 mod n5_tests;

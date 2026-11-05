@@ -1,4 +1,4 @@
-//! 安装门信任四态（P11 验签上膛）。
+//! 安装门信任四态（验签上膛）。
 //!
 //! 验签结果（Ed25519 签名 + TrustStore）与「无签名按策略」归约成四个稳定态，
 //! 供审批卡展示与安装记录落盘：
@@ -66,7 +66,7 @@ pub struct VerificationOutcome {
 }
 
 impl VerificationOutcome {
-    /// 按 P11 语义归约出信任四态。
+    /// 按 语义归约出信任四态。
     ///
     /// - 无签名：`allow_unsigned=true` -> ReviewRequired；false（strict）-> Blocked。
     /// - 签名有效：Verified -> Trusted；Community -> ReviewRecommended；

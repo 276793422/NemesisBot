@@ -185,7 +185,7 @@ impl SkillsLoader {
     ///
     /// If security scanning is not enabled or no linter is configured,
     /// this is a no-op. Otherwise it lints the skill's executable surface
-    /// (M5: SKILL.md + all auxiliary .md + script forms under the skill
+    /// (SKILL.md + all auxiliary.md + script forms under the skill
     /// directory) and updates the `SkillInfo` with the lint score and
     /// warning status. Falls back to single-file scanning when the path has
     /// no usable parent directory.
@@ -384,7 +384,7 @@ impl SkillsLoader {
             Err(_) => return,
         };
 
-        // 级内输出按名字排序：read_dir 枚举序是平台实现细节（BUG-20261028-115，
+        // 级内输出按名字排序：read_dir 枚举序是平台实现细节（
         // NTFS 字典序 vs ext4 哈希序）——SkillsInfoTool 的 find 命中与注入 LLM
         // 的技能摘要顺序必须跨平台确定。只排序本级新增段，级间优先序保持。
         let batch_start = skills.len();
@@ -419,7 +419,7 @@ impl SkillsLoader {
                 warn!("Invalid skill name from {}: {}", source, info.name);
                 continue;
             }
-            // BUG-20261028-115：声明名与目录名等值校验——列表（本链路）信
+            // 声明名与目录名等值校验——列表（本链路）信
             // frontmatter 声明名，而 load_skill（按名拼 `join(name)` 读目录）、
             // install/uninstall/lockfile/drift 与 Dashboard 列表全部以**目录名**
             // 为 slug 真相源。声明名 ≠ 目录名时列表展示的名字 load_skill 读不到
@@ -452,7 +452,7 @@ impl SkillsLoader {
             // Override source
             info.source = source.to_string();
 
-            // Run security scan if enabled（M5：走 scan_skill_security 的
+            // Run security scan if enabled（走 scan_skill_security 的
             // 目录可执行面实现，此处不再内联单文件逻辑）.
             self.scan_skill_security(&mut info, &skill_md);
 

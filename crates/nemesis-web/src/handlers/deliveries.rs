@@ -1,6 +1,6 @@
 //! c（2026-10-17）— `deliveries.*` WSAPI + 交付账本查询/裁决面。
 //!
-//! 依赖方向（同 [`crate::handlers::agents`] 先例）：nemesis-web 不能反向
+//! 依赖方向（同 [`crate::handlers:agents`] 先例）：nemesis-web 不能反向
 //! 依赖 nemesisbot（deliveries 表的 `Arc<TaskDb>` 在那边），所以这里定义
 //! [`DeliveriesBridge`] trait + 模块级槽，nemesisbot 在 gateway 装配时把
 //! 实现装进槽。handler 全部经 bridge 走；未装配（headless / 独立 web 测试）

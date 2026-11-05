@@ -1,6 +1,6 @@
-//! nemesisbot_data.db 变更侦测（A3 请求明细实时刷新的后端半）。
+//! nemesisbot_data.db 变更侦测（请求明细实时刷新的后端半）。
 //!
-//! 原理与 `nemesis-board::watcher` 同源（W2.5 先例的拷贝适配）：
+//! 原理与 `nemesis-board::watcher` 同源（.5 先例的拷贝适配）：
 //! `PRAGMA data_version` 在**其他连接**提交写事务时递增（本连接自身的写不
 //! bump）。watcher 用一条从不写入的独立连接轮询该值——gateway 进程内的
 //! 全部写入方（AgentLoop / workflow LLM 节点经 `DataStore` 自己的连接落库）

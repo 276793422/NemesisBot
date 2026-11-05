@@ -1,6 +1,6 @@
-//! verify_bytes 九态全态测试（S4-1：v4 Authenticode 管线）。
+//! verify_bytes 九态全态测试（v4 Authenticode 管线）。
 //!
-//! 判据（goal S4-1）：Valid / Tampered / NoSignature / SignatureInvalid /
+//! 判据（goal）：Valid / Tampered / NoSignature / SignatureInvalid /
 //! UnsupportedVersion / Malformed / Untrusted / Revoked / Expired 各 ≥1。
 //! Revoked 需要真 CRL 服务器 + env（NEMESIS_REVOCATION_URL）+ 全局 CRL 缓存，
 //! 位于 `revocation/tests.rs` 的 verify_bytes 集成段（与本文件共享 crate 根
@@ -8,7 +8,7 @@
 //!
 //! 载体覆盖：raw（九态主载体）+ PE（证书表定位 + authenticode digest 分支，
 //! 最小 PE 手工构造，布局假设与 pe/tests.rs build_pe 同款）。ELF 载体的
-//! footer/L 契约在 envelope/tests.rs S3-4 段覆盖，本文件不重复。
+//! footer/L 契约在 envelope/tests.rs 段覆盖，本文件不重复。
 //!
 //! ⚠ env 串行契约（2026-09-12 CI Untrusted 假红根修）：**凡能走到 verify_bytes
 //! 第⑥步（吊销）的测试必须持有 crate 根 `GLOBAL_STATE_LOCK`**——revocation
@@ -24,7 +24,7 @@ use crate::fixtures::{V4Harness, now_secs};
 use crate::pe::append_certificate_table;
 use p256::ecdsa::SigningKey;
 
-// ===== 最小 PE 构造（端口自 pe/tests.rs build_pe，只留 S4-1 需要的形态）=====
+// ===== 最小 PE 构造（端口自 pe/tests.rs build_pe，只留 需要的形态）=====
 
 const P: usize = 0x40; // e_lfanew
 
@@ -35,7 +35,7 @@ fn put32(b: &mut [u8], off: usize, v: u32) {
     b[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
-/// 无证书表的最小 PE32+：1 个 section（0x200 @ 0x400），nrva=16（Security 项
+/// 无证书表的最小 +：1 个 section（0x200 @ 0x400），nrva=16（Security 项
 /// 全零 = 未签名）。
 fn base_pe() -> Vec<u8> {
     let size_of_opt: usize = 240;
@@ -113,7 +113,7 @@ fn valid_pe_certificate_table() {
     );
 }
 
-// ===== sign_content_v4（S5-1：v4 签发单一入口，格式分派 + digest 接线）=====
+// ===== sign_content_v4（v4 签发单一入口，格式分派 + digest 接线）=====
 
 #[test]
 fn sign_content_v4_raw_roundtrip_valid() {
@@ -151,7 +151,7 @@ fn sign_content_v4_pe_roundtrip_valid() {
 
 // ===== 最小 ELF64 LE 构造（端口自 envelope/tests.rs s34_min_elf，模块私有不可跨文件）=====
 
-/// PT_LOAD 全覆盖形态：codec L = 全文件长（overlay 域为空），S5-2 用它覆盖
+/// PT_LOAD 全覆盖形态：codec L = 全文件长（overlay 域为空）， 用它覆盖
 /// [`sign_content_v4`] ELF 臂的 `compute_l` Some(L) 路径。
 fn min_elf64_le() -> Vec<u8> {
     let hdr: usize = 64;
@@ -299,7 +299,7 @@ fn unsupported_version_non_v1_signed_data() {
     let cms = h.build_cms(&content, 1_800_000_000, &h.h.leaf_sk, &h.h.chain());
 
     // version 不在签名覆盖面（RFC 5652：签名只盖 signedAttrs）→ parse → 改
-    // V2 → re-encode 不破签名；Authenticode 钉 V1 → UnsupportedVersion
+    // → re-encode 不破签名；Authenticode 钉 → UnsupportedVersion
     let mut ci = ContentInfo::from_der(cms.as_slice()).expect("ContentInfo parse");
     let mut sd =
         SignedData::from_der(ci.content.to_der().unwrap().as_slice()).expect("SignedData parse");
@@ -354,7 +354,7 @@ fn malformed_garbage_cms() {
 fn untrusted_empty_anchor_set_is_default_state() {
     let h = V4Harness::new();
     let signed = h.sign_raw(b"default state payload", 1_800_000_000);
-    // D7：默认态（未安装任何根）→ 链验不到信任锚 → Untrusted
+    // 默认态（未安装任何根）→ 链验不到信任锚 → Untrusted
     assert_eq!(
         verify_bytes(&signed, &[], now_secs()),
         VerifyOutcome::Untrusted,
@@ -407,8 +407,8 @@ fn expired_when_now_outside_validity() {
 
 #[test]
 fn legacy_v3_envelope_yields_no_signature() {
-    // v3 NMBSIG footer 字节内联（v3 签名器 sign_content 已随 S5-3 删除）——
-    // v3 形态文件在 v4 管线 = 无主签名（goal S4-1 破坏性声明）。
+    // v3 NMBSIG footer 字节内联（v3 签名器 sign_content 已随 删除）——
+    // v3 形态文件在 v4 管线 = 无主签名（goal 破坏性声明）。
     let mut legacy = b"v3 legacy envelope".to_vec();
     let mut footer = [0u8; 64];
     footer[0..8].copy_from_slice(b"NMBSIG\x03\x00");
@@ -423,13 +423,13 @@ fn legacy_v3_envelope_yields_no_signature() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：verify_bytes 的支线臂补测——
+// AGT 覆盖率批次：verify_bytes 的支线臂补测——
 // - PE 首条目非 PKCS → locate_primary Malformed（146-149）
 // - sid 指向的签名者证书不在证书集 → Malformed（244）
 // - leaf 缺 codeSigning EKU → 链验 Untrusted（258）
 // - leaf 签名字节破坏 → BadSignature 落 catch-all Untrusted（264）
 // - order_chain_from：AKI↔SKI 成环 → None（213）
-// - 签名者/签发者 SPKI 损坏 → 链序前置拒绝 Untrusted（2026-09-26 补测修正：
+// - 签名者/签发者 SPKI 损坏 → 链序前置拒绝 Untrusted（补测修正：
 //   原计划的「第⑤步签名者公钥」「InvalidKey→证书链」两臂经 verify_bytes
 //   不可达——is_self_signed 无条件解析 SPKI，坏 SPKI 证书在 order_chain_from
 //   即被拒，两臂为防御性死臂，见覆盖率报告墙类 9）
@@ -437,7 +437,7 @@ fn legacy_v3_envelope_yields_no_signature() {
 // ---------------------------------------------------------------------------
 
 /// TBS 级变异积木：build_tbs → mutate → seal（签名在变异后盖，证书自洽）。
-/// 独立命名（agt_ 前缀）避免与 S4-1 段夹具混淆。
+/// 独立命名（agt_ 前缀）避免与 段夹具混淆。
 fn agt_mutated_cert(
     subject_vk: &p256::ecdsa::VerifyingKey,
     signer_sk: &p256::ecdsa::SigningKey,
@@ -614,7 +614,7 @@ fn agt_broken_leaf_signature_falls_into_catch_all_untrusted() {
 #[test]
 fn agt_signer_spki_corrupted_rejected_by_chain_order_untrusted() {
     // 签名者（leaf）SPKI 损坏（TBS 变异后重盖签名，证书自洽、SKI/AKI 完好）：
-    // 链序上溯的第一步 is_self_signed 需解析主体 SPKI → InvalidKey →
+    // 链序上溯的 is_self_signed 需解析主体 SPKI → InvalidKey →
     // order_chain_from None → Untrusted。原目标「第⑤步 Malformed『签名者
     // 公钥』」经 verify_bytes 不可达（链序前置拦截，防御性死臂——见覆盖率
     // 报告墙类 9），本测试钉死真实行为 = 诚实拒绝。

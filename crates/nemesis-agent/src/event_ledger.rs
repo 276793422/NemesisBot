@@ -17,7 +17,7 @@
 //!   的硬要求（永不丢已提交数据：rewind 删掉的对话可从账本找回原文）。
 //!
 //! 记账是 best-effort：账本写失败只 warn，绝不阻断聊天主流程（chat_log
-//! 写入才是真相源；账本是旁证）。
+//! 写入才为权威依据；账本是旁证）。
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

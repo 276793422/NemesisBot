@@ -4,9 +4,9 @@
 // external tools, assess_and_report happy paths, exit_if_risk_flagged(false).
 //
 // Safety notes:
-// - `sbieini` / `start_exe` are FAKE .cmd batch files (exit /b 0|3) — nothing
+// - `sbieini` / `start_exe` are FAKE.cmd batch files (exit /b 0|3) — nothing
 //   touches a real Sandboxie.ini or service.
-// - run_phases receives the monitor-DLL path from the caller (R1 2026-10-22:
+// - run_phases receives the monitor-DLL path from the caller (
 //   resolved + signature-gated in run_eval, passed through). This test feeds
 //   fake (nonexistent) SbieCtrl.exe / monitor DLL / agent exe, so the 6j
 //   `launch_and_inject_with_env` call fails at spawn/read time — no real DLL
@@ -19,8 +19,8 @@ fn tmp() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
-/// Fake external tool: a .cmd batch that exits with the given code.
-/// std::process::Command runs .cmd files via cmd.exe /c on Windows.
+/// Fake external tool: a.cmd batch that exits with the given code.
+/// std::process:Command runs.cmd files via cmd.exe /c on Windows.
 fn fake_tool(dir: &std::path::Path, name: &str, exit_code: u8) -> std::path::PathBuf {
     let p = dir.join(format!("{name}.cmd"));
     std::fs::write(&p, format!("@echo off\r\nexit /b {exit_code}\r\n")).unwrap();
@@ -258,8 +258,8 @@ fn sbieini_set_nonzero_exit_bails() {
 
 #[test]
 fn sbieini_set_missing_tool_bails_with_context() {
-    // 注意：缺失的 .cmd 在 Windows 上经 cmd.exe /c 代跑会以 exit code 1 落到
-    // 非零退出分支；要覆盖 with_context 的 spawn 失败臂必须用缺失的 .exe。
+    // 注意：缺失的.cmd 在 Windows 上经 cmd.exe /c 代跑会以 exit code 1 落到
+    // 非零退出分支；要覆盖 with_context 的 spawn 失败臂必须用缺失的.exe。
     let ghost = std::env::temp_dir().join(format!("no_such_sbieini_{}.exe", std::process::id()));
     let err = sbieini_set(&ghost, "S", "K", "V").expect_err("缺工具 → Err");
     assert!(
@@ -299,7 +299,7 @@ fn clean_box_runs_delete_sandbox_when_root_exists() {
 // ---------------------------------------------------------------------------
 // run_phases — 头段（config 写入 / trace 开关 / clean_box / agent 伪 spawn），
 // 假路径下于 6j launch_and_inject_with_env 处失败（spawn/读 DLL 即败，无真
-// 注入）。monitor DLL 缺失的 bail 语义已在 run_eval 闸段（R1 后 run_phases
+// 注入）。monitor DLL 缺失的 bail 语义已在 run_eval 闸段（后 run_phases
 // 只消费调用方传入的路径，不再自查）。launch 成功后的注入段永不触达。
 // ---------------------------------------------------------------------------
 

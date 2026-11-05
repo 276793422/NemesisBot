@@ -9,7 +9,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// box_mirror_for —— Sandboxie 盒内镜像路径推导（2026-08-21 修复的回归钉）
+// box_mirror_for —— Sandboxie 盒内镜像路径推导（修复的回归钉）
 // ---------------------------------------------------------------------------
 
 /// 在磁盘上搭一个盒镜像布局并验证 home 映射到预期镜像路径。
@@ -423,9 +423,9 @@ fn write_assessment_without_meta_still_writes_json() {
     assert_eq!(fixed.len(), 2);
 }
 
-// r10（覆盖率 goal R10 批）：meta.json 存在但**不是对象**的两跳过形态——
+// r10（覆盖率 goal 批）：meta.json 存在但**不是对象**的两跳过形态——
 // read Ok + parse Ok 但 as_object_mut()==None（数组/标量根）。两形态在
-// write_assessment 的 if-let 链里汇合到同一收口（:956-957），此前从未有
+// write_assessment 的 if-let 链里汇合到同一收口（956-957），此前从未有
 // 测试走到。断言：assessment.json 照常落盘、meta.json 字节原样不动。
 #[test]
 fn r10_write_assessment_non_object_meta_skips_merge_but_keeps_assessment_json() {
@@ -709,7 +709,7 @@ fn user_profile_dir_matches_env_or_fallback() {
 }
 
 // =========================================================================
-// run() / run_eval 前置 bail / 文件型 helper 覆盖（S11 覆盖率冲刺）
+// run() / run_eval 前置 bail / 文件型 helper 覆盖（覆盖率冲刺）
 //
 // 策略：NEMESISBOT_HOME 指向临时目录（resolve_home 优先级 2），
 // run()/run_eval() 全程只读临时 home；env set_var 进程级 →
@@ -1067,7 +1067,7 @@ fn test_copy_skill_dir_builtin_pass_through_ok() {
 fn test_close_temp_with_retry_fast_path() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().to_path_buf();
-    // box_root 不存在 → Phase 0 立即过；close 成功 → Phase 1 首轮返回
+    // box_root 不存在 → 立即过；close 成功 → 首轮返回
     close_temp_with_retry(tmp, Path::new(r"Z:\no\such\box_root"));
     assert!(!path.exists());
 }
@@ -1183,22 +1183,22 @@ async fn test_wait_with_timeout_null_handle_yields_none() {
 }
 
 // =========================================================================
-// 覆盖率补测 wave B（2026-08-27）
+// 覆盖率补测 wave B
 //
 // 目标（llvm-cov miss 清单中的可测子集）：
-//   146-149     exit_if_risk_flagged 旗标清零直返通路（148=exit(2) 豁免：
+//   146-149 exit_if_risk_flagged 旗标清零直返通路（148=exit(2) 豁免：
 //               进程内真退码会杀掉测试宿主，属结构性禁触）
-//   204-208     model_ref 空 provider 臂（裸名引用）
-//   221-223     run_eval 的 skill 复制臂（kind=="skill" 真复制发生后再被拦）
-//   503         锁文件 create_new 的非 AlreadyExists 失败（泛化上下文臂）
-//   885-893     assess_and_report 完整评估链（命中→true / 未命中→false）
-//   928-930     assessment.json 落盘失败 loud WARN 后继续
-//   940-944     结论映射 Safe/Unknown 臂（Risk 已有既有钉）
-//   953-955     meta.json 重写失败 loud WARN、不半更新
-//   1001-1003   Unknown 多缺口明细循环
-//   1207-1212   close_temp phase-0 轮询至 box_root 消失
-//   1216-1225   close_temp phase-1 首轮 close 失败 → 睡眠一次经 None 分支返回
-//   1296-1306   wait_box_deleted 有根轮询直到外部删除者生效
+//   204-208 model_ref 空 provider 臂（裸名引用）
+//   221-223 run_eval 的 skill 复制臂（kind=="skill" 真复制发生后再被拦）
+//   503 锁文件 create_new 的非 AlreadyExists 失败（泛化上下文臂）
+//   885-893 assess_and_report 完整评估链（命中→true / 未命中→false）
+//   928-930 assessment.json 落盘失败 loud WARN 后继续
+//   940-944 结论映射 Safe/Unknown 臂（Risk 已有既有钉）
+//   953-955 meta.json 重写失败 loud WARN、不半更新
+//   1001-1003 Unknown 多缺口明细循环
+//   1207-1212 close_temp phase-0 轮询至 box_root 消失
+//   1216-1225 close_temp phase-1 首轮 close 失败 → 睡眠一次经 None 分支返回
+//   1296-1306 wait_box_deleted 有根轮询直到外部删除者生效
 //
 // 其余 miss 区间归类见交付报告：readiness 之后的真 Sandboxie 引擎链 /
 // 进程 spawn / 真 SbieIni 状态码 / exit(2) / phase-2 死代码一律 EXEMPT。
@@ -1251,7 +1251,7 @@ mod wave_b {
         .await
         .unwrap_err();
         // 配置层全部通过（不是 load real config / resolve model 报错），
-        // 一路走到 6e readiness —— 中途经过 :204-208 空 provider 臂。
+        // 一路走到 6e readiness —— 中途经过:204-208 空 provider 臂。
         let msg = err.to_string();
         assert!(msg.contains("Sandbox engine not ready"), "err: {msg}");
         assert!(msg.contains("start_exe=false"), "err: {msg}");
@@ -1278,21 +1278,21 @@ mod wave_b {
         )
         .await
         .unwrap_err();
-        // Skill 分支进入 run_eval 并越过 6b/6c/6d（:221 的 kind=="skill"
+        // Skill 分支进入 run_eval 并越过 6b/6c/6d（221 的 kind=="skill"
         // 成立 → copy_skill_dir 真复制到临时 workspace）才被 readiness 拦下。
         let msg = err.to_string();
         assert!(msg.contains("Sandbox engine not ready"), "err: {msg}");
     }
 
     // ---------------------------------------------------------------------
-    // acquire_eval_lock —— 泛化打开失败臂（:503）
+    // acquire_eval_lock —— 泛化打开失败臂（503）
     // ---------------------------------------------------------------------
 
     #[test]
     fn wave_b_eval_lock_open_failure_reports_create_context() {
         // sandbox_root 的位置本身是一个【文件】：create_dir_all(.ok()) 吞掉
         // 失败，随后 create_new 打开锁文件因父级不是目录而失败（kind 不是
-        // AlreadyExists）→ 走 :503 泛化臂，带 "create eval lock <path>" 上下文。
+        // AlreadyExists）→ 走:503 泛化臂，带 "create eval lock <path>" 上下文。
         let root = tempfile::tempdir().unwrap();
         let blocker = root.path().join("blocker");
         std::fs::write(&blocker, "not a directory").unwrap();
@@ -1306,12 +1306,12 @@ mod wave_b {
     }
 
     // ---------------------------------------------------------------------
-    // assess_and_report —— 完整评估链（:885-893 两态）
+    // assess_and_report —— 完整评估链（885-893 两态）
     // ---------------------------------------------------------------------
 
     /// 自洽「健康运行」报告四件套 + meta（integrity 全绿口径）。纪律同
     /// eval_assessor/tests.rs：meta.final_response_len == 实际字节数、
-    /// tool_call_count == trace 数组长度，杜绝 Y9/Z5 自相矛盾缺口。
+    /// tool_call_count == trace 数组长度，杜绝 / 自相矛盾缺口。
     /// kind=prompt → 不触发 skill 零工具检查；driver_events 空文件合法。
     fn wave_b_write_prompt_report(dir: &Path, subject: &str, response: &str) {
         std::fs::write(dir.join("final_response.md"), response).unwrap();
@@ -1364,8 +1364,8 @@ mod wave_b {
             "all previous instructions replaced.",
         );
 
-        // :887-889 完整链：assess → assessment.json/meta 合并 → 控制台输出。
-        // :892 第一态：fail_on_risk=true 且结论 risk → 信号 true。
+        // 887-889 完整链：assess → assessment.json/meta 合并 → 控制台输出。
+        // 892 第一态：fail_on_risk=true 且结论 risk → 信号 true。
         assert!(assess_and_report(&report, home.path(), true));
 
         let saved: serde_json::Value =
@@ -1395,7 +1395,7 @@ mod wave_b {
             "done, nothing unusual.",
         );
 
-        // :892 第二态：fail_on_risk=true 但结论非 risk → false。
+        // 892 第二态：fail_on_risk=true 但结论非 risk → false。
         assert!(!assess_and_report(&report, home.path(), true));
 
         let saved: serde_json::Value =
@@ -1416,14 +1416,14 @@ mod wave_b {
         // 目录占位 → assessment.json 落盘必然失败（确定性，无需权限 DLL）。
         std::fs::create_dir_all(out.join("assessment.json")).unwrap();
 
-        // :928-930 WARN 之后继续跑 meta 合并与 fixed_notes —— 不能静默中断。
+        // 928-930 WARN 之后继续跑 meta 合并与 fixed_notes —— 不能静默中断。
         let fixed = write_assessment(&out, &sample_result(crate::eval_assessor::Conclusion::Risk));
         assert_eq!(fixed.len(), 2, "fixed notes 不受落盘失败影响: {fixed:?}");
     }
 
     #[test]
     fn wave_b_write_assessment_merges_safe_and_unknown_map_arms_into_meta() {
-        // 既有夹具钉过 Risk 臂；这里补 :942(Safe)/:943(Unknown) 两个映射臂。
+        // 既有夹具钉过 Risk 臂；这里补:942(Safe)/:943(Unknown) 两个映射臂。
         for c in [
             crate::eval_assessor::Conclusion::Safe,
             crate::eval_assessor::Conclusion::Unknown,
@@ -1456,7 +1456,7 @@ mod wave_b {
         std::fs::write(&meta_path, r#"{"kind":"prompt"}"#).unwrap();
 
         // Windows 只读属性 → fs::write(meta.json) 拒绝访问（确定性）。
-        // :953-955 必须 eprintln 告警且不打断主流程。
+        // 953-955 必须 eprintln 告警且不打断主流程。
         let mut perms = std::fs::metadata(&meta_path).unwrap().permissions();
         perms.set_readonly(true);
         std::fs::set_permissions(&meta_path, perms.clone()).unwrap();
@@ -1477,7 +1477,7 @@ mod wave_b {
     }
 
     // ---------------------------------------------------------------------
-    // print_assessment —— Unknown 多缺口明细循环（:1001-1003）
+    // print_assessment —— Unknown 多缺口明细循环（1001-1003）
     // ---------------------------------------------------------------------
 
     #[test]
@@ -1507,7 +1507,7 @@ mod wave_b {
         let tmp_path = tmp.path().to_path_buf();
 
         // 600ms 后移除 box_root：phase-0 首轮探到存在 → sleep(500ms)
-        //（覆盖 :1211 睡眠行），下一轮已消失 → break；随后 phase-1 正常关闭。
+        //（覆盖:1211 睡眠行），下一轮已消失 → break；随后 phase-1 正常关闭。
         let victim = box_root.clone();
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(600));
@@ -1532,11 +1532,11 @@ mod wave_b {
     // —— 这正是生产中 SbieSvc 持盒 hive 的形态。以下两测用外部 powershell
     // 持有者做确定性故障注入。
 
-    /// BUG#35 回归：修复前首例 close 失败即在下一轮经 None 分支 return，
+    /// 回归：修复前首例 close 失败即在下一轮经 None 分支 return，
     /// 注释里承诺的 phase-2 remove_dir_all 兜底是结构性死代码 —— 盒子目录
     /// 在 %TEMP% 永久泄漏。本测钉住「外部句柄短暂持有 → 释放后兜底完成回收」。
     /// Windows 形态（外部 powershell 持有者 + ERROR_SHARING_VIOLATION 语义），
-    /// Linux nightly 排除（2026-09-02 约定）。
+    /// Linux nightly 排除（约定）。
     #[cfg(windows)]
     #[test]
     fn wave_b_close_temp_phase2_fallback_recovers_after_external_release() {
@@ -1608,7 +1608,7 @@ mod wave_b {
         // 名义，CI 慢机/负载下重试轮拉伸可过 2 倍）。此前 13s 与烧满窗口只差
         // ~2.3s：负载拉伸越过 13s → 持有者先超时自灭、句柄释放 → 后续重试
         // 正当删除成功（close 契约就是句柄释放即清完）→「树须完整」假红
-        // （2026-10-21 CI shard2 实录，solo recap 同挂）。120s 覆盖任何慢机。
+        // （CI，solo recap 同挂）。120s 覆盖任何慢机。
         let marker = leaked.join(".holder_ready");
         let script = format!(
             "$fs=[System.IO.File]::Open('{b}','Open','ReadWrite','ReadWrite');Set-Content -Path '{m}' -Value held;Start-Sleep -Milliseconds 120000;$fs.Close()",
@@ -1692,7 +1692,7 @@ mod wave_b {
 }
 
 // ===========================================================================
-// r9（覆盖率补测批 2026-08-27）：探测式真链路组。
+// r9（覆盖率补测-27）：探测式真链路组。
 //
 // 用户裁决：探测系统沙盒状态再决策跑真链路（不走 mock 引擎）。
 //
@@ -1715,7 +1715,7 @@ mod r9_real_chain {
     use std::collections::HashSet;
     use std::time::{Duration, Instant};
 
-    /// 同一时刻只放行一个真链路测试（进程内第二道闸；生产另有 .eval_lock
+    /// 同一时刻只放行一个真链路测试（进程内第二道闸；生产另有.eval_lock
     /// 文件锁兜底——正是下面合并测试的并发臂所钉的锁）。
     /// pub(super)：mod r10 的真链路测试共用同一把串行锁（并发安全）。
     static EVAL_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1813,7 +1813,7 @@ mod r9_real_chain {
     /// 起一个真链路子进程：env 定位 engine home（不用 --local）、中立 cwd、
     /// kill_on_drop 防泄漏。注入 CLI 覆盖 profile（测量模式下子进程计数落
     /// NEMESISBOT_COVERAGE_DIR；非测量环境 env 为空零影响）——曾因缺这行，
-    /// B1 全量插桩跑里 eval 真链路 ~280 行覆盖全部丢在子进程默认位置。
+    /// 全量插桩跑里 eval 真链路 ~280 行覆盖全部丢在子进程默认位置。
     pub(super) async fn spawn_eval(
         bin: &Path,
         args: &[&str],
@@ -1848,10 +1848,10 @@ mod r9_real_chain {
         )
     }
 
-    /// 开跑前清陈旧 .eval_lock：持有者已死（崩溃残留）→ 删除；仍活着 →
+    /// 开跑前清陈旧.eval_lock：持有者已死（崩溃残留）→ 删除；仍活着 →
     /// 有真实 eval 在跑，大声失败（测试不替活跃持有者拆锁）。只探存在性的
     /// 等待曾让 p2 在 p1 建锁前观察到陈锁 → 按崩溃残留偷锁放行 → 假红
-    /// （run 2, 2026-09-04）。
+    /// （run 2）。
     #[cfg(windows)]
     pub(super) fn clear_stale_eval_lock(sandbox_root: &Path) {
         let lock = sandbox_root.join(".eval_lock");
@@ -1876,7 +1876,7 @@ mod r9_real_chain {
         let _ = std::fs::remove_file(sandbox_root.join(".eval_lock"));
     }
 
-    /// 轮询 .eval_lock 出现**且持有者 pid == expect_pid**（锁获取在 readiness
+    /// 轮询.eval_lock 出现**且持有者 pid == expect_pid**（锁获取在 readiness
     /// 之后——这是子进程健康前进的锚点，也决定并发臂的起跑时机）。内容级
     /// 匹配保证「磁盘上有陈锁」不再满足等待条件——p2 起跑时看到的必是 p1
     /// 的活锁，并发拒绝臂因此确定性成立。
@@ -1974,7 +1974,7 @@ mod r9_real_chain {
         }
     }
 
-    // ── A2+A5 合并：prompt 真链路 happy（7 件套 + assessment）+ 并发互斥锁 ──
+    // ── 合并：prompt 真链路 happy（7 件套 + assessment）+ 并发互斥锁 ──
 
     #[tokio::test]
     async fn r9_real_chain_prompt_report_and_concurrent_lock_rejection() {
@@ -2002,7 +2002,7 @@ mod r9_real_chain {
             "60",
         ];
 
-        // p1 先起，等它拿到 .eval_lock 再放 p2 —— 并发窗口确定性最大化。
+        // p1 先起，等它拿到.eval_lock 再放 p2 —— 并发窗口确定性最大化。
         // p2 与 p1 同参同 env；p2 在 readiness 之后、ini 改写之前就撞锁退出，
         // 绝不会碰 p1 正在做的 Sandboxie.ini 手术（锁获取点先于 ini 写入）。
         clear_stale_eval_lock(&sandbox_root);
@@ -2117,7 +2117,7 @@ mod r9_real_chain {
             return;
         };
         let ws = test_harness::TestWorkspace::new().expect("tempdir");
-        // BB4 写命令拒绝静默建家——先把 home 建出来再写坏 config。
+        // 写命令拒绝静默建家——先把 home 建出来再写坏 config。
         std::fs::create_dir_all(ws.home()).unwrap();
         std::fs::write(ws.config_path(), "definitely not json {{{").unwrap();
 
@@ -2152,9 +2152,9 @@ mod r9_real_chain {
         }
     }
 
-    // ── C1：sbieini_set / sbieini_append 参数化双臂（既有覆盖只有 missing-exe
+    // ──：sbieini_set / sbieini_append 参数化双臂（既有覆盖只有 missing-exe
     //    臂）。不借系统 exe：Windows hostname.exe **带参数时退 1**（不是恒退 0），
-    //    系统工具的参数行为太脆。改用临时 .cmd 脚本钉死退出码：`@exit /b 0`
+    //    系统工具的参数行为太脆。改用临时.cmd 脚本钉死退出码：`@exit /b 0`
     //    成功臂 / `@exit /b 2` 失败臂，全程不触碰真实 ini。
     fn temp_cmd(name: &str, body: &str) -> (test_harness::TestWorkspace, PathBuf) {
         let ws = test_harness::TestWorkspace::new().expect("tempdir");
@@ -2188,11 +2188,11 @@ mod r9_real_chain {
 }
 
 // ===========================================================================
-// r10（覆盖率 goal R10 批）：真链路退码 2 + --output 自定义报告目录。
+// r10（覆盖率 goal 批）：真链路退码 2 + --output 自定义报告目录。
 //
-// 目标行：eval.rs:148（exit_if_risk_flagged 的 std::process::exit(2)——
-// RISK_EXIT_FLAG 置位后的唯一出口，此前没有任何测试真实退过 2）+ :742
-// （--output Some(p) 臂：报告直接落在指定目录而非 <home>/workspace/logs/eval）。
+// 目标行：eval.rs:148（exit_if_risk_flagged 的 std::process:exit(2)——
+// RISK_EXIT_FLAG 置位后的唯一出口，此前没有任何测试真实退过 2）+:742
+// （output Some(p) 臂：报告直接落在指定目录而非 <home>/workspace/logs/eval）。
 //
 // 确定性手段：不赌模型行为（r9 malicious 测试只能钉 {0,2} 两态），改用
 // subject 源正则规则强制 Risk——subject.txt 就是提示词原文，进程内
@@ -2337,14 +2337,14 @@ mod r10_exit_two_and_output {
             "命中规则必须含 r10-force-risk，got {ids:?}"
         );
 
-        // 默认报告目录不得再新增本次目录（--output 接管了落点）。
+        // 默认报告目录不得再新增本次目录（output 接管了落点）。
         // swap 已在此后 Drop 恢复 owner 规则文件。
         drop(_swap);
     }
 }
 
 // ---------------------------------------------------------------------------
-// box_api_base —— 盒内 api_base 的 lane 后缀（2026-09-11 r10 真链路红根因钉）
+// box_api_base —— 盒内 api_base 的 lane 后缀（r10 真链路红根因钉）
 // ---------------------------------------------------------------------------
 // 此前盒内 api_base 无条件带 /v1；Anthropic lane（provider 自己拼
 // /v1/messages）下盒内路径变成 /v1/v1/messages → 上游 404 → 评估结论

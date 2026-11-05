@@ -556,7 +556,7 @@ async fn test_edit_file_replace_entire_content() {
 }
 
 // ============================================================
-// W4a coverage gap closure (AppendFileTool::parameters and its
+// coverage gap closure (AppendFileTool::parameters and its
 // restrict arm)
 // ============================================================
 
@@ -583,7 +583,7 @@ async fn w4a_append_file_restrict_rejects_outside_workspace() {
     let tool = AppendFileTool::new(&ws, true);
 
     // workspace 外的绝对路径用平台无关取法：tempdir 的父目录 + 独立文件名
-    // （2026-09-01：原写死 "C:/Windows/..." 在 Linux 上不是 is_absolute →
+    // （原写死 "C:/Windows/..." 在 Linux 上不是 is_absolute →
     // 走相对臂放行，restrict 拒绝断言落空）。
     let outside = dir.path().parent().unwrap().join("w4a_outside_target.txt");
 
@@ -602,7 +602,7 @@ async fn w4a_append_file_restrict_rejects_outside_workspace() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): resolve_path restrict=true with an in-workspace
+// coverage: resolve_path restrict=true with an in-workspace
 // path (the non-rejected fall-through edge of both tools)
 // ===========================================================================
 

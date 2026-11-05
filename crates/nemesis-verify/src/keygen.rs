@@ -1,6 +1,6 @@
-//! 密钥体系生成与持久化（**v4：X.509 三级链**，Authenticode 对齐 D4）。
+//! 密钥体系生成与持久化（**v4：X.509 三级链**，Authenticode 对齐）。
 //!
-//! # 层级与有效期（D4 默认跨度）
+//! # 层级与有效期（默认跨度）
 //! ```text
 //! root（离线自签，30y，永不安装）→ 发行锚 CA（10y，opt-in 可安装）
 //!   → leaf 代码签名证书（3y，EKU codeSigning）→ exe
@@ -12,10 +12,10 @@
 //!
 //! # 根锚导出
 //! [`KeyHierarchy::root_anchor_fingerprint`] = SHA-256(根证书 DER)——编译期锚注入
-//! 与链终止条件（S4-2）的同一口径。
+//! 与链终止条件的同一口径。
 //!
 //! # 低层积木
-//! [`issue_x509`]（配 [`crate::cert::TbsInput`]）是公开的低层签发积木：测试用它
+//! [`issue_x509`]（配 [`crate::cert:TbsInput`]）是公开的低层签发积木：测试用它
 //! 组合断链 / 过期 / EKU 错 / 签名坏 / 根不匹配等失败形态证书。
 
 use crate::cert::{self, Certificate, TbsInput};
@@ -32,11 +32,11 @@ pub(crate) const KEYS_JSON_VERSION: u32 = 2;
 /// 有效期回拨（1h，容时钟偏差）。
 pub(crate) const NOT_BEFORE_BACKDATE_SECS: u64 = 3600;
 
-/// D4 默认跨度：根 30y。
+/// 默认跨度：根 30y。
 const SPAN_ROOT_SECS: u64 = 30 * 365 * 86400;
-/// D4 默认跨度：发行锚 10y。
+/// 默认跨度：发行锚 10y。
 const SPAN_ISSUING_SECS: u64 = 10 * 365 * 86400;
-/// D4 默认跨度：leaf 3y。
+/// 默认跨度：leaf 3y。
 const SPAN_LEAF_SECS: u64 = 3 * 365 * 86400;
 
 /// 主体 CN（根）。
@@ -96,12 +96,12 @@ impl KeyHierarchy {
         *self.leaf_sk.verifying_key()
     }
 
-    /// 根锚指纹 = SHA-256(根证书 DER)（S4-2 口径；编译期注入 / 链终止同源）。
+    /// 根锚指纹 = SHA-256(根证书 DER)（口径；编译期注入 / 链终止同源）。
     pub fn root_anchor_fingerprint(&self) -> [u8; 32] {
         self.root_cert.sha256_fingerprint()
     }
 
-    /// 签发链 = `[leaf, issuing, root]`（leaf 在前，**含根**——S0-4 实证：CMS 证书集
+    /// 签发链 = `[leaf, issuing, root]`（leaf 在前，**含根**—— 实证：CMS 证书集
     /// 缺根时默认态报 CERT_E_CHAINING 而非干净 UNTRUSTEDROOT；嵌入 ≠ 信任）。
     pub fn chain(&self) -> Vec<Certificate> {
         vec![
@@ -112,7 +112,7 @@ impl KeyHierarchy {
     }
 }
 
-/// 生成新密钥体系（D4 默认跨度：30y / 10y / 3y，起点回拨 1h）。
+/// 生成新密钥体系（默认跨度：30y / 10y / 3y，起点回拨 1h）。
 pub fn generate() -> Result<KeyHierarchy> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -171,7 +171,7 @@ pub fn generate_at(now_unix: u64) -> Result<KeyHierarchy> {
         },
     )?;
 
-    // leaf：发行锚签发，3y，终端实体，KU digitalSignature，EKU codeSigning（D4）。
+    // leaf：发行锚签发，3y，终端实体，KU digitalSignature，EKU codeSigning。
     let leaf_sk = crypto::signing_key_from_hex(&crypto::generate_key_pair().private_key)?;
     let leaf_vk = leaf_sk.verifying_key();
     let leaf_cert = issue_x509(
@@ -263,7 +263,7 @@ impl KeyHierarchy {
     }
 
     pub fn save(&self, path: &str) -> Result<()> {
-        // BUG-20261104-378：全量包含全部三级私钥，敏感度高于三个分包形态——
+        // 全量包含全部三级私钥，敏感度高于三个分包形态——
         // 必须与 bundle 三类型化 saver 同源走 save_private_json（unix 0600）。
         // 裸 fs::write 落 umask 默认权限（Linux 常态 0644 = 同机其他用户可读）；
         // 生产消费方 revoke-server --init-keys / exe-sign-tool keygen /

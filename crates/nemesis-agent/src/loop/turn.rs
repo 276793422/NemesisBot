@@ -77,7 +77,7 @@ impl Default for ProcessOptions {
 /// (devtool-upgrade)：`run_detached` 选项。
 ///
 /// 构造用 `Default`（全空 = 全继承主 loop）。语义详见
-/// [`AgentLoop:run_detached`]。
+/// [`AgentLoop::run_detached`]。
 #[derive(Default)]
 pub struct DetachedOpts<'a> {
     /// 子代理可用工具白名单（工具名集合）。`None` / 空 = 继承主 loop
@@ -111,7 +111,7 @@ pub struct DetachedOpts<'a> {
     pub label: Option<&'a str>,
     /// prompt-pack pro：子代理角色模板。None = 继承主人格（默认，
     /// 兼容现状）；Some(role) = 主人格 + 角色段叠加（角色定位 / 硬边界 /
-    /// 输出契约 / 内容边界，见 [`crate:prompt:SubagentRole`]）。与
+    /// 输出契约 / 内容边界，见 [`crate::prompt:SubagentRole`]）。与
     /// `system_prompt` 的关系：显式 `system_prompt` 优先（裸提示词模式照旧
     /// 替换人格），`role` 只在没有显式覆盖时叠加。
     pub role: Option<crate::prompt::SubagentRole>,
@@ -132,7 +132,7 @@ impl AgentLoop {
     /// (devtool-upgrade)：会话标题自动生成——assistant 回复落盘
     /// 后触发；后台任务取首条 user 消息（≤500 字）→ 小模型生成 ≤24 字标题
     /// → 写 sidecar meta（只填「无标题/仅占位符」的会话，手动改名永不覆盖，
-    /// 见 `chat_log:write_session_meta_auto_title`）。未配置
+    /// 见 `chat_log::write_session_meta_auto_title`）。未配置
     /// `agents.small_model` / 无资格 / 首条消息缺失 → 不 spawn（返回 None）。
     /// 返回 JoinHandle 供测试 await；生产调用点丢弃句柄。
     ///
@@ -172,7 +172,7 @@ impl AgentLoop {
     }
 
     /// drain 本 session 的 turn 文件变更缓冲（取走即清 + 按 path 去重，
-    /// kind 取最后声明——投影规则见 `chat_log:dedup_file_changes`）。
+    /// kind 取最后声明——投影规则见 `chat_log::dedup_file_changes`）。
     /// assistant 最终回复落盘前调用。
     pub(crate) fn drain_turn_file_changes(&self, session_key: &str) -> Vec<FileChange> {
         let drained = self
@@ -184,7 +184,7 @@ impl AgentLoop {
     }
 
     /// drain 本 session 的交付物流水（取走即清 + 按 path 去重，title/note
-    /// 取最后登记——投影规则见 `chat_log:dedup_presented_files`）。
+    /// 取最后登记——投影规则见 `chat_log::dedup_presented_files`）。
     /// assistant 最终回复落盘前调用（与 `drain_turn_file_changes` 同点）。
     pub(crate) fn drain_turn_deliverables(
         &self,
@@ -308,7 +308,7 @@ impl AgentLoop {
         // 会话双缺失时 get_or_create_instance 走 rebuild_from_chat_log，把
         // 已落盘的本轮 user 行回放进模型上下文，下方 add_user_message
         // 再加一次 → 首轮请求用户消息重复（agent-bench context_integrity
-        // 实证）。turn 末 store 仍以 instance 全量 set_history 为单一真相源。
+        // 实证）。turn 末 store 仍以 instance 全量 set_history 为统一定义。
 
         // Emit conversation_start observer event.
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
@@ -446,7 +446,7 @@ impl AgentLoop {
         // 两处合计维持。
         // 本 turn 声明式文件工具变更随 assistant 行落盘（消息↔文件
         // 变更映射； 会话级 diff 查看器的数据源）。drain 即清（下 turn
-        // 从空开始）；去重规则见 `chat_log:dedup_file_changes`。
+        // 从空开始）；去重规则见 `chat_log::dedup_file_changes`。
         let turn_changes = self.drain_turn_file_changes(session_key);
         // 本 turn 交付物随 assistant 行落盘（前端交付物卡片的数据源；
         // 与 file_changes 并列不重叠——「该看什么」产物指引 vs「改了什么」
@@ -628,7 +628,7 @@ impl AgentLoop {
         turn_budget: Option<u32>,
         image_refs: &[String],
     ) -> Vec<AgentEvent> {
-        // : prompt-level lifecycle hooks (dialect SessionStart +
+        // prompt-level lifecycle hooks (dialect SessionStart +
         // UserPromptSubmit dialect events). Runs BEFORE `add_user_message`
         // so a blocked prompt NEVER enters history — the model doesn't see
         // it, matching the dialect's block semantics. `resume_execution` does not
@@ -713,13 +713,13 @@ impl AgentLoop {
         }
     }
 
-    /// /（devtool-upgrade）：[`AgentLoop:run_detached`] 的**事件
+    /// （devtool-upgrade）：[`AgentLoop::run_detached`] 的**事件
     /// 全集**变体。同一条 `run_with_trace` 链路（工具调度、安全 8 层、
     /// guardian、tier、spill、turn_guard 全部同源），但把事件 `Vec` 原样
     /// 交还调用方——headless `run` 文本模式折 Done/Error，NDJSON 模式
     /// 逐事件序列化。会话语义同 run_detached：临时 instance 跑完即弃。
     pub async fn run_detached_events(&self, task: &str, opts: DetachedOpts<'_>) -> Vec<AgentEvent> {
-        // Swarm （裸提示词模式）：system_prompt 覆盖须在 AgentInstance:new
+        // Swarm （裸提示词模式）：system_prompt 覆盖须在 AgentInstance::new
         // 之前——构造函数把它注入为 history 首轮 system turn。
         // prompt-pack pro：显式 `system_prompt` 优先（裸提示词替换）；
         // 否则 `role` 存在时把角色模板叠加到主人格之后（None = 纯继承）。
@@ -887,7 +887,7 @@ impl AgentLoop {
 
     /// `resume_execution` 的带取消令牌变体（per-task cancel）：集群续行
     /// 任务执行前由 cluster_agent 注册 token，cancel_task 下行时可中断 LLM 循环。
-    /// 语义与 [`Self:resume_execution`] 相同，仅 token 透传。
+    /// 语义与 [`Self::resume_execution`] 相同，仅 token 透传。
     pub async fn resume_execution_with_token(
         &self,
         instance: &AgentInstance,

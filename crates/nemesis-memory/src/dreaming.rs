@@ -1,8 +1,8 @@
-//! P31 记忆 dreaming —— 三段式记忆巩固（召回记账 / cron sweep / LLM 决策 + 宿主产出）。
+//! 记忆 dreaming —— 三段式记忆巩固（召回记账 / cron sweep / LLM 决策 + 宿主产出）。
 //!
 //! 三段职责：
 //! ① **召回记账**：检索命中时 touch 条目（`recall_count`/`last_recall`），
-//!    标记式幂等（实现见 [`crate::manager::MemoryManager::record_recall`]）。
+//!    标记式幂等（实现见 [`crate::manager:MemoryManager::record_recall`]）。
 //! ② **sweep 候选**：对全量条目做 6 信号加权打分（召回次数 / 时间衰减 /
 //!    条目冲突 / 冗余度 / 年龄 / 来源可靠性），取 topK 候选。
 //! ③ **LLM 决策 + 宿主产出**：候选交 LLM 只做**决策**（merge/promote/expire/
@@ -40,7 +40,7 @@ pub const META_DREAM_SOURCE_RELIABILITY: &str = "dream_source_reliability";
 // 6 信号权重与打分纯函数
 // ---------------------------------------------------------------------------
 
-/// 6 信号权重（P31 ②）。打分时按权重和归一——调用方给未归一权重也安全。
+/// 6 信号权重（②）。打分时按权重和归一——调用方给未归一权重也安全。
 #[derive(Debug, Clone, PartialEq)]
 pub struct DreamingWeights {
     /// 召回次数（越常被召回越值得巩固/晋升）。
@@ -145,7 +145,7 @@ pub fn recall_count_of(entry: &Entry) -> u64 {
         .unwrap_or(0)
 }
 
-/// 6 信号加权打分（P31 ②纯函数）。输入信号快照 + 权重，输出 [0,1] 分数
+/// 6 信号加权打分（②纯函数）。输入信号快照 + 权重，输出 [0,1] 分数
 ///（权重和为 0 时诚实返回 0）。打分不读存储、不修改条目——信号怎么来的
 ///（metadata 记账 / 两两词面比对）由调用方负责。
 pub fn score_entry(signals: &DreamSignals, weights: &DreamingWeights) -> f64 {
@@ -193,7 +193,7 @@ pub fn build_signals(entry: &Entry, rel: &RelSignals, now: DateTime<Local>) -> D
 // 词面关系启发式（宿主预计算 冲突/冗余 信号）
 // ---------------------------------------------------------------------------
 
-/// 词面 token 集（复用 BM25 分词——CJK 单字切分，中文条目可比）。
+/// 词面 token 集（复用 分词——CJK 单字切分，中文条目可比）。
 fn token_set(text: &str) -> HashSet<String> {
     crate::retrieval::tokens(text).into_iter().collect()
 }
@@ -271,7 +271,7 @@ pub fn is_dream_settled(entry: &Entry) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// 近期召回硬保护（W5，2026-10-25 加固）
+// 近期召回硬保护（加固）
 // ---------------------------------------------------------------------------
 
 /// 保护窗（天）：`last_recall` 距今 ≤ 此窗的条目受 expire 硬保护。
@@ -300,7 +300,7 @@ pub fn is_recency_protected(entry: &Entry, now: DateTime<Local>) -> bool {
     recently_recalled || recall_count_of(entry) >= RECALL_PROTECT_MIN_RECALLS
 }
 
-/// 由全量条目选出 topK 候选（P31 ②纯函数）。排除已处理/已归档条目；按
+/// 由全量条目选出 topK 候选（②纯函数）。排除已处理/已归档条目；按
 /// 分数降序（同分按创建时间升序——老条目优先），截取 top_k。
 pub fn select_candidates(
     entries: Vec<Entry>,
@@ -337,7 +337,7 @@ pub fn select_candidates(
 // LLM 决策协议（LLM 只决策，宿主产出——模型不产正文）
 // ---------------------------------------------------------------------------
 
-/// sweep 的 LLM 通道（Forge `LLMCaller` 同型先例：nemesis-memory 不依赖
+/// sweep 的 LLM 通道（Forge `LLMCaller` 同型nemesis-memory 不依赖
 /// provider，gateway 集成层提供具体实现——小模型通道 `agents.small_model`）。
 #[async_trait]
 pub trait DreamingLlm: Send + Sync {
@@ -350,7 +350,7 @@ pub trait DreamingLlm: Send + Sync {
 pub enum DreamAction {
     /// 合并：>=2 条说同一件事 → 宿主拼接去重正文新建条目。
     Merge,
-    /// 晋升：正文原样提升 tier（→ long_term）。
+    /// 晋升：正文原样提升 tier（long_term）。
     Promote,
     /// 过期：标记 archived（不物理删除）。
     Expire,
@@ -413,7 +413,7 @@ pub fn parse_decisions(raw: &str) -> Result<Vec<serde_json::Value>, String> {
     Ok(arr.clone())
 }
 
-/// 单条决策校验（P31 ③边界闸）：
+/// 单条决策校验（③边界闸）：
 /// - 字段白名单 {action, source_ids, reason}——出现 `content`/`new_content`/
 ///   `text` 等正文字段 = 越界（模型不得产正文）→ 整条拒绝；
 /// - action 必须是四动作之一；
@@ -540,7 +540,7 @@ async fn mark_processed(
     manager.update_entry(entry).await
 }
 
-/// 应用一条已校验决策（P31 ③宿主产出）。
+/// 应用一条已校验决策（③宿主产出）。
 /// 返回实际执行的动作名（供报告记账）。
 /// - merge：宿主拼接去重源正文 → 新建 long_term 条目（metadata 记
 ///   `dream_merged_from`，tags 取并集）；源条目仅打 processed 标记（是否
@@ -619,7 +619,7 @@ pub async fn apply_decision(
 }
 
 // ---------------------------------------------------------------------------
-// sweep 编排（P31 ②+③ 闭环）
+// sweep 编排（②+③ 闭环）
 // ---------------------------------------------------------------------------
 
 /// 一次 sweep 的结果报告（Serialize 供 gateway 落盘 JSON）。
@@ -695,7 +695,7 @@ pub fn build_decision_user_prompt(candidates: &[DreamCandidate]) -> String {
     sb
 }
 
-/// 跑一轮 sweep 闭环（P31 ②+③）：全量条目 → 6 信号打分 topK → LLM 决策 →
+/// 跑一轮 sweep 闭环（②+③）：全量条目 → 6 信号打分 topK → LLM 决策 →
 /// 宿主产出 → 幂等标记。LLM 调用/JSON 解析失败 = Err（调用方如实记账）；
 /// 单条决策非法 = 记入报告 notes 后继续（不因个别越界决策丢掉整轮）。
 pub async fn run_sweep(

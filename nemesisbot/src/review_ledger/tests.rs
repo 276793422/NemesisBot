@@ -1,4 +1,4 @@
-//! `review_ledger` 用例（P4-d）：评审结论入账（review 行 payload/run_id）、
+//! `review_ledger` 用例（d）：评审结论入账（review 行 payload/run_id）、
 //! 分支闭环两臂（auto_accept→confirm / redispatch→reject 带理由）、
 //! scope 闸（pending/parent_* 不动分支）、无账本静默、dossier 行。
 //! 全部走真 TaskDb（tempdir）与 `Cluster::new` deps——task_db 显式传参，

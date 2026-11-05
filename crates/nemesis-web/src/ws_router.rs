@@ -21,7 +21,7 @@ pub trait ModuleHandler: Send + Sync {
     /// The module name this handler responds to (e.g., "models", "channels").
     fn module_name(&self) -> &str;
 
-    /// （devtool-upgrade）：本模块的静态命令清单（单一真相源——
+    /// （devtool-upgrade）：本模块的静态命令清单（统一定义——
     /// 与 `handle_cmd` 的 `match cmd` 臂保持一致，运行时 debug warn 纠偏）。
     /// 默认空（渐进补齐）；只列**可枚举的字面量命令**——chat.send 这类走
     /// message 帧不经 request dispatch 的、以及守卫臂动态前缀（如
@@ -194,7 +194,7 @@ impl Default for WsRouter {
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): dispatch
+// (, quality-hardening goal 冲刺 web): dispatch
 // send-failure arm (dead SendQueue → warn, no panic).
 #[cfg(test)]
 mod s10b_tests;

@@ -1,8 +1,8 @@
-//! /：会话租约测试（独立测试文件——禁内联测试仓库门禁）。
+//! ：会话租约测试（独立测试文件——禁内联测试仓库门禁）。
 //!
 //! 覆盖：同工作区双持有者争用（宽限超时诚实拒绝，文案含持有者名）、
 //! 释放后可再获取 + sidecar 生命周期、probe 输出形态（含陈旧记录注记）、
-//! **真·跨进程死进程释放**（重调自身测试二进制：子进程 `std:process:exit`
+//! **真·跨进程死进程释放**（重调自身测试二进制：子进程 `std::process:exit`
 //! 跳过 Drop，锁只由 OS 在进程死亡时释放——正是 的核心承诺）、
 //! register_shared_tools 包装接线（占锁时写类工具被拒；开关关 = 裸工具
 //! 直跑）。
@@ -131,7 +131,7 @@ async fn probe_reports_hold_state_and_stale_sidecar() {
 }
 
 /// 子进程辅助（父测试用当前测试二进制重调 + `--exact` 过滤到本用例）：
-/// 获取租约 → 写就绪文件 → `std:process:exit(0)`。exit 不跑 Drop——
+/// 获取租约 → 写就绪文件 → `std::process:exit(0)`。exit 不跑 Drop——
 /// 锁只能由 OS 在进程死亡时释放（本用例作为常规测试跑时环境变量缺席，
 /// 直接空转通过）。
 #[tokio::test]
@@ -142,12 +142,12 @@ async fn ws9_lease_child_holder() {
     let lease = Arc::new(WorkspaceLease::new(Path::new(&ws), "dead-child"));
     let _acq = lease.acquire().await.expect("child acquire");
     std::fs::write(Path::new(&ws).join("child_ready"), "1").expect("write ready");
-    // 不 drop `_acq`：std:process:exit 直接终结进程（析构不跑）。
+    // 不 drop `_acq`：std::process:exit 直接终结进程（析构不跑）。
     std::process::exit(0);
 }
 
 /// 核心：死进程的文件锁由 OS 自动释放——子进程持锁后
-/// `std:process:exit(0)`（跳过 Drop），父进程观察到锁已释放、sidecar
+/// `std::process:exit(0)`（跳过 Drop），父进程观察到锁已释放、sidecar
 /// 残留（probe 诚实标注「陈旧」）、随后可立即获取。
 #[tokio::test]
 async fn lease_dead_process_releases_os_lock() {
@@ -255,7 +255,7 @@ async fn register_shared_tools_wraps_write_tools_and_enforces() {
 #[tokio::test]
 async fn lease_disabled_passthrough_unwrapped() {
     // 生产默认路径：config.json agents 段缺键 → serde default_true。注意
-    // derive 的 `Config:default()`（全 Default 链）是 false——image_downscale
+    // derive 的 `Config::default()`（全 Default 链）是 false——image_downscale
     // 同款已知 footgun；生产装配走 serde 解析/default_config()，两条都为 true。
     let agents: nemesis_config::AgentsConfig = serde_json::from_str("{}").unwrap();
     assert!(agents.lease_enabled, "serde 缺省（生产真实默认）应为 true");
@@ -280,7 +280,7 @@ async fn lease_disabled_passthrough_unwrapped() {
     assert!(std::path::Path::new(&target).exists(), "文件应落盘");
 }
 
-/// ：sidecar 清理按 per-acquire 唯一 id 比对——同 holder
+/// sidecar 清理按 per-acquire 唯一 id 比对——同 holder
 /// 名的**他人**记录不得被本次释放误删，旧格式（无 acq_id）同样不删。
 /// 竞态窗口用改写 sidecar 确定性模拟（A 落 guard 后、清理执行前 B 已写
 /// 自己那份的中间态），不靠真竞速。

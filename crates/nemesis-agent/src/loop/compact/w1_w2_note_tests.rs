@@ -1,6 +1,6 @@
 //! （2026-10-25 加固）压缩注记域测试 + 压缩点解析窗口来源各臂。
 //!
-//! -：注记限频（纯函数 + emit 集成）、注记文本
+//! -注记限频（纯函数 + emit 集成）、注记文本
 //!   要素、summarize 触发落 role="system" jsonl 行、StuckResume 档仲裁、
 //!   hook 标签二值；
 //! - 窗口来源各臂：`resolve_compact_trigger` 的 window/source/

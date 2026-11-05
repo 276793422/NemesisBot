@@ -1,4 +1,4 @@
-//! L02（2026-11-01）流式中断部分输出保留：`collect_stream_response` 两臂
+//! （2026-11-01）流式中断部分输出保留：`collect_stream_response` 两臂
 //! 改造回归钉——流中途 Err / channel 关闭无终态时，已聚合 partial 不再
 //! 丢弃，包成 `StreamInterrupted` 随错误值携带；空 content 维持旧语义。
 
@@ -35,7 +35,7 @@ async fn err_arm_empty_content_passes_original_error() {
 
 #[tokio::test]
 async fn err_arm_whitespace_only_content_treated_as_empty() {
-    // 对抗 A5：空白 partial 视同空（trim 判空口径与 None 臂一致）。
+    // 对抗：空白 partial 视同空（trim 判空口径与 None 臂一致）。
     let (tx, rx) = tokio::sync::mpsc::channel(4);
     tx.send(Ok(chunk("  \n\t"))).await.unwrap();
     tx.send(Err(unknown_err())).await.unwrap();

@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 ///
 /// Recursion depth is bounded by serde_json's parse-depth limit (128 by
 /// default; `unbounded_depth` is not enabled), so deeply nested args cannot
-/// overflow the stack. Cost is on par with L1/L5, which already recurse over
+/// overflow the stack. Cost is on par with /, which already recurse over
 /// the same tree.
 fn scan_credentials_in_value(
     scanner: &CredentialScanner,
@@ -57,7 +57,7 @@ fn scan_credentials_in_value(
     }
 }
 
-/// F5: per-layer fixed remediation hints fed to the model alongside the
+/// per-layer fixed remediation hints fed to the model alongside the
 /// deny summary. Keys match [`DenyInfo::layer`].
 fn layer_suggestion(layer: &str) -> Option<&'static str> {
     match layer {
@@ -72,7 +72,7 @@ fn layer_suggestion(layer: &str) -> Option<&'static str> {
     }
 }
 
-/// F5: build a `DenyInfo` with the layer's fixed suggestion attached.
+/// build a `DenyInfo` with the layer's fixed suggestion attached.
 fn deny_info(layer: &'static str, policy: &str, summary: impl Into<String>) -> DenyInfo {
     DenyInfo {
         layer,
@@ -113,7 +113,7 @@ pub struct SecurityPluginConfig {
     pub audit_log_enabled: bool,
     pub audit_log_dir: Option<String>,
     pub default_action: String,
-    /// CFG-05（2026-09-16 死键接线）：审批卡超时秒数。原 JSON 键
+    /// CFG-05（死键接线）：审批卡超时秒数。原 JSON 键
     /// `approval_timeout_seconds` 从未接到 AuditorConfig（恒 Default 300），
     /// 属假姿态。构造期接线（reload 不重建审批链路）。
     pub approval_timeout_secs: u64,
@@ -122,7 +122,7 @@ pub struct SecurityPluginConfig {
     /// 现接线到 execute() 末尾的 "passed all security layers" 事件。
     /// 默认 true = 旧行为不变。
     pub log_all_operations: bool,
-    /// L6（2026-10-12 T1）：pre-exec 脚本内容扫描开关（默认开）。独立键，
+    /// pre-exec 脚本内容扫描开关（默认开）。独立键，
     /// 同时受 `enabled` 主闸约束（主闸关 = 全管线短路）。关 = 扫描器不
     /// 装配（构造期唯一生效路径，与 injection/command_guard 同款）。
     pub preexec_scan_enabled: bool,
@@ -187,18 +187,18 @@ pub struct SecurityPlugin {
     /// When attached, CRITICAL operations that pass the rule layers get a second
     /// opinion from an LLM reading the action as evidence (anti-injection).
     judge: RwLock<Option<Arc<dyn crate::guardian::LlmJudge>>>,
-    /// D2（2026-09-16 用户裁决）：guardian（LLM judge）自身故障时姿态。
+    /// （用户裁决）：guardian（LLM judge）自身故障时姿态。
     /// "allow"/"ask"/"deny"；空串 = 未配置（保持旧行为：Err 落空放行）。
     /// 由 security_setup 按裸 JSON 键 `guardian_failure_policy` 注入。
     guardian_failure_policy: RwLock<String>,
-    /// 覆盖面开关（2026-09-16 无上下文 LLM 命令审计，用户拍板默认 off）。
+    /// 覆盖面开关（无上下文 LLM 命令审计，默认 off）。
     /// "off"（含空串/未知值）= 不装配 judge 也不审（零 LLM 成本，连旧
     /// CRITICAL 审都不跑）；"critical" = 现状行为（CRITICAL 级工具全审）；
     /// "high" = HIGH+CRITICAL 级工具先过破坏形态预筛词表，命中才进 LLM。
     /// 由 security_setup 按裸 JSON 键 `guardian_mode` 注入；装配点
     /// （gateway set_judge）与消费点（agent loop）同读此闸。
     guardian_mode: RwLock<String>,
-    /// L6（2026-10-12 T1）：pre-exec 脚本内容扫描器。`preexec_scan_enabled`
+    /// pre-exec 脚本内容扫描器。`preexec_scan_enabled`
     /// 关 = 不装配 = 扫描短路（None）。
     preexec: Option<crate::preexec::PreExecScanner>,
 }
@@ -214,7 +214,7 @@ impl SecurityPlugin {
         let auditor_config = AuditorConfig {
             enabled: config.enabled,
             default_action: config.default_action.clone(),
-            // CFG-05（2026-09-16 死键接线）：审批卡超时从 config.security.json
+            // CFG-05（死键接线）：审批卡超时从 config.security.json
             // 的 `approval_timeout_seconds` 构造期接入（原先恒 Default 300）。
             approval_timeout_secs: config.approval_timeout_secs,
             ..Default::default()
@@ -279,7 +279,7 @@ impl SecurityPlugin {
                 max_events_per_segment: 100_000,
                 signing_key: None,
             });
-            // 链尾回载（BUG-20261104-374）：链状态（last_hash）是进程内存
+            // 链尾回载：链状态（last_hash）是进程内存
             // 态，而 storage_path 是固定路径续写——不回载则重启后首个事件
             // prev_hash=全零，与盘上既有链断裂，logs.chain_verify 全量校验
             // 恒 FAIL，防篡改链被正常重启本身打穿（load_segments 假持久化：
@@ -336,7 +336,7 @@ impl SecurityPlugin {
             );
         }
 
-        // L6（2026-10-12 T1）：pre-exec 脚本内容扫描器。注入阈值与第 1 层
+        // pre-exec 脚本内容扫描器。注入阈值与第 1 层
         // 同源（config.injection_threshold——单一灵敏度旋钮）。
         let preexec = if config.preexec_scan_enabled {
             Some(crate::preexec::PreExecScanner::new(
@@ -544,7 +544,7 @@ impl SecurityPlugin {
         // Close audit log file。AuditLogger 无显式 close，Drop 负责收尾——
         // 一次性置 None 即可。原实现 if-let 持着 write guard 又嵌套 write()
         // 同一把锁（parking_lot 不可重入）→ audit_logger=Some 时 cleanup 必
-        // 死锁；此前无调用方无测试触达，属潜伏地雷（2026-08-25 测试首触即挂）。
+        // 死锁；此前无调用方无测试触达，属潜伏地雷（测试首触即挂）。
         *self.audit_logger.write() = None;
 
         // Clean up auditor
@@ -614,7 +614,7 @@ impl SecurityPlugin {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(self.config.dlp_enabled);
 
-                // ── 死读取恢复区（2026-09-16 用户指令：代码不得随便删，注释
+                // ── 死读取恢复区（用户指令：代码不得随便删，注释
                 // 保留待讨论）───────────────────────────────────────────
                 // CFG-05 曾删这三个「读后丢弃」块：层引擎构造期唯一生效，
                 // reload 不重建层，这些读取只制造"已生效"假象。注释恢复
@@ -685,12 +685,12 @@ impl SecurityPlugin {
 
     /// Execute the 8-layer security pipeline.
     /// Returns (allowed, deny info). `DenyInfo` carries layer / policy /
-    /// summary (original free text) / per-layer suggestion (F5).
+    /// summary (original free text) / per-layer suggestion.
     pub fn execute(&self, invocation: &ToolInvocation) -> (bool, Option<DenyInfo>) {
         self.execute_inner(invocation, &std::cell::Cell::new(None))
     }
 
-    /// 行动代理 P0（PLAN §6.2 凭条 `approval_ref` 契约字段）：同
+    /// 行动代理 （PLAN 凭条 `approval_ref` 契约字段）：同
     /// [`Self::execute`]，但多返回审批引用——ABAC 层 RequireApproval 经
     /// 交互审批管理器**人工批准**时 `Some(request_id)`（= 审批卡 id），
     /// 其余全分支（直通/规则表/免打扰/拒绝/无管理器）None。调用方
@@ -785,7 +785,7 @@ impl SecurityPlugin {
             );
         }
 
-        // L6: pre-exec 脚本内容扫描（2026-10-12 T1）。8 层只看 args——
+        // pre-exec 脚本内容扫描。8 层只看 args——
         // 磁盘既有脚本的内容 exec 前零检查是盲区。命中不硬拦：把
         // force_approval 钉到请求上，ABAC 升格强制人工审批（误报出路，
         // 审批卡可放行）；文件缺失/二进制自然放行，`bash -c` 内联不受影响。
@@ -849,10 +849,10 @@ impl SecurityPlugin {
             denied_reason: None,
             force_approval,
         };
-        // K4 (b): 从 invocation metadata 提取审批来源上下文（loop 构造
+        // (b): 从 invocation metadata 提取审批来源上下文（loop 构造
         // invocation 时填入）——RequireApproval 时审批卡按它路由回发起
         // 对话（IM 通道）；缺键 = 空 ctx，管理器按现状处理。
-        // approval_session_key（2026-10-22 审批续执行）：重启补裁回灌路由
+        // approval_session_key（审批续执行）：重启补裁回灌路由
         // 键——随行进台账 payload，stale 卡裁决后按它把裁决消息送回原会话。
         let approval_ctx = crate::auditor::ApprovalContext {
             channel: invocation.source.clone(),
@@ -871,10 +871,10 @@ impl SecurityPlugin {
                 .get("approval_session_key")
                 .cloned()
                 .unwrap_or_default(),
-            // L07：原始 args 透传——审批卡 diff 预览的数据源（preview 在
-            // 挂起点生成，args 只在这里可见）。
+            // 原始 args 透传——审批卡 diff 预览的数据源（preview 在
+            // 挂起点生成，args 只在这里可）。
             tool_args: invocation.args.clone(),
-            // 并行批审批聚合（BUG-A 第三层）：批号随行（loop 在构造
+            // 并行批审批聚合（第三层）：批号随行（loop 在构造
             // invocation 时对并行批工具调用填入）；缺键 = 串行路径单卡。
             batch_id: invocation
                 .metadata
@@ -908,12 +908,12 @@ impl SecurityPlugin {
         }
 
         // Layer 4: Credential Scanner — depth-first over ALL string leaves.
-        // BUG-20261030-210: previously only top-level string values were
+        // previously only top-level string values were
         // scanned; nested payloads (multiedit `edits[].new_text`, headers
         // objects, arrays) skipped the scan entirely, and the ~20 credential
         // patterns with no DLP counterpart (EC/DSA/PGP private-key headers,
         // SendGrid, Slack webhook, bare Bearer, npm token, …) made it a
-        // double miss. L1 injection and L5 DLP both recurse; so does L4 now.
+        // double miss. injection and DLP both recurse; so does now.
         if let Some(ref scanner) = self.credential_scanner
             && let Some(result) = scan_credentials_in_value(scanner, &invocation.args)
         {
@@ -1084,11 +1084,11 @@ impl SecurityPlugin {
                 }
 
                 // Scan content in tool arguments (check multiple content fields)
-                // BUG-20261102-310：new_text 在列——edit_file 待写内容是顶层
+                // new_text 在列——edit_file 待写内容是顶层
                 // new_text（edit.rs schema required 键，execute 落
-                // tokio::fs::write），缺键 = edit_file 写盘内容完全绕过病毒
+                // tokio::fs:write），缺键 = edit_file 写盘内容完全绕过病毒
                 // 扫描（write_file/multiedit 拦得住的 edit_file 拦不住；
-                // BUG-20261029-171 同族漂移在扫描面复发）。old_text 刻意不扫
+                // 同族漂移在扫描面复发）。old_text 刻意不扫
                 // ——它是待删除文本（须已存在于文件中），拦截其删除是反向
                 // 语义。
                 for content_key in &["content", "data", "body", "html", "new_text"] {
@@ -1112,10 +1112,10 @@ impl SecurityPlugin {
                     }
                 }
 
-                // BUG-20261029-171：multiedit 待写内容内嵌 edits[].new_text
+                // multiedit 待写内容内嵌 edits[].new_text
                 // （顶层无 content/data/body/html 键，上方键循环取不到）——
                 // 缺此段 = multiedit 写盘内容完全绕过病毒扫描（write_file
-                // 拦得住的 multiedit 拦不住；BUG-20261028-118 同族漂移在
+                // 拦得住的 multiedit 拦不住； 同族漂移在
                 // 扫描面复发）。逐条扫，命中即拦。
                 if tool_name == "multiedit"
                     && let Some(edits) = args.get("edits").and_then(|v| v.as_array())
@@ -1227,7 +1227,7 @@ impl SecurityPlugin {
         Arc::clone(&self.auditor)
     }
 
-    /// D2 存取（2026-09-16 用户裁决）：guardian（LLM judge）自身故障时的
+    /// 存取（用户裁决）：guardian（LLM judge）自身故障时的
     /// 姿态开关。空串 = 未配置（保持旧行为：Err 落空放行）；"allow"/"ask"/
     /// "deny" 显式生效。security_setup 按裸 JSON 键注入。
     pub fn set_guardian_failure_policy(&self, policy: &str) {
@@ -1238,8 +1238,8 @@ impl SecurityPlugin {
         self.guardian_failure_policy.read().clone()
     }
 
-    /// L6（2026-10-12 T1）：注入 pre-exec 扫描的相对脚本路径解析根
-    /// （workspace root，security_setup 构造期调用；与 D1 保护路径同源）。
+    /// 注入 pre-exec 扫描的相对脚本路径解析根
+    /// （workspace root，security_setup 构造期调用；与 保护路径同源）。
     /// 未注入 = 相对路径不解析（诚实降级，绝对路径仍覆盖）。
     pub fn set_preexec_workspace_root(&self, root: &str) {
         if let Some(ref scanner) = self.preexec {
@@ -1247,9 +1247,9 @@ impl SecurityPlugin {
         }
     }
 
-    /// 覆盖面开关存取（2026-09-16 无上下文 LLM 命令审计）。空串 = 未配置
+    /// 覆盖面开关存取（无上下文 LLM 命令审计）。空串 = 未配置
     /// = off。装配点（gateway set_judge）与消费点（agent loop
-    /// `guardian_should_review`）同读此值——单一真相源。
+    /// `guardian_should_review`）同读此值——统一定义。
     pub fn set_guardian_mode(&self, mode: &str) {
         *self.guardian_mode.write() = mode.trim().to_lowercase();
     }
@@ -1276,7 +1276,7 @@ impl SecurityPlugin {
         get_danger_level(self.effective_tool_operation(tool_name)).to_string()
     }
 
-    /// Guardian 审计覆盖裁决（2026-09-16 单一决策点）：该工具调用是否应
+    /// Guardian 审计覆盖裁决（单一决策点）：该工具调用是否应
     /// 进 LLM 审计。agent loop 消费端唯一入口——mode 语义集中在此，不散落。
     ///
     /// - `off` / 空串 / 未知值 → false（judge 本就不该被装配，双保险）。
@@ -1336,7 +1336,7 @@ impl SecurityPlugin {
         self.dlp_engine.as_ref()
     }
 
-    /// S2①（2026-10-09 高优差距批次一）：exec/exec_async/background_start
+    /// ①：exec/exec_async/background_start
     /// 执行前脚本内容扫描。8 层管线只看入参，磁盘上预先存在的脚本（用户
     /// 创建 / web_fetch 下载 / git clone）被 exec 执行时内容零检查——本入口
     /// 补上该盲区（详见 `shell_bleed` 模块头）。`args_json` = 工具调用完整
@@ -1373,7 +1373,7 @@ impl SecurityPlugin {
         self.audit_chain.as_ref()
     }
 
-    /// F8（2026-09-27）：非工具管线的直接审计记账入口——rewind force 等
+    /// 非工具管线的直接审计记账入口——rewind force 等
     /// 强恢复动作不经 `execute()` 八层管线（没有 ToolInvocation），但需要
     /// 落审计链台账（Merkle append-only，不可篡改；tracing 日志轮转即失，
     /// 不算「留痕」）。返回 `None` = 审计链未启用（默认）/已关闭，调用方

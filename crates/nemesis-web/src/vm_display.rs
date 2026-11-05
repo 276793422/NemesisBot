@@ -21,7 +21,7 @@
 //! 6. 并发上限：[`MAX_DISPLAY_SESSIONS`]（PTY max_sessions 模式的定数版）；
 //! 7. **readonly 是插件侧 per-session 语义**：mode=ro 时插件丢弃 RFB
 //!    client→server 写类消息（KeyEvent/PointerEvent/ClientCutText）。QEMU
-//!    层的 `-vnc ...,readonly` 不用（会锁死所有 viewer 且改档要重启 VM）。
+//!    层的 `-vnc...,readonly` 不用（会锁死所有 viewer 且改档要重启 VM）。
 //!
 //! **与插件的线协议**（网关是唯一 WS 演讲者）：网关作为 TCP 客户端连插件
 //! 回环监听（[`VmDisplayEndpoint::listen_port`]，插件 init 时经 vtable 上报

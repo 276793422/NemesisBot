@@ -1,11 +1,11 @@
-//! voice.rs 纯逻辑覆盖（批次 18，2026-08-25）。
+//! voice.rs 纯逻辑覆盖（2026-08-25）。
 //!
 //! 子模块（非 sibling 文件）以获得私有项访问。只测不依赖音频设备 / DLL 的
 //! 纯逻辑：DialogueSttOutput 缓冲语义、check_model_subdir_any 文件探测、
 //! voice 配置读回退、cmd_status 文件探测、speaker 持久化与阈值校验、
 //! tts 长度上限、空状态 shutdown / 全关初始化 no-op。
 //!
-//! 结构性豁免（见台账 §9.4）：WASAPI 采集、SpeexDSP AEC、kokoro TTS、
+//! 结构性豁免（见台账）：WASAPI 采集、SpeexDSP AEC、kokoro TTS、
 //! espeak、SenseVoice STT 的真 DLL 加载与推理臂；setup/install 真下载臂。
 
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
@@ -109,17 +109,17 @@ fn check_model_subdir_any_variants() {
     // 2) 空目录 → false
     std::fs::create_dir_all(base.join("empty")).unwrap();
     assert!(!check_model_subdir_any(&base.join("empty")));
-    // 3) 子目录存在但没有 .onnx → false
+    // 3) 子目录存在但没有.onnx → false
     let no_onnx = base.join("m1").join("sub");
     std::fs::create_dir_all(&no_onnx).unwrap();
     std::fs::write(no_onnx.join("weights.bin"), b"x").unwrap();
     assert!(!check_model_subdir_any(&base.join("m1")));
-    // 4) 子目录里有 .onnx → true
+    // 4) 子目录里有.onnx → true
     let with_onnx = base.join("m2").join("sub");
     std::fs::create_dir_all(&with_onnx).unwrap();
     std::fs::write(with_onnx.join("model.onnx"), b"x").unwrap();
     assert!(check_model_subdir_any(&base.join("m2")));
-    // 5) .onnx 直接放顶层（不在子目录里）→ false（模型必须按子目录组织）
+    // 5).onnx 直接放顶层（不在子目录里）→ false（模型必须按子目录组织）
     let top = base.join("m3");
     std::fs::create_dir_all(&top).unwrap();
     std::fs::write(top.join("model.onnx"), b"x").unwrap();

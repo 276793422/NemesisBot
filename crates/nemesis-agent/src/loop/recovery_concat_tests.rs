@@ -15,7 +15,7 @@ use crate::test_support::capture_logs;
 use async_trait::async_trait;
 
 // ---------------------------------------------------------------------------
-// 常量字面量互锚（providers 侧 failover:STREAM_* 的同文副本——任一端改
+// 常量字面量互锚（providers 侧 failover::STREAM_* 的同文副本——任一端改
 // 文本，两端测试必红；见 recovery.rs 常量注释分层约束）。
 // ---------------------------------------------------------------------------
 
@@ -395,7 +395,7 @@ async fn non_stream_transient_error_no_concat() {
 }
 
 // ---------------------------------------------------------------------------
-// 开关解析纯函数（config_watch:stream_concat_retry_from_value）
+// 开关解析纯函数（config_watch::stream_concat_retry_from_value）
 // ---------------------------------------------------------------------------
 
 #[test]

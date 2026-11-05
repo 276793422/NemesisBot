@@ -3,24 +3,24 @@
 //! can run sandboxed.
 //!
 //! Layer 2 of the executor-separation plan. See
-//! `docs/PLAN/2026-07-09_sandboxie-integration.md`.
+//! `sandboxie-integration`.
 //!
-//! L2.0 scope (this crate's first cut): download + verify + 7z extract the
+//! .0 scope (this crate's first cut): download + verify + 7z extract the
 //! official release; KmdUtil install/uninstall/start/stop the driver + service;
 //! write Sandboxie.ini (NemesisBox). Does NOT touch the executor yet — that's
-//! L2.1+ (named-pipe transport, Start.exe spawn).
+//! .1+ (named-pipe transport, Start.exe spawn).
 //!
 //! Windows-only at runtime; non-Windows compiles to stubs that return errors
 //! (so `cargo check --workspace` stays green cross-platform).
 //!
-//! U11 userland backends (Linux landlock/bwrap, macOS Seatbelt) live in
+//! userland backends (Linux landlock/bwrap, macOS Seatbelt) live in
 //! [`backend`] — cross-platform trait layer with cfg'd platform impls; Windows
 //! registers no userland backend in `detect_backend` by design (Sandboxie
-//! owns the default path). P24（2026-09-25 能力扩展 WS1）adds an **opt-in
+//! owns the default path). （2026-09-25）adds an **opt-in
 //! experimental Windows userland ACL backend** ([`backend::AclBackend`],
 //! feature `acl`): mandatory-integrity-label No-Write-Up fence, half-tier
 //! isolation, always `Partial` — engaged via `executor.backend` **explicit
-//! `acl` only** (auto never falls back to it, P24 contract), on the
+//! `acl` only** (auto never falls back to it, contract), on the
 //! box-missing stdio channel; wired in exec_worker engage + gateway
 //! selection hook (2026-09-26 contract alignment).
 
@@ -38,13 +38,13 @@ pub mod kmdutil;
 pub mod pending;
 pub mod selftest;
 pub mod status;
-// P5（桌面级 VM，2026-10-17）：第三类隔离后端（独立内核整机隔离）。feature
+// （桌面级 VM）：第三类隔离后端（独立内核整机隔离）。feature
 // `vm` 门控——关 = 整个 vm 模块不编译（IoT/云端裁剪位）。
 #[cfg(feature = "vm")]
 pub mod vm;
 
 // ---------------------------------------------------------------------------
-// Constants (from C:/AI/NemesisBot/Sandboxie/ source research, 2026-07-09)
+// Constants (from C:/AI/NemesisBot/Sandboxie/ source research,)
 // ---------------------------------------------------------------------------
 
 /// Plus release tag (the GitHub release tag differs from the Classic file version).
@@ -69,7 +69,7 @@ pub const FILTER_ALTITUDE: &str = "86900";
 /// Default box name we launch the executor into.
 pub const DEFAULT_BOX_NAME: &str = "NemesisBox";
 
-/// 2026-10-19 黑窗根修：本 crate 的外部工具 spawn（sc/reg/KmdUtil/7z/where/
+/// 黑窗根修：本 crate 的外部工具 spawn（sc/reg/KmdUtil/7z/where/
 /// Start.exe）统一压 `CREATE_NO_WINDOW`。release gateway 是 windows 子系统
 /// 进程（main.rs `windows_subsystem = "windows"`，自身无 console），console
 /// 子进程以默认 flags 从无 console 父进程 spawn 时系统分配**新的可见
@@ -105,7 +105,7 @@ pub struct SandboxPaths {
     /// the Sandboxie subtree; every other location derives from it.
     pub base_dir: PathBuf,
     /// Where the extracted runtime binaries (SbieDrv.sys, SbieSvc.exe, Start.exe,
-    /// KmdUtil.exe, ...) live.
+    /// KmdUtil.exe,...) live.
     pub runtime_dir: PathBuf,
     /// Sandboxie.ini location (redirected via IniPath).
     pub ini_path: PathBuf,
@@ -141,9 +141,9 @@ impl SandboxPaths {
         self.runtime_dir.join("Start.exe")
     }
 
-    /// 盒引擎就绪判定（P3 ② 常驻盒 + exec_world 通道装配同源）：Start.exe
+    /// 盒引擎就绪判定（② 常驻盒 + exec_world 通道装配同源）：Start.exe
     /// 在场 + SbieSvc Running + 引擎（驱动/服务）归属本方安装。三元组单一
-    /// 真相源——`exec_world::build_executor_channel` 的 `will_attach` 收口
+    /// 权威定义——`exec_world::build_executor_channel` 的 `will_attach` 收口
     /// 到这里，勿在调用点重抄条件。
     pub fn engine_ready(&self) -> bool {
         self.start_exe().exists()
@@ -186,7 +186,7 @@ impl SandboxPaths {
 #[cfg(test)]
 mod tests;
 
-// P21（2026-09-25）：沙盒拒绝台账测试（独立测试文件，全平台编译）。
+// 沙盒拒绝台账测试（独立测试文件，全平台编译）。
 #[cfg(test)]
 mod denial_tests;
 

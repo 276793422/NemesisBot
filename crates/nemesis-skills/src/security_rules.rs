@@ -1,4 +1,4 @@
-//! Embedded lint rule table (P15 供应链扩面).
+//! Embedded lint rule table (供应链扩面).
 //!
 //! The extended lint categories (credential theft / persistence / download
 //! execute chain / sensitive path access / environment probing / dynamic

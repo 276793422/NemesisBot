@@ -1,5 +1,5 @@
 #![cfg(windows)]
-//! M2 实弹集成（总控 §10 M2 验收，场景 B）：真实 spawn dummy-monitor →
+//! 实弹集成（总控 验收，场景 B）：真实 spawn dummy-monitor →
 //! attach_and_schedule → poll 调度（on_change + notify）→ 报警到达事件汇
 //! （≤3s）→ 重复报警限频（60s 窗口内只发一次）→ capture 回流落盘 →
 //! 一次性快照读 → detach 停调度。

@@ -1,4 +1,4 @@
-//! 轮内预算/限流重试常量与 429 退避梯子（裁决②③④⑧）、RateLimitStatus、限流状态 set/clear/retry_status/send_retry_progress。
+//! 轮内预算/限流重试常量与 429 退避梯子、RateLimitStatus、限流状态 set/clear/retry_status/send_retry_progress。
 //!
 //! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
@@ -21,13 +21,13 @@ pub(crate) const MAX_TRANSIENT_RETRIES: u32 = 3;
 /// 429 限流重试环：限流重试间隔阶梯（秒）——
 /// 前 4 档翻倍爬升抓瞬时抖动，后 6 档每档 +30s 线性放宽等限流窗口过去；
 /// 总跨度 885s ≈ 14.8 分钟。上游带 Retry-After 时取 max(上游要求, 阶梯值)
-/// （裁决⑧遵从上游，但不低于本地阶梯）。
+/// （遵从上游，但不低于本地阶梯）。
 const RATE_LIMIT_BACKOFF_LADDER: [u64; 10] = [5, 10, 20, 40, 60, 90, 120, 150, 180, 210];
 
-/// 限流分类词表：`rate limited by provider` = FailoverError:RateLimit 的
+/// 限流分类词表：`rate limited by provider` = FailoverError::RateLimit 的
 /// Display 前缀（llm_bridge 保真展平）；`429` / `too many requests` 兜底
 /// 裸文本形态（对齐 providers 侧 error_classifier 口径）；`overloaded` =
-/// FailoverError:Overloaded 的 Display 尾词（502/503 过载，状态码在展平
+/// FailoverError::Overloaded 的 Display 尾词（502/503 过载，状态码在展平
 /// 时已丢失）——providers 侧既有约定就是按限流对待（error_classifier
 /// 「Overloaded treated as rate_limit」），loop 层词表必须同步对齐，否则
 /// 过载首败即终局（BUG 实证：provider codex is overloaded 一次
@@ -75,18 +75,18 @@ pub(crate) fn rate_limit_wait_secs(err: &str, attempt: u32) -> u64 {
     )
 }
 
-/// BUG ②：单次上游调用超时默认 180s——429 后连接挂起（不回
+/// 单次上游调用超时默认 180s——429 后连接挂起（不回
 /// 响应体）时旧行为可挂任意久（实测 27 分钟缺口）。0 = 关闭超时（退回
 /// 旧行为）。`agents.defaults.provider_call_timeout_secs` 覆盖。
 /// （机制加固）：180→480——thinking 型模型 prefill 实测
 /// 212s 撞破 180s 闸（诚实调用被超时误杀）；仍低于 provider lane 默认
 /// 600s，超时阶梯不倒挂。
 pub const DEFAULT_PROVIDER_CALL_TIMEOUT_SECS: u64 = 480;
-/// BUG ②：限流重试环总预算默认 900s（等待 + 调用累计）——
+/// 限流重试环总预算默认 900s（等待 + 调用累计）——
 /// 10 次上限只限次数不限总时长（实测 46 分钟无熔断）。0 = 不限。
 /// `agents.defaults.rate_limit_budget_secs` 覆盖。
 pub const DEFAULT_RATE_LIMIT_BUDGET_SECS: u64 = 900;
-/// [`AgentLoop:retry_status`] 读侧过期阈值：写侧在 turn 被 abort（E-STOP
+/// [`AgentLoop::retry_status`] 读侧过期阈值：写侧在 turn 被 abort（E-STOP
 /// /进程取消）时来不及清——快照超时未更新即视为失效，读侧顺手回收。
 pub const RETRY_STATUS_STALE_SECS: u64 = 300;
 
@@ -132,7 +132,7 @@ impl AgentLoop {
         None
     }
 
-    /// 429 重试进度对用户可见（裁决③「显式进度」）——经 outbound_tx 直发
+    /// 429 重试进度对用户可见（「显式进度」）——经 outbound_tx 直发
     /// 一条状态文本；不置 sent_in_round、不影响终局回复发布。tx 未装配
     /// （B 端 worker 等场景）静默重试。
     pub(crate) async fn send_retry_progress(&self, context: &RequestContext, text: String) {

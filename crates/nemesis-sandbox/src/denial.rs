@@ -1,4 +1,4 @@
-//! P21（2026-09-25 能力扩展 WS1）沙盒拒绝台账（denial ledger）。
+//! （2026-09-25）沙盒拒绝台账（denial ledger）。
 //!
 //! 沙盒层拒绝事件（landlock EACCES / bwrap 非零退出 / Sandboxie 拒绝 / 后续
 //! Windows ACL denied）统一记结构化 JSONL 台账：
@@ -15,7 +15,7 @@
 //! - `nemesisbot` executor 子进程（`exec_worker`）：工具错误分类为沙盒拒绝 →
 //!   记台账 + 把工具结果改写为面向模型的可自纠文案（[`model_facing_text`]）；
 //!   engage 严格模式拒绝、bwrap 包装的盒内实例非零退出 → 同账本。
-//! - 后续 Windows ACL 档（P24）接同一写入面。
+//! - 后续 Windows ACL 档接同一写入面。
 //!
 //! ## 诚实边界
 //!
@@ -40,7 +40,7 @@ pub const LEDGER_FILE: &str = "sandbox_denials.jsonl";
 /// 单条沙盒拒绝记录（JSONL 一行）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DenialRecord {
-    /// RFC3339 UTC（毫秒精度，`2026-09-25T08:30:00.123Z` 形态；字典序 =
+    /// RFC3339 UTC（毫秒精度，`-25T08:30:00.123Z` 形态；字典序 =
     /// 时间序）。
     pub ts: String,
     /// 后端：`landlock` / `bwrap` / `seatbelt` / `sandboxie` / `acl` /
@@ -68,7 +68,7 @@ pub fn ledger_path(workspace: &Path) -> PathBuf {
 }
 
 /// 截断预览（按 char；超长补省略号）。公开给写入侧复用——模型文案与台账
-/// 里的 target 必须同源同形（单一真相源）。
+/// 里的 target 必须同源同形。
 pub fn preview_target(s: &str) -> String {
     if s.chars().count() <= PREVIEW_MAX_CHARS {
         s.to_string()

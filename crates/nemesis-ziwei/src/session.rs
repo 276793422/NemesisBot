@@ -1,6 +1,6 @@
-//! session —— 会话管理器（T1.3）：attach 编排 / 状态机 / detach 卸载 / estop。
+//! session —— 会话管理器（.3）：attach 编排 / 状态机 / detach 卸载 / estop。
 //!
-//! 状态机（总控 §5）：`Injecting → Handshaking → Ready ⇄ Busy → Unloading`
+//! 状态机（总控）：`Injecting → Handshaking → Ready ⇄ Busy → Unloading`
 //! （任一步失败 → 会话不入表，失败原因透出给调用方；入表即 Ready）。
 //!
 //! attach 时序（防握手窗口错配——payload 只重试连 10s）：
@@ -14,14 +14,14 @@
 //! PipeLink。
 //!
 //! 全局槽（`SESSION_MANAGER`）：AppState 有 69 处测试字面量不可扩字段——
-//! L1 COMMANDS_REGISTRY 同款 OnceLock 全局，gateway 装配时 set。
+//! COMMANDS_REGISTRY 同款 OnceLock 全局，gateway 装配时 set。
 
-/// 会话管理器未装配的统一错误文案（单一真相源，2026-11-03 BUG-1 修复）。
+/// 会话管理器未装配的统一错误文案（统一定义， BUG-1 修复）。
 ///
 /// 此前同一条件（`global() == None`）散布三种括号注解（「gateway 未启用或
 /// 非 Windows 平台」/「gateway 未启用」/「config ziwei.enabled=false」），
-/// 同一会话先后出现不同文案把 agent 与用户引偏（实录见
-/// 2026-11-03_紫微实测对话四缺陷 BUG-1）。统一口径必须说清两件事：
+/// 同一会话先后出现不同文案把 agent 与用户引偏（案例见
+/// 03_紫微实测对话四缺陷 BUG-1）。统一口径必须说清两件事：
 /// 原因（gateway 进程启动时 config ziwei.enabled=false，或当前非 gateway /
 /// 非 Windows 形态）与出路（改配置需重启 gateway 进程才生效——会话管理器
 /// 只在进程启动时装配进 OnceLock 槽，agent 重建读的是 fresh config，
@@ -44,7 +44,7 @@ mod imp {
     /// estop 全量卸载总预算。
     const ESTOP_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// 会话状态（总控 §5）。
+    /// 会话状态（总控）。
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum SessionState {
         Injecting,
@@ -77,15 +77,15 @@ mod imp {
         pub pipe_name: String,
         pub attached_at: chrono::DateTime<chrono::Utc>,
         pub target_exe: String,
-        /// 结构名 → 运行时地址（attach 注入；M3 起由锚解析自动化）。
+        /// 结构名 → 运行时地址（attach 注入； 起由锚解析自动化）。
         struct_addrs: HashMap<String, u64>,
-        /// 函数键（语义名 / `{语义}::chain{i}`）→ 运行时地址（M4 resolve 引擎）。
+        /// 函数键（语义名 / `{语义}:chain{i}`）→ 运行时地址（resolve 引擎）。
         fn_addrs: Mutex<HashMap<String, u64>>,
         /// 函数键 → 锚点地址（resolve 产出；hook 补丁点=nop 垫所在）。
         /// 与 fn_addrs 分表：调用需函数入口（执行序章），hook 需锚点（窃取
         /// 窗口）——夹具两者可不同（锚在编译器序章之后）。
         fn_anchors: Mutex<HashMap<String, u64>>,
-        /// 在场 hook 绑定（id ↔ 语义名 ↔ 地址；M4 hook 订阅账本）。
+        /// 在场 hook 绑定（id ↔ 语义名 ↔ 地址； hook 订阅账本）。
         hooks: Mutex<Vec<HookBinding>>,
         /// poll 任务句柄（detach / estop 时 abort）。
         poll_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
@@ -93,7 +93,7 @@ mod imp {
         link: tokio::sync::Mutex<PipeLink>,
     }
 
-    /// 在场 hook 绑定（T4.2/T4.6：主函数与链步骤共用一本账）。
+    /// 在场 hook 绑定（.2/.6：主函数与链步骤共用一本账）。
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct HookBinding {
         pub id: u32,
@@ -279,7 +279,7 @@ mod imp {
             rows
         }
 
-        /// 附加：profile × pid → 注入 → 握手 → Ready（T1.3；无结构地址注入）。
+        /// 附加：profile × pid → 注入 → 握手 → Ready（.3；无结构地址注入）。
         pub async fn attach(
             &self,
             profile: &Profile,
@@ -289,15 +289,15 @@ mod imp {
                 .await
         }
 
-        /// 附加 + 结构地址注入（`struct:Name` → 运行时地址；M3 前由调用方
-        /// 显式提供，M3 起锚解析自动化）。
+        /// 附加 + 结构地址注入（`struct:Name` → 运行时地址； 前由调用方
+        /// 显式提供， 起锚解析自动化）。
         pub async fn attach_with_struct_addrs(
             &self,
             profile: &Profile,
             pid: u32,
             struct_addrs: HashMap<String, u64>,
         ) -> Result<Arc<Session>, AttachError> {
-            // T5.1 状态机闸：非 Active 一律拒绝注入（stale → 找回引导）。
+            // .1 状态机闸：非 Active 一律拒绝注入（stale → 找回引导）。
             crate::verify::pre_attach_guard(profile).map_err(AttachError::Other)?;
             let key = profile.profile_id.clone();
             {
@@ -353,7 +353,7 @@ mod imp {
             }
             let arch = profile.target.machine.payload_suffix().to_string();
 
-            // payload 落盘（T1.6：内嵌 first-use 写 / payload_dir 覆盖）
+            // payload 落盘（.6：内嵌 first-use 写 / payload_dir 覆盖）
             let payload = ensure_payload(&self.workspace, self.payload_dir.as_deref(), &arch)
                 .map_err(|e| AttachError::Other(e.to_string()))?;
 
@@ -520,10 +520,10 @@ mod imp {
         }
 
         // -------------------------------------------------------------------
-        // M4：函数地址解析 / call_fn / hook 订阅退订 / capture 拉取
+        // 函数地址解析 / call_fn / hook 订阅退订 / capture 拉取
         // -------------------------------------------------------------------
 
-        /// 函数地址解析入册（M4/T4.2 支撑）：profile 全函数 locate + 链步骤
+        /// 函数地址解析入册（/.2 支撑）：profile 全函数 locate + 链步骤
         /// → resolve 引擎（byte_pattern 活体扫描 / rva 直算）→ fn_addrs 整表替换。
         /// 返回报告 JSON（resolved 映射 + notes 诚实清单）。
         #[cfg(windows)]
@@ -537,7 +537,7 @@ mod imp {
             self.resolve_functions_with(profile_id, profile).await
         }
 
-        /// [`Self::resolve_functions`] 的 profile 注入形态（BUG-20261105-015）：
+        /// [`Self:resolve_functions`] 的 profile 注入形态：
         /// 向导期 profile 只在 `ziwei/drafts/<id>/`（已提交库 load 恒
         /// NotFound）——向导面（setup diff_window hook 臂）传 draft 进来，
         /// 运行时面（runtime attach 后）仍走已提交库包装。
@@ -575,7 +575,7 @@ mod imp {
             result
         }
 
-        /// call_fn（T4.1）：目标内调函数（地址由调用方解析——语义名→addr 在
+        /// call_fn（.1）：目标内调函数（地址由调用方解析——语义名→addr 在
         /// 工具层裁决）。超时预算 = CMD_TIMEOUT + timeout_ms（payload 应答前
         /// 命令循环被占用，须大于看门狗窗口）。
         #[cfg(windows)]
@@ -608,7 +608,7 @@ mod imp {
             result
         }
 
-        /// hook 订阅（T4.2/T4.6）：语义名（函数或链步骤键）→ hook_set 补丁。
+        /// hook 订阅（.2/.6）：语义名（函数或链步骤键）→ hook_set 补丁。
         /// 幂等：同语义名已订阅 = 直接返回现状（不重复补丁）。
         #[cfg(windows)]
         pub async fn hook_start(
@@ -712,7 +712,7 @@ mod imp {
             }
         }
 
-        /// capture 拉取（T4.3）：poll_events → 事件批按 hook 绑定归类 →
+        /// capture 拉取（.3）：poll_events → 事件批按 hook 绑定归类 →
         /// capture.decode（regs[0] 为指针时读内存解码）→ CaptureStore 回流。
         /// 返回本批 summary（含 dropped 诚实计数）。
         #[cfg(windows)]
@@ -729,7 +729,7 @@ mod imp {
                 std::collections::HashMap::new();
             for b in &bindings {
                 let Some(f) = profile.functions.iter().find(|f| f.semantic == b.semantic) else {
-                    continue; // 链步骤（::chainN）无独立 decode——v1 只记 regs
+                    continue; // 链步骤（chainN）无独立 decode——v1 只记 regs
                 };
                 if let Some(spec) = &f.capture
                     && let Some(struct_name) = spec
@@ -764,7 +764,7 @@ mod imp {
                         "regs": ev.regs,
                     });
                     // decode：regs[0] 视为结构指针（v1 约定；profile ArgSpec 注记）。
-                    // BUG-20261105-016：read_mem 必须 CMD_TIMEOUT 包装（同函数
+                    // read_mem 必须 CMD_TIMEOUT 包装（同函数
                     // poll_events / dispatch 入口同纪律）——目标停摆时裸 await
                     // 永挂并持有 link 互斥锁，调度器 poll_loop 与后续 detach
                     // 全部连锁挂死（普通 detach 无超时预算）。
@@ -797,7 +797,7 @@ mod imp {
                             }
                         }
                     }
-                    // BUG-20261105-020：落盘失败不再静默（磁盘满/权限故障时
+                    // 落盘失败不再静默（磁盘满/权限故障时
                     // 事件只活在本次响应里，TTL 清扫与审计面永久缺 these 记录
                     // 的根因是无人知道失败发生了）——warn 可观测 + stored 计数
                     // 如实不增。
@@ -824,7 +824,7 @@ mod imp {
             result
         }
 
-        /// estop 全量卸载（§9.4）：逐会话 detach，30s 总预算，逐条审计日志。
+        /// estop 全量卸载：逐会话 detach，30s 总预算，逐条审计日志。
         pub async fn estop_unload_all(&self) -> Vec<String> {
             let ids: Vec<String> = {
                 let map = self.sessions.lock().unwrap();
@@ -865,7 +865,7 @@ mod imp {
     }
 
     // -----------------------------------------------------------------------
-    // 全局槽（AppState 不可扩字段——L1 COMMANDS_REGISTRY 同款 OnceLock）
+    // 全局槽（AppState 不可扩字段—— COMMANDS_REGISTRY 同款 OnceLock）
     // -----------------------------------------------------------------------
     static SESSION_MANAGER: OnceLock<Arc<SessionManager>> = OnceLock::new();
 

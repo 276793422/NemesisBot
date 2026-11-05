@@ -1,7 +1,7 @@
-//! Tests for `loopback`（S12 覆盖率冲刺，2026-08-26；R6 增补 2026-08-27）。
+//! Tests for `loopback`（覆盖率冲刺，2026-08-26； 增补 2026-08-27）。
 //!
 //! 可达面：slot 管理 + 幂等早退 + 停止标志（预置 slot 状态绕开真实采集）；
-//! R6 增补真线程生命周期测试（start → spawn → stop → 线程自清 slot）。
+//! 增补真线程生命周期测试（start → spawn → stop → 线程自清 slot）。
 //!
 //! 结构性豁免：`run_loopback_inner` 的 WASAPI 深层（真 Render 设备 loopback
 //! capture 流 + bytes→mono 降混 + far_end 灌入）——真声卡硬件。
@@ -36,7 +36,7 @@ fn stop_loopback_without_start_is_noop() {
 #[test]
 fn exit_clears_only_own_registration_not_restarted_thread_flag() {
     let _guard = LOOPBACK_TEST_LOCK.lock().unwrap();
-    // BUG-20261029-180 回归锁：stop→start 快速重启后，旧线程退出时 slot 里
+    // 回归锁：stop→start 快速重启后，旧线程退出时 slot 里
     // 已是新线程的旗标——旧线程的退出清理必须按身份（ptr_eq）判定，不得
     // 无条件清 None（否则新线程从此不可停 + 下次 start 再 spawn =
     // 线程泄漏 + far-end 双喂，每次重启再漏一个）。
@@ -101,7 +101,7 @@ fn start_loopback_spawns_thread_and_stop_clears_slot() {
         );
         return;
     }
-    // R6：真线程生命周期。start → spawn 成功则 slot=Some(flag)；
+    // 真线程生命周期。start → spawn 成功则 slot=Some(flag)；
     // run_loopback 结束（有声卡：stop 置位后事件循环 ≤100ms 退出；
     // 无声卡：get_default_device Err 早退）后线程把 slot 清回 None。
     let _guard = LOOPBACK_TEST_LOCK.lock().unwrap();
@@ -111,7 +111,7 @@ fn start_loopback_spawns_thread_and_stop_clears_slot() {
     // start_loopback 在 spawn 前同步置位 slot——"start 后 slot 必为 Some"
     // 的断言必须在 sleep 前做：无渲染设备的机器上 run_loopback 线程会立即
     // Err 早退并自清 slot，sleep 后再断言就成了对机器音频态的依赖
-    // （2026-08-29 无声卡态下必失败，R6 增补时的时序缺陷）。
+    // （无声卡态下必失败， 增补时的时序缺陷）。
     {
         let slot = loopback_slot().lock().unwrap();
         assert!(slot.is_some(), "slot must be Some after start_loopback");

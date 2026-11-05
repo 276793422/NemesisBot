@@ -127,7 +127,7 @@ pub fn spawn(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut client: Option<reqwest::Client> = None;
-        // 翻转沿日志标志（初值与第一轮实际状态比较后按需打印）。
+        // 翻转沿日志标志（初值与实际状态比较后按需打印）。
         let mut announced_following = false;
         let mut announced_unreachable = false;
         loop {

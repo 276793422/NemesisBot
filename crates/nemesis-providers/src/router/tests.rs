@@ -769,7 +769,7 @@ fn test_select_by_prefixed_model_finds_bare_candidate() {
 }
 
 // ===========================================================================
-// I5 (P3.4): semantic routing
+// (.4): semantic routing
 // ===========================================================================
 
 fn sem_candidate(provider: &str, model: &str, desc: &str, priority: i32) -> Candidate {
@@ -853,7 +853,7 @@ fn test_policy_semantic_serde_roundtrip() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：Router::chat failover 全矩阵 + select 臂 + serde 默认
+// 补测：Router::chat failover 全矩阵 + select 臂 + serde 默认
 // ===========================================================================
 
 /// 可编程 mock provider：按调用序返回预设结果，并记录收到的 model 名。
@@ -1095,7 +1095,7 @@ async fn test_w4c_router_chat_passes_candidate_model_to_provider() {
 
 #[tokio::test]
 async fn test_w4c_router_chat_fallback_matches_bare_candidate_on_prefixed_request() {
-    // BUG-20261104-367：fallback 循环曾用 `c.model == resolved` 精确相等，
+    // fallback 循环曾用 `c.model == resolved` 精确相等，
     // 与同函数 selection 的 model_matches 判据不一致——前缀请求 + 裸名候选
     // 时主级可被选中，retriable 失败后 fallback 却匹配不到任何候选 → 跨
     // provider 故障转移静默失效（返回 primary 原始错误）。回归钉：前缀
@@ -1252,7 +1252,7 @@ fn test_w4c_cosine_guard_arms() {
 }
 
 // ===========================================================================
-// B 根修补测（2026-09-17）：trait 默认 chat_stream「不支持」语义。streaming
+// B 根修补测：trait 默认 chat_stream「不支持」语义。streaming
 // 槽从 Arc<HttpProvider> 放宽为 Arc<dyn LLMProvider> 后，未实现流式的
 // provider（Codex/Cli 系等）必须诚实报错而非 panic/空流——默认实现预填
 // Unknown 错（receiver 立即终止），不留给上游悬挂的空流。

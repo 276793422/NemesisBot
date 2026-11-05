@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -10,12 +10,12 @@ use super::llm::{failed_node_result, resolve_runtime_string};
 /// Placeholder executor for `tool` nodes on engines without a tool bridge.
 ///
 /// The real executor is [`RealToolNodeExecutor`] — it dispatches to a shared
-/// [`nemesis_tools::registry::ToolRegistry`] and is wired by
+/// [`nemesis_tools::registry:ToolRegistry`] and is wired by
 /// `WorkflowEngine::new_integrated*` (gateway side). Engines built with
 /// `WorkflowEngine::new()` (CLI bare engine) have no registry, so this
 /// placeholder answers instead.
 ///
-/// (BUG #32, quality-hardening goal 冲刺) It previously fabricated
+/// (, quality-hardening goal 冲刺) It previously fabricated
 /// `{"tool":…,"status":"success"}` + Completed without executing anything —
 /// a silent fake success: `nemesisbot workflow run` reported Completed for
 /// tool-node workflows while doing none of the work. It now surfaces an
@@ -224,8 +224,8 @@ pub(super) fn resolve_items_list(
 
 /// Convert a `ToolResult` into a workflow `NodeResult`.
 ///
-/// Tool success → Completed with `output = {tool, result, ...}`.
-/// Tool error   → Failed with the LLM-facing message in `error`.
+/// Tool success → Completed with `output = {tool, result,...}`.
+/// Tool error → Failed with the LLM-facing message in `error`.
 fn tool_result_to_node_result(
     node_id: &str,
     started: chrono::DateTime<Local>,

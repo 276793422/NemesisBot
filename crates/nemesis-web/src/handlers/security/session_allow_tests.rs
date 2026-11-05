@@ -1,4 +1,4 @@
-//! 会话级全部放行（2026-10-24 长任务无人值守计划）：session_allow 双写 /
+//! 会话级全部放行（2026-10-24 长任务）：session_allow 双写 /
 //! session_allow_status 双臂 / 会话键推导与 chat.sync 公式字节一致。
 
 use super::*;
@@ -149,7 +149,7 @@ fn session_allow_persisted_flag_survives_state_rebuild() {
 
 // 回归锁（外评探针反转）：持久化失败必须诚实响应 ---
 //
-// 旧形态：write_session_allow_all 吞错返 ，handler 无视结果照常返回普通
+// 旧形态：write_session_allow_all 吞错返，handler 无视结果照常返回普通
 // 成功——「关闭放行」持久化失败后磁盘残留 true，重启 hydrate 把放行复活。
 // 修复后：persisted:false + warning；内存态按当次意志保留（关=安全方向）。
 // share_mode(1)（仅 FILE_SHARE_READ）锁 meta 文件逼原子替换失败。Windows

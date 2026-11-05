@@ -1,7 +1,7 @@
 //! 声明式量化风险限制（vault 计划，2026-09-22 计划）。
 //!
 //! 通用机制原则：本模块不认识任何业务名词——工具经
-//! [`Tool:limit_categories()`] 声明自己属于哪些类别（如 exec、
+//! [`Tool::limit_categories()`] 声明自己属于哪些类别（如 exec、
 //! mass_message），规则由配置 `security.limits`（类别 → {max, window_secs}）
 //! 提供，装配层（nemesisbot security_setup）启动时注入 [`set_rules`]。
 //! 未注入或类别无规则 = 不限（缺省全关）。
@@ -18,7 +18,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-/// 单类别规则（与 nemesis_config:RateLimitRule 同构——机制层不反向依赖
+/// 单类别规则（与 nemesis_config::RateLimitRule 同构——机制层不反向依赖
 /// 配置层的 serde 形态，装配层负责转换）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LimitRule {

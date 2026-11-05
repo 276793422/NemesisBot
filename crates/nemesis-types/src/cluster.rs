@@ -27,7 +27,7 @@ pub struct Task {
     pub completed_at: Option<String>,
 }
 
-/// L13-b（2026-11-03 三期）：mandate 执行期守卫投影。B 端（PeerChatHandler）
+/// b（三期）：mandate 执行期守卫投影。B 端（PeerChatHandler）
 /// 验签通过后从 mandate body 派生（剥掉签名/时间戳，只留执行期约束），随
 /// ClusterTask 进执行面。类型放 nemesis-types 而非 nemesis-cluster：
 /// nemesis-agent 不能依赖 nemesis-cluster（工具面 crate 依赖纪律），单类型
@@ -74,10 +74,10 @@ pub enum NodeRole {
 }
 
 impl NodeRole {
-    /// 解析角色字符串（单一真相源：peers.toml `[node].role`、UDP 广播、
+    /// 解析角色字符串（统一定义：peers.toml `[node].role`、UDP 广播、
     /// 身份更新都走这里）。接受现行词表 `coordinator` 与旧值
     /// `master`/`manager`（向后兼容），其余一律回落 Worker。
-    /// BUG-20261102-318：大小写不敏感——serde 直解路径有 `alias = "Master"`
+    /// 大小写不敏感——serde 直解路径有 `alias = "Master"`
     /// 兜存量旧 JSON 词（同文件上方变体定义），字符串路径却大小写敏感，
     /// 同一存量词 "Master" 两路径分叉（serde=Coordinator / 字符串=Worker）：
     /// peers.toml 手写 "Master" 的节点被 Worker 化（看板权威职责丢失 +
@@ -109,7 +109,7 @@ pub struct RpcMessage {
     pub timestamp: String,
 }
 
-/// 看板讨论唤醒事件（Swarm M3：wake.post 下行 / board.sync 补拉的反序列化
+/// 看板讨论唤醒事件（Swarm：wake.post 下行 / board.sync 补拉的反序列化
 /// 产物，投进 cluster agent loop 的 select 队列——worker 端 handler 越薄
 /// 越好，这里只带数据不带行为）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -135,7 +135,7 @@ pub struct DiscussionEvent {
     #[serde(default)]
     pub new_sender: String,
     /// 触发消息发送者的身份种类（Actor.kind：admin=人类 / agent=节点 /
-    /// system=系统；2026-10-23 身份透传——此前只传裸 id，worker 的 LLM
+    /// system=系统； 身份透传——此前只传裸 id，worker 的 LLM
     /// 无从知晓说话的是人还是节点，@all 后对着人类只能 @ 自己）。
     #[serde(default)]
     pub sender_kind: String,

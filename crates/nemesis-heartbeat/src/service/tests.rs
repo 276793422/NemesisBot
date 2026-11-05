@@ -30,10 +30,10 @@ fn test_status() {
     assert_eq!(status["beat_count"], serde_json::json!(0));
 }
 
-// BUG-20261025-80 回归锁：Default 的 interval 必须与 new(0,..) 契约口径
+// 回归锁：Default 的 interval 必须与 new(0,..) 契约口径
 // （缺省 30 分钟）等值。旧 Default 是 30 秒——同文件三处「缺省间隔」
 // 语义（new 契约 / serde 缺省 / default_interval_minutes 字段）之外的
-// 第四处分裂，任何 ..Default::default() 采纳者拿到 60× 频率的 LLM 锤。
+// 第四处分裂，任何..Default::default() 采纳者拿到 60× 频率的 LLM 锤。
 #[test]
 fn test_default_interval_matches_new_zero_contract() {
     let default_cfg = HeartbeatConfig::default();
@@ -90,7 +90,7 @@ fn test_handler() {
     assert_eq!(called.load(Ordering::SeqCst), 0);
 }
 
-// BUG-20261102-301 回归锁：handler 执行墙钟超过 interval（错过多拍）后
+// 回归锁：handler 执行墙钟超过 interval（错过多拍）后
 // 必须恰好补一拍（Delay 语义：从当前时刻重排），不得按默认 Burst 逐拍
 // 补发——本循环的 tick 消费者是完整 agent loop（LLM+工具轮次），逐拍
 // 补发 = 连环心跳执行（LLM 成本放大 + HEARTBEAT.md 任务重复副作用）。
@@ -181,9 +181,9 @@ fn test_is_heartbeat_file_empty_truly_empty() {
 
 #[test]
 fn test_is_heartbeat_file_empty_bom_comments_only() {
-    // BUG-20261105-030：UTF-8 BOM（EF BB BF，旧版 Notepad/部分编辑器保存常态）
-    // 不在 char::is_whitespace 内，trim 不剥——BOM 开头的注释-only 文件第一行
-    // 是 "\u{feff}# ..." 不以 '#' 开头，误判为有实质内容 → 生产 tick
+    // UTF-8 BOM（EF BB BF，旧版 Notepad/部分编辑器保存常态）
+    // 不在 char:is_whitespace 内，trim 不剥——BOM 开头的注释-only 文件第一行
+    // 是 "\u{feff}#..." 不以 '#' 开头，误判为有实质内容 → 生产 tick
     // （execute_heartbeat_tick → build_prompt_from_workspace）每拍空跑完整
     // agent loop（LLM 成本 + 注释清空这一文档化停心跳方式失效）。
     let svc = HeartbeatService::new(HeartbeatConfig::default());
@@ -421,7 +421,7 @@ fn test_send_response_internal_channel() {
 fn test_config_default_values() {
     let config = HeartbeatConfig::default();
     assert!(config.enabled);
-    // BUG-20261025-80：缺省间隔与 new(0) 契约同口径（30 分钟），旧 30 秒
+    // 缺省间隔与 new(0) 契约同口径（30 分钟），旧 30 秒
     // 是分裂第四处。专锁见 test_default_interval_matches_new_zero_contract。
     assert_eq!(config.interval, Duration::from_secs(30 * 60));
     assert!(config.workspace.is_none());
@@ -436,7 +436,7 @@ fn test_config_new_disabled() {
     assert_eq!(config.workspace, Some("/tmp/ws".to_string()));
 }
 
-// BUG-20261025-64 回归锁（旧形态必红：gateway services.rs 本地手搓映射为
+// 回归锁（旧形态必红：gateway services.rs 本地手搓映射为
 // 0→300s、<5 分钟直通无钳制）：间隔解析收编 `HeartbeatConfig::new` 单一
 // 真相源后，契约口径在此钉死——0=缺省 30 分钟、<5 分钟钳到 5 分钟下限
 // （每次 tick 是一整轮 agent LLM 调用，下限防配置写小把 LLM 打穿）。
@@ -463,7 +463,7 @@ fn test_config_new_clamps_interval() {
     );
 }
 
-// BUG-20261025-65 回归锁：on_beat 回调在有效 tick（通过 skip 检查、内部
+// 回归锁：on_beat 回调在有效 tick（通过 skip 检查、内部
 // beat 计数自增处）触发；旧形态该回调面不存在，/ready beat_count 恒 0。
 #[tokio::test]
 async fn test_on_beat_callback_fires_on_tick() {
@@ -1469,8 +1469,8 @@ async fn test_concurrent_start_requests() {
     svc.stop();
 }
 
-// BUG-20261025-46 回归锁：心跳排除集合与 nemesis-types 的内部通道集合是
-// 刻意不同的两个语义（防止未来被「统一」到单一真相源）。
+// 回归锁：心跳排除集合与 nemesis-types 的内部通道集合是
+// 刻意不同的两个语义（防止未来被「统一」到统一定义）。
 #[test]
 fn r46_heartbeat_excluded_channels_intentionally_differs_from_internal_channels() {
     // 集合本体不同。
@@ -1488,7 +1488,7 @@ fn r46_heartbeat_excluded_channels_intentionally_differs_from_internal_channels(
     }
 }
 
-// BUG-20261028-113 红证回归锁：handler panic 曾沿调用栈杀死常驻 tick
+// 红证回归锁：handler panic 曾沿调用栈杀死常驻 tick
 // 任务——心跳服务静默永久停摆（running 残留 true，handle 无人 await，
 // panic 无任何日志面）。修复 = catch_unwind 隔离（对齐 observer
 // emit_sync 纪律）：panic 记 error、本拍跳过、循环继续。

@@ -1,4 +1,4 @@
-//! [`super`] 检查证据捕获单元测试（②typed checks 块，2026-10-19）。
+//! [`super`] 检查证据捕获单元测试（typed checks 块，2026-10-19）。
 
 use super::*;
 

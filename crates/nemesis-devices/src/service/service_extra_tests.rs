@@ -2,7 +2,7 @@
 //! - `with_config(monitor_usb=true)` line 136
 //! - `start()` source iteration (lines 213-235) via a mock EventSource
 //! - `stop()` source error path (lines 251-253)
-//! - `handle_events_task` event loop (notification routing since BUG-20261028-126)
+//! - `handle_events_task` event loop (notification routing since)
 //! - All parse/serialization edge cases
 //! - All bus/state configuration combinations
 
@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tokio::sync::mpsc;
 
 // ---------------------------------------------------------------------------
-// BUG-20261028-126：handle_events_task 签名从 bool 探测值改为真实依赖
+// handle_events_task 签名从 bool 探测值改为真实依赖
 // （bus/state Arc 克隆）。既有 smoke 测试统一经空依赖 helper 构造。
 // ---------------------------------------------------------------------------
 
@@ -412,7 +412,7 @@ async fn test_handle_events_task_with_bus_and_state_true() {
 
 #[tokio::test]
 async fn test_handle_events_task_with_bus_and_state_false() {
-    // 同上（BUG-20261028-126 后 bool 探测参数已退役，两用例保留 smoke 覆盖）。
+    // 同上（后 bool 探测参数已退役，两用例保留 smoke 覆盖）。
     let (tx, rx) = mpsc::channel::<DeviceEvent>(8);
     let stop = Arc::new(AtomicBool::new(false));
     let stop_clone = stop.clone();
@@ -1492,7 +1492,7 @@ fn test_set_state_manager_overrides_previous() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261028-126 回归锁：事件必须真正路由到通知（bus + state 接线后）
+// 回归锁：事件必须真正路由到通知（bus + state 接线后）
 //
 // 修前 handle_events_task 收到事件只 debug log（bool 探测参数弃用），
 // send_notification 生产零调用——本测试的 PushingSource 事件永不触达

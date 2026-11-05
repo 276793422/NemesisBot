@@ -181,7 +181,7 @@ impl AgentLoop {
         node_id: &str,
         session_key: &str,
     ) {
-        // ：panic 兜底守卫（同 admitted/维护尾巴
+        // panic 兜底守卫（同 admitted/维护尾巴
         // ——RPC ACK 等待/落盘路径 panic 展开时释放会话）。正常路径在两个
         // 出口各显式 drop（= 原 release_session），均先于 drain。
         let _busy_guard = super::admission::SessionBusyGuard::new(self, session_key);

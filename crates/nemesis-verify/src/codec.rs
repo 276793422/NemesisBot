@@ -28,7 +28,7 @@ pub enum CodecError {
     Truncated,
     /// 某字段偏移越界（附带字段名，便于诊断）。
     FieldOutOfBounds(&'static str),
-    /// Optional Header Magic 既非 PE32(0x10b) 也非 PE32+(0x20b)。
+    /// Optional Header Magic 既非 (0x10b) 也非 +(0x20b)。
     UnknownOptionalHeaderMagic(u16),
     /// ELF e_ident[EI_CLASS] 非 1(32 位) 也非 2(64 位)。
     UnsupportedElfClass(u8),

@@ -1,6 +1,6 @@
-//! L07（2026-11-01）：审批卡 diff 预览生成——挂起点（拦截处）把「将要发生
+//! （2026-11-01）：审批卡 diff 预览生成——挂起点（拦截处）把「将要发生
 //! 的变化」算成 unified diff / 命令现场，随审批卡下发。设计文档：
-//! `docs/PLAN/2026-11-01_L07审批卡diff预览与孤儿卡清理_设计文档.md`。
+//! `审批卡diff预览与孤儿卡清理_设计文档`。
 //!
 //! 分派按 **args 字段形态**（content / old_text+new_text / edits[] /
 //! command）而非工具名——挂起点收到的 operation 是 op_type 字符串，
@@ -31,7 +31,7 @@ pub fn build_preview(
     if !args.is_object() {
         return None;
     }
-    // 分派表按序首中（P5：一次只产一种 preview，不拼接）。
+    // 分派表按序首中（一次只产一种 preview，不拼接）。
     if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
         return build_multiedit_preview(edits);
     }
@@ -155,7 +155,7 @@ fn build_edit_preview(
     }
 }
 
-/// multiedit（`edits: [{path, old_text, new_text}, ...]`）：逐文件模拟替换
+/// multiedit（`edits: [{path, old_text, new_text},...]`）：逐文件模拟替换
 /// （同文件按序累积——与工具原子语义一致），每文件一段 diff。
 fn build_multiedit_preview(edits: &[serde_json::Value]) -> Option<(String, &'static str)> {
     if edits.is_empty() {
@@ -287,7 +287,7 @@ fn unified_diff(old: &str, new: &str, path: &str) -> String {
         new.lines().collect()
     };
     // 空文件行数修正：lines() 对空串给 0 行，但「空文件 → 有内容」要显式
-    // 表达为全量新增（-0,0 +1,N）。
+    // 表达为全量新增（0,0 +1,N）。
     let (old_label, new_label) = (format!("a/{path}"), format!("b/{path}"));
     if a.is_empty() && b.is_empty() {
         return String::new();

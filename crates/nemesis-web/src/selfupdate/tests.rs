@@ -227,7 +227,7 @@ fn boot_recovery_success_sweeps_staging_residue() {
     let ws = tmp_dir("boot-sweep");
     let full = "0123456789abcdef0123456789abcdef01234567";
     save_journal(&ws, &journal("restarting", full, "nowhere.old")).unwrap();
-    // staging 残留（新布局）：back/ 抽屉 = exe .old 文件 + plugins .old/.new
+    // staging 残留（新布局）：back/ 抽屉 = exe.old 文件 + plugins.old/.new
     // 目录（PID 后缀形态，与生产 staging_paths/plugins_staging_paths 同构）。
     let exe = ws.join("current.exe");
     std::fs::write(&exe, b"new-image").unwrap();
@@ -414,7 +414,7 @@ fn rollback_plugins_noop_when_no_journal_fields() {
     assert!(detail.contains("无 plugins 舞步记录"), "{detail}");
 }
 
-/// rollback_update 合成语义：exe .old 缺席 + plugins 双字段空 = 双 noop
+/// rollback_update 合成语义：exe.old 缺席 + plugins 双字段空 = 双 noop
 /// （noop=true 的唯一形态——boot 收口据此判 rollback_noop 而非 rolled_back）。
 #[test]
 fn rollback_update_double_noop_when_no_recoverable_state() {
@@ -790,7 +790,7 @@ fn sweep_stale_staging_removes_pid_suffixed_leaves_failed() {
     for f in &stale {
         std::fs::write(f, b"stale").unwrap();
     }
-    // 旧布局过渡面：根目录他进程 PID 残留 + 根目录 .failed 诊断现场。
+    // 旧布局过渡面：根目录他进程 PID 残留 + 根目录.failed 诊断现场。
     let legacy_old = ws.join(format!(
         "nemesisbot.old-{}",
         std::process::id() + 1 // 模拟他进程 PID 残留（避开本进程真名）
@@ -829,8 +829,8 @@ fn sweep_stale_staging_removes_pid_suffixed_leaves_failed() {
 /// 主断言（boot restarting 相位）：回滚执行失败 → action=recovery_failed、
 /// journal **保留**（下次 boot 重试）、目标 exe 内容不被破坏。
 /// 失败注入（Windows）：.old 被本进程以 share_mode=0 独占打开 → rename 报
-/// 占用。Windows 舞步下运行中 exe（target）先让位 .failed， .old→target
-/// 撞锁失败后 .failed 回手——target 最终保持原内容。
+/// 占用。Windows 舞步下运行中 exe（target）先让位.failed，.old→target
+/// 撞锁失败后.failed 回手——target 最终保持原内容。
 #[cfg(windows)]
 #[test]
 fn rollback_failure_keeps_journal_and_reports_recovery_failed() {
@@ -849,7 +849,7 @@ fn rollback_failure_keeps_journal_and_reports_recovery_failed() {
         ),
     )
     .unwrap();
-    // 独占 .old（无共享）→ rename(.old→target) 必败。
+    // 独占.old（无共享）→ rename(.old→target) 必败。
     let _lock = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(0)
@@ -899,7 +899,7 @@ fn boot_recovery_staging_rollback_failure_keeps_journal() {
 }
 
 /// Windows 舞步正例（boot restarting 相位，目标被占用态由测试文件模拟）：
-/// 回滚成功 = target 内容为 .old、.old 消失、被替换的 exe 留 .failed 诊断
+/// 回滚成功 = target 内容为.old、.old 消失、被替换的 exe 留.failed 诊断
 /// 现场（与回滚源同目录——随 old 路径推导，journal 布局透明）、journal 清除。
 #[test]
 fn boot_recovery_rollback_windows_dance_leaves_failed_diagnostics() {
@@ -992,7 +992,7 @@ fn install_lock_serializes_holders() {
 fn wait_for_pid_exit_returns_fast_for_dead_pid() {
     // Windows：u32::MAX 不可能是真实 PID——tasklist 探不到 → 判死。
     // Linux：procps 4 的 /usr/bin/kill 对超 pid_t 域的值反而 rc=0
-    // （判活假象，CI ；bash builtin rc=1 但 Command 找的
+    // （判活假象，CI；bash builtin rc=1 但 Command 找的
     // 是 PATH 上的二进制）——改用 ns_last_pid+N 构造「合法域内但当前
     // 未分配」的死 PID；procfs 不可读则诚实跳过（环境探针纪律）。
     #[cfg(windows)]
@@ -1089,7 +1089,7 @@ mod gated {
         assert!(err.contains("子目录嵌套"), "{err}");
     }
 
-    // tar.gz 臂（Linux 主包 / macOS 留位同型）：CI `tar -czf … -C staging .`
+    // tar.gz 臂（Linux 主包 / macOS 留位同型）：CI `tar -czf … -C staging.`
     // 条目带 `./` 前缀、目录条目跳过、裸名 nemesisbot、unix mode 记录。
 
     fn tar_gz_bytes(entries: Vec<(tar::EntryType, &str, Option<u32>, Vec<u8>)>) -> Vec<u8> {
@@ -1603,7 +1603,7 @@ mod gated {
         }
     }
 
-    // 两段式 ：pending 包（updates/）往返与损坏整清
+    // 两段式：pending 包（updates）往返与损坏整清
 
     fn sample_pending() -> PendingUpdate {
         PendingUpdate {

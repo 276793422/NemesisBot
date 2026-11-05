@@ -1,8 +1,8 @@
 //! Skills search and install tools.
 //!
 //! These tools delegate to the real `nemesis-skills` crate types:
-//! - `FindSkillsTool` delegates to `nemesis_skills::registry::RegistryManager`
-//! - `InstallSkillTool` delegates to `nemesis_skills::installer::SkillInstaller`
+//! - `FindSkillsTool` delegates to `nemesis_skills::registry:RegistryManager`
+//! - `InstallSkillTool` delegates to `nemesis_skills::installer:SkillInstaller`
 //!
 //! Mirrors Go's `FindSkillsTool` (module/tools/skills_search.go) and
 //! `InstallSkillTool` (module/tools/skills_install.go).
@@ -19,7 +19,7 @@ use tokio::sync::Mutex;
 
 /// Find skills tool - searches configured skill registries.
 ///
-/// Delegates to `nemesis_skills::registry::RegistryManager::search_all()`
+/// Delegates to `nemesis_skills::registry:RegistryManager::search_all()`
 /// for concurrent multi-registry search, matching Go's `FindSkillsTool.Execute()`.
 pub struct FindSkillsTool {
     registry: Arc<Mutex<Option<nemesis_skills::registry::RegistryManager>>>,
@@ -144,7 +144,7 @@ impl Tool for FindSkillsTool {
 
 /// Install skill tool - installs a skill from a configured registry.
 ///
-/// Delegates to `nemesis_skills::installer::SkillInstaller` for downloading,
+/// Delegates to `nemesis_skills::installer:SkillInstaller` for downloading,
 /// linting, quality checking, and installing skills. Mirrors Go's
 /// `InstallSkillTool.Execute()`.
 pub struct InstallSkillTool {

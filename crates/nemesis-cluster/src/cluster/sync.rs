@@ -1,19 +1,19 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
 
 impl Cluster {
-    /// state.toml 回读（集群完备性加固 2026-09-11）：sync_loop 周期把注册表
+    /// state.toml 回读（集群完备性加固）：sync_loop 周期把注册表
     /// 持久化到 state.toml，但重启后从未回读——discovered 历史在首个 sync
     /// tick 就被「只有本节点」的注册表覆盖（write-only 假持久化）。本函数把
-    /// 磁盘 discovered 条目以 **Offline** 状态种回注册表（G2 探针 1/5 降频
+    /// 磁盘 discovered 条目以 **Offline** 状态种回注册表（探针 1/5 降频
     /// 或 announce 到达时复活；**绝不因回读直接 Online**——诚实语义：存活
     /// 未知）。跳过：空 id、本节点、黑名单节点（removed_peers 不复活）、
     /// 已有条目（静态 peers 在 start() 前装载，不覆盖）、不可拨号地址
-    /// （空/无 host:port 形态，与 G14 的 rpc_port=0 同语义）、**同地址或
-    /// 同名的既有条目**（2026-09-12 T13 根修：注册表里已有该物理节点时再
+    /// （空/无 host:port 形态，与 的 rpc_port=0 同语义）、**同地址或
+    /// 同名的既有条目**（根修：注册表里已有该物理节点时再
     /// 种一份会造出「同节点双条目」—— RpcClient 直接键命中离线影子就拒绝
     /// 拨号，遮蔽同地址的运行时 id 在线条目）。返回种入数。
     pub(super) fn restore_discovered_from_state(&self) -> usize {
@@ -33,7 +33,7 @@ impl Cluster {
             if pc.id.trim().is_empty() || pc.id == self.node_id {
                 continue;
             }
-            // BUG-20261101-263：旧版 state.toml 可能存过未过身份闸的 id
+            // 旧版 state.toml 可能存过未过身份闸的 id
             // （闸先于本函数存在）——坏 id 不种回注册表，与 announce 闸同源。
             if !crate::cluster_config::is_valid_node_identity(&pc.id) {
                 continue;
@@ -51,7 +51,7 @@ impl Cluster {
             // 同地址 / 同名既有条目 → 同一物理节点已在注册表（典型：静态
             // peer 按运行时 id 键控，state.toml 还留着升级前的占位名条目，
             // 如 id="Node-A"）。再种一份 = RpcClient 直接键命中离线影子拒绝
-            // 拨号（UAT T13 实证：D 重启后 D→A 全部 duration_ms=0 失败）。
+            // 拨号（UAT 实证：D 重启后 D→A 全部 duration_ms=0 失败）。
             // 跳过，让既有条目承担探针/announce 复活。
             let name = pc.name.trim();
             let shadows_existing = self.registry.find_by_address(addr).is_some()
@@ -97,7 +97,7 @@ impl Cluster {
                 // 自会重学——空 = 未宣告，绝不因回读假造清单）。
                 agents: Vec::new(),
                 // runtime_backend 与 agents 相反是静态身份——持久化并回读
-                // （P5 第 4 步 ③，同 professions/tier）。
+                // （同 professions/tier）。
                 runtime_backend: pc.runtime_backend.clone(),
                 // build 同纪律：回读种入的 Offline 占位不带构建号（空 =
                 // 未宣告），下次 announce/探针到达自会补齐。
@@ -139,9 +139,9 @@ impl Cluster {
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(interval_duration);
-            // BUG-20261101-264：默认 Burst 会在挂起恢复后把错过的 announce/
+            // 默认 Burst 会在挂起恢复后把错过的 announce/
             // 同步 tick 逐个补发（UDP 洪泛对端）——Delay 从当前时刻重排
-            // （同 ：1509 先例）。
+            // （同：1509 先例）。
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tokio::select! {
@@ -233,7 +233,7 @@ impl Cluster {
         };
         self.registry.upsert(info);
 
-        // QUIC 插件化 M2 热更钩子：身份热改（8 个 setter 调用点全覆盖——
+        // QUIC 插件化 热更钩子：身份热改（8 个 setter 调用点全覆盖——
         // 本函数是它们共同尾站）后名册注册载荷里的成员身份字段同步刷新。
         // registry_start 插件侧幂等停旧起新；无 runtime 上下文（纯同步
         // 测试路径）/ 名册未挂（params None）= 静默跳过。

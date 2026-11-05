@@ -88,9 +88,9 @@ impl ModuleHandler for ChatHandler {
             nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
         );
         // todo_get 是只读文件读取，不需要 AgentLoop——
-        // 提前返回，不占用 loop 句柄。 ：项目会话的
+        // 提前返回，不占用 loop 句柄。：项目会话的
         // todo 落在项目目录（TodoWriteTool 按 loop 的 workspace root 解析
-        // sessions/），先判项目根再读；无归属回落主 workspace。
+        // sessions），先判项目根再读；无归属回落主 workspace。
         if cmd == "todo_get" {
             let workspace = crate::handlers::projects::project_root_for_session(&session_key)
                 .or_else(|| ctx.workspace.clone())
@@ -111,7 +111,7 @@ impl ModuleHandler for ChatHandler {
         // 的测量口径（与压缩压力同公式，见 loop.rs session_context_status）。
         if cmd == "context_status" {
             let status = agent_loop.session_context_status(&session_key);
-            // 量测（改进项三期）：tool defs 供给面字节随行
+            // 量测：tool defs 供给面字节随行
             // AgentLoop 单一真相源量测（openai 形态代理口径），与压缩
             // 压力快照同请求返回；-建设惰性 schema 的前后对比基线源。
             let tool_defs = agent_loop.tool_defs_metrics();
@@ -164,10 +164,10 @@ impl ModuleHandler for ChatHandler {
                 "work": work,
             })));
         }
-        // （能力扩展）：steer/followUp 队列可观测——`chat.queue_status`
+        // steer/followUp 队列可观测——`chat.queue_status`
         // 返回两条队列各几条（steer = next_step 插队，followUp = next_turn
         // 排队），前端徽标数据源。只读快照，与 `agent.inbox_status` 同源
-        // 同口径（`InboxStatus` 单一真相源），字段名按 契约语义命名；
+        // 同口径（`InboxStatus` 统一定义），字段名按 契约语义命名；
         // loop 归属解析失败由 resolve 的 Err 传播（与 compact/clear 同姿态）。
         if cmd == "queue_status" {
             let s = agent_loop.inbox_status(&session_key);
@@ -314,6 +314,6 @@ pub(crate) fn read_session_todos(
 #[cfg(test)]
 mod agt_tests;
 
-// （能力扩展）：chat.queue_status 契约测试（steer/followUp 计数面）。
+// chat.queue_status 契约测试（steer/followUp 计数面）。
 #[cfg(test)]
 mod queue_status_tests;

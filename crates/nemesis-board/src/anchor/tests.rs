@@ -1,4 +1,4 @@
-//! P2（B1）锚点模块测试：解析穷举 / 执行器 / 路径安全 / 渲染。
+//! 锚点模块测试：解析穷举 / 执行器 / 路径安全 / 渲染。
 //! 纯逻辑 + 临时目录文件只读，无网络无命令。
 
 use super::*;
@@ -88,7 +88,7 @@ fn parse_regex_pattern_may_contain_spaces() {
     assert_eq!(anchors[0].pattern.as_deref(), Some("验收 标准 v2"));
 }
 
-// ---------- P4（2026-10-13）：` # ` 显式注释切分 / 编写陷阱防线 ----------
+// ----------：` # ` 显式注释切分 / 编写陷阱防线 ----------
 
 /// ` # ` 之后是注释，不参与任何臂的语义；raw 保留全行（回显语义不变）。
 #[test]
@@ -239,7 +239,7 @@ fn run_content_regex_matches_delivery_text() {
     assert!(!results[0].passed);
 }
 
-// 自指防御（2026-09-12 UAT T30③ 回归锁）：交付文本逐字引用锚点行本身
+// 自指防御（UAT ③ 回归锁）：交付文本逐字引用锚点行本身
 // （任务 prompt 回显）不构成满足锚点的证据；剥离引文后其余文本无命中
 // → 诚实 FAIL。
 #[test]
@@ -305,7 +305,7 @@ fn run_empty_anchor_group_passes() {
 #[test]
 fn path_safety_rejects_absolute_and_traversal_at_parse_time() {
     // 形态不安全（绝对路径 / `..` 穿越）= 解析期拒绝：不产出锚点、回落
-    // 语义项 + RejectedAnchor 告警记录（T2-3 语义：标准自身的毛病不惩罚
+    // 语义项 + RejectedAnchor 告警记录（语义：标准自身的毛病不惩罚
     // 执行者）。首条 `file:/etc/passwd` 在 Windows 上不是 is_absolute
     // （无盘符前缀），但 RootDir 组件仍被拒。
     let (anchors, semantic, rejected) = parse_anchors(
@@ -359,7 +359,7 @@ fn path_safety_rejects_symlink_escape_at_runtime_backstop() {
 }
 
 // ---------- Windows 形态用例（盘符 / UNC / 8.3 短名）----------
-// 形态闸是 FS 无关契约：盘符/UNC 拒收在所有平台生效（2026-09-12 根修，
+// 形态闸是 FS 无关契约：盘符/UNC 拒收在所有平台生效（根修，
 // 此前生产代码 cfg(windows) 门控导致 Linux 全放行），本组测试跨平台跑。
 
 #[test]
@@ -411,7 +411,7 @@ fn render_summary_and_failures_are_per_anchor_readable() {
     assert!(!all_passed(&results));
 }
 
-// ---------- 拓扑约束谓词（2026-10-08 NB-4/NB-5/NB-6 根修回归锁）----------
+// ---------- 拓扑约束谓词（// 根修回归锁）----------
 
 #[test]
 fn has_file_anchor_and_content_regex_predicate_matrix() {
@@ -435,13 +435,13 @@ fn has_file_anchor_and_content_regex_predicate_matrix() {
     // 非法正则的 re: 行回落语义项 → 不算锚点。
     assert!(!has_file_anchor("[CHECK] re:[非法正则"));
     // 路径不安全的 file: 行被解析期拒绝（回落语义项 + 告警）→ 不算锚点，
-    // 不产生拓扑约束（T2-3 语义：不安全锚点是标准自身的毛病，重派惩罚
+    // 不产生拓扑约束（语义：不安全锚点是标准自身的毛病，重派惩罚
     // 不到执行者；若将来这类行成为生效锚点，本断言会红并要求重新评估）。
     assert!(!has_file_anchor("[CHECK] file:../evil.txt exists"));
     assert!(!has_file_anchor("[CHECK] file:C:\\evil.txt exists"));
 }
 
-// ---------- run_anchors_dual：项目目录 fallback（2026-10-09 NB-22 根修）----------
+// ---------- run_anchors_dual：项目目录 fallback（根修）----------
 // 档案管线把 worker 变更集合并在项目目录（不进主 workspace），非档案管线
 // 首跑件直写主 workspace 根——文件类锚点双根 OR 兼容两种交付形态。
 
@@ -556,7 +556,7 @@ fn dual_root_content_regex_unaffected() {
     assert!(hit[0].passed, "{}", hit[0].detail);
 }
 
-// ---------- exec: 锚点（M7：策略闸 / 超时 / 输出截断 / 跳过注记）----------
+// ---------- exec: 锚点（策略闸 / 超时 / 输出截断 / 跳过注记）----------
 
 fn exec_anchor(command: &str) -> Vec<AnchorCheck> {
     let (anchors, _, _) = parse_anchors(&format!("[CHECK] exec:{command}"));
@@ -730,8 +730,8 @@ fn exec_anchor_runs_in_project_root_when_present() {
     assert!(file_results[0].passed, "{}", file_results[0].detail);
 }
 
-/// exec/re 锚点不计入拓扑约束谓词（§6.1：exec 锚点 worker 自证 + master
-/// 重放，跨节点安全；E2E-1 实证 2026-10-12：exec 误计入 → 派发全体停车）。
+/// exec/re 锚点不计入拓扑约束谓词（exec 锚点 worker 自证 + master
+/// 重放，跨节点安全；E2E-1 实证：exec 误计入 → 派发全体停车）。
 /// 只有 file: 三形态（存在/正则/包含）才是拓扑约束。
 #[test]
 fn exec_anchor_not_fs_dependent_for_topology() {
@@ -773,7 +773,7 @@ fn validate_anchor_roots_triage_matrix() {
     assert!(validate_anchor_roots(&exec_anchors, &ws_missing, None).is_err());
 }
 
-// ---------- §6.1 exec 锚点两道闸：危险命令黑名单 + 环境依赖探针 ----------
+// ---------- exec 锚点两道闸：危险命令黑名单 + 环境依赖探针 ----------
 
 /// 黑名单命中 = RejectedAnchor 通道（回落语义项 + 告警记录），不是锚点、
 /// 不是静默放行。覆盖删除 / 网络外联 / 任意代码执行三类代表形态。
@@ -847,7 +847,7 @@ fn exec_anchor_env_skips_when_tool_missing() {
 }
 
 /// 探针在场路径：平台常驻工具（where/sleep）实探通过后命令照常实跑判定。
-/// 工具意外缺席的环境（罕见）诚实跳过本用例（探针纪律：环境不满足不假红）。
+/// 工具意外缺席的环境（罕）诚实跳过本用例（探针纪律：环境不满足不假红）。
 /// 不用 ping：ICMP 可被防火墙拦（工具在场 ≠ 可用，退出码环境依赖）。
 #[test]
 fn exec_anchor_runs_when_tool_present() {
@@ -875,7 +875,7 @@ fn exec_anchor_runs_when_tool_present() {
     );
 }
 
-/// NB-22 引号回归（2026-10-12 实证）：`findstr /C:"..."` 形态经
+/// 引号回归（实证）：`findstr /C:"..."` 形态经
 /// Command::arg 的 MSVCRT 转义后 cmd 无法解析（退出码 1 假 FAIL，文件在
 /// 场且内容精确仍三连重派）。修复 = run_exec_anchor 的 cmd /C 改 raw_arg
 /// 原样传串（cc_hooks.rs 同型先例）。本用例钉死带引号验证命令可真跑通过。
@@ -956,7 +956,7 @@ fn parse_exec_comment_after_quoted_arg_splits_top_level() {
 }
 
 /// ContentRegex 模式含成对引号包住的 ` # `——切分不误切（quote-aware），
-/// 且**包裹引号对被剥除**（多角度审计批 A2 根修：引号字面进正则永远
+/// 且**包裹引号对被剥除**（多角度审计批 根修：引号字面进正则永远
 /// 匹配不上——`re:"交付完成"` 字面找 `"交付完成"`）。
 #[test]
 fn parse_content_regex_quoted_hash_stays() {
@@ -969,7 +969,7 @@ fn parse_content_regex_quoted_hash_stays() {
     );
 }
 
-/// A2 根修行为锁：包裹引号的 CJK 模式必须真的匹配得到交付文本。
+/// 根修行为锁：包裹引号的 CJK 模式必须真的匹配得到交付文本。
 #[test]
 fn content_regex_wrap_quotes_match_delivery_text() {
     let ws = temp_workspace("wrap-quote-match");
@@ -998,7 +998,7 @@ fn parse_regex_apostrophe_prose_still_splits() {
     assert_eq!(anchors[0].pattern.as_deref(), Some("it's done"));
 }
 
-/// A1 根修锁（多角度审计批）：盲切模式下注释切在**最后一个** ` # `——
+/// 根修锁（多角度审计批）：盲切模式下注释切在**最后一个** ` # `——
 /// 残引号在 pattern 中间时早切会把 pattern 主体截断在引号残迹前。
 #[test]
 fn parse_regex_blind_mode_splits_at_last_hash() {
@@ -1011,7 +1011,7 @@ fn parse_regex_blind_mode_splits_at_last_hash() {
     );
 }
 
-// ---------- required_check_gaps：必需检查契约（项 B，2026-10-22 拍板）----------
+// ---------- required_check_gaps：必需检查契约（项 B）----------
 
 fn fc(raw: &str, target: &str) -> AnchorCheck {
     AnchorCheck {

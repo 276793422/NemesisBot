@@ -361,7 +361,7 @@ pub async fn sign_upload(
     .map_err(internal)?;
 
     // registry 元数据：content_hash 与 CMS messageDigest 同源（v4_content_digest
-    // 单一真相源——verify_bytes 吊销 FileHash 维传的是 CMS 内嵌 digest，记账侧
+    // 单一权威定义——verify_bytes 吊销 FileHash 维传的是 CMS 内嵌 digest，记账侧
     // 存别的口径会让该维度永远查不中）+ key_fp（发行方公钥指纹）
     let content_hash: [u8; 32] =
         nemesis_verify::verify::v4_content_digest(&file_bytes).map_err(internal)?;

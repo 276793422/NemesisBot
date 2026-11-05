@@ -135,7 +135,7 @@ pub fn save_profile(workspace: &Path, profile: &UserProfile) -> Result<(), Strin
     save_profile_locked(workspace, profile)
 }
 
-/// [`save_profile`] 的锁内版：调用方**已持** [`nemesis_config:config_write_lock`]
+/// [`save_profile`] 的锁内版：调用方**已持** [`nemesis_config::config_write_lock`]
 /// 时使用（锁不可重入——锁内函数再走 `save_profile` 会自死锁；四路评审
 /// B- 根修配套）。
 pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<(), String> {
@@ -152,7 +152,7 @@ pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<()
 /// 开启画像（记录 enabled_at——仅向前锚点；幂等：已开启不改动）。
 ///
 /// `max_entries` = 注入条目上限，**由调用方从 config 现读传入**
-/// （`UserProfileConfig:max_entries_or(MAX_ENTRIES)`）——sweep 侧按同一
+/// （`UserProfileConfig::max_entries_or(MAX_ENTRIES)`）——sweep 侧按同一
 /// config 值截断（此前本函数内嵌硬编码 [`prune_and_cap`]
 /// (=10)，`max_entries` 配 >10 的用户 disable→enable 循环后习惯被静默
 /// 截回 10，与配置矛盾）。
@@ -199,7 +199,7 @@ pub fn prune_and_cap(profile: &mut UserProfile) {
 }
 
 /// [`prune_and_cap`](fn@prune_and_cap) 的可调上限版（config 消费点：
-/// `user_profile.max_entries`，经 `UserProfileConfig:max_entries_or` 回落
+/// `user_profile.max_entries`，经 `UserProfileConfig::max_entries_or` 回落
 /// [`MAX_ENTRIES`]）。
 pub fn prune_and_cap_with_max(profile: &mut UserProfile, max_entries: usize) {
     profile
@@ -280,7 +280,7 @@ pub fn decay_sweep_with_days(
     }
 }
 
-/// 注入段渲染（loop:messages merged snapshot 的输入；空 = 未开启或无
+/// 注入段渲染（loop::messages merged snapshot 的输入；空 = 未开启或无
 /// active 条目，零字节注入）。content 换行折叠为空格（单行纪律）。
 pub fn render_section(profile: &UserProfile) -> String {
     let mut lines = Vec::new();

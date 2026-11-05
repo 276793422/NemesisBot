@@ -6,9 +6,9 @@
 //! 任何行为不端的插件都能打死整个 gateway（DoS 面）。本探针在**真 abort
 //! 二进制**里把四条关键路径各跑一遍，任何一条没接住就以非零退码死亡：
 //!
-//! 1. `echo`      —— guest 实例化 + 正常调用（happy path）
-//! 2. `trap`      —— guest 蓄意 unreachable（wasmtime 必须接住变 Trap 错误）
-//! 3. `mem_bomb`  —— ResourceLimiter 内存上限 → 分配 trap
+//! 1. `echo` —— guest 实例化 + 正常调用（happy path）
+//! 2. `trap` —— guest 蓄意 unreachable（wasmtime 必须接住变 Trap 错误）
+//! 3. `mem_bomb` —— ResourceLimiter 内存上限 → 分配 trap
 //! 4. `fuel_bomb` —— fuel 耗尽 → trap（metering 在 abort 下正常计费）
 //!
 //! 用法（仓库根）：

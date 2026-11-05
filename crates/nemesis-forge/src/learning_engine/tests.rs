@@ -32,7 +32,7 @@ fn make_collected_with_duration(tool: &str, success: bool, duration: u64) -> Col
 
 #[test]
 fn test_ff1_adjust_confidence_uses_success_rate_not_usage_count() {
-    // F-F1: feedback must adjust the dedicated success_rate field, not corrupt
+    // F-: feedback must adjust the dedicated success_rate field, not corrupt
     // usage_count (the old code treated the integer count as a rate).
     use crate::monitor::EvaluationResult;
     use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
@@ -74,7 +74,7 @@ fn test_ff1_adjust_confidence_uses_success_rate_not_usage_count() {
 
 #[test]
 fn test_ff2_disable_degraded_skill_hides_deployed_file() {
-    // F-F2: a Degraded skill's deployed SKILL.md must be renamed to .disabled
+    // F-: a Degraded skill's deployed SKILL.md must be renamed to.disabled
     // so the skills loader (workspace/skills/*/SKILL.md) stops loading it.
     use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
     let dir = tempfile::tempdir().unwrap();
@@ -120,7 +120,7 @@ fn test_ff2_disable_degraded_skill_hides_deployed_file() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fc1_closed_loop_produces_deployed_skill() {
-    // F-C1 + F-C3 end-to-end: with pipeline+monitor injected and a shared
+    // F- + F- end-to-end: with pipeline+monitor injected and a shared
     // registry, a high-confidence tool_chain pattern (12 same-tool successes)
     // must produce an actually-deployed skill (file written + registered).
     // This is the proof that the closed loop works after the wiring fix.
@@ -133,7 +133,7 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
     let cycle_store = CycleStore::new(&forge_dir);
 
-    // Shared registry across pipeline + monitor + engine (F-C3).
+    // Shared registry across pipeline + monitor + engine (F-).
     let pipeline = Arc::new(Pipeline::new(ForgeConfig::default(), registry.clone()));
     let monitor = Arc::new(DeploymentMonitor::new(
         ForgeConfig::default(),
@@ -145,8 +145,8 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
         registry.clone(),
         cycle_store,
     );
-    engine.set_pipeline(pipeline); // F-C1
-    engine.set_monitor(monitor); // F-C1
+    engine.set_pipeline(pipeline); // F-
+    engine.set_monitor(monitor); // F-
     // Mock LLM returns a valid draft (>=50 chars, frontmatter, no dangerous /
     // secret content) -> passes validate_static; pipeline has no LLM so Stage 3
     // hardcodes score 70 -> Active -> deployed.
@@ -165,7 +165,7 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
         (0..12).map(|_| make_collected("file_read", true)).collect();
     let cycle = engine.run_cycle(&exps).await;
 
-    // F-C3: the deployed artifact is in the SHARED registry the monitor/pipeline use.
+    // F-: the deployed artifact is in the SHARED registry the monitor/pipeline use.
     let has_skill = registry
         .list(None, None)
         .iter()
@@ -174,7 +174,7 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
         has_skill,
         "closed loop should register a Skill artifact in the shared registry"
     );
-    // F-C1: a skill file was actually written to disk.
+    // F-: a skill file was actually written to disk.
     let any_skill_file = std::fs::read_dir(forge_dir.join("skills"))
         .map(|rd| {
             rd.filter_map(|e| e.ok())
@@ -185,7 +185,7 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
         any_skill_file,
         "closed loop should write a SKILL.md under forge/skills/"
     );
-    // F-M3: create_skill action should be counted in actions_taken.
+    // F-: create_skill action should be counted in actions_taken.
     assert!(
         cycle.actions_taken >= 1,
         "create_skill should be counted (F-M3)"
@@ -194,7 +194,7 @@ async fn test_fc1_closed_loop_produces_deployed_skill() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fc2_refine_then_deploy() {
-    // F-C2: a draft that fails validation must be refined, the refined version
+    // F-: a draft that fails validation must be refined, the refined version
     // re-validated and deployed (the old code discarded the refined output and
     // returned after one attempt).
     use crate::monitor::DeploymentMonitor;
@@ -256,7 +256,7 @@ async fn test_fc2_refine_then_deploy() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fm7_pipeline_lock_free_during_slow_llm() {
-    // F-M7: during the LLM call in execute_create_skill, the pipeline Mutex
+    // F-: during the LLM call in execute_create_skill, the pipeline Mutex
     // must be FREE (cloned out + guard dropped before the call). A slow mock
     // LLM (2s sleep) + a concurrent try_lock probe proves this — with the old
     // code (lock held across LLM), the probe would fail.
@@ -315,7 +315,7 @@ async fn test_fm7_pipeline_lock_free_during_slow_llm() {
 
 #[test]
 fn test_fm1_suggestions_kept_when_no_deployed_skill() {
-    // F-M1: prompt suggestions must NOT be wiped when no skill has been deployed
+    // F-: prompt suggestions must NOT be wiped when no skill has been deployed
     // (old code deleted every *_suggestion.md on each cycle unconditionally).
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path();
@@ -339,7 +339,7 @@ fn test_fm1_suggestions_kept_when_no_deployed_skill() {
 
 #[test]
 fn test_fm2a_classify_verdict_respects_configured_threshold() {
-    // F-M2a: when degrade_threshold is configured (e.g. 0.5), classify_verdict
+    // F-: when degrade_threshold is configured (e.g. 0.5), classify_verdict
     // must respect it. Old code forced -0.2 whenever threshold >= 0.0.
     use crate::monitor::DeploymentMonitor;
     use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
@@ -464,7 +464,7 @@ fn test_detect_efficiency_issue() {
         patterns
     );
     assert!(efficiency[0].description.contains("slow_tool"));
-    // R18 置信度公式钉：confidence = 1 - 1/ratio。本夹具 avg=340ms、
+    // 置信度公式钉：confidence = 1 - 1/ratio。本夹具 avg=340ms、
     // slow_tool=1000ms → ratio=50/17 → confidence=0.66。旧公式
     // `(ratio-1.0).min(1.0)` 在 ratio>2 入场过滤下恒饱和 1.0（必红）。
     assert!(
@@ -692,7 +692,7 @@ fn test_evaluate_outcomes() {
     engine.evaluate_outcomes(&outcomes);
     // Should not panic, artifact should still exist
     assert!(registry.get("test-artifact").is_some());
-    // LE2 回归钉（2026-10-16）：positive 评测必须真实调整 success_rate
+    // 回归钉：positive 评测必须真实调整 success_rate
     // （0.0 + 0.1 = 0.1）——不再是无声 no-op（旧实现 `let _ = new_rate`）。
     let art = registry.get("test-artifact").unwrap();
     assert!(
@@ -1485,7 +1485,7 @@ fn test_detect_tool_chain_patterns_empty() {
     assert!(patterns.is_empty());
 }
 
-/// LE4 回归钉（2026-10-16）：generate_actions 必须把 pattern.tools 结构化
+/// 回归钉：generate_actions 必须把 pattern.tools 结构化
 /// 带进 LearningAction.tools——此前部署点从 description 散文按 `→` 反解
 /// 析，散文不含箭头，落库的是垃圾尾词。
 #[test]
@@ -1511,7 +1511,7 @@ fn test_generate_actions_carries_structured_tools() {
     );
 }
 
-/// LE4 咬合钉：deploy_tool_signature 优先取结构化 tools；空 tools 回落
+/// 咬合钉：deploy_tool_signature 优先取结构化 tools；空 tools 回落
 /// description 解析（兼容手工构造的 action），旧解析对散文的垃圾输出
 /// 在此钉死——防有人把回落路径误当正确路径恢复。
 #[test]
@@ -1649,7 +1649,7 @@ fn test_evaluate_result_negative_verdict() {
     // Should not panic
     engine.evaluate_outcomes(&outcomes);
     assert!(registry.get("eval-neg").is_some());
-    // LE2 回归钉：negative 评测真实下调（0.5 - 0.2 = 0.3）
+    // 回归钉：negative 评测真实下调（0.5 - 0.2 = 0.3）
     let art = registry.get("eval-neg").unwrap();
     assert!(
         (art.success_rate - 0.3).abs() < 1e-9,
@@ -2094,7 +2094,7 @@ fn test_check_suggestion_adoption_removes_files() {
     let _ = std::fs::write(prompts_dir.join("other_file.md"), "other");
 
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
-    // F-M1 闸：必须存在已部署（Active）skill 才触发回收——空注册表时
+    // F- 闸：必须存在已部署（Active）skill 才触发回收——空注册表时
     // check_suggestion_adoption 早退，suggestion 存活（本测试验证的是
     // 「有部署 → 回收」路径，故注入 Active skill）。
     registry.add(nemesis_types::forge::Artifact {
@@ -2201,7 +2201,7 @@ fn test_action_to_summary_conversion() {
 }
 
 // =========================================================================
-// S8 coverage batch (quality-hardening goal 冲刺 S8)
+// coverage batch (quality-hardening goal 冲刺)
 // =========================================================================
 
 /// A valid skill draft that passes pipeline validation (Stage 3 scores 70
@@ -2765,7 +2765,7 @@ fn test_s8_execute_create_skill_action_variants() {
     }
 }
 
-/// BUG-20261029-189 红证：公开门面 refine 轮数预算必须读
+/// 红证：公开门面 refine 轮数预算必须读
 /// `learning.max_refine_rounds`（与私有 execute_create_skill 同一字段）。
 /// 修复前误读 `max_auto_creates`（每周期自动创建上限）——0 落 else 臂
 /// 拿到 3 轮预算，坏稿照样 refine 成功部署，max_refine_rounds 被无视。
@@ -2875,7 +2875,7 @@ fn test_s8_iterative_refiner_exhausts_rounds() {
     assert!(content.contains("## Error Handling")); // round 2: errors
 }
 
-/// F-S1 安全闸（2026-10-16 R16 同类扫）：LLM 自动产出的技能含危险命令
+/// F- 安全闸（同类扫）：LLM 自动产出的技能含危险命令
 /// （curl|bash）时不得部署——pipeline.validate_static 现已含危险命令面
 /// （拒绝晋升、卡 Draft），部署点 security_errors 是纵深第二道。回归钉
 /// 咬合：摘掉 validate_static 的 dangerous_command_errors 接线，本测试必红
@@ -2938,10 +2938,10 @@ async fn test_security_gate_blocks_dangerous_auto_skill() {
     );
 }
 
-/// execute_create_skill_action 落盘名 slug 化（R17 防御纵深）：穿越序列
+/// execute_create_skill_action 落盘名 slug 化（防御纵深）：穿越序列
 /// draft_name 不得把 SKILL.md 写出 forge/skills（两条平行 create 实现的
 /// action 面与 execute_create_skill 同款闸）。回归钉咬合：摘掉入口
-/// slugify，本测试翻红（SKILL.md 落到 tempdir 根的 escaped_evil/）。
+/// slugify，本测试翻红（SKILL.md 落到 tempdir 根的 escaped_evil）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_execute_create_skill_action_slugifies_traversal_name() {
     use crate::pipeline::Pipeline;
@@ -2973,7 +2973,7 @@ async fn test_execute_create_skill_action_slugifies_traversal_name() {
     // draft_name 直塞穿越序列（模拟上游名字生成被污染的极端形态）。
     let mut action = action;
     action.draft_name = Some("../../escaped_evil".into());
-    // LE4 钉（2026-10-16 复查补）：public 包装器的部署点同样优先结构化
+    // 钉（复查补）：public 包装器的部署点同样优先结构化
     // tools——旧实现此处走 description 反解析（"read->edit" 无 Unicode
     // 箭头 → 落库垃圾），结构化 tools 就位后必须原样进注册表。
     action.tools = vec!["read".to_string(), "edit".to_string()];
@@ -3017,7 +3017,7 @@ async fn test_execute_create_skill_action_slugifies_traversal_name() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_p0f2_run_cycle_trace_arm_evaluates_outcomes() {
-    // 审计 P0-F2（2026-10-22）：run_cycle Step1 轨迹臂接线。TraceStore
+    // 审计 -：run_cycle Step1 轨迹臂接线。TraceStore
     // （forge_dir/"traces"，与 gateway 装配点同形态）里有签名匹配的轨迹时，
     // run_cycle 必须走 evaluate_outcomes 并把 last_efficacy 写回 registry——
     // 此前轨迹零读者，实效对比链在这里断头。证据面：断言 last_efficacy

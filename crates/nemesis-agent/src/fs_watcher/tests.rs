@@ -38,7 +38,7 @@ fn test_is_ignored_builtins() {
     assert!(is_ignored(&rel("target/debug/foo.exe"), &[]));
     assert!(is_ignored(&rel("logs/sessions/x.jsonl"), &[]));
     assert!(is_ignored(&rel("sub/deep/uploads/img.png"), &[]));
-    // ：构建产物/虚拟环境目录扩充进共享真相表。
+    // 构建产物/虚拟环境目录扩充进共享真相表。
     assert!(is_ignored(&rel("build/out.o"), &[]));
     assert!(is_ignored(&rel("out/objs.o"), &[]));
     assert!(is_ignored(&rel("bin/app.exe"), &[]));

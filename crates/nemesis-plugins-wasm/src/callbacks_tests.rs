@@ -1,4 +1,4 @@
-//! cb_llm_complete 帧纪律回归锁（2026-10-24 BUG-HUNT R70）。
+//! cb_llm_complete 帧纪律回归锁（2026-10-24）。
 //!
 //! 契约：llm-complete **只有策略帧可用**（host_impl::LlmInvoker、runtime
 //! CallFrame.llm、registry::set_llm 三处注释同口径）。回归前实现只拦
@@ -144,7 +144,7 @@ fn r70_zero_max_tokens_denied() {
 }
 
 // ---------------------------------------------------------------------------
-// cb_secret_set / cb_config_set 闸矩阵（2026-11-03 自持写通道批）
+// cb_secret_set / cb_config_set 闸矩阵（自持写通道批）
 // ---------------------------------------------------------------------------
 
 struct StubSecretWriter {

@@ -427,7 +427,7 @@ impl SkillsHandler {
         ))
     }
 
-    /// （机会项）：学得技能账目列表（`.learned.json`）。
+    /// 学得技能账目列表（`.learned.json`）。
     /// 附带 on_disk 现场核对（账有盘无 = 幽灵条目，如实标记）。
     fn learned_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let manifest =
@@ -603,7 +603,7 @@ impl SkillsHandler {
         }
         // 审批门：gateway 注入槽（None = 无审批面，直装——headless/测试装配；
         // `skills.install_approval` 的消费点在 gateway 注入侧）。
-        // §2 免打扰边界注记（无人值守计划 Part 2）：本闸当前唯一发起方 =
+        // 免打扰边界注记（Part 2）：本闸当前唯一发起方 =
         // Dashboard 登录用户（RequestContext 无 channel 字段，无集群发起
         // 路径可判；生产 agent 的 install_skill 走 RegistryManager 不经本
         // WSAPI 面）。远期若出现集群发起路径，先给 RequestContext 加身份
@@ -1039,7 +1039,7 @@ impl SkillsHandler {
         match detected {
             Ok((index_type, skill_path_pattern, branch)) => {
                 // 事务入口罩整段 RMW：探测（网络，秒级）期间其他写臂可能
-                // 已改配置，锁内重读 + 重查重 + 写（同类横扫 ，
+                // 已改配置，锁内重读 + 重查重 + 写（同类横扫，
                 // 锁在 update_skills_config 内）。
                 update_skills_config(workspace, |cfg| {
                     if cfg.github_sources.iter().any(|s| s.name == name) {

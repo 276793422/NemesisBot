@@ -7,7 +7,7 @@ fn pipe_name_format() {
 }
 
 /// per-agent 常驻执行体管道名：`NemesisAgent_` 前缀与
-/// `nemesis_sandbox:ini:AGENT_BOX_PREFIX` 互钉（那边的 ini `OpenPipePath`
+/// `nemesis_sandbox::ini:AGENT_BOX_PREFIX` 互钉（那边的 ini `OpenPipePath`
 /// 允许清单 `\Device\NamedPipe\NemesisAgent_<id>_*` 必须持续匹配这里的
 /// Win32 名形态，否则盒内子进程永远连不上——nemesis-agent 不依赖
 /// nemesis-sandbox，前缀在两 crate 各自测试钉字面量）。
@@ -29,7 +29,7 @@ fn agent_pipe_name_format_pinned_against_ini_openpipepath() {
 /// Sandboxie 拒绝盒内 connect → 常驻执行体 spawn 硬故障。
 #[test]
 fn agent_pipe_name_sanitized_matches_ini_openpipepath_shape() {
-    // 与 sandbox ini/tests.rs:agent_box_name_prefix_and_sanitization 同字面量：
+    // 与 sandbox ini/tests.rs::agent_box_name_prefix_and_sanitization 同字面量：
     assert_eq!(
         agent_pipe_name("a/b\\c d", "1_0"),
         r"\\.\pipe\NemesisAgent_a_b_c_d_1_0"

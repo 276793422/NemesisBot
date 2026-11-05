@@ -135,7 +135,7 @@ async fn test_edit_file_tool_old_text_not_found() {
 
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
-    // ：失败反馈升级为修复指令——文案改为
+    // 失败反馈升级为修复指令——文案改为
     // "old_text not found in {path}. {hint}"（带文件预览）。
     let err = result.unwrap_err();
     assert!(err.contains("not found in"), "got: {err}");
@@ -165,7 +165,7 @@ async fn test_edit_file_tool_duplicate_old_text() {
     assert!(result.unwrap_err().contains("appears 2 times"));
 }
 
-// ：exact 未命中 → 五级模糊替换级联（EditFileTool 集成）。
+// exact 未命中 → 五级模糊替换级联（EditFileTool 集成）。
 #[tokio::test]
 async fn test_edit_file_tool_fuzzy_match_reports_level() {
     let tmp = TempDir::new().unwrap();
@@ -378,7 +378,7 @@ async fn test_sleep_tool_zero_duration() {
 #[test]
 fn test_register_default_tools_count() {
     let tools = register_default_tools();
-    // ：+1 = multiedit。
+    // +1 = multiedit。
     assert_eq!(tools.len(), 11);
     assert!(tools.contains_key("message"));
     assert!(tools.contains_key("read_file"));
@@ -1792,7 +1792,7 @@ async fn test_cron_tool_create_missing_schedule() {
 
 #[tokio::test]
 async fn test_cron_tool_create_at_seconds_overflow_honest_err() {
-    // 回归钉：at_seconds = i64:MAX/1000（换算层
+    // 回归钉：at_seconds = i64::MAX/1000（换算层
     // checked_mul 过检的最大值），合成加法 now + ms 溢出 i64——修复前
     // 裸 add 在 debug 构建 panic（打穿 gateway）、release 回绕负 at_ms
     // 被 compute_next_run 的 ms > now 过滤 = 静默僵尸任务；修复后诚实
@@ -2267,7 +2267,7 @@ async fn test_i2c_tool_invalid_json() {
 /// 接线真实实现后沿用）：read/write 缺 bus/缺地址或垃圾地址必须报错
 /// （真实实现校验先于真实 I/O，消息跨平台确定性）；hex 字符串形态过
 /// 白名单（"0x05" 保留段拒绝）。纯函数面跨平台覆盖见
-/// nemesis-tools hardware:tests:test_i2c_parse_address_string_forms；
+/// nemesis-tools hardware::tests:test_i2c_parse_address_string_forms；
 /// 本用例验 execute() 接线（真实实现首行是平台闸，故 Linux 门控）。
 #[cfg(target_os = "linux")]
 #[tokio::test]

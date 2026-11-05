@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Results at or above this many chars spill to disk instead of being kept
-/// (pruned) inline. Must be >= `crate:prune:MAX_TOOL_RESULT_INLINE_CHARS`
+/// (pruned) inline. Must be >= `crate::prune:MAX_TOOL_RESULT_INLINE_CHARS`
 /// so the two tiers compose: <=8192 inline, 8193..65535 pruned inline,
 /// >=65536 spilled (and the spill REPLACES the inline text entirely with a
 /// > short preview + locator).
@@ -33,7 +33,7 @@ const SPILL_PREVIEW_CHARS: usize = 2000;
 /// becomes `_`.
 ///
 /// SAN-05：本函数曾是仓内唯一的白名单消毒器（金标准），已晋升为
-/// `nemesis_utils:sanitize:sanitize_path_segment` 单一真相源；此处保留
+/// `nemesis_utils::sanitize:sanitize_path_segment` 单一权威定义；此处保留
 /// 薄包装维持模块内调用点与测试不动。
 fn sanitize_segment(raw: &str) -> String {
     nemesis_utils::sanitize::sanitize_path_segment(raw)
@@ -64,7 +64,7 @@ pub enum SpillOutcome {
 /// Full-text spill with bounded preview + locator. `stamp` is the caller's
 /// sortable timestamp suffix (e.g. `20260821_153000_123`). `hint_subagent`
 /// appends the spawn hint to the locator when the registry has a spawn
-/// tool (see `prune:prune_tool_result` for the recomputability caveat —
+/// tool (see `prune::prune_tool_result` for the recomputability caveat —
 /// spill text is already projection-recorded regardless).
 pub fn spill_tool_result(
     result: &str,
@@ -112,7 +112,7 @@ pub fn spill_tool_result(
     ))
 }
 
-/// ：工具主动存档——**无条件**整体落盘，返回文件路径。
+/// 工具主动存档——**无条件**整体落盘，返回文件路径。
 ///
 /// 与 [`spill_tool_result`] 的 ≥64KB 自动闸不同：run_checks 的回灌是聚焦后
 /// 的错误摘录，全量输出无论大小都要有处可查（read_file/grep 可检索），所以
@@ -276,6 +276,6 @@ pub fn status(root: &Path) -> SpillStatus {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

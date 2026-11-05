@@ -38,7 +38,7 @@ fn jsonrpc_error_display_and_std_error() {
         format!("{err}"),
         "JSON-RPC error -32601: Method not found: foo"
     );
-    // Verify it satisfies std::error::Error
+    // Verify it satisfies std::error:Error
     let _: &dyn std::error::Error = &err;
 }
 
@@ -75,7 +75,7 @@ fn server_config_default_and_builder() {
     assert_eq!(cfg.name, "test");
     assert_eq!(cfg.command, "node");
     assert_eq!(cfg.args, vec!["server.js"]);
-    // 2026-08-31 收敛后 env 是 Vec<String>（非 Option）
+    // 收敛后 env 是 Vec<String>（非 Option）
     assert_eq!(cfg.env, vec!["FOO=bar".to_string()]);
     assert_eq!(cfg.timeout_secs, 60);
 
@@ -375,7 +375,7 @@ fn tool_content_text_helper() {
     assert_eq!(tc.text.as_deref(), Some("hello"));
 }
 
-/// BUG-20261104-380 回归锁：规范 image content（`data` + `mimeType`）反序列
+/// 回归锁：规范 image content（`data` + `mimeType`）反序列
 /// 化不再丢载荷——此前类型缺字段，serde 静默丢弃后 adapter 恒产空占位。
 #[test]
 fn tool_content_spec_image_deserializes_data_and_mime_type() {
@@ -386,7 +386,7 @@ fn tool_content_spec_image_deserializes_data_and_mime_type() {
     assert_eq!(tc.mime_type.as_deref(), Some("image/png"));
 }
 
-/// BUG-20261104-380 回归锁：规范 resource content 的嵌套对象完整保留
+/// 回归锁：规范 resource content 的嵌套对象完整保留
 /// （uri/mimeType/text/blob），不再被 serde 静默丢弃。
 #[test]
 fn tool_content_spec_resource_deserializes_embedded_object() {
@@ -548,7 +548,7 @@ fn server_config_deserialize_with_defaults() {
     assert_eq!(cfg.name, "n");
     assert_eq!(cfg.command, "c");
     assert!(cfg.args.is_empty());
-    // 2026-08-31 收敛后 env 是 Vec<String>（宽容反序列化把 null/缺失归一为空表）
+    // 收敛后 env 是 Vec<String>（宽容反序列化把 null/缺失归一为空表）
     assert!(cfg.env.is_empty());
     assert_eq!(cfg.timeout_secs, 30);
 }
@@ -619,7 +619,7 @@ fn client_capabilities_with_all_fields() {
     assert!(rt.prompts.is_some());
 }
 
-/// B3：MCP annotations 双 hint 解析（camelCase wire 键；半缺 = None 不猜）。
+/// MCP annotations 双 hint 解析（camelCase wire 键；半缺 = None 不猜）。
 #[test]
 fn tool_annotations_camel_case_roundtrip() {
     let json = r#"{"readOnlyHint":true,"destructiveHint":false}"#;

@@ -1,5 +1,5 @@
 // auditor.rs 覆盖率补充测试（guardian 失败审批 / limit 审批 /
-// guardian verdict 审批三通道的全臂 + 审批 ctx 路由 + JSONL/log file
+// guardian verdict 审通道的全臂 + 审批 ctx 路由 + JSONL/log file
 // 写失败臂 + get_audit_log 早退臂 + 自杀形态退化根 + workspace 外路径）。
 //
 // 豁免：1216-1218 / 1247-1249（JSONL 与 log file append 打开成功后的
@@ -374,7 +374,7 @@ fn guardian_verdict_manager_error_propagates() {
 }
 
 // ---------------------------------------------------------------------------
-// request_credential_use_approval / has_approval_channel（L26 凭据闸）——全臂
+// request_credential_use_approval / has_approval_channel（凭据闸）——全臂
 // ---------------------------------------------------------------------------
 
 /// 带临时 JSONL 审计目录的 auditor（get_audit_log 从盘上 audit.jsonl 读——
@@ -666,7 +666,7 @@ fn permission_with_ctx_falls_back_to_trait_default_delegation() {
 
 #[test]
 fn audit_jsonl_empty_dir_skips_file_write() {
-    // BUG-20261102-322：名字承诺 skips_file_write——实现契约（auditor.rs
+    // 名字承诺 skips_file_write——实现契约（auditor.rs
     // 空串 dir 守卫注释）是「不得穿透成 CWD 相对路径落盘」；回归（守卫
     // 被删）会把 Path::new("").join("audit.jsonl") 落到 CWD。哨兵断言收口。
     let cwd_audit = std::env::current_dir().unwrap().join("audit.jsonl");
@@ -812,7 +812,7 @@ fn self_destruct_protected_path_itself_and_descendant_both_blocked() {
 
 #[test]
 fn validate_path_outside_workspace_rejected() {
-    // 词法上带 ".." 的前缀可剥离但 rel 以 .. 开头（1617-1619 臂）。
+    // 词法上带 ".." 的前缀可剥离但 rel 以.. 开头（1617-1619 臂）。
     let result = SecurityAuditor::validate_path(
         "C:\\some\\workspace\\..\\evil.txt",
         "C:\\some\\workspace",

@@ -99,7 +99,7 @@ impl Tool for McpDiscoverTool {
 
     /// stdio 臂（`command` 参数）是 LLM 可控的任意进程
     /// spawn（`discover_server_metadata` → `StdioTransport` → 直接
-    /// `Command:spawn`）——效果面与 exec 同级，静态 NetworkRequest
+    /// `Command::spawn`）——效果面与 exec 同级，静态 NetworkRequest
     /// （MEDIUM）档让 exec 族全部闸失配：默认配置的 `process_rules.exec`
     /// 危险命令 deny 规则（rm -rf / format / del /s / remove-item
     /// -recurse…）、Layer 2 命令守卫、preexec 扫描、guardian 危级全部照

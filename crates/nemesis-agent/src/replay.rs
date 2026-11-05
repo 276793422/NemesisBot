@@ -17,7 +17,7 @@
 //! byte-exact against the request_logger's raw.json `body.messages`.
 //!
 //! Honest boundaries (documented, by design):
-//! - **Trimmed history**: `SessionStore:set_history` trims to
+//! - **Trimmed history**: `SessionStore::set_history` trims to
 //!   `MAX_STORED_MESSAGES`; if the messages a round needed were dropped,
 //!   byte-exact replay is impossible → rebuild reports `Unavailable` (never
 //!   fabricates).
@@ -31,7 +31,7 @@
 //!   the claim site in `run_llm_loop`) — they are NOT transient, so they need
 //!   no ledger entry.
 //!
-//! [`check_request_log_consistency`]: crate:request_logger:check_request_log_consistency
+//! [`check_request_log_consistency`]: crate::request_logger:check_request_log_consistency
 
 use chrono::Local;
 use nemesis_path::default_path_manager;
@@ -152,7 +152,7 @@ pub struct RequestProjectionRecord {
     #[serde(default)]
     pub system_prompt_sha256: Option<String>,
     /// 本请求 tool defs 数组（tier 过滤 + 按名排序后的
-    /// `Vec<ToolDefinition>`）的 `serde_json:to_string` 字节 sha256（快照在
+    /// `Vec<ToolDefinition>`）的 `serde_json::to_string` 字节 sha256（快照在
     /// objects/tool_defs/<hash>.json）。
     #[serde(default)]
     pub tools_sha256: Option<String>,
@@ -236,7 +236,7 @@ pub fn snapshot_system_prompt(content: &str) -> String {
 }
 
 /// snapshot the tool defs actually sent this round (canonical
-/// `serde_json:to_string` of the tier-filtered, name-sorted array —
+/// `serde_json::to_string` of the tier-filtered, name-sorted array —
 /// deterministic derivation, same def set ⇒ same hash). Serialization
 /// failure → None (defensive; the request itself is unaffected).
 pub fn snapshot_tool_defs(defs: &[crate::types::ToolDefinition]) -> Option<String> {
@@ -340,7 +340,7 @@ pub enum RebuildOutcome {
 
 /// Same mapping `build_messages_with_memory` applies to history turns.
 ///
-/// /（多模态）：委托主循环共用转换（`turn_to_request_message`）——
+/// （多模态）：委托主循环共用转换（`turn_to_request_message`）——
 /// image_refs 每轮水合重读，重建视图与生产请求的字节语义一致。
 fn turn_to_msg(turn: &ConversationTurn) -> LlmMessage {
     crate::r#loop::turn_to_request_message(turn)
@@ -531,7 +531,7 @@ pub struct ReplayDiff {
 
 /// Byte-exact comparison of a rebuilt message list against the recorded
 /// request messages (`NN.AI.Request.raw.json` → `body.messages`, which are
-/// `serde_json:to_value(LlmMessage)` — the same serialization both sides).
+/// `serde_json::to_value(LlmMessage)` — the same serialization both sides).
 /// Returns the FIRST difference with diagnosis.
 pub fn verify_request_replay(
     rebuilt: &[LlmMessage],
@@ -618,7 +618,7 @@ fn first_diff_offset(a: &str, b: &str) -> usize {
     floor_char_boundary_str(a, i)
 }
 
-/// `str:floor_char_boundary` is still unstable — local copy (same approach
+/// `str::floor_char_boundary` is still unstable — local copy (same approach
 /// as nemesis-utils; kept here so the module is self-contained).
 fn floor_char_boundary_str(s: &str, mut i: usize) -> usize {
     if i >= s.len() {
@@ -748,6 +748,6 @@ pub fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

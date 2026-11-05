@@ -2,7 +2,7 @@
 //! 两分支 + 项目根切换。
 //!
 //! bridge 槽是进程级共享态（`PROJECTS_BRIDGE`）——所有触碰它的测试持
-//! [`BRIDGE_TEST_LOCK`](crate::handlers::projects::BRIDGE_TEST_LOCK) 串行
+//! [`BRIDGE_TEST_LOCK`](crate::handlers:projects::BRIDGE_TEST_LOCK) 串行
 //! 并在结束时复位为 None（同 env-test-race 家族纪律）；mock bridge 对非
 //! 哨兵 key 一律 None，杜绝与并行跑的其他 handler 测试串台。
 //!
@@ -520,7 +520,7 @@ async fn resolve_loop_bound_but_unavailable_is_honest_error() {
     }
     let ctx = make_ctx(None);
     let err = resolve_session_loop(&ctx, SENTINEL_KEY)
-        // expect_err 要求 Ok 侧 Debug（Arc<AgentLoop> 未实现）——保持 .err().expect()
+        // expect_err 要求 Ok 侧 Debug（Arc<AgentLoop> 未实现）——保持.err().expect()
         .err()
         .expect("bound-but-missing must fail honestly");
     assert!(

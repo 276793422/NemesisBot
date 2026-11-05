@@ -469,7 +469,7 @@ async fn test_copy_dir_recursive_write_fail_skips_file() {
     assert!(dst.join("good.txt").exists());
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[tokio::test]
 async fn test_s8_export_artifact_copies_project_files_and_tests_dir() {

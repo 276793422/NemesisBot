@@ -15,7 +15,7 @@
 //! - 协议 adapter 是**纯函数面**（[`DelegateProtocolKind`]）：构造 spawn
 //!   参数、编码 stdin 帧、从 stdout NDJSON 行抽取 assistant 文本与
 //!   session_id——每个 CLI 一个实现，版本漂移只改一处；
-//! - estop 联动：manager 持 [`crate:estop:EstopState`] 的弱引用 watcher
+//! - estop 联动：manager 持 [`crate::estop:EstopState`] 的弱引用 watcher
 //!   （首个 delegate 启动时 lazy spawn；manager 随 loop 重建销毁后 watcher
 //!   自行退出，不泄漏）——急停触发 = 全部 delegate 关 stdin + 树杀，与 PTY
 //!   终端同语义；estop 已触发时 `delegate_start` 直接拒绝。
@@ -310,7 +310,7 @@ impl StartReservation {
     }
 }
 
-/// ：启动许可 RAII——容量闸「检查+占位」的占位半边。取得
+/// 启动许可 RAII——容量闸「检查+占位」的占位半边。取得
 /// 发生在 entries 锁内（并发准入串行化），持有跨 build_args/spawn/estop
 /// 复检；reservation 落入 starting（座位改由 starting 计数）即 Drop 释放。
 /// 三段口径 `entries + starting + permits` 全程守恒不超 [`MAX_DELEGATES`]，
@@ -558,7 +558,7 @@ impl DelegateManager {
         }
 
         // 墙钟上限 watchdog：到点置 kill 旗标（树杀交给 supervise）+ 在输出
-        // 流留诚实注记。0 → Duration:MAX = 不限（不挂任务）。
+        // 流留诚实注记。0 → Duration::MAX = 不限（不挂任务）。
         if max_lifetime != Duration::MAX {
             let status = status.clone();
             let kill_flag = kill_flag.clone();
@@ -1021,7 +1021,7 @@ fn truncate_diag(s: &str) -> String {
     if s.len() <= 400 {
         s.to_string()
     } else {
-        // ：`&s[..400]` 在非字符边界 panic——两个调用方的输入
+        // `&s[..400]` 在非字符边界 panic——两个调用方的输入
         // 都是外部 CLI 输出/JSON 错误串（serde_json 不转义非 ASCII，中文
         // 原样保留），握手失败诊断恰是最容易混入 CJK 的路径。先落到边界
         // 再切（与 code_run/messages 等 in-repo 截断同纪律）。
@@ -1038,7 +1038,7 @@ fn truncate_diag(s: &str) -> String {
 /// （`global_vault_resolver`）解析——与 provider api_key / channel token /
 /// MCP env 的 `vault:<alias>` 是**同一条链**（nemesisbot 启动路径注入，
 /// 含 argon2 `NEMESISBOT_VAULT_PASSPHRASE` 解锁臂与每次现开现解语义）。
-/// 这里不直开 vault 文件：那会绕开注入点且复制解锁逻辑（单一真相源）。
+/// 这里不直开 vault 文件：那会绕开注入点且复制解锁逻辑。
 ///
 /// 任一名失败（解析器未安装/vault 缺席/锁定/别名不存在）→ Err 逐项列明
 /// （诚实失败，不静默空注——子代理拿不到预期凭据会在远端以更隐蔽的方式

@@ -346,7 +346,7 @@ async fn rt_start_stop_error_arms_and_no_workspace() {
         .unwrap_err();
     assert_eq!(err, "cluster service not available");
 
-    // start 失败 → "start failed: ..."
+    // start 失败 → "start failed:..."
     let svc = Arc::new(FakeClusterSvc {
         running: AtomicBool::new(false),
         fail_start: true,
@@ -360,7 +360,7 @@ async fn rt_start_stop_error_arms_and_no_workspace() {
     assert!(err.contains("start failed"), "{err}");
     assert!(err.contains("start boom"), "{err}");
 
-    // stop 失败 → "stop failed: ..."
+    // stop 失败 → "stop failed:..."
     let svc = Arc::new(FakeClusterSvc {
         running: AtomicBool::new(false),
         fail_start: false,
@@ -636,7 +636,7 @@ async fn nodes_refresh_timeout_clamped_to_one_sec() {
         "127.0.0.1:1",
     ));
 
-    // 前置原理：tokio::time::Timeout 只在「内层 future Pending 且 deadline 到」
+    // 前置原理：tokio::time:Timeout 只在「内层 future Pending 且 deadline 到」
     // 时返回 Elapsed；正常 RPC 路径内层自己的 timer 先臂先响（同一次 poll 级联
     // 里内层先臂、时长相同）→ 外层永远输。唯一能让外层赢的路径：内层卡在限流
     // 器 acquire_async 的 100ms 睡眠重试（Pending）。为此先用 60 次快速失败

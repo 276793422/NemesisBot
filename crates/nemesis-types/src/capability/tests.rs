@@ -108,7 +108,7 @@ fn serde_roundtrip() {
 fn retry_budget_per_tier() {
     assert_eq!(ModelTier::Mini.validation_retry_budget(), 3);
     assert_eq!(ModelTier::Normal.validation_retry_budget(), 2);
-    // P2C（2026-09-12 NB-15）：Big 1→2——并行工具批首个坏调用即烧光
+    // P2C：Big 1→2——并行工具批首个坏调用即烧光
     // budget=1，模型没机会看到回灌错误自纠；2 给一次下轮自纠机会。
     assert_eq!(ModelTier::Big.validation_retry_budget(), 2);
 }
@@ -160,7 +160,7 @@ fn resolve_max_output_tokens_from_config() {
     );
 }
 
-/// BUG-20261029-144：`max_output_tokens` 为 0 / 负数时必须按缺席处理（None）。
+/// `max_output_tokens` 为 0 / 负数时必须按缺席处理（None）。
 /// resolver 家族惯例（context_window / compact_context_tokens /
 /// agents.defaults.max_tokens / max_output_ceiling 全带 `.filter(|v| *v > 0)`）
 /// 唯独本函数漏 filter——Some(0) 经 run_loop `unwrap_or(DEFAULT)` 直达请求体
@@ -180,7 +180,7 @@ fn resolve_max_output_tokens_rejects_non_positive() {
 
 #[test]
 fn resolve_agents_default_max_tokens_and_const() {
-    // 2026-10-23 P0：主轮回退链第二级（条目 max_output_tokens > 本键 >
+    // 主轮回退链第二级（条目 max_output_tokens > 本键 >
     // DEFAULT_MAX_TOKENS）。
     let cfg = serde_json::json!({"agents": {"defaults": {"max_tokens": 32768}}});
     assert_eq!(resolve_agents_default_max_tokens(&cfg), Some(32768));
@@ -206,7 +206,7 @@ fn resolve_agents_default_max_tokens_and_const() {
         ),
         None
     );
-    // 最终回退常量：8192 → 64K（docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md）。
+    // 最终回退常量：8192 → 64K（max-tokens-8192截断撞顶复发）。
     assert_eq!(DEFAULT_MAX_TOKENS, 65_536);
 }
 
@@ -247,7 +247,7 @@ fn display_lowercase() {
     assert_eq!(ModelTier::Auto.to_string(), "auto");
 }
 
-// U16 (sixth batch): per-model context_window resolution.
+// (sixth batch): per-model context_window resolution.
 #[test]
 fn resolve_context_window_per_model() {
     let cfg = serde_json::json!({
@@ -281,7 +281,7 @@ fn resolve_context_window_per_model() {
     );
 }
 
-// 2026-10-20 压缩点一等公民化：per-model 绝对压缩点键。
+// 压缩点一等公民化：per-model 绝对压缩点键。
 #[test]
 fn resolve_compact_context_tokens_per_model() {
     let cfg = serde_json::json!({
@@ -318,7 +318,7 @@ fn resolve_compact_context_tokens_per_model() {
     );
 }
 
-// 2026-10-20 真浏览器 E2E 实证回归锁：活 gateway 的 active_model 是剥前缀
+// 真浏览器 E2E 实证回归锁：活 gateway 的 active_model 是剥前缀
 // 裸名（`resolve_from_model_config` 切 '/' 取尾段；CLI `model add --default`
 // 写 agents.defaults.llm 同为裸名），自定义别名条目（model_name ≠ 裸名）
 // 在纯精确匹配下全族失联——context_window=131072 被无视、压缩点落价目表。
@@ -417,7 +417,7 @@ fn tier_lists_delegation_tools() {
     assert!(!mini.contains(&"codex_delegate"), "Mini excluded by design");
 }
 
-// B4 (2026-09-05): background-process trio is Normal-tier and above.
+// background-process trio is Normal-tier and above.
 #[test]
 fn tier_lists_background_tools() {
     let normal = tier_allowed_tools(ModelTier::Normal);
@@ -433,7 +433,7 @@ fn tier_lists_background_tools() {
         normal.contains(&"background_kill"),
         "background_kill in Normal"
     );
-    // L11（2026-11-03）：steer 动词随家族同档 Normal+。
+    // steer 动词随家族同档 Normal+。
     assert!(
         normal.contains(&"background_steer"),
         "background_steer in Normal"
@@ -471,7 +471,7 @@ fn test_resolve_reasoning_effort_tiers() {
 }
 
 // ============================================================================
-// T10（多模态 goal）：vision 能力解析（解析序 User > Probe > Name > Default）
+// （多模态 goal）：vision 能力解析（解析序 User > Probe > Name > Default）
 // ============================================================================
 
 #[test]
@@ -543,7 +543,7 @@ fn vision_resolution_user_pin_wins() {
     );
 }
 
-// L8（2026-09-04 四轮盲审）：钉死值宽容解析——大写 / JSON 布尔 / true/false
+// （四轮盲审）：钉死值宽容解析——大写 / JSON 布尔 / true/false
 // 变体都算用户钉死，不再静默忽略落回名字识别（用户明确表达了意图）。
 #[test]
 fn vision_resolution_user_pin_tolerant_forms() {
@@ -721,7 +721,7 @@ fn protocol_normalization_unknown_loud() {
     assert!(err.contains("anthropic | openai | responses"));
 }
 
-/// 集群专业职能框架 M4：images-openai 进归一值集（不在 factory 的对话
+/// 集群专业职能框架：images-openai 进归一值集（不在 factory 的对话
 /// Provider 集内——构造路径 loud 拒绝），is_image_protocol 单一谓词。
 #[test]
 fn protocol_images_openai_and_predicate() {
@@ -742,7 +742,7 @@ fn protocol_images_openai_and_predicate() {
     assert!(!is_image_protocol("responses"));
 }
 
-/// M6-1：`agents.defaults.max_tool_iterations` 解析——三态（在值/键缺席/
+/// `agents.defaults.max_tool_iterations` 解析——三态（在值/键缺席/
 /// 0=不限透传）。
 #[test]
 fn resolve_max_tool_iterations_tri_state() {
@@ -769,7 +769,7 @@ fn resolve_max_tool_iterations_tri_state() {
     assert_eq!(resolve_max_tool_iterations(&negative), Some(-1));
 }
 
-/// §6.2（2026-10-12 无人值守）：`agents.defaults.max_output_ceiling` 翻倍
+/// （无人值守）：`agents.defaults.max_output_ceiling` 翻倍
 /// 阶梯封顶解析——值生效 / 0 与负数与非数字回落默认 / 缺席回落默认。
 /// 惯例与 `max_tool_iterations` 0=不限 相反：封顶没有不限形态。
 #[test]
@@ -819,8 +819,8 @@ fn resolve_max_output_ceiling_defaulting() {
     assert_eq!(MAX_OUTPUT_CEILING_DEFAULT, 262_144);
 }
 
-/// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe` 解析——
-/// 缺席 = 默认开 + 默认墙钟（用户拍板默认开）；只有显式 `enabled: false`
+/// `agents.defaults.pre_pause_probe` 解析——
+/// 缺席 = 默认开 + 默认墙钟（默认开）；只有显式 `enabled: false`
 /// 关闭；timeout 0 / 负数 / 非数字 / 段缺席全部回落默认。
 #[test]
 fn resolve_pre_pause_probe_defaulting() {
@@ -880,7 +880,7 @@ fn resolve_pre_pause_probe_defaulting() {
     assert_eq!(resolve_pre_pause_probe(&non_number), dflt);
 }
 
-/// N6（2026-10-13）：模型角色声明——canonical 值集 + 对话谓词。
+/// 模型角色声明——canonical 值集 + 对话谓词。
 /// 守卫语义：三个 default 槽写入点 + factory 装配点消费 is_conversation_role。
 #[test]
 fn model_role_normalize_and_conversation_predicate() {

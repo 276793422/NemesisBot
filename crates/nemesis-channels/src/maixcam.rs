@@ -77,7 +77,7 @@ impl MaixCamChannel {
     ///
     /// `bus_sender` publishes inbound device events (person detection) to the
     /// message bus — parity with Go's `NewMaixCamChannel(cfg, bus)` ->
-    /// `HandleMessage`（BUG #14：修复前设备消息只 debug 日志直接丢弃）.
+    /// `HandleMessage`（修复前设备消息只 debug 日志直接丢弃）.
     pub fn new(
         config: MaixCamConfig,
         bus_sender: tokio::sync::broadcast::Sender<InboundMessage>,
@@ -122,7 +122,7 @@ impl MaixCamChannel {
         Self::classify_message(msg)
     }
 
-    /// Classifies a raw device message into an event（单一真相源，
+    /// Classifies a raw device message into an event（统一定义，
     /// `process_message` 与 TCP reader 共用）.
     pub fn classify_message(msg: &MaixCamMessage) -> MaixCamEvent {
         let msg_type = msg.msg_type.as_deref().unwrap_or("");
@@ -267,7 +267,7 @@ impl MaixCamChannel {
                                                 if !trimmed.is_empty() {
                                                     debug!(peer = %peer_str, data = %trimmed, "[MaixCamChannel] data");
                                                     // Parse JSON message and publish to the bus
-                                                    // (BUG #14: 修复前解析结果直接丢弃)
+                                                    // (修复前解析结果直接丢弃)
                                                     if let Ok(msg) = serde_json::from_str::<MaixCamMessage>(trimmed) {
                                                         let msg_type = msg.msg_type.as_deref().unwrap_or("");
                                                         debug!(msg_type = %msg_type, "[MaixCamChannel] event");
@@ -337,14 +337,14 @@ pub enum MaixCamEvent {
 }
 
 impl MaixCamChannel {
-    /// 出站写超时（BUG-20261102-300）：manager 出站派发是单任务串行
+    /// 出站写超时：manager 出站派发是单任务串行
     /// await（一条通道 send 无界挂起 = 全部通道出站停摆且零错误零日志，
     /// 见 base.rs 串行派发纪律）——设备停摆（对端不读、内核缓冲填满）
     /// 时定向写/broadcast 写会把整条出站管线冻死，TCP write 必须有界。
     /// HTTP 35s / email 30s 同族先例，此处对齐 email 的 30s。
     const WRITE_TIMEOUT_SECS: u64 = 30;
 
-    /// 单一写路径：带超时的 write_all（BUG-20261102-300 有界性）。
+    /// 单一写路径：带超时的 write_all（有界性）。
     /// 超时映射 `ErrorKind::TimedOut`（email io_timeout 同形态）。
     /// 泛型形态：生产传 TcpStream 写半部，测试传 mock writer（Windows
     /// loopback TCP 缓冲自调连显式收窄都不认——内核行为不可依赖）。
@@ -362,7 +362,7 @@ impl MaixCamChannel {
         }
     }
 
-    /// send 的可注入超时形态（测试用短窗验证 BUG-20261102-300 的
+    /// send 的可注入超时形态（测试用短窗验证 的
     /// 有界性；生产走 WRITE_TIMEOUT_SECS）。
     async fn send_with_timeout(
         &self,

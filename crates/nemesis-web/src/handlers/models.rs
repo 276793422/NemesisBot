@@ -344,9 +344,9 @@ fn apply_health_hints(rows: &mut [nemesis_data::ModelToolHealth], days: i64) {
     }
 }
 
-/// DISABLED (,): typed save is no longer called — every
+/// DISABLED: typed save is no longer called — every
 /// `model_list` mutation here goes through raw RMW
-/// ([`super::config::update_raw_config`]) because a typed round-trip DROPS
+/// ([`super::config:update_raw_config`]) because a typed round-trip DROPS
 /// the tier/size/real_name/context_window extras. Kept (not deleted) per the
 /// code-change discipline: safe to revive only for sections whose keys the
 /// typed `Config` fully models.
@@ -546,19 +546,19 @@ impl ModelsHandler {
         // `../../etc/passwd` 等穿越形态可落盘。宽松档（裸名合法——dashboard
         // 既有契约，见 add_persists_protocol_and_normalizes_alias 回归钉）+
         // 段级穿越/反斜杠/控制字符拒绝，与 CLI `model add` 严格档共享同一
-        // 段级检查内核（单一真相源）。model_name 显示名是自由文本语义不在
+        // 段级检查内核。model_name 显示名是自由文本语义不在
         // 此校验（出口有 sanitize_csv/sanitize_path_segment）。
         nemesis_utils::sanitize::validate_model_entry_name(&model)?;
         let api_key = crate::handlers::get_str(data, "key")?;
         let api_base = crate::handlers::get_opt_str(data, "base_url").unwrap_or_default();
         let proxy = crate::handlers::get_opt_str(data, "proxy").unwrap_or_default();
         // LLM 协议选择器：可选显式协议，缺省 = 自动推断（空串）。
-        // 值集校验/归一走单一真相源；未知值 loud 拒绝。
+        // 值集校验/归一走单一权威定义；未知值 loud 拒绝。
         let protocol = nemesis_types::capability::normalize_model_protocol(
             &crate::handlers::get_opt_str(data, "protocol").unwrap_or_default(),
         )?;
         // per-model 流式开关（stream 键）：可选，缺省不写键 = auto。
-        // 归一走单一真相源 normalize_stream_value（与 CLI --stream / 配置解析
+        // 归一走统一定义 normalize_stream_value（与 CLI --stream / 配置解析
         // 同源），非法值 loud 拒绝（显式提交是当次意志，不做静默纠偏）。
         let stream_raw = crate::handlers::get_opt_str(data, "stream").unwrap_or_default();
         let stream = if stream_raw.is_empty() {
@@ -1410,7 +1410,7 @@ impl ModelsHandler {
             "stream" => {
                 // per-model 流式开关（stream 键）：空串/auto =
                 // 清除（跟随 lane 默认）；yes/no（别名 true/false）归一写盘；
-                // 未知值 loud 拒绝——归一走单一真相源 normalize_stream_value
+                // 未知值 loud 拒绝——归一走统一定义 normalize_stream_value
                 // （与 CLI --stream / 配置解析同源）。构造期消费：改默认模型
                 // 需 set_default 热切或重启生效（前端标注同口径）。
                 let s = value.as_str().ok_or("stream must be a string")?.trim();
@@ -1575,7 +1575,7 @@ impl ModelsHandler {
     /// network — reads the cache file directly; the file shape
     /// matches the CLI's `catalog.rs` cache).
     ///
-    /// 路径唯一真相源 = `nemesis_path::models_catalog_cache_path`
+    /// 路径唯一依据 = `nemesis_path::models_catalog_cache_path`
     /// （`<home>/workspace/data/models_catalog.json`；与 CLI `model
     /// catalog-update` 共用同一函数—— 曾抓到过一次读写路径分叉，
     /// 从 home 根迁入 workspace/data 后路径收进 nemesis-path，
@@ -1652,7 +1652,7 @@ fn lane_label(t: nemesis_providers::factory::ProviderType) -> &'static str {
     }
 }
 
-/// 错误文本 → 粗分类 kind（models.test 的 kind 字段）。单一真相源 =
+/// 错误文本 → 粗分类 kind（models.test 的 kind 字段）。单一权威 =
 /// nemesis-utils 错误分类器（与 agent loop / fallback 同源词表）；
 /// Timeout 细分 connect（连接建立失败 = 端点死了，与慢响应不同门）。
 fn error_kind(msg: &str) -> &'static str {
@@ -1723,7 +1723,7 @@ fn read_raw_model_entries(
 }
 
 /// In-memory shape of the CLI's catalog cache (`{version, fetched_at,
-/// entries: [{key, context_window, ...}]}`) — only the fields `list` needs.
+/// entries: [{key, context_window,...}]}`) — only the fields `list` needs.
 struct CatalogLite {
     entries: Vec<CatalogLiteEntry>,
 }
@@ -1736,7 +1736,7 @@ struct CatalogLiteEntry {
 }
 
 fn read_catalog(home: &str) -> Option<CatalogLite> {
-    // 与 catalog_info 同源：路径唯一真相源 =
+    // 与 catalog_info 同源：路径唯一依据 =
     // `nemesis_path::models_catalog_cache_path`（见 catalog_info 的注释）。
     let home_pb = std::path::PathBuf::from(home);
     let path = nemesis_path::models_catalog_cache_path(&home_pb);
@@ -1771,7 +1771,7 @@ fn read_catalog(home: &str) -> Option<CatalogLite> {
 #[cfg(test)]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): pin the DISABLED
+// (, quality-hardening goal 冲刺 web): pin the DISABLED
 // typed-save helper's behavior (see its doc comment above).
 #[cfg(test)]
 mod s10b_tests;

@@ -1,11 +1,11 @@
-//! P5 第 3 步：VM 持久实体监督器（`vm` feature 闸——收窄/IoT 形态整模块
+//! 第 3 步：VM 持久实体监督器（`vm` feature 闸——收窄/IoT 形态整模块
 //! 不进二进制，`nemesis-sandbox/vm` 同闸）。
 //!
 //! 每 agent 一台**常驻 VM**（独立内核整机隔离），磁盘即持久状态：overlay
 //! 跨睡眠/停机/重启保留，guest 内文件与登录态存活。睡眠 = RAM 状态保存
 //! （快照线 `-loadvm` / 迁移线 `-incoming`），唤醒 = 带产物重挂同 overlay。
 //!
-//! 纪律（镜像 P3 `runtime.rs` 监督器，全部对齐）：
+//! 纪律（镜像 `runtime.rs` 监督器，全部对齐）：
 //! - **config 现读**：`executor.vm` 每操作从 config.json 重读（单一真相
 //!   源，无快照表）；`enabled=false` / 缺席 / 损坏 = `None` = 诚实不可用
 //!   （关闭态零激活铁律）。
@@ -40,7 +40,7 @@ use nemesis_sandbox::vm::lifecycle::{
 use nemesis_sandbox::vm::overlay;
 use nemesis_utils::sanitize::sanitize_path_segment;
 
-/// watchdog tick（对齐 P3 槽位看护节奏）。
+/// watchdog tick（对齐 槽位看护节奏）。
 const WATCHDOG_TICK: Duration = Duration::from_secs(15);
 /// sleep 墙钟预算（savevm/migrate 都是墙钟敏感操作；实机探针同量级）。
 const SLEEP_BUDGET: Duration = Duration::from_secs(300);
@@ -53,23 +53,23 @@ const STOP_GRACE: Duration = Duration::from_secs(10);
 /// 的异常形态（如崩溃残留的半截记录）。
 const SWEEP_STARTUP_GRACE: Duration = Duration::from_secs(120);
 /// guest agent 就绪轮询间隔。（就绪预算本体 = config `executor.vm.
-/// ready_budget_secs`，缺省 240——P5-R4 配置化，原编译期常量退役。）
+/// ready_budget_secs`，缺省 240——- 配置化，原编译期常量退役。）
 const GUEST_READY_POLL: Duration = Duration::from_secs(2);
 /// GiB（GC 预算单位换算）。
 pub(crate) const GIB: u64 = 1024 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
-// 错误分型（对齐 P3 SupervisorError 语义——Step 4 接入面靠它决定可否回落）
+// 错误分型（对齐 SupervisorError 语义——Step 4 接入面靠它决定可否回落）
 // ---------------------------------------------------------------------------
 
-/// VM 监督器错误。三臂语义（P3 同款 + F1 扩）：调用方据此决定「回落其他
+/// VM 监督器错误。三臂语义（同款 + 扩）：调用方据此决定「回落其他
 /// 执行后端」还是「如实上报」。
 #[derive(Debug)]
 pub enum VmSupervisorError {
     /// 档不可用，**调用从未发生**（config 关 / 镜像缺 / 满员 / GC stop 闸 /
     /// 加速缺席 / 睡眠线不支持）——可安全回落其他执行后端。
     Unavailable(String),
-    /// F1（2026-10-21 三轮复评）：身份生命周期已终结（删除墓碑/删除在途）——
+    /// （三轮复评）：身份生命周期已终结（删除墓碑/删除在途）——
     /// 调用未发生**且**该身份不该再执行任何工具。**禁宿主回落**（回落 =
     /// 已删身份的工具在宿主照常执行）。
     LifecycleRejected(String),
@@ -118,7 +118,7 @@ pub struct VmInstanceRecord {
     pub vcpu: u32,
     pub ram_mb: u32,
     pub disk_gb: u32,
-    /// VNC 显示端口（P5-R2；display=vnc 时每次启动分配，display=none 为
+    /// VNC 显示端口（display=vnc 时每次启动分配，display=none 为
     /// None。**端口不参与唤醒路由**——重启/唤醒后按 config 现值重分，
     /// 旧记录缺键 = serde default None 兼容）。
     #[serde(default)]
@@ -162,7 +162,7 @@ pub(crate) fn parse_accel(s: &str) -> Option<QemuAccel> {
     }
 }
 
-/// 显示端口解析（P5-R2 带界面 VM）：config `executor.vm.display` 现值裁决。
+/// 显示端口解析（带界面 VM）：config `executor.vm.display` 现值裁决。
 /// - `none` → `None`（无头形态，装配字节不变——回归锁在 assembly/tests）；
 /// - `vnc` → **headless 闸**（base 镜像 manifest 的 `variant` 必须 =
 ///   `desktop`——headless 镜像 + vnc = 黑屏，不是合法形态，诚实拒绝）+
@@ -298,7 +298,7 @@ pub(crate) fn load_record(workspace: &Path, agent_id: &str) -> Option<VmInstance
     }
 }
 
-/// 孤儿 overlay 判定的引用集（P5-R4 磁盘 GC 判定面，[`VmSupervisor::
+/// 孤儿 overlay 判定的引用集（磁盘 GC 判定面，[`VmSupervisor:
 /// sweep_disk_garbage`] 消费；独立纯函数便于单测）：全部 run 目录名 ∪ 各
 /// registry 记录 `sanitize(agent_id)` ∪ 记录 overlay 文件 stem。registry
 /// 损坏/缺席时目录名兜底——认不出 = 保守保留，绝不因记录损坏删数据盘。
@@ -385,7 +385,7 @@ pub(crate) fn parse_pidfile(pidfile: &Path) -> Option<u32> {
 
 /// 孤儿身份核验：pid 存活**且**其可执行镜像与我们解析出的 QEMU 二进制
 /// 一致。pid 复用（pidfile 陈旧 + pid 被无关进程占用）= 不匹配 = 不动。
-/// 先例：Windows 走 `QueryFullProcessImageNameW`（nemesis-security clamav
+/// Windows 走 `QueryFullProcessImageNameW`（nemesis-security clamav
 /// ownership 同款），Linux 读 `/proc/<pid>/cmdline` 做字节窗匹配
 /// （nemesis-cluster exec_workspace 同款）。
 pub(crate) fn pid_matches_qemu_identity(pid: u32, qemu_bin: &Path) -> bool {
@@ -415,7 +415,7 @@ pub(crate) fn pid_matches_qemu_identity(pid: u32, qemu_bin: &Path) -> bool {
 }
 
 /// Windows 路径等价：大小写不敏感的字面比较为快路径；失配时 canonicalize
-/// 兜底展开再比。为什么需要兜底：gateway 经 `std::env::temp_dir()` 拿到的
+/// 兜底展开再比。为什么需要兜底：gateway 经 `std::env:temp_dir()` 拿到的
 /// spawn 路径可能含 8.3 短名（如 `LOCALA~1`），而 `QueryFullProcessImageNameW`
 /// 返回的是 kernel 展开后的长名（如 `localadmin`）——字面比较必失配，会把
 /// 真孤儿误判成「pid 复用」而拒绝清理。canonicalize 失败（路径已消失等）仍
@@ -726,7 +726,7 @@ pub(crate) fn ensure_route(
 // ---------------------------------------------------------------------------
 
 /// 运行中槽（只有活 VM 在 map 里——睡眠/冷停的实例离开 map，watchdog
-/// 看不见它们，与 P3「睡着的槽已离开 map」同语义）。
+/// 看不见它们，与 「睡着的槽已离开 map」同语义）。
 pub(crate) struct VmSlot {
     pub(crate) vm: VmInstance,
     pub(crate) last_used: Instant,
@@ -734,7 +734,7 @@ pub(crate) struct VmSlot {
 
 /// VM 持久实体监督器：每 agent 至多一台常驻 VM，睡眠/唤醒/停机/孤儿清理/
 /// 磁盘预算统一纪律面。gateway post_agent 装配并注入 web 侧
-/// [`nemesis_web::handlers::vm::VmBridge`] 槽（晚注入——与 P3 runtime 同款）。
+/// [`nemesis_web::handlers:vm::VmBridge`] 槽（晚注入——与 runtime 同款）。
 pub struct VmSupervisor {
     workspace: PathBuf,
     config_path: PathBuf,
@@ -742,7 +742,7 @@ pub struct VmSupervisor {
     /// 自引用弱句柄（试玩后台启动任务需要 owned `Arc`——装配侧
     /// `set_self_arc` 注入；Weak 不阻止释放。缺席 = try_start 同步回落）。
     self_weak: Mutex<Option<std::sync::Weak<VmSupervisor>>>,
-    /// 试玩后台启动状态（`try_launch_*` 族单一真相源；短临界区 std 锁）。
+    /// 试玩后台启动状态（`try_launch_*` 族单一权威定义；短临界区 std 锁）。
     try_launch: Mutex<TryLaunchState>,
     /// per-agent 启动在途集（ensure_running 同 agent 互斥闸）：spawn 在
     /// map 锁外、全程分钟级——两个并发 ensure_running 都会错过「槽未入
@@ -751,27 +751,27 @@ pub struct VmSupervisor {
     /// ×2 / instance_wake × try_start 等交叉）。在途 = insert 失败 = 诚实
     /// 拒绝。sweep_orphans 同源消费：在途 agent 不是孤儿。
     starting: Mutex<HashSet<String>>,
-    /// R2（2026-10-20 复评）：已逐出身份墓碑。删除编排（`AgentManager::
+    /// （复评）：已逐出身份墓碑。删除编排（`AgentManager:
     /// remove` → `VmBackend::evict_agent_prepare/commit`）在真相源删除成功
     /// 后落墓碑；`ensure_running` 入口与槽安装点复查——封「删除 vs 分钟级
     /// 冷启动」窗口（启动在途的 wake 完成时被安装点拦下，自停刚起的实例 +
     /// 诚实 Err）与「删除后旧身份再唤醒」。单调增长可忽略（每条一个
     /// String，删除是低频管理动作）。
     evicted: Mutex<HashSet<String>>,
-    /// F2（2026-10-21 三轮复评）：删除**在途**临时拒绝态。prepare 进、
+    /// （三轮复评）：删除**在途**临时拒绝态。prepare 进、
     /// commit 转 permanent / abort 解除——与 `evicted` 分离是本修复的核
     /// 心：DB 删除失败时临时态解除、身份可再唤醒，永久墓碑不误落（探针
     /// 实证的「记录在册但身份永久不可唤醒」事故面）。
     evicting: Mutex<HashSet<String>>,
     /// 确定性不可睡眠墓碑（idle sweep 用）：accel 无睡眠线（如 whpx 三探针
     /// 定谳）是宿主能力、实例生命周期内不变——sweep 周期重试只会刷屏 +
-    /// 每 tick 白读一次 registry 盘文件（2026-10-21 demo 实录：单实例 1 小时
+    /// 每 tick 白读一次 registry 盘文件（demo 单实例 1 小时
     /// 113 对 WARN/INFO）。只在 sweep 臂消费；用户显式 sleep 照常诚实报错。
     /// 单调增长可忽略（每 agent 一条 String，同 evicted 口径）。
     sleep_unavailable: Mutex<HashSet<String>>,
 }
 
-/// 试玩启动在途状态（真机教训 2026-10-19：冷启动同步等 30-60s 撞前端
+/// 试玩启动在途状态（真机冷启动同步等 30-60s 撞前端
 /// 30s WSAPI 超时——「timeout: vm.try.start」弹窗而 QEMU 实际已成功启动；
 /// 改为发起即返回 + 前端轮询 try.status 转绿，本结构记录在途/停止请求/
 /// 失败原因）。
@@ -912,14 +912,14 @@ impl VmSupervisor {
         serde_json::from_value(v.get("executor")?.get("vm")?.clone()).ok()
     }
 
-    /// config 现读（单一真相源 = config.json；`None` = 缺席 / `enabled=false`
+    /// config 现读（统一定义 = config.json；`None` = 缺席 / `enabled=false`
     /// / 损坏——关闭态零激活铁律的判定面，不做任何猜测性回退）。
     pub(crate) fn vm_settings(&self) -> Option<ExecutorVmConfig> {
         self.vm_config().filter(|c| c.enabled)
     }
 
     /// `executor.strict` 裸读（fail-closed 闸：要求加速但本机不可用 → 拒绝
-    /// 而非降级，对齐 U11 语义）。
+    /// 而非降级，对齐 语义）。
     fn executor_strict(&self) -> bool {
         nemesis_utils::fsutil::read_config_string(&self.config_path)
             .ok()
@@ -970,7 +970,7 @@ impl VmSupervisor {
     /// 确保 agent 的 VM 在运行：命中槽 → 摸 `last_used` 直接返回；否则
     /// 唤醒（睡眠产物）或冷启（首启制备 overlay，否则同盘冷启）。
     ///
-    /// spawn 在 map 锁外（P3 同款——冷启秒级到分钟级，不持锁阻塞并发）；
+    /// spawn 在 map 锁外（同款——冷启秒级到分钟级，不持锁阻塞并发）；
     /// 插入时竞态复核满员 + 同 agent 双赢家（输家诚实停掉）。
     pub async fn ensure_running(
         &self,
@@ -980,14 +980,14 @@ impl VmSupervisor {
         if let Err(m) = validate_agent_id(agent_id) {
             return Err(VmSupervisorError::Failed(m));
         }
-        // R2：已逐出身份拒绝（删除联动墓碑）——F1：生命周期拒绝（调用未
+        // 已逐出身份拒绝（删除联动墓碑）——：生命周期拒绝（调用未
         // 发生且身份已终结；禁宿主回落由独立变体表达，不再是 Unavailable）。
         if self.is_evicted(agent_id) {
             return Err(VmSupervisorError::LifecycleRejected(format!(
                 "agent {agent_id} 已删除（VM 身份已逐出），旧实例不可再唤醒"
             )));
         }
-        // F2：删除在途临时拒绝——prepare 已进、commit/abort 未决的窗口内
+        // 删除在途临时拒绝——prepare 已进、commit/abort 未决的窗口内
         // 新启动一律拒绝（临时态，abort 后自动恢复可唤醒）。
         if self.is_evicting(agent_id) {
             return Err(VmSupervisorError::LifecycleRejected(format!(
@@ -1086,9 +1086,9 @@ impl VmSupervisor {
             last_used: Instant::now(),
         }));
         // 插入/复核（锁内只做决策，await 一律在锁块外——std 守卫跨 await
-        // 会让 future 非 Send，async_trait 面直接拒绝）。F2：墓碑与删除
+        // 会让 future 非 Send，async_trait 面直接拒绝）。：墓碑与删除
         // 在途一并复查（删除 vs 分钟级冷启动窗口两态都拦）；满员/双赢家
-        // 仍是可降级 Unavailable——生命周期拒绝单独成臂（F1 变体语义）。
+        // 仍是可降级 Unavailable——生命周期拒绝单独成臂（变体语义）。
         enum InstallRejection {
             Lifecycle(String),
             Unavailable(String),
@@ -1099,13 +1099,13 @@ impl VmSupervisor {
                 .lock()
                 .expect("vm supervisor slots lock poisoned");
             if self.is_evicted(agent_id) {
-                // R2：启动在途窗口内删除编排完成（永久墓碑已落）——安装点
+                // 启动在途窗口内删除编排完成（永久墓碑已落）——安装点
                 // 复查拦下，刚启动的实例走输家路径自停。
                 Some(InstallRejection::Lifecycle(format!(
                     "agent {agent_id} 已删除（VM 身份已逐出）"
                 )))
             } else if self.is_evicting(agent_id) {
-                // F2：启动在途窗口内删除编排开始（临时态在位）——同上拦下。
+                // 启动在途窗口内删除编排开始（临时态在位）——同上拦下。
                 Some(InstallRejection::Lifecycle(format!(
                     "agent {agent_id} 删除在途（VM 身份逐出进行中）"
                 )))
@@ -1197,14 +1197,14 @@ impl VmSupervisor {
 
         let qemu_bin = resolve_qemu_binary(arch, qemu_install_dir(&self.workspace).as_deref());
 
-        // 显示端口解析（P5-R2）：config `display` 现值裁决。vnc 态过
+        // 显示端口解析：config `display` 现值裁决。vnc 态过
         // headless 闸（desktop variant 镜像）+ 回环端口分配；失败 = 启动前
         // 诚实拒绝（无副作用，Unavailable 语义）。
         let display_port = resolve_display_port(&self.workspace, settings)?;
         record.display_port = display_port;
         if display_port.is_some() {
             // spawn 前落盘锚（二.5）：display=vnc 的端口决议也进 registry
-            // （插件/前端经 vm status 查询可见）。
+            // （插件/前端经 vm status 查询可）。
             save_record(&self.workspace, agent_id, &record).map_err(|e| {
                 VmSupervisorError::Failed(format!("registry 落盘失败（display 锚）: {e}"))
             })?;
@@ -1218,7 +1218,7 @@ impl VmSupervisor {
 
         // 镜像换装互斥（[`IMAGE_SWAP_GATE`] 两相协议的 spawn 侧）：从
         // overlay 首触（首启 create_overlay 以 base 作 backing 模板）持到
-        // 本函数终态——成功=槽即将入 map（promote 侧 pidfile 扫描可见），
+        // 本函数终态——成功=槽即将入 map（promote 侧 pidfile 扫描可），
         // 失败=子进程已收尸（overlay 已释放）。promote 持闸期间本路径在
         // 此排队，闸后启动用的已是新 base，一致性自然成立。守卫取消即
         // 释放，不卡停机。
@@ -1227,12 +1227,12 @@ impl VmSupervisor {
         // 在途标记（[`StartingMarkerGuard`]）：闸后落盘——排队等闸期间不
         // 算在途（否则另一进程的换装扫描会为一个还没开跑的 start 误拒）。
         // 覆盖本进程 spawn 全相位 + 跨进程可见（另一进程的 promote 扫描
-        // 看得见）；Drop 即移除，终态后 pidfile 接管活体哨兵。
+        // 看得）；Drop 即移除，终态后 pidfile 接管活体哨兵。
         let _starting = StartingMarkerGuard::arm(&run_dir)
             .map_err(|e| VmSupervisorError::Failed(format!("spawn 在途标记落盘失败: {e}")))?;
 
         // wake-or-cold 路由（[`wake_kind_of`] 纯函数）+ 首启制备。
-        // seed 已烧进 base（`/var/lib/cloud/seed/nocloud/`，2026-10-20
+        // seed 已烧进 base（`/var/lib/cloud/seed/nocloud/`，
         // cdrom 缺席定谳的根修——q35 AHCI cdrom 在 ds-identify 检测窗内
         // 缺席 → cloud-init 单元被 generator 静默摘除），gateway 无需再
         // 挂任何 seed 介质。
@@ -1309,7 +1309,7 @@ impl VmSupervisor {
         // → 宿主回落混两套文件视图。在交槽前把引导墙钟吃掉：轮询鉴权握手
         //（流即弃——execute_persistent 每次调用独立握手）；超时 = 启动失败
         //（停机 + 回冷），不带着没就绪的 VM 出这个函数。预算 = config
-        // `executor.vm.ready_budget_secs` 现读（缺省 240，P5-R4 配置化）。
+        // `executor.vm.ready_budget_secs` 现读（缺省 240，- 配置化）。
         let ready_budget = Duration::from_secs(settings.ready_budget_secs);
         let deadline = tokio::time::Instant::now() + ready_budget;
         loop {
@@ -1452,7 +1452,7 @@ impl VmSupervisor {
         res.map_err(|e| VmSupervisorError::Failed(format!("stop 失败（记录已转冷停）: {e}")))
     }
 
-    /// R2：身份已逐出？（墓碑只增不清——删除不可撤销，复活 = 重新建 agent
+    /// 身份已逐出？（墓碑只增不清——删除不可撤销，复活 = 重新建 agent
     /// 走新身份；消费点 = ensure_running 入口 + 槽安装点。）
     fn is_evicted(&self, agent_id: &str) -> bool {
         self.evicted
@@ -1461,7 +1461,7 @@ impl VmSupervisor {
             .contains(agent_id)
     }
 
-    /// F2：删除在途？（临时态——prepare 进、commit/abort 出；消费点 =
+    /// 删除在途？（临时态——prepare 进、commit/abort 出；消费点 =
     /// ensure_running 入口 + 槽安装点，与墓碑同位复查。）
     fn is_evicting(&self, agent_id: &str) -> bool {
         self.evicting
@@ -1470,7 +1470,7 @@ impl VmSupervisor {
             .contains(agent_id)
     }
 
-    /// R2：删除联动逐出，F2（2026-10-21 三轮复评）改**两段式**——
+    /// 删除联动逐出，（三轮复评）改**两段式**——
     ///
     /// - [`Self::evict_agent_prepare`]：进 `evicting` 临时拒绝态 + 有槽冷停
     ///   出 map（复用 [`Self::stop_agent`] 语义：QMP quit→kill 兜底，
@@ -1511,7 +1511,7 @@ impl VmSupervisor {
         Ok(())
     }
 
-    /// F2 第二段：真相源删除成功 → 永久墓碑落地 + 临时态转正（同步不可
+    /// 真相源删除成功 → 永久墓碑落地 + 临时态转正（同步不可
     /// 失败；幂等）。
     pub fn evict_agent_commit(&self, agent_id: &str) {
         self.evicted
@@ -1528,7 +1528,7 @@ impl VmSupervisor {
         );
     }
 
-    /// F2 失败恢复段：真相源删除失败 → 解除临时拒绝态（旧身份可再唤醒；
+    /// 失败恢复段：真相源删除失败 → 解除临时拒绝态（旧身份可再唤醒；
     /// 幂等）。
     pub fn evict_agent_abort(&self, agent_id: &str) {
         let removed = self
@@ -1631,7 +1631,7 @@ impl VmSupervisor {
         swept
     }
 
-    /// 磁盘 GC：孤儿 overlay + 陈旧换装残留清扫（P5-R4；watchdog 周期 +
+    /// 磁盘 GC：孤儿 overlay + 陈旧换装残留清扫（watchdog 周期 +
     /// gateway 启动 sweep 共用）。返回删除的文件数。
     ///
     /// **孤儿判定（保守）**：overlays 根下 `*.qcow2` 且文件名 stem 不在
@@ -1649,7 +1649,7 @@ impl VmSupervisor {
     /// base.new 是唯一落点，删了 = 毁镜像）。`.staging` 目录刻意不碰——
     /// 构建失败保留供排查是 vm_bridge 的既定决策，GC 不翻案。
     ///
-    /// **换装闸互斥（BUG-20261030-196）**：promote_staging ①落临时名到
+    /// **换装闸互斥**：promote_staging ①落临时名到
     /// ③rename 转正之间，canonical 与 base.new **同时在场**正是本函数的
     /// 陈旧残留判定签名——闸忙（换装/启动在飞）时整轮跳过（GC 本就是
     /// best-effort「下轮重试」语义，watchdog 15s tick 自会再来）。
@@ -1711,7 +1711,7 @@ impl VmSupervisor {
         removed
     }
 
-    /// watchdog（P3 同款 Arc downgrade 自弱引用循环；supervisor 全体 drop
+    /// watchdog（同款 Arc downgrade 自弱引用循环；supervisor 全体 drop
     /// → 看护自灭）。单 tick：死槽收敛 → 孤儿 sweep → 磁盘预算告警 →
     /// idle 自动睡眠（`idle_sleep_secs=0` 关）。
     pub fn start_watchdog(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
@@ -1747,7 +1747,7 @@ impl VmSupervisor {
             else {
                 continue;
             };
-            // try_lock：忙碌（工具调用/睡眠进行中）= 跳过本 tick（P3 同款）。
+            // try_lock：忙碌（工具调用/睡眠进行中）= 跳过本 tick（同款）。
             let Ok(mut s) = slot.try_lock() else {
                 continue;
             };
@@ -1770,7 +1770,7 @@ impl VmSupervisor {
         // 2. 孤儿 sweep。
         self.sweep_orphans().await;
 
-        // 2.5 磁盘 GC：孤儿 overlay / 陈旧换装残留（P5-R4）。在 config
+        // 2.5 磁盘 GC：孤儿 overlay / 陈旧换装残留。在 config
         // 门之前跑——垃圾回收不依赖 VM 档开关（enabled=false 时遗留产物
         // 照样回收，关闭态零激活指的是不启动新东西不是不管旧垃圾）。
         self.sweep_disk_garbage();
@@ -1836,7 +1836,7 @@ impl VmSupervisor {
 }
 
 // ---------------------------------------------------------------------------
-// P5 第 4 步：执行接入面（PersistentExecutor + VmBackend 桥）
+// 第 4 步：执行接入面（PersistentExecutor + VmBackend 桥）
 // ---------------------------------------------------------------------------
 
 /// guest agent 工具子集（`nemesis-guest` src/tools.rs dispatch 表同源镜像
@@ -1861,12 +1861,12 @@ pub(crate) const VM_GUEST_TOOLS: [&str; 8] = [
 /// 常态」：工具自身长短不一，超时 = 诚实失败）。
 const GUEST_CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// VmSupervisorError → PersistentCallError 纯映射（T7 同款依赖倒置桥）。
+/// VmSupervisorError → PersistentCallError 纯映射（同款依赖倒置桥）。
 /// Unavailable = 调用从未发生（config 关/镜像缺/满员/GC 闸/加速缺席）；Failed
-/// = 已可能副作用 → ToolFailed 绝不回落。R1（2026-10-20）：VM 档 guest 异文
+/// = 已可能副作用 → ToolFailed 绝不回落。：VM 档 guest 异文
 /// 件视图——Unavailable 时 `host_fallback=false`，宿主回落由错误位**禁止**
 /// （静默落宿主 = 文件视图切换正确性 bug；上层见 false 必须上抛诚实错误，
-/// 不得 spawn 宿主执行器）。F1（2026-10-21 三轮复评）：LifecycleRejected
+/// 不得 spawn 宿主执行器）。（三轮复评）：LifecycleRejected
 /// （删除墓碑/删除在途）独立透传——身份已终结，无论文件视图一律终止。
 fn vm_err_to_persistent(
     e: VmSupervisorError,
@@ -1917,7 +1917,7 @@ impl nemesis_agent::remote_executor_tool::PersistentExecutor for VmSupervisor {
 
 impl VmSupervisor {
     /// 单次 guest 调用共享通路（ensure_running + 握手 + guest_call）。
-    /// B9-1 从 execute_persistent 提取——agent 工具调用与 internal_call
+    /// 从 execute_persistent 提取——agent 工具调用与 internal_call
     /// 走同一条路，差别只在调用方的闸（子集闸/无闸）。
     ///
     /// 失败分型沿用既有纪律：ensure_running/握手失败 = Unavailable（请求
@@ -1965,10 +1965,10 @@ impl VmSupervisor {
         }
     }
 
-    /// B9-1：vm_sync 同步引擎的**内部方法通道**（bulk_write/bulk_read/
+    /// vm_sync 同步引擎的**内部方法通道**（bulk_write/bulk_read/
     /// bulk_read_chunk/hash_tree）。与 agent 工具面的唯一差别 = **不过
     /// `VM_GUEST_TOOLS` 子集闸**——这四个方法名宿主闸根本不认识，agent
-    /// 永远摸不到（vm_sync 地基，B9 实施计划 §4.2 ③「guest 三个内部
+    /// 永远摸不到（vm_sync 地基， 实施计划 ③「guest 三个内部
     /// 方法」的宿主侧入口）。ctx 钉 `source: "vm_sync"` 供 guest 侧区分。
     pub(crate) async fn internal_call(
         &self,
@@ -1981,7 +1981,7 @@ impl VmSupervisor {
             .await
     }
 
-    /// P5-R1：`browser` 工具专用通道（guest 内 headless chromium + CDP，
+    /// `browser` 工具专用通道（guest 内 headless chromium + CDP，
     /// 执行体 = nemesis-guest src/browser.rs）。与 agent 文件/exec 工具面
     /// 同路（call_guest）但**不过 `VM_GUEST_TOOLS` 子集闸**——"browser"
     /// 刻意不在子集（子集是 guest 文件/exec 直通面，两套文件视图纪律；
@@ -2030,18 +2030,18 @@ impl super::VmBackend for VmSupervisor {
     }
 
     async fn evict_agent_prepare(&self, agent_id: &str) -> Result<(), String> {
-        // R2/F2：删除联动第一段——临时拒绝态 + 冷停出槽（见 inherent
+        // /：删除联动——临时拒绝态 + 冷停出槽（见 inherent
         // evict_agent_prepare 文档）。
         self.evict_agent_prepare(agent_id).await
     }
 
     fn evict_agent_commit(&self, agent_id: &str) {
-        // F2 第二段：真相源删除成功 → 永久墓碑（见 inherent 同名方法）。
+        // 真相源删除成功 → 永久墓碑（见 inherent 同名方法）。
         self.evict_agent_commit(agent_id)
     }
 
     fn evict_agent_abort(&self, agent_id: &str) {
-        // F2 失败恢复段：临时态解除（见 inherent 同名方法）。
+        // 失败恢复段：临时态解除（见 inherent 同名方法）。
         self.evict_agent_abort(agent_id)
     }
 }

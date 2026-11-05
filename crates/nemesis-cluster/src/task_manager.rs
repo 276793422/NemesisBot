@@ -4,7 +4,7 @@
 //! transitions to Completed or Failed.
 //!
 //! Mirrors Go's `TaskManager` with:
-//! - `TaskStore` trait for pluggable storage (Phase 1: in-memory)
+//! - `TaskStore` trait for pluggable storage (in-memory)
 //! - `Start()`/`Stop()` lifecycle with background cleanup goroutine
 //! - `cleanup_loop` that periodically removes completed tasks older than 2 hours
 //! - `cleanup_completed` that also times out pending tasks older than 24 hours
@@ -18,10 +18,10 @@ use uuid::Uuid;
 use nemesis_types::cluster::{Task, TaskStatus};
 
 // ---------------------------------------------------------------------------
-// TaskStore trait (Phase 2: can be replaced with persistent implementation)
+// TaskStore trait (can be replaced with persistent implementation)
 // ---------------------------------------------------------------------------
 
-/// Interface for task storage (Phase 2 can replace with persistent implementation).
+/// Interface for task storage (can replace with persistent implementation).
 ///
 /// Mirrors Go's `TaskStore` interface.
 pub trait TaskStore: Send + Sync {
@@ -77,7 +77,7 @@ pub trait TaskStore: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// InMemoryTaskStore (Phase 1 implementation)
+// InMemoryTaskStore (implementation)
 // ---------------------------------------------------------------------------
 
 /// Terminal states of the TaskManager lifecycle（Completed/Failed/Cancelled）。
@@ -92,7 +92,7 @@ fn is_terminal_status(status: &TaskStatus) -> bool {
     )
 }
 
-/// G3：attempt 归因收账的终态串映射（runs 行状态机由 SqliteTaskStore
+/// attempt 归因收账的终态串映射（runs 行状态机由 SqliteTaskStore
 /// 适配器维护；这里只映射 attempts 收账串——非终态 None = 不记账）。
 fn ledger_attempt_status(status: TaskStatus) -> Option<&'static str> {
     match status {
@@ -298,25 +298,25 @@ pub struct TaskManager {
     store: Arc<dyn TaskStore>,
     cleanup_interval: std::time::Duration,
     on_complete: Mutex<Option<Arc<OnCompleteCallback>>>,
-    /// G4: pending 任务安全网超时（默认 24h）。集群层用
+    /// pending 任务安全网超时（默认 24h）。集群层用
     /// `stale_task_safety_net(llm_timeout)` 按阶梯推导后经
     /// [`Self::set_pending_timeout`] 覆盖，保证安全网 > B 端 LLM 超时。
     pending_timeout: Arc<parking_lot::RwLock<chrono::Duration>>,
-    /// Mutex 化（BUG-20261030-209）：生产装配点持有 `Arc<TaskManager>`
+    /// Mutex 化：生产装配点持有 `Arc<TaskManager>`
     /// （`Cluster.task_manager`），旧 `&mut self` 签名让 start/stop 无法经
     /// Arc 调用——清理循环因此在生产从未接线，终态任务在 tasks.db 无限累积。
     stop_tx: parking_lot::Mutex<Option<tokio::sync::broadcast::Sender<()>>>,
     /// 负载感知路由记账回调（A 端，Cluster 构造期安装）。回调漏斗
     /// （complete_task/fail_task）之外的五处旁路 settle 点——恢复轮询
     /// sweep 三分支（安全网超时判死 / done 回灌 / not_found 判死）、默认
-    /// peer_chat_callback handler 兜底臂、G4 清理 tick 的 H4 安全网判死
+    /// peer_chat_callback handler 兜底臂、 清理 tick 的 安全网判死
     /// （`cleanup_completed`）——经 [`Self::fire_route_record`] 补记账，
     /// 慢/坏节点的失败样本才进得了路由统计。未安装 = fire no-op
     /// （独立 TaskManager 的单测路径）。
     route_record_fn: Mutex<Option<Arc<RouteRecordCallback>>>,
 }
 
-/// G4: pending 任务安全网默认值（24 小时）。
+/// pending 任务安全网默认值（24 小时）。
 pub fn default_pending_timeout() -> chrono::Duration {
     chrono::Duration::hours(24)
 }
@@ -369,7 +369,7 @@ impl TaskManager {
     /// Only spawns if inside a tokio runtime. Safe to call multiple times
     /// (subsequent calls are no-ops).
     ///
-    /// `&self`（BUG-20261030-209）：生产装配点经 `Arc<TaskManager>` 调用，
+    /// `&self`：生产装配点经 `Arc<TaskManager>` 调用，
     /// 幂等 check+set 收进同一临界区。
     pub fn start(&self) {
         let mut guard = self.stop_tx.lock();
@@ -418,12 +418,12 @@ impl TaskManager {
 
     // -- Callback management ----------------------------------------------------
 
-    /// G4: 覆盖 pending 任务安全网超时（`Cluster::start` 按超时阶梯推导后调用）。
+    /// 覆盖 pending 任务安全网超时（`Cluster::start` 按超时阶梯推导后调用）。
     pub fn set_pending_timeout(&self, timeout: chrono::Duration) {
         *self.pending_timeout.write() = timeout;
     }
 
-    /// G4: 当前 pending 任务安全网超时。
+    /// 当前 pending 任务安全网超时。
     pub fn pending_timeout(&self) -> chrono::Duration {
         *self.pending_timeout.read()
     }
@@ -441,7 +441,7 @@ impl TaskManager {
     /// 触发负载感知路由记账（未安装 = no-op）。旁路 settle 点调用——
     /// 记账语义（去重/过滤/时长样本）由 Cluster 侧闭包定义。
     pub fn fire_route_record(&self, task_id: &str, ok: bool) {
-        // Clone the hook OUT of the lock（对齐 confirm_delivery BUG #19 同款
+        // Clone the hook OUT of the lock（对齐 confirm_delivery 同款
         // 纪律）：钩子闭包体内会经 get_task 锁 store，不持 route_record_fn
         // 守卫跨调用——防未来钩子实现重入本锁自锁死（parking_lot 非重入）。
         let f = self.route_record_fn.lock().clone();
@@ -530,7 +530,7 @@ impl TaskManager {
         ) {
             Ok(true) => {
                 crate::logger::log_task("assigned", task_id, node_id);
-                // G3：attempt 归因开账（谁领的、何时开跑；runs 行由
+                // attempt 归因开账（谁领的、何时开跑；runs 行由
                 // SqliteTaskStore 适配器随本次转移置 running；账本未安装
                 // = 零变化，best-effort 不阻断）。
                 nemesis_taskstore::ledger::begin_cluster_attempt(task_id, node_id);
@@ -553,7 +553,7 @@ impl TaskManager {
     /// Returns `false` if the task was not found, or the task is in a
     /// conflicting state.
     ///
-    /// 终态幂等（NB-CODE-002）：重复回调（F2 送达重试/B 端重发）对已 Completed
+    /// 终态幂等（NB-CODE-002）：重复回调（送达重试/B 端重发）对已 Completed
     /// 的任务是幂等成功——结果保留首次值、callback 不重复 fire。
     pub fn complete_task(&self, task_id: &str, result: serde_json::Value) -> bool {
         self.settle_task(task_id, TaskStatus::Completed, Some(result))
@@ -594,7 +594,7 @@ impl TaskManager {
             }
             Ok(true) => {
                 if let Ok(task) = self.store.get(task_id) {
-                    // G3：attempt 归因收账（runs 行由 SqliteTaskStore 适配器
+                    // attempt 归因收账（runs 行由 SqliteTaskStore 适配器
                     // 随本次 settle 落终态；这里只关 attempts——账本未安装
                     // = 零变化，best-effort 不阻断 callback）。
                     if let Some(s) = ledger_attempt_status(status) {
@@ -724,7 +724,7 @@ impl Default for TaskManager {
 // ---------------------------------------------------------------------------
 
 /// Clean up completed/failed tasks older than 2 hours, and time out pending
-/// tasks older than `pending_timeout`（G4：由集群超时阶梯推导，默认 24h）.
+/// tasks older than `pending_timeout`（由集群超时阶梯推导，默认 24h）.
 ///
 /// Mirrors Go's `TaskManager.cleanupCompleted()`.
 fn cleanup_completed(
@@ -756,8 +756,8 @@ fn cleanup_completed(
         }
     }
 
-    // H4: Time out pending/running tasks past the safety-net timeout
-    // （G4: 每 tick 读一次当前配置，set_pending_timeout 即时生效）。
+    // Time out pending/running tasks past the safety-net timeout
+    // （每 tick 读一次当前配置，set_pending_timeout 即时生效）。
     // NB-CODE-006：卡死的 Running 与 Pending 同口径回收（超出同一安全网
     // 即判死 + fire callback），不再永久滞留。判定用 created_at：A 端
     // create→assign 同函数连续调用，时间差可忽略；不为此新增 updated_at
@@ -770,7 +770,7 @@ fn cleanup_completed(
                 let created_utc = created.with_timezone(&chrono::Local);
                 if chrono::Local::now() - created_utc > pending_limit {
                     // Mark as failed with timeout error（条件转移防与并发
-                    // settle 竞态覆盖已定终态）。T6①（2026-10-17）：只有
+                    // settle 竞态覆盖已定终态）。①：只有
                     // 条件转移真正落地（Ok(true)）才记 timeout 日志 + fire
                     // callback——并发 settle 已定终态时返回 Ok(false)，旧
                     // 代码无视结果照发，下游续行快照单消费者会收到重复事件。
@@ -788,7 +788,7 @@ fn cleanup_completed(
                     );
 
                     if settled == Ok(true) {
-                        // G3：attempt 归因收账（timeout 判死同口径；runs 行
+                        // attempt 归因收账（timeout 判死同口径；runs 行
                         // 已随本次条件转移落终态，这里只关 attempts）。
                         nemesis_taskstore::ledger::finish_cluster_attempt(
                             &task.id,
@@ -805,7 +805,7 @@ fn cleanup_completed(
                             ),
                         );
 
-                        // 负载感知路由：H4 判死也是任务终态 settle，经路由
+                        // 负载感知路由： 判死也是任务终态 settle，经路由
                         // 钩子补记账失败样本。Running 卡死任务没有其他回收
                         // 路径（恢复 sweep 只扫 Pending）；Pending 分支与
                         // 恢复 sweep 竞速（本 tick 30s vs sweep 120s，本臂

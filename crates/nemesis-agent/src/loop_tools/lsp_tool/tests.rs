@@ -1,7 +1,7 @@
 //! Tests for the `lsp` agent tool. Registration semantics are
 //! tested purely via `registration_plan` (acceptance ②); execute-side
 //! validation errors are exercised without spawning any server (they fire
-//! before the spawn path in `LspManager:query`).
+//! before the spawn path in `LspManager::query`).
 
 use super::*;
 use crate::context::RequestContext;
@@ -126,7 +126,7 @@ async fn execute_rename_without_new_name_errors() {
 }
 
 /// Missing file: clear error, no server spawned (the is_file check runs
-/// before the PATH probe in `LspManager:query`).
+/// before the PATH probe in `LspManager::query`).
 #[tokio::test]
 async fn execute_rejects_missing_file() {
     let t = LspTool::new(None, None);

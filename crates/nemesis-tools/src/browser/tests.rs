@@ -197,9 +197,9 @@ async fn test_screen_capture_full_screen_no_mcp() {
     let result = tool
         .execute(&serde_json::json!({"mode": "full_screen"}))
         .await;
-    // 无 MCP 时三合法结局（2026-09-01 扩容）：Windows 上 PowerShell 截屏
+    // 无 MCP 时三合法结局（扩容）：Windows 上 PowerShell 截屏
     // 成功 / 报错；非 Windows 上 powershell.exe ENOENT → "screen capture
-    // failed: ..." 臂（原宽容断言只认成功或含 "MCP"，Linux 假红）。
+    // failed:..." 臂（原宽容断言只认成功或含 "MCP"，Linux 假红）。
     assert!(
         !result.is_error
             || result.for_llm.contains("MCP")
@@ -656,7 +656,7 @@ fn test_desktop_tool_metadata() {
 }
 
 // ============================================================
-// W4a coverage gap closure (set_timeout setters on the three
+// coverage gap closure (set_timeout setters on the three
 // MCP-backed tools — trivial mutators otherwise never called)
 // ============================================================
 

@@ -35,7 +35,7 @@ async fn new_adapter_reports_not_running() {
         Arc::new(ClusterTaskList::new(tmp.path().join("cluster_tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
-        None, // 无讨论通道（G4 专属用例自行传入）
+        None, // 无讨论通道（专属用例自行传入）
     );
 
     // 固有方法 + trait 实现都报未运行。
@@ -64,7 +64,7 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
         Arc::new(ClusterTaskList::new(tmp.path().join("cluster_tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
-        None, // 无讨论通道（G4 专属用例自行传入）
+        None, // 无讨论通道（专属用例自行传入）
     );
 
     // 未运行时 stop() 必须短路 Ok（幂等停机），不触碰 cluster 内部。
@@ -75,7 +75,7 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：first_start 三分支
+// 补测（quality-hardening goal 冲刺）：first_start 三分支
 // （恢复磁盘任务 + 构建 agent 成功 / 构建失败 lenient）+ LifecycleService
 // start/stop 全路径（组件重启 + ClusterRpcTool 使能旗标翻转 + 幂等）。
 // 全部离线：Cluster::new 不绑口；discovery 起不来也只是 warn 不致命。
@@ -85,7 +85,7 @@ use std::sync::atomic::AtomicBool;
 
 use nemesis_cluster::cluster_task::{ClusterTask, TaskSource, TaskStatus};
 
-/// cluster_service 层测试不关心持久化语义（G1 收口语径的专属用例在
+/// cluster_service 层测试不关心持久化语义（收口语径的专属用例在
 /// cluster_agent/tests.rs）——统一 no-op persister。
 fn test_persister() -> Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister> {
     struct NoopPersister;
@@ -145,7 +145,7 @@ fn make_pending_task(task_id: &str) -> ClusterTask {
     }
 }
 
-/// 双击直启降级语义（2026-09-17）后，「无 config.json」不再让 agent 构建
+/// 双击直启降级语义后，「无 config.json」不再让 agent 构建
 /// 失败（工厂降级 NullProvider 装配 Ok，消费者真实存在）。需要确定性
 /// 「无 agent 消费者 / handle 缺席」的测试改写损坏的 config.json——
 /// load_config Err 是降级后仅存的工厂失败路径（lenient 臂照常可达）。
@@ -202,7 +202,7 @@ fn make_adapter(
         task_list.clone(),
         work_queue.clone(),
         test_persister(),
-        None, // 无讨论通道（G4 专属用例自行传入）
+        None, // 无讨论通道（专属用例自行传入）
     );
     (adapter, cluster, shared, task_list, work_queue, flag)
 }
@@ -391,7 +391,7 @@ async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
         assert_eq!(t.status, TaskStatus::Pending);
     }
     // 队列有界：恰好 CAPACITY 个被接受，多出的两个被 try_send 拒绝（warn 内吞）。
-    // 注意：ClusterWorkQueue 自持 sender，next() 永不返回 None（见 S11d 注），
+    // 注意：ClusterWorkQueue 自持 sender，next() 永不返回 None（见 注），
     // 排空判定必须用超时而非等 None。
     let mut drained = Vec::new();
     for _ in 0..ids.len() + 4 {
@@ -415,7 +415,7 @@ async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
 }
 
 /// start() 里 RPC server 绑定到已被占用的端口 → 错误向上传播为
-/// "RPC server start: ..."，且 running 保持 false（无半开状态泄漏）。
+/// "RPC server start:..."，且 running 保持 false（无半开状态泄漏）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
     let tmp = tempfile::tempdir().unwrap();
@@ -451,7 +451,7 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         task_list,
         work_queue,
         test_persister(),
-        None, // 无讨论通道（G4 专属用例自行传入）
+        None, // 无讨论通道（专属用例自行传入）
     );
 
     let err = adapter.start().expect_err("busy rpc port must fail start");
@@ -490,7 +490,7 @@ async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
         Arc::new(ClusterTaskList::new(tmp.path().join("tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
-        None, // 无讨论通道（G4 专属用例自行传入）
+        None, // 无讨论通道（专属用例自行传入）
     );
 
     // agent 构建 lenient-Ok(None) → running=true 但 handle 缺席。
@@ -541,7 +541,7 @@ async fn r10_first_start_recovery_info_fields_execute_with_subscriber() {
 }
 
 // =========================================================================
-// G1 sweep_and_reload_stale_results 链路测试（集群完备性加固 2026-09-11：
+// sweep_and_reload_stale_results 链路测试（集群完备性加固：
 // 从 first_start 提为自由函数）。真实磁盘目录 + 真实 store：陈旧结果
 // （stored_at 8 天前）被 7 天 TTL 清扫删除；新鲜结果留盘并被回载进内存。
 // =========================================================================
@@ -588,7 +588,7 @@ fn sweep_and_reload_sweeps_stale_keeps_and_loads_fresh() {
 }
 
 // =========================================================================
-// CD4（2026-09-17）：master 重启后从看板在途派发行重建 TaskManager Pending
+// master 重启后从看板在途派发行重建 TaskManager Pending
 // =========================================================================
 
 /// 构造带 registry 节点（id=remote-001 / name=worker-1）的 Cluster。
@@ -637,11 +637,11 @@ fn cd4_rebuild_registers_pending_from_active_dispatches() {
             ..Default::default()
         })
         .unwrap();
-    // 新行形态：worker_id 已是 real id（T37 写前归一）。
+    // 新行形态：worker_id 已是 real id（写前归一）。
     store
         .insert_dispatch("task-cd4-id", issue.id, "remote-001", &actor)
         .unwrap();
-    // 存量行形态：worker_id 是 peer 名（T37 之前的数据）——按名兜底解析。
+    // 存量行形态：worker_id 是 peer 名（之前的数据）——按名兜底解析。
     store
         .insert_dispatch("task-cd4-name", issue.id, "worker-1", &actor)
         .unwrap();
@@ -699,14 +699,14 @@ fn cd4_rebuild_skips_unresolvable_worker_and_none_store() {
 }
 
 // =========================================================================
-// wave4 追加（coverage）：G5 续行快照重登记四形态、discussion_inbox Some
-// 臂（sender 换入）、CD4 超安全网行 + 空库短路。
+// wave4 追加（coverage）： 续行快照重登记四形态、discussion_inbox Some
+// 臂（sender 换入）、 超安全网行 + 空库短路。
 // =========================================================================
 
-/// G5（A 侧重启恢复链路）：first_start 把磁盘续行快照重登记进 TaskManager。
+/// （A 侧重启恢复链路）：first_start 把磁盘续行快照重登记进 TaskManager。
 /// 四形态一次钉全：正常快照（Pending + peer/channel/chat 随行）、已登记
 /// 防重复、旧格式无 peer_id 跳过、损坏 JSON 跳过。损坏 config 让 agent
-/// 构建失败（确定性、不 spawn loop）——G5 块在构建之前已跑完，不影响。
+/// 构建失败（确定性、不 spawn loop）—— 块在构建之前已跑完，不影响。
 #[tokio::test]
 async fn g5_first_start_reregisters_pending_continuations_from_disk() {
     let tmp = tempfile::tempdir().unwrap();
@@ -839,7 +839,7 @@ async fn first_start_with_discussion_inbox_wires_sender() {
     assert!(inbox.send(ev).is_ok(), "start 后必须换入新 sender");
 }
 
-/// CD4 残余臂：空库短路（无在途派发行 → 0）+ 超安全网行不登记
+/// 残余臂：空库短路（无在途派发行 → 0）+ 超安全网行不登记
 /// （安全网压到 0 → 任何 age 都超期，留给派发超时 sweep 收口）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 #[test]

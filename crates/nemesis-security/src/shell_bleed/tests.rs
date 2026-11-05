@@ -1,4 +1,4 @@
-//! S2①：exec 前脚本内容扫描测试（字面凭据拦截 / 环境变量引用告警 /
+//! ①：exec 前脚本内容扫描测试（字面凭据拦截 / 环境变量引用告警 /
 //! 剥离防误报 / 形态矩阵 / 诚实降级 / 插件级入口）。
 
 use std::path::Path;
@@ -31,7 +31,7 @@ fn literal_credential_in_script_is_blocked() {
 
     assert!(out.has_literals(), "字面键必须命中：{out:?}");
     assert_eq!(out.literals[0].pattern, "aws_access_key");
-    // 默认 KeepPrefix 掩码 = 首 4 + ... + 尾 4（credential.rs mask_keep_prefix）。
+    // 默认 KeepPrefix 掩码 = 首 4 +... + 尾 4（credential.rs mask_keep_prefix）。
     assert!(
         out.literals[0].masked.ends_with("...MPLE")
             && out.literals[0].masked.starts_with("AKIA..."),

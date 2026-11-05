@@ -1,7 +1,7 @@
-//! 会话级全部放行（2026-10-24 长任务无人值守计划）。
+//! 会话级全部放行（2026-10-24 长任务）。
 //!
-//! 用户裁决（原话语义，见 `docs/REPORT/2026-10-24_会话级全部放行与循环干预阶梯.md`
-//! §0）：长任务无人值守场景下，进程级免打扰（§2 `config.approvals.auto_approve`）
+//! 用户裁决（原话语义，见 `会话级全部放行与循环干预阶梯`
+//! ）：长任务无人值守场景下，进程级免打扰（`config.approvals.auto_approve`）
 //! 隔离粒度不够——多会话并行时，A 会话的任务内容无权放行 B 会话的操作。
 //! 本模块是**会话级**开关的运行时载体：开启后该会话的**所有**安全审批卡
 //! 自动放行（含 CRITICAL、含 ziwei `run_policy=confirm` 的 force 卡——裁决
@@ -9,13 +9,13 @@
 //! （上游 dispatch 已拦）、无审批通道 fail-closed。
 //!
 //! **无 TTL、无自动关闭**（用户裁决：自动关闭=用户某天忘了还得回来找产品
-//! 麻烦）——纯手动开关；持久真相源 = 会话 sidecar
+//! 麻烦）——纯手动开关；持久权威 = 会话 sidecar
 //! `{safe_key}.meta.json` 的 `allow_all` 字段（写路径在 nemesis-agent
 //! `chat_log`，WSAPI handler 双写），本态是运行期投影，gateway 启动 hydrate。
 //!
-//! 消费方与注入模式复刻 [`crate::approval_auto::ApprovalAutoApproveState`]：
+//! 消费方与注入模式复刻 [`crate::approval_auto:ApprovalAutoApproveState`]：
 //! 同一实例 Arc 双注入——auditor（`set_session_allow_all`，RequireApproval 臂
-//! 读）+ web security handler（WSAPI 读写）——单一真相源。
+//! 读）+ web security handler（WSAPI 读写）——统一定义。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -28,7 +28,7 @@ pub struct AllowAllEntry {
     /// 开启时刻（RFC3339 本地时区，前端「自 HH:MM 放行中」展示）。
     since: String,
     /// 本放行期已自动批准条数（关闭后保留供回看，重开清零——「本次」语义
-    /// 与 [`crate::approval_auto::ApprovalAutoApproveState`] 的 count 对齐）。
+    /// 与 [`crate::approval_auto:ApprovalAutoApproveState`] 的 count 对齐）。
     count: AtomicU64,
 }
 

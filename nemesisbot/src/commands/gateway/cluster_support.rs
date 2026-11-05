@@ -1,14 +1,14 @@
 // ---------------------------------------------------------------------------
-// Cluster 支撑件（E1 二期 token 回传 + host:port 解析）
+// Cluster 支撑件（二期 token 回传 + host:port 解析）
 // ---------------------------------------------------------------------------
 
-/// E1 二期 token 回传（全自动流转 P5）：把 worker 回调携带的 `usage` 记入
+/// 二期 token 回传（全自动流转）：把 worker 回调携带的 `usage` 记入
 /// master 用量账本（DataStore request_logs）。记账键 = `cluster_rpc:
 /// {worker}/{task_id}`（与 worker 侧 `cluster_rpc:{A}/{chat}` 会话键同前缀
 /// 家族；per-task 粒度让 token 预算闸能按派发行精确聚合，`{worker}%` LIKE
 /// 前缀聚合同时可用）。诚实边界：无 usage（旧 worker / 错误回调）/ 无
 /// DataStore / 落库失败 → 静默跳过（warn），绝不影响回调路由。
-/// BUG-20261105-013：worker 回调重试 / G5 恢复轮询会重放同一回调（同
+/// worker 回调重试 / 恢复轮询会重放同一回调（同
 /// task_id），记账走 trace_id 去重幂等插入（`cluster-callback:{task_id}`
 /// 单任务一笔），重复回调不再翻倍 token 账本——与同 handler 的
 /// `record_delivery`（`{task_id}:branch` 幂等键）对齐。
@@ -62,7 +62,7 @@ pub(crate) fn record_cluster_usage(
     match ds.insert_request_log_dedup(&log) {
         Ok(true) => {}
         Ok(false) => {
-            // BUG-20261105-013：同 task_id 重复回调（worker 重试 / 恢复
+            // 同 task_id 重复回调（worker 重试 / 恢复
             // 轮询重放），幂等跳过不翻倍记账。
             tracing::debug!(
                 "[Gateway] Cluster callback usage already recorded (task {task_id}), dedup skip"
@@ -85,7 +85,7 @@ pub(crate) fn parse_host_port(addr: &str) -> (String, u16) {
 }
 
 // ---------------------------------------------------------------------------
-// P4 交付门（持久 Agent 实体，2026-10-17）：A 端交付分支记账
+// （持久 Agent 实体）：A 端交付分支记账
 // ---------------------------------------------------------------------------
 
 /// 记账内核（只做 DB 写，审计在 audited shim——inner 不引用 optional
@@ -139,8 +139,8 @@ pub(crate) fn record_branch_delivery(
 }
 
 /// A 端交付分支记账 + 审计留痕（all(cluster, security) 门）：deliveries 入
-/// 账后 `append_direct_audit_event`（F8 先例——非工具管线的直接审计记账，
-/// Merkle append-only；审计链未启用 = None，tracing 兜底可见）。
+/// 账后 `append_direct_audit_event`（先例——非工具管线的直接审计记账，
+/// Merkle append-only；审计链未启用 = None，tracing 兜底可）。
 #[cfg(all(feature = "cluster", feature = "security"))]
 pub(crate) fn record_branch_delivery_audited(
     task_db: Option<&std::sync::Arc<nemesis_taskstore::TaskDb>>,

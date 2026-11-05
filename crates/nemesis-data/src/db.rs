@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS model_pricing (
 );
 "#;
 
-/// v1 → v2（A3 请求明细增强，2026-08-31）：明细行补计价与排查字段。
+/// v1 → v2（请求明细增强）：明细行补计价与排查字段。
 ///
 /// 与源规格（`proxy_request_logs` 表）的偏差：**不单设
 /// `duration_ms`**——既有 `latency_ms` 就是该请求的真实耗时真相源
@@ -76,8 +76,8 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_status
     ON request_logs(status_code);
 "#;
 
-/// v2 → v3（P2B 模型工具健康，2026-09-12）：按 天×模型 聚合的工具调用 /
-/// 参数校验失败计数。NB-15 根修配套——worker 端 validation_budget 失败
+/// v2 → v3（P2B 模型工具健康）：按 天×模型 聚合的工具调用 /
+/// 参数校验失败计数。 根修配套——worker 端 validation_budget 失败
 /// （A 端 fail_class 只能看到「失败了」）在此沉淀为可观测的长期趋势，
 /// `models.health`（WSAPI/Dashboard）据此给出 tier 校准建议。
 ///
@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS guard_event_stats (
 );
 "#;
 
-/// L20 门面迁移链（v1-v3 数组化；语义与原散装 if 链等价：每步原子
+/// 门面迁移链（v1-v3 数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[DataStore] {note}`，门面按序跳过已应用步）。
 static DATA_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
     nemesis_utils::sqlite_preflight::Migration {
@@ -125,7 +125,7 @@ static DATA_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
     },
 ];
 
-/// L20 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
+/// 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
 /// 门面；无 extra pragmas——data.db 单写者，无多进程并开退避需求）。
 static DATA_STORE: nemesis_utils::sqlite_preflight::StoreSpec =
     nemesis_utils::sqlite_preflight::StoreSpec {
@@ -143,7 +143,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
             .map_err(|e| format!("Failed to create data directory: {e}"))?;
     }
     // 装配序（能力准入/WAL/漂移对账/迁移前备份/原子迁移链）单一真相源在
-    // 共享件 sqlite_preflight::open_sqlite_store（L20 门面）。
+    // 共享件 sqlite_preflight::open_sqlite_store（门面）。
     nemesis_utils::sqlite_preflight::open_sqlite_store(db_path, &DATA_STORE, &[])
 }
 

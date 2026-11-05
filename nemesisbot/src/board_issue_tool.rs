@@ -1,20 +1,20 @@
-//! 全自动流转 P3/D1：`board_issue` 工具——主 agent 的看板建单 + AI 拆解入口。
+//! 全自动流转 /：`board_issue` 工具——主 agent 的看板建单 + AI 拆解入口。
 //!
 //! 产品语义「对 master 说一句话建单」：用户在对话里说「建个单把登录修了」，
-//! LLM 调 `board_issue create`；「把 NB-7 拆解发车」→ `board_issue plan`。
+//! LLM 调 `board_issue create`；「把 拆解发车」→ `board_issue plan`。
 //!
 //! 注册面：**仅主 agent**（`agent_factory.rs::build_agent_loop`；store 未装配
 //! = 工具不注册）。cluster agent（worker）**不装**——worker 本地 board.db 是
 //! dashboard 视图非权威，建单落不到 master 权威库（与 board_discuss 相反：
 //! 发言经 RPC 上行即可，建单必须直写权威 store）。
 //!
-//! 复用（单一真相源）：`create` 走 `nemesis_web::handlers::board::build_new_issue`
+//! 复用：`create` 走 `nemesis_web::handlers:board::build_new_issue`
 //! （WSAPI `issue.create` 同一解析/默认值）；`plan` 走同 crate 的
 //! `execute_plan_chain`（WSAPI issue.plan / autopilot auto_plan / 项目
-//! auto_start / 本工具四入口同一编排，含 A1 auto_confirm 语义）。
+//! auto_start / 本工具四入口同一编排，含 auto_confirm 语义）。
 //!
 //! tier 策略：不进 `tier_allowed_tools`（与 board_discuss/cluster_rpc 同族，
-//! 仅 Big/Unresolved 全量档可见）；execute 内**显式 tier 闸**兜底（样板
+//! 仅 Big/Unresolved 全量档可）；execute 内**显式 tier 闸**兜底（样板
 //! `nemesis-web/src/handlers/cluster.rs::persona_generate`，拒 Mini）。
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ pub struct BoardIssueTool {
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     /// planner moderator 槽（gateway 在主 agent 建成后填充；先建槽后填模式）。
     moderator_slot: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
-    /// home 目录（A1 `board.plan.auto_confirm` 旗标现读）。
+    /// home 目录（`board.plan.auto_confirm` 旗标现读）。
     home: std::path::PathBuf,
     /// SSE 事件 hub（plan_ready/plan_failed 推送；None = 不推）。
     hub: Option<Arc<nemesis_web::events::EventHub>>,
@@ -85,7 +85,7 @@ impl BoardIssueTool {
     }
 }
 
-/// 解析后的子命令（execute 内部第一步；独立成纯函数便于单测）。
+/// 解析后的子命令（execute 内部；独立成纯函数便于单测）。
 #[derive(Debug)]
 pub(crate) enum BoardIssueCommand {
     Create {
@@ -182,7 +182,7 @@ impl BoardIssueTool {
         Ok(())
     }
 
-    /// A1 旗标现读的 home 入参（未装配 home → None，链内 fail-closed）。
+    /// 旗标现读的 home 入参（未装配 home → None，链内 fail-closed）。
     fn home_ref(&self) -> Option<&std::path::Path> {
         if self.home.as_os_str().is_empty() {
             None
@@ -205,7 +205,7 @@ impl nemesis_agent::r#loop::Tool for BoardIssueTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // 拍平平铺 schema（2026-09-30 压测 D 场景）：此前是 `oneOf` 分支形态
+        // 拍平平铺 schema（压测 D 场景）：此前是 `oneOf` 分支形态
         // （顶层无 properties、`subcommand: {const}` 藏在分支里），glm-5.3-flash
         // 实测连续 4 轮构造不出 `subcommand`（错误回灌也无法自纠），agent 只能
         // 改走 CLI 兜底。平铺后顶层直接声明全部字段，required 只留 subcommand，

@@ -85,7 +85,7 @@ fn test_init_logger_with_config_file() {
 }
 
 // ---------------------------------------------------------------------------
-// R7（coverage-95 goal）：init_logger_from_config 配置解析的细分支补测
+// （coverage-95 goal）：init_logger_from_config 配置解析的细分支补测
 // —— 纯解析路径（不发 tracing 全局订阅），直接对返回 flags 断言。
 // ---------------------------------------------------------------------------
 
@@ -164,7 +164,7 @@ fn test_should_skip_heartbeat() {
     assert!(should_skip_heartbeat_for_bootstrap(tmp.path()));
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_resolve_home_env_var() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -186,13 +186,13 @@ fn test_resolve_home_env_var() {
 
 #[test]
 fn test_resolve_home_auto_detect() {
-    // Test auto-detect when cwd has .nemesisbot
+    // Test auto-detect when cwd has.nemesisbot
     // 读 NEMESISBOT_HOME env——持锁防并行 mutator 窗口穿插（读者纪律）。
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let home = resolve_home(false);
-    // Should resolve to some .nemesisbot path (either auto-detect or home dir)
+    // Should resolve to some.nemesisbot path (either auto-detect or home dir)
     assert!(home.to_string_lossy().contains(".nemesisbot"));
 }
 
@@ -253,7 +253,7 @@ fn test_enhanced_memory_config_path() {
 #[test]
 fn test_cors_config_path() {
     let home = PathBuf::from("/tmp/test");
-    // 2026-08-29 收编：落位改 <workspace>/config/cors.json（nemesis-path 真相源）。
+    // 收编：落位改 <workspace>/config/cors.json（nemesis-path 真相源）。
     assert_eq!(
         cors_config_path(&home),
         PathBuf::from("/tmp/test/workspace/config/cors.json")
@@ -434,7 +434,7 @@ fn test_resolve_home_local_returns_cwd_based() {
     assert_eq!(home, cwd.join(".nemesisbot"));
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_resolve_home_env_var_custom_path() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -456,7 +456,7 @@ fn test_resolve_home_env_var_custom_path() {
 fn test_resolve_home_exe_dir() {
     // Priority 3: exe directory takes precedence over cwd
     // This test verifies the exe directory branch is exercised.
-    // We can't easily create .nemesisbot next to the test binary,
+    // We can't easily create.nemesisbot next to the test binary,
     // but we can verify the function still returns a valid path.
     // 读 NEMESISBOT_HOME env（env 优先于 exe_dir 分支）——持锁防并行 mutator。
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -714,7 +714,7 @@ fn test_log_flag_constants() {
 
 // --- ensure_exe_in_path tests ---
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_ensure_exe_in_path() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -750,7 +750,7 @@ fn test_ensure_exe_in_path() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：common.rs 剩余可测面。
+// 补测（quality-hardening goal 冲刺）：common.rs 剩余可测面。
 // - ensure_exe_in_path 的「PATH 整个不存在」分支（37-38）
 // - resolve_home 的 exe-dir 标记分支（93/95-96）与 cwd 标记分支（100）
 // - chat/forge/sessions 三个路径 builder
@@ -764,7 +764,7 @@ fn test_ensure_exe_in_path() {
 // - run_interactive_mode 的 EOF 分支（cargo test stdin 是管道 EOF）
 // =========================================================================
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -788,7 +788,7 @@ fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
     assert_eq!(now, canonical.to_string_lossy().to_string());
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn resolve_home_exe_dir_and_cwd_marker_branches() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -798,7 +798,7 @@ fn resolve_home_exe_dir_and_cwd_marker_branches() {
     let saved_env = std::env::var("NEMESISBOT_HOME").ok();
     unsafe { std::env::remove_var("NEMESISBOT_HOME") };
 
-    // --- exe-dir 分支：exe 旁建 .nemesisbot 标记（target 下的构建产物
+    // --- exe-dir 分支：exe 旁建.nemesisbot 标记（target 下的构建产物
     // 目录，非生产数据；测点测量完立即拆除）。---
     let exe_dir = std::env::current_exe()
         .unwrap()
@@ -815,7 +815,7 @@ fn resolve_home_exe_dir_and_cwd_marker_branches() {
         std::fs::remove_dir(&exe_marker).ok();
     }
 
-    // --- cwd 分支：exe-dir 标记拆除后，cwd 下的 .nemesisbot 生效。---
+    // --- cwd 分支：exe-dir 标记拆除后，cwd 下的.nemesisbot 生效。---
     let cwd = std::env::current_dir().unwrap();
     let cwd_marker = cwd.join(".nemesisbot");
     let cwd_marker_created = !cwd_marker.exists();
@@ -971,27 +971,27 @@ fn max_level_filter_maps_all_five_levels() {
     assert_eq!(max_level_filter(tracing::Level::ERROR), LevelFilter::ERROR);
 }
 
-// [2026-08-27 R9 死码处置] run_interactive_mode_returns_ok_on_stdin_eof
+// [ 死码处置] run_interactive_mode_returns_ok_on_stdin_eof
 // 随 run_interactive_mode 一并删除：该函数全仓库零生产调用方（用户
-// 2026-08-27 裁决删除），测试无存续对象。
-// [2026-10-19] setup_cron_tool_returns_wired_service_and_tool 随
+// 裁决删除），测试无存续对象。
+// [] setup_cron_tool_returns_wired_service_and_tool 随
 // setup_cron_tool 一并删除：该函数全仓库零生产调用方（dead code，生产
 // 注册的是 nemesis-agent loop_tools 的 CronTool），测试无存续对象。
 
 // ===========================================================================
-// r9_zero（R9 补测批零头组，2026-08-27）：resolve_home 的「exe 旁 .nemesisbot」
+// r9_zero（补测批零头组）：resolve_home 的「exe 旁.nemesisbot」
 // 优先级——代码序（common.rs 77-105）是 local → NEMESISBOT_HOME →
 // 【exe 目录】→ cwd 自动探测 → ~/.nemesisbot。注意文件头 doc 注释（71-76 行）
 // 把 exe 目录和 cwd 的顺序写反了，以实现为准（本测试就是 3 号位的回归钉）。
 //
 // 夹具：拷贝真 exe 到 <tmp>/bin/nemesisbot.exe，marker config 放在
-// <tmp>/bin/.nemesisbot/config.json；启动 cwd 是无 .nemesisbot 的空目录、并显式
+// <tmp>/bin/.nemesisbot/config.json；启动 cwd 是无.nemesisbot 的空目录、并显式
 // env_remove("NEMESISBOT_HOME") → 子进程只能经 exe 目录臂命中 marker。
 // 磁盘成本：一次 ~50MB 拷贝，TempDir 析构自动回收。
 // ===========================================================================
 
 mod r9_zero {
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn resolve_home_priority3_exe_side_dotnemesisbot_wins_before_cwd_autodetect() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1020,7 +1020,7 @@ mod r9_zero {
         )
         .unwrap();
 
-        // 启动目录刻意无 .nemesisbot（cwd 自动探测臂必须落空）。
+        // 启动目录刻意无.nemesisbot（cwd 自动探测臂必须落空）。
         let cwd = tmp.path().join("cwd");
         std::fs::create_dir_all(&cwd).unwrap();
 
@@ -1049,7 +1049,7 @@ mod r9_zero {
     }
 }
 
-/// P0 复审（fail-closed，2026-09-21）：鉴权验证类凭据解析失败必须回一次性
+/// 复审（fail-closed）：鉴权验证类凭据解析失败必须回一次性
 /// 随机 token，绝不回空串——verify_token(expected=空) 对所有请求放行。
 #[test]
 fn resolve_auth_token_or_random_fail_closed_on_broken_reference() {
@@ -1166,7 +1166,7 @@ fn control_plane_gate_matrix_maps_four_checklist_scenarios() {
             .is_ok()
     );
 
-    // 字段标签如实入文案（真机验证 2026-09-23：websocket 闸触发不得错指 web）。
+    // 字段标签如实入文案（真机验证：websocket 闸触发不得错指 web）。
     let ws_err = ensure_control_plane_credential("0.0.0.0", "", WS_FIELD)
         .expect_err("websocket gate must refuse too");
     assert!(
@@ -1180,7 +1180,7 @@ fn control_plane_gate_matrix_maps_four_checklist_scenarios() {
 }
 
 // ===========================================================================
-// Coverage 追加（2026-09-24）：SEC-001 凭据引导状态机 + vault 引用解析
+// Coverage 追加：SEC-001 凭据引导状态机 + vault 引用解析
 // helper 的失败分支 + 回环判定。
 // try_respawn_detached（真实 spawn 分离子进程）与 ensure_exe_in_path 的
 // current_exe 失败臂（进程内不可达）豁免，见交付报告。
@@ -1251,14 +1251,14 @@ fn bind_host_loopback_matrix() {
 
 /// console_is_solo_fresh：进程内可调不炸；返回值随运行环境（有/无控制台、
 /// 父 shell 在场与否）变化，只钉类型契约不断言真值。
-#[cfg(target_os = "windows")] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(target_os = "windows")] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn console_is_solo_fresh_returns_bool_without_panicking() {
     let _solo = console_is_solo_fresh();
 }
 
 // =========================================================================
-// panic hook（日志全覆盖审计 2026-10-17）：panic 信息必须经 tracing 落盘
+// panic hook（日志全覆盖审计）：panic 信息必须经 tracing 落盘
 // =========================================================================
 
 /// 共享缓冲 writer：fmt subscriber 的落点，测试里读出格式化后的输出断言。
@@ -1321,11 +1321,11 @@ fn panic_hook_routes_panic_info_through_tracing() {
 
 #[test]
 fn test_resolve_home_env_tilde_expands() {
-    // BUG-20261102-316：common::resolve_home 非 local 分支委托
+    // common::resolve_home 非 local 分支委托
     // nemesis_path::resolve_home_dir 后，env 值的 `~/` 前缀必须展开——
     // 旧平行实现按字面量处理，`NEMESISBOT_HOME=~` 会把数据落进 cwd 下的
     // `~` 目录（与 crate 侧展开语义分叉）。行为锁：展开后不含字面量 `~`
-    // 前缀、含自定义段与 .nemesisbot 后缀。
+    // 前缀、含自定义段与.nemesisbot 后缀。
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());

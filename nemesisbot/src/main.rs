@@ -2,7 +2,7 @@
 //!
 //! Routes all commands to their respective handler modules.
 
-// 双击直启 = 正式桌面应用语义（2026-09-21 BUG：双击 bot 后弹出的
+// 双击直启 = 正式桌面应用语义（BUG：双击 bot 后弹出的
 // Dashboard 附带控制台黑窗）。release 构建用 windows 子系统——系统不再
 // 为进程分配控制台，双击直启只有托盘 + Dashboard。debug 构建保留 console：
 // 真机测试范式（`target/debug/nemesisbot.exe gateway > console.log` 重定向、
@@ -15,45 +15,45 @@
     windows_subsystem = "windows"
 )]
 
-/// L7（devtool-upgrade 阶段 7）：ACP agent 侧 server——编辑器等 ACP 客户端经
+/// （devtool-upgrade）：ACP agent 侧 server——编辑器等 ACP 客户端经
 /// stdio JSON-RPC 接入；安全 8 层与 gateway 同源生效（详见模块头）。
 mod acp;
 mod adapters;
 mod agent_factory;
-/// P2（2026-10-16）：Agent 持久实体管理器——两阶段创建 / main 幂等 seed /
-/// 启动 sweep 收敛 / 项目镜像。记录真相源 = tasks.db agents 表；home/
-/// 记忆布局单一真相源 = nemesis-path。无 feature 门（对话组身份是核心
+/// Agent 持久实体管理器——两阶段创建 / main 幂等 seed /
+/// 启动 sweep 收敛 / 项目镜像。记录以 tasks.db agents 表为准；home/
+/// 记忆布局权威定义 = nemesis-path。无 feature 门（对话组身份是核心
 /// 基础设施）；gateway boot 装配（post_agent seed 块）+ 进程槽供 WSAPI /
 /// 集群宣告消费。
 mod agents;
-/// 看板项目档案 goal P3（D3/D4 master 侧）：执行档案落地回灌 + 超限出卡
+/// 看板项目档案 goal （/ master 侧）：执行档案落地回灌 + 超限出卡
 /// （TransferSink on_landed/on_overlimit 回调入口）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_archive_ingest;
-/// Swarm M3 资产 RPC 兜底通路（提供方侧，2026-09-20）：asset.meta /
+/// Swarm 资产 RPC 兜底通路（提供方侧）：asset.meta /
 /// asset.chunk 两命令——跨网段 HTTP 不可达时消费方经集群 RPC 分块拉取。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_asset_rpc;
-/// Swarm M3（G9 资产拉取/发布执行者）：board_asset 工具（仅注册进 cluster
+/// Swarm （资产拉取/发布执行者）：board_asset 工具（仅注册进 cluster
 /// agent；自包含——只需 workspace 路径，fetch 纯 HTTP+sha256，publish 自开
 /// store + 幂等密钥 + 读 gateway 落盘的 node url）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_asset_tool;
-/// Swarm M3：master 侧 nb_bus 装配（board 信封协议 gateway glue；
+/// Swarm：master 侧 nb_bus 装配（board 信封协议 gateway glue；
 /// 幂等/额度/裁决器/wake 下行/主持人裁决）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_bus;
-/// 集群任务认领（2026-10-22）：board_claim 工具（仅注册进 cluster
+/// 集群任务认领：board_claim 工具（仅注册进 cluster
 /// agent；browse/claim 两臂，信封构造本地、RPC 复用 cluster_agent 共用件）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_claim_tool;
-/// Swarm M3（G4 主动发言通道）：board_discuss 工具（仅注册进 cluster
+/// Swarm （主动发言通道）：board_discuss 工具（仅注册进 cluster
 /// agent；信封/RPC 复用 cluster_agent 共用件）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_discuss_tool;
-// M3 同因失败签名熔断账本已移 nemesis-board 公开（§6.4D：nemesis-web 手动
+// 同因失败签名熔断账本已移 nemesis-board 公开（D：nemesis-web 手动
 // 重派清账与评审链共用同一 JSON，nemesis_board::fail_streak 消费）。
-/// L07（2026-11-01）：审批卡 diff 预览生成（挂起点把「将要发生的变化」算
+/// 审批卡 diff 预览生成（挂起点把「将要发生的变化」算
 /// 成 unified diff / 命令现场）。同 web_approval 门（唯一消费方）。
 #[cfg(feature = "security")]
 mod approval_preview;
@@ -61,42 +61,42 @@ mod approval_preview;
 /// 主 agent——评审链 EvidenceOnly/ReadOnly 白名单消费；档案根围栏只读）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_evidence_tool;
-/// 全自动流转 P3/D1：board_issue 工具（仅注册进主 agent——「对 master 说
+/// 全自动流转：board_issue 工具（仅注册进主 agent——「对 master 说
 /// 一句话建单」入口；create 复用 WSAPI issue.create 解析，plan 复用
-/// execute_plan_chain 四入口单一真相源）。
+/// execute_plan_chain 四入口统一定义）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_issue_tool;
-/// AOR 批三 5.3：重规划器编排（四类触发点挂接 + LLM 起草 + assisted
+/// 重规划器编排（四类触发点挂接 + LLM 起草 + assisted
 /// 审批/autonomous 策略闸执行；建议≠授权；纯逻辑层在 nemesis_board::replan）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_replan;
-/// Swarm M4：验收 agent 编排（in_review 批作业三态处置；触发挂
+/// Swarm：验收 agent 编排（in_review 批作业三态处置；触发挂
 /// write_back in_review 路径，评审 LLM 走主 loop 后置装配桥）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_review;
-/// 集群专业职能框架 M5：验收链图像工件取回 + vision 评审（从交付/线程
+/// 集群专业职能框架：验收链图像工件取回 + vision 评审（从交付/线程
 /// 评论提取图像引用束 → 程序化取回 → base64 image part 进评审裸调用；
 /// provider 走 default_slot 与主 loop 同源，降级按次回落文本评审）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_review_assets;
-/// U-B（2026-10-12 无人值守 §9.2）：LLM 端点不可用恢复探针——封存期最小
+/// U-B（无人值守）：LLM 端点不可用恢复探针——封存期最小
 /// completion 探测（TCP 通 ≠ LLM 活），解封边沿读中断档案逐单续做
 /// （review→复评 / plan→续拆 / project→收口复评）；estop 优先级更高；
 /// 数据面/闸在 nemesis-web board_unavailable（同源）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_unavailable;
-/// 反向桥客户端（goal：节点显示名 + 反向桥与多设备汇聚，一期批次二）：
+/// 反向桥客户端（goal：节点显示名 + 反向桥与多设备汇聚，一期）：
 /// 出站连远端中继、hello 握手、退避重连、conn 泵（本机 web server 字节流
 /// 搬运）、access_check 比对。旁路——任何失败不影响本机 dashboard。
 mod bridge_client;
-/// 桥集群身份注册（goal 二期批次五，hub 侧）：桥 hello 集群身份事件 →
+/// 桥集群身份注册（goal 二期，hub 侧）：桥 hello 集群身份事件 →
 /// registry 同权注册 / Offline（依赖 nemesis_cluster，随 feature 门控）。
 /// `--relay` 纯中继不注入（只转发不注册边界不动）。
 #[cfg(feature = "cluster")]
 mod bridge_cluster;
 #[cfg(feature = "cluster")]
 mod bridge_rpc;
-/// P5-R1：browser 工具（VM 档 guest 内 headless chromium 的宿主侧入口；
+/// browser 工具（VM 档 guest 内 headless chromium 的宿主侧入口；
 /// 仅 VM 档诚实执行，注册闸 = persistent 路由在场）。
 mod browser_tool;
 #[cfg(feature = "cluster")]
@@ -107,11 +107,11 @@ mod cluster_request_logger_observer;
 mod cluster_service;
 mod commands;
 mod common;
-/// 看板项目档案 goal P5/F5：冲突硬解执行体（auto 档——AI 硬解→机械失败
+/// 看板项目档案 goal /：冲突硬解执行体（auto 档——AI 硬解→机械失败
 /// 重派原 worker→离线三轮接触→换人；budget 保险丝打满回落 human 档）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod conflict_resolver;
-/// 行动代理 P0（2026-10-14）：connector_find / connector_invoke 动态工具
+/// 行动代理：connector_find / connector_invoke 动态工具
 /// 对——注册表发现 + 按 connector.toml 声明执行（op_override 投影风险、
 /// 统一回执、预算护栏、三绑定 http/tool/action）。模块本体零 security
 /// 依赖（SecurityPlugin 槽位 cfg 内联，security 关 = None = 无闸直连），
@@ -121,17 +121,17 @@ mod conflict_resolver;
 /// ——nemesis-connectors 整包随它进出（连带 nemesis-security）。
 #[cfg(feature = "connectors")]
 mod connector_tools;
-/// B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——值不 transit 通道。
+/// （凭据 vault）：凭据索要卡 broker——值不 transit 通道。
 /// 门控随 vault_runtime（security feature off = 无 vault 可落，卡片无意义；
 /// 触发点槽空走原错误路径零回归）。
 #[cfg(feature = "security")]
 mod credential_broker;
-/// P4 交付门（持久 Agent 实体，2026-10-17）：worker 侧交付分支捕获——
+/// （持久 Agent 实体）：worker 侧交付分支捕获——
 /// 仅 cluster 形态消费（execute_new_task/resume_task 成功收口）。
 #[cfg(feature = "cluster")]
 mod delivery_gate;
-/// P4-c（2026-10-17）：A 端交付账本 web 面（deliveries bridge 实现）——
-/// 真相源 tasks.db deliveries 表无 feature 依赖，裁剪形态下查空账本诚实
+/// A 端交付账本 web 面（deliveries bridge 实现）——
+/// 以 tasks.db deliveries 表为准，无 feature 依赖，裁剪形态下查空账本诚实
 /// 可用（写入面只在 cluster 回调/评审里产生）。
 mod delivery_ledger;
 mod embedded;
@@ -145,14 +145,14 @@ mod estop_follower;
 mod eval_assessor;
 #[cfg(feature = "eval")]
 mod eval_worker;
-/// M1a broadcast 事件收尾排干（Lagged 穿透）——K2 NDJSON 与 ACP update
-/// 泵共用的单一真相源。
+/// broadcast 事件收尾排干（Lagged 穿透）—— NDJSON 与 ACP update
+/// 泵共用的统一定义。
 mod event_drain;
 mod exec_worker;
-/// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
+/// 统一执行世界：executor 通道装配统一定义 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
-/// P3 插件流程扩展：宿主侧 flow 引擎——面板插件 `[[flow.template]]` 剧本
+/// 插件流程扩展：宿主侧 flow 引擎——面板插件 `[[flow.template]]` 剧本
 /// 的推进者（六类 step 原语绑定既有件：connector 取数 / board 落单 /
 /// agent_fixloop / 回归验收 / publish 发布 / dossier 报告；磁盘实例账本 +
 /// `flow://` 代答面 + manual gate 卡点 + estop 冻结）。门控 =
@@ -164,19 +164,19 @@ mod flow_engine;
 /// Forge A 线行为回归执行器（SkillTestRunner 实现 + C 线重放执行面，feature=forge）。
 #[cfg(feature = "forge")]
 mod forge_test_runner;
-/// 集群专业职能框架 M4：generate_image 工具（images-openai lane 唯一消费
+/// 集群专业职能框架：generate_image 工具（images-openai lane 唯一消费
 /// 点；prompt→b64→落盘 workspace/images/，路径 sanitization 钉死输出根）。
 mod image_gen_tool;
 /// target="self" 单机本地执行器（网关装配面）：看板派发 target="self" 上
 /// 总线直驱本机 AgentLoop，回复捕获→写回→评审触发镜像集群回调 Route 0。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod local_dispatch;
-/// M7/M8（2026-10-27 整改批次三）：logs 五族统一 TTL 清扫器——session_logs
+/// logs 五族统一 TTL 清扫器——session_logs
 /// / boundary / request_logs / terminal / event_ledger 按 `config.logs.ttl`
 /// 逐族保留天数清扫（0=族关），启动扫一次 + 每 6h 一拍，每族每拍限量。
 mod logs_sweeper;
-/// P23（能力扩展 WS10）：stdio MCP server——NemesisBot 能力经 MCP 协议
-/// 暴露给 Claude Code / Cursor 等客户端；K1 式装配与 gateway 同源
+/// stdio MCP server——NemesisBot 能力经 MCP 协议
+/// 暴露给 Claude Code / Cursor 等客户端； 式装配与 gateway 同源
 /// （安全 8 层全量生效，MCP 出口不是安全旁路）。
 mod mcp_serve;
 /// 原生插件装载闸 + 签名策略（四个本地 C-ABI 插件 DLL 的统一裁决点）：
@@ -185,10 +185,10 @@ mod mcp_serve;
 /// warn=放行示警 / dormant=放行不验）+ Dashboard 本地插件库清单
 ///（status_list / scan_unrecognized）。
 mod native_plugins;
-/// 项 C（2026-10-22）：出站通知记账 + 失败重试 sweeper——notify_state
+/// 项 C：出站通知记账 + 失败重试 sweeper——notify_state
 /// 三段推进（pending→channel_accepted→confirmed）与 notify_outbox 重投。
 mod notify;
-/// WASM 插件框架 ↔ gateway 桥（W5-3）：agent 工具桥 / 宿主调用面 / vault
+/// WASM 插件框架 ↔ gateway 桥：agent 工具桥 / 宿主调用面 / vault
 /// 凭据解析 / 安装审批晚绑 / estop 联动。随 `plugins-wasm` feature 门控
 /// （该 feature implies security——信任/审计/扫描机制依赖 nemesis-security）。
 #[cfg(feature = "plugins-wasm")]
@@ -198,87 +198,87 @@ mod plugin_bridge;
 /// 同闸，无 forge 构建整模块缺席。
 #[cfg(feature = "forge")]
 mod profile_service;
-/// L6++（2026-09-08）：项目注册表（config/projects.json）+ 项目常驻
+/// 项目注册表（config/projects.json）+ 项目常驻
 /// AgentLoop 管理（对话/项目双分组；注册不拥有——删项目只解除分组）。
-/// M1 中间态：registry API 尚无二进制消费方（M2 manager / G4 WSAPI 接线），
+/// 中间态：registry API 尚无二进制消费方（manager / WSAPI 接线），
 /// allow 随接线移除。
 #[allow(dead_code)]
 mod projects;
-/// P3 外循环（交付发布 + unknown 对账，2026-10-25）：交付分支推远端 +
-/// 外部引用创建（协议由 flow 模板 PublishProtocol 声明，域剥离批 2026-11-02）
+/// 外循环（交付发布 + unknown 对账）：交付分支推远端 +
+/// 外部引用创建（协议由 flow 模板 PublishProtocol 声明，域剥离-02）
 /// + 三分支状态机。门控与消费点同闸（board+security+connectors）——
 /// 发布需要 connector 通路、vault 凭据、board 副本。
 #[cfg(all(feature = "board", feature = "security", feature = "connectors"))]
 mod publish;
-/// F7（devtool-upgrade 阶段 5）：Dashboard 结构化提问 broker——question
+/// （devtool-upgrade）：Dashboard 结构化提问 broker——question
 /// 工具的阻塞端 + WSAPI question.respond/pending 端（同审批 broker 形态）。
 mod question_broker;
-/// P4-d（2026-10-17）：评审结论 → 交付账本闭环——record_auto_decide 漏斗
+/// d：评审结论 → 交付账本闭环——record_auto_decide 漏斗
 /// 尾同步落 deliveries `review` 行 + auto_accept/redispatch 分支裁决 +
 /// 项目档案自动导出 `dossier` 行。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod review_ledger;
-/// A4（2026-10-21 引入）：安全校准——规则层 × guardian LLM
+/// （引入）：安全校准——规则层 × guardian LLM
 /// 二审一致性标定（`security calibrate`；样本永不执行、报告不改配置）。
 /// 消费 nemesis-security 的 pipeline/guardian（security feature 门控面），
 /// 与 commands::security 同闸。
 #[cfg(feature = "security")]
 mod security_calibrate;
-/// K1（devtool-upgrade 阶段 4）：SecurityPlugin 构造单一真相源（gateway /
+/// SecurityPlugin 构造统一定义（gateway /
 /// headless `run` 共用，安全 9 层在无端口形态不降级）。
 mod security_setup;
-/// L9 selfupdate 工具面：selfupdate_check（只读）/ selfupdate_apply（提案，
+/// selfupdate 工具面：selfupdate_check（只读）/ selfupdate_apply（提案，
 /// 人类闸=编排内 CRITICAL 审批卡）。主 loop 专属注册，编译闸=selfupdate。
 #[cfg(feature = "selfupdate")]
 mod selfupdate_tool;
-/// L14（2026-11-01）：会话执行统计聚合器（事件泵 + loop sink + 读侧）。
+/// 会话执行统计聚合器（事件泵 + loop sink + 读侧）。
 mod session_stats;
-/// P0 vault（B1，2026-09-22 计划）：进程级 `vault:<alias>` 解析器注入。
+/// vault（计划）：进程级 `vault:<alias>` 解析器注入。
 /// 门控随 nemesis-security（security feature off 时 `vault:` 引用诚实报
 /// "解析器未安装"，明文/env/yaml 链路不受影响）。
 #[cfg(feature = "security")]
 mod vault_runtime;
-/// 签名验证三态裁决（接入计划 §1/§3，2026-09-23）：resolve_mode 单一真相源
+/// 签名验证三态裁决：resolve_mode 统一定义
 /// + 启动自验单一入口（Cli::parse 后调，enforce 失败 exit 86）+ StartCheck
 /// 快照（gateway 审计链 / WSAPI status / 前端徽标数据源）。
 mod verify_policy;
-/// M7（devtool-upgrade 阶段 5）：Dashboard 审批管理器——auditor 的
+/// （devtool-upgrade）：Dashboard 审批管理器——auditor 的
 /// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
 /// 门控随消费方：唯一生产调用点在 gateway 的 security cfg 装配块内，
-/// feature off 时整块消失，本模块必须同门（--no-default-features 编译）。
+/// feature off 时整块消失，本模块必须同门（no-default-features 编译）。
 #[cfg(feature = "security")]
 mod web_approval;
-/// 紫微系统 T2.2：profile.tools[] → AgentLoop 动态工具桥（依赖方向所限
+/// 紫微系统.2：profile.tools[] → AgentLoop 动态工具桥（依赖方向所限
 /// ——nemesis-ziwei 不依赖 nemesis-agent，桥住本 crate；min_tier=normal +
 /// ziwei 操作投影 + confirm 强审批）。
 #[cfg(feature = "ziwei")]
 mod ziwei_tools;
 
-/// K4 (b)（devtool-upgrade 阶段 7）：IM 通道审批卡管理器 + 组合分流。
+/// (b)（devtool-upgrade）：IM 通道审批卡管理器 + 组合分流。
 /// web_approval 同门（依赖 nemesis_security::auditor trait）。
 #[cfg(feature = "security")]
 mod channel_approval;
 
-/// M5（2026-10-10 集群无人值守硬化）：跨节点批复桥 worker 侧（ask 上行
+/// （集群无人值守硬化）：跨节点批复桥 worker 侧（ask 上行
 /// 登记/摘除上行 + Dashboard responder 装饰器）。双门：消费方全在
 /// gateway 的 security cfg 装配块（web_mgr 在手处）+ 依赖 cluster。
 #[cfg(all(feature = "cluster", feature = "security"))]
 mod remote_approval;
 
-/// B9（VM 项目工作副本）：gateway 同步引擎——宿主项目目录 ↔ VM
+/// （VM 项目工作副本）：gateway 同步引擎——宿主项目目录 ↔ VM
 /// /workspace 的工作树对齐（开工全量 + 基线账本 + 排除规则/路径翻译
 /// 单点）。消费方 = 项目路由开工闸（projects manager）+ WSAPI/CLI
-/// 强制重扫（B9-3）。
+/// 强制重扫。
 #[cfg(feature = "vm")]
 mod vm_sync;
 
-/// P5-R2 ④：plugin-vm 宿主装载器（vm-display feature 门控，implies vm
+/// ④：plugin-vm 宿主装载器（vm-display feature 门控，implies vm
 /// ——display_port_query 数据源是 VmSupervisor）。
 #[cfg(feature = "vm-display")]
 mod vm_display_loader;
 
 /// plugin-vm 库文件查找 + v4 签名闸（vm feature 门控）——装载臂
-/// （vm_display_loader）与资源释放臂（vm_resources）的单一真相源。
+/// （vm_display_loader）与资源释放臂（vm_resources）的统一定义。
 #[cfg(feature = "vm")]
 mod vm_plugin_lib;
 
@@ -290,16 +290,16 @@ mod vm_resources;
 
 /// 插件库文件查找 + v4 签名闸（无 feature 门；PluginLibSpec 参数化
 /// 插件名）——VM（vm_plugin_lib 薄壳）与 roaming（roaming_plugin_loader）
-/// 两个装载臂的单一真相源。
+/// 两个装载臂的统一定义。
 mod plugin_lib;
 
 /// plugin_roaming 宿主装载器（C-ABI 解冻第二例：新式交互插件样板——
-/// 常驻服务 + 同步 FFI + vtable 双向回调；M4 起 feature 门已删，恒编译）。
-/// 装载/调用/停机三面：QUIC 中继服务端面自 2026-10-23 起经本装载器
+/// 常驻服务 + 同步 FFI + vtable 双向回调； 起 feature 门已删，恒编译）。
+/// 装载/调用/停机三面：QUIC 中继服务端面自 起经本装载器
 /// 走插件（iroh 家族重依赖随迁出主二进制）。
 mod roaming_plugin_loader;
 
-/// A1 运行时完整性清单：打包部署的
+/// 运行时完整性清单：打包部署的
 /// 运行时文件 hash 清单（runtime-manifest.json，构建期由
 /// scripts/gen_runtime_manifest.py 生成）+ 启动三态校验。无 feature 门
 /// （cargo 开发态 = manifest 缺席态，warn 不阻塞，照常工作）。
@@ -310,7 +310,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 
 // Embed all config templates at compile time (mirrors Go's //go:embed config)
 // pub(crate)：onboard 提取模块（commands/onboard.rs）共用同一份嵌入常量，
-// 不二次 include_str（单一真相源）。
+// 不二次 include_str。
 pub(crate) const CONFIG_DEFAULT: &str = include_str!("../config/config.default.json");
 pub(crate) const CONFIG_MCP_DEFAULT: &str = include_str!("../config/config.mcp.default.json");
 pub(crate) const CONFIG_CLUSTER_DEFAULT: &str =
@@ -349,7 +349,7 @@ struct Cli {
     #[arg(long)]
     local: bool,
 
-    /// 无参 = 直启 gateway（双击直启语义，2026-09-17）：home 缺失自动
+    /// 无参 = 直启 gateway（双击直启语义）：home 缺失自动
     /// auto-init（种子语义，不 clobber 用户文件）、无 LLM 降级启动
     /// （NullProvider）、双击场景无窗重生 + 托盘 + 自动开 Dashboard。
     #[command(subcommand)]
@@ -389,12 +389,12 @@ enum Commands {
         /// 读 config.quic.json relay 段；token 空 = 拒绝启动（fail-closed）。
         #[arg(long)]
         quic_relay: bool,
-        /// A1 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
+        /// 运行时硬化批：显式跳过 runtime-manifest 完整性校验（运维
         /// 逃生门；打包部署残缺默认响亮拒启，跳过必须显式输入）。
         #[arg(long)]
         skip_runtime_check: bool,
     },
-    /// Run a single headless agent task and exit (no ports, no gateway; K1)
+    /// Run a single headless agent task and exit (no ports, no gateway;)
     Run {
         /// Task prompt. Omit (or pass `-`) to read the task from stdin.
         task: Option<String>,
@@ -407,7 +407,7 @@ enum Commands {
         #[arg(long)]
         mode: Option<String>,
 
-        /// Output format: text (default) or json (K2 NDJSON event stream)
+        /// Output format: text (default) or json (NDJSON event stream)
         #[arg(long)]
         format: Option<String>,
 
@@ -425,10 +425,10 @@ enum Commands {
         #[arg(long)]
         thinking: bool,
     },
-    /// Run the ACP agent server over stdio (ACP editors/clients; L7)
+    /// Run the ACP agent server over stdio (ACP editors/clients;)
     Acp,
-    /// Expose NemesisBot capabilities as a stdio MCP server (P23; Claude
-    /// Code / Cursor etc. connect with zero changes; K1 same-source security)
+    /// Expose NemesisBot capabilities as a stdio MCP server (; Claude
+    /// Code / Cursor etc. connect with zero changes; same-source security)
     McpServe,
     /// Interact with the agent directly
     Agent {
@@ -452,13 +452,13 @@ enum Commands {
     },
     /// Show system status
     Status,
-    /// Search conversation history across sessions (U20 full-text search)
+    /// Search conversation history across sessions (full-text search)
     #[cfg(feature = "history-search")]
     History {
         #[command(subcommand)]
         action: commands::history::HistoryAction,
     },
-    /// Manage conversation sessions (Z1: fork a session at a turn boundary)
+    /// Manage conversation sessions (fork a session at a turn boundary)
     Session {
         #[command(subcommand)]
         action: commands::session::SessionAction,
@@ -511,13 +511,13 @@ enum Commands {
         #[command(subcommand)]
         action: commands::auth::AuthAction,
     },
-    /// Migrate model API keys into credentials.yaml references (U15).
+    /// Migrate model API keys into credentials.yaml references.
     /// NOTE: model API keys — distinct from `auth`'s OAuth credential store.
     Credentials {
         #[command(subcommand)]
         action: commands::credentials::CredentialsAction,
     },
-    /// Encrypted credential vault（P0）：通用秘密加密存储，list 永不见值。
+    /// Encrypted credential vault：通用秘密加密存储，list 永不见值。
     #[cfg(feature = "security")]
     Vault {
         #[command(subcommand)]
@@ -587,7 +587,7 @@ enum Commands {
         #[command(subcommand)]
         action: commands::sandbox::SandboxCommand,
     },
-    /// QUIC management (keygen / status / relay server; 2026-10-23 与集群解耦——
+    /// QUIC management (keygen / status / relay server; 与集群解耦——
     /// relay 走 plugin_roaming 装载，插件缺席 = 动态隐藏 + 显式调用诚实报错)
     Quic {
         #[command(subcommand)]
@@ -669,12 +669,12 @@ enum Commands {
 
 #[cfg(not(target_os = "macos"))]
 fn main() -> Result<()> {
-    // 停机窗口 panic / 退出拖挂根修（2026-10-24）：`#[tokio::main]` 的
+    // 停机窗口 panic / 退出拖挂根修：`#[tokio::main]` 的
     // runtime drop 是「立即 shutdown + 无限等」——gateway 停机后残余的
     // 孤儿任务（llm_bridge 在飞 LLM 调用、heartbeat interval 循环、直调
     // 回合等）一旦被唤醒去注册新 timer，就撞 "A Tokio 1.x context was
     // found, but it is being shutdown" panic；若有任务卡死，drop 的无限
-    // 等待则直接拖住进程退出（r9 gateway boot 测试实录：7 个停机 panic +
+    // 等待则直接拖住进程退出（r9 gateway boot 测试7 个停机 panic +
     // r10 子进程 90s 不退出）。手工 runtime + shutdown_timeout：服务自身
     // 的优雅停机链（BotService/AgentLoop stop）不变，main 返回后给残余
     // 任务最多 5s 自然收尾（窗口内 runtime 正常运行，timer 注册合法），
@@ -688,7 +688,7 @@ fn main() -> Result<()> {
     result
 }
 
-/// BUG-20261104-388：角色短路条件 = env 标记 **且无 CLI args**。
+/// 角色短路条件 = env 标记 **且无 CLI args**。
 ///
 /// gateway/eval spawn 的角色子进程无子命令（"spawned with no subcommand"
 /// 前提），而 CLI 嵌套（executor/eval 盒内工具再 spawn `nemesisbot <sub>`）
@@ -710,7 +710,7 @@ async fn async_main() -> Result<()> {
     // dispatch. Must precede Cli::parse_from — the child is spawned with no
     // subcommand. The early return also prevents any fork loop: the child never
     // reaches the gateway code that spawns executors.
-    // BUG-20261104-388：短路同时要求无 CLI args——见 helper 文档。
+    // 短路同时要求无 CLI args——见 helper 文档。
     if executor_role_short_circuit("executor") {
         return exec_worker::run().await;
     }
@@ -758,19 +758,19 @@ async fn async_main() -> Result<()> {
     let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
-        // BUG-20261101-281：提示行必须走 stderr——`run --format json` 的
+        // 提示行必须走 stderr——`run --format json` 的
         // stdout 是纯 NDJSON 契约（`run` 文本模式 stdout 只承载最终回复、
         // `acp` stdout 是 JSON-RPC 协议行），println 污染首行即炸消费方解析。
         eprintln!("Local mode enabled: using ./.nemesisbot");
     }
 
-    // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——
+    // 签名验证启动自验（接入计划）：Cli::parse 之后、任何命令装配之前——
     // gateway / run / acp 及其余子命令同源覆盖。必须在双击直启 respawn 之前：
     // enforce 拒启要对启动者可见，不能藏进 detached 子进程。
     // executor / eval-agent 子进程已在上方短路，不重复自验（由已验父进程派生）。
     verify_policy::self_check_and_enforce(local_mode);
 
-    // 双击直启（2026-09-17）：无参/`gateway` 语义且独占新控制台（双击 exe
+    // 双击直启：无参/`gateway` 语义且独占新控制台（双击 exe
     // 形态）→ 无窗重生 DETACHED_PROCESS 子进程后本进程退出；子进程带
     // NEMESISBOT_BARE_CHILD 跳过检测继续跑。其他子命令保持控制台输出
     // （短命 CLI 操作，双击场景用户需要看到输出）。
@@ -782,7 +782,7 @@ async fn async_main() -> Result<()> {
         std::process::exit(0);
     }
 
-    // R1 真机验收修复（2026-08-28）：把 CLI 解析出的 home 同步进 nemesis-path
+    // 真机验收修复：把 CLI 解析出的 home 同步进 nemesis-path
     // 的进程单例（default_path_manager）。该单例独立解析 home，而
     // `set_local_mode` 从未被本二进制调用 —— exe 旁存在 `.nemesisbot` 的部署
     // （bin_windows / --local 多实例）里，单例按 exe-dir 优先级抢在 cwd 之前，
@@ -817,7 +817,7 @@ fn parse_cli(args: Vec<String>) -> Cli {
     Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
 }
 
-/// plugin_roaming 缺席时动态隐藏 QUIC 服务端面入口（拍板 2：动态隐藏 +
+/// plugin_roaming 缺席时动态隐藏 QUIC 服务端面入口（动态隐藏 +
 /// 显式调用诚实报错双保险——hide 只影响 help/补全可见性，显式传参仍可
 /// 解析，落到运行时诚实报错）。纯文件探测（不 dlopen）；
 /// `quic relay` 子命令与 `gateway --quic-relay` 旗标同源隐藏。
@@ -850,12 +850,12 @@ fn main() -> Result<()> {
     // Executor role short-circuit (see the non-mac entry for rationale). macOS
     // main is sync, so drive the async executor entrypoint on a current-thread
     // runtime. The executor never needs the main-thread tray handoff.
-    // BUG-20261104-388：短路同时要求无 CLI args（helper 文档）。
+    // 短路同时要求无 CLI args（helper 文档）。
     if executor_role_short_circuit("executor") {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
-        // 限时收尾（同非 mac 入口 2026-10-24 根修）：runtime drop = 立即
+        // 限时收尾（同非 mac 入口 根修）：runtime drop = 立即
         // shutdown + 无限等，停机窗口里被唤醒任务的 timer 注册撞
         // TimerEntry panic。窗口内 runtime 正常运行，timer 注册合法。
         let result = rt.block_on(exec_worker::run());
@@ -917,24 +917,24 @@ fn main() -> Result<()> {
     let mut cli = parse_cli(filtered_args);
     if local_mode {
         cli.local = true;
-        // BUG-20261101-281：提示行必须走 stderr——`run --format json` 的
+        // 提示行必须走 stderr——`run --format json` 的
         // stdout 是纯 NDJSON 契约（`run` 文本模式 stdout 只承载最终回复、
         // `acp` stdout 是 JSON-RPC 协议行），println 污染首行即炸消费方解析。
         eprintln!("Local mode enabled: using ./.nemesisbot");
     }
 
-    // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——
+    // 签名验证启动自验（接入计划）：Cli::parse 之后、任何命令装配之前——
     // gateway / run / acp 及其余子命令同源覆盖。必须在双击直启 respawn 之前：
     // enforce 拒启要对启动者可见，不能藏进 detached 子进程。
     // executor / eval-agent 子进程已在上方短路，不重复自验（由已验父进程派生）。
     verify_policy::self_check_and_enforce(local_mode);
 
-    // R1 真机验收修复（2026-08-28）：与非 mac 入口同构 —— 把解析出的 home
+    // 真机验收修复：与非 mac 入口同构 —— 把解析出的 home
     // 同步进 nemesis-path 进程单例（详见非 mac 入口同位置的注释）。
     nemesis_path::default_path_manager().set_home_dir(common::resolve_home(local_mode));
 
     // Only the Gateway command needs the main-thread tray handoff.
-    // 双击直启（2026-09-17）：无参（None）= gateway 语义，同样需要托盘
+    // 双击直启：无参（None）= gateway 语义，同样需要托盘
     // 主线程 handoff。
     if matches!(&cli.command, None | Some(Commands::Gateway { .. })) {
         let tray_rx = nemesis_desktop::main_thread_handoff::init();
@@ -948,7 +948,7 @@ fn main() -> Result<()> {
                 let gw_rt = tokio::runtime::Builder::new_multi_thread()
                     .enable_all()
                     .build()?;
-                // 限时收尾（2026-10-24 根修，同非 mac 入口）：此前的
+                // 限时收尾（根修，同非 mac 入口）：此前的
                 // `gw_rt` 在闭包尾直接 drop = `#[tokio::main]` 的「立即
                 // shutdown + 无限等」原样保留——gateway 停机后残余孤儿
                 // 任务被唤醒注册 timer 撞 TimerEntry panic；任务卡死则
@@ -994,7 +994,7 @@ fn main() -> Result<()> {
 /// Shared command dispatch, used by both the `#[tokio::main]` entry
 /// (Windows / Linux) and the macOS manual-runtime entry.
 async fn run_command(cli: Cli) -> Result<()> {
-    // U15: point `yaml:<alias>` api_key references at this home's
+    // point `yaml:<alias>` api_key references at this home's
     // workspace/config/credentials.yaml. Resolution reads the file
     // per-operation (mirroring `env:VAR`), so one assignment at process
     // start covers every later resolve in this process (gateway runtime,
@@ -1004,12 +1004,12 @@ async fn run_command(cli: Cli) -> Result<()> {
         nemesis_config::credentials::set_global_credentials_path(
             nemesis_config::credentials::credentials_path_for_home(&cred_home),
         );
-        // P0 vault（B1）：`vault:<alias>` 解析器同点注入（见 vault_runtime）。
+        // vault：`vault:<alias>` 解析器同点注入（见 vault_runtime）。
         #[cfg(feature = "security")]
         crate::vault_runtime::install(&cred_home);
     }
 
-    // 双击直启（2026-09-17）：无参 = gateway 语义 + auto-init + 自动开
+    // 双击直启：无参 = gateway 语义 + auto-init + 自动开
     // Dashboard（BARE_LAUNCH env 标记，gateway 启动完成后消费）。显式
     // `nemesisbot gateway` 不带标记——那是 server 语义，不弹窗口。
     // 在 dispatch 前归一化，全部 match 臂保持原样。
@@ -1041,7 +1041,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 println!("Interactive configuration setup...");
             }
 
-            // 双击直启 goal（2026-09-17）：12 步初始化序列提取到
+            // 双击直启 goal：12 步初始化序列提取到
             // commands/onboard.rs（CLI 覆盖语义与 gateway auto-init 种子
             // 语义共用同一实现；此处 CLI 路径行为不变）。
             commands::onboard::onboard_default(
@@ -1333,7 +1333,7 @@ async fn run_command(cli: Cli) -> Result<()> {
 
 /// Write fallback minimal config when no embedded config is available.
 ///
-/// [2026-08-27 R9 死码处置注记] 生产侧唯一调用方（CONFIG_DEFAULT 解析的
+/// [ 死码处置注记] 生产侧唯一调用方（CONFIG_DEFAULT 解析的
 /// Err 兜底臂）恒不触发——编译期常量 from_str 不可能失败——该臂已删除。
 /// 函数保留：tests.rs 的 5 个既有测试以它为对象钉住最小配置 schema，
 /// 属"测试保活"状态。恢复生产接线：在 onboard 主配置写入处补 match/Err。
@@ -1361,30 +1361,30 @@ fn write_fallback_config(cfg_path: &std::path::Path) -> anyhow::Result<()> {
 }
 
 // Shared lock for env-mutating tests across nemesisbot's test modules
-// (common::tests, commands::migrate::tests). Env is process-global → parallel
+// (common::tests, commands::migrate:tests). Env is process-global → parallel
 // tests race on set_var/set_current_dir; every env-mutating test acquires this
 // lock so the binary is reliable under default parallel `cargo test`.
 //
 // 获取侧必须 poison-aware（`.lock().unwrap_or_else(|e| e.into_inner())`）：
 // 本锁只做串行化，不承载任何与锁体相关的不变量——某个持锁测试 panic 后，
 // 后续测试拿到的数据与从未 panic 过时完全一致，毒化标记对它们没有语义，
-// `.unwrap()` 只会把 1 个真实失败放大成几十个 PoisonError 假失败（2026-09-24
+// `.unwrap()` 只会把 1 个真实失败放大成几十个 PoisonError 假失败（
 // nightly run 35995518326 实证：cors 1 个根因 + 21 个级联）。同约定见
 // nemesis-agent background_registry 的模块级 TEST_LOCK。
 #[cfg(test)]
 static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-// §2 免打扰（无人值守计划 Part 2）：APPROVAL_AUTO 进程级槽（nemesis-web
+// 免打扰（Part 2）：APPROVAL_AUTO 进程级槽（nemesis-web
 // 全局态）触碰类测试的共享串行锁——question_broker / board_bus 等模块的
 // 测试会装 enabled 态置换它，并行测试互相交叠会 flake。获取侧同上：
 // poison-aware（`.lock().unwrap_or_else(|e| e.into_inner())`）。
 #[cfg(test)]
 pub(crate) static APPROVAL_AUTO_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-// §3 `NEMESIS_WASM_HOST_DLL` 进程级 env 突变的共享串行锁——native_plugins
+// `NEMESIS_WASM_HOST_DLL` 进程级 env 突变的共享串行锁——native_plugins
 // （gate 验签对象切换）与 plugin_bridge（ensure_host_dll 注入 dev 壳产物）
 // 两个测试模块都改读同一变量，各自只持 GLOBAL_STATE_LOCK / 无锁时并行互踩
-// （2026-10-22 实录：native warn 态检查读到 plugin_bridge 注入的 dev DLL
+// （native warn 态检查读到 plugin_bridge 注入的 dev DLL
 // 路径，Allow 携带对象断言假红）。持锁跨整个用例体（env 必须活到用例内
 // 的 loader/闸读取完成）。获取侧 poison-aware，同上约定。
 #[cfg(test)]

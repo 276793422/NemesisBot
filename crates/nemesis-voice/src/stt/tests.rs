@@ -11,7 +11,7 @@ fn normalize_strips_token_wrapper() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：引擎构造分支 + FFI 结构甄别
+// 覆盖率冲刺：引擎构造分支 + FFI 结构甄别
 // 无 DLL 时 sherpa_fn 包装器在符号查找处 panic "sherpa-onnx not
 // initialized"——should_panic 测试正好覆盖全部 #[repr(C)] 结构构造。
 // ===========================================================================
@@ -107,7 +107,7 @@ fn decode_recognizer_null_recognizer_panics_at_symbol_lookup() {
 }
 
 // ---------------------------------------------------------------------------
-// R6（2026-08-27）：白盒 null 引擎 → recognize / recognize_detail / Drop 封送路径
+// 白盒 null 引擎 → recognize / recognize_detail / Drop 封送路径
 // `SttEngine { recognizer: null, restriction: None }` 不触发任何 FFI 构造；
 // recognize → recognize_detail → decode_recognizer 在 FFI 符号查找处 panic。
 // 剩余不可达 = FFI 成功返回值语义（真模型 + 真 DLL）。

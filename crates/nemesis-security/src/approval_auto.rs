@@ -1,4 +1,4 @@
-//! §2 免打扰运行时态（2026-10-11 无人值守计划 Part 2）。
+//! 免打扰运行时态（2026-10-11 Part 2）。
 //!
 //! `security.approvals.auto_approve` 开关的**运行期载体**：同一
 //! [`ApprovalAutoApproveState`] Arc 双注入（editor_access 单一真相源同款）：

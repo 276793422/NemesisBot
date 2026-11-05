@@ -22,7 +22,7 @@ use tracing::{debug, warn};
 // Status constants
 // ---------------------------------------------------------------------------
 
-/// 引擎库下载 stall 检测窗（BUG-20261101-278）——见 ClamAVEngine::download
+/// 引擎库下载 stall 检测窗——见 ClamAVEngine::download
 /// 内注释。测试态 400ms：stall 回归测试经真实 download() 跑，等待必须秒级。
 #[cfg(not(test))]
 const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -654,7 +654,7 @@ impl InstallableEngine for ClamAVEngine {
         // Create target directory
         std::fs::create_dir_all(dir).map_err(|e| format!("failed to create directory: {}", e))?;
 
-        // BUG-20261101-278：reqwest::get 内部 Client::new() 零超时——病毒库
+        // reqwest::get 内部 Client::new() 零超时——病毒库
         // CDN 半死（TCP 已建但不发数据）时这里永久挂死，且在下方 cancel
         // select 之外、取消令牌救不了。read_timeout 只惩罚响应分片间隔
         // （stall 形态），慢速但流动的合法大文件下载（~200MB 的 main.cvd）
@@ -1249,7 +1249,7 @@ impl VirusScanner for ClamavScannerWrapper {
                         duration: format!("{:?}", start.elapsed()),
                     };
                 }
-                // Still failing → G5 fail-open (clean on unavailable).
+                // Still failing → fail-open (clean on unavailable).
                 ScanResult {
                     path: path.to_string_lossy().to_string(),
                     infected: false,
@@ -1790,7 +1790,7 @@ impl ScanChain {
                     }
                 }
             }
-            // BUG-20261029-171：multiedit 待写内容内嵌 edits[].new_text
+            // multiedit 待写内容内嵌 edits[].new_text
             // （顶层无 content 键，写系 content 臂取不到；本函数头的
             // file_path 扩展名闸读顶层 path/save_path，对 multiedit 恒空
             // 不适用）——逐条扫 new_text，不过扩展名闸（over-approve，
@@ -1856,9 +1856,9 @@ impl ScanChain {
                     }
                 }
             }
-            // BUG-20261029-171：multiedit 载荷内嵌 edits[].path（顶层无
+            // multiedit 载荷内嵌 edits[].path（顶层无
             // path/file_path 键），缺臂 = 目标文件不进路径扫描。
-            // BUG-20261028-118 在 extract_target（ABAC/审计面）修过同族
+            // 在 extract_target（ABAC/审计面）修过同族
             // 漂移，本表漏改——同类白名单式 match 表新工具必须同步补臂。
             "multiedit" => {
                 if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {

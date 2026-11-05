@@ -5,8 +5,8 @@
 #![allow(clippy::await_holding_lock)]
 
 use super::*;
-// ASM-05（2026-09-16）：agent.rs 手写装配删除后，LlmMessage/ToolCallInfo 不再
-// 经 super::* 转出——测试直接从 nemesis-agent 引入（生产同源类型）。
+// ASM-05：agent.rs 手写装配删除后，LlmMessage/ToolCallInfo 不再
+// 经 super:* 转出——测试直接从 nemesis-agent 引入（生产同源类型）。
 use nemesis_agent::r#loop::{LlmMessage, LlmProvider};
 use nemesis_agent::types::ToolCallInfo as AgentToolCallInfo;
 use tempfile::TempDir;
@@ -563,12 +563,12 @@ fn test_history_preview_81_chars() {
 }
 
 // =========================================================================
-// S11b 覆盖率冲刺（quality-hardening goal）：真实调用面测试。
+// 覆盖率冲刺（quality-hardening goal）：真实调用面测试。
 // - ProviderAdapter（LlmProvider impl）全转换路径：LlmMessage→Message、
 //   ToolDefinition 转发、ChatOptions Some/None、响应 tool_calls 过滤 +
 //   finished 判定 + usage 映射、provider Err→String。
 // - run() 无子命令：cfg 缺失 bail / build 失败 bail+提示 / 单消息模式
-//   死地址 provider 全流程（连接拒绝 → "Agent error" → Ok(())）。
+//   死地址 provider 全流程（连接拒绝 → "Agent error" → Ok()）。
 // - run() Set Llm：cfg 缺失 bail / resolve 成功写回 agents.defaults.llm。
 // - run() Set ConcurrentMode：非法 mode bail / reject / queue 带尺寸 /
 //   queue 默认 8 / 无 config.json → Ok 不写。
@@ -720,8 +720,8 @@ impl nemesis_providers::router::LLMProvider for S11bMockProvider {
     }
 }
 
-// ASM-05（2026-09-16）：adapter 转换测试改打 nemesis_web::ProviderAdapter
-// （生产单一真相源——agent.rs 本地 adapter 是它的旧拷贝，已随手写装配删除；
+// ASM-05：adapter 转换测试改打 nemesis_web::ProviderAdapter
+// （生产单一权威定义——agent.rs 本地 adapter 是它的旧拷贝，已随手写装配删除；
 // 转换行为逐字段一致，全部断言原样保留）。
 fn s11b_adapter(
     reply: S11bMockReply,
@@ -928,9 +928,9 @@ async fn test_s11b_run_agent_mode_unresolvable_model_degrades_ok() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
-    // 双击直启语义（2026-09-17）：llm 指向不存在的模型 → 工厂降级装配
+    // 双击直启语义：llm 指向不存在的模型 → 工厂降级装配
     // NullProvider（Ok 不 Err）→ 单消息模式打到 NullProvider → "Agent
-    // error" 打印后 run 返回 Ok(())（与 dead-provider 测试同款：LLM 层
+    // error" 打印后 run 返回 Ok()（与 dead-provider 测试同款：LLM 层
     // 失败不上抛；用户在 Dashboard 配好模型即恢复）。
     s11b_write_agent_config(
         &th.home,
@@ -960,7 +960,7 @@ async fn test_s11b_run_agent_mode_single_message_dead_provider() {
     let th = s11b_agent_home_env();
     s11b_write_agent_config(&th.home, s11b_dead_provider_config());
     // build 成功 + 单消息模式：LLM 调用打到死地址 → process_direct Err →
-    // "Agent error" 打印后 run 返回 Ok(())（不 panic、不上抛）
+    // "Agent error" 打印后 run 返回 Ok()（不 panic、不上抛）
     let res = run(
         None,
         Some("say hi".to_string()),
@@ -1164,7 +1164,7 @@ async fn test_s11b_run_set_concurrent_mode_reject_then_queue() {
     assert_eq!(cfg["agents"]["defaults"]["queue_size"], 8);
 }
 
-// E2 (devtool-upgrade 阶段 3): steer 在运行时自 I1 起就支持（loop.rs 三个
+// (devtool-upgrade): steer 在运行时自 起就支持（loop.rs 三个
 // 模式都解析），CLI 闸门此前漏了它——写盘行为与 queue 同型（含 queue_size）。
 #[tokio::test]
 async fn test_s11b_run_set_concurrent_mode_steer() {
@@ -1251,7 +1251,7 @@ async fn test_s11b_run_set_concurrent_mode_no_config_ok() {
 // 不可测豁免（证据）：
 // - agent.rs:218-219 `!resolution.enabled` 守卫：resolve_model_config 三处
 //   硬编码 enabled:true（provider_resolver.rs:59/103/179）→ 死分支。
-// - agent.rs:266 `system_prompt.is_empty()` None 臂：ContextBuilder::
+// - agent.rs:266 `system_prompt.is_empty()` None 臂：ContextBuilder:
 //   build_system_prompt 无条件 push build_identity()（context.rs:328）
 //   → 永非空。
 // - rustyline REPL / Set-Llm y/N stdin 确认：交互 tty 下 read_line 阻塞。
@@ -1547,7 +1547,7 @@ mod wave_b {
                 }]
             }),
         );
-        // 单消息模式全绿通路：process_direct Ok → println!("Agent: ...") 臂，
+        // 单消息模式全绿通路：process_direct Ok → println!("Agent:...") 臂，
         // run 返回 Ok 且 mock 至少收到一次真实 HTTP 补全请求。
         let res = run(
             None,
@@ -1607,18 +1607,18 @@ mod wave_b {
 }
 
 // ===========================================================================
-// R9 补测批（coverage-95 goal）：交互式 REPL 主循环（agent.rs 交互分支，
+// 补测批（coverage-95 goal）：交互式 REPL 主循环（agent.rs 交互分支，
 // ~agent.rs:504-653）+ `agent set llm` 未命中时的裸 stdin y/N 确认
 // （~agent.rs:670-689）。全部经真实 exe 子进程 + 管道 stdin 脚本驱动。
 //
-// 豁免清账：上方 S11b 头注与 wave_b 尾注曾把「rustyline REPL」「Set-Llm
+// 豁免清账：上方 头注与 wave_b 尾注曾把「rustyline REPL」「Set-Llm
 // stdin 确认」列为不可测（当时按 tty 阻塞推断）。本批用
-// test_harness::TestWorkspace::run_cli_with_stdin（整段脚本写入管道后关闭
+// test_harness::TestWorkspace:run_cli_with_stdin（整段脚本写入管道后关闭
 // = 子进程顺序消费脚本、末尾见 EOF）推翻该豁免：rustyline 15 对非 tty
-// stdin 无 isatty 挡路，走 readline_direct 全流程；EOF → ReadlineError::
+// stdin 无 isatty 挡路，走 readline_direct 全流程；EOF → ReadlineError:
 // Eof → Goodbye 臂（agent.rs:641-644）。
 //
-// 结构性事实（ASM-05 退役后更新，2026-09-16）：standalone 手写装配已被
+// 结构性事实（ASM-05 退役后更新）：standalone 手写装配已被
 // agent_factory 工厂装配取代，registry 恒 Some——三个内建 slash 命令的
 // registry Some 分支（/history 打印真实历史、/clear 清实例历史、/status
 // 打印 State: Idle (N messages)）成为常态路径。断言目标 = 「命令被识别、
@@ -1626,7 +1626,7 @@ mod wave_b {
 // =========================================================================
 
 // 整 mod Windows 形态（7/7 测试 + 3 个专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r9_repl {
     use std::path::PathBuf;
     use test_harness::TestWorkspace;
@@ -1713,7 +1713,7 @@ mod r9_repl {
         (ws, bin)
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_hello_then_quit_returns_mock_reply() {
         let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
@@ -1748,7 +1748,7 @@ mod r9_repl {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_eof_without_quit_hits_eof_goodbye_arm() {
         let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
@@ -1773,7 +1773,7 @@ mod r9_repl {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_unknown_slash_command_lists_options_and_loops() {
         // 空 script：任何意外 LLM 调用会被 mock 以 500 "script exhausted"
@@ -1806,10 +1806,10 @@ mod r9_repl {
         assert_eq!(srv.hits(), 0, "slash 命令路径不允许触发任何 LLM 调用");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_builtin_slash_trio_recognized_loop_survives() {
-        // ASM-05（2026-09-16）后 REPL 走 agent_factory 工厂装配，registry
+        // ASM-05后 REPL 走 agent_factory 工厂装配，registry
         // 恒 Some（原「standalone 构造 registry=None」结构性事实已退役）：
         // /history 打印真实会话历史、/clear 恒打 "History cleared."、
         // /status 打印 Session + State: Idle（N messages）。三者都应被识别
@@ -1847,7 +1847,7 @@ mod r9_repl {
         assert_eq!(srv.hits(), 0, "slash 命令不应打到 mock");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_set_llm_unresolved_confirm_yes_writes_default() {
         let (ws, bin) = r9_setup_plain_ws().await;
@@ -1885,7 +1885,7 @@ mod r9_repl {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_set_llm_unresolved_confirm_no_cancels() {
         let (ws, bin) = r9_setup_plain_ws().await;
@@ -1915,11 +1915,11 @@ mod r9_repl {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_llm_failure_arm_prints_agent_error_and_loop_survives() {
         // api_base 指向立即拒绝的死端口：hello 的 LLM 调用失败 → process_
-        // direct Err → "\nAgent error: ...\n"（eprintln）→ 循环继续吃 quit。
+        // direct Err → "\nAgent error:...\n"（eprintln）→ 循环继续吃 quit。
         let (ws, bin) = r9_setup_model_ws(DEAD_BASE).await;
         let out = ws
             .run_cli_with_stdin(&bin, &["agent"], "hello\nquit\n", 90)
@@ -1944,7 +1944,7 @@ mod r9_repl {
 }
 
 // ===========================================================================
-// R10 补测批（coverage-95 goal）：REPL 历史文件装载 + 空行 continue。
+// 补测批（coverage-95 goal）：REPL 历史文件装载 + 空行 continue。
 //
 // r9_repl 已证 REPL 可管道驱动，但从未预置 history 文件（agent.rs:518 的
 // load_history 行恒 miss）也没喂过空行（agent.rs:527-528 的 is_empty →
@@ -1957,7 +1957,7 @@ mod r9_repl {
 // =========================================================================
 
 // 整 mod Windows 形态（1/1 测试 + resolve helper，全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r10 {
     use std::path::PathBuf;
 
@@ -1967,7 +1967,7 @@ mod r10 {
         test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_repl_seed_history_load_and_blank_line_continue() {
         let bin = r10_resolve_bin();
@@ -2016,7 +2016,7 @@ mod r10 {
         std::fs::write(hist_dir.join("agent_history"), "/status\nprev question\n")
             .expect("seed agent_history");
 
-        // 脚本：空行（→ trim 空，continue）→ /history（registry None → 只
+        // 脚本：空行（trim 空，continue）→ /history（registry None → 只
         // 打空行继续）→ quit（Goodbye + save_history 干净退出）。
         let out = ws
             .run_cli_with_stdin(&bin, &["agent"], "\n/history\nquit\n", 60)

@@ -1,7 +1,7 @@
 //! roaming 段配置解析测试（2026-10-23 收缩后：段内只剩 `enabled` 一个键）：
 //! 缺文件 / 坏 JSON / 缺段 / enabled 六态类型语义 / 残留旧键忽略 / 与
 //! `roaming_enabled_in_config` 同源一致性。QUIC 键（relay_url/relay_token/
-//! rendezvous_url/relay 段）的解析测试在 [`super::super::quic_config::tests`]
+//! rendezvous_url/relay 段）的解析测试在 [`super::super:quic_config::tests`]
 //!（迁移后新家）。
 
 use std::io::Write as _;
@@ -72,7 +72,7 @@ fn enabled_type_mismatch_falls_to_false() {
 
 #[test]
 fn legacy_relay_keys_are_ignored_after_decoupling() {
-    // 2026-10-23 解耦回归锁：cluster.json roaming 段残留旧 QUIC 键
+    // 解耦回归锁：cluster.json roaming 段残留旧 QUIC 键
     //（首读迁移只拷贝不删除）= 无害遗留，解析忽略、enabled 语义不变。
     let cfg = parse_roaming_value(Some(&serde_json::json!({
         "roaming": {
@@ -87,7 +87,7 @@ fn legacy_relay_keys_are_ignored_after_decoupling() {
 }
 
 // ---------------------------------------------------------------------------
-// 单一真相源：resolved_roaming().enabled ≡ roaming_enabled_in_config
+// 统一定义：resolved_roaming().enabled ≡ roaming_enabled_in_config
 // ---------------------------------------------------------------------------
 
 #[test]

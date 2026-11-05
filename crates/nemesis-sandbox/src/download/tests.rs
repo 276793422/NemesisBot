@@ -1,4 +1,4 @@
-//! Tests for `download`（Phase 3 覆盖率，2026-08-25）。
+//! Tests for `download`（覆盖率，2026-08-25）。
 //!
 //! 手搓最小 HTTP 服务器（tokio TcpListener + 裸响应）代替真 GitHub——
 //! checksums 解析、SHA-256 校验/失配、无期望哈希的降级路径全走真 reqwest
@@ -63,8 +63,8 @@ async fn fetch_expected_sha256_missing_filename_bails() {
 
 #[tokio::test]
 async fn download_and_verify_matching_hash_writes_file() {
-    // R5（2026-08-27）：装 subscriber 让 info!/warn! 的参数行（bytes.len() 等）
-    // 真实求值——无 subscriber 时该行 lcov 恒 0（S6 批次钉过的机制）。
+    // 装 subscriber 让 info!/warn! 的参数行（bytes.len() 等）
+    // 真实求值——无 subscriber 时该行 lcov 恒 0（批次钉过的机制）。
     let _log = crate::test_util::capture_logs();
     let payload = b"sandboxie-installer-bytes".to_vec();
     let expected = {
@@ -108,7 +108,7 @@ async fn download_and_verify_hash_mismatch_bails_without_writing() {
 #[tokio::test]
 async fn download_and_verify_without_expected_hash_still_writes() {
     // checksums 拿不到时降级为不校验直落盘（warn 路径）。
-    let _log = crate::test_util::capture_logs(); // R5：同上，warn 参数行确定性求值
+    let _log = crate::test_util::capture_logs(); // 同上，warn 参数行确定性求值
     let body: &'static str = "unverified-content";
     let url = serve(body, "200 OK").await;
     let dir = tempfile::tempdir().unwrap();
@@ -132,7 +132,7 @@ async fn download_release_checksums_unavailable_proceeds_unverified() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：装 thread-local
+// 覆盖率批次（quality-hardening goal）：装 thread-local
 // subscriber 让 tracing 宏参数行（info!/warn!）真实求值。
 // ---------------------------------------------------------------------------
 
@@ -161,7 +161,7 @@ async fn download_logs_under_subscriber_macro_args_evaluated() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：create_dir_all 失败臂——dest 父目录被
+// AGT 覆盖率批次：create_dir_all 失败臂——dest 父目录被
 // 一个**文件**占位 → 建目录必败 → with_context 的参数行确定性求值。
 // ---------------------------------------------------------------------------
 
@@ -178,7 +178,7 @@ async fn download_and_verify_uncreatable_parent_bails_with_context() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-278：零超时下载在半死上游上永久挂死——read_timeout 回归测试。
+// 零超时下载在半死上游上永久挂死——read_timeout 回归测试。
 // 经真实公开函数跑（测试态 DOWNLOAD_READ_TIMEOUT=400ms），等待必须秒级内。
 // ---------------------------------------------------------------------------
 

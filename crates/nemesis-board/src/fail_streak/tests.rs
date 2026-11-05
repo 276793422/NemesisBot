@@ -1,4 +1,4 @@
-//! M3/§6.4 同因熔断账本测试：新签名格式（verdict 维度）/ 阈值三连跳 /
+//!  同因熔断账本测试：新签名格式（verdict 维度）/ 阈值三连跳 /
 //! 签名翻转清零（含旧格式存量兼容）/ 持久化跨实例记账 / 清账复位。
 
 use super::*;
@@ -33,7 +33,7 @@ fn temp_ws(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-/// §6.4A 新签名格式：`{verdict 小写}|{排序失败锚点集}`；全过/无锚点 =
+/// A 新签名格式：`{verdict 小写}|{排序失败锚点集}`；全过/无锚点 =
 /// `{verdict 小写}|no-anchors`。FAIL 与 UNSURE 不再坍缩同签名。
 #[test]
 fn signature_carries_verdict_and_sorts_failed_anchors() {
@@ -67,7 +67,7 @@ fn signature_carries_verdict_and_sorts_failed_anchors() {
         failure_signature(&[], &ReviewVerdict::Unsure),
         UNSURE_SIGNATURE
     );
-    // FAIL 与 UNSURE 同锚点形态不同签名（§6.4A 的核心去坍缩）。
+    // FAIL 与 UNSURE 同锚点形态不同签名（A 的核心去坍缩）。
     assert_ne!(
         failure_signature(&[], &ReviewVerdict::Fail),
         failure_signature(&[], &ReviewVerdict::Unsure)
@@ -95,7 +95,7 @@ fn same_signature_trips_at_threshold() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// 签名翻转：计数清零重计（worker 换了失败形态不算旧账；含 §6.4A 新旧
+/// 签名翻转：计数清零重计（worker 换了失败形态不算旧账；含 A 新旧
 /// 格式翻转——FAIL 轮与 UNSURE 轮交替各自重计）。
 #[test]
 fn signature_flip_resets_counter() {
@@ -119,7 +119,7 @@ fn signature_flip_resets_counter() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// §6.4A 存量兼容：旧格式签名（无 verdict 前缀的 `fail:no-anchors`）遇新
+/// A 存量兼容：旧格式签名（无 verdict 前缀的 `fail:no-anchors`）遇新
 /// 格式签名 = 翻转清零重计，零迁移（文档承诺）。
 #[test]
 fn legacy_signature_entry_flips_to_new_format() {
@@ -174,7 +174,7 @@ fn ledger_persists_across_reload() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// 跨实例落定（D10-3）：账本生命周期是 per-review 的 load→mutate→save，
+/// 跨实例落定：账本生命周期是 per-review 的 load→mutate→save，
 /// 同批多单并行评审各持实例打同一 JSON——曾 last-writer-wins 互踩丢计数
 /// （熔断保险丝迟到）。回归钉：B 实例记账前以磁盘最新为底 reload，A 的
 /// 过期快照也不得把 B 已记的账覆盖回退。
@@ -235,7 +235,7 @@ fn corrupt_file_starts_fresh() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// §6.4B UNSURE 收敛闸判定矩阵：count=1 继续重派 / count=2 转人工 /
+/// B UNSURE 收敛闸判定矩阵：count=1 继续重派 / count=2 转人工 /
 /// 0=不限（旧行为 pin）/ FAIL 轮不受此闸。
 #[test]
 fn unsure_gate_matrix() {
@@ -256,7 +256,7 @@ fn unsure_gate_matrix() {
         &StreakOutcome::Continue(5),
         0
     ));
-    // FAIL 轮不受此闸（M3 熔断管辖）。
+    // FAIL 轮不受此闸（熔断管辖）。
     assert!(!unsure_gate_trips(
         &ReviewVerdict::Fail,
         &StreakOutcome::Continue(2),

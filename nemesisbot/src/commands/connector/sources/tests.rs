@@ -1,4 +1,4 @@
-//! D6.2 远程清单源测试：本地 git 源全链（add-source → search → install）
+//! .2 远程清单源测试：本地 git 源全链（add-source → search → install）
 //! + 装配漏斗语义（unsigned 闸 / verified 直通 / 篡改拒装 / 目标冲突拒）。
 
 use super::*;

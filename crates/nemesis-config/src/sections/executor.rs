@@ -36,7 +36,7 @@ pub struct ExecutorSeparationConfig {
     pub allow_network: bool,
     #[serde(default)]
     pub strict: bool,
-    /// （能力扩展）：沙盒后端选择（`executor.backend`，
+    /// 沙盒后端选择（`executor.backend`，
     /// 缺省 `"auto"`）。值域：`auto`（默认——Windows 上 Sandboxie 就绪则
     /// sandboxie，否则退 Windows 用户态 ACL 轻量档）/ `sandboxie`（显式钉
     /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回
@@ -143,7 +143,7 @@ impl Default for ExecutorAclConfig {
     }
 }
 
-/// `executor.acl.max_files` 缺省值（设计稿 §3.4：20000）。
+/// `executor.acl.max_files` 缺省值（设计稿：20000）。
 fn default_acl_max_files() -> u32 {
     20_000
 }
@@ -185,7 +185,7 @@ pub struct ExecutorVmConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Guest CPU 架构：`x86_64`（当前唯一产出档）| `aarch64`（接口在位、
-    /// 当前不产出——选了诚实报不支持，恢复路径见实施计划 §5）。
+    /// 当前不产出——选了诚实报不支持，恢复路径见实施计划）。
     #[serde(default = "default_vm_arch")]
     pub arch: String,
     /// 硬件加速：`auto`（探测裁决）| `kvm`（显式钉 Linux KVM）| `whpx`
@@ -268,7 +268,7 @@ pub struct VmGcConfig {
     /// 0 = 不设预算。
     #[serde(default = "default_vm_gc_max_disk_gb")]
     pub max_total_disk_gb: u32,
-    /// 超限动作：`warn`（默认，日志横幅可见）| `stop`（拒绝新实例创建，
+    /// 超限动作：`warn`（默认，日志横幅可）| `stop`（拒绝新实例创建，
     /// 既有实例不受影响）。
     #[serde(default = "default_vm_gc_over_limit")]
     pub over_limit: String,

@@ -1,4 +1,4 @@
-//! 图像生成独立 lane（`images-openai` 协议，集群专业职能框架 M4）。
+//! 图像生成独立 lane（`images-openai` 协议，集群专业职能框架）。
 //!
 //! **不走 Provider trait**（chat 形状完全不符：无流式、无工具调用、单 POST
 //! + JSON）。单一请求函数 [`generate_image`]：POST `{api_base}/images/
@@ -85,7 +85,7 @@ pub async fn generate_image(
         })?;
 
     let status = resp.status();
-    // body 读传输失败诚实报（BUG-20261029-153 同族）：unwrap_or_default 会把
+    // body 读传输失败诚实报（同族）：unwrap_or_default 会把
     // 200 路径断连伪装成「图像响应非 JSON」误导诊断（去查根本不存在的格式
     // 问题）、非 200 路径详情丢失。读失败按连接中断/超时报，状态码非成功
     // 时一并保留（诊断不丢现场）。

@@ -1,8 +1,8 @@
 //! `SqliteApprovalJournal` —— 审批台账 SQLite 实现（approvals 表）。
 //!
-//! 契约：`nemesis_types::approval_journal::ApprovalJournal`。
+//! 契约：`nemesis_types::approval_journal:ApprovalJournal`。
 //! - `record_pending`：`INSERT OR IGNORE` 幂等（同 id 重复不覆盖不报错）；
-//! - `record_decision`：`UPDATE ... WHERE status='pending'` 条件更新
+//! - `record_decision`：`UPDATE... WHERE status='pending'` 条件更新
 //!   先到先得（web / IM / 重启补裁并发竞态恰有一方生效）。
 
 use std::sync::Arc;

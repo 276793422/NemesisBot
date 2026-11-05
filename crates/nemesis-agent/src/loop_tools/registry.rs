@@ -79,7 +79,7 @@ pub struct SharedToolConfig {
     pub claude_code_tool_enabled: bool,
     /// wall-clock timeout per delegation (None = 300s default).
     pub claude_code_tool_timeout_secs: Option<u64>,
-    /// : fixed claude permission tier (empty = default accept_edits;
+    /// fixed claude permission tier (empty = default accept_edits;
     /// enum default/accept_edits/plan/bypass_permissions). NOT in the tool
     /// schema — deployment config governs, the model cannot choose it.
     pub claude_code_tool_permission_mode: String,
@@ -87,11 +87,11 @@ pub struct SharedToolConfig {
     pub codex_tool_enabled: bool,
     /// wall-clock timeout per codex delegation (None = 300s default).
     pub codex_tool_timeout_secs: Option<u64>,
-    /// : fixed codex sandbox tier (empty = default read_only; enum
+    /// fixed codex sandbox tier (empty = default read_only; enum
     /// read_only/workspace_write/danger_full_access, snake_case config →
     /// kebab-case CLI value). NOT in the tool schema.
     pub codex_tool_sandbox: String,
-    /// : enable the read-only `lsp` semantic-code tool. Default
+    /// enable the read-only `lsp` semantic-code tool. Default
     /// false — and even when true, registration additionally requires at
     /// least one language server on PATH (probe at registration).
     pub lsp_tool_enabled: bool,
@@ -99,9 +99,9 @@ pub struct SharedToolConfig {
     pub lsp_tool_timeout_secs: Option<u64>,
     /// idle session reap threshold (None = 600s default).
     pub lsp_tool_idle_secs: Option<u64>,
-    /// ：外部 LSP manager 单例（agent_factory 在
+    /// 外部 LSP manager 单例（agent_factory 在
     /// SharedResources 建一次；gateway shutdown_all 可达）。None = 注册路径
-    /// 自建 manager（`LspTool:new` 兜底，旧行为——测试/独立 runner 用）。
+    /// 自建 manager（`LspTool::new` 兜底，旧行为——测试/独立 runner 用）。
     #[cfg(feature = "lsp")]
     pub lsp_manager: Option<Arc<nemesis_lsp::LspManager>>,
     /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
@@ -133,10 +133,10 @@ pub struct SharedToolConfig {
     pub approval_manager: Option<ApprovalManagerSlot>,
     /// Whether skill_manage writes require interactive approval.
     pub skills_manage_approval: bool,
-    /// ：`install_skill` 工具的装前审批门槽（gateway 晚填
+    /// `install_skill` 工具的装前审批门槽（gateway 晚填
     /// `LateWebSkillsGate`；None = 无审批面直装——headless/测试装配）。
     pub skills_install_gate_slot: Option<SkillsInstallGateSlot>,
-    /// ：SSRF 闸宿主（SecurityPlugin），web_fetch 重定向
+    /// SSRF 闸宿主（SecurityPlugin），web_fetch 重定向
     /// 循环逐跳复查用。None = 闸不生效（跳数上限仍生效）。执行体子进程按
     /// 设计不注入（哑执行——判断在 gateway，且 web_fetch 不在 MOVE_TOOLS，
     /// 子进程里的 web_fetch 本就不会被调用）。
@@ -145,17 +145,17 @@ pub struct SharedToolConfig {
     #[cfg(not(feature = "security"))]
     #[allow(dead_code)]
     pub security: Option<()>,
-    /// ：文件工具工作区边界（write_file / edit_file /
+    /// 文件工具工作区边界（write_file / edit_file /
     /// append_file 纵深防御，不单靠安全 8 层管线）。None = 不设界（基线
     /// 注册 / 测试形态）。executor 子进程按同根注入（NEMESISBOT_EXECUTOR_
     /// WORKSPACE），保证 Layer-1 分离后写路径仍受同一边界约束。
     pub workspace_boundary: Option<Arc<WorkspaceBoundary>>,
-    /// ：todowrite 工具配置（workspace 存储 + TodoUpdated
+    /// todowrite 工具配置（workspace 存储 + TodoUpdated
     /// 广播通道）。None = 不注册该工具（register_default_tools 基线形态 /
     /// 无 workspace 的测试）。事件通道与 ToolEventHook 共用同一
     /// broadcast（gateway 建、web pump 消费）；None tx = 仍落盘、不广播。
     pub todo: Option<TodoToolConfig>,
-    /// ：后台进程注册表（gateway 级单例，跨 agent 重启
+    /// 后台进程注册表（gateway 级单例，跨 agent 重启
     /// 存活；Drop 时给残余任务发 kill 旗标）。Some 时注册
     /// background_start / background_output / background_kill /
     /// background_steer 四动词（steer 为 扩展）。
@@ -163,25 +163,25 @@ pub struct SharedToolConfig {
     /// 必然孤儿，见 remote_executor_tool.rs 的 exec_async 注记；以及
     /// register_default_tools 基线/测试形态）。
     pub background_registry: Option<Arc<BackgroundProcessRegistry>>,
-    /// ：question 工具的 broker 槽（gateway 装配后填
+    /// question 工具的 broker 槽（gateway 装配后填
     /// `WebQuestionBroker`）。None = 不注册该工具（headless / exec_worker /
     /// register_default_tools 基线形态——模型看不到一个只会失败的调用）。
     pub question_broker: Option<QuestionBrokerSlot>,
     /// （三批合并）：GPIO/I2C 地址访问策略（`tools.hardware`
     /// 段，agent_factory 从 config 构造）。None = 内置默认白名单
     /// （可自由寻址空间 0x08-0x77）。loop_tools 桩与 nemesis-tools 真实
-    /// 实现共用同一 `HardwarePolicy` 单一真相源。
+    /// 实现共用同一 `HardwarePolicy` 统一定义。
     pub hardware_policy: Option<Arc<nemesis_tools::hardware::HardwarePolicy>>,
-    /// /：workspace 级写租约（`agents.lease_enabled` 默认开，
+    /// ：workspace 级写租约（`agents.lease_enabled` 默认开，
     /// agent_factory 构造）。Some 时 register_shared_tools 尾部把
     /// LEASE_WRITE_TOOLS 换成 LeaseGuardTool 委派包装（acquire → 执行 →
     /// release；宽限 30s 超时诚实拒绝）。None = 基线/测试形态不包装。
     pub workspace_lease: Option<Arc<crate::workspace_lease::WorkspaceLease>>,
-    /// ：present_plan 工具的共享接线（broker/mode/tx/
+    /// present_plan 工具的共享接线（broker/mode/tx/
     /// verdict 四件）。Some 时注册 `present_plan`（与 question 同条件——
     /// gateway 交互形态）；None = 不注册（headless / 基线注册）。
     pub plan_present: Option<Arc<PlanPresentHandle>>,
-    /// ：present_files 工具的交付物流水桶（与 AgentLoop
+    /// present_files 工具的交付物流水桶（与 AgentLoop
     /// `turn_deliverables` 共享同一 Arc——工具登记、loop drain）。Some 时
     /// 注册 `present_files`；None = 不注册（cluster worker / 基线注册——
     /// worker 文件路径对 A 端用户无意义）。
@@ -275,7 +275,7 @@ impl std::fmt::Debug for SharedToolConfig {
 pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<dyn Tool>> {
     let mut tools = register_default_tools();
 
-    // ：配置了工作区边界时，write/edit/append 换成带界的
+    // 配置了工作区边界时，write/edit/append 换成带界的
     // 生产形态（纵深防御，不单靠安全 8 层管线）。无界（测试 / 基线注册）
     // 保持 register_default_tools 的默认形态。
     // FT：读族 5 工具（read_file/list_dir/delete_file/
@@ -320,7 +320,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         );
     }
 
-    // ：todowrite —— 全量提交式 todo 清单，写
+    // todowrite —— 全量提交式 todo 清单，写
     // sessions/todo_{safe_key}.json + 广播 TodoUpdated（web pump → WS push
     // + SSE）。None = 不注册（register_default_tools 基线形态零开销）。
     if let Some(ref todo) = config.todo {
@@ -345,7 +345,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // 宿主——重定向手动循环逐跳复查（无闸时仍限跳数 ≤5）。mut 只在
     // security 形态用到（ssrf 注入），minimal 形态 cfg_attr 压 unused_mut
     // （远端 minimal clippy；不能删 mut——security 形态需要）。
-    // ：注入 workspace 根（超限全文存档 spill 用）。web_fetch
+    // 注入 workspace 根（超限全文存档 spill 用）。web_fetch
     // 无条件注册（与 workspace 有无无关）——workspace 缺席时 with_workspace
     // 收空串，超限退回旧「截断+注记」行为（诚实不静默）。
     #[cfg_attr(not(feature = "security"), allow(unused_mut))]
@@ -450,7 +450,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         );
     }
 
-    // : question tool — structured ask-the-user card on the
+    // question tool — structured ask-the-user card on the
     // Dashboard, blocking on the answer. Only registered when a broker is
     // wired (gateway); headless / baseline forms never see it.
     if let Some(ref slot) = config.question_broker {
@@ -460,7 +460,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         );
     }
 
-    // : present_plan — plan 模式审批卡（批准翻 build /
+    // present_plan — plan 模式审批卡（批准翻 build /
     // 驳回结构化止步）。注册条件与 question 同源（broker 已接线 = 交互
     // 形态）；handle 由 agent_factory 构造并双侧注入（工具 + loop）。
     if let Some(ref handle) = config.plan_present {
@@ -470,7 +470,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         );
     }
 
-    // : present_files — turn 交付物登记（「该看什么」产物
+    // present_files — turn 交付物登记（「该看什么」产物
     // 指引，随 assistant 回复落盘为 deliverables 字段）。注册条件 = 桶与
     // workspace 双接线（agent_factory 注入 loop 同一 Arc）；cluster worker /
     // 基线形态不注册（worker 的文件路径对 A 端用户无意义）。
@@ -529,7 +529,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             Box::new(BootstrapTool::new(workspace)),
         );
 
-        // : build/test runner with focused output. In
+        // build/test runner with focused output. In
         // MOVE_TOOLS (builds write target/; executor separation & sandbox
         // should contain it; plan mode blocks it via the same derivation).
         tools.insert(
@@ -538,7 +538,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         );
     }
 
-    // : background process trio — needs BOTH a workspace (cwd
+    // background process trio — needs BOTH a workspace (cwd
     // resolution / boundary) and a gateway-level registry. NOT in MOVE_TOOLS:
     // job handles live in this registry (gateway process lifetime), so a
     // per-call executor child could not own them — see background_registry.rs
@@ -633,7 +633,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         }
     }
 
-    // : read-only LSP semantic-code tool — same opt-in + probe
+    // read-only LSP semantic-code tool — same opt-in + probe
     // shape: config opts in AND at least one language server on PATH.
     // Absent/failed probe ⇒ tool not registered at all (no dead schema).
     #[cfg(feature = "lsp")]
@@ -679,7 +679,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             {
                 lsp_impl.security = config.security;
             }
-            // ：rename 落盘挂工作区边界（与 write_file
+            // rename 落盘挂工作区边界（与 write_file
             // 等文件工具同一实例——纵深防御第二道闸覆盖 rename 这条写路径）。
             if let Some(ref boundary) = config.workspace_boundary {
                 lsp_impl = lsp_impl.with_boundary(boundary.clone());

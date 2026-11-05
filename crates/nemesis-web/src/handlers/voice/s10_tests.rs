@@ -1,11 +1,11 @@
-//! voice.rs 非豁免行覆盖（quality-hardening goal 冲刺 ，2026-08-25）。
+//! voice.rs 非豁免行覆盖（quality-hardening goal 冲刺，2026-08-25）。
 //!
 //! 与 wweb2_tests 同款子模块声明以获得私有项访问。聚焦 豁免范围之外的：
 //! WSAPI dispatch 提取臂、start/stop 状态机（通过注入会话/令牌到全局状态）、
 //! 配置读写（config.toml / config.voice.json / config.chat.json）、
 //! 纯逻辑 helper（handle_tts_failure / punctuate_if_loaded）、push 广播 spawn 路径。
 //!
-//! 不触碰：真音频 DLL、模型下载、真麦克风（范围见台账 §9.4）。
+//! 不触碰：真音频 DLL、模型下载、真麦克风（范围见台账）。
 //!
 //! 竞态纪律（env-test-race-lock-pattern）：voice.rs 的全局 OnceLock 状态是
 //! 进程级共享的，所有会注入/清空全局状态的本模块测试 + wweb2_tests 的
@@ -420,7 +420,7 @@ async fn speakers_lists_kokoro_table() {
 async fn devices_tolerant_of_host_audio_stack() {
     // 【 CI nemesis-web 0xc0000005】本测试与 voice_extra_tests 的
     // devices_returns_object 同经 cmd_devices() 穿透调用
-    // nemesis_voice::audio::list_devices() → cpal host 设备枚举。本轮 CI 实证：
+    // nemesis_voice::audio:list_devices() → cpal host 设备枚举。本轮 CI 实证：
     // 同进程内**第一次**枚举调用正常返回（本测试过），**第二次**调用挂死 +
     // 进程 native ACCESS_VIOLATION（voice crate 二连崩同族雷，时序/状态依赖）。
     // CI=true 且未 opt-in 时 SKIP（与 nemesis-voice audio::tests 的
@@ -1178,12 +1178,12 @@ impl<T> UnwrapErrOr<String> for Result<T, String> {
     }
 }
 
-// 补充批次 2：llvm-cov 复测后仍缺的臂
+// 补充：llvm-cov 复测后仍缺的臂
 
 #[tokio::test]
 async fn status_probes_model_subdirs_with_and_without_onnx() {
     // check_model_subdir_any / has_onnx_file 的 true 与 false 路径：
-    // stt 子目录带 .onnx → ready=true；tts 子目录只有 txt → ready=false；
+    // stt 子目录带.onnx → ready=true；tts 子目录只有 txt → ready=false；
     // 其余目录缺席 → exists-false 臂（已覆盖，此处保持断言完整）。
     let _guard = voice_state_lock().lock().unwrap_or_else(|e| e.into_inner());
     clear_session_states().await;

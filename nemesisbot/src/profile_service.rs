@@ -60,7 +60,7 @@ fn load_scan_interval_secs(home: &Path) -> u64 {
 
 /// 单次 sweep：开关关 = no-op。返回本 tick 处理的消息数（诊断用）。
 ///
-/// 两段式（四路评审 B-F4 根修）：候选收集（统计 + LLM 反思，含 30s+ 墙钟
+/// 两段式（四路评审 B- 根修）：候选收集（统计 + LLM 反思，含 30s+ 墙钟
 /// 的 LLM 调用）全程**锁外**——`config_write_lock` 是进程级互斥锁，持锁跨
 /// LLM 会把 dashboard config 保存整段卡死；收集到的候选在**短临界区**
 /// （锁 + fresh load + upsert + 衰减 + 截断 + 水线 + 落盘）内落到锁内
@@ -134,7 +134,7 @@ pub fn sweep_once(home: &Path, sweeps: u64, rt: &tokio::runtime::Handle) -> Resu
 
 /// 扫 session_logs 全部 `*.jsonl`，收集 `role=="user"` 且时间戳不早于
 /// `window_start_ms`（证据窗起点，epoch 毫秒）的消息文本，**按时间升序**
-/// 返回（BUG-20261025-21：此前按文件序返回——反思通道「近期 60 条」采样
+/// 返回（此前按文件序返回——反思通道「近期 60 条」采样
 /// 取的是列表尾部；文件序由 session key 字典序决定，与新旧无关，字典序
 /// 靠前的活跃会话会把采到的是死会话的陈旧尾巴、漏掉真正新的会话）。
 fn collect_user_messages_after(
@@ -219,7 +219,7 @@ fn reflect_semantic_habits(
         .as_array()
         .ok_or("reflect response is not a JSON array")?;
     let now = chrono::Local::now().to_rfc3339();
-    // 类别白名单（四路评审 B-F2 根修）：LLM 输出的 category 不验证就入库
+    // 类别白名单（四路评审 B- 根修）：LLM 输出的 category 不验证就入库
     // 会污染注入段格式；未知类别整条跳过。
     const ALLOWED_CATEGORIES: &[&str] = &["workflow", "correction", "tool_preference", "style"];
     let mut out = Vec::new();

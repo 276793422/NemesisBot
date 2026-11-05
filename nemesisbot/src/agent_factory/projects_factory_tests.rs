@@ -1,4 +1,4 @@
-//! L6++ 项目 loop 工厂测试（G2，2026-09-08）。
+//! 项目 loop 工厂测试（2026-09-08）。
 //!
 //! 覆盖：构建成功 + 两 loop 共有工具 schema 字节一致（prompt cache 契约）+
 //! cluster_rpc 剥离 + checkpoint 影子库两形态（.git 项目 / 纯目录）零污染 +
@@ -183,7 +183,7 @@ async fn project_factory_builds_loop_with_byte_identical_shared_schemas() {
     }
 
     // 急停同源：项目 loop 绑的是 shared.estop 同一 Arc（estop 冻结两 loop）。
-    // （绑定行为由 set_estop(shared.estop) 保证；Arc 同源性在 G3/G6 的
+    // （绑定行为由 set_estop(shared.estop) 保证；Arc 同源性在 / 的
     // 行为级测试观察。）
 }
 
@@ -195,7 +195,7 @@ async fn project_factory_builds_loop_with_byte_identical_shared_schemas() {
 #[cfg(feature = "checkpoint-git")]
 #[tokio::test]
 async fn project_checkpoint_shadow_repo_stays_out_of_project_dir() {
-    // ── 形态一：项目带 .git 目录（git 影子库后端）──
+    // ── 形态一：项目带.git 目录（git 影子库后端）──
     let home = unique_home("cp_git");
     write_mini_model_config(&home);
     let project_dir = home.join("proj");
@@ -216,7 +216,7 @@ async fn project_checkpoint_shadow_repo_stays_out_of_project_dir() {
         CheckpointBackend::Git,
         "project with .git dir must select the git shadow backend"
     );
-    // 影子库在构造期即初始化于主 workspace（R7：绝不落用户项目目录）。
+    // 影子库在构造期即初始化于主 workspace（绝不落用户项目目录）。
     let cp_dir = project_checkpoint_dir(&shared.workspace_dir(), "p_cpgit0001");
     let shadow = cp_dir.join("repo.git");
     assert!(
@@ -231,7 +231,7 @@ async fn project_checkpoint_shadow_repo_stays_out_of_project_dir() {
         cp_entries.iter().any(|n| n.ends_with(".json")),
         "turn record must persist under main workspace cp_dir, got {cp_entries:?}"
     );
-    // 用户项目目录零污染：只有自放的 .git + f.txt。
+    // 用户项目目录零污染：只有自放的.git + f.txt。
     let mut remaining = dir_names(&project_dir);
     remaining.sort();
     assert_eq!(
@@ -240,7 +240,7 @@ async fn project_checkpoint_shadow_repo_stays_out_of_project_dir() {
         "project dir must stay untouched"
     );
 
-    // ── 形态二：纯目录（无 .git）→ JSON 快照回落，同样零污染 ──
+    // ── 形态二：纯目录（无.git）→ JSON 快照回落，同样零污染 ──
     let home2 = unique_home("cp_json");
     write_mini_model_config(&home2);
     let project_dir2 = home2.join("proj2");
@@ -296,7 +296,7 @@ async fn project_factory_rejects_missing_project_dir() {
 }
 
 // ---------------------------------------------------------------------------
-// ASM-08 装配矩阵（2026-09-16 横扫存量加固）：项目 loop 关键件接线
+// ASM-08 装配矩阵（横扫存量加固）：项目 loop 关键件接线
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -325,7 +325,7 @@ async fn project_loop_critical_wiring_matrix() {
             "项目 loop 关键件 `{key}` 未接线（ASM-08 矩阵回归）"
         );
     }
-    // workspace_root 必须指向项目目录（不是主 workspace）——围栏根（D6）。
+    // workspace_root 必须指向项目目录（不是主 workspace）——围栏根。
     assert_eq!(
         project_loop.workspace_root().as_deref(),
         Some(project_dir.as_path()),
@@ -334,7 +334,7 @@ async fn project_loop_critical_wiring_matrix() {
 }
 
 // ===========================================================================
-// Coverage 追加（2026-09-24）：项目工厂装配旋钮臂——discipline 总开关 /
+// Coverage 追加：项目工厂装配旋钮臂——discipline 总开关 /
 // small_model 通道（可解析 + 不可解析）/ 无 LLM 降级（ghost 模型 →
 // NullProvider）/ 价目表打开失败降级。
 // ===========================================================================
@@ -492,7 +492,7 @@ async fn project_factory_pricing_store_open_failure_degrades() {
 }
 
 // ---------------------------------------------------------------------------
-// N7（2026-10-13）：项目 loop 指令信任档装配解析——注册表条目 × 全局策略。
+// 项目 loop 指令信任档装配解析——注册表条目 × 全局策略。
 // ---------------------------------------------------------------------------
 
 /// 受信条目（缺省）= Trusted（主循环行为）；未受信 + 策略 "" = Annotate；
@@ -543,7 +543,7 @@ async fn project_factory_resolves_instruction_trust_from_entry_and_policy() {
 }
 
 // ---------------------------------------------------------------------------
-// P2：AgentLoopSpec 记录路径（agents 表记录 → 统一工厂）
+// AgentLoopSpec 记录路径（agents 表记录 → 统一工厂）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -554,7 +554,7 @@ async fn record_spec_builds_loop_and_checkpoints_keyed_by_agent_id() {
     let main_loop = build_agent_loop(&shared).expect("main loop builds");
     let session_store = main_loop.session_store().cloned().unwrap();
 
-    // 自建记录：exec_root 带 .git（Git 影子后端在 store 构造期急切初始化
+    // 自建记录：exec_root 带.git（Git 影子后端在 store 构造期急切初始化
     // repo.git——键挂载的直接证据；JSON 后端惰性落盘无急切观察面）。
     let exec_root = home.join("agents").join("rec01").join("home");
     std::fs::create_dir_all(exec_root.join(".git")).unwrap();
@@ -594,7 +594,7 @@ async fn record_spec_builds_loop_and_checkpoints_keyed_by_agent_id() {
 #[test]
 fn record_spec_project_mirror_keeps_project_id_checkpoint_key() {
     // 项目镜像记录（kind=project 带 project_id）→ checkpoint 键=project_id
-    // （L6++ 存量影子库连续性；from_record 的键选择规则钉死）。
+    // （存量影子库连续性；from_record 的键选择规则钉死）。
     let mut record = nemesis_taskstore::AgentRecord::new_provisioning(
         "ffffffffffffffffffffffffffffffff",
         "mirrored",
@@ -610,7 +610,7 @@ fn record_spec_project_mirror_keeps_project_id_checkpoint_key() {
 }
 
 // ---------------------------------------------------------------------------
-// G1（2026-10-18 三方复评整改批三）：from_record 的记录→spec 映射
+// （三方复评）：from_record 的记录→spec 映射
 // （tier / tool_policy 折算 / persona_refs）
 // ---------------------------------------------------------------------------
 
@@ -661,7 +661,7 @@ fn record_spec_defaults_when_policy_and_persona_absent() {
     assert!(spec.tool_policy_hidden.is_empty());
     assert!(spec.tool_policy_allow.is_empty());
     assert_eq!(spec.persona_dir, None);
-    // G2：记录映射不携带浏览器 profile（workspace 根不在记录视野内——
+    // 记录映射不携带浏览器 profile（workspace 根不在记录视野内——
     // selfbuilt 由 AgentLoopManager 按 agent home 赋值）。
     assert_eq!(spec.browser_profile, None);
 }
@@ -688,7 +688,7 @@ fn tool_policy_fold_and_persona_dir_edge_shapes() {
     }
 }
 
-/// G1 工厂级消费：记录 tier 钉死 + tool_policy 折算在**构建产物**上生效
+/// 工厂级消费：记录 tier 钉死 + tool_policy 折算在**构建产物**上生效
 /// ——config 说 big（条目无 model_tier → 默认 big），记录钉 mini 必须赢；
 /// deny 折算进 extra_hidden 后供给闸真实收窄。
 #[tokio::test]
@@ -696,7 +696,7 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
     use nemesis_types::capability::ModelTier;
 
     let home = unique_home("recg1");
-    // config 档位缺省（→ big，空白名单直通）：与记录钉死形成对照。
+    // config 档位缺省（big，空白名单直通）：与记录钉死形成对照。
     let cfg = serde_json::json!({
         "agents": { "defaults": { "llm": "big-model", "max_tool_iterations": 5 } },
         "model_list": [ {
@@ -733,10 +733,10 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
     );
     record.exec_root = exec_root.to_string_lossy().to_string();
     record.tier = "mini".to_string();
-    // F4：allow 白名单随 deny 一并挂记录——build 后断言直挂 loop 槽
+    // allow 白名单随 deny 一并挂记录——build 后断言直挂 loop 槽
     // （不再折算注册面）。
     record.tool_policy = serde_json::json!({ "deny": ["grep"], "allow": ["read_file", "exec"] });
-    // G2：从记录映射后手动补 browser_profile（生产由 AgentLoopManager 赋值
+    // 从记录映射后手动补 browser_profile（生产由 AgentLoopManager 赋值
     // ——这里直填，验证 spec→loop 构建消费链路）。
     let profile_dir = exec_root.join("browser-profile");
     let spec = {
@@ -754,7 +754,7 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
         hidden.contains(&"grep".to_string()),
         "deny 折算必须进合并隐藏表，实际 {hidden:?}"
     );
-    // F4：allow 白名单**直挂 loop 槽**（旧折算取缔）——槽值原样、且注册面
+    // allow 白名单**直挂 loop 槽**（旧折算取缔）——槽值原样、且注册面
     // 不再被「∖ allow」折叠（折进 hidden 的话 web_fetch 这类非 allow 工具
     // 就会出现在隐藏表里）。
     assert_eq!(
@@ -779,7 +779,7 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
         names.iter().any(|n| n == "grep"),
         "grep 应仍在注册表（隐藏≠摘除），实际 {names:?}"
     );
-    // G2：spec.browser_profile 必须消费进构建产物（MCP 装配注入链的起点）。
+    // spec.browser_profile 必须消费进构建产物（MCP 装配注入链的起点）。
     assert_eq!(
         built.browser_profile(),
         Some(profile_dir.to_string_lossy().as_ref()),
@@ -788,8 +788,8 @@ async fn record_spec_build_consumes_tier_pin_and_tool_policy() {
 }
 
 // ---------------------------------------------------------------------------
-// 治理补全 P1（2026-10-19）：connector 治理面全覆盖——项目 loop 与主 loop
-// 同源接线（A1-b 回归锁：独占接管曾只接主 loop，项目会话成旁路）
+// 治理补全：connector 治理面全覆盖——项目 loop 与主 loop
+// 同源接线（b 回归锁：独占接管曾只接主 loop，项目会话成旁路）
 // ---------------------------------------------------------------------------
 
 /// 主 loop 与项目 loop 都注册 connector_find/connector_invoke，且独占隐藏表
@@ -868,7 +868,7 @@ async fn assert_governance_wired(agent_loop: &Arc<nemesis_agent::r#loop::AgentLo
 }
 
 // ---------------------------------------------------------------------------
-// B2/B5（2026-10-31 项目 home 收编）：agent home 物化 + 数据面落位
+// /（项目 home 收编）：agent home 物化 + 数据面落位
 // ---------------------------------------------------------------------------
 
 /// spec.agent_home 在场：三子目录物化 + plan 产物根钉 home/plans +
@@ -901,7 +901,7 @@ async fn agent_home_spec_materializes_and_routes_data_to_home() {
     )
     .expect("project loop builds with agent home");
 
-    // B2：三子目录物化。
+    // 三子目录物化。
     for sub in ["memory", "plans", "checkpoints"] {
         assert!(
             agent_home.join(sub).is_dir(),
@@ -909,15 +909,15 @@ async fn agent_home_spec_materializes_and_routes_data_to_home() {
             agent_home.join(sub).display()
         );
     }
-    // B4：plan 产物根钉 home/plans（项目目录 plans/ 不再是产物根——
-    // 用户拍板⑥：计划产物绝不能落团队可见的项目目录）。
+    // plan 产物根钉 home/plans（项目目录 plans/ 不再是产物根——
+    // ⑥：计划产物绝不能落团队可见的项目目录）。
     assert_eq!(
         loop_arc.plan_products_dir().as_deref(),
         Some(agent_home.join("plans").as_path()),
         "plan 产物根必须落 agent home/plans"
     );
 
-    // B5：checkpoint 影子库随迁 agent home/checkpoints。
+    // checkpoint 影子库随迁 agent home/checkpoints。
     #[cfg(feature = "checkpoint-git")]
     {
         let store = loop_arc.checkpoint_store().expect("checkpoint store wired");
@@ -939,7 +939,7 @@ async fn agent_home_spec_materializes_and_routes_data_to_home() {
             entries.iter().any(|n| n.ends_with(".json")),
             "turn 记录必须落 agent home/checkpoints: {entries:?}"
         );
-        // 主 workspace 旧位置零污染（B5 语义：旧项目 rewind 回档失效不
+        // 主 workspace 旧位置零污染（语义：旧项目 rewind 回档失效不
         // 迁移，但新位置必须真正接管）。
         assert!(
             !project_checkpoint_dir(&shared.workspace_dir(), "p_b2home001").exists(),
@@ -959,11 +959,11 @@ async fn agent_home_spec_materializes_and_routes_data_to_home() {
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&home);
 }
 
-/// 记忆选域闸（B1 姊妹函数 [`super::memory_manager_for_data_dir`]）：
-/// 总开关关（shared.memory_manager None）→ 项目域不旁路恒 None（拍板②
+/// 记忆选域闸（姊妹函数 [`super::memory_manager_for_data_dir`]）：
+/// 总开关关（shared.memory_manager None）→ 项目域不旁路恒 None（
 /// 「旧数据不管」语义：增强内存不开就谁都没有）；开关开 → manager 在位
 /// （构造走 with_config_dir，data_dir 由调用方传 home 派生目录——目录
-/// 锚定无公开观测面，由 B2 循环测试的物化断言 + 代码字面 join 双保险）。
+/// 锚定无公开观测面，由 循环测试的物化断言 + 代码字面 join 双保险）。
 #[cfg(feature = "memory")]
 #[test]
 fn memory_data_dir_gate_disabled_is_none_enabled_is_some() {

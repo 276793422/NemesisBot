@@ -70,7 +70,7 @@ fn read_allow_network_defaults_false_when_unset_or_broken() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：
+// 覆盖率批次（quality-hardening goal）：
 // wait_for_state / wait_for_installed 的立即命中与超时臂（只读 sc query）、
 // start 的 verify_runtime 前置 bail、stop 的 tolerant 流程（tempdir 缺
 // KmdUtil.exe → spawn 失败被吞，零系统副作用）+ purge、stop_service、
@@ -87,7 +87,7 @@ fn wait_for_state_immediate_hit_and_timeout() {
     // 上界用「被传入的 timeout 本身」（30s）而非固定 2s：这个断言要钉住的
     // bug 类是「命中路径睡满 timeout 才返回」（30s 睡满必暴露），而一次
     // sc query spawn 在 workspace 全量并行测试的满载机器上可以合法地超过
-    // 任何秒级固定界（2026-09-14 实证：release 全量跑 2s 界假红，单跑
+    // 任何秒级固定界（实证：release 全量跑 2s 界假红，单跑
     // 0.68s 绿——与 background_registry TEST_LOCK 教训同类的负载放大）。
     let t0 = std::time::Instant::now();
     assert_eq!(
@@ -218,7 +218,7 @@ fn ensure_installed_bails_on_missing_runtime() {
 }
 
 // ---------------------------------------------------------------------------
-// R5 覆盖率批次（2026-08-27）：verify_runtime 通过后的 start /
+// 覆盖率批次：verify_runtime 通过后的 start /
 // ensure_installed 深层臂——用「dummy 内容的假 runtime」让 verify 放行，
 // 但 KmdUtil.exe 非 PE → spawn 必败（零系统副作用），钉住错误传播路径。
 // ---------------------------------------------------------------------------

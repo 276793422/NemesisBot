@@ -139,12 +139,12 @@ impl McpServer {
     }
 
     fn handle_tools_list(&self, id: Value) -> JSONRPCResponse {
-        // BUG-20261101-286：tools 注册表是 HashMap，values() 迭代序是进程
+        // tools 注册表是 HashMap，values() 迭代序是进程
         // 随机态——`nemesisbot mcp-serve` 每次重启后外部 MCP 客户端
         // （Claude Code / Cursor 等）拿到的 tools/list 数组顺序洗牌，客户端
         // 侧工具清单/prompt 前缀随之抖动。MCP 协议对数组序无语义，按工具
         // 名排序输出（与 agent 侧 build_tool_defs 的 names.sort() 同纪律——
-        // 2026-10-21 自查 #6 根修的同类面）。
+        // 自查 #6 根修的同类面）。
         let mut tools: Vec<&McpTool> = self.tools.values().collect();
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         JSONRPCResponse::success(id, serde_json::json!({ "tools": tools }))
@@ -200,7 +200,7 @@ impl McpServer {
     }
 
     fn handle_resources_list(&self, id: Value) -> JSONRPCResponse {
-        // BUG-20261101-286 同族：resources 迭代序按 URI 排序输出（生产
+        // 同族：resources 迭代序按 URI 排序输出（生产
         // 注册表当前恒空，与 tools/list 同纪律对称修齐）。
         let mut resources: Vec<&Resource> = self.resources.values().collect();
         resources.sort_by(|a, b| a.uri.cmp(&b.uri));

@@ -3,7 +3,7 @@
 //! - 245：copy_chat_log_prefix 直调（已被 supersede，#[allow(dead_code)]，
 //!   但 pub 可测——覆盖归档路径）。
 //! - 336：write_chat_log_from_store 直调（同上 superseded）。
-//! - 379：clear_chat_log 的 boundary sidecar fs:write 失败 warn（sidecar
+//! - 379：clear_chat_log 的 boundary sidecar fs::write 失败 warn（sidecar
 //!   路径预置为目录 → 写失败）。
 
 use super::*;
@@ -112,7 +112,7 @@ fn write_chat_log_from_store_projects_chat_rows_only() {
     delete_chat_log(&k);
 }
 
-/// clear_chat_log：boundary sidecar 已存在但为目录 → fs:write 失败 → warn（379）。
+/// clear_chat_log：boundary sidecar 已存在但为目录 → fs::write 失败 → warn（379）。
 #[test]
 fn clear_chat_log_warns_when_boundary_sidecar_is_a_directory() {
     let _logs = capture_logs();
@@ -120,7 +120,7 @@ fn clear_chat_log_warns_when_boundary_sidecar_is_a_directory() {
     delete_chat_log(&k);
     // 主 jsonl 写入两条，让 clear 有东西可清
     append_chat_log(&k, "user", "x");
-    // sidecar 预置为目录 → fs:write 失败
+    // sidecar 预置为目录 → fs::write 失败
     let safe = k.replace(':', "_");
     let sidecar_dir = default_path_manager()
         .boundary_events_dir()

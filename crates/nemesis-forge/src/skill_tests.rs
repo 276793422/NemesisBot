@@ -7,10 +7,10 @@
 //! 职责分界：
 //! - 本模块 = **纯 schema + 纯断言求值**（不执行、不 IO）；
 //! - [`SkillTestRunner`] trait = 执行抽象（跑 turns、写 fixtures、收集
-//!   transcript），由集成层（nemesisbot）实现注入——与 [`crate::reflector_llm::LLMCaller`]
+//!   transcript），由集成层（nemesisbot）实现注入——与 [`crate::reflector_llm:LLMCaller`]
 //!   同款依赖倒置，forge 不反依赖执行环境。
 //!
-//! 格式约束（定稿数值，见 docs/PLAN/2026-10-14_自进化升级计划.md §四）：
+//! 格式约束（定稿数值，见 自进化升级计划 §四）：
 //! turns ≤ 6；fixtures ≤ 8 个且单文件 ≤ 64KB；每条用例至少一个断言；
 //! 违反 = 解析错误（该 skill 回归不通过，诚实报错）。
 
@@ -25,7 +25,7 @@ pub const FIXTURE_MAX_BYTES: usize = 65536;
 pub const FIXTURE_MAX_COUNT: usize = 8;
 /// turns 脚本轮数上限。
 pub const TURNS_MAX: usize = 6;
-/// frontmatter YAML 嵌套深度上限（DoS 闸，BUG-20261101-276）。tests 段
+/// frontmatter YAML 嵌套深度上限（DoS 闸）。tests 段
 /// 真实 schema（tests→case→turns/fixtures/expect）深度 ≤ 10，64 已是
 /// 荒谬余量（与 pipeline.rs 的 serde_json 128 层递归闸同族语义）。
 pub const FRONTMATTER_MAX_NESTING_DEPTH: usize = 64;
@@ -215,7 +215,7 @@ pub fn parse_skill_tests(content: &str) -> Result<Option<SkillTestsSpec>, String
     if fm.is_empty() {
         return Ok(None);
     }
-    // 嵌套深度预检（BUG-20261101-276）：SKILL.md 内容是**不可信输入**
+    // 嵌套深度预检：SKILL.md 内容是**不可信输入**
     // （远端仓库安装；optimize 候选 = 模型生成），serde_yaml 反序列化器
     // 按嵌套深度递归下降——深嵌套 flow 集合（`[[[[…]]]]`）或块式缩进
     // 炸弹会栈溢出，而栈溢出是 abort 不可捕获（gateway 内 forge.test /
@@ -260,7 +260,7 @@ fn extract_frontmatter(content: &str) -> String {
     out.join("\n")
 }
 
-/// YAML 嵌套深度词法估计（BUG-20261101-276 DoS 闸的度量件）。
+/// YAML 嵌套深度词法估计（DoS 闸的度量件）。
 ///
 /// 双覆盖：flow 集合按括号字符计（引号内的 `[`/`{` 不计——引号里是
 /// 字面量，serde 不会为其递归）；块式嵌套按缩进宽度计（2 字符一级，
@@ -324,7 +324,7 @@ fn validate_spec(spec: &SkillTestsSpec) -> Result<(), String> {
             ));
         }
         for fx in &case.fixtures {
-            // 路径闸（R18 收紧）：拒绝 `..`、绝对路径与 Windows 盘符形态。
+            // 路径闸（收紧）：拒绝 `..`、绝对路径与 Windows 盘符形态。
             // 此前只挡 `..`——`C:evil` 这类盘符相对路径 is_absolute()==false
             // 且无 `..`，但 Path::join 会整段换基座（写出到盘符当前目录），
             // 沙盒夹具越出临时工作区。合法夹具一律是沙盒内的相对段。
@@ -504,7 +504,7 @@ pub async fn evaluate_case_full(
     result
 }
 
-/// judge 评审 prompt（单一真相源；调用方拼 transcript 后调 LLMCaller）。
+/// judge 评审 prompt（统一定义；调用方拼 transcript 后调 LLMCaller）。
 pub fn judge_prompt(case: &TestCase, transcript: &ExecutionTranscript) -> String {
     let judge = case
         .judge

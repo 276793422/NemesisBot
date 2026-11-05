@@ -1,9 +1,9 @@
 //! + （2026-10-18）compact 域测试。
 //!
-//! -：混合触发信号——provider 实报（完整输入 = prompt +
-//!   cache_creation + cache_read，`usage_full_input` 单一真相源）参与触发
+//! -混合触发信号——provider 实报（完整输入 = prompt +
+//!   cache_creation + cache_read，`usage_full_input` 统一定义）参与触发
 //!   比较（取大者早触发，安全侧）；无 usage 的 lane 回落纯估算（不多触发）；
-//! -：无进展守卫——摘要采用前用同轴估算比较压缩前后（基线 = 旧摘要 +
+//! -无进展守卫——摘要采用前用同轴估算比较压缩前后（基线 = 旧摘要 +
 //!   尾巴，不含 provider 实报的 system+tools 开销——2026-10-19 根修），省幅
 //!   不足 5% 弃用并计入 no_progress；连续 2 次暂停自动压缩（stuck 闩，
 //!   provider 不再被调）；成功采用清零计数。
@@ -101,7 +101,7 @@ fn keep_tokens_config(tag: &str, keep: usize) -> std::path::PathBuf {
         "nemesis_test_compact_signal_{tag}_{}.json",
         std::process::id()
     ));
-    // ：条目带 context_window=100——窗口已知才不禁自动压缩
+    // 条目带 context_window=100——窗口已知才不禁自动压缩
     // （本文件测的是信号/预算机制，不是窗口解析；与 instance
     // set_context_window(100) 的阈值语义一致）。
     std::fs::write(

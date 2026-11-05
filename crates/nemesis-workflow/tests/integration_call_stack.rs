@@ -1,4 +1,4 @@
-//! 1c-F2 integration: WorkflowCallStack tracks engine runs.
+//! 1c integration: WorkflowCallStack tracks engine runs.
 //!
 //! Verifies the engine push/pop wiring:
 //! - running a workflow pushes a frame

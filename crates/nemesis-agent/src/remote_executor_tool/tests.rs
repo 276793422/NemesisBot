@@ -32,14 +32,14 @@ fn move_tools_is_the_expected_set() {
         &[
             "exec",
             "run_script",
-            // : run_checks spawns cargo/npm/go — same write
+            // run_checks spawns cargo/npm/go — same write
             // surface as exec (target/, node_modules/).
             "run_checks",
             "read_file",
             "write_file",
             "list_dir",
             "edit_file",
-            // : batch edit_file — contained identically.
+            // batch edit_file — contained identically.
             "multiedit",
             "append_file",
             "delete_file",
@@ -203,7 +203,7 @@ async fn stdio_transport_child_exits_without_response() {
     // 极端环境（AutoRun /q 抑制 banner）下落到无响应/超时臂，也一并接受。
     // 本地化代码页变体（实测）：中文 Windows 的 banner 含中文
     // 字符（"版本"等），cmd.exe 以 OEM 代码页 /GBK 写管道——严格
-    // UTF-8 解码（BufReader:lines）失败 → UTF-8 错误臂。协议是
+    // UTF-8 解码（BufReader::lines）失败 → UTF-8 错误臂。协议是
     // UTF-8 JSONL，非 UTF-8 输出报错是正确行为；英文 Windows（ASCII
     // banner）走 parse 臂，两种环境都在接受集合内。
     // 错误文案随 tokio 版本漂移：旧锁 Lines 报 "stream did not contain
@@ -395,7 +395,7 @@ async fn remote_tool_execute_wraps_channel_error() {
     assert!(err.contains("failed to spawn"), "err: {err}");
 }
 
-// ：Windows 盒缺位时的用户态 ACL 降级通道判定。
+// Windows 盒缺位时的用户态 ACL 降级通道判定。
 #[cfg(windows)]
 #[test]
 fn p24_userland_fallback_channel_selection() {
@@ -432,7 +432,7 @@ fn p24_userland_fallback_channel_selection() {
 }
 
 // ---------------------------------------------------------------------------
-// ：persistent env 白名单 + home 重定向（纯函数，无进程 env 竞态）
+// persistent env 白名单 + home 重定向（纯函数，无进程 env 竞态）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -552,7 +552,7 @@ fn home_redirect_points_every_home_family_var_into_agent_home() {
 }
 
 // ---------------------------------------------------------------------------
-// ：常驻路由四臂（mock executor，无子进程）。回落锚 = 通道 exe 不存在
+// 常驻路由四臂（mock executor，无子进程）。回落锚 = 通道 exe 不存在
 // （回落必产 "executor unavailable: … failed to spawn" 形态）；错误分型纪律
 // 的行为面钉死——Ok 短路 / ToolFailed 原样上抛不回落 / Unavailable 回落 /
 // resolve=None 不触碰常驻执行体。

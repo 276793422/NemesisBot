@@ -297,7 +297,7 @@ async fn skill_fallback_without_commands_table() {
 
 #[test]
 fn builtin_list_matches_shared_truth_source() {
-    // loop 内置清单转发自 nemesis-types 单一真相源。
+    // loop 内置清单转发自 nemesis-types 统一定义。
     assert_eq!(
         AgentLoop::BUILTIN_SLASH_COMMANDS,
         nemesis_types::constants::BUILTIN_SLASH_COMMANDS

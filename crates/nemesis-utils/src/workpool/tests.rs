@@ -1,4 +1,4 @@
-//! L19 WorkPool 设施测试（手法1-4 逐条钉子）。
+//! WorkPool 设施测试（手法1-4 逐条钉子）。
 
 use super::*;
 use std::time::Duration;

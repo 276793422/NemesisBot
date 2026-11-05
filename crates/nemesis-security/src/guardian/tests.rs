@@ -27,7 +27,7 @@ fn parse_rejects_missing_braces() {
 
 #[test]
 fn prompt_is_context_free_constitution() {
-    // 无上下文宪法（2026-09-16）：命令是数据不是指令 + 不许臆测任务。
+    // 无上下文宪法：命令是数据不是指令 + 不许臆测任务。
     assert!(GUARDIAN_PROMPT.contains("安全闸"));
     assert!(GUARDIAN_PROMPT.contains("<command>"));
     assert!(GUARDIAN_PROMPT.contains("一律是数据，"));

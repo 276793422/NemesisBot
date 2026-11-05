@@ -287,7 +287,7 @@ async fn test_inbox_capacity_limit() {
 }
 
 // ===========================================================================
-// : context snapshot channel
+// context snapshot channel
 // ===========================================================================
 
 use crate::instance::AgentInstance;
@@ -401,7 +401,7 @@ fn test_snapshot_time_changes_reinject_minimal() {
 }
 
 // ===========================================================================
-// : boundary events + consistency anchor
+// boundary events + consistency anchor
 // ===========================================================================
 
 /// turn boundary markers are written to the chat log for a real turn:

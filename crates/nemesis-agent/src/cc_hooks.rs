@@ -2,20 +2,20 @@
 //!
 //! 把 `hooks.json` 方言格式桥到 // 的钩子体系上：解析方言配置 →
 //! 按事件生成子进程脚本调用（stdin JSON / env / 退出码拦放行）→ 把退出码
-//! 翻译回 [`crate:hooks`] 的决策类型。
+//! 翻译回 [`crate::hooks`] 的决策类型。
 //!
 //! # 事件映射（goal 表）
 //!
 //! | 事件 | 我们的钩点 | 方言语义 |
 //! |---|---|---|
-//! | `SessionStart` | [`LifecycleHook:on_user_prompt`]（桥内部：该 session 首条 prompt 时先跑） | 观察型（exit 2 不拦——SessionStart 无阻断语义） |
-//! | `UserPromptSubmit` | [`LifecycleHook:on_user_prompt`]（在消息进 history 之前） | exit 2 → 拦下 prompt（模型永远看不到）；exit 0 → 观察（stdout 只记日志，**不**注入上下文——诚实边界，见下） |
-//! | `PreToolUse` | [`ToolHook:pre_tool_use`]（security 固定闸之后） | exit 2 / JSON `{"decision":"block"}` → Block（stderr 作 reason 回灌模型） |
-//! | `PostToolUse` | [`ToolHook:post_tool_use`]（Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（反馈给模型；不撤销已执行的操作） |
-//! | `Stop` | [`LifecycleHook:on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`MAX_TURN_END_CONTINUES` 封顶 fail-open）；`stop_hook_active` 标志随第二次起置 true |
-//! | `SubagentStart` | [`CcHookBridge:dispatch_subagent_start`]（spawn 闭包内、`run_detached` 前——**仅本地 spawn 的子代理**；内部 LLM 委托如评审/冲突解决不发） | exit 2 / JSON block → **拒绝 spawn**（SpawnFn 返 Err，子代理不启动） |
-//! | `SubagentStop` | [`CcHookBridge:dispatch_subagent_stop`]（spawn 闭包内、detached 轮次返回/后台任务完成处） | 观察型（任务已跑完，exit 2 无阻断语义——响亮 warn 记录） |
-//! | `Notification` | [`CcHookBridge:dispatch_notification`]（审批/提问边界 fire-and-forget）+ [`ObservingQuestionAsker`]（loop 提问端装饰）+ `ObservingApprovalManager`（security 审批 manager 装饰） | **纯观察型**（exit 2 无任何阻断语义——通知已发出，outcome 由真实装配端决定）；覆盖面诚实边界见两包装器文档 |
+//! | `SessionStart` | [`LifecycleHook::on_user_prompt`]（桥内部：该 session 首条 prompt 时先跑） | 观察型（exit 2 不拦——SessionStart 无阻断语义） |
+//! | `UserPromptSubmit` | [`LifecycleHook::on_user_prompt`]（在消息进 history 之前） | exit 2 → 拦下 prompt（模型永远看不到）；exit 0 → 观察（stdout 只记日志，**不**注入上下文——诚实边界，见下） |
+//! | `PreToolUse` | [`ToolHook::pre_tool_use`]（security 固定闸之后） | exit 2 / JSON `{"decision":"block"}` → Block（stderr 作 reason 回灌模型） |
+//! | `PostToolUse` | [`ToolHook::post_tool_use`]（Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（反馈给模型；不撤销已执行的操作） |
+//! | `Stop` | [`LifecycleHook::on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`MAX_TURN_END_CONTINUES` 封顶 fail-open）；`stop_hook_active` 标志随第二次起置 true |
+//! | `SubagentStart` | [`CcHookBridge::dispatch_subagent_start`]（spawn 闭包内、`run_detached` 前——**仅本地 spawn 的子代理**；内部 LLM 委托如评审/冲突解决不发） | exit 2 / JSON block → **拒绝 spawn**（SpawnFn 返 Err，子代理不启动） |
+//! | `SubagentStop` | [`CcHookBridge::dispatch_subagent_stop`]（spawn 闭包内、detached 轮次返回/后台任务完成处） | 观察型（任务已跑完，exit 2 无阻断语义——响亮 warn 记录） |
+//! | `Notification` | [`CcHookBridge::dispatch_notification`]（审批/提问边界 fire-and-forget）+ [`ObservingQuestionAsker`]（loop 提问端装饰）+ `ObservingApprovalManager`（security 审批 manager 装饰） | **纯观察型**（exit 2 无任何阻断语义——通知已发出，outcome 由真实装配端决定）；覆盖面诚实边界见两包装器文档 |
 //!
 //! LLM 调用级无对应方言事件——hooks.json 没有 per-LLM-call hook，不造。
 //!
@@ -53,11 +53,11 @@
 //! # 装配
 //!
 //! 配置落位（2026-08-29 收编）：`<workspace>/config/hooks.json`（经
-//! `nemesis_path:resolve_hooks_config_path_in_workspace`）。原先游离在
+//! `nemesis_path::resolve_hooks_config_path_in_workspace`）。原先游离在
 //! `<home>/config/hooks.json`——08-28 路径大迁移的漏网项；读取方启动时经
 //! `migrate_legacy_home_hooks_config` 一次性 copy-once 迁移（legacy 保留
 //! 作备份）。网关主 agent 工厂（`agent_factory.rs`）启动时若存在则加载并注册
-//! （[`CcHookBridge:load_from_dir`]）；**集群 agent 不挂**（远端节点跑的是
+//! （[`CcHookBridge::load_from_dir`]）；**集群 agent 不挂**（远端节点跑的是
 //! 本地用户的任务，hook 拦截语义不该跨节点复制——挂账决策，报告注明）。
 //! 解析失败 = warn + 跳过（fail-open，绝不拖死 gateway）。
 
@@ -568,11 +568,11 @@ impl ScriptOutcome {
 /// [`LifecycleHook`]（SessionStart/UserPromptSubmit/Stop）。
 ///
 /// **热更（hooks）**：盘上加载的桥（经
-/// [`Self:load_from_dir`]）在每次分发入口惰性检查 hooks.json 的内容，
+/// [`Self::load_from_dir`]）在每次分发入口惰性检查 hooks.json 的内容，
 /// 变化即重新解析并原子换装——保存即下条消息生效，无需重启 Agent。语义：
 /// 解析失败保留旧配置（fail-open 保旧，坏文件不炸会话）；文件清空/消失 =
 /// 换装为空 = 事实注销（与启动态「没有 hooks.json = 没配」同一语义）。纯
-/// 内存桥（[`Self:from_json`]，测试/手工构造）无热更。
+/// 内存桥（[`Self::from_json`]，测试/手工构造）无热更。
 pub struct CcHookBridge {
     /// 当前生效配置（热更换装点）。分发入口取 clone 快照再跑脚本——锁不跨
     /// await（CcEvents 为 Vec 簇小结构，clone 便宜）。
@@ -594,7 +594,7 @@ pub struct CcHookBridge {
 }
 
 impl CcHookBridge {
-    /// 解析 + 绑定 workspace。不读盘（盘上加载见 [`Self:load_from_dir`]）。
+    /// 解析 + 绑定 workspace。不读盘（盘上加载见 [`Self::load_from_dir`]）。
     pub fn from_json(json: &str, project_dir: PathBuf) -> Result<Self, String> {
         let events = parse_cc_hooks(json)?;
         Ok(Self {
@@ -1109,7 +1109,7 @@ impl CcHookBridge {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 
@@ -1123,7 +1123,7 @@ mod cov_tests;
 // ---------------------------------------------------------------------------
 
 /// loop 提问端观察装饰（件3 层1）： doom-loop 审批卡与 结构化提问都
-/// 经 `AgentLoop:question_asker()` 槽（wiring.rs 的 setter 处包装）。ask
+/// 经 `AgentLoop::question_asker()` 槽（wiring.rs 的 setter 处包装）。ask
 /// 发起前发 `Notification`（kind=question, layer=loop），然后**无条件原样
 /// 委托**——装饰器改不了 outcome（红线靠类型不靠纪律）。
 ///

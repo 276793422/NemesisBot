@@ -1,12 +1,12 @@
-//! L15（2026-11-03 存储世代化迁移链骨架）：四条铁律的代码化模板。
+//! （2026-11-03 存储世代化迁移链骨架）：四条铁律的代码化模板。
 //!
-//! 设计文档：`docs/PLAN/2026-11-03_存储世代化迁移链_设计文档.md`（协议细节
+//! 设计文档：`存储世代化迁移链_设计文档`（协议细节
 //! 与中断恢复语义的真相源）。**零接线**——现行 chat_log / board / config
-//! 读写路径不消费本模块；未来任何存储做破坏性格式变更时按设计文档 §4 契约
+//! 读写路径不消费本模块；未来任何存储做破坏性格式变更时按设计文档 契约
 //! 接线（传 stem + 迁移链 + 接线方版本常量）。
 //!
 //! 四条铁律的代码对应物（原文见
-//! `docs/REPORT/2026-11-01_改进项落地执行清单.md` L15 节）：
+//! `改进项落地执行清单` 节）：
 //! ① 物理文件按世代命名 `{stem}.vN.jsonl`（v1 = 无世代段裸名基线）→
 //!    [`detect_generations`]；
 //! ② 相邻迁移各 own 一步，链式组合 → [`MigrationStep`]；
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 /// 世代文件名（铁律①命名协议）。v1 = 裸名基线（现网存量天然是 v1）；
 /// vN（N≥2）= 版本段在扩展名前（`*.jsonl` glob 兼容——现行扫描器以
 /// extension 过滤，对 v2+ 文件仍命中；接线时扫描器按剥段后的 stem 分组，
-/// 见设计文档 §3）。
+/// 见设计文档）。
 fn generation_file_name(stem: &str, generation: u32) -> String {
     if generation <= 1 {
         format!("{stem}.jsonl")
@@ -391,11 +391,11 @@ pub fn migrate_to_latest(
 
         // 发布：先查目标（重入/并发已发布 → 幂等臂认输——铁律④已提交
         // 世代永不替换）。诚实边界：检查与 rename 之间仍有 nanos 级竞态
-        // 窗口，且 std::fs::rename 两平台都是「存在即原子替换」语义
+        // 窗口，且 std::fs:rename 两平台都是「存在即原子替换」语义
         //（Windows MOVEFILE_REPLACE_EXISTING / Unix rename(2)）——绝对
         // no-replace 需平台 API（renameat2 RENAME_NOREPLACE / MoveFileEx
         // 去掉 REPLACE 标志），模板用 std 能力，接线方如需严格闭合窗口
-        // 在此处换平台调用（设计文档 §4 记录在案）。
+        // 在此处换平台调用（设计文档 记录在案）。
         if target_path.exists() {
             let _ = crate::fsutil::remove_file_retry(&tmp_path);
         } else {

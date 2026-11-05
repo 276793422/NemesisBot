@@ -1,7 +1,7 @@
 //! 会话回收站（2026-10-30）：`sessions.delete` 默认从硬删除改为「移入回收站」。
 //!
-//! 存储真相源 = `<workspace>/logs/trash/sessions/{deleted_at_ms}_{safe_key}/`
-//! （路径真相源 [`nemesis_path:resolve_trash_sessions_dir_in_workspace`]），
+//! 存储权威 = `<workspace>/logs/trash/sessions/{deleted_at_ms}_{safe_key}/`
+//! （路径真相源 [`nemesis_path::resolve_trash_sessions_dir_in_workspace`]），
 //! 每个子目录装原 chat_log 三件套的改名副本（`chat.jsonl` / `boundary.jsonl` /
 //! `meta.json`）+ `trash.json` 清单。设计要点：
 //!
@@ -18,7 +18,7 @@
 //!
 //! 冲突语义：恢复目标三件套（jsonl 或 meta）已存在 = 结构化
 //! conflict 返回（调用方转提示）；web 键允许带 `new_sid` 改名恢复（新 sid 经
-//! [`SessionStore:sanitize_session_id`] 消毒后重验），复合键改名不支持。
+//! [`SessionStore::sanitize_session_id`] 消毒后重验），复合键改名不支持。
 //!
 //! 恢复事务（2026-11-02 复评）：三段 rename 中途失败会留下「半成品」——
 //! 一部分材料已到目标键、其余还在条目目录。恢复在首次 rename 前往条目内写
@@ -30,11 +30,11 @@
 //! # 寻址注入
 //!
 //! 核心函数全部走 [`TrashLocations`]（chat_log 三件套寻址 + 回收站根）。
-//! 生产 = [`TrashLocations:production`]（进程单例 path manager，文件名格式
-//! 由 chat_log 同源闭包决定）；测试一律 [`TrashLocations:with_dirs`] 注入
+//! 生产 = [`TrashLocations::production`]（进程单例 path manager，文件名格式
+//! 由 chat_log 同源闭包决定）；测试一律 [`TrashLocations::with_dirs`] 注入
 //! tempdir——进程单例 home 不可 per-test 重定向（OnceLock 固化，cov 系同款
 //! 约束），而真实 home 是在用数据目录，测试写它 = 污染。惯例
-//! `nemesis-plugins-wasm:PluginManager:new_with_dirs`。
+//! `nemesis-plugins-wasm::PluginManager:new_with_dirs`。
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -80,8 +80,8 @@ pub struct TrashManifest {
 
 /// 回收站寻址注入面：chat_log 三件套寻址 + 回收站根。
 ///
-/// 生产走 [`TrashLocations:production`]（与 chat_log 同源寻址，路径真相源
-/// 不搬出 chat_log）；测试走 [`TrashLocations:with_dirs`] 注入 tempdir。
+/// 生产走 [`TrashLocations::production`]（与 chat_log 同源寻址，路径真相源
+/// 不搬出 chat_log）；测试走 [`TrashLocations::with_dirs`] 注入 tempdir。
 #[derive(Clone)]
 pub struct TrashLocations {
     trash_root: PathBuf,
@@ -107,7 +107,7 @@ impl TrashLocations {
 
     /// 测试注入：回收站根 + session_logs 目录 + boundary 目录。文件名格式与
     /// chat_log 同源（`{safe}.jsonl` / `{safe}.meta.json`，
-    /// `safe = sanitize_path_segment`；chat_log.rs:log_path 注释即契约）。
+    /// `safe = sanitize_path_segment`；chat_log.rs::log_path 注释即契约）。
     pub fn with_dirs(
         trash_root: PathBuf,
         session_logs_dir: PathBuf,

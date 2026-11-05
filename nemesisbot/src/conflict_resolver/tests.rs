@@ -1,4 +1,4 @@
-//! P5/F5 冲突硬解执行体单测：产出契约校验矩阵（范围钉死/二进制择边/
+//! 冲突硬解执行体单测：产出契约校验矩阵（范围钉死/二进制择边/
 //! 锁文件理由/覆盖完备/围栏容错）+ prompt 静态断言 + 接触时刻表常量。
 
 use super::*;
@@ -197,7 +197,7 @@ fn user_prompt_carries_intent_and_three_stages() {
 }
 
 // ===========================================================================
-// Coverage 追加（2026-09-24）：parse_resolutions 校验臂补全 / override_content
+// Coverage 追加：parse_resolutions 校验臂补全 / override_content
 // 择边装配矩阵 / build_user_prompt 截断与缺侧渲染 / run_resolver 三道前置
 // 闸（estop / 主 agent 未就绪 / mini 档）→ fallback_freeze / 重派链三道
 // 发车前闸（estop / 旗标读取失败 / 预算超限）。
@@ -210,7 +210,7 @@ use std::sync::Arc;
 
 use nemesis_board::models::NewIssue;
 
-/// 最小评审依赖（同 board_review::tests::review_deps 形态；不装 rpc client
+/// 最小评审依赖（同 board_review::tests:review_deps 形态；不装 rpc client
 /// ——probe_peer 无客户端即秒 False，测试不碰网络）。
 pub(crate) fn resolver_deps(name: &str) -> crate::board_review::BoardReviewDeps {
     use nemesis_cluster::cluster::Cluster;
@@ -323,7 +323,7 @@ async fn run_resolver_without_moderator_loop_falls_back() {
     assert!(note.contains("主 agent 未就绪"), "{note}");
 }
 
-/// run_resolver 第三闸：mini 档模型拒绝硬解（F5 造假重灾区防线）。
+/// run_resolver 第三闸：mini 档模型拒绝硬解（造假重灾区防线）。
 #[tokio::test]
 async fn run_resolver_rejects_mini_tier() {
     use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
@@ -769,8 +769,8 @@ fn user_prompt_absent_side_truncation_and_criteria() {
 }
 
 // ===========================================================================
-// 硬解 LLM 主链（2026-09-25 覆盖补齐）：脚本化 provider 装进 moderator_loop
-// （同 board_review::tests::attach_loop 形态——run_detached 纯文本单轮在
+// 硬解 LLM 主链（覆盖补齐）：脚本化 provider 装进 moderator_loop
+// （同 board_review::tests:attach_loop 形态——run_detached 纯文本单轮在
 // 进程内可跑），打通产出→落盘 commit→审计→收口与机械失败→重派闸全链。
 // ===========================================================================
 
@@ -824,7 +824,7 @@ impl nemesis_agent::r#loop::LlmProvider for ResolverLlm {
 }
 
 /// 委托壳：AgentLoop::new 收 Box<dyn LlmProvider>，测试侧保留 Arc 句柄读
-/// 调用计数（同 board_review::tests::SharedLlm 形态）。
+/// 调用计数（同 board_review::tests:SharedLlm 形态）。
 struct SharedResolverLlm(Arc<ResolverLlm>);
 
 #[async_trait::async_trait]
@@ -1157,12 +1157,12 @@ async fn run_resolver_commit_failure_redispatch_gate_freezes() {
 }
 
 // ===========================================================================
-// wave5 round2 batch-3（2026-09-25）：硬解收尾的三条快闸——E1 预算保险丝
+// wave5 batch-3：硬解收尾的三条快闸—— 预算保险丝
 // 打满转人工、board 旗标读取失败 fail-closed、ours/theirs 择边审计 arm。
 // （estop/无 agent/mini 档三闸既有测试已盖，不重复。）
 // ===========================================================================
 
-/// E1 预算保险丝：父单全链累计派发数打满 → 冲突重派前就被拦停转人工。
+/// 预算保险丝：父单全链累计派发数打满 → 冲突重派前就被拦停转人工。
 /// LLM 调用失败（不消耗解析轮）→ 机械失败进重派链 → 旗标 Ok 但预算超限
 /// → fallback_freeze（不真接触不真发车——接触时刻表 60s/120s 在测试域
 /// 结构性不可等）。
@@ -1328,7 +1328,7 @@ async fn w5_resolver_ours_and_theirs_actions_audited() {
 /// 转人工。盖 probe 循环 t0 轮、offline 分支、switched=false 回落臂、
 /// 发车 Err 臂。
 // multi_thread：全量并行下 BASELINE_PUSHER 全局可能已被某个 gateway boot
-// 测试装配（进程级 OnceLock，装配与否取决于测试调度顺序——F-B8 同族），
+// 测试装配（进程级 OnceLock，装配与否取决于测试调度顺序——F- 同族），
 // 装配态下发车会走 push_dispatch_baseline 的 block_in_place 桥，current_thread
 // runtime 直接 panic。multi_thread 下两条序都合法。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

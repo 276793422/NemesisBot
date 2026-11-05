@@ -244,7 +244,7 @@ fn test_full_workflow_context_round_trip() {
     };
     ctx.set_node_result("node1", node_result);
 
-    // 模拟 to_serializable 转换(B3 实施后 variables 直接是 JSON,这里手动转)
+    // 模拟 to_serializable 转换(实施后 variables 直接是 JSON,这里手动转)
     let variables = ctx.get_all_variables();
     let node_results = ctx.get_all_node_results();
 
@@ -300,7 +300,7 @@ fn test_full_workflow_context_round_trip() {
     }
     let new_ctx = WorkflowContext::new(restored_input);
     for (k, v) in &restored.variables {
-        // 当前 set_var 只接受 String,B3 实施后改为 Value
+        // 当前 set_var 只接受 String, 实施后改为 Value
         if let Some(s) = v.as_str() {
             new_ctx.set_var(k, s);
         }

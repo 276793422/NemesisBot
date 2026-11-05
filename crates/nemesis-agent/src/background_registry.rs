@@ -10,7 +10,7 @@
 //! 跨 AgentLoop 重启存活；注册表 Drop 时给所有存活任务发 kill 旗标（监督
 //! 任务 ≤200ms 内收尸），`kill_on_drop(true)` 兜底 runtime 关停路径。
 //!
-//! **不进 [`MOVE_TOOLS`](crate:remote_executor_tool:MOVE_TOOLS)**：executor
+//! **不进 [`MOVE_TOOLS`](crate::remote_executor_tool:MOVE_TOOLS)**：executor
 //! 分离是 per-call 子进程，一次调用后退出——在子进程里起后台任务，句柄必然
 //! 随子进程孤儿化。因此四动词固定在 gateway 进程内跑（与 `exec_async` 同一
 //! 决策，见 remote_executor_tool.rs 顶部注记），`exec_worker` 侧不注入注册表
@@ -27,7 +27,7 @@
 //! 显式条目，例外语义保留但不再依赖兜底行为）。
 //!
 //! stdin 活管道（2026-11-03）：`start(.., steerable=true)` 保留 child
-//! stdin（此前恒 `Stdio:null()`），`background_steer` 向其写字节（text +
+//! stdin（此前恒 `Stdio::null()`），`background_steer` 向其写字节（text +
 //! 换行 + flush）。registry 层只管字节——协议帧封装（stream-json /
 //! app-server 帧协议）是 delegate_registry 的职责，不在本层重复。缺省
 //! steerable=false 零行为变化（读 stdin 的命令照旧即刻 EOF，不会因活管道
@@ -238,7 +238,7 @@ impl BackgroundProcessRegistry {
 
     /// 起一个后台任务。`command` 经平台 shell 解释（cmd /C 或 sh -c）。
     /// `steerable=false` → stdin 恒 null（旧行为，读 stdin 的命令即刻 EOF）；
-    /// `steerable=true` → stdin 活管道（[`Self:steer`] 可注入，任务不读
+    /// `steerable=true` → stdin 活管道（[`Self::steer`] 可注入，任务不读
     /// stdin 也无害——管道缓冲写满前子进程照常跑）。
     pub async fn start(
         &self,
@@ -643,7 +643,7 @@ pub(crate) async fn force_kill(pid: u32) {
 /// 强杀升级 → `start_kill` 兜底直杀 shell 本体。
 ///
 /// 调用方随后照常 try_wait 收尸记录终态（真相源不变）。指令丢失一律
-/// 忽略错误——收尸才是真相源（与 tree_kill 同纪律）；PID 复用窗口同
+/// 忽略错误——收尸才为权威依据（与 tree_kill 同纪律）；PID 复用窗口同
 /// tree_kill（毫秒级固有竞态，不做缓解）。
 pub(crate) async fn stop_ladder(
     pid: u32,
@@ -677,7 +677,7 @@ pub(crate) async fn stop_ladder(
 ///   `build_platform_shell` 的 process_group(0)）。
 ///
 /// 指令丢失（进程已退/PID 复用/kill 不存在）一律忽略错误——调用方随后
-/// 的 try_wait 收尸才是真相源。PID 复用窗口（进程退出→树杀之间）是平台
+/// 的 try_wait 收尸才为权威依据。PID 复用窗口（进程退出→树杀之间）是平台
 /// 固有竞态，量级为毫秒且后果止于误杀同名树，不做缓解。
 ///
 /// `pub(crate)`：exec/run_checks/run_script 的超时收尸共用
@@ -709,7 +709,7 @@ pub(crate) async fn tree_kill(pid: u32) {
 
 /// cwd 解析 + 工作区边界（与 `ExecTool` 同形态：相对 cwd join workspace，
 /// 双侧 canonicalize_for_compare 归一化防 8.3 短名/大小写失配）。
-/// 返回**解析后的绝对路径**——`Command:current_dir` 对相对路径按父进程
+/// 返回**解析后的绝对路径**——`Command::current_dir` 对相对路径按父进程
 /// cwd 解释，与工作区基准脱钩（exec 侧传原始串是历史行为，这里不复制）。
 ///
 /// `pub(crate)`：delegate_registry 的 delegate_start 复用同一

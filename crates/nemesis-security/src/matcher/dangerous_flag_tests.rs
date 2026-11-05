@@ -1,4 +1,4 @@
-//! L01 敏感 flag 词表测试（`scan_dangerous_flags`）。
+//! 敏感 flag 词表测试（`scan_dangerous_flags`）。
 //!
 //! 契约：输入是 [`exec_rule_segments`] 的产物（归一化小写/剥引号/合并
 //! 空白/剥 env 头），测试统一走 `scan(target)` helper 模拟真实管道，
@@ -18,7 +18,7 @@ fn test_git_push_force_variants_hit() {
         scan("git push --force-with-lease origin main"),
         vec!["--force"]
     );
-    // 等号带值形态（--force-with-lease=main）照常命中。
+    // 等号带值形态（force-with-lease=main）照常命中。
     assert_eq!(
         scan("git push --force-with-lease=main origin main"),
         vec!["--force"]
@@ -128,7 +128,7 @@ fn test_git_benign_variants_not_hit() {
 
 #[test]
 fn test_head_basenames_recognized() {
-    // 路径头与 .exe 后缀：与 extract_interpreter_payloads 的 bin_key 同口径。
+    // 路径头与.exe 后缀：与 extract_interpreter_payloads 的 bin_key 同口径。
     assert_eq!(scan("/usr/bin/git push -f origin"), vec!["--force"]);
     assert_eq!(scan("git.exe push --force origin"), vec!["--force"]);
     assert_eq!(scan("C:/Tools/rm.exe -rf /tmp/x"), vec!["-rf"]);

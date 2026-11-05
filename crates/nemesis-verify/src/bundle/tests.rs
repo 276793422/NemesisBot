@@ -134,7 +134,7 @@ fn signing_material_full_lifecycle_signs_and_verifies() {
     let m2 = SigningMaterial::from_json(&j2).unwrap();
     m2.validate(now()).unwrap();
 
-    // save → load 闭环（0600 落盘在 Windows 走 std::fs::write 臂）
+    // save → load 闭环（0600 落盘在 Windows 走 std::fs:write 臂）
     let p2 = tmp.path().join("sign_only.json");
     m2.save(&p2.to_string_lossy()).unwrap();
     let m3 = SigningMaterial::load(&p2.to_string_lossy()).unwrap();
@@ -351,7 +351,7 @@ fn issuing_material_validate_failure_arms() {
     let e = err_of(wrong_signer.validate(now));
     assert!(e.to_string().contains("签名非该根所签"), "{e}");
 
-    // ④ 根非自签形态：root = 真 issuing 证书（ issuing 的 AKI 指向其 SKI、
+    // ④ 根非自签形态：root = 真 issuing 证书（issuing 的 AKI 指向其 SKI、
     //    签名可被其公钥验证——唯一败点是「根非自签」）
     let child = crate::keygen::issue_x509(
         h.leaf_sk.verifying_key(),

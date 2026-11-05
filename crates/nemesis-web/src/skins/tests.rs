@@ -94,7 +94,7 @@ async fn explicit_id_serves_and_missing_is_404() {
     write_skin(tmp.path(), "alpha", Some("skin/x.css"), None);
     let a = app(Some(tmp.path().to_str().unwrap()), "alpha");
 
-    // 带 .css 后缀（段值整体 = "alpha.css"，handler 剥后缀）
+    // 带.css 后缀（段值整体 = "alpha.css"，handler 剥后缀）
     let ok = a
         .clone()
         .oneshot(
@@ -339,7 +339,7 @@ fn manifest_structure_defaults_to_none() {
 
 // 脚本载荷（数据面；裁决序 ① 404 无脚本 → ② 403 闸关 → ③ 200）---
 
-/// 内存构建 script 形态 .nbskin（theme 载荷 + 可选 script 载荷）。
+/// 内存构建 script 形态.nbskin（theme 载荷 + 可选 script 载荷）。
 fn write_script_skin(dir: &std::path::Path, id: &str, script: Option<&str>) {
     use std::io::Write;
     let path = dir.join(format!("{id}.nbskin"));
@@ -493,7 +493,7 @@ async fn script_explicit_id_gated_and_fail_closed() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    // 穿越路径（manifest.script 带 ..）→ load 拒绝 → 404
+    // 穿越路径（manifest.script 带..）→ load 拒绝 → 404
     let res = a
         .clone()
         .oneshot(
@@ -558,7 +558,7 @@ fn tempdir() -> tempfile::TempDir {
 
 /// 锚 env 串行锁：`NEMESIS_ROOT_ANCHOR` 是进程全局，hooks 测试（本文件）
 /// 与 handlers 测试（`handlers/skins/tests.rs`）经
-/// `crate::skins::tests::ANCHOR_ENV_LOCK` 共用同一把——锚在场的断言窗口
+/// `crate::skins:tests::ANCHOR_ENV_LOCK` 共用同一把——锚在场的断言窗口
 /// 内禁止其它测试并发读锚（resolve_anchors 在 install/scan 内部读 env）。
 pub(crate) static ANCHOR_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
@@ -597,7 +597,7 @@ pub(crate) fn hex32(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 内存构建 theme 形态 .nbskin 原始字节（未签；handlers 测试复用）。
+/// 内存构建 theme 形态.nbskin 原始字节（未签；handlers 测试复用）。
 pub(crate) fn theme_zip_bytes(id: &str) -> Vec<u8> {
     use std::io::Write;
     let buf = std::io::Cursor::new(Vec::new());

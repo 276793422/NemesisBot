@@ -1,4 +1,4 @@
-//! board_review_assets 单测（M5）：bundle 提取 / 本地命中免网络 / HTTP
+//! board_review_assets 单测：bundle 提取 / 本地命中免网络 / HTTP
 //! 取回 + sha256 校验 / 张数与单张上限 / 视觉评审裸调用（wiremock +
 //! http-compat 真管线：image part 上行断言 + 解析回灌重试 + 3 轮失败）。
 
@@ -258,7 +258,7 @@ async fn vision_review_attaches_image_parts_and_parses() {
 async fn vision_review_retry_recovers_with_replay_note() {
     let server = wiremock::MockServer::start().await;
     // 挂载序：先挂 garbage（up_to 2，wiremock 按挂载序先匹配）耗尽后
-    // 落到 valid → 前两轮 garbage、第三轮 valid。
+    // 落到 valid → 前两轮 garbage、 valid。
     wiremock::Mock::given(method("POST"))
         .and(path("/chat/completions"))
         .respond_with(
@@ -283,7 +283,7 @@ async fn vision_review_retry_recovers_with_replay_note() {
     assert_eq!(out.verdict, nemesis_board::ReviewVerdict::Pass);
     let reqs = server.received_requests().await.unwrap();
     assert_eq!(reqs.len(), 3, "解析失败回灌重试 ≤2（共 3 轮）");
-    // 回灌语义：第三轮请求体带前轮原输出（回灌重试提示词；清单为空时
+    // 回灌语义：请求体带前轮原输出（回灌重试提示词；清单为空时
     // 与旧 build_retry_prompt 字节一致）。
     let last = String::from_utf8_lossy(&reqs[2].body);
     assert!(last.contains(GARBAGE), "回灌带前轮输出: {last}");

@@ -55,7 +55,7 @@ struct ConnectorReceiptCtx {
 // 「项目模式×background」已随 解锁移除—— 起项目 loop 后台
 // spawn 与主 spawn 同源，无需注册。
 
-/// detached 臂值形态（文案单一真相源；instance 包装与并行预检都消费它）。
+/// detached 臂值形态（文案单一权威定义；instance 包装与并行预检都消费它）。
 pub(crate) fn detached_tool_refusal_for(
     no_tools: bool,
     allowed_tools: Option<&[String]>,
@@ -91,7 +91,7 @@ pub(crate) fn fence_exempt_tool(tool: &str) -> bool {
     FENCE_EXEMPT_TOOLS.contains(&tool)
 }
 
-/// 派发闸拒绝文案的单一真相源（serial 与 parallel 两条派发路径共用，
+/// 派发闸拒绝文案的统一定义（serial 与 parallel 两条派发路径共用，
 /// 文案不允许劈叉）。`profession` = `AgentConfig.tool_fence_profession`
 ///（Some 时文案带职能名，None 时通用措辞——讨论唤醒轮的宣言交集形态）。
 /// 白名单外（且非豁免工具）→ `Some(拒绝文案)`；命中白名单 → `None`。
@@ -179,7 +179,7 @@ pub(crate) fn filter_defs_by_environment_constraints(
 impl AgentLoop {
     /// ⚠️ 已被循环干预阶梯取代（见
     /// 会话级全部放行与循环干预阶梯）：`check_escalation`
-    /// 不再调用本函数——escalation 终级改走 [`Self:ask_doom_loop_terminal`]
+    /// 不再调用本函数——escalation 终级改走 [`Self::ask_doom_loop_terminal`]
     /// （无超时 + bypass_auto_approve，任何自动化开关都压不掉）。
     ///
     /// **禁止删除**：未来场景可能复用——（a）分级干预失灵后的对话式追问
@@ -189,7 +189,7 @@ impl AgentLoop {
     /// 但当前无生产消费点——本函数是它唯一的历史消费方，删除本函数会连带
     /// 让该配置键变成无出处的死键。
     ///
-    /// doom-loop 审批卡。经 [`Self:question_asker`]（同源 broker 的
+    /// doom-loop 审批卡。经 [`Self::question_asker`]（同源 broker 的
     /// ask 端）发结构化提问「继续吗？」，阻塞等用户作答。
     ///
     /// 返回：`Some(true)` = 用户选「继续」（调用方清签名计数继续）；
@@ -233,7 +233,7 @@ impl AgentLoop {
     }
 
     /// 循环干预阶梯终级卡：nudge 阶梯全部无效后的
-    /// 停车问询。与 卡（[`Self:ask_doom_loop_approval`]）的三个差别：
+    /// 停车问询。与 卡（[`Self::ask_doom_loop_approval`]）的三个差别：
     /// **无超时**（`timeout_secs=0`，broker 语义 = 无限等——烟雾报警器必须
     /// 响到有人来为止）；**bypass_auto_approve**（免打扰直批分支被绕过，
     /// 无人值守开关压不掉它）；**无 config 闸**（全会话默认行为，用户裁决
@@ -286,7 +286,7 @@ impl AgentLoop {
     /// thin wrapper: external callers (hooks/cc_hooks/loop tests, any
     /// non-subagent dispatch) mean "top-level agent invoked this" — they
     /// stay untouched and get depth 0. The production serial dispatch in
-    /// `run_llm_loop` calls [`Self:handle_tool_call_at_depth`] with the
+    /// `run_llm_loop` calls [`Self::handle_tool_call_at_depth`] with the
     /// instance's detached depth instead.
     pub async fn handle_tool_call(
         &self,
@@ -296,14 +296,14 @@ impl AgentLoop {
         self.handle_tool_call_at_depth(tool_call, context, 0).await
     }
 
-    /// depth-aware variant of [`Self:handle_tool_call`]. `depth` is the
+    /// depth-aware variant of [`Self::handle_tool_call`]. `depth` is the
     /// invoking instance's sub-agent nesting depth (instance.detached_depth());
     /// it is injected into depth-aware tools (spawn) before execution so the
     /// `agents.subagent.max_depth` limit can reject over-deep spawns.
     ///
-    /// ②typed checks 块捕获：包装层——原实现拆到
-    /// [`Self:handle_tool_call_at_depth_impl`]，本层在结果定稿后做检查类
-    /// 工具记账（拒绝不记账，`checks_capture:classify_result` 单点分类）。
+    /// typed checks 块捕获：包装层——原实现拆到
+    /// [`Self::handle_tool_call_at_depth_impl`]，本层在结果定稿后做检查类
+    /// 工具记账（拒绝不记账，`checks_capture::classify_result` 单点分类）。
     /// 所有调度路径（串行/批次/子代理）都过本入口，一处包装全覆盖。
     pub async fn handle_tool_call_at_depth(
         &self,
@@ -321,7 +321,7 @@ impl AgentLoop {
     /// `ApprovalContext.batch_id` → 审批卡 entry，前端按批聚卡（一张卡
     /// 列 N 项 + 全部允许/全部拒绝）。`None` = 无批上下文（串行路径），
     /// 卡片照旧单张渲染。包装语义（checks 记账）与
-    /// [`Self:handle_tool_call_at_depth`] 完全一致；既有调用点零改动。
+    /// [`Self::handle_tool_call_at_depth`] 完全一致；既有调用点零改动。
     pub async fn handle_tool_call_at_depth_batched(
         &self,
         tool_call: &ToolCallInfo,
@@ -342,7 +342,7 @@ impl AgentLoop {
         result
     }
 
-    /// [`Self:handle_tool_call_at_depth`] 的原实现（闸门瀑布 + 执行）。
+    /// [`Self::handle_tool_call_at_depth`] 的原实现（闸门瀑布 + 执行）。
     async fn handle_tool_call_at_depth_impl(
         &self,
         tool_call: &ToolCallInfo,
@@ -433,7 +433,7 @@ impl AgentLoop {
                 name: inner_name,
                 arguments: serde_json::to_string(&inner_args).unwrap_or_default(),
             };
-            // Box:pin：async fn 递归的尺寸不定点（内层名已保证 != mcp_call，
+            // Box::pin：async fn 递归的尺寸不定点（内层名已保证 != mcp_call，
             // 实际递归深度恒 1，装箱只是给编译器的有限尺寸凭据）。
             // 批号随行（第三层）：mcp_call 解包后的内层调用属于同一
             // 并行批，批审批聚合必须覆盖它——递归走 batched 变体同批号。
@@ -589,7 +589,7 @@ impl AgentLoop {
 
         // (connector 独占接管)：独占闸 dispatch 端——出处感知。
         // config hidden（上一闸）是绝对闸，任何出处都拒；独占闸只拦「直调」
-        // ：经 connector_invoke 的绑定回灌（ctx.channel ==
+        // 经 connector_invoke 的绑定回灌（ctx.channel ==
         // "connector-binding"，run_tool_binding 同标签）必须放行——那正是
         // 治理通路的正向路由，拒了它独占一开连接器自己先瘫（自堵雷）。放行
         // 不等于旁路：回灌调用进的是同一个 dispatch 瀑布的后续全部闸
@@ -699,7 +699,7 @@ impl AgentLoop {
         // 白名单工具排除在此外——它们的 plans/ 放行例外由第一臂承载）。
         #[cfg(feature = "security")]
         let declared_write = !Self::PLAN_MODE_WRITE_TOOLS.contains(&tool_call.name.as_str())
-            // ：todowrite 被静态表归 FileWrite，但其目标是工具
+            // todowrite 被静态表归 FileWrite，但其目标是工具
             // 内部钉死的 sessions/todo_*.json（无路径自由度）——计划草稿
             // 语义与 plans/ 例外同哲学；且 no-security 构建 declared_write
             // 恒 false 本就放行，豁免让两形态行为对齐，供给闸（含
@@ -818,7 +818,7 @@ impl AgentLoop {
                         let limit_tool = tool_call.name.clone();
                         let limit_msg = over.denial_message();
                         let limit_ctx = approval_ctx.clone();
-                        // 修②：急停中断臂——select 包住
+                        // 急停中断臂——select 包住
                         // spawn_blocking 等待，estop 翻真即放弃在飞裁决（返回
                         // estop 文案而非合成 Err：后者会落进下方 NO APPROVAL
                         // CHANNEL 分支打出误导文案）。丢弃 JoinHandle 不取消
@@ -956,7 +956,7 @@ impl AgentLoop {
                 // 同步调用不 yield，select 无法打断。
                 let tracked_security = std::sync::Arc::clone(security);
                 let tracked_invocation = invocation.clone();
-                // 修②：急停中断臂——同上方 limits 审批
+                // 急停中断臂——同上方 limits 审批
                 // select 形态。estop 翻真即放弃在飞管线（阻塞在人工审批卡
                 // 里的 asker 已被 estop watcher 取消放行，此处只是不再等它）。
                 // 直接返回 estop 文案：此处尚未进 around-hook 链（无
@@ -1120,14 +1120,14 @@ impl AgentLoop {
             }
         }
 
-        // : user tool hooks. Pre hooks run here — AFTER the fixed
+        // user tool hooks. Pre hooks run here — AFTER the fixed
         // security gate above (which stays inline as the de-facto pre[0]; see
-        // crate:hooks module doc for why it wasn't converted to a trait
+        // crate::hooks module doc for why it wasn't converted to a trait
         // object) and BEFORE context injection / checkpoint / execute.
         // Ordered, first Block wins. Fires on every dispatch attempt,
         // including unknown tool names (a hook may deny what the model
         // *tried* to call — mirrors the dialect's PreToolUse).
-        // 修②⑥：call_id 单一派生点——turn WAL（下方
+        // call_id 单一派生点——turn WAL（下方
         // wal_call）与 hook 事件面（ToolEventHook 的 ToolStarted/Finished）
         // 共用同一 id。急停中断执行链时（下方看门狗 select 的 estop 臂），
         // dispatch 据此补发 interrupted ToolFinished，与已发出的 ToolStarted
@@ -1281,7 +1281,7 @@ impl AgentLoop {
                 Box::pin(async move {
                     let tool_opt = tools.get(&call.name).cloned();
                     let tool_was_registered = tool_opt.is_some();
-                    // ：凭据引用前置轻闸（管线后、注入前——
+                    // 凭据引用前置轻闸（管线后、注入前——
                     // 管线看别名原文、注入在最内层，真值出域（如 web_fetch
                     // headers 随首跳外发）无人工裁决点的时序空隙收口）。
                     // 闸位精确性：只查声明槽位（credential_arg_keys），未声明
@@ -1551,7 +1551,7 @@ impl AgentLoop {
                                         }
                                     }
                                 };
-                            // ：工具 panic 隔离。
+                            // 工具 panic 隔离。
                             // 工具在 agent loop task 内联执行，release
                             // panic=unwind 下任一工具 panic 会沿 unwind 炸掉整
                             // 个 loop task → 无 final、无错误回复、无集群回调，
@@ -1646,7 +1646,7 @@ impl AgentLoop {
                                         } else {
                                             Vec::new()
                                         };
-                                    // ：钩子路径用与执行器
+                                    // 钩子路径用与执行器
                                     // 同源的 resolve_tool_path 重算（相对路径
                                     // 锚定工作区根）——原始 args path 在 cwd≠
                                     // 工作区根时会误导 format-on-save 摸错同
@@ -1730,7 +1730,7 @@ impl AgentLoop {
         // （后台注册表/停摆清扫兜底）；错误以 "Error:" 开头，与
         // `tool_result_indicates_error` / WAL ok 判定 / doom-loop 签名同刻度。
         let watchdog = self.current_executor_tool_timeout();
-        // 修②：急停中断臂——estop 翻真即 drop 在飞执行
+        // 急停中断臂——estop 翻真即 drop 在飞执行
         // 链 future（工具体 + around hooks + format-on-save），不再等工具
         // 自愿返回。drop 安全性边界（PLAN 第 ⑤ 项审计结论，逐类）：
         // - exec 族：子进程树由 exec_tree 守卫 RAII Drop 收杀（Windows Job
@@ -1743,7 +1743,7 @@ impl AgentLoop {
         // - MCP 常驻 server：只 drop 调用 future，不杀 server 进程；
         // - background_start：estop 不杀后台进程（设计如此，注册表自管）；
         // - 集群在飞任务：保持自身续行/取消语义，estop 只管本节点。
-        // 中断面（修⑥）：被 drop 的 hook 链发不出 ToolFinished——此处按同
+        // 中断面：被 drop 的 hook 链发不出 ToolFinished——此处按同
         // 一发射点补发 interrupted 终态（同 call_id、真实墙钟、estop 预览），
         // UI 卡片与 Work 时间线不悬空。WAL finished 由下方既有块正常落
         // （⛔ 前缀 → ok=false），不会留 interrupted 假崩溃态。
@@ -1858,7 +1858,7 @@ impl AgentLoop {
                         .unwrap_or(serde_json::Value::Null);
                     forge.collector().record_with_args(exp, &args).await;
                     // Audit -：TraceStore 原先零生产调用——
-                    // monitor 的实效对比链在这里断头。经 Forge:record_trace_event
+                    // monitor 的实效对比链在这里断头。经 Forge::record_trace_event
                     // JSONL 直写（写失败只 warn，观测数据不反噬工具链）。
                     // session_key 与经验台账同格式，monitor 侧按它分组回话轨迹。
                     forge
@@ -1885,7 +1885,7 @@ impl AgentLoop {
     }
 
     /// lsp 工具的 `rename` op 是写类（跨文件改内容）——plan 模式必须
-    /// 拦。lsp 不在 [`Self:PLAN_MODE_WRITE_TOOLS`] 里（其余 op 只读，整表
+    /// 拦。lsp 不在 [`Self::PLAN_MODE_WRITE_TOOLS`] 里（其余 op 只读，整表
     /// 拦截会误伤），故按 args 探测 op 字段特判。解析失败从严当写拦
     /// （plan 模式拒绝成本不对称：误拒可让用户切 /build，误放行改了文件）。
     pub(crate) fn is_lsp_write_call(tool_name: &str, arguments: &str) -> bool {
@@ -1902,7 +1902,7 @@ impl AgentLoop {
     /// 角色目录闸（角色目录与分档供给）：spawn `role` 出界检查。
     /// 返回 `Some(错误串)` = 拒绝（作为工具结果回灌，模型可自纠）。缺省/
     /// 空 role = `None`（旧行为，通用子代理）。裁决口径与 `roles.list` 同源
-    /// （[`Self:visible_roles`]）：未知 slug 列全目录；分档外/隐藏列当前
+    /// （[`Self::visible_roles`]）：未知 slug 列全目录；分档外/隐藏列当前
     /// 可见集——不给隐藏角色留存在感。
     pub(crate) fn check_spawn_role(&self, arguments: &str) -> Option<String> {
         let args = serde_json::from_str::<serde_json::Value>(arguments).ok()?;
@@ -1992,7 +1992,7 @@ impl AgentLoop {
         Some(out)
     }
 
-    /// （项目 home 收编）：plan 模式产物目录单一真相源——
+    /// （项目 home 收编）：plan 模式产物目录单一权威定义——
     /// `plan_products_root` 槽优先（项目 loop = `<agent_home>/plans`），
     /// 回落 `workspace_root/plans`（主会话旧行为）。放行判定、拒绝文案、
     /// /plan 切换回执三处同读本函数。`workspace_root` 未注入 → None
@@ -2009,7 +2009,7 @@ impl AgentLoop {
 
     /// Plan 模式分发端唯一写放行——`write_file` 且目标路径落在
     /// plans 目录前缀内（项目会话 = `<agent_home>/plans`，主会话 =
-    /// `<workspace>/plans/`）。路径解析与 [`crate:loop_tools:validate_workspace_path`]
+    /// `<workspace>/plans/`）。路径解析与 [`crate::loop_tools:validate_workspace_path`]
     /// 同构（相对路径 join 工作区根 + 双侧 `canonicalize_for_compare` 防
     /// 8.3 短名/大小写失配；目标不存在按最长存在祖先解析）。workspace_root
     /// 未注入（standalone）→ 无放行锚点，一律拦截（诚实从严）。

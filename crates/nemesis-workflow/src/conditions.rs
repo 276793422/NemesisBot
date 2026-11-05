@@ -96,11 +96,11 @@ fn eval_expression(expr: &str) -> Result<bool, String> {
 /// Split an expression by a logical operator, respecting parentheses.
 ///
 /// 循环全程以 `char_indices` 的**字节偏移**为索引单位（`expr[a..b]` 直接
-/// 可用）。BUG-20261102-323：旧实现用 `chars().collect()` 的 char 下标
+/// 可用）。：旧实现用 `chars().collect()` 的 char 下标
 /// 按字节切片 `expr[current_start..i]`，多字节字符（CJK）在逻辑算子前时
 /// 切点落在字符中间——`完成 == 完成 or 失败 == 失败` 即
 /// `not a char boundary` panic；另有 mis-split 臂产出裸词 → Err。
-/// 与 BUG-20261031-240（find_operator 同族病）同文件，当时漏扫。
+/// 与 （find_operator 同族病）同文件，当时漏扫。
 fn split_logical<'a>(expr: &'a str, op: &str) -> Vec<&'a str> {
     let mut parts = Vec::new();
     let mut depth = 0;
@@ -210,10 +210,10 @@ fn eval_comparison(expr: &str) -> Result<bool, String> {
 /// and parentheses.
 ///
 /// 返回值是**字节下标**（调用方 `eval_comparison` 直接按字节切片）。
-/// BUG-20261031-240 修复两形态越界：
+/// 修复两形态越界：
 /// - 空 expr / 短于算子的 expr 无处可匹配——旧循环上界
 ///   `saturating_sub + 1` 恒 ≥1，空 expr 直接 `chars[0]` 索引越界 panic
-///   （`a == 1 or  or b == 2` 的空串 part 即触发）；
+///   （`a == 1 or or b == 2` 的空串 part 即触发）；
 /// - 旧实现返回 char 下标而被调用方按字节下标切片，多字节字符在算子前时
 ///   切点落在字符中间（not a char boundary panic / 错误拆分）——现以
 ///   `char_indices` 的字节偏移作返回值，ASCII 形态字节=char 下标不变。
@@ -342,10 +342,10 @@ fn eval_matches(left: &str, right: &str) -> Result<bool, String> {
 
 /// Find the closing paren that matches the opening paren at position start.
 /// 返回值是**字节偏移**（调用方与 `expr.len() - 1` 字节长度直接比较，
-/// 命中位自身是 ')' 的起始字节，边界保证）。BUG-20261102-323：旧实现
+/// 命中位自身是 ')' 的起始字节，边界保证）。：旧实现
 /// `chars().enumerate()` 返回 char 下标，含多字节字符的括号表达式与
 /// 字节长度永不相等 → 括号解包永不生效（`(完成 == 完成)` 静默错判）。
-/// 与 BUG-20261031-240（find_operator 同族病）同文件，当时漏扫。
+/// 与 （find_operator 同族病）同文件，当时漏扫。
 fn find_matching_paren(expr: &str, start: usize) -> usize {
     let mut depth = 0;
     for (i, ch) in expr[start..].char_indices() {

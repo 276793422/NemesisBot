@@ -324,7 +324,7 @@ pub async fn handle_workflow_webhook(
 /// workflow with the payload taken from the query string (some external
 /// services, e.g. Slack's URL verification flow, use GET).
 ///
-/// Hardening :
+/// Hardening:
 /// - Workflows without a webhook trigger are not reachable (404), same as POST.
 /// - Workflows that define a webhook `secret` reject GET entirely (405):
 ///   GET has no body to HMAC, so a signed workflow can never be triggered

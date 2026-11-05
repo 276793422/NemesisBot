@@ -219,7 +219,7 @@ async fn poll_stale_rpc_error_and_null_result_keep_pending() {
         tm.submit(task).unwrap();
     }
 
-    // G5+P1（T19 根修）：bus / delivery_cb 收句柄（分支内取用时现读）。
+    // （根修）：bus / delivery_cb 收句柄（分支内取用时现读）。
     let no_bus: Arc<Mutex<Option<Arc<dyn MessageBus>>>> = Arc::new(Mutex::new(None));
     let no_cb: Arc<
         Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>,

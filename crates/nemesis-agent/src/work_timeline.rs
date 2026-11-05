@@ -3,16 +3,16 @@
 //!
 //! turn 级累加器：按真实时序收拢一个 turn 的「中间轮叙述 + 工具调用」，
 //! 最终回复落盘时随行写进 chat_log assistant 行（`"work"` 键）；执行中
-//! 经 [`AgentLoop:current_work_timeline`]（WSAPI `chat.work_current`）
+//! 经 [`AgentLoop::current_work_timeline`]（WSAPI `chat.work_current`）
 //! 只读快照，支撑「切走再切回」的全量恢复（活累加器无滑窗限制）。
 //!
 //! # 喂入点与单一真相源
 //!
-//! 喂入与既有事件发射**同点同源**：RoundText 在 [`crate:r#loop`]
+//! 喂入与既有事件发射**同点同源**：RoundText 在 [`crate::r#loop`]
 //! `emit_round_output`（tool_batch 每轮先叙述后工具的发布序，叙述与思考
-//! 皆空的轮不发——纯工具轮由 [`WorkRecorder:tool_started`] 的分组规则
+//! 皆空的轮不发——纯工具轮由 [`WorkRecorder::tool_started`] 的分组规则
 //! 自动成轮）；ToolStarted/ToolFinished 在
-//! [`crate:tool_event_hook:ToolEventHook`]。
+//! [`crate::tool_event_hook:ToolEventHook`]。
 //! 实时 WS 推送与落盘时间线是同一发射点的两个投影，无第二份转换逻辑。
 //!
 //! # 分组规则（一轮一个工具批次）
@@ -37,7 +37,7 @@ use serde::Serialize;
 pub const MAX_WORK_ROUNDS: usize = 500;
 
 /// 单次工具调用的记录（`work.rounds[].tools[]` 条目）。
-/// 形状单一真相源：本 struct 的 serde 输出 = chat_log 行 `"work"` 键 =
+/// 形状统一定义：本 struct 的 serde 输出 = chat_log 行 `"work"` 键 =
 /// 前端 TS 类型镜像（web/src/stores/chat.ts WorkTimeline）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WorkToolRecord {
@@ -137,7 +137,7 @@ impl WorkRecorder {
 
     /// 中间轮输出（emit_round_output 同点喂入；叙述 + 思考链同轮）。
     /// 两者皆空不建轮（trim 判定与观察面 emit_round_output 同口径；
-    /// 存储保留原文不修剪）。纯工具轮由 [`WorkRecorder:tool_started`]
+    /// 存储保留原文不修剪）。纯工具轮由 [`WorkRecorder::tool_started`]
     /// 的分组规则自动成轮。会话不匹配忽略。
     pub fn push_round_output(&self, session_key: &str, text: &str, reasoning: &str) {
         let mut slot = self.0.lock();

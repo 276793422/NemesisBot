@@ -156,7 +156,7 @@ impl PeerRegistry {
         self.peers.lock().get(node_id).map(|e| e.info.clone())
     }
 
-    /// 读取对端当前连续探针失败计数（G2 降频调度观测/测试用；节点不在册返回 0）。
+    /// 读取对端当前连续探针失败计数（降频调度观测/测试用；节点不在册返回 0）。
     pub fn probe_failure_count(&self, node_id: &str) -> u32 {
         self.peers
             .lock()
@@ -214,7 +214,7 @@ impl PeerRegistry {
         false
     }
 
-    /// G2: 记录一次主动健康探针失败。
+    /// 记录一次主动健康探针失败。
     ///
     /// 累加 `consecutive_failures`；达到 `threshold` 且当前仍标记 Online 时
     /// 翻转为 Offline 并返回 `true`（调用方据此打 WARN 日志）。未达阈值或
@@ -231,7 +231,7 @@ impl PeerRegistry {
         false
     }
 
-    /// G2: 记录一次主动健康探针成功（一次成功即自愈）。
+    /// 记录一次主动健康探针成功（一次成功即自愈）。
     ///
     /// 清零失败计数、刷新 `last_health_check`；若节点此前是 Offline 则翻回
     /// Online 并返回 `true`（调用方据此打日志）。节点不存在返回 `false`。

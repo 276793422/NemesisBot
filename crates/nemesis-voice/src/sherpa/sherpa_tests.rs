@@ -1,4 +1,4 @@
-//! Tests for `sherpa` 纯 helper（Phase 3 覆盖率，2026-08-25）。
+//! Tests for `sherpa` 纯 helper（覆盖率，2026-08-25）。
 //!
 //! FFI 函数表本体需要真 sherpa-onnx DLL（结构性不测，进豁免证据表）；
 //! 这里钉：CString 包装语义（内嵌 NUL 的输入降级为空串而非 panic——
@@ -43,7 +43,7 @@ fn is_initialized_false_when_dll_never_loaded() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：init 失败臂 + 符号查找 panic 臂 + TTS safe 包装
+// 覆盖率冲刺：init 失败臂 + 符号查找 panic 臂 + TTS safe 包装
 // 全部走「DLL 永不加载」前提：init 只喂坏路径/哑文件（绝不成功），其余
 // should_panic 测试正好覆盖 get_fn/get_raw_fn/macro 包装体的未初始化分支。
 // ===========================================================================

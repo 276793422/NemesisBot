@@ -4,7 +4,7 @@
 //! message splitting, HTTP retry, skill parsing, zip handling.
 
 pub mod env_sanitize;
-// M2（2026-10-27 整改批次一）：关键持久化写失败的进程级信号注册表——
+// 关键持久化写失败的进程级信号注册表——
 // 生产者 nemesis-agent（chat_log/checkpoint/turn_wal），消费者 gateway
 // 水泵（EventHub system-alert + /ready 面）。
 pub mod degraded;
@@ -12,29 +12,29 @@ pub mod file;
 pub mod fsutil;
 pub mod http_retry;
 pub mod llm_error_class;
-// http 门控（BUG 2026-10-30）：media 模块核心是 reqwest 下载——未启用 `http`
+// http 门控：media 模块核心是 reqwest 下载——未启用 `http`
 // feature 的消费方（nemesis-guest musl 交叉构建）不编译本模块。
 #[cfg(feature = "http")]
 pub mod media;
 pub mod message;
-// 有界管道排干（BUG 2026-10-29 横扫角度 B）：子进程 stdout/stderr 收集
-// 的单一真相源——1 MiB 丢头保尾，防高吞吐输出 OOM。
+// 有界管道排干（横扫角度 B）：子进程 stdout/stderr 收集
+// 的统一定义——1 MiB 丢头保尾，防高吞吐输出 OOM。
 pub mod pipe_cap;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;
-// L15（改进项三期 2026-11-03）：存储世代化迁移链骨架（四条铁律的代码化
+// 存储世代化迁移链骨架（四条铁律的代码化
 // 模板——零接线，未来破坏性格式变更时按设计文档契约接线）。
 pub mod storage_gen;
-// L19（改进项三期 2026-11-03）：统一 WorkPool 设施（CPU 准入 max(1,N-1) /
+// 统一 WorkPool 设施（CPU 准入 max(1,N-1) /
 // reader-compute-writer 分池 / 双上限背压+类型化 overloaded / 取消三事实分离）。
 pub mod workpool;
-// B10（2026-10-18 存储韧性）：SQLite 打开面前置守卫——feature 门控，
+// （存储韧性）：SQLite 打开面前置守卫——feature 门控，
 // 未启用 `sqlite-preflight` 的消费方不编译本模块（rusqlite 不进依赖图）。
 #[cfg(feature = "sqlite-preflight")]
 pub mod sqlite_preflight;
 pub mod string_utils;
-// BUG-20261104-368：恒时 token 比较单一真相源（原 nemesis-web api_handlers
+// 恒时 token 比较单一真相源（原 nemesis-web api_handlers
 // 私有件；web re-export 保路径，nemesis-channels websocket 升级闸跨 crate 消费）。
 pub mod verify;
 pub mod wait_ready;

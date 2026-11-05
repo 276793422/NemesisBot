@@ -1,4 +1,4 @@
-//! resolve —— 运行时锚扫描（M4/T4.2 支撑）：profile 函数 locate → 运行时地址。
+//! resolve —— 运行时锚扫描（/.2 支撑）：profile 函数 locate → 运行时地址。
 //!
 //! - **byte_pattern**：主模块可执行节经 read_mem 分块扫**活体内存**（诚实面：
 //!   锚在内存不在场 = 不入表 + note，不猜）；分块带 (pattern_len-1) 重叠窗，
@@ -21,7 +21,7 @@ use nemesis_ziwei_profile::LocateKind;
 use nemesis_ziwei_profile::parse_byte_pattern;
 use nemesis_ziwei_profile::{Conv, LocateSpec};
 
-/// 单节扫描上限（v1 诚实边界；超大 .text 目标转人工分析流程）。
+/// 单节扫描上限（v1 诚实边界；超大.text 目标转人工分析流程）。
 #[cfg(windows)]
 const SECTION_SCAN_CAP: u64 = 64 << 20;
 /// read_mem 单块大小（与 payload MAX_READ_LEN 同值，双写注记）。
@@ -40,7 +40,7 @@ pub fn conv_to_code(conv: Conv) -> u32 {
 /// 解析报告（诚实面：未命中/非法/读失败进 notes，不进 addrs）。
 #[derive(Debug, Default, Clone)]
 pub struct ResolveReport {
-    /// 键（函数语义名 / `{语义}::chain{i}`）→ 运行时地址。
+    /// 键（函数语义名 / `{语义}:chain{i}`）→ 运行时地址。
     pub addrs: HashMap<String, u64>,
     pub notes: Vec<String>,
 }
@@ -98,7 +98,7 @@ struct Pending {
 }
 
 /// 把 profile 侧 locate 列表编译成（键, LocateSpec）待解析清单的公共入口——
-/// 函数 locate 键 = 语义名；链步骤键 = `{语义}::chain{i}`（T4.6 链式捕获）。
+/// 函数 locate 键 = 语义名；链步骤键 = `{语义}:chain{i}`（.6 链式捕获）。
 pub fn collect_profile_locates(
     profile: &nemesis_ziwei_profile::Profile,
 ) -> Vec<(String, LocateSpec)> {

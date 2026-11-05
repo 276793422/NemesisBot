@@ -1,5 +1,5 @@
 //! `WorkflowCallStack` — runtime call-stack abstraction for nested workflow
-//! invocations (milestone 1c-F2).
+//! invocations (milestone 1c-).
 //!
 //! Goal: give the engine a single place to observe every active workflow
 //! execution and enforce [`MAX_RECURSION_DEPTH`] for `AgentTool`-triggered
@@ -78,7 +78,7 @@ impl WorkflowCallStack {
     /// Push a new frame. Rejects with an error message if the frame's
     /// `recursion_depth` exceeds `MAX_RECURSION_DEPTH`.
     ///
-    /// Returns `Ok(())` on success.
+    /// Returns `Ok()` on success.
     pub fn push(&self, frame: CallFrame) -> Result<(), String> {
         if frame.recursion_depth > MAX_RECURSION_DEPTH {
             return Err(format!(

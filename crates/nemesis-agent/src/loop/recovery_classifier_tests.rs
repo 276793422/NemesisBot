@@ -1,5 +1,5 @@
 //! 错误分类器分派测试（扩展计划）：recovery.rs 错误入口消费
-//! `nemesis_utils:llm_error_class:classify_llm_error` 后的分派：
+//! `nemesis_utils::llm_error_class:classify_llm_error` 后的分派：
 //!
 //! - Auth/Billing → 零重试零压缩环（单次调用终局，文案带可行动提示 +
 //!   原始错误保真入 history/observer/capture）；
@@ -250,7 +250,7 @@ async fn quota_wording_enters_rate_limit_ring_and_recovers() {
         2,
         "首败 + 限流环重试成功 = 恰好 2 次调用"
     );
-    // 限流环显式进度可见（裁决③）——证明走的是限流环而非词表兜底终局。
+    // 限流环显式进度可见——证明走的是限流环而非词表兜底终局。
     let mut saw_progress = false;
     while let Ok(msg) = rx.try_recv() {
         if msg.content.contains("重试") {

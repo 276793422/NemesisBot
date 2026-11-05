@@ -61,11 +61,11 @@ pub static DEFAULT_DENY_PATTERNS: std::sync::LazyLock<HashMap<OperationType, Vec
         m
     });
 
-/// 解释器内层载荷的危险结构词表（CMD-06②，2026-09-16 横扫存量加固）。
+/// 解释器内层载荷的危险结构词表（横扫存量加固）。
 ///
 /// 解释器包装（`python -c`/`node -e`…）的内层是代码片段，模板的命令行
 /// glob 规则表达不了 `shutil.rmtree` 这类 API 形态；命中即送审批
-/// （RequireApproval）——这是 F-U4-7（worker `python -c` 删自身 home 的
+/// （RequireApproval）——这是 F-（worker `python -c` 删自身 home 的
 /// 真实事故）命令类的最后一道语义闸。只收高精度结构，防误伤正常脚本。
 const INTERPRETER_DANGEROUS_STRUCTURES: &[&str] = &[
     "shutil.rmtree", // Python 递归删树
@@ -114,7 +114,7 @@ impl ApprovalRequiredError {
 ///
 /// Mirrors Go's `approval.ApprovalManager` interface. The auditor calls into
 /// this when a `require_approval` decision is reached.
-/// 一次审批交互的裁决（F6，devtool-upgrade 阶段 5）。
+/// 一次审批交互的裁决（devtool-upgrade）。
 ///
 /// v1 的 `bool` 升级为结构体：拒绝可携带用户备注（审批卡输入框），auditor
 /// 把备注拼进拒绝消息回灌给模型（纠错回喂——模型知道
@@ -143,7 +143,7 @@ impl ApprovalVerdict {
     }
 }
 
-/// K4 (devtool-upgrade 阶段 7): 审批请求的来源通道上下文。
+/// (devtool-upgrade): 审批请求的来源通道上下文。
 ///
 /// 由 pipeline 从 `ToolInvocation.metadata` 提取（loop 在构造 invocation 时
 /// 填入 `approval_chat_id` / `approval_sender_id` / `approval_session_key`；
@@ -152,7 +152,7 @@ impl ApprovalVerdict {
 /// 为空 = 无来源上下文（cron 直发无 chat 等），管理器自行决定回落行为。
 #[derive(Debug, Clone, Default)]
 pub struct ApprovalContext {
-    /// 来源通道名（web / telegram / feishu / ...）。
+    /// 来源通道名（web / telegram / feishu /...）。
     pub channel: String,
     /// 来源对话 ID（审批卡送达处 + 回执校验）。
     pub chat_id: String,
@@ -162,11 +162,11 @@ pub struct ApprovalContext {
     /// bus，项目会话经 ProjectLoopManager 归属转发，同一 session_key 两种
     /// 归宿都命中）。空 = 旧链路/无会话上下文，补裁退化为纯记账。
     pub session_key: String,
-    /// L07（2026-11-01）审批卡 diff 预览数据源：触发审批的工具调用原始
+    /// 审批卡 diff 预览数据源：触发审批的工具调用原始
     /// args（pipeline 从 `ToolInvocation.args` 透传）。`Value::Null`
     /// （Default）= 无 args（旧调用方 / limits 直发路径），预览不产。
     pub tool_args: serde_json::Value,
-    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：批号（`batch-{uuid}`）。
+    /// 并行批审批聚合（第三层）：批号（`batch-{uuid}`）。
     /// pipeline 从 `ToolInvocation.metadata["approval_batch_id"]` 提取；
     /// 空 = 无批上下文（串行路径 / limits 直发旧形态），管理器单卡渲染
     /// 不进聚合。经 `request_approval_sync_ctx` 原样透传到卡 entry。
@@ -177,7 +177,7 @@ pub trait ApprovalManager: Send + Sync {
     /// Whether the approval manager is currently running and able to show dialogs.
     fn is_running(&self) -> bool;
 
-    /// Request interactive approval. Returns the user's verdict (F6: a deny
+    /// Request interactive approval. Returns the user's verdict (a deny
     /// may carry the user's free-text note for model feedback).
     fn request_approval_sync(
         &self,
@@ -189,7 +189,7 @@ pub trait ApprovalManager: Send + Sync {
         timeout_secs: u64,
     ) -> Result<ApprovalVerdict, String>;
 
-    /// K4 (b): 带来源上下文的审批请求。默认实现忽略 ctx 委托旧方法——
+    /// (b): 带来源上下文的审批请求。默认实现忽略 ctx 委托旧方法——
     /// 既有实现（桌面弹窗 / Web 卡片 / ACP）零改动保持现状；支持通道
     /// 卡片的实现 override 本方法做路由。
     fn request_approval_sync_ctx(
@@ -217,14 +217,14 @@ pub trait ApprovalManager: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct AuditorConfig {
     pub enabled: bool,
-    // ── 死键恢复区（2026-09-16 用户指令：代码不得随便删，注释保留待讨论）
+    // ── 死键恢复区（用户指令：代码不得随便删，注释保留待讨论）
     // ─────────────────────────────────────────────────────────────
-    // CFG-05 曾裁「确认无用直接删」（D3），现注释恢复原字段。**未接线**
+    // CFG-05 曾裁「确认无用直接删」，现注释恢复原字段。**未接线**
     // 说明：log_denials_only（与 log_all_operations=false 同义，接线版
     // log_all_operations 现居 pipeline.rs SecurityPluginConfig）、
     // max_pending_requests（无满额语义实现）、audit_log_retention_days
     // （无保留清扫器，盲清扫会误伤审计链文件）。删除与否待用户裁决。
-    // pub log_all_operations: bool,   // 已接线迁移至 pipeline.rs（非删除，是 relocation）
+    // pub log_all_operations: bool, // 已接线迁移至 pipeline.rs（非删除，是 relocation）
     // pub log_denials_only: bool,
     // pub max_pending_requests: usize,
     // pub audit_log_retention_days: u32,
@@ -264,11 +264,11 @@ pub struct OperationRequest {
     pub approved_at: Option<chrono::DateTime<chrono::Local>>,
     /// Reason for denial (if denied).
     pub denied_reason: Option<String>,
-    /// L6 pre-exec 误报出路（2026-10-12 T1）：pre-exec 脚本内容扫描命中
+    /// pre-exec 误报出路：pre-exec 脚本内容扫描命中
     /// 时，pipeline 在评估前把「强制人工审批」旗标钉在本请求上（Some =
     /// 命中理由）。`evaluate_request` 对非硬拒判定一律升格
     /// RequireApproval（policy=preexec_scan）；`request_permission_with_ctx`
-    /// 对带旗标请求**跳过 F3「总是允许」规则表**——审批卡必须到达人，
+    /// 对带旗标请求**跳过 「总是允许」规则表**——审批卡必须到达人，
     /// 不得被 pattern 记忆自动吞掉。硬拒（deny 规则/自毁硬拦）不受影响：
     /// 升级只覆盖「本会放行」的判定。
     #[serde(default)]
@@ -307,44 +307,44 @@ pub struct SecurityAuditor {
     pending_count: AtomicI64,
     /// Optional approval manager for interactive approval dialogs.
     approval_manager: RwLock<Option<Arc<dyn ApprovalManager>>>,
-    /// F3: approval pattern memory（「总是允许」规则表热载器）。命中且层级
+    /// approval pattern memory（「总是允许」规则表热载器）。命中且层级
     /// 安全门放行 → require_approval 自动放行（审计标注 auto_by_rule）。
     approval_rules:
         RwLock<Option<Arc<nemesis_config::HotReloader<Vec<crate::approval_rules::ApprovalRule>>>>>,
     /// Optional explicit log file path for audit events (date-based).
     /// When set, audit events are appended to this file in JSON format.
     log_file_path: RwLock<Option<PathBuf>>,
-    /// D1（2026-09-16 用户裁决）：exec/spawn 未知命令（无规则命中）姿态。
+    /// （用户裁决）：exec/spawn 未知命令（无规则命中）姿态。
     /// "allow"/"ask"/"deny"；空串 = 未配置（落 default_action，旧行为）。
     /// 由 security_setup 按裸 JSON 键 `exec_unknown_policy` 注入（键存在才
     /// 注入——老配置文件缺键不得悄悄改变其 default_action 语义）。
     exec_unknown_policy: RwLock<String>,
-    /// 自杀形态硬拦保护路径（2026-09-16 用户裁决：rm -rf 自身 home/workspace
+    /// 自杀形态硬拦保护路径（用户裁决：rm -rf 自身 home/workspace
     /// 保持硬拦，**不进** exec_unknown_policy 开关）。由 security_setup 注入
     /// workspace root + home（含 `~` 形态）；空 = 未注入（跳过扫描）。
     protected_paths: RwLock<Vec<String>>,
-    /// 自杀硬拦豁免路径（A-F3 方案 1，2026-09-16 用户裁决）：workspace root。
+    /// 自杀硬拦豁免路径（A- 方案 1， 用户裁决）：workspace root。
     /// 目标在豁免路径**之内**（不含自身）时「后代臂」不硬拦，交给正常治理
     /// （ABAC/exec_unknown_policy/审批）；本体/祖先/根/~ 等臂不受豁免影响。
     /// 空 = 未注入（三臂全开，旧行为）。
     self_destruct_exempt: RwLock<String>,
-    /// Full Access 编辑器放行开关（2026-09-20 用户裁决）：Some =
+    /// Full Access 编辑器放行开关（用户裁决）：Some =
     /// evaluate_request 在自毁硬拦**之后**短路调用其 evaluate（见
     /// editor_access 模块——开关开启时规则遍/解释器扫描/exec_unknown_policy/
     /// default_action 全部绕过）；None = 未装配（旧行为）。运行时态不持久化，
-    /// gateway 装配处注入（与 web editor handler 共享同一 Arc——单一真相源）。
+    /// gateway 装配处注入（与 web editor handler 共享同一 Arc——统一定义）。
     editor_access: RwLock<Option<Arc<crate::editor_access::EditorAccessState>>>,
-    /// §2 免打扰运行时态（2026-10-11 无人值守计划 Part 2）：Some =
+    /// 免打扰运行时态（Part 2）：Some =
     /// request_permission RequireApproval 臂在其短路自动放行（审计标
     /// auto_by_config + 集群来源落持久规则）；None = 未装配（旧行为）。
     /// gateway 装配处注入（与 web security handler 共享同一 Arc——单一
-    /// 真相源；config 是持久真相源，本态是运行期投影）。
+    /// 权威定义；config 是持久真相源，本态是运行期投影）。
     approval_auto: RwLock<Option<Arc<crate::approval_auto::ApprovalAutoApproveState>>>,
-    /// 会话级全部放行（2026-10-24 长任务无人值守计划）：Some =
+    /// 会话级全部放行（长任务）：Some =
     /// request_permission RequireApproval 臂按 ctx.session_key 命中即自动
     /// 放行（含 CRITICAL 与 force 卡——裁决语义；审计标 session_allow_all）；
     /// None = 未装配（旧行为）。gateway 装配处注入（与 web security handler
-    /// 共享同一 Arc——单一真相源，approval_auto 同款双注入）；持久真相源 =
+    /// 共享同一 Arc——统一定义，approval_auto 同款双注入）；持久权威 =
     /// 会话 sidecar `allow_all` 字段，本态是运行期投影。
     session_allow_all: RwLock<Option<Arc<crate::session_allow_all::SessionAllowAllState>>>,
     /// JSONL 结构化审计通道的运行时接线(None = 未接线 → 回落 `config` 的
@@ -393,7 +393,7 @@ impl SecurityAuditor {
         *self.protected_paths.write() = normalized;
     }
 
-    /// 注入自杀硬拦豁免路径（A-F3 方案 1，2026-09-16 用户裁决）：workspace
+    /// 注入自杀硬拦豁免路径（A- 方案 1， 用户裁决）：workspace
     /// root。目标在该路径**之内**（严格后代，不含自身）时「后代臂」不硬拦。
     /// 归一化方式与 protected_paths 一致（小写 + 反斜杠转正斜杠 + 去尾斜杠，
     /// 后代判定按字节前缀比较，尾斜杠残留会静默失配）。
@@ -406,10 +406,10 @@ impl SecurityAuditor {
         *self.self_destruct_exempt.write() = normalized;
     }
 
-    /// D2（2026-09-16 用户裁决）：guardian（LLM judge）自身故障时的审批
+    /// （用户裁决）：guardian（LLM judge）自身故障时的审批
     /// 直通车——同步阻塞等用户裁决，reason 自由文本。**fail-closed**：
     /// 无审批管理器 / 管理器未运行 / 调用失败 = Err（调用方按拒绝处理），
-    /// 绝不回落 allow。审批 verdict 含用户备注（F6）。
+    /// 绝不回落 allow。审批 verdict 含用户备注。
     pub fn request_guardian_failure_approval(
         &self,
         tool: &str,
@@ -443,7 +443,7 @@ impl SecurityAuditor {
                 self.config.approval_timeout_secs,
             ),
         };
-        // A-F5（复核 2026-09-16）：guardian 故障审批的用户裁决必须落审计
+        // A-（复核）：guardian 故障审批的用户裁决必须落审计
         // （audit_log_event 同一 JSONL/审计链通道）——CRITICAL 工具的人为
         // 放行/拒绝是安全链上最重的决定，此前只回调用方（approved 分支仅
         // info log，审计无痕，事后无法回答「谁放行了这次 CRITICAL 操作」）。
@@ -494,10 +494,10 @@ impl SecurityAuditor {
         }
     }
 
-    /// 无上下文 LLM 命令审计（2026-09-16）：verdict 全量落审计（放行也记）
+    /// 无上下文 LLM 命令审计：verdict 全量落审计（放行也记）
     /// ——审计的意义是事后可回答「LLM 为什么放行/拦下了这条命令」。
     /// op_type 无 CRITICAL-工具泛型变体，取族内最常见 ProcessExec 占位
-    /// （同 A-F5 口径）；真实工具名在 target、来源在 source。
+    /// （同 A- 口径）；真实工具名在 target、来源在 source。
     pub fn log_guardian_verdict(
         &self,
         tool: &str,
@@ -533,10 +533,10 @@ impl SecurityAuditor {
         });
     }
 
-    /// 无上下文 LLM 命令审计（2026-09-16）：verdict 升格（ask/deny）→
+    /// 无上下文 LLM 命令审计：verdict 升格（ask/deny）→
     /// 人工审批卡。LLM 误报不无声硬拦（留人工通道）；审批不可用 = 调用方
-    /// fail-closed 拒绝（loop 消费端语义）。人为裁决落审计（A-F5 同款）。
-    /// P0 vault（D3，2026-09-22 计划 §4）：量化风险限制超限后的人工升级
+    /// fail-closed 拒绝（loop 消费端语义）。人为裁决落审计（A- 同款）。
+    /// vault（计划）：量化风险限制超限后的人工升级
     /// 通道。复用 guardian_failure 的审批直通车形态（Web/Channel 管理器
     /// 零改动）；审计落 `limit_review` 事件——「谁放行了这次超限调用」
     /// 可追溯。批准 = 计数 + 放行（调用方负责 record）；拒绝/超时/
@@ -549,7 +549,7 @@ impl SecurityAuditor {
     ) -> Result<ApprovalVerdict, String> {
         let mgr_opt = self.approval_manager.read().clone();
         let Some(mgr) = mgr_opt.as_ref() else {
-            // fail-closed 也是安全决策——无通道的升级同样落审计（A-F5 语义）。
+            // fail-closed 也是安全决策——无通道的升级同样落审计（A- 语义）。
             self.log_audit_event(&AuditEvent {
                 event_id: uuid::Uuid::new_v4().to_string(),
                 request: OperationRequest {
@@ -609,7 +609,7 @@ impl SecurityAuditor {
                 self.config.approval_timeout_secs,
             ),
         };
-        // 审批裁决落审计（guardian_failure_approval 同款 A-F5 语义）。
+        // 审批裁决落审计（guardian_failure_approval 同款 A- 语义）。
         // op_type 取族内最常见 ProcessExec 占位；真实工具名在 target、
         // 来源在 source，可追溯不依赖 op_type。
         let audit_verdict = |decision: &str, why: String| {
@@ -657,11 +657,11 @@ impl SecurityAuditor {
         }
     }
 
-    /// L26（2026-11-02）：审批通道在场判定——dispatch 凭据闸的跳过条件。
+    /// 审批通道在场判定——dispatch 凭据闸的跳过条件。
     /// headless / 裸装配无通道时闸不启用（行为与闸落地前一致）；与
     /// [`Self::request_limit_approval`] 的无通道 fail-closed 是有意分歧
-    /// （limits 基线=超限异常必须人裁，闸基线=现状合法调用，见 L26 设计
-    /// 文档 §9.2）。
+    /// （limits 基线=超限异常必须人裁，闸基线=现状合法调用，见 设计
+    /// 文档）。
     pub fn has_approval_channel(&self) -> bool {
         self.approval_manager
             .read()
@@ -670,10 +670,10 @@ impl SecurityAuditor {
             .unwrap_or(false)
     }
 
-    /// L26（2026-11-02）：凭据引用出域审批——dispatch 链凭据闸的直卡
+    /// 凭据引用出域审批——dispatch 链凭据闸的直卡
     /// 通道（真值注入前的人工同意面，管线对解析后真值不可见的时序空隙
     /// 收口）。镜像 [`Self::request_limit_approval`]：无通道/未运行
-    /// fail-closed 落审计（A-F5 语义）；有通道经 `request_approval_sync_ctx`
+    /// fail-closed 落审计（A- 语义）；有通道经 `request_approval_sync_ctx`
     /// 出卡（`credential_use` 操作名 / HIGH / auditor 配置超时，Web/Channel
     /// 管理器零改动），裁决落审计。op_type 占位 ProcessExec 同 limits
     /// （真实工具名在 target、来源在 source，可追溯不依赖 op_type）。
@@ -744,7 +744,7 @@ impl SecurityAuditor {
                 self.config.approval_timeout_secs,
             ),
         };
-        // 审批裁决落审计（limit/guardian 同款 A-F5 语义）。
+        // 审批裁决落审计（limit/guardian 同款 A- 语义）。
         let audit_verdict = |decision: &str, why: String| {
             self.log_audit_event(&AuditEvent {
                 event_id: uuid::Uuid::new_v4().to_string(),
@@ -911,7 +911,7 @@ impl SecurityAuditor {
         self.approval_manager.read().clone()
     }
 
-    /// F3: 挂载审批记忆规则表热载器（gateway 装配；`approval_rules.json`
+    /// 挂载审批记忆规则表热载器（gateway 装配；`approval_rules.json`
     /// 磁盘变化经 `HotReloader::check()` 在每次查询前自动重读）。
     pub fn set_approval_rules(
         &self,
@@ -942,28 +942,28 @@ impl SecurityAuditor {
         *self.default_action.write() = action.to_string();
     }
 
-    /// D1：设置 exec/spawn 未知命令姿态（allow/ask/deny）。空串 = 未配置
+    /// 设置 exec/spawn 未知命令姿态（allow/ask/deny）。空串 = 未配置
     /// （落 default_action 旧行为）。只在配置键真实存在时调用。
     pub fn set_exec_unknown_policy(&self, policy: &str) {
         *self.exec_unknown_policy.write() = policy.to_lowercase();
     }
 
-    /// Full Access 编辑器放行开关注入（2026-09-20 用户裁决，gateway 装配处
-    /// 调用；同一 Arc 同时交给 web editor handler 读写——单一真相源）。
+    /// Full Access 编辑器放行开关注入（用户裁决，gateway 装配处
+    /// 调用；同一 Arc 同时交给 web editor handler 读写——统一定义）。
     pub fn set_editor_access(&self, state: Arc<crate::editor_access::EditorAccessState>) {
         *self.editor_access.write() = Some(state);
     }
 
     /// 读取注入的 editor 开关态（未注入 = None）。gateway 装配处经
-    /// [`EditorAccessState::fence_gate`](crate::editor_access::EditorAccessState::fence_gate)
-    /// 把同一 Arc 的围栏闸门递给工具层 WorkspaceBoundary（2026-11-01
+    /// [`EditorAccessState::fence_gate`](crate::editor_access:EditorAccessState::fence_gate)
+    /// 把同一 Arc 的围栏闸门递给工具层 WorkspaceBoundary（
     /// 两层不认账修复：审批层与围栏同一裁决源）。
     pub fn editor_access(&self) -> Option<Arc<crate::editor_access::EditorAccessState>> {
         self.editor_access.read().clone()
     }
 
-    /// §2 免打扰运行时态注入（无人值守计划 Part 2，gateway 装配处调用；
-    /// 同一 Arc 同时交给 web security handler 读写——单一真相源，editor_access
+    /// 免打扰运行时态注入（Part 2，gateway 装配处调用；
+    /// 同一 Arc 同时交给 web security handler 读写——统一定义，editor_access
     /// 同款双注入）。
     pub fn set_approval_auto_approve(
         &self,
@@ -980,7 +980,7 @@ impl SecurityAuditor {
             .is_some_and(|s| s.enabled())
     }
 
-    /// 会话级全部放行运行时态注入（2026-10-24 长任务无人值守计划，gateway
+    /// 会话级全部放行运行时态注入（长任务，gateway
     /// 装配处调用；同一 Arc 同时交给 web security handler 读写——单一真相
     /// 源，approval_auto 同款双注入）。
     pub fn set_session_allow_all(
@@ -1020,7 +1020,7 @@ impl SecurityAuditor {
         self.request_permission_with_ctx(req, None)
     }
 
-    /// K4 (b): 带来源上下文的审批入口。`ctx` 来自 pipeline 提取的
+    /// (b): 带来源上下文的审批入口。`ctx` 来自 pipeline 提取的
     /// `ToolInvocation.metadata`（来源通道/对话）；None = 无上下文（行为
     /// 与旧路径逐字节一致）。上下文只影响 RequireApproval 臂传给审批
     /// 管理器的路由信息，策略评估/审计事件完全不变。
@@ -1033,7 +1033,7 @@ impl SecurityAuditor {
         (allowed, err, req.id.clone())
     }
 
-    /// 行动代理 P0（PLAN §6.2 凭条 `approval_ref` 契约字段）：同
+    /// 行动代理 （PLAN 凭条 `approval_ref` 契约字段）：同
     /// [`Self::request_permission_with_ctx`]，但第三返回值语义收窄——仅
     /// RequireApproval 经交互审批管理器**人工批准**时 `Some(req.id)`（=
     /// 审批卡 request_id，凭条审批引用的取值来源）；直通 / 规则表自动
@@ -1052,11 +1052,11 @@ impl SecurityAuditor {
 
         let (decision, reason, policy) = self.evaluate_request(req);
 
-        // F3: 审批 pattern 记忆——require_approval 先查「总是允许」规则表，
+        // 审批 pattern 记忆——require_approval 先查「总是允许」规则表，
         // 命中且层级安全门放行（CRITICAL 仅 process_exec 豁免）则自动放行，
         // 审计事件标注 auto_by_rule。查前 check() 让 approval_rules.json 的
         // 磁盘变化（审批卡写入 / CLI 清理 / 手工编辑）即时生效。
-        // L6（2026-10-12 T1）：带 force_approval 旗标的请求**跳过**规则表
+        // 带 force_approval 旗标的请求**跳过**规则表
         // ——pre-exec 命中的卡片必须到达人，pattern 记忆不得自动放行。
         if decision == SecurityDecision::RequireApproval
             && req.force_approval.is_none()
@@ -1070,7 +1070,7 @@ impl SecurityAuditor {
                 &req.target,
                 &req.danger_level.to_string(),
             ) {
-                // L01 敏感 flag 放行臂二次校验：记忆规则的归约形态
+                // 敏感 flag 放行臂二次校验：记忆规则的归约形态
                 // （exec `git push *`）不区分破坏性 flag——已批准
                 // `git push origin main` 的记忆不得静默放行 --force
                 // 变体。命中 = 留痕 flag_hit 后**跳过本条自动放行**
@@ -1123,10 +1123,10 @@ impl SecurityAuditor {
             }
         }
 
-        // 会话级全部放行（2026-10-24 长任务无人值守计划）：RequireApproval
+        // 会话级全部放行（长任务）：RequireApproval
         // 且 ctx.session_key 命中启用集 = 自动放行（**含 force_approval 卡
-        // 与 CRITICAL**——裁决语义；F3 对 force 的跳过闸只管 pattern 记忆，
-        // 管不到本块）。优先级：F3 规则表 → 本块 → §2 免打扰 → 人工卡
+        // 与 CRITICAL**——裁决语义； 对 force 的跳过闸只管 pattern 记忆，
+        // 管不到本块）。优先级： 规则表 → 本块 → 免打扰 → 人工卡
         // （更具体的意图先落审计标记）。硬边界：Denied 根本到不了
         // RequireApproval；estop 冻结在上游 dispatch 已拦。ctx 缺席/无会话
         // 键（cron 等）= 无会话可挂，跳过本块（fail-safe 走后续路径）。
@@ -1159,10 +1159,10 @@ impl SecurityAuditor {
             return (true, None, None);
         }
 
-        // §2 免打扰开关（无人值守计划 Part 2）：RequireApproval 且开关开 =
+        // 免打扰开关（Part 2）：RequireApproval 且开关开 =
         // 自动放行（不弹卡）。优先级低于 pattern 记忆（上块先命中先走，本块
         // 轮不到）；guardian 二审/approval 弹窗/doom-loop 卡都在 manager 之后
-        // 或另行直调，不经本块（保持人工，计划 §2.4 不动清单）。集群来源
+        // 或另行直调，不经本块（保持人工，计划 不动清单）。集群来源
         // （worker auditor ask，channel=="cluster"）把该 (op,target,risk)
         // 落成持久 pattern 规则——同一节点后续同类操作命中规则即放行，
         // 无需每次经本开关；对话来源不落（用户只对当次操作点头）。
@@ -1190,7 +1190,7 @@ impl SecurityAuditor {
                     Ok(Some(pattern)) => {
                         // 落盘即自刷新：规则当轮可见，不赌下次 ask 的
                         // mtime 检测（分辨率/瞬时 stat 失败都可能漏检，
-                        // 2026-10-22 CI Windows 假红实录）。
+                        // CI Windows 假红）。
                         hot.force_reload();
                         tracing::info!(
                             "[ApprovalAuto] cluster ask auto-approved + persisted rule: {} {}",
@@ -1301,7 +1301,7 @@ impl SecurityAuditor {
                             return (true, None, Some(req.id.clone()));
                         }
                         Ok(v) => {
-                            // User explicitly denied or timed out. F6: 用户备注
+                            // User explicitly denied or timed out.: 用户备注
                             // 拼进拒绝消息回灌（模型知道为什么被拒）。
                             self.pending_count.fetch_sub(1, Ordering::SeqCst);
                             self.denied_count.fetch_add(1, Ordering::SeqCst);
@@ -1580,13 +1580,13 @@ impl SecurityAuditor {
                         .open(&log_path)
                     {
                         Ok(mut file) => {
-                            // BUG-20261104-386：整行（含换行）单次 write_all
+                            // 整行（含换行）单次 write_all
                             // 行原子性——`writeln!` 是正文与 "\n" 两次 write，
                             // append 模式下每片段独立定位 EOF，多线程安全判定
                             // 并发落审计时可把别的行插进本行中间粘成一行，读
                             // 端 parse 失败 trace 级静默跳过 = 审计事件丢失
                             // （人工放行 CRITICAL 的 approved 事件恰在此链）。
-                            // 与 chat_log R100（BUG-20261025-25）同族同修法。
+                            // 与 chat_log 同族同修法。
                             let mut buf = line;
                             buf.push('\n');
                             if let Err(e) = file.write_all(buf.as_bytes()) {
@@ -1621,7 +1621,7 @@ impl SecurityAuditor {
                         .open(log_path)
                     {
                         Ok(mut file) => {
-                            // BUG-20261104-386：同上——log_file_path 通道同款
+                            // 同上——log_file_path 通道同款
                             // 行原子性（并发审计事件不得粘行）。
                             let mut buf = line;
                             buf.push('\n');
@@ -1643,7 +1643,7 @@ impl SecurityAuditor {
 
     fn evaluate_request(&self, req: &OperationRequest) -> (SecurityDecision, String, String) {
         let inner = self.evaluate_request_inner(req);
-        // L6 pre-exec 误报出路（2026-10-12 T1）：扫描命中 → 强制人工审批，
+        // pre-exec 误报出路：扫描命中 → 强制人工审批，
         // 非纯硬拦。硬拒（deny 规则 / 自毁硬拦 / editor 短路 deny）保持
         // 硬拒——升级只覆盖「本会放行」的判定（Allowed / 既有 Require-
         // Approval），理由换成扫描命中详情（更具体的理由优先展示）。
@@ -1670,7 +1670,7 @@ impl SecurityAuditor {
             _ => None,
         };
 
-        // CMD-01/CMD-06①（2026-09-16 横扫存量加固）：评估顺序改为
+        // （横扫存量加固）：评估顺序改为
         // **deny-first 三遍扫**（deny → ask → allow）——旧的
         // first-match-wins 下模板的 allow 规则（`python *`/`git *`…）排在
         // deny 之前，命中 allow 即放行，deny 永远没机会看。
@@ -1679,7 +1679,7 @@ impl SecurityAuditor {
         // 统一小写）——`rm "-rf"`、`rm --Recursive` 曾借 shell 剥引号与
         // 大小写差异同时绕过 Guard 与 ABAC。pattern 也按小写比较（模板
         // pattern 书写大小写不再敏感，`Remove-Item*` 可命中
-        // `remove-item ...`）。审计日志保留原文。
+        // `remove-item...`）。审计日志保留原文。
         let is_command_op = matches!(
             req.op_type,
             OperationType::ProcessExec
@@ -1693,7 +1693,7 @@ impl SecurityAuditor {
             req.target.clone()
         };
 
-        // 自杀形态硬拦（2026-09-16 用户裁决，先于一切规则遍——不进
+        // 自杀形态硬拦（用户裁决，先于一切规则遍——不进
         // exec_unknown_policy 开关）：递归删除类命令瞄准保护路径
         // （workspace root / home / `~` / 根）即拒。
         if matches!(
@@ -1713,7 +1713,7 @@ impl SecurityAuditor {
             }
         }
 
-        // Full Access 编辑器放行（2026-09-20 用户裁决）：自毁硬拦
+        // Full Access 编辑器放行（用户裁决）：自毁硬拦
         // **之后**、规则遍之前短路——开关开启时 deny/ask 规则、解释器内层
         // 扫描、exec_unknown_policy、default_action 全部被绕过（「全放行」
         // 字面义）；写删族项目外且开关二未开时返回 None 回落原判定（外部
@@ -1753,7 +1753,7 @@ impl SecurityAuditor {
                 | OperationType::ProcessSpawn
                 | OperationType::ProcessKill
                 | OperationType::ProcessSuspend => {
-                    // CMD-12（2026-10-13）：deny/ask 匹配按顶层段任一命中即拦
+                    // CMD-12：deny/ask 匹配按顶层段任一命中即拦
                     // ——整串锚定打不中非首段（`echo hi && rm -rf y` 曾逃过
                     // `rm -rf *`）。段在原文上切（引号感知，引号内的 `&&`
                     // 不切；引号不平衡退 quote-blind 盲切——单段 fallback 是
@@ -1768,7 +1768,7 @@ impl SecurityAuditor {
                     // 段准备与桶匹配在 [`matcher::exec_rule_segments`] /
                     // [`matcher::exec_rule_bucket_match`]（闭环批上移的单一
                     // 真相源，`security.rs` CLI 预览同源消费；pattern 归一化
-                    // 在桶匹配内部——D12-2 后两侧同管道）。
+                    // 在桶匹配内部—— 后两侧同管道）。
                     let segs = matcher::exec_rule_segments(&req.target);
                     matcher::exec_rule_bucket_match(bucket, &rule.pattern, &match_target, &segs)
                 }
@@ -1783,7 +1783,7 @@ impl SecurityAuditor {
 
         // 三遍扫的 deny/ask 两遍先行；allow 遍刻意延后到解释器拆段扫描
         // 之后——外层 `python *` allow 若先命中就直接放行，内层载荷扫描
-        // 永远到不了（`python -c "os.system('rm -rf ...')"` 被包装放行）。
+        // 永远到不了（`python -c "os.system('rm -rf...')"` 被包装放行）。
         for want in ["deny", "ask"] {
             if let Some(op_rules) = op_rules {
                 for (i, rule) in op_rules.iter().enumerate() {
@@ -1802,7 +1802,7 @@ impl SecurityAuditor {
             }
         }
 
-        // CMD-02/06②：解释器包装拆段——外层 allow（`python *`、
+        // 解释器包装拆段——外层 allow（`python *`、
         // `powershell *`…）不得屏蔽内层载荷（`-c`/`-e` 后的代码）的视线：
         // 载荷独立过一遍 deny/ask 规则（glob_contains 子串语义——载荷是
         // 代码片段，整串锚定打不中 `os.system('rm -rf /data')` 里的
@@ -1860,7 +1860,7 @@ impl SecurityAuditor {
                     continue;
                 }
                 if rule_matches("allow", rule) {
-                    // L01 敏感 flag 放行臂二次校验：规则表 allow 的
+                    // 敏感 flag 放行臂二次校验：规则表 allow 的
                     // pattern 归约（`git push *`）不区分破坏性 flag，
                     // 命中 = 不放行，降级弹卡 + reason 带 flag_hit 供
                     // 审计链检索。仅命令行 op（kill/suspend 的 target
@@ -1893,7 +1893,7 @@ impl SecurityAuditor {
             }
         }
 
-        // D1：exec/spawn 未知命令（无规则命中）姿态。空串 = 未配置 →
+        // exec/spawn 未知命令（无规则命中）姿态。空串 = 未配置 →
         // 落 default_action（旧行为；老配置文件缺键不得悄悄变语义）。
         if matches!(
             req.op_type,
@@ -1939,12 +1939,12 @@ impl SecurityAuditor {
 // Internal helper functions
 // ---------------------------------------------------------------------------
 
-/// 自杀形态检测（exec/spawn 专用，2026-09-16 用户裁决硬拦）：破坏性删除
+/// 自杀形态检测（exec/spawn 专用， 用户裁决硬拦）：破坏性删除
 /// 动词 + 递归旗标 + 删除目标命中保护路径（workspace root / home / `~` /
 /// 根 / `.` / `..` / `*` / `.git`）。判定窗口从动词起到下一个命令边界
 /// （`&&` `;` `||` `|` `&`）——`cd <workspace> && rm -rf build` 不误伤
-/// （窗口内无保护路径），`cd <workspace> && rm -rf .` 拦截。
-/// A-F3 豁免（2026-09-16 用户裁决方案 1）：`exempt` 非空时，目标为豁免
+/// （窗口内无保护路径），`cd <workspace> && rm -rf.` 拦截。
+/// A- 豁免（用户裁决方案 1）：`exempt` 非空时，目标为豁免
 /// 路径（workspace root）**严格后代**的绝对路径不再触发「后代臂」——
 /// workspace 是 agent 法定作业区，删除其中内容（node_modules/build 产物）
 /// 属日常工作，交正常治理（ABAC/exec_unknown_policy/审批）；删除豁免路径
@@ -1965,7 +1965,7 @@ fn detect_self_destruct(normalized: &str, protected: &[String], exempt: &str) ->
         "remove-item",
     ];
     fn bin_key(t: &str) -> &str {
-        // 取 basename（闭环批 2026-10-13，对齐 extract_interpreter_payloads
+        // 取 basename（闭环-13，对齐 extract_interpreter_payloads
         // 同名修复）：`/bin/rm`、`del.exe` 全路径/带后缀形态此前打不中
         // DESTRUCTIVE_BINS（key 带目录/后缀）——自毁硬拦对这种形态整体失明
         //（fail-open）。提取只增加拦截面，方向 fail-closed。
@@ -1998,7 +1998,7 @@ fn detect_self_destruct(normalized: &str, protected: &[String], exempt: &str) ->
             || t.starts_with('~')
             || protected.iter().any(|p| {
                 let p = p.trim_end_matches('/');
-                // A-F3 豁免（方案 1）：目标在豁免路径内的严格后代不再经
+                // A- 豁免（方案 1）：目标在豁免路径内的严格后代不再经
                 // 「后代臂」硬拦。只豁免第三臂——本体（p==tt，如 rm 掉
                 // workspace 本身）与祖先臂照旧拦截。
                 if !exempt.is_empty()
@@ -2051,7 +2051,7 @@ fn normalize_decision(action: &str) -> SecurityDecision {
 /// Validate path is within workspace and safe.
 fn validate_path_internal(path: &str, workspace: &str) -> Result<String, String> {
     use nemesis_path::paths::canonicalize_for_compare;
-    // 2026-09-01 8.3 短名统一修复：裸 canonicalize + 词法回退在「workspace
+    // 8.3 短名统一修复：裸 canonicalize + 词法回退在「workspace
     // 已存在（canonicalize 成长名）而 path 尚不存在（create 前守卫常态，回退
     // 保留 RUNNER~1 短名）」时前缀比较恒 false → 根内写入全被误拒。
     // canonicalize_for_compare 借最长存在祖先对齐双方表示后再比。
@@ -2076,7 +2076,7 @@ fn validate_path_internal(path: &str, workspace: &str) -> Result<String, String>
 
     // Check dangerous system paths —— 对**原始输入**与规范化结果都查：
     // 规范化会把 POSIX 风格输入经根祖先拼成 Windows 盘符路径（/etc/passwd →
-    // C:\etc\passwd），只查规范化结果会漏掉字面前缀命中（2026-09-01）。
+    // C:\etc\passwd），只查规范化结果会漏掉字面前缀命中。
     let dangerous = [
         "/etc/passwd",
         "/etc/shadow",
@@ -2249,7 +2249,7 @@ fn _reset_global_auditor() {
     // parking_lot::OnceLock does not support reset. In tests we just
     // re-initialize a new auditor each time via init_global_auditor
     // (which returns the existing one if already set).
-    // NOTE: std::sync::OnceLock also does not support reset.
+    // NOTE: std::sync:OnceLock also does not support reset.
     // Each test should create its own auditor instance for isolation.
 }
 

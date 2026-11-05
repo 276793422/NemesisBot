@@ -1,8 +1,8 @@
-//! `nemesisbot session` — Z1 (Phase4-d) 会话分支 CLI。
+//! `nemesisbot session` — 会话分支 CLI。
 //!
 //! `session fork` 把一个会话在选定轮次边界处分支成新会话（真分支，非
 //! 回滚）：原会话不动，新会话拿到到该轮为止的完整上下文。**2026-08-25
-//! 第三轮修复：轮次语义以 chat_log jsonl 为唯一真相源**（UI 渲染、弹窗
+//! 修复：轮次语义以 chat_log jsonl 为唯一依据**（UI 渲染、弹窗
 //! 计数、分叉切口三者同源）——分叉时 jsonl 前缀**逐行原样复制**，新会话
 //! 的 SessionStore 用同一批行经共享映射重建（与自愈重建同构；store 只是
 //! 可重建缓存，会被压缩折叠/被 7 天 TTL 删除，绝不能定义"第 N 轮"）。
@@ -11,7 +11,7 @@
 //! 辅助）。
 //!
 //! 网关可同时保持运行：fork 由本 CLI 进程直接落盘，运行中的网关靠
-//! SessionStore 的「内存未命中→磁盘回退」（Z1 新增）在下一条消息时
+//! SessionStore 的「内存未命中→磁盘回退」（新增）在下一条消息时
 //! 载入新会话，不会用空会话覆盖 fork 文件。
 
 use crate::common;
@@ -47,7 +47,7 @@ pub enum SessionAction {
         /// _2/_3/... when taken).
         #[arg(long)]
         new_key: Option<String>,
-        /// WS9/P17：分叉缘由（写入新会话 sidecar meta 的 fork_reason，
+        /// 分叉缘由（写入新会话 sidecar meta 的 fork_reason，
         /// 谱系视图展示用；缺省不写）。
         #[arg(long)]
         reason: Option<String>,
@@ -89,13 +89,13 @@ pub async fn run(action: SessionAction, local: bool) -> Result<()> {
             };
             let info = fork_session(&store, &session_key, new_key, at)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
-            // WS9/P17：分叉缘由落盘（空白不写——write_session_fork_reason
+            // /：分叉缘由落盘（空白不写——write_session_fork_reason
             // 内部 trim+空跳过）。
             if let Some(r) = reason.as_deref() {
                 nemesis_agent::chat_log::write_session_fork_reason(&info.new_key, r);
             }
-            // F5（2026-09-27）：分支摘要与 WSAPI fork 对齐——同一生成通道
-            // （P18：遗弃 ≥3 轮 × small_model 槽位 × 六节 schema）。CLI 进程
+            // 分支摘要与 WSAPI fork 对齐——同一生成通道
+            // （遗弃 ≥3 轮 × small_model 槽位 × 六节 schema）。CLI 进程
             // 无 AgentLoop，槽位直接从 config 解析（与 agent_factory 装配
             // 同一原语：resolve_model_config + create_provider +
             // ProviderAdapter）；同步执行（进程即跑即退，无后台可 spawn），
@@ -128,8 +128,8 @@ pub async fn run(action: SessionAction, local: bool) -> Result<()> {
 }
 
 /// `session list`：读 sessions 目录（元数据：key / updated / 摘要标签），
-/// 轮数与行数按各会话的 chat_log jsonl 统计（2026-08-25 第三轮：jsonl 是
-/// 轮次语义的真相源——store 被压缩/TTL 删过之后其条数不代表可分支内
+/// 轮数与行数按各会话的 chat_log jsonl 统计（jsonl 是
+/// 轮次语义的权威定义——store 被压缩/TTL 删过之后其条数不代表可分支内
 /// 容）。jsonl 缺失（纯 store 残留）显示 0/0。按 updated 倒序。
 fn list_sessions(home: &Path) -> Result<()> {
     let dir = common::sessions_dir(home);
@@ -185,13 +185,13 @@ fn list_sessions(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// F5（2026-09-27）：CLI 形态的分支摘要生成（与 WSAPI fork 的 P18 通道
+/// CLI 形态的分支摘要生成（与 WSAPI fork 的 通道
 /// 对齐）——解析 small_model 槽位 → `prepare_branch_summary_with` → 同一
 /// 生成通道 run + 写新会话 meta。返回面向用户的输出行（各闸门的诚实注
 /// 记，含跳过原因）。绝不 panic、绝不阻塞分叉本体（任何失败都折算成注
 /// 记文案）。
 ///
-/// BUG-20261030-224 根修：必须 async + 直接 await——生产入口在 tokio
+/// 根修：必须 async + 直接 await——生产入口在 tokio
 /// runtime 上下文内（main 的 multi_thread runtime → async_main →
 /// run_command 同步调用本命令），旧实现自建嵌套 current_thread runtime
 /// 再 `block_on`，tokio `enter_runtime` 检测到嵌套直接 panic「Cannot

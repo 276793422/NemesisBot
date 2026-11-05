@@ -127,7 +127,7 @@ impl Tool for GrepTool {
 }
 
 /// git 单次执行的归一输出（普通 piped / 受限文件重定向两形态同构，
-/// [`GitTool:run_git`] 产物、三态判定与 commit 专用路径共用）。
+/// [`GitTool::run_git`] 产物、三态判定与 commit 专用路径共用）。
 struct GitOutput {
     success: bool,
     stdout: String,

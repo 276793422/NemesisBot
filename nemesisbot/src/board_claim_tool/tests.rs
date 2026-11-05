@@ -63,7 +63,7 @@ fn format_claimable_list_empty_and_entries() {
     assert!(out.contains("ELIGIBLE"), "{out}");
     assert!(out.contains("BLOCKED"), "{out}");
     assert!(out.contains("需职能 ui-design"), "{out}");
-    // items 在 /body 下（顶层读恒空——run4 实录口径）。
+    // items 在 /body 下（顶层读恒空——实测口径）。
     let top_level = serde_json::json!({"ok": true, "items": [
         {"number": "X", "title": "t", "priority": 0, "status": "todo", "eligible": true}
     ]});

@@ -51,7 +51,7 @@
 // 刻意设计：本文件测试的落盘文件按进程 ID 隔离（session_key），同进程内
 // （cargo test 线程并行）由进程级串行锁（GOLDEN_LOCK）保护、guard 跨 async
 // 测试体的 await 持有；nextest 每测试独立进程，pid 派生键天然互不相干。
-// #[tokio:test] 每个测试独立 current_thread runtime，持锁方在自己线程上
+// #[tokio::test] 每个测试独立 current_thread runtime，持锁方在自己线程上
 // 恢复运行，不会死锁。测试域统一豁免（逐处 allow 不现实）。
 #![allow(clippy::await_holding_lock)]
 
@@ -137,7 +137,7 @@ struct CapturedCall {
 }
 
 /// 金色录制 provider：按脚本出牌 + 捕获每次 chat() 的实收内容。
-/// 脚本耗尽时的兜底与 tests:MockLlmProvider 一致（"No more responses"）。
+/// 脚本耗尽时的兜底与 tests::MockLlmProvider 一致（"No more responses"）。
 struct GoldenCaptureProvider {
     responses: std::sync::Mutex<Vec<LlmResponse>>,
     calls: Arc<std::sync::Mutex<Vec<CapturedCall>>>,

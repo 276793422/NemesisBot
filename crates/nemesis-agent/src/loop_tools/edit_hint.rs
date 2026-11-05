@@ -1,4 +1,4 @@
-//! /（2026-09-04 devtool-upgrade）：edit_file 失败反馈 → 修复指令，
+//! （2026-09-04 devtool-upgrade）：edit_file 失败反馈 → 修复指令，
 //! 成功回 unified diff。
 //!
 //! 设计立场：所有失败消息都是**给模型的修复指令**——
@@ -135,17 +135,17 @@ pub(crate) fn match_line_numbers(content: &str, needle: &str) -> Vec<usize> {
 }
 
 /// unified diff 输出超过该字节数时回退统计摘要（全量语义由 loop 层 spill
-/// 闸兜底——工具回灌不是变更审计的唯一真相源）。
+/// 闸兜底——工具回灌不是变更审计的唯一依据）。
 const DIFF_MAX_BYTES: usize = 4096;
 
 /// unified diff 上下文行数（对齐 `diff -u` 惯例）。
 const DIFF_CONTEXT: usize = 3;
 
-/// ：手写简易 unified diff（不引新依赖）。
+/// 手写简易 unified diff（不引新依赖）。
 ///
 /// 算法：公共前缀/后缀行定位唯一变更窗口 + 3 行上下文 + `-`/`+` 块。
 /// 单 hunk 视角（edit_file 每次只替换一处，多窗口场景不存在）。
-/// 行尾统一 LF 视角（`str:lines` 剥 `\r`）；无差异返回空串。
+/// 行尾统一 LF 视角（`str::lines` 剥 `\r`）；无差异返回空串。
 /// 超长输出回退统计摘要 `+n / -m lines (diff truncated …)`。
 pub(crate) fn unified_diff(path: &str, old: &str, new: &str) -> String {
     let old_lines: Vec<&str> = old.lines().collect();

@@ -53,7 +53,7 @@ pub fn project_event(event: &AgentEvent) -> Option<String> {
 ///
 /// 返回的 JoinHandle 常驻；退出 = 广播 sender 全部 drop（gateway 收尾
 /// SharedResources 释放时发生）→ `recv()` 返回 Closed → 泵结束。不接
-/// estop：急停冻结由 [`crate::registry::PluginManager::set_enabled`]
+/// estop：急停冻结由 [`crate::registry:PluginManager::set_enabled`]
 /// （estop watcher 联动）承担——enqueue 变 no-op，泵照常空转；release
 /// 后泵还活着，观察面无缝恢复（泵若自己接了 estop 退出，watch 无 reset
 /// 生产者会死透不复活）。

@@ -3,7 +3,7 @@
 //! 与 tests / s10b_tests 互补，聚焦仍缺的确定性错误臂：
 //! - `Default` impl + 命令表无重复
 //! - `pending` 的 enumerate 错误臂：box_root 预置为普通文件 → walk 的
-//!   read_dir 失败 → `enumerate box: ...`
+//!   read_dir 失败 → `enumerate box:...`
 //! - `set_network` 的 Sandboxie.ini 重写失败臂（base 目录被文件占位 →
 //!   create_dir_all 失败）与 Start.exe /reload 缺失 spawn 失败臂（ini 写
 //!   成功但 runtime 未就绪 → spawn Err）

@@ -205,7 +205,7 @@ async fn empty_path_snapshot_is_ignored() {
 // ----- branch coverage -----
 
 /// load(): non-`.json` entries are skipped (line 90); a `.json`-named
-/// DIRECTORY makes std:fs:read fail → skipped (line 93); both must not break
+/// DIRECTORY makes std::fs:read fail → skipped (line 93); both must not break
 /// loading of the valid file.
 #[tokio::test]
 async fn load_skips_non_json_and_unreadable_entries() {
@@ -308,7 +308,7 @@ async fn restore_recreates_parent_directories() {
     let store = CheckpointStore::new(None, root.clone());
 
     store.begin(0, "nested");
-    // The snapshot helper writes via tokio:fs:write, which needs the parent
+    // The snapshot helper writes via tokio::fs:write, which needs the parent
     // to exist — create it explicitly (restore() is the code under test for
     // parent recreation, not snapshot()).
     tokio::fs::create_dir_all(root.join("sub").join("dir"))
@@ -417,7 +417,7 @@ async fn empty_turn_does_not_create_file() {
 
 /// SAN-10 复核：工作区外声明路径**照常恢复**——这是 hybrid
 /// 的既定契约（restrict=false 部署下声明式工具合法写工作区外文件，undo 必须
-/// 能回滚；见 safe_path 文档注释与 d2_tests:git_mode_hybrid_restores_out_of_
+/// 能回滚；见 safe_path 文档注释与 d2_tests::git_mode_hybrid_restores_out_of_
 /// workspace_paths）。此处钉 JSON 形态下的同款契约防未来误加边界；`..` 相对
 /// 逃逸仍被拒（见 path_escape_is_rejected_on_restore）。
 #[tokio::test]

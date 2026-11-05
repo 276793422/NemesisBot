@@ -1,4 +1,4 @@
-//! /：会话租约（WorkspaceLease）——workspace 级写租约（v1 粒度 =
+//! ：会话租约（WorkspaceLease）——workspace 级写租约（v1 粒度 =
 //! 整个工作区的写类操作互斥）。
 //!
 //! 背景：主 loop / 项目 loop / executor 子进程 / cron sweep 多个执行体
@@ -104,7 +104,7 @@ impl WorkspaceLease {
 
     /// 获取租约。成功 = 返回 [`LeaseAcquisition`]（持有至 Drop；Drop 即
     /// 发释放信号，锁线程落 guard + 清 sidecar 后退出）。失败（宽限超时
-    /// /基础设施故障）= `Err(io:Error)`：
+    /// /基础设施故障）= `Err(io::Error)`：
     /// - `WouldBlock` + 中文文本（含 sidecar 里的当前持有者名）= 争用超
     ///   时（调用方当「诚实拒绝」处理）；
     /// - 其他 kind = 锁文件打开失败 / 线程故障（调用方按基础设施故障
@@ -112,7 +112,7 @@ impl WorkspaceLease {
     pub async fn acquire(self: &Arc<Self>) -> io::Result<LeaseAcquisition> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<io::Result<()>>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        // ：per-acquire 唯一 id——sidecar 的清理比对键从
+        // per-acquire 唯一 id——sidecar 的清理比对键从
         // holder 名换成它。同 holder 名的相邻持有（同二进制先后两次获取）
         // 在「A 落 guard → B 抢到锁写 sidecar → A 才执行清理」的时序下，
         // 按名比对会误删 B 的 sidecar（B 持锁却查无此人）；uuid 比对下 A
@@ -133,7 +133,7 @@ impl WorkspaceLease {
         // Err 路径给线程补发 release，防「线程已持锁却无人释放」悬挂。
         let wait = async {
             // 两层 `?` 剥掉 JoinError / RecvError 后，剩锁线程的**诚实判
-            // 决**（`io:Result<>`：Ok=获取成功 / Err=争用超时或故障），
+            // 决**（`io::Result<>`：Ok=获取成功 / Err=争用超时或故障），
             // 原样作为本 async 块的结果——不可 `let _` 吞掉（否则拒绝会
             // 被伪装成成功， scratch 实证过的真 bug）。
             tokio::task::spawn_blocking(move || ready_rx.recv())
@@ -193,7 +193,7 @@ impl WorkspaceLease {
         };
         self.write_holder(acq_id);
         let _ = ready_tx.send(Ok(()));
-        // 持有至释放信号（LeaseAcquisition:Drop 触发；进程死亡 = OS 释放）。
+        // 持有至释放信号（LeaseAcquisition::Drop 触发；进程死亡 = OS 释放）。
         let _ = release_rx.recv();
         drop(guard);
         remove_own_holder(&self.holder_path, acq_id);
@@ -351,7 +351,7 @@ impl Drop for LeaseAcquisition {
     }
 }
 
-/// /：需要租约的写类工具清单（v1）。`exec` **不在账**——见模块
+/// ：需要租约的写类工具清单（v1）。`exec` **不在账**——见模块
 /// 文档「接线」小节的诚实边界（命令面包装拦不到效果面，不做假拦截）。
 pub const LEASE_WRITE_TOOLS: [&str; 7] = [
     "write_file",
@@ -365,7 +365,7 @@ pub const LEASE_WRITE_TOOLS: [&str; 7] = [
 
 /// 写类工具的租约守卫委派包装（`SharedToolConfig.workspace_lease = Some`
 /// 时 `register_shared_tools` 把 LEASE_WRITE_TOOLS 逐个换成此形态）。实现
-/// agent 内部 `crate:r#loop:Tool` trait（与被包装工具同一 trait 对象）；
+/// agent 内部 `crate::r#loop::Tool` trait（与被包装工具同一 trait 对象）；
 /// 协议面（description/parameters）与行为面（preview/preview_all/只读声
 /// 明/凭据槽位/限额类别等）**全量透传 inner**——checkpoint 安全网（依赖
 /// preview_all）、 冲突预检、安全 8 层、prompt cache 前缀全部不受包

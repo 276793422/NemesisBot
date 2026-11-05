@@ -7,7 +7,7 @@ use super::*;
 
 /// Check if a channel is internal (not user-facing).
 ///
-/// 委托仓内单一真相源 `nemesis_types:is_internal_channel`
+/// 委托仓内统一定义 `nemesis_types::is_internal_channel`
 /// （收编，本文件原为手抄 `matches!` 副本）。
 pub fn is_internal_channel(channel: &str) -> bool {
     nemesis_types::is_internal_channel(channel)
@@ -27,7 +27,7 @@ pub const DRAINING_RECEIPT: &str =
 
 /// 在途 turn gauge 守卫——构造即 +1，Drop 即 -1（panic/abort 展开
 /// 路径也减账，gauge 不会单调漂移）。spawn 臂与 inline continuation 臂
-/// 共用（[`AgentLoop:spawn_turn_task`] / pump_dispatch Continuation 分支）。
+/// 共用（[`AgentLoop::spawn_turn_task`] / pump_dispatch Continuation 分支）。
 pub(crate) struct InFlightTurnGuard {
     gauge: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
@@ -378,7 +378,7 @@ impl AgentLoop {
                     tx,
                     self.observer_manager.clone(),
                     self.session_store.as_ref().map(|v| v.as_ref()),
-                    // F-F：active 模型 vision 解析（config.json 唯一真相源）。
+                    // F-F：active 模型 vision 解析（config.json 唯一依据）。
                     self.current_vision().supported,
                     task_source_node.as_deref(),
                 )
@@ -640,7 +640,7 @@ impl AgentLoop {
         }
     }
 
-    /// /：多 loop 联合 drain 等待——gateway teardown 的
+    /// ：多 loop 联合 drain 等待——gateway teardown 的
     /// drain 面不止主 loop（项目 loop 与 自建 agent loop 同为常驻
     /// AgentLoop，在途 turn 同样不该被停机 abort），全部 loop 共享同一有界
     /// 窗口轮询，任一在途即未排干。空列表视为已排干。
@@ -807,7 +807,7 @@ impl AgentLoop {
                 let this = self.clone();
                 let m = msg.clone();
                 self.spawn_turn_task(async move {
-                    // ：panic 兜底守卫——
+                    // panic 兜底守卫——
                     // handle_maintenance（LLM 摘要，分钟级）panic 展开时
                     // 释放会话，不留永久 busy 死会话。正常路径在 drain 前
                     // 显式 drop（= 原 release_session）。
@@ -863,7 +863,7 @@ impl AgentLoop {
     /// turn WAL 启动恢复：`recover_and_finalize` 产出断头候选 →
     /// 预置键会话合成续轮消息（session_key 原样回填——route_message 对
     /// `is_preset_session_key` 命中键原样采纳，重路由确定性落回原会话）→
-    /// 走 [`Self:pump_dispatch`] 正常闸门。非预置键（standalone fallback /
+    /// 走 [`Self::pump_dispatch`] 正常闸门。非预置键（standalone fallback /
     /// 集群复合键）不自动续轮——重路由不保证落回原会话（fallback 按
     /// sender/chat 重组、集群会话有自己的 恢复链），诚实放弃，
     /// interrupted 留痕照写。
@@ -953,7 +953,7 @@ impl AgentLoop {
         // 任务不在 turn_task_handles，下面的 abort 覆盖不到——guardian
         // judge / 看板 moderator / headless run 都走那条路）。
         self.stop_token.cancel();
-        // : kill Queue/Steer mode's spawned turn tasks. The
+        // kill Queue/Steer mode's spawned turn tasks. The
         // adapter aborts the pump task itself; without this the spawned turns
         // would be orphaned (holding Arc clones) and keep running/publishing
         // after the stop.
@@ -991,7 +991,7 @@ impl AgentLoop {
     /// loop, and sending the final response.
     ///
     /// NOTE: The main run_bus_owned loop calls the free function
-    /// `crate:loop_continuation:handle_cluster_continuation` directly instead
+    /// `crate::loop_continuation:handle_cluster_continuation` directly instead
     /// of this method. Similarly, maybe_summarize calls the standalone
     /// `summarize_history_owned` / `summarize_multipart_owned` / `summarize_batch_owned`
     /// free functions. These self methods are kept as reference implementations

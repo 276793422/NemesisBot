@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): drive the full
+//! (quality-hardening goal 冲刺, web): drive the full
 //! `generate_persona` three-stage pipeline against a wiremock OpenAI-compatible
 //! backend (process-local, no real network) — the existing tests only cover the
 //! pure helpers (extract/unwrap/check_*), never the retry loop:

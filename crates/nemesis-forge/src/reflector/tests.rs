@@ -379,9 +379,9 @@ fn test_filter_by_period() {
     assert_eq!(filtered.len(), 2);
 
     let filtered = reflector.filter_by_period(&experiences, "today");
-    // 夹具时间戳固定 2026-04-29（make_collected），已永久处于过去；"today"
+    // 夹具时间戳固定 （make_collected），已永久处于过去；"today"
     // 截止点 = 本地今天零点 → 两条必然被过滤。旧版只跑不断言——「可能过滤
-    // 可能不过滤」的注释写于 2026-04-29 尚可能是今天时，现已确定性成立。
+    // 可能不过滤」的注释写于 尚可能是今天时，现已确定性成立。
     assert!(
         filtered.is_empty(),
         "2026-04-29 fixture timestamps must fall outside today's window, got {}",
@@ -860,7 +860,7 @@ fn test_resolve_period_today() {
 
 #[test]
 fn test_resolve_period_today_carries_local_offset() {
-    // R18 修复钉：today 截止点必须带**真实本地偏移**（旧实现 naive.and_utc()
+    // 修复钉：today 截止点必须带**真实本地偏移**（旧实现 naive.and_utc()
     // 误贴 +00:00，东八区实际截到昨天 16:00）。断言偏移秒数 == 本机 Local
     // 偏移（UTC 机器上两者同为 0，钉不误伤；非 UTC 机器上回退旧行为必红）。
     let cutoff = Reflector::resolve_period("today").expect("today cutoff");
@@ -1422,7 +1422,7 @@ async fn test_reflect_with_llm_no_provider_none() {
     assert!(report.llm_insights.is_none());
 }
 
-// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+// ---- coverage batch ---- (quality-hardening goal 冲刺)
 
 #[test]
 fn test_s8_generate_reflection_evaluates_tracing_fields() {
@@ -1448,7 +1448,7 @@ async fn test_s8_reflect_with_llm_ok_evaluates_tracing_fields() {
     assert!(report.llm_insights.is_some());
 }
 
-/// max_tokens 透传断言（aux 治理 2026-09-28）：reflect_with_llm 的预算参数
+/// max_tokens 透传断言（aux 治理）：reflect_with_llm 的预算参数
 /// 原样抵达 LLMCaller（生产调用方传 AUX_FORGE_MAX_TOKENS，思考系模型防烧穿）。
 #[tokio::test]
 async fn test_reflect_with_llm_passes_max_tokens_to_caller() {
@@ -1542,7 +1542,7 @@ fn test_s8_get_latest_report_picks_newest_md_ignoring_others() {
 
 // 锁定文件"删不掉"的前提是 Windows share_mode(0) 独占句柄语义；Linux 上
 // 打开中的 fd 不阻止 unlink（无可移植等价物），测试前提不成立 → 整测
-// cfg(windows) 门控（2026-09-01 Linux 首跑暴露）。
+// cfg(windows) 门控（Linux 首跑暴露）。
 #[cfg(windows)]
 #[test]
 fn test_s8_cleanup_reports_result_locked_file_reports_error() {

@@ -10,18 +10,18 @@ pub mod transcriber;
 // --- Config (cross-platform, pure data types) ---
 pub mod config;
 
-// --- 语音化输出纯函数层（cross-platform；realtime P1 W4 L1 / W2 句切分） ---
+// --- 语音化输出纯函数层（cross-platform；realtime / 句切分） ---
 pub mod sentence;
 pub mod spoken_form;
 
-// --- realtime P1 跨平台纯件：barge-in 决策状态机 + WAV 编解码 ---
+// --- realtime 跨平台纯件：barge-in 决策状态机 + WAV 编解码 ---
 pub mod barge_in;
 pub mod wav;
 
 // --- Local voice pipeline (Windows only) ---
 // 设备 IO 三件套（audio/aec/loopback）随 `voice-capture` feature 进出：开启 =
 // cpal/wasapi 真实现；关闭 = 同名 stub 模块（`#[path]` 重映射保持消费方路径
-// `nemesis_voice::audio::…` 不变），运行期对设备 IO 诚实报「未编译」。
+// `nemesis_voice::audio:…` 不变），运行期对设备 IO 诚实报「未编译」。
 #[cfg(all(target_os = "windows", feature = "voice-capture"))]
 pub mod aec;
 #[cfg(not(all(target_os = "windows", feature = "voice-capture")))]
@@ -36,7 +36,7 @@ pub mod audio;
 pub mod bootstrap;
 #[cfg(target_os = "windows")]
 pub mod channel_bridge;
-// 音频采集源抽象（realtime P1 W7）：生产 = 麦克风，测试 = WavSource 注入。
+// 音频采集源抽象（realtime）：生产 = 麦克风，测试 = WavSource 注入。
 // 随 Windows 进出；无 voice-capture 构建下 MicSource::new / WavSource 读文件
 // 经 audio_stub 诚实报「未编译」（trait 本体可用）。
 #[cfg(target_os = "windows")]

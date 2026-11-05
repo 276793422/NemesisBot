@@ -49,7 +49,7 @@ pub async fn run(action: PersonaAction, _home: &str, workspace: &str) -> Result<
 // Local commands (synchronous)
 // ---------------------------------------------------------------------------
 
-/// persona id 路径安全闸——复用 R35 技能 slug 验证器单一真相源（拒路径
+/// persona id 路径安全闸——复用 技能 slug 验证器单一真相源（拒路径
 /// 分隔符/`..`/`:`/Windows 保留名/尾点尾空格）。CLI install/remove 对
 /// `personas/{id}` 是裸 `join`（web 面同路径有 `resolve_path` 兜底，CLI
 /// 此前无任何闸）：远端树里合法存在的 `..\x.md` 文件名（git/Linux 允许
@@ -171,12 +171,12 @@ fn cmd_list(workspace: &std::path::Path) -> Result<()> {
 }
 
 fn cmd_activate(workspace: &std::path::Path, name: &str) -> Result<()> {
-    // slug 闸与 install/remove 对齐（BUG-20261101-294：activate 此前漏闸，
+    // slug 闸与 install/remove 对齐（activate 此前漏闸，
     // 空串/路径形态 name 命中 personas 目录本身——激活生命周期清空工作区
     // 人格文件后把激活标记写成非法名）。
     validate_persona_id(name)?;
     // 与 web 面同源的完整生命周期（归档当前人格 → 清理根 → 恢复目标 →
-    // 原子写标记；BUG-20261028-117 前 CLI 简化版只拷 4 个 .md 不归档，
+    // 原子写标记； 前 CLI 简化版只拷 4 个.md 不归档，
     // 运行期 memory 滞留根目录，下次 web 切换时被归档进错误人格目录）。
     nemesis_web::handlers::persona::activate_persona_workspace(&workspace.to_string_lossy(), name)
         .map_err(anyhow::Error::msg)?;
@@ -203,7 +203,7 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
         if v["name"].as_str() == Some(name) {
             // 与 web 面同源的完整恢复（归档/清理/恢复 default + 原子写标记）。
             // fail-closed：default 目录缺失时诚实报错中止，不静默删出悬空
-            // 激活标记（BUG-20261028-117 前 CLI 行为，见 wave_b 测试）。
+            // 激活标记（前 CLI 行为，见 wave_b 测试）。
             nemesis_web::handlers::persona::activate_persona_workspace(
                 &workspace.to_string_lossy(),
                 "default",
@@ -369,7 +369,7 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
             let p = item["path"].as_str().unwrap_or("");
             let filename = p.rsplit('/').next().unwrap_or("");
             // 匹配口径与 web 面同源（`stem == id || filename == id`，
-            // BUG-20261028-117 前 CLI 漏第二臂）。
+            // 前 CLI 漏第二臂）。
             if (filename.trim_end_matches(".md") == id || filename == id)
                 && p.ends_with(".md")
                 && nemesis_web::handlers::persona::is_agent_file(p)
@@ -405,7 +405,7 @@ async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
 
     // 转换与 web shop.download 同源（convert_agent_content：AGENT/TOOLS 拼
     // 系统模板、PERSONA.json 含 color/tools/vibe/frontmatter 扩展字段——
-    // BUG-20261028-117 前 CLI 简化转换缺字段，web 语义消费方读到空值）。
+    // 前 CLI 简化转换缺字段，web 语义消费方读到空值）。
     let converted = nemesis_web::handlers::persona::convert_agent_content(&content);
 
     // Write to disk

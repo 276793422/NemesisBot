@@ -1,23 +1,23 @@
-//! 双向分块传输通道（看板项目档案 goal P3/D1+D3+D6+D7）。
+//! 双向分块传输通道（看板项目档案 goal）。
 //!
-//! 既有集群 RPC 之上的可靠文件传输：worker→master（执行记录回传；P4 起
-//! 变更集同路）、master→worker（P4 基线下发复用同一机制）。设计裁决：
+//! 既有集群 RPC 之上的可靠文件传输：worker→master（执行记录回传； 起
+//! 变更集同路）、master→worker（基线下发复用同一机制）。设计裁决：
 //!
 //! - **分块 + 逐块确认**：每个 chunk 是一次独立 RPC request/response
 //!   （chunk ACK = master 已把该块**先落盘**），禁止一次性大包/base64
 //!   整包（1.33x 膨胀 + 内存尖峰）。chunk payload 本身 base64 进 JSON
 //!   ——逐块有界（默认 1 MiB，帧上限 16 MB 富余），与「整包」禁令不冲突。
-//! - **幂等去重（D3）**：`(task_id, content_hash)` 去重，at-least-once
+//! - **幂等去重**：`(task_id, content_hash)` 去重，at-least-once
 //!   语义下重复投递无害；去重索引持久化（master 重启不失效）。
 //! - **断点续传**：begin 回复 `have`（staging 已收块序号），sender 跳过
 //!   已收块——传输中断/进程重启后重推只补缺块。staging 布局确定性
 //!   （manifest 决定 seq→(file,offset) 映射），双方无需协商额外状态。
-//! - **端到端完整性（D6）**：manifest.json 携带文件清单 + SHA-256；
+//! - **端到端完整性**：manifest.json 携带文件清单 + SHA-256；
 //!   end 组装后逐文件核验，缺失/校验败 = 诚实报错（不 ACK，sender 保留
 //!   本地重试）。
-//! - **体积护栏（D4）**：`max_bytes` 超限 = begin 直接诚实拒绝
+//! - **体积护栏**：`max_bytes` 超限 = begin 直接诚实拒绝
 //!   （`over_limit`），绝不截断。
-//! - **路径围栏（D7）**：manifest 声明的相对路径经 [`safe_relative_path`]
+//! - **路径围栏**：manifest 声明的相对路径经 [`safe_relative_path`]
 //!   单点校验——拒 `..`/绝对路径/盘符/反斜杠/8.3 短名。
 //!
 //! 本模块只做**传输 + 中立落盘**（`<workspace>/cluster/inbox/<task_id>/`），
@@ -46,13 +46,13 @@ pub const ACTION_TRANSFER_END: &str = "transfer_end";
 pub const ACTION_TRANSFER_PULL: &str = "transfer_pull";
 pub const ACTION_TRANSFER_OVERLIMIT: &str = "transfer_overlimit";
 
-/// 传输类别（`kind`；P3 只用 execution_records，P4 基线/变更集复用通道）。
+/// 传输类别（`kind`； 只用 execution_records， 基线/变更集复用通道）。
 pub const TRANSFER_KIND_EXECUTION_RECORDS: &str = "execution_records";
 
-/// P4/E2：项目档案基线快照（master 派发时 HEAD 树同步推送 worker）。
+/// ：项目档案基线快照（master 派发时 HEAD 树同步推送 worker）。
 pub const TRANSFER_KIND_PROJECT_BASELINE: &str = "project_baseline";
 
-/// P6-R2：agent home 迁移载荷（A 端把 `<workspace>/agents/<id>/` 的
+/// ：agent home 迁移载荷（A 端把 `<workspace>/agents/<id>/` 的
 /// home/** + memory/** 经 push_transfer_dir 推到 B 端 inbox；凭据密文
 /// 另走 commit RPC，不混入本通道）。B 端 sink 落地路径与既有类别一致
 /// （`<workspace>/cluster/inbox/<task_id>/files/`），迁移方自行 rename。
@@ -62,7 +62,7 @@ pub const TRANSFER_KIND_AGENT_HOME: &str = "agent_home";
 /// 速率限制 30 req/10s 下有效吞吐 ~3 MiB/s，2 GiB 极限载荷 ~11 分钟——
 /// 可接受，正常执行记录是 KB~MB 级）。
 pub const DEFAULT_CHUNK_BYTES: usize = 1024 * 1024;
-/// begin manifest 文件条目上限（BUG-20261030-203；推导见 validate_manifest）。
+/// begin manifest 文件条目上限（推导见 validate_manifest）。
 const MAX_MANIFEST_FILES: usize = 100_000;
 
 /// chunk 大小环境变量覆盖（UAT「调小块大小」用，免重编；钳到
@@ -109,7 +109,7 @@ fn is_short_name(comp: &str) -> bool {
     false
 }
 
-/// D7 路径围栏：manifest 声明的相对路径单点校验（语义复用 anchor
+/// 路径围栏：manifest 声明的相对路径单点校验（语义复用 anchor
 /// `resolve_anchor_path`，代码独立——nemesis-cluster 不依赖 nemesis-board）。
 /// 拒绝：空串、绝对路径、盘符、反斜杠、`..`/`.` 组件、8.3 短名组件、
 /// 非 UTF-8。返回以 `/` 为分隔的相对 PathBuf（落地时 join 到接收目录）。
@@ -155,7 +155,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 }
 
 /// 摘要 → 小写 hex（单一编码点：sha256_hex 与流式哈希共用，杜绝
-/// hash-of-hash 形态的错位——2026-10-17 LOW-8 回归实测抓出）。
+/// hash-of-hash 形态的错位—— LOW-8 回归实测抓出）。
 fn sha256_digest_hex(digest: &[u8]) -> String {
     let mut s = String::with_capacity(64);
     for b in digest {
@@ -167,8 +167,8 @@ fn sha256_digest_hex(digest: &[u8]) -> String {
 /// 流式文件哈希：返回 (size, sha256_hex)。固定 256 KiB 缓冲逐块喂，
 /// 不整文件进内存。
 ///
-/// LOW-8（2026-10-17 四轮审计）：收集路径此前 `read` 整文件再哈希——
-/// 大工件=单文件级内存尖峰，且 D4 总量护栏要收集完才算得出。exec 侧
+/// LOW-8（四轮审计）：收集路径此前 `read` 整文件再哈希——
+/// 大工件=单文件级内存尖峰，且 总量护栏要收集完才算得出。exec 侧
 /// diff_walk 同规则复用本函数（同 crate 单一实现）。
 pub fn sha256_file_streaming(path: &Path) -> Result<(u64, String), String> {
     use std::io::Read;
@@ -257,7 +257,7 @@ pub struct TransferEndReply {
     pub total_bytes: Option<u64>,
 }
 
-/// transfer_pull 载荷（master→worker，D5 兜底拉取）。
+/// transfer_pull 载荷（master→worker， 兜底拉取）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferPull {
     pub task_id: String,
@@ -267,7 +267,7 @@ pub struct TransferPull {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferPullReply {
     /// queued = worker 已（重新）入队并触发推送；dead/over_limit = 条目
-    /// 停车（不会被推送循环拾取——BUG-20261030-201 诚实态词，master 落
+    /// 停车（不会被推送循环拾取—— 诚实态词，master 落
     /// no_archive_seen 停拉，手动重放后由收件箱重灌腿恢复）；no_archive =
     /// worker 本地无该任务执行记录（诚实回答，master 侧记缺失）。
     pub status: String,
@@ -347,15 +347,15 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>) -> Result<(),
 
 /// 目录级排除（任意层级；按归一化相对路径末段名匹配）：
 /// - VCS 内部：`.git` 对象库混入变更集会让 master 三方合并 upsert 保留
-///   路径失败（F-S1，2026-09-16 showcase 实证：worker 在 exec 副本 git
+///   路径失败（F-， showcase 实证：worker 在 exec 副本 git
 ///   init 后 `.git/COMMIT_EDITMSG` 被收进变更集 → 合并停车）；
-/// - 依赖/缓存目录（S-O3）：`__pycache__` 等生态固定名目录是运行副产物，
+/// - 依赖/缓存目录（S）：`__pycache__` 等生态固定名目录是运行副产物，
 ///   入库是纯噪音。黑名单只收**无争议名**——`target`/`dist`/`build` 等
-///   通用名不排（静默丢真实交付比噪音入库严重；大目录交给 D4 字节护栏）。
+///   通用名不排（静默丢真实交付比噪音入库严重；大目录交给 字节护栏）。
 ///
 /// SAN-09 起 pub：评审证据列举器（nemesisbot board_review）与 transfer
 /// walk 共用同一排除谓词——两处漂移会让 venv/缓存条目挤占 200 条上限、
-/// 把真实交付证据挤出评审 prompt（U3 蒙眼症状复发通道）。
+/// 把真实交付证据挤出评审 prompt（蒙眼症状复发通道）。
 pub fn is_noise_dir(rel: &str) -> bool {
     let last = rel.rsplit('/').next().unwrap_or(rel);
     matches!(
@@ -416,10 +416,10 @@ pub fn plan_chunks(files: &[TransferFileEntry], chunk_size: usize) -> Vec<(usize
 
 /// 总块数——**算术式**（Σ ceil(size/chunk_size)，O(files) 不物化计划）。
 ///
-/// F-NEW-2（2026-10-17 四轮审计）：validate 路径此前走 [`plan_chunks`]
+/// F-NEW-2（四轮审计）：validate 路径此前走 [`plan_chunks`]
 /// 逐块物化，远端 manifest 的 `f.size=u64::MAX`（total 绕加匹配可过校验）
 /// = 无界循环 + OOM DoS；校验只需要数量，计划物化留给真正组装的位置
-/// （`end`/推送——那里的 manifest 已过本函数校验 + D4 护栏）。
+/// （`end`/推送——那里的 manifest 已过本函数校验 + 护栏）。
 pub fn chunk_count(files: &[TransferFileEntry], chunk_size: usize) -> usize {
     debug_assert!(chunk_size > 0);
     files
@@ -484,7 +484,7 @@ pub struct TransferSink {
     staging_root: PathBuf,
     /// 去重索引（内存镜像 + `.dedup.json` 持久化）：task_id → 条目。
     dedup: RwLock<HashMap<String, DedupEntry>>,
-    /// D4 体积护栏（字节；0 = 不限）。AtomicU64：gateway 周期从 config
+    /// 体积护栏（字节；0 = 不限）。AtomicU64：gateway 周期从 config
     /// 现读刷新（热生效）。
     max_bytes: AtomicU64,
     on_landed: Mutex<Option<LandedCallback>>,
@@ -508,12 +508,12 @@ impl TransferSink {
         }
     }
 
-    /// D4 护栏现值刷新（gateway sweep 周期调用；0 = 不限）。
+    /// 护栏现值刷新（gateway sweep 周期调用；0 = 不限）。
     pub fn set_max_bytes(&self, max_bytes: u64) {
         self.max_bytes.store(max_bytes, Ordering::Relaxed);
     }
 
-    /// `.staging/<transfer_id>/` 按龄清扫（BUG-2，2026-10-17）。
+    /// `.staging/<transfer_id>/` 按龄清扫（BUG-2）。
     ///
     /// 永不续传的传输（发送端死亡 / 任务取消 / 内容变更换 transfer_id）
     /// 留下的孤儿分块目录没有别的清理路径（旧同 id 清理只覆盖「同 id
@@ -559,7 +559,7 @@ impl TransferSink {
 
     /// 接线落地回调（档案投影）。只在装配期调用一次。
     pub fn set_on_landed(&self, cb: LandedCallback) {
-        // 恢复式（BUG-20261030-202）：回调 panic 毒化过锁后，装配期重接线
+        // 恢复式：回调 panic 毒化过锁后，装配期重接线
         // 仍可用——对齐 outbox 同仓先例。
         *self.on_landed.lock().unwrap_or_else(|p| p.into_inner()) = Some(cb);
     }
@@ -576,7 +576,7 @@ impl TransferSink {
 
     /// begin：护栏 → 校验 → 去重/超限/续传三分支。
     pub fn begin(&self, req: &TransferBegin) -> TransferBeginReply {
-        // 1. D4 护栏**先行**（F-NEW-2，2026-10-17 四轮审计）：远端声明
+        // 1. 护栏**先行**（F-NEW-2， 四轮审计）：远端声明
         //    的 total_bytes 超限直接诚实拒绝——此前 validate_manifest 在
         //    前，攻击载荷先撞进校验逻辑（chunk_count 物化）才轮到护栏。
         //    0 = 不限。
@@ -600,16 +600,16 @@ impl TransferSink {
                 error: Some(e),
             };
         }
-        // 3. D3 去重：(task_id, content_hash) 已落地 **且档案实体仍在收件箱**
+        // 3. 去重：(task_id, content_hash) 已落地 **且档案实体仍在收件箱**
         //    → 免传。ingest 会把 inbox/<task_id> 移走安置进项目档案——此时
-        //    索引虽在、实体已不在 master，必须放行重传：否则 D5 兜底拉取
+        //    索引虽在、实体已不在 master，必须放行重传：否则 兜底拉取
         //    被 dedup 挡死（worker 推 → dedup → 删发件箱 → sweep 永远补不回
         //    档案，无限空转）。
         if let Some(entry) = self.dedup.read().get(&req.task_id)
             && entry.content_hash == req.content_hash
             && self
                 .inbox_root
-                // T8（2026-10-17 三轮审计）：task_id 远端可控——探针与落地
+                // （三轮审计）：task_id 远端可控——探针与落地
                 // 同源消毒，与 end 侧 landed 目录名一致。
                 .join(crate::fsutil::safe_task_file_name(&req.task_id))
                 .join("landed.json")
@@ -642,7 +642,7 @@ impl TransferSink {
                 error: None,
             };
         }
-        // 韧性删除（T3，2026-10-17；删除实现已提升 nemesis_utils::fsutil
+        // 韧性删除（删除实现已提升 nemesis_utils::fsutil
         // 全仓共享）：Windows AV/索引器瞬时句柄是常态，裸 remove_dir_all
         // 单发必胜假设在 CI runner 实证不成立（T-MRG-1 先例）——退避重试
         // 窗口内仍失败且目录仍在才对端报错，由 create_dir_all 兜底。
@@ -682,7 +682,7 @@ impl TransferSink {
         if !st.exists() {
             return Err("staging 不存在（begin 未到达或已被清理）".into());
         }
-        // LOW-7（2026-10-17 四轮审计）：按 staging manifest 闸块序号与块
+        // LOW-7（四轮审计）：按 staging manifest 闸块序号与块
         // 大小——认证对端不再能写任意多/任意大块文件进 staging（磁盘填充
         // 面）。manifest 缺失（begin manifest 落盘前的窄窗口）诚实拒绝，
         // sender 重试即可。
@@ -703,14 +703,14 @@ impl TransferSink {
         }
         // 块文件名固定宽度：字典序 = 数值序。原子写（唯一 tmp + rename）：
         // 裸 fs::write 中途崩溃会留下撕裂半块，被 begin 续传按「存在性」
-        // 当已收永久跳过 → end 组装长度失配死循环（BUG-20261030-198）。
+        // 当已收永久跳过 → end 组装长度失配死循环。
         let path = st.join(format!("chunk_{:06}.bin", req.seq));
         nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), &data, 0o644)
             .map_err(|e| format!("写 staging 块失败: {e}"))?;
         Ok(())
     }
 
-    /// end：组装 staging → 逐文件 SHA-256 核验（D6）→ 落地 inbox → 更新
+    /// end：组装 staging → 逐文件 SHA-256 核验→ 落地 inbox → 更新
     /// 去重索引 → 清 staging → 触发落地回调。任何一步失败 = 诚实 Err
     /// （不 ACK，sender 保留本地重试；staging 保留供诊断/续传）。
     pub fn end(&self, transfer_id: &str) -> Result<TransferEndReply, String> {
@@ -780,7 +780,7 @@ impl TransferSink {
             f.write_all(&data)
                 .map_err(|e| format!("写 {}: {e}", dest.display()))?;
         }
-        // 2. 逐文件 SHA-256 核验（D6 端到端完整性；流式读，不整文件进内存）。
+        // 2. 逐文件 SHA-256 核验（端到端完整性；流式读，不整文件进内存）。
         for file in &begin.files {
             let rel = safe_relative_path(&file.path)?;
             let (size, got) = sha256_file_streaming(&files_root.join(&rel))
@@ -800,14 +800,14 @@ impl TransferSink {
         }
         // 3. 落地：inbox/<task_id>/（已存在则整体替换——同 task_id 新内容
         //    以最新为准）。含 files/ + manifest.json + landed.json 回执。
-        // T8（2026-10-17 三轮审计）：task_id 远端可控，落地目录名消毒
+        // （三轮审计）：task_id 远端可控，落地目录名消毒
         // （与 begin 去重探针、nemesis-board dossier 读侧同源同函数），
         // 否则 `../` 可把暂存载荷改名落到 inbox 外任意路径。真实 uuid/
         // 单号 task_id 映射恒等，存量落地目录不受影响。
         let landed = self
             .inbox_root
             .join(crate::fsutil::safe_task_file_name(&begin.task_id));
-        // 韧性删除（T3，同 begin 侧，实现已提升 nemesis_utils::fsutil 共享）。
+        // 韧性删除（同 begin 侧，实现已提升 nemesis_utils::fsutil 共享）。
         if landed.exists()
             && let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&landed)
             && landed.exists()
@@ -835,7 +835,7 @@ impl TransferSink {
             "total_bytes": begin.total_bytes,
             "landed_at": chrono::Local::now().to_rfc3339(),
         });
-        // BUG-20261104-365 横向同族：landed.json 是基线解包的 kind 探针，
+        // 横向同族：landed.json 是基线解包的 kind 探针，
         // 半截文件 = unpack_baseline 误判「空树基线」开跑（真实基线被丢）。
         // 原子写对齐全仓持久化纪律。
         nemesis_utils::file::write_file_atomic(
@@ -874,7 +874,7 @@ impl TransferSink {
             );
         }
         // 6. 落地回调（档案投影接线；失败不影响 ACK——数据已安全落地）。
-        //    锁内 clone、锁外调用（BUG-20261030-202）：回调慢/panic/重入
+        //    锁内 clone、锁外调用：回调慢/panic/重入
         //    都不持锁——持锁调回调会让回调内 set_* 重入死锁、panic 毒化锁。
         let cb = self
             .on_landed
@@ -887,7 +887,7 @@ impl TransferSink {
         Ok(done_reply)
     }
 
-    /// worker→master 超限通知入口（D4 诚实失败路径的 master 侧可见性）。
+    /// worker→master 超限通知入口（诚实失败路径的 master 侧可见性）。
     pub fn note_overlimit(&self, req: &TransferOverlimit) {
         tracing::warn!(
             task_id = %req.task_id,
@@ -895,7 +895,7 @@ impl TransferSink {
             limit = req.limit,
             "[Transfer] worker 报告传输超限（档案未回传）"
         );
-        // 锁内 clone、锁外调用（BUG-20261030-202，理由见 begin 落地回调处）。
+        // 锁内 clone、锁外调用（理由见 begin 落地回调处）。
         let cb = self
             .on_overlimit
             .lock()
@@ -910,7 +910,7 @@ impl TransferSink {
         self.staging_root.join(sanitize_transfer_id(transfer_id))
     }
 
-    /// inbox 根（D5 sweep 复用：master 检查本地已收档案）。
+    /// inbox 根（sweep 复用：master 检查本地已收档案）。
     pub fn inbox_root(&self) -> &Path {
         &self.inbox_root
     }
@@ -933,7 +933,7 @@ fn validate_manifest(req: &TransferBegin) -> Result<(), String> {
     if req.transfer_id.is_empty() || req.task_id.is_empty() {
         return Err("transfer_id/task_id 不能为空".into());
     }
-    // BUG-20261030-203：files 条数闸——病态海量小文件的 begin JSON 可超
+    // files 条数闸——病态海量小文件的 begin JSON 可超
     // 16MiB 传输帧上限（直连 TCP 与桥接 ws 同为 MAX_FRAME_SIZE），到传输
     // 层才被拒时错误不可诊断（"帧过大"，无结构化指引）。上限推导：16MiB
     // ÷ ~160B/条 ≈ 10 万条安全余量；真实项目档案（源码树 + 执行记录）
@@ -950,7 +950,7 @@ fn validate_manifest(req: &TransferBegin) -> Result<(), String> {
     let mut total = 0u64;
     for f in &req.files {
         safe_relative_path(&f.path)?;
-        // F-NEW-2（2026-10-17 四轮审计）：饱和加法——release 下旧 `+=`
+        // F-NEW-2（四轮审计）：饱和加法——release 下旧 `+=`
         // 溢出回绕可让伪造总量绕过一致校验（debug 直接 panic，更糟）。
         // 回绕后 ≠ 声明总量 → 诚实拒绝；真实传输总量远离 u64 上界不触达。
         total = total.saturating_add(f.size);
@@ -987,7 +987,7 @@ fn read_staging_manifest(dir: &Path) -> Option<TransferBegin> {
 /// 列出 staging 已收到的合法块序号（0..chunk_count 内）。合法性 = 文件
 /// 在场**且长度与计划一致**——只看存在性会把崩溃撕裂的半块当「已收」，
 /// sender 永久跳过 → end 组装长度失配死循环，直到 staging 被按龄清扫
-/// （BUG-20261030-198；写入侧已改原子写，此处读侧双保险兜住存量/异源
+/// （写入侧已改原子写，此处读侧双保险兜住存量/异源
 /// 半块）。长度不符 = 不进 have，sender 重发覆盖自愈。
 fn list_received_chunks(st: &Path, begin: &TransferBegin) -> Vec<usize> {
     let mut have = Vec::new();
@@ -1025,7 +1025,7 @@ fn save_dedup(inbox_root: &Path, dedup: &HashMap<String, DedupEntry>) {
     let Ok(json) = serde_json::to_string_pretty(dedup) else {
         return;
     };
-    // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.dedup.json.tmp`
+    // 委托唯一临时名权威 helper（固定 `.dedup.json.tmp`
     // 并发互踩；失败静默容忍语义保留）。
     let _ = nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o644);
 }

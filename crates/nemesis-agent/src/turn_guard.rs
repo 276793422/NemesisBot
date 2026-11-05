@@ -37,11 +37,11 @@ pub const ALTERNATING_LOOP_HARD_STOP: u32 = 24;
 
 /// ⑥ 干预阶梯分级边界（与 [`ALTERNATING_LOOP_HARD_STOP`] 同一真相源）：
 /// 起点 6、 起点 12、 起点 18；≥ [`ALTERNATING_LOOP_HARD_STOP`] 由
-/// escalation 终级接手（不再发 nudge）。[`Self:alternating_nudge`] 消费。
+/// escalation 终级接手（不再发 nudge）。[`Self::alternating_nudge`] 消费。
 pub const LADDER_LEVEL_BOUNDS: [u32; 3] = [6, 12, 18];
 
-/// 升级硬停文案的稳定前缀（P2A）：[`TurnGuard:escalation_message`]
-/// 与集群 worker 侧（`cluster_agent`）共用同一真相源——worker 据此识别
+/// 升级硬停文案的稳定前缀（P2A）：[`TurnGuard::escalation_message`]
+/// 与集群 worker 侧（`cluster_agent`）共用同一权威定义——worker 据此识别
 /// 「升级停轮」形态的终结交付并按失败上报（fail_class=escalation），A 端
 /// 验收决策不再把停止告知当工作交付评审后盲重派。改文案必须保留此前缀
 /// （跨 crate 识别依赖）。
@@ -87,7 +87,7 @@ pub const RECEIPT_MISSING_MARKER: &str =
 
 /// ⑤ Tools whose success is "write-like" — repeating an identical successful
 /// call is almost always a no-op loop. Conservative list; extend as needed.
-/// : the long-reserved "multi_edit" placeholder is now live as
+/// the long-reserved "multi_edit" placeholder is now live as
 /// the actual `multiedit` tool name.
 const WRITE_LIKE_TOOLS: &[&str] = &[
     "edit_file",
@@ -135,13 +135,13 @@ pub struct TurnGuard {
     /// ⑧ Consecutive similar-content rounds this turn.
     repeat_text_count: u32,
     /// （扩展计划）：本轮真实执行收据环（cap 32，FIFO 驱逐）——
-    /// `(receipt, ts_ms)`。由 [`Self:record_tool_outcome_verified`] 对每个
+    /// `(receipt, ts_ms)`。由 [`Self::record_tool_outcome_verified`] 对每个
     /// 真实执行的 registry 结果入账；结果文本自称成功但无收据 → 合成
     /// 失败签名喂 escalation。防幻觉执行证明，不进 LLM 上下文不落盘。
     receipts: std::collections::VecDeque<(String, u64)>,
-    /// ：本轮是否发生过写类工具成功——预算暂停
+    /// 本轮是否发生过写类工具成功——预算暂停
     /// 前编译探针的触发闸（见 `loop/pre_pause_probe`）。只在
-    /// [`Self:record_write_success`] 的写类门内置位（失败不算：edit 原子、
+    /// [`Self::record_write_success`] 的写类门内置位（失败不算：edit 原子、
     /// 失败即未落；exec 类副作用刻意不在触发集合——exec 同时承载只读
     /// 命令，纳入会退化成逢 exec 必探针）。
     had_writes: bool,
@@ -221,7 +221,7 @@ impl TurnGuard {
     ///   → 谎报/注入路径：合成失败签名（[`RECEIPT_MISSING_MARKER`]）按
     ///   失败语义入 ⑥/④ 计数，喂 escalation 判定，并返回合成 nudge；
     /// - 其余组合（有收据的成功 / 任意失败）→ 原样走
-    ///   [`Self:record_tool_outcome`]。
+    ///   [`Self::record_tool_outcome`]。
     pub fn record_tool_outcome_verified(
         &mut self,
         tool: &str,
@@ -267,7 +267,7 @@ impl TurnGuard {
     /// has failed at least [`ALTERNATING_LOOP_HARD_STOP`] times this turn — the
     /// model is ignoring the nudges, so stop the turn to avoid burning the whole
     /// `max_turns` budget. The caller breaks the loop and surfaces the message.
-    /// 派生自 [`Self:escalating_signature`]（单一真相源）。
+    /// 派生自 [`Self::escalating_signature`]。
     pub fn escalation_check(&self) -> Option<String> {
         self.escalating_signature()
             .map(|(sig, count)| Self::escalation_message(&sig, count))
@@ -275,8 +275,8 @@ impl TurnGuard {
 
     /// (devtool-upgrade)：当前已到硬停阈值的第一个 `(tool, error)`
     /// 签名 `(sig, count)`（无则 `None`）。escalation 审批化（loop 侧）据此
-    /// 发提问卡，批准后用 [`Self:clear_signature`] 清计数；
-    /// [`Self:escalation_check`] 亦由此派生。
+    /// 发提问卡，批准后用 [`Self::clear_signature`] 清计数；
+    /// [`Self::escalation_check`] 亦由此派生。
     pub fn escalating_signature(&self) -> Option<(String, u32)> {
         self.fail_freq
             .iter()
@@ -285,7 +285,7 @@ impl TurnGuard {
     }
 
     /// escalation 停轮文案（签名 + 次数 → 用户可见消息）。审批被拒 /
-    /// 超时 / 通路缺失时 loop 侧用同一文案停轮，与 [`Self:escalation_check`]
+    /// 超时 / 通路缺失时 loop 侧用同一文案停轮，与 [`Self::escalation_check`]
     /// 的输出一字不差。
     pub fn escalation_message(sig: &str, count: u32) -> String {
         let tool = sig.split('\x00').next().unwrap_or("tool");
@@ -327,7 +327,7 @@ impl TurnGuard {
         }
     }
 
-    /// ：本轮是否发生过写类工具成功——预算暂停
+    /// 本轮是否发生过写类工具成功——预算暂停
     /// 前编译探针的触发闸（消费方 `loop/pre_pause_probe`）。
     pub(crate) fn had_writes(&self) -> bool {
         self.had_writes
@@ -476,7 +476,7 @@ fn alternating_nudge(tool: &str, count: u32) -> String {
 /// - `Command timed out...` — `ExecTool` timeout-kill, also `Ok(_)`. Same
 ///   logic as the non-zero-exit case: a hung-command loop (interactive prompt
 ///   wait, long test suite) must count as repeated failures. This matches
-///   [`crate:loop_tools:exec_output_passed`] (the exec-shape truth source):
+///   [`crate::loop_tools:exec_output_passed`] (the exec-shape truth source):
 ///   all three exec failure forms (`Exit code:` / `Command timed out` / `Err`)
 ///   are recognized, keeping the guard / WAL / observer / Forge classifications
 ///   on the same scale.
@@ -570,6 +570,6 @@ fn shingles(s: &str, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

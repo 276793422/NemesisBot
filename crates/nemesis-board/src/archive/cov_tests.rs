@@ -24,7 +24,7 @@ fn w6_default_directory_exhaustion_is_honest_error() {
     let err = default_directory(&ws, "proj", &[]).unwrap_err();
     assert!(err.contains("100 个候选名全部被占用"), "{err}");
 
-    // 腾出一个中段候选（-57）→ 立刻可用，报错不是粘性的。
+    // 腾出一个中段候选（57）→ 立刻可用，报错不是粘性的。
     std::fs::remove_dir_all(projects.join("proj-57")).unwrap();
     let got = default_directory(&ws, "proj", &[]).unwrap();
     assert!(got.ends_with("proj-57"), "{got:?}");

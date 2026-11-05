@@ -1,4 +1,4 @@
-//! L6++（2026-09-08）：项目注册表契约测试——缺席/损坏/名称与路径校验/
+//! （2026-09-08）：项目注册表契约测试——缺席/损坏/名称与路径校验/
 //! 上限/重叠矩阵/remove/rename。纯文件操作：每测独立 tempdir，无全局态，
 //! 无跨测竞争。损坏文件 loud 拒绝（写路径）+ lenient 空表（读路径）的
 //! 双姿态是本模块的核心防呆，单独钉死。
@@ -105,7 +105,7 @@ fn test_name_validation_shared_by_create_and_rename() {
         .to_string();
     assert!(err.contains("过长"), "unexpected: {err}");
 
-    // rename 共用同一校验真相源；trim 生效；path/id 不动。
+    // rename 共用同一校验权威定义；trim 生效；path/id 不动。
     let e = create_project(&reg, ws.path(), "demo", proj.to_str().unwrap(), 4).unwrap();
     let err = rename_project(&reg, &e.id, "  ").unwrap_err().to_string();
     assert!(err.contains("名称不能为空"));
@@ -236,7 +236,7 @@ fn test_remove_unbinds_only_and_missing_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// N7（2026-10-13）：指令信任位——serde 缺省 true（老条目零迁移）+ set_project_trust RMW。
+// 指令信任位——serde 缺省 true（老条目零迁移）+ set_project_trust RMW。
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -291,7 +291,7 @@ fn test_set_project_trust_rmw_and_not_found() {
 }
 
 // ---------------------------------------------------------------------------
-// 写并发串行化（2026-10-13 同类横扫补钉）：create/remove/rename/set_trust 都
+// 写并发串行化（同类横扫补钉）：create/remove/rename/set_trust 都
 // 是 load→改→save 的 RMW，WSAPI 各臂可并发到达。无锁时后写者以自己的快照
 // 整体覆盖先写者的更新（save 原子救不了丢更新）——trust 翻转被 create 的
 // 旧快照冲回 true = 指令信任闸静默失效。REGISTRY_WRITE_LOCK 串行化后，

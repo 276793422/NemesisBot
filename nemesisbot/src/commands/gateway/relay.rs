@@ -2,7 +2,7 @@ use super::display::web_bind_and_display_hosts;
 use anyhow::Result;
 use tracing::info;
 
-/// `--relay` 纯中继模式（goal：反向桥与多设备汇聚，一期批次一）：只起
+/// `--relay` 纯中继模式（goal：反向桥与多设备汇聚，一期）：只起
 /// web server（状态页 `/relay` + `/bridge` 接入 + `/d/<node_id>/` 转发），
 /// 不起本地 agent/board/集群/discovery——状态页即全部 UI。
 /// `bridge.server.token` 空 → 拒绝启动（fail-closed，纯中继不允许裸奔）。
@@ -32,13 +32,13 @@ pub(crate) async fn run_relay(home: &std::path::Path, cfg: &nemesis_config::Conf
     // .token 独立把关（上方 fail-closed 校验）。
     let web_bind_host = web_bind_and_display_hosts(&cfg.channels.web.host, true).0;
     let web_port = cfg.channels.web.port;
-    // relay_only（2026-09-20，用户裁决）：纯中继不暴露 hub 自身 dashboard
+    // relay_only（用户裁决）：纯中继不暴露 hub 自身 dashboard
     // ——不传静态资源 + set_relay_only(true)，/ws、全量 /api/*、SPA 静态
     // 资源不装配（/api/* 信任边界是本机/内网，绑 0.0.0.0 公网即失守）。
     // 公网只剩 /health + /bridge 接入 + /relay 状态页 + /d/<node_id>/ 隧道。
     let web_config = nemesis_web::server::WebServerConfig {
         listen_addr: format!("{}:{}", web_bind_host, web_port),
-        // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用（web server
+        // vault：auth_token 支持 vault:/env:/yaml: 引用（web server
         // 侧与 web channel 侧同源解析，两处比较值一致）。鉴权验证类字段：
         // 解析失败回一次性随机 token（fail-closed，绝不静默回空串关鉴权）。
         auth_token: crate::common::resolve_auth_token_or_random(

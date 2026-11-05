@@ -189,7 +189,7 @@ fn global_singleton_set_get_load_live_save_live() {
     assert_eq!(reloaded.gateway.port, 12345);
 }
 
-// （能力扩展）：executor.backend 往返与兼容
+// executor.backend 往返与兼容
 
 /// typed save round-trip：`executor.backend` 显式值经 store.update 落盘后，
 /// 全新 load 读回不丢（同款回归锁per-model untyped 键 round-trip）。

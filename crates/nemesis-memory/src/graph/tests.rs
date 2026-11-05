@@ -783,7 +783,7 @@ async fn graph_default_store() {
     assert_eq!(store.triple_count().await.unwrap(), 0);
 }
 
-// ---- S5 coverage: disk load with blank/malformed lines + triple persistence ----
+// ---- coverage: disk load with blank/malformed lines + triple persistence ----
 
 #[tokio::test]
 async fn load_from_disk_skips_blank_and_malformed_lines() {
@@ -851,7 +851,7 @@ async fn persist_and_reload_triples_roundtrip() {
     assert_eq!(all.len(), 2);
 }
 
-// ---- R1 coverage: load-from-disk failure swallow + save-side dedup ----
+// ---- coverage: load-from-disk failure swallow + save-side dedup ----
 
 #[tokio::test]
 async fn persistence_dir_pointing_at_file_starts_empty() {
@@ -887,7 +887,7 @@ async fn persist_triples_dedupes_identical_keys_on_save() {
     );
 }
 
-// BUG-20261025-59：persist 走唯一临时名权威 helper。旧固定
+// persist 走唯一临时名权威 helper。旧固定
 // `entities.jsonl.tmp` / `triples.jsonl.tmp` 被残留垃圾（目录形态最顽固）
 // 占用时 File::create 失败 → 落盘被静默吞掉（变更永不落盘）。种目录在旧
 // 固定名上：旧实现必红，新实现经唯一临时名照常落盘。
@@ -919,7 +919,7 @@ async fn bug59_persist_survives_residue_at_fixed_tmp_paths() {
     );
 }
 
-// -- BUG-20261029-182 回归锁：键归一大小写一致性 --------------------------
+// -- 回归锁：键归一大小写一致性 --------------------------
 // 存储键统一小写归一（entities 键 + triples 双索引键），结构体字段保留
 // 原始大小写供展示；任何大小写形态的查询必须命中同一份数据。
 

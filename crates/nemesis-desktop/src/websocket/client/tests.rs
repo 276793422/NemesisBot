@@ -391,7 +391,7 @@ fn test_handle_message_empty_json_object() {
 }
 
 // ============================================================
-// Phase 4: Additional coverage for 93%+ target
+// Additional coverage for 93%+ target
 // ============================================================
 
 #[test]
@@ -904,7 +904,7 @@ fn test_client_register_then_close() {
     assert!(result.is_success_response());
 }
 
-// ---- R3 coverage: send_raw state-guard arms ----
+// ---- coverage: send_raw state-guard arms ----
 
 #[test]
 fn test_send_raw_rejects_when_not_connected() {

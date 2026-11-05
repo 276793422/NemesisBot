@@ -523,7 +523,7 @@ fn test_clean_paths_home_separator_variants() {
     // If no home dir is detected the call must still complete without panic.
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[test]
 fn test_s8_clean_paths_without_workspace_config() {

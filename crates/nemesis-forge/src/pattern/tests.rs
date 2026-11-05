@@ -581,7 +581,7 @@ fn test_detect_efficiency_issues_no_slow_sessions() {
 
 #[test]
 fn test_detect_efficiency_issues_slow_session_detected() {
-    // R18 数值钉（修复语义：效率分 = 1 - actual_rounds/(2×全局平均轮数)）。
+    // 数值钉（修复语义：效率分 = 1 - actual_rounds/(2×全局平均轮数)）。
     // 构造：3 个快会话（1 轮 @10ms）+ 1 个慢会话（2 轮 @1000ms）。
     // - global_avg_dur = 406 → 慢会话 avg 1000 > 2×406 ✓ 入选，快会话过滤；
     // - global_avg_rounds = 5/4 = 1.25，actual_rounds = 2；
@@ -754,7 +754,7 @@ fn test_extract_conversation_patterns_returns_combined() {
     );
 }
 
-// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+// ---- coverage batch ---- (quality-hardening goal 冲刺)
 
 #[test]
 fn test_s8_detect_conversation_efficiency_issues_full_paths() {
@@ -822,7 +822,7 @@ fn test_s8_detect_conversation_efficiency_issues_full_paths() {
     }
 }
 
-// ---- S8 Wave 2 ----
+// ---- Wave 2 ----
 
 /// A session with a single experience cannot form a chain: the `exps.len() < 2`
 /// guard skips it, so no conversation tool-chain pattern is emitted.

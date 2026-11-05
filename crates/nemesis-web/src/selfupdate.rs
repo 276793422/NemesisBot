@@ -1,4 +1,4 @@
-//! selfupdate 版本自切换通道（2026-10-13，内部专项总计划 战略项；
+//! selfupdate 版本自切换通道（2026-10-13， 战略项；
 //! 2026-10-22 两段式改造：审批卡/频率保险丝退役，下载与安装分离）。
 //!
 //! apply 通道（LLM自更新通道设计方案 §四；两段式
@@ -53,7 +53,7 @@
 //!   记录路径消费、不依赖布局（旧布局 journal 照旧路径收口，跨版本安全）；
 //!   根目录旧前缀残留由清扫的**过渡兼容层**收掉。成功收口 = 整删 `back/`；
 //!   失败零删除（回滚源原样保留）。
-//! - **plugins 整包替换**（2026-10-22 ：主包自带 plugins/ 子树，
+//! - **plugins 整包替换**（2026-10-22：主包自带 plugins/ 子树，
 //!   整包同版本分发——接口错配根因消失，不需单独打包）：解包产物里
 //!   plugins/ 平面文件先落 `back/plugins.new-{pid}/` staging；舞步 = 既有
 //!   同名让位 `back/plugins.old-{pid}/` → 新文件逐个 rename 进 `plugins/`
@@ -70,7 +70,7 @@
 //!   包格式 magic 分派 zip/tar.gz，不按平台 cfg 硬分）；macos = TARGET_ASSET
 //!   留位（`nightly-macos.tar.gz`，CI 未产出 → check 诚实 asset_present=
 //!   false）、apply 显式拒绝桩；android = APK 发行形态不走本通道，显式
-//!   拒绝桩。能力位单一真相源 = [`apply_supported`]。
+//!   拒绝桩。能力位单一权威 = [`apply_supported`]。
 
 use std::path::{Path, PathBuf};
 
@@ -89,7 +89,7 @@ pub const TARGET_ASSET: &str = "nightly-macos.tar.gz";
 #[cfg(target_os = "android")]
 pub const TARGET_ASSET: &str = "";
 
-/// apply 平台支持位（能力表单一真相源，取代旧 `cfg!(windows)` 单点）：
+/// apply 平台支持位（能力表统一定义，取代旧 `cfg!(windows)` 单点）：
 /// windows/linux = 全链路可用；macos = 机制就绪但 CI 无产物且未实测，
 /// 诚实 false（留位，打开即真）；android = APK 通道，false。
 pub fn apply_supported() -> bool {
@@ -134,7 +134,7 @@ pub struct UpdateJournal {
     pub plugins_new_dir: String,
     /// plugins 逐文件清单（根修）：journal 构造时（任何落盘
     /// 动作之前）按「包内条目 × plugins/ 现状」计算并随 journal 先行落盘
-    /// 回滚以它为唯一真相源，不再从「backup 目录名单差集」推断谁是
+    /// 回滚以它为唯一依据，不再从「backup 目录名单差集」推断谁是
     /// 新装（该推断在 backup 缺席、部分归位两个崩溃窗口都会把旧插件误判
     /// 成 new-only 删掉）。`#[serde(default)]` 兼容旧 journal（空清单 =
     /// 保守模式：只归位 backup，不删任何文件）。
@@ -245,8 +245,8 @@ pub fn commit_matches(current_short: &str, target_full: &str) -> bool {
     !current_short.is_empty() && !target_full.is_empty() && target_full.starts_with(current_short)
 }
 
-/// 包内 version.txt 的 `Commit : <sha>` 行提取（40 hex 全量）。
-/// 「Commit Date : …」行因冒号前多一段不匹配，天然跳过。
+/// 包内 version.txt 的 `Commit: <sha>` 行提取（40 hex 全量）。
+/// 「Commit Date: …」行因冒号前多一段不匹配，天然跳过。
 pub fn extract_commit_from_version_txt(txt: &str) -> Option<String> {
     for line in txt.lines() {
         let line = line.trim();
@@ -1046,11 +1046,11 @@ pub async fn check(
 
 // boot 收口（recover_on_boot）+ 旧进程等待（不门控：任何构建都要能清现场）
 
-/// boot 收口结果（gateway 启动期 tracing 可见）。
+/// boot 收口结果（gateway 启动期 tracing 可）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct BootRecovery {
     /// none / wait_timeout / update_success / rolled_back / recovery_failed
-    /// （recovery_failed = 回滚执行失败，journal 与 .old **保留**，下次
+    /// （recovery_failed = 回滚执行失败，journal 与.old **保留**，下次
     /// 启动 boot 收口幂等重试——旧实现失败也清 journal，现场丢失不可重试）。
     pub action: String,
     pub detail: String,
@@ -1103,7 +1103,7 @@ fn pid_alive(pid: u32) -> bool {
 ///    接力棒；超时继续启动——端口撞上由既有 bind 失败路径诚实报错）；
 /// 2. journal 缺席 → 无事；
 /// 3. phase=restarting：当前 commit 命中目标 → 更新成功，清 journal；
-///    未命中（新包起不来/被换错文件）→ .old 回滚 + 清 journal；
+///    未命中（新包起不来/被换错文件）→.old 回滚 + 清 journal；
 /// 4. phase=staging：rename dance 中途死——.old 在场即回滚，清 journal。
 pub fn recover_on_boot(workspace: &Path, current_commit: &str) -> BootRecovery {
     let exe = std::env::current_exe().unwrap_or_default();
@@ -1190,7 +1190,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
                             detail,
                         }
                     }
-                    // 回滚失败不清 journal——现场（journal + .old + plugins
+                    // 回滚失败不清 journal——现场（journal +.old + plugins
                     // staging）保留，下次启动重试；旧实现无条件清 journal =
                     // 失败即丢现场。
                     Err(fail) => {
@@ -1246,7 +1246,7 @@ fn recover_on_boot_in(workspace: &Path, current_commit: &str, exe: &Path) -> Boo
 /// Windows 舞步：目标位被运行中的 PE 占用时（boot 收口的常态——当前进程
 /// 就跑在待回滚替换的 exe 上），直接 rename(.old→exe) 会撞「文件被占用」。
 /// 运行中 PE 可 rename 不可覆盖，所以先把运行中 exe 让位到 `.failed`
-/// （保留作诊断现场），再 .old→exe；失败则把 `.failed` 尝试回手
+/// （保留作诊断现场），再.old→exe；失败则把 `.failed` 尝试回手
 /// 原位并 Err。非 Windows rename 语义天然可覆盖运行中二进制，单步即可。
 /// 缺 `.old` 分支（noop）的 detail 前缀：boot 调用方据此把 action 记为
 /// `rollback_noop` 而非 `rolled_back`——什么都没回滚就不能宣称回滚完成。
@@ -1439,7 +1439,7 @@ fn remove_loaded_file(target: &Path) -> Result<(), String> {
 /// 回滚完成（detail 区分 noop）/ Err = 失败原因（调用方保 journal，下次
 /// boot 重试）。
 ///
-/// **清单是唯一真相源**（journal 构造时在任何落盘前计算的逐文件意图快照）：
+/// **清单是唯一依据**（journal 构造时在任何落盘前计算的逐文件意图快照）：
 /// - `new_install=false`（替换）：从 backup 归位。**backup 缺席 = 跳过**——
 ///   两种成因（舞步从未让位到该文件 / 上轮回滚已归位）都意味着 plugins/
 ///   里已是旧版，无需也不得动作（旧实现按「backup 名单差集」推断 new-only，
@@ -1714,7 +1714,7 @@ fn sweep_stale_staging(exe: &Path) -> usize {
                 continue;
             }
             if name == failed_name {
-                continue; // 旧布局 .failed 诊断现场，过渡清扫不清
+                continue; // 旧布局.failed 诊断现场，过渡清扫不清
             }
             // plugins staging 目录（前缀匹配，后缀须还有 PID 段——裸 `plugins`
             // 与真实插件目录不沾边）。
@@ -1824,7 +1824,7 @@ pub struct SelfUpdateManager {
     /// 下载方永不等待 apply）。下载任务自身 try_lock，占用中 = 幂等受理。
     pub download_flight: tokio::sync::Mutex<()>,
     /// 下载取消旗标（WSAPI cancel_download 置位；进度回调逐 chunk 轮询，
-    /// 返 false = 中止并整清 updates/）。
+    /// 返 false = 中止并整清 updates）。
     pub download_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 进度快照槽（SSE 之外的轮询观测面）。
     pub download_progress: std::sync::Arc<parking_lot::Mutex<DownloadProgress>>,
@@ -1950,7 +1950,7 @@ impl SelfUpdateManager {
         }
     }
 
-    /// 下载编排：同源解析 → 干净起步 → 流式落 .part → rename 就位 →
+    /// 下载编排：同源解析 → 干净起步 → 流式落.part → rename 就位 →
     /// sha256 → meta 后写。任一步失败 = 整清 updates/ + error 进度帧 +
     /// 审计（调用方拿 Err）。进度经 SSE（100ms 节流）+ 进度槽双面可见。
     async fn download_to_pending(
@@ -2599,7 +2599,7 @@ impl SelfUpdateManager {
         save_journal(&self.workspace, &restarting)?;
         if let Err(e) = spawn_new_version(&exe_path) {
             // 新进程没起来：journal 回 staging 相位，本进程重启后 boot 收口
-            // 按 .old 回滚——自愈路径闭环。
+            // 按.old 回滚——自愈路径闭环。
             let mut back = restarting.clone();
             back.phase = "staging".to_string();
             let _ = save_journal(&self.workspace, &back);
@@ -2716,7 +2716,7 @@ struct ExtractedBundle {
     /// None（旧 CI 包 / 用户自打包）——apply 侧按 Unknown 类处理。
     manifest_bytes: Option<Vec<u8>>,
     /// unix 包内 exe 权限位（tar 条目 mode；zip 臂恒 None——zip 无通用执行位
-    /// 语义，unix 下 .new 落盘走 0755 回落）。读点在 apply 的 `#[cfg(unix)]`
+    /// 语义，unix 下.new 落盘走 0755 回落）。读点在 apply 的 `#[cfg(unix)]`
     /// chmod 臂——windows 构建诚实死字段。
     #[cfg_attr(not(unix), allow(dead_code))]
     exe_unix_mode: Option<u32>,
@@ -2792,7 +2792,7 @@ enum BundleEntry {
 #[cfg_attr(not(any(target_os = "windows", target_os = "linux")), allow(dead_code))] // 消费方=windows/linux apply；macOS/android 桩平台诚实死码
 fn classify_entry(name: &str) -> Result<BundleEntry, String> {
     // 主程序条目：windows 主包 = nemesisbot.exe；linux 主包（macOS 留位同型
-    // ）= 裸名 nemesisbot（daily-release「解压后运行 ./nemesisbot gateway」
+    // ）= 裸名 nemesisbot（daily-release「解压后运行./nemesisbot gateway」
     // 形态）。两个名字都认——解包分派按魔数不按平台，双形态免费共存。
     if name == "nemesisbot.exe"
         || name == "nemesisbot"
@@ -2912,7 +2912,7 @@ fn extract_zip_bundle(zip_bytes: &[u8]) -> Result<ExtractedBundle, String> {
     finish_bundle(exe_bytes, version_txt, manifest_bytes, None, plugins)
 }
 
-/// tar.gz 臂（Linux/macOS 主包）：CI `tar -czf - -C staging .` 产出 `./`
+/// tar.gz 臂（Linux/macOS 主包）：CI `tar -czf - -C staging.` 产出 `./`
 /// 前缀条目——normalize 剥前缀。Directory 条目跳过、Regular 处理、其他
 /// （symlink/hardlink）诚实拒收（解包不跟随链接——链接逃逸是 tar 投毒
 /// 常态面）；exe 权限位随条目 mode 进 [`ExtractedBundle::exe_unix_mode`]。

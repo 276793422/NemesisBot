@@ -1,4 +1,4 @@
-//! P24 Windows ACL 档的 **stub 编译形态**（非 Windows 平台，或 Windows 上
+//! Windows ACL 档的 **stub 编译形态**（非 Windows 平台，或 Windows 上
 //! 关掉 `acl` feature 的裁剪构建）。
 //!
 //! 契约：与 `acl_impl` 完全一致的公共 API 面，行为全部诚实失败——

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use crate::reflector::{ReflectionStats, TraceStats};
 use crate::types::{Artifact, CollectedExperience, ExperienceStats};
 
-/// Forge 侧杂务 LLM 输出预算的统一真相源（aux 杂务三层治理 2026-09-28，
+/// Forge 侧杂务 LLM 输出预算的统一真相源（aux 杂务三层治理，
 /// 用户裁决统一 8192：预算是防失控上限不是支出；thinking 系模型把思考
 /// token 一并计入 max_tokens，旧值 500 已实证间歇烧穿——GLM 真机 cycle1
 /// 两稿全空）。四处消费：SKILL_GENERATOR / SKILL_FIXER（learning_engine）、
@@ -65,8 +65,8 @@ pub fn build_analysis_prompt(stats: &ExperienceStats, total_tools: usize) -> Str
 /// - Statistical summary (tool frequency, success rates)
 /// - High-frequency and low-success patterns
 /// - Existing artifacts
-/// - Phase 5: conversation-level trace insights
-/// - Phase 6: closed-loop learning state
+/// - conversation-level trace insights
+/// - closed-loop learning state
 pub fn build_full_analysis_prompt(
     stats: &ReflectionStats,
     artifacts: &[Artifact],
@@ -128,7 +128,7 @@ pub fn build_full_analysis_prompt(
         ));
     }
 
-    // Phase 5: Conversation-level trace insights
+    // Conversation-level trace insights
     if let Some(ts) = trace_stats {
         sb.push_str("\n## 会话级轨迹洞察\n");
         sb.push_str(&format!("- 会话总数：{}\n", ts.total_traces));
@@ -171,7 +171,7 @@ pub fn build_full_analysis_prompt(
         }
     }
 
-    // Phase 6: Closed-loop learning state
+    // Closed-loop learning state
     if let Some(cycle) = cycle {
         sb.push_str("\n## 闭环学习状态（第六阶段）\n");
         sb.push_str(&format!("- 发现模式数：{}\n", cycle.patterns_found));
@@ -200,7 +200,7 @@ pub async fn semantic_analysis(
 ) -> Result<String, String> {
     let user_prompt = build_full_analysis_prompt(stats, artifacts, trace_stats, cycle);
 
-    // 提示词单一真相源在 nemesis-prompts（M7 集中化）。
+    // 提示词单一真相源在 nemesis-prompts（集中化）。
     let system_prompt = nemesis_prompts::forge::SEMANTIC_ANALYSIS_SYSTEM_PROMPT;
 
     caller.chat(system_prompt, &user_prompt, max_tokens).await
@@ -217,7 +217,7 @@ const MAX_DISTILL_ROWS: usize = 120;
 /// Build a sanitized chronological digest of experiences for distillation.
 ///
 /// 每行一条经验（时序、工具、成败、耗时、会话、输入/输出摘要），先过
-/// [`crate::sanitizer::Sanitizer`] 脱敏再进提示词——经验层虽有采集期
+/// [`crate::sanitizer:Sanitizer`] 脱敏再进提示词——经验层虽有采集期
 /// 脱敏，这里做第二道（防御纵深：蒸馏提示词是明文进 LLM 的面）。
 pub fn build_experience_digest(experiences: &[CollectedExperience]) -> String {
     let sanitizer = crate::sanitizer::Sanitizer::new();
@@ -261,7 +261,7 @@ pub struct DistilledSkill {
 
 /// Distill a step-by-step SKILL.md draft from experiences via LLM.
 ///
-/// `artifacts.auto_skill` 生成面（2026-10-15 MCP-HTTP 安装闭环 W2）：对
+/// `artifacts.auto_skill` 生成面（MCP-HTTP 安装闭环）：对
 /// 「同工具序列多次成功收敛」的模式产出步骤化技能草稿。返回 `Ok(None)`
 /// 表示「无可蒸馏模式 / LLM 回复不合契约」（两者对调用方等价：本轮不出
 /// 草稿，诚实降级）；`Err` 是调用面故障（网络/预算烧穿）。
@@ -292,7 +292,7 @@ pub async fn distill_skill_draft(
 }
 
 /// Parse the distillation LLM response (JSON contract in
-/// `nemesis_prompts::forge::skill_distillation_prompt`).
+/// `nemesis_prompts::forge:skill_distillation_prompt`).
 ///
 /// 严格契约：`has_skill` 为真且 `name`/`skill_md` 均非空、`skill_md` 带
 /// `---` frontmatter——任一不满足按「无可蒸馏」处理（不猜、不救）。
@@ -327,7 +327,7 @@ fn parse_distill_response(raw: &str) -> Option<DistilledSkill> {
     })
 }
 
-/// Forge 产物质量评审 user prompt 构造（LLM-as-Judge 单一真相源）：
+/// Forge 产物质量评审 user prompt 构造（LLM-as-Judge 统一定义）：
 /// evaluator / validator / pipeline 三个调用点共用同一份中文计分卡与 JSON
 /// schema（`version` 传 `None` 时省略版本行，兼容不带版本号的调用面）。
 /// JSON 键与权重是解析契约（消费端按 `correctness`/`quality`/`security`/
@@ -338,7 +338,7 @@ pub fn quality_review_prompt(
     version: Option<&str>,
     content: &str,
 ) -> String {
-    // 文本单一真相源在 nemesis-prompts（M7 集中化）；此处保留原签名作
+    // 文本单一真相源在 nemesis-prompts（集中化）；此处保留原签名作
     // forge 内便捷入口（evaluator/validator/pipeline 调用点不动）。
     nemesis_prompts::forge::quality_review_prompt(kind, name, version, content)
 }
@@ -376,7 +376,7 @@ pub fn extract_json(response: &str) -> Option<serde_json::Value> {
     }
 }
 
-/// 质量评审维度分数解析（单一真相源，2026-10-16 R18 钳制修复）：从 LLM
+/// 质量评审维度分数解析（统一定义， 钳制修复）：从 LLM
 /// 回复 JSON 取一个维度分并**钳制到 0-100**。三个评审调用点（pipeline /
 /// validator / evaluator）共用。
 ///
@@ -398,7 +398,7 @@ pub fn parse_dimension_score(val: &serde_json::Value) -> Option<u32> {
 
 // Provider bridge note:
 // The concrete ProviderBridge adapter is defined in `nemesisbot/src/commands/gateway.rs`
-// because it needs access to `nemesis_providers::router::LLMProvider` which is only
+// because it needs access to `nemesis_providers::router:LLMProvider` which is only
 // available at the binary crate level. The adapter wraps the provider and implements
 // this `LLMCaller` trait.
 //

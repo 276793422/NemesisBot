@@ -111,7 +111,7 @@ impl MessageTool {
     /// Set the send callback function.
     ///
     /// The callback receives `(channel, chat_id, content)` and should deliver
-    /// the message to the appropriate destination. Returns `Ok(())` on success
+    /// the message to the appropriate destination. Returns `Ok()` on success
     /// or `Err(message)` on failure.
     pub async fn set_send_callback(&self, callback: SendCallback) {
         *self.send_callback.lock().await = Some(callback);

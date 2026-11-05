@@ -1,4 +1,4 @@
-//! L07（2026-11-01）：审批卡 diff 预览单测——分派表按序首中、四种形态
+//! （2026-11-01）：审批卡 diff 预览单测——分派表按序首中、四种形态
 //! 全命中、失败路径诚实注记、截断与二进制边界。
 
 use super::*;
@@ -71,7 +71,7 @@ fn dispatch_no_matching_form_returns_none() {
 
 #[test]
 fn dispatch_confusing_args_content_wins_over_command() {
-    // 对抗 P5（形态混淆）：args 同时带 content 与 command——分派表按序首中
+    // 对抗 （形态混淆）：args 同时带 content 与 command——分派表按序首中
     // （write 先于 command），一次只产一种 preview，不拼接。
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("mix.txt");

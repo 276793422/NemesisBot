@@ -15,18 +15,18 @@
 //! is passed via `NEMESISBOT_EXECUTOR_WORKSPACE` so the child does not re-run
 //! path resolution.
 //!
-//! ## MCP 与执行体的边界（G2，2026-10-18）
+//! ## MCP 与执行体的边界（2026-10-18）
 //!
 //! 执行体**不装配 MCP**（`register_shared_tools` 是纯内置工具注册表）——
 //! 生产 MCP 走 gateway 侧 per-agent-loop 装配（`enable_mcp_reload`）。执行体
 //! spawn 时带的 `NEMESISBOT_BROWSER_PROFILE` env 是浏览器身份的**上下文标记**
-//! （P3 T6 语义保留）：它只在「有进程在执行体上下文里 spawn MCP server」时
+//! （语义保留）：它只在「有进程在执行体上下文里 spawn MCP server」时
 //! 生效，而该场景在生产不存在；浏览器 profile 的生产路径是 gateway 内
 //! agent loop 经 `McpManager` 显式注入（server 配置 opt-in
 //! `browser_profile: true`）。两层语义同源见 nemesis-mcp
 //! `stdio_transport::args_with_browser_profile` 文档。
 //!
-//! ## U11 用户态沙盒（Linux landlock/bwrap、macOS Seatbelt）
+//! ## 用户态沙盒（Linux landlock/bwrap、macOS Seatbelt）
 //!
 //! 非 Windows 上 `executor.sandbox=true` 时 gateway 以 stdio spawn + env
 //! `NEMESISBOT_EXECUTOR_SANDBOX=1`（见 `spawn_and_call`）。子进程在进工具
@@ -44,9 +44,9 @@
 //! 线程上先装沙盒（或 re-exec），再用 current_thread runtime 驱动循环——
 //! 循环里的一切（含 tokio::spawn 的任务）都落在线程本身，全部受限。
 //!
-//! See `docs/PLAN/2026-07-08_executor-separation.md` (Layer 1),
-//! `docs/PLAN/2026-07-09_sandboxie-integration.md` (Layer 2), and
-//! the 2026-08-23 remaining-goal plan doc (W2 / U11, local archive).
+//! See `executor-separation` (Layer 1),
+//! `sandboxie-integration` (Layer 2), and
+//! the 2026-08-23 remaining-goal plan doc (/, local archive).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -62,7 +62,7 @@ use nemesis_agent::{SharedToolConfig, register_shared_tools};
 
 mod journal;
 
-// P3 T1：wire 结构收编到 nemesis_agent::executor_transport（两侧单一真相源，
+// wire 结构收编到 nemesis_agent::executor_transport（两侧统一定义，
 // 镜像 struct 删除）。子进程侧消费 `ExecutorRequestOwned`（v1/v2 双兼容
 // 反序列化）+ `ExecutorResponseWire`（call_id 回显 + v1 字节形态不变）。
 
@@ -81,7 +81,7 @@ pub async fn run() -> Result<()> {
         .map_err(|_| anyhow::anyhow!("executor main thread panicked"))?
 }
 
-/// Dedicated-thread main (sync): env → 沙盒决策（U11）→ 工具循环。
+/// Dedicated-thread main (sync): env → 沙盒决策→ 工具循环。
 fn executor_main() -> Result<()> {
     let workspace = std::env::var("NEMESISBOT_EXECUTOR_WORKSPACE")
         .context("NEMESISBOT_EXECUTOR_WORKSPACE not set (executor role requires it)")?;
@@ -94,7 +94,7 @@ fn executor_main() -> Result<()> {
     if sandbox_marker && !already_boxed {
         #[cfg(feature = "sandbox")]
         {
-            // D4（三轮复查根修）：workspace-dacl 受限令牌 spawn 时 fence 已由
+            // （三轮复查根修）：workspace-dacl 受限令牌 spawn 时 fence 已由
             // 内核强制——engage 的 Plain 臂不再因「无用户态后端」触发 strict
             // 拒绝或「unsandboxed」warn（engage 内见 spawn_fenced 注释）。
             let spawn_fenced =
@@ -108,7 +108,7 @@ fn executor_main() -> Result<()> {
                     }
                     anyhow::bail!("wrapped executor exited: {status}");
                 }
-                // P5-2：沙盒介入失败（严格模式拒绝 / re-exec spawn 失败）。
+                // 沙盒介入失败（严格模式拒绝 / re-exec spawn 失败）。
                 // 此时 gateway 的工具调用已在途（per-call 子进程）——先回一行
                 // 干净的协议错误再退出，让模型/用户看到拒绝原因，而不是对着
                 // 「子进程无响应」猜。
@@ -131,7 +131,7 @@ fn executor_main() -> Result<()> {
         }
     }
 
-    // D4（DACL 定向档，2026-09-27）：受限令牌树下 console 分配面治理。
+    // （DACL 定向档）：受限令牌树下 console 分配面治理。
     // gateway 经 workspace-dacl hook 注入的 env 标记在本进程可见 → 先尽力
     // **附着**父进程 console（附着=打开既有 condrv 非写类，白名单下放行；
     // 新分配才会死，见 nemesis-sandbox token.rs 实证）。附着成功 = 本树内
@@ -157,7 +157,7 @@ fn executor_main() -> Result<()> {
     rt.block_on(run_loop(&workspace))
 }
 
-/// 在进工具循环前失败时，向 stdout 回一行协议错误（P5-2）。
+/// 在进工具循环前失败时，向 stdout 回一行协议错误。
 ///
 /// engage 失败发生在任何请求读取之前，但 per-call 子进程被 spawn 的前提就是
 /// gateway 有一个调用在途——直接 exit 会让 gateway 收到 EOF、报「子进程无响
@@ -178,7 +178,7 @@ fn emit_error_response(error: &str) {
     let _ = out.flush();
 }
 
-/// B1（2026-10-31 项目 home 收编）：解析透传的围栏第二根 env（未设/空 =
+/// （项目 home 收编）：解析透传的围栏第二根 env（未设/空 =
 /// 空 vec = 单根旧行为；`split_paths` 平台原生分隔符，与
 /// `ExecutorChannel::env_pairs` 的 `join_paths` 序列化同源互逆）。
 fn parse_extra_roots_env(v: Option<std::ffi::OsString>) -> Vec<std::path::PathBuf> {
@@ -186,7 +186,7 @@ fn parse_extra_roots_env(v: Option<std::ffi::OsString>) -> Vec<std::path::PathBu
         .unwrap_or_default()
 }
 
-/// BUG 修复 2026-11-04：子进程围栏 restrict 开关解析（缺省 true；显式
+/// BUG 修复：子进程围栏 restrict 开关解析（缺省 true；显式
 /// `"0"` = false——镜像主进程 `WorkspaceBoundary.restrict`，其余值视同
 /// true：省 env 不含语义，跟 `NEMESISBOT_LEASE` 同族）。纯函数便于测试，
 /// 不直接摸进程 env。
@@ -200,12 +200,12 @@ async fn run_loop(workspace: &str) -> Result<()> {
     // tool impls. Minimal config: only `workspace`; everything else None →
     // STAY tools (memory/cron/cluster_rpc/...) register as inert stubs that the
     // gateway never invokes (it only sends MOVE tool names over the wire).
-    // B1（2026-10-31 项目 home 收编）：围栏第二根从 env 透传
+    // （项目 home 收编）：围栏第二根从 env 透传
     // （`NEMESISBOT_EXECUTOR_EXTRA_ROOTS`）——项目会话开 executor 分离时，
     // 子进程围栏与主进程同根（第二根 = 项目 agent home），开关两侧行为
     // 不分裂。未设 = 单根旧行为（主 loop/工作流引擎字节不变）。
     let extra_roots = parse_extra_roots_env(std::env::var_os("NEMESISBOT_EXECUTOR_EXTRA_ROOTS"));
-    // BUG 修复 2026-11-04：围栏 restrict 镜像主进程边界开关（gateway 装配
+    // BUG 修复：围栏 restrict 镜像主进程边界开关（gateway 装配
     // 侧经 `NEMESISBOT_EXECUTOR_RESTRICT=0` 透传 false；env 未设/非 "0" =
     // true 旧行为——老网关 spawn 的子进程字节不变）。此前 restrict 恒 true
     // 写死，用户 `restrict_to_workspace=false` 在 executor 分离形态下被
@@ -213,7 +213,7 @@ async fn run_loop(workspace: &str) -> Result<()> {
     let restrict = restrict_from_env(std::env::var_os("NEMESISBOT_EXECUTOR_RESTRICT").as_deref());
     let cfg = SharedToolConfig {
         workspace: Some(workspace.to_string()),
-        // A5（2026-09-04）：子进程侧同样设界——executor 工作区即边界根。
+        // 子进程侧同样设界——executor 工作区即边界根。
         // restrict 缺省 true（能被剥离执行的操作本就该只碰工作区），与
         // gateway 侧纵深防御一致（8 层管线已在 dispatch 前跑过）；显式
         // false = 主进程边界就是关的，子进程镜像同相（不更严也不更松）。
@@ -231,7 +231,7 @@ async fn run_loop(workspace: &str) -> Result<()> {
                 editor_gate: None,
             },
         )),
-        // WS9/P22：executor 侧租约——gateway 在 spawn 前经
+        // /：executor 侧租约——gateway 在 spawn 前经
         // `NEMESISBOT_LEASE=1` 透传「主进程开了租约」（executor 子进程不
         // 读用户 config，装配语义由父进程钉死）。持有者名带本子进程 PID。
         workspace_lease: if std::env::var("NEMESISBOT_LEASE").as_deref() == Ok("1") {
@@ -249,7 +249,7 @@ async fn run_loop(workspace: &str) -> Result<()> {
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);
     debug!("[executor] registered {} tools", tools.len());
 
-    // P3 T2：幂等账（journal）。persistent 模式（NEMESISBOT_EXECUTOR_AGENT_ID
+    // 幂等账（journal）。persistent 模式（NEMESISBOT_EXECUTOR_AGENT_ID
     // 在场）才启用——per-call 子进程每次一调用即退，账本无意义，保持 v1
     // 行为零变化。
     let mut journal = journal::Journal::open(Path::new(workspace));
@@ -268,7 +268,7 @@ async fn run_loop(workspace: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// U11 用户态沙盒（feature 门控 —— trim 构建回退无盒 + warn）
+// 用户态沙盒（feature 门控 —— trim 构建回退无盒 + warn）
 // ---------------------------------------------------------------------------
 #[cfg(feature = "sandbox")]
 mod userland {
@@ -278,7 +278,7 @@ mod userland {
     use anyhow::{Context, Result};
     use nemesis_sandbox::backend::{self, BackendForm, Enforcement, SandboxBackend, SandboxConf};
 
-    // P21（2026-09-25）：拒绝台账钩子是 exec_worker 顶层的兄弟模块，这里
+    // 拒绝台账钩子是 exec_worker 顶层的兄弟模块，这里
     // 引入后在 engage / reexec 各失败臂直接记账。
     use crate::exec_worker::sandbox_denial;
 
@@ -312,10 +312,10 @@ mod userland {
     }
 
     /// 沙盒介入点（executor 专用线程上调用）。默认降级语义 = warn + 无盒
-    /// 继续、永不因沙盒失败而 Err（U11 验收「Landlock 不可用降级无盒+warn
+    /// 继续、永不因沙盒失败而 Err（验收「Landlock 不可用降级无盒+warn
     /// 不崩」）。Err 出口有二：
     /// 1. re-exec 的进程层失败（spawn 不起来 = 代理模式根本没法跑）；
-    /// 2. **P5-2 严格模式**（`executor.strict=true`）：无可用后端 / 自装失败
+    /// 2. ** 严格模式**（`executor.strict=true`）：无可用后端 / 自装失败
     ///    时改判为 Err（fail-closed 拒绝）——gateway 侧闸门已在 spawn 前拒
     ///    绝过一遍，这里是子进程侧的第二道防线（防两边探测结果分叉，如
     ///    bwrap 在闸门过后、子进程启动前的窗口里被卸载）。
@@ -333,18 +333,18 @@ mod userland {
     /// 不受影响——那是另一条 arm，其 strict fail-closed 语义保留。
     pub fn engage(workspace: &str, home: Option<&Path>, spawn_fenced: bool) -> Result<Outcome> {
         let strict = home.map(backend::read_executor_strict).unwrap_or(false);
-        // P1（2026-09-25）：先读网络要求再选后端——禁网 + bwrap 可用 → 选
-        // bwrap（--unshare-net 真禁网）；landlock 仅在允许网络或无 bwrap 时
+        // 先读网络要求再选后端——禁网 + bwrap 可用 → 选
+        // bwrap（unshare-net 真禁网）；landlock 仅在允许网络或无 bwrap 时
         // 上岗（降级时 apply_to_self 的 gaps 仍诚实标注网络缺口）。
         let allow_network = home
             .map(backend::read_executor_allow_network)
             .unwrap_or(false);
         let detected = backend::detect_backend(allow_network);
-        // P24（2026-09-26）：Windows 无平台默认后端（Sandboxie 盒路径不经
+        // Windows 无平台默认后端（Sandboxie 盒路径不经
         // userland engage）——**显式 `executor.backend = "acl"`** 且本机可用
         // 时 AclBackend（用户态完整性围栏，恒 Partial）opt-in 上岗。auto/
         // sandboxie/未知一律维持 None：auto 档不回落用户态实验档（默认行为
-        // 字节不变——2026-09-26 全量回归实证 auto 回落会让既有 executor
+        // 字节不变—— 全量回归实证 auto 回落会让既有 executor
         // 子进程测试的「无盒 warn」静默变成「真实装围栏」，strict 语义也被
         // 改写），显式钉 acl 才启用。
         #[cfg(all(target_os = "windows", feature = "sandbox"))]
@@ -465,7 +465,7 @@ mod userland {
         let exe = std::env::current_exe().context("resolve current exe for re-exec")?;
         let mut inner = std::process::Command::new(&exe);
         // env 继承自本进程（gateway 给的 ROLE/WORKSPACE/SANDBOX 都在）；
-        // REEXEC 防环（盒内实例见到它就跳过沙盒介入）。P21：盒内实例的
+        // REEXEC 防环（盒内实例见到它就跳过沙盒介入）。：盒内实例的
         // dispatch 靠这个键知道「自己在哪个后端里」（台账 backend 字段）。
         inner.env("NEMESISBOT_EXECUTOR_REEXEC", "1");
         inner.env("NEMESISBOT_SANDBOX_BACKEND", backend.name());
@@ -498,7 +498,7 @@ mod userland {
         let status = child.wait().context("wait wrapped executor")?;
         let _ = t_out.join();
         if !status.success() {
-            // P21：盒内实例非零退出（bwrap 包装层拒绝/失败）记台账。此时本
+            // 盒内实例非零退出（bwrap 包装层拒绝/失败）记台账。此时本
             // 进程只是 stdio 代理、无法把结构化错误回注 gateway → 模型不可见。
             sandbox_denial::record(
                 backend.name(),
@@ -514,7 +514,7 @@ mod userland {
 }
 
 // ---------------------------------------------------------------------------
-// P21（2026-09-25）：沙盒拒绝台账钩子（sandbox feature 门控——trim 构建无
+// 沙盒拒绝台账钩子（sandbox feature 门控——trim 构建无
 // 沙盒 → 无台账面）。核心语义见 nemesis_sandbox::denial 模块文档。
 // ---------------------------------------------------------------------------
 #[cfg(feature = "sandbox")]
@@ -626,7 +626,7 @@ async fn stdio_loop(
 }
 
 /// 服务一行请求（两个传输循环共用的协议主体）：解析 → journal replay 命中
-/// 回缓存行 → 未决意图分类（R2 两相账）→ dispatch → （v2 请求）intent
+/// 回缓存行 → 未决意图分类（两相账）→ dispatch → （v2 请求）intent
 /// 记账 → journal 记账 → 序列化响应行。返回值恒带换行。
 async fn serve_line(
     line: &str,
@@ -646,7 +646,7 @@ async fn serve_line(
         }
     };
 
-    // 幂等 replay（P3）：call_id 在完成账 → 该调用曾在先前进程内**执行完成**
+    // 幂等 replay：call_id 在完成账 → 该调用曾在先前进程内**执行完成**
     // （journal 只在执行完成后记账），直接回缓存结果，不重复执行——
     // 杀进程/杀 gateway 语义对齐 kill -9：已提交且完成的调用 at-most-once。
     if let Some(cached) = journal.lookup(&req.call_id) {
@@ -656,7 +656,7 @@ async fn serve_line(
         return cached;
     }
 
-    // R2 两相账 replay 分类：intent 在账而完成不在 = 上次尝试结果未知
+    // 两相账 replay 分类：intent 在账而完成不在 = 上次尝试结果未知
     // （进程在完成记账前中断，副作用可能已发生）。只读白名单安全重执行；
     // 其余诚实回错并**把错误记为完成账**——supervisor 后续按原 call_id 重发
     // 回缓存错误（不重复尝试），模型以新 call_id 显式重试 = 副作用只发生
@@ -690,7 +690,7 @@ async fn serve_line(
     }
 
     // 两相账第一相：dispatch 前记意图（崩溃窗口 = 意图在账而完成不在 →
-    // 重启后 replay 分类可判「结果未知」）。F2（二轮复评）：意图未可靠落盘
+    // 重启后 replay 分类可判「结果未知」）。（二轮复评）：意图未可靠落盘
     // （存储故障/账本不可信）且工具非只读 = 拒绝执行——持久保护缺席时危险
     // 工具不得继续，否则执行体重启后 intent 随内存蒸发、「结果未知」保护
     // 失效。只读白名单照常放行（可用性取舍：读不改状态，最坏 = 重启后重读
@@ -727,7 +727,7 @@ async fn serve_line(
     resp_line
 }
 
-/// R2：崩溃重放可安全重执行的只读白名单（保守子集：纯读取、无副作用——
+/// 崩溃重放可安全重执行的只读白名单（保守子集：纯读取、无副作用——
 /// 执行失败最坏代价是重读一次）。**不在册 = 一律 outcome-unknown 诚实报错**；
 /// 新成员须显式评估加入，不许「看起来无害」顺手放行。
 const READONLY_REPLAYABLE: &[&str] = &["read_file", "list_dir", "grep"];
@@ -793,7 +793,7 @@ async fn dispatch(
             error: String::new(),
         },
         Err(error) => {
-            // P21（2026-09-25）：沙盒 engaged 且错误长得像沙盒拒绝 → 记台账 +
+            // 沙盒 engaged 且错误长得像沙盒拒绝 → 记台账 +
             // 改写为面向模型的可自纠文案；普通错误原样透传（trim 构建无沙盒
             // → 无台账面，feature 门控）。
             #[cfg(feature = "sandbox")]

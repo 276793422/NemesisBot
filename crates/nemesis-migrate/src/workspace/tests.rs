@@ -270,7 +270,7 @@ fn test_migration_plan_serialization() {
 }
 
 // ============================================================
-// Additional coverage tests for 95%+ target — Phase 2
+// Additional coverage tests for 95%+ target —
 // ============================================================
 
 #[test]
@@ -580,7 +580,7 @@ fn test_plan_migration_only_skills_dir() {
 #[test]
 fn test_plan_migration_all_migrateable_files() {
     // Create all 6 migrateable files + verify each is planned as Copy
-    // （BUG-20261028-103：清单补 IDENTITY.md——bot 读人格的唯一根是 workspace
+    // （清单补 IDENTITY.md——bot 读人格的唯一根是 workspace
     // 根，IDENTITY.md 是人格三件套之首，漏掉=crate 链迁移不完整。）
     let dir = TempDir::new().unwrap();
     let src = dir.path().join("src");
@@ -947,7 +947,7 @@ fn test_copy_file_with_mkdir_dst_empty_no_parent() {
     assert!(err.contains("copy"), "unexpected error: {}", err);
 }
 
-/// BUG-20261103-343：目录符号链接环必须诚实跳过（不递归）。旧实现
+/// 目录符号链接环必须诚实跳过（不递归）。旧实现
 /// `path.is_dir()` 跟随链接，链接环（loop → memory 自身）= 病态重复
 /// 递归：每层以「loop\loop\...」假路径重复产出动作，直到 OS 路径长度
 /// 上限（Windows ~260 / Linux PATH_MAX）才收敛。链接创建免提权降级链：

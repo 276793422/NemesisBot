@@ -426,7 +426,7 @@ async fn emit_observer_events_records_request_messages_and_honest_failures() {
         .await;
     assert!(matches!(out, Some(Err(e)) if e.contains("upstream boom")));
 
-    // Manager:emit 对每个 observer tokio:spawn 异步投递（fire-and-forget）
+    // Manager::emit 对每个 observer tokio::spawn 异步投递（fire-and-forget）
     // ——让出调度若干轮等 spawned 任务排空再断言。
     for _ in 0..20 {
         tokio::task::yield_now().await;
@@ -1157,7 +1157,7 @@ async fn bus_flow_async_marker_intermediate_reply() {
         "got: {}",
         out.content
     );
-    // 4724-4734 的快照保存在 tokio:spawn 里 —— run_bus_owned 返回时任务
+    // 4724-4734 的快照保存在 tokio::spawn 里 —— run_bus_owned 返回时任务
     // 可能还没被调度。轮询 mgr 直至快照落内存（否则 spawn 体永不执行）。
     // 用 async has_continuation：sync 版在 runtime 内阻塞会 panic。
     let mut saved = false;
@@ -1514,7 +1514,7 @@ async fn bus_flow_hook_retry_fail_open() {
     assert_eq!(out.content, "original answer");
 }
 
-/// AgentLoop:handle_cluster_continuation 参考实现两臂（1794-1833，
+/// AgentLoop::handle_cluster_continuation 参考实现两臂（1794-1833，
 /// #[allow(dead_code)]，主循环走自由函数；直调覆盖）。
 #[tokio::test]
 async fn handle_cluster_continuation_wrapper_both_arms() {

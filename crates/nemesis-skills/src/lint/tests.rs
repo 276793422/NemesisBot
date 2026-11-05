@@ -65,7 +65,7 @@ fn test_exfiltration_pattern_detected() {
 #[test]
 fn test_obfuscation_and_recon_patterns() {
     let linter = SkillLinter::new();
-    // OBFS-002 matches eval( and Invoke-Expression
+    // OBFS-002 matches eval(and Invoke-Expression
     // RECN-001 matches nmap
     let content = "eval('hidden code') && nmap -sV 10.0.0.1";
     let result = linter.lint(content);
@@ -620,7 +620,7 @@ fn test_lint_multiline_same_pattern() {
 }
 
 // ============================================================
-// S5 coverage: LintWarning serde default severity
+// coverage: LintWarning serde default severity
 // ============================================================
 
 #[test]
@@ -639,7 +639,7 @@ fn test_lint_warning_deserialize_without_severity_defaults_medium() {
 }
 
 // ============================================================
-// M5 供应链扩面：技能目录可执行面 lint（lint_dir）
+// 供应链扩面：技能目录可执行面 lint（lint_dir）
 // ============================================================
 
 #[test]
@@ -657,7 +657,7 @@ fn test_is_surface_file_extension_list() {
 }
 
 /// 恶意载荷藏在 scripts/*.sh 里（SKILL.md 完全干净）→ lint_dir 必须命中，
-/// 且 warning 带文件归属、passed 翻 false（M5 盲区的主回归用例）。
+/// 且 warning 带文件归属、passed 翻 false（盲区的主回归用例）。
 #[test]
 fn test_lint_dir_scans_script_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -687,7 +687,7 @@ fn test_lint_dir_scans_script_files() {
 }
 
 /// 辅助 markdown（references/*.md）也是 agent 会读的指令面——下载执行链
-/// 载荷写在非 SKILL.md 的 .md 里同样要命中。
+/// 载荷写在非 SKILL.md 的.md 里同样要命中。
 #[test]
 fn test_lint_dir_covers_nested_markdown() {
     let dir = tempfile::tempdir().unwrap();
@@ -711,7 +711,7 @@ fn test_lint_dir_covers_nested_markdown() {
     );
 }
 
-/// 非清单形态（data.json / .bin）内容再危险也不进扫描面——扫描范围由
+/// 非清单形态（data.json /.bin）内容再危险也不进扫描面——扫描范围由
 /// 可执行面清单钉死，不因误报噪声扩到数据文件。
 #[test]
 fn test_lint_dir_skips_non_surface_files() {
@@ -727,7 +727,7 @@ fn test_lint_dir_skips_non_surface_files() {
 }
 
 /// 非 UTF-8 的 surface 文件必须字节读 + lossy 兜底扫描——恶意载荷塞一个
-/// 无效字节即可整体逃过 M5 可执行面扫描是盲区复活（记账/签名面都是字节读，
+/// 无效字节即可整体逃过 可执行面扫描是盲区复活（记账/签名面都是字节读，
 /// 扫描面不允许编码形态逃逸）。
 #[test]
 fn test_lint_dir_non_utf8_script_still_scanned() {

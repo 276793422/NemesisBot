@@ -1,11 +1,11 @@
-//! 状态机转移表测试（§1.1 全覆盖）。
+//! 状态机转移表测试（全覆盖）。
 
 use super::*;
 use crate::models::IssueStatus::*;
 
 #[test]
 fn test_valid_transitions_from_table() {
-    // (from, 合法目标集)——逐条对照 §1.1 转移表。
+    // (from, 合法目标集)——逐条对照 转移表。
     let table: &[(IssueStatus, &[IssueStatus])] = &[
         (Backlog, &[Todo, InProgress, Done, Blocked, Cancelled]),
         (Todo, &[InProgress, Done, Blocked, Cancelled]),
@@ -69,7 +69,7 @@ fn test_terminal_states_are_absorbing() {
     for s in all {
         assert!(!can_transition(Done, s), "done must be terminal (→ {s})");
     }
-    // cancelled 唯一终态出口 = backlog（发现④ reopen，2026-09-15）；其余
+    // cancelled 唯一终态出口 = backlog（发现④ reopen）；其余
     // 目标全部非法。
     for s in all {
         if s == Backlog {

@@ -1,4 +1,4 @@
-//! P31 记忆 dreaming —— gateway 侧 cron 挂载 + sweep 执行器。
+//! 记忆 dreaming —— gateway 侧 cron 挂载 + sweep 执行器。
 //!
 //! 职责：
 //! - [`sync_dreaming_job`]：启动时把 `memory.dreaming` 配置节同步到
@@ -67,7 +67,7 @@ pub fn sync_dreaming_job(
     }
 
     // 表达式合法性闸：非法 → 回落默认（warn 留痕）。语义死排程（解析
-    // 通过但永不匹配，如 `0 0 30 2 *`，BUG-20261025-18）同样回落——
+    // 通过但永不匹配，如 `0 0 30 2 *`）同样回落——
     // 挂着 enabled 恒不触发的 sweep job 就是静默僵尸。
     let expr = if !configured_cron.is_empty()
         && nemesis_cron::cron_expr_can_fire(

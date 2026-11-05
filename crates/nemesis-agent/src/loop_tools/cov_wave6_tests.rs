@@ -754,7 +754,7 @@ async fn register_shared_tools_lsp_both_manager_arms() {
     let tools = register_shared_tools(&cfg_ext);
     assert!(tools.contains_key("lsp"), "rust-analyzer expected on PATH");
 
-    // 臂 2：自建 manager（LspTool:new 兜底）。
+    // 臂 2：自建 manager（LspTool::new 兜底）。
     let cfg_self = SharedToolConfig {
         lsp_tool_enabled: true,
         ..Default::default()

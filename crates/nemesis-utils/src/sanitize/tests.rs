@@ -63,7 +63,7 @@ fn length_capped_at_80_with_hash_suffix() {
 
 #[test]
 fn over_limit_keys_differing_at_tail_do_not_collide() {
-    // 2026-09-29 UAT 回归钉（2026-10-10 改真实形态重钉）：cluster 会话键
+    // UAT 回归钉（改真实形态重钉）：cluster 会话键
     // `cluster_rpc:{node_id}/board:{n}`——派发 chat 形态恒为裸数字单号
     // （`board:NB-` 从未被生产代码产出，原夹具误用 issue key 形态）。
     // 节点 id 随主机名变长（此处 60 字符形态真实存在），两位数单号即把
@@ -79,7 +79,7 @@ fn over_limit_keys_differing_at_tail_do_not_collide() {
     assert_ne!(a, c);
     // 同输入两次调用一致（读写两侧同源）。
     assert_eq!(a, sanitize_path_segment(&format!("{node}/board:10")));
-    // D12-4 域分离：hash 形态产物再消毒**不再**原样（hash 输出形态是
+    // 域分离：hash 形态产物再消毒**不再**原样（hash 输出形态是
     // 输出域专属——若直通原样，任何能注入会话键的一方都能把 78 字符
     // 撞形 id 直接落到别人会话的文件段上）。映射仍确定（读写两侧同函
     // 数同输入恒同输出），只是 hash 形态段不再幂等。
@@ -107,7 +107,7 @@ fn whitelist_is_idempotent() {
     assert_eq!(once, "web___user_chat_file_x");
 }
 
-// ---------- D12-4（2026-10-13 第 6 轮审计）：hash 输出形态与输入域分离 ----------
+// ---------- （第 6 轮审计）：hash 输出形态与输入域分离 ----------
 
 #[test]
 fn hash_form_lookalike_input_does_not_pass_through() {
@@ -135,7 +135,7 @@ fn hash_form_lookalike_input_does_not_pass_through() {
 #[test]
 fn hash_output_represented_as_id_lands_elsewhere() {
     // 攻击面回归钉：受害者超限会话键的文件段 V，作为**原始 id**再喂入
-    // 不得落回 V（2026-09-29 纯截断碰撞根修的完整性补丁）。
+    // 不得落回 V（纯截断碰撞根修的完整性补丁）。
     let node = "cluster_rpc:node-laptop-mbrq578qxyz-b11dbf4f-905f-40d9-8530-a2238e5aaf5c";
     let victim = sanitize_path_segment(&format!("{node}/board:10"));
     assert_eq!(victim.len(), 78);
@@ -165,7 +165,7 @@ fn csv_special_chars_wrap_and_double_inner_quotes() {
     assert_eq!(sanitize_csv("cr\rtail"), "\"cr\rtail\"");
 }
 
-// ---------- BUG-20261101-284：LIKE 通配符字面化（单一真相源出口） ----------
+// ----------：LIKE 通配符字面化（统一定义出口） ----------
 
 #[test]
 fn escape_like_escapes_wildcards_and_backslash_first() {
@@ -173,7 +173,7 @@ fn escape_like_escapes_wildcards_and_backslash_first() {
     assert_eq!(escape_like("a%b"), "a\\%b");
     assert_eq!(escape_like("a_b"), "a\\_b");
     // `\` 必须最先转义（防二次解义：若先转义 `%`，已有 `\%` 里的 `\`
-    // 会在第二步被翻倍，语义漂移）。
+    // 会在被翻倍，语义漂移）。
     assert_eq!(escape_like("a\\b"), "a\\\\b");
     // 普通词直通。
     assert_eq!(escape_like("glm-4.7"), "glm-4.7");
@@ -182,7 +182,7 @@ fn escape_like_escapes_wildcards_and_backslash_first() {
     assert_eq!(escape_like("50_100\\200%"), "50\\_100\\\\200\\%");
 }
 
-// ---------- BUG-20261102-328：OWASP CSV Injection 公式前缀守卫 ----------
+// ----------：OWASP CSV Injection 公式前缀守卫 ----------
 
 #[test]
 fn csv_formula_prefixes_get_quote_guard() {
@@ -226,7 +226,7 @@ fn model_identifier_accepts_valid_wire_forms() {
 #[test]
 fn model_identifier_rejects_traversal_and_malformed() {
     use super::validate_model_identifier;
-    // R493 实机实测放行形态：vendor=`..`（含 / 所以过旧 contains('/') 闸）。
+    // 实机实测放行形态：vendor=`..`（含 / 所以过旧 contains('/') 闸）。
     assert!(validate_model_identifier("../../etc/passwd").is_err());
     // `..` 出现在任何段都拒（尾段形态也一样是穿越语义）。
     assert!(validate_model_identifier("openai/../etc").is_err());

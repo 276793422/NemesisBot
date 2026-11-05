@@ -1,4 +1,4 @@
-//! issue CLI 测试（W2 P1 看板命令离线臂）。
+//! issue CLI 测试（看板命令离线臂）。
 //!
 //! 覆盖面：`parse_assignee` / `resolve_issue_id` 纯逻辑（跨平台，不碰 env）
 //! + `run()` 全部分发臂（经 `NEMESISBOT_HOME` 临时根 + 共享 SQLite
@@ -105,13 +105,13 @@ fn resolve_issue_id_unknown_number_errs() {
 // ---------------------------------------------------------------------------
 
 /// RAII 守卫：NEMESISBOT_HOME → 临时根（drop 撤销）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct TempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl TempHomeEnv {
     fn new() -> Self {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -122,7 +122,7 @@ impl TempHomeEnv {
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for TempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
@@ -130,7 +130,7 @@ impl Drop for TempHomeEnv {
 }
 
 /// 重新打开 run() 刚写过的共享库（WAL 多连接，断言持久化副作用）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn reopen_store(home: &std::path::Path) -> BoardStore {
     let db = crate::common::workspace_path(home)
         .join("board")
@@ -140,7 +140,7 @@ fn reopen_store(home: &std::path::Path) -> BoardStore {
         .unwrap()
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_create_without_assignee_persists_backlog_issue() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -172,7 +172,7 @@ fn w_run_create_without_assignee_persists_backlog_issue() {
     assert_eq!(all[0].acceptance_criteria.as_deref(), Some("all green"));
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_create_with_worker_assignee_persists_assignee() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -200,7 +200,7 @@ fn w_run_create_with_worker_assignee_persists_assignee() {
     assert_eq!(all[0].assignee_id.as_deref(), Some("node-b"));
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_list_filters_status_query_and_rejects_unknown_status() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -268,7 +268,7 @@ fn w_run_list_filters_status_query_and_rejects_unknown_status() {
     assert!(err.to_string().contains("未知 status"), "{err}");
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_get_by_number_and_unknown_id_errs() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -298,7 +298,7 @@ fn w_run_get_by_number_and_unknown_id_errs() {
         })
         .map_err(anyhow::Error::msg)
         .unwrap();
-    // 人读编号路径（NB-1）+ 评论/活动列表渲染。
+    // 人读编号路径+ 评论/活动列表渲染。
     run(
         IssueAction::Get {
             issue: "NB-1".into(),
@@ -319,7 +319,7 @@ fn w_run_get_by_number_and_unknown_id_errs() {
     assert!(err.to_string().contains("找不到 issue"), "{err}");
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_assign_set_clear_and_missing_assignee_errs() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -379,7 +379,7 @@ fn w_run_assign_set_clear_and_missing_assignee_errs() {
     assert!(err.to_string().contains("--assignee"), "{err}");
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_status_transition_valid_invalid_name_and_illegal_move() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -441,7 +441,7 @@ fn w_run_status_transition_valid_invalid_name_and_illegal_move() {
     assert!(!err.to_string().is_empty());
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_reopen_cancelled_issue_back_to_backlog() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -486,7 +486,7 @@ fn w_run_reopen_cancelled_issue_back_to_backlog() {
     );
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_comment_projects_stats_all_ok() {
     let _g = crate::GLOBAL_STATE_LOCK

@@ -19,7 +19,7 @@ fn multiedit_args(edits: serde_json::Value) -> String {
     serde_json::json!({ "edits": edits }).to_string()
 }
 
-/// 绝对路径字符串（Windows 下 to_string_lossy 带反斜杠，PathBuf:from 原样
+/// 绝对路径字符串（Windows 下 to_string_lossy 带反斜杠，PathBuf::from 原样
 /// 接受；工具不走 shell，无转义问题）。
 fn p(dir: &std::path::Path, name: &str) -> String {
     dir.join(name).to_string_lossy().to_string()

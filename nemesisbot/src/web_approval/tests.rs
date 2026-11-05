@@ -1,11 +1,11 @@
-//! M7：WebApprovalManager 单元测试。
+//! WebApprovalManager 单元测试。
 //!
 //! 覆盖六条路径：approve / deny / 超时 deny + pending 清理 / 双 respond 竞速
 //! 先到先得 / pending 列表 / ApprovalRequested 广播内容。等待侧测试在纯同步
 //! 线程跑（走 `recv` 直等分支）；`block_in_place` 分支由多线程 flavor 的
 //! async 测试单独覆盖。
 //!
-//! F6（devtool-upgrade 阶段 5）新增：拒绝备注随 verdict 送达（approve 时被
+//! （devtool-upgrade）新增：拒绝备注随 verdict 送达（approve 时被
 //! 忽略 / 空白备注归一 None）+ `ApprovalResolved` 裁决广播（respond 成功 /
 //! 超时自动 deny 两条路径）。
 
@@ -33,7 +33,7 @@ fn mgr_with_events() -> (
 /// 在独立线程发起审批请求（模拟 auditor 的同步调用上下文）。
 ///
 /// timeout 一律传 300：这是「不被超时打断」的安全边际而非被测值——
-/// 真实墙钟超时在慢机/高负载 CI 上会被调度延迟击穿（实录 ET Linux
+/// 真实墙钟超时在慢机/高负载 CI 上会被调度延迟击穿（ET Linux
 /// 2727 测试并行时 10s 竞态红，timeout 先于 respond 触发 → pending
 /// 被清 → respond 诚实报 unknown → unwrap 假红）。只有显式测超时
 /// 行为本身的用例才传小值（1s）。
@@ -148,7 +148,7 @@ fn pending_lists_request_metadata() {
     assert_eq!(list[0]["target"], "cargo publish");
     assert_eq!(list[0]["risk_level"], "HIGH");
     assert_eq!(list[0]["timeout_secs"], 300);
-    // F3:「总是允许」pattern 随 pending 下发（B5 归约：cargo publish *）。
+    // 「总是允许」pattern 随 pending 下发（归约：cargo publish *）。
     assert_eq!(list[0]["pattern"], "cargo publish *");
     assert!(mgr.respond("req-p", true, false, None).unwrap());
     let _ = result_rx.recv_timeout(Duration::from_secs(2));
@@ -181,7 +181,7 @@ async fn broadcast_carries_full_request_payload() {
     assert_eq!(payload["data"]["risk_level"], "CRITICAL");
     assert_eq!(payload["data"]["reason"], "rule: w");
     assert_eq!(payload["data"]["timeout_secs"], 300);
-    // F3: pattern 随事件下发。
+    // pattern 随事件下发。
     assert_eq!(payload["data"]["pattern"], "/tmp/x");
     assert!(mgr.respond("req-b", true, false, None).unwrap());
     let _ = result_rx.recv_timeout(Duration::from_secs(2));
@@ -215,7 +215,7 @@ async fn request_in_tokio_context_uses_block_in_place_and_still_resolves() {
 }
 
 // ---------------------------------------------------------------------------
-// F3（devtool-upgrade 阶段 5）：「总是允许」规则写入
+// （devtool-upgrade）：「总是允许」规则写入
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -232,7 +232,7 @@ fn respond_always_approved_writes_exec_prefix_rule() {
     let rules: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0]["op"], "process_exec");
-    // B5 归约：`cargo publish` → 前缀 pattern（而非原文全文）。
+    // 归约：`cargo publish` → 前缀 pattern（而非原文全文）。
     assert_eq!(rules[0]["pattern"], "cargo publish *");
     assert_eq!(rules[0]["action"], "allow");
     let _ = result_rx.recv_timeout(Duration::from_secs(2));
@@ -326,8 +326,8 @@ fn always_rule_upsert_is_idempotent() {
     assert_eq!(rules.len(), 1, "same command must upsert not duplicate");
 }
 
-/// skills 安装门：安装类操作**永不自动放行**（2026-09-30 复查 #12——原
-/// M3 语义「规则命中不弹卡直接 Approve」已废除：source 目录/URL 记忆 ≠
+/// skills 安装门：安装类操作**永不自动放行**（复查 #12——原
+/// 语义「规则命中不弹卡直接 Approve」已废除：source 目录/URL 记忆 ≠
 /// 载荷记忆，同一路径明天可以装不同内容的技能包）。手写规则（历史遗留/
 /// 绕开写入面）也是死信；无人裁决 = 弹卡超时 Deny（fail-closed 不变）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -378,7 +378,7 @@ async fn late_skills_gate_ignores_install_rules_always_card() {
 }
 
 // ---------------------------------------------------------------------------
-// F6（devtool-upgrade 阶段 5）：拒绝备注 + 裁决广播
+// （devtool-upgrade）：拒绝备注 + 裁决广播
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -470,7 +470,7 @@ async fn resolved_broadcast_fires_on_respond_and_timeout() {
 }
 
 // ---------------------------------------------------------------------------
-// approval_rules.json 写串行锁并发回归钉（2026-10-13 横扫四期）：该文件的
+// approval_rules.json 写串行锁并发回归钉（横扫四期）：该文件的
 // 两个写者——本管理器的 save_always_rule（rules_write 叠加 config_write_lock）
 // 与 security.approvals.clear（config_write_lock）——必须互斥。本钉用「外部
 // 持 config_write_lock 手写规则文件」模拟 clear 臂，验证 save_always_rule
@@ -548,7 +548,7 @@ fn save_always_rule_is_exclusive_with_config_family_lock() {
 }
 
 // ---------------------------------------------------------------------------
-// P1 统一任务层：审批台账（tasks.db approvals 表）
+// 统一任务层：审批台账（tasks.db approvals 表）
 // ---------------------------------------------------------------------------
 
 fn journal_at(
@@ -654,7 +654,7 @@ fn journal_restart_resume_stale_card_decidable_exactly_once() {
 }
 
 // ---------------------------------------------------------------------------
-// R3（2026-10-18 三方复评）：落库时序与裁决竞争
+// （三方复评）：落库时序与裁决竞争
 // ---------------------------------------------------------------------------
 
 use std::collections::HashMap;
@@ -766,7 +766,7 @@ impl nemesis_types::approval_journal::ApprovalJournal for GateJournal {
     }
 }
 
-/// R3 不变量：**内存可见（pending 表/广播）⇒ DB pending 已在**。闸住
+/// 不变量：**内存可见（pending 表/广播）⇒ DB pending 已在**。闸住
 /// record_pending 时，pending 表不得出现、ApprovalRequested 不得广播
 /// （旧序 = 先入册+广播后落库，respond 可在 INSERT 前完成裁决 → 幽灵
 /// pending）；放行后链路照常走通。
@@ -803,7 +803,7 @@ fn journal_pending_persists_before_map_visible_and_broadcast() {
     let _ = result_rx.recv_timeout(Duration::from_secs(2));
 }
 
-/// R3：respond 撞上已记账的 Expired（超时先到）→ `Ok(false)` 显式处理：
+/// respond 撞上已记账的 Expired（超时先到）→ `Ok(false)` 显式处理：
 /// 不送裁决、诚实报 already decided、台账终态保持 expired。旧代码
 /// send-then-record 会把裁决送进已超时的通道并静默忽略 Ok(false)。
 #[test]
@@ -851,7 +851,7 @@ fn respond_after_expired_records_no_verdict_and_errors() {
     assert_eq!(e.status, nemesis_types::approval_journal::status::EXPIRED);
 }
 
-/// R3：超时分支撞上抢先的 respond（respond 的记账先到）→ `Ok(false)` 被尊重：
+/// 超时分支撞上抢先的 respond（respond 的记账先到）→ `Ok(false)` 被尊重：
 /// **不广播假 timeout**、宽限窗收回在途裁决返回真实结果。旧代码无条件广播
 /// 「timeout」+ 强制 deny——用户批了的操作被谎报成超时拒绝。
 #[test]
@@ -930,7 +930,7 @@ fn timeout_honors_raced_respond_and_recovers_verdict() {
     assert_eq!(e.decided_by.as_deref(), Some("web-user"));
 }
 
-/// R3 可用性立场：台账写失败（Err）时裁决照常送达（审批可用性不绑
+/// 可用性立场：台账写失败（Err）时裁决照常送达（审批可用性不绑
 /// tasks.db），审计缺失 loud 留痕——响应仍成功。
 struct ErrJournal;
 
@@ -986,7 +986,7 @@ fn respond_still_delivers_when_journal_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// 审批续执行（2026-10-22 拍板「批准+拒绝都回灌」）：stale 裁决回灌原会话
+// 审批续执行（「批准+拒绝都回灌」）：stale 裁决回灌原会话
 // ---------------------------------------------------------------------------
 
 /// 捕获型注入器：记录 (session_key, content)，送达结果可编程（true=会话
@@ -1188,7 +1188,7 @@ fn ctx_request_routes_session_key_into_entry_and_journal() {
 }
 
 // ---------------------------------------------------------------------------
-// L07（2026-11-01）：孤儿卡配对清理 + diff 预览透传。
+// 孤儿卡配对清理 + diff 预览透传。
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1432,7 +1432,7 @@ async fn preview_absent_when_tool_args_null_or_unmatched() {
 }
 
 // -------------------------------------------------------------------------
-// 并行批审批聚合（BUG-A 第三层，2026-11-05）：同批 N 卡一次裁决。
+// 并行批审批聚合（第三层）：同批 N 卡一次裁决。
 // -------------------------------------------------------------------------
 
 /// 发起**带批号**的审批请求（并行批路径的真实形态：pipeline 从 invocation

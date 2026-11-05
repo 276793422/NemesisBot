@@ -721,7 +721,7 @@ fn test_is_subagent_uppercase() {
 }
 
 // ===========================================================================
-// S12b batch（quality-hardening goal 冲刺）：DMScope Default / 解析防御臂 /
+// batch（quality-hardening goal 冲刺）：DMScope Default / 解析防御臂 /
 // identity-links 空白 peer 早退
 // ===========================================================================
 
@@ -732,7 +732,7 @@ fn s12b_dm_scope_default_is_main() {
 
 #[test]
 fn s12b_parse_agent_key_rejects_empty_agent_or_rest() {
-    // "agent::<rest>"：agent 段为空
+    // "agent:<rest>"：agent 段为空
     assert!(parse_agent_session_key("agent::web:direct:u").is_none());
     // "agent:a:"：rest 段为空
     assert!(parse_agent_session_key("agent:a:").is_none());

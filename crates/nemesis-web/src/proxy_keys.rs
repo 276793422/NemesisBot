@@ -12,9 +12,9 @@
 //!   一律不匹配（回落主 token 校验必 401），防借道提权读会话/文件/配置。
 //!   白名单是**前置内存闸**：Dashboard 路径连盘都不 stat。
 //! - **宁可无 key 回落主 token，不可让配置故障拦死老路径**——缺文件/
-//!   损坏 = 空 key 表（宽和读在 `nemesis-config::proxy_keys_file::list`）。
-//! - key 比对复用 [`crate::api_handlers::verify_token`]（XOR 恒时比较，
-//!   比较语义单一真相源）；空 token 不参与匹配（防空串撞库）。
+//!   损坏 = 空 key 表（宽和读在 `nemesis-config::proxy_keys_file:list`）。
+//! - key 比对复用 [`crate::api_handlers:verify_token`]（XOR 恒时比较，
+//!   比较语义统一定义）；空 token 不参与匹配（防空串撞库）。
 
 use crate::api_handlers::AppState;
 use nemesis_config::proxy_keys_file::{self, ProxyKeyEntry};
@@ -60,7 +60,7 @@ pub(crate) fn match_proxy_caller(state: &AppState, token: &str, path: &str) -> O
     }
     let keys = cached_keys(state)?;
     for k in keys.iter().filter(|k| k.enabled) {
-        // 恒时比较复用 verify_token（比较语义单一真相源）。
+        // 恒时比较复用 verify_token（比较语义统一定义）。
         if crate::api_handlers::verify_token(k.key.trim(), token) {
             return Some(ProxyCaller(Arc::new(k.name.clone())));
         }

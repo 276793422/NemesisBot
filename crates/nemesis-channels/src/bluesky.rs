@@ -39,7 +39,7 @@ pub struct BlueskyConfig {
 pub struct BlueskySessionResponse {
     pub did: String,
     pub handle: String,
-    /// BUG #13 fix (2026-08-25)：AT Protocol createSession 返回 camelCase
+    /// fix：AT Protocol createSession 返回 camelCase
     /// （accessJwt/refreshJwt）。原 snake_case-only 导致 serde 报 missing field，
     /// 会话永远建不起来（整个 Bluesky 出站不可用）。alias 保留内部兼容。
     #[serde(rename = "accessJwt", alias = "access_jwt")]
@@ -523,7 +523,7 @@ impl Channel for BlueskyChannel {
 
         self.base.record_sent();
 
-        // BUG-20261101-277: bluesky 硬限 300 graphemes（服务端 400 拒收整条）。
+        // bluesky 硬限 300 graphemes（服务端 400 拒收整条）。
         // graphemes ≤ chars，char 预算 280 恒安全；长文拆成同父 sibling 回复链。
         let chunks = split_message(&msg.content, 280);
         for chunk in &chunks {

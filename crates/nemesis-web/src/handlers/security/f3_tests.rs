@@ -1,6 +1,6 @@
 //! (devtool-upgrade): SecurityHandler 的 approvals.list / approvals.clear
 //! 命令——「总是允许」规则表管理（纯文件 IO：nemesis-web 不依赖
-//! nemesis-security，条目原样透传；路径唯一真相源 nemesis-path）。
+//! nemesis-security，条目原样透传；路径唯一依据 nemesis-path）。
 
 use super::*;
 use crate::ws_router::{ModuleHandler, RequestContext};

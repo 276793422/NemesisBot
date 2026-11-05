@@ -29,7 +29,7 @@
 //! Install: 拷到 nemesisbot.exe 旁 `plugins/` 子目录（宿主 loader 探测名见下；
 //! exe 同目录仅旧部署回落）。**单文件部署**——镜像构建脚本与 guest 双架构
 //! ELF 全部内嵌在库本体（`resources` 模块 + `plugin_vm_resource_get` 导出），
-//! 宿主用时释放到 workspace；**没有资源目录**（2026-10-22 拍板）。
+//! 宿主用时释放到 workspace；**没有资源目录**（2026-10-22 决策）。
 
 // 同步副本（源：crates/nemesis-plugin/src/vm_display.rs，字节一致纪律）。
 // 插件侧只消费部分常量/类型——未消费面 dead_code 允许（副本不因插件

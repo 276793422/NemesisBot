@@ -84,7 +84,7 @@ fn sync_one_parent(
         if !terminal && parent.status != IssueStatus::InReview {
             store.transition_issue(parent_id, IssueStatus::InReview, actor)?;
         }
-        // 全自动流转 ：子单全部落定 → 触发父单收口验收钩子。
+        // 全自动流转：子单全部落定 → 触发父单收口验收钩子。
         // 旗标判定在 hook 内（未注册 / auto_close_parent=false = no-op，
         // 等价现行为）；cancelled 缺口闸也在 hook 侧。终态父单已收过口，
         // 不重复触发。
@@ -96,7 +96,7 @@ fn sync_one_parent(
     }
     if !all_done {
         // 缺口评论列全子树非 done 项（旧实现只列直接子单——孙层缺口不可
-        // 见）。终态父单（无法推列）也写：SAN-06 冻结缺口就此显形而非
+        // ）。终态父单（无法推列）也写：SAN-06 冻结缺口就此显形而非
         // 永久沉默。非终态父单维持旧防重语义（已在 in_review 不重复写）。
         if terminal || parent.status != IssueStatus::InReview {
             let gap: Vec<String> = subtree
@@ -252,7 +252,7 @@ pub fn spawn_task_cancel(
 /// 单，依赖闸只认 done，死链显形）+ **父子边**（`list_children`：planner
 /// 拆解的依赖边是兄弟链、从不指向父单，只走依赖边则 cancel 父单恒零级联，
 /// 子单沦为僵尸 backlog 且补派触发器还会继续派它们空烧 token）。遍历统一
-/// 走 [`nemesis_board::store::BoardStore::descendants`]（依赖∪父子闭包，
+/// 走 [`nemesis_board::store:BoardStore::descendants`]（依赖∪父子闭包，
 /// visited 防环）——**穿过终态单继续下探**：旧手搓 BFS 在终态单上直接
 /// 跳过且不入队，done/cancelled 中间节点之下的死链从此不可见（依赖链
 /// 穿不过已完成的环节）。终态过滤在动作侧：只有非终态节点被取消。
@@ -415,10 +415,10 @@ pub(super) async fn issue_cancel(
     Err("issue.cancel 需要集群支持（cluster feature 未编译）".to_string())
 }
 
-/// `issue.cancel_dispatch` 实现（B 级清零）：**只撤派发、
+/// `issue.cancel_dispatch` 实现：**只撤派发、
 /// 单据存活**——与 `issue.cancel`（连单终杀）互补的轻量出口。适用场景：
 /// 派错节点想换人重派、worker 假死不等超时 sweep。语义：
-/// - A 侧撤派发行（→ cancelled 终态）+ 下行 task_cancel（fire-and-forget，
+/// - A 侧撤派发行（cancelled 终态）+ 下行 task_cancel（fire-and-forget，
 ///   与 issue.cancel 共用 [`spawn_task_cancel`] 单一出口）；
 /// - 竞态守卫同构：赢竞态（cancel_dispatch Ok(Some)）才动账；输（worker
 ///   恰好回报/超时 sweep 先到）诚实报错——issue 保持写回的状态；

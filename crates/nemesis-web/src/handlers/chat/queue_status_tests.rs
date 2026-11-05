@@ -1,4 +1,4 @@
-//! （能力扩展）：`chat.queue_status` WSAPI 契约测试。
+//! `chat.queue_status` WSAPI 契约测试。
 //!
 //! 契约面：真实 AgentLoop + 预置两条队列的条目 → 响应字段与计数逐项断言
 //! （steer/followUp/capacity/busy/mode/session_key 回显）；空队列零值形态；
@@ -128,7 +128,7 @@ async fn queue_status_reports_steer_and_follow_up_counts() {
     ));
     let key = session_key_of("p4-qs");
     // 1 条插队（`!` 前缀 → next_step）+ 2 条排队（无前缀 → next_turn）。
-    // 经 doc-hidden 测试支撑访问器播种（inbox 字段对 web crate 不可见）。
+    // 经 doc-hidden 测试支撑访问器播种（inbox 字段对 web crate 不可）。
     let inbox = lp.inbox_handle();
     inbox.enqueue(&key, queued(&key, "! 插队消息"));
     inbox.enqueue(&key, queued(&key, "排队一"));

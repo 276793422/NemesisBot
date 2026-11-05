@@ -10,7 +10,7 @@
 //! `panel_llm.enabled`（2026-11-01 决策 C）：面板帧 llm-complete 总闸，
 //! **缺省 false**——插件 manifest 还须 `x-llm = true` 声明（双闸，任一缺 =
 //! 帧内恒 unavailable）。每调用现读无缓存（[`runtime_enabled`] 同款热语义）：
-//! 开关翻转即时生效，无需重启。选本文件而非 config.json 做真相源：本文件
+//! 开关翻转即时生效，无需重启。选本文件而非 config.json 做权威定义：本文件
 //! 已有读改写函数 + config 写锁 + fail-closed 纪律，且不受 typed save_config
 //! 影响（config.json 顶层未知段会被 typed 保存静默丢弃）。
 //!

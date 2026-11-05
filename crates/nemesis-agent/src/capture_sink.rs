@@ -5,7 +5,7 @@
 //! failure.** Normal turns only push lightweight records into an in-memory
 //! ringbuffer (per `session_key`). When a failure signal fires (LLM retry
 //! exhausted, context overflow, session overwrite detected, agent error
-//! funnel), [`CaptureSink:flush`] writes the buffered evidence + the failure
+//! funnel), [`CaptureSink::flush`] writes the buffered evidence + the failure
 //! payload to `{workspace}/logs/capture/{session_key}/{ts}_{signal}/`.
 //!
 //! This is **observability only** — it does not change control flow or
@@ -80,8 +80,8 @@ static GLOBAL: OnceLock<CaptureSink> = OnceLock::new();
 impl CaptureSink {
     /// Initialize the global sink. Call once at gateway startup with the
     /// workspace path and the `debug.capture.enabled` flag. If never called,
-    /// [`CaptureSink:global`] returns `None` and all capture calls are
-    /// no-ops — so unconditional `CaptureSink:global()` call sites stay safe
+    /// [`CaptureSink::global`] returns `None` and all capture calls are
+    /// no-ops — so unconditional `CaptureSink::global()` call sites stay safe
     /// in tests/binaries that never init.
     pub fn init(workspace: PathBuf, enabled: bool) {
         let _ = GLOBAL.set(CaptureSink {
@@ -270,6 +270,6 @@ impl CaptureSink {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

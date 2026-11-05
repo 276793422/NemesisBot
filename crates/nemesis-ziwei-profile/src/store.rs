@@ -1,4 +1,4 @@
-//! profile 目录存储（总控 §6.1 布局 + §10 存储汇总）。
+//! profile 目录存储（总控 布局 + 存储汇总）。
 //!
 //! ```text
 //! <workspace>/ziwei/profiles/<id>/
@@ -75,8 +75,8 @@ impl ProfileStore {
     }
 
     fn assert_id(id: &str) -> Result<(), StoreError> {
-        // id 是路径组件：形态闸单一真相源 = model::is_valid_profile_id
-        //（Profile::validate 同源消费——BUG-20261103-329），拒绝路径穿越。
+        // id 是路径组件：形态闸单一权威 = model::is_valid_profile_id
+        //（Profile::validate 同源消费），拒绝路径穿越。
         if crate::model::is_valid_profile_id(id) {
             Ok(())
         } else {
@@ -243,7 +243,7 @@ pub fn ts_dir_name() -> String {
 }
 
 fn atomic_write_bytes(path: &Path, data: &[u8]) -> Result<(), StoreError> {
-    // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.tmp` 并发互踩）。
+    // 委托唯一临时名权威 helper（固定 `.tmp` 并发互踩）。
     nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), data, 0o644)
         .map_err(|e| StoreError::Io(std::io::Error::other(e)))?;
     Ok(())

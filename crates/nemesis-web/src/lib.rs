@@ -102,7 +102,7 @@ mod proxy_keys_extra_tests;
 #[cfg(test)]
 mod history_filter_tests;
 
-// （改进项三期）：chat.send 写入侧幂等键——LRU 容量 / LRU
+// chat.send 写入侧幂等键——LRU 容量 / LRU
 // touch / sidecar 持久化往返 / 损坏 sidecar 降级 / 纯图 seq=0 形态。
 #[cfg(test)]
 mod chat_dedup_tests;
@@ -117,12 +117,12 @@ mod sse_chat_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod workflow_chat_extra_tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): workflow_chat
+// (, quality-hardening goal 冲刺 web): workflow_chat
 // history unknown-index / happy-read arms + send unknown-index arm.
 #[cfg(all(test, feature = "workflow"))]
 mod workflow_chat_s10b_tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): ProviderAdapter
+// (, quality-hardening goal 冲刺 web): ProviderAdapter
 // tool_calls/options/tools mapping arms + provider-Err arm (llm_bridge.rs
 // itself is compiled unconditionally, so no feature gate needed).
 #[cfg(test)]

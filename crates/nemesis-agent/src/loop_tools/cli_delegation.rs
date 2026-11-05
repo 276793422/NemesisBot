@@ -42,7 +42,7 @@ pub struct CliDelegationSpec<'a> {
 /// per-tool copies.
 pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, String> {
     let mut cmd = Command::new(spec.cli);
-    // Timeout safety: if tokio:time:timeout drops the output() future
+    // Timeout safety: if tokio::time:timeout drops the output() future
     // at the deadline, the spawned child must die with it — without
     // kill_on_drop the CLI process would outlive the tool call as an
     // orphan (second-pass review fix).
@@ -63,7 +63,7 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
     // （NEMESISBOT_VAULT_PASSPHRASE 等）。刻意窄剥——关键词黑名单不适用
     // （第三方 CLI 自身 auth 依赖的 env key 必须保留，全剥砍登录态）。
     // 超时臂 taskkill / find_cli_on_path 的 `where` 属系统工具、不携数据，
-    // 无 env 暴露面，不接闸（窄版语义见 nemesis-utils:env_sanitize 模块文档）。
+    // 无 env 暴露面，不接闸（窄版语义见 nemesis-utils::env_sanitize 模块文档）。
     let stripped_env = nemesis_utils::env_sanitize::sanitize_tokio_command_narrow(&mut cmd);
     if stripped_env > 0 {
         tracing::debug!(
@@ -154,7 +154,7 @@ pub fn delegation_cwd(session_key: &str) -> PathBuf {
 ///
 /// Windows nuance (真机揭的 bug）：npm 风格安装会在 PATH 上
 /// 同时落一个**无扩展名的 POSIX sh shim** 和一个 `.cmd` 包装（`where claude`
-/// 先吐 shim）。`Command:new(<无扩展名>)` 在 Windows 上必失败（os error 193
+/// 先吐 shim）。`Command::new(<无扩展名>)` 在 Windows 上必失败（os error 193
 /// "不是有效的 Win32 应用程序"）——所以这里不能盲取第一行，要优先挑带
 /// Windows 可执行扩展名的候选。
 pub fn find_cli_on_path(name: &str) -> Option<String> {
@@ -213,7 +213,7 @@ fn pick_windows_exec_candidate(lines: &[&str]) -> Option<String> {
 /// Valid claude `--permission-mode` values — the CLI's own camelCase set
 /// (verified against claude CLI 2.1.240 `--help`: acceptEdits / auto /
 /// bypassPermissions / manual / dontAsk / plan). 真机揭的第二个 bug
-/// ： 原来硬编码 snake_case（default/accept_edits/...），
+/// 原来硬编码 snake_case（default/accept_edits/...），
 /// 真实 CLI 直接拒收 `accept_edits`（exit 2 "invalid choice"），委派从未
 /// 在真机上跑通过——mock 测试钉的是错误假设。Default `acceptEdits` —
 /// the non-interactive-safe tier.

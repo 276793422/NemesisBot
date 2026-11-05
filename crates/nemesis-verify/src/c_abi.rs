@@ -3,16 +3,16 @@
 //! 产物：`nemesis_verify.dll`（Win）/ `libnemesis_verify.so`（Linux/Android）/ `libnemesis_verify.dylib`（Mac）。
 //! 外部（exe/测试工具/其他语言）通过 `libloading` 或 `dlopen` 加载本库，调 `nv_*` 函数。
 //!
-//! # 当前状态（S4-5）
+//! # 当前状态
 //! - `nv_verify_target` / `nv_verify_current_exe` / `nv_self_verify`：v4
-//!   Authenticode 管线（S4-1）——PE 载体定位走 Certificate Table（DLL 自验
-//!   同管线），ELF/raw 走 v4 footer 载体；nv_* 签名与返回码 T3 形态不变。
-//! - **根锚注入**：单一真相源 = [`crate::builtin_root_anchors`]（lib.rs，S4-2）——
+//!   Authenticode 管线——PE 载体定位走 Certificate Table（DLL 自验
+//!   同管线），ELF/raw 走 v4 footer 载体；nv_* 签名与返回码 形态不变。
+//! - **根锚注入**：单一权威 = [`crate::builtin_root_anchors`]（lib.rs）——
 //!   编译期 `NEMESIS_BUILD_ROOT_ANCHOR`（根证书 SHA-256 指纹 hex）优先，
 //!   fallback 运行时 `NEMESIS_ROOT_ANCHOR`；两者皆缺/非法 = 空锚集 → `NV_UNTRUSTED`。
-//! - `nv_self_verify`（R7 A2）：读 DLL 字节 + `verify_bytes`（Valid→0，非
-//!   Valid→-4，无锚→-5）；防 patch/防替换等 DLL 自身安全仍是 R7 后续独立命题。
-//! - 查看接口（`nv_list_signatures` / `nv_get_signature`）：S4-3 起 v4（view
+//! - `nv_self_verify`：读 DLL 字节 + `verify_bytes`（Valid→0，非
+//!   Valid→-4，无锚→-5）；防 patch/防替换等 DLL 自身安全仍是 后续独立命题。
+//! - 查看接口（`nv_list_signatures` / `nv_get_signature`）： 起 v4（view
 //!   判据同源，不下结论）。
 
 use crate::verify;
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn nv_verify_target(path: *const c_char, out: *mut NvOutco
     0
 }
 
-/// 验证调用方进程的 exe（`std::env::current_exe()`）。
+/// 验证调用方进程的 exe（`std::env:current_exe()`）。
 ///
 /// # Safety
 /// - `out` 必须指向可写的 `NvOutcome` 内存，或为 null（返回 -1，不解引用）。
@@ -154,11 +154,11 @@ pub unsafe extern "C" fn nv_verify_current_exe(out: *mut NvOutcome) -> c_int {
     0
 }
 
-/// DLL 自验（R7 A2）：读 `dll_path` 字节 + `verify_bytes`（v4 Authenticode；
+/// DLL 自验：读 `dll_path` 字节 + `verify_bytes`（v4 Authenticode；
 /// PE 载体 = Certificate Table 定位）+ 内置根锚判信。
 ///
 /// 调用方传 DLL 路径（Rust cdylib 无 DllMain 存 hinstDLL，DLL 定位自身跨平台复杂——
-/// 由调用方传路径绕过）。返回：0=Valid，<0=非 Valid / 错误（-1 null, -2 utf8, -3 read,
+/// 由调用方传路径绕过）。返回：0=Valid，<0=非 Valid / 错误（1 null, -2 utf8, -3 read,
 /// -4 验签失败, -5 无内置根）。
 ///
 /// # Safety

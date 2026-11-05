@@ -16,7 +16,7 @@ fn same_state_is_never_a_transition() {
 
 #[test]
 fn legal_transitions_exhaustive() {
-    // 主链 + 归档旁路 + 重开 + F3 预留回退。
+    // 主链 + 归档旁路 + 重开 + 预留回退。
     let legal = [
         (ProjectStatus::Active, ProjectStatus::InProgress),
         (ProjectStatus::Active, ProjectStatus::Archived),

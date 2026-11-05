@@ -83,7 +83,7 @@ pub struct ReflectionReport {
     pub llm_insights: Option<String>,
     /// Conversation-level trace stats.
     pub trace_stats: Option<TraceStats>,
-    /// Learning cycle result (Phase 6).
+    /// Learning cycle result.
     pub learning_cycle: Option<nemesis_types::forge::LearningCycle>,
 }
 
@@ -527,7 +527,7 @@ impl Reflector {
     ///
     /// `max_tokens`：语义分析请求的输出预算（思考系模型思考 token 计入
     /// max_tokens，None=provider 默认会间歇烧穿——生产调用方传
-    /// [`crate::reflector_llm::AUX_FORGE_MAX_TOKENS`]；测试可传 None）。
+    /// [`crate::reflector_llm:AUX_FORGE_MAX_TOKENS`]；测试可传 None）。
     pub async fn reflect_with_llm(
         &self,
         experiences: &[CollectedExperience],
@@ -652,7 +652,7 @@ impl Reflector {
     /// Supported values: "today", "week", "all" (default: "today").
     /// Returns `None` for "all" (meaning no time filter).
     ///
-    /// 2026-10-16 R18：`today` 分支此前把 naive 本地午夜 `.and_utc()` 误贴
+    /// `today` 分支此前把 naive 本地午夜 `.and_utc()` 误贴
     /// UTC 偏移（东八区 = 实际截到昨天 16:00），与 filter_by_period 的字符
     /// 串序比较凑成「双重 bug 相消」才表现为正确（本地日期段 >= 今天）。
     /// 两侧同时修正：截止点带真实本地偏移，比较走时刻解析（与
@@ -688,7 +688,7 @@ impl Reflector {
     ///
     /// Returns only experiences whose timestamp is after the resolved cutoff.
     ///
-    /// 2026-10-16 R18：比较从 RFC3339 字符串序改为时刻解析（不同偏移的
+    /// 比较从 RFC3339 字符串序改为时刻解析（不同偏移的
     /// 字符串序与时刻序不一致，`+00:00` 截止点配 `+08:00` 时间戳此前靠
     /// 双重 bug 相消才正确；解析失败 = 不入本期视图，与
     /// trace_store::read_since 同一纪律）。
@@ -1018,7 +1018,7 @@ impl Reflector {
 
     /// Delete report files older than `max_age_days` days.
     ///
-    /// Returns `Ok(())` on success. Errors during individual file deletion
+    /// Returns `Ok()` on success. Errors during individual file deletion
     /// are logged but do not cause the overall operation to fail.
     pub fn cleanup_reports_result(&self, max_age_days: i64) -> Result<(), String> {
         if self.reflections_dir.as_os_str().is_empty() {

@@ -56,7 +56,7 @@ fn normalize_strips_unsafe_symbols() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：引擎构造分支 + FFI 结构甄别
+// 覆盖率冲刺：引擎构造分支 + FFI 结构甄别
 //
 // 无 DLL 时 `safe_create_offline_tts → get_raw_fn` 会 panic
 // "sherpa-onnx not initialized"——should_panic 测试正好执行**全部**
@@ -242,7 +242,7 @@ fn build_model_config_vits_active_others_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// R6（2026-08-27）：build_kokoro_config 直调 voices 缺失臂 + 白盒 generate/Drop
+// build_kokoro_config 直调 voices 缺失臂 + 白盒 generate/Drop
 // new() 用 voices.bin 探测分支，voices 缺失时永远走 VITS——kokoro 的
 // voices.bin fail-fast 臂只能直调私有构造函数触达。
 // ---------------------------------------------------------------------------
@@ -301,7 +301,7 @@ fn tts_drop_null_engine_panics_at_destroy() {
 }
 
 // ---------------------------------------------------------------------------
-// R6：map_fullwidth_punct 直测（normalize 已覆盖逗/顿/句/问/叹，补分号冒号）
+// map_fullwidth_punct 直测（normalize 已覆盖逗/顿/句/问/叹，补分号冒号）
 // ---------------------------------------------------------------------------
 
 #[test]

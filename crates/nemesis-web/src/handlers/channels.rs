@@ -134,7 +134,7 @@ impl ChannelsHandler {
     }
 }
 
-// (, quality-hardening goal 冲刺 web 批次 2): error arms
+// (, quality-hardening goal 冲刺 web): error arms
 // (missing config file / update payload validation) + sensitive-field
 // masking recursion（mask_sensitive_fields 已上移 handlers/mod.rs 共享，
 // 凭据回显脱敏批次）.

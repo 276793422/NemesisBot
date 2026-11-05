@@ -1,4 +1,4 @@
-//! FTS history-search family — ISOLATED test binary (X3 / U20 debt).
+//! FTS history-search family — ISOLATED test binary (/ debt).
 //!
 //! WHY a dedicated integration binary instead of `src/history_search/tests.rs`:
 //! `default_path_manager()` is a process-global `OnceLock` singleton whose
@@ -83,7 +83,7 @@ fn fresh_session(prefix: &str) -> String {
     )
 }
 
-/// 2026-08-23 regression (found by the strict-completion final regression):
+/// regression (found by the strict-completion final regression):
 /// deleting a session's chat log must purge its FTS rows on the next
 /// reindex — pre-fix, deleted files' rows lingered forever (ghost hits
 /// accumulated across runs until they pushed live sessions out of the

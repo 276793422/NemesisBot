@@ -152,8 +152,8 @@ impl ModuleHandler for ClusterHandler {
                 let data = data.ok_or("missing data")?;
                 self.nodes_add(&data, ctx)
             }
-            // cluster.pair（发现②/）：与 CLI `cluster pair` 同一后端
-            // （nemesis_cluster::pair::pair_with_peer）——系统代写 + 回读断言。
+            // cluster.pair（发现②）：与 CLI `cluster pair` 同一后端
+            // （nemesis_cluster::pair:pair_with_peer）——系统代写 + 回读断言。
             "pair" => {
                 let data = data.ok_or("missing data")?;
                 self.pair(&data, ctx).await
@@ -329,7 +329,7 @@ fn format_duration(d: std::time::Duration) -> String {
 }
 
 fn cluster_config_path(workspace: &str) -> PathBuf {
-    // 路径唯一真相源 = nemesis-path（peers.toml 跨 crate 读写三方共用）。
+    // 路径唯一依据 = nemesis-path（peers.toml 跨 crate 读写三方共用）。
     nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
 }
 
@@ -433,11 +433,11 @@ fn inject_cluster_gate(
     }
 }
 
-/// cluster.roaming.status 载荷。enabled=config 闸（单一真相源
+/// cluster.roaming.status 载荷。enabled=config 闸（统一定义
 /// `Cluster::roaming_enabled_in_config`）；active=运行态（roaming 层在跑）；
 /// requires_restart = 两者不一致（用户改了开关还没重启网关）。
 /// `rendezvous` = 名册同步状态（已序列化；Null = 循环未挂—— 形态/未启用）。
-/// QUIC 插件化 ：node_id 走桥（派生在插件内；桥缺席/失败 = null——
+/// QUIC 插件化：node_id 走桥（派生在插件内；桥缺席/失败 = null——
 /// 观测面偏差见 PLAN 注记）。
 async fn roaming_status_payload(
     workspace: &str,
@@ -483,7 +483,7 @@ async fn roaming_status_payload(
 }
 
 /// cluster.roaming.enable/disable 实现。enable 时缺 key 顺手生成（备料，
-/// QUIC 插件化 ：走桥 identity_ensure——身份面在插件内；桥缺席 =
+/// QUIC 插件化：走桥 identity_ensure——身份面在插件内；桥缺席 =
 /// 闸照写 + 诚实注记（gateway 启动时同款 warn 降级），Failed = Err），
 /// 返回身份 hex 供 UI 展示；disable 只写闸。
 async fn roaming_set_enabled_impl(
@@ -984,7 +984,7 @@ impl ClusterHandler {
             Err(_) => std::collections::HashMap::new(),
         };
 
-        // 漫游拨号路径观测批量预查（QUIC 插件化 ：观测槽在插件，一次 FFI
+        // 漫游拨号路径观测批量预查（QUIC 插件化：观测槽在插件，一次 FFI
         // 往返取全量快照；逐节点经 roaming_hex_of 映射，非漫游节点 = null）。
         let dial_paths = cluster.roaming_dial_paths().await;
 
@@ -1140,10 +1140,10 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({ "added": true })))
     }
 
-    /// cluster.pair（发现②/）：地址配对——系统代写 peers.toml。
+    /// cluster.pair（发现②）：地址配对——系统代写 peers.toml。
     ///
     /// 与 CLI `nemesisbot cluster pair` 共用同一后端
-    /// [`nemesis_cluster::pair::pair_with_peer`]（四步：双形态探测 → 拉真实
+    /// [`nemesis_cluster::pair:pair_with_peer`]（四步：双形态探测 → 拉真实
     /// ID → 写盘（字面键）→ 写后回读断言）。成功后若集群运行中，顺手把
     /// 节点以 Online 注册进 registry（探测刚往返成功，在线状态是实测值），
     /// Dashboard 节点列表即时可见。
@@ -1321,7 +1321,7 @@ impl ClusterHandler {
             })
             .unwrap_or_default();
         let node_type = resp["node_type"].as_str().unwrap_or("").to_string();
-        // 职能框架 ：自报 professions/tier 进注册表（旧节点 get_info 无
+        // 职能框架：自报 professions/tier 进注册表（旧节点 get_info 无
         // 这两个键 → 空列表/None = 未宣告，与 announce 缺字段同语义）。
         let professions: Vec<String> = resp["professions"]
             .as_array()
@@ -1341,7 +1341,7 @@ impl ClusterHandler {
                     .collect()
             })
             .unwrap_or_default();
-        // 第 4 步 ③：自报运行时后端形态（旧节点 get_info 无此键 →
+        // 自报运行时后端形态（旧节点 get_info 无此键 →
         // None = 未宣告）。
         let runtime_backend = resp["runtime_backend"].as_str().map(String::from);
 
@@ -1479,7 +1479,7 @@ impl ClusterHandler {
             cluster.set_tags(tag_list.clone());
             updated["tags"] = serde_json::json!(tag_list);
         }
-        // 职能框架 ：professions（slug 数组，规范化 + loud 校验——写进去
+        // 职能框架：professions（slug 数组，规范化 + loud 校验——写进去
         // = 派发匹配数据源，非法 slug 永不命中）+ tier（mini/normal/big，
         // null = 清除回落 auto 推断）。运行时热改写（下一 announce 拍生效）
         // + peers.toml [node] 段持久化（重启保真）。
@@ -2273,7 +2273,7 @@ impl ClusterHandler {
     ///
     /// 管理面恒编译（起 feature 已删）——available 恒 true；插件缺席
     /// 表现为 node_id:null + identity_note（前端按未装配渲染诚实注记）。
-    /// QUIC 插件化 ：身份派生走桥（插件内）——异步化。
+    /// QUIC 插件化：身份派生走桥（插件内）——异步化。
     /// 观测性：rendezvous 段 = 宿主成功快照 × 插件运行态 merge
     /// （[`plugin_bridge::effective_rendezvous_state`]）——失败态（连败
     /// streak/last_error/失败时刻）从插件出（此前只进日志，前端失败徽标
@@ -2306,7 +2306,7 @@ impl ClusterHandler {
             rendezvous,
         )
         .await?;
-        // 闸链快照注入（QUIC 插件化 ：恒编译——插件缺席时 inject 本身
+        // 闸链快照注入（QUIC 插件化：恒编译——插件缺席时 inject 本身
         // 诚实降级，取代旧 cluster-roaming cfg 裁剪形态）。
         inject_cluster_gate(&mut payload, ctx, &workspace);
         Ok(payload)
@@ -2314,7 +2314,7 @@ impl ClusterHandler {
 
     /// cluster.roaming.enable / roaming.disable：写 config `roaming.enabled`，
     /// enable 时缺 key 顺手生成（备料语义与 setup_roaming 同源）。重启网关生效。
-    /// QUIC 插件化 ：身份面走桥——异步化。
+    /// QUIC 插件化：身份面走桥——异步化。
     async fn roaming_set_enabled(
         &self,
         ctx: &RequestContext,

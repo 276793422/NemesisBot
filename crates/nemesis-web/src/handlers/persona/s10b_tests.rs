@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): persona.rs uncovered
+//! (quality-hardening goal 冲刺, web): persona.rs uncovered
 //! helpers + offline shop preview/download paths (cache-injected, no real
 //! GitHub) + activate/restore archive-directory arms.
 //!

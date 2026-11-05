@@ -1,4 +1,4 @@
-//! 看板数据模型（开发计划 §1.4 MVP ★ 表对应的 Rust 类型）。
+//! 看板数据模型（开发计划 MVP ★ 表对应的 Rust 类型）。
 //!
 //! 存储约定：枚举以蛇形字符串落库（`in_progress`），serde 同形；时间戳为
 //! Unix 秒（i64，与 nemesis-data::RequestLog 一致）。
@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 // 枚举
 // ---------------------------------------------------------------------------
 
-/// Issue 状态（§1.1 状态机；合法转移见 [`crate::state_machine`]）。
+/// Issue 状态（状态机；合法转移见 [`crate::state_machine`]）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IssueStatus {
@@ -37,7 +37,7 @@ impl IssueStatus {
     }
 
     /// 从库里的字符串解析（未知名回退 `None`，由调用方报错）。
-    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str:FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "backlog" => Some(IssueStatus::Backlog),
@@ -77,7 +77,7 @@ impl std::fmt::Display for IssueStatus {
 }
 
 /// 评论类型：普通评论 / 状态变更痕迹 / 系统写入（autopilot、回流等）；
-/// M3 扩展：讨论发言 / 提问 / 交付物回流（信封 `board.comment.post` 的
+/// 扩展：讨论发言 / 提问 / 交付物回流（信封 `board.comment.post` 的
 /// `mtype` 与之对应）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -102,7 +102,7 @@ impl CommentType {
         }
     }
 
-    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str:FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "comment" => Some(CommentType::Comment),
@@ -124,24 +124,24 @@ pub mod priority {
     pub const URGENT: i32 = 3;
 }
 
-/// 派发记录状态（表 `issue_dispatch.state`；P4 超时/取消策略在此基础上扩展）。
+/// 派发记录状态（表 `issue_dispatch.state`； 超时/取消策略在此基础上扩展）。
 pub mod dispatch_state {
     /// 已派发，等 worker 回报（peer_chat_callback）。
     pub const DISPATCHED: &str = "dispatched";
-    /// worker 已出队开跑（goal P2/D0b 重平衡信号：queued vs executing 的
+    /// worker 已出队开跑（goal / 重平衡信号：queued vs executing 的
     /// 分界——重平衡只挪 queued 单，running 单不可迁移）。由 worker 出队时
     /// 经 nb_bus `task.started` 上报（信封 ns="task"）。
     pub const RUNNING: &str = "running";
     /// worker 成功回报（写回结果评论 + issue → in_review）。
     pub const DONE: &str = "done";
-    /// worker 汇报失败 / RPC 送达失败 / 超时 sweep 兜底（P4）。
+    /// worker 汇报失败 / RPC 送达失败 / 超时 sweep 兜底。
     pub const FAILED: &str = "failed";
-    /// 管理端主动取消（P4 per-task cancel；终结动作见 store 的
+    /// 管理端主动取消（per-task cancel；终结动作见 store 的
     /// cancel_dispatch / fail_dispatch）。
     pub const CANCELLED: &str = "cancelled";
 }
 
-/// 派发记录（表 `issue_dispatch`；W2 P2 派发链路：issue ↔ peer_chat task 绑定）。
+/// 派发记录（表 `issue_dispatch`； 派发链路：issue ↔ peer_chat task 绑定）。
 /// task_id 是 peer_chat_callback 的写回路由键。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DispatchRecord {
@@ -153,13 +153,13 @@ pub struct DispatchRecord {
     pub state: String,
     pub dispatched_at: i64,
     pub completed_at: Option<i64>,
-    /// 派发代际号（AOR 批二a ④）：首派 0、第 N 次重派 N-1（落库时按该
+    /// 派发代际号（a ④）：首派 0、第 N 次重派 N-1（落库时按该
     /// issue 已有派发行数计算）。随派发下行到 worker、写回原样回声——
     /// 写回闸据此拒绝旧代迟到回调覆盖新一代派发状态。
     pub generation: i64,
 }
 
-/// 自检取证在途路由持久行（表 `selfcheck_pending`；BUG-20261105-012）。
+/// 自检取证在途路由持久行（表 `selfcheck_pending`）。
 /// selfcheck 派发不写 `issue_dispatch`（写了会被 Route 0 当交付写回），
 /// 路由键以本表持久化：gateway 重启后内存注册表清零，worker 取证回调凭
 /// 本表兜底路由；`status`/`response` 同时是二段验收状态机——`None` =
@@ -185,14 +185,14 @@ pub struct SelfcheckPendingRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub id: i64,
-    /// 人读编号，如 `NB-42`（workspace 前缀 + 自增 counter）。
+    /// 人读编号，如 ``（workspace 前缀 + 自增 counter）。
     pub number: String,
     pub title: String,
     #[serde(default)]
     pub description: String,
     pub status: IssueStatus,
     pub priority: i32,
-    /// 多态指派（§1.3）：manager_self 或 worker；未指派为 None。
+    /// 多态指派：manager_self 或 worker；未指派为 None。
     pub assignee: Option<crate::assignment::AssignmentType>,
     pub assignee_id: Option<String>,
     pub creator: crate::assignment::Actor,
@@ -200,42 +200,42 @@ pub struct Issue {
     pub project_id: Option<i64>,
     /// 截止时间（Unix 秒）。
     pub due_date: Option<i64>,
-    /// 看板列内排序位（P3 拖拽用）。
+    /// 看板列内排序位（拖拽用）。
     pub position: i64,
-    /// 验收标准（JSON 或自由文本；完成判定 §8：manager agent 自判 done）。
+    /// 验收标准（JSON 或自由文本；完成判定：manager agent 自判 done）。
     #[serde(default)]
     pub acceptance_criteria: Option<String>,
     /// 来源（autopilot/cron/channel/...；MVP 仅记录，不做路由）。
     pub origin: Option<TaskOrigin>,
-    /// Swarm M1（planner 拆解）：派发需求角色（匹配器硬条件；None=不限）。
+    /// Swarm （planner 拆解）：派发需求角色（匹配器硬条件；None=不限）。
     #[serde(default)]
     pub required_role: Option<String>,
-    /// Swarm M1：派发需求标签（匹配器硬条件；空=不限）。
+    /// Swarm：派发需求标签（匹配器硬条件；空=不限）。
     #[serde(default)]
     pub required_tags: Vec<String>,
-    /// 集群专业职能框架（M2）：派发需求职能 slug（`family[:spec]`，精确
+    /// 集群专业职能框架：派发需求职能 slug（`family[:spec]`，精确
     /// 匹配无继承；None/空 = 不限职能）。
     #[serde(default)]
     pub required_profession: Option<String>,
-    /// 环境能力硬条件（NB-122 批 2026-10-16）：派发需求节点能力词（与
+    /// 环境能力硬条件（16）：派发需求节点能力词（与
     /// 节点宣告的 capabilities 同词表；匹配是全量硬闸、不参与松弛，见
     /// matcher 硬条件 5）；空 = 无能力需求。
     #[serde(default)]
     pub required_capabilities: Vec<String>,
-    /// 派发需求运行时后端（P6-R1，2026-10-21）：`process`|`vm`，与节点
+    /// 派发需求运行时后端：`process`|`vm`，与节点
     /// 宣告的 runtime_backend 精确匹配（大小写不敏感；节点未宣告 =
     /// fail-closed 排除，不参与松弛，见 matcher 硬条件 6）；None/空 =
     /// 无需求不过闸（旧节点混编零回归）。
     #[serde(default)]
     pub required_backend: Option<String>,
-    /// 交付证据契约（G4，2026-10-18 批六）：AC 含 file: 类锚点 → 建单时
-    /// 自动置位（单一真相源在 [`crate::store::BoardStore::create_issue`]，
+    /// 交付证据契约：AC 含 file: 类锚点 → 建单时
+    /// 自动置位（统一定义在 [`crate::store:BoardStore::create_issue`]，
     /// 按 `has_file_anchor` 谓词）；置位后验收 PASS 必须有交付记录背书
     /// （delivered/confirmed），缺失 = 评审门降级 FAIL「缺交付证据」。
     /// 只读字段（无 patch 面）：由 AC 内容决定，不是人工意志位。
     #[serde(default)]
     pub requires_evidence: bool,
-    /// 取消单「永久收起」标记（P1/A2b 清理出口）：任何前端表面都不再出现，
+    /// 取消单「永久收起」标记（/ 清理出口）：任何前端表面都不再出现，
     /// 即使「显示已取消」开关打开。board.db 仍保留行（审计链完整）。
     #[serde(default)]
     pub hidden: bool,
@@ -257,7 +257,7 @@ pub struct TaskOrigin {
     pub origin_meta: BTreeMap<String, String>,
 }
 
-/// 评论（表 `comment`；`parent_id` 支持一层线程，P3 UI 展开）。
+/// 评论（表 `comment`；`parent_id` 支持一层线程， UI 展开）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
     pub id: i64,
@@ -281,7 +281,7 @@ pub struct ActivityLog {
     pub created_at: i64,
 }
 
-/// 审计决策行（全自动流转 P5/E2 决策流视图）：`auto_decide` 活动 + 关联
+/// 审计决策行（全自动流转 / 决策流视图）：`auto_decide` 活动 + 关联
 /// 单据编号/标题（JOIN 补齐，决策列表直接可读）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditDecisionRow {
@@ -298,7 +298,7 @@ pub struct AuditDecisionRow {
 pub struct RollbackPrecedent {
     /// 回滚活动 id（activity_log.id）。
     pub rollback_activity_id: i64,
-    /// 关联单据编号（如 NB-12）。
+    /// 关联单据编号（如）。
     pub issue_number: String,
     /// 单据标题。
     pub issue_title: String,
@@ -309,7 +309,7 @@ pub struct RollbackPrecedent {
     pub rollback_reason: String,
 }
 
-/// 订阅者（表 `issue_subscriber`；通知投递 P4 接通道）。
+/// 订阅者（表 `issue_subscriber`；通知投递 接通道）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscriber {
     pub issue_id: i64,
@@ -318,7 +318,7 @@ pub struct Subscriber {
     pub reason: String,
 }
 
-/// 项目状态（全自动流转 P3/F2）：主链 `active → in_progress → completed`，
+/// 项目状态（全自动流转）：主链 `active → in_progress → completed`，
 /// 归档旁路 `archived`。合法转移表见 [`crate::project_state`]；存量库中的
 /// 未知字符串在读取时宽容映射 `active`（[`crate::store`] row 映射统一收口）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -341,7 +341,7 @@ impl ProjectStatus {
     }
 
     /// 从库里的字符串解析（未知名回退 `None`，由调用方决定宽容/报错）。
-    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str:FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "active" => Some(ProjectStatus::Active),
@@ -357,7 +357,7 @@ impl ProjectStatus {
         match self {
             ProjectStatus::Active => "in_progress/archived",
             ProjectStatus::InProgress => "completed/archived",
-            // completed → in_progress 为 P4 F3 项目级验收 FAIL 自动回退预留。
+            // completed → in_progress 为 项目级验收 FAIL 自动回退预留。
             ProjectStatus::Completed => "archived/in_progress",
             ProjectStatus::Archived => "active（重开）",
         }
@@ -377,32 +377,32 @@ pub struct Project {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// 状态词表：`active / in_progress / completed / archived`（F2 状态机，
+    /// 状态词表：`active / in_progress / completed / archived`（状态机，
     /// 合法转移见 [`crate::project_state`]）。落库为自由字符串——前端兼容
-    /// 旧值；写入校验收口在 [`crate::store::BoardStore::update_project`]。
+    /// 旧值；写入校验收口在 [`crate::store:BoardStore::update_project`]。
     pub status: String,
     pub priority: i32,
     pub lead: Option<crate::assignment::Actor>,
     #[serde(default)]
     pub icon: String,
-    /// 项目级验收标准（v10 列；空 = 无）。F3 收口验收聚合父单 AC 时本字段
+    /// 项目级验收标准（v10 列；空 = 无）。 收口验收聚合父单 AC 时本字段
     /// 排首位——project.create/patch 写入，完成判定真实消费（此前只存父单，
     /// 项目级标准无处安放）。
     #[serde(default)]
     pub acceptance_criteria: String,
-    /// 项目档案目录绝对路径（v12 列；看板项目档案 goal P2/B1）。None =
+    /// 项目档案目录绝对路径（v12 列；看板项目档案 goal）。None =
     /// 存量项目/未绑定——不参与档案管线（投影/里程碑写入全部跳过，不回填）。
     /// **绑定不可变**：仅 create_project 写入一次，此后改名不改目录；
     /// ProjectPatch 刻意不含本字段（无任何修改入口）。
     #[serde(default)]
     pub directory: Option<String>,
-    /// 冲突冻结标志（v14 列；看板项目档案 goal P5/F2）。true = 项目域冻结：
+    /// 冲突冻结标志（v14 列；看板项目档案 goal）。true = 项目域冻结：
     /// 新派发被闸拒绝、合并只登记 pending_merges 不合入。只限本项目（不株连
     /// 其他项目），不动 ProjectStatus 状态机。系统管理（冲突停车置位 /
     /// `project.resume` 解除），ProjectPatch 刻意不含。
     #[serde(default)]
     pub conflict_frozen: bool,
-    /// 待补合并队列（v14 列 JSON；看板项目档案 goal P5/F3）。冻结期在途
+    /// 待补合并队列（v14 列 JSON；看板项目档案 goal）。冻结期在途
     /// 交付「收到→入档案→不合入」，未合入变更集按完成顺序登记于此；
     /// 解冻后串行补合并（补合并再冲突→再走漏斗）。系统管理，ProjectPatch
     /// 刻意不含。
@@ -411,7 +411,7 @@ pub struct Project {
     pub created_at: i64,
 }
 
-/// 待补合并队列条目（P5/F3）：冻结期收到但未合入的变更集登记。
+/// 待补合并队列条目：冻结期收到但未合入的变更集登记。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PendingMerge {
     /// 派发任务 id（变更集归属键）。
@@ -426,7 +426,7 @@ pub struct PendingMerge {
     pub parked_at_ms: i64,
 }
 
-/// 附件元数据（表 `attachment`；P1 只记录元数据，文件上传 P3）。
+/// 附件元数据（表 `attachment`； 只记录元数据，文件上传）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
     pub id: i64,
@@ -437,8 +437,8 @@ pub struct Attachment {
     pub created_at: i64,
 }
 
-/// 通知种类词表（表 `notification.kind`；P3 store + dashboard 收件箱，
-/// 经 21 通道的站外投递留 P4）。
+/// 通知种类词表（表 `notification.kind`； store + dashboard 收件箱，
+/// 经 21 通道的站外投递留）。
 pub mod notification_kind {
     /// 被指派（收件人 = 新指派对象）。
     pub const ASSIGNED: &str = "assigned";
@@ -449,11 +449,11 @@ pub mod notification_kind {
     /// 指派的 issue 状态变化（收件人 = 指派对象 − 操作者；状态在看板列
     /// 可见，订阅者不推——避免 worker 回报写回时对创建者双份轰炸）。
     pub const STATUS_CHANGED: &str = "status_changed";
-    /// 派发失败（P4 超时 sweep / worker 离线兜底；收件人 = 创建者 ∪ 指派
-    /// 对象 ∪ 订阅者，由 sweep 调用方显式 [`crate::BoardStore::notify`]，
+    /// 派发失败（超时 sweep / worker 离线兜底；收件人 = 创建者 ∪ 指派
+    /// 对象 ∪ 订阅者，由 sweep 调用方显式 [`crate::BoardStore:notify`]，
     /// 不走 store 内部钩子）。
     pub const DISPATCH_FAILED: &str = "dispatch_failed";
-    /// 重规划建议被策略闸拒绝（AOR 批三 5.3：autonomous 模式下建议动作
+    /// 重规划建议被策略闸拒绝（autonomous 模式下建议动作
     /// 超约束被拒 → 冻结 + 审计评论 + 本通知显形——宁可停不可闯）。
     pub const REPLAN_BLOCKED: &str = "replan_blocked";
 }
@@ -465,7 +465,7 @@ pub struct Notification {
     pub recipient: crate::assignment::Actor,
     /// [`notification_kind`] 词表。
     pub kind: String,
-    /// 单行人读摘要（如 `NB-3 修复登录`）。
+    /// 单行人读摘要（如 ` 修复登录`）。
     pub title: String,
     /// 正文片段（评论原文 / 变更说明）。
     #[serde(default)]
@@ -476,7 +476,7 @@ pub struct Notification {
     pub created_at: i64,
 }
 
-/// 发通知的输入（[`crate::BoardStore::notify`]）。
+/// 发通知的输入（[`crate::BoardStore:notify`]）。
 #[derive(Debug, Clone)]
 pub struct NewNotification {
     pub recipient: crate::assignment::Actor,
@@ -504,15 +504,15 @@ pub struct NewIssue {
     pub due_date: Option<i64>,
     pub acceptance_criteria: Option<String>,
     pub origin: Option<TaskOrigin>,
-    /// Swarm M1（planner 拆解）：派发需求角色/标签（None/空 = 不限）。
+    /// Swarm （planner 拆解）：派发需求角色/标签（None/空 = 不限）。
     pub required_role: Option<String>,
     pub required_tags: Vec<String>,
-    /// 集群专业职能框架（M2）：派发需求职能 slug（None/空 = 不限）。
+    /// 集群专业职能框架：派发需求职能 slug（None/空 = 不限）。
     pub required_profession: Option<String>,
-    /// 环境能力硬条件（NB-122 批 2026-10-16）：派发需求节点能力词
+    /// 环境能力硬条件（16）：派发需求节点能力词
     /// （匹配硬闸、不参与松弛）；空 = 无能力需求。
     pub required_capabilities: Vec<String>,
-    /// 派发需求运行时后端（P6-R1）：`process`|`vm`，精确匹配 + fail-closed
+    /// 派发需求运行时后端：`process`|`vm`，精确匹配 + fail-closed
     /// （不参与松弛）；None/空 = 无需求不过闸。
     pub required_backend: Option<String>,
 }
@@ -560,16 +560,16 @@ pub struct IssueFilter {
     pub priority: Option<i32>,
     /// 编号/标题子串（大小写不敏感；空串不过滤）。
     pub query: Option<String>,
-    /// 排除归档项目（status=archived）名下的子单（P1/A2）。无项目单不受
+    /// 排除归档项目（status=archived）名下的子单。无项目单不受
     /// 影响。Default false = 全量（既有内部调用行为不变）；WSAPI issue.list
     /// 按 `include_archived_projects` 入参映射（默认排除——用户面两个页签
     /// 同享一份默认，不留「列表隐藏看板还在」的半吊子）。
     pub exclude_archived_projects: bool,
-    /// 排除已取消单（P1/A2b）。Default false = 全量；WSAPI issue.list 按
+    /// 排除已取消单。Default false = 全量；WSAPI issue.list 按
     /// `include_cancelled` 入参映射（默认排除，可开关显示）。
     pub exclude_cancelled: bool,
-    /// 排除 hidden 单（P1/A2b 清理出口——永久收起，没有放行口）。Default
-    /// false = 全量（内部调用/详情可见）；WSAPI issue.list 恒置 true。
+    /// 排除 hidden 单（/ 清理出口——永久收起，没有放行口）。Default
+    /// false = 全量（内部调用/详情可）；WSAPI issue.list 恒置 true。
     pub exclude_hidden: bool,
 }
 
@@ -595,11 +595,11 @@ pub struct ProjectPatch {
     pub description: Option<String>,
     pub status: Option<String>,
     pub icon: Option<String>,
-    /// 项目级验收标准（v10 列；F3 收口验收聚合输入首位）。None = 不改。
+    /// 项目级验收标准（v10 列； 收口验收聚合输入首位）。None = 不改。
     pub acceptance_criteria: Option<String>,
 }
 
-/// 自动化规则（W2 P4 autopilot；表 `autopilot`）：到点建 issue（标题支持
+/// 自动化规则（autopilot；表 `autopilot`）：到点建 issue（标题支持
 /// `{date}` 占位符）并可向指定节点派活。run 历史不单独建表——每次触发的
 /// issue 带 `origin = autopilot/{id}`，按 origin 反查即历史。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -617,17 +617,17 @@ pub struct Autopilot {
     /// 派活目标节点 id（空 = 仅建单不派活，MVP 语义）。
     #[serde(default)]
     pub target: String,
-    /// 全自动流转 D2：触发建单后自动跑 planner 拆解（仅当 target 为空=
+    /// 全自动流转：触发建单后自动跑 planner 拆解（仅当 target 为空=
     /// 未预指派 worker 时）。与 `board.plan.auto_confirm`（拆解完是否自动
     /// 发车）正交：auto_plan 管「是否拆解」，auto_confirm 管「拆解完是否
     /// 发车」。DB 列 v9 迁移，serde default false（存量规则行为不变）。
     #[serde(default)]
     pub auto_plan: bool,
-    /// UAT U5 F-U5-1：验收标准（触发建单时透传给 issue）。空/缺省 = 不填，
+    /// UAT F-：验收标准（触发建单时透传给 issue）。空/缺省 = 不填，
     /// 评审保持「验收标准（未提供）」保守转人工的既有语义。DB 列 v15 迁移。
     #[serde(default)]
     pub acceptance_criteria: Option<String>,
-    /// 三期 L23（2026-11-03）：可选绑定发起 session_key（父会话）。绑定的
+    /// 三期：可选绑定发起 session_key（父会话）。绑定的
     /// 规则触发时先验父会话存活（jsonl 在档且非空）：存活 = 建单继承父会话
     /// 近段上下文（description 注入）+ 单据可溯源父会话；消失（清空/删除）
     /// = 规则自动暂停 + 留痕评论，不孤儿运行。None = 未绑定 = 现行行为
@@ -640,14 +640,14 @@ pub struct Autopilot {
     /// 后回存映射——启动同步据此判「规则有没有挂上 cron」。
     #[serde(default)]
     pub cron_job_id: Option<String>,
-    /// 上次触发时间（Unix 秒；触发落账走 [`crate::BoardStore::mark_autopilot_run`]）。
+    /// 上次触发时间（Unix 秒；触发落账走 [`crate::BoardStore:mark_autopilot_run`]）。
     #[serde(default)]
     pub last_run_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
-/// 建 autopilot 的输入（[`crate::BoardStore::create_autopilot`]）。
+/// 建 autopilot 的输入（[`crate::BoardStore:create_autopilot`]）。
 #[derive(Debug, Clone)]
 pub struct NewAutopilot {
     pub name: String,
@@ -658,11 +658,11 @@ pub struct NewAutopilot {
     pub project_id: Option<i64>,
     pub target: String,
     pub enabled: bool,
-    /// 全自动流转 D2：建单后自动 planner 拆解（同 [`Autopilot::auto_plan`]）。
+    /// 全自动流转：建单后自动 planner 拆解（同 [`Autopilot::auto_plan`]）。
     pub auto_plan: bool,
-    /// UAT U5 F-U5-1：验收标准（建单透传，同 [`Autopilot::acceptance_criteria`]）。
+    /// UAT F-：验收标准（建单透传，同 [`Autopilot::acceptance_criteria`]）。
     pub acceptance_criteria: Option<String>,
-    /// 三期 L23：父会话绑定（同 [`Autopilot::session_key`]）。None = 不绑定。
+    /// 三期：父会话绑定（同 [`Autopilot::session_key`]）。None = 不绑定。
     pub session_key: Option<String>,
 }
 
@@ -678,21 +678,21 @@ pub struct AutopilotPatch {
     pub project_id: Option<i64>,
     pub target: Option<String>,
     pub enabled: Option<bool>,
-    /// 全自动流转 D2：`Some(v)` = 改 auto_plan（None = 不改）。
+    /// 全自动流转：`Some(v)` = 改 auto_plan（None = 不改）。
     pub auto_plan: Option<bool>,
-    /// UAT U5 F-U5-1：`Some(v)` = 改验收标准（`Some("")` = 清空，语义同
+    /// UAT F-：`Some(v)` = 改验收标准（`Some("")` = 清空，语义同
     /// 不填；None = 不改）。
     pub acceptance_criteria: Option<String>,
-    /// 三期 L23：`Some(v)` = 改父会话绑定（`Some("")` = 清空绑定；None =
+    /// 三期：`Some(v)` = 改父会话绑定（`Some("")` = 清空绑定；None =
     /// 不改）。
     pub session_key: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
-// 讨论频道 + 任务资产（Swarm M2 本地保存；impl-plan §4.1/§4.2）
+// 讨论频道 + 任务资产（Swarm 本地保存；impl-plan）
 // ---------------------------------------------------------------------------
 
-/// 频道消息种类词表（`channel_message.mtype`）。M2 先立两态；M3 信封落地
+/// 频道消息种类词表（`channel_message.mtype`）。 先立两态； 信封落地
 /// 后按需扩展（如 delivery 回流卡）。
 pub mod channel_message_type {
     /// 普通发言。
@@ -719,7 +719,7 @@ pub struct Channel {
     pub created_at: i64,
 }
 
-/// 建频道的输入（[`crate::BoardStore::create_channel`]）。
+/// 建频道的输入（[`crate::BoardStore:create_channel`]）。
 #[derive(Debug, Clone)]
 pub struct NewChannel {
     pub name: String,
@@ -749,7 +749,7 @@ pub struct ChannelMessage {
     pub created_at: i64,
 }
 
-/// 发频道消息的输入（[`crate::BoardStore::append_channel_message`]）。
+/// 发频道消息的输入（[`crate::BoardStore:append_channel_message`]）。
 #[derive(Debug, Clone)]
 pub struct NewChannelMessage {
     pub channel_id: i64,
@@ -761,12 +761,12 @@ pub struct NewChannelMessage {
 }
 
 /// 任务资产索引（表 `asset`；实体落 `workspace/board/assets/<ref>`，库只存
-/// 索引——引用与内容分离的本地侧，impl-plan §4.2）。不设 TTL：随所属 issue
+/// 索引——引用与内容分离的本地侧，impl-plan）。不设 TTL：随所属 issue
 /// 删除级联清理（多 issue 引用同一 ref 时最后一个解绑才删盘）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoardAsset {
     pub id: i64,
-    /// 全局唯一引用名（如 `a3f9…-report.md`；M3 信封里以 asset_ref 流转）。
+    /// 全局唯一引用名（如 `a3f9…-report.md`； 信封里以 asset_ref 流转）。
     pub ref_name: String,
     pub origin_issue: Option<i64>,
     pub sha256: String,
@@ -776,7 +776,7 @@ pub struct BoardAsset {
     pub created_at: i64,
 }
 
-/// 登记资产的输入（[`crate::BoardStore::register_asset`]；实体文件由调用方
+/// 登记资产的输入（[`crate::BoardStore:register_asset`]；实体文件由调用方
 /// 先落盘，store 只记索引）。
 #[derive(Debug, Clone)]
 pub struct NewAsset {
@@ -816,7 +816,7 @@ pub struct PostedMessage {
     pub response: serde_json::Value,
 }
 
-/// 经验类别词表（team_memory.category 约定值；M4.5 §6.5.1）。落库不强制
+/// 经验类别词表（team_memory.category 约定值；.5）。落库不强制
 /// 枚举校验（评审 agent 提示词引导四类，词表外值诚实原样存）。
 pub mod team_memory_category {
     /// 坑——踩过的雷/避免的做法。
@@ -829,7 +829,7 @@ pub mod team_memory_category {
     pub const PREFERENCE: &str = "preference";
 }
 
-/// 团队经验条目（表 `team_memory`；M4.5 §6.5.1 schema）。
+/// 团队经验条目（表 `team_memory`；.5 schema）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TeamMemoryEntry {
     pub id: i64,
@@ -838,13 +838,13 @@ pub struct TeamMemoryEntry {
     /// 检索键：模块/技术栈标签（注入匹配按 scope 与任务文本比对）。
     pub scope: String,
     pub content: String,
-    /// 来源任务编号（如 NB-7）。
+    /// 来源任务编号（如）。
     pub source: String,
     /// 蒸馏者（验收 agent 节点 id）。
     pub author: String,
     /// 被注入次数（衰减依据；重复经验并进旧条目时 +1）。
     pub use_count: i64,
-    /// 软删标记（旧经验与实际冲突 → 标记不覆盖，§6.5.4）。
+    /// 软删标记（旧经验与实际冲突 → 标记不覆盖）。
     pub deprecated: bool,
     /// Unix 秒。
     pub created_at: i64,

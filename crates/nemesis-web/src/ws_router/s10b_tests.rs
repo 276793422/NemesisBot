@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): WsRouter::dispatch's
+//! (quality-hardening goal 冲刺, web): WsRouter::dispatch's
 //! send-failure arm — a SendQueue whose receiver is dropped makes the response
 //! send fail; dispatch must warn and return without panicking.
 

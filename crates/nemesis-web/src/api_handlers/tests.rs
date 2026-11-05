@@ -46,7 +46,7 @@ fn test_resolve_log_file_path_general() {
     let dir = tempfile::tempdir().unwrap();
     let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
-    // New JSONL daily format: nemesisbot.YYYY-MM-DD (no .log suffix).
+    // New JSONL daily format: nemesisbot.YYYY-MM-DD (no.log suffix).
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "log content").unwrap();
 
     let ws = dir.path().to_string_lossy().to_string();
@@ -364,7 +364,7 @@ fn test_resolve_log_file_path_security_with_files() {
 
     let ws = dir.path().to_string_lossy().to_string();
     let path = resolve_log_file_path(&ws, "security").unwrap();
-    // Phase : security 路径固定指向 logs/security_logs/audit.jsonl
+    // Phase: security 路径固定指向 logs/security_logs/audit.jsonl
     assert!(path.contains("audit.jsonl"));
     assert!(path.contains("security_logs"));
 }
@@ -746,7 +746,7 @@ fn test_resolve_log_file_path_cluster_empty_directory() {
     assert!(resolve_log_file_path(&ws, "cluster").is_none());
 }
 
-// API handler integration tests via tower::ServiceExt::oneshot
+// API handler integration tests via tower::ServiceExt:oneshot
 
 /// Helper to create a minimal AppState for testing API handlers.
 fn make_test_state(workspace: Option<String>, auth_token: &str) -> Arc<AppState> {

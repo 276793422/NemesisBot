@@ -604,7 +604,7 @@ fn test_cron_payload_serialization() {
 }
 
 // -------------------------------------------------------------------------
-// T3 (U12): max_rounds per-fire budget
+// max_rounds per-fire budget
 // -------------------------------------------------------------------------
 
 /// Old payloads persisted BEFORE max_rounds existed must deserialize with
@@ -684,7 +684,7 @@ fn test_add_job_ext_max_rounds() {
     assert_eq!(legacy.payload.max_rounds, None, "legacy path → no budget");
 }
 
-/// P1-2 (2026-08-24 UI entry gap): `tasks.cron.update` patches the per-fire
+/// (UI entry gap): `tasks.cron.update` patches the per-fire
 /// budget through `CronJobPatch.max_rounds`. Three states must hold:
 /// `Some(Some(n))` sets, `Some(None)` clears (global default), `None` (key
 /// absent) leaves the existing budget untouched.
@@ -866,7 +866,7 @@ fn test_add_job_at_schedule_past_time() {
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
     let past_ms = Local::now().timestamp_millis() - 60000; // 1 min ago
-    // 过期 at 属死排程，用户漏斗 add_job_ext 已 loud 拒绝（BUG-20261024-11）；
+    // 过期 at 属死排程，用户漏斗 add_job_ext 已 loud 拒绝；
     // 这里钉的是服务侧数据形态的落库语义，走内部旁路。
     let job = svc
         .add_job_internal(
@@ -957,7 +957,7 @@ fn test_cron_service_start_and_stop() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        svc.arm(); // H1: arm before start (fresh-process gate)
+        svc.arm(); // arm before start (fresh-process gate)
         svc.start().await.unwrap();
     });
     let status = svc.status();
@@ -1729,10 +1729,10 @@ fn test_cron_service_start_idempotent() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         // First start
-        svc.arm(); // H1: arm before start (fresh-process gate)
+        svc.arm(); // arm before start (fresh-process gate)
         svc.start().await.unwrap();
         // Second start should be idempotent (return Ok)
-        svc.arm(); // H1: arm before start (fresh-process gate)
+        svc.arm(); // arm before start (fresh-process gate)
         svc.start().await.unwrap();
     });
 
@@ -1838,7 +1838,7 @@ fn test_recompute_next_runs_skips_disabled() {
     // recompute_next_runs is private, but start() calls it
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        svc.arm(); // H1: arm before start (fresh-process gate)
+        svc.arm(); // arm before start (fresh-process gate)
         svc.start().await.unwrap();
     });
     svc.stop();
@@ -2054,7 +2054,7 @@ fn test_cron_service_status_running_with_no_jobs() {
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
-        svc.arm(); // H1: arm before start (fresh-process gate)
+        svc.arm(); // arm before start (fresh-process gate)
         svc.start().await.unwrap();
     });
 
@@ -2142,7 +2142,7 @@ async fn test_cron_service_start_stop_with_handler() {
     )
     .unwrap();
 
-    svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.arm(); // arm before start (fresh-process gate)
     svc.start().await.unwrap();
 
     // Wait for the cron tick to process
@@ -2188,7 +2188,7 @@ async fn test_cron_service_start_deletes_after_run() {
         .unwrap();
     assert!(job.delete_after_run);
 
-    svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.arm(); // arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(4)).await;
     svc.stop();
@@ -2227,7 +2227,7 @@ async fn test_cron_service_handler_error() {
         )
         .unwrap();
 
-    svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.arm(); // arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
     svc.stop();
@@ -2265,7 +2265,7 @@ async fn test_cron_service_no_handler_sets_ok() {
         )
         .unwrap();
 
-    svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.arm(); // arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(3)).await;
     svc.stop();
@@ -2306,7 +2306,7 @@ async fn test_cron_service_every_job_recomputes_next_run() {
     )
     .unwrap();
 
-    svc.arm(); // H1: arm before start (fresh-process gate)
+    svc.arm(); // arm before start (fresh-process gate)
     svc.start().await.unwrap();
     tokio::time::sleep(Duration::from_secs(5)).await;
     svc.stop();
@@ -2530,7 +2530,7 @@ fn test_compute_next_run_5_field() {
 #[test]
 fn test_compute_next_run_5_field_weekdays() {
     // "0 9 * * 1-5" → weekdays at 9:00
-    // 2026-01-17 is Saturday → next should be Monday 2026-01-19
+    // is Saturday → next should be Monday
     let after = chrono::DateTime::parse_from_rfc3339("2026-01-17T10:00:00Z")
         .unwrap()
         .timestamp_millis();
@@ -2570,7 +2570,7 @@ fn test_compute_next_run_month_names() {
 #[test]
 fn test_compute_next_run_day_names() {
     // "0 9 * * FRI" → every Friday at 9:00
-    // 2026-01-14 is Wednesday → next Friday is 2026-01-16
+    // is Wednesday → next Friday is
     let after = chrono::DateTime::parse_from_rfc3339("2026-01-14T10:00:00Z")
         .unwrap()
         .timestamp_millis();
@@ -2737,7 +2737,7 @@ fn test_validate_invalid_expressions() {
 }
 
 // ---------------------------------------------------------------------------
-// H1 (U12): startup arm gate
+// startup arm gate
 // ---------------------------------------------------------------------------
 
 /// A fresh service is DISARMED: due persisted jobs do not fire until arm().
@@ -2753,7 +2753,7 @@ async fn test_cron_startup_disarmed_until_arm() {
         let svc = CronService::new(&path);
         svc.arm(); // the OLD process was armed; its jobs are enabled
         // 已到期 job 是「上一进程遗留的盘上状态」形态：走内部旁路造数
-        // （BUG-20261024-11 后用户漏斗拒绝过期 at）。
+        // （后用户漏斗拒绝过期 at）。
         svc.add_job_internal(
             "due-job",
             CronSchedule {
@@ -2826,19 +2826,19 @@ async fn test_cron_arm_idempotent_and_latches() {
     assert!(!svc.is_disarmed());
 }
 
-/// BUG-HUNT R34：已执行失败的僵尸单发不得被 H1 重启复活。旧代码留下的磁盘
+/// 已执行失败的僵尸单发不得被 重启复活。旧代码留下的磁盘
 /// 形态（enabled=true + 过期 at_ms + last_run=Some + last_status=error，
 /// fire loop 失败臂忘 disable）在新进程 recompute_next_runs 里曾被无条件
 /// 塞回 stale due time → 每次网关重启重放一次已失败的单发（建单/LLM turn
 /// 副作用重复）。last_run=Some = 单发语义已消耗；只有 last_run=None（停机
 /// 期间从未执行）才享有 stale-due-once（`test_cron_startup_disarmed_until_arm`
-/// 钉住的 H1 原案不受影响）。
+/// 钉住的 原案不受影响）。
 #[test]
 fn test_recompute_does_not_resurrect_failed_one_shot() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    // 遗留僵尸形态造数走内部旁路（BUG-20261024-11 后用户漏斗拒绝过期 at）。
+    // 遗留僵尸形态造数走内部旁路（后用户漏斗拒绝过期 at）。
     let job = svc
         .add_job_internal(
             "zombie_one_shot",
@@ -2887,7 +2887,7 @@ fn test_recompute_does_not_resurrect_failed_one_shot() {
 
 #[test]
 fn s12b_describe_schedule_weekday_arm() {
-    // S12b batch（quality-hardening goal 冲刺）：weekday 非通配的描述分支此前
+    // batch（quality-hardening goal 冲刺）：weekday 非通配的描述分支此前
     // 无断言覆盖（"At <hour>:<min> on weekdays <weekday>"）。
     assert_eq!(
         CronService::describe_schedule("0 0 9 * * 1"),
@@ -2901,7 +2901,7 @@ fn s12b_describe_schedule_weekday_arm() {
 }
 
 // ========================================================================
-// G3 运行账本接线（触发记账；全局槽由本测试进程独占安装）
+// 运行账本接线（触发记账；全局槽由本测试进程独占安装）
 // ========================================================================
 
 /// execute_job 手动触发的账面：ok→succeeded、err→failed（trigger=manual
@@ -2969,7 +2969,7 @@ fn ledger_cron_execute_job_records_runs() {
 }
 
 // -------------------------------------------------------------------------
-// 保留命名空间（BUG-20261024-10）：`board-ap:` / `memory-dreaming:` 是系统
+// 保留命名空间：`board-ap:` / `memory-dreaming:` 是系统
 // 内部作业的按名路由命名空间——用户面创建 loud 拒绝，内部装配走
 // add_job_internal 旁路。
 // -------------------------------------------------------------------------
@@ -2985,7 +2985,7 @@ fn every_60s() -> CronSchedule {
 }
 
 // ---------------------------------------------------------------------------
-// W3（2026-10-25 加固）：JobPauseHandle——触发期
+// （加固）：JobPauseHandle——触发期
 // pause 自身 job（父会话已删除 → 诚实停车，不删 job 可手动恢复）。
 // ---------------------------------------------------------------------------
 
@@ -3025,7 +3025,7 @@ fn reserved_names_rejected_on_user_paths_and_not_created() {
             err.contains("保留前缀"),
             "{name}: 报错应点明保留前缀: {err}"
         );
-        // Err 必须意味着「没建」——不留半成品（与 BUG #16 同纪律）。
+        // Err 必须意味着「没建」——不留半成品（与 同纪律）。
         assert!(
             svc.list_jobs(true).iter().all(|j| j.name != name),
             "被拒绝的名字不应产生 job: {name}"
@@ -3054,7 +3054,7 @@ fn add_job_internal_bypasses_reservation() {
 
 #[test]
 fn reserved_names_rejected_on_rename_paths_and_name_unchanged() {
-    // BUG-HUNT R99：改名入口（update_job / patch_job）此前不查保留前缀——
+    // 改名入口（update_job / patch_job）此前不查保留前缀——
     // 用户经 tasks.cron.update 把作业改成 `board-ap:{i64}` 形态后，启动
     // 孤儿清理按「形态+未注册 id」静默删除、on_job 分派按形态劫持（message
     // 被忽略）：add 时的创建闸被 rename 完整绕过。
@@ -3090,9 +3090,9 @@ fn reserved_names_rejected_on_rename_paths_and_name_unchanged() {
 
 #[test]
 fn update_job_schedule_on_disabled_job_keeps_next_run_none() {
-    // BUG-HUNT R99：update_job 的 schedule 分支此前不带 enabled 守卫裸写
+    // update_job 的 schedule 分支此前不带 enabled 守卫裸写
     // next_run（patch_job 有 `if job.enabled`）——禁用作业带上幻影「下次
-    // 触发」，违背 W1b「disabled 不排程，enable 重算」不变量。
+    // 触发」，违背 「disabled 不排程，enable 重算」不变量。
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
@@ -3126,7 +3126,7 @@ fn update_job_schedule_on_disabled_job_keeps_next_run_none() {
 }
 
 // ===========================================================================
-// BUG-20261024-11：时间算术受检化——溢出 honest None / 死排程创建闸
+// 时间算术受检化——溢出 honest None / 死排程创建闸
 // ===========================================================================
 
 #[test]
@@ -3263,7 +3263,7 @@ fn add_job_ext_rejects_dead_schedules_loud() {
 
 #[test]
 fn add_job_ext_allows_disabled_dead_schedule_but_stays_dormant() {
-    // enabled=false 放行（W1b 语义：不排程不触发；enable_job 重算时才落
+    // enabled=false 放行（语义：不排程不触发；enable_job 重算时才落
     // next_run）——闸只挡「已排程」的假象。
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
@@ -3307,7 +3307,7 @@ fn add_job_internal_still_allows_legacy_dead_schedule() {
 
 #[test]
 fn add_job_ext_rejects_empty_message_enabled_loud() {
-    // BUG-20261030-222：空 message 闸（死排程闸同族不变量）——enabled 作
+    // 空 message 闸（死排程闸同族不变量）——enabled 作
     // 业 message 空白 = 每次触发都落 on_job 的 "No message to deliver"
     // （status=ok）＝以已排程假象什么都不投递的静默僵尸，loud 拒绝。
     let dir = tempfile::tempdir().unwrap();
@@ -3351,7 +3351,7 @@ fn add_job_ext_rejects_empty_message_enabled_loud() {
             .is_err()
     );
 
-    // disabled 放行（W1b 对称：不触发；enable 路径复检）。
+    // disabled 放行（对称：不触发；enable 路径复检）。
     let dormant = svc
         .add_job_ext(
             "dormant",
@@ -3376,8 +3376,8 @@ fn add_job_ext_rejects_empty_message_enabled_loud() {
 
 #[test]
 fn empty_message_gate_covers_enable_toggle_patch_paths() {
-    // BUG-20261030-222：闸覆盖全部翻正/更新路径（对齐死排程闸家族
-    // BUG-20261025-30 的覆盖面）——休眠空 message 作业不得经 enable/
+    // 闸覆盖全部翻正/更新路径（对齐死排程闸家族
+    // 的覆盖面）——休眠空 message 作业不得经 enable/
     // toggle/patch 翻正成空转僵尸；patch 也不得把启用中作业的 message
     // 改空。校验在任何变更应用前，Err = 无副作用。
     let dir = tempfile::tempdir().unwrap();
@@ -3489,7 +3489,7 @@ fn empty_message_gate_covers_enable_toggle_patch_paths() {
 
 #[test]
 fn empty_message_gate_exempts_internal_reserved_prefix_jobs() {
-    // R289 / BUG-20261031-228：222 空 message 闸漏豁免保留前缀内部作业。
+    // /：222 空 message 闸漏豁免保留前缀内部作业。
     // 闸的前提「启用 + message 空 = 什么都不投递的空转僵尸」只对用户作业
     // 成立——`board-ap:{id}` / `memory-dreaming:sweep` 的 on_job 分派在
     // message 判空**之前**按名拦截（add_job_internal 旁路注释同一理由），
@@ -3564,7 +3564,7 @@ fn empty_message_gate_exempts_internal_reserved_prefix_jobs() {
         .unwrap_or_else(|e| panic!("dreaming 跟随 patch 不得被空 message 闸拒绝: {e}"));
     assert_eq!(dream_patched.schedule.expr.as_deref(), Some("0 4 * * *"));
 
-    // ③ enable/toggle 翻正内部休眠作业 → 放行（W1b：闸不管内部作业）。
+    // ③ enable/toggle 翻正内部休眠作业 → 放行（闸不管内部作业）。
     let dormant_ap = svc
         .add_job_internal(
             "board-ap:9",
@@ -3614,7 +3614,7 @@ fn empty_message_gate_exempts_internal_reserved_prefix_jobs() {
 
 #[test]
 fn cron_expr_can_fire_combines_syntax_and_semantics() {
-    // BUG-20261025-18：挂载面（autopilot/dreaming）共用的组合判定。
+    // 挂载面（autopilot/dreaming）共用的组合判定。
     let now = Local::now().timestamp_millis();
     // 语法错 = false。
     assert!(!cron_expr_can_fire("不是cron", now));
@@ -3627,7 +3627,7 @@ fn cron_expr_can_fire_combines_syntax_and_semantics() {
 }
 
 // ---------------------------------------------------------------------------
-// W3（2026-10-25 加固）：JobPauseHandle——触发期
+// （加固）：JobPauseHandle——触发期
 // pause 自身 job（父会话已删除 → 诚实停车，不删 job 可手动恢复）。
 // ---------------------------------------------------------------------------
 /// pause 置 enabled=false 且落盘（新开服务实例从同一路径重载 = 仍停用）；
@@ -3723,16 +3723,16 @@ fn w3_pause_handle_shares_store_and_avoids_outer_lock() {
     assert_eq!(after.state.last_error.as_deref(), Some("paused by test"));
 }
 // ===========================================================================
-// BUG-20261025-30：死排程闸覆盖缺口（更新/patch/启用路径）+ toggle 停用
-// 幻影 next_run。BUG-20261024-11 的闸只设在创建漏斗 add_job_ext，四条
+// 死排程闸覆盖缺口（更新/patch/启用路径）+ toggle 停用
+// 幻影 next_run。 的闸只设在创建漏斗 add_job_ext，四条
 // 用户面变更路径（update_job / patch_job / enable_job(true) / toggle 翻正）
 // 全部绕过——enabled + 算不出任何下一次触发 = 静默僵尸。补闸 = 同一不变量
 // 覆盖全部用户面路径（内部旁路 add_job_internal 维持豁免，board 同步有
-// BUG-20261025-18 挂载防线前置）。A 面：toggle 停用残留旧 next_run，
-// 对齐 enable_job / patch_job 的 W1b 不变量（disabled 作业不排程）。
+// 挂载防线前置）。A 面：toggle 停用残留旧 next_run，
+// 对齐 enable_job / patch_job 的 不变量（disabled 作业不排程）。
 // ===========================================================================
 
-/// 永不触发的 cron：2 月没有 30 日（BUG-20261024-11 同款盲区样本）。
+/// 永不触发的 cron：2 月没有 30 日（同款盲区样本）。
 fn dead_cron_schedule() -> CronSchedule {
     CronSchedule {
         kind: "cron".to_string(),
@@ -3814,7 +3814,7 @@ fn patch_job_rejects_dead_schedule_by_final_state() {
     );
     assert!(after.enabled);
     assert!(after.state.next_run_at_ms.is_some(), "拒绝后原排程必须保留");
-    // ② 禁用作业 patch 成死排程 = 休眠死排程，放行（W1b：不排程不触发，
+    // ② 禁用作业 patch 成死排程 = 休眠死排程，放行（不排程不触发，
     //    与 add_job_ext 对 disabled 死排程放行同语义）。
     svc.enable_job(&job.id, false).unwrap();
     svc.patch_job(
@@ -3894,7 +3894,7 @@ fn toggle_job_disable_clears_next_run() {
         .add_job("alive", alive_every_schedule(), "m", false, None, None)
         .unwrap();
     assert!(job.state.next_run_at_ms.is_some());
-    // A 面（W1b 对齐）：停用不得残留幻影「下次触发」。
+    // A 面（对齐）：停用不得残留幻影「下次触发」。
     let new_state = svc.toggle_job(&job.id).unwrap();
     assert!(!new_state);
     let after = svc.get_job(&job.id).unwrap();
@@ -3912,7 +3912,7 @@ fn toggle_job_disable_clears_next_run() {
     );
 }
 
-// -- BUG-20261025-49：REL-002 损坏守卫（gateway 侧补位）+ pause_job W1b 补位 --
+// --： 损坏守卫（gateway 侧补位）+ pause_job 补位 --
 
 #[test]
 fn r127_corrupt_store_blocks_save_and_preserves_file_bytes() {
@@ -4040,11 +4040,11 @@ fn r127_pause_job_clears_next_run_w1b() {
 #[allow(clippy::await_holding_lock)]
 async fn arm_and_start(svc: &Arc<std::sync::Mutex<CronService>>) {
     let s = svc.lock().unwrap();
-    s.arm(); // H1: arm before start
+    s.arm(); // arm before start
     s.start().await.unwrap();
 }
 
-/// BUG-20261028-116 红证①：执行期内并发改期为「未来 at 单发」的任务，
+/// 红证①：执行期内并发改期为「未来 at 单发」的任务，
 /// 触发循环的 retain 不得按「成功单发即删」把它吞掉。
 ///
 /// patch 发生在 on_job handler 内部（reset next_run 之后、post-exec 之前），
@@ -4136,8 +4136,8 @@ async fn test_fire_loop_keeps_job_rescheduled_to_future_at_during_execution() {
     );
 }
 
-/// BUG-20261028-116 红证②：执行期内改期 + 本次触发失败——单发停摆收尾
-/// （R34）不得把 patch 刚建立的新排程一并停用清空。
+/// 红证②：执行期内改期 + 本次触发失败——单发停摆收尾
+/// 不得把 patch 刚建立的新排程一并停用清空。
 #[tokio::test]
 async fn test_fire_loop_failed_fire_keeps_rescheduled_future_at() {
     let dir = tempfile::tempdir().unwrap();
@@ -4218,7 +4218,7 @@ async fn test_fire_loop_failed_fire_keeps_rescheduled_future_at() {
 }
 
 // ---------------------------------------------------------------------------
-// R197 绿证（BUG-20261028-131）：collect + reset 已合并进单临界区 helper
+// 绿证：collect + reset 已合并进单临界区 helper
 // （`collect_and_reset_due`）。旧形态 collect（读锁）与 reset（写锁）两段
 // 之间，并发 patch_job 可给到期 at 作业换入新未来 next_run，reset 无条件按
 // due 列表践踏回 None——执行后 at 分支见 None 走失败臂（disable 停摆）或
@@ -4237,7 +4237,7 @@ fn collect_and_reset_due_collects_due_resets_and_persists() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
     let svc = CronService::new(&path);
-    // 到期形态造数走内部旁路（用户漏斗拒绝过期 at，BUG-20261024-11），
+    // 到期形态造数走内部旁路（用户漏斗拒绝过期 at），
     // next_run 手动钉死（不依赖墙钟与 recompute）。
     let due_job = svc
         .add_job_internal(
@@ -4458,7 +4458,7 @@ fn collect_and_reset_due_no_due_no_disk_write() {
     );
 }
 
-// ===== BUG-20261029：on_job handler panic 隔离 =====
+// =====：on_job handler panic 隔离 =====
 
 #[test]
 fn invoke_handler_catch_panic_maps_panic_to_err() {
@@ -4606,7 +4606,7 @@ fn cron_tick_loop_survives_handler_panic() {
     );
 }
 
-// --- BUG-20261105-033: execute_job_detached（web「立即运行」异步化）---
+// ---: execute_job_detached（web「立即运行」异步化）---
 
 #[test]
 fn test_execute_job_detached_fires_and_persists() {
@@ -4729,7 +4729,7 @@ fn test_execute_job_detached_not_found() {
 fn test_execute_job_detached_poisoned_store_rejects() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json");
-    // 毒态构造：盘上坏 JSON → new 时 load 失败置毒（REL-002 链路）。
+    // 毒态构造：盘上坏 JSON → new 时 load 失败置毒（链路）。
     std::fs::write(&path, "{ not valid json").unwrap();
     let svc = CronService::new(path.to_string_lossy().as_ref());
     let err = svc.execute_job_detached("whatever").unwrap_err();
@@ -4738,7 +4738,7 @@ fn test_execute_job_detached_poisoned_store_rejects() {
 
 #[test]
 fn test_execute_job_detached_does_not_block_caller() {
-    // 差分钉死 BUG-20261105-033 核心：handler 慢时 detached 调用必须在远
+    // 差分钉死 核心：handler 慢时 detached 调用必须在远
     // 小于 handler 时长内返回（同步内联形态此断言必红——execute_job 阻塞
     // 到 handler 完成）。测试钩子只在这条测试里用慢 handler。
     let dir = tempfile::tempdir().unwrap();

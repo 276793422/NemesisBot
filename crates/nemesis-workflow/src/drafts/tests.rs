@@ -190,7 +190,7 @@ fn save_surfaces_lint_warnings_in_summary() {
     std::fs::create_dir_all(&defs).unwrap();
     let store = DraftStore::new(root.join("drafts"), defs.clone());
 
-    // llm max_tokens 过小 + 无触发器 → L1 + L2 两条 warning
+    // llm max_tokens 过小 + 无触发器 → + 两条 warning
     let mut wf = sample_workflow("risky");
     wf.triggers.clear();
     wf.nodes[0]

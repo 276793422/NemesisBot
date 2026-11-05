@@ -1,9 +1,9 @@
-//! `crate::elevation` 测试（S6 覆盖率批次）。
+//! `crate::elevation` 测试（覆盖率批次）。
 //!
 //! `relaunch_elevated` 的**成功臂**结构性不可测：真实调用会弹 UAC 对话框
 //! （红线，见 SandboxPaths 红线清单），且 fire-and-forget 无法在测试里观测
 //! 副作用。**失败臂**可用「不存在的 exe」确定性触发（SE_ERR_FNF，不弹
-//! UAC），R5 批次（2026-08-27）已测（见文件末尾）。`is_elevated` 走
+//! UAC）， 批次（2026-08-27）已测（见文件末尾）。`is_elevated` 走
 //! `GetTokenInformation(TokenElevation)` 只读直查（不再依赖 net.exe PATH 与
 //! LanmanServer 服务状态），测试钉「net session 成功 ⇒ 必须判定提权」的单向
 //! 蕴含——反向不蕴含（服务停转/net.exe 缺失时提权进程也会失败，正是弃用
@@ -40,7 +40,7 @@ fn is_elevated_always_false_off_windows() {
 }
 
 // ---------------------------------------------------------------------------
-// R5 覆盖率批次（2026-08-27）：relaunch_elevated 的**失败臂**可以确定性
+// 覆盖率批次：relaunch_elevated 的**失败臂**可以确定性
 // 触发——ShellExecuteW("runas", <不存在的 exe>) 在解析 UAC 前就报
 // SE_ERR_FNF（实测 PowerShell Start-Process -Verb RunAs 同层行为：立即
 // "系统找不到指定的文件"，不弹对话框）。成功臂仍为红线（真 UAC）。

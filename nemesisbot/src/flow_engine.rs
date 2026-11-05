@@ -53,7 +53,7 @@ const KIND_FIXLOOP: &str = "agent_fixloop";
 const KIND_REGRESS: &str = "check_regress";
 const KIND_PUBLISH: &str = "publish";
 const KIND_REPORT: &str = "report";
-/// `repo_sync`（2026-11-04 jira-gitlab-flow 批）：确定性 clone-or-pull——
+/// `repo_sync`（jira-gitlab-flow 批）：确定性 clone-or-pull——
 /// 项目目录（注册表 `directory`）与远端对齐，fixloop 之前执行。
 const KIND_REPO_SYNC: &str = "repo_sync";
 
@@ -650,7 +650,7 @@ fn find_board_issue(
 
 /// `board_land`：按 origin 幂等建 board 单（origin 整串精确去重 +
 /// NewIssue 字面量形态；title 不带 origin 前缀——origin 已是独立数据槽）。
-/// origin 来自模板声明渲染（C-1）；外部正文 `[CHECK]` 行提取为 AC（P0
+/// origin 来自模板声明渲染（C-1）；外部正文 `[CHECK]` 行提取为 AC（
 /// 缺陷根修同源）；args.project 可选：按项目名归属项目（缺席 = 不归属）；
 /// args.body_preamble 可选：流程契约前导（域模板声明，确定性注入 issue
 /// description 头部——worker 读单即读纪律，不靠提示词软约束）。
@@ -828,13 +828,13 @@ fn poll_outcome(outcome: PollOutcome) -> Result<Value, String> {
 
 // ---------------------------------------------------------------------------
 // 域剥离批 C 原语：外部身份映射（C-1）/ 回写轮询（C-2）/ 取数韧性
-// （salvage/[CHECK]/labels 过滤等通用原语唯一真相源在此）
+// （salvage/[CHECK]/labels 过滤等通用原语唯一依据在此）
 // ---------------------------------------------------------------------------
 
 /// 回写轮询每模板单轮限额（origin_type 订阅面取数上限）。
 const WRITEBACK_POLL_LIMIT: usize = 100;
 
-/// 写回熔断阈值（2026-11-04）：同一回写目标连续失败达到该次数 = 停投。
+/// 写回熔断阈值：同一回写目标连续失败达到该次数 = 停投。
 /// 请求可能已到达对端而响应丢失（网络抖动/对端崩溃重启）——无限重投即
 /// 重复副作用（demo 事故 156 条重复评论实证）；对齐 board 派发
 /// `max_send_retries`（缺省 5）熔断先例。计数为引擎内存态（重启 = 预算
@@ -1017,7 +1017,7 @@ enum WritebackTableOutcome {
 /// 缺席时 parse-origin-id 现场分解，结果双前缀镜像落表（`origin_id.*` 与
 /// `origin_meta.*` 各一份）：模板 args 静态声明一套前缀必须两态通用，只落
 /// `origin_id.*` 会让引用 `origin_meta.*` 的模板对 v1 旧单永久渲染失败
-/// （2026-11-02 NB-2 cancel 回帖 Retry 循环实证）。
+/// （cancel 回帖 Retry 循环实证）。
 fn build_writeback_table(
     origin: &nemesis_board::TaskOrigin,
     hook: &FlowTransition,
@@ -1097,7 +1097,7 @@ fn parse_publish_step_protocol(
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .ok_or_else(|| format!("publish 步缺 {key} 声明（域知识只在模板）"))?;
-        // op 形态校验（批 3a）：`plugin:` 引用形态必须过 parse_plugin_step_ref
+        // op 形态校验（a）：`plugin:` 引用形态必须过 parse_plugin_step_ref
         // （与 on-transition/report 同纪律——装载期红，不留运行期黑洞）；
         // 其余自由文本（connector 词表裁决在 connector 侧）。
         if v.starts_with("plugin:")
@@ -1187,7 +1187,7 @@ fn writeback_decision(stored: Option<&str>, current: &str) -> WritebackDecision 
     }
 }
 
-/// 写回投递结果（调用方熔断簿记驱动，2026-11-04）。
+/// 写回投递结果（调用方熔断簿记驱动）。
 enum WritebackResult {
     /// 游标已推进（done/skipped/connector ok/永久跳过）——清除失败计数。
     Advanced,
@@ -1313,9 +1313,9 @@ fn eval_filter(entry: &Value, expr: &str) -> bool {
 fn substitute_tokens(tpl: &str, inst: &FlowInstance, extra: &Value) -> String {
     let lookup = |key: &str| -> Option<String> {
         // 保留键先读产物账面（后步覆盖前步）；账面空回落 extra——report 步
-        // 执行中产物尚未入账，extra 是唯一活源（P4 e2e 实录：旧实现账面空串
+        // 执行中产物尚未入账，extra 是唯一活源（e2e 旧实现账面空串
         // 遮蔽 extra，{{report_path}} 恒空）。两处皆无 = None（原样保留，
-        // 模板残留可见）。
+        // 模板残留可）。
         let ledger_then_extra = |k: &str| {
             let v = latest_artifact_str(inst, k);
             (!v.is_empty()).then(|| v.to_string()).or_else(|| {
@@ -1332,7 +1332,7 @@ fn substitute_tokens(tpl: &str, inst: &FlowInstance, extra: &Value) -> String {
             "board_issue" | "report_path" => ledger_then_extra(key),
             // 步骤投影（决策 B 条件步数据源）：steps.<id>.<field>，field 词表
             // status/error/attempts。未知 id/field = None（token 原样保留，
-            // 模板写错可见）。
+            // 模板写错可）。
             other if other.starts_with("steps.") => {
                 let (_, rest) = other.split_once('.').expect("prefix checked");
                 let (id, field) = rest.split_once('.')?;
@@ -1376,7 +1376,7 @@ fn substitute_tokens(tpl: &str, inst: &FlowInstance, extra: &Value) -> String {
 }
 
 /// Value 树逐 String 替换：在结构上替换而非序列化串上替换——Windows 路径
-/// 反斜杠进序列化串即非法 JSON 转义（P4 e2e 实录第二坑），树内替换后由
+/// 反斜杠进序列化串即非法 JSON 转义（e2e 已知坑），树内替换后由
 /// serde 统一转义。非字符串标量原样克隆。
 fn substitute_tokens_value(v: &Value, inst: &FlowInstance, extra: &Value) -> Value {
     match v {
@@ -1472,7 +1472,7 @@ pub(crate) fn render_tokens<F: Fn(&str) -> Option<String>>(tpl: &str, lookup: F)
     out
 }
 
-/// 外链 scheme 闸（R341 同源纪律）：只放行 http(s)。空串 = 无外链（放行）。
+/// 外链 scheme 闸（同源纪律）：只放行 http(s)。空串 = 无外链（放行）。
 pub(crate) fn safe_external_url(raw: &str) -> Option<String> {
     // scheme 大小写不敏感（RFC 3986：HTTPS:// 与 https:// 同义）——只放行
     // http(s)，判前缀用小写比对、回传保原形（与旧外链闸语义对齐）。
@@ -1628,11 +1628,11 @@ pub struct FlowEngine {
     plugins_dir: PathBuf,
     config_dir: PathBuf,
     estop: Arc<EstopState>,
-    /// flow-step 插件注册表（2026-11-03 guest step 批）：`plugin:<slug>:<op>`
+    /// flow-step 插件注册表（guest step 批）：`plugin:<slug>:<op>`
     /// 步骤的执行通路。None = 子系统未装配（宿主壳缺席/总闸关），plugin 步骤
     /// 投递诚实失败走 on_fail。
     plugin_manager: Option<Arc<nemesis_plugins_wasm::PluginManager>>,
-    #[allow(dead_code)] // 非 cluster 形态 ()；cluster 形态派发臂消费
+    #[allow(dead_code)] // 非 cluster 形态；cluster 形态派发臂消费
     cluster: ClusterOwned,
     flows: FlowStore,
     /// 写操作互斥（fetch/advance/confirm/resume 串行；读代答无锁）。
@@ -1718,7 +1718,7 @@ impl FlowEngine {
     }
 
     async fn tick(&self) -> Result<(), String> {
-        // 运行期总闸（2026-11-01 BUG 修复）：子系统翻关 → tick 空转
+        // 运行期总闸（BUG 修复）：子系统翻关 → tick 空转
         // （fetch/advance 全停，active 实例冻存盘上；开关改回即时恢复）。
         if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace) {
             return Ok(());
@@ -1781,7 +1781,7 @@ impl FlowEngine {
     /// 模板缓存：戳（载荷目录 + 开关文件，见 template_stamp）变化才重扫。
     /// 开关文件必须入戳——enable/disable 只写 config.plugin.wasm.json 不碰
     /// 载荷目录，戳不覆盖则禁用后 tick 照跑（真实 connector/board/publish
-    /// 副作用）、重启用不恢复（2026-11-01 缺陷 A 根修）。
+    /// 副作用）、重启用不恢复（缺陷 A 根修）。
     async fn current_templates(&self) -> Vec<FlowTemplateDef> {
         let stamp = template_stamp(&self.plugins_dir, &self.config_dir);
         {
@@ -1820,7 +1820,7 @@ impl FlowEngine {
         let first = steps
             .first()
             .ok_or_else(|| format!("模板 {} 无步骤", def.template.id))?;
-        // 取数入口双形态（2026-11-03 自持样板批）：首步合法 `plugin:<slug>:<op>`
+        // 取数入口双形态（自持样板批）：首步合法 `plugin:<slug>:<op>`
         // 引用 = plugin fetch（guest 专管取数——自持插件自连外部系统）；
         // connector_fetch = connector 原语旧形态。plugin fetch 出参契约 =
         // `{"status":"done","entries":[...]}`，entries 即条目数组（原始远端
@@ -1929,7 +1929,7 @@ impl FlowEngine {
         }))
     }
 
-    /// plugin fetch（guest 专管取数，2026-11-03 自持样板批）：模板级
+    /// plugin fetch（guest 专管取数， 自持样板批）：模板级
     /// run_flow_step 投递——无实例上下文，session_key 固定
     /// `flow:<template>/fetch`（审计归因键），op + args = 首步声明直投
     /// （装载期已渲染 {{config.*}}；分页声明不适用——分页是 guest args 面）。
@@ -2061,7 +2061,7 @@ impl FlowEngine {
     /// 发起当前步骤（Pending → Running，或同步完成/失败）。
     async fn start_step(&self, inst: &mut FlowInstance, cur: &StepRun) {
         inst.updated_at_ms = now_ms();
-        // plugin 步骤（guest step，2026-11-03 批）：专管路径全权处置——
+        // plugin 步骤（guest step， 批）：专管路径全权处置——
         // 同步 done 同 tick 完成（board_land 形态）、running 转 Running 逐
         // tick 轮询、failed/skipped 立即记账。estop 冻结由 tick loop 承担，
         // 这里天然继承。
@@ -2122,7 +2122,7 @@ impl FlowEngine {
         inst.updated_at_ms = now_ms();
         // plugin 步骤（guest step）：与 start 同一专管路径——running 出态
         // 保持 Running，下轮 tick 重投 run-step（轮询 = 重跑，幂等由 guest
-        // 负责，拍板 1）。
+        // 负责）。
         if nemesis_plugins_wasm::manifest::parse_plugin_step_ref(&cur.kind).is_some() {
             self.run_plugin_step(inst, cur).await;
             return;
@@ -2210,8 +2210,8 @@ impl FlowEngine {
         }
     }
 
-    /// `repo_sync`（2026-11-04 jira-gitlab-flow 批）：项目仓库确定性
-    /// clone-or-pull。项目目录唯一真相源 = 注册表 `directory`（与 land
+    /// `repo_sync`（jira-gitlab-flow 批）：项目仓库确定性
+    /// clone-or-pull。项目目录唯一依据 = 注册表 `directory`（与 land
     /// 的按名归属同一绑定；项目未注册/无目录 = 诚实 Err，不自动注册
     /// ——directory 绑定不可变语义不动）。凭据经 `cred_secret` vault
     /// 别名（publish 同源 `resolve_alias_at`；缺席 = 匿名）。
@@ -2365,7 +2365,7 @@ impl FlowEngine {
             &usage_of,
         )?;
         let report_path = outcome.root.display().to_string();
-        // 可选回帖：args.connector 声明才做。路由双形态（2026-11-03 自持样板
+        // 可选回帖：args.connector 声明才做。路由双形态（自持样板
         // 批）：`plugin:<slug>:<op>` 引用 = guest 直投（自持插件回帖自有系统
         // ——op 段即引用组成，无需另声明 op）；其余 = connector 原语 op
         //（op 必填，宿主无内置回帖协议——域知识只在模板声明面）。
@@ -2384,7 +2384,7 @@ impl FlowEngine {
                     .args_get("args_json")
                     .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
                     .unwrap_or_else(|| json!({}));
-                // 在 Value 树上逐 String 替换（P4 e2e 实录第二坑：序列化串上
+                // 在 Value 树上逐 String 替换（e2e 已知坑：序列化串上
                 // 替换会把 Windows 路径反斜杠变成非法 JSON 转义，落到
                 // {"comment": path} 兜底丢 key/body）；替换结果即请求体。
                 let args = substitute_tokens_value(
@@ -2536,7 +2536,7 @@ impl FlowEngine {
                     continue;
                 }
                 WritebackDecision::Compose { from } => {
-                    // 写回熔断（2026-11-04）：同一目标连续失败达上限 = 停投
+                    // 写回熔断：同一目标连续失败达上限 = 停投
                     // （重复副作用防线——对端可能已收下请求只是响应丢失，
                     // 无限重投即重复写）。恢复 = 修复对端后重启 gateway
                     // （重试预算随进程刷新）；成功投递即清除计数。
@@ -2640,7 +2640,7 @@ impl FlowEngine {
             }
         }
         let args = Value::Object(args);
-        // 回写路由（2026-11-03 自持写通道批）：`plugin:<slug>:<op>` 引用 =
+        // 回写路由（自持写通道批）：`plugin:<slug>:<op>` 引用 =
         // guest 步直投（自持插件回写自有系统——域知识全在插件侧）；其余 =
         // connector 原语 op（fetch 步声明，回写与取数同一外部系统）。
         if hook.op.trim().starts_with("plugin:") {
@@ -2677,7 +2677,7 @@ impl FlowEngine {
         }
     }
 
-    /// plugin: 回写投递（2026-11-03 自持写通道批）：`plugin:<slug>:<op>` 经
+    /// plugin: 回写投递（自持写通道批）：`plugin:<slug>:<op>` 经
     /// flow-step 通道直投 guest；入参投影 = `{"op": <op>, "args": <渲染后
     /// args>, "session_key": "flow:<template>/<origin_id>"}`（审计归因键与
     /// 实例键同形态）。四态映射：done/skipped = 游标推进（回写即收口——回写无
@@ -2757,7 +2757,7 @@ impl FlowEngine {
 
     /// `flow://<template>/<view>` 代答单点。
     pub async fn answer(&self, template: &str, view: &str, args: &Value) -> Result<Value, String> {
-        // 运行期总闸（2026-11-01 BUG 修复）：`ui.invoke` 的 flow:// 分支
+        // 运行期总闸（BUG 修复）：`ui.invoke` 的 flow:// 分支
         // 在 web 侧 require_installer 之前直入本桥——子系总闸/宿主壳开关
         // 翻关后必须在此拦截，否则面板页面在框架关闭后仍可代答。
         if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace) {
@@ -2766,7 +2766,7 @@ impl FlowEngine {
                     .to_string(),
             );
         }
-        // 单插件闸（2026-11-01 缺陷 B 根修）：current_templates 按开关过滤
+        // 单插件闸（缺陷 B 根修）：current_templates 按开关过滤
         // （scan_templates 纪律同 ui_registry_impl）——模板解析不到 = 所属
         // 插件禁用或载荷缺席，全部视图统一诚实拒绝。此前只有总闸：单插件
         // disable 后 list/detail/timeline 照答数据、confirm/resume/fetch
@@ -2869,7 +2869,7 @@ fn fail_step(flows: &FlowStore, inst: &mut FlowInstance, error: &str) {
     let _ = flows.save(inst);
 }
 
-/// 条件步不成立（决策 B）：Skipped 留痕（条件式进 artifacts，面板可见）
+/// 条件步不成立（决策 B）：Skipped 留痕（条件式进 artifacts，面板可）
 /// + 游标同 tick 推进——不执行步骤本体，不走 on_fail（跳过不是失败）。
 fn skip_step(flows: &FlowStore, inst: &mut FlowInstance, rendered_when: &str) {
     if let Some(step) = inst.steps.get_mut(inst.current_step) {
@@ -2900,7 +2900,7 @@ fn skip_step_with_payload(flows: &FlowStore, inst: &mut FlowInstance, payload: V
 // ---------------------------------------------------------------------------
 
 /// run-step 出参四态（status 词表 done/running/failed/skipped + 自由负载）。
-/// `pub(crate)`：publish 步 plugin 路由臂复用同一解析单点（批 3a）。
+/// `pub(crate)`：publish 步 plugin 路由臂复用同一解析单点（a）。
 #[derive(Debug, PartialEq)]
 pub(crate) enum PluginOutcome {
     /// 同步完成：负载 = artifacts 落盘。
@@ -2915,7 +2915,7 @@ pub(crate) enum PluginOutcome {
     Malformed(String),
 }
 
-/// run-step 出参解析：`{"status": <词表>, ...自由负载}`。畸形（非 JSON /
+/// run-step 出参解析：`{"status": <词表>,...自由负载}`。畸形（非 JSON /
 /// 缺 status / 未知 status）= Malformed；failed 的错误文本取负载 `error`
 /// 字段（缺省 = status 原文）。负载 = 去 status 键后的对象（done/skipped
 /// 落 artifacts；failed 不落——错误文本进 step.error 走 ERR_SNIPPET 截断）。
@@ -2973,7 +2973,7 @@ fn plugin_fetch_entries(payload: &Value, template_id: &str) -> Result<Vec<Value>
 /// run-step 入参投影（宿主构造）：op + token 渲染后 args + 实例身份 +
 /// steps 状态投影 + board_issue 锚点 + attempts 计数 + session_key（审计
 /// 归因键）。token 渲染与六原语同源（substitute_tokens_value；未知 token
-/// 原样保留可见）。attempts = 本轮重试序号（宿主 fail_step 的 Retry 账本
+/// 原样保留可）。attempts = 本轮重试序号（宿主 fail_step 的 Retry 账本
 /// 记失败，投递本身不推计数避免双计；轮询重跑幂等由 guest 负责，guest
 /// 对账用 instance + 自身 data 目录状态）。不含图片字节与凭据。
 fn plugin_step_input(inst: &FlowInstance, cur: &StepRun, op: &str, session_key: &str) -> String {
@@ -3088,7 +3088,7 @@ fn scan_templates(plugins_dir: &Path, config_dir: &Path) -> Vec<FlowTemplateDef>
         if *manifest.kind != PluginKind::Panel {
             continue;
         }
-        // 实例配置 token 表（2026-11-03 参数化批）：schema 缺省值打底 +
+        // 实例配置 token 表（参数化批）：schema 缺省值打底 +
         // 开关文件运行值覆盖。装载期渲染 `{{config.<key>}}`——开关文件在
         // 缓存戳里（template_stamp），config.set 写盘即重扫热生效。
         let cfg = config_table(&manifest, switches.get(&slug));
@@ -3240,7 +3240,7 @@ fn validate_template(t: &FlowTemplate) -> Result<(), String> {
     if t.steps.is_empty() {
         return Err("模板无步骤".to_string());
     }
-    // fetch 专管放宽（2026-11-03 自持样板批）：首步 = connector_fetch（旧
+    // fetch 专管放宽（自持样板批）：首步 = connector_fetch（旧
     // 形态）或合法 plugin:<slug>:<op> 引用（guest 专管取数——自持插件自连
     // 外部系统）。plugin fetch 模板禁止再声明 connector_fetch（取数入口
     // 唯一，不可混用）；plugin 引用在后续位置仍是普通步（下方循环既有
@@ -3291,7 +3291,7 @@ fn validate_template(t: &FlowTemplate) -> Result<(), String> {
         }
     }
     for s in &t.steps {
-        // plugin 步骤（guest step，2026-11-03 批）：`plugin:<slug>:<op>` 引用
+        // plugin 步骤（guest step， 批）：`plugin:<slug>:<op>` 引用
         // 形态合法即过声明面校验（slug/op 词表与安装期对账在运行期路由闸——
         // 未装载/越权 op 诚实失败走 on_fail，不在模板校验期猜注册表）。
         if nemesis_plugins_wasm::manifest::parse_plugin_step_ref(&s.kind).is_some() {
@@ -3356,7 +3356,7 @@ fn validate_template(t: &FlowTemplate) -> Result<(), String> {
     if t.origin_id.trim().is_empty() {
         return Err("模板缺 origin_id 声明（外部身份映射必声明——宿主不猜）".to_string());
     }
-    // on_transition 回写 op（2026-11-03 自持写通道批）：connector 原语 op
+    // on_transition 回写 op（自持写通道批）：connector 原语 op
     // 自由文本（远端裁决）；`plugin:` 引用形态必须过 parse_plugin_step_ref
     //（非法引用 = 声明坏了 loud 拒——装载期诚实跳过模板，不给运行期游标
     // 留永久重试黑洞）。

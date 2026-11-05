@@ -1194,7 +1194,7 @@ async fn test_search_network_error_returns_err() {
 }
 
 // ============================================================
-// S5 coverage: parse_github_tree_url edges, list_repo_files /
+// coverage: parse_github_tree_url edges, list_repo_files /
 // fetch_repo_raw error arms, fetch_full_skill empty, install
 // fallback-skip + canonical escape, get_skill_content mismatch
 // ============================================================

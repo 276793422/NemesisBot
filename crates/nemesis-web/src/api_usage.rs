@@ -192,7 +192,7 @@ pub async fn handle_api_usage_log_detail(
     }
 }
 
-// Pricing — layered view + management (,)
+// Pricing — layered view + management
 
 /// Layer of a pricing entry (lookup priority: custom > downloaded > embedded).
 const SRC_EMBEDDED: &str = "embedded";

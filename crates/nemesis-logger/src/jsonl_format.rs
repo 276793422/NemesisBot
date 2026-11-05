@@ -1,6 +1,6 @@
 //! Tracing formatter that writes one JSON line per event to `nemesisbot.YYYY-MM-DD.log`.
 //!
-//! Each line is a serialized [`crate::sse_layer::SseLogEvent`] — byte-identical to what
+//! Each line is a serialized [`crate::sse_layer:SseLogEvent`] — byte-identical to what
 //! the SSE EventHub pushes to the dashboard. This is what makes "load history on page
 //! open" + "dedup against live SSE" work: the file format and the SSE format share a
 //! single construction path (`build_sse_log_event`) and a single globally-unique `seq`.

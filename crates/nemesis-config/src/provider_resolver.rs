@@ -58,7 +58,7 @@ pub struct ProviderResolution {
     /// 消费（codex auto=流式；anthropic/openai auto=非流式；yes/no 强制）。
     #[serde(default)]
     pub stream_mode: String,
-    /// per-model 缓存断点显式化（B 级清零）：模型条目 extra
+    /// per-model 缓存断点显式化：模型条目 extra
     /// 的 `cache_breakpoints`。仅 anthropic lane 消费——开启后在 system 尾 +
     /// tools 尾注入 `cache_control:{type:"ephemeral"}`（Anthropic 手动缓存
     /// 语义：断点必须显式放置，无断点 = 零缓存）。缺省 false = 请求体字节
@@ -235,7 +235,7 @@ fn extract_stream_mode(extra: &std::collections::BTreeMap<String, serde_json::Va
         .unwrap_or_default()
 }
 
-/// `stream` 值归一单一真相源：`Some("yes"/"no")` = 合法值；`None` = 非法
+/// `stream` 值归一统一定义：`Some("yes"/"no")` = 合法值；`None` = 非法
 /// （调用方决定处置——配置解析层诚实忽略落 auto，CLI 显式 flag loud 报错）。
 pub fn normalize_stream_value(v: &serde_json::Value) -> Option<String> {
     match v {
@@ -398,12 +398,12 @@ pub fn infer_provider_from_model(model: &str) -> String {
 }
 
 // ============================================================================
-// Provider preset table（能力扩展）
+// Provider preset table
 // ============================================================================
 
 /// 一个内置 provider 家族预设。
 ///
-/// 单一真相源：`get_default_api_base` / `infer_default_model` / CLI
+/// 统一定义：`get_default_api_base` / `infer_default_model` / CLI
 /// `model add --provider` / Dashboard 家族分组全部查这张表（前端镜像
 /// `web/src/utils/providerFamilies.ts`，只镜像 id/aliases/display_name 三字段）。
 pub struct ProviderPreset {
@@ -415,7 +415,7 @@ pub struct ProviderPreset {
     /// 本机默认端口）。
     pub api_base: &'static str,
     /// wire 协议：`anthropic` | `openai` | `responses`（与
-    /// `nemesis_types::capability::normalize_model_protocol` 值域一致）。
+    /// `nemesis_types::capability:normalize_model_protocol` 值域一致）。
     pub protocol: &'static str,
     /// 只给 `--provider` 不给 `--model` 时自动采用的默认型号。
     /// 空串 = 该家族无公开固定默认型号（须显式 `--model`）。

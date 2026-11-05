@@ -10,7 +10,7 @@
 //!
 //! ⚠️ 状态（2026-09-16）：**未接线模块**——本模块是 Go 版 1:1 复刻的既有
 //! 平行实现，当前无任何生产消费方（安全 8 层管线走 pipeline.rs/auditor.rs）。
-//! 曾在横扫存量 BUG CMD-11③ 被整体删除，经用户指令恢复保留（代码不得随便
+//! 曾在横扫存量 被整体删除，经用户指令恢复保留（代码不得随便
 //! 删）；接线、改造或删除待用户裁决，动手前先问。
 
 use crate::auditor::{AuditFilter, OperationRequest, SecurityAuditor};
@@ -18,7 +18,7 @@ use crate::types::*;
 use std::collections::HashMap;
 use tracing::{debug, info, warn};
 
-/// Build a `tokio::process::Command` that executes a shell command.
+/// Build a `tokio::process:Command` that executes a shell command.
 ///
 /// On Windows, uses `raw_arg` to avoid C-runtime quoting that garbles
 /// cmd.exe's own quote handling (e.g. `if exist "path"` commands).
@@ -30,7 +30,7 @@ fn shell_command(command: &str) -> tokio::process::Command {
         use std::os::windows::process::CommandExt;
         let mut cmd = tokio::process::Command::new("cmd");
         cmd.raw_arg(format!("/C {}", command));
-        // 黑窗根修（2026-10-19）：cmd/taskkill 等 console 子进程从无 console
+        // 黑窗根修：cmd/taskkill 等 console 子进程从无 console
         // 的 gateway（release windows 子系统）spawn 会分配新可见 console。
         // 本构造器覆盖 execute_command/kill/term/check 等全部调用点，单点收口。
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -45,10 +45,10 @@ fn shell_command(command: &str) -> tokio::process::Command {
     }
 }
 
-/// B8d：受超时约束执行 shell 命令——spawn + 并发 drain + 超时树杀。此前
+/// 受超时约束执行 shell 命令——spawn + 并发 drain + 超时树杀。此前
 /// `timeout(dur, cmd.output())` 超时取消 future 连带 drop Child 默认不
 /// kill，被超时命令继续在后台跑（孤儿）；移进 future 的管道读在取消时
-/// 还会丢残余输出。形态对齐 guest exec / shell.rs（B2 管道并发 drain，
+/// 还会丢残余输出。形态对齐 guest exec / shell.rs（管道并发 drain，
 /// 防写满管道缓冲死锁）。返回 (stdout, stderr, exit status)。
 async fn run_shell_bounded(
     command: &str,
@@ -93,8 +93,8 @@ async fn drain_child_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>
     let Some(pipe) = pipe else {
         return String::new();
     };
-    // 有界排干（BUG 2026-10-29 横扫角度 B）：输出体量不受我方控制，1 MiB
-    // 丢头保尾（nemesis_utils::pipe_cap 单一真相源，对齐 anchor.rs D10-4）。
+    // 有界排干（横扫角度 B）：输出体量不受我方控制，1 MiB
+    // 丢头保尾（nemesis_utils::pipe_cap 统一定义，对齐 anchor.rs）。
     String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()
 }
 

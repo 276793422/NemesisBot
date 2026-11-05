@@ -1,7 +1,7 @@
 //! provider 流式输出 lane（2026-10-13 内部专项）。
 //!
 //! 两个组件：
-//! - [`ProviderStreamSink`]：增量合并窗 + `AgentEvent:ProviderStream` 发射
+//! - [`ProviderStreamSink`]：增量合并窗 + `AgentEvent::ProviderStream` 发射
 //!   器。增量按 ≥64 字符或 ≥150ms 合并成帧（防 delta 洪泛刷爆 SSE/broadcast）；
 //!   `start`（首增量前）→ `delta`* → `end`/`error` 收尾。事件经 agent_event_tx
 //!   broadcast 发布，web pump 转易逝 SSE/WS 面（不入补拉环）。
@@ -17,7 +17,7 @@
 //! start 帧重置前端缓冲）。cache warmer / compact / probe / forge 等**不经过**
 //! call_llm_with_recovery 的调用路径不产生流事件（观测面聚焦主 turn）。
 //!
-//! 已知边界：上游超时路径（`chat_call_bounded` 内部 `tokio:time:timeout`
+//! 已知边界：上游超时路径（`chat_call_bounded` 内部 `tokio::time:timeout`
 //! drop chat future）没有同步钩子通知 sink——该次流的 error 帧缺席，靠重试
 //! 新流的 start 帧重置前端缓冲、终答回复覆盖收口；cancel/estop 两臂在
 //! recovery.rs 显式补 error 帧（sink 引用另持一份）。观测 lane 语义，最终
@@ -172,7 +172,7 @@ impl ProviderStreamSink {
     }
 
     fn emit_with_elapsed(&self, seq: u64, phase: &str, text: &str, elapsed_ms: Option<u64>) {
-        // 注意： 事件枚举是 `nemesis_types:agent:AgentEvent`（agent_event_tx
+        // 注意： 事件枚举是 `nemesis_types::agent:AgentEvent`（agent_event_tx
         // 同型）；prelude 的 `AgentEvent` 是本 crate legacy types.rs 的旧枚举。
         let _ = self
             .tx
@@ -251,7 +251,7 @@ impl LlmProvider for StreamingLlmProvider {
 // ---------------------------------------------------------------------------
 
 impl AgentLoop {
-    /// `agents.provider_stream_events` 新鲜读（config.json 唯一真相源；无
+    /// `agents.provider_stream_events` 新鲜读（config.json 唯一依据；无
     /// config / 段缺失 → 默认 true——观测面默认开，wire 行为回落见
     /// `chat_streamed` 缺省实现）。
     pub(crate) fn provider_stream_events_enabled(&self) -> bool {

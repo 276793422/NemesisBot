@@ -1,6 +1,6 @@
 //! eval 结果评估器（assessor）——规则驱动三分类。
 //!
-//! Plan: docs/PLAN/2026-08-17_eval-result-assessor.md
+//! Plan: eval-result-assessor
 //!
 //! 纯函数评估：报告目录是唯一输入（可回放、可单测），不依赖运行时状态。
 //! 读 `workspace/config/eval_rules.json`（不存在 → 种子内置默认集再加载；
@@ -36,7 +36,7 @@ pub fn rules_file_path(home: &Path) -> std::path::PathBuf {
 // serde 模型
 // ---------------------------------------------------------------------------
 
-/// 规则文件当前版本（L20 漂移检测基准；字段演进时递增，旧 version 文件
+/// 规则文件当前版本（漂移检测基准；字段演进时递增，旧 version 文件
 /// 照常载入，高 version 文件拒载——降级读入会产生运行期字段缺失）。
 pub const CURRENT_RULES_VERSION: u32 = 1;
 
@@ -135,7 +135,7 @@ pub fn validate_rule(rule: &Rule) -> Result<()> {
                 other
             ),
         }
-        // regex/contains 的 value 必须是字符串（BUG-20261029-168）：regex
+        // regex/contains 的 value 必须是字符串：regex
         // 此前用 as_str().unwrap_or("") 按空模式校验——非字符串 value 永远
         // 过闸，求值侧却恒 false（规则静默失效，fail-open）。加载期 loud
         // 拒绝才与「不让坏规则静默失效」的立场一致。
@@ -174,7 +174,7 @@ pub fn validate_rule(rule: &Rule) -> Result<()> {
 /// 解析规则文件内容为 `RulesFile`（校验每条规则 + id 唯一 + 版本漂移）。
 pub fn parse_rules(content: &str) -> Result<RulesFile> {
     let file: RulesFile = serde_json::from_str(content).context("parse rules JSON")?;
-    // L20 漂移检测：文件 version 高于程序支持 = 来自更新版本的程序，拒载
+    // 漂移检测：文件 version 高于程序支持 = 来自更新版本的程序，拒载
     // （与 sqlite_preflight::check_schema_drift 同语义：降级打开会产生
     // 运行期字段缺失，宁 loud 拒不静默）。
     if file.version > CURRENT_RULES_VERSION {
@@ -221,7 +221,7 @@ pub fn load_rules(path: &Path) -> Result<RulesFile> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        // REL-002：统一原子写入（首次运行自动种子与 save_rules 同源）。
+        // 统一原子写入（首次运行自动种子与 save_rules 同源）。
         nemesis_utils::write_file_atomic(
             &path.to_string_lossy(),
             DEFAULT_RULES_JSON.as_bytes(),
@@ -235,12 +235,12 @@ pub fn load_rules(path: &Path) -> Result<RulesFile> {
     parse_rules(&content).with_context(|| format!("rules file {} is damaged", path.display()))
 }
 
-/// 保存规则文件（写回唯一真相源；pretty JSON 便于手工编辑）。
-/// X4 起要求原子替换；REL-002 起统一走 `write_file_atomic`（唯一临时名
+/// 保存规则文件（写回唯一依据；pretty JSON 便于手工编辑）。
+/// 起要求原子替换； 起统一走 `write_file_atomic`（唯一临时名
 /// `.tmp-{pid}-{nanos}` + sync_all + 失败清理，替代此前的自制固定名
 /// `.json.tmp` + rename——旧形态无 sync、并发互踩、失败清理只覆盖 rename 臂）。
 pub fn save_rules(path: &Path, file: &RulesFile) -> Result<()> {
-    // L20 覆写前备份：现存旧文件轮换为 `.json.bak`（单份，本次成功覆盖旧
+    // 覆写前备份：现存旧文件轮换为 `.json.bak`（单份，本次成功覆盖旧
     // bak）。用户可编辑资产（add/edit/reset 都走本单一写点）被直接覆盖前
     // 至少留一份可回。备份是兜底不是闸门——复制失败 warn 不阻断保存。
     if path.exists() {
@@ -309,7 +309,7 @@ fn json_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 }
 
 /// 单条记录对全部 conditions 求值（记录内 AND）。
-/// ⚠ 评估主路径不经过这里（assess 用预编译正则的内联循环，见 P1b 修复）——
+/// ⚠ 评估主路径不经过这里（assess 用预编译正则的内联循环，见 修复）——
 /// 保留给单测直测求值原语语义（op 矩阵测试）。生产代码不要新增调用点，
 /// 要用就先确认与 assess 内联路径语义一致（两处同步改）。
 #[cfg_attr(not(test), allow(dead_code))]
@@ -494,7 +494,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
         gaps.push("subject.txt 缺失".to_string());
     }
 
-    // ── 溯源标记检查（第五轮 V1 / 第六轮 X9）──
+    // ── 溯源标记检查──
     // eval.rs 读盒镜像失败时写入 `_NEMESIS_UNREADABLE_` 标记（而不是合法
     // 缺省 JSON），区分"数据丢失"与"合法空结果"。见标记 = 沙盒 worker
     // 中途死亡/文件没写进去 → 未知。tool_trace 的标记是 JSON 对象
@@ -512,10 +512,10 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
             gaps.push("tool_trace.json: 顶层不是数组（报告异常）".to_string());
         }
     }
-    // X9：final_response.md 完全缺失也算报告缺件（回放场景 meta 有长度
+    // final_response.md 完全缺失也算报告缺件（回放场景 meta 有长度
     // 但文件被删 → 不得凭 meta 数字判 Safe）；空文件是合法的（agent 空回复
     // 由 meta.final_response_len==0 判）。
-    // Y9 配套：反向矛盾检查——meta 说 final_response_len==0 但文件非空
+    // 配套：反向矛盾检查——meta 说 final_response_len==0 但文件非空
     //（且非标记）→ meta 不可信 → 未知。宽容方向：meta 说非零而文件更长/
     // 更短不报（合法的手工编辑/换行差异不该误伤）。
     match std::fs::read_to_string(report_dir.join("final_response.md")) {
@@ -643,7 +643,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize),
     };
-    // Y9 反向矛盾：meta 说 final_response_len==0 但文件非空 → meta 与文件
+    // 反向矛盾：meta 说 final_response_len==0 但文件非空 → meta 与文件
     // 矛盾（meta 被篡改/手改坏）→ 未知。只查这一方向：meta 非零 vs 文件
     // 实际长度的差异不报（手工编辑/换行差异是合法的）。
     if integrity.final_response_len == Some(0)
@@ -660,8 +660,8 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
             .push("报告不一致，无法下结论；检查报告是否被篡改。".to_string());
         return r;
     }
-    // Z5：tool_call_count 同样的反向矛盾——meta 说 0 但 tool_trace 有记录
-    //（Y9 只做了 final_response，这条漏了；skill 零调用判定完全依赖这个
+    // tool_call_count 同样的反向矛盾——meta 说 0 但 tool_trace 有记录
+    //（只做了 final_response，这条漏了；skill 零调用判定完全依赖这个
     // 字段，被篡改的 0 会让"其实执行了工具的技能"跳过零调用检查）。
     if integrity.tool_call_count == Some(0) && tool_trace.as_array().is_some_and(|a| !a.is_empty())
     {
@@ -725,7 +725,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
     // subject 整个文本作为一条记录 { "text": "<全文>" }。
     let subject_record = serde_json::json!({ "text": subject_txt });
 
-    // 白名单注入（A3，2026-08-21 重做）：把 api_base_host 换算成每条
+    // 白名单注入（重做）：把 api_base_host 换算成每条
     // driver_events 记录的临时布尔字段 `_whitelisted`——该记录的 `name`
     // 归一化后等于 LLM API 端点 host 即 true。规则侧用现有 op 就能表达
     // 排除语义：`name` 匹配外域正则 **且** `_whitelisted` equals false
@@ -751,7 +751,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
         let mut records = driver_events.clone();
         for rec in &mut records {
             // name 归一化等值比较要在 as_object_mut 之前取值（rec 同时不可变
-            // + 可变借用是 E0502）。
+            // + 可变借用是）。
             let whitelisted = rec
                 .get("name")
                 .and_then(|v| v.as_str())
@@ -764,7 +764,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
         records
     };
 
-    // 每条规则的正则**预编译一次**（P1b：真实报告 6.6k 事件 × 每条含正则
+    // 每条规则的正则**预编译一次**（真实报告 6.6k 事件 × 每条含正则
     // 的规则逐记录 Regex::new 会做数万次编译，秒级浪费）。
     let mut compiled: Vec<(usize, usize, regex::Regex)> = Vec::new(); // (rule_idx, cond_idx, re)
     for (ri, rule) in enabled_rules.iter().enumerate() {
@@ -874,7 +874,7 @@ fn regex_match_value(re: &regex::Regex, value: &serde_json::Value) -> bool {
 /// 读 JSONL（driver_events.jsonl）：每行一个 JSON 对象；文件缺失 → Err；
 /// 单行解析失败跳过（截断的尾行不该废掉整份报告）。
 /// 但**全部 `{` 开头的行都解析失败** = 文件损坏 → Err（返回 Ok(空) 会让
-/// 零事件参与求值、完整性字段又正常 → 误判"安全"——正是 A2 要防的）。
+/// 零事件参与求值、完整性字段又正常 → 误判"安全"——正是 要防的）。
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn read_jsonl(dir: &Path, name: &str) -> Result<Vec<serde_json::Value>> {
     let p = dir.join(name);

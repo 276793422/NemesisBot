@@ -1,4 +1,4 @@
-//! Tests for `crate:cc_hooks` (— seventh batch, hooks.json 方言层).
+//! Tests for `crate::cc_hooks` (— seventh batch, hooks.json 方言层).
 //!
 //! Acceptance mapping (goal §二 / 原验收):
 //! - **现有方言 hook 脚本在我方会话真实触发** → 脚本级测试全部走**真子进程**
@@ -1061,7 +1061,7 @@ async fn post_tool_use_failure_hook_runs_script() {
         dispatch_started: None,
         call_id: None,
     };
-    // 走 ToolHook:post_tool_use_failure（生产 Err 分支的入口）。
+    // 走 ToolHook::post_tool_use_failure（生产 Err 分支的入口）。
     use crate::hooks::ToolHook as _;
     let _ = bridge.post_tool_use_failure(&call, "boom").await;
 

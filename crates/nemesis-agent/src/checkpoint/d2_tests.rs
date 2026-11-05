@@ -1,6 +1,6 @@
 //! checkpoint git 影子库双形态回归（约束的验收测试）。
 //!
-//! - **git 形态**：fixture 是真 git 仓（`git2:Repository:init`），store 构造
+//! - **git 形态**：fixture 是真 git 仓（`git2::Repository:init`），store 构造
 //!   期自动选影子库后端；turn 边界写 tree → **shell/exec 副作用**（不经
 //!   `snapshot()` 声明的纯 fs 写、新建、删除）也在 rewind 覆盖内（的
 //!   核心价值）；`logs/` 运行时属主目录不进影子树（影子 gitdir 自身就在
@@ -99,7 +99,7 @@ fn current_tree_entry(store: &CheckpointStore, rel: &str) -> Option<(git2::Oid, 
 
 /// libgit2 `git_index_add_all` 空 pathspec + 回调组合 = STATUS_ACCESS_VIOLATION：
 /// `git_pathspec__match` 对空 spec 直接 `return true` 但不填 `matched_pathspec`
-/// （pathspec.c:209-211）→ 回调收到 NULL → git2-rs shim `CStr:from_ptr(NULL)`
+/// （pathspec.c:209-211）→ 回调收到 NULL → git2-rs shim `CStr::from_ptr(NULL)`
 /// 段错误。workaround = 非空全匹配 spec（`**`，递归含子目录）。此测试在
 /// libgit2 升级时守卫该坑（若上游修复可考虑换回空 spec）。
 #[test]

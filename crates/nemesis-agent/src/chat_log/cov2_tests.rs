@@ -29,7 +29,7 @@ fn cov_key(tag: &str) -> String {
     format!("test:covw6b:{run}:{tag}")
 }
 
-/// 以 share_mode(0)（拒绝一切共享）打开句柄——阻塞他人 File:open。
+/// 以 share_mode(0)（拒绝一切共享）打开句柄——阻塞他人 File::open。
 #[cfg(windows)]
 fn lock_exclusive(path: &Path) -> fs::File {
     use std::os::windows::fs::OpenOptionsExt;

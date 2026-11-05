@@ -1,4 +1,4 @@
-//! 插件 cdylib 库文件查找 + v4 签名闸——**单一真相源**（QUIC 插件化 M1
+//! 插件 cdylib 库文件查找 + v4 签名闸——**单一真相源**（QUIC 插件化
 //! 泛化：从 vm_plugin_lib 上移，按 [`PluginLibSpec`] 参数化插件名）。
 //!
 //! 消费臂：
@@ -49,8 +49,8 @@ impl PluginLibSpec {
         }
     }
 
-    /// 库文件查找：exe 旁 `plugins/` 子目录优先（部署权威布局，2026-10-22
-    /// 布局统一——与其他插件同住 plugins/），exe 同目录回落（旧部署兼容）。
+    /// 库文件查找：exe 旁 `plugins/` 子目录优先（部署权威布局，
+    /// 布局统一——与其他插件同住 plugins），exe 同目录回落（旧部署兼容）。
     pub fn find_path(&self) -> Option<PathBuf> {
         let name = self.filename();
         let exe_dir = std::env::current_exe().ok()?.parent()?.to_path_buf();

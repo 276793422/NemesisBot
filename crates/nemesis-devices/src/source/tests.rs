@@ -486,7 +486,7 @@ fn test_device_event_format_bluetooth_add() {
     assert!(msg.contains("Capabilities: audio"));
 }
 
-// ---- BUG-20261030-194: KERNEL/UDEV double-block duplicate events ----
+// ----: KERNEL/UDEV double-block duplicate events ----
 //
 // `udevadm monitor --property` prints every physical event twice: the raw
 // kernel uevent (KERNEL block, sparse properties — no hwdb lookups) and the

@@ -43,8 +43,8 @@ fn test_verify_rejects_tampered_content() {
 
 #[test]
 fn test_forged_hash_signature_rejected() {
-    // BUG-20261025-28 回归锁：哈希"签名"（sha256(content||pubkey)）不是签名——
-    // 公钥是公开信息（合法技能的 .signature 里就带着受信公钥），任何人都
+    // 回归锁：哈希"签名"（sha256(content||pubkey)）不是签名——
+    // 公钥是公开信息（合法技能的.signature 里就带着受信公钥），任何人都
     // 能对任意内容算出这个哈希。旧实现把它当验签 fallback → 整个 Ed25519
     // 信任模型被架空（改内容 + 自算哈希 = valid + trusted）。修复 = 验签
     // 只认 Ed25519，哈希形态一律拒绝。
@@ -301,7 +301,7 @@ fn test_sign_skill_and_verify_skill() {
     // Sign the skill.
     sign_skill(&skill_dir, &signing_key, "test-signer").unwrap();
 
-    // Verify .signature file was created.
+    // Verify.signature file was created.
     assert!(skill_dir.join(SIGNATURE_FILE_NAME).exists());
 
     // Create verifier and add key.
@@ -743,7 +743,7 @@ fn test_signature_verifier_no_trusted_keys() {
 
 #[test]
 fn test_signature_verifier_remove_trusted_key() {
-    // BUG-20261025-28 顺带：信任移除语义改用真实 Ed25519 签名验证
+    // 顺带：信任移除语义改用真实 Ed25519 签名验证
     // （旧版借哈希 fallback 凑断言，fallback 删除后该断言不再成立）。
     let verifier = SignatureVerifier::new();
     let kp = generate_key_pair().unwrap();
@@ -797,7 +797,7 @@ fn test_verifier_no_signature_file_returns_invalid() {
     let skill_dir = dir.path().join("skill");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(skill_dir.join("SKILL.md"), "# Test").unwrap();
-    // No .signature file
+    // No.signature file
 
     let ts_path = dir.path().join("truststore.json");
     let v = Verifier::new(Config {
@@ -835,7 +835,7 @@ fn test_sign_skill_creates_signature_file_with_correct_format() {
 
     sign_skill(&skill_dir, &signing_key, "test-author").unwrap();
 
-    // Verify .signature file exists and is valid JSON
+    // Verify.signature file exists and is valid JSON
     let sig_path = skill_dir.join(SIGNATURE_FILE_NAME);
     assert!(sig_path.exists());
     let content = std::fs::read_to_string(&sig_path).unwrap();
@@ -1070,7 +1070,7 @@ fn test_verifier_verify_skill_with_tampered_signature_file() {
 
     sign_skill(&skill_dir, &signing_key, "signer").unwrap();
 
-    // Tamper with the .signature file
+    // Tamper with the.signature file
     let sig_path = skill_dir.join(SIGNATURE_FILE_NAME);
     let mut content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&sig_path).unwrap()).unwrap();
@@ -1095,7 +1095,7 @@ fn test_verifier_verify_skill_with_invalid_signature_json() {
     let skill_dir = dir.path().join("invalid_sig");
     std::fs::create_dir_all(&skill_dir).unwrap();
     std::fs::write(skill_dir.join("SKILL.md"), "# Test").unwrap();
-    // Write invalid JSON as .signature
+    // Write invalid JSON as.signature
     std::fs::write(skill_dir.join(SIGNATURE_FILE_NAME), "not valid json {{{{").unwrap();
 
     let ts_path = dir.path().join("truststore.json");
@@ -1232,7 +1232,7 @@ fn test_import_export_roundtrip_multiple_keys() {
 }
 
 // ============================================================
-// TrustStore save/load error arms + defaults (2026-08-25 push)
+// TrustStore save/load error arms + defaults (push)
 // ============================================================
 
 #[test]
@@ -1293,7 +1293,7 @@ fn test_trust_store_save_parent_is_file_errors() {
 #[test]
 fn test_trust_store_save_rename_to_directory_errors() {
     // 目标 path 是已存在目录 → rename(tmp→目录) 失败 → 诚实报错 + 无 tmp 残留。
-    // REL-002 统一原子写入（2026-09-23）后错误文本走 helper 契约
+    // 统一原子写入后错误文本走 helper 契约
     // （"atomic write {path}: rename: …"），旧自制实现的固定
     // `store_dir.tmp` 名不复存在——残留断言改按唯一临时名前缀 `.tmp-` glob。
     let dir = tempfile::tempdir().unwrap();
@@ -1337,7 +1337,7 @@ fn test_trust_store_load_empty_file() {
 }
 
 // ============================================================
-// verify_skill error-envelope arms (2026-08-25 push)
+// verify_skill error-envelope arms (push)
 // ============================================================
 
 fn make_verifier(dir: &Path) -> Verifier {
@@ -1575,7 +1575,7 @@ fn test_verify_signature_ed25519_fallthrough_arms() {
 
 #[test]
 fn test_compute_directory_hash_nested_signature_included() {
-    // 根级 .signature 被 filter_entry 排除；嵌套在子目录里的 .signature
+    // 根级.signature 被 filter_entry 排除；嵌套在子目录里的.signature
     // 不会被跳过，作为普通文件参与哈希（walk 循环内的 954-957 检查路径）。
     let dir = tempfile::tempdir().unwrap();
     let skill = dir.path().join("nested");
@@ -1586,7 +1586,7 @@ fn test_compute_directory_hash_nested_signature_included() {
         "junk-signature",
     )
     .unwrap();
-    // 根级 .signature 也会被排除，不计数
+    // 根级.signature 也会被排除，不计数
     std::fs::write(skill.join(SIGNATURE_FILE_NAME), "root sig").unwrap();
 
     let (hash1, count) = compute_directory_hash(&skill).unwrap();
@@ -1599,7 +1599,7 @@ fn test_compute_directory_hash_nested_signature_included() {
 }
 
 // ============================================================
-// S3 batch 3: trust-store revoke/save-with-parent, verify_skill
+// batch 3: trust-store revoke/save-with-parent, verify_skill
 // hash mismatch, verify_file success, directory-hash round trip
 // ============================================================
 
@@ -1686,7 +1686,7 @@ fn test_verify_file_success_with_trusted_key() {
 
 #[test]
 fn test_compute_directory_hash_signature_file_excluded_roundtrip() {
-    // 根级 .signature 不参与哈希：sign → hash 与手算（排除 .signature）一致。
+    // 根级.signature 不参与哈希：sign → hash 与手算（排除.signature）一致。
     let dir = tempfile::tempdir().unwrap();
     let skill = dir.path().join("rt-skill");
     std::fs::create_dir_all(skill.join("nested")).unwrap();
@@ -1700,13 +1700,13 @@ fn test_compute_directory_hash_signature_file_excluded_roundtrip() {
     let sk = SigningKey::from_bytes(&hex_decode_32(&kp.private_key).unwrap());
     sign_skill(&skill, &sk, "rt").unwrap();
 
-    // 签名后重算：根级 .signature 被排除，其余文件未变 → 哈希不变
+    // 签名后重算：根级.signature 被排除，其余文件未变 → 哈希不变
     let (h_after, count_after) = compute_directory_hash(&skill).unwrap();
     assert_eq!(count_after, 2);
     assert_eq!(h_before, h_after);
 }
 
-// 非 ASCII hex 输入诚实拒绝（2026-10-17 全仓横扫）：远端技能清单的签名/
+// 非 ASCII hex 输入诚实拒绝（全仓横扫）：远端技能清单的签名/
 // 公钥字段可控行——字节长度门挡不住多字节字符，裸字节切片曾会落在字符
 // 中间 panic，现为 Err。
 #[test]

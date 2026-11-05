@@ -33,9 +33,9 @@ impl Default for PoolConfig {
 pub struct ConnectionPool {
     config: PoolConfig,
     client: reqwest::Client,
-    /// 不跟随重定向的伴生 client（BUG-HUNT R36）。reqwest 默认策略自动
+    /// 不跟随重定向的伴生 client。reqwest 默认策略自动
     /// 跟随 ≤10 跳——「先过 SSRF 闸再发请求」的调用面闸只覆盖显式 URL，
-    /// 对端 302 指向内网/元数据端点即整条绕闸（web_fetch J2a 修过的同类
+    /// 对端 302 指向内网/元数据端点即整条绕闸（web_fetch 修过的同类
     /// 形态）。守卫类下载面走 [`Self::download_file_capped_strict`]；
     /// 普通面维持 [`Self::client`] 语义不变。
     no_redirect_client: reqwest::Client,
@@ -142,13 +142,13 @@ impl ConnectionPool {
         self.download_file_capped(url, dest_path, u64::MAX).await
     }
 
-    /// [`Self::download_file`] 的有界版（D10-1，2026-10-13 第 6 轮审计）：
+    /// [`Self::download_file`] 的有界版（第 6 轮审计）：
     /// `max_bytes` 上限内才落盘——曾 `resp.bytes()` 无界缓冲，恶意/失控
     /// 远端可把任意大响应灌进内存（磁盘弹药）。两道闸：Content-Length
     /// 预检（超限在传输前拒绝）+ 分块累积硬上限（缺/谎报 Content-Length
     /// 的 chunked 响应由实收字节兜底）。`u64::MAX` = 不限（旧语义）。
     ///
-    /// 语义注记（BUG-HUNT R36）：本方法用默认 client，**跟随重定向**。
+    /// 语义注记：本方法用默认 client，**跟随重定向**。
     /// 调用方若先过了 SSRF 闸（闸只覆盖显式 URL，逐跳不重放），必须改用
     /// [`Self::download_file_capped_strict`]。
     pub async fn download_file_capped(
@@ -161,11 +161,11 @@ impl ConnectionPool {
             .await
     }
 
-    /// [`Self::download_file_capped`] 的不跟随重定向版（BUG-HUNT R36）：
+    /// [`Self::download_file_capped`] 的不跟随重定向版：
     /// reqwest 默认策略自动跟随 ≤10 跳，而「先过 SSRF 闸再发请求」的调用
     /// 面（board 资产拉取等）闸只查显式 URL——对端 302 指向
     /// metadata/内网端点即整条绕闸。本方法遇 3xx 直接按 `HTTP <status>`
-    /// 报错，跳转裁决权交还调用方（与 web_fetch J2a 手动逐跳过闸同一纪律；
+    /// 报错，跳转裁决权交还调用方（与 web_fetch 手动逐跳过闸同一纪律；
     /// 构成不安全跳转时由上层错误路径自然处理，无 second request 落地）。
     pub async fn download_file_capped_strict(
         &self,
@@ -177,10 +177,10 @@ impl ConnectionPool {
             .await
     }
 
-    /// 下载实现的单一真相源：`max_bytes` 双闸（Content-Length 预检 +
-    /// 流式硬上限）+ 全量缓冲后落盘。**落盘是裸 `std::fs::write` 非原子**
+    /// 下载实现的统一定义：`max_bytes` 双闸（Content-Length 预检 +
+    /// 流式硬上限）+ 全量缓冲后落盘。**落盘是裸 `std::fs:write` 非原子**
     /// ——原子性由调用方负责（board 资产面走 `.part` 临时名 + finalize
-    /// 改名；R180 修正：旧注释宣称「原子落盘」与实现不符）。重定向行为
+    /// 改名； 修正：旧注释宣称「原子落盘」与实现不符）。重定向行为
     /// 由传入的 client 决定（两个公开入口的唯一差异点）。
     async fn download_file_capped_on(
         &self,
@@ -260,7 +260,7 @@ fn retryable_connect_only(e: &reqwest::Error) -> bool {
 /// Execute a request with retry logic (total attempts = 1 + `max_retries`;
 /// backoff = `retry_delay` × 2^attempt).
 ///
-/// BUG-20261025-61：此前 `max_retries`/`retry_delay` 硬编码（3 / 500ms
+/// 此前 `max_retries`/`retry_delay` 硬编码（3 / 500ms
 /// 基数），[`PoolConfig`] 的两个配置项声名从未消费（配置 max_retries=0
 /// 关重试完全无效）。现由调用方传入实际消费；重试面按请求幂等性分派
 /// （[`retryable_get`] / [`retryable_connect_only`]）。

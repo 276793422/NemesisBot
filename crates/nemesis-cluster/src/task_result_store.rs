@@ -4,7 +4,7 @@
 //! retrieve them asynchronously. Supports optional disk persistence so that
 //! results survive process restarts (matching the Go implementation).
 //!
-//! T4（2026-10-17）：Go 兼容镜像类型（GoTaskResultEntry/Index/Store，
+//! （2026-10-17）：Go 兼容镜像类型（GoTaskResultEntry/Index/Store，
 //! ~200 行）已整体删除——生产零调用方的死代码，与主 store 并存误导读者；
 //! 历史形态见 git。
 
@@ -17,8 +17,8 @@ use tokio::fs;
 use tracing;
 
 /// SAN-02：task_id 可能来自远端对端（A 端可传任意串）——落盘路径成分前
-/// 白名单消毒。实现已上收 `crate::fsutil::safe_task_file_name`（T7/T8/T9
-/// 同族修复，2026-10-17：cluster_task / continuation_store / transfer /
+/// 白名单消毒。实现已上收 `crate::fsutil:safe_task_file_name`（//
+/// 同族修复，cluster_task / continuation_store / transfer /
 /// forge handler 全部同源复用，本 store 不再私有一份）。
 use crate::fsutil::safe_task_file_name;
 
@@ -137,7 +137,7 @@ impl TaskResultStore {
     ///
     /// `TaskResultPersister::set_running` 落 `{"status":"running"}` 占位，
     /// `set_result` 换真结果、`delete` 送达后清理——三者之后本查询即 false。
-    /// BUG-2026-10-15 D：exec 残留周期清扫以它跳过**进行中**任务的工作副本
+    /// BUG- D：exec 残留周期清扫以它跳过**进行中**任务的工作副本
     /// （活跃任务的 exec 目录不可触碰；真崩溃残留无占位、照常收拾）。
     pub fn is_running(&self, task_id: &str) -> bool {
         self.results
@@ -177,7 +177,7 @@ impl TaskResultStore {
             }
         };
 
-        // T6③（2026-10-17）：显式排序——read_dir 顺序是平台实现细节
+        // ③：显式排序——read_dir 顺序是平台实现细节
         //（NTFS 字典序 vs ext4 哈希序），max_size 限额加载时截哪部分
         // 必须确定性，不能跟着平台目录序漂。
         let mut paths: Vec<std::path::PathBuf> = entries
@@ -192,7 +192,7 @@ impl TaskResultStore {
             match std::fs::read_to_string(&path) {
                 Ok(data) => match serde_json::from_str::<TaskResult>(&data) {
                     Ok(result) => {
-                        // Bug D 修复（2026-09-08 真机 R1c 发现）：set_running
+                        // Bug D 修复（真机 发现）：set_running
                         // 占位条目是运行时暂态 —— 它代表的在途工作随进程死亡
                         // 而消失（B 端 peer_chat 任务不进 ClusterTaskList，
                         // 重启后无人重跑）。占位若随盘复活，query_task_result
@@ -235,7 +235,7 @@ impl TaskResultStore {
         loaded
     }
 
-    /// Remove results older than `max_age` from both disk and memory (G1).
+    /// Remove results older than `max_age` from both disk and memory.
     ///
     /// Disk is the sweep authority: every `*.json` file in `cache_dir` whose
     /// `stored_at` parses and is older than the cutoff is deleted, then the
@@ -314,7 +314,7 @@ impl TaskResultStore {
             let path = dir.join(format!("{}.json", safe_task_file_name(&result.task_id)));
             match serde_json::to_string_pretty(result) {
                 Ok(json) => {
-                    // BUG-20261025-51：委托唯一临时名权威 helper——固定
+                    // 委托唯一临时名权威 helper——固定
                     // `{task}.json.tmp` 同任务并发回调互踩可产损坏文件。
                     if let Err(e) = nemesis_utils::file::write_file_atomic(
                         &path.to_string_lossy(),
@@ -352,7 +352,7 @@ impl TaskResultStore {
     }
 }
 
-/// LOW-6（2026-10-17 四轮审计）：满容量逐出选 `stored_at` **最旧**者——
+/// LOW-6（四轮审计）：满容量逐出选 `stored_at` **最旧**者——
 /// 旧「HashMap 首键」是任意序（RandomState），可逐出刚写入未送达的新结果；
 /// 最旧者按 TTL 语义本来就该最先走。全部解析失败（理论不可达，写入侧恒
 /// RFC3339 now）回落首键保前进。
@@ -467,7 +467,7 @@ impl AsyncTaskResultStore {
             }
         };
 
-        // T6③（2026-10-17）：显式排序——read_dir 顺序是平台实现细节，
+        // ③：显式排序——read_dir 顺序是平台实现细节，
         // max_size 限额加载时截哪部分必须确定性（与同步版同源纪律）。
         let mut paths: Vec<PathBuf> = Vec::new();
         while let Ok(Some(entry)) = read_dir.next_entry().await {
@@ -484,8 +484,8 @@ impl AsyncTaskResultStore {
             match fs::read_to_string(&path).await {
                 Ok(data) => match serde_json::from_str::<TaskResult>(&data) {
                     Ok(result) => {
-                        // Bug D 同款修复（T4，2026-10-17；同步版 2026-09-08
-                        // 真机 R1c 发现）：set_running 占位条目是运行时暂态
+                        // Bug D 同款修复（同步版
+                        // 真机 发现）：set_running 占位条目是运行时暂态
                         // ——它代表的在途工作随进程死亡而消失，占位若随盘
                         // 复活，query_task_result 会永远回答 "running"，A 端
                         // 恢复轮询被吊到 24h 安全网。加载时丢弃占位并删除
@@ -569,7 +569,7 @@ impl AsyncTaskResultStore {
             let path = dir.join(format!("{}.json", safe_task_file_name(&result.task_id)));
             match serde_json::to_string_pretty(result) {
                 Ok(json) => {
-                    // BUG-20261025-51：委托唯一临时名权威 helper（spawn_blocking
+                    // 委托唯一临时名权威 helper（spawn_blocking
                     // 包裹——同步 fsync 不占 runtime worker，对齐同文件 LOW-5 删除臂）。
                     let target = path.clone();
                     let joined = tokio::task::spawn_blocking(move || {

@@ -1,5 +1,5 @@
 //! [`lifecycle`] 单测。三组：
-//! 1. `adjudicate_accel` 纯函数全组合（G2 门「探针缺席 → Unavailable 单测；
+//! 1. `adjudicate_accel` 纯函数全组合（门「探针缺席 → Unavailable 单测；
 //!    strict+缺席 → 拒绝执行单测」的落点）；
 //! 2. token 生成形态；
 //! 3. spawn 失败诚实面（不存在的 qemu 二进制）+ 首帧鉴权/工具调用的
@@ -28,7 +28,7 @@ fn probe(available: bool, reason: &str) -> AccelProbe {
 // adjudicate_accel：纯函数全组合
 // ---------------------------------------------------------------------------
 
-/// G2 门：探针缺席 + 非 strict = Unavailable（调用方可回落其他执行后端）。
+/// 门：探针缺席 + 非 strict = Unavailable（调用方可回落其他执行后端）。
 #[test]
 fn adjudicate_unavailable_non_strict_gives_unavailable() {
     let kvm = probe(false, "/dev/kvm 不存在");
@@ -38,7 +38,7 @@ fn adjudicate_unavailable_non_strict_gives_unavailable() {
     assert!(err.to_string().contains("不做 TCG 纯模拟降级"), "{err}");
 }
 
-/// G2 门：探针缺席 + strict = StrictReject（fail-closed 拒绝执行而非降级）。
+/// 门：探针缺席 + strict = StrictReject（fail-closed 拒绝执行而非降级）。
 #[test]
 fn adjudicate_unavailable_strict_gives_strict_reject() {
     let kvm = probe(false, "/dev/kvm 不存在");
@@ -186,7 +186,7 @@ async fn spawn_missing_qemu_binary_is_launch_error() {
 }
 
 // ---------------------------------------------------------------------------
-// wait_qmp_ready 收尸纪律（fake-qmp + 真子进程回归——2026-10-20 第五轮：
+// wait_qmp_ready 收尸纪律（fake-qmp + 真子进程回归——：
 // 修前查询瞬断 `?` 直通放弃整轮、坏状态路径不 kill——泄漏的 QEMU 占
 // overlay+端口，下轮 ensure_running 双开同一 overlay = qcow2 并发写损坏）
 // ---------------------------------------------------------------------------
@@ -451,7 +451,7 @@ async fn sleep_snapshot_success_saves_and_quits() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sleep_snapshot_quit_teardown_reset_still_ok() {
-    // quit 后 QEMU 停机拆除竞速（quit 回包被 RST/断连取代——2026-10-18 远程
+    // quit 后 QEMU 停机拆除竞速（quit 回包被 RST/断连取代—— 远程
     // KVM savevm 误报失败根因）：savevm 已成功、状态载体在手，sleep 必须
     // 仍 Ok。成功判据是 QEMU 退出（实例层 child.wait 核验），不是 quit
     // 回包到达。

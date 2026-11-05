@@ -1,4 +1,4 @@
-//! W7 SDK dogfood e2e：三方 SDK（[`nemesis_plugin_sdk::export_tool!`]）产物
+//! SDK dogfood e2e：三方 SDK（[`nemesis_plugin_sdk::export_tool!`]）产物
 //! 走宿主正式 admit 漏斗实测执行。
 //!
 //! fixture = `plugins/wasm/textstat`（三方起点示例：serde_json 正经
@@ -130,7 +130,7 @@ async fn installed_manager()
     let src = stage_plugin(tmp.path(), TEXTSTAT_TOML.to_string(), &wasm)?;
     let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
     installer.install(&src, true).await?;
-    // 测试语义 =「用户已开开关」（安装 ≠ 加载，2026-10-22）。
+    // 测试语义 =「用户已开开关」（安装 ≠ 加载）。
     installer
         .set_enabled("textstat", true)
         .await?

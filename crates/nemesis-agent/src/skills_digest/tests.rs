@@ -245,8 +245,8 @@ fn test_skills_digest_empty_no_injection() {
     );
 }
 
-// wave5：DigestState:default 转发 new（80-82）。单元结构体直呼
-// Default:default() 会触发 clippy:default_constructed_unit_structs，
+// wave5：DigestState::default 转发 new（80-82）。单元结构体直呼
+// Default::default() 会触发 clippy::default_constructed_unit_structs，
 // 经泛型间接调用既保 lint 干净又真正执行 trait 转发。
 #[test]
 fn digest_state_default_delegates_to_new() {

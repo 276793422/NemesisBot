@@ -25,12 +25,12 @@ pub struct CodexConfig {
     pub enable_web_search: bool,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
-    /// 出站代理 URL（代理接线修复 2026-09-17）：http/socks5；None = 直连。
+    /// 出站代理 URL（代理接线修复）：http/socks5；None = 直连。
     /// 来自模型条目 `proxy` 字段经 FactoryConfig 透传；非法 URL warn 回落
     /// 直连（与 HttpProvider/Anthropic 同策略）。
     #[serde(default)]
     pub proxy: Option<String>,
-    /// per-model 流式开关（2026-10-13 stream 键）：空（auto）= 流式（默认，
+    /// per-model 流式开关（stream 键）：空（auto）= 流式（默认，
     /// 墙钟根因修复的形态）；"no" = 逃生门强制非流式（body 不带 stream 字段，
     /// 等完整响应）。经 FactoryConfig.stream_mode 透传，构造期消费。
     #[serde(default)]
@@ -63,7 +63,7 @@ fn build_client(timeout_secs: u64, proxy: Option<&str>) -> reqwest::Client {
     builder.build().expect("failed to build HTTP client")
 }
 
-// P3A 超时对齐（2026-09-12）：与 anthropic/http lane 统一 600s（原 120s，
+// P3A 超时对齐：与 anthropic/http lane 统一 600s（原 120s，
 // 超时阶梯口径分裂的一半）。per-model 覆盖经模型条目 extra `timeout_secs`。
 fn default_timeout() -> u64 {
     600
@@ -133,9 +133,9 @@ impl CodexProvider {
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // D7 同族降级（2026-09-03 二次回归 F2）：function_call_output
+                        // 同族降级（二次回归）：function_call_output
                         // 的 output 必须是字符串，Parts 走文本视图 + 诚实注记
-                        //（Text 形态返回原串，字节不变；图像进 tool_result 属 Phase 5）。
+                        //（Text 形态返回原串，字节不变；图像进 tool_result 属）。
                         input_items.push(serde_json::json!({
                             "type": "function_call_output",
                             "call_id": tc_id,
@@ -145,7 +145,7 @@ impl CodexProvider {
                         input_items.push(serde_json::json!({
                             "type": "message",
                             "role": "user",
-                            // 该 provider 未实现 vision 数组 → 图像按 D7 诚实降级
+                            // 该 provider 未实现 vision 数组 → 图像按 诚实降级
                             "content": msg.content.to_prompt_text_with_image_note()
                         }));
                     }
@@ -187,9 +187,9 @@ impl CodexProvider {
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // D7 同族降级（2026-09-03 二次回归 F2）：function_call_output
+                        // 同族降级（二次回归）：function_call_output
                         // 的 output 必须是字符串，Parts 走文本视图 + 诚实注记
-                        //（Text 形态返回原串，字节不变；图像进 tool_result 属 Phase 5）。
+                        //（Text 形态返回原串，字节不变；图像进 tool_result 属）。
                         input_items.push(serde_json::json!({
                             "type": "function_call_output",
                             "call_id": tc_id,
@@ -214,7 +214,7 @@ impl CodexProvider {
             "store": false,
         });
 
-        // 流式线缆（2026-10-13 根因修复）：非流式请求要等模型补全完才回响应
+        // 流式线缆（根因修复）：非流式请求要等模型补全完才回响应
         // 头，推理型模型 + 大上下文（工作流对话生成实测 ~150s）必撞中转链路
         // 的 ~120s 墙钟超时 → 连接被掐 → 上游 502 "error sending request"，
         // bot 侧归为 Overloaded 进限流环，重试恒撞同一堵墙永不自愈。Codex
@@ -235,15 +235,15 @@ impl CodexProvider {
             body["temperature"] = serde_json::json!(temp);
         }
 
-        // reasoning_effort 翻译（2026-11-03 空摘要根修）：Responses API 的
+        // reasoning_effort 翻译（空摘要根修）：Responses API 的
         // reasoning.effort 此前被本 lane 完全忽略——aux_chat_options 发的
         // "off"（关思考省输出预算，压缩摘要等杂务调用）被静默丢弃，gpt-5 系
         // 默认 effort 会把 max_output_tokens 整个烧在思考上、正文为空
-        // （8192 摘要预算空文本四连实录）。翻译规则：low/medium/high 原样
-        // 透传；"off" → gpt- 系用 minimal（该族支持的最低档）、o 系
+        // （8192 摘要预算空文本四连）。翻译规则：low/medium/high 原样
+        // 透传；"off" → gpt 系用 minimal（该族支持的最低档）、o 系
         // （o3*/o4*，不支持 minimal）退 low；其余未知值不发字段（不猜，
         // 对齐 anthropic lane 的 unknown 语义——留给服务端默认）。
-        // 词表漂移（2026-11-04 真机实证）：gpt-6 系已砍掉 minimal（词表
+        // 词表漂移（真机实证）：gpt-6 系已砍掉 minimal（词表
         // low/medium/high/xhigh/max），部分代理还会把 minimal 映射成 none
         // 再发上游 → 400 unsupported_value。chat() 对该类错误按上游错误
         // 信息自带的权威词表降档重试一次（见 effort_downgrade_target），
@@ -299,7 +299,7 @@ impl CodexProvider {
         req.json(body)
             .send()
             .await
-            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
+            // 诚实化：真超时→Timeout；DNS/连接拒绝/SYN 黑洞等
             // 传输错误→Unknown + "connect error: <根因链>"（此前一律伪装
             // Timeout——21s 恒定超时误导排查两天）。
             .map_err(|e| transport_error("codex", model, &e))
@@ -643,8 +643,8 @@ fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, 
         match handle_sse_event(&ev) {
             SseOutcome::Finished(response) => return Ok(parse_codex_response(&response)),
             SseOutcome::Failed(msg) => {
-                // BUG-20261103-351：流内 failed/error 文案与真相源同判
-                //（classify_llm_error 单一真相源）——此前恒 Unknown（不带
+                // 流内 failed/error 文案与真相源同判
+                //（classify_llm_error 统一定义）——此前恒 Unknown（不带
                 // "connect error" 前缀 = is_retriable false），上游显式瞬态
                 // 文案（"quota exceeded"/"overloaded"）反而放弃 fallback
                 // 轮转，比断流（Timeout 可重试）处置更差。分类命中 → 对应
@@ -659,7 +659,7 @@ fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, 
                     error_message = %msg,
                     "[Provider] Codex SSE stream failed"
                 );
-                // BUG-20261103-351：与真相源同判（classify_message_error 单一
+                // 与真相源同判（classify_message_error 单一
                 // 入口）——此前恒 Unknown 不可重试，上游显式瞬态文案放弃轮转
                 // 比断流（Timeout）处置更差。
                 return Err(crate::failover::classify_message_error(
@@ -690,8 +690,8 @@ async fn parse_sse_response(
     parse_sse_text(&text, model)
 }
 
-/// 响应解码（自 chat() 抽出，2026-11-04：effort 降档重试跳复用同一分派）。
-/// Content-type 分派（流式线缆 2026-10-13）：SSE 走聚合解析；
+/// 响应解码（自 chat() 抽出，effort 降档重试跳复用同一分派）。
+/// Content-type 分派（流式线缆）：SSE 走聚合解析；
 /// application/json（服务端忽略 stream 回整包）走既有 json 路径。
 async fn decode_codex_response(
     resp: reqwest::Response,
@@ -707,7 +707,7 @@ async fn decode_codex_response(
         return parse_sse_response(resp, model).await;
     }
 
-    // body 读取与 JSON 解析拆分（BUG-20261029-153）：resp.json() 一步把
+    // body 读取与 JSON 解析拆分：resp.json() 一步把
     // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
     // 重试），fallback 链直接终止不轮转（本文件 parse_sse_response 的
     // SSE 聚合路径早已 transport_error，此路径此前未对齐）。现传输失败
@@ -729,10 +729,10 @@ async fn decode_codex_response(
     Ok(parse_codex_response(&data))
 }
 
-/// effort 词表自愈降档目标（2026-11-04 真机实证）：gpt-6 系词表已变为
+/// effort 词表自愈降档目标（真机实证）：gpt-6 系词表已变为
 /// low/medium/high/xhigh/max（minimal 被砍；部分代理还会把 minimal 映射成
 /// none 再发上游），上游 400 unsupported_value 的 message 自带权威词表
-///（"Supported values are: 'low', ... 'max'."）。从错误里解析词表、按已知
+///（"Supported values are: 'low',... 'max'."）。从错误里解析词表、按已知
 /// 档位排序取最低档作为降档目标。非本类错误 / 缺词表句 / 首跳未发
 /// reasoning.effort / 当前已是最低档（无从降档且防循环）→ None（诚实失败，
 /// 不猜）。词表真相源交给服务端，不在代码里按模型名猜代际。
@@ -812,7 +812,7 @@ impl LLMProvider for CodexProvider {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            // effort 词表自愈（2026-11-04 真机实证）：gpt-6 系砍掉 minimal
+            // effort 词表自愈（真机实证）：gpt-6 系砍掉 minimal
             // 后首跳 off→minimal 撞 400 unsupported_value；上游错误信息自带
             // 权威词表，按其最低档降档重试一次（仅此一跳，不循环——重试跳
             // 再错即诚实上报）。
@@ -858,7 +858,7 @@ impl LLMProvider for CodexProvider {
 
     fn stream_preferred(&self, _model: &str) -> bool {
         // 与 chat() 的内部切换同判据（226 行）：codex lane auto = 流式
-        // （2026-10-13 stream 键语义——上游排队墙钟根因修复形态），显式
+        // （stream 键语义——上游排队墙钟根因修复形态），显式
         // no 才非流式。
         self.config.stream_mode != "no"
     }

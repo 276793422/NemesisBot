@@ -23,7 +23,7 @@ fn test_tool_to_operation() {
     assert_eq!(tool_to_operation("unknown"), None);
 }
 
-/// U10 统一执行世界：`run_script`（workflow script 节点/agent 脚本入口，
+/// 统一执行世界：`run_script`（workflow script 节点/agent 脚本入口，
 /// MOVE_TOOLS 成员）必须分类为 ProcessExec——此前缺分类 → 8 层管线全跳。
 #[test]
 fn test_tool_to_operation_run_script_classified() {
@@ -33,7 +33,7 @@ fn test_tool_to_operation_run_script_classified() {
     );
 }
 
-/// F3（2026-09-22 审计修复）：`git`/`grep`（MOVE_TOOLS 成员）必须分类为
+/// （审计修复）：`git`/`grep`（MOVE_TOOLS 成员）必须分类为
 /// FileRead——此前缺分类 → 管线 None 放行（fail-open），8 层全部跳过。
 #[test]
 fn test_tool_to_operation_git_grep_classified() {
@@ -41,7 +41,7 @@ fn test_tool_to_operation_git_grep_classified() {
     assert_eq!(tool_to_operation("grep"), Some(OperationType::FileRead));
 }
 
-/// 集群专业职能框架 M4：generate_image 分类为 NetworkRequest（MEDIUM）——
+/// 集群专业职能框架：generate_image 分类为 NetworkRequest（MEDIUM）——
 /// 注入检测/凭据扫描/DLP/审计链全跑；审计 target = output 相对路径。
 #[test]
 fn test_tool_to_operation_generate_image_classified() {
@@ -53,7 +53,7 @@ fn test_tool_to_operation_generate_image_classified() {
     assert_eq!(extract_target("generate_image", &args), "mockups/login.png");
 }
 
-/// W5 盲点修复回归钉：内置表补齐后，此前搭「未知名放行」便车的工具全部
+/// 盲点修复回归钉：内置表补齐后，此前搭「未知名放行」便车的工具全部
 /// 有具名档——multiedit/run_checks 与 exec 同族，background_* 例外语义
 /// 显式保留（Internal=LOW），纯编排面（message/sleep/question/subagent/
 /// workflow_run/mcp_list 等）落 Internal 而非误挂执行档。
@@ -101,7 +101,7 @@ fn test_tool_to_operation_inventory_complete() {
         tool_to_operation("board_evidence_read"),
         Some(OperationType::FileRead)
     );
-    // B4 例外语义显式化（不再靠未知名兜底）。
+    // 例外语义显式化（不再靠未知名兜底）。
     assert_eq!(
         tool_to_operation("background_start"),
         Some(OperationType::ProcessExec)
@@ -114,7 +114,7 @@ fn test_tool_to_operation_inventory_complete() {
         tool_to_operation("background_kill"),
         Some(OperationType::Internal)
     );
-    // L11（2026-11-03）：steer = 注入指令操控进程 → exec 类审批口径
+    // steer = 注入指令操控进程 → exec 类审批口径
     // （与 output/kill 的 Internal 例外刻意不同档）。
     assert_eq!(
         tool_to_operation("background_steer"),
@@ -145,7 +145,7 @@ fn test_tool_to_operation_inventory_complete() {
     assert_eq!(get_danger_level(OperationType::Internal), DangerLevel::Low);
 }
 
-/// W5 盲点修复回归钉：进程级声明表 lookup-first（动态注册面：MCP 桥/
+/// 盲点修复回归钉：进程级声明表 lookup-first（动态注册面：MCP 桥/
 /// 插件桥注册期 declare）——声明覆盖内置表、undeclare 恢复内置表、
 /// 未声明名走内置表 None。
 #[test]
@@ -178,7 +178,7 @@ fn test_extract_target() {
     assert_eq!(extract_target("exec", &args2), "ls -la");
 }
 
-// BUG-20261028-118 红证：`run_script` 是 ProcessExec 档（与 exec 同级任意
+// 红证：`run_script` 是 ProcessExec 档（与 exec 同级任意
 // 代码执行），但 extract_target 无臂 → target 恒空 → Layer 2 命令守卫与
 // preexec 脚本内容扫描的 `!target.is_empty()` 前置双双跳过——script 内容
 // （与 exec 的 command 同语义的危险载荷）完全不过守卫。
@@ -197,7 +197,7 @@ fn test_extract_target_run_script_reads_script_field() {
     assert_eq!(extract_target("run_script", &serde_json::json!({})), "");
 }
 
-// BUG-20261028-118 红证：`multiedit` 是 FileWrite 档，path 内嵌在
+// 红证：`multiedit` 是 FileWrite 档，path 内嵌在
 // edits[].path——extract_target 顶层 get("path") 取不到 → 审计链/审计日志
 // target 为空、按路径匹配的 ABAC 规则对 multiedit 失效（edit_file 拦得住
 // 的 multiedit 拦不住）。取首个 edit 的 path 作为 target。
@@ -216,7 +216,7 @@ fn test_extract_target_multiedit_reads_first_edit_path() {
     assert_eq!(extract_target("multiedit", &serde_json::json!({})), "");
 }
 
-// BUG-20261102-296：mcp_discover stdio 臂投影 process_exec 后，target 必须
+// mcp_discover stdio 臂投影 process_exec 后，target 必须
 // 取命令行本体（command + args 拼接）让 Layer 2 命令守卫 / process_rules /
 // 审计链照常工作（run_script 同款先例）；HTTP 臂（无 command）取 url。
 #[test]
@@ -251,7 +251,7 @@ fn test_extract_target_mcp_discover_command_and_url() {
     assert_eq!(extract_target("mcp_discover", &serde_json::json!({})), "");
 }
 
-// BUG-20261102-296：mcp_discover 的 url 进 Layer 6 SSRF（与 web_fetch 同
+// mcp_discover 的 url 进 Layer 6 SSRF（与 web_fetch 同
 // 语义同闸）。
 #[test]
 fn test_extract_url_mcp_discover_reads_url() {

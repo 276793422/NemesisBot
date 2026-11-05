@@ -25,7 +25,7 @@ impl QuestionTool {
     }
 }
 
-/// / 共用：提问卡 ID 发号器（question 工具与 doom-loop 审批卡同源，
+///  共用：提问卡 ID 发号器（question 工具与 doom-loop 审批卡同源，
 /// 保证 Dashboard 上 ID 全局唯一）。
 pub(crate) fn next_question_id() -> String {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -317,7 +317,7 @@ impl Tool for QuestionTool {
 pub type TurnDeliverablesBucket =
     Arc<parking_lot::Mutex<HashMap<String, Vec<crate::chat_log::PresentedFile>>>>;
 
-/// ：交付物登记工具。agent 认为本 turn 的用户**应该
+/// 交付物登记工具。agent 认为本 turn 的用户**应该
 /// 去看**的产物文件（报告/图/导出物）在此声明——与 write_file「改了什么」
 /// （file_changes）分工：这是「该看什么」的结果面指引。登记项随
 /// assistant 最终回复落盘为 chat_log 的 `deliverables` 字段，Dashboard 在
@@ -503,7 +503,7 @@ pub struct PlanPresentHandle {
 
 impl PlanPresentHandle {
     /// 批准臂：mode 翻 Build + ModeChanged 广播（幂等，事件照发——与
-    /// `AgentLoop:set_mode_with_event` 同语义；loop 侧方法拿不到本句柄，
+    /// `AgentLoop::set_mode_with_event` 同语义；loop 侧方法拿不到本句柄，
     /// 翻转逻辑在此内联，`*mode.write()` 单点写入无竞态面）。
     fn flip_to_build(&self, session_key: &str, chat_id: &str) {
         *self.mode.write() = crate::types::AgentMode::Build;

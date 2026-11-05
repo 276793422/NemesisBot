@@ -29,7 +29,7 @@ impl LogLevel {
         }
     }
 
-    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str:FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "DEBUG" => LogLevel::Debug,
@@ -82,7 +82,7 @@ struct LoggerState {
     logging_enabled: bool,
     console_enabled: bool,
     file: Option<File>,
-    /// Arc'd hook（BUG-20261031-242）：log() 在锁内 clone Arc 后放锁再调用。
+    /// Arc'd hook：log() 在锁内 clone Arc 后放锁再调用。
     /// 旧 `Option<LogHook>`（Box）+ take/put-back 形态下，并发 log 会 take 到
     /// None 丢 SSE 投递；in-flight 期间 set_hook(新) 会被放回的旧钩子覆盖。
     hook: Option<Arc<dyn Fn(LogEntry) + Send + Sync>>,
@@ -228,7 +228,7 @@ impl NemesisLogger {
 
         // Console output
         let console_enabled = state.console_enabled;
-        // BUG-20261031-242：锁内只 clone Arc，绝不做 take/put-back——take
+        // 锁内只 clone Arc，绝不做 take/put-back——take
         // 形态下并发 log 取到 None 丢投递，in-flight 期间 set_hook(新) 会被
         // 放回的旧钩子覆盖。与 sse_layer.rs 的 global_log_callback_slot 同款
         // 纪律：hold the lock only long enough to clone，never invoke while

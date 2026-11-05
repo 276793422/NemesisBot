@@ -75,7 +75,7 @@ impl AgentHandler {
         })))
     }
 
-    /// dashboard visibility : per-session inbox snapshot for the chat
+    /// dashboard visibility: per-session inbox snapshot for the chat
     /// UI's queued/steer chip. `data.session_id` is the raw conversation id
     /// the client sends with chat messages — the SAME session_key build rule
     /// as the web inbound chokepoint (server.rs process_messages: empty →
@@ -382,7 +382,7 @@ fn update_model_info(ctx: &RequestContext) {
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): real-AgentLoop
+// (, quality-hardening goal 冲刺 web): real-AgentLoop
 // arms (cancel/checkpoints/rewind Some-loop + turn guards).
 #[cfg(test)]
 mod s10b_tests;

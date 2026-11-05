@@ -1,5 +1,5 @@
 //! [`super::BoardAssetTool`] 单测。全部本地：publish 走临时 workspace 真库
-//! 真文件；fetch 用 tokio 裸 TCP 手写 HTTP 响应（免新增 dev-dep，G9 端到端
+//! 真文件；fetch 用 tokio 裸 TCP 手写 HTTP 响应（免新增 dev-dep， 端到端
 //! 语义在批次 G cluster-uat 再覆盖真 gateway）。
 
 use super::*;
@@ -341,7 +341,7 @@ async fn fetch_downloads_verifies_and_lands_file() {
     );
     assert!(lines[0].contains("expires_at="), "got: {}", lines[0]);
 
-    // 落定文件内容一致，无 .part 残留。
+    // 落定文件内容一致，无.part 残留。
     let final_path = ws.join("board").join("assets").join("spec.md");
     assert_eq!(std::fs::read(&final_path).expect("read final"), body);
     assert!(
@@ -380,7 +380,7 @@ async fn fetch_sha_mismatch_discards_file() {
 }
 
 // ---------------------------------------------------------------------------
-// fetch RPC 兜底（2026-09-20：HTTP 连接级失败 → 集群 RPC 分块拉取）
+// fetch RPC 兜底（HTTP 连接级失败 → 集群 RPC 分块拉取）
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc as StdArc;
@@ -567,7 +567,7 @@ async fn http_business_error_does_not_trigger_fallback() {
     assert_eq!(calls.load(Ordering::SeqCst), 0, "mock RPC 未被调用");
 }
 
-/// 302 重定向假提供方（BUG-HUNT R36）：A 任何请求回 302 → Location 指向
+/// 302 重定向假提供方：A 任何请求回 302 → Location 指向
 /// B；B 命中计数（第二跳断言用）。返回 (A 的 base_url, B 的 base_url,
 /// B 的命中计数)。
 async fn spawn_redirect_server() -> (String, String, StdArc<AtomicUsize>) {
@@ -631,7 +631,7 @@ async fn spawn_redirect_server() -> (String, String, StdArc<AtomicUsize>) {
 
 #[tokio::test]
 async fn fetch_redirect_is_refused_without_second_hop() {
-    // BUG-HUNT R36：SSRF 闸只查显式 URL（本面还是内网放行形态），旧实现
+    // SSRF 闸只查显式 URL（本面还是内网放行形态），旧实现
     // 用共享 client 自动跟随 ≤10 跳——恶意 peer 回 302 → 内网/metadata
     // 端点即整条绕闸。strict 化后 302 = 业务错诚实上抛：无第二跳请求、
     // 无文件落盘、不触发 RPC 兜底（与 403 同类）。
@@ -1010,7 +1010,7 @@ async fn rpc_chunk_failure_matrix() {
     );
 }
 
-// ---- B8（2026-10-13）：verify_cached_assets 本地缓存体检 ----
+// ----：verify_cached_assets 本地缓存体检 ----
 
 /// 载荷准备：登记 ref → 真文件（可选内容篡改）→ 体检断言。
 fn register_asset(ws: &Path, ref_name: &str, content: &[u8]) {

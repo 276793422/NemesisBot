@@ -5,7 +5,7 @@
 //!   `turn_file_changes`；**不挂 checkpoint store 也收集**（消息↔文件
 //!   变更映射不依赖安全网开关—— 依赖解耦的验收点）。
 //! - **drain 语义**：`drain_turn_file_changes` 取走即清（第二次 drain 为
-//!   空）+ 去重走 `chat_log:dedup_file_changes`（kind 取最后声明）。
+//!   空）+ 去重走 `chat_log::dedup_file_changes`（kind 取最后声明）。
 //! - checkpoint 快照侧不受重构影响（挂载时照常 snapshot—— 语义不回归）。
 
 use super::*;

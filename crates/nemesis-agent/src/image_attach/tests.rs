@@ -13,7 +13,7 @@
 //! 水合成功/失效占位、URL 占位注记（前诚实降级）。
 //!
 //! 注意：走真实 SecurityPlugin 的测试必须 multi_thread flavor——管线
-//! Layer 7（病毒扫描）无条件 `tokio:task:block_in_place`，current_thread
+//! Layer 7（病毒扫描）无条件 `tokio::task:block_in_place`，current_thread
 //! runtime 会 panic。
 
 use std::path::PathBuf;
@@ -662,7 +662,7 @@ fn hydrate_disguised_ref_degrades_to_placeholder() {
 }
 
 // ---------------------------------------------------------------------------
-// 注记合并（AttachOutcome:merge_into_text）
+// 注记合并（AttachOutcome::merge_into_text）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -812,7 +812,7 @@ fn d6_under_cap_no_note() {
 
 // ---------------------------------------------------------------------------
 // （二次回归）：重定向不跟随——SSRF 闸只校验首跳 URL，
-// 302 → 内网地址曾借共享池默认跟随策略绕过闸直打内网。现在 Policy:none()
+// 302 → 内网地址曾借共享池默认跟随策略绕过闸直打内网。现在 Policy::none()
 // + 显式 is_redirection 拦截：诚实注记，重定向目标零连接。
 // ---------------------------------------------------------------------------
 #[tokio::test]
@@ -834,7 +834,7 @@ async fn t9_redirect_response_not_followed() {
             hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut buf = [0u8; 4096];
             let _ = stream.read(&mut buf);
-            // 302 指向链路本地元数据端点（客户端 Policy:none 不会真连）。
+            // 302 指向链路本地元数据端点（客户端 Policy::none 不会真连）。
             let resp = "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = stream.write_all(resp.as_bytes());
         }

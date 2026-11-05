@@ -831,7 +831,7 @@ fn test_resolve_timeout_non_numeric_ignored() {
 }
 
 // ============================================================================
-// Provider preset table integrity（预设表完整性，能力扩展）
+// Provider preset table integrity（预设表完整性）
 // ============================================================================
 
 /// 轻量 URL 校验（测试内联，避免引入 url crate）：`http(s)://authority[path]`。
@@ -1073,7 +1073,7 @@ fn test_resolve_model_config_stream_mode_passthrough() {
     assert_eq!(resolve_model_config(&cfg, "plain").unwrap().stream_mode, "");
 }
 
-// cache_breakpoints 提取（B 级清零）：真值语义与 stream
+// cache_breakpoints 提取：真值语义与 stream
 // 键同源（normalize_stream_value），缺省/未知值 = 关。
 
 #[test]

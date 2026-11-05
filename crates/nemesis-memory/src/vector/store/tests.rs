@@ -107,7 +107,7 @@ fn test_cosine_similarity_zero_vectors() {
 }
 
 // ============================================================
-// P2 System Tests — VectorStore with real ONNX plugin
+// System Tests — VectorStore with real ONNX plugin
 //
 // ONNX Runtime cannot safely re-init after free, so all
 // scenarios run inside a single test with one VectorStore
@@ -116,7 +116,7 @@ fn test_cosine_similarity_zero_vectors() {
 //
 // Requires:
 //   1. plugin_onnx.dll: cd plugins/plugin-onnx && cargo build --release
-//   2. Test model:       bash test-tools/plugin-onnx-test/scripts/setup-test.sh
+//   2. Test model: bash test-tools/plugin-onnx-test/scripts/setup-test.sh
 //
 // Run with:
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1
@@ -124,10 +124,10 @@ fn test_cosine_similarity_zero_vectors() {
 
 #[test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 fn st_plugin_system_test_all_scenarios() {
@@ -528,10 +528,10 @@ fn st_plugin_system_test_all_scenarios() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn st_plugin_persistence_roundtrip() {
@@ -544,7 +544,7 @@ async fn st_plugin_persistence_roundtrip() {
             .expect("plugin DLL + model files required")
     };
 
-    // Phase 1: Store and persist (using shared plugin fixture)
+    // Store and persist (using shared plugin fixture)
     let embed1 =
         crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let store = VectorStore::new_from_embed(embed1, config.clone());
@@ -560,7 +560,7 @@ async fn st_plugin_persistence_roundtrip() {
     assert_eq!(store.len(), 2);
     drop(store); // Drop VectorStore, shared plugin keeps running
 
-    // Phase 2: Load into new store (using same shared plugin)
+    // Load into new store (using same shared plugin)
     let embed2 =
         crate::vector::test_fixture::shared_embed_func().expect("shared plugin not available");
     let store2 = VectorStore::new_from_embed(embed2, config);
@@ -573,7 +573,7 @@ async fn st_plugin_persistence_roundtrip() {
 }
 
 // ============================================================
-// R1 coverage: offline constructor paths (no plugin needed)
+// coverage: offline constructor paths (no plugin needed)
 // ============================================================
 
 /// VectorStore::new without any configured embedding backend must fail with
@@ -628,7 +628,7 @@ fn new_with_explicit_storage_path_still_requires_plugin() {
     );
 }
 
-// BUG-20261025-59：rewrite_persist_file 走唯一临时名权威 helper。旧固定
+// rewrite_persist_file 走唯一临时名权威 helper。旧固定
 // `<persist>.jsonl.tmp` 被残留垃圾（目录形态最顽固）占用时全静默失败，
 // 活文件永不重写。预种活文件 + 在旧固定名上种目录：旧实现必红（删除未
 // 落盘，条目原样留在盘上），新实现经唯一临时名照常重写。

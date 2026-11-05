@@ -1,10 +1,10 @@
-//! Tests for `punct` (Phase 3 覆盖率，2026-08-25)。
+//! Tests for `punct` (覆盖率，2026-08-25)。
 //!
 //! 引擎本体的 add_punctuation 走 sherpa-onnx FFI，成功语义需要真模型文件——
 //! 进豁免证据表；这里钉可测分支：缺模型文件时的显式 bail（不触发任何 FFI
 //! 调用）。
 //!
-//! R6（2026-08-27）修订：add_punctuation 的空串早退是纯 Rust 分支可直测；
+//! （2026-08-27）修订：add_punctuation 的空串早退是纯 Rust 分支可直测；
 //! 非空路径的封送代码用白盒 null 引擎测到 FFI 符号查找处 panic；Drop 同理。
 //! 剩余不可达 = FFI 之后的成功返回值语义（真模型 + 真 DLL）。
 
@@ -24,7 +24,7 @@ fn punct_engine_new_missing_model_bails_without_ffi() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：模型在场时的结构构造臂
+// 覆盖率冲刺：模型在场时的结构构造臂
 // 模型文件存在 → #[repr(C)] 配置构造 → FFI 符号查找处 panic（无 DLL 红线内）。
 // ===========================================================================
 
@@ -38,7 +38,7 @@ fn punct_engine_new_with_model_builds_config_until_ffi() {
 }
 
 // ===========================================================================
-// R6（2026-08-27）：add_punctuation 分支 + 白盒 null 引擎封送路径。
+// add_punctuation 分支 + 白盒 null 引擎封送路径。
 // Drop 也 panic → 持 null 引擎的测试一律 mem::forget；方法 panic 用
 // catch_panic_msg 截住展开（should_panic 会双 panic fail-fast，见 test_util.rs）。
 // ===========================================================================

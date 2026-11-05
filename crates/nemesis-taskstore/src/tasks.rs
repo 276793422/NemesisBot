@@ -1,10 +1,10 @@
 //! `SqliteTaskStore` —— 集群任务真相源（runs 表）。
 //!
-//! 语义逐条对齐 `nemesis-cluster::task_manager::InMemoryTaskStore`
+//! 语义逐条对齐 `nemesis-cluster::task_manager:InMemoryTaskStore`
 //! （错误文案、completed_at 盖章规则、条件更新先到先得），使
 //! `Cluster::with_workspace` 换装后行为面零漂移。`TaskStore` trait 的
 //! 适配 impl 住在 nemesis-cluster（trait 所有方，orphan rule）；
-//! 本 crate 只暴露固有方法供适配层与 P2/P4 复用。
+//! 本 crate 只暴露固有方法供适配层与 / 复用。
 
 use std::sync::Arc;
 
@@ -154,7 +154,7 @@ impl SqliteTaskStore {
         })
     }
 
-    /// 条件更新（期望状态集合）。原子：`UPDATE ... WHERE status IN (...)`
+    /// 条件更新（期望状态集合）。原子：`UPDATE... WHERE status IN (...)`
     /// 单条语句先到先得。状态不匹配 = `Ok(false)`；任务不存在 = Err
     /// （与 InMemory 语义一致）。
     pub fn update_result_if_status(

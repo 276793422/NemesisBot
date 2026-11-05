@@ -6,13 +6,13 @@ use async_trait::async_trait;
 use nemesis_path::paths::canonicalize_for_compare;
 use std::path::{Path, PathBuf};
 
-/// 工作区路径解析 + restrict 边界校验（本模块工具族单一真相源）。
+/// 工作区路径解析 + restrict 边界校验（本模块工具族统一定义）。
 ///
 /// 相对路径相对 workspace 解析；绝对路径原样采纳。`restrict` 开启时双侧
-/// 统一归一化（nemesis-path 单一真相源）：target 侧 resolve 防 symlink
+/// 统一归一化（nemesis-path 统一定义）：target 侧 resolve 防 symlink
 /// escape；workspace 侧同步 canonicalize，防 Windows 8.3 短名失配（CI
 /// runner 的 TEMP 是 C:\Users\RUNNER~1\...，target 经 canonicalize 成长名
-/// 后与原始短名串永不相等 → 误拒，2026-09-01）。`Path::starts_with` 为
+/// 后与原始短名串永不相等 → 误拒）。`Path::starts_with` 为
 /// 组件级比较。
 fn resolve_workspace_path(workspace: &Path, restrict: bool, path: &str) -> Result<PathBuf, String> {
     let target = Path::new(path);
@@ -369,7 +369,7 @@ impl Tool for DeleteFileTool {
             Err(e) => return ToolResult::error(&e),
         };
 
-        // BUG-20261031-238：操作面删除走 fsutil 退避重试（Windows Defender/
+        // 操作面删除走 fsutil 退避重试（Windows Defender/
         // 索引器瞬时句柄单发必败，fsutil 模块注释与 CI 实证）。重试变体把
         // NotFound 吞成成功（清理语义），操作面「删不存在文件要报错」的
         // 语义由前置存在性检查保留。
@@ -454,7 +454,7 @@ impl Tool for DeleteDirTool {
         }
 
         // Remove the directory and all its contents.
-        // BUG-20261031-238：操作面删除走 fsutil 退避重试（Windows Defender/
+        // 操作面删除走 fsutil 退避重试（Windows Defender/
         // 索引器瞬时句柄单发必败，os error 5/32——红测受控句柄复现）。阻塞
         // 实现经 spawn_blocking 进线程池，不占 async executor 线程。
         let retry_target = target.clone();

@@ -168,7 +168,7 @@ fn legacy_dir_noise_handled() {
 // fail-closed 全禁 + 下次写以空底重建）。修复 = 走 write_file_atomic（唯一
 // 临时名 + fsync 先于 rename + 失败清理）。进程内无法真实注入写中崩溃
 // （BUG-43/44 同族诚实边界），本批锁可观察不变量：兄弟条目跨写保留、
-// 文件字节形态（尾随换行）不变、写路径与迁移路径盘上零 .tmp 残留。
+// 文件字节形态（尾随换行）不变、写路径与迁移路径盘上零.tmp 残留。
 
 #[test]
 fn r45_writes_preserve_siblings_trailing_newline_and_no_tmp_residue() {
@@ -199,7 +199,7 @@ fn r45_migration_write_via_read_path_leaves_no_residue() {
     let dir = temp_config_dir("r45_migrate");
     let _g = SERIAL.lock().unwrap();
     legacy_instance(&dir, "old-plugin", r#"{"k":"v"}"#);
-    // 首读触发迁移写（不罩锁的路径）——迁移条目落盘 + 零 .tmp 残留
+    // 首读触发迁移写（不罩锁的路径）——迁移条目落盘 + 零.tmp 残留
     let sw = switch(&dir, "old-plugin");
     assert!(!sw.enabled);
     assert_eq!(sw.config.get("k"), Some(&serde_json::json!("v")));
@@ -342,7 +342,7 @@ fn runtime_gate_bom_config_json_still_honors_master_switch() {
 
 // ==================== 面板 LLM 总闸 panel_llm（决策 C） ====================
 //
-// 真相源 = `<workspace>/config/config.plugin.wasm.json` 顶层 `panel_llm.enabled`
+// 权威 = `<workspace>/config/config.plugin.wasm.json` 顶层 `panel_llm.enabled`
 // （缺省 false）。与 per-slug 开关同文件同锁；false 时键整体省略（既有文件
 // 消费者零感知）；热语义 = 每次 build_frame 现读（无缓存）。
 

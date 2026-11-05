@@ -229,7 +229,7 @@ impl McpHandler {
             }
         }
         // 头行语法闸：与 CLI `mcp add` 同源（规则
-        // 单一真相源 nemesis_config::validate_mcp_header_line）——此前
+        // 统一定义 nemesis_config::validate_mcp_header_line）——此前
         // Dashboard 放行运行期必跳过/必失败的行（缺冒号、保留头、引用名带
         // 空格），失败延迟到挂载期 401 且 WARN 对用户不可见。
         for line in &server.headers {
@@ -238,7 +238,7 @@ impl McpHandler {
             }
         }
 
-        // env 行语法闸：与 headers 同源（单一真相源
+        // env 行语法闸：与 headers 同源（统一定义
         // nemesis_config::validate_mcp_env_line）——此前坏行静默落盘，挂载
         // 期被运行期跳过，变量无声消失。
         for line in &server.env {
@@ -246,7 +246,7 @@ impl McpHandler {
                 return Err(format!("env 校验失败：{reason}"));
             }
         }
-        // env 行语法闸：与 headers 同源（单一真相源
+        // env 行语法闸：与 headers 同源（统一定义
         // nemesis_config::validate_mcp_env_line）——此前坏行静默落盘，挂载
         // 期被运行期跳过，变量无声消失。
 

@@ -232,7 +232,7 @@ fn node_def_timeout_duration() {
     assert_eq!(node_no_timeout.timeout_duration(), None);
 }
 
-/// BUG-20261025-86：节点 timeout 为零时长（"0"/"0s"/"0m"/"0h"）= 不限
+/// 节点 timeout 为零时长（"0"/"0s"/"0m"/"0h"）= 不限
 /// （None），不是 Some(Duration::ZERO)。全仓配置约定 0=关/不限
 /// （llm_timeout_secs、board 预算、format_on_save timeout_secs 同族）；
 /// Some(0) 透传给 tokio timeout 会在节点首个 await 点即 Elapsed——带
@@ -520,7 +520,7 @@ fn execution_id_is_uuid_format() {
 }
 
 // ---------------------------------------------------------------------------
-// TriggerSource (1a-B1 / 1a-C2)
+// TriggerSource (1a / 1a-)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -576,7 +576,7 @@ fn trigger_source_webhook_default_payload() {
 }
 
 // ---------------------------------------------------------------------------
-// Execution extended fields (1a-B1)
+// Execution extended fields (1a-)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -592,7 +592,7 @@ fn execution_new_has_default_none_for_new_fields() {
 
 #[test]
 fn execution_old_jsonl_loads_with_default_fields() {
-    // Simulate a legacy JSONL file written before 1a-B1 added the new fields.
+    // Simulate a legacy JSONL file written before 1a added the new fields.
     let old_json = r#"{
         "id": "exec-legacy",
         "workflow_name": "wf",
@@ -653,7 +653,7 @@ fn execution_skip_serializing_none_fields() {
 }
 
 // ---------------------------------------------------------------------------
-// Workflow::compute_output (1a-B2)
+// Workflow::compute_output (1a-)
 // ---------------------------------------------------------------------------
 
 fn make_node_result(id: &str, output: serde_json::Value) -> NodeResult {
@@ -952,7 +952,7 @@ fn workflow_compute_output_empty_node_results_is_null() {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (parse_duration suffix arms with non-numeric body)
+// coverage gap closure (parse_duration suffix arms with non-numeric body)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -970,7 +970,7 @@ fn w4a_parse_duration_suffix_with_non_numeric_body_is_none() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261028-119：Workflow::hash 跨进程不稳定
+// Workflow::hash 跨进程不稳定
 // ---------------------------------------------------------------------------
 
 /// 构造 hash 稳定性探针工作流：单个节点、config 带 12 个键。

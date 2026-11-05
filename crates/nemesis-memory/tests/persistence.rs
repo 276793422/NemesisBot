@@ -22,10 +22,10 @@ fn make_entry(id: &str, content: &str) -> VectorEntry {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn it_vector_store_jsonl_roundtrip() {
@@ -34,7 +34,7 @@ async fn it_vector_store_jsonl_roundtrip() {
     let config = __test_fixture::plugin_store_config(&path.to_string_lossy())
         .expect("plugin DLL + model files required");
 
-    // Phase 1: Store and persist (using shared plugin fixture)
+    // Store and persist (using shared plugin fixture)
     let embed1 = __test_fixture::shared_embed_func().expect("shared plugin not available");
     let store = VectorStore::new_from_embed(embed1, config.clone());
     let e1 = make_entry("rt-1", "machine learning artificial intelligence");
@@ -46,7 +46,7 @@ async fn it_vector_store_jsonl_roundtrip() {
     assert_eq!(store.len(), 2);
     drop(store);
 
-    // Phase 2: Load into new store and query (using same shared plugin)
+    // Load into new store and query (using same shared plugin)
     let embed2 = __test_fixture::shared_embed_func().expect("shared plugin not available");
     let store2 = VectorStore::new_from_embed(embed2, config);
     store2.load_persisted_sync().unwrap();
@@ -93,10 +93,10 @@ async fn it_manager_close_reopen_survives() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn it_persistence_mixed_valid_corrupted() {

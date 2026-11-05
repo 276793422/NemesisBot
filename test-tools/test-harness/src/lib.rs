@@ -36,14 +36,14 @@ pub fn ai_server_port() -> u16 {
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(37105)
 }
-/// 41300（<49152，动态端口范围外）：2026-10-16 撞口实录后从 37300 迁出——
+/// 41300（<49152，动态端口范围外）：2026-10-16 撞口案例后从 37300 迁出——
 /// cluster-uat 的常驻/临时节点 web 口规划占 37300-37306 段，两套件并行跑时
 /// cluster-uat 节点重启会在 IT 的 precheck 之后、bind 之前的秒级窗口抢占 37300
 /// （IT 的 WS 全打到 cluster-uat 节点 = 6 个假 FAIL）。41300 与 cluster-uat
 /// 全段（373xx/484xx/1879x/37105）不相交，并行跑也不再撞。
 ///
 /// ⚠ 本端口的**串行复跑间隔 ≥4 分钟**（2026-11-01 agent-bench --compare 假红
-/// 实录）：上一轮进程的连接进 TIME_WAIT（Windows 默认 240s），本轮 gateway
+/// 案例）：上一轮进程的连接进 TIME_WAIT（Windows 默认 240s），本轮 gateway
 /// spawn 重绑 41300 撞 WSAEADDRINUSE → 重试拖 ~25s → gateway_restart 场景
 /// p50 延迟假回退（对照门 +30% 必红）。pass_rate 不受影响；间隔拉开或等
 /// `netstat` 无 41300 残留再跑即绿。
@@ -172,7 +172,7 @@ pub fn precheck_ports(ports: &[u16]) -> Result<(), String> {
 /// 自己 spawn 的那个进程。
 ///
 /// `precheck_ports` 只能拦「启动前已被占」；「precheck 之后、bind 之前的
-/// 秒级窗口被别的套件节点抢跑」只有事后核验能拦（2026-10-16 实录：
+/// 秒级窗口被别的套件节点抢跑」只有事后核验能拦（2026-10-16 案例：
 /// cluster-uat 长跑中节点重启在 IT 预检后抢占 37300，IT 网关 web bind
 /// 静默失败而 health 照常 200，全部 WS 套件跟幽灵节点说话 = 6 个假 FAIL）。
 /// LISTEN 持有者 = bind 成功者，netstat 不会撒谎；gateway.json 的
@@ -309,7 +309,7 @@ impl ManagedProcess {
         // 子进程（TestAIServer：gin Logger 每请求一行访问日志写 stdout）
         // 在 ~540 请求后撑满 OS 管道缓冲——Logger 中间件在 c.Next() 之后
         // 阻塞，net/http 链路不收尾、响应永不 flush，全桩「收请求、零响应」，
-        // 四节点 agent loop 顺序卡死在途 LLM 调用（15:17:55.906 起实录）。
+        // 四节点 agent loop 顺序卡死在途 LLM 调用（15:17:55.906 起实测）。
         // 详细请求日志在子进程自己的 stub-requests/ 文件侧，stdout 量级
         // ~60KB，读到内存弃置即可。
         if let Some(mut stdout) = child.stdout.take() {
@@ -441,7 +441,7 @@ pub struct TestWorkspace {
     /// 本机 TEMP 常见 8.3 短名形态（`C:\Users\LOCALA~1\AppData\Local\Temp`），
     /// tempfile 原样继承 → gateway cwd / CLI 委派 cwd 全是短名。claude CLI
     /// 子进程的安全检查把 8.3 短名路径判为「可疑路径模式、需人工批准」，
-    /// 非交互 `-p` 模式无人批准 → 一切写入被拒（V4 委派 e2e 真机实录
+    /// 非交互 `-p` 模式无人批准 → 一切写入被拒（V4 委派 e2e 真机案例
     /// 2026-10-15：DELEGATION 文本声称完成而 cli_probe.txt 全工作区不存在）。
     /// 所有 getter 一律走 [`Self::path`]，禁止再摸 `temp_dir.path()`。
     root: PathBuf,

@@ -10,10 +10,10 @@ use std::path::{Path, PathBuf};
 ///
 /// # Examples
 ///
-/// | `base_name`      | Windows            | Linux               | macOS                |
+/// | `base_name` | Windows | Linux | macOS |
 /// |------------------|--------------------|---------------------|----------------------|
-/// | `"plugin_ui"`    | `plugin_ui.dll`    | `libplugin_ui.so`   | `libplugin_ui.dylib` |
-/// | `"plugin_onnx"`  | `plugin_onnx.dll`  | `libplugin_onnx.so` | `libplugin_onnx.dylib` |
+/// | `"plugin_ui"` | `plugin_ui.dll` | `libplugin_ui.so` | `libplugin_ui.dylib` |
+/// | `"plugin_onnx"` | `plugin_onnx.dll` | `libplugin_onnx.so` | `libplugin_onnx.dylib` |
 pub fn plugin_library_filename(base_name: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{}.dll", base_name)

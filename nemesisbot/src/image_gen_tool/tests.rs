@@ -1,4 +1,4 @@
-//! generate_image 工具单测（集群专业职能框架 M4）。
+//! generate_image 工具单测（集群专业职能框架）。
 //!
 //! 落盘链路用 wiremock 假端点跑真实 IO（临时目录）；路径 sanitization
 //! 纯函数直测。注册闸（resolve_image_model）两态也在本文件。
@@ -90,7 +90,7 @@ async fn rejects_path_traversal_and_absolute_paths() {
         "C:\\abs\\x.png",
         "/etc/x.png",
         "con.png",
-        // BUG-20261028-99 红证：COM1-9/LPT1-9 全段保留（微软命名规范含
+        // 红证：COM1-9/LPT1-9 全段保留（微软命名规范含
         // 「紧跟扩展名的形态」），首版清单只拦 com1/lpt1。
         "com5.png",
         "com9.png",
@@ -159,7 +159,7 @@ fn sanitize_rel_accepts_normal_relative_paths() {
     assert_eq!(GenerateImageTool::sanitize_rel("a/../x.png"), None);
     assert_eq!(GenerateImageTool::sanitize_rel("dir/"), None);
     assert_eq!(GenerateImageTool::sanitize_rel("."), None);
-    // BUG-20261028-99：保留名全段（与 connectors/manifest.rs、skills/types.rs
+    // 保留名全段（与 connectors/manifest.rs、skills/types.rs
     // 同类清单对齐——首版漏 com2-9/lpt2-9）。
     for r in ["com2", "com5", "com9", "lpt2", "lpt7", "lpt9"] {
         assert_eq!(

@@ -15,7 +15,7 @@ pub struct LlmMessage {
     /// Reasoning content from thinking-mode models, passed back to the API.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
-    /// /（多模态，goal）：本条消息携带的图片（已水合的
+    /// （多模态，goal）：本条消息携带的图片（已水合的
     /// base64 字节）。历史存储只留路径引用（`ConversationTurn.image_refs`），
     /// build_messages 组包时经 `hydrate_image_refs` 每轮重读填充；文件已删
     /// → 占位文本进 content。旧请求重放/下游适配器忽略此字段即纯文本路径，
@@ -28,15 +28,15 @@ pub struct LlmMessage {
 pub const OBSERVER_IMAGE_DATA_MARKER: &str =
     "[图片字节已省略：observer 事件不落 base64，路径见 path]";
 
-/// observer 事件的 messages 序列化（F-J 单一真相源）。
+/// observer 事件的 messages 序列化（F-J 统一定义）。
 ///
 /// build_messages 水合后的 `LlmMessage.images[].data` 是完整图片 base64
-/// （单图 ≤25MB、每消息 ≤8 张）。逐轮 `serde_json:to_value` 若原样发射，
+/// （单图 ≤25MB、每消息 ≤8 张）。逐轮 `serde_json::to_value` 若原样发射，
 /// 字节会被复制进 observer 事件下游（to_callback_json /
 /// request_logger_observer 的 01.AI.Request.raw.json），8×25MB 图 ≈ 每轮
 /// ~270MB JSON 的磁盘/内存放大。此处在**发射源**把非空 `data` 替换为
 /// [`OBSERVER_IMAGE_DATA_MARKER`]（保留 path/media_type 供排障定位）——
-/// 下游消费方（loop_executor:to_callback_json / request_logger_observer）
+/// 下游消费方（loop_executor::to_callback_json / request_logger_observer）
 /// 序列化的是事件里的值，源头干净则全链干净。真实 LLM 请求不受影响
 /// （只改序列化副本，`messages` 本体原样上行）。
 pub fn observer_msg_values(msgs: &[LlmMessage]) -> Vec<serde_json::Value> {
@@ -75,7 +75,7 @@ pub struct LlmResponse {
     pub reasoning_content: Option<String>,
     /// （无人值守）：provider 归一化的停止原因
     /// （"stop"/"length"/...，anthropic/openai lane 均已归一）。翻倍阶梯
-    /// （[`super:length_escalation`]）的判定输入；None = 适配器未提供。
+    /// （[`super::length_escalation`]）的判定输入；None = 适配器未提供。
     pub finish_reason: Option<String>,
     /// 翻倍阶梯实际生效的最后一次 max_tokens（仅当本调用发生过翻倍
     /// 重试才 Some）——`handle_length_continuation` 的 token_cap 判定与触顶
@@ -109,7 +109,7 @@ pub trait LlmProvider: Send + Sync {
         tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String>;
 
-    /// （内部专项）：流式增量 lane。语义与 [`Self:chat`]
+    /// （内部专项）：流式增量 lane。语义与 [`Self::chat`]
     /// 完全一致（同参同返回），额外在**内容增量**到达时同步回调 `on_delta`
     /// （合并窗口在 sink 侧，实现方可按块直呼）。默认实现忽略回调、直接
     /// 委托 `chat()`——非流式 provider / CLI 型 provider / 测试桩行为字节
@@ -121,7 +121,7 @@ pub trait LlmProvider: Send + Sync {
     /// 每增量一次小串分配可忽略（deltas 本就是新串）。
     ///
     /// 实现约定：provider 不支持流式（`chat_stream` 缺省 = 首块即
-    /// `FailoverError:Unknown`"not implemented"）时实现方应**静默回落**
+    /// `FailoverError::Unknown`"not implemented"）时实现方应**静默回落**
     /// 非流式调用（成功后合成一条增量回调），调用方无感知。
     async fn chat_streamed(
         &self,
@@ -144,7 +144,7 @@ pub trait LlmProvider: Send + Sync {
 }
 
 impl AgentLoop {
-    /// BUG ②A：单次上游调用统一包超时——挂死连接（429/网络
+    /// 单次上游调用统一包超时——挂死连接（429/网络
     /// 黑洞后不回响应体）按超时失败计，不再无限等待（实测挂死 27 分钟）。
     /// 四个调用点（首捕 / 429 重试环 / transient 环 / hook 重呼）统一走
     /// 这里；`call_timeout` = 0 关闭超时（退回旧行为）。超时文案带

@@ -80,13 +80,13 @@ pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆�
 pub const PLANNER_SOFT_BUDGET_BYTES: usize = 40_000;
 
 /// planner 系统提示词完整渲染：基础契约 + 职能化拆解方法论段
-/// （[`crate::professions::PLANNER_METHOD`]，D10 流水线模式）。
+/// （[`crate::professions:PLANNER_METHOD`]， 流水线模式）。
 ///
 /// 返回 `&'static str`：消费方经 `DetachedOpts.system_prompt`（`Option<&a str>`
 /// 借用形态）注入，没有 owned 通道——用 `OnceLock` 首调拼装后进程内驻留
 /// （拼装结果恒定，驻留一次即可；不触碰 nemesis-agent 的字段形态）。
 /// 同步测试在 nemesis-board planner/tests.rs（值域清单与
-/// [`crate::professions::meta::CATALOG`] 逐 slug 钉住）。
+/// [`crate::professions:meta::CATALOG`] 逐 slug 钉住）。
 pub fn planner_system_prompt() -> &'static str {
     static PLANNER_PROMPT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     PLANNER_PROMPT.get_or_init(|| {
@@ -201,7 +201,7 @@ pub const CONFLICT_RESOLVER_SYSTEM_PROMPT: &str = r#"你是看板项目的合并
 
 要求：每个冲突文件恰有一条；action=merge 时 content 必须是文件完整新内容（不是 diff、不是片段）；reason 必填。"#;
 
-/// 重规划器系统提示词（AOR 批三 5.3；裸提示词模式的 system 段；经
+/// 重规划器系统提示词（裸提示词模式的 system 段；经
 /// `DetachedOpts.system_prompt` 注入，与主 agent 人格完全隔离）。
 ///
 /// 建议 ≠ 授权：本提示词产出的是**重规划建议**（proposal），执行裁决在
@@ -281,12 +281,12 @@ pub fn render_review_system_prompt(tier: ReviewTier) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// B3/C2 评审 lens（profession-capability-evolution 2026-10-14）
+// / 评审 lens（profession-capability-evolution）
 // ---------------------------------------------------------------------------
 
 /// 一面评审透镜：评审员**只对一类失败负责**的系统性检查清单（任务分镜打
 /// 散同源先验的相关盲区——每个评审员深挖一个维度，优于 N 个泛化评委）。
-/// D6 裁决：表驱动注册表（[`REVIEW_LENSES`]），加镜/换镜 = 加表项，不改
+/// 裁决：表驱动注册表（[`REVIEW_LENSES`]），加镜/换镜 = 加表项，不改
 /// 控制流。
 #[derive(Debug, Clone)]
 pub struct ReviewLens {
@@ -298,15 +298,15 @@ pub struct ReviewLens {
     pub body: &'static str,
 }
 
-/// C2 异构检查员轮换池的大小（[`REVIEW_LENSES`] 前 N 项）。checkers=2 取
+/// 异构检查员轮换池的大小（[`REVIEW_LENSES`] 前 N 项）。checkers=2 取
 /// 镜 1+2；≥3 全开；超出取模回绕（checkers 上限 5 > 3 镜，第 4/5 号复用
 /// 镜 1/2）。加镜 = 在 [`REVIEW_LENSES`] 前段加表项 + 调此数。
 pub const CHECKER_LENS_COUNT: usize = 3;
 
-/// lens 注册表（单一真相源，D6 表驱动）。前 [`CHECKER_LENS_COUNT`] 项 =
-/// C2 异构检查员轮换池；其后为 B3 职能分镜专用项。
+/// lens 注册表（统一定义， 表驱动）。前 [`CHECKER_LENS_COUNT`] 项 =
+/// 异构检查员轮换池；其后为 职能分镜专用项。
 pub const REVIEW_LENSES: &[ReviewLens] = &[
-    // ---- C2 检查员轮换池（镜 1~3）----
+    // ---- 检查员轮换池（镜 1~3）----
     ReviewLens {
         id: "constraint-compliance",
         title: "禁令/约束符合性",
@@ -330,7 +330,7 @@ pub const REVIEW_LENSES: &[ReviewLens] = &[
                东西（范围蔓延）记缺口；交付的东西改变了需求语义（偷换需求）\
                记缺口；需求编号在交付汇报中引用不到的记缺口。",
     },
-    // ---- B3 职能分镜专用 ----
+    // ---- 职能分镜专用 ----
     ReviewLens {
         id: "product-accuracy",
         title: "验收标准准确性",
@@ -348,12 +348,12 @@ pub const REVIEW_LENSES: &[ReviewLens] = &[
     },
 ];
 
-/// C2：按检查员 index 取镜（表驱动按序取，超出池大小取模回绕）。
+/// 按检查员 index 取镜（表驱动按序取，超出池大小取模回绕）。
 pub fn checker_lens_for_index(index: usize) -> &'static ReviewLens {
     &REVIEW_LENSES[index % CHECKER_LENS_COUNT]
 }
 
-/// B3 职能分镜：按任务职能选 lens（product → 准确性；dev/* → 禁令符合性；
+/// 职能分镜：按任务职能选 lens（product → 准确性；dev/* → 禁令符合性；
 /// test-* → 追溯矩阵）。职能只比 family 段（`dev:cpp` 归 dev）；无匹配
 /// （ui-design/architecture/未知/空）→ None（通用评审不加分镜）。
 pub fn review_lens_for_profession(slug: &str) -> Option<&'static ReviewLens> {
@@ -396,7 +396,7 @@ fn render_lens_section(lens: &ReviewLens, reference: Option<&str>) -> String {
     out
 }
 
-/// 带分镜的评审系统提示词渲染（B3）：老签名 [`render_review_system_prompt`]
+/// 带分镜的评审系统提示词渲染：老签名 [`render_review_system_prompt`]
 /// 保留（无分镜 = 原文，`&'static str` 零分配路径不变）；带分镜走本函数
 /// （String 拼接，每档纪律段 + lens 段）。
 pub fn render_review_system_prompt_with_lens(
@@ -458,7 +458,7 @@ criteria 至少一条且与整体 verdict 一致（存在 FAIL 条目时整体�
 /// 一条回滚先例（来自审计回滚记录的**历史事实**，非指令）。
 #[derive(Debug, Clone)]
 pub struct PrecedentEntry {
-    /// 原始决策所属单号与标题（如 `NB-12 用户登录`）。
+    /// 原始决策所属单号与标题（如 ` 用户登录`）。
     pub issue_ref: String,
     /// 当时的自动决策内容（原 audit 记录详情，截断后引用）。
     pub decision: String,

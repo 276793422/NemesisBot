@@ -8,7 +8,7 @@
 //!   为空回退 `clamav_path/database`——两条路都因 freshclam.exe 缺失立即
 //!   Err（`find_executable` 是纯 join，无 PATH 回退，无网络）
 //!
-//! 结构性豁免（台账 §9.4 延续）：真下载 / 真下载库 / clamd 引擎扫描、
+//! 结构性豁免（台账 延续）：真下载 / 真下载库 / clamd 引擎扫描、
 //! spawn 包装层的进度/取消竞态臂、`cfg!(windows)` 的非 Windows 常量假臂。
 
 use super::*;

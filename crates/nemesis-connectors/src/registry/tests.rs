@@ -73,7 +73,7 @@ fn scan_dir_without_manifest_honest_entry() {
 
 #[test]
 fn scan_and_find_reject_oversized_manifest_without_reading() {
-    // 边界补强 2026-10-20：清单体积上限——超限条目按损坏诚实入列 /
+    // 边界补强：清单体积上限——超限条目按损坏诚实入列 /
     // 诚实 Invalid，不进 TOML 解析（scan 是热路径，读前止损）。
     let ws = tmpws();
     // 超限条目：合法 TOML 前缀 + 巨量注释垫到超限。
@@ -287,7 +287,7 @@ fn lookup_error_display_has_id() {
     assert!(e.to_string().contains("x"));
 }
 
-// --- R4：执行前 args 校验 + 加载期 schema 形态扫描 ----------------------------
+// ---：执行前 args 校验 + 加载期 schema 形态扫描 ----------------------------
 
 #[test]
 fn validate_op_args_enforces_schema() {
@@ -374,7 +374,7 @@ fn validate_op_args_enforces_schema() {
     assert!(validate_op_args(None, &serde_json::json!({"anything": [1, 2, 3]})).is_ok());
 }
 
-// --- schema 驱动 wire 规整（2026-11-02 外循环域剥离批 C）---------------------
+// --- schema 驱动 wire 规整（外循环域剥离批 C）---------------------
 // 消费方（flow 引擎回写/publish 组包）args 值恒为字符串（BTreeMap<String,String>
 // + token 渲染），类型事实只在 schema：整串可解析 → 规整成 typed JSON；不可
 // 解析保持字符串 → 类型错诚实浮出（畸形模板声明不被静默吞掉）。
@@ -523,7 +523,7 @@ args_schema = {schema_toml}
     );
 }
 
-/// 形态坏的 required / properties loud 拒（2026-10-16 回检补口）：registry
+/// 形态坏的 required / properties loud 拒（回检补口）：registry
 /// 消费侧 `as_array()`/`as_str()`/`as_object()` 全是静默跳过——形态坏 =
 /// 必填闸或字段级校验整体失效，加载期必须拒，不能装作支持。
 #[test]
@@ -586,9 +586,9 @@ args_schema = {schema_toml}
     assert!(find_connector(ws.path(), "ok-empty").is_ok());
 }
 
-/// min/max 声明在非数值型 property 上 loud 拒（2026-10-16 四轮复查）：
+/// min/max 声明在非数值型 property 上 loud 拒（四轮复查）：
 /// registry 校验器只对 number/integer 消费边界，string/boolean 上声明 =
-/// 运行期静默跳过——同 R4「装作支持」防线。
+/// 运行期静默跳过——同 「装作支持」防线。
 #[test]
 fn manifest_args_schema_shape_rejects_minmax_on_non_numeric() {
     let ws = tmpws();
@@ -645,7 +645,7 @@ args_schema = {schema_toml}
 }
 
 // ---------------------------------------------------------------------------
-// 管理面（Dashboard connectors.create / set_enabled / remove，2026-10-19）
+// 管理面（Dashboard connectors.create / set_enabled / remove）
 // ---------------------------------------------------------------------------
 
 const MIN_TOML: &str = r#"[connector]
@@ -662,7 +662,7 @@ action = "builtin.noop"
 "#;
 
 /// 生成 id 指定、其余同 MIN_TOML 的清单文本（create 强制目录名==id，
-/// 测试夹具按目录名配平 id——边界补强 2026-10-20）。
+/// 测试夹具按目录名配平 id——边界补强）。
 fn min_toml_for(id: &str) -> String {
     MIN_TOML.replace("id = \"new-c\"", &format!("id = \"{id}\""))
 }
@@ -710,8 +710,8 @@ fn create_connector_rejects_bad_dir_name_bad_toml_duplicates_and_mismatch() {
     create_connector(ws.path(), "dup", &dup_toml).expect("first");
     let err = create_connector(ws.path(), "dup", &dup_toml).unwrap_err();
     assert!(err.contains("已存在"), "{err}");
-    // 目录名与清单 id 不一致（边界补强 2026-10-20：dir==id 强制——放行
-    // 会造出「可列出、不可调用」死链，find_connector 直达 connectors/<id>/）
+    // 目录名与清单 id 不一致（边界补强：dir==id 强制——放行
+    // 会造出「可列出、不可调用」死链，find_connector 直达 connectors/<id>）
     let err = create_connector(ws.path(), "other-dir", MIN_TOML).unwrap_err();
     assert!(err.contains("不一致"), "{err}");
     assert!(
@@ -735,7 +735,7 @@ fn set_connector_enabled_writes_sidecar_manifest_bytes_untouched() {
         .join(MANIFEST_FILE);
     let before = std::fs::read_to_string(&manifest_path).expect("read");
 
-    // 停用：清单字节不动（A3-a 启停写 sidecar），effective 反映在 scan/find。
+    // 停用：清单字节不动（a 启停写 sidecar），effective 反映在 scan/find。
     set_connector_enabled(ws.path(), "tog", false).expect("disable");
     let after = std::fs::read_to_string(&manifest_path).expect("read");
     assert_eq!(before, after, "清单字节必须原样——启停恒写 sidecar");
@@ -803,7 +803,7 @@ fn set_connector_enabled_honest_failures() {
 
 #[test]
 fn set_connector_enabled_works_for_signed_entry() {
-    // A3-a 核心收益：签名条目启停恒写 sidecar，清单字节不动 → 验签恒过。
+    // a 核心收益：签名条目启停恒写 sidecar，清单字节不动 → 验签恒过。
     // （旧实现翻 `[connector] enabled` 位破坏验签，只能诚实拒绝。）
     let ws = tmpws();
     create_connector(ws.path(), "signed-c", &min_toml_for("signed-c")).expect("create");
@@ -861,7 +861,7 @@ fn remove_connector_deletes_dir_but_receipts_survive() {
 
 #[test]
 fn find_connector_fallback_resolves_dir_id_mismatch() {
-    // 边界补强 2026-10-20：存量手放目录 dir≠id（绕过 create 的强制）——
+    // 边界补强：存量手放目录 dir≠id（绕过 create 的强制）——
     // find_connector 直达未命中后按清单 id 扫描兜底，不再「可列出、不可调用」。
     let ws = tmpws();
     write_connector(&ws, "hand-made", &min_toml_for("fallback-c"));
@@ -890,7 +890,7 @@ fn find_connector_fallback_resolves_dir_id_mismatch() {
 
 #[test]
 fn corrupt_sidecar_falls_back_to_manifest_enabled_default() {
-    // 边界补强 2026-10-20：坏 JSON sidecar = 空表降级（读路径永不报错），
+    // 边界补强：坏 JSON sidecar = 空表降级（读路径永不报错），
     // enabled 回落清单缺省——停用缺省不被静默翻转成启用（观测面 WARN
     // 在 load_tool_state；行为语义在此钉住）。
     let ws = tmpws();
@@ -916,7 +916,7 @@ fn corrupt_sidecar_falls_back_to_manifest_enabled_default() {
 }
 
 // ---------------------------------------------------------------------------
-// B2（2026-10-19 独占接管）：独占隐藏表 + 镜像 op 枚举
+// （独占接管）：独占隐藏表 + 镜像 op 枚举
 // ---------------------------------------------------------------------------
 
 /// 独占声明 connector 模板（接管 `stub` server；显式 op 绑定一个不在
@@ -1078,7 +1078,7 @@ fn exclusive_mirror_ops_empty_without_declaration() {
     );
 }
 
-/// 治理补全 P1（2026-10-19）：纯独占接管清单合法——ops 为空 + exclusive_mcp
+/// 治理补全：纯独占接管清单合法——ops 为空 + exclusive_mcp
 /// 声明 = 镜像 op 就是操作面（此前「至少一个 [[op]]」把纯接管形态逼成
 /// 写假 op）。同时钉 exclusive_hidden_tools 对该形态照常命中。
 #[test]
@@ -1134,7 +1134,7 @@ enabled = true
     );
 }
 
-/// B3：mirror_baseline 四档 + 矛盾裁决纯函数表。
+/// mirror_baseline 四档 + 矛盾裁决纯函数表。
 #[test]
 fn mirror_baseline_tier_table() {
     use crate::manifest::OpClass;

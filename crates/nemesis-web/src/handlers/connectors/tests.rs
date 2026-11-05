@@ -1,4 +1,4 @@
-//! connector 数据面 WSAPI 测试（行动代理 ，2026-10-14）。
+//! connector 数据面 WSAPI 测试（行动代理，2026-10-14）。
 //!
 //! 覆盖三条只读命令的投影面：`connectors.list`（合法 + 损坏诚实入列）、
 //! `connectors.receipts.list`（append → 回读 / limit / connector 过滤）、

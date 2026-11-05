@@ -169,7 +169,7 @@ pub fn registry() -> &'static RemoteAskRegistry {
 
 /// 回执语法解析（与 channel_approval::parse_reply / loop 侧同源格式：
 /// `/approve <id>` / `/deny <id>`，id 不含空白）。返回 (是否批准, id)。
-/// 本函数是格式单一真相源——channel_approval 委托此处。
+/// 本函数是格式单一权威定义——channel_approval 委托此处。
 pub fn parse_approval_reply(content: &str) -> Option<(bool, &str)> {
     let trimmed = content.trim();
     let (approved, rest) = if let Some(rest) = trimmed.strip_prefix("/approve ") {

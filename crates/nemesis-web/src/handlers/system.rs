@@ -46,7 +46,7 @@ impl ModuleHandler for SystemHandler {
                 ctx.workspace.as_deref(),
             ))),
             // 构建形态清单（feature 裁剪体系）：gateway 注入的 features.json
-            //（单一真相源 scripts/customize/features.toml + 本构建 CARGO_FEATURE_*
+            //（统一定义 scripts/customize/features.toml + 本构建 CARGO_FEATURE_*
             // 真实编译态）。未注入（测试装配）= 空数组。
             "features" => {
                 let features = FEATURES_MANIFEST
@@ -74,7 +74,7 @@ impl ModuleHandler for SystemHandler {
                 })))
             }
             // 打开主目录（侧边栏【打开主目录】按钮后端）：用系统
-            // 文件管理器打开 home 根目录，免用户满盘找 .nemesisbot 位置。路径
+            // 文件管理器打开 home 根目录，免用户满盘找.nemesisbot 位置。路径
             // 完全由服务端 ctx 解析、不收客户端任何路径参数——比
             // projects.open_dir（注册表白名单闸）攻击面更低一档；信任级 =
             // dashboard 登录用户。远程访问语义与 projects.open_dir 一致：

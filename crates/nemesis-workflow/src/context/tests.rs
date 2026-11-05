@@ -288,7 +288,7 @@ fn test_context_debug_format() {
 }
 
 // ===========================================================================
-// 1b-B3: variables JSON 化 — new tests
+// 1b-: variables JSON 化 — new tests
 // ===========================================================================
 
 #[test]
@@ -386,8 +386,8 @@ fn test_load_old_jsonl_file_string_vars() {
     // value as `Value::String`, so no explicit migration is needed.
     //
     // The Execution.variables type is `HashMap<String, serde_json::Value>`
-    // since 1b-B3; an old JSONL line looks like:
-    //   {"variables": {"name": "alice", "count": "42"}, ...}
+    // since 1b-; an old JSONL line looks like:
+    //   {"variables": {"name": "alice", "count": "42"},...}
     // and the deserialised Value type for "alice" and "42" is String.
     let old_json = r#"{
         "name": "old_exec",
@@ -486,7 +486,7 @@ fn w4a_resolve_unknown_reference_stays_verbatim() {
 }
 
 // ===========================================================================
-// S12b batch：`{{node.field}}` 引用解析失败的原样回退臂（context.rs ~156-157）。
+// batch：`{{node.field}}` 引用解析失败的原样回退臂（context.rs ~156-157）。
 // ===========================================================================
 
 #[test]

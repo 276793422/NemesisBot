@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): drive the
+//! (quality-hardening goal 冲刺, web): drive the
 //! `WorkflowObserver::on_event` delivery path end-to-end (previously only the
 //! pure `build_completed_reply_with_workflow` was tested):
 //!

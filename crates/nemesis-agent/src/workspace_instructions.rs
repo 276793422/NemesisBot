@@ -14,11 +14,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// ：工作区指令信任档位——loop 对 AGENTS.md/CLAUDE.md 注入
-/// 链的处理方式。主/集群 loop 恒 [`InstructionTrust:Trusted`]（操作者自己
+/// 工作区指令信任档位——loop 对 AGENTS.md/CLAUDE.md 注入
+/// 链的处理方式。主/集群 loop 恒 [`InstructionTrust::Trusted`]（操作者自己
 /// 的工作区，注册即信任行为）；项目 loop按注册表条目
 /// `instructions_trusted` × config `projects.instruction_trust` 全局策略
-/// 在装配时解析（[`crate:loop:AgentLoop:set_instruction_trust`] 注入）。
+/// 在装配时解析（[`crate::loop:AgentLoop::set_instruction_trust`] 注入）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstructionTrust {
     /// 受信：verbatim 注入（主循环行为，缺省）。

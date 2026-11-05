@@ -1,4 +1,4 @@
-//! Swarm M3（§5.4/D6）：资产下载凭据——HMAC 签名 token + 引用束。
+//! Swarm：资产下载凭据——HMAC 签名 token + 引用束。
 //!
 //! web token 不跨节点（worker 没有 master 的 dashboard 凭据），资产下载的
 //! 凭据随引用走：引用下发时签发方用**本节点密钥**签 HMAC-SHA256(ref,
@@ -15,13 +15,13 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::sync::Arc;
 
-/// 引用缺省有效期（§5.4「有效期如 1h」）；过期重拉即重新签发。
+/// 引用缺省有效期（「有效期如 1h」）；过期重拉即重新签发。
 pub const DEFAULT_TOKEN_TTL_SECS: i64 = 3600;
 
 type HmacSha256 = Hmac<Sha256>;
 
 /// 资产引用束（dispatch payload / 评论内容里随 `asset_ref` 一起流转的
-/// 下载凭据；serde 形状即信封/HTTP query 的单一真相源）。§5.4 层 1
+/// 下载凭据；serde 形状即信封/HTTP query 的统一定义）。 层 1
 /// 「引用 = {asset_ref, sha256, size}」+ 下载凭据四件套——消费方
 /// （board_asset 工具）把字段逐字抄进 fetch 参数即可，sha256 是完整性
 /// 校验的期望值，必须随引用走而不是靠截断展示。
@@ -37,7 +37,7 @@ pub struct AssetTokenBundle {
     /// 节点表只有 RPC 地址没有 HTTP 端口，bundle 自带完整寻址，
     /// 消费方拿来即用（反向对称：worker 产物 bundle 带自己地址）。
     pub node_url: String,
-    /// 提供方集群 node_id（RPC 兜底通路寻址用，2026-09-20）。跨网段
+    /// 提供方集群 node_id（RPC 兜底通路寻址用）。跨网段
     /// HTTP 直连不可达时，消费方凭它向提供方发 `asset.meta`/`asset.chunk`
     /// 集群 RPC 分块拉取（复用集群连接，零新增网络设施）。serde default
     /// 兼容存量 bundle：旧 JSON 无此字段 → 空串 → 消费方仅 HTTP 通路
@@ -138,18 +138,18 @@ pub fn issue_asset_bundle(
     }
 }
 
-/// 引用名合法性（路径穿越防御的单一真相源；注册登记与下载端点两侧
+/// 引用名合法性（路径穿越防御的统一定义；注册登记与下载端点两侧
 /// 都过这道）。白名单字符集：字母/数字/`. _ -`，且不得以 `.` 开头
 /// （拦 `..`、隐藏文件）、不得为空、长度 ≤ 200。ref 落盘即文件名，
 /// 含路径分隔符或 `..` 序列的引用一律拒绝。
 ///
-/// Windows 保留设备名（BUG-20261105-031）：ref 落盘即文件名，`CON`/
+/// Windows 保留设备名：ref 落盘即文件名，`CON`/
 /// `NUL`/`COM1` 等有设备语义——Win11 26200 实机探针实证 WriteAllText
 /// 报成功但文件不存在、同会话又可从设备读回（内容写设备不落盘，资产
 /// sha256 跨会话必挂，COM 类打开还可阻塞）。首段（第一个 `.` 之前的
 /// stem）命中 22 名单即拒（大小写不敏感，含「紧跟扩展名」形态——
 /// 微软命名规范明文），与 image_gen_tool / connectors / skills /
-/// ziwei-profile 同类清单对齐（BUG-20261028-99 先例）。
+/// ziwei-profile 同类清单对齐（先例）。
 pub fn sanitize_asset_ref(ref_name: &str) -> Result<(), String> {
     if ref_name.is_empty() {
         return Err("asset ref must not be empty".to_string());
@@ -189,7 +189,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 /// 计算字节串 sha256（hex 小写）。下载端校验（board_asset 工具 fetch）与
-/// 登记索引（publish）共用——asset 完整性的单一真相源。
+/// 登记索引（publish）共用——asset 完整性的统一定义。
 pub fn sha256_bytes(data: &[u8]) -> String {
     use sha2::Digest;
     let mut hasher = Sha256::new();
@@ -208,9 +208,9 @@ fn hex_decode_32(hex: &str) -> Result<Vec<u8>, String> {
     if hex.len() != 64 {
         return Err(format!("expected 64 hex chars, got {}", hex.len()));
     }
-    // BUG-20261105-036：非 ASCII 输入（字节数恰为 64 但含多字节字符）会让
+    // 非 ASCII 输入（字节数恰为 64 但含多字节字符）会让
     // 下方字节切片落在 char boundary 之外 panic——模块不变量是「损坏内容
-    // 诚实 Err 绝不 panic」（BUG-20261105-035 同族：skills signer hex_decode）。
+    // 诚实 Err 绝不 panic」（同族：skills signer hex_decode）。
     if !hex.is_ascii() {
         return Err(format!(
             "expected 64 ASCII hex chars, got {} bytes containing non-ASCII",
@@ -231,7 +231,7 @@ fn hex_decode_32(hex: &str) -> Result<Vec<u8>, String> {
 ///
 /// 损坏处理是**诚实 loud**：读到的内容不是合法 64 hex → Err，绝不静默
 /// 重置（重置=作废所有已签发 token + 已登记引用，用户必须知道）。
-/// 读 IO 错误同纪律（BUG-20261025-85）：只有 `NotFound` 是首次运行走生成
+/// 读 IO 错误同纪律：只有 `NotFound` 是首次运行走生成
 /// ——独占锁/权限拒绝等**读失败 ≠ 不存在**，落进生成分支要么静默轮换
 /// （读拒写允许的 ACL 形态，已签发 token 全作废且无告警），要么报错在
 /// write 阶段误导排障方向（常见锁形态，红证实证报 `write … os error 32`
@@ -253,8 +253,8 @@ pub fn load_or_create_secret(path: &std::path::Path) -> Result<Vec<u8>, String> 
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|e| format!("generate asset secret: {e}"))?;
     let hex = hex_encode(&bytes);
-    // BUG-20261105-036：签名熵落盘走 write_file_atomic 0o600（BUG-20261105-035
-    // 同族：凭据面纪律——裸 fs::write 按 umask 常为 0644 世界可读 + 中断撕裂）。
+    // 签名熵落盘走 write_file_atomic 0o600（
+    // 同族：凭据面纪律——裸 fs:write 按 umask 常为 0644 世界可读 + 中断撕裂）。
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
@@ -264,7 +264,7 @@ pub fn load_or_create_secret(path: &std::path::Path) -> Result<Vec<u8>, String> 
 }
 
 /// dispatch 侧资产签发上下文：secret + 本节点对外 web 基址槽 + 集群
-/// node_id。gateway 装配时构造并 set 进 [`crate::store::BoardStore`]
+/// node_id。gateway 装配时构造并 set 进 [`crate::store:BoardStore`]
 /// （dispatch 链全部函数已持有 store——资产段渲染零参数蔓延）。
 #[derive(Clone)]
 pub struct AssetSignContext {
@@ -277,7 +277,7 @@ pub struct AssetSignContext {
     pub node_id: String,
 }
 
-/// 本节点对外 web 基址句柄（可更新）。G9（2026-09-09）：基址不再是一次
+/// 本节点对外 web 基址句柄（可更新）。：基址不再是一次
 /// 性写死的 OnceLock——多重网卡机器的对外 NIC、以及 DHCP 换 IP，都由
 /// gateway 的自愈任务随集群注册表知识更新（更新之后 bundle 重签即走
 /// HTTP 老路）。
@@ -325,7 +325,7 @@ impl AssetSignContext {
     }
 }
 
-/// 渲染 dispatch prompt 的「## 任务资产」段（§5.4 层 1：引用随包走）。
+/// 渲染 dispatch prompt 的「## 任务资产」段（层 1：引用随包走）。
 /// 无资产 → None（prompt 不加段）；基址未就绪的资产逐条诚实注记。
 pub fn render_assets_section(
     signing: &AssetSignContext,

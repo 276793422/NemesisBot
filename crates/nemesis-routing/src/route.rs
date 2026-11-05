@@ -77,7 +77,7 @@ pub struct RouteResolver {
 }
 
 impl RouteResolver {
-    /// BUG-20261103-332：peer 约束完整性归一——kind/id **任一**为空（trim 后）
+    /// peer 约束完整性归一——kind/id **任一**为空（trim 后）
     /// 的 peer 约束是永不命中的死绑定（find_peer_match 对空字段 continue），
     /// 且 is_some() 判定会把 account/wildcard 匹配一并挡死——绑定静默脱靶
     /// default。与 config 转换点（agent_factory build_route_resolver）对
@@ -225,7 +225,7 @@ impl RouteResolver {
             if bk.is_empty() || bid.is_empty() {
                 continue;
             }
-            // BUG-20261025-89：peer_id 比较与 kind/channel/account 同一大小写
+            // peer_id 比较与 kind/channel/account 同一大小写
             // 纪律（CI）——渠道上报的 peer_id 大小写与配置漂移（IRC 昵称
             // RFC 1459 大小写不敏感、Mastodon/Bluesky 句柄等）时，精确比较
             // 让绑定静默脱靶落到 default agent；且会话键构建本就把 peer_id
@@ -248,7 +248,7 @@ impl RouteResolver {
             if let Some(g) = &b.match_guild_id {
                 let g = g.trim();
                 if !g.is_empty()
-                    // BUG-20261025-89 族延伸（BUG-20261103-332）：guild/team
+                    // 族延伸：guild/team
                     // 与 peer/account 同一 CI 纪律——渠道侧 GUID 大小写漂移
                     // （Teams/平台 GUID 语义大小写不敏感）此前精确比较让绑定
                     // 静默脱靶。CI 是纯放宽（原精确命中在 CI 下照常命中）。
@@ -270,7 +270,7 @@ impl RouteResolver {
         for b in bindings {
             if let Some(t) = &b.match_team_id {
                 let t = t.trim();
-                // CI 同 guild（BUG-20261025-89 族延伸）。
+                // CI 同 guild（族延伸）。
                 if !t.is_empty() && t.to_lowercase() == team_id.to_lowercase() {
                     return Some(*b);
                 }

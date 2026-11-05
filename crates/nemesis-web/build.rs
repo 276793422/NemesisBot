@@ -1,6 +1,6 @@
 //! Build script for nemesis-web.
 //!
-//! P2-2 (2026-08-24 UI entry gap): compile-time packaging of the Python SDK
+//! (2026-08-24 UI entry gap): compile-time packaging of the Python SDK
 //! (`test-tools/python/sdk/`) into two zip artifacts embedded via
 //! `include_bytes!` in `sdk_embed.rs`:
 //!

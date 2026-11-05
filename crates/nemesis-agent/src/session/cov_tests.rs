@@ -2,7 +2,7 @@
 // cleanup 读目录失败·过期删除·删除失败 / delete·clear 删除失败 warn /
 // force_compress 短史恒等与长史压缩 / save 往返）。
 //
-// 不调 CaptureSink:init——session:tests 的 capture 测试是该 OnceLock
+// 不调 CaptureSink::init——session::tests 的 capture 测试是该 OnceLock
 // 在本测试二进制的唯一初始化点（先到先得，多初始化会互相毒化）。
 //
 // save() 的「sanitize 后仍非法」错误臂（733）为死防御——

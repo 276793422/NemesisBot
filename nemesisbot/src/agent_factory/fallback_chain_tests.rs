@@ -1,4 +1,4 @@
-//! T2b（扩展计划 D4）：fallback 链装配单测（`wrap_fallback_chain`）。
+//! （扩展计划）：fallback 链装配单测（`wrap_fallback_chain`）。
 //!
 //! 断言面：`fallback_to` 缺失/全不可用 = 原样返回主 provider（`Arc::ptr_eq`，
 //! 行为与现状字节一致）；有效别名 → 包装成 FallbackProvider（非 ptr_eq）；

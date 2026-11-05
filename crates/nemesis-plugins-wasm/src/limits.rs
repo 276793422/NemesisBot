@@ -1,7 +1,7 @@
 //! 插件资源限制表 + 并发实例闸。
 //!
 //! 内存/表/fuel/墙钟预算的实际执行在宿主壳 DLL（plugin_wasm.dll）里；
-//! 本模块只剩额度表（单一真相源）与信号量闸。默认额度（可在 config `plugins.limits` 全局收紧；manifest `[limits]`
+//! 本模块只剩额度表与信号量闸。默认额度（可在 config `plugins.limits` 全局收紧；manifest `[limits]`
 //! 只能在全局上限内进一步收紧，放宽被忽略并留 warn）。
 
 use std::sync::Arc;
@@ -81,7 +81,7 @@ impl PluginLimits {
     }
 }
 
-/// 循环策略点（2026-10-22 样板工程批 4；调用预算按点推导——单表 timeout_ms
+/// 循环策略点（样板工程；调用预算按点推导——单表 timeout_ms
 /// 是工具口径，policy 三点墙钟画像差异极大，不能一刀切）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PolicyPoint {
@@ -121,7 +121,7 @@ impl PolicyPoint {
 }
 
 impl PluginLimits {
-    /// policy 组件按策略点的单次调用墙钟超时（2026-10-22 批 4）。
+    /// policy 组件按策略点的单次调用墙钟超时。
     ///
     /// - validation：manifest `[limits] timeout-ms` 收紧语义照常生效（取
     ///   较紧者）；

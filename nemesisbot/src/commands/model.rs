@@ -14,7 +14,7 @@ pub enum ModelAction {
         /// family is used automatically.
         #[arg(long)]
         model: Option<String>,
-        /// Built-in provider family (P9 preset table, e.g. zhipu / groq /
+        /// Built-in provider family (preset table, e.g. zhipu / groq /
         /// deepseek / ollama). Auto-fills api_base / protocol / default model;
         /// explicit --model/--base/--protocol flags take precedence.
         #[arg(long)]
@@ -36,7 +36,7 @@ pub enum ModelAction {
         /// "claude" is accepted as an alias of "anthropic".
         #[arg(long)]
         protocol: Option<String>,
-        /// Declared model role (2026-10-13): conversation | utility | classifier.
+        /// Declared model role: conversation | utility | classifier.
         /// Omit = conversation. utility/classifier entries are chat-shaped but
         /// rejected from the default conversation slot (--default / WSAPI
         /// models.set_default / gateway assembly).
@@ -88,7 +88,7 @@ pub enum ModelAction {
         /// Real model name, e.g. "Qwen3-30B-A3B"
         real_name: String,
     },
-    /// per-model 流式开关（2026-10-13 stream 键）：yes/no（别名 true/false）
+    /// per-model 流式开关（stream 键）：yes/no（别名 true/false）
     /// 强制流式/非流式请求形态；auto 或空串清除回 lane 默认（codex=流式，
     /// anthropic/openai 兼容=非流式）。构造期消费：默认模型需重新设默认
     /// 或重启生效。
@@ -97,7 +97,7 @@ pub enum ModelAction {
         /// One of: auto | yes | no（别名 true/false）
         stream: String,
     },
-    /// per-model 绝对压缩点（2026-10-20 compact_context_tokens）：设 N =
+    /// per-model 绝对压缩点（compact_context_tokens）：设 N =
     /// 上下文到 N token 即压缩（不乘比例，解决「1M 模型但 200K 压一次」）；
     /// auto / 0 / 空串清除回默认链（窗口×75%）。超过真实窗口时运行期钳到
     /// 窗口（一次性 warn）。每轮压缩检查前重读配置——下一轮即生效。
@@ -106,7 +106,7 @@ pub enum ModelAction {
         /// token 数，或 auto / 0 清除
         tokens: String,
     },
-    /// H4 (U16 half): set the reasoning-effort tier for a model.
+    /// (half): set the reasoning-effort tier for a model.
     /// "off" clears it (send nothing); low/medium/high set the tier that
     /// providers translate into their wire format.
     SetEffort {
@@ -118,12 +118,12 @@ pub enum ModelAction {
     /// probe) to the model and writes the detected tier (and vision probe
     /// result) to config. Costs ~8 LLM calls. Explicit only.
     Probe { name: String },
-    /// U16 (sixth batch): fetch the models.dev catalog (context windows /
+    /// (sixth batch): fetch the models.dev catalog (context windows /
     /// max output tokens per model) and cache it at
     /// `<home>/workspace/data/models_catalog.json`. `model add` auto-fills
     /// from the cache.
     CatalogUpdate,
-    /// 价目表管理（A2 在线更新：LiteLLM 主源 + 自定义条目 + 离线导入）。
+    /// 价目表管理（在线更新：LiteLLM 主源 + 自定义条目 + 离线导入）。
     /// 查表优先级：自定义 > 下载 > 内置（内置 36 模型表离线兜底）。
     Prices {
         #[command(subcommand)]
@@ -166,7 +166,7 @@ pub enum PricesAction {
         /// 显示名（可选，缺省用模型名）。
         #[arg(long)]
         display: Option<String>,
-        /// Prompt-length 阶梯价（L3，可重复）：`<min_prompt_tokens>:<input>:<output>`
+        /// Prompt-length 阶梯价（可重复）：`<min_prompt_tokens>:<input>:<output>`
         /// （USD / 百万 token；input_tokens ≥ min 时该档生效，多条命中取
         /// 阈值最大档；缓存价继承基础价——需精细控制走 Dashboard 属性编辑器）。
         #[arg(long = "price-tier")]
@@ -179,7 +179,7 @@ pub enum PricesAction {
     },
 }
 
-/// 守卫①生效键（M4 + 2026-10-13 N6）：新 entry 显式键优先，重复 add 回退
+/// 守卫①生效键（+）：新 entry 显式键优先，重复 add 回退
 /// 旧条目——与 model_list 合并的 `or_insert`（旧键只填缺）语义一致。只看
 /// 新 entry 会漏「旧条目是 images-openai/utility，重复 `--default` 仍把
 /// 它指到主对话槽」的旁路（两守卫同款洞，合并生效值一并封死）。
@@ -222,7 +222,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
 
-            // P9（能力扩展 WS5）：--provider 家族预设——查内置表自动补
+            // --provider 家族预设——查内置表自动补
             // api_base / protocol / 默认型号；显式 --model / --base /
             // --protocol 恒优先。未知家族 loud 报错并列出全部可用家族。
             let preset = match provider.as_deref() {
@@ -267,7 +267,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
 
             // Validate model identifier format: must be vendor/model，段级拒
-            // `.`/`..`/`\`/控制字符（BUG-20261104-361：旧 `contains('/')` 闸
+            // `.`/`..`/`\`/控制字符（旧 `contains('/')` 闸
             // 放行 `../../etc/passwd`——vendor 段 `..` 是穿越形态）。单一真相
             // 源 helper 与 WSAPI models.add 同源。
             nemesis_utils::sanitize::validate_model_identifier(&model)
@@ -280,7 +280,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 _ => model.clone(),
             };
 
-            // F-I（2026-09-04 四轮盲审）：add 前先查重——重复 add 是「更新」语义，
+            // F-I（四轮盲审）：add 前先查重——重复 add 是「更新」语义，
             // 走下方 or_insert_with 合并；若这里无条件写 model_tier="auto"，
             // 新条目已带该键 → 合并填不进旧值 → 用户 set-tier / probe 写入的
             // tier 被静默重置为 auto（auto→big 默认，小模型会被发全量工具）。
@@ -312,7 +312,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if let Some(a) = &auth {
                 entry["auth_method"] = serde_json::Value::String(a.clone());
             }
-            // LLM 协议选择器（2026-09-11）：显式协议写盘；校验/归一走单一
+            // LLM 协议选择器：显式协议写盘；校验/归一走单一
             // 真相源（claude→anthropic），未知值 loud 报错退出。
             if let Some(p) = &protocol {
                 let normalized = nemesis_types::capability::normalize_model_protocol(p)
@@ -322,7 +322,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 // 表内协议均为归一值（完整性测试钉住），直接写盘即可。
                 entry["protocol"] = serde_json::Value::String(p.protocol.to_string());
             }
-            // per-model 流式开关（2026-10-13 stream 键）：归一走单一真相源
+            // per-model 流式开关（stream 键）：归一走单一真相源
             // normalize_stream_value（与配置解析同源），非法值 loud 报错
             // （CLI 显式 flag 不做静默忽略——与配置层「未知值落 auto」的分
             // 工是刻意的：flag 是用户当次意志，错了就该说）。
@@ -336,11 +336,11 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     })?;
                 entry["stream"] = serde_json::Value::String(normalized);
             }
-            // 集群专业职能框架 M4：图像协议条目唯一消费点 = generate_image 工具
+            // 集群专业职能框架：图像协议条目唯一消费点 = generate_image 工具
             // （经 tools.image_gen / 唯一 images-openai 条目解析），不能坐上
             // agent 默认对话模型槽。--default 显式请求 = loud 拒绝（守卫①）；
             // 仅一条模型时的自动默认（守卫①b）也跳过图像条目，诚实打印说明。
-            // N6（2026-10-13）：守卫判定用**合并生效值**——重复 add 不带
+            // 守卫判定用**合并生效值**——重复 add 不带
             // --protocol/--role 时新 entry 缺键、旧条目经下方 merge 回填，
             // 只看新 entry 会漏掉「旧条目是 images-openai/utility 仍被
             // --default 指到主对话槽」的旁路（两守卫同款洞，一并修）。
@@ -362,8 +362,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                      请去掉 --default 重新添加（generate_image 工具会自动解析该条目）"
                 );
             }
-            // 声明式模型角色（2026-10-13 N6）：显式 --role 写盘；校验/归一走
-            // 单一真相源，未知值 loud 报错退出。utility/classifier 是对话形态
+            // 声明式模型角色：显式 --role 写盘；校验/归一走
+            // 统一定义，未知值 loud 报错退出。utility/classifier 是对话形态
             // 条目（probe 照常），但不是默认对话模型槽的合法形态——守卫①
             // 同款 loud 拒绝（agents.small_model 才是这类条目的消费点）。
             if let Some(r) = &role {
@@ -380,7 +380,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 );
             }
 
-            // Phase 4a (small-model-tool-robustness): tag with an auto-detect
+            // a (small-model-tool-robustness): tag with an auto-detect
             // tier. Resolved at runtime from the model name (and any real_name /
             // model_size_b the user adds later). Override with `model set-tier`.
             // F-I：只对**新增**条目写 auto——重复 add 由下方合并保留旧 tier。
@@ -388,7 +388,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 entry["model_tier"] = serde_json::Value::String("auto".to_string());
             }
 
-            // U16 (sixth batch): auto-fill context_window / max_output_tokens
+            // (sixth batch): auto-fill context_window / max_output_tokens
             // from the models.dev catalog cache when the model is a catalog
             // hit and the user didn't set them otherwise (there is no CLI
             // flag for these today — catalog is the only writer besides a
@@ -435,11 +435,11 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             );
                         }
                         // Remove existing entry with same model name
-                        // （2026-09-03 二次回归 model-1：替换时保留旧条目的未类型化
+                        // （二次回归 model-1：替换时保留旧条目的未类型化
                         // 键——model_tier / vision / vision_probe / max_output_tokens
                         // 等是 probe / set-tier / catalog 写进来的资产，重复 add
                         // 不该静默清掉；新条目显式设置的键以新值为准。
-                        // F-I（2026-09-04）：model_tier 现在只对新增条目写入
+                        // F-I：model_tier 现在只对新增条目写入
                         // （见上方 already_exists 门），重复 add 走这里回填旧值。）
                         if let Some(old) = existing
                             && let (Some(new_obj), Some(old_obj)) =
@@ -474,12 +474,12 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     }
                 }
 
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
             }
 
             println!("Model added: {}", model);
-            // Phase 4a: print the auto-detected capability tier (advisory).
+            // a: print the auto-detected capability tier (advisory).
             {
                 let hint = nemesis_types::capability::TierHint {
                     full_model: Some(model.clone()),
@@ -520,7 +520,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             "  Note: 'images-openai' 协议条目不自动设为默认对话模型（仅供 generate_image 工具消费）"
                         );
                     } else if !nemesis_types::capability::is_conversation_role(&entry_role) {
-                        // 守卫①b（N6）：utility/classifier 条目同样不自动坐槽。
+                        // 守卫①b：utility/classifier 条目同样不自动坐槽。
                         println!(
                             "  Note: role '{}' 条目不自动设为默认对话模型（杂务消费走 agents.small_model）",
                             entry_role
@@ -542,7 +542,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                                     );
                                 }
                             }
-                            // REL-002：统一原子写入。
+                            // 统一原子写入。
                             write_config_atomic(&cfg_path, &cfg)?;
                         }
                         println!(
@@ -563,8 +563,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let cfg: serde_json::Value = serde_json::from_str(&data)?;
 
-            // 默认模型唯一真相源 agents.defaults.llm（get_effective_llm 同源）。
-            // BUG-20261101-290：旧版这里回退读顶层 default_model 键——该键
+            // 默认模型唯一依据 agents.defaults.llm（get_effective_llm 同源）。
+            // 旧版这里回退读顶层 default_model 键——该键
             // 装配层从不消费（写侧 CLI/dashboard/migrate/模板零来源），手写
             // 会被显示误导（Default: X 而实际跑 fallback 模型）。显示不谎报。
             let default_model = cfg
@@ -576,7 +576,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
 
             println!("  Default: {}", default_model);
             println!();
-            // N1 (devtool-upgrade 阶段 1)：生效 context_window + 来源标记
+            // (devtool-upgrade)：生效 context_window + 来源标记
             // （config 显式 > 价目表 catalog > fallback-128k）。价目表打开
             // 失败 → None，catalog 级静默跳过（fallback 链兜底）。
             let pricing =
@@ -603,7 +603,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         // Match by model_name (alias) or full model identifier
                         let is_default = model == default_model || model_name == default_model;
 
-                        // N1: effective context window + source for THIS alias.
+                        // effective context window + source for THIS alias.
                         let alias_for_window = if model_name.is_empty() {
                             model
                         } else {
@@ -628,7 +628,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             println!("    Base URL: {}", b);
                         }
                         if verbose {
-                            // 有效压缩点 + 来源（2026-10-20 compact_context_tokens；
+                            // 有效压缩点 + 来源（compact_context_tokens；
                             // 未设 = 窗口×75% 默认链，被钳时 clamped_from 带原值）。
                             let trig = nemesis_agent::r#loop::resolve_compact_trigger(
                                 Some(&cfg),
@@ -692,7 +692,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
 
-            // BUG-20261101-290：顶层 default_model 兼容读取已删——装配层
+            // 顶层 default_model 兼容读取已删——装配层
             // （get_effective_llm）不读该键，防误删判定与装配同源，不再让
             // 手写死键莫名拒绝删除。
 
@@ -749,7 +749,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
 
             if found {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 println!("Model removed: {}", name);
             } else {
@@ -763,7 +763,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
             let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
             let cfg: serde_json::Value = serde_json::from_str(&data)?;
-            // BUG-20261101-290：默认模型唯一真相源 agents.defaults.llm（与
+            // 默认模型唯一依据 agents.defaults.llm（与
             // 装配 get_effective_llm 同源）；顶层 default_model 兼容回退已删
             // （装配层不读，显示不谎报）。
             let default_model = cfg
@@ -793,14 +793,14 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 e["model_tier"] = serde_json::Value::String(parsed.to_string());
             });
             if updated {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 println!("✓ {} → model_tier={}", name, parsed);
                 // tier 热生效：AgentLoop 每轮 LLM 前 check_config_reload()（mtime
                 // 检测）自动重解析，切档无需重启（旧文案"需重启"是错的，二次回归
                 // model-2 修正；与 set-effort 文案同语义）。
                 println!("  (生效于下次 LLM 调用前的 config 重读)");
-                // F8：tier 决定「档位工具集」，`agents.hidden_tools` 决定「彻底
+                // tier 决定「档位工具集」，`agents.hidden_tools` 决定「彻底
                 // 隐藏」——两者叠加。若切档后仍看不到某工具，检查是否被隐藏。
                 println!(
                     "  提示：工具供给 = tier 档位 ∩ 未隐藏（agents.hidden_tools 可通配隐藏，如 \"mcp_*\"）；详见 TOOLS.md"
@@ -832,7 +832,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 en["reasoning_effort"] = value.clone();
             });
             if updated {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 if e == "off" {
                     println!("✓ {} → reasoning_effort cleared", name);
@@ -861,7 +861,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 e["model_size_b"] = serde_json::Value::Number(size_b.into());
             });
             if updated {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 println!(
                     "✓ {} → model_size_b={} (auto 检测将解析为 tier={})",
@@ -888,7 +888,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             };
             let resolved = nemesis_types::capability::detect_tier(&hint);
             if updated {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 println!(
                     "✓ {} → real_name=\"{}\" (auto 检测将解析为 tier={})",
@@ -902,7 +902,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found.");
             }
-            // 归一走单一真相源 normalize_stream_value（与 model add --stream /
+            // 归一走统一定义 normalize_stream_value（与 model add --stream /
             // web update_field / 配置解析同源）：auto/空串清除（写空串 =
             // 跟随 lane 默认），yes/no（别名 true/false）归一写盘，未知值
             // loud 拒绝——flag 是用户当次意志，不静默纠偏。
@@ -924,7 +924,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 e["stream"] = serde_json::Value::String(normalized.clone());
             });
             if updated {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 let shown = if normalized.is_empty() {
                     "auto".to_string()
@@ -973,7 +973,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 }
             });
             if updated {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 write_config_atomic(&cfg_path, &cfg)?;
                 if cleared {
                     println!(
@@ -1018,7 +1018,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
-            // 集群专业职能框架 M4 守卫③：探针走对话/工具调用链路，图像协议
+            // 集群专业职能框架 守卫③：探针走对话/工具调用链路，图像协议
             // 条目没有这些形状——诚实拒绝，不烧 8 次注定失败的 LLM 调用。
             {
                 let cfg: serde_json::Value =
@@ -1050,10 +1050,10 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 tokio::runtime::Handle::current().block_on(run_probe(&home, &name))
             })?;
             // run_probe 返回 (report, wrote)：wrote = tier/vision 写回是否
-            // 真正落盘（BUG-20261030-218：报告必须如实反映，不再无条件
+            // 真正落盘（报告必须如实反映，不再无条件
             // 宣称"已写入 config.json"）。
             println!("{}", format_probe_report(&name, &report.0, report.1));
-            // N1：生效 context_window + 来源标记——fallback 命中自然引导
+            // 生效 context_window + 来源标记——fallback 命中自然引导
             // 用户显式配置（catalog 未收录的小众模型手动钉死）。
             let probe_cfg = nemesis_utils::fsutil::read_config_string(&cfg_path)
                 .ok()
@@ -1133,7 +1133,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
     Ok(())
 }
 
-/// 解析 `--price-tier <min>:<input>:<output>` 重复参数（L3）。解析失败
+/// 解析 `--price-tier <min>:<input>:<output>` 重复参数。解析失败
 /// 响亮报错（带条目序号与原文），空列表 = 无阶梯（None）。
 fn parse_price_tiers(specs: &[String]) -> Result<Option<Vec<nemesis_data::PriceTier>>> {
     if specs.is_empty() {
@@ -1178,7 +1178,7 @@ fn parse_price_tiers(specs: &[String]) -> Result<Option<Vec<nemesis_data::PriceT
     Ok(Some(tiers))
 }
 
-/// A2（2026-08-31）：`model prices` 子命令实现。CLI 直开 DataStore（与
+/// `model prices` 子命令实现。CLI 直开 DataStore（与
 /// gateway 同一路径真相源 `workspace_data_dir`），计价/价目管理复用
 /// nemesis-data + nemesis-web 的同步实现，不重复造轮子。
 async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
@@ -1302,7 +1302,7 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             if name.is_empty() {
                 anyhow::bail!("模型名不能为空");
             }
-            // BUG-20261030-219：基础价四字段有限性校验——clap f64 解析接受
+            // 基础价四字段有限性校验——clap f64 解析接受
             // "NaN"/"inf" 字面量，无校验时坏值直接落自定义层污染计价输出
             // （与下方 parse_price_tiers 的 is_finite 校验同函数族，此处对齐）。
             if !(input.is_finite()
@@ -1361,9 +1361,9 @@ where
     update_model_entry(cfg, name, f)
 }
 
-/// REL-002：model CLI raw RMW 写 config.json 的单一原子入口。
+/// model CLI raw RMW 写 config.json 的单一原子入口。
 /// 序列化失败必须报错退出，不得 unwrap_or_default() 静默写空文件
-///（2026-09-03 二次回归 model-4，两处写入点同修）；落盘走
+///（二次回归 model-4，两处写入点同修）；落盘走
 /// `write_file_atomic`（唯一临时名 + sync_all + 失败清理）。
 fn write_config_atomic(cfg_path: &Path, cfg: &serde_json::Value) -> anyhow::Result<()> {
     let body = serde_json::to_string_pretty(cfg)
@@ -1438,21 +1438,21 @@ async fn run_probe(
     // Persist the detected tier.
     let data = nemesis_utils::fsutil::read_config_string(&cfg_path)?;
     let mut cfg_val: serde_json::Value = serde_json::from_str(&data)?;
-    // BUG-20261030-218：写回查找目标 = 实际被探测的 llm_ref，不是原始 name。
+    // 写回查找目标 = 实际被探测的 llm_ref，不是原始 name。
     // `probe ""`（探默认模型）时 name 为空串，update_model_entry 的
     // full/alias/suffix 三匹配对空串永不命中 → 8 次 LLM 调用的探针结果
     // 静默丢失且报告谎称已写入。用 llm_ref（name 非空时与 name 相同，
     // 行为不变；name 为空时为生效默认模型别名，命中真实条目）。
     let wrote = update_model_entry(&mut cfg_val, &llm_ref, |e| {
         e["model_tier"] = serde_json::Value::String(report.tier.to_string());
-        // T10（多模态 D9）：视觉探针结果——`Some(_)` 才写（None = 传输类
+        // （多模态）：视觉探针结果——`Some(_)` 才写（None = 传输类
         // 未定，不给模型钉"不支持"；auto 解析序继续走名字关键词/默认放行）。
         if let Some(vp) = report.vision_probe {
             e["vision_probe"] = serde_json::Value::Bool(vp);
         }
     });
     if wrote {
-        // REL-002：统一原子写入。
+        // 统一原子写入。
         write_config_atomic(&cfg_path, &cfg_val)?;
     }
     Ok((report, wrote))
@@ -1471,7 +1471,7 @@ fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport, wrote:
             tool, sc.format, sc.selection, sc.schema
         ));
     }
-    // BUG-20261030-218：写回结果如实呈现——写失败（config 中找不到条目）
+    // 写回结果如实呈现——写失败（config 中找不到条目）
     // 不得谎称"已写入 config.json"。
     if wrote {
         s.push_str(&format!("  → tier={} (已写入 config.json)", r.tier));
@@ -1481,7 +1481,7 @@ fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport, wrote:
             r.tier
         ));
     }
-    // T10（多模态 D9）：第 8 题视觉探针结果。
+    // （多模态）：第 8 题视觉探针结果。
     match r.vision_probe {
         Some(true) => s.push_str(
             "\n  vision=支持（第 8 题带图请求成功，已写 vision_probe=true）",
@@ -1496,7 +1496,7 @@ fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport, wrote:
     s
 }
 
-/// U16 (sixth batch): models.dev catalog fetch / cache / lookup.
+/// (sixth batch): models.dev catalog fetch / cache / lookup.
 pub mod catalog;
 
 #[cfg(test)]

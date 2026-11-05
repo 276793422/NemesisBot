@@ -99,20 +99,20 @@ fn test_task_serialization() {
 fn test_node_role_serialization() {
     let role = NodeRole::Coordinator;
     let json = to_value(role).unwrap();
-    // P2 角色改名：规范序列化词 = "Coordinator"；旧词 "Master" 仅作
+    // 角色改名：规范序列化词 = "Coordinator"；旧词 "Master" 仅作
     // 反序列化 alias（见 cluster.rs `#[serde(alias = "Master")]`）。
     assert_eq!(json, "Coordinator");
 
     let deserialized: NodeRole = from_value(json).unwrap();
     assert_eq!(deserialized, NodeRole::Coordinator);
 
-    // 旧词 master/manager 兼容解析（from_role_str 单一真相源）。
+    // 旧词 master/manager 兼容解析（from_role_str 统一定义）。
     assert_eq!(NodeRole::from_role_str("master"), NodeRole::Coordinator);
     assert_eq!(NodeRole::from_role_str("manager"), NodeRole::Coordinator);
     // 旧 JSON 词 "Master" 经 serde alias 仍可反序列化（存量数据兼容）。
     let legacy: NodeRole = from_value(to_value("Master").unwrap()).unwrap();
     assert_eq!(legacy, NodeRole::Coordinator);
-    // BUG-20261102-318 红证锚：同一存量旧词走字符串解析路径必须与 serde
+    // 红证锚：同一存量旧词走字符串解析路径必须与 serde
     // alias 同判——"Master" 在 serde 直解是 Coordinator（上方 legacy 断言），
     // from_role_str 大小写敏感却落 Worker。字符串路径的输入域（peers.toml
     // [node].role String / cluster.role 运行时 String）与 serde 路径消费的

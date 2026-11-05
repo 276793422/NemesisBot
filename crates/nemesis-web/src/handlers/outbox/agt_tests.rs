@@ -5,7 +5,7 @@
 //!   created_at 刷新落盘）+ 未知 task_id 诚实报错
 //! - 缺参 / 错型 task_id bail、未知命令、workspace 未配置 bail
 //!
-//! 磁盘布局唯一真相源 nemesis-cluster::outbox：`<ws>/cluster/outbox/
+//! 磁盘布局唯一依据 nemesis-cluster::outbox：`<ws>/cluster/outbox/
 //! <task_id>/entry.json`，本测试直接落盘构造，不需要活实例（与生产约束
 //! 一致：web 层只持 workspace 根）。
 

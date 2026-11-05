@@ -1,11 +1,11 @@
 //! guest 工具子集实现（宿主 MOVE_TOOLS 同形语义，musl Linux 栖息地）。
 //!
 //! 语义对齐锚点（文案同形，让模型对 guest 与本地 executor 无感知差异）：
-//! - `exec` ↔ `nemesis-agent::loop_tools::ExecTool`（stdout / "(no output)" /
-//!   "Exit code: N\nstdout: ...\nstderr: ..."；spawn 失败与超时为 Err）；
-//! - 文件工具 ↔ `nemesis-tools/src/filesystem.rs`（"wrote N bytes to ..."、
-//!   "created directory: ..."、"deleted file: ..." 等）+ append_file 对齐
-//!   `loop_tools::AppendFileTool`（"Appended N bytes to ..."）。
+//! - `exec` ↔ `nemesis-agent::loop_tools:ExecTool`（stdout / "(no output)" /
+//!   "Exit code: N\nstdout:...\nstderr:..."；spawn 失败与超时为 Err）；
+//! - 文件工具 ↔ `nemesis-tools/src/filesystem.rs`（"wrote N bytes to..."、
+//!   "created directory:..."、"deleted file:..." 等）+ append_file 对齐
+//!   `loop_tools::AppendFileTool`（"Appended N bytes to..."）。
 //!
 //! 差异（刻意，guest 栖息地语义）：
 //! - shell 恒 `sh -c`（musl Linux）；宿主直跑（Windows 测试形态）退
@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use crate::resolve_in_workspace;
 
-/// exec 超时：缺省 60s（B8e 对齐宿主 shell 工具缺省）、上限 600s
+/// exec 超时：缺省 60s（对齐宿主 shell 工具缺省）、上限 600s
 /// （对齐宿主 ExecTool 的 `exec_timeout_secs` 口径）。
 const EXEC_DEFAULT_TIMEOUT_SECS: u64 = 60;
 const EXEC_MAX_TIMEOUT_SECS: u64 = 600;
@@ -32,7 +32,7 @@ const TRUNCATE_TAIL_CHARS: usize = 4000;
 
 /// 派发一个工具调用。`args` 是 LLM 产出的原始 JSON 串（协议原样透传）。
 ///
-/// 除 agent 工具子集外，本函数也路由 **B9-1 内部方法**（bulk_write/
+/// 除 agent 工具子集外，本函数也路由 ** 内部方法**（bulk_write/
 /// bulk_read/bulk_read_chunk/hash_tree）——它们经宿主 `internal_call`
 /// 专用通道进入，宿主侧 `VM_GUEST_TOOLS` 子集闸不认识它们，agent
 /// 工具面永不暴露（`transfers` 是 bulk 分块传输状态表）。
@@ -53,15 +53,15 @@ pub(crate) async fn dispatch(
         "create_dir" => create_dir(&val, workspace).await,
         "delete_file" => delete_file(&val, workspace).await,
         "delete_dir" => delete_dir(&val, workspace).await,
-        // P5-R1 guest 内浏览器（headless chromium + CDP）：宿主 VmBrowserTool
+        // guest 内浏览器（headless chromium + CDP）：宿主 VmBrowserTool
         // 专用通道（ctx source:"browser"），不进 VM_GUEST_TOOLS 子集。
         "browser" => crate::browser::handle(&val, workspace).await,
-        // B9-1 内部方法（vm_sync 同步引擎通道；不是 agent 工具）。
+        // 内部方法（vm_sync 同步引擎通道；不是 agent 工具）。
         "bulk_write" => crate::bulk::bulk_write(&val, workspace, transfers).await,
         "bulk_read" => crate::bulk::bulk_read(&val, workspace, transfers).await,
         "bulk_read_chunk" => crate::bulk::bulk_read_chunk(&val, transfers).await,
         "hash_tree" => crate::bulk::hash_tree(&val, workspace).await,
-        // B9-2 内部方法（开工闸宿主删除传播）。
+        // 内部方法（开工闸宿主删除传播）。
         "bulk_delete" => crate::bulk::bulk_delete(&val, workspace).await,
         // 诚实拒绝未实现项（edit_file/multiedit/grep/git 往后续补）。
         other => Err(format!(
@@ -103,15 +103,15 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        // B8d：任何路径上 Child 被 drop（含早期返回）都兜底 kill，不留孤儿。
+        // 任何路径上 Child 被 drop（含早期返回）都兜底 kill，不留孤儿。
         .kill_on_drop(true);
-    // B8d 树杀前提（对齐宿主 background_registry::tree_kill）：Unix 侧
+    // 树杀前提（对齐宿主 background_registry::tree_kill）：Unix 侧
     // spawn 时 process_group(0)，超时才能整组 SIGKILL——只杀 sh 本体时
     // `a && b` 复合命令的载荷进程会孤儿化继续跑（僵尸 apt 占 dpkg 锁）。
     #[cfg(unix)]
     cmd.process_group(0);
 
-    // B2 同款纪律：管道读取独立任务并发 drain——只 wait 会在写满管道缓冲时
+    // 同款纪律：管道读取独立任务并发 drain——只 wait 会在写满管道缓冲时
     // 死锁；把管道移进被 timeout 包住的 future 会在超时取消时丢残余输出。
     let mut child = cmd
         .spawn()
@@ -143,7 +143,7 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
         }
         Ok(Err(e)) => Err(format!("Failed to execute command: {e}")),
         Err(_) => {
-            // B8d：超时 = 终止整棵进程树并收尸后再报错。此前直接返回 Err，
+            // 超时 = 终止整棵进程树并收尸后再报错。此前直接返回 Err，
             // Child 默认 drop 不 kill——被超时的命令继续在 VM 后台跑。
             // 树杀对齐宿主 background_registry::tree_kill；2s 护栏防 kill
             // 指令自身卡住应答。收尾 drain 等管道关闭，避免残余输出串扰。
@@ -159,7 +159,7 @@ async fn exec(val: &serde_json::Value, workspace: &Path) -> Result<String, Strin
     }
 }
 
-/// B8d 超时树杀（宿主 `background_registry::tree_kill` 同款语义）：
+/// 超时树杀（宿主 `background_registry::tree_kill` 同款语义）：
 /// Windows = `taskkill /T /F`；Unix = 进程组 SIGKILL（配合 spawn 侧
 /// `process_group(0)`）。尽力而为：2s 护栏，失败不阻塞超时错误返回
 /// （后续 `child.start_kill` 直杀 shell 本体兜底）。
@@ -186,7 +186,7 @@ async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>) -> S
     let Some(pipe) = pipe else {
         return String::new();
     };
-    // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾。与旧 is_ok
+    // 有界排干（横扫角度 B）：1 MiB 丢头保尾。与旧 is_ok
     // 分支的差异（刻意）：读错误时旧版丢弃已收字节返空串，本版保留部分
     // 数据——kill_tree 场景拿到的 pidlist 片段仍是证据， partial 好过空。
     String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()

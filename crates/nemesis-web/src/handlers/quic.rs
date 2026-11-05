@@ -1,9 +1,9 @@
 //! QUIC 中继 WSAPI（2026-10-23 与集群解耦；QUIC 插件化 起**代理化**）
 //! `quic.relay.*` + `quic.registry.members`。
 //!
-//! **零 Cluster 运行面类型依赖 + 零 iroh 依赖**：config 真相源 =
+//! **零 Cluster 运行面类型依赖 + 零 iroh 依赖**：config 权威 =
 //! `config.quic.json`（`relay` 服务端段 + `client` 客户端段，见
-//! `nemesis_cluster::roaming::quic_config`，纯 serde 解析函数）；运行态 =
+//! `nemesis_cluster::roaming:quic_config`，纯 serde 解析函数）；运行态 =
 //! `AppState.quic_relay` 槽（plugin_roaming C-ABI 句柄，fn 指针 Copy）——
 //! 启停/成员查询经 `spawn_blocking` 调插件，ok:false 展开
 //! 与 nemesisbot loader `call_roaming` 同源形态。插件未装载 =
@@ -274,7 +274,7 @@ fn relay_settings_payload(
         }
         RelayTls::None => (String::new(), "unused", String::new(), "unused"),
         RelayTls::SelfSigned => {
-            // 插件化 后路径真相源 = relay_info（与插件副本同源对账）。
+            // 插件化 后路径权威 = relay_info（与插件副本同源对账）。
             let cert = relay_info::relay_cert_path(Path::new(workspace));
             let key = relay_info::relay_key_path(Path::new(workspace));
             (
@@ -354,7 +354,7 @@ fn relay_status_payload(
 }
 
 /// 集群 config 路径（roaming_enabled 观测键数据源；纯路径换算——
-/// 路径唯一真相源 = nemesis-path）。
+/// 路径唯一依据 = nemesis-path）。
 #[cfg(feature = "cluster")]
 fn cluster_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
@@ -550,9 +550,9 @@ fn save_echo(_path: &std::path::Path, _workspace: &str) -> serde_json::Value {
 
 /// relay_toggle 的实现核心（ctx 解耦——tests 以 handle=None 直接验证
 /// config+载荷契约；真中继拉起/停掉的 roundtrip 归插件侧 e2e +
-/// gateway 装载冒烟，[`crate::handlers::quic::tests`] 只钉 None 臂）。
+/// gateway 装载冒烟，[`crate::handlers:quic::tests`] 只钉 None 臂）。
 ///
-/// ① config 闸先动（单一真相源，config.quic.json relay.enabled）：enable
+/// ① config 闸先动（统一定义，config.quic.json relay.enabled）：enable
 /// 中途失败（token 空 fail-closed）闸保持开——修复后重开开关即重试。
 /// ② 插件内拉起/停掉（幂等；句柄未装载时只落 config 闸——运行态诚实
 /// 呈现 requires_restart）。③ 最新状态回前端。

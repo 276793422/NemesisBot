@@ -251,7 +251,7 @@ fn test_save_and_load_security_config() {
 
 #[test]
 fn test_security_config_approvals_auto_approve_default_off_and_roundtrip() {
-    // §2 免打扰（无人值守计划 Part 2）：approvals.auto_approve 缺省关
+    // 免打扰（Part 2）：approvals.auto_approve 缺省关
     // （现行为零变化——弹卡照旧），显式 true 落盘 + 回读保真。
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     assert!(
@@ -2825,7 +2825,7 @@ fn test_workspace_resolver_env_var_with_tilde() {
     }
 
     let path = WorkspaceResolver::resolve(false);
-    // Should expand ~ and append .nemesisbot
+    // Should expand ~ and append.nemesisbot
     assert!(path.to_string_lossy().contains("custom"));
     assert!(path.to_string_lossy().contains(".nemesisbot"));
 
@@ -2862,7 +2862,7 @@ fn test_workspace_resolver_auto_detect() {
     std::env::set_current_dir(dir.path()).unwrap();
 
     let path = WorkspaceResolver::resolve(false);
-    // Should detect .nemesisbot in current directory
+    // Should detect.nemesisbot in current directory
     assert!(path.to_string_lossy().contains(".nemesisbot"));
 
     std::env::set_current_dir(original).unwrap();
@@ -2871,7 +2871,7 @@ fn test_workspace_resolver_auto_detect() {
 #[test]
 fn test_workspace_resolver_default_fallback() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
-    // Clear env var, ensure no local .nemesisbot
+    // Clear env var, ensure no local.nemesisbot
     unsafe {
         std::env::remove_var("NEMESISBOT_HOME");
     }
@@ -2967,7 +2967,7 @@ fn test_save_config_local_mode_detection() {
 
 // 锁：local 模式落盘只重写「默认工作区」的等价拼法，
 // home 下的自定义路径与波浪号自定义路径必须原样保留（旧 starts_with
-// 宽匹配把它们静默改写成 .nemesisbot/workspace，必红）。
+// 宽匹配把它们静默改写成.nemesisbot/workspace，必红）。
 #[test]
 fn test_save_config_local_mode_preserves_custom_workspace() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -3152,7 +3152,7 @@ fn test_adjust_paths_no_llm_logging() {
 }
 
 // ============================================================================
-// Coverage batch : remaining uncovered branches in lib.rs.
+// Coverage batch: remaining uncovered branches in lib.rs.
 // Only lines NOT already covered by tests.rs / extra_tests.rs are targeted
 // here (verified against existing test bodies before writing each one).
 // ============================================================================
@@ -3566,7 +3566,7 @@ fn test_board_flag_config_auto_dispatch_roundtrip() {
 }
 
 // ============================================================
-// 全自动流转 ：board.review / board.budget 默认值与 round-trip
+// 全自动流转：board.review / board.budget 默认值与 round-trip
 // ============================================================
 
 #[test]
@@ -4069,7 +4069,7 @@ fn test_l7_mcp_extra_serialization_deterministic() {
 
 #[test]
 fn test_diagnostics_loop_missing_key_defaults() {
-    // 缺键不炸（serde default fn 全覆盖）：诊断闭环默认**开**（能力扩展
+    // 缺键不炸（serde default fn 全覆盖）：诊断闭环默认**开**（
     // 翻转，对齐业界内置无条件开启）、20 条、2000ms。
     let parsed: crate::AgentDefaults = serde_json::from_str("{}").unwrap();
     assert!(parsed.diagnostics_loop.enabled);
@@ -4244,7 +4244,7 @@ fn test_security_config_roundtrip_preserves_dir_rules() {
     );
 }
 
-/// CFG-10 ③：typed SecurityConfig round-trip 不丢键 + 幂等。
+/// typed SecurityConfig round-trip 不丢键 + 幂等。
 /// 用户磁盘上的配置（含手加策略键 / / / audit_chain_enabled /
 /// layers.injection.extra 自定义键）经 parse → serialize 后**任何用户键
 /// 不得消失**（CFG-01/CFG-09 丢键族的机械防线）；serialize → parse →
@@ -4304,7 +4304,7 @@ fn cfg10_security_config_typed_roundtrip_byte_preserving() {
 
 #[test]
 fn test_typed_save_roundtrip_preserves_vault_references() {
-    // vault（计划 §5 纪律项， 完善度检查补齐）：typed
+    // vault（计划 纪律项， 完善度检查补齐）：typed
     // load→save round-trip 不得把 `vault:`/`env:`/`yaml:` 引用键抹掉、
     // 改写或解析成明文。引用只在消费面（provider_resolver / gateway
     // 装配点 / agent_factory）现解；配置层任何保存（dashboard
@@ -4357,7 +4357,7 @@ fn test_typed_save_roundtrip_preserves_vault_references() {
     assert_eq!(reloaded.channels.web.auth_token, "vault:e2e-web-token");
 }
 
-// 签名验证三态开关（接入计划 §1）：typed round-trip 回归锁。
+// 签名验证三态开关（接入计划）：typed round-trip 回归锁。
 // A- 同款缺省语义——空串 = 未配置 = 不落盘（skip_serializing_if），从未
 // 显式配置的部署经 Dashboard 安全设置页保存一次字节不变；显式值原样存活。
 #[test]

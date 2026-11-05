@@ -55,7 +55,7 @@ impl Daemon {
         let mut cmd = Command::new(&clamd_exe);
         cmd.args(["--config-file", &self.config.config_file, "-F"]);
         cmd.current_dir(&self.config.clamav_path);
-        // 黑窗根修（2026-10-19）：clamd 是 console 程序，gateway（release
+        // 黑窗根修：clamd 是 console 程序，gateway（release
         // windows 子系统，无 console）spawn 默认 flags 会分配新可见 console
         // 且随守护进程常驻——「cmd 窗口躺在桌面」的 scanner 版。压掉。
         // （tokio Command 在 Windows 原生自带 creation_flags，无需 std CommandExt）

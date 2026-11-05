@@ -29,10 +29,10 @@ pub trait WebServerOps: Send + Sync {
     /// badge-less deliveries. Implementations that don't care (test mocks)
     /// accept it via `_: Option<&str>`.
     ///
-    /// `session_key`（L2，optional）为 agent 会话键——chat_event_log 断线补拉
+    /// `session_key`（optional）为 agent 会话键——chat_event_log 断线补拉
     /// 环形缓冲的记录键；`None` 回退连接级 session_id。
     ///
-    /// `source_node`（2026-09-23，optional）为集群续行归属——实际干活的
+    /// `source_node`（optional）为集群续行归属——实际干活的
     /// worker 节点名，web 前端据此渲染「节点 X」徽章；`None`（非集群回复）
     /// 不写帧键，与历史行为逐字节一致。
     fn send_to_session(
@@ -121,7 +121,7 @@ pub struct WebChannel {
     config: WebChannelConfig,
     server: parking_lot::RwLock<Option<Arc<dyn WebServerOps>>>,
     running: AtomicBool,
-    /// C4（2026-10-24 死会话软失败）：已做过「目标会话不存在」一次性
+    /// （死会话软失败）：已做过「目标会话不存在」一次性
     /// WARN 的 session_id 集合。标签页关闭/重连后旧 chat_id 失效是常态
     /// （ConvRouter latest-wins 设计的预期后果，正文已落 chat_log 可经
     /// 历史加载恢复），逐轮 ERROR 刷屏无信息量——每目标只 WARN 一次，
@@ -151,7 +151,7 @@ impl WebChannel {
         *self.server.write() = Some(ops);
     }
 
-    /// C4（2026-10-24）：死目标会话一次性留痕——同 session_id 首次 WARN
+    /// 死目标会话一次性留痕——同 session_id 首次 WARN
     /// （带恢复路径说明），之后 debug。跨消息去重靠 `dead_targets` 集合。
     fn note_dead_target(&self, session_id: &str, chat_id: &str) {
         let first = self.dead_targets.lock().insert(session_id.to_string());
@@ -355,7 +355,7 @@ impl Channel for WebChannel {
             msg.meta.session_key.as_deref(),
             msg.meta.source_node.as_deref(),
         ) {
-            // C4（2026-10-24 死会话软失败）：目标会话已不在（标签页关闭/
+            // （死会话软失败）：目标会话已不在（标签页关闭/
             // 重连换新 session id，ConvRouter latest-wins 残留旧绑定）——
             // 不进 manager 错误路径（dispatch loop WARN + 重试箱），一次性
             // WARN + 后续 debug，返回 Ok。正文已由 agent 落 chat_log，历史

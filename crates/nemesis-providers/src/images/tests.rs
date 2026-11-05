@@ -1,4 +1,4 @@
-//! images lane 单测（wiremock 假端点；集群专业职能框架 M4）。
+//! images lane 单测（wiremock 假端点；集群专业职能框架）。
 
 use super::*;
 use wiremock::matchers::{header, method, path};

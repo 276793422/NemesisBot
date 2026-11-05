@@ -756,7 +756,7 @@ async fn test_search_dispatches_to_two_layer_when_no_author() {
 }
 
 // ============================================================
-// S5 coverage: search loop limit-break arms and malformed
+// coverage: search loop limit-break arms and malformed
 // skill-path skips
 // ============================================================
 

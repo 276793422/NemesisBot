@@ -1,12 +1,12 @@
-//! Swarm M3（§5.6 交付线程）：worker 汇报格式解析——交付线程首评与
-//! M4 验收 agent 的共同地基（单一真相源：`REPORT_FORMAT_SECTION` 与
+//! Swarm （交付线程）：worker 汇报格式解析——交付线程首评与
+//! 验收 agent 的共同地基（统一定义：`REPORT_FORMAT_SECTION` 与
 //! 本解析器必须同步演化，`build_dispatch_prompt` 直接引用本模块）。
 //!
 //! 解析从宽（与主持人裁决同一信任模型）：worker 的最终回复经 LLM 生成，
 //! 可能带人格前后缀——按「段标题是否出现」判定格式，段落内容取标题行
 //! 之后到下一个已知标题之间；前导散文忽略。核心三段（结论/交付物清单/
 //! 自检结果）齐备才算结构化汇报；「风险与未尽事项」「经验与坑」缺失时
-//! 按空串处理（M4.5 起五段）。不满足 → `None`（调用方诚实降级为普通评论）。
+//! 按空串处理（.5 起五段）。不满足 → `None`（调用方诚实降级为普通评论）。
 
 use serde::{Deserialize, Serialize};
 
@@ -32,7 +32,7 @@ const SECTION_HEADERS: [&str; 5] = [
     "## 经验与坑",
 ];
 
-/// 评论内联字节上限（§5.6：diff/汇报 ≤64KB 内联，超限截断 + 引用注记，
+/// 评论内联字节上限（diff/汇报 ≤64KB 内联，超限截断 + 引用注记，
 /// 全文走层 2 HTTP 资产拉取）。
 pub const MAX_INLINE_BYTES: usize = 64 * 1024;
 
@@ -51,7 +51,7 @@ pub struct DeliveryReport {
     pub self_check: String,
     /// 「## 风险与未尽事项」段（缺失 = 空串）。
     pub risks: String,
-    /// 「## 经验与坑」段（M4.5；缺失 = 空串——旧四段汇报向后兼容）。
+    /// 「## 经验与坑」段（.5；缺失 = 空串——旧四段汇报向后兼容）。
     #[serde(default)]
     pub experience: String,
 }
@@ -75,7 +75,7 @@ fn all_header_positions(text: &str) -> Vec<usize> {
 /// 缺失 → None。段内容 trim 后原样保留（验收 agent 要读原文）；末段
 /// 之后的尾部散文并入末段（从宽——无法区分正文与人格后缀）。
 pub fn parse_delivery_report(text: &str) -> Option<DeliveryReport> {
-    // 任务 prompt 回显闸（2026-09-12 UAT T30③ 实证）：回显文本里带着
+    // 任务 prompt 回显闸（UAT ③ 实证）：回显文本里带着
     // 引述的「## 汇报格式」模板（五段标题齐全）与验收标准原文，仅凭
     // 「段标题出现」会被误判为结构化汇报——回显随 ctype='delivery' 落
     // 交付首评后，re: 锚点在引文里自命中 → 假 PASS 自动收货。以此开头

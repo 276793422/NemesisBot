@@ -22,7 +22,7 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
-/// WS 升级单连接墙钟上限（BUG-20261103-344）：TCP 连上不发 HTTP 升级请求
+/// WS 升级单连接墙钟上限：TCP 连上不发 HTTP 升级请求
 /// 的静默连接（本地扫描/挂死客户端）按超时淘汰，不得永久冻结 accept 循环。
 const WS_UPGRADE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
 
@@ -118,13 +118,13 @@ struct ActiveConnection {
     client_id: String,
 }
 
-/// 连接 ID 序号（BUG-20261031-232）：进程内单调，同纳秒两次生成也唯一。
+/// 连接 ID 序号：进程内单调，同纳秒两次生成也唯一。
 static CLIENT_ID_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// 生成连接 ID（BUG-20261031-232）：`client_<纳秒>_<序号>`。
+/// 生成连接 ID：`client_<纳秒>_<序号>`。
 ///
 /// 此前为秒级时间戳（`as_secs`），同一秒内的断开重连（网络抖动/代理
-/// 瞬断的自动重连是常态）生成相同 ID——而出站归属校验（BUG-20261030-192）、
+/// 瞬断的自动重连是常态）生成相同 ID——而出站归属校验、
 /// reader 断开清理都以 client_id 为连接身份依据，碰撞 = 身份混淆：
 /// 旧连接的迟到回复被当作新连接的合法回复投递（串台防线失效）。
 /// 纳秒 + 单调序号双保险，格式前缀 `client_` 保持不变（消费方全为
@@ -158,7 +158,7 @@ pub struct WebSocketChannel {
     accept_task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Handles to all reader tasks. Aborted on stop().
     reader_tasks: Arc<parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
-    /// BUG-20261030-192（web 通道 C4 同款）：已做过「目标会话不属于当前
+    /// （web 通道 同款）：已做过「目标会话不属于当前
     /// 连接」一次性 WARN 的 client_id 集合。断线重连后旧 chat_id 失效是
     /// 常态，逐条 WARN 刷屏无信息量——每目标只 WARN 一次，后续降 debug。
     dead_targets: parking_lot::Mutex<std::collections::HashSet<String>>,
@@ -182,7 +182,7 @@ impl WebSocketChannel {
         }
     }
 
-    /// BUG-20261030-192（web 通道 C4 同款）：死目标会话一次性留痕——
+    /// （web 通道 同款）：死目标会话一次性留痕——
     /// 同 client_id 首次 WARN（带恢复路径说明），之后 debug。
     fn note_dead_target(&self, target_id: &str, chat_id: &str) {
         let first = self.dead_targets.lock().insert(target_id.to_string());
@@ -256,7 +256,7 @@ impl Channel for WebSocketChannel {
                         }
 
                         // WebSocket upgrade (with optional path check and auth)
-                        // BUG-20261103-344：升级等待必须有界——TCP 连上不发
+                        // 升级等待必须有界——TCP 连上不发
                         // HTTP 升级请求的静默连接（本地扫描/挂死客户端）旧实现
                         // 会永久冻结 accept 循环，通道对一切后续客户端失联。
                         // 10s 上限按 per-connection 淘汰（与 oauth 回调连接
@@ -292,8 +292,8 @@ impl Channel for WebSocketChannel {
                                             .body(Some("Not Found".to_string()))
                                             .unwrap());
                                     }
-                                    // Token validation（BUG-20261104-368：裸 `==` 短路
-                                    // 比较换恒时比较——BUG-20261104-355 同族横扫缺口，
+                                    // Token validation（裸 `==` 短路
+                                    // 比较换恒时比较—— 同族横扫缺口，
                                     // 355 只覆盖了 nemesis-web 三处 WS 升级面。语义等价
                                     // 论证：此臂 auth_token 非空（else 分支），verify_token
                                     // 对非空 expected 严格 ≡ `==`；空 token 走无闸分支）。
@@ -503,15 +503,15 @@ impl Channel for WebSocketChannel {
             ));
         }
 
-        // BUG-20261030-192：出站归属校验——入站按 websocket:{client_id} 精确
+        // 出站归属校验——入站按 websocket:{client_id} 精确
         // 寻址，出站必须对称校验：断线重连后旧 chat_id 的迟到回复若直投单槽
         // （latest-wins 接管），会串到重连的新客户端（跨会话串台/信息泄露）。
         // 分级：
         // - 无 websocket: 前缀（跨通道 sync 镜像 / programmatic 直发）→ 直发；
         // - 有前缀且 id 匹配当前连接 → 直发；
-        // - 有前缀且 id 不匹配 → 死目标软失败（C4 同款：一次性 WARN + 后续
+        // - 有前缀且 id 不匹配 → 死目标软失败（同款：一次性 WARN + 后续
         //   debug + Ok，正文已由 agent 落 chat_log）。
-        // BUG-20261031-232：校验与投递必须**同一临界区**——此前是两次独立
+        // 校验与投递必须**同一临界区**——此前是两次独立
         // 加锁，多线程 runtime 下 accept 循环的 latest-wins 接管（断线清理
         // 置 None → 新连接换槽）可插在两段之间，旧连接的回复恰好落进新
         // 客户端 socket（192 要防的串台本体在微秒窗口复现）。note_dead_target
@@ -547,7 +547,7 @@ impl Channel for WebSocketChannel {
         let _ = json;
 
         // Outbound sync: forward to other channels (e.g., web dashboard).
-        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        // sync 镜像来的消息不再二次扩散（回环防护）。
         self.base.sync_outbound(&msg).await;
 
         Ok(())

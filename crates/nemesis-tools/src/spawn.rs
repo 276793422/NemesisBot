@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// System prompt injected into every subagent conversation.
-/// 文本单一真相源在 `nemesis-prompts`（M7 集中化，字节保留历史文案）。
+/// 文本单一真相源在 `nemesis-prompts`（集中化，字节保留历史文案）。
 use nemesis_prompts::spawn::SPAWN_SUBAGENT_SYSTEM_PROMPT as SUBAGENT_SYSTEM_PROMPT;
 
 /// Subagent task state.
@@ -298,7 +298,7 @@ impl Tool for SpawnTool {
         };
 
         // If a callback is configured, kick off the real LLM execution in the
-        // background.  When it finishes the task status is updated and the
+        // background. When it finishes the task status is updated and the
         // optional `SpawnTool.callback` (AsyncTool notification) is invoked.
         if self.manager.has_llm_callback() {
             let mgr = self.manager.clone();

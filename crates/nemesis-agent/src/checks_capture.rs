@@ -20,7 +20,7 @@
 //!   调用才进证据（[`classify_result`] 单点分类）。
 //! - `ok` 按工具类选**精确判别器**（修复，2026-10-20）：`exec` = 结果
 //!   前缀判据（`Exit code:`/`Command timed out` = 失败，与
-//!   `exec_output_passed` 单一真相源）；`run_checks` = 阶段状态行判据
+//!   `exec_output_passed` 统一定义）；`run_checks` = 阶段状态行判据
 //!   （行首 `✗ `/`⏱ ` = 有失败阶段）；其余检查类工具无结构化退码才落
 //!   `Tool error:` 前缀兜底。旧「结果不含 `Tool error:` 即成功」的
 //!   contains 启发式已废——非零退出（`Exit code: 7` 形态）被记成成功、
@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-/// 检查类工具名单（捕获过滤单一真相源）。`exec` = 自由命令；`run_checks`
+/// 检查类工具名单（捕获过滤统一定义）。`exec` = 自由命令；`run_checks`
 /// = 固定命令表（scope/filter 渲染）。`exec_async` 不在名单（见模块头诚实
 /// 边界）。
 pub const CHECKS_CLASS_TOOLS: [&str; 2] = ["exec", "run_checks"];
@@ -110,7 +110,7 @@ pub(crate) fn run_checks_passed(result: &str) -> bool {
 }
 
 /// 按工具类选成败判别器（前置条件：拒绝族已排除、`Tool error:` 前缀已
-/// 判负）。`exec` = [`crate:loop_tools:exec_output_passed`]（前缀精确
+/// 判负）。`exec` = [`crate::loop_tools:exec_output_passed`]（前缀精确
 /// 判据，单一真相源直用）；`run_checks` = [`run_checks_passed`]；其余
 /// 工具无结构化退码，默认成功。
 pub(crate) fn classify_by_tool(tool: &str, result: &str) -> bool {
@@ -130,7 +130,7 @@ pub(crate) fn classify_by_tool(tool: &str, result: &str) -> bool {
 /// 执行结果不会长这样，工具失败是 `Tool error:...`）、`SECURITY BLOCKED`
 /// （安全层/guardian 拦截，contained 形态）。
 ///
-/// ：`Tool error:` 从 contains 改 **starts_with**——工具
+/// `Tool error:` 从 contains 改 **starts_with**——工具
 /// 返回 Err 时 dispatch 层恒以该前缀开头（执行过但失败的形态），而成功
 /// 输出**中途**出现该字样（如测试断言里引用错误文案）不应误判失败。
 pub fn classify_result(tool: &str, result: &str) -> Option<bool> {

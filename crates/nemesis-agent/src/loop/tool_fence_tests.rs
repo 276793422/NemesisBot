@@ -1,7 +1,7 @@
 // （profession-capability-evolution）：职能工具围栏双闸测试。
 //
 // 覆盖面：
-// ① 派发拒绝文案单一真相源 `profession_fence_refusal_for`——白名单外拒绝
+// ① 派发拒绝文案统一定义 `profession_fence_refusal_for`——白名单外拒绝
 //    （含 who 子句两形态）、白名单内放行、question 豁免；
 // ② instance 级闸（统一注册点
 //    `environment_constraint_refusal`；本组实例 detached 旗标恒空 = 纯
@@ -251,7 +251,7 @@ async fn precompute_parallel_batch_fence_refuses_outside_and_executes_inside() {
     // 白名单内照常执行。
     assert_eq!(results[0].result, "ALPHA-OK", "白名单内工具必须真执行");
     assert!(!results[0].validation_failed);
-    // 白名单外诚实拒绝（文案单一真相源，并行/串行一致）。
+    // 白名单外诚实拒绝（文案统一定义，并行/串行一致）。
     assert!(
         results[1]
             .result

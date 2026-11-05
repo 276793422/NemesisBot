@@ -6,7 +6,7 @@
 //!
 //! - [`SDK_EXPORT_ZIP`] — tree at zip root (导出 SDK 目录).
 //! - [`SDK_SDIST_ZIP`] — sdist layout under `nemesisbot-<version>/` (pip 包;
-//!   `pip install ./<file>.zip` descends into the single top-level dir).
+//!   `pip install./<file>.zip` descends into the single top-level dir).
 //!
 //! Both are immutable build artifacts: serving them is zero-IO and the exe
 //! is self-contained (only-the-exe machines get the full SDK).

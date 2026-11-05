@@ -1,4 +1,4 @@
-//! 反向桥批次一端到端测试：真 WebServer（随机端口）+ mock 桥设备
+//! 反向桥端到端测试：真 WebServer（随机端口）+ mock 桥设备
 //! （tokio-tungstenite 直连 `/bridge`）+ 原始 TCP 浏览器客户端。
 //!
 //! 覆盖 goal 测试面：token 拒止（welcome{ok:false}）、access_check 三态
@@ -113,7 +113,7 @@ async fn recv_frame(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Brid
     }
 }
 
-/// 收下一帧业务帧（跳过 member_sync 广播与心跳噪声——三期批次八起注册
+/// 收下一帧业务帧（跳过 member_sync 广播与心跳噪声——三期起注册
 /// 即广播，设备 ws 流里的 MemberSync 不属业务语义，与心跳噪声同待跳过）。
 async fn recv_business_frame(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> BridgeFrame {
     loop {

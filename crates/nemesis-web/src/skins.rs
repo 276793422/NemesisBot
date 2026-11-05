@@ -25,7 +25,7 @@
 //!
 //! 服务端职责：**分发 + 管理面来源验证**（`scan_skins`，list/reload/
 //! set_active 时现扫现验）。数据面（CSS/structure/script）**不验签**——
-//! 签名是来源徽标而非加载闸（定案：目录内所有 .nbskin 一律可加载
+//! 签名是来源徽标而非加载闸（定案：目录内所有.nbskin 一律可加载
 //! 可用，目标用户的皮肤可能就是没签名的）。解析/清洗/注入全在前端。
 //!
 //! 激活 id 来自 `config.json` 的 `ui.skin`（`"default"`/空 = 无皮肤，
@@ -240,7 +240,7 @@ async fn handle_active_structure(State(host): State<SkinHost>) -> impl IntoRespo
 }
 
 /// `GET /skins/active.css` — config `ui.skin` 指向的皮肤。响应头
-/// `X-Skin-Id` 回传激活 id（前端打 `data-skin` 属性的真相源——localStorage
+/// `X-Skin-Id` 回传激活 id（前端打 `data-skin` 属性的权威定义——localStorage
 /// 缓存可能过期）。
 async fn handle_active_css(State(host): State<SkinHost>) -> impl IntoResponse {
     // 锁快照一次：load 与响应头用同一 id（热翻竞态下不会头/体分裂）。
@@ -377,7 +377,7 @@ pub fn skin_router(
 //
 // 管理面：来源验证 + 注册表（scan-per-call，无持久缓存）
 //
-// 设计（skin-signing-and-management-goal §3.2）：
+// 设计（skin-signing-and-management-goal）：
 // - 签名是**来源徽标而非加载闸**：四态 + 正交 broken 状态，灰卡展示。
 // - 锚来源复用 v4 现有机制：`NEMESIS_BUILD_ROOT_ANCHOR`（编译期注入，
 //   官方 CI 构建）→ `NEMESIS_ROOT_ANCHOR`（运行时 env）→ 皆无 = 无锚，
@@ -801,7 +801,7 @@ pub struct CrlSnapshotInfo {
     pub note: Option<String>,
 }
 
-/// CRL 快照装载（单一真相源）：读 `{dir}/crl.pem` → 根公钥取自
+/// CRL 快照装载：读 `{dir}/crl.pem` → 根公钥取自
 /// `root_bytes`（一枚 verified 包，`anchors` 锚定校验；None = 无 donor）→
 /// 根签验签 → 过期检查。`crl = None` = 未应用（原因见 info.note）。
 pub fn load_crl_snapshot_state(

@@ -29,8 +29,8 @@ pub(crate) struct CompactState {
     /// （取大者 = 偏早触发，安全侧）；无 usage 的 lane（claude-cli/
     /// codex-cli）保持 None = 纯估算诚实回落。
     pub(crate) last_provider_prompt_tokens: Option<u64>,
-    /// ：连续「压缩无进展」次数（摘要被守卫弃用
-    /// = 无进展；成功采用即清零；达 [`COMPACT_NO_PROGRESS_LIMIT`] 与 ⑩
+    /// 连续「压缩无进展」次数（摘要被守卫弃用
+    /// = 无进展；成功采用即清零；达 [`COMPACT_NO_PROGRESS_LIMIT`] 与
     /// stuck 闩共用暂停语义）。手动 /compact（force_compression 路径）不
     /// 经此守卫，不受限。
     pub(crate) no_progress: u32,
@@ -43,7 +43,7 @@ pub(crate) struct CompactState {
     /// 事实）。
     last_auto_note: Option<(&'static str, i64)>,
     /// 上一轮处于 stuck 暂停、本轮信号回落解除了暂停——下一次自动
-    /// 压缩注记按 [`CompactReason:StuckResume`] 档发（用户能看到「恢复」
+    /// 压缩注记按 [`CompactReason::StuckResume`] 档发（用户能看到「恢复」
     /// 而非以为一切照旧）。
     resumed_from_pause: bool,
     /// 空转前缀一次性注记闸（小窗口实测根修）：边界只覆盖
@@ -63,14 +63,14 @@ const COMPACT_SUMMARIZE_RATIO: usize = 75; // % (unchanged from legacy behavior)
 /// is still at least this fraction of its pre-summarization size.
 const COMPACT_STUCK_PLATEAU_RATIO: usize = 90; // %
 
-/// ：压缩无进展守卫阈值——摘要采用前用同一信号源
+/// 压缩无进展守卫阈值——摘要采用前用同一信号源
 /// 比较压缩前后，省幅不足信号的 5% 视为无进展 → 弃用（用有损摘要换零空间
 /// 是纯亏损）。纯相对阈值：计划原案 max(5%, 500 tokens) 中的 500 绝对地板
 /// 只在 <10k token 的微型窗口生效（生产触发规模 = 75% × ≥128k 窗口，5% 恒
 /// 为数千 token，地板无增益），为不误伤小窗口会话与既有测试取纯相对。
 const COMPACT_NO_PROGRESS_RATIO: usize = 5; // %
 
-/// 连续无进展达此次数 → 暂停自动压缩（与 ⑩ stuck 闩共用暂停语义）。
+/// 连续无进展达此次数 → 暂停自动压缩（与 stuck 闩共用暂停语义）。
 const COMPACT_NO_PROGRESS_LIMIT: u32 = 2;
 
 /// （devtool-upgrade）：context_window 三级解析链的最后一级兜底。
@@ -99,7 +99,7 @@ pub fn resolve_context_window_tiered(
         return (Some(w as usize), "config");
     }
     if let Some(store) = pricing {
-        // ：直接用活动别名查（standalone 形态下 alias 即 full
+        // 直接用活动别名查（standalone 形态下 alias 即 full
         // model 名，bare-suffix 匹配在 store.lookup 内部完成）。
         if let Some(w) = store
             .lookup(alias)
@@ -108,7 +108,7 @@ pub fn resolve_context_window_tiered(
         {
             return (Some(w as usize), "catalog");
         }
-        // ：config 条目把别名映射到 full model 名（如
+        // config 条目把别名映射到 full model 名（如
         // `glm`→`zhipu/glm-4.7`）时，用 full 名再查一轮——bare-suffix
         // `glm-4.7` 命中目录条目。
         if let Some(cfg) = cfg {
@@ -160,7 +160,7 @@ pub struct CompactTrigger {
 
 /// 组合解析：per-model 绝对压缩点（`compact_context_tokens`，到点即压）→
 /// 未设回落 窗口×75% 既有行为（比例一律不动，零行为变化）。纯函数可单测；
-/// fresh-read 胶水在 `config_watch:current_compact_trigger`。
+/// fresh-read 胶水在 `config_watch::current_compact_trigger`。
 ///
 /// `fallback` = 三级链全 miss 时的（窗口, 来源标签）：agent 侧传实例窗口
 /// （启动时三级链物化值 / 测试显式 set_context_window——**旧路径语义**，
@@ -350,7 +350,7 @@ pub(crate) fn token_budget_boundary(
     start
 }
 
-/// 摘要请求单消息 token 上限的单一真相源（[`summarize_prefix_owned`] 的
+/// 摘要请求单消息 token 上限的统一定义（[`summarize_prefix_owned`] 的
 /// 超限守卫与触发侧「值得摘要」闸共用同一常量，防两处口径漂移）。
 pub(crate) fn summarizer_max_msg_tokens(context_window: usize) -> usize {
     context_window / 2
@@ -389,7 +389,7 @@ pub(crate) fn summarize_advance_worthwhile(
 /// 前的旧尾巴语义，现降级为回退路径：`compact_keep_recent_tokens = 0`
 /// （显式配置）时 `maybe_update_summary` 的逐字尾巴仍按「保留近
 /// [`K_TARGET`] 条」计算。默认路径（非 0）按 token 预算
-/// （[`AgentLoop:current_compact_keep_recent_tokens`]）定界，见
+/// （[`AgentLoop::current_compact_keep_recent_tokens`]）定界，见
 /// [`token_budget_boundary`]。
 pub(crate) const K_TARGET: usize = 6;
 
@@ -427,7 +427,7 @@ pub(crate) const VOICE_PLAYBACK_SUFFIX: &str = "（语音播报模式已开启�
 /// the persisted-derived projection every main-loop LLM request starts from.
 ///
 /// (②): extracted from `build_messages_with_memory` so the replay
-/// ledger (`crate:replay`) rebuilds requests through the SAME code path —
+/// ledger (`crate::replay`) rebuilds requests through the SAME code path —
 /// production build and audit replay cannot drift apart (single source of
 /// truth; same lesson as the memory-tool schema-drift fix).
 ///
@@ -515,7 +515,7 @@ impl AgentLoop {
     /// *tail* (what the LLM actually receives), so the threshold is evaluated
     /// against the tail, not the full history.
     ///
-    /// ：尾巴边界从「条数 K_TARGET=6」改为「token 预算」
+    /// 尾巴边界从「条数 K_TARGET=6」改为「token 预算」
     /// （`agents.defaults.compact_keep_recent_tokens`，默认 20000；0 = 旧按
     /// 条数回退路径）。预算内从尾部逐条回退定界（[`token_budget_boundary`]），
     /// 再经 [`tool_safe_boundary`] 回退保证永不切在 tool_call/result 对中间。
@@ -560,7 +560,7 @@ impl AgentLoop {
         // size gates moved to build_messages, so the raw estimate would count
         // a 70KB original the provider only ever sees as a bounded locator.
         let tail_tokens = estimate_tokens_for_turns_projected(&history[c..]);
-        // ：混合信号。provider 实报（整请求：
+        // 混合信号。provider 实报（整请求：
         // system + tools + summary + tail）≥ tail 部分，取大者 = 偏早触发
         // （安全侧）；实报来自上一轮请求（最新鲜的地面真值），无 usage 的
         // lane 自然回落纯估算。软位/触发/失效判定/记账全部用同一信号，
@@ -877,7 +877,7 @@ impl AgentLoop {
         };
 
         if let Some(summary) = summary {
-            // ：无进展守卫——采用前用同轴估算比较
+            // 无进展守卫——采用前用同轴估算比较
             // 压缩前后：基线 = 被折叠前的上下文（旧摘要 + 现尾巴），省幅不足
             // 基线 5% 视为无进展 → 弃用（covers 不推进——用有损摘要换零空间
             // 是纯亏损，且历史原文比同尺寸摘要信息量大）。基线刻意不用混合
@@ -969,8 +969,8 @@ impl AgentLoop {
 
     /// （口径补全）：记录最近一次
     /// provider 实报的整请求完整输入 token（prompt + cache_creation +
-    /// cache_read，`usage_full_input` 单一真相源），供
-    /// [`Self:maybe_update_summary`] 的混合触发信号使用。每次 LLM 响应后
+    /// cache_read，`usage_full_input` 统一定义），供
+    /// [`Self::maybe_update_summary`] 的混合触发信号使用。每次 LLM 响应后
     /// 调用（run_loop 器官 5 之后）；无 usage 的调用方不调 = 信号保持
     /// None = 纯估算回落。
     pub(crate) fn note_compaction_provider_signal(&self, session_key: &str, total_input: u64) {
@@ -1022,12 +1022,12 @@ impl AgentLoop {
         }
     }
 
-    /// ：`agents.defaults.compact_keep_recent_tokens`
+    /// `agents.defaults.compact_keep_recent_tokens`
     /// （默认 20000，对齐 pi keepRecentTokens；**0 = 回退旧按条数
     /// K_TARGET 路径**）。fresh-read（同 `current_summarizer_prefix_reuse`
-    /// 模式——config.json 唯一真相源，运行中改键下一轮生效）；standalone
-    /// （无 config_path）→ 默认值。键路径与缺省值的单一真相源在
-    /// `nemesis_config:resolve_compact_keep_recent_tokens`（typed
+    /// 模式——config.json 唯一依据，运行中改键下一轮生效）；standalone
+    /// （无 config_path）→ 默认值。键路径与缺省值的统一定义在
+    /// `nemesis_config::resolve_compact_keep_recent_tokens`（typed
     /// `AgentDefaults` 字段同源）。
     pub(crate) fn current_compact_keep_recent_tokens(&self) -> usize {
         let cfg = self
@@ -1254,7 +1254,7 @@ impl AgentLoop {
     /// 即压 / 窗口×75%）。这样 Dashboard 显示的百分比就是「下一轮真实
     /// 占用」而不是另一套口径的近似值。
     ///
-    /// 实例按回合从 store 重建（同 [`Self:compact_session`] 的读路径），
+    /// 实例按回合从 store 重建（同 [`Self::compact_session`] 的读路径），
     /// 无驻留状态；store 未挂（standalone 简测）时按空历史计。
     pub fn session_context_status(&self, session_key: &str) -> serde_json::Value {
         let instance = self.get_or_create_instance(session_key);
@@ -1357,7 +1357,7 @@ pub(crate) struct SummaryUpdate<'a> {
 }
 
 /// 构建摘要请求的尾部指令（batch / bare-concat / multipart 合并共用
-/// 的单一真相源——三种请求形态的摘要语义必须一致）。
+/// 的统一定义——三种请求形态的摘要语义必须一致）。
 pub(crate) fn build_summary_instruction(update: &SummaryUpdate<'_>) -> String {
     let ledger_lines: Vec<String> = update
         .ledger
@@ -1416,7 +1416,7 @@ fn line_heading(line: &str) -> Option<&str> {
 ///
 /// 累积性：每次压缩都对完整前缀 history[..new_c] 重算，旧摘要已覆盖段
 /// 的操作天然包含 → 台账随迭代更新单调累积。同 path 后声明 kind 覆盖、
-/// 首次出现顺序保留（镜像 `chat_log:dedup_file_changes` 投影语义）。
+/// 首次出现顺序保留（镜像 `chat_log::dedup_file_changes` 投影语义）。
 pub(crate) fn collect_file_ops_ledger(messages: &[&crate::types::ConversationTurn]) -> Vec<FileOp> {
     fn push(
         out: &mut Vec<FileOp>,
@@ -1526,7 +1526,7 @@ pub(crate) fn finalize_summary_text(reply: &str, ledger: &[FileOp], omitted: boo
     text
 }
 
-/// : pre summary shape, restored as the per-model fallback
+/// pre summary shape, restored as the per-model fallback
 /// (`summarizer_prefix_reuse: false`).
 ///
 /// This is the OLD request form the refactor replaced: a single bare user
@@ -1605,7 +1605,7 @@ pub(crate) async fn summarize_bare_concat_owned(
 
 /// Multi-part summarization (standalone, works in spawned task).
 ///
-/// : each part is summarized as `[system?,...part messages,
+/// each part is summarized as `[system?,...part messages,
 /// instruction]` — a part is a contiguous slice of the covered prefix, so its
 /// message list is a true ordered prefix subset of the main request's history
 /// (prefix-cache friendly in the same way).
@@ -1727,7 +1727,7 @@ pub(crate) async fn summarize_multipart_owned(
 
 /// Single-batch summarization (standalone, works in spawned task).
 ///
-/// : the request is `[system?,...covered messages (original
+/// the request is `[system?,...covered messages (original
 /// structure), instruction]` — a genuine prefix of the conversation plus the
 /// trailing instruction, replacing the old single bare user message with
 /// `role: content` text concatenation.
@@ -1816,7 +1816,7 @@ pub(crate) async fn summarize_batch_owned(
 ///
 /// `messages` 是本次调用实际发出的请求消息（供 LlmRequest 观测事件记录
 /// 「摘了什么」——此前硬编码 `vec![]`，aux_ 日志请求侧永远空壳，无法事后
-/// 定性压缩在摘哪段历史； 记录面缺陷①）。
+/// 定性压缩在摘哪段历史）。
 ///
 /// `make_call` 是工厂闭包（**入参 max_tokens**，每次调用产出一个新请求
 /// future）：空输出/瞬态失败由 [`with_one_retry`] 在同一超时窗口内同预算
@@ -1891,7 +1891,7 @@ where
     }
 
     // Execute the LLM call (async, no block_on). 墙钟上限走杂务旁路护栏
-    // （bypass_llm:AUX_SUMMARY_TIMEOUT）——慢模型/挂死连接不拖住压缩任务；
+    // （bypass_llm::AUX_SUMMARY_TIMEOUT）——慢模型/挂死连接不拖住压缩任务；
     // 超时折叠为 Err，走既有失败语义（摘要不产出、历史保持不折叠）。
     // 空输出/瞬态失败在同一超时窗口内重试一次。**空→Err 归一必须在重试
     // 内层**：with_one_retry 只对 Err 重试，LlmResponse 携带空 content 是
@@ -1955,7 +1955,7 @@ where
         });
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    // 事件载荷按 Ok/Err 分态（记录面缺陷②③）：失败不再伪装
+    // 事件载荷按 Ok/Err 分态：失败不再伪装
     // 成功——content 带 Error 前缀文本、finish_reason 如实标 error（对齐
     // 主链路 recovery.rs 失败事件惯例），Err 文本进 request_log 留失败现场。
     // Ok 路径内容必然非空（空输出已被 attempt() 归一为 Err）。
@@ -2105,7 +2105,7 @@ pub(crate) async fn summarize_prefix_owned(
     }
 
     let final_summary = if !prefix_reuse {
-        // : old shape — single bare user message, no structure.
+        // old shape — single bare user message, no structure.
         summarize_bare_concat_owned(&valid_messages, &update, provider, model, observer_manager)
             .await
     } else {
@@ -2149,7 +2149,7 @@ pub(crate) async fn summarize_prefix_owned(
 }
 
 // ---------------------------------------------------------------------------
-// ：token 预算尾巴 / 结构化摘要 schema / 文件操作
+// token 预算尾巴 / 结构化摘要 schema / 文件操作
 // 台账测试。独立测试文件（生产文件只保留声明行，仓库纪律）。
 // ---------------------------------------------------------------------------
 #[cfg(test)]

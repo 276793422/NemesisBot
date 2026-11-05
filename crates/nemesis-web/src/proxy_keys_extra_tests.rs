@@ -1,4 +1,4 @@
-//! `proxy_keys` 单测（LLM代理调用方key管理 §4）：
+//! `proxy_keys` 单测（LLM代理调用方key管理）：
 //! 空 token 不参与匹配 / 白名单前置内存闸 / 命中注入 caller / 禁用 key 拒绝
 //! / 缺文件回落 / 手填空 key 不开旁路 / 热生效（mtime 重载）/ workspace 缺席。
 //! AppState 构造依赖 workflow 的 ChatSecretStore，feature 闸同
@@ -186,7 +186,7 @@ fn workspace_absent_returns_none() {
 
 // 回归锁：同 tick 双写的缓存陈旧。NTFS LastWriteTime 有
 // 毫秒级量化（本机实测零间隔 atomic 写 3/11 次撞同值；write_file_atomic
-// 的临时名注释、HotReloader::force_reload 的 、auth_tests
+// 的临时名注释、HotReloader::force_reload 的、auth_tests
 // 的 20ms sleep「不赌 mtime 粒度」三处在案）——第二次写与第一次写落在同
 // 一 tick 时 mtime 相同，mtime 单信号缓存把第二次写当「未变」：禁用/删除
 // 的 key 无限期继续放行，「写盘即热生效」契约被破。

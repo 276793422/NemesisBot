@@ -113,7 +113,7 @@ impl VaultDomainConfig {
     }
 }
 
-/// slot 层级匹配（设计 §3.3）：绑定 `slot` 覆盖字段路径 `field` 当且仅当
+/// slot 层级匹配（设计）：绑定 `slot` 覆盖字段路径 `field` 当且仅当
 /// `field == slot`（顶槽本体 / 精确叶）或 `field` 是 `slot` 的直接层级后代
 /// （`{slot}.叶`——顶槽绑定盖全部叶子）。不做通配符语法（层级语义已覆盖）。
 fn slot_covers(slot: &str, field: &str) -> bool {

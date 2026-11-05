@@ -214,7 +214,7 @@ fn test_save_config_rejects_no_api_key() {
 #[test]
 fn test_validate_config_checks_models() {
     let dir = tempfile::tempdir().unwrap();
-    // Config with no models — 校验失败降级启动（BUG-20261029-149）：
+    // Config with no models — 校验失败降级启动：
     // start() Ok + state=Running + last_error 保留失败记录 + can_stop（shutdown
     // 路径能完整停机，此前 Error 态跳过 bot stop）。
     let config_path = dir.path().join("config.json");
@@ -1693,13 +1693,13 @@ fn test_config_file_empty_json() {
 
     let result = svc.start();
     assert!(result.is_ok());
-    // Empty JSON → no models → 降级启动（BUG-20261029-149），失败记录保留
+    // Empty JSON → no models → 降级启动，失败记录保留
     assert_eq!(svc.get_state(), BotState::Running);
     assert!(svc.get_error().unwrap().contains("no models"));
 }
 
 // ============================================================
-// Additional coverage tests for 95%+ target - Phase 2
+// Additional coverage tests for 95%+ target -
 // ============================================================
 
 // --- start_services with health server ---
@@ -2118,7 +2118,7 @@ fn test_validate_config_not_loaded() {
         ..BotServiceConfig::default()
     });
 
-    // Config loaded but models empty → 降级启动（BUG-20261029-149）。
+    // Config loaded but models empty → 降级启动。
     let result = svc.start();
     assert!(result.is_ok());
     assert_eq!(svc.get_state(), BotState::Running);
@@ -2147,11 +2147,11 @@ fn test_validate_config_not_loaded() {
 //   error! 分支（#[tokio::test] 提供 runtime）。
 //
 // 结构性不可达（不试图覆盖，仅记录证据）：
-// - 650-654（start() Phase 3 init_components 失败 arm）：init_components
+// - 650-654（start() init_components 失败 arm）：init_components
 //   唯一的 Err 是 config_file 为 None（bot_service.rs:1231），而走到
-//   Phase 3 前提是 Phase 1 load_config 成功（会把 config_file 置 Some；
-//   Phase 2 校验失败自 BUG-20261029-149 起降级不拦，但其两个「未加载/
-//   未解析」臂在 Phase 1 成功后本就不可达，models 臂不依赖 config_file
+//   前提是 load_config 成功（会把 config_file 置 Some；
+//   校验失败自 起降级不拦，但其两个「未加载/
+//   未解析」臂在 成功后本就不可达，models 臂不依赖 config_file
 //   存在性）→ 650-654 只有在 load_config 成功但 config_file 又是 None 的
 //   矛盾状态下才可达。
 // ============================================================
@@ -2410,7 +2410,7 @@ fn test_validate_config_direct_call_not_loaded() {
 #[tokio::test]
 async fn test_start_with_failing_health_service() {
     // 覆盖 1422：注入 start() 失败的 health 服务 → 后台 spawn 任务里
-    // error!("[BotService] Health server error: ...")。失败不阻断启动。
+    // error!("[BotService] Health server error:...")。失败不阻断启动。
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);
@@ -2434,7 +2434,7 @@ async fn test_start_with_failing_health_service() {
 #[tokio::test]
 async fn test_start_with_failing_agent_service() {
     // 覆盖 1437：注入 start() 失败的 agent loop → 后台 spawn 任务里
-    // error!("[BotService] Agent loop error: ...")。失败不阻断启动。
+    // error!("[BotService] Agent loop error:...")。失败不阻断启动。
     let dir = tempfile::tempdir().unwrap();
     let config = make_config_with_file(dir.path());
     let svc = BotService::new(config);

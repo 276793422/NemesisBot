@@ -219,7 +219,7 @@ impl ModuleHandler for VaultHandler {
 
 // 共享辅助（供 handler 与测试复用；passphrase 显式传参，测试不碰进程 env）
 
-/// vault 文件路径 = `<workspace>/config/vault.enc`（nemesis-path 单一真相源，
+/// vault 文件路径 = `<workspace>/config/vault.enc`（nemesis-path 统一定义，
 /// 与 CLI / 网关解析器同一条）。
 pub(crate) fn vault_path(ctx: &RequestContext) -> Result<PathBuf, String> {
     let ws = ctx

@@ -1,5 +1,5 @@
 //! bulk 分块账与打包单测（宿主可跑的纯宿主面；带真实 VM 的全链路归
-//! guest 集成测试 full_chain）。H1 回归锁住在这里：分块账必须按 tar
+//! guest 集成测试 full_chain）。 回归锁住在这里：分块账必须按 tar
 //! 实际长度计，头部开销漏算会让大变更集跨 4MiB 边界时截尾。
 
 #[test]
@@ -22,7 +22,7 @@ fn read_chunk_plan_boundaries() {
 #[test]
 fn pack_files_tar_len_exceeds_payload_sum() {
     // tar 头（512B/条目）+ 1024B 收尾块是真实开销——旧分块账（按 payload
-    // 字节和）漏了它，正是 H1 截尾的根因。小包这里只验证不等式成立；
+    // 字节和）漏了它，正是 截尾的根因。小包这里只验证不等式成立；
     // 跨界数学由 read_chunk_plan_boundaries 钉死。
     let tmp = tempfile::tempdir().unwrap();
     let ws = tmp.path();
@@ -58,7 +58,7 @@ fn pack_files_missing_files_are_absent_not_fatal() {
     assert_eq!(packed.bytes, 2);
 }
 
-// ---- symlink 闸回归（2026-10-20 全面复查批）----
+// ---- symlink 闸回归（全面复查批）----
 // symlink 创建是 Unix 语义（Windows 需特权/开发者模式），用例整体
 // #[cfg(unix)]——真实执行面（VM 内 guest）本就是 Linux。
 
@@ -67,7 +67,7 @@ fn pack_files_missing_files_are_absent_not_fatal() {
 #[cfg(unix)]
 fn build_tar(ws: &std::path::Path, name: &str, entries: &[(&str, &[u8])]) -> std::path::PathBuf {
     // 调用方传的是 tempdir 下的新鲜子目录（如 tmp/t）——先建父目录，
-    // 否则 File::create 直接 ENOENT（2026-10-20 CI Linux coverage job 实证）。
+    // 否则 File::create 直接 ENOENT（CI Linux coverage job 实证）。
     std::fs::create_dir_all(ws).unwrap();
     let out = ws.join(name);
     let f = std::fs::File::create(&out).unwrap();

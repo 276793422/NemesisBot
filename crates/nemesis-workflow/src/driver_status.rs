@@ -3,7 +3,7 @@
 //!
 //! This exists so the UI never has to hardcode "event/message triggers are
 //! not driven" — instead it queries the backend and renders whatever the
-//! backend says. When [`crate::triggers::TriggerManager::match_event`] gets
+//! backend says. When [`crate::triggers:TriggerManager::match_event`] gets
 //! a real event-bus subscription in the external-integration phase, only
 //! the matches in this file need to flip from `undriven` to `driven`.
 

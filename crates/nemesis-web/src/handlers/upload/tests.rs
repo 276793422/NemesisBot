@@ -235,7 +235,7 @@ async fn upload_stores_file_and_refs_resolve() {
     let stored = std::path::PathBuf::from(json["path"].as_str().unwrap());
     assert!(stored.starts_with(&uploads_dir));
 
-    // 文件落盘且字节逐位一致（写后即落盘：std::fs::write 关 fd 即 flush）。
+    // 文件落盘且字节逐位一致（写后即落盘：std::fs:write 关 fd 即 flush）。
     assert_eq!(std::fs::read(&stored).unwrap(), payload);
 
     // 上传返回的 id 可被 resolve_media_ref 解析回同一路径（WSAPI 闭环）。
@@ -246,7 +246,7 @@ async fn upload_stores_file_and_refs_resolve() {
 }
 
 // F-C（四轮盲审）：落盘扩展名按**内容**定，不信 `?name=` 声明——
-// JPEG 字节命名 .png 若按 name 落盘，下游水合按扩展名定 media_type 时
+// JPEG 字节命名.png 若按 name 落盘，下游水合按扩展名定 media_type 时
 // content/type 失配。
 #[tokio::test]
 async fn fc_upload_stored_extension_follows_content_not_name() {
@@ -254,7 +254,7 @@ async fn fc_upload_stored_extension_follows_content_not_name() {
     let dir = tempfile::tempdir().unwrap();
     let _guard = RedirectHomeGuard::to(dir.path());
 
-    // JPEG 字节 + .png 声明 → 落盘 .jpg（内容说了算）。
+    // JPEG 字节 +.png 声明 → 落盘.jpg（内容说了算）。
     let resp = post_upload(
         test_router(make_state("")),
         Some("ignored"),
@@ -268,7 +268,7 @@ async fn fc_upload_stored_extension_follows_content_not_name() {
     let id = json["id"].as_str().unwrap();
     assert!(id.ends_with(".jpg"), "JPEG 字节必须落盘为 .jpg: id={id}");
 
-    // .jpeg 声明同样归一为内容判定的 .jpg（与 URL 下载命名一致）。
+    // .jpeg 声明同样归一为内容判定的.jpg（与 URL 下载命名一致）。
     let resp = post_upload(
         test_router(make_state("")),
         Some("ignored"),
@@ -284,7 +284,7 @@ async fn fc_upload_stored_extension_follows_content_not_name() {
         "jpeg 声明归一为 .jpg"
     );
 
-    // PNG 字节 + .jpg 声明 → 反向同样按内容落 .png。
+    // PNG 字节 +.jpg 声明 → 反向同样按内容落.png。
     let resp = post_upload(
         test_router(make_state("")),
         Some("ignored"),

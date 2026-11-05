@@ -97,7 +97,7 @@ fn test_paper_broker_template_parses() {
     );
 }
 
-// ---- D6.1 签名信任族 CLI 辅助（validate_hex64 / resolve_trust_entry） ----
+// ----.1 签名信任族 CLI 辅助（validate_hex64 / resolve_trust_entry） ----
 
 #[test]
 fn test_validate_hex64_discriminates() {
@@ -173,7 +173,7 @@ fn test_trust_revoke_readback_flow() {
     ));
 }
 
-// ============ B5 管理对称族（治理补全 P4，2026-10-19） ============
+// ============ 管理对称族（治理补全） ============
 
 /// 最小合法清单模板（rest 型，无凭据槽位）。
 const B5_MIN_MANIFEST: &str = r#"
@@ -286,7 +286,7 @@ fn test_run_connector_toggle_sidecar_roundtrip() {
 fn test_run_connector_toggle_dir_name_differs_from_id() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path();
-    // 手工摆盘绕过 create 的 dir==id 强制（边界补强 2026-10-20）
+    // 手工摆盘绕过 create 的 dir==id 强制（边界补强）
     let dir = ws
         .join(nemesis_connectors::registry::CONNECTORS_DIR)
         .join("b5-dir");

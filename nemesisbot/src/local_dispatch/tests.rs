@@ -1,11 +1,11 @@
-//! 本地派发交付捕获回归锁（BUG 2026-11-05 根修）。
+//! 本地派发交付捕获回归锁（根修）。
 //!
 //! - `pin_local_baseline`：真 git 夹具返 Some（HEAD commit）；非 git 目录 /
-//!   文件形态 .git（worktree 链接）/ 空仓（无 HEAD commit）三臂 None。
+//!   文件形态.git（worktree 链接）/ 空仓（无 HEAD commit）三臂 None。
 //! - `capture_and_record_local_delivery`：真 TaskDb + 真 git 夹具（基线后
 //!   改文件）→ true + `delivery_by_key("{task_id}:branch")` 命中 +
 //!   payload `repo_base_sha` == 钉住基线（agent 合法 commit 移动 HEAD 后
-//!   HEAD 当基线会失真的 T1 同族根修）+ patch 非空 + tree 在场；非 git
+//!   HEAD 当基线会失真的 同族根修）+ patch 非空 + tree 在场；非 git
 //!   目录 → false（capture 缺席诚实上报）。
 
 use super::*;
@@ -47,8 +47,8 @@ fn pin_baseline_non_git_dir_is_none() {
 #[test]
 fn pin_baseline_file_form_dot_git_is_none() {
     let dir = tempfile::tempdir().unwrap();
-    // 文件形态 .git（worktree 链接指针，不是目录）——镜像 ensure_exec_repo
-    // 对文件形态 .git 的裁决：不打开（open 沿 gitdir 指针会落到别处）。
+    // 文件形态.git（worktree 链接指针，不是目录）——镜像 ensure_exec_repo
+    // 对文件形态.git 的裁决：不打开（open 沿 gitdir 指针会落到别处）。
     std::fs::write(dir.path().join(".git"), "gitdir: elsewhere.git\n").unwrap();
     assert!(pin_local_baseline(dir.path(), "loc-pin-3").is_none());
 }
@@ -148,9 +148,9 @@ fn capture_on_non_git_dir_is_false() {
     assert!(db.delivery_by_key("loc-cap-2:branch").unwrap().is_none());
 }
 
-/// Fix 1 回归锁（NB-1 占位回复误判）：busy 排队回执（receipt=true）不得
+/// Fix 1 回归锁（占位回复误判）：busy 排队回执（receipt=true）不得
 /// 被当终局回复捕获——会话忙时首条出站是 ⏳ 排队回执 + 真回复随后，
-/// capture_reply 必须跳过回执等到真回复。NB-1 实录：queue-ack 被当终局
+/// capture_reply 必须跳过回执等到真回复。 queue-ack 被当终局
 /// → 57ms 空交付 completed，真回复随后无人认领成孤儿。
 #[tokio::test]
 async fn capture_reply_skips_receipt_and_returns_final() {

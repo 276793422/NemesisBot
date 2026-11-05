@@ -20,7 +20,7 @@ use tracing::{debug, info, warn};
 use crate::websocket::dispatcher::Dispatcher;
 use crate::websocket::protocol::Message;
 
-/// Bounded wait for the authentication message (BUG-20261103-344): a
+/// Bounded wait for the authentication message: a
 /// connection that never completes auth is dropped instead of pinning its
 /// spawned per-connection task forever.
 const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -260,7 +260,7 @@ impl WebSocketServer {
                 match accept_result {
                     Ok((stream, addr)) => {
                         debug!("[WebSocketServer] New connection from {}", addr);
-                        // BUG-20261103-344: per-connection 处理必须 spawn——
+                        // per-connection 处理必须 spawn——
                         // 旧实现内联 await auth，TCP 连上后不发数据的静默
                         // 客户端（挂死的子进程窗口/本地探测进程）会永久
                         // 冻结 accept 循环，锁死全部后续子窗口连接。
@@ -280,7 +280,7 @@ impl WebSocketServer {
 
     /// Handle a new TCP connection: upgrade to WebSocket, authenticate, start read/write loops.
     ///
-    /// Runs in its own spawned task (BUG-20261103-344): a stalled auth phase
+    /// Runs in its own spawned task: a stalled auth phase
     /// must never block the accept loop. The auth read is bounded by
     /// AUTH_TIMEOUT so connections that never complete authentication are
     /// dropped instead of pinning their task forever.

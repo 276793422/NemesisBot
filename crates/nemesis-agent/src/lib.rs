@@ -29,7 +29,7 @@ pub mod chat_log;
 /// nemesis-web sessions handler + nemesisbot sweeper。
 pub mod chat_trash;
 pub mod checkpoint;
-/// ②typed checks 块捕获：检查类工具（exec /
+/// typed checks 块捕获：检查类工具（exec /
 /// run_checks）真实执行后的管线侧确定性记账——交付证据 `$.delivery.checks`
 /// 的捕获源，见模块头诚实边界。
 pub mod checks_capture;
@@ -61,7 +61,7 @@ pub mod executor_pipe;
 pub mod executor_transport;
 pub mod formatter;
 pub mod fs_watcher;
-/// guardian（LLM 安全法官）语义二审决策表单一真相源——
+/// guardian（LLM 安全法官）语义二审决策表单一权威定义——
 /// dispatch 内联块与 LSP rename 合成写闸同源消费（此前只活在 dispatch，
 /// 合成闸缺席且文档声称继承）。
 #[cfg(feature = "security")]
@@ -82,7 +82,7 @@ pub mod loop_continuation;
 pub mod loop_executor;
 pub mod loop_tools;
 /// b（三期）：任务 mandate 执行面守卫——marker + 纯裁决
-/// （loop 侧接线在 `r#loop:mandate_guard`）。
+/// （loop 侧接线在 `r#loop::mandate_guard`）。
 pub mod mandate_guard;
 pub mod mcp_bridge;
 pub mod memory;
@@ -98,7 +98,7 @@ pub mod request_logger_observer;
 pub mod ringbuffer;
 pub mod session;
 pub mod session_fork;
-/// ：会话执行统计 sink——loop 内部计数（重试/校验失败/
+/// 会话执行统计 sink——loop 内部计数（重试/校验失败/
 /// 压缩成功）上抛宿主聚合器的 trait 面。
 pub mod session_stats;
 pub mod skills_digest;
@@ -106,8 +106,8 @@ pub mod spill;
 /// 子代理任务注册表（子代理可见性）：三形态统一台账 + 落盘 + 取消面。
 pub mod subagent_registry;
 pub mod todo_closeout;
-/// （集群无人值守硬化）：会话 token 预算闸——marker 文案单一真相源 +
-/// per-session 累计账本（loop 侧接线在 `r#loop:token_budget`）。
+/// （集群无人值守硬化）：会话 token 预算闸——marker 文案统一定义 +
+/// per-session 累计账本（loop 侧接线在 `r#loop::token_budget`）。
 pub mod token_budget;
 pub mod tool_adapter;
 pub mod tool_doc_folding;
@@ -123,7 +123,7 @@ pub mod user_profile;
 /// 落盘随行 + `chat.work_current` 活查询。
 pub mod work_timeline;
 pub mod workspace_instructions;
-/// /：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
+/// ：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
 pub mod workspace_lease;
 
 #[cfg(test)]
@@ -135,10 +135,10 @@ mod history_tests;
 mod token_budget_tests;
 
 #[cfg(test)]
-/// /：租约互斥/宽限/死进程释放/开关旁路测试（独立测试文件）。
+/// ：租约互斥/宽限/死进程释放/开关旁路测试（独立测试文件）。
 mod workspace_lease_tests;
 
-// (quality-hardening goal 冲刺): 测试共享 helper（thread-local tracing
+// 测试共享 helper（thread-local tracing
 // subscriber），声明式挂载指向独立文件，无内联测试。
 #[cfg(test)]
 mod test_support;

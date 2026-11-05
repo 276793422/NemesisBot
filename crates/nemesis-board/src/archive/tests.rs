@@ -1,4 +1,4 @@
-//! archive 项目档案目录测试（看板项目档案 goal P2/B1-B6；2026-09-17 补齐）。
+//! archive 项目档案目录测试（看板项目档案 goal /-；2026-09-17 补齐）。
 //!
 //! 覆盖：`sanitize_project_name` 纯函数矩阵（非法字符/连续塌缩/多字节截断/
 //! 空名兜底）、`default_directory` 序号分配与 canonical 去重、
@@ -8,7 +8,7 @@
 //!
 //! 注：本文件在上游提交 `4edbaf61` 中声明（archive.rs 末尾 `mod tests;`）
 //! 但从未被创建——`cargo test -p nemesis-board` / `--workspace` 全新构建
-//! 即 E0583。2026-09-17 由修复 goal 补齐（先占位后实装）。
+//! 即 。2026-09-17 由修复 goal 补齐（先占位后实装）。
 
 use super::*;
 use std::path::PathBuf;
@@ -27,18 +27,18 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 // 短名链直传说明：CI Windows runner 的 %TEMP% 落在 `C:\Users\RUNNER~1\...`
-// （用户名本身是 8.3 短名形态）。2026-09-18 实录曾让 resolve 系列先撞
+// （用户名本身是 8.3 短名形态）。实测曾让 resolve 系列先撞
 // 「8.3 词法拦截」而非被测分支——archive.rs 修复后 8.3 检查先展开盘上
 // 存在的祖先链（RUNNER~1 → 真名）再匹配，因此这里**故意用 temp_root
 // 原始形态直传**：本机（无短名）与 CI（短名链）都必须按被测分支分流。
 
 // ---------------------------------------------------------------------------
-// sanitize_project_name（B2 纯函数矩阵）
+// sanitize_project_name（纯函数矩阵）
 // ---------------------------------------------------------------------------
 
 #[test]
 fn sanitize_folds_whitespace_and_illegal_chars() {
-    // 空白 → `_`；Windows 非法字符 `< > : " / \ | ? *` → `_`；控制字符 → `_`。
+    // 空白 → `_`；Windows 非法字符 `< >: " / \ | ? *` → `_`；控制字符 → `_`。
     assert_eq!(sanitize_project_name("hello world"), "hello_world");
     assert_eq!(
         sanitize_project_name("a<b>c:d\"e/f\\g|h|i?j*k"),
@@ -81,7 +81,7 @@ fn sanitize_empty_yields_project_default() {
 }
 
 // ---------------------------------------------------------------------------
-// default_directory（B2 序号分配）
+// default_directory（序号分配）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -126,7 +126,7 @@ fn default_directory_respects_existing_canonical_set() {
 }
 
 // ---------------------------------------------------------------------------
-// resolve_project_directory（B2 校验矩阵）
+// resolve_project_directory（校验矩阵）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -193,7 +193,7 @@ fn resolve_auto_allocates_and_creates_dir() {
         "落在 board-projects/ 下: {}",
         out.display()
     );
-    // 已存在目录是合法形态（B5：用户选已有目录作初始基线）→ 直接使用。
+    // 已存在目录是合法形态（用户选已有目录作初始基线）→ 直接使用。
     let again = resolve_project_directory(None, &ws, "gamma", &[]).unwrap();
     assert_ne!(out, again, "第二次自动分配撞已存在目录 → 序号");
     // 已存在同名【文件】拒绝（路径须在 workspace 外——否则先命中重叠拒绝）。
@@ -210,7 +210,7 @@ fn resolve_auto_allocates_and_creates_dir() {
 }
 
 // ---------------------------------------------------------------------------
-// ensure_scaffold + manifest + timeline（B3/B4/B5/B6）
+// ensure_scaffold + manifest + timeline
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -233,7 +233,7 @@ fn ensure_scaffold_first_run_creates_all_and_idempotent() {
     assert_eq!(m.integrity, "ok");
     assert!(m.missing_blocks.is_empty());
 
-    // 幂等：用户改动不被覆盖（B5 语义），fresh=false。
+    // 幂等：用户改动不被覆盖（语义），fresh=false。
     std::fs::write(root.join("timeline.jsonl"), b"user data").unwrap();
     std::fs::write(root.join(".gitignore"), b"user rules").unwrap();
     assert!(!ensure_scaffold(&root, 9, "renamed", "done").unwrap());
@@ -248,7 +248,7 @@ fn ensure_scaffold_first_run_creates_all_and_idempotent() {
     // project.json 未重建（保留首次内容）。
     assert_eq!(read_manifest(&root).unwrap().project_id, 7);
 
-    // .gitignore 内容含四个投影排除项 + 自排除（B6；自排除 = publish
+    // .gitignore 内容含四个投影排除项 + 自排除（自排除 = publish
     // 内容等值臂的前提——pre-merge 落定不得把它带进跟踪树）。
     assert!(GITIGNORE_CONTENT.contains("/project.json"));
     assert!(GITIGNORE_CONTENT.contains("/timeline.jsonl"));

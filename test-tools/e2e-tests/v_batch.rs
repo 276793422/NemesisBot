@@ -122,7 +122,7 @@ async fn ws_wait_reply_containing(
                     // data.role="user"）不是回复——只认 assistant 帧。否则
                     // 查询文本含等待词时（v2 的 <MEM_CHECK> ⊃ "MEM_"）回声
                     // 先到先匹配，断言拿到的是测试自己发的内容（V2 首跑
-                    // 实录 2026-10-15；provider_stream.rs 同款教训横扫）。
+                    // 案例 2026-10-15；provider_stream.rs 同款教训横扫）。
                     if v["data"]["role"].as_str() == Some("user") {
                         continue;
                     }
@@ -163,7 +163,7 @@ async fn ws_chat_until(
 
 /// 收集 `<home>/workspace/logs/request_logs/` 下全部 request .md（按文件名排序），
 /// 返回 (文件名, 内容) 列表。detail_level=Full 时这些文件含发给模型的完整
-/// messages —— 断言「模型实际看到什么」的真相源。
+/// messages —— 断言「模型实际看到什么」的直接实证。
 fn collect_request_mds(home: &Path) -> Vec<(String, String)> {
     let mut out = vec![];
     let base = home.join("workspace").join("logs").join("request_logs");
@@ -190,7 +190,7 @@ fn collect_request_mds(home: &Path) -> Vec<(String, String)> {
     out
 }
 
-/// 模型可见的 request log 文件（发给 LLM 的 messages 真相源）。
+/// 模型可见的 request log 文件（发给 LLM 的 messages 实证）。
 /// `NN.AI.Request.md` = 该轮完整 messages；`NN.request.md` = 用户请求。
 /// `NN.Local.md` 是本地工具执行观测日志（记录工具原始 result，镜像 Go 行为），
 /// 不发给模型，不参与「模型看到了什么」的断言。
@@ -518,7 +518,7 @@ const MEM_RELATED_QUERY: &str = "What is my favorite project codename? <MEM_CHEC
 const MEM_UNRELATED_QUERY: &str = "What is the capital of France? <MEM_CHECK>";
 
 /// 列出 `<home>/workspace/logs/request_logs/` 下全部 `NN.AI.Request.md` 的
-/// (绝对路径, 内容)——「模型实际看到什么」的真相源。按绝对路径 key，
+/// (绝对路径, 内容)——「模型实际看到什么」的直接实证。按绝对路径 key，
 /// round 间 before/after 差分用（文件名跨会话目录可能重名）。
 fn collect_ai_request_files(home: &Path) -> Vec<(PathBuf, String)> {
     let mut out = vec![];
@@ -1162,7 +1162,7 @@ async fn run_v5a(
         .context("queued message must start its own turn after turn 1 ends")?;
     assert!(queued.contains("B5_QUEUED_TURN2_OK"), "got: {queued}");
 
-    // —— ⑤ provider 请求真相源 ——
+    // —— ⑤ provider 请求实证 ——
     let files = collect_ai_request_files(&ws.home());
     // turn 1 的首轮请求：含 B5_BUSY 触发串，不含追发内容。
     let first_req = files
@@ -1269,7 +1269,7 @@ async fn run_v5b(
         "steer must be injected at the tool boundary and witnessed by the model, got: {reply}"
     );
 
-    // —— ④ provider 请求真相源 ——
+    // —— ④ provider 请求实证 ——
     let files = collect_ai_request_files(&ws.home());
     let post_tool = files
         .iter()
@@ -1293,7 +1293,7 @@ async fn run_v5b(
 }
 
 // ===========================================================================
-// Z1 (Phase4-d): session fork e2e —— 真分支 + 运行中网关 + 投影真相源
+// Z1: session fork e2e —— 真分支 + 运行中网关 + 投影实证
 // ===========================================================================
 //
 // 模型 testai-9.3（Go 侧 TestAI93）回复 Z1_USERS_<n>（请求里 user 消息
@@ -1301,7 +1301,7 @@ async fn run_v5b(
 // 运行——fork 文件落盘后，网关靠 SessionStore 内存未命中→磁盘回退载入，
 // 这是 Z1 的关键路径）→ 新会话首聊必须 Z1_USERS_3（拷贝的 2 轮 + 新 user
 // = 投影完整）→ 源会话再聊 Z1_USERS_4（源未受影响，第 3 轮还在）。request
-// log AI.Request.md 是 provider 实收真相源：fork 首请求含 T1/T2/FORK、不含
+// log AI.Request.md 是 provider 实收记录：fork 首请求含 T1/T2/FORK、不含
 // T3/T4；源会话 post-fork 请求含 T1-T4、不含 FORK。
 
 const Z1_AI_PORT: u16 = 18100;
@@ -1406,7 +1406,7 @@ async fn run_z1(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
         "source session must keep its full history (4 user turns), got: {src_reply}"
     );
 
-    // —— ⑤ request log 真相源：provider 实收 messages ——
+    // —— ⑤ request log 实证：provider 实收 messages ——
     let files = collect_ai_request_files(&ws.home());
     // fork 首请求：唯一含 FORK_DELTA 的请求。
     let fork_req = files
@@ -1510,7 +1510,7 @@ async fn run_z1(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
 // 两组对照共用同一 Go 模型，唯一差异是 bot 侧 vision 配置：
 //   ① 默认放行（config 无 vision 键）→ 图片穿过 provider 上线：回复
 //      VISION_OK:1；第二轮纯文本消息的历史回放仍带图（同样 VISION_OK:1，
-//      image_refs 重水合）。模型回复即线上真相源——比任何落盘日志更强
+//      image_refs 重水合）。模型回复即线上实证——比任何落盘日志更强
 //      （字节真过了 HTTP wire；默认配置不落 raw.json，AI.Request.md 只渲染
 //      content 字符串不渲染图片 parts，故 wire 断言只能靠模型实测回复）。
 //   ② vision="no"（用户钉死，T10 解析序最高优先级）→ projection 剥图：
@@ -1621,7 +1621,7 @@ async fn run_v6_yes(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
         "turn-2 history replay must still carry the turn-1 image, got: {r2}"
     );
 
-    // —— ③ request log 真相源：两轮 AI.Request.md 都在；vision=yes 不产生
+    // —— ③ request log 实证：两轮 AI.Request.md 都在；vision=yes 不产生
     //    剥图注记；第二轮请求回放第一轮文本 ——
     let files = collect_ai_request_files(&ws.home());
     let turn1_req = files
@@ -1706,7 +1706,7 @@ async fn run_v6_no(ws: &TestWorkspace, cfg: &serde_json::Value, web_port: u16) -
         "vision=no must strip the image before the provider, got: {r1}"
     );
 
-    // —— ② request log 真相源：user turn 的 content 含剥图注记
+    // —— ② request log 实证：user turn 的 content 含剥图注记
     //    （「[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]」
     //    前缀，即模型实际看到的文本）——
     let files = collect_ai_request_files(&ws.home());

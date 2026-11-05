@@ -7,7 +7,7 @@ fn test_no_credentials() {
     assert!(!result.has_matches);
 }
 
-// U15: credential REFERENCE strings are not secrets. `env:VAR` / `yaml:<alias>`
+// credential REFERENCE strings are not secrets. `env:VAR` / `yaml:<alias>`
 // api_key forms carry a variable/alias name, not a key value — the scanner must
 // not flag them (false positives would block legitimate config inspection).
 #[test]

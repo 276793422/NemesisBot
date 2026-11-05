@@ -1,4 +1,4 @@
-//! degraded 注册表测试（M2 批次一）。共享进程级单例——注册表是全局
+//! degraded 注册表测试。共享进程级单例——注册表是全局
 //! static，cargo 默认并行跑测试会互踩，用模块级 TEST_LOCK 串行
 //! （background_registry TEST_LOCK 同款纪律），每用例再 reset 清场。
 

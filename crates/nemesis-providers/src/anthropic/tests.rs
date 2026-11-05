@@ -134,7 +134,7 @@ fn test_anthropic_config_default() {
     let config = AnthropicConfig::default();
     assert_eq!(config.base_url, DEFAULT_BASE_URL);
     assert_eq!(config.default_model, DEFAULT_MODEL);
-    // P3A 超时对齐（2026-09-12）：全 lane 统一 600s（原 120s 与超时阶梯口径分裂）。
+    // P3A 超时对齐：全 lane 统一 600s（原 120s 与超时阶梯口径分裂）。
     assert_eq!(config.timeout_secs, 600);
 }
 
@@ -531,7 +531,7 @@ fn test_get_api_key_with_failing_token_source() {
         Box::new(|| Err("token refresh failed".to_string()));
     let provider = AnthropicProvider::with_token_source(AnthropicConfig::default(), ts);
     let err = provider.get_api_key().unwrap_err();
-    // provider 槽 = lane 名，不是 default_model（BUG-20261102-303 回归锁：
+    // provider 槽 = lane 名，不是 default_model（回归锁：
     // 此前误填 default_model——模型名进了 provider 槽，Display 把 auth
     // 失败归因给模型）。
     assert!(
@@ -582,7 +582,7 @@ fn test_assistant_with_tool_calls_and_function_fallback() {
     assert_eq!(content[0]["name"], "search"); // from function.name fallback
 }
 
-// H4 (U16 half): reasoning effort → thinking budget mapping
+// (half): reasoning effort → thinking budget mapping
 #[test]
 fn test_effort_anthropic_budget_mapping() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
@@ -606,7 +606,7 @@ fn test_effort_anthropic_budget_mapping() {
         assert_eq!(b["thinking"]["type"], "enabled", "tier {tier}");
         assert_eq!(b["thinking"]["budget_tokens"], budget, "tier {tier}");
     }
-    // "off"（aux 杂务通道显式禁思考标记，2026-09-28）→ 显式 disabled 块。
+    // "off"（aux 杂务通道显式禁思考标记）→ 显式 disabled 块。
     let off = mk(Some("off"));
     assert_eq!(off["thinking"]["type"], "disabled");
     assert!(off["thinking"].get("budget_tokens").is_none());
@@ -622,7 +622,7 @@ fn test_effort_anthropic_budget_mapping() {
 use serde_json::json;
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：chat() HTTP 矩阵（wiremock）+ build_request_body
+// 补测：chat() HTTP 矩阵（wiremock）+ build_request_body
 // assistant/tool 消息分支
 // ===========================================================================
 
@@ -718,7 +718,7 @@ async fn test_w4c_anth_chat_invalid_json_maps_format() {
 
 #[tokio::test]
 async fn test_w4c_anth_chat_dead_port_maps_connect_error() {
-    // 诚实化（2026-10-13）：连接拒绝（端口 1 无监听）不是超时——
+    // 诚实化：连接拒绝（端口 1 无监听）不是超时——
     // Unknown + "connect error: <根因链>"（可重试归宿经前缀词表保证）。
     let provider = AnthropicProvider::new(anth_config("http://127.0.0.1:1"));
     let err = provider
@@ -736,7 +736,7 @@ async fn test_w4c_anth_chat_dead_port_maps_connect_error() {
     }
 }
 
-/// per-model `stream=yes`（2026-10-13 stream 键）：`chat()` 内部走流式
+/// per-model `stream=yes`（stream 键）：`chat()` 内部走流式
 /// （SSE wire 契约），聚合回非流式 `LLMResponse`——内容/finish_reason/usage
 /// 与非流式路径同构，对外签名不变。
 #[tokio::test]
@@ -808,7 +808,7 @@ async fn test_stream_auto_keeps_non_streaming_wire() {
 
 /// stream=yes 撞上忽略 stream 的端点（回 200 application/json 完整消息）：
 /// 合成流的终态 chunk 必须透传 parse_response 提取的 reasoning_content
-///（thinking 块）——此前硬编码 None 静默丢 thinking（BUG-20261102-303，
+///（thinking 块）——此前硬编码 None 静默丢 thinking（
 /// 对齐 HttpProvider 合成流同款修复）。
 #[tokio::test]
 async fn test_stream_yes_json_wrapped_body_carries_reasoning() {
@@ -841,7 +841,7 @@ async fn test_stream_yes_json_wrapped_body_carries_reasoning() {
 }
 
 // ===========================================================================
-// thinking 块 wire 兼容回退（2026-09-28 aux 杂务通道回归根修）：
+// thinking 块 wire 兼容回退（aux 杂务通道回归根修）：
 // adaptive-thinking-only 模型（新 Claude 系）拒绝一切显式 thinking 块
 // （enabled/disabled 皆 400）——aux 的 `thinking:{type:"disabled"}` 在这类
 // 端点上剥块重试一次回落服务端默认语义。
@@ -1071,9 +1071,9 @@ fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
 }
 
 // ============================================================
-// 字节快照（goal T1/T3 纪律 6）：content 类型多态化
+// 字节快照（goal / 纪律 6）：content 类型多态化
 // （String → MessageContent）前后，纯文本请求体必须逐字节一致
-// ——这是 prompt cache 前缀契约（真相源 §1.5.2）。本测试先于
+// ——这是 prompt cache 前缀契约（真相源）。本测试先于
 // 类型改动写好并锁死当前字节；类型改动后必须原样保持绿。
 // 注：请求体经 serde_json::Value（无 preserve_order → BTreeMap），
 // 键序为字母序——快照锁定的是"当前真实字节"而非声明序。
@@ -1121,7 +1121,7 @@ fn test_request_body_bytesnapshot_pure_text() {
 }
 
 // ============================================================
-// T3：Anthropic image blocks（goal T3）
+// Anthropic image blocks（goal）
 // ============================================================
 
 #[test]
@@ -1174,7 +1174,7 @@ fn test_request_body_image_parts_anthropic_blocks() {
 
 #[test]
 fn test_request_body_tool_result_content_stays_string() {
-    // tool result content 不转 blocks（工具结果文本;MCP 图像属 P5 范围）
+    // tool result content 不转 blocks（工具结果文本;MCP 图像属 范围）
     let provider = AnthropicProvider::new(AnthropicConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
@@ -1191,8 +1191,8 @@ fn test_request_body_tool_result_content_stays_string() {
     assert_eq!(msg["content"][0]["content"], "工具输出");
 }
 
-// 2026-09-03 二次回归 F1 回归锁：非 user 位（system / assistant / tool_result）
-// 携带 Parts 时不得 raw 序列化产出非法 wire 块——文本视图（+诚实注记，D7 同族），
+// 二次回归 回归锁：非 user 位（system / assistant / tool_result）
+// 携带 Parts 时不得 raw 序列化产出非法 wire 块——文本视图（+诚实注记， 同族），
 // 全请求无 base64 泄漏；Text 形态保持原字节（既有快照测试覆盖）。
 #[test]
 fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
@@ -1247,7 +1247,7 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     assert!(raw.contains("Y29udHJvbA=="), "user 位图片被误剥: {raw}");
 
     // system：**纯文本视图**（to_text）——system 是内部指令位，无"用户附带"
-    // 语义，故无注记（与 codex system 分支同语义；回归 F1 的一致性修正）。
+    // 语义，故无注记（与 codex system 分支同语义；回归 的一致性修正）。
     assert_eq!(body["system"][0]["type"], "text");
     let sys_text = body["system"][0]["text"].as_str().unwrap();
     assert_eq!(sys_text, "系统指令", "system 位应取纯文本、无图片注记");
@@ -1283,7 +1283,7 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
 }
 
 // ---------------------------------------------------------------------------
-// F-U3-3（UAT U3 round-2 wire 抓包实锤，2026-09-15）：历史 assistant tool_use
+// F-（UAT round-2 wire 抓包实锤）：历史 assistant tool_use
 // input 恒 `{}` —— LlmProvider 桥（llm_bridge::agent_message_to_provider /
 // CLI agent adapter）只填 `function.arguments`（String），`arguments`
 // （HashMap）恒 None；而 build_request_body 此前只读 HashMap 版 → 桥场景
@@ -1480,7 +1480,7 @@ fn test_build_request_body_both_argument_sources_missing_stays_empty_object() {
 }
 
 // ===========================================================================
-// B 根修（2026-09-17）：chat_stream 流式测试（wiremock）。persona 生成 lane
+// B 根修：chat_stream 流式测试（wiremock）。persona 生成 lane
 // 此前只有 HttpProvider（OpenAI wire），主模型切 anthropic 协议后断粮——
 // 这里钉死 AnthropicProvider::chat_stream 的完整语义：SSE 事件族解析 /
 // tool_use 累积+按序 flush / 200-JSON 双守卫（忽略 stream:true 的兼容合成
@@ -1680,7 +1680,7 @@ async fn test_b_stream_error_event_overloaded_maps_overloaded() {
     ));
 }
 
-// BUG-20261103-351 回归锁：流内 error 事件与真相源（llm_error_class）同判。
+// 回归锁：流内 error 事件与真相源（llm_error_class）同判。
 // 此前除 overloaded_error 外全砸 Format（不可重试，fallback 放弃轮转）——
 // rate_limit_error / api_error / authentication_error 等在流内形态的处置与
 // 同类 HTTP 状态码（429→RateLimit / 500→Overloaded / 401→Auth，from_status
@@ -1795,7 +1795,7 @@ async fn test_b_stream_eof_without_message_stop_synthesizes_final() {
 
 #[tokio::test]
 async fn test_b_anthropic_stream_silent_stall_hits_wall_clock_deadline() {
-    // NB-123 实证根修（2026-10-16，与 http_provider 同门）：上游静默停流时
+    // 实证根修（与 http_provider 同门）：上游静默停流时
     // reqwest client 级 `.timeout()` 在 bytes_stream() 读路径不兜底。契约：
     // SSE 读受 timeout_secs 绝对墙钟线约束，到线产 Timeout（可重试）。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1847,7 +1847,7 @@ async fn test_b_anthropic_stream_silent_stall_hits_wall_clock_deadline() {
 }
 
 // ---------------------------------------------------------------------------
-// B13 缓存断点显式化（2026-10-18 B 级清零）：cache_breakpoints 只在
+// 缓存断点显式化：cache_breakpoints 只在
 // anthropic lane 的 request body 注入 ephemeral 断点；缺省关 = 字节兼容。
 // ---------------------------------------------------------------------------
 
@@ -1965,7 +1965,7 @@ fn b13_cache_breakpoints_on_without_tools_marks_system_only() {
 }
 
 // ===========================================================================
-// base_url 构造期归一回归（2026-10-23）：preset 推断默认（anthropic/claude
+// base_url 构造期归一回归：preset 推断默认（anthropic/claude
 // 前缀，provider_resolver PROVIDER_PRESETS）带 `/v1` 尾缀，factory 原样传
 // AnthropicProvider::new，chat() 再自拼 `/v1/messages` → `/v1/v1/messages`
 // 每次 404。归一收在构造边界（new / with_token_source）。
@@ -2015,7 +2015,7 @@ async fn test_v1_suffixed_base_hits_v1_messages_not_v1_v1() {
     assert_eq!(resp.content, "ok");
 }
 
-/// BUG-20261029-153（anthropic lane 同族）：200 后 body 读传输失败（连接
+/// （anthropic lane 同族）：200 后 body 读传输失败（连接
 /// 中途断开）→ transport_error（Unknown + "connect error" 前缀，可重试），
 /// 而非旧 resp.json() 伪装 Format 不可重试。可读的坏 JSON 仍走
 /// from_str→Format，见 test_w4c_anth_chat_invalid_json_maps_format。

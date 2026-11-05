@@ -31,7 +31,7 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema describing the expected input parameters.
     pub parameters: serde_json::Value,
-    /// Server 自述行为提示（B3，从 McpTool.annotations 透传；老 server 不带
+    /// Server 自述行为提示（从 McpTool.annotations 透传；老 server 不带
     /// = None）。消费点：连接器独占镜像基线定档（nemesis-connectors registry）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub annotations: Option<super::types::McpToolAnnotations>,
@@ -403,7 +403,7 @@ impl Tool for ArcClientAdapter {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// BUG-20261104-380：image/audio content 按规范消费 `data`（base64）+
+/// image/audio content 按规范消费 `data`（base64）+
 /// `mimeType` 字段——此前 ToolContent 缺这两个字段、臂从规范不存在的 `text`
 /// 取数，真实 server（按 MCP 规范把 base64 放 `data`）的图像 content 反序列
 /// 化后恒产空占位 `[Image: ]`。base64 不透传 LLM 文本通道（token 爆炸且非
@@ -426,7 +426,7 @@ fn image_or_audio_note(c: &crate::types::ToolContent, kind: &str) -> String {
     }
 }
 
-/// BUG-20261104-380：resource content 按规范消费嵌套 `resource` 对象——
+/// resource content 按规范消费嵌套 `resource` 对象——
 /// 文本资源（`text`）真内容透传给 LLM（资源嵌入的本意），二进制资源（`blob`）
 /// 给诚实元信息注记不透传；此前 ToolContent 缺 `resource` 字段，真实 server
 /// 的 resource content 反序列化后恒产空占位 `[Resource: ]`。无嵌套对象时
@@ -470,10 +470,10 @@ pub fn sanitize_name(name: &str) -> String {
         .collect()
 }
 
-/// 检测 server 名单中 sanitize 后工具前缀相撞的分组（2026-10-16 第十四轮
+/// 检测 server 名单中 sanitize 后工具前缀相撞的分组（
 /// 缺陷 17）：`pet.v2` 与 `pet-v2` 都归一为 `mcp_pet_v2_`——热重载
 /// `find_new_servers` 会把第二个当「已注册」静默过滤（永不挂载），启动
-/// 全量挂载则工具键互相覆盖（后注册者胜）。检测单一真相源：加载面
+/// 全量挂载则工具键互相覆盖（后注册者胜）。检测统一定义：加载面
 /// （`McpManager::load_config`，覆盖启动 + 热重载）与写面（CLI `mcp add`
 /// / Dashboard server_add）共用本函数。吃名字迭代器（manager 传类型化
 /// 名单、CLI/web 传 raw JSON 名字，免 serde 往返）。返回只含冲突组的
@@ -515,8 +515,8 @@ fn sanitize_schema(mut schema: serde_json::Value) -> serde_json::Value {
     }
 
     // Sanitize nested property schemas
-    // 2026-10-25 BUG-20261025-47：flatten_type 递归覆盖 properties/items
-    // 全深度（含数组元素）；2026-10-30 BUG-20261030-212 收编复合关键字
+    // flatten_type 递归覆盖 properties/items
+    // 全深度（含数组元素）； 收编复合关键字
     // （anyOf/oneOf/allOf、对象形态 additionalProperties、$defs/definitions、
     // patternProperties/prefixItems）。此处一遍调用即可，无需分层手抄。
     flatten_type(&mut schema);
@@ -530,11 +530,11 @@ fn sanitize_schema(mut schema: serde_json::Value) -> serde_json::Value {
 /// composition keywords `anyOf`/`oneOf`/`allOf` plus object-form
 /// `additionalProperties`.
 ///
-/// 背景（BUG-20261025-47）：部分 LLM provider 拒绝数组形态的 `type`；旧实现
+/// 背景：部分 LLM provider 拒绝数组形态的 `type`；旧实现
 /// 只处理两层 properties 且完全不碰 `items`——深层嵌套或数组项带
 /// `type: ["x","null"]` 时原样透传，provider 侧报 schema 非法。
 ///
-/// 背景（BUG-20261030-212）：BUG-47 的收编面仍漏复合关键字——`anyOf`/
+/// 背景：BUG-47 的收编面仍漏复合关键字——`anyOf`/
 /// `oneOf`/`allOf` 分支（可空联合的常见载体）、对象形态 `additionalProperties`
 /// （map 值 schema）、`$defs`/`definitions`（随 `$ref` 一起整体上行给
 /// provider）、`patternProperties`/`prefixItems`——这些位置里的数组形态

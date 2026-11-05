@@ -1,4 +1,4 @@
-//! M7/M8（2026-10-27 整改批次三）：logs 六族统一 TTL 清扫器。
+//! logs 六族统一 TTL 清扫器（2026-10-27 起）。
 //!
 //! 六族日志此前零生命周期管理——session_logs / boundary / request_logs /
 //! terminal / event_ledger / trash 只写不删，长跑实例磁盘占用单调增长。
@@ -19,7 +19,7 @@
 //!   行携带被删行全文 = chat_log 的唯一旁证，末行非 append 的账本保留
 //!   （存量靠 TTL 自然老化，不做人工清账）。
 //! - **terminal** 含回显密码（审计文件头有诚实注记），敏感面最短（默认 7d）。
-//! - **trash** 默认 90d（拍板①：30 天太短）——回收站的存在意义就是「删了
+//! - **trash** 默认 90d（30 天太短）——回收站的存在意义就是「删了
 //!   还能反悔」，保留期刻意长于所有日志族。
 //!
 //! 删除一律走 [`nemesis_utils::fsutil`] 韧性包装（Windows AV/索引器瞬时
@@ -60,7 +60,7 @@ pub struct LogsTtl {
 impl Default for LogsTtl {
     fn default() -> Self {
         // 默认值与 LogsTtlConfig::default 同源口径（terminal 含回显密码，
-        // 敏感面最短；trash 拍板① 90 天——回收站的存在意义就是「删了还能
+        // 敏感面最短；trash 90 天——回收站的存在意义就是「删了还能
         // 反悔」，保留期刻意长于所有日志族）。
         Self {
             session_logs: 30,
@@ -132,7 +132,7 @@ impl Family {
 /// 单族单拍清扫统计。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SweepStats {
-    /// 本拍删除件数（含 session_logs 的 .meta.json 配对同删）。
+    /// 本拍删除件数（含 session_logs 的.meta.json 配对同删）。
     pub deleted: u64,
     /// 删除重试耗尽仍残留的件数（诚实计数，交下拍重试）。
     pub failed: u64,
@@ -250,7 +250,7 @@ fn sweep_family(dir: &Path, ttl_days: u64, family: Family, now: SystemTime) -> S
             Ok(()) => {
                 stats.deleted += 1;
                 stats.bytes_freed += size;
-                // session_logs：正文删除时配对同删 .meta.json sidecar
+                // session_logs：正文删除时配对同删.meta.json sidecar
                 //（不看 sidecar 自身年龄——幽灵会话条目防的正是它比正文新）。
                 // 先 metadata 探存在（fsutil 对 NotFound 返 Ok，直接删会让
                 // 计数把「本就没有 sidecar」也记成一刀）。

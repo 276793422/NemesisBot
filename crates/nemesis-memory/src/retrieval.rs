@@ -1,8 +1,8 @@
-//! Lightweight BM25 lexical retrieval (no external dependency).
+//! Lightweight lexical retrieval (no external dependency).
 //!
 //! A local, dependency-free approximation of FTS matching for memory/session
 //! text search. Lexical only — not semantic. Used as a fallback when the vector
-//! store is unavailable, and for session log search. Standard BM25 with k1=1.2,
+//! store is unavailable, and for session log search. Standard with k1=1.2,
 //! b=0.75, +1-smoothed IDF, plus CJK single-rune tokenization so
 //! Chinese/Japanese/Korean text is searchable.
 
@@ -59,7 +59,7 @@ pub fn document_frequency(docs: &[HashMap<String, usize>]) -> HashMap<String, us
     df
 }
 
-/// BM25 score for one document against query terms.
+/// score for one document against query terms.
 pub fn bm25_score(
     counts: &HashMap<String, usize>,
     doc_len: usize,

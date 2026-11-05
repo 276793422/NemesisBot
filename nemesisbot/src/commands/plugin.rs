@@ -1,4 +1,4 @@
-//! Plugin command — WASM 插件 CLI（W4）。
+//! Plugin command — WASM 插件 CLI。
 //!
 //! CLI 进程是**磁盘 only** 操作者：install/upgrade 走完整九步装配漏斗
 //! （CLI 无审批卡 UI → 必须 `--yes` 显式同意；无病毒扫描引擎 → 第④步
@@ -93,7 +93,7 @@ pub enum PluginAction {
         #[arg(long)]
         name: Option<String>,
     },
-    /// 面板 LLM 总闸（2026-11-01 决策 C）。无参 = 查看状态；`on` / `off`
+    /// 面板 LLM 总闸（决策 C）。无参 = 查看状态；`on` / `off`
     /// = 翻闸（写 `config.plugin.wasm.json`，运行中 gateway 热生效——面板
     /// UI 帧逐次现读，重启保持）。语义 = manifest `[permissions] x-llm`
     /// 声明 × 本总闸双闸；模型槽 `agents.small_model`（未配置回落主模型）。
@@ -113,7 +113,7 @@ fn trust_path(home: &std::path::Path) -> std::path::PathBuf {
         .join("plugin_trust.json")
 }
 
-/// 信任吊销面（2026-09-30 插件体系复查 #10）：--key/--name 解析为库内条目。
+/// 信任吊销面（插件体系复查 #10）：--key/--name 解析为库内条目。
 /// 恰给其一；都给则校验同指一条（防错改同名异钥条目）。
 fn resolve_trust_entry(
     store: &nemesis_security::signature::TrustStore,
@@ -187,7 +187,7 @@ fn cli_installer(
 /// enable/disable 的磁盘形态：`config.plugin.wasm.json` 单一真相源
 /// （nemesis_config::plugin_wasm 原子写）。CLI 进程不装配——只写加载
 /// 开关；运行中的 gateway 重启后按开关装载。开着不存在的载荷 = 幽灵
-/// 配置，诚实拒绝（2026-09-29 交付审查 3.2 延续：CLI 与 WSAPI/重启装载
+/// 配置，诚实拒绝（交付审查 3.2 延续：CLI 与 WSAPI/重启装载
 /// 共用同一真相源，不再旁路）。
 fn set_switch_on_disk(home: &std::path::Path, slug: &str, on: bool) -> Result<()> {
     if !nemesis_plugins_wasm::manifest::valid_slug(slug) {
@@ -365,7 +365,7 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                 anyhow::bail!("非法 slug: {slug}");
             }
             let manager = cli_manager(&home)?;
-            // lockfile 条目（安装状态真相源；无条目 = 未安装）
+            // lockfile 条目（安装状态权威定义；无条目 = 未安装）
             let lock_path = manager.plugins_dir().join("lockfile.json");
             let lf: nemesis_plugins_wasm::install::PluginLockfile =
                 std::fs::read_to_string(&lock_path)
@@ -469,7 +469,7 @@ pub async fn run(local: bool, action: PluginAction) -> Result<()> {
                 nemesis_security::signature::SignatureVerifier::with_persistence(trust_path(&home));
             verifier.trust_store_ref().add_key(&key, &name, lvl);
             // 盘上真相回读（信任库持久化失败不得静默报成功——内存态与磁盘
-            // 分叉时重启即丢；2026-09-29 交付审查）。
+            // 分叉时重启即丢； 交付审查）。
             let persisted = nemesis_security::signature::TrustStore::new(Some(trust_path(&home)))
                 .is_trusted(&key)
                 .1;

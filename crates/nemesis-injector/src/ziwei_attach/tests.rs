@@ -26,15 +26,15 @@ fn param_block_offsets_pinned() {
 
 #[test]
 fn stub_sizes() {
-    // BUG-20261103-342：stub 加 NULL 守卫（test/jz）后扩容——LoadLibraryW
+    // stub 加 NULL 守卫（test/jz）后扩容——LoadLibraryW
     // 失败不再 call NULL 崩目标进程，而是守卫退码 4/5 诚实退出。
     assert_eq!(X64_STUB.len(), 98);
     assert_eq!(X86_STUB.len(), 53);
     // 关键偏移落在缓冲内
     assert!(X64_OFF_PARAM + 8 <= X64_STUB.len());
     assert!(X86_OFF_PARAM + 4 <= X86_STUB.len());
-    // 每个立即数前的 opcode 钉死（movabs rcx=48 B9 / rax=48 B8 / rdx=48 BA；
-    // push=68 / mov eax=B8）——写错偏移 = 注入野写。
+    // 每个立即数前的 opcode 钉死（movabs rcx=48 / rax=48 / rdx=48 BA；
+    // push=68 / mov eax=）——写错偏移 = 注入野写。
     assert_eq!(
         &X64_STUB[X64_OFF_DLLPATH - 2..X64_OFF_DLLPATH],
         &[0x48, 0xB9]
@@ -51,20 +51,20 @@ fn stub_sizes() {
     assert_eq!(X86_STUB[X86_OFF_NAME - 1], 0x68);
     assert_eq!(X86_STUB[X86_OFF_GPA - 1], 0xB8);
     assert_eq!(X86_STUB[X86_OFF_PARAM - 1], 0x68);
-    // x86 GPA 参数序回归锁（2026-10-23 实证根因）：GetProcAddress(HMODULE,
+    // x86 GPA 参数序回归锁（实证根因）：GetProcAddress(HMODULE,
     // LPCSTR) 右到左压栈——name（push imm32）先、hmod（push eax）后。写反
     // = GPA 拿参数块当模块句柄 → 恒 NULL → 远线程 call 0 崩。
     assert_eq!(X86_STUB[0x10], 0x68, "GPA 第二参（name）必须先压");
     assert_eq!(X86_STUB[0x15], 0x50, "GPA 第一参（hmod=eax）必须后压");
 }
 
-/// BUG-20261103-342 红证：两个 stub 都必须带「call 后 test/jz 守卫」，
+/// 红证：两个 stub 都必须带「call 后 test/jz 守卫」，
 /// 守卫失败路径退码 4（LoadLibraryW 失败）/ 5（GetProcAddress 失败）。
 /// 旧 stub 无守卫：LoadLibraryW 失败（路径截断/依赖缺失/被拦截）→
 /// GPA(NULL) → call NULL → 目标进程 0xC0000005 崩溃（第三方进程连带损毁）。
 #[test]
 fn stub_null_guards_and_fail_exit_codes_pinned() {
-    // x64：LoadLibraryW call @0x18 → test rax,rax (48 85 C0) @0x1A → jz @0x1D
+    // x64：LoadLibraryW call @0x18 → test rax,rax (48 85) @0x1A → jz @0x1D
     assert_eq!(
         &X64_STUB[0x1A..0x1D],
         &[0x48, 0x85, 0xC0],
@@ -86,7 +86,7 @@ fn stub_null_guards_and_fail_exit_codes_pinned() {
         &[0x74, 0x1B],
         "x64 GPA 失败 jz → gpa_fail@0x58"
     );
-    // 退码尾巴：mov eax,4 @0x4E / mov eax,5 @0x58（B8 imm32 + add rsp,28h + ret）
+    // 退码尾巴：mov eax,4 @0x4E / mov eax,5 @0x58（imm32 + add rsp,28h + ret）
     assert_eq!(
         &X64_STUB[0x4E..0x53],
         &[0xB8, 0x04, 0x00, 0x00, 0x00],
@@ -100,7 +100,7 @@ fn stub_null_guards_and_fail_exit_codes_pinned() {
     );
     assert_eq!(X64_STUB[0x61], 0xC3, "gpa_fail ret");
     // jz 位移换算自洽：0x1D jz 终点 0x1F + 0x2F = 0x4E；0x3B jz 终点 0x3D + 0x1B = 0x58
-    // x86：LoadLibraryW call @0x0A → test eax,eax (85 C0) @0x0C → jz @0x0E
+    // x86：LoadLibraryW call @0x0A → test eax,eax (85) @0x0C → jz @0x0E
     assert_eq!(
         &X86_STUB[0x0C..0x0E],
         &[0x85, 0xC0],
@@ -159,7 +159,7 @@ fn stub_exit_error_mapping() {
     ));
 }
 
-/// BUG-20261103-342：dll_path UTF-16 单位数 > 259 必须在 attach 前诚实
+/// dll_path UTF-16 单位数 > 259 必须在 attach 前诚实
 /// 拒绝——旧实现 take(259) 静默截断 → 目标内 LoadLibraryW 找不到文件 →
 /// （旧 stub 无守卫）call NULL 崩目标进程。
 #[test]

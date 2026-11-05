@@ -1,9 +1,9 @@
-//! B9-1 内部方法：bulk 分块传输 + hash_tree 全树指纹。
+//! 内部方法：bulk 分块传输 + hash_tree 全树指纹。
 //!
 //! **这些不是 agent 工具**：gateway 同步引擎（`nemesisbot/src/vm_sync.rs`）
 //! 经 `VmSupervisor::internal_call` 专用通道调用——宿主侧 `VM_GUEST_TOOLS`
-//! 子集闸不认识它们，agent 工具面永不暴露（vm_sync 的地基，见 B9 实施计划
-//! §4.2：bulk_write 收分块 tar 流整树落 /workspace、bulk_read 按清单打包
+//! 子集闸不认识它们，agent 工具面永不暴露（vm_sync 的地基，见 实施计划
+//! bulk_write 收分块 tar 流整树落 /workspace、bulk_read 按清单打包
 //! 回传、hash_tree 返回全树/子树 {相对路径→sha256}）。
 //!
 //! 载体纪律：协议是「一行 JSON 请求 / 一行 JSON 响应」，二进制 tar 以
@@ -427,7 +427,7 @@ pub async fn bulk_read(
 
     // 分块账按 tar **实际长度**：头部开销（512B/文件 + 1024B 收尾块）不
     // 在 payload 字节和里——按 packed.bytes 切会在大变更集跨 4MiB 边界时
-    // 少给块，宿主拉到截尾 tar 解包失败（H1 回归锁见 bulk/tests.rs）。
+    // 少给块，宿主拉到截尾 tar 解包失败（回归锁见 bulk/tests.rs）。
     let tar_len = std::fs::metadata(&file)
         .map(|m| m.len())
         .unwrap_or(packed.bytes);
@@ -604,7 +604,7 @@ pub async fn bulk_read_chunk(
 // hash_tree：全树/子树指纹（开工基线 + commit 增量扫描的读取面）
 // ---------------------------------------------------------------------------
 
-/// `{"mode":"dirs"}` → 全部目录 `[{path, mtime_ms}]`（目录 mtime 是 B9-2
+/// `{"mode":"dirs"}` → 全部目录 `[{path, mtime_ms}]`（目录 mtime 是
 /// commit 闸粗筛的信号——Linux 在条目增删改名时更新父目录 mtime）。
 /// `{"mode":"files","subtree"?:"rel","exclude_prefixes"?:[..],"paths"?:[..]}`
 /// → 子树内全部普通文件 `[{path, sha256, size}]`；`paths` 给出时为**定点
@@ -734,7 +734,7 @@ pub async fn hash_tree(val: &serde_json::Value, workspace: &Path) -> Result<Stri
     .map_err(|e| format!("hash_tree 任务失败: {e}"))?
 }
 
-/// `{"paths":[...]}` → 定点删除（B9-2 开工闸宿主删除传播）。
+/// `{"paths":[...]}` → 定点删除（开工闸宿主删除传播）。
 /// `{"deleted": n, "missing": m}`——缺失按 missing 计（幂等：重复删除
 /// 不算错）；其他 IO 错误诚实上抛。路径过 [`safe_entry_rel`] 闸，目录
 /// 不删（工作树是纯文件对账面；整目录删除走 clean 全量重同步）。

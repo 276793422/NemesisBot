@@ -446,7 +446,7 @@ async fn redo_writeback_failure_restores_undo_entry_for_retry() {
 
     al.rewind_to_message(&key, 0, false).await.unwrap();
 
-    // 锁会话 jsonl：sanitize 与落盘侧同源（chat_log:log_path 同构）。
+    // 锁会话 jsonl：sanitize 与落盘侧同源（chat_log::log_path 同构）。
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&key);
     let jsonl = nemesis_path::default_path_manager()
         .sessions_log_dir()
@@ -1024,7 +1024,7 @@ async fn e3_gate_releases_session_after_inner_error() {
 /// 回归锁：rewind/redo 的会话 jsonl 重写窗口（快照读取 → 截断写回）内，
 /// busy 分支的 D-2 回绝留痕（user 行 + 回执行）必须跳过落盘——此刻追加
 /// 的行会被截断按陈旧快照整文件重写静默吞掉（不在 undo 条目里，redo
-/// 无法恢复）。窗口外留痕行为不变（负对照臂）。AgentLoop:new 默认
+/// 无法恢复）。窗口外留痕行为不变（负对照臂）。AgentLoop::new 默认
 /// Reject 模式，busy 分支直达 persist_busy_refusal。
 #[tokio::test]
 async fn e3_busy_refusal_rows_skipped_inside_rewrite_window() {

@@ -1,7 +1,7 @@
 //! （bot 占用扫描目标项目 `.git\objects\pack` 致项目无法删除）
 //! 回归锁。
 //!
-//! 根因（已确认）：旧实现 `GitBackend.repo`（`Mutex<git2:Repository>`）随
+//! 根因（已确认）：旧实现 `GitBackend.repo`（`Mutex<git2::Repository>`）随
 //! CheckpointStore 常驻 gateway 进程；影子库 `objects/info/alternates` 指向
 //! 目标项目 objects → libgit2 首次 `begin`（index.add_all 全工作区扫描）沿
 //! alternates mmap 目标项目 pack 数据文件，句柄直到 Repository drop 才释放。

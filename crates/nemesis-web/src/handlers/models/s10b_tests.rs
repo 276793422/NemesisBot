@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): models handler — the only
+//! (quality-hardening goal 冲刺, web): models handler — the only
 //! remaining non-structural uncovered lines are the DISABLED typed-save
 //! helper `save_config` (kept per the code-change discipline; exercised here
 //! so its behavior stays pinned if it is ever revived). The other TSV gaps

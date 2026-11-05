@@ -1,11 +1,11 @@
-//! U10 统一执行世界 —— 「执行环境」一等抽象（writable_roots + env 清洗 + spawn 语义）。
+//! 统一执行世界 —— 「执行环境」一等抽象（writable_roots + env 清洗 + spawn 语义）。
 //!
 //! ## 为什么需要它
 //!
 //! Sandboxie 执行分离（Layer 1/2）此前只罩 agent 工具层（MOVE_TOOLS 经
 //! `RemoteExecutorTool` → `ExecutorChannel`）。工作流引擎的控制面 IO
 //! （定义/执行日志/checkpoint 写盘）与无 registry 的 script 直 spawn 路径
-//! 完全绕过该层。U10 把「这段代码跑在哪个环境」抽成一等 trait，让
+//! 完全绕过该层。 把「这段代码跑在哪个环境」抽成一等 trait，让
 //! MOVE_TOOLS、workflow script/tool 节点、引擎控制面 IO 共享同一套：
 //!
 //! - **writable_roots**：控制面写守卫。引擎的写盘点（定义 CRUD、执行
@@ -35,7 +35,7 @@
 //! 两轴**正交**：
 //! - `OperationType`（nemesis-security，`tool_to_operation`）= 操作**风险
 //!   分类**，喂 8 层安全管线；未来插件 `ToolInfo.operation_type`
-//!   （`docs/PLAN/2026-07-10_tool-plugin-system.md` §3.1/§3.5）声明的
+//!   （`tool-plugin-system`）声明的
 //!   也是这一轴（前置读声明，未声明默认 CRITICAL）。
 //! - `ExecutionWorld`（本模块）= 执行**位置/环境**（直跑 vs 子进程 vs
 //!   盒内 + 写根 + env）。
@@ -51,7 +51,7 @@
 //! - `nemesisbot`：`ExecutorWorld` 桥（包 ExecutorChannel）+ gateway/CLI
 //!   装配。
 //!
-//! U11（Linux/mac 用户态沙盒）的 `SandboxBackend` trait 将挂载在本 crate，
+//! （Linux/mac 用户态沙盒）的 `SandboxBackend` trait 将挂载在本 crate，
 //! 届时 `SpawnSemantics` 的盒内分支按平台后端解析。
 
 use std::collections::HashMap;
@@ -126,7 +126,7 @@ impl ExecOutcome {
     }
 }
 
-/// 统一执行世界（U10 一等抽象）。
+/// 统一执行世界（一等抽象）。
 ///
 /// 见模块文档的轴定义与两轴正交说明。默认 `check_writable` 用
 /// [`path_within_roots`] 语义（component 前缀比较 + best-effort canonicalize）。
@@ -174,7 +174,7 @@ pub trait ExecutionWorld: Send + Sync {
 ///
 /// Windows 坑（实测）：`canonicalize` 返回 `\\?\C:\...` verbatim 前缀路径，
 /// 词法路径没有该前缀 → 直接 starts_with 永假（clamd client.rs 同款坑）。
-/// 双方统一走 [`canonicalize_for_compare`]（nemesis-path 唯一真相源）后再比。
+/// 双方统一走 [`canonicalize_for_compare`]（nemesis-path 唯一依据）后再比。
 pub fn path_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
     let canon = canonicalize_for_compare(path);
     roots.iter().any(|root| {
@@ -184,7 +184,7 @@ pub fn path_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
 }
 
 /// 执行体运输层内部变量全集——本进程直 spawn 前必须剥掉（见模块文档「env
-/// 清洗」）。BUG-20261104-388：此前只列 ROLE/WORKSPACE/PIPE 三键，漏掉
+/// 清洗」）。：此前只列 ROLE/WORKSPACE/PIPE 三键，漏掉
 /// SANDBOX/HOME/RESTRICT/REEXEC/EXTRA_ROOTS/AGENT_ID/LEASE/BACKEND/CONSOLE
 /// 九个后来陆续加入的运输层键——脚本继承后跑 `nemesisbot` CLI 会被误路由
 /// 进角色 worker（main.rs 短路加 args 条件是根修，这里是纵深：workflow
@@ -251,8 +251,8 @@ pub async fn guarded_direct_spawn(
 
     let mut cmd = tokio::process::Command::new(&job.program);
     cmd.args(&job.args);
-    // BUG-20261104-388：剥除面从手写三键改为遍历 EXECUTOR_INTERNAL_ENV
-    // 全表——表是唯一真相源，spawn 侧不再自带第二份清单（漏键漂移根除）。
+    // 剥除面从手写三键改为遍历 EXECUTOR_INTERNAL_ENV
+    // 全表——表是唯一依据，spawn 侧不再自带第二份清单（漏键漂移根除）。
     // 其余 env 照常继承（env_clear 会误清 PATH 等运行底座，不可用）。
     for k in EXECUTOR_INTERNAL_ENV {
         cmd.env_remove(k);
@@ -278,7 +278,7 @@ pub async fn guarded_direct_spawn(
         && let Some(stdin) = child.stdin.take()
     {
         use tokio::io::AsyncWriteExt;
-        // BUG-20261103-337 同族（BUG-20261102-312 修复模式）：stdin 写放
+        // 同族（修复模式）：stdin 写放
         // 独立任务——payload 超管道缓冲且 spawned 进程不读 stdin 时，
         // inline write_all 会阻塞到对方退出，下方 timeout 只包
         // wait_with_output 管不到这里，等于超时保护整段失效。独立任务

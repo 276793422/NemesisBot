@@ -101,12 +101,12 @@ impl WorkspaceStateManager {
 
     /// Atomically update the last channel and save.
     pub fn set_last_channel(&self, channel: &str) -> Result<(), String> {
-        // BUG-20261103-335：变异+快照+落盘全程同一把写锁——旧形态变异锁
+        // 变异+快照+落盘全程同一把写锁——旧形态变异锁
         // 释放后 save_atomic 重新取读锁快照，「快照→rename」对无闸：两写
         // 并发（主 loop max_concurrent_turns 生产默认 8，并发 turn 各自
         // record_last_channel）时旧快照的 rename 可晚于新快照落盘
         // （last-rename-wins = 磁盘丢更新，重启后 last_channel 回退）。
-        // BUG-20261030-213 同族（session 侧已修 save_gate，本位点横向扫漏）。
+        // 同族（session 侧已修 save_gate，本位点横向扫漏）。
         // 状态文件极小，写锁持穿 fsync 的争用代价可忽略。
         let mut state = self.state.write();
         state.last_channel = channel.to_string();
@@ -116,7 +116,7 @@ impl WorkspaceStateManager {
 
     /// Atomically update the last chat ID and save.
     pub fn set_last_chat_id(&self, chat_id: &str) -> Result<(), String> {
-        // BUG-20261103-335：同 set_last_channel——变异+快照+落盘同一把写锁。
+        // 同 set_last_channel——变异+快照+落盘同一把写锁。
         let mut state = self.state.write();
         state.last_chat_id = chat_id.to_string();
         state.timestamp = Local::now();
@@ -144,14 +144,14 @@ impl WorkspaceStateManager {
     }
 
     /// 序列化给定状态快照并原子落盘。调用方必须**已持 state 写锁**且覆盖
-    /// 「变异→本函数落盘」整段——锁跨度分离即复现 BUG-20261103-335 竞态
+    /// 「变异→本函数落盘」整段——锁跨度分离即复现 竞态
     /// （旧快照 rename 晚落覆盖新值）。测试钩子停顿也在锁内（并发方在写锁
     /// 上排队，无法插入交错窗口）。
     fn persist(&self, state: &WorkspaceState) -> Result<(), String> {
         let data =
             serde_json::to_string_pretty(state).map_err(|e| format!("marshal state: {}", e))?;
         // 测试钩子：确定性制造「快照后、落盘前」的并发窗口（仅 test 构建；
-        // 一次性——首个保存消费后归零）。BUG-20261103-335 红证/回归锁用。
+        // 一次性——首个保存消费后归零）。 红证/回归锁用。
         #[cfg(test)]
         {
             let d = self
@@ -207,8 +207,8 @@ impl WorkspaceStateManager {
 
 /// Check if a channel name is an internal channel.
 /// Mirrors Go `constants.IsInternalChannel`.
-/// 委托仓内单一真相源 `nemesis_types::is_internal_channel`
-/// （BUG-20261025-46 收编，本文件原为手抄常量副本）。
+/// 委托仓内统一定义 `nemesis_types::is_internal_channel`
+/// （收编，本文件原为手抄常量副本）。
 pub fn is_internal_channel(channel: &str) -> bool {
     nemesis_types::is_internal_channel(channel)
 }

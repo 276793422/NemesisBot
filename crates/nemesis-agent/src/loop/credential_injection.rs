@@ -1,7 +1,7 @@
 //! 凭据别名最后一刻注入（vault 计划 /，2026-09-22 计划）。
 //!
 //! 通用机制原则：本模块不认识任何业务名词（不知道"webhook"、"api_key"是
-//! 什么）——工具通过 [`crate:loop:Tool:credential_arg_keys`] **声明**自己
+//! 什么）——工具通过 [`crate::loop:Tool::credential_arg_keys`] **声明**自己
 //! 参数里承载凭据别名的槽位；机制只在 dispatch 瀑布最内层、`execute` 调用
 //! 前的一瞬，把槽位里的 `vault:<alias>` 改写成真值（copy 语义）。
 //!
@@ -11,7 +11,7 @@
 //! 上游全部表面天然只见别名；改写后的真值只活在 `execute` 的入参里。
 //!
 //! 槽位语义：值以 `vault:` 开头 → 经全局解析器现查（与 provider api_key
-//! 同链路，见 nemesis_config:vault_ref）；非 vault 值（模型传的字面量）
+//! 同链路，见 nemesis_config::vault_ref）；非 vault 值（模型传的字面量）
 //! 原样通过（向后兼容，工具自行决定语义）。解析失败 → 结构化错误
 //! [`CredentialInjectionError`]（Display = 人类可读错误串，fail loud），
 //! 调用方可选接凭据发卡恢复 [`try_card_recovery`]（2026-11-02）：
@@ -206,7 +206,7 @@ fn resolve_slot_value(field: &str, slot: &mut String) -> Result<(), CredentialIn
 }
 
 // ---------------------------------------------------------------------------
-// ：发卡恢复 + 防滥用占位
+// 发卡恢复 + 防滥用占位
 // ---------------------------------------------------------------------------
 
 /// 发卡防滥用占位表：`(session_key, alias)` → 占位时刻。同一会话对同一

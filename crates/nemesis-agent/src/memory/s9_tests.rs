@@ -44,7 +44,7 @@ fn summarize_without_system_prompt_hits_noop_arm_and_logs() {
     assert!(!mem.get_context().is_empty());
 }
 
-/// MemoryStore:new 的 info! 参数行（195）。
+/// MemoryStore::new 的 info! 参数行（195）。
 #[test]
 fn memory_store_new_logs_info_line() {
     // 名字承诺 logs_info_line——此前只装 sink 丢弃

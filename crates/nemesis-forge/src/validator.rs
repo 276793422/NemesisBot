@@ -49,7 +49,7 @@ impl StaticValidator {
             ArtifactKind::Mcp => self.validate_mcp(content, &mut result),
         }
 
-        // Common security checks — apply to ALL artifact kinds (F-S1): dangerous
+        // Common security checks — apply to ALL artifact kinds (F-): dangerous
         // commands were previously only checked for Scripts, so a Skill with
         // `rm -rf /` / `curl|bash` passed and got deployed as an agent instruction.
         self.check_security(content, &mut result);
@@ -104,7 +104,7 @@ impl StaticValidator {
     }
 
     fn check_security(&self, content: &str, result: &mut StaticValidationResult) {
-        // Check for hardcoded secrets（表单一真相源 = hardcoded_secret_errors）
+        // Check for hardcoded secrets（表单一权威 = hardcoded_secret_errors）
         for desc in self.hardcoded_secret_errors(content) {
             result.stage.errors.push(desc);
         }
@@ -112,9 +112,9 @@ impl StaticValidator {
 
     /// Check for dangerous shell patterns. Applied to ALL artifact kinds (not
     /// just Scripts) so a learned/generated Skill can't deploy `rm -rf /` /
-    /// `curl|bash` as an agent instruction. (F-S1)
+    /// `curl|bash` as an agent instruction. (F-)
     fn check_dangerous_commands(&self, content: &str, result: &mut StaticValidationResult) {
-        // 表单一真相源 = dangerous_command_errors
+        // 表单一权威 = dangerous_command_errors
         for desc in self.dangerous_command_errors(content) {
             result.stage.errors.push(desc);
         }
@@ -124,7 +124,7 @@ impl StaticValidator {
     /// ignoring quality checks (length, frontmatter). Used as the write gate
     /// for skill/script/mcp creation so a short-but-safe skill isn't rejected,
     /// while dangerous / secret-laden content is blocked before it is written
-    /// to disk and becomes an agent instruction. (F-S1)
+    /// to disk and becomes an agent instruction. (F-)
     pub fn security_errors(&self, content: &str) -> Vec<String> {
         let mut errors = self.hardcoded_secret_errors(content);
         errors.extend(self.dangerous_command_errors(content));
@@ -152,7 +152,7 @@ impl StaticValidator {
 
     /// Dangerous shell pattern errors (`rm -rf /` / `curl|bash`). pub(crate)
     /// so `pipeline::validate_static`（learning_engine refine 循环的唯一静态
-    /// 闸）能只取危险命令面、不与既有密钥子串检查重复计错。(F-S1)
+    /// 闸）能只取危险命令面、不与既有密钥子串检查重复计错。(F-)
     pub(crate) fn dangerous_command_errors(&self, content: &str) -> Vec<String> {
         static DANGEROUS: LazyLock<Vec<(Regex, &str)>> = LazyLock::new(|| {
             vec![

@@ -1,4 +1,4 @@
-//! 反向桥 HTTP/WS handlers（一期批次一）。
+//! 反向桥 HTTP/WS handlers（一期）。
 //!
 //! 路由（WebServer build_router 在 `set_relay` 注入后挂载）：
 //! - `/bridge`：桥设备接入 WS 端点（hello 帧 token 校验，token 不走 URL query）
@@ -9,7 +9,7 @@
 //!   服务端自处理）
 //! - `/relay` + `/relay/login`：极简状态页（ws token 门：未通过不可见
 //!   任何设备信息）
-//! - `/api/relay/status`：设备列表 JSON（状态页与批次三【中继通道】页同源）
+//! - `/api/relay/status`：设备列表 JSON（状态页与【中继通道】页同源）
 //!
 //! 帧语义见 `protocol.rs`；状态机见 `server.rs`；WS 帧转换见 `ws_codec.rs`。
 
@@ -251,7 +251,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
                                 relay.close_conn(conn_id, &reason);
                             }
                             BridgeFrame::ClusterRpc { payload } => {
-                                // 二期批次六：上行集群 RPC 帧 → 宿主出口
+                                // 二期：上行集群 RPC 帧 → 宿主出口
                                 // （hub 形态：喂本地 RPC 链，响应封帧回上行）。
                                 // 未装配 sink（`--relay` / 一期形态）→ 维持
                                 // 一期「WARN 忽略」语义。
@@ -437,7 +437,7 @@ async fn handle_http_tunnel(relay: Arc<RelayServer>, node_id: String, req: Reque
     let chunked = is_chunked(&resp_headers);
     // 非 chunked 响应的 body 收口长度：设备侧不再半关闭写半（
     // 真机实测 shutdown 使 hyper 断连），本机连接 keep-alive 存续 → EOF
-    // 兜底不可依赖。有 content-length 按长度收口；无长度头（罕见）仍留
+    // 兜底不可依赖。有 content-length 按长度收口；无长度头（罕）仍留
     // EOF 兜底（设备侧读到本机关连接才发空 fin）。
     let content_len: Option<u64> = resp_headers
         .iter()
@@ -1118,7 +1118,7 @@ pub async fn handle_relay_login(relay: Arc<RelayServer>, req: Request) -> Respon
     resp
 }
 
-/// GET /api/relay/status：设备列表 JSON（状态页轮询 + 批次三通道页同源消费）。
+/// GET /api/relay/status：设备列表 JSON（状态页轮询 + 通道页同源消费）。
 pub async fn handle_relay_api_status(relay: Arc<RelayServer>, req: Request) -> Response {
     if !relay.is_gate_open() {
         return (StatusCode::NOT_FOUND, "Not Found").into_response();
@@ -1135,7 +1135,7 @@ pub async fn handle_relay_api_status(relay: Arc<RelayServer>, req: Request) -> R
     .into_response()
 }
 
-// 批次三：通道页【中继通道】HTTP 端点（dashboard 语义——与 /api/status 同
+// 通道页【中继通道】HTTP 端点（dashboard 语义——与 /api/status 同
 // 信任边界：本机/内网 dashboard 用户；不走状态页的 admin cookie 门，那是
 // 「知道 ws token」的带外通道，两者受众不同）。
 

@@ -14,7 +14,7 @@ pub const DEFAULT_HOME_DIR: &str = ".nemesisbot";
 
 /// Global local mode flag.
 ///
-/// 私有 AtomicBool（2026-09-22 审查 SAFE-001：原 `pub static mut` 读写全靠
+/// 私有 AtomicBool（审查 SAFE-001：原 `pub static mut` 读写全靠
 /// unsafe 且暴露可变本体）。唯一访问口是 [`set_local_mode`]/[`is_local_mode`]；
 /// 单 bool 标志无复合不变量，Relaxed 序足够。进程级状态：并发测试仍须持有
 /// ENV_LOCK（见 paths/tests.rs 契约注释）。
@@ -252,7 +252,7 @@ pub fn resolve_home_dir() -> Result<PathBuf, String> {
 /// （无斜杠）按字面量处理——与 `config::expand_tilde`/`migrate` 同口径。
 /// 旧守卫 `starts_with('~') && len>1` 配 `&path[2..]` 在 `~<多字节字符>`（如
 /// `~中`，NEMESISBOT_HOME 环境变量可达）时字节 2 落续字节上直接 panic。
-/// BUG-20261102-319：`~\` 反斜杠形态（Windows 手写惯例）与 `~/` 同判。
+/// `~\` 反斜杠形态（Windows 手写惯例）与 `~/` 同判。
 pub fn expand_home(path: &str) -> PathBuf {
     if (path.starts_with("~/") || path.starts_with("~\\") || path == "~")
         && let Some(home) = dirs::home_dir()
@@ -265,7 +265,7 @@ pub fn expand_home(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Check if local mode should be auto-detected (if .nemesisbot exists in cwd).
+/// Check if local mode should be auto-detected (if.nemesisbot exists in cwd).
 pub fn detect_local() -> bool {
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     cwd.join(DEFAULT_HOME_DIR).is_dir()
@@ -281,7 +281,7 @@ pub fn is_local_mode() -> bool {
     LOCAL_MODE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// `<workspace>/config` —— 子系统配置区（config.*.json；用户 2026-08-28
+/// `<workspace>/config` —— 子系统配置区（config.*.json；用户
 /// 布局指令：子系统配置归 workspace/config，禁止丢 home 根）。
 pub fn workspace_config_dir(workspace: &Path) -> PathBuf {
     workspace.join("config")
@@ -303,38 +303,38 @@ pub fn resolve_mcp_config_path_in_workspace(workspace: &Path) -> PathBuf {
 }
 
 /// `<workspace>/config/approval_rules.json` —— 审批 pattern 记忆规则表
-/// （F3：auditor 自动放行查询 + M7 审批卡「总是允许」写入 + CLI/WSAPI
-/// 管理，单一真相源）。
+/// （auditor 自动放行查询 + 审批卡「总是允许」写入 + CLI/WSAPI
+/// 管理，统一定义）。
 pub fn resolve_approval_rules_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("approval_rules.json")
 }
 
-/// `<workspace>/config/cors.json` —— CORS 配置（2026-08-29 收编：原游离在
+/// `<workspace>/config/cors.json` —— CORS 配置（收编：原游离在
 /// `<home>/config/cors.json`，同 hooks.json 为路径大迁移漏网项）。
 pub fn resolve_cors_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("cors.json")
 }
 
-/// `<workspace>/config/projects.json` —— 项目注册表（L6++ Phase 1：对话/
-/// 项目双分组；注册不拥有——删项目只解除分组，单一真相源）。
+/// `<workspace>/config/projects.json` —— 项目注册表（对话/
+/// 项目双分组；注册不拥有——删项目只解除分组，统一定义）。
 pub fn resolve_projects_registry_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("projects.json")
 }
 
-/// `<workspace>/logs/gateway/` —— 网关进程每日滚动日志目录（2026-08-30 统一
+/// `<workspace>/logs/gateway/` —— 网关进程每日滚动日志目录（统一
 /// 收编：`nemesisbot.YYYY-MM-DD` 产物原先散在 `logs/` 根，与 security_logs/
 /// cluster_logs/request_logs 等子目录混放）。
 pub fn resolve_gateway_logs_dir_in_workspace(workspace: &Path) -> PathBuf {
     logs_dir_in_workspace(workspace).join("gateway")
 }
 
-/// `<workspace>/logs/checkpoints/` —— 编辑安全网 turn 快照（2026-08-30 统一
+/// `<workspace>/logs/checkpoints/` —— 编辑安全网 turn 快照（统一
 /// 收编：原 `.checkpoints/` 散放 workspace 根，记录型数据归 logs 家族）。
 pub fn resolve_checkpoints_dir_in_workspace(workspace: &Path) -> PathBuf {
     logs_dir_in_workspace(workspace).join("checkpoints")
 }
 
-/// `<workspace>/config/hooks.json` —— 钩子方言配置（2026-08-29 收编：
+/// `<workspace>/config/hooks.json` —— 钩子方言配置（收编：
 /// 原先游离在 `<home>/config/hooks.json`，为 08-28 路径大迁移的漏网项；
 /// 读取方经 `migrate_legacy_home_hooks_config` 一次性迁移）。
 pub fn resolve_hooks_config_path_in_workspace(workspace: &Path) -> PathBuf {
@@ -358,13 +358,13 @@ pub fn resolve_cluster_config_path_in_workspace(workspace: &Path) -> PathBuf {
 }
 
 /// `<workspace>/config/config.quic.json` —— QUIC 中继配置（服务端 relay 段 +
-/// 客户端 client 段；QUIC 的配置不丢在集群里，2026-10-23 解耦；单一真相源）。
+/// 客户端 client 段；QUIC 的配置不丢在集群里， 解耦；统一定义）。
 pub fn resolve_quic_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.quic.json")
 }
 
-/// `<workspace>/config/vault.enc` —— 凭据 vault 加密存储（P0 安全升级，
-/// `docs/PLAN/2026-09-22_credential-vault-and-risk-limits.md`；单一真相源）。
+/// `<workspace>/config/vault.enc` —— 凭据 vault 加密存储（安全升级，
+/// `credential-vault-and-risk-limits`；统一定义）。
 pub fn resolve_vault_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("vault.enc")
 }
@@ -385,7 +385,7 @@ pub fn resolve_chat_config_path_in_workspace(workspace: &Path) -> PathBuf {
 }
 
 // =======================================================================
-// workspace/data 派生数据区（2026-08-28 布局确立）
+// workspace/data 派生数据区（布局确立）
 // =======================================================================
 
 /// `<home>/workspace/data` —— 运行时派生数据统一目录（nemesisbot_data.db、
@@ -404,12 +404,12 @@ pub fn models_catalog_cache_path(home_dir: &Path) -> PathBuf {
 
 /// board 讨论唤醒水位快照：`<home>/workspace/data/board_wake_state.json`。
 /// 读写方：gateway worker 分支（board_bus WorkerWakeState::load_or_create，
-/// G8：worker 重启接续水位，历史 @ 不再全量重放）。
+/// worker 重启接续水位，历史 @ 不再全量重放）。
 pub fn board_wake_state_path(home_dir: &Path) -> PathBuf {
     workspace_data_dir(home_dir).join("board_wake_state.json")
 }
 
-/// 旧版缓存位置（2026-08-28 前直接丢 home 根；保留仅供读时迁移与测试播种）。
+/// 旧版缓存位置（前直接丢 home 根；保留仅供读时迁移与测试播种）。
 pub fn legacy_models_catalog_cache_path(home_dir: &Path) -> PathBuf {
     home_dir.join("models_catalog.json")
 }
@@ -429,12 +429,12 @@ pub fn migrate_legacy_models_catalog_cache(home_dir: &Path) {
 }
 
 // =======================================================================
-// workspace 布局区（2026-08-28 路径唯一真相源扩展）
+// workspace 布局区（路径唯一依据扩展）
 // =======================================================================
 //
 // 背景：全仓审计发现 peers.toml / state.toml / rpc_cache / logs/* /
 // sessions / state 等路径在 3+ crate 里各自 join（跨 crate 读/写对曾真实
-// 分叉过，2026-08-24 L2 抓到 catalog 读写路径分叉）。本区把 workspace
+// 分叉过， 抓到 catalog 读写路径分叉）。本区把 workspace
 // 布局的每个子目录收敛为唯一拼接点：改布局只改这里，消费方禁止各自拼。
 
 /// `<home>/workspace` —— 工作空间根。
@@ -442,9 +442,9 @@ pub fn workspace_dir(home_dir: &Path) -> PathBuf {
     home_dir.join("workspace")
 }
 
-// --- uploads 区（T7 Telegram 图片落盘 / T8 Web 上传端点共享的暂存目录） ---
+// --- uploads 区（Telegram 图片落盘 / Web 上传端点共享的暂存目录） ---
 
-/// `<workspace>/uploads` —— 入站媒体暂存目录（多模态 goal 2026-09-03）。
+/// `<workspace>/uploads` —— 入站媒体暂存目录（多模态 goal）。
 /// temp 语义：TTL 7 天周期清扫（gateway 启动 + 周期，照 task_result_store
 /// 惯例）；用户点名路径 / 历史引用不受清扫影响（引用即路径，文件被清扫后
 /// 水合降级为 `[图片已失效]` 占位）。
@@ -485,13 +485,13 @@ pub fn resolve_cluster_results_dir_in_workspace(workspace: &Path) -> PathBuf {
 // --- 统一任务层（tasks.db；写方 nemesis-taskstore / nemesis-cluster / gateway 审批台账） ---
 
 /// `<workspace>/tasks.db` —— 统一任务编排层单库（runs/attempts/approvals/
-/// deliveries 四表；集群任务真相源 + 审批台账）。路径唯一真相源挂此，
+/// deliveries 四表；集群任务真相源 + 审批台账）。路径唯一依据挂此，
 /// 禁止消费方各自 `workspace.join("tasks.db")`。
 pub fn resolve_tasks_db_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace.join("tasks.db")
 }
 
-// --- Agent 持久实体区（P2：agents 记录在 tasks.db；home/记忆命名空间在此） ---
+// --- Agent 持久实体区（agents 记录在 tasks.db；home/记忆命名空间在此） ---
 
 /// `<workspace>/agents` —— Agent 实体根目录（每 agent 一个 `<id>/` 子目录，
 /// home 物化在 `<id>/home/`）。`agent_id` 必须是受控生成的 uuid（创建点
@@ -510,7 +510,7 @@ pub fn resolve_agent_home_in_workspace(workspace: &Path, agent_id: &str) -> Path
 }
 
 /// `<workspace>/agents/<id>/home/browser-profile` —— Agent 浏览器身份目录
-/// （P3 T6：常驻执行体 spawn 时经 `NEMESISBOT_BROWSER_PROFILE` 注入，
+/// （常驻执行体 spawn 时经 `NEMESISBOT_BROWSER_PROFILE` 注入，
 /// MCP browser 工具消费为 Chromium `--user-data-dir`——登录态/cookie 跨
 /// 任务与跨执行体重建保持，宿主与 agent 间、agent 相互间身份隔离）。
 pub fn resolve_agent_browser_profile_in_workspace(workspace: &Path, agent_id: &str) -> PathBuf {
@@ -532,15 +532,15 @@ pub fn resolve_board_backups_dir_in_workspace(workspace: &Path) -> PathBuf {
     workspace.join("backups")
 }
 
-/// `<workspace>/board/assets` —— 看板任务资产实体目录（Swarm M2 §4.2：
+/// `<workspace>/board/assets` —— 看板任务资产实体目录（Swarm：
 /// `assets/<ref>` 落盘实体、asset 表存索引；不设 TTL，随所属 issue 删除
-/// 级联清理）。写方 gateway（登记/下载端点）；§5.4 下载端点的白名单根。
+/// 级联清理）。写方 gateway（登记/下载端点）； 下载端点的白名单根。
 pub fn resolve_board_assets_dir_in_workspace(workspace: &Path) -> PathBuf {
     workspace.join("board").join("assets")
 }
 
 /// `<workspace>/config/asset_secret.key` —— 本节点资产下载 HMAC 密钥
-/// （Swarm M3 §5.4；64 hex = 32 字节熵，load-or-create，损坏 loud 不重置）。
+/// （Swarm；64 hex = 32 字节熵，load-or-create，损坏 loud 不重置）。
 pub fn resolve_asset_secret_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("asset_secret.key")
 }
@@ -610,7 +610,7 @@ pub fn resolve_boundary_events_dir_in_workspace(workspace: &Path) -> PathBuf {
     logs_dir_in_workspace(workspace).join("boundary")
 }
 
-/// `<workspace>/logs/trash/sessions` —— 会话回收站（2026-10-30）。每个子
+/// `<workspace>/logs/trash/sessions` —— 会话回收站。每个子
 /// 目录 = 一个被删除的会话（`{deleted_at_ms}_{sanitize(key)}` 命名，内含
 /// chat/boundary/meta 三件套 + trash.json 清单）。logs 根之下 = 自动进
 /// checkpoint 忽略表（`WORKSPACE_IGNORED_DIRS` 含 `logs`），logs sweeper
@@ -629,11 +629,11 @@ pub fn home_logs_dir(home_dir: &Path) -> PathBuf {
     home_dir.join("logs")
 }
 
-/// `<home>/logs/spill` —— 【已废弃位置，2026-08-31 迁回 workspace】LLM 请求
-/// 外溢目录的旧位置。U4 设计（docs/PLAN 2026-08-21 更新清单 U4 条目，本地档案）
+/// `<home>/logs/spill` —— 【已废弃位置， 迁回 workspace】LLM 请求
+/// 外溢目录的旧位置。 设计（docs/PLAN 更新清单 条目，本地档案）
 /// 指定 `<workspace>/logs/spill`：spill 定位器文件必须落在
 /// `restrict_to_workspace` 限制范围内，agent 的 file 工具才读得到全文；
-/// 实现期曾漂移到 home 根，且 2026-08-28 路径收敛只验证了内部一致性、
+/// 实现期曾漂移到 home 根，且 路径收敛只验证了内部一致性、
 /// 未对照设计规格，把漂移固化了下来。新代码一律用
 /// [`resolve_spill_dir_in_workspace`]；本函数保留供历史 spill 数据迁移
 /// （把旧 `<home>/logs/spill` 内容搬进新根）参考。
@@ -642,7 +642,7 @@ pub fn resolve_spill_dir_for_home(home_dir: &Path) -> PathBuf {
 }
 
 /// `<workspace>/logs/spill` —— LLM 请求外溢目录（agent_factory 写 / Logs 页
-/// 读）。U4 设计指定位置：处于 restrict_to_workspace 限制范围内，agent 可
+/// 读）。 设计指定位置：处于 restrict_to_workspace 限制范围内，agent 可
 /// 回读定位器指向的全文。
 pub fn resolve_spill_dir_in_workspace(workspace: &Path) -> PathBuf {
     logs_dir_in_workspace(workspace).join("spill")
@@ -708,7 +708,7 @@ impl MinimalConfig {
         if ws.is_empty() {
             return None;
         }
-        // BUG-20261102-319：`~\` 反斜杠形态与 `~/` 同判（展开）——本函数
+        // `~\` 反斜杠形态与 `~/` 同判（展开）——本函数
         // 是 MCP/security/skills/scanner 四个 resolve_*_config_path 的
         // workspace 来源，字面量穿透会把配置路径落到 cwd 下 `~` 目录。
         if (ws.starts_with("~/") || ws.starts_with("~\\"))
@@ -739,7 +739,7 @@ pub fn resolve_config_path() -> PathBuf {
 }
 
 /// Fallback home directory when `resolve_home_dir()` fails.
-/// Exposed for testability；BUG-20261102-316 起主 crate `common::resolve_home`
+/// Exposed for testability； 起主 crate `common::resolve_home`
 /// 委托 [`resolve_home_dir`] 时同款兜底（home 解析单一真相源的组成部分）。
 pub fn fallback_home_dir(_: String) -> PathBuf {
     dirs::home_dir()
@@ -836,7 +836,7 @@ pub fn resolve_scanner_config_path() -> PathBuf {
 /// 回退保留输入的原始表示，而存在的对侧（root/workspace）被 canonicalize
 /// 成卷上真实表示——Windows 上路径含 8.3 短名（如 `RUNNER~1`，用户名
 /// \> 8 字符的机器常态）或大小写不同时，component 前缀/相等比较恒 false。
-/// 2026-09-01 CI runner（`C:\Users\RUNNER~1\...`）首次在 nemesis-sandbox
+/// CI runner（`C:\Users\RUNNER~1\...`）首次在 nemesis-sandbox
 /// 写守卫暴露；本函数是全库统一的比较规范化入口（sandbox 写守卫 /
 /// security ABAC workspace 校验 / forge 路径守卫 / agent touch 链比较）。
 ///
@@ -900,17 +900,17 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     out
 }
 
-// --- Workspace 遍历忽略表（单一真相源） ---
+// --- Workspace 遍历忽略表 ---
 //
-// 消费方：nemesis-agent `fs_watcher`（watch 事件过滤，I1）+ nemesis-web
-// `fs` handler（@补全目录遍历，I2）。两处此前/原本会各写一份并漂移，收敛
+// 消费方：nemesis-agent `fs_watcher`（watch 事件过滤）+ nemesis-web
+// `fs` handler（@补全目录遍历）。两处此前/原本会各写一份并漂移，收敛
 // 到 nemesis-path（双方共同依赖的底层 crate）。
 
 /// 目录/组件名忽略：workspace 相对路径任一组件命中即整棵子树忽略。
 /// 覆盖 VCS/构建产物与运行时属主子树（会话流水、影子 git、rpc_cache、
 /// 看板 db、catalog 派生数据、热重载配置、sandboxie runtime、图像生成
-/// 产物）。M9（2026-10-27 整改批次五）补全常见构建/虚拟环境产物目录。
-/// BUG-20261028-105 补 `images`（M4 generate_image 落点，2026-09-29 上线
+/// 产物）。补全常见构建/虚拟环境产物目录。
+/// 补 `images`（generate_image 落点， 上线
 /// 时漏更——watch 把 agent 刚生成的图当外部修改注入上下文 + @补全把
 /// 二进制 PNG 当项目文件列出）。
 pub const WORKSPACE_IGNORED_DIRS: &[&str] = &[

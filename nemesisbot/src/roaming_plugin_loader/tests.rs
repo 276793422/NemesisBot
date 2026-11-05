@@ -50,7 +50,7 @@ fn load_absent_is_absent_not_error() {
 
 #[test]
 fn load_disabled_by_switch_short_circuits_before_file_probe() {
-    // 名册开关闸（BUG-20261025-21 同族义务）：停用 = DisabledBySwitch，
+    // 名册开关闸（同族义务）：停用 = DisabledBySwitch，
     // 且在文件探测之前短路——文件在不在无关（CI 无 DLL 环境恒可测）。
     let cfg = tempfile::tempdir().unwrap();
     nemesis_config::plugins_native::set_enabled(

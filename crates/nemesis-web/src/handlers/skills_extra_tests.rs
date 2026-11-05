@@ -1149,7 +1149,7 @@ async fn test_skills_install_already_installed() {
 #[tokio::test]
 async fn test_skills_install_unknown_registry() {
     // No already-installed dir, force=false, but registry doesn't exist
-    // → should fail with "源 ... 不存在"
+    // → should fail with "源... 不存在"
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);

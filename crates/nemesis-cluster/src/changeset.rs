@@ -1,4 +1,4 @@
-//! 变更集（changeset）wire 类型与落盘/读取（看板项目档案 goal P4/E3+E8）。
+//! 变更集（changeset）wire 类型与落盘/读取（看板项目档案 goal）。
 //!
 //! worker 任务终结时把「执行目录相对基线的改动」组装成变更集，**搭执行
 //! 记录同一 outbox 载荷**（`payload/changeset/…`）——同一次分块传输原子
@@ -12,11 +12,11 @@
 //! └── files/<rel>        各 upsert 文件原始内容（sha256 可核）
 //! ```
 //!
-//! - **E8 归属**：`base_commit` 由 worker 申报（派发时 master 下发的 HEAD）；
+//! - ** 归属**：`base_commit` 由 worker 申报（派发时 master 下发的 HEAD）；
 //!   「是否属于活跃 dispatch 轮次」由 master 侧调用方按 dispatch 记录裁决，
 //!   本模块只管 wire 形态 + 完整性核验。
-//! - **D7 路径围栏**：清单声明路径在写入/读取两侧都过
-//!   [`super::transfer::safe_relative_path`]（单点校验）。
+//! - ** 路径围栏**：清单声明路径在写入/读取两侧都过
+//!   [`super::transfer:safe_relative_path`]（单点校验）。
 //! - **完整性**：读取侧逐文件 SHA-256 核验（声明 sha256/size 双对账），
 //!   任何失配 = 诚实 Err——合并绝不吃半套数据。
 
@@ -52,7 +52,7 @@ pub struct ChangesetManifest {
     /// worker 侧不可读而**跳过**的文件清单（`/` 相对路径 + 失败原因注记）。
     /// 这些文件不在 upserts 里——master 合并后档案与 worker 工作副本存在
     /// 已知差异，如实申报让 master WARN + 交付评论留痕，绝不静默丢。
-    /// （BUG-2026-10-15 NB-120：单文件锁不再废掉整个变更集。旧清单无此键
+    /// （BUG-：单文件锁不再废掉整个变更集。旧清单无此键
     /// = 空 vec，serde default 双向兼容。）
     #[serde(default)]
     pub skipped: Vec<String>,

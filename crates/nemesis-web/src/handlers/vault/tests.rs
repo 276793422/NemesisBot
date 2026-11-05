@@ -7,7 +7,7 @@
 //!
 //! env 守卫必须包住**整个 poll**：helper 按值收 future（不是构造闭包）。
 //! 首版闭包形态 `with_passphrase(PW, || async{..}).await` 只在锁内构造
-//! future，真正 .await 发生在摘除口令之后——Linux（argon2id）下 handler
+//! future，真正.await 发生在摘除口令之后——Linux（argon2id）下 handler
 //! 读 env 恒空，四个 set/remove 用例全红（2026-10-10 ET Linux + CI
 //! coverage 双 job）；Windows dpapi 不需要口令，恒绿掩盖了它。
 

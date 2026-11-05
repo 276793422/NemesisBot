@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -171,7 +171,7 @@ impl NodeExecutor for LoopNodeExecutor {
                             result.state,
                             ExecutionState::Waiting | ExecutionState::Cancelled
                         ) {
-                            // 运行期兜底（BUG-20261030-211）：同 parallel——
+                            // 运行期兜底：同 parallel——
                             // 暂停类子状态诚实失败，绝不静默当成功继续迭代。
                             loop_error = Some(format!(
                                 "loop iteration {} node {} 返回 {} 状态：暂停类节点不支持在 composite 内（审批落地前 workflow 不得继续）",

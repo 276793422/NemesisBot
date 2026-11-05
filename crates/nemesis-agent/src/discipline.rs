@@ -11,14 +11,14 @@
 //!
 //! **声明闸**（内部 ToolHook，首位注册）：参与中 + 工具 ∈
 //! {write_file, edit_file, append_file, delete_file} 且路径不在
-//! `.discipline/**` 且无有效声明 → `HookDecision:Block`（文案即纪律提示：
+//! `.discipline/**` 且无有效声明 → `HookDecision::Block`（文案即纪律提示：
 //! 六字段 schema）。`.discipline/**` 豁免——否则鸡生蛋（首次写声明本身
 //! 被闸）。
 //!
 //! **证伪执行**（内部 LifecycleHook）：参与中 + 有声明 + 证伪未跑或上次
 //! 未过 → on_turn_end 先跑 `falsification_cmd`（走既有 ExecTool 管线：
 //! 工作区边界/超时/管道收尸全适用）→ 结果落 `.discipline/falsification-{n}.json`
-//! （run/命令/成败/输出节选）并作为 feedback 注入（`TurnEndDecision:Continue`）。
+//! （run/命令/成败/输出节选）并作为 feedback 注入（`TurnEndDecision::Continue`）。
 //! 通过后后续轮次不再续（条件「未跑或上次未过」转假）；重新参与
 //! （marker prompt / `/discipline` off→on）即进度归零——同会话下一轮
 //! 纪律任务拿满新预算，不因上轮残留被静默跳过。
@@ -26,7 +26,7 @@
 //! **预算双帽（诚实注记）**：自有 [`MAX_FALSIFICATION_RUNS`]（耗尽 =
 //! 停车升级不静默——warn + falsification-{n}.json 留盘供看板评审注记；
 //! 交互会话的失败反馈早已逐轮可见 = 交还用户）+ 循环侧
-//! [`crate:hooks:MAX_TURN_END_CONTINUES`]（本钩子**首位注册**，纪律续轮
+//! [`crate::hooks:MAX_TURN_END_CONTINUES`]（本钩子**首位注册**，纪律续轮
 //! 计入共享帽——全局轮数有界，代价是与 Stop 方言续轮互相挤占）。
 //!
 //! **逃生门（全路径留痕）**：`/discipline off [理由]`（带理由时追加
@@ -77,7 +77,7 @@ const FALSIFICATION_TIMEOUT_SECS: u64 = 120;
 const FALSIFICATION_OUTPUT_EXCERPT: usize = 2000;
 
 /// 闸面工具集（计划 v1）：四文件变更工具。名字与
-/// `config_watch.rs:PLAN_MODE_WRITE_TOOLS` 的文件子集一致（注册名真相源
+/// `config_watch.rs::PLAN_MODE_WRITE_TOOLS` 的文件子集一致（注册名真相源
 /// 在 registry 构建）。
 const GATED_TOOLS: &[&str] = &["write_file", "edit_file", "append_file", "delete_file"];
 
@@ -240,7 +240,7 @@ impl DisciplineState {
         }
     }
 
-    /// `/discipline on`。返回进入前是否**已**在参与态（幂等；HashSet:insert
+    /// `/discipline on`。返回进入前是否**已**在参与态（幂等；HashSet::insert
     /// 的 bool 是「新插入」，这里取反成「已存在」语义）。新插入（off→on
     /// 重进）时证伪进度一并归零——预算重新计，人工恢复路径；已参与时重复
     /// `on` 走 already 分支不动进度（幂等不变）。
@@ -506,7 +506,7 @@ impl DisciplineFalsificationHook {
             approval_ref: None,
         };
         let outcome = exec.execute(&args, &ctx).await;
-        // 成败判定走 loop_tools 单一真相源 [`crate:loop_tools:exec_output_passed`]
+        // 成败判定走 loop_tools 统一定义 [`crate::loop_tools:exec_output_passed`]
         // （协议：非零退出 `Ok("Exit code: N…")` 与超时收尸
         // `Ok("Command timed out …")` 皆失败形态；Err 仅进程无法启动——
         // 同败。超时误判通过的缺陷收口当日复核修复）。

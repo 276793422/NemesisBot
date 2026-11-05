@@ -443,7 +443,7 @@ async fn file_store_episode_with_metadata() {
     assert_eq!(episodes[0].metadata.get("source").unwrap(), "api");
 }
 
-// ---- S5 coverage: filesystem error branches ----
+// ---- coverage: filesystem error branches ----
 
 #[tokio::test]
 async fn append_create_dir_fails_when_data_dir_is_file() {
@@ -525,7 +525,7 @@ async fn delete_by_id_rewrite_fails_on_readonly_file() {
         return;
     }
 
-    // Unix 注入点升级（BUG-20261029-183 原子重写的连带）：rewrite 经
+    // Unix 注入点升级（原子重写的连带）：rewrite 经
     // write_file_atomic（同目录 temp + rename），POSIX rename 替换只读目标
     // 只看目录写权限不看文件位——Linux runner 非 root 实证文件位注入失效
     // （delete Ok 假红）。目录摘写位让 create temp 步 EACCES。Windows
@@ -586,7 +586,7 @@ async fn cleanup_rewrite_fails_on_readonly_file() {
         return;
     }
 
-    // Unix 注入点升级（BUG-20261029-183 原子重写的连带）：rewrite 经
+    // Unix 注入点升级（原子重写的连带）：rewrite 经
     // write_file_atomic（同目录 temp + rename），POSIX rename 替换只读目标
     // 只看目录写权限不看文件位——Linux runner 非 root 实证文件位注入失效
     // （cleanup Ok 假红）。目录摘写位让 create temp 步 EACCES。Windows
@@ -629,7 +629,7 @@ async fn list_sessions_fails_when_data_dir_is_file() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：cleanup 的部分清除重写分支（会话内新旧混合
+// AGT 覆盖率批次：cleanup 的部分清除重写分支（会话内新旧混合
 // ——旧 episode 删除、新 episode 重写回文件）；对照全旧 → 整文件删除已有用例。
 // ---------------------------------------------------------------------------
 

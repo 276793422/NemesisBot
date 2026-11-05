@@ -1192,7 +1192,7 @@ async fn test_rpc_client_against_rpc_server() {
 }
 
 // ===========================================================================
-// S4 coverage: connection-closed debug field line and the non-request
+// coverage: connection-closed debug field line and the non-request
 // msg_type skip arm in handle_connection's message loop.
 // ===========================================================================
 

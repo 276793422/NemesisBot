@@ -1,9 +1,9 @@
 //! 测试共享工具（覆盖率批次引入，模式抄自 nemesis-sandbox/src/test_util.rs）。
 //!
 //! `capture_logs`：装一个 thread-local tracing subscriber（sink 丢弃），
-//! 让 `tracing:info!/warn!/debug!` 的参数表达式行被真实求值——无 subscriber
+//! 让 `tracing::info!/warn!/debug!` 的参数表达式行被真实求值——无 subscriber
 //! 时宏参数行在 lcov 里恒为 0（参数只在事件启用时格式化）。`set_default`
-//! 是 thread-local：`#[test]` 与 `#[tokio:test]`（默认 current_thread flavor）
+//! 是 thread-local：`#[test]` 与 `#[tokio::test]`（默认 current_thread flavor）
 //! 都在同一线程上跑，守卫生命周期覆盖整个测试体。
 //!
 //! 本文件只放 helper，不放 #[test]（测试只放独立 tests.rs / *_tests.rs）。

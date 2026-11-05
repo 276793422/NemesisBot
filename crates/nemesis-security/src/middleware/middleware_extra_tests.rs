@@ -4,7 +4,7 @@
 //! - shell_command, execute_command, spawn, kill, terminate, wait, signal, get_output
 //! - download_url, get, post, do_request, dial_http
 //! - i2c_read, i2c_write, gpio_read, gpio_write, spi_write
-//! - validate_path edge cases (relative, .., system paths, workspace boundary)
+//! - validate_path edge cases (relative,.., system paths, workspace boundary)
 //! - is_safe_command patterns (regex match/miss)
 //! - Approval flow (approve/deny) and audit chain integration
 //! - Configuration toggles (auditor disabled / default_action ask)
@@ -2561,7 +2561,7 @@ fn extra_elevated_allows_eleven_ops() {
 }
 
 // ============================================================
-// S3 batch 5: kill/terminate 真实分支、wait 已退出分支、
+// batch 5: kill/terminate 真实分支、wait 已退出分支、
 // 本地 raw-TCP HTTP 服务器驱动 download_url / get / post /
 // do_request / dial_http 的成功与错误臂、batch 单条被规则
 // 拒绝而汇总放行的分支
@@ -2687,7 +2687,7 @@ fn extra_batch_operation_individual_denied_by_rule_while_summary_approved() {
 
 #[tokio::test]
 async fn extra_process_kill_spawned_process_success() {
-    // 杀掉真实存活的自有进程 → taskkill /F 成功 → Ok(()) 臂。
+    // 杀掉真实存活的自有进程 → taskkill /F 成功 → Ok() 臂。
     let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");
     let w = SecureProcessWrapper::new(&mw);
     let spawn_cmd = if cfg!(target_os = "windows") {

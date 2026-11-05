@@ -1,4 +1,4 @@
-//! （devtool-upgrade）：`AgentLoop:session_context_status` 测试。
+//! （devtool-upgrade）：`AgentLoop::session_context_status` 测试。
 //!
 //! 契约：与压缩压力测量**同一公式**（摘要覆盖点之后的逐字尾部 ×
 //! MODEL-FACING 投影估算 ÷ 三级解析链窗口），即显示的百分比 =
@@ -177,7 +177,7 @@ fn session_tokens_used_reports_budget_ledger() {
 }
 
 /// 回归锁：`record_round_usage` 的预算 delta = 完整输入
-/// （prompt + cache_creation + cache_read，`usage_full_input` 单一真相源）
+/// （prompt + cache_creation + cache_read，`usage_full_input` 统一定义）
 /// + output——Anthropic 形态（creation>0）不再漏计。走真实 record_round_usage
 /// 接线（observer 落账 + 预算累计），不手捏 delta。
 #[tokio::test]

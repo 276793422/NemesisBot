@@ -6,8 +6,8 @@
 //!
 //! 语义要点（与多模态附加链同一套纪律）：
 //! - **安全 8 层闸**：每个引用 = 一次程序化 `read_file` invocation 走
-//!   `SecurityPlugin:execute`（附加与普通 read 同权；拒绝诚实注明）。
-//! - **图片让位**：图片扩展名（[`image_path_detector:has_image_extension`]）
+//!   `SecurityPlugin::execute`（附加与普通 read 同权；拒绝诚实注明）。
+//! - **图片让位**：图片扩展名（[`image_path_detector::has_image_extension`]）
 //!   的引用静默跳过——同一消息里 attach_turn_images 会把它作为图片附加，
 //!   双注入（文本 + 像素）是浪费且有害。
 //! - **失败诚实注明**：路径形 token（含分隔符或扩展名）解析失败 →
@@ -132,7 +132,7 @@ fn slice_lines(s: &str, start: usize, end: Option<usize>) -> String {
         .join("\n")
 }
 
-/// 单引用安全闸（与 image_attach:gate_and_hash 同一套 invocation 形态：
+/// 单引用安全闸（与 image_attach::gate_and_hash 同一套 invocation 形态：
 /// tool_name=read_file，8 层全跑；拒绝时错误串带 layer 前缀）。
 #[cfg(feature = "security")]
 fn gate_read(
@@ -197,7 +197,7 @@ fn read_head_text(
 #[cfg(feature = "security")]
 fn read_head_bytes(path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    // Read:take(self) 按值消费 —— file 不需要 mut。
+    // Read::take(self) 按值消费 —— file 不需要 mut。
     let file = std::fs::File::open(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => "文件不存在".to_string(),
         _ => format!("文件无法读取 ({})", e),
@@ -214,7 +214,7 @@ fn read_head_bytes(path: &Path) -> Result<Vec<u8>, String> {
 fn read_head_text(_security: Option<()>, path: &Path, _channel: &str) -> Result<String, String> {
     let bytes = {
         use std::io::Read;
-        // Read:take(self) 按值消费 —— file 不需要 mut。
+        // Read::take(self) 按值消费 —— file 不需要 mut。
         let file = std::fs::File::open(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => "文件不存在".to_string(),
             _ => format!("文件无法读取 ({})", e),

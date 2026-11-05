@@ -621,7 +621,7 @@ fn test_run_from_content() {
     assert!(validation.stage1_static.as_ref().unwrap().stage.passed);
 }
 
-// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+// ---- coverage batch ---- (quality-hardening goal 冲刺)
 
 #[test]
 fn test_s8_validate_stage2_failure_skips_stage3() {
@@ -798,7 +798,7 @@ async fn test_s8_validate_async_stage2_failure_skips_stage3() {
     assert!(validation.stage3_quality.is_none());
 }
 
-// 三轮复查（2026-10-14）：Stage 2 judge 层 caller 槽优先级——judge_caller
+// 三轮复查：Stage 2 judge 层 caller 槽优先级——judge_caller
 // （杂务回落链）优先于 llm_caller（主模型）；judge_caller 缺席回落主模型。
 
 #[tokio::test]

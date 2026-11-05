@@ -185,7 +185,7 @@ mod vault_arm {
 
     /// 真实拓扑 ctx：home=X，workspace=X/workspace（make_ctx 默认同路径，
     /// 这里覆写 workspace/home 让 vault_path / credentials_path_for_home
-    /// 各走各的单一真相源）。
+    /// 各走各的统一定义）。
     fn make_home_ctx(
         dir: &tempfile::TempDir,
     ) -> (std::path::PathBuf, crate::ws_router::RequestContext) {

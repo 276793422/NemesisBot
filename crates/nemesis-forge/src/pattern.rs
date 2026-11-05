@@ -442,7 +442,7 @@ pub fn detect_conversation_efficiency_issues(
             .push(exp);
     }
 
-    // 全局平均轮数（每会话经验条数均值）。2026-10-16 R18 修复：效率分公式
+    // 全局平均轮数（每会话经验条数均值）。 修复：效率分公式
     // 分母原为 `2.0 * global_avg_dur / global_avg_dur`（Go 移植丢变量，恒
     // 等于常数 2.0）——实际语义是「2 × 全局平均轮数」；丢变量后轮数被拿
     // 去除以常数，confidence 恒 ≤0.5（轮数 >2 的会话直接 0 分），且描述

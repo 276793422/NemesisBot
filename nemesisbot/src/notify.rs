@@ -1,6 +1,6 @@
 //! 项 C（2026-10-22）— 出站通知记账 + 失败重试 sweeper。
 //!
-//! 真相源 = tasks.db `deliveries.notify_state` + `notify_outbox` 表；
+//! 权威 = tasks.db `deliveries.notify_state` + `notify_outbox` 表；
 //! 本模块只做三件事：
 //! - **记账钩子**（[`notify_accounting`]，接线进
 //!   `ChannelManager::set_notify_hook`）：每次真实投递尝试后推进
@@ -8,7 +8,7 @@
 //!   （守卫：仅 `pending` 义务行入箱）。
 //! - **重试 sweeper**（[`sweep_once`] + [`spawn_sweeper`]）：到期行重投
 //!   （复用 `dispatch_outbound`——钩子自动记账，无双重计数：UPSERT 按
-//!   delivery_key 幂等）；死信闸（age 7 天 / attempts 1000，CD6 同款）。
+//!   delivery_key 幂等）；死信闸（age 7 天 / attempts 1000， 同款）。
 //! - **惰性接线**（[`install_notify_db`] / [`NOTIFY_DB`]）：db 槽由
 //!   post_agent 在交付账本装配点注入；sweeper 每 tick 惰性读槽，槽空 =
 //!   no-op（headless/测试形态零开销）。
@@ -99,7 +99,7 @@ pub(crate) fn notify_accounting(
     }
 }
 
-/// 出箱前可投递性裁决（BUG-20261025-48）：sweep 此前只看箱内
+/// 出箱前可投递性裁决：sweep 此前只看箱内
 /// next_retry_at，不复查交付状态——已拒绝的交付（reject 只清 deliveries 侧
 /// 到期、不清箱）到期后仍会被重投，拒绝语义被投递回泼。重投前先查交付：
 /// 义务已终（notify_state != pending）或交付已拒绝 = 清箱停车；查询瞬时
@@ -140,7 +140,7 @@ pub(crate) async fn sweep_once(db: &Arc<TaskDb>, mgr: &Arc<ChannelManager>) {
         }
     };
     for row in due {
-        // 可投递性前置闸（BUG-20261025-48）：先于死信闸——义务已终/已拒绝
+        // 可投递性前置闸：先于死信闸——义务已终/已拒绝
         // 的交付直接清箱，不进死信记账（那是 pending 义务的终态，不是
         // 拒绝交付的归宿）。
         let action = sweep_deliverability(&db.delivery_by_key(&row.delivery_key));

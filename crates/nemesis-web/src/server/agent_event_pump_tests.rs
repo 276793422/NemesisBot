@@ -470,7 +470,7 @@ async fn canvas_open_sse_payload_flattened_and_no_ws_push() {
     pump.abort();
 }
 
-// （机会项）：DeliverablesRegistered → SSE `deliverables` +
+// DeliverablesRegistered → SSE `deliverables` +
 // WS push `deliverables`（必达通道——不入 chat_event_log 环，无 seq，
 // 历史恢复走 chat_log 权威源；tool_event 通道不得被污染）。
 

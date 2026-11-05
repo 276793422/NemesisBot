@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): websocket_handler arms
+//! (quality-hardening goal 冲刺, web): websocket_handler arms
 //! that `extra_tests.rs` (auth/legacy happy paths) does not reach, all via a
 //! real axum server on an ephemeral 127.0.0.1 port + tokio-tungstenite client:
 //!

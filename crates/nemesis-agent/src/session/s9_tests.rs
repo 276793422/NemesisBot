@@ -1,7 +1,7 @@
 //! 覆盖率批次：session.rs 剩余未覆盖行。
 //! - 445：自愈重建 info! 的 replayed 字段行（store json 缺 + chat_log 有
 //!   → get_or_create 触发 rebuild，需 subscriber）。
-//! - 545/547：add_message 的 capture 分支收尾（CaptureSink:global 初始化
+//! - 545/547：add_message 的 capture 分支收尾（CaptureSink::global 初始化
 //!   后 capture_on 为真）。
 //! - 793-794/800：delete_session 的 json remove 失败 warn 字段行（路径
 //!   预置为目录 → remove_file 失败非 NotFound）。
@@ -59,8 +59,8 @@ fn self_heal_rebuild_logs_replayed_fields() {
     let _ = std::fs::remove_dir_all(temp_dir("heal"));
 }
 
-/// （曾有一个 add_message capture 分支测试在此调用 CaptureSink:init，
-/// 删除：CaptureSink:GLOBAL 是进程级 OnceLock，session/tests.rs
+/// （曾有一个 add_message capture 分支测试在此调用 CaptureSink::init，
+/// 删除：CaptureSink::GLOBAL 是进程级 OnceLock，session/tests.rs
 /// 的 test_capture_records_session_writes_when_enabled 自称「本测试二进制
 /// 唯一 init 调用者」并断言其临时目录下的落盘文件；两个 init 竞争会让
 /// 先跑的一方把全局指到已 drop 的 tempdir → 对方 read_dir NotFound。

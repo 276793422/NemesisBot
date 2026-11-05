@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
-// WASM 插件框架 ↔ gateway 桥（W5-3，计划 §5.4/§5.6）。
+// WASM 插件框架 ↔ gateway 桥（计划）。
 //
 // 五件：
 // 1. [`PluginToolBridge`]——agent `Tool` trait 适配器：execute →
 //    PluginManager.execute_tool（full frame → runtime），is_error=业务失败
-//    转 Err（触发 post-failure hooks，LLM 看到 "Tool error: ..." 同内置
-//    风格）；输出经凭据复扫（W5⑤）——guest 回给 LLM 的文本命中凭据模式
+//    转 Err（触发 post-failure hooks，LLM 看到 "Tool error:..." 同内置
+//    风格）；输出经凭据复扫（⑤）——guest 回给 LLM 的文本命中凭据模式
 //    即 redact + 审计，防 secret 原文经工具结果泄漏进会话历史。
 // 2. [`GatewayHostInvoker`]——宿主 tool-invoke 面：Weak<AgentLoop> +
 //    `plugin.` 前缀拒绝（插件不能调插件工具，depth 1 递归闸）+ 完整
@@ -23,7 +23,7 @@
 //    联动（急停冻结子系统，释放恢复；invoker 挂接在 build_agent_loop
 //    每次重建时执行）。
 // 6. [`PolicyBridge`]——三循环策略槽（`CompactPolicy`/`FinalJudgePolicy`/
-//    `ValidationPolicy`）的 WASM 适配器（2026-10-22 样板工程批 4）：JSON
+//    `ValidationPolicy`）的 WASM 适配器（样板工程）：JSON
 //    投影进出 + 裁决解析；guest 失败（trap/超时/解码失败/畸形裁决）诚实
 //    回退内置 + WARN + 计数，`NotAvailable`（无接管者/禁用/总开关关，常规
 //    态）静默回内置。
@@ -72,7 +72,7 @@ impl PluginToolBridge {
     /// 四个合法值显式映射；空串/未知 → `None` = **不声明**——dispatch 时
     /// 走 `effective_tool_operation` 未注册名 fail-closed（ProcessExec /
     /// CRITICAL 过全管线），对齐 WIT 合同「未按惯例注册的操作类型按未注
-    /// 册名默认 CRITICAL」承诺（2026-09-30 插件体系复查 #3 从紧：此前空
+    /// 册名默认 CRITICAL」承诺（插件体系复查 #3 从紧：此前空
     /// 串/未知落 FileRead 基线，比 WIT 承诺宽；已入库示例全部显式声明，
     /// 零兼容影响）。
     /// `pub(crate)`：热装 hook（run_runtime 注入闭包）与启动装载共用同一映射。
@@ -88,14 +88,14 @@ impl PluginToolBridge {
         }
     }
 
-    /// W5⑤：工具输出出站凭据复扫——guest 返回文本命中凭据模式即脱敏
+    /// ⑤：工具输出出站凭据复扫——guest 返回文本命中凭据模式即脱敏
     /// （`[REDACTED_CREDENTIAL]`）+ 审计。防 x-secret 原文经工具结果
     /// 泄漏进会话历史/审计面。
     ///
     /// Scanner 恒开（`true`，无视 security.credential 开关）是故意的：
     /// 这不是常规凭据检测层，而是 x-secret 注入面的收口——宿主把 vault
     /// 原文交给了 guest，无论操作员是否启用通用凭据扫描，插件输出都不
-    /// 应把原文带出宿主（2026-09-30 复查 #3）。Scanner 构造廉价
+    /// 应把原文带出宿主（复查 #3）。Scanner 构造廉价
     /// （pattern 集 OnceLock 缓存），无需缓存实例。
     fn rescan_output_credentials(&self, content: &str, session_key: &str) -> String {
         let scanner = nemesis_security::credential::Scanner::new(true, "block");
@@ -119,7 +119,7 @@ impl PluginToolBridge {
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::Tool for PluginToolBridge {
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
-        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关后，已注册
+        // 运行期总闸（BUG 修复）：总闸/宿主壳开关翻关后，已注册
         // 工具在 loop 重建前残留注册表——执行体在此诚实拒绝（不产生任何
         // guest 执行）；开关改回即时恢复，无需等重建。
         if !nemesis_config::plugin_wasm::runtime_enabled(self.manager.workspace_root()) {
@@ -138,10 +138,10 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
             .find_by_tool_name(&self.meta.name)
             .map(|reg| reg.manifest.slug.clone())
             .unwrap_or_else(|| self.meta.name.clone());
-        // 调用留痕（2026-10-23 委托面可观测）：宿主侧成对日志——调用 +
+        // 调用留痕（委托面可观测）：宿主侧成对日志——调用 +
         // 返回各一行，只记元数据与量纲（slug/耗时/字节量/outcome），不落
         // 载荷全文（审计链 hash-only 同纪律；内容归 wasm.logs 与 SSE 卡）。
-        // 此前仅 debug 级一行（release 默认不可见），「这是插件干的还是
+        // 此前仅 debug 级一行（release 默认不可），「这是插件干的还是
         // 内置干的、烧了多久、返回多大」排障无据。
         info!(
             slug = %slug,
@@ -165,7 +165,7 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
                     // guest 业务失败 → Err（dispatch 包 "Tool error: {err}"
                     // + post-failure hooks，与内置工具失败同语义）。错误文本
                     // 同样走出站凭据复扫——失败信息可能回显 guest 刚读到的
-                    // 凭据（2026-09-30 复查 #1：此前仅成功路径扫描）。
+                    // 凭据（复查 #1：此前仅成功路径扫描）。
                     (Err(scanned), false, n, "guest_error")
                 } else {
                     (Ok(scanned), true, n, "ok")
@@ -174,7 +174,7 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
             Err(e) => {
                 // PluginError（trap/超时/预算/禁用）→ 错误文本回灌；不带
                 // "Tool error: " 前缀（dispatch 统一包）。顺序必须是先复扫
-                // 全文再截断——先截断可能把凭据切成两半各自漏检（2026-09-30
+                // 全文再截断——先截断可能把凭据切成两半各自漏检（
                 // 复查 #1：错误路径此前完全不过复扫）。
                 let scanned = self.rescan_output_credentials(&e.to_string(), &context.session_key);
                 let mut cut = 300.min(scanned.len());
@@ -235,7 +235,7 @@ impl nemesis_agent::r#loop::Tool for PluginToolBridge {
 }
 
 // ---------------------------------------------------------------------------
-// 工具接管层（2026-10-23）：内置接口 → wasm 执行体的可插拔托管。
+// 工具接管层：内置接口 → wasm 执行体的可插拔托管。
 //
 // 形态（与 loop 策略点接管同哲学——宿主保留裁决权，wasm 只是执行体）：
 // - 模型/安全面全无感：wrapper 元数据全 delegate 内置实例（prompt cache
@@ -264,11 +264,11 @@ pub struct TakeoverToolBridge {
     active: Arc<AtomicBool>,
     /// 内置工具名（注册表键；发卡 service 字段与日志定位用）。
     builtin: String,
-    /// L25：回退态发卡恢复面——broker 由 loop 构造期快照（`None` =
+    /// 回退态发卡恢复面——broker 由 loop 构造期快照（`None` =
     /// headless/裸构建走原错误串零回归）。接管态不经过：guest 恒见别名
     /// 原文，发卡恢复只在回退态 wrapper 内与 dispatch 层发生。
     credential_broker: Option<Arc<dyn nemesis_types::agent::CredentialBroker>>,
-    /// L25：发卡防滥用占位表（wrapper 自有实例——生命周期独立于 loop 级
+    /// 发卡防滥用占位表（wrapper 自有实例——生命周期独立于 loop 级
     /// 窗口，防的是同一会话对同一别名刷卡轰炸，语义等价）。
     credential_guard: Arc<nemesis_agent::r#loop::credential_injection::CredentialCardGuard>,
 }
@@ -276,7 +276,7 @@ pub struct TakeoverToolBridge {
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
-        // 路径决策单快照（R17 纪律扩展，2026-11-01）：active 位 + 运行期
+        // 路径决策单快照（纪律扩展）：active 位 + 运行期
         // 总闸在同一次读取里定路。总闸翻关 = 可用性丢失（接管层降级文档
         // 「总闸关 → 无缝回内置」）——与 load=false 同路回内置，绝不撞
         // PluginToolBridge::execute 的总闸诚实报错把「无缝回退」变成
@@ -285,7 +285,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
         let master_on =
             nemesis_config::plugin_wasm::runtime_enabled(self.bridge.manager.workspace_root());
         if self.active.load(Ordering::SeqCst) && master_on {
-            // guest 回环闸（评审 #1，2026-10-23）：guest tool-invoke 经
+            // guest 回环闸（评审 #1）：guest tool-invoke 经
             // GatewayHostInvoker 的固定标记 context（channel="plugin"，全仓
             // 唯一构造点）再入接管面 = guest↔wasm 无界递归——guest→内置链
             // 今天天然终止（内置工具不再发起工具调用），接管后这条边成环
@@ -300,7 +300,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
             }
             self.bridge.execute(args, context).await
         } else {
-            // 回退态凭据注入在 wrapper 内做（BUG-HUNT R17，闭合 TOCTOU）：
+            // 回退态凭据注入在 wrapper 内做（闭合 TOCTOU）：
             // 此前「keys 双态路由 + dispatch 层注入」在热同步翻位与
             // credential_arg_keys()→execute() 两读之间存在竞态窗口——keys
             // 读到回退态槽位、明文改写完成后 active 刚被翻真 → execute 走
@@ -310,7 +310,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
             // ——单一快照决定整条路径，无混合态：load=false → 注入后的
             // 明文只进内置执行体；load=true → 未注入的别名原文才进 wasm。
             // 注入失败 = 与 dispatch 层注入同语义（Err 直接作为工具结果，
-            // 本轮不执行）；差异面：broker 在场时先走 L25 发卡恢复（发凭据
+            // 本轮不执行）；差异面：broker 在场时先走 发卡恢复（发凭据
             // 卡 → Stored 后原地重注入续行），缺席/被拒/超时回落原错误串。
             let injected = match nemesis_agent::r#loop::credential_injection::inject_credential_aliases_structured(
                 self.inner.as_ref(),
@@ -379,7 +379,7 @@ impl nemesis_agent::r#loop::Tool for TakeoverToolBridge {
     }
 
     fn credential_arg_keys(&self) -> &[&str] {
-        // 恒空槽纪律（BUG-HUNT R17 改版）：注入收进 wrapper 回退态分支
+        // 恒空槽纪律（改版）：注入收进 wrapper 回退态分支
         // 自做（与 active 路径决策同点原子，闭合翻位 TOCTOU——详见
         // execute 注释），dispatch 层对本 wrapper 恒不注入。评审 #2 的
         // 双态路由正是这个 TOCTOU 的来源，此处不再恢复。
@@ -419,7 +419,7 @@ fn takeover_switches()
     TAKEOVER_SWITCHES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// 单目标接管对账（启动 8d 循环体 + 热同步 hook 共用单一真相源）。
+/// 单目标接管对账（启动 8d 循环体 + 热同步 hook 共用统一定义）。
 ///
 /// 裁决链：接管者裁决（registry `takeover_owner`——禁用/卸载/非 tool = 无
 /// 主）→ deny 闸（防御性二拦，parse 层已拒）→ 目标在场闸（loop 注册表）→
@@ -498,7 +498,7 @@ pub fn reconcile_takeover(
             bridge: PluginToolBridge::new(meta, manager.clone()),
             active: active.clone(),
             builtin: builtin.to_string(),
-            // L25：构造期快照 loop 的 broker（None = headless 走原错误串）。
+            // 构造期快照 loop 的 broker（None = headless 走原错误串）。
             credential_broker: agent_loop.credential_broker(),
             credential_guard: Arc::new(
                 nemesis_agent::r#loop::credential_injection::CredentialCardGuard::new(),
@@ -581,7 +581,7 @@ pub fn apply_takeovers(
     manager: &Arc<PluginManager>,
     gate: bool,
 ) -> usize {
-    // 运行期总闸（2026-11-01 BUG 修复）：子系统翻关 = 接管面整体回内置
+    // 运行期总闸（BUG 修复）：子系统翻关 = 接管面整体回内置
     // （可用性丢失语义）——与接管总闸关同路（清侧表 + 不应用声明）；
     // 在管 wrapper 的执行路径由 TakeoverToolBridge::execute 的单快照
     // 路由兜住（总闸关 → 内置执行体），本函数收敛重建后的供给面。
@@ -755,12 +755,12 @@ impl SecretResolver for VaultPluginSecrets {
     }
 }
 
-/// 插件凭据写回面（2026-11-03 自持写通道批）：secret-set 落 vault 裸别名
+/// 插件凭据写回面（自持写通道批）：secret-set 落 vault 裸别名
 /// `plugin/<slug>/<name>`（与 [`VaultPluginSecrets`] 解析同源——写读同一
 /// 命名空间，guest 侧 `vault:` 前缀只是组件视角）。Upsert 语义
 ///（VaultStore::set 保留 created_at）；文件缺失 = 按平台默认模式自动建库
 ///（DPAPI 免口令开箱即用；argon2id 只认 env 口令，缺失仍诚实 Err——
-/// headless 不能 prompt，demo 实录见 2026-11-03 自持批）；锁定 = 诚实 Err
+/// headless 不能 prompt）；锁定 = 诚实 Err
 ///（带补救指引）。
 pub struct VaultPluginSecretWriter {
     vault_path: std::path::PathBuf,
@@ -869,7 +869,7 @@ impl InstallApprover for LateInstallApprover {
     ) -> futures::future::BoxFuture<'a, Result<bool, String>> {
         Box::pin(async move {
             let Some(manager) = self.inner.get() else {
-                // 3.1（2026-09-29 交付审查）：未 bind 是本进程内的恒定状态
+                // 3.1（交付审查）：未 bind 是本进程内的恒定状态
                 // （security.enabled=false 或非 gateway 运行态），不是瞬时
                 // 故障——「请稍后重试」是误导，诚实指出替代路径。
                 return Err(
@@ -877,7 +877,7 @@ impl InstallApprover for LateInstallApprover {
                         .to_string(),
                 );
             };
-            // 安装类操作不走「总是允许」规则（2026-09-30 复查 #12）：规则
+            // 安装类操作不走「总是允许」规则（复查 #12）：规则
             // 记的是 source_dir，同一目录明天可以放进不同 sha 的载荷——目录
             // 记忆对「装任意代码」天然不安全，每次安装保持人工裁决。规则
             // 写入侧（respond always）由 rule_permitted_for 的 is_install_op
@@ -949,7 +949,7 @@ pub fn register_plugin_tools(
     agent_loop: &mut nemesis_agent::r#loop::AgentLoop,
     manager: &Arc<PluginManager>,
 ) -> usize {
-    // 运行期总闸（2026-11-01 BUG 修复）：关 = 供给面不注册（loop 重建即
+    // 运行期总闸（BUG 修复）：关 = 供给面不注册（loop 重建即
     // 收敛到与启动关一致形态）；翻回开 = 下次重建恢复供给。重建窗口内
     // 已注册残留由 PluginToolBridge::execute 的总闸诚实报错兜住。
     if !nemesis_config::plugin_wasm::runtime_enabled(manager.workspace_root()) {
@@ -958,7 +958,7 @@ pub fn register_plugin_tools(
     let mut registered = 0usize;
     for reg in manager.list() {
         // 禁用插件的工具不进供给面（与 WSAPI enable/disable 热同步同语义：
-        // agent 重启/loop 重建后不复活，2026-09-29 交付审查 1.1）。
+        // agent 重启/loop 重建后不复活， 交付审查 1.1）。
         if !reg.enabled.load(Ordering::SeqCst) {
             continue;
         }
@@ -986,7 +986,7 @@ pub fn register_plugin_tools(
 /// release → 恢复；初始态对齐（启动时已急停的场景）。
 pub fn spawn_estop_watcher(manager: &Arc<PluginManager>, estop: &Arc<nemesis_agent::EstopState>) {
     // 先订阅后读初值：订阅先行后，任何 trigger/release 的 send 都有 receiver
-    // 记账，不存在错过窗口（读后订阅会永久错过订阅前一刻的急停——2026-09-29
+    // 记账，不存在错过窗口（读后订阅会永久错过订阅前一刻的急停——
     // 交付审查 1.4；spawn_watcher 同款时序先例）。
     //
     // 但初值必须读 AtomicBool（is_engaged）而非 watch 值：tokio watch::send
@@ -1067,10 +1067,10 @@ pub fn read_runtime_config(home: &std::path::Path) -> PluginRuntimeConfig {
         {
             out.limits.max_instances = n as usize;
         }
-        // BUG-20261101-271：受检换算——`n * 1000` 对 config 手写巨值会溢出
+        // 受检换算——`n * 1000` 对 config 手写巨值会溢出
         // （debug panic / release 回绕可构造出小于默认值的小数，让「巨值 =
         // 不收紧」语义翻转成意外收紧）。checked_mul 失败 = 跳过收紧用默认
-        // （与 cron.rs BUG-20261024-11「乘 1000 必须受检」同族习语）。
+        // （与 cron.rs 「乘 1000 必须受检」同族习语）。
         if let Some(ms) = take_u64("call_timeout_secs")
             .and_then(|n| n.checked_mul(1000))
             .filter(|ms| *ms > 0 && *ms < defaults.timeout_ms)
@@ -1091,7 +1091,7 @@ pub fn read_runtime_config(home: &std::path::Path) -> PluginRuntimeConfig {
     out
 }
 
-/// 装配 PluginManager + Installer（gateway / headless 共用构造单一真相源）。
+/// 装配 PluginManager + Installer（gateway / headless 共用构造统一定义）。
 ///
 /// 返回 `(manager, installer)`；子系统关（config `plugins.wasm.enabled=false`）
 /// 返回 `None`（整面子系统不存在——SharedResources 槽空、工具不注册、
@@ -1110,7 +1110,7 @@ pub fn build_plugin_stack(
         return None;
     }
     // 原生插件闸：宿主壳 plugin_wasm.dll 同受用户开关 + 签名策略管辖
-    // （装配期一次性消费——开关改动重启 gateway 生效）。R1 整改：闸的
+    // （装配期一次性消费——开关改动重启 gateway 生效）。：闸的
     // `Allow { path }` 携带统一解析出的具体文件（enforce 态验签对象），
     // 装载按同一路径定点进行——「验了 A 装 B」的解耦已封死。
     let allowed_host_path = match crate::native_plugins::gate_load(
@@ -1160,7 +1160,7 @@ pub fn build_plugin_stack(
     if let Some(audit) = build_plugin_audit_logger(home) {
         manager.set_audit(audit);
     }
-    // 自持写通道写回面（2026-11-03 批）：装配期注入一次（loop 无关——
+    // 自持写通道写回面（批）：装配期注入一次（loop 无关——
     // 与 set_llm/set_invoker 的每 loop 重建重注入不同）。未注入 =
     // secret-set / config-set 恒 unavailable（Panel 帧授予期即 None，
     // 调用期诚实报错不假成功）。
@@ -1177,7 +1177,7 @@ pub fn build_plugin_stack(
 }
 
 // ---------------------------------------------------------------------------
-// 循环策略点桥（2026-10-22 样板工程批 4：盘点 #17/#18/#10/#14 的 WASM 化）。
+// 循环策略点桥（样板工程：盘点 #17/#18/#10/#14 的 WASM 化）。
 //
 // 形态：一个零状态路由桥实现三 trait，按 trait 硬编码路由到对应
 // `PolicyPoint`（宿主 registry 的 `policy_owner` 是接管者唯一裁决点——桥
@@ -1262,7 +1262,7 @@ impl PolicyBridge {
         {
             Ok(out) => match serde_json::from_str::<serde_json::Value>(&out) {
                 Ok(v) => {
-                    // 委托裁决留痕（2026-10-23 委托面可观测）：接管者正常
+                    // 委托裁决留痕（委托面可观测）：接管者正常
                     // 裁决此前零日志（只有失败才 WARN）——「这次为什么没
                     // 压缩/为什么放行」无据可查。只记点/slug/裁决 JSON
                     // （裁决是小结构体，非载荷；全文归 wasm.logs）。
@@ -1384,7 +1384,7 @@ impl nemesis_agent::r#loop::policy::CompactPolicy for PolicyBridge {
                     return CompactExecVerdict::Builtin;
                 };
                 // 宿主硬闸：空摘要拒绝（无声抹掉覆盖前缀 = 内置 summarize
-                // 拒空同语义）+ 超长钳制（下轮 B2 无进展守卫还会复检省幅）。
+                // 拒空同语义）+ 超长钳制（下轮 无进展守卫还会复检省幅）。
                 if s.trim().is_empty() {
                     self.fallback(PolicyPoint::Compact, "empty summary rejected".into());
                     return CompactExecVerdict::Builtin;

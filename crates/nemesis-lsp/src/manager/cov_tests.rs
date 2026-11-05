@@ -129,7 +129,7 @@ async fn live_session_spawn_query_and_shutdown_with_rust_analyzer() {
 #[tokio::test]
 async fn touch_file_best_effort_semantics_for_unsupported_paths() {
     let mgr = LspManager::new(Some(Duration::from_secs(5)), Some(Duration::from_secs(5)));
-    // 不支持的类型 / 无对应服务器：尽力而为 = Ok(())，绝不 Err，也不建会话。
+    // 不支持的类型 / 无对应服务器：尽力而为 = Ok()，绝不 Err，也不建会话。
     assert!(
         mgr.touch_file(std::path::Path::new("/x/notes.txt"))
             .await

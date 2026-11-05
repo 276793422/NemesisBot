@@ -116,7 +116,7 @@ fn utf16_lower(buf: &[u16]) -> String {
 /// 从 PE 文件导出表解析指定函数名的 RVA 列表（按 `names` 顺序；缺失 = Err）。
 ///
 /// 纯文件解析（不加载映像）：DOS → PE → 可选头 → 数据目录[0] 导出表 →
-/// 名字表/序号表/函数表三路跳转。PE32 与 PE32+ 都支持（导出目录偏移不同）。
+/// 名字表/序号表/函数表三路跳转。 与 + 都支持（导出目录偏移不同）。
 pub fn pe_export_rvas(path: &std::path::Path, names: &[&str]) -> Result<Vec<u64>, String> {
     let data = std::fs::read(path).map_err(|e| format!("读 {}: {e}", path.display()))?;
     let u16_at = |off: usize| -> Result<u16, String> {
@@ -142,8 +142,8 @@ pub fn pe_export_rvas(path: &std::path::Path, names: &[&str]) -> Result<Vec<u64>
     let opt = coff + 20;
     let magic = u16_at(opt)?;
     let (data_dirs_off, _opt_hdr_size) = match magic {
-        0x10B => (opt + 96, u16_at(coff + 16)? as usize), // PE32
-        0x20B => (opt + 112, u16_at(coff + 16)? as usize), // PE32+
+        0x10B => (opt + 96, u16_at(coff + 16)? as usize),
+        0x20B => (opt + 112, u16_at(coff + 16)? as usize), // +
         m => return Err(format!("未知可选头 magic {m:#x}")),
     };
     let export_rva = u32_at(data_dirs_off)?;

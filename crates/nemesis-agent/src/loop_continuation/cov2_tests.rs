@@ -36,7 +36,7 @@ fn cont_data(ready: bool) -> Arc<ContinuationData> {
     })
 }
 
-/// 最小合法 PNG（magic 8 字节 + 尾量），过 image_path_detector:verify。
+/// 最小合法 PNG（magic 8 字节 + 尾量），过 image_path_detector::verify。
 fn png_bytes() -> Vec<u8> {
     let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
     v.extend_from_slice(&[0u8; 16]);

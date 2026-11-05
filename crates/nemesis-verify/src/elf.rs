@@ -31,7 +31,7 @@ const PT_LOAD: u32 = 1;
 
 /// 读 u16（按字节序）。
 /// 偏移来自 u64 全域字段（e_phoff/p_offset/e_shoff），`off + N` 可在 debug
-/// 构建溢出 panic（BUG-20261028-130 同族）——两段式 get 零算术。
+/// 构建溢出 panic（同族）——两段式 get 零算术。
 fn u16(b: &[u8], off: usize, le: bool, name: &'static str) -> Result<u16, CodecError> {
     let s = b
         .get(off..)
@@ -112,7 +112,7 @@ fn compute_elf_l(bytes: &[u8]) -> Result<usize, CodecError> {
     };
     for i in 0..phnum {
         // e_phoff 是 u64 全域字段：与条目落点相加可溢出（debug panic /
-        // release 回绕落点漂移）——checked 后诚实 Malformed（BUG-20261028-130）
+        // release 回绕落点漂移）——checked 后诚实 Malformed
         let Some(ph) = i
             .checked_mul(phentsize)
             .and_then(|off| phoff.checked_add(off))

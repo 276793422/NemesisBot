@@ -51,7 +51,7 @@ fn dll_file_name() -> &'static str {
 fn build_host_dll() -> Option<PathBuf> {
     let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugins/plugin-wasm");
     let out = crate_dir.join("target/release").join(dll_file_name());
-    // BUG-HUNT R16：缓存此前只查存在不查新鲜度——壳源码更新（如同日宿主面
+    // 缓存此前只查存在不查新鲜度——壳源码更新（如同日宿主面
     // 接线回调表加槽）后旧 DLL 被静默信任，engine_init ABI 失配 → 全部引擎
     // 依赖套件报 "wasm host engine init failed: "（旧壳未落错误槽=空详情），
     // 本地全量红 27 例而 CI 全新 checkout 无缓存不受影响。改为：产物缺席
@@ -103,7 +103,7 @@ fn build_shell(
     out.exists().then_some(out)
 }
 
-// BUG-HUNT R16：过期判定回归锁。common 被每个 wasm 测试二进制各 include
+// 过期判定回归锁。common 被每个 wasm 测试二进制各 include
 // 一次，本用例会在多个二进制里重复执行——重复无害，断言纯函数级。
 
 /// 源文件比产物新 → 过期（本次事故形态：壳源码更新、缓存 DLL 停留旧版）。

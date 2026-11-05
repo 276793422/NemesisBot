@@ -1,5 +1,5 @@
-//! 全自动流转 P2（B1）：确定性验收锚点——零 LLM 成本、零命令执行的客观
-//! 检查层（单一真相源：本模块与 planner prompt 的 `[CHECK]` 指令段同步
+//! 全自动流转：确定性验收锚点——零 LLM 成本、零命令执行的客观
+//! 检查层（统一定义：本模块与 planner prompt 的 `[CHECK]` 指令段同步
 //! 演化）。
 //!
 //! 验收标准（`acceptance_criteria` 自由文本）中以 `[CHECK]` 开头的行是
@@ -12,7 +12,7 @@
 //! [CHECK] file:src/main.rs re:^fn main      — 文件内容正则匹配
 //! ```
 //!
-//! **行内注释（P4 编写陷阱防线，2026-10-13）**：行内 ` # `（空格#空格）
+//! **行内注释（编写陷阱防线，2026-10-13）**：行内 ` # `（空格#空格）
 //! 之后是编写者注释，不参与匹配——`[CHECK] re:^测试通过 # 汇报须含测试结论`
 //! 只用前半段。引号感知：引号**成对**时引号内的 ` # ` 是字面内容不切
 //! （`exec:git log --format="%h # %s"` 不被误截）；引号不成对退简单切分。
@@ -21,7 +21,7 @@
 //! （「应用 ` # ` 分隔注释」）——歧义输入宁 WARN 不假 FAIL，重派前先给
 //! 编写者纠错线索。
 //!
-//! **exec: 锚点（M7，config 闸门默认关）**：`[CHECK] exec:<命令>` 在锚点
+//! **exec: 锚点（config 闸门默认关）**：`[CHECK] exec:<命令>` 在锚点
 //! 根目录（项目目录在场优先，否则 workspace 根）以子进程执行命令，退出码
 //! 0 = 过、非 0 = 不过。服务「表现层零可执行验证手段」（21 个 JS 文件全
 //! 靠人眼的教训）。护栏三件：[`ExecAnchorPolicy`]（默认
@@ -30,18 +30,18 @@
 //! 出撑爆评论/planner prompt）。关闭时 exec 锚点**诚实跳过并注记**
 //! （[`run_anchors_dual_ext`] 的第二返回值），不做 PASS 也不做 FAIL——
 //! 跳过项进提示/评论，不进失败集（否则会触发重派，重蹈假红病灶）。planner
-//! 对可运行时验证的子单**应**产出此形态（§6.1 改动二翻转；按交付物技术栈
+//! 对可运行时验证的子单**应**产出此形态（改动二翻转；按交付物技术栈
 //! 选命令）。两道闸护航：解析期危险命令黑名单（[`validate_exec_anchor_command`]
-//! ：删除/网络外联/任意代码执行形态直接拒绝）+ 环境依赖探针（
+//! 删除/网络外联/任意代码执行形态直接拒绝）+ 环境依赖探针（
 //! [`run_exec_anchor`]：命令解释器/关键工具缺失 = 诚实 SKIP 不计失败不进
-//! 失败签名集——master 环境缺失不得冤枉重派，NB-8 同型冤案防线）。
+//! 失败签名集——master 环境缺失不得冤枉重派， 同型冤案防线）。
 //!
 //! 其余文件类锚点只读 `std::fs`，路径经 [`resolve_anchor_path`] 单点收紧：
 //! 仅限根子树内相对路径，拒绝绝对路径 / `..` 穿越 / 8.3 短名 /
 //! 符号链接越界（canonicalize 后前缀校验）。无法解析的 `[CHECK]` 行不
 //! 拒绝——回落语义项，诚实降级不炸验收。
 //!
-//! **双根核验（[`run_anchors_dual`]，2026-10-09 web-FPS NB-22 锚点全败根修）**：
+//! **双根核验（[`run_anchors_dual`]，2026-10-09 web-FPS 锚点全败根修）**：
 //! 档案管线把 worker 变更集合并在**项目目录**（`board-projects/<项目名>/`，
 //! `git_repo::merge_changeset` 的唯一落点，设计上不进主 workspace），而非
 //! 档案管线的首跑件直写主 workspace 根——两种交付形态并存时，单根核验
@@ -70,7 +70,7 @@ const PROSE_PATTERN_HINT: &str =
     "\n提示：pattern 含空白/非 ASCII，疑似描述混入，应用 ` # ` 分隔注释";
 
 /// 按首个**引号外**的 ` # ` 切掉行尾显式注释，返回（前段, 是否有显式注释）
-/// ——单一真相源，re:/exec:/file: 各臂共用。
+/// ——统一定义，re:/exec:/file: 各臂共用。
 ///
 /// 引号感知：单/双引号**成对**（全行偶数）时，引号内的 ` # ` 是字面内容
 /// 不是注释——`exec:git log --format="%h # %s"`、`re:"\d+ # \d+"` 不被误切
@@ -79,12 +79,12 @@ const PROSE_PATTERN_HINT: &str =
 /// 天然不命中。字节扫描安全：`'`/`"`/`#`/` ` 均为 ASCII，UTF-8 多字节
 /// 序列（≥0x80）不会误配，`rest[..i]` 落在字符边界上。
 ///
-/// 引号不成对 → 退 quote-blind 盲切（多角度审计批 2026-10-13 改向）：
+/// 引号不成对 → 退 quote-blind 盲切（多角度审计-13 改向）：
 /// 视引号为普通字符，注释切在**最后一个** ` # `——编写约定注释在行尾，
 /// 残引号在 pattern 中间时早切会把 pattern 主体截断在引号残迹前
 ///（`re:"\d+ # \d+ # 备注` 少个闭引号，早切只剩 `\d+`）；取末个保住主体。
 /// 英文叙述撇号（`it's done # 备注`）单 ` # ` 场景首末等价，不受影响。
-/// 切分落 **debug**（闭环批 2026-10-13 降档）：本函数在 sweep/验收热路径
+/// 切分落 **debug**（闭环-13 降档）：本函数在 sweep/验收热路径
 /// 被反复调用（has_file_anchor 等 tick 级扫查），残缺引号的存量单子会
 /// 每 tick 刷一条 WARN（30s tick ≈ 2880 条/天）——编写面诊断的正确落点
 /// 是安装期 WARN（`warn_if_prose_pattern` 的 prose 检查）与 FAIL 面明细，
@@ -123,7 +123,7 @@ fn split_anchor_comment(rest: &str) -> (&str, bool) {
     (rest, false)
 }
 
-/// 剥模式两端的成对包裹引号（多角度审计批 2026-10-13）：编写者借引号包住
+/// 剥模式两端的成对包裹引号（多角度审计-13）：编写者借引号包住
 /// 含空白的模式（shell 习惯），但 re:/contains: 的模式是裸文本——引号字面
 /// 进了正则/关键词几乎永远匹配不上（`re:"交付完成"` 字面找 `"交付完成"`，
 /// 而交付文本极少逐字含引号 → 大概率 FAIL → 无谓重派）。只剥**成对**包裹
@@ -143,7 +143,7 @@ fn strip_wrap_quotes(pattern: &str) -> &str {
     }
 }
 
-/// re: 模式「疑似描述混入」判定——两档谓词（多角度审计批 2026-10-13 拆分）：
+/// re: 模式「疑似描述混入」判定——两档谓词（多角度审计-13 拆分）：
 /// - **安装 WARN 用窄档**（[`pattern_looks_like_prose_strict`]）：含空白才
 ///   疑似——多词自然语言描述的强信号。纯 CJK 无空白（`re:交付完成`，planner
 ///   提示词自己推荐的形态）是合法匹配式，WARN 是误报噪音。
@@ -179,7 +179,7 @@ fn prose_pattern_hint(pattern: &str) -> &str {
     }
 }
 
-/// exec: 锚点的执行策略（M7 护栏闸）。
+/// exec: 锚点的执行策略（护栏闸）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecAnchorPolicy {
     /// 不执行（默认）：exec 锚点诚实跳过并注记，不进失败集。
@@ -199,7 +199,7 @@ pub enum AnchorKind {
     FileContains,
     /// `re:<正则>` — 对 worker delivery 文本（验收输入）正则匹配。
     ContentRegex,
-    /// `exec:<命令>` — 在锚点根目录执行命令，退出码 0 = 过（M7；
+    /// `exec:<命令>` — 在锚点根目录执行命令，退出码 0 = 过（
     /// 受 [`ExecAnchorPolicy`] 闸门，默认不执行）。
     Exec,
 }
@@ -217,7 +217,7 @@ impl AnchorKind {
     }
 
     /// 是否 file: 类锚点（存在/正则/包含——锚点根解析产物路径的三种形态）。
-    /// 拓扑分类单一真相源：file: 锚点在派发端 workspace 实核 → 只能派本节点；
+    /// 拓扑分类统一定义：file: 锚点在派发端 workspace 实核 → 只能派本节点；
     /// `re:`（对交付文本核对）与 `exec:`（worker 自证 + master 重放，环境
     /// 缺失诚实 SKIP）跨节点安全，不计入拓扑约束。
     pub fn is_file_anchor(&self) -> bool {
@@ -257,9 +257,9 @@ pub struct RejectedAnchor {
     pub reason: String,
 }
 
-/// AC 是否含 `re:`（交付文本正则）锚点（2026-09-30 F6）：这类锚点核对的
+/// AC 是否含 `re:`（交付文本正则）锚点：这类锚点核对的
 /// 是 worker delivery 文本本体，可被「把标记字符串抄进交付文本」欺骗
-/// （真机 NB-13 实证）；file: 类锚点核的是真实文件，不在本判定内。调用方
+/// （真机 实证）；file: 类锚点核的是真实文件，不在本判定内。调用方
 /// （评审）据此按需启用自检取证。
 pub fn has_content_regex_anchor(acceptance_criteria: &str) -> bool {
     let (anchors, _, _) = parse_anchors(acceptance_criteria);
@@ -267,15 +267,15 @@ pub fn has_content_regex_anchor(acceptance_criteria: &str) -> bool {
 }
 
 /// AC 是否含 file: 类锚点（`file:` 存在/正则/包含三种形态）。**拓扑约束
-/// 谓词（单一真相源）**：file: 锚点在派发端（看板权威端）workspace 解析
+/// 谓词**：file: 锚点在派发端（看板权威端）workspace 解析
 /// 实核，而远端节点的交付文件不在派发端 workspace——含 file: 锚点的单只能
 /// 派给本节点执行。`re:`（交付文本）与 `exec:`（worker 自证 + master 重放，
-/// 见 §6.1）锚点跨节点安全，**不**计入本谓词。消费方（全部必须走本谓词，
+/// ）锚点跨节点安全，**不**计入本谓词。消费方（全部必须走本谓词，
 /// 不许各自内联解析）：`reject_remote_file_anchors` 拓扑硬闸 /
 /// `rank_dispatch_candidates` 候选过滤（换节点/兜底/匹配器决策面）/
-/// `rebalance_queued_to_worker` 重平衡偷单过滤。真机 NB-4/NB-5/NB-6
-/// 实证（2026-10-08）：决策面不感知本谓词 → 产出非法远端目标 → 拓扑闸
-/// 拦下 → 死锁或取消后无补偿。E2E-1 验收实证（2026-10-12）：exec 锚点
+/// `rebalance_queued_to_worker` 重平衡偷单过滤。真机 //
+/// 实证：决策面不感知本谓词 → 产出非法远端目标 → 拓扑闸
+/// 拦下 → 死锁或取消后无补偿。E2E-1 验收实证：exec 锚点
 /// 误计入本谓词 → 纯 exec/re 锚点单全体停车。
 pub fn has_file_anchor(acceptance_criteria: &str) -> bool {
     let (anchors, _, _) = parse_anchors(acceptance_criteria);
@@ -322,7 +322,7 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
     if rest.is_empty() {
         return Ok(None);
     }
-    // 显式注释切分（行级单点，P4）：引号外的 ` # ` 之后不参与任何臂的
+    // 显式注释切分（行级单点）：引号外的 ` # ` 之后不参与任何臂的
     // 语义——file: 路径/谓词、re: 模式、exec: 命令（含黑名单校验）都只看
     // 前段。行尾注释因此不会把关键词/命令弄脏（`exec:npm test # 不用 curl`
     // 不再因注释里的黑名单词被误拒）；引号内的 ` # ` 是字面内容不切
@@ -384,7 +384,7 @@ fn parse_anchor_line(rest: &str) -> Result<Option<AnchorCheck>, String> {
         if command.is_empty() {
             return Ok(None);
         }
-        // 危险命令黑名单（§6.1 改动二配套）：验证锚点只允许只读/测试类
+        // 危险命令黑名单（改动二配套）：验证锚点只允许只读/测试类
         // 命令；删除/网络外联/任意代码执行形态解析期即拒绝（与路径形态
         // 不安全同通道：回落语义项 + RejectedAnchor 告警）。
         validate_exec_anchor_command(command)?;
@@ -491,18 +491,18 @@ pub fn validate_exec_anchor_command(command: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// M2 决策链三态分流：锚点执行前先验根有效性。主根与 fallback 根**都不
+/// 决策链三态分流：锚点执行前先验根有效性。主根与 fallback 根**都不
 /// 可达**（canonicalize 失败）= 基础设施故障（`Err`），调用方必须转人工 +
 /// WARN，**不得**照常执行锚点（那会产出逐锚点 FAIL → 触发重派——机器上
 /// 没人能修好「根不存在」，重派循环烧预算还惩罚不到任何人）；至少一根可
-/// 达、或锚点组全部与 FS 无关（`re:` 交付文本锚点 / 空组）= `Ok(())`，
+/// 达、或锚点组全部与 FS 无关（`re:` 交付文本锚点 / 空组）= `Ok()`，
 /// 照常执行。根可达但文件未命中 = 真 FAIL（质量面），不在此判定内。
 ///
 /// 注意与拓扑谓词 [`has_file_anchor`] 的分工：本函数判定「**评审机器**上
 /// 锚点执行是否需要可达根」——exec: 锚点执行 cwd = 锚点根，需要根可达，
 /// 故计入（`!ContentRegex` 口径在此正确）；拓扑谓词判定「**派发**能否去
 /// 远端」——exec 走 worker 自证 + master 重放，跨节点安全，不计入。两套
-/// 口径不同是刻意的，勿互相「统一」（E2E-1 实证 2026-10-12：拓扑口径
+/// 口径不同是刻意的，勿互相「统一」（E2E-1 实证：拓扑口径
 /// 误纳 exec → 派发全体停车）。
 pub fn validate_anchor_roots(
     anchors: &[AnchorCheck],
@@ -545,7 +545,7 @@ pub fn run_anchors(
 /// 双根版 [`run_anchors`]：`project_root` 在场（issue 挂了看板项目且项目
 /// 目录已分配）时，文件类锚点在主根未命中后再核项目目录——档案管线合并
 /// 产物落在项目目录、非档案管线首跑件落在主 workspace 根，双根 OR 兼容
-/// 两种交付形态（NB-22 锚点全败事故根修；见模块文档）。`project_root`
+/// 两种交付形态（锚点全败事故根修；见模块文档）。`project_root`
 /// 传 `None` 时与 [`run_anchors`] 行为一致。exec: 锚点按
 /// [`ExecAnchorPolicy::Disabled`] 处理（跳过注记被丢弃）——需要消费跳过
 /// 注记的调用方走 [`run_anchors_dual_ext`]。
@@ -565,7 +565,7 @@ pub fn run_anchors_dual(
     .0
 }
 
-/// 双根 + exec 策略版 [`run_anchors_dual`]（M7）：返回 `(结果组, 跳过注记)`。
+/// 双根 + exec 策略版 [`run_anchors_dual`]：返回 `(结果组, 跳过注记)`。
 /// 关闭策略下的 exec 锚点**不进结果组**（做 PASS 会假放行、做 FAIL 会触发
 /// 重派——跳过是第三态），只进跳过注记，由调用方落提示/评论。
 pub fn run_anchors_dual_ext(
@@ -588,7 +588,7 @@ pub fn run_anchors_dual_ext(
             };
             // exec 的执行根：项目目录在场优先（档案管线合并产物的主落点），
             // 否则 workspace 根。cwd 语义与文件锚点的项目目录优先 fallback
-            // 同构（§6.1 改动四核实结论：项目目录在场优先已是现状，测试钉住）。
+            // 同构（改动四核实结论：项目目录在场优先已是现状，测试钉住）。
             let root = project_root.unwrap_or(workspace_root);
             match run_exec_anchor(anchor, root, *timeout_secs) {
                 ExecAnchorOutcome::Ran(passed, detail) => results.push(AnchorResult {
@@ -634,10 +634,10 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> Exec
             format!("exec 锚点执行根不存在（{}）", root.display()),
         );
     }
-    // 环境依赖探针（§6.1 master 侧执行环境保障；仓库纪律「二进制在场 ≠
+    // 环境依赖探针（master 侧执行环境保障；仓库纪律「二进制在场 ≠
     // 可用，用前实跑 trivial 探针」）：实跑前先以 where/command -v 实探
     // 首 token 工具是否在场——缺失 = EnvSkip 不计失败（master 缺环境不得
-    // 变成 FAIL 冤枉重派，NB-8 同型冤案）。shell 内建（cd/echo/set…解释器
+    // 变成 FAIL 冤枉重派， 同型冤案）。shell 内建（cd/echo/set…解释器
     // 在场即成立）与路径形态首 token（相对脚本缺失属交付缺陷，走真 FAIL）
     // 不探。
     if let Some(tool) = probe_target_token(command)
@@ -657,7 +657,7 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> Exec
         // raw_arg：命令串**原样**进命令行（与 cc_hooks.rs 同型修复）。
         // 默认 argv 转义把内嵌引号变 `\"`（MSVCRT 规则），cmd 不认 `\"
         // `——`findstr /C:"..."` 形态的验证命令被打挂（退出码 1 假 FAIL，
-        // NB-22 实证：文件在场且内容精确仍三连失败）。raw_arg 让 cmd 按
+        // 实证：文件在场且内容精确仍三连失败）。raw_arg 让 cmd 按
         // 原生语法解析，与真 shell 收到的一致。
         #[cfg(windows)]
         c.raw_arg(command);
@@ -690,7 +690,7 @@ fn run_exec_anchor(anchor: &AnchorCheck, root: &Path, timeout_secs: u64) -> Exec
     // 主线程 try_wait 轮询到超时上限。
     let out_rx = spawn_pipe_reader(child.stdout.take().map(|p| Box::new(p) as PipeReader));
     let err_rx = spawn_pipe_reader(child.stderr.take().map(|p| Box::new(p) as PipeReader));
-    // 上界钳制（D12-6）：config 的 exec_anchor_timeout_secs 是无界 u64，
+    // 上界钳制：config 的 exec_anchor_timeout_secs 是无界 u64，
     // `Instant + Duration` 溢出按 std 契约 panic——clamp 只防荒谬值，
     // 正常配置（≤1 天）逐字节不变。
     let timeout_secs = timeout_secs.clamp(1, 86_400);
@@ -808,13 +808,13 @@ type PipeReader = Box<dyn std::io::Read + Send>;
 
 /// 单管道捕获上限：孙进程占住管道时读者线程照常退出（不再无限阻塞），
 /// 且缓冲有界——曾是无界 `read_to_string`，孙进程每写一行都追加进永不
-/// 被消费的 String（D10-4）。锚点只消费尾部，尾部保留语义不变。
+/// 被消费的 String。锚点只消费尾部，尾部保留语义不变。
 const PIPE_CAPTURE_CAP_BYTES: usize = 1 << 20;
 
 /// 管道→字符串读取线程（exit 后由 [`run_exec_anchor`] 带超时回收）。
 /// 有界读循环：累计超 [`PIPE_CAPTURE_CAP_BYTES`] 丢头保尾——孙进程占住
 /// 管道时曾是无界 `read_to_string`，每写一行都追加进永不消费的 String
-/// （D10-4：缓冲无界增长面已封；安静孙进程仍可让线程阻塞在 read 上，
+/// （缓冲无界增长面已封；安静孙进程仍可让线程阻塞在 read 上，
 /// 但内存有界，主线程 2s 宽限后照常放弃）。锚点只消费尾部，语义不变。
 fn spawn_pipe_reader(pipe: Option<PipeReader>) -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -883,7 +883,7 @@ fn run_one(
             };
             match Regex::new(pattern) {
                 Ok(re) => {
-                    // 自指防御（2026-09-12 UAT T30③ 实证）：交付文本逐字
+                    // 自指防御（UAT ③ 实证）：交付文本逐字
                     // 引用锚点行本身（重派 prompt 回显、复述验收标准的汇报）
                     // 不构成满足锚点的证据——剥离全部锚点行原文后再匹配。
                     // 否则 worker 只要把任务卡原样抄回来，re: 锚点就在引文
@@ -995,9 +995,9 @@ fn read_limited(path: &Path) -> Result<String, String> {
 
 /// 路径安全·形态闸（解析期，FS 无关）：仅接受 workspace 内相对路径的
 /// 字面形态。拒绝：绝对路径 / Windows 盘符与 UNC 形态 / `..` 穿越 /
-/// 8.3 短名组件（`RUNNER~1` 家族教训：canonicalize 前先拦，杜绝短名
+/// 8.3 短名组件（`RUNNER~1` 家族canonicalize 前先拦，杜绝短名
 /// 别名语义绕过）。解析期拒绝 = 不安全锚点回落语义项 + 告警，不产出生
-/// 效锚点（T2-3 语义：不安全的验收标准是标准自身的毛病，不惩罚执行者）。
+/// 效锚点（语义：不安全的验收标准是标准自身的毛病，不惩罚执行者）。
 pub fn validate_anchor_path_shape(raw: &str) -> Result<(), String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -1011,7 +1011,7 @@ pub fn validate_anchor_path_shape(raw: &str) -> Result<(), String> {
     // 契约是「解析期，FS 无关」（见函数头注释），集群是跨平台的：Linux
     // master 审 Windows worker 形态的锚点必须同样判不安全，不能因运行平台
     // 放空（`C:\evil` 在 Linux 上只是普通文件名字符串，is_absolute=false，
-    // 此前 cfg(windows) 门控导致 Linux 全放行——2026-09-12 CI Linux 红根修，
+    // 此前 cfg(windows) 门控导致 Linux 全放行—— CI Linux 红根修，
     // remote_file_anchor_gate / parent_malicious_anchor 两测试实证）。
     if raw.starts_with("\\\\") {
         return Err(format!("锚点路径拒绝 UNC 形态：{raw}"));
@@ -1135,7 +1135,7 @@ pub fn render_anchor_failures(results: &[AnchorResult]) -> String {
     out
 }
 
-// ---- 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）----
+// ---- 必需检查契约（项 B「必需的必须跑」）----
 // 「跑了必须过」由锚点双检 FAIL 短路兜住；本节补另一半：「必需的必须跑」
 // ——规则要求某类单子必须带某锚点，而该锚点 AC 未声明 / 被跳过（exec 关
 // 或环境缺）/ 未产出核验结果时，语义评审不得对该单给 PASS（零证据放行

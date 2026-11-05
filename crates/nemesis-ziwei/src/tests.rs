@@ -1,4 +1,4 @@
-//! nemesis-ziwei 单测（M0：estop 回调槽）。
+//! nemesis-ziwei 单测（estop 回调槽）。
 
 use crate::estop_hook::{has_unload_hook, run_estop_unload, set_unload_hook};
 

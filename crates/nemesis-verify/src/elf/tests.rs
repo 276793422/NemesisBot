@@ -1,6 +1,6 @@
-//! ELF codec 单测（M5 补测，quality-hardening goal 2026-08-25）。
+//! ELF codec 单测（补测，quality-hardening goal 2026-08-25）。
 //!
-//! 与 pe/tests.rs 同理：此前 elf.rs 0 单测（基线 §9.3 可疑点）。手工构造
+//! 与 pe/tests.rs 同理：此前 elf.rs 0 单测（基线 可疑点）。手工构造
 //! 最小 ELF 字节流（ELF64 LE / ELF32 BE 双轴），钉住 L 的两个来源
 //! （PT_LOAD 段末尾 / section header table 末尾）、字节序处理、哈希
 //! 前缀语义与全部错误路径。
@@ -220,7 +220,7 @@ fn elf_error_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// R196 红证（BUG-20261028-130）：L 计算三处裸加法在 u64 全域字段下溢出
+// 红证：L 计算三处裸加法在 u64 全域字段下溢出
 // ——debug 构建 panic（`attempt to add with overflow`），release 回绕后
 // 语义错（落点漂移 / L 谎报）。位点：phoff+i*phentsize、p_offset+p_filesz、
 // shoff+shentsize*shnum，外加第四位点 = 读侧 u16/u32/u64 helper 自身的

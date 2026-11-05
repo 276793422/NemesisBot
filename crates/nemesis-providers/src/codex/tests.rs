@@ -172,7 +172,7 @@ fn test_build_request_body() {
     assert_eq!(body["store"], false);
 }
 
-/// reasoning_effort 翻译（2026-11-03 空摘要根修回归锁）："off" 按模型族
+/// reasoning_effort 翻译（空摘要根修回归锁）："off" 按模型族
 /// 落 minimal[gpt-]/low[o 系]；low/medium/high 透传；None 与未知值不发
 /// reasoning 字段（字节兼容现网无 effort 请求）。
 #[test]
@@ -180,7 +180,7 @@ fn test_build_request_body_reasoning_effort_translation() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages: Vec<Message> = Vec::new();
 
-    // "off" + gpt- 系 → minimal（gpt-5 空摘要根因形态）。
+    // "off" + gpt 系 → minimal（gpt-5 空摘要根因形态）。
     let body = provider.build_request_body(
         &messages,
         &[],
@@ -233,13 +233,13 @@ fn test_build_request_body_reasoning_effort_translation() {
     assert!(body.get("reasoning").is_none(), "{}", body);
 }
 
-/// effort 词表自愈（2026-11-04 真机实证回归锁）：400 unsupported_value 按
+/// effort 词表自愈（真机实证回归锁）：400 unsupported_value 按
 /// 上游自带词表降档——gpt-6.1-sol 实测词表 low/medium/high/xhigh/max，
-/// cc-switch 包装错误逐字取自该机上游实录。
+/// cc-switch 包装错误逐字取自该机上游。
 #[test]
 fn test_effort_downgrade_target_from_error() {
     let body = serde_json::json!({ "reasoning": { "effort": "minimal" } });
-    // cc-switch 包装形态（真机实录逐字）：解析出权威词表 → 最低档 low。
+    // cc-switch 包装形态（真机案例逐字）：解析出权威词表 → 最低档 low。
     let wrapped = r#"{"error":{"message":"CC Switch local proxy failed while handling Codex endpoint /responses. Provider: 公司的; model: gpt-6.1-sol; upstream_status: HTTP 400; cause: Unsupported value: 'none' is not supported with the 'gpt-6.1-sol' model. Supported values are: 'low', 'medium', 'high', 'xhigh', and 'max'.","type":"invalid_request_error","code":"unsupported_value","param":"reasoning.effort","provider":"公司的"}}"#;
     assert_eq!(
         effort_downgrade_target(&body, wrapped).as_deref(),
@@ -750,8 +750,8 @@ fn test_resolved_codex_model_debug() {
     assert!(debug.contains("gpt-4o"));
 }
 
-// 2026-09-03 二次回归 F2 回归锁：function_call_output 的 output 必须是字符串，
-// Parts 走文本视图 + 诚实注记（D7 同族），无 base64 泄漏；Text 形态保持原字节。
+// 二次回归 回归锁：function_call_output 的 output 必须是字符串，
+// Parts 走文本视图 + 诚实注记（同族），无 base64 泄漏；Text 形态保持原字节。
 #[test]
 fn test_build_request_body_tool_output_with_parts_degrades_to_text_note() {
     let provider = CodexProvider::new(CodexConfig::default());
@@ -811,7 +811,7 @@ fn test_build_request_body_requests_streaming() {
     );
 }
 
-/// per-model `stream` 键（2026-10-13）："no" = 逃生门，body 不带 stream
+/// per-model `stream` 键："no" = 逃生门，body 不带 stream
 /// 字段（恢复非流式形态，等完整响应）。
 #[test]
 fn test_build_request_body_stream_no_omits_stream_field() {
@@ -832,7 +832,7 @@ fn test_build_request_body_stream_no_omits_stream_field() {
     );
 }
 
-/// 传输错误诚实化（2026-10-13）：连接拒绝（端口 1 无监听）→ Unknown 且
+/// 传输错误诚实化：连接拒绝（端口 1 无监听）→ Unknown 且
 /// message 带 "connect error" 前缀（loop transient 词表成员，可重试），
 /// 不再伪装 Timeout。真超时仍归 Timeout（reqwest is_timeout）。
 #[tokio::test]
@@ -975,7 +975,7 @@ fn test_parse_sse_text_truncated_stream_maps_to_timeout() {
     }
 }
 
-// BUG-20261103-351 回归锁：流内 failed/error 文案与真相源（llm_error_class）
+// 回归锁：流内 failed/error 文案与真相源（llm_error_class）
 // 同判——此前恒 Unknown（不带 connect error 前缀 = 不可重试），上游显式限流
 // 文案（"quota exceeded"）反而放弃 fallback 轮转，比断流（Timeout 可重试）
 // 处置更差。分类命中 → 对应变体（可轮转语义与 HTTP 429/500 同判）；分类

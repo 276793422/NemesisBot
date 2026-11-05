@@ -751,7 +751,7 @@ fn handle_chat_send(
         media: Option<Vec<serde_json::Value>>,
         /// （devtool-upgrade）：客户端（IDE）上报的当前打开文件
         /// 路径。缺省 = 无（老客户端零影响）。协议约定顺序 = 上报顺序，
-        /// 首条最近活跃。清洗与封顶走 nemesis-types::channel::sanitize_open_files
+        /// 首条最近活跃。清洗与封顶走 nemesis-types::channel:sanitize_open_files
         /// 单点，JSON 序列化进 metadata["open_files"] 全链路透传到 agent loop。
         #[serde(default)]
         open_files: Option<Vec<String>>,
@@ -768,7 +768,7 @@ fn handle_chat_send(
         /// （open_files 同款单点模式，AgentLoop 侧 `inbox::priority_of` 解析）。
         #[serde(default)]
         priority: Option<String>,
-        /// （改进项三期）：客户端幂等键。同一
+        /// 客户端幂等键。同一
         /// (session_id, client_msg_id) 重复提交 = 服务端去重（回原 seq +
         /// `deduped:true`，不二次触发 agent）；不带 = 旧行为零变化。
         /// 经 metadata["client_msg_id"] 透传到 server.rs 入站咽喉点
@@ -1035,7 +1035,7 @@ mod tests;
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): workflow-chat
+// (, quality-hardening goal 冲刺 web): workflow-chat
 // auth arm, no-router request error, workflow_chat spawn block, inbound
 // channel arms, protocol ping frame, abrupt-drop cleanup — live-socket tests
 // on ephemeral ports.

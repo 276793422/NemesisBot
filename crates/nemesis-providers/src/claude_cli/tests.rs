@@ -99,7 +99,7 @@ fn test_parse_response_error() {
 fn test_parse_response_with_tool_calls() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let output = r#"{"type":"result","is_error":false,"result":"Using tool {\"tool_calls\":[{\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"/tmp\\\"}\"}}]}","usage":{"input_tokens":20,"output_tokens":10}}"#;
-    // 白名单内名字（read_file）→ 正常恢复为工具调用（BUG-20261103-338 过滤
+    // 白名单内名字（read_file）→ 正常恢复为工具调用（过滤
     // 只拦名字不可执行的伪调用，不碰机制本身）。
     let tools = vec![fn_tool("read_file")];
     let resp = provider.parse_response(output, &tools).unwrap();
@@ -300,7 +300,7 @@ fn test_provider_name_and_default_model() {
 }
 
 // ============================================================
-// T3：CLI 委派降级（D7）——图像 → 文字占位，不静默
+// CLI 委派降级——图像 → 文字占位，不静默
 // ============================================================
 
 #[test]
@@ -334,8 +334,8 @@ fn test_messages_to_prompt_image_degrades_to_note() {
 }
 
 // ============================================================
-// BUG-20261103-338：文档性 `{"tool_calls"` JSON 不得劫持成幻影工具调用
-// （BUG-20261025-16 同款白名单不变量）。文本信封是 CLI lane 唯一工具
+// 文档性 `{"tool_calls"` JSON 不得劫持成幻影工具调用
+// （同款白名单不变量）。文本信封是 CLI lane 唯一工具
 // 调用通道，过滤只拦名字不可执行的伪调用，不碰机制本身。
 // ============================================================
 

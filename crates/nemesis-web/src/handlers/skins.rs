@@ -303,7 +303,7 @@ impl SkinsHandler {
 // 单一来源；本模块只保留 skins 语义的资产名与解包安装。
 
 /// 官方发布源 Release 的 nightly-skins.zip 附件名——CI 打包链的固定产物
-///（plan §2）。列表 API 与查找在 [`crate::handlers::release_fetch`]。
+///（plan）。列表 API 与查找在 [`crate::handlers::release_fetch`]。
 const RELEASE_ZIP_NAME: &str = "nightly-skins.zip";
 
 /// 官方 Release 安装：GitHub API 近期 Release 列表 → 首个含 nightly-skins.zip
@@ -337,7 +337,7 @@ async fn install_zip_entries(
         let mut entry = archive
             .by_index(i)
             .map_err(|e| format!("ZIP 条目 {i} 不可读：{e}"))?;
-        // zip 9：条目名解码可失败——名字解不出必非合法 .nbskin，逐条容错形态
+        // zip 9：条目名解码可失败——名字解不出必非合法.nbskin，逐条容错形态
         // （与循环内 read_to_end 错误同款：记 errors 不炸整包）。
         let name = match entry.name() {
             Ok(n) => n.to_string(),
@@ -401,7 +401,7 @@ fn import_error(
     )
 }
 
-/// `POST /api/skins/import?overwrite=bool` — 本地 .nbskin 文件导入（raw
+/// `POST /api/skins/import?overwrite=bool` — 本地.nbskin 文件导入（raw
 /// body，前端 `fetch(url, {method:'POST', body: file})` 天然形态）。鉴权与
 /// `/api/upload/image` 同约定；落盘走同一条 [`install_bytes`] 管线（物理闸
 /// 在落盘前，信任全落盘——与 WSAPI `skins.install` 同一语义；落盘名 =

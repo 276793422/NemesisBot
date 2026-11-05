@@ -22,7 +22,7 @@ pub(crate) struct PrecomputedTool {
     pub(crate) duration_ms: u64,
 }
 
-// ：并行批双上限（手法3 背压的 形态）。
+// 并行批双上限（手法3 背压的 形态）。
 // 取宽值防回归：128 调用 / 8 MiB 覆盖任何现实批（模型输出级别的 args），
 // 只有病态大包才被诚实拒绝。
 pub(crate) const PARALLEL_BATCH_MAX_CALLS: usize = 128;
@@ -30,8 +30,8 @@ pub(crate) const PARALLEL_BATCH_MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// 手法1+3：并行批专属准入池（OnceLock 静态单池——跨批/跨 agent loop
 /// 共享同一 CPU 准入信号量与双上限账本；借用形态：执行体借用 `&self`/
-/// `&context` 无法 `'static` spawn，经 [`WorkPool:try_reserve`] 拿账本
-/// 预留 + [`WorkPool:permits`] 拿准入，由调用方 future 自持到执行结束）。
+/// `&context` 无法 `'static` spawn，经 [`WorkPool::try_reserve`] 拿账本
+/// 预留 + [`WorkPool::permits`] 拿准入，由调用方 future 自持到执行结束）。
 ///
 /// pending 上限 = 批调用数上限（**预检=池容量连贯**：预检放行的单批恒可
 /// 整体预留，不会中段撞池；跨 loop 并发大批共享同一账本，超过账本容量的
@@ -73,7 +73,7 @@ impl AgentLoop {
     /// loop replay the `validation_failures` counter exactly as the serial
     /// path would (Invalid → +1; Valid/Fixed → reset to 0).
     ///
-    /// /: concurrently execute an ALL-parallel-safe batch (validated
+    /// concurrently execute an ALL-parallel-safe batch (validated
     /// read-only-or-opted-in by the caller). Each task runs the SAME
     /// execution path as the serial loop's match (`check_tool_args` →
     /// `handle_tool_call_at_depth` or synthesize an Invalid error), gated
@@ -101,12 +101,12 @@ impl AgentLoop {
         context: &RequestContext,
         depth: usize,
         // 压测①a：detached 工具闸随行（串行路径同款裁决，见
-        // [`super:tool_dispatch:environment_constraint_refusal_for`]）——
+        // [`super::tool_dispatch:environment_constraint_refusal_for`]）——
         // 并行安全批（list_dir 等只读工具）同样不得绕过 no_tools / allowed_tools。
         no_tools: bool,
         allowed_tools: Option<Vec<String>>,
         // （profession-capability-evolution）：职能工具围栏随
-        // 行（串行路径同款裁决，同一注册点 [`super:tool_dispatch:
+        // 行（串行路径同款裁决，同一注册点 [`super::tool_dispatch:
         // environment_constraint_refusal_for`]）——只读工具同样不得绕过围栏。
         // 逐 future clone，调用方从 instance config 取值（None/空 = 未围，
         // 恒 `None` 放行）。
@@ -195,7 +195,7 @@ impl AgentLoop {
         // （N 项 + 全部允许/全部拒绝，一次裁决全批）。批号每批新生成，
         // 串行路径不生成、字节不变。
         let batch_id = format!("batch-{}", uuid::Uuid::new_v4());
-        // 修④：逐 future 完成旗标 + 批起点墙钟（中断面
+        // 逐 future 完成旗标 + 批起点墙钟（中断面
         // ToolFinished 的 duration 取批起点——池排队导致的起点偏差可接受，
         // 中断行本就是近似时刻）。
         let batch_started = std::time::Instant::now();
@@ -223,7 +223,7 @@ impl AgentLoop {
                     let start = std::time::Instant::now();
                 // 环境约束预拒统一注册点（detached +
                 // fence 两约束一处声明，与串行路径
-                // [`super:tool_dispatch:environment_constraint_refusal`]
+                // [`super::tool_dispatch:environment_constraint_refusal`]
                 // 同源——文案不外散 inline，新增约束只改注册点一处）。
                 if let Some(refusal) = super::tool_dispatch::environment_constraint_refusal_for(
                     no_tools,
@@ -279,7 +279,7 @@ impl AgentLoop {
                         )
                     }
                 };
-                // 修④：完成旗标在此置位——与 hook 链内
+                // 完成旗标在此置位——与 hook 链内
                 // ToolFinished 发射同点（handle_tool_call_at_depth 返回即事件
                 // 已发），其后到旗标置位之间无 await（同一 poll 内同步完成）
                 // → drop 窗口不存在：旗标 false ⇒ ToolFinished 未发，estop
@@ -292,7 +292,7 @@ impl AgentLoop {
                 }
             }
         });
-        // 修④：biased estop-first select 包住 join_all
+        // biased estop-first select 包住 join_all
         // ——急停在批内窗口到达即中断（旧语义：批跑完、下一轮边界才停，
         // 等待最坏 = 整批墙钟）。中断 = drop join（在飞 future 全部取消；
         // exec 族子进程树由 Job Object RAII + gateway estop sweep 收杀，见
@@ -348,7 +348,7 @@ impl AgentLoop {
     }
 
     /// prompt-pack pro：工具描述分档取值单点。Pro 体系查
-    /// [`crate:prompt:tool_description`] 档位表（mini→lean、normal/big→
+    /// [`crate::prompt:tool_description`] 档位表（mini→lean、normal/big→
     /// full 优先否则 lean，未命中回落注册表原文）；Classic 体系恒回落
     /// 原文（字节不变）。`build_tool_defs`（含恢复环经
     /// `effective_tool_defs` 的重建）都走这里。
@@ -407,7 +407,7 @@ impl AgentLoop {
         // `{"type":"object"}`），模型按需经 `tools_schema_get` 取回完整
         // schema（取回过的名字进 per-session 解锁账，build_messages 的
         // 「已解锁 schema 注记」节持续携带）。档位策略见
-        // [`Self:current_lazy_tool_schema`]；lazy off = 恒 false，字节零变化。
+        // [`Self::current_lazy_tool_schema`]；lazy off = 恒 false，字节零变化。
         let schema_lazy = self.current_lazy_tool_schema();
         // (devtool-upgrade): Plan 模式第四过滤层——只读白名单
         // ∩（MCP 前缀工具与 spawn 豁免：MCP 语义未知不猜；spawn 保留供给、
@@ -476,7 +476,7 @@ impl AgentLoop {
                     || name.starts_with("mcp_")
                     || name.as_str() == "spawn"
             })
-            // ：present_plan 只在 plan 模式供给（build 模式下
+            // present_plan 只在 plan 模式供给（build 模式下
             // 调用无意义且工具内已诚实报错——供给+调用双闸对齐）。
             .filter(|name| name.as_str() != "present_plan" || plan_mode)
             .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
@@ -516,7 +516,7 @@ impl AgentLoop {
         let defs = self.build_tool_defs();
         // 环境约束供给面过滤统一注册点（detached 白名单
         // + 职能围栏一处声明，与派发预拒
-        // [`super:tool_dispatch:environment_constraint_refusal`] 同源双端
+        // [`super::tool_dispatch:environment_constraint_refusal`] 同源双端
         // 对齐——供给闸只管 defs 可见性，上游端点注入的调用由派发闸现场
         // 裁决）。`question` 豁免照旧在过滤函数内生效（围栏内任务向人求助
         // 的唯一通道）。loop 级 config `tools` 恒空 → 主 loop / 普通对话 /
@@ -533,7 +533,7 @@ impl AgentLoop {
         self.apply_tool_doc_folding(filtered, instance)
     }
 
-    /// : read `agents.tool_doc_folding` from the current config
+    /// read `agents.tool_doc_folding` from the current config
     /// generation (世代快照读 — the dashboard/CLI can flip it while the
     /// gateway runs; new value lands next round via the round-start
     /// publication). Absent section, no generation (standalone loop / 绑定后
@@ -561,8 +561,8 @@ impl AgentLoop {
     /// effect from the next turn without restarting the loop). Absent key, no
     /// generation (standalone loop) → empty list (nothing hidden).
     ///
-    /// ：与 per-loop `extra_hidden_tools`
-    /// （自建 agent tool_policy 折算，[`Self:set_extra_hidden_tools`]）
+    /// 与 per-loop `extra_hidden_tools`
+    /// （自建 agent tool_policy 折算，[`Self::set_extra_hidden_tools`]）
     /// 在此单点合并——供给闸（build_tool_defs）与 dispatch 闸共用本函数，
     /// 合并一处即双闸天然对齐。config 侧缺键/无代不影响 extra
     /// 侧生效；两侧去重合并，顺序不承诺（消费方做通配匹配不做全量比较）。
@@ -611,7 +611,7 @@ impl AgentLoop {
     ///   断供，供给白名单必含 tools_schema_get）；
     /// - Big | Auto → 恒全量（旗舰不缺上下文预算，惰性徒增取回往返）；
     /// - Normal → config `agents.lazy_tool_schema`（缺省 true=惰性，用户
-    ///   推荐方案；世代快照读同 [`Self:current_mcp_lazy_supply`]
+    ///   推荐方案；世代快照读同 [`Self::current_mcp_lazy_supply`]
     ///   世代化模式，无 config_path/缺键/坏 JSON = 缺省）。
     ///
     /// 与 mcp_lazy_supply 正交：那是 MCP 长尾**名面**两级化，这是全部工具
@@ -748,7 +748,7 @@ impl AgentLoop {
             .collect()
     }
 
-    /// : semantic tool-documentation folding, applied AFTER the
+    /// semantic tool-documentation folding, applied AFTER the
     /// tier filter and ORTHOGONAL to tool supply — folded tools stay
     /// callable with their full parameter schema; only the description text
     /// shrinks. Returns the defs byte-unchanged unless EVERY gate opens:
@@ -851,7 +851,7 @@ impl AgentLoop {
     }
 
     /// 量测：tool defs 供给面字节量测——
-    /// 当前生效 defs（[`Self:build_tool_defs`] 单一真相源）序列化为
+    /// 当前生效 defs（[`Self::build_tool_defs`] 统一定义）序列化为
     /// JSON 的字节数 + 工具个数，供 `chat.context_status` 与 agent-bench
     /// 记分卡消费（惰性 schema 改造 -建设的前后对比基线）。
     ///
@@ -879,8 +879,8 @@ impl AgentLoop {
 /// when it ends with `*`, as a prefix (`mcp_*` hides every MCP tool). A bare
 /// `*` hides everything. Matching is case-sensitive (tool names are
 /// lowercase by convention). Shared by BOTH gates — the supply side
-/// ([`AgentLoop:build_tool_defs`]) and the dispatch side
-/// ([`AgentLoop:handle_tool_call_at_depth`]) — so the two can never
+/// ([`AgentLoop::build_tool_defs`]) and the dispatch side
+/// ([`AgentLoop::handle_tool_call_at_depth`]) — so the two can never
 /// disagree about what is hidden.
 pub(crate) fn tool_name_matches_hidden(entries: &[String], name: &str) -> bool {
     entries.iter().any(|entry| {
@@ -915,8 +915,8 @@ pub(crate) fn active_tier_rank(tier: nemesis_types::capability::ModelTier) -> u8
     }
 }
 
-/// 建设：args_validator Invalid 回灌的单一真相源（并行预计算臂
-/// [`AgentLoop:precompute_tools`] 与串行批 [`AgentLoop:run_batch`]
+/// 建设：args_validator Invalid 回灌的统一定义（并行预计算臂
+/// [`AgentLoop::precompute_tools`] 与串行批 [`AgentLoop::run_batch`]
 /// 两处同源消费）。惰性供给开启时折叠占位使模型看不到真实参数面，
 /// 首调错参是预期形态——回灌附取回指引，补齐自纠通路（否则小模型
 /// 会反复盲试撞尽 validation 预算）。取回工具自身校验失败不指引

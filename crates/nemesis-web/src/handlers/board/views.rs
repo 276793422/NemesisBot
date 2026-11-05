@@ -122,7 +122,7 @@ pub(super) fn build_patch(data: &serde_json::Value) -> IssuePatch {
 }
 
 /// WSAPI issue 载荷 → NewIssue（pub：agent 工具 `board_issue create` 复用
-/// 同一份字段解析/默认值/assignee 配对语义——单一真相源）。
+/// 同一份字段解析/默认值/assignee 配对语义——统一定义）。
 pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssue, String> {
     let mut ni = NewIssue {
         title: get_str(data, "title")?,

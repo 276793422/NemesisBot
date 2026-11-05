@@ -1,4 +1,4 @@
-//! Tests for `bootstrap`（S12 覆盖率冲刺，2026-08-26）。
+//! Tests for `bootstrap`（覆盖率冲刺，2026-08-26）。
 //!
 //! 可达面：常量/纯函数（format_speed）、目录布局探测（find_file / find_lib_dir
 //! 四种布局 + bail）、文件操作（copy_libs_from / dir_has_any_target_lib）、
@@ -65,7 +65,7 @@ fn init_sherpa_missing_main_lib_bails_with_hint() {
 }
 
 // ===========================================================================
-// R6 覆盖率批次（2026-08-27）：init_sherpa 哑 DLL 臂 + run() 组装路径
+// 覆盖率批次：init_sherpa 哑 DLL 臂 + run() 组装路径
 // ===========================================================================
 
 #[test]
@@ -336,7 +336,7 @@ fn download_aec_lib_existing_dll_returns_early_without_network() {
 }
 
 // ===========================================================================
-// Wave4 覆盖批次（2026-09-25）：下载路径真覆盖。
+// Wave4 覆盖批次：下载路径真覆盖。
 //
 // 上一版把 download_runtime_libs / try_download_and_extract / try_download_aec
 // / download_to 全列结构性豁免（URL 硬编码真网络）。但这些函数的 URL 都是
@@ -357,14 +357,14 @@ mod download_paths {
 
     /// 暂存目录按进程 ID 派生（nextest 纪律，CLAUDE.md「测试命令」节）：nextest
     /// 每个测试独立进程，进程内 DOWNLOAD_TMP_LOCK 管不了跨进程互踩——固定共享
-    /// 目录会被并行测试写花（实录 2026-10-10：本地全量 nextest
+    /// 目录会被并行测试写花（本地全量 nextest
     /// try_download_and_extract_bad_archive_bails_and_cleans_up 假红，单测必绿；
     /// cargo test 单进程全绿掩盖至今）。生产调用方传 canonical 路径
     /// （bootstrap::sherpa_staging_dir），测试传 pid 派生目录，跨进程各走各的；
     /// 同进程（cargo test 线程并行）pid 相同，DOWNLOAD_TMP_LOCK 继续承担串行。
     ///
     /// 锁获取一律中毒恢复（PoisonError::into_inner）：一个测试断言失败 panic
-    /// 不该把同锁其余测试打成连锁假红（实录 2026-10-25：AEC 全链路测试曾因
+    /// 不该把同锁其余测试打成连锁假红（AEC 全链路测试曾因
     /// 生产 staging 缓存残留翻车，连锁 9 假红掩盖真实失败面）。此锁只管
     /// 目录互斥，中毒后继续持有不产生额外互踩。
     static DOWNLOAD_TMP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -468,7 +468,7 @@ mod download_paths {
     }
 
     // -------------------------------------------------------------------
-    // try_download_aec —— wiremock 全成功臂（下载 → .part 改名 → tar 解压
+    // try_download_aec —— wiremock 全成功臂（下载 →.part 改名 → tar 解压
     // → find_file → 拷贝 aec.dll）
     // -------------------------------------------------------------------
 
@@ -580,7 +580,7 @@ mod download_paths {
                     .unwrap_err()
             );
             assert!(err.contains("HTTP 404"), "{err}");
-            // 失败后归档不该被改名成最终名（还在 .part 或不存在）
+            // 失败后归档不该被改名成最终名（还在.part 或不存在）
             assert!(!aec_tmp_guard().join(AEC_WIN_ARTIFACT).exists());
         });
 
@@ -594,7 +594,7 @@ mod download_paths {
 
     // -------------------------------------------------------------------
     // try_download_and_extract —— wiremock 全成功臂（sherpa 布局）
-    // 下载 → .part 改名 → tar -xjf → find_lib_dir → copy_libs_from
+    // 下载 →.part 改名 → tar -xjf → find_lib_dir → copy_libs_from
     // -------------------------------------------------------------------
 
     #[test]
@@ -743,7 +743,7 @@ mod download_paths {
                 .unwrap_err()
             );
             assert!(err.contains("tar extraction failed"), "{err}");
-            // bail 前删了归档 + .part
+            // bail 前删了归档 +.part
             let archive = voice_setup_tmp().join(format!("{}.tar.bz2", SHERPA_RELEASE_NAME));
             assert!(
                 !archive.exists(),
@@ -793,7 +793,7 @@ mod download_paths {
     }
 }
 
-// ---- BUG-20261030-195: bootstrap 解压目录残留清理（必须成功才能继续）----
+// ----: bootstrap 解压目录残留清理（必须成功才能继续）----
 // helper 与下载函数同 cfg（windows + download）；Linux 无此路径。
 
 #[cfg(all(target_os = "windows", feature = "download"))]

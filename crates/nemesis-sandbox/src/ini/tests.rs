@@ -35,7 +35,7 @@ fn write_sandboxie_ini_emits_allow_network_directive() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：subscriber 下让
+// 覆盖率批次（quality-hardening goal）：subscriber 下让
 // write_sandboxie_ini 的 info! 参数行真实求值；并钉 ini 内容的关键安全行。
 // ---------------------------------------------------------------------------
 
@@ -68,7 +68,7 @@ fn write_ini_logs_and_pins_security_directives() {
 }
 
 // ---------------------------------------------------------------------------
-// P3 ② per-agent 常驻盒（NemesisAgent_*）：upsert 体系 + 指令集钉死。
+// ② per-agent 常驻盒（NemesisAgent_*）：upsert 体系 + 指令集钉死。
 // ---------------------------------------------------------------------------
 
 /// `agent_pipe_nt_pattern` 的字面量形态：ini `OpenPipePath` 允许清单必须与
@@ -82,7 +82,7 @@ fn agent_pipe_nt_pattern_literal_pin() {
     );
 }
 
-/// BUG-20261104-387 互钉面：pattern 的消毒形态与 nemesis-agent 侧
+/// 互钉面：pattern 的消毒形态与 nemesis-agent 侧
 /// `agent_pipe_name` 的消毒实现用同一字面量组钉死（那边测试在
 /// executor_pipe/tests.rs::agent_pipe_name_sanitized_matches_ini_openpipepath_
 /// shape）。任意一侧消毒规则漂移（一侧消毒一侧原始）即两侧字面量断言脱钩，
@@ -113,7 +113,7 @@ fn agent_box_name_prefix_and_sanitization() {
     assert_eq!(agent_box_name(""), "NemesisAgent_");
 }
 
-/// `agent_box_directives` 指令集钉死（P3 ② 安全命门行——改任何一行都会被
+/// `agent_box_directives` 指令集钉死（② 安全命门行——改任何一行都会被
 /// 这条测试抓住）：Enabled/DropAdminRights/OpenPipePath/FileRootPath +
 /// **两行 OpenFilePath 写穿透**（journal `.runtime` + browser-profile 登录态）。
 #[test]
@@ -141,7 +141,7 @@ fn agent_box_directives_pin() {
         )
     );
     // 写穿透两行：journal 必须（崩溃恢复/幂等记账在真盘）+ 浏览器登录态
-    // 必须（T6 浏览器身份跨任务保持）；其余工作区写入保持虚拟化。
+    // 必须（浏览器身份跨任务保持）；其余工作区写入保持虚拟化。
     assert_eq!(
         d[5],
         (

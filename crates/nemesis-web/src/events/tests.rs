@@ -548,7 +548,7 @@ fn l2_concurrent_publish_keeps_replay_buffer_in_seq_order() {
     assert!(!gap);
     assert_eq!(events.len(), threads * per_thread, "全部事件必须在窗口内");
     // 严格升序 + 完整覆盖 = seq 序与缓冲序一致（锁外分配的经典违例形态
-    // 是相邻交换对 [.., k+1, k, ..]）。
+    // 是相邻交换对 [.., k+1, k,..]）。
     for (idx, e) in events.iter().enumerate() {
         assert_eq!(e.seq, idx as u64 + 1, "replay 必须严格升序且无洞");
     }

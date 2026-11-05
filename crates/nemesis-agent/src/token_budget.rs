@@ -1,4 +1,4 @@
-//! 会话 token 预算闸（集群无人值守硬化）——纯类型 + 会话账本 + 文案单一真相源。
+//! 会话 token 预算闸（集群无人值守硬化）——纯类型 + 会话账本 + 文案统一定义。
 //!
 //! 背景：看板重派全部收敛到同一 worker 会话（`cluster_rpc:{source}/board:{n}`）
 //! 且每次带全量旧历史重入，既有守卫全部是单请求维度——唯一累计维度闸
@@ -11,13 +11,13 @@
 //! 不改现网行为）**。注意与 `max_tool_iterations` 的「0 = 不限」惯例相反——
 //! 本键一族（含 `board.budget.*`）0 = 关，文档与提示词一律写死。
 //! 计费口径 = 完整输入（prompt + cache_creation + cache_read， 2026-10-22
-//! 补全——loop 侧 `loop/token_budget.rs:usage_full_input` 单一真相源）+
-//! output，与 `DataStore:aggregate_session_usage` 账本 SQL 同源——累计器
+//! 补全——loop 侧 `loop/token_budget.rs::usage_full_input` 统一定义）+
+//! output，与 `DataStore::aggregate_session_usage` 账本 SQL 同源——累计器
 //! 与底账两边公式一致才不会互相打架。
 
 use std::collections::HashMap;
 
-/// 硬停/拒接文案的单一真相源前缀：worker `classify_terminal_failure`
+/// 硬停/拒接文案的统一定义前缀：worker `classify_terminal_failure`
 /// 按它识别 `fail_class = token_budget`，board_review 据此转人工不重派。
 pub const SESSION_TOKEN_BUDGET_MARKER: &str = "💰 会话 token 预算耗尽";
 
@@ -29,7 +29,7 @@ pub(crate) const SESSION_BUDGET_SOFT_RATIO: u64 = 75;
 /// 自愈，清账只损失一次 DB 查询）。
 const SESSION_BUDGET_MAX_ENTRIES: usize = 512;
 
-/// loop 侧硬停文案（≥100%）：本轮 break 后经 `AgentEvent:Error` 出站，
+/// loop 侧硬停文案（≥100%）：本轮 break 后经 `AgentEvent::Error` 出站，
 /// worker `classify_terminal_failure` 按前缀识别为 `token_budget`。
 pub fn hard_stop_notice(used: u64, budget: u64) -> String {
     format!(

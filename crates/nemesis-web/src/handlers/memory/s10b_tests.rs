@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): manager-dependent arms of
+//! (quality-hardening goal 冲刺, web): manager-dependent arms of
 //! the memory handler + offline-safe model install + helper edge cases.
 //!
 //! Existing coverage (`tests.rs` + `memory_extra_tests.rs`) runs every command

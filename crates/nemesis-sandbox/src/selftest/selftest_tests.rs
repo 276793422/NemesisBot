@@ -1,7 +1,7 @@
-//! G7 (D2)：selftest 探针单测（无沙盒直跑）——
+//! selftest 探针单测（无沙盒直跑）——
 //! 对照组必须成功；无沙盒时外部写/网络探测如实报告「未拦截」。
 //! 拦截语义（landlock/bwrap/Seatbelt 生效时的 blocked:true）由 WSL2 真机
-//! 验收（R2）覆盖 —— 单测环境没有沙盒，无法也不应伪造 blocked 结果。
+//! 验收覆盖 —— 单测环境没有沙盒，无法也不应伪造 blocked 结果。
 
 use super::*;
 use std::path::PathBuf;
@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// 共享同一 PID（同一文件名）。占位目录测试存在期间，并发断言「外部写
 /// 允许」的测试会撞上目录 → os error 5 → 假失败。串行化兜底。
 /// `pub(super)`：cov_tests 的 probe 测试也写同一共享路径，必须拿同一把锁
-/// （2026-09-27 实证：解锁的 cov_tests 与占位目录测试并发 → 假红漂移）。
+/// （实证：解锁的 cov_tests 与占位目录测试并发 → 假红漂移）。
 pub(super) static AGT_SELFTEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
@@ -67,7 +67,7 @@ fn child_out_serializes_single_compact_line_without_null_error() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：两个 Err 臂 + emit 的成功臂。
+// AGT 覆盖率批次：两个 Err 臂 + emit 的成功臂。
 // - 外部写 Err 臂：探测目标路径被同名**目录**占位 → fs::write 必败 →
 //   blocked=true（诚实证据臂，无需真沙盒/防火墙）。
 // - 对照组 Err 臂：workspace 挂在**文件**路径之下 → join 后写入必败。

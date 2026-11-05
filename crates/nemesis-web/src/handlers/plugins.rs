@@ -9,7 +9,7 @@
 //! 不依赖 nemesis-verify；槽空 = dormant 诚实降级）/ 未知库清单（只列出，
 //! 不装载）。`wasm.*` 系列代理到 handlers/plugins_wasm.rs（宿主运行时管理
 //! 面），其中 `wasm.devkit_download` 自处理。编译期子系统 feature 状态不在
-//! 此处（→ system.features）。开关写有副作用（长期记忆文件），其余只读。
+//! 此处（system.features）。开关写有副作用（长期记忆文件），其余只读。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::hooks::ToolHook;
@@ -38,7 +38,7 @@ fn signature_dormant_fallback() -> serde_json::Value {
 
 /// WASM 插件开发包（devkit）的 Release 附件名与落位子目录——CI
 ///（daily-release，仅 linux，平台无关源码包）打包链的固定产物。下载管线
-/// 与 skins 同源（[`crate::handlers::release_fetch`]，SSRF 逐跳闸 + 上限）。
+/// 与 skins 同源（[`crate::handlers:release_fetch`]，SSRF 逐跳闸 + 上限）。
 #[cfg(feature = "plugins-wasm")]
 const DEVKIT_ZIP_NAME: &str = "nightly-wasm-devkit.zip";
 

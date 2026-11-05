@@ -796,7 +796,7 @@ async fn test_clawhub_registry_trait_impl() {
 }
 
 // ============================================================
-// S5 coverage: JoinError (panic) arm, "all registries failed"
+// coverage: JoinError (panic) arm, "all registries failed"
 // with task error, and SkillRegistry delegation impls
 // (GitHub 508-536 / ClawHub 541-569 / ModelScope 574-601)
 // ============================================================

@@ -1,6 +1,6 @@
-//! notify —— 报警条件 DSL 运行时求值（T2.3）。
+//! notify —— 报警条件 DSL 运行时求值（.3）。
 //!
-//! 语法与 [`nemesis_ziwei_profile::model::validate_notify_expr`]（入库校验）
+//! 语法与 [`nemesis_ziwei_profile::model:validate_notify_expr`]（入库校验）
 //! 同源：`字段 操作符 字面量`，操作符 `== != >= <= > <`，字面量 = 标识符
 //! 或数。这里做**运行时**解析 + 对已解码结构快照（serde_json object）求值：
 //!
@@ -8,7 +8,7 @@
 //! - 数字字面量：与字段数值比较（`value>90`）；
 //! - 字段缺失 / 类型不合 = 不匹配（诚实无异常，不猜）。
 //!
-//! 自写解析不求值任意表达式——profile 是数据不是脚本（总控 §2.2）。
+//! 自写解析不求值任意表达式——profile 是数据不是脚本（总控）。
 
 /// 比较操作符。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

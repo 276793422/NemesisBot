@@ -80,7 +80,7 @@ pub struct UsbEventSource {
     /// The spawned `udevadm monitor` child, if running. Shared with the reader
     /// thread so either exit path (`stop()` or receiver drop) can reap it —
     /// udevadm monitor never exits on its own, so dropping the handle here
-    /// would leak one thread + one process per start() (2026-09-02: 3 orphans
+    /// would leak one thread + one process per start() (3 orphans
     /// hung the remote Linux nightly's stdout pipe; root-fixed here).
     child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
 }
@@ -128,7 +128,7 @@ impl EventSource for UsbEventSource {
             let (tx, rx) = tokio::sync::mpsc::channel(100);
 
             // Spawn udevadm monitor
-            // W1（BUG-20261028-126 伴生）：spawn 失败此前被 `if let Ok` 吞掉，
+            // （伴生）：spawn 失败此前被 `if let Ok` 吞掉，
             // udevadm 缺失时返回 Ok(rx) 假装在监控（事件永不到达、无错误面）。
             // 诚实传播 Err，由 DeviceService::start 的 source 循环记 error。
             let mut child = std::process::Command::new("udevadm")
@@ -187,7 +187,7 @@ impl EventSource for UsbEventSource {
 }
 
 /// Emitter of a `udevadm monitor` block, named by the block header line
-/// (`KERNEL[ts] add /devices/...` vs `UDEV  [ts] add /devices/...`).
+/// (`KERNEL[ts] add /devices/...` vs `UDEV [ts] add /devices/...`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(any(target_os = "linux", test))]
 enum MonitorBlockSource {
@@ -196,8 +196,8 @@ enum MonitorBlockSource {
 }
 
 /// Classify a `udevadm monitor --property` line as a block header.
-/// Header lines carry the emitter tag followed by a `[` (`KERNEL[ts] ...`,
-/// `UDEV  [ts] ...`); property lines are KEY=value and banner lines lack
+/// Header lines carry the emitter tag followed by a `[` (`KERNEL[ts]...`,
+/// `UDEV [ts]...`); property lines are KEY=value and banner lines lack
 /// the bracket — all three must not match.
 #[cfg(any(target_os = "linux", test))]
 fn parse_block_header(line: &str) -> Option<MonitorBlockSource> {
@@ -253,7 +253,7 @@ impl MonitorParser {
 /// event (UDEV block, full property set). Emitting both duplicated every
 /// notification (and the KERNEL block rendered as an "Unknown Device").
 /// Skipping KERNEL loses no property — the UDEV block is the same physical
-/// event with the enriched set (BUG-20261030-194).
+/// event with the enriched set.
 ///
 /// Actions other than add/remove/change (bind/unbind driver attachment,
 /// online/offline power transitions) are not physical connect/disconnect

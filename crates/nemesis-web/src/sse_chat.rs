@@ -234,7 +234,7 @@ pub(crate) async fn handle_chat_stream(
 #[cfg(test)]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): explicit-model
+// (, quality-hardening goal 冲刺 web): explicit-model
 // passthrough arm + unterminated backend stream still gets handler done event.
 #[cfg(test)]
 mod s10b_tests;

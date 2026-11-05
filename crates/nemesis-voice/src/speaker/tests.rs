@@ -108,7 +108,7 @@ fn cosine_similarity_large_vectors_do_not_overflow_to_nan() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：引擎构造分支 + FFI 结构甄别
+// 覆盖率冲刺：引擎构造分支 + FFI 结构甄别
 // 无 DLL 时 sherpa_fn 包装器在符号查找处 panic "sherpa-onnx not initialized"
 // ——should_panic 测试正好覆盖 #[repr(C)] 结构构造后到 FFI 调用之间的代码。
 // ===========================================================================
@@ -147,7 +147,7 @@ fn speaker_manager_new_panics_at_symbol_lookup() {
 }
 
 // ===========================================================================
-// R6（2026-08-27）：白盒 null 指针 → embed / manager 各方法的封送路径
+// 白盒 null 指针 → embed / manager 各方法的封送路径
 // （走到 FFI 符号查找处 panic）。剩余不可达 = FFI 成功返回值语义（真 DLL）。
 // 注意：两个引擎的 Drop 同样在 null 上 panic——持有 null 实例的测试一律
 // `mem::forget` 收尾；方法 panic 用 `catch_panic_msg` 截住展开（should_panic

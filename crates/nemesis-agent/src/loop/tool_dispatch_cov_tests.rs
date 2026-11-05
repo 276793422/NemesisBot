@@ -325,7 +325,7 @@ async fn dispatch_ok_tool_returns_result() {
     assert_eq!(out, "stub ok");
 }
 
-/// ：工具 panic 被隔离为结构化失败——
+/// 工具 panic 被隔离为结构化失败——
 /// handle_tool_call 正常返回（loop task 不被 unwind 炸掉），结果带
 /// "Tool error:" + "tool panicked" 双锚（tool_result_indicates_error 等
 /// 下游守卫按既有失败语义识别），且 loop 后续调用照常工作。

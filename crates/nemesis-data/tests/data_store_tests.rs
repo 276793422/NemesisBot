@@ -699,7 +699,7 @@ fn test_trend_data_format() {
 
     // Insert a log at a specific time
     let mut log = create_test_log(1, "trace-1", "gpt-4");
-    log.created_at = 1704067200; // 2024-01-01 00:00:00 UTC
+    log.created_at = 1704067200; // 00:00:00 UTC
     store
         .insert_request_log(&log)
         .expect("Failed to insert log");
@@ -780,14 +780,14 @@ fn test_large_cost_aggregation() {
         .query_summary(0, 2000000000)
         .expect("Failed to query summary");
 
-    // Sum of 0.01, 0.02, ..., 1.00 = 0.01 * (1 + 2 + ... + 100) = 0.01 * 5050 = 50.50
+    // Sum of 0.01, 0.02,..., 1.00 = 0.01 * (1 + 2 +... + 100) = 0.01 * 5050 = 50.50
     assert!((summary.total_cost_usd - 50.50).abs() < 0.01);
 
     let _ = fs::remove_file(&db_path);
 }
 
 // ---------------------------------------------------------------------------
-// P2B 模型工具健康（tool_validation_stats，2026-09-12 NB-15 根修配套）
+// P2B 模型工具健康（tool_validation_stats， 根修配套）
 // ---------------------------------------------------------------------------
 
 #[test]

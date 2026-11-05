@@ -15,12 +15,12 @@ use tracing::warn;
 
 /// （多模态，goal）：agent LlmMessage → provider Message 的统一
 /// 转换。gateway 的 [`ProviderAdapter`] 与 CLI `agent` 命令的 adapter 共用
-/// （单一真相源，此前两处手写重复的转换收敛于此）。
+/// （统一定义，此前两处手写重复的转换收敛于此）。
 ///
 /// 转换规则：`images` 为空 → 纯文本字符串形态（与历史请求逐字节一致，prompt
 /// cache 前缀不破）；`images` 非空 → `MessageContent::Parts` 数组形态——文本
 /// part 在前（非空时），每张图片产出 `[图片: <path>]` 标注 part + 图片 part
-/// （Base64；`detail: None` 走服务端 auto，goal .2 锁定的线上形态）。
+/// （Base64；`detail: None` 走服务端 auto，goal.2 锁定的线上形态）。
 pub fn agent_message_to_provider(
     m: nemesis_agent::r#loop::LlmMessage,
 ) -> nemesis_providers::types::Message {
@@ -110,7 +110,7 @@ fn map_provider_error(e: &nemesis_providers::failover::FailoverError) -> String 
 }
 
 /// agent 层 ChatOptions → provider 层（chat / chat_streamed 共用转换，
-/// 单一真相源——此前内联在 chat()）。
+/// 单一权威定义——此前内联在 chat()）。
 fn agent_options_to_provider(
     options: Option<nemesis_agent::types::ChatOptions>,
 ) -> nemesis_providers::types::ChatOptions {
@@ -180,7 +180,7 @@ fn provider_response_to_agent(
         tool_calls,
         finished,
         reasoning_content: resp.reasoning_content,
-        // §6.2：归一化停止原因透传（主 loop 输出翻倍阶梯判定输入）。
+        // 归一化停止原因透传（主 loop 输出翻倍阶梯判定输入）。
         finish_reason: Some(resp.finish_reason),
         escalated_to: None,
         usage: resp
@@ -360,7 +360,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                 if c.reasoning_content.is_some() {
                     reasoning_content = c.reasoning_content;
                 }
-                // §6.2：终态块的归一化停止原因（输出翻倍阶梯判定输入）。
+                // 终态块的归一化停止原因（输出翻倍阶梯判定输入）。
                 if c.finish_reason.is_some() {
                     finish_reason = c.finish_reason;
                 }
@@ -421,7 +421,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             tool_calls,
             finished,
             reasoning_content,
-            // §6.2：归一化停止原因透传；EOF 无 finish_reason（上游早断）=
+            // 归一化停止原因透传；EOF 无 finish_reason（上游早断）=
             // None（不虚构终止原因，阶梯判定按缺省走）。
             finish_reason,
             escalated_to: None,
@@ -538,7 +538,7 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             extra: HashMap::new(),
         };
 
-        // 杂务旁路护栏（nemesis_agent::loop::bypass_llm，重试版）：墙钟超时
+        // 杂务旁路护栏（nemesis_agent::loop:bypass_llm，重试版）：墙钟超时
         // + 空输出校验 + 空输出/瞬态失败同窗口重试一次——Forge 评审/反思/
         // 草稿是千 token 级短输出，挂死连接不拖住后台学习循环；空文本不再
         // 当成功结果透传（下游本就把空串当无效），采样抖动由重试兜底。

@@ -765,7 +765,7 @@ fn test_is_path_within_dir_nonexistent_same_path_uses_string_compare() {
     assert!(is_path_within_dir(&p, &p));
 }
 
-/// BUG-20261025-82 回归锁：回退分支（两路径都不存在 → 纯字符串比较）对
+/// 回归锁：回退分支（两路径都不存在 → 纯字符串比较）对
 /// **嵌套**不存在的路径必须判内。旧 rest 判定（空或以分隔符开头）在
 /// normalize_path_str 尾分隔符归一后对嵌套形态（rest = "sub/file.txt/"）
 /// 恒 false——回退分支退化为「仅精确相等返回 true」。
@@ -791,7 +791,7 @@ fn test_is_path_within_dir_fallback_dotdot_escape_false() {
 }
 
 // ---------------------------------------------------------------------------
-// S1 coverage batch (2026-08-26): `if let Some(parent)` None arms.
+// coverage batch: `if let Some(parent)` None arms.
 // Root-drive targets ("c:\") have parent() == None, exercising the closing
 // brace regions at lines 58 / 86 (extract) and 131 (create_zip).
 // ---------------------------------------------------------------------------
@@ -799,7 +799,7 @@ fn test_is_path_within_dir_fallback_dotdot_escape_false() {
 #[test]
 #[cfg(windows)]
 fn test_s1_extract_root_drive_entry_parent_none() {
-    // Entry name "c:" (prefix-only, Windows drive prefix): R62 前该形态漏过
+    // Entry name "c:" (prefix-only, Windows drive prefix): 前该形态漏过
     // 两道旧检查（parent()==None 跳过 canonical 检查、子串兜底不匹配
     // "c:"），晚到 File::create("c:") 才失败；现在被 is_unsafe_rel_path
     // 词法闸提前拒绝——同形态恶意条目，拒绝点更早、消息更明确。
@@ -895,7 +895,7 @@ fn test_create_zip_target_is_directory_fails() {
     assert!(err.contains("failed to create zip file"), "{err}");
 }
 
-/// R62 回归钉：is_unsafe_rel_path 词法闸（归档穿越判定单一真相源）。
+/// 回归钉：is_unsafe_rel_path 词法闸（归档穿越判定统一定义）。
 /// canonicalize 型检查在父目录不存在时被静默跳过，词法闸不依赖文件系统状态。
 #[test]
 fn test_is_unsafe_rel_path() {
@@ -942,7 +942,7 @@ fn test_extract_zip_rejects_traversal_entry() {
     assert!(err.contains("zip slip detected"), "{err}");
 }
 
-// ===== read_entry_capped（BUG 2026-10-29 横扫角度 B：解压无界入内存）=====
+// ===== read_entry_capped（横扫角度 B：解压无界入内存）=====
 
 #[test]
 fn test_read_entry_capped_under_cap_is_verbatim() {

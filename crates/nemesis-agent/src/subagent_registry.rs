@@ -6,12 +6,12 @@
 //! web 看板评审——不进列表）。
 //!
 //! 落盘：`<workspace>/logs/subagent_tasks/tasks.json`（每次变更原子重写，
-//! tmp + rename）。重启回读时 Running 条目诚实降级为 [`SubagentStatus:Interrupted`]
+//! tmp + rename）。重启回读时 Running 条目诚实降级为 [`SubagentStatus::Interrupted`]
 //! （进程重启后无从确认死活，不装作还在跑）。容量上限 [`MAX_TASKS`]（500），
 //! 超限逐出最老的终态条目（全 Running 时逐最老，保内存有界）。
 //!
 //! 全局单例 [`global`]：gateway 启动早期 [`init`] 注入落盘路径（幂等）；
-//! 未 init = 纯内存态（测试/裸构建）。测试用 [`SubagentRegistry:new`]
+//! 未 init = 纯内存态（测试/裸构建）。测试用 [`SubagentRegistry::new`]
 //! 本地实例（OnceLock 不可重置）。
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ pub const MAX_TASKS: usize = 500;
 const EXCERPT_TASK: usize = 500;
 const EXCERPT_RESULT: usize = 400;
 
-/// 子代理任务状态（序列化 snake_case；单一真相源，前端直接消费）。
+/// 子代理任务状态（序列化 snake_case；统一定义，前端直接消费）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentStatus {
@@ -279,10 +279,10 @@ impl SubagentRegistry {
         drop(inner);
     }
 
-    /// 原子落盘（[`nemesis_utils:write_file_atomic`]：pid+序数+nanos 唯一
+    /// 原子落盘（[`nemesis_utils::write_file_atomic`]：pid+序数+nanos 唯一
     /// tmp 名 + create_new + rename 覆盖）。并发 begin/
     /// finish/cancel 是功能常态路径（多子代理同时收尾），**禁止**固定 tmp
-    /// 名——两个 persist 竞争同一路径时 `fs:write` 交错可产出坏混合体，
+    /// 名——两个 persist 竞争同一路径时 `fs::write` 交错可产出坏混合体，
     /// rename 会把好账本顶成坏账本（重启 load 失败 = 整册清空）；Windows
     /// 下对端持打开句柄时固定名 rename 共享违规失败还看时序运气。失败只
     /// WARN（注册表故障不阻断 spawn）；unix 0600（台账含任务文本摘录）。

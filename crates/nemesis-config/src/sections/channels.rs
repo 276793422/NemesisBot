@@ -353,7 +353,7 @@ pub struct ExternalConfig {
 // gateway 装配点统一经 resolve_secret_or_empty / resolve_auth_token_or_random
 // 解析（见 web_init.rs 各转换臂）。
 
-/// Matrix 通道配置（对应 `nemesis_channels::matrix::MatrixConfig`）。
+/// Matrix 通道配置（对应 `nemesis_channels::matrix:MatrixConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MatrixConfig {
     #[serde(default)]
@@ -377,7 +377,7 @@ pub struct MatrixConfig {
     pub sync_to: Vec<String>,
 }
 
-/// IRC 通道配置（对应 `nemesis_channels::irc::IRCConfig`）。
+/// IRC 通道配置（对应 `nemesis_channels::irc:IRCConfig`）。
 /// Default 对齐通道侧（use_tls=true、退避 5/300）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -428,7 +428,7 @@ impl Default for IrcConfig {
     }
 }
 
-/// Signal 通道配置（对应 `nemesis_channels::signal::SignalConfig`，
+/// Signal 通道配置（对应 `nemesis_channels::signal:SignalConfig`，
 /// signal-cli-rest-api 桥接形态）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SignalConfig {
@@ -446,7 +446,7 @@ pub struct SignalConfig {
     pub sync_to: Vec<String>,
 }
 
-/// Mastodon 通道配置（对应 `nemesis_channels::mastodon::MastodonConfig`）。
+/// Mastodon 通道配置（对应 `nemesis_channels::mastodon:MastodonConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MastodonConfig {
     #[serde(default)]
@@ -463,7 +463,7 @@ pub struct MastodonConfig {
     pub sync_to: Vec<String>,
 }
 
-/// Bluesky 通道配置（对应 `nemesis_channels::bluesky::BlueskyConfig`）。
+/// Bluesky 通道配置（对应 `nemesis_channels::bluesky:BlueskyConfig`）。
 /// Default 对齐通道侧（poll_interval=10）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -506,7 +506,7 @@ impl Default for BlueskyConfig {
     }
 }
 
-/// WeCom（企业微信）通道配置（对应 `nemesis_channels::wecom::WeComConfig`）。
+/// WeCom（企业微信）通道配置（对应 `nemesis_channels::wecom:WeComConfig`）。
 /// 字段默认全空——通道侧 new 对 listen_addr/callback_path 有空值归一。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WeComConfig {
@@ -539,7 +539,7 @@ pub struct WeComConfig {
     pub sync_to: Vec<String>,
 }
 
-/// Mattermost 通道配置（对应 `nemesis_channels::mattermost::MattermostConfig`）。
+/// Mattermost 通道配置（对应 `nemesis_channels::mattermost:MattermostConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MattermostConfig {
     #[serde(default)]
@@ -561,7 +561,7 @@ pub struct MattermostConfig {
     pub sync_to: Vec<String>,
 }
 
-/// nostr 通道配置（对应 `nemesis_channels::nostr::NostrConfig`）。
+/// nostr 通道配置（对应 `nemesis_channels::nostr:NostrConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NostrConfig {
     #[serde(default)]
@@ -585,7 +585,7 @@ pub struct NostrConfig {
 }
 
 /// MQTT 订阅 topic filter → 回包 topic 映射条目（对应
-/// `nemesis_channels::mqtt::MqttTopicMapping`）。
+/// `nemesis_channels::mqtt:MqttTopicMapping`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MqttTopicMapping {
     /// 订阅的 topic filter（支持 `+`/`#` 通配）。
@@ -596,7 +596,7 @@ pub struct MqttTopicMapping {
     pub reply_topic: String,
 }
 
-/// MQTT 通道配置（对应 `nemesis_channels::mqtt::MqttChannelConfig`）。
+/// MQTT 通道配置（对应 `nemesis_channels::mqtt:MqttChannelConfig`）。
 /// Default 对齐通道侧文档默认值（broker 127.0.0.1:1883、keep-alive 30、
 /// clean_session=true、退避 5、QoS 1）——通道侧对 broker_host 空值响亮报错、
 /// 端口/keep-alive 原样透传 rumqttc，缺省值必须在 config 层给足。
@@ -682,7 +682,7 @@ impl Default for MqttConfig {
 }
 
 /// 微信个人微信通道配置（iLink Bot API，对应
-/// `nemesis_channels::wechat::WeChatConfig`）。Default 对齐通道侧
+/// `nemesis_channels::wechat:WeChatConfig`）。Default 对齐通道侧
 /// （base_url/send_path/回调监听/签名方案均为通道侧常量——协议形态为
 /// 实现假设，真机校准只需要改 config）。
 #[derive(Debug, Clone, Serialize, Deserialize)]

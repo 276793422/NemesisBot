@@ -36,7 +36,7 @@ pub struct DingTalkConfig {
 #[derive(Debug, Deserialize)]
 pub struct DingTalkCallbackData {
     pub text: DingTalkTextContent,
-    /// BUG #12 fix：与 DingTalkConversationMessage 同类，真实 wire 是 camelCase。
+    /// fix：与 DingTalkConversationMessage 同类，真实 wire 是 camelCase。
     #[serde(rename = "senderStaffId", alias = "sender_staff_id")]
     pub sender_staff_id: String,
     #[serde(rename = "senderNick", alias = "sender_nick")]
@@ -86,7 +86,7 @@ struct StreamEventHeaders {
 /// DingTalk conversation message payload.
 #[derive(Debug, Deserialize)]
 struct DingTalkConversationMessage {
-    /// BUG #12 fix (2026-08-25): DingTalk 真实 wire 格式是 camelCase
+    /// fix: DingTalk 真实 wire 格式是 camelCase
     /// （senderStaffId/senderNick/conversationId/conversationType）——同结构里
     /// sessionWebhook 早就 rename 了，这四个漏掉导致生产里全部解析成 None：
     /// sender_id 变 "unknown"、群消息 chat_id 塌缩、sender_nick 丢失。
@@ -149,7 +149,7 @@ pub struct DingTalkChannel {
     running: Arc<parking_lot::RwLock<bool>>,
     /// Session webhook per chat (chat_id -> webhook URL).
     ///
-    /// BUG-20261029-143：必须 `Arc<DashMap>`——裸 `DashMap::clone()` 是逐
+    /// 必须 `Arc<DashMap>`——裸 `DashMap::clone()` 是逐
     /// shard 深拷贝，start() 交给流任务的副本与 send() 读的原表分叉，
     /// 会话 webhook 写入恒不可见（每条回复必失败）。
     session_webhooks: Arc<dashmap::DashMap<String, String>>,
@@ -177,7 +177,7 @@ impl DingTalkChannel {
             config,
             http: crate::base::outbound_http_client()?,
             running: Arc::new(parking_lot::RwLock::new(false)),
-            // BUG-20261029-143：必须 Arc 包装——裸 DashMap 经 clone() 交给
+            // 必须 Arc 包装——裸 DashMap 经 clone() 交给
             // 流任务的是深拷贝副本，任务侧写入的会话 webhook 对 send()
             // 读路径恒不可见（每条回复必失败）。
             session_webhooks: Arc::new(dashmap::DashMap::new()),
@@ -492,7 +492,7 @@ impl DingTalkChannel {
                                     );
                                     let mut poll_interval =
                                         tokio::time::interval(std::time::Duration::from_secs(1));
-                                    // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的
+                                    // 默认 Burst 在挂起恢复后把错过的
                                     // tick 逐个补发——1s 轮询挂 2h 即对钉钉网关密集补发
                                     // 上万次 HTTP POST（配额打爆/封禁）。Delay 从当前
                                     // 时刻重排。

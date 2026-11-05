@@ -19,10 +19,10 @@ use std::sync::Mutex;
 use anyhow::{Context, Result};
 
 // ---------------------------------------------------------------------------
-// P3 ②：per-agent 常驻盒（`NemesisAgent_<agent_id>`）
+// ②：per-agent 常驻盒（`NemesisAgent_<agent_id>`）
 // ---------------------------------------------------------------------------
 
-/// per-agent 常驻盒名前缀（P3 T5）。盒名 / 管道名 / ini `OpenPipePath` 模式
+/// per-agent 常驻盒名前缀。盒名 / 管道名 / ini `OpenPipePath` 模式
 /// 三处共用此前缀；nemesis-agent 的 `executor_pipe::agent_pipe_name` 以字面
 /// 量对齐（无跨 crate 依赖，两测各钉一处防漂移）。
 pub const AGENT_BOX_PREFIX: &str = "NemesisAgent_";

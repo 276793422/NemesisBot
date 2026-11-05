@@ -2,7 +2,7 @@
 //!
 //! `write_file` / `edit_file` 成功后按文件扩展名选格式化工具（声明式表，
 //! 常用格式化器子集），spawn 带 3s 超时；成功且文件实际变化时重读 diff
-//! （复用 [`crate:loop_tools:edit_hint:unified_diff`]），把
+//! （复用 [`crate::loop_tools:edit_hint::unified_diff`]），把
 //! `[format] reformatted by {tool}` + diff 追加到工具结果尾部——模型同轮
 //! 看到格式化后的真实形态。全部失败/未命中路径**静默原样返回**（开关关 /
 //! 非文本文件 / 无匹配格式化器 / spawn 失败 / 超时 / 内容未变）——格式化

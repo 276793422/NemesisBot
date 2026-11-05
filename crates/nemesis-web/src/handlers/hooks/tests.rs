@@ -1,4 +1,4 @@
-//! Tests for `HooksHandler` . Private-method tests run under every
+//! Tests for `HooksHandler`. Private-method tests run under every
 //! feature combo (module declared from `hooks.rs`, same pattern as
 //! `models/tests.rs`); one dispatch-level test proves the `ctx.home` wiring.
 

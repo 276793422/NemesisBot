@@ -1,4 +1,4 @@
-//! build.rs —— payload DLL 内嵌（T1.6）。
+//! build.rs —— payload DLL 内嵌（.6）。
 //!
 //! 找 `plugins/ziwei-agent-dll/bin/ziwei_agent_{x64,x86}.dll`：
 //! - 在场 → 生成 `embed.rs`：include_bytes! 内嵌 + sha256/大小常量（编译期快照）；

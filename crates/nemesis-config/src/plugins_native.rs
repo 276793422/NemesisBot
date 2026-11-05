@@ -164,7 +164,7 @@ pub fn load_enabled(config_dir: &Path, id: NativePluginId) -> bool {
 }
 
 /// 写开关（读-改-写整文件；文件不存在 = 只写目标键。保留其他插件条目）。
-/// 原子落盘（`write_file_atomic`，：直写撕裂会让下次 RMW
+/// 原子落盘（`write_file_atomic`，直写撕裂会让下次 RMW
 /// 以空底重建、静默抹掉全部兄弟插件条目）；罩 config 家族写串行锁
 /// （与 config 写臂族互斥，同 approval_rules 惯例）。
 pub fn set_enabled(config_dir: &Path, id: NativePluginId, enabled: bool) -> Result<(), String> {

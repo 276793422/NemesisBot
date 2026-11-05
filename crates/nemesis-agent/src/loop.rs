@@ -23,7 +23,7 @@
 // 物理拆分：
 // 单文件 loop.rs 拆为 17 个子模块 + 本根文件（struct AgentLoop/散项/测试挂载/re-export）。
 // 语义零变化：子模块经 `use super:*` 取根 re-export，根经 glob re-export 保持
-// `crate:r#loop:X` 既有路径逐字节不变；字段零改动（struct 留根，impl 分居后代模块）。
+// `crate::r#loop::X` 既有路径逐字节不变；字段零改动（struct 留根，impl 分居后代模块）。
 // ===========================================================================
 //
 // 锁纪律（§原则 5）：本模块（含全部子模块）显式固化「guard 不跨
@@ -114,7 +114,7 @@ pub(crate) use fs_watch::*;
 /// （无人值守）：撞顶翻倍阶梯——空输出 `length` 烧穿时
 /// max_tokens 翻倍重发（32K 地板 / config 封顶）+ per-model 学习缓存。
 /// pub(crate)：+续行续写再撞顶复用同一阶梯公式与
-/// ESCALATION_FLOOR 地板（单一真相源，不抄数字）。
+/// ESCALATION_FLOOR 地板（统一定义，不抄数字）。
 pub(crate) mod length_escalation;
 mod llm_types;
 #[allow(unused_imports)]
@@ -141,8 +141,8 @@ pub(crate) use observer::*;
 // 哨兵 Builtin 默认实现，行为零变化（见 policy.rs 模块文档）。
 pub mod policy;
 
-// ：预算暂停前收尾编译探针（触发闸/探针执行/
-// 诚实注记；计划 编码基准固化与E5计划 项②）。
+// 预算暂停前收尾编译探针（触发闸/探针执行/
+// 诚实注记）。
 mod pre_pause_probe;
 #[allow(unused_imports)]
 pub(crate) use pre_pause_probe::*;
@@ -187,12 +187,12 @@ pub use tool_dispatch::*;
 #[allow(unused_imports)]
 pub(crate) use tool_dispatch::*;
 // b（三期）：mandate 执行面守卫 loop 侧接线（槽/轮顶检；
-// 纯类型+marker 在顶层 crate:mandate_guard）。
+// 纯类型+marker 在顶层 crate::mandate_guard）。
 mod mandate_guard;
 #[allow(unused_imports)]
 pub(crate) use mandate_guard::*;
 // （集群无人值守硬化）：会话 token 预算闸 loop 侧接线（顶检器官/
-// 记账/观测；纯类型+账本在顶层 crate:token_budget）。
+// 记账/观测；纯类型+账本在顶层 crate::token_budget）。
 mod token_budget;
 #[allow(unused_imports)]
 pub(crate) use token_budget::*;
@@ -221,20 +221,20 @@ pub(crate) use wiring::*;
 /// setter（`add_tool_hook`/`add_llm_hook`/`add_lifecycle_hook`）留在
 /// `AgentLoop` 上一行委托，外部 API 零变化。
 pub(crate) struct HooksState {
-    /// : user tool hooks — pre runs after the fixed security gate,
+    /// user tool hooks — pre runs after the fixed security gate,
     /// post runs after execute and before Forge. RwLock so hooks can be
     /// registered from `&self` post-construction (hooks.json wiring).
-    /// See `crate:hooks` module doc for the full 布点图.
+    /// See `crate::hooks` module doc for the full 布点图.
     pub(crate) tool_hooks: parking_lot::RwLock<crate::hooks::ToolHookManager>,
-    /// : LLM-call-level hooks — pre may append reminder messages
+    /// LLM-call-level hooks — pre may append reminder messages
     /// (visible in request_log), post may allow/replace/retry/block the
-    /// response. See `crate:hooks` module doc（LLM 调用级布点）.
+    /// response. See `crate::hooks` module doc（LLM 调用级布点）.
     pub(crate) llm_hooks: parking_lot::RwLock<crate::hooks::LlmHookManager>,
-    /// : prompt/turn lifecycle hooks — on_user_prompt runs in
+    /// prompt/turn lifecycle hooks — on_user_prompt runs in
     /// `run_with_trace` BEFORE the message enters history (blocked prompts
     /// are never seen by the model), on_turn_end runs after the final
     /// answer is accepted, before the turn ends. Primary consumer: the
-    /// hooks.json dialect bridge (`crate:cc_hooks`).
+    /// hooks.json dialect bridge (`crate::cc_hooks`).
     pub(crate) lifecycle_hooks: parking_lot::RwLock<crate::hooks::LifecycleHookManager>,
 }
 
@@ -268,7 +268,7 @@ pub(crate) struct MemoryState {
     /// by the factory (`set_memory_inject`). Tuple so both values travel
     /// together on the one setter. Default (false, 3) = feature off.
     pub(crate) memory_inject_cfg: parking_lot::RwLock<(bool, usize)>,
-    /// : per-tool description embedding cache (tool name →
+    /// per-tool description embedding cache (tool name →
     /// (description bytes, vector)) for semantic doc folding. Entries
     /// re-embed only when a tool's description text changes, so after the
     /// first round folding adds no embed calls beyond the query itself.
@@ -333,14 +333,14 @@ pub(crate) struct SecurityState {
     /// 未装配 = `None`，Auth 臂走原「停止重试」终局零回归。
     pub(crate) credential_broker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::CredentialBroker>>>,
-    /// ：凭据发卡防滥用占位表（同 `(session_key, alias)`
+    /// 凭据发卡防滥用占位表（同 `(session_key, alias)`
     /// TTL 窗内至多一张卡）。纯内存态随 loop 重建清零；与 broker 同族，
     /// dispatch 注入失败臂与 TakeoverToolBridge 回退态共用（wrapper 持
     /// 自有实例，语义等价）。
     pub(crate) credential_card_guard: Arc<crate::r#loop::credential_injection::CredentialCardGuard>,
     /// 免打扰运行时态（Part 2，security feature）：gateway
-    /// 注入与 auditor / web security handler 同一 Arc（editor_access 单一
-    /// 真相源同款双注入）。（循环干预阶梯起 `check_escalation`
+    /// 注入与 auditor / web security handler 同一 Arc（editor_access
+    /// 同款双注入）。（循环干预阶梯起 `check_escalation`
     /// 不再读它——终级卡不可自动批；auditor 侧 直批块走 nemesis-security
     /// 内部同 Arc。本槽保留=注入面不破坏，仅测试消费。）
     #[cfg(feature = "security")]
@@ -396,7 +396,7 @@ pub struct AgentLoop {
     /// Session store for persistent history.
     session_store: Option<Arc<SessionStore>>,
     /// （聊天切会话竞态）：环尾 seq 查询回调（nemesis-web 的
-    /// `chat_event_log:latest_seq` 经 gateway 装配注入——crate 方向
+    /// `chat_event_log::latest_seq` 经 gateway 装配注入——crate 方向
     /// agent←web 不可直调，走依赖注入，同 session_store 模式）。
     /// `handle_history_request` 在读取历史**之后**采样，随响应下发
     /// `last_seq`；`None`（standalone / 未注入）→ 响应不带 last_seq，
@@ -437,7 +437,7 @@ pub struct AgentLoop {
         Option<tokio::sync::mpsc::Sender<nemesis_types::channel::InboundMessage>>,
     >,
     /// Configured queue size for queue mode. Stored for config/logging parity
-    /// but NOT read: busy-queueing lives in `crate:inbox` (capacity-bounded
+    /// but NOT read: busy-queueing lives in `crate::inbox` (capacity-bounded
     /// FIFO per session), not in the session_busy map (see
     /// `try_start_session`'s comment for why the old counter path was
     /// removed). Remove this field (+ the `new_bus` param + call sites) if
@@ -506,7 +506,7 @@ pub struct AgentLoop {
     security: SecurityState,
     /// MCP Manager for dynamic tool discovery and hot-reload.
     mcp_manager: Option<std::sync::Mutex<nemesis_mcp::manager::McpManager>>,
-    /// ：per-agent 浏览器 profile（工厂经 setter 注入，
+    /// per-agent 浏览器 profile（工厂经 setter 注入，
     /// `enable_mcp_reload` 转交给 McpManager——server 配置 opt-in
     /// `browser_profile: true` 的浏览器类 spawn 时拿 `--user-data-dir`）。
     /// None = env 回落语义（主/项目 loop 恒 None 零变化）。
@@ -538,7 +538,7 @@ pub struct AgentLoop {
     /// （加固）：在途
     /// turn 计数（turn 任务体开始 +1 / 结束 -1，含 spawn 与 inline
     /// continuation 两臂）——优雅停机 drain 的有界等待 gauge。与 checkpoint
-    /// 用 [`Self:turn_counter`]（单调计数，非在途 gauge）语义正交。
+    /// 用 [`Self::turn_counter`]（单调计数，非在途 gauge）语义正交。
     in_flight_turns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// 停机 drain 闸——置位后泵拒绝新 turn（外部通道诚实回执，内部
     /// 通道静默丢），在途 turn 照常收尾。estop（冻结 agent 活动）与之正交。
@@ -553,8 +553,8 @@ pub struct AgentLoop {
     /// 到本轮）；steer 注入不重入 `run_agent_loop_internal`，正在跑的 turn
     /// 缓冲不受影响。
     turn_file_changes: Arc<parking_lot::Mutex<HashMap<String, Vec<FileChange>>>>,
-    /// ：本 turn 的交付物流水（`present_files` 工具
-    /// 登记），按 session_key 分桶。与 [`Self:turn_file_changes`] 同一缓冲
+    /// 本 turn 的交付物流水（`present_files` 工具
+    /// 登记），按 session_key 分桶。与 [`Self::turn_file_changes`] 同一缓冲
     /// 模式：assistant 最终回复落盘时 drain+去重，写进 chat_log jsonl 行的
     /// `deliverables` 字段（前端交付物卡片；「该看什么」产物指引，区别于
     /// file_changes 的「改了什么」变更映射）。清理时点同 file_changes。
@@ -571,7 +571,7 @@ pub struct AgentLoop {
     /// 集。forward_tree 采集于 truncate 之前、压栈在 jsonl 提交之后——这个
     /// 窗口里它既不在索引（本会话 turn ≥ 锚的条目待截）也不在栈里，重建式
     /// gc 的保留集看不到它 = 当孤儿对象清掉，redo 的文件前向恢复必炸「tree
-    /// 查找失败」。经 [`Self:undo_stack_tree_refs`] 并入 gc extras；注册/
+    /// 查找失败」。经 [`Self::undo_stack_tree_refs`] 并入 gc extras；注册/
     /// 注销由 rewind 模块的 RAII guard 管理（早退路径 drop 兜底，不残留陈
     /// 旧 hex——残留 = gc 永久清不掉对应对象，反向泄漏）。
     gc_inflight_trees: parking_lot::Mutex<std::collections::HashSet<String>>,
@@ -581,7 +581,7 @@ pub struct AgentLoop {
     memory: MemoryState,
     /// Capability tier (small-model-tool-robustness plan, a). Resolved at
     /// construction from the active model's `model_tier` config (see
-    /// [`nemesis_types:capability`]). Drives tool-set size,
+    /// [`nemesis_types::capability`]). Drives tool-set size,
     /// validation-retry budget, and format-repair gating.
     /// `RwLock` so it can be re-resolved if the active model switches at runtime.
     tier: parking_lot::RwLock<nemesis_types::capability::ModelTier>,
@@ -590,7 +590,7 @@ pub struct AgentLoop {
     /// （`handle_tool_call_at_depth` 入口，防 MCP/未知写工具与陈旧 defs
     /// 漏网）+ plans/ 写放行。运行时态不持久化（重启回 Build）；
     /// `/plan` `/build` 与 WSAPI `chat.set_mode` 双入口改同一份状态。
-    /// ：Arc 化——同一槽与 present_plan 工具共享
+    /// Arc 化——同一槽与 present_plan 工具共享
     /// （PlanPresentHandle.mode，批准臂直接翻转），本侧读写经 Deref 零变化。
     mode: Arc<parking_lot::RwLock<crate::types::AgentMode>>,
     /// present_plan 审批结论槽（与工具共享 PlanPresentHandle；批次尾
@@ -603,8 +603,8 @@ pub struct AgentLoop {
     agent_event_tx: parking_lot::RwLock<
         Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
     >,
-    /// ：会话执行统计 sink——loop 内部计数（LLM 重试/
-    /// 校验失败回灌/压缩成功）经 [`crate:session_stats:SessionStatsSink`]
+    /// 会话执行统计 sink——loop 内部计数（LLM 重试/
+    /// 校验失败回灌/压缩成功）经 [`crate::session_stats:SessionStatsSink`]
     /// 上抛宿主聚合器（nemesisbot `session_stats` 装配注入）。`None`
     /// （standalone / 未注入）= 不统计，调用点零开销。
     session_stats:
@@ -612,7 +612,7 @@ pub struct AgentLoop {
     /// Work 时间线累加器（ChatPanel 长任务时间线改造）：turn
     /// 级「叙述+工具」按真实时序收拢，落盘随行（turn.rs 最终回复行）+
     /// `chat.work_current` 活查询。Arc 与 ToolEventHook 共享同一实例
-    /// （factory 经 [`Self:work_recorder`] 取 clone 注入 hook）；槽空 =
+    /// （factory 经 [`Self::work_recorder`] 取 clone 注入 hook）；槽空 =
     /// 喂入静默忽略，未装配路径零开销。
     work_recorder: crate::work_timeline::WorkRecorder,
     /// Path to config.json — the single source of truth for per-model
@@ -621,9 +621,9 @@ pub struct AgentLoop {
     /// so dashboard-added models and CLI `model set-tier` are picked up live,
     /// with no stale snapshot.
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
-    /// ：per-loop 附加隐藏表——自建 agent
+    /// per-loop 附加隐藏表——自建 agent
     /// tool_policy（deny/hidden/allow 折算）的 loop 级供给闸输入。与 config
-    /// `agents.hidden_tools` 在 [`Self:current_hidden_tools`] 单点合并，
+    /// `agents.hidden_tools` 在 [`Self::current_hidden_tools`] 单点合并，
     /// 供给闸（build_tool_defs）与 dispatch 闸天然双闸对齐；通配语义同
     /// `tool_name_matches_hidden`。空 = 零影响（主 loop / 项目 loop 不触碰）。
     extra_hidden_tools: parking_lot::RwLock<Vec<String>>,
@@ -644,28 +644,28 @@ pub struct AgentLoop {
     /// 吃注册期快照，MCP 热加载的新工具漏拦；槽值每回合现读，动态新工具
     /// 天然落闸。精确名匹配，不扩通配语法。空 = 零影响。
     tool_policy_allow: parking_lot::RwLock<Vec<String>>,
-    /// 循环流程策略槽（WASM 样板工程，`policy` 模块是设计真相源）：
+    /// 循环流程策略槽（WASM 样板工程，`policy` 模块承载设计定义）：
     /// 三策略 + 标题回调。三策略恒持实现——默认零逻辑哨兵（裁决
     /// `Builtin` → 宿主原逻辑路径），WASM 桥（PolicyBridge）激活
     /// 组件时整槽替换，桥故障回退 = 换回哨兵；全量替换语义镜像
-    /// [`Self:set_extra_hidden_tools`]。标题槽例外为 `Option`——内置
+    /// [`Self::set_extra_hidden_tools`]。标题槽例外为 `Option`——内置
     /// 路径依赖宿主 small_model 资源（形态对照，见 policy.rs）。
     compact_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::CompactPolicy>>,
     final_judge_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::FinalJudgePolicy>>,
     validation_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::ValidationPolicy>>,
     title_callback: parking_lot::RwLock<Option<std::sync::Arc<dyn policy::TitleCallback>>>,
-    /// ②typed checks 块捕获槽表：会话键 → 记录
+    /// typed checks 块捕获槽表：会话键 → 记录
     /// 槽。集群 worker 任务 run 前后 begin/take（`checks_capture` 模块文档
-    /// 是语义真相源）；并发任务按 session_key 精确归属互不串账。空表 =
+    /// 以此为语义依据）；并发任务按 session_key 精确归属互不串账。空表 =
     /// 零影响（主 loop / 项目 loop 不触碰；查表 miss 仅一次读锁 + 名单比对）。
     checks_capture: checks_capture::ChecksCaptureMap,
-    /// 记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
-    /// 唯一真相源——[`Self:refresh_active_tier`] 短路（config 重解析/换模型
+    /// 记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以
+    /// 记录为准——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
     /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
     tier_override: parking_lot::RwLock<Option<nemesis_types::capability::ModelTier>>,
     /// prompt-pack pro：提示词体系选择。启动装配型——工厂按
     /// `agents.prompt_system` 注入；Pro 时工具描述走
-    /// [`crate:prompt:tool_description`] 档位表（按 tier 取档），Classic
+    /// [`crate::prompt:tool_description`] 档位表（按 tier 取档），Classic
     /// 恒回落注册表原文（字节不变）。缺省 Classic。
     prompt_system: parking_lot::RwLock<crate::prompt::PromptSystem>,
     /// （devtool-upgrade）：分层价目表（workspace/data）。三级
@@ -679,8 +679,8 @@ pub struct AgentLoop {
     /// 静默跳过。Set via `set_lsp_manager` by the agent factory.
     #[cfg(feature = "lsp")]
     lsp_manager: parking_lot::RwLock<Option<Arc<nemesis_lsp::LspManager>>>,
-    /// ：会话级诊断采集登记（跨文件聚合 + stale 过滤
-    /// 状态面）。语义与生命周期见 `config_watch:DiagnosticsTouchRegistry`
+    /// 会话级诊断采集登记（跨文件聚合 + stale 过滤
+    /// 状态面）。语义与生命周期见 `config_watch::DiagnosticsTouchRegistry`
     /// ——仅声明/初始化挂靠于此（结构体字段），逻辑全在 config_watch.rs
     /// （计划 §冲突面登记：诊断域改动不进 loop.rs 主体）。
     #[cfg(feature = "lsp")]
@@ -694,7 +694,7 @@ pub struct AgentLoop {
     /// hooks 方言桥：PreCompact/PostCompact 触发用。
     /// SessionEnd 经 SessionEndHookManager（factory 清理点直接调桥）。
     cc_bridge: parking_lot::RwLock<Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>>>,
-    /// : root directory for tool-result spill files
+    /// root directory for tool-result spill files
     /// (`<home>/logs/spill`). `None` disables spilling (results fall back to
     /// the prune tier). Set via `set_spill_root` by the agent factory.
     spill_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
@@ -706,17 +706,17 @@ pub struct AgentLoop {
     /// the old per-session hash map gated nothing and was removed — see
     /// skills_digest.rs module doc).
     skills_digest_state: std::sync::Arc<crate::skills_digest::DigestState>,
-    /// : per-session message inbox for Queue/Steer modes. Unused in
+    /// per-session message inbox for Queue/Steer modes. Unused in
     /// Reject mode (kept anyway — trivial cost, simplifies mode switching).
     inbox: crate::inbox::SharedInbox,
-    /// : abort handles of the Queue/Steer pump's spawned turn
+    /// abort handles of the Queue/Steer pump's spawned turn
     /// tasks. The pump itself is aborted by the adapter on stop; without
     /// tracking, those spawned turns would be orphaned and keep publishing
     /// replies after the "stop()". `stop` aborts them (mirrors the serial
     /// pump where aborting the one task killed the in-flight turn). Reject
     /// mode never spawns — stays empty.
     turn_task_handles: parking_lot::Mutex<Vec<tokio::task::AbortHandle>>,
-    /// : workspace root for the AGENTS.md/CLAUDE.md instruction
+    /// workspace root for the AGENTS.md/CLAUDE.md instruction
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
     workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
@@ -727,8 +727,8 @@ pub struct AgentLoop {
     /// 零行为差异。nemesis-agent 不识 VM 概念，注记内容由宿主侧决定。
     exec_env_resolver:
         parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> String + Send + Sync>>>,
-    /// ：工作区指令信任档（见
-    /// [`crate:workspace_instructions:InstructionTrust`]）。缺省 Trusted
+    /// 工作区指令信任档（见
+    /// [`crate::workspace_instructions:InstructionTrust`]）。缺省 Trusted
     /// ——主/集群 loop 不经显式注入即为主循环行为；项目 loop 装配时按注册
     /// 表条目 × 全局策略注入。运行中经 `projects.trust` WSAPI 热更新。
     instruction_trust: parking_lot::RwLock<crate::workspace_instructions::InstructionTrust>,
@@ -741,7 +741,7 @@ pub struct AgentLoop {
     external_changes: parking_lot::Mutex<Vec<String>>,
     /// agent-authored writes (write_file/edit_file) for the self-write
     /// window — watcher events for these paths within
-    /// [`crate:fs_watcher:SELF_WRITE_WINDOW`] are dropped (the agent knows
+    /// [`crate::fs_watcher:SELF_WRITE_WINDOW`] are dropped (the agent knows
     /// what it just wrote). Normalized workspace-relative lowercase.
     // pub(crate) so sibling test modules (fs_watcher/tests.rs) can age
     // entries past the self-write window without sleeping.
@@ -753,7 +753,7 @@ pub struct AgentLoop {
     snapshot_role: parking_lot::RwLock<String>,
     /// codemode（默认开 + 热生效联动）：装配期构造并 set_loop
     /// 的 code_run 工具实例。enabled 开关切的是注册表成员资格（本实例的
-    /// register/remove，见 config_watch:sync_codemode_registration），不是
+    /// register/remove，见 config_watch::sync_codemode_registration），不是
     /// 重建——timeout/memory 是构造期值，改键需 loop 重建生效。feature
     /// 关/Android 时字段整体缺席。
     #[cfg(all(feature = "codemode", not(target_os = "android")))]
@@ -767,7 +767,7 @@ pub struct AgentLoop {
     interactive_approval: parking_lot::RwLock<bool>,
     /// （devtool-upgrade）：当前轮客户端上报的「当前打开文件」路径
     /// （WSAPI `chat.send` data.open_files → metadata["open_files"] → bus 全链
-    /// 路透传，解析走 nemesis-types:channel:open_files_from_metadata 单点）。
+    /// 路透传，解析走 nemesis-types::channel:open_files_from_metadata 单点）。
     /// Ephemeral per-turn：`process_admitted` 进轮前 set、出轮后 clear（词法
     /// 配对防泄漏——cron/heartbeat/continuation 等非 process_admitted 路径
     /// 天然读不到，无陈旧泄漏）。build_messages 渲染进 merged digest section
@@ -776,7 +776,7 @@ pub struct AgentLoop {
     pending_open_files: parking_lot::RwLock<Vec<String>>,
     /// 对话生成：当前轮 workflow_edit 注入目标（WSAPI
     /// `chat.send` data.workflow_edit → metadata["workflow_edit"]，解析走
-    /// nemesis-types:channel:workflow_edit_from_metadata 单点）。与
+    /// nemesis-types::channel:workflow_edit_from_metadata 单点）。与
     /// pending_open_files 同款 per-turn ephemeral 生命周期：process_admitted
     /// set、出轮 clear。Some → build_messages 渲染能力表/当前定义 section。
     /// 引擎引用只服务「已注册工作流」的当前定义读取；no-workflow 编译下
@@ -784,7 +784,7 @@ pub struct AgentLoop {
     pending_workflow_edit: parking_lot::RwLock<Option<nemesis_types::channel::WorkflowEditTarget>>,
     /// 建设：惰性 schema 供给的 per-session
     /// 解锁账（tools_schema_get 取回成功的工具名，按解锁顺序 append、只增
-    /// 不减、去重）。schema_unlock_section 渲染累积注记的真相源——
+    /// 不减、去重）。schema_unlock_section 渲染累积注记的落点——
     /// append-only 保证字节前缀稳定（prompt cache 只失效尾部）。进程内存
     /// 态：重启即清，模型重取即回（诚实边界，不持久化）。
     tool_schema_unlocks: parking_lot::RwLock<std::collections::HashMap<String, Vec<String>>>,
@@ -839,11 +839,11 @@ pub struct AgentLoop {
     /// 渲染 section（关 = 无 section = prompt 字节不变，cache 不动）。
     /// `None`（standalone / 未装配）= 永不注入。
     voice_prompt: parking_lot::RwLock<Option<Arc<std::sync::atomic::AtomicBool>>>,
-    /// ：写后钩子的路径解析基点——与工具表同一
+    /// 写后钩子的路径解析基点——与工具表同一
     /// `Arc<WorkspaceBoundary>` 实例（factory 注入）。写后钩子（format-on-
     /// save、诊断回灌）此前从**原始 args** 抠 path：模型给相对路径而 cwd
     /// 与工作区根不一致时，钩子摸到的是 cwd 下的同名文件（误格式化/误诊
-    /// 断）——两套真相源。钩子处用 [`crate:loop_tools:resolve_tool_path`]
+    /// 断）——两套依据。钩子处用 [`crate::loop_tools::resolve_tool_path`]
     /// + 本字段重算 = 执行器与钩子同一落点。
     ///
     /// `None` = 无界形态（resolve 按原样透传）。
@@ -854,7 +854,7 @@ pub struct AgentLoop {
     /// `workspace_root/plans`（主会话旧行为，逐字节不变）。
     plan_products_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
     /// （集群无人值守硬化）：per-session token 预算账本（累计 + soft
-    /// 一次性闩）。类型与 seed 防双计语义见 [`crate:token_budget`]；接线
+    /// 一次性闩）。类型与 seed 防双计语义见 [`crate::token_budget`]；接线
     /// 全在 loop/token_budget.rs（计划 §冲突面登记：预算域改动不进
     /// loop.rs 主体）。
     token_budget: crate::token_budget::SessionTokenBudgetLedger,
@@ -1057,8 +1057,8 @@ impl AgentLoop {
         *self.voice_prompt.write() = Some(flag);
     }
 
-    /// ：装配写后钩子的路径解析边界（factory 在
-    /// loop 构造后注入，与工具表同一 `Arc` 实例——单一真相源）。
+    /// 装配写后钩子的路径解析边界（factory 在
+    /// loop 构造后注入，与工具表同一 `Arc` 实例——同源）。
     pub fn set_workspace_boundary(&self, boundary: Arc<crate::loop_tools::WorkspaceBoundary>) {
         *self.workspace_boundary.write() = Some(boundary);
     }
@@ -1066,7 +1066,7 @@ impl AgentLoop {
     /// （项目 home 收编）：装配侧注入 plan 模式产物根
     /// （项目 loop = `<agent_home>/plans`；主/集群/headless 不注入 = 回落
     /// workspace_root/plans 旧行为）。`plan_mode_write_allowed` 与拒绝
-    /// 文案、/plan 切换回执同读本槽——单一真相源。
+    /// 文案、/plan 切换回执同读本槽——同源。
     pub fn set_plan_products_root(&self, root: std::path::PathBuf) {
         *self.plan_products_root.write() = Some(root);
     }
@@ -1090,7 +1090,7 @@ impl AgentLoop {
         self.turn_wal.read().clone()
     }
 
-    /// ：`present_plan` 计划审批 late-binding（gateway 装配；仿
+    /// `present_plan` 计划审批 late-binding（gateway 装配；仿
     /// set_turn_wal 模式）。装配后 plan 模式下模型可调 `present_plan` 把计划
     /// 交给用户审批；批准=翻转 build 模式 + 广播 ModeChanged，驳回/超时=
     /// 本轮结构性终止（tool_batch 消费 verdict）。
@@ -1098,7 +1098,7 @@ impl AgentLoop {
         *self.plan_present.write() = Some(handle);
     }
 
-    /// ：中间轮输出发布（[`nemesis_types:agent:AgentEvent:RoundText`]）。
+    /// 中间轮输出发布（[`nemesis_types::agent:AgentEvent::RoundText`]）。
     /// web pump 的默认路径即覆盖全部投递（注入 session_id + record_tool 入环 +
     /// tool_event 通道 WS push），本方法只负责发；agent_event_tx 未装配
     /// （CLI / B 端 worker）为 no-op。
@@ -1118,7 +1118,7 @@ impl AgentLoop {
             return;
         }
         // Work 时间线喂入：与事件发射同点同源——先喂累加器
-        // （落盘真相源，与 tx 在场与否无关），再发实时事件（观察面）。
+        // （落盘为准，与 tx 在场与否无关），再发实时事件（观察面）。
         self.work_recorder
             .push_round_output(session_key, content, reasoning);
         if let Some(tx) = self.agent_event_tx.read().as_ref() {
@@ -1137,7 +1137,7 @@ impl AgentLoop {
         self.work_recorder.clone()
     }
 
-    /// 修⑥：急停中断面的 ToolFinished 补发。被 estop
+    /// 急停中断面的 ToolFinished 补发。被 estop
     /// select 臂 drop 的执行链（含 ToolEventHook）发不出终态——按 hook 同一
     /// 发射点（Work 累加器 + broadcast）补发 interrupted 记录：同 call_id
     /// （hook 侧 ToolStarted 已带）、真实墙钟（dispatch 入口起算，含审批
@@ -1199,8 +1199,8 @@ impl AgentLoop {
         }
     }
 
-    /// ：交付物登记事件发布
-    /// ([`nemesis_types:agent:AgentEvent:DeliverablesRegistered`])。交付物
+    /// 交付物登记事件发布
+    /// ([`nemesis_types::agent:AgentEvent::DeliverablesRegistered`])。交付物
     /// 随 assistant 行落盘（chat_log 权威源）后调用；web pump 转 SSE
     /// `deliverables` + WS push，前端缓冲挂到即将落地的 assistant 回复卡。
     /// agent_event_tx 未装配（CLI / B 端 worker）为 no-op；空清单不发布。
@@ -1222,7 +1222,7 @@ impl AgentLoop {
             });
         }
     }
-    /// ：canvas 打开事件发布（[`nemesis_types:agent:AgentEvent:CanvasOpen`]）。
+    /// canvas 打开事件发布（[`nemesis_types::agent:AgentEvent::CanvasOpen`]）。
     /// 终答里检出**全部合法**的 ```canvas 块后逐块发布；web pump 转 SSE
     /// `canvas.open`（内层 data 展平 + session_id 注入），前端 CanvasPanel
     /// 渲染。`html` 载荷完整不截断（面板需要全量文档）；agent_event_tx 未
@@ -1309,7 +1309,7 @@ mod cache_warmer_tests;
 // (devtool-upgrade)：三级 context_window 解析链测试。
 #[cfg(test)]
 mod context_window_tests;
-// ：写后钩子路径解析边界（相对路径锚工作区根 / 越界
+// 写后钩子路径解析边界（相对路径锚工作区根 / 越界
 // 跳过 / 注入回路同 Arc）。
 #[cfg(test)]
 mod m5_hook_boundary_tests;
@@ -1346,10 +1346,10 @@ mod l2_compaction_fail_tests;
 // 开关关闭零落盘 / 总线级断头续轮）。WAL 文件级生命周期归 turn_wal/tests.rs。
 #[cfg(test)]
 mod turn_wal_loop_tests;
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
-// ：预算暂停前编译探针测试（纯函数 + loop 级咬合锁）。
+// 预算暂停前编译探针测试（纯函数 + loop 级咬合锁）。
 #[cfg(test)]
 mod pre_pause_probe_tests;
 // (devtool-upgrade)：subagent 后台化 + 完成回灌测试。
@@ -1374,7 +1374,7 @@ mod spawn_detached_tests;
 // (devtool-upgrade)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;
-// ：per-loop 附加闸槽（extra_hidden 合并 +
+// per-loop 附加闸槽（extra_hidden 合并 +
 // tier_override 钉死 vs config 驱动）测试。
 #[cfg(test)]
 mod g1_agent_slots_tests;
@@ -1405,11 +1405,11 @@ mod i3_lazy_instructions_tests;
 // plans/ 写放行 + slash 切换 + ModeChanged 事件）测试。
 #[cfg(test)]
 mod f1_plan_mode_tests;
-// ：工作区指令信任档（isolated 整段跳过 / annotate
+// 工作区指令信任档（isolated 整段跳过 / annotate
 // 横幅 / trusted verbatim + 运行中热更新）测试。
 #[cfg(test)]
 mod n7_instruction_trust_tests;
-// ：present_plan 计划审批（批准翻 build + 驳回/
+// present_plan 计划审批（批准翻 build + 驳回/
 // 超时结构性停轮 + ModeChanged 广播 + 供给双闸）循环级测试。
 #[cfg(test)]
 mod present_plan_loop_tests;
@@ -1430,7 +1430,7 @@ mod prompt_system_tests;
 #[cfg(test)]
 mod d3_tests;
 
-// ：交付物登记——dispatch 入桶 / drain 即清去重 /
+// 交付物登记——dispatch 入桶 / drain 即清去重 /
 // DeliverablesRegistered 事件广播（字段+访问器）/ 空清单与未接线 no-op。
 #[cfg(test)]
 mod deliverables_tests;
@@ -1476,11 +1476,11 @@ mod recovery_stop_tests;
 // 恢复重试上同样生效）。
 #[cfg(test)]
 mod recovery_supply_gate_tests;
-// ：中间轮正文事件（RoundText）发布语义测试（带叙述的
+// 中间轮正文事件（RoundText）发布语义测试（带叙述的
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]
 mod round_text_tests;
-// ：canvas 终答检出/回灌自纠/预算放行 轮级测试。
+// canvas 终答检出/回灌自纠/预算放行 轮级测试。
 #[cfg(test)]
 mod canvas_turn_tests;
 // 免打扰（Part 2）：wiring 注入/判定回环 +
@@ -1551,7 +1551,7 @@ mod tool_dispatch_sec_cov_tests;
 #[cfg(test)]
 mod provider_stream_tests;
 
-// : rewind 冲突预检（外部修改拒绝 + force 强
+// rewind 冲突预检（外部修改拒绝 + force 强
 // 过 + redo 往返）编排测试。用例全部 git 形态（stage_sealed_two_turns
 // git init）→ 随 checkpoint-git 进出。
 #[cfg(all(test, feature = "checkpoint-git"))]
@@ -1585,13 +1585,13 @@ mod b4_b2_gate_tests;
 #[cfg(test)]
 mod turn_end_summary_wipe_tests;
 
-// 量测：tool defs 字节量测埋点（单一真相源
-// 一致性 / hidden_tools 闸联动 / 序列化口径钉子——-建设惰性 schema
+// 量测：tool defs 字节量测埋点（口径
+// 一致性 / hidden_tools 闸联动 / 序列化口径钉子——建设惰性 schema
 // 前后对比基线的口径稳定性回归锁）。
 #[cfg(test)]
 mod tool_defs_metrics_tests;
 
-// ： 并行批接统一 WorkPool 后的行为钉子
+// 并行批接统一 WorkPool 后的行为钉子
 // （批级预检全批拒绝零执行 / 累计字节口径 / 正常批源序不变）。
 #[cfg(test)]
 mod l19_parallel_batch_tests;

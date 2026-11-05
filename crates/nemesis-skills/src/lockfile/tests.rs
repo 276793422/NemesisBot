@@ -30,7 +30,7 @@ fn test_corrupt_file_warns_and_continues() {
     assert!(lock.skills.is_empty());
 }
 
-/// M4（2026-09-27）：损坏文件降级为空表前先备份 .bak（save 会整写覆盖，
+/// 损坏文件降级为空表前先备份.bak（save 会整写覆盖，
 /// 不备份就丢排查证据）。
 #[test]
 fn test_corrupt_file_backed_up_before_fallback() {

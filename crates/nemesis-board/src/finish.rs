@@ -1,12 +1,12 @@
-//! AOR 批二b（⑥ FINISH 谓词）：父单收口前置谓词（计划 §6
+//! b（⑥ FINISH 谓词）：父单收口前置谓词（计划
 //! `can_enter_parent_review`）的单一实现。**两级闸面**：
 //!
 //! - **入口面** [`evaluate_parent_entry_finish`]——`review_parent_issue`
 //!   开闸前的环境干净三条件（③ 活跃派发 / ④ 未决 unknown / ⑤ cancelled
 //!   缺口）。①②（终态闭包/fail_class）刻意不在入口：in-flight 子单在场
-//!   时缺陷闸（M8 停车泊车）/ review_issue 父单分流 / FAIL 返工承接链必须
+//!   时缺陷闸（停车泊车）/ review_issue 父单分流 / FAIL 返工承接链必须
 //!   照常跑——这是既有收口链测试钉住的行为（零回归合同），谓词在入口挡
-//!   ①② 会让 P0 缺陷漏停车、返工链哑火。⑤ 在入口保留旧 cancelled 检查
+//!   ①② 会让 缺陷漏停车、返工链哑火。⑤ 在入口保留旧 cancelled 检查
 //!   语义（不烧 LLM token 提前让位）。
 //! - **收口面** [`evaluate_parent_finish`]（完整五条件）——web
 //!   `sync_one_parent` 全 done 垫升闸 + `review_parent_issue` Pass 臂落
@@ -22,7 +22,7 @@
 //!    与谓词矩阵测试；
 //! ③ 无活跃派发——逐单 `get_active_dispatch` = None（queued/running 在途
 //!    即阻塞，防「单已落定、新代派发又起飞」的窗口期收口）；
-//! ④ 未决 unknown 清单为空或已裁决——`unknown: ` 标记行（批一c ③
+//! ④ 未决 unknown 清单为空或已裁决——`unknown: ` 标记行（c ③
 //!    `persist_unknowns` 落盘，system 评论）之后同单存在 admin 评论 =
 //!    该批已裁决；agent/system 评论不裁决，admin 评论在标记之前不算
 //!    （评论按 id 升序 = 插入序比较，created_at 秒级粒度同秒不可靠）；
@@ -31,7 +31,7 @@
 //!
 //! 谓词在正常路径恒真（全 done 子树、无在途派发、无未裁决 unknown），
 //! 不改变既有收口行为。不满足 → 调用方阻塞 + [`write_finish_gap_comment`]
-//! 缺口评论显式列出清单（C-F4 去重：与最近一条同前缀系统评论逐字比较）。
+//! 缺口评论显式列出清单（C- 去重：与最近一条同前缀系统评论逐字比较）。
 
 use crate::assignment::Actor;
 use crate::models::{CommentType, Issue, IssueStatus, NewComment};
@@ -41,7 +41,7 @@ use crate::store::BoardStore;
 const UNKNOWN_LINE_PREFIX: &str = "unknown: ";
 /// `fail_class: ` 标记行前缀（写回失败评论的结构化分类行）。
 const FAIL_CLASS_LINE_PREFIX: &str = "fail_class: ";
-/// 缺口评论前缀（C-F4 去重的同款识别锚）。
+/// 缺口评论前缀（C- 去重的同款识别锚）。
 pub const FINISH_GAP_PREFIX: &str = "⚠ FINISH 收口闸未满足：";
 
 /// 父单收口前置谓词（**收口面**，完整五条件）：对子树（Subtree 闭包，
@@ -108,7 +108,7 @@ fn closure_gaps(store: &BoardStore, subtree: &[Issue]) -> Vec<String> {
 
 /// 父单收口前置谓词（**入口面**，环境干净三条件）：review_parent_issue
 /// 开闸前的 ③④⑤ 检查。①② 刻意不在入口——in-flight 子单在场时缺陷闸
-/// （M8 停车泊车）/ 父单分流 / FAIL 返工承接链必须照常跑（零回归合同）；
+/// （停车泊车）/ 父单分流 / FAIL 返工承接链必须照常跑（零回归合同）；
 /// ⑤ 在入口保留旧 cancelled 检查语义（不烧 LLM token 提前让位）。
 pub fn evaluate_parent_entry_finish(store: &BoardStore, subtree: &[Issue]) -> Vec<String> {
     let mut gaps: Vec<String> = Vec::new();
@@ -195,7 +195,7 @@ pub fn evaluate_parent_entry_finish(store: &BoardStore, subtree: &[Issue]) -> Ve
     gaps
 }
 
-/// 单条 issue 的待裁决 unknown 批次（AOR 批三 5.3 触发点④素材）。
+/// 单条 issue 的待裁决 unknown 批次（触发点④素材）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct PendingUnknownBatch {
     pub issue_id: i64,
@@ -260,7 +260,7 @@ pub fn pending_unknown_batches(store: &BoardStore, issues: &[Issue]) -> Vec<Pend
     out
 }
 
-/// FINISH 缺口评论落盘（C-F4 去重）：与最近一条同前缀系统评论逐字比较，
+/// FINISH 缺口评论落盘（C- 去重）：与最近一条同前缀系统评论逐字比较，
 /// 内容未变则跳过（谓词每轮收口检查都会跑，不去重会刷屏）。清单变化仍会
 /// 补写显形。空清单不写。
 pub fn write_finish_gap_comment(

@@ -1,4 +1,4 @@
-//! xref —— 交叉引用索引（T3.2）。
+//! xref —— 交叉引用索引（.2）。
 //!
 //! 四类索引：字符串引用（.rdata C 串 → 引用指令）、导入调用
 //! （call [iat] → dll!func）、立即数常量、数据引用（rip-rel → 数据 RVA）。
@@ -65,7 +65,7 @@ pub struct XrefIndex {
 #[derive(Debug, Default, Serialize)]
 pub struct ReverseIndex {
     /// 字符串内容 → 串所在数据 RVA 列表（同文重复串多址；search string
-    /// 第一步，站点经 `data_by_rva` 二跳）。
+    /// 站点经 `data_by_rva` 二跳）。
     pub str_by_content: HashMap<String, Vec<u32>>,
     /// 立即数值 → 引用站点（指令 RVA）。
     pub imm_by_value: HashMap<u64, Vec<u32>>,
@@ -137,7 +137,7 @@ fn scan_strings(image: &ImageMap) -> Vec<(u32, String, bool)> {
                         .chars()
                         .take(256)
                         .collect();
-                    // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                    // saturating 防 u32 加法溢出（同族）
                     out.push((info.rva.saturating_add(s as u32), text, false));
                 }
             }
@@ -150,7 +150,7 @@ fn scan_strings(image: &ImageMap) -> Vec<(u32, String, bool)> {
                     .chars()
                     .take(256)
                     .collect();
-                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                // saturating 防 u32 加法溢出（同族）
                 out.push((info.rva.saturating_add(s as u32), text, false));
             }
         }
@@ -168,7 +168,7 @@ fn scan_strings(image: &ImageMap) -> Vec<(u32, String, bool)> {
                         .map(|c| c[0] as char)
                         .take(256)
                         .collect();
-                    // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                    // saturating 防 u32 加法溢出（同族）
                     out.push((info.rva.saturating_add(i as u32), text, true));
                 }
                 i = j;

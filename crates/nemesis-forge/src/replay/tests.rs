@@ -3,7 +3,7 @@
 use super::*;
 use std::path::Path;
 
-/// 构造一条 WAL 行（字段名与 nemesis-agent::turn_wal::WalRecord 对齐）。
+/// 构造一条 WAL 行（字段名与 nemesis-agent::turn_wal:WalRecord 对齐）。
 fn wal_line(session: &str, tool: &str, state: &str, ok: Option<bool>, ts: u64) -> String {
     let ok_json = match ok {
         Some(b) => b.to_string(),
@@ -71,7 +71,7 @@ fn extract_empty_or_missing_wal_is_empty() {
 
 #[test]
 fn extract_scans_rotated_wal_old_generation() {
-    // 轮换代扫描（四路评审 C-F3 根修）：wal.jsonl 轮换为 wal.jsonl.old 后，
+    // 轮换代扫描（四路评审 C- 根修）：wal.jsonl 轮换为 wal.jsonl.old 后，
     // 上一代的失败记录仍要被提取（当前代只有新失败时不丢上一代尾部）。
     let dir = tempfile::tempdir().unwrap();
     write_wal(
@@ -91,7 +91,7 @@ fn extract_scans_rotated_wal_old_generation() {
 
 #[test]
 fn confirm_writes_confirmed_before_pending_so_crash_never_loses_cases() {
-    // 写序回归锁（四路评审 C-F1 根修）：confirmed 写失败（此处以目录占位
+    // 写序回归锁（四路评审 C- 根修）：confirmed 写失败（此处以目录占位
     // 模拟中断点）时 pending 必须原样——用例不被销毁；写序颠倒的旧实现会
     // 先截 pending 再写 confirmed，中断即整批丢失。
     let dir = tempfile::tempdir().unwrap();
@@ -129,7 +129,7 @@ fn confirm_writes_confirmed_before_pending_so_crash_never_loses_cases() {
 
 #[test]
 fn corrupt_zone_files_error_instead_of_silent_empty() {
-    // 损坏区文件（四路评审 C-F2 根修）：静默当空会让后续 confirm/ingest
+    // 损坏区文件（四路评审 C- 根修）：静默当空会让后续 confirm/ingest
     // 以空基线回写销毁整区——必须 Err。
     let dir = tempfile::tempdir().unwrap();
     let replay = dir.path().join("forge").join("replay");

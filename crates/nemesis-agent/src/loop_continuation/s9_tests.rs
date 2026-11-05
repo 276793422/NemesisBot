@@ -1,5 +1,5 @@
 //! 覆盖率批次：loop_continuation.rs 剩余未覆盖行。
-//! - 164：ContinuationStore:delete 的 remove 失败 warn（快照路径预置为
+//! - 164：ContinuationStore::delete 的 remove 失败 warn（快照路径预置为
 //!   目录）。
 //! - 187：list_pending 的扩展名分支收尾（.json + 非.json 混合目录）。
 //! - 479-483：wait_for_continuation 超时耗尽 → warn + None（直接构造
@@ -8,7 +8,7 @@
 //!   （复刻 simple_response 场景 + subscriber）。
 //! - 855-868 / 872-884：结构性死区——execute_tool_for_continuation 是
 //!   ContinuationToolResult 的唯一生产者（loop_continuation.rs:954-977 三
-//!   个构造点全部 `..Default:default()`，for_user 恒空、is_async 恒
+//!   个构造点全部 `..Default::default()`，for_user 恒空、is_async 恒
 //!   false、silent 恒 true）→ for_user 发送臂与嵌套异步保存臂永假。
 //! - 387-392：messages 序列化失败分支（Vec<LlmMessage> 恒可序列化）结构性。
 //! - 464-473：双检竞态窗口（drop 锁后到 load 之间就绪）——非确定性窗口，

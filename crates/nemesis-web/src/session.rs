@@ -376,7 +376,7 @@ fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): stats /
+// (, quality-hardening goal 冲刺 web): stats /
 // all_sessions / shutdown / no-queue broadcast arms.
 #[cfg(test)]
 mod s10b_tests;

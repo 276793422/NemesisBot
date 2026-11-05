@@ -443,7 +443,7 @@ impl FeishuChannel {
 
     /// 循环尾退避等待：睡满 `backoff` 返回 true；等待期间取消被触发
     /// （oneshot 完成，含 sender 侧 drop）返回 false。
-    /// BUG-20261104-384：循环尾旧形态 `select! { sleep => {}, async {} => {} }`
+    /// 循环尾旧形态 `select! { sleep => {}, async {} => {} }`
     /// 空 async 臂首个 poll 即 Ready，select 恒立即返回，退避 sleep 被完全
     /// 短路（断连后零间隔重连）。抽成独立函数以便单测锁语义。
     async fn backoff_wait(
@@ -602,7 +602,7 @@ impl FeishuChannel {
                         let (mut write, mut read) = ws_stream.split();
                         let mut ping_interval_timer =
                             tokio::time::interval(std::time::Duration::from_secs(ping_interval));
-                        // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的 ping
+                        // 默认 Burst 在挂起恢复后把错过的 ping
                         // 逐个补发——对端被 ping 洪泛。Delay 从当前时刻重排。
                         ping_interval_timer
                             .set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

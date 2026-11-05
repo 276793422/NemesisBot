@@ -80,7 +80,7 @@ fn w7_loop() -> AgentLoop {
     {
         let mut t = al.tools.write();
         t.insert("mcp_fake_echo".to_string(), Arc::new(McpEchoTool));
-        // 生产注册在 loop_tools 装配函数（恒注册）；裸 AgentLoop:new 不跑
+        // 生产注册在 loop_tools 装配函数（恒注册）；裸 AgentLoop::new 不跑
         // 装配——测试自插，等价供给闸面对的注册面。mcp_list 同为恒注册
         // （补：首版 fixture 漏插导致长尾隐藏把两步流程的
         // 查询面一起裁掉的缺陷在供给面测试里不可）。

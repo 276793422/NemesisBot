@@ -1,4 +1,4 @@
-//! 紫微系统 WSAPI handler（总控 §1/§8/§9；.5 空壳 + 门关拒绝面）。
+//! 紫微系统 WSAPI handler（总控；.5 空壳 + 门关拒绝面）。
 //!
 //! 命令清单（l1 注册表全量登记）：
 //! - 会话/资产面：`ziwei.list` / `show` / `attach` / `detach` / `invoke` /
@@ -11,8 +11,8 @@
 //! 1. cargo feature `ziwei`（关 = 本 handler 整体不注册，命令 unknown）；
 //! 2. config `ziwei.enabled`（默认 false = 全部命令诚实拒绝）。
 //!
-//! 里程碑实装面：list/show/status/remove = ；attach/detach = ；
-//! invoke（poll 一次性快照）/refresh（动态工具重注册钩子）= ；
+//! 里程碑实装面：list/show/status/remove =；attach/detach =；
+//! invoke（poll 一次性快照）/refresh（动态工具重注册钩子）=；
 //! setup.* = 。refresh 经 `set_refresh_hook` 桥（依赖方向：nemesis-web
 //! 不依赖 nemesisbot，钩子由 gateway 装配时安装）。
 
@@ -196,7 +196,7 @@ impl ModuleHandler for ZiweiHandler {
         }
         // 运行闸：config ziwei.enabled（默认 false）。**直读磁盘文件**（不走
         // live 缓存）——热开闸语义：gateway 运行中改 config.json 即刻生效
-        // （update_config 落盘写穿，文件即真相源；IT ziwei 套件依赖本语义）。
+        // （update_config 落盘写穿，文件即权威定义；IT ziwei 套件依赖本语义）。
         let home = ctx.home.clone().ok_or("home 未知")?;
         let cfg = nemesis_config::load_config(&super::config::config_path(&home))
             .map_err(|e| format!("failed to load config: {e}"))?;
@@ -218,7 +218,7 @@ impl ModuleHandler for ZiweiHandler {
         }
 
         match cmd {
-            // ── 只读面（数据层 .4 即 backing）──
+            // ── 只读面（数据层.4 即 backing）──
             "list" => {
                 let store = ProfileStore::new(&Self::workspace(ctx)?);
                 let profiles = store.list().map_err(|e| e.to_string())?;
@@ -269,7 +269,7 @@ impl ModuleHandler for ZiweiHandler {
                 tracing::info!("[ziwei] profile {} 已删除（WSAPI）", id);
                 Ok(Some(serde_json::json!({ "removed": id })))
             }
-            // ── 运行期面（attach/detach；：invoke/refresh）──
+            // ── 运行期面（attach/detach；invoke/refresh）──
             "attach" => {
                 let id = data
                     .as_ref()

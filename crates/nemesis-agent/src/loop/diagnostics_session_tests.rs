@@ -1,7 +1,7 @@
-//! /（2026-09-25）：诊断回灌触发臂扩展 + 会话级跨文件
+//! （2026-09-25）：诊断回灌触发臂扩展 + 会话级跨文件
 //! 聚合 + stale 过滤（版本感知竞速）测试。
 //!
-//! fake gopls / PATH 辅助复用 [`super:diagnostics_feedback_tests`]（PATH
+//! fake gopls / PATH 辅助复用 [`super::diagnostics_feedback_tests`]（PATH
 //! 是进程全局态，跨模块必须共用同一把 env 锁——否则并行测试互踩，TOCTOU
 //! 见同文件 `no_server_on_path_returns_unchanged` 注释）。纯逻辑测试
 //! （路径提取 / registry cap 与隔离 / 锚点）不依赖真服务器，确定性覆盖；

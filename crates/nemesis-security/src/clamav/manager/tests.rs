@@ -377,13 +377,13 @@ fn test_parse_duration_hours_and_minutes() {
 }
 
 // ============================================================
-// Fake clamd / where.exe full-start tests (2026-08-25 coverage push)
+// Fake clamd / where.exe full-start tests (coverage push)
 // ============================================================
 // 把 manager 的完整启动序列拉通：
 // - 假 clamd.exe = where.exe 副本（spawn 成功即退，start() 只看 ping）
 // - 假 clamd 服务 = 进程内 PONG server（readiness + scanner.ping 都打它）
 // - 预置 <data_dir>/database/main.cvd（mtime 新鲜 → is_database_stale=false
-//   → 跳过 freshclam；同时过 G3 检查）
+//   → 跳过 freshclam；同时过 检查）
 // - update_interval "1h" → 覆盖 step 8 的 spawn 分支（1h 内不会真跑 freshclam）
 
 #[cfg(windows)]
@@ -441,7 +441,7 @@ async fn fake_manager_full_start_and_stop() {
     let clamav_dir = tempfile::tempdir().unwrap();
     place_where_as(clamav_dir.path(), "clamd");
     let data_dir = tempfile::tempdir().unwrap();
-    // 预置新鲜 main.cvd：跳过 freshclam 下载 + 过 G3
+    // 预置新鲜 main.cvd：跳过 freshclam 下载 + 过
     std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
     std::fs::write(
         data_dir.path().join("database").join("main.cvd"),
@@ -492,7 +492,7 @@ async fn fake_manager_full_start_and_stop() {
 #[cfg(windows)]
 #[tokio::test]
 async fn fake_manager_start_missing_database_refuses() {
-    // 无 main.cvd：stale → update（freshclam 缺失 → warn）→ G3 拒绝启动。
+    // 无 main.cvd：stale → update（freshclam 缺失 → warn）→ 拒绝启动。
     let clamav_dir = tempfile::tempdir().unwrap();
     place_where_as(clamav_dir.path(), "clamd");
     let data_dir = tempfile::tempdir().unwrap();
@@ -640,7 +640,7 @@ async fn fake_manager_freshclam_conf_write_failure_errors() {
 async fn fake_manager_initial_database_download_success_arm() {
     // hostname.exe ignores all arguments and exits 0 → the fake freshclam
     // "succeeds" → the "Virus database downloaded successfully" arm runs.
-    // No main.cvd afterwards → G3 refuses to start clamd (still fine here).
+    // No main.cvd afterwards → refuses to start clamd (still fine here).
     let clamav_dir = tempfile::tempdir().unwrap();
     place_where_as(clamav_dir.path(), "clamd");
     place_hostname_as(clamav_dir.path(), "freshclam");

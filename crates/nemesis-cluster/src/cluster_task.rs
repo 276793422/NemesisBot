@@ -22,7 +22,7 @@ pub enum TaskStatus {
     WaitingRemote,
     Completed,
     Failed,
-    /// A 侧（board coordinator）下行取消（W2 P4 task_cancel）。终态：
+    /// A 侧（board coordinator）下行取消（task_cancel）。终态：
     /// 排队任务出队时直接报错回收；执行中任务经 CancellationToken 中断。
     Cancelled,
 }
@@ -54,7 +54,7 @@ pub enum CancelOutcome {
     AlreadyTerminal { status: String },
 }
 
-/// 出队执行结局（BUG-20261029-140：消费方出队序列原子化）。
+/// 出队执行结局（消费方出队序列原子化）。
 #[derive(Debug, Clone)]
 pub enum DequeueOutcome {
     /// 任务不存在（从未入册或已回收）。
@@ -96,12 +96,12 @@ pub struct ClusterTask {
     pub waiting_tool_call_id: Option<String>,
     /// Callback result injected when the child task completes.
     pub callback_result: Option<String>,
-    /// 集群专业职能框架（M3）：本任务要求的执行职能 slug（`family[:spec]`，
+    /// 集群专业职能框架：本任务要求的执行职能 slug（`family[:spec]`，
     /// 已由派发端归一小写）。None = 无职能需求（B 端仅渲染稳定前缀）。
     /// 职能文本从不跨越 RPC：A 端只传 slug，B 端从本节点磁盘/内置目录渲染。
     #[serde(default)]
     pub required_profession: Option<String>,
-    /// E1 二期用量账（2026-10-17 异步多跳根修）：async 挂起前已消耗的
+    /// 二期用量账（异步多跳根修）：async 挂起前已消耗的
     /// token 用量差值（`task_usage_delta` JSON 形态：input_tokens/output_tokens/
     /// requests/cost_usd）。此前首跳用量在 `execute_new_task` 检出 __ASYNC__
     /// 后随 `usage_before` 局部变量一起丢失，`resume_task` 重新快照后最终
@@ -110,14 +110,14 @@ pub struct ClusterTask {
     /// 成功回调）。resume 完成时合并（饱和加法）上报。
     #[serde(default)]
     pub async_usage_stash: Option<serde_json::Value>,
-    /// L13-b（2026-11-03 三期）：mandate 执行期守卫投影——B 端前置闸验签
-    /// 通过后从 mandate body 派生（[`crate::roaming::mandate::
+    /// b（三期）：mandate 执行期守卫投影——B 端前置闸验签
+    /// 通过后从 mandate body 派生（[`crate::roaming:mandate:
     /// enforcement_from_body`]），随任务进执行面（cluster_agent set 进
     /// AgentLoop guard 槽）。None = 无 mandate（旧节点兼容/verify 放行）。
     /// serde default 兼容旧任务记录/async state 回读。
     #[serde(default)]
     pub mandate: Option<nemesis_types::cluster::MandateEnforcement>,
-    /// AOR 批二a ④：派发代际号——A 端 claim 时按该 issue 已有派发行数
+    /// a ④：派发代际号——A 端 claim 时按该 issue 已有派发行数
     /// 计算（首派 0、第 N 次重派 N-1），随下行 payload 到 B 端存进任务，
     /// 回调时原样回声（`dispatch_generation` 键）。A 端写回闸据此拒绝旧代
     /// 迟到回调覆盖新一代派发状态。None = 上行 payload 无此键（旧 A 端
@@ -130,7 +130,7 @@ pub struct ClusterTask {
 // ClusterWorkQueue
 // ---------------------------------------------------------------------------
 
-/// 取证请求 marker（压测②单一真相源，2026-09-30）：master 评审链
+/// 取证请求 marker（压测②统一定义）：master 评审链
 /// （nemesisbot `board_review::build_selfcheck_prompt`）构造取证 prompt 的
 /// 头部形态；worker 侧 PeerChatHandler 据此判定取证任务走优先通道
 /// （[`ClusterWorkQueue::submit_priority`]）。改文案两处同源。
@@ -141,9 +141,9 @@ pub const SELFCHECK_PROMPT_MARKER: &str = "[取证请求 board_selfcheck:";
 /// Producers (PeerChatHandler, callback handler) submit task IDs;
 /// the cluster agent loop consumes them one at a time.
 ///
-/// 压测②（2026-09-30 三设备）：在普通 FIFO 之外带一条**取证优先通道**——
+/// 压测②（三设备）：在普通 FIFO 之外带一条**取证优先通道**——
 /// 评审链的 取证→回报→二段评审 与正式任务共用本队列时会被串行排队拖长
-/// （C1/NB-54 实测 50+ 分钟）。取证任务短平快且评审挂起等待时效敏感，
+/// （/ 实测 50+ 分钟）。取证任务短平快且评审挂起等待时效敏感，
 /// 消费侧绝对插队；正式任务不饿死（取证量是每单个位数的短任务）。
 pub struct ClusterWorkQueue {
     tx: mpsc::Sender<String>,
@@ -217,7 +217,7 @@ impl ClusterWorkQueue {
 /// Thread-safe task list backed by DashMap with optional disk persistence.
 pub struct ClusterTaskList {
     tasks: DashMap<String, ClusterTask>,
-    /// 执行中任务的取消令牌（W2 P4 per-task cancel）：task_id → token。
+    /// 执行中任务的取消令牌（per-task cancel）：task_id → token。
     /// cluster_agent 在 run 前 register、run 后 unregister；cancel_task 命中
     /// 执行中任务时 token.cancel() 让 agent loop 尽快中断。
     running_tokens: DashMap<String, tokio_util::sync::CancellationToken>,
@@ -261,7 +261,7 @@ impl ClusterTaskList {
     /// Sets conversation snapshot, waiting_for_task_id, waiting_tool_call_id,
     /// and status to WaitingRemote in a single DashMap entry update.
     ///
-    /// 内存态更新是真相源、照常先行；磁盘持久化（会话快照 + 任务索引）失败
+    /// 内存态更新为权威依据、照常先行；磁盘持久化（会话快照 + 任务索引）失败
     /// 聚合进返回值（NB-CODE-008）——恢复面静默失效必须让调用方可感知。
     pub fn save_async_state(
         &self,
@@ -325,7 +325,7 @@ impl ClusterTaskList {
         None
     }
 
-    /// 写入 async 挂起前的用量暂存（E1 二期多跳账，2026-10-17）。调用方
+    /// 写入 async 挂起前的用量暂存（二期多跳账）。调用方
     /// （cluster_agent）紧跟着调 [`Self::save_async_state`]——落盘的任务
     /// 索引自然带上本字段，崩溃恢复后 resume 仍能合并首跳用量。
     pub fn set_async_usage_stash(&self, task_id: &str, usage: Option<serde_json::Value>) {
@@ -348,12 +348,12 @@ impl ClusterTaskList {
     /// 注入后立即落盘（NB-CODE-007）：内存态 Pending + callback_result 若只存在于
     /// 内存，父任务 resume（LLM 分钟级）窗口内崩溃 → 重启恢复成 WaitingRemote →
     /// 回调结果丢失 → 父任务重跑、子任务重复执行。落盘把该窗口收窄到 resume
-    /// 执行中崩溃（走 G5 快照链的固有窗口）。失败透传给调用方（NB-CODE-008 同款
+    /// 执行中崩溃（走 快照链的固有窗口）。失败透传给调用方（NB-CODE-008 同款
     /// 诚实化）。
     pub fn inject_callback(&self, task_id: &str, response: &str) -> Result<(), String> {
-        // 取消守卫（W2 P4）：任务已被 task_cancel 下行取消（终态）→ 迟到的
+        // 取消守卫：任务已被 task_cancel 下行取消（终态）→ 迟到的
         // 回调不得把它复活回 Pending（防多跳回调链重新入队）；直接回收清理。
-        // LOW-4（2026-10-17 四轮审计）：取消判定放进 get_mut guard **内**
+        // LOW-4（四轮审计）：取消判定放进 get_mut guard **内**
         // 原子完成——旧「先 get 读状态、drop 后再 get_mut 写」与 cancel_task
         // 的 update_status 交错（读在取消前、写在取消后）可把刚取消的任务
         // 复活回 Pending（重跑一次）。注意不能在 guard 持有期间调
@@ -395,7 +395,7 @@ impl ClusterTaskList {
         })
     }
 
-    // -- per-task cancel（W2 P4）-------------------------------------------
+    // -- per-task cancel-------------------------------------------
 
     /// 执行前注册取消令牌（cluster_agent 的 execute_new_task / resume 路径
     /// 在 run_with_trace 前调用；run 结束后必须 unregister）。
@@ -447,7 +447,7 @@ impl ClusterTaskList {
         }
     }
 
-    /// 出队执行原子化（BUG-20261029-140，inject_callback 的 LOW-4 同族）：
+    /// 出队执行原子化（inject_callback 的 LOW-4 同族）：
     /// 旧消费序列 get_task 读快照 → 内存检查 Cancelled → update_status(Running)
     /// 三步分离，cancel_task 落在检查与转移之间时（读 Pending → 过检 → 写
     /// Cancelled）终态被随后的 update_status(Running) 无条件覆盖——A 端已收
@@ -477,7 +477,7 @@ impl ClusterTaskList {
     /// then updates the task index on disk so stale entries don't accumulate across restarts.
     pub fn complete_task(&self, task_id: &str) {
         // Delete conversation file from disk.
-        // LOW-5（2026-10-17 四轮审计）：韧性删除——Windows 瞬时句柄对单文件
+        // LOW-5（四轮审计）：韧性删除——Windows 瞬时句柄对单文件
         // 同理成立，裸 remove_file 单发失败 = 残留文件（AV/索引器释放后无人
         // 再清）。
         let conv_path = self.conversation_path(task_id);
@@ -505,7 +505,7 @@ impl ClusterTaskList {
         }
     }
 
-    /// 防御性清扫内存中残留的终态任务（BUG-3，2026-10-17）。
+    /// 防御性清扫内存中残留的终态任务（BUG-3）。
     ///
     /// 正常路径 [`Self::complete_task`] 在所有执行出口移除条目（成功/失败/
     /// 取消-出队），终态条目本不应驻留内存——磁盘持久化同样过滤终态。
@@ -541,7 +541,7 @@ impl ClusterTaskList {
     // -- Persistence helpers ------------------------------------------------
 
     fn conversation_path(&self, task_id: &str) -> PathBuf {
-        // T9（2026-10-17 三轮审计）：task_id 在 B 端来自远端载荷——路径
+        // （三轮审计）：task_id 在 B 端来自远端载荷——路径
         // 成分前消毒（crate 单一包装），否则 `data_dir/cluster/{task_id}.json`
         // 裸拼让认证对端可任意路径写（persist_conversation）/删
         // （complete_task）。写入（persist）与恢复（restore_from_disk 按
@@ -563,7 +563,7 @@ impl ClusterTaskList {
         }
         match serde_json::to_string_pretty(conversation) {
             Ok(json) => {
-                // REL-002：统一原子写入。
+                // 统一原子写入。
                 nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
                     .map_err(|e| {
                         tracing::warn!(
@@ -612,9 +612,9 @@ impl ClusterTaskList {
                 && matches!(status, TaskStatus::Pending | TaskStatus::WaitingRemote)
             {
                 let conv_path = self.conversation_path(&task_id);
-                // BUG-20261101-282：写侧 write_file_atomic 原子，读侧遇到的损坏
+                // 写侧 write_file_atomic 原子，读侧遇到的损坏
                 // 只剩外部篡改/历史残留/磁盘问题——正是需要第一个可见信号的场景
-                // （session 坏档 WARN 同族口径，BUG-20261025-44 的漏网点）。跳过
+                // （session 坏档 WARN 同族口径， 的漏网点）。跳过
                 // 语义不变：不炸、任务照常恢复，但丢上下文必须 loud 留痕。
                 if conv_path.exists() {
                     match std::fs::read_to_string(&conv_path) {
@@ -727,7 +727,7 @@ impl ClusterTaskList {
             .map_err(|e| format!("Failed to serialize tasks: {}", e))?;
 
         let path = dir.join("tasks.json");
-        // REL-002：统一原子写入。
+        // 统一原子写入。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
             .map_err(|e| format!("Failed to write tasks.json: {}", e))?;
 

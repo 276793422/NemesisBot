@@ -126,7 +126,7 @@ impl DualMakeWriter {
 
     /// Create a writer that outputs to stderr **and** the given file path.
     ///
-    /// The file is opened in append mode (created if absent).  Parent
+    /// The file is opened in append mode (created if absent). Parent
     /// directories are **not** automatically created.
     pub fn with_file(path: &str) -> io::Result<Self> {
         let file = std::fs::OpenOptions::new()

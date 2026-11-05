@@ -152,7 +152,7 @@ pub fn far_end_buffer() -> Arc<Mutex<VecDeque<f32>>> {
 }
 
 /// far-end 参考信号的采样率（由 loopback 采集线程初始化成功后写入，
-/// BUG-20261029-181：此前全仓无 store 点——「由 AudioPlayback::new 写入」
+/// 此前全仓无 store 点——「由 AudioPlayback::new 写入」
 /// 是死接线声明，far_end_sample_rate() 恒等于默认值，loopback 采样率一改
 /// 就静默失配）。STT pipeline 用它把 far-end 参考信号重采样到 16k 喂 AEC
 /// ——采集和播放可能是不同设备、不同采样率，不能复用 near-end 的
@@ -290,7 +290,7 @@ impl AudioPlayback {
         self.queue.lock().unwrap().clear();
     }
 
-    /// 跨线程停止句柄（barge-in，realtime P1 G4）：只持播放队列 Arc（Send+Sync）。
+    /// 跨线程停止句柄（barge-in，realtime）：只持播放队列 Arc（Send+Sync）。
     /// AudioPlayback 本体因 cpal Stream 是 !Send——播放循环线程持有本体，
     /// STT 管线线程经本句柄打断（stop() 清队列即刻出静音，play_blocking 等待
     /// 循环见空队列即返回）。

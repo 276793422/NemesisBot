@@ -463,7 +463,7 @@ async fn test_build_router_embedded_static_spa_fallback() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
-    // 批次二（反向桥）起，嵌入式 HTML 出站统一注入 `<base href>`（此处
+    // （反向桥）起，嵌入式 HTML 出站统一注入 `<base href>`（此处
     // 无身份、请求在根路径 → 注入 `href="/"`），SPA fallback 同样走改写。
     assert_eq!(&body[..], b"<html><base href=\"/\">SPA</html>");
 }
@@ -1550,7 +1550,7 @@ async fn test_process_messages_records_user_row_and_echoes_to_sender() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    // 回声走可丢通道（BUG ：qrx 须绑 lo 位；绑 hi 位时回声帧
+    // 回声走可丢通道（BUG：qrx 须绑 lo 位；绑 hi 位时回声帧
     // 落 lo，而 hi 随 mgr 析构关闭 → recv 恒 None，正向断言必炸）。
     let (queue, _hi_rx, mut qrx, _done_tx) = SendQueue::test_channels(16);
     mgr.set_send_queue(&session.id, Arc::new(queue));

@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): CORSManager error arms the
+//! (quality-hardening goal 冲刺, web): CORSManager error arms the
 //! existing tests skip — invalid JSON load, un-creatable parent directory
 //! (`create_dir_all` failure), the honest rename failure on a read-only
 //! destination, and the CDN `Url::parse` failure arm in `check_origin`.

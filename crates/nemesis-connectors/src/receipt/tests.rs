@@ -97,7 +97,7 @@ fn serde_roundtrip_keeps_optional_fields_absent() {
 
 #[test]
 fn legacy_line_without_undoable_deserializes() {
-    // 撤销动词（2026-10-14）之前的存量回执行没有 undoable 字段——
+    // 撤销动词之前的存量回执行没有 undoable 字段——
     // undoable 缺 serde(default) 会把它们全部解析成损坏行静默跳过
     // （connectors_ws IT ids=[] 实证）。回归锁：历史行合法可读、
     // undoable 缺省 false。
@@ -133,12 +133,12 @@ fn list_skips_corrupt_lines() {
     assert_eq!(all[0].receipt_id, "RCPT-1000-0002");
 }
 
-// BUG-20261104-386：回执 jsonl 追加的行原子性——`append_receipt` 无锁，
+// 回执 jsonl 追加的行原子性——`append_receipt` 无锁，
 // 多会话 agent loop 并发执行 connector 工具时 `writeln!`（正文与 "\n" 两
 // 次 write）可粘行，list_receipts 对损坏行 warn + 跳过 = 回执（可撤销
 // 凭据）静默丢失 → 撤销面缺口。修复 = 整行（含换行）单次 write_all
 // （O_APPEND / FILE_APPEND_DATA 每次 write 定位原子）。与 auditor
-// audit.jsonl / chat_log R100 同族。真红是概率性的（竞态），修复后确定性绿。
+// audit.jsonl / chat_log 同族。真红是概率性的（竞态），修复后确定性绿。
 #[test]
 fn b386_concurrent_receipt_appends_never_tear() {
     let ws = tmpws();

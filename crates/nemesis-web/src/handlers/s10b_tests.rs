@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): handlers:: shared path/file
+//! (quality-hardening goal 冲刺, web): handlers:shared path/file
 //! utility arms the gated `mod tests` skips — absolute-path rejection, the
 //! canonicalize-fallback branch (non-existent base), `..` denial when the
 //! target is missing, atomic-write fallback on a read-only destination, and

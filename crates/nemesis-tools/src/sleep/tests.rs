@@ -104,7 +104,7 @@ async fn test_sleep_negative_duration() {
 #[tokio::test]
 async fn test_sleep_cancellation() {
     let tool = SleepTool::new();
-    // Use tokio::time::timeout to simulate cancellation
+    // Use tokio::time:timeout to simulate cancellation
     let result = tokio::time::timeout(
         std::time::Duration::from_millis(50),
         tool.execute(&serde_json::json!({"duration": 30})),

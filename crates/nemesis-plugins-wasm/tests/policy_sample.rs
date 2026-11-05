@@ -1,4 +1,4 @@
-//! 循环策略样板 e2e（2026-10-22 批 5）：三方 SDK（
+//! 循环策略样板 e2e（2026-10-22）：三方 SDK（
 //! [`nemesis_plugin_sdk::export_loop_policy!`]）产物走宿主正式 admit 漏斗
 //! 实测三策略点接管 / builtin 回退 / 禁用摘桥语义。
 //!
@@ -378,7 +378,7 @@ async fn policy_disable_reenable_fallback_chain() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_runtime_master_gate_blocks_and_recovers() {
-    // 运行期总闸（2026-11-01 BUG 修复）回归锁：总闸/宿主壳开关翻关 =
+    // 运行期总闸（BUG 修复）回归锁：总闸/宿主壳开关翻关 =
     // call_policy_point NotAvailable（调用方按「无接管」语义回退内置策略）
     // ——与插件禁用不同，接管者注册表照旧（policy_owner 在场），只挡
     // guest 咨询；开关改回即时恢复（无缓存）。
@@ -435,7 +435,7 @@ async fn policy_runtime_master_gate_blocks_and_recovers() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn policy_validation_latency_probe() {
-    // 性能探针（计划批 5④）：validate-args 是高频路径（每次 LLM 工具调用
+    // 性能探针（计划④）：validate-args 是高频路径（每次 LLM 工具调用
     // 一次），fresh-store-per-call 的固有开销在此实测。只打印不做墙钟硬
     // 断言（跨机噪声大，报告文档引用实测值；超标治理 = validate 帧低
     // fuel 档）。--nocapture 观看。

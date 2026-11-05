@@ -185,7 +185,7 @@ pub struct MockTransport {
     closed: bool,
     responses: Vec<MockResponse>,
     requests: Vec<RecordedRequest>,
-    /// 每次 send() 收到的 timeout_ms（2026-10-15 第十二轮：config `timeout`
+    /// 每次 send() 收到的 timeout_ms（config `timeout`
     /// 内层接线咬合断言面，与 requests 同序）。
     timeouts_ms: Vec<u64>,
 }
@@ -280,7 +280,7 @@ impl MockTransport {
     }
 
     /// Return the recorded per-send timeout_ms values（与 take_requests 同序；
-    /// 2026-10-15 第十二轮：config `timeout` 内层接线咬合断言面）。
+    /// config `timeout` 内层接线咬合断言面）。
     pub fn take_timeouts_ms(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.timeouts_ms)
     }
@@ -399,8 +399,8 @@ impl Default for SharedMockTransport {
     }
 }
 
-/// `Transport` 实现（2026-10-15 第十二轮补装）：让共享 mock 能直接作为
-/// `Box<dyn Transport>` 塞进 [`crate::client::McpClient`]，同时保留 Clone
+/// `Transport` 实现（补装）：让共享 mock 能直接作为
+/// `Box<dyn Transport>` 塞进 [`crate::client:McpClient`]，同时保留 Clone
 /// 侧把手在客户端外断言 recorded 状态（connect/close/send 委托内层锁）。
 #[async_trait]
 impl Transport for SharedMockTransport {

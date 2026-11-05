@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -85,7 +85,7 @@ impl RealLLMNodeExecutor {
 
     /// Internal constructor that shares the engine's usage slot so LLM calls
     /// are recorded whenever the gateway populates the slot via
-    /// [`crate::engine::WorkflowEngine::set_usage_store`].
+    /// [`crate::engine:WorkflowEngine::set_usage_store`].
     pub(crate) fn with_usage_store(
         provider: Arc<dyn LLMProvider>,
         usage_store: UsageStoreSlot,
@@ -178,7 +178,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
             top_p: None,
             stop: None,
             extra: HashMap::new(),
-            reasoning_effort: None, // H4: workflow nodes don't set a tier
+            reasoning_effort: None, // workflow nodes don't set a tier
         };
 
         // ---- Invoke provider ----
@@ -199,7 +199,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
 }
 
 /// Build a NodeResult from a successful LLMResponse, honoring the honest
-/// failure contract (2026-09-23 计划 A1).
+/// failure contract (计划).
 ///
 /// 空文本 = 节点 Failed（节点唯一产物就是文本）：`finish_reason=length`
 /// 时错误点名 max_tokens 预算被思维链耗尽（推理模型典型病，glm-5.3-flash
@@ -347,7 +347,7 @@ pub(crate) fn placeholder_refs(cond: &str) -> Vec<(String, Option<String>)> {
 /// Resolve a node-config string: credential reference first, then `{{var}}`
 /// template.
 ///
-/// 诚实失败契约的模板层一半（2026-09-23 计划类 B）：
+/// 诚实失败契约的模板层一半（计划类 B）：
 ///
 /// 1. **凭据引用（整值）**：配置**原文**以 `env:` / `yaml:` / `vault:` 开头
 ///    → 交给 [`nemesis_config::resolve_secret_field`] 解析（每次现查）。
@@ -372,7 +372,7 @@ pub(super) fn resolve_runtime_string(
 // ---------------------------------------------------------------------------
 // Tool Node
 // ---------------------------------------------------------------------------
-/// LLM-based classifier node (milestone 1b-D3).
+/// LLM-based classifier node (milestone 1b-).
 ///
 /// Sends a structured prompt that asks the LLM to pick exactly one class from
 /// a configured list. Output is `{class_id, confidence}` so downstream
@@ -431,7 +431,7 @@ struct ClassDef {
 /// hallucinate ids outside the configured set.
 /// 分类器 system prompt：从给定类 id 集合中挑且只挑一个。类清单经
 /// `{classes}` 占位内联注入，模型无法幻觉出集合外的 id。
-/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+/// 文本单一真相源在 `nemesis-prompts`（集中化）。
 use nemesis_prompts::workflow::CLASSIFIER_SYSTEM_PROMPT;
 
 #[async_trait]
@@ -553,7 +553,7 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                 top_p: None,
                 stop: None,
                 extra: HashMap::new(),
-                reasoning_effort: None, // H4: workflow nodes don't set a tier
+                reasoning_effort: None, // workflow nodes don't set a tier
             };
 
             // Capture per-call start so each retry's RequestLog has its own
@@ -644,9 +644,9 @@ fn confidence_for(attempt: usize, _max_attempts: usize) -> f64 {
 }
 
 // ---------------------------------------------------------------------------
-// Parameter Extractor Node (1b-D4)
+// Parameter Extractor Node (1b-)
 // ---------------------------------------------------------------------------
-/// LLM-based parameter extractor (milestone 1b-D4).
+/// LLM-based parameter extractor (milestone 1b-).
 ///
 /// Asks the LLM to read a chunk of free-form text and pull out structured
 /// fields according to a declared schema. The output is a JSON object with
@@ -716,7 +716,7 @@ pub(super) struct ParamDef {
 /// markdown fences, no commentary) to keep parsing trivial.
 /// 抽取器 system prompt：按字段清单抽信息、输出单一 JSON 对象。
 /// 字段清单经 `{parameters}` 占位注入。文本单一真相源在
-/// `nemesis-prompts`（M7 集中化）。
+/// `nemesis-prompts`（集中化）。
 use nemesis_prompts::workflow::EXTRACTOR_SYSTEM_PROMPT;
 
 #[async_trait]
@@ -843,7 +843,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
                 top_p: None,
                 stop: None,
                 extra: HashMap::new(),
-                reasoning_effort: None, // H4: workflow nodes don't set a tier
+                reasoning_effort: None, // workflow nodes don't set a tier
             };
 
             // Capture per-call start so each retry's RequestLog has its own
@@ -914,7 +914,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
 /// The model is told to emit only JSON, but we tolerate a few common
 /// wrappers: leading/trailing whitespace, an optional ```json fence
 /// (single or triple backticks), and surrounding prose that still leaves
-/// the JSON parseable once we extract the outermost `{ ... }` block.
+/// the JSON parseable once we extract the outermost `{... }` block.
 pub(super) fn parse_json_object(content: &str) -> Result<serde_json::Value, String> {
     let trimmed = content.trim();
     if trimmed.is_empty() {
@@ -929,7 +929,7 @@ pub(super) fn parse_json_object(content: &str) -> Result<serde_json::Value, Stri
         return Err(format!("expected JSON object, got {}", type_name(&v)));
     }
 
-    // Strip ```json ... ``` fences.
+    // Strip ```json... ``` fences.
     let fence_stripped = trimmed
         .strip_prefix("```json")
         .or_else(|| trimmed.strip_prefix("```"))
@@ -1011,7 +1011,7 @@ pub(super) fn type_name(v: &serde_json::Value) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
-// Agent Node (1b-D2)
+// Agent Node (1b-)
 // ---------------------------------------------------------------------------
 /// Result returned by an [`AgentRunner`] after a one-shot direct run.
 ///
@@ -1059,7 +1059,7 @@ pub trait AgentRunner: Send + Sync {
     ) -> Result<AgentRunResult, String>;
 }
 
-/// Workflow node that delegates to an [`AgentRunner`] (milestone 1b-D2).
+/// Workflow node that delegates to an [`AgentRunner`] (milestone 1b-).
 ///
 /// The node kicks off a one-shot agent run with the resolved prompt and
 /// surfaces the final response. Internal agent iterations (LLM ↔ tool
@@ -1133,7 +1133,7 @@ impl NodeExecutor for AgentNodeExecutor {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
 
-        // 角色绑定（2026-09-28 角色目录与分档供给）：`role` = 子代理角色
+        // 角色绑定（角色目录与分档供给）：`role` = 子代理角色
         // slug，模板（四组件：硬边界/输出契约/内容边界）前置进 prompt——
         // run_direct 无独立 system prompt 通道，前置等价生效（模板在前，
         // 节点指令在后）。未知 slug = 诚实节点失败并列合法清单（不静默
@@ -1171,7 +1171,7 @@ impl NodeExecutor for AgentNodeExecutor {
             .await
         {
             Ok(result) => {
-                // 诚实失败契约（2026-09-23 计划 A3）：空响应 = 无可用产出，
+                // 诚实失败契约（计划）：空响应 = 无可用产出，
                 // 节点 Failed（max_turns 耗尽或模型无输出）。
                 if result.response.trim().is_empty() {
                     return Ok(failed_node_result(

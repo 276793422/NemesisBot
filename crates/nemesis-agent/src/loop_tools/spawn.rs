@@ -65,12 +65,12 @@ pub fn detached_role_for_profile(profile: &str) -> Option<crate::prompt::Subagen
 /// 闭包内经 `detached_tools_for_profile` 映射为白名单）。
 /// 第 7 参 `depth` = 本 spawn 应产生的子代理深度（父深度 + 1，已过
 /// max_depth 检查），闭包经 `DetachedOpts.depth` 写到子 instance。
-/// 第 8 参 `background` = 后台化（true 时闭包侧 `tokio:spawn` 包住
+/// 第 8 参 `background` = 后台化（true 时闭包侧 `tokio::spawn` 包住
 /// run_detached，立即返回 `__BG_SPAWN__:{task_id}` marker；任务完成经
 /// `subagent_continuation:{task_id}` bus 消息回灌续行）。深度限制沿用第
 /// 7 参（后台任务不另计深度——派生前已过 max_depth 检查）。
 /// （角色显式化）：第 9 参 `role` = 子代理角色 slug（`""` = 自动：沿用
-/// 工具档位推导的既有行为；非空 = 已过 `SubagentRole:from_slug` 校验的
+/// 工具档位推导的既有行为；非空 = 已过 `SubagentRole::from_slug` 校验的
 /// 显式角色，闭包侧覆盖 `DetachedOpts.role`）。
 /// 子代理可见性：第 10 参 `parent_session_key` = 发起会话键（注册表
 /// 台账归属 + 后台续行回灌路由的信号；客户端手动 spawn 传 `""`）。
@@ -164,7 +164,7 @@ impl SpawnTool {
     ///
     /// The function signature is: `(agent_id, task, model, channel, chat_id) -> Future<Output = Result<String, String>>`
     ///
-    /// 内部写入共享槽（`OnceLock:set` 首次生效，重复 set 静默忽略——
+    /// 内部写入共享槽（`OnceLock::set` 首次生效，重复 set 静默忽略——
     /// 与旧「直接替换」语义的差异仅在同一工具实例重复 set 的场景，生产/
     /// 测试均不存在该用法）。
     pub fn set_spawn_fn(&mut self, f: SpawnFn) {
@@ -179,7 +179,7 @@ impl Tool for SpawnTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // 角色 enum 从目录生成（单一真相源：新增角色只改 catalog，schema
+        // 角色 enum 从目录生成（统一定义：新增角色只改 catalog，schema
         // 自动跟上）。"" 不进 enum——缺省 = 键缺省，模型显式传 "" 反而是
         // 混淆面。枚举保持全量目录（稳定契约）；tier/hidden 的供给收窄
         // 由 dispatch 闸权威裁决（同款双闸模型，陈旧 cache 窗口兜底）。

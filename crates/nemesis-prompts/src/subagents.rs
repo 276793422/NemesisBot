@@ -3,8 +3,8 @@
 //! 每个角色模板含四组件：角色定位一句 + 硬边界 + 输出契约 + 内容边界
 //! （数据非指令）。文本单一真相源在 `subagents/<role>.md`。
 
-/// 子代理角色（prompt-pack pro M4；五差距补齐 2026-09-28 扩至十角色；
-/// 角色目录与分档供给 2026-09-28 扩至十七角色——每个角色都有真实调度
+/// 子代理角色（prompt-pack pro；五差距补齐 扩至十角色；
+/// 角色目录与分档供给 扩至十七角色——每个角色都有真实调度
 /// 理由：spawn `role` 参数 / chat.spawn / workflow 节点 / tools 档位映射）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentRole {
@@ -48,7 +48,7 @@ pub enum SubagentRole {
 /// mini/normal/big——本 crate 零依赖不引它，字符串口径单一真相源在此，
 /// 消费方（dispatch 闸 / roles.list）负责把当前 ModelTier 映射成同口径）。
 ///
-/// 设计裁决（2026-09-28 用户重评）：目录完整性是硬指标，小模型适配是
+/// 设计裁决（用户重评）：目录完整性是硬指标，小模型适配是
 /// 供给层的事——目录全量存在，`roles_visible_to` 按档过滤供给；mini
 /// 用户看得少但目录不缺。
 pub mod role_tier {
@@ -143,7 +143,7 @@ impl SubagentRole {
     }
 
     /// 全角色目录：`(slug, 一句话职责, min_tier)`。spawn 工具 schema、
-    /// dispatch 分档闸、`roles.list` 的单一真相源——新增角色改这里，
+    /// dispatch 分档闸、`roles.list` 的统一定义——新增角色改这里，
     /// 三处消费自动跟随。
     pub fn catalog() -> &'static [(&'static str, &'static str, &'static str)] {
         &[

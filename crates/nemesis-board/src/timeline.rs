@@ -1,6 +1,6 @@
-//! U-C（2026-10-12 停车现场工程 §9.3）：单子级全链路时间线聚合。
+//! U-C（2026-10-12 停车现场工程）：单子级全链路时间线聚合。
 //!
-//! 单一真相源：WSAPI `board.timeline`（运行态查询）与 dossier `timeline.md`
+//! 统一定义：WSAPI `board.timeline`（运行态查询）与 dossier `timeline.md`
 //! （收口导出）复用同一聚合入口 [`collect_issue_timeline`]——收口导出与
 //! 运行态查询不两套逻辑。素材全部已在（board.db 三表：activity_log /
 //! comment / issue_dispatch），纯聚合投影，零新写入面。

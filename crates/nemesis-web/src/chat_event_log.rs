@@ -1,6 +1,6 @@
 //! （devtool-upgrade）— per-session WS chat 帧环形缓冲。
 //!
-//! 与 [`crate::events::EventHub`]（SSE 全局事件流）平行：WS chat 推送帧
+//! 与 [`crate::events:EventHub`]（SSE 全局事件流）平行：WS chat 推送帧
 //!（`message.chat.receive`）按 session 记录并盖**会话内单调 seq**，
 //! `chat.sync {session_id, after_seq}` 断线补拉（useWebSocket 重连点调用）。
 //!
@@ -38,7 +38,7 @@ pub struct ChatEvent {
     /// 条目类别。`None` = 普通 chat 行（assistant/user
     /// 文本，兼容旧条目与旧测试）；`Some("tool")` = 工具事件——`tool` 字段
     /// 携带完整 push 载荷（ToolStarted/ToolFinished/ModeChanged），chat.sync
-    /// 回放时前端据此恢复工具卡（切页/重连/重载后工具流程可见）。
+    /// 回放时前端据此恢复工具卡（切页/重连/重载后工具流程可）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     /// `kind = "tool"` 条目的完整工具事件载荷（帧内层 data 原样）。

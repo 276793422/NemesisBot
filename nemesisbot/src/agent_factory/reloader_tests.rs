@@ -1,4 +1,4 @@
-//! B4（2026-10-18 凭据 vault §7）ModelProviderReloader 测试。
+//! （2026-10-18 凭据 vault）ModelProviderReloader 测试。
 //!
 //! 覆盖：credential_request_fields 三分支（vault 别名轮换 / 明文提议 /
 //! 条目缺失提议）+ reload_provider patch 写盘语义（api_key → `vault:<alias>`

@@ -203,7 +203,7 @@ async fn test_panic_in_observer_does_not_affect_others() {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (accessor arms for the remaining variants,
+// coverage gap closure (accessor arms for the remaining variants,
 // WorkflowEventManager::default)
 // ---------------------------------------------------------------------------
 

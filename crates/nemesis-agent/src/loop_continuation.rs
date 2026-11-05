@@ -75,7 +75,7 @@ pub struct ContinuationData {
     /// （多模态）：触发本续行的 turn 已过安全闸的图片路径引用（最后一条
     /// user 消息的 `ConversationTurn.image_refs` 同源）。内存里 `messages`
     /// 保留已水合的图片字节（同进程续行字节级无损）；磁盘快照则剥离字节、
-    /// 只落引用（见 [`ContinuationSnapshot:image_refs`]），加载时重水合。
+    /// 只落引用（见 [`ContinuationSnapshot::image_refs`]），加载时重水合。
     pub image_refs: Vec<String>,
     /// （四轮盲审）：**每条 user 轮**的图片路径引用（与
     /// `messages` 中 user 消息按出现顺序一一对应）。旧版单层 `image_refs`
@@ -233,7 +233,7 @@ fn rehydrate_images_by_user_turn(messages: &mut [LlmMessage], refs_by_turn: &[Ve
 /// F-F（四轮盲审）：vision=no 模型的**消息级**投影（续行恢复
 /// 路径对应 loop.rs 的 turn 级 `project_turns_for_no_vision`）。
 ///
-/// 为什么需要： 的 vision=no 投影发生在 build_messages（turn 视图），
+/// 为什么需要：vision=no 投影发生在 build_messages（turn 视图），
 /// 续行快照恢复却绕过 build_messages 直接拿 `messages` 调 provider——
 /// 内存快照保留了已水合字节、磁盘恢复又按引用重水合，vision=no 模型
 /// 接管续行时请求带图 → provider 4xx（正常轮被投影保护、恢复轮裸奔）。
@@ -279,7 +279,7 @@ pub struct ContinuationStore {
 impl ContinuationStore {
     /// Create a new store rooted at the given workspace directory.
     pub fn new(workspace: &std::path::Path) -> Self {
-        // 路径唯一真相源 = nemesis-path（与 nemesis-cluster ContinuationStore
+        // 路径唯一依据 = nemesis-path（与 nemesis-cluster ContinuationStore
         // 同一目录，两侧禁止各自 join）。
         let base_dir = nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(workspace);
         Self { base_dir }
@@ -295,7 +295,7 @@ impl ContinuationStore {
         self.ensure_dir()?;
         let path = self.snapshot_path(&snapshot.task_id);
         let json = serde_json::to_string_pretty(snapshot).map_err(std::io::Error::other)?;
-        // （对齐）：改原子写。此前裸 std:fs:write 直写
+        // （对齐）：改原子写。此前裸 std::fs:write 直写
         // 目标——崩溃/断电落在写中 → 半截 JSON 快照，重启后 load 解析失败
         // 被 warn 跳过，该任务续行与 pending 重建静默丢失。同目录的
         // nemesis-cluster 侧 twin store（「快照损坏会导致续行失败，
@@ -388,7 +388,7 @@ impl ContinuationStore {
                         );
                     }
 
-                    // ：中断安全重放——恢复时检测
+                    // 中断安全重放——恢复时检测
                     // 挂起 tool_use（有 tool call 无对应 tool result），合成
                     // 显式 interrupted 结果回灌（前缀对齐
                     // merge_real_tool_result 的占位识别——真实结果到达时按
@@ -472,7 +472,7 @@ impl ContinuationStore {
     /// snapshots whose callback never arrives (peer died, task
     /// lost mid-flight) used to accumulate in `cluster/rpc_cache/` forever —
     /// the write side had no retention counterpart. The caller
-    /// (`ContinuationManager:cleanup_old_snapshots`) evicts both the file
+    /// (`ContinuationManager::cleanup_old_snapshots`) evicts both the file
     /// and the in-memory twin. Mtime (not the in-file `created_at` field) is
     /// the clock: every save rewrites the file, so mtime == last write.
     pub fn stale_task_ids(&self, max_age: Duration) -> Vec<String> {
@@ -556,8 +556,8 @@ impl ContinuationStore {
 
 /// (devtool-upgrade)：后台 subagent 任务 ID 统一前缀。
 /// 生成端 = agent_factory 注入的 spawn 闭包（`bg_{millis}_{counter}`），
-/// 恢复端 = [`ContinuationManager:list_bg_spawn_pending_sync`]（按前缀筛
-/// pending 快照）。单一真相源，防两端漂移。
+/// 恢复端 = [`ContinuationManager::list_bg_spawn_pending_sync`]（按前缀筛
+/// pending 快照）。统一定义，防两端漂移。
 pub const BG_SPAWN_TASK_PREFIX: &str = "bg_";
 
 /// Manages continuation snapshots with the save-barrier pattern.
@@ -566,7 +566,7 @@ pub const BG_SPAWN_TASK_PREFIX: &str = "bg_";
 /// It holds an in-memory cache of active continuations and an optional
 /// disk store for persistence across restarts.
 /// 续行执行期的会话级在途标记（RAII）。持有期间
-/// [`ContinuationManager:has_inflight_work`] 对该会话返回 true；drop
+/// [`ContinuationManager::has_inflight_work`] 对该会话返回 true；drop
 /// （含 panic 展开、`?` 早退）自动清除，不会把会话永久锁死。
 pub(crate) struct ContinuationInflightGuard<'a> {
     manager: &'a ContinuationManager,
@@ -593,12 +593,12 @@ pub struct ContinuationManager {
     barrier_timeout: Duration,
     /// 单飞闸（发现 F 真机根修）：正在处理续行的 task_id 集合。
     /// 进程内存态——崩溃即随进程消失，这正是期望行为：磁盘快照保留到最终
-    /// 回复持久化后，崩溃后 [`ContinuationStore:recover_to_manager`]
+    /// 回复持久化后，崩溃后 [`ContinuationStore::recover_to_manager`]
     /// 仍可从盘上恢复。
     handling: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// ：快照恢复相位机
+    /// 快照恢复相位机
     /// `checkpoint→restored→confirmed`（非法转移 loud 拒绝，见
-    /// [`crate:interrupt_replay:validate_restore_transition`]）。键缺省 =
+    /// [`crate::interrupt_replay:validate_restore_transition`]）。键缺省 =
     /// Checkpoint（存活快照的出厂相位）。进程内存态，随快照回收清理。
     restore_phases: std::sync::Mutex<HashMap<String, crate::interrupt_replay::RestorePhase>>,
     /// 续行执行中的会话键集合。`handling` 只存 task_id，
@@ -651,7 +651,7 @@ impl ContinuationManager {
     /// Save a continuation snapshot (memory + disk dual-write).
     ///
     /// （多模态）：无图调用的兼容入口（签名不动），等价于
-    /// [`Self:save_continuation_with_images`] 传空引用。
+    /// [`Self::save_continuation_with_images`] 传空引用。
     ///
     /// This method implements the save-barrier pattern:
     /// 1. Create `ContinuationData` with an open `ready` Notify.
@@ -848,7 +848,7 @@ impl ContinuationManager {
                         return None;
                     }
 
-                    // Use tokio:select! to wait with a timeout.
+                    // Use tokio::select! to wait with a timeout.
                     let notified = tokio::select! {
                         _ = ready.notified() => true,
                         _ = tokio::time::sleep(remaining) => false,
@@ -939,7 +939,7 @@ impl ContinuationManager {
     /// 单飞闸·认领（发现 F 真机根修）：认领该任务的续行处理权。
     /// 返回 `false` = 已有在途处理（重复回调诚实跳过）。
     ///
-    /// 必须在加载**之前**认领：磁盘快照现在保留到收口（[`Self:finish_handling`]），
+    /// 必须在加载**之前**认领：磁盘快照现在保留到收口（[`Self::finish_handling`]），
     /// 重复回调会经 `try_load_from_disk` 盘上回退命中——没有认领闸就会双路处理、
     /// 双份回复。闸本身是进程内存态，崩溃即消失（期望行为：磁盘快照在崩溃场景
     /// 下必须存活，供重启后 `recover_to_manager` 捞回）。
@@ -1012,7 +1012,7 @@ impl ContinuationManager {
     }
 
     // -----------------------------------------------------------------------
-    // ：快照恢复相位机
+    // 快照恢复相位机
     // -----------------------------------------------------------------------
 
     /// 相位转移（严格校验）。键缺省 = Checkpoint（存活快照出厂相位）；
@@ -1070,7 +1070,7 @@ impl ContinuationManager {
     /// (peer died, task lost) and would otherwise leak on disk forever and,
     /// after a restart, get re-recovered into memory by `recover_to_manager`.
     /// Mirrors the SessionStore 7-day TTL (`cleanup_old_sessions`) and the
-    /// nemesis-cluster `ContinuationStore:cleanup_old` semantics (same
+    /// nemesis-cluster `ContinuationStore::cleanup_old` semantics (same
     /// directory, other implementation). No-op without a disk store.
     /// Returns the number of entries removed（快照 + `.tmp-` 崩溃残留孤儿，
     /// 后者走固定宽限与 max_age 无关）.
@@ -1128,9 +1128,9 @@ impl ContinuationManager {
     /// 快照、以 error 结果续行 LLM 让卡住的会话解锁，完成后自行
     /// remove_continuation 清理。
     ///
-    /// 同步入口（LifecycleService:start 是 sync fn）：内存 map 走
+    /// 同步入口（LifecycleService::start 是 sync fn）：内存 map 走
     /// `try_lock()`（同 `has_continuation_sync` 先例 —— 启动期无争用；
-    /// 偶发争用回退磁盘清单，磁盘是真相源）。
+    /// 偶发争用回退磁盘清单，磁盘为权威依据）。
     pub fn list_bg_spawn_pending_sync(&self) -> Vec<String> {
         if let Ok(g) = self.continuations.try_lock() {
             return g
@@ -1165,7 +1165,7 @@ impl Default for ContinuationManager {
 ///
 /// Order matters (self-heal regression fix): `get_or_create` may
 /// REBUILD a missing store entry by replaying the jsonl chat_log
-/// (`SessionStore:rebuild_from_chat_log`). If the chat_log append ran FIRST,
+/// (`SessionStore::rebuild_from_chat_log`). If the chat_log append ran FIRST,
 /// the rebuild would already contain this final reply and `add_message` would
 /// append it a SECOND time — a duplicated assistant turn in the model's
 /// context. Store-first mirrors the normal AgentLoop turn-end path (store
@@ -1274,7 +1274,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     task_error: Option<&str>,
     provider: &dyn LlmProvider,
     model: &str,
-    // ：与主循环 chat_opts 同源的输出 cap（per-model
+    // 与主循环 chat_opts 同源的输出 cap（per-model
     // `max_output_tokens` > agents.defaults.max_tokens > DEFAULT_MAX_TOKENS，
     // 解析在 loop 侧 `current_max_tokens_override` 完成——本函数不重读
     // config）。provider.chat 从 None（lane 默认）改显式 Some(ChatOptions)，
@@ -1362,7 +1362,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     };
 
     // 续行执行期盖会话级在途标记——history gate
-    // （rewind/undo/redo/fork）acquire 前查 [`ContinuationManager:has_inflight_work`]
+    // （rewind/undo/redo/fork）acquire 前查 [`ContinuationManager::has_inflight_work`]
     // 诚实拒绝，防续行最终落库（append chat_log + 保存会话）与截断/回退
     // 竞争。guard RAII 覆盖本函数全部 return 路径（含错误早退），drop 即清。
     let _inflight_guard = manager.mark_inflight_session(&cont_data.session_key);
@@ -1414,7 +1414,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // 磁盘）。否则「回调已到、续行未完」窗口内崩溃，盘上仍是无结果的旧快照；
     // 恢复轮询 query_task_result 又落在 B 端存档清理之后（persist_result 只
     // 兜底回调失败，成功回调即消费删除）→ 恢复拿到的只有 "remote task not
-    // found"。写回后快照即恢复真相源：重启 → recover_to_manager → merge 因
+    // found"。写回后快照即恢复权威定义：重启 → recover_to_manager → merge 因
     // 真实结果在案不被 not-found 覆盖（见 merge_real_tool_result）→ 续行
     // 用盘上结果照常完成。元数据（channel/chat_id/session_key/peer_id）不变，
     // image 字节不落盘（save_continuation_with_images 的既有剥字节水合语义）。
@@ -1452,7 +1452,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // MAX_EMPTY_LENGTH_CONTINUATIONS）。
     let mut empty_length_streak: u32 = 0;
     // +：续写再撞顶翻倍阶梯的当前档位（起点 = max_tokens_cap；
-    // 升档公式与地板复用主循环 length_escalation 单一真相源）。
+    // 升档公式与地板复用主循环 length_escalation 统一定义）。
     let mut effective_cap = max_tokens_cap as u64;
     // 阶梯 **2 档封顶**——防单任务 token 失控
     // （主循环阶梯无次数封顶但受 iteration 语义约束，续行单任务长文场景
@@ -1539,8 +1539,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             tokio::spawn(async move { mgr.emit(event).await });
         }
 
-        // ：max_tokens 截断判定 + 续写——对齐主循环器官 6
-        // （run_loop:handle_length_continuation）。此前裸调把截断半截正文
+        // max_tokens 截断判定 + 续写——对齐主循环器官 6
+        // （run_loop::handle_length_continuation）。此前裸调把截断半截正文
         // 直接当终局回复持久化+出站。三道纪律同源：①截断响应带 tool_calls
         // 一律丢弃（执行半截 args 是写坏文件事故），只保留正文；②空内容撞
         // cap 不烧预算（B 同款 2 连守卫）；③续写轮消耗同一 1..=20 迭代
@@ -1590,7 +1590,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             );
             // +：续写再撞顶 → 翻倍升档（对齐主循环
             // length_escalation 公式：next = max(current × 2, 32K 地板)），
-            // 受双闸约束： 档封顶 + 全局 ceiling（与主循环同源）。
+            // 受双闸约束：单档封顶 + 全局 ceiling（与主循环同源）。
             // 升档只影响下一迭代请求的 max_tokens；本轮已截断正文照常入
             // 对话续写（已有半截不丢）。升不了档（到顶）= 维持现档继续，
             // iteration 预算照旧兜底。
@@ -1865,7 +1865,7 @@ mod tests;
 #[cfg(test)]
 mod cov_tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 
@@ -1874,12 +1874,12 @@ mod s9_tests;
 #[cfg(test)]
 mod cov2_tests;
 
-// ：save 原子写回归锁（往返/覆盖取最新/零 tmp 残留/崩溃残留
+// save 原子写回归锁（往返/覆盖取最新/零 tmp 残留/崩溃残留
 // 不进 pending）。
 #[cfg(test)]
 mod r14_atomic_save_tests;
 
-// ：max_tokens 截断判定纯函数三态 + 续写循环行为面
+// max_tokens 截断判定纯函数三态 + 续写循环行为面
 // （续写追加 / 空内容 2 连停 / 预算耗尽注记 / 截断带 tool_calls 丢弃）。
 #[cfg(test)]
 mod truncation_tests;

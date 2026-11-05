@@ -285,13 +285,13 @@ impl BaseChannel {
     /// For the `"web"` target, uses `"web:broadcast"` as the chat ID.
     /// Each send has a 3-second timeout to avoid blocking.
     ///
-    /// 构造的镜像消息统一盖 `meta.sync_via` 章（BUG-20261025-57，单一盖章
+    /// 构造的镜像消息统一盖 `meta.sync_via` 章（单一盖章
     /// 点）：接收通道 `send()` 里的出站镜像（`sync_outbound`）见到该标记
     /// 不再二次扩散——互配 `sync_to` 的两通道会无限乒乓，每轮都是一次
     /// 真实外部投递的消息风暴。
     pub async fn sync_to_targets(&self, content: &str) {
         // Collect targets into a Vec within a block scope so the RwLockReadGuard
-        // is dropped before any .await. parking_lot::RwLockReadGuard is !Send,
+        // is dropped before any.await. parking_lot::RwLockReadGuard is !Send,
         // which would make the future !Send if held across an await point.
         let entries: Vec<(String, Arc<dyn Channel>)> = {
             let targets = self.sync_targets.read();
@@ -351,7 +351,7 @@ impl BaseChannel {
         }
     }
 
-    /// Outbound sync mirror for the `send()` path (BUG-20261025-57).
+    /// Outbound sync mirror for the `send()` path.
     ///
     /// Mirrors a message this channel just delivered to its sync targets —
     /// but **not** if the message itself arrived via a sync mirror
@@ -392,7 +392,7 @@ impl BaseChannel {
 // 出站 HTTP client 单一构造点
 // ---------------------------------------------------------------------------
 
-/// 出站 HTTP builder 单一真相源（BUG-20261031-261）：通道出站 client 必须带
+/// 出站 HTTP builder 统一定义：通道出站 client 必须带
 /// 总超时。reqwest 默认无总超时——通道远端半死（TCP 已建立但响应挂起）时
 /// `channel.send()` 永久 pending，而 `ChannelManager` 的 dispatch loop 是
 /// 单任务串行 await，一条通道挂起 = **全部**通道出站停摆且零错误零日志。

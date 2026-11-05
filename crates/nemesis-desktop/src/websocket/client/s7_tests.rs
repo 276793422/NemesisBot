@@ -1,9 +1,9 @@
-//! S7 冲刺覆盖测试：websocket/client.rs 的读/写循环错误分支、pending
+//! 冲刺覆盖测试：websocket/client.rs 的读/写循环错误分支、pending
 //! 管线、以及 call() 对真实本地服务器的完整往返。
 //!
 //! 与既有测试的区别：既有 round-trip 测试把 `client.call()` 包在 3 秒
 //! timeout 里且 `if let` 不做断言（超时也算过），本文件用严格断言钉死
-//! 行为——这直接暴露了 pending 双 map 分叉 bug（见 S7 报告 BUG 条目）。
+//! 行为——这直接暴露了 pending 双 map 分叉 bug（见 报告 BUG 条目）。
 
 use std::time::Duration;
 

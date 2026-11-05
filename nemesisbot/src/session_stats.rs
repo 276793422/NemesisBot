@@ -1,4 +1,4 @@
-//! L14（2026-11-01）：会话执行统计聚合器——事件侧（AgentEvent broadcast
+//! （2026-11-01）：会话执行统计聚合器——事件侧（AgentEvent broadcast
 //! 订阅）+ loop 侧（[`nemesis_agent::SessionStatsSink`] 实现）双路累计，
 //! 节流落盘到 session sidecar meta 的 `stats` 字段（写路径单一收口
 //! `chat_log::update_session_stats`），读侧（[`nemesis_agent::SessionStatsReader`]
@@ -8,7 +8,7 @@
 //! LLM 重试/校验失败/压缩成功走 sink（loop 内部计数器无事件载体）。
 //! 审批裁决事件（`ApprovalResolved`）不带 session_key——用
 //! `ApprovalRequested` 时记下的 `request_id → session_key` 映射配对归账
-//! （设计文档 §6 偏差②）。estop 不入会话统计（§6 偏差①）：全局事件
+//! （设计文档 偏差②）。estop 不入会话统计（偏差①）：全局事件
 //! 不归属单会话。
 //!
 //! 落盘节流：内存累计为主真相源，每会话距上次落盘 ≥5s 或 ≥32 次增量才

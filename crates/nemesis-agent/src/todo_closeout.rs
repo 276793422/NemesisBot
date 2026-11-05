@@ -5,7 +5,7 @@
 //! 最后调一次 todowrite 把 `in_progress` 收掉（2026-09-24 用户实测：汇总
 //! 报告正文已交付，清单停在 3/4）。本模块是 turn-end lifecycle hook
 //! 的内建实现：终答案被接受后读 todo 落盘文件，还有未完成项 →
-//! [`TurnEndDecision:Continue`] 注入一次性提醒（模型下一轮先收尾清单
+//! [`TurnEndDecision::Continue`] 注入一次性提醒（模型下一轮先收尾清单
 //! 再答复；清单收不回来的暂停项诚实改回 `pending`）。
 //!
 //! 缓存纪律（prompt cache 命中率不受影响的根据）：注入走 既有路径
@@ -15,7 +15,7 @@
 //! prompt 或每轮合并快照注入点（那两处字节变化会打穿缓存前缀）。
 //!
 //! 预算：`stop_hook_active`（本轮已有任何 Continue，含用户脚本）时自限
-//! 跳过 = 每 turn 至多一次；loop 侧 [`crate:hooks:MAX_TURN_END_CONTINUES`]
+//! 跳过 = 每 turn 至多一次；loop 侧 [`crate::hooks:MAX_TURN_END_CONTINUES`]
 //! 硬封顶 fail-open。heartbeat / GiveUp / 错误路径不经过 turn-end hooks
 //! （`judge_final_answer` 只在正常 Accept 路径跑 hooks）。
 //!
@@ -40,7 +40,7 @@ impl TodoCloseoutHook {
         Self { workspace }
     }
 
-    /// 与 `TodoWriteTool:execute` 同构的落盘路径（同一 sanitize 真相源）。
+    /// 与 `TodoWriteTool::execute` 同构的落盘路径（同一 sanitize 真相源）。
     fn todo_path_for(&self, session_key: &str) -> PathBuf {
         let safe = nemesis_utils::sanitize::sanitize_path_segment(session_key);
         nemesis_path::resolve_sessions_dir_in_workspace(&self.workspace)

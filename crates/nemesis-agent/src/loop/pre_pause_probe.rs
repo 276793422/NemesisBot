@@ -8,7 +8,7 @@
 //! 触发闸（全部满足才跑，任一不满足零副作用直通）：
 //! 1. `prepare_round` 判定预算暂停（reason = budget_exhausted / max_turns，
 //!    cron / detached / 常驻三条路都算——树状态对三者同等重要）；
-//! 2. 本轮发生过写类工具成功（[`crate:turn_guard:TurnGuard:had_writes`]）；
+//! 2. 本轮发生过写类工具成功（[`crate::turn_guard:TurnGuard::had_writes`]）；
 //! 3. config `agents.defaults.pre_pause_probe.enabled`（默认开，新鲜读）；
 //! 4. workspace_root 已装配且命中已知生态标记（无标记=非编码工作区，静默）。
 //!
@@ -75,7 +75,7 @@ pub(crate) fn select_probe_command(root: &Path) -> Option<(&'static str, &'stati
     }
 }
 
-/// 跑探针：复用 [`crate:loop_tools:run_one_stage`] 执行内核（含
+/// 跑探针：复用 [`crate::loop_tools:run_one_stage`] 执行内核（含
 /// 超时树杀语义——收尸连 cargo/rustc 孙树一起收）。无生态标记 → None（静默）。
 pub(crate) async fn run_probe(root: &Path, timeout_secs: u64) -> Option<ProbeOutcome> {
     let (marker, command) = select_probe_command(root)?;

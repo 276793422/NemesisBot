@@ -1,4 +1,4 @@
-//! R5（2026-10-24 第四次外评）回归锁：pipe roundtrip 无请求 ID——外部超时
+//! （2026-10-24 第四次外评）回归锁：pipe roundtrip 无请求 ID——外部超时
 //! 取消交换后，迟到应答滞留管道缓冲，被下一请求冒领（张冠李戴）。修复 =
 //! 交换窗标志（取消路径滞留）+ `LinkUnreliable` 诚实拒绝。外评探针
 //! `review_oct24_timeout_assigns_previous_read_reply_to_next_address` 的

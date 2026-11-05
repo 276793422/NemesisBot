@@ -5,10 +5,10 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// §2 免打扰运行时态槽（无人值守计划 Part 2，editor.rs 同款依赖方向：
+/// 免打扰运行时态槽（Part 2，editor.rs 同款依赖方向：
 /// `ApprovalAutoApproveState` 本体在 nemesis-security，gateway 装配处
 /// `install_auto_approve` 注入，本 handler `approvals.status` 读 +
-/// `config.save` 热翻——单一真相源 Arc；config.json 是持久真相源）。
+/// `config.save` 热翻——统一定义 Arc；config.json 是持久真相源）。
 static APPROVAL_AUTO: std::sync::RwLock<
     Option<Arc<nemesis_security::approval_auto::ApprovalAutoApproveState>>,
 > = std::sync::RwLock::new(None);
@@ -51,9 +51,9 @@ fn approval_auto() -> Option<Arc<nemesis_security::approval_auto::ApprovalAutoAp
     approval_auto_state()
 }
 
-/// 会话级全部放行运行时态槽（长任务无人值守计划，approval_auto
+/// 会话级全部放行运行时态槽（长任务，approval_auto
 /// 同款双注入：gateway 装配处 `install_session_allow_all` 注入，本 handler
-/// `session_allow`/`session_allow_status` 读写——单一真相源 Arc；持久真相源
+/// `session_allow`/`session_allow_status` 读写——统一定义 Arc；持久真相源
 /// = 会话 sidecar `allow_all` 字段，set 时双写内存 + sidecar）。
 static SESSION_ALLOW_ALL: std::sync::RwLock<
     Option<Arc<nemesis_security::session_allow_all::SessionAllowAllState>>,
@@ -187,10 +187,10 @@ impl ModuleHandler for SecurityHandler {
             // 感知 clear）。
             "approvals.list" => self.approvals_list(workspace),
             "approvals.clear" => self.approvals_clear(workspace),
-            // §2: 免打扰开关状态（运行期投影透传；config.get 的 approvals
+            // 免打扰开关状态（运行期投影透传；config.get 的 approvals
             // 段是持久真相源，enabled 可能已被 config.save 热翻）。
             "approvals.status" => Ok(Some(Self::approvals_status())),
-            // 会话级全部放行（长任务无人值守计划）：set 双写
+            // 会话级全部放行（长任务）：set 双写
             // （内存即时生效 + sidecar 重启恢复）；status 供前端刷新。
             "session_allow" => {
                 let data = data.ok_or("missing data")?;
@@ -243,7 +243,7 @@ fn update_security_config<T>(
     Ok(out)
 }
 
-/// 审批记忆规则表管理（list/clear）。路径唯一真相源 nemesis-path。
+/// 审批记忆规则表管理（list/clear）。路径唯一依据 nemesis-path。
 fn approval_rules_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_approval_rules_path_in_workspace(Path::new(workspace))
 }
@@ -253,7 +253,7 @@ fn security_log_dir(workspace: &str) -> PathBuf {
 }
 
 /// Flatten a nested AuditEvent JSON into the flat format expected by the frontend.
-/// JSONL structure: {event_id, request: {op_type, danger_level, target, ...}, decision, reason, timestamp}
+/// JSONL structure: {event_id, request: {op_type, danger_level, target,...}, decision, reason, timestamp}
 /// Frontend expects (AuditEntry in web/src/components/logs/mockData.ts):
 ///   {id, timestamp, operation, risk_level, target, result, decision, user?, reason?, policy?, raw}
 /// where `result` is normalized to "allow" or "deny", `decision` keeps the original
@@ -328,13 +328,13 @@ impl SecurityHandler {
         let config: nemesis_config::SecurityConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid security config: {}", e))?;
         // 锁在 update_security_config 内（整档回存与 config.json 编辑臂同基准）。
-        // §2 热翻所需布尔先捕获（闭包按值拿走 config）。
+        // 热翻所需布尔先捕获（闭包按值拿走 config）。
         let auto_approve = config.approvals.auto_approve;
         update_security_config(workspace, |cfg| {
             *cfg = config;
             Ok(())
         })?;
-        // §2: 免打扰热翻（运行期投影即时生效；config 是持久真相源，这里
+        // 免打扰热翻（运行期投影即时生效；config 是持久真相源，这里
         // 只翻投影——auditor 下一次 require_approval 即读新值）。
         if let Some(state) = approval_auto() {
             state.set_enabled(auto_approve);
@@ -342,7 +342,7 @@ impl SecurityHandler {
         Ok(Some(serde_json::json!({ "saved": true })))
     }
 
-    /// §2: 免打扰状态（未注入 = 开发/降级形态，返回 `injected: false` 让
+    /// 免打扰状态（未注入 = 开发/降级形态，返回 `injected: false` 让
     /// 前端展示「未装配」而非误判成关）。
     fn approvals_status() -> serde_json::Value {
         match approval_auto() {
@@ -562,7 +562,7 @@ impl SecurityHandler {
     }
 }
 
-// (, quality-hardening goal 冲刺 web 批次 2): audit paging +
+// (, quality-hardening goal 冲刺 web): audit paging +
 // decision normalization + flatten/extract fallback arms + config error arms.
 #[cfg(test)]
 mod s10b_tests;
@@ -578,12 +578,12 @@ mod f3_tests;
 #[cfg(test)]
 mod agt_tests;
 
-// §2 免打扰（无人值守计划 Part 2）：approvals.status 双臂 +
+// 免打扰（Part 2）：approvals.status 双臂 +
 // config.save 热翻投影。
 #[cfg(test)]
 mod approval_auto_tests;
 
-// 会话级全部放行（长任务无人值守计划）：session_allow 双写 /
+// 会话级全部放行（长任务）：session_allow 双写 /
 // status 双臂 / 会话键推导与 chat.sync 字节一致。
 #[cfg(test)]
 mod session_allow_tests;

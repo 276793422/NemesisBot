@@ -408,7 +408,7 @@ impl Channel for MastodonChannel {
             Some(msg.chat_id.as_str())
         };
 
-        // BUG-20261101-277: mastodon 硬限 500 字符（服务端 422 拒收整条），
+        // mastodon 硬限 500 字符（服务端 422 拒收整条），
         // 预算 480 留余量；长文拆成多条回复（同父）。
         let chunks = split_message(&msg.content, 480);
         for chunk in &chunks {

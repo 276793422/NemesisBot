@@ -116,7 +116,7 @@ fn test_persist_and_restore() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// T9（2026-10-17 三轮审计）：B 端 conversation 路径成分消毒——远端可控
+/// （三轮审计）：B 端 conversation 路径成分消毒——远端可控
 /// task_id（含 `../`）落盘/删除都必须留在 data_dir/cluster/ 内，且恢复
 /// 路径（tasks.json 索引原 id 反查）与写入对称。
 #[test]
@@ -136,7 +136,7 @@ fn test_hostile_task_id_conversation_stays_in_cluster_dir() {
     )
     .expect("save_async_state should succeed");
 
-    // 落盘文件 = 消毒名；`../../t9_escape` 前缀是 `. . / . . /` 共 6 个
+    // 落盘文件 = 消毒名；`../../t9_escape` 前缀是 `.. /.. /` 共 6 个
     // 非白名单字符（`../` × 2），1:1 映射 = 6 个 `_` → `______t9_escape`；
     // 裸名/逃逸位置都不存在。
     let cluster_dir = dir.join("cluster");
@@ -302,7 +302,7 @@ async fn test_work_queue_returns_none_on_close() {
     );
 }
 
-// 压测②（2026-09-30 三设备）：取证优先通道语义。
+// 压测②（三设备）：取证优先通道语义。
 #[tokio::test]
 async fn test_work_queue_priority_lane_jumps_fifo() {
     let queue = ClusterWorkQueue::new(10);
@@ -419,10 +419,10 @@ fn test_crash_recovery_restores_conversation() {
 }
 
 // ============================================================
-// W3b coverage batch: Display variants, queue sender/full,
+// coverage batch: Display variants, queue sender/full,
 // persistence failure warns (data_dir-as-file, conversation
 // delete failure), restore error arms (read/parse), terminal
-// status skip on restore, corrupt conversation .ok() fallback,
+// status skip on restore, corrupt conversation.ok() fallback,
 // tasks.json write failure.
 // ============================================================
 
@@ -520,7 +520,7 @@ fn test_w3b_restore_skips_terminal_and_running_and_tolerates_corrupt_conversatio
 
     // Hand-build a tasks.json covering: Running (skipped), Completed (skipped),
     // Failed (skipped), WaitingRemote with NO conversation field in the index
-    // but a CORRUPT conversation file on disk (parse .ok() → None).
+    // but a CORRUPT conversation file on disk (parse.ok() → None).
     let wr_corrupt = {
         let mut t = make_task("t-wr-corrupt", TaskStatus::WaitingRemote);
         t.conversation = None;
@@ -586,7 +586,7 @@ fn test_w3b_persist_to_disk_write_failure_when_tasks_json_is_dir() {
 }
 
 // ============================================================
-// S4 coverage: tracing field lines, conversation restore,
+// coverage: tracing field lines, conversation restore,
 // recover_task_ids field lines.
 // ============================================================
 
@@ -613,7 +613,7 @@ fn s4_tracing_subscriber() {
 }
 
 /// save_async_state persists the conversation file next to tasks.json and the
-/// tracing info fields evaluate under the S4 subscriber (cluster_task.rs
+/// tracing info fields evaluate under the subscriber (cluster_task.rs
 /// 178-184, 415-417).
 #[test]
 fn test_s4_save_async_state_persists_conversation_file() {
@@ -740,7 +740,7 @@ fn test_s4_recover_task_ids_fields_for_pending_and_waiting() {
 }
 
 // ============================================================
-// W2 P4: per-task cancel（cancel_task / 取消令牌 / 迟到回调守卫）
+// per-task cancel（cancel_task / 取消令牌 / 迟到回调守卫）
 // ============================================================
 
 #[test]
@@ -883,7 +883,7 @@ fn test_inject_callback_persist_survives_restart() {
 }
 
 // ---------------------------------------------------------------------------
-// remove_terminal_tasks（BUG-3，2026-10-17）：终态残留防御清扫
+// remove_terminal_tasks（BUG-3）：终态残留防御清扫
 // ---------------------------------------------------------------------------
 
 // 终态（Completed/Failed/Cancelled）条目被清扫，非终态（Pending/Running/
@@ -919,7 +919,7 @@ fn test_remove_terminal_tasks_empty_is_zero() {
 }
 
 // ===========================================================================
-// BUG-20261029-140：出队执行原子化（begin_execution）
+// 出队执行原子化（begin_execution）
 //
 // 旧消费序列（nemesisbot/src/cluster_agent.rs 修复前 169/182/205）三步分离：
 // get_task 读快照 → 内存检查 Cancelled → update_status(Running)。A 侧
@@ -1015,9 +1015,9 @@ fn queue_outcome_tag(o: &DequeueOutcome) -> &'static str {
     }
 }
 
-// --- BUG-20261101-282：conv 文件损坏恢复必须有可见信号 --------------------
+// ---：conv 文件损坏恢复必须有可见信号 --------------------
 // 写侧 write_file_atomic 原子，读侧遇到的损坏只剩外部篡改/历史残留/磁盘问题
-// （session 坏档 WARN 同族口径，BUG-20261025-44 的漏网点）。跳过语义不变：
+// （session 坏档 WARN 同族口径， 的漏网点）。跳过语义不变：
 // 任务照常恢复（不炸、不带半吊子上下文），但 WARN 必须在。
 
 #[derive(Clone)]

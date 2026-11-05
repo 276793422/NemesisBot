@@ -449,7 +449,7 @@ fn test_agent_session_clone() {
 }
 
 // ---------------------------------------------------------------------------
-// M7（devtool-upgrade 阶段 5）：ApprovalRequested 事件 + ApprovalResponder trait
+// （devtool-upgrade）：ApprovalRequested 事件 + ApprovalResponder trait
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -597,9 +597,9 @@ fn test_agent_event_approval_resolved_serde_shape() {
     assert_eq!(ev.kind(), "ApprovalResolved");
 }
 
-/// F7（devtool-upgrade 阶段 5）：QuestionAsked / QuestionResolved 的 serde
+/// （devtool-upgrade）：QuestionAsked / QuestionResolved 的 serde
 /// 形状 + accessors。QuestionAsked 带会话 chat_id；Resolved 是全局事件。
-/// B8（提问两形态）：fields（表单形态）随事件透传 + AnsweredForm 结局。
+/// （提问两形态）：fields（表单形态）随事件透传 + AnsweredForm 结局。
 #[test]
 fn test_agent_event_question_serde_shape() {
     use super::{AgentEvent, QuestionField, QuestionOutcome, QuestionRequest};
@@ -621,7 +621,7 @@ fn test_agent_event_question_serde_shape() {
     assert_eq!(v["data"]["options"][0], "pnpm");
     assert_eq!(v["data"]["multi"], false);
     assert_eq!(v["data"]["timeout_secs"], 120);
-    // B8：选项形态 fields 为空数组（前端按选项卡渲染）。
+    // 选项形态 fields 为空数组（前端按选项卡渲染）。
     assert_eq!(v["data"]["fields"], serde_json::Value::Array(Vec::new()));
     match serde_json::from_value::<AgentEvent>(v).unwrap() {
         AgentEvent::QuestionAsked {
@@ -642,7 +642,7 @@ fn test_agent_event_question_serde_shape() {
     assert_eq!(ev.chat_id(), "chat-1");
     assert_eq!(ev.kind(), "QuestionAsked");
 
-    // B8 表单形态：fields 逐字段透传（type 键 rename、required/options
+    // 表单形态：fields 逐字段透传（type 键 rename、required/options
     // 缺省回填），前端据此渲染 text 输入框 + select 下拉。
     let form_ev = AgentEvent::QuestionAsked {
         session_key: "web:chat-1".to_string(),
@@ -707,7 +707,7 @@ fn test_agent_event_question_serde_shape() {
     assert_eq!(resolved.kind(), "QuestionResolved");
 
     // QuestionOutcome：单选恰一项 / Timeout 与 Answered 可区分；
-    // B8 AnsweredForm 携带键值作答（BTreeMap，Eq 可比较）。
+    // AnsweredForm 携带键值作答（BTreeMap，Eq 可比较）。
     let answered = QuestionOutcome::Answered(vec!["pnpm".to_string()]);
     assert_eq!(
         answered,
@@ -735,7 +735,7 @@ fn test_agent_event_question_serde_shape() {
     assert_eq!(req.timeout_secs, 60);
 }
 
-/// P30（WS14）：CanvasOpen 的 serde 形状 + accessors。带会话上下文
+/// CanvasOpen 的 serde 形状 + accessors。带会话上下文
 /// （chat_id / session_key 都有——web pump 据末段注入 session_id）。
 #[test]
 fn test_agent_event_canvas_open_serde_shape() {
@@ -769,7 +769,7 @@ fn test_agent_event_canvas_open_serde_shape() {
     assert_eq!(ev.session_key(), Some("web:s-9"));
 }
 
-/// N5（2026-10-13 机会项）：DeliverablesRegistered 的 serde 形状 +
+/// DeliverablesRegistered 的 serde 形状 +
 /// accessors（adjacently tagged：kind 外层 / data 内层 files 数组）。
 #[test]
 fn test_agent_event_deliverables_registered_serde_shape() {
@@ -818,7 +818,7 @@ fn test_agent_event_deliverables_registered_serde_shape() {
     assert_eq!(ev.session_key(), Some("agent:main:session:s5"));
 }
 
-/// N5：PresentedFile 的 `#[serde(default)]` 契约——title/note 缺省反序列化
+/// PresentedFile 的 `#[serde(default)]` 契约——title/note 缺省反序列化
 /// 为空串（前端按空串回退文件名/隐藏注记），path 必填。
 #[test]
 fn test_presented_file_serde_defaults() {

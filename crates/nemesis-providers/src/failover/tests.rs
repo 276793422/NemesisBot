@@ -29,17 +29,17 @@ fn test_from_status() {
     let err = FailoverError::from_status("openai", "gpt-4", 503, "overloaded", None);
     assert!(matches!(err, FailoverError::Overloaded { .. }));
 
-    // BUG-20261025-83：500 必须归 Overloaded（可重试可轮转）——与
-    // llm_error_class::class_by_status 同口径（单一真相源委托）。
+    // 500 必须归 Overloaded（可重试可轮转）——与
+    // llm_error_class::class_by_status 同口径（统一定义委托）。
     let err = FailoverError::from_status("openai", "gpt-4", 500, "internal error", None);
     assert!(matches!(err, FailoverError::Overloaded { .. }));
 }
 
-/// BUG-20261025-83 对齐锁：`from_status` 的状态码→类别映射必须与
+/// 对齐锁：`from_status` 的状态码→类别映射必须与
 /// `llm_error_class::class_by_status` 一致。此前本表只认 502/503，
 /// 408/500/521-524/529 落 Unknown 非 retriable——fallback 链/router 的
 /// 轮转判据是 `is_retriable`，主级间歇 500 类故障时永不轮转（loop 侧
-/// 2026-09-24 补 "status 500" transient 词表时明确「同口径」意图，
+/// 补 "status 500" transient 词表时明确「同口径」意图，
 /// 结构化路径漏对齐；文本分类路径同 crate 内测试早已钉 500 → Overloaded）。
 #[test]
 fn test_from_status_aligns_with_class_by_status() {
@@ -129,7 +129,7 @@ fn test_not_retriable_unknown() {
 
 #[test]
 fn test_connect_error_unknown_is_retriable() {
-    // 2026-10-13 诚实化配套：transport_error 的连接失败落 Unknown，但
+    // 诚实化配套：transport_error 的连接失败落 Unknown，但
     // fallback 链/路由的轮转判据是 is_retriable——前缀必须算 retriable
     // （此前伪装 Timeout 时恒 true，不补 = 主端点连不上不再故障转移）。
     let err = FailoverError::Unknown {
@@ -270,7 +270,7 @@ fn test_reason_all_variants() {
 }
 
 // ---------------------------------------------------------------------------
-// J1: Retry-After 填充
+// Retry-After 填充
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -359,7 +359,7 @@ fn test_retry_after_from_headers_parses() {
     assert_eq!(retry_after_from_headers(&map), None);
 }
 
-// -- L02（2026-11-01）StreamInterrupted --------------------------------------
+// -- StreamInterrupted --------------------------------------
 
 #[test]
 fn stream_interrupted_is_retriable_and_maps_timeout_reason() {
@@ -414,7 +414,7 @@ fn stream_interrupted_display_headline_prefix_and_tail_full_partial() {
         display.contains("connection reset by peer"),
         "根因链不丢（诚实化纪律）: {display:?}"
     );
-    // L29 契约：分隔符与 tc 标记常量出现在 Display（agent 侧解析器用同
+    // 契约：分隔符与 tc 标记常量出现在 Display（agent 侧解析器用同
     // 常量解析——字面量与常量漂移在此钉死）。
     assert!(
         display.contains(super::STREAM_PARTIAL_SEPARATOR),
@@ -428,7 +428,7 @@ fn stream_interrupted_display_headline_prefix_and_tail_full_partial() {
 
 #[test]
 fn stream_interrupted_display_no_tool_calls_mark_when_false() {
-    // L29 契约另一半：has_partial_tool_calls=false 头行不带标记（可拼接续写）。
+    // 契约另一半：has_partial_tool_calls=false 头行不带标记（可拼接续写）。
     let e = FailoverError::StreamInterrupted {
         provider: "openai".to_string(),
         model: "gpt-5".to_string(),
@@ -448,7 +448,7 @@ fn stream_interrupted_display_no_tool_calls_mark_when_false() {
     );
 }
 
-// BUG-20261103-351 回归锁：classify_message_error 与真相源同判——自由文案
+// 回归锁：classify_message_error 与真相源同判——自由文案
 // （流内错误事件 / CLI stderr）此前恒 Unknown 不可重试，上游显式瞬态文案
 // 放弃 fallback 轮转。
 #[test]

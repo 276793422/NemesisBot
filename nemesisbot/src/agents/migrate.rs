@@ -1,4 +1,4 @@
-//! Agent 跨节点迁移（P6-R2，`cluster` feature 闸——裁剪/IoT 形态整模块
+//! Agent 跨节点迁移（`cluster` feature 闸——裁剪/IoT 形态整模块
 //! 不进二进制）。
 //!
 //! 语义总纲（决策记录 2026-10-21）：
@@ -21,19 +21,19 @@
 //!   崩溃窗口留给 sweep 收敛，见 `status::MIGRATING` 注）。
 //! - **诚实窗口**：commit ACK 后本地删除前崩溃 = 短暂双活（B 真活，A 残
 //!   记录由 sweep 经墓碑收敛）。v1 曾接受「B 激活后 ACK 丢失 = A 回滚
-//!   active 与 B 同 uuid 双活，人工二选一」——R79 残余面根修（2026-10-24
-//!   台账复核）随 R7 冻结机制建成一并关闭该窗：commit call **模糊类**
+//!   active 与 B 同 uuid 双活，人工二选一」—— 残余面根修（2026-10-24
+//!   台账复核）随 冻结机制建成一并关闭该窗：commit call **模糊类**
 //!   失败（超时/取消/连接中断，请求可能已被 B 处理）标记
 //!   [`COMMIT_ACK_LOST_MARK`] 走冻结轨（不回滚、不删意图日志，sweep
 //!   冻结转人工）；确定未发出（限流/序列化/客户端缺席）与对端明确拒绝
 //!   （resp.error）仍走回滚（B 端从未激活，回滚安全）。
-//!   N2 根修（2026-10-24）：ACK 后本地收敛失败（store.remove 报错等）
-//!   与崩溃同族处置——错误带 [`POST_ACK_ERR_MARK`] 前缀，外层 ⑫ **不
+//!   根修（2026-10-24）：ACK 后本地收敛失败（store.remove 报错等）
+//!   与崩溃同族处置——错误带 [`POST_ACK_ERR_MARK`] 前缀，外层**不
 //!   回滚**、保持 migrating 等墓碑收敛（旧行为一视同仁回滚 active =
 //!   ACK 后删除失败即永久双活且 sweep 失明）；墓碑写入重试 ×3，全败
 //!   且记录删除也失败时 sweep 按无墓碑回滚 = 上述第二类诚实窗口。
-//!   R7 根修（2026-10-24 复核）：上窗「墓碑全败 + 删除全败 → sweep 回滚
-//!   active」的自动双活不可接受——commit 发出前落**意图日志**（R7），sweep
+//!   根修（2026-10-24 复核）：上窗「墓碑全败 + 删除全败 → sweep 回滚
+//!   active」的自动双活不可接受——commit 发出前落**意图日志**，sweep
 //!   对「日志在场、墓碑缺席」一律冻结 migrating 转人工（B 可能已激活，
 //!   自动回滚 = 同 uuid 双活且 ACTIVE 让 sweep 永久失明）；两锚皆缺席
 //!   （崩溃在日志写入前）才回滚 active。
@@ -56,21 +56,21 @@ const COMMIT_RPC_TIMEOUT: Duration = Duration::from_secs(300);
 /// 迁移 staging 载荷格式版本（migration.json `format` 字段）。
 const MIGRATION_FORMAT: u32 = 1;
 
-/// post-ACK 错误标记（2026-10-24 N2 根修）：⑩ commit ACK 已达（B 端已
-/// 激活）之后的本地收敛失败，错误串以本前缀起头——外层 ⑫ 回滚臂据此
+/// post-ACK 错误标记（根修）：⑩ commit ACK 已达（B 端已
+/// 激活）之后的本地收敛失败，错误串以本前缀起头——外层回滚臂据此
 /// **跳过回滚**（B 活 + A 回滚 active = 同 uuid 双活，且 ACTIVE 状态让
 /// sweep 永久失明，双活从短暂窗口变永久态）；保持 migrating 让墓碑收敛。
 /// 前缀匹配是刻意选择：错误串经多层 format! 包裹（外层还要附保持语义
 /// 说明），结构化 enum 会强改全部消费面签名，标记前缀零涟漪。
 const POST_ACK_ERR_MARK: &str = "commit 已确认（B 端已激活）";
 
-/// commit 结果未知错误标记（2026-10-24 R79 残余面根修）：⑩ commit call
+/// commit 结果未知错误标记（残余面根修）：⑩ commit call
 /// 以**模糊类**传输错误失败（超时/取消/连接中断——请求可能已达 B 端并被
 /// 处理）时，错误串以本前缀起头——外层 ⑫ 与 POST_ACK 同款**不回滚、不删
 /// 意图日志**：保持 migrating，重启 sweep 冻结转人工（确认 B 已激活 → 落
 /// 墓碑收敛删记录；确认未收到 → 删日志，下轮 sweep 回滚 active）。旧行为
 /// 把模糊错误当「确定未达」回滚 active——B 端恰好已激活时 = 同 uuid 双活
-/// 且 ACTIVE 让 sweep 永久失明（v1 诚实窗口；R7 冻结机制建成后按其同款
+/// 且 ACTIVE 让 sweep 永久失明（v1 诚实窗口； 冻结机制建成后按其同款
 /// 判词「自动回滚 = 双活且失明不可接受」关闭）。前缀匹配是刻意选择，
 /// 理由同 [`POST_ACK_ERR_MARK`] 注。
 const COMMIT_ACK_LOST_MARK: &str = "commit 结果未知（B 端可能已激活）";
@@ -97,12 +97,12 @@ fn commit_call_may_have_landed(err: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// agent 迁移对集群传输面的最小依赖投影。与 outbox 的
-/// [`nemesis_cluster::outbox::TransferTransport`] 刻意不同源：迁移是
+/// [`nemesis_cluster::outbox:TransferTransport`] 刻意不同源：迁移是
 /// 破坏性操作，`is_peer_online` 的未知节点（None）必须按 fail-closed
 /// 拒绝——不复用 outbox `unwrap_or(true)`（推送兜底语义）。
 #[async_trait::async_trait]
 pub trait MigrateTransport: Send + Sync {
-    /// 本节点 id（self 比对 + commit RPC source 身份——T37 教训：发送方
+    /// 本节点 id（self 比对 + commit RPC source 身份—— 发送方
     /// 身份必须显式填，不依赖下层代填）。
     fn self_node_id(&self) -> String;
 
@@ -114,7 +114,7 @@ pub trait MigrateTransport: Send + Sync {
     fn is_peer_online(&self, peer: &str) -> bool;
 
     /// 推送 staging 目录到对端 inbox（transfer 分块通道；kind=
-    /// [`nemesis_cluster::transfer::TRANSFER_KIND_AGENT_HOME`]，上限 0 =
+    /// [`nemesis_cluster::transfer:TRANSFER_KIND_AGENT_HOME`]，上限 0 =
     /// 不设限——迁移方已过本地 staging 打包，超限在此诚实报错）。
     async fn push_dir(
         &self,
@@ -133,7 +133,7 @@ pub trait MigrateTransport: Send + Sync {
     ) -> Result<serde_json::Value, String>;
 }
 
-/// 生产实现：包 `Arc<Cluster>`（`nemesis_cluster::cluster::Cluster`）。
+/// 生产实现：包 `Arc<Cluster>`（`nemesis_cluster::cluster:Cluster`）。
 pub struct ClusterMigrateTransport {
     pub cluster: Arc<nemesis_cluster::cluster::Cluster>,
 }
@@ -241,7 +241,7 @@ pub fn validate_migrate_agent_id(agent_id: &str) -> Result<(), String> {
 }
 
 /// B 端记录改写（纯函数）：home_node 换靶、status 归 active、exec_root/
-/// home_path 按靶机 workspace 重派生（nemesis-path 单一真相源）、记忆
+/// home_path 按靶机 workspace 重派生（nemesis-path 统一定义）、记忆
 /// 命名空间不变（`agents/<id>` 语义跨节点稳定）。字段写前快照用于
 /// 审计日志（返回改动摘要）。
 pub fn rewrite_record_for_target(
@@ -310,7 +310,7 @@ fn remove_tombstone(workspace: &Path, agent_id: &str) {
     let _ = std::fs::remove_file(tombstone_path(workspace, agent_id));
 }
 
-/// 迁移意图日志（R7，2026-10-24 复核：`<workspace>/agents/<id>.migrating.json`）。
+/// 迁移意图日志（复核：`<workspace>/agents/<id>.migrating.json`）。
 ///
 /// 写入时机 = ⑩ commit RPC **发出前**——给 sweep 的「无墓碑 = commit 未达」
 /// 推断一个下界：日志在场 = commit 已发出（或正在发出），B 端**可能已激活**，
@@ -438,7 +438,7 @@ pub async fn migrate_agent(
     match migrate_inner(mgr, transport.as_ref(), &record, &target, &self_id).await {
         Ok(v) => Ok(v),
         Err(e) => {
-            // **post-ACK 失败绝不回滚**（N2）：commit ACK 已达 = B 端已激活，
+            // **post-ACK 失败绝不回滚**：commit ACK 已达 = B 端已激活，
             // 回滚 active 会造成同 uuid 双活，且 ACTIVE 状态让 sweep 永久
             // 失明（sweep 只收敛 migrating）。保持 migrating：墓碑在场时
             // sweep 按迁移成功收敛删记录；墓碑也缺席（写墓碑重试后仍失败）
@@ -450,7 +450,7 @@ pub async fn migrate_agent(
                      重启 sweep 按墓碑收敛"
                 ));
             }
-            // R79 残余面：commit 结果未知（模糊类传输错误，请求可能已达 B）
+            // 残余面：commit 结果未知（模糊类传输错误，请求可能已达 B）
             // ——与 post-ACK 同轨：绝不回滚、绝不删意图日志（日志 = sweep
             // 冻结锚），保持 migrating 转人工。
             if e.starts_with(COMMIT_ACK_LOST_MARK) {
@@ -494,7 +494,7 @@ async fn migrate_inner(
     let agent_id = record.agent_id.as_str();
     let workspace = mgr.workspace.clone();
 
-    // ④ queued 检查：渠道有排队消息 = 拒绝（在途任务诚实拒绝拍板）。
+    // ④ queued 检查：渠道有排队消息 = 拒绝（在途任务诚实拒绝）。
     if let Some(lm) = mgr.loop_manager()
         && let Some(n) = lm.has_queued(agent_id)
         && n > 0
@@ -585,7 +585,7 @@ async fn migrate_inner(
     }
 
     // ⑩ commit RPC：B 端 rename + vault import + 记录落库（同步 handler）。
-    // R7：commit 发出前先落意图日志（安全锚，见 MigrationIntentJournal 注）
+    // commit 发出前先落意图日志（安全锚，见 MigrationIntentJournal 注）
     // ——sweep 据此区分「commit 未达」（回滚）与「commit 已发出」（冻结转
     // 人工）。重试 ×3 全败 = 诚实中止（此刻尚未 commit，回滚零代价）。
     let mut journal_ok = false;
@@ -624,7 +624,7 @@ async fn migrate_inner(
         .await
     {
         Ok(r) => r,
-        // R79 残余面：模糊类错误（请求可能已达 B）绝不按「确定未达」
+        // 残余面：模糊类错误（请求可能已达 B）绝不按「确定未达」
         // 回滚——标记上抛走冻结轨（此臂意图日志在场，冻结轨才有收敛锚）。
         Err(e) if commit_call_may_have_landed(&e) => {
             return Err(format!(
@@ -644,7 +644,7 @@ async fn migrate_inner(
     // ⑪ 本地收敛（顺序契约：墓碑先写、记录后删——崩溃窗口留给 sweep：
     // migrating+墓碑 = 迁移成功终局，删记录；反之回滚 active 照常服务）。
     // 失败必须带 post-ACK 标记上抛：此刻 B 端已激活，外层 ⑫ 不得回滚
-    // （N2：旧实现一视同仁回滚 active = ACK 后删除失败即永久双活）。
+    // （旧实现一视同仁回滚 active = ACK 后删除失败即永久双活）。
     if let Err(e) = migrate_agent_local_finalize(mgr, agent_id, target) {
         return Err(format!("{POST_ACK_ERR_MARK}；本地收敛失败：{e}"));
     }
@@ -669,7 +669,7 @@ async fn migrate_inner(
 /// 写失败必须重试争取（Windows 瞬时句柄/索引器是常态失败源）——三试全
 /// 败仍继续删记录（记录删掉 = 已收敛，墓碑本就冗余）；若记录删除也失败，
 /// 外层保持 migrating 而墓碑缺席，意图日志仍在场（⑩ 已写、本函数未到
-/// 清除步）——sweep 按日志分支**冻结转人工**（绝不自动回滚，R7/R79 语义），
+/// 清除步）——sweep 按日志分支**冻结转人工**（绝不自动回滚，/ 语义），
 /// 此处 WARN 与 sweep 冻结 WARN 双重留痕。
 fn migrate_agent_local_finalize(
     mgr: &super::AgentManager,
@@ -710,7 +710,7 @@ fn migrate_agent_local_finalize(
 }
 
 /// sweep 收敛扩展（`agents.rs::sweep` 的 migrating 分支，cfg cluster 调用）。
-/// R7（2026-10-24 复核）三分支：
+/// （复核）三分支：
 /// - migrating + 墓碑在场 = commit ACK 已达 → 删记录 + 删墓碑/日志 + 清 staging；
 /// - migrating + 意图日志在场、无墓碑 = commit **已发出**（B 端可能已激活）
 ///   → **冻结**：保持 migrating + loud WARN 转人工（自动回滚 active 会造

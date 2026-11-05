@@ -7,7 +7,7 @@
 //! - 3337-3364 SkillManageTool 元数据。
 //! - 3448-3492 GrepTool：execute 三分支（命中/无命中/坏正则）。
 //! - 3495-3550 GitTool：未知 action / 非 git 目录 / 真仓库 status。
-//! - 1517-1520 WebSearchTool:extract_query（dead_code，仅测试可达）+
+//! - 1517-1520 WebSearchTool::extract_query（dead_code，仅测试可达）+
 //!   无 provider 配置报错。
 //!   注：1511-1736 的 search_brave/tavily/perplexity 等为硬编码外部
 //!   HTTPS 端点的真实网络调用（无 base-url 覆盖入口），按纪律 3 不做真实

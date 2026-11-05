@@ -1,5 +1,5 @@
 #![cfg(windows)]
-//! M1 实弹集成（总控 §10 M1 验收）：真实 spawn dummy 目标 → 注入 payload →
+//! 实弹集成（总控 验收）：真实 spawn dummy 目标 → 注入 payload →
 //! 管道握手（PID/令牌/协议/架构四重校验）→ read_mem + profile 结构解码 →
 //! unload 自卸 → 目标进程存活确认。
 //!
@@ -101,7 +101,7 @@ fn spawn_dummy(exe: &Path, extra: &[&str]) -> (Child, u32, u64) {
     (child, pid, data_addr)
 }
 
-/// 构造指向 dummy-draw 的 profile（V1 结构与 dummy 同源）。
+/// 构造指向 dummy-draw 的 profile（结构与 dummy 同源）。
 fn draw_profile(profile_id: &str) -> Profile {
     serde_json::from_str(&format!(
         r#"{{
@@ -253,7 +253,7 @@ async fn x64_attach_handshake_read_decode_detach() {
     assert_eq!(session.arch, "x64");
     assert_eq!(mgr.session_count(), 1);
 
-    // read_mem + 解码：DataHeader（V1 魔法 0x5A6B7C8D / count=5 / cap=16）
+    // read_mem + 解码：DataHeader（魔法 0x5A6B7C8D / count=5 / cap=16）
     let hdr = mgr
         .read_struct(&profile.profile_id, data_addr, &header_struct())
         .await

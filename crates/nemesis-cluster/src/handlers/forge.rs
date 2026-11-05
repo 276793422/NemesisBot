@@ -80,7 +80,7 @@ impl FileForgeProvider {
 
 /// Redact common API key patterns from content.
 ///
-/// F-NEW-1（2026-10-17 四轮审计）：`find` 返回字节下标，`pos+20` 可能落在
+/// F-NEW-1（四轮审计）：`find` 返回字节下标，`pos+20` 可能落在
 /// 多字节 UTF-8 字符中间——旧写法先切片后校验，长度检查只防越界不防
 /// boundary，远端可控内容（forge_share 报告，`receive_reflection` →
 /// `do_sanitize`）可构造 panic 杀死 handler。改为**逐字节预检**（`get`
@@ -174,10 +174,10 @@ impl ForgeDataProvider for FileForgeProvider {
         let report = payload.get("report").ok_or("report field is required")?;
 
         // Generate a filename from source node and timestamp.
-        // T10（2026-10-17 三轮审计）：source_node 是远端可控标识符——文件
+        // （三轮审计）：source_node 是远端可控标识符——文件
         // 名成分前消毒（仓内单一真相源白名单段消毒，`../` 等映射 `_`，真
         // 实节点名逐字节不变），否则 `remote-{source_node}-{ts}.json` 可逃
-        // remote_dir 任意路径写（T7/T8/T9 同族）。读侧 read_reflection_content
+        // remote_dir 任意路径写（// 同族）。读侧 read_reflection_content
         // 已有 `file_name()` 围栏，本修只补写侧。
         let safe_name = nemesis_utils::sanitize::sanitize_path_segment(source_node);
         let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
@@ -200,7 +200,7 @@ impl ForgeDataProvider for FileForgeProvider {
     }
 
     fn get_reflections_list_payload(&self) -> serde_json::Value {
-        // LOW-14（2026-10-17 四轮审计）：read_dir 顺序是平台实现细节
+        // LOW-14（四轮审计）：read_dir 顺序是平台实现细节
         // （NTFS 字典序 vs ext4 哈希序）——先收集后显式排序，列表顺序跨
         // 平台确定（对端按序消费/展示不漂）。
         let mut reflections = Vec::new();

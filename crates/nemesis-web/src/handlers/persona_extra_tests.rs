@@ -483,7 +483,7 @@ async fn test_file_save_path_traversal() {
         .await
         .unwrap_err();
     // name 闸（slug 验证器）先于 resolve_path——旧路径下
-    // 该用例靠「目标不存在 + 相对路径含 ..」的 canonicalize 启发式兜住；
+    // 该用例靠「目标不存在 + 相对路径含..」的 canonicalize 启发式兜住；
     // 目标存在时 resolve_path 实际放行（personas/../ = workspace 根），
     // 等于越权写根文件。现在 name='..' 在触碰文件系统之前 loud 拒绝。
     assert!(err.contains("invalid"), "got: {}", err);

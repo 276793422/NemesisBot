@@ -33,7 +33,7 @@ pub struct ModelConfig {
     /// 形态条目（probe/messages 可收发），但**不该坐默认对话模型槽**——三个
     /// default 槽写入点（CLI `--default`、唯一模型自动坐槽、WSAPI
     /// `models.set_default`）与 factory 装配点按 `is_conversation_role` 拒绝/
-    /// 降级。值集单一真相源 `nemesis_types::capability::normalize_model_role`。
+    /// 降级。值集统一定义 `nemesis_types::capability:normalize_model_role`。
     /// 空串不序列化（`skip_serializing_if`）——老条目 typed 保存字节零变化
     /// （零迁移完整语义；protocol 先例是无条件序列化，role 以空为常态故收紧）。
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -179,7 +179,7 @@ impl ImageGenConfig {
 /// 空段列表 = 内置默认（可自由寻址空间 0x08-0x77）；deny 优先于 allow。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HardwareToolsConfig {
-    /// 允许的 7 位地址段 `[[lo, hi], ...]`（闭区间）；空 = 内置默认 0x08-0x77。
+    /// 允许的 7 位地址段 `[[lo, hi],...]`（闭区间）；空 = 内置默认 0x08-0x77。
     #[serde(default)]
     pub i2c_allow_ranges: Vec<(u8, u8)>,
     /// 拒绝的地址段（在 allow 之上再排除，用于屏蔽已知有风险的设备地址）。

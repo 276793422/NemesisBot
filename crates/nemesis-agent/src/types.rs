@@ -20,12 +20,12 @@ pub struct AgentConfig {
     /// Names of tools available to this agent.
     ///
     /// 职能工具围栏（profession-capability-evolution）：此
-    /// 字段非空 = 实例级工具白名单生效（供给闸 [`crate:loop:tool_defs`]
-    /// 与派发闸 [`crate:loop:tool_dispatch`] 双端交集/拒绝）。写入方只有
+    /// 字段非空 = 实例级工具白名单生效（供给闸 [`crate::loop:tool_defs`]
+    /// 与派发闸 [`crate::loop:tool_dispatch`] 双端交集/拒绝）。写入方只有
     /// cluster_agent 任务装配（B 端职能子单 / 讨论唤醒轮）；loop 级 config
     /// 恒空 → 主 loop/普通对话/项目 loop 零行为变化。
     pub tools: Vec<String>,
-    /// [`Self:tools`] 围栏的职能标注——派发拒绝文案带职能名。None =
+    /// [`Self::tools`] 围栏的职能标注——派发拒绝文案带职能名。None =
     /// 围栏非单一职能来源（讨论唤醒轮的宣言交集形态）或未围；`tools` 是
     /// 闸的权威判据，本字段只管文案。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,7 +61,7 @@ pub struct ConversationTurn {
     /// ORIGINAL output, un-pruned and un-spilled — the mid-section stays
     /// recoverable (history replay / session branching). The bounded,
     /// model-facing form is derived per-request via
-    /// [`ConversationTurn:model_facing_content`]; the provider never sees
+    /// [`ConversationTurn::model_facing_content`]; the provider never sees
     /// more than the prune budget of any tool result.
     pub content: String,
     /// Tool calls issued by the assistant in this turn.
@@ -95,7 +95,7 @@ pub struct ConversationTurn {
     /// already pruned, so projecting an already-projected turn is a no-op.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_result_projection: Option<String>,
-    /// /（多模态，goal）：本 turn 附带的图片路径引用（路径
+    /// （多模态，goal）：本 turn 附带的图片路径引用（路径
     /// 注入 + media 落盘引用）。历史只存引用不存字节——build_messages 每轮
     /// 水合重读（文件已删 → 占位文本），provider 字节路径零影响。
     /// 旧会话文件无此键 → `#[serde(default)]` 加载为空。
@@ -461,6 +461,6 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

@@ -1,4 +1,4 @@
-//! BUG-HUNT R38 回归钉：`push_chunk_incremental` 增量 UTF-8 解码。
+//! 回归钉：`push_chunk_incremental` 增量 UTF-8 解码。
 //!
 //! 旧实现逐 chunk 独立 `from_utf8_lossy`：TCP 分片把多字节字符劈开时，
 //! 前半字节在上一个 chunk 被替换成 U+FFFD——长 CJK 回复几乎每个 chunk
@@ -7,7 +7,7 @@
 use super::next_event_boundary;
 use super::push_chunk_incremental;
 
-/// BUG-HUNT R61 回归钉：`next_event_boundary` 双形态事件边界。
+/// 回归钉：`next_event_boundary` 双形态事件边界。
 /// 此前 anthropic/http_provider 两 lane 只扫 `\n\n`——CRLF-only 上游
 /// （SSE 规范行终止三态 LF/CR/CRLF）零事件解析，流式回复静默变空。
 
@@ -53,14 +53,14 @@ fn feed(chunks: &[&[u8]]) -> String {
 
 #[test]
 fn cjk_char_split_across_three_chunks_survives() {
-    // "中" = E4 B8 AD，一字节一个 chunk（最恶劣劈法）。
+    // "中" = AD，一字节一个 chunk（最恶劣劈法）。
     let out = feed(&[&[0xE4], &[0xB8], &[0xAD]]);
     assert_eq!(out, "中");
 }
 
 #[test]
 fn emoji_four_byte_split_across_two_chunks_survives() {
-    // "😀" = F0 9F 98 80，2+2 劈开。
+    // "😀" = 9F 98 80，2+2 劈开。
     let out = feed(&[&[0xF0, 0x9F], &[0x98, 0x80]]);
     assert_eq!(out, "😀");
 }

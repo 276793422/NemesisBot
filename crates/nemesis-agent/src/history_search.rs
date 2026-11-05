@@ -504,7 +504,7 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
 
 /// session_logs 目录的 JSONL 清单，最新 mtime 优先（文件名升序 tiebreak）。
 /// 只收常规文件（`*.jsonl` 目录不进清单）；非常规 mtime 的条目跳过
-/// （后续 File:open 也会失败，语义一致）。
+/// （后续 File::open 也会失败，语义一致）。
 fn jsonl_files_latest_first(rd: std::fs::ReadDir) -> Vec<PathBuf> {
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()

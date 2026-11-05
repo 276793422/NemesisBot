@@ -556,7 +556,7 @@ fn test_cache_stats_default() {
 }
 
 // ============================================================
-// S5 coverage: expired similar entry skipped during similarity
+// coverage: expired similar entry skipped during similarity
 // match, jaccard on empty inputs
 // ============================================================
 

@@ -16,7 +16,7 @@ pub struct ClusterConfig {
     pub bind_address: String,
     /// Known peer addresses.
     pub peers: Vec<String>,
-    /// 批次四：节点显示名（来自 config.cluster.json `node_name`；空 = 自动
+    /// 节点显示名（来自 config.cluster.json `node_name`；空 = 自动
     /// 解析链：hostname → `Bot {id8}` 兜底）。非空时该名免疫撞名后缀
     /// （用户显式意志优先，重名无害——唯一性靠 node_id）。
     #[serde(default)]
@@ -42,10 +42,10 @@ pub enum NodeStatus {
     Connecting,
 }
 
-/// 节点自报 agent 实体清单条目（P2 2026-10-16）。wire 最小面：只带身份
+/// 节点自报 agent 实体清单条目。wire 最小面：只带身份
 /// 与档位——host 路径（exec_root/home_path）绝不出网。
 ///
-/// `state` 词汇表（P3 T8）：`running`（常驻执行体存活）/
+/// `state` 词汇表：`running`（常驻执行体存活）/
 /// `active`（记录就绪、常驻未在跑）/ `provisioning` / `failed`（后两者=
 /// agents 表记录生命周期态）。空串 = 未宣告（旧 wire 兼容——serde
 /// default，旧节点/Go 节点缺字段不炸，Go json.Unmarshal 忽略未知键）。
@@ -57,7 +57,7 @@ pub struct AgentAnnouncement {
     pub kind: String,
     /// `auto`（空串归一）/ `mini` / `normal` / `big`。
     pub tier: String,
-    /// P3 T8 运行态：常驻执行体存活 → `running`，否则回记录生命周期态。
+    /// 运行态：常驻执行体存活 → `running`，否则回记录生命周期态。
     #[serde(default)]
     pub state: String,
 }
@@ -73,7 +73,7 @@ pub struct ExtendedNodeInfo {
     /// serde default 兼容缺字段的旧 state.toml。
     #[serde(default)]
     pub tags: Vec<String>,
-    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug，精确匹配
+    /// 自报职能清单（集群专业职能框架；`family[:spec]` slug，精确匹配
     /// 无继承）。announce 携带；serde default 兼容旧 state.toml / 旧 announce。
     #[serde(default)]
     pub professions: Vec<String>,
@@ -81,17 +81,17 @@ pub struct ExtendedNodeInfo {
     /// matcher tier 闸 fail-open 放行）。
     #[serde(default)]
     pub tier: Option<String>,
-    /// 自报 agent 实体清单（P2 2026-10-16；announce/get_info 携带）。
+    /// 自报 agent 实体清单（announce/get_info 携带）。
     /// 旧节点 wire 无此字段 → serde default 空 = 未宣告（兼容 professions
     /// 先例）。不持久化到 state.toml（运行时清单，周期 announce 自会重学）。
     #[serde(default)]
     pub agents: Vec<AgentAnnouncement>,
-    /// 自报运行时后端形态（P5 第 4 步 ③；如 `process` / `vm`；None = 未
+    /// 自报运行时后端形态（如 `process` / `vm`；None = 未
     /// 宣告）。与 agents 相反这是**静态身份**——持久化到 state.toml，重启
-    /// 后经回读种回注册表。本批只宣告不做 matcher 闸（P6 上位）。
+    /// 后经回读种回注册表。本批只宣告不做 matcher 闸（上位）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
-    /// 对端自报构建号（git 短 hash；A1 运行时硬化批）。旧 state.toml /
+    /// 对端自报构建号（git 短 hash； 运行时硬化批）。旧 state.toml /
     /// 旧 announce 无此字段 → serde default 空 = 未宣告（同 professions
     /// 先例）。Dashboard 节点面展示，三机换装偏斜一眼可见。
     #[serde(default)]

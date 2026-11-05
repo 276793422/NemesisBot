@@ -1,8 +1,8 @@
-//! ：ContinuationStore:save 原子写回归锁。
+//! ContinuationStore::save 原子写回归锁。
 //!
-//! 修复前 `save` 用裸 `std:fs:write` 直写目标——崩溃/断电落在写中 → 半截
+//! 修复前 `save` 用裸 `std::fs:write` 直写目标——崩溃/断电落在写中 → 半截
 //! JSON 快照，重启后 load 解析失败被 warn 跳过，续行与 pending 重建静默
-//! 丢失。修复后走 `nemesis_utils:write_file_atomic`（同目录 cluster 侧
+//! 丢失。修复后走 `nemesis_utils::write_file_atomic`（同目录 cluster 侧
 //! twin store 的 形态：唯一临时名 + sync_all 先于 rename + 失败清理）。
 //!
 //! 进程内无法真实注入「写中崩溃」，本批锁三件可观察行为：

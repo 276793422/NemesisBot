@@ -1,8 +1,8 @@
 //! （+）：rewind 侧谱系与分支摘要的 AgentLoop 编排测试。
 //!
-//! -：`rewind_to_message` 截断后写 `last_rewind` 谱系进本会话 sidecar
+//! -`rewind_to_message` 截断后写 `last_rewind` 谱系进本会话 sidecar
 //!   meta（no-op 回退 = 无谱系事实，不写）；
-//! -：遗弃后缀 ≥3 个完整 user 轮且 `agents.small_model` 已配置 →
+//! -遗弃后缀 ≥3 个完整 user 轮且 `agents.small_model` 已配置 →
 //!   mock 小模型生成结构化摘要落盘（`branch_summary`）；
 //! - 降级：小模型未配置 = 诚实跳过（谱系照写、摘要缺席、不阻塞回退）；
 //! - 注入：`branch_summary` 在 `build_messages` 里成为 `# Branch

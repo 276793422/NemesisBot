@@ -5,7 +5,7 @@
 //! 2. 文本提取路径（主场景：用户在提示词里写本地图片路径）
 //!
 //! **附加 = 一次程序化 file_read 走安全管线**：构造 `read_file` invocation 交
-//! `SecurityPlugin:execute`（8 层全跑：注入 → ABAC file_rules → 凭据 → DLP →
+//! `SecurityPlugin::execute`（8 层全跑：注入 → ABAC file_rules → 凭据 → DLP →
 //! SSRF → 病毒扫描 → 审计链），允许后读文件算 sha256 并向审计链追加一条
 //! path+hash 事件。工作区边界语义：聊天用户点名路径 = 主体意志，附加**不走**
 //! 文件工具的 restrict_to_workspace 校验（该开关继续管 agent 自主工具调用，
@@ -156,7 +156,7 @@ fn gate_and_hash(_security: Option<()>, path: &Path, _channel: &str) -> Result<S
 /// 泛化为参数化构建器供 web_fetch 重定向循环复用同一语义）：
 /// 共享池默认策略跟随至多 10 跳重定向——SSRF 闸只校验**首跳** URL，
 /// `302 → 内网地址` 会绕过闸直接打内网。所有拉取外部 URL 的 client 一律
-/// 用 Policy:none（重定向响应走 error_for_status 或由上层循环手动逐跳
+/// 用 Policy::none（重定向响应走 error_for_status 或由上层循环手动逐跳
 /// 复查），不静默放行内网。
 pub(crate) fn build_no_redirect_client(
     user_agent: &str,
@@ -191,7 +191,7 @@ fn no_redirect_client() -> &'static reqwest::Client {
 /// `resolve(host, addr)` 把该 host 的全部连接钉在已验证 IP 上，reqwest 不再
 /// 发起第二次解析，TOCTOU 关闭。TLS SNI/证书校验仍按原 host（仅钉解析）。
 ///
-/// 构建失败返回 None，调用方回退 [`build_no_redirect_client`]（Policy:none
+/// 构建失败返回 None，调用方回退 [`build_no_redirect_client`]（Policy::none
 /// 语义不丢；**绝不**回退到 reqwest 默认 client——默认会跟随重定向， 就
 /// 回来了）。
 // 唯一调用点在 security 布防分支（钉死路径）；feature 裁掉 security 时
@@ -242,7 +242,7 @@ fn pinned_no_redirect_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqw
 /// 全复用，URL 项不新增旁路）。
 ///
 /// 每条 URL 依次过：
-/// 1. **SSRF 闸**（安全管线 Layer 6 同一真相源 `ssrf:Guard`——DNS 解析后
+/// 1. **SSRF 闸**（安全管线 Layer 6 同一真相源 `ssrf::Guard`——DNS 解析后
 ///    校验回环/内网/链路本地/元数据端点；guard=None（feature 裁剪 / 插件未
 ///    挂 / ssrf 层配置关闭）直通，与 [`gate_and_hash`] 的三态语义一致）；
 ///    四轮盲审：验证过的 IP 集会**钉死**到下载 client（防
@@ -351,7 +351,7 @@ pub async fn fetch_url_media(
                 continue;
             }
         };
-        // （二次回归）：重定向不跟随——client 已设 Policy:none()
+        // （二次回归）：重定向不跟随——client 已设 Policy::none()
         //（SSRF 闸只校验首跳 URL，302 → 内网地址会绕过闸直打内网；且
         // error_for_status 只拒 4xx/5xx，3xx 会漏过）。重定向响应在此显式
         // 诚实注明失败，不读其 body、不放行。
@@ -514,7 +514,7 @@ fn pick_url_ext(url: &str, content_type: &str) -> String {
 ///         落盘产物；URL 须先经 [`fetch_url_media`] 预取，本同步入口不拉
 ///         网络，直接收到 URL 属调用方误用，诚实注明）。
 /// 两来源统一过安全闸 + 跨来源去重（解析路径大小写不敏感）。
-/// 张数上限：两来源合计 ≤[`image_path_detector:MAX_IMAGES_PER_MESSAGE`]，
+/// 张数上限：两来源合计 ≤[`image_path_detector::MAX_IMAGES_PER_MESSAGE`]，
 /// 超出部分不附加、聚合成一条诚实注记（先到先得：文本出现序 → media 追加序）。
 ///
 /// （devtool-upgrade）：`downscale_uploads = Some(uploads 目录)` 时，

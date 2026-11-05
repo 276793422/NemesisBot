@@ -6,7 +6,7 @@
 //! 截断、tier 双闸（声明 + mini 档 dispatch 拒绝）、args 校验、config 默认开
 //!（2026-10-25）+ 开关热生效联动 + 预算超时文案（审批等待注记）。
 //!
-//! 全部 multi_thread flavor：execute → spawn_blocking → `Handle:block_on`
+//! 全部 multi_thread flavor：execute → spawn_blocking → `Handle::block_on`
 //! 桥需要 driver 在后台线程被驱动（current_thread 会挂死——与生产形态
 //! 一致，见 code_run.rs 模块注释）。
 #![cfg(all(feature = "codemode", not(target_os = "android")))]
@@ -282,7 +282,7 @@ async fn estop_rejects_script_tool_calls() {
 async fn security_deny_rejects_script_tool_calls() {
     let mut al = AgentLoop::new(Box::new(NoopProvider), test_config());
     al.register_tool("echo_tool".to_string(), Box::new(EchoTool));
-    // default_action 默认 deny（SecurityPluginConfig:default）→ 一切拒绝。
+    // default_action 默认 deny（SecurityPluginConfig::default）→ 一切拒绝。
     al.set_security_plugin(Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
         nemesis_security::pipeline::SecurityPluginConfig {
             enabled: true,
@@ -339,7 +339,7 @@ async fn memory_limit_rejects_allocation_bomb() {
     assert!(!out.contains("survived"), "不得跑完: {out}");
 }
 
-/// ：单次 tool() 吃穿剩余预算的超时路径——错误文案必须
+/// 单次 tool() 吃穿剩余预算的超时路径——错误文案必须
 /// 带审批等待注记（模型/用户可自诊断：审批卡最长 300s，预算耗在等待上时
 /// 提示调 agents.codemode.timeout_secs）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -570,7 +570,7 @@ fn config_reload_missing_key_falls_back_to_enabled() {
 // timeout_secs=0（「不限时」语义）曾因 Instant 溢出 panic
 // ---------------------------------------------------------------------------
 
-/// timeout_secs=0 → Duration:MAX → `Instant:now() + Duration:MAX` 溢出
+/// timeout_secs=0 → Duration::MAX → `Instant::now() + Duration::MAX` 溢出
 /// panic（Add for Instant = checked_add().expect）→ spawn_blocking JoinError
 /// → 工具 Err。文档语义是「不限时、interrupt handler 轮询永假」——脚本必须
 /// 照常执行。修复后 deadline=None（checked_add None 即不限时）。

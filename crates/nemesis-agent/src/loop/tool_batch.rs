@@ -9,13 +9,13 @@
 //! 返回，骨架统一 `push + break`；8e 命中即 `Some(终局事件)` 返回，骨架置
 //! `terminal_reason` 后 push + break——事件向量与文案逐字节不变，golden
 //! transcript 把关。：批循环本体（中间消息落账 + 并行预计算 + 批次
-//! for）亦收编为 [`AgentLoop:execute_tool_batch`]，返回 `TurnFlow`；原
+//! for）亦收编为 [`AgentLoop::execute_tool_batch`]，返回 `TurnFlow`；原
 //! `force_stop`/`hit_async` 两补偿闩随方法化退役。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
-/// ：批内 steer 跳批时给未执行调用合成的 tool 结果文本。
+/// 批内 steer 跳批时给未执行调用合成的 tool 结果文本。
 /// 计划钦定文案（原样，不翻译）：模型据此知道调用被用户插队让路，而非
 /// 执行失败或结果未知。
 pub(crate) const STEER_SKIP_TOOL_RESULT: &str = "Skipped due to queued user message.";
@@ -27,7 +27,7 @@ impl AgentLoop {
     /// [`STEER_SKIP_TOOL_RESULT`] tool 结果（assistant tool_call / tool
     /// 结果消息对在落账时即完整合法；`repair_tool_message_pairs` 在每次
     /// build 的 `project_history_for_request` 里继续兜底）→ 终止当前批。
-    /// 返回 `TurnFlow:Continue`：下一轮器官 1 顶检 → 器官 2
+    /// 返回 `TurnFlow::Continue`：下一轮器官 1 顶检 → 器官 2
     /// `claim_steer_messages` 认领 steer（@file 展开 / 媒体附加 / chat_log
     /// 落行同源，此处不重复）→ steer 文本自然进下一轮 build_messages。
     ///
@@ -43,7 +43,7 @@ impl AgentLoop {
     ///   next_step 永远为空，检查恒不命中。
     /// - **守卫面诚实**：被跳调用不 emit observer ToolCall 事件、不记
     ///   turn_guard 结果、不生成执行收据——它们确实没执行；事件流
-    ///   仅推 `AgentEvent:ToolResult`（前端卡片可见跳过原因）。
+    ///   仅推 `AgentEvent::ToolResult`（前端卡片可见跳过原因）。
     pub(crate) fn check_steer_skip_batch(
         &self,
         instance: &AgentInstance,
@@ -365,8 +365,8 @@ impl AgentLoop {
         // 反馈与工具结果同走一条模型可见管线（gate/spill/projection 都作
         // 用于装饰后的文本）。失败路径全部静默（开关关 / 非触发写工具 /
         // 无 manager / 无服务器 / 同步失败 / 无 ERROR）——永不拖垮工具调用。
-        // ：触发臂扩到 append_file/multiedit（枚举表
-        // DIAGNOSTICS_WRITE_TOOLS 单一真相源）；路径提取按 args 形态分派
+        // 触发臂扩到 append_file/multiedit（枚举表
+        // DIAGNOSTICS_WRITE_TOOLS 统一定义）；路径提取按 args 形态分派
         // （multiedit = edits[].path）。：跨文件聚合 + stale 过滤（状态
         // 按 session_key 隔离在 diagnostics_touched）。
         #[cfg(feature = "lsp")]
@@ -375,7 +375,7 @@ impl AgentLoop {
             && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
         {
             let paths = extract_diag_feedback_paths(&tc.name, &args_val);
-            // ：与 format-on-save 同源——钩子路径经
+            // 与 format-on-save 同源——钩子路径经
             // resolve_tool_path 重算（相对路径锚定工作区根），不吃原始 args
             // 的 cwd 歧义。解析失败诚实跳过该路径。
             let paths: Vec<String> = paths
@@ -530,7 +530,7 @@ impl AgentLoop {
     }
 
     /// 器官 8d：// 指令链触碰（自写窗口登记 / 懒发现队列 /
-    /// : touch-driven instruction-chain invalidation. A
+    /// touch-driven instruction-chain invalidation. A
     /// successful read_file/write_file/edit_file may have touched
     /// a file on the workspace instruction chain — invalidate the
     /// context digests so the next build re-reads the chain.
@@ -595,7 +595,7 @@ impl AgentLoop {
     /// ⑥ Escalation: same (tool, error) failed past the hard-stop
     /// threshold (24) — every level of the intervention ladder
     /// （通用 → 换方法 → 换路径/分解 → 绕过+记录缺口，
-    /// `turn_guard:alternating_nudge` 计次分级）has been ignored. Latch a
+    /// `turn_guard::alternating_nudge` 计次分级）has been ignored. Latch a
     /// stop event and break the tool batch; the outer-scope check after this
     /// for-loop ends the turn (a bare `break` here only exits the batch, not
     /// the LLM loop).
@@ -703,7 +703,7 @@ impl AgentLoop {
             tool_calls.clone(),
             response.reasoning_content.clone(),
         );
-        // ：中间轮输出发布——模型多步执行时每轮的过程叙述
+        // 中间轮输出发布——模型多步执行时每轮的过程叙述
         // （「我先看下 X 再改 Y」）此前只进 history，前端看不见；
         // 叙述与思考链同发，皆空才不发（guard 在
         // emit_round_output 内）——thinking-only 轮（叙述空、思考有值）照发。
@@ -758,7 +758,7 @@ impl AgentLoop {
         // The serial path (precomputed.is_none()) keeps the per-item checks
         // byte-identical.
         let skip_cancel_estop = precomputed.is_some();
-        // 修④：批后急停检查点——并行批窗口内到达的急停
+        // 批后急停检查点——并行批窗口内到达的急停
         // （precompute 内 biased select 已中断在飞收集并补发中断面
         // ToolFinished，见 tool_defs.rs 同款注释）在此收口：拒绝整批回灌、
         // 终局本轮（旧语义 = 批照跑完且回灌照常、下一轮边界才停）。per-item
@@ -854,7 +854,7 @@ impl AgentLoop {
             } else {
                 // 环境约束预拒统一注册点——detached +
                 // 职能围栏两约束一处声明，串行/并行同源（并行预检消费
-                // 值形态 [`super:tool_dispatch:
+                // 值形态 [`super::tool_dispatch:
                 // environment_constraint_refusal_for`]）。环境性拒绝在
                 // 安全段之前权威拒绝：不弹审批卡、不进风险管线（
                 // 阻塞链的派发侧护栏之一）。
@@ -1015,7 +1015,7 @@ impl AgentLoop {
             }
         }
 
-        // ：present_plan verdict 消费（批次边界，单一消费点）。
+        // present_plan verdict 消费（批次边界，单一消费点）。
         // 按 session_key 取走本会话的裁决（跨会话 turn 并发不串台）。
         // 驳回/超时 = 本轮结构性终止（模型不再获得下一轮，工具结果文本已落
         // 历史，下条用户消息可）；批准 = 模式已在工具内翻转，落回正常轮。
@@ -1044,6 +1044,6 @@ impl AgentLoop {
     }
 }
 
-// ：批内 steer 跳批测试（声明 + 独立文件，无内联测试）。
+// 批内 steer 跳批测试（声明 + 独立文件，无内联测试）。
 #[cfg(test)]
 mod p19_steer_skip_tests;

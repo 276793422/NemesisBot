@@ -1,11 +1,11 @@
-//! `collect_relative_files` 单测：链接项跳过语义（BUG-20261029-138）。
+//! `collect_relative_files` 单测：链接项跳过语义。
 //!
 //! 修复前形态：`p.is_dir()` 是 `fs::metadata` 跟随链接版——工作区内
 //! junction/symlink 被当目录递归，目标树文件以 `link/...` 前缀进 files
 //! 清单（`files_exist` 断言面污染）；自指链接则无限递归挂死 runner
 //! （进程内装配 = 挂死 gateway）。红证用指向树外真实目录的链接钉跟随
-//! 语义（自指挂死不可断言，同一跟随语义的推论）；与 R204
-//! （BUG-20261029-135）`label_tree` 修复同款判定（symlink_metadata）。
+//! 语义（自指挂死不可断言，同一跟随语义的推论）；与
+//! `label_tree` 修复同款判定（symlink_metadata）。
 
 use super::*;
 

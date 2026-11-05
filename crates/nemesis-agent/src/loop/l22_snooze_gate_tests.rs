@@ -8,7 +8,7 @@
 // ④ 管理动词（slash）在闸上方短路——暂停不拦管理操作；
 // ⑤ 未暂停会话正常准入，零 pending 文件。
 //
-// harness 仿 f1_plan_mode_tests（MockProvider + AgentLoop:new + gate 直调）；
+// harness 仿 f1_plan_mode_tests（MockProvider + AgentLoop::new + gate 直调）；
 // 预置键 `agent:test/l22gate:N` 被 route_message 原样采纳（is_preset_session_key）
 // ——键可预测，chat_log 侧 unique key + delete 清理（本 crate 测试惯例）。
 

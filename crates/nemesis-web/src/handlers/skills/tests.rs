@@ -1,4 +1,4 @@
-//! skills.rs 私有面覆盖（quality-hardening goal 冲刺 ，web 批次 1，
+//! skills.rs 私有面覆盖（quality-hardening goal 冲刺，web，
 //! 2026-08-26）。
 //!
 //! `skills_more_tests.rs` / `skills_extra_tests.rs`（handlers 级公共 API）
@@ -469,7 +469,7 @@ fn parse_github_url_https_http_git_suffix_and_shorthand() {
     let (o, r) = parse_github_url("https://github.com/user/repo3.git/").unwrap();
     assert_eq!((o.as_str(), r.as_str()), ("user", "repo3"));
 
-    // git@ SSH 形式（含 .git）
+    // git@ SSH 形式（含.git）
     let (o, r) = parse_github_url("git@github.com:user/repo4.git").unwrap();
     assert_eq!((o.as_str(), r.as_str()), ("user", "repo4"));
 
@@ -701,7 +701,7 @@ async fn search_registry_failure_maps_chinese_prefix() {
     let dir = tempfile::tempdir().unwrap();
     write_clawhub_config(dir.path(), &server.uri(), true);
 
-    // 唯一源返回 500 → search_all 全失败 → “搜索失败: ...”
+    // 唯一源返回 500 → search_all 全失败 → “搜索失败:...”
     Mock::given(method("GET"))
         .and(path("/api/search"))
         .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
@@ -806,7 +806,7 @@ async fn shop_detail_ok_and_convex_error_arms() {
     assert_eq!(r["downloads"], 100);
     assert_eq!(r["installed"], true);
 
-    // 2) convex error → “获取详情失败: convex error: ...”（不走 GitHub 回退）
+    // 2) convex error → “获取详情失败: convex error:...”（不走 GitHub 回退）
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();
     write_clawhub_config(dir.path(), &server.uri(), true);

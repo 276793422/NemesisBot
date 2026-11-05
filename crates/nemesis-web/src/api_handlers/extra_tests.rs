@@ -1076,7 +1076,7 @@ fn test_resolve_log_file_path_security_returns_fixed_audit_file() {
     let sec_dir = dir.path().join("logs").join("security_logs");
     std::fs::create_dir_all(&sec_dir).unwrap();
     std::fs::write(sec_dir.join("audit.jsonl"), "{\"audit\":\"entry\"}").unwrap();
-    // Other .log files in the dir should be ignored
+    // Other.log files in the dir should be ignored
     std::fs::write(sec_dir.join("audit_2025-01-01.log"), "stale").unwrap();
 
     let ws = dir.path().to_string_lossy().to_string();

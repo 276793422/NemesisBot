@@ -89,7 +89,7 @@ fn save_shares(workspace: &str, shares: &[ShareEntry]) -> Result<(), String> {
 /// session_id 就地消毒（`sanitize_session_id`，与 sessions export/rewind
 /// 臂同源）：sid 会拼进 `read_chat_log` 的文件路径（log_path 只替换 `:`），
 /// 含 `/` `\` `..` 的裸 sid 可路径穿越读任意 jsonl —— 守卫放在 store API
-/// 这一层（单一真相源），所有调用方自动覆盖。
+/// 这一层，所有调用方自动覆盖。
 pub fn create_share(workspace: &str, session_id: &str) -> Result<ShareEntry, String> {
     let session_id = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
     let _g = SHARE_LOCK

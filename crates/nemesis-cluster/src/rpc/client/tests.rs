@@ -6,8 +6,8 @@ fn test_default_timeout() {
     assert_eq!(client.timeout(), Duration::from_secs(3600));
 }
 
-/// F3 失败分类（2026-09-30）：连接/网络面 → 节点不可达；对端拒绝/协议
-/// 失配 → 节点配置异常（看板 ⛔ 评论的可读标签，口径单一真相源）。
+/// 失败分类：连接/网络面 → 节点不可达；对端拒绝/协议
+/// 失配 → 节点配置异常（看板 ⛔ 评论的可读标签，口径统一定义）。
 #[test]
 fn test_failure_category_labels() {
     use RpcClientError as E;
@@ -52,9 +52,9 @@ fn test_extract_ip_from_addr_bare() {
     assert_eq!(ip, Some("10.0.0.1".parse().unwrap()));
 }
 
-/// A1 P3：iroh 钉址形态（`iroh:<hex>@<ip:port>`）的直连 socket 参与
+/// iroh 钉址形态（`iroh:<hex>@<ip:port>`）的直连 socket 参与
 /// 同网段仲裁；纯 node_id 形态（无 `@`）不产生 IP（发现层供址，仲裁
-/// 跳过）；与 `roaming::bridge::IROH_ADDR_PREFIX` 字面量一致性由此
+/// 跳过）；与 `roaming::bridge:IROH_ADDR_PREFIX` 字面量一致性由此
 /// 测试与 bridge 侧语法测试双面钉住。
 #[test]
 fn test_extract_ip_roaming_pinned() {
@@ -406,7 +406,7 @@ fn test_extract_ip_from_addr_invalid() {
 
 #[test]
 fn test_extract_ip_from_addr_malformed_bracket_no_panic() {
-    // R52：`rfind("]:")` 不验 `[` 前缀——裸 "]:" 落成 &addr[1..0]
+    // `rfind("]:")` 不验 `[` 前缀——裸 "]:" 落成 &addr[1..0]
     // （start>end panic），首字符多字节时切非边界。加 starts_with('[')
     // 守卫后畸形输入全部落 IPv4/裸地址回退，返回 None 不 panic；
     // 合法 IPv6 括号形态不受影响。
@@ -620,7 +620,7 @@ fn test_select_best_address_with_resolver_subnet_match() {
 }
 
 // ---------------------------------------------------------------------------
-// 二期桥仲裁（goal：桥集群，批次六）
+// 二期桥仲裁（goal：桥集群）
 // ---------------------------------------------------------------------------
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1051,7 +1051,7 @@ async fn test_arbitration_bridge_offline_is_pure_direct() {
 
 #[tokio::test]
 async fn test_arbitration_probe_shares_bridge_path() {
-    // G2 探针（require_online=false）与业务共享仲裁：registry Offline 但
+    // 探针（require_online=false）与业务共享仲裁：registry Offline 但
     // 桥在线 → 探针经桥触达，Online 语义自洽（桥节点不再被误判死节点）。
     let bridge_calls = Arc::new(AtomicUsize::new(0));
     let client = RpcClient::with_resolver(Arc::new(ArbitrationResolver {
@@ -1078,7 +1078,7 @@ async fn test_arbitration_probe_shares_bridge_path() {
 }
 
 // ---------------------------------------------------------------------------
-// L13-b：mandate 签名注入 step 0（[`RpcClient::inject_mandate_if_needed`]，
+// b：mandate 签名注入 step 0（[`RpcClient::inject_mandate_if_needed`]，
 // 免网络直测 dispatch 咽喉判定——注入/不注入/绑定/兼容语义）
 // ---------------------------------------------------------------------------
 

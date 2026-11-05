@@ -58,7 +58,7 @@ impl ClusterLogWriter {
         // Build the log entry.
         let entry = {
             // 非 object 调用方（错误地传了 string/number 等）不 panic——包一层
-            // {"payload": fields} 落盘（集群完备性加固 2026-09-11：日志写入
+            // {"payload": fields} 落盘（集群完备性加固：日志写入
             // 是观测面，绝不能因调用方类型错误把生产进程打崩）。
             if !fields.is_object() {
                 fields = serde_json::json!({ "payload": fields });
@@ -156,10 +156,10 @@ pub fn write_cluster_log(event: &str, fields: serde_json::Value) {
 /// strings are lowercase (`peer_chat`/`transfer_begin`/`nb_bus`) — that contract
 /// is frozen (deserialization matches exact strings). The audit trail, however,
 /// renders every action lowercase so log forensics needs a single grep form
-/// (2026-10-17 实盘核对实证：按小写 `peer_chat` 检索漏掉 85 条 `PeerChat`
+/// (实盘核对实证：按小写 `peer_chat` 检索漏掉 85 条 `PeerChat`
 /// 派发行，险些误判「派发审计缺失」）。
 ///
-/// Historical note: log files written before 2026-10-18 keep the raw form
+/// Historical note: log files written before keep the raw form
 /// (PascalCase for Known actions) — auditing old files still needs both forms.
 pub fn audit_action_name(action: &str) -> String {
     action.to_ascii_lowercase()

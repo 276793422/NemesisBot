@@ -68,8 +68,8 @@ pub fn ensure_exe_in_path() -> bool {
 
 /// Resolve the NemesisBot home directory.
 ///
-/// BUG-20261102-316 收敛：非 `--local` 分支委托
-/// [`nemesis_path::resolve_home_dir`]（单一真相源）——此前此处是一份平行
+/// 收敛：非 `--local` 分支委托
+/// [`nemesis_path::resolve_home_dir`]——此前此处是一份平行
 /// 实现，与 crate 侧三处分叉：env 值不展开 `~/`（`NEMESISBOT_HOME=~` 按
 /// 字面量落 cwd 下 `~` 目录）、`{exe_dir,cwd}/.nemesisbot` 用 `exists()`
 /// 判定（文件占位也误认 home），doc 优先级序还与代码写反。crate 侧版本
@@ -128,7 +128,7 @@ pub fn cluster_config_path(home: &Path) -> PathBuf {
 }
 
 /// Get the QUIC relay config file path（config.quic.json——QUIC 自身全部配置，
-/// 2026-10-23 与集群解耦）。
+/// 与集群解耦）。
 pub fn quic_config_path(home: &Path) -> PathBuf {
     // 委托 nemesis-path 唯一拼接点（与 cluster_config_path 同款纪律）。
     nemesis_path::resolve_quic_config_path_in_workspace(&workspace_path(home))
@@ -154,7 +154,7 @@ pub fn forge_config_path(home: &Path) -> PathBuf {
 
 /// Get the CORS config file path.
 ///
-/// 2026-08-29 收编：落位 `<workspace>/config/cors.json`（nemesis-path 真相源）。
+/// 收编：落位 `<workspace>/config/cors.json`（nemesis-path 真相源）。
 /// 一次性迁移 legacy `<home>/config/cors.json`（copy-once：新位已存在则不动，
 /// legacy 保留——与 hooks.json 迁移同款先例）。
 pub fn cors_config_path(home: &Path) -> PathBuf {
@@ -342,7 +342,7 @@ pub fn print_help() {
 /// a panic inside a `tokio::spawn` task only kills that task (the process
 /// keeps running), so the crash would otherwise be invisible in the
 /// persistent logs. Real precedent: an axum router build panic in the web
-/// task left only a stderr trace (docs/INFO/2026-09-30_test-case-library.md).
+/// task left only a stderr trace (test-case-library).
 ///
 /// The previous hook is preserved and invoked after the tracing record, so
 /// stderr behaviour is unchanged. Idempotent via `OnceLock` — both logger
@@ -384,7 +384,7 @@ fn install_panic_hook() {
 
 /// Initialize a default console logger for simple CLI commands.
 ///
-/// Uses `std::sync::OnceLock` to ensure the subscriber is only installed once.
+/// Uses `std::sync:OnceLock` to ensure the subscriber is only installed once.
 /// Commands like gateway/agent/daemon call `init_logger_from_config()` instead,
 /// which reads the logging section from config.json. This function is for all
 /// other commands (status, model, cron, etc.) that just need basic console output.
@@ -533,7 +533,7 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
             .and_then(|s| s.to_str())
             .unwrap_or("nemesisbot");
 
-        // (BUG #30, quality-hardening goal 冲刺 S11) 根因：tracing-appender
+        // (, quality-hardening goal 冲刺) 根因：tracing-appender
         // 0.2.5 的 RollingFileAppender::new 内部对日志目录创建失败直接
         // .expect panic（rolling.rs:156）——原先 create_dir_all 失败只 warn
         // 想继续，随后却无条件构造 appender，进程照样 panic（warn-and-
@@ -597,9 +597,9 @@ fn max_level_filter(level: tracing::Level) -> tracing_subscriber::filter::LevelF
 // =========================================================================
 // Interactive mode
 // =========================================================================
-// [2026-08-27 R9 死码处置·已删除] run_interactive_mode（原 554-593 行）：
+// [ 死码处置·已删除] run_interactive_mode（原 554-593 行）：
 // 全仓库零生产调用方（#[allow(dead_code)] 工具函数，grep 实证仅自身定义），
-// 且 stdin 循环在进程内测试无法注入。按用户 2026-08-27 裁决删除——
+// 且 stdin 循环在进程内测试无法注入。按用户 裁决删除——
 // 恢复方式：git 历史本提交前的版本。
 
 // =========================================================================
@@ -643,7 +643,7 @@ pub fn should_skip_heartbeat_for_bootstrap(workspace: &Path) -> bool {
 mod tests;
 
 // =========================================================================
-// 双击直启（2026-09-17）：无窗重生
+// 双击直启：无窗重生
 // =========================================================================
 
 /// env 标记：本进程是无窗重生出来的子进程（Windows 双击检测后
@@ -724,7 +724,7 @@ pub fn try_respawn_detached() -> bool {
     false
 }
 
-/// P0 vault（B3，2026-09-22 计划）：秘密字段引用解析统一 helper。
+/// vault（计划）：秘密字段引用解析统一 helper。
 ///
 /// vault:/env:/yaml: 前缀经 nemesis-config 全局解析器现查（vault 解析器
 /// 由 vault_runtime 在启动路径注入）；字面量原样返回。解析失败 error!
@@ -791,7 +791,7 @@ pub fn is_bootstrap_web_credential(raw: &str) -> bool {
 
 /// SEC-001：绑定 host 是否只落回环。返回 `None` = 无法判定（主机名解析
 /// 失败或零结果）——调用方放行：绑不上的地址不构成暴露面，让既有 bind
-/// 流程自然报错。`0.0.0.0` / `::`（unspecified，绑所有网卡）按非回环处理。
+/// 流程自然报错。`0.0.0.0` / `:`（unspecified，绑所有网卡）按非回环处理。
 pub fn bind_host_is_loopback(host: &str) -> Option<bool> {
     use std::net::ToSocketAddrs;
     let h = host.trim();
@@ -823,7 +823,7 @@ pub fn bind_host_is_loopback(host: &str) -> Option<bool> {
 ///
 /// `field`：报错里如实指认来源配置键（如 `channels.web.auth_token` /
 /// `channels.websocket.auth_token`）——两个闸共用本函数，文案不得硬编码
-/// 通道名误导排障（真机验证 2026-09-23：websocket 闸触发时旧文案错指 web）。
+/// 通道名误导排障（真机验证：websocket 闸触发时旧文案错指 web）。
 pub fn ensure_control_plane_credential(
     bind_host: &str,
     raw_auth_token: &str,

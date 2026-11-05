@@ -13,11 +13,11 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-278：download_file 超时——reqwest::blocking::get 内部
+// download_file 超时——reqwest::blocking::get 内部
 // Client::new() 零超时，模型 CDN 半死（TCP 已建但不发数据）时 Dashboard
 // 安装按钮永久挂死。reqwest 0.12.28 的 blocking::ClientBuilder **没有
 // read_timeout**（只有总 timeout/connect_timeout），对齐同族先例
-// nemesis-voice model.rs（BUG-20261029-146）用总超时 600s 兜底：嵌入模型
+// nemesis-voice model.rs用总超时 600s 兜底：嵌入模型
 // 实际只有几十 MB（hf-mirror 实测 ~3.6MB/s，合法下载远低于 600s），
 // write_file_atomic 保证超时中途失败不落半截残骸（重装幂等重下）。
 #[cfg(not(test))]
@@ -46,13 +46,13 @@ pub struct EmbeddingConfig {
     /// Model definitions for each tier.
     #[serde(default)]
     pub models: ModelsConfig,
-    /// P3.1 (sixth batch): auto-inject memory hits into the conversation as
+    /// .1 (sixth batch): auto-inject memory hits into the conversation as
     /// a `# Memory Context` snapshot section. Grey-release default OFF —
     /// with false the agent's message stream is byte-identical to before
     /// this feature existed (same promise as steer mode).
     #[serde(default)]
     pub auto_inject: bool,
-    /// P3.1: how many top-K memory hits to inject at most (default 3).
+    /// .1: how many top-K memory hits to inject at most (default 3).
     #[serde(default = "default_auto_inject_top_k")]
     pub auto_inject_top_k: usize,
 }
@@ -307,8 +307,8 @@ pub fn save_embedding_config(config: &EmbeddingConfig, config_dir: &Path) {
     let path = config_path(config_dir);
     match serde_json::to_string_pretty(config) {
         Ok(content) => {
-            // BUG-20261103-339：落盘走 write_file_atomic（BUG-20261025-59 原子
-            // 写家族）——裸 std::fs::write 直写终路径，写一半（进程被杀/磁盘
+            // 落盘走 write_file_atomic（原子
+            // 写家族）——裸 std::fs:write 直写终路径，写一半（进程被杀/磁盘
             // 满）残留半截 JSON；load 解析失败回落 default（enabled=false），
             // 损坏文件滞留盘上，增强记忆静默自禁且需手工清理。
             if let Err(e) = nemesis_utils::file::write_file_atomic(
@@ -386,7 +386,7 @@ pub fn resolve_model_files(
     }
 
     // Check local_model_path first. 存在性判定一律走 is_non_empty_file：
-    // 零字节残骸不能报 Model found（BUG-20261031-241）——否则这里放行、
+    // 零字节残骸不能报 Model found——否则这里放行、
     // 插件 init 以晦涩错误失败，用户重装也永远跳不过残骸。
     let data_dir = embedding_data_dir(config_dir).join(&model_conf.name);
 
@@ -423,9 +423,9 @@ pub fn resolve_model_files(
     Ok((model_path.to_string_lossy().to_string(), dim))
 }
 
-/// 零字节文件 = 中断下载的残骸（BUG-20261031-241）：存在但为空不能当
+/// 零字节文件 = 中断下载的残骸：存在但为空不能当
 /// 「已下载/已安装」放行，调用方应走重下路径。metadata 读失败视为不存在。
-/// 目录形态同样不算（BUG-20261103-339：ext4 上目录 metadata len>0 会
+/// 目录形态同样不算（ext4 上目录 metadata len>0 会
 /// 误判「非空」，且目录本就不是可加载的模型/分词器资产）。
 fn is_non_empty_file(p: &Path) -> bool {
     std::fs::metadata(p)
@@ -510,12 +510,12 @@ pub fn download_model_files(
     // Resolve or download tokenizer file
     let tokenizer_path = model_path.join("tokenizer.json");
     if !is_non_empty_file(&tokenizer_path) {
-        // BUG-20261103-339：拷贝源判定与目标/模型臂同语义（is_non_empty_file =
+        // 拷贝源判定与目标/模型臂同语义（is_non_empty_file =
         // 零字节/目录形态残骸 = 未安装）。旧代码裸 exists() 把残骸当有效源，
         // fs::copy 拷出 0 字节 tokenizer 后照常报成功——残骸被合法化、下方 URL
-        // 下载臂被遮蔽，重装永远跳不过（BUG-20261031-241 在 model 臂修掉的
+        // 下载臂被遮蔽，重装永远跳不过（在 model 臂修掉的
         // 病理在本地拷贝臂重演）。fs::copy 非原子（中断残留半截文件）→ 改读
-        // 全量 + write_file_atomic（BUG-20261025-59 原子写家族）；拷贝失败
+        // 全量 + write_file_atomic（原子写家族）；拷贝失败
         // 不再静默——落 URL 臂兜底，两臂皆不成由下方最终校验诚实报错。
         let local_src = (!model_conf.local_tokenizer_path.is_empty())
             .then(|| Path::new(&model_conf.local_tokenizer_path))
@@ -555,10 +555,10 @@ pub fn download_model_files(
         }
     }
 
-    // BUG-20261103-339：安装最终校验——无论本地拷贝/下载哪条臂，tokenizer
+    // 安装最终校验——无论本地拷贝/下载哪条臂，tokenizer
     // 必须真实非空才算安装成功。旧形态两臂皆不成时静默 Ok（tokenizer 缺失
     // /零字节），插件 init 以晦涩错误失败 → with_config_dir 写 enabled:false
-    // 永久自禁增强记忆（BUG-20261031-241 定义的失败链）。
+    // 永久自禁增强记忆（定义的失败链）。
     if !is_non_empty_file(&tokenizer_path) {
         return Err(format!(
             "tokenizer 文件未安装或为空: {}。请检查 local_tokenizer_path / tokenizer_url 配置后重试安装",
@@ -587,12 +587,12 @@ pub fn download_model_files(
 
 /// Download a file using reqwest (blocking).
 ///
-/// BUG-20261031-241 三重加固（对齐 nemesis-voice model.rs 同族已修先例
-/// BUG-20261029-146）：
+/// 三重加固（对齐 nemesis-voice model.rs 同族已修先例
+///
 /// - 已存在文件只在**非空**时跳过——零字节是中断下载的残骸，重下；
 /// - 响应体为空 → 诚实报错，不落 0 字节终文件；
 /// - 落盘走 write_file_atomic——写一半（进程被杀/磁盘满）不会以终文件名
-///   残留半截文件。旧 `std::fs::write` 直写终路径是「一次中断 → 半截
+///   残留半截文件。旧 `std::fs:write` 直写终路径是「一次中断 → 半截
 ///   model.onnx → 重装永远跳过 → 插件 init 失败 → with_config_dir 写
 ///   enabled:false 永久自禁增强记忆」失败链的源头。
 fn download_file(url: &str, dest: &Path) -> Result<(), String> {
@@ -600,7 +600,7 @@ fn download_file(url: &str, dest: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    // BUG-20261101-278：blocking::get 内部 Client::new() 零超时 → 换带
+    // blocking::get 内部 Client::new() 零超时 → 换带
     // connect/total timeout 的显式客户端，半死 CDN 上诚实报错不挂死。
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)

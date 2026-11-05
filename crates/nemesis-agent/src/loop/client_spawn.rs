@@ -5,7 +5,7 @@
 //! detached 通道与模型侧 `spawn` 工具共用（同一 SpawnFn 闭包），工具档位/
 //! 深度/角色模板/安全管线全部同源。区别只在入口：模型的 spawn 走工具派发
 //! 闸（角色目录闸在 dispatch），客户端 spawn 的角色合法性由 handler 侧
-//! [`Self:check_client_role`] 用同一 [`Self:visible_roles`] 裁决——两处
+//! [`Self::check_client_role`] 用同一 [`Self::visible_roles`] 裁决——两处
 //! 口径永不漂移。
 
 use super::*;
@@ -63,7 +63,7 @@ impl AgentLoop {
 
     /// WSAPI `roles.list` 的数据面：当前 tier + 目录全量（slug/职责/最低
     /// 档/当前可见性/配置隐藏）。可见性裁决与 dispatch 闸共用
-    /// [`Self:visible_roles`]——前端下拉看到的集合就是模型能用的集合。
+    /// [`Self::visible_roles`]——前端下拉看到的集合就是模型能用的集合。
     pub fn roles_surface(&self) -> serde_json::Value {
         let tier_str = match *self.tier.read() {
             nemesis_types::capability::ModelTier::Mini => "mini",
@@ -92,7 +92,7 @@ impl AgentLoop {
         })
     }
 
-    /// 发布委派回执落会话事件（[`nemesis_types:agent:AgentEvent:
+    /// 发布委派回执落会话事件（[`nemesis_types::agent:AgentEvent:
     /// SubagentReplyLanded`]）。持久化**之后**调用（前端收到即 resync，
     /// 行必须已在盘上）；agent_event_tx 未装配（CLI / B 端 worker）为
     /// no-op。摘录 rune 安全截断 500 字符（toast 展示用，全文在 chat_log）。
@@ -171,7 +171,7 @@ impl AgentLoop {
                 },
             );
             if !log_existed {
-                // ：WSAPI 入口无 sender 上下文，principal 空串 = 不落盘
+                // WSAPI 入口无 sender 上下文，principal 空串 = 不落盘
                 // （函数内部短路）。
                 crate::chat_log::write_session_meta_principal(parent_session_key, "");
                 self.emit_session_created(parent_session_key);

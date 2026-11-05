@@ -53,10 +53,10 @@ fn cmd_status_with_libs_present_reports_ok() {
 }
 
 // ===========================================================================
-// run() 分发 + cmd_status 模型目录分支（S11c，quality-hardening goal 冲刺 S11）
+// run() 分发 + cmd_status 模型目录分支（quality-hardening goal 冲刺）
 // —— 既有 4 测只钉 require_config / cmd_status 基础分支。env home 隔离：
 // Download/Tts/Stt/Chat 全部经 require_config 门卫在缺 config.toml 时 bail
-// （不下模型不碰音频）；Devices 只钉"不炸"（cpal 枚举交给 S12 的 crate 批次）。
+// （不下模型不碰音频）；Devices 只钉"不炸"（cpal 枚举交给 的 crate 批次）。
 // ===========================================================================
 
 mod run_arm {

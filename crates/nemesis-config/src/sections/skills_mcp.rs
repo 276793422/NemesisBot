@@ -204,7 +204,7 @@ pub struct McpServerConfig {
     pub tags: Vec<String>,
     #[serde(default)]
     pub command: String,
-    /// （三方复评整改）：浏览器 profile 注入 opt-in 闸。
+    /// 浏览器 profile 注入 opt-in 闸。
     /// true = 本 server 允许宿主按上下文注入 per-agent Chromium
     /// `--user-data-dir`（gateway agent loop 路径 = agent home
     /// browser-profile/；执行体子进程路径 = `NEMESISBOT_BROWSER_PROFILE`
@@ -293,7 +293,7 @@ impl McpServerConfig {
     }
 }
 
-/// MCP HTTP 头行语法校验（单一真相源， 复查）：CLI
+/// MCP HTTP 头行语法校验（统一定义， 复查）：CLI
 /// `mcp add`/`mcp discover`、Dashboard `server.add`/`server.update`、运行期
 /// `resolved_header_pairs` 三方同源。只验语法，绝不解引用、绝不回显值段
 /// （值段可能夹带真凭据；错误文案只接头名/引用名——两者非秘密）。
@@ -341,7 +341,7 @@ pub fn validate_mcp_header_line(line: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// MCP stdio env 行语法校验（"KEY=VALUE"； 单一真相源——
+/// MCP stdio env 行语法校验（"KEY=VALUE"； 单一权威定义——
 /// CLI `mcp add` 写入面 / Dashboard server.add·update / 运行期
 /// `resolved_env` WARN 跳过同源）：缺 `=` / 键名空 / 键名含空白 / 整值
 /// `vault:`/`env:`/`yaml:` 引用名为空或带首尾空格。与
@@ -382,7 +382,7 @@ pub fn validate_mcp_env_line(line: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// 宽容字符串列表反序列化（单一真相源收敛配套）：`null` → 空表；
+/// 宽容字符串列表反序列化（统一定义收敛配套）：`null` → 空表；
 /// `{"K":"V"}` → `["K=V"]`（LLM/外部生态最常见的 env 写法）；`["a","b"]`
 /// → 原样；标量 → 单元素表。元素非字符串时尽力转字符串。
 fn flexible_string_list<'de, D>(d: D) -> std::result::Result<Vec<String>, D::Error>

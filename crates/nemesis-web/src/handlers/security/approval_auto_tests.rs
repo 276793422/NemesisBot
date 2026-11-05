@@ -1,4 +1,4 @@
-//! §2 免打扰（2026-10-11 无人值守计划 Part 2）：approvals.status 双臂 +
+//! 免打扰（2026-10-11 Part 2）：approvals.status 双臂 +
 //! config.save 热翻投影 + 默认形态 pin。
 
 use super::*;

@@ -245,7 +245,7 @@ async fn l3_guess_too_big_recovers_via_emergency_compression() {
     let done: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            // AgentEvent 经 loop.rs 的 use 从 crate:types 引入，super:* 可见。
+            // AgentEvent 经 loop.rs 的 use 从 crate::types 引入，super:* 可见。
             AgentEvent::Done(msg) => Some(msg.clone()),
             _ => None,
         })

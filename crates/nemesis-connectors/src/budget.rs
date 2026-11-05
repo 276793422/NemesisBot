@@ -1,4 +1,4 @@
-//! 预算护栏（PLAN §3.4 + R3 整改）：per-connector 滑窗限频 + 资金类
+//! 预算护栏（PLAN +）：per-connector 滑窗限频 + 资金类
 //! 单笔/日累计限额，**reserve/commit/release 三段原子占用**。
 //!
 //! 语义（资金类 fail-closed）：
@@ -6,7 +6,7 @@
 //! - `finance_max_order_qty = 0` = 拒绝所有资金 op（不设限 = 不成交）。
 //! - `finance_max_orders_per_day = 0` = 拒绝所有资金 op（同 fail-closed 族）。
 //!
-//! R3 原子占用（修复旧 check→await→record 的并发旁路与执行即失账）：
+//! 原子占用（修复旧 check→await→record 的并发旁路与执行即失账）：
 //! - [`BudgetGuard::reserve`]：单锁内完成全部限额检查并**立即记账**（预备
 //!   账目计入限额）——裁决与外部执行之间的窗口不再被并发请求钻空；
 //! - [`BudgetGuard::commit`]：预备转正式（记账保留；幂等，重复收口不重复计数）；
@@ -19,11 +19,11 @@
 //! （agent/loop 重建不清零）。`now_ms` 由调用方传入（可测性），日期按
 //! UTC 自然日滚转。
 //!
-//! M3（2026-10-19）真跨进程限额：`BudgetGuard` 可挂**持久化存储**
+//! （2026-10-19）真跨进程限额：`BudgetGuard` 可挂**持久化存储**
 //! （`<workspace>/data/connectors_budget.json`）——`shared_budget_guard`
 //! 自动挂 store，全部读写经「锁文件互斥 → 读盘 → 改 → 原子写回」漏斗，
 //! 多 gateway 进程 / 多实例共享同一份账目：
-//! - 互斥用**锁文件**（`<store>.lock`，`std::fs::File::lock` 阻塞独占）而
+//! - 互斥用**锁文件**（`<store>.lock`，`std::fs:File::lock` 阻塞独占）而
 //!   非数据文件自身——数据文件经 `write_file_atomic` tmp+rename 原子换装，
 //!   锁句柄存活期与数据文件 inode 解耦（Windows rename-over-open 上限）。
 //! - OS 文件锁进程死亡自动释放 = 无陈锁恢复问题；锁持有窗口是毫秒级
@@ -31,7 +31,7 @@
 //! - 存储损坏（半截 JSON 等）= **重置 fail-open**：预算是成本熔断不是
 //!   安全边界，宁可重开账也不把 agent 锁死在坏文件上（WARN 留痕）。
 //! - 锁文件/写回失败（目录不可写、AV 瞬时占用等）= 回退进程内存态 +
-//!   WARN（诚实降级，本次记账跨进程不可见）。
+//!   WARN（诚实降级，本次记账跨进程不可）。
 //! - `BudgetGuard::default()`（无 store）行为不变：纯内存，单测/工具路径。
 
 use std::collections::HashMap;
@@ -139,26 +139,26 @@ struct State {
 }
 
 /// 预算护栏实例。跨实例经 [`shared_budget_guard`] 按 workspace 共享
-/// （同进程内 agent/loop 重建共用同一 Arc）；挂 store 的实例（M3）账目
+/// （同进程内 agent/loop 重建共用同一 Arc）；挂 store 的实例账目
 /// 落盘，**跨进程**共享同一份（store 是唯一真相，操作经文件锁串行）。
 #[derive(Debug, Default)]
 pub struct BudgetGuard {
     state: Mutex<State>,
-    /// M3：持久化存储路径（None = 纯内存，`default()` 行为不变）。
+    /// 持久化存储路径（None = 纯内存，`default()` 行为不变）。
     store: Option<PathBuf>,
 }
 
 /// 预备占用超时扫尾窗口（远大于最长执行路径——RPC 上限 2h，24h 宽裕）。
 const PROVISIONAL_TTL_MS: i64 = 24 * HOUR_MS;
 
-/// workspace → 预算存储路径（M3 单一真相源；`shared_budget_guard` 与测试
+/// workspace → 预算存储路径（统一定义；`shared_budget_guard` 与测试
 /// 同源引用，别处不得自行拼路径）。
 pub fn budget_store_path(workspace: &Path) -> PathBuf {
     workspace.join("data").join("connectors_budget.json")
 }
 
 impl BudgetGuard {
-    /// 挂持久化存储的实例（M3）：账目落 `<path>`，跨进程共享（文件锁串行
+    /// 挂持久化存储的实例：账目落 `<path>`，跨进程共享（文件锁串行
     /// + 原子写回）。测试直连 `with_store`；生产走 [`shared_budget_guard`]。
     pub fn with_store(path: PathBuf) -> Self {
         Self {
@@ -167,7 +167,7 @@ impl BudgetGuard {
         }
     }
 
-    /// 状态操作统一漏斗（M3）：无 store = 进程内互斥；有 store = 锁文件
+    /// 状态操作统一漏斗：无 store = 进程内互斥；有 store = 锁文件
     /// 互斥 → 读盘 → `f` → 原子写回。锁/写失败诚实降级内存态（WARN 留痕
     /// ——预算是成本熔断不是安全边界，不因基础设施抖动把执行面锁死）。
     fn operate<T>(&self, f: impl FnOnce(&mut State) -> T) -> T {
@@ -325,12 +325,12 @@ impl BudgetGuard {
     }
 }
 
-/// workspace 共享预算单例（R3）：进程级 `Mutex<HashMap>` 按 canonical
+/// workspace 共享预算单例：进程级 `Mutex<HashMap>` 按 canonical
 /// workspace 路径键控——agent/loop 重建走同一 `Arc`，滑窗与日累计不清零
 /// （旧 per-instance `BudgetGuard::default()` 让 agent 重启即重置额度，
 /// 限额形同虚设）。canonicalize 失败（目录不存在等）回落原路径作键。
 ///
-/// M3 起实例自动挂 store（`<workspace>/data/connectors_budget.json`）：
+/// 起实例自动挂 store（`<workspace>/data/connectors_budget.json`）：
 /// 同进程共享 Arc，**跨进程**经文件锁 + 原子写回共享同一份账目——多
 /// gateway 实例（多 `--local` 部署除外，workspace 不同天然隔离）不再
 /// 各记各账。
@@ -346,7 +346,7 @@ pub fn shared_budget_guard(workspace: &Path) -> Arc<BudgetGuard> {
         .clone()
 }
 
-/// M3 存储互斥句柄：锁文件（`<store>.lock`）上的 OS 级阻塞独占锁。锁文件
+/// 存储互斥句柄：锁文件（`<store>.lock`）上的 OS 级阻塞独占锁。锁文件
 /// 与数据文件分离——数据文件走 `write_file_atomic` tmp+rename，锁句柄不受
 /// rename 影响。进程死亡 = OS 释放锁，无陈锁恢复问题。
 struct StoreLock(std::fs::File);

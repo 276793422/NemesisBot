@@ -252,7 +252,7 @@ fn model_source_clones_correctly() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：serde 部分缺省臂 + 绝对路径 model_dir
+// 覆盖率冲刺：serde 部分缺省臂 + 绝对路径 model_dir
 // 现有 `app_config_model_dir_absolute_path_returned_as_is` 用 "/opt/..."——
 // 在 Windows 上不是绝对路径（无盘符），189 行其实从未命中；这里用真实
 // 绝对路径（env::temp_dir，全平台绝对）补上真正的 as-is 分支。
@@ -385,7 +385,7 @@ fn model_dir_truly_absolute_path_returned_without_join() {
     assert_eq!(dir, abs, "absolute dir must be returned as-is");
 }
 
-// C4（2026-10-24 告警降噪）：缺失配置路径的 WARN 只发一次——重复失败
+// （告警降噪）：缺失配置路径的 WARN 只发一次——重复失败
 // （每轮/心跳读取点）降 debug。判定按路径去重，不同路径互不影响。
 #[test]
 fn should_warn_missing_only_first_time_per_path() {
@@ -403,7 +403,7 @@ fn should_warn_missing_only_first_time_per_path() {
 }
 
 // ===========================================================================
-// set_model_name_in_config（2026-10-25 语音模型设置弹窗）：就地改写
+// set_model_name_in_config（语音模型设置弹窗）：就地改写
 // `[<category>]` 节 model_name 行——注释/缩进/行尾注释/CRLF 全保真；
 // 错误面（无节/无键/引号不配对）诚实报错。
 // ===========================================================================

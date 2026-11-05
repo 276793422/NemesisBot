@@ -12,7 +12,7 @@ use crate::signing::ConnectorTrust;
 pub const CONNECTORS_DIR: &str = "connectors";
 pub const MANIFEST_FILE: &str = "connector.toml";
 
-/// 清单体积分上限（边界补强 2026-10-20）：`scan_connectors` 是热路径
+/// 清单体积分上限（边界补强）：`scan_connectors` 是热路径
 /// （list / find / invoke / undo 每次调用都全量重扫），读文件前先查体积
 /// ——超限条目按损坏诚实入列，不读不解析。真实清单是 KB 级（几十个 op
 /// 到顶几 KB），256KB = 5~10× 余量；注册表目录在 workspace 内，agent 可
@@ -31,7 +31,7 @@ pub struct LoadedConnector {
     pub dir: PathBuf,
     pub connector: Option<ValidatedConnector>,
     pub error: Option<String>,
-    /// 签名徽标（D6.1）：verified / community / unsigned。验签失败的条目
+    /// 签名徽标（.1）：verified / community / unsigned。验签失败的条目
     /// 走 `error` 拒收路径，不落条目。
     pub trust: ConnectorTrust,
 }
@@ -133,7 +133,7 @@ pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
         match std::fs::read_to_string(&manifest_path) {
             Ok(text) => match parse_connector_manifest(&text) {
                 Ok(c) => match assess_dir_trust(&path, workspace, &text) {
-                    // D6.1：带签名且验签失败（篡改/调换/吊销）→ 拒收，
+                    // .1：带签名且验签失败（篡改/调换/吊销）→ 拒收，
                     // corrupt 形态诚实入列（不静默跳过也不过带）。
                     Err(err) => out.push(LoadedConnector {
                         dir: path,
@@ -142,7 +142,7 @@ pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
                         trust: ConnectorTrust::Unsigned,
                     }),
                     Ok(trust) => {
-                        // A3-a：启停真相单点合并（sidecar 覆盖 > 清单缺省）
+                        // a：启停真相单点合并（sidecar 覆盖 > 清单缺省）
                         // ——list / find / invoke 闸 / 独占隐藏表全部经此处消费。
                         let mut c = c;
                         let side = crate::state::load_tool_state(workspace, &c.id);
@@ -175,13 +175,13 @@ pub fn scan_connectors(workspace: &Path) -> Vec<LoadedConnector> {
 
 /// 按 id 查找单个 connector（区分 不存在 / 损坏 / 停用 三态）。
 ///
-/// 双轨解析（边界补强 2026-10-20）：先直达 `connectors/<id>/`（目录名
+/// 双轨解析（边界补强）：先直达 `connectors/<id>/`（目录名
 /// 命中，快路径）；未命中再扫描注册表按**清单 id** 匹配（存量手放目录
 /// dir≠id 的兜底——与 CLI enable/disable 的 id-or-dir 双臂同语义；dir
 /// 名升序确定性 first-match，损坏条目跳过）。新走 create 路径的条目
 /// dir==id 恒成立，直达即中。
 ///
-/// 成功时同时返回信任徽标（M1 消费面收口 2026-10-19：执行面
+/// 成功时同时返回信任徽标（消费面收口：执行面
 /// require_signed 闸与审批卡警示都从这里取 trust，不再丢给调用方）。
 pub fn find_connector(
     workspace: &Path,
@@ -230,7 +230,7 @@ pub fn find_connector(
         id: id.to_string(),
         error,
     })?;
-    // D6.1：带签名且验签失败（篡改/调换/吊销）→ 执行面拒用——即使清单
+    // .1：带签名且验签失败（篡改/调换/吊销）→ 执行面拒用——即使清单
     // parse 仍然合法（改动后的清单可能语义完好，但签名不再对得上）。
     // 单读：验签对象就是上面 parse 用的 text。
     let trust = assess_dir_trust(&dir, workspace, &text).map_err(|error| {
@@ -239,7 +239,7 @@ pub fn find_connector(
             error,
         }
     })?;
-    // A3-a：启停真相单点合并（sidecar 覆盖 > 清单缺省），与 scan_connectors 同源。
+    // a：启停真相单点合并（sidecar 覆盖 > 清单缺省），与 scan_connectors 同源。
     let side = crate::state::load_tool_state(workspace, &c.id);
     let c = ValidatedConnector {
         enabled: crate::state::effective_enabled(&side, c.enabled),
@@ -257,21 +257,21 @@ pub fn find_op<'a>(c: &'a ValidatedConnector, op_id: &str) -> Option<&'a Validat
 }
 
 // ---------------------------------------------------------------------------
-// 管理面（Dashboard connectors.create / set_enabled / remove，2026-10-19）
+// 管理面（Dashboard connectors.create / set_enabled / remove）
 // ---------------------------------------------------------------------------
 
 /// 新建 connector（先校验后落盘）。
 ///
 /// - 目录名与 connector id 同字符集（`[a-z0-9_-]{1,64}`）——路径安全单点，
 ///   `..` / 绝对路径 / 路径分隔符天然被拒；
-/// - **目录名必须等于清单 id**（边界补强 2026-10-20）：目录即注册表，
+/// - **目录名必须等于清单 id**（边界补强）：目录即注册表，
 ///   `find_connector` 直达 `connectors/<id>/` 与 sidecar 按 id 键控都以
 ///   dir==id 为前提——放行 dir≠id 会造出「可列出、不可调用」的死链；
 /// - 清单经 [`parse_connector_manifest`] 全量校验，非法不写半截；
 /// - 拒重复：目录已存在、manifest id 与在册条目撞车（id 全局唯一，
-///   三方指南 §3.1）都拒绝；
+///   三方指南）都拒绝；
 /// - 默认启用与否由清单自身的 `enabled` 键决定（缺省 true）；示例模板
-///   （examples/connectors/）刻意默认停用是安全姿态，不在此处覆盖。
+///   （examples/connectors）刻意默认停用是安全姿态，不在此处覆盖。
 pub fn create_connector(
     workspace: &Path,
     dir_name: &str,
@@ -309,7 +309,7 @@ pub fn create_connector(
     Ok(parsed)
 }
 
-/// 翻 per-connector 启停位（A3-a，治理补全 P2）：**恒写 sidecar**
+/// 翻 per-connector 启停位（a，治理补全）：**恒写 sidecar**
 /// （`config/connector_state/<id>.json` 的 `enabled` 键），清单字节不动
 /// ——带分离签名的条目从此可正常启停（旧实现翻 `[connector] enabled` 位
 /// 会破坏验签，只能诚实拒绝）。
@@ -350,7 +350,7 @@ pub fn remove_connector(workspace: &Path, dir_name: &str) -> Result<(), String> 
         .map_err(|e| format!("删除目录 {} 失败: {e}", entry.dir.display()))
 }
 
-/// 执行前 args 校验（R4）：按 op 声明的 `args_schema` 检查
+/// 执行前 args 校验：按 op 声明的 `args_schema` 检查
 /// required / type / enum / minimum / maximum。schema 缺省（None）= 不设限；
 /// 多余字段忽略（JSON Schema 缺省语义，对齐 agent 侧 args_validator 惯例）。
 /// 返回 Err = 人读拒绝原因（回执/回灌用），**必须在出网（本地 dispatch /
@@ -461,7 +461,7 @@ fn enum_member_eq(a: &serde_json::Value, b: &serde_json::Value) -> bool {
     a == b
 }
 
-/// schema 驱动的 wire 规整（2026-11-02 外循环域剥离批 C）：字符串传输形态
+/// schema 驱动的 wire 规整（外循环域剥离批 C）：字符串传输形态
 /// → 按 op args_schema 声明类型规整成 typed JSON。消费方（flow 引擎回写/
 /// publish 组包）全用 `BTreeMap<String,String>` 声明 + token 渲染，产出的
 /// args 值恒为字符串——类型事实只在 schema（`index` integer 等），不在
@@ -531,7 +531,7 @@ fn type_name_of(value: &serde_json::Value) -> &'static str {
 #[derive(Debug, Clone)]
 pub struct ConnectorSearchHit {
     pub connector: ValidatedConnector,
-    /// 签名徽标（M1 消费面收口：connector_find 随命中透出，模型可感知，
+    /// 签名徽标（消费面收口：connector_find 随命中透出，模型可感知，
     /// 自主优先高信任源——弱信号，不门控）。
     pub trust: ConnectorTrust,
     /// op 级命中的 op id；connector 级命中（名称/描述）= 全部 op id。
@@ -599,17 +599,17 @@ pub fn search_connectors(workspace: &Path, query: &str) -> Vec<ConnectorSearchHi
 }
 
 // ---------------------------------------------------------------------------
-// B2（2026-10-19 独占接管）：独占隐藏表 + 镜像 op 枚举（共享纯函数）
+// （独占接管）：独占隐藏表 + 镜像 op 枚举（共享纯函数）
 // ---------------------------------------------------------------------------
 
-/// B2：独占 server 名 → 工具名前缀（`mcp_<sanitize(server)>_`）。sanitize
-/// 单一真相源 = `nemesis_mcp::adapter::sanitize_name`（与 MCP 挂载面、
+/// 独占 server 名 → 工具名前缀（`mcp_<sanitize(server)>_`）。sanitize
+/// 单一权威 = `nemesis_mcp::adapter:sanitize_name`（与 MCP 挂载面、
 /// nemesis-web 在位探测同源）。pub = Dashboard 列表的镜像行枚举同源复用。
 pub fn exclusive_prefix(server: &str) -> String {
     format!("mcp_{}_{}", nemesis_mcp::adapter::sanitize_name(server), "")
 }
 
-/// B2：独占隐藏名清单——**供给器闭包与 Dashboard 列表共用的单一真相**。
+/// 独占隐藏名清单——**供给器闭包与 Dashboard 列表共用的单一真相**。
 ///
 /// 语义：每个「启用且声明了 `exclusive_mcp`」的 connector，其独占 server
 /// 前缀（`mcp_<sanitize(server)>_`）命中的当下注册工具，除 sidecar
@@ -647,7 +647,7 @@ pub fn exclusive_hidden_tools(workspace: &Path, mcp_tool_names: &[String]) -> Ve
     hidden
 }
 
-/// B2：单独占 connector 的镜像 op 清单——**connector_find / Dashboard 列表
+/// 单独占 connector 的镜像 op 清单——**connector_find / Dashboard 列表
 /// 共用**。独占 server 前缀命中的当下注册工具 − sidecar `blocked`（封禁
 /// = 镜像不提供）− sidecar `exempt`（豁免 = 回原生直调，不经镜像）−
 /// 显式 `[[op]]` 已覆盖的工具（显式档位优先于镜像，避免双路由）。
@@ -695,7 +695,7 @@ pub fn exclusive_mirror_ops(
     out
 }
 
-/// B3（治理补全 2026-10-19）：镜像基线四档——按 server 自述 annotations
+/// （治理补全）：镜像基线四档——按 server 自述 annotations
 /// hints 定接管基线。hint 是**声明不是承诺**（server 说了不算数，但它比
 /// 「清单层不可知」的 v1 一刀切精确）；显式 `[[op]]` 恒优先于镜像（作者
 /// 对高危工具自定义审批/预算面的入口不变）。

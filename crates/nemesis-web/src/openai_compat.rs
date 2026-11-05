@@ -155,7 +155,7 @@ impl OpenAiMessage {
     }
 }
 
-/// OpenAI wire 多模态 content 归一（BUG-b ，纯函数供测试）：
+/// OpenAI wire 多模态 content 归一（BUG-b，纯函数供测试）：
 /// OpenAI 形态 `{"type":"image_url","image_url":{"url":...}}` 与内部
 /// [`ContentPart`] serde tag（`type:"image"`）不同，直接 `from_value` 会
 /// 整体失败 → 整条消息被清空。本函数把 string / text part / image_url
@@ -960,7 +960,7 @@ async fn bare_forward_stream(
                     Some(Ok(c)) => c,
                     Some(Err(e)) => {
                         // 中途断流：带内注记 + 合成 stop（worker 侧 把
-                        // 无终态断流当完整 stop——静默截断不可见）。
+                        // 无终态断流当完整 stop——静默截断不可）。
                         let err_msg = e.to_string();
                         record_proxy_usage(
                             ds_block.as_deref(),

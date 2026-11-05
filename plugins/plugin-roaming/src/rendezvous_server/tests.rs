@@ -4,7 +4,7 @@
 //! 双客户端经名册互见后 iroh ping 通——自动发现全链）。
 //!
 //! 类型分工：单元测走插件内 [`crate::types::RendezvousMember`]；HTTP e2e 的
-//! 客户端循环走**插件** [`crate::registry_client::sync_once`]（M2 拍板 7：
+//! 客户端循环走**插件** [`crate::registry_client::sync_once`]（M2 决策 7：
 //! sync_once 搬插件，宿主副本已删——插件客户端打插件服务端）；wire 同构
 //! 证明保留在 raw HTTP 负例（`serde_json::json!` 手工同字段集——字段对齐
 //! 纪律见宿主 rendezvous.rs `RendezvousMember`，M3 删 dev-dep 后注释级

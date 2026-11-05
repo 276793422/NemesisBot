@@ -45,7 +45,7 @@ pub struct ProxyKeysFile {
     pub keys: Vec<ProxyKeyEntry>,
 }
 
-/// 配置文件路径：`<config_dir>/config.proxy_keys.json`（单一真相源）。
+/// 配置文件路径：`<config_dir>/config.proxy_keys.json`。
 pub fn proxy_keys_config_path(config_dir: &Path) -> PathBuf {
     config_dir.join("config.proxy_keys.json")
 }

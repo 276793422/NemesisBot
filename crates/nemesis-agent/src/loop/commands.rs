@@ -58,7 +58,7 @@ impl AgentLoop {
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
-        // ：user 行落盘职责上移（原在 run_agent_loop_internal
+        // user 行落盘职责上移（原在 run_agent_loop_internal
         // 开头）——system 路径内容 / 时点 / checkpoint 缺省保持原样，仅位置
         // 随职责移动到调用方。
         let sys_user_row = format!("[System: {}] {}", msg.sender_id, content);
@@ -115,7 +115,7 @@ impl AgentLoop {
         &self,
         msg: &nemesis_types::channel::InboundMessage,
     ) {
-        // 解析/组装走 crate:history 共享件（BUG 入站过滤链：
+        // 解析/组装走 crate::history 共享件（BUG 入站过滤链：
         // web 咽喉点 HistoryFilter 与本路径共用同一组装逻辑，防漂移）。
         let req = match crate::history::HistoryRequest::parse(&msg.content) {
             Ok(r) => r,
@@ -208,11 +208,11 @@ impl AgentLoop {
         // HD：session_id 回显（前端会话归属校验）；None = 解析
         // 失败路径（前端围栏按无归属放行，不因错误响应丢帧）。
         session_id: Option<&str>,
-        // ：历史读取时刻的环尾 seq（0 = 未注入回调/环空，
+        // 历史读取时刻的环尾 seq（0 = 未注入回调/环空，
         // 序列化时省略——前端按无 last_seq 走同文兜底）。
         last_seq: u64,
     ) {
-        // 组装唯一真相源 crate:history:history_response_json（HD 回显 /
+        // 组装唯一依据 crate::history:history_response_json（HD 回显 /
         // last_seq 省略规则只写一处）；本函数只保留 transport。
         let content = match crate::history::history_response_json(
             request_id,
@@ -280,7 +280,7 @@ impl AgentLoop {
     // -----------------------------------------------------------------------
 
     /// （聊天切会话竞态）：注入环尾 seq 查询回调
-    /// （nemesis-web `chat_event_log:latest_seq`，gateway 装配期调用）。
+    /// （nemesis-web `chat_event_log::latest_seq`，gateway 装配期调用）。
     /// `handle_history_request` 采样进历史响应 `last_seq`，前端据此剔除
     /// 「先于历史快照渲染的 assistant 实时帧」。未注入（standalone）→
     /// 响应不带 last_seq，前端走尾部同文兜底。
@@ -301,8 +301,8 @@ impl AgentLoop {
     ///    同级信任，**不**过 9 层安全管线（管线管的是 LLM 工具调用）；且只在
     ///    命令模板路径生效——普通消息不做注入（不放大攻击面）。
     /// 3. **内置深度模板**：命令表未命中时查产品内置模板库（评审/排障/
-    ///    修复纪律，`crate:prompt:slash`）→ 整段展开改写。用户配置恒可
-    ///    覆盖内置默认（不在 [`Self:BUILTIN_SLASH_COMMANDS`] 内置短路名单，
+    ///    修复纪律，`crate::prompt:slash`）→ 整段展开改写。用户配置恒可
+    ///    覆盖内置默认（不在 [`Self::BUILTIN_SLASH_COMMANDS`] 内置短路名单，
     ///    自定义同名命令优先）；内置路径**不做** shell 注入展开（模板是
     ///    编译期产品文本，`$ARGUMENTS` 纯文本替换，不放大攻击面）。
     /// 4. **技能回落**：`/name` 均未命中时查已装 skills（workspace →
@@ -386,7 +386,7 @@ impl AgentLoop {
         true
     }
 
-    /// 技能回落（只在命令表未命中时被 [`Self:rewrite_custom_command`]
+    /// 技能回落（只在命令表未命中时被 [`Self::rewrite_custom_command`]
     /// 调用）。命中已装技能 → 改写为技能驱动提示词；否则不动。
     fn rewrite_skill_fallback(
         &self,

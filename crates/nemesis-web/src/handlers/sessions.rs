@@ -77,7 +77,7 @@ impl ModuleHandler for SessionsHandler {
                 // `agent:main:session:{sid}` with `:`→`_`). Strip the prefix
                 // so the client gets the bare `sid` — exactly what it sends
                 // back as moduleData.session_id. (Legacy `agent_main_main`
-                // migration is .)
+                // migration is.)
                 let mut web: Vec<_> = all
                     .into_iter()
                     .filter_map(|mut s| {
@@ -90,7 +90,7 @@ impl ModuleHandler for SessionsHandler {
                 // 侧栏条目回填 tokens/cost（session_key
                 // 聚合；无记录时缺省，前端不展示）。
                 crate::handlers::logs::backfill_session_usage(ctx, &mut web);
-                // 会话级全部放行投影（长任务无人值守计划）：列表
+                // 会话级全部放行投影（长任务）：列表
                 // 一眼可见哪个会话在放行（读运行态内存——gateway 启动 hydrate
                 // 先于 WS 服务可用，无「sidecar 真但内存假」窗口）。
                 // security feature 关闭时状态模块不编译，投影恒 false（诚实
@@ -198,7 +198,7 @@ impl ModuleHandler for SessionsHandler {
                 // 视图回平、Branch Context 停止注入。消息内容零改动（fork
                 // 时整段 VERBATIM 拷贝，零共享状态）；子分支跟随独立（子树
                 // 挂在本会话下，本会话成根后树自动重组）。不可逆；boundary
-                // 审计行保留（jsonl 内部，UI 不可见）。无血缘 = 诚实拒绝。
+                // 审计行保留（jsonl 内部，UI 不可）。无血缘 = 诚实拒绝。
                 let session_id = data
                     .as_ref()
                     .and_then(|d| d.get("session_id"))
@@ -619,7 +619,7 @@ impl ModuleHandler for SessionsHandler {
             // `export`（= logs.session_detail 的行序，同一 jsonl）里
             // messages 数组下标。编排在 AgentLoop（checkpoint/undo 栈都住
             // 那边），这里只做参数解析与 agent_loop 装配检查。
-            // （能力扩展）：可选 `force`（bool，默认 false）——
+            // 可选 `force`（bool，默认 false）——
             // 冲突预检检出「文件在 checkpoint 后被外部修改」时默认零副作用
             // 拒绝（blocked:true + 结构化冲突清单），force=true 强过（回执
             // 与日志留痕）。
@@ -690,7 +690,7 @@ impl ModuleHandler for SessionsHandler {
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
                 // redo 的 undo 栈住 loop 实例，同 rewind 路由项目会话。
-                // （整改）：可选 force——冲突预检（回退窗口内
+                // 可选 force——冲突预检（回退窗口内
                 // 外部漂移）拒绝时前端确认后带 force 重试。
                 let force = data
                     .as_ref()
@@ -992,7 +992,7 @@ async fn delete_session_body(
     if let Some(bridge) = session_end_bridge {
         bridge.on_session_end(session_key, "deleted").await;
     }
-    // Cron cascade : a scheduled job pinned to this
+    // Cron cascade: a scheduled job pinned to this
     // session_key would otherwise FIRE on a deleted conversation
     // and resurrect it — an empty jsonl re-created + cron rows
     // appended, a session the user explicitly deleted coming
@@ -1172,7 +1172,7 @@ pub fn spawn_snooze_sweeper() {
 
 // （snooze 排队）：暂停期消息重放 hook ——
 
-/// 重放 hook 签名：按会话键取走全部 pending（[`nemesis_agent::chat_log::
+/// 重放 hook 签名：按会话键取走全部 pending（[`nemesis_agent::chat_log:
 /// take_session_pending`]）并经该会话归属 loop 的 reinject 通道逐条重放，
 /// 返回成功注入条数。loop 缺席（停机窗口/未装配）= 0——pending 落盘保
 /// 留，sweeper 下轮重试（自愈不丢失）。
@@ -1271,7 +1271,7 @@ pub(crate) fn wake_due_sessions() -> usize {
         let Some((_, note)) = nemesis_agent::chat_log::clear_session_snooze(&session_key) else {
             continue; // 已被并发方摘掉
         };
-        // 会话可能在暂停期间被删除——不复活（no jsonl = scan 不可见）。
+        // 会话可能在暂停期间被删除——不复活（no jsonl = scan 不可）。
         if !nemesis_agent::chat_log::chat_log_exists(&session_key) {
             continue;
         }

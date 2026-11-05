@@ -96,14 +96,14 @@ fn subscriber_count_and_sender_helpers() {
     let _ = bus.outbound_sender();
 }
 
-/// BUG-20261030-214：订阅 info 日志的 `total receivers` 必须是**订阅后**
+/// 订阅 info 日志的 `total receivers` 必须是**订阅后**
 /// 总数——旧实现打新增前计数，首个订阅者打 total=0，恒差 1，排障时订阅
 /// 拓扑口径失真。
 ///
 /// 断言方式是子进程自调（current_exe + --exact 重入自身，env 旗标走子分
 /// 支）：tracing 的 callsite interest 是**进程级**一次性缓存，同二进制的
 /// 其他并行测试会以无订阅者状态先注册这些 info! 调用点（interest=never
-/// 被永久缓存），线程局部捕获订阅者收不到事件（实录：并行下捕获缓冲区
+/// 被永久缓存），线程局部捕获订阅者收不到事件（并行下捕获缓冲区
 /// 恒空，rebuild_interest_cache 与并行首注册有清-抢竞态也救不了）；子进
 /// 程里本测试是唯一测试，调用点首注册必然命中捕获订阅者——cargo test
 /// 并行与 nextest 单测进程两种语义下都确定性成立。

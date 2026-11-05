@@ -266,7 +266,7 @@ fn set_main_switch(cfg_path: &Path, enabled: bool) -> Result<()> {
     }
 
     let updated = serde_json::to_string_pretty(&cfg).context("serializing config")?;
-    // REL-002：统一原子写入。
+    // 统一原子写入。
     nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), updated.as_bytes(), 0o600)
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("writing {}", cfg_path.display()))?;
@@ -279,7 +279,7 @@ fn detect_plugin_path() -> Option<String> {
     nemesis_utils::find_plugin_library("plugin_onnx").map(|p| p.to_string_lossy().to_string())
 }
 
-/// Check if any .onnx files exist under the given directory (recursively).
+/// Check if any.onnx files exist under the given directory (recursively).
 fn has_onnx_files(dir: &Path) -> bool {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
@@ -296,8 +296,8 @@ fn has_onnx_files(dir: &Path) -> bool {
     false
 }
 
-// (孤儿测试修复（S11c，测试基建）, quality-hardening goal 冲刺 S11) cmd_* 签名重构（去掉 Paths
-// 参数、改用 common::*_path）时 `#[cfg(test)] mod tests;` 声明被一并删除，
+// (孤儿测试修复（测试基建）, quality-hardening goal 冲刺) cmd_* 签名重构（去掉 Paths
+// 参数、改用 common:*_path）时 `#[cfg(test)] mod tests;` 声明被一并删除，
 // memory/tests.rs 沦为孤儿文件（LH=0 / 全文件 MISS）。本行恢复声明；测试
 // 侧同步改为新签名。
 #[cfg(test)]

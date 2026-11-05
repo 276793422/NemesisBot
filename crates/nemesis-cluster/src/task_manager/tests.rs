@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// G4: cleanup_completed 第三参 —— 默认 24h 安全网（测试大多数用默认值）。
+/// cleanup_completed 第三参 —— 默认 24h 安全网（测试大多数用默认值）。
 fn test_pending_timeout() -> parking_lot::RwLock<chrono::Duration> {
     parking_lot::RwLock::new(super::default_pending_timeout())
 }
@@ -342,7 +342,7 @@ fn test_cleanup_h4_timeout_records_route_failure() {
             captured_clone.lock().push((task_id.to_string(), ok));
         }));
 
-    // Running 卡死任务：恢复 sweep 只扫 Pending，H4 是唯一回收路径——
+    // Running 卡死任务：恢复 sweep 只扫 Pending， 是唯一回收路径——
     // 不补记账则「领了任务挂死」的坏节点信号永久丢失。
     let old_time = (chrono::Local::now() - chrono::Duration::hours(25)).to_rfc3339();
     store
@@ -948,7 +948,7 @@ fn test_cleanup_pending_timeout_fires_callback_v2() {
     assert_eq!(recent.status, TaskStatus::Pending);
 }
 
-/// T6① 回归（2026-10-17）：cleanup_completed 超时分支只在条件转移真正
+/// ① 回归：cleanup_completed 超时分支只在条件转移真正
 /// 落地（Ok(true)）时才记日志 + fire callback。竞态形态：任务被列出时
 /// 还是 Pending，但条件转移执行前并发 settle 已把它落成 Completed——
 /// update_result_if_status 返回 Ok(false)，callback 必须不 fire，
@@ -1200,7 +1200,7 @@ async fn test_w3b_start_cleanup_loop_processes_tasks_between_ticks() {
 }
 
 // ============================================================
-// S4 coverage: stop-arm of the background cleanup loop + direct
+// coverage: stop-arm of the background cleanup loop + direct
 // cleanup_completed call over the completed_at branch.
 // ============================================================
 
@@ -1263,7 +1263,7 @@ fn test_s4_cleanup_completed_deletes_old_completed_task() {
     assert!(store.get("s4-fresh-done").is_ok(), "fresh task kept");
 }
 
-// ---- 整改回归（2026-10-15 可靠性加固计划 §四）----------------------------
+// ---- 整改回归（可靠性加固计划 §四）----------------------------
 
 fn make_store_task(id: &str, status: TaskStatus, created_at: String) -> Task {
     Task {
@@ -1441,7 +1441,7 @@ fn test_cleanup_running_timeout() {
 }
 
 // -------------------------------------------------------------------------
-// BUG-20261030-209 回归锁：清理循环经 start() 起跑后必须删除超 2h 终态
+// 回归锁：清理循环经 start() 起跑后必须删除超 2h 终态
 // 任务；同时锁 start/stop 的 `&self` 签名——生产装配点持有
 // `Arc<TaskManager>`，旧 `&mut self` 签名让它无法从 Arc 调用，清理循环
 // 因此在生产从未接线（终态任务含完整 payload+result 在 tasks.db 无限累积）。

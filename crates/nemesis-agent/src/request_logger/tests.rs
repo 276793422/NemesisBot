@@ -906,7 +906,7 @@ fn log_methods_without_session_are_silent_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// : request/chat-log consistency anchor — 补测
+// request/chat-log consistency anchor — 补测
 // ---------------------------------------------------------------------------
 
 /// The invariant: every persisted chat-log role sequence must be a

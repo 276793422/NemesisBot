@@ -1,4 +1,4 @@
-//! W1b batch (Phase 3 batch 16): nemesis-heartbeat gap tests.
+//! batch (batch 16): nemesis-heartbeat gap tests.
 //!
 //! Targets the uncovered surface of `service.rs` found by auditing the
 //! existing 74-test suite:
@@ -8,7 +8,7 @@
 //! - non-UTF8 HEARTBEAT.md lossy read, template write failure no-panic
 //! - tick branches: is_error / is_async publish nothing but advance beat
 //!   tracking
-//! - BUG #17 regression: start() used to MOVE the handler into the spawned
+//! - regression: start() used to MOVE the handler into the spawned
 //!   task, so a stop()+start() cycle silently dropped it (ticks then logged
 //!   "handler not configured" forever)
 
@@ -315,7 +315,7 @@ async fn test_w1b_tick_error_and_async_results_publish_nothing_but_track_beats()
 
 #[tokio::test]
 async fn test_w1b_restart_after_stop_keeps_handler() {
-    // BUG #17 regression: start() moves the handler into the spawned task, so
+    // regression: start() moves the handler into the spawned task, so
     // a stop()+start() cycle used to leave the service running with NO handler
     // (every tick just logged "handler not configured"). The handler must
     // survive a restart.

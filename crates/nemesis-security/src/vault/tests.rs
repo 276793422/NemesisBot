@@ -260,7 +260,7 @@ fn dpapi_corrupted_blob_honest_error() {
 }
 
 // ---------------------------------------------------------------------------
-// P6-R2 agent 迁移：export_entries / import_entries。
+// agent 迁移：export_entries / import_entries。
 // ---------------------------------------------------------------------------
 
 /// 导出→导入 roundtrip：值还原、元数据保留、错误口令拒绝、
@@ -353,7 +353,7 @@ fn export_rejects_missing_alias_and_locked_store() {
 }
 
 // ---------------------------------------------------------------------------
-// 模型 key 迁移核心（2026-10-27 自 nemesisbot/commands/vault.rs 下沉）：
+// 模型 key 迁移核心（自 nemesisbot/commands/vault.rs 下沉）：
 // migrate_model_keys_to_vault + vault_alias_for 直测（别名裁决四臂随函数
 // 一起搬家——原 nemesisbot 侧 alias_arbiter 直测已由本节承接）。
 // ---------------------------------------------------------------------------
@@ -565,7 +565,7 @@ fn migrate_vault_residue_cleanup_skipped_when_vault_missing_alias() {
 
 #[test]
 fn migrate_vault_residue_cleanup_fires_when_vault_has_alias() {
-    // 既有语义回归锁（BUG-20261028-119 收敛路径）：vault 真在场时残留
+    // 既有语义回归锁（收敛路径）：vault 真在场时残留
     // 清扫照常 fires——守卫只拦损坏态，不拦正常收敛。
     let (dir, mut store) = migrate_store("cleanup-fires");
     store.set("legacy", "sk-legacy-real", "model", "").unwrap();
@@ -590,7 +590,7 @@ fn migrate_vault_residue_cleanup_fires_when_vault_has_alias() {
     cleanup(&dir);
 }
 
-/// L26（2026-11-02）oracle 契约 pin：`UnknownAlias` 的 Display 以
+/// oracle 契约 pin：`UnknownAlias` 的 Display 以
 /// 「别名不存在」开头——nemesis-agent 注入层凭这个字面量 marker 识别
 /// 「别名不存在」根因并改写为通用文案（不给存在性 oracle）。thiserror
 /// 文案漂移会静默拆闸，这里钉死。

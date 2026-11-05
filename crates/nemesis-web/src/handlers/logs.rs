@@ -211,7 +211,7 @@ fn request_log_dir(workspace: &str) -> PathBuf {
 }
 
 fn cluster_log_dir(workspace: &str) -> PathBuf {
-    // 路径唯一真相源 = nemesis-path（写方 observer 与本读方共用拼接点）。
+    // 路径唯一依据 = nemesis-path（写方 observer 与本读方共用拼接点）。
     nemesis_path::resolve_cluster_logs_dir_in_workspace(Path::new(workspace))
 }
 
@@ -529,7 +529,7 @@ fn read_meta_snooze(jsonl_path: &Path) -> Option<(String, Option<String>)> {
             Some((String::from(until), note))
         })
 }
-/// /：谱系扩展三字段一次 meta 读全取——`(fork_reason, last_rewind,
+/// ：谱系扩展三字段一次 meta 读全取——`(fork_reason, last_rewind,
 /// branch_summary)`。缺席 sidecar / 旧形态文件 = 三 `None`（调用方逐项
 /// 判空，条目零增量）。`last_rewind` 以原样 JSON 对象透传（结构真相源在
 /// agent 侧 `RewindLineage`，这里只搬运不复制 schema）。
@@ -718,7 +718,7 @@ pub(crate) fn list_subdirs_sorted_desc(dir: &Path) -> Vec<PathBuf> {
     subs
 }
 
-/// Sort files in a dir by their filename prefix numeric value (00, 01, ...).
+/// Sort files in a dir by their filename prefix numeric value (00, 01,...).
 fn sorted_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -1868,7 +1868,7 @@ fn spill_retention_days() -> u64 {
         .unwrap_or(7)
 }
 
-// Request / cluster log entry builders (parse raw.json + .md files)
+// Request / cluster log entry builders (parse raw.json +.md files)
 
 /// Build a top-level LlmRequestEntry summary from a request_logs/{ts}_{rand}/ dir.
 fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_json::Value {
@@ -2577,7 +2577,7 @@ mod history_tests;
 #[cfg(test)]
 mod browse_tests;
 
-// 批次 18：security/chain_list/chain_verify 命令 +
+// security/chain_list/chain_verify 命令 +
 // 管道格式解析 + meta sidecar + markdown helper 直测。链夹具用真实
 // AuditChain（integrity.rs 写入端）生成，保证格式断言钉的是真磁盘契约。
 #[cfg(all(test, feature = "security"))]

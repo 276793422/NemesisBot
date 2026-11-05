@@ -1,4 +1,4 @@
-//! 桥客户端状态槽（goal 批次三：通道页【中继通道】数据源）。
+//! 桥客户端状态槽（goal：通道页【中继通道】数据源）。
 //!
 //! 桥客户端跑在 nemesisbot（bin crate），而通道页的数据出口在 nemesis-web
 //! nemesisbot 依赖 nemesis-web，所以状态用「模块级全局槽」回传：客户端

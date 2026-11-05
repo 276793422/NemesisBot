@@ -19,24 +19,24 @@
 
 use anyhow::Result;
 
-// 仅测试消费的再导出（Phase A 先例）：姊妹 tests.rs 经 `use super::*` 取用，
-// B7 后 run() 骨架不再直接用 Arc。
+// 仅测试消费的再导出（Phase A 先例）：姊妹 tests.rs 经 `use super:*` 取用，
+// 后 run() 骨架不再直接用 Arc。
 #[cfg(test)]
 use std::sync::Arc;
 
-// K1（devtool-upgrade 阶段 4）：apply_security_layer_switches /
+// （devtool-upgrade）：apply_security_layer_switches /
 // load_security_rules / load_scanner_full_config 与 Step 9b 装配块整体迁往
-// `crate::security_setup`（单一真相源，headless `run` 共用）。
+// `crate::security_setup`（统一定义，headless `run` 共用）。
 
 // ---------------------------------------------------------------------------
-// Phase A 顶层装配件拆解（2026-09-23 gateway god-object 计划）：按职责迁入
+// Phase A 顶层装配件拆解（gateway god-object 计划）：按职责迁入
 // gateway/ 子模块；此处 cfg 门与原定义一致的 `pub(crate) use` 再导出保持
-// `gateway::` 消费面不变——run() 主体与姊妹测试的 `use super::*` 按原名
+// `gateway:` 消费面不变——run() 主体与姊妹测试的 `use super:*` 按原名
 // 解析，外部两处引用（main.rs run / agent_factory GatewayMemoryGate）不动。
 // 仅 use/可见性调整：跨模块消费项 pub(crate) 化（结构体字面量构造的字段
 // 随之），仅测试消费的再导出挂 cfg(test)。
 //
-// Phase B run() 相位化（计划 §4.2）：B1 起 Steps 1–9b 收敛为
+// Phase B run() 相位化（计划）： 起 Steps 1–9b 收敛为
 // GatewayCtx::assemble（gateway/ctx.rs），下游相位按 PR 逐个提取为独立 fn
 // + 产物 struct；run() 终态为编排骨架（<600 行），Step 编号注释保留。
 // ---------------------------------------------------------------------------
@@ -119,29 +119,29 @@ pub(crate) use self::web_init::{WebWiring, init_web};
 #[cfg(test)]
 mod tests;
 
-/// R9 补测批：gateway 活动场景组（live 双节点/心跳/审批/工作流，见模块头注释）。
+/// 补测批：gateway 活动场景组（live 双节点/心跳/审批/工作流，见模块头注释）。
 /// 整文件 Windows 形态（11/11 live 场景走 Windows CLI 进程边界），随测试一并门控。
 /// `pub(crate)` 仅为姊妹模块 scenario_tests 复用互斥闸与启动夹具。
 #[cfg(all(test, windows))]
 pub(crate) mod r9_live_tests;
 
-/// 场景级真机 E2E（2026-09-23 多会话并行清账批）：起真 gateway 子进程 +
+/// 场景级真机 E2E（多会话并行清账批）：起真 gateway 子进程 +
 /// 可控延时 mock LLM，经持久 WS 连接逐条复现四联 BUG 的原始场景并断言修复
 /// 生效（跨会话并行 / 同会话排队不丢 / Reject 忙弹回留痕 / 绑定注册表全
-/// 生命周期）。同样 Windows 进程边界形态，与 R9 组同门控。
+/// 生命周期）。同样 Windows 进程边界形态，与 组同门控。
 #[cfg(all(test, windows))]
 mod scenario_tests;
 
-/// 插件 UI 面板 + flow 剧本全链真机 E2E（2026-10-31 P4 样板工程批）：
+/// 插件 UI 面板 + flow 剧本全链真机 E2E（样板工程批）：
 /// 手搓 mock connector 服务 + CLI 装配漏斗 + ui.registry 锚点 + 六步剧本（双人工闸 +
 /// publish 诚实缺口）+ guest 血肉面，经 plugins.ui.invoke 全串透传宿主 flow
-/// 引擎逐段断言。零 LLM 链（模型指死端口），Windows 进程边界形态，与 R9 组
+/// 引擎逐段断言。零 LLM 链（模型指死端口），Windows 进程边界形态，与 组
 /// 同门控同互斥闸。
 #[cfg(all(test, windows))]
 mod flow_live_tests;
 
 // -------------------------------------------------------------------------
-// 旧模板值一次性迁移（2026-10-19 用户报告「长任务 20 轮突然暂停」）
+// 旧模板值一次性迁移（用户报告「长任务 20 轮突然暂停」）
 // -------------------------------------------------------------------------
 
 /// INIT 模板（继承自 OpenClaw 迁移）在 `agents.defaults` 写死
@@ -152,7 +152,7 @@ mod flow_live_tests;
 /// 现行模板意图）+ WARN 留痕；其他任何值（用户自选）不碰。
 ///
 /// 为什么改**文件**而非 typed 内存：AgentLoop 的轮顶预算每轮新鲜读 raw
-/// config.json（M6-1 热读，config_watch::current_max_tool_iterations），
+/// config.json（热读，config_watch::current_max_tool_iterations），
 /// 只改内存会立刻被热读盖回；落盘后热读/typed 双面一致（config.json 唯一
 /// 真相源纪律）。失败（只读盘等）= 按原值运行 + WARN，不阻塞启动。
 pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) {
@@ -173,7 +173,7 @@ pub(crate) fn migrate_legacy_max_tool_iterations(config_file: &std::path::Path) 
     v["agents"]["defaults"]["max_tool_iterations"] = serde_json::json!(0);
     let write = serde_json::to_string_pretty(&v)
         .map_err(|e| e.to_string())
-        // REL-002：主 config.json 改写走统一原子写入——迁移虽一次性，但截断
+        // 主 config.json 改写走统一原子写入——迁移虽一次性，但截断
         // 的主 config 是集群禁用级杀伤面（BUG-251 同源），不走裸 fs::write。
         .and_then(|s| {
             nemesis_utils::write_file_atomic(&config_file.to_string_lossy(), s.as_bytes(), 0o600)
@@ -203,13 +203,13 @@ pub async fn run(
     #[cfg(target_os = "macos")]
     let _tray_channel_guard = nemesis_desktop::main_thread_handoff::channel_guard();
 
-    // A1 运行时完整性清单：启动最早期的部署面校验（先于 selfupdate 恢复/
+    // 运行时完整性清单：启动最早期的部署面校验（先于 selfupdate 恢复/
     // 任何端口 bind）。打包部署残缺 = 响亮拒启；manifest 缺席（cargo 开发
     // 态）= warn 不阻塞；`--skip-runtime-check` 显式逃生门。语义详见
     // runtime_manifest 模块头。
     crate::runtime_manifest::check_startup(skip_runtime_check)?;
 
-    // L9 selfupdate：启动收口先于任何端口 bind——journal 未竟事务处置：
+    // selfupdate：启动收口先于任何端口 bind——journal 未竟事务处置：
     // restarting 相位 commit 命中 = 上次切换成功收口；miss / staging 相位 =
     // .old 归位回滚。**不带 selfupdate feature 的构建也执行**：journal 清理
     // 是纯 fs 语义（ungated），feature 裁剪版也要能擦净上个全量版本留下的
@@ -219,11 +219,11 @@ pub async fn run(
     {
         let home = crate::common::resolve_home(local);
         // 旧模板值一次性迁移（见 fn 文档）——必须先于 GatewayCtx::assemble
-        // 读配置：AgentLoop 的轮顶预算每轮新鲜读 raw config.json（M6-1），
+        // 读配置：AgentLoop 的轮顶预算每轮新鲜读 raw config.json，
         // 迁移落盘后热读与 typed 装配双面一致。
         migrate_legacy_max_tool_iterations(&crate::common::config_path(&home));
         let ws_dir = crate::common::workspace_path(&home);
-        // 子代理可见性（P1，2026-11-03）：注册表落盘路径早期注入（幂等；
+        // 子代理可见性：注册表落盘路径早期注入（幂等；
         // 必须先于 global() 首次物化——首个 spawn 闭包运行远晚于此）。
         nemesis_agent::subagent_registry::init(
             ws_dir
@@ -231,7 +231,7 @@ pub async fn run(
                 .join("subagent_tasks")
                 .join("tasks.json"),
         );
-        // 独立代理配置 env 段注入（2026-10-31 批B）已迁 `GatewayCtx::assemble`
+        // 独立代理配置 env 段注入（批B）已迁 `GatewayCtx::assemble`
         // Step 5a（ctx.rs）：必须晚于 logger 初始化（否则 tracing 事件蒸发）
         // 且早于一切 reqwest client 构造——两约束只在 assemble 内部同时成立。
         let recovery = nemesis_web::selfupdate::recover_on_boot(
@@ -252,32 +252,32 @@ pub async fn run(
         );
     }
 
-    // Phase B1（计划 §4.2）：Steps 1–9b（PB-0 bootstrap + PB-1 单例预装配）
+    // Phase （计划）：Steps 1–9b（PB-0 bootstrap + PB-1 单例预装配）
     // 收敛为 GatewayCtx::assemble（gateway/ctx.rs）。`--relay` / `--quic-relay`
     // 纯中继早退在 assemble 内部处理（None → 直接 Ok 返回；run_relay /
     // run_relay_server 语义不变）；channel_guard（上方）仍护住 run() 全部
-    // 早退路径（C10）。
+    // 早退路径。
     let Some(ctx) = GatewayCtx::assemble(local, relay, quic_relay, extra_args).await? else {
         return Ok(());
     };
-    // ctx 影子说明：B2–B7 各相位 fn 均自行从 ctx 克隆/借取所需字段（B1 建
-    // ctx 时的 16 无门影子已随相位迁移逐 PR 删除，B7 收尾后根部不再持有
+    // ctx 影子说明：– 各相位 fn 均自行从 ctx 克隆/借取所需字段（建
+    // ctx 时的 16 无门影子已随相位迁移逐 PR 删除， 收尾后根部不再持有
     // 任何 ctx 影子）；root 仅保留 wiring 产物局部名供下游调用传参。
 
-    // Phase B2（计划 §4.2）：PB-2 集群初始化（Step 9a）提取为 init_cluster
+    // Phase （计划）：PB-2 集群初始化（Step 9a）提取为 init_cluster
     //（gateway/cluster_init.rs）——参数表自 12 个上游变量缩到 ctx 单参；
     // 产物 ClusterWiring 只携带实测逃逸项（计划表列 cluster/task_list/
     // work_queue/persister 随 cluster_adapter_refs 四元组传递、node_id/
-    // node_name 消费不出块，见该模块头注记）。C4 discovery Handle 捕获、
-    // C2 E3 sweep 顺序、C9 占位→真身两段注册随块原样内聚。
+    // node_name 消费不出块，见该模块头注记）。 discovery Handle 捕获、
+    // sweep 顺序、 占位→真身两段注册随块原样内聚。
     let cluster_wiring = init_cluster(&ctx).await?;
-    // Phase B3（计划 §4.2）：PB-3 Web/Channel 装配（C1）提取为 init_web
+    // Phase （计划）：PB-3 Web/Channel 装配提取为 init_web
     //（gateway/web_init.rs）——依赖 ctx 三件（home/cfg/bus）+ cluster wiring
     // 二件（均在 cfg(cluster) 门内消费）。产物 WebWiring 六项供 PB-4–PB-7
-    // 消费；C7 mem::forget 挂账随块原样保留（§8）。
+    // 消费； mem::forget 挂账随块原样保留。
     let web_wiring = init_web(&ctx, &cluster_wiring).await?;
-    // wiring 影子重绑：web_server 移动推迟到 init_agent 之后（B4——其以
-    // &WebWiring 借读整体），其余 clone 保结构完整（B5 起不再借 web）。
+    // wiring 影子重绑：web_server 移动推迟到 init_agent 之后（其以
+    // &WebWiring 借读整体），其余 clone 保结构完整（起不再借 web）。
     // enabled_channels 不留影子：唯一消费者 PB-4 已迁入 init_agent（其内
     // 自行 clone），Step 21 另建同名局部（count_enabled_channels）。
     let web_bind_host = web_wiring.web_bind_host.clone();
@@ -287,30 +287,30 @@ pub async fn run(
 
     // wiring 影子重绑：bridge_cluster_slot 原局部名沿用（PB-7 桥身份快照
     // 消费）；其余五件（should_start/worker inbox/estop 停车场/selfcheck
-    // 表/refs 四元组）B5 起消费全在 init_post_agent 内，影子已 delete，
+    // 表/refs 四元组） 起消费全在 init_post_agent 内，影子已 delete，
     // 结构体按值传入。
     #[cfg(feature = "cluster")]
     let bridge_cluster_slot = cluster_wiring.bridge_cluster_slot.clone();
 
-    // Phase B4（计划 §4.2）：PB-4 Agent 构建（Step 9b/9d + LSP/事件通道/
+    // Phase （计划）：PB-4 Agent 构建（Step 9b/9d + LSP/事件通道/
     // 后台注册表 + SharedResources + AgentLoop + workflow 桥）提取为
     // init_agent（gateway/agent_build.rs）——全引用签名（&ctx/&web/&cluster：
-    // wiring 结构体须完整存活到 B5 按值消费），产物 AgentWiring 五项。
+    // wiring 结构体须完整存活到 按值消费），产物 AgentWiring 五项。
     let agent_wiring = init_agent(&ctx, &web_wiring, &cluster_wiring).await?;
-    // AgentWiring 影子重绑：Arc 家族 clone 保结构体完整（B5 按值传入，
+    // AgentWiring 影子重绑：Arc 家族 clone 保结构体完整（按值传入，
     // 部分移动后不可整体消费），克隆共享同一对象语义不变；security_plugin
     // 下游仅两处 cfg(security) 消费（审批装配 + scanner 停机），随门收放；
-    // agent_event_rx 影子 B5 删除（唯一消费 set_agent_event_rx 在
+    // agent_event_rx 影子 删除（唯一消费 set_agent_event_rx 在
     // init_post_agent 内）；initial_tool_count Copy 直读。
     let shared_resources = agent_wiring.shared_resources.clone();
     let agent_loop = agent_wiring.agent_loop.clone();
     let initial_tool_count = agent_wiring.initial_tool_count;
     #[cfg(feature = "security")]
     let security_plugin = agent_wiring.security_plugin.clone();
-    // W5-3：插件安装审批晚绑槽（run_runtime 审批块 bind 真身）。
+    // 插件安装审批晚绑槽（run_runtime 审批块 bind 真身）。
     #[cfg(feature = "plugins-wasm")]
     let plugin_gate = agent_wiring.plugin_gate.clone();
-    // 渠道下载的 SSRF 闸回填（P2；skins 与 wasm-devkit 下载共用
+    // 渠道下载的 SSRF 闸回填（skins 与 wasm-devkit 下载共用
     // handlers::release_fetch 单一管线）：init_web 早于本点，故走静态槽——
     // Guard Clone 共享 inner，闸配置热更新对下载路径同效。None（security
     // 关/ssrf 层关）= 下载直通闸。cfg 覆盖两个消费方任一在场的构建。
@@ -320,7 +320,7 @@ pub async fn run(
             .as_ref()
             .and_then(|p| p.ssrf_guard().cloned()),
     );
-    // workflow http 节点 SSRF 闸（BUG-20261102-324 同族接线）：url 支持
+    // workflow http 节点 SSRF 闸（同族接线）：url 支持
     // {{var}} 运行时注入 + 此前默认自动跟随重定向，威胁面与 web_fetch 同级。
     // Guard Clone 共享 inner，闸配置热更新对节点执行同效；None（workflow 开
     // + security 关 / ssrf 层关）= 无闸直通，重定向纪律仍生效。
@@ -334,7 +334,7 @@ pub async fn run(
     // 整体（board_event_hub），部分移动后不可再整体借用。
     let mut web_server = web_wiring.web_server;
 
-    // WS4（P13）：技能装前审批门注入。security 门内装配——无 security
+    // 技能装前审批门注入。security 门内装配——无 security
     // feature 的构建无审批面，AppState 槽保持 None（= AlwaysAllow 语义）。
     // `skills.install_approval`（默认 true）= false 时跳过注入（用户显式关
     // 卡）。真身 WebApprovalManager 尚未存在（run_runtime 审批块才建），这里
@@ -344,8 +344,8 @@ pub async fn run(
     let skills_install_gate = if ctx.cfg.skills.as_ref().is_none_or(|s| s.install_approval) {
         let gate = std::sync::Arc::new(crate::web_approval::LateWebSkillsGate::new(300));
         web_server.set_skills_install_gate(gate.clone());
-        // BUG-20261101-295：同一门填进 SharedResources 共享槽——agent 的
-        // `install_skill` 工具经此走 P13 审批（旧形态工具面绕过全漏斗，
+        // 同一门填进 SharedResources 共享槽——agent 的
+        // `install_skill` 工具经此走 审批（旧形态工具面绕过全漏斗，
         // 是 web/CLI 之外的唯一旁路）。槽 Arc 早于 loop 构建，晚填可见。
         *shared_resources.skills_install_gate_slot.write() = Some(gate.clone());
         Some(gate)
@@ -356,14 +356,14 @@ pub async fn run(
         None
     };
 
-    // Phase B5（计划 §4.2）：PB-5 Agent→Web 注入族（Swarm M3 主持人桥/能力
+    // Phase （计划）：PB-5 Agent→Web 注入族（Swarm 主持人桥/能力
     // 注入/ClusterServiceAdapter 构建/AgentLoopServiceAdapter/项目常驻 loop/
     // set_* 注入链/board 服务/cluster 服务）提取为 init_post_agent
     //（gateway/post_agent.rs）——ctx 引用 + &mut web_server + web_bind_host/
     // web_port 按值 + AgentWiring/ClusterWiring 按值消费（agent_event_rx
     // move、refs 四元组/worker inbox take 均原地耗尽）；产物 PostAgentWiring
     // 四项（agent_adapter/projects_manager 无门 + cluster_adapter/
-    // cluster_arc_ref @cluster）。B2 的 cluster_adapter None 前向声明随其
+    // cluster_arc_ref @cluster）。 的 cluster_adapter None 前向声明随其
     // 构建段迁入。
     let post_wiring = init_post_agent(
         &ctx,
@@ -376,7 +376,7 @@ pub async fn run(
     .await?;
     // PostAgentWiring 影子重绑：门随下游消费面（cluster 二件下游均在
     // cfg(cluster) 门内消费；cluster_adapter 根部无 take——Step 24 take 已
-    // 随 B7 迁入 run_runtime，按值移交 RuntimeHandoff）。
+    // 随 迁入 run_runtime，按值移交 RuntimeHandoff）。
     let agent_adapter = post_wiring.agent_adapter;
     let projects_manager = post_wiring.projects_manager;
     #[cfg(feature = "cluster")]
@@ -384,7 +384,7 @@ pub async fn run(
     #[cfg(feature = "cluster")]
     let cluster_arc_ref = post_wiring.cluster_arc_ref;
 
-    // Phase B6（计划 §4.2）：PB-6 服务族（Step 11–17：HealthServer 构建/
+    // Phase （计划）：PB-6 服务族（Step 11–17：HealthServer 构建/
     // HeartbeatService 装配/设备监控/ServiceManager+基础服务/board autopilot
     // 启动同步/cron 装配与调度器/Agent 启动信息/WebServer 启动+real_port
     // 等待+资产基址落槽与 30s 自愈/网关状态落盘/反向桥客户端 spawn）提取为
@@ -427,7 +427,7 @@ pub async fn run(
     let real_port = services_wiring.real_port;
     let internal_cmd_rx = services_wiring.internal_cmd_rx;
 
-    // Phase B7（计划 §4.2）：PB-8/PB-9 运行期与关停（Step 18–24：cron arm/
+    // Phase （计划）：PB-8/PB-9 运行期与关停（Step 18–24：cron arm/
     // bot 服务/展示 URL/横幅/审批接线/question broker/内部命令泵/sweeper/
     // Ctrl+C/托盘/wait_for_shutdown/统一善后 teardown）提取为 run_runtime
     //（gateway/runtime.rs）——终相无产物，运行期对象全部按值移入
@@ -435,18 +435,18 @@ pub async fn run(
     // web_display_host/real_port/svc_mgr/web_handle/internal_cmd_rx 无门）；
     // 门控三件经 RuntimeHandoff（字段双臂声明——AgentWiring.security_plugin
     // 同款，@not 臂空桩保全组合可构造）；ctx 侧五件克隆 + bridge_outbound_
-    // handle 引用（仅 Step 24 abort）。run() 自此为编排骨架（B1–B7 相位
+    // handle 引用（仅 Step 24 abort）。run() 自此为编排骨架（相位
     // 调用 + 影子重绑，Step 编号注释随各相位体保留）。
     #[cfg(feature = "security")]
     let security_slot = security_plugin;
     #[cfg(not(feature = "security"))]
     let security_slot = None;
-    // WS4（P13）：技能装前审批门槽移交（注入本体见上方 `set_skills_install_gate`）。
+    // 技能装前审批门槽移交（注入本体见上方 `set_skills_install_gate`）。
     #[cfg(feature = "security")]
     let skills_gate_slot = skills_install_gate;
     #[cfg(not(feature = "security"))]
     let skills_gate_slot = ();
-    // W5-3：插件安装审批门槽移交（gate 创建于 init_agent，installer 持有）。
+    // 插件安装审批门槽移交（gate 创建于 init_agent，installer 持有）。
     #[cfg(feature = "plugins-wasm")]
     let plugin_gate_slot = plugin_gate;
     #[cfg(not(feature = "plugins-wasm"))]

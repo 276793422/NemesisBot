@@ -1,4 +1,4 @@
-//! S7 冲刺覆盖测试：dashboard.rs 中 ws_client 存在时 startup() 注册的
+//! 冲刺覆盖测试：dashboard.rs 中 ws_client 存在时 startup() 注册的
 //! 4 个处理器（3 个通知 + 1 个 system.ping 请求）。
 //!
 //! 既有测试全部用 `None` 作为 ws_client，所以这些注册分支从未执行。

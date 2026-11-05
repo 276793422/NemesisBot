@@ -54,7 +54,7 @@ pub fn stop_loopback() {
     }
 }
 
-/// 线程退出只清自己的注册（BUG-20261029-180）：stop→start 快速重启时
+/// 线程退出只清自己的注册：stop→start 快速重启时
 /// slot 可能已换成新线程的旗标——旧线程无条件清 None 会把新注册抹掉
 /// （新线程从此不可停 + 下次 start 再 spawn = 线程泄漏 + far-end 双喂）。
 fn clear_loopback_slot_if_owner(stop: &Arc<AtomicBool>) {
@@ -113,7 +113,7 @@ fn run_loopback_inner(stop: &Arc<AtomicBool>) -> Result<(), String> {
         .start_stream()
         .map_err(|e| format!("start_stream: {}", e))?;
 
-    // loopback 跑在 FAR_RATE（我们请求的）。BUG-20261029-181：初始化成功即
+    // loopback 跑在 FAR_RATE（我们请求的）。：初始化成功即
     // 登记实际参考信号采样率——此前 FAR_END_RATE 全仓无 store 点（死接线），
     // far_resampler 只能吃默认值，loopback 采样率一改就静默失配。
     crate::audio::set_far_end_sample_rate(FAR_RATE as u32);

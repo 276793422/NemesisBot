@@ -21,7 +21,7 @@
 //! 转发，2026-10-31 面板扩展批）。
 //!
 //! 安全面：install 是九步装配漏斗唯一运行期入口（验签→扫描→审批→编译
-//! →lockfile→落位全走 nemesis-plugins-wasm::install 单一真相源，本
+//! →lockfile→落位全走 nemesis-plugins-wasm::install 统一定义，本
 //! 模块零旁路）；config.get 按 manifest x-secret 脱敏（值不回传 Dashboard）。
 //!
 //! 加载纪律（2026-10-22）：安装 ≠ 加载——`list` 的 `enabled` =
@@ -119,7 +119,7 @@ fn require_installer() -> Result<Arc<PluginInstaller>, String> {
 
 /// 运行期总闸裁决（可直注 workspace 测试，不经全局 installer 槽）：子系统
 /// 翻关 = Some(诚实错误)，开 = None。真相源与热语义见
-/// `nemesis_config::plugin_wasm::runtime_enabled`。
+/// `nemesis_config::plugin_wasm:runtime_enabled`。
 fn runtime_gate_error(workspace_root: &std::path::Path) -> Option<String> {
     if nemesis_config::plugin_wasm::runtime_enabled(workspace_root) {
         return None;
@@ -301,7 +301,7 @@ fn list_impl(installer: &PluginInstaller) -> Result<serde_json::Value, String> {
     }
 
     // ② lockfile 记录但载荷缺席（盘上被手工删了；enabled 位照读——
-    // 用户开关还开着时 enable 路径的诚实报错靠这行可见）。
+    // 用户开关还开着时 enable 路径的诚实报错靠这行可）。
     if let Some(lf) = lockfile.as_ref() {
         for (slug, e) in &lf.plugins {
             if !seen.contains(slug) {
@@ -393,7 +393,7 @@ pub async fn cmd_install(data: Option<serde_json::Value>) -> Result<serde_json::
 /// 拒绝：空串 / 相对路径（install 漏斗 canonicalize 会把它钉到 gateway
 /// 进程 cwd，与操作员直觉不符）/ UNC 前缀（`\\`、`//` 开头——网络盘/
 /// 设备路径面，扫描与落位语义未定义）。绝对路径判定交给
-/// [`std::path::Path::is_absolute`]（Windows 盘符形态覆盖）。
+/// [`std::path:Path::is_absolute`]（Windows 盘符形态覆盖）。
 fn validate_source_dir(raw: &str) -> Result<(), String> {
     if raw.trim().is_empty() {
         return Err("source_dir 不能为空".to_string());

@@ -2047,7 +2047,7 @@ fn test_deleted_session_does_not_resurrect_via_rebuild() {
 // branch coverage (capture, save/load edge arms, migrate, cleanup)
 // ---------------------------------------------------------------------------
 
-/// The ONLY `CaptureSink:init` caller in this test binary: after it runs the
+/// The ONLY `CaptureSink::init` caller in this test binary: after it runs the
 /// capture branches in set_history/add_message are live, and a shrinking
 /// set_history must auto-flush the write timeline to disk.
 #[test]
@@ -2115,7 +2115,7 @@ fn test_sanitize_session_id_charset() {
 
 /// save(): rename failure (destination path is a DIRECTORY on Windows) ->
 /// Err（底层 rename 失败，文案经 write_file_atomic 冒泡）and the temp file is
-/// cleaned up. 后落盘走 nemesis_utils:file:write_file_atomic，
+/// cleaned up. 后落盘走 nemesis_utils::file:write_file_atomic，
 /// 错误形状为 `save session <path>: atomic write <path>: rename:...`；断言
 /// `contains("rename")`（新旧实现都含，兼容两形态）。残留检查不依赖 tmp 命名：
 /// 失败后目录里除目标 DIRECTORY 外应无任何常规文件（helper 内部自清理）。
@@ -2381,7 +2381,7 @@ fn test_load_from_disk_in_memory_store_is_noop() {
 }
 
 // F-E（四轮盲审）：chat_log 行的 "images" 数组必须还原进
-// image_refs——硬编码 Vec:new() 会让 self-heal 重建 / fork 的图片引用
+// image_refs——硬编码 Vec::new() 会让 self-heal 重建 / fork 的图片引用
 // 凭空消失（两套存储分叉）。
 #[test]
 fn fe_projected_rows_restore_image_refs() {

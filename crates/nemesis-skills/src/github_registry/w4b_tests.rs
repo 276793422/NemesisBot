@@ -1,4 +1,4 @@
-//! W4b 补测（批次 14）：GitHubRegistry 下载安装树路径与截断告警。
+//! 补测：GitHubRegistry 下载安装树路径与截断告警。
 //!
 //! 覆盖缺口（github_extra_tests 已盖 search/meta/browse 的 HTTP 面，
 //! 但 download_and_install 的树下载成功路径未盖）：

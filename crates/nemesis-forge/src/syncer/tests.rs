@@ -3,7 +3,7 @@ use crate::bridge::NoOpBridge;
 
 #[test]
 fn test_fm8_sanitize_report_never_leaks_secrets() {
-    // F-M8: sanitized report must never leak secrets. The sanitizer matches
+    // F-: sanitized report must never leak secrets. The sanitizer matches
     // `token: <20+ chars>` inside a value and replaces with [REDACTED]. If
     // replacement corrupts JSON → fail-closed returns {} (not the raw). Either
     // way, the secret must not appear in the result.
@@ -495,7 +495,7 @@ fn test_get_reflections_list_payload_error_when_reflections_is_file() {
     );
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[tokio::test]
 async fn test_s8_share_reflection_evaluates_tracing_field_expressions() {
@@ -510,7 +510,7 @@ async fn test_s8_share_reflection_evaluates_tracing_field_expressions() {
     assert_eq!(count, 0); // NoOp bridge shares with nobody
 }
 
-// ---- S8 Wave 2: receive_reflection / read_reflection_content branches ----
+// ---- Wave 2: receive_reflection / read_reflection_content branches ----
 
 /// receive_reflection without a "from" node: sanitize_node_id maps the empty
 /// id to "unknown", so the file is prefixed "unknown_" and the header renders

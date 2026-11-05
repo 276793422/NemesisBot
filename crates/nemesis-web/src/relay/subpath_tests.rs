@@ -1,9 +1,9 @@
-//! 桥子路径支持测试（goal：反向桥与多设备汇聚，一期批次二）。
+//! 桥子路径支持测试（goal：反向桥与多设备汇聚，一期）。
 //!
 //! 覆盖 goal 测试面锚点：「子路径：HTML 资源引用/WS/路由在 `/d/<node_id>/`
 //! 前缀下正确落到目标设备（base 注入生效）；本地直连（无前缀）零回归」。
 //!
-//! 测试形态：`WebServer::build_router` + `tower::ServiceExt::oneshot` 直发
+//! 测试形态：`WebServer::build_router` + `tower::ServiceExt:oneshot` 直发
 //! 请求（不 bind 端口），断言路由命中 / 前缀剥离 / base 注入三类语义。
 
 use super::subpath::{BridgeSubpathService, inject_base_tag, strip_self_prefix};
@@ -105,7 +105,7 @@ async fn direct_html_gets_root_base() {
 /// 直连 `/chat/`（带尾斜杠的子路径入口）：相对构建产物 `./assets/...`
 /// 按 base 解析——不注入 base 会解析成 `/chat/assets`（404），注入
 /// `<base href="/">` 后解析回 `/assets`。这是「直连也统一注入」的
-/// 正确性依据（goal 批次二）。
+/// 正确性依据（goal）。
 #[tokio::test]
 async fn direct_subpath_entry_html_gets_root_base() {
     let router = build_router_with_identity(Some("node-a"));

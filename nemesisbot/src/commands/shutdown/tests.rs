@@ -138,7 +138,7 @@ fn test_port_extraction_default() {
 
 #[test]
 fn test_shutdown_url_construction() {
-    // (BUG #31, quality-hardening goal 冲刺 S11e) Method 3 改打既有内部控制
+    // (, quality-hardening goal 冲刺) Method 3 改打既有内部控制
     // 端点 /api/internal（旧 /api/shutdown 从未注册，是死臂）。
     let port: u64 = 49000;
     let url = format!("http://127.0.0.1:{}/api/internal", port);
@@ -189,11 +189,11 @@ fn test_shutdown_http_timeout() {
 }
 
 // ===========================================================================
-// run() 全臂（S11c 建立基础；S11e 随 BUG #31 重写更新到 /api/internal 端点）
+// run() 全臂（建立基础； 随 重写更新到 /api/internal 端点）
 // —— 既有 10 个测试只钉常量/解析片段，run() 本体从没跑过。run() 是同步 fn，
 // 全部走 env home 隔离 + 本地 mock（127.0.0.1:0）。
 //
-// S11e 变更：
+// 变更：
 // - Method 3 打 POST /api/internal {"cmd":"shutdown"}（原 /api/shutdown 死臂）
 //   并断言 body / X-Auth-Token header；
 // - 补 token 缺失分支（config 无 auth_token → 不发 header）；
@@ -201,7 +201,7 @@ fn test_shutdown_http_timeout() {
 // ===========================================================================
 
 // 整 mod Windows 形态（11/11 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod run_arm {
     use super::*;
 
@@ -319,7 +319,7 @@ mod run_arm {
             .port()
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_without_pid_and_config_writes_signal_and_reports_unreachable() {
         with_env_home(|home| {
@@ -329,7 +329,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_with_unparsable_pid_falls_through_to_signal_file() {
         with_env_home(|home| {
@@ -342,7 +342,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_with_out_of_range_pid_is_safe_noop() {
         with_env_home(|home| {
@@ -356,7 +356,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_with_live_pid_uses_taskkill_graceful_path() {
         // 真 spawn 一个本机 sleep 进程（继承当前控制台，不开新窗口），
@@ -387,7 +387,7 @@ mod run_arm {
             .output();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_http_shutdown_success_posts_internal_cmd_and_removes_signal_file() {
         with_env_home(|home| {
@@ -428,7 +428,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_http_shutdown_missing_token_omits_header_still_succeeds() {
         // token 缺失分支：config 未配 auth_token → 不发 X-Auth-Token 头
@@ -459,7 +459,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_http_shutdown_non_2xx_keeps_signal_file() {
         with_env_home(|home| {
@@ -483,7 +483,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_http_shutdown_unreachable_port_reports_not_reachable() {
         with_env_home(|home| {
@@ -499,10 +499,10 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_http_401_reports_auth_mismatch_and_keeps_signal_file() {
-        // R7（coverage-95 goal）Ok(401) 臂：token 配置不一致时如实提示，
+        // （coverage-95 goal）Ok(401) 臂：token 配置不一致时如实提示，
         // 且不走清理路径（signal 文件保留，供人工排查）。
         with_env_home(|home| {
             std::fs::create_dir_all(&home).unwrap();
@@ -527,7 +527,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_corrupt_config_json_skips_http_block_and_keeps_signal() {
         // config.json 存在但 JSON 损坏：serde 解析失败 → 跳过整个 HTTP 块
@@ -540,7 +540,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_pid_unreadable_directory_falls_through_to_signal_file() {
         // gateway.pid 是【目录】而非文件：exists()==true 但 read_to_string
@@ -556,15 +556,15 @@ mod run_arm {
 }
 
 // ===========================================================================
-// panic 探针（BUG #27 同类横向 / BUG #31, quality-hardening goal 冲刺 S11e）
+// panic 探针（同类横向 /, quality-hardening goal 冲刺）
 //
 // 生产修复模式（本批首次引入）：「独立 OS 线程 + 私有 multi-thread runtime +
 // 异步 client」——新线程没有 ambient runtime context，runtime 创建/销毁合法，
 // 且全程不存在嵌套 runtime 的 blocking client。
 // 每个【首次使用】的模式必须有 catch_unwind 探针实证（#27 的探针拓扑纪律）：
-//   红①：multi_thread rt + block_on 内创建并 drop reqwest::blocking::Client
+//   红①：multi_thread rt + block_on 内创建并 drop reqwest::blocking:Client
 //         → 按 profile 断言（debug 必 panic / release 守卫编译掉不 panic，
-//           BUG #50 勘误：reqwest enter() 守卫带 cfg(debug_assertions)）。
+//           勘误：reqwest enter() 守卫带 cfg(debug_assertions)）。
 //   绿②：同样的 async 上下文里调用 post_internal_shutdown（内部走独立线程）
 //         → 绝不 panic 且往返成功。
 // ===========================================================================
@@ -573,9 +573,9 @@ mod probes {
     use super::*;
 
     /// 红①对照探针：在 multi_thread runtime 的 block_on 未来体里创建并 drop
-    /// reqwest::blocking::Client（忠实复刻 main.rs 非 gateway 命令的拓扑：
+    /// reqwest::blocking:Client（忠实复刻 main.rs 非 gateway 命令的拓扑：
     /// rt.block_on(run_command) 里同步代码创建/丢弃 blocking client）。
-    /// 契约是 **profile 依赖**的（BUG #50，2026-08-28 勘误）——reqwest 0.12.28
+    /// 契约是 **profile 依赖**的（勘误）——reqwest 0.12.28
     /// src/blocking/wait.rs 的 `enter()` 嵌套-runtime 守卫带
     /// `#[cfg(debug_assertions)]`（workspace 无 package 覆盖，两侧同 profile）：
     ///   - debug：守卫在编译 → new() 内 shell runtime 在 async 上下文建+弃 →
@@ -668,7 +668,7 @@ mod probes {
 }
 
 // ===========================================================================
-// r9_zero（R9 补测批零头组，2026-08-27）：taskkill 无 /F 礼貌路径的成功分支
+// r9_zero（补测批零头组）：taskkill 无 /F 礼貌路径的成功分支
 // （shutdown.rs 33-37：「Shutdown signal sent to PID {}." + 删 PID 文件」）。
 //
 // 受害进程选型（pre-compaction 探针 %TEMP%\r9probe.ps1 实证过）：控制台进程
@@ -685,7 +685,7 @@ mod r9_zero {
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-    /// 离屏 WinForms 消息泵脚本：Form 放屏幕外（-32000,-32000）、不进任务栏，
+    /// 离屏 WinForms 消息泵脚本：Form 放屏幕外（32000,-32000）、不进任务栏，
     /// ShowDialog 维持泵直到收到 WM_CLOSE。用 Left/Top int 属性避开
     /// System.Drawing 类型加载。
     const VICTIM_SCRIPT: &str = r#"

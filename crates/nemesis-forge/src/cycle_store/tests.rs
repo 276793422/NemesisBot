@@ -14,8 +14,8 @@ fn make_cycle(id: &str) -> LearningCycle {
 
 #[tokio::test]
 async fn test_fm10_load_latest_cycle_returns_newest_by_started_at() {
-    // F-M10: load_latest_cycle must return the newest by started_at, not
-    // arbitrary read_dir order (old code used .last() on unordered read_dir).
+    // F-: load_latest_cycle must return the newest by started_at, not
+    // arbitrary read_dir order (old code used.last() on unordered read_dir).
     let dir = tempfile::tempdir().unwrap();
     let store = CycleStore::from_base(dir.path());
 
@@ -498,7 +498,7 @@ async fn test_read_cycles_skips_stray_files_and_notes() {
         .unwrap()
         .path();
     // 追加（不是覆盖）脏行——真 cycle 的 jsonl 行必须保留，才验证 skip 逻辑。
-    // tokio::fs::write 会整文件替换，之前写成 write 导致真 cycle 被抹掉、读回 0 条。
+    // tokio::fs:write 会整文件替换，之前写成 write 导致真 cycle 被抹掉、读回 0 条。
     let mut f = tokio::fs::OpenOptions::new()
         .append(true)
         .open(&jsonl)
@@ -532,7 +532,7 @@ async fn test_cleanup_skips_non_jsonl_and_stray_entries() {
 
     let store = CycleStore::from_base(dir.path());
     let removed = store.cleanup(1).await.unwrap();
-    // Only the old .jsonl file is removed; notes.txt and the stray file stay.
+    // Only the old.jsonl file is removed; notes.txt and the stray file stay.
     assert_eq!(removed, 1);
     assert!(!old_month.join("20200101.jsonl").exists());
     assert!(old_month.join("notes.txt").exists());

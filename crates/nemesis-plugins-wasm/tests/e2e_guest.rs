@@ -1,4 +1,4 @@
-//! W1 spike e2e：真 guest 组件经宿主装配漏斗 + fresh-store 链路全跑通。
+//! spike e2e：真 guest 组件经宿主装配漏斗 + fresh-store 链路全跑通。
 //!
 //! fixture = `plugins/wasm/{translate,activity-log}` 编译产物
 //! （wasm32-wasip2 release）。fixture 缺席时诚实 SKIP（打印原因后返回）——
@@ -124,7 +124,7 @@ version = "0.1.0"
 description = "e2e fixture observer"
 "#;
 
-/// 接管变体（2026-10-23 工具接管层）：根级 `takeover` 声明（必须在任何
+/// 接管变体（工具接管层）：根级 `takeover` 声明（必须在任何
 /// table 段之前——TOML 根键纪律与 wasm-sha256 同款）。
 const TRANSLATE_TAKEOVER_TOML: &str = r#"api-version = 1
 slug = "translate"
@@ -241,7 +241,7 @@ async fn tool_install_roundtrip_and_host_calls() {
     );
     assert!(out.content.contains("now="), "got: {}", out.content);
 
-    // 数据目录落盘（/data preopen → plugin-data/translate/）。
+    // 数据目录落盘（/data preopen → plugin-data/translate）。
     let spill = mgr.plugin_data_dir("translate").join("spill.txt");
     assert!(spill.exists(), "spill missing at {}", spill.display());
 
@@ -285,10 +285,10 @@ async fn egress_denied_by_default() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn takeover_declaration_survives_install_funnel() {
-    // 工具接管层 e2e（2026-10-23）：正例 = 带接管声明的插件走完装配漏斗，
+    // 工具接管层 e2e：正例 = 带接管声明的插件走完装配漏斗，
     // 声明原样落盘、装配注册后 owner 裁决命中（桥 wrap/翻开关位由
     // nemesisbot plugin_bridge tests 用桩内置工具钉过——这里钉宿主面全链
-    // ：漏斗不吞声明、注册面消费声明）。反例 = deny-list 命中（exec）在
+    // 漏斗不吞声明、注册面消费声明）。反例 = deny-list 命中（exec）在
     // 漏斗第①步（manifest 解析）诚实拒绝——安装即拦截，不等到注册面。
     let Some(wasm) = fixture_wasm("translate", "translate_plugin") else {
         eprintln!("{}", skip_reason("translate"));
@@ -491,7 +491,7 @@ dropped_events={} dropped_ring={dropped_ring} host_logs={lines:?}",
     );
 }
 
-/// W3 审计链接线：secret-get / workspace-read / http-send 的 allowed 与
+/// 审计链接线：secret-get / workspace-read / http-send 的 allowed 与
 /// denied 都落安全审计文件；凭据原文永不入审计。
 #[tokio::test(flavor = "multi_thread")]
 async fn audit_events_recorded() {
@@ -646,7 +646,7 @@ async fn uninstall_removes_payload_keeps_data() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-23 开关补漏斗收口：手工拷入无签名载荷 + 卡面救援全链
+// 开关补漏斗收口：手工拷入无签名载荷 + 卡面救援全链
 //（set_enabled 补漏斗；从紧面（无卡 CLI）归 install_registry::test_ unsigned_without_card_stays_strict）
 // ---------------------------------------------------------------------------
 
@@ -750,7 +750,7 @@ async fn hand_copied_unsigned_denied_by_card_stays_out() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-31 面板扩展批：panel-echo 夹具全链（install → enable → invoke_ui
+// 面板扩展批：panel-echo 夹具全链（install → enable → invoke_ui
 // 五行为面：echo 往返 / rows 投影 / fail 业务失败 / unknown 回执 / probe
 // 能力探针 + guest 日志 + 审计链）
 // ---------------------------------------------------------------------------
@@ -869,7 +869,7 @@ async fn panel_install_roundtrip_and_ui_invoke() {
     // 审计链：每次 invoke 落 plugin_ui_invoke allow 事件。
     let body = audit_body(audit_dir.path());
     assert!(body.contains("plugin_ui_invoke"), "audit body: {body}");
-    // 开关关 → 真摘除（2026-10-22 纪律：disable = unregister，无「注册但拒
+    // 开关关 → 真摘除（纪律：disable = unregister，无「注册但拒
     // 调用」半态）→ invoke 诚实报 not loaded（动作面随开关冻结）。
     installer
         .set_enabled("panel-echo", false)
@@ -884,7 +884,7 @@ async fn panel_install_roundtrip_and_ui_invoke() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-01 决策 C：面板 llm-complete 双闸（manifest `x-llm` 声明 ×
+// 决策 C：面板 llm-complete 双闸（manifest `x-llm` 声明 ×
 // `panel_llm.enabled` 总闸，缺省 false）。授予裁决在 registry::build_frame
 // （私有，无公开帧访问器——crate 纪律 src 零内联测试），可观察面 = guest
 // 夹具 `llm_probe` 命令消费帧内 llm 是否在场。宿主 invoker 用测试桩。
@@ -988,7 +988,7 @@ async fn panel_llm_missing_declaration_stays_denied() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-03 guest step 批：stepdemo 夹具（kind=flow-step）全链
+// guest step 批：stepdemo 夹具（kind=flow-step）全链
 // install → enable → run_flow_step 八行为面：echo done（中文 CABI）/
 // tally running×2→done（guest 数据目录记账幂等）/ chaos failed / chaos
 // skipped 形态透传 / 越权 op 对账拒绝 / unknown slug / host-error → Trap /
@@ -1144,7 +1144,7 @@ async fn flow_step_install_roundtrip_and_run() {
     let body = audit_body(audit_dir.path());
     assert!(body.contains("plugin_flow_step"), "audit body: {body}");
 
-    // ⑧ disable = 真摘除（2026-10-22 纪律）→ 投递诚实报 not loaded。
+    // ⑧ disable = 真摘除（纪律）→ 投递诚实报 not loaded。
     installer
         .set_enabled("stepdemo", false)
         .await
@@ -1161,7 +1161,7 @@ async fn flow_step_install_roundtrip_and_run() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-03 组合 world 批：panel-step-demo 夹具（kind=panel 双导出
+// 组合 world 批：panel-step-demo 夹具（kind=panel 双导出
 // flow-step，world=plugin-panel-flow-step）全链 install → enable →
 // 面板写通道正向控制（secret-set/config-set 真落 writer）→ flow-step 帧
 // 写通道活体证明（同一份 guest 代码的写调用被帧纪律拦下）→ 纯面板
@@ -1366,7 +1366,7 @@ async fn pure_panel_without_step_meta_rejects_flow_step() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-04 sc-bugfix shipped 真载荷 e2e（域插件实机形态，非夹具）：
+// sc-bugfix shipped 真载荷 e2e（域插件实机形态，非夹具）：
 // install → enable → 六 op 词表快照 → 面板写通道（save_settings 真 config
 // 落盘 + secret 落 writer + 枚举先验拒绝）→ 无配置步骤诚实失败（不猜 URL）
 // → 词表外 op 安装期对账拒绝。全程零真实网络（config 缺席先于 http-send

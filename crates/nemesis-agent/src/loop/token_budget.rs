@@ -1,7 +1,7 @@
 //! 会话 token 预算闸（集群无人值守硬化）——`impl AgentLoop` 接线。
 //!
-//! 纯类型/账本/文案在 [`crate:token_budget`]（顶层 pub 模块：marker 常量
-//! 供 nemesisbot `classify_terminal_failure` 与 board_review 单一真相源）；
+//! 纯类型/账本/文案在 [`crate::token_budget`]（顶层 pub 模块：marker 常量
+//! 供 nemesisbot `classify_terminal_failure` 与 board_review 统一定义）；
 //! 本文件只是 glue——私有字段访问需要 `r#loop` 模块后代身份，与 fs_watch/
 //! config_watch 等同居 `loop/` 的理由一致。
 //!
@@ -14,7 +14,7 @@
 //!    与 `config_json_path` 访问器对接）。
 use super::*;
 
-/// 完整输入 token 口径单一真相源：
+/// 完整输入 token 口径统一定义：
 /// `prompt + cache_creation + cache_read`。两族 provider 语义对齐的依据 =
 /// provider 归一化层已把 OpenAI/DeepSeek 的 cached 子集从 `prompt_tokens`
 /// 剥出（剥出后 prompt = 非缓存纯输入），Anthropic 的 prompt_tokens 本来
@@ -36,15 +36,15 @@ pub(crate) fn usage_full_input(usage: &crate::loop_executor::ObserverUsageInfo) 
 
 impl AgentLoop {
     /// `agents.defaults.session_token_budget` fresh-read（模式，
-    /// config.json 唯一真相源——改键下一轮生效，无快照表）。
+    /// config.json 唯一依据——改键下一轮生效，无快照表）。
     /// **0 = 关（默认）**，与 `max_tool_iterations` 的 0=不限惯例相反。
-    /// pub 供 nemesisbot 入口拒接（cluster_agent）复用同一读法单一真相源。
+    /// pub 供 nemesisbot 入口拒接（cluster_agent）复用同一读法统一定义。
     pub fn current_session_token_budget(&self) -> u64 {
         self.agents_defaults_u64("session_token_budget", 0)
     }
 
     /// config.json 绝对路径（入口拒接用：nemesisbot cluster_agent 无
-    /// config_path 访问权，经此只读 accessor 单一真相源——工厂装配约定
+    /// config_path 访问权，经此只读 accessor 单一权威定义——工厂装配约定
     /// `<home>/config.json` 的路径知识不外泄）。`None` = standalone/未注入。
     pub fn config_json_path(&self) -> Option<std::path::PathBuf> {
         self.config_path.read().clone()
@@ -52,7 +52,7 @@ impl AgentLoop {
 
     /// 每轮记账（observer.rs `record_round_usage` 末尾调用；预算关闭时
     /// 调用方已短路，此处零 config 读）。seed 防双计语义见
-    /// [`crate:token_budget:SessionTokenBudgetLedger`]。
+    /// [`crate::token_budget:SessionTokenBudgetLedger`]。
     pub(crate) fn record_session_tokens(&self, session_key: &str, delta: u64) {
         self.token_budget
             .record(self.data_store.as_deref(), session_key, delta);
@@ -67,8 +67,8 @@ impl AgentLoop {
 
     /// 骨架顶检器官（run_loop `prepare_round` 块之后，每轮开头）。
     ///
-    /// - hard（≥100%）：`Some(AgentEvent:Error(...))`——文案以
-    ///   [`crate:token_budget:SESSION_TOKEN_BUDGET_MARKER`] 开头，worker
+    /// - hard（≥100%）：`Some(AgentEvent::Error(...))`——文案以
+    ///   [`crate::token_budget:SESSION_TOKEN_BUDGET_MARKER`] 开头，worker
     ///   `classify_terminal_failure` 识别为 `fail_class=token_budget`，
     ///   master board_review 转人工不重派。提示同时入 instance 历史
     ///   （下一会话上下文可见停机原因，-B 同款形态）。

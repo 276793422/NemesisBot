@@ -960,7 +960,7 @@ async fn test_ready_endpoint_with_beats_and_checks() {
 // （优雅停机：shutdown future 被唤醒 → serve 正常返回 → stop 发送 oneshot）。
 // 仅用本地回环裸 TCP（无外部网络依赖、无额外 crate）。
 
-/// 从 OS 拿一个当前空闲的回环端口（bind :0 取端口后立刻释放）。
+/// 从 OS 拿一个当前空闲的回环端口（bind:0 取端口后立刻释放）。
 fn pick_free_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0 for port discovery");
     let port = l.local_addr().unwrap().port();

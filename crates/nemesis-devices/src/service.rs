@@ -95,8 +95,8 @@ pub fn parse_last_channel(last_channel: &str) -> (String, String) {
 
 /// Check if a channel name is internal (should not receive device notifications).
 /// Mirrors Go `constants.IsInternalChannel`.
-/// 委托仓内单一真相源 `nemesis_types::is_internal_channel`
-/// （BUG-20261025-46 收编，本文件原为手抄常量副本）。
+/// 委托仓内统一定义 `nemesis_types::is_internal_channel`
+/// （收编，本文件原为手抄常量副本）。
 pub fn is_internal_channel(channel: &str) -> bool {
     nemesis_types::is_internal_channel(channel)
 }
@@ -114,7 +114,7 @@ pub struct DeviceService {
     handler: Mutex<Option<DeviceEventHandler>>,
     running: AtomicBool,
     /// Outbound message sender (bus integration).
-    /// Arc 化：start() 把克隆传入 handle_events_task（BUG-20261028-126 Layer A）。
+    /// Arc 化：start() 把克隆传入 handle_events_task（Layer A）。
     bus_sender: Arc<Mutex<Option<OutboundSender>>>,
     /// State manager for retrieving last channel info.
     /// Arc 化：同上，事件任务按事件实时取 last channel。
@@ -248,7 +248,7 @@ impl DeviceService {
                 Ok(rx) => {
                     let kind = format!("{:?}", source.kind());
                     let stop = self.stop_flag.clone();
-                    // BUG-20261028-126 Layer A：把 bus/state 依赖的真实克隆
+                    // Layer A：把 bus/state 依赖的真实克隆
                     // 传入事件任务（此前只传 bool 探测值，任务无法通知）。
                     let bus_sender = self.bus_sender.clone();
                     let state = self.state.clone();
@@ -309,7 +309,7 @@ impl DeviceService {
         Self::route_notification(&self.bus_sender, &self.state, ev);
     }
 
-    /// Notification routing core (BUG-20261028-126 Layer A 抽取).
+    /// Notification routing core (Layer A 抽取).
     ///
     /// 此前通知主体只活在 `send_notification` 里，而 `handle_events_task`
     /// 收到事件仅打 debug log——生产路径（source 事件流 → 任务）从不触达
@@ -367,7 +367,7 @@ impl DeviceService {
     /// Background task to handle events from a source channel.
     /// Mirrors Go `Service.handleEvents(kind, eventCh)`.
     ///
-    /// BUG-20261028-126 Layer A：此前收两个 bool 探测值（`_bus_available`/
+    /// Layer A：此前收两个 bool 探测值（`_bus_available`/
     /// `_state_available`，下划线弃用），收到事件只打 debug log，通知永不
     /// 发出。现收 bus/state 依赖的 Arc 克隆，逐事件路由通知。
     async fn handle_events_task(

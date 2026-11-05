@@ -244,7 +244,7 @@ fn manager_register_cap_and_kill_all() {
 // 满员拒绝臂 reap
 
 /// Unix 僵尸子进程计数（state=='Z' 且 ppid==本进程）。
-/// /proc/<pid>/stat 形如 `pid (comm) state ppid ...`——comm 可含空格括号，
+/// /proc/<pid>/stat 形如 `pid (comm) state ppid...`——comm 可含空格括号，
 /// 以最后一个 `)` 为界取其后字段。
 #[cfg(unix)]
 fn count_zombie_children() -> usize {
@@ -279,7 +279,7 @@ fn count_zombie_children() -> usize {
 
 /// 满员拒绝臂（handle_pty_socket 满员闸）行为钉：超员连接收到上限文案、
 /// 会话不注册，且 **kill 不留 Unix 僵尸**——portable-pty 0.9 的
-/// `ChildKiller for std::process::Child`（Unix）kill=SIGHUP 后循环
+/// `ChildKiller for std::process:Child`（Unix）kill=SIGHUP 后循环
 /// `try_wait`（waitpid WNOHANG）主动收尸（lib.rs:340-365），拒绝臂的
 /// `child.kill()` 自带 reap。此钉防两件事回归：①上限拒绝语义被改坏；
 /// ②若未来 kill 语义换成裸信号（或 portable-pty 升级改契约），僵尸泄漏

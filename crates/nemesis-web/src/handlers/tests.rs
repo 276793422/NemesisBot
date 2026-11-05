@@ -306,7 +306,7 @@ async fn test_identity_list() {
         .unwrap();
     let docs = result["documents"].as_array().unwrap();
     // 四件套 + 指令链 AGENTS.md/CLAUDE.md = 六条目
-    assert_eq!(docs.len(), 6); // AGENT/IDENTITY/SOUL/USER/AGENTS/CLAUDE .md
+    assert_eq!(docs.len(), 6); // AGENT/IDENTITY/SOUL/USER/AGENTS/CLAUDE.md
     let agent_doc = docs.iter().find(|d| d["name"] == "AGENT.md").unwrap();
     assert!(agent_doc["exists"].as_bool().unwrap());
     let soul_doc = docs.iter().find(|d| d["name"] == "SOUL.md").unwrap();

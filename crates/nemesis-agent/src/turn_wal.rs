@@ -3,7 +3,7 @@
 //! 闸门）/ started（真实执行前）/ finished（含 ok）——写到
 //! `<workspace>/logs/turn_wal/wal.jsonl`。进程被强杀（`taskkill /F`、崩溃）
 //! 时，执行中的调用会留下「started 无 finished」的断头记录；下次启动
-//! [`TurnWal:recover_and_finalize`] 扫描补写 interrupted 收尾行并返回续轮
+//! [`TurnWal::recover_and_finalize`] 扫描补写 interrupted 收尾行并返回续轮
 //! 候选（pump 据此合成续轮消息，走正常 gate/admission 流程回到原会话）。
 //!
 //! 诚实边界：纯 `write` + `flush`（无 fsync）——数据落 OS 页缓存，进程级

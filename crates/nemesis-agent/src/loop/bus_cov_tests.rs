@@ -124,8 +124,8 @@ async fn pump_runs_maintenance_and_user_dispatch_as_turn_tasks() {
 /// 普通消息走 Admitted 臂：完整 turn（quiet provider）→ finish_message
 /// 发布响应（截断日志 + 非 rpc 分支）。
 ///
-/// 注意：这里不能调 CaptureSink:init——OnceLock 先到先得，会毒化整个
-/// 测试二进制的 capture 状态，破坏 session:tests 的「唯一 init 调用者」
+/// 注意：这里不能调 CaptureSink::init——OnceLock 先到先得，会毒化整个
+/// 测试二进制的 capture 状态，破坏 session::tests 的「唯一 init 调用者」
 /// 契约；capture 开或关对断言无影响。
 #[tokio::test]
 async fn pump_admits_plain_message_and_publishes_response() {

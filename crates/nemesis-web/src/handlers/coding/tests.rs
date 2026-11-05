@@ -1,4 +1,4 @@
-//! Tests for `CodingHandler` .
+//! Tests for `CodingHandler`.
 //!
 //! `lsp_status` asserts structure, NOT availability — which servers are on
 //! PATH is machine-dependent, so a test asserting `available == false` would

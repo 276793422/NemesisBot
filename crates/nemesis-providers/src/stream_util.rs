@@ -16,7 +16,7 @@ use crate::http_provider::StreamChunk;
 use crate::types::LLMResponse;
 
 /// SSE 增量 UTF-8 解码：把一个网络 chunk 安全并入行缓冲 `buffer`
-/// （BUG-HUNT R38）。`pending` 携带上一 chunk 留下的未完成尾随序列。
+/// 。`pending` 携带上一 chunk 留下的未完成尾随序列。
 ///
 /// 逐 chunk 独立 `from_utf8_lossy` 会把被 chunk 边界劈开的多字节字符
 /// （CJK 3 字节 / emoji 4 字节）替换成 U+FFFD——TCP 分片边界是任意的，
@@ -41,7 +41,7 @@ pub fn push_chunk_incremental(buffer: &mut String, pending: &mut Vec<u8>, bytes:
                 let v = pos + e.valid_up_to();
                 match e.error_len() {
                     Some(n) => {
-                        // 合法前缀 [pos..v) + 坏段 [v..v+n)（→U+FFFD）入缓冲，
+                        // 合法前缀 [pos..v) + 坏段 [v..v+n)（U+FFFD）入缓冲，
                         // 越过坏段继续扫（其后可能还有合法字符/残尾）。
                         buffer.push_str(&String::from_utf8_lossy(&chunk[pos..v + n]));
                         pos = v + n;
@@ -69,7 +69,7 @@ pub fn push_chunk_incremental(buffer: &mut String, pending: &mut Vec<u8>, bytes:
 /// 流中途 `Err` / channel 关闭无终态（生产者 panic 等异常路径）时：
 /// 已聚合文本为空 → 维持旧语义（原错误原样上抛 / `Timeout`——lane 已做
 /// 诚实分类，错误值不吞）；**非空 → `StreamInterrupted`**（partial 是模型
-/// 已产出的一等工作成果，随错误值携带不丢——L02，消费方是 recovery 重试
+/// 已产出的一等工作成果，随错误值携带不丢——，消费方是 recovery 重试
 /// 环与终局通知）。tool_calls 出现过由 `has_partial_tool_calls` 旗标声明
 /// （半截不可当纯文本续用）。`raw_request_body` / `raw_response_body` 恒
 /// `None`——流式路径没有完整响应体快照（请求日志器对 None 字段本就省略，
@@ -103,7 +103,7 @@ pub async fn collect_stream_response(
                 }
             }
             Err(e) => {
-                // L02：已聚合文本/工具调用非空 → partial 随错误携带不丢；
+                // 已聚合文本/工具调用非空 → partial 随错误携带不丢；
                 // 空 → lane 原错误原样上抛（诚实分类不吞）。
                 if content.trim().is_empty() && tool_calls.is_empty() {
                     return Err(e);
@@ -153,7 +153,7 @@ pub async fn collect_stream_response(
 /// SSE 事件边界定位：返回 (块终点偏移, 分隔符字节长)。协议分隔符是空行，
 /// 同时容忍 `\n\n` 与 `\r\n\r\n` 两种行尾形态（SSE 规范行终止 LF/CR/CRLF
 /// 三态；CRLF-only 上游若按单一 `\n\n` 扫描将零事件解析——静默直到 EOF
-/// 兜底，内容全丢）。codex lane 原有语义抽成单一真相源，三 lane 共用。
+/// 兜底，内容全丢）。codex lane 原有语义抽成统一定义，三 lane 共用。
 pub fn next_event_boundary(buffer: &str) -> Option<(usize, usize)> {
     match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
         (Some(a), Some(b)) => {
@@ -172,6 +172,6 @@ pub fn next_event_boundary(buffer: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests;
 
-// L02（2026-11-01）collect_stream_response 两臂改造回归钉。
+// collect_stream_response 两臂改造回归钉。
 #[cfg(test)]
 mod collect_tests;

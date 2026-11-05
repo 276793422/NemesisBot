@@ -7,7 +7,7 @@
 //! 注入集成。
 //!
 //! 独立测试文件（仓库纪律）。形态同 w7_lazy_supply_tests（裸 AgentLoop +
-//! 手插工具 + tempdir config + std:mem:forget）。
+//! 手插工具 + tempdir config + std::mem:forget）。
 
 use super::AgentLoop;
 use crate::context::RequestContext;
@@ -130,7 +130,7 @@ fn l10_loop() -> AgentLoop {
         t.insert("multiedit".to_string(), Arc::new(MiniInvisibleTool));
         // min_tier=big 声明桩（秩比较镜像）。
         t.insert("big_only".to_string(), Arc::new(BigOnlyTool));
-        // 生产装配恒注册；裸 AgentLoop:new 不跑装配——测试自插（w7 同款）。
+        // 生产装配恒注册；裸 AgentLoop::new 不跑装配——测试自插（w7 同款）。
         t.insert("tools_schema_get".to_string(), Arc::new(ToolsSchemaGetTool));
     }
     al
@@ -175,7 +175,7 @@ fn def_by_name(al: &AgentLoop, name: &str) -> Option<crate::types::ToolDefinitio
 }
 
 // ---------------------------------------------------------------------------
-// 档位裁决矩阵（current_lazy_tool_schema 单一真相源）
+// 档位裁决矩阵（current_lazy_tool_schema 统一定义）
 // ---------------------------------------------------------------------------
 
 // mini 强制惰性：即使 config 显式关（用户意志不覆盖强制面——字节节省对
@@ -493,7 +493,7 @@ fn unlock_section_append_only_prefix_stable() {
 }
 
 // ---------------------------------------------------------------------------
-// 校验回灌指引（validation_error_feedback 单一真相源）
+// 校验回灌指引（validation_error_feedback 统一定义）
 // ---------------------------------------------------------------------------
 
 #[test]

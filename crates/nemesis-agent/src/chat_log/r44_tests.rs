@@ -1,4 +1,4 @@
-//! ：会话持久化面读侧损坏静默吞 → loud 留痕
+//! 会话持久化面读侧损坏静默吞 → loud 留痕
 //! 回归锁（nemesis-session load_chat_sessions 的镜像面在本 crate 的三处
 //! meta 读取点：read_meta_full / snoozed_sessions / allow_all_sessions）。
 //!

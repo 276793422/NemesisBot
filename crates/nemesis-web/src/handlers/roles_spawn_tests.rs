@@ -322,7 +322,7 @@ async fn spawn_rejects_unknown_role() {
 async fn spawn_reports_missing_slot_honestly() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir, Some(role_agent_loop()));
-    // 角色 qa 合法（mini 档，big 下可见），但槽未注入 → 诚实报错不假成功。
+    // 角色 qa 合法（mini 档，big 下可），但槽未注入 → 诚实报错不假成功。
     let err = ChatHandler
         .handle_cmd(
             "spawn",

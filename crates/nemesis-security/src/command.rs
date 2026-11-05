@@ -107,7 +107,7 @@ impl Guard {
             return Ok(());
         }
 
-        // CMD-04/05（2026-09-16 横扫存量加固）：除原文小写形态外，再对
+        // CMD-04/05（横扫存量加固）：除原文小写形态外，再对
         // 归一化形态（剥引号/合并空白/小写，见 matcher::normalize_exec_command）
         // 扫一遍——`rm "-rf"`、`rm --Recursive`、`rd "/s"` 曾借 shell 剥引号
         // 与大小写差异同时绕过 Guard 与 ABAC，原文形态打不中。
@@ -128,7 +128,7 @@ impl Guard {
             }
         }
 
-        // Named fork bomb（CMD-10：classic `:(){ :|:& };:` 形态由
+        // Named fork bomb（CMD-10：classic `:{:|:& };` 形态由
         // catastrophic_pipe 正则覆盖；自递归命名函数形态
         // `bomb(){ bomb|bomb & };bomb` 需要自引用判定，正则无后向引用，
         // 代码级扫描。
@@ -206,7 +206,7 @@ impl Guard {
 
     /// Simplify/normalize a command for better pattern matching.
     ///
-    /// CMD-11①：归一化单一真相源 = `matcher::normalize_exec_command`
+    /// 归一化单一权威 = `matcher::normalize_exec_command`
     /// （剥引号/合并空白/小写）；本函数只在其上保留注释剥离（`#`/`//`
     /// 尾注释会让 blocklist 看见注释里的危险词，如 `echo hi # rm -rf`）。
     pub fn simplify_command(command: &str) -> String {
@@ -292,7 +292,7 @@ fn get_strict_keywords() -> &'static [&'static str] {
 /// CMD-10：自递归命名函数 fork bomb 检测（`bomb(){ bomb|bomb & };bomb`）。
 /// 正则无后向引用做不了「体内引用自身名」的判定，代码级扫描：找 `(){`
 /// 函数定义，取其名，看首个 `}` 前的体内是否出现同名 token。误伤面：
-/// 单行函数体内字符串恰好含自身名（agent exec 场景极罕见），可接受。
+/// 单行函数体内字符串恰好含自身名（agent exec 场景极罕），可接受。
 fn detect_self_recursive_function(cmd: &str) -> Option<String> {
     let mut search_from = 0usize;
     while let Some(rel) = cmd[search_from..].find("(){") {
@@ -328,17 +328,17 @@ fn get_blocklist() -> &'static BlockList {
     static LIST: OnceLock<BlockList> = OnceLock::new();
     LIST.get_or_init(|| {
         let raw: Vec<(&str, &str)> = vec![
-            // Destructive (CMD-09 扩充，2026-09-16 横扫存量加固)
+            // Destructive (CMD-09 扩充， 横扫存量加固)
             // rm_rf：任意 flag 形态——`-rf`/`-fr`/`-r`/`-rfv`/flag 后置
             // （`rm dir -rf`）/长参（`--recursive`），含 r 或 f 即命中；
             // `rm -i file`、`rm file` 不误伤。
             // 前缀用 `\b`（词边界）：`;rm`/`/bin/rm`/`$(rm` 等非空白分隔
-            // 形态必须命中（复核 2026-09-16：`(^|\s)` 前缀把旧版 `\b` 能拦
+            // 形态必须命中（复核：`(^|\s)` 前缀把旧版 `\b` 能拦
             // 的 `cd /tmp;rm -rf ~` 族全部放跑——拦截回归）。
             ("rm_rf", r"(?i)\brm\s+(\S+\s+)*-{1,2}[a-z]*[rf][a-z]*(\s|$)"),
             // del_force：/s（递归）/f（强制）/q（安静）与组合（/sf）；
             // flag 后置形态（`del file /f`，cmd.exe 合法）用 rm_rf 同款
-            // `(\S+\s+)*` 中间组覆盖（BUG-20261104-373 横向；同文件内
+            // `(\S+\s+)*` 中间组覆盖（横向；同文件内
             // robocopy_mir 早已是任意位置形态）。
             ("del_force", r"(?i)\bdel(\.exe)?\s+(\S+\s+)*/[a-z]*[sfq]"),
             // remove_item_recurse：PowerShell 的 rm -rf 等价物——
@@ -357,10 +357,10 @@ fn get_blocklist() -> &'static BlockList {
             ("wipefs", r"(?i)\bwipefs\b"),
             ("shred", r"(?i)\bshred\b"),
             // truncate：`-s0` 紧凑值与 `-s 0` 同义（GNU getopt），`\s*` 覆盖
-            // 两者（BUG-20261104-373 横向）。
+            // 两者（横向）。
             ("truncate", r"(?i)\btruncate\s+-s\s*0\b"),
             ("srm", r"(?i)\bsrm\b"),
-            // catastrophic_pipe：classic 冒号炸弹（`:(){ :|:& };:`）——
+            // catastrophic_pipe：classic 冒号炸弹（`:{:|:& };`）——
             // 旧正则要求 `;` 在 `}` 前而 canonical 形态 `;` 在后，恒打不中
             // （CMD-10）；自递归命名函数形态由 check() 的代码级扫描覆盖。
             ("catastrophic_pipe", r"(?i):\(\)\s*\{[^}]*\}\s*;?\s*:"),
@@ -380,7 +380,7 @@ fn get_blocklist() -> &'static BlockList {
             ("pkill", r"(?i)\bpkill\b"),
             ("killall", r"(?i)\bkillall\b"),
             // kill_9：`-s 9`/`-s sigkill` 与 `-9` 等价（含 `-s9` 紧凑），
-            // 等价写法一并拦（BUG-20261104-373 横向）。
+            // 等价写法一并拦（横向）。
             ("kill_9", r"(?i)\bkill\s+(-9\b|-s\s*(9|sigkill)\b)"),
             ("taskkill", r"(?i)\btaskkill\b"),
             // Network recon (4)
@@ -388,7 +388,7 @@ fn get_blocklist() -> &'static BlockList {
             // netcat_bind：listen flag 组合形态（`-lvp`/`-lnp`/`-vl`）与
             // chmod_recursive 同族——旧 `-\b[l]\b` 要求 l 独立成词，组合
             // flag 里 l 后跟其他字母无词边界恒打不中，bind shell 组合形态
-            // 全部漏网（BUG-20261104-373）。误伤面：`nc --help`/`-help`
+            // 全部漏网。误伤面：`nc --help`/`-help`
             // 等含 l 的 flag 串会命中——安全条目误拦走审批出路（与
             // chmod_recursive 对 --reference 同取向）。
             ("netcat_bind", r"(?i)\bnc\s+.*-[a-z]*l"),
@@ -727,7 +727,7 @@ fn get_blocklist_metadata() -> &'static Vec<BlockEntry> {
                 platform: Platform::All,
                 reason: "Python code execution",
             },
-            // 2026-09-16 横扫存量加固新增条目的 metadata
+            // 横扫存量加固新增条目的 metadata
             BlockEntry {
                 name: "rd_s",
                 category: CommandCategory::Destructive,

@@ -1,9 +1,9 @@
-//! macOS Seatbelt（sandbox-exec）包装式后端（U11）。
+//! macOS Seatbelt（sandbox-exec）包装式后端。
 //!
-//! ⚠️ 诚实边界（goal 拍板 2026-08-23）：**无真机验证**。SBPL profile 由
+//! ⚠️ 诚实边界（goal -08-23）：**无真机验证**。SBPL profile 由
 //! `super::seatbelt_profile` 纯函数生成（跨平台单测钉形状），调用形态按
-//! Apple `sandbox-exec(1)` 手册实现：`sandbox-exec -p '<profile>' <cmd ...>`。
-//! B7 的 mac 半边保留欠账——有 mac 真机后跑与 Linux 同款的写外拒/写内
+//! Apple `sandbox-exec(1)` 手册实现：`sandbox-exec -p '<profile>' <cmd...>`。
+//! 的 mac 半边保留欠账——有 mac 真机后跑与 Linux 同款的写外拒/写内
 //! 放行验收再销账。
 //!
 //! 另注：macOS Sonoma 起 `sandbox-exec` 标记 deprecated（仍可用）；Apple

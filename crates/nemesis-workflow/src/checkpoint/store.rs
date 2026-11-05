@@ -1,4 +1,4 @@
-//! `CheckpointStore` trait + `InMemoryCheckpointStore` — milestone 1b-A1 step 2.
+//! `CheckpointStore` trait + `InMemoryCheckpointStore` — milestone 1b step 2.
 //!
 //! All access is keyed by `execution_id` first, then `checkpoint_id`. This
 //! matches Spike 3 decision 4: there is intentionally no global list-all

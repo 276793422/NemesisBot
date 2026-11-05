@@ -1,7 +1,7 @@
 //! Trace event types for conversation-level trace collection.
 //!
 //! `TraceEvent` is the JSONL record persisted by
-//! [`crate::trace_store::TraceStore`] (fed from the tool-dispatch path via
+//! [`crate::trace_store:TraceStore`] (fed from the tool-dispatch path via
 //! `Forge::record_trace_event`) and consumed by the deployment monitor's
 //! efficacy analysis. The in-memory `TraceCollector` and its aggregate types
 //! (`SessionSignal` / `TraceStats` / `ToolChainPattern` / `RetryPattern`)

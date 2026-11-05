@@ -1,4 +1,4 @@
-//! P3 发布模块（publish.rs）单元测试。
+//! 发布模块（publish.rs）单元测试。
 //!
 //! 覆盖面：纯函数（发布结果解析 `$.` path 形态 / 对账逐条匹配 / 翻页推进 /
 //! task_id 校验 / arg 提取）+ 协议缺席诚实报错（域剥离批 C-3：宿主无内置
@@ -6,7 +6,7 @@
 //! 凭据缺席语义 + [`preflight`] 前置核验全分支（真 TaskDb + 真 BoardStore +
 //! 真 git 副本仓——不触碰 agent loop；`reconcile_by_match` 编排与 git 半边
 //! 由 nemesis-board git_repo tests 与 UAT/活体验证覆盖）+ 续作留痕回归
-//! （2026-11-02 外部复评 F1：push 阶段失败重试续作 / patch 原始字节保真 /
+//! （2026-11-02 外部复评：push 阶段失败重试续作 / patch 原始字节保真 /
 //! pr_pending 对账收敛 / Inconclusive 保守停车，connector_invoke 走桩）。
 
 use super::*;
@@ -58,7 +58,7 @@ fn parse_publish_result_empty_array_is_none() {
 
 #[test]
 fn parse_publish_result_unsafe_scheme_dropped() {
-    // BUG-20261101-274：result_url path 取到的链接来自 connector 调用的
+    // result_url path 取到的链接来自 connector 调用的
     // 模型回复，可携带 `javascript:` 伪 URL——落账后 Dashboard `:href`
     // 直染成点击执行向量。scheme 闸（safe_external_url）：非 http(s)
     // 诚实丢弃（链接是展示性留痕，权威标识是外部条目号）。
@@ -189,7 +189,7 @@ fn match_item_numeric_compare_shared_with_when() {
 
 #[test]
 fn reconcile_advance_short_page_is_absent_even_at_page_one() {
-    // 不足一页 = 末页取尽即停（BUG-20261028：对账固定首页漏后续页——协议化
+    // 不足一页 = 末页取尽即停（对账固定首页漏后续页——协议化
     // 形态仍保留逐页扫尽语义）。
     let p = PublishProtocol {
         reconcile_limit: 20,
@@ -680,9 +680,9 @@ fn preflight_happy_path_proceeds_with_issue_title() {
     }
 }
 
-/// 第三臂（2026-11-02 真链发现）：交付已并入副本 main（ingest 在任务完成时
+/// 第三臂（真链发现）：交付已并入副本 main（ingest 在任务完成时
 /// 即合并，publish 人工闸在后是常态时序）——副本 HEAD 树等值交付 payload
-/// `tree`（worker 交付后内容树）时放行，patch 免再套。T7 实录：exec 捕获
+/// `tree`（worker 交付后内容树）时放行，patch 免再套。 exec 捕获
 /// 路径 repo_base_sha 对不上主仓任何 commit、base_tree 也因交付合并越过而
 /// 失配，唯一等值的是交付树。
 #[test]
@@ -742,7 +742,7 @@ fn preflight_delivery_already_merged_proceeds_third_arm() {
     }
 }
 
-/// 重试幂等决策（2026-11-02 真链第二缺口）：「确定失败可重试」的承诺要有
+/// 重试幂等决策（真链第二缺口）：「确定失败可重试」的承诺要有
 /// 结构支撑——上次 git 半边完成（分支已推）后重试撞「分支已存在」诚实拒绝。
 /// 分支树等值交付树 → 复用；不等 → 诚实拒绝不猜；锚缺席 → 落 git 层探针。
 #[test]
@@ -773,8 +773,8 @@ fn branch_reuse_decision_absent_branch_proceeds_normal_path() {
 
 /// 交付树锚缺席（旧形态 payload 无 `tree` 键）→ Ok(None) 落入
 /// apply_patch_new_branch 的内容级复用探针（父基线一致 + patch-over-HEAD
-/// tree 等值，复评 F1 移植）——双层校验分工：上层快路要锚，锚缺席不在此
-/// fail-closed（会挡死 F1 续作回归的合法重试），等值校验由 git 层完成。
+/// tree 等值，复评 移植）——双层校验分工：上层快路要锚，锚缺席不在此
+/// fail-closed（会挡死 续作回归的合法重试），等值校验由 git 层完成。
 #[test]
 fn branch_reuse_decision_missing_delivery_tree_falls_to_git_probe() {
     let none = branch_reuse_decision(Some(("c1".to_string(), "aa".to_string())), None).unwrap();
@@ -843,7 +843,7 @@ fn preflight_invalid_task_id_is_err() {
 }
 
 // ---------------------------------------------------------------------------
-// F1 续作回归（2026-11-02 外部复评）：push/PR 阶段失败后的重试续作 +
+// 续作回归（外部复评）：push/PR 阶段失败后的重试续作 +
 // preflight 原始 patch 保真。connector_invoke 走桩（记账断言「未调用」——
 // dispatch 有 panic 隔离，桩内 panic 会变 Tool error 文本被吞，测试不红）。
 // ---------------------------------------------------------------------------
@@ -938,7 +938,7 @@ fn stub_agent(stub: StubConnector) -> Arc<AgentLoop> {
 }
 
 /// file:// URL 组装：Linux 绝对路径带前导 `/`，`file:///` 基座再拼 = 四斜杠
-/// 非法 URI（libgit2 class=Config 拒推——BUG-20261103 Linux ET 四测连红实录
+/// 非法 URI（libgit2 class=Config 拒推—— Linux ET 四测连红
 /// `'file:////tmp/...' is not a valid local file URI`）；Windows 盘符路径无
 /// 前导斜杠需补足三杠。按首字符分治，双平台同式。
 fn file_url(p: &std::path::Path) -> String {
@@ -1221,7 +1221,7 @@ async fn review_nov02_publish_pr_pending_retry_inconclusive_stays_conservative()
 }
 
 // ---------------------------------------------------------------------------
-// op 路由双臂（批 3a）：parse_op_route / credential_alias / NOT_SENT_MARKER 语义
+// op 路由双臂（a）：parse_op_route / credential_alias / NOT_SENT_MARKER 语义
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1283,7 +1283,7 @@ fn credential_alias_by_create_route() {
 
 #[test]
 fn reconcile_page_body_accepts_entries_wrapper_form() {
-    // 批 3a：plugin 步 done 契约 `{"status":"done","entries":[...]}` 去
+    // a：plugin 步 done 契约 `{"status":"done","entries":[...]}` 去
     // status 后的对象形态——entries 包裹直出；非数组 entries = Inconclusive
     // 不冒充「扫尽」。本测试经 reconcile_by_match 全函数走四态判定边界。
     // 直接构造：畸形 entries 在页体解析即 Inconclusive（不进 match_item）。

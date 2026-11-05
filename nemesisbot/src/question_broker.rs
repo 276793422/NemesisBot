@@ -1,18 +1,18 @@
-//! F7（devtool-upgrade 阶段 5）：Dashboard 结构化提问 broker。
+//! （devtool-upgrade）：Dashboard 结构化提问 broker。
 //!
 //! agent 的 `question` 工具（nemesis-agent loop_tools）发起结构化提问时
 //! 阻塞在这里：广播 `AgentEvent::QuestionAsked`（web pump 转 SSE
 //! `question-asked`，前端 QuestionCard 渲染选项卡/表单卡），并实现
-//! [`nemesis_types::agent::QuestionResponder`]（WSAPI → broker 方向：
+//! [`nemesis_types::agent:QuestionResponder`]（WSAPI → broker 方向：
 //! `question.respond` / `question.pending` 把用户作答送回等待中的 `ask`）。
 //!
-//! 与 [`crate::web_approval::WebApprovalManager`] 同构（pending map +
+//! 与 [`crate::web_approval:WebApprovalManager`] 同构（pending map +
 //! mpsc oneshot + broadcast 事件）：等待侧是 sync trait 方法内阻塞——tokio
 //! 上下文（工具经 spawn_blocking 进来的阻塞线程）直接 `recv_timeout`，
 //! 不新建 runtime。超时不是错误：广播 `QuestionResolved{timeout}` 并返回
 //! `QuestionOutcome::Timeout`，工具侧回灌「按最佳判断继续」。
 //!
-//! B8（提问两形态）：同一 pending 通道承载两种作答形态
+//! （提问两形态）：同一 pending 通道承载两种作答形态
 //! （[`Answer`] 枚举）——选项形态（`respond`）/ 表单形态（`respond_form`）。
 //! 两形态互斥：选项卡收表单作答（或反之）诚实报错（请求留在 pending）。
 //!
@@ -27,13 +27,13 @@ use std::time::Duration;
 
 use nemesis_types::agent::{AgentEvent, QuestionField, QuestionOutcome, QuestionRequest};
 
-/// 用户作答载荷（B8 两形态统一通道；ask 侧 match 还原成 QuestionOutcome）。
+/// 用户作答载荷（两形态统一通道；ask 侧 match 还原成 QuestionOutcome）。
 enum Answer {
     /// 选项形态：选中项原文（单选恰一项）。
     Selection(Vec<String>),
     /// 表单形态：键=字段 key，值=文本或选中项原文（可选空值已剔除）。
     Form(BTreeMap<String, String>),
-    /// 循环干预阶梯（2026-10-24）：[`Self::cancel_pending_all`]（estop
+    /// 循环干预阶梯：[`Self::cancel_pending_all`]（estop
     /// watcher）的强制了结形态——不是超时也不是用户作答。
     Cancelled,
 }
@@ -44,7 +44,7 @@ struct PendingEntry {
     question: String,
     options: Vec<String>,
     multi: bool,
-    /// B8：表单字段；空 = 选项形态，非空 = 表单形态（两形态互斥）。
+    /// 表单字段；空 = 选项形态，非空 = 表单形态（两形态互斥）。
     fields: Vec<QuestionField>,
     timeout_secs: u64,
     chat_id: String,
@@ -66,7 +66,7 @@ impl WebQuestionBroker {
         }
     }
 
-    /// 循环干预阶梯（2026-10-24）：急停挂钩——把全部 pending 提问以
+    /// 循环干预阶梯：急停挂钩——把全部 pending 提问以
     /// [`Answer::Cancelled`] 强制了结（等待方醒来 → 消费方按「停止」语义
     /// 处理；`broadcast_resolved("cancelled")` 让前端摘卡）。无超时终级卡
     /// 停在等答态会跨 estop 存续——estop watcher（gateway 装配处 spawn）
@@ -172,15 +172,15 @@ impl WebQuestionBroker {
 
 impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
     fn ask(&self, request: QuestionRequest) -> Result<QuestionOutcome, String> {
-        // §2 免打扰（无人值守计划 Part 2）：开关开 = 提问卡不广播不进
+        // 免打扰（Part 2）：开关开 = 提问卡不广播不进
         // pending，直接超时语义返回——工具侧回灌「按最佳判断继续」，无人
         // 值守下 agent 全自主推进。
-        // **bypass_auto_approve 绕过**（循环干预阶梯，2026-10-24）：终级卡
+        // **bypass_auto_approve 绕过**（循环干预阶梯）：终级卡
         // （doom-loop escalation 停车问询）必须绕过本分支——任何自动化开关
         // 都压不掉它（烟雾报警器必须响，用户裁决第 5 点）。
         // security 关闭 = 审批体系整体缺席（approval_auto_state 在
         // handlers::security 模块内，随 feature 消失）→ 不可能有自动兜底，
-        // 恒发卡。feature matrix 实录：漏 gate 编译红 E0433（2026-10-14）。
+        // 恒发卡。feature matrix 漏 gate 编译红 。
         #[cfg(feature = "security")]
         if !request.bypass_auto_approve
             && nemesis_web::handlers::security::approval_auto_state().is_some_and(|s| s.enabled())
@@ -203,9 +203,9 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
             created_at: std::time::Instant::now(),
             tx,
         };
-        // **先入册、后广播**（channel_approval 同款教训：先广播后挂表时，
+        // **先入册、后广播**（channel_approval 同款先广播后挂表时，
         // 消费方收到事件立即 respond 查表落空报 unknown——高负载并行下
-        // 请求线程被调度延迟卡在广播与入册之间，web_approval 实录同根因
+        // 请求线程被调度延迟卡在广播与入册之间，web_approval 同根因案例
         // 假红）。broadcast send 是同步非阻塞操作，持锁发送无死锁面。
         {
             let mut map = self
@@ -222,7 +222,7 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
         // recv；block_in_place 分支保留给直接在 async 上下文调用 ask 的
         // 形态（与审批同构）。
         // **timeout_secs == 0 = 永不超时**（循环干预阶梯终级卡专用语义，
-        // 2026-10-24）：`rx.recv()` 无限等（**不是** `recv_timeout(0)`——那
+        // ）：`rx.recv()` 无限等（**不是** `recv_timeout(0)`——那
         // 是立即返回）。唯一的了结路径 = 用户作答 / respond_stale 类重启
         // 补裁（本题无——提问 pending 纯内存、无重启 sweep，不存在自动
         // 拒绝面，`timeout_secs==0` 条目天然「永不自动拒绝」）/ estop 经
@@ -253,7 +253,7 @@ impl nemesis_types::agent::QuestionAsker for WebQuestionBroker {
                     request.question_id,
                     selected.len()
                 );
-                // 已了结广播由 respond 侧负责（单一真相源，同审批先例——
+                // 已了结广播由 respond 侧负责（统一定义，同审批先例——
                 // 这里再广播一次会发出重复 resolved 事件）。
                 Ok(QuestionOutcome::Answered(selected))
             }

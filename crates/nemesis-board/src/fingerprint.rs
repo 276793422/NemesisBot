@@ -1,12 +1,12 @@
-//! 能力扩展 P34：重派决策量化——worker × 任务类型指纹（nanobot 指纹晋升
+//! 重派决策量化——worker × 任务类型指纹（nanobot 指纹晋升
 //! 思想移植）。
 //!
 //! 职责边界（镜像 [`crate::team_memory`] 的分层）：本模块**不含任何 IO 与
 //! LLM 调用**——任务类型指纹怎么算、三档怎么判、加权怎么排，全是纯函数
 //! （单测零依赖）。成败记账的落库时机在 board_review 评审定案处（master
-//! 侧验收结论是唯一成败真相源：PASS=成功 / FAIL=失败；UNSURE 与评审自身
+//! 侧验收结论是唯一成败权威定义：PASS=成功 / FAIL=失败；UNSURE 与评审自身
 //! 故障不计——没定案的轮次不配给任何 worker 记成败），落库走
-//! [`crate::BoardStore::record_fingerprint_outcome`]（task_id 幂等）。
+//! [`crate::BoardStore:record_fingerprint_outcome`]（task_id 幂等）。
 //! 加权消费在 nemesisbot `pick_redispatch_target`，挂在
 //! `board.fingerprint_weighting` 开关后面（默认 false = 决策表现状行为
 //! 字节等价；记账与开关解耦，灰度期照常攒数据）。
@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-/// 晋档/降档的最小样本数（P34 任务给定；灰度期写死，调参改常量再评估）。
+/// 晋档/降档的最小样本数（任务给定；灰度期写死，调参改常量再评估）。
 pub const FINGERPRINT_MIN_SAMPLES: u64 = 3;
 
 /// prefer 阈值：成功率 ≥ 此值晋升（3/3、7/10 都算）。
@@ -102,7 +102,7 @@ pub fn classify_tier(success: u64, total: u64) -> FingerprintTier {
     }
 }
 
-/// 匹配器排序之上的稳定加权（[`crate::matcher::rank_peers`] 的**次级重排**，
+/// 匹配器排序之上的稳定加权（[`crate::matcher:rank_peers`] 的**次级重排**，
 /// 不改资格面）：按 (worker, task_type) 指纹把候选分成 prefer → neutral →
 /// avoid 三段，段内保持匹配器原始序（稳定分区）。指纹缺失的 worker 视作
 /// neutral（不惩罚新节点——样本 <3 本来就 neutral）。avoid 非绝对排除：

@@ -196,7 +196,7 @@ impl AgentLoop {
         );
     }
 
-    /// : touch-driven digest invalidation. Called by the dispatch
+    /// touch-driven digest invalidation. Called by the dispatch
     /// path when a read_file/write_file/edit_file call touched a file that
     /// is on the session's instruction chain — the next build_messages
     /// re-reads the chain and re-injects. `session_key` is the stable key
@@ -255,7 +255,7 @@ impl AgentLoop {
                         .nth(300)
                         .map(|(i, _)| i)
                         .unwrap_or(content.len());
-                    // ：auto-inject 召回同样带日期
+                    // auto-inject 召回同样带日期
                     // 戳（时效判断不靠运气）；位于动态注入段尾部，稳定前缀
                     // 字节不受影响。
                     (
@@ -456,7 +456,7 @@ impl AgentLoop {
     }
 
     /// (②) companion: [`build_messages_with_memory`] plus a
-    /// [`crate:replay:BuildAnnotation`] recording everything a later
+    /// [`crate::replay:BuildAnnotation`] recording everything a later
     /// byte-exact replay needs that is NOT derivable from the final session
     /// file — the digest injection's final-vec position, the folded history
     /// length, and the summary-cache state AS OF this build (the session
@@ -476,7 +476,7 @@ impl AgentLoop {
         self.build_messages_inner(instance, memory_hits, None, channel)
     }
 
-    /// /：session_key 感知变体——生产路径（`run_loop.rs` 的
+    /// ：session_key 感知变体——生产路径（`run_loop.rs` 的
     /// `build_round_messages`）传 `Some(&context.session_key)` 以注入分支
     /// 前情提要节；测试/replay 兼容路径继续走无 key 的旧签名（其余字节
     /// 路径完全一致）。`channel` 同穿（prompt-pack pro 外部来源降权节）；
@@ -547,7 +547,7 @@ impl AgentLoop {
             vision_projected,
         };
 
-        // : time/env becomes the FIRST section of the merged context
+        // time/env becomes the FIRST section of the merged context
         // snapshot (was a standalone system-role dyn_msg). Minute granularity:
         // the timestamp truncates to the minute so a burst of calls within
         // the same minute does not churn the digest (runtime-context
@@ -617,7 +617,7 @@ impl AgentLoop {
                 }
             }
             if let Some(ref root) = ws_root {
-                // ：信任档三分——isolated 整段跳过（指令链
+                // 信任档三分——isolated 整段跳过（指令链
                 // 完全不进上下文）；annotate 注入但前置不可信来源横幅；
                 // trusted verbatim（主循环行为，缺省）。区块逐 build 重渲染
                 // ——运行中 `projects.trust` 热更新下一轮即生效，无残留。
@@ -764,7 +764,7 @@ impl AgentLoop {
             // （devtool-upgrade）：模式进快照——Plan 时模型当轮就
             // 能读到「不许改文件」，与供给/分发双闸互补（提醒是软约束）。
             let mode_now = self.mode();
-            // plan 放行目录动态写入（单一真相源 plan_products_dir——
+            // plan 放行目录动态写入（统一定义 plan_products_dir——
             // 项目会话 = <agent_home>/plans，主会话 = <workspace>/plans）。
             // 静态旧文案「plans/」会把项目会话的模型引向已禁写的项目目录
             // plans/，必吃一次拒绝回灌才能自纠。
@@ -862,7 +862,7 @@ impl AgentLoop {
                 self.skills_digest_state
                     .should_inject("", &merged) // stateless since round-5
                     .map(|m| LlmMessage {
-                        // : user-role snapshot (was system) — the
+                        // user-role snapshot (was system) — the
                         // system prompt stays byte-frozen; dynamic facts
                         // arrive as conversation messages.: role is
                         // configurable for strict chat templates that
@@ -930,7 +930,7 @@ pub(crate) fn textwise_similar(a: &str, b: &str) -> f64 {
     inter / union
 }
 
-/// : build an LLM wire message from a ConversationTurn preserving the
+/// build an LLM wire message from a ConversationTurn preserving the
 /// original structure (role/content/tool_calls/tool_call_id/reasoning) — the
 /// same projection `build_messages`'s `turn_to_msg` performs. Shared by the
 /// summarizers so the summary request's prefix messages are byte-equal to the
@@ -957,7 +957,7 @@ pub(crate) fn conversation_turn_to_llm_message(
     }
 }
 
-/// /（多模态）：主循环请求的 history turn → 请求消息转换（`build_messages`
+/// （多模态）：主循环请求的 history turn → 请求消息转换（`build_messages`
 /// 与 replay 重建共用，水合语义单点）。路径引用**每轮重读**：验真通过 →
 /// base64 字节进 `LlmMessage.images`；文件已删/失效 → 占位文本行
 /// `[图片已失效: <path>]` 追加进 content（诚实降级，不静默、不炸）。

@@ -1,9 +1,9 @@
-//! 语音 realtime 热态 + TTS 接力注册（realtime /）
+//! 语音 realtime 热态 + TTS 接力注册（realtime）
 //!
 //! **无条件编译**（不挂 `voice` feature、不挂平台 cfg）：`server.rs` 的出站
 //! 广播路径每帧都查热态，热态默认全 false = 逐字节现状。真实现（TTS 入队、
 //! 打断）在 `handlers/voice.rs`（`voice` feature + Windows）——本模块只持有
-//! 跨进程共享的开关面与注册槽，两侢单一真相源。
+//! 跨进程共享的开关面与注册槽，两侢统一定义。
 //!
 //! 生命周期：gateway 启动时 [`init_realtime_hot`] 从 `config.chat.json` 的
 //! `realtime` 段装载；运行期 `voice.chat_config_set` 写盘后同步 apply（热生

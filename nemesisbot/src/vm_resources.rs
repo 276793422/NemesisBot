@@ -1,4 +1,4 @@
-//! plugin-vm 内嵌资源释放臂（`vm` feature 门控；2026-10-22 拍板：VM
+//! plugin-vm 内嵌资源释放臂（`vm` feature 门控；2026-10-22 VM
 //! 资源——除三方件外——全部内嵌进 plugin_vm.dll，**用的时候释放**，
 //! 不再有 plugin_vm/ 资源目录）。
 //!

@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): sandbox handler coverage
+//! (quality-hardening goal 冲刺, web): sandbox handler coverage
 //! for the box-FS selection paths and remaining field arms — all offline,
 //! against a FAKE box tree (no Sandboxie, no UAC, no downloads):
 //!

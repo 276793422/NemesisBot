@@ -370,7 +370,7 @@ async fn wsapi_list_returns_registered_workflows() {
     let result = handler.handle_cmd("list", None, &ctx).await.unwrap();
     let payload = result.unwrap();
     assert_eq!(payload["count"], 1);
-    // After , workflows[] holds summary objects, not name strings.
+    // After, workflows[] holds summary objects, not name strings.
     assert_eq!(payload["workflows"][0]["name"], "wf_alpha");
     assert_eq!(payload["workflows"][0]["node_count"], 1);
     // trigger_driver_status is the global capability declaration.
@@ -1226,7 +1226,7 @@ async fn wsapi_clear_chat_password_success() {
 }
 
 // =====================================================================
-// quality-hardening goal 冲刺 （web 批次 1）
+// quality-hardening goal 冲刺 （web）
 //
 // 上面 58 个测试已覆盖 WSAPI 主干 + verify_signature 基本臂。本批补：
 // engine_error 全 7 臂、REST run/start/list/status/executions 实跑、
@@ -1667,7 +1667,7 @@ async fn webhook_get_variant_triggers_via_query_params() {
     assert_eq!(json["state"], "Running");
 }
 
-// hardening : a signed workflow can never be triggered via
+// hardening: a signed workflow can never be triggered via
 // GET — there is no body to HMAC, so the old silently-ignore-secret behavior
 // turned the signature into decoration. GET must answer 405 with a pointer
 // to POST + X-Signature.
@@ -1708,7 +1708,7 @@ async fn webhook_get_on_signed_workflow_returns_405() {
     assert_eq!(status_post, StatusCode::UNAUTHORIZED);
 }
 
-// hardening : the public webhook URL only reaches workflows
+// hardening: the public webhook URL only reaches workflows
 // that declare a webhook trigger. Manual/cron/event-only workflows — and
 // unknown names — answer the same 404 for both HTTP methods, so the route
 // can't be used as a workflow-existence oracle either.
@@ -2421,7 +2421,7 @@ async fn wsapi_run_now_start_and_status_success() {
     let ctx = make_ctx_with_engine(engine.clone());
     let handler = WorkflowHandler;
 
-    // run_now：input 非对象 → parse_input_object 包成 {"input": ...}，
+    // run_now：input 非对象 → parse_input_object 包成 {"input":...}，
     // ensure_unified_input 看到已有 input 不再合成
     let payload = handler
         .handle_cmd(
@@ -2606,7 +2606,7 @@ async fn wsapi_delete_without_defs_dir_succeeds_and_deregisters() {
     assert_eq!(payload["count"], 0);
 }
 
-// 补充批次 2：llvm-cov 复测后仍缺的单行/单臂（504 超时 / GET 限流 /
+// 补充：llvm-cov 复测后仍缺的单行/单臂（504 超时 / GET 限流 /
 // 内容不匹配签名 / create+update+validate 成功臂 / delete Err 闭包 /
 // run_now 启动失败闭包 / chat password set+clear 臂）
 
@@ -2743,7 +2743,7 @@ async fn wsapi_create_update_validate_and_delete_error_with_defs_dir() {
     assert!(payload["errors"].is_array());
 
     // 畸形 workflow 定义 → create/update/validate 三处 map_err 闭包
-    // （"invalid workflow definition: ..."，只测过成功解析路径）
+    // （"invalid workflow definition:..."，只测过成功解析路径）
     let bad = serde_json::json!({ "nodes": "not-an-array" });
     for cmd in ["create", "update", "validate"] {
         let data = if cmd == "update" {

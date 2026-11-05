@@ -5,7 +5,7 @@
 //! `title_manual=true`）插入时，自动标题照样落盘覆盖手动名（「手动改名
 //! 永不覆盖」契约击穿）。修复后写点在 [`META_LOCK`] 下判定+落盘原子完成
 //! （与 `write_session_branch_summary` 的 detach 封印位同构），判定逻辑与
-//! `auto_title_eligible` 共用 `auto_title_writable` 单一真相源。
+//! `auto_title_eligible` 共用 `auto_title_writable` 统一定义。
 //!
 //! 毫秒级竞窗无法确定性重现；本组锁钉行为面：拒绝臂必须**不落盘**
 //! （meta 逐字节保持）、判定与写点对全部 meta 形态裁决一致。
@@ -54,7 +54,7 @@ fn b385_auto_title_rejection_leaves_meta_untouched() {
 
 /// 判定与写点同源：对全部 meta 形态，`write_session_meta_auto_title` 的
 /// 成败必须与 `auto_title_eligible` 的裁决一致（同一 `auto_title_writable`
-/// 单一真相源；两消费点漂移 = spawn 预检与落盘裁决各说各话）。
+/// 单一权威定义；两消费点漂移 = spawn 预检与落盘裁决各说各话）。
 #[test]
 fn b385_eligibility_and_write_share_single_truth() {
     // 形态 1：无 meta → eligible 且写成功。

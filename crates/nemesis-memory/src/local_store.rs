@@ -84,8 +84,8 @@ impl TfIdfLocalStore {
             buf
         };
 
-        // BUG-20261029-183：改原子写权威 helper（旧 `File::create` 打开即
-        // 截断，写中途崩溃 = 整库丢失；BUG-20261025-59 同族漏修兄弟）。
+        // 改原子写权威 helper（旧 `File::create` 打开即
+        // 截断，写中途崩溃 = 整库丢失； 同族漏修兄弟）。
         // helper 内建 create_dir_all + 唯一临时名 + rename + 失败清理。
         nemesis_utils::file::write_file_atomic(&self.path.to_string_lossy(), &snapshot, 0o644)
             .map_err(|e| format!("Failed to write store file: {e}"))?;

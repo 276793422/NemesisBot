@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): SecurityHandler arms the
+//! (quality-hardening goal 冲刺, web): SecurityHandler arms the
 //! gated `mod tests` skips — audit offset paging + malformed-line skipping +
 //! decision normalization (approved→allow), direct flatten/extract fallback
 //! arms, and config load/save error propagation.

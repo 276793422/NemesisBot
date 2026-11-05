@@ -1,7 +1,7 @@
-//! profile.json schema v1 类型（总控 §6.2）。
+//! profile.json schema v1 类型（总控）。
 //!
 //! 纪律：
-//! - **profile 是数据不是脚本**：`tools[].action` 只能引用 §5 原语与参数模板；
+//! - **profile 是数据不是脚本**：`tools[].action` 只能引用 原语与参数模板；
 //!   任何未知字段 / 未知枚举值 serde 直接报错（loud 拒绝，与 args_validator
 //!   「未知 loud 拒绝」同哲学）。
 //! - 所有 struct `deny_unknown_fields`；所有字符串枚举无 `Other` 兜底——
@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 /// 当前 schema 版本。加载时严格等于本值，否则 loud 拒绝（不做静默迁移）。
 pub const SCHEMA_VERSION: u32 = 1;
 
-/// 逐层 hook 收敛链长上限（决议 5 / §7.5：超限标注期诚实拒绝，转人工）。
+/// 逐层 hook 收敛链长上限（决议 5 /：超限标注期诚实拒绝，转人工）。
 pub const CHAIN_CAP: usize = 4;
 
 /// profile 根对象。
@@ -48,7 +48,7 @@ pub enum ProfileStatus {
 }
 
 impl ProfileStatus {
-    /// 状态机（T5.1）：合法转移 = Active→Stale / Stale→Active /
+    /// 状态机（.1）：合法转移 = Active→Stale / Stale→Active /
     /// {Active,Stale}→Revoked；同态 no-op；Revoked→* loud 拒绝（吊销不可
     /// 自动复活，只能重建/删除 profile）。
     pub fn can_transition_to(self, to: ProfileStatus) -> Result<(), String> {
@@ -68,7 +68,7 @@ impl ProfileStatus {
     }
 }
 
-/// 目标指纹：附加时逐项核对（§6.4 验证链第一环）。
+/// 目标指纹：附加时逐项核对（验证链第一环）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct TargetFingerprint {
@@ -144,7 +144,7 @@ pub struct FunctionDef {
 }
 
 /// 函数定位描述（v1：byte_pattern 是唯一已实现 kind；其余 kind 枚举在位，
-/// M3/M5 找回流程消费——未知值在 serde 层即被拒绝）。
+///  找回流程消费——未知值在 serde 层即被拒绝）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct LocateSpec {
@@ -184,7 +184,7 @@ pub struct ArgSpec {
     /// 寄存器名（x64：rcx/rdx/r8/r9；x86：栈槽序号 "stack:0"）。
     pub reg: String,
     /// 参数类型（FieldType 同套字面量："u64"/"f64"/"char[32]"/"wchar[N]"；
-    /// validate 用 FieldType::parse 同源校验——单一真相源）。B4 增补，
+    /// validate 用 FieldType::parse 同源校验——统一定义）。 增补，
     /// `#[serde(default)]` 旧文件无此字段照读。
     #[serde(default)]
     pub ty: Option<String>,
@@ -202,7 +202,7 @@ pub struct CaptureSpec {
     /// 上行通道（v1 唯一值 hook_capture）。
     #[serde(default)]
     pub emit: Option<EmitSink>,
-    /// 逐层 hook 收敛链（§7.5）：稳定锚点起逐层推进到数据产生点。
+    /// 逐层 hook 收敛链：稳定锚点起逐层推进到数据产生点。
     /// 链长上限 [`CHAIN_CAP`]，`Profile::validate` 强制。
     #[serde(default)]
     pub chain: Vec<ChainStep>,
@@ -266,7 +266,7 @@ pub enum FieldBase {
 impl FieldType {
     /// 单元素字节数（数组整体大小 = size_of * array_len）。
     ///
-    /// BUG-20261028-123：返回 u64——u32 乘法在 `u64[536870913]` 这类大
+    /// 返回 u64——u32 乘法在 `u64[536870913]` 这类大
     /// 数组上回绕（8×(2^29+1) mod 2^32 = 8），debug panic / release 静默
     /// 变小，validate 的越界闸随之失效（decode 面 with_capacity 巨量分配
     /// 打爆进程）。u64 真值下 validate 按实际大小 loud 拒绝。
@@ -353,7 +353,7 @@ impl FieldType {
 pub struct FieldDef {
     pub offset: u32,
     pub name: String,
-    /// JSON 键保持 `"type"`（对齐总控 §6.2 schema 草案）；`type_` 只是
+    /// JSON 键保持 `"type"`（对齐总控 schema 草案）；`type_` 只是
     /// Rust 关键字回避。
     #[serde(rename = "type")]
     pub type_: FieldType,
@@ -400,7 +400,7 @@ pub enum RunPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ToolAction {
-    /// 只能是 §5 原语（未知原语 loud 拒绝——profile 是数据不是脚本）。
+    /// 只能是 原语（未知原语 loud 拒绝——profile 是数据不是脚本）。
     pub primitive: Primitive,
     /// 地址模板："struct:Name"（结构驻留）/ "fn:语义名"（已标注函数）。
     pub addr: String,
@@ -415,7 +415,7 @@ pub struct ToolAction {
     /// call_fn 超时毫秒（看门狗；缺省 5000）。
     #[serde(default)]
     pub timeout_ms: Option<u64>,
-    /// 报警条件（最小 DSL，M2 实现；这里只做非空 + 字符集校验）。
+    /// 报警条件（最小 DSL， 实现；这里只做非空 + 字符集校验）。
     #[serde(default)]
     pub notify: Option<NotifyRule>,
 }
@@ -440,7 +440,7 @@ pub enum PollMode {
 pub struct NotifyRule {
     /// 条件表达式，如 "state==ALERT" / "value>90"。v1 DSL：字段名 + 比较符
     /// （==/!=/>/>=/</<=）+ 字面量（数或短标识符）。语法校验在这里，
-    /// 求值在 PollScheduler（M2）。
+    /// 求值在 PollScheduler。
     pub on: String,
     /// 出站通道（缺省 = 默认出站）。
     #[serde(default)]
@@ -495,7 +495,7 @@ impl Profile {
                 self.schema_version, SCHEMA_VERSION
             ));
         }
-        // BUG-20261103-329：profile_id 形态闸单一真相源（is_valid_profile_id
+        // profile_id 形态闸单一真相源（is_valid_profile_id
         // ——与 store::assert_id 同源）。此前只查前缀：load 只 assert 请求侧
         // id，手改盘上 profile.json 的内部 id（`zw-pro-../../evil` 形态）
         // 经 validate 畅通入会话键 / capture / snapshots 路径消费面。
@@ -509,7 +509,7 @@ impl Profile {
             return Err("profile name 不得为空".to_string());
         }
 
-        // BUG-20261028-125：结构按名引用（struct:/capture.decode）——重名即
+        // 结构按名引用（struct:/capture.decode）——重名即
         // 引用歧义，与 tool_name 唯一性同一不变量。在位去重收集，重名 loud。
         let mut struct_names: std::collections::HashSet<&str> = Default::default();
         for ds in &self.data_structures {
@@ -527,7 +527,7 @@ impl Profile {
                 return Err(format!("结构 {} size=0 非法", ds.name));
             }
             for f in &ds.fields {
-                // BUG-20261028-123：u64 真值比较（u32 乘法回绕曾使该闸失效）；
+                // u64 真值比较（u32 乘法回绕曾使该闸失效）；
                 // u64 域内无溢出（最大 4G offset + 34G size）。
                 let end = u64::from(f.offset) + f.type_.size_of();
                 if end > u64::from(ds.size) {
@@ -543,7 +543,7 @@ impl Profile {
             }
         }
 
-        // BUG-20261028-125：函数语义名按名引用（锚/fn:/call_fn/hook）——
+        // 函数语义名按名引用（锚/fn:/call_fn/hook）——
         // 重名即引用歧义（recover_confirm 的接受集、地址查表都按它索引）。
         let mut fn_names: std::collections::HashSet<&str> = Default::default();
         for f in &self.functions {
@@ -741,9 +741,9 @@ pub fn is_valid_tool_name(name: &str) -> bool {
             .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_')
 }
 
-/// profile_id 形态判定（单一真相源）：`zw-pro-` 前缀 + ≤64 字符 +
+/// profile_id 形态判定：`zw-pro-` 前缀 + ≤64 字符 +
 /// ASCII alnum/`-`/`_`。`Profile::validate` 与 `store::assert_id` 同源
-/// 消费——BUG-20261103-329：validate 此前只查前缀，手改 profile.json 的
+/// 消费——：validate 此前只查前缀，手改 profile.json 的
 /// 内部 id（load 只 assert 请求侧 id）可携 `..`/路径分隔符进会话键与
 /// capture/snapshots 路径消费面逃逸。
 pub fn is_valid_profile_id(id: &str) -> bool {
@@ -762,7 +762,7 @@ fn validate_rel_dest(dest: &str) -> Result<(), String> {
     if p.is_absolute() {
         return Err(format!("output.dest {dest:?} 须为相对路径"));
     }
-    // BUG-20261028-124：Windows 保留设备名清单（与 image_gen_tool /
+    // Windows 保留设备名清单（与 image_gen_tool /
     // connectors::manifest / skills::types 同族纪律——此前注释声称对齐
     // image_gen，代码却只拦冒号，22 名漏检）。逐组件按「首个点之前」的
     // stem 判定、大小写不敏感精确比对：`con.txt`/`nul` 会落到设备而非
@@ -794,7 +794,7 @@ fn validate_rel_dest(dest: &str) -> Result<(), String> {
 
 /// notify.on 最小条件 DSL 语法校验：`字段 比较符 字面量`，字段名
 /// `[A-Za-z_][A-Za-z0-9_]*`，比较符 ==/!=/>/>=/</<=，字面量为整数/小数/短标识符。
-/// 求值在 M2 PollScheduler；这里只拦语法（loud）。
+/// 求值在 PollScheduler；这里只拦语法（loud）。
 pub fn validate_notify_expr(expr: &str) -> Result<(), String> {
     let expr = expr.trim();
     let ops = ["==", "!=", ">=", "<=", ">", "<"];

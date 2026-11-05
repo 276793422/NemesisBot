@@ -17,7 +17,7 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use base64::Engine;
 use nemesis_board::BoardStore;
 // ⏸ 暂缓评论去重标记（闭环-13 从本文件上移）：停车判定 SQL
-// 与 sweep 落评论共用单一真相源，消灭跨 crate 字面量漂移面。
+// 与 sweep 落评论共用统一定义，消灭跨 crate 字面量漂移面。
 use nemesis_board::PARK_NOTICE_MARK;
 use nemesis_board::assignment::{Actor, AssignmentType};
 use nemesis_board::models::{
@@ -178,9 +178,9 @@ impl ModuleHandler for BoardHandler {
                 let data = data.ok_or("missing data")?;
                 let issues = store.list_issues(&build_filter(&data)?)?;
                 let total = issues.len();
-                // goal /：逐单附环节（issue_stage 单一真相源）——前端
+                // goal /：逐单附环节（issue_stage 统一定义）——前端
                 // 子单行环节徽标数据源；加法变更，旧前端兼容。
-                // §1.1 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
+                // 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
                 // 的单附 `planning: {elapsed_secs, attempt, phase}`（纯展示叠
                 // 加，不改 issue 状态机——backlog 语义不变）。phase=
                 // planning（planner LLM 运行中）/ dispatching（auto_confirm
@@ -363,7 +363,7 @@ impl ModuleHandler for BoardHandler {
                     "online_nodes": online_nodes,
                 })))
             }
-            // U-C（§9.3）：单子全链路时间线（可追溯查询面——终结
+            // U-C：单子全链路时间线（可追溯查询面——终结
             // 「人查 4 个库」）。聚合入口与 dossier timeline.md 同源
             // （nemesis-board::timeline）；集群侧事件（任务结果 / 续行快照
             // 在场）在此注入。按 (ts, source_rank) 升序。
@@ -616,7 +616,7 @@ impl ModuleHandler for BoardHandler {
             // get 单查；TTL 惰性过滤与插入点同判据）。
             "plan.list" => plan_list(&store, data),
             "plan.get" => plan_get(data),
-            // 取消单清理（/）：批量给已取消单打 hidden 标记（永久收起，
+            // 取消单清理：批量给已取消单打 hidden 标记（永久收起，
             // 列表面无放行口）。只认 status=cancelled——混入非取消单整体拒绝
             //（不是跳过，语义诚实）；前端二次确认后调用；逐单写
             // issue_bulk_archive 审计。
@@ -662,7 +662,7 @@ impl ModuleHandler for BoardHandler {
                     project_id: data.get("project_id").and_then(|v| v.as_i64()),
                     target: get_opt_str(&data, "target").unwrap_or_default(),
                     enabled,
-                    // 全自动流转 ：建单后自动 planner 拆解（默认 false，
+                    // 全自动流转：建单后自动 planner 拆解（默认 false，
                     // 存量前端不传时行为不变）。
                     auto_plan: data
                         .get("auto_plan")
@@ -1085,7 +1085,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "updated": true, "project": project }),
                 ))
             }
-            // 看板项目档案 ：打开档案目录。只放行 board 项目注册表
+            // 看板项目档案：打开档案目录。只放行 board 项目注册表
             // （board.db Project.directory——绑定不可变、无修改入口）已知路径，
             // 前端不可传任意路径；系统文件管理器打开（复用 projects 模块的
             // open_in_file_manager：CREATE_NO_WINDOW spawn 不等待）。
@@ -1423,7 +1423,7 @@ impl ModuleHandler for BoardHandler {
                 let hook = REVIEW_RETRIGGER_HOOK.get().ok_or(
                     "评审重触发钩子未安装（gateway 未装配 board 评审依赖或非 master 节点）",
                 )?;
-                // 留痕：人工触发记录进单据（决策流/审计可见）——必须在
+                // 留痕：人工触发记录进单据（决策流/审计可）——必须在
                 // hook 发车之前落库（评审侧循环升级防抖守卫靠「升级后有
                 // admin 活动」放行人工复评）。
                 tracing::info!(
@@ -1557,7 +1557,7 @@ impl ModuleHandler for BoardHandler {
     }
 }
 
-/// 全自动流转 ：board 配置段白名单写入。typed 改字段 → 重序列化
+/// 全自动流转：board 配置段白名单写入。typed 改字段 → 重序列化
 /// round-trip 验证（与 `config.set_field` 同契约：字段没活下来就 loud 拒绝，
 /// 不谎报 updated）→ live/盘双路保存。白名单外键拒绝（配置页不作为任意
 /// 配置写入口）。保存后热生效：消费点（load_board_flags/plan 自动发车/
@@ -1614,7 +1614,7 @@ fn board_config_set(
             // worker × 任务类型成功率指纹三档权重）。
             "fingerprint_weighting" => board.fingerprint_weighting = need_bool(value)?,
             // 三档化：off/role/full（默认 role=丢职能保角色）；
-            // 旧布尔 false/true 兼容接收（→off/full），写盘统一为字符串档位。
+            // 旧布尔 false/true 兼容接收（off/full），写盘统一为字符串档位。
             "dispatch_fallback" => {
                 board.dispatch_fallback = serde_json::from_value(value.clone()).map_err(|e| {
                     format!("dispatch_fallback 需要 \"off\"|\"role\"|\"full\"（或旧布尔）: {e}")
@@ -1716,7 +1716,7 @@ fn board_config_set(
                     u32::try_from(value.as_u64().ok_or("review.max_turns 需要非负整数")?)
                         .map_err(|_| "review.max_turns 超出 u32 范围")?;
             }
-            // 连续 UNSURE 停车阈值（0=不限；用户 ：设置页缺旋钮）。
+            // 连续 UNSURE 停车阈值（0=不限；用户：设置页缺旋钮）。
             "review.max_unsure_streak" => {
                 board.review.max_unsure_streak = u32::try_from(
                     value
@@ -1993,7 +1993,7 @@ mod tests;
 mod l23_tests;
 
 // 机械拆分：按域分文件。纯代码搬家，行为零变更；
-// 各子模块项经 pub use 保持原 handlers::board:: 路径不变。
+// 各子模块项经 pub use 保持原 handlers::board:路径不变。
 mod cascade;
 mod dispatch;
 mod plan;

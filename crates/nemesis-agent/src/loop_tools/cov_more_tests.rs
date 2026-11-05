@@ -1,5 +1,5 @@
 //! Wave4 覆盖率补充批次（loop_tools.rs 纯助手与执行原语）：
-//! - `exec_output_passed` / `exec_timeout_secs`（失败形态判定单一真相源）
+//! - `exec_output_passed` / `exec_timeout_secs`（失败形态判定统一定义）
 //! - `preview_chars` / `binary_file_summary`（magic 分派三臂）
 //! - `resolve_tool_path`（有界/无界两形态）
 //! - `count_labeled_numbers`（四标签臂 + any 信号）
@@ -304,7 +304,7 @@ async fn run_one_stage_timeout_kills_grandchild_tree() {
     assert!(dead, "超时后孙进程 pid={} 仍存活——树杀未落地", gc_pid);
 }
 
-/// 平台进程存活检查（locale 无关；同 background_registry:tests 模式）。
+/// 平台进程存活检查（locale 无关；同 background_registry::tests 模式）。
 #[cfg(target_os = "windows")]
 fn process_alive(pid: u32) -> bool {
     let out = std::process::Command::new("tasklist")

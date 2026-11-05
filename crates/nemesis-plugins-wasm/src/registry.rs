@@ -90,7 +90,7 @@ impl PolicyMetaSnapshot {
 }
 
 /// flow 步骤元数据快照（注册进宿主的唯一事实源；来自安装期
-/// get-step-metadata 对账，2026-11-03 guest step 批）。flow 引擎路由按此
+/// get-step-metadata 对账， guest step 批）。flow 引擎路由按此
 /// 对账——模板引用的 op 必须在词表内（越权 kind = 诚实拒绝）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StepMetaSnapshot {
@@ -113,7 +113,7 @@ pub struct RegisteredPlugin {
     pub tool_meta: Option<ToolMetaSnapshot>,
     /// 策略接管快照（kind=policy 必有）。
     pub policy_meta: Option<PolicyMetaSnapshot>,
-    /// flow 步骤元数据快照（kind=flow-step 必有；2026-11-03 guest step 批）。
+    /// flow 步骤元数据快照（kind=flow-step 必有； guest step 批）。
     pub step_meta: Option<StepMetaSnapshot>,
     /// 宿主日志环形缓冲。
     pub logs: Arc<PluginLogBuffer>,
@@ -159,7 +159,7 @@ pub struct PluginManager {
     invoker: Mutex<Option<Arc<dyn crate::host_impl::HostToolInvoker>>>,
     /// 杂务 LLM 补全面（gateway 装配后注入；policy 帧消费）。
     llm: Mutex<Option<Arc<dyn LlmInvoker>>>,
-    /// 凭据写回面（gateway 装配后注入；仅 Panel 帧授予消费——2026-11-03
+    /// 凭据写回面（gateway 装配后注入；仅 Panel 帧授予消费——
     /// 自持写通道批；None 保持 = secret-set 恒 unavailable）。
     secret_writer: Mutex<Option<Arc<dyn SecretWriter>>>,
     /// 实例配置写回面（gateway 装配后注入；同上；None 保持 = config-set
@@ -220,7 +220,7 @@ pub fn resolve_plugins_wasm_dir() -> PathBuf {
     fallback
 }
 
-/// 旧载荷一次性迁移（2026-10-22 前落位点 `<workspace>/plugins/`）：整树
+/// 旧载荷一次性迁移（前落位点 `<workspace>/plugins/`）：整树
 /// 并入解析出的 `plugins_wasm/`。触发条件 = 旧树 `lockfile.json` 在场；
 /// 同名冲突（目标 slug 目录/lockfile 已在）= 该条目留守 + WARN。迁毕清理
 /// 残留旧目录（韧性删除，Windows 句柄占用重试）。幂等：旧 lockfile 不在
@@ -307,7 +307,7 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
 
 impl PluginManager {
     /// 构建管理器（生产路径：载荷目录走 [`resolve_plugins_wasm_dir`]——
-    /// exe 旁 `plugins_wasm/`，用户一眼可见）。宿主壳自动选路 + 进程缓存
+    /// exe 旁 `plugins_wasm/`，用户一眼可）。宿主壳自动选路 + 进程缓存
     /// 装载；生产 gateway 装配走 [`Self::new_with_host_path`]（闸获准路径
     /// 定点装载——验签对象即装载对象）。壳缺席 = `NotAvailable`（诚实降级）。
     /// 测试一律走 [`Self::new_with_dirs`]（显式注入，杜绝共享真实路径串扰）。
@@ -349,7 +349,7 @@ impl PluginManager {
         })
     }
 
-    /// 定点构建（R1 整改）：宿主壳从**闸获准路径**装载（native_plugins
+    /// 定点构建：宿主壳从**闸获准路径**装载（native_plugins
     /// enforce 验签通过的那个文件），绕过自动选路与进程装载缓存。载荷目录
     /// 走生产解析。装载/符号绑定/ABI 握手失败 = `NotAvailable`（调用方诚实
     /// 降级）。
@@ -433,7 +433,7 @@ impl PluginManager {
     }
 
     /// 装配凭据写回面（gateway 在 vault 就绪后调用；仅 Panel 帧授予消费
-    /// ——2026-11-03 自持写通道批。None 保持 = secret-set 恒 unavailable）。
+    /// —— 自持写通道批。None 保持 = secret-set 恒 unavailable）。
     pub fn set_secret_writer(&self, writer: Arc<dyn SecretWriter>) {
         *self.secret_writer.lock() = Some(writer);
     }
@@ -601,7 +601,7 @@ impl PluginManager {
                 "policy plugin missing metadata snapshot".into(),
             ));
         }
-        // 面板注册面（2026-10-31 面板扩展批）：不携 tool/policy 元数据
+        // 面板注册面（面板扩展批）：不携 tool/policy 元数据
         // （扩展点本体 = ui/flow 声明面 + 可选 guest 命令通道，不走这两张
         // 快照）；有载荷面板必须有编译句柄，纯声明式用 0 哨兵（无组件可
         // drop，壳对 0 容忍）；路由跨插件唯一（前端 /panel/<route> 动态
@@ -631,7 +631,7 @@ impl PluginManager {
                 }
             }
         }
-        // flow 步骤注册面（2026-11-03 guest step 批；2026-11-03 组合 world
+        // flow 步骤注册面（guest step 批； 组合 world
         // 批放宽到 kind=panel）：必须携 step 元数据快照（扩展点本体 =
         // run-step 出口，安装期 get-step-metadata 对账产物）；kind 词表非空
         // + 形态校验（运行期路由按此对账，越权 kind 诚实拒绝）。组合
@@ -743,7 +743,7 @@ impl PluginManager {
 
     fn build_frame(&self, reg: &RegisteredPlugin, observer_frame: bool) -> CallFrame {
         let config = self.instance_config(reg);
-        // egress 每帧现渲染（2026-11-03 自持写通道批）：manifest 字面条目 +
+        // egress 每帧现渲染（自持写通道批）：manifest 字面条目 +
         // `{{config.<key>}}` 整条目 token（实例配置 = schema 缺省值 ∪ 操作员
         // 覆盖；解析失败条目丢弃——allowlist 空 = 能力整体关闭）。config.set
         // 写盘后下一帧即生效（fresh-store-per-call 无驻留）。
@@ -778,9 +778,9 @@ impl PluginManager {
             egress,
             invoker: self.invoker.lock().clone(),
             // LLM 面授予（供给面单一裁决点；调用时闸在 cb_llm_complete 再收
-            // 一道纵深）：policy 帧按 kind 硬规则授（2026-10-24 R70 帧纪律）；
+            // 一道纵深）：policy 帧按 kind 硬规则授（帧纪律）；
             // panel 帧走双闸 = manifest `[permissions] x-llm` 声明 × 宿主总闸
-            // `panel_llm_enabled`（2026-11-01 决策 C；总闸每调用现读无缓存
+            // `panel_llm_enabled`（决策 C；总闸每调用现读无缓存
             // ——翻转即时生效，帧是 fresh-store-per-call 无驻留会话）。
             // tool/observer 帧构造期即 None。
             llm: match *reg.manifest.kind {
@@ -798,7 +798,7 @@ impl PluginManager {
             // 自持写通道授予（供给面单一裁决点；调用时闸在 cb_secret_set /
             // cb_config_set 再收一道纵深）：仅 Panel 帧（面板命令通道 = 用户
             // 意志入口）授予；tool/observer/policy/flow-step 帧构造期即 None
-            //（2026-11-03 自持写通道批）。writer 未装配 = None 恒 unavailable。
+            //（自持写通道批）。writer 未装配 = None 恒 unavailable。
             secret_write: match *reg.manifest.kind {
                 PluginKind::Panel => self.secret_writer.lock().clone(),
                 _ => None,
@@ -940,7 +940,7 @@ impl PluginManager {
                 "wasm plugin subsystem disabled".into(),
             ));
         }
-        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关 = 本注释
+        // 运行期总闸（BUG 修复）：总闸/宿主壳开关翻关 = 本注释
         // 承诺的「子系统总开关关」臂——此前只实装了 estop 臂，策略面在翻关
         // 后仍会咨询 guest。NotAvailable 语义下调用方静默回退内置策略
         // （PolicyBridge 已有映射），开关改回即时恢复。
@@ -958,8 +958,8 @@ impl PluginManager {
     /// 投递一次 flow 插件步骤（flow 引擎入口；slug+op 对账自安装期元数据
     /// 快照——模板引用的 op 必须在组件自报词表内，越权 kind 诚实拒绝）。
     ///
-    /// 责任划分（2026-11-03 拍板）：幂等/重试防重在 guest（宿主每 tick
-    /// 重投，入参带 attempts）；审批一次在安装期漏斗，运行期不弹卡。闸链
+    /// 责任划分：幂等/重试防重在 guest（宿主每 tick
+    /// 重投，入参带 attempts）；审次在安装期漏斗，运行期不弹卡。闸链
     /// 与 call_policy_point 同构：装载存在性 → kind → op 对账 → 子系统总
     /// 开关 → 插件开关 → 运行期总闸 → 审计 → 帧投递。
     pub async fn run_flow_step(
@@ -973,7 +973,7 @@ impl PluginManager {
                 "flow step plugin not loaded: {slug}"
             )));
         };
-        // kind 闸（2026-11-03 组合 world 批放宽）：flow-step world 或组合
+        // kind 闸（组合 world 批放宽）：flow-step world 或组合
         // world（kind=panel 双导出 flow-step）均可投递——组合插件的步骤面
         // 在注册表以 step_meta 快照认（无快照的纯面板由下一道 op 对账拒）。
         if !matches!(*reg.manifest.kind, PluginKind::FlowStep | PluginKind::Panel) {
@@ -1026,7 +1026,7 @@ impl PluginManager {
         if !self.is_enabled() {
             return;
         }
-        // 运行期总闸（2026-11-01 BUG 修复）：总闸/宿主壳开关翻关后观察者
+        // 运行期总闸（BUG 修复）：总闸/宿主壳开关翻关后观察者
         // 泵静默停投（fire-and-forget 语义一致）；开关改回即时恢复。
         if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
             return;
@@ -1037,10 +1037,10 @@ impl PluginManager {
             }
             let q = self.observers.lock().get(&reg.manifest.slug).cloned();
             let Some(q) = q else {
-                // 队列缺位只发生在 register 的摘旧插新窗口（L301 remove →
+                // 队列缺位只发生在 register 的摘旧插新窗口（remove →
                 // insert 之间 enqueue 见 reg 在 map、队列还没有）。静默丢弃
                 // 是设计（fire-and-forget），但 Observer 类要补计数——否则
-                // 「事件去哪了」不可观测（2026-09-30 复查 #8）。tool 类本无
+                // 「事件去哪了」不可观测（复查 #8）。tool 类本无
                 // 队列，计数会误导，不补。
                 if *reg.manifest.kind == PluginKind::Observer {
                     reg.dropped_events.fetch_add(1, Ordering::Relaxed);
@@ -1065,7 +1065,7 @@ impl PluginManager {
         tokio::spawn(async move {
             while let Some(event_json) = rx.recv().await {
                 let Some(mgr) = mgr.upgrade() else { break };
-                // 运行期总闸（2026-11-01 BUG 修复）：入队闸只挡新增，翻关
+                // 运行期总闸（BUG 修复）：入队闸只挡新增，翻关
                 // 前已排队的在途事件由这里兜住——「翻关后 guest 不执行任何
                 // 代码」的严格口径。丢弃与入队满丢语义一致（fire-and-forget
                 // 事件无回执）；开关改回即时恢复投递。
@@ -1133,7 +1133,7 @@ impl PluginManager {
     /// 盘上载荷目录的 manifest（未加载也可读——config-schema 校验与
     /// 列表投影都靠它，不要求注册表在场）。
     ///
-    /// slug 在拼路径**前**过 `valid_slug`（BUG-HUNT R37 读写对称性补齐）：
+    /// slug 在拼路径**前**过 `valid_slug`（读写对称性补齐）：
     /// 本 crate 纪律是 WSAPI 可达 slug 先校验再碰路径（set_enabled /
     /// set_config_key / unset_config_key 均有），漏了本读路径——
     /// `plugins.wasm.config.get` 传 `../../x` / `C:x` 时 join 越界且

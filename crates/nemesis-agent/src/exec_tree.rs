@@ -254,7 +254,7 @@ pub(crate) fn kill_session_trees(session_key: &str) -> usize {
         .count()
 }
 
-/// estop 联动入口（Batch 2 ③ 执行面 sweep）：终止**全部会话**在飞 exec 树。
+/// estop 联动入口（执行面 sweep）：终止**全部会话**在飞 exec 树。
 /// gateway 侧 estop watcher 挂在全局 estop 状态上（不分 session）——急停
 /// 冻结的是整个进程的全部 agent 活动，任何会话的在飞子进程树都应被收，
 /// 不能只靠逐会话 kill_session_trees（watcher 拿不到「哪些会话在飞」的

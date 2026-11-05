@@ -1,4 +1,4 @@
-//! 桥集群身份注册测试（goal 二期批次五）。
+//! 桥集群身份注册测试（goal 二期）。
 //!
 //! 覆盖：online 注册（同权进 registry）/ offline 标离线 / rpc_port==0
 //! 闸（不注册）/ 纯隧道事件（无集群身份）不动 registry / 顶替重连幂等。
@@ -135,7 +135,7 @@ fn replacement_reconnect_is_idempotent() {
     );
 }
 
-// via-bridge 哨兵（hub 侧对称标记，2026-09-20）：hub 注册的桥入设备与
+// via-bridge 哨兵（hub 侧对称标记）：hub 注册的桥入设备与
 // 设备侧 member_sync 合并的成员（bridge_rpc）两侧都能回答「怎么接入的」。
 #[test]
 fn registered_node_is_tagged_via_bridge() {

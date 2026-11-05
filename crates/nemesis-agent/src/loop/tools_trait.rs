@@ -71,7 +71,7 @@ pub trait Tool: Send + Sync {
 
     /// Return the JSON schema for this tool's parameters.
     /// Mirrors Go's Tool.Parameters() map[string]interface{}.
-    /// Should return a serde_json:Value representing an OpenAI-compatible
+    /// Should return a serde_json::Value representing an OpenAI-compatible
     /// JSON Schema object (e.g., {"type": "object", "properties": {...}}).
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({"type": "object", "properties": {}})
@@ -98,7 +98,7 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// ：checkpoint 预检多点版——默认与 [`Tool:preview`]
+    /// checkpoint 预检多点版——默认与 [`Tool::preview`]
     /// 等价（单文件）；multiedit 覆盖为逐文件清单，让检查点安全网在一次
     /// dispatch 内快照全部待改文件。调用点（瀑布）只消费本方法。
     fn preview_all(&self, args: &str) -> Vec<FileChange> {
@@ -116,7 +116,7 @@ pub trait Tool: Send + Sync {
     }
 
     /// (devtool-upgrade): whether this tool may join the
-    /// parallel pre-execution pool. Default = [`Self:is_read_only`] —
+    /// parallel pre-execution pool. Default = [`Self::is_read_only`] —
     /// pure reads stay the only automatic joiners. Override to `true` only
     /// for tools whose concurrent execution is safe by construction: the
     /// spawn tool opts in because (a) every pool dispatch injects the
@@ -172,7 +172,7 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// [`Tool:operation_override`] 的投影载荷。
+/// [`Tool::operation_override`] 的投影载荷。
 #[derive(Debug, Clone)]
 pub struct OperationOverride {
     /// op_type Display slug（如 `"process_exec"`；管线经
@@ -264,9 +264,9 @@ impl AgentLoop {
     }
 
     /// （WASM 插件框架）：注册插件工具桥（gateway 装配期 + 热装回调共用；
-    /// `&self` + 内部写锁，与 [`Self:register_mcp_tool`] 同模式）。撞名时
+    /// `&self` + 内部写锁，与 [`Self::register_mcp_tool`] 同模式）。撞名时
     /// 诚实改名 `_2/_3…`（返回实际注册名）。操作类型声明由调用方按 guest
-    /// `operation_type` 声明（[`Self:register_mcp_tool`] 的 FileRead 基线
+    /// `operation_type` 声明（[`Self::register_mcp_tool`] 的 FileRead 基线
     /// 不适用——插件有精确声明）。
     pub fn register_plugin_tool(&self, name: String, tool: Arc<dyn Tool>) -> String {
         let mut tools = self.tools.write();
@@ -302,9 +302,9 @@ impl AgentLoop {
     }
 
     /// 工具接管层：按名摘出注册工具（Arc 所有权转移）——
-    /// 接管 wrapper 双态持有内置实例的前提（注册后 `Box` 已 `Arc:from`，
+    /// 接管 wrapper 双态持有内置实例的前提（注册后 `Box` 已 `Arc::from`，
     /// 唯一取回路径）。摘除后注册表短暂缺席，调用方须紧随 wrapper 注册
-    ///（[`Self:register_plugin_tool`] 同名回插）。非在册名返回 None。
+    ///（[`Self::register_plugin_tool`] 同名回插）。非在册名返回 None。
     pub fn take_tool(&self, name: &str) -> Option<Arc<dyn Tool>> {
         self.tools.write().remove(name)
     }
@@ -319,7 +319,7 @@ impl AgentLoop {
         self.tools.read().keys().cloned().collect()
     }
 
-    /// ：按名取注册工具的 `parameters()` JSON。项目 loop
+    /// 按名取注册工具的 `parameters()` JSON。项目 loop
     /// 工厂测试用它对两 loop 的共有工具逐同名比对 schema 字节一致（prompt
     /// cache 契约——同名工具 schema 漂移会让切会话组的请求缓存全失效）。
     /// None = 未注册。
@@ -327,7 +327,7 @@ impl AgentLoop {
         self.tools.read().get(name).map(|t| t.parameters())
     }
 
-    /// ：注入 per-agent 浏览器 profile（须在
+    /// 注入 per-agent 浏览器 profile（须在
     /// `enable_mcp_reload` 之前——装配期随 manager 转 MCP spawn 链）。
     /// None = env 回落语义（主/项目 loop 恒 None）。
     pub fn set_browser_profile(&mut self, profile: Option<String>) {
@@ -346,7 +346,7 @@ impl AgentLoop {
     /// the manager checks if the config file changed and loads new servers.
     pub fn enable_mcp_reload(&mut self, config_path: std::path::PathBuf) {
         let mut mgr = nemesis_mcp::manager::McpManager::new(config_path);
-        // ：per-agent 浏览器 profile 随 manager 走——
+        // per-agent 浏览器 profile 随 manager 走——
         // 启动全量挂载与后续热重载补挂都经 mgr.discover_tools 单点消费
         // （注入与否的 opt-in 闸在 transport 侧按 server 配置执行）。
         mgr.set_browser_profile(self.browser_profile.clone());
@@ -519,7 +519,7 @@ impl AgentLoop {
     /// (class C, not a schema failure).
     ///
     /// 循环策略槽（WASM 样板工程）：校验裁决先过
-    /// [`crate:r#loop:policy:ValidationPolicy`]——`Builtin` 裁决走下方
+    /// [`crate::r#loop::policy:ValidationPolicy`]——`Builtin` 裁决走下方
     /// 内置 schema 校验 + autofix；`Valid`/`Fixed`/`Reject` 由宿主映射为
     /// 同形态 `Outcome`（Reject 按 schema violation 类计，计 failure 预算）。
     /// 串行（tool_batch）与并行（tool_defs 预计算）两路共用本入口。
@@ -566,7 +566,7 @@ impl AgentLoop {
 // ---------------------------------------------------------------------------
 
 /// (devtool-upgrade)：从「配置的 server 名 × 已注册工具键」正推
-/// 已注册前缀。与 [`nemesis_mcp:manager:McpManager:find_new_servers`] 的
+/// 已注册前缀。与 [`nemesis_mcp::manager:McpManager::find_new_servers`] 的
 /// 前缀计算同源（`mcp_<sanitize(server)>_`），再看工具表里有没有以它开头
 /// 的键。旧实现从注册键反推切分（数下划线取 [2]）：`underscores[2]` 是
 /// 第 3 个下划线，注释声称 `mcp_<srv>_` 实则多切一段（server 或工具名含

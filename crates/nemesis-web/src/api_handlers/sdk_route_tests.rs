@@ -101,7 +101,7 @@ async fn test_sdk_pip_route_serves_sdist_zip() {
 
 /// Prove the routes are wired into the REAL router that the gateway serves
 /// (not just the minimal test router above). Same construction as
-/// server::tests::test_build_router.
+/// server::tests:test_build_router.
 #[tokio::test]
 async fn test_sdk_routes_registered_in_full_router() {
     let config = crate::server::WebServerConfig {

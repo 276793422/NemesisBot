@@ -21,7 +21,7 @@
 //!    池内死连接及其信号量槽位（防泄漏，非重连）。
 //!
 //! 代价语义：半开连接要到「第一次写失败/取用验活」才被发现——TCP 探活
-//! 的固有边界；主动可通信性检测由上层 G2 健康探针（frame 级 ping 过
+//! 的固有边界；主动可通信性检测由上层 健康探针（frame 级 ping 过
 //! AEAD）补齐，两者职责不同、互不替代。
 
 use std::collections::HashMap;
@@ -200,7 +200,7 @@ pub struct Pool {
     semaphore: std::sync::Arc<Semaphore>,
     node_counts: Mutex<HashMap<String, usize>>,
     active_count: AtomicUsize,
-    /// LOW-10（2026-10-17 四轮审计）：close() 幕帘——close 后迟到的
+    /// LOW-10（四轮审计）：close() 幕帘——close 后迟到的
     /// return_connection 不再触碰三账（active_count 已归零，fetch_sub 会
     /// 下溢、add_permits 会与 close 的归还需重新校准），只关连接 + 补还
     /// 许可，保持信号量与「池内全空」世界一致。
@@ -264,7 +264,7 @@ impl Pool {
                     self.dec_node_count(node_id);
                     return Ok((key, entry.conn));
                 }
-                // Connection is dead, remove it（T5，2026-10-17）：拨号时
+                // Connection is dead, remove it：拨号时
                 // permit.forget() 消耗的许可在此归还 + 节点计数回落——旧
                 // 代码只减 active_count，注释声称「许可留作复用」是谎话
                 //（forget 掉的许可拿不回来，随后的 dial 取的是新许可），
@@ -333,9 +333,9 @@ impl Pool {
         Ok((key, conn))
     }
 
-    // 注：get_with_context 已删除（2026-10-17 四轮审计）——生产零调用方
+    // 注：get_with_context 已删除（四轮审计）——生产零调用方
     // 的 test-only API，select 双 ready 竞态漏许可的分析结论见四轮审计
-    // 报告 §3；其测试语义由 get_with_timeout + 调用方超时覆盖。
+    // 报告；其测试语义由 get_with_timeout + 调用方超时覆盖。
 
     /// Remove and close a connection by key.
     pub fn remove(&self, key: &str) {
@@ -387,9 +387,9 @@ impl Pool {
         if conn.is_active() {
             let node_id = conn.node_id().to_string();
             let mut conns = self.conns.lock();
-            // 同 key 二次归还（BUG-20261105-027）：per-node limit 允许同
+            // 同 key 二次归还：per-node limit 允许同
             // node+address 并发租借多条连接（get 直接拨新、不走池），它们
-            // 的 key 相同；顺序归还时 HashMap::insert 的覆盖语义会 drop 池
+            // 的 key 相同；顺序归还时 HashMap:insert 的覆盖语义会 drop 池
             // 内旧连接，而旧连接在 dial 时 forget 的 permit 连同它的
             // node_count / active_count 一起永久蒸发——泄漏单位不在池内，
             // cleanup_dead 摸不到，反复并发调用即逼近
@@ -415,7 +415,7 @@ impl Pool {
                 },
             );
         } else {
-            // Connection is dead, release resources（T5：节点计数与许可、
+            // Connection is dead, release resources（节点计数与许可、
             // active_count 三账对齐回落，镜像 dial 的消耗）。
             let node_id = conn.node_id().to_string();
             conn.close();

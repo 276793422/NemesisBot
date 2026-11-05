@@ -37,7 +37,7 @@ async fn attach_slot_full() {
     let _ = m.attach(&profile, 0xFFFF_FFF1).await.unwrap_err();
     let _ = m.attach(&profile, 0xFFFF_FFF2).await.unwrap_err();
     // 单槽上限在 pending 清理正确时不应提前触发
-    // （真实上限测试在 M1 集成测试：双 dummy 会话并发）
+    // （真实上限测试在 集成测试：双 dummy 会话并发）
 }
 
 fn test_profile() -> Profile {
@@ -57,7 +57,7 @@ fn test_profile() -> Profile {
         .unwrap()
 }
 
-/// 统一文案契约（2026-11-03 BUG-1）：「未装配」错误必须同时说清原因
+/// 统一文案契约（BUG-1）：「未装配」错误必须同时说清原因
 /// （gateway 启动时 config 为 false / 非 gateway 非 Windows）与出路
 /// （改配置需重启 gateway 进程——OnceLock 槽进程级装配，agent 重建不
 /// 重新装配），杜绝此前三种括号注解漂移。

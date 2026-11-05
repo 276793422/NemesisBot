@@ -1,5 +1,5 @@
 //! Tests: spin up a local mock "real endpoint" (axum), start the proxy
-//! pointing at it, and verify pass-through + auth substitution + the A3
+//! pointing at it, and verify pass-through + auth substitution + the
 //! per-launch token gate.
 
 use axum::Router;
@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 
-/// 测试用的每启动 fake key（A3 闸比对基准）。
+/// 测试用的每启动 fake key（闸比对基准）。
 const FAKE: &str = "eval-fake-key-test";
 
 #[tokio::test]
@@ -61,7 +61,7 @@ async fn proxy_forwards_and_swaps_auth() {
     handle.shutdown().await;
 }
 
-// ==================== A3 每启动令牌闸 ====================
+// ==================== 每启动令牌闸 ====================
 
 #[tokio::test]
 async fn wrong_or_missing_token_is_401_without_upstream_contact() {
@@ -247,7 +247,7 @@ async fn api_base_points_at_local_proxy_v1() {
 
 #[tokio::test]
 async fn unreachable_upstream_returns_bad_gateway() {
-    // 挑一个保证无监听的回环端口：bind :0 后立刻 drop → 转发必被拒绝（确定性失败）
+    // 挑一个保证无监听的回环端口：bind:0 后立刻 drop → 转发必被拒绝（确定性失败）
     let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_port = dead.local_addr().unwrap().port();
     drop(dead);

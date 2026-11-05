@@ -3,7 +3,7 @@
 //! Each `AgentInstance` tracks the full conversation history for one session.
 //! History is strictly append-only in memory (summarization/compression no
 //! longer mutate it); bounding is the session store's responsibility (drop
-//! oldest with a C-aware index adjustment — see `SessionStore:trim_to_limit`).
+//! oldest with a C-aware index adjustment — see `SessionStore::trim_to_limit`).
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -295,7 +295,7 @@ impl AgentInstance {
     /// alongside instead of replacing the content.
     ///
     /// `tool_name` feeds the deterministic prune-marker recompute in
-    /// [`ConversationTurn:model_facing_content`] (the main agent loop knows
+    /// [`ConversationTurn::model_facing_content`] (the main agent loop knows
     /// the name at dispatch time). `projection` is the recorded override —
     /// set ONLY when the model-facing text cannot be recomputed from the
     /// original later: the spill tier (locator path embeds a wall-clock
@@ -457,7 +457,7 @@ impl AgentInstance {
 
     /// Replace the entire history with a new set of turns.
     ///
-    /// Preserves the system prompt that was set during `AgentInstance:new()`.
+    /// Preserves the system prompt that was set during `AgentInstance::new()`.
     /// When session data is loaded from disk (which only contains user + assistant
     /// messages), the system prompt must not be lost.
     pub fn set_history(&self, new_history: Vec<ConversationTurn>) {
@@ -598,7 +598,7 @@ impl AgentInstance {
     // -----------------------------------------------------------------------
 
     /// 子代理工具白名单快照（`None` = 非子代理 / 全量供给）。由
-    /// `AgentLoop:run_detached` 在派生时设置一次，只读不再变更。
+    /// `AgentLoop::run_detached` 在派生时设置一次，只读不再变更。
     pub fn detached_allowed_tools(&self) -> Option<Vec<String>> {
         self.detached_allowed_tools.lock().unwrap().clone()
     }
@@ -734,7 +734,7 @@ impl AgentInstance {
 
     /// Internal helper: push a turn. History is strictly append-only —
     /// bounding (with C-aware index adjustment) is the session store's job
-    /// (`SessionStore:trim_to_limit`), never the instance's, so that the
+    /// (`SessionStore::trim_to_limit`), never the instance's, so that the
     /// summary cache's `covers_up_to` index stays valid as history grows.
     fn push_turn(&self, turn: ConversationTurn) {
         let mut history = self.history.lock().unwrap();
@@ -745,6 +745,6 @@ impl AgentInstance {
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

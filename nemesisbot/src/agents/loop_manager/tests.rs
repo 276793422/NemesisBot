@@ -1,4 +1,4 @@
-//! AgentLoopManager 行为用例（G1，2026-10-18 三方复评整改批三）：诚实拒绝
+//! AgentLoopManager 行为用例（2026-10-18 三方复评）：诚实拒绝
 //! 面（不存在 / main / project / 未 active）+ NullProvider 全链路往返
 //! （mpsc 注入 → loop 消费 → 出站回包到发起 chat_id）+ remove 联动与
 //! 重建。全部 tempdir 真文件 + 内存可开的 tasks.db，LLM 面用无模型配置的
@@ -233,7 +233,7 @@ async fn remove_stops_loop_and_rebuild_works() {
     );
     let _loop1 = fx.manager.loop_for_agent(id).expect("first build");
     assert!(fx.manager.is_running(id));
-    // G2：manager 按 agent home 派生浏览器 profile 目录（单一真相源
+    // manager 按 agent home 派生浏览器 profile 目录（统一定义
     // nemesis-path），构建产物必须携带。
     {
         let built = fx.manager.loop_for_agent(id).expect("probe build");
@@ -257,7 +257,7 @@ async fn remove_stops_loop_and_rebuild_works() {
     assert!(!fx.manager.is_running(id));
 }
 
-// BUG-20261025-33：drain 面快照覆盖在跑 loop——gateway teardown 与主 loop
+// drain 面快照覆盖在跑 loop——gateway teardown 与主 loop
 // 同一窗口联合 drain 的取数面（此前 teardown 直接 abort 在途轮次）。
 #[tokio::test]
 async fn drain_snapshot_covers_running_agent_loops() {

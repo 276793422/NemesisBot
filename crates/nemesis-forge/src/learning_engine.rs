@@ -1,4 +1,4 @@
-//! Learning engine - closed-loop self-learning (Phase 6).
+//! Learning engine - closed-loop self-learning.
 //!
 //! Extracts patterns from collected experiences, generates learning actions
 //! (skill creation, prompt suggestions), and evaluates deployment outcomes.
@@ -28,14 +28,14 @@ use crate::registry::Registry;
 use crate::types::CollectedExperience;
 use nemesis_types::forge::LearningCycle;
 
-// 2026-10-16 复查（LE3）：`SkillCreator` trait 整体删除——它是 write-only
+// 复查：`SkillCreator` trait 整体删除——它是 write-only
 // 死接线：`set_skill_creator()` 有注入点（gateway ctx.rs + 测试），但字段
 // 从未被读取。技能创建实际路径：run_cycle ⑥ → 私有 `execute_create_skill`
 // （含 pipeline 臂：validate + refine 循环 + determine_status + registry
 // 登记 + workspace/skills 部署；no-pipeline 臂 = 本文件内联注册）。
 // 公开的 `execute_create_skill_action` 是同一逻辑的公开门面（当前仅测试
 // 与外部调用方使用）。保留一个「看起来已接线」的死委托只会误导读者以为
-// 有第三条创建路径。同类先例：A5 restrict_to_workspace 只声名未读取。
+// 有第三条创建路径。同类A5 restrict_to_workspace 只声名未读取。
 
 /// Detected pattern from experience analysis.
 #[derive(Debug, Clone)]
@@ -81,8 +81,8 @@ pub struct LearningAction {
     pub created_at: Option<String>,
     /// Execution timestamp (ISO 8601).
     pub executed_at: Option<String>,
-    /// Associated tool names from the triggering pattern（2026-10-16 复查
-    /// LE4：部署时 tool_signature 的直接来源——此前从 description 散文
+    /// Associated tool names from the triggering pattern（复查
+    /// 部署时 tool_signature 的直接来源——此前从 description 散文
     /// 按 `→` 反解析，而 pattern 描述是英文散文不含箭头，落库的是垃圾
     /// 尾词。pattern.tools 由检测器结构化携带，不再二次解析）。
     pub tools: Vec<String>,
@@ -285,7 +285,7 @@ impl LearningEngine {
             None => (Vec::new(), None),
         };
         if let Some(monitor) = monitor_for_traces {
-            // 审计 P0-F2（2026-10-22）：轨迹臂补全。TraceStore 里工具派发侧
+            // 审计 -：轨迹臂补全。TraceStore 里工具派发侧
             // 喂的 tool_call 事件此前零读者——在此读出并转成回话轨迹，走
             // evaluate_outcomes 的 before/after 实效对比（含 handle_verdict
             // 降级 + last_efficacy 写回）。与上面 evaluate_all 简模式并存：
@@ -319,7 +319,7 @@ impl LearningEngine {
 
         // Step 2: Adjust confidence based on feedback
         self.adjust_confidence_from_outcomes(&previous_outcomes);
-        // F-F2: take monitoring effect — disable the deployed skill file of any
+        // F-: take monitoring effect — disable the deployed skill file of any
         // artifact the monitor marked Degraded so the skills loader stops using
         // it. Without this the monitor's verdict had no teeth.
         self.disable_degraded_skills();
@@ -353,7 +353,7 @@ impl LearningEngine {
                     } else {
                         auto_count += 1;
                         self.execute_create_skill(&action);
-                        // F-M3: execute_create_skill takes &action (immutable),
+                        // F-: execute_create_skill takes &action (immutable),
                         // so it can't set action.status — count the action here
                         // once it runs past the max_auto gate. (Inner early-
                         // return paths are best-effort, but the action was
@@ -582,7 +582,7 @@ impl LearningEngine {
             };
             if let Some(delta) = delta {
                 self.registry.update(&outcome.artifact_id, |a| {
-                    // F-F1: adjust the dedicated success_rate field, NOT
+                    // F-: adjust the dedicated success_rate field, NOT
                     // usage_count — the old code treated the integer count as
                     // success_rate*100, corrupting its semantics.
                     a.success_rate = (a.success_rate + delta).clamp(0.0, 1.0);
@@ -591,17 +591,17 @@ impl LearningEngine {
         }
     }
 
-    /// Disable the deployed skill file for any Degraded artifact (F-F2). The
+    /// Disable the deployed skill file for any Degraded artifact (F-). The
     /// skills loader scans `workspace/skills/*/SKILL.md`, so renaming a
     /// degraded skill's `SKILL.md` → `SKILL.md.disabled` hides it from the
     /// agent (reversible: rename back to re-enable). This is the "rollback"
-    /// endpoint of the Phase 6 monitor→feedback loop — without it a bad learned
+    /// endpoint of the monitor→feedback loop — without it a bad learned
     /// skill stayed an active instruction forever.
     fn disable_degraded_skills(&self) {
         self.disable_degraded_skills_impl()
     }
 
-    /// Same as `disable_degraded_skills`, exposed for tests (F-F2 verification).
+    /// Same as `disable_degraded_skills`, exposed for tests (F- verification).
     pub(crate) fn disable_degraded_skills_impl(&self) {
         use nemesis_types::forge::{ArtifactKind, ArtifactStatus};
         let workspace = match self.forge_dir.parent() {
@@ -651,8 +651,8 @@ impl LearningEngine {
                 return;
             }
         };
-        // 落盘名统一过 slug 化（R17 防御纵深，与 store_distilled_draft 同一
-        // 规则单一真相源）：draft_name 源自经验聚合的工具链（generate_skill_name
+        // 落盘名统一过 slug 化（防御纵深，与 store_distilled_draft 同一
+        // 规则统一定义）：draft_name 源自经验聚合的工具链（generate_skill_name
         // 只 replace+lowercase，无字符白名单；error_recovery 分支直拼
         // tools.first()），下游有 3 个路径 join 点（forge/skills 落盘、
         // workspace/skills 部署、degraded 回滚 rename）。上游工具名当前
@@ -689,7 +689,7 @@ impl LearningEngine {
         // (round budget from config.learning.max_refine_rounds)
         let max_refine = self.config.learning.max_refine_rounds;
 
-        // F-M7: clone the Arc<Pipeline> out of the lock and drop the guard
+        // F-: clone the Arc<Pipeline> out of the lock and drop the guard
         // before the LLM round-trips (validate + refine loop). Holding the
         // pipeline Mutex across block_in_place LLM calls pins a runtime worker
         // and can panic on a current-thread runtime.
@@ -706,7 +706,7 @@ impl LearningEngine {
                 if new_status == nemesis_types::forge::ArtifactStatus::Active
                     || new_status == nemesis_types::forge::ArtifactStatus::Observing
                 {
-                    // F-S1 安全闸（2026-10-16 R16 同类扫）：部署前终态内容过
+                    // F- 安全闸（同类扫）：部署前终态内容过
                     // security_errors——refine 循环每轮产物都是 LLM 输出（不可
                     // 信输入），pipeline.validate_static 现已含危险命令面，此
                     // 处是纵深防御第二道（拦住未过 pipeline 的部署路径）。
@@ -719,7 +719,7 @@ impl LearningEngine {
                     }
 
                     // Passed — deploy by writing skill file and registering artifact
-                    // LE4：签名取结构化 pattern.tools（无则回落旧解析）
+                    // 签名取结构化 pattern.tools（无则回落旧解析）
                     let tool_sig = deploy_tool_signature(action);
 
                     // Write content to forge skills directory
@@ -763,7 +763,7 @@ impl LearningEngine {
                     return;
                 }
 
-                // Failed — refine, then loop to re-validate (F-C2: the old code
+                // Failed — refine, then loop to re-validate (F-: the old code
                 // discarded the refined draft `_refined` and returned after one
                 // attempt, so a skill that failed first validation could never
                 // deploy even after successful refinement).
@@ -786,7 +786,7 @@ impl LearningEngine {
                 }
             }
 
-            // 2026-10-16 复查（LE1）：耗尽 refine 轮数的失败注记只属于
+            // 复查：耗尽 refine 轮数的失败注记只属于
             // pipeline 臂——此前挂在 if/else 之后，no-pipeline 成功注册
             // draft 的路径也会穿透过来打「validation failed」说谎 warn。
             tracing::warn!(
@@ -870,13 +870,13 @@ impl LearningEngine {
     }
 
     /// Check if previously suggested prompts have been adopted (mirrors Go's checkSuggestionAdoption).
-    /// Test-only: probe whether the pipeline lock is currently free (F-M7).
+    /// Test-only: probe whether the pipeline lock is currently free (F-).
     #[cfg(test)]
     pub(crate) fn pipeline_try_lock_for_test(&self) -> bool {
         self.pipeline.try_lock().is_some()
     }
 
-    /// Test-only wrapper for check_suggestion_adoption (F-M1 verification).
+    /// Test-only wrapper for check_suggestion_adoption (F- verification).
     #[cfg(test)]
     pub(crate) fn check_suggestion_adoption_for_test(&self, patterns: &[DetectedPattern]) {
         self.check_suggestion_adoption(patterns);
@@ -892,7 +892,7 @@ impl LearningEngine {
                 .join("prompts")
         };
 
-        // F-M1: only retire prompt suggestions once at least one skill has
+        // F-: only retire prompt suggestions once at least one skill has
         // actually been deployed (Active/Observing). The old code wiped every
         // *_suggestion.md on each cycle, so suggestions never survived long
         // enough to be adopted. No precise adoption signal exists, so gate on
@@ -950,11 +950,11 @@ impl LearningEngine {
         );
 
         // 预算统一走 forge 侧常量（reflector_llm::AUX_FORGE_MAX_TOKENS，
-        // 2026-09-28 从 500 上调：旧值被 thinking 系模型烧穿，真机两稿全空）。
+        // 从 500 上调：旧值被 thinking 系模型烧穿，真机两稿全空）。
         let budget = crate::reflector_llm::AUX_FORGE_MAX_TOKENS as u32;
         Self::call_llm_sync(
             provider,
-            // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+            // 文本单一真相源在 `nemesis-prompts`（集中化）。
             nemesis_prompts::forge::SKILL_GENERATOR_SYSTEM_PROMPT,
             &prompt,
             budget,
@@ -984,7 +984,7 @@ impl LearningEngine {
         let budget = crate::reflector_llm::AUX_FORGE_MAX_TOKENS as u32;
         Self::call_llm_sync(
             provider,
-            // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+            // 文本单一真相源在 `nemesis-prompts`（集中化）。
             nemesis_prompts::forge::SKILL_FIXER_SYSTEM_PROMPT,
             &prompt,
             budget,
@@ -1041,7 +1041,7 @@ impl LearningEngine {
 
             if let Some(delta) = delta {
                 self.registry.update(&outcome.artifact_id, |a| {
-                    // 2026-10-16 复查（LE2）：原实现算出 new_rate 后 `let _ =`
+                    // 复查：原实现算出 new_rate 后 `let _ =`
                     // 丢弃——空转假成功（调用方以为反馈闭环生效，实际什么都没
                     // 改）。现真正落字段：正评 +0.1 / 负评 -0.2，钳制 0-1，
                     // 与 monitor 的 adjust_confidence_from_outcomes 同语义
@@ -1155,9 +1155,9 @@ impl LearningEngine {
             if ratio > 2.0 {
                 // More than 2x slower than average
                 // 置信度随严重度单调上升（ratio 2→0.5，越大越趋近 1）。
-                // 2026-10-16 R18：原 `(ratio - 1.0).min(1.0)` 在 ratio>2 的
+                // 原 `(ratio - 1.0).min(1.0)` 在 ratio>2 的
                 // 入场过滤下恒饱和为 1.0——所有效率问题都顶格置信度，排序
-                // 与 FF1 调整失去区分度。
+                // 与 调整失去区分度。
                 let confidence = (1.0 - 1.0 / ratio).max(0.0);
                 patterns.push(DetectedPattern {
                     pattern_type: "efficiency_issue".into(),
@@ -1225,8 +1225,8 @@ impl LearningEngine {
                 return result;
             }
         };
-        // 落盘名统一过 slug 化（R17 防御纵深）：与 execute_create_skill 同款
-        // 同一规则单一真相源——本函数是平行的 create 实现（自身 refine 循环
+        // 落盘名统一过 slug 化（防御纵深）：与 execute_create_skill 同款
+        // 同一规则单一权威定义——本函数是平行的 create 实现（自身 refine 循环
         // + forge/skills 落盘面），漏掉即同一穿越面复活。
         let draft_name = crate::forge::slugify_skill_name(&draft_name);
         if draft_name.is_empty() {
@@ -1265,16 +1265,16 @@ impl LearningEngine {
         };
 
         // Iterative refinement loop
-        // （BUG-20261029-189：refine 轮数预算此前误读 `max_auto_creates`
+        // （refine 轮数预算此前误读 `max_auto_creates`
         // ——那是「每周期自动创建上限」（run_cycle 的 max_auto 闸），不是
         // refine 轮数，用户配的 max_refine_rounds 被无视。与私有
         // execute_create_skill（读 max_refine_rounds）同字段收口：两条
-        // 平行 create 路径的同一语义旋钮必须同源，R17 同步演进纪律。）
+        // 平行 create 路径的同一语义旋钮必须同源， 同步演进纪律。）
         let max_refine = self.config.learning.max_refine_rounds;
 
-        // Arc clone 后立即放锁（F-M7 同款模式）：迭代 refine 是 30s+ 墙钟
+        // Arc clone 后立即放锁（F- 同款模式）：迭代 refine 是 30s+ 墙钟
         // 的 LLM 调用，持 pipeline 锁跨 LLM 会把并发路径（observe/reflect
-        // 等一切读 pipeline 的调用）整段卡死（四路评审 A-F1 根修）。快照
+        // 等一切读 pipeline 的调用）整段卡死（四路评审 A- 根修）。快照
         // 语义 = 本轮创建流程锚定一个 pipeline 实例，set_pipeline 热替换
         // 下轮生效。
         let pipeline = { self.pipeline.lock().clone() };
@@ -1291,7 +1291,7 @@ impl LearningEngine {
                 if new_status == nemesis_types::forge::ArtifactStatus::Active
                     || new_status == nemesis_types::forge::ArtifactStatus::Observing
                 {
-                    // F-S1 安全闸（2026-10-16 R16 同类扫）：与 execute_create_skill
+                    // F- 安全闸（同类扫）：与 execute_create_skill
                     // 部署点同款——refine 终态内容过 security_errors，拦下则本轮
                     // 诚实失败（不落盘不注册）。
                     let sec_errors =
@@ -1305,9 +1305,9 @@ impl LearningEngine {
                         return result;
                     }
 
-                    // LE4：签名取结构化 pattern.tools（无则回落旧解析）——
+                    // 签名取结构化 pattern.tools（无则回落旧解析）——
                     // 与 execute_create_skill 私有实现同一规则（两条平行
-                    // create 路径必须同步演进，见 R17 同款纪律）。
+                    // create 路径必须同步演进，见 同款纪律）。
                     let tool_sig = deploy_tool_signature(action);
 
                     // Write content to forge skills directory
@@ -1378,7 +1378,7 @@ impl LearningEngine {
                 version: "1.0".to_string(),
                 status: nemesis_types::forge::ArtifactStatus::Draft,
                 content,
-                // LE4：与部署臂同一规则（结构化 tools 优先，回落旧解析）。
+                // 与部署臂同一规则（结构化 tools 优先，回落旧解析）。
                 tool_signature: deploy_tool_signature(action),
                 created_at: chrono::Local::now().to_rfc3339(),
                 updated_at: chrono::Local::now().to_rfc3339(),
@@ -1503,7 +1503,7 @@ fn extract_tool_signature_from_chain(description: &str) -> Vec<String> {
     tools
 }
 
-/// 部署期 tool_signature 单一来源（2026-10-16 复查 LE4）：优先取
+/// 部署期 tool_signature 单一来源（复查）：优先取
 /// `action.tools`（检测器结构化携带，generate_actions 填充），空则回落
 /// description 按 `→` 解析（兼容手工构造的 action 与其既有测试语义）。
 /// 此前两个部署点都直接走 description 解析，而 pattern 描述是英文散文

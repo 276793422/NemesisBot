@@ -65,7 +65,7 @@ async fn run_errors_when_config_missing() {
 
 #[tokio::test]
 async fn run_status_reports_engaged_true_branch() {
-    // R7（coverage-95 goal）：status + 服务端 engaged=true → 「⛔ ENGAGED」
+    // （coverage-95 goal）：status + 服务端 engaged=true → 「⛔ ENGAGED」
     // 打印臂（此前 mock 固定 engaged=false，该臂从未点亮）。
     let dir = tempfile::tempdir().unwrap();
     let port = start_mock_engaged(true);
@@ -102,7 +102,7 @@ async fn run_errors_when_gateway_unreachable() {
 }
 
 // ===========================================================================
-// S11c（quality-hardening goal 冲刺 S11）：补齐 match (status, release,
+// （quality-hardening goal 冲刺）：补齐 match (status, release,
 // engaged) 的剩余分支——既有 mock 固定回 engaged:false，engaged:true 两臂
 // （release 指令已发送 / engage ⛔ 已触发）和 engaged 缺字段臂从没到过，
 // 加 web_port=0 的早退分支（estop.rs:36-38）。

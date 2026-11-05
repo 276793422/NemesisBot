@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-// 编译期静态正则（2026-10-16 R18）：Sanitizer 此前在 new()/clean_paths()/
+// 编译期静态正则：Sanitizer 此前在 new()/clean_paths()/
 // clean_public_ips() 里各处现场 Regex::new——collector 每条经验构造一个
 // Sanitizer，反思循环里 sanitize 逐条调用，10 个正则每次全量重编译。
 // 正则全部是字面量常量，提为 LazyLock 单次编译全局复用。
@@ -160,7 +160,7 @@ impl Sanitizer {
             && !ws.is_empty()
         {
             // Handle both forward-slash and backslash variants.
-            // (BUG #24, quality-hardening goal 冲刺 S8) 顺序替换全部拼写变体——
+            // (, quality-hardening goal 冲刺) 顺序替换全部拼写变体——
             // 原 else-if 链在内容混用分隔符拼写时只替换第一个命中的变体，
             // 另一种拼写的路径原样泄露。
             let ws_normalized = ws.replace('\\', "/");

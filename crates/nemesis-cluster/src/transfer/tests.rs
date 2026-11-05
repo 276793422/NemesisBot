@@ -1,4 +1,4 @@
-//! transfer 分块通道测试（P3/D1+D3+D4+D6+D7）。
+//! transfer 分块通道测试。
 //!
 //! goal 单测清单：分块切分/重组/乱序、去重幂等、超限判定、manifest 核验、
 //! 路径围栏（`..`/绝对/8.3 拒绝）、先落盘后 ACK 顺序。
@@ -22,7 +22,7 @@ fn temp_root(name: &str) -> PathBuf {
 ///
 /// 不得用 `replace('/', "\\")`——`\` 只在 Windows 是分隔符，Linux 上会
 /// 把嵌套路径写成「名字带 `\` 的单个怪文件」，collect 的排除判定按组件
-/// 匹配看不到 `.git` 等目录 → 排除测试全灭（2026-09-18 CI Linux 实录）。
+/// 匹配看不到 `.git` 等目录 → 排除测试全灭（CI Linux）。
 fn disk_path(root: &Path, rel: &str) -> PathBuf {
     let mut p = root.to_path_buf();
     for seg in rel.split('/') {
@@ -213,12 +213,12 @@ fn resume_skips_already_received_chunks() {
     let sink = TransferSink::new(&root.join("ws"), 0);
     let begin = prepare_begin(&src, "xf-3", "task-3", 1024); // 4 块
 
-    // 第一轮：推 0、1 块后「中断」。
+    // 推 0、1 块后「中断」。
     assert_eq!(sink.begin(&begin).status, "ok");
     push_chunk(&sink, &begin, &src, 0);
     push_chunk(&sink, &begin, &src, 1);
 
-    // 第二轮（重启后）：begin 返回 have=[0,1]。
+    // （重启后）：begin 返回 have=[0,1]。
     let reply = sink.begin(&begin);
     assert_eq!(reply.status, "ok");
     assert_eq!(reply.have, vec![0, 1], "断点续传必须报告已收块");
@@ -248,7 +248,7 @@ fn resume_skips_already_received_chunks() {
     );
 }
 
-/// BUG-20261030-198：接收端 chunk 写入中途崩溃会留下撕裂半块
+/// 接收端 chunk 写入中途崩溃会留下撕裂半块
 /// （裸 fs::write 非原子）。begin 续传的 have 不得把「长度与计划不符的
 /// 半块」当已收——否则 sender 永久跳过它，end 组装长度失配诚实 Err，
 /// resume 永远信任半块 → 传输死循环直至 staging 被按龄清扫（7 天）。
@@ -262,7 +262,7 @@ fn bug198_torn_chunk_not_reported_in_resume_have() {
     let sink = TransferSink::new(&root.join("ws"), 0);
     let begin = prepare_begin(&src, "xf-b198", "task-b198", 1024); // 4 块
 
-    // 第一轮：推 0、1 块。
+    // 推 0、1 块。
     assert_eq!(sink.begin(&begin).status, "ok");
     push_chunk(&sink, &begin, &src, 0);
     push_chunk(&sink, &begin, &src, 1);
@@ -278,7 +278,7 @@ fn bug198_torn_chunk_not_reported_in_resume_have() {
     let full = std::fs::read(&torn).unwrap();
     std::fs::write(&torn, &full[..full.len() / 2]).unwrap();
 
-    // 第二轮（重启后续传）：撕裂的 1 不得进 have。
+    // （重启后续传）：撕裂的 1 不得进 have。
     let reply = sink.begin(&begin);
     assert_eq!(reply.status, "ok");
     assert_eq!(reply.have, vec![0], "长度不符的半块不得进 have");
@@ -302,7 +302,7 @@ fn bug198_torn_chunk_not_reported_in_resume_have() {
     );
 }
 
-/// BUG-20261030-198 配套：seq → 计划块长算术（不物化计划）的边界形态
+/// 配套：seq → 计划块长算术（不物化计划）的边界形态
 /// ——末块短块、空文件不占序号、跨文件序号连续、越界 None。
 #[test]
 fn bug198_planned_chunk_len_arithmetic() {
@@ -323,7 +323,7 @@ fn bug198_planned_chunk_len_arithmetic() {
 }
 
 // ---------------------------------------------------------------------------
-// 去重幂等（D3）
+// 去重幂等
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -359,7 +359,7 @@ fn duplicate_push_is_deduped_and_original_landing_untouched() {
 
 #[test]
 fn dedup_does_not_block_repush_after_landing_moved_away() {
-    // D5 关键语义：ingest 把 inbox/<task_id> 搬走后，同载荷重推必须放行
+    // 关键语义：ingest 把 inbox/<task_id> 搬走后，同载荷重推必须放行
     // 重传（dedup 只在档案实体仍在收件箱时生效——否则兜底拉取被索引挡死，
     // worker 推→dedup→删发件箱→sweep 永远补不回档案）。
     let root = temp_root("dedup-moved");
@@ -411,7 +411,7 @@ fn same_task_new_content_relands_replacing_old() {
 }
 
 // ---------------------------------------------------------------------------
-// 体积护栏（D4）
+// 体积护栏
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -443,7 +443,7 @@ fn zero_limit_means_unlimited() {
 }
 
 // ---------------------------------------------------------------------------
-// manifest 核验（D6）
+// manifest 核验
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -554,7 +554,7 @@ fn safe_relative_path_unit_matrix() {
 }
 
 // ---------------------------------------------------------------------------
-// 先落盘后 ACK 顺序（D3）
+// 先落盘后 ACK 顺序
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -616,7 +616,7 @@ fn landed_callback_fires_with_task_and_dir() {
     assert!(got[0].1.ends_with("task-11"));
 }
 
-/// T8（2026-10-17 三轮审计）：远端可控 task_id 落地目录消毒——`../` 形态
+/// （三轮审计）：远端可控 task_id 落地目录消毒——`../` 形态
 /// 不得逃出 inbox；去重探针与落地同源（重传命中 dedup）。
 #[test]
 fn hostile_task_id_lands_inside_inbox() {
@@ -699,8 +699,8 @@ fn collect_dir_files_is_sorted_deterministic_and_fenced() {
 
 #[test]
 fn collect_dir_files_excludes_vcs_internal_dirs() {
-    // VCS 内部目录（任意层级的 .git）不进收集产物——混入变更集会让 master
-    // 三方合并 upsert 保留路径失败（2026-09-16 showcase 实证）。
+    // VCS 内部目录（任意层级的.git）不进收集产物——混入变更集会让 master
+    // 三方合并 upsert 保留路径失败（showcase 实证）。
     let root = temp_root("collect_vcs");
     let src = root.join("src");
     make_source(
@@ -724,8 +724,8 @@ fn collect_dir_files_excludes_vcs_internal_dirs() {
 
 #[test]
 fn collect_dir_files_excludes_build_noise() {
-    // S-O3：无争议构建垃圾（字节码/缓存/依赖目录/系统垃圾文件）不进收集
-    // 产物——2026-09-16 showcase NB-5 变更集只剩 __pycache__/*.pyc 实证。
+    // S-：无争议构建垃圾（字节码/缓存/依赖目录/系统垃圾文件）不进收集
+    // 产物—— showcase 变更集只剩 __pycache__/*.pyc 实证。
     // 通用名（target/dist/build）不排——防静默丢真实交付。
     let root = temp_root("collect_noise");
     let src = root.join("src");
@@ -775,7 +775,7 @@ fn sanitize_transfer_id_and_chunk_size_resolution() {
 }
 
 // ---------------------------------------------------------------------------
-// sweep_stale_staging（BUG-2，2026-10-17）：孤儿分块目录按龄清扫
+// sweep_stale_staging（BUG-2）：孤儿分块目录按龄清扫
 // ---------------------------------------------------------------------------
 
 // max_age=0：所有分块目录视为过期，全部清除；非目录条目不碰；
@@ -829,7 +829,7 @@ fn test_sweep_stale_staging_missing_root_is_zero() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-// LOW-7（2026-10-17 四轮审计）：chunk 按 staging 计划双闸——序号越界与
+// LOW-7（四轮审计）：chunk 按 staging 计划双闸——序号越界与
 // 单块超尺寸在写盘前诚实拒绝（此前远端可控 seq/len 可写任意多/任意大的
 // 块文件进 staging = 磁盘填充面）。
 #[test]
@@ -874,7 +874,7 @@ fn chunk_rejects_seq_and_size_beyond_staging_plan() {
     assert_eq!(end.status, "ok");
 }
 
-// LOW-8 回归锁（hash-of-hash 事故，2026-10-17）：流式哈希必须与整读
+// LOW-8 回归锁（hash-of-hash 事故）：流式哈希必须与整读
 // sha256_hex 同值——首版实现把 finalize 摘要又哈希了一遍，收发两侧同错
 // 自洽互证通过，跨函数比较（diff_walk 声明 vs 变更集写侧重验）当场现形。
 #[test]
@@ -891,10 +891,10 @@ fn streaming_hash_matches_whole_read_hash() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261030-202 / BUG-20261030-203：回调锁卫生 + manifest 条数闸
+// /：回调锁卫生 + manifest 条数闸
 // ---------------------------------------------------------------------------
 
-/// BUG-20261030-202：回调 panic 不毒化锁（恢复式，后续接线照常生效）；
+/// 回调 panic 不毒化锁（恢复式，后续接线照常生效）；
 /// 回调内重入 set_on_overlimit（同一把锁）不死锁——消费点锁内 clone、
 /// 锁外调用（旧形态持锁调回调在此永久阻塞）。
 #[test]
@@ -931,7 +931,7 @@ fn callback_panics_do_not_poison_and_reentrant_set_is_safe() {
     sink.note_overlimit(&req);
 }
 
-/// BUG-20261030-203：files 条数超闸 → 诚实拒绝（可诊断错误 + 打包建议），
+/// files 条数超闸 → 诚实拒绝（可诊断错误 + 打包建议），
 /// 不再放行到传输层撞 16MiB 帧；闸值内通过结构校验。
 #[test]
 fn manifest_file_count_gate() {

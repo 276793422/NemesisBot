@@ -1,4 +1,4 @@
-//! S7 冲刺覆盖测试：websocket/server.rs 的升级失败分支、连接 RST 后的
+//! 冲刺覆盖测试：websocket/server.rs 的升级失败分支、连接 RST 后的
 //! 读/写错误分支、call_child 的发送失败 / pending 被 stop 清掉 / 超时
 //! 三种错误出口。
 //!
@@ -51,7 +51,7 @@ async fn make_server() -> (Arc<WebSocketServer>, u16, Arc<KeyGenerator>) {
 /// 静默 TCP 连接（握手后一个字节都不发）不得冻结 accept 循环——后续真实
 /// 子进程连接必须照常完成升级+auth+注册。旧实现把 auth 等待内联在 accept
 /// 循环里，挂死的子进程窗口（或本地任意进程敲端口不发数据）会永久锁死
-/// 全部后续子窗口连接（BUG-20261103-344 回归锁）。
+/// 全部后续子窗口连接（回归锁）。
 #[tokio::test]
 async fn s7_silent_connection_does_not_block_accept_loop() {
     let (server, port, key_gen) = make_server().await;

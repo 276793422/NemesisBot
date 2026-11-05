@@ -23,7 +23,7 @@ fn test_detect_openclaw_home_no_override_no_env() {
     let _ = detect_openclaw_home(&None);
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_detect_openclaw_home_env_var() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -43,7 +43,7 @@ fn test_detect_openclaw_home_env_var() {
     // The actual value might differ if env var was overridden by parallel tests
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_detect_openclaw_home_env_var_takes_precedence() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -169,11 +169,11 @@ fn test_copy_dir_recursive_creates_dst() {
     assert!(dst.join("file.txt").exists());
 }
 
-// BUG-20261025-68 回归锁（旧形态必红：旧实现按 PROMPT/TERM 环境变量猜测
+// 回归锁（旧形态必红：旧实现按 PROMPT/TERM 环境变量猜测
 // tty——PowerShell 交互态两变量皆缺恒判「非交互」confirm 自动拒，管道继承
 // TERM 又误判「交互」；设了变量会翻转旧实现的结果）。新实现委托 std stdin
 // 探测，环境变量必须不再影响判定。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_atty_isnt_ignores_env_vars() {
     use std::io::IsTerminal;
@@ -223,7 +223,7 @@ fn test_convert_config_fallback_with_yaml() {
     .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
-    // BUG-20261101-291：默认模型写装配唯一真相源 agents.defaults.llm（顶层
+    // 默认模型写装配唯一依据 agents.defaults.llm（顶层
     // default_model 死键已废）。
     assert_eq!(config["agents"]["defaults"]["llm"], "test/model");
     assert_eq!(config["channels"]["web"]["port"], 9090);
@@ -269,13 +269,13 @@ fn test_convert_config_fallback_yml_extension() {
     .unwrap();
 
     let (config, _warnings) = convert_config_fallback(tmp.path()).unwrap();
-    // BUG-20261101-291：同上，agents.defaults.llm 单一真相源。
+    // 同上，agents.defaults.llm 统一定义。
     assert_eq!(config["agents"]["defaults"]["llm"], "yml-model");
 }
 
 #[test]
 fn test_convert_config_fallback_model_entries_use_schema_fields() {
-    // BUG-20261103-340：model_list 条目只含 schema 字段（model）——旧形态写
+    // model_list 条目只含 schema 字段（model）——旧形态写
     // schema 外死键 "key"（权威字段是 api_key，ModelConfig #[serde(default)]
     // 缺省即空，死键只污染用户 config 的 extra 面）。
     let tmp = TempDir::new().unwrap();
@@ -383,7 +383,7 @@ fn test_backup_file_json_extension() {
 }
 
 // ---------------------------------------------------------------------------
-// write_migrated_config（BUG-20261025-66 合并语义 + BUG-20261025-67 原子写）
+// write_migrated_config（合并语义 + 原子写）
 // ---------------------------------------------------------------------------
 
 /// BUG-66 锁（旧形态必红：旧实现把转换结果整体写盘，merge stub 是空 if——
@@ -526,7 +526,7 @@ fn test_write_migrated_config_prefills_missing_model_list() {
 }
 
 /// BUG-67 锁（半锁：黑盒测不了崩溃窗口，钉的是权威原子 helper 的可观察
-/// 面——产物正确 + 无 .tmp-* 残留 + 覆盖重写幂等）。旧形态裸 fs::write
+/// 面——产物正确 + 无.tmp-* 残留 + 覆盖重写幂等）。旧形态裸 fs::write
 /// 在此同样「通过」，真正的机制收编由代码路径唯一化保证（全仓 config 写
 /// 统一 write_file_atomic，BUG-59 同纪律）。
 #[test]
@@ -612,7 +612,7 @@ fn test_convert_config_fallback_yaml_priority() {
     )
     .unwrap();
     let (config, _) = convert_config_fallback(tmp.path()).unwrap();
-    // BUG-20261101-291：config.yaml 优先级胜出写 agents.defaults.llm。
+    // config.yaml 优先级胜出写 agents.defaults.llm。
     assert_eq!(config["agents"]["defaults"]["llm"], "from-config-yaml");
 }
 
@@ -651,7 +651,7 @@ fn test_convert_config_fallback_default_structure() {
     let tmp = TempDir::new().unwrap();
     let (config, warnings) = convert_config_fallback(tmp.path()).unwrap();
     assert_eq!(config["version"], "1.0");
-    // BUG-20261101-291：默认模板带 agents.defaults.llm（装配真相源）；
+    // 默认模板带 agents.defaults.llm（装配真相源）；
     // 顶层 default_model 死键不再产出。
     assert_eq!(config["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash");
     assert!(config.get("default_model").is_none());
@@ -683,7 +683,7 @@ fn test_confirm_returns_false_in_test_env() {
 }
 
 // ===========================================================================
-// run() 全臂 + convert_config_fallback（S11c，quality-hardening goal 冲刺 S11）
+// run() 全臂 + convert_config_fallback（quality-hardening goal 冲刺）
 // —— 既有测试只钉 helper 片段，run() 本体（219 MISS 行）从没跑过。全部用
 // openclaw_home/nemesisbot_home 双 override 指向临时目录，零 env 依赖；
 // confirm 在测试 stdin（管道 EOF）下必返 false，非 --force 一律取消。
@@ -696,7 +696,7 @@ fn write_full_openclaw_layout(openclaw: &std::path::Path) {
     std::fs::write(openclaw.join("prompts").join("p1.md"), "prompt").unwrap();
     std::fs::create_dir_all(openclaw.join("skills")).unwrap();
     std::fs::write(openclaw.join("skills").join("s1.md"), "skill").unwrap();
-    // BUG-20261028-103：真实 OpenClaw 布局把人格三件套写在 workspace 根
+    // 真实 OpenClaw 布局把人格三件套写在 workspace 根
     // （上游 agent-create.ts 用 workspaceRoot.write(DEFAULT_IDENTITY_FILENAME)）。
     std::fs::write(openclaw.join("workspace").join("IDENTITY.md"), "identity").unwrap();
     std::fs::write(openclaw.join("workspace").join("SOUL.md"), "soul").unwrap();
@@ -743,7 +743,7 @@ fn run_empty_openclaw_reports_nothing_to_migrate() {
 
 #[test]
 fn run_openclaw_yml_only_triggers_config_migration() {
-    // BUG-20261103-340：has_config 门漏 openclaw.yml（fallback 消费清单有它）
+    // has_config 门漏 openclaw.yml（fallback 消费清单有它）
     // → 纯 openclaw.yml 形态安装的配置被静默跳过，[Config] 不进计划、
     // convert_config_fallback 的 yml 分支永远走不到。
     let tmp = tempfile::tempdir().unwrap();
@@ -769,7 +769,7 @@ fn run_openclaw_yml_only_triggers_config_migration() {
 
 #[test]
 fn run_models_yaml_only_triggers_config_migration() {
-    // BUG-20261103-340：has_config 门漏 models.yaml → legacy models.yaml-only
+    // has_config 门漏 models.yaml → legacy models.yaml-only
     // 形态的模型清单静默不迁移。
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("openclaw");
@@ -852,7 +852,7 @@ fn run_force_migrates_config_workspace_prompts_skills_and_persona_files() {
         "skill"
     );
 
-    // 人格三件套落 workspace 根（BUG-20261028-103：bot 消费唯一根是
+    // 人格三件套落 workspace 根（bot 消费唯一根是
     // workspace 根——context.rs load_bootstrap_files / persona activate 都读
     // 这里；home 根是 bot 零消费的死位置）。
     let ws = target.join("workspace");
@@ -885,7 +885,7 @@ fn run_backs_up_existing_target_config_before_overwrite() {
     let new: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(target.join("config.json")).unwrap())
             .unwrap();
-    // BUG-20261025-66 收编后既有 config 不再被整体覆盖而是「现有优先」合并：
+    // 收编后既有 config 不再被整体覆盖而是「现有优先」合并：
     // 未知既有键（old）保留 + 迁移产物（models.yaml 的 m1/m2）合入。
     // 旧形态断言 `old` 不存在（纯覆盖），正是被修掉的丢数据行为。
     assert_eq!(
@@ -895,7 +895,7 @@ fn run_backs_up_existing_target_config_before_overwrite() {
     );
     let models = new["model_list"].as_array().expect("model_list 合入");
     // 本夹具无 openclaw.json → fallback 路径，条目形态 {model, key}（既有
-    // fallback 测试钉死的契约）；crate 路径形态是 {model_name, ...}。两者
+    // fallback 测试钉死的契约）；crate 路径形态是 {model_name,...}。两者
     // 都认——断言的是「models.yaml 的模型确实落入 model_list」。
     assert!(
         models
@@ -934,7 +934,7 @@ fn run_config_only_skips_workspace_and_vice_versa() {
     assert!(t2.join("workspace").join("IDENTITY.md").exists());
 }
 
-// BUG-20261028-103：persona 源定位与落点契约（workspace 根优先 / home 根
+// persona 源定位与落点契约（workspace 根优先 / home 根
 // 回落 / 备份后覆盖）。
 
 #[test]
@@ -977,7 +977,7 @@ fn run_persona_workspace_root_wins_over_home_root() {
 #[test]
 fn run_persona_overwrite_leaves_bak_of_previous_target() {
     // 目标 workspace 已有人格文件（如 onboard 模板占位）→ 备份后覆盖：
-    // 迁移本意就是用真实人格替换模板占位，但旧值必须 .bak 兜底（对齐
+    // 迁移本意就是用真实人格替换模板占位，但旧值必须.bak 兜底（对齐
     // config 臂纪律）。
     let tmp = tempfile::tempdir().unwrap();
     let src = tmp.path().join("openclaw");
@@ -1036,7 +1036,7 @@ fn run_refresh_flag_overwrites_conflicting_target_files() {
 #[test]
 fn fallback_conversion_extracts_default_model_port_and_models() {
     let tmp = tempfile::tempdir().unwrap();
-    // 只放 config.yml（不在 has_config 的 .yaml 白名单里也没关系——
+    // 只放 config.yml（不在 has_config 的.yaml 白名单里也没关系——
     // fallback 的查找循环覆盖 yaml/yml/openclaw.*），不放 crate 认的配置。
     std::fs::write(
         tmp.path().join("config.yml"),
@@ -1050,7 +1050,7 @@ fn fallback_conversion_extracts_default_model_port_and_models() {
     .unwrap();
 
     let (cfg, warnings) = convert_config_fallback(tmp.path()).unwrap();
-    // BUG-20261101-291：单引号 YAML 值也要剥干净，写 agents.defaults.llm。
+    // 单引号 YAML 值也要剥干净，写 agents.defaults.llm。
     assert_eq!(
         cfg["agents"]["defaults"]["llm"], "claude-9",
         "单引号 YAML 值也要剥干净"
@@ -1070,7 +1070,7 @@ fn fallback_conversion_extracts_default_model_port_and_models() {
 fn fallback_conversion_with_no_sources_keeps_defaults() {
     let tmp = tempfile::tempdir().unwrap();
     let (cfg, _) = convert_config_fallback(tmp.path()).unwrap();
-    // BUG-20261101-291：无来源=模板默认模型；顶层 default_model 死键不存在。
+    // 无来源=模板默认模型；顶层 default_model 死键不存在。
     assert_eq!(cfg["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash");
     assert!(cfg.get("default_model").is_none());
     assert_eq!(cfg["channels"]["web"]["port"], 8080, "缺省端口 8080");
@@ -1097,7 +1097,7 @@ fn copy_dir_recursive_nested_tree_count() {
 }
 
 // ===========================================================================
-// wave_a（R7 中批补盲，2026-08-27）：run() 流程级 + 转换分发臂。
+// wave_a（中批补盲）：run() 流程级 + 转换分发臂。
 // ① dry-run 用 crate 成功转换（151-156）+ warnings 打印；② 非 tty confirm
 // 取消臂（124-126 / 394-397，PROMPT+TERM 摘除后 atty_isnt=true）；③
 // --force 全量迁移（420 写盘 + workspace/prompts/skills/三人格各段
@@ -1128,7 +1128,7 @@ mod wave_a {
         std::fs::write(root.join("prompts").join("p.md"), "p").unwrap();
         std::fs::create_dir_all(root.join("skills").join("s1")).unwrap();
         std::fs::write(root.join("skills").join("s1").join("SKILL.md"), "s").unwrap();
-        // BUG-20261028-103：真实布局人格三件套在 workspace 根。
+        // 真实布局人格三件套在 workspace 根。
         for name in ["IDENTITY.md", "SOUL.md", "USER.md"] {
             std::fs::write(root.join("workspace").join(name), format!("{name} body")).unwrap();
         }
@@ -1163,7 +1163,7 @@ mod wave_a {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn confirm_cancelled_when_stdin_is_non_tty() {
         // 摘除 PROMPT/TERM → atty_isnt()=true → confirm 直接 false →
@@ -1273,7 +1273,7 @@ mod wave_a {
         assert!(warnings.iter().any(|w| w.contains("fallback")));
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn atty_isnt_true_when_both_prompt_and_term_absent() {
         // 与既有的「PROMPT 存在/TERM 存在」用例互补：双缺 → true 臂（139）。
@@ -1302,7 +1302,7 @@ mod wave_a {
 }
 
 // ===========================================================================
-// wave_c（coverage 补测，2026-08-27）：OPENCLAW_HOME 环境变量注入臂
+// wave_c（coverage 补测）：OPENCLAW_HOME 环境变量注入臂
 // （migrate.rs detect_openclaw_home 的 env 探测段 54-60）。
 // 既有 test_detect_openclaw_home_env_var* 设了 env 却因「并行可能被改写」
 // 从不做值断言，env→Some(p) 臂实际零验证。OPENCLAW_HOME 全 crate 只有
@@ -1313,11 +1313,11 @@ mod wave_a {
 // ===========================================================================
 
 // 整 mod Windows 形态（2/2 测试 + 专属 use 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod wave_c {
     use super::*;
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn env_openclaw_home_existing_dir_is_returned_verbatim() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1342,7 +1342,7 @@ mod wave_c {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_migrates_entirely_via_env_detected_openclaw_home() {
         // 端到端：无 --openclaw-home，源定位纯靠 OPENCLAW_HOME；
@@ -1425,7 +1425,7 @@ mod r10_fallback {
         let tmp = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp.path().join("config.yaml")).unwrap();
         let (config, warnings) = convert_config_fallback(tmp.path()).unwrap();
-        // BUG-20261101-291：读不出内容保持模板默认模型，不写死键。
+        // 读不出内容保持模板默认模型，不写死键。
         assert_eq!(
             config["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash",
             "读不出内容保持模板默认模型"
@@ -1445,7 +1445,7 @@ mod r10_fallback {
         )
         .unwrap();
         let (config, _) = convert_config_fallback(tmp.path()).unwrap();
-        // BUG-20261101-291：空值走 !model.is_empty() 短路边——不触发写入，
+        // 空值走 !model.is_empty() 短路边——不触发写入，
         // agents.defaults.llm 保持模板默认（既不插死键也不覆盖默认）。
         assert_eq!(
             config["agents"]["defaults"]["llm"], "zhipu/glm-4.7-flash",
@@ -1489,11 +1489,11 @@ mod r10_fallback {
 // ===========================================================================
 
 // 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r10_subprocess {
     use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_confirm_stdin_answer_n_cancels_migration_without_force() {
         let ws = TestWorkspace::new().expect("workspace");
@@ -1550,14 +1550,14 @@ mod r10_subprocess {
 }
 
 // ===========================================================================
-// wave5 round2 batch-2（2026-09-25）：migrate run() 的「OpenClaw 未找到」
+// wave5 batch-2：migrate run() 的「OpenClaw 未找到」
 // 提示臂（无 override / 无 env / 无 ~/.openclaw）与「OPENCLAW_HOME env 命中
 // + 最小存量 fixture」迁移主链（config 换转换写盘 + workspace 拷贝 + 汇总
 // 打印）。fixture 极简（config.json = "{}"）：转换器对未知/空结构的宽容臂
 // 与 workspace 缺失跳过臂都在同一链路上。
 // ===========================================================================
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod w5b2 {
     use super::super::{MigrateOptions, run};
 

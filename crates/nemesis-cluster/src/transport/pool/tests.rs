@@ -316,7 +316,7 @@ fn test_async_pool_config_debug() {
 }
 
 // ============================================================
-// S4 coverage: sync reuse path (63), async first-check reuse
+// coverage: sync reuse path (63), async first-check reuse
 // (238-241), dead-entry path (243), double-check per-node limit
 // (280-285), cleanup_dead removal (422-431), dec_node_count
 // arcs (470-477).
@@ -553,7 +553,7 @@ async fn test_s4_cleanup_dead_removes_dead_entry() {
     server.abort();
 }
 
-/// T5 回归（2026-10-17）：get_inner 捞出**池内死条目**时必须归还信号量
+/// 回归：get_inner 捞出**池内死条目**时必须归还信号量
 /// 许可 + 节点计数——旧代码只减 active_count，注释声称「许可留作复用」
 /// 是谎话（forget 掉的许可拿不回来，随后的 dial 取的是新许可），每轮
 /// 死连接轮换永久漏 1 槽。max_conns=1 让漏槽直接表现为第二次 get 假限流。
@@ -607,7 +607,7 @@ async fn test_t5_dead_entry_in_map_releases_permit_on_get() {
     server.abort();
 }
 
-/// T5 回归（2026-10-17）：return_connection 收到**死连接**时节点计数
+/// 回归：return_connection 收到**死连接**时节点计数
 /// 必须随许可、active_count 一起回落（镜像 dial 的消耗三账）。
 #[tokio::test]
 async fn test_t5_return_dead_conn_releases_node_count() {
@@ -660,7 +660,7 @@ fn test_s4_dec_node_count_arcs() {
 }
 
 // ============================================================
-// 重连语义链路测试（集群完备性加固 2026-09-11，见模块头「重连语义」）：
+// 重连语义链路测试（集群完备性加固，见模块头「重连语义」）：
 // 隐式自愈全链路 —— 本地关闭的连接归还时被拒（不回池）→ 下次 get 现场
 // 剔除死条目并新拨 → active_count 回到 1。半开连接（对端静默丢）的
 // 「首次写失败」发现路径是 TCP 固有边界，不在单测覆盖（见模块头裁决）。
@@ -697,7 +697,7 @@ async fn test_link_locally_closed_conn_evicted_then_fresh_dialed() {
     // 3. 直接把死条目塞回池内（模拟归还前已死的遗留条目）：
     //    下次 get 的取用即验会剔除它并新拨一条活的。
     //    （return_connection 已验活拒收，本段构造池内死条目的路径。）
-    //    上面第 2 步已证明拒收，这里复用 S4 dead-entry 语义做全链路收尾：
+    //    上面第 2 步已证明拒收，这里复用 dead-entry 语义做全链路收尾：
     let (key2, conn2) = pool.get("link-heal", &addr).await.unwrap();
     assert_eq!(key2, key);
     assert!(conn2.is_active(), "重拨后连接必须存活");
@@ -708,9 +708,9 @@ async fn test_link_locally_closed_conn_evicted_then_fresh_dialed() {
     server.abort();
 }
 
-/// BUG-20261105-027 回归锁：同 key 二次归还不得覆盖池内条目。
+/// 回归锁：同 key 二次归还不得覆盖池内条目。
 /// per-node limit 允许同 node+address 并发租借（get 直接拨新不走池），
-/// 两条租借的 key 相同；旧实现顺序归还时 HashMap::insert 覆盖池内第一条，
+/// 两条租借的 key 相同；旧实现顺序归还时 HashMap:insert 覆盖池内第一条，
 /// 被覆盖连接 dial 时 forget 的 permit + node_count + active_count 三账
 /// 单位永久蒸发（泄漏单位不在池内，cleanup_dead 摸不到）——反复并发调用
 /// 即逼近 "connection limit reached" / "per-node limit reached" 假限流。

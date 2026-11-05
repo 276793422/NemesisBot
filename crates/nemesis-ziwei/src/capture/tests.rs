@@ -49,7 +49,7 @@ fn profiles_isolated() {
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
 
-/// BUG-20261105-018：大文件下 read_recent 只留尾部 limit 条（滑动窗口），
+/// 大文件下 read_recent 只留尾部 limit 条（滑动窗口），
 /// 返回 = 尾部且恰好 limit 条；limit=0 = 空（旧语义不变）。
 #[test]
 fn read_recent_sliding_window_keeps_tail_only() {

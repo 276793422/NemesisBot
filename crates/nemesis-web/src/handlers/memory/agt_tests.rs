@@ -108,7 +108,7 @@ async fn agt_run(
 async fn agt_team_memory_requires_board_service() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = agt_ctx_full(&dir, None, None);
-    // 私有取用函数直接断言（BoardStore 无 Debug，用 .err() 取错误）
+    // 私有取用函数直接断言（BoardStore 无 Debug，用.err() 取错误）
     let err = require_team_memory_store(&ctx).err().unwrap();
     assert!(err.contains("board service not available"), "err: {err}");
     // dispatch 层同样诚实报错（在参数提取之前）

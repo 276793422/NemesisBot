@@ -5,7 +5,7 @@ use std::sync::Mutex;
 // parallel `pass/fail/skip` increment races with `reset_counters()`+`get_counters()`
 // and the reset assertion can see (1,1,1) instead of (0,0,0); symmetrically, a
 // parallel naked `reset_counters()` wipes the locked test's increments mid-window
-// (`failed: 0`, Windows CI 实录 2026-09-02). The contract is bilateral: EVERY
+// (`failed: 0`, Windows CI 案例 2026-09-02). The contract is bilateral: EVERY
 // test that touches the counters (increment or reset) must hold this lock.
 static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 

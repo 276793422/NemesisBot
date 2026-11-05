@@ -1,4 +1,4 @@
-//! 分层价目表（A2 在线更新，2026-08-31）。
+//! 分层价目表（在线更新，2026-08-31）。
 //!
 //! 查表优先级：**用户自定义 > 下载表 > 内置表**（编译期嵌入的 36 模型表
 //! 保持离线兜底）。落位约定（对齐 catalog-cache-workspace-data 布局：
@@ -186,7 +186,7 @@ impl PricingStore {
         }
     }
 
-    /// 分层计价的分项版（A3 明细表用）。查不到 → `None`（调用方记
+    /// 分层计价的分项版（明细表用）。查不到 → `None`（调用方记
     /// 空 `pricing_model` + 全 0 分项——「未命中」与「命中免费条目」
     /// 在明细行上可区分）。
     pub fn compute_cost_breakdown(
@@ -291,15 +291,15 @@ impl PricingStore {
     }
 }
 
-/// 原子写（BUG-20261025-51 起委托唯一临时名权威 helper——旧固定 `.json.tmp`
+/// 原子写（起委托唯一临时名权威 helper——旧固定 `.json.tmp`
 /// 并发互踩 + 先删后 rename 的崩溃窗口一并根除；helper 内部同目录临时文件
 /// 保证同分区 rename）。
 ///
-/// BUG-20261025-58 复查追补：本模块不受 `usage-store` 门控（自定义价目层
-/// 恒编译），而 `nemesis-utils` 只是 `usage-store` 的 optional dep（B10
-/// 拍板：关账本时 rusqlite/nemesis-utils/守卫模块一并退出依赖图）——
+/// 复查追补：本模块不受 `usage-store` 门控（自定义价目层
+/// 恒编译），而 `nemesis-utils` 只是 `usage-store` 的 optional dep（
+/// 关账本时 rusqlite/nemesis-utils/守卫模块一并退出依赖图）——
 /// a188d09a 引入的无门引用让 `cargo check -p nemesis-data
-/// --no-default-features` 等 IoT 裁剪形态编译破裂（E0433 nemesis_utils，
+/// --no-default-features` 等 IoT 裁剪形态编译破裂（nemesis_utils，
 /// 全 workspace 构建因 feature 归一恒真被掩盖）。补门控：有 utils 走权威
 /// helper；无 utils 走下方同语义 fallback（非第二权威——有 utils 的构建
 /// 恒走 utils 版）。
@@ -313,7 +313,7 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
 /// 无 `nemesis-utils` 形态（usage-store 关，IoT 裁剪）的同语义原子写：
 /// 同目录 pid+序数+纳秒临时名 create_new → 写+flush+sync → rename 覆盖
 /// → 失败清理临时文件——镜像权威 helper
-/// （`nemesis_utils::file::write_file_atomic`）的语义，仅在 utils 缺席的
+/// （`nemesis_utils::file:write_file_atomic`）的语义，仅在 utils 缺席的
 /// 构建参与编译。
 #[cfg(not(feature = "usage-store"))]
 fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {

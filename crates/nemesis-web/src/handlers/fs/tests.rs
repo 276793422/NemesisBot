@@ -17,7 +17,7 @@ fn setup_workspace() -> TempDir {
     std::fs::create_dir_all(ws.join("src")).unwrap();
     std::fs::write(ws.join("src").join("main.rs"), "m").unwrap();
     std::fs::write(ws.join("src").join("util.rs"), "u").unwrap();
-    // 共享忽略表里的运行时目录（补全必须不可见）。
+    // 共享忽略表里的运行时目录（补全必须不可）。
     std::fs::create_dir_all(ws.join("node_modules").join("dep")).unwrap();
     std::fs::write(ws.join("node_modules").join("dep").join("index.js"), "x").unwrap();
     std::fs::create_dir_all(ws.join("logs")).unwrap();
@@ -258,7 +258,7 @@ fn tree(ws: &TempDir, path: &str, depth: u64) -> serde_json::Value {
         .unwrap()
 }
 
-/// 根层列出：忽略表同补全（node_modules/logs 不可见）、目录在前文件在后、
+/// 根层列出：忽略表同补全（node_modules/logs 不可）、目录在前文件在后、
 /// depth 边界子目录 children=null（懒展开点）、展开的空目录 children=[]。
 #[test]
 fn tree_root_lists_depth_and_ignore() {
@@ -628,7 +628,7 @@ fn open_resolve_fallback_skips_dotdot_candidates() {
         "见../sibling.md",
     )
     .unwrap_err();
-    // 若候选未过 .. 闸，这里会打开 outer/sibling.md 而非报错。
+    // 若候选未过.. 闸，这里会打开 outer/sibling.md 而非报错。
     assert!(err.contains("文件不存在"), "{err}");
 }
 

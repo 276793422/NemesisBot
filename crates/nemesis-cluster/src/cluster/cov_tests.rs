@@ -449,7 +449,7 @@ fn register_rpc_peer_inherits_static_placeholder() {
     );
 }
 
-/// 占位地址剥不出端口 → rpc_port=0（2215），G14 拒登记 → false。
+/// 占位地址剥不出端口 → rpc_port=0（2215）， 拒登记 → false。
 #[test]
 fn register_rpc_peer_unparseable_port_falls_back_zero() {
     let ws = Ws::new("rpc-peer-zero");
@@ -536,7 +536,7 @@ fn set_rpc_client_external() {
     assert!(cluster.rpc_client_arc().is_some());
 }
 
-/// G4 安全网阶梯 + G2 探针调度纯函数 + 漂移限频闸单例（3271-3296）。
+/// 安全网阶梯 + 探针调度纯函数 + 漂移限频闸单例（3271-3296）。
 #[test]
 fn safety_net_and_probe_gate_helpers() {
     // 0 → 协议默认 2h ×2 = 4h，被 24h 地板抬起。
@@ -571,7 +571,7 @@ impl MessageBus for MockBus {
     fn publish_inbound(&self, msg: BusInboundMessage) {
         self.messages.lock().unwrap().push(msg);
     }
-    // T19 二层根修：Mock 恒「就位」（不模拟订阅时序，等待逻辑归 publish 侧）。
+    // 二层根修：Mock 恒「就位」（不模拟订阅时序，等待逻辑归 publish 侧）。
     fn inbound_receiver_count(&self) -> usize {
         1
     }
@@ -603,7 +603,7 @@ async fn poll_stale_times_out_past_safety_net_publishes_bus() {
     let bus = Arc::new(MockBus {
         messages: StdMutex::new(Vec::new()),
     });
-    // G5+P1（T19 根修）：bus / delivery_cb 收句柄（分支内取用时现读）。
+    // （根修）：bus / delivery_cb 收句柄（分支内取用时现读）。
     let bus_handle: Arc<Mutex<Option<Arc<dyn MessageBus>>>> =
         Arc::new(Mutex::new(Some(bus.clone())));
     let no_cb: Arc<

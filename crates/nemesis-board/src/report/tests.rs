@@ -69,7 +69,7 @@ fn missing_optional_risks_section_is_empty_string() {
 
 #[test]
 fn missing_experience_section_is_empty_string_backward_compatible() {
-    // 旧四段汇报（M4.5 之前的 worker 输出）照常解析，experience 空串。
+    // 旧四段汇报（.5 之前的 worker 输出）照常解析，experience 空串。
     let text = "\
 ## 结论
 完成。
@@ -177,7 +177,7 @@ fn delivery_report_serde_roundtrip() {
     assert_eq!(legacy.experience, "");
 }
 
-// 任务 prompt 回显闸（2026-09-12 UAT T30③ 回归锁）：worker 把派发任务卡
+// 任务 prompt 回显闸（UAT ③ 回归锁）：worker 把派发任务卡
 // 原样抄回（testai-3.1 回显行为），文本里带着引述的「## 汇报格式」模板
 // 与验收标准原文——仅凭段标题出现会被误判为结构化汇报，必须 None。
 #[test]

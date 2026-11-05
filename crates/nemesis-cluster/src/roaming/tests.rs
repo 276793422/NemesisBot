@@ -22,7 +22,7 @@ fn node_id_from_hex_rejects_garbage() {
 fn node_id_from_hex_rejects_non_curve_point() {
     // "ab"*32：长度对、字符对，但解压不出合法曲线点（x² 非二次剩余）——
     // VerifyingKey::from_bytes 应拒绝（与 iroh EndpointId::from_bytes 同
-    // 语义，announce 入池闸的底座）。A1 实录：iroh 拒 ab*32 报
+    // 语义，announce 入池闸的底座）。 iroh 拒 ab*32 报
     // 「data is not a valid public key」；注意全 0xff 不行——
     // curve25519-dalek 域解码隐式 mod-p 归约，0xff*32 归约后恰好是合法点。
     assert!(

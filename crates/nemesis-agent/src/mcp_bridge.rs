@@ -1,6 +1,6 @@
-//! Bridge between `nemesis_mcp:adapter:Tool` and the agent's `Tool` trait.
+//! Bridge between `nemesis_mcp::adapter::Tool` and the agent's `Tool` trait.
 
-/// Wrapper that adapts an `adapter:Tool` into the agent's `Tool` trait.
+/// Wrapper that adapts an `adapter::Tool` into the agent's `Tool` trait.
 pub(crate) struct McpToolBridge {
     inner: Box<dyn nemesis_mcp::adapter::Tool>,
 }

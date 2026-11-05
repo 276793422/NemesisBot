@@ -1,6 +1,6 @@
 use super::*;
 use crate::clamav::scanner::ScannerConfig;
-use tokio::io::AsyncBufReadExt; // read_line 所在 trait（E0599）
+use tokio::io::AsyncBufReadExt; // read_line 所在 trait
 
 fn make_result(path: &str, infected: bool, virus: &str) -> ClamavScanResult {
     ClamavScanResult {
@@ -155,7 +155,7 @@ async fn test_scan_hook_scan_file_path_safe_extension() {
     let file_path = dir.path().join("test.txt");
     std::fs::write(&file_path, "hello").unwrap();
     let result = hook.scan_file_path(&file_path).await.unwrap();
-    assert!(result.0); // clean (not scanned because .txt is safe)
+    assert!(result.0); // clean (not scanned because.txt is safe)
     assert!(result.1.is_none()); // no scan result
 }
 
@@ -198,10 +198,10 @@ async fn test_health_check_fails_when_not_running() {
 }
 
 // ============================================================
-// Fake clamd server tests (2026-08-25 coverage push)
+// Fake clamd server tests (coverage push)
 // ============================================================
 // 协议细节见 client/tests.rs 的 serve_clamd 注释；此处为模块内独立副本
-// （tests 模块互相不可见）。
+// （tests 模块互相不可）。
 
 use std::sync::Arc as StdArc;
 
@@ -410,7 +410,7 @@ async fn fake_scan_tool_invocation_write_content_clean() {
 
 #[tokio::test]
 async fn fake_scan_tool_invocation_write_content_infected() {
-    // INSTREAM 回 FOUND → Err("virus detected in content: ...")。
+    // INSTREAM 回 FOUND → Err("virus detected in content:...")。
     let addr = serve_clamd(noop_responder(), "stream: EICAR FOUND\n").await;
     let hook = hook_on(&addr);
     let args = serde_json::json!({"path": "y.bin", "content": "X5O!P%@AP[EICAR]"});

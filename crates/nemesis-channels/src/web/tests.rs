@@ -12,7 +12,7 @@ struct MockWebServer {
     sent: Mutex<Vec<(String, String, String)>>,
     /// Model arg passed to each send_to_session call (badge pipeline).
     sent_models: Mutex<Vec<Option<String>>>,
-    /// 集群续行归属（2026-09-23）：source_node 转发链断言用。
+    /// 集群续行归属：source_node 转发链断言用。
     sent_nodes: Mutex<Vec<Option<String>>>,
     history: Mutex<Vec<(String, String)>>,
     broadcasts: Mutex<Vec<String>>,
@@ -192,7 +192,7 @@ async fn test_send_to_session_forwards_model_badge() {
         Some("deepseek/deepseek-v4-flash"),
         "WebChannel::send must forward meta.model to send_to_session"
     );
-    // 集群续行归属（2026-09-23）：source_node 同链路转发。
+    // 集群续行归属：source_node 同链路转发。
     let nodes = mock.sent_nodes.lock().unwrap();
     assert_eq!(nodes.len(), 1);
     assert_eq!(
@@ -1134,7 +1134,7 @@ fn test_web_channel_config_debug() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): Channel trait is_running impl (shadowed on
+// coverage: Channel trait is_running impl (shadowed on
 // direct calls by the inherent is_running)
 // ===========================================================================
 
@@ -1147,7 +1147,7 @@ fn s2_web_channel_trait_is_running_via_dyn_dispatch() {
     assert!(!dyn_ch.is_running());
 }
 
-// === C4（2026-10-24 死会话软失败）===
+// === （死会话软失败）===
 
 /// 目标会话不存在的 mock——错误串与真实 session map 一致。
 struct DeadSessionMockServer;

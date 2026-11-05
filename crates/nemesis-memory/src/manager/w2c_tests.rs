@@ -1,4 +1,4 @@
-//! W2c batch tests (Phase 3 / quality-hardening goal).
+//! batch tests (/ quality-hardening goal).
 //!
 //! Targets manager.rs branches not exercised by tests.rs / extra_tests.rs:
 //! - close() error concatenation with a failing general store (mock backend)
@@ -280,7 +280,7 @@ async fn cleanup_episodic_removes_old_vector_entries() {
 }
 
 // ============================================================
-// MemoryType roundtrip through the vector adapter (BUG #10)
+// MemoryType roundtrip through the vector adapter
 // ============================================================
 
 /// Direct pin on the parse helper: every Display form parses back to the
@@ -305,7 +305,7 @@ fn parse_memory_type_from_str_matches_display_forms() {
 /// back from the VECTOR store with the same MemoryType. query_semantic is
 /// vector-first (unlike get(), which prefers the keyword store), so this
 /// exercises the store_entry_to_vector write + parse_memory_type_from_str
-/// read pair. Before BUG #10 the write used Debug-lowercase ("shortterm")
+/// read pair. Before the write used Debug-lowercase ("shortterm")
 /// while the read parsed Display ("short_term") — ShortTerm/Graph/Daily
 /// entries came back as LongTerm.
 #[tokio::test]

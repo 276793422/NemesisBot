@@ -152,7 +152,7 @@ fn test_append_full_with_cron_markers() {
 /// dirblock 挂死诊断（extended-tests Linux nightly 首跑）。
 ///
 /// Linux：后台线程每 90s 检查测试是否完成；未完成就把各线程内核态
-/// （stat 的 wchan + syscall 号）经 [`crate:test_support:force_stderr`]
+/// （stat 的 wchan + syscall 号）经 [`crate::test_support:force_stderr`]
 /// 旁路 libtest 捕获直接写 stderr，留挂死现场。其它平台：全 no-op 桩
 /// （/proc 依赖，无观测意义），保持测试体平台无关调同一 API。
 #[cfg(target_os = "linux")]
@@ -899,14 +899,14 @@ fn test_read_chat_log_whole_log_lane_same_semantics() {
     delete_chat_log(&key);
     write_mixed_rows(&key);
 
-    // usize:MAX（fork/rewind/export/share/CLI 形态）：与全量小窗同结果。
+    // usize::MAX（fork/rewind/export/share/CLI 形态）：与全量小窗同结果。
     let (page, total, has_more, oldest) = read_chat_log(&key, usize::MAX, None);
     assert_eq!(total, 7);
     assert_eq!(page.len(), 5);
     assert!(!has_more);
     assert_eq!(oldest, 0);
 
-    // usize:MAX + before_index：Option 占位窗口同样按 raw 坐标对齐
+    // usize::MAX + before_index：Option 占位窗口同样按 raw 坐标对齐
     // （boundary 行占位后过滤），[0..5) → u0,a0,u1,a1。
     let (page, _, _, oldest) = read_chat_log(&key, usize::MAX, Some(5));
     assert_eq!(page.len(), 4);
@@ -1087,7 +1087,7 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
 }
 
 // ---------------------------------------------------------------------------
-// ：会话执行统计 sidecar 字段（stats）读写契约
+// 会话执行统计 sidecar 字段（stats）读写契约
 // ---------------------------------------------------------------------------
 
 /// stats round-trip：写入八字段 → 读回逐字段一致；全零不落盘（旧 meta

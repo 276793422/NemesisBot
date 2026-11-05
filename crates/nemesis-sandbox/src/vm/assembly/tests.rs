@@ -1,4 +1,4 @@
-//! [`assembly`] 单测（纯函数装配断言——G2 门「QEMU 参数装配 / hostfwd
+//! [`assembly`] 单测（纯函数装配断言—— 门「QEMU 参数装配 / hostfwd
 //! 127.0.0.1 断言」的 CI 落点）。
 
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ fn args_of(accel: QemuAccel, shared: Option<PathBuf>) -> Vec<String> {
     build_qemu_args(&spec(accel, shared))
 }
 
-/// G2 宿主零暴露面：hostfwd 恒绑 127.0.0.1（装配层钉死——外部接口不可达
+/// 宿主零暴露面：hostfwd 恒绑 127.0.0.1（装配层钉死——外部接口不可达
 /// 由绑定语义保证）。
 #[test]
 fn hostfwd_binds_loopback_only() {
@@ -47,7 +47,7 @@ fn hostfwd_binds_loopback_only() {
     );
 }
 
-/// G2 宿主零暴露面（对称）：QMP 也恒绑 127.0.0.1（QMP 无鉴权）。
+/// 宿主零暴露面（对称）：QMP 也恒绑 127.0.0.1（QMP 无鉴权）。
 #[test]
 fn qmp_binds_loopback_only() {
     let args = args_of(QemuAccel::Whpx, None);
@@ -72,9 +72,9 @@ fn display_none_present() {
     assert_eq!(args[i + 1], "none");
 }
 
-/// P5-R2 vnc 态：`-vnc 127.0.0.1:<display>` 回环装配 + `-display` 不出现
+/// vnc 态：`-vnc 127.0.0.1:<display>` 回环装配 + `-display` 不出现
 /// （两形态互斥）；display = port-5900 反向换算（QEMU 冒号后数字是显示器
-/// 编号而非端口——2026-10-21 真机探针：`127.0.0.1:51206` 绑 57106 的根因
+/// 编号而非端口—— 真机探针：`127.0.0.1:51206` 绑 57106 的根因
 /// 回归锁）；默认 None 路径字节不变（display_none_present 回归锁的对称面）。
 #[test]
 fn display_vnc_loopback_assembly() {
@@ -132,7 +132,7 @@ fn accel_and_machine_mapping() {
 /// 绝对指点设备：显式 xhci 控制器 + usb-tablet 挂显式总线（q35 无默认
 /// pointer 硬件也无默认 USB 总线——裸 `-device usb-tablet` 实测
 /// `No 'usb-bus' bus found` 提前退出；缺它则 VNC 操作档的键鼠事件到
-/// QEMU 后 guest 无设备可收，鼠标「完全不动」。2026-10-21 演示实录回归锁）。
+/// QEMU 后 guest 无设备可收，鼠标「完全不动」。演示回归锁）。
 #[test]
 fn usb_tablet_always_present() {
     for &accel in QemuAccel::ALL {
@@ -282,7 +282,7 @@ fn validate_clean_spec_ok() {
 }
 
 /// 逗号闸逐字段：overlay_path / shared_host_path / incoming_file 任一含
-/// 逗号 = Err 且报错点名该字段（L6++ 项目路径用户任意，可含逗号；
+/// 逗号 = Err 且报错点名该字段（项目路径用户任意，可含逗号；
 /// 逗号在 QEMU 单 argv 子选项串里是分隔符）。
 #[test]
 fn validate_rejects_comma_in_each_path_field() {
@@ -315,7 +315,7 @@ fn validate_rejects_comma_in_each_path_field() {
     }
 }
 
-/// token 逗号（-smbios serial 子选项面）= Err。
+/// token 逗号（smbios serial 子选项面）= Err。
 #[test]
 fn validate_rejects_comma_in_token() {
     let mut s = spec(QemuAccel::Kvm, None);

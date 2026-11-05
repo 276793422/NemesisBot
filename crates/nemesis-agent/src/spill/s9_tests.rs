@@ -22,7 +22,7 @@ fn temp_root(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-/// 把文件 mtime 拨到过去（std File:set_times，Rust 1.75+）。
+/// 把文件 mtime 拨到过去（std File::set_times，Rust 1.75+）。
 fn age_file(path: &std::path::Path, old: SystemTime) {
     let f = std::fs::OpenOptions::new()
         .write(true)

@@ -1,4 +1,4 @@
-//! 桥客户端状态槽测试（批次三）。
+//! 桥客户端状态槽测试。
 //!
 //! CLIENT_STATUS / RECONNECT_KICK 是进程级全局——并行测试会互相踩。
 //! 全部用例经 [`GLOBAL_TEST_LOCK`] 串行化；每个用例先把槽打到已知
@@ -116,7 +116,7 @@ async fn test_kick_permit_survives_until_subscribed() {
     }
 }
 
-// 批次三通道页端点（handler 直调——路由挂载形态见 server.rs，直调足以
+// 通道页端点（handler 直调——路由挂载形态见 server.rs，直调足以
 // 覆盖 JSON 语义；与 /api/relay/status 的 handler 测试同思路）
 
 use axum::body::Body;

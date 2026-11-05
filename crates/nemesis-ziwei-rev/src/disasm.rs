@@ -1,4 +1,4 @@
-//! disasm —— iced-x86 反汇编封装（T3.1）。
+//! disasm —— iced-x86 反汇编封装（.1）。
 //!
 //! 只引 decoder 面：块解码 + 指令属性抽取（控制流类别/立即数/直接分支
 //! 目标/rip 相对目标/nop 识别）。x64+x86 双模式按 machine 选 bitness。
@@ -9,7 +9,7 @@
 use iced_x86::{Decoder, DecoderOptions, FlowControl, Instruction, Mnemonic, OpKind};
 
 /// 目标架构（bitness 是 iced-x86 的 Decoder 入参）。
-/// P0 容器归一：PE machine 与 ELF e_machine 两套命名空间都归一到此枚举；
+/// 容器归一：PE machine 与 ELF e_machine 两套命名空间都归一到此枚举；
 /// Arm64 变体位已就位，但 iced-x86 仅支持 x86/x64 解码——Arm64 在分析入口
 /// 处诚实拒绝（区分「不认识的 machine」与「认识但反汇编器缺席」）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,7 +35,7 @@ impl Arch {
             _ => None,
         }
     }
-    /// ELF e_machine 命名空间（ELF 容器解析器 P1 批次消费）。
+    /// ELF e_machine 命名空间（ELF 容器解析器 批次消费）。
     pub fn from_elf_machine(e_machine: u16) -> Option<Arch> {
         match e_machine {
             0x3E => Some(Arch::X64),   // EM_X86_64
@@ -207,7 +207,7 @@ pub fn leading_nop_bytes(arch: Arch, bytes: &[u8], rva: u32, max: usize) -> usiz
         let insns = decode_block(
             arch,
             &bytes[off..end],
-            // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+            // saturating 防 u32 加法溢出（同族）
             rva.saturating_add(off as u32),
             1,
         );

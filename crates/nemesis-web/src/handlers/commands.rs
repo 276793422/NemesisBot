@@ -12,8 +12,8 @@ use nemesis_config::{CommandEntry, CommandsConfig, load_commands_config, save_co
 use nemesis_path::resolve_commands_config_path_in_workspace;
 use std::path::{Path, PathBuf};
 
-/// 内置命令的展示元数据（描述 / 参数提示）。**名称**的单一真相源在
-/// `nemesis_types::constants::BUILTIN_SLASH_COMMANDS`；这里只是 UI 标签表，
+/// 内置命令的展示元数据（描述 / 参数提示）。**名称**的统一定义在
+/// `nemesis_types::constants:BUILTIN_SLASH_COMMANDS`；这里只是 UI 标签表，
 /// 未知名兜底「内置命令」（清单扩了没改这里也不会崩）。
 fn builtin_display_meta(name: &str) -> (&'static str, &'static str) {
     match name {
@@ -66,8 +66,8 @@ impl CommandsHandler {
 
     fn commands_list(&self, workspace: &str) -> Result<serde_json::Value, String> {
         let cfg = load_commands_config(&self.config_path(workspace));
-        // （devtool-upgrade）：内置命令名随清单下发（单一真相源 =
-        // nemesis_types::constants::BUILTIN_SLASH_COMMANDS，与 AgentLoop 改写
+        // （devtool-upgrade）：内置命令名随清单下发（统一定义 =
+        // nemesis_types::constants:BUILTIN_SLASH_COMMANDS，与 AgentLoop 改写
         // 跳过名单同源）；这里只补 UI 展示元数据（描述/参数提示是标签不是
         // 行为）。前端补全菜单把 builtins 并进菜单数据源。
         let builtins: Vec<serde_json::Value> = nemesis_types::constants::BUILTIN_SLASH_COMMANDS

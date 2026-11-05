@@ -1,20 +1,20 @@
 #![cfg(windows)]
-//! M5 实弹演练（总控 §M5 验收）：验证链 / 一次性降级注记 / stale 通知 /
+//! 实弹演练（总控 验收）：验证链 / 一次性降级注记 / stale 通知 /
 //! 授权找回 全链路，真 exe 文件面（三变体 dummy-draw）。
 //!
 //! 腿 A：首次验证锚定 hash 基准 → Active；复验 hash 一致 → Active（不重扫）。
-//! 腿 B：V2（bake-mutate，锚同 hash 异）→ 锚投票 3≥2 → ActiveDegraded +
-//!       一次性报告/事件（str_ref V1 产品串被常量折叠消除——真实版本升级
+//! 腿 B：（bake-mutate，锚同 hash 异）→ 锚投票 3≥2 → ActiveDegraded +
+//!       一次性报告/事件（str_ref 产品串被常量折叠消除——真实版本升级
 //!       语义：3/4 锚存活）；复验不再重复打扰（notice_emitted=false）。
 //! 腿 C：noanchor（编译期剥锚）→ 锚投票 1<2 → Stale + profile 持久化 +
 //!       pre_attach_guard 拒附加 + notify.jsonl + ziwei.stale 事件。
 //! 腿 D：recover_start（noanchor）→ partially_recoverable + 报告 md 落盘 +
 //!       无 LLM 钩子诚实注记；recover_confirm 全接受 → 仅 str_ref 函数找回，
 //!       其余诚实拒绝 → 保持 Stale（无部分恢复态）。
-//! 腿 E：recover_confirm（V1 全锚命中，「误报恢复」：noanchor 是错误构建，
-//!       真目标仍是 V1）→ all_recovered + Active + hash 基准回锚 →
-//!       verify(V1) hash 一致 → Active；guard 放行。
-//!       （V2 缺 feed_render 锚，找回只能保命中函数 → 对 V2 全找回不可达，
+//! 腿 E：recover_confirm（全锚命中，「误报恢复」：noanchor 是错误构建，
+//!       真目标仍是）→ all_recovered + Active + hash 基准回锚 →
+//!       verify() hash 一致 → Active；guard 放行。
+//!       （缺 feed_render 锚，找回只能保命中函数 → 对 全找回不可达，
 //!       只能降级（B 腿）或重配——设计语义，见 README 诚实边界。）
 //! 腿 F：吊销 → verify loud 拒 + guard 拒（不可自动复活）。
 //!
@@ -148,7 +148,7 @@ fn pattern_loc(p: &str) -> LocateSpec {
     }
 }
 
-/// M5 profile：四个函数（语义名即锚关联键）；阈值 2；hash 基准待首验锚定。
+/// profile：四个函数（语义名即锚关联键）；阈值 2；hash 基准待首验锚定。
 fn m5_profile(profile_id: &str) -> Profile {
     let f = |semantic: &str, pattern: &str| FunctionDef {
         semantic: semantic.into(),
@@ -194,12 +194,12 @@ fn m5_profile(profile_id: &str) -> Profile {
 
 /// 真锚集（与夹具字节布局一一对应；4 锚，阈值 2）：
 /// - push_record: byte_pattern（sled+imm 13B，全变体唯一）
-/// - feed_render: str_ref（V1 产品串；bake-mutate 常量折叠会消除该串——
-///   版本升级锚衰减的真实样本，V2 投票 3/4 的来源）
+/// - feed_render: str_ref（产品串；bake-mutate 常量折叠会消除该串——
+///   版本升级锚衰减的真实样本， 投票 3/4 的来源）
 /// - slow_op: imm_const 0x00112233（仅 asm 预埋）
 /// - crash_op: imm_const 0x0BADF00D（仅 asm 预埋）
 ///
-/// 故意不用 imm_const 0x5A6B7C8D：MAGIC_V1 经 C7 imm32 写入指令同样出现在
+/// 故意不用 imm_const 0x5A6B7C8D：MAGIC_V1 经 imm32 写入指令同样出现在
 /// .text（init_area），剥锚变体也命中——会污染 stale 腿的投票语义。
 fn m5_anchors(profile_id: &str) -> AnchorSet {
     let a = |function: &str, kind: AnchorType, patch: &dyn Fn(&mut Anchor)| -> Anchor {
@@ -253,7 +253,7 @@ async fn m5_verify_recover_live_on_dummy_variants() {
     let store = ProfileStore::new(&ws);
     let id = "zw-pro-m5live";
 
-    // 夹具健全性：三变体 hash 两两互异（V2=更新版、noanchor=重编剥锚）。
+    // 夹具健全性：三变体 hash 两两互异（=更新版、noanchor=重编剥锚）。
     let (h_v1, h_v2, h_noa) = (
         sha256_file(&exe_v1).unwrap(),
         sha256_file(&exe_v2).unwrap(),
@@ -271,7 +271,7 @@ async fn m5_verify_recover_live_on_dummy_variants() {
         }),
     );
 
-    // 事件钩子（验证链 T5.2 面）：全程收集 ziwei.* 事件。
+    // 事件钩子（验证链.2 面）：全程收集 ziwei.* 事件。
     let events: Arc<Mutex<Vec<(String, serde_json::Value)>>> = Arc::new(Mutex::new(Vec::new()));
     let events_c = events.clone();
     assert!(
@@ -313,7 +313,7 @@ async fn m5_verify_recover_live_on_dummy_variants() {
         }),
     );
 
-    // ── 腿 B：V2（锚同 hash 异）→ ActiveDegraded + 一次性注记/事件 ──
+    // ── 腿 B：（锚同 hash 异）→ ActiveDegraded + 一次性注记/事件 ──
     let out = verify_profile(&store, &ws, &profile, &exe_v2).expect("B 降级验证");
     assert_eq!(out.report.verdict, Verdict::ActiveDegraded);
     assert!(!out.report.hash_match);
@@ -331,7 +331,7 @@ async fn m5_verify_recover_live_on_dummy_variants() {
     assert!(out.report.notes.iter().any(|n| n.contains("降级注记")));
     let profile_b = out.profile_updated.expect("B 更新");
     assert_eq!(profile_b.status, ProfileStatus::Active, "降级不改状态");
-    // 缺的是 feed_render 的 V1 产品串锚（版本升级真实语义）
+    // 缺的是 feed_render 的 产品串锚（版本升级真实语义）
     assert_eq!(
         hit_functions(&store, id, &exe_v2).unwrap(),
         vec!["crash_op", "push_record", "slow_op"],
@@ -447,7 +447,7 @@ async fn m5_verify_recover_live_on_dummy_variants() {
         }),
     );
 
-    // ── 腿 E：对 V1 找回确认（全锚命中，「误报恢复」）→ Active + 复验闭环 ──
+    // ── 腿 E：对 找回确认（全锚命中，「误报恢复」）→ Active + 复验闭环 ──
     let hits = hit_functions(&store, id, &exe_v1).expect("E hit_functions");
     assert_eq!(
         hits,
@@ -463,7 +463,7 @@ async fn m5_verify_recover_live_on_dummy_variants() {
         Some(h_v1.as_str()),
         "hash 基准回锚 V1"
     );
-    // byte_pattern 载荷在 V1 中逐字相同 → 不需要重生（重生数 0 是正确语义）
+    // byte_pattern 载荷在 中逐字相同 → 不需要重生（重生数 0 是正确语义）
     assert_eq!(rep["regenerated_anchors"], 0, "V1 锚字节未变，无需重生");
     // 复验：hash 一致 → Active（闭环）
     let out = verify_profile(&store, &ws, &profile_e, &exe_v1).expect("E 复验");

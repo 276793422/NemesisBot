@@ -24,14 +24,14 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-/// 补全列表上限（计划 ：≤20 条）。
+/// 补全列表上限（计划：≤20 条）。
 pub const MAX_COMPLETIONS: usize = 20;
 /// 扫描项上限（目录爆炸兜底；与 deadline 先到为准）。
 pub const MAX_SCAN_ENTRIES: usize = 20_000;
 /// 单次补全的时间预算。
 pub const SCAN_DEADLINE: Duration = Duration::from_secs(1);
 
-/// 目录树条目上限（计划 ：500；所有层级合计）。
+/// 目录树条目上限（计划：500；所有层级合计）。
 pub const MAX_TREE_ENTRIES: usize = 500;
 /// 目录树深度钳制上限（请求 depth 再大也不超过；默认 3）。
 pub const MAX_TREE_DEPTH: usize = 8;
@@ -161,7 +161,7 @@ fn resolve_click_target(
             // 粘连的中文引导语找真实文件——「见docs/总结.md」→ docs/总结.md）。
             // 每个候选先过同一套 normalize 闸（`..` 段拒绝必须重跑——raw
             // 「见../x」因首段是「见..」可通过整体检查，切出的候选「../x」
-            // 若不过闸，path_contains 字符串前缀检查拦不住 OS 层 .. 解析，
+            // 若不过闸，path_contains 字符串前缀检查拦不住 OS 层.. 解析，
             // 即成逃逸面），再走同一条 try_resolve_once。
             for cand in cjk_boundary_candidates(&norm) {
                 if normalize_click_path(&cand).is_err() {

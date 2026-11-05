@@ -1,6 +1,6 @@
-//! G4 跨进程恢复测试 — 模拟进程崩溃后从磁盘 checkpoint 续行
+//! 跨进程恢复测试 — 模拟进程崩溃后从磁盘 checkpoint 续行
 //!
-//! 这些测试验证 milestone 1b-A1 的恢复路径：
+//! 这些测试验证 milestone 1b 的恢复路径：
 //! - 引擎运行到 human_review 进入 Waiting，checkpoint 落盘
 //! - 丢弃旧引擎（模拟崩溃）
 //! - 新引擎指向同一个 FileCheckpointStore
@@ -417,7 +417,7 @@ async fn checkpoint_files_persist_on_disk_after_pause() {
         exec_dir
     );
 
-    // And it should contain at least one .json file.
+    // And it should contain at least one.json file.
     let json_count = std::fs::read_dir(&exec_dir)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -431,11 +431,11 @@ async fn checkpoint_files_persist_on_disk_after_pause() {
 }
 
 // ---------------------------------------------------------------------------
-// 1c-G7 additional recovery tests — variable propagation, multi-restore,
+// 1c additional recovery tests — variable propagation, multi-restore,
 // trigger source preservation, post-resume node-results visibility.
 // ---------------------------------------------------------------------------
 
-/// Build the same review workflow used by the G4 suite so tests share a
+/// Build the same review workflow used by the suite so tests share a
 /// common shape: pre_review → review (human_review) → post_review.
 fn build_review_wf_with_ids(pre_id: &str, review_id: &str, post_id: &str) -> Workflow {
     wf_with_name(
@@ -564,7 +564,7 @@ async fn restore_is_idempotent_running_twice_does_not_duplicate_executions() {
 // Gap 1 + Gap 2: trigger_source persistence + terminal checkpoint
 // ---------------------------------------------------------------------------
 //
-// These tests cover the two known gaps closed after Phase 1c:
+// These tests cover the two known gaps closed after c:
 // - Gap 1: `trigger_source` survives a crash + restore round-trip.
 // - Gap 2: completed workflows write a terminal checkpoint so the next
 //   process restart doesn't resurrect them as Waiting/Running.

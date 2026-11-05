@@ -11,15 +11,15 @@
 //! 名册只供地址——入网连接仍要过传输身份（QUIC-TLS）+ 集群 RPC token
 //! （AEAD）+ trust.toml 信任簿三关，语义与既有路径完全同源。
 //!
-//! 分层：类型 / resolve_registry_url / member_dial_address 恒编译（M4 起
-//! cluster-roaming feature 已删）；HTTP 客户端半边（原 `sync_once`）随 QUIC 插件化 M2（2026-10-23）
+//! 分层：类型 / resolve_registry_url / member_dial_address 恒编译（起
+//! cluster-roaming feature 已删）；HTTP 客户端半边（原 `sync_once`）随 QUIC 插件化 （2026-10-23）
 //! 迁入 plugin_roaming `registry_client.rs`；axum 服务端半边随 QUIC 插件化
-//! M1（2026-10-23）迁入 plugin_roaming（名册成员形状对账基准 = 本模块 serde
+//! （2026-10-23）迁入 plugin_roaming（名册成员形状对账基准 = 本模块 serde
 //! 类型，两侧字段名/语义逐字对齐）。
 
 use serde::{Deserialize, Serialize};
 
-/// 注册表默认端口（真相源在 [`crate::roaming::config`]，与 relay 端口常量
+/// 注册表默认端口（真相源在 [`crate::roaming:config`]，与 relay 端口常量
 /// 同居一处；此处 re-export 供客户端/观测面按名取用）。
 pub use crate::roaming::config::DEFAULT_REGISTRY_PORT;
 
@@ -51,7 +51,7 @@ pub struct RendezvousMember {
     /// 节点类型（Cluster::node_type，默认 "agent"）。
     #[serde(default)]
     pub node_type: String,
-    /// 集群 RPC 端口（入册闸要求 >0——`handle_discovered_node_impl` 的 G14
+    /// 集群 RPC 端口（入册闸要求 >0——`handle_discovered_node_impl` 的
     /// 语义：无 RPC 端口的记录造不出可用邻居）。
     #[serde(default)]
     pub rpc_port: u16,
@@ -73,7 +73,7 @@ pub struct RendezvousMember {
     /// 拉取方以自己的 relay_url 兜底）。
     #[serde(default)]
     pub relay_url: String,
-    /// 功能宣告（严格不兼容语义，2026-10-23 拍板：消费方按需过滤——集群
+    /// 功能宣告（严格不兼容语义， 消费方按需过滤——集群
     /// 同步循环只收 `features` 含 "cluster" 的成员；空 = 消费侧跳过，不猜）。
     /// 服务端登记容忍：serde default 空 vec，缺字段不拒注册。
     #[serde(default)]
@@ -99,7 +99,7 @@ pub struct RendezvousClientState {
 // 客户端地址推导
 // ---------------------------------------------------------------------------
 
-/// 注册表地址推导（单一真相源）：显式 `rendezvous_url` 优先；空 = relay_url
+/// 注册表地址推导：显式 `rendezvous_url` 优先；空 = relay_url
 /// 同 scheme 同 host、端口 [`DEFAULT_REGISTRY_PORT`]。
 pub fn resolve_registry_url(rendezvous_url: &str, relay_url: &str) -> Result<String, String> {
     let explicit = rendezvous_url.trim();
@@ -119,7 +119,7 @@ pub fn resolve_registry_url(rendezvous_url: &str, relay_url: &str) -> Result<Str
     Ok(format!("{scheme}://{host}:{DEFAULT_REGISTRY_PORT}"))
 }
 
-/// host:port → host（支持 IPv6 字面量 `[::1]:3340` 形态）。
+/// host:port → host（支持 IPv6 字面量 `[:1]:3340` 形态）。
 fn split_host(hostport: &str) -> &str {
     if let Some(rest) = hostport.strip_prefix('[')
         && let Some(end) = rest.find(']')
@@ -137,7 +137,7 @@ fn split_host(hostport: &str) -> &str {
 // ---------------------------------------------------------------------------
 // 客户端同步
 // ---------------------------------------------------------------------------
-// （QUIC 插件化 M2：register/members HTTP 往返（原 `sync_once`）整体迁入
+// （QUIC 插件化：register/members HTTP 往返（原 `sync_once`）整体迁入
 // plugin_roaming `registry_client.rs`——错误文案逐字对齐，宿主不再持 HTTP
 // 客户端。本文件只剩 wire 类型与地址拼装纯函数。）
 

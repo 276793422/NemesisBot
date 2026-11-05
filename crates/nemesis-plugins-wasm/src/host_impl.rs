@@ -102,10 +102,10 @@ pub trait HostToolInvoker: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
 }
 
-/// 杂务 LLM 补全面（gateway 注入；2026-10-22 样板工程批 4）。实现 =
+/// 杂务 LLM 补全面（gateway 注入； 样板工程）。实现 =
 /// Weak<AgentLoop> 委托 `chore_completion`（bypass_llm 护栏同源 + estop
 /// fail-closed + small_model 杂务槽）。帧纪律：policy 帧（kind 硬规则）
-/// 与 panel 帧（双闸 manifest `x-llm` × 总闸 `panel_llm_enabled`，2026-11-01
+/// 与 panel 帧（双闸 manifest `x-llm` × 总闸 `panel_llm_enabled`，
 /// 决策 C）可用；observer 帧恒 unavailable（观察路径不授 LLM 花销能力）。
 /// 授予裁决集中在 registry::build_frame，这里只消费帧内是否在场。
 pub trait LlmInvoker: Send + Sync {
@@ -117,7 +117,7 @@ pub trait LlmInvoker: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
 }
 
-/// 凭据写回面（gateway 注入；2026-11-03 自持写通道批）。实现 =
+/// 凭据写回面（gateway 注入； 自持写通道批）。实现 =
 /// `VaultPluginSecretWriter`（vault 文件现开现解锁 → upsert → 原子落盘，
 /// 与读取同源语义）。alias = vault 裸别名 `plugin/<slug>/<name>`（不带
 /// `vault:` 前缀——前缀是组件侧视图，写面只认存储视图）。帧纪律：仅
@@ -130,7 +130,7 @@ pub trait SecretWriter: Send + Sync {
 
 /// 实例配置写回面（gateway 注入；同批）。实现 = Weak<PluginManager> 委派
 /// `set_config_key`（三闸 + config_io 锁 + 原子落盘，与 WSAPI
-/// `wasm.config.set` 单一真相源）。帧纪律同 SecretWriter：仅 Panel 帧授予。
+/// `wasm.config.set` 统一定义）。帧纪律同 SecretWriter：仅 Panel 帧授予。
 pub trait ConfigWriter: Send + Sync {
     /// 写一条实例配置（Err = 人读失败文本；闸拒在 manager 内loud 报错）。
     fn set_config(&self, slug: &str, key: &str, value: &str) -> Result<(), String>;
@@ -221,9 +221,9 @@ pub struct CallCaps {
     pub egress: Arc<crate::egress::EgressPolicy>,
     /// 宿主工具调用面（None = 未装配，恒 unavailable）。
     pub invoker: Option<Arc<dyn HostToolInvoker>>,
-    /// 杂务 LLM 补全面（None = 未装配，恒 unavailable；2026-10-22 批 4）。
+    /// 杂务 LLM 补全面（None = 未装配，恒 unavailable）。
     pub llm: Option<Arc<dyn LlmInvoker>>,
-    /// 凭据写回面（None = 未装配/帧未授予，恒 unavailable；2026-11-03
+    /// 凭据写回面（None = 未装配/帧未授予，恒 unavailable；
     /// 自持写通道批；仅 Panel 帧由 build_frame 授予）。
     pub secret_write: Option<Arc<dyn SecretWriter>>,
     /// 实例配置写回面（None = 未装配/帧未授予，恒 unavailable；同批）。
@@ -268,20 +268,20 @@ impl CallCaps {
     }
 
     pub(crate) fn log_line(&self, level: &str, message: &str) {
-        // 凭据脱敏先于截断（2026-09-30 复查 #3）：先截断可能把凭据切成两半
+        // 凭据脱敏先于截断（复查 #3）：先截断可能把凭据切成两半
         // 各自漏检——顺序必须是先脱敏后截断。secret-get 有「observe 帧内
         // 拒答」的帧纪律，但 tool 帧里 guest 完全可以把拿到的原文 log 出来
         // ——环形缓冲经 WSAPI wasm.logs 直达 Dashboard，同属出站面。脱敏
         // 不写审计链：log 频度 guest 可控，刷审计链本身就是 DoS 面；工具
         // 输出的出站凭据复扫在 bridge 侧承担审计（plugin_bridge
-        // ::rescan_output_credentials）。
+        // :rescan_output_credentials）。
         let redacted = credential_scanner().redact_content(message);
         let truncated: String = {
             let max = self.limits.log_line_max_bytes;
             if redacted.len() > max {
                 // 预算按字节、切点必须落在字符边界——字节判据命中而字符数
                 // 不足时，裸字节切点会切进多字节 UTF-8 序列中间 panic
-                //（2026-09-29 交付审查 M2，guest 可控输入直达）。
+                //（交付审查，guest 可控输入直达）。
                 let keep = max / 4 * 3;
                 let mut cut = keep.min(redacted.len());
                 while cut > 0 && !redacted.is_char_boundary(cut) {
@@ -352,7 +352,7 @@ pub(crate) fn read_workspace_rel(
 }
 
 /// 错误文本截断（回 guest 的错误串恒定上限，防大错误撑爆 guest 内存）。
-/// 切点向字符边界收（同 [`CallCaps::log_line`]，2026-09-29 交付审查 M2）。
+/// 切点向字符边界收（同 [`CallCaps::log_line`]， 交付审查）。
 pub(crate) fn truncate_err(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();

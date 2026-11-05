@@ -29,7 +29,7 @@ pub struct TriggerConfig {
     pub config: HashMap<String, serde_json::Value>,
 }
 
-/// Timezone a cron trigger evaluates its expression in (milestone 1b-C4).
+/// Timezone a cron trigger evaluates its expression in (milestone 1b-).
 ///
 /// Most users write cron expressions thinking of wall-clock local time
 /// ("0 9 * * * *" = "9am my time"), so [`CronTimezone::Local`] is the
@@ -409,7 +409,7 @@ fn match_glob(pattern: &str, s: &str) -> bool {
         return false;
     }
 
-    // BUG-20261028-120：首尾 part 不得重叠——"a*a" 不能匹配 "a"（同一
+    // 首尾 part 不得重叠——"a*a" 不能匹配 "a"（同一
     // 字符无法既做开头又做结尾）。旧实现只查 starts_with/ends_with，
     // 长度不足时假阳性放行（message/event 触发器 glob 语义错误）。
     // 字节长度判定，与下方 idx 字节偏移推进同语义。

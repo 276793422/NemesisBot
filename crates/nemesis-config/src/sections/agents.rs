@@ -37,13 +37,13 @@ pub struct AgentsConfig {
     /// （委派持续操控）: delegate 四工具开关与子代理生命上限（默认关）。
     #[serde(default)]
     pub delegate: DelegateToolConfig,
-    /// （内部专项总计划重评估）：工具调用三态 WAL——工具
+    /// （重评估）：工具调用三态 WAL——工具
     /// admit/start/finish 每态一行 JSONL 落 `<workspace>/logs/turn_wal/`，
     /// 进程被强杀（taskkill /F）后重启扫描补 interrupted 并自动续轮。
     /// 默认开；关闭后完全不落盘。诚实边界：纯 flush 无 fsync，断电不保。
     #[serde(default = "default_true")]
     pub turn_wal: bool,
-    /// （内部专项总计划重评估）：provider 流式输出观测面——主 turn
+    /// （重评估）：provider 流式输出观测面——主 turn
     /// LLM 调用经流式 lane（provider 支持则真实增量，否则聚合后合成）发
     /// `provider_stream_event` 易逝帧（SSE + WS push，不入补拉环）。默认
     /// 开；关闭后零事件零开销。运行时改键下一轮生效（每轮新鲜读）。
@@ -100,14 +100,14 @@ pub struct AgentsConfig {
     /// 运行时改键下一轮生效。
     #[serde(default = "default_true")]
     pub image_downscale: bool,
-    /// /：workspace 写租约开关。默认**开**——主 loop / 项目 loop /
+    /// ：workspace 写租约开关。默认**开**——主 loop / 项目 loop /
     /// executor 子进程的写类工具经 workspace 级文件锁互斥（宽限 30s 超时
     /// 诚实拒绝；持有进程死亡 OS 自动释放）。**装配期消费**（gateway/
     /// exec_worker 启动时按本键构造租约并包装写类工具）——改键需重启
     /// 生效（与 executor 段同语义，非 loop 侧 fresh-read）。
     #[serde(default = "default_true")]
     pub lease_enabled: bool,
-    /// 件4（HOOK 三合一收口 §6）：纪律闭环总开关。默认
+    /// 件4（HOOK）：纪律闭环总开关。默认
     /// **false**（灰度）——关 = 闸/证伪钩子不注册、`/discipline` 提示
     /// 未启用、任务 marker 不生效。开 = 任务描述含 `[discipline:bugfix]`
     /// 或 `/discipline on` 的会话进入参与态（声明闸 + 证伪预算，见
@@ -140,7 +140,7 @@ pub struct AgentsConfig {
     /// token）；显式 false = stream 断流回退「重试从头」。消费方
     /// `config_watch::stream_concat_retry_from_value` 原始 JSON fresh-read
     /// （nemesis-agent）——typed 字段化保证 save_config 往返不丢键
-    /// （cache_warmer 同款预防，：不建模则显式
+    /// （cache_warmer 同款预防，不建模则显式
     /// 「重试从头」被任何 typed 保存静默抹掉回翻拼接）。
     #[serde(default = "default_true")]
     pub stream_concat_retry: bool,
@@ -177,7 +177,7 @@ pub struct DisciplineConfig {
 
 /// （cache-warmer）`agents.cache_warmer` 配置节。消费方在
 /// `nemesis-agent` loop/cache_warmer.rs（fresh-read，运行中改键热关生效；
-/// 启动后才开需重启——诚实不对称见该模块注释）。类型在此单一真相源，
+/// 启动后才开需重启——诚实不对称见该模块注释）。类型在此统一定义，
 /// agent 侧经 serde 反序列化消费同一份默认值。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheWarmerConfig {
@@ -284,7 +284,7 @@ fn default_subagent_max_depth() -> usize {
     1
 }
 
-/// （内部专项总计划 codemode）: `agents.codemode` config
+/// （codemode）: `agents.codemode` config
 /// section — `code_run` 脚本工具（QuickJS 沙箱）的运行开关与资源限制。
 /// 编译闸是 `codemode` cargo feature；这里管运行态：`enabled` 默认**开**
 /// （默认开，Dashboard Tools 页可手动关）。开关 enabled
@@ -368,7 +368,7 @@ impl Default for DelegateToolConfig {
 
 /// `agents.tool_doc_folding` config section. When enabled,
 /// the `expand_top_n` tools most similar to the current conversation (cosine
-/// between the latest user message and each tool description, via the .1
+/// between the latest user message and each tool description, via the.1
 /// embed backend) keep their full description; the rest collapse to a
 /// one-line summary. Orthogonal to tier supply — folding rewrites
 /// description TEXT only, every tool stays callable with its full parameter
@@ -425,7 +425,7 @@ pub struct LspToolConfig {
 /// `agents.lsp_tool.enabled` 解耦**：诊断闭环开而 lsp 工具关是合法组合
 /// （闭环自身按需起服务器）。
 ///
-/// （能力扩展）：`enabled` 默认翻转为 **true**（对齐
+/// `enabled` 默认翻转为 **true**（对齐
 /// 业界通行的「内置无条件开启」）——缺键/缺段按开处理；用户显式写
 /// `false` 的配置不受影响（serde 显式值优先于 default fn）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -456,7 +456,7 @@ impl Default for DiagnosticsLoopConfig {
     }
 }
 
-/// （能力扩展）：诊断回灌默认开（同源供 serde 缺键路径与手写
+/// 诊断回灌默认开（同源供 serde 缺键路径与手写
 /// Default impl 消费——两路必须落同一值）。
 fn default_diagnostics_enabled() -> bool {
     true
@@ -523,7 +523,7 @@ pub struct FormatOnSaveConfig {
     pub timeout_secs: u64,
 }
 
-/// 格式化超时缺省秒数（单一真相源：serde 缺省 / Default / 0 防呆共用）。
+/// 格式化超时缺省秒数（统一定义：serde 缺省 / Default / 0 防呆共用）。
 pub fn default_format_timeout_secs() -> u64 {
     3
 }
@@ -557,7 +557,7 @@ pub struct AgentDefaults {
     pub max_tool_iterations: i64,
     #[serde(default = "default_concurrent_request_mode")]
     pub concurrent_request_mode: String,
-    /// Full-review : context-snapshot message role. "user" (default)
+    /// Full-review: context-snapshot message role. "user" (default)
     /// places the merged snapshot as a user message; some
     /// strict chat templates reject adjacent user/user pairs — set
     /// "system" to restore the pre single system-role injection.
@@ -589,7 +589,7 @@ pub struct AgentDefaults {
     /// max(上游要求, 阶梯值)。0 = 关闭重试（一次失败即终局，旧行为）。
     #[serde(default = "default_rate_limit_retries")]
     pub rate_limit_retries: i64,
-    /// （能力扩展 compaction）：自动压缩的逐字尾巴 token 预算
+    /// （compaction）：自动压缩的逐字尾巴 token 预算
     /// （默认 20000，对齐业界通行 keepRecentTokens）。压缩边界从「保留近
     /// K_TARGET=6 条」改为「保留近 N token」（MODEL-FACING 投影估算），
     /// 预算边界再经 tool_safe_boundary 回退，保证永不切在 tool_call/result
@@ -603,7 +603,7 @@ pub struct AgentDefaults {
     /// 0=不限惯例相反。消费点 = loop 侧轮顶检（硬停 ≥100% / 软提示 ≥75%）、
     /// cluster_agent 重派入口拒接、board_review 转人工；读法统一
     /// `agents_defaults_u64("session_token_budget", 0)` fresh-read
-    /// （config.json 单一真相源，运行中改键下一轮生效）。typed 字段的
+    /// （config.json 统一定义，运行中改键下一轮生效）。typed 字段的
     /// 意义 = 防 typed save_config round-trip 静默抹键（vision 键
     /// 同类回归；AgentDefaults 无 flatten extra）。
     #[serde(default)]
@@ -615,7 +615,7 @@ pub struct AgentDefaults {
     /// （drain 只走正常停机路径）。
     #[serde(default = "default_shutdown_drain_secs")]
     pub shutdown_drain_secs: u64,
-    /// 输出撞顶翻倍阶梯的封顶值（§6.2 无人值守硬化；默认 262144 = 256K）。
+    /// 输出撞顶翻倍阶梯的封顶值（无人值守硬化；默认 262144 = 256K）。
     /// LLM 响应 `finish_reason=length` 且正文为空（思考烧穿形态）时翻倍重发
     ///（`max(当前×2, 32768)` 起步地板），直到有正文或触及本封顶。触及封顶
     /// 仍空 = 按现行失败收口（文案注明已试到封顶）。只改当次请求，不回写
@@ -624,7 +624,7 @@ pub struct AgentDefaults {
     pub max_output_ceiling: u64,
 }
 
-/// 翻倍阶梯封顶缺省（serde 缺省 / Default 单一真相源）。
+/// 翻倍阶梯封顶缺省（serde 缺省 / Default 统一定义）。
 pub fn default_max_output_ceiling() -> u64 {
     262144
 }

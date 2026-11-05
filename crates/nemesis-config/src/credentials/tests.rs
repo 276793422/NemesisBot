@@ -354,7 +354,7 @@ fn test_sanitize_alias() {
     assert_eq!(sanitize_alias(""), "model");
 }
 
-// Coverage batch : file-IO error branches + import corner cases.
+// Coverage batch: file-IO error branches + import corner cases.
 
 #[test]
 fn test_load_credentials_blank_file_is_default() {
@@ -621,7 +621,7 @@ fn classify_key_source_serializes_without_plaintext() {
     );
 }
 
-// vault（/）：vault: 引用的旁路防护与来源徽标
+// vault：vault: 引用的旁路防护与来源徽标
 
 /// classify_key_source：vault: 分支——kind=vault，reference=别名，值永不出。
 #[test]

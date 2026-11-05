@@ -1,4 +1,4 @@
-//! 反向桥帧协议（goal：节点显示名 + 反向桥与多设备汇聚，一期批次一）。
+//! 反向桥帧协议（goal：节点显示名 + 反向桥与多设备汇聚，一期）。
 //!
 //! 桥两端（中继服务端 ↔ 桥客户端）之间的全部通信都是 JSON 文本帧
 //! （与集群 RPC 同风格；单用户面板流量量级足够，二进制帧优化待实测需要）。
@@ -29,7 +29,7 @@
 //! `nemesisbot/src/relay/protocol.rs`，但 nemesis-web 不能引用 bin crate
 //! （nemesisbot）的类型，而路由/handler/状态页都在 nemesis-web——协议类型
 //! 与服务端状态机整体放 `nemesis-web/src/relay/`，桥客户端（nemesisbot）
-//! 引用 `nemesis_web::relay::protocol` 复用。
+//! 引用 `nemesis_web::relay:protocol` 复用。
 
 use serde::{Deserialize, Serialize};
 

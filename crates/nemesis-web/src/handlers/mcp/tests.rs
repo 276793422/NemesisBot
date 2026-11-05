@@ -358,7 +358,7 @@ async fn r10_transport_type_case_variants_canonicalized_on_disk() {
 }
 
 // 头行语法闸——server.add / server.update 写入面与 CLI
-// `mcp add` 同源（单一真相源 nemesis_config::validate_mcp_header_line）。
+// `mcp add` 同源（统一定义 nemesis_config::validate_mcp_header_line）。
 // 此前 Dashboard 放行运行期必跳过/必失败的行（缺冒号、保留头、引用名带
 // 空格），失败延迟到挂载期 401 且 WARN 对用户不可见。
 
@@ -482,7 +482,7 @@ async fn r12_server_update_tolerates_masked_legacy_plus_new_good_line() {
 }
 
 // 结构闸 + command 入参消费化——此前 server_add 硬编码
-// command 空串，`{"command": ...}` 载荷被静默丢弃产出双空死条目；且
+// command 空串，`{"command":...}` 载荷被静默丢弃产出双空死条目；且
 // http 无 url / stdio 双空直接落盘，挂载期才炸。
 
 #[tokio::test]
@@ -632,7 +632,7 @@ async fn r13_server_update_tolerates_command_only_stdio() {
     assert_eq!(out["updated"], true);
 }
 
-// env：env 行语法闸——与 headers 同纪律（单一真相源
+// env：env 行语法闸——与 headers 同纪律（统一定义
 // nemesis_config::validate_mcp_env_line），坏行写入面 loud 拒绝，不再
 // 静默落盘等挂载期无声消失。
 

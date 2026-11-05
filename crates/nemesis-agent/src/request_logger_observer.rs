@@ -242,7 +242,7 @@ impl RequestLoggerObserver {
                 });
                 state.logger.log_raw_request_envelope(&envelope);
             } else {
-                // Convert serde_json:Value messages to LlmMessage structs.
+                // Convert serde_json::Value messages to LlmMessage structs.
                 let messages: Vec<crate::r#loop::LlmMessage> = data
                     .messages
                     .iter()
@@ -438,7 +438,7 @@ impl nemesis_observer::Observer for RequestLoggerObserver {
     }
 }
 
-/// Convert a `nemesis_observer:ConversationEvent` into the internal
+/// Convert a `nemesis_observer::ConversationEvent` into the internal
 /// `ConversationEvent` used by `RequestLoggerObserver`.
 ///
 /// Exposed as pub so that other observers (e.g. `ClusterRequestLoggerObserver`

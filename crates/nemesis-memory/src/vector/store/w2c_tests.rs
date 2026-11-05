@@ -1,11 +1,11 @@
-//! W2c batch tests (Phase 3 / quality-hardening goal).
+//! batch tests (/ quality-hardening goal).
 //!
 //! Targets vector/store.rs branches not exercised by tests.rs / extra_tests.rs:
 //! - load_persisted_sync with non-UTF-8 content → Err (io error path)
 //! - persist_entry_sync failure arms (parent is a file / storage path is a dir)
 //! - rewrite_persist_file failure is silent (unwritable persist path)
 //! - failing embed backend: store_entry / query propagate the error
-//! - embed_handle returns a working standalone handle (M5 lock discipline)
+//! - embed_handle returns a working standalone handle (lock discipline)
 //! - exact total-vs-capped-entries accounting in query results
 
 use super::*;
@@ -101,14 +101,14 @@ fn persist_entry_sync_storage_path_is_dir_errors() {
 }
 
 // ============================================================
-// persist 不可用时 delete 的内存语义不受影响（BUG-20261025-59 更新）
+// persist 不可用时 delete 的内存语义不受影响（更新）
 // ============================================================
 
 #[test]
 fn delete_entry_with_unwritable_persist_path_still_deletes() {
     let dir = tempfile::tempdir().unwrap();
     // Persist 路径的父目录不存在：旧实现 File::create(tmp) 失败且全静默；
-    // BUG-20261025-59 起走唯一临时名权威 helper——helper 自带
+    // 起走唯一临时名权威 helper——helper 自带
     // create_dir_all，持久化反而成功（行为差异见下方断言），但本测试钉的
     // 核心契约不变：持久化成败不影响内存态 delete。
     let path = dir.path().join("missing_dir").join("v.jsonl");
@@ -149,7 +149,7 @@ fn query_with_failing_embed_errors() {
 }
 
 // ============================================================
-// embed_handle (M5 lock discipline entry point)
+// embed_handle (lock discipline entry point)
 // ============================================================
 
 #[test]

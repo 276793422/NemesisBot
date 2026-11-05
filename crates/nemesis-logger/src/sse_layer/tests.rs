@@ -1,6 +1,6 @@
 //! Tests for the SseLogLayer.
 //!
-//! These tests use `tracing::dispatch::with_default` to install a subscriber with our layer,
+//! These tests use `tracing::dispatch:with_default` to install a subscriber with our layer,
 //! emit a tracing event, and assert that the callback fired with the expected fields.
 
 use std::sync::{Arc, Mutex};
@@ -49,7 +49,7 @@ fn classifies_source_by_target_prefix() {
         SseLogEvent::classify_source("nemesis_agent::loop"),
         "general"
     );
-    // L10（2026-10-13）：cache warmer 完整模块路径先判 → llm（warm 是
+    // cache warmer 完整模块路径先判 → llm（warm 是
     // 真金白银的 API 调用，观测面归 llm 源）；其余 nemesis_agent 不受影响。
     assert_eq!(
         SseLogEvent::classify_source("nemesis_agent::loop::cache_warmer"),
@@ -80,7 +80,7 @@ fn layer_fires_callback_for_info_event() {
     assert_eq!(ev.message, "hello world");
     assert_eq!(ev.source, "general");
     // seq must be populated and anchored to this boot's base.
-    // BUG-20261028-110 修复后：seq = (boot_ms << 20) + 自由增长计数器，
+    // 修复后：seq = (boot_ms << 20) + 自由增长计数器，
     // 计数器跨过 2^20 后 seq 高位会进入 boot+1 段——所以只断言 ≥ 本进程
     // 基址，不钉死高位精确相等（严格单调性由
     // next_seq_strictly_monotonic_across_counter_wrap 钉死）。
@@ -93,7 +93,7 @@ fn layer_fires_callback_for_info_event() {
 #[test]
 fn next_seq_is_monotonic_and_distinct() {
     // Consecutive calls must return strictly increasing values.
-    // BUG-20261028-110 修复后单调性来自「boot 基址 + 不掩码自由计数器」的
+    // 修复后单调性来自「boot 基址 + 不掩码自由计数器」的
     // 加法布局，跨 2^20 边界不回绕（边界行为由
     // next_seq_strictly_monotonic_across_counter_wrap 覆盖）。
     let a = next_seq();
@@ -107,7 +107,7 @@ fn next_seq_is_monotonic_and_distinct() {
 fn next_seq_anchored_to_boot_base() {
     // The seq domain starts at this boot's base (boot_unix_ms << 20). This is
     // the invariant the frontend relies on for cross-restart uniqueness.
-    // BUG-20261028-110 修复后计数器不掩码自由增长：跨过 2^20 边界后高位会
+    // 修复后计数器不掩码自由增长：跨过 2^20 边界后高位会
     // 落在 boot+1 段，因此断言用 ≥ 基址而非高位精确相等。
     let s = next_seq();
     assert!(
@@ -119,7 +119,7 @@ fn next_seq_anchored_to_boot_base() {
 
 #[test]
 fn next_seq_strictly_monotonic_across_counter_wrap() {
-    // BUG-20261028-110 红证：旧实现 `(boot_ms << 20) | (counter & 0xFFFFF)`
+    // 红证：旧实现 `(boot_ms << 20) | (counter & 0xFFFFF)`
     // 的 20-bit 掩码让计数器在 2^20 次调用后回绕——seq 域重复且回退。
     // 前端 EventStream 按 `seq <= maxSeqSeen` 去重，回退的 seq 会被静默
     // 丢弃：gateway 是长驻进程（+ 文件/SSE 两层各消费一个 seq，实际约
@@ -473,7 +473,7 @@ fn global_layer_does_not_hold_lock_during_callback() {
 }
 
 // ===========================================================================
-// S12b batch（quality-hardening goal 冲刺）：Visit 类型分支补全 + 测试辅助
+// batch（quality-hardening goal 冲刺）：Visit 类型分支补全 + 测试辅助
 // ===========================================================================
 
 #[test]

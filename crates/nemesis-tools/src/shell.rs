@@ -31,7 +31,7 @@ const TRUNCATE_TAIL_CHARS: usize = 4000;
 /// Resolve a POSIX shell interpreter name (`bash` / `sh`) to a real
 /// executable on Windows; identity elsewhere.
 ///
-/// 【2026-09-02 CI 首跑实证】Windows 系统 PATH 中 `System32` 恒排最前，
+/// 【 CI 首跑实证】Windows 系统 PATH 中 `System32` 恒排最前，
 /// `Command::new("bash")` 命中的是 `C:\Windows\System32\bash.exe`（WSL
 /// launcher）。WSL feature 已启用但**未装任何 Linux 发行版**时（GitHub
 /// windows-2025 runner 镜像即此形态；装了 Docker Desktop 但没装发行版的
@@ -46,7 +46,7 @@ const TRUNCATE_TAIL_CHARS: usize = 4000;
 /// script 节点（全部四条车道）+ agent `run_script` 工具。
 pub fn resolve_posix_shell_path(interpreter: &str) -> String {
     // 两个 cfg 块互斥，各自独占尾表达式位置（不能写成两个 return，
-    // 否则另一平台报 needless_return / unused import——2026-09-02 远端实测）。
+    // 否则另一平台报 needless_return / unused import—— 远端实测）。
     #[cfg(not(windows))]
     {
         // Linux/macOS：PATH 上的 bash/sh 就是真 shell，无需修补。
@@ -152,8 +152,8 @@ fn default_deny_patterns() -> Vec<Regex> {
 
 /// Shell command execution tool with safety validation.
 ///
-/// 【2026-09-04 B1 核实】本工具**当前无生产注册路径**：agent `exec` 走
-/// `nemesis-agent::loop_tools::ExecTool`（无工具内截断，全量交 loop 层
+/// 【 核实】本工具**当前无生产注册路径**：agent `exec` 走
+/// `nemesis-agent::loop_tools:ExecTool`（无工具内截断，全量交 loop 层
 /// spill/prune 闸治理）；workflow `script` 节点走 `run_script` 工具 /
 /// execution world / 裸 spawn 三车道，均不经本工具。唯一潜在消费方是
 /// cron 的 `set_shell_tool`（生产未接线）。下方 10k 截断因此是遗留实现的
@@ -343,11 +343,11 @@ impl ShellTool {
 
             // Extract paths from the command and validate they are within workspace.
             //
-            // BUG-20261025-55：旧形态 `strip_prefix` 只有路径在 cwd 之内才
+            // 旧形态 `strip_prefix` 只有路径在 cwd 之内才
             // Ok——成功分支里的 `..` 判断永假（死代码），真正在外的路径走
             // Err 分支直接放行，整个扫描恒 no-op（伪守卫，注释却声称校验
             // 工作区）。改为只核**无歧义绝对路径**：
-            // - Windows 盘符形态（X:\ / X:/）与 Unix 顶级 / 形态（按
+            // - Windows 盘符形态（X:\ / X）与 Unix 顶级 / 形态（按
             //   `Path::is_absolute` 自然分平台）必然是路径；
             // - rooted 无盘符形态（/x）在 Windows 与命令旗标不可区分
             //   （robocopy /mir、msiexec /i），刻意不核——宁漏检（cwd 边界 +
@@ -356,7 +356,7 @@ impl ShellTool {
             // - URL scheme 尾巴（https: 的 s://…）按「匹配起点前是字母
             //   数字」跳过，否则 restrict 模式下所有带 URL 的命令误杀。
             // 盲点（既有，非本次引入）：UNC（\\srv\share）、环境变量间接
-            // （%windir%）、无分隔符盘根（cd C:）不在此扫描面。
+            // （%windir%）、无分隔符盘根（cd C）不在此扫描面。
             let path_pattern = Regex::new(r#"[A-Za-z]:[\\/][^\s"'<>]+|/[^\s"'<>]+"#).unwrap();
             let base = canonicalize_for_compare(std::path::Path::new(cwd));
 
@@ -574,9 +574,9 @@ impl Tool for ShellTool {
                     } else {
                         self.workspace.join(&p)
                     };
-                    // 双侧统一归一化（nemesis-path 单一真相源）：组件级比较防
+                    // 双侧统一归一化（nemesis-path 统一定义）：组件级比较防
                     // `C:\ws2` 前缀误判；workspace 侧归一化防 8.3 短名/大小写
-                    // 失配（CI RUNNER~1 家族，2026-09-01）。
+                    // 失配（CI RUNNER~1 家族）。
                     let resolved = canonicalize_for_compare(&target);
                     let ws = canonicalize_for_compare(&self.workspace);
                     if !resolved.starts_with(&ws) {
@@ -624,7 +624,7 @@ impl Tool for ShellTool {
         let mut cmd = tokio::process::Command::new(shell);
         cmd.arg(flag).arg(&command).current_dir(&cwd);
 
-        // T4（扩展计划 D2a）：先剥继承环境中的凭据类变量，再叠加模型显式
+        // （扩展计划）：先剥继承环境中的凭据类变量，再叠加模型显式
         // env（显式 env 走工具 args，已被安全管线审计，属声明意图）。
         let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut cmd);
         if stripped > 0 {
@@ -639,7 +639,7 @@ impl Tool for ShellTool {
             }
         }
 
-        // B8d：spawn + 并发 drain + 超时树杀（guest exec 同款形态）。此前
+        // spawn + 并发 drain + 超时树杀（guest exec 同款形态）。此前
         // `timeout(timeout, cmd.output())`——超时取消 future 连带 drop Child
         // 默认不 kill，被超时命令继续在后台跑；移进 future 的管道读在取消
         // 时还会丢残余输出。
@@ -702,7 +702,7 @@ async fn drain_child_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin + Send>
     let Some(pipe) = pipe else {
         return String::new();
     };
-    // 有界排干（BUG 2026-10-29 横扫角度 B）：输出体量不受我方控制（`yes`
+    // 有界排干（横扫角度 B）：输出体量不受我方控制（`yes`
     // 类高吞吐 × 超时窗口 = OOM 面），1 MiB 丢头保尾，显示层截断照旧。
     String::from_utf8_lossy(&nemesis_utils::pipe_cap::drain_capped_async(pipe).await).into_owned()
 }

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -65,7 +65,7 @@ impl Cluster {
 
                             match result {
                                 Ok(resp) => {
-                                    // G2: 交叉校验对端响应 timestamp，漂移过大限频 WARN
+                                    // 交叉校验对端响应 timestamp，漂移过大限频 WARN
                                     // （复用 discovery 的 AnnounceWarnGate，10 分钟冷却）
                                     if let Some(ts) = resp
                                         .result
@@ -84,7 +84,7 @@ impl Cluster {
                                             );
                                         }
                                     }
-                                    // 身份回传（TCP fallback，2026-10-10）：ping 响应携带
+                                    // 身份回传（TCP fallback）：ping 响应携带
                                     // announce（与 UDP announce 同构的 additive 字段）时，
                                     // 经 apply_probe_announce 走 handle_discovered_node_ex
                                     // 同一入册漏斗。UDP 静默拓扑（CI ghost 进程占端口、
@@ -107,7 +107,7 @@ impl Cluster {
                                         // 复活也是「节点发现」：广播被隔离的拓扑（多宿主
                                         // 主机跨网段、AP 隔离）里 announce 永远不来，探针
                                         // 翻转是唯一的 Offline→Online 信号源——停车场
-                                        // sweep / 看板收编必须同样感知（T1 真机缺陷修复）。
+                                        // sweep / 看板收编必须同样感知（真机缺陷修复）。
                                         Self::fire_recovered_callback(
                                             &on_discovered,
                                             &registry,
@@ -187,7 +187,7 @@ impl Cluster {
     /// confirms the peer is alive — independent of the UDP discovery loop.
     ///
     /// Offline→Online 翻转同样触发 `on_node_discovered`（复活也是节点发现，
-    /// 与 G2 探针复活同语义，见 `fire_recovered_callback`）；已 Online 的
+    /// 与 探针复活同语义，见 `fire_recovered_callback`）；已 Online 的
     /// 重复确认不触发（幂等）。
     pub fn mark_peer_healthy(&self, node_id: &str) {
         let was_offline = self
@@ -211,15 +211,15 @@ impl Cluster {
         crate::logger::log_discovery("offline", reason, Some(node_id));
     }
 
-    /// On-demand frame-level connectivity probe of a single peer（G2 探针
+    /// On-demand frame-level connectivity probe of a single peer（探针
     /// 同款形态：`Custom("ping")` + 5s 超时，`require_online=false`——对端
     /// 被标 Offline 也能探到真话）。返回对端是否帧级应答。
     ///
     /// 与健康检查循环的分工：本方法**不**因单次失败翻转注册表状态（那是
-    /// G2 连败累计的职责，单次失败可能是瞬态抖动）；成功侧顺带
+    /// 连败累计的职责，单次失败可能是瞬态抖动）；成功侧顺带
     /// [`Self::mark_peer_healthy`]（幂等，Offline→Online 复活广播照常触发
     /// ——看板停车场 sweep 依赖该信号，业务流主动接触到的复活不该被
-    /// sweep 晚一轮才看见）。消费方：看板冲突硬解重派前的三轮主动接触
+    /// sweep 晚一轮才看）。消费方：看板冲突硬解重派前的三轮主动接触
     ///（board conflict_resolver）。
     pub async fn probe_peer(&self, node_id: &str) -> bool {
         let Some(client) = self.rpc_client_arc() else {
@@ -253,27 +253,27 @@ impl Cluster {
     }
 }
 
-/// G2: 探针调度判定（纯函数，便于单测）：Online 对端每 tick 都探；
+/// 探针调度判定（纯函数，便于单测）：Online 对端每 tick 都探；
 /// Offline 对端**前 12 个 tick 全探**（启动冲刺——纯中继/UDP 静默拓扑
 /// （跨网自建中继，announce 永远不来）里静态 peer 的 Offline→Online 只能
 /// 靠探针，降频 1/5 × 60s interval = 首次上线最长 5 分钟，用户视角等同
 /// 「组网失败」；冲刺窗口内全探把首拨号提前到秒级。窗口取 12 = 默认 60s
 /// 间隔下覆盖 12 分钟的人尺度启动偏差——用户先起 A 再去配 B 是常态，B 晚
-/// 到 5~10 分钟仍在窗口内秒级互见），之后每 5 个 tick 探一次（1/5 降频
+/// 到 5~10 分钟仍在窗口内秒级互），之后每 5 个 tick 探一次（1/5 降频
 /// 自愈——不是放弃，是恢复手段，一次成功立即翻回 Online）。
 /// `tick` 为 1-based tick 序号。
 pub(super) fn should_probe_peer(online: bool, tick: u64) -> bool {
     online || tick <= 12 || tick.is_multiple_of(5)
 }
 
-/// G2: 探针 timestamp 漂移 WARN 限频闸门（进程级，每节点 10 分钟冷却）。
+/// 探针 timestamp 漂移 WARN 限频闸门（进程级，每节点 10 分钟冷却）。
 pub(super) fn probe_drift_gate() -> &'static crate::discovery::AnnounceWarnGate {
     static GATE: std::sync::OnceLock<crate::discovery::AnnounceWarnGate> =
         std::sync::OnceLock::new();
     GATE.get_or_init(crate::discovery::AnnounceWarnGate::new)
 }
 
-/// 负载感知路由记账核心（自由函数，语义单一真相源）：task_id → 目标节点
+/// 负载感知路由记账核心（自由函数，语义统一定义）：task_id → 目标节点
 /// 成功/失败 +1，响应时长样本（created_at→completed_at 实测，RFC3339 解析
 /// 失败只计胜负不计时——宁缺毋假）随可解析时累加。幂等重放去重：每任务
 /// 只计首次 settle——重复回调（送达重试/B 端重发/恢复轮询重放）经
@@ -281,11 +281,11 @@ pub(super) fn probe_drift_gate() -> &'static crate::discovery::AnnounceWarnGate 
 /// 节点成功率失真。空 peer_id / 本节点自身任务不入账（路由只关心「派给
 /// 谁」）。入口三处共用：① 回调漏斗 [`Cluster::record_route_outcome`]；
 /// ② 构造期路由钩子（恢复轮询 sweep 三分支 + 默认回调 handler 兜底臂 +
-/// G4 清理 tick 的 H4 安全网判死，经 `TaskManager::fire_route_record`
+/// 清理 tick 的 安全网判死，经 `TaskManager::fire_route_record`
 /// 触达）；③ 两臂全部捕获同一 stats/去重集。
 /// 路由去重集容量上限（内存护栏）。条目只在「settle 后短时间内可能收到
-/// 重放」的窗口内有意义（送达重试/G5 恢复轮询都在分钟级），而任务本体
-/// 2h 后即被 G4 清理——集内旧条目是纯死重量。超限整体清空重新计数：
+/// 重放」的窗口内有意义（送达重试/ 恢复轮询都在分钟级），而任务本体
+/// 2h 后即被 清理——集内旧条目是纯死重量。超限整体清空重新计数：
 /// 丢的只是远超任何重放窗口的旧任务去重位，最坏情形（窗口外恰好来重放）
 /// 是单个样本双计，自限且可忽略。10 万条 ≈ 15MB 上界，远超看板自动化
 /// 现实任务量级。

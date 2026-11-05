@@ -5,7 +5,7 @@
 //! loop/tests.rs 的 guardian e2e 钉死，本文件不重复。
 //!
 //! fixture 自带（兄弟测试模块不能互相 import）。安全层涉及
-//! `tokio:task:block_in_place`，一律 `multi_thread` flavor。
+//! `tokio::task:block_in_place`，一律 `multi_thread` flavor。
 
 #![cfg(feature = "security")]
 

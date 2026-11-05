@@ -1,11 +1,11 @@
-//! 吊销检查（P2a：DLL 联网查 CRL，数据模式）。
+//! 吊销检查（DLL 联网查 CRL，数据模式）。
 //!
 //! 流程：拉 `GET <NEMESIS_REVOCATION_URL>/v1/crl` → `SignedResponse<Crl>`（被根签）→
 //! 用内置根公钥 `verify_response` → 缓存（TTL）→ 四维度查（key_fp/sig_hash/content_hash/publisher）。
 //!
 //! **数据模式**：CRL 被根私钥签，DLL 本地用根公钥验。云端被攻破 → 假 CRL 无根签 → 验不过 → 拒。
 //!
-//! 配置（环境变量，R7 同模式运行时配置）：
+//! 配置（环境变量， 同模式运行时配置）：
 //! - `NEMESIS_REVOCATION_URL`：云端 base URL（如 `http://127.0.0.1:7878`）。
 //! - `NEMESIS_STRICT_OFFLINE`：`1`/`true` = strict 模式（断网/拉取失败且无缓存 → `Unknown` → 调用方拒）。
 //!
@@ -75,19 +75,19 @@ pub fn strict_offline() -> bool {
 
 /// 拉取并验证 CRL（被根签）。返回验过的 Crl。
 ///
-/// BUG-20261029-147：网络调用在独立线程执行——`reqwest::blocking` 的 Client
+/// 网络调用在独立线程执行——`reqwest::blocking` 的 Client
 /// drop 时其内部 runtime 关闭需要 block，在 tokio runtime 上下文内 drop 即
 /// panic（「Cannot drop a runtime in a context where blocking is not
 /// allowed」）。本库调用方横跨三类上下文：CLI 工具（exe-sign-tool，无
 /// tokio，安全）、WSAPI handler（skins list/detail 直调 verify_bytes，async
 /// worker 线程）、gateway 启动签名闸（`#[tokio::main]` 主体内同步执行）——
-/// 后两类不包装必炸。线程包装对无 tokio 的调用方零影响。先例：
+/// 后两类不包装必炸。线程包装对无 tokio 的调用方零影响。
 /// nemesis-voice bootstrap.rs download_runtime_libs、
-/// nemesis-voice model.rs download_model_files（BUG-20261029-146 同款修复）。
+/// nemesis-voice model.rs download_model_files（同款修复）。
 fn fetch_crl(base_url: &str, root_pub: &VerifyingKey) -> Result<Crl> {
     let url = format!("{}/v1/crl", base_url.trim_end_matches('/'));
     let resp: SignedResponse<Crl> = std::thread::spawn(move || -> Result<SignedResponse<Crl>> {
-        // BUG-20261031-261：blocking::get 用默认 client（无总超时）——CRL
+        // blocking::get 用默认 client（无总超时）——CRL
         // 分发点半死时线程永久挂起，`verify --revocation-url` 卡死无输出。
         // 30s 对齐分发点拉取类请求（非长轮询）。
         let client = reqwest::blocking::Client::builder()
@@ -112,7 +112,7 @@ fn crl_expired(crl: &Crl, now: u64) -> bool {
 }
 
 /// 取有效 CRL（缓存优先，过期/无则拉取）。soft-fail：拉失败用旧缓存。
-/// 三臂全部按 valid_until 门控（BUG-20261029-190）：缓存命中臂（本地 TTL 内
+/// 三臂全部按 valid_until 门控：缓存命中臂（本地 TTL 内
 /// 但 CRL 本体过期 → 不用）、新拉臂（拉到即过期的 CRL 视同拉取失败）、
 /// stale-fallback 臂（只回退到 valid_until 内的旧缓存）。
 fn get_crl(root_pub: &VerifyingKey) -> Option<Crl> {
@@ -234,10 +234,10 @@ pub fn ocsp_check_single(
         content_hash: Some(hex_encode(content_hash)),
         publisher: publisher.map(String::from),
     };
-    // BUG-20261029-147：同 fetch_crl——独立线程执行 blocking 网络（tokio
+    // 同 fetch_crl——独立线程执行 blocking 网络（tokio
     // 上下文安全）；线程 panic = 传输层不可达，与 send Err 同待遇（None）。
     let resp: Option<SignedResponse<OcspResp>> = std::thread::spawn(move || {
-        // BUG-20261031-261：同 fetch_crl——无超时 blocking client 会被半死
+        // 同 fetch_crl——无超时 blocking client 会被半死
         // 响应端点永久挂起；soft-fail 语义下超时与 send Err 同待遇（None）。
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
@@ -268,7 +268,7 @@ pub fn ocsp_check_single(
     }
 }
 
-// ===== 本地 CRL 快照支持（皮肤管理面 P3：无网络快照模式）=====
+// ===== 本地 CRL 快照支持（皮肤管理面：无网络快照模式）=====
 //
 // 与上方「联网数据模式」的差异：CRL 文件由运维手动放置（release 附件
 // 分发 → 保存为本地快照），装载/验签/查询全程无网络。信任链：快照 =
@@ -288,7 +288,7 @@ pub struct RevocationMeta {
     /// sig_hash hex = SHA-256(SignerInfo.signature DER)。
     pub sig_hash: Option<String>,
     /// v4 内容摘要 hex（FileHash 维度；口径与签发/记账同源 =
-    /// [`crate::verify::v4_content_digest`]）。
+    /// [`crate::verify:v4_content_digest`]）。
     pub content_hash: Option<String>,
     /// 签名者证书 subject CN（Publisher 维度）。
     pub publisher: Option<String>,
@@ -315,7 +315,7 @@ fn primary_cms(bytes: &[u8]) -> Result<Vec<u8>> {
 ///
 /// 签名结构解析失败 → 各签名维 `None`（诚实缺维）；content_hash：PE =
 /// authenticode_digest（排除证书表）；有 footer = 载体内嵌摘要（签发时刻
-/// 口径，与记账一致）；都无 = [`crate::verify::v4_content_digest`]（未签
+/// 口径，与记账一致）；都无 = [`crate::verify:v4_content_digest`]（未签
 /// 文件的 best-effort 文件指纹）。
 pub fn revocation_meta(bytes: &[u8]) -> RevocationMeta {
     let mut meta = RevocationMeta::default();

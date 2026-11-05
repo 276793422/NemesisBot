@@ -263,7 +263,7 @@ async fn b11_wake_due_sessions_injects_recovery_line() {
 
     let woken = wake_due_sessions();
     assert_eq!(woken, 1, "到期项应唤醒一次");
-    // 标记摘除 + 恢复 system 行入 jsonl（真相源）。
+    // 标记摘除 + 恢复 system 行入 jsonl。
     let meta = nemesis_agent::chat_log::read_session_meta_full(&key).unwrap();
     assert_eq!(meta.snoozed_until, None);
     let (msgs, _, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 50, None);
@@ -381,7 +381,7 @@ fn b11_parse_snooze_until_units() {
 }
 
 /// 用户可控秒数双重坏带回归锁：`until` 是 WSAPI 入参字符串，天文数字曾
-/// 直接进 panicking 的 chrono::Duration::seconds——构造带（>~9.2e15s chrono
+/// 直接进 panicking 的 chrono::Duration:seconds——构造带（>~9.2e15s chrono
 /// 毫秒 i64 溢出 panic）与加法溢出带（>~7.5e12s 溢出 NaDateTime 年域，
 /// `+` expect panic）都会炸 handler。修为 try_seconds + checked_add_signed
 /// 后越界诚实报错。

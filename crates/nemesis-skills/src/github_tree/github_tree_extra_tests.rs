@@ -483,7 +483,7 @@ fn test_tree_response_tree_can_be_huge() {
 }
 
 // ============================================================
-// S5 coverage: blob==prefix continue arm, path traversal
+// coverage: blob==prefix continue arm, path traversal
 // Security error, parent-create Io failure
 // ============================================================
 

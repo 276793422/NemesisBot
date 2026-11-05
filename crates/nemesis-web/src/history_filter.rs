@@ -2,7 +2,7 @@
 //!
 //! 拦截 `request_type="history"` 的入站消息，**就地**读主 workspace 的
 //! chat_log 并经 bus 出站应答——消息不再进入 bus 扇出，与任何 agent
-//! loop 的存亡/忙闲彻底解耦（BUG 2026-09-23 项目会话历史加载修复）：
+//! loop 的存亡/忙闲彻底解耦（项目会话历史加载修复）：
 //!
 //! - 场景 A（项目目录缺失）：项目 loop 从未启动，历史照样可读——数据
 //!   本就全在主 workspace `logs/session_logs/`，项目归属不再能把只读

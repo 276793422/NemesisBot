@@ -1,10 +1,10 @@
-// ：per-loop 附加闸槽测试。
+// per-loop 附加闸槽测试。
 //
 // 覆盖面：
 // ① `extra_hidden_tools` 合并语义——`current_hidden_tools` 单点合并（记录
 //    tool_policy 折算面 ∪ config `agents.hidden_tools`），重叠去重、两源
 //    各自生效；供给闸 `build_tool_defs` 对合并表生效；
-// ② `tier_override` 钉死语义——`Some` = 记录档位唯一真相源
+// ② `tier_override` 钉死语义——`Some` = 记录档位唯一依据
 //    （`refresh_active_tier` 短路：config 重解析 / 换模型都不覆盖）；
 //    `None` = 回落 config 驱动；档位供给闸随钉死生效（mini 白名单收窄）。
 //

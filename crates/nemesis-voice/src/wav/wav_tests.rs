@@ -64,7 +64,7 @@ fn wav_write_clamps_and_silence() {
     assert!(parsed[2].abs() < 1e-6);
 }
 
-// ===== 撒谎 chunk size 算术溢出（BUG 2026-10-29 横扫角度 B）=====
+// ===== 撒谎 chunk size 算术溢出（横扫角度 B）=====
 
 /// 纯函数契约（64 位）：u32::MAX 步进 = 2^32 精确无饱和，语义与旧式
 /// `body_start + size.div_ceil(2)*2` 逐字节一致（偶数 size 同样精确）。

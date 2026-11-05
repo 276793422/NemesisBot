@@ -1,10 +1,10 @@
 //! 验收标准自动生成（2026-10-17 用户裁决）：issue 创建时未填验收标准，
 //! 系统按标题/背景自动推导判定基准——「我说了有 BUG，验收标准就是 BUG
-//! 被解决」，评审不得对着「未提供」装瞎（NB-125 实录：worker 两轮交付
+//! 被解决」，评审不得对着「未提供」装瞎（worker 两轮交付
 //! 均正确，评审因 AC 缺失连续 UNSURE 无限重派，纯烧 worker 轮次）。
 //!
 //! 确定性模板、零 LLM：创建路径（WSAPI/CLI/autopilot/planner 子单）全部
-//! 经 [`crate::store::BoardStore::create_issue`] 单点生效；planner 子单自带
+//! 经 [`crate::store:BoardStore::create_issue`] 单点生效；planner 子单自带
 //! AC 不触发。用户事后可在详情页编辑（issue.update 照常覆盖）。评审侧
 //! 对存量缺 AC 单据用同一函数兜底推导（[`crate::review`] prompt 渲染），
 //! 口径一致。

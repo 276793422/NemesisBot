@@ -1,7 +1,7 @@
 //! 覆盖率批次：capture_sink.rs 剩余未覆盖行。
 //! - 207：flush 的 05.error.txt 写失败 warn。
-//! - 234：write_json 的 fs:write 失败 warn。
-//! - 245-247：write_jsonl 的 File:create 失败 warn + return。
+//! - 234：write_json 的 fs::write 失败 warn。
+//! - 245-247：write_jsonl 的 File::create 失败 warn + return。
 //!
 //! 后两者直接调模块私有 helper（子模块可），目标路径预置为目录 →
 //! 写/创建确定性失败。207 需要 flush 内部时间戳命中预置的
@@ -20,7 +20,7 @@ fn temp_ws(tag: &str) -> PathBuf {
     ))
 }
 
-/// write_json：目标路径已是目录 → fs:write 失败 → warn（234）。
+/// write_json：目标路径已是目录 → fs::write 失败 → warn（234）。
 #[test]
 fn write_json_to_directory_path_warns() {
     let _logs = capture_logs();
@@ -33,7 +33,7 @@ fn write_json_to_directory_path_warns() {
     let _ = fs::remove_dir_all(&ws);
 }
 
-/// write_jsonl：目标路径已是目录 → File:create 失败 → warn + return
+/// write_jsonl：目标路径已是目录 → File::create 失败 → warn + return
 /// （245-247）。传入非空 items 确认循环体不执行也不 panic。
 #[test]
 fn write_jsonl_to_directory_path_warns() {
@@ -62,7 +62,7 @@ fn write_jsonl_to_directory_path_warns() {
 }
 
 /// flush 的 error.txt 写失败（207）：预置 `{ts}_{signal}/05.error.txt` 为
-/// 目录，同一秒内调用 flush → fs:write 失败。跨秒（flush 落到新目录、
+/// 目录，同一秒内调用 flush → fs::write 失败。跨秒（flush 落到新目录、
 /// 写会成功）则换 key 重试；最多 10 次，全部跨秒概率≈0。
 #[test]
 fn flush_error_txt_blocked_by_directory_warns() {
@@ -79,7 +79,7 @@ fn flush_error_txt_blocked_by_directory_warns() {
             .join("capture")
             .join(sanitize(&key))
             .join(format!("{}_s9err", ts));
-        // 预置 05.error.txt 为目录 → flush 里 fs:write 必失败
+        // 预置 05.error.txt 为目录 → flush 里 fs::write 必失败
         fs::create_dir_all(sink_dir.join("05.error.txt")).unwrap();
         let sink = CaptureSink::for_test(ws.clone());
         sink.flush(&key, "s9err", None, Some("boom: full error text"));

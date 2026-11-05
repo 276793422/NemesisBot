@@ -310,7 +310,7 @@ fn test_truncate_history_nonexistent_session_silent_return() {
     mgr.truncate_history("nonexistent:key", 5);
 }
 
-// SAN-05 单一真相源契约（2026-09-16）：退化/含分隔符键不再报错，而是消毒成
+// SAN-05 单一真相源契约：退化/含分隔符键不再报错，而是消毒成
 // 合法段落盘（save_chat_session 的 post-sanitize 守卫降级为不变量 tripwire）。
 #[test]
 fn test_save_chat_session_invalid_key_dot_normalizes() {
@@ -1014,7 +1014,7 @@ fn test_message_fields_serialization_order() {
 }
 
 // ===========================================================================
-// S12b batch（quality-hardening goal 冲刺）：load_chat_sessions 目录扫描防御臂
+// batch（quality-hardening goal 冲刺）：load_chat_sessions 目录扫描防御臂
 // ===========================================================================
 
 #[test]
@@ -1025,7 +1025,7 @@ fn s12b_load_chat_sessions_skips_non_json_and_corrupt_files() {
     let storage = dir.path().join("sessions");
     std::fs::create_dir_all(&storage).unwrap();
 
-    // 非 .json 文件 → extension 守卫 continue
+    // 非.json 文件 → extension 守卫 continue
     let mut txt = std::fs::File::create(storage.join("notes.txt")).unwrap();
     txt.write_all(b"not a session").unwrap();
     // .json 但内容损坏 → 反序列化失败被静默跳过
@@ -1049,7 +1049,7 @@ fn s12b_load_chat_sessions_skips_non_json_and_corrupt_files() {
     assert_eq!(mgr.get_history("corrupt").len(), 0);
 }
 
-// BUG-20261025-44（BUG-HUNT R121）：损坏会话 json 静默跳过 → loud 留痕回归锁。
+// 损坏会话 json 静默跳过 → loud 留痕回归锁。
 // 跳过语义不变（坏档不进索引、好档照常载入）；warn 本身无法在进程内断言
 // （无 tracing 捕获夹具，BUG-43 同族诚实边界），本锁钉「混档目录载入不炸、
 // 好坏分拣正确、原子写残留被扩展名过滤无视」这一可观察行为。
@@ -1079,7 +1079,7 @@ fn load_chat_sessions_corrupt_file_skipped_with_valid_ones_loaded() {
     assert!(!loaded.contains_key("web:torn"), "坏档不得进索引");
 }
 
-/// BUG-20261025-51 回归锁：同键并发写不产损坏文件、成功后零临时残留。
+/// 回归锁：同键并发写不产损坏文件、成功后零临时残留。
 /// 旧固定 `{key}.json.tmp` 实现下，多线程 add_message 的 File::create 截断
 /// 互踩可把混合字节 rename 落盘（概率性损坏——本测试为并发烟测 + 零残留
 /// 不变量；确定性保障在 nemesis_utils::write_file_atomic 自身测试 + 本次
@@ -1119,7 +1119,7 @@ fn test_concurrent_same_key_saves_produce_valid_file_and_no_tmp_residue() {
     assert_eq!(session.key, "telegram:123");
     assert!(session.messages.len() >= MSGS);
 
-    // 成功路径零残留：目录里只有目标 .json（唯一临时名也不允许残留）。
+    // 成功路径零残留：目录里只有目标.json（唯一临时名也不允许残留）。
     let residue: Vec<_> = std::fs::read_dir(&path)
         .unwrap()
         .map(|e| e.unwrap().file_name())
@@ -1128,7 +1128,7 @@ fn test_concurrent_same_key_saves_produce_valid_file_and_no_tmp_residue() {
     assert!(residue.is_empty(), "residue: {residue:?}");
 }
 
-// —— BUG-20261028-95 红证：会话持久化失败不得静默 ——
+// —— 红证：会话持久化失败不得静默 ——
 
 #[derive(Clone)]
 struct CaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
@@ -1181,13 +1181,13 @@ fn chat_session_save_failure_warns_not_silent() {
     );
 }
 
-// --- BUG-20261030-213：同键并发保存 lost-update（确定性构造）-------------
+// ---：同键并发保存 lost-update（确定性构造）-------------
 // save_chat_session 快照在状态锁内、落盘在锁外——旧快照的 rename 可能晚于
 // 新快照落盘（last-rename-wins = 已完成保存的消息重启后丢失；BUG-51 只修了
 // 撕裂写，没修这个序问题）。修复 = 快照+落盘用同一把 save 闸串行化。
-// 确定性复现：save_delay 测试钩子把 T0 钉在「快照后、落盘前」的停顿窗口，
-// T1 的完整保存整体落在窗口内——修复前 T0 的旧快照 rename 必然最后落地
-// （丢 T1 消息）；修复后 T1 阻塞在闸上、快照+rename 都晚于 T0，盘上完整。
+// 确定性复现：save_delay 测试钩子把 钉在「快照后、落盘前」的停顿窗口，
+// 的完整保存整体落在窗口内——修复前 的旧快照 rename 必然最后落地
+// （丢 消息）；修复后 阻塞在闸上、快照+rename 都晚于，盘上完整。
 #[test]
 fn test_concurrent_same_key_saves_never_lose_messages() {
     let dir = std::env::temp_dir().join(format!(
@@ -1206,18 +1206,18 @@ fn test_concurrent_same_key_saves_never_lose_messages() {
         "user",
         &format!("base-{}", "x".repeat(4 * 1024 * 1024)),
     );
-    // 一次性钩子：只延迟 T0 的首个保存（消费即归零，T1 的保存不受影响）。
+    // 一次性钩子：只延迟 的首个保存（消费即归零， 的保存不受影响）。
     mgr.save_delay_ms
         .store(1200, std::sync::atomic::Ordering::SeqCst);
     let mgr = std::sync::Arc::new(mgr);
-    // T0：先快照（含 base），随后在钩子停顿里挂起 1200ms 再落盘。
+    // 先快照（含 base），随后在钩子停顿里挂起 1200ms 再落盘。
     let t0 = {
         let mgr = mgr.clone();
         std::thread::spawn(move || {
             mgr.add_message("gw:race", "user", "from-t0");
         })
     };
-    // 等 T0 进入停顿窗口（快照已拍），再让 T1 完成整轮保存。
+    // 等 进入停顿窗口（快照已拍），再让 完成整轮保存。
     std::thread::sleep(Duration::from_millis(300));
     mgr.add_message("gw:race", "user", "from-t1");
     t0.join().unwrap();

@@ -1,6 +1,6 @@
-//! PE codec 单测（M5 补测，quality-hardening goal 2026-08-25）。
+//! PE codec 单测（补测，quality-hardening goal 2026-08-25）。
 //!
-//! 此前 pe.rs 0 单测（基线 §9.3 可疑点：T1-T5 端到端跑通走的是
+//! 此前 pe.rs 0 单测（基线 可疑点：- 端到端跑通走的是
 //! exe-sign-tool/verify-loader **手工 bin**，cargo 测试从不经过 PE 解析）。
 //! 这里用手工构造的最小 PE 字节流直接钉住布局解析的每个决策点：
 //! L 的多源综合（section 末尾 / section table 兜底 / 文件长度截断）、
@@ -19,7 +19,7 @@ fn put32(b: &mut [u8], off: usize, v: u32) {
 }
 
 struct PeSpec {
-    /// PE32+（0x20b）还是 PE32（0x10b）。
+    /// +（0x20b）还是 （0x10b）。
     plus: bool,
     /// (SizeOfRawData, PointerToRawData) 列表。
     sections: Vec<(u32, u32)>,
@@ -103,7 +103,7 @@ fn compute_l_is_max_section_raw_end() {
     });
     assert_eq!(PeCodec.compute_l(&pe2).unwrap(), Some(0x450));
 
-    // PE32+ 变体（magic 0x20b，不同的 nrva/datadir 偏移）
+    // + 变体（magic 0x20b，不同的 nrva/datadir 偏移）
     let pe_plus = one_section_pe(true);
     assert_eq!(PeCodec.compute_l(&pe_plus).unwrap(), Some(0x300));
 }
@@ -177,7 +177,7 @@ fn content_hash_excludes_checksum_and_security_dir() {
         );
         pe[off] ^= 0xFF;
     }
-    // PE32+ 的 Security 目录项在 P+136+32
+    // + 的 Security 目录项在 P+136+32
     let mut pe_plus = build_pe(&PeSpec {
         plus: true,
         sections: vec![(0x80, 0x200)],
@@ -228,7 +228,7 @@ fn overlay_excludes_reports_auth_region_and_tolerates_garbage() {
 }
 
 /// `NumberOfRvaAndSizes < 5`（无 Security 目录项）是合法 PE 形态：
-/// security_dir_range / auth_region 双双走 None 臂（S6 覆盖率批次）。
+/// security_dir_range / auth_region 双双走 None 臂（覆盖率批次）。
 #[test]
 fn nrva_below_5_means_no_security_directory() {
     let mut pe = one_section_pe(false);
@@ -315,7 +315,7 @@ fn parse_error_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// S3-1：Authenticode byte-range digest（v4 语义：两字段整体跳过 + 证书块排除 +
+// Authenticode byte-range digest（v4 语义：两字段整体跳过 + 证书块排除 +
 // 无 L 上界；与 v3 content_hash 的差异只在无 L 截断 + 证书块排除，参照交叉验证钉死）
 // ---------------------------------------------------------------------------
 
@@ -333,7 +333,7 @@ fn fill_ranges(b: &mut [u8], ranges: &[(usize, usize)]) {
 
 #[test]
 fn authenticode_digest_semantics_pinned_by_reference_reimpl() {
-    // PE32+，1 section（L=0x300），证书表 [0x400,0x440) 落 overlay 中段，
+    // +，1 section（L=0x300），证书表 [0x400,0x440) 落 overlay 中段，
     // 证书表之后还有 0x20 尾巴——五个参与区段 + 三个特殊区一次钉死。
     let pe = build_pe(&PeSpec {
         plus: true,
@@ -455,15 +455,15 @@ fn authenticode_digest_rejects_unparseable() {
 }
 
 // ---------------------------------------------------------------------------
-// S3-1 参照交叉验证（goal 判据：本实现 digest 与 signtool/osslsigncode 签的
-// 参照 PE 内嵌 messageDigest 逐字节一致——先绿才准进 S3-2）
+// 参照交叉验证（goal 判据：本实现 digest 与 signtool/osslsigncode 签的
+// 参照 PE 内嵌 messageDigest 逐字节一致——先绿才准进）
 //
-// 参照物在仓库外 spike 目录（默认 C:\AI\NemesisBot\Logs\2026-09-12_authenticode-spike，
+// 参照物在仓库外 spike 目录（默认 C:\AI\NemesisBot\Logs\-12_authenticode-spike，
 // 可用 NEMESIS_AUTHENTICODE_SPIKE 覆盖）；`--ignored` 显式运行。
-// 清单：R1-R3 = 存量 osslsigncode 签名（FileAlign=0x200 PE32+）；
-// R4 = signtool 直签（spike leaf PFX；SignerInfo.signatureAlgorithm =
-// id-ecPublicKey 怪癖参照）；R5 = mingw 构建异构形态（17 sections）；
-// R6 = 签名前追加 4KB 随机 overlay（真 overlay 形态）；
+// 清单：- = 存量 osslsigncode 签名（FileAlign=0x200 +）；
+// = signtool 直签（spike leaf PFX；SignerInfo.signatureAlgorithm =
+// id-ecPublicKey 怪癖参照）； = mingw 构建异构形态（17 sections）；
+// = 签名前追加 4KB 随机 overlay（真 overlay 形态）；
 // 负控 = test-tampered.exe（签名后翻 0x1000 处 1 字节）。
 // ---------------------------------------------------------------------------
 
@@ -476,14 +476,14 @@ fn spike_dir() -> String {
 
 /// DER 外层 TLV 总长（头 + 内容）；坏头/越界返回 None。
 ///
-/// 真实发现（S3-1 交叉验证）：osslsigncode 的 WIN_CERTIFICATE.bCertificate 在
+/// 真实发现（交叉验证）：osslsigncode 的 WIN_CERTIFICATE.bCertificate 在
 /// 提取 Security Directory 指向的 WIN_CERTIFICATE 链里全部 bCertificate
 /// （CMS ContentInfo DER，按外层 TLV 长度裁掉条目尾部 padding）。
 /// 链式布局：dwLength(4) + wRevision(2) + wCertificateType(2)
 /// + bCertificate(dwLength-8)，下一项按 8 字节对齐。
 ///
-/// （S3-3 起 [`super::read_certificate_entries`] 为产品化版本；本辅助保留给
-/// S3-1 参照交叉验证门的裁剪语义，实现委托 pe.rs 单一真相源。）
+/// （起 [`super::read_certificate_entries`] 为产品化版本；本辅助保留给
+/// 参照交叉验证门的裁剪语义，实现委托 pe.rs 统一定义。）
 fn win_cert_entries(bytes: &[u8]) -> Result<Vec<&[u8]>, CodecError> {
     let layout = super::parse_pe(bytes)?;
     let Some((va, end)) = layout.auth_region else {
@@ -548,12 +548,12 @@ fn cross_validate_one(path: &std::path::Path) -> Result<(), String> {
 fn s31_cross_validate_reference_pes() {
     let dir = spike_dir();
     let refs = [
-        "test-full-signed.exe",       // R1: osslsigncode 全链，大 overlay
-        "test-compare-signed.exe",    // R2: osslsigncode 对照链
-        "test-signed.exe",            // R3: osslsigncode 早期链
-        "test-signtool-signed.exe",   // R4: signtool 直签（MS 权威实现）
-        "test-ossl-mingw-signed.exe", // R5: mingw 17-section 异构形态
-        "test-overlay-signed.exe",    // R6: 签名前追加 4KB 随机 overlay（真 overlay 形态）
+        "test-full-signed.exe",       // osslsigncode 全链，大 overlay
+        "test-compare-signed.exe",    // osslsigncode 对照链
+        "test-signed.exe",            // osslsigncode 早期链
+        "test-signtool-signed.exe",   // signtool 直签（MS 权威实现）
+        "test-ossl-mingw-signed.exe", // mingw 17-section 异构形态
+        "test-overlay-signed.exe",    // 签名前追加 4KB 随机 overlay（真 overlay 形态）
     ];
     for r in refs {
         cross_validate_one(std::path::Path::new(&dir).join(r).as_path())
@@ -587,8 +587,8 @@ fn s31_negative_control_tampered() {
 }
 
 // ---------------------------------------------------------------------------
-// S3-2：Certificate Table 写入（WIN_CERTIFICATE + 8B 对齐 + Security 表项更新）
-// 布局惯例（dwLength = 8 + roundup8(der) / va 8 对齐 / 文件止于表尾）按 S3-1
+// Certificate Table 写入（WIN_CERTIFICATE + 8B 对齐 + Security 表项更新）
+// 布局惯例（dwLength = 8 + roundup8(der) / va 8 对齐 / 文件止于表尾）按
 // 参照四例（ossl + signtool）实测钉死；本组合成测试钉语义，ignored 门产出真实
 // 自签样本供 signtool / Explorer 外部检查。
 // ---------------------------------------------------------------------------
@@ -688,12 +688,12 @@ fn append_certificate_table_rejects_signed_and_broken_shapes() {
         force_len: None,
     });
     let der = vec![0x01u8; 16];
-    // 已有证书表（Size>0）→ 拒绝（S3-3 策略域）
+    // 已有证书表（Size>0）→ 拒绝（策略域）
     let mut already = unsigned.clone();
     let va = already.len().div_ceil(8) * 8;
     let entry_len = 8 + der.len().div_ceil(8) * 8;
     already.resize(va + entry_len, 0);
-    let dd32 = P + 136 + 32; // PE32+ Security 表项 VA 域
+    let dd32 = P + 136 + 32; // + Security 表项 VA 域
     already[dd32..dd32 + 4].copy_from_slice(&(va as u32).to_le_bytes());
     already[dd32 + 4..dd32 + 8].copy_from_slice(&(entry_len as u32).to_le_bytes());
     assert!(
@@ -740,8 +740,8 @@ fn s32_write_self_signed_sample() {
     let cms = build_signed_data(
         &digest,
         &h.leaf_sk,
-        1_800_000_000, // 2027-01：落在自生成链有效期**内**（keygen 链从 2026-09 起；
-        // 2023 旧值会让 Windows 按签名时间验链时报 HashMismatch——S3-2 实证）
+        1_800_000_000, // 落在自生成链有效期**内**（keygen 链从 起；
+        // 2023 旧值会让 Windows 按签名时间验链时报 HashMismatch—— 实证）
         &h.chain(),
         Some("NemesisBot Code Signing"),
         Some("https://nemesisbot.example"),
@@ -752,7 +752,7 @@ fn s32_write_self_signed_sample() {
     std::fs::write(&out_path, &signed)
         .unwrap_or_else(|e| panic!("写 {} 失败: {e}", out_path.display()));
 
-    // 自方结构 + 摘要闭环（信任链判定归 S4-1 管线）：
+    // 自方结构 + 摘要闭环（信任链判定归 管线）：
     let entries = win_cert_entries(&signed).expect("条目提取");
     assert_eq!(entries.len(), 1);
     let sig = parse_signed_data(entries[0]).expect("真 CMS 可解析");
@@ -762,7 +762,7 @@ fn s32_write_self_signed_sample() {
         digest,
         "签名后文件 digest 不变（写入的恰是排除域）"
     );
-    // Rust 侧密码学闭环：对落盘字节的 signedAttrs（SET OF，RFC 5652 §5.4）验签
+    // Rust 侧密码学闭环：对落盘字节的 signedAttrs（SET OF，RFC 5652）验签
     {
         use ecdsa::signature::Verifier;
         let der_sig = <ecdsa::der::Signature<p256::NistP256>>::try_from(sig.signature.as_slice())
@@ -780,14 +780,14 @@ fn s32_write_self_signed_sample() {
 }
 
 // ---------------------------------------------------------------------------
-// S3-2 回归钉（SpcLink 编码 bug 防复发 + statementType 属性）
+// 回归钉（SpcLink 编码 bug 防复发 + statementType 属性）
 // ---------------------------------------------------------------------------
 
-/// S3-2 根修回归钉：SpcIndirectDataContent 的 file 链接字段必须是
-/// `A0 20 A2 1E 80 1C <28B BMP>`——[2] 层 **constructed**（0xA2）。
+/// 根修回归钉：SpcIndirectDataContent 的 file 链接字段必须是
+/// ` 20 1E 80 1C <28B BMP>`——[2] 层 **constructed**（0xA2）。
 /// der_derive 对 Choice 型 variant 的 EXPLICIT 会按 IMPLICIT 式标签替换
 /// 产出 primitive 0x82：Windows 解码 SpcIndirectData 中断 → HashMismatch
-/// （2026-09-12 对照实验实证：与 osslsigncode 产物仅差 0x82/0xA2 一字节）。
+/// （对照实验实证：与 osslsigncode 产物仅差 0x82/0xA2 一字节）。
 #[test]
 fn spc_indirect_data_file_link_is_constructed_tag() {
     let der = crate::envelope::build_spc_indirect_data(&[0xAB; 32]).expect("spc build");
@@ -806,8 +806,8 @@ fn spc_indirect_data_file_link_is_constructed_tag() {
     // 尾部 30 31 = DigestInfo SEQUENCE 头（不在此钉）
 }
 
-/// S3-2：SignerInfo 必含 SPC_STATEMENT_TYPE 属性（signtool / osslsigncode 默认都带；
-/// S3-2 对照实验前的缺省实现曾被 Windows 拒——补齐后与参照行为一致）。
+/// SignerInfo 必含 SPC_STATEMENT_TYPE 属性（signtool / osslsigncode 默认都带；
+/// 对照实验前的缺省实现曾被 Windows 拒——补齐后与参照行为一致）。
 #[test]
 fn signed_data_includes_statement_type_attr() {
     use crate::envelope::build_signed_data;
@@ -837,19 +837,19 @@ fn signed_data_includes_statement_type_attr() {
 }
 
 // ---------------------------------------------------------------------------
-// S3-3：已签名文件策略——三态（未签名 / 自方重签 / 他方+自方共存）
+// 已签名文件策略——三态（未签名 / 自方重签 / 他方+自方共存）
 // 策略入口 resign_pe_file（envelope 层）；载体原语：read_certificate_entries
 // （条目遍历，主签名=首条目）+ replace_certificate_table（剥表重写）。
 // **多条目共存形态已实证否决**（signtool /as 对照：Windows 主签名枚举只认
 // 首条目；追加多签名的微软真实形态 = SPC_NESTED_SIGNATURE 嵌套属性）。
 // 定位自方签名 = enumerate_signatures 展开 → 逐签名证书集含根锚判定；
-// 完整 verify 管线归 S4-1，此处钉定位组合可用。
+// 完整 verify 管线归，此处钉定位组合可用。
 // ---------------------------------------------------------------------------
 
 use crate::envelope::{enumerate_signatures, resign_pe_file};
 use crate::pe::{read_certificate_entries, replace_certificate_table};
 
-/// S3-3 公共夹具：8 对齐未签名底层 PE（与 S3-2 测试同规格）。
+/// 公共夹具：8 对齐未签名底层 PE（与 测试同规格）。
 fn s33_base() -> Vec<u8> {
     build_pe(&PeSpec {
         plus: true,
@@ -859,7 +859,7 @@ fn s33_base() -> Vec<u8> {
     })
 }
 
-/// S3-3 公共夹具：用给定密钥体系构造真 CMS（signingTime 可变 → CMS 字节可区分）。
+/// 公共夹具：用给定密钥体系构造真 CMS（signingTime 可变 → CMS 字节可区分）。
 fn s33_cms(h: &crate::keygen::KeyHierarchy, digest: &[u8; 32], when: u64) -> Vec<u8> {
     crate::envelope::build_signed_data(
         digest,
@@ -971,7 +971,7 @@ fn resign_pe_nests_into_third_party_and_own_is_locatable() {
     assert_eq!(sigs[1], cms_own, "嵌套体 = 我方 CMS 原样");
 
     // 主签名字节零变化 + 他方验签仍过（SPC_NESTED_SIGNATURE 属 unsignedAttrs，
-    // RFC 5652 §5.4/§5.6 不在签名覆盖面——密码学层面的共存不互扰证明）
+    // RFC 5652 不在签名覆盖面——密码学层面的共存不互扰证明）
     let p_before = parse_signed_data(&cms_other).unwrap();
     let p_after = parse_signed_data(&sigs[0]).unwrap();
     assert_eq!(p_before.signature, p_after.signature, "主签名值字节不变");
@@ -1131,7 +1131,7 @@ fn s33_coexist_with_third_party_reference_and_write_sample() {
 
     let h = crate::keygen::generate().expect("keygen");
     let digest = authenticode_digest(&theirs).expect("他方文件 digest");
-    let cms = s33_cms(&h, &digest, 1_800_000_000); // 2027-01：落在自生成链有效期内（S3-2 实证约束）
+    let cms = s33_cms(&h, &digest, 1_800_000_000); // 落在自生成链有效期内（实证约束）
     let both = resign_pe_file(&theirs, &cms, &h.root_anchor_fingerprint()).expect("嵌套共存");
 
     // 结构断言：单条目表重写；枚举 = 主 + 嵌套；主签名字节零变化；
@@ -1183,7 +1183,7 @@ fn s33_coexist_with_third_party_reference_and_write_sample() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：read_certificate_entries 的 PKCS 非 DER /
+// AGT 覆盖率批次：read_certificate_entries 的 PKCS 非 DER /
 // TLV 畸形臂、表尾短条目 break、replace_certificate_table 三个诚实失败臂。
 // append_certificate_table 不校验 DER——用「合法 hex 位形」直接塞畸形 blob
 // 即可精确触发解析层各失败分支。
@@ -1225,7 +1225,7 @@ fn read_entries_pkcs_non_der_tlv_forms_bail() {
     // 非 PKCS 类型条目原样保留 blob（不进 DER 裁剪分支）。类型字段在**外层**
     // WIN_CERTIFICATE 头（append 恒写 PKCS）——append 后改头字节触发。
     let base = s33_base();
-    let marker = b"RAW-BLOB-1234567"; // 16B：round8 后 blob 与 marker 等长
+    let marker = b"RAW-BLOB-1234567"; // 16B： 后 blob 与 marker 等长
     let signed = append_certificate_table(&base, marker).unwrap();
     let va = base.len().div_ceil(8) * 8;
     let mut patched = signed;
@@ -1246,7 +1246,7 @@ fn read_entries_stops_on_short_trailing_entry() {
     let mut signed = append_certificate_table(&base, &cms).unwrap();
     signed.extend_from_slice(&0u32.to_le_bytes());
     signed.extend_from_slice(&[0u8; 4]);
-    // Security Size 表项 +8 覆盖新尾巴（PE32+：dd_start = P+136，Size 在 +36）
+    // Security Size 表项 +8 覆盖新尾巴（+：dd_start = P+136，Size 在 +36）
     let size_pos = P + 136 + 36;
     let old = u32::from_le_bytes(signed[size_pos..size_pos + 4].try_into().unwrap());
     signed[size_pos..size_pos + 4].copy_from_slice(&(old + 8).to_le_bytes());
@@ -1281,7 +1281,7 @@ fn replace_certificate_table_rejects_unsigned_trailing_and_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// R196 红证（BUG-20261028-129）：parse_pe 的 L 保险只含 section table 末尾、
+// 红证：parse_pe 的 L 保险只含 section table 末尾、
 // 不含 Security 表项末尾——crafted 头（SizeOfOptionalHeader 偏小）让 Security
 // 表项落在 [0, L) 之外，VA < L 交叉校验穿透，下游两处 panic：
 //   位点 1 authenticode_digest：`bytes[se..va]`（va=216 < se=224，start>end）
@@ -1289,7 +1289,7 @@ fn replace_certificate_table_rejects_unsigned_trailing_and_empty() {
 //         （stripped=len 216，越界 [216..224]）
 // ---------------------------------------------------------------------------
 
-/// 最小 crafted PE（len=224）：PE32、零 section、SizeOfOptionalHeader=0
+/// 最小 crafted PE（len=224）：、零 section、SizeOfOptionalHeader=0
 /// → sec_tbl_end=88；nrva=5 → Security 表项 [216,224)（悬在 opt header 结构外）；
 /// Security.VA=216、Size=8。旧 L 保险下 l=88：交叉校验 va=216 ≥ 88 ✓、
 /// end=224 ≤ len ✓ 双过——但 va < se，digest/replace 两点位全部越界。
@@ -1301,7 +1301,7 @@ fn crafted_pe_security_entry_outside_l() -> Vec<u8> {
     b[P..P + 4].copy_from_slice(b"PE\0\0");
     put16(&mut b, P + 6, 0); // NumberOfSections = 0
     put16(&mut b, P + 20, 0); // SizeOfOptionalHeader = 0（crafted：表项悬在结构外）
-    put16(&mut b, P + 24, 0x10b); // Magic = PE32
+    put16(&mut b, P + 24, 0x10b); // Magic =
     put32(&mut b, P + 116, 5); // NumberOfRvaAndSizes = 5（Security 表项在场）
     put32(&mut b, 216, 216); // Security.VA（datadir_start = P+120 = 184，表项 @184+32）
     put32(&mut b, 220, 8); // Security.Size = 8
@@ -1337,7 +1337,7 @@ fn crafted_pe_security_entry_outside_l_is_malformed() {
 /// 此处补一条「Security 表项在场 + section 主导 L」的最短对照。
 #[test]
 fn legal_pe_l_insurance_with_security_entry_is_noop() {
-    // PE32+：sec_tbl_end = P+24+240+40 = 368 > se = P+136+40 = 240 → max 无操作
+    // +：sec_tbl_end = P+24+240+40 = 368 > se = P+136+40 = 240 → max 无操作
     let pe = build_pe(&PeSpec {
         plus: true,
         sections: vec![(0x100, 0x200)],

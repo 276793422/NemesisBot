@@ -1,19 +1,19 @@
-//! Executor wire 协议薄 crate（P5 底座，2026-10-17）。
+//! Executor wire 协议薄 crate（底座，2026-10-17）。
 //!
 //! 「gateway ↔ executor 子进程」之间一行一 JSON 的 wire 协议（v1/v2 双形态
 //! 与 call_id 回显）、传输抽象（`ExecutorStream` trait）与交换原语的
 //! **单一真相源**。原实现住在 `nemesis-agent/src/executor_transport.rs`
-//! （P3 T1），P5 桌面级 VM 需要第三个消费方——guest agent（VM 内执行体）
+//! 桌面级 VM 需要第三个消费方——guest agent（VM 内执行体）
 //! ——而 guest crate 不可能依赖 nemesis-agent（整包依赖图太重），所以协议
 //! 本体抽薄到这里（零 nemesis 依赖），两侧同源消费，防两端口径漂移。
 //!
 //! 消费方：
 //! - `nemesis-agent::executor_transport`：re-export 本 crate（现有调用点
 //!   零改动），并继续持有 stdio/persistent 会话等宿主侧载体。
-//! - `nemesis-guest`（P5）：guest agent 的协议循环（musl 静态二进制 +
+//! - `nemesis-guest`：guest agent 的协议循环（musl 静态二进制 +
 //!   宿主双栖直跑）。
 //!
-//! 协议版本纪律（与 P3 一致）：
+//! 协议版本纪律（与 一致）：
 //! - **v1**（现状）：`{tool,args,context}` → `{ok,result,error}`。per-call
 //!   路径继续产出 v1 字节（request 不带 `call_id`/`v` 键——serde skip），
 //!   现有测试与外部断言零迁移。
@@ -34,7 +34,7 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
 pub const PROTOCOL_V2: u32 = 2;
 
 // ---------------------------------------------------------------------------
-// Wire structs（两侧单一真相源）
+// Wire structs（两侧统一定义）
 // ---------------------------------------------------------------------------
 
 /// Gateway → executor 请求（序列化形态，借用字段）。
@@ -129,7 +129,7 @@ pub fn new_call_id() -> String {
 // ---------------------------------------------------------------------------
 
 /// 构造 v2 请求行（含尾部换行）。supervisor 日常调用/replay 与 VM 通道
-/// 共用——单一真相源。
+/// 共用——统一定义。
 pub fn build_v2_request_line(
     tool: &str,
     args: &str,
@@ -155,7 +155,7 @@ pub fn build_v2_request_line(
 
 /// executor 字节传输的最小接口。任何 `AsyncRead + AsyncWrite + Unpin +
 /// Send` 的对象自动实现（blanket impl）——stdio 双工、Windows 具名管道
-/// （tokio `NamedPipeServer/Client` 原生满足）、P5 的 TCP/vsock 流同理。
+/// （tokio `NamedPipeServer/Client` 原生满足）、 的 TCP/vsock 流同理。
 pub trait ExecutorStream: AsyncRead + AsyncWrite + Unpin + Send {}
 
 impl<T> ExecutorStream for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -312,10 +312,10 @@ where
         && !expected.is_empty()
         && resp.call_id != expected
     {
-        // BUG-20261102-308 carve-out：空 call_id + ok=false = 子进程在任何
-        // 请求读取前失败的会话级全局错误（P5-2 `emit_error_response`——如
+        // carve-out：空 call_id + ok=false = 子进程在任何
+        // 请求读取前失败的会话级全局错误（`emit_error_response`——如
         // strict 拒绝 engage），不是错位的请求应答。透传拒绝原因原文，不再
-        // 泛化成 mismatch（P5-2「让模型/用户看到拒绝原因」的意图在
+        // 泛化成 mismatch（「让模型/用户看到拒绝原因」的意图在
         // persistent 路径同样成立）。非空 call_id 失配（含 ok=false 的错位
         // 错误应答）行为不变——串话 / journal replay 防线不削弱。
         if resp.call_id.is_empty() && !resp.ok && !resp.error.is_empty() {

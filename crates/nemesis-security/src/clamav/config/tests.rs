@@ -242,7 +242,7 @@ fn test_generate_freshclam_config_includes_update_log_file() {
 }
 
 // ============================================================
-// Parent-dir / write-error branches (2026-08-25 coverage push)
+// Parent-dir / write-error branches (coverage push)
 // ============================================================
 
 #[test]

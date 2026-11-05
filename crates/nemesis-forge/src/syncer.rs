@@ -218,7 +218,7 @@ impl Syncer {
         let path = self.forge_dir.join("reflections").join(&safe_name);
 
         // Security: ensure the resolved path is within the reflections directory
-        // 2026-09-01 8.3 短名统一修复：裸 canonicalize 失败回退词法原样，与
+        // 8.3 短名统一修复：裸 canonicalize 失败回退词法原样，与
         // canonicalize 过的另一侧表示失配 → 合法读取被误拒（fail-closed）。
         let reflections_dir = self.forge_dir.join("reflections");
         let abs_path = nemesis_path::paths::canonicalize_for_compare(&path);
@@ -237,7 +237,7 @@ impl Syncer {
     }
 
     /// Sanitize a report before sharing (remove sensitive data).
-    /// Test-only wrapper for sanitize_report (F-M8 verification).
+    /// Test-only wrapper for sanitize_report (F- verification).
     #[cfg(test)]
     pub(crate) fn sanitize_report_for_test(&self, report: &serde_json::Value) -> serde_json::Value {
         self.sanitize_report(report)
@@ -247,7 +247,7 @@ impl Syncer {
         let report_str = serde_json::to_string(report).unwrap_or_default();
         let sanitized = self.sanitizer.sanitize(&report_str);
         serde_json::from_str(&sanitized).unwrap_or_else(|_| {
-            // F-M8: NEVER fall back to the unsanitized report — a regex that
+            // F-: NEVER fall back to the unsanitized report — a regex that
             // crossed JSON structure would otherwise leak the very secrets we
             // tried to scrub. Fail closed (drop the content) instead.
             tracing::warn!("[Syncer] sanitized report failed to re-parse; dropping content");
@@ -256,7 +256,7 @@ impl Syncer {
     }
 }
 
-/// Read all .md files from a directory.
+/// Read all.md files from a directory.
 fn read_md_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     if !dir.exists() {
         return Ok(Vec::new());

@@ -1,7 +1,7 @@
 //! （2026-10-16）— `agents.list/get/create/remove` WSAPI + Agent 持久
 //! 实体管理面。
 //!
-//! 依赖方向（同 [`crate::handlers::projects`] 先例）：nemesis-web 不能反向
+//! 依赖方向（同 [`crate::handlers:projects`] 先例）：nemesis-web 不能反向
 //! 依赖 nemesisbot（`AgentManager` 与 tasks.db 在那边），所以这里定义
 //! [`AgentsBridge`] trait + 模块级槽，nemesisbot 在 gateway 装配时把实现
 //! 装进槽。handler 全部经 bridge 走；未装配（headless / 独立 web 测试）
@@ -49,13 +49,13 @@ pub struct AgentInfo {
 /// 生命周期面走异步——sleep/wake 涉及子进程停起（tokio IO）。
 #[async_trait::async_trait]
 pub trait AgentsBridge: Send + Sync {
-    /// 列出全部记录（main/project/selfbuilt 三类组并存可见）。
+    /// 列出全部记录（main/project/selfbuilt 三类组并存可）。
     fn list(&self) -> Vec<AgentInfo>;
     /// 单条查询。
     fn get(&self, agent_id: &str) -> Result<AgentInfo, String>;
     /// 创建自建 agent（两阶段：provisioning → home 物化 → active）。
     /// `runtime_backend`：`process|vm`（空串同 process；值域校验在实现侧
-    /// 单一真相源，非法值 loud 拒绝）。`principal`：主体标识（
+    /// 统一定义，非法值 loud 拒绝）。`principal`：主体标识（
     /// 预留薄透传，空 = 未绑定）。
     fn create(
         &self,
@@ -106,11 +106,11 @@ pub trait AgentsBridge: Send + Sync {
     -> Result<serde_json::Value, String>;
 }
 
-// agent 会话键（会话身份单一真相源）
+// agent 会话键（会话身份统一定义）
 
 /// agent 会话键形态：`agents:{agent_id}:session:{sid}`。sid 消毒同主会话
-/// 纪律（[`nemesis_agent::session::SessionStore::sanitize_session_id`]
-/// 单一真相源）。本函数与 [`agent_owner_of`] 是该形态的构造/解析单点。
+/// 纪律（[`nemesis_agent::session:SessionStore::sanitize_session_id`]
+/// 统一定义）。本函数与 [`agent_owner_of`] 是该形态的构造/解析单点。
 pub fn agent_session_key(agent_id: &str, session_id: &str) -> String {
     let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
     format!("agents:{agent_id}:session:{sid}")

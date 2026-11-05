@@ -195,7 +195,7 @@ fn project_no_vision_notes_last_user_differently() {
 }
 
 // ---------------------------------------------------------------------------
-// ContinuationStore:stale_task_ids
+// ContinuationStore::stale_task_ids
 // ---------------------------------------------------------------------------
 
 #[test]

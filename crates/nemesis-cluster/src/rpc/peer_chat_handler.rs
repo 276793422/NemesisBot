@@ -28,7 +28,7 @@ use crate::rpc::client::RpcClient;
 pub const DEFAULT_LLM_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
 /// `config.cluster.json` 的 `llm_timeout_secs` → B 端 LLM 等待超时
-/// （集群完备性加固 2026-09-11 单一真相源；此前 gateway 内联 0→24h、
+/// （集群完备性加固 单一权威定义；此前 gateway 内联 0→24h、
 /// 本 handler 默认 2h、文档写「0=不限」三方不一致）。
 ///
 /// 语义以文档为准：**0 = 不限**（`Duration::MAX`，tokio timeout 永不触发）；
@@ -77,13 +77,13 @@ pub struct PeerChatAck {
     pub status: String,
     /// Task ID for tracking the async processing.
     pub task_id: String,
-    /// L13-b：拒单原因（status=error 时给 A 端失败漏斗可读文案——board
+    /// b：拒单原因（status=error 时给 A 端失败漏斗可读文案——board
     /// 派发侧把它带进 ⛔ 系统评论；None / 缺键 = 旧形态 wire 兼容）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
-/// 判定 peer_chat 的 RPC 响应载荷是否为 B 端拒单（BUG-1，2026-10-17）。
+/// 判定 peer_chat 的 RPC 响应载荷是否为 B 端拒单（BUG-1）。
 ///
 /// B 端工作队列满等场景同步返回 `{status:"error"}` ACK——传输层成功、
 /// 载荷层拒单。A 端调用方（board 派发 / 评审取证 / Dashboard 手动
@@ -142,14 +142,14 @@ pub trait TaskResultPersister: Send + Sync {
     ) -> Result<(), String>;
     /// Delete a task result (after successful callback).
     fn delete(&self, task_id: &str) -> Result<(), String>;
-    /// 任务到达终态钩子（看板项目档案 goal P3/D2；默认 no-op 兼容既有
+    /// 任务到达终态钩子（看板项目档案 goal /；默认 no-op 兼容既有
     /// 实现与测试 fake）。无论回调成功/失败、无论 legacy/work-queue 路径，
     /// 任务终结时都会被调用——gateway 侧适配器在此触发执行档案入队
     /// （TransferOutbox::enqueue）。
     fn on_task_terminal(&self, _task_id: &str, _source_node_id: &str) {}
 }
 
-/// 任务接收钩子（看板项目档案 goal P4/E3 worker 侧档案工作副本）。work-queue
+/// 任务接收钩子（看板项目档案 goal / worker 侧档案工作副本）。work-queue
 /// 路径在 `handle()` 收到任务时调用：payload 带 `_baseline_commit`（档案
 /// 管线派发）= 解包基线工作副本并返回 prompt 工作目录段（追加进任务
 /// content）；`None` = 非档案任务，既有行为零改动。
@@ -171,12 +171,12 @@ pub struct PeerChatHandler {
     llm_channel: Option<Arc<dyn LlmChannel>>,
     rpc_client: Option<Arc<RpcClient>>,
     result_persister: Option<Arc<dyn TaskResultPersister>>,
-    /// P4/E3 任务接收钩子（档案工作副本；None = 无档案语义）。
+    ///  任务接收钩子（档案工作副本；None = 无档案语义）。
     task_receive_hook: Option<Arc<dyn TaskReceiveHook>>,
     /// Cluster agent work queue (preferred over llm_channel).
     cluster_task_list: Option<Arc<ClusterTaskList>>,
     cluster_work_queue: Option<Arc<ClusterWorkQueue>>,
-    /// L13-b：mandate 校验策略（workspace + posture；gateway 装配期注入）。
+    /// b：mandate 校验策略（workspace + posture；gateway 装配期注入）。
     /// `None` = 未装配 = 全放行（旧节点/旧装配兼容——mandate 缺失即旧行为，
     /// 在场即验需要 workspace 钉存钥面在场才有意义）。
     mandate_policy: Option<crate::roaming::mandate::MandatePolicy>,
@@ -187,7 +187,7 @@ pub struct PeerChatHandler {
 impl PeerChatHandler {
     /// Create a new peer chat handler with the default 2-hour LLM timeout
     /// ([`DEFAULT_LLM_TIMEOUT`]；可经 config.cluster.json 的 `llm_timeout_secs`
-    /// 覆盖，0 = 不设超时。G4 修正：旧注释"59-minute"是错的，59 分钟是
+    /// 覆盖，0 = 不设超时。 修正：旧注释"59-minute"是错的，59 分钟是
     /// RPC Client 的 ACK 等待上限，与 B 端 LLM 处理超时是两回事）。
     pub fn new(node_id: String) -> Self {
         Self {
@@ -238,12 +238,12 @@ impl PeerChatHandler {
         self.result_persister = Some(persister);
     }
 
-    /// Set the task receive hook（P4/E3 档案工作副本；gateway 装配期一次）。
+    /// Set the task receive hook（/ 档案工作副本；gateway 装配期一次）。
     pub fn set_task_receive_hook(&mut self, hook: Arc<dyn TaskReceiveHook>) {
         self.task_receive_hook = Some(hook);
     }
 
-    /// L13-b：注入 mandate 校验策略（workspace 钉存钥面 + posture）。
+    /// b：注入 mandate 校验策略（workspace 钉存钥面 + posture）。
     pub fn set_mandate_policy(&mut self, policy: crate::roaming::mandate::MandatePolicy) {
         self.mandate_policy = Some(policy);
     }
@@ -329,7 +329,7 @@ impl PeerChatHandler {
             .unwrap_or("default")
             .to_string();
 
-        // 4.5 L13-b mandate 前置闸（四道校验：吊销/钉存/签名+绑定+时限；
+        // 4.5 -b mandate 前置闸（四道校验：吊销/钉存/签名+绑定+时限；
         // 拒绝 = status:error ACK，任务不进 set_running/不入队——B 端零
         // 副作用，A 端既有失败漏斗收口）。拒绝文案带 `mandate 拒绝:` 前缀
         // 经 ack.error 透传（board 派发侧系统评论 / chat 派发侧错误直达）。
@@ -387,7 +387,7 @@ impl PeerChatHandler {
         let cluster_work_queue = self.cluster_work_queue.clone();
         if let (Some(ref task_list), Some(ref work_queue)) = (cluster_task_list, cluster_work_queue)
         {
-            // P4/E3（看板项目档案 goal）：接收钩子——payload 带
+            // /（看板项目档案 goal）：接收钩子——payload 带
             // `_baseline_commit` = 解包基线工作副本 + prompt 工作目录段。
             // legacy LLM 路径不接钩子（裸通道无文件工具，档案语义无从谈起）。
             let content = match self
@@ -399,9 +399,9 @@ impl PeerChatHandler {
                 None => req.content.clone(),
             };
             // Create a cluster task and enqueue to the work queue.
-            // 集群专业职能框架（M3）：派发载荷顶层 `required_profession`
+            // 集群专业职能框架：派发载荷顶层 `required_profession`
             // （board 派发端写入；旧 A 端不带该键 → None，优雅降级）。
-            // 压测②（2026-09-30 三设备）：取证任务（board 评审链的
+            // 压测②（三设备）：取证任务（board 评审链的
             // board_selfcheck 取证请求）走优先通道插队——评审在 master
             // 侧挂起等待，被正式任务串行队列堵住会把评审链拖长数十分钟。
             let is_selfcheck = content.contains(crate::cluster_task::SELFCHECK_PROMPT_MARKER);
@@ -420,15 +420,15 @@ impl PeerChatHandler {
                 callback_result: None,
                 required_profession: required_profession_from_payload(&payload),
                 async_usage_stash: None,
-                // L13-b：验签通过的执行面守卫投影随任务走（cluster_agent
+                // b：验签通过的执行面守卫投影随任务走（cluster_agent
                 // set 进 AgentLoop guard 槽）；None = 无 mandate。
                 mandate: mandate_enforcement,
-                // AOR 批二a ④：派发代际号（可选键，旧 A 端不带 → None）。
+                // a ④：派发代际号（可选键，旧 A 端不带 → None）。
                 // 随任务存进 task_list，回调时原样回声给 A 端写回闸。
                 dispatch_generation: payload.get("dispatch_generation").and_then(|v| v.as_i64()),
             };
             task_list.create_task(cluster_task);
-            // 压测②（2026-09-30 三设备）：取证任务（board 评审链的
+            // 压测②（三设备）：取证任务（board 评审链的
             // board_selfcheck 取证请求）走优先通道插队——评审在 master
             // 侧挂起等待，被正式任务串行队列堵住会把评审链拖长数十分钟。
             let submit_result = if is_selfcheck {
@@ -442,7 +442,7 @@ impl PeerChatHandler {
                     error = %e,
                     "[PeerChat] Failed to submit to work queue"
                 );
-                // BUG-1（2026-10-17）：拒单即回滚先行的两处登记——
+                // BUG-1：拒单即回滚先行的两处登记——
                 // set_running 占位会对 A 端 query_task_result 持续回答
                 // running（任务从未开始却吊住恢复轮询）；task_list 条目
                 // 没有执行出口，complete_task 是唯一移除点，不回滚就是
@@ -496,7 +496,7 @@ impl PeerChatHandler {
                 )
                 .await;
             });
-            // LOW-17（2026-10-17 四轮审计）：入队前清一遍已完成 handle
+            // LOW-17（四轮审计）：入队前清一遍已完成 handle
             // （is_finished 无消费副作用）——旧写法只增不清，legacy LLM
             // 路径长驻进程时 Vec 无界慢漏（每任务一个死 handle ≈ 几十字节
             // + 内核句柄残留到进程退出）。
@@ -575,7 +575,7 @@ pub struct RpcMeta {
     pub from: Option<String>,
 }
 
-/// 集群专业职能框架（M3）：读派发载荷顶层 `required_profession`（slug，
+/// 集群专业职能框架：读派发载荷顶层 `required_profession`（slug，
 /// trim + 归一小写；空白/缺失/非字符串 = None）。旧 A 端 payload 不带该键
 /// → None = B 端仅渲染稳定前缀（优雅降级，零协议负担）。
 pub fn required_profession_from_payload(payload: &serde_json::Value) -> Option<String> {
@@ -739,11 +739,11 @@ async fn process_async(
 /// Attempt to send the callback to the source node. If all retries fail,
 /// persist the result locally.
 ///
-/// 2026-09-08 G1 收口（集群韧性真机复验 R1a 发现）：本函数是「回调成功 →
-/// 删除已落盘结果 / 回调失败 → 落盘真实结果」语义的单一真相源，legacy
+/// 收口（集群韧性真机复验 发现）：本函数是「回调成功 →
+/// 删除已落盘结果 / 回调失败 → 落盘真实结果」语义的统一定义，legacy
 /// 路径（process_async）与 work-queue 路径（cluster_agent）都必须走它。
 /// 此前 work-queue 路径直连裸 [`send_callback`]，B 端结果从不落盘、成功
-/// 后占位也不清理 → A 端恢复轮询永远拿到 running 占位，G5 恢复链在
+/// 后占位也不清理 → A 端恢复轮询永远拿到 running 占位， 恢复链在
 /// 生产路径下失效。
 pub async fn send_callback_or_persist(
     rpc_client: Option<&RpcClient>,
@@ -800,7 +800,7 @@ pub async fn send_callback_or_persist(
         }
     }
 
-    // 任务终态钩子（P3/D2 执行档案入队）：回调成功与否无关紧要——worker 侧
+    // 任务终态钩子（/ 执行档案入队）：回调成功与否无关紧要——worker 侧
     // 档案推送不依赖 A 端是否收到本轮结果。source 为空时钩子内部诚实跳过。
     if let Some(persister) = result_persister {
         persister.on_task_terminal(task_id, source_node_id);
@@ -809,17 +809,17 @@ pub async fn send_callback_or_persist(
 
 /// Send callback to source node with retries.
 ///
-/// `usage`（全自动流转 P5/E1 二期）：worker 本轮 token 用量（input/output
+/// `usage`（全自动流转 / 二期）：worker 本轮 token 用量（input/output
 /// JSON，serde 兼容——旧 master 忽略未知字段；无用量 = None，字段不落）。
-/// `fail_class`（P2A，2026-09-12 双端真机 NB-15 根修）：结构化终结失败
+/// `fail_class`（P2A， 双端真机 根修）：结构化终结失败
 /// 分类（仅 error 回调携带，`None` = 不落字段——wire 兼容与 usage 同款）。
 /// A 端验收重派决策据此避免同 worker 同模型盲重派（能力类失败重派必复现）。
-/// `delivery`（P4 交付门）：worker 侧交付分支证据（ref/commit/tree/patch
+/// `delivery`：worker 侧交付分支证据（ref/commit/tree/patch
 /// 元数据 JSON，serde 兼容——旧 master 忽略未知字段；无交付 = None，
 /// 字段不落）。
-/// `dispatch_generation`（AOR 批二a ④）：派发代际号原样回声（None = 键
+/// `dispatch_generation`（a ④）：派发代际号原样回声（None = 键
 /// 不落——wire 兼容与 usage 同款；A 端写回闸对回声缺席 = 放行，旧 B 端
-/// / legacy 路径 / CD3 恢复路径均走该兼容臂）。
+/// / legacy 路径 / 恢复路径均走该兼容臂）。
 pub async fn send_callback(
     rpc_client: Option<&RpcClient>,
     source_node_id: &str,
@@ -870,14 +870,14 @@ pub async fn send_callback(
             // 发送方身份必须显式填：RpcClient 不代填（wire 帧 from 直接抄
             // request.source），留空会让对端 `_rpc.from` 拿到空串——master
             // 用量记账键 `cluster_rpc:{worker}/{task_id}` 的 worker 段就此
-            // 丢失（T37 真机实证）。旧注释「filled by client」是谎话。
+            // 丢失（真机实证）。旧注释「filled by client」是谎话。
             source: self_node_id.to_string(),
             target: Some(source_node_id.into()),
         };
 
         // must-reach：回调是任务结果的唯一交付路径，走拨号穿透
         // （require_online=false）——registry 的 Offline 判定可能滞后于
-        // 实际网络恢复（ heal 后 announce/探针节奏内的窗口），门禁瞬断会
+        // 实际网络恢复（heal 后 announce/探针节奏内的窗口），门禁瞬断会
         // 让三次重试在 15s 内全部空转耗尽、已完成的任务结果丢失（T44C
         // 真机 iptables 注入 run2 实证：重派任务执行成功但回调全被
         // 「peer is offline」拒发，master 侧只能 sweep ⛔）。直连拨号本身

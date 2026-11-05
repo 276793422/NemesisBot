@@ -132,16 +132,16 @@ pub enum ClusterAction {
         #[arg(short, long, default_value = "10")]
         broadcast_interval: u64,
     },
-    /// Manage iroh cross-network roaming (A1 overlay layer; identity keygen
-    /// 2026-10-23 起归 `quic keygen`——身份是 QUIC 层资产)
+    /// Manage iroh cross-network roaming (overlay layer; identity keygen
+    /// 起归 `quic keygen`——身份是 QUIC 层资产)
     Roaming {
         #[command(subcommand)]
         action: RoamingAction,
     },
 }
 
-/// iroh 漫游子命令（A1 叠加层；keygen 已挪
-/// `quic keygen`——2026-10-23 与集群解耦，身份文件物理路径不变）。
+/// iroh 漫游子命令（叠加层；keygen 已挪
+/// `quic keygen`—— 与集群解耦，身份文件物理路径不变）。
 #[derive(clap::Subcommand)]
 pub enum RoamingAction {
     /// Show roaming identity status (key file / node ID / trust book)
@@ -152,7 +152,7 @@ pub enum RoamingAction {
     /// Disable cross-network roaming (writes config.cluster.json roaming.enabled;
     /// takes effect on gateway restart)
     Disable,
-    /// Add node to trust book（L16：写盘即激活互信 allowlist regime——
+    /// Add node to trust book（写盘即激活互信 allowlist regime——
     /// 首次写入 trust.toml 起发现链 TOFU 钉存 + 插件 accept 闸 allowlist 语义）
     TrustAdd {
         /// iroh node_id hex（64 hex；接受 `iroh:` 前缀 / 大写，归一入簿）
@@ -171,7 +171,7 @@ pub enum RoamingAction {
         /// iroh node_id hex（64 hex；接受 `iroh:` 前缀 / 大写，归一入簿）
         node_id: String,
     },
-    /// List mandate 公钥钉存（L13-a：`[mandate_keys]` / `[mandate_revoked]`
+    /// List mandate 公钥钉存（a：`[mandate_keys]` / `[mandate_revoked]`
     /// 全量 + 各节点验签态）
     MandateList,
     /// Force-pin mandate 公钥（管理面显式写簿：覆盖既有 pin / 轮换唯一
@@ -343,7 +343,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Some(interval) = cfg.get("broadcast_interval").and_then(|v| v.as_u64()) {
                         println!("  Broadcast Interval: {}s", interval);
                     }
-                    // L13-b：mandate 授权配置（CLI 是离线静态视图——运行时
+                    // b：mandate 授权配置（CLI 是离线静态视图——运行时
                     // 签名器状态看 Dashboard runtime.status 的 mandate 段）。
                     if let Some(m) = cfg.get("mandate").and_then(|v| v.as_object()) {
                         let mode = m.get("mode").and_then(|v| v.as_str()).unwrap_or("verify");
@@ -438,7 +438,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             "broadcast_interval".to_string(),
                             serde_json::Value::Number(broadcast_interval.into()),
                         );
-                        // REL-002：统一原子写入。
+                        // 统一原子写入。
                         let _ = nemesis_utils::write_file_atomic(
                             &cfg_path.to_string_lossy(),
                             serde_json::to_string_pretty(&cfg)
@@ -590,7 +590,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             }
             Some(PeerAction::Remove { id }) => {
                 println!("Removing peer: {}", id);
-                // (BUG #26, quality-hardening goal 冲刺 S11) 权威写路径
+                // (, quality-hardening goal 冲刺) 权威写路径
                 // sanitize_peer_key 只替换 `.`/`:`（保留 `-`），而此处旧逻辑把
                 // `-` 也换成 `_` 再查表 → `peers add --id node-a` 写出
                 // `[peers.node-a]`，`peers remove --id node-a` 查 `node_a`
@@ -631,7 +631,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         };
                         if let Some(key) = target_key {
                             if peers.remove(&key).is_some() {
-                                // REL-002：统一原子写入。
+                                // 统一原子写入。
                                 let _ = nemesis_utils::write_file_atomic(
                                     &peers_path.to_string_lossy(),
                                     toml::to_string_pretty(&doc).unwrap_or_default().as_bytes(),
@@ -656,7 +656,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Ok(data) = std::fs::read_to_string(&peers_path) {
                         match enable_peer_in_toml(&data, &id, true) {
                             Ok(new_data) => {
-                                // REL-002：统一原子写入。
+                                // 统一原子写入。
                                 let _ = nemesis_utils::write_file_atomic(
                                     &peers_path.to_string_lossy(),
                                     new_data.as_bytes(),
@@ -678,7 +678,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Ok(data) = std::fs::read_to_string(&peers_path) {
                         match enable_peer_in_toml(&data, &id, false) {
                             Ok(new_data) => {
-                                // REL-002：统一原子写入。
+                                // 统一原子写入。
                                 let _ = nemesis_utils::write_file_atomic(
                                     &peers_path.to_string_lossy(),
                                     new_data.as_bytes(),
@@ -759,7 +759,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                                 "token".to_string(),
                                 serde_json::Value::String(token.clone()),
                             );
-                            // REL-002：统一原子写入（config.cluster.json 含 token）。
+                            // 统一原子写入（config.cluster.json 含 token）。
                             nemesis_utils::write_file_atomic(
                                 &cfg_path.to_string_lossy(),
                                 serde_json::to_string_pretty(&cfg)
@@ -833,7 +833,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             "token".to_string(),
                             serde_json::Value::String(value.clone()),
                         );
-                        // REL-002：统一原子写入（config.cluster.json 含 token）。
+                        // 统一原子写入（config.cluster.json 含 token）。
                         nemesis_utils::write_file_atomic(
                             &cfg_path.to_string_lossy(),
                             serde_json::to_string_pretty(&cfg)
@@ -874,7 +874,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                     if let Some(obj) = cfg.as_object_mut() {
                         obj.remove("token");
-                        // REL-002：统一原子写入（config.cluster.json 含 token）。
+                        // 统一原子写入（config.cluster.json 含 token）。
                         nemesis_utils::write_file_atomic(
                             &cfg_path.to_string_lossy(),
                             serde_json::to_string_pretty(&cfg)
@@ -935,7 +935,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             // --- 写 config.cluster.json（系统参数 + token）---
             // config.cluster.json 不再含身份字段，只含系统参数 + token。
             // token 用 generate_token（32 字节 CSPRNG，与 `cluster token generate`
-            // 同源）：空 token = RPC/UDP 发现层双双无鉴权裸奔（审计 F4），init 即生成。
+            // 同源）：空 token = RPC/UDP 发现层双双无鉴权裸奔（审计），init 即生成。
             let init_token = generate_token(32);
             let mut cluster_cfg =
                 serde_json::from_str::<serde_json::Value>(crate::CONFIG_CLUSTER_DEFAULT)
@@ -946,7 +946,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     serde_json::Value::String(init_token.clone()),
                 );
             }
-            // REL-002：统一原子写入。
+            // 统一原子写入。
             let _ = nemesis_utils::write_file_atomic(
                 &cfg_path.to_string_lossy(),
                 serde_json::to_string_pretty(&cluster_cfg)
@@ -995,7 +995,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     // 未显式指定时按声明的职能推断（catalog min_tier 最大值）。
                     nemesis_prompts::professions::meta::min_tier_for_set(&professions_vec)
                 });
-            // 环境能力词（NB-122 批 ③ 数据面）：逗号分隔，trim + 剔空；
+            // 环境能力词（批 ③ 数据面）：逗号分隔，trim + 剔空；
             // 自由词表（与 professions slug 不同，无 catalog 校验）。
             let capabilities_vec: Vec<String> = capabilities
                 .map(|c| {
@@ -1005,7 +1005,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         .collect()
                 })
                 .unwrap_or_default();
-            // 运行时后端形态（P5 第 4 步 ③）：值域校验对齐 tier 先例——
+            // 运行时后端形态（）：值域校验对齐 tier 先例——
             // 非法值 loud 拒绝；缺省 None = 未宣告（matcher fail-open 语义）。
             let runtime_backend_value = runtime_backend.map(|v| {
                 let v = v.trim().to_ascii_lowercase();
@@ -1030,8 +1030,8 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     // init 不写声明（setup_roaming 按派生对账）。
                     iroh_id: None,
                     runtime_backend: runtime_backend_value,
-                    // mandate 签名公钥声明（L13-a）：init 期无运行时签名密钥
-                    //（L13-b 落地后真相源改为运行时 leaf key 派生），不写声明。
+                    // mandate 签名公钥声明（a）：init 期无运行时签名密钥
+                    //（b 落地后真相源改为运行时 leaf key 派生），不写声明。
                     pubkey: None,
                 },
             };
@@ -1050,7 +1050,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             println!("Enable with: nemesisbot cluster enable");
         }
         ClusterAction::Enable => {
-            // 幂等判定必须看双旗标（UAT-U1 2026-09-15）：子系统开关
+            // 幂等判定必须看双旗标（UAT）：子系统开关
             // （config.cluster.json）与主开关（config.json cluster.enabled）
             // 由不同路径维护，用户手改任一文件都会失步——若只查子系统旗标
             // 就提前返回，主开关漏写 → 网关静默无网络（RPC/discovery 不启）。
@@ -1058,7 +1058,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let subsystem = cluster_flag(&home, "enabled").unwrap_or(false);
             let main = main_cluster_flag(&home).unwrap_or(false);
             if subsystem && main {
-                // F4：存量已启用部署不自动生成（重跑 enable 静默换 token 会
+                // 存量已启用部署不自动生成（重跑 enable 静默换 token 会
                 // 拆散已互通的集群）——但空 token 必须至少 WARN 出声，否则
                 // 存量无鉴权状态永远无感知。
                 if read_cluster_token(&home).is_empty() {
@@ -1078,7 +1078,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             if subsystem != main {
                 println!("Detected inconsistent enable flags; repaired.");
             }
-            // F4（2026-09-23）：enable 是集群进入可网络触达状态的时刻——
+            // enable 是集群进入可网络触达状态的时刻——
             // 空 token = RPC/UDP 发现层无鉴权裸奔，此处自动生成并打印
             // （非静默，带对端同步提示）。已启用部署的幂等早退路径不经过
             // 这里（存量配置不被改动）；跨节点 token 失配 = 节点互不可见，
@@ -1212,7 +1212,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     } else {
                         // Write template to file
                         let template = crate::CLUSTER_IDENTITY_TEMPLATE;
-                        // REL-002：统一原子写入（节点身份关键文件）。
+                        // 统一原子写入（节点身份关键文件）。
                         nemesis_utils::write_file_atomic(
                             &identity_path.to_string_lossy(),
                             template.as_bytes(),
@@ -1234,7 +1234,7 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
 
                     let _ = std::fs::create_dir_all(&cluster_dir);
                     let default_content = crate::DEFAULT_IDENTITY_CLUSTER;
-                    // REL-002：统一原子写入（节点身份关键文件）。
+                    // 统一原子写入（节点身份关键文件）。
                     nemesis_utils::write_file_atomic(
                         &identity_path.to_string_lossy(),
                         default_content.as_bytes(),
@@ -1266,8 +1266,8 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
     Ok(())
 }
 
-/// iroh 漫游管理（A1 叠加层；status/enable/disable；keygen 已挪 `quic keygen`
-/// ——2026-10-23 与集群解耦）。QUIC 插件化 M2：身份/派生面在 plugin_roaming
+/// iroh 漫游管理（叠加层；status/enable/disable；keygen 已挪 `quic keygen`
+/// —— 与集群解耦）。QUIC 插件化：身份/派生面在 plugin_roaming
 /// ——CLI 进程先装载插件（幂等）再走桥；插件缺席 = status 诚实注记（配置/
 /// 信任簿段照常展示）、enable 诚实报错（显式意志不降级，与 `quic keygen`
 /// 同口径）。
@@ -1367,7 +1367,7 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
             );
             if enabled {
                 // 缺 key 顺手备料（与 WSAPI enable / setup_roaming 同一语义）。
-                // QUIC 插件化 M2：备料面（load_or_create）在插件内——装载走
+                // QUIC 插件化：备料面（load_or_create）在插件内——装载走
                 // 桥；插件缺席/拒载 = 诚实报错（CLI 显式意志，闸已写不回滚）。
                 let key_path = roaming_key_path(&workspace);
                 match load_roaming_plugin(
@@ -1432,7 +1432,7 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
             save_trust_book(&workspace, &book)?;
             println!("Trusted iroh:{hex}");
             if regime_was_off {
-                // L16：写入即建文件 = regime 激活唯一路径——一次性语义说明。
+                // 写入即建文件 = regime 激活唯一路径——一次性语义说明。
                 println!("  trust.toml 已创建 = 互信 allowlist regime 激活：");
                 println!("  - 发现链首见节点自动钉存（TOFU）；");
                 println!(
@@ -1486,7 +1486,7 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
             println!(
                 "  三臂生效：其 announce 不再采信 / 新 iroh 连接被拒 / 本节点出站 iroh 拨号 veto。"
             );
-            // TCP 边界注记（§2.3 对称面）：trust 簿只管辖 roaming 叠加层。
+            // TCP 边界注记（对称面）：trust 簿只管辖 roaming 叠加层。
             println!(
                 "  注意：信任簿只管辖 iroh 漫游叠加层——TCP 主通路直连不受此拦（节点级移除走 `cluster peer remove`）；在途连接不踢，下次连接由 accept 闸拒绝。"
             );
@@ -1576,7 +1576,7 @@ async fn run_roaming(action: RoamingAction, home: &Path) -> Result<()> {
     }
 }
 
-/// L16 管理面入参校验：剥 `iroh:` 前缀 → 64 hex + on-curve（`node_id_from_hex`
+/// 管理面入参校验：剥 `iroh:` 前缀 → 64 hex + on-curve（`node_id_from_hex`
 /// 同款）loud 拒绝。管理面入簿条目会实际影响插件 accept 闸——垃圾条目 =
 /// 无声死区（对端真 hex 对不上永不命中），必须在门口拦住。返回小写 hex
 /// （TOML 存储形态）。
@@ -1918,7 +1918,7 @@ async fn run_node(
     println!();
 
     // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml 加载真实身份；
-    // node_name 留空走自动解析链（--name override 仍最高）
+    // node_name 留空走自动解析链（name override 仍最高）
     let cluster_config = nemesis_cluster::types::ClusterConfig {
         node_id: String::new(),
         bind_address: format!("0.0.0.0:{}", rpc_port),
@@ -1932,7 +1932,7 @@ async fn run_node(
         cluster.set_node_name(&name);
     }
     cluster.set_node_type("node");
-    // A1 运行时硬化批：announce 携带本节点构建号（与 gateway 装载同源）。
+    // 运行时硬化批：announce 携带本节点构建号（与 gateway 装载同源）。
     cluster.set_build_hash(crate::common::VERSION_INFO.git_commit);
 
     // Load static peers from peers.toml
@@ -1943,7 +1943,7 @@ async fn run_node(
         && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table())
     {
         for (key, val) in peers_table {
-            // B3 同款（与 gateway 装载器一致）：表键=字面 peer_id，不做有损
+            // 同款（与 gateway 装载器一致）：表键=字面 peer_id，不做有损
             // sanitize 替换——系统写盘（pair/占位升级）落的是字面键。
             let peer_id = key.clone();
             let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
@@ -2007,7 +2007,7 @@ async fn run_node(
     }
 
     // Start RPC server
-    // P0 vault fail-closed（BUG-20261102-297 扩展）：token 引用解析失败**或**
+    // vault fail-closed（扩展）：token 引用解析失败**或**
     // 为空 → 拒绝 bind（宁可没有 RPC，不可无认证 RPC）。`cluster node` 整体
     // 退出，让运维当场看到错误。空 token 不看旗标（旗标带 enabled 闸——
     // 子系统关着不置位），node 子命令是显式起 B 端 worker，直接查真值。
@@ -2103,7 +2103,7 @@ fn update_cluster_config(
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert(key.to_string(), value.into());
-        // REL-002：统一原子写入（config.cluster.json 含 token）。
+        // 统一原子写入（config.cluster.json 含 token）。
         nemesis_utils::write_file_atomic(
             &cfg_path.to_string_lossy(),
             serde_json::to_string_pretty(&cfg)
@@ -2130,7 +2130,7 @@ fn update_main_config_cluster(home: &std::path::Path, enabled: bool) -> Result<(
             "cluster".to_string(),
             serde_json::json!({ "enabled": enabled }),
         );
-        // REL-002：统一原子写入（config.cluster.json 含 token）。
+        // 统一原子写入（config.cluster.json 含 token）。
         nemesis_utils::write_file_atomic(
             &cfg_path.to_string_lossy(),
             serde_json::to_string_pretty(&cfg)
@@ -2164,7 +2164,7 @@ fn read_cluster_token(home: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
-/// F4：token 空则生成 32 字节 CSPRNG token 并写回 config.cluster.json，
+/// token 空则生成 32 字节 CSPRNG token 并写回 config.cluster.json，
 /// 返回 `Some(新 token)`；非空不动配置返回 `None`。文件缺失 = 未 init，
 /// `update_cluster_config` 的 "not initialized" 错误照常上抛。
 fn ensure_cluster_token(home: &std::path::Path) -> Result<Option<String>> {

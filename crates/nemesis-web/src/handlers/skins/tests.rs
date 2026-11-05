@@ -29,7 +29,7 @@ use std::time::Instant;
 
 static SLOT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// 注册表契约：module 名 + commands() 六命令单一真相源。
+/// 注册表契约：module 名 + commands() 六命令统一定义。
 #[test]
 fn commands_registry_shape() {
     use crate::ws_router::ModuleHandler as _;
@@ -134,7 +134,7 @@ fn make_ctx(home: &std::path::Path) -> RequestContext {
     }
 }
 
-/// 写一个 theme 形态 .nbskin（manifest + CSS 载荷），可指定 manifest.id
+/// 写一个 theme 形态.nbskin（manifest + CSS 载荷），可指定 manifest.id
 ///（id_mismatch 注记用）。
 fn write_theme_skin(dir: &std::path::Path, file_stem: &str, manifest_id: &str) {
     let path = dir.join(format!("{file_stem}.nbskin"));
@@ -154,7 +154,7 @@ fn write_theme_skin(dir: &std::path::Path, file_stem: &str, manifest_id: &str) {
     zip.finish().unwrap();
 }
 
-/// 写一个双无载荷的 .nbskin（manifest 无 entry 也无 structure——v2 双
+/// 写一个双无载荷的.nbskin（manifest 无 entry 也无 structure——v2 双
 /// 载荷闸下「无任何可服务载荷」，set_active 拒绝；形态类型学不作裁决依据）。
 fn write_app_skin(dir: &std::path::Path, file_stem: &str) {
     let path = dir.join(format!("{file_stem}.nbskin"));
@@ -227,7 +227,7 @@ fn list_reports_entries_broken_and_dir_state() {
     write_theme_skin(&skins, "alpha", "alpha");
     // broken：写垃圾字节（非 ZIP）
     std::fs::write(skins.join("broken.nbskin"), b"not a zip at all").unwrap();
-    // 非 .nbskin 文件不进注册表
+    // 非.nbskin 文件不进注册表
     std::fs::write(skins.join("readme.txt"), b"hi").unwrap();
 
     let active = Arc::new(parking_lot::RwLock::new("default".to_string()));

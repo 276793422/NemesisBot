@@ -1,4 +1,4 @@
-//! Linux bubblewrap（bwrap）包装式后端（U11 链条第二档）。
+//! Linux bubblewrap（bwrap）包装式后端（链条第二档）。
 //!
 //! 定位：landlock 不可用（老内核 / 容器禁用）时的兜底，以及**唯一能真禁网**
 //! 的档（`--unshare-net`）。包装式语义与 Sandboxie Start.exe 同构：父进程
@@ -10,7 +10,7 @@
 //! 注意 spawn 失败走的是**诚实失败**出口（engage Err → 协议错误回 gateway，
 //! 非 strict 也失败——禁网承诺不静默丢失），不是「降级 warn + 无盒继续」
 //! 路径；完整组合语义见
-//! docs/INFO/2026-09-27_linux-userland-sandbox-composition-semantics.md。
+//! linux-userland-sandbox-composition-semantics。
 
 use std::path::PathBuf;
 use std::process::Command;

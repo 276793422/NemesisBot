@@ -195,7 +195,7 @@ pub(crate) fn resolve_open_target(
 /// `Command::arg` 直传不经 shell，路径含空格/特殊字符安全。
 /// 系统文件管理器打开目录（Windows explorer / macOS open / Linux
 /// xdg-open；CREATE_NO_WINDOW spawn 不等待）。pub(crate)：board 模块的
-/// `project.open_dir`（看板项目档案 /）同源复用，不复制第二份。
+/// `project.open_dir`（看板项目档案）同源复用，不复制第二份。
 pub(crate) fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     let spawn = || -> std::io::Result<std::process::Child> {
         #[cfg(target_os = "windows")]
@@ -261,7 +261,7 @@ impl ModuleHandler for ProjectsHandler {
                 let data = data.ok_or("missing data")?;
                 let project_id = crate::handlers::get_str(&data, "project_id")?;
                 let info = bridge.remove(&project_id)?;
-                // 文案与设计档 §3.4 对齐：移除只解除分组，不删任何文件。
+                // 文案与设计档 对齐：移除只解除分组，不删任何文件。
                 Ok(Some(serde_json::json!({
                     "removed": info,
                     "note": "仅解除分组，未删除会话与项目目录内的任何文件",

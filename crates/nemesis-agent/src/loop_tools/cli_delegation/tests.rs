@@ -117,7 +117,7 @@ impl FakeArgEchoCli {
 // ---------------------------------------------------------------------------
 
 /// npm 布局：`where claude` 第一行是无扩展名 POSIX shim（Windows 上
-/// `Command:new` 必 os error 193），第二行才是可 spawn 的 `.cmd`。
+/// `Command::new` 必 os error 193），第二行才是可 spawn 的 `.cmd`。
 /// pick_windows_exec_candidate 必须跳过 shim 选 `.cmd`。
 #[test]
 #[cfg(windows)]

@@ -354,7 +354,7 @@ async fn test_process_messages_empty_channel() {
 #[test]
 fn test_resolve_static_dir_nonexistent_workspace() {
     let result = resolve_static_dir(None, Some("/nonexistent/workspace/path"));
-    // May return None or Some depending on ./static/ in CWD
+    // May return None or Some depending on./static/ in CWD
     // The key behavior is that the workspace path itself is not returned
     if let Some(ref path) = result {
         assert!(!path.contains("nonexistent"));
@@ -1228,7 +1228,7 @@ async fn test_build_router_sse_stream_endpoint() {
 fn test_resolve_static_dir_current_dir_static() {
     // Test the fallback path where no explicit dir and no workspace
     let result = resolve_static_dir(None, None);
-    // Result depends on whether ./static/ exists in CWD
+    // Result depends on whether./static/ exists in CWD
     let _ = result;
 }
 

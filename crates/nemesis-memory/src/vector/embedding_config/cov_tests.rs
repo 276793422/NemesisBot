@@ -2,8 +2,8 @@
 //!
 //! 背景：embedding_config.rs 的 info!/warn!/error! 多行字段表达式
 //! （`.display()` 参数行）在无 tracing subscriber 时惰性不求值 → 覆盖
-//! 报告 dark，与 gateway.rs:380 已钉案的 R7b 伪影同族。本文件用
-//! `tracing::subscriber::with_default` 挂 sink subscriber（输出丢弃，只
+//! 报告 dark，与 gateway.rs:380 已钉案的 伪影同族。本文件用
+//! `tracing::subscriber:with_default` 挂 sink subscriber（输出丢弃，只
 //! 求字段表达式真实求值）重跑既有场景，把这批伪影行真实翻绿。
 //!
 //! 同时钉一条平台行为：readonly 目录上的默认配置写盘（Linux 覆盖 Err

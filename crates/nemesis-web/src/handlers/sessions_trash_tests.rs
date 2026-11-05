@@ -283,7 +283,7 @@ async fn trash_command_guards() {
             .unwrap_err();
         assert_eq!(err, "missing entry", "{cmd} 缺参须报 missing entry");
     }
-    // 注入形态名字（/../）在 core 校验闸被拒（handler 不吞错）。
+    // 注入形态名字（/..）在 core 校验闸被拒（handler 不吞错）。
     for cmd in ["trash_restore", "trash_purge"] {
         let err = run(&ctx, cmd, Some(serde_json::json!({"entry": "../escape"})))
             .await

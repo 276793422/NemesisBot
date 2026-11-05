@@ -426,7 +426,7 @@ fn match_message_empty_config_matches_everything() {
 }
 
 // =========================================================================
-// W4a coverage batch — triggers.rs gap closure
+// coverage batch — triggers.rs gap closure
 // =========================================================================
 
 /// CronTimezone::label (triggers.rs ~59-64).
@@ -629,7 +629,7 @@ fn w4a_match_glob_middle_part_missing() {
     assert!(!match_glob("a*b*c", "bXXbXXc"));
 }
 
-/// BUG-20261028-120: leading/trailing literal parts must not overlap —
+/// leading/trailing literal parts must not overlap —
 /// "a*a" cannot match "a" (the same character cannot serve as both the
 /// required start and the required end). Old implementation only checked
 /// starts_with/ends_with and passed short strings as false positives.
@@ -643,7 +643,7 @@ fn bug_120_match_glob_leading_trailing_overlap_rejected() {
     assert!(match_glob("a*a", "aa"));
 }
 
-/// BUG-20261028-120 companion: legal overlaps must keep matching.
+/// companion: legal overlaps must keep matching.
 /// Empty first/last parts ("*x*") never overlap; a middle segment may
 /// share characters with the anchors ("aba" = "a"+"b"+"a" for "a*b*a").
 #[test]
@@ -657,7 +657,7 @@ fn bug_120_match_glob_legal_overlaps_still_match() {
     assert!(match_glob("*bar", "bar"));
 }
 
-/// BUG-20261028-120: byte-length guard aligns with the byte-offset middle
+/// byte-length guard aligns with the byte-offset middle
 /// scan — multibyte anchors cannot overlap either.
 #[test]
 fn bug_120_match_glob_multibyte_anchor_overlap_rejected() {

@@ -1,6 +1,6 @@
 use super::*;
 
-/// REL-002 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
+/// 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
 /// 阻塞临时文件」的注入面不复存在（正是升级目标之一），改用平台确定的
 /// 「替换失败」注入——
 /// - unix：父目录置只读 → 临时文件创建失败（EACCES）
@@ -308,8 +308,8 @@ fn test_atomic_write_rename_failure() {
 
 #[test]
 fn test_atomic_write_cleanup_on_failure() {
-    // Verify that the .tmp file is cleaned up when rename fails.
-    // We test this indirectly: save to a valid path first, then verify no leftover .tmp
+    // Verify that the.tmp file is cleaned up when rename fails.
+    // We test this indirectly: save to a valid path first, then verify no leftover.tmp
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cleanup.toml");
 
@@ -317,7 +317,7 @@ fn test_atomic_write_cleanup_on_failure() {
     save_static_config(&path, &config).unwrap();
 
     // After successful save, no tmp file should remain（helper 唯一临时名
-    // 前缀 `.tmp-`——固定名 `.toml.tmp` 已随 REL-002 退役）
+    // 前缀 `.tmp-`——固定名 `.toml.tmp` 已随 退役）
     assert_no_tmp_leftovers(dir.path(), "no tmp file should have been left after save");
     assert!(path.exists());
 }
@@ -388,7 +388,7 @@ fn test_append_peer_to_file_appends_multiple() {
 
 #[test]
 fn test_append_peer_overwrite_preserves_extras() {
-    // 四审 #6（2026-10-21）：覆盖路径保留扩展字段——operator 手写的
+    // 四审 #6：覆盖路径保留扩展字段——operator 手写的
     // professions/tier/tags 不得被五字段 persist 冲掉（静态条目职能/档位
     // 声明被一次 nodes.ping 抹掉的根修；缺失补齐式保留=PeerConfig 加新字
     // 段时写入面自动跟上）。
@@ -437,7 +437,7 @@ fn test_append_peer_overwrite_preserves_extras() {
 
 #[test]
 fn test_append_peer_zero_rpc_port_preserves_explicit_port() {
-    // 六审 #6 子物种（2026-10-21）：build_peer_entry_table 对 rpc_port=0
+    // 六审 #6 子物种：build_peer_entry_table 对 rpc_port=0
     // **不写键**（`if rpc_port > 0`），缺失补齐式必须把旧显式端口补回来
     // ——非标准 udp/rpc 配对（9149/29149）手写条目经一次 rpc_port=0 的
     // persist 就不能丢端口（丢了重启后 loader 回落 udp+10000 派生=猜错）。
@@ -713,7 +713,7 @@ fn test_remove_peer_from_file_handles_corrupt_toml() {
 }
 
 // ============================================================
-// W3b coverage batch: I/O error arms (path-as-directory read
+// coverage batch: I/O error arms (path-as-directory read
 // failures, parent-as-file create_dir_all failures, atomic
 // write tmp-block / rename-failure cleanup), legacy [[peers]]
 // array replacement, no-[peers]-table early Ok.
@@ -768,7 +768,7 @@ fn test_w3b_ensure_node_id_error_paths() {
     std::fs::create_dir_all(&as_dir).unwrap();
     assert!(ensure_node_id(&as_dir, "id-2").is_err());
 
-    // 3. REL-002：写失败注入（旧：预建 peers.toml.tmp 目录阻塞固定临时名；
+    // 3.：写失败注入（旧：预建 peers.toml.tmp 目录阻塞固定临时名；
     //    唯一临时名后改平台注入）。文件带 [node] 但无 id → ensure 走到写路径。
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
@@ -804,7 +804,7 @@ fn test_w3b_append_peer_error_paths_and_legacy_peers_array() {
     std::fs::create_dir_all(&as_dir).unwrap();
     assert!(append_peer_to_file(&as_dir, "Node-B", "10.0.0.1:9000", "worker", "dev", 0).is_err());
 
-    // 3. REL-002：写失败注入（平台注入，见 block_atomic_replace）→ Err，
+    // 3.：写失败注入（平台注入，见 block_atomic_replace）→ Err，
     //    existing file untouched
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
@@ -856,7 +856,7 @@ fn test_w3b_remove_peer_no_peers_table_and_error_paths() {
     std::fs::create_dir_all(&as_dir).unwrap();
     assert!(remove_peer_from_file(&as_dir, "x").is_err());
 
-    // 3. REL-002：写失败注入（平台注入）→ Err after successful removal
+    // 3.：写失败注入（平台注入）→ Err after successful removal
     let dir3 = tempfile::tempdir().unwrap();
     let path3 = dir3.path().join("peers.toml");
     append_peer_to_file(&path3, "victim", "10.0.0.1:9000", "worker", "dev", 0).unwrap();
@@ -886,7 +886,7 @@ fn test_w3b_atomic_write_rename_failure_cleans_tmp() {
 }
 
 // ---------------------------------------------------------------------------
-// 显式 rpc_port 往返（R1-7 根修，2026-09-15）
+// 显式 rpc_port 往返（根修）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -911,7 +911,7 @@ fn test_append_peer_with_explicit_rpc_port_roundtrip() {
         content
     );
 
-    // 装载端（resolve_peer_rpc_port 单一真相源）：显式值优先于 udp+10000 推导
+    // 装载端（resolve_peer_rpc_port 统一定义）：显式值优先于 udp+10000 推导
     let doc: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
     let entry = &doc["peers"]["Node-B"];
     assert_eq!(
@@ -967,7 +967,7 @@ fn test_resolve_peer_rpc_port_edge_cases() {
     }
 }
 
-// -- load_peer_udp_endpoints（U1-5 根修 2026-09-15：异端口拓扑定向单播）--
+// -- load_peer_udp_endpoints（根修：异端口拓扑定向单播）--
 
 #[test]
 fn test_load_peer_udp_endpoints_collects_peer_addresses() {
@@ -1033,7 +1033,7 @@ name = "a"
     assert!(load_peer_udp_endpoints(&path).is_empty());
 }
 
-// -- save_static_config peer-preserving（UAT-BUG-3 根修 2026-09-15）--
+// -- save_static_config peer-preserving（UAT-BUG-3 根修）--
 
 #[test]
 fn test_save_static_config_preserves_peers_section() {
@@ -1115,7 +1115,7 @@ fn test_save_static_config_invalid_existing_file_overwrites() {
     assert_eq!(loaded.node.id, "node-1");
 }
 
-/// 职能字段（M2）随 [[discovered]] / [peers.X] 表往返保留；旧 state.toml
+/// 职能字段随 [[discovered]] / [peers.X] 表往返保留；旧 state.toml
 /// 缺字段时 serde default 兜底（空职能 + None 档位）。
 #[test]
 fn peer_config_professions_roundtrip_and_legacy_default() {
@@ -1151,7 +1151,7 @@ fn peer_config_professions_roundtrip_and_legacy_default() {
 }
 
 // ---------------------------------------------------------------------------
-// peers.toml 写串行锁并发回归钉（2026-10-13 横扫四期）：peers.toml 的写者
+// peers.toml 写串行锁并发回归钉（横扫四期）：peers.toml 的写者
 // 家族（append / remove / save_static_config 经 web update_peers_node）此前
 // 只有 [node] 段进锁——append/remove 的读→改→写快照不互斥，并发身份写回会
 // 冲掉刚落的 [peers.X]。现在 append/remove 在函数内取 config_write_lock。
@@ -1259,7 +1259,7 @@ fn identity_write_with_lock_does_not_clobber_concurrent_append() {
     );
 }
 
-/// NB-122 批 ③ 数据面（2026-10-16）：peers.toml `[node].capabilities`
+/// 批 ③ 数据面：peers.toml `[node].capabilities`
 /// 环境能力自报段——解析 + save/load round-trip + 缺段 = 空（serde default）。
 #[test]
 fn test_node_capabilities_roundtrip_and_default() {
@@ -1293,7 +1293,7 @@ fn test_node_capabilities_roundtrip_and_default() {
     assert!(bare.node.capabilities.is_empty());
 }
 
-// -- BUG-20261101-263：节点身份字符集闸（wire 复合键协议保真）---------------
+// --：节点身份字符集闸（wire 复合键协议保真）---------------
 
 #[test]
 fn test_is_valid_node_identity_accepts_generated_forms() {

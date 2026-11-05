@@ -368,12 +368,12 @@ async fn test_save_barrier_retry_loop() {
 
     // 伪造「保存进行中」现场：write_file_atomic 的临时名形如
     // `.tmp-{pid}-{seq}-{nanos}`（nemesis-utils），探针扫 `.tmp-` 前缀——
-    // 旧形态 `<id>.json.tmp` 与真实临时名永不相交（T7：barrier 死代码的根源）。
+    // 旧形态 `<id>.json.tmp` 与真实临时名永不相交（barrier 死代码的根源）。
     let tmp_path = dir.path().join(".tmp-barrier-retry-sim");
     let final_path = dir.path().join(format!("{}.json", task_id));
     tokio::fs::write(&tmp_path, "saving...").await.unwrap();
 
-    // In a separate task, after 200ms, write the actual .json file and remove .tmp
+    // In a separate task, after 200ms, write the actual.json file and remove.tmp
     let final_path_clone = final_path.clone();
     let tmp_path_clone = tmp_path.clone();
     let snap_json = serde_json::to_string_pretty(&make_snapshot(task_id)).unwrap();
@@ -518,7 +518,7 @@ async fn test_list_pending_deduplicates() {
 }
 
 // ============================================================
-// W3b coverage batch: save/persist failure arms (warn-not-fail),
+// coverage batch: save/persist failure arms (warn-not-fail),
 // barrier-loop error propagation + memory-hit arm, IO error on
 // dir-at-snapshot-path, remove-warn, cleanup_old error propagation,
 // recover read errors, cache_dir getter
@@ -543,7 +543,7 @@ async fn test_w3b_save_warns_and_continues_when_cache_dir_is_file() {
 
 #[tokio::test]
 async fn test_w3b_save_persist_tmp_and_rename_failures() {
-    // (a) REL-002：tmp 创建失败 → warn，内存照常。旧注入（预建固定名
+    // (a)：tmp 创建失败 → warn，内存照常。旧注入（预建固定名
     //     `.json.tmp` 目录）随唯一临时名升级失效；Windows 对唯一临时名的
     //     创建失败无确定性注入面，本臂 unix-only（父目录只读）。
     #[cfg(unix)]
@@ -568,7 +568,7 @@ async fn test_w3b_save_persist_tmp_and_rename_failures() {
     }
 
     // (b) final path blocked by a directory → rename fails → warn, still Ok;
-    //     失败路径 helper 必须清掉临时文件（旧实现残留 .json.tmp）
+    //     失败路径 helper 必须清掉临时文件（旧实现残留.json.tmp）
     {
         let dir = tempfile::tempdir().unwrap();
         let store = ContinuationStore::new(dir.path());
@@ -592,7 +592,7 @@ async fn test_w3b_load_barrier_loop_propagates_parse_error() {
     let dir = tempfile::tempdir().unwrap();
     let store = ContinuationStore::new(dir.path());
 
-    // `.tmp-` 前缀夹具（真实临时名形态）→ 重试循环被进入；最终 .json 存在
+    // `.tmp-` 前缀夹具（真实临时名形态）→ 重试循环被进入；最终.json 存在
     // 但内容损坏 → load_from_disk_inner 返回 Json（非 NotFound），必须立即
     // 上抛而不是睡满 50 轮重试。
     std::fs::write(dir.path().join(".tmp-w3b-corrupt-sim"), "saving").unwrap();
@@ -736,7 +736,7 @@ async fn test_w3b_cache_dir_getter() {
 }
 
 // ============================================================
-// S4 coverage: save-barrier final attempt, remove warn arm,
+// coverage: save-barrier final attempt, remove warn arm,
 // cleanup_old removal, list_pending dedupe, recover_from_disk
 // skip/deser-err/read-err arms.
 // ============================================================
@@ -875,7 +875,7 @@ async fn test_s4_recover_from_disk_mixed_entries() {
     .unwrap();
     // Invalid JSON → deserialize error.
     std::fs::write(dir.path().join("s4-bad.json"), "{not json").unwrap();
-    // Unreadable entry (directory with .json name) → read error.
+    // Unreadable entry (directory with.json name) → read error.
     std::fs::create_dir_all(dir.path().join("s4-dir.json")).unwrap();
 
     let store = ContinuationStore::new(dir.path());
@@ -891,7 +891,7 @@ async fn test_s4_recover_from_disk_mixed_entries() {
     assert!(!store.contains("s4-bad"));
 }
 
-/// T7（2026-10-17 三轮审计）：快照路径消毒——远端可控 task_id 落盘留
+/// （三轮审计）：快照路径消毒——远端可控 task_id 落盘留
 /// cache_dir 内，save/load/remove 同源对称（内存键原 id、磁盘名消毒名）。
 #[tokio::test]
 async fn test_snapshot_path_sanitized_for_hostile_task_id() {
@@ -901,7 +901,7 @@ async fn test_snapshot_path_sanitized_for_hostile_task_id() {
     let hostile = "../../t7_escape";
     store.save(make_snapshot(hostile)).await.unwrap();
 
-    // 落盘 = 消毒名；`../../t7_escape` 前缀是 `. . / . . /` 共 6 个非白名单
+    // 落盘 = 消毒名；`../../t7_escape` 前缀是 `.. /.. /` 共 6 个非白名单
     // 字符（`../` × 2），1:1 映射 = 6 个 `_` → `______t7_escape`；无逃逸。
     let names: Vec<String> = std::fs::read_dir(dir.path())
         .unwrap()
@@ -924,7 +924,7 @@ async fn test_snapshot_path_sanitized_for_hostile_task_id() {
     assert!(!dir.path().join("______t7_escape.json").exists());
 }
 
-/// T7 save barrier 复活：write_file_atomic 的临时名 `.tmp-{pid}-{seq}-
+/// save barrier 复活：write_file_atomic 的临时名 `.tmp-{pid}-{seq}-
 /// {nanos}` 与旧探测形 `<id>.json.tmp` 永不相交（barrier 死代码）。预置
 /// `.tmp-` 前缀文件 + 延迟 save——load 必须在重试窗口内等到快照，而不是
 /// 立即 NotFound。
@@ -945,7 +945,7 @@ async fn test_save_barrier_waits_for_in_flight_write() {
             .unwrap();
     });
 
-    // load 立即发起：最终文件未落、barrier 命中（.tmp- 在场）→ 重试窗口
+    // load 立即发起：最终文件未落、barrier 命中（.tmp 在场）→ 重试窗口
     // 内等到 save 完成。死 barrier 形态下这里直接 NotFound。
     let loaded = store.load("task-barrier").await;
     writer.await.unwrap();
@@ -958,7 +958,7 @@ async fn test_save_barrier_waits_for_in_flight_write() {
 }
 
 // ============================================================
-// BUG-20261104-356：崩溃残留 `.tmp-` 原子写孤儿清扫（固定 1h 宽限）
+// 崩溃残留 `.tmp-` 原子写孤儿清扫（固定 1h 宽限）
 // ============================================================
 
 /// cleanup_old 附带孤儿清扫：超龄孤儿删、新鲜孤儿保留（宽限闸，与 max_age
@@ -982,7 +982,7 @@ async fn test_cleanup_old_sweeps_tmp_orphans_with_fixed_grace() {
     let fresh = dir.path().join(".tmp-fresh-1-2-4");
     std::fs::write(&fresh, b"partial").unwrap();
 
-    // 普通 .json 快照：ZERO 语义下被清（对照组，证明本轮确实在清扫）。
+    // 普通.json 快照：ZERO 语义下被清（对照组，证明本轮确实在清扫）。
     let snap = dir.path().join("t1.json");
     std::fs::write(&snap, b"{}").unwrap();
 
@@ -996,8 +996,8 @@ async fn test_cleanup_old_sweeps_tmp_orphans_with_fixed_grace() {
     );
 }
 
-/// 孤儿不进快照清单/恢复路径（扩展名过滤防误判，R14 语义保持）：
-/// cleanup_old 清完孤儿后，list_pending / recover_from_disk 仍只认 .json。
+/// 孤儿不进快照清单/恢复路径（扩展名过滤防误判， 语义保持）：
+/// cleanup_old 清完孤儿后，list_pending / recover_from_disk 仍只认.json。
 #[tokio::test]
 async fn test_tmp_orphans_never_count_as_snapshots() {
     let dir = tempfile::tempdir().unwrap();

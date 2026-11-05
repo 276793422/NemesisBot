@@ -354,7 +354,7 @@ impl Channel for RPCChannel {
                 let tx = {
                     // Take the sender out to send without holding the mutable ref
                     // We need to replace it with a dummy since we can't take from a mutable ref
-                    // Actually, we can use std::mem::take approach
+                    // Actually, we can use std::mem:take approach
 
                     std::mem::replace(&mut pending.tx, {
                         // Create a dummy sender/receiver pair to replace the taken sender

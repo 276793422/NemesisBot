@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): handle_chat_stream arms the
+//! (quality-hardening goal 冲刺, web): handle_chat_stream arms the
 //! existing extra tests skip — explicit `model` passthrough to the provider
 //! (vs. the empty-model default arm), and a backend stream that ends WITHOUT
 //! finish_reason / [DONE] (handler still emits its own done event).

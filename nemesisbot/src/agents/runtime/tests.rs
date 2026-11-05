@@ -18,7 +18,7 @@ use super::AgentRuntimeSupervisor;
 // config 现读（无进程）
 // ---------------------------------------------------------------------------
 
-/// 磁盘是唯一真相源：enabled=true 读到配额；false / 键缺失 / 文件缺失 /
+/// 磁盘是唯一依据：enabled=true 读到配额；false / 键缺失 / 文件缺失 /
 /// executor 段缺失全部归 None（不可用）。
 #[test]
 fn persistent_settings_follows_config_disk_state() {
@@ -81,8 +81,8 @@ fn persistent_call_timeout_zero_passes_through_config_layer() {
     );
 }
 
-/// P3 ②：盒 `AllowNetworkAccess` 取自 config `executor.allow_network` 的
-/// **现读**（每次 spawn 读盘，磁盘是唯一真相源——与 persistent_settings
+/// ②：盒 `AllowNetworkAccess` 取自 config `executor.allow_network` 的
+/// **现读**（每次 spawn 读盘，磁盘是唯一依据——与 persistent_settings
 /// 同纪律）；缺键/缺段/文件缺失 = false（默认断网，安全向）。仅 Windows +
 /// sandbox feature（方法本体 cfg 门控）。
 #[cfg(all(feature = "sandbox", windows))]
@@ -116,12 +116,12 @@ fn executor_allow_network_follows_config_disk_state() {
     assert!(!sup.executor_allow_network());
 }
 
-/// P3 ①/④ spawn 基础 env 装配点钉死：stdio 与盒两条 spawn 路径共用的
-/// 7 键集合——角色、双根（T7：WORKSPACE=exec_root 工具 cwd 锚 / HOME=
+/// ①/④ spawn 基础 env 装配点钉死：stdio 与盒两条 spawn 路径共用的
+/// 7 键集合——角色、双根（WORKSPACE=exec_root 工具 cwd 锚 / HOME=
 /// agent home 隔离根，两根分离是 main/project 形态的正确语义）、agent id、
-/// 常驻标记、浏览器身份目录（T6：值恒 = home/browser-profile，与
+/// 常驻标记、浏览器身份目录（值恒 = home/browser-profile，与
 /// nemesis-path `resolve_agent_browser_profile_in_workspace` 同一布局）、
-/// 围栏第二根（B1：home≠exec_root 时透传 home，子进程围栏与主进程同源；
+/// 围栏第二根（home≠exec_root 时透传 home，子进程围栏与主进程同源；
 /// 两根重合不写=6 键，selfbuilt 旧行为逐键一致）；路径专属键
 /// PIPE/SANDBOX_BACKEND 由调用方追加，不在本装配点。
 #[test]
@@ -129,7 +129,7 @@ fn base_executor_env_keys_pinned() {
     // fixture 路径必须随平台：装配点的 EXTRA_ROOTS 走 `env::join_paths`，
     // 它拒收含平台分隔符的段（Linux 分隔符是 `:`）——Windows 字面量在
     // Linux 上编码失败 → 按 fail-closed 设计丢第 7 键 → 钉死断言 6≠7 假红
-    //（2026-10-31 ET Linux 全量实录）。两平台各用合法路径，7 键钉死共通。
+    //（ET Linux 全量）。两平台各用合法路径，7 键钉死共通。
     let exec_root = PathBuf::from(if cfg!(windows) {
         r"C:\tmp\workspace-root"
     } else {
@@ -188,7 +188,7 @@ fn base_executor_env_keys_pinned() {
     );
 }
 
-/// P3（PLAN Linux 项）：persistent stdio 臂的 U11 标记开关取自 config
+/// （PLAN Linux 项）：persistent stdio 臂的 标记开关取自 config
 /// `executor.sandbox` 的**现读**（每次 spawn 读盘）；缺键/缺段/文件缺失 =
 /// false（与 `ExecutorSeparationConfig` serde default 一致）。仅非 Windows
 /// （方法本体 cfg 门控；Windows 的隔离走 Sandboxie 盒臂）。
@@ -222,10 +222,10 @@ fn executor_sandbox_requested_follows_config_disk_state() {
 }
 
 // ---------------------------------------------------------------------------
-// R1 隔离策略判读（ExecutorIsolationPolicy，无进程）
+// 隔离策略判读（ExecutorIsolationPolicy，无进程）
 // ---------------------------------------------------------------------------
 
-/// R1：策略三键（sandbox/strict/allow_network）同一现读实现——磁盘是唯一
+/// 策略三键（sandbox/strict/allow_network）同一现读实现——磁盘是唯一
 /// 真相源，缺段/缺键/文件缺失/解析失败 = false（与 serde default 同缺省）。
 #[test]
 fn isolation_policy_reads_config_disk_state() {
@@ -260,7 +260,7 @@ fn isolation_policy_reads_config_disk_state() {
     assert!(!policy.strict_required(), "解析失败 = false");
 }
 
-/// R1：strict 后端就绪性实测——临时 home 下引擎永远不就绪（测试环境默认态
+/// strict 后端就绪性实测——临时 home 下引擎永远不就绪（测试环境默认态
 /// 即「后端不可用」面；真实 Sandboxie 故障注入不可 CI 复现，见模块文档诚实
 /// 边界）。
 #[cfg(all(feature = "sandbox", windows))]
@@ -275,7 +275,7 @@ fn strict_backend_not_ready_in_temp_home() {
 }
 
 // ---------------------------------------------------------------------------
-// T9 槽位看护：崩溃自动重拉（预算熔断 / 复位 / 常驻档关闭不拉）
+// 槽位看护：崩溃自动重拉（预算熔断 / 复位 / 常驻档关闭不拉）
 // ---------------------------------------------------------------------------
 
 /// 常驻档已关（运行中改键 / 配置损坏）：auto_relaunch 诚实不拉且**不计数**
@@ -367,7 +367,7 @@ mod sup_real_child {
 
     /// 测试二进制解析：debug 槽专用，不走 test-harness 的 release 优先序。
     /// 本组测试断言 v2 wire 契约（call_id 回显）——被测二进制必须与源码
-    /// 同代；release 槽是任意旧产物（CI 缓存实录：pre-v2 的 release exe
+    /// 同代；release 槽是任意旧产物（CI 缓存pre-v2 的 release exe
     /// 不回显 call_id → 全组 deterministic 红，debug 二进制钉入即全绿）。
     /// debug 槽由 `cargo test -p nemesisbot`（自动构建本包 bin 目标）与
     /// nextest 纪律的前置 `cargo build -p nemesisbot` 维持新鲜。
@@ -449,7 +449,7 @@ mod sup_real_child {
 
     /// 日常链路：常驻执行体跑通一次工具调用；杀掉子进程后下一次调用自动
     /// 重建（journal/ home 即状态）；home 重定向生效（USERPROFILE 指 home）；
-    /// exec_root 双根拆分生效（T7：工具 cwd = exec_root ≠ agent home）。
+    /// exec_root 双根拆分生效（工具 cwd = exec_root ≠ agent home）。
     #[tokio::test]
     async fn sup_execute_round_trip_and_respawn_after_kill() {
         let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -465,7 +465,7 @@ mod sup_real_child {
             .expect("persistent round trip");
         assert!(out.contains("sup-roundtrip"), "exec 输出异常: {out}");
 
-        // T7 双根拆分：exec 工具 cwd = exec_root（= tempdir 根），而非
+        // 双根拆分：exec 工具 cwd = exec_root（= tempdir 根），而非
         // agent home——main agent 语义（exec_root=workspace 根）。
         let out = exec_cmd(&sup, &exec_root, "cd").await.expect("cwd probe");
         let cwd = out
@@ -480,7 +480,7 @@ mod sup_real_child {
             exec_root.display()
         );
 
-        // P3 ①：home 族重定向——子进程内 USERPROFILE 即 agent home
+        // ①：home 族重定向——子进程内 USERPROFILE 即 agent home
         let out = exec_cmd(&sup, &exec_root, "echo %USERPROFILE%")
             .await
             .expect("home redirect probe");
@@ -506,7 +506,7 @@ mod sup_real_child {
         assert_ne!(pid, pid2, "respawn 应产生新进程");
     }
 
-    /// R4：evict = 注册删除联动停机——进程杀掉、槽清空、重拉预算清零；
+    /// evict = 注册删除联动停机——进程杀掉、槽清空、重拉预算清零；
     /// 幂等（再 evict 不炸不报）。
     #[tokio::test]
     async fn sup_evict_shuts_down_clears_budget_and_is_idempotent() {
@@ -540,7 +540,7 @@ mod sup_real_child {
         assert!(sup.slot_states().is_empty());
     }
 
-    /// R4：注册表已删除的 agent 崩溃后看护循环不重拉（孤儿进程不复活），
+    /// 注册表已删除的 agent 崩溃后看护循环不重拉（孤儿进程不复活），
     /// 也不记重拉预算；重新注册后显式 wake 复活（wake 是操作员在场语义，
     /// 不过 registration 闸——闸只拦看护循环的自动重拉）。
     #[tokio::test]
@@ -571,7 +571,7 @@ mod sup_real_child {
         kill_pid(pid);
         // taskkill /F 返回 ≠ try_wait 立即翻死：TerminateProcess 之后进程
         // 对象清理是异步的，watchdog_tick 若抢在清理完成前探测会把槽当活槽
-        // 跳过（全量并行负载下实录假红 2026-10-18）。轮询等监督器同一探测
+        // 跳过（全量并行负载下实测假红）。轮询等监督器同一探测
         // 结论（is_alive=try_wait，slot_states alive 投影）翻死再 tick——
         // 有界 10s，超时按旧路径继续（tick 断言会给出诚实失败）。
         for _ in 0..200 {
@@ -603,7 +603,7 @@ mod sup_real_child {
         assert!(sup.slot_pid("agent-a").await.is_some());
     }
 
-    /// R4：删除与 execute 并发不脱管——evict 拿槽锁等在途调用收尾（慢调用
+    /// 删除与 execute 并发不脱管——evict 拿槽锁等在途调用收尾（慢调用
     /// 完整返回），收尾后槽清空。evict 若不等锁直接杀，在途调用会中途断线
     /// 返回 Err。
     #[tokio::test]
@@ -642,7 +642,7 @@ mod sup_real_child {
         assert!(sup.slot_states().is_empty(), "收尾后槽清空");
     }
 
-    /// F3（二轮复评）：删除编排窗口内 get_or_spawn 拒新——旗标在位时无槽
+    /// （二轮复评）：删除编排窗口内 get_or_spawn 拒新——旗标在位时无槽
     /// 也不 spawn（早退闸），wake 诚实 Unavailable；evict_end 后恢复可用
     /// （真实子进程往返）。
     #[tokio::test]
@@ -658,7 +658,7 @@ mod sup_real_child {
         sup.evict_begin("agent-a").await; // 无槽：纯置旗
         let r = sup.wake_agent("agent-a", &exec_root).await;
         match r {
-            // F1：删除在途 = 生命周期拒绝（原 Unavailable 变体已拆分）。
+            // 删除在途 = 生命周期拒绝（原 Unavailable 变体已拆分）。
             Err(SupervisorError::LifecycleRejected(m)) => {
                 assert!(m.contains("being removed"), "拒绝须说明删除在途: {m}");
             }
@@ -675,10 +675,10 @@ mod sup_real_child {
         assert!(sup.slot_states().is_empty());
     }
 
-    // R3 回归锁（原 review 探针反转，2026-10-20）：删除完整走完（begin→end、
+    // 回归锁（原 review 探针反转）：删除完整走完（begin→end、
     // 旗标已清、记录已注销）后，spawn 中途的在途 wake 必须在插入点被代次
     // 复核拦下——诚实 Err、刚 spawn 的会话被关停、零幸存槽。旧行为（ABA）：
-    // 插表成功 = 已删身份复活，result Ok 且槽幸存。F1（2026-10-21 三轮复评）：
+    // 插表成功 = 已删身份复活，result Ok 且槽幸存。（三轮复评）：
     // 拒绝变体从 Unavailable 细分为 LifecycleRejected（身份已终结，禁宿主
     // 回落）——match 臂随之收窄，可降级的 Unavailable 不再混入删除语义。
     #[tokio::test]
@@ -718,7 +718,7 @@ mod sup_real_child {
         }
     }
 
-    // F1 回归锁（原三轮复评诊断探针翻转，2026-10-21）：删除完整走完后恢复
+    // 回归锁（原三轮复评诊断探针翻转）：删除完整走完后恢复
     // 的工具调用必须**终止**在生命周期拒绝——不落宿主 per-call 回落。旧行为
     // （探针实证）：拒绝被统一映射成 host_fallback=true，RemoteExecutorTool
     // 经宿主通道照常执行（宿主 marker 文件被读出 = 已删身份的工具成功执行）。
@@ -794,7 +794,7 @@ mod sup_real_child {
         );
     }
 
-    /// F3：删除编排与并发 spawn 的竞态不变式——begin 返回后槽必为空（并发
+    /// 删除编排与并发 spawn 的竞态不变式——begin 返回后槽必为空（并发
     /// wake 要么被旗标拒绝（修复语义），要么先成槽被排空（等价旧行为）），
     /// 绝不允许幸存「evict 覆盖不到的替代槽」；反复三轮压窗口（spawn 真实
     /// 子进程数百 ms，80ms 后置旗 = 高概率落在 spawn 在途）。旧行为此断言
@@ -828,7 +828,7 @@ mod sup_real_child {
         assert!(sup.slot_states().is_empty());
     }
 
-    /// P3 ①：env 白名单——宿主注入的秘密变量在常驻执行体内不可见；OS
+    /// ①：env 白名单——宿主注入的秘密变量在常驻执行体内不可见；OS
     /// 基线（PATH）照常可见；运输层内部变量（NEMESISBOT_*）对模型可跑的
     /// 命令 env 不可见——两层防御：① supervisor spawn env_clear+白名单
     /// （宿主秘密剥离），② exec 工具孙进程消毒（nemesis_utils::env_sanitize
@@ -853,7 +853,7 @@ mod sup_real_child {
         );
         // 行首匹配 + 忽略大小写（Windows env 名大小写不敏感；CI runner 存
         // `Path`、Git Bash 传播 `PATH`——按原样 contains 会按环境确定性分叉，
-        // CI 三连红实录 2026-10-18）。
+        // CI 三连红）。
         assert!(
             out.lines().any(|l| l.to_uppercase().starts_with("PATH=")),
             "OS 基线（PATH）应保留: {out}"
@@ -869,7 +869,7 @@ mod sup_real_child {
         );
         // 运输层内部变量不得漏进孙进程 env（env_sanitize 纪律：模型可跑的
         // 命令观测不到/伪造不了执行体标记——NEMESISBOT_ROLE/PERSISTENT/
-        // AGENT_ID 等在孙进程 dump 中必须缺席；子进程侧消费在 T5/T6 接线）。
+        // AGENT_ID 等在孙进程 dump 中必须缺席；子进程侧消费在 / 接线）。
         // 按「变量名=」行首匹配（大小写不敏感子串会误伤 PATH 里的仓库目录名
         // NemesisBot_Rust_2）。
         assert!(
@@ -921,7 +921,7 @@ mod sup_real_child {
             .expect("sleep 释放槽后 agent-b 应可用");
     }
 
-    /// P3 ⑤ + R2：调用中途杀子进程（kill -9 语义）→ Eof → 一次重建 + 原样
+    /// ⑤ +：调用中途杀子进程（kill -9 语义）→ Eof → 一次重建 + 原样
     /// 重发同 call_id → 子进程两相账裁决：有副作用工具（exec）回「结果未知」
     /// 诚实错误（不盲重试——副作用可能已发生；at-most-once 优先于重跑）；
     /// 随后新 call_id 调用照常完成（重建链路健康，诚实错误不拦新调用）。
@@ -978,7 +978,7 @@ mod sup_real_child {
         assert!(out.contains("after-unknown"), "{out}");
     }
 
-    /// R18 回归锁：慢工具撞调用超时后，带毒会话不得复用。旧 BUG：超时只
+    /// 回归锁：慢工具撞调用超时后，带毒会话不得复用。旧 BUG：超时只
     /// 报错不销毁会话，child 仍活着、迟到响应滞留管道——下次调用读到上一
     /// 次的迟到行，call_id 永久错位一格（超时一次执行体对后续所有调用
     /// 报废）。修复语义：非 Eof 失败即判死会话（fail_poisoned），下一次
@@ -1003,7 +1003,7 @@ mod sup_real_child {
         // child 此刻还活着（这正是带毒的根源）。载荷取理论极限：本测试是
         // current_thread runtime，timer 推进依赖测试线程被 OS 调度——全量
         // 并发满载下若线程饥饿 >（载荷-预算）秒，超时判定会晚于 ping 完成
-        // → Ok 假红（2026-11-05 R528 全量实录）。载荷 11s vs 预算 1s =
+        // → Ok 假红（全量）。载荷 11s vs 预算 1s =
         // 翻转需饥饿 >10s，全量并发下不可达（ping -n 4≈3s 的旧值在满载
         // 机上余量不足）。
         match exec_cmd(&sup, &exec_root, "ping -n 12 127.0.0.1 > nul").await {
@@ -1035,7 +1035,7 @@ mod sup_real_child {
     }
 
     /// sleep/wake 生命周期 + slot_states 观测面：sleep 杀进程清槽（幂等），
-    /// wake 产生新进程；T8 宣告消费的快照形态正确。
+    /// wake 产生新进程； 宣告消费的快照形态正确。
     #[tokio::test]
     async fn sup_sleep_wake_and_slot_states() {
         let _env = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -1053,7 +1053,7 @@ mod sup_real_child {
         assert_eq!(states.len(), 1, "一个 agent 一个槽: {states:?}");
         assert_eq!(states[0].agent_id, "agent-a");
         assert!(states[0].alive);
-        // R1 观测面：无 sandbox 请求 + 临时 home 引擎不就绪 → stdio 槽，
+        // 观测面：无 sandbox 请求 + 临时 home 引擎不就绪 → stdio 槽，
         // 隔离形态诚实记录（不冒标）。
         assert_eq!(
             states[0].isolation,
@@ -1077,7 +1077,7 @@ mod sup_real_child {
         sup.sleep_agent("agent-a").await;
     }
 
-    /// R1 strict 预检：`executor.strict` 请求在场而后端不可用（临时 home
+    /// strict 预检：`executor.strict` 请求在场而后端不可用（临时 home
     /// 引擎永不就绪）→ spawn 前拒绝，执行体零落地（无子进程、无槽——
     /// 「拒绝执行」不能退回裸 stdio）。错误分型 Unavailable（调用未发生，
     /// per-call 回落链可安全处理）。
@@ -1105,7 +1105,7 @@ mod sup_real_child {
         assert!(sup.slot_pid("agent-a").await.is_none());
     }
 
-    /// R1：sandbox=true 但引擎未就绪、未开 strict → stdio 兼容回退照常可用
+    /// sandbox=true 但引擎未就绪、未开 strict → stdio 兼容回退照常可用
     /// （⑥——strict 缺位时不因沙盒缺失拒服务），槽位隔离形态诚实记 Stdio。
     #[tokio::test]
     async fn sup_sandbox_requested_engine_absent_no_strict_falls_back() {
@@ -1124,7 +1124,7 @@ mod sup_real_child {
         sup.sleep_agent("agent-a").await;
     }
 
-    /// R1 运行中配置切换：strict 翻开 → 现存 stdio 槽不再满足契约 → execute
+    /// 运行中配置切换：strict 翻开 → 现存 stdio 槽不再满足契约 → execute
     /// 复检触发重建；后端仍不可用 → Unavailable（调用未发生）。关回 strict
     /// → 原槽仍活着，恢复可用（重建失败不损毁在册会话）。
     #[tokio::test]

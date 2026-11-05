@@ -4,7 +4,7 @@
 //!   直到 10s deadline 返回 Err。
 //!
 //! ⚠️ 测试硬成本 ~10s（deadline 写死 10s；tokio start_paused 用不了——
-//! std:time:Instant 是真实时钟，暂停时间会死循环）。只此一个。
+//! std::time:Instant 是真实时钟，暂停时间会死循环）。只此一个。
 
 #[cfg(windows)]
 #[tokio::test]

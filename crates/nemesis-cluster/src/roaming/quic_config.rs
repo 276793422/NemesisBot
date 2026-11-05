@@ -6,9 +6,9 @@
 //! 集群层 = 消费者，只留「要不要使用 QUIC 打洞」开关
 //! （config.cluster.json `roaming.enabled`，见 [`super::config`]）。
 //!
-//! 单一真相源：[`resolved_quic`] 纯函数——缺文件 / 坏 JSON / 缺段 /
-//! 字段类型不符一律逐字段落默认值（与 [`super::config::resolved_roaming`]
-//! 同一解析纪律；relay 段字段解析经 [`super::config::parse_relay_settings`]
+//! 统一定义：[`resolved_quic`] 纯函数——缺文件 / 坏 JSON / 缺段 /
+//! 字段类型不符一律逐字段落默认值（与 [`super::config:resolved_roaming`]
+//! 同一解析纪律；relay 段字段解析经 [`super::config:parse_relay_settings`]
 //! 同源复用）。
 //!
 //! 旧位置首读迁移：[`ensure_quic_config`]——quic.json 不存在且

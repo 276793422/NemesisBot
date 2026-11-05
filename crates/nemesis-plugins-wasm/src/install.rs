@@ -33,7 +33,7 @@ pub const WASM_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// 同进程装配漏斗互斥（Dashboard 双击 / WSAPI 并发 install/uninstall/
 /// enable/disable 同 slug 时，载荷目录重建、lockfile/实例配置读-改-写与
 /// 内存启用位翻转会竞争出错配/丢条目/「写盘失败但内存已翻转」假成功
-/// ——2026-09-29 交付审查 3.3/L2 + 2026-09-30 复查 #7：set_enabled_plugin
+/// —— 交付审查 3.3/ + 复查 #7：set_enabled_plugin
 /// 也走此闸，先写盘成功再翻内存位）。跨进程 CLI vs gateway 不在此闸内，
 /// 后果：不同 slug 并发 → lockfile 读-改-写丢条目（CLI 管理面不自愈）；
 /// 同 slug 并发 → 载荷与 lockfile 混版本（load_one 的 sha 自洽比对拒载，
@@ -63,7 +63,7 @@ pub struct LockfileEntry {
     pub installed_at_ms: u64,
     /// 签名者公钥前 16 hex（未签名 = 空）。
     pub signed_by: String,
-    /// 装配自动注册成功的 connector id（2026-11-03 域侧批：审计面 + 卸载
+    /// 装配自动注册成功的 connector id（域侧批：审计面 + 卸载
     /// 提示；只记事实——冲突不覆盖/IO 失败的不在此列。`#[serde(default)]`
     /// 旧形态 lockfile 零迁移）。
     #[serde(default)]
@@ -94,14 +94,14 @@ pub struct InstallReview {
     /// wasm 字节数。
     pub wasm_bytes: u64,
     /// wasm sha256（hex64，第③步重算值——审批卡上的人比对照锚点，与
-    /// manifest/lockfile 记账同源。2026-09-30 复查 #12：装的是哪个载荷，
+    /// manifest/lockfile 记账同源。 复查 #12：装的是哪个载荷，
     /// 审批者有权知道。纯声明式 = 空串）。
     pub wasm_sha256: String,
     /// 面板页面数（kind=panel 的声明面摘要；其他 kind = 0）。
     pub ui_pages: usize,
     /// flow 剧本模板数（kind=panel 的声明面摘要；其他 kind = 0）。
     pub flow_templates: usize,
-    /// 包内 connector.toml 声明的 connector id（2026-11-03 域侧批：装前
+    /// 包内 connector.toml 声明的 connector id（域侧批：装前
     /// 可见「将注册 connector: gitea」；解析失败到不了审批卡——①段已拒）。
     pub connectors: Vec<String>,
     /// manifest limits 被忽略的放宽请求。
@@ -118,7 +118,7 @@ pub trait InstallApprover: Send + Sync {
         review: &'a InstallReview,
     ) -> futures::future::BoxFuture<'a, Result<bool, String>>;
 
-    /// 是否具备「人批卡豁免无签名」能力（2026-10-23 开关补漏斗收口）：
+    /// 是否具备「人批卡豁免无签名」能力（开关补漏斗收口）：
     /// true = gateway 审批卡面（无签名载荷转卡裁决，批准 = 人显式接受，
     /// 与 `install --allow-unsigned` 同一留档语义）；false（缺省）= CLI
     /// `--yes`/headless——无签名豁免维持显式旗标纪律，开关路径从紧拒绝。
@@ -140,7 +140,7 @@ pub struct ApprovedInstall {
     pub tool_meta: Option<ToolMetaSnapshot>,
     /// 策略面快照（kind=policy 时非空）。
     pub policy_meta: Option<PolicyMetaSnapshot>,
-    /// flow 步骤面快照（kind=flow-step 时非空；2026-11-03 guest step 批）。
+    /// flow 步骤面快照（kind=flow-step 时非空； guest step 批）。
     pub step_meta: Option<StepMetaSnapshot>,
     /// 装配自动注册**成功**的 connector id（⑥.5 事实面；冲突不覆盖/IO
     /// 失败者不在列，与 lockfile 记账同源）。
@@ -203,7 +203,7 @@ impl PluginInstaller {
         }
     }
 
-    /// 装配漏斗（CLI / WSAPI install 共用）。新纪律（2026-10-22）：安装≠
+    /// 装配漏斗（CLI / WSAPI install 共用）。新纪律：安装≠
     /// 加载——装配成功只落载荷与 lockfile，开关记录写入
     /// `config.plugin.wasm.json`（新装一律 `enabled=false` 不注册；升级保留
     /// 用户既有开关位，开着 → 摘旧重注册=热升级）。装载走显式开关
@@ -299,7 +299,7 @@ impl PluginInstaller {
         let (manifest, outcome) = verify_manifest(&raw, &self.verifier)?;
         let trust_state = trust_state_for(&outcome, allow_unsigned)?;
 
-        // ①.5 包内 connector.toml 预检（2026-11-03 域侧批）：解析失败 =
+        // ①.5 包内 connector.toml 预检（域侧批）：解析失败 =
         // 拒绝安装（fail-closed，与 sha mismatch 同级——不装「看起来装好
         // 但 connector 不可用」的插件；此处零突变，早拒早干净）。
         let bundled_connector = self.parse_bundled_connector(source_dir)?;
@@ -391,7 +391,7 @@ impl PluginInstaller {
             (component, tool_meta, policy_meta, step_meta)
         };
 
-        // ⑥.5 connector 装配自动注册（2026-11-03 域侧批）：包内
+        // ⑥.5 connector 装配自动注册（域侧批）：包内
         // connector.toml → `<workspace>/connectors/<id>/`（落文件即注册，
         // scan_connectors 目录扫描制）。冲突语义：目标在场且内容不同 =
         // **不覆盖** + WARN（connector 含 base/clone_url 等用户必改字段，
@@ -409,11 +409,11 @@ impl PluginInstaller {
         // ⑦ lockfile（lockfile-first：落位之前写——失败 = 零突变干净中止，
         // 优于「报失败但新载荷已生效」的谎报；与 uninstall 的 remove-lockfile
         // 先行对称。load_one 不读 lockfile（sha 自洽比对），此处失败留下的
-        // 元数据超前不破本进程装载，重装自愈。2026-09-30 复查 #5）
+        // 元数据超前不破本进程装载，重装自愈。 复查 #5）
         self.update_lockfile(&manifest, trust_state, &outcome, &registered_connectors)?;
 
         // ⑧ 落位（升级路径：先清旧载荷；数据目录保留不动）。删除重试耗尽
-        // 必须中止——继续落位会新旧载荷文件混布（2026-09-29 交付审查 L3）。
+        // 必须中止——继续落位会新旧载荷文件混布（交付审查）。
         let target = self.manager.plugin_dir(&manifest.slug);
         match resilient_remove_dir_all(&target) {
             Ok(true) => {
@@ -542,15 +542,15 @@ impl PluginInstaller {
 
     /// 编译后对账（第⑥步）：tool = probe get-metadata + 字段合法性；
     /// observer = 只编译验证（probe 由注册后首事件兜底）；
-    /// policy = probe get-policy-metadata + ≥1 接管点校验（2026-10-22 批 4）；
-    /// panel = 探针 get-step-metadata 分诊（2026-11-03 组合 world 批）——
+    /// policy = probe get-policy-metadata + ≥1 接管点校验；
+    /// panel = 探针 get-step-metadata 分诊（组合 world 批）——
     /// 成功 = panel 双导出 flow-step 的组合形态（按 flow-step 同规对账
     /// kinds）；壳明报「not a flow-step plugin」= 纯面板（无运行期元数据；
     /// 页面/路由合法性是声明面，归 manifest validate）——锚点是壳+宿主
     /// 同仓发运的确定性错误文案（host_dll_freshness 测试钉壳陈旧）；
     /// 其余错误原样上抛（真故障不吞）；
     /// flow-step = probe get-step-metadata + kind 词表非空 + 形态校验
-    /// （2026-11-03 guest step 批——运行期路由按此对账）。
+    /// （guest step 批——运行期路由按此对账）。
     #[allow(clippy::type_complexity)]
     async fn probe_and_reconcile(
         &self,
@@ -590,7 +590,7 @@ impl PluginInstaller {
             }
             return Ok((None, Some(pm), None));
         }
-        // panel 分诊（2026-11-03 组合 world 批）：kind=panel 组件可能是
+        // panel 分诊（组合 world 批）：kind=panel 组件可能是
         // panel 双导出 flow-step 的组合形态——探针 get-step-metadata 试探。
         // 成功 = 组合（快照进注册表，run_flow_step 按 flow-step 同规投递）；
         // 壳「not a flow-step plugin」明报 = 纯面板（无步骤面，原样放行）；
@@ -613,7 +613,7 @@ impl PluginInstaller {
                 Err(e) => return Err(e),
             }
         }
-        // flow 步骤对账（2026-11-03 guest step 批）：探针 get-step-metadata
+        // flow 步骤对账（guest step 批）：探针 get-step-metadata
         // （紧超时同 validation 口径）；kind 词表非空 + 形态校验（1-64 字符
         // 无空白/控制字符）——模板 `plugin:<slug>:<op>` 引用的 op 必须在词
         // 表内，安装期就把越权引用拦在门外。
@@ -689,7 +689,7 @@ impl PluginInstaller {
     ) -> Result<(), PluginError> {
         let path = self.manager.plugins_dir().join("lockfile.json");
         // 文件缺失 = 全新 lockfile；损坏 = 诚实报错（静默重置会丢全部安装
-        // 历史，2026-09-29 交付审查 L2）。
+        // 历史， 交付审查）。
         let mut lockfile: PluginLockfile = match std::fs::read_to_string(&path) {
             Ok(s) => serde_json::from_str(&s).map_err(|e| {
                 PluginError::Io(format!("lockfile 解析失败 {}: {e}", path.display()))
@@ -717,7 +717,7 @@ impl PluginInstaller {
             .map_err(|e| PluginError::Io(format!("write lockfile: {e}")))
     }
 
-    /// 启动装载（无审批/无扫描——安装期已裁决）。新纪律（2026-10-22）：
+    /// 启动装载（无审批/无扫描——安装期已裁决）。新纪律：
     /// 发现 ≠ 加载——扫全部含 `plugin.toml` 的子目录得发现清单，仅
     /// `config.plugin.wasm.json` 记录 `enabled=true` 者装载。返回加载数。
     pub async fn load_all(&self) -> usize {
@@ -817,7 +817,7 @@ impl PluginInstaller {
                 slug,
                 "[WasmPlugin] 载荷无安装记录（手工拷入），补跑装配漏斗"
             );
-            // 无签名载荷的容忍判定（2026-10-23 开关补漏斗收口）：审批面具备
+            // 无签名载荷的容忍判定（开关补漏斗收口）：审批面具备
             // 人批卡能力（gateway 审批卡）且载荷仅「无签名」→ 放宽进漏斗——
             // 卡面展示 trust=review-required，批准 = 人显式接受（与
             // `install --allow-unsigned` 同一留档语义，lockfile 记
@@ -879,7 +879,7 @@ impl PluginInstaller {
         let (manifest, outcome) = verify_manifest(&raw, &self.verifier)?;
         // 目录名与 manifest.slug 不一致 = 孤儿载荷（注册用 manifest.slug、
         // 卸载/升级只操作 canonical 目录名——错位目录每次启动都会重装成
-        // 幽灵注册项；2026-09-29 交付审查 L5）。
+        // 幽灵注册项； 交付审查）。
         let dir_name = pdir
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
@@ -1007,7 +1007,7 @@ pub fn is_eight_short_name(seg: &str) -> bool {
 /// 韧性删除（Windows AV/索引器瞬时句柄是常态：80ms×10 退避重试）。
 /// `Ok(false)` = 目录不存在（首装/已删，正常）；`Ok(true)` = 已删除；
 /// `Err` = 重试耗尽删除失败——调用方必须中止，不能与「不存在」混同
-///（2026-09-29 交付审查 L3）。
+///（交付审查）。
 pub fn resilient_remove_dir_all(path: &Path) -> Result<bool, String> {
     if !path.exists() {
         return Ok(false);
@@ -1034,7 +1034,7 @@ pub fn resilient_remove_dir_all(path: &Path) -> Result<bool, String> {
 
 /// wasm 载荷文件名必须为纯文件名（防 join 逃逸：`../`、绝对路径、`C:foo`
 /// 盘符相对形态——`file_name()` 归一化比较一次覆盖全部形态；join 绝对路径
-/// 时整体替换，可把载荷读到源目录之外。2026-09-29 交付审查 L1）。
+/// 时整体替换，可把载荷读到源目录之外。 交付审查）。
 fn ensure_plain_filename(name: &str) -> Result<(), PluginError> {
     if name.is_empty() || std::path::Path::new(name).file_name() != Some(std::ffi::OsStr::new(name))
     {
@@ -1045,7 +1045,7 @@ fn ensure_plain_filename(name: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
-/// lockfile 摘除前的条目 connector 清单（2026-11-03 域侧批：卸载提示
+/// lockfile 摘除前的条目 connector 清单（域侧批：卸载提示
 /// 取证；读失败/条目缺席 = 空表，不阻塞卸载）。
 fn lockfile_connectors_of(manager: &PluginManager, slug: &str) -> Vec<String> {
     let path = manager.plugins_dir().join("lockfile.json");
@@ -1081,7 +1081,7 @@ fn remove_lockfile_entry(manager: &PluginManager, slug: &str) -> Result<bool, Pl
 
 /// 卸载（漏斗互斥内执行）。lockfile 摘除 → 注销 + 删载荷。数据目录与实例
 /// 配置文件保留（操作员手动清理）。lockfile 摘除先行且失败即中止——反序会
-/// 出现「载荷已删而 lockfile 留条目」的漂移态（2026-09-29 交付审查 L2/3.4）。
+/// 出现「载荷已删而 lockfile 留条目」的漂移态（交付审查 /3.4）。
 pub async fn uninstall(manager: &PluginManager, slug: &str) -> Result<bool, PluginError> {
     if !valid_slug(slug) {
         return Err(PluginError::Manifest(format!("invalid slug: {slug}")));
@@ -1104,7 +1104,7 @@ fn uninstall_inner(manager: &PluginManager, slug: &str) -> Result<bool, PluginEr
     // 开关记录一并摘除（幂等；失败不阻塞卸载——孤儿条目无害，重装覆盖）。
     let config_dir = manager.workspace_root().join("config");
     let _ = nemesis_config::plugin_wasm::remove(&config_dir, slug);
-    // 卸载留痕（2026-10-23 日志面收口）：此前未装载插件的卸载完全静默
+    // 卸载留痕（日志面收口）：此前未装载插件的卸载完全静默
     //（已装载的至少有工具面 hot-unregistered 日志）——三清点一行说清。
     if existed || removed || in_lockfile {
         tracing::info!(

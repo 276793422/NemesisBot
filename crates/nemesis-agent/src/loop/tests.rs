@@ -1,5 +1,5 @@
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
-// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio:test] 每个
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
 // 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
 // 测试域统一豁免（逐处 allow ~200 个不现实）。
 #![allow(clippy::await_holding_lock)]
@@ -542,15 +542,15 @@ async fn handle_tool_call_runs_when_estop_disengaged() {
 
 #[tokio::test]
 async fn estop_interrupts_in_flight_tool_and_emits_tool_finished() {
-    // 修②⑥（交叉态回归锁）：工具执行到一半触发急停——
+    // （交叉态回归锁）：工具执行到一半触发急停——
     // dispatch 的 estop select 臂 drop 在飞执行链 future（工具体 + around
     // hooks），被 drop 的 hook 链发不出 ToolFinished，dispatch 按**同一
-    // call_id**（turn_wal:call_id_for 派生点）补发 interrupted 终态
+    // call_id**（turn_wal::call_id_for 派生点）补发 interrupted 终态
     // （ok=false、estop 预览、真实墙钟），UI 卡片与 Work 时间线不悬空。
     // 观察面：同一 broadcast tx 同时喂 ToolEventHook（正常链事件）与
     // agent_event_tx（中断补发事件），单 rx 收全两路。
     // 文案判别：入口级拒绝是「拒绝」，此处 select 臂是「打断」——断言
-    // 「打断」保证命中的是修②臂而非 checkpoint C。
+    // 「打断」保证命中的是臂而非 checkpoint C。
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -992,7 +992,7 @@ async fn grace_round_finalizes_when_model_cooperates() {
 }
 
 // -------------------------------------------------------------------------
-// : per-turn cron budget override
+// per-turn cron budget override
 // -------------------------------------------------------------------------
 
 fn tool_loop_response() -> LlmResponse {
@@ -1428,9 +1428,9 @@ impl nemesis_types::agent::QuestionAsker for FakeDoomAsker {
     }
 }
 
-/// ：写一个只含 `agents.defaults.compact_keep_recent_tokens` 的临时
+/// 写一个只含 `agents.defaults.compact_keep_recent_tokens` 的临时
 /// config.json，返回路径（调用方负责删除）。`maybe_update_summary` 对该键是
-/// fresh-read（config.json 唯一真相源）——测试要控制逐字尾巴的 token 预算
+/// fresh-read（config.json 唯一依据）——测试要控制逐字尾巴的 token 预算
 /// 就必须落盘这个键；缺省 20000 会吞掉测试里的小 history（边界=0）。
 fn keep_tokens_config_file(budget: i64, suffix: &str) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -1438,7 +1438,7 @@ fn keep_tokens_config_file(budget: i64, suffix: &str) -> std::path::PathBuf {
         std::process::id(),
         suffix
     ));
-    // ：条目带 context_window=100——窗口已知才不禁自动压缩
+    // 条目带 context_window=100——窗口已知才不禁自动压缩
     // （与这些测试 instance.set_context_window(100) 的阈值语义一致）。
     std::fs::write(
         &path,
@@ -4747,7 +4747,7 @@ async fn test_process_inbound_message_no_resolver_fallback() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    // Use AgentLoop:new (standalone) which has no route resolver
+    // Use AgentLoop::new (standalone) which has no route resolver
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     // process_direct_with_channel works in standalone mode
@@ -4877,7 +4877,7 @@ async fn test_assistant_outbound_carries_model_badge() {
     }
     // (If the assistant row isn't found under main_key, the outbound assertion
     //  above already covers the stamping; chat_log write is also unit-tested in
-    //  chat_log:tests:test_append_with_model_round_trip.)
+    //  chat_log::tests:test_append_with_model_round_trip.)
 }
 
 #[tokio::test]
@@ -5719,7 +5719,7 @@ async fn test_summarize_prefix_owned_returns_summary() {
 }
 
 // -------------------------------------------------------------------------
-// : per-model summarizer prefix-reuse switch
+// per-model summarizer prefix-reuse switch
 // (shape capture reuses CapturingMockProvider, defined near the tests below)
 // -------------------------------------------------------------------------
 
@@ -6793,7 +6793,7 @@ fn test_build_messages_preserves_history_order() {
     assert_eq!(messages[1].role, "user");
     assert_eq!(messages[1].content, "First");
     assert_eq!(messages[2].role, "assistant");
-    // : time/env is now the FIRST section of the merged context
+    // time/env is now the FIRST section of the merged context
     // snapshot injected as a USER-role message (was system-role dyn_msg).
     assert_eq!(messages[3].role, "user"); // merged context snapshot
     assert!(messages[3].content.contains("Current Time"));
@@ -7866,7 +7866,7 @@ fn test_build_messages_repairs_orphan_tool_call() {
         .iter()
         .map(|tc| tc.id.as_str())
         .collect();
-    // : the orphan call_A is NO LONGER dropped — it now gets a
+    // the orphan call_A is NO LONGER dropped — it now gets a
     // synthetic TOOL_OUTCOME_UNKNOWN result, so BOTH calls survive and the
     // provider transcript stays balanced (same 400-prevention guarantee, but
     // the model also learns its half-executed call happened).
@@ -8649,7 +8649,7 @@ async fn g3_parallel_pool_injects_instance_depth() {
 }
 
 // ===========================================================================
-// : summary request reuses the conversation prefix
+// summary request reuses the conversation prefix
 // ===========================================================================
 
 /// Mock provider that RECORDS every request's messages (unlike
@@ -9545,7 +9545,7 @@ fn test_x2_runtime_policy_guardian_on_reflects_live_judge() {
 }
 
 // ---------------------------------------------------------------------------
-// : semantic tool-documentation folding — loop-level gates.
+// semantic tool-documentation folding — loop-level gates.
 // Pure decision/rendering tests live in `src/tool_doc_folding/tests.rs`;
 // these verify the LOOP-side contract: default-off = byte-identical defs,
 // enabled+manager = folded provider-visible shape (the same `tool_defs`
@@ -10350,9 +10350,9 @@ fn rewrite_exec_cwd_injects_default_and_rewrites_relative() {
 // （user+assistant 各一行）。前端成对重复 BUG 修复时钉死：后端不存在
 // 「同一轮走两条路径各落一次」的组合（收尾单一出口 run_agent_loop_internal，
 // inline/spawned 两臂互斥；/build 与续行各只补一行且不与正常收尾叠加）。
-/// ：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
+/// 未知窗口模型的首个 turn 会落一条「压缩已停用」系统
 /// 注记，污染「恰好 +2 行」类精确断言。夹具给 test-model 钉已知窗口
-/// （config.json 唯一真相源 fresh-read）→ 自动压缩路径惰性，断言继续只
+/// （config.json 唯一依据 fresh-read）→ 自动压缩路径惰性，断言继续只
 /// 管 turn 持久化本身； 注记行为由 w1_w2_note_tests 专测。
 fn pin_known_window_config(al: &AgentLoop) {
     let cfg_path = std::env::temp_dir().join(format!(

@@ -1,4 +1,4 @@
-//! pair 模块测试（发现②/B6）。
+//! pair 模块测试（发现②）。
 //!
 //! 网络探测路径需要真实对端——真机回归在 cluster-uat（T 系列双节点）。
 //! 这里钉死零网络依赖的纯逻辑面：入参解析、双形态候选推导、写后回读
@@ -206,7 +206,7 @@ fn test_rollback_restores_pre_write_content() {
     );
 }
 
-// -- 字面键 round-trip（含 `.`/`:` id）——B3 联动 ---------------------------
+// -- 字面键 round-trip（含 `.`/`:` id）—— 联动 ---------------------------
 
 #[test]
 fn test_pair_written_key_is_literal_for_dotted_and_colon_ids() {
@@ -251,7 +251,7 @@ fn test_pair_written_key_is_literal_for_dotted_and_colon_ids() {
     );
 }
 
-// -- BUG-20261103-334 横向排查定性钉（非缺陷修复）--------------------------
+// -- 横向排查定性钉（非缺陷修复）--------------------------
 
 /// 记事本（带 BOM 的 UTF-8）手工维护的 peers.toml，配对回读断言照常解析。
 /// 实测 toml crate parse 容忍前导 BOM（与 JSON 位点 serde_json 不同）——

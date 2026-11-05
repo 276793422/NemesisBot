@@ -4,7 +4,7 @@
 //! AI 处理期间（分钟级）用户切走路由再切回，前端 loadHistory 从
 //! chat_log 必须能拉到本轮 user 行，不再空视图。assistant 行仍在
 //! turn 末落盘，HD「一轮 = jsonl 恰好 +2 行」不变量由两处合计维持
-//! （既有 tests.rs:one_turn_appends_exactly_user_and_assistant_rows
+//! （既有 tests.rs::one_turn_appends_exactly_user_and_assistant_rows
 //! 继续守护完整轮的行数；本文件钉「进行中可见」的时序半边）。
 
 // 共享键测试持 std Mutex guard 跨 await（串行 chat_log 落盘窗口）——
@@ -74,9 +74,9 @@ fn timing_session_key(name: &str) -> String {
     )
 }
 
-/// ：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
+/// 未知窗口模型的首个 turn 会落一条「压缩已停用」系统
 /// 注记，破坏本文件「完整轮恰好 +2 行」类精确断言。夹具统一给 test-model
-/// 钉已知窗口（config.json 唯一真相源 fresh-read）→ 自动压缩路径惰性
+/// 钉已知窗口（config.json 唯一依据 fresh-read）→ 自动压缩路径惰性
 /// （信号远低于阈值），本文件继续只测 turn 持久化时序本身； 注记行为
 /// 由 w1_w2_note_tests 专测。
 fn pin_known_window(al: &AgentLoop) {

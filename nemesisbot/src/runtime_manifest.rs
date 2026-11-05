@@ -1,9 +1,9 @@
-//! A1 运行时完整性清单。
+//! 运行时完整性清单。
 //!
 //! 打包部署（build-windows.bat / build-linux.sh / build-android.bat /
 //! customize 流程）在产物目录落 `runtime-manifest.json`
 //! （`{version, git_commit, generated_at, files: [{path, sha256, size}]}`，
-//! 生成器单一真相源 = `scripts/gen_runtime_manifest.py`），覆盖主二进制 +
+//! 生成器单一权威 = `scripts/gen_runtime_manifest.py`），覆盖主二进制 +
 //! `static/` 前端全量文件。gateway 启动早期逐件校验 sha256。
 //!
 //! 三态语义（刻意设计，与打包硬拒语义的分歧保 cargo 开发态可用）：

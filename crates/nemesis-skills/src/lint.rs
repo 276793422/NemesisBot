@@ -11,7 +11,7 @@ use tracing::warn;
 
 /// Category of a lint warning.
 ///
-/// 12 categories aligned with the legacy scanner (P15 供应链扩面)：
+/// 12 categories aligned with the legacy scanner (供应链扩面)：
 /// 既有 5 类语义并入（Destructive=危险执行 / Exfiltration=数据外传 /
 /// Privilege=提权 / Obfuscation=混淆编码 / Recon=网络扫描），新增 7 类
 /// 规则来自嵌入 JSON 规则表（`security_rules.json`，便于热更）。
@@ -147,7 +147,7 @@ pub struct LintWarning {
     #[serde(default = "default_severity")]
     pub severity: LintSeverity,
     /// 所属文件（相对技能目录根，`/` 分隔）。单文件 lint 恒 `None`
-    /// （JSON 不出键，与现网形态一致）；目录 lint（M5）按文件归属填充。
+    /// （JSON 不出键，与现网形态一致）；目录 lint按文件归属填充。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
 }
@@ -172,7 +172,7 @@ pub struct LintResult {
 }
 
 impl LintResult {
-    /// Count warnings per category (P15 分类计数，供审批卡摘要与评分展示).
+    /// Count warnings per category (分类计数，供审批卡摘要与评分展示).
     pub fn category_counts(&self) -> std::collections::BTreeMap<LintCategory, usize> {
         let mut counts = std::collections::BTreeMap::new();
         for w in &self.warnings {
@@ -428,7 +428,7 @@ impl SkillLinter {
             })
             .collect();
 
-        // P15: append the embedded JSON rule table (7 extended categories).
+        // append the embedded JSON rule table (7 extended categories).
         // Invalid regexes / unknown categories are skipped with a warn so a
         // bad rule entry can never break installation entirely.
         for rule in crate::security_rules::embedded_rule_file().rules() {
@@ -537,7 +537,7 @@ impl Default for SkillLinter {
 }
 
 // ---------------------------------------------------------------------------
-// M5 供应链扩面：技能目录内的可执行面清单（装前 lint 的扫描范围单一真相源）。
+// 供应链扩面：技能目录内的可执行面清单（装前 lint 的扫描范围统一定义）。
 //
 // 盲区背景：装前安全检查此前只吃 SKILL.md 内容，staging 里同包分发的
 // scripts/*.sh、hooks/*.ps1、references/*.md 等只进 sha256 清单、内容从不
@@ -548,7 +548,7 @@ impl Default for SkillLinter {
 ///
 /// 三类形态：
 /// - `.md`：指令文本——SKILL.md 与 references/ 等辅助 markdown 都是 agent
-///   会读的指令面，prompt 注入型载荷写在任何 .md 里同样危险；
+///   会读的指令面，prompt 注入型载荷写在任何.md 里同样危险；
 /// - 脚本：POSIX shell / Windows 批处理与 PowerShell；
 /// - 解释型语言源码：装包自带的 `.py`/`.js` 等在技能工作流里常被直接执行。
 pub const SURFACE_FILE_EXTENSIONS: &[&str] = &[
@@ -601,7 +601,7 @@ fn collect_surface_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 impl SkillLinter {
-    /// 对技能目录的可执行面整体 lint（M5）。
+    /// 对技能目录的可执行面整体 lint。
     ///
     /// 扫描范围 = [`SURFACE_FILE_EXTENSIONS`] 命中的全部文件（含 SKILL.md
     /// 自身——目录形态下一次聚合，不重复计分）；评分与 passed 判定规则和

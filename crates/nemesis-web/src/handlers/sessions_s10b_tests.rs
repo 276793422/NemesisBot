@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): sessions WSAPI success
+//! (quality-hardening goal 冲刺, web): sessions WSAPI success
 //! arms beyond the missing-field bails in `sessions_extra_tests.rs`:
 //!
 //! - `list` strips the `agent_main_session_` prefix (web sessions only) and

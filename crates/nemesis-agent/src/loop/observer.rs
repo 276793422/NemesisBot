@@ -96,7 +96,7 @@ impl AgentLoop {
 
         // （集群无人值守硬化）：会话 token 预算累计。口径与
         // `aggregate_session_usage` 账本一致 = 完整输入（prompt +
-        // cache_creation + cache_read，`usage_full_input` 单一真相源）+
+        // cache_creation + cache_read，`usage_full_input` 统一定义）+
         // output。budget 关闭（0，默认）时零 config 读直接跳过；开启时
         // fresh-read 每轮一次（与 current_max_tool_iterations 同频）。
         // 本调用位于 `insert_request_log` 之后——seed-on-miss 路径读到的

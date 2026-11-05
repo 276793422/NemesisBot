@@ -1,15 +1,15 @@
-//! 宿主能力面（WIT `nemesis:plugin/host` 导入）的封装。
+//! 宿主能力面（WIT `nemesis::plugin/host` 导入）的封装。
 //!
 //! **guest 插件请勿使用本模块实现 Guest trait**：Guest 生成 trait 的签名
-//! 类型来自插件 crate 自身的 generate! 绑定（`nemesis::plugin::host`），
+//! 类型来自插件 crate 自身的 generate! 绑定（`nemesis::plugin:host`），
 //! 与本模块的镜像类型是不同名义类型（Rust 类型系统不认跨 crate 同形）。
-//! 正确写法见 crate 根文档示例：`use nemesis::plugin::host;`。
+//! 正确写法见 crate 根文档示例：`use nemesis::plugin:host;`。
 //!
 //! 本模块的定位：SDK 自身绑定的独立组件场景（只调宿主、无导出的辅助
 //! 组件）与 SDK 内部测试；底层绑定由 SDK crate 内的 bindgen 生成（WIT 来源
 //! = 宿主 crate 的权威合同目录 `nemesis-plugins-wasm/wit/`，无本地副本；
 //! 组件级同名导入合并，与插件 crate 自身生成的导入互不冲突）；本模块提供
-//! 稳定签名 + 文档。原始形态在 `crate::__host_wire`（`nemesis::plugin::host`）。
+//! 稳定签名 + 文档。原始形态在 `crate::__host_wire`（`nemesis::plugin:host`）。
 
 #![allow(clippy::module_name_repetitions)]
 

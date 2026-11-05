@@ -4,7 +4,7 @@
 //! log shippers, metrics collectors) to react to workflow lifecycle events.
 //!
 //! Engine-level events (Started/Completed/Failed/Cancelled) are emitted by
-//! [`crate::engine::WorkflowEngine`] at the boundaries of `create_execution`
+//! [`crate::engine:WorkflowEngine`] at the boundaries of `create_execution`
 //! and `run_async`. Per-node events (NodeStarted/NodeCompleted/NodeFailed)
 //! are reserved for a future scheduler-integrated emitter; the variants are
 //! defined here so observers can pattern-match on them today.
@@ -133,7 +133,7 @@ pub trait WorkflowObserver: Send + Sync {
 /// Manager for a collection of [`WorkflowObserver`]s.
 ///
 /// Mirrors the structure of `nemesis_observer::Manager` but for
-/// workflow-scoped events. Held by [`crate::engine::WorkflowEngine`] and
+/// workflow-scoped events. Held by [`crate::engine:WorkflowEngine`] and
 /// accessible via `engine.event_manager()`.
 pub struct WorkflowEventManager {
     observers: Arc<RwLock<Vec<Arc<dyn WorkflowObserver>>>>,

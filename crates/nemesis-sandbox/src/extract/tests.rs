@@ -22,7 +22,7 @@ async fn download_and_unzip_7z_brings_7z_exe_into_runtime() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3 覆盖率（2026-08-25）：cached 7z 分支 / seven_zip_status 探测 /
+// 覆盖率：cached 7z 分支 / seven_zip_status 探测 /
 // extract 的假 7z 执行（成功 + 失败带 stderr）。下载分支走上面的 ignored
 // 网络测试，不在此重复。
 // ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ fn extract_failure_bails_with_stderr() {
 
 /// spawn 层瞬态错有界重试。coverage job（cargo-llvm-cov 全 workspace --lib
 /// 单进程 160+ 测试线程 + LLVM 插桩内存膨胀）高负载下 fork/posix_spawn 偶发
-/// EAGAIN——实录 2026-10-10 CI Linux coverage：缓存命中 + 脚本 exit 3 的
+/// EAGAIN—— CI Linux coverage：缓存命中 + 脚本 exit 3 的
 /// 确定性路径拿到 spawn 层 Err，断言假红。只对 `spawn` 前缀错误（extract
 /// 的 with_context 层）重试 3 次；extract 层的确定性失败（脚本退出码 →
 /// 「7z extraction failed」）第一次就原样返回，绝不重试掩盖真契约失败。
@@ -162,7 +162,7 @@ fn extract_missing_7z_binary_is_err() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：extract_release 走
+// 覆盖率批次（quality-hardening goal）：extract_release 走
 // cached 假 7z（绝不触发下载红线）；subscriber 下让 extract 的 info! 参数行
 // 真实求值。
 // ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ async fn extract_release_with_cached_7z_propagates_extraction_error() {
             seven_zip_dir.join("7z.exe"),
             // `Permissions` struct lives in std::fs; `from_mode` comes from
             // the PermissionsExt trait imported above. (The re-export under
-            // std::os::unix::fs is private — E0603 on Linux.)
+            // std::os:unix::fs is private — on Linux.)
             std::fs::Permissions::from_mode(0o755),
         )
         .unwrap();
@@ -230,7 +230,7 @@ async fn extract_release_with_cached_7z_propagates_extraction_error() {
 }
 
 // ---------------------------------------------------------------------------
-// R5 覆盖率批次（2026-08-27）：resolve_seven_zip 的 system 臂（机器依赖
+// 覆盖率批次：resolve_seven_zip 的 system 臂（机器依赖
 // 守卫：本机装有系统 7-Zip 才测；干净机器会走网络下载分支，本测试绝不
 // 联网）。cached 臂已由上面 prefers_cached 测试钉住。
 // ---------------------------------------------------------------------------
@@ -253,7 +253,7 @@ async fn resolve_seven_zip_uses_system_7z_when_no_cache() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：find_system_7z 的 `where` 命中臂 +
+// AGT 覆盖率批次：find_system_7z 的 `where` 命中臂 +
 // resolve/status 的 system 分支。PATH 前插一个含假 7z.exe 的目录确定性
 // 触发（where 按当前目录 + PATH 顺序搜索，前插必命中），绝不进网络下载
 // 分支。前插只是超集、不破坏并行测试的工具解析；退出前恢复原 PATH。

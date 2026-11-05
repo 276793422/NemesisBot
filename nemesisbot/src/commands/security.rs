@@ -46,7 +46,7 @@ pub enum SecurityAction {
         #[command(subcommand)]
         action: RulesAction,
     },
-    /// Manage saved approval rules (F3 always-allow memory)
+    /// Manage saved approval rules (always-allow memory)
     Approvals {
         #[command(subcommand)]
         action: ApprovalsAction,
@@ -71,7 +71,7 @@ pub enum SecurityAction {
     /// Reset security config to defaults
     #[command(name = "config-reset")]
     ConfigReset,
-    /// A4（2026-10-21 引入）：安全校准——样本批量重放过规则
+    /// （引入）：安全校准——样本批量重放过规则
     /// 管线（**永不执行**），对照人工标注与（可选）guardian LLM 二审，产出
     /// 一致性报告到 workspace/logs/calibration/<ts>/（不改任何配置）。
     Calibrate {
@@ -157,7 +157,7 @@ pub enum RulesAction {
     },
 }
 
-/// F3: approvals 管理动作（always-allow 规则表）。
+/// approvals 管理动作（always-allow 规则表）。
 #[derive(clap::Subcommand)]
 pub enum ApprovalsAction {
     /// List saved approval rules (always-allow memory)
@@ -192,12 +192,12 @@ fn valid_operations_for_type(rule_type: &str) -> &[&str] {
     }
 }
 
-/// CFG-02（2026-09-16 横扫存量加固）：rules 子命令曾读写死键 `rules.*`
+/// CFG-02（横扫存量加固）：rules 子命令曾读写死键 `rules.*`
 /// （`{file:[],directory:[]...}` 平铺）——生产真相源是
 /// `file_rules`/`dir_rules`/`process_rules`... 分节 + 每节按操作名分组的
 /// `{pattern,action,comment}` 数组（见 security_setup::load_security_rules）。
 /// 旧实现对死键的一切增删测试都不影响运行时行为（用户以为加白实际没加）。
-/// 现全部对齐真相源；类型→分节名单一映射如下。
+/// 现全部对齐权威定义；类型→分节名单一映射如下。
 fn section_name_for_type(rule_type: &str) -> Option<&'static str> {
     match rule_type {
         "file" => Some("file_rules"),
@@ -256,8 +256,8 @@ fn read_rules_config(security_cfg: &std::path::Path) -> Result<serde_json::Value
     }
 }
 
-/// 最小出厂骨架。注意（B-F7 复核 2026-09-16）：这是「出厂模板形态」的
-/// 近似（D1/D2 用户裁决值），**不是**「缺文件时 runtime 的默认」——
+/// 最小出厂骨架。注意（B- 复核）：这是「出厂模板形态」的
+/// 近似（/ 用户裁决值），**不是**「缺文件时 runtime 的默认」——
 /// config.security.json 缺失时 load_security_rules 提前返回，auditor 保持
 /// 构造默认 `default_action: "deny"`；而本骨架写盘后下次启动生效的是
 /// `allow`。即：对一个缺文件系统执行 reset/写盘类命令 = 从 deny 放宽到
@@ -274,7 +274,7 @@ fn default_security_config() -> serde_json::Value {
 fn write_rules_config(security_cfg: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
     let dir = security_cfg.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
-    // REL-002：统一原子写入（security 规则配置）。
+    // 统一原子写入（security 规则配置）。
     nemesis_utils::write_file_atomic(
         &security_cfg.to_string_lossy(),
         serde_json::to_string_pretty(cfg)
@@ -360,7 +360,7 @@ fn match_pattern_inner(pattern: &str, target: &str) -> bool {
 // Rules sub-commands
 // ---------------------------------------------------------------------------
 
-/// F3: 列出「总是允许」规则表（`<workspace>/config/approval_rules.json`，
+/// 列出「总是允许」规则表（`<workspace>/config/approval_rules.json`，
 /// 路径真相源 nemesis-path；文件缺失/为空都诚实展示空表）。
 fn cmd_approvals_list(home: &std::path::Path) -> Result<()> {
     let path =
@@ -395,13 +395,13 @@ fn cmd_approvals_list(home: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// F3: 清空「总是允许」规则表（写回空表，文件保留；运行中 gateway 的
+/// 清空「总是允许」规则表（写回空表，文件保留；运行中 gateway 的
 /// HotReloader 经 mtime 感知）。与「总是允许」写入侧（persist_auto_allow_rule
 /// 的 RMW）互斥：全程持 config 家族写串行锁——计数读与清空写之间若插入
 /// 并发 RMW，旧实现会把已清规则复活（last-write-wins 丢清空）而 CLI 仍
-/// 打印 Cleared N。WSAPI approvals_clear 同锁（同类横扫四期，2026-10-13）。
+/// 打印 Cleared N。WSAPI approvals_clear 同锁（同类横扫四期）。
 fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
-    // BUG-20261029-176：旧实现不持锁，与 WSAPI 同名命令及 persist 侧
+    // 旧实现不持锁，与 WSAPI 同名命令及 persist 侧
     // 「双写者互斥」不变量漂移——锁先于计数读与写盘（临界区覆盖全程）。
     let _cfg_serial = nemesis_config::config_write_lock();
     let path =
@@ -417,7 +417,7 @@ fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    // REL-002：统一原子写入（approval 规则表清空）。
+    // 统一原子写入（approval 规则表清空）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), b"[]\n", 0o600)
         .map_err(anyhow::Error::msg)?;
     println!("Cleared {} approval rule(s): {}", removed, path.display());
@@ -537,7 +537,7 @@ fn cmd_rules_add(
             }));
         }
         None => {
-            // 复核 2026-09-16：此前无条件打印成功——`op_rules_mut` 返回
+            // 复核：此前无条件打印成功——`op_rules_mut` 返回
             // None（分节/操作层是 null 或类型不符）时规则根本没写进去，
             // 「以为加白实际没加」的假姿态复发。诚实报错退出。
             println!(
@@ -652,10 +652,10 @@ fn cmd_rules_test(
     // 通配匹配）。无命中落 default_action。CMD-12 同款 + 复检批桶语义：
     // deny/ask = 任一段命中即拦（另并整串锚定兜底）；allow = 全部段
     // 命中才放；段先剥 env 前缀再匹配（与归约端同语义）。
-    // 闭环批 2026-10-13：段准备/桶匹配消费
-    // `matcher::{exec_rule_segments, exec_rule_bucket_match}`——与 auditor
+    // 闭环-13：段准备/桶匹配消费
+    // `matcher:{exec_rule_segments, exec_rule_bucket_match}`——与 auditor
     // 执行管线同一真相源（此前是字节级双拷贝，漂移即预览与真实判定分叉）。
-    // 诚实边界：本预览**不含**解释器内层载荷扫描（auditor CMD-02/06② 的
+    // 诚实边界：本预览**不含**解释器内层载荷扫描（auditor 内层载荷扫描的
     // glob_contains + 危险结构词表第二道）——`security rules test` 对
     // `python -c "os.system('rm -rf /')"` 可能显示无命中，运行时仍会被
     // 内层扫描拦下；预览偏松方向，结论以运行时审计为准。
@@ -705,8 +705,8 @@ fn cmd_rules_test(
 
     match matched {
         Some((i, pattern, action)) => {
-            // L01 敏感 flag 放行臂二次校验：allow 命中后与 auditor 同源
-            // 跑扫描（预览与运行时判定不分叉——D12 教训）。命中显示
+            // 敏感 flag 放行臂二次校验：allow 命中后与 auditor 同源
+            // 跑扫描（预览与运行时判定不分叉—— 教训）。命中显示
             // ASK + flag_hit，与运行时降级弹卡一致。
             let flags = if (action == "allow" || action == "allowed") && is_command_op {
                 let segs = nemesis_security::matcher::exec_rule_segments(target);
@@ -781,7 +781,7 @@ fn cmd_approve(security_cfg: &std::path::Path, id: &str) -> Result<()> {
     pending.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(id));
 
     if pending.len() < before {
-        // REL-002：统一原子写入（security 待审批清单）。
+        // 统一原子写入（security 待审批清单）。
         nemesis_utils::write_file_atomic(
             &pending_path.to_string_lossy(),
             serde_json::to_string_pretty(&pending)
@@ -818,7 +818,7 @@ fn cmd_deny(security_cfg: &std::path::Path, id: &str, reason: Option<&str>) -> R
     pending.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(id));
 
     if pending.len() < before {
-        // REL-002：统一原子写入（security 待审批清单）。
+        // 统一原子写入（security 待审批清单）。
         nemesis_utils::write_file_atomic(
             &pending_path.to_string_lossy(),
             serde_json::to_string_pretty(&pending)
@@ -984,7 +984,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                 .and_then(|v| v.as_bool())
                 .map(|v| if v { "yes" } else { "no" })
                 .unwrap_or("no");
-            // CFG-05（2026-09-16）：键名对齐磁盘真相源。此前读
+            // CFG-05：键名对齐磁盘真相源。此前读
             // `approval_timeout`/`audit_retention_days`——模板键实为
             // `approval_timeout_seconds`/（已删）`audit_log_retention_days`，
             // 显示恒空，属假姿态。retention 已删（无清扫器），不再显示。
@@ -1109,7 +1109,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                             );
                         }
                     }
-                    // REL-002：统一原子写入（security enable/disable 改主配置）。
+                    // 统一原子写入（security enable/disable 改主配置）。
                     nemesis_utils::write_file_atomic(
                         &cfg_path.to_string_lossy(),
                         serde_json::to_string_pretty(&cfg)
@@ -1164,7 +1164,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                             );
                         }
                     }
-                    // REL-002：统一原子写入（security enable/disable 改主配置）。
+                    // 统一原子写入（security enable/disable 改主配置）。
                     nemesis_utils::write_file_atomic(
                         &cfg_path.to_string_lossy(),
                         serde_json::to_string_pretty(&cfg)
@@ -1311,7 +1311,7 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                     } else {
                         println!("  Result: BLOCKED");
                         if let Some(info) = err {
-                            // F5: DenyInfo 结构化反馈（layer/policy 与审计 JSONL 同源）。
+                            // DenyInfo 结构化反馈（layer/policy 与审计 JSONL 同源）。
                             println!("  Layer: {} | Policy: {}", info.layer, info.policy);
                             println!("  Reason: {}", info.summary);
                             if let Some(sug) = &info.suggestion {

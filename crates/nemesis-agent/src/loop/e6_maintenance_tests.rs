@@ -70,7 +70,7 @@ impl LlmProvider for FailingLlmProvider {
 fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
-        // None：AgentInstance:new 会把 system_prompt 注入为 history[0] 的
+        // None：AgentInstance::new 会把 system_prompt 注入为 history[0] 的
         // system turn——这里要让「store N 条 == instance 历史 N 条」的算术
         // 透明可断言，不带隐式 +1。
         system_prompt: None,

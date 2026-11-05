@@ -81,7 +81,7 @@ impl SkillSigner {
         let signature_bytes = signing_key.sign(&manifest.content);
         let signature_hex = hex_encode(signature_bytes.to_bytes().as_ref());
 
-        // Write .signature file.
+        // Write.signature file.
         let sig_path = skill_dir.join(".signature");
         let sig_data = serde_json::json!({
             "algorithm": "ed25519",
@@ -148,8 +148,8 @@ impl SkillSigner {
         let key_pair = generate_key_pair()
             .map_err(|e| NemesisError::Security(format!("failed to generate key pair: {}", e)))?;
 
-        // Save private key. BUG-20261105-035：私钥落盘 0o600 + 原子写（对齐
-        // auth.json BUG-20261025-39 的凭据面纪律——裸 std::fs::write 在 Unix
+        // Save private key.：私钥落盘 0o600 + 原子写（对齐
+        // auth.json 的凭据面纪律——裸 std:fs:write 在 Unix
         // 按 umask 常为 0644 世界可读，进程中断撕裂 = 半截 hex key）。
         // 公钥与 meta 非敏感，维持普通写。
         let priv_path = out_path.join("skill_sign.key");
@@ -194,7 +194,7 @@ impl SkillSigner {
     ///
     /// 先递归收集文件清单并按规范化相对路径排序（分隔符统一 `/`），再逐个
     /// 读**原始字节**参与拼接与哈希——签名载荷与 read_dir 枚举顺序、平台
-    /// 分隔符、UTF-8 有效性全部解耦（2026-09-26 复查修复：此前拼接跟随
+    /// 分隔符、UTF-8 有效性全部解耦（复查修复：此前拼接跟随
     /// 枚举顺序、Windows `\` 分隔符直接进载荷（跨平台签验必失败）、非
     /// UTF-8 文件令整个签名/验证报错）。
     fn build_manifest(&self, skill_dir: &Path) -> std::result::Result<SkillManifest, NemesisError> {
@@ -242,7 +242,7 @@ impl SkillSigner {
             let entry = entry.map_err(NemesisError::Io)?;
             let path = entry.path();
 
-            // Skip hidden files and .signature.
+            // Skip hidden files and.signature.
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
                 continue;
@@ -308,7 +308,7 @@ fn hex_decode(hex: &str) -> std::result::Result<[u8; 32], String> {
     if hex.len() != 64 {
         return Err(format!("expected 64 hex chars, got {}", hex.len()));
     }
-    // BUG-20261105-035：非 ASCII 输入（字节数可能恰为 64 但含多字节字符）
+    // 非 ASCII 输入（字节数可能恰为 64 但含多字节字符）
     // 会让下方 `&hex[i*2..i*2+2]` 字节切片落在 char boundary 之外直接 panic
     // ——key 文件内容写坏时应报 Err 而非崩调用方，前置 ASCII 检查。
     if !hex.is_ascii() {

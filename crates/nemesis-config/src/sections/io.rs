@@ -189,7 +189,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
     }
 
     // Auto-adjust paths for local mode before saving (mirrors Go behavior)
-    // When --local is used or .nemesisbot is detected in current directory,
+    // When --local is used or.nemesisbot is detected in current directory,
     // workspace and other paths should be relative to the config directory
     if is_local_mode(config_path) {
         let config_dir = config_path.parent().unwrap_or(Path::new("."));
@@ -202,7 +202,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
             // 只重写「默认工作区」的等价拼法：旧
             // starts_with("~/")/starts_with(home) 会把任何 home 下的自定义
             // 路径（甚至仅共享字符串前缀的 C:\Users\me2 家族）误判成默认
-            // 形态，每次落盘静默改写成 .nemesisbot/workspace，用户自定义
+            // 形态，每次落盘静默改写成.nemesisbot/workspace，用户自定义
             // workspace 被丢弃（会话/历史/记忆集体「消失」）。Path 组件相等
             // 比较天然免疫字符串前缀堂亲与分隔符/大小写变体；空串不在此
             // 处理（加载期 adjust_paths_for_environment 会解析默认值）。
@@ -243,7 +243,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-/// Check if we're in local mode (config is in current directory's .nemesisbot).
+/// Check if we're in local mode (config is in current directory's.nemesisbot).
 pub fn is_local_mode(config_path: &Path) -> bool {
     if let Ok(cwd) = std::env::current_dir() {
         let local_dir = cwd.join(".nemesisbot");
@@ -409,7 +409,7 @@ pub fn apply_env_overrides(config: &mut Config) {
     }
 }
 
-/// 布尔 env 覆盖的宽容识别（单一真相源）。
+/// 布尔 env 覆盖的宽容识别。
 ///
 /// 识别集：`true/false/t/f/1/0`（= Go `strconv.ParseBool` 全集，大小写
 /// 不敏感）+ `yes/no/on/off`（项目宽容布尔惯例，同 `normalize_stream_value`
@@ -484,7 +484,7 @@ pub fn default_config() -> Config {
                 max_tool_iterations: 100,
                 // concurrent_request_mode intentionally omitted — filled by
                 // `..Default::default` → `default_concurrent_request_mode`
-                // (: single truth source; a stale "reject" literal lived here
+                // (single truth source; a stale "reject" literal lived here
                 // until and silently outvoted the default fn).
                 queue_size: 8,
                 ..Default::default()
@@ -854,12 +854,12 @@ impl WorkspaceResolver {
         }
 
         if let Ok(home) = std::env::var("NEMESISBOT_HOME") {
-            // Expand ~ to user home, then append .nemesisbot (matching Go behavior)
+            // Expand ~ to user home, then append.nemesisbot (matching Go behavior)
             let expanded = expand_tilde(&home);
             return expanded.join(".nemesisbot");
         }
 
-        // Auto-detect: if .nemesisbot exists in current directory
+        // Auto-detect: if.nemesisbot exists in current directory
         let local_path = PathBuf::from("./.nemesisbot");
         if local_path.exists() {
             return local_path;

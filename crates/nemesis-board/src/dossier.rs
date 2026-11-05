@@ -170,9 +170,9 @@ fn export_core(
 
     // 收件箱补收：派发行 task_id 在收件箱里 = 执行档案未安置（无处安置/
     // 存量项目/落地竞态）——拷进档案诚实可见。
-    // T8 读侧（2026-10-17 三轮审计）：收件箱目录名由 transfer 落地侧消毒
+    // 读侧（三轮审计）：收件箱目录名由 transfer 落地侧消毒
     // （nemesis-cluster fsutil::safe_task_file_name → sanitize_path_segment，
-    // 单一真相源），读侧必须同源同函数——否则「写入消毒名、读取裸名」
+    // 统一定义），读侧必须同源同函数——否则「写入消毒名、读取裸名」
     // 错位漏收，且裸拼 task_id 可逃导出树。
     for (number, d) in &all_dispatches {
         let safe_task_id = nemesis_utils::sanitize::sanitize_path_segment(&d.task_id);
@@ -183,7 +183,7 @@ fn export_core(
         let _ = number; // 目录按 task_id 组织（与 cluster_logs 目录名同源）
     }
 
-    // ---- U-A 停车现场归档（handoffs/）：导出树里有停车档案的单逐一拷入
+    // ---- U-A 停车现场归档（handoffs）：导出树里有停车档案的单逐一拷入
     // （存在才拷；缺席不注记——多数单子无停车历史是常态）。
     for issue in &issues {
         let src = crate::handoff::handoff_path(workspace, &issue.number);
@@ -202,7 +202,7 @@ fn export_core(
     for (number, d) in &all_dispatches {
         let landed = records_base.join(number).join("execution").is_dir()
             || walk_has_dir(&records_base.join(number), "execution")
-            // T8 读侧同源消毒（见上方收件箱补收）。
+            // 读侧同源消毒（见上方收件箱补收）。
             || unplaced_base
                 .join(nemesis_utils::sanitize::sanitize_path_segment(&d.task_id))
                 .is_dir();
@@ -270,8 +270,8 @@ fn export_core(
     let mut csv = String::from("task_id,worker,input_tokens,output_tokens,total\n");
     for (task_id, worker, input, output) in &usage_rows {
         // task_id/worker_id 是外部影响字段（worker_id = 用户自设节点名，
-        // 无字符集校验）——CSV 字段消毒防错位移列（单一真相源
-        // nemesis_utils::sanitize::sanitize_csv，与审计链同源；数字列免消毒）。
+        // 无字符集校验）——CSV 字段消毒防错位移列（统一定义
+        // nemesis_utils::sanitize:sanitize_csv，与审计链同源；数字列免消毒）。
         csv.push_str(&format!(
             "{},{},{},{},{}\n",
             nemesis_utils::sanitize::sanitize_csv(task_id),
@@ -326,7 +326,7 @@ fn copy_dir_sorted(src: &Path, dst: &Path) -> Result<(), String> {
     for e in entries {
         let p = e.path();
         let target = dst.join(e.file_name());
-        // BUG-20261103-343：目录符号链接跳过。file_type() 不穿越链接——
+        // 目录符号链接跳过。file_type() 不穿越链接——
         // 旧代码 p.is_dir() 跟随链接，链接环下整子树以「loop\loop\...」
         // 假路径重复拷贝，直到 OS 路径长度上限才收敛。
         if e.file_type().map(|t| t.is_symlink()).unwrap_or(false) && p.is_dir() {
@@ -352,7 +352,7 @@ fn walk_has_dir(root: &Path, name: &str) -> bool {
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let p = e.path();
-        // BUG-20261103-343：链接条目不下探（同上环防护）
+        // 链接条目不下探（同上环防护）
         if e.file_type().map(|t| t.is_symlink()).unwrap_or(false) {
             continue;
         }
@@ -396,9 +396,9 @@ fn fmt_ts(secs: i64) -> String {
         .unwrap_or_else(|| secs.to_string())
 }
 
-/// 人读时间线：每单一段 + 合并事件流。U-C（2026-10-12）起与 WSAPI
+/// 人读时间线：每单一段 + 合并事件流。U-C起与 WSAPI
 /// `board.timeline` 复用同一聚合入口 [`timeline::collect_issue_timeline`]——
-/// 收口导出与运行态查询不两套逻辑（单一真相源）。事件按 (ts, source_rank)
+/// 收口导出与运行态查询不两套逻辑。事件按 (ts, source_rank)
 /// 统一时间排序（旧实现档案事件恒排最前的分层序已随同源化消除）。
 fn render_timeline(
     store: &BoardStore,

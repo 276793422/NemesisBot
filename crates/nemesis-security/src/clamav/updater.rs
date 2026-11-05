@@ -80,7 +80,7 @@ impl Updater {
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
         // freshclam 是 console 程序；gateway 托盘/无控制台运行（release
-        // windows 子系统，2026-09-21）时压掉弹窗（stdio 已 null，不受影响）。
+        // windows 子系统）时压掉弹窗（stdio 已 null，不受影响）。
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
@@ -120,7 +120,7 @@ impl Updater {
             None => {
                 // Check file modification times
                 if !self.config.database_dir.is_empty() {
-                    // BUG-20261104-376：freshclam 日常只滚动 daily.cvd/cld
+                    // freshclam 日常只滚动 daily.cvd/cld
                     // （main.cvd 数月一更，bytecode.cvd 偶更）——只看
                     // main.cvd 的 mtime，DB 明明新鲜也恒判 stale，每次
                     // Manager.start 都白跑一遍 freshclam（联网延迟 + 离线

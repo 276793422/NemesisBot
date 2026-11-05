@@ -1,6 +1,6 @@
 //! Streaming STT safe wrapper — streaming Zipformer/Paraformer via sherpa-onnx
 //!
-//! 语音 realtime P1（W1）：边说边出 partial。与 `stt.rs`（SenseVoice 整段精识）
+//! 语音 realtime：边说边出 partial。与 `stt.rs`（SenseVoice 整段精识）
 //! 互补：partial 只管实时显示与端点判定，final 默认仍走离线整段精识（two_pass，
 //! 见 handlers/voice.rs 管线）。
 //!

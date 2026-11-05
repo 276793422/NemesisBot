@@ -30,7 +30,7 @@ fn make_empty_mcp_config(tmp: &TempDir) -> std::path::PathBuf {
     cfg_path
 }
 
-/// stdio 快捷构造（W1 HTTP 化前 `cmd_add` 七参形态的测试等价物——
+/// stdio 快捷构造（HTTP 化前 `cmd_add` 七参形态的测试等价物——
 /// cmd_add 收敛为 AddRequest 后，stdio 用例经此走同一校验入口）。
 fn add_stdio(
     cfg: &std::path::Path,
@@ -72,7 +72,7 @@ fn test_find_server_no_file() {
 
 #[test]
 fn test_json_to_server_config_full() {
-    // 2026-08-31 单一真相源收敛：手搓 json_to_server_config 已删除，
+    // 单一真相源收敛：手搓 json_to_server_config 已删除，
     // CLI 与 Dashboard/MCP runtime 同用 serde 解析 McpServerConfig。
     let json = serde_json::json!({
         "name": "my-server",
@@ -130,7 +130,7 @@ fn test_cmd_add_duplicate_server() {
     let cfg = make_mcp_config(&tmp);
 
     // make_mcp_config 已种 test-server → 重复名 = 刻意响亮失败
-    // （第十四轮：失败路径退码非零，不再打印后 Ok）
+    // （失败路径退码非零，不再打印后 Ok）
     let err = add_stdio(
         &cfg,
         &main_cfg_of(&tmp),
@@ -193,7 +193,7 @@ fn test_cmd_remove_nonexistent_server() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
 
-    // 第十四轮：不存在 = 响亮失败；磁盘保持不变
+    // 不存在 = 响亮失败；磁盘保持不变
     let err = cmd_remove(&cfg, "nonexistent").unwrap_err();
     assert!(err.to_string().contains("not found"));
     let data: serde_json::Value =
@@ -205,7 +205,7 @@ fn test_cmd_remove_nonexistent_server() {
 fn test_cmd_remove_no_file() {
     let tmp = TempDir::new().unwrap();
     let cfg = tmp.path().join("nonexistent.json");
-    // 第十四轮：无文件 = 响亮失败（不再打印后 Ok）
+    // 无文件 = 响亮失败（不再打印后 Ok）
     let err = cmd_remove(&cfg, "test").unwrap_err();
     assert!(err.to_string().contains("not found"));
 }
@@ -245,7 +245,7 @@ fn test_cmd_inspect_found() {
 fn test_cmd_inspect_not_found() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    // 第十四轮：不存在 = 响亮失败
+    // 不存在 = 响亮失败
     let err = cmd_inspect(&cfg, "nonexistent").unwrap_err();
     assert!(err.to_string().contains("not found"));
 }
@@ -275,7 +275,7 @@ fn test_cmd_add_args_parsing() {
 }
 
 // -------------------------------------------------------------------------
-// (ex-)json_to_server_config edge cases —— 2026-08-31 起直接测 serde 解析
+// (ex-)json_to_server_config edge cases —— 起直接测 serde 解析
 // McpServerConfig（CLI 第三条手搓解析路径已删除，与全仓同真相源）。
 // -------------------------------------------------------------------------
 
@@ -429,7 +429,7 @@ fn test_cmd_list_with_timeout_and_env() {
 fn test_cmd_inspect_no_file() {
     let tmp = TempDir::new().unwrap();
     let cfg = tmp.path().join("nonexistent.json");
-    // 第十四轮：无文件 = 响亮失败
+    // 无文件 = 响亮失败
     let err = cmd_inspect(&cfg, "anything").unwrap_err();
     assert!(err.to_string().contains("not found"));
 }
@@ -564,7 +564,7 @@ fn test_mcp_cmd_remove_nonexistent_v2() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
 
-    // 第十四轮：不存在 = 响亮失败；磁盘保持不变
+    // 不存在 = 响亮失败；磁盘保持不变
     let err = cmd_remove(&cfg, "nonexistent").unwrap_err();
     assert!(err.to_string().contains("not found"));
 
@@ -619,7 +619,7 @@ fn test_mcp_find_server_not_found_v2() {
 }
 
 // =========================================================================
-// S11b 覆盖率冲刺：sync_mcp_master_switch 全分支 + cmd_test/tools/resources/
+// 覆盖率冲刺：sync_mcp_master_switch 全分支 + cmd_test/tools/resources/
 // prompts/discover（python 假 MCP 服务器成功路径 + 快失败路径）+ run() 分发。
 //
 // 假服务器沿用 crates/nemesis-mcp/src/manager/tests.rs 的 W4C_FAKE_MCP 模式
@@ -684,7 +684,7 @@ fn s11b_fake_mcp_config(tmp: &TempDir) -> std::path::PathBuf {
     cfg_path
 }
 
-/// cmd_add 现直传真实主配置路径（2026-08-28 修复 master switch 推导错位）；
+/// cmd_add 现直传真实主配置路径（修复 master switch 推导错位）；
 /// 测试里主配置默认不存在 → sync 静默跳过，与 cmd_add 测试意图一致。
 fn main_cfg_of(tmp: &TempDir) -> std::path::PathBuf {
     tmp.path().join("config.json")
@@ -692,7 +692,7 @@ fn main_cfg_of(tmp: &TempDir) -> std::path::PathBuf {
 
 // ------------------------- sync_mcp_master_switch -------------------------
 
-// 2026-08-28 契约更新：sync_mcp_master_switch 的参数现在**就是**主配置
+// 契约更新：sync_mcp_master_switch 的参数现在**就是**主配置
 // config.json 路径（由调用方直传 common::config_path(&home)），不再从
 // config.mcp.json 父目录推导（旧推导指向无人读取的
 // `<home>/workspace/config/config.json`，mcp.enabled 从不真正置位）。
@@ -767,7 +767,7 @@ fn test_s11b_sync_master_switch_flips_real_production_layout() {
 async fn test_s11b_cmd_test_not_found_and_missing_command() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    // 服务器不存在 → 响亮失败（第十四轮：退码非零契约）
+    // 服务器不存在 → 响亮失败（退码非零契约）
     let err = cmd_test(&cfg, "nope").await.unwrap_err();
     assert!(err.to_string().contains("not found"));
     // 服务器存在但命令不在 PATH → 响亮失败（不再跳过后 Ok）
@@ -798,7 +798,7 @@ async fn test_s11b_cmd_test_python_fake_full_pass() {
 async fn test_s11b_cmd_tools_not_found_and_python_fake() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    // 第十四轮：不存在 = 响亮失败
+    // 不存在 = 响亮失败
     let err = cmd_tools(&cfg, "nope").await.unwrap_err();
     assert!(err.to_string().contains("not found"));
     if !s11b_have_python() {
@@ -814,7 +814,7 @@ async fn test_s11b_cmd_tools_not_found_and_python_fake() {
 async fn test_s11b_cmd_resources_not_found_and_python_fake() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    // 第十四轮：不存在 = 响亮失败
+    // 不存在 = 响亮失败
     let err = cmd_resources(&cfg, "nope").await.unwrap_err();
     assert!(err.to_string().contains("not found"));
     if !s11b_have_python() {
@@ -830,7 +830,7 @@ async fn test_s11b_cmd_resources_not_found_and_python_fake() {
 async fn test_s11b_cmd_prompts_not_found_and_python_fake() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_mcp_config(&tmp);
-    // 第十四轮：不存在 = 响亮失败
+    // 不存在 = 响亮失败
     let err = cmd_prompts(&cfg, "nope").await.unwrap_err();
     assert!(err.to_string().contains("not found"));
     if !s11b_have_python() {
@@ -846,14 +846,14 @@ async fn test_s11b_cmd_prompts_not_found_and_python_fake() {
 
 #[tokio::test]
 async fn test_s11b_cmd_discover_no_args_errors() {
-    // (None, None) → 响亮失败（第十四轮：用法错误退码非零，不再打印后 Ok）
+    // (None, None) → 响亮失败（用法错误退码非零，不再打印后 Ok）
     let err = cmd_discover(None, None, &[], None, 5).await.unwrap_err();
     assert!(err.to_string().contains("provide either --command"));
 }
 
 #[tokio::test]
 async fn test_s11b_cmd_discover_bad_command_err_arm() {
-    // 命令不存在 → spawn 失败 → Err 分支响亮失败（第十四轮退码契约）
+    // 命令不存在 → spawn 失败 → Err 分支响亮失败（退码契约）
     let err = cmd_discover(Some("/definitely/missing/cmd/s11b"), None, &[], None, 5)
         .await
         .unwrap_err();
@@ -875,7 +875,7 @@ async fn test_s11b_cmd_discover_stdio_python_fake_ok_arm() {
         eprintln!("Skipping test: python not available");
         return;
     }
-    // args 按逗号切分 → 不能内联脚本；写临时 .py 文件（路径无逗号）。
+    // args 按逗号切分 → 不能内联脚本；写临时.py 文件（路径无逗号）。
     let tmp = TempDir::new().unwrap();
     let script = tmp.path().join("fake_mcp.py");
     std::fs::write(&script, S11B_FAKE_MCP).unwrap();
@@ -890,20 +890,20 @@ async fn test_s11b_cmd_discover_stdio_python_fake_ok_arm() {
 // ------------------------- run() 分发 -------------------------------------
 
 /// RAII 守卫：NEMESISBOT_HOME 指向临时根，drop 时移除（同 cluster/tests.rs 模式）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct S11bTempHomeEnv {
     _tmp: TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for S11bTempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_temp_home_env() -> S11bTempHomeEnv {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -912,7 +912,7 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
     S11bTempHomeEnv { _tmp: tmp, home }
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_s11b_run_sync_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -948,7 +948,7 @@ fn test_s11b_run_sync_arms() {
     assert!(v["servers"].as_array().unwrap().is_empty());
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_async_dispatch_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -958,7 +958,7 @@ async fn test_s11b_run_async_dispatch_arms() {
     let _ = &th.home;
     // block_in_place 分发 arm 用「服务器不存在」的快路径逐个覆盖：
     // Test / Tools / Resources / Prompts / Discover。
-    // 第十四轮：不存在 = 响亮失败，逐臂断言错误文案。
+    // 不存在 = 响亮失败，逐臂断言错误文案。
     let err = run(
         McpAction::Test {
             name: "nope".into(),
@@ -1010,10 +1010,10 @@ async fn test_s11b_run_async_dispatch_arms() {
 //
 // 纯文件臂：find_server 无 servers 键 / sync_mcp_master_switch 真 None-parent /
 // cmd_list 无 servers 键与配置路径不可读 / cmd_add 无 servers 数组时静默丢
-// server（可疑点 S1，按现状钉住）/ cmd_remove 无 servers 键。
+// server（可疑点，按现状钉住）/ cmd_remove 无 servers 键。
 //
 // 活服务器臂（沿用 s11b_fake_mcp 的 newline-delimited JSON-RPC stdio 假服
-// 务器模式；脚本落盘为 .py 文件、以 args 数组直传 cmd_* 函数，绕开 CLI 逗号
+// 务器模式；脚本落盘为.py 文件、以 args 数组直传 cmd_* 函数，绕开 CLI 逗号
 // 切分）：连接失败 / tools/list 报错响应 / 空列表臂 / required 星标与参数
 // 渲染 / resource description+mimeType 打印 / prompt arguments 全矩阵 /
 // discover 空 list 区段与富渲染区段。全部持 python 探测守卫。
@@ -1044,7 +1044,7 @@ mod wave_b {
     /// 注：既有 test_s11b_sync_master_switch_no_parent_dir 传入裸文件名，
     /// 其 parent() 实际是 Some("")——真正的 None 臂由本测试补上。
     #[test]
-    // 2026-08-28 契约更新：参数即主配置路径，parent() 死分支已删除。
+    // 契约更新：参数即主配置路径，parent() 死分支已删除。
     // 不存在的路径 → Ok 无操作（生产对应 home 根 config.json 缺失时静默跳过）。
     fn wave_b_sync_master_switch_nonexistent_paths_ok() {
         sync_mcp_master_switch(std::path::Path::new("/definitely-missing-cfg"), true).unwrap();
@@ -1077,7 +1077,7 @@ mod wave_b {
     /// test_cmd_add_missing_servers_key_still_persists / non_array 回归钉住。
     ///
     /// cmd_remove：config 存在但无 "servers" 键 → if-let None（336 区），
-    /// 第十四轮 = 响亮失败且不回写。
+    /// = 响亮失败且不回写。
     #[test]
     fn wave_b_cmd_remove_on_config_without_servers_key_reports_not_found() {
         let tmp = TempDir::new().unwrap();
@@ -1095,7 +1095,7 @@ mod wave_b {
     /// cmd_add 对既有 servers 数组的两条路径：
     /// 相位1 无重名 → for 完整扫描掉落（289/291）、push 追加成功、
     /// 主开关 false→true 翻转并写盘 —— 这是有数组时的正常路径，
-    /// 与下方 S1 可疑点（无数组时静默丢弃）互为对照。
+    /// 与下方 可疑点（无数组时静默丢弃）互为对照。
     /// 相位2 重名 → 扫描命中直接早退（285-288）：不追加、不覆盖旧条目、
     /// 主开关保持原值不翻转。
     #[test]
@@ -1121,7 +1121,7 @@ mod wave_b {
         assert_eq!(servers[1]["timeout_secs"], 9);
         assert_eq!(data["enabled"], true, "主开关翻转落盘");
 
-        // 相位2：重名短路（快照对比整份文件不变；第十四轮 = 响亮失败）
+        // 相位2：重名短路（快照对比整份文件不变； = 响亮失败）
         let before = std::fs::read_to_string(&cfg).unwrap();
         let err = add_stdio(
             &cfg,
@@ -1240,7 +1240,7 @@ for line in sys.stdin:
         send({"jsonrpc": "2.0", "id": rid, "result": {}})
 "#;
 
-    /// 写一份指向 python 假服务器的 mcp 配置；脚本作为 .py 文件落盘，
+    /// 写一份指向 python 假服务器的 mcp 配置；脚本作为.py 文件落盘，
     /// 经 config args 数组直传（不经 CLI 逗号切分）。返回 (配置路径, 脚本路径)。
     fn wb_fake_server(tmp: &TempDir, tag: &str, script: &str, timeout: u64) -> std::path::PathBuf {
         let dir = tmp.path().join(tag).join("config");
@@ -1272,13 +1272,13 @@ for line in sys.stdin:
         }
         let tmp = TempDir::new().unwrap();
         let cfg = wb_fake_server(&tmp, "dead", WB_DEAD_SERVER, 15);
-        // 第十四轮：连接失败 = 退码非零（不再打印后 Ok）
+        // 连接失败 = 退码非零（不再打印后 Ok）
         let err = cmd_test(&cfg, "wb-dead").await.unwrap_err();
         assert!(err.to_string().contains("connection test failed"));
     }
 
     /// cmd_test：tools/list 返回 JSON-RPC error 对象 → list_tools Err →
-    /// 「Tools: error - ...」臂（391）；随后 close 正常。
+    /// 「Tools: error -...」臂（391）；随后 close 正常。
     #[tokio::test]
     async fn wave_b_cmd_test_tools_error_response_prints_error_line() {
         if !s11b_have_python() {
@@ -1484,7 +1484,7 @@ fn r10_cmd_list_without_enabled_key_renders_servers_fully() {
 }
 
 // =========================================================================
-// W1（2026-10-15）mcp add HTTP 化：
+// mcp add HTTP 化：
 // - 互斥校验（command/url 恰给其一、形态专属参数、transport 一致性）
 // - header 行语法闸（缺冒号 / 空名 / 保留头 / 空引用名；内嵌引用是字面量）
 // - http 写盘形态 + serde round-trip；stdio 旧形态键集不变（红槽）
@@ -1566,7 +1566,7 @@ mod w1_http_add {
     #[test]
     fn w1_transport_unknown_value_rejected() {
         let err = build(None, Some("http://x/mcp"), Some("sse"), &[], None, &[]).unwrap_err();
-        // v1 拍板：sse 不放，错误文案列出支持值
+        // v1 sse 不放，错误文案列出支持值
         assert!(err.to_string().contains("sse"), "实际: {err}");
         assert!(err.to_string().contains("http"), "实际: {err}");
     }
@@ -1657,8 +1657,8 @@ mod w1_http_add {
             )
             .is_err()
         );
-        // 2026-10-15 第五轮复查：引用名带首尾空格——运行期按原样解析
-        // （resolve_vault_reference / std::env::var 不 trim），必然失败 →
+        // 复查：引用名带首尾空格——运行期按原样解析
+        // （resolve_vault_reference / std::env:var 不 trim），必然失败 →
         // WARN 跳过头 → 401。add 时 loud 拒绝，三前缀同闸。
         assert!(
             build(
@@ -1876,19 +1876,19 @@ mod w1_http_add {
     // ------------------------- run() 分发 -------------------------
 
     /// RAII 守卫复用 s11b 模式（NEMESISBOT_HOME → 临时根）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct W1TempHomeEnv {
         _tmp: TempDir,
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl Drop for W1TempHomeEnv {
         fn drop(&mut self) {
             unsafe { std::env::remove_var("NEMESISBOT_HOME") };
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn w1_temp_home_env() -> (W1TempHomeEnv, std::path::PathBuf) {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join(".nemesisbot");
@@ -1897,7 +1897,7 @@ mod w1_http_add {
         (W1TempHomeEnv { _tmp: tmp }, home)
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn w1_run_add_http_dispatch_arm() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1937,7 +1937,7 @@ mod w1_http_add {
         assert_eq!(main["mcp"]["enabled"], true);
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn w1_run_add_validation_error_propagates() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2027,7 +2027,7 @@ mod w1_http_add {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn w1_cmd_test_http_e2e_vault_ref_unresolved_401_hint_branch() {
         // vault 引用（本测试进程无解析器 → WARN 跳过 → 头未注入）→ 401：
-        // 覆盖案例设备的真实失败形态与诊断分支（第十四轮：打印提示后退码非零）
+        // 覆盖案例设备的真实失败形态与诊断分支（打印提示后退码非零）
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::any())
             .respond_with(wiremock::ResponseTemplate::new(401).set_body_string("no auth"))
@@ -2105,7 +2105,7 @@ mod w1_http_add {
         server.verify().await;
     }
 
-    // ------------------------- test 形态判定（2026-10-15 复查修复） ---------
+    // ------------------------- test 形态判定（复查修复） ---------
 
     #[test]
     fn w1_server_entry_is_http_matches_dispatch_aliases() {
@@ -2224,7 +2224,7 @@ fn r8_display_command_mirrors_stdio_url_fallback() {
 
 #[test]
 fn r8_server_entry_is_http_empty_command_key_matches_dispatch() {
-    // 第八轮对齐：显式 "command": ""（键在但空串）+ 裸 url 无 transport_type
+    // 对齐：显式 "command": ""（键在但空串）+ 裸 url 无 transport_type
     // ——真相源按 command.is_empty() 判 HTTP 意图，CLI 镜像不得用 is_none()
     // 造成诊断/行为分裂。
     assert!(super::server_entry_is_http(&serde_json::json!({
@@ -2232,7 +2232,7 @@ fn r8_server_entry_is_http_empty_command_key_matches_dispatch() {
     })));
 }
 
-// ------------------------- env 行语法闸（R13，2026-10-15）---------
+// ------------------------- env 行语法闸---------
 
 #[test]
 fn r13_env_line_syntax_gates() {
@@ -2270,10 +2270,10 @@ fn r13_env_line_syntax_gates() {
     assert!(build(&["K=V", "T=vault:alias"]).is_ok());
 }
 
-// ------------------------- R14（2026-10-16）：失败路径退出码契约 ---------
+// -------------------------：失败路径退出码契约 ---------
 
 /// 失败 = 非零退出（自动化契约）：add 重名不再 println+Ok 假成功——
-/// agent/exec 工具靠退出码判断成败（W1 agent 驱动安装的核心通路）。
+/// agent/exec 工具靠退出码判断成败（agent 驱动安装的核心通路）。
 #[test]
 fn r14_add_duplicate_is_loud_error() {
     let tmp = TempDir::new().unwrap();

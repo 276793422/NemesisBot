@@ -57,7 +57,7 @@ impl LlmProvider for RateLimitedThenSuccess {
 
 #[test]
 fn ladder_follows_10_step_design() {
-    // 裁决④：5s→10s→20s→40s→60s→90s→120s→150s→180s→210s。
+    // 5s→10s→20s→40s→60s→90s→120s→150s→180s→210s。
     let want = [5u64, 10, 20, 40, 60, 90, 120, 150, 180, 210];
     for (i, w) in want.iter().enumerate() {
         assert_eq!(rate_limit_ladder_secs(i as u32 + 1), *w);
@@ -67,7 +67,7 @@ fn ladder_follows_10_step_design() {
 
 #[test]
 fn retry_after_and_ladder_take_max() {
-    // 裁决⑧：遵从 Retry-After，但不低于本地阶梯。
+    // 遵从 Retry-After，但不低于本地阶梯。
     assert_eq!(
         rate_limit_wait_secs("rate limited by provider p/m (retry_after=120s)", 1),
         120,
@@ -117,7 +117,7 @@ async fn rate_limit_retry_succeeds_and_notifies_progress() {
         "限流重试后必须恢复: {events:?}"
     );
 
-    // 裁决③「显式进度」：两次失败 → 恰好两条进度通知经 outbound_tx。
+    // 「显式进度」：两次失败 → 恰好两条进度通知经 outbound_tx。
     let mut progresses = Vec::new();
     while let Ok(msg) = rx.try_recv() {
         if msg.content.contains("重试") {
@@ -133,7 +133,7 @@ async fn rate_limit_retry_succeeds_and_notifies_progress() {
 #[tokio::test(start_paused = true)]
 async fn rate_limit_exhausted_yields_structured_terminal_error() {
     // 默认 10 次（fresh-read 无 config_path = 默认口径）：1 首捕 + 10 重试
-    // = 11 次调用；终局文案结构化标注（裁决④），不再裸抛。
+    // = 11 次调用；终局文案结构化标注，不再裸抛。
     let provider = RateLimitedThenSuccess {
         calls: std::sync::atomic::AtomicUsize::new(0),
         fail_times: usize::MAX,
@@ -164,7 +164,7 @@ async fn rate_limit_exhausted_yields_structured_terminal_error() {
 
 #[tokio::test(start_paused = true)]
 async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
-    // BUG：`provider codex is overloaded`（FailoverError:Overloaded
+    // BUG：`provider codex is overloaded`（FailoverError::Overloaded
     // 展平形态，状态码已丢）此前两环都不命中 → 一次终局。词表加 overloaded
     // 后必须按限流对待（对齐 error_classifier 既有约定）并显式进度。
     let provider = RateLimitedThenSuccess {
@@ -295,7 +295,7 @@ async fn rate_limit_retries_config_override_takes_effect() {
     );
 }
 
-// -- BUG ②A：单次调用超时 ---------------------------------------
+// --：单次调用超时 ---------------------------------------
 
 /// 永不返回的 provider（429 后连接挂起、不回响应体的形态；也是纯首捕
 /// 挂死的形态）。
@@ -412,7 +412,7 @@ async fn hanging_first_call_times_out_into_transient_loop_and_terminates() {
     );
 }
 
-// -- BUG ②B：重试环总预算 ---------------------------------------
+// --：重试环总预算 ---------------------------------------
 
 #[tokio::test(start_paused = true)]
 async fn retry_budget_exhausted_yields_budget_terminal_error() {

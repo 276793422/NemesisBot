@@ -456,7 +456,7 @@ fn test_extract_json_end_before_start_returns_none() {
 }
 
 // =========================================================================
-// auto_skill 蒸馏（2026-10-15 W2）：digest 构造 / 响应解析 / 蒸馏入口
+// auto_skill 蒸馏：digest 构造 / 响应解析 / 蒸馏入口
 // =========================================================================
 
 fn make_distill_experience(
@@ -574,7 +574,7 @@ fn test_build_experience_digest_row_format() {
 
 #[test]
 fn test_build_experience_digest_sanitizes_secrets() {
-    // data_1 实录形态：MCP 安装经验里带裸 hex token——第二道脱敏必须拦住
+    // data_1 案例形态：MCP 安装经验里带裸 hex token——第二道脱敏必须拦住
     let exps = vec![make_distill_experience(
         "mcp_add",
         true,
@@ -676,7 +676,7 @@ async fn test_distill_skill_draft_contract_violation_is_none() {
 #[test]
 fn test_parse_dimension_score_clamps_and_rejects() {
     use super::parse_dimension_score;
-    // 越界钳位（R18：u32 溢出/溢出分直接进加权会 panic 或回绕）。
+    // 越界钳位（u32 溢出/溢出分直接进加权会 panic 或回绕）。
     assert_eq!(parse_dimension_score(&serde_json::json!(1000)), Some(100));
     assert_eq!(parse_dimension_score(&serde_json::json!(-5)), Some(0));
     assert_eq!(parse_dimension_score(&serde_json::json!(87.6)), Some(87));

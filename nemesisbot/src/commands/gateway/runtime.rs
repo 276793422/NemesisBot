@@ -1,20 +1,20 @@
 // ---------------------------------------------------------------------------
-// PB-8/PB-9 运行期与关停（计划 §4.2 B7）：Step 18–24（cron arm（BUG #49 调序
+// PB-8/PB-9 运行期与关停（计划）：Step 18–24（cron arm（调序
 // 后）/bot 服务/展示 URL/启动横幅/审批接线/question broker/内部命令泵/
 // uploads sweeper/Ctrl+C/托盘装配/wait_for_shutdown/统一善后 teardown）整体
 // 迁入 `run_runtime`。原文自 run() 逐字迁入，仅三处机械改写：fn 体包裹、
 // ctx 依赖影子重绑、门控三件入参解包。
 //
-// 终相无产物：run() 在本调用后即 Ok(()) 返回，运行期对象全部按值移入
+// 终相无产物：run() 在本调用后即 Ok() 返回，运行期对象全部按值移入
 //（agent_loop/agent_adapter/projects_manager/shared_resources/web_display_
 // host/real_port/svc_mgr/web_handle/internal_cmd_rx 无门）；security_plugin
 // @security/health_server@health/cluster_adapter@cluster(mut，Step 24 take)
 // 经 `RuntimeHandoff` 传入——调用点不支持逐参 cfg 属性，字段双臂声明
 //（AgentWiring.security_plugin 同款：真身随门 + 空桩保全组合可构造）。
 // ctx 侧 home/cfg/bus/cron_service/model_name 克隆 + bridge_outbound_handle
-// 取引用（JoinHandle 非 Clone，仅 Step 24 .abort()）+ forge_for_web@forge/
+// 取引用（JoinHandle 非 Clone，仅 Step 24.abort()）+ forge_for_web@forge/
 // llm_provider@any(workflow,security) 克隆。注释死码 dispatch_handle.abort()
-// 原样随迁（计划 §8：是否删除另行拍板）。
+// 原样随迁（计划：是否删除另行）。
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use nemesis_services::LifecycleService;
 use tracing::error;
 use tracing::{info, warn};
 
-// M5（2026-10-10 集群无人值守硬化）：RPC 下行 handler 闭包内直调 trait 方法
+// （集群无人值守硬化）：RPC 下行 handler 闭包内直调 trait 方法
 // （approval.respond/pending 捕获 web_mgr）。
 #[cfg(all(feature = "cluster", feature = "security"))]
 use nemesis_types::agent::ApprovalResponder;
@@ -45,7 +45,7 @@ use super::trigger_global_shutdown;
 use super::{open_browser, open_plugin_window};
 use crate::common;
 
-/// B7（2026-10-13）：guardian judge 模型通道三级阶梯（单一真相源，原内联
+/// guardian judge 模型通道三级阶梯（统一定义，原内联
 /// match 抽取 + guardian_model 前置级）。优先级：`agents.guardian_model`
 /// （审计专用——审计点独立于 /compact 杂务，可单独选档）→
 /// `agents.small_model`（杂务通道，/compact 先例）→ 主模型。各级未配置 /
@@ -142,8 +142,8 @@ fn resolve_guardian_judge_lane(
     )
 }
 
-/// PB-8/PB-9 门控三件入参打包（§4.2 B7）：字段双臂声明——真身随 feature
-/// 门，@not 臂空桩（Option<()> / ()）保持结构体全组合可构造；体内消费点
+/// PB-8/PB-9 门控三件入参打包：字段双臂声明——真身随 feature
+/// 门，@not 臂空桩（Option<>）保持结构体全组合可构造；体内消费点
 /// 均处同门块内（含 Step 24 善后）。
 pub(crate) struct RuntimeHandoff {
     #[cfg(feature = "security")]
@@ -161,7 +161,7 @@ pub(crate) struct RuntimeHandoff {
     #[cfg(not(feature = "cluster"))]
     #[allow(dead_code)]
     pub cluster_adapter: (),
-    /// WS4（P13）：技能装前审批门（LateWebSkillsGate 槽；run_runtime 审批块
+    /// 技能装前审批门（LateWebSkillsGate 槽；run_runtime 审批块
     /// bind 真身 WebApprovalManager）。@not(security) 臂空桩——无 security
     /// 构建无审批面，AppState 槽保持 None（= AlwaysAllow 语义）。
     #[cfg(feature = "security")]
@@ -169,7 +169,7 @@ pub(crate) struct RuntimeHandoff {
     #[cfg(not(feature = "security"))]
     #[allow(dead_code)]
     pub skills_install_gate: (),
-    /// W5-3：插件安装审批门（LateInstallApprover 槽；init_agent 建、installer
+    /// 插件安装审批门（LateInstallApprover 槽；init_agent 建、installer
     /// 持有；run_runtime 审批块 bind 真身）。@not 臂空桩同上。
     #[cfg(feature = "plugins-wasm")]
     pub plugin_install_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
@@ -179,11 +179,11 @@ pub(crate) struct RuntimeHandoff {
     /// 出站投递面名单（WebWiring.enabled_channels = ChannelManager
     /// allowed-channels 白名单，同源移交）：审批组合分流器注入后，不在册的
     /// 合成通道名（flow-engine 等）的审批卡落 Dashboard 而非静默丢弃
-    /// （2026-11-02 publish 审批卡不可见根修）。
+    /// （publish 审批卡不可见根修）。
     pub enabled_channels: Vec<String>,
 }
 
-/// Step 18–24 运行期与关停（计划 §4.2 B7）。
+/// Step 18–24 运行期与关停（计划）。
 #[cfg_attr(
     not(any(feature = "security", feature = "health", feature = "cluster")),
     allow(unused_variables)
@@ -201,7 +201,7 @@ pub(crate) async fn run_runtime(
     internal_cmd_rx: tokio::sync::mpsc::Receiver<nemesis_web::internal::InternalCommand>,
     runtime_handoff: RuntimeHandoff,
 ) -> Result<()> {
-    // ctx 影子重绑（B1 同款）：门控取各名字在本函数内的实际消费门。
+    // ctx 影子重绑（同款）：门控取各名字在本函数内的实际消费门。
     let home = ctx.home.clone();
     let cfg = ctx.cfg.clone();
     let bus = ctx.bus.clone();
@@ -223,7 +223,7 @@ pub(crate) async fn run_runtime(
     #[cfg(feature = "cluster")]
     let mut cluster_adapter = runtime_handoff.cluster_adapter;
 
-    // 签名验证启动自验 → 审计链一条（接入计划 §4；Layer 8 Merkle
+    // 签名验证启动自验 → 审计链一条（接入计划；Layer 8 Merkle
     // append-only——事后改日志藏不住）。warn 失败进程仍活着，此处如实记
     // denied；enforce 失败活不到这里（main 阶段已 exit 86）。
     #[cfg(feature = "security")]
@@ -291,7 +291,7 @@ pub(crate) async fn run_runtime(
         );
     }
 
-    // Step 18: Arm cron（原 agent_adapter.start() 位置，BUG #49 调序后）
+    // Step 18: Arm cron（原 agent_adapter.start() 位置， 调序后）
     // 此时序不变量全部就位：agent 已订阅 bus（Step 14b）+ web 已 bind 且
     // gateway state 已写盘（上方 Step 17 尾部）——armed 后第一个 tick fire
     // 的 overdue job，其消息有订阅者接、deliver=true 的回复有 web channel 投。
@@ -302,7 +302,7 @@ pub(crate) async fn run_runtime(
     }
 
     // Step 19: Start bot service — health/heartbeat/devices 三服务的唯一生产
-    // 启动点（start_services）。BUG-20261029-149 纠偏：旧注释「for state
+    // 启动点（start_services）。 纠偏：旧注释「for state
     // tracking / real services are already started above」不实——三服务没有
     // "above" 启动点，start_bot 失败（旧:validate 无模型 → Err）即三服务全灭
     // 且 Error 态停不掉。现 BotService 对模型面校验失败自降级（warn + Running），
@@ -359,7 +359,7 @@ pub(crate) async fn run_runtime(
     }
 
     // Wire up ApprovalManager: WebApprovalManager → SecurityPlugin auditor
-    // M7（devtool-upgrade 阶段 5）：审批交互同构替换为 Dashboard 审批卡——
+    // （devtool-upgrade）：审批交互同构替换为 Dashboard 审批卡——
     // auditor "ask" 规则触发时广播 SSE `approval-requested`，用户在
     // Dashboard 点批准/拒绝 → WSAPI `approval.respond` → mpsc 解除阻塞。
     // 全平台可用（desktop WebView 内嵌同一 Dashboard，天然生效），因此
@@ -369,7 +369,7 @@ pub(crate) async fn run_runtime(
     {
         if let Some(ref plugin) = security_plugin {
             let auditor = plugin.auditor();
-            // F3: 审批记忆规则表热载器（auditor 查询侧 + 审批卡写入侧共用
+            // 审批记忆规则表热载器（auditor 查询侧 + 审批卡写入侧共用
             // 同一磁盘文件 `<workspace>/config/approval_rules.json`）。
             let approval_rules_path = nemesis_path::resolve_approval_rules_path_in_workspace(
                 &shared_resources.workspace_dir(),
@@ -383,7 +383,7 @@ pub(crate) async fn run_runtime(
                 shared_resources.agent_event_tx.clone(),
                 Some(approval_rules_path),
             ));
-            // 审批续执行（2026-10-22 拍板「批准+拒绝都回灌」）：stale 卡
+            // 审批续执行（「批准+拒绝都回灌」）：stale 卡
             // （gateway 重启前签发）裁决后，按台账 payload 的 session_key
             // 把裁决消息回灌原会话。注入器晚绑（镜像 set_journal 时序）；
             // 闭包持 bus——入站消息统一走 bus：主 loop 直消费，项目会话经
@@ -410,7 +410,7 @@ pub(crate) async fn run_runtime(
                     true
                 })
             });
-            // K4 (b)（devtool-upgrade 阶段 7）：IM 通道审批卡 + 组合分流——
+            // (b)（devtool-upgrade）：IM 通道审批卡 + 组合分流——
             // web/无上下文 → web_mgr（Dashboard 卡片，现状不变）；IM 通道
             // → ChannelApprovalManager（审批卡回发起对话 + /approve|/deny
             // 回执）。skill_manage / memory gate / responder 桥仍指 web_mgr
@@ -420,9 +420,9 @@ pub(crate) async fn run_runtime(
             ));
             // watcher 装配走 spawn_watcher（订阅先于 spawn）：任务内订阅
             // 存在回执丢失窗口——窗口内的 /approve 被 broadcast 静默丢弃，
-            // 用户批复等满超时被误拒（2026-09-08 全量实证根因）。
+            // 用户批复等满超时被误拒（全量实证根因）。
             channel_mgr.spawn_watcher();
-            // P1 审批台账：tasks.db 打开一次，web + IM 两个审批 broker 共享
+            // 审批台账：tasks.db 打开一次，web + IM 两个审批 broker 共享
             // 同库同幂等契约（重启补裁「可裁决且只生效一次」）。开失败 =
             // 台账关闭（审批照常内存态工作，仅丢重启补裁能力）——响亮
             // error 留痕，不静默假装持久化。
@@ -444,18 +444,18 @@ pub(crate) async fn run_runtime(
                     );
                 }
             }
-            // Batch 2 ③（BUG-C 2026-11-04）：IM 审批卡 estop 挂点句柄——
-            // channel_mgr 即将 move 进组合管理器，先留克隆给下方 L07 watcher。
+            // Batch 2 ③：IM 审批卡 estop 挂点句柄——
+            // channel_mgr 即将 move 进组合管理器，先留克隆给下方 watcher。
             let channel_mgr_estop = channel_mgr.clone();
             let composite = crate::channel_approval::CompositeApprovalManager::new(
                 web_mgr.clone(),
                 channel_mgr,
             );
-            // 出站投递面名单注入（2026-11-02 publish 审批卡不可见根修）：
+            // 出站投递面名单注入（publish 审批卡不可见根修）：
             // 不在 ChannelManager allowed 白名单的合成通道名（flow-engine 等）
             // 的 ask 落 Dashboard 卡，不再经 bus 发往无投递面的通道静默丢弃。
             composite.set_outbound_channels(runtime_handoff.enabled_channels.clone());
-            // M5-3（2026-10-10 机制加固）：cluster 通道 ask 看板注记——
+            // （机制加固）：cluster 通道 ask 看板注记——
             // worker 执行看板任务的审批等待向 master 权威 issue 线程投系统
             // 评论（路由侧已在 Composite 内改走默认管理器=本节点 Dashboard
             // SSE 卡）。无集群 / adapter 缺席 = 不装（路由修复仍生效）。
@@ -474,7 +474,7 @@ pub(crate) async fn run_runtime(
                             &notice.reason,
                             notice.timeout_secs,
                         );
-                        // M5（2026-10-10 集群无人值守硬化）：跨节点批复桥——
+                        // （集群无人值守硬化）：跨节点批复桥——
                         // ask 上行登记 master（远程批复入口的数据源）。
                         crate::remote_approval::spawn_remote_ask_register(
                             ask_cluster.clone(),
@@ -485,7 +485,7 @@ pub(crate) async fn run_runtime(
                 info!("[Gateway] Board ask notifier armed (cluster approval visibility)");
             }
             let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> = Arc::new(composite);
-            // M5（2026-10-10 集群无人值守硬化）：跨节点批复桥 worker 侧装配
+            // （集群无人值守硬化）：跨节点批复桥 worker 侧装配
             // ——注册 RPC 下行 handler（master 转发的批复直达本节点 pending，
             // always 兜底钉死 false：规则记忆只允许本地 Dashboard 显式落盘）
             // + Dashboard 卡通路换装饰器（本节点裁决生效后上行 ask_closed
@@ -540,11 +540,11 @@ pub(crate) async fn run_runtime(
                     }
                     Err(e) => warn!("[Gateway] approval.pending handler note: {e}"),
                 }
-                // connectors 关 = 远程执行面注册段整体退出编译（E1 收官批
-                // 2026-10-15 的 worker handler 随 nemesis-connectors 进出）。
+                // connectors 关 = 远程执行面注册段整体退出编译（收官批
+                // 的 worker handler 随 nemesis-connectors 进出）。
                 #[cfg(feature = "connectors")]
                 {
-                    // E1（收官批 2026-10-15）：远程执行面 worker handler——master
+                    // （收官-15）：远程执行面 worker handler——master
                     // 派发的 connector_invoke 到达本节点后走本地 handle_tool_call
                     // 完整 dispatch 瀑布（estop/hidden/Plan/安全 8 层/审批卡；
                     // confirm=required 资金单在审批点阻塞、超时自动拒——远程
@@ -677,27 +677,27 @@ pub(crate) async fn run_runtime(
             auditor.set_approval_manager(adapter.clone());
             // Bridge the same approval manager to `skill_manage` write approval.
             *shared_resources.approval_slot.write() = Some(adapter.clone());
-            // P2: bridge the same approval manager to the agent's memory write/forget
+            // bridge the same approval manager to the agent's memory write/forget
             // gate — agent memory_store/forget now pop up for approval, never
             // bypassed by YOLO/auto. No-op if no memory executor was stashed.
             #[cfg(feature = "memory")]
             {
-                // clone：adapter 的最后消费方在此之后（L9 selfupdate 装配块
+                // clone：adapter 的最后消费方在此之后（selfupdate 装配块
                 // 也要一份——memory feature 开/关两种形态下都取 owned）。
                 agent_loop
                     .set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter.clone())));
             }
-            // M7: dashboard 审批卡的响应端点经 AgentLoop 的 responder 槽触达
+            // dashboard 审批卡的响应端点经 AgentLoop 的 responder 槽触达
             // （nemesis-web approval handler 读 agent_loop.approval_responder()）。
             agent_loop.set_approval_responder(responder);
-            // WS4（P13）：技能装前审批门 bind 真身——web_server AppState 里的
+            // 技能装前审批门 bind 真身——web_server AppState 里的
             // LateWebSkillsGate（gateway.rs set_skills_install_gate 注入）经此
             // 挂上同一 web_mgr，技能安装卡与 auditor 审批共用 respond 通路。
             if let Some(gate) = skills_install_gate.as_ref() {
                 gate.bind(web_mgr.clone());
                 info!("[Gateway] skills install approval gate bound (WS4 P13)");
             }
-            // W5-3：插件安装审批门 bind 真身——installer（init_agent 建）里的
+            // 插件安装审批门 bind 真身——installer（init_agent 建）里的
             // LateInstallApprover 挂上同一 web_mgr，插件安装卡与 auditor 审批
             // 共用 respond 通路。
             #[cfg(feature = "plugins-wasm")]
@@ -705,11 +705,11 @@ pub(crate) async fn run_runtime(
                 gate.bind(web_mgr.clone());
                 info!("[Gateway] plugin install approval gate bound (W5-3)");
             }
-            // X2 (U8 refinement): reflect interactive-approval reachability
+            // (refinement): reflect interactive-approval reachability
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);
             info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
-            // L07（2026-11-01）：审批卡 estop 挂点——急停触发时全部未决卡
+            // 审批卡 estop 挂点——急停触发时全部未决卡
             // 立即关闭（等待方收到拒绝裁决、前端摘卡、台账留 orphaned 痕），
             // 不再挂满超时窗口。watch 订阅单点覆盖全部触发入口（WSAPI /
             // CLI /api/internal / 托盘菜单）；结构照抄上方 question broker
@@ -725,7 +725,7 @@ pub(crate) async fn run_runtime(
                             "[Gateway] estop already engaged at approval wiring: closed {n} orphan card(s)"
                         );
                     }
-                    // Batch 2 ③（BUG-C 2026-11-04）：IM 通道卡对称面——同一
+                    // Batch 2 ③：IM 通道卡对称面——同一
                     // 触发点收掉 channel 侧全部在飞卡（语义注释见该方法）。
                     let nc = channel_mgr_estop
                         .cancel_pending_all("estop already engaged at wiring time");
@@ -750,7 +750,7 @@ pub(crate) async fn run_runtime(
                     }
                 });
             }
-            // Batch 2 ③ 执行面 sweep（BUG-C 2026-11-04）：急停触发时收杀全部
+            // Batch 2 ③ 执行面 sweep：急停触发时收杀全部
             // 会话在飞的 exec 子进程树（Windows Job Object / Unix 进程组）。
             // select 中断（tool_dispatch estop 臂）只能丢弃执行链 Future——
             // 子进程收杀由注册表 sweep 完成（PLAN 第二层 ②③ 分工：执行链
@@ -781,7 +781,7 @@ pub(crate) async fn run_runtime(
                     }
                 });
             }
-            // L06 复核点③（2026-11-01）：凭据卡 estop 挂点——急停触发时全部
+            // 复核点③：凭据卡 estop 挂点——急停触发时全部
             // 在途凭据索要卡立即关闭（等待方收 Denied、前端摘卡），不再挂满
             // 300s 超时窗口；清理只送裁决不落 vault。broker 槽在 init_agent
             // 先于本函数装好（headless 不装 → current() None = 优雅跳过）。
@@ -817,7 +817,7 @@ pub(crate) async fn run_runtime(
                     });
                 }
             }
-            // L9 selfupdate：两段式 apply/download 编排器装配（selfupdate
+            // selfupdate：两段式 apply/download 编排器装配（selfupdate
             // implies security）。审计链走 security_plugin；estop 同源；
             // 确认在 Dashboard 侧完成（审批卡已退役——v4 签名验签是安全闸）。
             // WSAPI selfupdate.* 与 /api/internal selfupdate_apply 都从
@@ -827,7 +827,7 @@ pub(crate) async fn run_runtime(
                 // 停机约定成对（Ctrl+C / 托盘 / internal shutdown 同款）：
                 // trigger_global_shutdown() 只置 SHUTDOWN_REQUESTED 旗标，
                 // 生产无轮询消费者——真正驱动停机序列的是 svc_mgr.shutdown()。
-                // 2026-10-22 彩排实证：只置旗标 = A 版永不退场 → B 版
+                // 彩排实证：只置旗标 = A 版永不退场 → B 版
                 // WAIT_PID 超时放弃 boot 收口，journal 永远停在 restarting。
                 let svc_mgr_for_selfupdate = Arc::clone(&svc_mgr);
                 let mgr = Arc::new(nemesis_web::selfupdate::SelfUpdateManager {
@@ -843,7 +843,7 @@ pub(crate) async fn run_runtime(
                             svc_mgr_for_selfupdate.shutdown();
                         }
                     }),
-                    // R2 进程内单飞闸（与安装目录跨进程锁两层互补）。
+                    // 进程内单飞闸（与安装目录跨进程锁两层互补）。
                     flight: tokio::sync::Mutex::new(()),
                     download_flight: tokio::sync::Mutex::new(()),
                     download_cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -851,7 +851,7 @@ pub(crate) async fn run_runtime(
                         nemesis_web::selfupdate::DownloadProgress::default(),
                     )),
                     last_check: Arc::new(parking_lot::Mutex::new(None)),
-                    // apply 失败反馈面（2026-10-23 挂死修复）：Err 记录 +
+                    // apply 失败反馈面（挂死修复）：Err 记录 +
                     // SSE error 帧，Dashboard 粘滞态据此解挂。
                     last_apply_error: Arc::new(parking_lot::Mutex::new(None)),
                     downgrade_denied: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -860,7 +860,7 @@ pub(crate) async fn run_runtime(
                 info!("[Gateway] selfupdate manager wired (L9)");
                 // 启动自动 check（~30s 错开启动高峰）：有更新 → info 提示
                 // （Dashboard 连上后 status/cached_check 即见，按钮由此点亮）；
-                // 无更新 → debug；失败静默（不重试风暴——用户拍板）。pending
+                // 无更新 → debug；失败静默（不重试风暴）。pending
                 // 已就绪的提醒由 Dashboard status 轮询承担（每次启动都提醒）。
                 let auto_mgr = mgr.clone();
                 tokio::spawn(async move {
@@ -895,13 +895,13 @@ pub(crate) async fn run_runtime(
                     }
                 });
             }
-            // P5: guardian judge attach — `guardian_mode` 闸（2026-09-16
-            // 无上下文 LLM 命令审计，用户拍板默认 off：LLM 审计耗时且贵，
+            // guardian judge attach — `guardian_mode` 闸（
+            // 无上下文 LLM 命令审计，默认 off：LLM 审计耗时且贵，
             // 是双刃剑）。off/空/未知值 = 不装配 judge（零 LLM 成本，连旧
             // CRITICAL 审也不跑）；critical = 旧 CRITICAL 全审；high =
             // HIGH+CRITICAL 破坏形态预筛 + LLM 审（消费闸在
             // SecurityPlugin::guardian_should_review 单一决策点）。
-            // 模型通道：B7（2026-10-13）三级阶梯——`agents.guardian_model`
+            // 模型通道：三级阶梯——`agents.guardian_model`
             // 审计专用优先 → `agents.small_model` 杂务通道（/compact 先例
             // ——审计点独立于主对话，不烧主模型）→ 主模型回落，绝不阻断
             // 启动（见 resolve_guardian_judge_lane）。
@@ -929,27 +929,27 @@ pub(crate) async fn run_runtime(
         }
     }
 
-    // W7：插件工具面热装 hook——WSAPI wasm.install/uninstall/enable/disable
+    // 插件工具面热装 hook——WSAPI wasm.install/uninstall/enable/disable
     // 成功后经此把工具同步进**当前** AgentLoop 注册表（启动装载走
     // agent_factory 8c 的 register_plugin_tools，两路共用同一桥类型与操作
     // 类型映射）。捕获 loop 持有器（与 AppState 同一 Arc，agent 重启自动
     // 跟进）而非裸 Weak；None = 停机窗口，重启路径会从注册表重新拉起，
     // 事件丢弃是诚实降级。同步一律按 `plugin.<slug>.` 前缀整面摘除再按需
-    // 注册（2026-09-29 交付审查 1.3：upgrade 换名时只摘同名会留旧名僵尸
+    // 注册（交付审查 1.3：upgrade 换名时只摘同名会留旧名僵尸
     // 工具 + declare 泄漏）。放在 security 装配块之外：hook 注入不依赖
     // 审批 manager，security.enabled=false 只是跳过审批装配，工具面热
-    // 同步必须照常工作（2026-09-29 交付审查 3.1）；plugins-wasm feature
+    // 同步必须照常工作（交付审查 3.1）；plugins-wasm feature
     // implies security，nemesis_security 引用编译期恒可用。
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared_resources.plugin_manager {
         let loop_ref = agent_adapter.loop_ref_handle();
-        // 批 4：策略 hook 用副本（tool hook 的 move 闭包在下方先吞掉本体）。
+        // 策略 hook 用副本（tool hook 的 move 闭包在下方先吞掉本体）。
         let loop_ref_for_policy = loop_ref.clone();
         let pm_for_hook = pm.clone();
         // 摘旧-插新不是原子序列（tool_names → remove ×N → register），notify
         // 是同步调用、并发 WSAPI 任务可同时进 hook——交错时 register 后的
         // 另一线程 remove 会把新工具摘掉（或双注册同名），`_2` 僵尸后缀
-        // 由此而来（2026-09-30 复查 #5）。hook 体无 await，std Mutex 串行
+        // 由此而来（复查 #5）。hook 体无 await，std Mutex 串行
         // 足够；poison 容忍（持锁线程 panic 后锁仍要用，into_inner 放行）。
         let hook_serial = Arc::new(std::sync::Mutex::<()>::new(()));
         let serial_for_hook = hook_serial.clone();
@@ -986,7 +986,7 @@ pub(crate) async fn run_runtime(
                             stale
                         );
                     }
-                    // 接管面对账（2026-10-23 工具接管层）：disable/uninstall
+                    // 接管面对账（工具接管层）：disable/uninstall
                     // 后声明面接管就地解除回内置（幂等；无声明 = 空转）。
                     crate::plugin_bridge::reconcile_takeover_event(
                         &loop_arc,
@@ -1039,12 +1039,12 @@ pub(crate) async fn run_runtime(
                 );
             },
         ));
-        // 批 4（2026-10-22 样板工程）：循环策略面热同步 hook——WSAPI
+        // （样板工程）：循环策略面热同步 hook——WSAPI
         // install/enable/disable/uninstall 成功后整体对账三策略槽（事件
         // 只当触发器 + 日志上下文）：每点查 `policy_owner`（enabled ∧
         // takes 的唯一接管者），有 = 装 PolicyBridge，无 = 回内置哨兵。
         // 整面对账而非按事件点增删，是刻意选择：三槽固定、owner 裁决在
-        // registry 单一真相源，对账幂等且自愈（升级换形/注销中间态的旧
+        // registry 统一定义，对账幂等且自愈（升级换形/注销中间态的旧
         // 接管不留幽灵——与工具面前缀整面摘除同纪律）。槽写入是单次
         // RwLock 写，无多步交错面，不与工具 hook 共享 hook_serial。
         let pm_for_policy = pm.clone();
@@ -1096,13 +1096,13 @@ pub(crate) async fn run_runtime(
         ));
     }
 
-    // F7（devtool-upgrade 阶段 5）：question 工具的 Dashboard 提问 broker。
+    // （devtool-upgrade）：question 工具的 Dashboard 提问 broker。
     // 与审批不同，提问是交互动作不是安全动作——不依赖 security feature，
     // 无 cfg 门（gateway 跑起来就有 Dashboard，提问天然可答）。broker 同时
     // 扮演两个角色：question 工具的阻塞端（SharedResources.question_slot，
     // SharedToolConfig 建槽时已克隆同一 Arc，此处晚填即生效）+ WSAPI
     // question.respond/pending 的响应端（AgentLoop responder 槽）。
-    // J5（devtool-upgrade 阶段 6）：同一 Arc 再挂 AgentLoop asker 槽——
+    // （devtool-upgrade）：同一 Arc 再挂 AgentLoop asker 槽——
     // doom-loop escalation 审批卡（agents.doom_loop_approval，默认关）与
     // question 工具共用同一提问通路与作答 UI，不新造审批协议。
     {
@@ -1112,7 +1112,7 @@ pub(crate) async fn run_runtime(
         *shared_resources.question_slot.write() = Some(broker.clone());
         agent_loop.set_question_responder(broker.clone());
         agent_loop.set_question_asker(broker.clone());
-        // 循环干预阶梯（2026-10-24）：急停挂钩——无超时终级卡（escalation
+        // 循环干预阶梯：急停挂钩——无超时终级卡（escalation
         // 停车问询，timeout_secs=0）会停在等答态跨普通停机窗口存续，estop
         // 触发时必须强制了结：等待的 loop 醒来（Cancelled→诚实收尾）、前端
         // 卡摘除（resolved cancelled 广播）、下一次 dispatch 被 estop 冻结
@@ -1149,7 +1149,7 @@ pub(crate) async fn run_runtime(
         let url = format!("http://{}:{}", web_display_host, real_port);
         let token = cfg.channels.web.auth_token.clone();
         let mut rx = internal_cmd_rx;
-        // (BUG #31, quality-hardening goal 冲刺 S11e) `nemesisbot shutdown`
+        // (, quality-hardening goal 冲刺) `nemesisbot shutdown`
         // 的 HTTP 臂经 POST /api/internal {"cmd":"shutdown"} 落到这里的
         // Shutdown 变体：与托盘 Quit 同源的优雅停机——置全局标志后调用
         // ServiceManager.shutdown()，其 broadcast 让 Step 23 的
@@ -1205,7 +1205,7 @@ pub(crate) async fn run_runtime(
                         allow_downgrade,
                         force,
                     } => {
-                        // L9：CLI `nemesisbot selfupdate apply` 经 /api/internal
+                        // CLI `nemesisbot selfupdate apply` 经 /api/internal
                         // 落到这里——受理后 spawn 九步编排（pending 下载 +
                         // v4 验签 + staging 全程分钟级，不能占住监听）。成功路径 apply
                         // 内部已 spawn 新版本并自带优雅停机线程，此处不再动
@@ -1237,7 +1237,7 @@ pub(crate) async fn run_runtime(
         info!("[Gateway] Internal command listener started");
     }
 
-    // 双击直启（2026-09-17）：无参启动（BARE_LAUNCH env，run_command 归一化
+    // 双击直启：无参启动（BARE_LAUNCH env，run_command 归一化
     // 时设置）→ 启动完成自动打开 Dashboard（plugin-ui webview 窗口带 token，
     // 缺 dll 回落浏览器；托盘图标由 Step 22 装配，与本块正交）。显式
     // `nemesisbot gateway` 不带标记——server 语义，不弹窗口。web 已 bind
@@ -1260,14 +1260,14 @@ pub(crate) async fn run_runtime(
         }
     }
 
-    // T8（多模态 goal 2026-09-03）：uploads 暂存目录 TTL 清扫（启动扫一次 +
+    // （多模态 goal）：uploads 暂存目录 TTL 清扫（启动扫一次 +
     // 每 6 小时一次，7 天 TTL）。uploads 是 temp 语义；被清扫文件的历史引用
-    // 由 T6 水合层诚实降级 `[图片已失效]`，不依赖此处。路径唯一真相源
+    // 由 水合层诚实降级 `[图片已失效]`，不依赖此处。路径唯一依据
     // nemesis-path resolve_uploads_dir_in_workspace。
     nemesis_web::handlers::upload::spawn_uploads_sweeper();
     info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
 
-    // M7/M8（2026-10-27 整改批次三）：logs 五族统一 TTL 清扫（session_logs /
+    // /：logs 五族统一 TTL 清扫（session_logs /
     // boundary / request_logs / terminal / event_ledger；config `logs` 段逐族
     // 天数，0=族关，全 0 不装配；启动扫一次 + 每 6h 一拍，与 uploads 同拍）。
     // 删除走 fsutil 韧性包装 + 每族每拍限量；event_ledger 末行非 append 保留
@@ -1275,7 +1275,7 @@ pub(crate) async fn run_runtime(
     let logs_ttl = crate::logs_sweeper::LogsTtl::from_config(cfg.logs.as_ref());
     crate::logs_sweeper::spawn_logs_sweeper(logs_ttl);
 
-    // M6（2026-10-27 整改批次五）：checkpoint gc 周期拍（第二触发点；第一
+    // checkpoint gc 周期拍（第二触发点；第一
     // 触发点在 truncate_from_scoped 后）。默认关（checkpoint.gc.enabled），
     // 关 = 不装配线程零触碰。6h 与 uploads/logs 同拍；gc 内部并发互斥 +
     // 失败零破坏。项目 loop 的影子库只吃 truncate 触发（周期拍只挂主
@@ -1299,9 +1299,9 @@ pub(crate) async fn run_runtime(
             .unwrap_or_else(|e| warn!("[Gateway] checkpoint gc sweeper 启动失败（仅周期拍缺位，truncate 触发仍在）: {e}"));
     }
 
-    // B11（2026-10-18 snooze）：暂停会话到期唤醒 sweeper（每 10s 扫 meta
+    // （snooze）：暂停会话到期唤醒 sweeper（每 10s 扫 meta
     // sidecar；到期摘标记 + 注入恢复 system 行 + 事件广播）。
-    // L22（2026-11-03 snooze 排队）：装配重放 hook——摘标记后把 `.pending`
+    // （snooze 排队）：装配重放 hook——摘标记后把 `.pending`
     // sidecar 里的暂停期消息逐条注入该会话归属 loop。三臂解析与 web
     // resolve_session_loop 同序（agents → projects → 主槽；直接取 bridge
     // getter 免造 RequestContext）。注入走 loop 私有入站通道
@@ -1354,7 +1354,7 @@ pub(crate) async fn run_runtime(
         info!("[Gateway] snooze sweeper started (10s interval, replay hook armed)");
     }
 
-    // Ctrl+C / SIGINT 优雅停机臂（2026-08-31 web-dead 停机事故教训）：
+    // Ctrl+C / SIGINT 优雅停机臂（web-dead 停机事故教训）：
     // 此前 gateway 停机只有两条路——/api/internal（骑 web，web 任务一死即全断）
     // 和托盘 Quit（要求桌面托盘存活）。控制台 Ctrl+C 落 std 默认处置=硬终止，
     // Step 24 善后全部跳过。补一条与托盘 Quit 同源的信号臂。
@@ -1411,7 +1411,7 @@ pub(crate) async fn run_runtime(
                 let home_for_start = home.clone();
                 let ca_start = ca.clone();
                 tray.set_on_cluster_start(Box::new(move || {
-                    // 写串行锁罩两个 config RMW（同类横扫四期，2026-10-13）：
+                    // 写串行锁罩两个 config RMW（同类横扫四期）：
                     // 本回调与 Dashboard 任意 config 写臂（update_config/
                     // update_raw_config/update_json_file 同族）互斥——裸 RMW
                     // 的整份快照写回会冲掉并发写臂的字段，反之亦然。锁块只
@@ -1431,7 +1431,7 @@ pub(crate) async fn run_runtime(
                             {
                                 obj.insert("enabled".to_string(), serde_json::json!(true));
                                 if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                    // REL-002：统一原子写入（cluster enable 开关写主配置）。
+                                    // 统一原子写入（cluster enable 开关写主配置）。
                                     let _ = nemesis_utils::write_file_atomic(
                                         &cfg_path.to_string_lossy(),
                                         updated.as_bytes(),
@@ -1452,7 +1452,7 @@ pub(crate) async fn run_runtime(
                         {
                             obj.insert("enabled".to_string(), serde_json::json!(true));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                // REL-002：统一原子写入（config.cluster.json 含 token）。
+                                // 统一原子写入（config.cluster.json 含 token）。
                                 let _ = nemesis_utils::write_file_atomic(
                                     &cluster_cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
@@ -1472,7 +1472,7 @@ pub(crate) async fn run_runtime(
                     if let Err(e) = ca_stop.stop() {
                         tracing::warn!("[Gateway] Tray: failed to stop cluster: {}", e);
                     }
-                    // 写串行锁罩两个 config RMW（同 start 回调，2026-10-13）。
+                    // 写串行锁罩两个 config RMW（同 start 回调）。
                     {
                         let _cfg_serial = nemesis_config::config_write_lock();
                         // Write config.cluster.json enabled = false
@@ -1487,7 +1487,7 @@ pub(crate) async fn run_runtime(
                         {
                             obj.insert("enabled".to_string(), serde_json::json!(false));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                // REL-002：统一原子写入（config.cluster.json 含 token）。
+                                // 统一原子写入（config.cluster.json 含 token）。
                                 let _ = nemesis_utils::write_file_atomic(
                                     &cluster_cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
@@ -1504,7 +1504,7 @@ pub(crate) async fn run_runtime(
                         {
                             obj.insert("enabled".to_string(), serde_json::json!(false));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                // REL-002：统一原子写入。
+                                // 统一原子写入。
                                 let _ = nemesis_utils::write_file_atomic(
                                     &cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
@@ -1590,7 +1590,7 @@ pub(crate) async fn run_runtime(
     println!();
     println!("Shutting down...");
 
-    // W6（2026-10-25 加固）：优雅
+    // （加固）：优雅
     // 停机 drain——先关入口（draining 闸：外部通道新消息诚实回执，内部
     // 通道静默丢），再有界等在途 turn 归零，然后才 teardown。超时明示
     // 在途数后照常强制收尾（下方 agent_adapter.stop() 会 abort 余量）。
@@ -1599,7 +1599,7 @@ pub(crate) async fn run_runtime(
     // run_runtime，不受影响。
     let drain_secs = cfg.agents.defaults.shutdown_drain_secs;
     if drain_secs > 0 {
-        // BUG-20261025-33：drain 面不止主 loop——L6++ 项目 loop 与 G1 自建
+        // drain 面不止主 loop—— 项目 loop 与 自建
         // agent loop 同为常驻 AgentLoop（teardown stop_all 直接 abort 在途
         // 轮次），只 drain 主 loop 时项目/agent 会话的在途 turn 停机即杀，
         // 且主 loop 空闲时会打出「已归零」假完成。三处同一窗口关入口
@@ -1638,7 +1638,7 @@ pub(crate) async fn run_runtime(
 
     svc_mgr.shutdown();
 
-    // F-L2: graceful Forge shutdown — flush buffered aggregation + stop the
+    // F-: graceful Forge shutdown — flush buffered aggregation + stop the
     // background loops cleanly. Previously the spawn handle was dropped and the
     // loops were killed by runtime teardown (losing unflushed data / mid-write).
     #[cfg(feature = "forge")]
@@ -1689,13 +1689,13 @@ pub(crate) async fn run_runtime(
     // runas); a non-elevated stop re-introduces the KmdUtil permission popup.
     // #[cfg(feature = "sandbox")]
     // {
-    //     crate::commands::sandbox::stop_service_if_ours(&home);
+    //     crate::commands:sandbox::stop_service_if_ours(&home);
     // }
 
     // Close the message bus
     bus.close();
 
-    // C5: gracefully close every LSP session (shutdown → exit → kill) so
+    // gracefully close every LSP session (shutdown → exit → kill) so
     // language-server child processes never outlive the gateway. Previously
     // the tool's sessions were only reaped lazily (idle timeout) or via
     // kill_on_drop at process exit — an abrupt teardown could orphan them.
@@ -1710,15 +1710,15 @@ pub(crate) async fn run_runtime(
     // Abort background tasks
     web_handle.abort();
     agent_adapter.stop().ok();
-    // L6++：项目常驻 loop 收尾（镜像主 agent stop：摘表 + stop + abort 任务）。
+    // 项目常驻 loop 收尾（镜像主 agent stop：摘表 + stop + abort 任务）。
     projects_manager.stop_all();
-    // G1：自建 agent 常驻 loop 收尾（同款摘表 + stop + abort；manager 槽
+    // 自建 agent 常驻 loop 收尾（同款摘表 + stop + abort；manager 槽
     // 现取——teardown 点无局部句柄，未装配形态自然跳过）。
     if let Some(lm) = crate::agents::manager().and_then(|m| m.loop_manager()) {
         lm.stop_all();
     }
     bridge_outbound_handle.abort();
-    //  MSG: 同 step 16 ，目前暂时不用，所以注释掉了
+    //  MSG: 同 step 16，目前暂时不用，所以注释掉了
     //dispatch_handle.abort();
 
     // Stop cluster (adapter handles: agent abort, RPC server, discovery, recovery/sync loops)
@@ -1729,7 +1729,7 @@ pub(crate) async fn run_runtime(
         }
     }
 
-    // QUIC 中继停机（QUIC 插件化 M1）：计划拍板「estop 不触达传输面」，
+    // QUIC 中继停机（QUIC 插件化）：计划「estop 不触达传输面」，
     // roaming_stop 只挂 gateway 进程停机链——优雅停中继（插件内关 HTTP/
     // QUIC 监听）+ shutdown_plugin_roaming 终态收尾（幂等；不 unload 库，
     // 活线程 UB——同库 OS 引用计数新句柄）。与集群停臂互不依赖：集群关了

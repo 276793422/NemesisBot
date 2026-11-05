@@ -1,16 +1,16 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
 
-/// B2b 二段验收（fire-and-forget）：gateway 回调闭包在 [`SelfcheckRegistry`]
+/// 二段验收（fire-and-forget）：gateway 回调闭包在 [`SelfcheckRegistry`]
 /// 命中后调用（issue_id 由闭包 `take` 出，避免双取竞态）。worker 回报失败
 /// （status=error）→ 诚实转人工；正常回报 → 证据带入二段评审
 /// （`allow_selfcheck=false`：取证只带一程，二段结论直接三态处置）。
 ///
 /// `task_id` = 本轮二段对应的取证任务（执行档案直读路径无任务传 `None`）：
-/// BUG-20261105-012——在途标记防 sweep 恢复臂双跑；完成（含失败臂）后清
+/// —在途标记防 sweep 恢复臂双跑；完成（含失败臂）后清
 /// 标记 + 删 `selfcheck_pending` 持久行（行生命周期 = 二段完成；完成前
 /// gateway 崩溃由 sweep 重放）。
 pub(crate) fn spawn_selfcheck_second_stage(
@@ -101,7 +101,7 @@ async fn run_second_stage_review(
     }
 }
 
-/// B2b 自检取证提示词：给执行 worker 的指令——只收集证据如实回报，不下
+/// 自检取证提示词：给执行 worker 的指令——只收集证据如实回报，不下
 /// 验收结论、不改已交付内容。marker 头（共享常量
 /// [`nemesis_cluster::SELFCHECK_PROMPT_MARKER`]）同时是人读标记与 worker 侧
 /// 队列优先通道的路由判据（压测②：取证插队不被正式任务串行堵住）。
@@ -121,7 +121,7 @@ pub(super) fn build_selfcheck_prompt(issue: &nemesis_board::Issue, request: &str
     )
 }
 
-/// B2b 自检派发：向执行 worker 发 peer_chat 取证请求。与正式派发
+/// 自检派发：向执行 worker 发 peer_chat 取证请求。与正式派发
 /// （fire-and-forget）不同，这里**同步等 RPC 送达**（30s）——送不到就不
 /// 挂起评审（回调永远不会来，挂起即悬挂），诚实返回 Err 转人工兜底。
 /// 会话键与正式派发一致（`board:{number}`）：取证请求落在 worker 的既有
@@ -168,11 +168,11 @@ pub(super) async fn dispatch_selfcheck(
         .call_with_timeout(worker, request_rpc, std::time::Duration::from_secs(30))
         .await
         .map_err(|e| format!("取证 RPC 送达失败：{e}"))?;
-    // BUG-1（2026-10-17）：B 端拒单（工作队列满，ACK status=error）=
+    // BUG-1：B 端拒单（工作队列满，ACK status=error）=
     // 任务从未开始，不能当派发成功——返回 Err 走调用方既有取证失败
     // 路径，评审链不被悬挂等待一个永不会来的回调。
     if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(resp.result.as_ref()) {
-        // L13-b：ACK error 字段（mandate 拒绝原因等）优先透传。
+        // b：ACK error 字段（mandate 拒绝原因等）优先透传。
         let reason = resp
             .result
             .as_ref()
@@ -186,7 +186,7 @@ pub(super) async fn dispatch_selfcheck(
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261105-012：自检取证路由持久层兜底 sweep
+// 自检取证路由持久层兜底 sweep
 // ---------------------------------------------------------------------------
 
 /// 臂 B not_found 宽限（秒）：worker 工作队列正常秒级消费，ACK 后超宽限
@@ -203,11 +203,11 @@ const SELFCHECK_PENDING_MAX_AGE_SECS: i64 = 24 * 60 * 60;
 /// - **臂 A**（已路由 status 非空、不在本进程在途集合）：二段验收进行中
 ///   进程崩溃 → 重放二段（证据已烧入行内，零 worker 依赖）。
 /// - **臂 B**（未路由 status NULL）：取证回调丢失（gateway 停机窗口送达
-///   失败时 worker `send_callback_or_persist` 落盘保留副本）→ G5 式
+///   失败时 worker `send_callback_or_persist` 落盘保留副本）→ 式
 ///   `query_task_result` 轮询捞回：done → 恢复路由进二段；running →
 ///   继续；not_found 超宽限 / 行绝对超龄 → 诚实停车转人工。
 ///
-/// P1 保险丝：estop 挂起时评审冻结（不跑 LLM、不转人工收口）——两臂同
+/// 保险丝：estop 挂起时评审冻结（不跑 LLM、不转人工收口）——两臂同
 /// 冻结，行保留等 release 后处理。
 pub(crate) async fn sweep_selfcheck_pending(deps: &BoardReviewDeps) {
     sweep_selfcheck_pending_at(deps, chrono::Utc::now().timestamp()).await;
@@ -403,7 +403,7 @@ async fn selfcheck_sweep_give_up(
     let _ = deps.store.delete_selfcheck_pending(&row.task_id);
 }
 
-/// 取证软件化（2026-10-15）：执行档案直读取证。档案管线
+/// 取证软件化：执行档案直读取证。档案管线
 /// （[`crate::board_archive_ingest`]）把 worker 的执行记录（`00.request.md`
 /// / `NN.AI.Response.md` 等）随交付回灌安置在
 /// `<项目目录>/records/<编号>/execution/<ts>/`——评审取证优先从这份本地
@@ -414,7 +414,7 @@ async fn selfcheck_sweep_give_up(
 /// 交付）；`.raw.json` 线材件跳过（体积大且人不可读），取任务请求头 +
 /// 最新一轮 AI 回复头作为证据主体；总输出有界。
 ///
-/// 清单路径形态（NB-105 真机实证 2026-10-15）：评审员照清单用
+/// 清单路径形态（真机实证）：评审员照清单用
 /// `board_evidence_read` 逐个读取，path 以项目档案根为基准解析
 /// （[`crate::board_evidence_tool`]）——清单必须列档案根相对路径
 /// （`records/<编号>/execution/<ts>/<name>`）；裸文件名会让评审员的全部

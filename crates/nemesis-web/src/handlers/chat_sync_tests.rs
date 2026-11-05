@@ -24,7 +24,7 @@ fn unique_session(tag: &str) -> String {
     )
 }
 
-/// 与 handlers/chat.rs sync 臂同构的环形缓冲键变换（单一真相源是
+/// 与 handlers/chat.rs sync 臂同构的环形缓冲键变换（统一定义是
 /// chat.rs 的构造——测试侧镜像它以锚定两侧不漂移）。
 fn ring_key(session_id: &str) -> String {
     format!(

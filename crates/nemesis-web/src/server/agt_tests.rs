@@ -461,7 +461,7 @@ async fn agt_process_messages_binds_router_and_runs_filter_ladder() {
 }
 
 // ============================================================
-// （改进项三期）：chat.send 写入侧幂等键——同
+// chat.send 写入侧幂等键——同
 // (session, client_msg_id) 重复提交只扇出一次（bus 不二次触发 agent），
 // 不带 id 的消息零变化。全局去重表（chat_dedup TABLE）测试整段互斥。
 // ============================================================

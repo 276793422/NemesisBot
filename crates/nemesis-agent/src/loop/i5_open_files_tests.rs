@@ -5,7 +5,7 @@
 //    （顺序 = 上报顺序），且同状态两次 build 字节一致（多迭代稳定语义）；
 // ② 生命周期——clear 后段消失，且全部消息字节回到从未 set 过的基线
 //    （出轮清空 = 无跨轮陈旧泄漏）；
-// ③ 解析联测——metadata 键经 nemesis-types:channel:open_files_from_metadata
+// ③ 解析联测——metadata 键经 nemesis-types::channel:open_files_from_metadata
 //    单点清洗后与 AgentLoop 渲染端看到的一致（web 写入端共用 sanitize 单点，
 //    端到端形状由 websocket_handler 测试覆盖）。
 //

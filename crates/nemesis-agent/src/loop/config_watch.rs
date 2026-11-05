@@ -24,8 +24,8 @@ pub(crate) const E7_TITLE_INPUT_MAX_CHARS: usize = 500;
 pub(crate) const E7_TITLE_MAX_CHARS: usize = 24;
 
 /// 一次性 LLM 标题生成（无工具、非流式）。失败/超时/空输出 → None（
-/// 调用方诚实跳过，下轮回复再试）。提示文本单一真相源：
-/// `prompt:render_title_prompt`（格式约束 + 双向删减规则 + 数据非指令
+/// 调用方诚实跳过，下轮回复再试）。提示文本统一定义：
+/// `prompt::render_title_prompt`（格式约束 + 双向删减规则 + 数据非指令
 /// 防护）；清洗兜底仍由 [`sanitize_generated_title`] 负责。调用走杂务
 /// 旁路护栏（`bypass_llm`：限 token + 超时 + 空输出校验 + 重试版护栏
 /// ——空输出/瞬态失败同窗口重试一次，采样抖动兜底）。
@@ -78,7 +78,7 @@ pub(crate) fn sanitize_generated_title(raw: &str) -> Option<String> {
     Some(cleaned.chars().take(E7_TITLE_MAX_CHARS).collect())
 }
 
-/// ：会话级已采集文档登记——诊断跨文件聚合 + stale
+/// 会话级已采集文档登记——诊断跨文件聚合 + stale
 /// 过滤的状态面。键 = session_key（会话隔离：不同会话互不可见，杜绝跨
 /// 会话/跨请求泄漏）；值 = 有序 (path → 诊断采集时的 mtime 锚点)，插入
 /// 序 = 首次采集序（重采集移到尾部，cap 淘汰最旧）。纯内存不落盘，
@@ -237,7 +237,7 @@ impl AgentLoop {
 
     /// （收官-15）：杂务文本补全单一入口——`agents.small_model`
     /// 槽位优先，未配置 WARN 回主模型（槽位/主模型解析复用
-    /// [`Self:resolve_summary_provider`]，锁序纪律同一处）；调用治理（墙钟
+    /// [`Self::resolve_summary_provider`]，锁序纪律同一处）；调用治理（墙钟
     /// 超时 + 空输出拒绝 + 单次重试 + 显式禁思考）与标题/摘要杂务同走
     /// bypass_llm 护栏。首个 nemesisbot 侧消费点 = connector monitor 语义
     /// 变化摘要（收官批）。无工具、单条 user 消息、非流式。
@@ -291,7 +291,7 @@ impl AgentLoop {
     }
 
     /// (devtool-upgrade)：`agents.doom_loop_approval` 世代快照读
-    /// （模式的 世代化形态——config.json 唯一真相源，改键下轮生效，
+    /// （模式的世代化形态——以 config.json 为准，改键下轮生效，
     /// 无需重启）。无 config_path / 无代 = `false`（安全底座方向）。
     ///
     /// ⚠ 循环干预阶梯：`check_escalation` 改走无 config 闸的
@@ -311,7 +311,7 @@ impl AgentLoop {
 
     /// （profession-capability-evolution）：职能工具围栏总开关
     /// `agents.profession_tool_fence` 世代快照读（模式的 世代化形态
-    /// ——config.json 唯一真相源，dashboard/CLI 改键下轮生效）。
+    /// ——以 config.json 为准，dashboard/CLI 改键下轮生效）。
     /// 缺省 **true**（围栏开）——关闭 = B 端任务装配不写 `AgentConfig.tools`
     /// 白名单（供给/派发双闸的权威判据为空 = 不围），已围着的实例也照常
     /// 放行（闸只看非空白名单）。无 config_path / 无代 = 默认开。
@@ -339,8 +339,8 @@ impl AgentLoop {
             .unwrap_or(true)
     }
 
-    /// 429 重试环（裁决④）：`agents.defaults.rate_limit_retries` 世代快照读
-    /// （世代化——config.json 唯一真相源，改键下轮生效）。无 config_path /
+    /// 429 重试环：`agents.defaults.rate_limit_retries` 世代快照读
+    /// （世代化——以 config.json 为准，改键下轮生效）。无 config_path /
     /// 无代 = 默认 10（default_rate_limit_retries 同源口径）。
     pub(crate) fn current_rate_limit_retries(&self) -> i64 {
         let Some(v) = self.config_generation() else {
@@ -353,10 +353,10 @@ impl AgentLoop {
             .unwrap_or(10)
     }
 
-    /// BUG ②：`agents.defaults.<key>` 世代快照读（世代化，
-    /// 同 [`Self:current_rate_limit_retries`] 口径）。解析失败或缺键 = 默认值。
+    /// `agents.defaults.<key>` 世代快照读（世代化，
+    /// 同 [`Self::current_rate_limit_retries`] 口径）。解析失败或缺键 = 默认值。
     /// 起 pub(crate)：loop/token_budget.rs 的 session_token_budget
-    /// 世代读复用同一真相源。
+    /// 世代读复用同一配置来源。
     pub(crate) fn agents_defaults_u64(&self, key: &str, default: u64) -> u64 {
         let Some(v) = self.config_generation() else {
             return default;
@@ -368,7 +368,7 @@ impl AgentLoop {
             .unwrap_or(default)
     }
 
-    /// BUG ②A：单次上游调用超时（秒）。0 = 关闭（旧行为）。
+    /// 单次上游调用超时（秒）。0 = 关闭（旧行为）。
     pub(crate) fn current_provider_call_timeout_secs(&self) -> u64 {
         self.agents_defaults_u64(
             "provider_call_timeout_secs",
@@ -376,7 +376,7 @@ impl AgentLoop {
         )
     }
 
-    /// BUG ②B：限流重试环总预算（秒）。0 = 不限。
+    /// 限流重试环总预算（秒）。0 = 不限。
     pub(crate) fn current_rate_limit_budget_secs(&self) -> u64 {
         self.agents_defaults_u64("rate_limit_budget_secs", DEFAULT_RATE_LIMIT_BUDGET_SECS)
     }
@@ -387,7 +387,7 @@ impl AgentLoop {
     }
 
     /// 当前活跃模型 id（解析后的模型名，非别名；审计/展示用—— 冲突硬解
-    /// 决策流卡记「哪个模型做的硬解」）。切换走 [`Self:set_active_model`]。
+    /// 决策流卡记「哪个模型做的硬解」）。切换走 [`Self::set_active_model`]。
     pub fn active_model(&self) -> String {
         self.active_model.read().clone()
     }
@@ -399,8 +399,8 @@ impl AgentLoop {
         *self.tier.write() = tier;
     }
 
-    /// ：记录级 tier 钉死。`Some` = 档位以
-    /// 记录为唯一真相源（[`Self:refresh_active_tier`] 短路——换模型/config
+    /// 记录级 tier 钉死。`Some` = 档位以
+    /// 记录为准（[`Self::refresh_active_tier`] 短路——换模型/config
     /// 重解析都不覆盖）；`None` = 回落 config 驱动（主/项目 loop 语义）。
     /// 设置时同步落当前 tier（下一轮供给闸立即可见，不等 refresh 触发点）。
     pub fn set_tier_override(&self, tier: Option<nemesis_types::capability::ModelTier>) {
@@ -417,8 +417,8 @@ impl AgentLoop {
         *self.extra_hidden_tools.write() = tools;
     }
 
-    /// 循环流程策略槽（WASM 样板工程；`policy` 模块是设计真相源）。
-    /// 全量替换语义，镜像 [`Self:set_extra_hidden_tools`]；传入哨兵
+    /// 循环流程策略槽（WASM 样板工程；`policy` 模块承载设计定义）。
+    /// 全量替换语义，镜像 [`Self::set_extra_hidden_tools`]；传入哨兵
     /// （`Builtin*Policy`）即回退内置路径。
     pub fn set_compact_policy(
         &self,
@@ -427,7 +427,7 @@ impl AgentLoop {
         *self.compact_policy.write() = policy;
     }
 
-    /// 终答裁决策略槽注入（见 [`Self:set_compact_policy`]）。
+    /// 终答裁决策略槽注入（见 [`Self::set_compact_policy`]）。
     pub fn set_final_judge_policy(
         &self,
         policy: std::sync::Arc<dyn crate::r#loop::policy::FinalJudgePolicy>,
@@ -435,7 +435,7 @@ impl AgentLoop {
         *self.final_judge_policy.write() = policy;
     }
 
-    /// 参数校验策略槽注入（见 [`Self:set_compact_policy`]）。
+    /// 参数校验策略槽注入（见 [`Self::set_compact_policy`]）。
     pub fn set_validation_policy(
         &self,
         policy: std::sync::Arc<dyn crate::r#loop::policy::ValidationPolicy>,
@@ -532,7 +532,7 @@ impl AgentLoop {
         *self.mode.read()
     }
 
-    /// ：mode Arc 句柄——`PlanPresentHandle` 与 loop 共享同一
+    /// mode Arc 句柄——`PlanPresentHandle` 与 loop 共享同一
     /// 份模式状态（工具批准侧直接翻转，loop 下轮供给闸读到的就是 build）。
     pub fn mode_arc(&self) -> Arc<parking_lot::RwLock<crate::types::AgentMode>> {
         self.mode.clone()
@@ -600,7 +600,7 @@ impl AgentLoop {
     pub(crate) const PLAN_MODE_WRITE_TOOLS: &'static [&'static str] = &[
         "exec",
         "run_script",
-        // ：cargo/npm/go 构建落 target//node_modules/——
+        // cargo/npm/go 构建落 target//node_modules/——
         // 「可变更外部状态」同语义，plan 模式一并拦。
         "run_checks",
         "write_file",
@@ -636,7 +636,7 @@ impl AgentLoop {
     /// (devtool-upgrade): inject the shared layered pricing store
     /// (workspace/data). of the three-tier `context_window` resolution —
     /// when config.json has no explicit `context_window` for the active
-    /// model, `PricingStore:lookup` (custom > downloaded > embedded, with
+    /// model, `PricingStore::lookup` (custom > downloaded > embedded, with
     /// bare-suffix matching) supplies `max_input_tokens`. `None` (not
     /// injected / open failed) skips straight to fallback.
     pub fn set_pricing_store(&self, store: std::sync::Arc<nemesis_data::PricingStore>) {
@@ -651,9 +651,9 @@ impl AgentLoop {
         *self.lsp_manager.write() = Some(mgr);
     }
 
-    /// ：诊断回灌触发写工具枚举表（单一真相源）——
+    /// 诊断回灌触发写工具枚举表——
     /// dispatch 侧门（tool_batch 器官 8c）与核心闸
-    /// （[`Self:apply_diagnostics_feedback`]）同源消费。计划 §冲突面登记
+    /// （[`Self::apply_diagnostics_feedback`]）同源消费。计划 §冲突面登记
     /// 钦定放 config_watch.rs，规避 loop.rs 主体的同文件冲突（Wave 2 的
     /// ）。multiedit 的 args 形态是 `edits[].path`（非顶层 path），
     /// 路径提取见 [`extract_diag_feedback_paths`]。
@@ -689,8 +689,8 @@ impl AgentLoop {
     /// 调用。ERROR 级取 ≤`max_errors` 条追加（起 `max_errors` 为**跨
     /// 文件聚合后的总量上限**）。
     ///
-    /// ：触发写工具扩到 4 个（枚举表
-    /// [`Self:DIAGNOSTICS_WRITE_TOOLS`] 单一真相源）；`paths` 支持多路径
+    /// 触发写工具扩到 4 个（枚举表
+    /// [`Self::DIAGNOSTICS_WRITE_TOOLS`] 统一定义）；`paths` 支持多路径
     /// （multiedit = `edits[].path` 去重集）。
     ///
     ///
@@ -704,12 +704,12 @@ impl AgentLoop {
     ///   一次写入（本会话经 exec 改的 / 外部改的）→ 丢弃，宁缺勿假。
     ///   编辑文件本身是本轮 touch 后现采的，天然新鲜。
     /// - 返回值第二元 = 本轮**成功采集**文档的 (path, 采集时 mtime) 锚点，
-    ///   调用方（[`Self:diagnostics_feedback`]）回写会话登记——0 错误的
+    ///   调用方（[`Self::diagnostics_feedback`]）回写会话登记——0 错误的
     ///   干净文档也登记（后续别的文件写入触发聚合时它才有据可查）。
     ///
-    /// 文档同步用 [`nemesis_lsp:LspManager:touch_file`]（读盘下发）而非
-    /// `notify_change`：edit_file 的最终内容无法从 args 重建，磁盘是唯一
-    /// 真相源；write_file 读盘等价（execute 返回即写完）。同步策略：
+    /// 文档同步用 [`nemesis_lsp::LspManager:touch_file`]（读盘下发）而非
+    /// `notify_change`：edit_file 的最终内容无法从 args 重建，以磁盘
+    /// 为准；write_file 读盘等价（execute 返回即写完）。同步策略：
     /// **先全量 touch、再单轮 drain**（等首个编辑文件）——`drain_pushes`
     /// 收割的是 session 全部 uri 的推送，逐文件串行等会让干净文件各吃满
     /// `wait_max_ms`（multiedit 多文件时等待税线性放大）。
@@ -879,12 +879,12 @@ impl AgentLoop {
         out
     }
 
-    /// 内置 slash 命令名（与 [`Self:handle_command_with_context`] 的 match 臂
+    /// 内置 slash 命令名（与 [`Self::handle_command_with_context`] 的 match 臂
     /// **同步维护**）：自定义命令表命中这些名字时跳过改写——内置优先。
     /// `compact`/`clear` 是 会话维护命令（gate 内 `parse_maintenance_command`
     /// 拦截，有副作用，同样不许被自定义命令表遮蔽）；`plan`/`build` 是
     /// 模式切换（gate 内独立臂，要先拿 chat_id 发布 ModeChanged）。
-    /// 清单本体收敛到 `nemesis_types:constants:BUILTIN_SLASH_COMMANDS`
+    /// 清单本体收敛到 `nemesis_types::constants:BUILTIN_SLASH_COMMANDS`
     /// （dashboard `commands.list` 的 `builtins` 下发同源），这里只做转发。
     pub(crate) const BUILTIN_SLASH_COMMANDS: &'static [&'static str] =
         nemesis_types::constants::BUILTIN_SLASH_COMMANDS;
@@ -897,7 +897,7 @@ impl AgentLoop {
     // AgentLoop 状态），HotReloader<T> 的 fn(&Path)->T 形状装不下——保留独立
     // 实现并登记（计划原文"诚实优于强行统一"）。收编需 trait 形状的 reloader。
     pub(crate) fn refresh_active_tier(&self) {
-        // 记录级钉死在场 = 记录是唯一真相源，config 重解析不覆盖。
+        // 记录级钉死在场 = 以记录为准，config 重解析不覆盖。
         if self.tier_override.read().is_some() {
             return;
         }
@@ -966,9 +966,9 @@ impl AgentLoop {
     /// Resolve the active model's per-model output token cap (`max_output_tokens`)
     /// from config.json, used as the chat request's `max_tokens`. Reads config
     /// fresh each call (like `current_display_model`). Fallback chain
-    /// : per-model `max_output_tokens` >
+    /// per-model `max_output_tokens` >
     /// `agents.defaults.max_tokens` > caller-side `unwrap_or(DEFAULT_MAX_TOKENS)`
-    /// (64K, see `nemesis_types:capability:DEFAULT_MAX_TOKENS`). Lets each
+    /// (64K, see `nemesis_types::capability:DEFAULT_MAX_TOKENS`). Lets each
     /// model declare its real output ceiling so large files write in one shot
     /// instead of truncating at a blanket cap.
     /// 带 detached 覆盖参数（BUG `board.plan.model`
@@ -986,7 +986,7 @@ impl AgentLoop {
         // 级——config 里 agents.defaults.max_tokens 在主轮路径是死键。
         nemesis_types::capability::resolve_max_output_tokens(&cfg, &active)
             .or_else(|| nemesis_types::capability::resolve_agents_default_max_tokens(&cfg))
-            // u32 值域外（负数 / >u32:MAX）= 配置坏值，按缺席处理（调用方
+            // u32 值域外（负数 / >u32::MAX）= 配置坏值，按缺席处理（调用方
             // 回落 DEFAULT_MAX_TOKENS 默认）。裸 `as` 会把 -1 回绕成
             // 4294967291——请求带巨值 max_tokens 打爆 provider 400。
             .and_then(|n| u32::try_from(n).ok())
@@ -1002,7 +1002,7 @@ impl AgentLoop {
     }
 
     /// （机制加固）：`agents.defaults.max_tool_iterations`
-    /// 的每轮世代快照读（世代化，同 [`Self:current_max_tokens`] 模式）
+    /// 的每轮世代快照读（世代化，同 [`Self::current_max_tokens`] 模式）
     /// ——dashboard / CLI 改值不再需要重启或等 mtime 翻转（organ 1 每轮消费）。
     /// None = 无代（standalone / 绑定后未发布）或键缺席——调用方回落启动值
     /// `config.max_turns`。负值照透传（消费侧 <=0 = 不限）。
@@ -1013,17 +1013,17 @@ impl AgentLoop {
 
     /// （无人值守）：`agents.defaults.max_output_ceiling`
     /// 翻倍阶梯封顶的每轮世代快照读（世代化，同
-    /// [`Self:current_max_tool_iterations`] 模式）。无代（standalone）或键
-    /// 缺席/非法 → 默认 262144（resolver 单一真相源
-    /// [`nemesis_types:capability:resolve_max_output_ceiling`]）。
+    /// [`Self::current_max_tool_iterations`] 模式）。无代（standalone）或键
+    /// 缺席/非法 → 默认 262144（resolver 权威定义
+    /// [`nemesis_types::capability::resolve_max_output_ceiling`]）。
     pub(crate) fn current_max_output_ceiling(&self) -> u64 {
         self.config_generation()
             .map(|v| nemesis_types::capability::resolve_max_output_ceiling(&v))
             .unwrap_or(nemesis_types::capability::MAX_OUTPUT_CEILING_DEFAULT)
     }
 
-    /// ：`agents.stream_concat_retry` 开关的
-    /// 每轮世代快照读（世代化，同 [`Self:current_max_output_ceiling`]
+    /// `agents.stream_concat_retry` 开关的
+    /// 每轮世代快照读（世代化，同 [`Self::current_max_output_ceiling`]
     /// 模式）——流中断 transient 重试是否拼接续写（partial 作 assistant
     /// 前缀 + 续写提示）。**默认开**（拼接省 token）；显式 `false` =
     /// 回退「重试从头」。键缺席 / 类型错 / 无代（standalone 测试态）→ 默认开。
@@ -1031,9 +1031,9 @@ impl AgentLoop {
         stream_concat_retry_from_value(self.config_generation().as_deref())
     }
 
-    /// ：`agents.defaults.pre_pause_probe` 的
-    /// 每次世代快照读（世代化，同 [`Self:current_max_output_ceiling`]
-    /// 模式——config.json 唯一真相源）。standalone（无 config_path）/ 无代
+    /// `agents.defaults.pre_pause_probe` 的
+    /// 每次世代快照读（世代化，同 [`Self::current_max_output_ceiling`]
+    /// 模式——以 config.json 为准）。standalone（无 config_path）/ 无代
     /// → 解析器默认值（开 + 240s）。在预算暂停路径消费（`loop/pre_pause_probe`）。
     pub(crate) fn current_pre_pause_probe(
         &self,
@@ -1050,7 +1050,7 @@ impl AgentLoop {
     /// (sixth batch) + (devtool-upgrade)：active 模型的
     /// context_window（input token capacity）**三级解析链**：
     /// config.json 显式 `context_window`（用户最大）→ 价目表
-    /// `max_input_tokens`（`PricingStore:lookup`，含 bare-suffix 匹配）→
+    /// `max_input_tokens`（`PricingStore::lookup`，含 bare-suffix 匹配）→
     /// [`FALLBACK_CONTEXT_WINDOW`]（128k，由调用方
     /// `instance.context_window()` 兜底）。读 config 每次新鲜（同
     /// `current_max_tokens` 模式）。This closes the - leftover: the
@@ -1062,7 +1062,7 @@ impl AgentLoop {
         self.current_context_window_with_source().0
     }
 
-    /// [`Self:current_context_window`] 带来源标记（可观测）：
+    /// [`Self::current_context_window`] 带来源标记（可观测）：
     /// `Some((窗口, "config" | "catalog"))`； 未命中 → `(None, "fallback-128k")`
     /// ——调用方用 `instance.context_window()`（= [`FALLBACK_CONTEXT_WINDOW`]）。
     pub(crate) fn current_context_window_with_source(&self) -> (Option<usize>, &'static str) {
@@ -1073,9 +1073,9 @@ impl AgentLoop {
     }
 
     /// 压缩点一等公民化：有效压缩点世代快照读（世代化，同
-    /// [`Self:current_context_window_with_source`] 模式——config.json 唯一
-    /// 真相源，`model set-compact-context` / Dashboard 改键下一轮压缩检查
-    /// 即生效）。组合与钳制单一真相源在 [`resolve_compact_trigger`]；
+    /// [`Self::current_context_window_with_source`] 模式——以 config.json
+    /// 为准，`model set-compact-context` / Dashboard 改键下一轮压缩检查
+    /// 即生效）。组合与钳制的统一定义在 [`resolve_compact_trigger`]；
     /// `fallback_window` = 三级链全 miss 时的兜底窗口——调用方传
     /// `instance.context_window()`（启动物化值 / 测试显式设置，旧路径语义
     /// 逐位保持）；来源标签相应记 `"instance"`。
@@ -1092,7 +1092,7 @@ impl AgentLoop {
     }
 
     /// （多模态 goal）：active 模型的 vision 能力（世代快照读，同
-    /// [`current_max_tokens`] 世代化模式——config.json 是唯一真相源，模型
+    /// [`current_max_tokens`] 世代化模式——以 config.json 为准，模型
     /// 中途切换 / 盘上改动经发布点自然生效）。standalone / 条目缺失 → 默认放行。
     pub(crate) fn current_vision(&self) -> nemesis_types::capability::VisionResolution {
         let active = self.active_model.read().clone();
@@ -1101,7 +1101,7 @@ impl AgentLoop {
             .unwrap_or_else(nemesis_types::capability::vision_default_allow)
     }
 
-    /// : per-model summarizer prefix-reuse switch (summarizer_prefix_reuse,
+    /// per-model summarizer prefix-reuse switch (summarizer_prefix_reuse,
     /// default true — the main model keeps the prefix-reuse summary shape).
     /// `false` → the summary request falls back to the pre shape (single bare
     /// user message with `role: content` text concatenation), for cheap
@@ -1118,7 +1118,7 @@ impl AgentLoop {
     /// codemode（默认开 + 热生效联动）：注入装配期构造的
     /// code_run 工具实例。agent_factory 在 `Arc<AgentLoop>` 定型后调用
     /// （`set_loop` 需要弱引用，只能在装配期做）；此后开关切换全部走
-    /// [`Self:check_config_reload`] 的注册状态比对，本方法只在装配期调用。
+    /// [`Self::check_config_reload`] 的注册状态比对，本方法只在装配期调用。
     #[cfg(all(feature = "codemode", not(target_os = "android")))]
     pub fn install_code_run_tool(&self, tool: std::sync::Arc<crate::code_run::CodeRunTool>) {
         *self.code_run_tool.write() = Some(tool);
@@ -1152,7 +1152,7 @@ impl AgentLoop {
     /// `check_mcp_reload`. Picks up dashboard model additions and CLI
     /// `model set-tier` while the gateway is running.
     ///
-    /// 内容闸内建于 [`Self:republish_config_generation`]（基准 = 现行
+    /// 内容闸内建于 [`Self::republish_config_generation`]（基准 = 现行
     /// 代锚定的盘上原始字节，内容比对不赌钟—— Windows 粗时钟
     /// 下 mtime 等值判定同 tick 写入不可分辨）；闸未过 = 现行代仍是盘上
     /// 真相，整段跳过。**本方法即
@@ -1186,7 +1186,7 @@ impl AgentLoop {
     }
 }
 
-/// 开关解析纯函数（单一真相源，[`AgentLoop:current_stream_concat_retry`]
+/// 开关解析纯函数（统一定义，[`AgentLoop::current_stream_concat_retry`]
 /// 消费）：config 根值里读 `agents.stream_concat_retry`。**默认开**（
 /// 拼接省 token）；显式 `false` = 回退「重试从头」。键缺席 / 类型错 /
 /// config 不可用（None）→ 默认开。`true` 显式与缺省同语义（不区分）。

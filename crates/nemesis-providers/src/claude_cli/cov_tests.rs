@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::types::{ChatOptions, Message, ToolDefinition};
-// PathBuf 唯一使用者是 Windows 形态的 .cmd 批处理夹具——不门控则
+// PathBuf 唯一使用者是 Windows 形态的.cmd 批处理夹具——不门控则
 // Linux 上 unused import 撞 clippy -D warnings。
 #[cfg(windows)]
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ fn provider_with(command: &str) -> ClaudeCliProvider {
 
 // Windows 形态夹具（.cmd 批处理 + cmd 语法体）——Linux 无 cmd 且该文件
 // 无执行位，spawn 直接 Permission denied。消费方全在下方 Windows 形态
-// 用例 → Linux 下门控防死代码。（2026-09-02 约定）
+// 用例 → Linux 下门控防死代码。（约定）
 #[cfg(windows)]
 fn temp_dir(name: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
@@ -110,7 +110,7 @@ async fn chat_nonexistent_command_reports_spawn_failure() {
 }
 
 /// 非零退出 + stderr → 「claude cli error: …」。
-#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded，2026-09-02 约定）
+#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded， 约定）
 #[tokio::test]
 async fn chat_nonzero_exit_with_stderr_reports_stderr() {
     let bat = write_batch("stderr-out", "echo boom 1>&2\r\nexit /b 3\r\n");
@@ -131,7 +131,7 @@ async fn chat_nonzero_exit_with_stderr_reports_stderr() {
 
 /// .bat 假 CLI 输出 result JSON → 成功链路（288 parse_response 尾巴 +
 /// usage 汇总）。
-#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded，2026-09-02 约定）
+#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded， 约定）
 #[tokio::test]
 async fn chat_success_via_fake_batch() {
     let bat = write_batch(

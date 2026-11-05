@@ -51,7 +51,7 @@ pub enum FinalJudgeVerdict {
     RetryWithNudge(String),
     /// 重试预算耗尽——以此文案收轮。
     GiveUp(String),
-    /// 单次显式回退宿主内置判定（`TurnGuard:check_final_answer`）。
+    /// 单次显式回退宿主内置判定（`TurnGuard::check_final_answer`）。
     Builtin,
 }
 
@@ -61,7 +61,7 @@ pub trait FinalJudgePolicy: Send + Sync {
     async fn judge(&self, input: &FinalJudgeInput) -> FinalJudgeVerdict;
 }
 
-/// 零逻辑哨兵：恒返 [`FinalJudgeVerdict:Builtin`]（行为 = 无策略槽）。
+/// 零逻辑哨兵：恒返 [`FinalJudgeVerdict::Builtin`]（行为 = 无策略槽）。
 pub struct BuiltinFinalJudgePolicy;
 
 #[async_trait::async_trait]
@@ -85,7 +85,7 @@ pub struct ValidationInput {
     pub args_json: String,
 }
 
-/// 校验裁决。宿主映射到 [`crate:args_validator:Outcome`]：
+/// 校验裁决。宿主映射到 [`crate::args_validator:Outcome`]：
 /// `Valid`/`Fixed` 直通；`Reject` 按 schema violation 类（class `"B"`）回灌
 /// 模型并计入 validation_failures（遥测类暂复用 `"B"`，专用类随 WASM
 /// 合同批引入）。
@@ -107,7 +107,7 @@ pub trait ValidationPolicy: Send + Sync {
     async fn validate(&self, input: &ValidationInput) -> ValidationVerdict;
 }
 
-/// 零逻辑哨兵：恒返 [`ValidationVerdict:Builtin`]。
+/// 零逻辑哨兵：恒返 [`ValidationVerdict::Builtin`]。
 pub struct BuiltinValidationPolicy;
 
 #[async_trait::async_trait]

@@ -1,7 +1,7 @@
-//! history 请求/响应的共享组装件（单一真相源）。
+//! history 请求/响应的共享组装件。
 //!
 //! `chat.history_request` 的解析与 `history_response` 的 JSON 组装此前
-//! 只活在 [`crate:r#loop:AgentLoop`] 内（loop.rs handle_history_request /
+//! 只活在 [`crate::r#loop::AgentLoop`] 内（loop.rs handle_history_request /
 //! publish_history_response）。入站过滤链落地（项目会话
 //! 历史加载修复）后，web 咽喉点的 `HistoryFilter` 与 loop 内路径共用
 //! 同一份组装逻辑——**搬移非重写**：字段集、session_id 回显（HD

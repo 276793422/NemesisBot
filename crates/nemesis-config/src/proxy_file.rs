@@ -16,7 +16,7 @@
 //! 生效时机（两段不同）：
 //! - env 段：gateway 启动早期 `set_var` 注入进程环境（**重启生效**）——
 //!   必须先于一切 reqwest client 构建；[`env_vars_to_apply`] 是注入清单的
-//!   纯函数单一真相源。
+//!   纯函数统一定义。
 //! - selfupdate 段：更新下载/检查链路**调用时读盘**（下载是逐次操作，
 //!   **保存即对下次生效**，免重启）——[`load_selfupdate_proxy`] 是唯一读点。
 
@@ -54,7 +54,7 @@ pub struct ProxyFileConfig {
     pub selfupdate: SelfupdateProxyConfig,
 }
 
-/// 配置文件路径：`<config_dir>/config.proxy.json`（单一真相源）。
+/// 配置文件路径：`<config_dir>/config.proxy.json`。
 pub fn proxy_config_path(config_dir: &Path) -> PathBuf {
     config_dir.join("config.proxy.json")
 }

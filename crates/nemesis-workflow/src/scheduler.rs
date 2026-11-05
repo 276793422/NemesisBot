@@ -18,7 +18,7 @@ use crate::types::{Edge, ExecutionState, NodeDef, NodeResult};
 
 /// Optional progress hook invoked by the scheduler after each level finishes.
 ///
-/// Used by the engine (1b-A1 step 6) to persist a checkpoint of the current
+/// Used by the engine (1b step 6) to persist a checkpoint of the current
 /// `wf_ctx` between levels so an interrupted execution can resume without
 /// re-running completed nodes.
 ///
@@ -111,7 +111,7 @@ pub fn topological_sort(nodes: &[NodeDef], edges: &[Edge]) -> Result<Vec<Vec<Str
 /// stale input field of the same name. Trigger-time inputs (workflow_chat's
 /// `input`/`content`/`chat_id`/...) are the lowest-priority baseline.
 ///
-/// 缺陷 13 修复（2026-09-23）：对象型 input 条目除整体键外还按
+/// 缺陷 13 修复：对象型 input 条目除整体键外还按
 /// `key.field` 平铺一层（与 node_results 的平铺约定一致）。模板解析是
 /// 平铺字符串替换（`{{payload.value}}` 需字面键），webhook 契约把外部
 /// 载荷整体挂在 `input.payload` 对象下，不平铺则 `{{payload.value}}`
@@ -130,7 +130,7 @@ fn build_executor_context(wf_ctx: &WorkflowContext) -> HashMap<String, serde_jso
         ctx.insert(k, v);
     }
 
-    // Workflow variables (already JSON-typed since 1b-B3).
+    // Workflow variables (already JSON-typed since 1b-).
     for (k, v) in wf_ctx.get_all_variables() {
         ctx.insert(k, v);
     }
@@ -192,7 +192,7 @@ pub async fn schedule(
     schedule_inner(nodes, edges, executors, wf_ctx, &empty, cancel, None).await
 }
 
-/// Like [`schedule`] but with a per-level progress hook (1b-A1 step 6).
+/// Like [`schedule`] but with a per-level progress hook (1b step 6).
 #[allow(clippy::too_many_arguments)]
 pub async fn schedule_with_hook(
     nodes: &[NodeDef],
@@ -269,7 +269,7 @@ pub async fn schedule_resume_with_hook(
 ///
 /// `skip` lists node IDs that must not be executed (already-completed nodes
 /// when resuming from a checkpoint; empty for fresh runs).
-/// `hook` is invoked after each level finishes (1b-A1 step 6) so callers can
+/// `hook` is invoked after each level finishes (1b step 6) so callers can
 /// persist progress; pass `None` to skip.
 #[allow(clippy::too_many_arguments)]
 async fn schedule_inner(
@@ -307,7 +307,7 @@ async fn schedule_inner(
         // from a checkpoint) are dropped here — their outputs were already
         // restored into wf_ctx by the caller.
         //
-        // 缺陷 15 修复（2026-09-23 E 级复核实测）：条件边引用了「已完成节点
+        // 缺陷 15 修复（E 级复核实测）：条件边引用了「已完成节点
         // 输出里不存在的字段」（生成器把 condition 输出幻觉成 `passed`）时，
         // 旧路径占位符原样残留落「非空即真」——正向恒放行、取反恒拦截，
         // 路由与真实数据脱钩。该节点输出已落定、字段存在与否可证 → 升级为
@@ -320,7 +320,7 @@ async fn schedule_inner(
             if skip.contains(&id) {
                 continue;
             }
-            // Preserved Waiting（BUG-20261103-349）：仍停在审批的节点是
+            // Preserved Waiting：仍停在审批的节点是
             // **暂停屏障**，不是「待运行」——重跑会重新执行其副作用
             // （sub_workflow 每次 execute 都 spawn 新子执行：旧子执行孤儿化、
             // 路由锚 metadata.execution_id 被换新）。跳过执行，靠本层收尾
@@ -443,7 +443,7 @@ async fn schedule_inner(
 
         // Collect results; abort waiting if cancelled. A node failure must
         // cancel the remaining in-flight siblings and join them before
-        // returning Err (BUG-20261025-27): dropping the JoinHandles would
+        // returning Err: dropping the JoinHandles would
         // detach those tasks — their side effects (exec/file writes) keep
         // running after the workflow was already declared Failed, and with
         // the token removed from the engine's cancel map there is no way to
@@ -476,7 +476,7 @@ async fn schedule_inner(
                 Ok((node_id, Some(result), None)) => {
                     if let Some(obj) = result.output.as_object() {
                         for (field, val) in obj {
-                            // Store as JSON value (1b-B3) — preserves structure
+                            // Store as JSON value (1b-) — preserves structure
                             // for downstream nodes instead of stringifying.
                             wf_ctx.set_var(&format!("{}.{}", node_id, field), val.clone());
                         }
@@ -530,7 +530,7 @@ async fn schedule_inner(
             h.on_level_completed(wf_ctx).await;
         }
 
-        // 缺陷 9 修复（2026-09-23）：任一节点停在 Waiting（human_review）时
+        // 缺陷 9 修复：任一节点停在 Waiting（human_review）时
         // 必须就此打住——下游不得在审批落地前抢跑。旧实现一路跑完后续层，
         // 下游带着未解析占位符「完成」，resume 后因已完成被跳过，占位符
         // 输出被永久固化（静默错，违反诚实失败契约）。engine 在 schedule
@@ -553,7 +553,7 @@ async fn schedule_inner(
 /// Check if a node should be executed based on conditional edges.
 ///
 /// Each incoming conditional edge's expression is evaluated via the same
-/// [`crate::nodes::evaluate_condition`] used by the ConditionNodeExecutor —
+/// [`crate::nodes:evaluate_condition`] used by the ConditionNodeExecutor —
 /// it resolves `{{var}}` placeholders itself, so the documented
 /// `{{count}} > 5` style works uniformly. All incoming conditional edges
 /// must pass (AND). Any condition evaluating false skips the node.

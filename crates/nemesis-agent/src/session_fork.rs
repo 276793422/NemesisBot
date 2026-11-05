@@ -1,4 +1,4 @@
-//! : session forking — a TRUE branch, not a rollback.
+//! session forking — a TRUE branch, not a rollback.
 //!
 //! Fork = copy a session's history up to a selected TURN boundary under a
 //! NEW session key. The original session is never touched (its later turns
@@ -31,14 +31,14 @@
 //! Consequences of the fix, all by construction:
 //! - the new jsonl = the source jsonl's first-N-turn rows **verbatim**
 //!   (timestamps / model badges / cron markers preserved — see
-//!   `chat_log:write_chat_log_rows`);
-//! - the new store = `session:projected_messages_from_rows` over the same
+//!   `chat_log::write_chat_log_rows`);
+//! - the new store = `session::projected_messages_from_rows` over the same
 //!   cut rows — byte-identical to what a later self-heal rebuild of the
 //!   fork's jsonl would produce, so the fork's model context can never
 //!   silently shift the day its store json ages out of the TTL;
 //! - the summary is NEVER carried (jsonl records no summary; a store
 //!   summary text may reference folded/truncated content that isn't in
-//!   the fork). `ForkInfo:summary_kept` stays in the API shape and is
+//!   the fork). `ForkInfo::summary_kept` stays in the API shape and is
 //!   always `false`.
 //!
 //! Boundary events (`session_fork_out` / `session_fork_in`) land in the
@@ -60,7 +60,7 @@ pub struct ForkInfo {
     pub kept_messages: usize,
     /// chat_log rows excluded from the fork (source keeps them).
     pub dropped_messages: usize,
-    /// /：被排除内容中的完整 user 轮数（`dropped_messages` 行换算
+    /// ：被排除内容中的完整 user 轮数（`dropped_messages` 行换算
     /// 成轮）——分支摘要触发阈值（≥3 轮）的判定输入。
     pub dropped_user_turns: usize,
     /// （复查）：被排除行的 **fork 时刻快照**（本次调用自己
@@ -78,7 +78,7 @@ pub struct ForkInfo {
 
 /// Count COMPLETE user turns over chat_log rows (round-3 truth source: the
 /// same rows the fork dialog counts and the Dashboard renders). 轮边界判定
-/// 走 [`crate:chat_log:is_user_turn_boundary`] 单一真相源——steer 注入行
+/// 走 [`crate::chat_log:is_user_turn_boundary`] 单一权威定义——steer 注入行
 /// 是轮中间的 user 形态行，不计轮（否则轮计数虚增、分支
 /// 摘要阈值与 rewind 谱系 dropped_turns 失真）。
 pub fn row_user_turn_count(rows: &[Value]) -> usize {
@@ -246,7 +246,7 @@ pub fn fork_session_opts(
     }
 
     // 2) store side: mirror the self-heal construction over the SAME rows
-    // (single shared mapping — session:projected_messages_from_rows).
+    // (single shared mapping — session::projected_messages_from_rows).
     // `set_history` applies the store's own MAX_STORED_MESSAGES trim, so an
     // over-long prefix ages exactly like any long session. Summary is
     // never carried (round-3 rule, see module doc).
@@ -255,7 +255,7 @@ pub fn fork_session_opts(
     store.set_history(&new_key, messages);
     store.set_summary(&new_key, "");
     store.set_summary_covers_up_to(&new_key, None);
-    // ：项目归属继承——meta sidecar 是真相源（写新 key
+    // 项目归属继承——meta sidecar 为权威依据（写新 key
     // sidecar），store 缓存镜像同步，由下方 save 一并落盘。源无绑定 = 无
     // 操作（对话组 fork 仍是对话组；绑定不可变，继承即终态）。
     if let Some(meta) = chat_log::read_session_meta_full(source_key)
@@ -289,7 +289,7 @@ pub fn fork_session_opts(
         ),
     );
 
-    // : 记录 fork 血缘到新 key 的 sidecar meta（parent +
+    // 记录 fork 血缘到新 key 的 sidecar meta（parent +
     // forked_at_turn）。Upsert 语义——随后 fork endpoint 写 title 时保留
     // 这两字段；旧 meta 文件（只有 title）不受影响。independent 形态跳过
     // （fork_session_opts 文档：生来无父分支）。

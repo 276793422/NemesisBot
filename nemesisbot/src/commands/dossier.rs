@@ -12,9 +12,9 @@ use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
 pub enum DossierAction {
-    /// Export an issue tree (number like NB-1) or a whole project's records
+    /// Export an issue tree (number like) or a whole project's records
     Export {
-        /// Issue number like NB-1（与 --project-id 二选一）
+        /// Issue number like （与 --project-id 二选一）
         issue: Option<String>,
         /// Export all issues of this project instead
         #[arg(long)]

@@ -1,4 +1,4 @@
-//! /（2026-09-05）：`chat.todo_get` 支撑函数测试——读路径与
+//! （2026-09-05）：`chat.todo_get` 支撑函数测试——读路径与
 //! TodoWriteTool 写路径的同构性锁定。
 
 use super::chat::read_session_todos;

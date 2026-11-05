@@ -526,7 +526,7 @@ fn test_fork_writes_parent_lineage_meta() {
 
 // ---：fork 继承项目归属 ---
 
-/// 源会话带项目绑定时 fork：新 key 的 sidecar meta（真相源）与 store 缓存
+/// 源会话带项目绑定时 fork：新 key 的 sidecar meta与 store 缓存
 /// 镜像都带同一绑定，且随 store.save 落盘（六矩阵⑥ 的数据侧前提——路由
 /// owner_of miss 时回读 sidecar 兜底）。源无绑定 = fork 后仍无绑定。
 #[test]
@@ -539,7 +539,7 @@ fn test_fork_inherits_project_binding() {
 
     let info = fork_session(&store, &src, None, Some(1)).unwrap();
 
-    // sidecar meta（真相源）双字段就位，title/血缘共存。
+    // sidecar meta双字段就位，title/血缘共存。
     let meta = crate::chat_log::read_session_meta_full(&info.new_key).expect("fork 落 meta");
     assert_eq!(meta.project_id.as_deref(), Some("p-deadbeef"));
     assert_eq!(meta.project_path.as_deref(), Some("/tmp/proj_x"));

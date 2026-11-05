@@ -4,8 +4,8 @@
 //! - manifest `permissions.egress` 无 allowlist → 能力整体关闭（no-permission）；
 //! - allowlist **精确域名匹配**（大小写不敏感；`host:port` 形态钉端口，
 //!   无端口 = 任意端口；不做子域名泛化——通配必须显式逐条列出。IPv6 条目
-//!   用 bracketed 形态 `[::1]:8080` 钉端口、裸 `[::1]` / `2001:db8::9`
-//!   任意端口——BUG-20261103-346 修复前钉端口条目对 IPv6 主机永不命中）；
+//!   用 bracketed 形态 `[:1]:8080` 钉端口、裸 `[:1]` / `2001:db8:9`
+//!   任意端口—— 修复前钉端口条目对 IPv6 主机永不命中）；
 //! - `allow-private` 默认 false：解析出的 IP 落私网/回环/链路本地/ULA → 拒绝；
 //! - **DNS 钉地址**：解析一次，reqwest `.resolve()` 钉死——请求期 DNS 重绑
 //!   （rebinding）不成立；重定向 `Policy::none()`（跟重定向绕 allowlist 不成立）；
@@ -69,7 +69,7 @@ impl EgressPolicy {
     }
 }
 
-/// egress allowlist 中的 `{{config.<key>}}` 整条目 token 渲染（2026-11-03
+/// egress allowlist 中的 `{{config.<key>}}` 整条目 token 渲染（
 /// 自持写通道批）：实例配置（schema 缺省值 ∪ 操作员覆盖）解析出真实
 /// host/host:port，配置缺席 = 该条目丢弃（deny-by-default 不破——allowlist
 /// 空 = 能力整体关闭）。字面条目原样保留；`{{` 混入非整条目 token 形态的
@@ -133,16 +133,16 @@ fn normalize_url_egress_entry(value: &str) -> Option<String> {
 /// 判断 IP 是否私网段（allow_private=false 时拒绝目标）。
 ///
 /// pub：私网判定原语（v4-mapped/NAT64 归一、ULA/link-local/CGNAT 等段表）
-/// 独立成面供边界测试钉死——绕过面回归（H1）不允许只靠 e2e 兜。
+/// 独立成面供边界测试钉死——绕过面回归不允许只靠 e2e 兜。
 #[must_use]
 pub fn is_private_ip(ip: std::net::IpAddr) -> bool {
     match ip {
         std::net::IpAddr::V4(v4) => is_private_v4(v4),
         std::net::IpAddr::V6(v6) => {
-            // IPv4-mapped（::ffff:0:0/96）与 NAT64（64:ff9b::/96）内嵌的
+            // IPv4-mapped（ffff:0:0/96）与 NAT64（64:ff9b:/96）内嵌的
             // IPv4 归一回 v4 判定——DNS 返回 v4-mapped AAAA 时裸 v6 检查
             // 五项全不命中（非 loopback/ULA/link-local），是私网闸的真实
-            // 绕过面（2026-09-29 交付审查 H1，rebinding 威胁模型内）。
+            // 绕过面（交付审查，rebinding 威胁模型内）。
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return is_private_v4(v4);
             }
@@ -157,9 +157,9 @@ pub fn is_private_ip(ip: std::net::IpAddr) -> bool {
             }
             v6.is_loopback()
                 || v6.is_unspecified()
-                || (seg[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
-                || (seg[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
-                || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation 2001:db8::/32
+                || (seg[0] & 0xfe00) == 0xfc00 // ULA fc00:/7
+                || (seg[0] & 0xffc0) == 0xfe80 // link-local fe80:/10
+                || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation 2001:db8:/32
         }
     }
 }
@@ -177,19 +177,19 @@ fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
         || v4.octets()[0] == 169 && v4.octets()[1] == 254
 }
 
-/// allowlist 精确匹配（host 大小写不敏感；条目可带 :port 钉端口）。
+/// allowlist 精确匹配（host 大小写不敏感；条目可带:port 钉端口）。
 ///
 /// pub：allowlist 匹配原语（条目三分形态）独立成面供边界测试钉死——与
 /// [`is_private_ip`] 同理，匹配面回归不允许只靠 e2e 兜。
 ///
-/// 条目形态三分（BUG-20261103-346：此前 `rsplit_once(':')` 解析把
-/// bracketed `[::1]:8080` 与裸 `::1:8080` 都判成「host 段含冒号」掉进
+/// 条目形态三分（此前 `rsplit_once(':')` 解析把
+/// bracketed `[:1]:8080` 与裸 `:1:8080` 都判成「host 段含冒号」掉进
 /// 整串比较分支，而请求 host 在 [`proxy_request_inner`] 已剥括号成
-/// `::1`——钉端口文档语义对全部 IPv6 主机失效，条目静默永不命中）：
+/// `:1`——钉端口文档语义对全部 IPv6 主机失效，条目静默永不命中）：
 /// - `[host]:port`——bracketed IPv6 钉端口（RFC 3986 唯一无歧义形态）；
 /// - `host:port`——v4/域名钉端口（host 段不含冒号才算 host:port）；
-/// - 裸形态（含全部带冒号 IPv6 字面量，如 `::1`、`2001:db8::9`、
-///   `::1:8080` 整串合法地址）——任意端口。
+/// - 裸形态（含全部带冒号 IPv6 字面量，如 `:1`、`2001:db8:9`、
+///   `:1:8080` 整串合法地址）——任意端口。
 #[must_use]
 pub fn allowlisted(policy: &EgressPolicy, host: &str, port: u16) -> bool {
     let host_lc = host.to_lowercase();
@@ -205,7 +205,7 @@ pub fn allowlisted(policy: &EgressPolicy, host: &str, port: u16) -> bool {
         } else {
             match entry.rsplit_once(':') {
                 // host:port 仅当 host 段无冒号（v4/域名）；含冒号 = 裸
-                // IPv6 字面量（如 `::1:8080` 整体是合法地址），按裸处理。
+                // IPv6 字面量（如 `:1:8080` 整体是合法地址），按裸处理。
                 Some((h, p))
                     if !h.contains(':')
                         && !p.is_empty()

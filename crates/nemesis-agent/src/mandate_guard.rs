@@ -1,9 +1,9 @@
 //! b（2026-11-03 三期）：任务 mandate 执行面守卫——类型 + marker + 纯
 //! 裁决函数（顶层 pub 模块，与 token_budget 同布局：loop 侧接线在
-//! `r#loop:mandate_guard`）。
+//! `r#loop::mandate_guard`）。
 //!
 //! B 端 PeerChatHandler 前置闸（nemesis-cluster）验签通过后，把授权投影
-//! （[`nemesis_types:cluster:MandateEnforcement`]）随 `ClusterTask.mandate`
+//! （[`nemesis_types::cluster:MandateEnforcement`]）随 `ClusterTask.mandate`
 //! 投递；nemesisbot cluster_agent 装配本守卫进 AgentLoop（`set_mandate_guard`），
 //! run 结束摘除（`take_mandate_guard`），违规记录随回调 response 追加块
 //! 交回 master。干预面两处：
@@ -24,7 +24,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 任务终局 marker（Error 事件文案前缀）。nemesisbot
-/// `classify_terminal_failure` 单一真相源：识别为 `mandate_violation`。
+/// `classify_terminal_failure` 统一定义：识别为 `mandate_violation`。
 pub const MANDATE_VIOLATION_MARKER: &str = "⛔ mandate 违规";
 
 /// dispatch 调用级拒绝前缀（完整文案 = "Error: " + 本前缀 + 细节）。

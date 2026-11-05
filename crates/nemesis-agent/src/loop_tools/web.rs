@@ -403,11 +403,11 @@ const WEB_FETCH_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKi
 pub struct WebFetchTool {
     /// Maximum response body size in bytes.
     pub max_size: usize,
-    /// ：workspace 根（spill 存档用）。空 = 无 spill 落点
+    /// workspace 根（spill 存档用）。空 = 无 spill 落点
     /// （超限时退回旧「截断+注记」行为，诚实不静默）。生产注册处必填；
     /// 旧测试构造路径不带（断言截断注记的用例不受扰）。
     workspace: String,
-    /// ：SSRF 闸宿主（SecurityPlugin）。重定向改为手动
+    /// SSRF 闸宿主（SecurityPlugin）。重定向改为手动
     /// 循环后**每一跳**都重新过闸（旧实现自动跟随 ≤10 跳、闸只查首跳，
     /// `302 → 内网` 直接绕闸）。None（feature 裁剪 / 插件未注入）时跳数
     /// 上限仍生效，仅不做内网校验。
@@ -436,7 +436,7 @@ impl WebFetchTool {
 
     /// 为本跳 URL 构建请求 client（SSRF 闸逐跳复查）。
     ///
-    /// 三态（与图片 URL 预取 / 同一真相源 `ssrf:Guard`）：
+    /// 三态（与图片 URL 预取 / 同一真相源 `ssrf::Guard`）：
     /// - `Err` = 闸拦截（回环/内网/链路本地/元数据/用户 CIDR/非 http(s)）
     ///   → 整个请求报错；
     /// - `Ok(ips)` 非空 = 钉死 DNS 的专用 client（防 rebinding TOCTOU）；
@@ -680,7 +680,7 @@ impl Tool for WebFetchTool {
         let start_url = extract_url(args)?;
         let headers = extract_headers(args)?;
 
-        // ：手动重定向循环替代 reqwest 默认自动跟随——
+        // 手动重定向循环替代 reqwest 默认自动跟随——
         // 旧实现用默认 client（≤10 跳自动跟随），SSRF 闸只查首跳 URL，
         // `302 → 内网` 直接绕闸。现在每一跳都重新过闸 + 可钉死 DNS；
         // 跳数上限 5；3xx 无 Location / 相对 Location 都诚实处理。

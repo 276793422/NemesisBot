@@ -5,7 +5,7 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// [`write_file_atomic`] 临时文件名前缀（单一真相源）。临时名形如
+/// [`write_file_atomic`] 临时文件名前缀。临时名形如
 /// `.tmp-{pid}-{seq}-{nanos}`，与目标同目录、无扩展名——消费方的目录
 /// 清扫（TTL sweep 等）若需清除**崩溃残留**的临时孤儿（错误路径会自清理，
 /// 但进程死亡留在 create↔rename 窗口时无人善后），按本前缀扫描。
@@ -42,7 +42,7 @@ pub fn atomic_tmp_path(parent: &Path) -> std::path::PathBuf {
 /// Atomically write data to a file: unique same-dir temp file → write →
 /// flush → `sync_all` → (unix) rename over target → (unix) parent-dir sync.
 ///
-/// REL-002（2026-09-23）关键配置/状态写入的唯一权威 helper——所有配置修改
+/// 关键配置/状态写入的唯一权威 helper——所有配置修改
 /// 入口都调这里，不在各模块重复自制 tmp+rename。
 ///
 /// - **唯一临时名** `.tmp-{pid}-{seq}-{nanos}`（seq=进程级单调序数）：

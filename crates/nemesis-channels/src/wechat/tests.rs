@@ -1,4 +1,4 @@
-//! wechat 通道测试（P29）：契约测试面 = 验签三方案 / 握手与回调拒绝路径 /
+//! wechat 通道测试：契约测试面 = 验签三方案 / 握手与回调拒绝路径 /
 //! 入站消息映射 / 出站请求形态（mock HTTP）/ 真实 TCP 回调全链路。
 //!
 //! ⚠️ 协议形态为实现假设（D-3 fallback），本文件钉死的是**本模块自洽契约**，
@@ -222,7 +222,7 @@ fn reply_of(
     body: &[u8],
     sig: Option<&str>,
 ) -> CallbackReply {
-    // 子模块直接访问私有字段（同 crate 模块树内可见）
+    // 子模块直接访问私有字段（同 crate 模块树内可）
     WeChatChannel::handle_callback_with(
         &ch.config,
         &ch.bus_sender,

@@ -3,7 +3,7 @@
 use super::*;
 
 /// checkpoint gc 配置（`config.json` 的 `"checkpoint"` 段；
-/// 整改批次五）。
+///
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct CheckpointConfig {
@@ -36,7 +36,7 @@ impl Default for CheckpointGcConfig {
     }
 }
 
-/// 紫微系统配置（`config.json` 的 `"ziwei"` 段；总控 §9.1）。
+/// 紫微系统配置（`config.json` 的 `"ziwei"` 段；总控）。
 ///
 /// `enabled` 默认 false：总闸关 = WSAPI 全拒 + CLI 子命令诚实报未启用 +
 /// payload 嵌入字节不落盘（feature 关则三 crate 连同 payload 整体不编译）。
@@ -85,7 +85,7 @@ pub struct ConnectorsConfig {
     /// 资金类限额（None = 全 0 = fail-closed 拒绝所有资金 op）。
     #[serde(default)]
     pub finance: Option<ConnectorsFinanceConfig>,
-    /// 远程执行面总闸（集群 ：worker 节点是否接受 master 经 RPC 派发的
+    /// 远程执行面总闸（集群：worker 节点是否接受 master 经 RPC 派发的
     /// `connector_invoke`；false = worker 侧 handler 诚实拒绝。缺省 true）。
     /// 凭据铁律不变：派发载荷只含 op+args，凭据永不上 RPC 线——worker 用
     /// 自己的 vault 解锁。
@@ -270,13 +270,13 @@ impl Default for TerminalConfig {
 }
 
 /// 日志五族 TTL 清扫（`config.json` 的 `logs` 段；/ 统一清扫器，
-/// 整改批次三）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
+/// ）。每族 = 保留天数，`0 = 该族关闭清扫`；缺键 =
 /// 全默认。清扫器（nemesisbot logs_sweeper）启动扫一次 + 每 6h 一拍，
 /// 每族每拍限量 200 件防 IO 尖峰。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct LogsTtlConfig {
-    /// 对话历史 JSONL（`logs/session_logs/`，含 .meta.json sidecar 配对
+    /// 对话历史 JSONL（`logs/session_logs/`，含.meta.json sidecar 配对
     /// 同删）。默认 30。
     pub session_logs: u64,
     /// 轮次边界事件 sidecar（`logs/boundary/`）。默认 30。
@@ -388,7 +388,7 @@ impl Default for CaptureConfig {
 // ============================================================================
 // Agents Config
 // ============================================================================
-/// 健康监测旗标（`config.json` 的 `health` 段；， 整改批次一）。
+/// 健康监测旗标（`config.json` 的 `health` 段）。
 /// None = 全默认——磁盘水位监测开（warn 5GB / critical 1GB / 60s）。
 /// critical 臂只升级告警面（SSE `system-alert` + `/ready` 降级），**不做
 /// 自动 estop**（防误伤）。

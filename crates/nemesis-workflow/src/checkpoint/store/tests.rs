@@ -116,7 +116,7 @@ async fn test_delete_missing_is_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (Default impls)
+// coverage gap closure (Default impls)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

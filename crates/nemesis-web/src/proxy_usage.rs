@@ -34,7 +34,7 @@ pub(crate) struct ProxyUsageRecord<'a> {
     /// 200 = 转发成功；500 = 上游错误 / 断流 / 无终态。
     pub status_code: i32,
     pub error_message: Option<&'a str>,
-    /// `proxy:openai-api:{uuid}` / `proxy:chat-stream:{uuid}`（§2.4 命名）。
+    /// `proxy:openai-api:{uuid}` / `proxy:chat-stream:{uuid}`（命名）。
     pub session_key: String,
     /// `openai-proxy-{uuid simple}` / `chat-stream-proxy-{uuid simple}`。
     pub trace_id: String,
@@ -95,7 +95,7 @@ pub(crate) fn record_proxy_usage(ds: Option<&nemesis_data::DataStore>, rec: Prox
     }
 }
 
-/// 执行模型解析单一真相源：调用方点名优先（sse_chat 的 req.model），
+/// 执行模型解析统一定义：调用方点名优先（sse_chat 的 req.model），
 /// 空 = master 活跃模型（AppState 展示字段与 set_default 同一更新点），
 /// 再空 = 默认槽文本（default-following 语义的可读名）。bare lane 恒传
 /// `None`（执行模型 = master 活跃模型，不消费调用方回显名）。

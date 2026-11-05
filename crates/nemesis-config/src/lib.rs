@@ -31,7 +31,7 @@ pub use vault_ref::{
 };
 
 // ②（三期）：vault 别名域绑定（alias→(工具,槽位) 白名单）
-// 的配置 loader 与判定——dispatch 凭据闸 v2 臂的单一真相源。
+// 的配置 loader 与判定——dispatch 凭据闸 v2 臂的统一定义。
 pub use vault_domain::{
     DomainBinding, DomainVerdict, DomainViolation, VAULT_DOMAIN_CONFIG_FILE, VaultDomainConfig,
     vault_domain_config_path_in,
@@ -206,7 +206,7 @@ pub struct Config {
     /// Dashboard 前端表现（皮肤等；None = 全默认——内置 static 皮肤）。
     #[serde(default)]
     pub ui: Option<UiConfig>,
-    /// 行动代理 connector 注册表（PLAN 行动代理 ；None = 全默认——
+    /// 行动代理 connector 注册表（PLAN 行动代理；None = 全默认——
     /// enabled=true，预算 fail-closed：资金限额 0=拒绝所有）。
     #[serde(default)]
     pub connectors: Option<ConnectorsConfig>,
@@ -220,7 +220,7 @@ pub struct Config {
     /// [`HealthFlagConfig`]。
     #[serde(default)]
     pub health: Option<HealthFlagConfig>,
-    /// 日志六族 TTL 清扫（/ + 回收站 ；None = 全默认——
+    /// 日志六族 TTL 清扫（/ + 回收站；None = 全默认——
     /// session_logs 30d / boundary 30d / request_logs 14d / terminal 7d /
     /// event_ledger 30d / trash 90d；0 = 该族关闭清扫）。见
     /// [`LogsTtlConfig`]。
@@ -233,7 +233,7 @@ pub struct Config {
     pub checkpoint: Option<CheckpointConfig>,
     /// WASM 插件宿主开关段（`plugins.wasm.enabled`，缺省 true）。typed
     /// 字段化保证 save_config 往返不丢键（cache_warmer 同款预防，
-    /// ）：本键由 `crate::plugin_wasm::runtime_enabled`
+    /// ）：本键由 `crate::plugin_wasm:runtime_enabled`
     /// 经原始 JSON pointer 消费、全仓无写入点（手编 config.json 是唯一
     /// 设置途径）——不建模则任何 typed 保存（dashboard config/models/
     /// skills/profile 事务、save_live、ConfigStore::update 等）静默抹掉
@@ -251,7 +251,7 @@ pub struct Config {
 #[serde(default)]
 pub struct PluginsHostConfig {
     /// WASM 插件子系统运行期总闸（缺省 true = 未表态放行；显式 false =
-    /// 禁用。消费方 `crate::plugin_wasm::runtime_enabled` 原始 pointer
+    /// 禁用。消费方 `crate::plugin_wasm:runtime_enabled` 原始 pointer
     /// 现读，本字段只保证保存面不丢键）。
     #[serde(default = "default_plugins_wasm_enabled")]
     pub wasm: PluginsWasmHostConfig,
@@ -281,7 +281,7 @@ fn default_plugins_wasm_enabled() -> PluginsWasmHostConfig {
 }
 
 // 机械拆分：按配置域分文件。纯代码搬家，行为零变更；
-// 各子模块 pub 项经 pub use 保持原 nemesis_config:: 路径不变。
+// 各子模块 pub 项经 pub use 保持原 nemesis_config:路径不变。
 #[path = "sections/agents.rs"]
 mod agents;
 #[path = "sections/board.rs"]
@@ -403,7 +403,7 @@ impl Config {
     pub fn adjust_paths_for_environment(&mut self) {
         let expected_workspace = WorkspaceResolver::resolve(false).join("workspace");
 
-        // Check if workspace is using a default path. ：旧
+        // Check if workspace is using a default path.：旧
         // `ends_with(".nemesisbot/workspace")` 把任何以该后缀结尾的绝对路径
         // （如项目内自定义 D:/bots/proj/.nemesisbot/workspace）误判成默认
         // 形态、每次加载强改回默认；且 Windows 下 save_config 落盘的反斜杠
@@ -472,7 +472,7 @@ fn default_prompt_system() -> String {
     "pro".to_string()
 }
 fn default_max_tokens() -> i64 {
-    // 单一真相源：nemesis-types capability（8192→64K，
+    // 统一定义：nemesis-types capability（8192→64K，
     // max-tokens-8192截断撞顶复发）
     nemesis_types::capability::DEFAULT_MAX_TOKENS
 }
@@ -513,12 +513,12 @@ fn default_max_concurrent_turns() -> i64 {
 fn default_spill_retention_days() -> i64 {
     7
 }
-/// 429 重试环默认次数（裁决④：对齐业界口径，默认 10）。
+/// 429 重试环默认次数（对齐业界口径，默认 10）。
 fn default_rate_limit_retries() -> i64 {
     10
 }
 
-/// （能力扩展 compaction）：逐字尾巴 token 预算缺省值（单一真相源：
+/// （compaction）：逐字尾巴 token 预算缺省值（统一定义：
 /// serde 缺省 / raw-JSON 解析 / Default impl 三方共用）。对齐业界通行的
 /// keepRecentTokens=20000 口径。
 pub const DEFAULT_COMPACT_KEEP_RECENT_TOKENS: i64 = 20_000;
@@ -586,7 +586,7 @@ fn default_mcp_timeout() -> i64 {
 // ============================================================================
 
 // Single shared process-global-state lock for ALL tests in this crate that touch
-// `std::env::set_var` / `set_current_dir` / load config (which reads env). These
+// `std::env:set_var` / `set_current_dir` / load config (which reads env). These
 // mutate/read PROCESS-GLOBAL state, so under parallel test execution they race:
 // a writer in one test module pollutes the env a reader in another module sees.
 // Both `tests` and `extra_tests` `use super::GLOBAL_STATE_LOCK` so they share
@@ -612,7 +612,7 @@ mod extra_tests;
 #[cfg(test)]
 mod mcp_serde_tests;
 
-// （能力扩展）：compact_keep_recent_tokens 配置面（serde 缺省 /
+// compact_keep_recent_tokens 配置面（serde 缺省 /
 // roundtrip / raw-JSON 解析）测试。
 #[cfg(test)]
 mod ws2_compact_config_tests;

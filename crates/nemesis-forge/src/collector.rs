@@ -80,9 +80,9 @@ impl Collector {
 
     /// Persist to JSONL + insert into the in-memory store.
     ///
-    /// P4 拆分（2026-10-16）：落库与聚合曾是两条路径；聚合线（pattern_counts
-    /// /flush/aggregates.jsonl）2026-10-22 整体移除——aggregates 全仓零读者，
-    /// 是 write-only 死数据（审计 P2-a）。本函数只承担落盘 + 内存入库。
+    /// 拆分：落库与聚合曾是两条路径；聚合线（pattern_counts
+    /// /flush/aggregates.jsonl） 整体移除——aggregates 全仓零读者，
+    /// 是 write-only 死数据（审计 -a）。本函数只承担落盘 + 内存入库。
     async fn persist_and_store(&self, experience: Experience, hash: String) {
         let ce = CollectedExperience {
             experience,

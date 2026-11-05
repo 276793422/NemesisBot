@@ -14,7 +14,7 @@ fn test_parse_github_url_https() {
     assert_eq!(repo, "skills");
 }
 
-// (BUG #25, quality-hardening goal 冲刺 S10) 前缀命中但只有 owner 段：
+// (, quality-hardening goal 冲刺) 前缀命中但只有 owner 段：
 // 原实现掉进 shorthand 分支产出 ("https:", "/github.com/onlyowner") 垃圾
 // 解析，现在直接报错。
 #[test]
@@ -182,7 +182,7 @@ fn test_cmd_remove_nonexistent_skill() {
     std::fs::create_dir_all(&skills_dir).unwrap();
 
     // Should succeed even if skill doesn't exist
-    // WS4：cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
+    // cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
     cmd_remove(tmp.path(), "nonexistent").unwrap();
 }
 
@@ -194,7 +194,7 @@ fn test_cmd_remove_existing_skill() {
     std::fs::create_dir_all(&skill_path).unwrap();
     std::fs::write(skill_path.join("SKILL.md"), "# Test Skill").unwrap();
 
-    // WS4：cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
+    // cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
     cmd_remove(tmp.path(), "test-skill").unwrap();
     assert!(!skill_path.exists());
 }
@@ -1037,7 +1037,7 @@ fn test_cmd_remove_removes_directory() {
     std::fs::create_dir_all(&skill_path).unwrap();
     std::fs::write(skill_path.join("SKILL.md"), "content").unwrap();
 
-    // WS4：cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
+    // cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
     cmd_remove(tmp.path(), "to-remove").unwrap();
     assert!(!skill_path.exists());
 }
@@ -1053,31 +1053,31 @@ fn test_parse_github_url_with_extra_path_components() {
 }
 
 // =========================================================================
-// run() / cmd_* 分支覆盖（S11 覆盖率冲刺）
+// run() / cmd_* 分支覆盖（覆盖率冲刺）
 //
 // 策略：NEMESISBOT_HOME 指向临时目录（resolve_home 优先级 2），
 // 全程只读写临时 home；env set_var 进程级 → 持 crate::GLOBAL_STATE_LOCK。
-// run() 的 Search/Cache/Learn 分支用 tokio::task::block_in_place →
+// run() 的 Search/Cache/Learn 分支用 tokio::task:block_in_place →
 // 必须 multi_thread flavor；直测 async cmd_* 用普通 #[tokio::test]。
 // 不触网：cmd_search 走"无 registry 提前返回"分支（默认配置
 // search_cache.enabled=false、clawhub.enabled=false、github_sources 空）；
 // cmd_learn 用 config 缺失 / 不可解析模型两条纯本地 bail 路径。
 // =========================================================================
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct TempHomeEnv {
     _tmp: TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for TempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn temp_home_env() -> TempHomeEnv {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -1099,7 +1099,7 @@ fn write_skills_cfg(home: &std::path::Path, cfg: &serde_json::Value) {
 }
 
 /// 与 cmd_cache_stats/clear 内部一致的缓存目录推导（经 nemesis-path 唯一
-/// 真相源）：`{workspace}/skills/.cache`（2026-08-28 修复双重 workspace 拼接）。
+/// 真相源）：`{workspace}/skills/.cache`（修复双重 workspace 拼接）。
 fn cache_dir_of(home: &std::path::Path) -> std::path::PathBuf {
     nemesis_path::resolve_skills_cache_dir_in_workspace(
         skills_cfg_of(home).parent().unwrap().parent().unwrap(),
@@ -1167,7 +1167,7 @@ async fn test_cmd_cache_stats_empty_dir_with_stats() {
     );
     let dir = make_cache_dir(&home);
     write_stats(&dir, r#"{"hits": 5, "misses": 5}"#);
-    // 只有 .stats.json → count=0 → "No entries yet"
+    // 只有.stats.json → count=0 → "No entries yet"
     cmd_cache_stats(&skills_cfg_of(&home)).await.unwrap();
 }
 
@@ -1314,7 +1314,7 @@ async fn test_cmd_learn_unresolvable_model_bails() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
     std::fs::create_dir_all(&home).unwrap();
-    // 双击直启语义（2026-09-17）：模型不可解析不再让装配失败——工厂降级
+    // 双击直启语义：模型不可解析不再让装配失败——工厂降级
     // NullProvider（Ok），错误延迟到 LLM 调用时诚实报「未配置模型」。
     std::fs::write(
         crate::common::config_path(&home),
@@ -1338,7 +1338,7 @@ async fn test_cmd_source_add_invalid_url_errors_before_network() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
     std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
-    // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) cmd_source_add 已
+    // (同类横向, quality-hardening goal 冲刺) cmd_source_add 已
     // async 化（原同步实现内部 reqwest::blocking，在 run_command 的 runtime
     // 上下文 drop 嵌套 runtime 必 panic）；URL 解析仍在任何网络 IO 之前。
     let err = cmd_source_add(&skills_cfg_of(&home), "not a github url!")
@@ -1351,7 +1351,7 @@ async fn test_cmd_source_add_invalid_url_errors_before_network() {
 // run() 同步分支
 // -------------------------------------------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_run_skills_list_dir_missing_and_present() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1372,7 +1372,7 @@ fn test_run_skills_list_dir_missing_and_present() {
     run(SkillsAction::List, false).unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_run_skills_remove_found_and_not_found() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1398,7 +1398,7 @@ fn test_run_skills_remove_found_and_not_found() {
     .unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_run_skills_show_variants() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1436,7 +1436,7 @@ fn test_run_skills_show_variants() {
     .unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_run_skills_source_list_and_remove() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1491,12 +1491,12 @@ fn test_run_skills_source_list_and_remove() {
     .unwrap();
 }
 
-// (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) AddSource 臂已 async 化
+// (同类横向, quality-hardening goal 冲刺) AddSource 臂已 async 化
 // （block_in_place + Handle::block_on 桥承载异步 client，与 Search/Install 臂同
 // 模式），要求 tokio multi-thread runtime 上下文——因此本测试改为生产同款拓扑：
 // 自建 runtime + block_on 驱动 run()。旧「裸线程直调」契约随之作废（原实现内嵌
 // reqwest::blocking，在生产 runtime 上下文里 drop 必 panic，才是真正要改的 bug）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_run_skills_add_source_invalid_url() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1529,7 +1529,7 @@ fn test_run_skills_add_source_invalid_url() {
     });
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_run_skills_validate_variants() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1579,7 +1579,7 @@ fn test_run_skills_validate_variants() {
     .unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_run_skills_builtin_install_and_list() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1619,7 +1619,7 @@ fn test_run_skills_builtin_install_and_list() {
 // run() 异步分支（block_in_place → multi_thread flavor）
 // -------------------------------------------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_search_empty_registries_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1645,7 +1645,7 @@ async fn test_run_skills_search_empty_registries_dispatch() {
     .unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_cache_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1681,7 +1681,7 @@ async fn test_run_skills_cache_dispatch() {
     .unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_learn_missing_config_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1700,7 +1700,7 @@ async fn test_run_skills_learn_missing_config_dispatch() {
 }
 
 // ===========================================================================
-// panic 探针（BUG #27 同类横向, quality-hardening goal 冲刺 S11e）
+// panic 探针（同类横向, quality-hardening goal 冲刺）
 //
 // run() 的 SourceAction::Add / AddSource / InstallClawhub 臂使用「block_in_place
 // + Handle::block_on 承载 async fn（内部异步 reqwest client）」桥接模式（本批
@@ -1766,7 +1766,7 @@ fn probe_block_in_place_bridge_with_async_client_is_panic_free() {
 }
 
 // ===========================================================================
-// wave_b（覆盖率补测 2026-08-27）——只补「进程内可构造」的 miss 行。
+// wave_b（覆盖率补测）——只补「进程内可构造」的 miss 行。
 //
 // 不触网纪律的三条实现路径：
 // 1. nemesis-skills 的 ClawHub registry 的 base_url / convex_url 来自
@@ -1891,12 +1891,12 @@ mod wave_b {
     /// NEMESISBOT_HOME 守卫：纪律要求 prev-value 按 Option 恢复
     /// （既有 temp_home_env 不恢复环境变量，本块不沿用）。调用方必须持
     /// crate::GLOBAL_STATE_LOCK。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct WaveBHomeGuard {
         prev: Option<std::ffi::OsString>,
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl WaveBHomeGuard {
         fn set(root: &std::path::Path) -> Self {
             let prev = std::env::var_os("NEMESISBOT_HOME");
@@ -1905,7 +1905,7 @@ mod wave_b {
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl Drop for WaveBHomeGuard {
         fn drop(&mut self) {
             match self.prev.take() {
@@ -2075,7 +2075,7 @@ mod wave_b {
     }
 
     /// 无斜杠 + mock 搜索命中（slug 故意含空格）→ Found 分支（540-544 拿到
-    /// registry/slug 元组）→ install 链走到 convex（指 ：9 回环死端口，连接
+    /// registry/slug 元组）→ install 链走到 convex（指：9 回环死端口，连接
     /// 即拒）失败 → 567-568 → 毒化 full_ref 回退在 parse 处安全终结。
     #[tokio::test]
     async fn wave_b_cmd_install_found_via_mock_registry_then_poisoned_full_ref() {
@@ -2092,7 +2092,7 @@ mod wave_b {
         })
         .to_string();
         let _mock = WaveBMock::start(vec![("/api/search", search_payload)], 1);
-        // convex 走死端口：identifier 校验放行空格 slug 后，第一步 convex 调用即败
+        // convex 走死端口：identifier 校验放行空格 slug 后， convex 调用即败
         wave_b_write_clawhub_cfg(&home, &_mock.base_url(), "http://127.0.0.1:9");
 
         let err = cmd_install(
@@ -2115,7 +2115,7 @@ mod wave_b {
     // -----------------------------------------------------------------------
 
     /// Install 臂的桥接体（1153-1158 + 1160-1161）：走上面同款离线终局。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_skills_install_arm_bridge_dispatch() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2139,7 +2139,7 @@ mod wave_b {
     }
 
     /// Source::Add 子臂（1168-1172）：非法 URL 在任何网络语句之前被 parse 拒绝。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_skills_source_add_arm_bridge_invalid_url() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2294,7 +2294,7 @@ mod wave_b {
     async fn wave_b_cmd_learn_provider_failure_surfaces_agent_error() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join(".nemesisbot");
-        // provider 构造离线可成功（:9 是保留丢弃端口，仅回环连接拒绝）
+        // provider 构造离线可成功（9 是保留丢弃端口，仅回环连接拒绝）
         wave_b_write_llm_home(&home, "http://127.0.0.1:9");
 
         let err = cmd_learn(&home, "src", None)
@@ -2305,10 +2305,10 @@ mod wave_b {
 }
 
 // ===========================================================================
-// wave_c（覆盖率补测 2026-08-27）——cmd_install 的 ClawHub ZIP 安装成功链。
+// wave_c（覆盖率补测）——cmd_install 的 ClawHub ZIP 安装成功链。
 //
 // 分类定性轮认定的安装成功链残行（563-566 `Ok(version)` 的 ✅ Installed +
-// Location 打印臂、575 收尾 `Ok(())`）：wave_b 只把 install 的【失败】终局
+// Location 打印臂、575 收尾 `Ok()`）：wave_b 只把 install 的【失败】终局
 // 钉死（毒化回退），成功臂此前只能走真网。真正的 seam 在 config.skills.json
 // 的 ClawHubConfig：base_url / convex_url / convex_site_url 三者皆可注入，
 // RegistryManager::from_config（registry.rs「ClawHub support」段）原样喂给
@@ -2358,7 +2358,7 @@ mod wave_c {
             out.extend_from_slice(&0u16.to_le_bytes()); // flags
             out.extend_from_slice(&0u16.to_le_bytes()); // method = STORE
             out.extend_from_slice(&0u16.to_le_bytes()); // mod time
-            out.extend_from_slice(&0x5821u16.to_le_bytes()); // mod date 2024-01-01
+            out.extend_from_slice(&0x5821u16.to_le_bytes()); // mod date
             let crc = wave_c_crc32(data);
             out.extend_from_slice(&crc.to_le_bytes());
             out.extend_from_slice(&(data.len() as u32).to_le_bytes());
@@ -2481,7 +2481,7 @@ mod wave_c {
 
     /// 主回归：config 注入本地 ClawHub 三 URL → cmd_install 全成功链。
     /// 覆盖意图：555 📥 打印、562 manager.install Ok、563-566 ✅ Installed +
-    /// Location、575 收尾 Ok(())；下游 ClawHubRegistry 的 getBySlug 解析、
+    /// Location、575 收尾 Ok()；下游 ClawHubRegistry 的 getBySlug 解析、
     /// ZIP content-type 校验、STORE 解压、单顶层文件非平铺直写、目标落盘。
     #[tokio::test]
     async fn wave_c_cmd_install_clawhub_zip_success_round_trip() {
@@ -2575,7 +2575,7 @@ mod wave_c {
 // ===========================================================================
 
 // 整 mod Windows 形态（6/6 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r10_wave {
     use super::*;
     use std::ffi::OsString;
@@ -2634,7 +2634,7 @@ mod r10_wave {
 
     /// 主干全链：parse → 验证（重试耗尽或成功皆可）→ 结构探测兜底 →
     /// 写回 github_sources + github_sources_legacy 双份登记。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_skills_source_add_trunk_persists_new_registry_source() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -2666,7 +2666,7 @@ mod r10_wave {
 
     /// 重名拒绝臂：检测阶段照跑（含网络重试/探测），但走到重名检查时
     /// 提前 Ok 返回——既不加新条目也不写 legacy。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_skills_source_add_duplicate_name_rejected_before_second_write() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -2709,7 +2709,7 @@ mod r10_wave {
 
     /// run() 的 AddSource 分发桥（合法 URL 变体）：此前只有非法 URL 早退版本，
     /// 这里补上「桥接体真正驱动完整个 async 主干」的分发路径。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_add_source_arm_drives_full_trunk_via_bridge() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -2732,10 +2732,10 @@ mod r10_wave {
         assert!(cfg.exists(), "run() 链路同样必须落盘配置");
     }
 
-    /// WS4 漏斗后的 GitHub 离线终局：owner/repo 合法解析但离线（R10OfflineNet）
+    /// 漏斗后的 GitHub 离线终局：owner/repo 合法解析但离线（R10OfflineNet）
     /// → resolve_commit 网络失败 → install_github Err（不再是旧裸下载器的
     /// 「打印+Ok」），且不创建任何安装目录。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_cmd_install_github_download_exhaustion_ends_cleanly() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -2763,7 +2763,7 @@ mod r10_wave {
     /// cmd_install_clawhub 不可达终点臂：openclaw/skills 的 raw URL 打不通时
     /// 打印排障提示并 Ok 收尾；output_name None / Some 两变体都过一遍
     /// （覆盖 out_name 解析两个臂）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_cmd_install_clawhub_unreachable_reports_and_returns_ok() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -2790,7 +2790,7 @@ mod r10_wave {
 
     /// run() 的 InstallClawhub 分发桥：既有测试从未驱动过的 async 命令包装臂
     /// （block_in_place + Handle::block_on 承载内部异步 client）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_install_clawhub_bridge_dispatches_offline_error_arm() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -2814,7 +2814,7 @@ mod r10_wave {
 }
 
 // ---------------------------------------------------------------------------
-// wave6（2026-09-25）：cmd_show 的「目录存在但既无 SKILL.md 也无任何文件」
+// wave6：cmd_show 的「目录存在但既无 SKILL.md 也无任何文件」
 // 空目录区（read_dir Ok + files 空 → files.is_empty() 分支收口）。
 // ---------------------------------------------------------------------------
 mod wave6 {
@@ -2828,13 +2828,13 @@ mod wave6 {
         std::fs::create_dir_all(&skill_dir).unwrap();
 
         // 目录在场（不走 "not found" 早退）、无 SKILL.md（走 else 区）、
-        // read_dir Ok 但零条目（files.is_empty() → 不打印 Files:）。
+        // read_dir Ok 但零条目（files.is_empty() → 不打印 Files）。
         cmd_show(&skills_dir, "w6-empty").expect("空目录展示不报错");
     }
 }
 
 // -----------------------------------------------------------------------
-// BUG-20261101-295：cmd_show / cmd_install_clawhub 路径安全闸
+// cmd_show / cmd_install_clawhub 路径安全闸
 // -----------------------------------------------------------------------
 
 /// cmd_show 敌意名触 FS 前拒绝（读任意 <target>/SKILL.md + 无 SKILL.md

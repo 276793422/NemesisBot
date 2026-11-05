@@ -37,12 +37,12 @@ pub struct ToolLoopResult {
 ///
 /// This is a simplified internal type used for testing and simulation.
 /// The actual LLM response type used in production is
-/// `nemesis_providers::types::LLMResponse`, which includes additional
+/// `nemesis_providers::types:LLMResponse`, which includes additional
 /// fields like `finish_reason` and `usage`. This type is intentionally
 /// kept separate to avoid coupling `nemesis-tools` to `nemesis-providers`.
 ///
 /// When integrating with the real agent loop, the caller should convert
-/// from `nemesis_providers::types::LLMResponse` to this type by mapping
+/// from `nemesis_providers::types:LLMResponse` to this type by mapping
 /// `tool_calls` (from `Vec<ToolCall>` with `FunctionCall` to `LLMToolCall`).
 #[derive(Debug, Clone)]
 pub struct LLMResponse {

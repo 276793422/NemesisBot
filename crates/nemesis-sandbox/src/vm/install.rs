@@ -6,7 +6,7 @@
 //! 缺失回内嵌模板，首装释放），代码零硬编码 URL。统一入口
 //! [`install_qemu_for_host_workspace`] 按宿主键取条目后按 `kind` 分派：
 //! - `archive`：ranged 并行下载 → SHA-512 双锚校验（钉值 + 上游 sidecar）→
-//!   7z 免安装直解（未运行安装器，P5 实证直跑）→ 最小文件集定位 →
+//!   7z 免安装直解（未运行安装器， 实证直跑）→ 最小文件集定位 →
 //!   落位 `<ws>/tools/vm/runtime/qemu/` → manifest 钉基线；
 //! - `packages`：包管理器链按宿主分臂——Linux apt/dnf（免密 sudo 探测 +
 //!   非交互安装）、Windows MSYS2 pacman（CLANGARM64，ARM64 宿主原生包源）、
@@ -16,12 +16,12 @@
 //! url+sha512）；条目 sha512 置空则回落 URL 同目录 sidecar 查表（sidecar
 //! 不可达 = 诚实拒绝，不裸跑无校验下载）。
 //!
-//! 下载纪律：weilnetz 单连接 ~20KB/s（P5 实测），Accept-Ranges 探测通过 =
+//! 下载纪律：weilnetz 单连接 ~20KB/s（实测），Accept-Ranges 探测通过 =
 //! N 路并行分块（`.partN` 分片，完整分片重试时跳过 = 断点续传）；
 //! 不支持 = 诚实单线回落。总长对账 Content-Length，全部完成后 SHA-512。
 //!
 //! 关闭态铁律不变：本模块所有函数只在用户显式触发安装时被调用
-//! （CLI `vm install` / WSAPI `vm.install_qemu`，B3 接线）；VM 总开关
+//! （CLI `vm install` / WSAPI `vm.install_qemu`， 接线）；VM 总开关
 //! `executor.vm.enabled=false` 时命令族诚实拒绝。
 
 use std::path::{Path, PathBuf};
@@ -30,13 +30,13 @@ use anyhow::{Context, Result, bail};
 
 use super::qemu_config::{QemuInstallKind, QemuPlatformEntry};
 
-/// 默认并行分块数（weilnetz 单连接 ~20KB/s，12 路 ~5min/197MB，P5 实测口径）。
+/// 默认并行分块数（weilnetz 单连接 ~20KB/s，12 路 ~5min/197MB， 实测口径）。
 pub const DEFAULT_PARALLEL: usize = 12;
 
 /// 单块读超时（连接假死检测——每读一段 120s 无进展即失败重试整块）。
 const CHUNK_READ_TIMEOUT_SECS: u64 = 120;
 
-/// BUG-20261101-278：客户端层 stall 检测窗（reqwest read_timeout）——覆盖
+/// 客户端层 stall 检测窗（reqwest read_timeout）——覆盖
 /// 响应头**等待**（probe_range 的 HEAD / 各 send()，原完全无保护：TCP 已建
 /// 但对端不发数据 = `vm install` 永久挂死）与 body 间隔两种形态。下方
 /// CHUNK_READ_TIMEOUT_SECS 的 per-chunk tokio 超时只包得住 body 读，头等待
@@ -86,7 +86,7 @@ pub struct QemuInstallReport {
     pub qemu_system: PathBuf,
     /// qemu-img 绝对路径。
     pub qemu_img: PathBuf,
-    /// `--version` 首行实测（如 `QEMU emulator version 11.1.0 ...`）。
+    /// `--version` 首行实测（如 `QEMU emulator version 11.1.0...`）。
     pub version: String,
     /// 安装包 SHA-256（hex64，实测钉基线——manifest 与本值同源）。
     pub installer_sha256: String,
@@ -173,7 +173,7 @@ async fn install_qemu_packages(entry: &QemuPlatformEntry) -> Result<QemuInstallR
 // 纯函数（单测钉死）
 // ---------------------------------------------------------------------------
 
-// （QEMU 关键二进制名对已矩阵化——`super::qemu_config::required_binaries_for`
+// （QEMU 关键二进制名对已矩阵化——`super::qemu_config:required_binaries_for`
 // 按条目 binaries 取，安装与探针同源消费。）
 
 /// 分块调度：`total_len` 均分为 `parallel` 块（余数并入末块），返回
@@ -515,7 +515,7 @@ async fn verify_len(path: &Path, expected: u64) -> Result<()> {
 
 /// 诊断文案里的钉值预览：`get(..16)` 非边界回落全串（钉值来自用户可编辑
 /// 的 config.vm_qemu.json，validate 不校验格式——非 hex/非 ASCII 钉值下
-/// 字节直切 `[..16]` 会 panic，BUG-20261101-280）。
+/// 字节直切 `[..16]` 会 panic）。
 fn pin_preview(s: &str) -> &str {
     s.get(..16).unwrap_or(s)
 }
@@ -667,7 +667,7 @@ async fn install_qemu_archive(
         return Err(e);
     }
 
-    // 3. 7z 直解（NSIS 免安装直跑——P5 实证；sync IO → spawn_blocking）。
+    // 3. 7z 直解（NSIS 免安装直跑—— 实证；sync IO → spawn_blocking）。
     let unpack = dirs.work_dir.join(UNPACK_DIR_NAME);
     if unpack.exists() && !nemesis_utils::fsutil::remove_dir_all_resilient(&unpack) {
         bail!("清理旧解包目录失败：{}", unpack.display());
@@ -761,13 +761,13 @@ async fn install_qemu_archive(
 }
 
 // ---------------------------------------------------------------------------
-// B2：引导命令构造（纯函数——CLI/WSAPI 引导文案与真实执行同源产出）
+// 引导命令构造（纯函数——CLI/WSAPI 引导文案与真实执行同源产出）
 // ---------------------------------------------------------------------------
 
-/// WHPX 的 Windows 可选功能名（DISM 单一真相源）。
+/// WHPX 的 Windows 可选功能名（DISM 统一定义）。
 pub const DISM_WHPX_FEATURE: &str = "HypervisorPlatform";
 
-/// DISM 启用 WHPX 参数表（`/NoRestart`：重启时机由用户决定，不替用户拍板）。
+/// DISM 启用 WHPX 参数表（`/NoRestart`：重启时机由用户决定，不替）。
 pub fn dism_enable_whpx_args() -> Vec<String> {
     vec![
         "/Online".into(),
@@ -799,7 +799,7 @@ pub enum DismFeatureState {
     Disabled,
 }
 
-/// 解析 DISM 输出里的 `State :` 行（英文字段名；本地化 Windows 解析不到 =
+/// 解析 DISM 输出里的 `State:` 行（英文字段名；本地化 Windows 解析不到 =
 /// None，调用方诚实降级，不瞎猜）。
 pub fn parse_dism_feature_state(output: &str) -> Option<DismFeatureState> {
     for line in output.lines() {
@@ -929,15 +929,15 @@ pub async fn passwordless_sudo_available() -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// B2：平台安装链
+// 平台安装链
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// B2：packages 安装臂（Linux apt/dnf / Android Termux / Windows MSYS2 pacman）
+// packages 安装臂（Linux apt/dnf / Android Termux / Windows MSYS2 pacman）
 // ---------------------------------------------------------------------------
 
 /// packages 条目按 pm 取包清单（空 = None——矩阵没给该 pm 的清单，诚实指路
-/// 补全配置；单一真相源 = config.vm_qemu.json 条目字段）。
+/// 补全配置；单一权威 = config.vm_qemu.json 条目字段）。
 #[cfg(target_os = "linux")]
 fn packages_for_pm(entry: &QemuPlatformEntry, pm: LinuxPm) -> Option<&str> {
     let raw = match pm {
@@ -986,7 +986,7 @@ async fn install_qemu_packages_linux(entry: &QemuPlatformEntry) -> Result<QemuIn
     // not allowed to set the following environment variables:
     // DEBIAN_FRONTEND`）。非交互性由 -y + sudo -n + 无 tty 下 debconf
     // noninteractive fallback 保证（qemu 包集无 debconf 交互）。
-    // 包名单从矩阵条目派生（单一真相源，不重复硬编码）。
+    // 包名单从矩阵条目派生（统一定义，不重复硬编码）。
     let packages: Vec<String> = pkgs.split_whitespace().map(str::to_string).collect();
     let (program, mut args) = match pm {
         LinuxPm::Apt => (

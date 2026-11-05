@@ -2,8 +2,8 @@
 //! —— 临时目录确定性）+ 共享分类映射臂钉住。
 //!
 //! cmd_search / cmd_install / fetch_and_convert / search_personas 走 GitHub
-//! API（结构性不可离线单测，L2 集成真进程覆盖）。解析/筛选/转换纯函数的
-//! 真相源在 nemesis-web handlers/persona（BUG-20261028-117 起 CLI 全部委托
+//! API（结构性不可离线单测， 集成真进程覆盖）。解析/筛选/转换纯函数的
+//! 真相源在 nemesis-web handlers/persona（起 CLI 全部委托
 //! 共享实现），其单测住 web crate，此处不重复。
 
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
@@ -15,7 +15,7 @@
 use super::*;
 
 // ---------------------------------------------------------------------------
-// map_category（共享真相源：nemesis-web handlers/persona）—— 17 臂全钉。
+// map_category（共享权威定义：nemesis-web handlers/persona）—— 17 臂全钉。
 // web 侧测试只钉 6 臂，这里补齐其余臂；helper 的 CLI 专属副本已删。
 // ---------------------------------------------------------------------------
 
@@ -164,7 +164,7 @@ mod file_commands {
     fn activate_missing_persona_bails() {
         let dir = ws();
         let err = cmd_activate(dir.path(), "ghost").expect_err("不存在的人格必须 Err");
-        // BUG-20261028-117 后与 web handler 共用单一真相源，错误文案同源
+        // 后与 web handler 共用统一定义，错误文案同源
         // （persona '<name>' not found）。
         assert!(err.to_string().contains("not found"), "err: {err:#}");
     }
@@ -207,9 +207,9 @@ mod file_commands {
 
     #[test]
     fn activate_archives_memory_and_swaps_heartbeat_like_web() {
-        // BUG-20261028-117：CLI activate 必须与 web activate 同语义——当前
+        // CLI activate 必须与 web activate 同语义——当前
         // 人格的 memory/ 与 HEARTBEAT.md 先归档回其目录，再恢复目标人格的；
-        // 旧 CLI 只拷 4 个 .md，运行期记忆滞留根目录，被下次 web 切换归档进
+        // 旧 CLI 只拷 4 个.md，运行期记忆滞留根目录，被下次 web 切换归档进
         // 错误的人格（跨人格串档 + 原人格记忆丢失），HEARTBEAT 也不切换。
         let dir = ws();
         seed_persona(dir.path(), "default", "default identity");
@@ -322,7 +322,7 @@ mod file_commands {
     #[test]
     fn restore_requires_default_persona() {
         let dir = ws();
-        // BUG-20261028-117 后与 web restore 同源：ensure 初始化会从根文件
+        // 后与 web restore 同源：ensure 初始化会从根文件
         // 搭出 default 人格（空根 → 空 default），restore 在处女 workspace
         // 上自愈成功而非 Err。
         cmd_restore(dir.path()).expect("处女 workspace restore 自愈 Ok（同 web）");
@@ -482,7 +482,7 @@ mod wave_b {
 
     /// cmd_remove：删除活动人格但 personas/default 不存在 → 与 web 同源的
     /// 激活路径诚实 Err 中止（fail-closed），不删目录、不落悬空 marker。
-    /// （BUG-20261028-117 前旧 CLI 静默删除并留下指向已删人格的 _active.json，
+    /// （前旧 CLI 静默删除并留下指向已删人格的 _active.json，
     /// 之后 web persona 面板读 active 的 PERSONA.json 报错——当时台账已标记
     /// 可疑点，本轮收口。）预置 _active.json 跳过 ensure 初始化——否则
     /// activate 内部的 ensure_persona_store 会先自愈搭出 default。
@@ -529,7 +529,7 @@ mod wave_b {
 // ===========================================================================
 
 // 整 mod Windows 形态（3/3 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r10_lead_in {
     use super::*;
     use std::ffi::OsString;
@@ -557,7 +557,7 @@ mod r10_lead_in {
 
     /// cmd_search 前置段：query 归一 → 提示打印 → workspace 快照克隆 →
     /// block_in_place 桥内 GET；send Err 经 `?` 一路上抛成 Err。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_search_lead_in_errors_at_dead_upstream() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -574,7 +574,7 @@ mod r10_lead_in {
     /// fetch_and_convert 第一腿（tree GET）即败；双层 Result 的两个 `?`
     /// 无论哪层接力，最终都 Err 且绝不创建 personas/<id>（安装目录只在
     /// 内容写盘阶段创建——离线 Err 与在线"未找到"两条世界同守此断言）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_install_uninstalled_id_bails_after_network_leg_one() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -594,7 +594,7 @@ mod r10_lead_in {
 
     /// run() 的 Search / Install 两条分发臂（此前只钉过本地五臂）：即便套上
     /// run 的 async 包装层，前置段的 Err 语义同样成立。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_run_dispatch_reaches_search_and_install_arms() {
         let _lock = crate::GLOBAL_STATE_LOCK
@@ -633,13 +633,13 @@ mod r10_lead_in {
 }
 
 // ===========================================================================
-// BUG-20261031-259：CLI persona install/remove 的 id 路径安全闸。
+// CLI persona install/remove 的 id 路径安全闸。
 //
 // CLI 对 `personas/{id}` 是裸 join（web 面同路径有 resolve_path 兜底，CLI
 // 从未有闸）：远端树里合法存在的 `..\x.md` 文件名（git/Linux 允许 `\`）
 // 经 is_agent_file 放行后，install 的 create_dir_all + 六个固定名文件会
-// 写出工作区，remove 会删掉工作区外目录。闸 = 复用 R35 技能 slug 验证器
-// 单一真相源，在触碰文件系统与网络之前拒绝（离线可测，不属文件头豁免域）。
+// 写出工作区，remove 会删掉工作区外目录。闸 = 复用 技能 slug 验证器
+// 统一定义，在触碰文件系统与网络之前拒绝（离线可测，不属文件头豁免域）。
 // ===========================================================================
 
 mod id_gate {
@@ -696,7 +696,7 @@ mod id_gate {
         assert!(!pdir.exists());
     }
 
-    /// BUG-20261101-294：activate 此前漏 slug 闸——空串/路径形态 name 命中
+    /// activate 此前漏 slug 闸——空串/路径形态 name 命中
     /// personas 目录本身，激活生命周期清空工作区人格文件后把激活标记写成
     /// 非法名。与 install/remove 对齐（validate_persona_id 同源）。
     #[test]

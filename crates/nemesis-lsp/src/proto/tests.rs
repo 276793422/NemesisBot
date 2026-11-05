@@ -67,7 +67,7 @@ fn decoder_returns_none_on_partial_body() {
 
 #[test]
 fn decoder_rejects_overflowing_content_length() {
-    // R5-2 回归锁：Content-Length 来自线上字节，body_start+len 裸加法对
+    // 回归锁：Content-Length 来自线上字节，body_start+len 裸加法对
     // 近 usize::MAX 的声明长度在 debug 溢出 panic / release 回绕骗过闸。
     // 修复后 checked_add 溢出臂诚实 Err（畸形帧）。
     let mut dec = FrameDecoder::new();
@@ -178,7 +178,7 @@ fn uri_to_path_strips_drive_slash_and_decodes() {
 }
 
 // ---------------------------------------------------------------------------
-// URI 规范化键（2026-09-05 C3 实机闭环验证根修）
+// URI 规范化键（实机闭环验证根修）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -199,7 +199,7 @@ fn uri_key_unifies_whatwg_normal_forms() {
 #[test]
 fn path_to_uri_matches_server_normalized_form() {
     // 闭环真不变量：本端发射形态经 uri_key 归一后，必须与「WHATWG 规范化
-    // 服务器」的回显形态**同键**。发射与回显字面不必一致（2026-09-05 实
+    // 服务器」的回显形态**同键**。发射与回显字面不必一致（实
     // 测：本机 rust-url from_file_path 产出大写盘符，真 rust-analyzer 回
     // 显小写）——键归一兜住两端，这才是 publishDiagnostics 记录/查询精
     // 确匹配的实际依赖。
@@ -298,7 +298,7 @@ fn parse_hover_all_contents_shapes() {
 }
 
 // ===========================================================================
-// S1 补测（2026-08-26）：FrameDecoder::default()；uri_to_path 小写十六进制 /
+// 补测：FrameDecoder::default()；uri_to_path 小写十六进制 /
 // 非法十六进制回退；parse_hover 无 value 字段的对象
 // ===========================================================================
 
@@ -336,7 +336,7 @@ fn s1_parse_hover_object_without_value_is_empty() {
 }
 
 // ===========================================================================
-// C2 补测（devtool-upgrade 阶段 2）：publishDiagnostics 解析
+// 补测（devtool-upgrade）：publishDiagnostics 解析
 // ===========================================================================
 
 #[test]
@@ -405,7 +405,7 @@ fn c2_parse_publish_diagnostics_tolerant() {
 }
 
 // ===========================================================================
-// C7 补测（devtool-upgrade 阶段 6）：WorkspaceEdit / CodeAction / 位置换算 /
+// 补测（devtool-upgrade）：WorkspaceEdit / CodeAction / 位置换算 /
 // TextEdit 应用
 // ===========================================================================
 

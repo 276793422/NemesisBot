@@ -119,7 +119,7 @@ fn test_go_style_formatter_format() {
     let ts = chrono::Local::now()
         .format("%Y-%m-%dT%H:%M:%S%.6f")
         .to_string();
-    // Should be something like "2026-05-22T05:50:26.935143"
+    // Should be something like "-22T05:50:26.935143"
     assert!(ts.len() >= 26);
     assert!(ts.contains('T'));
     assert!(ts.contains('.'));
@@ -303,7 +303,7 @@ fn test_dual_writer_partial_write() {
 
 #[test]
 fn s12b_go_style_formatter_full_pipeline_through_subscriber() {
-    // S12b batch (quality-hardening goal 冲刺)：format_event 此前从未被端到端
+    // batch (quality-hardening goal 冲刺)：format_event 此前从未被端到端
     // 驱动——用真 subscriber（自定义 event_format + DualMakeWriter 落盘）发一条
     // 事件，验证格式化链路（时间戳/右对齐 LEVEL/target:line/message）。
     let dir = tempfile::tempdir().unwrap();

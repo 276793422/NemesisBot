@@ -102,7 +102,7 @@ async fn test_claude_code_tool_timeout_returns_error() {
     };
     let t = ClaudeCodeTool::new(script.to_string_lossy().to_string(), Some(1), None);
     let ctx = test_ctx();
-    // The timeout surfaces as Result:Err carrying a STRUCTURED message
+    // The timeout surfaces as Result::Err carrying a STRUCTURED message
     // (never a panic, never a hang). Both channels are acceptable shape.
     let res = t.execute(r#"{"prompt":"do it"}"#, &ctx).await;
     let text = match res {

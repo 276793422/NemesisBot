@@ -501,7 +501,7 @@ fn test_has_heading_pattern_raw_pattern() {
 }
 
 // ============================================================
-// S5 coverage: score_clarity partial-credit branches (single
+// coverage: score_clarity partial-credit branches (single
 // code fence marker, medium line-length variance, mixed
 // script), has_heading_pattern flag injection, empty-input
 // variance guard

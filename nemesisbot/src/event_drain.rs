@@ -1,11 +1,11 @@
-//! M1a broadcast 事件收尾排干——K2 NDJSON（`commands/run.rs`）与 ACP
-//! update 泵收尾（`acp.rs`）共用的单一真相源。
+//! broadcast 事件收尾排干—— NDJSON（`commands/run.rs`）与 ACP
+//! update 泵收尾（`acp.rs`）共用的统一定义。
 //!
 //! 任务完成后的残余事件排干必须**穿透 Lagged**：broadcast 环形缓冲被
 //! 覆盖时 `try_recv()` 首次返回 `Err(Lagged(n))`，但游标已同时推进到最旧
 //! 存活事件——尾部未覆盖事件仍然可读。`while let Ok` 形态会在首个
 //! Lagged 处提前终止，把尾部事件（典型：配对的 `tool_end`）整体丢弃
-//! ——K2 消费方看到 `tool_start` 无 `tool_end`，ACP 编辑器侧留下悬空
+//! —— 消费方看到 `tool_start` 无 `tool_end`，ACP 编辑器侧留下悬空
 //! in_progress 工具卡。正确形态是 Lagged 继续排干，Empty/Closed 才终止。
 
 /// 排干 receiver 中所有可读事件；`Lagged`（缓冲覆盖）不终止——游标已

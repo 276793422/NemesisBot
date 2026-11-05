@@ -17,7 +17,7 @@ use super::web::extract_name_arg;
 /// tags-as-string while the executor reads `memory_type`/`content` +
 /// tags-as-array — args_validator then rejected executor-valid calls.)
 ///
-/// [`memory_tool_definitions`]: nemesis_memory:memory_tools:memory_tool_definitions
+/// [`memory_tool_definitions`]: nemesis_memory::memory_tools:memory_tool_definitions
 #[cfg(feature = "memory")]
 fn memory_tool_def(name: &str) -> nemesis_memory::memory_tools::MemoryTool {
     nemesis_memory::memory_tools::memory_tool_definitions()
@@ -28,7 +28,7 @@ fn memory_tool_def(name: &str) -> nemesis_memory::memory_tools::MemoryTool {
 
 /// Memory search tool for searching conversation memory.
 ///
-/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor` for the
+/// Delegates to `nemesis_memory::memory_tools:MemoryToolExecutor` for the
 /// actual search. If no memory manager is configured, returns an error.
 #[cfg(feature = "memory")]
 pub struct MemorySearchTool {
@@ -74,7 +74,7 @@ impl Tool for MemorySearchTool {
 
 /// Memory store tool for storing information in long-term memory.
 ///
-/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor`.
+/// Delegates to `nemesis_memory::memory_tools:MemoryToolExecutor`.
 #[cfg(feature = "memory")]
 pub struct MemoryStoreTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
@@ -119,7 +119,7 @@ impl Tool for MemoryStoreTool {
 
 /// Memory forget tool for removing information from long-term memory.
 ///
-/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor`.
+/// Delegates to `nemesis_memory::memory_tools:MemoryToolExecutor`.
 #[cfg(feature = "memory")]
 pub struct MemoryForgetTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
@@ -164,7 +164,7 @@ impl Tool for MemoryForgetTool {
 
 /// Memory list tool for listing stored memories.
 ///
-/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor`.
+/// Delegates to `nemesis_memory::memory_tools:MemoryToolExecutor`.
 #[cfg(feature = "memory")]
 pub struct MemoryListTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
@@ -403,9 +403,9 @@ impl Tool for FindSkillsTool {
 /// Mirrors Go's `InstallSkillTool`. Downloads and installs a skill from the
 /// specified registry to the local workspace skills directory.
 ///
-/// 执行面走 [`nemesis_skills:installer:SkillInstaller`]
+/// 执行面走 [`nemesis_skills::installer:SkillInstaller`]
 /// 全漏斗（staging → 验签 → 安全扫描 → 版本龄 → 审批门
-/// → 落位 + lockfile）。旧形态裸 `RegistryManager:install` 直落
+/// → 落位 + lockfile）。旧形态裸 `RegistryManager::install` 直落
 /// skills/，绕过全部供应链闸——web/CLI 同操作均走漏斗，工具面是唯一旁路
 /// （prompt-injected LLM 可装恶意技能 → 重启被 loader 加载 → 持久后门）。
 pub struct InstallSkillTool {
@@ -530,7 +530,7 @@ pub type ApprovalManagerSlot =
 /// stay `None`-compatible via this `` alias.
 pub type ApprovalManagerSlot = ();
 
-/// ：`install_skill` 工具的装前审批门共享槽——gateway 在 agent
+/// `install_skill` 工具的装前审批门共享槽——gateway 在 agent
 /// loop 建好后填 `LateWebSkillsGate`（approval_slot/question_slot 同款
 /// 「先建槽后填」；重启重建的 loop 共享同一槽 Arc，晚填也可）。
 /// 槽缺席（`None`）或槽内为空 = 无审批面直装（headless / 测试装配 /
@@ -581,7 +581,7 @@ impl SkillManageTool {
             // Security feature trimmed — no approval middleware; auto-allow skill writes.
             let _ = (operation, target, reason);
             // 尾表达式形式（非 `return Ok`）：not(security) 单臂编译时
-            // 本块即函数尾，clippy:needless_return 会判 return 多余
+            // 本块即函数尾，clippy::needless_return 会判 return 多余
             // （minimal-feature 形态 远端 clippy）。
             Ok(())
         }

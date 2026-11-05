@@ -2,7 +2,7 @@
 //!
 //! 消灭「手工抄写对端 ID」这个事故环节：用户只给一个对端可达地址，系统
 //! 一次 RPC `get_info` 拉取对端**真实 ID**（与 announce/RPC 自报同源
-//! `node_id` 字段——单一真相源），代写 peers.toml（表键=字面真实 id），
+//! `node_id` 字段——统一定义），代写 peers.toml（表键=字面真实 id），
 //! 写后回读断言（最终防线：任何环节出错，错误配置不落盘生效，命令当场
 //! 红）。CLI（`nemesisbot cluster pair`）与 WSAPI（`cluster.pair`）共用
 //! 本模块——同一后端函数，行为零分叉。
@@ -46,7 +46,7 @@ pub enum PairError {
     BadAddress(String),
     /// 对端响应缺 node_id 或为空（不可能用于表键）。
     MissingIdentity,
-    /// 对端 node_id 含非法字符（BUG-20261101-263：`:`/`/` 会切坏下游
+    /// 对端 node_id 含非法字符（`:`/`/` 会切坏下游
     /// session_key / 续行 marker 复合键协议——不落盘，同零写入纪律）。
     BadIdentity(String),
     /// 写后回读断言失败：已回滚本次写入。
@@ -88,7 +88,7 @@ impl std::error::Error for PairError {}
 /// 单次 `get_info` 探测超时。
 const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// 配对主流程（§2.3 四步 + §2.4-C 回读断言）。
+/// 配对主流程（四步 + -C 回读断言）。
 ///
 /// `peers_path`：目标 peers.toml（调用方按自己的路径真相源解析——CLI 用
 /// `<home>/cluster/peers.toml`，WSAPI 用 cluster 实例的 static_config_path）。
@@ -136,7 +136,7 @@ pub async fn pair_with_peer(
     let (rpc_port, literal_was_rpc, payload) =
         probed.ok_or(PairError::Unreachable { tried, last_error })?;
 
-    // -- 拉取身份（单一真相源：对端 Cluster 实例 node_id）-------------------
+    // -- 拉取身份（统一定义：对端 Cluster 实例 node_id）-------------------
     let peer_id = payload
         .get("node_id")
         .and_then(|v| v.as_str())
@@ -146,7 +146,7 @@ pub async fn pair_with_peer(
     if peer_id.is_empty() {
         return Err(PairError::MissingIdentity);
     }
-    // BUG-20261101-263：身份字符集闸（写盘前，零写入纪律）——对端真实 id
+    // 身份字符集闸（写盘前，零写入纪律）——对端真实 id
     // 直接落 peers.toml 表键并成为派发目标，坏字符 id 会把下游
     // session_key（`/` 分隔）与 `__ASYNC__` marker（`:` 分隔）切坏。
     if !crate::cluster_config::is_valid_node_identity(&peer_id) {
@@ -199,9 +199,9 @@ pub async fn pair_with_peer(
     // -- 写后回读断言（最终防线）-------------------------------------------
     if let Err(detail) = assert_pair_written(peers_path, &peer_id, &udp_address, &name, rpc_port) {
         // 回滚：恢复写前内容；原本无文件则删除半成品。
-        // REL-002：回滚恢复也走原子写入（撕裂的回滚=最需要原子性的场景）。
+        // 回滚恢复也走原子写入（撕裂的回滚=最需要原子性的场景）。
         // LOW-5：删除走韧性包装（半成品刚落盘即删，AV 瞬时句柄同理）。
-        // BUG-20261031-248：韧性删除的退避重试（80ms 递增，最坏 4.4s）不得
+        // 韧性删除的退避重试（80ms 递增，最坏 4.4s）不得
         // 阻塞调用方 tokio worker——同纪律先例（continuation/task_result
         // store 的 LOW-5 点位）均为 spawn_blocking 包裹，此处为漏网点补齐。
         let rollback = if let Some(content) = &pre_content {
@@ -290,7 +290,7 @@ fn assert_pair_written(
     Ok(())
 }
 
-/// 严格 `host:port` 解析（IPv6 `[::1]:21949` 形态兼容）。
+/// 严格 `host:port` 解析（IPv6 `[:1]:21949` 形态兼容）。
 fn parse_host_port_strict(address: &str) -> Result<(String, u16), PairError> {
     let (host, port_str) = address.rsplit_once(':').ok_or_else(|| {
         PairError::BadAddress(format!(
@@ -315,7 +315,7 @@ fn parse_host_port_strict(address: &str) -> Result<(String, u16), PairError> {
 /// 与 `RpcClient::try_connect_and_send` 同一 wire 协议（WireMessage JSON +
 /// 4 字节长度前缀 + token 派生 AES-256-GCM），但不依赖 registry/resolver
 /// ——pair 运行在集群未启动的 CLI 进程里。调用方负责总超时（外层
-/// `tokio::time::timeout`），防半开连接挂死。
+/// `tokio::time:timeout`），防半开连接挂死。
 async fn probe_get_info(addr: &str, token: Option<&str>) -> Result<serde_json::Value, String> {
     let stream = tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(addr))
         .await
@@ -327,7 +327,7 @@ async fn probe_get_info(addr: &str, token: Option<&str>) -> Result<serde_json::V
     std_stream
         .set_nonblocking(false)
         .map_err(|e| format!("set blocking: {}", e))?;
-    // F-NEW-4（2026-10-17 四轮审计）：读写超时——spawn_blocking 里的阻塞
+    // F-NEW-4（四轮审计）：读写超时——spawn_blocking 里的阻塞
     // recv/send **不可取消**，黑洞对端（可达但不回帧）会让阻塞线程无限期
     // 泊车（外层 tokio timeout 只把 Err 还给调用方，线程收不回来），反复
     // pair 尝试可累积线程泄漏。设 PROBE_TIMEOUT 上限：线程最长占用有界

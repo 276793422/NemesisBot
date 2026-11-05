@@ -1,6 +1,6 @@
-//! view 离线查看测试（S4-3：v4 Authenticode 形态）。
+//! view 离线查看测试（v4 Authenticode 形态）。
 //!
-//! 判据（goal S4-3）：view 输出含签名者/链/有效期，不下结论——列表/详情/哈希
+//! 判据（goal）：view 输出含签名者/链/有效期，不下结论——列表/详情/哈希
 //! 提取全走 v4 解析路径（PE 证书表 + 嵌套展开 / ELF/raw v4 footer 载体），
 //! 结构坏诚实空视图，crafted 输入不 panic。
 
@@ -15,7 +15,7 @@ use sha2::Digest;
 
 // ===== 本地最小载体夹具（pe/envelope 的 tests 模块私有，此处独立复制口径）=====
 
-/// 最小合法 PE32：MZ + e_lfanew + PE\0\0 + COFF + Optional header
+/// 最小合法：MZ + e_lfanew + PE\0\0 + COFF + Optional header
 /// （nrva=16 → Security 表项可写）+ 1 个 section（raw end 0x300）。
 /// 形态与 pe/tests.rs `build_pe` 同口径（模块私有，此处独立最小复制）。
 fn base_pe() -> Vec<u8> {
@@ -32,8 +32,8 @@ fn base_pe() -> Vec<u8> {
     put32(&mut b, 0x3C, P as u32);
     b[P..P + 4].copy_from_slice(b"PE\0\0");
     put16(&mut b, P + 6, 1); // NumberOfSections
-    put16(&mut b, P + 20, 224); // SizeOfOptionalHeader（PE32）
-    put16(&mut b, P + 24, 0x10b); // PE32 magic
+    put16(&mut b, P + 20, 224); // SizeOfOptionalHeader
+    put16(&mut b, P + 24, 0x10b); // magic
     put32(&mut b, P + 88, 0xDEADBEEF); // CheckSum 非零（digest 排除才可观测）
     put32(&mut b, P + 116, 16); // NumberOfRvaAndSizes ≥ 5（Security 表项存在）
     // section table @ P+24+224：SizeOfRawData@+16 / PointerToRawData@+20
@@ -228,8 +228,8 @@ fn no_signature_empty_list() {
     assert!(list_signatures(&[]).is_empty());
     // PE 无证书表 → 空视图
     assert!(list_signatures(&base_pe()).is_empty());
-    // v3 legacy envelope（footer 字节内联，v3 签名器已随 S5-3 删除）→ v4 视图
-    // 不可见（S4-1 破坏性迁移的 view 侧钉死）
+    // v3 legacy envelope（footer 字节内联，v3 签名器已随 删除）→ v4 视图
+    // 不可见（破坏性迁移的 view 侧钉死）
     let mut legacy = b"v3 legacy".to_vec();
     let mut footer = [0u8; 64];
     footer[0..8].copy_from_slice(b"NMBSIG\x03\x00");
@@ -283,7 +283,7 @@ fn crafted_footer_yields_empty_view() {
     assert!(get_signature_detail(&bad, 0).is_none());
     assert!(latest_sig_hash(&bad).is_none());
 
-    // ② cms_len 抬满（S2-3 防钳家族：footer 自身 CRC 合法但区间越界）
+    // ② cms_len 抬满（防钳家族：footer 自身 CRC 合法但区间越界）
     let mut bad2 = signed;
     let fo2 = bad2.len() - flen;
     bad2[fo2 + 32..fo2 + 36].copy_from_slice(&u32::MAX.to_le_bytes());
@@ -309,7 +309,7 @@ fn view_and_verify_agree_on_primary() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：collect_cms_blobs 的 PE 空返回臂——
+// AGT 覆盖率批次：collect_cms_blobs 的 PE 空返回臂——
 // 未签名 PE（证书表 0 条目 → first() None）与证书表读失败（Security 表指向
 // 被截断区）→ 诚实空视图。
 // ---------------------------------------------------------------------------

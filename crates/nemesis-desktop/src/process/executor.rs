@@ -282,7 +282,7 @@ pub trait PlatformExecutor: Send + Sync {
     fn cleanup(&self, child: &mut ChildProcess) -> Result<(), String>;
 }
 
-/// Default executor that uses std::process::Command.
+/// Default executor that uses std::process:Command.
 ///
 /// On Windows, supports CREATE_NO_WINDOW flag to hide console windows.
 /// Provides graceful terminate-then-kill with configurable timeout.

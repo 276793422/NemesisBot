@@ -1,4 +1,4 @@
-//! W3（2026-10-25 加固）：`cron_parent_session_exists`
+//! （2026-10-25 加固）：`cron_parent_session_exists`
 //! 单测——磁盘双臂（sessions json ∨ session_logs jsonl）任一在场即存在；
 //! 双 miss = 已删除（触发 pause 的判据）；文件名消毒与写入方同源。
 //!

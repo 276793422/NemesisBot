@@ -925,7 +925,7 @@ fn test_fallback_exhausted_error_is_std_error() {
         total_providers: 2,
         errors: vec![("p1".to_string(), "error".to_string())],
     };
-    // Verify it implements std::error::Error
+    // Verify it implements std::error:Error
     let _: &dyn std::error::Error = &err;
 }
 
@@ -968,7 +968,7 @@ fn test_resolve_candidates_preserves_order() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：全链冷却落空臂 / 显式 model 覆盖 / Display 明细
+// 补测：全链冷却落空臂 / 显式 model 覆盖 / Display 明细
 // ===========================================================================
 
 /// 记录收到的 model 参数的 mock（验证 effective_model 覆盖语义）。
@@ -1067,7 +1067,7 @@ async fn test_w4c_execute_detailed_all_in_cooldown_falls_through_exhausted() {
 
 #[tokio::test]
 async fn test_w4c_execute_detailed_entry_model_wins_per_level() {
-    // BUG-20261031-225 回归锁：每级恒用本级装配模型名（entry.model）——
+    // 回归锁：每级恒用本级装配模型名（entry.model）——
     // 调用方请求名只作级名缺失时的兜底。旧语义（非空请求名覆盖所有级）
     // 在生产装配形态下把主模型名发进备用 provider（真实上游 400）。
     let recorder = Arc::new(RecordingProvider {
@@ -1110,7 +1110,7 @@ fn test_w4c_fallback_exhausted_display_lists_provider_errors() {
 #[tokio::test]
 async fn test_w4c_chat_trait_method_uses_entry_model_per_level() {
     // LLMProvider::chat 走同样链路（走 trait 对象而非 execute_detailed）；
-    // BUG-20261031-225 同款语义：级装配名优先于调用方请求名。
+    // 同款语义：级装配名优先于调用方请求名。
     let recorder = Arc::new(RecordingProvider {
         name: "rec".to_string(),
         model: "entry-model".to_string(),
@@ -1133,10 +1133,10 @@ async fn test_w4c_chat_trait_method_uses_entry_model_per_level() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261031-225：跨模型 fallback 链的级模型名回归锁
+// 跨模型 fallback 链的级模型名回归锁
 // ---------------------------------------------------------------------------
 
-/// 生产装配形态回归锁（BUG-20261031-225）：主级失败轮到 fallback 级时，
+/// 生产装配形态回归锁：主级失败轮到 fallback 级时，
 /// fallback 级必须收到**自己的**装配模型名，而不是调用方传的主模型别名。
 /// 旧语义（非空调用方名覆盖所有级）把主模型名发进备用 provider 的
 /// api_base——真实上游 400 model not exist，`fallback_to` 跨模型故障转移
@@ -1178,7 +1178,7 @@ async fn test_fallback_chain_fallback_level_receives_own_model_name() {
 }
 
 // ---------------------------------------------------------------------------
-// J1: Retry-After hint 从错误流入 cooldown
+// Retry-After hint 从错误流入 cooldown
 // ---------------------------------------------------------------------------
 
 /// 429 + Retry-After 的 provider：冷却应取服务端权威 30s，而非公式第 1 次

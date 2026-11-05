@@ -113,11 +113,11 @@ fn test_private_ip_blocked() {
 }
 
 // =======================================================================
-// IPv4-mapped IPv6（BUG-20261029-186）：::ffff:0:0/96 双栈翻译形态
+// IPv4-mapped IPv6：ffff:0:0/96 双栈翻译形态
 // =======================================================================
 
-/// `::ffff:127.0.0.1` 等映射形态在双栈 socket 上按内嵌 IPv4 连接；
-/// 不归一则 std 的 V6 分类（is_loopback 只认 ::1 等）全部漏放 —— SSRF
+/// `:ffff:127.0.0.1` 等映射形态在双栈 socket 上按内嵌 IPv4 连接；
+/// 不归一则 std 的 分类（is_loopback 只认:1 等）全部漏放 —— SSRF
 /// 旁路。修复后分类必须与内嵌 IPv4 同判。
 #[test]
 fn test_ipv4_mapped_ipv6_blocked() {
@@ -148,13 +148,13 @@ fn test_ipv4_mapped_ipv6_blocked() {
     );
 }
 
-/// 真 IPv6 不受归一影响：公网 V6 字面量（非映射、非保留）照常放行。
+/// 真 IPv6 不受归一影响：公网 字面量（非映射、非保留）照常放行。
 #[test]
 fn test_real_ipv6_unaffected_by_mapping_normalization() {
     let guard = Guard::new(SsrfConfig::default()).unwrap();
-    // 2606:4700::1111（公网单播）——check_ip 不做 DNS，纯分类。
+    // 2606:4700:1111（公网单播）——check_ip 不做 DNS，纯分类。
     assert!(guard.check_ip("2606:4700::1111").is_ok());
-    // 真 V4 公网同样放行。
+    // 真 公网同样放行。
     assert!(guard.check_ip("93.184.216.34").is_ok());
 }
 
@@ -260,7 +260,7 @@ fn test_allowed_host_case_insensitive() {
 
 #[test]
 fn test_from_enabled_with_allowlist_passes_loopback() {
-    // from_enabled_with_allowlist（2026-10-14 connector e2e 接线）：白名单
+    // from_enabled_with_allowlist（connector e2e 接线）：白名单
     // 命中在 IP 校验之前——回环地址显式放行；同参无白名单照拦。
     let guard = Guard::from_enabled_with_allowlist(true, vec!["127.0.0.1".to_string()]);
     assert!(
@@ -273,7 +273,7 @@ fn test_from_enabled_with_allowlist_passes_loopback() {
             .resolve_and_validate_collect("http://127.0.0.1:18094/quote")
             .is_ok()
     );
-    // 白名单外回环地址（::1）不受放行影响
+    // 白名单外回环地址（1）不受放行影响
     assert!(guard.validate_url("http://[::1]:9/pwn").is_err());
 
     let plain = Guard::from_enabled(true);
@@ -753,7 +753,7 @@ fn test_validate_url_no_blocks_private_passes() {
 }
 
 // ============================================================
-// S3 batch 3: resolve_and_validate 独立入口的各臂
+// batch 3: resolve_and_validate 独立入口的各臂
 // ============================================================
 
 #[test]
@@ -808,7 +808,7 @@ fn test_resolve_and_validate_ip_literal_blocked() {
 
 #[test]
 fn test_resolve_and_validate_dns_failure_errors() {
-    // RFC 2606 保留 TLD .invalid → 解析必然失败 → DnsFailed
+    // RFC 2606 保留 TLD.invalid → 解析必然失败 → DnsFailed
     let guard = Guard::new(SsrfConfig::default()).unwrap();
     let err = guard
         .resolve_and_validate("http://definitely-no-such-host-s3.invalid/")
@@ -820,7 +820,7 @@ fn test_resolve_and_validate_dns_failure_errors() {
 }
 
 // =======================================================================
-// S2（2026-09-04 四轮盲审）：resolve_and_validate_collect —— 返回已验证
+// （四轮盲审）：resolve_and_validate_collect —— 返回已验证
 // IP 集供调用方钉死连接（防 DNS rebinding TOCTOU 的两次独立解析）。
 // =======================================================================
 

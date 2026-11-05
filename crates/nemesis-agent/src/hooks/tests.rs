@@ -1,4 +1,4 @@
-//! Tests for `crate:hooks` (— seventh batch).
+//! Tests for `crate::hooks` (— seventh batch).
 //!
 //! Acceptance mapping (goal §二):
 //! - ① pre 能拦下工具调用 → `handle_tool_call_pre_blocks`（真 dispatch 路径，
@@ -238,7 +238,7 @@ async fn manager_add_snapshot_len() {
 }
 
 // ---------------------------------------------------------------------------
-// Integration: through AgentLoop:handle_tool_call (the real dispatch path)
+// Integration: through AgentLoop::handle_tool_call (the real dispatch path)
 // ---------------------------------------------------------------------------
 
 /// Acceptance ①: a registered pre hook intercepts the dispatch — the blocked
@@ -658,7 +658,7 @@ async fn llm_hook_manager_basics() {
     assert_eq!(mgr.snapshot().len(), 1);
 }
 
-// --- integration: through AgentLoop:run (production run_llm_loop path) ------
+// --- integration: through AgentLoop::run (production run_llm_loop path) ------
 
 /// Acceptance ①: a pre-LLM hook's appended reminder reaches the provider as
 /// part of that round's messages (request_log is built from the same vec).

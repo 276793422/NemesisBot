@@ -321,7 +321,7 @@ fn test_file_provider_list_empty_dir() {
 }
 
 // ============================================================
-// S4 coverage: redact edge case, provider field lines, provider
+// coverage: redact edge case, provider field lines, provider
 // error arm, reflection read success path.
 // ============================================================
 
@@ -425,7 +425,7 @@ fn test_s4_get_reflections_with_filename_success() {
     assert!(result.response["content"].is_string());
 }
 
-/// T10（2026-10-17 三轮审计）：source_node 远端可控——落盘文件名消毒，
+/// （三轮审计）：source_node 远端可控——落盘文件名消毒，
 /// 路径字符映射 `_`，不得在 remote_dir 外留下任何痕迹。
 #[test]
 fn hostile_source_node_stays_in_remote_dir() {
@@ -453,7 +453,7 @@ fn hostile_source_node_stays_in_remote_dir() {
         "source_node 路径逃逸必须被消毒拦截: {stray:?}"
     );
 
-    // 文件落在 remote_dir 内、消毒名；`../../evil` 前缀 `. . / . . /` 共
+    // 文件落在 remote_dir 内、消毒名；`../../evil` 前缀 `.. /.. /` 共
     // 6 个非白名单字符，1:1 映射 = 6 个 `_` → `remote-______evil-*.json`。
     let remote = forge.join("reflections").join("remote");
     let names: Vec<String> = std::fs::read_dir(&remote)

@@ -1,4 +1,4 @@
-//! : the agent-facing `lsp` tool — read-only semantic code queries
+//! the agent-facing `lsp` tool — read-only semantic code queries
 //! (definition / references / implementation / hover) plus 's write-capable
 //! `rename` (server-computed WorkspaceEdit applied through the security
 //! pipeline) and `code_action` quickfix listing. Driven through real language
@@ -23,7 +23,7 @@ use crate::loop_tools::{Tool, WorkspaceBoundary};
 
 pub struct LspTool {
     manager: Arc<LspManager>,
-    /// ：rename 落盘的工作区边界（与 write_file 等文件
+    /// rename 落盘的工作区边界（与 write_file 等文件
     /// 工具同源的第二道闸）。`gate_and_write` 对 WorkspaceEdit 逐文件过
     /// `validate_workspace_path`，越界文件进拒绝清单不落盘；相对路径解析
     /// 基点也随边界根（无边界维持 cwd 兼容——测试 / 独立 runner 形态）。
@@ -48,7 +48,7 @@ impl LspTool {
     /// default). `idle_secs`: idle session reap threshold (None = 600s).
     ///
     /// Self-built-manager fallback path (tests, standalone agent runners).
-    /// Production goes through [`LspTool:with_manager`] so the gateway owns
+    /// Production goes through [`LspTool::with_manager`] so the gateway owns
     /// the singleton and can `shutdown_all()` on graceful exit.
     pub fn new(timeout_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
         Self {
@@ -75,7 +75,7 @@ impl LspTool {
         }
     }
 
-    /// ：挂工作区边界（生产装配形态）。rename 落盘
+    /// 挂工作区边界（生产装配形态）。rename 落盘
     /// 逐文件过 `validate_workspace_path`，相对路径解析基点 = 边界根。
     /// `new` / `with_manager` 签名不动（25+ 处测试调用点零波及）。
     pub fn with_boundary(mut self, boundary: Arc<WorkspaceBoundary>) -> Self {
@@ -230,7 +230,7 @@ impl Tool for LspTool {
 impl LspTool {
     /// rename 全链路。
     ///
-    /// 1. 服务器算 WorkspaceEdit，逐文件读盘应用成新全文（manager:rename，
+    /// 1. 服务器算 WorkspaceEdit，逐文件读盘应用成新全文（manager::rename，
     ///    不写盘）；
     /// 2. **两阶段安全闸**：全部文件先各自过 8 层管线 + guardian 语义二审
     ///    （合成 `write_file` 调用，内容可见；guardian 走 guardian_gate 与
@@ -364,7 +364,7 @@ impl LspTool {
 /// 破碎代码）。无闸形态（feature 裁剪/插件未注入）直接写——gate 缺席≠gate
 /// 通过，语义与无闸的普通写工具一致。
 ///
-/// ：安全闸之前先做**逐文件工作区边界预分**——
+/// 安全闸之前先做**逐文件工作区边界预分**——
 /// `validate_workspace_path` 通过的文件才进闸+写阶段，越界文件进拒绝清单
 /// （部分成功语义，与 rename 跨文件自然对齐：拒一处不连坐其余文件）。
 /// 全部被拒时 written 为空，由调用方定失败语义。
@@ -433,7 +433,7 @@ async fn gate_and_write(
                     info.summary
                 ));
             }
-            // guardian 与 dispatch 同源（单一真相源
+            // guardian 与 dispatch 同源（统一定义
             // guardian_gate）。合成 write_file 无 op 投影，危级走静态表——
             // 与 dispatch 无 override 路径完全同口径。
             let danger = security.tool_danger_level("write_file");

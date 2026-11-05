@@ -163,7 +163,7 @@ fn test_parse_and_dispatch_event_unhandled_type() {
     assert!(rx.try_recv().is_err());
 }
 
-// BUG-20261029-143：start() 把 session_webhooks 交给流任务的必须是共享
+// start() 把 session_webhooks 交给流任务的必须是共享
 // 克隆——裸 DashMap::clone() 是逐 shard 深拷贝，流事件写入的会话 webhook
 // 落私有副本，send() 的读路径（self.session_webhooks.get）读原表恒 miss，
 // 钉钉通道每条回复必失败（"no session_webhook found for chat"）。

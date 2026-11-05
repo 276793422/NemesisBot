@@ -114,7 +114,7 @@ fn bundle_serde_roundtrip_and_issue_shape() {
     let json = serde_json::to_string(&bundle).unwrap();
     let back: AssetTokenBundle = serde_json::from_str(&json).unwrap();
     assert_eq!(back, bundle, "serde roundtrip preserves all fields");
-    // 字段名即信封/query 契约（§5.4：asset_ref / asset_token / expires_at
+    // 字段名即信封/query 契约（asset_ref / asset_token / expires_at
     // + 完整性三件套 sha256 / size / node_url——fetch 参数逐字来源；
     // node_id 是 RPC 兜底寻址，同样随束流转）。
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -131,7 +131,7 @@ fn bundle_serde_roundtrip_and_issue_shape() {
     }
 }
 
-// node_id 字段向后兼容（2026-09-20）：存量 bundle JSON（旧网关签发，无
+// node_id 字段向后兼容：存量 bundle JSON（旧网关签发，无
 // node_id）必须照常解析——空串 = 消费方仅 HTTP 通路，诚实退化不报错。
 #[test]
 fn legacy_bundle_json_without_node_id_parses_with_default() {
@@ -173,13 +173,13 @@ fn sanitize_ref_rejects_traversal_and_accepts_plain_names() {
 
 #[test]
 fn sanitize_ref_rejects_windows_reserved_names() {
-    // BUG-20261105-031：ref 落盘即文件名，Windows 保留设备名（含「紧跟
+    // ref 落盘即文件名，Windows 保留设备名（含「紧跟
     // 扩展名」形态，微软命名规范明文）有设备语义——Win11 26200 实机探针
     // 实证 WriteAllText(CON) 报成功但 Test-Path=False、DIR-LIST 列出
     // CON、同会话 ReadAllText 读回 1 字节（内容写设备不落盘，资产管线
     // 行为不可预测：sha256 校验跨会话必挂 / COM1 类打开可阻塞）。
     // 与 image_gen_tool / connectors / skills / ziwei-profile 同类清单
-    // 对齐（BUG-20261028-99 先例：22 名单全量）。
+    // 对齐（22 名单全量）。
     let reserved = [
         "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
         "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
@@ -228,7 +228,7 @@ fn secret_load_create_and_corruption_semantics() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// BUG-20261025-85：读密钥文件的**非 NotFound IO 错误**（独占锁/权限拒绝）
+/// 读密钥文件的**非 NotFound IO 错误**（独占锁/权限拒绝）
 /// 不得落进「首次生成」分支静默轮换——模块不变量「绝不静默重置」此前只
 /// 对 hex 损坏成立是缺口；读失败 ≠ 不存在，轮换会作废全部已签发 token +
 /// 已登记引用且用户无从得知。红证判据：错误必须 loud 在 **read 阶段**
@@ -264,9 +264,9 @@ fn secret_read_io_error_loud_not_rotate() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// BUG-20261105-036：64 字节非 ASCII 损坏内容必须诚实 Err 而非 panic
+/// 64 字节非 ASCII 损坏内容必须诚实 Err 而非 panic
 /// （`&hex[i*2..i*2+2]` 字节切片落 char boundary 外）——与 skills signer
-/// hex_decode 同族（BUG-20261105-035）。
+/// hex_decode 同族。
 #[test]
 fn secret_non_ascii_corrupt_content_errors_not_panics() {
     let dir = std::env::temp_dir().join(format!(
@@ -293,7 +293,7 @@ fn secret_non_ascii_corrupt_content_errors_not_panics() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// BUG-20261105-036：生成侧落盘走 write_file_atomic 0o600（凭据面纪律，
+/// 生成侧落盘走 write_file_atomic 0o600（凭据面纪律，
 /// 同 auth.json / skills skill_sign.key 家族）。
 #[test]
 #[cfg(unix)]

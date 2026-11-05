@@ -49,7 +49,7 @@ fn normalize_path(path: &str) -> String {
 /// 文件/注册表路径规则匹配（auditor 路径桶单一入口）：Windows 文件系统
 /// 大小写不敏感，规则与目标两侧同折小写——target 是模型敲的原始字符串
 /// （无规范化直通），deny 规则 `D:/Secrets/*` 曾被任意大小写变体绕过
-/// （D12-3，fail-open）；allow 规则反向不命中=重复弹卡。非 Windows 路径
+/// （fail-open）；allow 规则反向不命中=重复弹卡。非 Windows 路径
 /// 大小写敏感保持原样（fold 会让 allow 规则误放，fail-open 方向）。
 /// 分隔符归一与通配语义仍由 [`match_pattern`] 承担。
 pub fn match_path_rule(pattern: &str, target: &str) -> bool {
@@ -93,7 +93,7 @@ fn wildcard_to_regex(pattern: &str) -> String {
             chars[i],
             '^' | '$' | '+' | '.' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
         ) {
-            // Escape special regex characters（D12-1：`.` 与 `?` 曾漏转义
+            // Escape special regex characters（`.` 与 `?` 曾漏转义
             // ——字面点号被当正则任意字符（`*.key` 命中 `testXkey`），`?`
             // 被当可选量词（`file?.log` 漂移成「可选 e」）。本函数契约只
             // 认 `*`/`**` 通配，其余元字符一律字面。
@@ -138,11 +138,11 @@ pub fn match_command_pattern(pattern: &str, command: &str) -> bool {
     }
 }
 
-/// 归一化 exec 目标用于 ABAC 匹配（CMD-05，2026-09-16 横扫存量加固）：
+/// 归一化 exec 目标用于 ABAC 匹配（CMD-05， 横扫存量加固）：
 /// 剥引号（`"`/`'`/`` ` ``——shell 会剥，留下的引号曾打断两侧匹配，
 /// `rm "-rf"` 绕过）、合并空白、统一小写（`--Recursive` 大小写绕过）。
 /// 审计日志保留原文；规则匹配只看归一化形态。`command.rs` 的
-/// `simplify_command` 委托本函数（CMD-11①：写了没人调的归一化基础接线）。
+/// `simplify_command` 委托本函数（写了没人调的归一化基础接线）。
 pub fn normalize_exec_command(command: &str) -> String {
     let collapsed: String = command.split_whitespace().collect::<Vec<_>>().join(" ");
     let no_quotes: String = collapsed
@@ -152,7 +152,7 @@ pub fn normalize_exec_command(command: &str) -> String {
     no_quotes.to_lowercase()
 }
 
-/// 解释器包装拆段（CMD-02/CMD-06②，2026-09-16 横扫存量加固）。
+/// 解释器包装拆段（横扫存量加固）。
 ///
 /// 输入必须是 `normalize_exec_command` 的产物（已剥引号/合并空白/小写）。
 /// 从 `powershell -c <payload>`、`cmd /c <payload>`、`bash -c <payload>`、
@@ -161,9 +161,9 @@ pub fn normalize_exec_command(command: &str) -> String {
 /// `powershell *`）不得屏蔽内层 `rm -rf`/`Remove-Item -Recurse` 的视线。
 ///
 /// 一层拆段 + 载荷尾部并入（`cmd /c foo bar` 载荷 = `foo bar`）；链式包装
-/// （`bash -c '... && python -c ...'`）由调用方对载荷重复调用实现递归。
+/// （`bash -c '... && python -c...'`）由调用方对载荷重复调用实现递归。
 /// 无旗标的解释器调用（`python script.py`）返回空——脚本文件内容不可知，
-/// 由 exec_unknown_policy（D1）治理。
+/// 由 exec_unknown_policy治理。
 pub fn extract_interpreter_payloads(normalized_command: &str) -> Vec<String> {
     fn bin_key(token: &str) -> &str {
         // 取 basename（复检批：`/bin/sh`、`C:\Windows\System32\cmd.exe`
@@ -222,7 +222,7 @@ pub fn extract_interpreter_payloads(normalized_command: &str) -> Vec<String> {
     payloads
 }
 
-/// 内层载荷扫描用匹配（CMD-06②）：把 glob 形状的规则 pattern 当「按序
+/// 内层载荷扫描用匹配：把 glob 形状的规则 pattern 当「按序
 /// 子串序列」匹配——`rm -r*` → 文本须含 `rm -r`；`find*-delete*` → 依次
 /// 含 `find`、`-delete`。与 `match_command_pattern` 的整串锚定语义刻意
 /// 不同：载荷是代码/命令片段不是完整命令行，锚定打不中
@@ -238,8 +238,8 @@ pub fn glob_contains(pattern: &str, text: &str) -> bool {
     true
 }
 
-/// exec 规则匹配的段准备（闭环批 2026-10-13 收口：auditor 执行管线与
-/// `security.rs` CLI 预览的字节级双拷贝闭包上移为单一真相源——两处语义
+/// exec 规则匹配的段准备（闭环-13 收口：auditor 执行管线与
+/// `security.rs` CLI 预览的字节级双拷贝闭包上移为单一权威定义——两处语义
 /// 曾靠人肉同步，漂移即审批预览与真实判定分叉）。
 ///
 /// 在原文上切顶层复合段（`command_segments`：引号感知，引号内的 `&&`
@@ -254,7 +254,7 @@ pub fn exec_rule_segments(target: &str) -> Vec<String> {
         .collect()
 }
 
-/// exec 规则桶匹配（闭环批 2026-10-13 与 [`exec_rule_segments`] 一并上移）。
+/// exec 规则桶匹配（闭环-13 与 [`exec_rule_segments`] 一并上移）。
 ///
 /// 两端不对称：**allow = 全部段命中才放**——任一段命中会把
 /// `echo hi && cargo publish` 被 `cargo *` allow 规则整体放行（default
@@ -263,13 +263,13 @@ pub fn exec_rule_segments(target: &str) -> Vec<String> {
 /// **双形态联合**：剥 env 整串（跨段通配 `*a*b*` 与空命令 `*` 规则的旧
 /// 拦截面）+ **未剥整串**（显式 env 形 deny 规则 `deny FOO=1 curl *` 的
 /// 字面形态——target 侧剥 env 后，pattern 侧的 env 头只有靠未剥整串才能
-/// 命中本尊输入；§九 D1 F4 声称的三臂联合，上移单一真相源时曾丢失）。
+/// 命中本尊输入；§九 声称的三臂联合，上移单一真相源时曾丢失）。
 ///
 /// - `bucket`：`"allow"` / `"deny"` / `"ask"`（其余按 deny 桶处理）
 /// - `pattern`：规则 pattern 原文（桶匹配内部过 [`normalize_exec_command`]
 ///   ——与 target 同管道字节级同源。曾只做小写：pattern 侧保留引号/多余
 ///   空白而 target 侧已剥已并，手写 shell 拟形 deny 规则（`rm "-rf" *`）
-///   对归一化 target 永不命中 = 静默死规则 fail-open（D12-2））
+///   对归一化 target 永不命中 = 静默死规则 fail-open）
 /// - `target_normalized`：整串归一化（[`normalize_exec_command`] 产物）
 /// - `segs`：[`exec_rule_segments`] 的产物
 pub fn exec_rule_bucket_match(
@@ -293,12 +293,12 @@ pub fn exec_rule_bucket_match(
     }
 }
 
-/// 敏感 flag 词表 + 放行臂二次校验（L01，2026-11-01）。
+/// 敏感 flag 词表 + 放行臂二次校验。
 ///
 /// 动机：pattern 归约（审批记忆 `git push *`、规则表 allow `git push *`）
 /// 不区分破坏性 flag——已批准过 `git push origin main` 的用户，此后敲
 /// `git push --force origin main` 会被 pattern **静默放行**。消费点在
-/// auditor 的两个自动放行臂（规则表 allow 遍 / F3 审批记忆
+/// auditor 的两个自动放行臂（规则表 allow 遍 / 审批记忆
 /// auto_by_rule）：命中非空 = 不自动放行，降级弹卡 + 审计 `flag_hit=`。
 /// 会话 allow-all / 免打扰开关是用户显式无人值守意志，**刻意不拦**
 /// （显式意图优先）。
@@ -330,7 +330,7 @@ pub fn scan_dangerous_flags(segs: &[String]) -> Vec<&'static str> {
         match head {
             "git" => {
                 // --force-with-lease 认前缀（`--force-with-lease=main` 带
-                // 等号值形态常用）；-f 精确（--follow-tags 不误拦）。
+                // 等号值形态常用）；-f 精确（follow-tags 不误拦）。
                 if has_sub("push") && (has("--force") || has("-f") || starts("--force-with-lease"))
                 {
                     hits.push("--force");
@@ -339,14 +339,14 @@ pub fn scan_dangerous_flags(segs: &[String]) -> Vec<&'static str> {
                 } else if has_sub("clean")
                     && rest.iter().any(|t| t.starts_with('-') && t.contains('f'))
                 {
-                    // clean 词表内含 f 的组合全破坏性（-f/-fd/-dfx…）
+                    // clean 词表内含 f 的组合全破坏性（f/-fd/-dfx…）
                     hits.push("-f");
                 } else if (has_sub("checkout") || has_sub("restore")) && has("--force") {
                     hits.push("--force");
                 }
             }
             "rm" => {
-                // 组合串（-rf/-fr/-rdf…含 r 且含 f）+ 分写（-r -f /
+                // 组合串（rf/-fr/-rdf…含 r 且含 f）+ 分写（r -f /
                 // --recursive --force——字符级组合打不中分写，单独认；
                 // 段已小写化，-R 不可能出现在归一化产物里）。
                 let combo = rest.iter().any(|t| {

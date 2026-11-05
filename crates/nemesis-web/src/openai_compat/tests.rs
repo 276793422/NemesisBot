@@ -976,7 +976,7 @@ async fn bare_stream_midstream_error_gets_inline_note_and_stop() {
     );
     let (state, _) = with_streaming(state, provider);
 
-    // 中途断流：带内注记（worker 可见）+ 合成 stop 终态（worker 侧
+    // 中途断流：带内注记（worker 可）+ 合成 stop 终态（worker 侧
     // 否则把无终态断流当完整 stop 静默截断）。
     let (status, _, text) =
         resp_text(api_chat_completions(&state, &body(&bare_request(true))).await).await;
@@ -1104,7 +1104,7 @@ async fn bare_chat_options_merge_caller_params_and_master_card() {
 // BUG-a：无 chat_stream lane 的 provider → 流式回落非流式
 
 /// 无 `chat_stream` 覆写的槽 provider：stream 请求踩 LLMProvider trait
-/// 缺省实现（首帧 Unknown "streaming ... not implemented ..."）——此前
+/// 缺省实现（首帧 Unknown "streaming... not implemented..."）——此前
 /// 裸转发直接 502，修复后应回落非流式合成 SSE。
 struct BareNoStreamProvider {
     seen: Mutex<Vec<BareSeen>>,
@@ -1172,7 +1172,7 @@ async fn bare_stream_falls_back_to_non_stream_when_lane_missing() {
 
     let resp = api_chat_completions(&state, &body(&bare_request(true))).await;
     let (status, headers, text) = resp_text(resp).await;
-    // 回落 = 200 SSE（此前 502 "streaming ... not implemented"）。
+    // 回落 = 200 SSE（此前 502 "streaming... not implemented"）。
     assert_eq!(status, 200, "{text}");
     assert!(
         headers

@@ -1,4 +1,4 @@
-//! S2①：exec 前脚本内容扫描（shell_bleed，2026-10-09 高优差距批次一）。
+//! ①：exec 前脚本内容扫描（shell_bleed，2026-10-09）。
 //!
 //! 8 层管线全部只见工具**入参**——`write_file` 写脚本时内容在 args 里会
 //! 过第④层，但**预先存在于磁盘的脚本**（用户创建 / web_fetch 下载 /
@@ -245,7 +245,7 @@ fn scan_one_script(
 /// 从命令行提取脚本候选 token（引号感知分词 + 分隔符切分 + 扩展名过滤）。
 fn extract_script_tokens(command: &str) -> Vec<String> {
     let mut out = Vec::new();
-    // && / || / 单个 & / ; / | / 换行皆视作命令边界（引号内的边界符会被
+    // && / || / 单个 & /; / | / 换行皆视作命令边界（引号内的边界符会被
     // 误切——代价只是该候选解析失败落入 skipped，best-effort）。
     let normalized = command.replace("&&", ";").replace("||", ";");
     for segment in normalized.split([';', '|', '&', '\n']) {

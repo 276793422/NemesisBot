@@ -235,7 +235,7 @@ fn test_cmd_status_specific_id_not_found() {
 /// 磁盘扫描走进程级 home，且语义是「磁盘有任一模板 → 整组替换默认集」
 /// （workflow.rs get_templates）——凡依赖内置默认集的测试必须用它隔离
 /// （同 cov_tests/board_bus/verify_policy 的 GLOBAL_STATE_LOCK + 守卫纪律；
-/// 读侧不加锁 = 读到 mutator 测试篡改的中间态，2026-10-17 全量跑实证 2 挂
+/// 读侧不加锁 = 读到 mutator 测试篡改的中间态， 全量跑实证 2 挂
 /// 的根因）。持锁失败不连坐：poison-aware。
 struct EnvHomeGuard {
     orig: Option<std::ffi::OsString>,
@@ -681,7 +681,7 @@ fn test_cmd_status_with_input_and_vars() {
 // cmd_template_show all templates
 // -------------------------------------------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_cmd_template_show_all_defaults() {
     // get_templates() 经 load_templates_from_disk 读 NEMESISBOT_HOME——守卫
@@ -698,7 +698,7 @@ fn test_cmd_template_show_all_defaults() {
 // cmd_template_create with all templates
 // -------------------------------------------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_cmd_template_create_all_defaults() {
     // get_templates() 读 NEMESISBOT_HOME（守卫纪律：持锁+钉空 tmp）。
@@ -905,7 +905,7 @@ fn test_cmd_list_with_executions() {
 }
 
 // ===========================================================================
-// cmd_run 全链路 + run() 分发（S11c，quality-hardening goal 冲刺 S11）——
+// cmd_run 全链路 + run() 分发（quality-hardening goal 冲刺）——
 // 既有 64 个测试只钉 helper/cmd_list/cmd_status/cmd_template_*/cmd_validate，
 // cmd_run（419-587，约 120 行）和 run() dispatch（903-978）从没跑过。
 // 可执行工作流用 delay 节点（内置执行器、seconds=0 零等待）；home 显式传参
@@ -1002,7 +1002,7 @@ mod cmd_run_tests {
             .await
             .expect("name 是存在的绝对路径 → 直接用（428-429 分支）");
 
-        // (BUG S11c-3) 绝对路径分支此前必然 "workflow not found"：注册键是
+        // (BUG -3) 绝对路径分支此前必然 "workflow not found"：注册键是
         // 文件内 name（abs），查找键却是整个路径字符串。钉住修复后的行为。
         let exec_dir = wf_dir.join("executions");
         let entries: Vec<_> = std::fs::read_dir(&exec_dir)
@@ -1091,7 +1091,7 @@ mod cmd_run_tests {
 
     #[tokio::test]
     async fn run_tool_node_on_bare_engine_fails_without_executor() {
-        // (BUG #32, quality-hardening goal 冲刺 S12b) 裸 CLI 引擎对 tool 节点
+        // (, quality-hardening goal 冲刺) 裸 CLI 引擎对 tool 节点
         // 原用 nodes.rs 的 ToolNodeExecutor 桩——不执行任何工具直接回
         // {"tool":"unknown","status":"success"} + Completed（假成功）。修复后
         // 显式 Failed 并指明「未配置工具执行器」（真执行器只在 gateway 侧经
@@ -1130,7 +1130,7 @@ mod cmd_run_tests {
             serde_json::from_str(&std::fs::read_to_string(&entries[0]).unwrap()).unwrap();
         // 整单 Failed，不再假成功 Completed。CLI 路径的持久化记录里失败
         // 信息由执行级 error 字段携带（node_results 在该持久化快照为空，
-        // 引擎内存态才有节点级结果——见 engine 侧 S12b 回归测试）。
+        // 引擎内存态才有节点级结果——见 engine 侧 回归测试）。
         assert_eq!(rec["state"], "failed");
         let err = rec["error"].as_str().unwrap_or_default();
         assert!(
@@ -1145,7 +1145,7 @@ mod cmd_run_tests {
 }
 
 // 整 mod Windows 形态（3/3 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod run_arm {
     use super::super::{TemplateAction, WorkflowAction, run};
 
@@ -1163,7 +1163,7 @@ mod run_arm {
         }
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn dispatch_list_status_template_and_validate_arms() {
         with_env_home(|_home| {
@@ -1222,7 +1222,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn dispatch_template_create_yaml_and_json_outputs() {
         with_env_home(|home| {
@@ -1243,7 +1243,7 @@ mod run_arm {
                 "默认落 researcher.yaml"
             );
 
-            // 显式 .json 输出：JSON 写分支（831-835）。
+            // 显式.json 输出：JSON 写分支（831-835）。
             run(
                 WorkflowAction::Template {
                     action: Some(TemplateAction::Create {
@@ -1273,10 +1273,10 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatch_run_arm_needs_multithread_runtime() {
-        // Run 臂走 tokio::task::block_in_place——current_thread runtime 会
+        // Run 臂走 tokio::task:block_in_place——current_thread runtime 会
         // panic，必须 multi_thread（这也是给未来读代码的人钉的契约）。
         let _guard = crate::GLOBAL_STATE_LOCK
             .lock()
@@ -1305,7 +1305,7 @@ mod run_arm {
 // 去重/坏文件警告臂）——既有 64 测试全在无模板目录的环境跑，循环体没进过。
 // ---------------------------------------------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn template_list_picks_up_disk_templates_and_warns_on_broken() {
     use super::{TemplateAction, WorkflowAction, run};
@@ -1366,7 +1366,7 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
 }
 
 // ===========================================================================
-// wave_b（coverage 补测，2026-08-27）：miss 行清零补洞。
+// wave_b（coverage 补测）：miss 行清零补洞。
 //
 // 目标行（workflow.rs）与本模块的对应关系：
 //  - 384-385（描述 >37 截断）/387（空描述 "-"）/398-400（多 triggers join）/
@@ -1380,7 +1380,7 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
 //    ConfigStore::load(path) 是纯读盘函数，不触碰 GLOBAL_STORE 单例；
 //  - 641（详情 <1s 毫秒臂）/645-646（started/ended 解析失败静默跳过）/
 //    702-704（节点输出 >200 截断 floor_char_boundary）/742-743（executions 目录
-//    存在但无 .json → "No executions found." 内层臂）/772（列表行 started 短串
+//    存在但无.json → "No executions found." 内层臂）/772（列表行 started 短串
 //    原样展示）/775（列表行 JSON 解析失败跳过整行）→ wave_b_status_detail_
 //    conditional_matrix + wave_b_status_list_view_edge_rows；
 //  - 178/186/195（模板扫描：非文件 continue / 扩展名不符 continue /
@@ -1404,7 +1404,7 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
 mod wave_b {
     // run/TemplateAction/WorkflowAction 只有下方 Windows 形态的测试使用，
     // 随之门控（Linux 上拆开导入，避免 unused import 死代码）。
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use super::super::{TemplateAction, WorkflowAction, run};
     use super::super::{cmd_list, cmd_run, cmd_status};
 
@@ -1513,11 +1513,11 @@ mod wave_b {
         let exec_dir = tmp.path().join("executions");
         std::fs::create_dir_all(&exec_dir).unwrap();
 
-        // 第一阶段：目录存在但没有任何 *.json → 741-743 内层空臂。
+        // 段：目录存在但没有任何 *.json → 741-743 内层空臂。
         std::fs::write(exec_dir.join("note.txt"), "ignore me").unwrap();
         cmd_status(tmp.path(), None).expect("empty-after-filter list view ok");
 
-        // 第二阶段：
+        // 段：
         //  - broken.json 整行 JSON 解析失败 → 757 的 else 边（756-775 收口）。
         //  - 无 started_at 的记录 → unwrap_or("?") len=1 → 769-773 短串原样臂。
         std::fs::write(exec_dir.join("broken.json"), "{{{").unwrap();
@@ -1578,7 +1578,7 @@ mod wave_b {
         assert_eq!(rec["state"], "completed");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_template_scan_skips_and_dedup() {
         // 目标行 177-179（目录 continue）/185-187（扩展名 continue）/
@@ -1642,11 +1642,11 @@ mod wave_b {
 // ===========================================================================
 
 // 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r10 {
     use super::super::{WorkflowAction, run};
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_dispatch_success_path_with_failed_transform_node_prints_error() {
         let _guard = crate::GLOBAL_STATE_LOCK

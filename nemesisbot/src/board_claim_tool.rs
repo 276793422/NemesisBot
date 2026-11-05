@@ -1,4 +1,4 @@
-//! 集群任务认领（2026-10-22 计划 §3.6）：`board_claim` 工具——cluster
+//! 集群任务认领（2026-10-22 计划）：`board_claim` 工具——cluster
 //! agent 主动浏览待领单 / 认领（board.claimable.list / board.claim 上行
 //! 信封）。
 //!
@@ -8,7 +8,7 @@
 //! 注册面：**仅 cluster agent**（`agent_factory.rs`，与 board_discuss
 //! 同点）。tier 白名单不收录——与 board_discuss/cluster_rpc 同族
 //! （Big/Unresolved 全量可见，mini/normal 不给：跨节点认领与跨节点发言
-//! 同信任级，Q5 拍板）。
+//! 同信任级）。
 //!
 //! 信封构造在本文件（两个 op 单消费者，不进 cluster_agent 共用件）；
 //! RPC 往返与 coordinator 现查找复用 cluster_agent.rs 共享件。
@@ -35,12 +35,12 @@ impl BoardClaimTool {
     }
 }
 
-/// 解析后的动作（execute 内部第一步；独立成纯函数便于单测）。
+/// 解析后的动作（execute 内部；独立成纯函数便于单测）。
 #[derive(Debug)]
 pub(crate) enum ClaimAction {
     /// 浏览待领单。
     Browse,
-    /// 认领一单（编号 `NB-15` 或数字 id 字符串均收）。
+    /// 认领一单（编号 `` 或数字 id 字符串均收）。
     Claim { issue: String },
 }
 
@@ -211,7 +211,7 @@ impl nemesis_agent::r#loop::Tool for BoardClaimTool {
 ///
 /// 入参 `body` 是 nb_bus RPC 的完整信封响应（`EnvelopeResponse` 序列化形
 /// `{"ok":..,"error":..,"body":{...}}`）——items 在 `/body/items`，与
-/// board_discuss 读 `/body/messages` 同口径（顶层读恒空，run4 实录）。
+/// board_discuss 读 `/body/messages` 同口径（顶层读恒空，run4）。
 pub(crate) fn format_claimable_list(body: &serde_json::Value) -> String {
     let items = body
         .pointer("/body/items")

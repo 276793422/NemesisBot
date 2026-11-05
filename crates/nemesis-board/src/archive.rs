@@ -1,6 +1,6 @@
-//! 项目档案目录（看板项目档案 goal P2/B1-B6）。
+//! 项目档案目录（看板项目档案 goal）。
 //!
-//! 每个项目可绑定一个**档案目录**（既是工作集也是档案，P4 起 git 化）。
+//! 每个项目可绑定一个**档案目录**（既是工作集也是档案， 起 git 化）。
 //! 本模块是目录的单一裁决点：
 //! - [`sanitize_project_name`] / [`default_directory`]：项目名 → 文件名安全
 //!   化 + 自动分配（纯函数，单测钉死）；
@@ -8,11 +8,11 @@
 //!   校验、与主 workspace/其他项目目录重叠拒绝、8.3 短名拒绝、创建时
 //!   mkdir）——**绑定不可变**，解析只发生在 project.create 一次；
 //! - [`ensure_scaffold`]：档案四件套初始化（project.json / docs/ /
-//!   artifacts/ / records/ + timeline.jsonl + .gitignore）。
+//!   artifacts/ / records/ + timeline.jsonl +.gitignore）。
 //!
-//! 真相源原则（goal B4）：board.db 恒为权威；目录 = 投影 + worker 原件。
+//! 真相源原则（goal）：board.db 恒为权威；目录 = 投影 + worker 原件。
 //! 投影部分（project.json/timeline/docs/records）可重建，`.gitignore` 排除
-//! （B6）；`artifacts/` 是依赖任务产物流转通道，进跟踪树。
+//! `artifacts/` 是依赖任务产物流转通道，进跟踪树。
 
 use std::path::{Path, PathBuf};
 
@@ -27,8 +27,8 @@ fn short_name_re() -> &'static regex::Regex {
     SHORT_NAME.get_or_init(|| regex::Regex::new(r".+~\d+$").expect("short-name regex"))
 }
 
-/// 项目名 → 文件名安全段（B2 纯函数）：
-/// - 空白折叠为 `_`；Windows 非法字符 `< > : " / \ | ? *` 与控制字符 → `_`；
+/// 项目名 → 文件名安全段（纯函数）：
+/// - 空白折叠为 `_`；Windows 非法字符 `< >: " / \ | ? *` 与控制字符 → `_`；
 /// - 连续 `_` 塌缩；首尾 `._ ` 修剪（Windows 尾点/尾空格陷阱）；
 /// - 截断到 40 字符（多字节安全向下取整，防根级目录名超长）；
 /// - 全空 → `project`。
@@ -100,7 +100,7 @@ pub fn default_directory(
     ))
 }
 
-/// 目录解析统一入口（B2；**绑定不可变**——只在 project.create 调用一次）。
+/// 目录解析统一入口（**绑定不可变**——只在 project.create 调用一次）。
 ///
 /// - `requested = Some(abs)`：绝对路径校验 + 8.3 短名拒绝（先展开盘上
 ///   存在的祖先链，展开后仍带 `~N` 组件才拒）+ 与主 workspace/其他项目
@@ -108,7 +108,7 @@ pub fn default_directory(
 /// - `requested = None`：[`default_directory`] 自动分配。
 ///
 /// 两条路都**创建时 mkdir**（存在性不要求；已存在同名目录直接使用——
-/// 用户选已有目录作初始基线是 B5 的合法形态）。返回 canonical 显示路径。
+/// 用户选已有目录作初始基线是 的合法形态）。返回 canonical 显示路径。
 pub fn resolve_project_directory(
     requested: Option<&str>,
     workspace: &Path,
@@ -127,7 +127,7 @@ pub fn resolve_project_directory(
             // **存在**的祖先链全部展开（`C:\Users\RUNNER~1\...` → 真名），
             // 展开后仍带 `~N` 尾的组件才拒绝。纯词法先行会误杀合法输入——
             // GitHub Actions Windows runner 的 %TEMP% 用户组件本身就是
-            // RUNNER~1 短名形态（2026-09-18 CI integration 实录：project.create
+            // RUNNER~1 短名形态（CI integration project.create
             // 对 %TEMP% 子目录全灭）。不存在的短名（SOMEDI~1 等探测形态）
             // 展不开、原样保留 → 词法兜底照旧拒绝。
             let expanded = nemesis_path::canonicalize_for_compare(&p);
@@ -172,11 +172,11 @@ pub fn resolve_project_directory(
 }
 
 // ---------------------------------------------------------------------------
-// 四件套脚手架 + project.json（B3/B4）
+// 四件套脚手架 + project.json
 // ---------------------------------------------------------------------------
 
 /// project.json（档案索引/清单；投影件，可从 board.db 重建）。`missing_blocks`
-/// 非空 = P3/D6 回传核验发现的缺失块（⚠ 对前端可见）。
+/// 非空 = / 回传核验发现的缺失块（⚠ 对前端可）。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProjectManifest {
     pub project_id: i64,
@@ -189,12 +189,12 @@ pub struct ProjectManifest {
     pub created_at: String,
 }
 
-/// `.gitignore` 内容（B6）：投影文件不进版本库；跟踪树 = 工作集 + artifacts/
-/// （依赖任务产物流转通道）。P2 落盘、P4 git 化时生效。
+/// `.gitignore` 内容：投影文件不进版本库；跟踪树 = 工作集 + artifacts/
+/// （依赖任务产物流转通道）。 落盘、 git 化时生效。
 ///
 /// **自排除**（`.gitignore` 行）：ingest 合并前的 pre-merge 落定（commit_worktree
-/// 的 `add_all`）尊重 ignore 规则——不排除自身则 .gitignore 会被第一次 pre-merge
-/// 落定带进跟踪树，master 跟踪树 = 交付树 + .gitignore，publish 的内容等值臂
+/// 的 `add_all`）尊重 ignore 规则——不排除自身则.gitignore 会被第一次 pre-merge
+/// 落定带进跟踪树，master 跟踪树 = 交付树 +.gitignore，publish 的内容等值臂
 /// （head_tree == 交付 tree）永不成立 → 基线漂移误拒。自排除后跟踪树恒为纯
 /// 工作集。注：ignore 规则对已跟踪文件无效（存量仓库需 `git rm --cached
 /// .gitignore` 一次性迁出）。
@@ -209,7 +209,7 @@ pub const GITIGNORE_CONTENT: &str = concat!(
 );
 
 /// 幂等初始化四件套（已存在的文件不覆盖——用户选已有目录时其现有文件
-/// 作为初始基线保留，goal B5）。返回是否新建了脚手架（首次 = true）。
+/// 作为初始基线保留，goal）。返回是否新建了脚手架（首次 = true）。
 pub fn ensure_scaffold(
     root: &Path,
     project_id: i64,
@@ -250,7 +250,7 @@ pub fn read_manifest(root: &Path) -> Option<ProjectManifest> {
     serde_json::from_str(&raw).ok()
 }
 
-/// 写 project.json（唯一临时名原子写——防半行 JSON + 并发互踩，BUG-20261025-51）。
+/// 写 project.json（唯一临时名原子写——防半行 JSON + 并发互踩）。
 pub fn write_manifest(root: &Path, manifest: &ProjectManifest) -> Result<(), String> {
     let raw =
         serde_json::to_string_pretty(manifest).map_err(|e| format!("manifest 序列化失败: {e}"))?;

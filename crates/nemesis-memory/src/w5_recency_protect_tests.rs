@@ -1,4 +1,4 @@
-//! W5（2026-10-25 加固）：dreaming 近期召回硬保护
+//! （2026-10-25 加固）：dreaming 近期召回硬保护
 //! 测试——最近被召回（≤ [`RECALL_PROTECT_WINDOW_DAYS`] 天）或累计召回
 //! ≥ [`RECALL_PROTECT_MIN_RECALLS`] 次的条目排除出 expire（merge/promote
 //! 仍可参与）；边界（恰在窗口上）钉死。

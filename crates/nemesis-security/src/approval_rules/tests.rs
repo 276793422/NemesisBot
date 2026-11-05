@@ -1,4 +1,4 @@
-//! approval_rules 单测（F3）：pattern 生成 / 匹配语义 / 层级安全门 /
+//! approval_rules 单测：pattern 生成 / 匹配语义 / 层级安全门 /
 //! upsert 去重 / 磁盘加载与容错。
 
 use super::*;
@@ -112,7 +112,7 @@ fn matches_rejects_blanket_star_suffix_pattern() {
 
 #[test]
 fn matches_tokenizes_quoted_targets() {
-    // 引号内空格照 B5 分词语义匹配。
+    // 引号内空格照 分词语义匹配。
     assert!(matches_rule(
         "process_exec",
         "node server.js *",
@@ -140,7 +140,7 @@ fn rule_permitted_critical_only_exec() {
 
 #[test]
 fn rule_permitted_install_ops_never() {
-    // 2026-09-30 复查 #12：安装类永不入规则（任何风险级）——目录记忆 ≠
+    // 复查 #12：安装类永不入规则（任何风险级）——目录记忆 ≠
     // 载荷记忆，装代码的每次裁决都保持人工。
     assert!(!rule_permitted_for("plugins.install", "HIGH"));
     assert!(!rule_permitted_for("skills.install", "MEDIUM"));
@@ -248,7 +248,7 @@ fn resolve_rules_path_lands_in_workspace_config() {
     );
 }
 
-// ---------- CMD-12（2026-10-13）：复合命令盲区 ----------
+// ---------- CMD-12：复合命令盲区 ----------
 
 #[test]
 fn pattern_for_compound_command_refuses_rule() {
@@ -346,7 +346,7 @@ fn persist_compound_command_returns_honest_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------- env 前缀（闭环批 2026-10-13）：读侧剥离与写侧归约同语义 ----------
+// ---------- env 前缀（闭环-13）：读侧剥离与写侧归约同语义 ----------
 
 #[test]
 fn matches_rule_strips_env_prefix_per_segment() {
@@ -405,7 +405,7 @@ fn matches_rule_exact_branch_strips_env_for_command_ops() {
     ));
 }
 
-// ---------- D12-5（2026-10-13 第 6 轮审计）：引号形 env 头两侧同源 ----------
+// ---------- （第 6 轮审计）：引号形 env 头两侧同源 ----------
 
 #[test]
 fn quoted_env_prefix_hits_reduced_rule() {

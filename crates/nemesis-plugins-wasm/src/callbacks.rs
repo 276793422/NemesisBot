@@ -1,4 +1,4 @@
-//! 宿主回调 shim（11 个 `extern "C"` 函数 → [`CallCaps`] 策略核心；批 3
+//! 宿主回调 shim（11 个 `extern "C"` 函数 → [`CallCaps`] 策略核心；
 //! 增补 llm-complete、2026-11-03 自持写通道批增补 secret-set/config-set）。
 //!
 //! 策略语义从原 bindgen Host 实现原样搬移（帧预算/observe 帧收窄/审计/脱敏），
@@ -112,7 +112,7 @@ fn guard(out_detail: *mut *mut c_char, f: impl FnOnce() -> (c_int, Option<String
 }
 
 // ---------------------------------------------------------------------------
-// 11 个 shim（批 3 增补 llm-complete；2026-11-03 自持写通道批增补
+// 11 个 shim（增补 llm-complete； 自持写通道批增补
 // secret-set / config-set）
 // ---------------------------------------------------------------------------
 
@@ -514,16 +514,16 @@ unsafe extern "C" fn cb_tool_invoke(
 }
 
 /// `llm-complete(prompt, max-tokens) -> result<string, host-error>`
-/// （2026-10-22 样板工程批 4；cb_tool_invoke 同款骨架）。
+/// （样板工程；cb_tool_invoke 同款骨架）。
 ///
 /// 帧纪律：**policy 帧（kind 硬规则）与 panel 帧（双闸：manifest
-/// `[permissions] x-llm` × 宿主总闸 `panel_llm_enabled`，2026-11-01
+/// `[permissions] x-llm` × 宿主总闸 `panel_llm_enabled`，
 /// 决策 C）可用**——授予裁决集中在 registry::build_frame（帧内 `llm`
 /// 为 None 即恒 unavailable）；tool / observer 帧恒 unavailable（LLM
 /// 花销能力只授循环治理路径与显式开关的面板通道，见
 /// host_impl::LlmInvoker 契约）。壳侧 llm-complete 恒注册（不按 world
 /// 区分）是 link 兼容（无辜组件不因 import 缺席实例化失败），授权在
-/// 调用时闸。2026-10-24 R70 补齐：此前只拦 observe 帧，tool 帧经
+/// 调用时闸。 补齐：此前只拦 observe 帧，tool 帧经
 /// build_frame 无差别注入的 llm 面即可调用——绕过 egress
 /// deny-by-default 形成未声明出站通道（manifest 零权限插件可把任意
 /// 内容经 prompt 送外部模型端点）。max_tokens=0 视为未给预算诚实拒绝
@@ -581,7 +581,7 @@ pub(crate) unsafe extern "C" fn cb_llm_complete(
     })
 }
 
-/// `secret-set(name, value) -> result<_, host-error>`（2026-11-03 自持写
+/// `secret-set(name, value) -> result<_, host-error>`（自持写
 /// 通道批；secret-get 的对偶写面）。闸序镜像 cb_llm_complete 防线双闸
 /// 风格：帧预算 → observer 帧 → 非 Panel kind → 未接线（Option None）→
 /// 声明 namespace 闸（未声明名 = policy-denied + 审计 denied，与 get 同
@@ -655,7 +655,7 @@ pub(crate) unsafe extern "C" fn cb_secret_set(
 /// x-secret 声明键 → policy-denied（配置面与凭据面分离——写凭据走
 /// secret-set，读面同样拒）；未声明键 → not-found（与 get「未声明键」同
 /// 语义）。写经 ConfigWriter 委派 `PluginManager::set_config_key`（三闸 +
-/// 原子落盘单一真相源），审计 LOW 记键名不记值。
+/// 原子落盘统一定义），审计 LOW 记键名不记值。
 #[doc(hidden)]
 pub(crate) unsafe extern "C" fn cb_config_set(
     env: *mut c_void,

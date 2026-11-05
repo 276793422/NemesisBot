@@ -28,7 +28,7 @@ pub struct Artifact {
     pub success_rate: f64,
     pub last_degraded_at: Option<String>,
     pub consecutive_observing_rounds: u32,
-    /// 显式部署时间戳（自进化升级 F 线，2026-10-14）：实效对比 before/after
+    /// 显式部署时间戳（自进化升级 F 线）：实效对比 before/after
     /// 分割点。None = 回落 created_at（旧行为零变化）。SPO 迭代重部署时
     /// 由调用方刷新，使每次变异的实效窗独立。
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,11 +1,11 @@
-//! ：persist 原子写 + load 损坏镜像 loud 留痕
+//! persist 原子写 + load 损坏镜像 loud 留痕
 //! 回归锁。
 //!
-//! 修复前 `persist` 用裸 `std:fs:write` 直写目标——崩溃/断电落在写中 →
+//! 修复前 `persist` 用裸 `std::fs:write` 直写目标——崩溃/断电落在写中 →
 //! 半截 JSON（turn-N.json 每 turn 被 snapshot/seal 多次覆写，撕裂毁掉的是
 //! 先前已落盘的好镜像），重启后 load 解析失败被静默跳过 → rewind 选择器丢
 //! 条目、tree 基线/封印指纹消失（冲突预检对该 turn 致盲）、redo 陈旧性守卫
-//! 基线漂移。修复后走 `nemesis_utils:write_file_atomic`（唯一临时名 +
+//! 基线漂移。修复后走 `nemesis_utils::write_file_atomic`（唯一临时名 +
 //! sync_all 先于 rename + 失败清理），load 解析失败 warn 留痕。
 //!
 //! 进程内无法真实注入「写中崩溃」（loop_continuation 同族先例的诚实

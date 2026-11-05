@@ -75,7 +75,7 @@ fn split_frontmatter(content: &str) -> (String, String) {
     if let Some(end) = rest.find(&close) {
         let fm = &rest[..end];
         // 空 frontmatter（`---\n---`）= 按无 frontmatter 处理——拼回会产出
-        // 前导空行污染候选头部（四路评审 C-F5 根修）。
+        // 前导空行污染候选头部（四路评审 C- 根修）。
         if fm.trim().is_empty() {
             return (String::new(), content.to_string());
         }
@@ -117,7 +117,7 @@ pub fn apply(
 
     // 无 frontmatter（含空 fence 按 body 处理的形态）不拼分隔换行：
     // fm 为空串时 format!("{fm}\n…") 会给候选头部注入空行，人工应用后
-    // 逐轮累积（R72 根修——四路评审 C-F5 只把空 fence 归入 body，主拼
+    // 逐轮累积（根修——四路评审 C- 只把空 fence 归入 body，主拼
     // 接路径仍在污染候选头部）。
     let new_content = if fm.is_empty() {
         new_body

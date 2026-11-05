@@ -51,7 +51,7 @@ pub struct PersonaPackage {
 /// 一条信息单元——对账的原子。输入的每条关键技术决策/项目/业务知识/方法论都各成一个单元。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InformationUnit {
-    /// 稳定 id（u1, u2, ...），供对账引用。
+    /// 稳定 id（u1, u2,...），供对账引用。
     pub id: String,
     /// 这条信息的内容。
     pub content: String,
@@ -849,7 +849,7 @@ pub async fn generate_persona(
 #[cfg(test)]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): full
+// (, quality-hardening goal 冲刺 web): full
 // generate_persona pipeline against a wiremock OpenAI-compatible backend —
 // clean run / retry-exhausted / stage-2 parse & validate continue arms /
 // audit HTTP failure fallback.

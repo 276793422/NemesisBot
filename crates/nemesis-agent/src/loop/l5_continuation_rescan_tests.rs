@@ -231,7 +231,7 @@ async fn cluster_continuation_inline_redacts_credentials() {
 }
 
 // ---------------------------------------------------------------------------
-// ② cluster 续行追加：spawned 臂（permits=1，tokio:spawn + semaphore）
+// ② cluster 续行追加：spawned 臂（permits=1，tokio::spawn + semaphore）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

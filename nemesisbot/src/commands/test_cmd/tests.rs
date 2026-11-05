@@ -284,13 +284,13 @@ fn test_approval_data_with_special_chars() {
 }
 
 // ===========================================================================
-// run() 分发 + 真实 ProcessManager 通路（S11c，quality-hardening goal 冲刺 S11）
+// run() 分发 + 真实 ProcessManager 通路（quality-hardening goal 冲刺）
 // —— 既有 27 个测试只钉 make_approval_data 纯函数，四个 run_* 全没跑过。
 // 关键事实：spawn_child 用 current_exe 起子进程，测试二进制把
-// `--multiple --child-id ... --window-type approval` 交给 clap → 参数不识别
+// `--multiple --child-id... --window-type approval` 交给 clap → 参数不识别
 // 立即退出 → 管道 EOF → handshake 确定性失败（不起 UI、不装 DLL、不占端口；
 // WS server 绑 127.0.0.1:0）。ApprovalUi / Dashboard 在更早的
-// check_plugin_library_exists 就 bail（测试 exe 旁无 plugins/）。
+// check_plugin_library_exists 就 bail（测试 exe 旁无 plugins）。
 // ===========================================================================
 
 mod run_arm {
@@ -308,7 +308,7 @@ mod run_arm {
         print_result(false, "fail banner");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[cfg(feature = "desktop")]
     #[tokio::test]
     async fn approval_headless_fails_fast_when_handshake_eof_and_cleans_env() {
@@ -328,7 +328,7 @@ mod run_arm {
             err.to_string().contains("spawn_child failed"),
             "got: {err:#}"
         );
-        // (BUG S11c-2) 对称清理：失败路径必须回收 env，不得残留给后续测试。
+        // (BUG -2) 对称清理：失败路径必须回收 env，不得残留给后续测试。
         assert_eq!(
             std::env::var("NEMESISBOT_FORCE_HEADLESS").unwrap_or_default(),
             "",
@@ -367,7 +367,7 @@ mod run_arm {
 }
 
 // ---------------------------------------------------------------------------
-// wave_a（2026-09-25）：check_plugin_library_exists 的 not-found 分支。
+// wave_a：check_plugin_library_exists 的 not-found 分支。
 // 测试进程 exe 目录是 target/debug/deps（无 plugins/ 子目录）→ 走 Err 臂；
 // Ok 臂依赖真实 exe 布局，不在单测面内。
 // ---------------------------------------------------------------------------

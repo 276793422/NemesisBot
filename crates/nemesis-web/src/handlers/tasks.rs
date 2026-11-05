@@ -137,7 +137,7 @@ impl ModuleHandler for TasksHandler {
 }
 
 /// 系统内部作业的用户面变更闸（`board-ap:` / `memory-dreaming:` 保留命名
-/// 空间，单一真相源 [`nemesis_cron::reserved_prefix_hit`]）：这些作业由
+/// 空间，统一定义 [`nemesis_cron::reserved_prefix_hit`]）：这些作业由
 /// 看板 autopilot 规则与 `memory.dreaming` 配置各自拥有真相源，gateway
 /// 运行中经本页删除/停用/改排程会静默破坏挂载——启动同步（仅 gateway
 /// 启动时跑一次）之前规则/排程一直停摆，且规则侧「已挂载」状态按

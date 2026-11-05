@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): AgentHandler arms with a
+//! (quality-hardening goal 冲刺, web): AgentHandler arms with a
 //! REAL AgentLoop attached (existing tests only cover the None/stub paths) —
 //! cancel Some-loop, checkpoints Some-loop, rewind with a live loop but no
 //! checkpoint store, and the missing/mistyped `turn` guards.
@@ -147,7 +147,7 @@ async fn rewind_with_live_loop_but_no_checkpoint_store_errors() {
 }
 
 // ============================================================
-// dashboard visibility : agent.inbox_status handler。
+// dashboard visibility: agent.inbox_status handler。
 // ============================================================
 
 #[tokio::test]

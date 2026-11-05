@@ -47,7 +47,7 @@ pub fn boot_unix_ms() -> u64 {
 /// Build a globally-unique sequence number.
 ///
 /// Layout: `(boot_unix_ms << 20) + free-running counter`. The counter is
-/// deliberately **not masked** to 20 bits (BUG-20261028-110): a masked counter
+/// deliberately **not masked** to 20 bits: a masked counter
 /// wraps after 2^20 calls and re-enters an already-emitted seq range — the
 /// dashboard's `seq <= maxSeqSeen` dedup (`EventStream.vue`) then silently
 /// drops every live log event until restart. The additive layout keeps the
@@ -97,7 +97,7 @@ impl SseLogEvent {
     /// Mapping is by crate prefix — keeps the per-event cost down (a single `starts_with` chain).
     /// Anything unrecognized falls back to `general`.
     pub fn classify_source(target: &str) -> String {
-        // L10（2026-10-13）：cache warmer 的 warm 生命周期日志（crate 前缀
+        // cache warmer 的 warm 生命周期日志（crate 前缀
         // 同为 nemesis_agent）按完整模块路径先判——warm 花真金白银 API 调用，
         // 归「llm」观测面（Logs Dashboard llm 源可查）。
         if target.starts_with("nemesis_agent::loop::cache_warmer") {

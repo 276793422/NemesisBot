@@ -1,4 +1,4 @@
-//! learned-skills manifest（2026-10-13 机会项）WSAPI 面测试。
+//! learned-skills manifest（2026-10-13）WSAPI 面测试。
 //!
 //! 覆盖：`skills.learned_list`（空账/有条目 + on_disk 幽灵核对）、
 //! `skills.learned_remove`（happy 清目录+账目 / 非 manifest 成员拒绝
@@ -68,7 +68,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
-/// 造一个 manifest 条目（便捷：直接调 nemesis_skills::learned::record_learned）。
+/// 造一个 manifest 条目（便捷：直接调 nemesis_skills::learned:record_learned）。
 fn seed_learned(ws: &Path, name: &str, desc: &str) {
     nemesis_skills::learned::record_learned(ws, name, desc).unwrap();
 }

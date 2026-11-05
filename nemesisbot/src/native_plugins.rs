@@ -6,16 +6,16 @@
 //! - **开关闸**：`<workspace>/config/plugins_native.json`（用户要求的独立
 //!   长期记忆配置；读写真相源在 nemesis-config `plugins_native`）。关 =
 //!   对应子系统诚实跳过 + 日志注记（eval 即时生效，其余重启生效）。
-//! - **签名策略**：与 exe 启动自验**同一三态矩阵**（`verify_policy::
-//!   resolve_mode` 单一真相源；`security.signature_verify` off/warn/enforce
+//! - **签名策略**：与 exe 启动自验**同一三态矩阵**（`verify_policy:
+//!   resolve_mode` 单一权威定义；`security.signature_verify` off/warn/enforce
 //!   + `verify-enforce-lock` 锁定版）——enforce（锁定版构建 / 显式配置）=
 //!   库文件必须过 `verify_bytes` 九态管线 Valid 才许装载（fail-closed：读取
 //!   失败同拒）；warn（缺省）= 放行 + 状态如实上报（开发构建四个自产 DLL
 //!   均未签名，缺省强制会把开发态肢解）；off / 锚缺席 / verify 未编译 =
 //!   休眠（放行不验）。锚缺席恒休眠——无锚即无验签能力，与 exe 自验的
 //!   「无锚降级」同语义。
-//! - **验签/装载同源**（R1 整改 2026-10-22）：[`resolve_load_path`] 是
-//!   路径解析单一真相源，`GateOutcome::Allow` 携带获准装载的具体文件。
+//! - **验签/装载同源**（整改 2026-10-22）：[`resolve_load_path`] 是
+//!   路径解析统一定义，`GateOutcome::Allow` 携带获准装载的具体文件。
 //!   消费义务两档：装载点另有查找规则的（wasm 宿主壳 loader 的 env 覆盖/
 //!   开发路径候选、eval 监控 DLL 的开发形态仓库路径）**必须**按
 //!   `Allow.path` 定点装载——enforce 态「验了 A 装 B」的解耦在此封死；
@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GateOutcome {
     /// 装载（开关开 + 签名策略放行、warn 或休眠）。携带获准装载的**具体
-    /// 文件**（R1 整改：enforce 态验签的就是它；查找规则与此处不同的
+    /// 文件**（enforce 态验签的就是它；查找规则与此处不同的
     /// 装载点——wasm 宿主壳/eval 监控 DLL——必须按它定点装载，与
     /// [`find_plugin_library`] 同源的装载点丢弃与消费等价，见模块文档）；
     /// `None` = 库文件缺席（缺席不在此定性——装载点自己的「未找到」
@@ -87,8 +87,8 @@ fn signature_gate_mode(config_dir: &Path) -> SignatureGateMode {
     }
 }
 
-/// 统一路径解析（单一真相源）：闸的验签对象与装载点的实际装载对象都
-/// 消费这里——R1 整改前闸只查 exe 旁 `plugins/`，而 wasm 宿主壳装载器
+/// 统一路径解析：闸的验签对象与装载点的实际装载对象都
+/// 消费这里——旧闸只查 exe 旁 `plugins/`，而 wasm 宿主壳装载器
 /// 另有 env 覆盖/exe 同目录/开发路径候选，enforce 态「验了 A 装 B」。
 ///
 /// - `PluginWasm` → 宿主壳装载器候选扫描（`resolve_host_dll_path`，env

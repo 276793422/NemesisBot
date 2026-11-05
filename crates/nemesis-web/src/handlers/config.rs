@@ -85,7 +85,7 @@ impl ModuleHandler for ConfigHandler {
 }
 
 /// config.json 路径（home 下）。pub(crate)：skins handler 的 set_active
-/// 写 `ui.skin` 复用同一装配（live 优先语义单一真相源）。
+/// 写 `ui.skin` 复用同一装配（live 优先语义统一定义）。
 pub(crate) fn config_path(home: &str) -> PathBuf {
     PathBuf::from(home).join("config.json")
 }

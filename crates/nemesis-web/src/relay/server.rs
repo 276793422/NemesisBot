@@ -1,4 +1,4 @@
-//! 反向桥中继服务端状态机（goal：反向桥与多设备汇聚，一期批次一）。
+//! 反向桥中继服务端状态机（goal：反向桥与多设备汇聚，一期）。
 //!
 //! 职责：桥接入鉴权（hello 帧 token 校验）、设备表（多设备并发 + 单设备
 //! 最新连接顶替旧连接）、心跳判定（90s 无心跳判离线）、conn 路由（conn_id
@@ -6,7 +6,7 @@
 //! 「已授权会话」状态，重启即失效）、运行时开关（正常模式默认开，通道页
 //! 可关，重启恢复）。
 //!
-//! 二期（批次五）：hello 携带集群身份 → 设备表存快照，上线/离线经
+//! 二期：hello 携带集群身份 → 设备表存快照，上线/离线经
 //! [`BridgeIdentitySink`] 抛给宿主（宿主注册进集群 registry——relay 模块
 //! 零依赖集群 crate；`--relay` 不注入 sink = 只转发不注册）。离线上报
 //! 三点全覆盖：断开（代际匹配移除）/ 心跳踢 / 开关踢；顶替场景旧循环
@@ -119,10 +119,10 @@ pub struct RelayServer {
     /// hub 侧集群身份（正常模式 = hub 集群 node_id；`--relay` 空）——
     /// welcome 帧带给设备，三期跨桥寻址用。
     hub_node_id: Mutex<String>,
-    /// 二期批次六：上行 `cluster_rpc` 帧出口槽（宿主注入 = hub 形态；
+    /// 二期：上行 `cluster_rpc` 帧出口槽（宿主注入 = hub 形态；
     /// None = `--relay` / 一期形态，上行帧维持 WARN 忽略）。
     cluster_frame_sink: super::cluster_frame::ClusterFrameSinkSlot,
-    /// 三期批次八：成员表快照闭包（宿主注入 = 正常模式 hub 广播集群
+    /// 三期：成员表快照闭包（宿主注入 = 正常模式 hub 广播集群
     /// registry 摘要；None = `--relay` 广播自身桥设备表摘要）。广播时
     /// 拉取最新（拉模式——registry 变化无需推钩子，relay 零集群依赖）。
     member_snapshot: Mutex<Option<std::sync::Arc<dyn Fn() -> serde_json::Value + Send + Sync>>>,
@@ -150,7 +150,7 @@ impl RelayServer {
         }
     }
 
-    /// 二期批次六：注入上行 `cluster_rpc` 帧出口（宿主装配处；`--relay`
+    /// 二期：注入上行 `cluster_rpc` 帧出口（宿主装配处；`--relay`
     /// 不注入——保持一期 WARN 忽略语义）。
     pub fn set_cluster_frame_sink(
         &self,
@@ -166,7 +166,7 @@ impl RelayServer {
         self.cluster_frame_sink.get()
     }
 
-    /// 三期批次八：注入成员表快照闭包（宿主装配处；正常模式 = 集群
+    /// 三期：注入成员表快照闭包（宿主装配处；正常模式 = 集群
     /// registry 摘要。`--relay` 不注入——广播回落为自身桥设备表摘要）。
     pub fn set_member_snapshot(
         &self,
@@ -175,7 +175,7 @@ impl RelayServer {
         *self.member_snapshot.lock().expect("member_snapshot 锁中毒") = Some(snapshot);
     }
 
-    /// 三期批次八：向全部在线设备广播成员表（`member_sync` 帧）。
+    /// 三期：向全部在线设备广播成员表（`member_sync` 帧）。
     ///
     /// 摘要来源：注入了快照闭包（正常模式 hub）→ 调用拉取 registry 摘要；
     /// 未注入（`--relay`）→ 自身桥设备表摘要（成员感知的纯中继形态）。
@@ -248,7 +248,7 @@ impl RelayServer {
                 online: false,
                 cluster,
             });
-        // 三期批次八：设备离线 = 摘要变化 → 立即广播（断开/心跳踢/开关踢
+        // 三期：设备离线 = 摘要变化 → 立即广播（断开/心跳踢/开关踢
         // 三点全覆盖；开关踢时 enabled 已关，广播内部 gate 静默跳过）。
         self.broadcast_member_sync();
     }
@@ -375,7 +375,7 @@ impl RelayServer {
                 online: true,
                 cluster: identity,
             });
-        // 三期批次八：设备上线 = 摘要变化 → 立即广播（不等 15s 兜底）。
+        // 三期：设备上线 = 摘要变化 → 立即广播（不等 15s 兜底）。
         self.broadcast_member_sync();
         Ok(generation)
     }
@@ -624,7 +624,7 @@ impl RelayServer {
         self.conns.retain(|_, c| {
             now_instant().duration_since(c.created_at).as_secs() < CONN_MAX_AGE_SECS
         });
-        // 三期批次八：成员表周期兜底广播（goal：变化触发 + 15s 兜底全量）。
+        // 三期：成员表周期兜底广播（goal：变化触发 + 15s 兜底全量）。
         self.broadcast_member_sync();
     }
 

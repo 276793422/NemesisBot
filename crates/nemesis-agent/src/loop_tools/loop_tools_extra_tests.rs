@@ -1591,7 +1591,7 @@ async fn test_forge_bridge_unknown_tool_name_returns_err() {
 }
 
 // ===========================================================================
-// : CronTool continue_session
+// CronTool continue_session
 // ===========================================================================
 
 #[tokio::test]
@@ -1651,7 +1651,7 @@ async fn test_cron_create_continue_session_uses_ext() {
     }
 }
 
-/// : continue_session + max_rounds — the budget lands in the job
+/// continue_session + max_rounds — the budget lands in the job
 /// payload (explicit tier, default 10 when omitted, ignored when not
 /// continuing the session).
 #[tokio::test]

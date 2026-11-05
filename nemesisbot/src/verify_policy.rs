@@ -1,9 +1,9 @@
-//! 签名验证三态裁决——单一真相源（接入计划 §1/§2.1，
-//! docs/PLAN/2026-09-23_signature-verify-integration-switch.md）。
+//! 签名验证三态裁决——单一真相源（接入计划，
+//! signature-verify-integration-switch）。
 //!
 //! 职责边界：
 //! - **裁决**（[`resolve_mode`]）：锁定版 feature / config 三态 / 编译期锚
-//!   三输入 → 生效模式。§1 矩阵的唯一实现，禁止在别处散落同款 if。
+//!   三输入 → 生效模式。 矩阵的唯一实现，禁止在别处散落同款 if。
 //! - **执行**（[`self_check_and_enforce`]）：main.rs `Cli::parse` 后、任何
 //!   命令装配前调用（gateway / run / acp 三入口同源覆盖——headless/ACP
 //!   不是安全旁路）。enforce 失败 = exit `86`。
@@ -11,7 +11,7 @@
 //!   装配完安全插件后据此补 tracing 汇总 + 审计链一条；WSAPI
 //!   `security.signature_verify_status` 只读消费。
 //!
-//! 边界声明（接入计划 §6 诚实边界）：
+//! 边界声明（接入计划 诚实边界）：
 //! - 消费版开关与二进制同处一个可篡改面——开关保可用性与可见性，强制层级
 //!   = 锁定版（本模块 `VERIFY_ENFORCE_LOCKED`）> 外部启动器（远期）；
 //! - 启动时验一次，运行期间磁盘 exe 可被换（周期复验 = 远期项）；
@@ -29,7 +29,7 @@ use nemesis_verify::verify::{self, VerifyOutcome};
 
 /// 锁定版旗标：cargo feature `verify-enforce-lock`（空 feature，纯编译期
 /// cfg）。feature 指纹原生跟踪——同 target 目录先消费后锁定绝无 stale
-/// （一稿 option_env! 方案的缓存复用坑，见计划 §2.1）。
+/// （一稿 option_env! 方案的缓存复用坑，见计划）。
 #[cfg_attr(not(feature = "verify"), allow(dead_code))]
 #[cfg(feature = "verify-enforce-lock")]
 pub const VERIFY_ENFORCE_LOCKED: bool = true;
@@ -62,7 +62,7 @@ pub const ROOT_ANCHOR: Option<&'static str> = anchor_from_env(option_env!("NEMES
 #[cfg_attr(not(feature = "verify"), allow(dead_code))]
 pub const EXIT_ENFORCE_REJECTED: i32 = 86;
 
-/// 生效模式（§1 矩阵输出）。
+/// 生效模式（矩阵输出）。
 #[cfg_attr(not(feature = "verify"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerifyMode {
@@ -95,7 +95,7 @@ pub struct Resolution {
     pub degraded: bool,
 }
 
-/// 三态裁决矩阵（§1）——**单一实现**，裁决顺序硬编码：
+/// 三态裁决矩阵——**单一实现**，裁决顺序硬编码：
 /// 1. config 值合法性先行（未知值 loud 拒绝——错值不是「值」，锁定版也不吞）；
 /// 2. 锁定版 → Enforce（config 任意合法值被忽略）；
 /// 3. 非锁定：off→Off / 缺省或 warn→Warn / enforce→Enforce；
@@ -187,7 +187,7 @@ pub fn self_check_and_enforce(local_mode: bool) {
     let resolution = match resolve_mode(config_value.as_deref()) {
         Ok(r) => r,
         Err(e) => {
-            // 未知取值 loud 拒绝（计划 §1；对齐 protocol 字段未知值风格）。
+            // 未知取值 loud 拒绝（计划；对齐 protocol 字段未知值风格）。
             eprintln!("[verify] ❌ {e}");
             std::process::exit(EXIT_ENFORCE_REJECTED);
         }

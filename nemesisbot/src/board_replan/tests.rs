@@ -1,4 +1,4 @@
-//! AOR 批三 5.3：重规划器编排层单测。夹具刻意不带模型（moderator_loop
+//! 重规划器编排层单测。夹具刻意不带模型（moderator_loop
 //! 留空）：全部闸跳过臂 / 策略闸 / 执行链 / sweep 候选扫描不触碰 LLM 照
 //! 样闭环；`run_replan_llm` 起草本体由 cluster-uat 端到端覆盖。纯逻辑层
 //! （parse_replan 等）测试在 `nemesis-board/src/replan/tests.rs`。
@@ -249,7 +249,7 @@ fn proposal_state_tracks_dedup_and_version() {
     assert_eq!(s.version, 2, "拒绝评论不计入建议版本");
 }
 
-/// 回归锁（BUG-20261105-010）：assisted 模式建议评论以 @提及前缀落盘
+/// 回归锁：assisted 模式建议评论以 @提及前缀落盘
 ///（`@<creator> 🔁 重规划建议：…`），识别处 starts_with 直接失配 →
 /// last_replan 永远 None → 去重闸对本根单终身失效（重复起草无限继续）
 /// + 版本号恒 v1。修复 = 识别前剥掉一次 `@<id> ` 前缀。
@@ -290,7 +290,7 @@ fn proposal_state_recognizes_assisted_mention_prefix() {
     assert_eq!(s.version, 2, "人工表态不推版本");
 }
 
-/// 回归锁（BUG-20261105-011）：in-flight 占位语义——首 claim 成功、同根单
+/// 回归锁：in-flight 占位语义——首 claim 成功、同根单
 /// 重复 claim 拒绝、不同根单互不影响、guard drop 后可再 claim。
 #[test]
 fn inflight_claim_blocks_concurrent_and_releases_on_drop() {
@@ -436,7 +436,7 @@ fn execute_blocked_writes_audit_comment_and_notification() {
 
 #[test]
 fn execute_aborts_when_estop_engaged_mid_draft() {
-    // EST-03 长跑复查回归锁（R528）：起草入口的 estop 检查到
+    // EST-03 长跑复查回归锁：起草入口的 estop 检查到
     // autonomous_execute 之间隔着分钟级评审 LLM——发起时未生效不代表
     // 结束时仍未生效，执行入口必须复查。急停中策略闸全过的合法建议
     // 也不得产生任何自治动作（宁可停不可闯）。

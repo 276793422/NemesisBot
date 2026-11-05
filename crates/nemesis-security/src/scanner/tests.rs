@@ -1,5 +1,5 @@
 use super::*;
-use tokio::io::AsyncBufReadExt; // read_line 所在 trait（E0599）
+use tokio::io::AsyncBufReadExt; // read_line 所在 trait
 
 #[tokio::test]
 async fn test_stub_scan_file_clean() {
@@ -232,9 +232,9 @@ fn test_extract_paths_from_args() {
     assert!(paths2.contains(&"/home/user/file.txt".to_string()));
 }
 
-// BUG-20261029-171 红证：multiedit 载荷内嵌 edits[].path（顶层无
+// 红证：multiedit 载荷内嵌 edits[].path（顶层无
 // path/file_path 键），缺臂 = 路径提取恒空（目标文件不进扫描）。
-// BUG-20261028-118 在 extract_target（ABAC/审计面）修过同族漂移，本表漏改。
+// 在 extract_target（ABAC/审计面）修过同族漂移，本表漏改。
 #[test]
 fn test_extract_paths_from_args_multiedit() {
     let chain = ScanChain::with_defaults();
@@ -307,7 +307,7 @@ impl VirusScanner for InfectedMock {
     }
 }
 
-// BUG-20261029-171 红证：multiedit 待写内容在 edits[].new_text（顶层无
+// 红证：multiedit 待写内容在 edits[].new_text（顶层无
 // content 键，写系 content 臂取不到）= 内容不扫即放行。
 #[tokio::test]
 async fn test_scan_tool_invocation_multiedit_blocked() {
@@ -1539,7 +1539,7 @@ fn test_extract_paths_cron_no_command() {
 }
 
 // ============================================================
-// MockEngine + chain arms (2026-08-25 coverage push)
+// MockEngine + chain arms (coverage push)
 // ============================================================
 // StubScanner 永远 clean，覆盖不了 chain 的 blocked / not-ready-skip /
 // start/stop warn 分支。MockEngine 按 flags 可控返回感染/未就绪/启停失败。
@@ -1909,7 +1909,7 @@ fn test_load_from_full_config_unknown_engine_skipped() {
 }
 
 // ============================================================
-// ClamAVEngine success paths via fake clamd (2026-08-25 coverage push)
+// ClamAVEngine success paths via fake clamd (coverage push)
 // ============================================================
 
 async fn serve_clamd(
@@ -2067,7 +2067,7 @@ async fn test_engine_start_success_via_fake_clamd() {
 
 #[tokio::test]
 async fn test_engine_scan_file_error_maps_to_scan_error() {
-    // started + SCAN 应答空（client "empty response" Err）→ raw "scan error: ..."
+    // started + SCAN 应答空（client "empty response" Err）→ raw "scan error:..."
     let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: OK\n").await;
     let engine = engine_on(&addr);
     engine.start().await.unwrap();
@@ -2096,7 +2096,7 @@ async fn test_engine_scan_content_success_infected() {
 
 #[tokio::test]
 async fn test_engine_scan_content_error_maps_to_scan_error() {
-    // INSTREAM 应答缺失（服务端不回）→ client Err → "scan error: ..."
+    // INSTREAM 应答缺失（服务端不回）→ client Err → "scan error:..."
     let addr = serve_clamd(pong_and(|_| Vec::new()), "").await;
     let engine = engine_on(&addr);
     engine.start().await.unwrap();
@@ -2170,7 +2170,7 @@ fn engine_with_url(url: String) -> ClamAVEngine {
 #[tokio::test]
 async fn test_engine_download_connection_refused() {
     // 关闭端口 → reqwest Err；嵌套目标目录先被 create_dir_all 建好。
-    // dest 放 target/ 不放 %TEMP%（2026-10-28 CI shard1 实录：tempdir 内
+    // dest 放 target/ 不放 %TEMP%（CI tempdir 内
     // nested/deep 在 download 的 ~2s 网络等待窗内被并发进程删除 → is_dir
     // 断言假红；%TEMP% 外部删除者家族第 4 起，lsp fixture 案迁址先例同款
     // 免疫）。pid+纳秒唯一不互踩；尾部自清（断言失败残留 target/ 生命周期
@@ -2355,7 +2355,7 @@ fn test_extract_zip_archive_dir_and_nested_entries() {
 }
 
 // ============================================================
-// ClamavScannerWrapper internals (2026-08-25 coverage push)
+// ClamavScannerWrapper internals (coverage push)
 // ============================================================
 // wrapper 是 scanner 模块私有 struct —— tests 子模块可直接访问私有字段
 // （manager / manager_config / started）与私有方法。
@@ -2383,7 +2383,7 @@ fn test_wrapper_setters_populate_manager_config() {
 // （netstat -ano → PID → QueryFullProcessImageNameW）；非 Windows 是文档化
 // stub（直接 true 假定是我们的，见 clamav/ownership.rs 头注）——三个
 // "外来监听者必须被拒" 测试的前提在 stub 下不成立 → cfg(windows) 门控
-// （2026-09-01 Linux 首跑暴露）。
+// （Linux 首跑暴露）。
 #[cfg(windows)]
 #[tokio::test]
 async fn test_wrapper_clamd_is_ours_false_for_foreign_listener() {
@@ -2427,7 +2427,7 @@ async fn test_wrapper_restart_clamd_if_down_manager_error_returns_false() {
 // ---- Windows-only: where.exe 假 clamd.exe + 进程内 PONG ----
 
 /// 测试专用根目录：target/scanner-test/<tag>-<pid>-<纳秒>。**不放 %TEMP%**——
-/// 外部删除者家族（2026-10-28 实录第 5 起：restart/stop wrapper 测试的
+/// 外部删除者家族（实测第 5 起：restart/stop wrapper 测试的
 /// tempdir 在 mgr.start() 的 readiness 轮询窗内被并发进程删掉 clamd.exe，
 /// restart 二次 exe 检查假红；迁址先例 = download 测试 f9e0165a + lsp
 /// fixture 案）。pid+纳秒唯一不互踩；调用方尾部自清。
@@ -2643,7 +2643,7 @@ async fn test_wrapper_scan_file_success_when_started() {
 
 #[tokio::test]
 async fn test_wrapper_scan_file_fail_open_after_restart_attempt() {
-    // started + 连不上 → restart_clamd_if_down false → G5 fail-open（clean +
+    // started + 连不上 → restart_clamd_if_down false → fail-open（clean +
     // raw "scan error (clamd unavailable, restart attempted)"）。
     let w = wrapper_on("127.0.0.1:1");
     w.started.store(true, Ordering::SeqCst);
@@ -2674,7 +2674,7 @@ async fn test_wrapper_scan_content_fail_open_after_restart_attempt() {
 }
 
 // ============================================================
-// S3 batch 4: ScanResult::merge / detect_install_path /
+// batch 4: ScanResult::merge / detect_install_path /
 // extension-rule skip / scan_directory / scan_tool_invocation
 // 各工具臂 / load_from_full_config 跳过未安装引擎
 // ============================================================
@@ -2911,10 +2911,10 @@ async fn test_load_from_full_config_skips_pending_engine() {
 }
 
 // ---------------------------------------------------------------------------
-// T11（多模态 P4.2）：EICAR 内容伪装 .png 必须被 ScanChain 拦截
+// （多模态.2）：EICAR 内容伪装.png 必须被 ScanChain 拦截
 //
 // 默认扫描语义钉死：scan_extensions（白名单）为空 + skip_extensions（黑名单）
-// 只排文本类 → .png 落在"默认全扫"区间。链级用内容识别引擎验证拦截路径，
+// 只排文本类 →.png 落在"默认全扫"区间。链级用内容识别引擎验证拦截路径，
 // clamav 协议级在 clamav/scanner/tests.rs（mock clamd）+ 在线 clamd 门控用例。
 // ---------------------------------------------------------------------------
 
@@ -3002,7 +3002,7 @@ async fn t11_eicar_png_blocked_by_scan_chain() {
     chain.add_engine(Box::new(T11EicarSimEngine));
 
     // 文件级路径语义：.png 规则放行 → 引擎读盘 → 判脏 → blocked 短路。
-    // **不写真签名**——本机 Defender 实时防护会在 std::fs::write 后立即
+    // **不写真签名**——本机 Defender 实时防护会在 std::fs:write 后立即
     // 隔离真 EICAR 文件（读盘错误 225），文件级用例与 Defender 天然竞态；
     // 真签名拦截覆盖在内容流（scan_content）+ clamav 协议级（mock clamd
     // INSTREAM）+ 在线 clamd 门控用例。这里用含 EICAR 标记的良性 REPLICA。
@@ -3039,7 +3039,7 @@ async fn t11_eicar_png_content_scan_also_blocks() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-278：零超时下载在半死上游上永久挂死——且挂死点在 download
+// 零超时下载在半死上游上永久挂死——且挂死点在 download
 // 的 cancel select 之外（响应头等待/首块断流），取消令牌救不了。read_timeout
 // 回归测试：测试态 DOWNLOAD_READ_TIMEOUT=400ms，等待必须秒级以内。
 // ---------------------------------------------------------------------------

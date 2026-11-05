@@ -1,5 +1,5 @@
 //! main.rs 装配面单测：契约探针判定核 + REQUIRED_AI_MODELS 单一真相源漂移锁。
-//! 背景（2026-11-02 实录）：TestAIServer 二进制过期曾让 3 场景以纯超时假回退，
+//! 背景（2026-11-02 案例）：TestAIServer 二进制过期曾让 3 场景以纯超时假回退，
 //! 探针 + 本组测试闭环该缺陷面。
 
 use crate::report::{Scorecard, compare_baseline};
@@ -97,7 +97,7 @@ fn stream_forced_entries_carry_stream_yes() {
 }
 
 /// BUG-20261104-369 回归锁：基线与本轮 bench 构建戳不一致 → [note] 可见
-/// 且不判门（2026-11-04 实录：陈旧 bench 二进制对合法 L29 拼接形态报
+/// 且不判门（2026-11-04 案例：陈旧 bench 二进制对合法 L29 拼接形态报
 /// stream_break 假回退——戳可见性让这类漂移在下结论前暴露）。
 #[test]
 fn bench_build_mismatch_emits_note_without_regression() {

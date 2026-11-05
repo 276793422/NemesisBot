@@ -20,7 +20,7 @@ pub(crate) enum TurnFlow {
 /// `force_stop` / `hit_async` **不进** TurnState（退役）：它们是
 /// "for 循环 break 出不去外层循环"的补偿机制；工具批次改为方法返回
 /// `TurnFlow` 后即无存在必要。per-round 暂存（replay_injections /
-/// replay_voice / request_had_images）由 [`AgentLoop:build_round_messages`]
+/// replay_voice / request_had_images）由 [`AgentLoop::build_round_messages`]
 /// 返回、当轮边界落盘即弃，不收拢——混进 TurnState 而忘记每轮清空 =
 /// 台账跨轮累积（重构期典型自坑点，特此钉死）。
 pub(crate) struct TurnState {
@@ -47,18 +47,18 @@ pub(crate) struct TurnState {
     pub(crate) degenerate_nudge_pending: Option<String>,
     /// ⑧ 待再注入的跨轮行文重复 nudge（同上瞬时模式）。
     pub(crate) repetition_nudge_pending: Option<String>,
-    /// ：一次性 escape-hatch 闩（Accept 分支：终答在即但有未认领
+    /// 一次性 escape-hatch 闩（Accept 分支：终答在即但有未认领
     /// steer——多给一轮，防 `!` 刷屏无限续 turn）。
     pub(crate) steer_escape_used: bool,
     /// break 点记录的终端原因（turn_end 边界标记不再靠文案嗅探）。
     pub(crate) terminal_reason: Option<&'static str>,
-    /// ：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
+    /// turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
     /// （fail-open，与 MAX_LLM_HOOK_RETRIES 同纪律）。
     pub(crate) turn_end_continues: u32,
-    /// ：canvas 语法预检回灌预算（本 turn 内计数；[`crate:canvas:MAX_SYNTAX_RETRIES`]
+    /// canvas 语法预检回灌预算（本 turn 内计数；[`crate::canvas:MAX_SYNTAX_RETRIES`]
     /// 封顶，耗尽后诚实放行——canvas 块按普通代码块留在正文，不发 CanvasOpen）。
     pub(crate) canvas_retries: u32,
-    /// ：turn 边界标记开关（heartbeat/cron/内部通道豁免）。
+    /// turn 边界标记开关（heartbeat/cron/内部通道豁免）。
     pub(crate) log_boundaries: bool,
     /// 本 turn 的 LLM 调用选项（max_tokens/temperature/reasoning_effort）。
     pub(crate) chat_opts: crate::types::ChatOptions,
@@ -105,7 +105,7 @@ impl AgentLoop {
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
-        // : durable turn boundary markers. Heartbeat sessions are
+        // durable turn boundary markers. Heartbeat sessions are
         // exempt — they run periodically and would grow heartbeat.jsonl
         // without bound (3+ boundary lines per beat, forever).
         // 4th-pass fix: the heartbeat exemption keys on the CONTEXT user
@@ -178,7 +178,7 @@ impl AgentLoop {
                 if let Some(r) = reason {
                     st.terminal_reason = Some(r);
                 }
-                // ：预算暂停前的收尾编译探针——
+                // 预算暂停前的收尾编译探针——
                 // 本轮写过代码时跑一次快速编译检查，把树状态诚实注记进
                 // 暂停消息（只报告不回滚；无写操作/配置关/无生态标记全部
                 // 静默直通，暂停消息一字不动）。
@@ -235,7 +235,7 @@ impl AgentLoop {
             // 事件（约定），骨架在此统一 push + break。
             // （cache-warmer）：开关开启时快照本轮请求（消息 + 工具 defs
             // 字节级副本）——warm 重放 = 同一请求 max_tokens=1，快照是「前缀
-            // 字节不变」的唯一真相源（纪律同源）。默认关 = 仅一次新鲜读，
+            // 字节不变」的唯一依据（纪律同源）。默认关 = 仅一次新鲜读，
             // 无克隆；多轮 turn 后写覆盖 → 天然收敛到最后一轮请求。
             // detached 模型覆盖回合不快照——warm 重放走 loop 主 provider/
             // 主模型，与覆盖请求不同源（重放会打到错误模型）。
@@ -296,7 +296,7 @@ impl AgentLoop {
             // （口径补全）：
             // provider 实报输入 token 进 compaction 混合触发信号缓存（完整
             // 输入 = prompt + cache_creation + cache_read， 会话预算记账
-            // 同口径，`usage_full_input` 单一真相源）；无 usage 的 lane 不写
+            // 同口径，`usage_full_input` 统一定义）；无 usage 的 lane 不写
             // = 纯估算诚实回落。
             if let Some(ref usage) = response.usage {
                 self.note_compaction_provider_signal(
@@ -570,7 +570,7 @@ impl AgentLoop {
                         "",
                         response.reasoning_content.as_deref(),
                     );
-                    // ：canvas 块检出 + JS 语法预检。有问题且回灌
+                    // canvas 块检出 + JS 语法预检。有问题且回灌
                     // 预算未尽 → 反馈落 user 消息续一轮（模型整条重发自纠，
                     // 与 length-continuation / turn-end hook 同一持久回灌
                     // 形态）；预算耗尽 → 诚实放行（canvas 块按普通代码块
@@ -618,7 +618,7 @@ impl AgentLoop {
                         // iteration injects the steer message(s).
                         return Some(TurnFlow::Continue);
                     }
-                    // : turn-end lifecycle hooks (Stop
+                    // turn-end lifecycle hooks (Stop
                     // dialect event). Runs after the assistant message
                     // is recorded, before the Done event. `Continue`
                     // injects the hook feedback as a user message and
@@ -661,7 +661,7 @@ impl AgentLoop {
                             }
                         }
                     }
-                    // ：终答合法且含 canvas 块 → 逐块发布
+                    // 终答合法且含 canvas 块 → 逐块发布
                     // CanvasOpen（index 0 起递增）。放在 steer-escape /
                     // turn-end hook 判定**之后**：只有真正 Done 时才发布，
                     // 续轮重答时按新终答重新扫描，不产生双重 emit。
@@ -716,7 +716,7 @@ impl AgentLoop {
     ) {
         instance.set_state(crate::types::AgentState::Idle);
 
-        // : durable turn_end marker with the terminal reason.
+        // durable turn_end marker with the terminal reason.
         // (full review): the reason comes from the break-site latch
         // (terminal_reason), not from sniffing the Done text — a model
         // reply containing the paused-after wording can no longer be
@@ -729,7 +729,7 @@ impl AgentLoop {
         if st.log_boundaries {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
         } else if st.terminal_reason == Some("budget_exhausted") {
-            // : cron turns are exempt from per-turn boundary events
+            // cron turns are exempt from per-turn boundary events
             // (a recurring job would grow the sidecar unboundedly), but a
             // budget-exhausted stop is a rare, one-shot terminal fact worth
             // exactly one marker — the budget's observability requirement.
@@ -828,7 +828,7 @@ impl AgentLoop {
                     "[AgentLoop] paused after {} tool-call rounds (per-turn budget exhausted, grace round spent, cron={})",
                     effective_max_turns, is_cron_turn
                 );
-                // : budget-driven stop, message keyed by budget
+                // budget-driven stop, message keyed by budget
                 // ORIGIN: cron continuation is resumable (the
                 // job that fired this turn is NOT deleted — the next fire
                 // re-budgets), but a detached run (headless `run` /
@@ -876,7 +876,7 @@ impl AgentLoop {
         st: &TurnState,
     ) {
         let log_boundaries = st.log_boundaries;
-        // : inbox claim — before EVERY LLM call of this turn, take
+        // inbox claim — before EVERY LLM call of this turn, take
         // all pending steer messages (next-step) into history as real user
         // messages (persisted: they ARE genuine user input). Placement
         // after the existing history = same position as the time/env
@@ -891,7 +891,7 @@ impl AgentLoop {
         if !steer_batch.is_empty() {
             for m in &steer_batch {
                 // (full review) + round-5: strip the marker via the
-                // SINGLE shared rule (inbox:strip_steer_marker) — it is a
+                // SINGLE shared rule (inbox::strip_steer_marker) — it is a
                 // ROUTING signal, not content, and the same message must
                 // arrive marker-free whether injected in-turn (here) or
                 // replayed post-turn (drain path).
@@ -1030,7 +1030,7 @@ impl AgentLoop {
         // (②): the annotated build + the injection records below
         // form this round's projection ledger — everything a later
         // byte-exact replay needs beyond the session store (the
-        // transient injections are never persisted). See `crate:replay`.
+        // transient injections are never persisted). See `crate::replay`.
         // /：传会话 key——分支前情提要（Branch Context）节按会话
         // sidecar meta 注入（无摘要/非 fork 会话 = 字节不变）。
         // prompt-pack pro：同时传来源通道——Pro 体系外部通道触发
@@ -1119,7 +1119,7 @@ impl AgentLoop {
 
         debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
 
-        // : LLM-call-level pre hooks. Runs AFTER messages are
+        // LLM-call-level pre hooks. Runs AFTER messages are
         // built (nudges included) and BEFORE the LlmRequest observer
         // event — appended messages land in request_log and in the
         // replay ledger (byte-exact replay keeps holding).
@@ -1162,7 +1162,7 @@ impl AgentLoop {
         // Sort by name so the order is stable across runs — a deterministic
         // tool order gives reproducible behaviour and avoids unnecessary prompt
         // variation between requests.
-        // : fold AFTER the tier filter — description text only,
+        // fold AFTER the tier filter — description text only,
         // byte-identical passthrough whenever folding is off/degrades.
         let tool_defs: Vec<crate::types::ToolDefinition> = self.effective_tool_defs(instance);
         debug!(
@@ -1198,7 +1198,7 @@ impl AgentLoop {
         instance.set_state(crate::types::AgentState::Thinking);
         let round_start = std::time::Instant::now();
 
-        // : durable llm_request marker (model + size estimate,
+        // durable llm_request marker (model + size estimate,
         // no bodies). Heartbeat/internal-channel exemption (see
         // turn_start).
         //
@@ -1266,7 +1266,7 @@ impl AgentLoop {
 #[path = "m4b_empty_cap_tests.rs"]
 mod m4b_empty_cap_tests;
 
-// ：无 usage 时 finish_reason 截断回退测试。
+// 无 usage 时 finish_reason 截断回退测试。
 #[cfg(test)]
 #[path = "length_fallback_tests.rs"]
 mod length_fallback_tests;

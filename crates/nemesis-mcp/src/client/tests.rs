@@ -827,7 +827,7 @@ fn parse_response_truncated_json() {
 }
 
 // ---------------------------------------------------------------------------
-// J3 (devtool-upgrade 阶段 4)：nextCursor 分页
+// (devtool-upgrade)：nextCursor 分页
 // ---------------------------------------------------------------------------
 
 /// 构造带 N 页 `tools/list` 响应的客户端（每页 result 原样入队，
@@ -1060,7 +1060,7 @@ async fn list_prompts_follows_next_cursor() {
 }
 
 // =========================================================================
-// from_server_config 分派（2026-10-15 W1 分派收敛 + 第六轮复查兼容臂）
+// from_server_config 分派（分派收敛 + 复查兼容臂）
 // =========================================================================
 
 /// initialize 请求 → 合法 InitializeResult（wiremock 形态与 nemesisbot
@@ -1249,7 +1249,7 @@ async fn test_from_server_config_stdio_command_field_wins_over_url() {
 
 #[test]
 fn test_from_server_config_unknown_transport_type_loud_rejected() {
-    // R9：未知 transport_type（Dashboard 曾可写 "sse"）loud 拒绝——静默掉
+    // 未知 transport_type（Dashboard 曾可写 "sse"）loud 拒绝——静默掉
     // stdio 臂会把 url 当程序名 spawn，报出与实际问题无关的错误。
     for tt in ["sse", "SSE", "websocket", "HTTP"] {
         let config = serde_json::from_value(serde_json::json!({
@@ -1275,7 +1275,7 @@ fn test_from_server_config_unknown_transport_type_loud_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// R12（2026-10-15）：config `timeout` → 内层逐请求超时接线。此前 client
+// config `timeout` → 内层逐请求超时接线。此前 client
 // 硬编码 30s——config > 30 被内层静默截断（adapter 外层超时放宽形同虚设，
 // 报错文案与实际死因不符）。
 // ---------------------------------------------------------------------------
@@ -1334,7 +1334,7 @@ async fn test_request_timeout_reaches_transport_send() {
     );
 }
 
-// --- 第十五轮缺陷 19：响应形状非法响亮报错（不再静默吞成空结果）-------
+// --- 缺陷 19：响应形状非法响亮报错（不再静默吞成空结果）-------
 
 #[tokio::test]
 async fn r15_list_tools_malformed_batch_is_loud() {
@@ -1452,7 +1452,7 @@ async fn r15_call_tool_well_formed_result_still_ok() {
     assert_eq!(result.content[0].text.as_deref(), Some("hello"));
 }
 
-// --- BUG-20261025-31（R105）：resources/read 结果静默吞成空成功（缺陷 19
+// ---：resources/read 结果静默吞成空成功（缺陷 19
 // 同类漏配——r15 响亮化只接了 list/call/get 三处，read_resource 漏配）-------
 
 async fn bug31_init_client(mock: crate::transport::MockTransport) -> McpClient {

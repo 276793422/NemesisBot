@@ -17,7 +17,7 @@ use nemesis_types::error::{NemesisError, Result};
 use crate::base::Channel;
 use nemesis_types::channel::InboundMessage;
 
-// 内部通道清单（原 const 已删，BUG-20261025-46 收编）：cli/system/subagent
+// 内部通道清单（原 const 已删， 收编）：cli/system/subagent
 // 这类内部通道的消息由 agent loop 等子系统静默消费，绝不转发给外部通道
 // 适配器。单一真相源在 `nemesis_types::INTERNAL_CHANNELS`，本模块的
 // `is_internal_channel` 直接委托它。
@@ -56,8 +56,8 @@ pub struct ChannelSyncConfig {
     pub targets: HashMap<String, Vec<String>>,
 }
 
-/// 通知记账钩子签名（项 C，2026-10-22）：消息 + 本次投递结果
-/// （`Result<()>` = 本 crate 别名，std Result<(), NemesisError>）。
+/// 通知记账钩子签名（项 C）：消息 + 本次投递结果
+/// （`Result<>` = 本 crate 别名，std Result<, NemesisError>）。
 pub type NotifyHookFn = dyn Fn(&OutboundMessage, &Result<()>) + Send + Sync;
 
 /// Manages the lifecycle of all channel instances.
@@ -159,7 +159,7 @@ impl ChannelManager {
     /// each one to the appropriate channel. Skips internal channels and
     /// channels not in the allowed list. The loop exits when the sender
     /// is dropped (all clones go out of scope) **or** when the shutdown
-    /// flag is set (explicit `stop_all()` call). BUG-20261104-360: on the
+    /// flag is set (explicit `stop_all()` call).: on the
     /// shutdown-flag path the loop first performs a bounded flush of the
     /// queued backlog (deadline 10s) before exiting, so replies of turns
     /// that completed during the shutdown drain are delivered instead of
@@ -171,11 +171,11 @@ impl ChannelManager {
             // Check shutdown flag before each recv, so stop_all() can break
             // the loop even if cloned senders are still alive.
             if self.shutdown.load(std::sync::atomic::Ordering::Acquire) {
-                // BUG-20261104-360：停机不再静默丢弃队列积压。旧形态旗标置位即
+                // 停机不再静默丢弃队列积压。旧形态旗标置位即
                 // break，rx 随任务退出 drop，mpsc 缓冲内已派发 turn 的最终回复
-                // 无声蒸发——停机 drain（BUG-20261025-33）等的就是这些 turn 完
+                // 无声蒸发——停机 drain等的就是这些 turn 完
                 // 成，最后一跳丢弃把 drain 的目的打折；且零痕迹违背
-                // BUG-20261102-315 确立的「丢失必须留痕」不变量。现 bounded
+                // 确立的「丢失必须留痕」不变量。现 bounded
                 // 冲刷：队列清空或截止先到为止，截止后余额 warn 计数（诚实下
                 // 界——此后新推入不追）。
                 const SHUTDOWN_FLUSH_SECS: u64 = 10;
@@ -312,7 +312,7 @@ impl ChannelManager {
     /// yet. This mirrors Go's behavior where the dispatch loop is started
     /// inside `StartAll()` rather than requiring a separate call.
     pub async fn start_all(self: &Arc<Self>) -> Result<()> {
-        // Auto-start dispatch loop if not yet started (M3).
+        // Auto-start dispatch loop if not yet started.
         // In Go, StartAll() starts the dispatch goroutine internally.
         if !self
             .dispatch_started
@@ -355,10 +355,10 @@ impl ChannelManager {
     /// Also sets the shutdown flag so the dispatch loop exits even if
     /// cloned senders are still alive. The dispatch loop responds by
     /// flushing its queued backlog within a bounded deadline before exit
-    /// (BUG-20261104-360) — `stop_all()` itself does not wait for the
+    /// — `stop_all()` itself does not wait for the
     /// flush; it runs concurrently in the dispatch task.
     pub async fn stop_all(&self) -> Result<()> {
-        // Set shutdown flag so dispatch loop exits (M4).
+        // Set shutdown flag so dispatch loop exits.
         // In Go, cancelling the context stops the dispatch goroutine.
         // In Rust, cloned senders keep the mpsc channel alive, so we
         // need an explicit signal.
@@ -627,7 +627,7 @@ pub struct ChannelInitConfig {
     /// WeCom（企业微信）channel configuration.
     #[cfg(feature = "wecom")]
     pub wecom: Option<crate::wecom::WeComConfig>,
-    /// 微信个人微信通道配置（P29，iLink Bot API）。
+    /// 微信个人微信通道配置（iLink Bot API）。
     #[cfg(feature = "wechat")]
     pub wechat: Option<crate::wechat::WeChatConfig>,
     /// QQ channel configuration.
@@ -651,7 +651,7 @@ pub struct ChannelInitConfig {
     /// Bluesky channel configuration.
     #[cfg(feature = "bluesky")]
     pub bluesky: Option<crate::bluesky::BlueskyConfig>,
-    /// nostr channel configuration (P27, NIP-04 加密 DM).
+    /// nostr channel configuration (, NIP-04 加密 DM).
     #[cfg(feature = "nostr")]
     pub nostr: Option<crate::nostr::NostrConfig>,
     /// OneBot channel configuration.
@@ -673,7 +673,7 @@ pub struct ChannelInitConfig {
     /// WebSocket channel configuration.
     #[cfg(feature = "websocket")]
     pub websocket: Option<crate::websocket::WebSocketChannelConfig>,
-    /// MQTT channel configuration（Wave 3 P28，feature=mqtt；IoT 传感器通道）。
+    /// MQTT channel configuration（Wave 3，feature=mqtt；IoT 传感器通道）。
     #[cfg(feature = "mqtt")]
     pub mqtt: Option<crate::mqtt::MqttChannelConfig>,
 }
@@ -830,7 +830,7 @@ impl ChannelManager {
             }
         }
 
-        // WeCom（企业微信，P25）
+        // WeCom（企业微信）
         #[cfg(feature = "wecom")]
         {
             if let Some(ref cfg) = config.wecom {
@@ -847,7 +847,7 @@ impl ChannelManager {
             }
         }
 
-        // 微信个人微信（P29，iLink Bot API）
+        // 微信个人微信（iLink Bot API）
         #[cfg(feature = "wechat")]
         {
             if let Some(ref cfg) = config.wechat {
@@ -983,7 +983,7 @@ impl ChannelManager {
             }
         }
 
-        // nostr (P27)
+        // nostr
         #[cfg(feature = "nostr")]
         {
             if let Some(ref cfg) = config.nostr {
@@ -1092,7 +1092,7 @@ impl ChannelManager {
             }
         }
 
-        // MQTT（Wave 3 P28：rumqttc 客户端，topic 订阅→inbound / outbound→publish，
+        // MQTT（Wave 3：rumqttc 客户端，topic 订阅→inbound / outbound→publish，
         // QoS 1 默认；IoT 叙事，feature=mqtt 门控）
         #[cfg(feature = "mqtt")]
         {
@@ -1128,7 +1128,7 @@ impl Default for ChannelManager {
 
 /// Checks whether a channel name is an internal channel that should not be
 /// dispatched to external channel adapters. 委托仓内单一真相源
-/// `nemesis_types::is_internal_channel`（BUG-20261025-46 收编，本文件原为
+/// `nemesis_types::is_internal_channel`（收编，本文件原为
 /// 手抄常量副本）。
 fn is_internal_channel(channel: &str) -> bool {
     nemesis_types::is_internal_channel(channel)

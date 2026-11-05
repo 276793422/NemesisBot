@@ -179,7 +179,7 @@ impl GatewayProcess {
     async fn kill(&mut self) {
         if let Some(mut child) = self.child.take() {
             // 树杀优先：TerminateProcess 只杀网关本体，QEMU 孙进程会变孤儿
-            // （VM-UAT 实录：EVICT-1/BROWSER-1 失败路径裸杀网关 → 两个 QEMU
+            // （VM-UAT 案例：EVICT-1/BROWSER-1 失败路径裸杀网关 → 两个 QEMU
             // 孤儿存活到套件结束，污染后续测试的「qemu→0」全局计数）。
             // taskkill /T 递归收割整棵进程树；对已退出 PID 无害。
             if let Some(pid) = child.id() {
@@ -923,7 +923,7 @@ async fn spawn_plan_ready_listener(
         let client = reqwest::Client::new(); // 无总超时：SSE 长连接
         // F1 统一鉴权（2026-09-22）罩到 REST 全部路由后，SSE 裸连会拿 401
         // JSON（首字节还恰好触发 ready 信号 → 流随即结束 → 「监听器提前
-        // 退出」四连败，CI extended-tests 2026-09-23 实录）。走中间件文档化
+        // 退出」四连败，CI extended-tests 2026-09-23 案例）。走中间件文档化
         // 的 EventSource 兜底：?token= 查询参数（与 ws_connect 同一 token）。
         let url = format!(
             "http://127.0.0.1:{}/api/events/stream?token={}",
@@ -2110,7 +2110,7 @@ fn stage_vm_assets(root: &Path, workspace: &Path) -> std::io::Result<()> {
     // junction（目录联接）免管理员权限——std 无稳定 API，走 mklink /J
     //（CREATE_NO_WINDOW；junction 要求 dst 不存在，TestWorkspace 新建不撞）。
     // mklink 是 cmd 内建：`/` 一律按开关前缀解析（「Invalid switch - "vm"」
-    // 实录——Path::join 的混合分隔符路径直接送 cmd 会被切成开关），dst/src
+    // 案例——Path::join 的混合分隔符路径直接送 cmd 会被切成开关），dst/src
     // 必须先归一成纯反斜杠形态。
     use std::os::windows::process::CommandExt;
     let bs = |p: &Path| p.to_string_lossy().replace('/', "\\");
@@ -4609,7 +4609,7 @@ async fn main() {
             //    BUG-20261103：deadline 300s 只有 2.5 个 tick 机会——满载
             //    runner（T-WAN-1 判词自证「前置测试极端慢速」段预算耗尽）
             //    一次 tick miss 即超窗（scheduled ET 41596006276 core a1
-            //    08:06Z 实录：54 过 1 红即此）。与 T43/T46 同族慢批形态，
+            //    08:06Z 案例：54 过 1 红即此）。与 T43/T46 同族慢批形态，
             //    同房规修：等窗 ≥ 3 tick + 余量 = 540s（4.5 tick，2.25×
             //    4min 上界预期），慢段才延伸、正常段 2-4min 照旧完赛。
             let session_logs_dir = ws_a
@@ -10150,7 +10150,7 @@ async fn main() {
                 // 1. 胜者先合并（in_review/done）→ 等**败者执行档案安置**
                 //    （records/<败者>/execution/ 出现）→ kill 双 worker：kill
                 //    仍落在硬解 3 轮失败窗口（Delay=4s×3 ≈ 12s）内，t0 探针
-                //    必扑空。BUG-20261104 CI mrg-b2 实录：split 一见胜者
+                //    必扑空。BUG-20261104 CI mrg-b2 案例：split 一见胜者
                 //    in_review 就杀，败者 C 的档案推送差 ~50ms（9/9 块已到
                 //    A、transfer_end 未发）→ 档案永不安置 → 冲突合并永不
                 //    触发 → spawn_conflict_resolver 唯一入口（落地腿，
@@ -10159,7 +10159,7 @@ async fn main() {
                 //    空转 → 600s 墙钟爆。board API 对档案安置零早期投影
                 //    （状态停 in_progress、无注释无审计），文件系统是唯一
                 //    确定性信号；落地正常 ~1s（exec 目录删除重试不对称最坏
-                //    ~5s，Windows os error 32 拖推送 4.4s 实录），30s 超时
+                //    ~5s，Windows os error 32 拖推送 4.4s 案例），30s 超时
                 //    诚实 bail 免楔死。安置→冲突合并→resolver spawn 全链在
                 //    A 本地（不依赖 B/C 存活），kill 晚于安置即安全。
                 let (_win_id, lose_id) = wait_conflict_split(&mut ws, id1, id2, 240).await?;
@@ -10248,7 +10248,7 @@ async fn main() {
                 //    修法）：mrg-b 切 b1/b2 两段后本测试成为 b2 段首测试，原经
                 //    T-MRG-4 建立的 A solver / B/C 编辑桩态在 b2 独立进程里
                 //    从未建立——worker 停在装配基座模型上回 boardAckText →
-                //    交付锚点 FILE_EDIT_DONE 恒假红（T-MRG-6 交付文本实录为
+                //    交付锚点 FILE_EDIT_DONE 恒假红（T-MRG-6 交付文本案例为
                 //    ack 文案），T-MRG-7 连冲突漏斗都进不去（无真交付可冲突）。
                 //    同值切换幂等，全量跑只多付三次重启墙钟；T-MRG-7 经本块
                 //    与 T-MRG-6 同进程共享桩态。
@@ -12173,7 +12173,7 @@ async fn main() {
             // --filter U 过滤跑下 T21 的 600s 派发超时重配不执行，A 保留
             // Phase 4 的 15s 测试速配——D2 对话机的合法 sleep+轮询链
             // （sleep 3×2 + 多轮 LLM 往返 ≈ 10~20s）会被派发超时掐死
-            // （run3 实录 2026-10-14：定稿回复迟到被吞 → 停车 → 600s 墙钟红）。
+            // （run3 案例 2026-10-14：定稿回复迟到被吞 → 停车 → 600s 墙钟红）。
             // 热调回 600s（免重启，阈值每 tick 经 config.json mtime 热读），
             // 收尾恢复 15s（后续 T43/T46/T48 各自管理自己的 sweep 值）。
             if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 600) {
@@ -12470,7 +12470,7 @@ async fn main() {
         }
         // 60s 而非 30s：worker 拾取派发走 dispatch sweep（默认 interval=20s，
         // 重启后计时器重置首拍最多 +20s），满载 runner 上 30s 余量不足
-        // （CI 41273770830 attempt2 T46 40.5min 龄真红实录：30s 现态仍
+        // （CI 41273770830 attempt2 T46 40.5min 龄真红案例：30s 现态仍
         // ["dispatched"]）；60s = 3 个 sweep 拍的余量，与 10405/13003 两处
         // 既有 60s 先例对齐。冻结/击杀窗口锚在 running 之后，不削弱断言。
         if let Err(e) = wait_dispatch_running(&db_path, issue_id, 60).await {
@@ -12842,7 +12842,7 @@ async fn main() {
         // 1. sweep 超时热调 90s（显式接管 T43 遗留的 30s：那 30s 为 T43 的
         //    快击杀场景服务，而本场景 0b 刚重启 B——冷启动 + 30s 延迟模型
         //    初始化，慢批 CI 下认领+started 回报可超 30s 被 sweep 抢杀，
-        //    等 running 窗只见 ["failed"]（ET16 a2 19:20Z 实录）。90s 仍被
+        //    等 running 窗只见 ["failed"]（ET16 a2 19:20Z 案例）。90s 仍被
         //    3b 的 150s 派发超时等窗覆盖：冻结最晚发生在 dispatch+90s，
         //    击杀紧随其后。收尾恢复见步骤 6。）
         if let Err(e) = hot_set_board_sweep_timeout(&ws_a.home(), 90) {

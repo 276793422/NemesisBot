@@ -1,9 +1,9 @@
-//! M7（devtool-upgrade 阶段 5）：Dashboard 审批管理器。
+//! （devtool-upgrade）：Dashboard 审批管理器。
 //!
-//! 实现 `nemesis_security::auditor::ApprovalManager`（auditor → manager 方向：
+//! 实现 `nemesis_security::auditor:ApprovalManager`（auditor → manager 方向：
 //! auditor 命中 `require_approval` 时同步调用 `request_approval_sync` 阻塞等
 //! 用户裁决），内部把请求广播为 `AgentEvent::ApprovalRequested`（web pump 转
-//! SSE `approval-requested`），并实现 `nemesis_types::agent::ApprovalResponder`
+//! SSE `approval-requested`），并实现 `nemesis_types::agent:ApprovalResponder`
 //! （WSAPI → manager 方向：`approval.respond` / `approval.pending` 把用户裁决
 //! 送回等待中的调用）。
 //!
@@ -25,11 +25,11 @@ use nemesis_types::agent::{AgentEvent, ApprovalResponder};
 
 /// 一条等待裁决的审批请求：元数据（`approval.pending` 列表用）+ 裁决回传
 /// 通道（`approval.respond` 取出后 send；mpsc 在 async handler 侧 send 无需
-/// runtime）。通道载荷是 `ApprovalVerdict`（F6：拒绝可携带用户备注）。
+/// runtime）。通道载荷是 `ApprovalVerdict`（拒绝可携带用户备注）。
 struct PendingEntry {
     operation: String,
     target: String,
-    /// F3:「总是允许」对应的规则 pattern（exec 类=B5 归约前缀），随事件
+    /// 「总是允许」对应的规则 pattern（exec 类= 归约前缀），随事件
     /// 与 pending 列表下发，前端按钮回显确认串。
     pattern: String,
     risk_level: String,
@@ -37,23 +37,23 @@ struct PendingEntry {
     timeout_secs: u64,
     chat_id: String,
     session_key: String,
-    /// 授权卡自解释三字段（感知层 §5；`approval_card_fields` 派生）。
+    /// 授权卡自解释三字段（感知层；`approval_card_fields` 派生）。
     why: String,
     impact: String,
     reject_note: String,
-    /// L07：审批卡预览（unified diff / 命令现场）；None = 不适用——卡片
+    /// 审批卡预览（unified diff / 命令现场）；None = 不适用——卡片
     /// 无预览区。入册时生成一次的冻结快照（现盘后续变化不反映）。
     preview: Option<String>,
     /// 渲染提示："diff" | "text"（`approval_preview::build_preview` 出槽）。
     preview_format: Option<String>,
-    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：本卡所属并行批的批号
+    /// 并行批审批聚合（第三层）：本卡所属并行批的批号
     /// （`batch-{uuid}`）。空串 = 串行路径单卡（不进聚合，前端按单卡渲染）。
     batch_id: String,
     created_at: std::time::Instant,
     tx: mpsc::Sender<nemesis_security::auditor::ApprovalVerdict>,
 }
 
-/// 授权卡自解释三字段派生（单一真相源；channel_approval 的 IM 文本卡同源
+/// 授权卡自解释三字段派生（统一定义；channel_approval 的 IM 文本卡同源
 /// 消费）。why 优先用触发原因原文（preexec 扫描/connector 强审批声明的
 /// 理由已自解释），缺失回落风险级固定文案；impact 按 op_type 推导操作
 /// 会碰什么；reject_note 固定口径（拒绝=零效果，agent 继续对话）。
@@ -101,16 +101,16 @@ pub fn approval_card_fields(
 pub struct WebApprovalManager {
     agent_event_tx: Option<tokio::sync::broadcast::Sender<AgentEvent>>,
     pending: Mutex<HashMap<String, PendingEntry>>,
-    /// F3:「总是允许」规则表路径（`<workspace>/config/approval_rules.json`）。
+    /// 「总是允许」规则表路径（`<workspace>/config/approval_rules.json`）。
     /// None = 未配置（respond always 诚实报错，不静默吞）。
     rules_path: Option<std::path::PathBuf>,
-    /// P1 审批台账（tasks.db approvals 表）。OnceLock 晚绑：manager 先于
+    /// 审批台账（tasks.db approvals 表）。OnceLock 晚绑：manager 先于
     /// tasks.db 装配（与 LateWebSkillsGate 同款时序），runtime.rs 装配块
     /// `set_journal()` 注入；未注入 = 台账关闭（审批照常工作，仅丢重启
     /// 补裁能力——诚实降级，非静默：装配失败有 loud error）。
     journal:
         std::sync::OnceLock<std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>>,
-    /// 审批续执行（2026-10-22）：stale 卡裁决回灌注入器。OnceLock 晚绑
+    /// 审批续执行：stale 卡裁决回灌注入器。OnceLock 晚绑
     /// （镜像 set_journal 时序——manager 先于 gateway 装配块存在），由
     /// run_runtime 审批块注入持有 bus 的闭包：按 session_key 发一条系统
     /// 入站消息（主 loop 直消费；项目会话经 ProjectLoopManager 归属转发，
@@ -134,7 +134,7 @@ impl WebApprovalManager {
         }
     }
 
-    /// P1：注入审批台账（tasks.db）。幂等失败 = 重复注入，静默忽略（首个胜出）。
+    /// 注入审批台账（tasks.db）。幂等失败 = 重复注入，静默忽略（首个胜出）。
     pub fn set_journal(
         &self,
         journal: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
@@ -157,10 +157,10 @@ impl WebApprovalManager {
         let _ = self.continuation.set(injector);
     }
 
-    /// F3:「总是允许」规则落盘。pattern 由 B5 归约生成（单一真相源
+    /// 「总是允许」规则落盘。pattern 由 归约生成（统一定义
     /// `approval_rules::pattern_for`，与 auditor 匹配侧同源）；层级安全门
     /// 与写入语义单一收口在 `approval_rules::persist_auto_allow_rule`
-    /// （§2 免打扰集群来源持久化同款）：`Ok(Some(pattern))` = 已落盘，
+    /// （免打扰集群来源持久化同款）：`Ok(Some(pattern))` = 已落盘，
     /// `Ok(None)` = 层级门不过（CRITICAL 仅 process_exec 豁免 + 安装类
     /// 永不入规则），`Err` = pattern 推导失败或写盘失败（空 pattern =
     /// run_script 无 target 提取，这类操作保持每次人工）。
@@ -195,14 +195,14 @@ impl WebApprovalManager {
                 reject_note: Some(entry.reject_note.clone()),
                 preview: entry.preview.clone(),
                 preview_format: entry.preview_format.clone(),
-                // 并行批聚合（BUG-A 第三层）：非空批号才下发（None = 单卡）。
+                // 并行批聚合（第三层）：非空批号才下发（None = 单卡）。
                 batch_id: (!entry.batch_id.is_empty()).then(|| entry.batch_id.clone()),
             };
             let _ = tx.send(event);
         }
     }
 
-    /// F6: 广播裁决事件（`approval-resolved`）——所有前端窗口（桌面
+    /// 广播裁决事件（`approval-resolved`）——所有前端窗口（桌面
     /// WebView + 外部浏览器）据此摘除本地审批卡，竞速败方不再挂到倒计时
     /// 结束；`decision` ∈ approved/denied/timeout。
     fn broadcast_resolved(&self, request_id: &str, decision: &str) {
@@ -230,7 +230,7 @@ impl WebApprovalManager {
             "reject_note": entry.reject_note,
             "age_secs": entry.created_at.elapsed().as_secs(),
         });
-        // L07：预览字段仅在在场时出现（skip_serializing_if 同款语义——旧
+        // 预览字段仅在在场时出现（skip_serializing_if 同款语义——旧
         // 前端/无预览形态零破坏）。
         if let Some(p) = entry.preview.as_deref() {
             v["preview"] = serde_json::Value::String(p.to_string());
@@ -238,14 +238,14 @@ impl WebApprovalManager {
         if let Some(f) = entry.preview_format.as_deref() {
             v["preview_format"] = serde_json::Value::String(f.to_string());
         }
-        // 并行批聚合（BUG-A 第三层）：非空批号才下发（旧前端无感）。
+        // 并行批聚合（第三层）：非空批号才下发（旧前端无感）。
         if !entry.batch_id.is_empty() {
             v["batch_id"] = serde_json::Value::String(entry.batch_id.clone());
         }
         v
     }
 
-    /// P1：构造台账条目（pending/decision 共用同一定位字段）。
+    /// 构造台账条目（pending/decision 共用同一定位字段）。
     fn journal_entry(
         request_id: &str,
         operation: &str,
@@ -279,7 +279,7 @@ impl WebApprovalManager {
         }
     }
 
-    /// P1：pending 记账（尽力而为——台账失败 loud error 留痕，不阻断审批
+    /// pending 记账（尽力而为——台账失败 loud error 留痕，不阻断审批
     /// 主链路；审批可用性不绑 tasks.db 可用性）。
     fn journal_record_pending(
         &self,
@@ -295,7 +295,7 @@ impl WebApprovalManager {
         }
     }
 
-    /// P1 重启补裁（respond 的 map-miss 兜底）+ 审批续执行（2026-10-22 拍板：
+    /// 重启补裁（respond 的 map-miss 兜底）+ 审批续执行（
     /// 批准+拒绝都回灌）：台账记一笔裁决，前端卡片得以摘除；随后按台账
     /// payload 里的 session_key 把裁决消息回灌原会话（批准臂提示可重新发起、
     /// 拒绝臂拒绝通知）。原操作进程已死、**不自动重放**——副作用重放正是
@@ -381,7 +381,7 @@ impl WebApprovalManager {
         }
     }
 
-    /// L07：孤儿卡清理公共主体。摘出匹配的未决卡，逐条：台账记 Orphaned
+    /// 孤儿卡清理公共主体。摘出匹配的未决卡，逐条：台账记 Orphaned
     /// （幂等条件更新，先到先得——respond/超时抢先的卡自然落空）→ tx 送
     /// **拒绝**裁决（清理绝不产生批准效果，等待方立即醒来不再空等超时）→
     /// 广播 resolved（decision="orphaned"，前端按 request_id 摘卡）。
@@ -496,11 +496,11 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
         timeout_secs: u64,
         ctx: &nemesis_security::auditor::ApprovalContext,
     ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
-        // 审批续执行路由面（2026-10-22）：ctx 带的 chat_id / session_key
+        // 审批续执行路由面：ctx 带的 chat_id / session_key
         // （loop dispatch 构造 ApprovalContext 时从 RequestContext 穿线）
         // 落进 PendingEntry 与台账 payload——重启补裁 respond_stale 据此
         // 把裁决消息回灌原会话。空值 = 无来源上下文（cron 直发等），补裁
-        // 自然退化纯记账。L07：ctx.tool_args 随行——挂起点 diff 预览的
+        // 自然退化纯记账。：ctx.tool_args 随行——挂起点 diff 预览的
         // 数据源（Null = 无 args，预览不产）。
         self.request_routed(
             request_id,
@@ -512,7 +512,7 @@ impl nemesis_security::auditor::ApprovalManager for WebApprovalManager {
             &ctx.chat_id,
             &ctx.session_key,
             &ctx.tool_args,
-            // 并行批审批聚合（BUG-A 第三层，2026-11-05）：pipeline 从
+            // 并行批审批聚合（第三层）：pipeline 从
             // invocation metadata 提取的批号原样透传——非空 = 前端按批聚卡。
             &ctx.batch_id,
         )
@@ -540,7 +540,7 @@ impl WebApprovalManager {
         let (why, impact, reject_note) =
             approval_card_fields(operation, target, risk_level, reason);
         let pattern = nemesis_security::approval_rules::pattern_for(operation, target);
-        // L07：挂起点生成 diff 预览（args 只在这里可见；生成失败/不适用 =
+        // 挂起点生成 diff 预览（args 只在这里可见；生成失败/不适用 =
         // None，卡片无预览区——预览是尽力而为的展示增强，不是审批闸的
         // 组成部分，失败绝不阻断审批主链路）。
         let (preview, preview_format) =
@@ -566,7 +566,7 @@ impl WebApprovalManager {
             created_at: std::time::Instant::now(),
             tx,
         };
-        // R3（2026-10-18 三方复评）：**先 durable pending、后内存入册+广播**
+        // （三方复评）：**先 durable pending、后内存入册+广播**
         // （不变量升级：内存可见 ⇒ DB pending 已在）。旧序（先广播后落库）
         // 有幽灵 pending 竞态：respond 可在 INSERT 前完成裁决 →
         // record_decision 撞空库表 → 请求线程随后补插 pending 无裁决 →
@@ -590,8 +590,8 @@ impl WebApprovalManager {
         // **先入册、后广播**（不变量：广播 ApprovalRequested ⇒ pending 已
         // 可裁决）。反序时消费方收到事件立即 respond 会查表落空报
         // unknown——高负载并行下请求线程被调度延迟卡在广播与入册之间
-        // （实录 ET Linux resolved_broadcast_fires_on_respond_and_timeout
-        // 假红），前端秒点同病。channel_approval 同款教训（2026-09-07）。
+        // （ET Linux resolved_broadcast_fires_on_respond_and_timeout
+        // 假红），前端秒点同病。channel_approval 同款教训。
         // broadcast send 是同步非阻塞操作，持锁发送无死锁面。
         {
             let mut map = self
@@ -640,7 +640,7 @@ impl WebApprovalManager {
                     operation,
                     timeout_secs
                 );
-                // R3：超时也是一次裁决——**先记台账**（幂等条件更新），再按
+                // 超时也是一次裁决——**先记台账**（幂等条件更新），再按
                 // 记账结果决定后续（Ok(false) = respond 抢先完成裁决，不能
                 // 顺着超时路径广播「timeout」——那是假广播）。
                 let expired_record = self.journal().map(|j| {
@@ -684,11 +684,11 @@ impl WebApprovalManager {
                         // None = 无 journal（审批可用性不绑 tasks.db，同
                         // journal_record_pending 立场）；Ok(true) = 正常超时
                         // 裁决。两者都广播 timeout。
-                        // F6: 超时自动拒绝也是一次裁决——广播出去让所有前端摘卡。
+                        // 超时自动拒绝也是一次裁决——广播出去让所有前端摘卡。
                         self.broadcast_resolved(request_id, "timeout");
                         Ok(nemesis_security::auditor::ApprovalVerdict {
                             approved: false,
-                            // 4.1（2026-09-29 交付审查）：超时拒绝带注记，与用户
+                            // 4.1（交付审查）：超时拒绝带注记，与用户
                             // 显式拒绝区分——上游消费 verdict.note 的面（技能/插件
                             // 安装卡的拒绝原因）不再把超时误报成「用户拒绝了」。
                             note: Some("审批超时自动拒绝".to_string()),
@@ -715,14 +715,14 @@ impl ApprovalResponder for WebApprovalManager {
                 .map_err(|e| format!("pending map poisoned: {}", e))?;
             match map.remove(request_id) {
                 Some(entry) => entry,
-                // P1 重启补裁：pending 表里还有、内存 map 已丢（gateway
+                // 重启补裁：pending 表里还有、内存 map 已丢（gateway
                 // 重启窗口内的卡片）→ 台账裁决落账（幂等条件更新先到先得），
                 // 原操作进程已死不继续执行——记账性质，卡片可以摘了。
                 None => return self.respond_stale(request_id, approved),
             }
         };
         // 先到先得：remove 已把请求移出 pending，第二个 respond 天然 unknown。
-        // F6: 拒绝备注只在 denied 时携带（空串/纯空白视同无备注）。
+        // 拒绝备注只在 denied 时携带（空串/纯空白视同无备注）。
         let note = note.filter(|n| !n.trim().is_empty());
         let verdict = if approved {
             nemesis_security::auditor::ApprovalVerdict::approved()
@@ -732,8 +732,8 @@ impl ApprovalResponder for WebApprovalManager {
                 note: note.clone(),
             }
         };
-        // R3（2026-10-18 三方复评）：**裁决状态转移以台账条件更新为准——先
-        // 记账、后通知**。R3 前置修复（先 durable pending 后入册广播）保证
+        // （三方复评）：**裁决状态转移以台账条件更新为准——先
+        // 记账、后通知**。 前置修复（先 durable pending 后入册广播）保证
         // 此刻 pending 行必已在，Ok(false) 只可能来自超时分支抢先。
         // - Ok(true)：本 respond 是先到者 → 送裁决；
         // - Ok(false)：已有人抢先 → 不送不广播（先到者已广播摘卡），诚实
@@ -775,11 +775,11 @@ impl ApprovalResponder for WebApprovalManager {
             );
             return Err("approval waiter already gone".to_string());
         }
-        // F6: 裁决已送达 → 广播 resolved，竞速败方窗口摘卡。在 always 规则
+        // 裁决已送达 → 广播 resolved，竞速败方窗口摘卡。在 always 规则
         // 写盘之前发（写失败不影响「卡已处理」事实）。
         self.broadcast_resolved(request_id, if approved { "approved" } else { "denied" });
 
-        // F3: 批准 + 总是允许 → 写规则。裁决已送达不回滚；层级安全门
+        // 批准 + 总是允许 → 写规则。裁决已送达不回滚；层级安全门
         // （CRITICAL 仅 process_exec 豁免 + 安装类永不入规则）不过则忽略
         // always 并 warn；规则写失败诚实回 Err（前端 toast 提示，本次批准
         // 仍生效）。
@@ -813,7 +813,7 @@ impl ApprovalResponder for WebApprovalManager {
                 .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
         };
-        // P1：台账里仍 pending、内存已丢（重启前遗留）→ 作为 stale 卡片
+        // 台账里仍 pending、内存已丢（重启前遗留）→ 作为 stale 卡片
         // 一并下发（前端可裁决，respond 走重启补裁记账路径；stale: true
         // 供前端注记「原操作已失效」）。字段对齐 entry_json 形态。
         if let Some(j) = self.journal() {
@@ -837,7 +837,7 @@ impl ApprovalResponder for WebApprovalManager {
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
-                // 并行批聚合（BUG-A 第三层）：stale 卡同样按批下发（payload
+                // 并行批聚合（第三层）：stale 卡同样按批下发（payload
                 // 缺键的历史形态 = 无批上下文，落 None 单卡）。
                 let payload_batch_id = e
                     .payload
@@ -882,11 +882,11 @@ impl ApprovalResponder for WebApprovalManager {
         })
     }
 
-    /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：一次裁决同一并行批内的
+    /// 并行批审批聚合（第三层）：一次裁决同一并行批内的
     /// 全部未决卡（前端「全部允许/全部拒绝」按钮）。语义：
     /// - **先摘后裁**（drain，同 resolve_orphans_matching）：同一把锁下摘出
     ///   全部同批卡；respond 先摘走的卡不在集合内（同锁互斥，竞速败方落空）。
-    /// - 逐卡 R3 同款：台账条件更新先到先得——Ok(false) = respond/超时抢先
+    /// - 逐卡 同款：台账条件更新先到先得——Ok(false) = respond/超时抢先
     ///   裁决过 → 不送不广播，计入 skipped（不假广播）。
     /// - always 规则：批量「全部总是允许」逐卡落规则；层级门不过（CRITICAL
     ///   仅 process_exec 豁免 + 安装类）= warn 忽略；写失败 = warn 收集不
@@ -920,7 +920,7 @@ impl ApprovalResponder for WebApprovalManager {
         if members.is_empty() {
             return Err(format!("no pending approvals in batch: {batch_id}"));
         }
-        // F6 同口径：拒绝备注只在 denied 时携带（空串/纯空白视同无备注）。
+        // 同口径：拒绝备注只在 denied 时携带（空串/纯空白视同无备注）。
         let note = note.filter(|n| !n.trim().is_empty());
         let decision = if approved {
             nemesis_types::approval_journal::ApprovalDecision::Approved
@@ -931,7 +931,7 @@ impl ApprovalResponder for WebApprovalManager {
         let mut skipped = 0usize;
         let mut always_failed: Vec<String> = Vec::new();
         for (id, entry) in members {
-            // R3：先台账条件更新（幂等先到先得），后送裁决。Err = 台账写失败
+            // 先台账条件更新（幂等先到先得），后送裁决。Err = 台账写失败
             // → 裁决照常送达（审批可用性不绑 tasks.db，审计缺失 loud 留痕）。
             let decided = match self
                 .journal()
@@ -1004,13 +1004,13 @@ impl ApprovalResponder for WebApprovalManager {
 }
 
 // ---------------------------------------------------------------------------
-// WS4（P13）：技能装前审批门（gateway 中央接线）
+// 技能装前审批门（gateway 中央接线）
 // ---------------------------------------------------------------------------
 
 /// 装配顺序适配器：`nemesis_skills::InstallGate` ← `WebApprovalManager`。
 ///
-/// WebServer 的 AppState 在 init_services（B6）即构建，而审批真身
-/// `WebApprovalManager` 在 run_runtime（B7 审批接线块）才存在——用
+/// WebServer 的 AppState 在 init_services即构建，而审批真身
+/// `WebApprovalManager` 在 run_runtime（审批接线块）才存在——用
 /// `OnceLock` 晚绑：gateway.rs 主流程把本类型注入 `web_server`（AppState
 /// 快照捕获），run_runtime 审批块 `bind()` 真身。技能安装卡与 auditor
 /// 审批共用**同一 manager 实例**，`approval.respond`（responder 槽）才能
@@ -1050,7 +1050,7 @@ impl nemesis_skills::install_gate::InstallGate for LateWebSkillsGate {
             };
         };
 
-        // 安装类操作不走「总是允许」规则（2026-09-30 复查 #12 横向同源：
+        // 安装类操作不走「总是允许」规则（复查 #12 横向同源：
         // 与 WASM 插件安装同判——source 目录记忆 ≠ 载荷记忆，同一路径明天
         // 可以装不同内容的技能包；每次安装保持人工裁决。历史遗留的
         // skills.install 规则成为死信；规则写入侧由 rule_permitted_for 的

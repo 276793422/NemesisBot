@@ -481,7 +481,7 @@ async fn cmd_run(
     // ——new() 的 stub 会让子工作流节点恒 Failed "no engine configured"。
     let engine = nemesis_workflow::engine::WorkflowEngine::new_arc();
 
-    // U10 统一执行世界：CLI 裸引擎此前是执行体隔离的逃逸路径——script
+    // 统一执行世界：CLI 裸引擎此前是执行体隔离的逃逸路径——script
     // 节点落到 `ScriptNodeExecutor::new()` 的裸 spawn，executor.sandbox=true
     // 也拦不住。executor 分离开（+ `sandbox` feature）时挂上与 gateway 同一
     // 条开关链的 ExecutionWorld：script 节点经 executor 子进程/Sandboxie 盒，
@@ -533,9 +533,9 @@ async fn cmd_run(
         .map_err(|e| anyhow::anyhow!("Registration error: {}", e))?;
 
     println!("  Executing...");
-    // (BUG #29, quality-hardening goal 冲刺 S11) 查找键必须与注册键同源：
+    // (, quality-hardening goal 冲刺) 查找键必须与注册键同源：
     // register_workflow 按文件内 `name` 字段注册（engine.rs:1193
-    // `workflows.insert(workflow.name.clone(), ...)`），此处原样传用户输入的
+    // `workflows.insert(workflow.name.clone(),...)`），此处原样传用户输入的
     // `name`——传绝对路径（428-429 分支）或文件名与内部 name 不一致时必然
     // "workflow not found"。改用解析出的 workflow.name，与注册同一真相源。
     let result = engine
@@ -763,7 +763,7 @@ fn cmd_status(workflow_dir: &std::path::Path, id: Option<&str>) -> Result<()> {
                             .and_then(|v| v.as_str())
                             .unwrap_or("?");
                         // Trim the timestamp for display. get() 边界安全横扫
-                        // （2026-10-17）：裸 [..19] 只被字节数门保护，记录里
+                        // 裸 [..19] 只被字节数门保护，记录里
                         // 的 started_at 一旦出现字节 19 落在多字节字符中间
                         // 的形态（手工编辑/异常数据）会 panic——退化取全串。
                         let started_short = started.get(..19).unwrap_or(started);

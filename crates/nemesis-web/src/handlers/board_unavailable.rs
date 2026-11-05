@@ -1,16 +1,16 @@
-//! U-B（2026-10-12 无人值守 §9.2）：LLM 端点不可用本地封存。
+//! U-B（2026-10-12 无人值守）：LLM 端点不可用本地封存。
 //!
 //! 三机共享一个云端模型端点是集群常态——端点挂掉时，master 侧拆解/评审/
 //! 自动重派链会各自撞连接失败并烧重试预算（重评链、拆解重拆链、停车场
 //! sweep 反复发车）。本模块实现 master 侧 circuit breaker：
 //!
-//! - **检测**：只认**连接建立类**失败（[`nemesis_utils::llm_error_class::is_connect_error`]）
+//! - **检测**：只认**连接建立类**失败（[`nemesis_utils::llm_error_class:is_connect_error`]）
 //!   超时不计入（慢模型跑满 provider 600s 是端点活着的证据，计入会误
 //!   封存）；4xx/5xx/解析失败同理不计入。连续 `connect_fail_threshold`
 //!   次连接类失败 → 端点 unavailable（封存）。
 //! - **封存**：只短路「下一步需要 LLM 的自动动作」——拆解发起
-//!   （[`super::board::execute_plan_chain`] 入口闸）、评审触发（nemesisbot
-//!   board_review 三入口闸）、停车场 sweep 重派（[`super::board::sweep_parked_dispatches_with_config`]
+//!   （[`super::board:execute_plan_chain`] 入口闸）、评审触发（nemesisbot
+//!   board_review 三入口闸）、停车场 sweep 重派（[`super::board:sweep_parked_dispatches_with_config`]
 //!   闸）。不需 LLM 的动作（dossier 导出/锚点执行/评论状态变更）照常。
 //!   在途工作逐一写**中断档案** `<workspace>/board/interruptions/<NB-x>.json`
 //!   （端点恢复后探针逐单续做）。
@@ -20,7 +20,7 @@
 //! - **与 estop 的关系**：estop 优先级更高（estop 挂起时探针不探测不恢复）；
 //!   封存独立于 estop（estop release 不解封，只有探针/手动放行解封）。
 //!
-//! 状态是进程级单例（[`UNAVAILABLE`] OnceLock）——同 [`super::board::BOARD_ESTOP`]
+//! 状态是进程级单例（[`UNAVAILABLE`] OnceLock）——同 [`super::board:BOARD_ESTOP`]
 //! 理由（AppState 字面量测试点太多）：**判定逻辑全部在可实例化的
 //! [`UnavailableState`] 方法上**，单测自建实例零全局污染（estop 纯函数
 //! 内核同款纪律）；全局壳函数只做一行委托。

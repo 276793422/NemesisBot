@@ -464,7 +464,7 @@ impl ForgeHandler {
             .get("status")
             .and_then(|v| v.as_str())
             .ok_or("missing 'status' field")?;
-        // 状态值必须能反序列化为 ArtifactStatus（单一真相源校验）：
+        // 状态值必须能反序列化为 ArtifactStatus（统一定义校验）：
         // 此前任意字符串直写 registry.json，而 Registry::load 用
         // Vec<Artifact> 严格反序列化——一个毒值让整个注册表加载必炸
         // 且无自愈（web 统计静默归零、CLI 反思去重失效会追加重复条目）。
@@ -593,7 +593,7 @@ impl ForgeHandler {
         // LLM 做语义分析，gateway 与 CLI 同语义」的第三入口——此前本命令
         // 无条件纯统计反思，Dashboard 手动反思在默认配置（use_llm=true）下
         // 永远拿不到 LLM 洞察，静默缺失。接线与 CLI `forge reflect` 同源：
-        // 杂务链（resolve_judge_caller 单一真相源：judge_model → small_model
+        // 杂务链（resolve_judge_caller 统一定义：judge_model → small_model
         // → 主模型）挂 reflector，带全量 artifacts（LLM 看到已部署技能不重复
         // 提名，注册表先从盘回载）+ 统一杂务预算；use_llm=false 或无可用模型
         // = 统计反思，响应 `llm_insights` 字段诚实标注（LLM 调用失败也落
@@ -1091,7 +1091,7 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
     results
 }
 
-// (, quality-hardening goal 冲刺 web 批次 2): narrow arms not
+// (, quality-hardening goal 冲刺 web): narrow arms not
 // reached by forge_extra_tests.rs — offline only.
 #[cfg(test)]
 mod s10b_tests;
@@ -1117,7 +1117,7 @@ fn forge_test_cmd(
         .get("name")
         .and_then(|v| v.as_str())
         .ok_or("missing 'name'")?;
-    // name 围栏（引入， 起走 forge crate 单一真相源）：单段目录名，
+    // name 围栏（引入， 起走 forge crate 统一定义）：单段目录名，
     // 拒 `../x` 穿越读面与 `C:evil` 盘符相对形态（is_absolute()==false 但
     // join 整段换基座）。合法技能目录名是 kebab/单段（slugify 产物）。
     nemesis_forge::forge::valid_skill_dir_name(name)?;

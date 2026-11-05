@@ -3,9 +3,9 @@
 //!
 //! `POST /api/upload/image`（走现有 Dashboard 鉴权，`X-Auth-Token` 约定同
 //! `/api/internal`）：raw body + `?name=<原始文件名>` → 白名单扩展名 + 25MB
-//! 上限 + magic byte 三道校验 → 落 `{workspace}/uploads/`（路径唯一真相源
+//! 上限 + magic byte 三道校验 → 落 `{workspace}/uploads/`（路径唯一依据
 //! `nemesis_path::resolve_uploads_dir_in_workspace`）→ 返回 `{id, path,
-//! size}`。写后即落盘（`std::fs::write` 关 fd 即 flush，纪律 4）。
+//! size}`。写后即落盘（`std::fs:write` 关 fd 即 flush，纪律 4）。
 //!
 //! uploads 是 **temp 语义**：[`sweep_uploads_older_than`] 按 mtime 清 7 天
 //! 旧文件（gateway 启动 + 周期，照 task_result_store 惯例）；用户点名路径
@@ -39,7 +39,7 @@ pub const UPLOADS_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// 1. `X-Auth-Token`（空 token 配置 = 鉴权可选，同 `/api/internal` 约定）；
 /// 2. `?name=` 白名单扩展名（png/jpg/jpeg/webp/gif，复用 检测器真相源）；
 /// 3. ≤25MB（`MAX_IMAGE_BYTES`）；
-/// 4. magic byte 嗅探（复用 `sniff_magic`，防文本伪装 .png）；落盘扩展名
+/// 4. magic byte 嗅探（复用 `sniff_magic`，防文本伪装.png）；落盘扩展名
 ///    按**内容**定（`ext_from_magic`，F-C ——`?name=` 只过协议门，
 ///    content/type 不失配）。
 pub async fn handle_upload_image(
@@ -94,7 +94,7 @@ pub async fn handle_upload_image(
 
     // 4) magic byte（落盘前嗅探；与水合验真的 真相源同一张签名表）。
     // F-C（四轮盲审）：落盘扩展名按**内容**定（ext_from_magic），
-    // 不信 `?name=` 的声明——JPEG 字节命名 .png 会以 .png 落盘，下游水合
+    // 不信 `?name=` 的声明——JPEG 字节命名.png 会以.png 落盘，下游水合
     // 按扩展名定 media_type 时 content/type 失配。嗅探失败（非图片字节）
     // 照旧 415 拒绝、不落盘。
     let ext = match nemesis_agent::image_path_detector::ext_from_magic(&body) {

@@ -4,7 +4,7 @@
 //!
 //! `<workspace>/config/hooks.json` 是 hooks.json 方言（`nemesis_agent::cc_hooks`）：
 //! 八事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop/
-//! SubagentStart/SubagentStop/Notification（2026-09-24 三合一收口件2+件3，
+//! SubagentStart/SubagentStop/Notification（2026-09-24 +件3，
 //! 后三事件），每条 hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
 //!
 //! - `get`：读文件；**不存在 → 返回空模板而非错误**（fresh home 常态）。
@@ -128,7 +128,7 @@ impl HooksHandler {
     }
 }
 
-/// 每事件脚本数 + 总数（`CcEvents::script_counts` 单一真相源）。
+/// 每事件脚本数 + 总数（`CcEvents::script_counts` 统一定义）。
 fn events_summary(events: &CcEvents) -> serde_json::Value {
     let counts = events.script_counts();
     let mut obj = serde_json::Map::new();

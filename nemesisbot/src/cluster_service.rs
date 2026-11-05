@@ -42,11 +42,11 @@ pub struct ClusterServiceAdapter {
     home: std::path::PathBuf,
     cluster_task_list: Arc<ClusterTaskList>,
     cluster_work_queue: Arc<ClusterWorkQueue>,
-    // G1 收口（2026-09-08）：work-queue 路径的回调结果持久化（回调失败 →
+    // 收口：work-queue 路径的回调结果持久化（回调失败 →
     // set_result 落盘真结果；成功 → delete 清占位）。与 gateway 传给
     // peer_chat_handler 的是同一份 adapter（同一 result_store 真相源）。
     result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
-    // Swarm M3（G4）：看板讨论事件入站箱（worker 侧 Some；master/board
+    // Swarm：看板讨论事件入站箱（worker 侧 Some；master/board
     // 裁剪时 None）。每次 start 换入新管道（stop/start 周期安全）。
     discussion_inbox: Option<Arc<crate::cluster_agent::DiscussionInbox>>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
@@ -119,12 +119,12 @@ impl ClusterServiceAdapter {
             );
         }
 
-        // G1（2026-09-01 集群韧性 goal）：rpc_cache/results 7 天 TTL 清扫 +
+        // （集群韧性 goal）：rpc_cache/results 7 天 TTL 清扫 +
         // 磁盘结果回载（A 崩溃前本地完成的任务结果，轮询恢复时可直接命中）。
         // 返回值 (清扫数, 回载数) 由 helper 内部日志承载，此处无需消费。
         let _ = sweep_and_reload_stale_results(self.cluster.result_store());
 
-        // G5（A 侧重启恢复链路）：把磁盘上未删除的续行快照重新登记进
+        // （A 侧重启恢复链路）：把磁盘上未删除的续行快照重新登记进
         // TaskManager（Pending + peer_id），让恢复轮询（poll_stale_pending_tasks）
         // 能向 B 查询结果并回灌 bus → AgentLoop 拦截 cluster_continuation 完成
         // 回复。continuation 数据本体已由 agent_factory 的
@@ -222,7 +222,7 @@ impl ClusterServiceAdapter {
                 Some(handle)
             }
             Err(e) => {
-                // ASM-08 复核（2026-09-16）：装配自检失败必须 loud——此前
+                // ASM-08 复核：装配自检失败必须 loud——此前
                 // `running=true` 但 `agent_handle=None` 是谎报（适配器自称
                 // 在跑、B 端没有 agent loop、任务永久排队）。运行时故障
                 // （端口占用等）维持降级不炸 gateway。chain 遍历防中间
@@ -316,10 +316,10 @@ impl LifecycleService for ClusterServiceAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// G1: rpc_cache/results TTL sweep + disk reload
+// rpc_cache/results TTL sweep + disk reload
 // ---------------------------------------------------------------------------
 
-/// G1（2026-09-01 集群韧性 goal；2026-09-11 提为自由函数以便链路测试）：
+/// （集群韧性 goal； 提为自由函数以便链路测试）：
 /// rpc_cache/results 7 天 TTL 清扫 + 磁盘结果回载（A 崩溃前本地完成的任务
 /// 结果，轮询恢复时可直接命中）。返回 (清扫数, 回载数)。
 ///
@@ -423,7 +423,7 @@ async fn start_cluster_components(
             Ok(Some(handle))
         }
         Err(e) => {
-            // ASM-08 复核（2026-09-16）：装配自检失败经 `?` 传播给调用方
+            // ASM-08 复核：装配自检失败经 `?` 传播给调用方
             // （LifecycleService::start 的 Result 通道），不再吞成 Ok(None)。
             // 运行时故障维持降级。
             if e.chain().any(|c| c.to_string().contains("ASM-08")) {
@@ -435,15 +435,15 @@ async fn start_cluster_components(
     }
 }
 
-/// CD4（2026-09-17）：master 重启后从看板在途派发行重建 TaskManager Pending。
+/// master 重启后从看板在途派发行重建 TaskManager Pending。
 ///
-/// 根因：TaskManager 纯内存，重启即空；board 派发无续行快照（G5 只救 chat
+/// 根因：TaskManager 纯内存，重启即空；board 派发无续行快照（只救 chat
 /// 任务）→ 恢复轮询对 board 在途单失明，worker 落盘的真实结果无人查询
 /// （7 天 TTL 蒸发）+ 派发超时 sweep 按「超时无回报」误标（实际可能已完成）。
 ///
-/// 重建后恢复轮询自然接管查询；查回结果经 CD3 恢复交付回调写回看板。
+/// 重建后恢复轮询自然接管查询；查回结果经 恢复交付回调写回看板。
 ///
-/// 身份兜底（E1 双身份教训）：新派发行 worker_id 已是 real id（T37 写前
+/// 身份兜底（双身份教训）：新派发行 worker_id 已是 real id（写前
 /// canonical 归一）；存量行可能是 peer 名——`canonical_peer_id` 先按 id 查
 /// registry、再按 name 扫描，两形态通吃；解析失败（对端不在 registry，如
 /// 只靠 UDP 发现且尚未 announce 的节点）→ 跳过 + WARN，留给既有超时 sweep
@@ -480,7 +480,7 @@ pub fn rebuild_pending_from_board_dispatches(
 
     for record in active {
         if cluster.task_manager().get_task(&record.task_id).is_some() {
-            continue; // 已登记（G5 续行重建同 id / 重复调用幂等）
+            continue; // 已登记（续行重建同 id / 重复调用幂等）
         }
         // dispatched_at 是 unix 秒（BoardStore::now = Utc timestamp）。
         let dispatched_at = match chrono::DateTime::from_timestamp(record.dispatched_at, 0) {

@@ -157,7 +157,7 @@ impl ModuleHandler for MemoryHandler {
                 self.model_install(&config_dir, &tier, ctx).await
             }
 
-            // Swarm .5：团队经验（team_memory 表，master board.db）---
+            // Swarm.5：团队经验（team_memory 表，master board.db）---
             // board 关 = team_memory 存储随 nemesis-board 退出编译，四臂诚实报未编译。
             "team.list" => {
                 #[cfg(feature = "board")]
@@ -1402,7 +1402,7 @@ fn count_episodic(dir: &std::path::Path) -> (usize, usize) {
 #[cfg(all(test, feature = "memory"))]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): manager-dependent
+// (, quality-hardening goal 冲刺 web): manager-dependent
 // arms + offline model-install success + helper edge cases.
 #[cfg(all(test, feature = "memory"))]
 mod s10b_tests;

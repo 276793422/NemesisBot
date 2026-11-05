@@ -424,7 +424,7 @@ fn test_evaluate_gt_with_mixed_types() {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (uncovered: resolve_variables break, split_logical
+// coverage gap closure (uncovered: resolve_variables break, split_logical
 // quote arms, find_operator quote/depth/word-boundary guards, string-fallback
 // lt/gte/lte, {{-truthy arm, find_matching_paren unbalanced)
 // ---------------------------------------------------------------------------
@@ -546,8 +546,8 @@ fn w4a_unresolved_template_alone_is_truthy() {
 }
 
 // ===========================================================================
-// S12b batch：整段括号包裹表达式的递归臂（eval_comparison ~152 行：
-// "( expr )" → eval_expression(inner)）。
+// batch：整段括号包裹表达式的递归臂（eval_comparison ~152 行：
+// "(expr)" → eval_expression(inner)）。
 // ===========================================================================
 
 #[test]
@@ -560,8 +560,8 @@ fn s12b_fully_parenthesized_expression_recurses_into_inner() {
     assert!(evaluate("(( true ))", &vars).unwrap());
 }
 
-/// BUG-20261031-240 红证：find_operator 双形态越界 panic。
-/// 形态一：条件表达式里连续重复逻辑算子（`or  or` / 双空格形态）使
+/// 红证：find_operator 双形态越界 panic。
+/// 形态一：条件表达式里连续重复逻辑算子（`or or` / 双空格形态）使
 /// split_logical 产出空串 part → find_operator 对空 expr 走 `chars[0]`
 /// （循环上界 saturating_sub 后 +1 恒 ≥1）→ 索引越界 panic。
 /// 形态二：find_operator 返回 char 下标，eval_comparison 按字节下标切片
@@ -584,8 +584,8 @@ fn test_doubled_logical_operator_does_not_panic() {
     assert_eq!(find_operator("状态 == ok", "=="), Some(7));
 }
 
-/// BUG-20261102-323 红证：split_logical / find_matching_paren 与
-/// BUG-20261031-240 同族（char 下标按字节切片 / char 下标 vs 字节长度
+/// 红证：split_logical / find_matching_paren 与
+/// 同族（char 下标按字节切片 / char 下标 vs 字节长度
 /// 比较）——240 只修了 find_operator，同文件两个兄弟函数漏扫
 /// （横向扫同类未做）。
 #[test]

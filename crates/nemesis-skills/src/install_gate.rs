@@ -1,4 +1,4 @@
-//! 装前审批卡（P13）：InstallPlan + InstallGate。
+//! 装前审批卡：InstallPlan + InstallGate。
 //!
 //! 安装门漏斗的第六环前置产出：`plan_install` 阶段把「来源 repo / commit、
 //! 文件清单+逐文件 sha256、安全扫描摘要、验签四态、版本龄」聚合为一张
@@ -62,7 +62,7 @@ pub struct InstallPlan {
     /// 非阻断性警告聚合（suspicious 标记 / lint 警告 / 龄 warn）。
     #[serde(default)]
     pub warnings: Vec<String>,
-    /// 本次安装的独立事务 staging 目录后缀（R2，2026-10-24）：`.skill-staging/<slug>.tx<id>`。
+    /// 本次安装的独立事务 staging 目录后缀：`.skill-staging/<slug>.tx<id>`。
     /// 逐次安装唯一——审批等待期间另一安装不得共享/换写本计划的内容源。
     /// `#[serde(skip)]`：审批卡不落盘内务路径；plan 只序列化展示（plan_to_json），
     /// 从不反序列化回传，进程内字段随结构体走。空串 = 兼容外部手工构造的
@@ -127,7 +127,7 @@ pub enum InstallDecision {
     Deny { reason: String },
 }
 
-/// 安装门 trait（P13 装前审批的统一注入点）。
+/// 安装门 trait（装前审批的统一注入点）。
 #[async_trait]
 pub trait InstallGate: Send + Sync {
     /// 对安装计划做裁决。实现方负责阻塞等待用户/规则回复。

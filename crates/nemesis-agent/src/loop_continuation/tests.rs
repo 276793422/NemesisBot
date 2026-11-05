@@ -1975,7 +1975,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
 
 #[tokio::test]
 async fn test_rwlock_tool_lookup_impl() {
-    // Covers the parking_lot:RwLock<HashMap> ToolLookup impl.
+    // Covers the parking_lot::RwLock<HashMap> ToolLookup impl.
     struct T;
     #[async_trait]
     impl Tool for T {
@@ -2040,19 +2040,19 @@ fn test_recover_to_manager_skips_corrupt_snapshot() {
     assert!(!mgr.has_continuation_sync("corrupt"));
 }
 
-/// Regression for: `ContinuationManager:with_disk_store`
+/// Regression for: `ContinuationManager::with_disk_store`
 /// runs `recover_to_manager` synchronously, which calls
 /// `has_continuation_sync`/`insert_continuation_sync`. Under the old code those
-/// used `tokio:sync:Mutex:blocking_lock()`, which panics with
+/// used `tokio::sync:Mutex::blocking_lock()`, which panics with
 /// "Cannot block the current thread from within a runtime" when invoked on a
 /// tokio runtime worker thread — exactly the context of gateway startup
 /// (`build_agent_loop` at agent_factory.rs:437 calls `with_disk_store` directly
-/// inside the async `gateway:run`, NOT via `spawn_blocking`). A leftover
+/// inside the async `gateway::run`, NOT via `spawn_blocking`). A leftover
 /// `rpc_cache/*.json` (gateway died mid-cluster-rpc) tripped `list_pending()`
 /// non-empty → the blocking_lock panic → a restart crash loop. The fix replaces
 /// `blocking_lock()` with `try_lock()` (non-blocking CAS, never parks the
 /// thread, safe from any context). This test seeds a real snapshot and calls
-/// `with_disk_store` directly from a `#[tokio:test]` (current_thread runtime
+/// `with_disk_store` directly from a `#[tokio::test]` (current_thread runtime
 /// worker thread) — the exact context that used to panic. It must recover the
 /// entry without panicking.
 #[tokio::test]
@@ -3684,7 +3684,7 @@ fn test_persist_final_reply_no_source_node_omits_key() {
 // 崩溃残留 `.tmp-` 原子写孤儿清扫
 // ============================================================
 
-/// mtime 回拨 helper（std File:set_times；append 打开不改内容）。
+/// mtime 回拨 helper（std File::set_times；append 打开不改内容）。
 fn backdate_mtime(path: &std::path::Path, ago: std::time::Duration) {
     let f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
     f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - ago))

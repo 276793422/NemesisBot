@@ -48,7 +48,7 @@ use tracing::warn;
 
 use crate::r#loop::{FileChange, FileChangeKind};
 
-// ：checkpoint gc（默认关；重建式影子库清扫 +
+// checkpoint gc（默认关；重建式影子库清扫 +
 // JSON 镜像清扫）。见 checkpoint/gc.rs 模块文档。
 mod gc;
 
@@ -64,7 +64,7 @@ pub struct FileSnap {
     pub content: Option<String>,
 }
 
-/// ：单路径「变更后指纹」——turn 收尾封印
+/// 单路径「变更后指纹」——turn 收尾封印
 /// （`seal_turn`）时该路径的**现盘**内容 sha256 hex。`hash == None` = 封印
 /// 时刻文件已不在盘上（删除语义）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,7 +155,7 @@ pub struct CheckpointBase {
 /// 带原因。此前 restore 家族只回 `(written, deleted)` 两 vec，写失败/删失败
 /// 被 `is_ok()` 过滤静默吞掉，rewind 侧无从感知、无条件盖「applied」戳并
 /// 摧毁 checkpoint（失败后无法重试）。消费方（rewind 编排）以
-/// [`RestoreReport:ok`] 决定是否推进截断。
+/// [`RestoreReport::ok`] 决定是否推进截断。
 #[derive(Debug, Default, Clone)]
 pub struct RestoreReport {
     pub written: Vec<String>,
@@ -178,7 +178,7 @@ impl RestoreReport {
     }
 }
 
-/// ：一次交付分支捕获的结果——可审分支的寻址面。
+/// 一次交付分支捕获的结果——可审分支的寻址面。
 ///
 /// 影子库本无 commit 流（只有 tree 流）：capture = 写当前工作区 tree →
 /// 以其为根建单个 commit → `refs/heads/nemesis/<branch>` force 指向它。
@@ -274,8 +274,8 @@ struct Inner {
 
 /// git 影子库后端句柄（非驻留化）。
 ///
-/// **不持有** `git2:Repository`——只存 (影子库路径, 工作区根) 路径对 +
-/// 操作串行锁；每个 git 操作经 [`GitBackend:open`] 临时打开 → 操作 →
+/// **不持有** `git2::Repository`——只存 (影子库路径, 工作区根) 路径对 +
+/// 操作串行锁；每个 git 操作经 [`GitBackend::open`] 临时打开 → 操作 →
 /// drop。原因：常驻 Repository 会让 libgit2 沿 alternates 链 mmap 目标
 /// 项目 `.git/objects/pack/*.pack`，句柄驻留至 Repository drop——gateway
 /// 常驻 = 用户扫描过的项目无法删除（产品原则：bot 不得在用户文件系统上
@@ -332,7 +332,7 @@ pub struct CheckpointStore {
     gc_running: std::sync::atomic::AtomicBool,
 }
 
-/// scope 判定单一真相源——条目会话归属是否属于「其他会话」。
+/// scope 判定单一权威定义——条目会话归属是否属于「其他会话」。
 /// `rewind_session = None`（不收窄）恒 false；条目归属 None（旧条目/测试直
 /// 构造，不可归属）恒 false——不可归属不惩罚，按同会话处理，单会话与存量
 /// 数据行为逐字节不变。
@@ -431,10 +431,10 @@ impl CheckpointStore {
             // 一次性 fs 副作用（初始化/自愈/alternates）借这个临时 repo 完成，
             // 随即 drop——**不驻留**（常驻 Repository 会沿
             // alternates mmap 目标项目 pack 并持有到 drop）。后续每个操作
-            // 经 GitBackend:open 临时打开。
+            // 经 GitBackend::open 临时打开。
             Ok(repo) => {
                 drop(repo);
-                // ：启动自愈——清扫崩溃残留的
+                // 启动自愈——清扫崩溃残留的
                 // temp 对象 / 半成品锁文件（幂等，无残留 = 0 清扫不吭声）。
                 let healed = Self::heal_shadow_repo(shadow);
                 if healed > 0 {
@@ -518,7 +518,7 @@ impl CheckpointStore {
         std::fs::write(&file, format!("{want}\n"))
     }
 
-    /// ：影子库自愈——清扫上次进程崩溃残留的
+    /// 影子库自愈——清扫上次进程崩溃残留的
     /// temp 对象 / 半成品锁文件（git 对象写入走 tmp→rename 原子替换，残留
     /// 形态 = `tmp_obj_*` / `tmp_pack_*` / 各类 `*.lock`）。幂等：重复启动
     /// 或无残留都安全（返回清扫条数）。只删已知安全形态，绝不触碰
@@ -616,7 +616,7 @@ impl CheckpointStore {
     }
 
     /// 工作区现状 → 影子库 tree hex。add_all 默认跳过.gitignore 命中文件；
-    /// matcher 再跳过运行时属主目录（`is_workspace_ignored` 单一真相源——
+    /// matcher 再跳过运行时属主目录（`is_workspace_ignored` 单一权威定义——
     /// logs/cluster/board/... 与 fs_watcher 同表）和真实主仓 index 声明的
     /// gitlink 边界。子模块不能递归扫成普通目录：扫描后以 mode 160000 显式
     /// 写回影子 index，记录当前 HEAD（未初始化时记录父仓 index OID）。
@@ -624,7 +624,7 @@ impl CheckpointStore {
     /// ⚠️ libgit2 坑（实测）：**空 pathspec + 回调**组合下，
     /// `git_pathspec__match` 对空 spec 直接 `return true` 但不填
     /// `matched_pathspec`（pathspec.c:209-211）→ 回调收到 NULL → git2-rs
-    /// shim `CStr:from_ptr(NULL)` 段错误（STATUS_ACCESS_VIOLATION）。必须传
+    /// shim `CStr::from_ptr(NULL)` 段错误（STATUS_ACCESS_VIOLATION）。必须传
     /// 非空全匹配 spec（`**` 递归匹配含子目录），不能用空数组表示「全部」。
     #[cfg(feature = "checkpoint-git")]
     fn write_current_tree(repo: &mut git2::Repository) -> Result<String, String> {
@@ -757,7 +757,7 @@ impl CheckpointStore {
         };
 
         // Added（现状有、目标无）→ 删除；Deleted/Modified/Typechange → 恢复。
-        // gitlink（FileMode:Commit）是 opaque 子模块边界：父仓 checkpoint 只
+        // gitlink（FileMode::Commit）是 opaque 子模块边界：父仓 checkpoint 只
         // 记录 OID，不具备安全修改真实子模块 HEAD / 初始化状态的能力。不得
         // 把它当普通文件 checkout，也不得对已初始化子模块目录调用文件删除；
         // 有差异时诚实列失败，普通父仓文件仍继续恢复。
@@ -831,7 +831,7 @@ impl CheckpointStore {
                 continue;
             }
             let abs = root.join(&rel);
-            // ：裸 remove_file 换 fsutil 韧性包装
+            // 裸 remove_file 换 fsutil 韧性包装
             //（Windows AV/索引器瞬时句柄是常态不是异常）。NotFound 语义保留：
             // retry 包装对 NotFound 返 Ok，先探存在性把「快照本就记录不存在
             // = 恢复语义已达成」与「真删了」分开（deleted 只计后者）。
@@ -918,10 +918,10 @@ impl CheckpointStore {
             .stats()
             .map_err(|e| format!("影子 diff 统计失败: {e}"))?;
         let mut buf = Vec::new();
-        // git2 0.21 无 Diff:format——patch 输出走 print 回调。⚠ line.content()
+        // git2 0.21 无 Diff::format——patch 输出走 print 回调。⚠ line.content()
         // **不含** +/-/空格 前缀字节（context/add/del 三类须手动补 origin 字符，
         // FileHeader/HunkHeader 自带完整换行）——漏补产出的 patch 无法被
-        // Diff:from_buffer 回读（"invalid patch hunk"）， 发布链实证。
+        // Diff::from_buffer 回读（"invalid patch hunk"）， 发布链实证。
         diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
             match line.origin() {
                 '+' | '-' | ' ' => buf.push(line.origin() as u8),
@@ -950,7 +950,7 @@ impl CheckpointStore {
     /// 附 `old_file` 摘要（删除条目 `old_sha256` 承载证据，不再整类
     /// 跳过——删除也是交付事实）。rename 在 delta 层呈 delete+add 对，
     /// typechange 按 modify 记（同路径内容形态变更）。超 [`FILES_MAX`]
-    /// 截断（诚实注记位）。与 [`Self:diff_patch`] 分开各跑一次 diff
+    /// 截断（诚实注记位）。与 [`Self::diff_patch`] 分开各跑一次 diff
     /// （影子库 task 收口一次性成本，换来两函数单一职责）。
     #[cfg(feature = "checkpoint-git")]
     fn diff_file_entries(
@@ -1373,7 +1373,7 @@ impl CheckpointStore {
     }
 
     // ------------------------------------------------------------------
-    // ：turn 收尾封印 + rewind 冲突预检
+    // turn 收尾封印 + rewind 冲突预检
     // ------------------------------------------------------------------
 
     /// turn 收尾封印——对本 turn 声明过的每个变更路径读**现盘**内容
@@ -1443,7 +1443,7 @@ impl CheckpointStore {
     }
 
     /// checkpoint 的声明路径集（paths 空时回退 files 的路径——老 JSON
-    /// 无 paths 字段）。seal/conflict/list 多处共用，单一真相源。
+    /// 无 paths 字段）。seal/conflict/list 多处共用，统一定义。
     fn declared_paths(cp: &Checkpoint) -> Vec<String> {
         if cp.paths.is_empty() {
             cp.files.iter().map(|f| f.path.clone()).collect()
@@ -1789,7 +1789,7 @@ impl CheckpointStore {
             };
             match content {
                 None => {
-                    // ：async 删除臂换 spawn_blocking +
+                    // async 删除臂换 spawn_blocking +
                     // fsutil 韧性包装（同步退避重试不堵 runtime；NotFound 语义
                     // 保留——retry 包装对 NotFound 返 Ok，先探存在性分开
                     // 「快照本就记录不存在」与「真删了」）。
@@ -1911,7 +1911,7 @@ impl CheckpointStore {
                 }
             }
         }
-        // ：truncate 后触发 gc。未装配/未启用
+        // truncate 后触发 gc。未装配/未启用
         // （默认态）= gc_now 首行诚实跳过，零触碰；启用时同步执行（git 重
         // 建典型毫秒级增量拷贝，且 rewind 本身是低频显式维护操作），失败
         // 零破坏、不影响 rewind 返回值。
@@ -1991,7 +1991,7 @@ impl CheckpointStore {
         Err("影子库未编译（checkpoint-git 关），无法按 tree 恢复文件".to_string())
     }
 
-    /// ：以指定基线 tree 为参照的盘面漂移扫描（redo
+    /// 以指定基线 tree 为参照的盘面漂移扫描（redo
     /// 冲突预检）。undo→redo 窗口内的**外部改动**（IDE 手改等）不产生新
     /// checkpoint turn——行数/行身份/tree 基线三守卫全盲（守卫 2 只看索引
     /// 最新 tree，而 undo 已把目标区间从索引截掉）；本扫描 diff 基线 tree
@@ -2194,7 +2194,7 @@ impl CheckpointStore {
             return;
         }
         let path = dir.join(format!("turn-{}.json", cp.turn));
-        // 改原子写。此前裸 std:fs:write 直写目标——崩溃/
+        // 改原子写。此前裸 std::fs:write 直写目标——崩溃/
         // 断电落在写中 → 半截 JSON，且 turn-N.json 每 turn 被 snapshot/seal
         // 多次覆写，撕裂毁掉的是先前已落盘的好镜像。重启后 load 解析失败
         // 静默跳过 → rewind 选择器丢条目、tree 基线/封印指纹消失（冲突预检
@@ -2237,12 +2237,12 @@ impl CheckpointStore {
 #[cfg(test)]
 mod tests;
 
-// ：persist 原子写 + load 损坏镜像 loud 留痕
+// persist 原子写 + load 损坏镜像 loud 留痕
 // 回归锁（同族先例形态）。
 #[cfg(test)]
 mod r43_tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 
@@ -2266,23 +2266,23 @@ mod m3_tests;
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod cov_tests;
 
-// : turn 收尾封印（after 指纹）+ 冲突预检
+// turn 收尾封印（after 指纹）+ 冲突预检
 // （last-declared 规则）+ 影子库自愈（幂等清扫）测试。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod p20_tests;
 
-// : 交付分支捕获 / patch 重算 / 列举 + 分支名校验
+// 交付分支捕获 / patch 重算 / 列举 + 分支名校验
 // 测试。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod p4_tests;
 
-// ：checkpoint gc 回归（保留集纯函数 / JSON 形态
+// checkpoint gc 回归（保留集纯函数 / JSON 形态
 // 清扫 / git 重建式 gc + extras + 交付 refs 存活 + 零触碰；git 臂在文件内
 // 自挂 feature 守卫）。
 #[cfg(test)]
 mod gc_tests;
 
-// 影子库常驻 git2:Repository 持有扫描目标项目 pack 句柄
+// 影子库常驻 git2::Repository 持有扫描目标项目 pack 句柄
 // （Windows mmap 锁 → 项目无法删除）复现/回归锁（Windows-only 语义在
 // 文件内自挂 cfg(windows)）。
 #[cfg(all(test, windows, feature = "checkpoint-git"))]

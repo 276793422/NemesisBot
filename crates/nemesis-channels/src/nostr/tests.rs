@@ -1,4 +1,4 @@
-//! nostr 通道测试（P27）：NIP-04 加解密 / NIP-01 事件与帧形态 / 通道行为 /
+//! nostr 通道测试：NIP-04 加解密 / NIP-01 事件与帧形态 / 通道行为 /
 //! mock relay 契约（进程内 tokio-tungstenite WS server，与生产同一条 0.26 栈）。
 //!
 //! 密钥纪律：测试用私钥只有两类——**硬编码 TEST-ONLY 常量**（`11`×32 /

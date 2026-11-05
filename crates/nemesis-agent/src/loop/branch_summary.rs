@@ -1,4 +1,4 @@
-//! /：分支摘要（branch summary）——fork/rewind 把会话后缀遗弃时，
+//! ：分支摘要（branch summary）——fork/rewind 把会话后缀遗弃时，
 //! 用小模型通道（`agents.small_model`，杂务槽位）对**被遗弃部分**生成一份
 //! 结构化前情提要，落盘到新会话 sidecar meta（`branch_summary` 字段），
 //! 新会话首轮 build_messages 注入为临时 system 节（`# Branch Context`），
@@ -6,7 +6,7 @@
 //!
 //! 设计要点（与 compaction 摘要同构但语义不同）：
 //! - **复用六节 schema**（Goal / Constraints / Progress / Decisions / Files
-//!   / Next Steps）与 [`super:parse_structured_summary`] 解析——schema
+//!   / Next Steps）与 [`super::parse_structured_summary`] 解析——schema
 //!   单一真相源在 compact 域，这里只消费不复制；
 //! - **只走 small_model 槽位**（与 标题生成同通道）：未配置 = 诚实跳过
 //!   （INFO 日志 + 不落盘），**绝不回退主模型**——分支摘要属杂务，不该
@@ -14,14 +14,14 @@
 //! - **阈值闸**：遗弃 <3 个完整 user 轮不生成（没什么可摘要的）；
 //! - **两段式 prepare/run**：`prepare_*` 在调用方帧内从 AgentLoop 提取
 //!   provider/model/prompt（纯 owned 数据）→ `run()` 自含异步执行——
-//!   `tokio:spawn` 只能拿 `'static`，不能把 `&AgentLoop` 带进去；
+//!   `tokio::spawn` 只能拿 `'static`，不能把 `&AgentLoop` 带进去；
 //! - **预算双钳**：转写截断 [`BRANCH_SUMMARY_TRANSCRIPT_MAX_CHARS`]、
-//!   摘要截断 [`chat_log:BRANCH_SUMMARY_MAX_CHARS`]（写入侧还有一次
+//!   摘要截断 [`chat_log::BRANCH_SUMMARY_MAX_CHARS`]（写入侧还有一次
 //!   防御性钳制，两边共用同一常量）。
 
 use super::AgentLoop;
-// LlmMessage/LlmProvider 真相源在 crate:r#loop:llm_types（loop.rs glob
-// 再导出）——不在 crate:types。
+// LlmMessage/LlmProvider 真相源在 crate::r#loop::llm_types（loop.rs glob
+// 再导出）——不在 crate::types。
 use crate::r#loop::{LlmMessage, LlmProvider};
 use serde_json::Value;
 
@@ -62,10 +62,10 @@ pub fn prepare_branch_summary(
     prepare_branch_summary_with(provider, model, session_key, dropped_rows, dropped_turns)
 }
 
-/// ：CLI 形态的摘要 prepared 构造——调用方**自带**
+/// CLI 形态的摘要 prepared 构造——调用方**自带**
 /// small_model 槽位（provider+model），无 AgentLoop 依赖。CLI `session
 /// fork` 用它与 WSAPI fork 对齐（同一生成通道：阈值/转写/空行三闸与
-/// prompt 构造都在本函数，单一真相源；`prepare_branch_summary` 只是
+/// prompt 构造都在本函数，单一权威定义；`prepare_branch_summary` 只是
 /// AgentLoop 槽位提取 + 委托本函数）。
 pub fn prepare_branch_summary_with(
     provider: std::sync::Arc<dyn LlmProvider>,
@@ -141,7 +141,7 @@ impl PreparedBranchSummary {
         if text.is_empty() {
             return None;
         }
-        // 六节 schema 解析（compact 域单一真相源）；解析失败回退自由文本
+        // 六节 schema 解析（compact 域统一定义）；解析失败回退自由文本
         // 原样使用——解析失败绝不允许丢摘要。
         let summary = super::parse_structured_summary(&text).unwrap_or(text);
         let summary = summary.trim();
@@ -205,7 +205,7 @@ fn build_transcript(rows: &[Value]) -> String {
 }
 
 /// 分支摘要请求的 prompt（六节 schema 与 compaction 摘要同源——标题列表
-/// 直接引用 [`super:SUMMARY_SCHEMA_SECTIONS`]（文本真相在 nemesis-prompts
+/// 直接引用 [`super::SUMMARY_SCHEMA_SECTIONS`]（文本真相在 nemesis-prompts
 /// aux 模块），防两处漂移）。
 fn build_branch_summary_prompt(transcript: &str) -> String {
     let mut p = String::from(

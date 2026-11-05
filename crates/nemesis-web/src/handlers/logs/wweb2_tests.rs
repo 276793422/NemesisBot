@@ -1,4 +1,4 @@
-//! logs.rs 安全面覆盖（批次 18，2026-08-25）。
+//! logs.rs 安全面覆盖（2026-08-25）。
 //!
 //! 覆盖：`parse_security_audit_file`（管道格式、decision 映射、畸形行跳过）、
 //! `security` 命令（多文件合并、risk_level 过滤、时间倒序、分页、_source_file）、

@@ -1,4 +1,4 @@
-//! `proxy_usage` 单测（代理请求用量记账 §4）：
+//! `proxy_usage` 单测（代理请求用量记账）：
 //! 落账字段管线（model/session 前缀/status/token/cost）、错误路径、
 //! usage=None 全 0、data_store 缺席 no-op、执行模型解析优先级。
 //! AppState 构造依赖 workflow 的 ChatSecretStore，feature 闸同

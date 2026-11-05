@@ -129,7 +129,7 @@ fn scanner_config_path(workspace: &str) -> PathBuf {
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
 /// （Mutex 非重入，嵌套即死锁）；长窗口臂（install/update_db 的 spawn
 /// 任务）在 await 完成后调本入口权威重读——锁不横跨 await。
-/// （同类横扫七期补网，：本文件与 mcp.rs 同款漏网——helper 名
+/// （同类横扫七期补网，本文件与 mcp.rs 同款漏网——helper 名
 /// 带 scanner 前缀，前六轮按 handler 清单的模式匹配落空。）
 fn update_scanner_config<T>(
     workspace: &str,
@@ -1026,9 +1026,9 @@ async fn update_db_inner(
     Ok(())
 }
 
-// 批次 18：scanner.rs 纯逻辑子模块测试（私有项访问：
+// scanner.rs 纯逻辑子模块测试（私有项访问：
 // cmd_cancel 三态匹配 / install 与 update_db 早期错误臂 / mark_op 去重 /
-// format_bytes / 进度回调）。真下载与真扫描臂 → 结构性豁免（台账 §9.4）。
+// format_bytes / 进度回调）。真下载与真扫描臂 → 结构性豁免（台账）。
 #[cfg(test)]
 mod wweb2_tests;
 

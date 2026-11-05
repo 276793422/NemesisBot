@@ -298,7 +298,7 @@ kind = "local"
     assert!(err.contains("至少要声明一个"), "got: {err}");
 }
 
-/// BUG-20261105-021：`exclusive_mcp = []`（空数组是 Some 非 None）不得
+/// `exclusive_mcp = []`（空数组是 Some 非 None）不得
 /// 绕过零操作面闸——旧形态在归一化前判 `is_none()`，空数组 + 空 ops =
 /// 死连接器静默入库。合法化语义不回退：空数组 + 有 op 照常合法。
 #[test]
@@ -450,7 +450,7 @@ http = { method = "GET", path = "/rss" }
     assert!(err.contains("prefix 只支持 header"), "got: {err}");
 }
 
-// ---- BUG-20261028-100：凭据 into 目标名加载期校验（防线对称缺口）----
+// ----：凭据 into 目标名加载期校验（防线对称缺口）----
 
 fn cred_into_manifest(into_toml_value: &str) -> String {
     format!(
@@ -535,7 +535,7 @@ fn http_base_unknown_field_still_loud() {
     assert!(err.contains("TOML 解析失败"), "got: {err}");
 }
 
-// —— E3（收官批 2026-10-15）：undo 撤销声明 ——
+// —— （收官-15）：undo 撤销声明 ——
 
 fn undo_manifest(undo_line: &str, extra_ops: &str) -> String {
     format!(
@@ -650,7 +650,7 @@ fn rejects_undo_empty_op_or_arg() {
     assert!(err.contains("不能为空"), "got: {err}");
 }
 
-// ---- M2（2026-10-19）script 声明式绑定 ----
+// ---- script 声明式绑定 ----
 
 const SCRIPT_VALID: &str = r#"
 [connector]
@@ -799,7 +799,7 @@ fn script_counts_in_binding_uniqueness() {
 }
 
 // ---------------------------------------------------------------------------
-// B2（2026-10-19 独占接管）：exclusive_mcp 清单解析
+// （独占接管）：exclusive_mcp 清单解析
 // ---------------------------------------------------------------------------
 
 #[test]

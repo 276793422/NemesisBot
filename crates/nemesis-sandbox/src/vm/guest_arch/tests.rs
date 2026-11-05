@@ -1,5 +1,5 @@
 //! [`guest_arch`] 单测：解析（round-trip / loud 拒绝）、机型映射表全组合
-//! 存在性（G0 门：aarch64 条目编译期存在性断言）、产出闸语义。
+//! 存在性（门：aarch64 条目编译期存在性断言）、产出闸语义。
 
 use super::*;
 
@@ -78,7 +78,7 @@ fn machine_table_covers_all_arch_accel_combinations() {
     }
 }
 
-/// G0 门：aarch64 两条目（KVM on ARM64 Linux / WHPX on Windows ARM64）
+/// 门：aarch64 两条目（KVM on ARM64 Linux / WHPX on Windows ARM64）
 /// 编译期存在 + 明确标注 Reserved（接口在位、当前不产出）。
 #[test]
 fn aarch64_entries_present_and_reserved() {

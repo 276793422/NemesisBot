@@ -3,8 +3,8 @@
 //! `subagents.cancel`。
 //!
 //! 三种子代理形态（内联 detached / `__BG_SPAWN__` 后台 / 集群 delegate
-//! 并入）的统一台账读面 + 用户面终止。数据面单一真相源 =
-//! `nemesis_agent::subagent_registry::global()`（gateway 启动早期注入
+//! 并入）的统一台账读面 + 用户面终止。数据面单一权威 =
+//! `nemesis_agent::subagent_registry:global()`（gateway 启动早期注入
 //! workspace 落盘路径）。
 //!
 //! `events` = 详情抽屉的对话环回放：registry id == 子代理会话键

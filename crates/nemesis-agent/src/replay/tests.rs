@@ -87,7 +87,7 @@ impl LlmProvider for NoopProvider {
     }
 }
 
-/// Provider that records the exact message list (as `serde_json:Value`, the
+/// Provider that records the exact message list (as `serde_json::Value`, the
 /// same serialization the request_logger's raw.json uses) for every chat
 /// call, then plays back scripted responses. Shared via Arc so the test keeps
 /// a handle after the AgentLoop takes ownership of a forwarding wrapper.
@@ -582,7 +582,7 @@ fn test_trimmed_history_reports_unavailable() {
 /// Acceptance (goal): a FULL turn with a real tool loop — the ledger
 /// records every round, and each round replays from the session store +
 /// ledger BYTE-EXACTLY against what the provider actually received
-/// (`serde_json:to_value` per message — the same serialization the
+/// (`serde_json::to_value` per message — the same serialization the
 /// request_logger's raw.json uses). Round 1's replay works even though the
 /// turn's later rounds grew the history — the as-of truncation property.
 #[tokio::test]

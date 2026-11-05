@@ -505,7 +505,7 @@ fn test_detect_plugin_path_does_not_panic() {
 }
 
 // ============================================================
-// embed_text (I5) + is_vector_enabled — M8 补测（quality-hardening goal）
+// embed_text + is_vector_enabled — 补测（quality-hardening goal）
 // ============================================================
 
 /// No store initialized → callers degrade to None (never panic).
@@ -518,7 +518,7 @@ fn test_embed_text_none_without_store() {
 }
 
 /// Delegates through the wired backend; a failing backend degrades to
-/// None (the M5 lock-discipline path: handle cloned out of the store
+/// None (the lock-discipline path: handle cloned out of the store
 /// guard BEFORE inference — delegating proves the handle survives the
 /// clone and runs).
 #[test]

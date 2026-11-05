@@ -55,7 +55,7 @@ impl AgentLoop {
     /// 未装配 = escalation 审批化不可用（诚实回退现行为）。
     ///
     /// 件3 层1：loop 挂了 hooks 桥时在 asker 外套
-    /// [`crate:cc_hooks:ObservingQuestionAsker`]——提问发起前发
+    /// [`crate::cc_hooks:ObservingQuestionAsker`]——提问发起前发
     /// `Notification`（kind=question, layer=loop），委托原样透传。网关在
     /// loop 构建后才调 setter（runtime 装配期），此处包装即最终生效；无桥
     /// （集群/裸构建）原样直挂零开销。
@@ -121,22 +121,22 @@ impl AgentLoop {
         self.provider_reloader.read().clone()
     }
 
-    /// : 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
+    /// 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
     /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
-    /// `crate:hooks` 模块文档）。RwLock 注册——运行中随时可挂。
+    /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。
     pub fn add_tool_hook(&self, hook: Arc<dyn crate::hooks::ToolHook>) {
         self.hooks.tool_hooks.write().add(hook);
     }
 
-    /// : 注册一个 LLM 调用级钩子。pre 在 messages 组装后、
+    /// 注册一个 LLM 调用级钩子。pre 在 messages 组装后、
     /// LlmRequest observer 事件前运行（可 Append 提醒消息 / 拦下本轮）；
     /// post 在响应错误恢复后、LlmResponse observer 事件前运行（可
-    /// Allow/Replace/有限 Retry/Block）。详见 `crate:hooks` 模块文档。
+    /// Allow/Replace/有限 Retry/Block）。详见 `crate::hooks` 模块文档。
     pub fn add_llm_hook(&self, hook: Arc<dyn crate::hooks::LlmHook>) {
         self.hooks.llm_hooks.write().add(hook);
     }
 
-    /// : 注册一个 prompt/turn 生命周期钩子。on_user_prompt 在
+    /// 注册一个 prompt/turn 生命周期钩子。on_user_prompt 在
     /// `run_with_trace` 顶部、消息进 history **之前**运行（拦截则模型
     /// 永远看不到该消息）；on_turn_end 在最终答案被接受后、Done 事件前
     /// 运行（可注入 feedback 要求再答一轮，预算封顶 fail-open）。
@@ -275,7 +275,7 @@ impl AgentLoop {
     ///
     /// Accepts an `Arc<dyn Any + Send + Sync>` to avoid a compile-time dependency
     /// on the `nemesis-cluster` crate. The concrete cluster instance should be
-    /// wrapped with `Arc:new(cluster) as Arc<dyn Any + Send + Sync>`.
+    /// wrapped with `Arc::new(cluster) as Arc<dyn Any + Send + Sync>`.
     /// Mirrors Go's `AgentLoop.cluster` field assignment.
     pub fn set_cluster(&mut self, cluster: Arc<dyn std::any::Any + Send + Sync>) {
         self.cluster = Some(cluster);
@@ -316,7 +316,7 @@ impl AgentLoop {
         self.session_store.as_ref()
     }
 
-    /// ②typed checks 块捕获：任务 run 前建槽（`checks_capture` 模块文档是
+    /// typed checks 块捕获：任务 run 前建槽（`checks_capture` 模块文档是
     /// 语义真相源）。同会话键重复 begin = 覆盖（漏摘自愈，占用有界）。
     pub fn begin_checks_capture(&self, session_key: &str) {
         self.checks_capture.write().insert(
@@ -325,7 +325,7 @@ impl AgentLoop {
         );
     }
 
-    /// ②typed checks 块捕获：任务 run 后摘槽取记录（槽必移除，无泄漏）。
+    /// typed checks 块捕获：任务 run 后摘槽取记录（槽必移除，无泄漏）。
     /// 没跑检查 / 未 begin = 空列表（诚实缺席，交付 payload 不带 checks）。
     pub fn take_checks_capture(&self, session_key: &str) -> Vec<checks_capture::CheckRecord> {
         self.checks_capture
@@ -409,8 +409,8 @@ impl AgentLoop {
         *self.agent_event_tx.write() = tx;
     }
 
-    /// ：注入会话执行统计 sink（nemesisbot
-    /// `session_stats:SessionStatsAggregator` 装配）。`None` = 不统计。
+    /// 注入会话执行统计 sink（nemesisbot
+    /// `session_stats::SessionStatsAggregator` 装配）。`None` = 不统计。
     pub fn set_session_stats_sink(
         &self,
         sink: Option<std::sync::Arc<dyn crate::session_stats::SessionStatsSink>>,
@@ -435,7 +435,7 @@ impl AgentLoop {
     /// 都接了」，把 ①/F-/ASM-01 一族的「漏接静默」变成装配即炸
     /// （单测自己动手装配所以永远绿，生产装配的接线缺口只能在装配点掀）。
     /// 只报告状态不含策略——「哪些必须非空」的裁决归调用方
-    /// （`agent_factory:assert_gateway_critical_wiring`）。`security_plugin`
+    /// （`agent_factory::assert_gateway_critical_wiring`）。`security_plugin`
     /// 条目仅 `security` feature 编入时出现。
     pub fn wiring_status(&self) -> Vec<(&'static str, bool)> {
         // security feature 关闭时无 push，mut 冗余——精确 cfg 门控。

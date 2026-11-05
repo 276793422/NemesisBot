@@ -1,4 +1,4 @@
-//! P15 规则表测试：可解析性 + 每分类命中/不误报样例。
+//! 规则表测试：可解析性 + 每分类命中/不误报样例。
 
 use super::*;
 use crate::lint::{LintCategory, SkillLinter};
@@ -239,7 +239,7 @@ fn test_display_new_categories() {
 #[test]
 fn test_all_patterns_compile() {
     // 编译完整性门禁：任何一条 pattern 编译失败 = 该规则静默死亡
-    // （SNST-003 教训：`[/\\]?` JSON 转义少一层 → 类不闭合 → regex 拒编译，
+    // （SNST-003 `[/\\]?` JSON 转义少一层 → 类不闭合 → regex 拒编译，
     //  既有命中/不误报样例都抓不到「规则根本没生效」）。这里逐条显式
     // 编译，坏一条即 fail 并点名规则 id。
     let file = embedded_rule_file();

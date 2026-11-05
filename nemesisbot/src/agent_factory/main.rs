@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 agent_factory.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 agent_factory.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -21,7 +21,7 @@ pub fn build_agent_loop(
 
     // 2. Resolve LLM model → create fresh provider.
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    // N6（2026-10-13）装配守卫④：默认对话模型槽只收 conversation 角色——
+    // 装配守卫④：默认对话模型槽只收 conversation 角色——
     // utility/classifier 条目手改 config 才能到达该状态（CLI/WSAPI 写入侧
     // 守卫①②已拦），loud 报错并走下方既有 NullProvider 降级臂（不硬崩，
     // Dashboard 配好并设默认后热切恢复）。
@@ -61,7 +61,7 @@ pub fn build_agent_loop(
         account_id: String::new(),
         headers: HashMap::new(),
     };
-    // 双击直启 goal（2026-09-17）：启动装配用 or_null——全新安装没配模型时
+    // 双击直启 goal：启动装配用 or_null——全新安装没配模型时
     // 网关必须照样起（先见 Dashboard、后配 LLM 热切）；一次性入口才 strict。
     let (provider, create_warn) = nemesis_providers::factory::create_provider_or_null(&factory_cfg);
     if let Some(w) = create_warn {
@@ -70,9 +70,9 @@ pub fn build_agent_loop(
             w
         );
     }
-    // T2b（扩展计划 D4）：fallback 链装配——active 模型条目的 per-model
-    // extra 键 `fallback_to: ["alias-b", ...]` 逐级 resolve + create，
-    // FallbackProvider 包住主 provider（J1 冷却语义沿用既有实现，不重写）。
+    // （扩展计划）：fallback 链装配——active 模型条目的 per-model
+    // extra 键 `fallback_to: ["alias-b",...]` 逐级 resolve + create，
+    // FallbackProvider 包住主 provider（冷却语义沿用既有实现，不重写）。
     // 链空/全部不可用 = 单模型，行为与现状字节一致；单级解析/创建失败
     // warn 跳过（诚实降级），不阻断装配。
     let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> =
@@ -91,7 +91,7 @@ pub fn build_agent_loop(
         // 入口形态变体（gap ⑤）：Interactive 恒空（gateway 字节不变）；
         // headless/ACP 由各自入口在 SharedResources 上显式设置。
         context_builder.set_entrance(shared.entrance);
-        // B 线画像 / E 线 tier 档位不再在此注入（2026-10-14 动态注入迁移）：
+        // B 线画像 / E 线 tier 档位不再在此注入（动态注入迁移）：
         // 两段迁入 build_messages_inner 的 merged snapshot 每轮重渲染
         // （mtime/live-tier 门控），sweep 学习、veto、tier 热切、pro 体系
         // 全部即时生效——build 时冻结形态（classic-only + 重启才更新）已废。
@@ -109,7 +109,7 @@ pub fn build_agent_loop(
 
     // 4. Create ProviderAdapter + AgentConfig + AgentLoop.
     let adapter = ProviderAdapter::new(provider_arc.clone(), model_name.clone());
-    // Phase 4a (small-model-tool-robustness): resolve the startup model's tier
+    // a (small-model-tool-robustness): resolve the startup model's tier
     // from config.json, and remember the path so the tier can be re-resolved
     // live when the model switches or config.json changes on disk (dashboard
     // add / CLI model set-tier). config.json is the single source of truth —
@@ -144,7 +144,7 @@ pub fn build_agent_loop(
     };
 
     let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;
-    // I1 (U7) + E1 (2026-09-05): concurrent_request_mode from config.
+    // +: concurrent_request_mode from config.
     // Default is "queue" (config.default.json + serde default agree); explicit
     // "reject" keeps legacy busy-bounce; "steer" adds the `!` interrupt channel.
     // Unknown strings warn + parse_concurrent_mode fails safe to reject.
@@ -170,21 +170,21 @@ pub fn build_agent_loop(
         queue_size,
         max_continuation_permits,
     );
-    // BUG-20261025-50：路由 config 接线——bindings / agents.list /
+    // 路由 config 接线——bindings / agents.list /
     // session.dm_scope 构造生产 resolver（此前四键只声名未读取，恒用
     // new_bus 硬编码默认）；identity_links 注入 route_message 的 RouteInput。
     // 全部键缺省 = 与硬编码默认同形，零回归。
     agent_loop.set_route_resolver(build_route_resolver(&cfg));
     agent_loop.set_identity_links(cfg.session.identity_links.clone());
-    // D-4（2026-09-23 多会话并行清账）：loop 级并发 turn 上限（安全阀，
+    // D-4（多会话并行清账）：loop 级并发 turn 上限（安全阀，
     // 默认 8；0 = 不设限）。泵统一 gate+spawn 后跨会话天然并发，此值防
     // 极端场景无界并发。
     agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);
-    // Phase 4a: apply the resolved startup tier + remember the config path so
+    // a: apply the resolved startup tier + remember the config path so
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(shared.home.join("config.json"));
-    // B4（2026-10-18 凭据 vault §7）：Auth 凭据卡装配——provider 重建器恒挂
+    // （凭据 vault）：Auth 凭据卡装配——provider 重建器恒挂
     // （纯数据件）；broker 走全局槽（security feature 门控；headless/acp
     // 未 install → None → Auth 臂走原终局零回归）。
     agent_loop.set_provider_reloader(Arc::new(ModelProviderReloader {
@@ -197,19 +197,19 @@ pub fn build_agent_loop(
     }
     // prompt-pack pro：描述档位与 system prompt 同一开关（启动装配型）。
     agent_loop.set_prompt_system(prompt_system);
-    // C3 (devtool-upgrade 阶段 2)：共享 LspManager 注入——编辑后诊断回灌
+    // (devtool-upgrade)：共享 LspManager 注入——编辑后诊断回灌
     // （write_file/edit_file → touch → 等 ERROR → "please fix"）与 LspTool
     // 共用同一实例（server 进程不翻倍）。standalone（None）路径反馈静默跳过。
     #[cfg(feature = "lsp")]
     agent_loop.set_lsp_manager(shared.lsp_manager.clone());
-    // A1（2026-09-22 聊天切会话竞态）：环尾 seq 查询回调注入——历史响应
+    // （聊天切会话竞态）：环尾 seq 查询回调注入——历史响应
     // 附 last_seq 供前端剔除「先于快照渲染的 assistant 实时帧」。指向
     // nemesis-web 的 chat_event_log::latest_seq（crate 方向 agent←web 不可
     // 直调，经此闭包注入；gateway.rs 的 install_event_hub 同层装配）。
     agent_loop.set_chat_seq_lookup(std::sync::Arc::new(nemesis_web::chat_event_log::latest_seq));
-    // N1 (devtool-upgrade 阶段 1)：价目表注入——三级 context_window 解析链
-    // 的 L2（config 未显式配置时按 max_input_tokens 猜）。打开失败（磁盘
-    // 异常）诚实降级为 None → L3 fallback-128k，不阻断 agent 启动。
+    // (devtool-upgrade)：价目表注入——三级 context_window 解析链
+    // 的 （config 未显式配置时按 max_input_tokens 猜）。打开失败（磁盘
+    // 异常）诚实降级为 None → fallback-128k，不阻断 agent 启动。
     match nemesis_data::PricingStore::open(&nemesis_path::workspace_data_dir(&shared.home)) {
         Ok(store) => agent_loop.set_pricing_store(std::sync::Arc::new(store)),
         Err(e) => tracing::warn!(
@@ -222,21 +222,21 @@ pub fn build_agent_loop(
     agent_loop.set_commands_path(nemesis_path::resolve_commands_config_path_in_workspace(
         &shared.workspace_dir(),
     ));
-    // 内建示例管线插件（around 计时）——「插件」页 T4 可展示/启停的对象。
+    // 内建示例管线插件（around 计时）——「插件」页 可展示/启停的对象。
     // 经进程级单例槽注册（WSAPI plugins.set_metrics_enabled 翻转同一实例）。
     agent_loop.add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
-    // M1a：工具事件观察 hook——有订阅通道才挂（None = CLI/exec_worker 零开销）。
+    // 工具事件观察 hook——有订阅通道才挂（None = CLI/exec_worker 零开销）。
     // 纯观察者（不改写/不拦截），事件由 gateway 建、web pump 消费。
     if let Some(tx) = shared.agent_event_tx.clone() {
         agent_loop.add_tool_hook(std::sync::Arc::new(
             nemesis_agent::tool_event_hook::ToolEventHook::new(tx, agent_loop.work_recorder()),
         ));
     }
-    // F1（devtool-upgrade 阶段 4）：事件发送端注入 loop——/plan /build 切换
+    // （devtool-upgrade）：事件发送端注入 loop——/plan /build 切换
     // 发布 ModeChanged（前端徽标实时刷新）。与 hook 注入不同，这里 None 也
     // 照常注入（loop 侧对 None 静默跳过）——standalone 模式切换本身仍可用。
     agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
-    // L14（2026-11-01）：会话执行统计 sink 注入——loop 内部计数（重试/校验
+    // 会话执行统计 sink 注入——loop 内部计数（重试/校验
     // 失败/压缩成功）上抛聚合器。None（headless/未装配）= 不统计零开销。
     agent_loop.set_session_stats_sink(
         shared
@@ -244,7 +244,7 @@ pub fn build_agent_loop(
             .clone()
             .map(|a| a as std::sync::Arc<dyn nemesis_agent::SessionStatsSink>),
     );
-    // N2（机会项）：present_plan 计划审批句柄——plan 模式下模型把写好的计划
+    // present_plan 计划审批句柄——plan 模式下模型把写好的计划
     // 交给用户裁决（question broker 同款阻塞等答）；批准=共享 mode Arc 翻转
     // build + ModeChanged 广播，驳回/超时=批次尾消费 verdict 结构性终止本轮。
     // broker 未装配（CLI headless 无 Dashboard）= 工具调用诚实报错，注册不受影响。
@@ -255,15 +255,15 @@ pub fn build_agent_loop(
         verdicts: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
     });
     agent_loop.set_plan_present_handle(plan_present_handle.clone());
-    // G4 (U4): enable tool-result spill under <workspace>/logs/spill — oversized
+    // enable tool-result spill under <workspace>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
-    // 2026-08-31 迁回 workspace（U4 设计指定位置）：定位器必须在
+    // 迁回 workspace（设计指定位置）：定位器必须在
     // restrict_to_workspace 限制范围内，agent 的 file 工具才读得到全文；
     // 旧 <home>/logs/spill 违反该约束，见 resolve_spill_dir_in_workspace。
     let spill_root =
         nemesis_path::resolve_spill_dir_in_workspace(&nemesis_path::workspace_dir(&shared.home));
     agent_loop.set_spill_root(spill_root.clone());
-    // U4 retention: startup sweep + daily midnight task. retention=0 disables.
+    // retention: startup sweep + daily midnight task. retention=0 disables.
     let spill_retention = cfg.agents.defaults.spill_retention_days.max(0) as u64;
     if spill_retention > 0 {
         let deleted = nemesis_agent::spill::cleanup_expired(&spill_root, spill_retention);
@@ -277,25 +277,25 @@ pub fn build_agent_loop(
         }
     }
     spawn_daily_spill_cleanup(spill_root, shared.home.join("config.json"));
-    // H3 (P2.2): skills-catalog digest injection — same loader the
+    // (.2): skills-catalog digest injection — same loader the
     // skills_list tools use, so the advertised catalog matches reality.
     if let Some(ref loader) = shared.skills_loader {
         agent_loop.set_skills_loader(loader.clone());
     }
-    // H5 (U18): workspace instruction chain (AGENTS.md/CLAUDE.md) rides the
+    // workspace instruction chain (AGENTS.md/CLAUDE.md) rides the
     // same merged context-digest injection.
     agent_loop.set_workspace_root(shared.workspace_dir());
-    // Full-review M4: snapshot role from config ("user" default; "system"
+    // Full-review: snapshot role from config ("user" default; "system"
     // for strict chat templates).
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
     // 所以急停状态在 agent stop/start 后自动保持）。
     agent_loop.set_estop(shared.estop.clone());
-    // 语音 realtime（G6）：热态装载（幂等，重建即从 config.chat.json 重刷）
+    // 语音 realtime：热态装载（幂等，重建即从 config.chat.json 重刷）
     // + voice_prompt 旗注入（Arc<AtomicBool> 镜像，apply_realtime_config 同步刷）。
     nemesis_web::voice_relay::init_realtime_hot(&shared.workspace_dir().join("config"));
     agent_loop.set_voice_prompt(nemesis_web::voice_relay::voice_prompt_flag());
-    // L8（内部专项总计划重评估）turn WAL：`agents.turn_wal`（默认 true）→
+    // （重评估）turn WAL：`agents.turn_wal`（默认 true）→
     // 打开 `<workspace>/logs/turn_wal/wal.jsonl` 并注入 loop；dispatch 三态
     // 写入 + run_bus 启动恢复（断头工具调用补 interrupted + 续轮）都吃这个
     // Arc。打开失败（盘满/权限）诚实降级为无 WAL——warn 不阻断装配。
@@ -308,7 +308,7 @@ pub fn build_agent_loop(
             Err(e) => warn!("[AgentFactory] turn WAL 打开失败（降级为无 WAL，不落盘不续轮）: {e}"),
         }
     }
-    // 件4（2026-09-24 三合一收口 §6）：纪律闭环——D5 总开关（默认 false =
+    // 件4：纪律闭环—— 总开关（默认 false =
     // 全链路惰性：钩子不注册、/discipline 提示未启用）。开 = 注入共享态 +
     // 注册闸/证伪钩子；闸在 user pre hooks **首位**（先于方言桥；metrics/
     // 事件观察者本就不拦）。estop 同点装配（触发 = fail-open 整体停用）。
@@ -327,14 +327,14 @@ pub fn build_agent_loop(
         ));
         agent_loop.set_discipline(discipline_state);
     }
-    // 对话生成（2026-09-22）：工作流引擎引用——workflow_edit 命名会话渲染
+    // 对话生成：工作流引擎引用——workflow_edit 命名会话渲染
     // 当前定义块用（workflow_create/capabilities 工具经 SharedToolConfig
     // 各自持有引擎 Arc，此处只服务 loop 的 section 渲染）。
     #[cfg(feature = "workflow")]
     if let Some(ref wf_engine) = shared.workflow_engine {
         agent_loop.set_workflow_engine(wf_engine.clone());
     }
-    // N2 (devtool-upgrade 阶段 4): `agents.small_model` 小模型杂务通道——
+    // (devtool-upgrade): `agents.small_model` 小模型杂务通道——
     // 手动 /compact 的摘要走小模型省 token（自动压缩维持主模型，质量敏感）。
     // 模型缺失/解析失败 = warn + 跳过（loop 侧诚实回退主模型），绝不阻断
     // gateway 启动。集群 loop（build_cluster_agent_loop）刻意不装配：
@@ -384,7 +384,7 @@ pub fn build_agent_loop(
             ),
         }
     }
-    // K2 (U14): hooks.json 方言层——workspace config 目录下有 hooks.json
+    // hooks.json 方言层——workspace config 目录下有 hooks.json
     // 就加载并挂上（工具钩子 + 生命周期钩子）。集群 agent 不挂（远端节点跑
     // 本地用户任务，hook 拦截语义不跨节点复制——挂账决策）。加载失败 =
     // warn + 跳过（fail-open，见 cc_hooks::load_from_dir）。
@@ -392,7 +392,7 @@ pub fn build_agent_loop(
     #[allow(unused_assignments)]
     let mut cc_bridge_for_daily: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> =
         None;
-    // 2026-08-29 T3 路径收编：hooks.json 落位 <workspace>/config/hooks.json
+    // 路径收编：hooks.json 落位 <workspace>/config/hooks.json
     // （nemesis-path 真相源）；legacy <home>/config/hooks.json copy-once 迁移。
     let ws_config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
     nemesis_agent::cc_hooks::migrate_legacy_home_hooks_config(
@@ -402,15 +402,15 @@ pub fn build_agent_loop(
     if let Some(bridge) =
         nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, shared.workspace_dir())
     {
-        // SessionEnd 触发用（启动清理删除的会话逐个触发——2026-08-29 T3）。
+        // SessionEnd 触发用（启动清理删除的会话逐个触发）。
         cc_bridge = Some(std::sync::Arc::clone(&bridge));
         cc_bridge_for_daily = Some(std::sync::Arc::clone(&bridge));
         // PreCompact/PostCompact 触发用（loop.rs 压缩流水线经 cc_bridge 调桥）。
         agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
         bridge.register(&agent_loop);
     }
-    // Todo 收尾提醒（2026-09-24）：终答案接受后清单还有未完成项 → 注入
-    // 一次性提醒再答一轮（K2 lifecycle hook；stop_hook_active 自限每 turn
+    // Todo 收尾提醒：终答案接受后清单还有未完成项 → 注入
+    // 一次性提醒再答一轮（lifecycle hook；stop_hook_active 自限每 turn
     // 一次 + MAX_TURN_END_CONTINUES 封顶 fail-open）。注册在用户 hooks 桥
     // 之后——first Continue wins，用户脚本优先于内建提醒。workspace 与
     // todowrite 工具同根（shared.workspace_dir()，见 TodoToolConfig 装配）。
@@ -418,7 +418,7 @@ pub fn build_agent_loop(
         shared.workspace_dir(),
     )));
 
-    // 件3 层2（2026-09-24 三合一收口）：hooks 桥 + security 插件同在时，
+    // 件3 层2：hooks 桥 + security 插件同在时，
     // 一次性延迟接线审批观察 manager。网关在 loop 构建**之后**（runtime
     // 装配期）才 set_approval_manager——构建时同步 get→wrap→set 会被覆写；
     // 见 spawn_approval_observer_once。
@@ -437,7 +437,7 @@ pub fn build_agent_loop(
             &sess_dir,
         ));
         // Startup cleanup: remove sessions older than 7 days.
-        // 2026-08-29 T3：改用 detailed 版（返回被删会话的原始 session key），
+        // 改用 detailed 版（返回被删会话的原始 session key），
         // 逐个触发方言 SessionEnd（观察型）。
         let removed = store.cleanup_old_sessions_detailed(7);
         let deleted = removed.len();
@@ -481,22 +481,22 @@ pub fn build_agent_loop(
     }
 
     // 7. Build tool config + register all tools + enable MCP.
-    // G0: 第二返回值是 spawn 共享槽原件——Arc<AgentLoop> 定型后注入闭包。
+    // 第二返回值是 spawn 共享槽原件——Arc<AgentLoop> 定型后注入闭包。
     let (mut tool_config, spawn_slot) = build_shared_tool_config(
         shared,
         &cfg,
         &model_name,
         Some(agent_loop.mcp_tool_snapshot()),
     );
-    // N2（机会项）：present_plan 工具供给（plan 模式白名单 + SharedToolConfig
+    // present_plan 工具供给（plan 模式白名单 + SharedToolConfig
     // 注册同源；loop 侧 verdict 消费槽已装配）。
     tool_config.plan_present = Some(plan_present_handle);
-    // M5（2026-10-27 整改）：写后钩子路径解析边界与工具表同一 Arc（单一
-    // 真相源——format-on-save / 诊断回灌与执行器同一落点）。
+    // 写后钩子路径解析边界与工具表同一 Arc（单一
+    // 权威定义——format-on-save / 诊断回灌与执行器同一落点）。
     if let Some(ref boundary) = tool_config.workspace_boundary {
         agent_loop.set_workspace_boundary(boundary.clone());
     }
-    // N5（机会项）：present_files 工具供给——交付物流水桶与 loop 共享同一
+    // present_files 工具供给——交付物流水桶与 loop 共享同一
     // Arc（工具登记、assistant 回复落盘时 drain 进 chat_log deliverables）。
     tool_config.turn_deliverables = Some(agent_loop.turn_deliverables_bucket());
 
@@ -506,7 +506,7 @@ pub fn build_agent_loop(
     // Sandboxie box, Layer 2); requires the `sandbox` feature + `nemesisbot sandbox
     // install`. When the `sandbox` feature is compiled out, sandbox=true is ignored.
     //
-    // U10: the readiness/probe/degrade logic now lives in `exec_world::
+    // the readiness/probe/degrade logic now lives in `exec_world:
     // build_executor_channel` (single source of truth) — the workflow engine's
     // ExecutionWorld uses the exact same assembly, so the agent tool layer and
     // workflow scripts share one switch chain (executor.enabled / executor.sandbox).
@@ -515,7 +515,7 @@ pub fn build_agent_loop(
         &workspace_dir,
         shared.config_store.handle(),
     )?;
-    // P3 T7：主 loop 常驻路由——解析闭包按 kind=main 现查 agents 表
+    // 主 loop 常驻路由——解析闭包按 kind=main 现查 agents 表
     // （main 记录 exec_root=workspace，与 per-call 通道同一 cwd 锚语义）。
     let persistent_route = persistent_route_for(
         shared,
@@ -530,7 +530,7 @@ pub fn build_agent_loop(
     );
 
     // Stash the memory executor so the gateway can attach an approval gate
-    // post-construction (P2: agent memory_store/forget require interactive
+    // post-construction (agent memory_store/forget require interactive
     // approval, never bypassed by YOLO/auto).
     #[cfg(feature = "memory")]
     {
@@ -539,7 +539,7 @@ pub fn build_agent_loop(
         }
     }
 
-    // P3.1 (sixth batch): wire the auto-inject channel — the memory manager
+    // .1 (sixth batch): wire the auto-inject channel — the memory manager
     // (read-only retrieval, deliberately NOT the approval-gated executor)
     // plus the auto_inject/top_k flags from config.enhanced_memory.json.
     // Default (auto_inject=false) keeps message output byte-identical.
@@ -582,7 +582,7 @@ pub fn build_agent_loop(
         info!("[AgentFactory] cluster_rpc tool registered (enabled=true)");
     }
 
-    // 8b. 全自动流转 P3/D1：board_issue 工具（主 agent 专属——「对 master
+    // 8b. 全自动流转 /：board_issue 工具（主 agent 专属——「对 master
     // 说一句话建单」入口）。store 未装配（run/acp headless、board feature
     // 裁掉、DB 打开失败）= 不注册，零影响。worker cluster agent 不装：
     // worker 本地 board.db 是 dashboard 视图，建单落不到 master 权威库。
@@ -611,7 +611,7 @@ pub fn build_agent_loop(
         info!("[AgentFactory] board_evidence_read tool registered (master main agent)");
     }
 
-    // 8c. W5-3（WASM 插件框架）：插件工具桥注册（主 agent 专属——项目 loop
+    // 8c. （WASM 插件框架）：插件工具桥注册（主 agent 专属——项目 loop
     // 工具子集不带、cluster worker agent 不装：远端节点不跑本地插件）。
     // manager 未装配（plugins.wasm.enabled=false / feature 裁掉 / 构建失败）
     // = 不注册，零影响。逐已注册 tool 插件 register_tool（plugin.<slug>.<base>
@@ -624,7 +624,7 @@ pub fn build_agent_loop(
         }
     }
 
-    // 8d. 工具接管层（2026-10-23）：接管声明应用（内置名 → wasm 执行体，
+    // 8d. 工具接管层：接管声明应用（内置名 → wasm 执行体，
     // wrapper 双态保降级）。在 8c 之后：先有插件工具供给面，再换内置执行
     // 体。总闸 config `plugins.wasm.takeover`（缺省 true）；热同步由
     // gateway ToolSync hook 翻侧表开关（注册表对象恒定，零 prompt cache
@@ -647,7 +647,7 @@ pub fn build_agent_loop(
             &workspace_dir,
         ));
         agent_loop.set_continuation_manager(cont_mgr.clone());
-        // rpc_cache TTL (2026-08-25): continuation snapshots whose callback
+        // rpc_cache TTL: continuation snapshots whose callback
         // never arrives (peer died, task lost) used to accumulate in
         // {workspace}/cluster/rpc_cache/ forever. Same 7-day TTL as the
         // SessionStore: startup sweep + daily midnight.
@@ -666,7 +666,7 @@ pub fn build_agent_loop(
         if let Some(ref plugin) = shared.security_plugin {
             agent_loop.set_security_plugin(plugin.clone());
         }
-        // §2：免打扰运行时态挂主 loop（doom-loop escalation 自动批准臂）；
+        // 免打扰运行时态挂主 loop（doom-loop escalation 自动批准臂）；
         // 槽本体在 security_setup 全局安装，未装配 = None = 现行为。
         if let Some(state) = nemesis_web::handlers::security::approval_auto_state() {
             agent_loop.set_approval_auto_approve(state);
@@ -674,8 +674,8 @@ pub fn build_agent_loop(
     }
     // Checkpoint store (edit safety net): snapshots writer-tool file changes so
     // a rewind can restore them. One per agent loop under
-    // {workspace}/logs/checkpoints/（2026-08-30 统一收编进 logs 家族；
-    // 旧 .checkpoints/ 散放目录一次性 move 迁移）。
+    // {workspace}/logs/checkpoints/（统一收编进 logs 家族；
+    // 旧.checkpoints/ 散放目录一次性 move 迁移）。
     {
         let ws = shared.workspace_dir();
         // 旧散放目录迁移（一次性）：存在且新位缺失 → 整目录 move。
@@ -737,18 +737,18 @@ pub fn build_agent_loop(
         "[AgentFactory] AgentLoop built successfully"
     );
 
-    // G0: Arc 定型后注入 sub-agent spawn 闭包（Weak::downgrade 需要 Arc）。
-    // G4: 闭包持有 bus 引用（后台任务完成回灌经 subagent_continuation 发布）。
+    // Arc 定型后注入 sub-agent spawn 闭包（Weak::downgrade 需要 Arc）。
+    // 闭包持有 bus 引用（后台任务完成回灌经 subagent_continuation 发布）。
     let agent_loop = Arc::new(agent_loop);
-    // M6（2026-10-27 整改批次五）：checkpoint gc 装配（config `checkpoint.gc`，
+    // checkpoint gc 装配（config `checkpoint.gc`，
     // 默认关；enabled 才挂钩子——含 undo/redo 栈下界闭包，Weak 指 loop 防环）。
-    // BUG-95（2026-10-27 回头检查发现）：cluster agent 的 checkpoint store 与
+    // BUG-95（回头检查发现）：cluster agent 的 checkpoint store 与
     // 主 store 是独立实例**共享同一影子库目录**——GitBackend 的 repo Mutex 是
     // 实例级的，本 store gc 的 objects/ 换名窗口锁不住集群写入者；且保留集
     // 闭包只接主 loop 的 undo/redo 栈，集群栈引用的 tree 会被误清。故
-    // config.cluster.enabled 时（config=单一真相源）**不装配 gc**——宁可放弃
+    // config.cluster.enabled 时（config=统一定义）**不装配 gc**——宁可放弃
     // gc 也不引入双写入者竞态。项目 loop（build_agent_loop_from_spec）影子库
-    // 独立（logs/project_checkpoints/<key>/），不受此闸影响；过度保守边：
+    // 独立（logs/project_checkpoints/<key>），不受此闸影响；过度保守边：
     // cluster feature 未编译但 config 残留 enabled=true 时同样被闸（诚实方向：
     // 宁可少 gc，不可错删）。
     {
@@ -779,10 +779,10 @@ pub fn build_agent_loop(
         }
     }
     inject_spawn_fn(&agent_loop, &spawn_slot, &shared.bus, cc_bridge.clone());
-    // W5-3：插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
+    // 插件 invoker 重挂（每次重建都要——Weak 指旧 loop，重启后
     // upgrade 失败 = guest tool-invoke 全哑）。estop watch 联动在 init_agent
     // spawn 一次（watcher 是 manager 级任务，不随 loop 重建泄）。
-    // 2026-10-22 样板工程批 4：循环策略桥同点装配（三策略槽接管 +
+    // 样板工程：循环策略桥同点装配（三策略槽接管 +
     // llm-complete 面注入——Weak 同样必须每次重建重指；无 policy 组件 =
     // 零装桥，槽维持内置哨兵）。
     #[cfg(feature = "plugins-wasm")]
@@ -795,10 +795,10 @@ pub fn build_agent_loop(
             info!("[AgentFactory] {} wasm loop policy point(s) bridged", np);
         }
     }
-    // T2 codemode（内部专项总计划 L1）：code_run 脚本工具。编译闸 `codemode`
-    // feature + 运行闸 `agents.codemode.enabled`（2026-10-25 默认开，Dashboard
+    // codemode：code_run 脚本工具。编译闸 `codemode`
+    // feature + 运行闸 `agents.codemode.enabled`（默认开，Dashboard
     // Tools 页可关）+ min_tier big 双闸（工具自带）。仅主 gateway loop 装配：
-    // 项目 loop（L6++ 固定子集，与插件工具同一挂账边界）与集群 agent 不含；
+    // 项目 loop（固定子集，与插件工具同一挂账边界）与集群 agent 不含；
     // 脚本内 tool() 走完整 dispatch 瀑布（同 GatewayHostInvoker 桥形态），
     // code_run 自身按 exec 档显式声明操作类型（不声明会走未知名 fail-closed
     // = ProcessExec，行为等价但每调一次 warn 一次——显式声明去噪 + 分类明示）。
@@ -832,7 +832,7 @@ pub fn build_agent_loop(
             "[AgentFactory] codemode code_run assembled"
         );
     }
-    // A3 委派持续操控（2026-10-18）：delegate 四工具（start/send/output/
+    // 委派持续操控：delegate 四工具（start/send/output/
     // stop）。运行闸 `agents.delegate.enabled`（默认关）+ CLI 在场探测
     // （claude/codex 至少一个在 PATH，都没有则四件套不注册——诚实缺位不
     // 空挂）。仅主 gateway loop 装配（项目 loop 固定子集、集群 worker 不
@@ -898,7 +898,7 @@ pub fn build_agent_loop(
             );
         }
     }
-    // L9 selfupdate 工具面（内部专项总计划）：selfupdate_check（只读）+
+    // selfupdate 工具面：selfupdate_check（只读）+
     // selfupdate_apply（提案——人类闸=编排内 CRITICAL 审批卡，「总是允许」
     // 恒忽略）。主 loop 独占（项目 loop 不该重启整个 gateway 杀掉兄弟项目；
     // 集群 worker 不参与版本治理）；操作类型显式声明（check=NetworkRequest、
@@ -926,16 +926,16 @@ pub fn build_agent_loop(
         );
         info!("[AgentFactory] selfupdate tools registered (check + apply, L9)");
     }
-    // 行动代理 P0（2026-10-14）：connector_find / connector_invoke 动态工具
-    // 对 + 独占隐藏表供给器（B2）——装配细节收敛到
-    // [`register_connector_governance`]（治理补全 P1 起主 loop 与统一工厂
+    // 行动代理：connector_find / connector_invoke 动态工具
+    // 对 + 独占隐藏表供给器——装配细节收敛到
+    // [`register_connector_governance`]（治理补全 起主 loop 与统一工厂
     // 项目/selfbuilt loop 共用同一治理面装配）。
     #[cfg(all(feature = "security", feature = "connectors"))]
     register_connector_governance(&agent_loop, shared);
-    // 紫微系统 T2.2：profile.tools[] → 动态工具注册（poll_report 可调；
-    // call_fn/hook_capture 诚实报 M4 实装中）。config 闸同 WSAPI 门关；
+    // 紫微系统.2：profile.tools[] → 动态工具注册（poll_report 可调；
+    // call_fn/hook_capture 诚实报 实装中）。config 闸同 WSAPI 门关；
     // profile 新增后经 `ziwei.refresh` 幂等重注册（先清 zw_* 再装）。
-    // 半热加载失配闸（2026-11-03 BUG-1）：工具注册在 agent 构建时读 fresh
+    // 半热加载失配闸（BUG-1）：工具注册在 agent 构建时读 fresh
     // config，会话管理器却只在 gateway 进程启动时装进 OnceLock 槽——config
     // 改 true 后只重启 agent 会出现「工具可见但调用必败」。manager 不在场
     // = 诚实不注册 + loud warn 说清重启要求（headless run/acp 形态同理）。
@@ -949,23 +949,23 @@ pub fn build_agent_loop(
             let n =
                 crate::ziwei_tools::register_profile_tools(&agent_loop, &shared.workspace_dir());
             crate::ziwei_tools::set_current_loop(agent_loop.clone());
-            // 配置期向导元工具（T3.8）：LLM 经 {action, params} 驱动 SetupManager。
+            // 配置期向导元工具（.8）：LLM 经 {action, params} 驱动 SetupManager。
             crate::ziwei_tools::register_bridge_tool(&agent_loop, &shared.workspace_dir());
             if n > 0 {
                 info!("[AgentFactory] ziwei dynamic tools registered ({n})");
             }
         }
     }
-    // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
+    // (devtool-upgrade)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄
     // 活在 AgentLoop 内、随其销毁；启动失败 warn 一次后禁用，不阻断装配。
     // 集群 agent 不接（远端节点跑本地用户任务，watcher 语义不跨节点复制——
     // 与 cc_hooks 同一挂账决策）。
-    // I1（devtool-upgrade 阶段 3）：workspace fs watcher——指令链失效锚 +
+    // （devtool-upgrade）：workspace fs watcher——指令链失效锚 +
     // 外部变更提示注入。启动失败在内部 warn 一次后放弃（不拖累 loop）。
     // 集群 agent 不挂 watcher（与 cc_hooks 同一挂账决策）。
     let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
-    // ASM-08：装配自检——关键件 None 即启动 loud fail（用户裁决 D5=甲）。
+    // ASM-08：装配自检——关键件 None 即启动 loud fail（用户裁决 =甲）。
     assert_gateway_critical_wiring(&agent_loop, shared, "主 gateway loop")?;
     Ok(agent_loop)
 }

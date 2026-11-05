@@ -114,11 +114,11 @@ fn test_list_embedded_files_no_backslashes() {
     }
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 #[allow(deprecated)]
 fn test_resolve_embedded_static_dir_returns_path() {
-    // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
+    // GLOBAL_STATE_LOCK：与 磁盘覆盖测试（exe 旁瞬时 static）互斥。
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -129,10 +129,10 @@ fn test_resolve_embedded_static_dir_returns_path() {
 }
 
 // 断言 embedded 回落（index.html 必须有来源）→ web-static 关时无意义。
-#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_resolve_static_files_returns_provider() {
-    // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
+    // GLOBAL_STATE_LOCK：与 磁盘覆盖测试（exe 旁瞬时 static）互斥。
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -146,10 +146,10 @@ fn test_resolve_static_files_returns_provider() {
 }
 
 // list_files 非空断言依赖 embedded 面（磁盘兜底不存在时）→ 随 web-static。
-#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_resolve_static_files_list() {
-    // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
+    // GLOBAL_STATE_LOCK：与 磁盘覆盖测试（exe 旁瞬时 static）互斥。
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -272,14 +272,14 @@ fn test_collect_files_returns_all() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：
+// 补测（quality-hardening goal 冲刺）：
 // - resolve_static_files 的磁盘覆盖分支（exe 旁 static/ 目录优先于内嵌）
 // - resolve_embedded_static_dir 的磁盘命中臂（deprecated legacy）
 // - extract_workspace_templates 的"已存在跳过"臂（用户自定义不被覆盖）
 // =========================================================================
 
 // 「拆掉磁盘目录后回落内嵌」半段依赖 embedded 面 → 随 web-static。
-#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "web-static"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 #[allow(deprecated)]
 fn resolve_static_files_prefers_disk_dir_next_to_exe() {

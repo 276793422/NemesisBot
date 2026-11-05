@@ -1,6 +1,6 @@
 //! (devtool-upgrade)：图片超限自动降采样。
 //!
-//! 多模态管线的验真链对 >25MB 图片是硬拒绝（`image_path_detector:MAX_IMAGE_BYTES`）；
+//! 多模态管线的验真链对 >25MB 图片是硬拒绝（`image_path_detector::MAX_IMAGE_BYTES`）；
 //! provider 另有分辨率上限（最长边 8000px 量级）。本模块给超限图片**一次降采样
 //! 机会**：解码后按最长边阶梯（4096→2048→1024）缩放 + JPEG q85 重编码，产物
 //! ≤8MB 才采用，落 uploads 暂存目录（内容寻址命名 `down_{sha8}.jpg`，同图复用；
@@ -34,7 +34,7 @@ pub(crate) const ENTRY_BYTES: u64 = image_path_detector::MAX_IMAGE_BYTES;
 #[cfg(feature = "image-process")]
 pub(crate) const MAX_DIMENSION: u32 = 8000;
 
-/// 降采样阶梯（最长边 px）：逐级收紧，产物 ≤[`Limits:out_bytes`] 才采用。
+/// 降采样阶梯（最长边 px）：逐级收紧，产物 ≤[`Limits::out_bytes`] 才采用。
 #[cfg(feature = "image-process")]
 const LADDER: [u32; 3] = [4096, 2048, 1024];
 
@@ -63,7 +63,7 @@ pub(crate) struct Limits {
     /// 产物字节上限（超过则尝试下一级阶梯）。
     pub out_bytes: usize,
     /// 输入文件字节硬上限：入口条件就是 size>entry_bytes，
-    /// 旧形态对超大文件（合法图片头 + 巨量垃圾尾部）`fs:read` 整包读入无
+    /// 旧形态对超大文件（合法图片头 + 巨量垃圾尾部）`fs::read` 整包读入无
     /// 上界——URL 侧 已修同族问题，本地文件路径漏网。
     pub max_input_bytes: u64,
 }
@@ -97,7 +97,7 @@ pub(crate) enum GateVerdict {
 
 /// 降采样闸（唯一入口，`image_attach` 两个来源共用）。
 ///
-/// `uploads_dir = None`（开关关）恒 [`GateVerdict:Keep`]——零行为变化。
+/// `uploads_dir = None`（开关关）恒 [`GateVerdict::Keep`]——零行为变化。
 /// 调用方对 `Err(reason)` 产出诚实拒绝注记（reason 已是人读文案）。
 ///
 /// image-process 关：降采样未编译——恒 Keep（原图直附，既有验真链照常
@@ -139,7 +139,7 @@ pub(crate) fn downscale_gate_with(
 
     // 输入文件字节硬上限——降采样入口条件本身就是
     // size>entry_bytes，超大文件（合法图片头 + 巨量垃圾）会在下方
-    // `fs:read` 整包进内存。与维度安全阀同一哲学：超阀诚实拒绝而非尝试。
+    // `fs::read` 整包进内存。与维度安全阀同一哲学：超阀诚实拒绝而非尝试。
     if size > limits.max_input_bytes {
         return Err(format!(
             "图片文件 {} 字节超过降采样输入上限 {}MB，无法自动降采样",
@@ -148,7 +148,7 @@ pub(crate) fn downscale_gate_with(
         ));
     }
 
-    // 头部读尺寸（不全解码）：ImageReader:open 是文件句柄读，无整包 slurp。
+    // 头部读尺寸（不全解码）：ImageReader::open 是文件句柄读，无整包 slurp。
     let (w, h) = image::ImageReader::open(src)
         .map_err(|e| format!("无法打开图片 ({}): {}", src.display(), e))?
         .with_guessed_format()

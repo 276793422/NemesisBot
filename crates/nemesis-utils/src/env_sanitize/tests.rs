@@ -1,4 +1,4 @@
-//! T4（扩展计划 D2a）：子进程环境清洗单测。
+//! （扩展计划）：子进程环境清洗单测。
 //! （自生产文件内联块迁出——2026-07-17 起测试代码放独立文件的纪律。）
 
 use super::*;
@@ -13,7 +13,7 @@ fn sensitive_names_match_blacklist_patterns() {
     assert!(is_sensitive_env_name("GITHUB_TOKEN"));
     assert!(is_sensitive_env_name("AWS_SECRET_ACCESS_KEY"));
     assert!(is_sensitive_env_name("DB_PASSWORD"));
-    // BUG-20261030-215：PASSWD 是 PASSWORD 的标准变体拼写，漏词时
+    // PASSWD 是 PASSWORD 的标准变体拼写，漏词时
     // MYSQL_PASSWD 等凭据变量既不被 spawn 前剥除、也不被 shell_bleed
     // 泄漏检测识别（两道防线同源词表同漏）。
     assert!(is_sensitive_env_name("MYSQL_PASSWD"));
@@ -71,7 +71,7 @@ fn sanitize_disabled_is_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// 窄版闸（改进项二期 L27）：只剥 bot 命名空间，保留第三方 CLI 自身 auth key
+// 窄版闸：只剥 bot 命名空间，保留第三方 CLI 自身 auth key
 // ---------------------------------------------------------------------------
 
 #[test]

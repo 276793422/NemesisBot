@@ -1,6 +1,6 @@
 //! flow 引擎单测：状态机纯函数、FlowStore 投影、模板校验、取数解析、
 //! board 绑定（真 BoardStore 临时库）。引擎本体（tick/publish/report）依赖
-//! 常驻 AgentLoop，不在单测面（P4 e2e 覆盖）。
+//! 常驻 AgentLoop，不在单测面（e2e 覆盖）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -435,12 +435,12 @@ fn substitute_tokens_resolution() {
         out,
         "I-1/EXT-1:样例实例 -> NB-42 @ https://jira.example ?{{unknown}}"
     );
-    // 保留键账面+extra 皆缺 → 原样保留（模板残留可见）。
+    // 保留键账面+extra 皆缺 → 原样保留（模板残留可）。
     assert_eq!(
         substitute_tokens("[{{report_path}}]", &inst, &extra),
         "[{{report_path}}]"
     );
-    // report 步执行中产物未入账，extra 是活源（P4 e2e 实录根修：旧实现
+    // report 步执行中产物未入账，extra 是活源（e2e 根修案例：旧实现
     // 账面空串遮蔽 extra，{{report_path}} 恒空）。
     assert_eq!(
         substitute_tokens(
@@ -589,7 +589,7 @@ fn start_fixloop_dispatch_and_observe() {
 #[cfg(feature = "cluster")]
 #[test]
 fn materialize_exec_target_declares_execution_surface() {
-    // 执行面声明物化（2026-11-04 改版）：`self` = 单机本地执行面字面量，
+    // 执行面声明物化（改版）：`self` = 单机本地执行面字面量，
     // 恒等透传（消费端 dispatch_issue_for_flow 识别后走 dispatch_issue_local
     // ——一等公民，与集群是否装配无关）；显式节点名原样透传；声明钉住
     // 即走，无回退。
@@ -915,8 +915,8 @@ fn build_writeback_table_v1_parse_fallback_skip_and_retry() {
         "12"
     );
     // 镜像断言：v1 兜底分解键同步落 `origin_meta.*`——模板 args 静态声明
-    // 一套前缀（`{{origin_meta.*}}`）必须 v1 旧单同样可渲染（2026-11-02
-    // NB-2 cancel 回帖 Retry 循环实证：只落 origin_id.* 时 meta 前缀模板
+    // 一套前缀（`{{origin_meta.*}}`）必须 v1 旧单同样可渲染（
+    // cancel 回帖 Retry 循环实证：只落 origin_id.* 时 meta 前缀模板
     // 永久失败）。
     assert_eq!(table["origin_meta.owner"], "p0admin");
     assert_eq!(table["origin_meta.repo"], "durfmt");
@@ -1142,7 +1142,7 @@ fn scan_templates_filters_switches_and_kinds() {
     )
     .unwrap();
     let out = scan_templates(&plugins, &cfg);
-    // 诊断：manifest 解析/校验错误现场化（解析失败 = 断言前可见）。
+    // 诊断：manifest 解析/校验错误现场化（解析失败 = 断言前可）。
     if out.is_empty() {
         if let Err(e) = PluginManifest::load_from_dir(&dir) {
             panic!("scan 空清单，manifest 加载失败: {e:?}");
@@ -1157,7 +1157,7 @@ fn scan_templates_filters_switches_and_kinds() {
     assert_eq!(out[0].template.id, "tpl");
 }
 
-/// 缺陷 A（2026-11-01）回归锁：enable/disable 只写 config.plugin.wasm.json
+/// 缺陷 A回归锁：enable/disable 只写 config.plugin.wasm.json
 /// 不碰载荷目录——缓存戳必须覆盖开关文件，否则禁用后 tick 照跑、重启用
 /// 不恢复。载荷目录侧入戳（旧行为）一并钉住。
 #[test]
@@ -1190,7 +1190,7 @@ fn template_stamp_covers_switch_file() {
 }
 
 // ---------------------------------------------------------------------------
-// 实例配置 token 装载期渲染（2026-11-03 参数化批：{{config.*}} → schema
+// 实例配置 token 装载期渲染（参数化批：{{config.*}} → schema
 // 缺省值打底 + 开关文件运行值覆盖；条目级 token 不动）
 // ---------------------------------------------------------------------------
 
@@ -1455,7 +1455,7 @@ fn substitute_tokens_steps_projection() {
         &serde_json::json!({}),
     );
     assert_eq!(out, "ok/2/第一次派发失败");
-    // 未知 id / 未知 field = 原样保留（诚实不猜，模板写错可见）。
+    // 未知 id / 未知 field = 原样保留（诚实不猜，模板写错可）。
     assert_eq!(
         substitute_tokens("[{{steps.ghost.status}}]", &inst, &serde_json::json!({})),
         "[{{steps.ghost.status}}]"
@@ -1522,7 +1522,7 @@ fn fetch_step(connector: &str, args_json: &str) -> FlowStep {
 #[test]
 fn resolve_instance_origin_v1_byte_compat() {
     // v1 origin_id 字节兼容：`gitea/{owner}/{repo}#{number}`。
-    // P0 已导入三单的去重键就是这个形态——模板声明必须逐字节复现。
+    // 已导入三单的去重键就是这个形态——模板声明必须逐字节复现。
     let mut t = tpl("tpl", &[KIND_FETCH, KIND_LAND]);
     t.origin_type = String::new(); // 空 = 回落 connector
     t.origin_id = "{{connector}}/{{arg.owner}}/{{arg.repo}}#{{key}}".to_string();
@@ -1730,7 +1730,7 @@ fn eval_filter_json_path_and_literal() {
 }
 
 // ---------------------------------------------------------------------------
-// plugin 步骤（guest step，2026-11-03 批）：出参四态解析 + 入参投影 +
+// plugin 步骤（guest step， 批）：出参四态解析 + 入参投影 +
 // 模板校验 plugin 引用面（自由函数级）。投递链路真组件 e2e 归
 // nemesis-plugins-wasm 的 stepdemo 夹具（tests/e2e_guest.rs）；estop 冻结
 // 由 flow tick loop 天然继承（无新闸），不另设用例。
@@ -1867,7 +1867,7 @@ fn validate_template_accepts_plugin_refs() {
 
 #[test]
 fn validate_template_plugin_fetch_forms() {
-    // plugin fetch（2026-11-03 自持样板批）：首步合法 plugin 引用 = guest
+    // plugin fetch（自持样板批）：首步合法 plugin 引用 = guest
     // 专管取数——放行；与 connector_fetch 互斥（取数入口唯一）。
     assert!(validate_template(&tpl("t", &["plugin:stepdemo:fetch", KIND_LAND])).is_ok());
     // op 段允许冒号（专业参数化同款语法）。
@@ -1914,7 +1914,7 @@ fn plugin_fetch_entries_extraction() {
 
 #[test]
 fn validate_template_report_plugin_reply_ref() {
-    // report 回帖 plugin 臂（2026-11-03 自持样板批）：connector =
+    // report 回帖 plugin 臂（自持样板批）：connector =
     // plugin:<slug>:<op> 引用——op 段即引用组成，无需另声明 op。
     let mut t = tpl("t", &[KIND_FETCH, KIND_LAND, KIND_REPORT]);
     let report = t.steps.last_mut().unwrap();
@@ -1946,7 +1946,7 @@ fn validate_template_report_plugin_reply_ref() {
 
 #[test]
 fn validate_template_gates_on_transition_plugin_refs() {
-    // on_transition 回写路由（2026-11-03 自持写通道批）：connector 原语
+    // on_transition 回写路由（自持写通道批）：connector 原语
     // op（自由文本，远端裁决）与空 op（缺省无回写）照旧过；`plugin:` 引
     // 用形态必须过 parse_plugin_step_ref——非法引用 = 声明坏 loud 拒，
     // 装载期诚实跳过模板，不给运行期游标留永久重试黑洞。
@@ -2004,7 +2004,7 @@ fn shipped_issue_import_template_passes_validate_template() {
 
 #[test]
 fn shipped_jira_fix_template_passes_validate_template() {
-    // D3 入库模板 drift 锁（引擎半边，同 issue-import 锁理由）：五步
+    // 入库模板 drift 锁（引擎半边，同 issue-import 锁理由）：五步
     // jira-pipeline（无 publish）必须过引擎规则——「恰好一个 fetch 且首步」
     // / origin_id 必声明 / report 带回写协议等在 gateway 装载期才跑。
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2098,7 +2098,7 @@ fn shipped_bugfix_flow_template_passes_validate_template() {
 
 #[test]
 fn shipped_jira_gitlab_flow_template_passes_validate_template() {
-    // 2026-11-04 入库模板 drift 锁（引擎半边，同 jira-fix/bugfix-flow 锁理由）：
+    // 入库模板 drift 锁（引擎半边，同 jira-fix/bugfix-flow 锁理由）：
     // 七步 jira-gitlab-pipeline（Jira 取数 + 宿主 repo_sync 仓副本 + GitLab MR
     // 发布）必须过引擎规则——「首步合法 plugin 引用且无 connector_fetch」/
     // origin_id 必声明 / publish 协议等在 gateway 装载期才跑。
@@ -2125,7 +2125,7 @@ fn shipped_jira_gitlab_flow_template_passes_validate_template() {
         .find(|s| s.kind == "agent_fixloop")
         .expect("fixloop step");
     assert_eq!(fixloop.gate, "manual");
-    // 执行面显式声明（2026-11-04）：target = self = 本节点一等执行面——
+    // 执行面显式声明：target = self = 本节点一等执行面——
     // 单机形态不需要第二个节点；无回退（删声明才落匹配器阶梯）。
     assert_eq!(
         fixloop.args.get("target").map(String::as_str),

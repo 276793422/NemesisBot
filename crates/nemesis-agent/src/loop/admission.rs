@@ -26,7 +26,7 @@ pub enum ConcurrentMode {
     Steer,
 }
 
-/// : outcome of the synchronous inbound gate (`gate_inbound`).
+/// outcome of the synchronous inbound gate (`gate_inbound`).
 #[derive(Debug)]
 pub(crate) enum GateOutcome {
     /// `cluster_continuation` marker — the pump handles it inline via
@@ -40,7 +40,7 @@ pub(crate) enum GateOutcome {
     /// 用；触发真相源在 cron 服务自身日志 + 触发账本）。泵侧只 debug 记
     /// 一笔。job id 走 tracing 字段。
     Coalesced { cron_job_id: String },
-    /// : `/compact` / `/clear` — 会话维护命令。gate 的同步
+    /// `/compact` / `/clear` — 会话维护命令。gate 的同步
     /// 短路点拿不到 instance（LLM 摘要是 async），但会话已在此获取（防
     /// 并发回合与压缩互相踩摘要推进）；pump/serial tail 派发到
     /// `handle_maintenance`，回执经 `finish_message` 走正常出站路径。
@@ -144,7 +144,7 @@ impl SentInRoundTracker {
     }
 }
 
-/// 会话历史闸的 RAII 释放守卫（[`AgentLoop:under_history_gate`] 专用）：
+/// 会话历史闸的 RAII 释放守卫（[`AgentLoop::under_history_gate`] 专用）：
 /// 持有 session_busy 旗标直到 drop——操作体 `?` 早退、panic 展开都保证
 /// 释放，不留「永久 busy、会话从此全拒」的死会话（clear_session_busy 的
 /// 注释记录过这类事故形态）。只负责释放；排队消息的排空是 async，由
@@ -408,7 +408,7 @@ impl AgentLoop {
         // 前执行完毕——进闸的消息永远是最终形态。
         let mut msg = msg.clone();
         self.rewrite_custom_command(&mut msg).await;
-        // : gate first (sync classification + session
+        // gate first (sync classification + session
         // acquire), then the matching tail. D：bus 泵已统一为
         // gate+spawn（`run_bus_impl`），本入口不再服务泵——仅存量的直调方
         // （tests、process_admitted 无 reinject 时的 inline 排队回退）继续
@@ -462,7 +462,7 @@ impl AgentLoop {
     /// verbatim from the head of the pre-split `process_inbound_message`).
     ///
     /// 本函数只剩「观测日志」一个职责——检查点 begin
-    /// 已拆出（[`Self:begin_turn_checkpoint`]，只在 Admitted 构造点调用）。
+    /// 已拆出（[`Self::begin_turn_checkpoint`]，只在 Admitted 构造点调用）。
     /// 旧实现在这里无条件 `begin_for_session`，导致 slash 回执/维护命令/
     /// busy 弹回/steer 插话这些「非回合消息」也换掉当前会话的 cur 指针
     /// （begin 无条件 finalize 上一 cur → done + 插新），运行中回合的
@@ -719,7 +719,7 @@ impl AgentLoop {
             return GateOutcome::Ungated;
         }
 
-        // : /compact /clear — 会话维护命令。gate 同步短路点
+        // /compact /clear — 会话维护命令。gate 同步短路点
         // 拿不到 instance（摘要 LLM 是 async），所以 mint 一个 Maintenance
         // outcome 交给 tail；会话在此获取（维护期间并发用户消息走 busy
         // 闸），尾巴负责释放。先于普通 slash 检查（维护命令有副作用，不是
@@ -983,7 +983,7 @@ impl AgentLoop {
                         },
                         timestamp: chrono::Local::now().to_rfc3339(),
                         // （引入）：优先级随消息
-                        // metadata 解析（单点 [`crate:inbox:priority_of`]）。
+                        // metadata 解析（单点 [`crate::inbox:priority_of`]）。
                         priority: crate::inbox::priority_of(msg),
                     };
                     // Second-pass review fix: the `!`-prefix steer channel
@@ -996,7 +996,7 @@ impl AgentLoop {
                         self.concurrent_mode == ConcurrentMode::Steer,
                     ) {
                         crate::inbox::EnqueueOutcome::QueuedForNextTurn => {
-                            // ：入队后复查 busy——
+                            // 入队后复查 busy——
                             // 回合可能恰在本闸 busy 判定与入队之间完成
                             // （竞态孤儿），就地 kick 排空，防无限期滞留。
                             self.kick_orphaned_queue_if_idle(&session_key);
@@ -1076,7 +1076,7 @@ impl AgentLoop {
         })
     }
 
-    /// ：busy 判定与入队之间的竞态孤儿封口。闸的
+    /// busy 判定与入队之间的竞态孤儿封口。闸的
     /// busy 分支里 try_acquire 失败与 enqueue_for_mode 之间是纯同步区间，
     /// 但多线程 runtime 上运行中回合的尾巴（release + drain）在另一个
     /// worker 并行——若它完整落在该区间内，消息入队时已无在途回合：drain
@@ -1158,7 +1158,7 @@ impl AgentLoop {
             cp_turn,
         } = admission;
 
-        // ：busy 释放 RAII 化。回合体任何一点
+        // busy 释放 RAII 化。回合体任何一点
         // panic（provider 响应解析/预处理/落盘/封印——工具执行已被
         // tool_dispatch 的 catch_unwind 单独包住，其余部分没有）展开时
         // 跳过尾巴 release，会话从此永久 busy：Reject 全拒、Queue/Steer
@@ -1166,7 +1166,7 @@ impl AgentLoop {
         // 点显式 drop（= 旧 release_session），panic 路径由展开 Drop 兜底。
         let _busy_guard = SessionBusyGuard::new(self, &session_key);
 
-        // ：空闲态 steer 信号剥除——`!`/`！` 前缀是路由信
+        // 空闲态 steer 信号剥除——`!`/`！` 前缀是路由信
         // 号不是内容，busy 态的两条消费路径（回合内 claim / 迟到 transfer）
         // 都已剥标记，唯独空闲直进 turn 的第三条时序把 `!` 字面量随内容送
         // 进模型：同一条消息因到达时机不同模型看到两个形态。这里 mode-aware
@@ -1232,7 +1232,7 @@ impl AgentLoop {
             );
             if !log_existed {
                 // （预留）：会话首建即绑 principal（`{channel}/
-                // {sender_id}`，映射单一真相源）。只写不读——多租户闸不做，
+                // {sender_id}`，映射统一定义）。只写不读——多租户闸不做，
                 // 消费方出现前不得据它分叉行为；无主体来源（cron/heartbeat/
                 // system）映射为空串，不落盘。
                 let principal =
@@ -1304,7 +1304,7 @@ impl AgentLoop {
         }
         .merge_into_text(processed_content);
         let image_refs = attach.ref_strings();
-        // : per-fire tool-round budget set by the gateway cron fire
+        // per-fire tool-round budget set by the gateway cron fire
         // handler from the job's max_rounds payload. Absent/unparsable → None
         // → the turn runs under the global max_turns.
         let cron_max_rounds = msg
@@ -1342,7 +1342,7 @@ impl AgentLoop {
         // 路径由守卫兜底，见上方 注）。必须在 drain 之前
         // ——重注入的队首要能通过 gate 的 busy 判定拿到会话。
         drop(_busy_guard);
-        // ：turn 收尾封印——本 turn 声明过的每个
+        // turn 收尾封印——本 turn 声明过的每个
         // 变更路径读现盘内容哈希，作为「变更后指纹」记进该 turn 的
         // checkpoint（rewind 冲突预检的比对基线）。无 store / 无 turn
         // （cp_turn None）= no-op；幂等。放 release 之后：封印只读盘 + 写
@@ -1372,7 +1372,7 @@ impl AgentLoop {
     }
 
     /// 轮尾收件箱排空：`process_admitted` / Maintenance（/compact
-    /// /clear）/ UserDispatch（/build）三类尾巴共用的单一真相源。
+    /// /clear）/ UserDispatch（/build）三类尾巴共用的统一定义。
     ///   - 未消费的 next-step（steer）消息一律转回 next-turn 队列——取消的
     ///     轮与「逃逸舱没赶上」的正常轮同语义（second-pass review fix），
     ///     转出即成为下一轮输入，不丢失、不陈旧。
@@ -1404,7 +1404,7 @@ impl AgentLoop {
                 // error → "Error processing message" + capture flush, and
                 // meta.model. The previous inline recursion published the
                 // reply raw — an rpc-channel queued reply lost its prefix
-                // (RPCChannel:send drops unprefixed replies) and a FAILED
+                // (RPCChannel::send drops unprefixed replies) and a FAILED
                 // queued turn produced no user-visible output at all.
                 // (full review): the queued message wraps the ORIGINAL
                 // InboundMessage whole (round-5), so replaying is a clone
@@ -1513,7 +1513,7 @@ impl AgentLoop {
         // the old Queue path incremented queue_length WITHOUT storing the
         // message, and release_session kept busy while queue_length>0 → the
         // session could deadlock (no turn ever acquires to drain the
-        // counter). Busy-queueing lives in `crate:inbox` (FIFO per session),
+        // counter). Busy-queueing lives in `crate::inbox` (FIFO per session),
         // driven by `gate_inbound`'s busy branch — reachable since 's
         // gate-in-pump restructure (the gate runs before the turn task is
         // spawned, so a busy session is detected while its turn is still
@@ -1562,7 +1562,7 @@ impl AgentLoop {
     /// 本方法把 peek 升级为真 acquire：持有期间该会话的新消息走
     /// gate_inbound 的 busy 分支（queue/steer 排队、reject 诚实拒绝），
     /// 与 turn 生命周期互斥；操作完成（含错误路径，guard RAII 兜 panic）
-    /// 后释放并 [`Self:drain_next_turn_queue`] 排空持闸期间排队的消息。
+    /// 后释放并 [`Self::drain_next_turn_queue`] 排空持闸期间排队的消息。
     /// 与 slash 维护路径（Maintenance outcome 先 acquire 再进尾巴）语义
     /// 对齐——两入口不再有闸差异。
     pub async fn under_history_gate<T, F, Fut>(
@@ -1751,7 +1751,7 @@ pub fn extract_parent_peer(msg: &nemesis_types::channel::InboundMessage) -> Opti
 /// Route input for agent resolution.
 ///
 /// This is a legacy compatibility type. For new code, use
-/// [`nemesis_routing:RouteInput`] directly with [`RouteResolver`].
+/// [`nemesis_routing::RouteInput`] directly with [`RouteResolver`].
 #[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct RouteInput {
@@ -1766,7 +1766,7 @@ pub struct RouteInput {
 /// Resolved route for a message.
 ///
 /// This is a legacy compatibility type. For new code, use
-/// [`nemesis_routing:ResolvedRoute`] directly.
+/// [`nemesis_routing::ResolvedRoute`] directly.
 #[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct RouteOutput {

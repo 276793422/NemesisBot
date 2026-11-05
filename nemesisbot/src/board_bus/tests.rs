@@ -161,7 +161,7 @@ fn test_comment_post_validation_errors() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// D11-1（2026-10-13 第 6 轮审计）：远端 kind_tag 白名单——保留类型
+/// （第 6 轮审计）：远端 kind_tag 白名单——保留类型
 /// （system/status_change/comment）worker 上行 VALIDATION 拒绝（否则
 /// worker 自选 ctype 落成系统/状态变更/普通评论形态）；正常 tag 放行。
 /// tokio::test：放行腿会走到 wake 派发的 tokio::spawn（无 reactor 即 panic）。
@@ -225,7 +225,7 @@ async fn test_comment_post_happy_path_and_idempotent() {
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].content, "第一条");
 
-    // 同 id 重发 → 相同首响，不重复落库（G12）。
+    // 同 id 重发 → 相同首响，不重复落库。
     let (ok2, _, body2) = parse_reply(handle_nb_bus(
         &deps,
         post_payload("u-1", "channel", ch.id, "第一条"),
@@ -304,7 +304,7 @@ async fn test_sync_returns_ledger_entries() {
 }
 
 // ---------------------------------------------------------------------------
-// Worker 侧（G4 wake.post 下行 + G8 sync 过滤）
+// Worker 侧（wake.post 下行 + sync 过滤）
 // ---------------------------------------------------------------------------
 
 /// worker 侧组装依赖（含活跃 inbox——调用方需要时自行 set_sender）。
@@ -387,7 +387,7 @@ async fn test_worker_wake_post_happy_duplicate_and_routing() {
     assert_eq!(event.reply_to, Some(4));
     assert_eq!(event.messages.len(), 1);
 
-    // 同 seq 重发（RPC 层重传）→ duplicate:true，不再入队（G12 下行侧）。
+    // 同 seq 重发（RPC 层重传）→ duplicate:true，不再入队（下行侧）。
     let reply = handle_worker_nb_bus(
         &deps,
         wake_payload("issue", 7, 4, "@node-b 看这个", "node-master"),
@@ -522,7 +522,7 @@ fn test_sync_entry_targets_me() {
         "node-master",
         "channel:1"
     ));
-    // 参与过的线程（wake 处理过）→ 无提及也真（G8「我参与的线程」）。
+    // 参与过的线程（wake 处理过）→ 无提及也真（「我参与的线程」）。
     deps.wake_state.commit("channel:2", 1);
     assert!(sync_entry_targets_me(
         &deps,
@@ -532,7 +532,7 @@ fn test_sync_entry_targets_me() {
     ));
 }
 
-/// G8 游标推进回归（2026-09-18 T26 根因）：sync 第一拍跑在 cluster agent
+/// 游标推进回归（根因）：sync 第一拍跑在 cluster agent
 /// loop 就绪之前 → inbox.send 失败。此前 advance_watermark 无条件推进
 /// latest → 该条目被跳过且永不重拉，补拉机制自己吞掉 wake 事件，离线
 /// 韧性失效。修复后失败条目前停住，下一拍重拉重试。
@@ -582,7 +582,7 @@ async fn test_local_post_ingress_happy_and_idempotent() {
     assert_eq!(msgs[0].sender.id, "zoo");
     assert_eq!(msgs[0].content, "大家好");
 
-    // 同 client_msg_id 重发 → 缓存首响，不重复落库（G12）。
+    // 同 client_msg_id 重发 → 缓存首响，不重复落库。
     let second = ingress
         .post(
             &Actor::admin("zoo"),
@@ -634,7 +634,7 @@ async fn test_local_post_quota_denial_maps_to_message() {
 }
 
 // =======================================================================
-// G8（2026-09-09）：WorkerWakeState 持久化——重启零重放
+// WorkerWakeState 持久化——重启零重放
 // =======================================================================
 
 #[test]
@@ -729,7 +729,7 @@ fn test_wake_state_new_is_pure_memory() {
 }
 
 // ---------------------------------------------------------------------------
-// goal P2/D0b：task.started 上报 → dispatch running（queued vs executing 分界）。
+// goal /：task.started 上报 → dispatch running（queued vs executing 分界）。
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -792,7 +792,7 @@ fn test_task_started_marks_dispatch_running() {
     assert!(!ok3, "来源与派发 worker 不匹配应被拒");
 }
 
-// claim 竞速（T43 实证）：dispatch_issue_core 的派发行在 submit ACK 之后
+// claim 竞速（实证）：dispatch_issue_core 的派发行在 submit ACK 之后
 // 才落库，空闲 worker 的 started 上报可跑赢插行——此刻任务正在执行，
 // 必须回 UNAVAILABLE（worker 退避重报）而不是 VALIDATION（永久拒绝）。
 // 行已存在但状态/worker 不符才维持 VALIDATION。
@@ -861,7 +861,7 @@ fn test_task_started_row_missing_is_unavailable_not_validation() {
 }
 
 // ===========================================================================
-// Coverage 追加（2026-09-24）：master handler 入口/校验臂、delivery.files
+// Coverage 追加：master handler 入口/校验臂、delivery.files
 // 全链（校验矩阵 + 落盘 + INTERNAL 臂）、额度拒绝映射、wake 计划投影与
 // 投递臂、主持人裁决（脚本化 LLM 直调 process_direct）、wake 信封组装、
 // worker 路由臂、持久化失败、sync 前置臂。
@@ -962,15 +962,15 @@ fn deps_with_workspace(
 }
 
 /// 脚本化主持人 LLM：按序弹出回复，耗尽后回落 `fallback`（形态同
-/// board_review::tests::ScriptedLlm）。唯一消费方 attach_scripted_moderator
+/// board_review::tests:ScriptedLlm）。唯一消费方 attach_scripted_moderator
 /// 是 Windows 形态——Linux 下门控防 dead_code 撞 clippy 门禁。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct ScriptedModeratorLlm {
     script: std::sync::Mutex<std::collections::VecDeque<String>>,
     fallback: String,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 #[async_trait::async_trait]
 impl nemesis_agent::r#loop::LlmProvider for ScriptedModeratorLlm {
     async fn chat(
@@ -1001,7 +1001,7 @@ impl nemesis_agent::r#loop::LlmProvider for ScriptedModeratorLlm {
 }
 
 /// 把脚本化 provider 装进主持人后置装配桥。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn attach_scripted_moderator(deps: &MasterBusDeps, replies: &[&str], fallback: &str) {
     let llm = ScriptedModeratorLlm {
         script: std::sync::Mutex::new(replies.iter().map(|s| s.to_string()).collect()),
@@ -1017,7 +1017,7 @@ fn attach_scripted_moderator(deps: &MasterBusDeps, replies: &[&str], fallback: &
 
 /// 主持人裁决测试的隔离前置（在每个 windows-gated async 测试体内联展开）：
 /// `let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());` + TempDir home +
-/// `crate::tests::EnvHomeGuard::point_at(&home)`——三个守卫绑定到测试函数
+/// `crate::tests:EnvHomeGuard::point_at(&home)`——三个守卫绑定到测试函数
 /// 作用域，跨 await 存活（spawn 的裁决任务在锁内被 current_thread 轮询，
 /// board_review::tests 同款纪律）。
 
@@ -1453,7 +1453,7 @@ fn sweep_build_wake_envelope_issue_and_channel_branches() {
         env["body"]["new_message"]["sender"],
         serde_json::json!("node-x")
     );
-    // 身份透传（2026-10-23）：wake 信封带 sender_kind。
+    // 身份透传：wake 信封带 sender_kind。
     assert_eq!(
         env["body"]["new_message"]["sender_kind"],
         serde_json::json!("agent")
@@ -1509,7 +1509,7 @@ fn sweep_truncate_chars_passthrough_boundary_and_ellipsis() {
     assert_eq!(truncate_chars(cn, 4), cn);
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn sweep_channel_post_moderator_silent_adds_no_comment() {
@@ -1546,7 +1546,7 @@ async fn sweep_channel_post_moderator_silent_adds_no_comment() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn sweep_moderator_reply_posts_comment_and_wakes_mentioned_node() {
@@ -1593,7 +1593,7 @@ async fn sweep_moderator_reply_posts_comment_and_wakes_mentioned_node() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn sweep_moderator_reply_without_mentions_posts_and_stops() {
@@ -1641,7 +1641,7 @@ async fn sweep_moderator_reply_without_mentions_posts_and_stops() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn sweep_mention_of_master_routes_to_local_adjudication() {
@@ -2004,7 +2004,7 @@ async fn sweep_worker_sync_once_happy_path_enqueues_and_advances() {
     assert!(wdeps.wake_state.peek("issue:7", 4), "更大的 seq 仍要处理");
 }
 
-/// 投递失败（inbox 无接收端）→ 游标只推进到失败条目之前（T26 根因修复：
+/// 投递失败（inbox 无接收端）→ 游标只推进到失败条目之前（根因修复：
 /// 补拉机制不得自己吞掉 wake 事件）。
 #[tokio::test]
 async fn sweep_worker_sync_undelivered_holds_watermark() {
@@ -2067,7 +2067,7 @@ async fn sweep_spawn_worker_sync_loop_first_tick_backfills() {
     assert_eq!(ev.event, "sync_backfill");
     assert_eq!(ev.seq, 3);
     // reply_to 必须是台账 message id——sync 投影只有线程 seq，冒充 id 会
-    // 与全局评论 id 空间相撞（parent_id 跨单错挂，run4 实录）。补拉恒 None。
+    // 与全局评论 id 空间相撞（parent_id 跨单错挂，run4）。补拉恒 None。
     assert_eq!(ev.reply_to, None);
     assert_eq!(wdeps.wake_state.watermark(), 3);
 }
@@ -2075,7 +2075,7 @@ async fn sweep_spawn_worker_sync_loop_first_tick_backfills() {
 /// run_moderator 残余臂：① agent loop 未就绪 → 静默跳过；② 回复落库后
 /// 线程额度归零 → 静默收敛（不再投递）；③ 有提名但 rpc client 缺席 →
 /// 诚实收敛。进程内全离线。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn sweep_run_moderator_not_ready_quota_zero_and_no_rpc() {
@@ -2170,7 +2170,7 @@ async fn sweep_run_moderator_not_ready_quota_zero_and_no_rpc() {
 }
 
 // ===========================================================================
-// wave5 round2（2026-09-25）：delivery.files 落盘写失败臂（目录只读 →
+// wave5：delivery.files 落盘写失败臂（目录只读 →
 // fs::write 失败 → INTERNAL「写入失败」）、post_discussion_locally 的
 // Store Err 映射臂（空白 content 穿过核心直达 store 校验）、
 // build_thread_context_text 纯函数（issue 评论线程 / channel 消息线程 /
@@ -2186,8 +2186,8 @@ mod w5r2 {
     /// 目录自建失败臂）。stored_name = `{Utc 毫秒}_a.txt`——写入发生在
     /// 布阵**之后**，漂移单向为正，所以窗口锚定**布阵结束时刻**（自校
     /// 准循环：布阵本身超预算就把窗再向前推 8s），不是 t0 时刻的定宽窗
-    /// ——CI 慢机上 8101 次 create_dir 自身超 8s（实录 20.4s），定宽窗
-    /// 全部漏接假红（2026-10-10 CI shard1 三连红根因）。
+    /// ——CI 慢机上 8101 次 create_dir 自身超 8s（20.4s），定宽窗
+    /// 全部漏接假红（CI 三连红根因）。
     #[test]
     fn w5_delivery_files_write_fail_readonly_dir() {
         use base64::Engine as _;
@@ -2205,9 +2205,9 @@ mod w5r2 {
             .insert_dispatch("w5-dl-1", issue.id, "node-b", &Actor::admin("test"))
             .unwrap();
 
-        // 时间戳注入（2026-10-11 根治，2026-10-10 CI run170 s1 假红）：
+        // 时间戳注入（根治， CI run170 s1 假红）：
         // 旧实现预埋 8s 静态目录阵赌处理器取点落窗内——慢机上布阵+前置
-        // 开销吃穿窗沿（实录该测试墙钟 20.4s，处理器取到窗外时间戳 →
+        // 开销吃穿窗沿（实测该测试墙钟 20.4s，处理器取到窗外时间戳 →
         // 无碰撞 → 写成功 → 断言假红）；布阵线程又追不上爬行时钟，一切
         // 铺窗策略治不了这个类。改为 deps.now_ms 注入固定值：处理器取点
         // 确定，预埋单个同名目录必命中，快慢机零竞态。
@@ -2364,13 +2364,13 @@ mod w5r2 {
     }
 }
 
-/// M5（2026-10-10 集群无人值守硬化）：ns="approval" 路由（ask 上行登记/摘除）
+/// （集群无人值守硬化）：ns="approval" 路由（ask 上行登记/摘除）
 /// 与看板评论回源 relay。注册表是进程全局——用例用独立 request_id + 结尾
 /// 摘除防串扰；SSE EventHub 未安装 = 发布静默跳过（不炸）。
 mod m5_approval {
     use super::*;
 
-    /// §2 免打扰短路测试会置换进程级 APPROVAL_AUTO 槽——登记路径的断言
+    /// 免打扰短路测试会置换进程级 APPROVAL_AUTO 槽——登记路径的断言
     /// 依赖「开关关」基线，统一在 crate 级锁下跑（question_broker 同锁）。
     fn slot_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::APPROVAL_AUTO_SLOT_LOCK
@@ -2522,7 +2522,7 @@ mod m5_approval {
     /// post_discussion_core 落库后异步转发远程审批——裸 Cluster 无 RPC
     /// 客户端 → 诚实失败留痕（❌ 系统评论）；杂散同形评论（短号未登记）
     /// 零影响。旁路 spawn 无 join → 轮询等待留痕。
-    /// D11-2（2026-10-13 第 6 轮审计）：回源只走 dashboard 本地发言
+    /// （第 6 轮审计）：回源只走 dashboard 本地发言
     /// （post_discussion_locally）——worker RPC 上行同形文本不得触发
     /// （审批 verdict 是人的裁决，worker 上行批复自己待审批卡 = 闸被
     /// 执行方自答击穿）。
@@ -2581,7 +2581,7 @@ mod m5_approval {
         }
         let receipt = receipt.expect("failure receipt comment must appear");
         assert!(receipt.contains("node-b"));
-        // D11-2 负向锁：worker RPC 上行（comment.post 信封）同形 /approve
+        // 负向锁：worker RPC 上行（comment.post 信封）同形 /approve
         // 文本不触发回源——照常落库，但无新回执。
         let receipt_count = || {
             store
@@ -2634,7 +2634,7 @@ mod m5_approval {
         }
     }
 
-    /// §2 免打扰（无人值守计划 Part 2）：开关开 = ask_register 不登记不广播，
+    /// 免打扰（Part 2）：开关开 = ask_register 不登记不广播，
     /// 直接应答 `auto_approved: true`（worker 侧放行继续）；裁决下发由
     /// spawn 的 send_verdict 负责（裸 Cluster 无 RPC 客户端 → 后台诚实失败
     /// ——不 join，断言不依赖它）。
@@ -2661,7 +2661,7 @@ mod m5_approval {
         // 锁必须持到函数结束（question_broker 同纪律）：逆序 drop 保证
         // `_swapped` 先恢复、`_serial` 后释放，置换窗口全程被锁覆盖；提前
         // drop 锁 = 「锁空闲但 enabled 仍在装」窗口，毒化并行 ask 测试
-        //（run3 挂死实证，2026-10-13）。
+        //（run3 挂死实证）。
 
         assert!(ok, "short-circuit reply must succeed: {code:?}");
         assert_eq!(
@@ -2686,7 +2686,7 @@ mod m5_approval {
 }
 
 // ---------------------------------------------------------------------------
-// D2 读取臂：comment.list（worker 轮询线程；纯查表不占额度）
+// 读取臂：comment.list（worker 轮询线程；纯查表不占额度）
 // ---------------------------------------------------------------------------
 
 fn list_payload(thread_kind: &str, thread_id: i64) -> serde_json::Value {
@@ -2748,7 +2748,7 @@ async fn test_comment_list_happy_empty_and_validation() {
         Some(&serde_json::json!("频道消息"))
     );
 
-    // 校验错误同 comment.post 先例：缺 thread 字段 = validation。
+    // 校验错误同 comment.post 缺 thread 字段 = validation。
     let (ok, code, _) = parse_reply(handle_nb_bus(
         &deps,
         serde_json::json!({"v": 1, "ns": "board", "op": "comment.list", "body": {}}),
@@ -2797,7 +2797,7 @@ async fn test_comment_list_happy_empty_and_validation() {
 }
 
 // ===========================================================================
-// 集群任务认领（board.claim / board.claimable.list，2026-10-22 计划 §4）
+// 集群任务认领（board.claim / board.claimable.list）
 //
 // unit 边界：Cluster::new 纯内存形态无 rpc client → claim 后派发必在
 // 「RPC client 未就绪」诚实失败 → handler 测试天然覆盖「认领→派发失败
@@ -3246,7 +3246,7 @@ fn claim_gate_reason_collects_all_failures() {
     };
     let input = claim_match_input(&issue);
     let reason = claim_gate_reason(&input, &peer);
-    // Q2「原因明示」：硬闸全不符时逐条可见，不首条即停。
+    // 「原因明示」：硬闸全不符时逐条可见，不首条即停。
     assert!(reason.contains("coordinator"), "{reason}");
     assert!(reason.contains("gpu"), "{reason}");
     assert!(reason.contains("dev:cpp"), "{reason}");
@@ -3285,7 +3285,7 @@ fn new_issue_shape() -> nemesis_board::Issue {
 }
 
 // ===========================================================================
-// build_moderator_prompt 双模式（2026-10-23）：@all/@点名 显式唤醒 master
+// build_moderator_prompt 双模式：@all/@点名 显式唤醒 master
 // → 参与者模式（正常回话，不转达点名）；规则③无 @ → 裁决者模式（现行）。
 // ===========================================================================
 
@@ -3318,7 +3318,7 @@ fn sweep_moderator_prompt_dual_mode() {
     );
     // 参与者：与 worker 讨论轮同语义（正文或 [SILENT]），名册标注已直唤醒、
     // 不诱导转达；发送者身份透传（human user）——行为引导靠数据不靠
-    // 「别 @ 自己」类补丁措辞（2026-10-23 用户裁定）。
+    // 「别 @ 自己」类补丁措辞（用户裁定）。
     assert!(participant.contains("You are node node-master in a multi-agent board discussion"));
     assert!(participant.contains("output ONLY your"));
     assert!(participant.contains("output exactly [SILENT]"));

@@ -1,11 +1,11 @@
-//! scanner.rs 纯逻辑覆盖（批次 18，2026-08-25）。
+//! scanner.rs 纯逻辑覆盖（2026-08-25）。
 //!
 //! 子模块（非 sibling）以访问私有项。覆盖：`cmd_cancel` 三态匹配（精确 /
 //! update-db 前缀 / 无活跃操作）、`install_engine_inner` 与 `update_db_inner`
 //! 的**网络前**早期错误臂、`mark_op_started` 去重、`format_bytes` 边界、
 //! `make_download_progress_cb` 的 SSE 事件发布。
 //!
-//! 结构性豁免（台账 §9.4）：真实下载（install/download）、freshclam 病毒库
+//! 结构性豁免（台账）：真实下载（install/download）、freshclam 病毒库
 //! 更新、clamd 引擎创建与扫描——需要真网络/真引擎，走既有 graceful-failure
 //! 测试（scanner_more_tests::test_cmd_test_clamav_engine_creation_fails_gracefully）。
 

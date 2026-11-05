@@ -1,14 +1,14 @@
-//! board.db 每日备份（Swarm M2；impl-plan §4.3）。
+//! board.db 每日备份（Swarm；impl-plan）。
 //!
 //! master 单点低成本兜底：`VACUUM INTO` 产生一致性快照到
 //! `workspace/backups/board-YYYYMMDD.db`（WAL 模式下直接 copy 会撕裂，
 //! VACUUM INTO 由 SQLite 保证原子）。保留最近 N 份，超出按日期名删除。
 //! master 永久丢失场景：人工换 config 到新节点 + 拷回备份；HA 自动接管
-//! 留给选举阶段（D1 裁决）。
+//! 留给选举阶段（裁决）。
 
 use std::path::{Path, PathBuf};
 
-/// 备份文件名前缀（ prune 只清这个模式的文件，不碰用户放的其他东西）。
+/// 备份文件名前缀（prune 只清这个模式的文件，不碰用户放的其他东西）。
 const BACKUP_PREFIX: &str = "board-";
 
 /// 生成今日备份：`VACUUM INTO <backups_dir>/board-YYYYMMDD.db`，然后裁剪

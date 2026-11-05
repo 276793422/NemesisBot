@@ -1,7 +1,7 @@
-//! 职能工具围栏（B2，profession-capability-evolution 2026-10-14）：契约文本
+//! 职能工具围栏（profession-capability-evolution 2026-10-14）：契约文本
 //! 内的 ` ```nemesis-tool-fence ` 代码块 = 该职能的实例级工具白名单。
 //!
-//! D3 裁决：能力边界跟职能文本放一处——内置契约与用户自定义职能
+//! 裁决：能力边界跟职能文本放一处——内置契约与用户自定义职能
 //! （`<workspace>/cluster/professions/<family>/<spec>.md`）走同一机制，
 //! 用户写档案天然获得同款能力。解析器零依赖（手写行解析，prompts crate
 //! 无 serde_yaml）。**fail-open**：无围栏块的职能 = 不围（[`parse_tool_fence`]
@@ -10,7 +10,7 @@
 //! 围栏块是**装配元数据不是提示词**——[`strip_tool_fence`] 由消费方在把
 //! 契约正文拼进 system prompt 之前调用，yaml 永不进 LLM 上下文。
 //!
-//! 文件形态约定（单一真相源：本模块两个函数共用的行扫描）：
+//! 文件形态约定（统一定义：本模块两个函数共用的行扫描）：
 //!
 //! ````text
 //! ```nemesis-tool-fence

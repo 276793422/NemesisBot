@@ -598,7 +598,7 @@ fn test_parse_device_code_response_invalid_json() {
 
 #[test]
 fn test_parse_device_code_response_missing_fields() {
-    // BUG-20261028-104b：缺 device_auth_id/user_code 必须 fail-fast 报
+    // b：缺 device_auth_id/user_code 必须 fail-fast 报
     // 结构错误——旧行为（静默空串）会让用户看到空验证码干等 15 分钟超时。
     let err = parse_device_code_response(r#"{"other":"data"}"#).unwrap_err();
     assert!(
@@ -1033,9 +1033,9 @@ fn test_parse_jwt_claims_impl_empty_string() {
 
 #[test]
 fn test_url_encode_cjk_chars() {
-    // BUG-20261028-111 红证：percent-encoding 按 RFC 3986 必须对 multibyte
+    // 红证：percent-encoding 按 RFC 3986 必须对 multibyte
     // 字符的 UTF-8 字节序列逐字节编码；旧实现 `c as u8` 把 char 截断到低
-    // 字节（'中' U+4E2D → 0x2D），产出错误编码 %2D 而非 %E4%B8%AD。
+    // 字节（'中' U+4E2D → 0x2D），产出错误编码 %2D 而非 %%%AD。
     // （旧测试名实不符：名为 cjk_chars 实测 "hello"，恰好掩盖了该缺陷。）
     let encoded = url_encode("hello");
     assert_eq!(encoded, "hello");
@@ -1045,7 +1045,7 @@ fn test_url_encode_cjk_chars() {
 
 #[test]
 fn test_url_decode_multibyte_utf8_roundtrip() {
-    // BUG-20261028-111 红证：url_decode 旧实现逐字节 `b as char`，UTF-8
+    // 红证：url_decode 旧实现逐字节 `b as char`，UTF-8
     // 字节序列被拆成独立码位（mojibake）；修复后按字节收集再整体重组。
     assert_eq!(url_decode("%E4%B8%AD"), "中");
     assert_eq!(url_decode("fran%C3%A7ais"), "français");
@@ -1859,7 +1859,7 @@ async fn poll_device_code_success_returns_credential() {
 }
 
 // ---------------------------------------------------------------------------
-// wait_for_callback / handle_callback（Phase 3 覆盖率，2026-08-25）：本地
+// wait_for_callback / handle_callback（覆盖率）：本地
 // TCP 回调服务器的请求行解析/状态校验/响应写出分支。真 TcpListener +
 // 进程内 tokio TCP 客户端，无需真浏览器（login_browser 编排层因 open_browser
 // 会真开浏览器而结构性不测，其网络部分由这里覆盖）。
@@ -1892,7 +1892,7 @@ async fn wait_for_callback_accepts_and_parses_callback_request() {
 }
 
 #[tokio::test]
-// BUG-20261025-60 前身 `wait_for_callback_state_mismatch_errors` 钉的正是
+// 前身 `wait_for_callback_state_mismatch_errors` 钉的正是
 // 缺陷姿态：state 不匹配的连接整个登录流程 Err 退出——任何本地进程在
 // 5 分钟窗口内敲 /auth/callback（陈旧标签页/扫描）都能打死登录。现语义：
 // 错误 state 的连接拿 400 拒绝响应，流程继续等真回调。
@@ -1944,7 +1944,7 @@ async fn bug60_state_mismatch_connection_does_not_kill_flow() {
 }
 
 #[tokio::test]
-// BUG-20261025-60 传输层错误臂：端口扫描/健康检查形态——连接建立后立即
+// 传输层错误臂：端口扫描/健康检查形态——连接建立后立即
 // 以 SO_LINGER=0 复位（RST），服务端 read 出传输层错误。旧实现整个登录
 // 在此 Err 退出；现语义 warn 后继续监听，真回调照常完成。
 // set_linger 已被 tokio 标记 deprecated（担心 drop 阻塞线程）——此处
@@ -1984,7 +1984,7 @@ async fn bug60_reset_connection_does_not_kill_flow() {
 }
 
 #[tokio::test(start_paused = true)]
-// BUG-20261103-344 横向同族红证：静默连接（TCP 握手后一个字节都不发——
+// 横向同族红证：静默连接（TCP 握手后一个字节都不发——
 // 本地扫描/健康检查敲端口形态）旧实现内联 await handle_callback，读循环
 // 挂死到外层 300s 超时，期间真浏览器回调全部无法被服务。不变量：静默
 // 连接按单连接墙钟上限淘汰，真回调照常被服务。
@@ -2048,7 +2048,7 @@ async fn wait_for_callback_no_code_param_errors() {
     assert!(err.contains("access_denied"), "{err}");
     let resp = client.await.unwrap();
     assert!(resp.contains("400 Bad Request"), "{resp}");
-    // BUG-20261105-007：头块必须 \r\n\r\n 终结——缺终结时 body 并进头块，
+    // 头块必须 \r\n\r\n 终结——缺终结时 body 并进头块，
     // 浏览器等不到头块结束，提示页渲染不出。
     assert!(
         resp.contains("Content-Type: text/html\r\n\r\n<html>"),
@@ -2062,8 +2062,8 @@ async fn wait_for_callback_skips_unrelated_and_post_then_continues() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    // 客户端 task 顺序发三个连接：无关路径 GET（→ None 跳过）、POST
-    // （非 GET → None 跳过）、真回调（→ Some）。前两个写完即弃（socket
+    // 客户端 task 顺序发三个连接：无关路径 GET（None 跳过）、POST
+    // （非 GET → None 跳过）、真回调（Some）。前两个写完即弃（socket
     // 关闭后服务端读到已缓冲字节，同样落入跳过分支，无需等响应）。
     let client = tokio::spawn(async move {
         let mut j1 = tokio::net::TcpStream::connect(addr).await.unwrap();
@@ -2147,7 +2147,7 @@ async fn login_device_code_full_flow_completes_on_first_poll() {
 }
 
 // ---------------------------------------------------------------------------
-// 覆盖补遗（2026-08-25）：login_browser 绑定失败臂（bind 失败发生在
+// 覆盖补遗：login_browser 绑定失败臂（bind 失败发生在
 // open_browser 之前，可确定性触发，不开浏览器）、device code 轮询的
 // clamp/pending/transient-error 三臂、callback 请求行缺 URI 的跳过臂、
 // 嵌套 auth claim 无可用键时的落穿臂、独立包装函数。
@@ -2399,7 +2399,7 @@ fn test_extract_account_id_nested_auth_without_usable_key_falls_through() {
 // Wave4 覆盖批次：open_browser 错误臂（进程 spawn 失败路径）。成功臂会
 // 真开浏览器（红线，结构性不测）；错误臂用「URL 含内嵌 NUL」确定性触发
 // ——std 在 CreateProcess 之前就拒绝含 NUL 的命令行（InvalidInput），
-// 无窗口、无副作用，错误如实映射为 "opening browser: ..."。
+// 无窗口、无副作用，错误如实映射为 "opening browser:..."。
 // ===========================================================================
 
 #[test]
@@ -2420,7 +2420,7 @@ fn open_browser_unsupported_platform_is_err() {
 }
 
 // ===========================================================================
-// BUG-20261025-29 回归锁：浏览器启动命令不得经过 shell。旧实现
+// 回归锁：浏览器启动命令不得经过 shell。旧实现
 // `cmd /c start {url}`（raw_arg 原样拼接）把未加引号的 URL 直通 cmd——授权
 // 查询串里的字面 `&` 是 cmd 命令分隔符，浏览器只收到第一个 & 之前的残缺
 // URL（缺 client_id/PKCE/state，OAuth 浏览器登录必败），余下 key=value 段
@@ -2449,7 +2449,7 @@ fn browser_command_keeps_ampersand_url_as_single_argument() {
 }
 
 // ===========================================================================
-// BUG-20261028-104a 红证：reqwest::Client::new() 默认零超时——端点接受连接
+// a 红证：reqwest::Client:new() 默认零超时——端点接受连接
 // 但永不响应（挂死代理/防火墙黑洞）时 login_device_code 无限挂死：15 分钟
 // deadline 只罩轮询循环，罩不住首个 usercode 请求与 token 交换。
 // 不变量：任何 OAuth HTTP 请求必须在请求超时内返回（成功或 Err）。
@@ -2486,7 +2486,7 @@ async fn login_device_code_hung_endpoint_must_not_hang_forever() {
     );
 }
 
-// ---------- BUG-20261103-330：device-flow 轮询等待必须被 deadline 有界化 ----------
+// ----------：device-flow 轮询等待必须被 deadline 有界化 ----------
 
 fn poll_pending()
 -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<AuthCredential>, String>>>> {
@@ -2512,7 +2512,7 @@ async fn device_flow_loop_self_terminates_at_deadline_despite_huge_interval() {
     // 轮询间隔是远端可控值（原始 i32 上限 ≈68 年；parse_flexible_int 的
     // i64→i32 截断同样可造出荒谬大值）。间隔 ≥ 剩余 deadline 时，裸
     // tick.tick().await 会永久挂起——deadline 只在 loop 顶检查，await
-    // 期间不生效，15 分钟期限形同虚设（BUG-20261028-104a「auth login
+    // 期间不生效，15 分钟期限形同虚设（a「auth login
     // 无限卡住」的第二个向量）。循环必须在 deadline 处自终止。
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
     let result = tokio::time::timeout(

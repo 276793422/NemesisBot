@@ -39,15 +39,15 @@
 //!    （它在 pre hooks 之前无条件运行，就是事实上的 pre[0]），Forge 在 post
 //!    hooks 之后记录最终 result（就是事实上的 post 末位）。字面转换要把
 //!    security.execute + guardian 子路径搬进 async trait 边界，纯机械风险、
-//!    零行为收益，且直接威胁验收③（security/Forge 行为不变）——按代码修改
-//!    守则不赌。 的 hooks 方言层只需要 user hooks + 事件，不需要 uniformity。
-//! 2. **pre/post 钩子异步**（`#[async_trait]`）： 的方言 hook 是**子进程脚本**
+//!    零行为收益，且直接威胁 security/Forge 行为不变性——按代码修改
+//!    守则不赌。本项目 hooks 方言层只需要 user hooks + 事件，不需要 uniformity。
+//! 2. **pre/post 钩子异步**（`#[async_trait]`）：本项目方言 hook 是**子进程脚本**
 //!    （stdin JSON / env / 退出码），同步 trait 装不下。用户钩子运行时注册、
 //!    数量少（个位数），异步开销可忽略。
 //!
 //! # 覆盖范围与旁路
 //!
-//! 所有工具分发收口在 `AgentLoop:handle_tool_call`（loop.rs），包括
+//! 所有工具分发收口在 `AgentLoop::handle_tool_call`（loop.rs），包括
 //! 并行批（`precompute_parallel_batch` 内部逐个调 handle_tool_call_at_depth）——
 //! 单一插入点即全覆盖。LLM 调用级钩子布在生产主路径 `run_llm_loop`（loop.rs 的
 //! `'turn` 循环）；`loop_executor.rs` 是 legacy 旁路（生产零构造），不铺死
@@ -93,7 +93,7 @@ pub struct HookToolCall {
     /// approval card). `None` = non-dispatch origin (tests) — consumers
     /// fall back to their own timer.
     pub dispatch_started: Option<std::time::Instant>,
-    /// 修②⑥：本次 dispatch 的稳定调用 id——与 turn WAL
+    /// 本次 dispatch 的稳定调用 id——与 turn WAL
     /// `call_id_for` 同一派生（`raw_id` 非空用原值，否则时间戳兜底），事件
     /// 面与 WAL 面共用同一 id。急停中断执行链时，dispatch 可据此补发
     /// interrupted ToolFinished（对齐 ToolStarted 的 id，UI 卡片不悬空）。
@@ -169,7 +169,7 @@ pub trait ToolHook: Send + Sync {
     }
 
     /// 工具执行失败（execute 返回 Err）时的变体。默认委托
-    /// [`Self:post_tool_use`]（错误文本作为结果，保持既有行为）；
+    /// [`Self::post_tool_use`]（错误文本作为结果，保持既有行为）；
     /// override 用于区分成败（如方言 `PostToolUseFailure` 事件派发）。
     async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
         self.post_tool_use(call, &format!("Tool error: {err}"))
@@ -178,7 +178,7 @@ pub trait ToolHook: Send + Sync {
 }
 
 /// 失败变体的管道式运行（同 [`run_post_hooks`]，走
-/// [`ToolHook:post_tool_use_failure`]）。
+/// [`ToolHook::post_tool_use_failure`]）。
 pub async fn run_post_failure_hooks(
     hooks: &[Arc<dyn ToolHook>],
     call: &HookToolCall,
@@ -203,7 +203,7 @@ pub async fn run_post_failure_hooks(
     current
 }
 
-/// Ordered hook registry. Stored on `AgentLoop` behind a `parking_lot:RwLock`;
+/// Ordered hook registry. Stored on `AgentLoop` behind a `parking_lot::RwLock`;
 /// `snapshot()` clones the Arc list so callers never hold the lock across an
 /// await (an async hook could otherwise deadlock a concurrent registration).
 /// (No `Debug` derive: `dyn ToolHook` isn't `Debug`.)
@@ -488,7 +488,7 @@ pub async fn run_llm_post_hooks(
 // Prompt/turn lifecycle hooks (— 方言 SessionStart/UserPromptSubmit/Stop 桥)
 // ---------------------------------------------------------------------------
 
-/// Per-turn safety cap for `TurnEndDecision:Continue` demands (dialect Stop-hook
+/// Per-turn safety cap for `TurnEndDecision::Continue` demands (dialect Stop-hook
 /// "block stopping"). Exhausted → the turn stops anyway with a loud warn
 /// (fail-open, same discipline as [`MAX_LLM_HOOK_RETRIES`]: a buggy hook must
 /// not be able to keep a session answering forever).
@@ -649,7 +649,7 @@ mod tests;
 #[cfg(test)]
 mod cov_tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 

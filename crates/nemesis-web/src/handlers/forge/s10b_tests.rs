@@ -1,4 +1,4 @@
-//! (quality-hardening goal 冲刺, web 批次 2): forge handler narrow arms
+//! (quality-hardening goal 冲刺, web): forge handler narrow arms
 //! not reached by `forge_extra_tests.rs` (which covers the main command
 //! flows), all offline:
 //!

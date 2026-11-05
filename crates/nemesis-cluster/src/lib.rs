@@ -32,11 +32,11 @@ pub mod handlers;
 pub mod rpc;
 pub mod transport;
 
-// A1 iroh 跨网 P2P 叠加层（M4 起 cluster-roaming feature 已删，恒编译；
+// iroh 跨网 P2P 叠加层（起 cluster-roaming feature 已删，恒编译；
 // 运行面在 plugin_roaming C-ABI 插件，缺席 = 诚实降级）。
 pub mod roaming;
 
-/// iroh 地址前缀（`iroh:<64位小写hex>`）——形态判定单一真相源。
+/// iroh 地址前缀（`iroh:<64位小写hex>`）——形态判定统一定义。
 ///
 /// 住 lib.rs（无 feature 门）：形态仲裁是纯字符串语义，未跑漫游的节点
 /// 同样会**收到**漫游节点的 announce（混合版本农场），地址不得按 TCP 口径

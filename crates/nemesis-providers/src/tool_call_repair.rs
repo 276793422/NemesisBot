@@ -55,7 +55,7 @@ pub fn repair_tool_calls(content: &str) -> Vec<ToolCall> {
         .collect()
 }
 
-/// 白名单过滤版修复入口（生产唯一消费点，BUG-20261025-16）。
+/// 白名单过滤版修复入口（生产唯一消费点）。
 ///
 /// [`repair_tool_calls`] 的 JSON/XML/DSML 启发式对 `name` 键零校验——正常
 /// 文档回复（```json 配置示例、裸 JSON 跨度等只要含 `"name"` 字符串键）会
@@ -152,7 +152,7 @@ fn json_value_to_call(v: &serde_json::Value) -> Option<(String, String)> {
             .and_then(|n| n.as_str())
     })?;
     // arguments 与 name 同构双源：顶层优先，缺失时回落 function.arguments
-    // （BUG-20261105-006）。OpenAI wire 教科书形态是
+    // 。OpenAI wire 教科书形态是
     // {"type":"function","function":{"name":..,"arguments":".."}}——name 有
     // function 回落而 arguments 没有，嵌套形态会恢复出 name 但参数静默丢成
     // "{}"（白名单过了、finish 强改、正文剥离——误修复）。

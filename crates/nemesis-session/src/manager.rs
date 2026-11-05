@@ -76,10 +76,10 @@ pub struct SessionMgr {
     // Chat sessions (persistent, Go-style)
     chat_sessions: Mutex<HashMap<String, ChatSession>>,
     storage_path: Option<PathBuf>,
-    /// 同键并发保存串行闸（BUG-20261030-213）：快照与落盘必须在同一把闸内
+    /// 同键并发保存串行闸：快照与落盘必须在同一把闸内
     /// 完成——快照在状态锁内、落盘在锁外的旧形态下，两线程同键并发保存时
     /// 旧快照的 rename 可能晚于新快照落盘（last-rename-wins = 已完成保存的
-    /// 消息在重启后丢失）。BUG-20261025-51 修了撕裂写（唯一临时名），本闸
+    /// 消息在重启后丢失）。 修了撕裂写（唯一临时名），本闸
     /// 补齐「rename 序 ≠ 快照序」的残余竞态。状态锁不在闸内（mutation 路径
     /// 不被落盘阻塞），闸只串行化逐次保存的「快照→rename」对。
     save_gate: Mutex<()>,
@@ -330,7 +330,7 @@ impl SessionMgr {
             None => return Ok(()),
         };
 
-        // BUG-20261030-213：闸在快照前取、持到函数尾——「快照→rename」对
+        // 闸在快照前取、持到函数尾——「快照→rename」对
         // 整体串行化，rename 序 = 快照序（旧形态两把锁夹缝里的交错见字段
         // 注释）。锁序恒为 save_gate → chat_sessions，无反向路径，无死锁。
         let _save_gate = self.save_gate.lock();
@@ -370,7 +370,7 @@ impl SessionMgr {
             }
         }
 
-        // BUG-20261025-51：落盘委托 REL-002 权威 helper（唯一临时名
+        // 落盘委托 权威 helper（唯一临时名
         // `.tmp-{pid}-{seq}-{nanos}`）。旧手搓固定 `{key}.json.tmp` 在同键
         // 并发写（loop 线程 × web rewind/compact）时 File::create 截断互踩，
         // 混合字节 rename 落盘 = 损坏 JSON，下次启动 warn 跳过即历史丢失。
@@ -400,7 +400,7 @@ impl SessionMgr {
             if !path.extension().map(|e| e == "json").unwrap_or(false) {
                 continue;
             }
-            // BUG-20261025-44：坏档不再静默吞。写侧早已 tempfile+fsync+rename
+            // 坏档不再静默吞。写侧早已 tempfile+fsync+rename
             // 原子，读侧遇到的损坏只剩外部篡改/历史残留/磁盘问题——正是需要
             // 第一个可见信号的场景（与 auth.json / 分享注册表 / checkpoint
             // 镜像同族口径）。跳过语义不变：不炸、不进索引。
@@ -431,9 +431,9 @@ impl SessionMgr {
 
 /// Sanitize a session key for use as a filename (replace ':' with '_').
 ///
-/// H1（devtool-upgrade 阶段 2）起 pub：todowrite（nemesis-agent loop_tools）
+/// （devtool-upgrade）起 pub：todowrite（nemesis-agent loop_tools）
 /// 的存储文件名 `todo_{safe_session_key}.json` 用同款规则——两处已统一为
-/// 仓内单一真相源 `nemesis_utils::sanitize::sanitize_path_segment`（SAN-05
+/// 仓内统一定义 `nemesis_utils::sanitize:sanitize_path_segment`（SAN-05
 /// 白名单；对运行时键族映射与旧 `replace(':')` 一致，另兜 `..`/超长）。
 pub fn sanitize_filename(key: &str) -> String {
     nemesis_utils::sanitize::sanitize_path_segment(key)

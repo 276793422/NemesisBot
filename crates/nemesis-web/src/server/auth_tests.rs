@@ -3,7 +3,7 @@
 //! 覆盖三块：
 //! 1. `auth_exempt_path` 豁免清单真值表（含近邻前缀不误豁免）；
 //! 2. `extract_request_token` 三载体（头 → 查询参数 → Bearer）与空值跳过；
-//! 3. `build_router` + `tower::ServiceExt::oneshot` 端到端：非空 token 下
+//! 3. `build_router` + `tower::ServiceExt:oneshot` 端到端：非空 token 下
 //!    `/api/status` 无/错 token 401、三载体正确 token 200、豁免路径不过闸、
 //!    `workflow_chat=` 只豁免 WS 路径（其余路径照常 401）、空 expected token
 //!    恒放行（默认部署零影响）。

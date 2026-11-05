@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 cluster.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -20,9 +20,9 @@ impl Cluster {
 
         let secret = self.load_discovery_secret();
 
-        // P0 vault fail-closed：token 引用解析失败（load_discovery_secret 或
+        // vault fail-closed：token 引用解析失败（load_discovery_secret 或
         // 先前的 load_rpc_auth_token 置位）→ 拒绝无加密发现，宁可不发现。
-        // BUG-20261102-297：token 为空（rpc_token_missing）同款拒绝——
+        // token 为空（rpc_token_missing）同款拒绝——
         // 明文 announce 可被局域网任意主机侦听/伪造，与坏引用同威胁。
         if self.rpc_reference_broken.load(Ordering::SeqCst) {
             tracing::error!(
@@ -37,7 +37,7 @@ impl Cluster {
             return;
         }
 
-        // G3: 从 config.cluster.json 读取可配置 announce 过期阈值
+        // 从 config.cluster.json 读取可配置 announce 过期阈值
         // （announce_expiry_secs，≤0 = 关闭过期丢弃）。
         let app_cfg = crate::config_loader::load_app_config(&self.workspace);
         let mut discovery_config = crate::discovery::DiscoveryConfig::with_encryption(
@@ -51,8 +51,8 @@ impl Cluster {
         // 整个缺失（load_rpc_auth_token / load_discovery_secret 都早退、两
         // 旗标均未置位）——即集群未配置却手工挂 discovery 的 exotic 接线
         // （测试直驱属此类）。生产路径（gateway / `cluster node`）config
-        // 存在且 token 为空时已在上面 token_missing 闸拒绝（BUG-20261102-297
-        // 推翻 L3 语义矩阵的「空 token = 明文广播运行」兼容臂：与 RPC
+        // 存在且 token 为空时已在上面 token_missing 闸拒绝（
+        // 推翻 语义矩阵的「空 token = 明文广播运行」兼容臂：与 RPC
         // fail-closed 对齐，拒绝无加密发现）。
         if secret.is_empty() {
             tracing::warn!(
@@ -91,7 +91,7 @@ impl Cluster {
 
     /// 解密失败丢弃摘要（token 失配来源账本；discovery 未启动 = None）。
     ///
-    /// L2（2026-09-27）：异 token 来源互不发现是预期安全行为，日常零日志；
+    /// 异 token 来源互不发现是预期安全行为，日常零日志；
     /// 诊断走此处——`cluster.status` WSAPI 的 `discovery_drops` 字段。
     pub fn discovery_decrypt_drops(&self) -> Option<crate::discovery::DecryptDropSummary> {
         let guard = self.discovery.lock();
@@ -119,7 +119,7 @@ impl Cluster {
         if raw.is_empty() {
             return raw;
         }
-        // P0 vault（B3）：discovery 加密密钥与 RPC token 同字段，同链路解析。
+        // vault：discovery 加密密钥与 RPC token 同字段，同链路解析。
         // 解析失败 = fail-closed：置位 rpc_reference_broken（start_discovery
         // 据此整体不启动），绝不降级为无加密发现。
         match nemesis_config::resolve_secret_field(&raw, "config.cluster.json token (discovery)") {
@@ -183,14 +183,14 @@ impl Cluster {
         self.removed_peers.write().remove(node_id)
     }
 
-    /// Register the node-discovered callback (Swarm M2). Called once at
+    /// Register the node-discovered callback (Swarm). Called once at
     /// gateway assembly; the closure receives `(node_id, role, category)` on
     /// every non-blacklisted discovery/refresh event.
     pub fn set_on_node_discovered(&self, cb: Arc<dyn Fn(&str, &str, &str) + Send + Sync>) {
         *self.on_node_discovered.lock() = Some(cb);
     }
 
-    /// CD3（2026-09-17）：注册恢复交付回调（语义见字段 doc）。gateway 在
+    /// 注册恢复交付回调（语义见字段 doc）。gateway 在
     /// board+cluster 构建下装配时注入；未注入 = 恢复腿保持旧行为（无条件
     /// confirm）。
     pub fn set_on_recovered_delivery(
@@ -212,7 +212,7 @@ impl Cluster {
         crate::is_roaming_address(a)
     }
 
-    /// A1：iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，统一小写）。
+    /// iroh 漫游身份 hex 校验归一（64 位 hex，大小写不敏感，统一小写）。
     /// None = 非法——入池 iroh 候选只会浪费拨号预算（诚实裁剪）。
     fn valid_iroh_id(s: Option<String>) -> Option<String> {
         let s = s?;
@@ -265,22 +265,22 @@ impl Cluster {
     }
 
     /// [`Self::handle_discovered_node`] 扩展形态：带对端自报职能、档位与
-    /// agent 实体清单（集群专业职能框架 M2 + P2 agent roster）。生产 UDP
+    /// agent 实体清单（集群专业职能框架 + agent roster）。生产 UDP
     /// 发现路径（announce 接收）走本方法；其余路径（桥接/静态）无扩展
     /// 数据，走旧签名。
     ///
-    /// `source_addr`：R5 源地址收割——UDP announce 的包源 IP（发现层亲眼
+    /// `source_addr`： 源地址收割——UDP announce 的包源 IP（发现层亲眼
     /// 可见的可达性证据；载荷地址可能因对端枚举缺口缺失，如 if_addrs 的
     /// APIPA 缺口）。作为最低优先级拨号候选并入地址池；非 UDP 路径
     /// （TCP 探针身份回传/静态装载）传 `None`。
     ///
-    /// `iroh_id`：对端自报 iroh 漫游身份 hex（A1；hex 校验合法且 feature
+    /// `iroh_id`：对端自报 iroh 漫游身份 hex（hex 校验合法且 feature
     /// 编译时才入池——拼 `iroh:<hex>` 作拨号候选，池尾追加不抢直连优先级；
     /// 非法值/未编译 = 忽略，debug 留痕）。
     ///
-    /// `mandate_pubkey`：对端自报 mandate 签名公钥（L13-a；P-256 SEC1 hex
+    /// `mandate_pubkey`：对端自报 mandate 签名公钥（a；P-256 SEC1 hex
     /// 66/130。合法形态且 trust.toml 已激活时 TOFU 首见钉存进
-    /// `[mandate_keys]`——验签消费在 L13-b；无 key 旧节点维持现行行为）。
+    /// `[mandate_keys]`——验签消费在 -b；无 key 旧节点维持现行行为）。
     #[allow(clippy::too_many_arguments)]
     pub fn handle_discovered_node_ex(
         &self,
@@ -344,7 +344,7 @@ impl Cluster {
         source_addr: Option<&str>,
         build: &str,
     ) -> bool {
-        // BUG-20261101-263：身份字符集闸（G14 同族——畸形 announce 不入册）。
+        // 身份字符集闸（同族——畸形 announce 不入册）。
         // 含 `:`/`/` 的 id 会把下游复合键协议（session_key 的 `/` 分隔、
         // `__ASYNC__` marker 的 `:` 分隔、连接池键）切坏——段截断/会话串台。
         // 正常生成形态不落此闸（见 is_valid_node_identity 注释）。
@@ -361,7 +361,7 @@ impl Cluster {
             return false;
         }
 
-        // L16（2026-11-02 三期）：iroh 互信 announce 采信闸——revoked 一票
+        // （三期）：iroh 互信 announce 采信闸——revoked 一票
         // 不采信（整条拒绝：身份/地址池含 iroh 候选全不采，last_seen 不刷新
         // → registry 自然 stale → Offline → 派发回避），unknown TOFU 首见钉
         // 存，簿缺席 = regime 未激活全放行（字节级现状，绝不因 announce 建
@@ -381,10 +381,10 @@ impl Cluster {
             }
         }
 
-        // L13-a（2026-11-03 三期）：mandate 签名公钥 TOFU 首见钉存。合法
+        // a（三期）：mandate 签名公钥 TOFU 首见钉存。合法
         // P-256 SEC1 hex 且 trust.toml 已激活（簿存在）才写簿——announce
-        // 抵达绝不激活 trust.toml（L16 纪律镜像），无 key 旧节点维持现行
-        // 行为。验签消费在 L13-b；此处只管分发面钉存。Conflict 保留首见
+        // 抵达绝不激活 trust.toml（纪律镜像），无 key 旧节点维持现行
+        // 行为。验签消费在 -b；此处只管分发面钉存。Conflict 保留首见
         // （strict TOFU，轮换唯一通道 = 管理面 mandate_pin_forced）；读/
         // 写失败 warn 不拒 announce（分发面 fail-open，自愈重钉）。
         if let Some(pk) = mandate_pubkey.as_deref()
@@ -411,7 +411,7 @@ impl Cluster {
             }
         }
 
-        // 批次四：撞名后缀收敛（goal 钉死，确定性规则无需协商协议）。
+        // 撞名后缀收敛（goal 钉死，确定性规则无需协商协议）。
         // 对方 announce 的显示名与我本地名相同且 id 不同 → 本地名追加
         // `-` + 自己 node_id 前 4 位（走 set_node_name 唯一写入点，下一拍
         // announce 自然携带新名；对端同理收敛，双方各自算出同一结论）。
@@ -435,7 +435,7 @@ impl Cluster {
             self.set_node_name(suffixed);
         }
 
-        // G14（2026-09-09 双机混跑）：rpc_port=0 的 announce 造不出可用
+        // （双机混跑）：rpc_port=0 的 announce 造不出可用
         // 记录（ip:0 永不可达）。正常路径不会出现 0——静态 peers 装载按
         // udp+10000 派生恒 >0，新版节点 announce 恒带真实 rpc_port；0 只
         // 来自异版本/畸形 announce。未知节点不登记（state.toml 不再存
@@ -450,13 +450,13 @@ impl Cluster {
             return false;
         }
 
-        // G14 同族（2026-10-13 本机实录）：addresses 为空时下方构造出的记录
+        // 同族（本机）：addresses 为空时下方构造出的记录
         // address=""（直连不可达形态）。**已知节点**只合并身份字段
         // （professions/tier/capabilities/tags/role/name 照常更新），地址保留
         // 原值——身份传播（探针回传在 UDP 隔离拓扑的 purpose）不得因对端 IP
-        // 枚举暂空而把可用地址抹成空（实录：静态 peer 的 127.0.0.1:<rpc> 被
+        // 枚举暂空而把可用地址抹成空（静态 peer 的 127.0.0.1:<rpc> 被
         // 探针身份回传覆盖为 ""，后续 peer_chat 全部
-        // `connect to : invalid socket address`）。
+        // `connect to: invalid socket address`）。
         // **未知节点**照常入册：空地址记录是桥接拓扑的合法形态——bridge
         // member_sync 广播的成员本就经 via-bridge 可达而非直连（新到空地址
         // 成员若被拒，桥接设备的成员注册就断了，bridge_rpc/member_sync
@@ -478,7 +478,7 @@ impl Cluster {
             merged.runtime_backend = runtime_backend;
             merged.node_type = node_type.to_string();
             merged.build = build.to_string();
-            // A1：iroh 漫游身份入池（新增非覆盖——空地址分支保留原地址的
+            // iroh 漫游身份入池（新增非覆盖——空地址分支保留原地址的
             // 纪律不变；iroh 候选是新通路证据，照常追加）。
             if let Some(hex) = Self::valid_iroh_id(iroh_id) {
                 let cand = format!("iroh:{hex}");
@@ -489,7 +489,7 @@ impl Cluster {
             return self.registry.upsert_if_changed(merged);
         }
 
-        // A1：iroh 形态地址自带完整寻址（node_id[+直连 socket]），拼
+        // iroh 形态地址自带完整寻址（node_id[+直连 socket]），拼
         // `:rpc_port` 会造出 `iroh:<hex>:<port>` 非法地址——原样作
         // primary。TCP 地址照旧拼 port。
         let primary_address = match addresses.first() {
@@ -500,11 +500,11 @@ impl Cluster {
 
         let was_known = self.registry.get(node_id).is_some();
 
-        // R2 静态 pin 合并保护：peers.toml 显式配置的对端地址不因 announce
+        // 静态 pin 合并保护：peers.toml 显式配置的对端地址不因 announce
         // 刷新被逐出（静态配置层与发现池层此前无合并保护——Win↔Win 验收
         // 实测：可达 pin 被对端自报的不可达地址挤掉后派发即断）。池序 =
         // pinned（用户显式配置优先）→ 载荷（announce 自报序）→ 源地址。
-        // **pin 前置**（多角度审计批中-2，2026-10-13）：拨号预算 = best + 3
+        // **pin 前置**（多角度审计批中-2）：拨号预算 = best + 3
         // 个 fallback（rpc/client.rs），载荷地址 ≥4 个且无一同网段时 pin
         // 排尾永远轮不到——「静态语义 = 用户显式配置优先」本就该排在自报
         // 载荷前面（merge_real_node_info 内的静态地址保护注释同口径）。
@@ -516,7 +516,7 @@ impl Cluster {
             && let Some(existing) = self.registry.get(node_id)
         {
             let mut pinned = existing.addresses.clone();
-            // A1：iroh 形态 base.address 是原子（node_id+可选 socket），
+            // iroh 形态 base.address 是原子（node_id+可选 socket），
             // 按冒号拆 host 会拆出 "iroh" 垃圾候选——iroh 形态整条入 pin。
             let host = if Self::addr_is_roaming(&existing.base.address) {
                 existing.base.address.clone()
@@ -546,7 +546,7 @@ impl Cluster {
                 pool.push(a.clone());
             }
         }
-        // R5 源地址收割：UDP 包源 IP 是「发现层亲眼可见」的可达性证据，作
+        // 源地址收割：UDP 包源 IP 是「发现层亲眼可见」的可达性证据，作
         // 为最低优先级候选入池（池序 pin > 载荷 > 源地址，中-2 pin 前置见
         // 上方静态块）——对端唯一可达地址是 link-local（被对端 if_addrs 缺
         // 口排除在载荷外）时的最后一根自愈稻草。
@@ -556,7 +556,7 @@ impl Cluster {
         {
             pool.push(src.to_string());
         }
-        // A1 池尾追加：iroh 候选是跨网兜底通路（N0 发现层打洞），不抢
+        // 池尾追加：iroh 候选是跨网兜底通路（发现层打洞），不抢
         // 局域网直连优先级——池序 pin > 载荷 > 源地址 > iroh。hex 校验
         // 合法（feature 编译）才入池，杜绝垃圾地址每次拨号白撞。
         if let Some(hex) = Self::valid_iroh_id(iroh_id) {
@@ -570,7 +570,7 @@ impl Cluster {
             base: nemesis_types::cluster::NodeInfo {
                 id: node_id.into(),
                 name: name.into(),
-                // announce 携带对端自报 role（真相源=对端 peers.toml [node].role）；
+                // announce 携带对端自报 role（权威=对端 peers.toml [node].role）；
                 // 曾硬编码 Worker 导致 board.sync 的 coordinator 判定在纯 UDP
                 // 发现拓扑下永远失败（补拉死循环），必须走 from_role_str 解析。
                 role: nemesis_types::cluster::NodeRole::from_role_str(role),
@@ -593,7 +593,7 @@ impl Cluster {
         };
         let changed = self.registry.upsert_if_changed(node);
 
-        // Phase 4: If a placeholder peer exists at the same address (i.e. a
+        // If a placeholder peer exists at the same address (i.e. a
         // manually-added entry keyed by name/address instead of the real ID),
         // upgrade it now. The placeholder is removed from both registry and
         // peers.toml, leaving only the canonical real_id entry.
@@ -609,22 +609,22 @@ impl Cluster {
             // the human-readable name the operator configured in peers.toml —
             // capture it so we can preserve it across the upgrade.
             //
-            // U1-6 补臂（2026-09-18，单机/回环拓扑根修）：自报地址**永不
+            // 补臂（单机/回环拓扑根修）：自报地址**永不
             // 含回环**（get_all_local_ips 跳过 loopback），而单机多实例的
             // 静态 peer 配的恰是 127.0.0.1——纯地址比对在此拓扑下永不命中，
             // 占位条目永不升级、与真实条目长期并存（占位 id = 人读名），
             // 进而遮蔽 canonical_peer_id 的解析（registry.get 先命中占位 →
-            // 返回占位 id 而非运行时 id，D0 账本身份失配，UAT T15 实证）。
+            // 返回占位 id 而非运行时 id， 账本身份失配，UAT 实证）。
             // 补名匹配臂：仅对「id==name」的自键占位条目、且本次 announce
             // 携带非空人读名（≠ node_id）时按名归并。真实条目（id≠name）
             // 不参与名合并——同名异 id 的两个真实节点不会被误并。
             let announce_carries_human_name = !name.is_empty() && name != node_id;
-            // 本机自条目永不作占位消费（2026-10-21 同机双节点实测缺陷）：
+            // 本机自条目永不作占位消费（同机双节点实测缺陷）：
             // 对端自报主地址与本机地址相同（同机多实例同 rpc_port / NAT 共
             // 出口 IP+端口）时，地址比对臂会把 registry 的本机自条目当
             // stale 占位吞掉——自条目被删、peers.toml [peers.{对端}] 被写成
             // 本机 name + UDP 派生端口、对端单播从此打回本机 socket（发现
-            // 自环，G2 探针只能走 overlay）。自条目不参与占位匹配。
+            // 自环， 探针只能走 overlay）。自条目不参与占位匹配。
             let local_node_id = self.node_id.clone();
             let placeholders: Vec<(String, String, Vec<String>)> = self
                 .registry
@@ -648,7 +648,7 @@ impl Cluster {
                     // 条目）。运行时学来的真实远端条目（announce 人类名、
                     // id≠name、非静态）不得被地址吞并——同机同 rpc_port /
                     // 共享 NAT 出口拓扑下两个真实节点地址相同，吞错 =
-                    // 注册表 flapping + peers.toml 反复改写（2026-10-21
+                    // 注册表 flapping + peers.toml 反复改写（
                     // 交付后复查，自条目缺陷的姊妹洞）。
                     if !(self.registry.is_peer_static(&p.base.id)
                         || p.base.id == p.base.name
@@ -656,7 +656,7 @@ impl Cluster {
                     {
                         return false;
                     }
-                    // 发现②/B4 强化：占位匹配对自报**全量**地址逐个比对，
+                    // 发现②/ 强化：占位匹配对自报**全量**地址逐个比对，
                     // 不再只对 primary——placeholder（静态 peers 手写条目）
                     // 配的地址可能不是自报 primary（多网卡枚举序决定），
                     // 单地址比对会永不归一、双条目并存。
@@ -725,7 +725,7 @@ impl Cluster {
                         // rpc_port 字段），不再留给装载端按约定猜。
                         rpc_port,
                         // 发现①根修：升级路径同样保全自报全量地址。
-                        // U1-6：并入占位侧地址（含回环），落盘的候选池
+                        // 并入占位侧地址（含回环），落盘的候选池
                         // 才是完整选址集合——单机拓扑下回环是唯一可达地址。
                         addresses: {
                             let mut merged = addresses.clone();
@@ -772,7 +772,7 @@ impl Cluster {
                 info.base.name = human_name;
                 self.registry.upsert(info);
             }
-            // U1-6：地址池继承。占位条目（静态 peers）配的往往是 operator
+            // 地址池继承。占位条目（静态 peers）配的往往是 operator
             // 手写的可达地址（单机拓扑 = 127.0.0.1），而 announce 自报地址
             // 永不含回环——不继承则升级后的真实条目只剩网卡 IP 候选，单机
             // /防火墙拓扑下 RpcClient 选址全部不可达（send_and_receive 的
@@ -820,7 +820,7 @@ impl Cluster {
             );
         }
 
-        // Swarm M2: notify the discovery callback (gateway folds the node into
+        // Swarm: notify the discovery callback (gateway folds the node into
         // board channels; first-join semantics are the closure's job — cluster
         // does not depend on board).
         if let Some(cb) = self.on_node_discovered.lock().clone() {
@@ -837,8 +837,8 @@ impl Cluster {
     /// stored under a placeholder peer_id (user-supplied ID, or the node name,
     /// or the address). The real node ID is only learned when the remote comes
     /// online and we either:
-    ///   - Phase 3: actively call `get_info` RPC, or
-    ///   - Phase 4: passively receive an AnnounceMessage via UDP discovery.
+    ///   -: actively call `get_info` RPC, or
+    ///   -: passively receive an AnnounceMessage via UDP discovery.
     ///
     /// This function performs the merge:
     ///   1. If an entry with the real_id already exists in the registry,
@@ -868,7 +868,7 @@ impl Cluster {
             // 静态 peer（peers.toml 显式配置）的地址不被对端自报覆盖：
             // 对端自报的 primary 是它 addresses[0]（网卡优先级决定），多网卡
             // 跨网段环境下对本地常不可达（真机三节点实证：master primary=
-            // 10.103.x，worker 按它拨号必败 → G2 探针失败 → Offline →
+            // 10.103.x，worker 按它拨号必败 → 探针失败 → Offline →
             // online 门禁拒 transfer）。静态语义=用户显式配置优先，地址
             // 与 mark_static 的免过期保护同源；动态发现节点仍照常更新。
             if !info.address.is_empty() && !self.registry.is_peer_static(&info.id) {
@@ -877,7 +877,7 @@ impl Cluster {
             // 发现①根修：全量自报数组非空才刷新（primary 保护同上——静态
             // 语义只锁用户显式配置的 base.address；数组是选址候选池，刷新
             // 让 select_best_address 在多网卡下始终拿到最新的可达集合）。
-            // R2 静态 pin 合并保护：静态对端的候选池走**合并**而非整组替换
+            // 静态 pin 合并保护：静态对端的候选池走**合并**而非整组替换
             // ——自报数组不含用户 pin 的可达地址（枚举缺口/网卡优先级）时，
             // 整组替换会把 pin 逐出（与 handle_discovered_node_impl 同纪律）。
             if !info.addresses.is_empty() {
@@ -906,12 +906,12 @@ impl Cluster {
                 None
             };
             self.registry.upsert(existing);
-            // R2 盘面臂（2026-10-21 横扫姊妹洞）：静态对端的 persist 地址与
+            // 盘面臂（横扫姊妹洞）：静态对端的 persist 地址与
             // 内存同纪律——本函数唯一生产调用方（web nodes.ping）每次都会走
             // 到这里，若用入参 info.address 写盘，peers.toml 手写的 pin 地址
             // 被 announce 自报 primary 覆盖（append 路径对已存在键=有意覆
             // 盖），重启后静态语义丢失——内存 2111 保住的 pin 只活到下次重
-            // 启。动态条目照旧随自报刷新（T9 语义不动）。
+            // 启。动态条目照旧随自报刷新（语义不动）。
             match static_pinned_address {
                 Some(addr) if !addr.is_empty() => {
                     let mut pinned = info.clone();
@@ -924,7 +924,7 @@ impl Cluster {
         }
 
         // 2. Placeholder by address → remove + insert under real_id.
-        // 发现②/B4 强化：占位匹配不再只比对自报 primary——对端多网卡下
+        // 发现②/ 强化：占位匹配不再只比对自报 primary——对端多网卡下
         // primary 可能不是用户静态配置的那个地址（真机实证：placeholder
         // 配 192.168.137.x 而自报 primary=10.103.x → 永不归一，双条目
         // 并存）。改为对自报全量地址逐个匹配，任一命中即归一。
@@ -1014,7 +1014,7 @@ impl Cluster {
 
     /// Convert an RPC address (`host:rpc_port`) to the UDP address
     /// (`host:udp_port`) for peers.toml write-back. 委托
-    /// [`crate::cluster_config::rpc_to_udp_address`]（单一真相源，pair 配对
+    /// [`crate::cluster_config:rpc_to_udp_address`]（统一定义，pair 配对
     /// 写盘同源消费）。
     pub(super) fn rpc_to_udp_address(rpc_addr: &str) -> String {
         crate::cluster_config::rpc_to_udp_address(rpc_addr)
@@ -1029,7 +1029,7 @@ impl Cluster {
         // is the RPC address (host:rpc_port) used in-memory; convert it back to
         // the UDP address on write so the derivation isn't double-applied on
         // reload (otherwise 21949 → 31949, breaking post-restart callbacks —
-        // root cause of cluster-uat T9).
+        // root cause of cluster-uat).
         let toml_address = Self::rpc_to_udp_address(&info.address);
         if let Err(e) = crate::cluster_config::append_peer_to_file_with_name(
             path,
@@ -1054,9 +1054,9 @@ impl Cluster {
     /// peer with the real ID), this is a no-op aside from a content refresh via
     /// `persist_real_peer_to_toml`. Otherwise the placeholder is stripped AND
     /// the real entry inserted into the same in-memory doc, then persisted with
-    /// **one** atomic write（T2 TOCTOU 根修：两段写之间的「两头皆无」窗口是
+    /// **one** atomic write（TOCTOU 根修：两段写之间的「两头皆无」窗口是
     /// 并发读盘方假红的根因——见函数尾注）。条目形态走
-    /// [`crate::cluster_config::build_peer_entry_table`] 与追加路径同源。
+    /// [`crate::cluster_config:build_peer_entry_table`] 与追加路径同源。
     pub(super) fn upgrade_peer_in_peers_toml(
         &self,
         placeholder: &str,
@@ -1104,7 +1104,7 @@ impl Cluster {
             }
         };
 
-        // 发现②/B3：优先按字面 placeholder 键删（新写盘路径是字面键）；
+        // 发现②/：优先按字面 placeholder 键删（新写盘路径是字面键）；
         // 找不到再试 sanitize 旧键（旧版代码落盘的有损键存量条目）。
         let placeholder_key = placeholder.to_string();
         let removed = peers_table.remove(&placeholder_key).or_else(|| {
@@ -1122,10 +1122,10 @@ impl Cluster {
             );
         }
 
-        // T2 TOCTOU 根修（2026-10-10）：真实条目**并入同一份 doc 后单次原子
+        // TOCTOU 根修：真实条目**并入同一份 doc 后单次原子
         // 写**。旧两段式（先删占位写一次，再追加真实条目又写一次）在两次写
-        // 之间留出「既无占位也无真实条目」的窗口——G2 探针身份化（probe-identity
-        // 改造）后升级路径触发频率大增，并发读盘的 T2 检查恰好落窗即假红。
+        // 之间留出「既无占位也无真实条目」的窗口—— 探针身份化（probe-identity
+        // 改造）后升级路径触发频率大增，并发读盘的 检查恰好落窗即假红。
         // 四审 #6 同族：占位条目（静态 peers 手写）的扩展字段（professions/
         // tier/tags/…）随键迁移**搬运**到新键——removed 旧 table 的非五字段
         // 并入新 entry，operator 手写职能/档位不因升级丢失。
@@ -1166,7 +1166,7 @@ impl Cluster {
     /// 把调用方给的 target（peer 名或节点 id，人读/机读两种形态都收）归一化
     /// 为注册表权威节点 id（`base.id`，即 worker 侧 `_rpc.from` 的形态）。
     ///
-    /// 单一真相源纪律（T37 双身份失配第三处落点，2026-09-13）：派发账本
+    /// 单一真相源纪律（双身份失配第三处落点）：派发账本
     /// `issue_dispatch.worker_id` 与 worker 上报的传输层身份必须是同一形态
     /// ——matcher 产出本来就是节点 id，人工指派/兜底路径可能给 peer 名
     /// （如 "Alex"），不归一化则 `task.started`/`delivery.files` 的
@@ -1174,13 +1174,13 @@ impl Cluster {
     /// None，调用方保留原值（RPC resolver 自身还有 name/id 兜底扫描）。
     pub fn canonical_peer_id(&self, target: &str) -> Option<String> {
         if let Some(info) = self.registry.get(target) {
-            // U1-6 占位遮蔽防护（2026-09-18）：get 命中的是「id==name」自键
+            // 占位遮蔽防护：get 命中的是「id==name」自键
             // 占位条目（静态 peers 以人读名键控）时，注册表里可能同时存在
             // 同一节点的真实条目（announce 已到、占位按地址升级未命中的
             // 窗口，单机/回环拓扑下该窗口是常态）——此时必须返回真实运行
             // 时 id（worker 侧 `_rpc.from` 的形态），否则派发账本 worker_id
-            // 落占位 id、写回评论作者身份失配（D0 单一真相源被占位击穿，
-            // UAT T15 实证：作者落 "Node-B" 而非 node-* 运行时 id）。扫描
+            // 落占位 id、写回评论作者身份失配（统一定义被占位击穿，
+            // UAT 实证：作者落 "Node-B" 而非 node-* 运行时 id）。扫描
             // 按 name 精确匹配、排除占位自身；无真实条目 = 维持占位 id
             //（旧行为，纯静态拓扑下这是唯一可用句柄）。
             if info.base.id == info.base.name
@@ -1200,7 +1200,7 @@ impl Cluster {
             .find(|p| p.base.id == target || p.base.name == target)
             .map(|p| p.base.id)
             .or_else(|| {
-                // 大小写不敏感回落（2026-09-30 F1：派发目标校验前置——人读
+                // 大小写不敏感回落（派发目标校验前置——人读
                 // 名手工输入大小写失配是常态，文档承诺「大小写不敏感」；
                 // 精确未命中再扫一轮 ASCII 折叠，歧义（两节点仅大小写异）
                 // 取先匹配，实际拓扑不存在。
@@ -1218,7 +1218,7 @@ impl Cluster {
     /// RPC 学到的未知对端登记（真实节点 id 首次出现、UDP announce 尚未
     /// 到达时的身份补齐入口）。
     ///
-    /// T26 根修（2026-09-18）：此前 gateway 在 peer_chat handler 里以硬
+    /// 根修：此前 gateway 在 peer_chat handler 里以硬
     /// 编码缺省值（name=id、addresses=["127.0.0.1"]、role="worker"、
     /// category="general"、rpc_port fallback 21949）直接调
     /// handle_discovered_node。RPC 天然比 announce 先到（广播周期
@@ -1228,7 +1228,7 @@ impl Cluster {
     /// 救回 name），并随 upgrade_peer_in_peers_toml 落盘 peers.toml 永久
     /// 固化——announce 的后续修正只进 registry + state.toml
     /// （sync_to_disk 不写 peers.toml），节点每次重启装载 peers.toml 垃
-    /// 圾复活，worker_sync_once 找不到 coordinator（UAT T26 实证：B 视
+    /// 圾复活，worker_sync_once 找不到 coordinator（UAT 实证：B 视
     /// 角 A 条目 = worker/general/127.0.0.1，而 A 实为
     /// coordinator/development）。
     ///
@@ -1287,7 +1287,7 @@ impl Cluster {
 
         let Some(ph) = chosen else {
             // 无占位可继承：保守登记（旧行为，仅 hint 可用时）。announce
-            // 到达后由 upsert_if_changed 修正为真实自报身份。G14 纪律：
+            // 到达后由 upsert_if_changed 修正为真实自报身份。 纪律：
             // rpc_port 未知（hint=0）登记不可达条目不如不登记。
             if rpc_port_hint == 0 {
                 return false;
@@ -1305,7 +1305,7 @@ impl Cluster {
             );
         };
 
-        // 继承占位身份升级。role 走占位的真实角色（T26 死因 = 旧代码在
+        // 继承占位身份升级。role 走占位的真实角色（死因 = 旧代码在
         // 此硬编码 "worker"，覆盖了 coordinator）；rpc_port：hint 优先，
         // 占位端口已是 rpc 形态（>10000）直接用，udp 形态按 +10000 约定
         // 派生（与静态 loader 同源）。
@@ -1320,7 +1320,7 @@ impl Cluster {
             0
         };
         // 占位 base.address 的 host 并入地址池（单机拓扑回环往往是唯一
-        // 可达地址，见 handle_discovered_node 升级臂 U1-6 注记）。
+        // 可达地址，见 handle_discovered_node 升级臂 注记）。
         let host = ph.base.address.split(':').next().unwrap_or("").to_string();
         let mut addresses = ph.addresses.clone();
         if !host.is_empty() && !addresses.contains(&host) {
@@ -1366,7 +1366,7 @@ impl Cluster {
 /// fields whenever the remote broadcasts a new state.
 ///
 /// `addresses` 是对端自报的**全量**地址列表（网卡枚举序）。发现①根修
-/// （2026-09-15 真机三节点）：此前 RPC merge 路径建条目时丢弃该列表
+/// （真机三节点）：此前 RPC merge 路径建条目时丢弃该列表
 /// （`Vec::new()`），`get_peer_info` 回落单地址后 `select_best_address`
 /// 的 `len<=1` 短路使子网匹配智能选址从未运行——多网卡环境下对端只能
 /// 拿 primary（枚举运气）盲拨不可达网段。保全全量后多地址 failover
@@ -1385,17 +1385,17 @@ pub struct RealNodeInfo {
     pub category: String,
     pub capabilities: Vec<String>,
     pub tags: Vec<String>,
-    /// 对端自报职能（集群专业职能框架 M2；get_info/announce 携带）。
+    /// 对端自报职能（集群专业职能框架；get_info/announce 携带）。
     pub professions: Vec<String>,
     /// 对端自报档位（role_tier 口径；None = 未宣告）。
     pub tier: Option<String>,
-    /// 对端自报 agent 实体清单（P2 2026-10-16；get_info 携带；merge 进
+    /// 对端自报 agent 实体清单（get_info 携带；merge 进
     /// 注册表 ExtendedNodeInfo）。
     pub agents: Vec<crate::types::AgentAnnouncement>,
-    /// 对端自报运行时后端形态（P5 第 4 步 ③；get_info/announce 携带；
-    /// None = 未宣告）。本批只宣告不做 matcher 闸（P6 上位）。
+    /// 对端自报运行时后端形态（get_info/announce 携带；
+    /// None = 未宣告）。本批只宣告不做 matcher 闸（上位）。
     pub runtime_backend: Option<String>,
-    /// 对端自报构建号（A1 运行时硬化批；announce/探针/get_info 携带；
+    /// 对端自报构建号（运行时硬化批；announce/探针/get_info 携带；
     /// merge 进注册表 ExtendedNodeInfo）。不落 peers.toml（写盘手选字段，
     /// 下次 announce 自会重学）。
     pub build: String,

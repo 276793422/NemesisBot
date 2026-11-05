@@ -171,7 +171,7 @@ fn build_completed_reply_with_workflow(
     // Walk terminal/leaf nodes; if any produced a bare JSON string, treat it
     // as the user-facing reply. This is the path used by transform nodes
     // configured with `output_type: text|markdown|xml` which unwrap the
-    // `{text: ...}` envelope into a bare string so the chat UI sees clean
+    // `{text:...}` envelope into a bare string so the chat UI sees clean
     // text instead of JSON.
     for id in terminal_node_ids(workflow) {
         if let Some(nr) = exec.node_results.get(&id)
@@ -235,7 +235,7 @@ fn terminal_node_ids(workflow: &nemesis_workflow::types::Workflow) -> Vec<String
 #[cfg(test)]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): on_event
+// (, quality-hardening goal 冲刺 web): on_event
 // delivery path (Completed/Failed/Cancelled/unknown/non-chat-trigger) via a
 // persistence-seeded engine + missing-def reply fallback.
 #[cfg(test)]

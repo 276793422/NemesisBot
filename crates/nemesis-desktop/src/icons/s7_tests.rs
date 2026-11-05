@@ -1,4 +1,4 @@
-//! S7 冲刺覆盖测试：icons.rs 中现有测试未覆盖的 `pixel()` 数据不足守卫。
+//! 冲刺覆盖测试：icons.rs 中现有测试未覆盖的 `pixel()` 数据不足守卫。
 //!
 //! 生产代码中 Icon 只能通过 `load_from_bytes` 构造（保证 data ==
 //! width*height*4），但 Icon 字段是 pub 的，直接构造一个 data 过短的

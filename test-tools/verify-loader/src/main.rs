@@ -7,7 +7,7 @@
 //! - `verify-self [--keys <包> | --root-cert <der>] <dll>`：调 `nv_verify_current_exe` 验证**本进程 exe**（DLL 自验入口测试）
 //!
 //! 锚自动注入（设 `NEMESIS_ROOT_ANCHOR` = 根证书 SHA-256 指纹 hex，DLL 内部读
-//! lib.rs `builtin_root_anchors`——S4-2 单一真相源）。`--root-cert` 是纯公开材料
+//! lib.rs `builtin_root_anchors`——S4-2 统一定义）。`--root-cert` 是纯公开材料
 //! 入口（零私钥验证）；`--keys` 取包内根证书算锚，同样不要求任何私钥在场。
 
 use anyhow::{Result, bail};

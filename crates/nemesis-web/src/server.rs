@@ -41,7 +41,7 @@ use tower_http::services::ServeDir;
 
 // Port allocation（bind 失败端口走查）
 
-/// 网关 Web 端口带下界（单一真相源）。配置端口落在此带内时，bind 走查
+/// 网关 Web 端口带下界。配置端口落在此带内时，bind 走查
 /// 从配置端口起 +1 前进、到 [`WEB_PORT_MAX`] 回绕 [`WEB_PORT_MIN`]
 /// 循环往复，绕满一整圈仍无可用端口才 loud 失败。
 pub const WEB_PORT_MIN: u16 = 49000;
@@ -215,7 +215,7 @@ pub struct WebServer {
     /// Whether the active model has an API key configured.
     model_has_key: Arc<std::sync::atomic::AtomicBool>,
     /// Optional streaming LLM provider for SSE chat endpoint + persona
-    /// generation（协议感知槽，B 根修 ；经 factory 装配）。
+    /// generation（协议感知槽，B 根修；经 factory 装配）。
     streaming_provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
     /// Agent loop service for start/stop/status control.
     agent_service: Option<Arc<dyn nemesis_services::bot_service::AgentLoopService>>,
@@ -240,7 +240,7 @@ pub struct WebServer {
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     #[cfg(not(feature = "cluster"))]
     cluster: Option<()>,
-    /// QUIC 中继运行面句柄（QUIC 插件化 ：plugin_roaming C-ABI，fn 指针
+    /// QUIC 中继运行面句柄（QUIC 插件化：plugin_roaming C-ABI，fn 指针
     /// Copy 直接持值；nemesisbot gateway 装载插件后经 set_roaming_plugin 注入）。
     /// 恒编译（cluster-roaming feature 已删，插件缺席 = None 诚实降级）。
     quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
@@ -273,7 +273,7 @@ pub struct WebServer {
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
     /// Global e-stop state for /api/internal estop commands.
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
-    /// 签名验证启动自验状态（接入计划 §4；gateway 从 verify_policy 快照映射
+    /// 签名验证启动自验状态（接入计划；gateway 从 verify_policy 快照映射
     /// 注入，flows into AppState for security.signature_verify_status）。
     signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
     /// 技能装前审批门（gateway 注入，flows into AppState）。
@@ -310,7 +310,7 @@ pub struct WebServer {
     /// build_router 挂载 `/bridge`、`/d/<node_id>/`、`/relay` 等桥路由；
     /// None = 接入门不开放（fail-closed，路由不存在）。
     relay: Option<std::sync::Arc<crate::relay::RelayServer>>,
-    /// 本机桥身份（goal 批次二）：桥客户端接入中继时用的 node_id。子路径
+    /// 本机桥身份（goal）：桥客户端接入中继时用的 node_id。子路径
     /// 中间件据此识别 `/d/<自身 node_id>/` 前缀（剥前缀 + base 注入）；
     /// None = 无身份（`--relay` 纯中继不服务自己的面板），前缀剥离永不
     /// 命中。`set_bridge_identity` 注入。
@@ -421,7 +421,7 @@ impl WebServer {
         Arc::clone(&self.skin_id)
     }
 
-    /// 注入本机桥身份（goal 批次二）：子路径中间件据此识别
+    /// 注入本机桥身份（goal）：子路径中间件据此识别
     /// `/d/<自身 node_id>/` 前缀。正常启动在桥客户端装配时注入（与
     /// bridge_client 同一身份）；`--relay` 纯中继不注入。
     pub fn set_bridge_identity(&mut self, node_id: String) {
@@ -504,7 +504,7 @@ impl WebServer {
         self.cluster = Some(cluster);
     }
 
-    /// Set the QUIC relay plugin handle（QUIC 插件化 ：nemesisbot gateway
+    /// Set the QUIC relay plugin handle（QUIC 插件化：nemesisbot gateway
     /// 装载 plugin_roaming 后注入；与 cluster 装配独立）。
     pub fn set_roaming_plugin(&mut self, handle: nemesis_plugin::roaming::RoamingPluginHandle) {
         self.quic_relay = Some(handle);
@@ -551,7 +551,7 @@ impl WebServer {
         self.estop = Some(estop);
     }
 
-    /// Set the signature-verify startup self-check status（接入计划 §4；
+    /// Set the signature-verify startup self-check status（接入计划；
     /// 只读快照，进程内不变——无 set 运行时入口）。
     pub fn set_signature_verify(
         &mut self,
@@ -616,7 +616,7 @@ impl WebServer {
         self.lsp_manager = Some(mgr);
     }
 
-    /// The held LSP manager, if injected .
+    /// The held LSP manager, if injected.
     #[cfg(feature = "lsp")]
     pub fn lsp_manager(&self) -> Option<Arc<nemesis_lsp::LspManager>> {
         self.lsp_manager.clone()
@@ -652,8 +652,8 @@ impl WebServer {
             mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
 
         // minimal（无 feature）形态下这四个槽位别名退化为 Option<>（Copy），
-        // 字面量里 .clone() 会触发 clippy::clone_on_copy（远端
-        // minimal clippy ；workspace 全量 feature unification 掩盖）。
+        // 字面量里.clone() 会触发 clippy::clone_on_copy（远端
+        // minimal clippy；workspace 全量 feature unification 掩盖）。
         // 按 cfg 取值：full 形态 clone Arc 槽，minimal 形态直接 Copy。
         #[cfg(feature = "memory")]
         let memory_manager = self.memory_manager.clone();
@@ -851,7 +851,7 @@ impl WebServer {
             // 未知/撤销/会话已删一律 404；见 crate::share 模块头。
             .route("/api/share/{token}", get(crate::share::handle_api_share));
 
-        // Swarm （§5.4/）：看板资产下载——公开端点（asset_token 即
+        // Swarm：看板资产下载——公开端点（asset_token 即
         // 凭据，不认 dashboard token；token 随引用走，见 handlers/board_asset）。
         // board 关：路由与 handlers/board_asset 模块整体退出编译。
         #[cfg(feature = "board")]
@@ -1016,7 +1016,7 @@ impl WebServer {
             router
         };
 
-        // 批次三：通道页【中继通道】端点。**无条件注册**——overview 的
+        // 通道页【中继通道】端点。**无条件注册**——overview 的
         // 客户端态与 client/reconnect 独立于服务端配置；relay 未注入时
         // overview 的 server 字段诚实回 null（enabled 端点回 400）。
         // dashboard 信任边界（与 /api/status 同语义：本机/内网）。
@@ -1213,7 +1213,7 @@ impl WebServer {
             router = router.merge(skins);
         }
 
-        // 桥子路径外壳（goal 批次二）：`/d/<自身 node_id>/` 前缀剥离 +
+        // 桥子路径外壳（goal）：`/d/<自身 node_id>/` 前缀剥离 +
         // HTML `<base href>` 注入。**不能**用 `Router::layer`——axum 0.8
         // 的 layer 运行于路由匹配之后（routing/mod.rs `Router::layer` →
         // path_router.layer 包装 endpoint），改 URI 来不及；外壳形态
@@ -1427,7 +1427,7 @@ fn cors_origin_value(req: &axum::extract::Request) -> String {
 ///
 /// Exact `/chat` + `/chat/` are handled inside rule 3's slot: they serve the
 /// standalone chat page shell (`chat/index.html`) rather than the dashboard
-/// fallback . Deeper `/chat/<x>` paths keep the SPA fallback.
+/// fallback. Deeper `/chat/<x>` paths keep the SPA fallback.
 async fn serve_embedded_static(
     files: Arc<dyn StaticFiles>,
     req: axum::extract::Request,
@@ -1595,7 +1595,7 @@ pub fn resolve_static_dir(explicit_path: Option<&str>, workspace: Option<&str>) 
         }
     }
 
-    // 3. ./static/
+    // 3../static/
     let local_static = PathBuf::from("static");
     if local_static.exists() && local_static.is_dir() {
         return Some("static".to_string());
@@ -1884,13 +1884,13 @@ pub async fn process_messages_with_router(
         // 本地占位已在发送时渲染，历史恢复走 chat_log 全量，与旧行为一致。
         // ⚠️ 咽喉点流经两类消息：chat.send（用户文本）与 chat.history_request
         // （content 是请求 JSON、metadata 带 request_type="history"）——只对
-        // 前者入环+回声。判据用排除式（BUG 修复 ：history_request
+        // 前者入环+回声。判据用排除式（BUG 修复：history_request
         // 曾被误当 user 行入环回声，前端每个会话凭空出现一条请求 JSON「消
         // 息」并触发悬空占位「...」）；agent 侧消费惯例即只认
         // request_type=="history"（loop.rs 两处），其余按用户消息处理。
         let is_history_request =
             msg.metadata.get("request_type").map(String::as_str) == Some("history");
-        // （改进项三期）：写入侧幂等键——(session_key,
+        // 写入侧幂等键——(session_key,
         // client_msg_id) 命中去重索引 = 不重复入环、不二次触发 agent（短路
         // bus 转发），回声帧带**原 seq + deduped:true**。幂等窗口有界
         // （chat_dedup LRU cap，超窗重复 = 正常重复处理，文档口径）。
@@ -2207,7 +2207,7 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
-                // （凭据 vault §7）：凭据索要卡同走全局广播——
+                // （凭据 vault）：凭据索要卡同走全局广播——
                 // 全局卡（无会话字段），前端凭据卡渲染 key_name/reason +
                 // 倒计时；凭据值绝不进事件载荷。展平内层同 族。
                 if matches!(
@@ -2306,7 +2306,7 @@ pub async fn pump_agent_events(
                     }
                     continue;
                 }
-                // （机会项）：交付物登记 → SSE `deliverables` +
+                // 交付物登记 → SSE `deliverables` +
                 // WS push `deliverables`。不入 chat_event_log 环——交付物已
                 // 随 assistant 行持久化在 chat_log（历史映射是权威恢复源，
                 // 重连/重载走 loadHistory 即恢复），环内重放只会让前端重复

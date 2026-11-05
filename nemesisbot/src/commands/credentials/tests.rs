@@ -144,7 +144,7 @@ async fn import_is_idempotent_on_second_run() {
 }
 
 // ===========================================================================
-// reused / conflicts 报表行（S11c，quality-hardening goal 冲刺 S11）——
+// reused / conflicts 报表行（quality-hardening goal 冲刺）——
 // 此前 MISSED：48（复用 N 个）与 51-55（冲突警告）。预置 credentials.yaml
 // 制造同值复用 / 异值冲突两种状态。
 // ===========================================================================

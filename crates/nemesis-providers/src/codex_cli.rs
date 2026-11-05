@@ -220,7 +220,7 @@ impl CodexCliProvider {
         }
 
         if !last_error.is_empty() && content_parts.is_empty() {
-            // BUG-20261103-351：turn.failed/error 事件是 codex CLI 对上游
+            // turn.failed/error 事件是 codex CLI 对上游
             // API 错误的透传（CLI 成功启动后的交互失败），与 SSE lane 的
             // response.failed 同源——交真相源分类（瞬态文案可轮转），分类
             // 不出维持 Unknown 兜底。
@@ -232,7 +232,7 @@ impl CodexCliProvider {
         }
 
         let content = content_parts.join("\n");
-        // 白名单过滤（BUG-20261103-338，BUG-20261025-16 同款不变量）：提取器
+        // 白名单过滤（同款不变量）：提取器
         // 对 `{"tool_calls"` 文本零校验，文档性 JSON 会被劫持成幻影工具调用
         // + finish 强改 "tool_calls" + 正文剥离（用户要看的示例被静默删掉）。
         // 恢出的名字必须命中本请求的 tools 白名单；全滤空 = 维持原 finish
@@ -279,7 +279,7 @@ impl LLMProvider for CodexCliProvider {
             });
         }
 
-        // prompt 走 stdin（2026-09-23 修复：此前 `let _prompt = …` 死绑定
+        // prompt 走 stdin（修复：此前 `let _prompt = …` 死绑定
         // 丢弃、stdin 只 pipe 不写 → codex CLI 等 EOF 挂到超时）。
         let prompt = self.build_prompt(messages, tools);
 
@@ -308,7 +308,7 @@ impl LLMProvider for CodexCliProvider {
         args.push("-".to_string()); // read prompt from stdin
 
         // CLI 子进程是 console 程序；gateway 托盘/无控制台运行（release
-        // windows 子系统，2026-09-21）时压掉弹窗（stdio 全走管道不受影响）。
+        // windows 子系统）时压掉弹窗（stdio 全走管道不受影响）。
         let mut cmd = tokio::process::Command::new(&self.config.command);
         cmd.args(&args)
             .stdin(std::process::Stdio::piped())
@@ -337,7 +337,7 @@ impl LLMProvider for CodexCliProvider {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.is_empty() {
                 // stderr 是 CLI 对上游/API 错误的透传主通道——同交真相源
-                // 分类（BUG-20261103-351）。
+                // 分类。
                 return Err(crate::failover::classify_message_error(
                     "codex-cli",
                     model,

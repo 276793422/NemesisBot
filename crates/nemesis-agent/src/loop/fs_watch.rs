@@ -38,7 +38,7 @@ impl AgentLoop {
         }
     }
 
-    /// : enable tool-result spill with the given root directory
+    /// enable tool-result spill with the given root directory
     /// (expected `<home>/logs/spill`). Results above the spill threshold are
     /// written whole under this root and the conversation keeps a bounded
     /// preview + locator. Without a call, spilling stays disabled and results
@@ -61,7 +61,7 @@ impl AgentLoop {
         *self.skills_loader.write() = Some(loader);
     }
 
-    /// : enable the workspace instruction-chain section by giving
+    /// enable the workspace instruction-chain section by giving
     /// the workspace root (chain root = this dir; the chain itself is read
     /// per-injection).
     pub fn set_workspace_root(&self, root: std::path::PathBuf) {
@@ -79,13 +79,13 @@ impl AgentLoop {
         *self.exec_env_resolver.write() = Some(resolver);
     }
 
-    /// 节点工作区根（装配时 [`Self:set_workspace_root`] 注入；未设 = None）。
+    /// 节点工作区根（装配时 [`Self::set_workspace_root`] 注入；未设 = None）。
     /// F-：cluster agent 以此定位档案管线任务的工作副本目录。
     pub fn workspace_root(&self) -> Option<std::path::PathBuf> {
         self.workspace_root.read().clone()
     }
 
-    /// ：注入工作区指令信任档（项目 loop 装配时解析注入；
+    /// 注入工作区指令信任档（项目 loop 装配时解析注入；
     /// `projects.trust` WSAPI 对运行中 loop 热更新——下一轮 build_messages
     /// 即生效，区块逐 build 重渲染无残留）。
     pub fn set_instruction_trust(&self, trust: crate::workspace_instructions::InstructionTrust) {
@@ -158,7 +158,7 @@ impl AgentLoop {
 
     /// buffer an externally-changed workspace file (workspace-relative).
     /// Drops self-inflicted writes (the agent's own write_file/edit_file
-    /// within [`crate:fs_watcher:SELF_WRITE_WINDOW`]) and caps the buffer.
+    /// within [`crate::fs_watcher:SELF_WRITE_WINDOW`]) and caps the buffer.
     pub fn push_external_change(&self, rel_path: &str) {
         let norm = crate::fs_watcher::normalize_workspace_rel(rel_path);
         {

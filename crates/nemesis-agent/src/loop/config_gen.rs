@@ -3,11 +3,11 @@
 //!
 //! 规格四要素的本面落点：
 //! - **配置变更 = 构建新代 prepared snapshot（校验→临时名→原子改名发布）**：
-//!   写入侧由 `nemesis_utils:write_file_atomic` 承担（config.json 全部保存点
+//!   写入侧由 `nemesis_utils::write_file_atomic` 承担（config.json 全部保存点
 //!   已同源，见 nemesis-config save_config 家族）；读取侧对应物是本文件的
 //!   prepare（读盘+解析=校验）→ publish（写锁内 CAS 改名换代）。
-//! - **消费者持代引用**：读者经 [`AgentLoop:config_generation`] 取
-//!   `Arc<serde_json:Value>`——不可变快照，代内恒一致；每轮 ≈20+ 次磁盘读
+//! - **消费者持代引用**：读者经 [`AgentLoop::config_generation`] 取
+//!   `Arc<serde_json::Value>`——不可变快照，代内恒一致；每轮 ≈20+ 次磁盘读
 //!   +JSON 解析收敛为每发布点一次。
 //! - **在途准备被取代 = retryable**：prepare 在锁外做 IO（含基线代号），
 //!   publish 时 CAS——基线已被并发发布者推进 = `Superseded`，调用方以最新
@@ -45,7 +45,7 @@ pub(crate) struct ConfigGeneration {
 pub(crate) struct PreparedConfig {
     /// 准备完成时的现行代号（CAS 基线）。
     pub(crate) base_generation: u64,
-    /// 准备所读的盘上原始字节（收敛比对基准，见 [`ConfigGeneration:raw`]）。
+    /// 准备所读的盘上原始字节（收敛比对基准，见 [`ConfigGeneration::raw`]）。
     pub(crate) raw: Vec<u8>,
     pub(crate) value: std::sync::Arc<serde_json::Value>,
 }

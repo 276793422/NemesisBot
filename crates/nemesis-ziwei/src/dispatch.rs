@@ -1,15 +1,15 @@
-//! dispatch —— 协议解析 + 结构解码（T1.4 read_mem 协议面；call_fn/hook_capture
-//! 随 M4 接入）。
+//! dispatch —— 协议解析 + 结构解码（.4 read_mem 协议面；call_fn/hook_capture
+//! 随 接入）。
 //!
 //! 职责切分（平台无关面）：帧 JSON 解析（[`json_get_str`]/[`json_get_u64`]）、
 //! read_mem 应答解析（[`parse_read_mem_resp`]）、内存镜像 → profile 数据结构
 //! 解码（[`decode_struct`]）。`read_mem` 发帧本体在 `pipe`（windows-only，
 //! 依赖 PipeLink）；本模块保持平台中立——Linux nightly 全量测试可跑解码单测。
 //!
-//! 原语路由表（总控 §5）：
+//! 原语路由表（总控）：
 //! - `read_mem`：读内存 + 按 profile 数据结构解码（本模块 + pipe）；
-//! - `call_fn`：M4（payload 侧 CreateRemoteThread 于目标内调函数 + 看门狗）；
-//! - `hook_capture`：M4（trampoline 单点捕获）。
+//! - `call_fn`：（payload 侧 CreateRemoteThread 于目标内调函数 + 看门狗）；
+//! - `hook_capture`：（trampoline 单点捕获）。
 
 use nemesis_ziwei_profile::{DataStructure, FieldBase, FieldDecode, FieldType};
 
@@ -35,7 +35,7 @@ pub enum PipeError {
     FrameTooBig(u32),
     #[error("对端已断开")]
     Closed,
-    /// R5（2026-10-24 第四次外评）：上一交换被外部超时取消——迟到应答仍滞
+    /// （第四次外评）：上一交换被外部超时取消——迟到应答仍滞
     /// 留管道缓冲，与新请求的应答无法区分（帧协议无请求 ID）。继续使用 =
     /// 张冠李戴。诚实语义：链路报废，结果未知，重建会话（勿自动重发——
     /// read/call_fn 副作用不可幂等假设）。
@@ -98,7 +98,7 @@ pub fn parse_read_mem_resp(resp: &str) -> Result<Vec<u8>, PipeError> {
 pub fn decode_struct(data: &[u8], ds: &DataStructure) -> Result<serde_json::Value, String> {
     let mut out = serde_json::Map::new();
     for f in &ds.fields {
-        // BUG-20261028-123：解码前重验字段界（validate 同闸 u64 真值）——
+        // 解码前重验字段界（validate 同闸 u64 真值）——
         // decode 自含，不依赖调用方先跑过 validate；此前 u32 乘法回绕使
         // `u64[536870913]` 这类字段绕闸进解码，0 步长死循环 + 巨量
         // with_capacity 可打爆进程。
@@ -294,7 +294,7 @@ pub fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
 }
 
 // ---------------------------------------------------------------------------
-// M4：call_fn 应答三态 + hook 事件（拉取制）
+// call_fn 应答三态 + hook 事件（拉取制）
 // ---------------------------------------------------------------------------
 
 /// call_fn 调用约定码（payload CONV_* 同源；0=msx64 1=stdcall 2=cdecl）。

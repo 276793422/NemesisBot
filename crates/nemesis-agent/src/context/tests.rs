@@ -57,7 +57,7 @@ fn context_builder_empty_workspace() {
     let prompt = builder.build_system_prompt(false);
 
     // Time is intentionally not in the cached system prompt; it's injected
-    // per-request by AgentLoopExecutor:build_messages().
+    // per-request by AgentLoopExecutor::build_messages().
     assert!(!prompt.contains("Current Time"));
     assert!(prompt.contains("Environment"));
     assert!(prompt.contains("Workspace"));
@@ -832,7 +832,7 @@ fn context_builder_load_skills_skips_stray_file_entries() {
     );
 }
 
-// --- EXPERTISE.md 注入（persona-gen D②，两态断言） ---
+// --- EXPERTISE.md 注入（两态断言） ---
 
 #[test]
 fn expertise_md_nonempty_is_injected() {
@@ -1009,7 +1009,7 @@ fn pro_mode_heartbeat_skip_bootstrap_keeps_segments() {
 // --- E 线 tier 档位 + B 线画像注入（自进化升级） ---
 //
 // 动态注入迁移：画像/档位两段从 ContextBuilder（build 时冻结、
-// classic-only）迁到 loop:messages 的 merged snapshot 每轮重渲染。这里
+// classic-only）迁到 loop::messages 的 merged snapshot 每轮重渲染。这里
 // retarget 为自由函数级测试（段模板字节契约 + from_tier 映射）；snapshot
 // 路径的注入行为回归锁在 loop/messages 测试与 user_profile/tests.rs。
 
@@ -1058,8 +1058,8 @@ fn prompt_profile_from_tier_mapping() {
 
 #[test]
 fn user_profile_section_renders_after_persona_before_tools() {
-    // 画像段模板契约（user_profile:render_section 产物的包装形态）：
-    // 标题行 + 空行 + 渲染正文 + 尾注（同 loop:messages:user_profile_section_now
+    // 画像段模板契约（user_profile::render_section 产物的包装形态）：
+    // 标题行 + 空行 + 渲染正文 + 尾注（同 loop::messages:user_profile_section_now
     // 的包装模板——两处字节由各自断言钉住，防漂移）。
     let rendered = "- [style] 用户偏好简洁回复";
     let section = format!(

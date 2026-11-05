@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// PB-3 Web/Channel 装配（计划 §4.2 B3）：C1 段（计划口径原 3969–4417）整体
+// PB-3 Web/Channel 装配（计划）： 段（计划口径原 3969–4417）整体
 // 迁入 `init_web`——WebServer 构建、CORS、relay 服务端装配（桥 hub 侧身份
 // sink / 帧枢纽 / 成员快照）、桥客户端身份注入、ChannelManager 全 Channel
 // 初始化与 dispatch loop。原文自 run() 逐字迁入，仅四处机械改写：fn 体包
@@ -17,7 +17,7 @@
 // 无消费者——fn 级 cfg_attr allow(unused_variables)（Phase A
 // advertise_host_for 同款形态），参数本体保持无门使调用点单行。
 //
-// 块内不变量随块内聚：C7 mem::forget(channel_manager) 挂账原样随块（§8）；
+// 块内不变量随块内聚： mem::forget(channel_manager) 挂账原样随块；
 // relay 模式不经此路径（run_relay 独立轻量启动）的语义注释随块保留。
 // ---------------------------------------------------------------------------
 
@@ -30,7 +30,7 @@ use super::web_bind_and_display_hosts;
 use super::{ClusterWiring, GatewayCtx};
 use crate::common;
 
-/// PB-3 产物 struct（§4.2 B3）。全字段无门：web/channel 装配在所有 feature
+/// PB-3 产物 struct。全字段无门：web/channel 装配在所有 feature
 /// 组合下恒走（仅内部 cluster 挂件随门摘除）。
 pub(crate) struct WebWiring {
     pub web_server: nemesis_web::server::WebServer,
@@ -41,12 +41,12 @@ pub(crate) struct WebWiring {
     pub bridge_client_launch: Option<nemesis_config::BridgeClientConfig>,
 }
 
-/// C1：WebServer + ChannelManager 装配（计划 §4.2 B3）。WebServer 早建以向
+/// WebServer + ChannelManager 装配（计划）。WebServer 早建以向
 /// WebChannel 注入 SessionManager；ChannelManager init/start/mem::forget 均
 /// 在本函数内完成。
 #[cfg_attr(not(feature = "cluster"), allow(unused_variables))]
 pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Result<WebWiring> {
-    // ctx 影子重绑（B1 同款）：块内原文引用局部名不变，所有权拓扑不变。
+    // ctx 影子重绑（同款）：块内原文引用局部名不变，所有权拓扑不变。
     let home = ctx.home.clone();
     let cfg = ctx.cfg.clone();
     let bus = ctx.bus.clone();
@@ -57,15 +57,15 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     let bridge_cluster_slot = cluster.bridge_cluster_slot.clone();
 
     //
-    // 变基注记（2026-09-24）：origin/main 并入 SEC-001 控制面凭据启动闸
+    // 变基注记：origin/main 并入 SEC-001 控制面凭据启动闸
     // （web + websocket 双监听面，common::ensure_control_plane_credential）——
     // 本体随之携带（run() PB-3 区原文含闸逐字迁入）。
-    // C1: Create ChannelManager and wire it.
+    // Create ChannelManager and wire it.
     // Mirrors Go's bot_service.go:333-344: create ChannelManager, register channels,
     // start dispatch loop, call agentLoop.SetChannelManager().
 
     // Create WebServer early so we can inject SessionManager into WebChannel.
-    // G9：绑定地址与展示地址分离（见 web_bind_and_display_hosts）——集群
+    // 绑定地址与展示地址分离（见 web_bind_and_display_hosts）——集群
     // 场景 0.0.0.0 如实绑定所有网卡，资产 bundle 广告的 LAN IP 才为真。
     #[cfg(feature = "cluster")]
     let web_cluster_starts = cluster_should_start;
@@ -94,7 +94,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         .map_err(anyhow::Error::msg)?;
     }
     let web_port = cfg.channels.web.port;
-    // CORS 三态（2026-10-16 hardening）：development_mode → 显式 allow-all；
+    // CORS 三态（hardening）：development_mode → 显式 allow-all；
     // 显式 origin 列表 → 生产层；配置缺失/加载失败 → restrictive（同源限定，
     // fail-closed——旧「空列表 = allow-all」缺省把配置缺失静默变成 `*`）。
     // dashboard 与 API 同源服务，restrictive 不影响内建流。
@@ -132,7 +132,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     let static_files = crate::embedded::resolve_static_files();
     let web_config = nemesis_web::server::WebServerConfig {
         listen_addr: format!("{}:{}", web_bind_host, web_port),
-        // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用（web server
+        // vault：auth_token 支持 vault:/env:/yaml: 引用（web server
         // 侧与 web channel 侧同源解析，两处比较值一致）。鉴权验证类字段：
         // 解析失败回一次性随机 token（fail-closed，绝不静默回空串关鉴权）。
         auth_token: crate::common::resolve_auth_token_or_random(
@@ -153,7 +153,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     // 皮肤包（.nbskin）装配：目录 = exe 同级 `skins/`（与 static/ 同策略，
     // 不落 home）；激活 id = config `ui.skin`（"default"/空 = 内置皮肤）。
     // setter 注入而非 WebServerConfig 字段——后者有大量测试字面量装配，
-    // 加字段即 E0063 面扩大（79b49a25 教训）。`skins` feature 关（IoT
+    // 加字段即 面扩大（79b49a25 教训）。`skins` feature 关（IoT
     // 裁剪）时整段不编译，config `ui.skin` 残留无害。
     #[cfg(feature = "skins")]
     {
@@ -173,7 +173,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         nemesis_web::handlers::skins::set_handle(skins_dir, web_server.skin_id_handle());
     }
 
-    // 签名验证启动自验状态注入（接入计划 §4）：verify_policy 快照 → 只读
+    // 签名验证启动自验状态注入（接入计划）：verify_policy 快照 → 只读
     // AppState 字段 → security.signature_verify_status / 前端徽标。
     if let Some(status) = signature_status_from_start_check() {
         web_server.set_signature_verify(status);
@@ -184,19 +184,19 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     // include_str! 嵌入——'static 字符串直接存静态槽，无需 AppState 字段。
     nemesis_web::handlers::system::set_features_manifest(crate::embedded::FEATURES_MANIFEST_JSON);
 
-    // P8（2026-09-21）：chat_event_log 装配 EventHub——record/record_tool 落
+    // chat_event_log 装配 EventHub——record/record_tool 落
     // 环时同步广播 SSE `chat.activity {session_id, seq}`，让**其他**浏览器
     // 标签/端感知到本会话有新帧（本端走 WS 实时 push，天然领先；落后端
     // 防抖全量刷新兜底）。`--relay` 纯中继路径（run_relay）无 chat 流量，
     // 不装配（未安装时 record 静默跳过广播，单测零开销）。
     nemesis_web::chat_event_log::install_event_hub(web_server.event_hub().clone());
 
-    // L12（改进项三期 2026-11-02）：chat.send 写入侧幂等键 sidecar 根装配
+    // chat.send 写入侧幂等键 sidecar 根装配
     // （`<workspace>/logs/session_logs/*.dedup.json`，惰性加载重启不失）。
     // 未安装 = 纯内存模式（重启后幂等窗口清零，诚实降级不报错）。
     nemesis_web::chat_dedup::install_workspace(&home.join("workspace"));
 
-    // 反向桥中继服务端（goal：反向桥与多设备汇聚，一期批次一）：配置了
+    // 反向桥中继服务端（goal：反向桥与多设备汇聚，一期）：配置了
     // bridge.server.token 才开放接入门（fail-closed）——未配置则桥路由
     // 不存在。`--relay` 纯中继不走此路径（run_relay 独立轻量启动）。
     if let Some(bridge) = &cfg.bridge {
@@ -206,7 +206,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                 true,
             ));
             relay_server.ensure_maintenance();
-            // 二期批次五（hub 侧）：正常模式全量启动 = 桥入设备注册进集群
+            // 二期（hub 侧）：正常模式全量启动 = 桥入设备注册进集群
             // registry（同权，与 UDP 发现节点一致，不降级）+ welcome 帧告知
             // hub 集群身份。identity sink 由宿主注入（relay 模块零集群依赖）；
             // cluster feature 关 = 桥退化为纯隧道语义（一期行为）。
@@ -219,7 +219,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                 );
                 relay_server.set_identity_sink(bridge_sink.clone());
                 relay_server.set_hub_node_id(hub_cluster.node_id().to_string());
-                // 二期批次六（hub 侧）：桥帧 RPC 枢纽——设备上行 cluster_rpc
+                // 二期（hub 侧）：桥帧 RPC 枢纽——设备上行 cluster_rpc
                 // 喂本地 RPC 链（与 TCP 同一 handler 链），RpcClient 桥出口
                 // 经 relay 下行投递（网段仲裁见 rpc/client.rs）。RPC server
                 // 未启动（rpc_port==0）→ 不装配，relay 维持一期忽略语义。
@@ -236,7 +236,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     hub_rpc_client.set_bridge_transport(hub_bridge);
                     info!("[Relay] 桥帧 RPC 枢纽已装配（上行喂本地 RPC 链 + 出口桥仲裁）");
                 }
-                // 三期批次八（hub 侧）：成员表快照闭包——relay 广播
+                // 三期（hub 侧）：成员表快照闭包——relay 广播
                 // member_sync 时拉取（registry 摘要 + hub 自身条目；桥入
                 // 成员经映射反查打 via_bridge 标）。`--relay` 不经此路径，
                 // 广播回落为桥设备表摘要（relay 内建）。
@@ -302,7 +302,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         }
     }
 
-    // 反向桥客户端（goal 批次二）：client.enabled 时注入本机桥身份
+    // 反向桥客户端（goal）：client.enabled 时注入本机桥身份
     // （/d/<node_id>/ 子路径命中本机面板——必须在 build_router 前注入），
     // 并在 Step 17 real_port 确定后 spawn 出站连接。桥为旁路：配置不完整
     // 只 ERROR + 不启动，绝不阻断主服务。
@@ -372,8 +372,8 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     if cfg.channels.external.enabled {
         enabled_channels.push("external".to_string());
     }
-    // Wave 3（WS12 集成面）：feature-gated 通道报告臂。cfg 门控用 nemesisbot
-    // 侧 feature 名（channels- 前缀）；此列表同时是 ChannelManager 的
+    // Wave 3（集成面）：feature-gated 通道报告臂。cfg 门控用 nemesisbot
+    // 侧 feature 名（channels 前缀）；此列表同时是 ChannelManager 的
     // allowed-channels 出站过滤白名单——缺名 = 该通道出站被静默丢弃。
     #[cfg(feature = "channels-matrix")]
     if cfg.channels.matrix.enabled {
@@ -433,7 +433,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     host: cfg.channels.web.host.clone(),
                     port: cfg.channels.web.port as u16,
                     ws_path: cfg.channels.web.path.clone(),
-                    // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用。
+                    // vault：auth_token 支持 vault:/env:/yaml: 引用。
                     // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
                     auth_token: crate::common::resolve_auth_token_or_random(
                         &cfg.channels.web.auth_token,
@@ -471,7 +471,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             #[cfg(feature = "channels-line")]
             line: if cfg.channels.line.enabled {
                 Some(nemesis_channels::line::LineConfig {
-                    // P0 vault（B3）：两个字段均支持 vault:/env:/yaml: 引用。
+                    // vault：两个字段均支持 vault:/env:/yaml: 引用。
                     // access_token 是出站调用凭据（保持空串语义）；
                     // channel_secret 用于签名验证（鉴权验证类 → fail-closed 随机）。
                     channel_access_token: crate::common::resolve_secret_or_empty(
@@ -494,7 +494,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     host: cfg.channels.websocket.host.clone(),
                     port: cfg.channels.websocket.port as u16,
                     path: cfg.channels.websocket.path.clone(),
-                    // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用。
+                    // vault：auth_token 支持 vault:/env:/yaml: 引用。
                     // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
                     auth_token: crate::common::resolve_auth_token_or_random(
                         &cfg.channels.websocket.auth_token,
@@ -506,12 +506,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             } else {
                 None
             },
-            // Feature-gated channel init 臂（Wave 3 WS12 集成面）：每臂把
+            // Feature-gated channel init 臂（Wave 3 集成面）：每臂把
             // nemesis-config 的通道配置逐字段转换到 nemesis-channels 侧 Config
-            //（真相源 = 各通道 mod 顶部 `pub struct XConfig`）。cfg 门控用
+            //（权威 = 各通道 mod 顶部 `pub struct XConfig`）。cfg 门控用
             // nemesisbot 侧 feature 名（`channels-` 前缀），经 nemesisbot
             // Cargo.toml 转发到 nemesis-channels 侧同名 feature（无前缀）。
-            // 凭据解析纪律（P0 vault B3 先例）：
+            // 凭据解析纪律（vault 先例）：
             //   鉴权验证类（验证入站请求的 secret）→ resolve_auth_token_or_random
             //   （解析失败回一次性随机 token，fail-closed）；
             //   出站调用凭据（access_token 类）→ resolve_secret_or_empty
@@ -574,7 +574,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     base_url: cfg.channels.mattermost.base_url.clone(),
                     // bot_token 是出站凭据（REST Bearer 头 + WS authentication_challenge
                     // 自鉴权首帧——把 token 发给服务器，从不用于验证入站请求），走
-                    // empty 兜底让通道侧的空 token 响亮校验拦截带病启动（2026-09-26 复查：
+                    // empty 兜底让通道侧的空 token 响亮校验拦截带病启动（复查：
                     // 此前误用 random 兜底，凭据引用失效时随机串击穿校验、通道带病启动）。
                     bot_token: crate::common::resolve_secret_or_empty(
                         &cfg.channels.mattermost.bot_token,
@@ -593,7 +593,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     api_key: if cfg.channels.whatsapp.api_key.is_empty() {
                         None
                     } else {
-                        // 桥 API key：出站鉴权凭据（config 侧字段为本次 WS12 补齐）
+                        // 桥 API key：出站鉴权凭据（config 侧字段为本次 补齐）
                         Some(crate::common::resolve_secret_or_empty(
                             &cfg.channels.whatsapp.api_key,
                             "channels.whatsapp.api_key",
@@ -656,7 +656,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         "channels.wecom.webhook_url",
                     ),
                     // webhooks map：值同为出站目标 URL（内嵌 key），逐值走
-                    // 出站凭据解析（2026-09-26 复查补漏：此前整 map 原样
+                    // 出站凭据解析（复查补漏：此前整 map 原样
                     // clone，vault:/env: 引用不解析原样上线路径）。
                     webhooks: cfg
                         .channels
@@ -975,7 +975,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             add_sync!(cfg.channels.line, "line");
             add_sync!(cfg.channels.maixcam, "maixcam");
             add_sync!(cfg.channels.onebot, "onebot");
-            // Wave 3（WS12 集成面）：feature-gated 通道 sync_to 接线（config
+            // Wave 3（集成面）：feature-gated 通道 sync_to 接线（config
             // 段无 cfg 门控，字段恒存在；enabled 关闭时宏内自判跳过）。
             add_sync!(cfg.channels.matrix, "matrix");
             add_sync!(cfg.channels.irc, "irc");
@@ -994,7 +994,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         // Bridge: bus outbound broadcast → ChannelManager mpsc.
         // Mirrors Go's manager.go: dispatchOutbound reading from bus.OutboundChannel().
         // Without this, non-web channel outbound is silently dropped.
-        // BUG-20261025-52：先订阅再 spawn——旧形态在任务体内订阅，spawn 到
+        // 先订阅再 spawn——旧形态在任务体内订阅，spawn 到
         // 首 poll 之间发布的消息不在桥的 broadcast 缓冲里（发布侧接收者计数
         // >0 时连 warn 都没有），startup 窗口的 IM 回复静默丢失。
         let _cm_bridge_handle =
@@ -1009,7 +1009,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             );
         }
 
-        // 项 C（2026-10-22）：通知记账钩子 + 失败重试 sweeper。钩子在
+        // 项 C：通知记账钩子 + 失败重试 sweeper。钩子在
         // dispatch_loop 启动前接线（start_dispatch_loop 消费 &Arc<Self>，
         // 钩子读写同一实例的 Mutex 槽，顺序无竞态但先接为先）。sweeper
         // 每 tick 惰性读 db 槽（post_agent 注入），槽空 = no-op——本函数
@@ -1041,7 +1041,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     })
 }
 
-/// bus 出站广播 → ChannelManager mpsc 桥（BUG-20261025-52：**先订阅再
+/// bus 出站广播 → ChannelManager mpsc 桥（**先订阅再
 /// spawn**——订阅在调用线程同步完成，此刻起发布的消息必进 broadcast 缓冲，
 /// 主循环任务稍后从缓冲取，无 spawn→首 poll 窗口丢失。旧形态在任务体内
 /// 订阅，与 `channel_approval::spawn_watcher` 已删除的 racy 入口同类漂移）。
@@ -1059,7 +1059,7 @@ fn spawn_bus_outbound_bridge(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    // P2-1：接收侧真实丢失计入 bus 指标。
+                    // 接收侧真实丢失计入 bus 指标。
                     bus.record_outbound_lagged(n);
                     tracing::warn!(
                         "[Gateway] ChannelManager outbound bridge lagged {} messages",
@@ -1077,7 +1077,7 @@ fn spawn_bus_outbound_bridge(
 #[cfg(test)]
 mod cov_tests;
 
-/// 签名验证启动自验快照 → nemesis-web 只读状态结构（接入计划 §4）。
+/// 签名验证启动自验快照 → nemesis-web 只读状态结构（接入计划）。
 /// None = 本进程没跑过自验（理论上不可能——main 阶段必调；测试装配兜底）。
 fn signature_status_from_start_check()
 -> Option<std::sync::Arc<nemesis_web::handlers::signature_status::SignatureVerifyStatus>> {

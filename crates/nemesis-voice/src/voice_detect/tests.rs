@@ -151,10 +151,10 @@ fn rms_threshold_zero_marks_speaking_on_empty_chunk_due_to_geq() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：Silero 构造 fail-fast + 工厂回退
+// 覆盖率冲刺：Silero 构造 fail-fast + 工厂回退
 // 原注：Silero 的 process/flush 需要真 VAD 引擎——结构性豁免。
 //
-// R6（2026-08-27）修订：白盒构造（engine 指针为 null）后，next_pending /
+// 修订：白盒构造（engine 指针为 null）后，next_pending /
 // is_speaking / name 是纯 Rust 可直测；process/flush 的封送路径可测到 FFI
 // 符号查找处 panic。剩余不可达 = 真引擎成功语义 + 3 秒诊断块（214 行
 // is_speech_detected 先 panic，diag 块在无 DLL 时永远走不到）。

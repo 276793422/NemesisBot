@@ -1,4 +1,4 @@
-//! P24（2026-09-25 能力扩展 WS1）Windows ACL 沙盒后端测试。
+//! （2026-09-25）Windows ACL 沙盒后端测试。
 //!
 //! 全平台编译：Windows + `acl` feature 跑真实现（真 API、真令牌、真 ACL、
 //! 真 No-Write-Up 围栏）；其余平台跑 stub 契约（Unavailable / Err）。
@@ -176,7 +176,7 @@ fn acl_label_tree_relabels_existing_entries_and_honors_budget() {
     );
 }
 
-/// junction 穿透行为锁定（P24 复检候选 2a 实证固化）：对 junction 打标
+/// junction 穿透行为锁定（复检候选 2a 实证固化）：对 junction 打标
 /// **不跟随**到目标目录（reparse point 自有 SD）——目标目录与经 junction
 /// 新建的子文件都保持无显式标签。若未来 Win32 层行为变化（跟随目标），
 /// 此测试先红，防止 label_tree 把工作区内的链接目标（可能指向树外）静默
@@ -473,7 +473,7 @@ fn acl_existing_files_gap_message_shape() {
 }
 
 // ---------------------------------------------------------------------------
-// DACL 定向档 D2（2026-09-27）：standing GRANT ACE 树
+// DACL 定向档：standing GRANT ACE 树
 // ---------------------------------------------------------------------------
 
 /// 测试辅助：读对象 DACL，返回**目标 SID** 名下的 (mode, mask) 列表
@@ -548,9 +548,9 @@ fn dacl_aces_for_sid(path: &std::path::Path, sid_str: &str) -> Vec<(i32, u32)> {
     }
 }
 
-/// 端到端（基线形态，2026-09-28 F9 证伪后的唯一形态）：树遍历后目录/文件
+/// 端到端（基线形态， 证伪后的唯一形态）：树遍历后目录/文件
 /// 都有 workspace SID 的 GRANT（mask 全覆盖，**含 DELETE**——rename/git/
-/// cargo 基线能力；「掐 DELETE 断 rename」的 F9 推演已被真进程证伪）；目录
+/// cargo 基线能力；「掐 DELETE 断 rename」的 推演已被真进程证伪）；目录
 /// **无** DENY FILE_DELETE_CHILD；幂等重跑稳定；预算超限诚实 Err。旧形态
 /// 残留滤除见 [`ensure_grant_ace_tree_filters_stale_ace_shapes`]。
 #[cfg(all(target_os = "windows", feature = "acl"))]
@@ -682,7 +682,7 @@ fn ensure_grant_ace_tree_filters_stale_ace_shapes() {
     super::revoke_ace(&f1, &ws_sid).expect("revoke f1");
 }
 
-/// junction DACL 跟随性**第一件事实证**（设计文档 §3.2 要求实现期首做）：
+/// junction DACL 跟随性**第一件事实证**（设计文档 要求实现期首做）：
 /// 给 junction 打 DACL ACE 只作用于 reparse point 自身、**不跟随**目标目录
 /// （与完整性标签侧 `acl_label_on_junction_does_not_follow_to_target` 同向
 /// 的行为记录）。产品实现（ensure_grant_ace_tree）对链接项保守跳过——本测
@@ -759,7 +759,7 @@ fn ensure_grant_ace_tree_skips_junction_entries() {
 }
 
 /// label_tree 树内 junction：遍历跳过链接项（不打不计数）——
-/// BUG-20261029-135。实测（本测试先红形态）：junction 的 symlink_metadata
+/// 。实测（本测试先红形态）：junction 的 symlink_metadata
 /// is_dir() 为 false（Rust FileType 对 reparse point 排除），目标树**不会**
 /// 被枚举重标（泄到树外的路径不存在）；但修复前 junction 自身仍被遍历
 /// set_integrity_label 显式打标 + 计数。语义与 ensure_grant_ace_tree 的
@@ -827,7 +827,7 @@ fn label_tree_root_junction_rejected() {
     assert!(r.is_err(), "根是 junction 应 Err，实际: {r:?}");
 }
 
-/// D4 状态面（2026-09-27；2026-09-28 基线单口径）：只读根 ACE 探针三态——
+/// 状态面（基线单口径）：只读根 ACE 探针三态——
 /// 未打标 (false,false,true) / 打标 (true,false,true)（grant 覆盖
 /// [`GRANT_MASK`] 含 DELETE、无 deny 面）/ 撤销后全 false。grant 判定与
 /// 铺设幂等同判据；deny 面纯观测（生产从不打，现存即外部篡改痕迹）。
@@ -862,7 +862,7 @@ fn root_standing_ace_state_readonly_probe_states() {
         "无 deny: {aces_after_probe:?}"
     );
 
-    // grant 必须含 DELETE（基线全量形态的探针面证据——F9 证伪锚）。
+    // grant 必须含 DELETE（基线全量形态的探针面证据—— 证伪锚）。
     assert!(
         aces_after_probe
             .iter()

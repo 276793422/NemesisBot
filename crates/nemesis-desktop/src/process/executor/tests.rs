@@ -414,7 +414,7 @@ fn test_spawn_child_empty_args() {
 }
 
 // ============================================================
-// Phase 4: Additional coverage for 93%+ target
+// Additional coverage for 93%+ target
 // ============================================================
 
 #[test]
@@ -491,7 +491,7 @@ fn test_read_stderr_with_real_process() {
     let executor = DefaultPlatformExecutor::with_defaults();
     // Use a process that may produce stderr and exits quickly
     // （Linux 臂曾是裸 `cat`：无参 cat 永远读 stdin、不写 stderr 不退出，
-    // 而 read_stderr_line 是无超时阻塞读 → 测试挂死（2026-09-01 远端全量
+    // 而 read_stderr_line 是无超时阻塞读 → 测试挂死（远端全量
     // 首跑暴露，nemesis-desktop 卡死根因）。改为写 stderr 即退的 sh。）
     let exe = if cfg!(windows) { "cmd" } else { "sh" };
     let args: Vec<String> = if cfg!(windows) {
@@ -565,13 +565,13 @@ fn test_kill_with_real_process() {
 }
 
 // ============================================================
-// BUG-20261025-70（ACK 读无超时）+ BUG-20261025-72（UTF-8 逐字节破坏）
+// （ACK 读无超时）+ （UTF-8 逐字节破坏）
 // 回归锁
 // ============================================================
 
 #[test]
 fn test_parse_json_line_roundtrips_multibyte_utf8() {
-    // BUG-20261025-72：旧实现逐字节 `byte[0] as char`，多字节 UTF-8 被
+    // 旧实现逐字节 `byte[0] as char`，多字节 UTF-8 被
     // 逐字节映射成 Latin-1 mojibake——JSON 结构不变、反序列化照常成功、
     // 字符串内容静默损坏。修复后走 String::from_utf8，必须逐字符还原。
     // （还原旧实现 = 本测试编译失败/断言红，双重必红。）

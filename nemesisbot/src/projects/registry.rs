@@ -1,13 +1,13 @@
-//! 项目注册表（`<workspace>/config/projects.json`；L6++ Phase 1）。
+//! 项目注册表（`<workspace>/config/projects.json`）。
 //!
 //! **注册不拥有**：删除项目只解除分组，不删会话与项目目录内的任何文件
-//! （行业共识，设计档 §2）。纯文件操作：load（缺席=空表首用 / 损坏=Err，
+//! （行业共识，设计档）。纯文件操作：load（缺席=空表首用 / 损坏=Err，
 //! 写路径 loud 拒绝——绝不把损坏文件用空表覆盖，那等于静默清空用户数据）+
 //! save（原子写 tmp+rename，同 `eval_assessor::save_rules` 形态）+
 //! create/remove/rename。
 //!
 //! 路径 canonicalize 一次（`canonicalize_for_compare`，剥 verbatim + 归一
-//! 8.3 短名），与围栏比较层同表示——「构建时 canonicalize 一次」的地基（M2
+//! 8.3 短名），与围栏比较层同表示——「构建时 canonicalize 一次」的地基（
 //! 项目工厂直接消费 entry.path，不再二次 canonicalize）。
 
 use std::path::{Path, PathBuf};
@@ -39,7 +39,7 @@ fn default_true() -> bool {
     true
 }
 
-/// 单条项目注册。创建时烧入：`path` 不可改（改路径 = 移除后重建，Phase 1
+/// 单条项目注册。创建时烧入：`path` 不可改（改路径 = 移除后重建，
 /// 语义）；`name` 可改（rename）；`instructions_trusted` 可改
 /// （`projects.trust` WSAPI）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -50,7 +50,7 @@ pub struct ProjectEntry {
     pub path: PathBuf,
     /// RFC3339 创建时间。
     pub created_at: String,
-    /// N7（2026-10-13）：项目工作区指令（AGENTS.md/CLAUDE.md）是否受信。
+    /// 项目工作区指令（AGENTS.md/CLAUDE.md）是否受信。
     /// 缺省 true——注册即信任行为（与主循环一致，老条目零迁移）；false 时
     /// 该项目 loop 按 config `projects.instruction_trust` 全局策略降级
     /// （annotate=注入但加不可信来源横幅 / isolated=整段跳过）。
@@ -105,7 +105,7 @@ pub fn load_projects_lenient(path: &Path) -> ProjectsFile {
     }
 }
 
-/// 原子写 — REL-002（2026-09-23）起委托统一 helper
+/// 原子写 — 起委托统一 helper
 /// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理）。
 pub fn save_projects(path: &Path, file: &ProjectsFile) -> Result<()> {
     let content = serde_json::to_string_pretty(file).context("serialize projects")?;
@@ -168,7 +168,7 @@ fn paths_overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }
 
-/// 校验项目名（create/rename 共用；单一真相源）。
+/// 校验项目名（create/rename 共用；统一定义）。
 fn validate_name(name: &str) -> Result<String> {
     let name = name.trim();
     if name.is_empty() {
@@ -240,7 +240,7 @@ pub fn remove_project(path: &Path, id: &str) -> Result<ProjectEntry> {
     Ok(entry)
 }
 
-/// 重命名（`path` 不可改——Phase 1：改路径 = 移除后重建）。返回更新后条目。
+/// 重命名（`path` 不可改——：改路径 = 移除后重建）。返回更新后条目。
 ///
 /// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]（同 [`create_project`]）。
 pub fn rename_project(path: &Path, id: &str, new_name: &str) -> Result<ProjectEntry> {
@@ -258,7 +258,7 @@ pub fn rename_project(path: &Path, id: &str, new_name: &str) -> Result<ProjectEn
     Ok(updated)
 }
 
-/// 翻转项目指令信任位（N7；读-改-写，损坏文件 loud 拒绝）。返回更新后条目。
+/// 翻转项目指令信任位（读-改-写，损坏文件 loud 拒绝）。返回更新后条目。
 ///
 /// 写侧全程持有 [`REGISTRY_WRITE_LOCK`]——trust 翻转与 create/rename/remove
 /// 并发时若不互斥，翻转会被对方快照整体覆盖回 true（指令信任闸静默失效）。

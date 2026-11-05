@@ -1,4 +1,4 @@
-//! W4b 补测（批次 14）：SkillInstaller 的安全拦截流。
+//! 补测：SkillInstaller 的安全拦截流。
 //!
 //! 覆盖面：
 //! - `install()`：经真实写文件的 registry（FileWritingRegistry）验证
@@ -7,9 +7,9 @@
 //!   set/last security check roundtrip、lint-not-passed 警告、
 //!   registry 搜索结果映射
 //!
-//! 历史注记（BUG-20261105-034）：本文件原有 8 个 `install_from_github`
+//! 历史注记：本文件原有 8 个 `install_from_github`
 //! （legacy 单文件 main 分支路径）wiremock 测试随方法删除——该方法绕过
-//! P11-P16 安装漏斗（验签/pin/审批卡/lockfile），零生产消费方，属旁路
+//! 安装漏斗（验签/pin/审批卡/lockfile），零生产消费方，属旁路
 //! 死 API；GitHub 安装统一走 `install_github`（plan+commit 完整漏斗）。
 
 use super::*;
@@ -292,7 +292,7 @@ async fn test_install_from_registry_error_only_signature() {
 }
 
 // ---------------------------------------------------------------------------
-// S5 coverage: set_last_security_check / lint-not-passed warn / warnings warn /
+// coverage: set_last_security_check / lint-not-passed warn / warnings warn /
 // list_available_skills_from_registry mapping
 // ---------------------------------------------------------------------------
 
@@ -306,7 +306,7 @@ fn test_set_last_security_check_roundtrip() {
     let installer = SkillInstaller::new(&dir.path().to_string_lossy());
     assert!(installer.last_security_check().is_none());
 
-    // 手构输入（BUG-20261105-034：单文件版 check_skill_security 随
+    // 手构输入（单文件版 check_skill_security 随
     // install_from_github 旁路死 API 删除，本测试只钉 set/get roundtrip，
     // 输入来源无关）。
     let result = crate::types::SecurityCheckResult {

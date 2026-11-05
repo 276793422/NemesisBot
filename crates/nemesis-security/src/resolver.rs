@@ -101,11 +101,11 @@ pub fn is_private_ip(ip: &IpAddr) -> bool {
     }
 }
 
-/// IPv4-mapped IPv6（`::ffff:0:0/96`）归一为内嵌 IPv4 地址；其余原样返回。
+/// IPv4-mapped IPv6（`:ffff:0:0/96`）归一为内嵌 IPv4 地址；其余原样返回。
 ///
-/// 双栈 socket 连接 `::ffff:127.0.0.1` 时 OS 按内嵌 IPv4 翻译——而 std 的
-/// V6 分类（`is_loopback` 只认 `::1` 等）对映射形态全部漏放，构成 SSRF
-/// 旁路（BUG-20261029-186）。IP 分类入口必须先过本函数再判定。
+/// 双栈 socket 连接 `:ffff:127.0.0.1` 时 OS 按内嵌 IPv4 翻译——而 std 的
+/// 分类（`is_loopback` 只认 `:1` 等）对映射形态全部漏放，构成 SSRF
+/// 旁路。IP 分类入口必须先过本函数再判定。
 pub fn normalize_ipv4_mapped(ip: &IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => v6
@@ -165,13 +165,13 @@ fn is_private_ipv4(ip: &Ipv4Addr) -> bool {
 }
 
 fn is_private_ipv6(_ip: &Ipv6Addr) -> bool {
-    // RFC 4193 Unique Local: fc00::/7
+    // RFC 4193 Unique Local: fc00:/7
     let segments = _ip.segments();
     if (segments[0] & 0xfe00) == 0xfc00 {
         return true;
     }
 
-    // RFC 6052 IPv4/IPv6 Translation: 64:ff9b::/96
+    // RFC 6052 IPv4/IPv6 Translation: 64:ff9b:/96
     if segments[0] == 0x0064 && segments[1] == 0xff9b {
         return true;
     }
@@ -240,7 +240,7 @@ pub fn is_reserved_ip(ip: &IpAddr) -> bool {
         }
         IpAddr::V6(v6) => {
             let segments = v6.segments();
-            // ff00::/8 IPv6 multicast
+            // ff00:/8 IPv6 multicast
             (segments[0] & 0xff00) == 0xff00
         }
     }
@@ -257,7 +257,7 @@ fn contains_control_chars(s: &str) -> bool {
 ///
 /// Mirrors Go's `ResolveHost`.
 pub async fn resolve_host(host: &str) -> Result<Vec<IpAddr>, ResolverError> {
-    // Strip bracket notation for IPv6 URLs: [::1] -> ::1
+    // Strip bracket notation for IPv6 URLs: [:1] ->:1
     let clean_host = if host.starts_with('[') && host.ends_with(']') && host.len() > 2 {
         &host[1..host.len() - 1]
     } else {

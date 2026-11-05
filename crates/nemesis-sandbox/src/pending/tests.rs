@@ -43,7 +43,7 @@ fn delete_file_never_touches_real_path() {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 3 覆盖率（2026-08-25）：real_path_for_box 映射 / enumerate_box 遍历 /
+// 覆盖率：real_path_for_box 映射 / enumerate_box 遍历 /
 // pending_workspace **安全过滤器**（工作区外的破坏永不进列表 = 沙盒防泄漏
 // 命门）/ commit_file 落盘。全部 tempdir 内构造假盒布局，不依赖 Sandboxie。
 // ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ fn make_box(tmp: &TempDir) -> std::path::PathBuf {
 
 // 盒布局映射（drive/<L>/<rest> → <L>:\<rest>）是 Sandboxie Windows 盒的
 // 镜像语义，生产路径只在 Windows 运行；Linux 上 join 分隔符不同 → 字符串
-// 断言必红。三个盒布局/过滤测试 cfg(windows) 门控（2026-09-01 Linux 首跑）。
+// 断言必红。三个盒布局/过滤测试 cfg(windows) 门控（Linux 首跑）。
 #[cfg(windows)]
 #[test]
 fn real_path_for_box_maps_user_drive_and_rejects_metadata() {
@@ -256,7 +256,7 @@ fn commit_file_missing_box_source_errors_with_context() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：walk 的 MAX 上限、
+// 覆盖率批次（quality-hardening goal）：walk 的 MAX 上限、
 // read_dir 错误臂、delete_file 的目录错误臂、delete_box_contents 的
 // 假 Start.exe 成功/失败/缺失三臂。
 // ---------------------------------------------------------------------------

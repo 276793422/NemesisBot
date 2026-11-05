@@ -1,4 +1,4 @@
-//! Hex 编解码单测（S6 覆盖率批次，quality-hardening goal 2026-08-25）。
+//! Hex 编解码单测（覆盖率批次，quality-hardening goal 2026-08-25）。
 //!
 //! 覆盖：hex_decode_32 长度/字符错误臂、trim、大小写不敏感；
 //! hex_decode_vec 奇数长度 / 非法字符 / 往返。
@@ -59,7 +59,7 @@ fn hex_decode_vec_errors() {
     assert_eq!(hex_decode_vec("").unwrap(), Vec::<u8>::new());
 }
 
-// 非 ASCII 输入诚实拒绝（2026-10-17 全仓横扫）：字节长度门挡不住多字节
+// 非 ASCII 输入诚实拒绝（全仓横扫）：字节长度门挡不住多字节
 // 字符，裸字节切片曾会落在字符中间 panic——现为 Err 而非进程崩溃。
 #[test]
 fn hex_decode_rejects_non_ascii() {

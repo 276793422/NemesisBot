@@ -1,4 +1,4 @@
-//! A4 `security_calibrate` 单测：样本归一/过滤、judge 映射、报告统计。
+//! `security_calibrate` 单测：样本归一/过滤、judge 映射、报告统计。
 //! （纯函数面——管线重放与 LLM 调用路径不在此测：管线行为已有
 //! nemesis-security 全套单测，judge 请求形态与 GatewayLlmJudge 同源。）
 
@@ -245,7 +245,7 @@ fn annotate_note_flags_missing_command_on_exec_family() {
     assert!(joined.contains("command 字段"));
     // 非 exec 族缺 command 不提示（read_file 的参数键本就不是 command）。
     assert_eq!(annotate_sample_note("read_file", &args_typo, ""), "");
-    // exec 族全名单抽两个（同走 tool_to_operation 单一真相源）。
+    // exec 族全名单抽两个（同走 tool_to_operation 统一定义）。
     assert!(annotate_sample_note("background_start", &args_typo, "").contains("command"));
     assert!(annotate_sample_note("codex_delegate", &args_typo, "").contains("command"));
 }

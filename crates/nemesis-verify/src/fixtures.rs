@@ -1,7 +1,7 @@
-//! v4 测试夹具（S4-1）：verify / c_abi / revocation 三处测试共用的真链 CMS 签名器。
+//! v4 测试夹具：verify / c_abi / revocation 三处测试共用的真链 CMS 签名器。
 //!
 //! 仅测试构建参与编译（lib.rs `#[cfg(test)] mod fixtures;` 声明 + 本独立文件），
-//! 不含任何 `#[test]`。信任锚 = 根证书 SHA-256 指纹（S4-2 口径，S0-5 实测：
+//! 不含任何 `#[test]`。信任锚 = 根证书 SHA-256 指纹（口径， 实测：
 //! 发行锚不可作信任锚，必须自签根）。
 
 use crate::cert::Certificate;

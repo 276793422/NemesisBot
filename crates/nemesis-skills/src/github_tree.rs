@@ -176,7 +176,7 @@ pub fn decode_tree_blob_paths(body: &[u8], dir_prefix: &str) -> Result<Vec<Strin
     let cursor = std::io::Cursor::new(body);
     let mut stream = serde_json::Deserializer::from_reader(cursor).into_iter::<serde_json::Value>();
 
-    // The response is {"sha": ..., "tree": [...], "truncated": ...}
+    // The response is {"sha":..., "tree": [...], "truncated":...}
     // We need to find the "tree" array and iterate its entries.
     let root = stream
         .next()

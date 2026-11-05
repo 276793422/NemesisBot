@@ -164,7 +164,7 @@ fn rejects_gif_honestly() {
 }
 
 // ---------------------------------------------------------------------------
-// ：动画 WebP 与 GIF 同原则——image-webp 对 ANMF 文件解码第一帧
+// 动画 WebP 与 GIF 同原则——image-webp 对 ANMF 文件解码第一帧
 // 成功，原实现只拦 GIF，动画 WebP 撞闸后被静默重编码成静态 JPEG（动画帧丢
 // 失 = 模块 doc 钉死的「静默语义变更」）。修复 = 头部采样窗口 12→4096 +
 // webp_is_animated（VP8X animation 旗标 / ANMF fourcc）诚实拒绝。
@@ -399,7 +399,7 @@ fn downscale_reports_honest_err_when_ladder_exhausted() {
 
 // 回归锁：输入文件字节超过 Limits.max_input_bytes → 诚实
 // Err 且不进入解码读入（旧形态对合法图片头 + 巨量垃圾尾部的文件会
-// `fs:read` 整包进内存——URL 侧 修的是同族问题，本地路径漏网）。
+// `fs::read` 整包进内存——URL 侧 修的是同族问题，本地路径漏网）。
 #[test]
 fn test_input_bytes_cap_honest_reject() {
     let dir = TempDir::new("input_bytes_cap");

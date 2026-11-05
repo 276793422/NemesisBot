@@ -1,4 +1,4 @@
-//! connector 数据面 WSAPI（行动代理 ，2026-10-14；管理面 2026-10-19）。
+//! connector 数据面 WSAPI（行动代理，2026-10-14；管理面 2026-10-19）。
 //!
 //! 命令：`connectors.list`（registry 状态）/ `connectors.receipts.list`
 //! （凭条流水）/ `connectors.undo`（页内撤销）/ `connectors.create` /
@@ -193,7 +193,7 @@ fn exclusive_tool_rows(
         .collect();
     // 隐藏标记（边界补强）：config hidden 是绝对闸（任何
     // 出处都拒），被隐藏的工具三态选择器形同虚设——行照列（管理面全量
-    // 可见）但带 `hidden_by_config` 标记，前端灰显提示先去解除隐藏。
+    // 可）但带 `hidden_by_config` 标记，前端灰显提示先去解除隐藏。
     let hidden_by_config =
         |name: &str| main_loop.is_some_and(|l| l.tool_matches_hidden_config(name));
     let mut rows: Vec<Value> = mcp_tools

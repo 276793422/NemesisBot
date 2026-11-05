@@ -1,4 +1,4 @@
-//! exec_world 测试（P5-2）：通道装配 + 严格闸门接线。
+//! exec_world 测试：通道装配 + 严格闸门接线。
 //!
 //! Windows 专属（cfg all(sandbox, windows)）：临时 home 下 Sandboxie 永远不
 //! 就绪 → 装配走 stdio 通道但闸门已挂；strict=true 时 spawn_and_call 在
@@ -71,7 +71,7 @@ mod strict_channel_refusal {
     }
 }
 
-/// D4（DACL 定向档，2026-09-27）：hook 接线矩阵——关=Ok(None)、开=Some(fn)、
+/// （DACL 定向档）：hook 接线矩阵——关=Ok(None)、开=Some(fn)、
 /// live 翻转热生效。fail-closed 分支（acl.strict + 后端不可用 → Err）无法在
 /// 单测里自然触发（dacl_availability 探针在本机恒 Full，Vista+ 令牌 API 无
 /// 法注入失败），语义由降级链代码路径 + 真进程验收覆盖。
@@ -168,7 +168,7 @@ mod dacl_hook_wiring {
     }
 }
 
-/// world 装配描述符（M2 补测，2026-08-25）：enabled → Some + stdio 语义 +
+/// world 装配描述符（补测）：enabled → Some + stdio 语义 +
 /// 写守卫根 + Spawn 车道 cwd 守卫（拒在 spawn 之前）。Tool 车道归一化不在此
 /// 测——spawn_and_call 会 spawn current_exe（测试 harness 二进制会重跑整套
 /// 测试，见上方 strict 测试的注释），真链路由 tests/executor.rs 覆盖。
@@ -305,13 +305,13 @@ mod layer0_and_live_probe {
                     sandbox: true,
                     allow_network: false,
                     strict: false,
-                    // P24 新字段；本用例与 backend 选型无关，取缺省语义。
+                    // 新字段；本用例与 backend 选型无关，取缺省语义。
                     backend: "auto".to_string(),
-                    // D4 新段；本用例与 DACL 定向档无关，取缺省（全关）。
+                    // 新段；本用例与 DACL 定向档无关，取缺省（全关）。
                     acl: Default::default(),
-                    // P3 T4 新段；本用例与常驻档无关，取缺省（全关）。
+                    // 新段；本用例与常驻档无关，取缺省（全关）。
                     persistent: Default::default(),
-                    // P5 新段；本用例与 VM 后端无关，取缺省（默认关）。
+                    // 新段；本用例与 VM 后端无关，取缺省（默认关）。
                     vm: Default::default(),
                 })
             })
@@ -350,7 +350,7 @@ mod layer0_and_live_probe {
 }
 
 // ===========================================================================
-// wave5 round2（2026-09-25）：stdio 回退路径的 strict 提示尾注两臂——
+// wave5：stdio 回退路径的 strict 提示尾注两臂——
 // warn! 参数里的 load_live()（NEMESISBOT_HOME → config.json executor.strict）
 // 真 ON / 假 OFF 两形态。env 变更持 GLOBAL_STATE_LOCK + EnvHomeGuard 隔离
 //（crate::tests 纪律同源）。沙盒通道真挂载臂（will_attach=true）在无沙盒

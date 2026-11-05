@@ -68,7 +68,7 @@ fn test_windows_path_forward_slash_mix() {
 }
 
 // UNC 是 Windows 形态语义（`\` 是分隔符、`\\server` 是根）：POSIX 上
-// `Path:has_root()` 对反斜杠前缀返回 false → 按相对路径处理 → 本测试的
+// `Path::has_root()` 对反斜杠前缀返回 false → 按相对路径处理 → 本测试的
 // 「deliberate + 诚实 NotFound」前提不成立。 约定：Windows 形态
 // 测试挂 #[cfg(windows)]，Linux 上编译期消失而非运行期跳过（
 // Linux CI 红 9 处的根因之一）。
@@ -417,7 +417,7 @@ fn test_no_workspace_dir_relative_dropped() {
 // ============================================================
 
 // `~`（8.3 短名）回归：段字符类此前不含 `~`，`C:\Users\RUNNER~1\...`
-// （GitHub Actions Windows runner 的 std:env:temp_dir() 真实返回形态，
+// （GitHub Actions Windows runner 的 std::env:temp_dir() 真实返回形态，
 // 开启 8.3 短名生成的机器同理）永不匹配 → 文本点名路径全部失明（Windows
 // CI 红 19 处）。`~` 在 Windows/POSIX 文件名里都合法，用字面 RUNNER~1
 // 目录名做双平台确定性回归。
@@ -533,7 +533,7 @@ fn verify_locked_file_reports_unreadable() {
         [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4],
     )
     .unwrap();
-    // share_mode(0) 独占 → metadata 成功但 File:open 共享冲突 → Unreadable。
+    // share_mode(0) 独占 → metadata 成功但 File::open 共享冲突 → Unreadable。
     let hold = std::os::windows::fs::OpenOptionsExt::share_mode(
         std::fs::OpenOptions::new().write(true),
         0,

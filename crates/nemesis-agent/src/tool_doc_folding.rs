@@ -1,4 +1,4 @@
-//! : semantic tool-documentation folding — PURE helpers.
+//! semantic tool-documentation folding — PURE helpers.
 //!
 //! With a large toolset (Big tier = 40+ tools) most tool
 //! descriptions are irrelevant to the current conversation. When enabled
@@ -12,7 +12,7 @@
 //! Everything here is deterministic and side-effect free: same inputs →
 //! byte-identical outputs (no clocks, no map-iteration-order leakage —
 //! rank ties break alphabetically). The loop-side gating (config, tier,
-//! embed availability) lives in `AgentLoop:apply_tool_doc_folding`.
+//! embed availability) lives in `AgentLoop::apply_tool_doc_folding`.
 
 use crate::types::ToolDefinition;
 use std::collections::HashMap;
@@ -146,6 +146,6 @@ pub fn fold_tool_defs(
 #[cfg(test)]
 mod tests;
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

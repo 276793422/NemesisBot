@@ -27,7 +27,7 @@ fn dpapi_needs_no_passphrase() {
     assert_eq!(passphrase_for_mode(VaultMode::Dpapi).unwrap(), None);
 }
 
-/// BUG-20261028-101（缺陷 A）回归锁：prompt 空口令必须拒——运行时解锁面把
+/// （缺陷 A）回归锁：prompt 空口令必须拒——运行时解锁面把
 /// 空 NEMESISBOT_VAULT_PASSPHRASE 视作未设置，空口令 vault 会在 gateway/run
 /// 等消费面永久锁死（CLI 手动 unlock 除外）。仅空白（非空）口令放行：
 /// 运行时 filter 只滤真空串，两侧语义对称。prompt 本体不可自动化
@@ -61,7 +61,7 @@ fn vault_path_matches_path_helper() {
 }
 
 // ---------------------------------------------------------------------------
-// P0 B2：vault migrate（模型 key 迁移）
+// vault migrate（模型 key 迁移）
 // ---------------------------------------------------------------------------
 
 use std::path::Path;
@@ -277,13 +277,13 @@ fn test_store(home: &Path) -> VaultStore {
 }
 
 // ---------------------------------------------------------------------------
-// wave_a（2026-09-25）：run() 各子命令臂（此前只有 migrate 核心与纯逻辑
+// wave_a：run() 各子命令臂（此前只有 migrate 核心与纯逻辑
 // 被测，run() 的 Set/List/Remove/Migrate 分支 0 覆盖）。
 // 纪律：
 // - NEMESISBOT_HOME 指向临时目录 + crate::GLOBAL_STATE_LOCK 互斥；
 // - NEMESISBOT_VAULT_PASSPHRASE 固定为 "migrate-test-pw"（与 test_store 的
 //   argon2 口令一致，保证 run() 重开 test_store 建的 vault 能解锁）；
-// - 交互输入一律走 stdin EOF（跑套件须 `cargo test ... < /dev/null`，
+// - 交互输入一律走 stdin EOF（跑套件须 `cargo test... < /dev/null`，
 //   与 eval_rules cmd_reset_non_force_aborts_on_eof_stdin 同约定）；
 // - run() 是 async，但全程无真正异步点——用独立 runtime block_on 包住，
 //   避免跨 await 持锁问题。
@@ -446,7 +446,7 @@ mod run_arms {
         assert_eq!(store.get("dup-alias").unwrap(), "old-value", "取消不轮换");
     }
 
-    /// BUG-20261028-101（缺陷 B）红证：List 永不见值——核心设计要点是
+    /// （缺陷 B）红证：List 永不见值——核心设计要点是
     /// 「元数据明文可读，未解锁也能列」（nemesis-security vault.rs 模块注释）。
     /// 此前 List 走 open_or_create 强制解锁：口令不对 → 整个 list 直接失败——
     /// 忘口令的用户连别名清单都看不到。红证用「env 指向错口令」确定性走
@@ -465,7 +465,7 @@ mod run_arms {
             .expect("锁定 vault 也必须能列（list 永不见值，解锁不该是列的前置）");
     }
 
-    /// BUG-20261028-101（缺陷 A）不对称实证（缺陷边界锁，修复前后恒绿）：
+    /// （缺陷 A）不对称实证（缺陷边界锁，修复前后恒绿）：
     /// 核心层接受空口令创建（Some("") 只查 None），而运行时解锁面
     /// （vault_runtime::open_unlocked）把空 NEMESISBOT_VAULT_PASSPHRASE
     /// 视作未设置——空口令 vault 在 gateway/run 等消费面永久锁死。
@@ -512,7 +512,7 @@ mod run_arms {
 }
 
 // ---------------------------------------------------------------------------
-// wave6（2026-09-25）：run() 层吃剩的报告臂——List 行级 domain/description
+// wave6：run() 层吃剩的报告臂——List 行级 domain/description
 // 非空臂、Migrate 的 conflicts/reused/yaml_broken 打印臂。
 // 纪律同 run_arms：NEMESISBOT_HOME + NEMESISBOT_VAULT_PASSPHRASE 重定向 +
 // GLOBAL_STATE_LOCK 互斥；vault 以 test_store 库 API 预置（绕 stdin）。
@@ -643,7 +643,7 @@ mod wave6 {
 }
 
 // ---------------------------------------------------------------------------
-// L26②（2026-11-02 三期）：vault 别名域绑定 CLI（Bind/Unbind/Bindings）。
+// ②（三期）：vault 别名域绑定 CLI（Bind/Unbind/Bindings）。
 // 绑定面是明文策略文件 `<workspace>/config/config.vault.json`——不触
 // vault.enc，无需口令；仍走 NEMESISBOT_HOME + GLOBAL_STATE_LOCK 夹具
 // （run() 落 home 解析与既有人马同一纪律）。断言一律盘上真相回读

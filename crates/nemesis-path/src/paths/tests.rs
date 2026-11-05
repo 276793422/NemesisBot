@@ -62,7 +62,7 @@ fn test_canonicalize_for_compare_dotdot_escape_kept() {
 #[cfg(target_os = "windows")]
 #[test]
 fn test_canonicalize_for_compare_representation_mismatch_normalized() {
-    // 回归（2026-09-01 CI 首次暴露）：NTFS 大小写不敏感 → 大小写变体路径
+    // 回归（CI 首次暴露）：NTFS 大小写不敏感 → 大小写变体路径
     // 存在但表示不同。canonicalize 把两边都归一到卷上真实大小写；8.3 短名
     // （RUNNER~1）同属「canonicalize 才能归一」的表示差异，同一机制。
     let dir = tempfile::tempdir().unwrap();
@@ -146,7 +146,7 @@ fn test_expand_home_relative() {
 
 #[test]
 fn test_expand_home_backslash_prefix() {
-    // BUG-20261102-319：`~\` 反斜杠形态（NEMESISBOT_HOME 环境变量可达）此前
+    // `~\` 反斜杠形态（NEMESISBOT_HOME 环境变量可达）此前
     // 原样穿透——与 `~/` 形态展开分叉。
     let result = expand_home("~\\test");
     assert!(!result.starts_with("~"));
@@ -357,7 +357,7 @@ fn test_path_manager_default_trait() {
 /// `default_path_manager()` OnceLock singleton (the first `get_or_init` freezes
 /// the then-live env-derived home for the whole test binary). EVERY test that
 /// touches any of these must hold this lock — env setters via EnvGuard, the
-/// rest via an explicit `ENV_LOCK.lock()` (2026-09-02 lock-contract sweep).
+/// rest via an explicit `ENV_LOCK.lock()` (lock-contract sweep).
 static ENV_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
 
 /// Helper to safely set env var (set_var/remove_var became unsafe in Rust 2024 edition).
@@ -584,7 +584,7 @@ fn test_minimal_config_workspace_path_tilde() {
 
 #[test]
 fn test_minimal_config_workspace_path_tilde_backslash() {
-    // BUG-20261102-319：`~\` 反斜杠形态此前原样返回字面量（四个 resolve_*_config_path
+    // `~\` 反斜杠形态此前原样返回字面量（四个 resolve_*_config_path
     // 消费方落错位置）——与 `~/` 形态展开分叉。
     let json = r#"{"agents":{"defaults":{"workspace":"~\\myworkspace"}}}"#;
     let cfg: MinimalConfig = serde_json::from_str(json).unwrap();
@@ -768,13 +768,13 @@ fn test_path_manager_skills_config_path_default_v2() {
 }
 
 // ============================================================
-// Additional coverage tests for 95%+ target - Phase 2
+// Additional coverage tests for 95%+ target -
 // ============================================================
 
 #[test]
 fn test_resolve_home_dir_auto_detect() {
     // When NEMESISBOT_HOME is not set and local mode is off,
-    // it should try auto-detect (CWD has .nemesisbot) then fall back to home
+    // it should try auto-detect (CWD has.nemesisbot) then fall back to home
     let _g1 = EnvGuard::remove(ENV_HOME);
     set_local_mode(false);
     let result = resolve_home_dir();
@@ -785,7 +785,7 @@ fn test_resolve_home_dir_auto_detect() {
 
 #[test]
 fn test_resolve_home_dir_no_env_no_auto() {
-    // Ensure no env vars interfere, and no local .nemesisbot in cwd
+    // Ensure no env vars interfere, and no local.nemesisbot in cwd
     let _g1 = EnvGuard::remove(ENV_HOME);
     set_local_mode(false);
     let result = resolve_home_dir();
@@ -935,7 +935,7 @@ fn test_expand_home_empty_string() {
 
 #[test]
 fn test_detect_local_no_dir() {
-    // detect_local checks if .nemesisbot exists in CWD
+    // detect_local checks if.nemesisbot exists in CWD
     // Just call it to cover the branch
     let _ = detect_local();
 }
@@ -985,7 +985,7 @@ fn test_path_manager_new_with_dirs() {
 }
 
 // ============================================================
-// Additional coverage tests for 95%+ target - Phase 3
+// Additional coverage tests for 95%+ target -
 // ============================================================
 
 #[test]
@@ -1007,7 +1007,7 @@ fn test_resolve_home_dir_auto_detect_with_dir() {
     // under parallel execution. Acquire ENV_LOCK so this test runs exclusively
     // w.r.t. every other env-mutating test in this file.
     let _cwd_lock = ENV_LOCK.lock();
-    // Create a temp dir with .nemesisbot subdir, cd into it.
+    // Create a temp dir with.nemesisbot subdir, cd into it.
     // NOTE: This test changes cwd which races with parallel tests that also
     // touch cwd. We avoid the strict equality assertion since another test
     // may have changed cwd concurrently. We just verify the function returns Ok.
@@ -1098,7 +1098,7 @@ fn test_resolve_home_dir_absolute_env() {
 }
 
 // ============================================================
-// Phase 4 coverage tests for 95%+ target
+// coverage tests for 95%+ target
 // ============================================================
 
 #[test]
@@ -1283,8 +1283,8 @@ fn test_resolve_home_dir_exe_dir() {
 
 #[test]
 fn test_resolve_home_dir_exe_dir_found() {
-    // Create .nemesisbot next to a fake exe, verify it's found.
-    // We simulate this by creating .nemesisbot in the current exe's dir
+    // Create.nemesisbot next to a fake exe, verify it's found.
+    // We simulate this by creating.nemesisbot in the current exe's dir
     // temporarily — but since we can't control exe location in tests,
     // we verify the logic path exists without side effects.
     let _g = EnvGuard::remove(ENV_HOME);
@@ -1845,12 +1845,12 @@ fn test_minimal_config_workspace_path_edge_cases() {
 }
 
 // ============================================================
-// Coverage Phase 5: Edge cases for fallback paths and exe dir
+// Coverage: Edge cases for fallback paths and exe dir
 // ============================================================
 
 #[test]
 fn test_resolve_home_dir_exe_dir_branch() {
-    // Create a .nemesisbot dir next to the test executable so that
+    // Create a.nemesisbot dir next to the test executable so that
     // the exe_dir branch (line 217) is exercised.
     let exe = std::env::current_exe().unwrap();
     let exe_dir = exe.parent().unwrap().to_path_buf();
@@ -1868,7 +1868,7 @@ fn test_resolve_home_dir_exe_dir_branch() {
     let result = resolve_home_dir();
     assert!(result.is_ok());
     let home = result.unwrap();
-    // If the .nemesisbot dir exists next to exe, home should be exe_dir/.nemesisbot
+    // If the.nemesisbot dir exists next to exe, home should be exe_dir/.nemesisbot
     // Otherwise it falls back to home dir or cwd.
     assert!(home.to_string_lossy().ends_with(".nemesisbot"));
 
@@ -1989,12 +1989,12 @@ fn test_resolve_home_dir_env_with_trailing_slash() {
 
 #[test]
 fn test_resolve_home_dir_env_empty_string() {
-    // Empty env var should be treated as "unset" by std::env::var semantics?
-    // Actually std::env::var returns Ok("") for empty. Let's see what happens.
+    // Empty env var should be treated as "unset" by std::env:var semantics?
+    // Actually std::env:var returns Ok("") for empty. Let's see what happens.
     let _g = EnvGuard::set(ENV_HOME, "");
     set_local_mode(false);
     let result = resolve_home_dir();
-    // expand_home("") returns PathBuf::from("") then .join(".nemesisbot") => ".nemesisbot"
+    // expand_home("") returns PathBuf::from("") then.join(".nemesisbot") => ".nemesisbot"
     assert!(result.is_ok());
 }
 
@@ -2505,7 +2505,7 @@ fn test_resolve_home_dir_returns_pathbuf() {
 
 #[test]
 fn test_detect_local_with_dir_present() {
-    // detect_local() checks if .nemesisbot exists in CWD.
+    // detect_local() checks if.nemesisbot exists in CWD.
     // We can't reliably change CWD under parallel test execution,
     // so we just call detect_local() and verify it returns a bool.
     let _: bool = detect_local();
@@ -2534,7 +2534,7 @@ fn test_resolve_home_dir_with_local_mode_in_temp_cwd() {
 
 #[test]
 fn test_resolve_home_dir_exe_dir_with_nemesisbot() {
-    // If .nemesisbot exists next to the test exe, it should be detected
+    // If.nemesisbot exists next to the test exe, it should be detected
     let exe = std::env::current_exe().unwrap();
     let exe_dir = exe.parent().unwrap().to_path_buf();
     let nb_dir = exe_dir.join(DEFAULT_HOME_DIR);
@@ -2604,7 +2604,7 @@ fn test_resolve_home_dir_with_complex_env_path() {
 }
 
 // ============================================================
-// Coverage Phase 6: Test fallback_home_dir directly
+// Coverage: Test fallback_home_dir directly
 // ============================================================
 
 #[test]
@@ -2637,14 +2637,14 @@ fn test_fallback_home_dir_consistent_with_resolve() {
     set_local_mode(false);
     let resolved = resolve_home_dir().unwrap_or_else(|_| fallback_home_dir("err".to_string()));
     let fallback = fallback_home_dir("err".to_string());
-    // Both should end with .nemesisbot
+    // Both should end with.nemesisbot
     assert!(resolved.to_string_lossy().ends_with(".nemesisbot"));
     assert!(fallback.to_string_lossy().ends_with(".nemesisbot"));
 }
 
 #[test]
 fn s12b_boundary_events_dir_lives_outside_session_logs() {
-    // S12b batch（quality-hardening goal 冲刺）：boundary 审计目录此前零调用。
+    // batch（quality-hardening goal 冲刺）：boundary 审计目录此前零调用。
     let pm = PathManager::with_home(std::path::PathBuf::from("/tmp/s12b_home"));
     let d = pm.boundary_events_dir();
     assert!(d.ends_with("boundary"), "got: {d:?}");
@@ -2656,7 +2656,7 @@ fn s12b_boundary_events_dir_lives_outside_session_logs() {
 
 #[test]
 fn set_home_dir_repoints_instance_paths() {
-    // R7（coverage-95 goal 2026-08-27）：运行时重定向缝。OnceLock 单例无法
+    // （coverage-95 goal）：运行时重定向缝。OnceLock 单例无法
     // 换实例，setter 是测试把 home 指向临时目录的唯一途径；钉住「改 home
     // 后所有派生路径跟随」+「不影响其他实例」。
     let a = PathManager::with_home(std::path::PathBuf::from("/tmp/home_a"));
@@ -2680,7 +2680,7 @@ fn set_home_dir_repoints_instance_paths() {
 
 #[test]
 fn test_resolve_spill_dir_in_workspace_layout() {
-    // 2026-08-31 U4 迁移：spill 根 = <workspace>/logs/spill（唯一拼接点）。
+    // 迁移：spill 根 = <workspace>/logs/spill（唯一拼接点）。
     let ws = std::path::PathBuf::from("/tmp/ws");
     assert_eq!(
         resolve_spill_dir_in_workspace(&ws),
@@ -2690,7 +2690,7 @@ fn test_resolve_spill_dir_in_workspace_layout() {
 
 #[test]
 fn test_resolve_spill_dir_in_workspace_stays_under_workspace() {
-    // U4 约束：spill 必须落在 restrict_to_workspace 限制范围内。
+    // 约束：spill 必须落在 restrict_to_workspace 限制范围内。
     let ws = std::path::PathBuf::from("/tmp/home_x/workspace");
     let spill = resolve_spill_dir_in_workspace(&ws);
     assert!(
@@ -2711,7 +2711,7 @@ fn test_resolve_spill_dir_for_home_is_legacy_location() {
 
 #[test]
 fn test_board_wake_state_path_layout() {
-    // G8（2026-09-09）：worker 唤醒水位快照落 workspace/data 派生数据区，
+    // worker 唤醒水位快照落 workspace/data 派生数据区，
     // 唯一拼接点在 paths.rs；布局不得再漂移。
     let home = std::path::PathBuf::from("/tmp/home_x");
     assert_eq!(
@@ -2726,7 +2726,7 @@ fn test_board_wake_state_path_layout() {
 
 #[test]
 fn test_agent_paths_layout() {
-    // P2：agent 实体区布局单一真相源。home 钉死 <workspace>/agents/<id>/home/，
+    // agent 实体区布局统一定义。home 钉死 <workspace>/agents/<id>/home/，
     // 记忆命名空间 <workspace>/memory/agents/<id>/；布局不得再漂移。
     let ws = std::path::PathBuf::from("/tmp/home_x/workspace");
     assert_eq!(resolve_agents_root_in_workspace(&ws), ws.join("agents"));
@@ -2738,7 +2738,7 @@ fn test_agent_paths_layout() {
         resolve_agent_memory_dir_in_workspace(&ws, "a1b2c3d4"),
         ws.join("memory").join("agents").join("a1b2c3d4")
     );
-    // P3 T6：浏览器身份目录钉死 home 内（cookies/登录态不出 home）。
+    // 浏览器身份目录钉死 home 内（cookies/登录态不出 home）。
     let browser = resolve_agent_browser_profile_in_workspace(&ws, "a1b2c3d4");
     assert_eq!(
         browser,
@@ -2760,7 +2760,7 @@ fn test_agent_paths_layout() {
 
 #[test]
 fn test_expand_home_multibyte_after_tilde_no_panic() {
-    // R52：旧守卫 `starts_with('~') && len>1` 配 `&path[2..]`，输入
+    // 旧守卫 `starts_with('~') && len>1` 配 `&path[2..]`，输入
     // `~<多字节字符>`（如 `~中`，经 NEMESISBOT_HOME 环境变量可达）时
     // 字节 2 落在续字节上直接 panic。新守卫只认 `~/` 前缀与裸 `~`，
     // `~x`（无斜杠）按字面量处理——与 config::expand_tilde/migrate
@@ -2777,7 +2777,7 @@ fn test_expand_home_multibyte_after_tilde_no_panic() {
     assert_eq!(expand_home("plain"), PathBuf::from("plain"));
 }
 
-// --- M9（2026-10-27 整改批次五）：忽略表扩充 ---
+// ---：忽略表扩充 ---
 
 #[test]
 fn test_workspace_ignored_dirs_extended_entries() {
@@ -2826,7 +2826,7 @@ fn test_workspace_ignored_root_self_name_not_matched() {
 
 #[test]
 fn test_workspace_ignored_images_runtime_dir() {
-    // BUG-20261028-105 红证：images 是运行时属主子树（M4 generate_image
+    // 红证：images 是运行时属主子树（generate_image
     // 每次落 <workspace>/images/*.png），与 logs/uploads/memory/data 同族。
     // 表漏 images → fs_watcher 把 agent 刚生成的图当「外部修改」注入
     // <external_changes> 上下文段（污染）；@补全把二进制 PNG 当项目文件列出。

@@ -1,8 +1,8 @@
-//! VM 生命周期原语（P5 第 2 步）：探针裁决 → QEMU spawn → QMP 就绪等待 →
+//! VM 生命周期原语（第 2 步）：探针裁决 → QEMU spawn → QMP 就绪等待 →
 //! 停止（QMP quit 优雅路径 → kill 兜底）→ guest agent 连接（首帧 token
 //! 挑战鉴权）+ 工具调用。
 //!
-//! 诚实边界（文档见实施计划 §5）：
+//! 诚实边界（文档见实施计划）：
 //! - 探针只做静态必要条件（/dev/kvm、WinHvPlatform.dll、qemu --version），
 //!   最终裁决在真启动（QMP 握手失败 = Launch 错误带 stderr 日志路径）；
 //! - QMP 无鉴权、guest agent NAT 端口无网络层防护——两者**恒绑
@@ -43,11 +43,11 @@ pub const SLEEP_SNAPSHOT_TAG: &str = "p5sleep";
 /// migrate-to-file 状态文件名（落 run_dir）。
 pub const SLEEP_STATE_FILENAME: &str = "vm.state";
 
-/// 睡眠状态载体（P5 第 3 步；线选择随宿主 accel 定，见
+/// 睡眠状态载体（第 3 步；线选择随宿主 accel 定，见
 /// [`SleepMode::default_for_accel`]）。两条线的机制面都实装、fake-qmp
 /// 测试全覆盖（CI 锚 + 接口预留），但**生产默认线**由早验定谳钉死：
 /// QEMU 11.1.0 WHPX 的迁移机器整体挂死（savevm 180s+300s 无响应、
-/// migrate-to-file 三种 URI 形态各 30s 连 error 对象都无应答，2026-10-18
+/// migrate-to-file 三种 URI 形态各 30s 连 error 对象都无应答，
 /// 三探针定谳）——WHPX 当前置 None = 诚实不支持，详见实施计划附录。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SleepMode {
@@ -66,7 +66,7 @@ impl SleepMode {
     pub fn default_for_accel(accel: QemuAccel) -> Option<Self> {
         match accel {
             QemuAccel::Kvm => Some(SleepMode::Snapshot),
-            // WHPX：savevm 与 migrate 双双挂死（三探针定谳，2026-10-18），
+            // WHPX：savevm 与 migrate 双双挂死（三探针定谳），
             // 编码成 None 而非硬选一条必挂的线烧预算。
             QemuAccel::Whpx => None,
         }
@@ -140,10 +140,10 @@ impl From<std::io::Error> for VmError {
 /// 包装 [`start_vm`] 只负责真实探测后调它）。
 ///
 /// - `arch` 未产出（aarch64 预留档）→ `Unavailable`（诚实「当前不产出」）；
-/// - 显式 `hypervisor`：该 accel 探针缺席 → strict ? `StrictReject` :
+/// - 显式 `hypervisor`：该 accel 探针缺席 → strict ? `StrictReject`:
 ///   `Unavailable`；
 /// - `auto`：按宿主 OS 选首选序（Windows = WHPX 优先；Linux = KVM 优先；
-///   非首选留作显式覆盖口），全部缺席 → strict ? `StrictReject` :
+///   非首选留作显式覆盖口），全部缺席 → strict ? `StrictReject`:
 ///   `Unavailable`（原因聚合两路探针明细）。
 pub fn adjudicate_accel(
     strict: bool,
@@ -252,7 +252,7 @@ pub struct VmStartParams {
     pub id: String,
     /// 运行期目录（stderr 日志 / pidfile 落这里）。
     pub run_dir: PathBuf,
-    /// qemu-system 二进制（[`super::assembly::resolve_qemu_binary`] 产出）。
+    /// qemu-system 二进制（[`super::assembly:resolve_qemu_binary`] 产出）。
     pub qemu_bin: PathBuf,
     /// 已裁决的加速后端（[`adjudicate_accel`]）。
     pub accel: QemuAccel,
@@ -269,7 +269,7 @@ pub struct VmStartParams {
     pub loadvm_tag: Option<String>,
     /// wake 线 B：migrate-to-file 状态文件（睡眠实例重挂用；冷启 None）。
     pub incoming_file: Option<PathBuf>,
-    /// 显示面（P5-R2）：Some(port) = VNC 监听真实 TCP 端口（127.0.0.1，
+    /// 显示面：Some(port) = VNC 监听真实 TCP 端口（127.0.0.1，
     /// 装配层按 display=port-5900 反向换算进 QEMU 参数）；None =
     /// `-display none`（默认）。端口由 caller 走 [`alloc_loopback_port`]。
     pub display_vnc_port: Option<u16>,
@@ -336,9 +336,9 @@ impl VmInstance {
         let mut cmd = tokio::process::Command::new(&p.qemu_bin);
         // 串口全量捕获（cloud 镜像 grub 自带 console=ttyS0）：boot/cloud-init
         // 输出落 run_dir/serial.log——首启装配失败（packages 卡死 / runcmd
-        // 中断）从宿主侧直接定性，不再靠 QMP 截屏盲猜（2026-10-21 VNC 演示
-        // 实录：fresh 首启两轮长静默，QMP 截屏只见 X 黑屏，guest 内原因
-        // 不可见）。反斜杠换正斜杠——chardev file: 路径不吃反斜杠转义风险。
+        // 中断）从宿主侧直接定性，不再靠 QMP 截屏盲猜（VNC 演示
+        // fresh 首启两轮长静默，QMP 截屏只见 X 黑屏，guest 内原因
+        // 不可）。反斜杠换正斜杠——chardev file: 路径不吃反斜杠转义风险。
         let serial_str = p
             .run_dir
             .join("serial.log")
@@ -351,7 +351,7 @@ impl VmInstance {
             .stderr(std::process::Stdio::from(stderr_file))
             // 句柄消失 = QEMU 收割（kill_on_drop）：gateway 任何形态退出
             // （优雅停机/Ctrl-C/裸杀）槽位 VmInstance 随之 drop，不挂这个
-            // QEMU 就变孤儿进程吃满内存（VM-UAT 实录：两个 2GB 孤儿污染
+            // QEMU 就变孤儿进程吃满内存（VM-UAT 两个 2GB 孤儿污染
             // 后续测试的「qemu→0」全局计数）。VM 生命周期完全由 gateway
             // 持有——没有「脱离网关继续跑」的产品语义，fail-closed 正确。
             .kill_on_drop(true);
@@ -368,14 +368,14 @@ impl VmInstance {
         let agent_addr: SocketAddr = format!("127.0.0.1:{host_port}")
             .parse()
             .expect("agent addr");
-        // wake 重挂（-incoming/-loadvm）= 状态回放完成前 QMP 停在过渡态，
+        // wake 重挂（incoming/-loadvm）= 状态回放完成前 QMP 停在过渡态，
         // 就绪判定走过渡态容忍分支（独立预算，见 WAKE_READY_TIMEOUT）。
         let is_wake = p.loadvm_tag.is_some() || p.incoming_file.is_some();
         Self::wait_qmp_ready(&mut child, qmp_addr, &stderr_path, is_wake).await?;
 
-        // VNC 绑定验证（2026-10-21 事故缺口）：QEMU 对 -vnc 绑定失败**非
+        // VNC 绑定验证（事故缺口）：QEMU 对 -vnc 绑定失败**非
         // 致命**（warn 后继续无显示跑）——registry 记着幻影端口 = 插件永久
-        // 连不上（当日实录：插件 session_reject vnc_connect_failed）。QMP
+        // 连不上（当日插件 session_reject vnc_connect_failed）。QMP
         // 就绪时 VNC listener 早已建立（QEMU 初始化期先于 QMP），此刻 TCP
         // 探针缺席 = 绑定确实失败，fail-closed 拒绝上岗（child kill_on_drop
         // 收割，不留无显示的僵尸实例）。
@@ -552,7 +552,7 @@ impl VmInstance {
         }
     }
 
-    /// 睡眠（P5 第 3 步）：[`sleep_via_qmp`] 状态保存 + 优雅退出 + 收割。
+    /// 睡眠（第 3 步）：[`sleep_via_qmp`] 状态保存 + 优雅退出 + 收割。
     /// Ok = VM 已退出且状态载体在手（caller 把产物落 registry 供 wake）；
     /// Err = 状态保存失败，**VM 保持运行**（无 quit——失败不毁现场，调用
     /// 方可重试 sleep 或改走 stop 丢弃状态）。
@@ -650,7 +650,7 @@ pub async fn sleep_via_qmp(
     // 核验），不是「读到 quit 回包」。QEMU 收到 quit 即停机拆除：JSON 解析在
     // `}` 处停止，命令尾部 `\n` 常留在内核接收队列——close() 遇接收队列非空
     // 走内核 abort 路径（RST + 丢弃发送队列中的 quit 回包），本端读回包拿到
-    // ECONNRESET / connection-closed。这是预期拆除形态不是错误（2026-10-18
+    // ECONNRESET / connection-closed。这是预期拆除形态不是错误（
     // 远程 KVM pcap+strace 实证：savevm 715ms 完成 → SHUTDOWN 事件 138B →
     // RST 取代 16B 回包 → 误报失败）。状态载体已在手，quit 回包未达不阻断；
     // QEMU 若真未退出由 15s 收割 + kill 兜底收敛。

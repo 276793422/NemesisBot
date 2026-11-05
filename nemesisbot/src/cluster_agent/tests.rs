@@ -198,7 +198,7 @@ fn test_build_context() {
     assert!(ctx.tool_path_base.is_none());
 }
 
-// -- F-U3-2：档案管线任务的工具路径基准 ----------------------------------
+// -- F-：档案管线任务的工具路径基准 ----------------------------------
 
 #[test]
 fn test_build_context_sets_tool_path_base_for_archive_task() {
@@ -451,7 +451,7 @@ fn test_persist_grows_history_across_turns() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：cluster_agent_loop 端到端。
+// 补测（quality-hardening goal 冲刺）：cluster_agent_loop 端到端。
 //
 // 直构 AgentLoop（脚本化 provider + 可注册的假 cluster_rpc 工具）+ 内存
 // ClusterTaskList/ClusterWorkQueue + broadcast shutdown，覆盖主循环 select、
@@ -591,8 +591,8 @@ mod loop_e2e {
             task_list.clone(),
             None, // rpc_client=None：send_task_callback 走无客户端跳过
             None, // 无 observer
-            None, // 无 result_persister（G1 收口语义走专属用例）
-            None, // 无讨论通道（G4 专属用例自行传入）
+            None, // 无 result_persister（收口语义走专属用例）
+            None, // 无讨论通道（专属用例自行传入）
             "test-node".to_string(),
             shutdown_rx,
         ));
@@ -604,7 +604,7 @@ mod loop_e2e {
         }
     }
 
-    /// 带录制 persister 的 rig（G1 收口回归用）。
+    /// 带录制 persister 的 rig（收口回归用）。
     fn spawn_rig_with_persister(
         agent_loop: AgentLoop,
         config: AgentConfig,
@@ -622,7 +622,7 @@ mod loop_e2e {
             None,
             None,
             Some(persister),
-            None, // 无讨论通道（G4 专属用例自行传入）
+            None, // 无讨论通道（专属用例自行传入）
             "test-node".to_string(),
             shutdown_rx,
         ));
@@ -849,23 +849,23 @@ mod loop_e2e {
     }
 
     // -----------------------------------------------------------------------
-    // G1 收口回归（2026-09-08，真机 R1a 发现的 work-queue 路径断链）：
-    // send_task_callback 必须走 send_callback_or_persist 单一真相源 ——
+    // 收口回归（真机 发现的 work-queue 路径断链）：
+    // send_task_callback 必须走 send_callback_or_persist 统一定义 ——
     // 回调失败（无客户端/网络断）→ persister.set_result 落盘真实结果；
     // 回调成功 → persister.delete 清理 set_running 占位。此前 work-queue
     // 路径直连裸 send_callback，两件事都不做 → A 端恢复轮询永远拿到
-    // running 占位，G5 恢复链在生产路径下失效。
+    // running 占位， 恢复链在生产路径下失效。
     // -----------------------------------------------------------------------
 
     use nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister;
 
     // =========================================================================
-    // G1 收口回归（2026-09-08，真机 R1a 发现的 work-queue 路径断链）：
-    // send_task_callback 必须走 send_callback_or_persist 单一真相源 ——
+    // 收口回归（真机 发现的 work-queue 路径断链）：
+    // send_task_callback 必须走 send_callback_or_persist 统一定义 ——
     // 回调失败（无客户端/网络断）→ persister.set_result 落盘真实结果；
     // 回调成功 → persister.delete 清理 set_running 占位。
     // 此前 work-queue 路径直连裸 send_callback，两件事都不做 → A 端恢复
-    // 轮询永远拿到 running 占位，G5 恢复链在生产路径下失效。
+    // 轮询永远拿到 running 占位， 恢复链在生产路径下失效。
     // =========================================================================
 
     /// 录制型 persister：记下每个调用，供断言。
@@ -1020,7 +1020,7 @@ mod loop_e2e {
 // （528-529）、count_llm_rounds 两形态（554-560）。
 // 豁免不碰：48-49（queue.next() None break——队列内部持有 tx，结构性死码）。
 
-// 本地复刻 loop_e2e 的 provider/rig（兄弟 mod 私有项不可见）。
+// 本地复刻 loop_e2e 的 provider/rig（兄弟 mod 私有项不可）。
 // =========================================================================
 
 mod wave_b {
@@ -1297,8 +1297,8 @@ mod wave_b {
             task_list.clone(),
             None, // rpc_client=None：回调走无客户端跳过（无网络）
             observer,
-            None, // 无 result_persister（G1 收口语义走专属用例）
-            None, // 无讨论通道（G4 专属用例自行传入）
+            None, // 无 result_persister（收口语义走专属用例）
+            None, // 无讨论通道（专属用例自行传入）
             "test-node".to_string(),
             shutdown_rx,
         ));
@@ -1426,7 +1426,7 @@ mod wave_b {
             .submit("t-wb-resume-obs".to_string())
             .unwrap();
 
-        // 第一段：exec 异步挂起。
+        // exec 异步挂起。
         wb_wait_until(10_000, || {
             matches!(
                 rig.task_list.get_task("t-wb-resume-obs").map(|t| t.status),
@@ -1439,7 +1439,7 @@ mod wave_b {
         assert_eq!(saved.waiting_tool_call_id.as_deref(), Some("tc-wb-obs"));
         assert!(saved.conversation.is_some());
 
-        // 第二段：纯文本回调 → replace_tool_result 抹掉 marker → 同步完成。
+        // 纯文本回调 → replace_tool_result 抹掉 marker → 同步完成。
         rig.task_list
             .inject_callback("t-wb-resume-obs", "plain remote answer")
             .expect("inject_callback should succeed");
@@ -1464,9 +1464,9 @@ mod wave_b {
 // - cluster_agent.rs:48-49（work queue closed → break）：ClusterWorkQueue
 //   自持 mpsc Sender（cluster_task.rs:80 结构体字段），Arc<Queue> 存活期间
 //   next() 不可能返回 None —— 结构性死码，测试不可达；
-// - :528-529 前驱回看未命中形态：wave_b 已有两条直测覆盖该路径（map 单行
+// -528-529 前驱回看未命中形态：wave_b 已有两条直测覆盖该路径（map 单行
 //   区域颗粒度噪声），无新的可达形态；
-// - :417 内层 !history.is_empty() 假臂：line 394 已保证 messages 非空、
+// -417 内层 !history.is_empty() 假臂：line 394 已保证 messages 非空、
 //   set_history 后必非空 —— 同为结构性死码。
 // =========================================================================
 
@@ -1519,7 +1519,7 @@ mod wave_c {
 }
 
 // =========================================================================
-// Swarm M3（G4）：讨论唤醒事件消费（第三 select 臂）。
+// Swarm：讨论唤醒事件消费（第三 select 臂）。
 //
 // 纯函数（prompt 组装 / 上行信封）直测；loop 冒烟走 loop_e2e 同款 rig +
 // ScriptedProvider（[SILENT] 沉默 / 正文回复两形态；rpc_client=None 时
@@ -1583,7 +1583,7 @@ mod swarm_g4 {
         assert!(build_discussion_prompt("node-a", &inf).contains("unlimited"));
     }
 
-    /// 身份透传（2026-10-23）：human 发言在 prompt 里可见是「human user」，
+    /// 身份透传：human 发言在 prompt 里可见是「human user」，
     /// agent 节点标「agent node」；空 kind（旧 master 包）退化裸 id。
     #[test]
     fn g4_prompt_renders_sender_identity_kinds() {
@@ -1763,7 +1763,7 @@ mod swarm_g4 {
         run_one_round("我的结论：先看日志。").await;
     }
 
-    /// Swarm G13：讨论轮必须落 cluster_logs 4 件套。讨论没有 cluster task，
+    /// Swarm：讨论轮必须落 cluster_logs 4 件套。讨论没有 cluster task，
     /// handle_discussion 需合成 task 上下文 + start/end——缺 start 则观察者
     /// active 表永不注册 trace，LLM 调用全部不可回放。本测试锁：轮次收尾后
     /// active 表清零（start/end 配对闭合），且磁盘出现
@@ -1857,7 +1857,7 @@ mod swarm_g4 {
     }
 }
 
-// ---------- E1 二期：task_usage_delta 纯差值 ----------
+// ---------- 二期：task_usage_delta 纯差值 ----------
 
 /// after - before 饱和减法：负差（retention 清扫/rollup 削行）钳 0，
 /// cost 允许浮点直减。
@@ -1894,7 +1894,7 @@ fn task_usage_delta_saturates_and_carries_cost() {
     assert_eq!(d2["requests"], 0);
 }
 
-// ---------- E1 二期多跳账：task_usage_merge（2026-10-17 异步多跳根修）----------
+// ---------- 二期多跳账：task_usage_merge（异步多跳根修）----------
 
 /// carried（async 暂存）+ 本轮差值逐字段饱和加法；carried 缺失/字段缺失
 /// 都按 0 兼容。
@@ -1923,7 +1923,7 @@ fn task_usage_merge_accumulates_and_tolerates_missing() {
     assert!((m3["cost_usd"].as_f64().unwrap() - 0.1).abs() < 1e-9);
 }
 
-// -- P1（2026-09-11 真机日志）：turn 终态判定 -----------------------------
+// -- （真机日志）：turn 终态判定 -----------------------------
 //
 // 失败终止（末事件 Error）必须映射 error 回调，不得包装成 success 空交付。
 
@@ -1957,7 +1957,7 @@ fn test_terminal_error_none_for_done_or_empty_stream() {
 }
 
 // ---------------------------------------------------------------------------
-// P2A（2026-09-12 NB-15）：终结失败分类（fail_class）契约
+// P2A：终结失败分类（fail_class）契约
 // ---------------------------------------------------------------------------
 
 /// 校验预算耗尽停轮 → validation_budget（loop.rs 生成侧前缀与此处同步）。
@@ -2002,7 +2002,7 @@ fn test_classify_llm_failure_variants() {
     );
 }
 
-/// L13-b：mandate 执行面守卫终局 → mandate_violation（稳定前缀契约）。
+/// b：mandate 执行面守卫终局 → mandate_violation（稳定前缀契约）。
 #[test]
 fn test_classify_mandate_violation() {
     let fc = super::classify_terminal_failure(
@@ -2053,7 +2053,7 @@ fn test_classify_empty_result_and_fallback() {
     );
 }
 
-/// P8（集群无人值守硬化 A2）：会话 token 预算耗尽（loop 硬停与入口拒接
+/// （集群无人值守硬化）：会话 token 预算耗尽（loop 硬停与入口拒接
 /// 两类文案同前缀）→ token_budget。
 #[test]
 fn test_classify_token_budget() {
@@ -2069,7 +2069,7 @@ fn test_classify_token_budget() {
     );
 }
 
-/// ② AOR 批一b：worker 六词失败纪律自报桥（`失败类别：` 前缀）→ fail_class
+/// ② b：worker 六词失败纪律自报桥（`失败类别：` 前缀）→ fail_class
 /// 词→类映射（与 board_review redispatch_policy 处置语义对齐）。
 #[test]
 fn test_classify_worker_failure_category_bridge() {
@@ -2126,7 +2126,7 @@ fn test_classify_worker_failure_category_bridge() {
     );
 }
 
-/// ② AOR 批一b：exec 兜底细分——窄环境特征命中 → environmental；不命中
+/// ② b：exec 兜底细分——窄环境特征命中 → environmental；不命中
 /// 仍落 exec_failed。
 #[test]
 fn test_classify_exec_fallback_environmental_features() {
@@ -2176,7 +2176,7 @@ fn test_classify_exec_fallback_environmental_features() {
 }
 
 // ---------------------------------------------------------------------------
-// P8（集群无人值守硬化 A2）：D3 重派入口拒接判定（session_budget_rejection）
+// （集群无人值守硬化）： 重派入口拒接判定（session_budget_rejection）
 // ---------------------------------------------------------------------------
 
 /// 预算写入 config.json（session_token_budget 键；与 loop 侧 fresh-read
@@ -2606,7 +2606,7 @@ mod wave_d {
         assert_eq!(calls[0].3, "cancelled");
     }
 
-    // -- 执行中取消（W2 P4 per-task cancel token） ---------------------------
+    // -- 执行中取消（per-task cancel token） ---------------------------
 
     /// 新任务执行窗口内 cancel_task → token 打断 → error("cancelled") 回调，
     /// 不走成功交付路径。
@@ -2686,7 +2686,7 @@ mod wave_d {
 
         rig.task_list.create_task(d_make_task("t-d-res-cancel"));
         rig.work_queue.submit("t-d-res-cancel".to_string()).unwrap();
-        // 第一段：exec 异步挂起。
+        // exec 异步挂起。
         d_wait_until(10_000, || {
             matches!(
                 rig.task_list.get_task("t-d-res-cancel").map(|t| t.status),
@@ -2719,7 +2719,7 @@ mod wave_d {
         assert_eq!(calls[0].3, "cancelled");
     }
 
-    // -- 升级硬停 / 空交付（P1/P2A 终态改判） --------------------------------
+    // -- 升级硬停 / 空交付（/P2A 终态改判） --------------------------------
 
     /// 新任务 Done 终止但文本带 ESCALATION_MARKER → error 回调（交付=完整
     /// 停止告知文本），A 端据此转人工。
@@ -2881,7 +2881,7 @@ mod wave_d {
         );
     }
 
-    // -- D0b 出队开跑上报 ----------------------------------------------------
+    // -- 出队开跑上报 ----------------------------------------------------
 
     /// notify_task_started fire-and-forget：无 resolver 客户端 call 快速 Err
     /// → debug 跳过；None 客户端直接返回。不炸不悬挂。
@@ -2922,7 +2922,7 @@ mod wave_d {
         deliver_files_back(Some(rpc.as_ref()), &task, "test-node", &text, None).await;
     }
 
-    /// 相对路径按 path_base 解析（2026-10-17 根修：档案管线交付清单是
+    /// 相对路径按 path_base 解析（根修：档案管线交付清单是
     /// 工作副本根相对形态，此前按进程 cwd 读=全部落空）；绝对路径原样；
     /// base=None 时相对路径照旧按 cwd（旧行为兼容面）。
     #[tokio::test]
@@ -2971,7 +2971,7 @@ mod wave_d {
         .await;
     }
 
-    // -- E1 二期用量提取 -----------------------------------------------------
+    // -- 二期用量提取 -----------------------------------------------------
 
     /// 装配 data_store → 差值提取 Some（空库全零）；未装配 → 诚实 None。
     #[tokio::test]
@@ -2997,7 +2997,7 @@ mod wave_d {
 
     // -- 讨论 post / send_nb_bus RPC 失败臂 ----------------------------------
 
-    /// 日志捕获（thread-local subscriber；BUG-20261102-322：空回复丢弃臂
+    /// 日志捕获（thread-local subscriber；空回复丢弃臂
     /// 的名字承诺 dropped_before_post，需要真断言丢弃日志）。
     fn capture_logs_to_buf() -> (
         tracing::subscriber::DefaultGuard,
@@ -3024,8 +3024,8 @@ mod wave_d {
         (guard, buf)
     }
 
-    /// 空回复：post 前被丢弃，不触 RPC、不炸（丢弃日志可见）。
-    /// BUG-20261102-322 实证：whitespace provider 走退化重试梯后返回**非空**
+    /// 空回复：post 前被丢弃，不触 RPC、不炸（丢弃日志可）。
+    /// 实证：whitespace provider 走退化重试梯后返回**非空**
     /// notice，空回复丢弃臂从未执行（双重空洞）。改用恒 Err provider——
     /// loop 以 Error 事件收尾、无 Done → extract_final_message 得空串，
     /// 真正走进丢弃臂。
@@ -3085,7 +3085,7 @@ mod wave_d {
 
     // -- 终态失败分类补漏（llm_rate_limit 限流形态单列） ----------------------
 
-    /// 「rate limited」/「429」→ llm_rate_limit（2026-09-17 BUG 文档裁决⑤）。
+    /// 「rate limited」/「429」→ llm_rate_limit。
     #[test]
     fn test_classify_llm_rate_limit_variants() {
         assert_eq!(
@@ -3100,7 +3100,7 @@ mod wave_d {
 }
 
 // ---------------------------------------------------------------------------
-// 职能渲染（集群专业职能框架 M3：task_system_prompt / load_profession_assets）
+// 职能渲染（集群专业职能框架：task_system_prompt / load_profession_assets）
 // ---------------------------------------------------------------------------
 
 fn prof_task(slug: Option<&str>) -> ClusterTask {
@@ -3248,7 +3248,7 @@ fn task_prompt_user_workspace_extension_loaded() {
 
 #[test]
 fn load_profession_assets_user_override_wins_over_builtin() {
-    // A1 翻转（2026-10-14 D5）：用户同名档案赢过内置，部署后可热改。
+    // 翻转：用户同名档案赢过内置，部署后可热改。
     let tmp = tempfile::tempdir().unwrap();
     let prof_dir = tmp.path().join("cluster").join("professions").join("dev");
     std::fs::create_dir_all(&prof_dir).unwrap();
@@ -3336,7 +3336,7 @@ fn load_profession_assets_invalid_slug_never_touches_disk() {
 }
 
 // ---------------------------------------------------------------------------
-// B2 职能工具围栏（profession-capability-evolution 2026-10-14）：
+// 职能工具围栏（profession-capability-evolution）：
 // 任务装配（task_system_prompt 写 cfg.tools）+ 讨论唤醒轮交集（discussion_
 // tool_fence）。解析器单测在 nemesis-prompts professions/tests.rs，此处测
 // 装配语义与开关。
@@ -3356,7 +3356,7 @@ fn expected_default_fence() -> Vec<String> {
         "edit_file",
         "board_issue",
         "board_discuss",
-        // sleep（D2 有界等待：定稿单评审轮询）2026-10-14 入围栏；与
+        // sleep（有界等待：定稿单评审轮询） 入围栏；与
         // nemesis-prompts professions/tests.rs 的 common 白名单同步。
         "sleep",
     ]
@@ -3648,7 +3648,7 @@ fn discussion_fence_switch_off_disables() {
     );
 }
 
-// claim 竞速重试判定（T43 实证的 D0b 竞态）：master 派发行未落库时回
+// claim 竞速重试判定（实证的 竞态）：master 派发行未落库时回
 // UNAVAILABLE —— worker 据此退避重报；VALIDATION/成功/空 result 都不重试。
 #[test]
 fn started_reply_retryable_only_for_unavailable() {
@@ -3695,7 +3695,7 @@ fn started_reply_retryable_only_for_unavailable() {
     assert!(!super::started_reply_retryable(&no_result));
 }
 
-// -- M5-3：issue_number_from_cluster_chat_id ------------------------------
+// --：issue_number_from_cluster_chat_id ------------------------------
 
 /// board 派发会话键（worker 侧真实形态，peer_chat_handler 原样拼接
 /// `cluster_rpc:{source}/{chat_id}`，chat_id = `board:{number}`）→ 单号。

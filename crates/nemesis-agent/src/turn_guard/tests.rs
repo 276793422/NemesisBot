@@ -204,7 +204,7 @@ fn indicates_error_detects_exit_code_prefix() {
         "Exit code: 101\nstdout: \nstderr: error[E0432]: x"
     ));
     // ExecTool timeout-kill format (`Ok("Command timed out …")` — the third
-    // exec failure shape per `loop_tools:exec_output_passed`). Missing here,
+    // exec failure shape per `loop_tools::exec_output_passed`). Missing here,
     // a hung-command loop (interactive prompt wait, long test suite) looks
     // like a stream of successes to the guards / WAL / observer / Forge.
     assert!(tool_result_indicates_error(
@@ -320,7 +320,7 @@ fn repeat_success_nudges_on_identical_writes() {
     }
 }
 
-/// ：写类成功置位 `had_writes`（预算暂停探针
+/// 写类成功置位 `had_writes`（预算暂停探针
 /// 触发闸）；读类不置位；新 guard 初始 false。
 #[test]
 fn had_writes_tracks_write_like_successes_only() {

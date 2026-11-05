@@ -1,4 +1,4 @@
-//! W2c batch tests (Phase 3 / quality-hardening goal).
+//! batch tests (/ quality-hardening goal).
 //!
 //! Targets vector/embedding_config.rs branches not exercised by tests.rs /
 //! extra_tests.rs:
@@ -44,7 +44,7 @@ pub(super) fn spawn_http_server(responses: Vec<(&'static str, &'static str)>) ->
 /// Find a free port and abandon it (for the connection-refused arm).
 /// `pub(super)` 供兄弟测试模块（extra_tests 等）复用：任何可能触发下载的
 /// 测试都应把 URL 指到死端口——默认 URL 是 hf-mirror 真网，CI runner 被
-/// 限流时 429 假红、本机网络好时真下载成功假绿（2026-09-01 CI 事故）。
+/// 限流时 429 假红、本机网络好时真下载成功假绿（CI 事故）。
 pub(super) fn find_dead_port() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -268,12 +268,12 @@ fn download_model_files_connection_refused_errors() {
 }
 
 // ============================================================
-// S5 coverage: tokenizer copy failure arm + download_file edges
+// coverage: tokenizer copy failure arm + download_file edges
 // ============================================================
 
 #[test]
 fn download_model_files_directory_tokenizer_source_errors() {
-    // BUG-20261103-339：local_tokenizer_path 指向目录 → 不是有效源
+    // local_tokenizer_path 指向目录 → 不是有效源
     // （is_non_empty_file 含 is_file 闸）→ 无 URL 可兜底 → 最终校验诚实
     // Err。旧代码：exists() 放行 → fs::copy 失败 warn + continue → 静默
     // Ok 返回但 tokenizer 缺失（插件 init 晦涩失败 + 永久自禁失败链）。
@@ -308,8 +308,8 @@ fn download_model_files_directory_tokenizer_source_errors() {
 }
 
 // ============================================================
-// BUG-20261103-339：tokenizer 本地拷贝臂残骸合法化 + 安装最终校验
-// （BUG-20261031-241 在 model 臂修掉的病理在本地拷贝臂重演）
+// tokenizer 本地拷贝臂残骸合法化 + 安装最终校验
+// （在 model 臂修掉的病理在本地拷贝臂重演）
 // ============================================================
 
 /// 零字节 local_tokenizer_path 是损坏源（不是有效源）：不得被 exists()
@@ -408,8 +408,8 @@ fn download_file_parent_create_failure_errors() {
 }
 
 // ============================================================
-// BUG-20261031-241：零字节残骸重下 + 空响应体诚实报错 + 原子落盘
-// （对齐 nemesis-voice model.rs 同族先例 BUG-20261029-146）
+// 零字节残骸重下 + 空响应体诚实报错 + 原子落盘
+// （对齐 nemesis-voice model.rs 同族先例）
 // ============================================================
 
 /// 红证（download_model_files 层）：0 字节 model.onnx/tokenizer.json 是
@@ -508,7 +508,7 @@ fn resolve_model_files_zero_byte_model_is_not_installed() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-278：零超时下载在半死上游上永久挂死——总超时回归测试
+// 零超时下载在半死上游上永久挂死——总超时回归测试
 // （blocking::ClientBuilder 无 read_timeout，走总超时兜底；测试态
 // DOWNLOAD_TOTAL_TIMEOUT=400ms，等待必须秒级以内）。
 // ---------------------------------------------------------------------------

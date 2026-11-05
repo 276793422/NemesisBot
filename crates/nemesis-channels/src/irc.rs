@@ -61,11 +61,11 @@ impl Default for IRCConfig {
 
 /// IRC channel using raw TCP connection.
 pub struct IRCChannel {
-    /// Arc 共享进连接任务（allow-list 检查在 spawn 侧执行，BUG-20261031-247）。
+    /// Arc 共享进连接任务（allow-list 检查在 spawn 侧执行）。
     base: Arc<BaseChannel>,
     config: IRCConfig,
     running: Arc<parking_lot::RwLock<bool>>,
-    /// Message bus sender for publishing inbound PRIVMSGs（BUG-20261031-247）。
+    /// Message bus sender for publishing inbound PRIVMSGs。
     ///
     /// 与 external/qq/matrix 通道同构：收件必须发布到总线进 agent loop。
     /// 此前本通道构造器没有 bus 参数，读循环也没有 PRIVMSG 分支——消息
@@ -75,7 +75,7 @@ pub struct IRCChannel {
     ///
     /// Arc 共享进连接任务：连接建立后由任务把写半部装载进槽，send_raw
     /// 与读循环（PONG/JOIN/QUIT）全走同一写槽（take-写-放回串行化）。
-    /// BUG-20261102-299：此前槽只在 new 时初始化 None、连接任务从不装载
+    /// 此前槽只在 new 时初始化 None、连接任务从不装载
     /// （写半部是任务本地变量），send_raw 恒走「IRC not connected」——
     /// 出站死路。
     writer: Arc<parking_lot::Mutex<Option<IRCWriter>>>,
@@ -195,7 +195,7 @@ impl IRCChannel {
     /// Builds IRC registration commands.
     ///
     /// 关联函数形态：连接任务里只有 config 没有 self（注册写与此处
-    /// 单一真相源，连接循环直接复用，不再 inline 重复）。
+    /// 统一定义，连接循环直接复用，不再 inline 重复）。
     pub fn build_registration(config: &IRCConfig) -> Vec<String> {
         let mut commands = Vec::new();
 
@@ -240,7 +240,7 @@ impl IRCChannel {
     }
 
     /// Parses a PRIVMSG to extract (target, content).
-    /// Format: "target :content" or "target content"
+    /// Format: "target:content" or "target content"
     pub fn parse_privmsg(params: &str) -> Option<(&str, &str)> {
         let parts: Vec<&str> = params.splitn(2, " :").collect();
         if parts.len() < 2 {
@@ -249,7 +249,7 @@ impl IRCChannel {
         Some((parts[0], parts[1]))
     }
 
-    /// 出站写超时（BUG-20261102-300）：manager 出站派发是单任务串行
+    /// 出站写超时：manager 出站派发是单任务串行
     /// await（一条通道 send 无界挂起 = 全部通道出站停摆且零错误零日志，
     /// 见 base.rs 串行派发纪律），TCP write 必须有界——HTTP 35s / email
     /// 30s 同族先例，此处对齐 email 的 30s。
@@ -332,7 +332,7 @@ impl IRCChannel {
         .await
     }
 
-    /// send_raw 的可注入超时形态（测试用短窗验证 BUG-20261102-300 的
+    /// send_raw 的可注入超时形态（测试用短窗验证 的
     /// 有界性；生产走 WRITE_TIMEOUT_SECS）。
     async fn send_raw_with_timeout(
         slot: &parking_lot::Mutex<Option<IRCWriter>>,
@@ -352,10 +352,10 @@ impl IRCChannel {
     fn spawn_connection_loop(&self) {
         let running = self.running.clone();
         let config = self.config.clone();
-        // BUG-20261031-247：收件发布面需要 allow-list 与 bus，一并共享进任务。
+        // 收件发布面需要 allow-list 与 bus，一并共享进任务。
         let base = Arc::clone(&self.base);
         let bus_sender = self.bus_sender.clone();
-        // BUG-20261102-299：写槽共享进任务——连接建立后装载写半部，
+        // 写槽共享进任务——连接建立后装载写半部，
         // send_raw 才有 writer 可用（此前任务从不装载，出站恒死）。
         let writer_slot = Arc::clone(&self.writer);
 
@@ -381,14 +381,14 @@ impl IRCChannel {
                     Ok(stream) => {
                         let (reader, writer) = tokio::io::split(stream);
 
-                        // BUG-20261102-299：写半部装载进共享写槽（此前是
+                        // 写半部装载进共享写槽（此前是
                         // 任务本地变量，send_raw 的槽永远 None——出站死路）。
                         // 注册与后续 PONG/JOIN/QUIT 全走同一写槽单一写路径
                         // （take-写-放回串行化，与 dispatch send 并发安全）。
                         *writer_slot.lock() = Some(IRCWriter { writer });
 
                         // Send registration commands（build_registration 单一
-                        // 真相源；写失败/超时不放回，外层重连环会重装）
+                        // 权威定义；写失败/超时不放回，外层重连环会重装）
                         for command in IRCChannel::build_registration(&config) {
                             let _ = IRCChannel::write_line_with_timeout(
                                 &writer_slot,
@@ -472,7 +472,7 @@ impl IRCChannel {
                                                     .await;
                                                 }
                                                 "PRIVMSG" => {
-                                                    // BUG-20261031-247：收件必须发布到总线进
+                                                    // 收件必须发布到总线进
                                                     // agent loop——此前读循环没有 PRIVMSG 分支，
                                                     // 消息落 `_ => {}` 静默丢弃（通道从未接线
                                                     // 总线：构造器无 bus 参数，allow_from 零

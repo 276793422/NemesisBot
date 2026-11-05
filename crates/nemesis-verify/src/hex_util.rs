@@ -17,7 +17,7 @@ pub fn hex_decode_32(hex: &str) -> Result<[u8; 32], String> {
     let hex = hex.trim();
     if !hex.is_ascii() {
         // 长度门只数字节；非 ASCII 输入会让下面的字节切片落在多字节
-        // 字符中间直接 panic——先诚实拒绝（2026-10-17 全仓横扫）。
+        // 字符中间直接 panic——先诚实拒绝（全仓横扫）。
         return Err("non-ascii hex".to_string());
     }
     if hex.len() != 64 {

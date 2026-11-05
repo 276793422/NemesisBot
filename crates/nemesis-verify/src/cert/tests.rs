@@ -1,6 +1,6 @@
 //! 证书链单测（v4：X.509 解析 + 链验证）。
 //!
-//! goal S1-2 判据六形态各 ≥1：正链 / 断链 / 过期 / EKU 错 / 签名坏 / 根不匹配，
+//! goal 判据六形态各 ≥1：正链 / 断链 / 过期 / EKU 错 / 签名坏 / 根不匹配，
 //! 全部经 keygen 低层积木 `issue_x509` 组合。
 
 use super::*;
@@ -86,7 +86,7 @@ fn valid_three_level_chain_verifies() {
     let (leaf, issuing, root) = (&chain[0], &chain[1], &chain[2]);
     assert_eq!(leaf.aki().unwrap(), issuing.ski().unwrap());
     assert_eq!(issuing.aki().unwrap(), root.ski().unwrap());
-    // D4 职责：leaf 带 codeSigning EKU；根自签、发行锚非自签。
+    // 职责：leaf 带 codeSigning EKU；根自签、发行锚非自签。
     assert!(leaf.has_code_signing_eku().unwrap());
     assert!(!issuing.has_code_signing_eku().unwrap());
     assert!(root.is_self_signed().unwrap());
@@ -173,7 +173,7 @@ fn wrong_root_anchor_detected() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：ChainError Display 全变体 / subject_public_key
+// AGT 覆盖率批次：ChainError Display 全变体 / subject_public_key
 // 三个失败臂 / SKI・AKI 剥除形态 / 签名算法不收 / KU 八组合 / chain blob
 // 往返与全部错误臂 / 无 AKI leaf 过链。
 // TBS 级变异积木：build_tbs → mutate → seal_certificate（签名在变异之后盖，

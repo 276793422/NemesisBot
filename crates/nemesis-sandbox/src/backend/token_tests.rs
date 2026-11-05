@@ -1,4 +1,4 @@
-//! DACL 定向档 D3 测试：write-restricted 令牌 + spawn 事务 + 写围栏 E2E。
+//! DACL 定向档 测试：write-restricted 令牌 + spawn 事务 + 写围栏 E2E。
 //!
 //! 真进程测试的子进程 = **本测试二进制自身**（`current_exe` + libtest 过滤器
 //! args，[`dacl_child_entry`] 是哨兵入口，按 env `NB_DACL_CHILD` 分臂）——
@@ -40,12 +40,12 @@ const EXIT_FENCE_BROKEN: i32 = 23;
 const EXIT_GRANDCHILD_FAIL: i32 = 24;
 const EXIT_ATTACH_FAIL: i32 = 25;
 const EXIT_EXECSIM_FAIL: i32 = 26;
-/// F9 证伪（2026-09-28）rename/delete 断言面：27=树内改名被拒（F9 所称
+/// 证伪rename/delete 断言面：27=树内改名被拒（所称
 /// 「掐 DELETE 断 rename」与实证相反——本码防有人再掐回去假回归）29=树内
 /// →树外改名成功（逃逸）30=树内删除被拒。**已知边界**：DELETE 不在
 /// write-restricted 写类评估集合 → 树内删除/改名**拦不住**（trustee=ws_sid
 /// 的 deny ACE 只影响 restricting 侧），「加固档」形态被真进程证伪为零拦截
-/// 力——治理归 8 层策略层，见 ACL 定向档报告 §3.9/§5。
+/// 力——治理归 8 层策略层，见 ACL 定向档报告 。
 const EXIT_RENAME_DENIED: i32 = 27;
 const EXIT_RENAME_ESCAPE: i32 = 29;
 const EXIT_DELETE_DENIED: i32 = 30;
@@ -107,8 +107,8 @@ fn dacl_child_entry() {
             }
             // d) 工作区外删除：观测点（不设失败条件）——DELETE 是否落入
             //    WRITE_RESTRICTED 的「写类」判定集合，MSDN 未逐位枚举；实测
-            //    结果打进 stderr 供报告/D4 逃逸边界文档记录真实语义。
-            //    **2026-09-28 实测定论：DELETE 不在写类集合**（树外无 ACE 仍
+            //    结果打进 stderr 供报告/ 逃逸边界文档记录真实语义。
+            //    ** 实测定论：DELETE 不在写类集合**（树外无 ACE 仍
             //    删成功）——这是「掐 DELETE 加固」零拦截力的机制根因。
             match std::fs::remove_file(&outside) {
                 Ok(()) => {
@@ -116,7 +116,7 @@ fn dacl_child_entry() {
                 }
                 Err(e) => eprintln!("[fence] 工作区外删除被拒（DELETE 在写类判定集合）: {e}"),
             }
-            // e) 树内改名（F9 证伪锚，2026-09-28）：Windows rename 需要源文件
+            // e) 树内改名（证伪锚）：Windows rename 需要源文件
             //    DELETE 权——**mask 保含 DELETE 的基线下必须通**（git
             //    lock→rename / cargo 原子替换 / mv 的内核语义锚）。被拒 = 有
             //    人把 DELETE 掐回去了（假回归，27 号退出码红出来）。
@@ -151,7 +151,7 @@ fn dacl_child_entry() {
         }
         // AttachConsole 臂：受限子进程（DETACHED，console-less）**附着**到
         // 已存在的 console（父=有 console 的测试进程）。附着是打开既有
-        // condrv 对象（非写类）而非新建——2026-09-27 实证白名单下放行，且
+        // condrv 对象（非写类）而非新建—— 实证白名单下放行，且
         // 附着后默认 flags 孙进程继承该 console 存活（与 S-1-2-1 无关，对照
         // 实验已定论）→ 生产形态「顶部进程持 console + 受限树附着」可解锁
         // 第三方工具链（cargo→rustc 类）默认 flags 链式 spawn。父测试进程
@@ -179,7 +179,7 @@ fn dacl_child_entry() {
                 }
             }
         }
-        // execsim 臂（D4 真进程二分，2026-09-27）：受限子进程内复现 exec 工具
+        // execsim 臂（真进程二分）：受限子进程内复现 exec 工具
         // 的 spawn 形态——`cmd /C` + 可选 current_dir(workspace) + creation
         // flags 变体，stdio piped（loop_tools make_piped_shell_command 同款）。
         // spawn 失败 → 26 退码带诊断；成功打出 status/stdout 供父侧断言。
@@ -202,7 +202,7 @@ fn dacl_child_entry() {
             let mut c = std::process::Command::new(program);
             // fence 对照臂（outside=1）：同进程内先跑 cmd 重定向写树外（复刻
             // 生产 exec 工具形态）——status/落盘/cmd_stderr 全打印进本进程
-            // stderr（→ 父侧 stderr_tail）供对照观测；落盘面硬断言在父侧
+            // stderr（父侧 stderr_tail）供对照观测；落盘面硬断言在父侧
             // （observation 测试按白名单形态逐项断言）。
             if std::env::var(CHILD_ENV_EXEC_OUTSIDE).as_deref() == Ok("1") {
                 let outside_dir = std::path::PathBuf::from(
@@ -211,7 +211,7 @@ fn dacl_child_entry() {
                 let target = outside_dir.join("violated_by_cmd.txt");
                 // cmd 自身 stdout/stderr 落工作区观测文件（树外建不了文件——
                 // 受限侧 File::create(outside) 本身就会被拒），跑完读回打进
-                // 本进程 stderr（→ 父侧 stderr_tail）。
+                // 本进程 stderr（父侧 stderr_tail）。
                 let obs_out = ws.join("obs_cmd_out.tmp");
                 let obs_err = ws.join("obs_cmd_err.tmp");
                 let mut cc = std::process::Command::new(program);
@@ -241,7 +241,7 @@ fn dacl_child_entry() {
             }
             c.args(["/C", "echo execsim_ok"]);
             // piped 三态：1=std piped（命名管道创建，受限下死）/ 0=inherit /
-            // file=workspace 内文件重定向（D4 修复形态——GRANT ACE 放行文件
+            // file=workspace 内文件重定向（修复形态——GRANT ACE 放行文件
             // 创建，句柄继承不重评）。
             if piped == "1" {
                 c.stdout(std::process::Stdio::piped())
@@ -320,7 +320,7 @@ fn dacl_grandchild_entry() {
     }
     // 臂 a（观测点，不判失败）：默认 flags。console 子系统孙进程在
     // console-less 父进程下必须**新分配** console（窗口形态）→ 对 condrv
-    // 写类访问 → 白名单 restricting 必死 0xC0000142（2026-09-27 实证；
+    // 写类访问 → 白名单 restricting 必死 0xC0000142（实证；
     // 此前 diag 里 default 存活是**继承假象**——diag 父测试进程自带 console，
     // 孙进程继承无需分配）。这正是「受限树内一切受控 spawn 必须 DETACHED /
     // 继承路径」诚实边界的实证锚点：第三方工具链（cargo→rustc 类）以默认
@@ -350,7 +350,7 @@ fn dacl_grandchild_entry() {
     }
     // 臂 b（观测点，不判失败）：CREATE_NO_WINDOW（nemesisbot exec 工具现行
     // 形态；隐藏 console 也是**新分配** → 实测死。受限模式下 exec 工具必须
-    // 避开此形态，D4 接线时改）。
+    // 避开此形态， 接线时改）。
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     match std::process::Command::new("C:\\Windows\\System32\\cmd.exe")
         .args(["/c", "exit 0"])
@@ -423,7 +423,7 @@ fn fence_dump_token(out_dir: &std::path::Path) {
 ///
 /// ⚠ `DETACHED_PROCESS` 是生产形态：受限令牌子进程的 console 分配（连
 /// CREATE_NO_WINDOW 的隐藏 console 也算）会对 \Device\ConDrv 做写类访问，
-/// 白名单 restricting 下必死 0xC0000142（2026-09-27 实证）；executor 协议
+/// 白名单 restricting 下必死 0xC0000142（实证）；executor 协议
 /// stdio 全走管道，不需要 console。
 fn spawn_child_mode(
     token: &WriteRestrictedToken,
@@ -438,7 +438,7 @@ fn spawn_child_mode(
         token,
         &std::env::current_exe().expect("current_exe 一定存在（本进程就是它）"),
         &[
-            // ⚠ libtest --exact 匹配完整测试路径（backend::token_tests::…），
+            // ⚠ libtest --exact 匹配完整测试路径（backend::token_tests:…），
             //   裸 fn 名匹配 0 个测试 → 子进程空跑退 0，一切断言全部空转。
             "backend::token_tests::dacl_child_entry".to_string(),
             "--exact".to_string(),
@@ -517,7 +517,7 @@ fn token_create_restricted_sids_introspection() {
         sids.iter().any(|s| s == ws_sid),
         "workspace SID 应在 restricting 列表: {sids:?}"
     );
-    // 组面 = Everyone-only（2026-09-28 围栏失守收窄后的生产形态）。
+    // 组面 = Everyone-only（围栏失守收窄后的生产形态）。
     assert!(
         sids.iter().any(|s| s == "S-1-1-0"),
         "Everyone 应在 restricting 列表: {sids:?}"
@@ -536,7 +536,7 @@ fn token_create_restricted_sids_introspection() {
     );
     // S-1-2-1（console logon）实证不进列表：不解锁新 console 分配（孙进程
     // 默认 flags 仍死），AttachConsole 放行也不依赖它（diag_attach 对照）——
-    // 两头无用即死代码（2026-09-27 已从生产白名单删除）。
+    // 两头无用即死代码（已从生产白名单删除）。
     assert!(
         !sids.iter().any(|s| s == "S-1-2-1"),
         "S-1-2-1 不应入 restricting 列表（实证死代码）: {sids:?}"
@@ -656,7 +656,7 @@ fn stdio_txn_timeout_kills_child() {
 /// 写工作区内放行 / 写工作区外拒绝 / **读工作区外放行**（write-restricted
 /// 读不设防语义的实证，见 dacl_child_entry fence 臂 b/c 注释）/ **树内改名
 /// 与删除放行**（基线能力锚：mask 保含 DELETE——rename/git/cargo/mv 与无
-/// DACL 基线一致；「掐 DELETE 断 rename」的 F9 推演已被本测试实证推翻）/
+/// DACL 基线一致；「掐 DELETE 断 rename」的 推演已被本测试实证推翻）/
 /// 树内→树外改名拒绝（DELETE 放行不开树外通道——围栏完整性锚）。
 /// 任一期望失守 → 子进程专属退出码 → 本测试红（诚实暴露设计断言被推翻）。
 #[test]
@@ -692,7 +692,7 @@ fn restricted_token_write_fence_e2e() {
          29=改名逃逸 30=内删除被拒），stderr: {}",
         outcome.stderr_tail
     );
-    // F9 证伪的输出面证据：树内改名/删除放行、树外改名被拒都要在 stderr 里
+    // 证伪的输出面证据：树内改名/删除放行、树外改名被拒都要在 stderr 里
     // 有正向痕迹（exit 0 只证没踩失败臂，这里钉语义真发生）。
     assert!(
         outcome.stderr_tail.contains("树内改名放行"),
@@ -747,7 +747,7 @@ fn restricted_token_grandchild_console_spawn() {
     );
 }
 
-/// exec 工具形态二分（D4 真进程，2026-09-27）：受限子进程内 spawn `cmd /C`
+/// exec 工具形态二分（真进程）：受限子进程内 spawn `cmd /C`
 /// 的四臂矩阵——cwd=ACE 树 workspace / 不设 cwd × DETACHED / 默认 flags，
 /// 外加 cwd=无 ACE 目录对照。定位「生产 exec 工具 spawn error 5」卡在哪个
 /// 变量上；四臂全活即固化为本档对 exec 场景的回归锚。
@@ -805,7 +805,7 @@ fn restricted_token_exec_tool_shape_spawn() {
     let f = run("arm6 full cwd=ws DETACHED", Some(&wsp), DETACHED_PROCESS);
     // 臂 7：inherit stdio（不建新管道）——切「piped 管道创建」变量。
     let g = run("arm7 full no-cwd DETACHED inherit", None, DETACHED_PROCESS);
-    // 臂 8：文件重定向捕获（D4 修复形态候选：cwd=ACE 树 + DETACHED + file）。
+    // 臂 8：文件重定向捕获（修复形态候选：cwd=ACE 树 + DETACHED + file）。
     let h = run(
         "arm8 filepipe cwd=ws DETACHED",
         Some(&wsp),
@@ -849,7 +849,7 @@ fn restricted_token_exec_tool_shape_spawn() {
             );
         }
     }
-    // arm7（inherit）与 arm8（文件重定向）是 2026-09-28 根因链的固化锚：
+    // arm7（inherit）与 arm8（文件重定向）是 根因链的固化锚：
     // 两形态是受限树内捕获子进程输出的唯二活路（exec 工具修复形态）。
     // arm8 额外断言输出真的经文件捕获回来了（exec 工具修复形态的语义面）。
     assert_eq!(
@@ -871,7 +871,7 @@ fn restricted_token_exec_tool_shape_spawn() {
     );
 }
 
-/// 树外写语义对照观测（2026-09-28）：真进程验收抓出「cmd 重定向写树外成功」
+/// 树外写语义对照观测：真进程验收抓出「cmd 重定向写树外成功」
 /// （fence 的 std::fs::write 树外被拒与生产 exec 的 cmd 重定向行为相矛盾）。
 /// 本测试在**同一受限进程**内跑 cmd 重定向写树外，把 status/落盘/cmd_stderr
 /// 打进 stderr_tail 供父侧打印——它就是抓出「Authenticated Users 白名单开口」
@@ -882,8 +882,8 @@ fn restricted_token_exec_tool_shape_spawn() {
 #[test]
 fn restricted_token_cmd_outside_redirect_observation() {
     let ws = tempfile::tempdir().unwrap();
-    // 外部目录用生产复现点（repo target/）与 %TEMP% 两形态各跑一遍——
-    // 2026-09-28 首跑实证：%TEMP% 下 cmd 重定向被拒（exit 1），但生产
+    // 外部目录用生产复现点（repo target）与 %TEMP% 两形态各跑一遍——
+    // 首跑实证：%TEMP% 下 cmd 重定向被拒（exit 1），但生产
     // exec 里 cmd 写 C:\AI\NemesisBot_Rust\target\ 成功——目录位置变量
     // 的对照观测。
     for outside in [
@@ -902,7 +902,7 @@ fn restricted_token_cmd_outside_redirect_observation() {
                 // 观测文件（cmd 的 stdout/stderr 捕获）必须落 ACE 树内才能建
                 // 出来——缺这个 env 时子进程侧 `ws` 为空、obs 文件相对路径
                 // 解析到无 ACE 的 cwd，File::create 被静默拒（if let Ok 跳过）
-                // → 观测退化 inherit、cmd_stderr 恒空（2026-09-28 复查修复）。
+                // → 观测退化 inherit、cmd_stderr 恒空（复查修复）。
                 (
                     CHILD_ENV_WS.to_string(),
                     ws.path().to_string_lossy().into_owned(),
@@ -940,7 +940,7 @@ fn restricted_token_cmd_outside_redirect_observation() {
     }
 }
 
-/// 最小 restricting 集对照实验（2026-09-28 围栏失守排查）：白名单组里的
+/// 最小 restricting 集对照实验（围栏失守排查）：白名单组里的
 /// Authenticated Users（S-1-5-11）在本机整个 C:\AI 树有继承 Modify
 /// （icacls 实证）→ 白名单形态的围栏对组可写目录**全线开口**（生产任务 B
 /// 实锤：受限 exec 的 cmd 重定向写 target\ 成功）。本实验验证「无组面」
@@ -1106,7 +1106,7 @@ fn restricted_token_minimal_restricting_set_probe() {
 }
 
 /// AttachConsole 链固化测试：受限子进程（DETACHED，console-less）附着到有
-/// console 的祖先进程后，默认 flags 孙进程存活（2026-09-27 实证定论：附着
+/// console 的祖先进程后，默认 flags 孙进程存活（实证定论：附着
 /// 放行且与 S-1-2-1 无关——「顶部进程持 console + 受限树附着」是解锁
 /// cargo→rustc 类第三方链式工具链的生产形态）。保持观测性输出而非硬断言：
 /// 父测试进程是否带 console 依运行环境而变（headless CI 下 attach 本就该

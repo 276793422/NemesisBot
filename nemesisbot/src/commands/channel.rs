@@ -152,7 +152,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 return Ok(());
             }
             if cfg_path.exists() {
-                // 统一走 set_channel_config_value（BUG-20261030-217）：此前手搓
+                // 统一走 set_channel_config_value：此前手搓
                 // pointer_mut 逻辑只覆盖「条目在」「channels 对象在但条目缺」
                 // 两臂——config.json 存在但 **channels 键整体缺席**时两分支都
                 // 不命中，配置未写入却打印 "Channel enabled"（假成功）。helper
@@ -186,7 +186,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     })?;
                     obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
                 }
-                // REL-002：统一原子写入（主 config 含 API key，0600）。序列化
+                // 统一原子写入（主 config 含 API key，0600）。序列化
                 // 失败 loud 报错而非 unwrap_or_default 静默写空文件（model-4
                 // 同款纪律；Value 序列化当前不可达失败，保底不写空）。
                 let body = serde_json::to_string_pretty(&cfg)
@@ -343,7 +343,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     println!("Web host set to: {}", host);
                 }
                 WebAction::Port { port } => {
-                    // 数字落盘（BUG #41：旧实现 to_string() 存字符串，typed 读侧
+                    // 数字落盘（旧实现 to_string() 存字符串，typed 读侧
                     // i64 解析失败会拖垮整个 config 加载）
                     set_channel_config_value(&cfg_path, "web", "port", serde_json::json!(port))?;
                     println!("Web port set to: {}", port);
@@ -535,7 +535,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     if !v.is_empty() {
                         port = v;
                     }
-                    // BUG #41：端口统一校验并落 JSON 数字（与 WebSocket Set 同契约）
+                    // 端口统一校验并落 JSON 数字（与 WebSocket Set 同契约）
                     let port_num: u16 = port
                         .trim()
                         .parse()
@@ -555,7 +555,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         if token.is_empty() {
                             "none"
                         } else {
-                            // BUG-20261030-216：token 预览必须走 char boundary 安全切片——
+                            // token 预览必须走 char boundary 安全切片——
                             // 裸 &token[..4] 在多字节字符中间切会 panic（如中文 token「密码…」第 4 字节落「码」内部）。
                             &token[..nemesis_types::utils::floor_char_boundary(&token, 4)]
                         }
@@ -583,7 +583,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         set_channel_config(&cfg_path, "websocket", "auth_token", &token)?;
                     }
 
-                    // Enable the websocket channel（BUG-20261030-217 同修：统一走
+                    // Enable the websocket channel（同修：统一走
                     // set_channel_config_value，写失败 loud 上抛——此前读/解析
                     // 失败静默跳过、`let _ =` 吞写失败，值已存而 enabled 未开
                     // 仍打印 "configured and enabled"）。
@@ -663,7 +663,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         value = format!("/{}", value);
                     }
                     if key == "port" {
-                        // 数字落盘（BUG #41）
+                        // 数字落盘
                         set_channel_config_value(
                             &cfg_path,
                             "websocket",
@@ -750,7 +750,7 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     }
                     set_channel_config(&cfg_path, "external", "chat_id", &chat_id)?;
 
-                    // Enable the external channel（BUG-20261030-217 同修：同
+                    // Enable the external channel（同修：同
                     // websocket setup，吞错写盘改为 loud 上抛）。
                     set_channel_config_value(
                         &cfg_path,
@@ -893,11 +893,11 @@ fn set_channel_config(
     key: &str,
     value: &str,
 ) -> Result<()> {
-    // 布尔键强制转 JSON bool（BUG #41 数字同族第二例，IT profile/cli 实证）：
+    // 布尔键强制转 JSON bool（数字同族第二例，IT profile/cli 实证）：
     // CLI set 的一切入参都是字符串，`enabled` 写成 "true"（字符串）会让
     // typed Config 的 `enabled: bool` 字段解析整份 config 直接炸
     // （invalid type: string "true", expected a boolean）。
-    // 仅对**已知布尔键**做强制（四路评审 E-F4 根修：此前对一切键无差别
+    // 仅对**已知布尔键**做强制（四路评审 E- 根修：此前对一切键无差别
     // 强制，token/auth_token 等字符串键的合法值恰好是 "true"/"1" 时会被
     // 毒化成 JSON bool）。布尔键值集限定 true/false/yes/no/on/off/1/0
     // （大小写不敏感）；布尔键命中但值不在值集 → 原样落串，typed 读侧
@@ -917,11 +917,11 @@ fn set_channel_config(
 
 /// Value-typed variant of [`set_channel_config`]: numeric keys (ports) must be
 /// stored as JSON numbers so typed readers (`WebChannelConfig.port: i64`,
-/// BUG #41) and `as_u64()` display arms see the real value.
+/// ) and `as_u64()` display arms see the real value.
 ///
 /// If `channels.<channel>` exists as a NON-object entry (corrupt/hand-edited
 /// config), refuse loudly instead of silently dropping the write while
-/// reporting success (BUG #42, same family as cron/mcp store corruption).
+/// reporting success (, same family as cron/mcp store corruption).
 fn set_channel_config_value(
     cfg_path: &std::path::Path,
     channel: &str,
@@ -970,7 +970,7 @@ fn set_channel_config_value(
         }
     }
 
-    // REL-002：统一原子写入（主 config 含 API key，0600）。序列化失败 loud
+    // 统一原子写入（主 config 含 API key，0600）。序列化失败 loud
     // 报错而非 unwrap_or_default 静默写空文件（model-4 同款纪律）。
     let body = serde_json::to_string_pretty(&cfg)
         .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;
@@ -980,7 +980,7 @@ fn set_channel_config_value(
 }
 
 /// Tolerant port reader for status/display arms: accepts JSON numbers or
-/// decimal strings. Legacy CLI builds wrote ports as strings (BUG #41), so
+/// decimal strings. Legacy CLI builds wrote ports as strings, so
 /// reading with plain `as_u64()` silently displayed defaults instead of the
 /// configured value; this heals that for pre-fix disks.
 fn read_port_flex(v: Option<&serde_json::Value>, default: u16) -> u64 {
@@ -1001,7 +1001,7 @@ fn get_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -> O
     let v = cfg.get("channels")?.get(channel)?.get(key)?;
     Some(match v {
         serde_json::Value::String(s) => s.clone(),
-        // BUG #41：端口等键修复后落 JSON 数字，读取按原文回显而非误报 (not set)
+        // 端口等键修复后落 JSON 数字，读取按原文回显而非误报 (not set)
         other => other.to_string(),
     })
 }
@@ -1020,7 +1020,7 @@ fn remove_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -
         obj.remove(key);
     }
 
-    // REL-002：统一原子写入（主 config 含 API key，0600）。序列化失败 loud
+    // 统一原子写入（主 config 含 API key，0600）。序列化失败 loud
     // 报错而非 unwrap_or_default 静默写空文件（model-4 同款纪律）。
     let body = serde_json::to_string_pretty(&cfg)
         .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;

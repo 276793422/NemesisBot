@@ -1,16 +1,16 @@
-//! 执行档案落地回灌 + 超限出卡（看板项目档案 goal P3，master 侧）。
+//! 执行档案落地回灌 + 超限出卡（看板项目档案 goal，master 侧）。
 //!
 //! - [`ingest_landed`]：`TransferSink::set_on_landed` 回调入口。worker 推来
-//!   的执行档案已过 D6 manifest 核验（transfer.end 落盘前逐块 sha + 清单
+//!   的执行档案已过 manifest 核验（transfer.end 落盘前逐块 sha + 清单
 //!   总量核验），本模块把它安置进项目档案目录
 //!   `records/<issue>/execution/<ts>/` 并写 timeline。无处安置（非看板
 //!   派发 / 存量项目无目录）= **留在收件箱可见**，不删不弃。
 //! - [`note_overlimit`]：`TransferSink::set_on_overlimit` 回调入口（master
-//!   收 transfer_overlimit RPC 后由 sink 转发）。worker 侧 D4 护栏拦下的
+//!   收 transfer_overlimit RPC 后由 sink 转发）。worker 侧 护栏拦下的
 //!   诚实失败 → 决策流卡 + 收件箱卡 + 系统评论 + 评审转人工（已被自动
 //!   验收 done 的回滚 in_review）。
 //!
-//! 纪律对齐 archive_writer（P2/C）：写失败不阻塞主流程，WARN + 审计留痕。
+//! 纪律对齐 archive_writer（/C）：写失败不阻塞主流程，WARN + 审计留痕。
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,24 +24,24 @@ use nemesis_cluster::transfer::{TransferOverlimit, copy_dir_recursive};
 
 use crate::board_review::BoardReviewDeps;
 
-/// 决策流 / 收件箱动作词：档案超护栏（D4）。
+/// 决策流 / 收件箱动作词：档案超护栏。
 pub const ACTION_ARCHIVE_OVERLIMIT: &str = "archive_overlimit";
-/// 收件箱通知词：档案超护栏（D4）。
+/// 收件箱通知词：档案超护栏。
 pub const NOTIF_ARCHIVE_OVERLIMIT: &str = "archive_overlimit";
-/// 决策流 / 活动词：档案回灌无处安置（诚实可见）。
+/// 决策流 / 活动词：档案回灌无处安置（诚实可）。
 pub const ACTION_ARCHIVE_ORPHANED: &str = "archive_orphaned";
-/// 决策流 / 活动词：变更集 superseded 丢弃（E8 归属校验）。
+/// 决策流 / 活动词：变更集 superseded 丢弃（归属校验）。
 pub const ACTION_ARCHIVE_SUPERSEDED: &str = "archive_superseded";
-/// 决策流 / 活动词：合并停车（冲突/损坏；P4 最小停车，P5 漏斗升级）。
+/// 决策流 / 活动词：合并停车（冲突/损坏； 最小停车， 漏斗升级）。
 pub const ACTION_MERGE_PARKED: &str = "merge_parked";
-/// 决策流 / 活动词：冻结期交付登记待补合并（P5/F3；解冻时串行补）。
+/// 决策流 / 活动词：冻结期交付登记待补合并（解冻时串行补）。
 pub const ACTION_MERGE_DEFERRED: &str = "merge_deferred";
-/// 决策流 / 活动词：变更集已合并（E4）。
+/// 决策流 / 活动词：变更集已合并。
 pub const ACTION_MERGED: &str = "changeset_merged";
 /// 变更集合并成功评论前缀（正常合并 + 解冻补合并两条路径共用「🔀」起手）。
-/// 单一真相源：停摆哨兵（board_dispatch sweep）以「在途评论之后是否已有本
+/// 统一定义：停摆哨兵（board_dispatch sweep）以「在途评论之后是否已有本
 /// 前缀评论」排除旧在途锚（评审 FAIL 重派回 in_progress 的单，上一轮在途/
-/// 合并评论对仍在评论流，不排除会把旧锚误判成本轮停摆——NB-122 实录）。
+/// 合并评论对仍在评论流，不排除会把旧锚误判成本轮停摆）。
 pub(crate) const MERGE_NOTICE_MARKER: &str = "🔀 ";
 
 /// 档案回灌入口（on_landed 回调；同步、ms 级——回调在 transfer.end 的
@@ -51,7 +51,7 @@ pub(crate) const MERGE_NOTICE_MARKER: &str = "🔀 ";
 /// 直接是执行记录文件 + `manifest.json`（传输核验凭据）+ `landed.json`。
 /// 成功后清收件箱（传输闭环；worker 侧已删发件箱）。返回安置目标目录。
 pub fn ingest_landed(store: &BoardStore, task_id: &str, inbox_dir: &Path) -> Option<PathBuf> {
-    // issue 绑定解析（单一真相源 board.db）。
+    // issue 绑定解析（统一定义 board.db）。
     let Some(dispatch) = store.get_dispatch(task_id).ok().flatten() else {
         tracing::debug!(
             task_id = %task_id,
@@ -77,7 +77,7 @@ pub fn ingest_landed(store: &BoardStore, task_id: &str, inbox_dir: &Path) -> Opt
             return None;
         }
     };
-    // 存量项目（directory 未绑定）与 P2 里程碑写入同语义：静默跳过。
+    // 存量项目（directory 未绑定）与 里程碑写入同语义：静默跳过。
     let root = match project.directory.as_ref() {
         Some(d) => PathBuf::from(d),
         None => {
@@ -88,14 +88,14 @@ pub fn ingest_landed(store: &BoardStore, task_id: &str, inbox_dir: &Path) -> Opt
             return None;
         }
     };
-    // 脚手架缺失 = 目录被手删（与 P2 writers 同语义：诚实留痕，不代重建）。
+    // 脚手架缺失 = 目录被手删（与 writers 同语义：诚实留痕，不代重建）。
     if !root.join("project.json").exists() {
         orphan_note(store, &issue, task_id, "项目档案目录脚手架缺失");
         return None;
     }
 
-    // D6 收件凭据核验：manifest.json / landed.json 必须在场（transfer.end
-    // 成功落地的产物；缺失 = 上游异常，记 missing_blocks 对前端可见）。
+    // 收件凭据核验：manifest.json / landed.json 必须在场（transfer.end
+    // 成功落地的产物；缺失 = 上游异常，记 missing_blocks 对前端可）。
     let manifest_ok = inbox_dir.join("manifest.json").exists();
     let landed_ok = inbox_dir.join("landed.json").exists();
     if !manifest_ok || !landed_ok {
@@ -161,7 +161,7 @@ pub fn ingest_landed(store: &BoardStore, task_id: &str, inbox_dir: &Path) -> Opt
         target = %target.display(),
         "[BoardArchive] 执行档案安置完成"
     );
-    // P4/E4：安置成功 → 登记 PLACED 注册表 + 合并触发（落地腿；写回腿在
+    // /：安置成功 → 登记 PLACED 注册表 + 合并触发（落地腿；写回腿在
     // write_back_board_dispatch）。谁后到谁触发，双到即合。
     register_placed(task_id, &target);
     let attempt = merge_and_maybe_review(task_id);
@@ -178,7 +178,7 @@ pub(crate) fn register_placed(task_id: &str, dir: &Path) {
         .insert(task_id.to_string(), dir.to_path_buf());
 }
 
-/// 超限出卡（D4 master 侧；on_overlimit 回调）。
+/// 超限出卡（master 侧；on_overlimit 回调）。
 pub fn note_overlimit(store: &BoardStore, req: &TransferOverlimit) {
     let Some(dispatch) = store.get_dispatch(&req.task_id).ok().flatten() else {
         tracing::warn!(
@@ -199,7 +199,7 @@ pub fn note_overlimit(store: &BoardStore, req: &TransferOverlimit) {
         "执行档案 {} 字节超护栏 {} 字节（board.archive.max_transfer_bytes），未传输——绝不截断，评审转人工",
         req.total_bytes, req.limit
     );
-    // 决策流卡（E2 审计视图）。
+    // 决策流卡（审计视图）。
     if let Err(e) = store.add_activity(
         issue.id,
         &actor,
@@ -227,7 +227,7 @@ pub fn note_overlimit(store: &BoardStore, req: &TransferOverlimit) {
             issue.number
         );
     }
-    // 系统评论留痕（看板列可见）。
+    // 系统评论留痕（看板列可）。
     if let Err(e) = store.add_comment(nemesis_board::models::NewComment {
         issue_id: issue.id,
         author: actor.clone(),
@@ -257,7 +257,7 @@ pub fn note_overlimit(store: &BoardStore, req: &TransferOverlimit) {
 
 /// 档案无处安置的诚实留痕（决策流卡可见；档案留在收件箱）。
 ///
-/// F-U6-1 去重（U6 实测根修）：滞留档案每轮 D5 sweep 都会重灌重试，无去重
+/// F- 去重（实测根修）：滞留档案每轮 sweep 都会重灌重试，无去重
 /// 时同 task 每分钟重复 WARN + 审计入账（965 条/数小时），并把决策流面板
 /// 的 500 条窗口完全挤占。同 (task, reason) 只记首次——重试静默（档案仍在
 /// 收件箱，后补绑项目的成功安置路径不受影响；重启清零后首个周期再记一次，
@@ -305,7 +305,7 @@ fn note_missing_block(root: &Path, block: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// D5 兜底拉取 sweep（master 侧；挂 board dispatch sweep 周期调用）
+// 兜底拉取 sweep（master 侧；挂 board dispatch sweep 周期调用）
 // ---------------------------------------------------------------------------
 
 /// pull 超时（RPC 往返；worker 只回 queued/no_archive，不传数据）。
@@ -334,7 +334,7 @@ pub async fn sweep_missing_archives(
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().to_string();
             if name.starts_with('.') || !e.path().is_dir() {
-                continue; // .staging / .done / 杂物
+                continue; // .staging /.done / 杂物
             }
             ingest_landed(store, &name, &e.path());
         }
@@ -385,7 +385,7 @@ pub async fn sweep_missing_archives(
         }
         let task_id = &latest.task_id;
         // master 收件箱滞留的算「在路上」，腿 1 已处理，不空拉。
-        // T8 读侧（2026-10-17 三轮审计）：收件箱目录名 = 落地侧消毒后的
+        // 读侧（三轮审计）：收件箱目录名 = 落地侧消毒后的
         // 段名（nemesis-cluster fsutil::safe_task_file_name 同源），探针
         // 同函数映射，真实任务 id 映射恒等。
         if inbox_root
@@ -416,7 +416,7 @@ pub async fn sweep_missing_archives(
                 );
             }
             Ok(v) if v.get("status").and_then(|s| s.as_str()) == Some("assembling") => {
-                // BUG-20261104-361：worker 装配未完（变更集还在组装）——
+                // worker 装配未完（变更集还在组装）——
                 // 不入队也不记 seen，下个 sweep 周期再看；正常完成腿会带
                 // 完整载荷（执行记录 + 变更集）交付。
                 tracing::debug!(
@@ -443,7 +443,7 @@ pub async fn sweep_missing_archives(
 }
 
 // ---------------------------------------------------------------------------
-// P4/E4：合并触发（看板项目档案 goal 合并批；写回/落地双路径收敛）
+// /：合并触发（看板项目档案 goal 合并批；写回/落地双路径收敛）
 //
 // 合并门槛 = dispatch done（交付落定）**且** 变更集已落地。两条到达路径
 // 谁后到谁触发（保序由 changeset.rs 模块注释钦定：变更集搭执行记录同一
@@ -455,7 +455,7 @@ pub async fn sweep_missing_archives(
 //
 // 单合并保证：PLACED 条目以 `HashMap::remove` 原子取走——并发双路径只有
 // 一个线程拿得到，拿到者合并，落空者按在途返回（无害 no-op）。全局再叠
-// [`MERGE_SERIAL`] 串行闸（E4：每收一个变更集合一次 commit 一次）。
+// [`MERGE_SERIAL`] 串行闸（每收一个变更集合一次 commit 一次）。
 // ---------------------------------------------------------------------------
 
 /// 已安置执行档案注册表：task_id → 安置目录（records/<issue>/execution/<ts>）。
@@ -470,8 +470,8 @@ static PLACED: std::sync::LazyLock<Mutex<HashMap<String, PathBuf>>> =
 static MERGED: std::sync::LazyLock<Mutex<HashSet<String>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// 合并全局串行闸（E4 合并时序钦定串行；std Mutex 持锁不跨 await）。
-/// P5 起冲突硬解的落盘 commit（commit_resolution）同走本闸——AI 硬解耗时
+/// 合并全局串行闸（合并时序钦定串行；std Mutex 持锁不跨 await）。
+/// 起冲突硬解的落盘 commit（commit_resolution）同走本闸——AI 硬解耗时
 /// 与合并解耦，但落盘那一下必须与在途合并互斥。
 pub(crate) static MERGE_SERIAL: Mutex<()> = Mutex::new(());
 
@@ -498,18 +498,18 @@ pub enum MergeAttempt {
     /// 急停中（护栏三不变：estop 下合并一律拒绝）。PLACED 条目保留，
     /// release 后 [`retry_placed_merges`] 补跑。
     EstopHalted,
-    /// 变更集按 E8 superseded 丢弃 + 审计（派发终态失败/取消，或申报基线
+    /// 变更集按 superseded 丢弃 + 审计（派发终态失败/取消，或申报基线
     /// 与派发基线失配——旧轮次/换人迟到交付）。
     Superseded,
     /// 已合并（含空集宽容 no-op）；评审已 spawn。
     Merged,
-    /// 合并撞冲突/数据损坏——停车（P4 最小停车形态；P5 起「冲突」停车
+    /// 合并撞冲突/数据损坏——停车（最小停车形态； 起「冲突」停车
     /// 附带项目域冻结，纯损坏仍走本形态）。
     Parked { reason: String },
-    /// P5/F3：项目冲突冻结中——变更集已入档案 + 登记待补合并队列
+    /// 项目冲突冻结中——变更集已入档案 + 登记待补合并队列
     /// （pending_merges，持久化 board.db），不合入不评审；解冻时串行补合并。
     FrozenDeferred,
-    /// P5/F5 auto 档：冲突已移交 AI 硬解执行体（异步）——本函数同步部分
+    /// auto 档：冲突已移交 AI 硬解执行体（异步）——本函数同步部分
     /// 到此为止，后续硬解/重派/换人由 [`crate::conflict_resolver`] 接管。
     AutoResolveStarted,
 }
@@ -547,7 +547,7 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
     {
         return MergeAttempt::Merged;
     }
-    // 3) 派发状态裁决（E4 时序：合并发生在交付落定之后）。
+    // 3) 派发状态裁决（时序：合并发生在交付落定之后）。
     let Some(dispatch) = store.get_dispatch(task_id).ok().flatten() else {
         tracing::warn!(task_id = %task_id, "[BoardArchive] 有基线行但无派发行（数据异常），不接管");
         return MergeAttempt::NotArchivePipeline;
@@ -556,7 +556,7 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
         dispatch.state.as_str(),
         dispatch_state::FAILED | dispatch_state::CANCELLED
     ) {
-        // 终态失败/取消：档案即使已安置也绝不合入（E8 防旧 worker 污染）。
+        // 终态失败/取消：档案即使已安置也绝不合入（防旧 worker 污染）。
         let consumed = PLACED
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -610,10 +610,10 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
             );
         }
     };
-    // 6.5) P5/F3 冻结期交付闸：项目冲突冻结中 → 交付照常入档案（已在
+    // 6.5) / 冻结期交付闸：项目冲突冻结中 → 交付照常入档案（已在
     //      records/ 持久化），变更集不合入——登记待补合并队列
     //      （placement 目录落 board.db，重启后补合并仍可读），解冻时串行
-    //      补合并（F4）。已派任务不打断、交付不丢，是 F3 的钦定语义。
+    //      补合并。已派任务不打断、交付不丢，是 的钦定语义。
     if let Some(pid) = issue.project_id
         && let Ok(project) = store.get_project(pid)
         && project.conflict_frozen
@@ -678,7 +678,7 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
     // 8) 合并串行闸（全局单飞；git 合并 ms 级，同步持锁无碍）。
     let _serial = MERGE_SERIAL.lock().unwrap_or_else(|p| p.into_inner());
     let Some((manifest, contents)) = changeset else {
-        // 空集宽容（goal E4）：非文件型任务——无变更集直接进评审（仓库
+        // 空集宽容（goal）：非文件型任务——无变更集直接进评审（仓库
         // no-op，不产空 commit）。
         MERGED
             .lock()
@@ -691,7 +691,7 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
             None,
         );
     };
-    // 9) E8 归属校验：worker 申报基线必须等于本派发下发的基线——旧轮次/
+    // 9) 归属校验：worker 申报基线必须等于本派发下发的基线——旧轮次/
     //    换人迟到的变更集一律丢弃 + 审计，绝不合入。
     if manifest.base_commit != baseline {
         superseded_note(
@@ -783,8 +783,8 @@ pub fn merge_and_maybe_review_with(deps: &BoardReviewDeps, task_id: &str) -> Mer
     }
 }
 
-/// P5 冲突漏斗入口（F2+F5）：真冲突按 `conflict_auto_resolve` 分流——
-/// human 档（默认）：项目域冻结（仅本项目，F2 不株连）+ 四审计之
+/// 冲突漏斗入口：真冲突按 `conflict_auto_resolve` 分流——
+/// human 档（默认）：项目域冻结（仅本项目， 不株连）+ 四审计之
 /// `conflict` + 停车明细卡（冲突文件清单+双方改动摘要）；auto 档：移交
 /// AI 硬解执行体（[`crate::conflict_resolver`]，异步接管后续硬解/重派/
 /// 换人），项目不停摆。
@@ -797,7 +797,7 @@ fn handle_merge_conflict(
     files: Vec<nemesis_board::git_repo::ConflictFile>,
 ) -> MergeAttempt {
     let detail = render_conflict_detail(&files);
-    // F1 开关现读（与 load_board_flags 同语义）；读失败 = 诚实按 human 档
+    // 开关现读（与 load_board_flags 同语义）；读失败 = 诚实按 human 档
     // 停车——配置坏了不放大自动处置权限。
     let auto = crate::board_review::load_board_flags(&deps.home)
         .map(|f| f.conflict_auto_resolve)
@@ -821,7 +821,7 @@ fn handle_merge_conflict(
         );
         return MergeAttempt::AutoResolveStarted;
     }
-    // F2 human 档：冻结只落本项目（conflict_frozen），不动 ProjectStatus
+    // human 档：冻结只落本项目（conflict_frozen），不动 ProjectStatus
     // 状态机；冲突单走既有停车场。
     if let Some(pid) = issue.project_id
         && let Err(e) = store.set_project_conflict_frozen(pid, true)
@@ -851,7 +851,7 @@ fn handle_merge_conflict(
     )
 }
 
-/// 冲突明细卡渲染（F4：文件清单 + 双方改动摘要）。文本文件给逐侧相对
+/// 冲突明细卡渲染（文件清单 + 双方改动摘要）。文本文件给逐侧相对
 /// 基线的新增行摘要（朴素行集差，各侧截 8 行）+ 行数统计；二进制只给
 /// 字节数（内容不可行级展示）。摘要≠补丁——精确内容在档案 records/ 与
 /// 仓库历史里。
@@ -934,12 +934,12 @@ pub fn retry_placed_merges(deps: &BoardReviewDeps) {
     }
 }
 
-/// S-O1 合并停车人工重试（2026-09-16 showcase 复跑实证）：park_merge 后
+/// S- 合并停车人工重试（showcase 复跑实证）：park_merge 后
 /// PLACED 条目已被 `remove` 原子取走（第 5 步裁决），重启后注册表同样清零
 /// ——停车变更集（数据仍在 placement 目录）再无自动触达途径，只能人工。
 /// 本入口按 issue 扫描档案树 `records/<number>/execution/*/`，从 placement
 /// 凭据 manifest.json（TransferBegin）反查 task_id，未合并的重新登记
-/// PLACED 并重走合并触发（E8 归属校验/estop 闸/串行闸全部原样生效）。
+/// PLACED 并重走合并触发（归属校验/estop 闸/串行闸全部原样生效）。
 ///
 /// 幂等：MERGED 集合已含的 task 跳过；estop 中拒绝（先释放急停）。
 /// 返回逐 task 明细（WSAPI 展示用）。
@@ -966,7 +966,7 @@ pub fn retry_merge_for_issue(
     let entries = std::fs::read_dir(&exec_dir)
         .map_err(|e| format!("档案执行目录不可读（{}）: {e}", exec_dir.display()))?;
     // 目录名 = 安置时间戳（%Y%m%d_%H%M%S%3f，字典序=时间序）；升序重试
-    // 让旧轮次先走（E8 会诚实丢弃失配基线，不猜）。
+    // 让旧轮次先走（会诚实丢弃失配基线，不猜）。
     let mut dirs: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
@@ -1040,16 +1040,16 @@ pub fn retry_merge_for_issue(
 }
 
 // ---------------------------------------------------------------------------
-// P5/F4：project.resume 解冻续行——补合并队列串行回放
+// /：project.resume 解冻续行——补合并队列串行回放
 // ---------------------------------------------------------------------------
 
 /// 解冻补合并回放（project.resume 的执行臂；nemesis-web handler 经
 /// [`install_resume_replay_hook`] 注入的回调调到这里——依赖方向 nemesis-web
 /// ← nemesisbot，钩子是唯一通路）。
 ///
-/// F4 钦定顺序：清 `conflict_frozen` → 工作树未提交改动自动 commit
+/// 钦定顺序：清 `conflict_frozen` → 工作树未提交改动自动 commit
 ///（message=`manual conflict resolution`，审计留痕）→ 串行补合并
-/// `pending_merges`（F3，按完成顺序 pop）→ 返回摘要（调用方据此决定是否
+/// `pending_merges`（按完成顺序 pop）→ 返回摘要（调用方据此决定是否
 /// 继续恢复派发）。补合并再冲突 → **重新冻结** + 冲突单走漏斗停车
 ///（resume 是人工在场流程，再冲突回到人工，不进 auto 硬解）+ 剩余队列
 /// 原地保留（逐条 pop 的天然性质）。
@@ -1165,7 +1165,7 @@ fn replay_one_pending(
         Some(Ok(pair)) => pair,
         Some(Err(e)) => return PendingReplay::Parked(format!("变更集损坏：{e}")),
     };
-    // E8 归属校验照常（冻结期长，迟到/换轮概率更高）。
+    // 归属校验照常（冻结期长，迟到/换轮概率更高）。
     let baseline = store.get_dispatch_baseline(&entry.task_id).ok().flatten();
     match baseline {
         None => {
@@ -1271,7 +1271,7 @@ fn replay_one_pending(
     }
 }
 
-/// B（BUG-2026-10-15）：worker 申报的 skipped 清单回显注记（两个合并臂
+/// B（BUG）：worker 申报的 skipped 清单回显注记（两个合并臂
 /// 共用）。空清单 = 空串（评论字节不变，保既有形态）；非空 = WARN + 评论
 /// 追加明细——合并后档案与 worker 工作副本的已知差异必须留在单据面上，
 /// 绝不静默（评审/人工据此判断交付完整性）。
@@ -1293,7 +1293,7 @@ fn changeset_skipped_note(manifest: &nemesis_cluster::changeset::ChangesetManife
 /// 合并收口：系统评论 + 转 in_review + spawn 评审（正常合并与空集宽容
 /// 共用）。transition 失败 = 单据已被别处推进（人工/并发）——不 spawn 评审
 /// 不代推进，留 WARN 诚实让位。`root` 在场时补 timeline。
-/// P5 起冲突硬解成功路径（conflict_resolver）共用本收口。
+/// 起冲突硬解成功路径（conflict_resolver）共用本收口。
 pub(crate) fn finish_merged_review(
     store: &BoardStore,
     issue: &nemesis_board::models::Issue,
@@ -1343,7 +1343,7 @@ pub(crate) fn finish_merged_review(
     }
 }
 
-/// E8 superseded 审计：决策流卡 + 系统评论 + WARN。执行档案已安置的留在
+/// superseded 审计：决策流卡 + 系统评论 + WARN。执行档案已安置的留在
 /// records/（诚实存档），变更集绝不入仓库。
 fn superseded_note(
     store: &BoardStore,
@@ -1378,8 +1378,8 @@ fn superseded_note(
     });
 }
 
-/// P4 最小停车：决策流卡 + ⚠ 系统评论。单据不进 in_review（goal E4：合并
-/// 失败不进评审）；P5 漏斗接手项目域冻结 / auto 硬解。冲突硬解执行体的
+/// 最小停车：决策流卡 + ⚠ 系统评论。单据不进 in_review（goal：合并
+/// 失败不进评审）； 漏斗接手项目域冻结 / auto 硬解。冲突硬解执行体的
 /// 兜底停车（fallback_freeze）共用本出口。
 pub(crate) fn park_merge(
     store: &BoardStore,

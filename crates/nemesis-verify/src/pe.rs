@@ -12,13 +12,13 @@
 //! 设 `P = e_lfanew`（u32 LE @ 文件偏移 `0x3C`）：
 //! - PE 签名 `"PE\0\0"` @ `P`
 //! - COFF header @ `P+4`：`NumberOfSections`@`P+6`、`SizeOfOptionalHeader`@`P+20`
-//! - Optional header @ `P+24`：`Magic`@`P+24`（`0x10b`=PE32 / `0x20b`=PE32+）
-//! - `CheckSum` @ `P+88`（PE32 与 PE32+ 偏移相同：BaseOfData+ImageBase 共 8B
+//! - Optional header @ `P+24`：`Magic`@`P+24`（`0x10b`= / `0x20b`=+）
+//! - `CheckSum` @ `P+88`（与 + 偏移相同：BaseOfData+ImageBase 共 8B
 //!   vs ImageBase 8B 抵消）
-//! - `NumberOfRvaAndSizes` @ `P+116`(PE32) / `P+132`(PE32+)
-//! - DataDirectory 起点 @ `P+120`(PE32) / `P+136`(PE32+)（差 16B：stack/heap
+//! - `NumberOfRvaAndSizes` @ `P+116`() / `P+132`(+)
+//! - DataDirectory 起点 @ `P+120`() / `P+136`(+)（差 16B：stack/heap
 //!   reserve+commit 字段 4B vs 8B）
-//! - `DataDirectory[4]`（Security）@ 起点+32 = `P+152`(PE32) / `P+168`(PE32+)
+//! - `DataDirectory[4]`（Security）@ 起点+32 = `P+152`() / `P+168`(+)
 //! - section table @ `P+24+SizeOfOptionalHeader`，每项 40B：
 //!   `SizeOfRawData`@+16、`PointerToRawData`@+20
 //!
@@ -41,7 +41,7 @@ pub(crate) struct PeLayout {
 
 /// 读 little-endian u16。
 /// 两段式 get 零算术（`off + N` 形态在 offset 巨大时 debug 构建溢出 panic，
-/// BUG-20261028-130 同族——PE 侧偏移源自 u32 字段、64-bit usize 不可能溢出，
+/// 同族——PE 侧偏移源自 u32 字段、64-bit usize 不可能溢出，
 /// 此处为形态统一防御）。
 fn u16le(b: &[u8], off: usize, name: &'static str) -> Result<u16, CodecError> {
     let s = b
@@ -60,7 +60,7 @@ fn u32le(b: &[u8], off: usize, name: &'static str) -> Result<u32, CodecError> {
 }
 
 /// DER 外层 TLV 总长（头 + 内容；短式与最长 4 字节长式；不支持 0x80 不定长）。
-/// 证书表条目的 bCertificate 带对齐 pad，提取须按此裁剪（S3-1 实证）。
+/// 证书表条目的 bCertificate 带对齐 pad，提取须按此裁剪（实证）。
 fn der_tlv_len(b: &[u8]) -> Option<usize> {
     if b.len() < 2 {
         return None;
@@ -96,17 +96,17 @@ fn parse_pe(bytes: &[u8]) -> Result<PeLayout, CodecError> {
     // COFF header
     let num_sections = u16le(bytes, p + 6, "NumberOfSections")? as usize;
     let size_of_opt = u16le(bytes, p + 20, "SizeOfOptionalHeader")? as usize;
-    // Optional header magic → PE32 / PE32+
+    // Optional header magic → / +
     let magic = u16le(bytes, p + 24, "Magic")?;
     let is_plus = match magic {
         0x10b => false,
         0x20b => true,
         _ => return Err(CodecError::UnknownOptionalHeaderMagic(magic)),
     };
-    // CheckSum @ P+88（PE32 与 PE32+ 相同）
+    // CheckSum @ P+88（与 + 相同）
     let checksum_range = (p + 88, p + 92);
 
-    // NumberOfRvaAndSizes 与 DataDirectory 起点（PE32 / PE32+ 不同）
+    // NumberOfRvaAndSizes 与 DataDirectory 起点（/ + 不同）
     let (nrva_off, datadir_start) = if is_plus {
         (p + 132, p + 136)
     } else {
@@ -154,7 +154,7 @@ fn parse_pe(bytes: &[u8]) -> Result<PeLayout, CodecError> {
     //（SizeOfOptionalHeader 偏小）可让表项落在 section table 之外——不补此
     // 下界则 va < l 交叉校验穿透、va < se 反向成立，authenticode_digest 的
     // bytes[se..va] 与 replace_certificate_table 的表项清零双双越界 panic
-    // （BUG-20261028-129）。se ≤ len 由表项两次 u32le 成功读取保证，
+    // 。se ≤ len 由表项两次 u32le 成功读取保证，
     // max 后 min(len) 不可能把 l 压回 se 之下。
     if let Some((_, se)) = security_dir_range {
         l = l.max(se);
@@ -187,7 +187,7 @@ fn parse_pe(bytes: &[u8]) -> Result<PeLayout, CodecError> {
     })
 }
 
-/// Authenticode byte-range digest（S3-1，v4 判据载体；SHA-256）。
+/// Authenticode byte-range digest（v4 判据载体；SHA-256）。
 ///
 /// [MS-Authcode] / PE 规范语义（signtool / osslsigncode 同口径，参照交叉验证钉死）：
 /// 1. `CheckSum`（4B）**整体跳过**（不参与哈希——实证：喂零与跳过在
@@ -196,9 +196,9 @@ fn parse_pe(bytes: &[u8]) -> Result<PeLayout, CodecError> {
 /// 3. 证书数据块 `[VA, VA+Size)` **整体排除**（Size > 0 时）；
 /// 4. 其余全文件参与——**无 L 上界，overlay 全含**（与 v3 [`ExecutableCodec::content_hash`]
 ///    的差异只在无 L 截断 + 证书块排除；字段跳过语义两者相同。
-///    v3 路径 S4-1 消费方切换后删除）。
+///    v3 路径 消费方切换后删除）。
 ///
-/// 参照交叉验证：`pe/tests.rs` S3-1 段对本机 signtool/osslsigncode 签的参照 PE
+/// 参照交叉验证：`pe/tests.rs` 段对本机 signtool/osslsigncode 签的参照 PE
 /// （含 overlay 大 / mingw 异构形态），本实现结果与签名内嵌 messageDigest 逐字节
 /// 比对（`cargo test -p nemesis-verify -- --ignored` 显式跑，仓库外参照物）。
 pub fn authenticode_digest(bytes: &[u8]) -> Result<[u8; 32], CodecError> {
@@ -221,7 +221,7 @@ pub fn authenticode_digest(bytes: &[u8]) -> Result<[u8; 32], CodecError> {
             match layout.auth_region {
                 Some((va, vend)) => {
                     // parse_pe 交叉校验强制 va ≥ L，L 保险含 Security 表项末尾
-                    // （va ≥ se，BUG-20261028-129），直接喂中间段
+                    // （va ≥ se），直接喂中间段
                     h.update(&bytes[se..va]);
                     if vend < bytes.len() {
                         // 证书表之后还有尾巴（多 WIN_CERTIFICATE 链被截 / 附加数据）→ 全参与
@@ -274,9 +274,9 @@ fn win_cert_entry_bytes(cms_der: &[u8]) -> Result<Vec<u8>, CodecError> {
     Ok(e)
 }
 
-/// S3-2：把 CMS DER 作为 Authenticode 证书表追加到**未签名** PE（写入路径）。
+/// 把 CMS DER 作为 Authenticode 证书表追加到**未签名** PE（写入路径）。
 ///
-/// 布局（signtool / osslsigncode 参照实证同口径，见 pe/tests.rs S3-1 交叉验证）：
+/// 布局（signtool / osslsigncode 参照实证同口径，见 pe/tests.rs 交叉验证）：
 /// `[原文件][零 pad 到 8 对齐][WIN_CERTIFICATE 条目]`
 /// 条目 = `dwLength`(u32 LE) + `wRevision`(u16 LE = 0x0200) +
 /// `wCertificateType`(u16 LE = 0x0002) + bCertificate（CMS DER，尾部零 pad 到
@@ -287,7 +287,7 @@ fn win_cert_entry_bytes(cms_der: &[u8]) -> Result<Vec<u8>, CodecError> {
 /// - nrva < 5（无 Security 表项可写）→ Malformed（扩 Optional header 需搬
 ///   section table，不支持）；
 /// - Security Size > 0（已有证书表）→ Malformed——已签名文件策略（替换自方 /
-///   追加共存）归 S3-3，本函数只接受未签名 PE；
+///   追加共存）归，本函数只接受未签名 PE；
 /// - VA / 条目长度超 u32（PE DataDirectory 域宽）→ Malformed；
 /// - CheckSum 字段**不重算**：Authenticode digest 跳过该字段、Windows 加载器
 ///   仅对驱动类映像强制校验（osslsigncode 会重算，非兼容必需，v4 明确不做）。
@@ -327,7 +327,7 @@ pub fn append_certificate_table(bytes: &[u8], cms_der: &[u8]) -> Result<Vec<u8>,
     Ok(out)
 }
 
-/// S3-3：证书表条目的解析视图（[`read_certificate_entries`] 产物）。
+/// 证书表条目的解析视图（[`read_certificate_entries`] 产物）。
 pub struct WinCertEntry {
     /// 条目起始文件偏移（Security.VA 或前序条目 8 对齐步进落点）。
     pub offset: usize,
@@ -338,19 +338,19 @@ pub struct WinCertEntry {
     /// `wCertificateType`（0x0002 = PKCS_SIGNED_DATA / CMS）。
     pub cert_type: u16,
     /// bCertificate。PKCS_SIGNED_DATA 条目按外层 DER TLV 长度裁掉对齐 pad
-    /// （osslsigncode 条目带 pad，严格 from_der 拒 trailing data——S3-1 实证）；
+    /// （osslsigncode 条目带 pad，严格 from_der 拒 trailing data—— 实证）；
     /// 其他类型条目原样保留原始 blob。
     pub certificate: Vec<u8>,
 }
 
-/// S3-3：读取证书表全部 WIN_CERTIFICATE 条目。
+/// 读取证书表全部 WIN_CERTIFICATE 条目。
 ///
 /// **主签名 = 首条目**（Windows Authenticode 语义：主签名枚举只认首条目，
 /// 追加多签名的微软真实形态 = SPC_NESTED_SIGNATURE 嵌套属性而非多条目——
-/// 2026-09-12 signtool /as 对照实验实证，见 envelope[`crate::envelope::append_nested_signature`]；
+/// signtool /as 对照实验实证，见 envelope[`crate::envelope:append_nested_signature`]；
 /// 多条目只在畸形/非微软工具产物中出现，读取层照常遍历）。
 ///
-/// 步进语义与 Windows 加载器 / S3-1 参照提取辅助同口径：从 Security.VA 起，
+/// 步进语义与 Windows 加载器 / 参照提取辅助同口径：从 Security.VA 起，
 /// 按 dwLength 前进、落点 8 对齐；`dwLength < 8` 或越过表尾即停（视作尾部
 /// padding，非错误）。未签名（无证书表）返回空 Vec。PKCS_SIGNED_DATA 条目的
 /// bCertificate 必须可解析出合法 DER TLV，否则 Malformed（诚实失败——带此
@@ -396,7 +396,7 @@ pub fn read_certificate_entries(bytes: &[u8]) -> Result<Vec<WinCertEntry>, Codec
     Ok(out)
 }
 
-/// S3-3：已签名文件策略之一——**替换证书表**（自方重签 / 嵌套签名后表重写共用）。
+/// 已签名文件策略之一——**替换证书表**（自方重签 / 嵌套签名后表重写共用）。
 ///
 /// 剥掉现有整张证书表（truncate 回表起点）+ Security 表项清零，再走
 /// [`append_certificate_table`] 重新追加。内容区 `[0, VA)` 不动 → 替换前后
@@ -404,7 +404,7 @@ pub fn read_certificate_entries(bytes: &[u8]) -> Result<Vec<WinCertEntry>, Codec
 ///
 /// 两个消费场景：
 /// - **自方重签**：表中只有自方签名时整体替换（旧签名消失）；含他方条目时
-///   不可用（会剥掉他方签名）——策略裁决在 [`crate::envelope::resign_pe_file`]；
+///   不可用（会剥掉他方签名）——策略裁决在 [`crate::envelope:resign_pe_file`]；
 /// - **嵌套签名后表重写**：他方 CMS 挂 SPC_NESTED_SIGNATURE 属性后 DER 变长，
 ///   以替换方式写回单条目表（他方签名在 CMS 内字节不变）。
 ///

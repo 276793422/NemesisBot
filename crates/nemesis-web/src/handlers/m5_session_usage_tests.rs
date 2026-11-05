@@ -290,7 +290,7 @@ async fn context_status_returns_snapshot() {
     assert!(status["used_tokens"].as_u64().unwrap() > 0);
     assert_eq!(status["window"], 128_000, "无 config/价目表 → 实例默认");
     assert!(status["pct"].as_u64().unwrap() <= 100);
-    // 量测（改进项三期）：tool defs 字节块随行（AgentLoop 单一真相源
+    // 量测：tool defs 字节块随行（AgentLoop 单一真相源
     // 量测；测试 loop 无注册工具 → 0 工具、空数组序列化恰 2 字节）。
     let td = &r["tool_defs"];
     assert!(td.is_object(), "tool_defs 块必须随行");

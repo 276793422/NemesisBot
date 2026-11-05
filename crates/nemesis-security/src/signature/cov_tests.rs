@@ -2,11 +2,11 @@
 // signature base64 解码失败臂）。
 //
 // 豁免（死防御臂，仅记录不硬凑）：
-// - 959（compute_directory_hash 循环内的根级 .signature 跳过 continue）：
-//   filter_entry（940-946）已经把根级 .signature 从 walker 剪掉（谓词对
-//   非目录且名为 .signature 且 rel.parent 为空 → false → 不产出也不下钻），
-//   循环体永远见不到根级 .signature，该 continue 不可达——是过滤器之外的
-//   二道防线。嵌套 .signature（sub/.signature）会被刻意哈希（父目录非空
+// - 959（compute_directory_hash 循环内的根级.signature 跳过 continue）：
+//   filter_entry（940-946）已经把根级.signature 从 walker 剪掉（谓词对
+//   非目录且名为.signature 且 rel.parent 为空 → false → 不产出也不下钻），
+//   循环体永远见不到根级.signature，该 continue 不可达——是过滤器之外的
+//   二道防线。嵌套.signature（sub/.signature）会被刻意哈希（父目录非空
 //   → 不过滤也不跳过），由 hash-mismatch 流程测试实际走到。
 
 use super::*;
@@ -92,7 +92,7 @@ fn verify_skill_reports_invalid_signature_encoding() {
 }
 
 /// 非法长度（非 64 字节）的签名 → 长度臂；随后合法 64 字节但错误签名
-/// → 走完整目录哈希（根级 .signature 被 filter_entry 剪掉、嵌套的被哈希）
+/// → 走完整目录哈希（根级.signature 被 filter_entry 剪掉、嵌套的被哈希）
 /// → "signature verification failed"。
 #[test]
 fn verify_skill_length_arm_then_full_hash_flow_with_signature_files() {
@@ -104,7 +104,7 @@ fn verify_skill_length_arm_then_full_hash_flow_with_signature_files() {
     let r = verifier.verify_skill(&dir);
     assert!(r.error.contains("invalid signature length"), "{}", r.error);
 
-    // 完整哈希流：目录含内容文件 + 嵌套 .signature（会被计入哈希）。
+    // 完整哈希流：目录含内容文件 + 嵌套.signature（会被计入哈希）。
     std::fs::write(dir.join("payload.txt"), b"cov payload").unwrap();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("sub").join(".signature"), b"nested sig is content").unwrap();
@@ -121,7 +121,7 @@ fn verify_skill_length_arm_then_full_hash_flow_with_signature_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 信任库磁盘真相的跨进程可见性（2026-09-30 插件链路测试实锤的缓存陈旧
+/// 信任库磁盘真相的跨进程可见性（插件链路测试实锤的缓存陈旧
 /// 缺口）：常驻进程在构造 TrustStore 之后，CLI（独立进程）直接写盘新增
 /// 信任 / 吊销——读入口（is_trusted/trust_level）必须重读磁盘让两个方向
 /// 都即时生效：新增不可见则「先信后装」热信任流断链；吊销不可见则已撤
@@ -160,7 +160,7 @@ fn trust_store_refreshes_from_disk_for_running_reader() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261025-38：revoke 持久化失败必须 loud 留痕
+// revoke 持久化失败必须 loud 留痕
 //
 // 同文件 add_key/remove_key 的文档化不变量：「信任库持久化失败不能静默吞
 // 掉：内存态信任与盘上真相分叉……loud 留痕」。revoke 双函数此前 `let _ =

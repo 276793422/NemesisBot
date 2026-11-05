@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Commands delivered to the gateway process via `POST /api/internal`
-/// (fire-and-forget mpsc; see [`crate::api_handlers::handle_api_internal`]
+/// (fire-and-forget mpsc; see [`crate::api_handlers:handle_api_internal`]
 /// and the gateway's internal-command listener in
 /// `nemesisbot/src/commands/gateway.rs`).
 #[derive(Debug, Clone, Serialize, Deserialize)]

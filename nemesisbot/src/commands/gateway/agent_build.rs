@@ -1,18 +1,18 @@
 // ---------------------------------------------------------------------------
-// PB-4 Agent 构建（计划 §4.2 B4）：Step 9b 安全插件 + Step 9d 观察者 +
+// PB-4 Agent 构建（计划）：Step 9b 安全插件 + Step 9d 观察者 +
 // LspManager/事件通道/后台进程注册表 + SharedResources + build_agent_loop +
 // workflow 工具桥/agent runner/usage store 注入（计划口径原 4418–4623）整体
 // 迁入 `init_agent`。原文自 run() 逐字迁入，仅三处机械改写：fn 体包裹、
 // ctx/web/cluster 依赖项影子重绑、末尾 AgentWiring 构造。
 //
 // 签名取 `(&GatewayCtx, &WebWiring, &ClusterWiring)`：全引用——cluster 结构
-// 体须完整存活到 B5（init_post_agent 按值消费 refs 四元组 take + worker
-// inbox take，结构体 Clone 不成立），本块对 trio 取 .clone()（Arc 家族，
+// 体须完整存活到 （init_post_agent 按值消费 refs 四元组 take + worker
+// inbox take，结构体 Clone 不成立），本块对 trio 取.clone()（Arc 家族，
 // 廉价）、refs/web_server 取共享借用（body 仅 as_ref 读 + event_hub 读）。
-// 相应 run() 侧演进（B4 头注记）：B2 的 trio 影子删除（SharedResources 在
+// 相应 run() 侧演进（头注记）： 的 trio 影子删除（SharedResources 在
 // 本函数内取自 cluster 字段克隆）；cluster_adapter_refs / bridge_cluster_
 // slot / board_worker_inbox / board_estop_parked / board_selfcheck_registry
-// 影子转 .clone()（部分移动后结构体不可整体再借——本函数借读全结构体）；
+// 影子转.clone()（部分移动后结构体不可整体再借——本函数借读全结构体）；
 // web_server 移动推迟到本调用之后，其余 web 影子转 clone（同因）。
 //
 // AgentWiring 字段 = 实测逃逸本块的完整集合（五项）：shared_resources /
@@ -21,7 +21,7 @@
 // cfg(security) 门内）、initial_tool_count（PB-5 能力注入日志 + Step 15
 // 启动信息）。observer_manager 实测消费不出块（仅 SharedResources 引用）
 // 留内。security_plugin 字段随 build_security_plugin 的 cfg 双形态
-// （security 真身 / 无 security 空桩 Option<()>）双臂声明。
+// （security 真身 / 无 security 空桩 Option<>）双臂声明。
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -34,7 +34,7 @@ use super::GatewayAgentRunner;
 use super::{ClusterWiring, GatewayCtx, WebWiring};
 use crate::common;
 
-/// PB-4 产物 struct（§4.2 B4）。
+/// PB-4 产物 struct。
 pub(crate) struct AgentWiring {
     pub shared_resources: Arc<crate::agent_factory::SharedResources>,
     pub agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
@@ -44,7 +44,7 @@ pub(crate) struct AgentWiring {
     #[cfg(not(feature = "security"))]
     #[allow(dead_code)]
     pub security_plugin: Option<()>,
-    /// W5-3：插件安装审批晚绑槽（run_runtime 审批块 bind 真身）。
+    /// 插件安装审批晚绑槽（run_runtime 审批块 bind 真身）。
     #[cfg(feature = "plugins-wasm")]
     pub plugin_gate: Option<Arc<crate::plugin_bridge::LateInstallApprover>>,
     #[cfg(not(feature = "plugins-wasm"))]
@@ -53,13 +53,13 @@ pub(crate) struct AgentWiring {
     pub initial_tool_count: usize,
 }
 
-/// Step 9b/9d + SharedResources + AgentLoop 构建（计划 §4.2 B4）。
+/// Step 9b/9d + SharedResources + AgentLoop 构建（计划）。
 pub(crate) async fn init_agent(
     ctx: &GatewayCtx,
     web: &WebWiring,
     cluster: &ClusterWiring,
 ) -> Result<AgentWiring> {
-    // ctx 影子重绑（B1 同款）：门控取各名字在本函数内的实际消费门。
+    // ctx 影子重绑（同款）：门控取各名字在本函数内的实际消费门。
     let home = ctx.home.clone();
     let cfg = ctx.cfg.clone();
     let bus = ctx.bus.clone();
@@ -102,7 +102,7 @@ pub(crate) async fn init_agent(
     // Step 9b: Create and inject SecurityPlugin if enabled.
     // Mirrors Go's SecurityPlugin registered via PluginManager in instance.go.
     // Keep a reference to the auditor so we can wire up the approval manager later.
-    // K1（devtool-upgrade 阶段 4）：装配逻辑原样迁往 `crate::security_setup`
+    // （devtool-upgrade）：装配逻辑原样迁往 `crate::security_setup`
     // （layer 开关 + DLP + 规则 + 审计日志 + scanner 链）——headless `run`
     // 与 gateway 共用同一构造，安全 9 层在无端口形态不降级。
     let security_plugin = crate::security_setup::build_security_plugin(
@@ -111,13 +111,13 @@ pub(crate) async fn init_agent(
     )
     .await;
 
-    // T5（扩展计划 D2b）：回填出站 DLP 闸槽——Step 9 出站桥创建早于本块，
+    // （扩展计划）：回填出站 DLP 闸槽——Step 9 出站桥创建早于本块，
     // 桥内逐消息查槽；装配前槽空 = 直通（此窗口不可能有出站流量）。
     #[cfg(feature = "security")]
     let _ = ctx.outbound_dlp_slot.set(security_plugin.clone());
 
     // Step 9d: Setup Observer Manager for conversation lifecycle events.
-    // Mirrors Go's bot_service.go Phase 5: observerMgr creation + RequestLogger registration.
+    // Mirrors Go's bot_service.go: observerMgr creation + RequestLogger registration.
     let observer_manager: Option<Arc<nemesis_observer::Manager>> = {
         let observer_mgr = Arc::new(nemesis_observer::Manager::new());
 
@@ -145,7 +145,7 @@ pub(crate) async fn init_agent(
 
     // Note: Forge injection into agent_loop is now handled at creation time above.
 
-    // W5-3（WASM 插件框架）：插件栈装配。config `plugins.wasm.enabled=false`
+    // （WASM 插件框架）：插件栈装配。config `plugins.wasm.enabled=false`
     // = None 整面子系统缺席（SharedResources 槽空、工具不注册、WSAPI/CLI
     // 诚实报「未启用」）。审批 gate 先建（installer 持有），run_runtime 审批
     // 块 bind 真身 WebApprovalManager（晚绑槽模式，skills gate 同款）；
@@ -163,9 +163,9 @@ pub(crate) async fn init_agent(
                 if loaded > 0 {
                     info!("[WasmPlugin] {} plugin(s) loaded at startup", loaded);
                 }
-                // W6：整槽注入 web 管理面（plugins.wasm.* 命令的 install /
+                // 整槽注入 web 管理面（plugins.wasm.* 命令的 install /
                 // uninstall / enable 均消费同一 installer——审批/扫描/验签
-                // 单一真相源，handler 零旁路）。
+                // 统一定义，handler 零旁路）。
                 nemesis_web::handlers::plugins_wasm::set_installer(Arc::new(installer));
                 (Some(manager), Some(gate))
             }
@@ -192,7 +192,7 @@ pub(crate) async fn init_agent(
 
     // Build SharedResources and use the factory to create the AgentLoop.
     // （estop 句柄已在集群装配块前创建——board 评审依赖集共用同一 Arc。）
-    // C5 (2026-09-04): ONE LspManager for the whole gateway — the LspTool
+    // ONE LspManager for the whole gateway — the LspTool
     // registers with it (via SharedToolConfig.lsp_manager), the web server
     // holds the same Arc, and Step-24 teardown calls shutdown_all() so
     // language-server child processes don't outlive the gateway.
@@ -209,10 +209,10 @@ pub(crate) async fn init_agent(
             .idle_secs
             .map(std::time::Duration::from_secs),
     ));
-    // C6（devtool-upgrade 阶段 6）：agents.lsp_tool.auto_install=true → 网关
+    // （devtool-upgrade）：agents.lsp_tool.auto_install=true → 网关
     // 启动期静默自举缺失的语言服务器（官方安装通道白名单目录，非交互命令
     // 串行后台执行，结果进日志）。信任级=用户显式配置的 standing consent
-    // （同 A6 formatter / LSP spawn——基础设施装配不走 8 层管线；dashboard
+    // （同 formatter / LSP spawn——基础设施装配不走 8 层管线；dashboard
     // 一键安装按钮那条路才走）。装完需重启 Agent 重新探测注册。
     #[cfg(feature = "lsp")]
     if cfg.agents.lsp_tool.auto_install {
@@ -220,18 +220,18 @@ pub(crate) async fn init_agent(
             std::time::Duration::from_secs(600),
         ));
     }
-    // M1a (2026-09-05): ONE tool-event broadcast channel for the gateway —
+    // ONE tool-event broadcast channel for the gateway —
     // sender side goes into SharedResources (each AgentLoop gets a
     // ToolEventHook), receiving side goes to the web server (pump routes
     // events to Dashboard WS push + EventHub).
     let (agent_event_tx, agent_event_rx) =
         tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
-    // B4 (2026-09-05): gateway-level background-process registry singleton —
+    // gateway-level background-process registry singleton —
     // construction is process-free (children spawn lazily via
     // background_start); Drop raises kill flags so no spawned job outlives
     // the gateway.
     let background_registry = std::sync::Arc::new(nemesis_agent::BackgroundProcessRegistry::new());
-    // P3 T7：常驻执行体监督器单例（进程无关构造，execute 按需 spawn 子进程）。
+    // 常驻执行体监督器单例（进程无关构造，execute 按需 spawn 子进程）。
     // exe/布局解析与 exec_world 通道装配同源（current_exe + common 路径单一
     // 真相源）；watchdog 是 manager 级任务，init_agent 一次性启动（死槽清理
     // + idle 自动睡眠，持弱引用——SharedResources 释放后自行退出）。
@@ -252,7 +252,7 @@ pub(crate) async fn init_agent(
     };
     let shared_resources = crate::agent_factory::SharedResources {
         home: home.clone(),
-        // K1：gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
+        // gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
         workspace: home.join("workspace"),
         // 入口形态（gap ⑤）：gateway = 交互常驻（缺省，渲染字节不变）。
         entrance: nemesis_agent::prompt::Entrance::Interactive,
@@ -289,22 +289,22 @@ pub(crate) async fn init_agent(
         mcp_config_path: common::mcp_config_path(&home),
         mcp_enabled,
         estop,
-        // P3 T7：常驻执行体监督器槽（None = headless run/acp 等无 supervisor
+        // 常驻执行体监督器槽（None = headless run/acp 等无 supervisor
         // 形态；gateway 恒 Some）。工厂据此挂 RemoteExecutorTool 常驻路由。
         agent_runtime: Some(agent_runtime),
         config_store: config_store.clone(),
         #[cfg(feature = "lsp")]
         lsp_manager,
         agent_event_tx: Some(agent_event_tx.clone()),
-        // L14 会话执行统计：聚合器订阅同一 broadcast（observe 侧消费
+        // 会话执行统计：聚合器订阅同一 broadcast（observe 侧消费
         // ToolStarted/ToolFinished/ApprovalRequested/ApprovalResolved 四事件），
         // Arc 同时挂在 SharedResources 供 web_server 读侧（sessions.stats）取用。
         session_stats: Some(crate::session_stats::spawn_session_stats(&agent_event_tx)),
         background_registry,
         plugin_manager,
-        // 全自动流转 P3/D1：board_issue 工具依赖（注册点在 build_agent_loop
+        // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
         // 主 agent；store=None 时工具不注册）。moderator 槽此刻还空，agent
-        // 建成后 :board_moderator_loop.set 填充——工具调用时读槽即得。
+        // 建成后:board_moderator_loop.set 填充——工具调用时读槽即得。
         #[cfg(all(feature = "board", feature = "cluster"))]
         board_store: board_store.clone(),
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -321,29 +321,29 @@ pub(crate) async fn init_agent(
         )),
         #[cfg(not(feature = "security"))]
         approval_slot: (),
-        // F7（2026-09-06）：question 工具 broker 槽（先建空槽，装配块晚填
+        // question 工具 broker 槽（先建空槽，装配块晚填
         // WebQuestionBroker；重启重建的 AgentLoop 共享同一槽 Arc）。
         question_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_types::agent::QuestionAsker>>,
         )),
-        // WS4（P13）/BUG-20261101-295：install_skill 工具审批门槽（先建空
-        // 槽，gateway.rs 建门后填 LateWebSkillsGate；同一 Arc 晚填可见）。
+        // /：install_skill 工具审批门槽（先建空
+        // 槽，gateway.rs 建门后填 LateWebSkillsGate；同一 Arc 晚填可）。
         skills_install_gate_slot: Default::default(),
     };
 
     let shared_resources = Arc::new(shared_resources);
 
-    // W5-3：插件 estop 联动 watcher——**先于 build_agent_loop** spawn：
+    // 插件 estop 联动 watcher——**先于 build_agent_loop** spawn：
     // 订阅（watch）先于装载期任何 estop 置位窗口（原位置在 loop 建成后，
     // 留一条启动窗口理论缝隙；前移无条件关窗——先订阅后读初值的时序
-    // 纪律见 spawn_estop_watcher 内注释。2026-09-30 复查 #9）。manager 级
+    // 纪律见 spawn_estop_watcher 内注释。 复查 #9）。manager 级
     // 一次性任务，不随 agent 重启泄；观察者事件泵仍在 loop 建成后挂。
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared_resources.plugin_manager {
         crate::plugin_bridge::spawn_estop_watcher(pm, &shared_resources.estop);
     }
 
-    // B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——**先于
+    // （凭据 vault）：凭据索要卡 broker——**先于
     // build_agent_loop** 装全局槽（工厂构造 loop 时读 current() 挂入；
     // init_agent 重跑幂等覆盖）。WSAPI credential.respond 走同一 Arc；
     // 模块随 security feature。
@@ -366,12 +366,12 @@ pub(crate) async fn init_agent(
         initial_tool_count
     );
 
-    // W5-3：观察者事件泵——init_agent 一次性 spawn（manager 级任务，不随
+    // 观察者事件泵——init_agent 一次性 spawn（manager 级任务，不随
     // agent 重启泄；invoker 挂接在 build_agent_loop 每次重建时）。estop
     // watcher 已在 loop 建成前挂（订阅先于装载，见上方）。泵退出 = 广播
     // sender 全部 drop（gateway 收尾 SharedResources 释放）→ recv() Closed；
     // estop 冻结由 estop watcher（set_enabled → enqueue no-op）承担，泵不接
-    // estop——release 后泵还活着，观察面无缝恢复（2026-09-30 插件体系复查
+    // estop——release 后泵还活着，观察面无缝恢复（插件体系复查
     // #1：此前泵从未接线，观察者插件在生产 gateway 收不到任何事件）。
     #[cfg(feature = "plugins-wasm")]
     if let Some(ref pm) = shared_resources.plugin_manager
@@ -411,7 +411,7 @@ pub(crate) async fn init_agent(
         );
     }
 
-    // Wire up `agent` workflow nodes (milestone 1b-D2). Each workflow run
+    // Wire up `agent` workflow nodes (milestone 1b-). Each workflow run
     // that hits an `agent` node will route through this runner, which
     // namespaces session keys under `workflow:{agent_id}` so workflow
     // sessions don't collide with human user sessions.
@@ -429,7 +429,7 @@ pub(crate) async fn init_agent(
             info!("[Gateway] Workflow usage store wired");
         }
 
-        // B12（2026-10-18）：automations 工具事件触发泵——注册表加载进进程
+        // automations 工具事件触发泵——注册表加载进进程
         // 缓存（WSAPI automations.set/remove 同进程热刷新），泵订阅 agent
         // 事件广播，ToolStarted 匹配 pattern → 冷却闸 → fire-and-forget
         // start_async 起跑 workflow（防自我循环：workflow:* 会话事件跳过）。

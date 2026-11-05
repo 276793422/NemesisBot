@@ -1,14 +1,14 @@
 //! `SqliteAgentsStore` —— Agent 持久实体真相源（agents 表，tasks.db 同库）。
 //!
-//! P2 地基件。Agent 记录 = 持久身份（uuid）+ home/记忆/凭据引用 + 执行根，
+//! 地基件。Agent 记录 = 持久身份（uuid）+ home/记忆/凭据引用 + 执行根，
 //! 跨 gateway 重启存活。三类组并存：`main`（对话组，启动时幂等 seed）、
-//! `project`（L6++ 项目 loop 收编形态，exec_root=项目目录）、`selfbuilt`
+//! `project`（项目 loop 收编形态，exec_root=项目目录）、`selfbuilt`
 //! （用户自建，home 钉死 `<workspace>/agents/<id>/home/`）。
 //!
-//! 两阶段创建契约（D6 复合操作纪律）：记录先落 `provisioning` → home 物化
+//! 两阶段创建契约（复合操作纪律）：记录先落 `provisioning` → home 物化
 //! （幂等可重跑）→ `transition_status` 到 `active`；启动 sweep 对卡在
 //! `provisioning` 的半创建记录收敛（续建或标 `failed`），杜绝中间态。
-//! 状态转移走 `UPDATE ... WHERE status=?` 条件更新（先到先得，与审批
+//! 状态转移走 `UPDATE... WHERE status=?` 条件更新（先到先得，与审批
 //! 台账同款纪律）。
 
 use std::sync::Arc;
@@ -18,15 +18,15 @@ use rusqlite::{OptionalExtension, params};
 use crate::db::TaskDb;
 use crate::tasks::now_rfc3339;
 
-/// Agent 记录生命周期状态常量（`kind`/`status` 值域单一真相源）。
+/// Agent 记录生命周期状态常量（`kind`/`status` 值域统一定义）。
 pub mod status {
-    /// 两阶段创建第一阶段：记录已落库、home 未物化完成。
+    /// 两阶段创建段：记录已落库、home 未物化完成。
     pub const PROVISIONING: &str = "provisioning";
     /// 可用：home 物化完成。
     pub const ACTIVE: &str = "active";
     /// sweep 判定的失败终态（半创建无法续建时）；人工可删可重建。
     pub const FAILED: &str = "failed";
-    /// 跨节点迁移进行中（P6-R2）：A 端迁移编排置入，源端 loop 冻结
+    /// 跨节点迁移进行中：A 端迁移编排置入，源端 loop 冻结
     /// （resolve_or_build 的 `status != ACTIVE` 闸拒绝新消息）。收敛由
     /// [`super::store`] 的 sweep 负责——本地墓碑在场 = commit ACK 已达
     /// （迁移成功终局），删记录+删墓碑；墓碑缺席 + 意图日志在场 = commit
@@ -40,21 +40,21 @@ pub mod status {
 pub mod kind {
     /// 对话组默认 agent（主 loop 的持久身份投影）。
     pub const MAIN: &str = "main";
-    /// L6++ 项目 loop 收编形态（exec_root=项目目录）。
+    /// 项目 loop 收编形态（exec_root=项目目录）。
     pub const PROJECT: &str = "project";
     /// 用户自建 agent。
     pub const SELFBUILT: &str = "selfbuilt";
 }
 
-/// 运行时后端档位常量（P5 第 4 步接入面：per-agent 工具执行走哪个常驻
-/// 执行体）。字段本体 [`AgentRecord::runtime_backend`]——P2 建表即预留。
+/// 运行时后端档位常量（第 4 步接入面：per-agent 工具执行走哪个常驻
+/// 执行体）。字段本体 [`AgentRecord::runtime_backend`]—— 建表即预留。
 pub mod runtime_backend {
     /// 进程档（默认）：常驻子进程/沙盒档，工作区 = 宿主 exec_root。
     pub const PROCESS: &str = "process";
-    /// VM 档（P5）：桌面级 VM 常驻执行体，工作区 = guest 内 `/workspace`。
+    /// VM 档：桌面级 VM 常驻执行体，工作区 = guest 内 `/workspace`。
     pub const VM: &str = "vm";
 
-    /// 值域校验（单一真相源——create/update 落库前必须过这里；空串同
+    /// 值域校验（统一定义——create/update 落库前必须过这里；空串同
     /// process 兼容旧调用方）。非法值 loud 拒绝，不静默纠偏。
     pub fn validate(value: &str) -> Result<&str, String> {
         match value.trim() {
@@ -71,7 +71,7 @@ pub mod runtime_backend {
 /// 损坏 JSON 读取时诚实降级为 `Null` 并保留原文可查——schema 演进由
 /// 增列迁移承接，不在读取路径做静默修补）。
 ///
-/// Serialize/Deserialize（P6-R2）：跨节点迁移载荷承载（A 端打包 / B 端
+/// Serialize/Deserialize：跨节点迁移载荷承载（A 端打包 / B 端
 /// 解析）——纯增量 derive，DB 层仍是手工行投影（`row_record`），互不
 /// 影响。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -94,11 +94,11 @@ pub struct AgentRecord {
     pub tool_policy: serde_json::Value,
     /// 档位（`auto|mini|normal|big`，空 = auto）。
     pub tier: String,
-    /// 运行时后端（P2 恒 `process`；`vm` 预留 P5）。
+    /// 运行时后端（恒 `process`；`vm` 预留）。
     pub runtime_backend: String,
-    /// 多租户主体（D4 预留，P2 恒空串）。
+    /// 多租户主体（预留， 恒空串）。
     pub principal: String,
-    /// 归属节点 id（D1：集群可寻址）。
+    /// 归属节点 id（集群可寻址）。
     pub home_node: String,
     /// `kind=project` 时关联的项目 id。
     pub project_id: Option<String>,
@@ -254,7 +254,7 @@ impl SqliteAgentsStore {
 const AGENT_COLUMNS: &str = "agent_id, name, kind, status, persona_refs, memory_namespace, \
      exec_root, home_path, credential_refs, tool_policy, tier, runtime_backend, \
      principal, home_node, project_id, created_at, updated_at, last_active_at";
-// 列清单单一真相源：按位置消费于 row_record，增列时同步改 row_record。
+// 列清单统一定义：按位置消费于 row_record，增列时同步改 row_record。
 const AGENT_SELECT: &str = "SELECT agent_id, name, kind, status, persona_refs, \
      memory_namespace, exec_root, home_path, credential_refs, tool_policy, tier, \
      runtime_backend, principal, home_node, project_id, created_at, updated_at, \

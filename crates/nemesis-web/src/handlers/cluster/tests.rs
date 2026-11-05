@@ -130,7 +130,7 @@ async fn test_roaming_status_payload_requires_restart_consistency() {
 #[tokio::test]
 async fn test_roaming_status_payload_carries_rendezvous_state() {
     // rendezvous 段透传：同步状态原样进 payload；Null = 循环未挂（形态）。
-    // QUIC 插件化 ：node_id 读走桥（测试环境插件缺席 = null 诚实降级）。
+    // QUIC 插件化：node_id 读走桥（测试环境插件缺席 = null 诚实降级）。
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
     let state = nemesis_cluster::roaming::rendezvous::RendezvousClientState {

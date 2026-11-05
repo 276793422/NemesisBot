@@ -58,26 +58,26 @@ pub struct FactoryConfig {
     pub protocol: String,
     /// Additional headers for HTTP provider.
     pub headers: HashMap<String, String>,
-    /// Per-model 单请求超时秒数（P3A 超时对齐，2026-09-12）：来自模型条目
+    /// Per-model 单请求超时秒数（P3A 超时对齐）：来自模型条目
     /// extra `timeout_secs`（provider_resolver 提取）。0 = 未设置，落 lane
     /// 默认 600s——此前 anthropic/codex/http-compat 各自写死 120s，与
     /// openai 兼容 lane 的 600s 口径分裂（评审 LLM 连续精确 120s 超时根因）。
     pub timeout_secs: u64,
-    /// Per-model 出站代理 URL（代理接线修复，2026-09-17）：来自模型条目
+    /// Per-model 出站代理 URL（代理接线修复）：来自模型条目
     /// `proxy` 字段（provider_resolver 透传），支持 http/socks5（reqwest
     /// `Proxy::all`）。空 = 不代理。此前 FactoryConfig 无此字段、HttpCompat
     /// lane 硬编码 `proxy: None`——模型管理页填的代理是「配置可见但执行
     /// 失效」的死配置（factory 整合期回归）。CLI 型 lane（claude-cli/
     /// codex-cli 子进程）不消费此字段：经进程环境变量 HTTPS_PROXY 代理。
     pub proxy: String,
-    /// per-model 流式开关（2026-10-13 stream 键）：来自模型条目 `stream`
+    /// per-model 流式开关（stream 键）：来自模型条目 `stream`
     /// 字段（provider_resolver 透传）。值集：空（auto）/ "yes" / "no"。
     /// auto = codex lane 流式（墙钟根因修复形态）、anthropic/openai 兼容
     /// lane 维持非流式；yes = 强制内部流式（聚合 chat_stream，chat() 对外
     /// 签名不变）；no = 逃生门强制非流式。语义对齐 protocol：构造期消费，
     /// 改条目需重新设默认或重启。CLI 型 lane 不消费此字段。
     pub stream_mode: String,
-    /// per-model 缓存断点显式化（B13，2026-10-18 B 级清零）：来自模型条目
+    /// per-model 缓存断点显式化：来自模型条目
     /// `cache_breakpoints` 字段（provider_resolver 透传）。仅 anthropic
     /// lane 消费（system 尾 + tools 尾注入 ephemeral 断点）；其他 lane
     /// 忽略 + 构造期一次 WARN。语义对齐 protocol：构造期消费。
@@ -102,7 +102,7 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
     // 可信 provider 归属：默认 openai 会把它们误路由到 Codex Responses API
     // （POST {base}/responses + 模型重映射 gpt-5.2，第三方 OpenAI 兼容端点全灭）。
     // 默认落 HttpCompat（chat/completions 是 OpenAI 兼容通用语）；显式
-    // "openai/x" 前缀不受影响，仍走 Codex。生产实证（2026-09-11）：dashboard
+    // "openai/x" 前缀不受影响，仍走 Codex。生产实证：dashboard
     // 裸名 glm-5.3-flash → "auth failure for provider codex/gpt-5.2: status 401"。
     let model_ref = parse_model_ref(&cfg.llm_ref, "http-compat")
         .ok_or_else(|| "empty LLM reference".to_string())?;
@@ -142,13 +142,13 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
         _ => {}
     }
 
-    // 显式协议覆盖（LLM 协议选择器，2026-09-11 拍板语义）：openai =
+    // 显式协议覆盖（LLM 协议选择器，既定语义）：openai =
     // chat/completions（业界通行），responses = OpenAI Responses API
     // （内部 CodexProvider），anthropic = Claude 消息协议。与旧前缀语义的
     // 分歧是刻意的：显式选择就该是用户读到的含义；旧前缀路径（protocol
     // 为空）行为不变。provider 前缀继续管 api_base 默认推断/价目表/显示。
     if !cfg.protocol.is_empty() {
-        // 值集归一走单一真相源 nemesis_types::capability::normalize_model_protocol。
+        // 值集归一走统一定义 nemesis_types::capability:normalize_model_protocol。
         let protocol = nemesis_types::capability::normalize_model_protocol(&cfg.protocol)?;
         match protocol.as_str() {
             "anthropic" => {
@@ -169,7 +169,7 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
                     sel.api_base = "https://chatgpt.com/backend-api/codex".to_string();
                 }
             }
-            // 图像协议不是对话协议（集群专业职能框架 M4）：chat Provider
+            // 图像协议不是对话协议（集群专业职能框架）：chat Provider
             // 形状完全不符（无流式无工具调用），构造路径 loud 拒绝——深度
             // 防误配（唯一消费点 = generate_image 工具，直连 images 模块）。
             "images-openai" => {
@@ -202,7 +202,7 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
             if sel.api_key.is_empty() {
                 // model_ref.model 已是 provider 前缀化串，别再拼一遍
                 // provider_name（曾产出 zhipu/zhipu/glm-4.7-flash 双前缀，
-                // 2026-09-22 集群事故报文用户亲见）。
+                // 集群事故报文用户亲）。
                 return Err(format!(
                     "no API key configured for provider: {} (model: {})\n\
                      Use: nemesisbot model add --model {} --key <YOUR_KEY> --default",
@@ -219,7 +219,7 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
 pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, String> {
     let sel = resolve_provider_selection(cfg)?;
 
-    // B13：cache_breakpoints 仅 anthropic lane 消费；其他 lane 显式开启 =
+    // cache_breakpoints 仅 anthropic lane 消费；其他 lane 显式开启 =
     // 配置对该 lane 无效，进程内一次 WARN（Once 锁——provider 构造虽是
     // 低频事件，仍不逐次刷屏），行为照旧不失败。
     static CACHE_BP_WARN: std::sync::Once = std::sync::Once::new();
@@ -310,7 +310,7 @@ fn opt_proxy(cfg: &FactoryConfig) -> Option<String> {
 }
 
 /// 启动装配专用：构造失败 → NullProvider（网关无 LLM 降级启动，双击直启
-/// goal 2026-09-17）。返回 (provider, 装配告警)：告警由调用方打日志——
+/// goal）。返回 (provider, 装配告警)：告警由调用方打日志——
 /// factory 层不打日志（保持纯函数）。一次性 CLI 入口（run/probe/连通性
 /// 测试）继续用 [`create_provider`]：它们就该 loud 失败。
 pub fn create_provider_or_null(cfg: &FactoryConfig) -> (Arc<dyn LLMProvider>, Option<String>) {

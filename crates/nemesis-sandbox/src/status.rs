@@ -1,4 +1,4 @@
-//! Service state detection via `sc.exe query` (L2.0 scaffolding — direct SCM
+//! Service state detection via `sc.exe query` (.0 scaffolding — direct SCM
 //! API via the `windows` crate is a cleanup option).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +64,7 @@ pub fn service_binary_path(name: &str) -> Option<String> {
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
         if let Some(idx) = line.find("BINARY_PATH_NAME") {
-            // e.g. `        BINARY_PATH_NAME   : "C:\...\SbieSvc.exe"`
+            // e.g. ` BINARY_PATH_NAME: "C:\...\SbieSvc.exe"`
             let after = &line[idx + "BINARY_PATH_NAME".len()..];
             let path = after.trim_start_matches([' ', ':', '\t']).trim();
             return Some(path.trim_matches('"').to_string());

@@ -1,4 +1,4 @@
-//! 进程级 vault 运行时（P0 vault 计划 B1，2026-09-22 计划 §2.2）。
+//! 进程级 vault 运行时（vault 计划，2026-09-22 计划）。
 //!
 //! 依赖环约束：nemesis-config 不能依赖 nemesis-security，所以 `vault:<alias>`
 //! 解析器由本模块在 nemesisbot 启动路径注入 `set_global_vault_resolver`。
@@ -46,7 +46,7 @@ fn resolve_alias(path: &Path, alias: &str) -> Result<String, String> {
     resolve_alias_at(path, alias.strip_prefix("vault:").unwrap_or(alias))
 }
 
-/// 打开并解锁 vault 的 pub 变体（P6-R2 agent 迁移的凭据导出用——迁移
+/// 打开并解锁 vault 的 pub 变体（agent 迁移的凭据导出用——迁移
 /// 编排需要拿整个 [`VaultStore`] 做 export_entries，不是单别名读取）。
 /// 语义与私有 [`open_unlocked`] 完全同源（现开现解锁、argon2 走
 /// `NEMESISBOT_VAULT_PASSPHRASE`）。

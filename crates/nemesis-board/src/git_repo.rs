@@ -1,21 +1,21 @@
-//! 项目目录 git 仓库化 + 三方合并（看板项目档案 goal P4/E1+H4+H5）。
+//! 项目目录 git 仓库化 + 三方合并（看板项目档案 goal）。
 //!
-//! 档案目录既是工作集也是档案（goal B4）——本模块把它变成 git 仓库（master
+//! 档案目录既是工作集也是档案（goal）——本模块把它变成 git 仓库（master
 //! 进程内 git2，静态编译，零外部 git 安装/零新进程/零新端口）：
 //!
 //! - [`ensure_repo`]：幂等 init（缺则建；对现有内容首 commit——用户选已有
-//!   目录作初始基线是 B5 合法形态；`.gitignore` 照常生效，投影文件不进库）；
+//!   目录作初始基线是 合法形态；`.gitignore` 照常生效，投影文件不进库）；
 //! - [`commit_worktree`]：工作集现状落一笔 commit（tree 无变化 = no-op）；
-//! - [`export_head_tree`]：HEAD 树全量导出到目录（E2 基线快照，天然只含
-//!   跟踪树——投影文件已被 .gitignore 排除，不会下发历史执行记录）；
-//! - [`merge_changeset`]：E4 三方合并——基线 commit 为 ancestor、worker 树
+//! - [`export_head_tree`]：HEAD 树全量导出到目录（基线快照，天然只含
+//!   跟踪树——投影文件已被.gitignore 排除，不会下发历史执行记录）；
+//! - [`merge_changeset`]： 三方合并——基线 commit 为 ancestor、worker 树
 //!   为 theirs、当前 HEAD 为 ours（行级合并，git2 [`Repository::merge_trees`]）；
 //!   无冲突 = 自动合入 + commit + 工作区同步；冲突 = 逐文件明细（内容级
-//!   二进制判定，E5）原样返回，**不触碰仓库任何状态**。
+//!   二进制判定）原样返回，**不触碰仓库任何状态**。
 //!
 //! 并发模型：所有函数每次调用独立 open 仓库、用完即弃（`git2::Repository`
 //! 是 Send + !Sync；短生命周期对象不做全局共享，天然免锁）。合并串行化由
-//! 调用方保证（E4：每收一个变更集合一次 commit 一次）。
+//! 调用方保证（每收一个变更集合一次 commit 一次）。
 
 use std::path::{Path, PathBuf};
 
@@ -39,7 +39,7 @@ pub struct ChangesetFile {
     pub executable: bool,
 }
 
-/// E8：变更集归属校验 + 合并输入（worker 声明其基线 commit——祖先由此
+/// 变更集归属校验 + 合并输入（worker 声明其基线 commit——祖先由此
 /// 而来；「是否属于活跃 dispatch 轮次」由调用方按 dispatch 记录裁决）。
 #[derive(Debug, Clone, Default)]
 pub struct MergeInput {
@@ -54,7 +54,7 @@ pub struct MergeInput {
 pub enum MergeOutcome {
     /// 已合入并 commit（空变更集 = no-op，返回当前 HEAD，不产空 commit）。
     Merged { commit_oid: String },
-    /// 真冲突：逐文件明细（`binary` = 内容级判定，E5 二进制不进行级合并）。
+    /// 真冲突：逐文件明细（`binary` = 内容级判定， 二进制不进行级合并）。
     Conflict { files: Vec<ConflictFile> },
 }
 
@@ -95,10 +95,10 @@ fn component_is_short_name(comp: &str) -> bool {
 /// worker 变更集路径契约是「项目档案根相对」（exec 工作副本镜像档案树），
 /// 但 worker LLM 偶尔按 master 工作区视角写文件——`board-projects/<项目名>/…`
 /// 整段落进工作副本，合并后双重嵌套 `<项目>/board-projects/<项目>/…`
-/// （2026-09-30 三设备压测 C1/NB-54 实证；`docs/…` 等正确项目相对路径不受
-/// 影响）。仅当首两段精确等于 [`crate::archive::BOARD_PROJECTS_DIR`] +
+/// （三设备压测 / 实证；`docs/…` 等正确项目相对路径不受
+/// 影响）。仅当首两段精确等于 [`crate::archive:BOARD_PROJECTS_DIR`] +
 /// 档案目录名（root 的文件名）且后段非空时剥除，其余逐字节不动；别的项目
-/// 前缀（第二段不等档案目录名）不剥——宁嵌套不误剥。
+/// 前缀（不等档案目录名）不剥——宁嵌套不误剥。
 fn normalize_repo_path(root: &Path, path: &str) -> String {
     let Some(project_dir) = root.file_name().and_then(|n| n.to_str()) else {
         return path.to_string();
@@ -115,7 +115,7 @@ fn normalize_repo_path(root: &Path, path: &str) -> String {
 }
 
 /// 变更集路径形状校验：`/` 分隔、非空、无 `.`/`..`/空组件、无反斜杠/盘符、
-/// 无 8.3 短名（archive.rs 同款教训：canonicalize 前先词法拦截）。
+/// 无 8.3 短名（archive.rs 同款canonicalize 前先词法拦截）。
 fn validate_rel_path(rel: &str) -> Result<PathBuf, String> {
     let t = rel.trim();
     if t.is_empty() {
@@ -143,7 +143,7 @@ fn validate_rel_path(rel: &str) -> Result<PathBuf, String> {
 }
 
 // ---------------------------------------------------------------------------
-// E1：仓库幂等 init + 工作集 commit
+// 仓库幂等 init + 工作集 commit
 // ---------------------------------------------------------------------------
 
 /// 幂等 ensure：目录内已有仓库（`.git` 在场）直接打开；否则 init + 对现有
@@ -213,7 +213,7 @@ fn head_commit(repo: &Repository) -> Option<git2::Commit<'_>> {
     head.peel_to_commit().ok()
 }
 
-/// HEAD commit hex（空仓库 = None；E2 派发里程碑基线标记用）。
+/// HEAD commit hex（空仓库 = None； 派发里程碑基线标记用）。
 pub fn head_commit_hex(root: &Path) -> Result<Option<String>, String> {
     let repo =
         Repository::open(root).map_err(|e| format!("打开项目仓库 {} 失败: {e}", root.display()))?;
@@ -230,7 +230,7 @@ pub fn head_tree_hex(root: &Path) -> Result<Option<String>, String> {
 }
 
 // ---------------------------------------------------------------------------
-// P1 外循环：远端克隆（任务专属副本物化，2026-10-25）
+// 外循环：远端克隆（任务专属副本物化）
 // ---------------------------------------------------------------------------
 
 /// 克隆远端仓库到 `dest`，返回克隆完成时的 HEAD commit hex（= 钉住的
@@ -279,7 +279,7 @@ pub fn clone_repo(
     // 克隆自带的 checkout **必须关过滤器**：local config 尚未落钉、libgit2
     // 落到系统/全局层（本机 autocrlf=true）会把 LF blob smudge 成 CRLF
     // 工作树——合并三方 base(blob LF) 与 ours/theirs(工作树 CRLF) 行尾
-    // 不同源，未触及行全部伪冲突（2026-11-01 T1 全文件伪冲突冻结实录）。
+    // 不同源，未触及行全部伪冲突（全文件伪冲突冻结）。
     // 事后 reset --hard 不可靠（index oid 与目标相同时跳过重写，行尾漂移
     // 不被归一）——在 checkout 本身禁过滤器，工作树恒为 blob 原始字节。
     let mut co = git2::build::CheckoutBuilder::new();
@@ -302,7 +302,7 @@ pub fn clone_repo(
     head_commit_hex(dest)?.ok_or_else(|| format!("克隆完成但 {} 无 HEAD", dest.display()))
 }
 
-/// 远端推送（P3 PR 发布）：把本地分支推到 `remote` 的 `remote_ref`。
+/// 远端推送（PR 发布）：把本地分支推到 `remote` 的 `remote_ref`。
 /// 凭据语义同 [`clone_repo`]。push 前本地分支必须存在（缺 = Err）。
 /// force = false（快进失败 = Err——交付分支被外部移动必须人裁，不覆盖）。
 /// 代理语义同 [`apply_proxy`]（Gerrit refs/for 推送同路）。
@@ -337,13 +337,13 @@ pub fn push_branch(
 }
 
 // ---------------------------------------------------------------------------
-// Gerrit 发布支撑（2026-11-04 SC 套件批）：确定性 Change-Id + 单提交 atop
+// Gerrit 发布支撑（SC 套件批）：确定性 Change-Id + 单提交 atop
 // ---------------------------------------------------------------------------
 
 /// 从种子串确定性派生 Gerrit Change-Id（`I<40hex>`，SHA-1 of seed）。
 /// 同一任务多次重试派生同一 Change-Id → Gerrit 服务端按 Change-Id 归并
 /// （push 建评审天然幂等，对账按此锚点回查——宿主 `{{change_id}}` 运行期
-/// token 的单一真相源）。
+/// token 的统一定义）。
 pub fn derive_change_id(seed: &str) -> Result<String, String> {
     let oid = git2::Oid::hash_object(git2::ObjectType::Commit, seed.as_bytes())
         .map_err(|e| format!("Change-Id 派生失败: {e}"))?;
@@ -460,7 +460,7 @@ pub fn single_commit_atop(
 }
 
 // ---------------------------------------------------------------------------
-// repo_sync 原语（2026-11-04 jira-gitlab-flow 批）：确定性 clone-or-pull
+// repo_sync 原语（jira-gitlab-flow 批）：确定性 clone-or-pull
 // ---------------------------------------------------------------------------
 
 /// [`sync_repo_remote`] 结果形态。
@@ -499,7 +499,7 @@ fn tls_hint(e: String) -> String {
     }
 }
 
-/// 代理语义（2026-11-04 SC 套件批）：libgit2 **不读环境变量**——企业内网
+/// 代理语义（SC 套件批）：libgit2 **不读环境变量**——企业内网
 /// 「仅经代理可达」的仓库必须显式注入 ProxyOptions。三档：
 /// - `None` = libgit2 默认（不走代理，既有行为零变化——全部旧调用点即此态）；
 /// - `Some("")` = auto（读 http.proxy 配置 / 环境探测）；
@@ -538,7 +538,7 @@ fn dir_is_nonempty(dest: &Path) -> Result<bool, String> {
 /// 非空目录内的就地物化（等价克隆）。
 ///
 /// 看板项目注册目录被 `project.create` 恒跑 `ensure_scaffold`（project.json /
-/// timeline.jsonl / .gitignore / docs//artifacts//records/ 预置在场），而
+/// timeline.jsonl /.gitignore / docs//artifacts//records/ 预置在场），而
 /// libgit2 `RepoBuilder::clone` 拒绝非空目标——主路径 clone 必炸。此函数用
 /// `Repository::init`（非空目录合法）+ 加 origin + fetch + 建本地分支检出
 /// 完成同一件事，**scaffold 档案原样保留**（checkout 只写仓库跟踪文件，
@@ -926,7 +926,7 @@ pub fn sync_repo_remote(
 }
 
 // ---------------------------------------------------------------------------
-// P3 外循环（2026-10-25）：交付分支发布原语（副本仓内重建交付的本地半边）
+// 外循环：交付分支发布原语（副本仓内重建交付的本地半边）
 // ---------------------------------------------------------------------------
 
 /// 发布链本地半边：从 HEAD 建新分支 + 应用 patch + commit，返回新 commit
@@ -936,7 +936,7 @@ pub fn sync_repo_remote(
 /// 失败语义（全部确定失败，仓库零残留）：
 /// - 工作区有未提交/未跟踪改动 = Err（发布不混入无关改动）；
 /// - 目标分支已存在：校验「单父 == 当前 HEAD 且内容与同一 patch 应用到同一
-///   HEAD 的 tree 一致」→ **幂等复用**既有 commit（2026-11-02 复评 F1：push/
+///   HEAD 的 tree 一致」→ **幂等复用**既有 commit（复评：push/
 ///   PR 阶段失败后重试续作，git 层不再被自己上次的分支挡死）；校验不过 =
 ///   Err（分支内容与本次交付不匹配，拒绝覆盖转人工——不静默吞下异源分支）；
 ///   探测经 index 旁路完成、工作区零触碰；
@@ -1109,7 +1109,7 @@ pub fn branch_tree_if_exists(
 }
 
 // ---------------------------------------------------------------------------
-// E2：HEAD 树导出（基线快照；只含跟踪树）
+// HEAD 树导出（基线快照；只含跟踪树）
 // ---------------------------------------------------------------------------
 
 /// HEAD 树全量导出到 `dest`（已存在的 `dest` 先清空）。返回 (文件数, 字节数)。
@@ -1171,12 +1171,12 @@ fn walk_tree(
 }
 
 // ---------------------------------------------------------------------------
-// 评审证据：commit 变更文件清单（F-U3-1 根修）
+// 评审证据：commit 变更文件清单（F- 根修）
 // ---------------------------------------------------------------------------
 
 /// commit 相对其首个父提交的变更文件清单（`(路径, 变更类型)`，路径 `/` 分隔）。
 ///
-/// 语义评审证据注入用（UAT F-U3-1）：worker 自报的交付路径是一面之词
+/// 语义评审证据注入用（UAT F）：worker 自报的交付路径是一面之词
 /// （集群 exec 沙箱路径会让评审误判文件未落盘），系统合并 commit 的实际
 /// diff 才是「产物是否进入项目工作区」的客观数据源。根提交（无父）对空
 /// 树 diff = 全量清单。
@@ -1228,12 +1228,12 @@ pub fn commit_changed_files(
 }
 
 // ---------------------------------------------------------------------------
-// E4：三方合并
+// 三方合并
 // ---------------------------------------------------------------------------
 
-/// 读 commit 内指定路径的 blob 文本（F-U3-7，2026-09-15 U3 真机）：验收
+/// 读 commit 内指定路径的 blob 文本（F-， 真机）：验收
 /// 评审的证据段需要文件内容实物（变更集清单只证实「落盘」，评审员无法
-/// 核对「内容」——NB-13 实证 UNSURE 转人工的直因）。二进制 / 超限 /
+/// 核对「内容」—— 实证 UNSURE 转人工的直因）。二进制 / 超限 /
 /// 路径不存在 / 父 commit 删除态 = `Ok(None)` 诚实降级为只列清单。
 pub fn commit_blob_text(
     root: &Path,
@@ -1276,12 +1276,12 @@ fn empty_tree(repo: &Repository) -> Result<Tree<'_>, String> {
     repo.find_tree(oid).map_err(|e| e.to_string())
 }
 
-/// E4 三方合并（调用方保证串行）。冲突 = 仓库零改动原样返回明细。
+/// 三方合并（调用方保证串行）。冲突 = 仓库零改动原样返回明细。
 ///
 /// 入口先做路径归一化（[`normalize_repo_path`]：剥误带的工作区前缀），
 /// 再全量过闸（任何一条畸形 = 拒绝整个变更集，不合入）。
 ///
-/// 流程：ancestor = worker 声明的基线 commit（E8：是否属于活跃 dispatch
+/// 流程：ancestor = worker 声明的基线 commit（是否属于活跃 dispatch
 /// 轮次由调用方先裁决，本函数只管 git 语义）→ theirs = 基线树 + 变更集
 /// （内存 index 组装，不触碰盘上 index/workdir）→ `merge_trees` → 干净 =
 /// commit + hard reset 同步工作区；冲突 = 收集逐文件明细（内容级二进制判定）。
@@ -1382,13 +1382,13 @@ pub fn merge_changeset(root: &Path, input: &MergeInput) -> Result<MergeOutcome, 
                 },
             };
             let path_str = String::from_utf8_lossy(&path).to_string();
-            // P5/F5：三阶段内容随行带出（AI 硬解/审计明细卡的数据源；
+            // /：三阶段内容随行带出（AI 硬解/审计明细卡的数据源；
             // blob 缺失降级 None，不致命——明细卡少一段展示而已）。
             let ancestor_data = conflict
                 .ancestor
                 .as_ref()
                 .map(|a| blob_content(&repo, a.id));
-            // E5：内容级二进制判定（任一侧二进制 = 不进行级合并，择边语义）。
+            // 内容级二进制判定（任一侧二进制 = 不进行级合并，择边语义）。
             let binary = [our_data.clone(), their_data.clone()]
                 .into_iter()
                 .flatten()
@@ -1442,7 +1442,7 @@ pub fn merge_changeset(root: &Path, input: &MergeInput) -> Result<MergeOutcome, 
             let Some(path) = delta.old_file().path() else {
                 continue;
             };
-            // 防逃逸（git 相对路径理论不含 ..，checkpoint.rs 同款防御保留）。
+            // 防逃逸（git 相对路径理论不含..，checkpoint.rs 同款防御保留）。
             let rel = path.to_string_lossy();
             if rel.split(['/', '\\']).any(|seg| seg == "..") {
                 continue;
@@ -1464,7 +1464,7 @@ fn blob_content(repo: &Repository, id: Oid) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// P5/F5：冲突硬解落盘
+// /：冲突硬解落盘
 // ---------------------------------------------------------------------------
 
 /// 冲突硬解产出落一笔 commit：HEAD 树起步 + override 条目替换/新增 →

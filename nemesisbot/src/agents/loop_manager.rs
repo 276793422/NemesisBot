@@ -1,19 +1,19 @@
-//! 自建 agent 常驻 LLM loop 生命周期管理器（G1，2026-10-18 三方复评整改批三）。
+//! 自建 agent 常驻 LLM loop 生命周期管理器（2026-10-18 三方复评）。
 //!
 //! 职责：按 agents 表记录（kind=selfbuilt）惰性构建并常驻 [`AgentLoop`]——
-//! 与项目 loop（`crate::projects::manager::ProjectLoopManager`）完全同构的
-//! 装配链（统一工厂 [`crate::agent_factory::build_agent_loop_from_spec`]，
+//! 与项目 loop（`crate::projects:manager::ProjectLoopManager`）完全同构的
+//! 装配链（统一工厂 [`crate::agent_factory:build_agent_loop_from_spec`]，
 //! 安全 8 层/estop/围栏/discipline 全生效——agent 会话不是安全旁路），差异
-//! 收敛在 [`crate::agent_factory::AgentLoopSpec::from_record`] 的记录映射。
+//! 收敛在 [`crate::agent_factory:AgentLoopSpec::from_record`] 的记录映射。
 //!
 //! 消息面：**不走 bus 订阅**（v1 WSAPI-only——`agents.send` 经
-//! [`nemesis_web::handlers::agents::AgentsBridge::send_to_agent`] 直接注入
+//! [`nemesis_web::handlers:agents::AgentsBridge:send_to_agent`] 直接注入
 //! 本 manager 的 per-loop mpsc，镜像项目调度 `route_one` 的转发目标形态）。
 //! loop 出站走 `shared.agent_outbound_tx` → bus → web 通道 → 发起方 WS 连接
 //! （chat_id 寻址），与主/项目会话的回包链同源。
 //!
-//! 生命周期：惰性构建（首次 `agents.send` / bridge 触达时）；`AgentManager::
-//! remove` 联动 [`Self::remove`] 停机摘表（R4 协调点——记录删了 loop 不留）；
+//! 生命周期：惰性构建（首次 `agents.send` / bridge 触达时）；`AgentManager:
+//! remove` 联动 [`Self::remove`] 停机摘表（协调点——记录删了 loop 不留）；
 //! gateway teardown 走 [`Self::stop_all`]。
 //!
 //! 刻意持 [`SqliteAgentsStore`] 而非 `Arc<AgentManager>`：manager 已持本
@@ -41,7 +41,7 @@ struct AgentLoopHandle {
 }
 
 /// 自建 agent 常驻 loop 的生命周期管理（gateway 装配期创建一个实例，挂在
-/// [`crate::agents::AgentManager`] 的槽上；teardown `stop_all`）。
+/// [`crate::agents:AgentManager`] 的槽上；teardown `stop_all`）。
 pub struct AgentLoopManager {
     shared: Arc<SharedResources>,
     store: SqliteAgentsStore,
@@ -113,15 +113,15 @@ impl AgentLoopManager {
                 record.status
             ));
         }
-        // 凭据 pre-flight（G1 v1 消费形态：装配期解析可观测——解析失败
+        // 凭据 pre-flight（v1 消费形态：装配期解析可观测——解析失败
         // warn+skip 不阻断；凭据的实际消费走既有 credential_injection 的
         // 工具入参 `vault:` 别名面（最后时刻改写，本体不出 gateway））。
         self.preflight_credentials(&record);
         let mut spec = crate::agent_factory::AgentLoopSpec::from_record(&record);
-        // G2（2026-10-18 批四）：per-agent 浏览器身份目录（agent home 的
+        // per-agent 浏览器身份目录（agent home 的
         // browser-profile/——配置 opt-in `browser_profile: true` 的浏览器类
         // MCP server spawn 时注入 `--user-data-dir`，登录态/cookie per-agent
-        // 隔离、跨任务跨重建保持）。派生式单一真相源 = nemesis-path。
+        // 隔离、跨任务跨重建保持）。派生式单一权威 = nemesis-path。
         spec.browser_profile = Some(nemesis_path::resolve_agent_browser_profile_in_workspace(
             &self.workspace,
             &record.agent_id,
@@ -157,7 +157,7 @@ impl AgentLoopManager {
                 .map(|h| h.agent_loop.clone())
                 .expect("double-spawn guard: winner handle must exist"));
         }
-        // R4 顺序契约收口（2026-10-18 二轮复查）：构建在途（early get 之后、
+        // 顺序契约收口（二轮复查）：构建在途（early get 之后、
         // insert 之前）`AgentManager::remove` 可整体完成——store.remove 已
         // 提交而 lm.remove 对空表 no-op，直接 insert 就造出「记录已删、loop
         // 存活到重启」的孤儿。持 state 锁复查真相源封死窗口：remove 的
@@ -267,7 +267,7 @@ impl AgentLoopManager {
         self.resolve_or_build(agent_id)
     }
 
-    /// 停止并摘除单个 agent loop（R4 联动：`AgentManager::remove` 在删记录
+    /// 停止并摘除单个 agent loop（联动：`AgentManager::remove` 在删记录
     /// 前调用）。镜像项目 `stop_project`：先摘两表再停——此后 send 诚实
     /// 报错，不静默丢。
     pub fn remove(&self, agent_id: &str) -> bool {
@@ -293,7 +293,7 @@ impl AgentLoopManager {
         }
     }
 
-    /// 停机 drain 面快照（BUG-20261025-33）：全部在跑自建 agent loop 的
+    /// 停机 drain 面快照：全部在跑自建 agent loop 的
     /// Arc，供 gateway teardown 与主 loop 同一窗口联合 drain（此前 teardown
     /// 直接 abort，在途轮次被杀）。
     pub fn drain_snapshot(&self) -> Vec<Arc<nemesis_agent::r#loop::AgentLoop>> {
@@ -307,13 +307,13 @@ impl AgentLoopManager {
 
     /// agent loop 是否在跑（可观测面）。`#[allow(dead_code)]`：当前唯一
     /// 消费方是本 crate 测试（round-trip/remove 用例）；Dashboard agent
-    /// 管理页接入「loop 存活」徽标时转正（同 credential_alias 的 P5 形态）。
+    /// 管理页接入「loop 存活」徽标时转正（同 credential_alias 的 形态）。
     #[allow(dead_code)]
     pub fn is_running(&self, agent_id: &str) -> bool {
         self.state.lock().unwrap().contains_key(agent_id)
     }
 
-    /// 渠道排队深度（P6-R2 迁移前置检查；None = loop 不在场/无渠道）。
+    /// 渠道排队深度（迁移前置检查；None = loop 不在场/无渠道）。
     /// 迁移编排用它在停 loop 前做「在途任务诚实拒绝」判定——排队消息
     /// 未消费时拒绝迁移，等用户等消息处理完。tokio mpsc 不直接暴露
     /// len——用 max_capacity - 剩余 permit 推导（创建时 1024 定容）。

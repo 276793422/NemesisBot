@@ -5,7 +5,7 @@
 //! 多步组合——省掉每步一个 LLM 轮次的上下文开销（codemode 的经济学动机）。
 //!
 //! 安全面（不旁路是底线）：
-//! - 脚本内 `tool()` 走 [`AgentLoop:handle_tool_call_at_depth`] **完整
+//! - 脚本内 `tool()` 走 [`AgentLoop::handle_tool_call_at_depth`] **完整
 //!   dispatch 瀑布**（estop → hidden → min-tier → Plan → 安全 8 层 → 审批
 //!   → hooks）——与 WASM 插件 guest tool-invoke 同一桥形态（GatewayHostInvoker）；
 //! - 脚本内不能调 `code_run` 自身（深度 1 闸，防递归线程放大）；
@@ -19,8 +19,8 @@
 //!   #2 同模型）。
 //!
 //! 执行模型：rquickjs 非 parallel 形态的 Runtime/Context 不是 Send，整个
-//! JS 生命周期封闭在 `tokio:task:spawn_blocking` 线程内；宿主函数同步
-//! 返回 → `Handle:block_on` 桥进异步 dispatch（阻塞线程不占 runtime
+//! JS 生命周期封闭在 `tokio::task:spawn_blocking` 线程内；宿主函数同步
+//! 返回 → `Handle::block_on` 桥进异步 dispatch（阻塞线程不占 runtime
 //! worker；要求 multi-thread runtime——current_thread 下 block_on 于
 //! blocking 线程无法驱动定时器/IO，会挂死）。
 
@@ -158,7 +158,7 @@ mod imp {
             console
                 .set(
                     name,
-                    // 参数类型不注解：Func:from 的目标 trait 签名把 ctx 与
+                    // 参数类型不注解：Func::from 的目标 trait 签名把 ctx 与
                     // args 推断到同一 'js（手写 Ctx<'_> / Rest<Value<'_>>
                     // 会被当作两个不相关匿名生命周期而撞 invariance）。
                     rquickjs::function::Func::from(move |ctx, args| -> rquickjs::Result<()> {
@@ -196,7 +196,7 @@ mod imp {
             Self {
                 loop_ref: parking_lot::RwLock::new(None),
                 // 0 = 不限时（诚实语义：配置者显式选了不限）。运行形态是
-                // Option<Instant> deadline（run_script）：`Duration:MAX` 与
+                // Option<Instant> deadline（run_script）：`Duration::MAX` 与
                 // `Instant` 相加必溢出 panic——checked_add
                 // 返回 None 即「无 deadline」，interrupt handler 轮询永假。
                 timeout: if timeout_secs == 0 {
@@ -205,7 +205,7 @@ mod imp {
                     Duration::from_secs(timeout_secs)
                 },
                 // saturating：u64 MB → 字节乘 2^20 的极端配置（手滑多打了
-                // 几位）回绕会让内存闸静默失效，钳到 u64:MAX = 诚实不设上限
+                // 几位）回绕会让内存闸静默失效，钳到 u64::MAX = 诚实不设上限
                 // （同族算术）。
                 memory_limit_bytes: (memory_limit_mb.max(1).saturating_mul(1024 * 1024)) as usize,
             }
@@ -221,7 +221,7 @@ mod imp {
     #[async_trait::async_trait]
     impl Tool for CodeRunTool {
         fn description(&self) -> String {
-            // 不限时配置诚实显示（Duration:MAX.as_secs() 的 20 位数字对模型
+            // 不限时配置诚实显示（Duration::MAX.as_secs() 的 20 位数字对模型
             // 是噪音； 随手修复）。
             let budget = if self.timeout == Duration::MAX {
                 "unlimited".to_string()
@@ -314,7 +314,7 @@ cannot call code_run itself.",
             rquickjs::Runtime::new().map_err(|e| format!("QuickJS runtime init failed: {e}"))?;
         rt.set_memory_limit(memory_limit);
         rt.set_max_stack_size(1024 * 1024);
-        // `Instant:now() + Duration:MAX`（timeout_secs=0
+        // `Instant::now() + Duration::MAX`（timeout_secs=0
         // 的「不限时」语义）必溢出 panic（Add for Instant = checked_add
         // .expect）。checked_add 的 None 恰好就是「deadline 无法表示」——
         // 即不限时：interrupt handler 轮询永假，invoke_tool 不包 timeout。
@@ -452,7 +452,7 @@ routinely exhaust it)"
 
     /// dispatch 结果 → 脚本侧 Ok/Err。拒绝两种形态都按异常透传：
     /// - 标准错误三前缀（`Error:` / `Tool error:` / `Exit code:`，见
-    ///   [`crate:turn_guard:tool_result_indicates_error`]）；
+    ///   [`crate::turn_guard:tool_result_indicates_error`]）；
     /// - `⛔` 硬拒家族（ESTOP / SECURITY BLOCKED / HOOK BLOCKED / GUARDIAN /
     ///   RATE LIMIT——dispatch 以「成功结果 + 指令文案」形态回传硬拒，见
     ///   handle_tool_call_at_depth 各闸返回值；对脚本它们是异常：可

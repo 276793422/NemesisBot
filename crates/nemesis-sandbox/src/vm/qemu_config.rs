@@ -1,13 +1,13 @@
-//! VM QEMU 平台安装矩阵（配置化单一真相源）。
+//! VM QEMU 平台安装矩阵（配置化统一定义）。
 //!
-//! 用户拍板（2026-10-27）：「下载地址不能是写死的啊，必须是动态可配置啊，配置
+//! （2026-10-27）：「下载地址不能是写死的啊，必须是动态可配置啊，配置
 //! 文件程序内嵌，然后本地检测，没有则释放，有则直接用。配置文件里面至少也要把
-//! 各平台不同的版本都列进去，然后不同平台下载不同过的包」；二轮拍板：「矩阵里
+//! 各平台不同的版本都列进去，然后不同平台下载不同过的包」；二轮「矩阵里
 //! 面没有项目，这并不影响你把配置补全，为什么你一定要盯着必须有项目呢。我们的
 //! arm64 环境下的 安卓 系统包，不就是 arm64 的linux 基座么，你先把东西补全」
 //! ——矩阵条目全格填真值，`produced` 判据 = **安装面是否成立**（有真实可用的
 //! 源），与 guest 系统面进度（镜像/machine_spec/GuestArch 点亮）解耦；
-//! `android-aarch64` 是刚需条目（`std::env::consts::OS` 在 Android target 返回
+//! `android-aarch64` 是刚需条目（`std::env:consts::OS` 在 Android target 返回
 //! `"android"` 而非 `"linux"`，故独立成键）。
 //!
 //! 解析链四层（全部诚实）：
@@ -73,7 +73,7 @@ fn default_true() -> bool {
 pub struct QemuPlatformEntry {
     pub kind: QemuInstallKind,
     /// 安装面是否成立（判据=有真实可用源；false = 登记在案不参与执行，
-    /// 只进报错文案——与 guest 系统面进度解耦，用户拍板）。
+    /// 只进报错文案——与 guest 系统面进度解耦）。
     #[serde(default = "default_true")]
     pub produced: bool,
     /// archive：安装包 URL。
@@ -110,7 +110,7 @@ pub struct QemuPlatformEntry {
 #[serde(deny_unknown_fields)]
 pub struct QemuPlatformMatrix {
     pub version: u32,
-    /// 键 = `{os}-{arch}`（`std::env::consts::OS`/`ARCH` 运行时值）。
+    /// 键 = `{os}-{arch}`（`std::env:consts::OS`/`ARCH` 运行时值）。
     pub platforms: BTreeMap<String, QemuPlatformEntry>,
 }
 
@@ -194,7 +194,7 @@ fn validate_entry(key: &str, e: &QemuPlatformEntry) -> Result<(), QemuConfigErro
 // 宿主键 / 内嵌矩阵 / 查询
 // ---------------------------------------------------------------------------
 
-/// 当前宿主的矩阵键：`{os}-{arch}`（运行时取 `std::env::consts`——Android
+/// 当前宿主的矩阵键：`{os}-{arch}`（运行时取 `std::env:consts`——Android
 /// target 返回 `"android"`，独立条目的依据）。
 pub fn host_key() -> String {
     format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)

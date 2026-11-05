@@ -45,7 +45,7 @@ fn resilient_removes_tree_and_reports_true() {
     assert!(remove_dir_all_resilient(&dir));
 }
 
-// BUG-20261101-272：async 包装面（spawn_blocking 转发同步实现）——guest
+// async 包装面（spawn_blocking 转发同步实现）——guest
 // delete_dir 等异步调用点的接线用例。
 #[tokio::test]
 async fn async_retry_removes_nested_tree() {
@@ -80,7 +80,7 @@ fn file_resilient_removes_and_reports_true() {
 // 删失败」需要 windows-sys 控 share_mode/ACL，不值。耗尽路径是 10 次循环
 // 收尾返回最后错误的直白逻辑，语义面由上面 3 个用例覆盖。
 
-// BUG-20261031-260：Windows 记事本「带 BOM 的 UTF-8」保存的配置文件——
+// Windows 记事本「带 BOM 的 UTF-8」保存的配置文件——
 // serde_json/toml 都拒 BOM（expected value at line 1 column 1），peers.toml
 // 更会走「解析失败→全新序列化覆盖写」冲掉用户手工 peers 表。read_config_string
 // 剥前导 BOM；非 BOM 文件字节不变。

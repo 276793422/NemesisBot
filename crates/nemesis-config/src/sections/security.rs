@@ -107,15 +107,15 @@ pub struct SecurityConfig {
     // 未配置不落盘，用户显式选择后才物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub guardian_mode: String,
-    // ── vault（计划 §4）：声明式量化风险限制 ──────
+    // ── vault（计划）：声明式量化风险限制 ──────
     // 类别 → 规则。**缺省空表 = 全关**（A- 同款缺省语义：空表不落盘，
     // 未配置的部署保存一次字节不变）。类别键由工具经
     // `Tool::limit_categories` 声明（机制不认识业务名词，工具 declares，
     // 配置 binds）。窗口 = 滑动窗口（进程内存计数，重启清零——诚实边界，
-    // 见计划 §4）。
+    // 见计划）。
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub limits: std::collections::BTreeMap<String, RateLimitRule>,
-    // ── 签名验证三态开关（接入计划 §1）──────────────────
+    // ── 签名验证三态开关（接入计划）──────────────────
     // ""（缺省）/ "off" / "warn" / "enforce"；未知值启动时 loud 拒绝。
     // **只读于启动，改动必须重启**（与 tier 等热载键刻意不同——避免
     // 「运行中验证策略被改」这个额外可篡改面）。A- 同款缺省语义：
@@ -123,7 +123,7 @@ pub struct SecurityConfig {
     // Dashboard 保存一次字节不变；用户显式选择后才物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub signature_verify: String,
-    // ── §2 免打扰（无人值守计划 Part 2）──────────────────
+    // ── 免打扰（Part 2）──────────────────
     // 审批自动批准段。缺省关（弹卡照旧）；`auto_approve=true` 时
     // RequireApproval 一律自动放行（审计标 auto_by_config，安全 8 层其余
     // 各层照常全跑）。整段缺省不落盘（skip_serializing_if）：未配置的
@@ -132,12 +132,12 @@ pub struct SecurityConfig {
     pub approvals: ApprovalsConfig,
 }
 
-/// §2 免打扰：审批自动批准配置段（无人值守计划 Part 2）。
+/// 免打扰：审批自动批准配置段（Part 2）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ApprovalsConfig {
     /// 无人值守免打扰：RequireApproval 审批卡一律自动批准（pattern 记忆
     /// 优先；guardian 语义二审不是弹窗不纳入；技能安装闸按发起流程分叉
-    /// 见计划 §2.4）。默认关 = 现行为（弹窗）。
+    /// 见计划）。默认关 = 现行为（弹窗）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_approve: bool,
 }
@@ -186,7 +186,7 @@ impl Default for SecurityConfig {
             limits: std::collections::BTreeMap::new(),
             // 签名验证三态开关：空串 = 未配置 = 落默认 warn。
             signature_verify: String::new(),
-            // §2 免打扰：缺省关。
+            // 免打扰：缺省关。
             approvals: ApprovalsConfig::default(),
         }
     }

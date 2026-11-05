@@ -188,7 +188,7 @@ async fn schedule_resume(
             continue;
         }
 
-        // 串行执行(简化:阶段 1 实施时改回并发)
+        // 串行执行(简化: 实施时改回并发)
         for node_id in runnable {
             let node = node_map.get(&node_id).cloned().unwrap();
             let executor = match executors.get(&node.node_type) {

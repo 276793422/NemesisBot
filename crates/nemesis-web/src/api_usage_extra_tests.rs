@@ -534,7 +534,7 @@ async fn pricing_returns_embedded_table() {
     }
 }
 
-// Pricing — management endpoints (: custom CRUD / import / update gate)
+// Pricing — management endpoints (custom CRUD / import / update gate)
 
 use crate::api_usage::{
     PricingCustomRemoveBody, PricingUpdateBody, handle_api_usage_pricing_custom_remove,
@@ -742,7 +742,7 @@ async fn pricing_update_requires_data_store() {
     assert_eq!(v["error"], "DataStore not configured");
 }
 
-// Log detail endpoint + filters (,)
+// Log detail endpoint + filters
 
 use crate::api_usage::handle_api_usage_log_detail;
 

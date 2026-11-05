@@ -1,4 +1,4 @@
-//! Swarm M3（G4 主动发言通道）：`board_discuss` 工具——cluster agent
+//! Swarm （主动发言通道）：`board_discuss` 工具——cluster agent
 //! 主动向 master 看板线程发言（board.comment.post 上行信封）。
 //!
 //! 与被动响应互补：被动是「被 @ / 指派评论才说话」（cluster_agent.rs 第三
@@ -8,7 +8,7 @@
 //! ——与 cluster_rpc 同族（Big/Unresolved 全量可见，mini/normal 不给：
 //! 跨节点发言是高信任交互，小模型容易滥用刷屏）。
 //!
-//! 信封构造 / RPC 往返复用 cluster_agent.rs 的共用件（单一真相源）；
+//! 信封构造 / RPC 往返复用 cluster_agent.rs 的共用件；
 //! coordinator 地址运行时现查（节点表是鲜活的，不用装配期快照）。
 
 use std::sync::Arc;
@@ -33,7 +33,7 @@ impl BoardDiscussTool {
     }
 }
 
-/// 解析后的工具参数（execute 内部第一步；独立成纯函数便于单测）。
+/// 解析后的工具参数（execute 内部；独立成纯函数便于单测）。
 #[derive(Debug)]
 pub(crate) struct DiscussArgs {
     pub thread_kind: String,
@@ -42,7 +42,7 @@ pub(crate) struct DiscussArgs {
     pub reply_to: Option<i64>,
 }
 
-/// 解析后的动作（D2 读取臂：args 无 `content` = 读线程）。
+/// 解析后的动作（读取臂：args 无 `content` = 读线程）。
 #[derive(Debug)]
 pub(crate) enum DiscussAction {
     Post(DiscussArgs),
@@ -51,7 +51,7 @@ pub(crate) enum DiscussAction {
 
 /// args JSON → 结构化动作（缺字段 / 词表外 thread_kind / 空 content 一律
 /// 诚实报错——args_validator 兜的是 schema 层，语义层这里自己守）。
-/// D2：`content` 键缺席或 null = 读取臂（轮询讨论线程）；键在场但空 =
+/// `content` 键缺席或 null = 读取臂（轮询讨论线程）；键在场但空 =
 /// 报错（写了 content: "" 是笔误不是读意图，诚实拒绝）。
 pub(crate) fn parse_discuss_args(args: &str) -> Result<DiscussAction, String> {
     let v: serde_json::Value =
@@ -91,7 +91,7 @@ pub(crate) fn parse_discuss_args(args: &str) -> Result<DiscussAction, String> {
 
 impl BoardDiscussTool {
     /// 找在线 coordinator（≠本节点）。实现抽到 cluster_agent.rs 共享
-    /// （[`crate::cluster_agent::find_online_coordinator`]）——board_claim
+    /// （[`crate::cluster_agent:find_online_coordinator`]）——board_claim
     /// 工具同源，master 地址运行时现查（节点表鲜活，重选主 / 离线切换
     /// 不需要重启本工具）。
     fn find_coordinator(&self, self_node_id: &str) -> Result<String, String> {
@@ -218,8 +218,8 @@ impl nemesis_agent::r#loop::Tool for BoardDiscussTool {
 /// 入参 `body` 是 nb_bus RPC 的完整信封响应（`EnvelopeResponse` 序列化形
 /// `{"ok":..,"error":..,"body":{...}}`）——messages 在 `/body/messages`，
 /// 与 POST 臂读 `/body/seq`、master 侧 sync 测试读 `body.body.messages`
-/// 同一口径。实录 2026-10-14（run4）：读顶层 `messages` 恒得空 → D2 对话
-/// 机 sleep↔read 永动 → U9 墙钟红；单测按顶层形状手搓镜像了 bug 所以自测
+/// 同一口径。 （run4）：读顶层 `messages` 恒得空 → 对话
+/// 机 sleep↔read 永动 → 墙钟红；单测按顶层形状手搓镜像了 bug 所以自测
 /// 绿——测试体必须复刻线上信封形状而非想象形状。
 pub(crate) fn format_comment_list(
     thread_kind: &str,
@@ -243,7 +243,7 @@ pub(crate) fn format_comment_list(
     );
     for m in &messages {
         let id = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        // 身份透传（2026-10-23 同族横扫）：master 返回 sender {type,id}，
+        // 身份透传（同族横扫）：master 返回 sender {type,id}，
         // 渲染带身份标注（admin=human user / agent=agent node）——读线程的
         // agent 与被动唤醒轮同样需要知道说话的是人还是节点。
         let sender = crate::board_bus::actor_label(

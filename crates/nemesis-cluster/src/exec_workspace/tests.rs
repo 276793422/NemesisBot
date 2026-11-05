@@ -1,4 +1,4 @@
-//! exec_workspace 单测（P4/E3 worker 侧档案工作副本）。
+//! exec_workspace 单测（/ worker 侧档案工作副本）。
 //!
 //! 场景矩阵：非档案任务零接管 / 基线解包（收件箱消费+sidecar）/ 空树基线 /
 //! prompt 附加段 / 全树 diff（增/改/删/未动）/ finish 全链（真 outbox 入队
@@ -201,7 +201,7 @@ fn finish_builds_changeset_and_cleans_up() {
     let task = "t-fy-1";
     ws.seed_logs(task);
 
-    // 工作副本：基线 a.h(改) + b.h(未动) + c.h(新) ；基线里的 d.h 被删。
+    // 工作副本：基线 a.h(改) + b.h(未动) + c.h(新)；基线里的 d.h 被删。
     let exec = exec_dir_for(&ws.root, task);
     std::fs::create_dir_all(exec.join("src")).unwrap();
     std::fs::write(exec.join("src/a.h"), b"alpha-v2\n").unwrap();
@@ -332,8 +332,8 @@ fn finish_enqueue_failure_preserves_scene() {
     assert!(exec.exists(), "入队失败必须保留工作副本现场");
 }
 
-/// BUG-20261104-361（T-MRG-1 吞变更集）：装配标记生命周期——Err 出口
-/// （现场保留）不留残标（残标会让 master D5 兜底永久观望，下轮兜底须
+/// （T-MRG-1 吞变更集）：装配标记生命周期——Err 出口
+/// （现场保留）不留残标（残标会让 master 兜底永久观望，下轮兜底须
 /// 能按旧语义重推）；Ok 出口 exec 连同标记一起清扫；标记在 exec 树外，
 /// 绝不进 diff（零差异不得因标记变非零差异）。
 #[test]
@@ -406,7 +406,7 @@ fn transfer_kinds_stable() {
 }
 
 // ---------------------------------------------------------------------------
-// PR3（2026-10-10 机制加固）：`_debug/` 调试产物双向排除
+// （机制加固）：`_debug/` 调试产物双向排除
 // ---------------------------------------------------------------------------
 
 /// `is_debug_artifact` 边界：根级 `_debug` 与 `_debug/` 前缀算；形近名
@@ -465,7 +465,7 @@ fn diff_tree_excludes_debug_artifacts_both_ways() {
     );
 }
 
-/// PR3 端到端钉死：只写 `_debug/` 的工作副本 = 零差异交付（纯记录，不产
+/// 端到端钉死：只写 `_debug/` 的工作副本 = 零差异交付（纯记录，不产
 /// 变更集）——过滤在 finish 生产路径生效，不只是孤立函数。
 #[test]
 fn finish_debug_only_tree_is_zero_diff() {
@@ -492,7 +492,7 @@ fn finish_debug_only_tree_is_zero_diff() {
 }
 
 /// is_build_artifact 边界：只排顶层 `target/`（含深层内容）；形近名
-/// （targets/、target_dir/）不算；子目录内的同名不排（S-O3「无争议名」
+/// （targets/、target_dir）不算；子目录内的同名不排（S-「无争议名」
 /// 纪律的有实证收窄发生在管线层，不动通用剪枝语义）。
 #[test]
 fn is_build_artifact_boundary() {
@@ -509,7 +509,7 @@ fn is_build_artifact_boundary() {
 
 /// diff_tree 双向排除顶层 `target/`：worker 构建产物不进 upserts；基线
 /// 残留产物缺失不报删除；`src/target` 深层同名不受牵连照常进变更集
-/// （BUG 2026-11-01：68MB/405 文件构建垃圾进变更集实录）。
+/// （68MB/405 文件构建垃圾进变更集）。
 #[test]
 fn diff_tree_excludes_top_level_target_both_ways() {
     let ws = Ws::new("targetdiff");
@@ -575,7 +575,7 @@ fn finish_target_only_tree_is_zero_diff() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-2026-10-15（NB-120）：残留进程清扫（A）+ 不可读文件韧性跳过（B）+
+// BUG-：残留进程清扫（A）+ 不可读文件韧性跳过（B）+
 // 周期兜底护栏（D）
 // ---------------------------------------------------------------------------
 

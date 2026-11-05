@@ -1,4 +1,4 @@
-//! 协议全链集成测试（P5 第 1 步 G1 闸「协议全链 CI 测试」）。
+//! 协议全链集成测试（第 1 步 闸「协议全链 CI 测试」）。
 //!
 //! 测**真 agent 二进制**（env!("CARGO_BIN_EXE_nemesis-guest") 实 spawn），
 //! 不是桩：
@@ -92,7 +92,7 @@ fn stdio_ping_pong_and_exec_roundtrip() {
     assert_eq!(resp["call_id"], "c-fc-1");
     assert_eq!(resp["ok"], true, "{resp}");
 
-    // 单次 exec 往返（G1 闸的执行面）。
+    // 单次 exec 往返（闸的执行面）。
     let resp = send_and_read(
         &mut stdin,
         &mut reader,
@@ -192,7 +192,7 @@ fn stdio_exec_timeout_honest_error() {
     );
 }
 
-// B8d：超时树杀——此前超时臂直接返回 Err 不 kill，被超时命令继续在后台
+// 超时树杀——此前超时臂直接返回 Err 不 kill，被超时命令继续在后台
 // 跑。钉死「超时后命令链不再推进」：marker 由命令链末段落盘，孤儿若存活
 // 必在自然结束点后写入 → 断言红。
 #[test]
@@ -348,7 +348,7 @@ fn tcp_connection_close_is_clean_and_new_connection_works() {
 }
 
 // ---------------------------------------------------------------------------
-// B9-1 内部方法全链（TCP 双栖）：分块 bulk_write（clean 首装清场）→
+// 内部方法全链（TCP 双栖）：分块 bulk_write（clean 首装清场）→
 // bulk_read/bulk_read_chunk 打包回传 → hash_tree 指纹。gateway 同步引擎
 // 的传输面协议即按此消费。
 // ---------------------------------------------------------------------------
@@ -521,7 +521,7 @@ fn tcp_bulk_roundtrip_clean_write_read_back_and_hash_tree() {
 }
 
 // ---------------------------------------------------------------------------
-// B9-2 定点臂 e2e：hash_tree paths 过滤（缺失静默）+ bulk_delete（幂等删
+// 定点臂 e2e：hash_tree paths 过滤（缺失静默）+ bulk_delete（幂等删
 // + 越界拒绝）。gateway 开工闸/commit 闸的定点指纹与宿主删除传播即按此消费。
 // ---------------------------------------------------------------------------
 
@@ -629,7 +629,7 @@ fn tcp_hash_tree_paths_filter_and_bulk_delete() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-272 定点臂：delete_dir 走 fsutil 韧性删除（async retry 包装，
+// 定点臂：delete_dir 走 fsutil 韧性删除（async retry 包装，
 // NotFound 视为成功）——嵌套树删除 + 越界拒绝照旧。
 // ---------------------------------------------------------------------------
 

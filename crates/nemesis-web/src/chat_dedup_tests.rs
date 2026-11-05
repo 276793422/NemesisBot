@@ -1,4 +1,4 @@
-//! （改进项三期 2026-11-02）— chat_dedup 单元测试。
+//! （2026-11-02）— chat_dedup 单元测试。
 //!
 //! ⚠️ 进程级全局状态（TABLE + WORKSPACE 槽）——并行测试整段互斥
 //! （GLOBAL_TABLE_LOCK，chat_event_log 同款纪律）；workspace 槽测试自管

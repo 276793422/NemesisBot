@@ -50,7 +50,7 @@ pub trait ClusterCallbacks: Send + Sync {
     fn node_type(&self) -> String {
         "agent".into()
     }
-    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug，announce
+    /// 自报职能清单（集群专业职能框架；`family[:spec]` slug，announce
     /// 携带）。默认空 = 未宣告。
     fn professions(&self) -> Vec<String> {
         Vec::new()
@@ -60,18 +60,18 @@ pub trait ClusterCallbacks: Send + Sync {
     fn tier(&self) -> Option<String> {
         None
     }
-    /// 自报运行时后端形态（P5 第 4 步 ③；如 `process` / `vm`，announce
+    /// 自报运行时后端形态（如 `process` / `vm`，announce
     /// 携带）。默认 `None` = 未宣告（执行体能力未装配时不宣告，不猜）。
     fn runtime_backend(&self) -> Option<String> {
         None
     }
-    /// 自报 agent 实体清单（P2 2026-10-16；announce 携带）。实现应每次
+    /// 自报 agent 实体清单（announce 携带）。实现应每次
     /// 现读实体注册表（fresh read），不做启动期快照——运行期增删 agent
     /// 无需回写即随下一个 announce 传播。默认空 = 未宣告。
     fn agent_roster(&self) -> Vec<crate::types::AgentAnnouncement> {
         Vec::new()
     }
-    /// 自报 iroh 漫游身份 hex（A1 跨网 P2P 叠加层；announce 携带，对端
+    /// 自报 iroh 漫游身份 hex（跨网 P2P 叠加层；announce 携带，对端
     /// 据此把 `iroh:<hex>` 追加进拨号候选池）。默认 `None` = 未启用漫游
     /// 叠加层（announce 不带字段，wire 兼容）。
     fn roaming_id(&self) -> Option<String> {
@@ -82,19 +82,19 @@ pub trait ClusterCallbacks: Send + Sync {
     /// 端点走 Minimal 预设——零发现层，裸 node_id 无解析路径（实测钉死：
     /// `bare_node_id_dial_fails_on_self_relay_minimal_base`），对端必须拿
     /// 到完整形态才能 bridge 解析 → `with_relay_url`。默认空 = 未使用
-    /// 自建中继（裸 `iroh:<hex>` 候选经 `iroh_id` 字段照常携带，N0 发现
+    /// 自建中继（裸 `iroh:<hex>` 候选经 `iroh_id` 字段照常携带， 发现
     /// 层解析）。
     fn roaming_overlay_addresses(&self) -> Vec<String> {
         Vec::new()
     }
-    /// 自报构建号（git 短 hash；A1 运行时硬化批，announce 携带）。默认
+    /// 自报构建号（git 短 hash； 运行时硬化批，announce 携带）。默认
     /// 空 = 未宣告。对端据此在注册表/Dashboard 展示构建偏斜。
     fn build_hash(&self) -> String {
         String::new()
     }
-    /// 自报 mandate 签名公钥（L13-a 2026-11-03；P-256 SEC1 hex 66/130，
+    /// 自报 mandate 签名公钥（a；P-256 SEC1 hex 66/130，
     /// announce 携带，对端 TOFU 首见钉存）。默认 `None` = 未宣告（静态
-    /// config 未声明 / L13-b 运行时 key 源未装配——announce 不带字段，
+    /// config 未声明 / -b 运行时 key 源未装配——announce 不带字段，
     /// wire 兼容）。
     fn mandate_pubkey(&self) -> Option<String> {
         None
@@ -114,17 +114,17 @@ pub trait ClusterCallbacks: Send + Sync {
         node_type: &str,
     ) -> bool;
     /// 扩展形态 [`Self::handle_discovered_node`]：带对端自报职能、档位、
-    /// agent 清单、运行时后端形态与 iroh 漫游身份（profession framework
-    /// M2 + P2 agent roster + P5 第 4 步 ③ + A1 漫游叠加层）。默认实现
+    /// agent 清单、运行时后端形态与 iroh 漫游身份（profession framework、
+    /// agent roster、漫游叠加层）。默认实现
     /// 丢弃扩展信息、委托旧形态——不关心的实现零改动对齐旧行为；生产
     /// UDP 发现路径（announce 接收）走本方法。
     ///
-    /// `iroh_id`：对端自报 iroh 漫游身份 hex（A1；非法值实现侧忽略）。
-    /// `runtime_backend`：对端自报运行时后端形态（P5；如 `process`/`vm`；
+    /// `iroh_id`：对端自报 iroh 漫游身份 hex（非法值实现侧忽略）。
+    /// `runtime_backend`：对端自报运行时后端形态（如 `process`/`vm`；
     /// 缺省 None = 未宣告，仅宣告面不设 matcher 闸）。
-    /// `mandate_pubkey`：对端自报 mandate 签名公钥（L13-a；缺省 None =
+    /// `mandate_pubkey`：对端自报 mandate 签名公钥（缺省 None =
     /// 未宣告，TOFU 钉存由实现侧在簿激活前提下执行）。
-    /// `source_addr`：R5 源地址收割——announce UDP 包的源 IP（发现层亲眼
+    /// `source_addr`：源地址收割——announce UDP 包的源 IP（发现层亲眼
     /// 可见的可达性证据），最低优先级拨号候选；非 UDP 路径传 `None`。
     fn handle_discovered_node_ex(
         &self,
@@ -435,8 +435,8 @@ pub struct DiscoveryConfig {
     pub interval: Duration,
     /// Shared secret for message authentication (empty = no auth).
     pub secret: String,
-    /// G3: announce 过期阈值（秒）。超过该时长的入站消息被丢弃（限频 WARN），
-    /// ≤0 = 关闭过期丢弃。默认 [`super::message::DEFAULT_EXPIRY_THRESHOLD_SECS`]。
+    /// announce 过期阈值（秒）。超过该时长的入站消息被丢弃（限频 WARN），
+    /// ≤0 = 关闭过期丢弃。默认 [`super::message:DEFAULT_EXPIRY_THRESHOLD_SECS`]。
     pub announce_expiry_secs: i64,
     /// AES encryption key derived from the auth token, if any.
     enc_key: Option<[u8; 32]>,
@@ -445,13 +445,13 @@ pub struct DiscoveryConfig {
 impl DiscoveryConfig {
     /// Create a config with an encryption key derived from the given token.
     ///
-    /// # 开关语义矩阵（L3，2026-09-27）
+    /// # 开关语义矩阵
     ///
     /// | `cluster.enabled` | token | 行为 |
     /// |---|---|---|
     /// | true | 非空 | AES-256-GCM 加密广播（主路径）；token 失配的入站帧静默丢弃并计入来源账本（见 [`super::DecryptDropSummary`]） |
     /// | true | 空 | **明文广播运行**（向后兼容行为）：announce 可被局域网内任意主机侦听/伪造，`Cluster::start_discovery` 启动时一次性 WARN 声明 |
-    /// | true | 引用解析失败 | **fail-closed 不启动**（P0：拒绝无加密运行，见 `Cluster::start_discovery`） |
+    /// | true | 引用解析失败 | **fail-closed 不启动**（拒绝无加密运行，见 `Cluster::start_discovery`） |
     /// | false | 任意 | discovery 不启动 |
     pub fn with_encryption(port: u16, interval: Duration, token: &str) -> Self {
         let enc_key = if token.is_empty() {
@@ -487,10 +487,10 @@ impl Default for DiscoveryConfig {
 }
 
 // ---------------------------------------------------------------------------
-// AnnounceWarnGate - rate-limited WARN logging (G3)
+// AnnounceWarnGate - rate-limited WARN logging
 // ---------------------------------------------------------------------------
 
-/// G3: 时钟漂移预警阈值（秒）。入站 announce 的 timestamp 与本地时钟偏差超过
+/// 时钟漂移预警阈值（秒）。入站 announce 的 timestamp 与本地时钟偏差超过
 /// 该值时限频 WARN —— 漂移过大会让 announce 过期判断失真。
 pub const DRIFT_WARN_THRESHOLD_SECS: i64 = 60;
 
@@ -569,7 +569,7 @@ pub struct DiscoveryService {
     listener: UdpListener,
     config: DiscoveryConfig,
     running: Arc<AtomicBool>,
-    /// 广播间隔秒数（共享原子，T6②：广播线程每秒 tick 重读——旧实现
+    /// 广播间隔秒数（共享原子，②：广播线程每秒 tick 重读——旧实现
     /// spawn 时按值捕获，set_broadcast_interval 运行中改了不生效）。
     /// 亚秒粒度不生效（线程 1s tick，既有语义如此，下限 1s）。
     broadcast_interval_secs: Arc<AtomicU64>,
@@ -629,7 +629,7 @@ impl DiscoveryService {
 
         // Set message handler
         let cluster = Arc::clone(&self.cluster);
-        // G3: 可配置过期阈值 + WARN 限频闸门（过期丢弃 / 时钟漂移各一把）。
+        // 可配置过期阈值 + WARN 限频闸门（过期丢弃 / 时钟漂移各一把）。
         let expiry_secs = self.config.announce_expiry_secs;
         let expiry_gate = AnnounceWarnGate::new();
         let drift_gate = AnnounceWarnGate::new();
@@ -639,7 +639,7 @@ impl DiscoveryService {
                 return;
             }
 
-            // Ignore expired messages (G3: 阈值可配置，丢弃时限频 WARN。
+            // Ignore expired messages (阈值可配置，丢弃时限频 WARN。
             // 正常 LAN 环境不该出现——出现即说明对端时钟漂移大或网络异常积压)。
             if msg.is_expired_with_threshold(expiry_secs) {
                 if expiry_gate.admit(&msg.node_id) {
@@ -661,7 +661,7 @@ impl DiscoveryService {
 
             match msg.msg_type {
                 super::message::DiscoveryMessageType::Announce => {
-                    // G3: 时钟漂移预警 —— announce timestamp 与本地时钟偏差过大会
+                    // 时钟漂移预警 —— announce timestamp 与本地时钟偏差过大会
                     // 让过期判断失真，限频 WARN 提示对端校时。
                     let drift = (chrono::Utc::now().timestamp() - msg.timestamp).abs();
                     if drift > DRIFT_WARN_THRESHOLD_SECS && drift_gate.admit(&msg.node_id) {
@@ -672,7 +672,7 @@ impl DiscoveryService {
                             "[Discovery] Announce timestamp drift detected (peer clock not synced?)"
                         );
                     }
-                    // R5 源地址收割：包源 IP 入池作最低优先级拨号候选。
+                    // 源地址收割：包源 IP 入池作最低优先级拨号候选。
                     let source_ip = addr.ip().to_string();
                     let changed = cluster.handle_discovered_node_ex(
                         &msg.node_id,
@@ -748,7 +748,7 @@ impl DiscoveryService {
                 while running.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_secs(1));
                     tick += 1;
-                    // T6②：每 tick 重读共享间隔——运行中 set_broadcast_interval
+                    // ②：每 tick 重读共享间隔——运行中 set_broadcast_interval
                     // 真生效（旧实现 spawn 时按值捕获，改了不生效）。
                     let target = interval_secs.load(Ordering::Relaxed).max(1);
                     if tick >= target {
@@ -779,7 +779,7 @@ impl DiscoveryService {
         if let Err(e) = self.listener.broadcast(&bye_msg) {
             tracing::error!(error = %e, "[Discovery] Failed to broadcast bye message");
         }
-        // 异端口拓扑 bye 定向单播（U1-5 根修 2026-09-15）：广播只覆盖同
+        // 异端口拓扑 bye 定向单播（根修）：广播只覆盖同
         // 端口监听者，异端口 peer 收不到停机通知（对端只能等探针超时）。
         for endpoint in self.cluster.peer_udp_endpoints() {
             self.listener.send_unicast(&endpoint, &bye_msg);
@@ -804,7 +804,7 @@ impl DiscoveryService {
 
     /// Dynamically change the broadcast interval.
     ///
-    /// Mirrors Go's `Discovery.SetBroadcastInterval`. T6②（2026-10-17）：
+    /// Mirrors Go's `Discovery.SetBroadcastInterval`. ②：
     /// 广播线程每秒 tick 重读共享秒数，运行中改动真生效（旧实现 spawn 时
     /// 按值捕获，文档声称 "next broadcast cycle" 是谎话）。亚秒值按 1s
     /// 下限处理——广播线程 tick 粒度就是 1s，与既有语义一致。
@@ -830,7 +830,7 @@ impl DiscoveryService {
     }
 }
 
-/// 从 ClusterCallbacks 构造 announce 消息（单一真相源）。
+/// 从 ClusterCallbacks 构造 announce 消息。
 ///
 /// 广播（`send_announce_direct`/`send_announce_with`）与 ping 探针响应的
 /// `announce` 字段（cluster.rs，TCP 身份回传 fallback）共用同一构造——
@@ -874,7 +874,7 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
         tracing::error!(error = %e, "[Discovery] Failed to send announce");
     }
 
-    // 异端口拓扑定向单播（U1-5 根修 2026-09-15）：广播只覆盖与自身同
+    // 异端口拓扑定向单播（根修）：广播只覆盖与自身同
     // UDP 端口的监听者，对 peers.toml 已知端点逐个补发单播。每 tick 重读
     // 端点列表——新 pair 的 peer 无需重启即可被单播覆盖。自发自收由
     // handler 的 self-check 丢弃。
@@ -926,7 +926,7 @@ fn send_announce_with(
         let _ = socket.send_to(&send_data, target);
     }
 
-    // 异端口拓扑定向单播（U1-5 根修 2026-09-15）：同 send_announce_direct——
+    // 异端口拓扑定向单播（根修）：同 send_announce_direct——
     // 广播目标端口=自身监听端口，异端口 peer 收不到；对 peers.toml 已知
     // UDP 端点逐个补发。自发自收由 handler 的 self-check 丢弃。
     for endpoint in cluster.peer_udp_endpoints() {

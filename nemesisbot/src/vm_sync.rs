@@ -1,6 +1,6 @@
-//! B9（VM 项目工作副本）gateway 同步引擎。
+//! （VM 项目工作副本）gateway 同步引擎。
 //!
-//! 职责（实施计划 §4.2 ③）：把项目目录的工作树与 VM 内 `/workspace`
+//! 职责（实施计划 ③）：把项目目录的工作树与 VM 内 `/workspace`
 //! 对齐——开工全量打包进 VM（`bulk_write` 分块 tar）+ 基线账本落盘
 //! （`<workspace>/logs/vm_sync/<project_id>/baseline.json`，内容 =
 //! guest 侧 `hash_tree` 读回的真实指纹，不是宿主侧自说自话）。
@@ -17,8 +17,8 @@
 //! - ⑤ **每轮成本 O(变更量)**：开工闸（[`open_work_gate`]）宿主侧变更
 //!   检测 = git 项目 `git status --porcelain`（亚秒）/ 非 git 项目
 //!   mtime+size 元数据快检（不读内容）；VM 侧嫌疑文件指纹 =
-//!   `hash_tree` 定点 paths 查询（B9-2 起）；全量传输只发生在首次开工
-//!   （[`full_sync`]）与手动强制重扫（B9-3 `vm.resync`）。
+//!   `hash_tree` 定点 paths 查询（起）；全量传输只发生在首次开工
+//!   （[`full_sync`]）与手动强制重扫（`vm.resync`）。
 //!   commit 闸（[`commit_project`]）每轮 turn 末做一次 VM 树全指纹——
 //!   这是刻意以正确性换优化：dir-mtime 粗筛会漏「原文件原地改写」（目录
 //!   mtime 不动），commit 漏记 = 基线账本失真 = 后续误报冲突；VM 树受
@@ -48,19 +48,19 @@ const HOST_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 /// 单项目工作副本文件数诚实上限（超限停车报错，不静默截断——半棵树当
 /// 工作副本是正确性事故）。
 pub const MAX_SYNC_FILES: usize = 200_000;
-/// 开工闸嫌疑面阈值：嫌疑变更超过它 = 增量对齐成本逼近全量（B9-1 旧
+/// 开工闸嫌疑面阈值：嫌疑变更超过它 = 增量对齐成本逼近全量（旧
 /// 基线缺 host_meta 的首个开工轮 / 大重构），诚实走全量重同步。
 const SUSPECT_FULL_RESYNC_THRESHOLD: usize = 20_000;
 /// 定点查询/删除的单次路径分块（guest 单帧 8MiB 收块闸下的保守档）。
 const VM_QUERY_CHUNK: usize = 5_000;
 
 // ---------------------------------------------------------------------------
-// 拉回方向（guest→host）宿主侧防御闸（BUG-20261101-262）
+// 拉回方向（guest→host）宿主侧防御闸
 //
 // [`pull_files_to_host`] 的 `chunks` 头/单块字节/总 payload 全部来自 VM 侧
 // wire 声明——本函数自己的注释曾主张「chunk 分次传输天然有界」，但分次
 // 传输只约束单帧形状，不约束帧数×帧大小的总量：谎报 chunks 数（或单块
-// 塞超额数据）即可让宿主 `buf` 无界增长直至 OOM。与 BUG-20261029 zip 撒谎
+// 塞超额数据）即可让宿主 `buf` 无界增长直至 OOM。与 zip 撒谎
 // size 同族——当时只修了 `with_capacity` 预分配面，累积面漏网。
 //
 // 块数/单块上限镜像 guest `bulk.rs` 协议常数（`MAX_TOTAL_CHUNKS` /
@@ -73,14 +73,14 @@ const PULL_CHUNK_MAX_BYTES: usize = 8 * 1024 * 1024;
 const PULL_TOTAL_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// 单 tar 条目解包内存上限（对齐 selfupdate 256MB 条目先例）——
 /// [`extract_tar_to_host`] 曾裸 `read_to_end`，违反 zip_util
-/// `read_entry_capped` 单一真相源纪律（2026-10-29 建立）。
+/// `read_entry_capped` 单一真相源纪律（建立）。
 const PULL_ENTRY_MAX_BYTES: usize = 256 * 1024 * 1024;
 
 /// 默认排除表（非 git 项目 + git 项目顶滤共用；双向生效的「表」侧）。
-/// `.browser-profile/` 是 P5-R1 guest 内 chromium 的 user-data-dir（登录态
+/// `.browser-profile/` 是 - guest 内 chromium 的 user-data-dir（登录态
 /// 常驻的锚，overlay 承载跨睡眠/重启）——cookies/缓存不进项目工作副本
-/// （体积 + 运行中 chromium 文件竞争双考虑）；迁移面按 D-P6-1 可迁移形态
-/// 预埋（随 agent home 打包，P6-R2 定谳）。
+/// （体积 + 运行中 chromium 文件竞争双考虑）；迁移面按 D- 可迁移形态
+/// 预埋（随 agent home 打包，- 定谳）。
 pub const DEFAULT_EXCLUDE_PREFIXES: [&str; 13] = [
     ".git/",
     "target/",
@@ -103,21 +103,21 @@ pub struct FullSyncReport {
     pub files: usize,
     pub bytes: u64,
     /// v1 打包只含普通文件（symlink 选择阶段已不进清单），恒 0——字段
-    /// 先立形状，B9-2 commit 闸的增量报告复用本结构时消费。
+    /// 先立形状， commit 闸的增量报告复用本结构时消费。
     #[allow(dead_code)]
     pub skipped_symlinks: usize,
     pub selection: &'static str,
-    /// B9-3 `vm.sync.status` 消费（现仅 gate debug 日志间接可见）。
+    /// `vm.sync.status` 消费（现仅 gate debug 日志间接可）。
     #[allow(dead_code)]
     pub synced_at_ms: u64,
 }
 
-/// 开工闸结果（B9-2 增量对齐版；`open_work_gate` 返回）：
+/// 开工闸结果（增量对齐版；`open_work_gate` 返回）：
 /// - `Fresh`：首次开工 / 手动强制重扫 / 嫌疑面超阈值兜底 —— 全量同步；
 /// - `Ready`：基线在册且宿主零变更（零传输直通）；
 /// - `Aligned`：宿主变更已批量推进进 VM（无冲突）；
 /// - `Conflicts`：存在双改冲突 —— **什么都不推**（半对齐状态等用户裁决，
-///   见 plan §4：禁止在裁决前把一侧改动覆盖掉）。
+///   见 plan：禁止在裁决前把一侧改动覆盖掉）。
 #[derive(Debug, serde::Serialize)]
 pub enum GateSync {
     Fresh(FullSyncReport),
@@ -131,7 +131,7 @@ pub enum GateSync {
     Conflicts(Vec<ConflictFile>),
 }
 
-/// 三方对比冲突条目（宿主≠基线 && VM≠基线；审批卡 / B9-3 WSAPI 消费）。
+/// 三方对比冲突条目（宿主≠基线 && VM≠基线；审批卡 / WSAPI 消费）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ConflictFile {
     pub rel: String,
@@ -217,7 +217,7 @@ pub struct HostFileMeta {
     pub size: u64,
 }
 
-/// commit 闸报告（turn 末回传落宿主的结果；B9-3 WSAPI / Dashboard 消费，
+/// commit 闸报告（turn 末回传落宿主的结果； WSAPI / Dashboard 消费，
 /// 全文落 `last_commit.json`）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CommitReport {
@@ -227,8 +227,8 @@ pub struct CommitReport {
     pub deleted: Vec<String>,
     /// 回传 payload 字节数（tar 解包前内容总量）。
     pub bytes: u64,
-    /// 因挂起（冲突裁决②「保留 VM 版」停车语义）跳过回传的文件清单
-    /// （H3 可观测面——不回传覆盖宿主，等用户手动合并后由开工闸解挂）。
+    /// 因挂起（冲突「保留 VM 版」停车语义）跳过回传的文件清单
+    /// （可观测面——不回传覆盖宿主，等用户手动合并后由开工闸解挂）。
     #[serde(default)]
     pub parked_skipped: Vec<String>,
 }
@@ -245,8 +245,8 @@ pub struct BaselineManifest {
     pub bytes: u64,
     pub skipped_symlinks: usize,
     pub files: BTreeMap<String, String>,
-    /// 宿主侧元数据快照（B9-2 起：非 git 项目开工闸 mtime 快检 + git
-    /// 项目回落检测的依据）。`#[serde(default)]` 兼容 B9-1 旧基线（缺
+    /// 宿主侧元数据快照（起：非 git 项目开工闸 mtime 快检 + git
+    /// 项目回落检测的依据）。`#[serde(default)]` 兼容 旧基线（缺
     /// 键 = 空表 → 全量嫌疑，由嫌疑阈值兜底走重同步）。
     #[serde(default)]
     pub host_meta: BTreeMap<String, HostFileMeta>,
@@ -307,10 +307,10 @@ fn last_commit_path(main_workspace: &Path, project_id: &str) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// 挂起表（H3：冲突裁决②「保留 VM 版」的停车语义）
+// 挂起表（冲突「保留 VM 版」的停车语义）
 // ---------------------------------------------------------------------------
 
-/// 冲突裁决②（保留 VM 版）落下的挂起条目：宿主手改挂起——不推进 VM、
+/// 冲突（保留 VM 版）落下的挂起条目：宿主手改挂起——不推进 VM、
 /// 不回传覆盖；此后宿主重新改动（指纹 ≠ 挂起时）= 手动合并完成，自动
 /// 解挂按正常变更推进 VM；宿主收敛到 VM 版（或两侧都没了）= 无事解挂。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -387,7 +387,7 @@ pub(crate) async fn snapshot_diverged(main_workspace: &Path, project_id: &str) -
     }
 }
 
-/// 冲突裁决②（保留 VM 版）落挂起表（幂等：同 rel 重挂以最新指纹覆盖）。
+/// 冲突（保留 VM 版）落挂起表（幂等：同 rel 重挂以最新指纹覆盖）。
 /// 独立持在飞闸——与开工/commit 对挂起表的读写互斥。返回挂起表总数。
 pub async fn park_diverged_files(
     main_workspace: &Path,
@@ -413,7 +413,7 @@ pub async fn park_diverged_files(
     Ok(n)
 }
 
-/// 挂起文件去留判定（纯函数；单测钉 H3 语义）。
+/// 挂起文件去留判定（纯函数；单测钉 语义）。
 pub(crate) enum DivergedVerdict {
     /// 宿主没再动（与挂起时同指纹，含「当时缺现在仍缺」）——继续挂起。
     KeepParked,
@@ -546,7 +546,7 @@ async fn persist_baseline(
 // 排除规则 + 文件选择（单点）
 // ---------------------------------------------------------------------------
 
-/// 排除规则与文件选择单一真相源。git 探测 = root/.git 存在（目录或
+/// 排除规则与文件选择统一定义。git 探测 = root/.git 存在（目录或
 /// worktree 文件都算）。
 pub(crate) struct SyncExclusion {
     pub is_git: bool,
@@ -881,11 +881,11 @@ impl<R: Read> HashingReader<R> {
 // 开工全量同步
 // ---------------------------------------------------------------------------
 
-/// 开工闸主入口（B9-2）：基线缺失 / `force_full` = 全量同步；否则宿主
+/// 开工闸主入口：基线缺失 / `force_full` = 全量同步；否则宿主
 /// 变更检测（git status 或 mtime 快检，O(变更量)）→ 嫌疑文件三方对比 →
 /// 无冲突批量推进 / 有冲突**非冲突文件照常推进**后原样停车交裁决
-/// （H2 文件粒度隔离：冲突文件的裁决不拖累其他手改的吸收）。挂起表
-/// （H3）中的文件全程绕行：不推进、不冲突卡、不回传覆盖。并发开工由
+/// （文件粒度隔离：冲突文件的裁决不拖累其他手改的吸收）。挂起表
+/// 中的文件全程绕行：不推进、不冲突卡、不回传覆盖。并发开工由
 /// per-project 在飞闸串行化（与 commit 闸共用同一把锁——开工对齐和
 /// turn 末回传不会交叠）。
 pub async fn open_work_gate(
@@ -911,9 +911,9 @@ pub async fn open_work_gate(
             synced_at_ms: baseline.synced_at_ms,
         });
     }
-    // 嫌疑面过大 = 增量对齐成本逼近全量（如 B9-1 旧基线缺 host_meta 的
+    // 嫌疑面过大 = 增量对齐成本逼近全量（如 旧基线缺 host_meta 的
     // 首个开工轮）：诚实走全量重同步。但全量（clean 清场）会覆盖 VM 未
-    // 同步改动（M3 守卫）——先对账，VM 有偏离就诚实停车（清场走显式
+    // 同步改动（守卫）——先对账，VM 有偏离就诚实停车（清场走显式
     // resync，调用方负责披露丢失语义），VM 干净才自动全量。
     if changes.len() > SUSPECT_FULL_RESYNC_THRESHOLD {
         let vm_tree = vm_tree_shas(sup, agent_id)
@@ -943,7 +943,7 @@ pub async fn open_work_gate(
     let rels: Vec<String> = changes.iter().map(|c| c.rel.clone()).collect();
     let vm_shas = query_vm_shas(sup, agent_id, &rels).await?;
 
-    // 挂起表预检（H3 停车语义）：挂起中的文件不进分类——不推进、不冲突
+    // 挂起表预检（停车语义）：挂起中的文件不进分类——不推进、不冲突
     // 卡；宿主重新改动 = 手动合并完成自动解挂，收敛 = 无事解挂。
     let mut diverged = load_diverged(main_workspace, project_id);
     let mut diverged_dirty = false;
@@ -988,11 +988,11 @@ pub async fn open_work_gate(
     let mut pushes = Vec::new();
     let mut deletes_on_vm = Vec::new();
     let mut conflicts: Vec<String> = Vec::new();
-    let mut aligned: Vec<String> = Vec::new(); // M1 短路命中的（三方已一致）
+    let mut aligned: Vec<String> = Vec::new(); // 短路命中的（三方已一致）
     for ch in &effective {
         let b = baseline.files.get(&ch.rel).map(String::as_str);
         let v = vm_shas.get(&ch.rel).cloned().flatten();
-        // 对齐短路（M1）：VM 已在基线（v==b）时补算宿主内容指纹——内容
+        // 对齐短路：VM 已在基线（v==b）时补算宿主内容指纹——内容
         // 也没变（git 项目未提交改动的常态：status 相对 index 永远 M；
         // 非 git 项目 mtime 被触摸）= 三方已一致，跳过重推。O(变更量)
         // 本地哈希换掉每轮重复传输。
@@ -1012,7 +1012,7 @@ pub async fn open_work_gate(
         }
     }
 
-    // 批量推进（H2：冲突在场也照常执行非冲突文件——先推后删，推送中途
+    // 批量推进（冲突在场也照常执行非冲突文件——先推后删，推送中途
     // 失败 = 下轮重推幂等——tar 定点覆盖）。
     let pushed_shas = if pushes.is_empty() {
         BTreeMap::new()
@@ -1039,7 +1039,7 @@ pub async fn open_work_gate(
             host_meta.insert(rel, m);
         }
     }
-    // M1 短路命中的也补刷 host_meta——mtime 项目里被触摸过的文件若不刷，
+    // 短路命中的也补刷 host_meta——mtime 项目里被触摸过的文件若不刷，
     // 每轮都会重新进嫌疑清单、每轮重新哈希（假阳性永不收敛）。
     if !aligned.is_empty() {
         for (rel, m) in scan_meta_for(project_path, &aligned).await? {
@@ -1243,7 +1243,7 @@ fn walk_meta(
 }
 
 /// 基线元数据 vs 当前元数据：mtime/size 不一致或新增 = Upsert；基线有
-/// 现无 = Delete。基线侧空表（B9-1 旧基线缺 host_meta）→ 全量嫌疑（由
+/// 现无 = Delete。基线侧空表（旧基线缺 host_meta）→ 全量嫌疑（由
 /// 嫌疑阈值兜底走重同步）。
 pub(crate) fn diff_host_meta(
     baseline: &BTreeMap<String, HostFileMeta>,
@@ -1315,7 +1315,7 @@ async fn query_vm_shas(
     Ok(out)
 }
 
-/// VM 树全指纹（排除表同源；正确性优先于增量——commit 与 M3 全量前
+/// VM 树全指纹（排除表同源；正确性优先于增量——commit 与 全量前
 /// 对账共用，单一实现）。truncated = 诚实报错（调用方各自决定不落基线
 /// / 停车，错误信息带语境由调用方包裹）。
 async fn vm_tree_shas(
@@ -1473,7 +1473,7 @@ async fn hash_host_file(root: &Path, rel: &str) -> Option<String> {
     .flatten()
 }
 
-/// 冲突裁决①（用宿主版覆盖）：定点推 host→VM + 基线增量刷新。审批卡
+/// 冲突（用宿主版覆盖）：定点推 host→VM + 基线增量刷新。审批卡
 /// 逐文件调用（文件粒度隔离——单文件失败不牵连其他裁决）。
 pub async fn apply_conflict_host_wins(
     main_workspace: &Path,
@@ -1560,7 +1560,7 @@ async fn full_sync(
     };
     persist_baseline(main_workspace, project_id, &manifest).await?;
     // 全量同步 = 宿主整体覆盖 VM：原挂起文件的宿主版已随全量进 VM 且基
-    // 线已含——挂起表清空（陈旧条目留着会永久拦掉未来同类变更，H3）。
+    // 线已含——挂起表清空（陈旧条目留着会永久拦掉未来同类变更）。
     // 清空前检查：非空挂起 = 用户「保留 VM 版」的裁决将被宿主版覆盖。
     // 显式 resync 是披露过的语义，但坏基线 → 自动全量是隐式路径——
     // loud warn 点名，不留无声覆盖。已在 INFLIGHT 闸内，直读安全。
@@ -1699,7 +1699,7 @@ async fn send_tar_chunks(
 }
 
 // ---------------------------------------------------------------------------
-// commit 闸（B9-2：turn 末 / 手动——VM→宿主回传 + 基线刷新）
+// commit 闸（turn 末 / 手动——VM→宿主回传 + 基线刷新）
 // ---------------------------------------------------------------------------
 
 /// commit 闸：VM 树全指纹 → 与基线 diff → 变更文件 bulk_read 回传落宿主
@@ -1709,7 +1709,7 @@ async fn send_tar_chunks(
 /// 返回 `None` = 无基线（未开工过，没有可 commit 的工作副本）。零变更
 /// 也返回 `Some`（changed/deleted 皆空——`last_commit.json` 照常刷新，
 /// Dashboard 可见「最近检查时间」）。estop 期间照常运行：commit 是
-/// 「保护方向」的基础设施对齐（internal_call 无 estop 闸，plan §4）。
+/// 「保护方向」的基础设施对齐（internal_call 无 estop 闸，plan）。
 pub async fn commit_project(
     main_workspace: &Path,
     project_id: &str,
@@ -1750,7 +1750,7 @@ pub async fn commit_project(
         return Ok(Some(report));
     }
 
-    // H3 挂起过滤（停车语义的 commit 侧）：挂起中的文件不回传、不删宿主
+    // 挂起过滤（停车语义的 commit 侧）：挂起中的文件不回传、不删宿主
     // ——「保留 VM 版」裁决不等于「VM 随后的改动可以覆盖宿主」，宿主
     // 手改区在用户合并完成（重新改动宿主文件 → 开工闸解挂推进）前是
     // 禁区。基线仍刷成 VM 树（挂起条目随 VM 走），解挂后三方对比照常。
@@ -1784,7 +1784,7 @@ pub async fn commit_project(
         }
     }
 
-    // M2 自定义 gitignore 过滤（VM→宿主方向遵守项目自己的忽略规则——
+    // 自定义 gitignore 过滤（VM→宿主方向遵守项目自己的忽略规则——
     // DEFAULT_EXCLUDE_PREFIXES 之外的动态层）。被忽略的变更条目不回传、
     // 不进基线（宿主与基线双双无视 → 后续轮次不会把它误判成宿主删除
     // 反复纠缠）；删除条目不过滤（删除是收敛方向，照常传播）。git 不可
@@ -1808,7 +1808,7 @@ pub async fn commit_project(
         }
     }
     if report.changed.is_empty() && report.deleted.is_empty() {
-        // 全过滤早退（H3 停车 / gitignore），但基线仍要刷成 VM 树——上方
+        // 全过滤早退（停车 / gitignore），但基线仍要刷成 VM 树——上方
         // 注释承诺的「挂起条目随 VM 走，解挂后三方对比照常」在这里兑现。
         // 不刷的后果（真机实测）：停车轮 commit 全被过滤 → 基线停在停车前
         // 旧值 → 宿主手动合并完成 → 开工闸 ReleaseMerged 解挂 → 三方对比
@@ -1917,7 +1917,7 @@ pub async fn commit_project(
     Ok(Some(report))
 }
 
-/// wire 声明的 chunk 计数闸（BUG-20261101-262）：0（非空清单的诚实 tar
+/// wire 声明的 chunk 计数闸：0（非空清单的诚实 tar
 /// 至少含 1 条目）与超镜像上限（guest `MAX_TOTAL_CHUNKS`）都诚实拒。
 fn validate_pull_chunk_count(chunks: u64) -> Result<(), String> {
     if chunks == 0 {
@@ -1931,7 +1931,7 @@ fn validate_pull_chunk_count(chunks: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// 单块/累计 payload 预算闸（BUG-20261101-262）：extend 前调用，单块超
+/// 单块/累计 payload 预算闸：extend 前调用，单块超
 /// guest `BULK_CHUNK_MAX_BYTES` 镜像或累计超 [`PULL_TOTAL_MAX_BYTES`] 都
 /// 诚实拒收——不先收进 `buf` 再判（判定在分配累积面之前）。
 fn check_pull_chunk_budget(buf_len: usize, chunk_len: usize) -> Result<(), String> {
@@ -1982,13 +1982,13 @@ async fn pull_files_to_host(
             head["missing"].as_array().map(|m| m.len()).unwrap_or(0)
         ));
     }
-    // 不按响应头 `bytes` 预分配（BUG-20261029 zip 撒谎 size 同族横扫补漏）：
+    // 不按响应头 `bytes` 预分配（zip 撒谎 size 同族横扫补漏）：
     // head 声明来自 VM 侧 wire，谎报/损坏值 `with_capacity` 即成无中生有的
     // 巨额分配（u64::MAX 直接 capacity overflow abort）。本路径对路径已做
     // fail-closed 防御（safe_rel/symlink 闸），size 头没有理由盲信——按实
     // 到 chunk 增长。
     //
-    // 「分次传输天然有界」不成立（BUG-20261101-262）：chunk 循环的帧数与
+    // 「分次传输天然有界」不成立：chunk 循环的帧数与
     // 单帧大小同样来自 VM 侧 wire，分次只约束单帧形状、不约束总量——
     // 谎报 chunks 数即可让宿主 buf 无界增长直至 OOM。guest 自限
     // （MAX_TOTAL_CHUNKS/BULK_CHUNK_MAX_BYTES）活在 guest 进程内，不是
@@ -2030,7 +2030,7 @@ async fn pull_files_to_host(
 /// symlink，拒绝落盘（fail-closed，点名路径）。宿主工作区是真实开发
 /// 目录——pnpm 的 node_modules 全链接、用户手建链接都常见；VM 树回拉的
 /// 同名真实文件若顺着链接写入，会写到工作区外（pnpm 全局 store 等）。
-/// 与 guest 侧 `extract_tar_safe` 的组件闸同族防御（2026-10-20 复查批
+/// 与 guest 侧 `extract_tar_safe` 的组件闸同族防御（复查批
 /// 同修）。调用前 rel 已过 [`safe_rel`]（无 `..`/绝对/前缀组件，`/` 分隔）。
 fn ensure_no_symlink_components_host(root: &Path, rel: &str) -> Result<(), String> {
     let mut cur = root.to_path_buf();
@@ -2062,9 +2062,9 @@ pub(crate) fn extract_tar_to_host(bytes: &[u8], root: &Path) -> Result<(), Strin
 
 /// [`extract_tar_to_host`] 的可注入条目上限变体（测试用小 cap 钉行为；
 /// 生产包装传 [`PULL_ENTRY_MAX_BYTES`]）。条目读走
-/// `nemesis_utils::zip_util::read_entry_capped` 单一真相源（16KB 分块
+/// `nemesis_utils::zip_util:read_entry_capped` 单一真相源（16KB 分块
 /// 流式、超 cap 即拒——解压炸弹在撑爆内存前被拦），不再裸 `read_to_end`
-/// （BUG-20261101-262 straggler）。
+/// （straggler）。
 pub(crate) fn extract_tar_to_host_with_caps(
     bytes: &[u8],
     root: &Path,
@@ -2083,7 +2083,7 @@ pub(crate) fn extract_tar_to_host_with_caps(
         if !ent.header().entry_type().is_file() {
             continue; // 目录/链接条目忽略：父目录按需创建；symlink 不进工作副本
         }
-        // 组件 symlink 闸在落盘前统一执行（std::fs::write 会跟随链接）。
+        // 组件 symlink 闸在落盘前统一执行（std::fs:write 会跟随链接）。
         ensure_no_symlink_components_host(root, &rel)?;
         let dst = root.join(&rel);
         if let Some(parent) = dst.parent() {
@@ -2106,7 +2106,7 @@ pub(crate) fn extract_tar_to_host_with_caps(
 /// commit 闸的 AgentLoop 挂点：turn 末（最终回复已记史、Done 事件前）
 /// 做一次 VM→宿主回传 + 基线刷新。恒 `Stop`（反馈不属于本闸职责——失败
 /// 只 WARN，不影响用户收到回复，下轮重试；estop 期间照常——「保护方向」
-/// 的基础设施对齐，plan §4）。全项目 loop 无差别注册，触发期自检：
+/// 的基础设施对齐，plan）。全项目 loop 无差别注册，触发期自检：
 /// supervisor / agent_id / VM 档都从 agents 全局表**按需解析**（VM 档是
 /// 运行期属性——spawn 期 supervisor 未装配、后来切档/切回都自然跟随；
 /// 非 VM 档项目零开销穿越）。
@@ -2175,7 +2175,7 @@ impl nemesis_agent::hooks::LifecycleHook for VmCommitHook {
 // ---------------------------------------------------------------------------
 
 /// 拒绝对路径组件（`..`/绝对路径/Windows 前缀）——基线里的 rel 都来自
-/// 本模块选择，此处是 B9-2 commit 回读时的防御闸（`pull_files_to_host`
+/// 本模块选择，此处是 commit 回读时的防御闸（`pull_files_to_host`
 /// 消费；单测钉语义）。
 pub(crate) fn safe_rel(rel: &str) -> Result<String, String> {
     if rel.is_empty() {
@@ -2238,7 +2238,7 @@ fn case_gate_pairs(
 }
 
 // ---------------------------------------------------------------------------
-// B9-3 手动面状态报告（WSAPI vm.sync.status / CLI / Dashboard 同步卡消费）
+// 手动面状态报告（WSAPI vm.sync.status / CLI / Dashboard 同步卡消费）
 // ---------------------------------------------------------------------------
 
 /// 项目同步状态（只读：不开闸、不落盘、不触碰 VM 实例——status 永远

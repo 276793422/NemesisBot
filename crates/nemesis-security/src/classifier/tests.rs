@@ -384,7 +384,7 @@ fn test_hash_prefix_numbered() {
 }
 
 // ============================================================
-// S3 batch 2: malicious band / entropy / structural / repetition /
+// batch 2: malicious band / entropy / structural / repetition /
 // instruction_structure / script_category arms
 // ============================================================
 

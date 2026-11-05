@@ -236,7 +236,7 @@ impl RequestLogger {
 
     /// Create a logger whose session directory carries a fixed prefix
     /// （压缩杂务隔离， BUG-3：sender_id="summarizer" 的事件改落
-    /// `aux_` 前缀目录，不再伪装成普通对话）。base_dir 派生同 [`Self:new`]
+    /// `aux_` 前缀目录，不再伪装成普通对话）。base_dir 派生同 [`Self::new`]
     /// （resolve_log_path）；目录名 = `{prefix}_{微秒时间戳}`——微秒后缀防
     /// 同秒碰撞（multipart 连发三次摘要调用是常态）。
     pub fn new_with_session_prefix(config: LoggingConfig, workspace: &Path, prefix: &str) -> Self {
@@ -821,7 +821,7 @@ fn rand_u16() -> u16 {
 mod tests;
 
 // ---------------------------------------------------------------------------
-// : request/chat-log consistency anchor (lightweight)
+// request/chat-log consistency anchor (lightweight)
 // ---------------------------------------------------------------------------
 
 /// Message-role sequence extracted from one side of the comparison.
@@ -872,6 +872,6 @@ pub fn check_request_log_consistency(
     Ok(())
 }
 
-// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

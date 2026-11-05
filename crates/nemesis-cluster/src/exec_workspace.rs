@@ -1,4 +1,4 @@
-//! worker 侧档案工作副本（exec workspace，看板项目档案 goal P4/E3）。
+//! worker 侧档案工作副本（exec workspace，看板项目档案 goal）。
 //!
 //! 档案管线任务（master 派发 payload 带 `_baseline_commit`）在 worker 侧的
 //! 全生命周期，**全部代码级、不依赖 LLM 自觉**：
@@ -42,7 +42,7 @@ pub const EXEC_DIR_NAME: &str = "exec";
 pub const BASELINE_SIDECAR_NAME: &str = ".baseline.json";
 
 /// 装配中标记路径（exec **根**下、工作副本树外——照 `.cs-{task}` 暂存目
-/// 录同款模式，绝不进 diff/变更集；`finish_task_exec` 装配期间在场，D5
+/// 录同款模式，绝不进 diff/变更集；`finish_task_exec` 装配期间在场，
 /// 兜底拉取据此观望）。
 pub fn assembling_marker_path(exec_root: &Path, task_id: &str) -> PathBuf {
     exec_root.join(format!(".assembling-{}", sanitize_transfer_id(task_id)))
@@ -50,7 +50,7 @@ pub fn assembling_marker_path(exec_root: &Path, task_id: &str) -> PathBuf {
 
 /// 装配中标记守卫：创建即落盘，Drop 即清——Ok（exec 目录随清扫消失）、
 /// Err（现场保留但可被下轮兜底按旧语义重推）两条出口都不留残标（残标
-/// 会让 master D5 兜底永久观望）。
+/// 会让 master 兜底永久观望）。
 struct AssemblingMarker(PathBuf);
 
 impl AssemblingMarker {
@@ -69,7 +69,7 @@ impl Drop for AssemblingMarker {
 /// 基线 sidecar（工作副本内持久化——任务终结时 diff 的对照清单）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaselineSidecar {
-    /// master 派发时下发的基线 commit hex（变更集申报原样回带，E8 归属校验用）。
+    /// master 派发时下发的基线 commit hex（变更集申报原样回带， 归属校验用）。
     pub baseline_commit: String,
     /// 基线树清单（master TransferBegin.files 原样；空树 = 空 vec）。
     pub files: Vec<TransferFileEntry>,
@@ -93,7 +93,7 @@ pub fn exec_dir_for(workspace: &Path, task_id: &str) -> PathBuf {
 // 1. 接收：解包基线 + prompt 工作目录段
 // ---------------------------------------------------------------------------
 
-/// 接收钩子（[`crate::rpc::peer_chat_handler::PeerChatHandler`] work-queue
+/// 接收钩子（[`crate::rpc:peer_chat_handler::PeerChatHandler`] work-queue
 /// 路径在收到任务时调用）。payload 带 `_baseline_commit` = 档案管线任务：
 /// 解包基线工作副本并返回 prompt 工作目录段（追加进任务 content）；否则
 /// `None`（既有非档案行为，零改动）。
@@ -176,7 +176,7 @@ impl ExecReceiveHook {
             files,
         };
         let json = serde_json::to_string_pretty(&sidecar).map_err(|e| e.to_string())?;
-        // BUG-20261104-365 横向同族：sidecar 是终结侧 diff 的对照清单，
+        // 横向同族：sidecar 是终结侧 diff 的对照清单，
         // 半截文件 = finish_task_exec 每次解析失败、任务档案永久卡死
         // （现场保留 WARN 无自愈）。原子写对齐全仓持久化纪律。
         nemesis_utils::file::write_file_atomic(
@@ -204,7 +204,7 @@ impl crate::rpc::peer_chat_handler::TaskReceiveHook for ExecReceiveHook {
 
 /// prompt 工作目录段（追加进任务 content；告诉 LLM 在哪干活 + 契约）。
 ///
-/// F-U3-2（UAT U3 实证）：原文本只说「所有文件读写必须在该目录内」，但模型
+/// F-（UAT 实证）：原文本只说「所有文件读写必须在该目录内」，但模型
 /// 仍会用相对路径调文件工具（落点在 workspace 根而非本目录——dispatch 层
 /// 重写已根修该落点）。这里把相对路径基准的真实语义写明，模型心智模型与
 /// 系统行为对齐，不再需要模型自行推断。
@@ -237,17 +237,17 @@ pub fn finish_task_exec(
         // 无 sidecar = 非档案管线（或解包失败的诚实降级形态）。
         return Ok(false);
     }
-    // BUG-20261104-361（T-MRG-1 吞变更集）：装配期间落 `.assembling-*`
-    // 标记——D5 兜底拉取（`TransferOutbox::request_pull`）据此暂不重推。
+    // （T-MRG-1 吞变更集）：装配期间落 `.assembling-*`
+    // 标记—— 兜底拉取（`TransferOutbox::request_pull`）据此暂不重推。
     // 否则 master sweep 在装配窗口命中时，无变更集的执行记录抢先入队，发
     // 件箱幂等闸会吞掉随后带变更集的正常入队，master 空集宽容把 worker
-    // 的实际改动静默合并为「无变更」（ET mrg-a T-MRG-1 实录：B 的 PATCH
+    // 的实际改动静默合并为「无变更」（ET mrg-a T-MRG-1 B 的 PATCH
     // 行被吞）。
     let _assembling = AssemblingMarker::new(assembling_marker_path(
         &exec_root_in_workspace(workspace),
         task_id,
     ));
-    // BUG-2026-10-15 NB-120（A 治本）：任务派生但未被树杀覆盖的残留进程
+    // BUG- （A 治本）：任务派生但未被树杀覆盖的残留进程
     // （浏览器实测的 Edge/crashpad 等）会占住工作副本内文件锁，让全树 diff
     // 与清扫整体失败。组装变更集**之前**按命令行清扫（best-effort，护栏见
     // kill_task_leftover_processes；非档案任务不走到这里，零开销）。
@@ -304,7 +304,7 @@ pub fn finish_task_exec(
 /// 删除清单）——三者按 upsert 排序一一对应。
 /// executability 跨平台不可靠（Windows 无位），恒 false（master merge 以
 /// 100644 入 index；可执行位语义 v1 不保真——诚实边界）。
-/// PR3（2026-10-10 机制加固）：`_debug/` 前缀 = 调试产物，双向排除——
+/// （机制加固）：`_debug/` 前缀 = 调试产物，双向排除——
 /// 工作副本里的调试脚本/探针输出不进变更集（不合入项目），基线里残留的
 /// 历史调试产物缺失也不报删除（调试产物双向都不是交付物）。
 fn is_debug_artifact(path: &str) -> bool {
@@ -314,8 +314,8 @@ fn is_debug_artifact(path: &str) -> bool {
 /// 顶层 `target/` = 构建产物，双向排除——worker 在副本里 cargo build 的产物
 /// 不进变更集（不合入项目），基线残留的构建产物缺失也不报删除。只排
 /// **顶层**：`src/target` 等深层同名不排——`is_noise_dir` 刻意只收无争议名
-/// （transfer.rs S-O3 纪律：静默丢真实交付比噪音入库严重），`target` 的
-/// 有实证收窄发生在本管线层不动通用剪枝语义（2026-11-01 T1 实录：68MB/
+/// （transfer.rs S- 纪律：静默丢真实交付比噪音入库严重），`target` 的
+/// 有实证收窄发生在本管线层不动通用剪枝语义（68MB/
 /// 405 文件构建垃圾进变更集，真实改动仅 2 文件）。
 fn is_build_artifact(path: &str) -> bool {
     path == "target" || path.starts_with("target/")
@@ -393,7 +393,7 @@ fn diff_tree(
     Ok((upserts, contents, deletions, skipped))
 }
 
-/// 工作副本容错收集（BUG-2026-10-15 NB-120 韧性修复）。与
+/// 工作副本容错收集（BUG- 韧性修复）。与
 /// `transfer::collect_dir_files` 同规则（`/` 相对路径、字典序、噪声目录/文件
 /// 排除、符号链接跳过），差异三点：
 /// 1. `_debug/` 整树**在下降时剪枝**——调试产物本就双向排除（不哈希不收
@@ -449,7 +449,7 @@ fn diff_walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>, skipped:
             if crate::transfer::is_noise_file(&normalized) {
                 continue;
             }
-            // LOW-8（2026-10-17 四轮审计）：流式哈希（256 KiB 缓冲）——
+            // LOW-8（四轮审计）：流式哈希（256 KiB 缓冲）——
             // 大工件（浏览器 profile/日志等）不再整文件读进内存做哈希。
             match crate::transfer::sha256_file_streaming(&path) {
                 Ok((size, hash)) => out.push(TransferFileEntry {
@@ -464,7 +464,7 @@ fn diff_walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>, skipped:
 }
 
 // ---------------------------------------------------------------------------
-// 3. 启动清扫（崩溃兜底）+ 周期兜底（BUG-2026-10-15 D）
+// 3. 启动清扫（崩溃兜底）+ 周期兜底（BUG- D）
 // ---------------------------------------------------------------------------
 
 /// 残留工作副本清扫（**必须在 `TransferOutbox::sweep_startup` 之前调用**，
@@ -530,7 +530,7 @@ pub fn sweep_exec_residual(
 /// 周期残留清扫间隔（30 分钟）。
 pub const RESIDUAL_SWEEP_PERIOD_SECS: u64 = 1800;
 
-/// 周期残留清扫线程（BUG-2026-10-15 D，NB-120 实证 1.5h 死等）：残留 exec
+/// 周期残留清扫线程（BUG- D， 实证 1.5h 死等）：残留 exec
 /// 目录此前只有 worker 启动清扫一条路——终态钩子组装失败后「必须重启
 /// worker」才能恢复。30 分钟周期兜底；活跃任务经 `is_running` 跳过。
 /// 独立 std::thread（清扫是纯阻塞 fs 工作，不依赖 tokio 运行时存活）。
@@ -556,7 +556,7 @@ pub fn spawn_periodic_residual_sweep(
 }
 
 // ---------------------------------------------------------------------------
-// 4. 残留进程清扫（BUG-2026-10-15 NB-120 A 治本）
+// 4. 残留进程清扫（BUG- A 治本）
 // ---------------------------------------------------------------------------
 
 /// 任务残留进程清扫：任务派生但未被 background_registry 树杀覆盖的
@@ -608,7 +608,7 @@ fn kill_matching_cmdline(needle: &str, self_pid: u32) -> Result<Vec<u32>, String
     );
     let mut cmd = std::process::Command::new("powershell");
     cmd.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
-    // 黑窗根修（2026-10-19）：gateway（release windows 子系统）spawn 默认
+    // 黑窗根修：gateway（release windows 子系统）spawn 默认
     // flags 会给 powershell 分配新可见 console。
     {
         use std::os::windows::process::CommandExt;
@@ -680,7 +680,7 @@ fn run_with_timeout(
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾，
+                // 有界排干（横扫角度 B）：1 MiB 丢头保尾，
                 // 输出体量不受我方控制。
                 let stdout = child
                     .stdout

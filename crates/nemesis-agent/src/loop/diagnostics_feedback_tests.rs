@@ -1,11 +1,11 @@
 //! （devtool-upgrade）：编辑后诊断回灌测试。
 //!
 //! 用 planted fake gopls（Python stdio LSP server，沿 nemesis-lsp
-//! `manager/tests.rs` 的确定性形态）驱动 [`AgentLoop:apply_diagnostics_feedback`]
+//! `manager/tests.rs` 的确定性形态）驱动 [`AgentLoop::apply_diagnostics_feedback`]
 //! 全决策表：ERROR 追加（格式/行号 1-based）、WARN-only 静默、开关关、
 //! 非触发写工具、无 manager、未注册语言、touch 失败、max_errors 截断。
 //! 全部失败路径都断言**原样返回**——诊断永不改写工具结果语义。
-//! ：默认值翻转为 true（显式 false 用例改显式构造）；
+//! 默认值翻转为 true（显式 false 用例改显式构造）；
 //! fake server / PATH 辅助 `pub(super)` 供 `diagnostics_session_tests`
 //! 复用（PATH 是进程全局态，跨模块必须共一把 env 锁，否则并行互踩）。
 

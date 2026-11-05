@@ -1,4 +1,4 @@
-//! Autopilot command — 看板定时自动化 CLI（W2 P4）。
+//! Autopilot command — 看板定时自动化 CLI。
 //!
 //! 与 `issue` 命令同样直接操作共享 SQLite store（`{workspace}/board/board.db`）。
 //! 注意：cron 调度由 gateway 的 live CronService 挂载——CLI 建/改的规则在
@@ -40,7 +40,7 @@ pub enum AutopilotAction {
         /// 验收标准（触发建单时透传；空 = 不填，评审将保守转人工）
         #[arg(long, default_value = "")]
         acceptance_criteria: String,
-        /// 绑定发起会话 session_key（L23：父会话存活时建单继承其上下文；父会话
+        /// 绑定发起会话 session_key（父会话存活时建单继承其上下文；父会话
         /// clear/删除后规则自动暂停。空 = 不绑定，行为与旧版一致）
         #[arg(long, default_value = "")]
         session_key: String,
@@ -121,7 +121,7 @@ fn print_autopilot(ap: &nemesis_board::Autopilot) {
             &ap.target
         },
         cron_state,
-        // L23：父会话绑定显示（绑定 = 建单继承父会话上下文）。
+        // 父会话绑定显示（绑定 = 建单继承父会话上下文）。
         ap.session_key
             .as_deref()
             .map(|k| format!(" 父会话: {k}"))
@@ -156,7 +156,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             session_key,
             disabled,
         } => {
-            // 语法 + 语义双闸（BUG-20261025-18）：解析通过但永不匹配的
+            // 语法 + 语义双闸：解析通过但永不匹配的
             // 表达式在写 store 前拒绝，与 WSAPI 同一校验单点。
             nemesis_web::handlers::board::validate_autopilot_schedule(&cron, !disabled)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -171,9 +171,9 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     target,
                     enabled: !disabled,
                     auto_plan: false,
-                    // F-U5-1：验收标准透传（CLI 空串 = 不填）。
+                    // F-：验收标准透传（CLI 空串 = 不填）。
                     acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
-                    // L23：父会话绑定（CLI 空串 = 不绑定）。
+                    // 父会话绑定（CLI 空串 = 不绑定）。
                     session_key: Some(session_key).filter(|s| !s.trim().is_empty()),
                 })
                 .map_err(err)?;
@@ -195,7 +195,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             acceptance_criteria,
             session_key,
         } => {
-            // 语法 + 语义双闸（BUG-20261025-18）：按「合并后的有效
+            // 语法 + 语义双闸：按「合并后的有效
             // cron + 有效 enabled」校验，与 WSAPI 同一校验单点。
             let old = store.get_autopilot(id).map_err(err)?;
             let eff_cron = cron.clone().unwrap_or(old.cron);
@@ -216,7 +216,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                         enabled: None,
                         auto_plan: None,
                         acceptance_criteria,
-                        // L23：`--session-key ""` = 解除绑定；不提供 = 不改。
+                        // `--session-key ""` = 解除绑定；不提供 = 不改。
                         session_key: session_key.map(|s| s.trim().to_string()),
                     },
                 )
@@ -229,7 +229,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
         }
         AutopilotAction::Enable { id } => {
             let ap = store.get_autopilot(id).map_err(err)?;
-            // 死排程闸（BUG-20261025-18）：启用死规则 = 复活静默僵尸，
+            // 死排程闸：启用死规则 = 复活静默僵尸，
             // loud 拒绝（先修 cron 再启用）。
             nemesis_web::handlers::board::validate_autopilot_schedule(&ap.cron, true)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;

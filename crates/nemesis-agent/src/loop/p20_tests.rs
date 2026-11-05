@@ -79,7 +79,7 @@ fn p20_append(key: &str, role: &str, content: &str, turn: Option<usize>) {
     );
 }
 
-/// sha256 hex（与 checkpoint:hash_on_disk 同口径，断言期望指纹用）。
+/// sha256 hex（与 checkpoint::hash_on_disk 同口径，断言期望指纹用）。
 fn p20_hash(content: &str) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
@@ -218,7 +218,7 @@ async fn p20_rewind_passes_through_when_seals_match_disk() {
 }
 
 // ---------------------------------------------------------------------------
-// ：force 强过的强恢复动作落审计链台账（Merkle
+// force 强过的强恢复动作落审计链台账（Merkle
 // append-only；此前只有 tracing warn——轮转即失，不算诚实留痕）。
 // ---------------------------------------------------------------------------
 

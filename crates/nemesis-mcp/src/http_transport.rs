@@ -23,7 +23,7 @@ use crate::transport::{Transport, TransportError, TransportRequest, TransportRes
 /// Session ID handling: if the server returns a `Mcp-Session-Id` header,
 /// it is stored and included in subsequent requests.
 ///
-/// Configured headers（收官批 B 段消费化，2026-10-15）: `McpServerConfig.headers`
+/// Configured headers（收官批 B 段消费化）: `McpServerConfig.headers`
 /// 的 `"KEY: VALUE"` 行在 `connect()` 时解析并现查（值支持 `vault:` / `env:` /
 /// `yaml:` 引用，语义同 stdio env——每次现查无缓存）；非法行 loud WARN 跳过。
 /// 解析后的值只进 HTTP 请求，Debug 掩码（不进日志）。
@@ -64,7 +64,7 @@ impl HttpTransport {
 
 /// 解析 "KEY: VALUE" 头行 → (name, resolved_value)。
 ///
-/// 语法规则单一真相源 = `nemesis_config::validate_mcp_header_line`（CLI
+/// 语法规则单一权威 = `nemesis_config::validate_mcp_header_line`（CLI
 /// `mcp add`、Dashboard server.add/update 写入面同源）：缺冒号 / 头名空 /
 /// 头名含空白控制字符 / `Mcp-Session-Id` 保留头 / 整值引用名空或带首尾
 /// 空格——非法行 loud WARN + 跳过（原文不落日志）。值经
@@ -253,7 +253,7 @@ impl Transport for HttpTransport {
 /// `?key=...`), and reqwest error `Display` embeds the full request URL —
 /// without this a failed send leaks the key into error strings that reach
 /// BOTH the logs AND the model (transport errors are returned to the LLM
-/// verbatim via mcp_discover). 2026-10-21 自查 #1 根修.
+/// verbatim via mcp_discover). 自查 #1 根修.
 pub(crate) fn sanitize_url_for_log(url: &str) -> String {
     let (base, had_query) = match url.split_once('?') {
         Some((b, _)) => (b, true),
@@ -284,17 +284,17 @@ pub(crate) fn sanitize_url_for_log(url: &str) -> String {
 /// Read SSE events from an HTTP response and extract the first JSON-RPC
 /// data payload.
 ///
-/// 2026-10-15 第十二轮复查加固：① 事件边界同时识别 `\n\n` 与 `\r\n\r\n`
+/// 复查加固：① 事件边界同时识别 `\n\n` 与 `\r\n\r\n`
 /// （SSE 规范允许两种行尾；此前只认前者，CRLF 服务器的完成事件永远匹配
 /// 不中——响应提取拖到流 EOF，保活型长连接直接撞总超时假死）；② 无
 /// `data:` 的事件（keepalive 注释等）跳过继续读，不再硬报错——此前流里
 /// 先到一条注释事件就整体失败。
 ///
-/// 2026-10-16 第十四轮加固：③ JSON-RPC **通知**事件（无 `id` 字段——
+/// 加固：③ JSON-RPC **通知**事件（无 `id` 字段——
 /// `notifications/progress`、`notifications/message` 等，服务器响应前先推
 /// 进度/日志是 MCP 标准行为）跳过继续读。此前对首个 data 载荷直接
-/// `from_str::<TransportResponse>`：`id` 是必填字段，通知事件反序列化必炸
-/// "missing field `id`"，整个请求硬失败——stdio 侧 J3 分类器
+/// `from_str:<TransportResponse>`：`id` 是必填字段，通知事件反序列化必炸
+/// "missing field `id`"，整个请求硬失败——stdio 侧 分类器
 /// （`classify_line`）已修的同类问题，HTTP SSE 路径漏配。
 async fn parse_sse_response(
     mut response: reqwest::Response,
@@ -353,10 +353,10 @@ enum SsePayload {
     Skipped,
 }
 
-/// 判定 SSE `data:` 载荷类别（第十四轮）：无 `id` 字段 = 通知，跳过；
-/// `id` + `method` 并存 = server→client 请求（BUG-20261025-56——JSON-RPC
+/// 判定 SSE `data:` 载荷类别：无 `id` 字段 = 通知，跳过；
+/// `id` + `method` 并存 = server→client 请求（JSON-RPC
 /// 响应永不携带 `method`，此前误归响应形态，id 撞车即被吞成空成功），跳过；
-/// 非 JSON = 垃圾，跳过（与 stdio 侧 J3 `classify_line` 的
+/// 非 JSON = 垃圾，跳过（与 stdio 侧 `classify_line` 的
 /// Notification/ServerRequest/Garbage 分类同语义）；带 `id` 无 `method` 但
 /// 形状非法 = 协议违例，硬报错（保留旧失败面）。
 fn response_payload(json_str: &str) -> Result<SsePayload, TransportError> {

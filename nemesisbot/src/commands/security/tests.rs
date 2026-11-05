@@ -1146,7 +1146,7 @@ fn test_write_rules_config_creates_dirs() {
 }
 
 // =========================================================================
-// S11b 覆盖率冲刺：security run() 全 arm 扫描（Status/Enable/Disable/
+// 覆盖率冲刺：security run() 全 arm 扫描（Status/Enable/Disable/
 // Config Show+Edit/Audit Show+Export+Denied/Test/Rules 分发/Approve/Deny/
 // Pending/Edit）+ cmd_edit 三分支（EDITOR 成功/非零/不存在）。
 // ConfigReset 走 stdin 交互（豁免，不测）。
@@ -1155,20 +1155,20 @@ fn test_write_rules_config_creates_dirs() {
 // crate::GLOBAL_STATE_LOCK；EDITOR 覆盖测试同锁内 set/restore。
 // =========================================================================
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct S11bTempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for S11bTempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_temp_home_env() -> S11bTempHomeEnv {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -1178,10 +1178,10 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
 }
 
 /// EDITOR 环境变量 RAII：set → drop 恢复原值（或移除）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct S11bEditorEnv(Option<String>);
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl S11bEditorEnv {
     fn set(val: &str) -> Self {
         let old = std::env::var("EDITOR").ok();
@@ -1190,7 +1190,7 @@ impl S11bEditorEnv {
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for S11bEditorEnv {
     fn drop(&mut self) {
         match self.0.take() {
@@ -1202,7 +1202,7 @@ impl Drop for S11bEditorEnv {
 
 // ------------------------------- Status -----------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_status_default_no_files() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1214,7 +1214,7 @@ async fn test_s11b_run_status_default_no_files() {
     assert!(!crate::common::config_path(&th.home).exists());
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_status_with_configs() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1255,7 +1255,7 @@ async fn test_s11b_run_status_with_configs() {
 
 // --------------------------- Enable / Disable -----------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_enable_disable_flips() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1284,7 +1284,7 @@ async fn test_s11b_run_enable_disable_flips() {
     assert_eq!(v["agents"]["defaults"]["restrict_to_workspace"], true);
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_enable_disable_insert_missing_sections() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1319,7 +1319,7 @@ async fn test_s11b_run_enable_disable_insert_missing_sections() {
 
 // ------------------------------ Config ------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_config_show_missing_and_present() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1353,7 +1353,7 @@ async fn test_s11b_run_config_show_missing_and_present() {
 }
 
 /// cmd_edit / SecurityAction::Edit 三分支：EDITOR 成功退出 / 非零退出 / 不存在。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_edit_via_editor_env() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1402,7 +1402,7 @@ async fn test_s11b_run_edit_via_editor_env() {
 
 // ------------------------------- Audit ------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_audit_show_export_denied() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1503,7 +1503,7 @@ async fn test_s11b_run_audit_show_export_denied() {
 
 // -------------------------------- Test ------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_security_test_allowed_blocked_invalid_json() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1544,7 +1544,7 @@ async fn test_s11b_run_security_test_allowed_blocked_invalid_json() {
 
 // ------------------------------- Rules ------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_rules_dispatch_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1586,15 +1586,15 @@ async fn test_s11b_run_rules_dispatch_arms() {
 }
 
 // --------------------- Approve / Deny / Pending ---------------------------
-// 注意（挂账 S11b-1，quality-hardening goal 冲刺 S11）：cmd_approve/cmd_deny/
+// 注意（挂账 -1，quality-hardening goal 冲刺）：cmd_approve/cmd_deny/
 // cmd_pending 经 security_cfg（<home>/workspace/config/config.security.json）
 // parent().parent() 再 join("workspace")/join("security") → 解析到
 // <home>/workspace/workspace/security/pending.json（双 workspace）。
 // 且全代码库零写入者（ApprovalManager 挂内存）→ 该文件永远不存在，
-// CLI 审批三命令实际永远走 "No pending operations found"。
+// CLI 审命令实际永远走 "No pending operations found"。
 // 本测试把夹具放在当前（错误的）解析路径以钉住现状；修复路径时此测试需同步改。
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_write_dead_pending(home: &std::path::Path, ids: &[&str]) -> std::path::PathBuf {
     let pending_path = home
         .join("workspace")
@@ -1610,7 +1610,7 @@ fn s11b_write_dead_pending(home: &std::path::Path, ids: &[&str]) -> std::path::P
     pending_path
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_approve_deny_pending() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1684,7 +1684,7 @@ async fn test_s11b_run_scanner_delegate_list() {
 }
 
 // =========================================================================
-// wave_b（覆盖率补测 2026-08-27）：规则引擎剩余可测臂 + run() 分发缺口。
+// wave_b（覆盖率补测）：规则引擎剩余可测臂 + run() 分发缺口。
 //   - 列表三态：有条目分组打印 / rules 空对象 "No rules defined."；
 //   - add 对缺类型键的 rules 对象 insert 空数组臂；
 //   - test 的 op 不匹配 continue 臂 + ask→deny 审批 reason 臂；
@@ -1782,14 +1782,14 @@ mod wave_b {
         cmd_rules_test(&path, "network", "request", "c2.evil.example").unwrap();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_pending_existing_file_with_empty_array_prints_no_ops() {
         let _guard = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
-        // 双 workspace 解析路径（S11b-1 挂账形状）：pending.json 存在且为 []，
+        // 双 workspace 解析路径（1 挂账形状）：pending.json 存在且为 []，
         // 走 exists→读取→空数组提示臂（非不存在早退、也非条目列表）。
         let pending_path = s11b_write_dead_pending(&th.home, &[]);
         assert_eq!(
@@ -1813,7 +1813,7 @@ mod wave_b {
         assert!(!cfg_path.exists());
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_run_rules_add_dispatch_destructures_and_persists_rule() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1848,7 +1848,7 @@ mod wave_b {
         assert_eq!(arr[0]["action"], "deny");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_run_rules_remove_dispatch_removes_matched_operation_entry() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1884,7 +1884,7 @@ mod wave_b {
         assert_eq!(arr[0]["pattern"], "keep.txt", "留下的是第二条");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_audit_denied_with_only_allowed_entries_prints_no_ops() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1931,7 +1931,7 @@ mod wave_b {
 //     文件不被触碰；直接函数层 + run() 分发层各过一遍。
 //     （确认=y 的真重置链路仍是豁免项——需要喂真实 stdin。）
 //   - Audit Export 输出路径被普通文件阻断时的写盘 Err 上抛
-//     （成功臂已由 S11b 的 export 断言覆盖，此处补 Err 臂）。
+//     （成功臂已由 的 export 断言覆盖，此处补 Err 臂）。
 // =========================================================================
 mod wave_c {
     use super::*;
@@ -1952,7 +1952,7 @@ mod wave_c {
         assert!(read_rules_config(&path).is_err());
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_status_corrupt_security_config_propagates_error() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1965,7 +1965,7 @@ mod wave_c {
         assert!(run(SecurityAction::Status, false).await.is_err());
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_status_corrupt_main_config_propagates_error() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1973,11 +1973,11 @@ mod wave_c {
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         std::fs::write(crate::common::config_path(&th.home), "{ broken").unwrap();
-        // Status 第一段读主配置处 from_str 失败即上抛
+        // Status 读主配置处 from_str 失败即上抛
         assert!(run(SecurityAction::Status, false).await.is_err());
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_enable_corrupt_main_config_fails_before_seeding_security_defaults() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -1996,7 +1996,7 @@ mod wave_c {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_disable_corrupt_main_config_propagates_error() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2007,7 +2007,7 @@ mod wave_c {
         assert!(run(SecurityAction::Disable, false).await.is_err());
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_enable_non_object_main_config_is_silent_noop_for_main_file() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2030,7 +2030,7 @@ mod wave_c {
         assert!(sec_cfg.exists(), "默认 security 配置照常播种");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_rules_add_on_corrupt_policy_errors_and_preserves_garbage() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2063,7 +2063,7 @@ mod wave_c {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_config_show_prints_raw_bytes_without_parsing() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2083,7 +2083,7 @@ mod wave_c {
         .unwrap();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_config_reset_stdin_eof_aborts_without_touching_file() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2107,9 +2107,9 @@ mod wave_c {
 
     /// Edit 收尾分支收口：EDITOR 脚本退出码 0 且吃掉路径参数 → 命中
     /// match status 的 success 分支（"Configuration saved." 打印区）。
-    /// （既有 S11b 用 EDITOR=hostname 尝试过此分支，但 hostname 带参
+    /// （既有 用 EDITOR=hostname 尝试过此分支，但 hostname 带参
     /// 实际退非零 → 只到过 "exited with status" 分支。）
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_edit_editor_exit_zero_reaches_saved_branch() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2123,7 +2123,7 @@ mod wave_c {
         run(SecurityAction::Edit, false).await.unwrap();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wc_run_audit_export_write_failure_propagates_when_output_blocked() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2139,7 +2139,7 @@ mod wave_c {
         .unwrap();
 
         // 输出路径的父目录段被普通文件占用 → fs::write 失败 → Export `?` 上抛
-        // （Export 成功写入臂由 S11b 覆盖；此处补写盘 Err 臂）。
+        // （Export 成功写入臂由 覆盖；此处补写盘 Err 臂）。
         let blocker = th.home.join("outblock");
         std::fs::write(&blocker, b"occupies dir slot").unwrap();
         let out = blocker.join("export.json");
@@ -2158,7 +2158,7 @@ mod wave_c {
 }
 
 // ===========================================================================
-// r10（覆盖率 goal R10 批）：config reset 确认=y 链路（此前 S11b/wave_c 的
+// r10（覆盖率 goal 批）：config reset 确认=y 链路（此前 /wave_c 的
 // 明示豁免项）+ 嵌套 Config 分发线 + corrupt 夹具直调四连。
 //   • 子进程 "y\n"：test_harness 起真二进制喂 stdin，覆盖 cmd_config_reset
 //     的确认臂（写默认配置 + 回执打印）与嵌套派发行（Nested Reset → fn）。
@@ -2213,7 +2213,7 @@ mod r10_arcs {
 
     /// 嵌套派发：run(Config{Some(Reset)}) → 分发行 → cmd_config_reset；
     /// cargo test 下 stdin 为管道 EOF → "非 y" → Aborted 且不动盘。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_nested_config_reset_dispatch_eof_aborts_without_touching_file() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2291,7 +2291,7 @@ mod r10_arcs {
     /// config.json 是顶层数组时 Disable：as_object_mut 失败 → 整段编辑跳过、
     /// 不回写主配置、也不创建 security 配置（Disable 与 Enable 不同，后者
     /// 会补默认 security cfg）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_disable_top_level_array_config_skips_edit_without_writes() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2319,7 +2319,7 @@ mod r10_arcs {
 }
 
 // ---------------------------------------------------------------------------
-// wave_a（2026-09-25）：Approvals（always-allow 记忆表）List/Clear 全分支
+// wave_a：Approvals（always-allow 记忆表）List/Clear 全分支
 // ——此前零覆盖。直接调 cmd_*（传 home 参数，无 env 依赖）+ run() 分发臂。
 // ---------------------------------------------------------------------------
 
@@ -2397,7 +2397,7 @@ mod wave_a_approvals {
         );
     }
 
-    // BUG-20261029-176 回归锁：CLI clear 与「总是允许」写入侧
+    // 回归锁：CLI clear 与「总是允许」写入侧
     // （persist_auto_allow_rule 的 RMW，锁序 RULES_WRITE_LOCK →
     // config_write_lock）互斥——旧实现不持锁，并发 RMW 插在计数读与清空
     // 写之间会把已清规则复活（last-write-wins 丢清空）而 CLI 仍打印
@@ -2488,8 +2488,8 @@ mod wave_a_approvals {
 }
 
 // ---------------------------------------------------------------------------
-// cov 补测（2026-09-25）：`op_rules` / `op_rules_mut` 直测（此前只有高层
-// op_add/op_remove 间接路径；B-F7 的 null 归一臂无处触发）。
+// cov 补测：`op_rules` / `op_rules_mut` 直测（此前只有高层
+// op_add/op_remove 间接路径；B- 的 null 归一臂无处触发）。
 // ---------------------------------------------------------------------------
 mod op_rules_cov {
     use super::*;
@@ -2575,7 +2575,7 @@ mod op_rules_cov {
 }
 
 // =========================================================================
-// wave5 round2（2026-09-25）：Status 规则汇总区（flat rules 键 + 分型计数
+// wave5：Status 规则汇总区（flat rules 键 + 分型计数
 // + 审批超时行）、rules add 坏分节诚实报错、rules test 非法操作 + 未知
 // action 归 deny 桶、enable/disable 主配置缺 security 段补插、approvals
 // clear 无文件臂、ConfigReset =y 链路（子进程管道喂 stdin——进程级 stdin
@@ -2586,7 +2586,7 @@ mod w5r2 {
     use super::*;
 
     // 消费方全在下方 Windows 形态用例——Linux 下门控防 dead_code。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn w5_write_raw(path: &std::path::Path, body: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, body).unwrap();

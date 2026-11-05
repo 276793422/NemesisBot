@@ -1,4 +1,4 @@
-//! Guardian（LLM 安全法官）语义二审闸——决策表单一真相源。
+//! Guardian（LLM 安全法官）语义二审闸——决策表统一定义。
 //!
 //! 此前 guardian 审查只活在 `loop/tool_dispatch.rs` 的
 //! 内联块里；LSP rename 的合成 `write_file` 闸（`loop_tools/lsp_tool.rs`

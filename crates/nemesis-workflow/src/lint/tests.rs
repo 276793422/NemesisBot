@@ -1,5 +1,5 @@
-//! lint 规则（L1-L6）单测——自生产文件内联测试外置（2026-09-23，
-//! check-inline-tests 纪律；原内联模块随 faed9364 引入，L6 用例随
+//! lint 规则单测——自生产文件内联测试外置（2026-09-23，
+//! check-inline-tests 纪律；原内联模块随 faed9364 引入， 用例随
 //! e16a4702 增补，外置时一并纳入）。
 
 use super::*;
@@ -186,7 +186,7 @@ fn l5_correct_field_references_stay_silent() {
     assert!(lint(&w).is_empty(), "{:?}", lint(&w));
 }
 
-/// L6 回归（E 级复核实测）：条件边引用 condition 节点幻觉字段
+/// 回归（E 级复核实测）：条件边引用 condition 节点幻觉字段
 /// `{{check.passed}}`（实际输出字段是 `condition_result`）当轮预警。
 #[test]
 fn l6_condition_edge_hallucinated_field_warns() {
@@ -219,7 +219,7 @@ fn l6_condition_edge_hallucinated_field_warns() {
     );
 }
 
-/// L6 不误伤：真实字段、取反、非 condition 节点的字段、变量引用。
+/// 不误伤：真实字段、取反、非 condition 节点的字段、变量引用。
 #[test]
 fn l6_correct_condition_refs_stay_silent() {
     let mut w = wf(

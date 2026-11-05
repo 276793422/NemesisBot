@@ -847,7 +847,7 @@ impl SandboxHandler {
 #[cfg(test)]
 mod tests;
 
-// (, quality-hardening goal 冲刺 web 批次 2): fake-box-tree
+// (, quality-hardening goal 冲刺 web): fake-box-tree
 // selection/commit/delete paths + set_executor_config + set_config
 // allow_network arm. All offline — no Sandboxie/UAC/downloads.
 #[cfg(test)]

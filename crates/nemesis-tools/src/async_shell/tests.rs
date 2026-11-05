@@ -138,7 +138,7 @@ fn test_extract_process_name_various() {
     // Quoted path with spaces: first token after quote stripping is "C:\Program" (split by space)
     // Windows Path 语义：`\` 是分隔符 → file_stem("C:\Program") = "Program"。
     // Linux 上 `\` 是普通字符 → stem 保持整个 token（文档化平台差异，
-    // 2026-09-01 远端首跑暴露）。
+    // 远端首跑暴露）。
     if cfg!(windows) {
         assert_eq!(
             AsyncExecTool::extract_process_name("\"C:\\Program Files\\app.exe\""),
@@ -301,7 +301,7 @@ fn w4a_set_restrict_to_workspace_toggles_traversal_guard() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): guard_command non-dangerous fall-through edge
+// coverage: guard_command non-dangerous fall-through edge
 // (restrict=true, no traversal)
 // ===========================================================================
 
@@ -314,7 +314,7 @@ fn s2_async_guard_command_restrict_no_traversal_passes() {
 }
 
 // ===========================================================================
-// BUG-20261025-55 回归锁：restrict 模式此前完全不看 args working_dir——任意
+// 回归锁：restrict 模式此前完全不看 args working_dir——任意
 // 绝对路径即可把工作目录钉到工作区外（cwd 边界失效，spawn 照常执行）。
 // 修复后诚实拒绝；旧形态会 spawn 并返回 started 成功文案 → 必红。
 // ===========================================================================

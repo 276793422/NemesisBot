@@ -6,7 +6,7 @@
 //! argument_hint / prompt —— schema 与作用域层级无关（单 workspace 起步，
 //! 多级合并为后续扩展，见 slash-commands）。
 //!
-//! 单一真相源 = 本文件；AgentLoop 改写与 Dashboard 管理页（CommandsView）都
+//! 单一权威 = 本文件；AgentLoop 改写与 Dashboard 管理页（CommandsView）都
 //! 经由这里读写。
 
 use serde::{Deserialize, Serialize};

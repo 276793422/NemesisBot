@@ -175,7 +175,7 @@ fn test_sanitize_segment() {
 // ---------------------------------------------------------------------------
 
 /// Create a spill file and set its mtime to `age_secs` ago (std-only:
-/// `File:set_modified`, no new dev-dependency).
+/// `File::set_modified`, no new dev-dependency).
 fn make_spill_file(root: &Path, session: &str, name: &str, age_secs: u64, content: &str) {
     use std::io::Write;
     let dir = root.join(session);
@@ -249,8 +249,8 @@ fn test_cleanup_removes_root_when_fully_empty() {
 // Additional branch coverage
 // ---------------------------------------------------------------------------
 
-/// `File:create` failure: a DIRECTORY pre-created exactly where the spill
-/// FILE would land makes create_dir_all succeed but File:create fail →
+/// `File::create` failure: a DIRECTORY pre-created exactly where the spill
+/// FILE would land makes create_dir_all succeed but File::create fail →
 /// SpillFailed (best-effort: caller keeps the original result).
 #[test]
 fn test_spill_file_create_blocked_by_directory_at_path() {
@@ -534,7 +534,7 @@ fn cleanup_expired_huge_retention_days_keeps_fresh_files() {
     assert_eq!(deleted, 0);
     assert!(sess.join("turn.md").exists());
 
-    // typed i64:MAX as u64（config 手写极限实际可到值）同样不 panic。
+    // typed i64::MAX as u64（config 手写极限实际可到值）同样不 panic。
     let deleted2 = cleanup_expired(&root, i64::MAX as u64);
     assert_eq!(deleted2, 0);
     assert!(sess.join("turn.md").exists());

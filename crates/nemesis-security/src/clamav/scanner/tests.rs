@@ -1,6 +1,6 @@
 use super::*;
 use std::path::PathBuf;
-use tokio::io::AsyncBufReadExt; // read_line 所在 trait（E0599）
+use tokio::io::AsyncBufReadExt; // read_line 所在 trait
 
 fn test_config() -> ScannerConfig {
     ScannerConfig {
@@ -321,7 +321,7 @@ fn test_should_scan_file_com_extension() {
 }
 
 // ============================================================
-// Fake clamd server tests (2026-08-25 coverage push)
+// Fake clamd server tests (coverage push)
 // ============================================================
 // 覆盖 scan_file/scan_content/scan_directory/ping/shutdown 的成功路径
 // （现有测试只到 disabled/too-large/connection-refused）。
@@ -629,7 +629,7 @@ async fn scan_file_zero_max_size_scans_via_mock() {
 
 #[tokio::test]
 async fn scan_file_missing_file_metadata_err_falls_through_to_client() {
-    // Existing file does not exist → tokio::fs::metadata fails → the if-let
+    // Existing file does not exist → tokio::fs:metadata fails → the if-let
     // falls through the size gate and the client scan still runs.
     let addr = clamd_mock("C:/missing.exe: OK\n").await;
     let cfg = ScannerConfig {
@@ -645,7 +645,7 @@ async fn scan_file_missing_file_metadata_err_falls_through_to_client() {
 }
 
 // ---------------------------------------------------------------------------
-// T11（多模态 P4.2）：EICAR 内容伪装 .png —— clamav 协议级（mock clamd）
+// （多模态.2）：EICAR 内容伪装.png —— clamav 协议级（mock clamd）
 // 与在线 clamd 门控（已装才跑，未装诚实跳过并在报告标注）。
 // ---------------------------------------------------------------------------
 

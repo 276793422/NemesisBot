@@ -393,11 +393,11 @@ fn test_find_peer_match_empty_kind_or_id() {
     };
     let route = resolver.resolve(&input);
     // Empty kind/id in input should not match peer binding（输入侧守卫）。
-    // BUG-20261103-332 前 matched_by=="default" 的旧断言被死绑定行为污染：
+    // 前 matched_by=="default" 的旧断言被死绑定行为污染：
     // binding 自身 kind="" 在旧代码既不命中 peer 也挡死 wildcard——落
     // default 是死绑定的副作用而非本测试意图。修复后 binding 归一为
     // wildcard 槽位，命中 channel 级；「输入空 kind 不命中 peer」的意图
-    // 由归一 + P1 输入守卫双保险保持。
+    // 由归一 + 输入守卫双保险保持。
     assert_ne!(
         route.matched_by, "binding.peer",
         "输入空 kind 不得命中 peer 绑定（测试原意图）"
@@ -1087,7 +1087,7 @@ fn test_route_with_non_default_agent_fallback() {
 }
 
 // ===========================================================================
-// S12b batch（quality-hardening goal 冲刺）：finder 防御臂（Option 无值迭代 /
+// batch（quality-hardening goal 冲刺）：finder 防御臂（Option 无值迭代 /
 // 限定字段跳过 continue / 通配候选过滤 continue）
 // ===========================================================================
 
@@ -1298,7 +1298,7 @@ fn s12b_channel_wildcard_match_continues_past_specific_accounts() {
     assert_eq!(route.agent_id, "wildcard");
 }
 
-// BUG-20261025-89 红证：peer 绑定的 peer_id 比较必须大小写不敏感。
+// 红证：peer 绑定的 peer_id 比较必须大小写不敏感。
 // 旧实现 kind 走 CI（`bk == peer_kind.to_lowercase()`）而 id 走精确比较
 // （`bid == peer_id`）——渠道上报的 peer_id 大小写与配置漂移（IRC 昵称
 // RFC 1459 大小写不敏感、Mastodon/Bluesky 句柄、用户手打大小写）时绑定
@@ -1364,7 +1364,7 @@ fn test_peer_match_peer_id_case_insensitive() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261103-332：不全 peer 约束死绑定 + guild/team 大小写脱靶（89 族延伸）
+// 不全 peer 约束死绑定 + guild/team 大小写脱靶（89 族延伸）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1520,7 +1520,7 @@ fn test_complete_peer_binding_still_matches_exactly() {
 
 #[test]
 fn test_guild_team_binding_is_case_insensitive() {
-    // BUG-20261025-89 族延伸：guild/team 匹配此前是精确比较——渠道侧 GUID
+    // 族延伸：guild/team 匹配此前是精确比较——渠道侧 GUID
     // 大小写漂移（Teams/Platform GUID 语义大小写不敏感）让绑定静默脱靶。
     // 修复：与 peer/account 同一 CI 纪律（纯放宽：原命中在 CI 下照常命中）。
     let resolver = RouteResolver::new(RouteConfig {

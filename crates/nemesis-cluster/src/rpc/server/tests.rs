@@ -973,7 +973,7 @@ fn test_default_handler_list_actions_count() {
 }
 
 // ---------------------------------------------------------------------------
-// 二期桥帧入口（goal：桥集群，批次六）——与 TCP 路径共用同一 dispatch。
+// 二期桥帧入口（goal：桥集群）——与 TCP 路径共用同一 dispatch。
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1047,7 +1047,7 @@ async fn test_handle_wire_message_handler_error_and_no_handler() {
     assert!(resp.error.contains("no handler for action"));
 }
 
-// 审计 action 形态统一（2026-10-18）：Known 动作 wire 形态是 PascalCase
+// 审计 action 形态统一：Known 动作 wire 形态是 PascalCase
 //（PeerChat），经真实分发链（dispatch_wire_request）落盘的 rpc_call 行
 // 必须渲染成小写（peerchat）——日志检索单一形态可全覆盖。
 #[tokio::test]

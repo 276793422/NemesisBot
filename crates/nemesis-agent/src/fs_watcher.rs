@@ -1,7 +1,7 @@
 //! (devtool-upgrade): workspace fs watcher — notify-based
 //! recursive watch over the workspace root, with debounce + ignore table.
 //!
-//! Two consumers (both wired through `AgentLoop:start_fs_watcher`):
+//! Two consumers (both wired through `AgentLoop::start_fs_watcher`):
 //! 1. **Instruction chain** — a create/modify/remove of any AGENTS.md or
 //!    CLAUDE.md under the workspace calls `invalidate_context_digests()`
 //!    (round-5 note: digest state is stateless — sections re-read from disk
@@ -60,7 +60,7 @@ pub type PathCallback = Arc<dyn Fn(&str) + Send + Sync>;
 /// Callers must strip the workspace root first (a workspace that happens to
 /// live under a dir named `target` must not be ignored wholesale).
 ///
-/// Built-ins delegate to the SHARED truth `nemesis_path:is_workspace_ignored`
+/// Built-ins delegate to the SHARED truth `nemesis_path::is_workspace_ignored`
 /// (收敛：watch 过滤与 @补全遍历用同一张表，不再各写一份漂移)；
 /// `extra` carries user-configured rules (`FsWatcherConfig.ignore`), where
 /// bare names match any component and `*.ext` matches by extension.

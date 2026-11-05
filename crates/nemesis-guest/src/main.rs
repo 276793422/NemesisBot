@@ -1,4 +1,4 @@
-//! guest agent 入口（双栖形态，P5 第 1 步）。
+//! guest agent 入口（双栖形态， 第 1 步）。
 //!
 //! - 无参数：stdio 协议循环（宿主直跑——跨平台冒烟 / 集成测试用）；
 //! - `--listen ADDR:PORT`：VM 内 TCP 服务（第 2 步 NAT-TCP 通道的 guest

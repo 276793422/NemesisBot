@@ -27,7 +27,7 @@ pub(super) fn needs_user_projection(
 }
 
 /// 停滞弱信号：in_progress 且最后一条 system 评论命中停摆哨兵标记
-/// （[`nemesis_board::STALL_MARKER`] 单一真相源）。只做提示徽标，不给决策
+/// （统一定义见 [`nemesis_board::STALL_MARKER`]）。只做提示徽标，不给决策
 /// 按钮——停滞单还在跑（或等哨兵下一轮），与 needs_user 强信号分开。
 pub(super) fn issue_needs_attention(store: &BoardStore, issue: &nemesis_board::Issue) -> bool {
     issue.status == nemesis_board::IssueStatus::InProgress
@@ -37,7 +37,7 @@ pub(super) fn issue_needs_attention(store: &BoardStore, issue: &nemesis_board::I
             .flatten()
             .is_some_and(|c| c.contains(nemesis_board::STALL_MARKER))
 }
-// Swarm ：issue.plan 两段式 AI 拆解 + 依赖补派（swarm-goal §1）
+// Swarm：issue.plan 两段式 AI 拆解 + 依赖补派（swarm-goal）
 //
 // 两段式：`issue.plan {id}`（confirm 缺省/false）异步跑 planner（裸提示词
 // detached LLM 调用，无人格/零工具），产出推送 `board.plan_ready` /
@@ -56,7 +56,7 @@ pub(super) struct PlanPreview {
     pub(super) created_at: std::time::Instant,
 }
 
-/// 全自动流转 ：父单收口验收钩子。模块级 static 而非 AppState
+/// 全自动流转：父单收口验收钩子。模块级 static 而非 AppState
 /// 字段——AppState 全库字面构造测试点太多，加字段是断点级改动（与下方
 /// PLAN_CACHE 同款理由）。gateway 装配时注册；hook 内部自读
 /// `board.auto_close_parent` 旗标（false = no-op 等价现行为），本 crate
@@ -74,7 +74,7 @@ pub fn set_parent_review_hook(
         .map_err(|_| "parent review hook already set".to_string())
 }
 
-/// 全自动流转 ：项目收口验收钩子。同 PARENT_REVIEW_HOOK 的模块级
+/// 全自动流转：项目收口验收钩子。同 PARENT_REVIEW_HOOK 的模块级
 /// static 理由（AppState 字面构造测试点太多）；gateway 装配时注册，hook
 /// 内部自读 `board.review.auto_close_project` 旗标（false = no-op）。
 static PROJECT_REVIEW_HOOK: std::sync::OnceLock<std::sync::Arc<dyn Fn(i64) + Send + Sync>> =
@@ -89,8 +89,8 @@ pub fn set_project_review_hook(
         .map_err(|_| "project review hook already set".to_string())
 }
 
-/// 看板项目档案 ：项目收口**总结**钩子——人工路径（project.update
-/// status=completed）触发；gateway 装配时注册（→ nemesisbot
+/// 看板项目档案：项目收口**总结**钩子——人工路径（project.update
+/// status=completed）触发；gateway 装配时注册（nemesisbot
 /// `spawn_project_summary`，内部自守门：estop/tier/档案目录缺失诚实跳过，
 /// 生成失败不阻塞收口状态机）。与上方评审钩子分离：总结是锦上添花，
 /// 不做验收判定，也不读 auto_close_project 旗标。
@@ -190,7 +190,7 @@ pub fn notify_project_review_on_parent_done(store: &Arc<BoardStore>, issue_id: i
     }
 }
 
-/// 单子单环节推导（goal / 徽标 + 聚合共用的单一真相源）。
+/// 单子单环节推导（徽标 + 聚合共用的统一定义）。
 /// 停车判定与 sweep 同源（PARK_NOTICE_MARK 系统评论）；「执行中/待重派」
 /// 以在途派发区分（无在途的 in_progress = 打回重做单，属 D 恢复候选）。
 pub(super) fn issue_stage(
@@ -224,7 +224,7 @@ pub(super) fn issue_stage(
 /// 规则见 goal §三 /——停车判定与 sweep 同源（PARK_NOTICE_MARK 系统
 /// 评论）；「执行中/待重派」以在途派发区分（无在途的 in_progress = 打回
 /// 重做单，属 D 恢复候选，-09-13 精化）。
-/// 看板项目档案 ：档案 manifest 完整性投影（directory 下的
+/// 看板项目档案：档案 manifest 完整性投影（directory 下的
 /// project.json）。(None, []) = 未绑定目录/manifest 不可读——诚实缺省，
 /// 前端隐藏完整性徽章（不臆造 ok）。
 fn archive_integrity_of(project: &nemesis_board::models::Project) -> (Option<String>, Vec<String>) {
@@ -494,8 +494,8 @@ async fn project_resume(
     Err("project.resume 需要集群支持（cluster feature 未编译）".to_string())
 }
 
-/// / resume 补合并回放钩子（依赖倒置：nemesis-web 不反向依赖
-/// nemesisbot——回放逻辑真相源在 nemesisbot::board_archive_ingest，由
+///  resume 补合并回放钩子（依赖倒置：nemesis-web 不反向依赖
+/// nemesisbot——回放逻辑以 nemesisbot::board_archive_ingest 为准，由
 /// gateway 装配时注入，仿 [`crate::handlers::board`] 的 parent review hook
 /// 先例）。入参 project_id，出参回放摘要 JSON（unfrozen/manual_commit/
 /// merged/superseded/parked/refrozen）。
@@ -511,7 +511,7 @@ pub fn set_resume_replay_hook(hook: ResumeReplayHook) {
 }
 
 /// S- 合并停车人工重试钩子（依赖倒置同 [`RESUME_REPLAY_HOOK`] 先例）：
-/// 重试真相源在 nemesisbot::board_archive_ingest（`retry_merge_for_issue`，
+/// 重试逻辑以 nemesisbot::board_archive_ingest 为准（`retry_merge_for_issue`，
 /// 扫档案树 placement 凭据反查 task → 重新登记 PLACED → 重走合并触发）。
 /// 入参 issue 引用，出参逐 task 重试明细 JSON。
 pub(crate) type RetryMergeHook = std::sync::Arc<
@@ -550,7 +550,7 @@ pub(super) const PLAN_TTL: std::time::Duration = std::time::Duration::from_secs(
 pub(super) struct RunningPlan {
     pub(super) issue_id: i64,
     pub(super) started_at: std::time::Instant,
-    /// 第几次尝试（1 起）。超时重拆链（§1.1）每次 +1；列表投影/横幅
+    /// 第几次尝试（1 起）。超时重拆链每次 +1；列表投影/横幅
     /// 「第 N 次尝试」文案数据源。
     pub(super) attempt: u32,
     /// 链阶段（观察窗口）：`planning`=planner LLM 运行中；
@@ -760,12 +760,12 @@ pub(super) fn plan_get(
 /// 重试 ≤2 次（首跑 + 2 次自纠）。 三臂：前两轮严格解析（职能格式非法
 /// → 回灌自纠）；**末轮换 [`nemesis_board::parse_plan_lenient`] 宽和臂**
 /// 职能格式非法的子单置空收进计划，降级明细随 Ok 返回（调用方落
-/// 系统评论 + WARN），不废整个计划。纯编排：提示词/解析/校验真相源在
-/// nemesis-board::planner。`team_experience`（.5）是 meta 级经验注入
+/// 系统评论 + WARN），不废整个计划。纯编排：提示词/解析/校验以 nemesis-board::planner 为准
+/// `team_experience`（.5）是 meta 级经验注入
 /// （调用方检索渲染后传入，空 = 不注入）。
 ///
-/// pub（全自动流转 /）：WSAPI `issue.plan` 与 agent 工具 `board_issue
-/// plan` 共用同一实现（单一真相源）。
+/// pub（全自动流转）：WSAPI `issue.plan` 与 agent 工具 `board_issue
+/// plan` 共用同一实现。
 ///
 /// `discussion_wait_secs`：master config 的
 /// `board.discussion.review_wait_secs` 现读值；Some 时向 planner user
@@ -1202,8 +1202,8 @@ pub(super) async fn board_resume(
 }
 
 /// 全自动流转 /：plan 链共享编排（WSAPI `issue.plan` 一段、agent 工具
-/// `board_issue plan`、autopilot `auto_plan`、项目 `auto_start` 四入口单一
-/// 真相源）。编排 = 团队经验检索（.5，发起点定格）→ [`run_planner`] →
+/// `board_issue plan`、autopilot `auto_plan`、项目 `auto_start` 四入口的
+/// 统一定义）。编排 = 团队经验检索（.5，发起点定格）→ [`run_planner`] →
 /// 预览入 [`PLAN_CACHE`] + `board.plan_ready` 事件 → 旗标现读（true 则
 /// [`confirm_plan`] 发车 + 系统评论；失败保留预览转人工 + `board.plan_failed`）。
 ///
@@ -1369,7 +1369,7 @@ pub(super) fn board_plan_model_swap(
     Some((adapter, resolution.model_name))
 }
 
-/// 拆解链 spawn 单点（超时重拆 §1.1 / §5#1 配置化）：= panic 留痕监视壳
+/// 拆解链 spawn 单点（超时重拆 #1 配置化）：= panic 留痕监视壳
 ///（[`spawn_plan_chain_watched`]）+ 超时重拆监视。attempt 从 1 起；重拆
 /// attempt+1 新 plan_id；attempt 耗尽停车（评论 + `board.plan_failed` +
 /// RUNNING_PLANS 摘除）——停车而非无限烧 LLM。
@@ -1417,11 +1417,11 @@ fn spawn_plan_chain(
     spawn_plan_timeout_watch(env, plan_id, attempt, cfg);
 }
 
-/// 超时重拆监视（§1.1 D）：`timeout_secs`（0=不限，不监视）后醒来检查
+/// 超时重拆监视（D）：`timeout_secs`（0=不限，不监视）后醒来检查
 /// RUNNING_PLANS——条目仍在 = 超时（正常完成 / panic / 错误路径的 guard
 /// 都已摘条目）。处置：摘除本 plan_id（旧链 LLM 返回后 superseded 自检
 /// 静默放弃——tokio 任务不可取消，双闸防双发车）→ 评论 → 重拆或停车。
-/// `cfg` 由调用方注入（生产读 config，测试传秒级短值——§5#1 裁决）。
+/// `cfg` 由调用方注入（生产读 config，测试传秒级短值——#1 裁决）。
 #[cfg(feature = "cluster")]
 pub(super) fn spawn_plan_timeout_watch(
     env: Arc<PlanChainEnv>,
@@ -1524,7 +1524,7 @@ pub(super) fn spawn_plan_timeout_watch(
     });
 }
 
-/// gateway 重启拆解恢复（§1.3 / §7.2 ，无人值守闭环）：RUNNING_PLANS
+/// gateway 重启拆解恢复（无人值守闭环）：RUNNING_PLANS
 /// 是内存态、重启杀拆解任务——旧行为 = 父单停留「已开始自动拆解」评论态
 /// 等手动重拆（无人值守语义下 = 流程中断）。启动恢复扫描：状态仍
 /// backlog/todo + 最新系统评论为拆解中形态 + 无子单 + 不在 RUNNING_PLANS
@@ -1637,7 +1637,7 @@ pub fn recover_interrupted_plans(
     recovered
 }
 
-/// U-B（§9.2）中断续拆：探针解封后对 `pending=plan` 中断档案重建拆解链
+/// U-B中断续拆：探针解封后对 `pending=plan` 中断档案重建拆解链
 /// （与 恢复同链——走 [`spawn_plan_chain`] 超时重拆链，attempt 重计 1）。
 /// 在途双保险：该单已有在途链 = 让位（扫描/探针/手动三方竞态防双发车）。
 /// 返回是否实际发车。
@@ -1698,7 +1698,7 @@ pub async fn execute_plan_chain(
     attempt: u32,
 ) -> Result<serde_json::Value, String> {
     let started = std::time::Instant::now();
-    // U-B（§9.2）：LLM 端点不可用封存闸——拆解发起短路。自动/手动同闸：
+    // U-B：LLM 端点不可用封存闸——拆解发起短路。自动/手动同闸：
     // 手动得到诚实挂起说明 + 中断档案（意图不丢，恢复后探针自动续做），
     // 不是静默吞掉。
     if super::super::board_unavailable::frozen_now() {
@@ -1840,7 +1840,7 @@ pub async fn execute_plan_chain(
                     &e,
                 );
             }
-            // superseded 优先于失败面（§1.1 双闸）：被超时重拆取代的旧链
+            // superseded 优先于失败面（双闸）：被超时重拆取代的旧链
             // 静默放弃——不发失败评论、不发 plan_failed（旧链迟到的失败
             // 事件会撤掉新链横幅），不消费解析结果。
             if !RUNNING_PLANS.lock().contains_key(plan_id) {
@@ -1890,7 +1890,7 @@ pub async fn execute_plan_chain(
             return Err(e);
         }
     };
-    // superseded 自检（§1.1 双闸之一，成功路径）：超时重拆监视在超时点摘除
+    // superseded 自检（双闸之一，成功路径）：超时重拆监视在超时点摘除
     // 本 plan_id 并发起新链——本链的 LLM future 不可取消仍在飞，返回后第一
     // 检查点验证自己仍在 RUNNING_PLANS；不在 = 已被取代 → 静默放弃：不发
     // plan_ready、不落缓存、不评论、不 confirm（防「双计划双发车」）。
@@ -2215,8 +2215,8 @@ pub(super) async fn issue_plan(
 /// 等补派触发器）→ 父单联动。单张派发失败不回滚整批（落库已成事实），
 /// 系统评论留痕继续。
 ///
-/// pub（全自动流转 /）：WSAPI `issue.plan` confirm 与 agent 工具 /
-/// autopilot auto_plan / 项目 auto_start 共用（单一真相源）。
+/// pub（全自动流转）：WSAPI `issue.plan` confirm 与 agent 工具 /
+/// autopilot auto_plan / 项目 auto_start 共用。
 #[cfg(feature = "cluster")]
 pub fn confirm_plan(
     store: &Arc<BoardStore>,
@@ -2229,7 +2229,7 @@ pub fn confirm_plan(
     // 1) 落库（保持批内顺序；id_by_idx 供依赖映射）。required_profession
     //    随拆解落库； 末轮宽和降级明细逐条落被降级子单的系统评论
     //    「required_profession=`…` 非法，已降级无职能」（审计可回查）。
-    //    降级子单**强制置空职能**再落库（防御性单一真相源：清空语义在
+    //    降级子单**强制置空职能**再落库（防御性双保险：清空语义在
     //    confirm_plan 定案，不依赖上游 parse_plan_lenient 是否已剥）。
     let mut id_by_idx: Vec<i64> = Vec::with_capacity(subs.len());
     for (idx, sub) in subs.iter().enumerate() {
@@ -2320,7 +2320,7 @@ pub fn confirm_plan(
 
     // 5) 件③：父单锚点下放防御性后置检查——提示词纪律（件②）LLM
     //    不保证遵守：父单 AC 含 `[CHECK] re:` 锚点但没有任何子单继承 →
-    //    系统评论提醒人工补（不阻塞发车；评论就是持久记录，详情弹窗可见）。
+    //    系统评论提醒人工补（不阻塞发车；评论就是持久记录，详情弹窗可）。
     if nemesis_board::has_content_regex_anchor(parent.acceptance_criteria.as_deref().unwrap_or(""))
         && !subs
             .iter()
@@ -2357,7 +2357,7 @@ pub(super) fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) 
         title: ap.title.replace("{date}", &date),
         description: ap.description.clone(),
         // F-：验收标准透传——定时任务也要能全自动验收。空 = 不填，
-        // 由 store.create_issue 的 ac_gen 创建时自动生成（单一真相点，
+        // 由 store.create_issue 的 ac_gen 创建时自动生成（统一定义点，
         // 模板/规则作者不填也会得到自动推导的验收基准）；**不存在**旧语义
         // 「留空 = 保守转人工」——ac_gen 落地后留空不再是安全阀，规则作者
         // 想强制人工评判应显式写不可自动核验的验收标准或在收口时人工干预。
@@ -2401,7 +2401,7 @@ fn parent_session_alive(session_key: &str) -> bool {
 
 /// 父会话上下文块：尾窗 40 行 → 倒序筛可投影行（user/assistant、
 /// 跳空内容与投影行）→ 最多 10 条、每条 600 字 → join 后总截 4000 字。
-/// 与前端历史气泡同一投影判定（`is_projected_chat_row` 单一真相源）。
+/// 与前端历史气泡同一投影判定（由 `is_projected_chat_row` 统一判定）。
 fn build_parent_context_block(session_key: &str) -> String {
     const WINDOW: usize = 40;
     const MAX_MESSAGES: usize = 10;
@@ -2432,7 +2432,7 @@ fn build_parent_context_block(session_key: &str) -> String {
     nemesis_utils::truncate(&joined, TOTAL_CHARS)
 }
 
-/// 暂停绑定规则：enabled=false 落库（store 是真相源；gateway 的 cron
+/// 暂停绑定规则：enabled=false 落库（以 store 为准；gateway 的 cron
 /// tick 先读规则 disabled 短路，不误触发；job 侧 enabled 旗标启动同步时
 /// 对齐——不 patch cron job，最终一致）+ ⏸ 系统评论落最近一次 run 的单
 /// （从未运行无评论面 = WARN 日志即留痕面）。
@@ -2567,7 +2567,7 @@ fn inject_parent_context(mut ni: NewIssue, block: String) -> NewIssue {
     ni
 }
 
-/// 全自动流转 ：autopilot auto_plan 触发 plan 链所需的运行时上下文。
+/// 全自动流转：autopilot auto_plan 触发 plan 链所需的运行时上下文。
 /// cron 路径的 moderator 槽在 gateway 装配期晚填（OnceLock 模式，照
 /// autopilot_cluster_slot 同款）；WSAPI 路径 agent_loop 现成，包一个即抛
 /// 槽传入。`hub` cron 路径传 None（web server 尚未装配，诚实降级：无 SSE
@@ -2589,11 +2589,11 @@ pub struct AutoPlanContext {
 }
 
 /// autopilot 触发核心（WSAPI `autopilot.run` 与 gateway 的 cron
-/// on_job 共用，单一真相源）：按模板建 issue → target 非空时派发 →
+/// on_job 共用的统一定义）：按模板建 issue → target 非空时派发 →
 /// 记 last_run_at。`cluster` 传 `None` 且 target 非空 → 建单前拒绝
 /// （不留半成品）。
 ///
-/// 全自动流转 ：`auto_plan: Option<&AutoPlanContext>` —— `Some` 且规则
+/// 全自动流转：`auto_plan: Option<&AutoPlanContext>` —— `Some` 且规则
 /// `auto_plan=true` 且未预指派 target → 建单后异步触发 plan 链（moderator
 /// 槽空时 WARN + 系统评论诚实降级，不炸 cron 回调）。`None`（CLI 手跑等
 /// 无运行时上下文的入口）且规则开了 auto_plan → 结果 JSON 标注 skipped。
@@ -2822,7 +2822,7 @@ pub fn fire_autopilot(
 }
 
 /// autopilot 的 cron job 即时登记/跟随更新。cron 服务未注入
-/// （单测/极简构建）时跳过——gateway 启动同步会以 store 为真相源补注册。
+/// （单测/极简构建）时跳过——gateway 启动同步会以 store 为准补注册。
 /// 已登记过（cron_job_id 命中且 job 还在）→ patch 跟随 store；否则新登记
 /// 并回存 job id（`board-ap:{autopilot_id}` 名字约定，启动同步据此清孤儿）。
 pub(super) fn arm_autopilot_job(
@@ -2856,7 +2856,7 @@ pub fn validate_autopilot_schedule(expr: &str, enabled: bool) -> Result<(), Stri
 
 /// arm 的核心（不依赖 RequestContext）：gateway 启动同步
 /// （`sync_autopilot_jobs`）与 WSAPI handler 共用这一份构造逻辑——
-/// 单一真相源，别在 gateway 里复制 CronSchedule/patch 语义。
+/// 统一定义，别在 gateway 里复制 CronSchedule/patch 语义。
 fn arm_autopilot_job_with(
     cron: &Arc<std::sync::Mutex<nemesis_cron::service::CronService>>,
     store: &Arc<BoardStore>,
@@ -2935,7 +2935,7 @@ pub(super) fn disarm_autopilot_job(ctx: &RequestContext, ap: &nemesis_board::Aut
 }
 
 /// autopilot cron job 启动同步（gateway 在 cron.start 前调用）。
-/// store 是唯一真相源，把 cron 服务对齐到 store：
+/// 以 store 为准，把 cron 服务对齐到 store：
 ///   1. 删孤儿：cron 里 `board-ap:*` 命名空间的 job 在 store 侧已无对应
 ///      登记（规则被删/改时 backfill 失败留下的幽灵 job）→ 移除，防到点
 ///      触发；只动 `board-ap:{i64}` 形态的作业（起按全
@@ -3012,7 +3012,7 @@ pub fn sync_autopilot_jobs(
 }
 
 /// 解析 autopilot cron 作业名 `board-ap:{i64}` → 规则 id（None = 非该形态）。
-/// 名字形态的单一真相源：孤儿清理（[`sync_autopilot_jobs`]）与分派解析
+/// 名字形态的统一定义：孤儿清理（[`sync_autopilot_jobs`]）与分派解析
 /// （nemesisbot `resolve_autopilot_job`）都按这里判定，两侧口径不分叉。
 pub fn autopilot_id_from_job_name(job_name: &str) -> Option<i64> {
     job_name.strip_prefix("board-ap:")?.parse().ok()

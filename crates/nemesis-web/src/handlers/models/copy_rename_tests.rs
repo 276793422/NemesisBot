@@ -614,7 +614,7 @@ fn repro_default_llm_was_model_string_then_copy_set_default() {
 // 此前「身份集三形态任一命中」（model_name / model 串 / 别名）的宽匹配，在
 // 复制体未换模型串时与原始条目身份重叠：rename 偷默认指针 + 假热切、
 // update_field 假热切（内存/磁盘默认分叉）、list/proxy_overview 双行同标
-// 默认、delete 误挡。修法 = ref_owner（resolver 同序归属判定）单一真相源，
+// 默认、delete 误挡。修法 = ref_owner（resolver 同序归属判定）统一定义，
 // 五个消费点全部换装。
 
 /// 偷默认场景种子：原始条目 glm 是默认，复制体 glm-copy 未换模型串

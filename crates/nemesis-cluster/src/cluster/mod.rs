@@ -39,7 +39,7 @@ pub struct BusInboundMessage {
     pub sender_id: String,
     pub chat_id: String,
     pub content: String,
-    /// G5: 结构化元数据（如 cluster_continuation 的 status / source_node /
+    /// 结构化元数据（如 cluster_continuation 的 status / source_node /
     /// error）。`BusToClusterAdapter` 原样映射到 `InboundMessage.metadata`，
     /// 供 AgentLoop 的续行拦截逻辑读取。空 = 无元数据。
     pub metadata: std::collections::HashMap<String, String>,
@@ -48,8 +48,8 @@ pub struct BusInboundMessage {
 /// Trait for publishing messages to the message bus.
 pub trait MessageBus: Send + Sync {
     fn publish_inbound(&self, msg: BusInboundMessage);
-    /// G5+P1（T19 二层根修）：入站接收者计数。broadcast send 对「无接收
-    /// 者」是静默丢弃（publish_inbound 返回 ()），恢复链路 publish 前需
+    /// （二层根修）：入站接收者计数。broadcast send 对「无接收
+    /// 者」是静默丢弃（publish_inbound 返回），恢复链路 publish 前需
     /// 探测订阅是否就位（gateway 装配顺序里 AgentLoop 订阅晚于
     /// cluster.start() 的首 tick，实测晚 ~131ms）。
     fn inbound_receiver_count(&self) -> usize;
@@ -64,7 +64,7 @@ pub const DEFAULT_UDP_PORT: u16 = 11949;
 pub const DEFAULT_RPC_PORT: u16 = 21949;
 pub const DEFAULT_BROADCAST_INTERVAL: Duration = Duration::from_secs(30);
 
-/// agent 实体清单提供者（P2 2026-10-16）：nemesisbot 装配期注入，闭包内
+/// agent 实体清单提供者：nemesisbot 装配期注入，闭包内
 /// 现读 AgentManager（fresh read）。放 Cluster 侧只依赖本 crate 类型，
 /// 不反向依赖 nemesisbot。
 pub type AgentRosterProvider =
@@ -75,7 +75,7 @@ pub struct Cluster {
     // -- Identity --
     node_id: String,
     node_name: parking_lot::RwLock<String>,
-    /// 批次四：显示名为显式配置（config.cluster.json `node_name` 或
+    /// 显示名为显式配置（config.cluster.json `node_name` 或
     /// peers.toml [node].name）时 = true——撞名后缀免疫（用户意志优先；
     /// 自动名 hostname / `Bot {id8}` 才允许撞名收敛）。
     node_name_locked: std::sync::atomic::AtomicBool,
@@ -84,15 +84,15 @@ pub struct Cluster {
     role: parking_lot::RwLock<String>,
     category: parking_lot::RwLock<String>,
     tags: parking_lot::RwLock<Vec<String>>,
-    /// 自报职能清单（集群专业职能框架 M2；peers.toml `[node].professions`
-    /// 种入，announce 携带；M6 起经身份编辑热改）。
+    /// 自报职能清单（集群专业职能框架；peers.toml `[node].professions`
+    /// 种入，announce 携带； 起经身份编辑热改）。
     professions: parking_lot::RwLock<Vec<String>>,
     /// 节点档位（role_tier 口径；peers.toml `[node].tier` 种入，手工声明）。
     tier: parking_lot::RwLock<Option<String>>,
-    /// 自报运行时后端形态（P5 第 4 步 ③；peers.toml `[node].runtime_backend`
-    /// 种入，手工声明；announce 携带。本批只宣告不做 matcher 闸，P6 上位）。
+    /// 自报运行时后端形态（peers.toml `[node].runtime_backend`
+    /// 种入，手工声明；announce 携带。本批只宣告不做 matcher 闸， 上位）。
     runtime_backend: parking_lot::RwLock<Option<String>>,
-    /// 自报 agent 实体清单提供者（P2 2026-10-16）。闭包每次现读实体注册
+    /// 自报 agent 实体清单提供者。闭包每次现读实体注册
     /// 表（fresh read，不缓存快照）——announce / get_info 拿到的都是当前
     /// 值，运行期增删 agent 无需回写。`None` = 未宣告（announce 不带
     /// agents，对端 serde default 兼容）。Arc 包装：get_info 的静态捕获
@@ -102,7 +102,7 @@ pub struct Cluster {
     /// Set via `set_capabilities()` after the agent is built.
     /// Wrapped in Arc for sharing with RPC handler closures (real-time reads).
     capabilities: Arc<std::sync::Mutex<Vec<String>>>,
-    /// 环境能力声明（NB-122 批 ③ 数据面 2026-10-16）：peers.toml
+    /// 环境能力声明（批 ③ 数据面）：peers.toml
     /// `[node].capabilities` 自报段种入；`set_capabilities` 时与工具名
     /// 并集进宣告面（`[peers.X]` 静态段不消费——那是当年因「配置了也
     /// 不生效」删除的字段，本字段只认自报段）。
@@ -117,7 +117,7 @@ pub struct Cluster {
     // -- Components --
     registry: Arc<PeerRegistry>,
     task_manager: Arc<TaskManager>,
-    /// P1 统一任务层：tasks.db 连接（None = `Cluster::new` 测试路径内存态；
+    /// 统一任务层：tasks.db 连接（None = `Cluster::new` 测试路径内存态；
     /// 打不开/损坏 = 同样 None 但 task_manager 挂 PoisonedTaskStore——
     /// fail-closed 响亮报错，不静默回内存）。
     task_db: Option<Arc<nemesis_taskstore::TaskDb>>,
@@ -126,37 +126,37 @@ pub struct Cluster {
     rpc_client: Mutex<Option<Arc<RpcClient>>>,
     /// RPC server instance.
     rpc_server: Option<Arc<crate::rpc::server::RpcServer>>,
-    /// A1：iroh 漫游叠加层运行旗标（QUIC 插件化
-    /// M3：端点本体搬 plugin_roaming，宿主只记「setup_roaming 装配成功 /
+    /// iroh 漫游叠加层运行旗标（QUIC 插件化
+    /// 端点本体搬 plugin_roaming，宿主只记「setup_roaming 装配成功 /
     /// stop() 已请求停机」——`setup_roaming` 置位，`stop()` 复位）。
     roaming_started: AtomicBool,
-    /// A1：本节点 iroh 漫游身份 hex（`setup_roaming` 成功后写入；announce
+    /// 本节点 iroh 漫游身份 hex（`setup_roaming` 成功后写入；announce
     /// 携带，对端据此把 `iroh:<hex>` 追加进拨号候选池）。None = 未启用
     /// 漫游叠加层（announce 不带字段，wire 兼容）。
     roaming_id: parking_lot::RwLock<Option<String>>,
     /// 自建中继形态的完整拨号地址（`iroh:<hex>@<relay_url>`；`setup_roaming`
     /// 成功后写入，announce `addresses` 携带）。Minimal 基座零发现层，裸
     /// node_id 无解析路径——对端需要完整形态才能 bridge → `with_relay_url`。
-    /// 空 = N0 形态（裸候选经 `roaming_id` 字段，N0 发现层解析）。
+    /// 空 = 形态（裸候选经 `roaming_id` 字段， 发现层解析）。
     roaming_dialable: parking_lot::RwLock<Vec<String>>,
-    /// rendezvous 名册客户端状态快照（2026-10-22 自动发现；QUIC 插件化 M2
+    /// rendezvous 名册客户端状态快照（自动发现；QUIC 插件化
     /// 后由成员回流漏斗（插件名册循环每次推送）覆写；WSAPI roaming.status 读取）。
-    /// None = 循环未挂（N0 形态 / 推导失败 / 未启用漫游）。
+    /// None = 循环未挂（形态 / 推导失败 / 未启用漫游）。
     rendezvous_status:
         parking_lot::RwLock<Option<crate::roaming::rendezvous::RendezvousClientState>>,
-    /// 名册循环装配参数缓存（QUIC 插件化 M2：循环本体在 plugin_roaming，
-    /// 宿主持真相源参数——身份/宣告字段热改经 `sync_local_node_to_registry`
+    /// 名册循环装配参数缓存（QUIC 插件化：循环本体在 plugin_roaming，
+    /// 宿主持权威参数——身份/宣告字段热改经 `sync_local_node_to_registry`
     /// 尾部钩子重组装重发 `registry_start`（幂等停旧起新））。None = 循环
-    /// 未挂（N0 形态 / 未启用漫游 / stop() 已清）。
+    /// 未挂（形态 / 未启用漫游 / stop() 已清）。
     rendezvous_params: parking_lot::RwLock<Option<RendezvousParams>>,
-    /// A1 运行时硬化批：本节点构建号（git 短 hash；announce 携带）。由
+    /// 运行时硬化批：本节点构建号（git 短 hash；announce 携带）。由
     /// 宿主（nemesisbot gateway / 轻量节点命令）在构造后经
     /// [`Cluster::set_build_hash`] 注入——编译期常量 `NEMESISBOT_GIT_COMMIT`
     /// 住在 nemesisbot，cluster crate 不重复抽 git。空 = 未宣告。
     build_hash: parking_lot::RwLock<String>,
-    /// L13-a（2026-11-03 三期）：本节点 mandate 签名公钥（P-256 SEC1 hex；
+    /// a（三期）：本节点 mandate 签名公钥（P-256 SEC1 hex；
     /// announce 携带，对端 TOFU 钉存）。构造期从 peers.toml `[node].pubkey`
-    /// 静态种入（同 tier/professions 先例）；L13-b 落地运行时 key 源后由
+    /// 静态种入（同 tier/professions 先例）；-b 落地运行时 key 源后由
     /// key 派生接管。None = 未宣告（announce 不带字段）。
     mandate_pubkey: parking_lot::RwLock<Option<String>>,
     /// Arc 自根槽（弱引用；gateway 装配在 `Arc::new(cluster)` 后经
@@ -175,12 +175,12 @@ pub struct Cluster {
     // -- State --
     running: RwLock<bool>,
     discovery_running: Arc<AtomicBool>,
-    /// P0 vault fail-closed：config.cluster.json 的 `token` 若是 vault:/env:/yaml:
+    /// vault fail-closed：config.cluster.json 的 `token` 若是 vault:/env:/yaml:
     /// 引用且解析失败，置位。RPC 绑定点据此拒绝启动（宁可没有 RPC，不可
     /// 无认证 RPC）；start_discovery 据此拒绝无加密发现。空串/字面量/读文件
     /// 失败不置位（见 rpc_token_missing）。
     rpc_reference_broken: AtomicBool,
-    /// BUG-20261102-297 fail-closed：集群启用但 token 为空（字面量空串/键缺
+    /// fail-closed：集群启用但 token 为空（字面量空串/键缺
     /// 失），置位。空 token + bind 0.0.0.0 = 明文无鉴权 RPC，局域网任意主机
     /// 可 peer_chat 驱动本节点 agent 带工具执行——与坏引用同威胁且更劣
     /// （连加密都不协商），同款处理：RPC 与 discovery 均拒绝启动。消费方
@@ -188,7 +188,7 @@ pub struct Cluster {
     rpc_token_missing: AtomicBool,
     discovery: Mutex<Option<crate::discovery::DiscoveryService>>,
     stop_tx: broadcast::Sender<()>,
-    /// G5: Arc 包一层 —— 恢复循环 spawn 时克隆 Arc，之后每 tick 重新
+    /// Arc 包一层 —— 恢复循环 spawn 时克隆 Arc，之后每 tick 重新
     /// `.lock().clone()` 读取，兼容 `set_message_bus` 在 `start()` 之后才
     /// 被调用的装配顺序（gateway 生产路径即如此）。
     bus: Arc<Mutex<Option<Arc<dyn MessageBus>>>>,
@@ -204,17 +204,17 @@ pub struct Cluster {
         Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>,
     >,
 
-    /// 节点发现回调（Swarm M2 落点）：对端节点被发现/刷新时触发
+    /// 节点发现回调（Swarm 落点）：对端节点被发现/刷新时触发
     /// `(node_id, role, category)`。gateway 用它把新节点自动收编进看板
     /// 频道；first-join 语义（成员零行才入）由闭包实现方裁决——cluster
     /// 不依赖 board。未注册时为零开销 no-op。
     ///
-    /// Arc 包裹：G2 探针循环在 spawn 出去的任务里运行（不持 &self），
+    /// Arc 包裹： 探针循环在 spawn 出去的任务里运行（不持 &self），
     /// 必须能活读这个槽——探针复活也是「节点发现」（见
     /// `fire_recovered_callback`）。
     on_node_discovered: Arc<Mutex<Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>>>,
 
-    /// CD3（2026-09-17）：恢复交付回调。恢复轮询（poll_stale_pending_tasks）
+    /// 恢复交付回调。恢复轮询（poll_stale_pending_tasks）
     /// 从 worker 查回任务结果后、向 worker 发 confirm（删除其本地副本）之前
     /// 触发；返回 true = 交付完成（可 confirm 删副本），false = 交付失败
     /// （跳过 confirm，worker 端副本走 7 天 TTL 兜底——宁留勿丢）。
@@ -231,8 +231,8 @@ pub struct Cluster {
     /// 重启归零——announce wire 不携带、state.toml 不落盘，对端自报负载
     /// 是远期项）。主漏斗 = [`Cluster::complete_task`] / [`Cluster::fail_task`]
     /// （覆盖 gateway peer_chat_callback handler 两臂）；旁路 settle 点
-    /// （恢复轮询 sweep 三分支 + 默认回调 handler 兜底臂 + G4 清理 tick
-    /// 的 H4 安全网判死）经 TaskManager 的路由钩子补记账，全部入口共用
+    /// （恢复轮询 sweep 三分支 + 默认回调 handler 兜底臂 + 清理 tick
+    /// 的 安全网判死）经 TaskManager 的路由钩子补记账，全部入口共用
     /// 同一去重集与记账核心（[`record_route_outcome_core`]）；消费方
     /// [`Cluster::pick_auto_route_target`]。
     /// Arc 包裹：构造期路由钩子闭包捕获（'static spawn / handler 闭包）。
@@ -278,8 +278,8 @@ impl RoutePeerStats {
     }
 }
 
-/// 名册循环装配参数缓存（QUIC 插件化 M2，拍板 7：循环本体在 plugin_roaming
-/// 自持 runtime，宿主持真相源参数）。身份/宣告字段热改经
+/// 名册循环装配参数缓存（QUIC 插件化，循环本体在 plugin_roaming
+/// 自持 runtime，宿主持权威参数）。身份/宣告字段热改经
 /// `sync_local_node_to_registry` 尾部钩子重组装 member 载荷重发
 /// `registry_start`（插件侧幂等停旧起新）。
 #[derive(Debug, Clone)]
@@ -308,7 +308,7 @@ impl Cluster {
             config.node_id.clone()
         };
 
-        // 批次四：显示名解析链（config 显式 → hostname → `Bot {id8}` 兜底）。
+        // 显示名解析链（config 显式 → hostname → `Bot {id8}` 兜底）。
         let (node_name_init, name_locked) = resolve_node_name_from_env(&config.node_name, &node_id);
 
         let cluster = Self {
@@ -381,7 +381,7 @@ impl Cluster {
 
     /// Create a cluster with a workspace path for config loading.
     pub fn with_workspace(config: ClusterConfig, workspace: PathBuf) -> Self {
-        // 路径唯一真相源 = nemesis-path（peers.toml 跨 crate 读写：本 crate /
+        // peers.toml 路径解析以 nemesis-path 为准（跨 crate 读写：本 crate /
         // nemesis-web / CLI 三方共用，禁止各自 join）。
         let cluster_dir = nemesis_path::cluster_dir_in_workspace(&workspace);
         let (stop_tx, _) = broadcast::channel(1);
@@ -394,7 +394,7 @@ impl Cluster {
 
         // Try to load existing node identity from static config
         let peers_path = cluster_dir.join("peers.toml");
-        // BUG-20261101-282：peers.toml 存在但损坏（手改出错/历史残留/磁盘问题）
+        // peers.toml 存在但损坏（手改出错/历史残留/磁盘问题）
         // 时不得静默——`.ok()` 吞掉后 node_id 走新生成，ensure_node_id 对不可
         // 解析文件整体序列化覆盖，节点身份静默漂移 + [peers.*] 静态表全部丢失
         // 且零日志。NotFound（首次启动）是正常路径不打扰；其余失败 loud WARN
@@ -424,7 +424,7 @@ impl Cluster {
             })
             .unwrap_or(node_id);
 
-        // BUG-20261101-263：本节点 id 手改含 `:`/`/` 时，本端发出的
+        // 本节点 id 手改含 `:`/`/` 时，本端发出的
         // announce/续行 marker 同样携带坏身份（对端闸会拒收我们）且 B 端
         // session_key 复合键被切坏。构造器不可 fail——loud WARN 把配置
         // 错误显性化（修复 = 手改 peers.toml id 为合法字符集后重启）。
@@ -440,7 +440,7 @@ impl Cluster {
         if let Err(e) = crate::cluster_config::ensure_node_id(&peers_path, &node_id) {
             tracing::warn!("[Cluster] Failed to persist node_id to peers.toml: {}", e);
         }
-        // 批次四：显示名解析链。peers.toml [node].name（既有显式持久化位）
+        // 显示名解析链。peers.toml [node].name（既有显式持久化位）
         // 最优先且免疫撞名后缀；其次 config.cluster.json `node_name`（同样
         // 显式免疫）；否则自动链 hostname → `Bot {id8}` 兜底（允许撞名收敛）。
         let (node_name_default, name_locked) = sc
@@ -462,25 +462,25 @@ impl Cluster {
             .map(|s| s.node.category.clone())
             .unwrap_or_else(|| "general".into());
         let tags_default = sc.as_ref().map(|s| s.node.tags.clone()).unwrap_or_default();
-        // 职能框架 M2：peers.toml [node] 声明种入（announce 携带 + matcher
-        // 数据源；身份编辑热改走 setter，M6 接线）。
+        // 职能框架：peers.toml [node] 声明种入（announce 携带 + matcher
+        // 数据源；身份编辑热改走 setter， 接线）。
         let professions_default = sc
             .as_ref()
             .map(|s| s.node.professions.clone())
             .unwrap_or_default();
         let tier_default = sc.as_ref().and_then(|s| s.node.tier.clone());
-        // P5 第 4 步 ③：peers.toml [node] 自报运行时后端形态种入（announce
+        // peers.toml [node] 自报运行时后端形态种入（announce
         // 携带；手工声明不自动推导，同 tier 先例）。
         let runtime_backend_default = sc.as_ref().and_then(|s| s.node.runtime_backend.clone());
-        // NB-122 批 ③ 数据面：`[node].capabilities` 自报段种入（环境事实
+        // 批 ③ 数据面：`[node].capabilities` 自报段种入（环境事实
         // 能力词；set_capabilities 时与工具名并集进宣告面）。
         let static_caps_default = sc
             .as_ref()
             .map(|s| s.node.capabilities.clone())
             .unwrap_or_default();
-        // L13-a（2026-11-03 三期）：`[node].pubkey` mandate 签名公钥种入。
+        // a（三期）：`[node].pubkey` mandate 签名公钥种入。
         // 归一（trim/小写）+ 形态校验——非法形态 warn 一次且不进 announce
-        // （分发面只放合法形态；错钥在 L13-b 验签时自然 loud 失败）。
+        // （分发面只放合法形态；错钥在 -b 验签时自然 loud 失败）。
         let mandate_pubkey_default = sc
             .as_ref()
             .and_then(|s| s.node.pubkey.as_deref())
@@ -496,7 +496,7 @@ impl Cluster {
                 }
             });
 
-        // P1 统一任务层：生产路径任务真相源换 tasks.db（SQLite）——内存态根除，
+        // 统一任务层：生产路径任务库换 tasks.db（SQLite）——内存态根除，
         // gateway 重启后在途任务/审批可恢复。打不开/损坏 = fail-closed（挂
         // PoisonedTaskStore，任务操作响亮报错，不静默退回内存假装持久化；
         // ChatSecretStore 损坏熔断同款纪律）。`Cluster::new` 测试路径保持内存态。
@@ -546,7 +546,7 @@ impl Cluster {
             cont_store: Arc::new(ContinuationStore::new(
                 nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(&workspace),
             )),
-            // G1: 磁盘持久化 —— B 端回调失败时结果落盘（rpc_cache/results/），
+            // 磁盘持久化 —— B 端回调失败时结果落盘（rpc_cache/results），
             // A 端重启恢复的 poll（query_task_result）才有真实数据可查。
             // 构造期同步建目录；启动后的清扫+恢复在 ClusterService::first_start。
             result_store: Arc::new(TaskResultStore::with_disk_persistence(
@@ -668,7 +668,7 @@ impl Cluster {
         // MUST be after RPC client creation so token is set on both server and client.
         self.load_rpc_auth_token();
 
-        // G4: 超时阶梯 —— pending 任务安全网 = max(24h, 2×B端LLM超时)，
+        // 超时阶梯 —— pending 任务安全网 = max(24h, 2×B端LLM超时)，
         // 保证安全网永远在 B 端 LLM 处理超时（llm_timeout_secs）之后才触发，
         // 不会把仍在正常处理中的任务提前判死。
         let app_cfg = crate::config_loader::load_app_config(&self.workspace);
@@ -688,7 +688,7 @@ impl Cluster {
             );
         }
 
-        // TaskManager 后台清理循环（BUG-20261030-209）：此前从未在生产接线
+        // TaskManager 后台清理循环：此前从未在生产接线
         // （旧 &mut self 签名无法经 Arc<TaskManager> 调用）——2h 终态清理
         // 与 pending/running 安全网兜底双双失效，终态任务（含完整
         // payload+result）在 tasks.db 无限累积。接线后 on_complete 生产恒
@@ -697,7 +697,7 @@ impl Cluster {
         // 竞争无害）。
         self.task_manager.start();
 
-        // G2: 主动健康探针循环（health_check_interval_secs=0 关闭）。
+        // 主动健康探针循环（health_check_interval_secs=0 关闭）。
         if app_cfg.health_check_interval_secs > 0 {
             self.start_health_check_loop(
                 Duration::from_secs(app_cfg.health_check_interval_secs),
@@ -705,7 +705,7 @@ impl Cluster {
             );
         }
 
-        // state.toml 回读（集群完备性加固 2026-09-11）：必须在 start_sync_loop
+        // state.toml 回读（集群完备性加固）：必须在 start_sync_loop
         // 之前——sync_loop 的 tokio interval 首 tick 即时触发，先启动会把磁盘
         // discovered 历史（上次运行的已知节点）以「只有本节点」的注册表覆盖掉。
         self.restore_discovered_from_state();
@@ -760,7 +760,7 @@ impl Cluster {
             .to_string();
 
         if token.is_empty() {
-            // BUG-20261102-297 fail-closed：集群启用 + 空 token = 明文无鉴权
+            // fail-closed：集群启用 + 空 token = 明文无鉴权
             // RPC（bind 0.0.0.0，局域网任意主机可 peer_chat 驱动本节点 agent
             // 带工具执行）。坏引用同威胁已 fail-closed（rpc_reference_broken），
             // 空 token 是同类威胁更劣形态（连加密都不协商），同款处理：RPC
@@ -776,7 +776,7 @@ impl Cluster {
             return;
         }
 
-        // P0 vault（B3，2026-09-22 计划）：token 支持 vault:/env:/yaml: 引用。
+        // vault（计划）：token 支持 vault:/env:/yaml: 引用。
         // 解析失败 = fail-closed：置位 rpc_reference_broken，RPC 绑定点据此
         // 拒绝启动（宁可没有 RPC，不可无认证 RPC）。日志带补救指引。
         let token = match nemesis_config::resolve_secret_field(&token, "config.cluster.json token")
@@ -806,7 +806,7 @@ impl Cluster {
 }
 
 impl Cluster {
-    /// P0 vault fail-closed：config.cluster.json 的 `token` 是否为解析失败的
+    /// vault fail-closed：config.cluster.json 的 `token` 是否为解析失败的
     /// 引用。RPC 绑定点（gateway / `commands/cluster.rs`）在 `start()` 之后
     /// 检查此项——为 true 时拒绝 bind，节点以"无 RPC 服务"状态运行而非
     /// 裸奔。空串/字面量 token 恒为 false（见 rpc_token_missing）。
@@ -814,7 +814,7 @@ impl Cluster {
         self.rpc_reference_broken.load(Ordering::SeqCst)
     }
 
-    /// BUG-20261102-297：集群启用但 token 为空。RPC 绑定点与 start_discovery
+    /// 集群启用但 token 为空。RPC 绑定点与 start_discovery
     /// 据此拒绝无认证/无加密运行（同 rpc_reference_broken 的处置）。
     pub fn rpc_token_missing(&self) -> bool {
         self.rpc_token_missing.load(Ordering::SeqCst)
@@ -830,7 +830,7 @@ impl Cluster {
 
     /// iroh 漫游叠加层是否在跑。供 Dashboard `cluster.roaming.status`
     /// 展示运行态；插件缺席/未装配 = 恒 false。
-    /// QUIC 插件化 M3：读装配旗标（端点本体在 plugin_roaming）。
+    /// QUIC 插件化：读装配旗标（端点本体在 plugin_roaming）。
     pub fn roaming_active(&self) -> bool {
         self.roaming_started.load(Ordering::SeqCst)
     }
@@ -847,7 +847,7 @@ impl Cluster {
     }
 
     /// 最近拨号路径观测批量快照（打洞直连 / 经中继转发——Dashboard 节点面
-    /// 可观测）：node_id hex → "direct"/"relay"。QUIC 插件化 M3：观测槽在
+    /// 可观测）：node_id hex → "direct"/"relay"。QUIC 插件化：观测槽在
     /// plugin_roaming（插件侧逐连接观察任务维护），宿主经桥读快照——批量
     /// 一次 FFI 往返，消费面配 [`Self::roaming_hex_of`] 做节点→hex 映射。
     /// 空 map = 插件缺席 / 端点未运行 / 尚无观测。
@@ -865,16 +865,16 @@ impl Cluster {
     }
 
     /// Stop the cluster. Stops discovery (joins threads) and signals shutdown.
-    /// A1 P2：iroh 漫游叠加层装配。
+    /// iroh 漫游叠加层装配。
     ///
     /// 显式开关（Dashboard/CLI 可控）：config.cluster.json `roaming.enabled`
-    /// 为 true 才装配——key 只是身份材料不再是开关（P0 的「key 存在即启用」
+    /// 为 true 才装配——key 只是身份材料不再是开关（的「key 存在即启用」
     /// 文件 opt-in 语义由本闸取代）；缺 key 时自动生成（身份为本地自证材料，
     /// info 日志诚实记录）。缺省/显式 false = 不装配（Ok(false)），LAN 节点
-    /// 零 iroh 面。QUIC 插件化 M3：端点本体（iroh QUIC 栈）在 plugin_roaming
+    /// 零 iroh 面。QUIC 插件化：端点本体（iroh QUIC 栈）在 plugin_roaming
     /// ——本方法只做装配编排：身份经桥 ensure、`endpoint_start` 拉起插件端
     /// 点（accept 侧入站交接经 notify_incoming 漏斗回流）、给 RPC client 挂
-    /// [`crate::roaming::plugin_bridge::BridgeDialer`]（dial 按 `iroh:` 前缀
+    /// [`crate::roaming:plugin_bridge::BridgeDialer`]（dial 按 `iroh:` 前缀
     /// 分派）、名册循环照旧 registry_start。AEAD token 取 server 当前值
     /// （`load_rpc_auth_token` 在 start() 已应用——调用方必须晚于
     /// `cluster.start()`）。
@@ -883,7 +883,7 @@ impl Cluster {
     /// 不炸集群——漫游是叠加层，TCP 主通路不受影响）。
     pub async fn setup_roaming(&self) -> Result<bool, String> {
         // 显式闸：config.cluster.json `roaming.enabled`（缺文件/缺字段/false
-        // 恒不启用——单一真相源，key 在场也不再等价于开启）。
+        // 恒不启用——口径统一，key 在场也不再等价于开启）。
         let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(&self.workspace);
         if !Self::roaming_enabled_in_config(&cfg_path) {
             tracing::debug!(
@@ -892,11 +892,11 @@ impl Cluster {
             return Ok(false);
         }
 
-        // 身份材料（QUIC 插件化 M2/M3）：身份面在 plugin_roaming——桥
+        // 身份材料（QUIC 插件化）：身份面在 plugin_roaming——桥
         // identity_ensure（无文件生成+落盘，幂等）等价旧 load_or_create。
         // 插件缺席 = warn 降级 Ok(false)（叠加层整体不启用——CLI 显式路径
         // 才诚实报错，gateway 装配失败不炸启动，与旧「缺 key 正常启动」
-        // 降级哲学同源）。M3 起 seed 不出插件（插件是身份与端点的唯一
+        // 降级哲学同源）。 起 seed 不出插件（插件是身份与端点的唯一
         // 消费者——identity_payload 一律不带 secret）。
         let identity = match crate::roaming::plugin_bridge::identity_ensure().await {
             crate::roaming::plugin_bridge::BridgeOutcome::Ok(info) => info,
@@ -941,7 +941,7 @@ impl Cluster {
             }
         }
 
-        // 入站受理臂装配（QUIC 插件化 M3）：server 臂挂受理漏斗——插件
+        // 入站受理臂装配（QUIC 插件化）：server 臂挂受理漏斗——插件
         // accept iroh 连接（trust 闸在插件 accept 侧先行，trust.toml 语义
         // 镜像宿主旧 TrustBook）后 notify_incoming 回流 {conn_id, port,
         // remote_hex}，消费任务逐条 `serve_roaming_loopback`
@@ -952,13 +952,13 @@ impl Cluster {
             None => return Err("RPC server 未装配，iroh 入站桥无处挂载".to_string()),
         }
 
-        // 端点装配（QUIC 插件化 M3）：端点本体在 plugin_roaming——桥
+        // 端点装配（QUIC 插件化）：端点本体在 plugin_roaming——桥
         // endpoint_start（幂等停旧起新）拉起插件端点。relay_url 空 = n0
         // 公共中继；非空 = 自建中继回落（Minimal 基座零发现层——裸
         // `iroh:<hex>` 寻址在此形态不可用，对端地址需
         // `iroh:<hex>@<relay_url>` 完整形态）。可选 relay_token 与服务端
         // SharedToken 配对。客户端三键（relay_url/relay_token/rendezvous_url）
-        // 自 2026-10-23 起迁 config.quic.json `client` 段（QUIC 的配置不丢
+        // 自 起迁 config.quic.json `client` 段（QUIC 的配置不丢
         // 在集群里——集群只是 QUIC 的一个消费方）。
         let quic_cfg = crate::roaming::quic_config::resolved_quic(
             &nemesis_path::resolve_quic_config_path_in_workspace(&self.workspace),
@@ -986,7 +986,7 @@ impl Cluster {
         }
 
         // 出站：RPC client dial 分派按 `iroh:` 前缀走桥拨号（插件 loopback
-        // 交接；测试可注入 LocalDialer 同 trait）。L16：包一层 TrustGateDialer
+        // 交接；测试可注入 LocalDialer 同 trait）。：包一层 TrustGateDialer
         // 吊销 veto（簿缺席 = 未启用透传字节不变；revoked 诚实 Err，调用方
         // ⛔ 重试语义照常）。
         if let Some(client) = self.rpc_client.lock().clone() {
@@ -1000,8 +1000,8 @@ impl Cluster {
         *self.roaming_id.write() = Some(iroh_hex.clone());
         // 自建中继形态：自报地址带 `@relay_url` 完整形态（Minimal 基座零
         // 发现层，裸 node_id 对端无解析路径——实测钉死在
-        // `bare_node_id_dial_fails_on_self_relay_minimal_base`）；N0 形态
-        // 清空——裸候选经 `roaming_id` 字段，N0 发现层解析。
+        // `bare_node_id_dial_fails_on_self_relay_minimal_base`）； 形态
+        // 清空——裸候选经 `roaming_id` 字段， 发现层解析。
         *self.roaming_dialable.write() = if quic_client.relay_url.trim().is_empty() {
             Vec::new()
         } else {
@@ -1014,10 +1014,10 @@ impl Cluster {
         );
         self.roaming_started.store(true, Ordering::SeqCst);
 
-        // rendezvous 名册同步循环（自动发现，2026-10-22；QUIC 插件化 M2，
-        // 拍板 7：循环本体搬 plugin_roaming 自持 runtime——宿主只组装载荷
+        // rendezvous 名册同步循环（自动发现，；QUIC 插件化，
+        // 循环本体搬 plugin_roaming 自持 runtime——宿主只组装载荷
         // + 挂成员回流漏斗 + 发 registry_start）。仅自建中继形态（relay_url
-        // 非空）挂载——N0 公共中继无名册，保持既有手工静态条目路径。注册表
+        // 非空）挂载—— 公共中继无名册，保持既有手工静态条目路径。注册表
         // 地址 = relay_url host + 默认端口推导（rendezvous_url 显式覆盖）；
         // 推导失败 = warn 跳过（名册是便利设施，不阻塞叠加层）。
         if !quic_client.relay_url.trim().is_empty() {
@@ -1044,14 +1044,14 @@ impl Cluster {
         Ok(true)
     }
 
-    /// 成员回流漏斗（QUIC 插件化 M2）：插件名册循环经 vtable
+    /// 成员回流漏斗（QUIC 插件化）：插件名册循环经 vtable
     /// `notify_members` 推来的 `{"members":[...]}` 全量包 →
     /// [`Self::merge_rendezvous_members`] 单一漏斗入册 + `rendezvous_status`
     /// 快照覆写。闭包持 `self_weak` 懒升级（同旧循环——`setup_roaming` 跑在
     /// `Arc::new` 之前）；在插件循环线程同步执行（纯内存入册，无回呼插件，
     /// 无死锁面）。快照语义：本漏斗只写**成功**形态（最后成功推送）；失败态
     /// 由插件运行状态槽承载，`plugin_bridge::effective_rendezvous_state`
-    /// 在状态面 merge 出最终形态（Phase 2 观测性，2026-10-24）。
+    /// 在状态面 merge 出最终形态（观测性）。
     fn members_sink(&self) -> std::sync::Arc<dyn Fn(&str) + Send + Sync> {
         let weak = self.self_weak.clone();
         std::sync::Arc::new(move |json: &str| {
@@ -1181,9 +1181,9 @@ impl Cluster {
             if m.iroh_id == self_iroh_hex {
                 continue; // 自己
             }
-            // features 严格过滤（2026-10-23 拍板「不兼容」）：名册是全量
+            // features 严格过滤（「不兼容」）：名册是全量
             // 登记面，集群视图只收宣告 cluster 的成员——缺宣告（旧版设备
-            // /非集群设备）= 本节点集群视图不可见（云端全量名册仍可见），
+            // /非集群设备）= 本节点集群视图不可见（云端全量名册仍可），
             // 不猜不兜底。
             if !m.features.iter().any(|f| f == "cluster") {
                 continue;
@@ -1234,7 +1234,7 @@ impl Cluster {
         self.rendezvous_status.read().clone()
     }
 
-    /// A1 运行时硬化批：注入本节点构建号（git 短 hash）。宿主（nemesisbot
+    /// 运行时硬化批：注入本节点构建号（git 短 hash）。宿主（nemesisbot
     /// gateway / 轻量节点命令）在 `Cluster::with_workspace` / `Cluster::new`
     /// 之后调用——编译期常量 `NEMESISBOT_GIT_COMMIT` 住在 nemesisbot，cluster
     /// crate 不能反向依赖。空串 = 未宣告（announce 不带 build 语义）。
@@ -1244,18 +1244,18 @@ impl Cluster {
 
     /// 漫游开关判定（纯函数）：config.cluster.json 顶层 `roaming.enabled`
     /// 严格为 JSON true 才开。缺文件 / 坏 JSON / 缺字段 / false → false。
-    /// 实现委托 `roaming::config::resolved_roaming`（`roaming` 段的单一
-    /// 真相源——setup_roaming 装配闸与 WSAPI/CLI 状态面同读此形；段内自
-    /// 2026-10-23 起只剩 enabled 一个键，QUIC 客户端/服务端配置已迁
+    /// 实现委托 `roaming::config::resolved_roaming`（`roaming` 段的统一定义
+    /// ——setup_roaming 装配闸与 WSAPI/CLI 状态面同读此形；段内自
+    /// 起只剩 enabled 一个键，QUIC 客户端/服务端配置已迁
     /// config.quic.json）。
     pub fn roaming_enabled_in_config(config_path: &std::path::Path) -> bool {
         crate::roaming::config::resolved_roaming(config_path).enabled
     }
 
-    // QUIC 中继生命周期已迁出集群（2026-10-23 解耦）：中继启停由宿主
+    // QUIC 中继生命周期已迁出集群（解耦）：中继启停由宿主
     //（nemesisbot gateway / 独立 `quic relay` 进程）经 plugin_roaming
-    // C-ABI 承载（QUIC 插件化 M1）——集群关闭/未启用时中继照起，集群
-    // `stop()` 也不再触碰中继。配置真相源 = `config.quic.json` `relay` 段。
+    // C-ABI 承载（QUIC 插件化）——集群关闭/未启用时中继照起，集群
+    // `stop()` 也不再触碰中继。配置以 `config.quic.json` `relay` 段为准。
     pub fn stop(&self) {
         *self.running.write() = false;
 
@@ -1267,10 +1267,10 @@ impl Cluster {
             tracing::warn!(error = %e, "[Cluster] RPC server stop error");
         }
 
-        // A1：iroh 漫游叠加层停机（QUIC 插件化 M3：端点本体在 plugin_roaming
+        // iroh 漫游叠加层停机（QUIC 插件化：端点本体在 plugin_roaming
         // ——桥 endpoint_stop 幂等收口 + 装配旗标复位 + 入站漏斗摘除；无
         // runtime 时 fire-and-forget 兜底由插件 shutdown 承担）。QUIC 中继
-        // 不在本停臂（2026-10-23 解耦——中继运行面在 plugin_roaming 插件、
+        // 不在本停臂（解耦——中继运行面在 plugin_roaming 插件、
         // 由宿主 gateway 停机链 roaming_stop 收口，集群停/启不影响中继）。
         {
             self.roaming_started.store(false, Ordering::SeqCst);
@@ -1292,9 +1292,9 @@ impl Cluster {
             }
         }
 
-        // QUIC 插件化 M2：名册循环在插件内——参数缓存清空（成员回流漏斗
+        // QUIC 插件化：名册循环在插件内——参数缓存清空（成员回流漏斗
         // 闭包据此丢弃迟到包）+ registry_stop（插件侧幂等；fire-and-forget，
-        // 无 runtime 上下文由插件 shutdown 兜底）。中继照旧不动（M1 解耦）。
+        // 无 runtime 上下文由插件 shutdown 兜底）。中继照旧不动（解耦）。
         {
             *self.rendezvous_params.write() = None;
             crate::roaming::plugin_bridge::registry_stop_fire_and_forget();
@@ -1308,7 +1308,7 @@ impl Cluster {
             tracing::warn!(error = %e, "[Cluster] Discovery stop error");
         }
 
-        // Stop TaskManager cleanup loop（BUG-20261030-209：start 接线的对称收口）
+        // Stop TaskManager cleanup loop（start 接线的对称收口）
         self.task_manager.stop();
 
         // Signal recovery/sync loops to exit
@@ -1335,8 +1335,8 @@ impl Cluster {
         &self.task_manager
     }
 
-    /// tasks.db 连接（P1 统一任务层）。`None` = `Cluster::new` 测试路径
-    /// 内存态（无台账可记）；交付门（P4）A 端据此把 worker 交付分支
+    /// tasks.db 连接（统一任务层）。`None` = `Cluster::new` 测试路径
+    /// 内存态（无台账可记）；A 端据此把 worker 交付分支
     /// 证据入 deliveries 表。
     pub fn task_db(&self) -> Option<Arc<nemesis_taskstore::TaskDb>> {
         self.task_db.clone()
@@ -1392,7 +1392,7 @@ impl Cluster {
         self.tags.read().clone()
     }
 
-    /// 自报职能清单（集群专业职能框架 M2；真相源 peers.toml
+    /// 自报职能清单（集群专业职能框架；以 peers.toml
     /// `[node].professions`，身份编辑热改写此处）。
     pub fn professions(&self) -> Vec<String> {
         self.professions.read().clone()
@@ -1404,7 +1404,7 @@ impl Cluster {
         self.sync_local_node_to_registry();
     }
 
-    /// 注入 agent 实体清单提供者（P2 2026-10-16；gateway 装配期一次）。
+    /// 注入 agent 实体清单提供者（gateway 装配期一次）。
     /// 闭包每次现读 AgentManager——announce / get_info 恒拿当前清单。
     /// 注入 `None` = 回到未宣告（测试形态）。
     pub fn set_agent_roster_provider(&self, provider: Option<AgentRosterProvider>) {
@@ -1420,7 +1420,7 @@ impl Cluster {
             .unwrap_or_default()
     }
 
-    /// 节点档位（role_tier 口径；真相源 peers.toml `[node].tier`）。
+    /// 节点档位（role_tier 口径；以 peers.toml `[node].tier` 为准）。
     pub fn tier(&self) -> Option<String> {
         self.tier.read().clone()
     }
@@ -1431,7 +1431,7 @@ impl Cluster {
         self.sync_local_node_to_registry();
     }
 
-    /// 自报运行时后端形态（P5 第 4 步 ③；真相源 peers.toml
+    /// 自报运行时后端形态（以 peers.toml
     /// `[node].runtime_backend`，手工声明不自动推导；None = 未宣告）。
     pub fn runtime_backend(&self) -> Option<String> {
         self.runtime_backend.read().clone()
@@ -1541,7 +1541,7 @@ impl Cluster {
         self.sync_local_node_to_registry();
     }
 
-    /// L13-b（2026-11-03 三期）：运行时 mandate 签名公钥覆盖静态声明。
+    /// b（三期）：运行时 mandate 签名公钥覆盖静态声明。
     ///
     /// gateway 装配期 load-or-generate 出节点 mandate 密钥后调用——announce
     /// wire 从此携带运行时真实公钥（peers.toml `[node].pubkey` 只是降级对账
@@ -1569,7 +1569,7 @@ impl Cluster {
     /// Called after the AgentLoop is built so the discovery broadcast includes
     /// the actual tool set rather than a hardcoded empty list.
     ///
-    /// NB-122 批 ③ 数据面：与 `static_capabilities`（peers.toml
+    /// 批 ③ 数据面：与 `static_capabilities`（peers.toml
     /// `[node].capabilities` 环境能力自报）取并集——matcher 的
     /// required_capabilities 硬条件需要工具名之外的环境能力词。并集
     /// 以自报段在前（顺序稳定，重调幂等），工具名去重追加在后。
@@ -1638,7 +1638,7 @@ impl Cluster {
 
     /// 安装 Arc 自根弱引用（gateway 装配在 `Arc::new(cluster)` 之后调用一次）。
     ///
-    /// 消费方：`ping` RPC handler（探针响应回传自报身份）与 G2 健康探针
+    /// 消费方：`ping` RPC handler（探针响应回传自报身份）与 健康探针
     /// 循环（探针成功时应用对端身份）——两者都在只有 `&self` 的上下文里
     /// 注册/启动，经本槽活读自身。未安装（裸构造的单测）时全部优雅降级：
     /// ping 回裸 pong、探针只记活不应用身份。
@@ -1649,9 +1649,9 @@ impl Cluster {
     /// 探针身份应用：把探针响应里携带的对端自报身份（announce 同构载荷）
     /// 走 [`Self::handle_discovered_node_ex`] 单一漏斗入册。
     ///
-    /// 背景（2026-10-10 ET U 系九连红根因）：身份（professions/tier）唯一
+    /// 背景（ET U 系九连红根因）：身份（professions/tier）唯一
     /// 载体是 UDP announce；广播被隔离/UDP 端口被幽灵进程劫持的部署形态
-    /// （CI 虚拟机实录：静态 peer + TCP 全通、announce 十九分钟零到达）里
+    /// （CI 虚拟机静态 peer + TCP 全通、announce 十九分钟零到达）里
     /// 身份永远不落地，而 TCP 探针全程健康。本方法让可靠 TCP 探针成为
     /// 身份传播的兜底通道。旧对端（响应无 announce 字段）静默跳过。
     pub(crate) fn apply_probe_announce(&self, ann: &serde_json::Value) {
@@ -1904,8 +1904,8 @@ mod cov_net_tests;
 mod node_name_tests;
 
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：按域分文件。纯代码搬家，行为零变更；
-// 各子模块项经 pub use 保持原 nemesis_cluster::cluster:: 路径不变。
+// 机械拆分：按域分文件。纯代码搬家，行为零变更；
+// 各子模块项经 pub use 保持原 nemesis_cluster::cluster:路径不变。
 // ---------------------------------------------------------------------------
 mod continuation;
 mod discovery;
@@ -1916,6 +1916,6 @@ mod tasks;
 pub use continuation::*;
 pub use discovery::*;
 // health/tasks 项全是 crate 内可见（pub(super)/pub(crate)），pub use 重导不出 pub
-// → health 降私有 glob（ROUTE_RECORDED_CAP 供兄弟经 super::* 解析）、tasks 降 pub(crate)
+// → health 降私有 glob（ROUTE_RECORDED_CAP 供兄弟经 super:* 解析）、tasks 降 pub(crate)
 use health::*;
 pub(crate) use tasks::*;

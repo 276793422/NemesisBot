@@ -174,7 +174,7 @@ impl Manager {
         }
         self.updater = Some(Arc::new(updater));
 
-        // G3: hard-validate the virus DB exists before spawning. An empty DB
+        // hard-validate the virus DB exists before spawning. An empty DB
         // makes clamd load 0 signatures and silently report every file as CLEAN
         // (false negatives — malware passes). If the download above failed or
         // was skipped and there's still no DB, refuse to start clamd.

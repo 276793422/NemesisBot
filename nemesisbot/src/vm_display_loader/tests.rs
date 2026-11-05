@@ -1,6 +1,6 @@
 //! [`super`] 单测：端口查询语义 + workspace 写入约定。不 dlopen（真插件
 //! cdylib 归 build 脚本/e2e 面）。签名闸口径与 find_path 的钉死
-//! 用例在 [`crate::plugin_lib`]（单一真相源搬家，测试跟着搬）。
+//! 用例在 [`crate::plugin_lib`]（统一定义搬家，测试跟着搬）。
 
 use super::*;
 
@@ -31,7 +31,7 @@ fn port_query_null_agent_is_unknown() {
     }
 }
 
-/// workspace 路径写入：截断拒绝（-1）、精确写入成功。
+/// workspace 路径写入：截断拒绝（1）、精确写入成功。
 #[test]
 fn write_cstr_semantics() {
     let mut buf = [0i8; 16];

@@ -1,7 +1,7 @@
-//! capture —— 使用期数据回流落盘（T2.4，决议 3）。
+//! capture —— 使用期数据回流落盘（.4，决议 3）。
 //!
 //! 布局：`<workspace>/ziwei/runs/<profile_id>/capture.jsonl`，每行一条
-//! JSON（ts + 来源工具 + 数据快照）。保留策略（§6.5）：7 天 TTL +
+//! JSON（ts + 来源工具 + 数据快照）。保留策略：7 天 TTL +
 //! 每 profile 512 MB 上限，超限删最旧一半（重写文件，尾部新数据保住）。
 //! 快照可能带目标业务数据 → 审计只记 hash+size，不落全文（对齐图片管线）。
 
@@ -65,7 +65,7 @@ impl CaptureStore {
     }
 
     /// 读回某 profile 的最近 `limit` 条记录（WSAPI 会话视图「最近捕获」用）。
-    /// BUG-20261105-018：只保留尾部 limit 条的滑动窗口——旧形态全量
+    /// 只保留尾部 limit 条的滑动窗口——旧形态全量
     /// collect 后再切片，capture.jsonl 上限 512MB，读侧一次性载入即数百
     /// MB 级瞬时峰值（gateway 常驻进程反复触发 = 内存压力）。
     pub fn read_recent(&self, profile_id: &str, limit: usize) -> Vec<serde_json::Value> {

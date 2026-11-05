@@ -211,10 +211,10 @@ async fn call_id_mismatch_is_protocol_error() {
     }
 }
 
-/// BUG-20261102-308 回归锁：engage 失败行（P5-2 `emit_error_response`——
+/// 回归锁：engage 失败行（`emit_error_response`——
 /// 子进程在任何请求读取前拒绝会话，回 v1 形态错误、无 call_id）在
 /// persistent `read_response` 的 call_id 校验下必须把拒绝原因**原文透传**，
-/// 不得泛化成 "call_id mismatch"（P5-2「让模型/用户看到拒绝原因而不是对着
+/// 不得泛化成 "call_id mismatch"（「让模型/用户看到拒绝原因而不是对着
 /// 『子进程无响应』猜」的意图在 persistent 路径同样成立）。
 #[tokio::test]
 async fn session_error_empty_call_id_passes_reason_through() {
@@ -299,7 +299,7 @@ async fn bad_response_json_is_protocol_error() {
 }
 
 // ---------------------------------------------------------------------------
-// 有界行读（MAX_FRAME_BYTES 闸；BUG-20261028-128 读侧 OOM 防线）
+// 有界行读（MAX_FRAME_BYTES 闸； 读侧 OOM 防线）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

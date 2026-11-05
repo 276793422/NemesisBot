@@ -988,7 +988,7 @@ impl VoiceHandler {
             })
         };
 
-        // AEC 库（可选，单独下载到 tools/voice/aec/）
+        // AEC 库（可选，单独下载到 tools/voice/aec）
         let aec_lib = voice_dir.join("aec").join("aec.dll");
         let aec_ready = aec_lib.exists();
 
@@ -3786,7 +3786,7 @@ fn run_stt_pipeline(
         };
 
         // realtime 流式分支：喂流式引擎 + partial 草稿上屏（变化才发，
-        // 省带宽；早于段尾 final 数秒可见）。
+        // 省带宽；早于段尾 final 数秒可）。
         if let Some(ref se) = stream_engine {
             se.accept_waveform(&cleaned, target_sr);
             se.decode();
@@ -4052,7 +4052,7 @@ fn has_onnx_file(dir: &std::path::Path) -> bool {
 
 /// 当前配置变体名（`cfg.<category>.model_name` 投影；未知类别 = None）。
 /// `voice.status` 的 `models.<cat>.current` 与 `voice.model_catalog` 的
-/// `is_current` 共用（单一真相源）。
+/// `is_current` 共用。
 #[cfg(target_os = "windows")]
 fn current_model_name_of(cfg: &nemesis_voice::AppConfig, category: &str) -> Option<String> {
     match category {
@@ -4083,15 +4083,15 @@ fn installed_variants(model_dir: &std::path::Path, category: &str) -> Vec<String
     out
 }
 
-// 批次 18：voice.rs 纯逻辑子模块测试。子模块（而非
+// voice.rs 纯逻辑子模块测试。子模块（而非
 // sibling 文件）是为了访问本文件私有项（DialogueSttOutput 缓冲语义 /
 // check_model_subdir_any / read_voice_config 回退 / cmd_status 文件探测 /
 // cmd_speaker_* 持久化）。原生音频臂（WASAPI / AEC / kokoro / espeak /
-// SenseVoice 真 DLL）不可 mock → 结构性豁免（台账 §9.4 VE-voice-1）。
+// SenseVoice 真 DLL）不可 mock → 结构性豁免（台账 VE-voice-1）。
 #[cfg(all(test, target_os = "windows"))]
 mod wweb2_tests;
 
-// quality-hardening goal 冲刺 ：voice.rs 非豁免行覆盖第二子模块。
+// quality-hardening goal 冲刺：voice.rs 非豁免行覆盖第二子模块。
 // 聚焦 豁免范围外的 WSAPI dispatch 提取臂、start/stop 状态机（注入会话）、
 // 配置读写、纯逻辑 helper 与 push 广播路径。测试间全局状态竞态由模块内
 // voice_state_lock() 串行化（wweb2_tests::voice_shutdown_idle_is_safe 也持有同一把锁）。

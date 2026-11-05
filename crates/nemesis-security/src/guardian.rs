@@ -1,6 +1,6 @@
 //! LLM safety judge (guardian) — a semantic second opinion for high-risk ops.
 //!
-//! 无上下文 LLM 命令审计（2026-09-16 用户拍板）：审计点是一个**独立提示词
+//! 无上下文 LLM 命令审计（2026-09-16）：审计点是一个**独立提示词
 //! 点**，绝不进 agent 流程——直连 provider 的一次 `chat()` 请求，无 session、
 //! 无历史、无工具。信息集刻意截断为「命令本身 + 拦截规则语义」，这是工作
 //! 原理而非缺陷：judge 只回答「这条命令本身危不危险、是否命中拦截规则」，
@@ -37,7 +37,7 @@ pub struct JudgeRequest {
 
 /// The judge's verdict, parsed from the LLM's JSON response.
 ///
-/// rubric 四元组（2026-09-16）：`intent`（命令真实意图）+ `matches_rules`
+/// rubric 四元组：`intent`（命令真实意图）+ `matches_rules`
 /// （是否命中拦截规则语义）+ `risk_level` + `recommendation`。旧的
 /// `user_authorization` 已删除——授权证据只能来自对话记录，无上下文 judge
 /// 拿不到，该字段是纯幻觉源（见 module doc）。
@@ -63,7 +63,7 @@ pub struct JudgeVerdict {
 }
 
 impl JudgeVerdict {
-    /// 消费语义（只升格，2026-09-16 拍板）：`allow` = 放行；`ask`/`deny`/
+    /// 消费语义（只升格）：`allow` = 放行；`ask`/`deny`/
     /// 空串/未知值 = 转人工审批卡——LLM 误报不无声硬拦（留人工通道），
     /// 未知值不猜（宁可多问一次人）。挂点在规则层 allow 之后，结构上
     /// 保证 verdict 只能升格、永不放走规则层已拦的操作。
@@ -94,7 +94,7 @@ pub trait LlmJudge: Send + Sync {
 /// 全文简体中文（全中文铁律）；命令示例、JSON 键名与枚举值保持代码标识
 /// 英文原文（裁决消费端 `is_allow()` 依赖 `allow|ask|deny` 字面量）。
 ///
-/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）；此处 re-export 保持
+/// 文本单一真相源在 `nemesis-prompts`（集中化）；此处 re-export 保持
 /// 既有公开路径不变。
 pub use nemesis_prompts::guardian::GUARDIAN_PROMPT;
 
@@ -119,7 +119,7 @@ pub fn parse_verdict(raw: &str) -> Result<JudgeVerdict, String> {
     Ok(v)
 }
 
-/// 破坏形态预筛词表（`guardian_mode=high` 的成本闸，2026-09-16）。
+/// 破坏形态预筛词表（`guardian_mode=high` 的成本闸）。
 ///
 /// 宽松高召回：词表未命中不进 LLM（控成本），命中也只是**候选**——精度
 /// 由后续 LLM 审计裁（误报代价 = 一次 LLM 调用，故敢放宽）。首版范围
@@ -272,7 +272,7 @@ fn term_present(text_lower: &str, term_lower: &str) -> bool {
 ///   语义就是删 → 恒命中。
 /// - 其余工具：取 `command` 字段（exec/spawn 族）作为审计文本，无该字段则
 ///   退化为整个 args JSON 文本（file_write 的 path/content 等同样能被词表
-///   扫到——写入 .ssh/authorized_keys 这类形态也逃不掉）。
+///   扫到——写入.ssh/authorized_keys 这类形态也逃不掉）。
 pub fn destructive_shaped(tool_name: &str, args_json: &str) -> bool {
     if matches!(tool_name, "delete_file" | "delete_directory" | "delete_dir") {
         return true;
