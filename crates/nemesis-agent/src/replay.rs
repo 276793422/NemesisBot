@@ -1,6 +1,6 @@
-//! Request-replay projection ledger + byte-exact verification (T8 / U9 ②).
+//! Request-replay projection ledger + byte-exact verification (/ ②).
 //!
-//! U9's acceptance: "session_log 可重放出与 request_log 逐字节一致的请求序列".
+//! 's acceptance: "session_log 可重放出与 request_log 逐字节一致的请求序列".
 //! Before this module the only cross-check was [`check_request_log_consistency`]
 //! (role-subsequence, no bodies). The gap: every LLM request's message list is a
 //! PROJECTION of the persisted history — `build_messages_with_memory` folds the
@@ -17,7 +17,7 @@
 //! byte-exact against the request_logger's raw.json `body.messages`.
 //!
 //! Honest boundaries (documented, by design):
-//! - **Trimmed history**: `SessionStore::set_history` trims to
+//! - **Trimmed history**: `SessionStore:set_history` trims to
 //!   `MAX_STORED_MESSAGES`; if the messages a round needed were dropped,
 //!   byte-exact replay is impossible → rebuild reports `Unavailable` (never
 //!   fabricates).
@@ -31,7 +31,7 @@
 //!   the claim site in `run_llm_loop`) — they are NOT transient, so they need
 //!   no ledger entry.
 //!
-//! [`check_request_log_consistency`]: crate::request_logger::check_request_log_consistency
+//! [`check_request_log_consistency`]: crate:request_logger:check_request_log_consistency
 
 use chrono::Local;
 use nemesis_path::default_path_manager;
@@ -56,7 +56,7 @@ pub const INJECTION_REPETITION_NUDGE: &str = "repetition_nudge";
 /// Ledger source tag (voice): the playback-mode suffix appended to the last
 /// user message's content — a mutation, not a standalone message.
 pub const INJECTION_VOICE_APPEND: &str = "voice_append";
-/// Ledger source tag (K1b/U14): messages appended by a registered LLM pre
+/// Ledger source tag: messages appended by a registered LLM pre
 /// hook (reminder / discipline prompts), between the built nudges and the
 /// LlmRequest observer event.
 pub const INJECTION_LLM_HOOK: &str = "llm_hook";
@@ -112,7 +112,7 @@ pub struct BuildAnnotation {
     pub history_len: usize,
     /// Summary cache state the fold used (`None` = no active cache).
     pub summary_as_of: Option<SummaryAsOf>,
-    /// T10（多模态 D4）：build 时是否应用了 vision=no 投影。`true` → replay
+    /// （多模态）：build 时是否应用了 vision=no 投影。`true` → replay
     /// 在 fold 后用同一共享纯函数重放投影——占位文本是投影视图的一部分，
     /// 不重放则字节对不上。
     pub vision_projected: bool,
@@ -142,17 +142,17 @@ pub struct RequestProjectionRecord {
     pub voice_append: Option<VoiceAppend>,
     /// Summary-cache state as-of this request (`None` = full verbatim history).
     pub summary_as_of: Option<SummaryAsOf>,
-    /// T10（多模态 D4）：build 时是否应用了 vision=no 投影（老记录缺键 =
+    /// （多模态）：build 时是否应用了 vision=no 投影（老记录缺键 =
     /// `false` = 无投影，向后兼容）。
     #[serde(default)]
     pub vision_projected: bool,
-    /// L24：本请求 system prompt 的内容寻址哈希（sha256 hex；正文快照在
+    /// 本请求 system prompt 的内容寻址哈希（sha256 hex；正文快照在
     /// objects/system_prompt/<hash>.txt）。None = 请求无 system 首条（诚实
     /// 留空）。豁免轮（cron/heartbeat/internal）不落台账故无此字段。
     #[serde(default)]
     pub system_prompt_sha256: Option<String>,
-    /// L24：本请求 tool defs 数组（tier 过滤 + 按名排序后的
-    /// `Vec<ToolDefinition>`）的 `serde_json::to_string` 字节 sha256（快照在
+    /// 本请求 tool defs 数组（tier 过滤 + 按名排序后的
+    /// `Vec<ToolDefinition>`）的 `serde_json:to_string` 字节 sha256（快照在
     /// objects/tool_defs/<hash>.json）。
     #[serde(default)]
     pub tools_sha256: Option<String>,
@@ -170,10 +170,10 @@ fn replay_ledger_path(session_key: &str) -> PathBuf {
 }
 
 // ---------------------------------------------------------------------------
-// L24: content-addressed snapshot store (system prompt + tool defs)
+// content-addressed snapshot store (system prompt + tool defs)
 // ---------------------------------------------------------------------------
 
-/// sha256 hex digest of `content` (L24 snapshot addressing; same inline
+/// sha256 hex digest of `content` (snapshot addressing; same inline
 /// pattern as `image_attach.rs`).
 fn sha256_hex(content: &str) -> String {
     use sha2::Digest;
@@ -220,7 +220,7 @@ fn store_object(boundary_dir: &std::path::Path, kind: &str, content: &str, hash:
     }
 }
 
-/// L24: snapshot the system prompt actually sent this round into the
+/// snapshot the system prompt actually sent this round into the
 /// content-addressed store; returns its sha256 hex (recorded in the ledger
 /// regardless of whether the object landed).
 pub fn snapshot_system_prompt(content: &str) -> String {
@@ -235,8 +235,8 @@ pub fn snapshot_system_prompt(content: &str) -> String {
     hash
 }
 
-/// L24: snapshot the tool defs actually sent this round (canonical
-/// `serde_json::to_string` of the tier-filtered, name-sorted array —
+/// snapshot the tool defs actually sent this round (canonical
+/// `serde_json:to_string` of the tier-filtered, name-sorted array —
 /// deterministic derivation, same def set ⇒ same hash). Serialization
 /// failure → None (defensive; the request itself is unaffected).
 pub fn snapshot_tool_defs(defs: &[crate::types::ToolDefinition]) -> Option<String> {
@@ -340,7 +340,7 @@ pub enum RebuildOutcome {
 
 /// Same mapping `build_messages_with_memory` applies to history turns.
 ///
-/// T5/T6（多模态）：委托主循环共用转换（`turn_to_request_message`）——
+/// /（多模态）：委托主循环共用转换（`turn_to_request_message`）——
 /// image_refs 每轮水合重读，重建视图与生产请求的字节语义一致。
 fn turn_to_msg(turn: &ConversationTurn) -> LlmMessage {
     crate::r#loop::turn_to_request_message(turn)
@@ -427,10 +427,10 @@ pub fn rebuild_request_messages_in(
         });
     }
 
-    // T10（多模态 D4）：vision=no 投影重放——生产 build 在 fold 后立即投影
+    // （多模态）：vision=no 投影重放——生产 build 在 fold 后立即投影
     // （投影窗口 = 当轮 fold 结果，即 history_len_at_build 条），重建同序
     // （占位文本参与后续逐字节比对）。
-    // F-D（2026-09-04 四轮盲审）：截断必须在投影**之前**——先投影全长再截
+    // F-D（四轮盲审）：截断必须在投影**之前**——先投影全长再截
     // 断时，"最新 user 轮"的 rposition 会落到 build 之后才追加的 user 轮上
     // （当前轮/历史轮注记错位 → 字节漂移，带后续轮次的 vision=no 会话重放
     // 恒红）。生产投影的就是当轮窗口，重放先截到同窗口再投影才是同输入。
@@ -479,7 +479,7 @@ pub fn rebuild_request_messages_in(
         m.content.push_str(&va.suffix);
     }
 
-    // L24: system-prompt snapshot restoration. The store's history[0] may
+    // system-prompt snapshot restoration. The store's history[0] may
     // carry the CURRENT persona (set_history re-injects the up-to-date prompt
     // on load), while the recorded round saw the prompt as-of that request —
     // the content-addressed snapshot is the only byte-exact source. Restore
@@ -531,7 +531,7 @@ pub struct ReplayDiff {
 
 /// Byte-exact comparison of a rebuilt message list against the recorded
 /// request messages (`NN.AI.Request.raw.json` → `body.messages`, which are
-/// `serde_json::to_value(LlmMessage)` — the same serialization both sides).
+/// `serde_json:to_value(LlmMessage)` — the same serialization both sides).
 /// Returns the FIRST difference with diagnosis.
 pub fn verify_request_replay(
     rebuilt: &[LlmMessage],
@@ -618,7 +618,7 @@ fn first_diff_offset(a: &str, b: &str) -> usize {
     floor_char_boundary_str(a, i)
 }
 
-/// `str::floor_char_boundary` is still unstable — local copy (same approach
+/// `str:floor_char_boundary` is still unstable — local copy (same approach
 /// as nemesis-utils; kept here so the module is self-contained).
 fn floor_char_boundary_str(s: &str, mut i: usize) -> usize {
     if i >= s.len() {
@@ -748,6 +748,6 @@ pub fn now_rfc3339() -> String {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

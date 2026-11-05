@@ -1,6 +1,6 @@
-//! 会话事件账本（扩展计划 T6 / D5）。
+//! 会话事件账本（扩展计划）。
 //!
-//! 会话历史（chat_log jsonl）可被合法改写：rewind/redo 截断（E3）、clear
+//! 会话历史（chat_log jsonl）可被合法改写：rewind/redo 截断、clear
 //! 清空、fork 复制。改写本身不可篡改审计——被删/被改的已提交内容直接消失，
 //! 事后无法回答「这个会话在 t 时刻是什么样、删掉的部分原文是什么」。本
 //! 账本在 chat_log 三个写路径（append / truncate / fork）旁路落一条
@@ -145,8 +145,8 @@ pub fn ledger_record(session_key: &str, op: LedgerOp, actor: &str, rows: Vec<Led
     }
 }
 
-/// BUG-20261028-121：同会话并发记账源真实存在——R100 注记承认的「spawned
-/// 续行 final vs 主循环下一条 user 行」双写形态，加 B11 snooze sweeper 唤醒
+/// 同会话并发记账源真实存在—— 注记承认的「spawned
+/// 续行 final vs 主循环下一条 user 行」双写形态，加 snooze sweeper 唤醒
 /// 行（gateway 常驻任务，不经 history gate）。「读链尾 → 追加」两步若不
 /// 串行，两方并发读到同一 (seq, prev_hash) → 重复 seq → ledger_verify 从
 /// 断点起永久红（append-only 无修复路径），完整性证据工具自身产生永久
@@ -172,7 +172,7 @@ pub fn record_entry_at(
     actor: &str,
     rows: Vec<LedgerRow>,
 ) -> Result<u64, String> {
-    // BUG-20261028-121：读尾 → 构造 → 追加全程持同路径锁（见
+    // 读尾 → 构造 → 追加全程持同路径锁（见
     // LEDGER_IO_LOCKS 注记）。
     let io_lock = ledger_io_lock(path);
     let _io = io_lock.lock();

@@ -151,8 +151,8 @@ impl ConversationMemory {
 /// This correctly handles CJK and other multi-byte text, unlike byte-based
 /// division which overestimates by 3x for CJK content.
 ///
-/// 已知边界（M6）：相对真实分词器（CJK ≈ 1 token/char）仍**低估 ~2.5 倍**，
-/// 详见 `session.rs::estimate_tokens` 的注记（不改估算器的理由同源）。
+/// 已知边界：相对真实分词器（CJK ≈ 1 token/char）仍**低估 ~2.5 倍**，
+/// 详见 `session.rs:estimate_tokens` 的注记（不改估算器的理由同源）。
 fn estimate_tokens(text: &str) -> usize {
     text.chars().count() * 2 / 5
 }
@@ -166,7 +166,7 @@ fn estimate_tokens(text: &str) -> usize {
 /// - Long-term memory: `memory/MEMORY.md`
 /// - Daily notes: `memory/YYYYMM/YYYYMMDD.md`
 ///
-/// 写串行锁（横扫六期记档，2026-10-13）：本结构当前无生产接线（仅测试
+/// 写串行锁（横扫六期记档）：本结构当前无生产接线（仅测试
 /// 保活；生产记忆写走 nemesis-memory 的 jsonl append 链），但
 /// append_today 是读→拼接→写的 RMW——一旦接线，主 loop/项目 loop/集群
 /// B 端并发调 memory 工具即互相丢笔记。锁取在写函数内，未来接线者
@@ -332,6 +332,6 @@ impl MemoryStore {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

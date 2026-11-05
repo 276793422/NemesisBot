@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：context.rs 剩余未覆盖行。
+//! 覆盖率批次：context.rs 剩余未覆盖行。
 //! - 274：load_skills 真实扫描目录（SKILL.md 加载成功 → if-let 块收尾）。
 //! - 334/508-509：debug! 参数表达式行（需 subscriber）。
 //! - 408：空 description 的 skill 渲染 "(no description)"。

@@ -1,14 +1,14 @@
-//! E5（2026-10-15 收尾保障）：预算暂停前收尾编译探针。
+//! （2026-10-15）：预算暂停前收尾编译探针。
 //!
 //! 首轮产品验证实验 3 个 FAIL 中 2 个同族：预算暂停把「编辑」与「复验」
 //! 切开，破损代码留在工作树（CKPTGC：必红测试写了没跑；HTTPARSE r3：最后
 //! 一轮编辑打坏宏，库不编译）。本器官在暂停事件推送前跑一次快速编译检查，
-//! 把树状态诚实注记进暂停消息——**只报告不回滚**（用户拍板 2026-10-15）。
+//! 把树状态诚实注记进暂停消息——**只报告不回滚**（2026-10-15）。
 //!
 //! 触发闸（全部满足才跑，任一不满足零副作用直通）：
 //! 1. `prepare_round` 判定预算暂停（reason = budget_exhausted / max_turns，
 //!    cron / detached / 常驻三条路都算——树状态对三者同等重要）；
-//! 2. 本轮发生过写类工具成功（[`crate::turn_guard::TurnGuard::had_writes`]）；
+//! 2. 本轮发生过写类工具成功（[`crate:turn_guard:TurnGuard:had_writes`]）；
 //! 3. config `agents.defaults.pre_pause_probe.enabled`（默认开，新鲜读）；
 //! 4. workspace_root 已装配且命中已知生态标记（无标记=非编码工作区，静默）。
 //!
@@ -75,7 +75,7 @@ pub(crate) fn select_probe_command(root: &Path) -> Option<(&'static str, &'stati
     }
 }
 
-/// 跑探针：复用 [`crate::loop_tools::run_one_stage`] 执行内核（含 2026-10-15
+/// 跑探针：复用 [`crate:loop_tools:run_one_stage`] 执行内核（含
 /// 超时树杀语义——收尸连 cargo/rustc 孙树一起收）。无生态标记 → None（静默）。
 pub(crate) async fn run_probe(root: &Path, timeout_secs: u64) -> Option<ProbeOutcome> {
     let (marker, command) = select_probe_command(root)?;

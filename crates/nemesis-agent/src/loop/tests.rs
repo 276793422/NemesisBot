@@ -1,5 +1,5 @@
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
-// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
+// 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio:test] 每个
 // 测试独立 current_thread runtime，持锁方在自己线程上恢复运行，不会死锁。
 // 测试域统一豁免（逐处 allow ~200 个不现实）。
 #![allow(clippy::await_holding_lock)]
@@ -73,7 +73,7 @@ impl Tool for StrictTool {
     }
 }
 
-/// 并发重叠峰值跟踪（2026-09-18 CI Windows 实录）：execute 进入 +1 / 退出
+/// 并发重叠峰值跟踪（CI Windows）：execute 进入 +1 / 退出
 /// −1，CAS 维护同时在执行的峰值。wall-clock 上限断言在 CI 慢机会假红
 /// （g3_mixed：并行被调度/杀毒延迟拉到 908ms，越过 700ms 上限——纯 spawn
 /// 批与纯 read-only 批同 run 全绿，混合批的 3×300ms 并行被环境拖成
@@ -100,7 +100,7 @@ impl OverlapTracker {
     }
 }
 
-/// U5 (sixth batch): a read-only tool that sleeps a fixed duration then
+/// (sixth batch): a read-only tool that sleeps a fixed duration then
 /// returns a marker — drives the concurrency tests. The delay is what the
 /// parallel pool overlaps; a serial path would sum them.
 struct SlowReadTool {
@@ -142,8 +142,8 @@ impl Tool for SlowReadTool {
     }
 }
 
-/// U5: same shape but NOT read-only (default `false`) — forces a mixed batch
-/// onto the serial path, the byte-identical-to-pre-U5 fallback.
+/// same shape but NOT read-only (default `false`) — forces a mixed batch
+/// onto the serial path, the byte-identical-to-pre fallback.
 struct SlowWriteTool {
     marker: String,
     delay_ms: u64,
@@ -201,7 +201,7 @@ async fn simple_text_response() {
 }
 
 /// A usage whose completion_tokens sits exactly at the default max_tokens cap
-/// (DEFAULT_MAX_TOKENS=64K; 8192 before the 2026-10-23 P0 fix) — the truncation
+/// (DEFAULT_MAX_TOKENS=64K; 8192 before the fix) — the truncation
 /// signal the continue-generation path detects. References the constant so a
 /// future default change can't silently stale the fixture.
 fn cap_usage() -> Option<crate::loop_executor::ObserverUsageInfo> {
@@ -409,7 +409,7 @@ async fn estop_disengaged_lets_loop_run_normally() {
 
 #[tokio::test]
 async fn estop_interrupts_in_flight_llm_call() {
-    // Phase 2：LLM 调用进行中触发急停，应通过 select 的 estop arm 中断挂起的
+    // LLM 调用进行中触发急停，应通过 select 的 estop arm 中断挂起的
     // chat future（而不是干等到 provider 永远挂起）。用 HangingProvider 验证——
     // 它的 chat 永远 pending，但进入时翻 entered 标志，让测试确定 chat 已在等。
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -449,7 +449,7 @@ async fn estop_interrupts_in_flight_llm_call() {
     let run_task = tokio::spawn(async move { al.run(&instance, "Hi", &context).await });
 
     // 等 chat() 被 poll 到（说明 select 已在等 LLM），再触发急停——
-    // 这样保证是 Phase 2 的 select arm 命中，而不是 Phase 0 的 checkpoint A。
+    // 这样保证是 的 select arm 命中，而不是 的 checkpoint A。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while !entered.load(Ordering::SeqCst) {
         if std::time::Instant::now() > deadline {
@@ -542,10 +542,10 @@ async fn handle_tool_call_runs_when_estop_disengaged() {
 
 #[tokio::test]
 async fn estop_interrupts_in_flight_tool_and_emits_tool_finished() {
-    // 修②⑥（BUG-C 2026-11-04 交叉态回归锁）：工具执行到一半触发急停——
+    // 修②⑥（交叉态回归锁）：工具执行到一半触发急停——
     // dispatch 的 estop select 臂 drop 在飞执行链 future（工具体 + around
     // hooks），被 drop 的 hook 链发不出 ToolFinished，dispatch 按**同一
-    // call_id**（turn_wal::call_id_for 派生点）补发 interrupted 终态
+    // call_id**（turn_wal:call_id_for 派生点）补发 interrupted 终态
     // （ok=false、estop 预览、真实墙钟），UI 卡片与 Work 时间线不悬空。
     // 观察面：同一 broadcast tx 同时喂 ToolEventHook（正常链事件）与
     // agent_event_tx（中断补发事件），单 rx 收全两路。
@@ -992,7 +992,7 @@ async fn grace_round_finalizes_when_model_cooperates() {
 }
 
 // -------------------------------------------------------------------------
-// T3 (U12): per-turn cron budget override
+// : per-turn cron budget override
 // -------------------------------------------------------------------------
 
 fn tool_loop_response() -> LlmResponse {
@@ -1074,7 +1074,7 @@ async fn cron_budget_override_stops_turn() {
     assert_eq!(tool_rounds, 3, "2 budget rounds + 1 grace round");
 }
 
-/// 预算暂停文案按来源分岔（2026-10-15 产品验证实验 #2 回归锁）：非 cron
+/// 预算暂停文案按来源分岔（产品验证实验 #2 回归锁）：非 cron
 /// 来源的预算（detached：headless run 的 --max-turns / 子代理 spawn
 /// max_turns）不可续——文案不得再谎称「下次触发时会重新获得预算」。
 #[tokio::test]
@@ -1181,7 +1181,7 @@ async fn cron_budget_none_uses_global_default() {
 
 /// Budget exhaustion on a cron-exempt turn (user=="cron") still writes ONE
 /// boundary turn_end marker with reason budget_exhausted — the observability
-/// requirement for T3 despite the cron boundary-exemption.
+/// requirement for despite the cron boundary-exemption.
 #[tokio::test]
 async fn cron_budget_exhaustion_writes_boundary_marker() {
     let responses: Vec<LlmResponse> = (0..10).map(|_| tool_loop_response()).collect();
@@ -1318,7 +1318,7 @@ async fn escalation_fires_on_repeated_failing_builds() {
     // Ok("Exit code: 101\nstderr: error[...]...") for a non-zero exit — without
     // the tool_result_indicates_error helper this looks like success and the
     // guards never fire. Verify ⑥ escalation hard-stops at failure 24 (well
-    // under max_turns=100); the ladder nudges L0-L3 fire along the way.
+    // under max_turns=100); the ladder nudges - fire along the way.
     let fail_resp = LlmResponse {
         finish_reason: None,
         escalated_to: None,
@@ -1379,7 +1379,7 @@ async fn escalation_fires_on_repeated_failing_builds() {
     );
 }
 
-// --- 循环干预阶梯（2026-10-24）：终级停车卡 + J5 保留件 ---
+// --- 循环干预阶梯：终级停车卡 + 保留件 ---
 
 /// 测试假 asker：返回预置作答（None = Timeout），并计数被问次数。
 struct FakeDoomAsker {
@@ -1417,7 +1417,7 @@ impl nemesis_types::agent::QuestionAsker for FakeDoomAsker {
         self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // 终级卡契约钉死（bypass 是判别器）：无超时（timeout_secs=0）——
         // 任何自动化开关都压不掉这张卡（用户裁决第 5 点：烟雾报警器必须
-        // 响）。J5 保留件卡走常规超时，不受此约束。
+        // 响）。 保留件卡走常规超时，不受此约束。
         if request.bypass_auto_approve {
             assert_eq!(request.timeout_secs, 0, "terminal card must never time out");
         }
@@ -1428,7 +1428,7 @@ impl nemesis_types::agent::QuestionAsker for FakeDoomAsker {
     }
 }
 
-/// WS2（P5）：写一个只含 `agents.defaults.compact_keep_recent_tokens` 的临时
+/// ：写一个只含 `agents.defaults.compact_keep_recent_tokens` 的临时
 /// config.json，返回路径（调用方负责删除）。`maybe_update_summary` 对该键是
 /// fresh-read（config.json 唯一真相源）——测试要控制逐字尾巴的 token 预算
 /// 就必须落盘这个键；缺省 20000 会吞掉测试里的小 history（边界=0）。
@@ -1438,7 +1438,7 @@ fn keep_tokens_config_file(budget: i64, suffix: &str) -> std::path::PathBuf {
         std::process::id(),
         suffix
     ));
-    // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩
+    // ：条目带 context_window=100——窗口已知才不禁自动压缩
     // （与这些测试 instance.set_context_window(100) 的阈值语义一致）。
     std::fs::write(
         &path,
@@ -1646,8 +1646,8 @@ async fn doom_loop_terminal_without_asker_stops_turn() {
 
 #[tokio::test]
 async fn doom_loop_terminal_fires_card_by_default() {
-    // 用户裁决第 7 点（2026-10-24）：阶梯 + 终级卡是**默认行为**——无需
-    // 任何 config 开关，全会话生效（取代 J5 的「开关关默认不发卡」语义）。
+    // 用户裁决第 7 点：阶梯 + 终级卡是**默认行为**——无需
+    // 任何 config 开关，全会话生效（取代 的「开关关默认不发卡」语义）。
     let provider = MockLlmProvider::new(
         (0..30)
             .map(|i| failing_exec_response(&format!("tc_{}", i)))
@@ -1692,7 +1692,7 @@ async fn doom_loop_terminal_fires_card_by_default() {
     );
 }
 
-/// J5 保留件冒烟（2026-10-24）：`ask_doom_loop_approval` 已被终级卡取代
+/// 保留件冒烟：`ask_doom_loop_approval` 已被终级卡取代
 /// （生产不消费）但**禁止删除**——直呼验证它仍然可用（带超时的轻量确认
 /// 卡语义保留给未来场景）。同一 asker 槽、不同选项原文（「继续执行」）。
 #[tokio::test]
@@ -2490,7 +2490,7 @@ fn test_concurrent_mode_default() {
     assert_eq!(ConcurrentMode::default(), ConcurrentMode::Reject);
 }
 
-/// M3 补测（quality-hardening goal 2026-08-25）：配置串解析的归一化 + 未知值
+/// 补测（quality-hardening goal）：配置串解析的归一化 + 未知值
 /// 兜底（fail-safe 回 Reject）。agent_factory 只在 unknown 时 warn，行为兜底
 /// 在这里——此前无直接断言。
 #[test]
@@ -2853,16 +2853,16 @@ fn test_build_messages_from_instance() {
 
     let messages = agent_loop.build_messages(&instance);
 
-    // system + (I2: user-role merged context snapshot) + user + assistant = 4
+    // system + (user-role merged context snapshot) + user + assistant = 4
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[0].role, "system");
-    assert_eq!(messages[1].role, "user"); // merged context snapshot (I2)
+    assert_eq!(messages[1].role, "user"); // merged context snapshot
     assert!(messages[1].content.contains("Current Time"));
     assert_eq!(messages[2].role, "user");
     assert_eq!(messages[3].role, "assistant");
 }
 
-// P3.1 (sixth batch): memory auto-inject snapshot section.
+// .1 (sixth batch): memory auto-inject snapshot section.
 #[test]
 fn test_build_messages_with_memory_off_is_byte_identical() {
     // auto_inject defaults to false (the (false, 3) in new()). With None
@@ -2953,7 +2953,7 @@ fn test_textwise_similar_dedup_helper() {
 
 #[tokio::test]
 async fn test_force_compression() {
-    // Redesigned (S4): force_compression does NOT mutate history. It advances
+    // Redesigned: force_compression does NOT mutate history. It advances
     // the summary cache to len-SMALL_K_FORCE and recomputes the summary, so
     // build_messages emits a shorter verbatim tail.
     let provider = MockLlmProvider::new(vec![llm_text("EMERGENCY SUMMARY")]);
@@ -2985,8 +2985,8 @@ async fn test_force_compression_short_history() {
     // (empty LLM response) → cache stays None (no-op). History unchanged.
     // (MockLlmProvider returns "No more responses" when exhausted, which is
     // non-empty, so use explicit empty responses to exercise the None path.)
-    // 2026-09-28 重试版护栏：空输出按失败归一进重试内层 → 两个空响应分别
-    // 承载首次尝试与重试；两次全空触发 4× 预算升档重试（2026-11-03）→
+    // 重试版护栏：空输出按失败归一进重试内层 → 两个空响应分别
+    // 承载首次尝试与重试；两次全空触发 4× 预算升档重试→
     // 第三个空响应承载升档尝试；三次全空 → 诚实 None（mock 耗尽回落的
     // "No more responses" 非空，绝不能让它被当摘要收编）。
     let provider = MockLlmProvider::new(vec![llm_text(""), llm_text(""), llm_text("")]);
@@ -3004,7 +3004,7 @@ async fn test_force_compression_short_history() {
 }
 
 // -------------------------------------------------------------------------
-// 2026-08-25 摘要静默失败回归测试（生产事故：legacy 会话的 store summary
+// 摘要静默失败回归测试（生产事故：legacy 会话的 store summary
 // 字段存着一次失败的摘要 LLM 回复"请把摘要贴给我"，covers=268 已推进，
 // 7 月上下文被折叠后静默丢失）。契约：任一摘要 LLM 调用失败 →
 // summarize_prefix_owned 返回 None → 调用方绝不推进 covers_up_to。
@@ -3057,7 +3057,7 @@ impl LlmProvider for OutcomeMockProvider {
 /// complaint, and that complaint was stored as the summary (covers advanced,
 /// prefix context silently lost). New contract: None, merge never called.
 ///
-/// （2026-09-28 重试版护栏接入：失败臂计入「重试一次」——part1 成功后
+/// （重试版护栏接入：失败臂计入「重试一次」——part1 成功后
 /// part2 两次尝试全败（重试由 OutcomeMockProvider 的第二条 Err 承载），
 /// 合同不变：None + merge 零调用，总调用数 3。）
 #[tokio::test]
@@ -3142,7 +3142,7 @@ async fn test_summarize_batch_failure_returns_none() {
     assert!(out.is_none());
 }
 
-/// 空输出重试回归（2026-09-28 复查修正）：thinking 系模型烧穿预算的主要
+/// 空输出重试回归（复查修正）：thinking 系模型烧穿预算的主要
 /// 失败形态是 200-OK 空正文——空→Err 归一必须在重试内层，否则 compact
 /// 路径对空输出永不重试。首次空 → 重试拿到真摘要 → 成功收口，恰好两次
 /// 调用。
@@ -3165,7 +3165,7 @@ async fn test_summarize_empty_output_retries_then_succeeds() {
     assert_eq!(provider.call_count(), 2, "exactly attempt + one retry");
 }
 
-/// 两次全空 → 4× 预算升档重试（2026-11-03）→ 仍空 → 诚实 None（摘要不产出、
+/// 两次全空 → 4× 预算升档重试→ 仍空 → 诚实 None（摘要不产出、
 /// 历史保持不折叠），恰好三次调用（默认预算 attempt+retry + 升档一次）；
 /// mock 耗尽回落串绝不进摘要。
 #[tokio::test]
@@ -3281,7 +3281,7 @@ fn test_provider_access() {
 
 #[test]
 fn test_runtime_model_switch_refreshes_tier() {
-    // Phase 4a: tier is re-resolved LIVE from config.json on every model switch.
+    // a: tier is re-resolved LIVE from config.json on every model switch.
     // config.json is the single source of truth — dashboard-added models and
     // CLI `model set-tier` edits are picked up because each switch re-reads
     // config.json (no stale snapshot). This also exercises `refresh_active_tier`,
@@ -3881,7 +3881,7 @@ fn test_set_route_resolver() {
     assert!(agent_loop.route_resolver.is_some());
 }
 
-/// BUG-20261025-50 接线端到端：route_message 的 RouteInput 不再恒传空身份
+/// 接线端到端：route_message 的 RouteInput 不再恒传空身份
 /// 链——dm_scope 粒度与 identity_links 归并在真实路由路径生效；缺省形态
 /// （Main scope + 空链）与旧硬编码行为逐字节同键。
 #[test]
@@ -3937,7 +3937,7 @@ fn test_route_message_dm_scope_and_identity_links_wiring() {
     assert_eq!(session_key, "agent:main:telegram:direct:alice");
 }
 
-/// BUG-20261028-114 红证：G1 agent 实体会话键（`agents:{agent_id}:session:{sid}`，
+/// 红证： agent 实体会话键（`agents:{agent_id}:session:{sid}`，
 /// web 层 `agent_session_key` 单一真相源构造、`agents.send` 投递）此前被
 /// route_message 的 `agent:`（单数）前缀 honor 检查漏接——`agents:` 不匹配
 /// `agent:`（第 6 字节 `s` vs `:`），会话身份被静默替换成路由键（缺省形态
@@ -3973,7 +3973,7 @@ fn test_route_message_honors_agents_entity_session_key() {
     );
 }
 
-/// BUG 2026-11-05 红证（本地派发会话键污染主会话）：本地执行器以
+/// BUG 红证（本地派发会话键污染主会话）：本地执行器以
 /// `board_dispatch:{task_id}` 键发布派发消息，该键族此前不进
 /// `is_preset_session_key` 白名单——route_message 走 resolver 覆盖分支把
 /// 键替换成路由缺省 `agent:main:main`：派发轮污染主会话（连续派发还互相
@@ -4158,7 +4158,7 @@ async fn test_handle_tool_call_with_security_block() {
 
 #[tokio::test]
 async fn test_checkpoint_e2e_write_then_rewind_restores() {
-    // P3 AgentLoop-level e2e: write_file snapshots pre-edit content via the
+    // AgentLoop-level e2e: write_file snapshots pre-edit content via the
     // capture seam in handle_tool_call, then rewind restores it. Verifies the
     // full flow: set_checkpoint_store → preview → snapshot → execute → rewind.
     use crate::checkpoint::CheckpointStore;
@@ -4174,7 +4174,7 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
     // Pre-existing file whose turn-start content must be captured.
     let file = root.join("target.txt");
     tokio::fs::write(&file, "ORIGINAL").await.unwrap();
-    // simulate process_inbound_message opening a turn（R4：与生产同键——
+    // simulate process_inbound_message opening a turn（与生产同键——
     // Admitted 点 begin_turn_checkpoint 带 session_key begin，下方
     // handle_tool_call 的 snapshot 同键落桶）。
     store.begin_for_session(0, "edit the file", Some("session1"));
@@ -4212,7 +4212,7 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
 #[cfg(feature = "security")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_e2e_critical_op_denied_by_judge() {
-    // P5 AgentLoop-level e2e: a CRITICAL op that passes the rule layers is
+    // AgentLoop-level e2e: a CRITICAL op that passes the rule layers is
     // blocked by the guardian judge. Verifies: set_judge + guardian_mode →
     // security allow → guardian_should_review → judge → escalate → 审批
     // 通道不可用 = fail-closed block, in the real handle_tool_call path.
@@ -4273,9 +4273,9 @@ async fn test_guardian_e2e_critical_op_denied_by_judge() {
 #[cfg(feature = "security")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_default_mode_off_skips_judge_entirely() {
-    // 2026-09-16 无上下文审计默认 off：judge 即使被（误）装配，缺省 mode
+    // 无上下文审计默认 off：judge 即使被（误）装配，缺省 mode
     // 下 guardian_should_review=false → judge 不被消费 → 工具照常执行。
-    // 钉死「默认零 LLM 成本、连旧 CRITICAL 审都不跑」的拍板语义。
+    // 钉死「默认零 LLM 成本、连旧 CRITICAL 审都不跑」的既定语义。
     use nemesis_security::guardian::{JudgeRequest, JudgeVerdict, LlmJudge};
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4338,7 +4338,7 @@ async fn test_guardian_default_mode_off_skips_judge_entirely() {
 #[cfg(feature = "security")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_e2e_allows_when_judge_approves() {
-    // P5 e2e counterpart: when the judge allows, the CRITICAL op proceeds.
+    // e2e counterpart: when the judge allows, the CRITICAL op proceeds.
     use nemesis_security::guardian::{JudgeRequest, JudgeVerdict, LlmJudge};
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
 
@@ -4747,7 +4747,7 @@ async fn test_process_inbound_message_no_resolver_fallback() {
         raw_request_body: None,
         raw_response_body: None,
     }]);
-    // Use AgentLoop::new (standalone) which has no route resolver
+    // Use AgentLoop:new (standalone) which has no route resolver
     let agent_loop = AgentLoop::new(Box::new(provider), test_config());
 
     // process_direct_with_channel works in standalone mode
@@ -4789,7 +4789,7 @@ async fn test_run_bus_owned_sends_outbound() {
 
     agent_loop.run_bus_owned(inbound_rx).await;
 
-    // 统一泵（D 2026-09-23）：turn 作为 tracked task spawn，run_bus_owned
+    // 统一泵（D）：turn 作为 tracked task spawn，run_bus_owned
     // 在 inbound 通道关闭即返回，出站帧异步到达——等待而非同步 try_recv。
     let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
         .await
@@ -4847,7 +4847,7 @@ async fn test_assistant_outbound_carries_model_badge() {
 
     // The assistant OutboundMessage carries the resolved display model
     // (provider/name) for the per-message "供应商·模型名" badge.
-    // 统一泵（D 2026-09-23）：出站帧异步到达（见 test_run_bus_owned_sends_outbound）。
+    // 统一泵（D）：出站帧异步到达（见 test_run_bus_owned_sends_outbound）。
     let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
         .await
         .expect("timed out waiting for outbound")
@@ -4877,7 +4877,7 @@ async fn test_assistant_outbound_carries_model_badge() {
     }
     // (If the assistant row isn't found under main_key, the outbound assertion
     //  above already covers the stamping; chat_log write is also unit-tested in
-    //  chat_log::tests::test_append_with_model_round_trip.)
+    //  chat_log:tests:test_append_with_model_round_trip.)
 }
 
 #[tokio::test]
@@ -4921,7 +4921,7 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
 
     agent_loop.run_bus_owned(inbound_rx).await;
 
-    // 统一泵（D 2026-09-23）：出站帧异步到达（见 test_run_bus_owned_sends_outbound）。
+    // 统一泵（D）：出站帧异步到达（见 test_run_bus_owned_sends_outbound）。
     let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
         .await
         .expect("timed out waiting for outbound")
@@ -5373,7 +5373,7 @@ async fn test_maybe_summarize_already_summarizing() {
 #[tokio::test]
 async fn test_maybe_update_summary_advances_cache_when_tail_over_threshold() {
     // Small context window → 75% threshold is low, so a handful of messages
-    // crosses it. P5 起尾巴边界按 token 预算（compact_keep_recent_tokens）算：
+    // crosses it. 起尾巴边界按 token 预算（compact_keep_recent_tokens）算：
     // 这里落盘一个很小的预算（缺省 20000 会吞掉整个小 history、边界=0 不推进），
     // 验证 cache 推进到「预算内尾巴的起点」并存储摘要文本。
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
@@ -5441,13 +5441,13 @@ async fn test_maybe_update_summary_no_trigger_below_threshold() {
 
 #[tokio::test]
 async fn test_maybe_update_summary_no_stuck_when_tail_short_but_over_threshold() {
-    // Regression (found via S7 实跑): a few HUGE messages put tail_tokens over
+    // Regression (found via 实跑): a few HUGE messages put tail_tokens over
     // the threshold while the tail is too short to summarize yet. The stuck
     // counter must NOT tick in this state — the old logic ticked it on
     // `tail_tokens >= threshold` regardless of tail length, so a big system
     // prompt / early oversized tool result paused summarization before it ever
     // ran. Verify summarize still fires once the tail grows long enough.
-    // P5：用 `compact_keep_recent_tokens=0` 走旧按条数（K_TARGET）回退路径，
+    // 用 `compact_keep_recent_tokens=0` 走旧按条数（K_TARGET）回退路径，
     // 让「尾巴太短」的语义保持原测试的精确形态（默认 token 预算路径下边界
     // 由预算定，「短尾巴」由预算边界=长度自然封死，等价但少了条数维度）。
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
@@ -5550,7 +5550,7 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
     // Integration: maybe_update_summary must set a tool-safe covers_up_to when
     // the naive boundary lands on a tool result. Regression for the
     // boundary-splits-tool-pair info loss found in second-pass review.
-    // P5：naive 边界现在来自 token 预算（落盘 budget=250）。从尾部回退装下
+    // naive 边界现在来自 token 预算（落盘 budget=250）。从尾部回退装下
     // u5..u3+res(160tok) 后到 235，再加 parent "go"(25tok) 会超 250 → raw=4
     // 恰好落在 tool 结果上 → tool_safe_boundary 退到 3。
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
@@ -5633,7 +5633,7 @@ async fn test_e2e_summarize_persist_reload_inject() {
         8,
         0,
     );
-    // P5：缺省预算 20000 会吞掉这个小 history（边界=0 不推进），落盘预算 90
+    // 缺省预算 20000 会吞掉这个小 history（边界=0 不推进），落盘预算 90
     // 让 covers=11（覆盖段 user/assistant 恰 10 条 → batch 单次 LLM 调用，
     // 与 only-one-response 的 mock 匹配），注入断言不变。
     let cfg_path = keep_tokens_config_file(90, "e2e");
@@ -5719,11 +5719,11 @@ async fn test_summarize_prefix_owned_returns_summary() {
 }
 
 // -------------------------------------------------------------------------
-// T4 (U1): per-model summarizer prefix-reuse switch
-// (shape capture reuses CapturingMockProvider, defined near the G1 tests below)
+// : per-model summarizer prefix-reuse switch
+// (shape capture reuses CapturingMockProvider, defined near the tests below)
 // -------------------------------------------------------------------------
 
-/// prefix_reuse=true (default) → G1 shape: the request preserves message
+/// prefix_reuse=true (default) → shape: the request preserves message
 /// structure — system first (when present), original user/assistant turns in
 /// order, trailing instruction. NOT a flattened single message.
 #[tokio::test]
@@ -5753,7 +5753,7 @@ async fn test_summarize_prefix_reuse_true_keeps_g1_shape() {
     assert_eq!(msgs[1].role, "user");
     assert_eq!(msgs[1].content, "question one");
     assert_eq!(msgs[2].role, "assistant");
-    // ...trailing instruction as the final user message（P6 六节 schema
+    // ...trailing instruction as the final user message（六节 schema
     // 指令——merge 后 loop 侧摘要指令由 build_summary_instruction 单源构建）。
     assert_eq!(msgs.last().unwrap().role, "user");
     assert!(msgs.last().unwrap().content.contains("## Goal"));
@@ -5847,7 +5847,7 @@ fn test_current_summarizer_prefix_reuse_default_and_off() {
     let _ = std::fs::remove_file(&cfg_path);
 }
 
-// --- S3.3: save/load cache round-trip (the amnesia fix wiring) ---
+// ---.3: save/load cache round-trip (the amnesia fix wiring) ---
 
 fn stored(role: &str, content: &str) -> crate::session::StoredMessage {
     crate::session::StoredMessage::from(&summary_turn(role, content))
@@ -6310,7 +6310,7 @@ async fn test_run_bus_owned_multiple_messages() {
         0,
     );
 
-    // 统一泵（D 2026-09-23）：new_bus 自带单 agent 路由 resolver，无 peer
+    // 统一泵（D）：new_bus 自带单 agent 路由 resolver，无 peer
     // 元数据的消息全路由到同一默认会话——旧串行泵下前一条 turn 必已完成
     // 察觉不到，并发泵下第二条在 gate 被 busy 弹回。用 agent: 前缀会话键
     // （route_message 对该前缀原样采用）表达两个独立会话——跨会话并发是
@@ -6335,7 +6335,7 @@ async fn test_run_bus_owned_multiple_messages() {
 
     agent_loop.run_bus_owned(inbound_rx).await;
 
-    // 统一泵（D 2026-09-23）：两个 turn 都是 spawn 的 tracked task（跨会话
+    // 统一泵（D）：两个 turn 都是 spawn 的 tracked task（跨会话
     // t1 / t2 并发放行），出站帧异步到达且顺序不保证——逐帧等待收满 2 条，
     // 再确认没有多余帧。
     for i in 0..2 {
@@ -6355,7 +6355,7 @@ async fn test_run_bus_owned_multiple_messages() {
     );
 }
 
-// --- D-2/D-4（2026-09-23 多会话并行清账）新语义单测 ---
+// --- D-2/D-4（多会话并行清账）新语义单测 ---
 
 /// Reject 模式下被 busy 弹回的消息必须诚实留痕：chat_log 成对落
 /// user 行 + BUSY_MESSAGE 回实行（D-2 契约——弹回消息此前零落盘，
@@ -6793,7 +6793,7 @@ fn test_build_messages_preserves_history_order() {
     assert_eq!(messages[1].role, "user");
     assert_eq!(messages[1].content, "First");
     assert_eq!(messages[2].role, "assistant");
-    // I2 (U8): time/env is now the FIRST section of the merged context
+    // : time/env is now the FIRST section of the merged context
     // snapshot injected as a USER-role message (was system-role dyn_msg).
     assert_eq!(messages[3].role, "user"); // merged context snapshot
     assert!(messages[3].content.contains("Current Time"));
@@ -7866,7 +7866,7 @@ fn test_build_messages_repairs_orphan_tool_call() {
         .iter()
         .map(|tc| tc.id.as_str())
         .collect();
-    // G2 (U2): the orphan call_A is NO LONGER dropped — it now gets a
+    // : the orphan call_A is NO LONGER dropped — it now gets a
     // synthetic TOOL_OUTCOME_UNKNOWN result, so BOTH calls survive and the
     // provider transcript stays balanced (same 400-prevention guarantee, but
     // the model also learns its half-executed call happened).
@@ -7892,7 +7892,7 @@ fn test_build_messages_repairs_orphan_tool_call() {
 }
 
 // ===========================================================================
-// S2: build_messages inline-summary pipeline
+// build_messages inline-summary pipeline
 // ===========================================================================
 
 /// Build a ConversationTurn with empty tool_calls / tool_call_id.
@@ -7979,7 +7979,7 @@ fn test_build_messages_cache_preserves_tail_verbatim() {
     let messages = agent_loop.build_messages(&instance);
 
     // Drop the leading system+summary and the injected context snapshot
-    // (I2: user-role <system-reminder> message before the last user) to
+    // (user-role <system-reminder> message before the last user) to
     // recover the verbatim conversation tail.
     let tail: Vec<&str> = messages
         .iter()
@@ -8299,7 +8299,7 @@ fn llm_text(content: &str) -> LlmResponse {
     }
 }
 
-/// U5 helper: a response requesting the named tools in order (no content).
+/// helper: a response requesting the named tools in order (no content).
 fn llm_tool_calls(names: &[&str]) -> LlmResponse {
     let tool_calls = names
         .iter()
@@ -8323,15 +8323,15 @@ fn llm_tool_calls(names: &[&str]) -> LlmResponse {
 }
 
 // ===========================================================================
-// U5 (sixth batch): read-only tool concurrency + source-order
+// (sixth batch): read-only tool concurrency + source-order
 // ===========================================================================
 
 #[tokio::test]
 async fn u5_readonly_batch_runs_concurrently() {
     // 3 read-only tools each sleeping 300ms (3 ≤ 4 permits → no queueing).
     // 并行的证明 = 重叠峰值 ≥2（串行必然峰值 =1）——wall-clock 上限在 CI
-    // 慢机会假红（调度/杀毒延迟可把 3×300ms 并行拖到逼近串行值，2026-09-18
-    // CI Windows 实录），故降级为死锁护栏。
+    // 慢机会假红（调度/杀毒延迟可把 3×300ms 并行拖到逼近串行值，
+    // CI Windows），故降级为死锁护栏。
     let overlap = OverlapTracker::default();
     let provider =
         MockLlmProvider::new(vec![llm_tool_calls(&["r1", "r2", "r3"]), llm_text("done")]);
@@ -8368,7 +8368,7 @@ async fn u5_readonly_batch_runs_concurrently() {
 #[tokio::test]
 async fn u5_writer_in_batch_keeps_serial() {
     // A writer (default is_read_only=false) in the batch → the batch is NOT
-    // all-read-only → serial path, byte-identical to pre-U5. 2×300ms serial ≈
+    // all-read-only → serial path, byte-identical to pre-. 2×300ms serial ≈
     // 600ms. Bound: > 500ms proves they did NOT overlap (parallel would be
     // ~300ms).
     let provider = MockLlmProvider::new(vec![llm_tool_calls(&["r1", "w1"]), llm_text("done")]);
@@ -8420,12 +8420,12 @@ async fn u5_parallel_results_preserve_source_order() {
 }
 
 // ===========================================================================
-// G3 (devtool-upgrade 阶段 6): spawn joins the parallel pool
+// (devtool-upgrade): spawn joins the parallel pool
 // ===========================================================================
 
-/// G3: a fake spawn tool — NOT read-only (a real sub-agent runs = side
+/// a fake spawn tool — NOT read-only (a real sub-agent runs = side
 /// effects) but explicitly parallel-safe, mirroring the real SpawnTool's
-/// opt-in (G0 semaphore + depth injection + isolated instances make
+/// opt-in (semaphore + depth injection + isolated instances make
 /// concurrent execution safe by construction).
 struct SlowSpawnTool {
     marker: String,
@@ -8467,7 +8467,7 @@ impl Tool for SlowSpawnTool {
     }
 }
 
-/// G3: records every `set_invocation_depth` value it receives — proves the
+/// records every `set_invocation_depth` value it receives — proves the
 /// pool dispatches at the invoking instance's detached depth (not 0).
 struct DepthRecorderTool {
     seen: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
@@ -8490,7 +8490,7 @@ impl Tool for DepthRecorderTool {
 async fn g3_spawn_batch_runs_concurrently_slowest_wins() {
     // 计划验收原话：一轮 3 个 spawn 并发、总耗时≈最慢者。Delays
     // 100/200/400ms → serial = 700ms, parallel ≈ 400ms (the slowest).
-    // 并行的证明 = 重叠峰值 ≥2（CI 慢机 wall-clock 假红实录见
+    // 并行的证明 = 重叠峰值 ≥2（CI 慢机 wall-clock 假红案例见
     // OverlapTracker 注释）；≥380ms 下限证明批确实等了最慢者（400ms 的
     // sleep 是硬延迟，快慢机都不会假红）。wall-clock 上限降级为死锁护栏。
     let overlap = OverlapTracker::default();
@@ -8555,8 +8555,8 @@ async fn g3_mixed_spawn_and_readonly_run_concurrently() {
     // member is (read-only by default predicate, spawn by opt-in).
     // 并行的证明 = 重叠峰值 ≥2，且 spawn 与 read-only 共享同一 tracker
     // （跨类型真实重叠才是本测试的语义）。wall-clock 上限在 CI Windows
-    // 慢机实录假红（并行被调度/Defender 拖到 908ms 越过 700ms 断言，
-    // 2026-09-18）——降级为死锁护栏，串行检出由峰值断言承担（串行必 =1）。
+    // 慢机实测假红（并行被调度/Defender 拖到 908ms 越过 700ms 断言，
+    // ）——降级为死锁护栏，串行检出由峰值断言承担（串行必 =1）。
     let overlap = OverlapTracker::default();
     let provider = MockLlmProvider::new(vec![
         llm_tool_calls(&["g3s1", "g3r1", "g3r2"]),
@@ -8649,7 +8649,7 @@ async fn g3_parallel_pool_injects_instance_depth() {
 }
 
 // ===========================================================================
-// G1 (U1): summary request reuses the conversation prefix
+// : summary request reuses the conversation prefix
 // ===========================================================================
 
 /// Mock provider that RECORDS every request's messages (unlike
@@ -8692,8 +8692,8 @@ fn g1_history(n_turns: usize) -> Vec<crate::types::ConversationTurn> {
     h
 }
 
-/// G1 core assertion: the summary request is
-/// [system (verbatim, no summary block), ...covered messages (original
+/// core assertion: the summary request is
+/// [system (verbatim, no summary block),...covered messages (original
 /// structure, byte-equal), instruction user message]. The bare
 /// `role: content` text-concatenation form is gone (no "CONVERSATION:" dump).
 #[tokio::test]
@@ -8751,8 +8751,8 @@ async fn test_summarize_request_reuses_conversation_prefix() {
     assert!(last.content.contains("摘要"));
 }
 
-/// G1 multipart: >10 covered messages split into two batches; each batch's
-/// message list is [system?, ...contiguous prefix slice..., instruction] —
+/// multipart: >10 covered messages split into two batches; each batch's
+/// message list is [system?,...contiguous prefix slice..., instruction] —
 /// i.e. an ordered subset of the covered prefix.
 #[tokio::test]
 async fn test_summarize_multipart_batch_is_prefix_subset() {
@@ -8787,7 +8787,7 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
     assert!(p1.last().unwrap().content.contains("摘要"));
     assert_eq!(p2.last().unwrap().role, "user");
     // The merge call is a plain user message (no system) — merge has no
-    // prefix to reuse（P6 合并提示：两段编号 + 六节 schema 后缀）.
+    // prefix to reuse（合并提示：两段编号 + 六节 schema 后缀）.
     let merge = &requests[2];
     assert_eq!(merge.len(), 1);
     assert_eq!(merge[0].role, "user");
@@ -8802,8 +8802,8 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
 }
 
 // ---------------------------------------------------------------------------
-// V5 gate-in-pump: busy-gate outcomes + spawned turn tasks
-// (run_bus_impl's Queue/Steer arm; the U7 inbox is reachable in production
+// gate-in-pump: busy-gate outcomes + spawned turn tasks
+// (run_bus_impl's Queue/Steer arm; the inbox is reachable in production
 // only since this restructure — previously the serial pump let message 2
 // wait in the mpsc until the session had already been released.)
 // ---------------------------------------------------------------------------
@@ -8841,7 +8841,7 @@ fn test_gate_busy_reject_mode_bounces() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261028-121 回归锁：检查点 begin 只在真回合准入（Admitted 构造点）
+// 回归锁：检查点 begin 只在真回合准入（Admitted 构造点）
 // 发生——slash 回执/维护命令撞闸/busy 弹回/steer 插话一律不建检查点、不换
 // cur 指针。旧实现在 gate 头部无条件 begin：非回合消息把运行中回合的
 // cur 换成自己的桶（工具变更快照错挂 + 消息级回退锚丢失）。三方探针
@@ -9294,7 +9294,7 @@ async fn test_stop_aborts_tracked_turn_tasks() {
 }
 
 // ---------------------------------------------------------------------------
-// X1 (U3 projection prune): build-time fold keeps history originals.
+// (projection prune): build-time fold keeps history originals.
 // ---------------------------------------------------------------------------
 
 fn x1_loop_turn(role: &str, content: &str) -> crate::types::ConversationTurn {
@@ -9416,7 +9416,7 @@ fn test_projection_summary_mode_and_override() {
 }
 
 // ---------------------------------------------------------------------------
-// X2 (U8 refinement): merged-snapshot `# Runtime Policy` section —
+// (refinement): merged-snapshot `# Runtime Policy` section —
 // approval wiring / guardian judge presence / live capability tier, all
 // rendered from plain state (no clocks) so the merged message stays
 // byte-stable between turns.
@@ -9545,7 +9545,7 @@ fn test_x2_runtime_policy_guardian_on_reflects_live_judge() {
 }
 
 // ---------------------------------------------------------------------------
-// Y1 (Phase4-a): semantic tool-documentation folding — loop-level gates.
+// : semantic tool-documentation folding — loop-level gates.
 // Pure decision/rendering tests live in `src/tool_doc_folding/tests.rs`;
 // these verify the LOOP-side contract: default-off = byte-identical defs,
 // enabled+manager = folded provider-visible shape (the same `tool_defs`
@@ -9594,7 +9594,7 @@ fn y1_probe_loop() -> AgentLoop {
     agent_loop
 }
 
-// y1_find_def 唯一消费方在 memory 闸下（Y1 folding 两则）——helper 同闸。
+// y1_find_def 唯一消费方在 memory 闸下（folding 两则）——helper 同闸。
 #[cfg(feature = "memory")]
 fn y1_find_def<'a>(
     defs: &'a [crate::types::ToolDefinition],
@@ -9795,7 +9795,7 @@ fn test_y1_folding_mini_tier_excluded() {
 }
 
 // ---------------------------------------------------------------------------
-// T6（多模态）：主循环请求逐轮水合 —— 第二轮仍含图 / 删文件降级占位不炸
+// （多模态）：主循环请求逐轮水合 —— 仍含图 / 删文件降级占位不炸
 // ---------------------------------------------------------------------------
 
 /// 最小 PNG（8 字节签名 + IHDR 长度前缀；与 image_attach 测试同形）。
@@ -9829,7 +9829,7 @@ fn t6_turn_to_request_message_hydrates_every_turn() {
     std::fs::write(&img, &bytes).unwrap();
     let refs = vec![img.to_string_lossy().into_owned()];
 
-    // 第一轮与第二轮各自转换：路径引用**每轮重读**，两轮请求都含图片字节
+    // 与各自转换：路径引用**每轮重读**，两轮请求都含图片字节
     //（build_messages 对每个 turn 走 turn_to_request_message，即此语义）。
     let turn = t6_turn_with_refs(refs.clone());
     let first = turn_to_request_message(&turn);
@@ -9870,7 +9870,7 @@ fn t6_turn_to_request_message_deleted_file_degrades() {
 #[test]
 fn t6_summarizer_message_stays_text_only() {
     // 摘要请求不发图片字节：conversation_turn_to_llm_message 对带引用的
-    // turn 也保持 images 恒空（G1 前缀字节等价 + 廉价摘要模型友好）。
+    // turn 也保持 images 恒空（前缀字节等价 + 廉价摘要模型友好）。
     let turn = t6_turn_with_refs(vec!["C:\\nonexistent\\t6_sum.png".to_string()]);
     let msg = conversation_turn_to_llm_message(&turn);
     assert!(msg.images.is_empty(), "摘要请求不得携带图片字节");
@@ -9885,7 +9885,7 @@ fn t6_turn_without_refs_is_plain_message() {
 }
 
 // ---------------------------------------------------------------------------
-// T10（多模态 D4）：vision=no 投影 —— 当前轮拒绝注明 / 历史轮已省略 /
+// （多模态）：vision=no 投影 —— 当前轮拒绝注明 / 历史轮已省略 /
 // 引用清空 / build 级联动 + 注解台账标志
 // ---------------------------------------------------------------------------
 
@@ -10092,12 +10092,12 @@ fn t10_build_annotation_flag_follows_vision() {
 }
 
 // ---------------------------------------------------------------------------
-// A6（devtool-upgrade 阶段 5）：format-on-save dispatch 级集成测试——
+// （devtool-upgrade）：format-on-save dispatch 级集成测试——
 // handle_tool_call 瀑布内（execute 之后、PostToolUse hooks 之前）触发。
 // ---------------------------------------------------------------------------
 
 /// 写盘 mock：execute 时把烂格式内容写到固定路径（模拟 write_file 的落盘
-/// 副作用，路径从 args 读——A6 band 消费的就是 args.path）。
+/// 副作用，路径从 args 读—— band 消费的就是 args.path）。
 struct FileWritingTool {
     content: String,
 }
@@ -10192,7 +10192,7 @@ async fn a6_format_on_save_silent_when_disabled_at_dispatch() {
     );
 }
 
-// ---------- F-U3-2：工作副本路径基准重写（rewrite_tool_paths_for_base）----------
+// ---------- F-：工作副本路径基准重写（rewrite_tool_paths_for_base）----------
 
 fn base_ctx(base: &std::path::Path) -> RequestContext {
     let mut ctx = RequestContext::new("cluster", "chat1", "peer", "sess1");
@@ -10346,14 +10346,14 @@ fn rewrite_exec_cwd_injects_default_and_rewrites_relative() {
     assert!(AgentLoop::rewrite_tool_paths_for_base(&call3, &ctx).is_none());
 }
 
-// HD（2026-09-17）：后端单写不变量——一轮对话 = chat_log jsonl 恰好 +2 行
+// HD：后端单写不变量——一轮对话 = chat_log jsonl 恰好 +2 行
 // （user+assistant 各一行）。前端成对重复 BUG 修复时钉死：后端不存在
 // 「同一轮走两条路径各落一次」的组合（收尾单一出口 run_agent_loop_internal，
 // inline/spawned 两臂互斥；/build 与续行各只补一行且不与正常收尾叠加）。
-/// W2（2026-10-25）：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
+/// ：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
 /// 注记，污染「恰好 +2 行」类精确断言。夹具给 test-model 钉已知窗口
 /// （config.json 唯一真相源 fresh-read）→ 自动压缩路径惰性，断言继续只
-/// 管 turn 持久化本身；W2 注记行为由 w1_w2_note_tests 专测。
+/// 管 turn 持久化本身； 注记行为由 w1_w2_note_tests 专测。
 fn pin_known_window_config(al: &AgentLoop) {
     let cfg_path = std::env::temp_dir().join(format!(
         "nemesis_test_known_window_{}.json",
@@ -10457,7 +10457,7 @@ async fn one_turn_appends_exactly_user_and_assistant_rows() {
     assert_eq!(first["role"], "user");
     assert_eq!(second["role"], "assistant");
 
-    // 第二轮 = +2 行（不是 +4）。
+    // = +2 行（不是 +4）。
     let msg2 = nemesis_types::channel::InboundMessage {
         content: "Again".to_string(),
         ..msg.clone()

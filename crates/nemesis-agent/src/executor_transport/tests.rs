@@ -1,6 +1,6 @@
 //! `executor_transport` 单测（宿主侧载体）：stderr 环形尾。wire 字节契约
 //! / call_id / duplex 交换原语已随协议本体迁入 `nemesis-exec-protocol`
-//! 薄 crate（P5 底座），真子进程 stdio 往返由 `remote_executor_tool`
+//! 薄 crate（底座），真子进程 stdio 往返由 `remote_executor_tool`
 //! 既有集成测试覆盖。
 
 use super::*;

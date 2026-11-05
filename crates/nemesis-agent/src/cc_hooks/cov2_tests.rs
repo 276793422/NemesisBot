@@ -58,7 +58,7 @@ async fn subagent_stop_exit2_hook_warns_loudly() {
     let b = bridge_with(&hooks_doc("SubagentStop", &block_cmd("too late")), &tmp);
     b.dispatch_subagent_stop(&subagent_info(), "completed", None)
         .await;
-    // BUG-20261102-322：名字承诺 warns_loudly 就得真断言级别——只求值不断言
+    // 名字承诺 warns_loudly 就得真断言级别——只求值不断言
     // 时日志臂降级为 info/debug 测试照绿（可观测性契约分叉，同 BUG-321 族）。
     let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
     assert!(
@@ -96,7 +96,7 @@ async fn compact_hook_stdout_gets_info_logged() {
     b.run_compact_hooks("auto", "pre").await;
     let b2 = bridge_with(&hooks_doc("PostCompact", echo), &tmp);
     b2.run_compact_hooks("auto", "post").await;
-    // BUG-20261102-322：pre 与 post 两臂的 stdout 都必须以 INFO 级记录。
+    // pre 与 post 两臂的 stdout 都必须以 INFO 级记录。
     let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
     assert!(
         captured.contains("INFO") && captured.contains("stdout: covw6b-compact-stdout"),
@@ -140,7 +140,7 @@ fn notification_payload_merges_extra_object() {
 // ---------------------------------------------------------------------------
 
 /// workspace config 路径被**文件**占用 → create_dir_all 静默失败 →
-/// fs::copy 失败 → warn（不 panic，legacy 保留）。
+/// fs:copy 失败 → warn（不 panic，legacy 保留）。
 #[test]
 fn migrate_legacy_copy_failure_warns_and_keeps_legacy() {
     let _logs = capture_logs();

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -8,7 +8,7 @@ use super::*;
 ///
 /// Mirrors Go's `ExecTool` which is registered as "exec" in the agent.
 ///
-/// B1（2026-09-04）输出留存契约：本工具**不做工具内截断**——全量输出返回给
+/// 输出留存契约：本工具**不做工具内截断**——全量输出返回给
 /// agent loop，由 loop 层两档闸统一治理（`spill.rs` ≥65536 字符全量落盘
 /// `<workspace>/logs/spill/` + locator 回灌；`prune.rs` 8193..65535 head+tail
 /// 内联收窄）。工具层再截一刀会让全量字节在生产路径上不可恢复，且与
@@ -34,7 +34,7 @@ impl Tool for ExecTool {
         "Execute a shell command and wait for completion".to_string()
     }
 
-    // P0 vault（D4，2026-09-22 计划 §4）：exec 类工具参与 `security.limits`
+    // vault（计划）：exec 类工具参与 `security.limits`
     // 的 exec 类别限额（滑动窗口 + 超限审批升级，见 loop/limits）。
     fn limit_categories(&self) -> &[&str] {
         &["exec"]
@@ -64,7 +64,7 @@ impl Tool for ExecTool {
         if self.restrict {
             // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
             // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
-            // workspace 侧归一化防 8.3 短名/大小写失配（2026-09-01）。
+            // workspace 侧归一化防 8.3 短名/大小写失配。
             let target = if Path::new(cwd).is_absolute() {
                 PathBuf::from(cwd)
             } else {
@@ -80,13 +80,13 @@ impl Tool for ExecTool {
             }
         }
 
-        // B2（2026-09-04）：stdout/stderr 改为显式 piped——超时收尸后要从管道
+        // ：stdout/stderr 改为显式 piped——超时收尸后要从管道
         // 缓冲区读回进程被杀前已产生的残余输出（旧 `cmd.output()` 的管道随
         // future 取消一起丢弃，超时即全丢）。stdin 保持 null（见下）。
-        // C8：平台 shell 形态抽到 `make_piped_shell_command`（与 run_checks
+        // 平台 shell 形态抽到 `make_piped_shell_command`（与 run_checks
         // 共用单一真相源）。
         let mut cmd = make_piped_shell_command(command);
-        // D4（2026-09-28）：workspace-dacl 受限模式下 piped→文件重定向
+        // ：workspace-dacl 受限模式下 piped→文件重定向
         // （std 匿名管道创建在受限令牌下必死，见 ShellOutputCapture 注释）。
         let mut capture = ShellOutputCapture::current()
             .map_err(|e| format!("Failed to prepare executor output capture: {e}"))?;
@@ -94,7 +94,7 @@ impl Tool for ExecTool {
             c.apply_to(&mut cmd);
         }
 
-        // 修6（BUG-C）：spawn 即挂子进程树守卫（Windows Job Object / Unix
+        // spawn 即挂子进程树守卫（Windows Job Object / Unix
         // 进程组）+ 会话注册——estop sweep 与守卫 Drop 都能收整棵树；正常
         // 完成路径 mark_complete 后 Drop 无操作（零行为变化）。
         let (guard, mut child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
@@ -103,7 +103,7 @@ impl Tool for ExecTool {
         )
         .map_err(|e| format!("Failed to execute command: {}", e))?;
 
-        // B2：管道读取必须**独立任务并发**进行——
+        // 管道读取必须**独立任务并发**进行——
         // ① 不能只 `child.wait()`：子进程写满 ~64KB 管道缓冲会阻塞在 write
         //    上永不退出，正常长输出路径会整体退化成超时；
         // ② 不能把管道移进被 timeout 包住的 future：超时取消时管道随 future
@@ -147,15 +147,15 @@ impl Tool for ExecTool {
                 Err(format!("Failed to execute command: {}", e))
             }
             Err(_) => {
-                // B2：超时改 Ok 回灌（模型可自纠），先收尸再读残余输出。
+                // 超时改 Ok 回灌（模型可自纠），先收尸再读残余输出。
                 // 管道任务持有所有权不受本次取消影响；kill + reap 后管道
                 // EOF，任务收尾。任务 await 兜 5s 上限：若命令 fork 了继承
                 // 管道的后台孙进程，EOF 要等孙进程死——此时如实返回已读不到
                 // 的空残余（旧实现同场景连收尸都没有，此处严格更优）。
-                // 2026-10-15：收尸升级为树杀（背景见 `tree_kill` 注记）——
+                // 收尸升级为树杀（背景见 `tree_kill` 注记）——
                 // start_kill 只杀 cmd.exe/sh 本体，cargo/rustc 等真实工作
                 // 进程整棵存活，超时后继续烧 CPU/占 target 锁。树杀后仍
-                // start_kill + wait 兜底直杀 shell 本体并收尸。修6：守卫先
+                // start_kill + wait 兜底直杀 shell 本体并收尸。：守卫先
                 // 记超时原因（estop sweep 后到来的超时不得降级其标注）。
                 guard.terminate(crate::exec_tree::TerminationReason::Timeout);
                 if let Some(pid) = child.id() {
@@ -200,13 +200,13 @@ impl Tool for ExecTool {
     }
 }
 
-/// B2（2026-09-04）：exec 超时解析——默认 30s、上限 600s（对齐
+/// ：exec 超时解析——默认 30s、上限 600s（对齐
 /// nemesis-tools shell.rs 的 cap）。模型传 999999 之类不再被照单全收。
 pub(super) fn exec_timeout_secs(v: Option<u64>) -> u64 {
     v.unwrap_or(30).min(600)
 }
 
-/// ExecTool 输出成败判定的**单一真相源**（B2 协议消费者共用）：三种失败
+/// ExecTool 输出成败判定的**单一真相源**（协议消费者共用）：三种失败
 /// 形态——非零退出 = `Ok("Exit code: N\n…")`；超时收尸 =
 /// `Ok("Command timed out …")`；进程无法启动 = `Err`。成功路径 = 裸
 /// stdout 或 `(no output)`。纪律证伪钩子（discipline）按此判定 pass/fail
@@ -215,7 +215,7 @@ pub(crate) fn exec_output_passed(output: &str) -> bool {
     !output.starts_with("Exit code:") && !output.starts_with("Command timed out")
 }
 
-/// D4（2026-09-28）：workspace-dacl 受限令牌下的 shell 输出捕获形态。
+/// ：workspace-dacl 受限令牌下的 shell 输出捕获形态。
 ///
 /// **为什么存在**：std 匿名管道在 Windows 上是命名管道实现（
 /// NtCreateNamedPipeFile）——受限令牌下创建 = 对 `\Device\NamedPipe` 目录
@@ -227,8 +227,8 @@ pub(crate) fn exec_output_passed(output: &str) -> bool {
 /// run_checks / run_script / async_shell）。
 ///
 /// 受限模式下输出落工作区 `.exec_out/`（GRANT ACE 放行创建与写，句柄经
-/// bInheritHandles 给孙进程不重评），wait 后读回。普通模式 None = 维持 B2
-/// piped 形态零变化。残留边界（2026-09-28 F9 证伪后收窄）：基线 mask 保含
+/// bInheritHandles 给孙进程不重评），wait 后读回。普通模式 None = 维持
+/// piped 形态零变化。残留边界（证伪后收窄）：基线 mask 保含
 /// DELETE，受限侧读回后自删通常成功；属主异常等失败场景留 gateway 侧清扫
 /// （DaclSpawnFn spawn 前清超龄文件）兜底。
 pub(super) struct ShellOutputCapture {
@@ -290,7 +290,7 @@ impl ShellOutputCapture {
         }
     }
 
-    /// [`apply_to`] 的 `std::process::Command` 形态（GitTool 等同步 spawn
+    /// [`apply_to`] 的 `std:process:Command` 形态（GitTool 等同步 spawn
     /// 点用）——同一捕获文件、同一读回路径，形态差异只在 Command 类型。
     pub(super) fn apply_to_std(&mut self, cmd: &mut std::process::Command) {
         if let Some(f) = self.out_file.take() {
@@ -333,7 +333,7 @@ impl ShellOutputCapture {
 }
 
 /// exec / exec_async / run_checks / run_script / git 五处共用的 console
-/// creation flags 决策**单一真相源**（D4 2026-09-28 建立；2026-10-19 黑窗
+/// creation flags 决策**单一真相源**（建立； 黑窗
 /// 修复收编默认臂）。
 ///
 /// **默认臂 = `Some(CREATE_NO_WINDOW)`（黑窗根修）**：release 版 gateway 是
@@ -348,7 +348,7 @@ impl ShellOutputCapture {
 /// 响）。唯一边界：console TUI 界面不可见（exec 非交互 + 管道收输出，零
 /// 实际损失）。
 ///
-/// **workspace-dacl 受限臂保持 D4 语义**：受限令牌树下**新** console 分配
+/// **workspace-dacl 受限臂保持 语义**：受限令牌树下**新** console 分配
 /// 必死 0xC0000142（nemesis-sandbox token.rs 实证；CREATE_NO_WINDOW 的隐
 /// 藏 console 同样算新分配），故：
 /// - exec_worker 附着成功（`NEMESISBOT_CONSOLE=1`）→ `None`：不加 flags，
@@ -372,7 +372,7 @@ pub(super) fn console_creation_flags() -> Option<u32> {
     }
 }
 
-/// B2 输出读取的统一出口：piped 形态走并发排水任务，受限文件形态走读回。
+/// 输出读取的统一出口：piped 形态走并发排水任务，受限文件形态走读回。
 async fn read_shell_output(
     capture: Option<ShellOutputCapture>,
     out_task: tokio::task::JoinHandle<Vec<u8>>,
@@ -388,16 +388,16 @@ async fn read_shell_output(
     }
 }
 
-/// C8（2026-09-06）：平台 shell 形态的单一真相源——ExecTool 与 RunChecksTool
-/// 共用。逐字保留 B2 语义：Windows `cmd /C` + raw_arg（.arg() 的自动加引号
+/// ：平台 shell 形态的单一真相源——ExecTool 与 RunChecksTool
+/// 共用。逐字保留 语义：Windows `cmd /C` + raw_arg（.arg() 的自动加引号
 /// 会搅乱 cmd.exe 自身的引号处理）；stdin null（交互式命令立即 EOF 不挂满
 /// 超时）；stdout/stderr piped；kill_on_drop（挂死命令不留孤儿）。
-/// T4（扩展计划 D2a）：spawn 前剥继承环境中的凭据类变量（*KEY*/TOKEN/
+/// （扩展计划）：spawn 前剥继承环境中的凭据类变量（*KEY*/TOKEN/
 /// SECRET/PASSWORD/CREDENTIAL/NEMESISBOT_*）——`exec` 里 echo 环境变量
 /// 即可读出 agent 进程凭据的缺口在此封堵；`security.sanitize_child_env`
-/// 可关（默认开）。本函数是 exec/run_checks 的接闸点；T4 是**家族闸**
+/// 可关（默认开）。本函数是 exec/run_checks 的接闸点； 是**家族闸**
 /// 不是单一闸——所有 LLM 驱动 exec 类 spawn 点（run_script/exec_async/
-/// git/background_start 等）各自接同一闸（BUG-20261029-178：新 spawn 点
+/// git/background_start 等）各自接同一闸（新 spawn 点
 /// 必须显式接闸，覆盖率靠家族清点不靠单一入口）。
 fn make_piped_shell_command(command: &str) -> tokio::process::Command {
     #[cfg(target_os = "windows")]
@@ -410,7 +410,7 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
-        // 2026-10-19 黑窗根修：release gateway 无 console（windows 子系统），
+        // 黑窗根修：release gateway 无 console（windows 子系统），
         // cmd.exe 默认 flags 会分配新可见 console → 黑窗。flags 决策单一真
         // 相源在 `console_creation_flags`（exec/exec_async/run_checks/
         // run_script/git 五处共用；普通模式=CREATE_NO_WINDOW 压黑窗，GUI 程
@@ -432,7 +432,7 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
-        // 树杀前提（2026-10-15，与 background_registry::build_platform_shell
+        // 树杀前提（与 background_registry:build_platform_shell
         // 同款）：子进程自成一进程组（pgid == pid），超时收尸的
         // `tree_kill` 才能用 `kill -TERM -- -PGID` 一锅端 shell 的孙进程
         // （cargo/rustc 等），否则进程组号不存在、树杀静默落空。
@@ -445,7 +445,7 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
     }
 }
 
-/// B2：排干管道到字节缓冲（pipe 缺失时返空）。有界排干（BUG 2026-10-29
+/// 排干管道到字节缓冲（pipe 缺失时返空）。有界排干（BUG
 /// 横扫角度 B）：1 MiB 丢头保尾（`join_pipe_task` 的 5s 上限只兜孙进程
 /// 占管道 EOF 不达，不兜体量）。
 pub(super) async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
@@ -455,7 +455,7 @@ pub(super) async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin>) 
     }
 }
 
-/// B2：收管道读取任务的结果；兜 5s 上限（孙进程继承管道 EOF 不达时不再挂）。
+/// 收管道读取任务的结果；兜 5s 上限（孙进程继承管道 EOF 不达时不再挂）。
 async fn join_pipe_task(handle: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
     tokio::time::timeout(std::time::Duration::from_secs(5), handle)
         .await
@@ -464,7 +464,7 @@ async fn join_pipe_task(handle: tokio::task::JoinHandle<Vec<u8>>) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// B2：超时残余输出的字符安全尾部截取（多字节安全，不按字节切）。
+/// 超时残余输出的字符安全尾部截取（多字节安全，不按字节切）。
 pub(super) fn tail_chars(s: &str, max_chars: usize) -> String {
     let total = s.chars().count();
     if total <= max_chars {
@@ -475,7 +475,7 @@ pub(super) fn tail_chars(s: &str, max_chars: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// C8（2026-09-06 devtool-upgrade 阶段 4）：run_checks 构建/测试运行器
+// （devtool-upgrade）：run_checks 构建/测试运行器
 // ---------------------------------------------------------------------------
 
 /// 项目类型探测结果（探测顺序即数组顺序，首个命中者胜）。
@@ -598,7 +598,7 @@ pub(super) fn count_labeled_numbers(toks: &[&str]) -> (u64, u64, u64, bool) {
 
 /// 从输出里聚合结构化测试统计（passed, failed, ignored）。只解析**有结构**
 /// 的汇总行，解析不出来返 None（不编造数字）：
-/// - cargo：多段 `test result: ok. 3 passed; 0 failed; ...` 全部累加（lib +
+/// - cargo：多段 `test result: ok. 3 passed; 0 failed;...` 全部累加（lib +
 ///   多 bin 各一段）。逐段容错——`ok.` 前缀等非数字 token 跳过，不毒化整
 ///   个函数（曾有 `?` 连坐 bug：一段垃圾 token 让全部统计变 None）。
 /// - pytest：`===== N passed, M failed, 1 skipped in 0.5s =====` 汇总行（取
@@ -762,7 +762,7 @@ impl Tool for RunChecksTool {
         let mut full = String::new();
         let mut summary = Vec::new();
         let mut failed_stage = false;
-        // 修6（BUG-C）：estop sweep 收杀的阶段——不计失败/超时，后续阶段
+        // estop sweep 收杀的阶段——不计失败/超时，后续阶段
         // 不再运行（sweep 是时点快照，break 后剩余阶段本可在 estop 下存活）。
         let mut estop_killed_stage = false;
         for (label, command) in stages {
@@ -867,13 +867,13 @@ impl Tool for RunChecksTool {
     }
 }
 
-/// C8：跑单个检查阶段，返回 (exit_code, stdout, stderr, timed_out)。
+/// 跑单个检查阶段，返回 (exit_code, stdout, stderr, timed_out)。
 /// exit_code None = 进程没能启动（程序不存在等）。spawn 形态与超时收尸
-/// 语义复用 B2 exec 内核（`make_piped_shell_command` + 并发管道排水 +
+/// 语义复用 exec 内核（`make_piped_shell_command` + 并发管道排水 +
 /// kill 后读残余——此处超时走独立返回值，不混进输出文本）。
-/// K3：改为 `pub(crate)` + `cwd: Option`——`` !`cmd` `` 注入（loop.rs
+/// 改为 `pub(crate)` + `cwd: Option`——`` !`cmd` `` 注入（loop.rs
 /// rewrite_custom_command）共用同一执行内核；cwd None = 不设（继承进程）。
-/// 修6（BUG-C）：spawn 挂 `ExecTreeGuard`（超时/estop sweep/drop 均可收
+/// spawn 挂 `ExecTreeGuard`（超时/estop sweep/drop 均可收
 /// 树）；本签名保持无会话注册（`` !`cmd` `` 注入与 pre-pause 探针无会话
 /// 语义），run_checks 走 `run_one_stage_in_session`。
 pub(crate) async fn run_one_stage(
@@ -886,7 +886,7 @@ pub(crate) async fn run_one_stage(
     (code, stdout, stderr, timed_out)
 }
 
-/// 修6（BUG-C）：带会话注册的形态（run_checks 消费）——末位 bool = 本阶段
+/// 带会话注册的形态（run_checks 消费）——末位 bool = 本阶段
 /// 是否被 estop sweep 收杀（「被 estop 终止」诚实标注的判定源，不记失败/
 /// 超时）。会话键为空串时不注册（守卫的超时/drop 兜底照常生效）。
 pub(crate) async fn run_one_stage_in_session(
@@ -898,7 +898,7 @@ pub(crate) async fn run_one_stage_in_session(
     run_one_stage_guarded(command, cwd, timeout_secs, Some(session_key)).await
 }
 
-/// 修6：共享执行内核——spawn 挂 `ExecTreeGuard`（超时臂显式 terminate +
+/// 共享执行内核——spawn 挂 `ExecTreeGuard`（超时臂显式 terminate +
 /// drop RAII 兜底 + estop sweep 可达）；其余形态与原 run_one_stage 逐字节
 /// 等价（make_piped_shell_command + dacl capture + 并发排水 + 树杀收尸）。
 async fn run_one_stage_guarded(
@@ -911,7 +911,7 @@ async fn run_one_stage_guarded(
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    // D4（2026-09-28）：workspace-dacl 受限模式下 piped→文件重定向（同 exec）。
+    // ：workspace-dacl 受限模式下 piped→文件重定向（同 exec）。
     let mut capture = match ShellOutputCapture::current() {
         Ok(c) => c,
         Err(e) => {
@@ -964,12 +964,12 @@ async fn run_one_stage_guarded(
             )
         }
         Err(_) => {
-            // 超时：先收尸再读残余输出（B2 同款——管道任务持所有权不受
+            // 超时：先收尸再读残余输出（同款——管道任务持所有权不受
             // 取消影响，kill 后 EOF 收尾；文件形态读回被杀前已写内容）。
-            // 2026-10-15：收尸升级为树杀（背景见 `tree_kill` 注记）——
+            // 收尸升级为树杀（背景见 `tree_kill` 注记）——
             // 本工具声明 timeout 参数，cargo 树不真死 = 参数没落地（产品
             // 验证实验 #1：声明 600s，超时后 cargo 又跑了 25 分钟）。树杀
-            // 后仍 start_kill + wait 兜底直杀 shell 本体并收尸。修6：守卫
+            // 后仍 start_kill + wait 兜底直杀 shell 本体并收尸。：守卫
             // 先记超时原因（estop sweep 后到来的超时不得降级其标注）。
             guard.terminate(crate::exec_tree::TerminationReason::Timeout);
             if let Some(pid) = child.id() {
@@ -991,7 +991,7 @@ async fn run_one_stage_guarded(
 /// separation is enabled it runs in the executor subprocess (Layer 1) or the
 /// Sandboxie box (Layer 2) — identical containment to `exec`. The workflow
 /// `script` node delegates to this tool to gain sandbox awareness: the spawn is
-/// byte-identical to `ScriptNodeExecutor`'s direct spawn (`Command::new(interp).
+/// byte-identical to `ScriptNodeExecutor`'s direct spawn (`Command:new(interp).
 /// arg(flag).arg(script)`), so enabling the sandbox changes only *where* the
 /// script runs, not *how*.
 ///
@@ -1008,7 +1008,7 @@ pub struct RunScriptTool {
 
 impl RunScriptTool {
     /// Create a new run_script tool. `workspace` is the default cwd; `restrict`
-    /// confines cwd to the workspace (mirrors [`ExecTool::new`]).
+    /// confines cwd to the workspace (mirrors [`ExecTool:new`]).
     pub fn new(workspace: &str, restrict: bool) -> Self {
         Self {
             workspace: workspace.to_string(),
@@ -1078,7 +1078,7 @@ impl Tool for RunScriptTool {
         if self.restrict {
             // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
             // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
-            // workspace 侧归一化防 8.3 短名/大小写失配（2026-09-01）。
+            // workspace 侧归一化防 8.3 短名/大小写失配。
             let target = if Path::new(cwd).is_absolute() {
                 PathBuf::from(cwd)
             } else {
@@ -1098,8 +1098,8 @@ impl Tool for RunScriptTool {
         // direct spawn. stdin=null + kill_on_drop so interactive prompts / hung
         // children don't survive the timeout.
         // Windows：裸 "bash"/"sh" 经 PATH 恒命中 System32 的 WSL launcher
-        // （feature 启用但无发行版 = exit 1 空壳，2026-09-02 CI 实证）→
-        // 解析到 Git/MSYS2 的真 bash。单一真相源 nemesis-tools::shell。
+        // （feature 启用但无发行版 = exit 1 空壳， CI 实证）→
+        // 解析到 Git/MSYS2 的真 bash。单一真相源 nemesis-tools:shell。
         let interpreter = nemesis_tools::shell::resolve_posix_shell_path(interpreter);
         let mut cmd = tokio::process::Command::new(&interpreter);
         if !flag.is_empty() {
@@ -1108,21 +1108,21 @@ impl Tool for RunScriptTool {
         cmd.arg(script)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
-        // T4 环境凭据剥离（BUG-20261029-178）：run_script 与 exec 同为 LLM
+        // 环境凭据剥离：run_script 与 exec 同为 LLM
         // 驱动的 exec 类 spawn——脚本里 printenv 即可读出 agent 进程继承的
         // 凭据，同闸必须同源（`security.sanitize_child_env` 总开关）。
         let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut cmd);
         if stripped > 0 {
             debug!("[Tools] env sanitized: {stripped} vars stripped");
         }
-        // 树杀前提（2026-10-15，Unix；同 make_piped_shell_command）：子进程
+        // 树杀前提（Unix；同 make_piped_shell_command）：子进程
         // 自成一进程组（pgid == pid），超时收尸的 tree_kill 才能一锅端
         // 脚本派生的工作进程。
         #[cfg(not(target_os = "windows"))]
         {
             cmd.process_group(0);
         }
-        // console flags 单一真相源（2026-10-19 黑窗根修后默认臂即
+        // console flags 单一真相源（黑窗根修后默认臂即
         // CREATE_NO_WINDOW，此前的普通模式硬编码分叉收回——语义不变）。
         // workspace-dacl 受限模式下 CREATE_NO_WINDOW 的隐藏 console 也是新
         // 分配（\Device\ConDrv 写类访问）必死 0xC0000142（token_tests
@@ -1134,17 +1134,17 @@ impl Tool for RunScriptTool {
             }
         }
 
-        // D4（2026-09-28）：workspace-dacl 受限模式下 output() 的隐式 piped
+        // ：workspace-dacl 受限模式下 output() 的隐式 piped
         // 必死（std 匿名管道创建受限令牌下被拒）→ spawn+wait+文件读回形态，
         // 结果契约（{stdout, stderr, exit_code} JSON）不变。
         let mut capture = ShellOutputCapture::current()
             .map_err(|e| format!("Failed to prepare executor output capture: {e}"))?;
         if let Some(c) = capture.as_mut() {
             c.apply_to(&mut cmd);
-            // 2026-10-15：spawn 前置到 timeout 之外——超时收尸要有 pid 才能
+            // spawn 前置到 timeout 之外——超时收尸要有 pid 才能
             // 树杀（spawn 藏在 timed future 里 = 取消时句柄一并丢弃，只剩
             // kill_on_drop 直杀解释器本体，脚本派生的工作进程全部存活）。
-            // 修6（BUG-C）：spawn 即挂守卫 + 会话注册（estop sweep/drop 可
+            // spawn 即挂守卫 + 会话注册（estop sweep/drop 可
             // 收树）；结构化 JSON 契约不变。
             let (guard, mut child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
                 cmd.current_dir(cwd),
@@ -1170,7 +1170,7 @@ impl Tool for RunScriptTool {
                     Err(format!("Failed to execute script: {}", e))
                 }
                 Err(_) => {
-                    // 修6：守卫先记超时原因（estop sweep 后到来的超时不得
+                    // 守卫先记超时原因（estop sweep 后到来的超时不得
                     // 降级其标注）。
                     guard.terminate(crate::exec_tree::TerminationReason::Timeout);
                     if let Some(pid) = child.id() {
@@ -1189,11 +1189,11 @@ impl Tool for RunScriptTool {
             };
         }
 
-        // 2026-10-15：output() → spawn + 并发排水 + wait（exec/run_checks 同
-        // 款 B2 形态）。output() 的隐式 future 取消时只剩 kill_on_drop 直杀
+        // output() → spawn + 并发排水 + wait（exec/run_checks 同
+        // 款 形态）。output() 的隐式 future 取消时只剩 kill_on_drop 直杀
         // 解释器本体；结构化出 pid 后超时走树杀。命令形态字节不变
         // （interpreter [flag] script 直 spawn 契约保持），只换捕获管道。
-        // 修6（BUG-C）：spawn 即挂守卫 + 会话注册（estop sweep/drop 可收树）。
+        // spawn 即挂守卫 + 会话注册（estop sweep/drop 可收树）。
         let (guard, mut child) = crate::exec_tree::ExecTreeGuard::attach_and_register(
             cmd.current_dir(cwd)
                 .stdout(std::process::Stdio::piped())
@@ -1227,7 +1227,7 @@ impl Tool for RunScriptTool {
                 Err(format!("Failed to execute script: {}", e))
             }
             Err(_) => {
-                // 修6：守卫先记超时原因（estop sweep 后到来的超时不得降级
+                // 守卫先记超时原因（estop sweep 后到来的超时不得降级
                 // 其标注）。
                 guard.terminate(crate::exec_tree::TerminationReason::Timeout);
                 if let Some(pid) = child.id() {
@@ -1299,7 +1299,7 @@ impl Tool for AsyncExecTool {
         if self.restrict {
             // 与 ExecTool（shell.rs）对齐：相对 cwd join workspace；双侧统一
             // 归一化（nemesis-path 单一真相源）——组件级比较防前缀误判，
-            // workspace 侧归一化防 8.3 短名/大小写失配（2026-09-01）。
+            // workspace 侧归一化防 8.3 短名/大小写失配。
             let target = if Path::new(cwd).is_absolute() {
                 PathBuf::from(cwd)
             } else {
@@ -1330,10 +1330,10 @@ impl Tool for AsyncExecTool {
                 c.arg("-c").arg(command);
                 c
             };
-            // D4（2026-09-28）：workspace-dacl 受限模式下 std piped 必死
+            // ：workspace-dacl 受限模式下 std piped 必死
             //（ShellOutputCapture 注释）；本工具本就不读输出 → 直接 null。
             c.current_dir(cwd);
-            // console 治理与五工具同源（2026-10-19 黑窗根修：普通模式默认臂
+            // console 治理与五工具同源（黑窗根修：普通模式默认臂
             // 即 CREATE_NO_WINDOW；本工具不在 MOVE_TOOLS、gateway 从不把
             // exec_async 路由进受限 executor——受限臂纯防御）。
             #[cfg(target_os = "windows")]
@@ -1342,7 +1342,7 @@ impl Tool for AsyncExecTool {
                     c.creation_flags(f);
                 }
             }
-            // T4 环境凭据剥离（BUG-20261029-178）：exec_async 不读输出 ≠
+            // 环境凭据剥离：exec_async 不读输出 ≠
             // 不漏——子进程命令可自行把环境落盘/外传，同闸必须同源。
             let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
             if stripped > 0 {

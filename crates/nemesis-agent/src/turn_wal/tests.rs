@@ -1,4 +1,4 @@
-//! L8 turn WAL 单测：三态落盘 / 断头恢复幂等 / TTL 清扫 / 轮转 / 坏行容忍。
+//! turn WAL 单测：三态落盘 / 断头恢复幂等 / TTL 清扫 / 轮转 / 坏行容忍。
 //! 独立文件（check-inline-tests 纪律）：`#[cfg(test)] mod tests;` 声明在
 //! turn_wal.rs 尾部，全部用例落这里。
 
@@ -160,7 +160,7 @@ async fn rotation_keeps_newest_generation_and_recovery_spans_both() {
     let candidates = wal.recover_and_finalize();
     assert_eq!(candidates.len(), 1, "跨代归并后断头调用仍是 1 个");
     assert_eq!(candidates[0].record.call_id, "call-hung");
-    // 轮转 + drain 后 .old 应被清掉。
+    // 轮转 + drain 后.old 应被清掉。
     assert!(!wal.old_path.exists(), "drain 应删除 .old");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -205,10 +205,10 @@ async fn call_id_for_empty_raw_generates() {
     assert_eq!(call_id_for("abc", "exec"), "abc");
 }
 
-/// BUG-20261030-204：轮转失败不杀 WAL、不静默丢行。老代码轮转判定+rename
+/// 轮转失败不杀 WAL、不静默丢行。老代码轮转判定+rename
 /// 在文件锁外做——rename 失败（.old 位点被占/瞬时句柄）时 guard 永久停在
 /// None，此后所有 log 行被 `if let Some` **静默**丢弃（无 per-write warn、
-/// M2 degraded 报告永不触发）。修复后轮转在锁内做 + 失败重开原文件续写。
+/// degraded 报告永不触发）。修复后轮转在锁内做 + 失败重开原文件续写。
 #[tokio::test]
 async fn rotation_failure_does_not_kill_wal_or_drop_lines() {
     let dir = tmp_dir("rotate-fail");

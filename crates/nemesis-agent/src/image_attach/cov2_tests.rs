@@ -121,7 +121,7 @@ async fn fetch_url_media_pinned_client_downloads_and_persists() {
     assert!(notes.is_empty(), "notes: {:?}", notes);
     assert_eq!(kept.len(), 1);
     assert_eq!(counter.load(Ordering::SeqCst), 1);
-    // 落盘文件真实存在（dir_ready 臂 + std::fs::write 成功路径）。
+    // 落盘文件真实存在（dir_ready 臂 + std:fs:write 成功路径）。
     let stored = Path::new(kept[0].url.as_str());
     assert!(stored.exists());
     assert!(stored.starts_with(uploads.path()));

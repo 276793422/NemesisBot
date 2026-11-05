@@ -1,7 +1,7 @@
-//! M3（devtool-upgrade 阶段 5）：会话级 diff 的 checkpoint 基线原语测试。
+//! （devtool-upgrade）：会话级 diff 的 checkpoint 基线原语测试。
 //!
 //! - `base_for_path`：首个声明过该文件的条目（git 形态=tree 锚；JSON
-//!   形态=content 锚；无 `paths` 的老 JSON 条目按 `files` 命中——D2 前
+//!   形态=content 锚；无 `paths` 的老 JSON 条目按 `files` 命中—— 前
 //!   兼容）；未声明过的路径 → None。
 //! - `read_file_from_tree`：按影子 tree 读单文件内容（NotFound → None，
 //!   不误报错误）。
@@ -77,7 +77,7 @@ async fn json_mode_base_for_path_content() {
     assert!(store.base_for_path("b.txt").is_none());
 }
 
-/// BUG-20261103-347：`repo_relative_path` 形态归一单元钉死（树接口单一
+/// `repo_relative_path` 形态归一单元钉死（树接口单一
 /// 入口）——绝对剥根 / `\\?\` 前缀 / 相对原样 / 界外与 `..` → None /
 /// 形态不齐 canonicalize 兜底。
 #[tokio::test]
@@ -106,7 +106,7 @@ async fn repo_relative_path_form_normalization() {
         store.repo_relative_path(&format!(r"\\?\{root_str}\code.txt")),
         Some("code.txt".to_string())
     );
-    // 相对输入原样归一（前导 ./ 剥除）。
+    // 相对输入原样归一（前导./ 剥除）。
     assert_eq!(
         store.repo_relative_path("./code.txt"),
         Some("code.txt".to_string())
@@ -144,7 +144,7 @@ async fn repo_relative_path_form_normalization() {
     let _ = dir;
 }
 
-/// BUG-20261103-347：`base_for_path` 跨形态命中——声明侧绝对路径、查询
+/// `base_for_path` 跨形态命中——声明侧绝对路径、查询
 /// 侧相对（及反向），comparable 归一后命中同一基线。
 #[tokio::test]
 async fn base_for_path_cross_form_absolute_declared() {

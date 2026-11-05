@@ -453,7 +453,7 @@ fn repair_tool_pairs_mismatched_id_removed() {
         make_tool_response("result", "call_B"),
     ];
     repair_tool_message_pairs(&mut msgs);
-    // G2 (U2): the orphaned call_A now gets a SYNTHETIC unknown-outcome
+    // : the orphaned call_A now gets a SYNTHETIC unknown-outcome
     // result instead of being dropped; the mismatched call_B result is still
     // removed (Pass 1). The assistant keeps its call.
     assert_eq!(msgs.len(), 4);
@@ -477,7 +477,7 @@ fn repair_tool_pairs_missing_tool_response_clears_calls() {
         make_tool_response("result_a", "call_A"),
     ];
     repair_tool_message_pairs(&mut msgs);
-    // G2 (U2): call_B gets a synthetic result; the assistant keeps BOTH
+    // : call_B gets a synthetic result; the assistant keeps BOTH
     // calls (previously call_B was dropped from tool_calls). The synthetic
     // inserts at assistant+1 (call order), the real result_A follows it.
     assert_eq!(msgs.len(), 3);
@@ -498,7 +498,7 @@ fn repair_tool_pairs_partial_response_keeps_matched() {
         make_tool_response("c", "call_C"),
     ];
     repair_tool_message_pairs(&mut msgs);
-    // G2 (U2): all three calls survive on the assistant; call_B gains a
+    // : all three calls survive on the assistant; call_B gains a
     // synthetic result inserted after the assistant (matching the model's
     // call order, before the later real results).
     assert_eq!(msgs.len(), 4);
@@ -590,7 +590,7 @@ fn repair_tool_pairs_keeps_distinct_tool_call_ids() {
 }
 
 // ---------------------------------------------------------------------------
-// G2 (U2): repair_tool_message_pairs synthesizes TOOL_OUTCOME_UNKNOWN results
+// : repair_tool_message_pairs synthesizes TOOL_OUTCOME_UNKNOWN results
 // ---------------------------------------------------------------------------
 
 /// Helper: build a ConversationTurn quickly.
@@ -734,7 +734,7 @@ fn test_repair_still_removes_orphaned_tool_results() {
 }
 
 // ---------------------------------------------------------------------------
-// X1 (U3 projection prune): per-turn model-facing projection unit tests.
+// (projection prune): per-turn model-facing projection unit tests.
 // ---------------------------------------------------------------------------
 
 fn x1_turn(role: &str, content: &str) -> ConversationTurn {
@@ -810,7 +810,7 @@ fn test_model_facing_small_tool_passthrough() {
 
 /// FOLD IDEMPOTENCE: the prune output is itself under the inline threshold,
 /// so projecting an already-projected turn (old sessions whose stored tool
-/// content was pruned by the pre-X1 write-time gate) is a byte-level no-op.
+/// content was pruned by the pre write-time gate) is a byte-level no-op.
 #[test]
 fn test_model_facing_projection_idempotent() {
     let original: String = "x".repeat(20_000);
@@ -837,15 +837,15 @@ fn test_model_facing_tool_name_fallback() {
 }
 
 // ---------------------------------------------------------------------------
-// B3 (devtool-upgrade 阶段 3): recompute-stability for the spawn hint.
+// (devtool-upgrade): recompute-stability for the spawn hint.
 // The hinted prune text is NOT recomputable (hint flag is registry state),
 // so the loop records it as `tool_result_projection`; the pure recompute
-// path must stay hint-free (byte-stable with pre-B3) so unhinted turns
+// path must stay hint-free (byte-stable with pre-) so unhinted turns
 // replay identically.
 // ---------------------------------------------------------------------------
 
 /// Recompute path (no recorded projection) never emits the hint — same
-/// bytes as the pre-B3 prune.
+/// bytes as the pre prune.
 #[test]
 fn test_model_facing_recompute_never_carries_subagent_hint() {
     let original: String = "z".repeat(20_000);
@@ -868,7 +868,7 @@ fn test_model_facing_recompute_never_carries_subagent_hint() {
     );
 }
 
-/// ToolDefinition::default() has the "function" tool_type and empty fn def
+/// ToolDefinition:default() has the "function" tool_type and empty fn def
 /// (second file-level check near other trailing defaults; kept separate from
 /// the earlier `tool_definition_default` to avoid a name collision).
 #[test]

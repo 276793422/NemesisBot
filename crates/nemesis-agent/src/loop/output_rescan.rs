@@ -1,7 +1,7 @@
-//! 主线工具输出凭据/DLP 复扫（S2②，2026-10-09 高优差距批次一）。
+//! 主线工具输出凭据/DLP 复扫（②，2026-10-09）。
 //!
 //! 8 层安全管线的凭据扫描（第④层）与 DLP（第⑤层）只看工具**入参**
-//! （`SecurityPlugin::execute` 只收 `ToolInvocation.args`）；出侧结果此前
+//! （`SecurityPlugin:execute` 只收 `ToolInvocation.args`）；出侧结果此前
 //! 零检查——`scan_tool_output` 在库里但主线从不调用，唯一调用点是 eval
 //! 沙盒 worker（`nemesisbot/src/eval_worker.rs`）。后果：`read_file` 读到
 //! config.json 的明文 model key、`exec` 回显环境变量秘钥时，原文直接进

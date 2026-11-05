@@ -1,23 +1,23 @@
 //! 会话维护：SessionMaintenance/parse_maintenance_command、parse_user_dispatch、build_dispatch_snapshot_messages、handle_maintenance、process_user_dispatch、clear_session。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
-/// E6: 会话维护命令种类（`/compact` 手动压缩 / `/clear` 清空会话）。
+/// 会话维护命令种类（`/compact` 手动压缩 / `/clear` 清空会话）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionMaintenance {
     /// 手动 compaction：推进摘要覆盖、收缩逐字尾巴（`force_compression`）。
     Compact,
     /// 清空会话历史（chat_log 截断 + SessionStore 清除，key 保留可用）。
     Clear,
-    /// 行动代理 P0（2026-10-14）撤销一等动词：回退上一用户轮（对话截断 +
+    /// 行动代理 撤销一等动词：回退上一用户轮（对话截断 +
     /// 文件还原到该轮开始前的 checkpoint 态，`rewind_last_turn`）。
     Undo,
 }
 
-/// E6: parse a session-maintenance slash command (`/compact` / `/clear`).
+/// parse a session-maintenance slash command (`/compact` / `/clear`).
 /// Returns (kind, pending receipt). Extra args are ignored (no-arg commands);
 /// `None` for anything else — the caller falls through to normal handling.
 pub(crate) fn parse_maintenance_command(content: &str) -> Option<(SessionMaintenance, String)> {
@@ -25,7 +25,7 @@ pub(crate) fn parse_maintenance_command(content: &str) -> Option<(SessionMainten
     match name {
         "/compact" => Some((SessionMaintenance::Compact, "⏳ 正在压缩会话…".to_string())),
         "/clear" => Some((SessionMaintenance::Clear, "⏳ 正在清空会话…".to_string())),
-        // 撤销一等动词（感知层 §5.1）：与 /compact 同款首词法（首词命中即
+        // 撤销一等动词（感知层）：与 /compact 同款首词法（首词命中即
         // 接管，尾随参数忽略）——「撤销」「撤销 一下」都算，连写「撤销一下」
         // 不算（落普通轮由 agent 自行理解）。
         "撤销" | "/undo" => Some((SessionMaintenance::Undo, "⏳ 正在撤销上一轮…".to_string())),
@@ -33,11 +33,11 @@ pub(crate) fn parse_maintenance_command(content: &str) -> Option<(SessionMainten
     }
 }
 
-/// K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发语法——
+/// (devtool-upgrade): 用户直发远程编码任务派发语法——
 /// `/build <task> repo:<node>`（`/plan` 前缀同接受）。
 ///
 /// 解析规则（可预测优先）：
-/// - 前缀必须是 `/build ` 或 `/plan `（带参数形态）；裸 `/build`（F1 模式
+/// - 前缀必须是 `/build ` 或 `/plan `（带参数形态）；裸 `/build`（模式
 ///   切换）因无尾随空格天然不匹配，互不干扰；
 /// - 目标节点 = **最后一个** `repo:` 前缀的空白分隔 token；其余部分为
 ///   任务文本；
@@ -64,7 +64,7 @@ pub(crate) fn parse_user_dispatch(content: &str) -> Option<(String, String)> {
     Some((task_text, node_id.to_string()))
 }
 
-/// K4: 构造用户直派发的自足续行快照消息。
+/// 构造用户直派发的自足续行快照消息。
 ///
 /// 与 LLM 发起 `cluster_rpc` 的 `__ASYNC__` 路径同构，但快照不来自
 /// instance 历史（用户派发没有 LLM 轮），而是直接合成最小合法序列：
@@ -157,7 +157,7 @@ impl AgentLoop {
     }
 
     // -----------------------------------------------------------------------
-    // K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发
+    // (devtool-upgrade): 用户直发远程编码任务派发
     // -----------------------------------------------------------------------
 
     /// 处理 `/build <task> repo:<node>` 用户直派发（serial tail 与 spawned
@@ -172,7 +172,7 @@ impl AgentLoop {
     ///    这是直接调工具对象被否决的原因）；
     /// ④ `__ASYNC__` ACK → 存自足续行快照（`build_dispatch_snapshot_messages`
     ///    合成最小合法序列），完成回调复用 `handle_cluster_continuation`
-    ///    全套（续行 LLM / 持久化 / 回原通道 / G5 崩溃恢复）；
+    ///    全套（续行 LLM / 持久化 / 回原通道 / 崩溃恢复）；
     /// ⑤ 同步结果或 Err（集群未启用 / 节点不存在 / 自调用守卫）→ 直接回复。
     pub(crate) async fn process_user_dispatch(
         &self,
@@ -181,7 +181,7 @@ impl AgentLoop {
         node_id: &str,
         session_key: &str,
     ) {
-        // R294（BUG-20261031-235）：panic 兜底守卫（同 admitted/维护尾巴
+        // ：panic 兜底守卫（同 admitted/维护尾巴
         // ——RPC ACK 等待/落盘路径 panic 展开时释放会话）。正常路径在两个
         // 出口各显式 drop（= 原 release_session），均先于 drain。
         let _busy_guard = super::admission::SessionBusyGuard::new(self, session_key);
@@ -190,7 +190,7 @@ impl AgentLoop {
         self.finish_message(msg, receipt, None, false, true).await;
 
         // ② 会话一致性：user 行落盘（原命令原文——派发上下文可追溯）。
-        // SB（2026-09-17）：同正常轮——首行落盘 = 会话物化 → 发布事件。
+        // SB：同正常轮——首行落盘 = 会话物化 → 发布事件。
         let log_existed = Self::session_log_exists_before_append(session_key);
         crate::chat_log::append_chat_log_meta(
             session_key,
@@ -237,7 +237,7 @@ impl AgentLoop {
                 let target_id = parts[1];
                 if let Some(ref mgr) = self.continuation_manager {
                     let messages = build_dispatch_snapshot_messages(task_text, node_id, &tc_id);
-                    // G5：对端 ID 随快照落盘——A 侧重启后恢复轮询知道问谁。
+                    // 对端 ID 随快照落盘——A 侧重启后恢复轮询知道问谁。
                     mgr.save_continuation_with_images(
                         task_id,
                         messages,
@@ -269,7 +269,7 @@ impl AgentLoop {
                 }
                 drop(_busy_guard); // = release_session（ACK 出口；panic 展开由守卫兜底）
                 // ACK 出口同样排空排队消息（与 admitted/维护尾巴同源，
-                // 2026-09-28 真模型验证发现的滞留修复）。
+                // 真模型验证发现的滞留修复）。
                 self.drain_next_turn_queue(session_key).await;
                 return;
             }
@@ -279,16 +279,16 @@ impl AgentLoop {
         // ⑤ 同步结果或错误：直接回复（handle_tool_call 把错误编码在返回串）。
         self.finish_message(msg, result, None, true, false).await;
         drop(_busy_guard); // = release_session（同步出口；panic 展开由守卫兜底）
-        // 排队消息排空（与 admitted/维护尾巴同源，2026-09-28 滞留修复）。
+        // 排队消息排空（与 admitted/维护尾巴同源， 滞留修复）。
         self.drain_next_turn_queue(session_key).await;
     }
 
-    /// E6: 手动清空会话入口。chat_log 截断（jsonl-first，令 rebuild 路径
+    /// 手动清空会话入口。chat_log 截断（jsonl-first，令 rebuild 路径
     /// 无旧内容可复活——sessions.clear 同纪律）+ SessionStore 清除（内存
     /// 条目 + 磁盘 json，下一回合 get_or_create 重建空会话）。key 保留，
     /// 会话继续可用。实例按回合从 store 重建，无驻留内存态需要清。
     pub async fn clear_session(&self, session_key: &str) -> Result<String, String> {
-        // BUG-20261030-205：jsonl 清空失败诚实报错（旧形态 warn-only 后
+        // jsonl 清空失败诚实报错（旧形态 warn-only 后
         // 照样回「✓ 已清空」，jsonl 残留 + store 先清 = self-heal 复活）。
         crate::chat_log::clear_chat_log(session_key)?;
         if let Some(ref store) = self.session_store {

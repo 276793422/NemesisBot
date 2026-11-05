@@ -1,7 +1,7 @@
-//! A7：multiedit 批量编辑单元测试。
+//! multiedit 批量编辑单元测试。
 //!
 //! 覆盖：args 解析（缺字段/空数组/坏 JSON）/ **原子性**（任一失败整批不
-//! 落盘 + 逐条状态回灌）/ 同文件多条编辑按序累积 / A4 级联命中标注 /
+//! 落盘 + 逐条状态回灌）/ 同文件多条编辑按序累积 / 级联命中标注 /
 //! replace_all 条目 / 缺文件中止 / 无差异诚实标注 / preview_all 多点预检
 //! （去重保序、坏 args 空、Modify kind）/ 边界形态（with_boundary 拦工作
 //! 区外路径整批中止）/ 基线注册接线。全用绝对路径（不碰进程 cwd——并行
@@ -19,7 +19,7 @@ fn multiedit_args(edits: serde_json::Value) -> String {
     serde_json::json!({ "edits": edits }).to_string()
 }
 
-/// 绝对路径字符串（Windows 下 to_string_lossy 带反斜杠，PathBuf::from 原样
+/// 绝对路径字符串（Windows 下 to_string_lossy 带反斜杠，PathBuf:from 原样
 /// 接受；工具不走 shell，无转义问题）。
 fn p(dir: &std::path::Path, name: &str) -> String {
     dir.join(name).to_string_lossy().to_string()
@@ -162,7 +162,7 @@ async fn same_file_edits_apply_cumulatively() {
 #[tokio::test]
 async fn cascade_level_reported_and_replace_all_works() {
     let dir = tempfile::tempdir().unwrap();
-    // 行尾空白差异 → A4 line-trimmed 级联命中（确定性模糊 fixture）。
+    // 行尾空白差异 → line-trimmed 级联命中（确定性模糊 fixture）。
     std::fs::write(dir.path().join("c.txt"), "alpha   \nbeta\n").unwrap();
     std::fs::write(dir.path().join("r.txt"), "dup X dup X\n").unwrap();
     let tool = MultiEditTool::default();

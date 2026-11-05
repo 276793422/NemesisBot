@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -11,14 +11,14 @@ pub struct SpawnConfig {
     pub default_model: String,
     /// Maximum number of concurrent sub-agents.
     pub max_concurrent: usize,
-    /// G2 (devtool-upgrade 阶段 3)：子代理最大嵌套深度。父深度 N（0 = 顶层
+    /// (devtool-upgrade)：子代理最大嵌套深度。父深度 N（0 = 顶层
     /// agent）发起 spawn 产生深度 N+1 的子代理，仅当 N+1 ≤ max_depth 放行；
     /// 超限回灌 `Sub-agent depth limit (N) reached` 供模型自纠。生产接线 =
     /// config `agents.subagent.max_depth`（默认 1 = 子代理不能再 spawn）。
     pub max_depth: usize,
 }
 
-/// G1：readonly 子代理工具白名单（spawn `tools` 档位的受限集，与 F2 explore
+/// readonly 子代理工具白名单（spawn `tools` 档位的受限集，与 explore
 /// 档共用同一清单）。语义 = 与注册表求交（`effective_tool_defs` retain）——
 /// 未注册/未启用的项（如 lsp_tool 关闭时）自然缺席，不报错。
 pub const DETACHED_READONLY_TOOLS: &[&str] = &[
@@ -31,7 +31,7 @@ pub const DETACHED_READONLY_TOOLS: &[&str] = &[
     "cli_reference",
 ];
 
-/// G1：spawn `tools` 档位 → `DetachedOpts.allowed_tools`。
+/// spawn `tools` 档位 → `DetachedOpts.allowed_tools`。
 /// `"readonly"` → 白名单（`DETACHED_READONLY_TOOLS`）；`"full"` → `None`
 /// （不设限，仍经父 tier 过滤）。未知档位 = `Err`（调用方诚实回灌模型自纠，
 /// 不静默降级）。
@@ -47,7 +47,7 @@ pub fn detached_tools_for_profile(
     }
 }
 
-/// prompt-pack pro（M4）：spawn `tools` 档位 → 子代理角色。readonly 档
+/// prompt-pack pro：spawn `tools` 档位 → 子代理角色。readonly 档
 /// （只读白名单）的子任务天然是调查/汇报型，映射侦察员角色模板；full 档
 /// 不指定（None = 继承主人格，行为不变）。与 [`detached_tools_for_profile`]
 /// 同为闭包侧唯一映射点。
@@ -59,21 +59,21 @@ pub fn detached_role_for_profile(profile: &str) -> Option<crate::prompt::Subagen
 }
 
 /// Spawn 闭包类型：`(agent_id, task, model, channel, chat_id, tools, depth, background, role) -> Future<Result<String, String>>`。
-/// G0 (devtool-upgrade 阶段 3)：生产接线 = agent_factory 组装 AgentLoop 后向
+/// (devtool-upgrade)：生产接线 = agent_factory 组装 AgentLoop 后向
 /// spawn_slot 注入的闭包（持 `Weak<AgentLoop>` 调 `run_detached`）。
-/// G1：第 6 参 `tools` = 工具档位（"readonly"|"full"，SpawnTool 侧已校验，
+/// 第 6 参 `tools` = 工具档位（"readonly"|"full"，SpawnTool 侧已校验，
 /// 闭包内经 `detached_tools_for_profile` 映射为白名单）。
-/// G2：第 7 参 `depth` = 本 spawn 应产生的子代理深度（父深度 + 1，已过
+/// 第 7 参 `depth` = 本 spawn 应产生的子代理深度（父深度 + 1，已过
 /// max_depth 检查），闭包经 `DetachedOpts.depth` 写到子 instance。
-/// G4：第 8 参 `background` = 后台化（true 时闭包侧 `tokio::spawn` 包住
+/// 第 8 参 `background` = 后台化（true 时闭包侧 `tokio:spawn` 包住
 /// run_detached，立即返回 `__BG_SPAWN__:{task_id}` marker；任务完成经
 /// `subagent_continuation:{task_id}` bus 消息回灌续行）。深度限制沿用第
 /// 7 参（后台任务不另计深度——派生前已过 max_depth 检查）。
-/// P3（角色显式化）：第 9 参 `role` = 子代理角色 slug（`""` = 自动：沿用
-/// 工具档位推导的既有行为；非空 = 已过 `SubagentRole::from_slug` 校验的
+/// （角色显式化）：第 9 参 `role` = 子代理角色 slug（`""` = 自动：沿用
+/// 工具档位推导的既有行为；非空 = 已过 `SubagentRole:from_slug` 校验的
 /// 显式角色，闭包侧覆盖 `DetachedOpts.role`）。
-/// 子代理可见性（P1）：第 10 参 `parent_session_key` = 发起会话键（注册表
-/// 台账归属 + D7 后台续行回灌路由的信号；客户端手动 spawn 传 `""`）。
+/// 子代理可见性：第 10 参 `parent_session_key` = 发起会话键（注册表
+/// 台账归属 + 后台续行回灌路由的信号；客户端手动 spawn 传 `""`）。
 pub type SpawnFn = Arc<
     dyn Fn(
             &str,
@@ -99,7 +99,7 @@ pub type SpawnFn = Arc<
 /// spawn; otherwise it returns an error indicating sub-agent support is not
 /// configured.
 ///
-/// G0 (devtool-upgrade 阶段 3)：spawn 闭包经 `Arc<OnceLock>` **槽**注入而
+/// (devtool-upgrade)：spawn 闭包经 `Arc<OnceLock>` **槽**注入而
 /// 非直接 setter——`Tool` trait 对象无法 downcast，注册进 tools map 后拿
 /// 不到自身；槽让 agent_factory 在 AgentLoop 组装完成后（闭包需要 loop 的
 /// Arc）延迟注入，工具即刻生效。`max_concurrent` 由真信号量兜住（超出
@@ -115,7 +115,7 @@ pub struct SpawnTool {
     /// 并发上限信号量（permits = `config.max_concurrent`；execute 时
     /// acquire，超并发排队等待而非放行）。
     semaphore: Arc<tokio::sync::Semaphore>,
-    /// G2：本次调用的父深度（`set_invocation_depth` 注入，0 = 顶层 agent）。
+    /// 本次调用的父深度（`set_invocation_depth` 注入，0 = 顶层 agent）。
     /// execute 读它执行 `parent + 1 > config.max_depth` 拒绝，并把子深度
     /// （parent + 1）经第 7 参传给 spawn 闭包。共享实例上 set-then-read 的
     /// 竞态只会在并发派发间边际误归属深度（与既有 set_context 竞态同类，
@@ -137,7 +137,7 @@ impl SpawnTool {
         )
     }
 
-    /// G0：共享槽构造器——生产接线用。调用方持有同一 slot Arc，在
+    /// 共享槽构造器——生产接线用。调用方持有同一 slot Arc，在
     /// AgentLoop 组装完成后向其注入闭包。
     pub fn with_spawn_slot(
         config: SpawnConfig,
@@ -164,7 +164,7 @@ impl SpawnTool {
     ///
     /// The function signature is: `(agent_id, task, model, channel, chat_id) -> Future<Output = Result<String, String>>`
     ///
-    /// G0：内部写入共享槽（`OnceLock::set` 首次生效，重复 set 静默忽略——
+    /// 内部写入共享槽（`OnceLock:set` 首次生效，重复 set 静默忽略——
     /// 与旧「直接替换」语义的差异仅在同一工具实例重复 set 的场景，生产/
     /// 测试均不存在该用法）。
     pub fn set_spawn_fn(&mut self, f: SpawnFn) {
@@ -182,7 +182,7 @@ impl Tool for SpawnTool {
         // 角色 enum 从目录生成（单一真相源：新增角色只改 catalog，schema
         // 自动跟上）。"" 不进 enum——缺省 = 键缺省，模型显式传 "" 反而是
         // 混淆面。枚举保持全量目录（稳定契约）；tier/hidden 的供给收窄
-        // 由 dispatch 闸权威裁决（F8 同款双闸模型，陈旧 cache 窗口兜底）。
+        // 由 dispatch 闸权威裁决（同款双闸模型，陈旧 cache 窗口兜底）。
         // 枚举描述同步由目录生成（slug=职责），消灭第二份手写文案。
         let role_slugs: Vec<&str> = crate::prompt::SubagentRole::catalog()
             .iter()
@@ -231,14 +231,14 @@ impl Tool for SpawnTool {
         }
     }
 
-    /// G2：分发层注入的父深度（`handle_tool_call_at_depth` → trait 默认
+    /// 分发层注入的父深度（`handle_tool_call_at_depth` → trait 默认
     /// no-op，这里覆写为存储）。execute 据此执行 max_depth 限制。
     fn set_invocation_depth(&self, depth: usize) {
         self.invocation_depth
             .store(depth, std::sync::atomic::Ordering::Relaxed);
     }
 
-    /// G3：spawn 加入 U5 并行池——并发安全由构造保证：池 4 许可 + G0
+    /// spawn 加入 并行池——并发安全由构造保证：池 4 许可 +
     /// 信号量双层限流、深度经 at_depth 注入（上面覆写消费）、每笔分发
     /// 仍过完整瀑布、兄弟子代理实例/会话全隔离。spawn 有副作用（真的
     /// 起子代理）故 `is_read_only` 保持默认 false。
@@ -250,7 +250,7 @@ impl Tool for SpawnTool {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
 
-        // G0：agent_id 改 optional（schema/实现一致化——schema 一直只
+        // agent_id 改 optional（schema/实现一致化——schema 一直只
         // required task）；语义 = 子代理 preset 名，v1 信息性，缺省 default。
         let agent_id = val
             .get("agent_id")
@@ -259,7 +259,7 @@ impl Tool for SpawnTool {
 
         let task = val.get("task").and_then(|v| v.as_str()).unwrap_or("");
 
-        // G1：工具档位（缺省 readonly=最小权限）。未知档位在 spawn 前诚实
+        // 工具档位（缺省 readonly=最小权限）。未知档位在 spawn 前诚实
         // 拒绝（不占信号量、不起子代理），错误文案列合法值供模型自纠。
         let tools_profile = val
             .get("tools")
@@ -267,7 +267,7 @@ impl Tool for SpawnTool {
             .unwrap_or("readonly");
         detached_tools_for_profile(tools_profile)?;
 
-        // G4：后台化开关（缺省 false=同步等待子代理完成）。true 时闭包
+        // 后台化开关（缺省 false=同步等待子代理完成）。true 时闭包
         // 侧转后台，本调用立即返回 `__BG_SPAWN__` marker（loop 侧存续行
         // 快照 + 中间消息收尾回合；完成结果经 subagent_continuation 回灌）。
         let background = val
@@ -275,7 +275,7 @@ impl Tool for SpawnTool {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        // P3：显式角色（缺省 "" = 自动，沿用工具档位推导）。未知 slug 在
+        // 显式角色（缺省 "" = 自动，沿用工具档位推导）。未知 slug 在
         // spawn 前诚实拒绝，错误文案带合法值清单供模型自纠。（tier/hidden
         // 的可见性由 dispatch 闸裁决——SpawnTool 无 tier 视角，管 slug
         // 合法性这一层。）
@@ -302,7 +302,7 @@ impl Tool for SpawnTool {
             ));
         }
 
-        // G2：深度限制——父深度 + 1（子代理深度）不得超过 `max_depth`。
+        // 深度限制——父深度 + 1（子代理深度）不得超过 `max_depth`。
         // 超限在占信号量/起子代理**之前**诚实拒绝，文案供模型自纠
         // （告诉它当前嵌套已到顶，应自己完成任务而不是再派生）。
         let parent_depth = self
@@ -345,7 +345,7 @@ impl Tool for SpawnTool {
             }
         };
 
-        // G0：并发上限真生效——acquire 许可，超出 max_concurrent 的调用在
+        // 并发上限真生效——acquire 许可，超出 max_concurrent 的调用在
         // 此排队等待（信号量关闭时 acquire 返回 Err，诚实上报）。
         let _permit = self
             .semaphore

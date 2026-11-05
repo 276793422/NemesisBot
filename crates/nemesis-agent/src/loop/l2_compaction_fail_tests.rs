@@ -1,13 +1,13 @@
-// L2（2026-10-12 内部专项 T0）：压缩失败诚实报错语义的回归锁。
+// （内部专项）：压缩失败诚实报错语义的回归锁。
 //
-// pi 真实事故（996K/1M 上下文）的教训：压缩（摘要生成）失败必须响亮失败
-// ——不能静默继续（用户以为带着全量上下文，实际早已失忆）。本仓 2026-08-25
+// pi 真实事故（996K/1M 上下文）的压缩（摘要生成）失败必须响亮失败
+// ——不能静默继续（用户以为带着全量上下文，实际早已失忆）。本仓
 // 已有「摘要失败绝不推进 covers」契约（compact.rs warn 臂），本文件钉住
 // 最后一环：`retry_after_context_error` 的**有界耗尽臂**——context 错误触
 // 发的压缩重试环里，摘要 LLM 与重呼 LLM 全部失败时：
 //   ① 重试预算有界（2 轮 × 摘要+重呼，不多烧）；
-//   ② 返回 Err(AgentEvent::Error) 携带原始错误（不静默、不假装成功）；
-//   ③ 错误落 history（assistant "Error: ..." 行，可观测/可审计）；
+//   ② 返回 Err(AgentEvent:Error) 携带原始错误（不静默、不假装成功）；
+//   ③ 错误落 history（assistant "Error:..." 行，可观测/可审计）；
 //   ④ 失败的摘要不推进 covers_up_to（上下文不静默丢失）；
 // 另补一臂：第 1 轮重呼成功即恢复（有界环的正向用途）。
 //
@@ -155,7 +155,7 @@ async fn context_retry_exhausts_bounded_then_fails_loud() {
         "错误文案必须携带最终错误原文：{formatted}"
     );
 
-    // ③ history 落账：最后一条 assistant 消息 = Error: ...（可观测/可审计，
+    // ③ history 落账：最后一条 assistant 消息 = Error:...（可观测/可审计，
     //    不静默吞掉本轮）。
     let history = instance.get_history();
     let last = history.last().expect("history 非空");
@@ -166,7 +166,7 @@ async fn context_retry_exhausts_bounded_then_fails_loud() {
         last.content
     );
 
-    // ④ 失败的摘要绝不推进 covers（上下文不静默丢失——2026-08-25 契约在
+    // ④ 失败的摘要绝不推进 covers（上下文不静默丢失—— 契约在
     //    context 重试环内同样成立）。
     let after_covers = instance
         .get_summary_cache()

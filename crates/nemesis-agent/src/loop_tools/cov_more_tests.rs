@@ -1,5 +1,5 @@
 //! Wave4 覆盖率补充批次（loop_tools.rs 纯助手与执行原语）：
-//! - `exec_output_passed` / `exec_timeout_secs`（B2 失败形态判定单一真相源）
+//! - `exec_output_passed` / `exec_timeout_secs`（失败形态判定单一真相源）
 //! - `preview_chars` / `binary_file_summary`（magic 分派三臂）
 //! - `resolve_tool_path`（有界/无界两形态）
 //! - `count_labeled_numbers`（四标签臂 + any 信号）
@@ -250,7 +250,7 @@ async fn run_one_stage_timeout_kills_and_reports() {
     assert_eq!(code, None, "超时收尸后无退出码");
 }
 
-/// 超时收尸**树杀**回归锁（2026-10-15 产品验证实验 #1）：timeout 到点后
+/// 超时收尸**树杀**回归锁（产品验证实验 #1）：timeout 到点后
 /// 不仅 shell 本体，shell 派生的孙进程也必须死——旧 start_kill 只杀
 /// cmd/sh，cargo/rustc 等真实工作进程整棵存活（实证：run_checks 声明
 /// 600s 超时后 cargo 又跑了 25 分钟直到手工杀树）。孙进程先落自身 PID
@@ -304,7 +304,7 @@ async fn run_one_stage_timeout_kills_grandchild_tree() {
     assert!(dead, "超时后孙进程 pid={} 仍存活——树杀未落地", gc_pid);
 }
 
-/// 平台进程存活检查（locale 无关；同 background_registry::tests 模式）。
+/// 平台进程存活检查（locale 无关；同 background_registry:tests 模式）。
 #[cfg(target_os = "windows")]
 fn process_alive(pid: u32) -> bool {
     let out = std::process::Command::new("tasklist")

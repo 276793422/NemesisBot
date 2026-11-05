@@ -1,4 +1,4 @@
-//! Tests for workspace instruction-chain loading/injection (H5 / U18).
+//! Tests for workspace instruction-chain loading/injection.
 
 use super::*;
 
@@ -166,7 +166,7 @@ fn test_touch_invalidates_digest_and_reinjects() {
             .any(|m| m.content.contains("version one instructions"))
     );
 
-    // 2. Second build without change: re-emitted byte-identically (I2
+    // 2. Second build without change: re-emitted byte-identically (
     // stable re-emission — same content, same bytes).
     let m2 = agent_loop.build_messages(&instance);
     let strip_time = |c: &str| -> String {
@@ -239,7 +239,7 @@ fn test_render_empty_chain_is_empty_string() {
 }
 
 // ---------------------------------------------------------------------------
-// N7（2026-10-13）：信任档解析 + 横幅。
+// ：信任档解析 + 横幅。
 // ---------------------------------------------------------------------------
 
 #[test]

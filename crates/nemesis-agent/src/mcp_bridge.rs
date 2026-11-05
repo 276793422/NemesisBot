@@ -1,6 +1,6 @@
-//! Bridge between `nemesis_mcp::adapter::Tool` and the agent's `Tool` trait.
+//! Bridge between `nemesis_mcp:adapter:Tool` and the agent's `Tool` trait.
 
-/// Wrapper that adapts an `adapter::Tool` into the agent's `Tool` trait.
+/// Wrapper that adapts an `adapter:Tool` into the agent's `Tool` trait.
 pub(crate) struct McpToolBridge {
     inner: Box<dyn nemesis_mcp::adapter::Tool>,
 }
@@ -40,7 +40,7 @@ impl crate::r#loop::Tool for McpToolBridge {
         self.inner.definition().parameters.clone()
     }
 
-    // B3（治理补全 2026-10-19）：MCP annotations 透传（快照/镜像基线消费）。
+    // （治理补全）：MCP annotations 透传（快照/镜像基线消费）。
     fn read_only_hint(&self) -> Option<bool> {
         self.inner
             .definition()

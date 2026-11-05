@@ -87,7 +87,7 @@ fn detach_without_lineage_returns_false() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261030-197 红证：detach 后迟到的分支摘要后台写不得复活
+/// 红证：detach 后迟到的分支摘要后台写不得复活
 /// branch_summary——detach 契约「Branch Context 停止注入」不被 in-flight
 /// 摘要（spawn 于 fork/rewind、LLM 往返数秒后落盘）击穿；re-fork
 /// （write_session_parent）解除封印。
@@ -125,7 +125,7 @@ fn bug197_late_branch_summary_after_detach_does_not_resurrect() {
     delete_chat_log(&parent);
 }
 
-/// BUG-20261030-197 对照：未 detach 的会话摘要照常落盘——fork 血缘在册
+/// 对照：未 detach 的会话摘要照常落盘——fork 血缘在册
 /// 与无血缘（rewind 摘要形态）两臂都不受封印影响。
 #[test]
 fn bug197_branch_summary_writes_normally_without_detach() {

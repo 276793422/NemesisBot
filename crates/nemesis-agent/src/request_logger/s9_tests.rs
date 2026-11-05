@@ -1,4 +1,4 @@
-//! S9 覆盖率批次（request_logger.rs:771 resolve_log_path 双分支）。
+//! 覆盖率批次（request_logger.rs:771 resolve_log_path 双分支）。
 //! 私有函数，经由子模块直接驱动（绝对路径原样 / 相对路径 join workspace）。
 
 use super::*;

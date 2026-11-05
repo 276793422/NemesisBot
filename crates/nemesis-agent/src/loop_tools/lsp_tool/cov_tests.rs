@@ -163,7 +163,7 @@ async fn gate_and_write_without_security_writes_all_files() {
     assert_eq!(std::fs::read_to_string(&b).unwrap(), "fn b() {}");
 
     // 写盘中途失败（第二个文件目录不存在）→ Err 且**自带已落盘清单**
-    // （BUG-20261104-381：此前 `?` 直接返回丢现场——模型只看到失败，
+    // （此前 `?` 直接返回丢现场——模型只看到失败，
     // 不知道第一个文件已经落盘，半改名状态不可见会盲目重试整个 rename）。
     let ok_file = dir.path().join("good.rs");
     let bad = vec![
@@ -203,7 +203,7 @@ async fn gate_and_write_without_security_writes_all_files() {
 }
 
 // ---------------------------------------------------------------------------
-// M3（2026-10-27 整改）：gate_and_write 工作区边界预分——越界文件进拒绝
+// ：gate_and_write 工作区边界预分——越界文件进拒绝
 // 清单不落盘，界内文件照写（部分成功语义）；相对路径以边界根为基点。
 // ---------------------------------------------------------------------------
 
@@ -294,7 +294,7 @@ fn gate_and_write_boundary_resolves_relative_paths_against_root() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261025-37 回归锁：guardian 语义二审接入合成写闸（与 dispatch
+// 回归锁：guardian 语义二审接入合成写闸（与 dispatch
 // 同源 guardian_gate）。此前 guardian 只活在 dispatch 内联块，rename
 // 合成闸只跑 8 层规则管线——guardian_mode=high 下同内容直写会被送审、
 // rename 直落，文档声称「guardian 按既有语义继承」不实。
@@ -487,9 +487,9 @@ async fn gate_and_write_guardian_default_off_never_calls_judge() {
 // ===========================================================================
 // Wave4 覆盖批次：真实 rust-analyzer 端到端（execute_rename 全链路 /
 // code_action 渲染 / hover 格式化）。SKIP 仅限「预检确认 rust-analyzer
-// 不在」（--version 实跑探针，二进制在场 ≠ 可用）；预检通过后的就绪
+// 不在」（version 实跑探针，二进制在场 ≠ 可用）；预检通过后的就绪
 // 失败、总预算耗尽、真实操作错误一律 fail（§四.1：真实错误不能全当
-// SKIP）。CI（nextest）下三用例由 .config/nextest.toml 的 ra-serialize
+// SKIP）。CI（nextest）下三用例由.config/nextest.toml 的 ra-serialize
 // 组跨进程串行（CI 未预配 RA → 走合法 SKIP 臂）；本文件内 Semaphore
 // 只对本地 cargo test 生效。
 // ===========================================================================
@@ -531,13 +531,13 @@ fn scratch_ra_project() -> Option<(tempfile::TempDir, std::path::PathBuf)> {
     Some((dir, lib))
 }
 
-/// 三个真实 rust-analyzer 用例共用一把静态闸（P2-2）：并发跑会同时拉起
+/// 三个真实 rust-analyzer 用例共用一把静态闸：并发跑会同时拉起
 /// 多个 rust-analyzer（每个冷启动数百 MB 内存 + 全量分析 CPU），慢机上
 /// 互相抢资源全部超时 SKIP。串行 = 后续用例吃到前一用例焐热的页缓存，
 /// 预算更稳、结果更可复现。
 static RA_SERIAL: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-/// 重试总预算（重试循环的墙钟总闸，P2-2）：旧实现 120 次循环名义「60s 预算」，
+/// 重试总预算（重试循环的墙钟总闸）：旧实现 120 次循环名义「60s 预算」，
 /// 实际单次 execute 自身可拖 60s（LspTool 内层超时），最坏总墙钟
 /// 120×60s+60s——RA 卡死时套件挂半小时级。总闸一次包全程：每次尝试
 /// （含 didOpen/touch_file）的等待钳制为剩余预算，耗尽即 Err（调用方

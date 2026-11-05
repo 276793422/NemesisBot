@@ -1,8 +1,8 @@
-//! S2②：主线工具输出凭据/DLP 复扫测试（凭据/DLP 双路 + 组合 + 旁路 +
+//! ②：主线工具输出凭据/DLP 复扫测试（凭据/DLP 双路 + 组合 + 旁路 +
 //! action 观测档不改写语义）。
 //!
 //! 走 `rescan_pair` 组装核直扫扫描器组合（不必构造整个 SecurityPlugin），
-//! 另加一例经 `SecurityPlugin::new(Default)` 的入口级集成（覆盖
+//! 另加一例经 `SecurityPlugin:new(Default)` 的入口级集成（覆盖
 //! accessors 解包胶水）。
 
 use super::output_rescan::{rescan_pair, rescan_tool_output};

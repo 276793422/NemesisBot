@@ -1,4 +1,4 @@
-//! history_search unit tests (U20 sixth batch) — PURE helpers only.
+//! history_search unit tests (sixth batch) — PURE helpers only.
 //!
 //! The STATEFUL family (reindex/search against real session logs: the
 //! fts_chinese / english / ghost-purge / idempotent / incremental tests)
@@ -51,7 +51,7 @@ fn test_search_empty_query() {
     assert!(search("", 10).is_empty());
 }
 
-/// M3 补测（quality-hardening goal 2026-08-25）：MATCH 表达式构造的直接断言。
+/// 补测（quality-hardening goal）：MATCH 表达式构造的直接断言。
 /// 此前只经 FTS 集成测试间接走到（命中≠表达式形状正确），这里钉住三件事：
 /// 短语臂 / CJK bigram 臂的形状、拉丁词不进 bigram 臂、FTS5 语法注入转义。
 #[test]
@@ -79,7 +79,7 @@ fn test_match_expr_shapes_and_injection_escape() {
     );
 }
 
-// --- W3a: 纯 helper 补测 —— CJK ext-B 字符、snippet_around 椭圆臂与
+// ---: 纯 helper 补测 —— CJK ext-B 字符、snippet_around 椭圆臂与
 // 字符边界回路。有状态族（reindex/search_linear）按本文件头约定留在
 // tests/history_search_fts.rs 专属集成二进制，不回迁。 ---
 
@@ -179,7 +179,7 @@ fn char_boundary_helpers_floor_and_ceil() {
 }
 
 // ===========================================================================
-// 降级路径确定性迭代序（2026-10-23）：search_linear 的 limit 截断让命中
+// 降级路径确定性迭代序：search_linear 的 limit 截断让命中
 // 子集依赖 read_dir 平台序（NTFS 字典序 vs ext4 哈希序）。收集/排序拆成
 // 纯函数在此钉死：过滤 jsonl + mtime 降序 + 文件名升序 tiebreak。
 // （状态族经 search() 走真索引的测试在 tests/history_search_fts.rs——

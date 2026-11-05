@@ -1,4 +1,4 @@
-//! Type definitions shared by the production agent loop (`crate::r#loop`).
+//! Type definitions shared by the production agent loop (`crate:r#loop`).
 //!
 //! This module contains **only** the observer-event and tool-result types that
 //! production code imports:
@@ -8,7 +8,7 @@
 //! - `ToolResult` — rich tool execution result produced by tools in `loop.rs`
 //!
 //! The former `AgentLoopExecutor` runtime that lived here was removed
-//! (2026-09-23): it was superseded by `crate::r#loop::AgentLoop` in an earlier
+//! (2026-09-23): it was superseded by `crate:r#loop:AgentLoop` in an earlier
 //! refactor and was never instantiated in production — only its own tests
 //! constructed it, so any edit there silently had no effect on live behaviour
 //! (route such changes through `loop.rs`).
@@ -35,7 +35,7 @@ pub struct ObserverUsageInfo {
 
 /// An event emitted by the observer system.
 ///
-/// This wraps the `nemesis_observer::ConversationEvent` types into a
+/// This wraps the `nemesis_observer:ConversationEvent` types into a
 /// self-contained enum that can be emitted synchronously or asynchronously
 /// through the `ObserverManager`.
 #[derive(Debug, Clone)]
@@ -102,7 +102,7 @@ pub enum ObserverEvent {
 }
 
 impl ObserverEvent {
-    /// Convert to a `nemesis_observer::ConversationEvent`.
+    /// Convert to a `nemesis_observer:ConversationEvent`.
     pub(crate) fn to_conversation_event(&self) -> nemesis_observer::ConversationEvent {
         use nemesis_observer::*;
         match self {

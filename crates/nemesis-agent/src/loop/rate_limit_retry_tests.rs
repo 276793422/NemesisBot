@@ -1,4 +1,4 @@
-//! 429 限流重试环测试（2026-09-17 BUG 文档裁决④⑧）。
+//! 429 限流重试环测试（2026-09-17）。
 //!
 //! 覆盖：阶梯 + Retry-After 取 max（纯函数）；重试成功恢复；耗尽后结构化
 //! 终局文案；`agents.defaults.rate_limit_retries` fresh-read 覆盖生效；
@@ -164,7 +164,7 @@ async fn rate_limit_exhausted_yields_structured_terminal_error() {
 
 #[tokio::test(start_paused = true)]
 async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
-    // 2026-09-20 BUG：`provider codex is overloaded`（FailoverError::Overloaded
+    // BUG：`provider codex is overloaded`（FailoverError:Overloaded
     // 展平形态，状态码已丢）此前两环都不命中 → 一次终局。词表加 overloaded
     // 后必须按限流对待（对齐 error_classifier 既有约定）并显式进度。
     let provider = RateLimitedThenSuccess {
@@ -200,7 +200,7 @@ async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
     }
     assert_eq!(progresses.len(), 2, "过载进度通知: {progresses:?}");
     assert!(progresses[0].contains("第 1/10 次"));
-    // 2026-10-13：过载与限流展示层分家——过载错误进环但文案必须是
+    // 过载与限流展示层分家——过载错误进环但文案必须是
     // 「上游过载」而非「上游限流」（排障方向不再被带偏）。
     assert!(
         progresses[0].contains("上游过载") && !progresses[0].contains("上游限流"),
@@ -210,7 +210,7 @@ async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
 
 #[tokio::test(start_paused = true)]
 async fn overloaded_exhausted_yields_structured_terminal_error() {
-    // 过载耗尽同样走结构化终局（不裸抛）；2026-10-13 起标签按真类
+    // 过载耗尽同样走结构化终局（不裸抛）； 起标签按真类
     // 「上游过载」（环归类口径不变，只改展示层）。
     let provider = RateLimitedThenSuccess {
         calls: std::sync::atomic::AtomicUsize::new(0),
@@ -243,7 +243,7 @@ async fn overloaded_exhausted_yields_structured_terminal_error() {
 
 #[tokio::test(start_paused = true)]
 async fn rate_limit_retries_config_override_takes_effect() {
-    // `agents.defaults.rate_limit_retries` fresh-read（F8 模式）：设 2 →
+    // `agents.defaults.rate_limit_retries` fresh-read（模式）：设 2 →
     // 1 首捕 + 2 重试 = 3 次调用即终局。
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("config.json");
@@ -295,7 +295,7 @@ async fn rate_limit_retries_config_override_takes_effect() {
     );
 }
 
-// -- BUG 2026-09-21 ②A：单次调用超时 ---------------------------------------
+// -- BUG ②A：单次调用超时 ---------------------------------------
 
 /// 永不返回的 provider（429 后连接挂起、不回响应体的形态；也是纯首捕
 /// 挂死的形态）。
@@ -412,13 +412,13 @@ async fn hanging_first_call_times_out_into_transient_loop_and_terminates() {
     );
 }
 
-// -- BUG 2026-09-21 ②B：重试环总预算 ---------------------------------------
+// -- BUG ②B：重试环总预算 ---------------------------------------
 
 #[tokio::test(start_paused = true)]
 async fn retry_budget_exhausted_yields_budget_terminal_error() {
     // ②B：预算（等待+调用累计）超限直接终局——10 次上限只限次数不限总
     // 时长（实测 46 分钟）的补丁。预算 30s + 单次调用超时 60s：首捕 429
-    // 后首轮调用挂满 60s，第二轮循环顶预算检查命中 → 终局「已重试 1 次」。
+    // 后首轮调用挂满 60s，循环顶预算检查命中 → 终局「已重试 1 次」。
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("config.json");
     std::fs::write(
@@ -456,7 +456,7 @@ async fn retry_budget_exhausted_yields_budget_terminal_error() {
     );
 }
 
-// -- BUG 2026-09-21 ①：retry_status 快照 ------------------------------------
+// -- BUG ①：retry_status 快照 ------------------------------------
 
 #[test]
 fn retry_status_snapshot_roundtrip_and_expiry() {
@@ -519,9 +519,9 @@ fn retry_status_snapshot_roundtrip_and_expiry() {
     assert!(agent_loop.retry_status(key).is_none(), "clear 后 = None");
 }
 
-// -- 2026-09-24：上游 500（Unknown Display）落入 transient 环 ----------------
+// --：上游 500（Unknown Display）落入 transient 环 ----------------
 
-/// 真机同款 500 错误文本（GLM anthropic lane 间歇 api_error，2026-09-24
+/// 真机同款 500 错误文本（GLM anthropic lane 间歇 api_error，
 /// 安卓端 request body 截 200 字符形态；旧词表只认 502/503/504，500 一次
 /// 终局直接抛给用户）。
 const GLM_500_ERR: &str = "unknown error from provider anthropic: status 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"1234\",\"message\":\"[1234][网络错误，错误id：202609241154091cf269318c4d4e07，请稍后重试]\"}";
@@ -627,7 +627,7 @@ async fn upstream_status_500_exhausts_transient_ring_without_rate_limit_ring() {
 
 #[test]
 fn rate_limit_display_label_distinguishes_overload() {
-    // 2026-10-13：过载与限流展示层分家——环归类不变，只改标签。
+    // 过载与限流展示层分家——环归类不变，只改标签。
     assert_eq!(
         rate_limit_display_label("provider codex is overloaded"),
         "上游过载"

@@ -1,17 +1,17 @@
-//! 子代理任务注册表（子代理可见性 P1，2026-11-03 拍板「D1~D7 全做」）。
+//! 子代理任务注册表（含子代理可见性配置）。
 //!
 //! 三种子代理形态的统一台账：内联 detached（`spawn` 工具）、后台子代理
-//! （`__BG_SPAWN__` 续行）、集群 delegate（P3 并入）。登记点只在 SpawnFn
-//! 闭包（hooks v2 先例：loop 内部委派——board_review / conflict_resolver /
+//! （`__BG_SPAWN__` 续行）、集群 delegate（并入）。登记点只在 SpawnFn
+//! 闭包（hooks v2 loop 内部委派——board_review / conflict_resolver /
 //! web 看板评审——不进列表）。
 //!
 //! 落盘：`<workspace>/logs/subagent_tasks/tasks.json`（每次变更原子重写，
-//! tmp + rename）。重启回读时 Running 条目诚实降级为 [`SubagentStatus::Interrupted`]
+//! tmp + rename）。重启回读时 Running 条目诚实降级为 [`SubagentStatus:Interrupted`]
 //! （进程重启后无从确认死活，不装作还在跑）。容量上限 [`MAX_TASKS`]（500），
 //! 超限逐出最老的终态条目（全 Running 时逐最老，保内存有界）。
 //!
 //! 全局单例 [`global`]：gateway 启动早期 [`init`] 注入落盘路径（幂等）；
-//! 未 init = 纯内存态（测试/裸构建）。测试用 [`SubagentRegistry::new`]
+//! 未 init = 纯内存态（测试/裸构建）。测试用 [`SubagentRegistry:new`]
 //! 本地实例（OnceLock 不可重置）。
 
 use std::collections::HashMap;
@@ -56,7 +56,7 @@ pub struct SubagentTask {
     /// 连接级 chat_id（`web:{连接id}`），实时事件 WS push 路由用。
     pub parent_chat_id: String,
     /// 来源：`model_spawn`（模型调 spawn 工具）/ `client_spawn`（客户端
-    /// 手动）/ `delegate`（集群委派，P3）。
+    /// 手动）/ `delegate`（集群委派）。
     pub origin: String,
     pub agent_id: String,
     /// 任务文本摘录。
@@ -65,7 +65,7 @@ pub struct SubagentTask {
     pub tools_profile: String,
     pub depth: usize,
     pub background: bool,
-    /// 所属 loop：`main` / `project:{pid}`（L6++ 项目分组）。
+    /// 所属 loop：`main` / `project:{pid}`（项目分组）。
     pub loop_origin: String,
     pub status: SubagentStatus,
     pub started_at_ms: u64,
@@ -279,10 +279,10 @@ impl SubagentRegistry {
         drop(inner);
     }
 
-    /// 原子落盘（[`nemesis_utils::write_file_atomic`]：pid+序数+nanos 唯一
-    /// tmp 名 + create_new + rename 覆盖，BUG-20261104-354）。并发 begin/
+    /// 原子落盘（[`nemesis_utils:write_file_atomic`]：pid+序数+nanos 唯一
+    /// tmp 名 + create_new + rename 覆盖）。并发 begin/
     /// finish/cancel 是功能常态路径（多子代理同时收尾），**禁止**固定 tmp
-    /// 名——两个 persist 竞争同一路径时 `fs::write` 交错可产出坏混合体，
+    /// 名——两个 persist 竞争同一路径时 `fs:write` 交错可产出坏混合体，
     /// rename 会把好账本顶成坏账本（重启 load 失败 = 整册清空）；Windows
     /// 下对端持打开句柄时固定名 rename 共享违规失败还看时序运气。失败只
     /// WARN（注册表故障不阻断 spawn）；unix 0600（台账含任务文本摘录）。

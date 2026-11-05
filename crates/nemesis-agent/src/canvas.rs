@@ -1,10 +1,10 @@
-//! P30（WS14）Canvas widget —— agent 侧 ```canvas 块检出 + JS 语法预检。
+//! Canvas widget —— agent 侧 ```canvas 块检出 + JS 语法预检。
 //!
 //! agent 终答里的 ```canvas fenced 块经本模块检出并预检后，由 AgentLoop
-//! 发布 [`nemesis_types::agent::AgentEvent::CanvasOpen`]（web pump 转 SSE
+//! 发布 [`nemesis_types:agent:AgentEvent:CanvasOpen`]（web pump 转 SSE
 //! `canvas.open`），前端 CanvasPanel 以 iframe 渲染。语法不过的块不发布，
-//! 错误明细回灌模型自纠（`CanvasScan::feedback_text`，接入点在
-//! `loop/run_loop.rs::judge_final_answer` 的 Accept 分支）。
+//! 错误明细回灌模型自纠（`CanvasScan:feedback_text`，接入点在
+//! `loop/run_loop.rs:judge_final_answer` 的 Accept 分支）。
 //!
 //! # v1 契约（Canvas 面板运行时语义，前端 CanvasPanel.vue 同文执行）
 //!

@@ -1,4 +1,4 @@
-//! A1（2026-09-04）：edit_file 失败反馈 → 修复指令的单元 + execute 集成测试。
+//! （2026-09-04）：edit_file 失败反馈 → 修复指令的单元 + execute 集成测试。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -127,7 +127,7 @@ async fn execute_success_includes_diff() {
     let p = tmp_file("success", "alpha\nbeta\n");
     let out = run_edit(&p, "alpha", "ALPHA").await.expect("must succeed");
     assert!(out.starts_with("File edited:"), "got: {out}");
-    // A2：成功回 unified diff 代码块。
+    // 成功回 unified diff 代码块。
     assert!(out.contains("```diff"), "should embed diff fence: {out}");
     assert!(out.contains("-alpha"), "should show removed line: {out}");
     assert!(out.contains("+ALPHA"), "should show added line: {out}");
@@ -135,7 +135,7 @@ async fn execute_success_includes_diff() {
 }
 
 // ---------------------------------------------------------------------------
-// A3：replace_all
+// replace_all
 // ---------------------------------------------------------------------------
 
 async fn run_edit_replace_all(
@@ -195,7 +195,7 @@ async fn execute_replace_all_identical_text_reports_count_without_diff() {
 }
 
 // ---------------------------------------------------------------------------
-// A2：unified_diff 纯函数层
+// unified_diff 纯函数层
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -1,5 +1,5 @@
-//! T2a 错误分类器分派测试（扩展计划 D4-2a）：recovery.rs 错误入口消费
-//! `nemesis_utils::llm_error_class::classify_llm_error` 后的分派：
+//! 错误分类器分派测试（扩展计划）：recovery.rs 错误入口消费
+//! `nemesis_utils:llm_error_class:classify_llm_error` 后的分派：
 //!
 //! - Auth/Billing → 零重试零压缩环（单次调用终局，文案带可行动提示 +
 //!   原始错误保真入 history/observer/capture）；
@@ -264,7 +264,7 @@ async fn quota_wording_enters_rate_limit_ring_and_recovers() {
 
 #[tokio::test(start_paused = true)]
 async fn connect_error_with_invalid_word_enters_transient_ring_not_compression() {
-    // 2026-10-13 诚实化盖章的遗留缝隙：TLS 失败根因链含 rustls 文案
+    // 诚实化盖章的遗留缝隙：TLS 失败根因链含 rustls 文案
     // "invalid peer certificate: Expired"——'invalid' 命中 is_context_error
     // 词表，会把传输层错误劫进 context 压缩环（2 次立即重呼 + summary
     // cache 强制推进），正确归宿是 transient 环（3 次重试预算）。用
@@ -390,11 +390,11 @@ async fn deadline_wording_enters_transient_ring_and_recovers() {
     );
 }
 
-// -- ⑧ L02 StreamInterrupted Display 前缀短路 → transient 环 ------------------
+// -- ⑧ StreamInterrupted Display 前缀短路 → transient 环 ------------------
 
 #[tokio::test(start_paused = true)]
 async fn stream_interrupted_display_enters_transient_ring_not_rate_limit_or_compression() {
-    // L02 对抗 A1/A2：partial 全文含 "429"/"rate limit"/"token"/"expired"
+    // 对抗 /：partial 全文含 "429"/"rate limit"/"token"/"expired"
     // 污染词（模型任意输出）。前缀短路必须把错误路由进 transient 环
     // （recovery is_stream_interrupted starts_with + classify_llm_error
     // 入口短路双保险）：误入限流环会发「重试」进度通知、误入压缩环会
@@ -422,7 +422,7 @@ async fn stream_interrupted_display_enters_transient_ring_not_rate_limit_or_comp
 
     let events = agent_loop.run(&instance, "Hello", &context).await;
 
-    // L29 拼接续写（默认开）：partial（含污染词）会前拼进恢复回复——
+    // 拼接续写（默认开）：partial（含污染词）会前拼进恢复回复——
     // Done 断言锚恢复段结尾而非全文等值；路由正确性由 calls==2（非压缩
     // 环）与无限流进度通知（下方 rx 扫描）继续钉住。
     assert!(
@@ -448,7 +448,7 @@ async fn stream_interrupted_display_enters_transient_ring_not_rate_limit_or_comp
     );
 }
 
-// -- ⑨ L02 终局 history 瘦身（头行进 history / 全文出站）----------------------
+// -- ⑨ 终局 history 瘦身（头行进 history / 全文出站）----------------------
 
 #[tokio::test(start_paused = true)]
 async fn stream_interrupted_exhausted_history_pruned_but_outbound_full() {

@@ -1,10 +1,10 @@
-// G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
+// (devtool-upgrade)：subagent 后台化 + 完成回灌测试。
 //
-// 覆盖面（对应实施计划 G4 验收）：
+// 覆盖面（对应实施计划 验收）：
 // ① schema：background 可选参数（不在 required）；
 // ② SpawnFn 第 8 参透传——background=true / 缺省 false 到闭包；
 // ③ `__BG_SPAWN__` marker → 续行快照 inline 落内存 + 中间回复 + 回合收尾；
-// ④ gate_inbound 拦截 `subagent_continuation:` 前缀 → GateOutcome::Continuation
+// ④ gate_inbound 拦截 `subagent_continuation:` 前缀 → GateOutcome:Continuation
 //    （集群前缀不回归、非前缀不误拦）；
 // ⑤ 完成回灌端到端——bus 消息 → dispatch_continuation →
 //    handle_cluster_continuation 复用路径 → 续行回复出站 + 快照自清；

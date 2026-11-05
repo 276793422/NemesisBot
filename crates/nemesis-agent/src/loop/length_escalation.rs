@@ -1,24 +1,24 @@
-//! §6.2（2026-10-12 无人值守计划）：验收/对话 LLM 空输出撞 max_tokens 根修——
+//! （2026-10-12）：验收/对话 LLM 空输出撞 max_tokens 根修——
 //! **撞顶翻倍阶梯**。
 //!
 //! 事实链（GLM 真机实证）：思考型模型思考 token 烧穿 `max_tokens`（config
 //! 条目缺键时 8192 硬默认）→ 正文为空 → 连续 2 轮空输出 guard 提前停轮 →
-//! 评审自身失败恒转人工。本模块在主 loop 的 LLM 调用收口处（[`AgentLoop::chat_call_escalating`]，
+//! 评审自身失败恒转人工。本模块在主 loop 的 LLM 调用收口处（[`AgentLoop:chat_call_escalating`]，
 //! recovery.rs 五个调用点）包翻倍阶梯：
 //!
 //! - **判定**：`finish_reason == "length"` 且正文空白，且（① 无工具调用 =
-//!   纯思考烧穿，§6.2 原形态；② 工具调用参数全为空对象/空串/非法 JSON 且
-//!   schema 需要参数 = 工具参数截断，BUG 2026-10-23 第四形态扩展——主
+//!   纯思考烧穿， 原形态；② 工具调用参数全为空对象/空串/非法 JSON 且
+//!   schema 需要参数 = 工具参数截断， 第四形态扩展——主
 //!   agent 轮恒挂工具，同一故障必然带着 tool_calls 出现）＝ 烧穿形态。
 //!   非空截断 / 带合法参数的工具调用走既有 continue-generation，
-//!   [`super::run_loop] 的 `handle_length_continuation`，分工边界。
+//!   [`super:run_loop] 的 `handle_length_continuation`，分工边界。
 //! - **阶梯**：`next = max(current × 2, 32768)`（32K 地板：条目 8192/16384
 //!   撞顶直接跳 32K 不浪费一轮），`next ≤ ceiling` 才重发（封顶
 //!   `agents.defaults.max_output_ceiling`，默认 262144，每轮 config 现读）。
 //!   触封顶仍空 = 现行失败语义收口（空响应照常返回，空输出 guard 终局；
 //!   响应带 `escalated_to` 供守卫文案如实报告「已试到 N」）。
 //! - **不回写 config**：翻倍只改当次请求。per-model **learned floor** 缓存
-//!   （[`AgentLoop::note_escalated_floor`]）让同 turn 后续轮 / 后续 turn
+//!   （[`AgentLoop:note_escalated_floor`]）让同 turn 后续轮 / 后续 turn
 //!   直接从 floor 起步不再烧撞顶轮；config.json mtime 变化清空（用户显式
 //!   改配置 = 重置学习，`check_config_reload`）。
 //! - **estop**：急停挂起时不再翻倍重发（LLM 活动冻结语义），当前响应照常
@@ -27,7 +27,7 @@
 //!   走正常调用链 = 请求日志/审计天然可见。
 //!
 //! cache_warmer 的 1-token warm 调用**不接**（恒 length+空形态，翻倍毫无
-//! 意义）——继续走纯超时包装 [`AgentLoop::chat_call_bounded`]。
+//! 意义）——继续走纯超时包装 [`AgentLoop:chat_call_bounded`]。
 
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ use super::AgentLoop;
 use super::llm_types::{LlmMessage, LlmProvider, LlmResponse};
 use crate::types::{ToolCallInfo, ToolDefinition};
 
-/// 工具参数截断签名（BUG 2026-10-23 第四形态）：全部工具调用的参数均为
+/// 工具参数截断签名（BUG 第四形态）：全部工具调用的参数均为
 /// 空串 / 空对象 / 非法 JSON，且（schema 可查时）该工具声明需要参数。
 /// 任一工具调用带合法参数 = 不是纯截断形态（可能有可执行进度），不判烧穿。
 fn tool_args_all_truncated(tool_calls: &[ToolCallInfo], tools: &[ToolDefinition]) -> bool {
@@ -74,8 +74,8 @@ fn schema_expects_args(parameters: &serde_json::Value) -> bool {
 pub(crate) const ESCALATION_FLOOR: u64 = 32_768;
 
 impl AgentLoop {
-    /// §6.2 主入口：recovery.rs 五个 LLM 调用点（首捕/压缩重试环/429 环/
-    /// transient 环/hook 重呼）统一走这里——在 [`AgentLoop::chat_call_bounded`]
+    /// 主入口：recovery.rs 五个 LLM 调用点（首捕/压缩重试环/429 环/
+    /// transient 环/hook 重呼）统一走这里——在 [`AgentLoop:chat_call_bounded`]
     /// 超时包装之上叠加翻倍阶梯。签名与 chat_call_bounded 完全一致（调用点
     /// 机械替换）。
     pub(crate) async fn chat_call_escalating(
@@ -93,9 +93,9 @@ impl AgentLoop {
         let learned = self.escalated_floor_for_model(model);
         let options = options.map(|mut o| {
             if learned > 0 && o.max_tokens.is_none_or(|t| (t as u64) < learned) {
-                // 与下方 write-back 的 `.min(u32::MAX as u64)` 同一防护：
-                // ceiling 被配成超 u32 巨值时 learned 可超 u32::MAX，裸 `as`
-                // 回绕成 0/小值反而砍上限（2026-10-23）。
+                // 与下方 write-back 的 `.min(u32:MAX as u64)` 同一防护：
+                // ceiling 被配成超 u32 巨值时 learned 可超 u32:MAX，裸 `as`
+                // 回绕成 0/小值反而砍上限。
                 o.max_tokens = Some(learned.min(u32::MAX as u64) as u32);
             }
             o
@@ -124,15 +124,15 @@ impl AgentLoop {
                 tools.clone(),
             )
             .await?;
-            // 思考烧穿形态：截断且零产出。两类指纹（BUG 2026-10-23 第四
-            // 形态扩展，docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md）：
-            // ① 纯思考烧穿——正文空白 + 无工具调用（§6.2 原形态，评审 LLM
+            // 思考烧穿形态：截断且零产出。两类指纹（BUG 第四
+            // 形态扩展，max-tokens-8192截断撞顶复发）：
+            // ① 纯思考烧穿——正文空白 + 无工具调用（原形态，评审 LLM
             //   出生场景）；
             // ② 工具参数截断——正文空白 + 工具调用参数为空对象/空串/非法
             //   JSON（主 agent 轮恒挂 40+ 工具，同一故障在这里必然带着
             //   tool_calls 出现：anthropic lane 把截断 input 归一化成
             //   `{}`（anthropic.rs unwrap_or(json!({}))），openai 兼容 lane
-            //   截断 args 是非法 JSON 原文。2026-10-23 ziwei-e2e 事故：glm-
+            //   截断 args 是非法 JSON 原文。 ziwei-e2e 事故：glm-
             //   5.3-flash 思考 + multiedit 大参数三轮恒 8192 截断，阶梯因
             //   `tool_calls.is_empty()` 指纹不匹配从未触发）。
             // 工具 schema 声明需要参数（required/properties 非空）才判截断

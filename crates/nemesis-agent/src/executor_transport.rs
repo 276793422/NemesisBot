@@ -1,17 +1,17 @@
-//! Executor transport 抽象（P3 T1；P5 起协议本体住薄 crate）。
+//! Executor transport 抽象（起协议本体住薄 crate）。
 //!
 //! 职责分界：
 //! - **`nemesis-exec-protocol` 薄 crate**（零 nemesis 依赖）：wire 协议
 //!   （一行一 JSON、v1/v2 双形态、call_id 回显）、`ExecutorStream` 传输
 //!   抽象、交换原语、`new_call_id`。本模块 re-export（现有调用点零改动）；
-//!   guest agent（P5 VM 内执行体）同源消费同一 crate——单一真相源，防
+//!   guest agent（VM 内执行体）同源消费同一 crate——单一真相源，防
 //!   两端口径漂移。
 //! - 本模块：宿主侧载体——stdio 双工（[`ChildStdio`]）、stderr 环形尾
 //!   （[`StderrTail`]）、**常驻会话**（[`PersistentExecutorSession`]，一个
 //!   长驻子进程跑多次工具调用，persistent 模式的 gateway 侧载体）。
-//! - [`crate::remote_executor_tool`]：per-call 通道（每次调用 spawn-退出，
+//! - [`crate:remote_executor_tool`]：per-call 通道（每次调用 spawn-退出，
 //!   Layer 1/2 现状语义，字节不变）；persistent 不可用时的回退路径。
-//! - `nemesisbot::exec_worker`：子进程侧循环（v1/v2 双解析 + call_id 回显
+//! - `nemesisbot:exec_worker`：子进程侧循环（v1/v2 双解析 + call_id 回显
 //!   + journal 幂等账）。
 
 use std::collections::VecDeque;
@@ -84,7 +84,7 @@ impl AsyncWrite for ChildStdio {
 
 // ---------------------------------------------------------------------------
 // StderrTail——子进程 stderr 后台排水 + 环形尾（诊断面，per-call 与
-// persistent 共用单一真相源；原 RemoteExecutorTool::drain_stderr 收编于此）
+// persistent 共用单一真相源；原 RemoteExecutorTool:drain_stderr 收编于此）
 // ---------------------------------------------------------------------------
 
 /// stderr 环形尾容量（行数）。

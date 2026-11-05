@@ -1,4 +1,4 @@
-//! W6（2026-10-25 加固）：优雅停机
+//! （2026-10-25 加固）：优雅停机
 //! drain 测试——在途 turn gauge（spawn/inline 两臂 + guard 防漂移）、
 //! drain 闸（外部通道诚实回执 / 内部通道静默丢 / 零处理早退）、有界等待
 //! （归零 true / 超时 false）。
@@ -72,7 +72,7 @@ async fn in_flight_gauge_tracks_spawned_turn_and_guard_releases() {
     // 在途任务：持 gauge 等外部放行。
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let (picked_up, picked_rx) = tokio::sync::oneshot::channel::<()>();
-    // spawn_turn_task 的任务体自带 guard（W6 接线本体）——测试不再手动
+    // spawn_turn_task 的任务体自带 guard（接线本体）——测试不再手动
     // acquire（双 guard 会重复计数）。
     al.spawn_turn_task(async move {
         let _ = picked_up.send(());
@@ -179,8 +179,8 @@ async fn spawned_turn_gauge_visible_via_wait_and_cleanup_after_finish() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261025-33：联合 drain 面必须覆盖全部常驻 loop——gateway 此前只等
-// 主 loop，项目/G1 loop 在途时假报「已归零」（停机假完成日志的根因形态）。
+// 联合 drain 面必须覆盖全部常驻 loop——gateway 此前只等
+// 主 loop，项目/ loop 在途时假报「已归零」（停机假完成日志的根因形态）。
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

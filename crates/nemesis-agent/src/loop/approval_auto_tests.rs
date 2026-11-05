@@ -1,4 +1,4 @@
-//! §2 免打扰（2026-10-11 无人值守计划 Part 2）：wiring 注入/判定回环 +
+//! 免打扰（2026-10-11 Part 2）：wiring 注入/判定回环 +
 //! check_escalation 消费面。nemesis-security 是本 crate 的 optional
 //! 依赖（security feature）——整个文件随 feature 消失。
 //!
@@ -8,8 +8,8 @@
 //! 报警器必须响）。本文件保留三个方向的钉子：
 //! ① 免打扰开 ≠ escalation 被自动批准（终级卡照发/无 asker 照停车）；
 //! ② `agents.doom_loop_approval` config 闸不再被 check_escalation 消费
-//!    （J5 保留件的生产消费点已移除，闸留解析不留行为）；
-//! ③ 阶梯 nudge L1/L2/L3 文案随累计次数升级（L0 原文案钉在
+//!    （保留件的生产消费点已移除，闸留解析不留行为）；
+//! ③ 阶梯 nudge // 文案随累计次数升级（原文案钉在
 //!    turn_guard/tests.rs）。
 
 use super::*;
@@ -54,7 +54,7 @@ fn test_config() -> AgentConfig {
 }
 
 /// 把 loop 的 config_path 钉到临时 config.json（`doom_loop_approval` 键
-/// fresh-read 消费——2026-10-24 起仅 config_watch 解析器保留，无生产消费；
+/// fresh-read 消费—— 起仅 config_watch 解析器保留，无生产消费；
 /// 本文件用它验证「闸不被 check_escalation 消费」）。
 fn pin_config_with_doom_approval(dir: &tempfile::TempDir, enabled: bool) {
     let path = dir.path().join("config.json");
@@ -120,7 +120,7 @@ async fn escalation_auto_approve_does_not_bypass_terminal_card() {
 
 #[tokio::test]
 async fn escalation_ignores_doom_loop_config_gate() {
-    // J5 不再被消费：`agents.doom_loop_approval=false` 的 config 闸对
+    // 不再被消费：`agents.doom_loop_approval=false` 的 config 闸对
     // 终级卡无效（阶梯默认全会话生效，用户裁决第 7 点）——配置关 +
     // asker 未装配 = 照旧停车，绝不因「闸关」短路出第二条路径。
     let dir = tempfile::tempdir().unwrap();
@@ -137,9 +137,9 @@ async fn escalation_ignores_doom_loop_config_gate() {
     );
 }
 
-/// 阶梯 nudge 随累计次数升级：同一签名 6 次=L1（换方法）、12 次=L2
-/// （换路径/分解）、18 次=L3（绕过+记录缺口）——record_tool_outcome
-/// 返回的 nudge 文案逐级换血（L0 原文案断言在 turn_guard/tests.rs）。
+/// 阶梯 nudge 随累计次数升级：同一签名 6 次=（换方法）、12 次=
+/// （换路径/分解）、18 次=（绕过+记录缺口）——record_tool_outcome
+/// 返回的 nudge 文案逐级换血（原文案断言在 turn_guard/tests.rs）。
 /// 隔次插入其他工具的成功破开 ④ 连败链（storm 文案优先级更高），让
 /// ⑥ 累计计数的阶梯文案显形。
 #[test]

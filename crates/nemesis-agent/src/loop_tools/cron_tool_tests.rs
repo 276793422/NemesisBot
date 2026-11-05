@@ -220,7 +220,7 @@ async fn cron_create_legacy_schedule_oversized_interval_rejected() {
     assert!(err.contains("too large"), "got: {err}");
 }
 
-// --- 静默僵尸根修（2026-10-24 R74）：create 无校验臂 ---
+// --- 静默僵尸根修：create 无校验臂 ---
 //
 // 本工具曾是唯一不校验 schedule 的生产创建入口（CLI/web/autopilot/
 // dreaming/board 全部前置 validate_schedule + 0 值守卫）。坏表达式 /
@@ -426,7 +426,7 @@ fn cron_schema_declares_real_interface() {
     );
 }
 
-// --- 保留命名空间 delete 闸（BUG-20261101-293）：board-ap:/memory-dreaming:
+// --- 保留命名空间 delete 闸：board-ap:/memory-dreaming:
 // 系统作业的挂载真相源在 autopilot 规则与 memory.dreaming 配置，agent 经本
 // 工具删除会静默破坏挂载（下次 gateway 启动同步才自愈）——loud 拒绝；
 // 普通任务删除不受影响（schema 形态 happy path 已有专测）。 ---

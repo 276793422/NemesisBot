@@ -1,8 +1,8 @@
-//! BUG-20261025-44（BUG-HUNT R121）：会话持久化面读侧损坏静默吞 → loud 留痕
+//! ：会话持久化面读侧损坏静默吞 → loud 留痕
 //! 回归锁（nemesis-session load_chat_sessions 的镜像面在本 crate 的三处
 //! meta 读取点：read_meta_full / snoozed_sessions / allow_all_sessions）。
 //!
-//! 写侧早已原子（write_meta_file_atomic，2026-10-24 R1）；读侧遇到的损坏
+//! 写侧早已原子（write_meta_file_atomic，2026-10-24）；读侧遇到的损坏
 //! 只剩外部篡改/历史残留/磁盘问题——正是需要第一个可见信号的场景。修复前
 //! 四点全部 `let Ok(...) else continue/None` 静默吞，其中 read_meta_full 的
 //! 静默 None 会被 upsert 以空基线重写放大成 title/血缘/项目归属/allow_all

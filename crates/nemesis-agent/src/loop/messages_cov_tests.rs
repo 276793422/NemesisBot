@@ -1,5 +1,5 @@
-// loop/messages.rs 覆盖率补充测试（K3 shell 注入失败面 / I3 note_read
-// 早退分支 / P3.1 prefetch_memory_context 门槛链 / workflow_edit 会话
+// loop/messages.rs 覆盖率补充测试（shell 注入失败面 / note_read
+// 早退分支 /.1 prefetch_memory_context 门槛链 / workflow_edit 会话
 // section 渲染三形态）。
 //
 // 形状同既有约定：恒定回复的迷你 provider（不真正跑 loop，只构造
@@ -50,7 +50,7 @@ fn cov_loop() -> AgentLoop {
 }
 
 // ---------------------------------------------------------------------------
-// K3：expand_shell_injections 失败面（经 pub(crate) 入口走私有
+// expand_shell_injections 失败面（经 pub(crate) 入口走私有
 // exec_shell_injection 的各分支）
 // ---------------------------------------------------------------------------
 
@@ -124,7 +124,7 @@ async fn shell_injection_absent_text_is_byte_identical() {
 }
 
 // ---------------------------------------------------------------------------
-// I3：note_read_for_instructions 早退分支（root 缺 / parent 缺 / 目录无
+// note_read_for_instructions 早退分支（root 缺 / parent 缺 / 目录无
 // instruction 文件保持未认领）
 // ---------------------------------------------------------------------------
 
@@ -166,7 +166,7 @@ fn note_read_plain_subdir_without_instruction_files_stays_unclaimed() {
 }
 
 // ---------------------------------------------------------------------------
-// P3.1：prefetch_memory_context 门槛链（memory feature 默认开）
+// .1：prefetch_memory_context 门槛链（memory feature 默认开）
 // ---------------------------------------------------------------------------
 
 /// auto=false（默认）→ None（feature 关闭语义，不查任何存储）。

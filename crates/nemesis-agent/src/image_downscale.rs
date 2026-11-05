@@ -1,6 +1,6 @@
-//! J6 (devtool-upgrade 阶段 6)：图片超限自动降采样。
+//! (devtool-upgrade)：图片超限自动降采样。
 //!
-//! 多模态管线的验真链对 >25MB 图片是硬拒绝（`image_path_detector::MAX_IMAGE_BYTES`）；
+//! 多模态管线的验真链对 >25MB 图片是硬拒绝（`image_path_detector:MAX_IMAGE_BYTES`）；
 //! provider 另有分辨率上限（最长边 8000px 量级）。本模块给超限图片**一次降采样
 //! 机会**：解码后按最长边阶梯（4096→2048→1024）缩放 + JPEG q85 重编码，产物
 //! ≤8MB 才采用，落 uploads 暂存目录（内容寻址命名 `down_{sha8}.jpg`，同图复用；
@@ -10,9 +10,9 @@
 //! 诚实边界（doc 钉死）：
 //! - 输入维度安全阀 [`MAX_INPUT_DIMENSION`]（12000px）：解码内存 ≈ w·h·4，
 //!   超阀诚实拒绝而非尝试（拒绝时保持原图直附语义失败前的原拒绝注记）。
-//! - 输入**文件字节**硬上限（BUG-20261025-81，`Limits.max_input_bytes`，
+//! - 输入**文件字节**硬上限（`Limits.max_input_bytes`，
 //!   缺省派生自维度阀理论解码内存 576MB）：入口条件就是 size>entry_bytes，
-//!   超大文件拒绝整包读入内存（URL 侧 S1 同族先例）。
+//!   超大文件拒绝整包读入内存（URL 侧 同族先例）。
 //! - **GIF / 动画 WebP 不降采样**（重编码丢动画帧 = 静默语义变更），诚实拒绝。
 //!   动画 WebP 判据见 [`webp_is_animated`]。
 //! - 解码失败（合法 magic 但坏 body）诚实拒绝。
@@ -34,7 +34,7 @@ pub(crate) const ENTRY_BYTES: u64 = image_path_detector::MAX_IMAGE_BYTES;
 #[cfg(feature = "image-process")]
 pub(crate) const MAX_DIMENSION: u32 = 8000;
 
-/// 降采样阶梯（最长边 px）：逐级收紧，产物 ≤[`Limits::out_bytes`] 才采用。
+/// 降采样阶梯（最长边 px）：逐级收紧，产物 ≤[`Limits:out_bytes`] 才采用。
 #[cfg(feature = "image-process")]
 const LADDER: [u32; 3] = [4096, 2048, 1024];
 
@@ -62,9 +62,9 @@ pub(crate) struct Limits {
     pub entry_dimension: u32,
     /// 产物字节上限（超过则尝试下一级阶梯）。
     pub out_bytes: usize,
-    /// 输入文件字节硬上限（BUG-20261025-81）：入口条件就是 size>entry_bytes，
-    /// 旧形态对超大文件（合法图片头 + 巨量垃圾尾部）`fs::read` 整包读入无
-    /// 上界——URL 侧 S1 已修同族问题，本地文件路径漏网。
+    /// 输入文件字节硬上限：入口条件就是 size>entry_bytes，
+    /// 旧形态对超大文件（合法图片头 + 巨量垃圾尾部）`fs:read` 整包读入无
+    /// 上界——URL 侧 已修同族问题，本地文件路径漏网。
     pub max_input_bytes: u64,
 }
 
@@ -95,9 +95,9 @@ pub(crate) enum GateVerdict {
     },
 }
 
-/// 降采样闸（J6 唯一入口，`image_attach` 两个来源共用）。
+/// 降采样闸（唯一入口，`image_attach` 两个来源共用）。
 ///
-/// `uploads_dir = None`（开关关）恒 [`GateVerdict::Keep`]——零行为变化。
+/// `uploads_dir = None`（开关关）恒 [`GateVerdict:Keep`]——零行为变化。
 /// 调用方对 `Err(reason)` 产出诚实拒绝注记（reason 已是人读文案）。
 ///
 /// image-process 关：降采样未编译——恒 Keep（原图直附，既有验真链照常
@@ -137,9 +137,9 @@ pub(crate) fn downscale_gate_with(
         .map_err(|e| format!("无法读取图片元数据 ({}): {}", src.display(), e))?
         .len();
 
-    // BUG-20261025-81：输入文件字节硬上限——降采样入口条件本身就是
+    // 输入文件字节硬上限——降采样入口条件本身就是
     // size>entry_bytes，超大文件（合法图片头 + 巨量垃圾）会在下方
-    // `fs::read` 整包进内存。与维度安全阀同一哲学：超阀诚实拒绝而非尝试。
+    // `fs:read` 整包进内存。与维度安全阀同一哲学：超阀诚实拒绝而非尝试。
     if size > limits.max_input_bytes {
         return Err(format!(
             "图片文件 {} 字节超过降采样输入上限 {}MB，无法自动降采样",
@@ -148,7 +148,7 @@ pub(crate) fn downscale_gate_with(
         ));
     }
 
-    // 头部读尺寸（不全解码）：ImageReader::open 是文件句柄读，无整包 slurp。
+    // 头部读尺寸（不全解码）：ImageReader:open 是文件句柄读，无整包 slurp。
     let (w, h) = image::ImageReader::open(src)
         .map_err(|e| format!("无法打开图片 ({}): {}", src.display(), e))?
         .with_guessed_format()
@@ -182,7 +182,7 @@ pub(crate) fn downscale_gate_with(
     if image_path_detector::ext_from_magic(&head) == Some("gif") {
         return Err("GIF 动图不支持自动降采样（会丢失动画帧）".to_string());
     }
-    // 动画 WebP（2026-10-23 R33）：与 GIF 同原则——image-webp 对 ANMF 文件
+    // 动画 WebP：与 GIF 同原则——image-webp 对 ANMF 文件
     // 解码第一帧成功，重编码 JPEG = 动画帧静默丢失。检测在解码前，诚实拒绝。
     if webp_is_animated(&head) {
         return Err("动画 WebP 不支持自动降采样（会丢失动画帧）".to_string());
@@ -243,7 +243,7 @@ pub(crate) fn downscale_gate_with(
 /// 判据一（spec 权威）：动画必带 VP8X 扩展头（扩展格式首 chunk）且 animation
 /// 旗标（flags 字节 bit1，offset 20）置 1——RIFF(4)+size(4)+WEBP(4)+VP8X
 /// fourcc(4)+chunk size(4) 之后第一个字节。判据二（兜底）：头部窗口内扫到
-/// ANMF 帧块 fourcc（覆盖旗标未置的非规范 mux）。静态 WebP（裸 VP8/VP8L 或
+/// ANMF 帧块 fourcc（覆盖旗标未置的非规范 mux）。静态 WebP（裸 /VP8L 或
 /// VP8X 旗标 0）两判据皆不命中 → 走原降采样链不变。
 #[cfg(feature = "image-process")]
 fn webp_is_animated(head: &[u8]) -> bool {

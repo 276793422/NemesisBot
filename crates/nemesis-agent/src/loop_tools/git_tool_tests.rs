@@ -1,4 +1,4 @@
-// D1 (2026-09-04) — GitTool 写操作测试。
+// — GitTool 写操作测试。
 //
 // 覆盖：add/commit/branch_create/checkout/restore/stash 往返（真实 temp 仓）、
 // push/reset --hard 等高危动作不可达（enum 白名单外）、stash op 白名单、
@@ -150,7 +150,7 @@ async fn add_commit_roundtrip_shows_last_commit() {
         "staged file must show as A, got: {status}"
     );
 
-    // commit 成功 → 输出附 Last commit（hash 可见）。
+    // commit 成功 → 输出附 Last commit（hash 可）。
     let commit = run(
         &tool,
         r#"{"action":"commit","message":"d1 roundtrip commit"}"#,
@@ -304,7 +304,7 @@ async fn stash_push_pop_roundtrip() {
     );
 }
 
-// --- F3（2026-09-22 审计修复）：读操作选项封死 --------------------------------
+// --- （审计修复）：读操作选项封死 --------------------------------
 //
 // 读原语此前接受 free-form 选项：`git diff --output=<path>` 可写任意文件、
 // `--ext-diff` 可让 git 执行外部 diff 程序——读工具实为写/执行原语。

@@ -36,7 +36,7 @@ fn cont_data(ready: bool) -> Arc<ContinuationData> {
     })
 }
 
-/// 最小合法 PNG（magic 8 字节 + 尾量），过 image_path_detector::verify。
+/// 最小合法 PNG（magic 8 字节 + 尾量），过 image_path_detector:verify。
 fn png_bytes() -> Vec<u8> {
     let mut v = b"\x89PNG\r\n\x1a\n".to_vec();
     v.extend_from_slice(&[0u8; 16]);
@@ -217,7 +217,7 @@ async fn claim_failure_early_returns_without_processing() {
         &NeverProvider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

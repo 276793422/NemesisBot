@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -12,12 +12,12 @@ use super::web::extract_name_arg;
 /// Single source of truth for the agent-facing memory tool schemas: the
 /// wrappers' `parameters()`/`description()` below delegate to
 /// [`memory_tool_definitions`] so they can never drift from what
-/// `MemoryToolExecutor` actually consumes. (T7 e2e found exactly that
+/// `MemoryToolExecutor` actually consumes. (e2e found exactly that
 /// drift: the hand-copied `memory_store` schema demanded `key` +
 /// tags-as-string while the executor reads `memory_type`/`content` +
 /// tags-as-array — args_validator then rejected executor-valid calls.)
 ///
-/// [`memory_tool_definitions`]: nemesis_memory::memory_tools::memory_tool_definitions
+/// [`memory_tool_definitions`]: nemesis_memory:memory_tools:memory_tool_definitions
 #[cfg(feature = "memory")]
 fn memory_tool_def(name: &str) -> nemesis_memory::memory_tools::MemoryTool {
     nemesis_memory::memory_tools::memory_tool_definitions()
@@ -28,7 +28,7 @@ fn memory_tool_def(name: &str) -> nemesis_memory::memory_tools::MemoryTool {
 
 /// Memory search tool for searching conversation memory.
 ///
-/// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor` for the
+/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor` for the
 /// actual search. If no memory manager is configured, returns an error.
 #[cfg(feature = "memory")]
 pub struct MemorySearchTool {
@@ -74,7 +74,7 @@ impl Tool for MemorySearchTool {
 
 /// Memory store tool for storing information in long-term memory.
 ///
-/// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor`.
+/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor`.
 #[cfg(feature = "memory")]
 pub struct MemoryStoreTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
@@ -119,7 +119,7 @@ impl Tool for MemoryStoreTool {
 
 /// Memory forget tool for removing information from long-term memory.
 ///
-/// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor`.
+/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor`.
 #[cfg(feature = "memory")]
 pub struct MemoryForgetTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
@@ -164,7 +164,7 @@ impl Tool for MemoryForgetTool {
 
 /// Memory list tool for listing stored memories.
 ///
-/// Delegates to `nemesis_memory::memory_tools::MemoryToolExecutor`.
+/// Delegates to `nemesis_memory:memory_tools:MemoryToolExecutor`.
 #[cfg(feature = "memory")]
 pub struct MemoryListTool {
     executor: Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>,
@@ -403,15 +403,15 @@ impl Tool for FindSkillsTool {
 /// Mirrors Go's `InstallSkillTool`. Downloads and installs a skill from the
 /// specified registry to the local workspace skills directory.
 ///
-/// BUG-20261101-295：执行面走 [`nemesis_skills::installer::SkillInstaller`]
-/// WS4 全漏斗（staging → 验签 P11 → 安全扫描 P15 → 版本龄 P16 → 审批门
-/// P13 → 落位 + lockfile P14）。旧形态裸 `RegistryManager::install` 直落
+/// 执行面走 [`nemesis_skills:installer:SkillInstaller`]
+/// 全漏斗（staging → 验签 → 安全扫描 → 版本龄 → 审批门
+/// → 落位 + lockfile）。旧形态裸 `RegistryManager:install` 直落
 /// skills/，绕过全部供应链闸——web/CLI 同操作均走漏斗，工具面是唯一旁路
 /// （prompt-injected LLM 可装恶意技能 → 重启被 loader 加载 → 持久后门）。
 pub struct InstallSkillTool {
     registry: Arc<nemesis_skills::registry::RegistryManager>,
     workspace: String,
-    /// P13 审批门槽（gateway 晚填）。None 槽 / 槽内 None 门 = 无审批面直装。
+    /// 审批门槽（gateway 晚填）。None 槽 / 槽内 None 门 = 无审批面直装。
     install_gate_slot: Option<SkillsInstallGateSlot>,
 }
 
@@ -459,9 +459,9 @@ impl Tool for InstallSkillTool {
         let version = val["version"].as_str().unwrap_or("latest");
         let force = val["force"].as_bool().unwrap_or(false);
 
-        // WS4 漏斗（BUG-20261101-295）：与 web install_with_ctx 同源走
-        // SkillInstaller（staging → 验签 P11 → 安全扫描 P15 → 版本龄 P16 →
-        // 审批门 P13 → 落位 + lockfile P14）。审批门经共享槽晚绑；P11/P16
+        // 漏斗：与 web install_with_ctx 同源走
+        // SkillInstaller（staging → 验签 → 安全扫描 → 版本龄 →
+        // 审批门 → 落位 + lockfile）。审批门经共享槽晚绑；/
         // 主配置消费点在 gateway 侧（槽同款），工具面无 home 语境按缺省
         // （allow_unsigned=true、age 关）——与改造前工具语义一致，非本轮收缩。
         let mut installer = nemesis_skills::installer::SkillInstaller::new(&self.workspace);
@@ -484,15 +484,15 @@ impl Tool for InstallSkillTool {
                     skill_dir.display()
                 ));
             }
-            // force = 先卸旧再装。经 installer.uninstall：边界校验 + P14
-            // lockfile 记账同步移除（与 web force 的 .skill-rollback 事务化
+            // force = 先卸旧再装。经 installer.uninstall：边界校验 +
+            // lockfile 记账同步移除（与 web force 的.skill-rollback 事务化
             // 同族语义；卸失败诚实报错，旧技能不动）。
             installer
                 .uninstall(slug)
                 .map_err(|e| format!("failed to remove existing skill '{}': {}", slug, e))?;
         }
 
-        // Install through the WS4 funnel.
+        // Install through the funnel.
         installer
             .install(registry_name, slug, version)
             .await
@@ -527,15 +527,15 @@ pub type ApprovalManagerSlot =
 #[cfg(not(feature = "security"))]
 /// Placeholder when the security feature is off — `skill_manage` auto-allows
 /// writes (no approval middleware). All `Option<ApprovalManagerSlot>` fields
-/// stay `None`-compatible via this `()` alias.
+/// stay `None`-compatible via this `` alias.
 pub type ApprovalManagerSlot = ();
 
-/// WS4（P13）：`install_skill` 工具的装前审批门共享槽——gateway 在 agent
+/// ：`install_skill` 工具的装前审批门共享槽——gateway 在 agent
 /// loop 建好后填 `LateWebSkillsGate`（approval_slot/question_slot 同款
-/// 「先建槽后填」；重启重建的 loop 共享同一槽 Arc，晚填也可见）。
+/// 「先建槽后填」；重启重建的 loop 共享同一槽 Arc，晚填也可）。
 /// 槽缺席（`None`）或槽内为空 = 无审批面直装（headless / 测试装配 /
 /// `skills.install_approval=false` 显式关卡——三种形态同语义）；漏斗其余
-/// 闸（staging / 验签 P11 / 安全扫描 P15 / lockfile P14）与门无关，恒生效。
+/// 闸（staging / 验签 / 安全扫描 / lockfile）与门无关，恒生效。
 pub type SkillsInstallGateSlot =
     Arc<parking_lot::RwLock<Option<nemesis_skills::install_gate::SharedInstallGate>>>;
 
@@ -580,9 +580,9 @@ impl SkillManageTool {
         {
             // Security feature trimmed — no approval middleware; auto-allow skill writes.
             let _ = (operation, target, reason);
-            // 尾表达式形式（非 `return Ok(())`）：not(security) 单臂编译时
-            // 本块即函数尾，clippy::needless_return 会判 return 多余
-            // （minimal-feature 形态 2026-09-05 远端 clippy 实录）。
+            // 尾表达式形式（非 `return Ok`）：not(security) 单臂编译时
+            // 本块即函数尾，clippy:needless_return 会判 return 多余
+            // （minimal-feature 形态 远端 clippy）。
             Ok(())
         }
         #[cfg(feature = "security")]
@@ -660,7 +660,7 @@ impl SkillManageTool {
             nemesis_utils::fsutil::remove_dir_all_resilient(skill_dir);
             return Err(format!("failed to write SKILL.md: {}", e));
         }
-        // N3：学得技能 manifest 记账（created/overwrite 共用 upsert）。记账失败
+        // 学得技能 manifest 记账（created/overwrite 共用 upsert）。记账失败
         // 不回滚 create——技能本体已落盘，降级为结果附注（账本可后补）。
         let manifest_note = match nemesis_skills::learned::record_learned(
             Path::new(&self.workspace),
@@ -746,7 +746,7 @@ impl SkillManageTool {
             .ok_or_else(|| "'content' is required for write_file".to_string())?;
         let overwrite = v["overwrite"].as_bool().unwrap_or(false);
         let target = resolve_within(skill_dir, path)?;
-        // 装前安全检查同闸（BUG-20261029-179）：安装路径（M5 目录形态）
+        // 装前安全检查同闸：安装路径（目录形态）
         // 对可执行面（SURFACE_FILE_EXTENSIONS）整体 lint——设计原文「恶意
         // 载荷藏在辅助脚本里无法再绕过检查」；agent 自写路径（write_file）
         // 此前零检查，同一载荷即可绕过。扩展名判定与安装路径同源（单一
@@ -812,7 +812,7 @@ impl SkillManageTool {
         }
         nemesis_utils::fsutil::remove_dir_all_retry(skill_dir)
             .map_err(|e| format!("failed to delete skill: {}", e))?;
-        // N3：学得技能 manifest 同步移除（不在账 = 无操作）。失败降级附注，
+        // 学得技能 manifest 同步移除（不在账 = 无操作）。失败降级附注，
         // 不回滚 delete（目录已删，账目残条可由 learned_remove 清）。
         let manifest_note =
             match nemesis_skills::learned::remove_learned(Path::new(&self.workspace), name) {
@@ -923,7 +923,7 @@ fn resolve_within(base: &Path, rel: &str) -> Result<PathBuf, String> {
 }
 
 // ===========================================================================
-// F7（devtool-upgrade 阶段 5）：question 工具 —— 结构化提问阻塞等答
+// （devtool-upgrade）：question 工具 —— 结构化提问阻塞等答
 // ===========================================================================
 
 /// Shareable slot holding an optional question broker, filled in later by the
@@ -937,9 +937,9 @@ pub type QuestionBrokerSlot =
 /// question 工具默认等待窗口（秒）。超时回灌「按最佳判断继续」。
 pub const QUESTION_DEFAULT_TIMEOUT_SECS: u64 = 120;
 
-/// B8（提问两形态）：表单形态字段数上限。超限诚实拒绝（防模型一卡塞满
+/// （提问两形态）：表单形态字段数上限。超限诚实拒绝（防模型一卡塞满
 /// 屏幕；两形态共用 question_id 发号器，超限消耗一个 ID 无害）。
 pub const QUESTION_MAX_FIELDS: usize = 8;
 
-/// B8：单选卡片选项上限（≤6 radio 列表，>6 前端收纳为下拉 select）。
+/// 单选卡片选项上限（≤6 radio 列表，>6 前端收纳为下拉 select）。
 pub const QUESTION_MAX_SINGLE_OPTIONS: usize = 12;

@@ -1,4 +1,4 @@
-//! S9 覆盖率批次（Batch D：loop.rs 可直测的辅助方法与纯函数）。
+//! 覆盖率批次（Batch D：loop.rs 可直测的辅助方法与纯函数）。
 //! - 7011 textwise_similar 纯函数（空/非空/相同分支）。
 //! - 6862-6925 resolve_route（#[cfg(test)] 兼容函数：peer 带/不带 kind、
 //!   parent_peer 两种形态）。
@@ -371,7 +371,7 @@ async fn emit_observer_events_wraps_llm_call_both_ways() {
     assert!(matches!(out, Some(Err(e)) if e.contains("exploded")));
 }
 
-/// 记录面三缺陷回归锁（2026-11-04，docs/BUG 同名文档）：LlmRequest 事件
+/// 记录面三缺陷回归锁（docs/BUG 同名文档）：LlmRequest 事件
 /// 必须携带真实请求消息（此前硬编码 `vec![]`，aux_ 日志请求侧永远空壳，
 /// 查不到「摘了什么」）；失败时 LlmResponse 事件必须如实携带 Error 文本与
 /// finish_reason=error（此前硬编码 stop 伪装成功、Err 文本丢弃，失败现场
@@ -426,7 +426,7 @@ async fn emit_observer_events_records_request_messages_and_honest_failures() {
         .await;
     assert!(matches!(out, Some(Err(e)) if e.contains("upstream boom")));
 
-    // Manager::emit 对每个 observer tokio::spawn 异步投递（fire-and-forget）
+    // Manager:emit 对每个 observer tokio:spawn 异步投递（fire-and-forget）
     // ——让出调度若干轮等 spawned 任务排空再断言。
     for _ in 0..20 {
         tokio::task::yield_now().await;
@@ -485,7 +485,7 @@ async fn emit_observer_events_records_request_messages_and_honest_failures() {
     );
 }
 
-/// 升档重试（2026-11-03 空摘要根因兜底）回归锁：默认预算空输出两连
+/// 升档重试（空摘要根因兜底）回归锁：默认预算空输出两连
 /// （with_one_retry 同预算重试一次）后按 4× 预算升档再试一次；工厂闭包
 /// 收到的 max_tokens 序列钉死 [8192, 8192, 32768]；升档成功即产出摘要。
 #[tokio::test]
@@ -1157,7 +1157,7 @@ async fn bus_flow_async_marker_intermediate_reply() {
         "got: {}",
         out.content
     );
-    // 4724-4734 的快照保存在 tokio::spawn 里 —— run_bus_owned 返回时任务
+    // 4724-4734 的快照保存在 tokio:spawn 里 —— run_bus_owned 返回时任务
     // 可能还没被调度。轮询 mgr 直至快照落内存（否则 spawn 体永不执行）。
     // 用 async has_continuation：sync 版在 runtime 内阻塞会 panic。
     let mut saved = false;
@@ -1385,7 +1385,7 @@ async fn bus_flow_big_tool_result_spills() {
     );
 }
 
-/// H5：write_file 触到指令链文件 → digest 失效（4925-4980）。
+/// write_file 触到指令链文件 → digest 失效（4925-4980）。
 #[tokio::test]
 async fn bus_flow_instruction_chain_touch_invalidates() {
     let _logs = capture_logs();
@@ -1514,7 +1514,7 @@ async fn bus_flow_hook_retry_fail_open() {
     assert_eq!(out.content, "original answer");
 }
 
-/// AgentLoop::handle_cluster_continuation 参考实现两臂（1794-1833，
+/// AgentLoop:handle_cluster_continuation 参考实现两臂（1794-1833，
 /// #[allow(dead_code)]，主循环走自由函数；直调覆盖）。
 #[tokio::test]
 async fn handle_cluster_continuation_wrapper_both_arms() {
@@ -1588,7 +1588,7 @@ async fn summarize_bare_concat_owned_error_arm() {
 async fn maybe_update_summary_compaction_stuck_marks_paused() {
     let (_guard, buf) = capture_logs_to_buf();
     let instance = AgentInstance::new(test_config());
-    // 2026-11-05 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
+    // 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
     // ≤125 字符）——超限轮整段被闸门判「无事可做」，烧不到失败计数；stuck
     // 闩的真失败形态 = 有效尺寸轮 + LLM 失败（ErrProvider）。同时总 tail
     // 须超 keep_recent 预算（默认 20000）：600 轮 × 40 tok = 24000，边界
@@ -1601,10 +1601,10 @@ async fn maybe_update_summary_compaction_stuck_marks_paused() {
     instance.set_history(hist);
 
     let agent_loop = AgentLoop::new(Box::new(ErrProvider), test_config());
-    // W2：窗口未知时 auto-summarization 整体被抑制（BUG-20261102-322 实证：
+    // 窗口未知时 auto-summarization 整体被抑制（实证：
     // 旧测试连 stuck 分支都没进过——capture 里只有 suppression warn）。挂
     // config 文件给 model_list 条目带 context_window=100 解除抑制
-    // （先例：loop/tests.rs keep_tokens_config_file 的 W2 注记）。
+    // （loop/tests.rs keep_tokens_config_file 的 注记）。
     let cfg_path = std::env::temp_dir().join(format!(
         "nemesis_test_s9_stuck_cfg_{}.json",
         std::process::id()
@@ -1630,7 +1630,7 @@ async fn maybe_update_summary_compaction_stuck_marks_paused() {
     agent_loop
         .maybe_update_summary(&instance, "agent:test/s9stuck", "web", "chat1")
         .await;
-    // BUG-20261102-322：名字承诺 marks_paused——此前零断言，计数到顶的
+    // 名字承诺 marks_paused——此前零断言，计数到顶的
     // warn + paused 闩回归（阈值比错/闩没置）测试照绿。
     let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
     assert!(
@@ -1654,7 +1654,7 @@ async fn maybe_update_summary_compaction_stuck_marks_paused() {
 }
 
 // ============================================================================
-// S9 收尾批（94.2% → 95% 冲刺）：错误恢复梯 / hook 取消 / Queue 臂 / 摘要
+// 收尾批（94.2% → 95% 冲刺）：错误恢复梯 / hook 取消 / Queue 臂 / 摘要
 // 成败两路 / spill 三臂 / 并行只读批重放 / reinject 双臂。
 // ============================================================================
 
@@ -2073,8 +2073,8 @@ async fn bus_flow_summary_success_notice_and_persist() {
         0,
     );
     agent_loop.set_session_store(store.clone());
-    // N1 后 fallback 窗口升到 128k（摘要阈值随之抬到 96k tokens），本测试
-    // 固定走 L1 显式 context_window=32000（阈值 24k），让大历史夹具
+    // 后 fallback 窗口升到 128k（摘要阈值随之抬到 96k tokens），本测试
+    // 固定走 显式 context_window=32000（阈值 24k），让大历史夹具
     // （≈30k tokens）不依赖 fallback 默认值。
     let cfg_path = ws.path().join("config.json");
     std::fs::write(
@@ -2126,7 +2126,7 @@ async fn bus_flow_summary_failure_warns_and_keeps_cache_empty() {
         0,
     );
     agent_loop.set_session_store(store.clone());
-    // 同上：L1 显式 32000 窗口，让夹具阈值断言不依赖 N1 的 128k fallback。
+    // 同上： 显式 32000 窗口，让夹具阈值断言不依赖 的 128k fallback。
     let cfg_path = ws.path().join("config.json");
     std::fs::write(
         &cfg_path,
@@ -2225,7 +2225,7 @@ async fn bus_flow_spill_failed_and_below_threshold_both_prune() {
     }
 }
 
-/// B3（devtool-upgrade 阶段 3）：registry 有 spawn → prune 文案带子代理
+/// （devtool-upgrade）：registry 有 spawn → prune 文案带子代理
 /// 提示，且该文案不可重算 → 必须随 `tool_result_projection` 记档（与
 /// spill 同理）；无 spawn → 投影为 None（纯重算路径，回放字节稳定）。
 /// 端到端观察点：bus 流程收尾把 instance 历史落 session store（3700-3705），
@@ -2362,7 +2362,7 @@ async fn emit_observer_sync_reaches_manager_and_callback() {
     );
 }
 
-/// U5 并行只读批（≥2 个 read-only 调用）→ precomputed 重放两臂
+/// 并行只读批（≥2 个 read-only 调用）→ precomputed 重放两臂
 /// （4613-4618）：全 Valid（reset 0，正常走完）与含 Invalid（+1 → big 档
 /// 预算 1 → 触发校验预算停）。
 #[tokio::test]
@@ -2522,7 +2522,7 @@ async fn cancel_during_tool_execution_breaks_turn() {
 }
 
 /// 批内取消（≥2 工具串行批，cancel 命中工具 #1 执行中）→ 单发 Done
-/// （2026-10-31 双发遗留修正回归锁）：工具 #2 被 checkpoint 拦下不执行，
+/// （双发遗留修正回归锁）：工具 #2 被 checkpoint 拦下不执行，
 /// 出站恰好一条「已取消」——旧形态 push Done + Continue 会经下一轮器官 1
 /// 顶检重发一次 = 聊天里两条「已取消」。
 #[tokio::test]
@@ -2712,7 +2712,7 @@ async fn queued_message_without_reinject_processes_inline() {
     );
 }
 
-/// I1 (U7) steer 逃生舱（4422-4432）：Steer 模式下模型正要收尾时来了
+/// steer 逃生舱（4422-4432）：Steer 模式下模型正要收尾时来了
 /// 未认领的 "!" 插话 → 不收尾、再跑一轮（下一轮顶部 claim 注入）。
 #[tokio::test]
 async fn steer_mode_escape_hatch_extends_turn() {
@@ -2757,7 +2757,7 @@ async fn steer_mode_escape_hatch_extends_turn() {
     );
 }
 
-/// 集群续行归属（2026-09-23）：wrapper 参考实现臂从 msg.metadata 提取
+/// 集群续行归属：wrapper 参考实现臂从 msg.metadata 提取
 /// source_node → 出站 meta 携带节点名。主循环 dispatch_continuation 的
 /// 提取逻辑同款（owned String 进 spawn 闭包，行为由此测试锚定语义）。
 #[tokio::test]
@@ -2869,7 +2869,7 @@ impl LlmProvider for BlockOnProvider {
     }
 }
 
-/// 维护尾巴排队消息排空（2026-09-28 真模型验证回归）：/compact 的 LLM 摘要
+/// 维护尾巴排队消息排空（真模型验证回归）：/compact 的 LLM 摘要
 /// 可达分钟级，期间排队的消息此前在维护尾巴 release_session 后永久滞留
 /// next_turn（排空只存在于 process_admitted 尾部；真实环境观察滞留 >20
 /// 分钟）。修复后维护尾巴对称调用 drain_next_turn_queue——本测试用阻塞

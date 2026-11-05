@@ -1,11 +1,11 @@
 //! history 请求/响应的共享组装件（单一真相源）。
 //!
 //! `chat.history_request` 的解析与 `history_response` 的 JSON 组装此前
-//! 只活在 [`crate::r#loop::AgentLoop`] 内（loop.rs handle_history_request /
-//! publish_history_response）。入站过滤链落地（BUG 2026-09-23 项目会话
+//! 只活在 [`crate:r#loop:AgentLoop`] 内（loop.rs handle_history_request /
+//! publish_history_response）。入站过滤链落地（项目会话
 //! 历史加载修复）后，web 咽喉点的 `HistoryFilter` 与 loop 内路径共用
 //! 同一份组装逻辑——**搬移非重写**：字段集、session_id 回显（HD
-//! 2026-09-17）、last_seq>0 才下发的省略规则（A1 2026-09-22）原样保留，
+//! 2026-09-17）、last_seq>0 才下发的省略规则（2026-09-22）原样保留，
 //! 后续任何字段演进只改这里，两条路径不可能漂移。
 //!
 //! transport 不在此层：loop 路径走 `outbound_tx`，过滤路径走

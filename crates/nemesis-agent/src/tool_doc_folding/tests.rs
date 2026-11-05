@@ -1,4 +1,4 @@
-//! Y1 (Phase4-a) pure-helper tests: cosine, one-line summary extraction,
+//! pure-helper tests: cosine, one-line summary extraction,
 //! and the fold decision/rendering (determinism, tie-breaks, passthrough).
 
 use super::*;

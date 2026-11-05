@@ -1,13 +1,13 @@
-//! Codex CLI delegation tool (I4 / U13 other half; T5 refactored to the
+//! Codex CLI delegation tool (/ other half; refactored to the
 //! shared CLI-delegation layer).
 //!
 //! Delegates a self-contained task to the local OpenAI Codex CLI:
 //! `codex exec --skip-git-repo-check --sandbox <tier> --ask-for-approval never "<prompt>"`
 //! (one-shot non-interactive execution; stdout collected as the result).
-//! The spawn/timeout/tree-kill plumbing lives in [`super::cli_delegation`]
-//! (T5 / A9 — this file is now the "argument construction + config" shell).
+//! The spawn/timeout/tree-kill plumbing lives in [`super:cli_delegation`]
+//! (/ — this file is now the "argument construction + config" shell).
 //!
-//! T5 (U13 original item): the sandbox is a FIXED config tier
+//! (original item): the sandbox is a FIXED config tier
 //! (`agents.codex_tool.sandbox`, enum read_only/workspace_write/
 //! danger_full_access, default `read_only`) mapped to codex's kebab-case CLI
 //! value at spawn, plus the implied `--ask-for-approval never` (non-interactive
@@ -17,7 +17,7 @@
 //!
 //! VERIFICATION STATUS: the codex CLI was NOT present on this machine when
 //! this was written, so the exec sub-command shape follows Codex CLI's public
-//! documentation; real-machine verification is the tracked B3 debt — the tool
+//! documentation; real-machine verification is the tracked debt — the tool
 //! degrades to a structured error, never panics.
 //!
 //! Registration is OPT-IN (`agents.codex_tool.enabled`, default false) AND
@@ -42,7 +42,7 @@ pub fn find_codex_cli() -> Option<String> {
 pub struct CodexTool {
     cli_path: String,
     timeout_secs: u64,
-    /// T5: fixed sandbox tier (snake_case, already normalized; default
+    /// fixed sandbox tier (snake_case, already normalized; default
     /// read_only).
     sandbox: &'static str,
 }
@@ -72,7 +72,7 @@ impl Tool for CodexTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // T5: sandbox is intentionally ABSENT — fixed config tier, not
+        // sandbox is intentionally ABSENT — fixed config tier, not
         // model-selectable.
         serde_json::json!({
             "type": "object",
@@ -104,7 +104,7 @@ impl Tool for CodexTool {
         // run outside a git repository by default, and the gateway's cwd is
         // typically the (non-git) workspace home (same flag as the in-repo
         // codex_cli provider). `--sandbox` + `--ask-for-approval never` are
-        // the T5 fixed tiers (see module doc).
+        // the fixed tiers (see module doc).
         let args = vec![
             "exec".to_string(),
             "--skip-git-repo-check".to_string(),

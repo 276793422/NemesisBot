@@ -1,4 +1,4 @@
-//! P8 会话 token 预算闸（集群无人值守硬化 A2）——纯类型 + 会话账本 + 文案单一真相源。
+//! 会话 token 预算闸（集群无人值守硬化）——纯类型 + 会话账本 + 文案单一真相源。
 //!
 //! 背景：看板重派全部收敛到同一 worker 会话（`cluster_rpc:{source}/board:{n}`）
 //! 且每次带全量旧历史重入，既有守卫全部是单请求维度——唯一累计维度闸
@@ -10,9 +10,9 @@
 //! config 键 `agents.defaults.session_token_budget`（u64）：**0 = 关（默认，
 //! 不改现网行为）**。注意与 `max_tool_iterations` 的「0 = 不限」惯例相反——
 //! 本键一族（含 `board.budget.*`）0 = 关，文档与提示词一律写死。
-//! 计费口径 = 完整输入（prompt + cache_creation + cache_read，R2 2026-10-22
-//! 补全——loop 侧 `loop/token_budget.rs::usage_full_input` 单一真相源）+
-//! output，与 `DataStore::aggregate_session_usage` 账本 SQL 同源——累计器
+//! 计费口径 = 完整输入（prompt + cache_creation + cache_read， 2026-10-22
+//! 补全——loop 侧 `loop/token_budget.rs:usage_full_input` 单一真相源）+
+//! output，与 `DataStore:aggregate_session_usage` 账本 SQL 同源——累计器
 //! 与底账两边公式一致才不会互相打架。
 
 use std::collections::HashMap;
@@ -29,7 +29,7 @@ pub(crate) const SESSION_BUDGET_SOFT_RATIO: u64 = 75;
 /// 自愈，清账只损失一次 DB 查询）。
 const SESSION_BUDGET_MAX_ENTRIES: usize = 512;
 
-/// loop 侧硬停文案（≥100%）：本轮 break 后经 `AgentEvent::Error` 出站，
+/// loop 侧硬停文案（≥100%）：本轮 break 后经 `AgentEvent:Error` 出站，
 /// worker `classify_terminal_failure` 按前缀识别为 `token_budget`。
 pub fn hard_stop_notice(used: u64, budget: u64) -> String {
     format!(
@@ -38,7 +38,7 @@ pub fn hard_stop_notice(used: u64, budget: u64) -> String {
     )
 }
 
-/// D3 重派入口拒接文案（任务未执行、零 token 消耗；早退于
+/// 重派入口拒接文案（任务未执行、零 token 消耗；早退于
 /// restore_session_history 之前）。
 pub fn entry_reject_notice(used: u64, budget: u64) -> String {
     format!(
@@ -73,7 +73,7 @@ pub(crate) struct SessionTokenBudgetLedger {
 }
 
 /// 底账种入值：`Some(total)` = DB 聚合成功（完整输入 = prompt +
-/// cache_creation + cache_read，R2 2026-10-22 口径）；`None`
+/// cache_creation + cache_read， 口径）；`None`
 /// = 无 data store 或查询失败（调用方回落内存增量）。
 fn seed_total(ds: Option<&nemesis_data::DataStore>, session_key: &str) -> Option<u64> {
     let agg = ds?.aggregate_session_usage(session_key).ok()?;

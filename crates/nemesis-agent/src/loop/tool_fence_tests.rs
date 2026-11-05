@@ -1,9 +1,9 @@
-// B2（profession-capability-evolution 2026-10-14）：职能工具围栏双闸测试。
+// （profession-capability-evolution）：职能工具围栏双闸测试。
 //
 // 覆盖面：
 // ① 派发拒绝文案单一真相源 `profession_fence_refusal_for`——白名单外拒绝
 //    （含 who 子句两形态）、白名单内放行、question 豁免；
-// ② instance 级闸（修2 2026-11-04 起统一注册点
+// ② instance 级闸（统一注册点
 //    `environment_constraint_refusal`；本组实例 detached 旗标恒空 = 纯
 //    fence 臂，语义与原 profession_fence_refusal 逐字节一致）——
 //    空表 = 未围（fail-open）；

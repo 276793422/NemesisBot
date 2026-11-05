@@ -1,4 +1,4 @@
-//! E6 (devtool-upgrade 阶段 2)：手动会话维护（`/compact` / `/clear`）测试。
+//! (devtool-upgrade)：手动会话维护（`/compact` / `/clear`）测试。
 //! - `parse_maintenance_command` 决策表（/compact /clear /带参 /非命令）。
 //! - `compact_session`：空会话 Err；mock 摘要成功 → 回执 + store 持久化
 //!   （summary + covers 先于 history，回合末持久化同序）；摘要 LLM 失败 →
@@ -70,7 +70,7 @@ impl LlmProvider for FailingLlmProvider {
 fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
-        // None：AgentInstance::new 会把 system_prompt 注入为 history[0] 的
+        // None：AgentInstance:new 会把 system_prompt 注入为 history[0] 的
         // system turn——这里要让「store N 条 == instance 历史 N 条」的算术
         // 透明可断言，不带隐式 +1。
         system_prompt: None,
@@ -148,7 +148,7 @@ fn parse_maintenance_extra_args_ignored() {
     assert_eq!(kind, SessionMaintenance::Clear);
 }
 
-/// 行动代理 P0（2026-10-14）撤销一等动词：「撤销」/「/undo」首词命中即接
+/// 行动代理 撤销一等动词：「撤销」/「/undo」首词命中即接
 /// 管（尾随参数忽略）；连写「撤销一下」不命中（落普通轮由 agent 自行理
 /// 解——与 /compact 同款首词法）。
 #[test]
@@ -240,7 +240,7 @@ async fn compact_llm_failure_keeps_history() {
     assert_eq!(store.get_history(&key).len(), 5);
 }
 
-// 2026-09-28 真模型验证发现：无可推进内容（tail 已最简/边界无法前移）此前
+// 真模型验证发现：无可推进内容（tail 已最简/边界无法前移）此前
 // 误报「摘要生成失败（LLM 调用失败…）」——根本没发起调用。钉住三态区分：
 // 前两次真压缩耗尽 Mock 响应，第三次必须走「无需压缩」Ok 臂。
 #[tokio::test]

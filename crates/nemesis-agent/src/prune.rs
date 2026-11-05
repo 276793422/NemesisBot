@@ -1,4 +1,4 @@
-//! Model-free tool-result pruning (U3).
+//! Model-free tool-result pruning.
 //!
 //! Oversized plain-text tool results are replaced, before they are fed back
 //! into the conversation, with a bounded head + omission marker + bounded
@@ -11,7 +11,7 @@
 //! Here there is no separate projection layer — the history IS the storage —
 //! so the pruned form is what history keeps. Consequence: the elided middle is not
 //! recoverable from history (models that need it must re-run the tool with a
-//! narrower query, or use the U4 spill path above the spill threshold).
+//! narrower query, or use the spill path above the spill threshold).
 //! Marker wording tells the model exactly that.
 
 /// Max characters (not bytes) of a tool result kept inline in the
@@ -23,7 +23,7 @@ pub const MAX_TOOL_RESULT_INLINE_CHARS: usize = 8192;
 const PRUNE_HEAD_CHARS: usize = 3600;
 const PRUNE_TAIL_CHARS: usize = 3600;
 
-/// B3 (devtool-upgrade 阶段 3): appended to prune/spill gate text when the
+/// (devtool-upgrade): appended to prune/spill gate text when the
 /// registry HAS a spawn tool — the elided content is unrecoverable from the
 /// pruned form, and a sub-agent can read the full source (spill file via
 /// read_file, or re-run the tool narrowly) and return only the relevant
@@ -36,7 +36,7 @@ pub const SUBAGENT_HINT_SUFFIX: &str =
 /// the `str-slice-multibyte-panic` incident class. `tool_name` is included in
 /// the marker so the model knows which call produced the elision.
 ///
-/// `hint_subagent` (B3): appends the spawn hint — true only when the tool
+/// `hint_subagent`: appends the spawn hint — true only when the tool
 /// registry contains a spawn tool. NOTE: the hinted text is NOT recomputable
 /// by the pure projection path (the flag is registry state, not turn data),
 /// so callers that apply the hint must record it as the turn's

@@ -1,13 +1,13 @@
-//! Claude Code subagent delegation tool (H7 / U13 half; T5 refactored to the
+//! Claude Code subagent delegation tool (/ half; refactored to the
 //! shared CLI-delegation layer).
 //!
 //! Delegates a self-contained task to the local Claude Code CLI:
 //! `claude --print -p "<prompt>" --output-format text --permission-mode <tier>`,
 //! stdout collected as the result. The spawn/timeout/tree-kill plumbing lives
-//! in [`super::cli_delegation`] (T5 / A9 — this file is now the
+//! in [`super:cli_delegation`] (/ — this file is now the
 //! "argument construction + config" shell).
 //!
-//! T5 (U13 original item): the permission mode is a FIXED config tier
+//! (original item): the permission mode is a FIXED config tier
 //! (`agents.claude_code_tool.permission_mode`, CLI camelCase enum
 //! acceptEdits/auto/bypassPermissions/manual/dontAsk/plan, default
 //! `acceptEdits` — non-interactive-safe). It is deliberately NOT in the tool
@@ -37,7 +37,7 @@ pub fn find_claude_cli() -> Option<String> {
 pub struct ClaudeCodeTool {
     cli_path: String,
     timeout_secs: u64,
-    /// T5: fixed permission tier (already normalized; default acceptEdits).
+    /// fixed permission tier (already normalized; default acceptEdits).
     permission_mode: &'static str,
 }
 
@@ -68,7 +68,7 @@ impl Tool for ClaudeCodeTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // T5: permission_mode is intentionally ABSENT — fixed config tier,
+        // permission_mode is intentionally ABSENT — fixed config tier,
         // not model-selectable.
         serde_json::json!({
             "type": "object",
@@ -95,9 +95,9 @@ impl Tool for ClaudeCodeTool {
 
         let cwd: std::path::PathBuf = cli_delegation::delegation_cwd(&context.session_key);
 
-        // T5 (U13): `--permission-mode <tier>` keeps the child deterministic
-        // per deployment config. (H7 originally passed no permission flag and
-        // let the CLI's own settings govern the child; the original U13
+        // : `--permission-mode <tier>` keeps the child deterministic
+        // per deployment config. (originally passed no permission flag and
+        // let the CLI's own settings govern the child; the original
         // acceptance requires a fixed non-interactive tier instead.)
         let args = vec![
             "--print".to_string(),

@@ -1,14 +1,14 @@
-//! S9 覆盖率批次：loop_continuation.rs 剩余未覆盖行。
-//! - 164：ContinuationStore::delete 的 remove 失败 warn（快照路径预置为
+//! 覆盖率批次：loop_continuation.rs 剩余未覆盖行。
+//! - 164：ContinuationStore:delete 的 remove 失败 warn（快照路径预置为
 //!   目录）。
-//! - 187：list_pending 的扩展名分支收尾（.json + 非 .json 混合目录）。
+//! - 187：list_pending 的扩展名分支收尾（.json + 非.json 混合目录）。
 //! - 479-483：wait_for_continuation 超时耗尽 → warn + None（直接构造
 //!   未就绪条目 + barrier_timeout=0，确定性）。
 //! - 931/934：handle_cluster_continuation 最终响应 info! 参数行 + 块收尾
 //!   （复刻 simple_response 场景 + subscriber）。
 //! - 855-868 / 872-884：结构性死区——execute_tool_for_continuation 是
 //!   ContinuationToolResult 的唯一生产者（loop_continuation.rs:954-977 三
-//!   个构造点全部 `..Default::default()`，for_user 恒空、is_async 恒
+//!   个构造点全部 `..Default:default()`，for_user 恒空、is_async 恒
 //!   false、silent 恒 true）→ for_user 发送臂与嵌套异步保存臂永假。
 //! - 387-392：messages 序列化失败分支（Vec<LlmMessage> 恒可序列化）结构性。
 //! - 464-473：双检竞态窗口（drop 锁后到 load 之间就绪）——非确定性窗口，
@@ -43,7 +43,7 @@ fn snapshot_for(task: &str) -> ContinuationSnapshot {
         created_at: chrono::Local::now().to_rfc3339(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
         final_persisted: false,
     }
 }
@@ -71,7 +71,7 @@ async fn store_delete_blocked_by_directory_warns() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// list_pending：.json 收进列表、非 .json 忽略（181-188 全分支收尾）。
+/// list_pending：.json 收进列表、非.json 忽略（181-188 全分支收尾）。
 #[test]
 fn store_list_pending_mixed_extensions() {
     let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -114,7 +114,7 @@ async fn wait_for_continuation_expired_deadline_falls_back() {
                 ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 peer_id: String::new(),
                 image_refs: Vec::new(),
-                image_refs_by_user_turn: Vec::new(), // L1
+                image_refs_by_user_turn: Vec::new(),
             }),
         );
     }
@@ -196,7 +196,7 @@ async fn continuation_final_response_logs_info_fields() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &std::collections::HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,

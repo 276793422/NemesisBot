@@ -1,6 +1,6 @@
-//! Tests for `crate::hooks` (K1a — U14 seventh batch).
+//! Tests for `crate:hooks` (— seventh batch).
 //!
-//! Acceptance mapping (goal §二 第七批 K1a):
+//! Acceptance mapping (goal §二):
 //! - ① pre 能拦下工具调用 → `handle_tool_call_pre_blocks`（真 dispatch 路径，
 //!   且断言工具本体未执行）
 //! - ② post 能观察/改写 result → `handle_tool_call_post_replaces` /
@@ -8,8 +8,8 @@
 //! - ③ security/Forge 行为不变 → `handle_tool_call_no_hooks_unchanged`
 //!   （无钩子路径结果字节不变）+ 既有全量回归
 //! - ④ 旁路覆盖 → loop_executor.rs 为 legacy 零生产构造（已留指针注释，
-//!   见 hooks.rs 模块文档「覆盖范围与旁路」）；U5 只读并行批内部逐个调
-//!   `handle_tool_call`，自动被同一插入点覆盖（loop/tests.rs U5 并发测试）。
+//!   见 hooks.rs 模块文档「覆盖范围与旁路」）； 只读并行批内部逐个调
+//!   `handle_tool_call`，自动被同一插入点覆盖（loop/tests.rs 并发测试）。
 //!
 //! 另外钉住文档化的不对称语义：pre 对**每次分发尝试**都跑（含未知工具名，
 //! `handle_tool_call_pre_fires_for_unknown_tool`），post 仅在工具真实执行
@@ -238,7 +238,7 @@ async fn manager_add_snapshot_len() {
 }
 
 // ---------------------------------------------------------------------------
-// Integration: through AgentLoop::handle_tool_call (the real dispatch path)
+// Integration: through AgentLoop:handle_tool_call (the real dispatch path)
 // ---------------------------------------------------------------------------
 
 /// Acceptance ①: a registered pre hook intercepts the dispatch — the blocked
@@ -283,7 +283,7 @@ async fn handle_tool_call_post_replaces() {
 }
 
 /// Acceptance ③: with no hooks registered the result is byte-identical to
-/// the pre-K1a behavior (zero-regression guarantee).
+/// the pre behavior (zero-regression guarantee).
 #[tokio::test]
 async fn handle_tool_call_no_hooks_unchanged() {
     let executed = Arc::new(AtomicBool::new(false));
@@ -354,13 +354,13 @@ async fn handle_tool_call_bare_observer_is_noop() {
 }
 
 // ===========================================================================
-// K1b — LLM-call-level hooks
+// — LLM-call-level hooks
 // ===========================================================================
 //
-// Acceptance mapping (goal §二 第七批 K1b):
+// Acceptance mapping (goal §二):
 // - ①请求前注入的提醒出现在该轮 messages → llm_pre_append_reaches_provider
 //   （observer LlmRequest 事件用同一份 messages 构建，结构上 request_log
-//   即可见）
+//   即可）
 // - ②响应检查可要求重试/放行 → llm_post_retry_recalls_with_feedback（重呼
 //   带反馈消息）/ llm_post_replace_downstream / llm_post_block_terminates /
 //   llm_retry_budget_exhausted_fail_open
@@ -658,7 +658,7 @@ async fn llm_hook_manager_basics() {
     assert_eq!(mgr.snapshot().len(), 1);
 }
 
-// --- integration: through AgentLoop::run (production run_llm_loop path) ------
+// --- integration: through AgentLoop:run (production run_llm_loop path) ------
 
 /// Acceptance ①: a pre-LLM hook's appended reminder reaches the provider as
 /// part of that round's messages (request_log is built from the same vec).
@@ -818,7 +818,7 @@ async fn llm_no_hooks_single_unchanged_call() {
 }
 
 // ---------------------------------------------------------------------------
-// K1b lifecycle entry points: run_user_prompt_hooks / run_turn_end_hooks
+// lifecycle entry points: run_user_prompt_hooks / run_turn_end_hooks
 // (4b layer-1 gap fill — these two run_* fns had zero coverage while the
 // LlmHook pre/post family above was fully tested).
 // ---------------------------------------------------------------------------
@@ -985,7 +985,7 @@ async fn turn_end_hooks_first_continue_short_circuits_with_feedback() {
 }
 
 // ---------------------------------------------------------------------------
-// W3a: LlmHook / LifecycleHook 默认实现 + 两个 manager 的 len/is_empty
+// LlmHook / LifecycleHook 默认实现 + 两个 manager 的 len/is_empty
 // ---------------------------------------------------------------------------
 
 /// 什么都不覆盖的空实现：三个 trait 的默认方法都必须是「无害放行」。

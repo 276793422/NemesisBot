@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "workflow")]
@@ -8,11 +8,11 @@ use super::*;
 /// Agent tool that invokes a registered workflow synchronously.
 ///
 /// Mirrors Go's `workflow_run` tool. The agent supplies a workflow name and
-/// an optional input object; the tool calls `WorkflowEngine::run` and
+/// an optional input object; the tool calls `WorkflowEngine:run` and
 /// returns the execution id / state / aggregated node output as JSON.
 ///
 /// **Recursion depth**: each call increments the depth carried in
-/// `TriggerSource::AgentTool`. When the new depth would exceed
+/// `TriggerSource:AgentTool`. When the new depth would exceed
 /// `MAX_RECURSION_DEPTH`, the call is rejected without dispatching to the
 /// engine. This prevents runaway `workflow_run → agent → workflow_run`
 /// cycles from stack-allocating unbounded tokio tasks.
@@ -148,7 +148,7 @@ impl Tool for WorkflowRunTool {
 ///
 /// The definition is validated (errors reported back for self-correction)
 /// and persisted under `{workspace}/workflow/drafts/<name>.yaml`, but NOT
-/// registered. `drafts::DraftStore::apply` (human-in-the-loop, from the UI)
+/// registered. `drafts:DraftStore:apply` (human-in-the-loop, from the UI)
 /// is the only path that turns a draft into a registered workflow — with an
 /// automatic `.history/` backup when it replaces an existing definition.
 #[cfg(feature = "workflow")]
@@ -239,7 +239,7 @@ impl Tool for WorkflowCreateTool {
                     .to_string(),
             );
         }
-        // 语义 lint（2026-09-23 计划类 C）：warning 不阻断，但经 hints 进
+        // 语义 lint（计划类 C）：warning 不阻断，但经 hints 进
         // 本轮自纠回路——修了重存，或向用户确认属有意配置。
         for w in &summary.warnings {
             hints.push(format!(
@@ -264,7 +264,7 @@ impl Tool for WorkflowCreateTool {
 
 /// Agent tool returning the generator capability table (node types, config
 /// fields, trigger types, structural rules). Rendered from the static table
-/// in `nemesis-workflow::capabilities`, which is pinned to the real executor
+/// in `nemesis-workflow:capabilities`, which is pinned to the real executor
 /// registry by anti-drift tests.
 #[cfg(feature = "workflow")]
 pub struct WorkflowCapabilitiesTool;

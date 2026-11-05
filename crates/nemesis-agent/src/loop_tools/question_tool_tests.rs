@@ -1,11 +1,11 @@
-//! F7 (2026-09-06): question 工具单元测试。
+//! (2026-09-06): question 工具单元测试。
 //!
 //! 覆盖：注册门控（question_broker Some→注册 / None→不注册）、args 校验
 //! （缺 question / 选项数量 / 非串选项）、回灌格式（单选一项 / 多选多项 /
 //! 超时回灌按最佳判断继续）、槽空（Some(空槽)）诚实报错、请求透传
 //! （chat_id/session_key/multi/id 自增）。
 //!
-//! B8（提问两形态）：fields schema（required 收敛为 question）、表单形态
+//! （提问两形态）：fields schema（required 收敛为 question）、表单形态
 //! 解析/校验（字段数上限/key 重复/未知 type/select 候选数）、AnsweredForm
 //! 紧凑 JSON 回灌、fields 优先于 options/multi、单选上限 6→12。
 
@@ -97,7 +97,7 @@ fn register_without_broker_omits_question_tool() {
 
 #[test]
 fn schema_requires_question_only_and_declares_both_forms() {
-    // B8：required 收敛为 question（options/fields 二选一，运行时校验）。
+    // required 收敛为 question（options/fields 二选一，运行时校验）。
     let tool = QuestionTool::new(empty_slot());
     let schema = tool.parameters();
     assert_eq!(schema["required"][0], "question");
@@ -215,7 +215,7 @@ async fn execute_validation_rejects_bad_args() {
         .unwrap_err();
     assert!(err.contains("array of strings"), "err: {}", err);
 
-    // 选项不足 2 / 超过 12（单选上限 B8 起 6→12）。
+    // 选项不足 2 / 超过 12（单选上限 起 6→12）。
     let err = tool
         .execute(r#"{"question":"q","options":["a"]}"#, &ctx())
         .await
@@ -254,7 +254,7 @@ async fn execute_validation_rejects_bad_args() {
 
 #[tokio::test]
 async fn execute_single_select_allows_up_to_12_options() {
-    // B8：单选 >6 项合法（前端收纳为下拉）——7 项照常透传。
+    // 单选 >6 项合法（前端收纳为下拉）——7 项照常透传。
     let broker = Arc::new(MockBroker::answered(&["7"]));
     let tool = QuestionTool::new(slot_with(broker.clone()));
     let out = tool
@@ -287,7 +287,7 @@ fn question_ids_increase_monotonically() {
 }
 
 // ---------------------------------------------------------------------------
-// B8（提问两形态）：fields 表单形态
+// （提问两形态）：fields 表单形态
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

@@ -7,9 +7,9 @@
 //! Design principle: signatures key on `(tool, error)` — **not** on arguments.
 //! A stuck model reworks the arguments cosmetically while failing identically,
 //! so arg-based matching misses the loop. See the plan doc
-//! `docs/PLAN/2026-07-06_agent-loop-turn-management-and-stuck-detection.md`
-//! (§4⑥) for the rationale.
-//! Exception: ⑤′ (`record_read_success`, the U6 read-repeat advisory) keys on
+//! `agent-loop-turn-management-and-stuck-detection`
+//! (⑥) for the rationale.
+//! Exception: ⑤′ (`record_read_success`, the read-repeat advisory) keys on
 //! `(tool, canonical args)` on purpose — it detects *identical* re-queries of
 //! read-like tools, where exact-args matching is precisely the signal.
 
@@ -26,21 +26,21 @@ pub const ALTERNATING_LOOP_THRESHOLD: u32 = 3;
 
 /// ⑥ Escalation: when the same `(tool, error_signature)` fails this many times
 /// in a turn we stop hard — every level of the intervention ladder
-/// （循环干预阶梯，2026-10-24）has been ignored. Bounds the worst-case cost of
+/// （循环干预阶梯）has been ignored. Bounds the worst-case cost of
 /// a stuck model that would otherwise run all the way to `max_turns`.
 ///
-/// 计次分级阶梯：3–5 L0 通用 nudge → 6–11 L1 换方法 → 12–17 L2 换路径/
-/// 分解 → 18–23 L3 绕过+记录缺口 → ≥24 终级（无超时严重卡问用户；asker
-/// 缺席 = fail-closed 停轮）。旧值 6 是 J5 审批化时代的硬停点；阶梯化后
+/// 计次分级阶梯：3–5 通用 nudge → 6–11 换方法 → 12–17 换路径/
+/// 分解 → 18–23 绕过+记录缺口 → ≥24 终级（无超时严重卡问用户；asker
+/// 缺席 = fail-closed 停轮）。旧值 6 是 审批化时代的硬停点；阶梯化后
 /// 终级前先走完四级 nudge 干预，24 给模型完整的四级自纠机会。
 pub const ALTERNATING_LOOP_HARD_STOP: u32 = 24;
 
 /// ⑥ 干预阶梯分级边界（与 [`ALTERNATING_LOOP_HARD_STOP`] 同一真相源）：
-/// L1 起点 6、L2 起点 12、L3 起点 18；≥ [`ALTERNATING_LOOP_HARD_STOP`] 由
-/// escalation 终级接手（不再发 nudge）。[`Self::alternating_nudge`] 消费。
+/// 起点 6、 起点 12、 起点 18；≥ [`ALTERNATING_LOOP_HARD_STOP`] 由
+/// escalation 终级接手（不再发 nudge）。[`Self:alternating_nudge`] 消费。
 pub const LADDER_LEVEL_BOUNDS: [u32; 3] = [6, 12, 18];
 
-/// 升级硬停文案的稳定前缀（P2A，2026-09-12）：[`TurnGuard::escalation_message`]
+/// 升级硬停文案的稳定前缀（P2A）：[`TurnGuard:escalation_message`]
 /// 与集群 worker 侧（`cluster_agent`）共用同一真相源——worker 据此识别
 /// 「升级停轮」形态的终结交付并按失败上报（fail_class=escalation），A 端
 /// 验收决策不再把停止告知当工作交付评审后盲重派。改文案必须保留此前缀
@@ -76,18 +76,18 @@ pub const TEXT_REPETITION_SIM_THRESHOLD: f64 = 0.8;
 /// before giving up. Below this, retry with a nudge.
 pub const MAX_EMPTY_FINAL_RETRIES: u32 = 3;
 
-/// T1（扩展计划 D3）：收据环容量——本轮最多保留 32 张执行收据（FIFO
+/// （扩展计划）：收据环容量——本轮最多保留 32 张执行收据（FIFO
 /// 驱逐最旧）。环只服务本轮防谎报核对与诊断，容量上限防长轮无界增长。
 pub const RECEIPT_RING_CAP: usize = 32;
 
-/// T1：无执行收据的"成功"合成失败签名用的错误标记（进 `(tool, error)`
+/// 无执行收据的"成功"合成失败签名用的错误标记（进 `(tool, error)`
 /// 签名，与真实错误文本不可能撞车）。
 pub const RECEIPT_MISSING_MARKER: &str =
     "\x00receipt-missing: success claimed without execution proof";
 
 /// ⑤ Tools whose success is "write-like" — repeating an identical successful
 /// call is almost always a no-op loop. Conservative list; extend as needed.
-/// A7 (2026-09-06): the long-reserved "multi_edit" placeholder is now live as
+/// : the long-reserved "multi_edit" placeholder is now live as
 /// the actual `multiedit` tool name.
 const WRITE_LIKE_TOOLS: &[&str] = &[
     "edit_file",
@@ -134,20 +134,20 @@ pub struct TurnGuard {
     last_content: Option<String>,
     /// ⑧ Consecutive similar-content rounds this turn.
     repeat_text_count: u32,
-    /// T1（扩展计划 D3）：本轮真实执行收据环（cap 32，FIFO 驱逐）——
-    /// `(receipt, ts_ms)`。由 [`Self::record_tool_outcome_verified`] 对每个
+    /// （扩展计划）：本轮真实执行收据环（cap 32，FIFO 驱逐）——
+    /// `(receipt, ts_ms)`。由 [`Self:record_tool_outcome_verified`] 对每个
     /// 真实执行的 registry 结果入账；结果文本自称成功但无收据 → 合成
     /// 失败签名喂 escalation。防幻觉执行证明，不进 LLM 上下文不落盘。
     receipts: std::collections::VecDeque<(String, u64)>,
-    /// E5（2026-10-15 收尾保障）：本轮是否发生过写类工具成功——预算暂停
+    /// ：本轮是否发生过写类工具成功——预算暂停
     /// 前编译探针的触发闸（见 `loop/pre_pause_probe`）。只在
-    /// [`Self::record_write_success`] 的写类门内置位（失败不算：edit 原子、
+    /// [`Self:record_write_success`] 的写类门内置位（失败不算：edit 原子、
     /// 失败即未落；exec 类副作用刻意不在触发集合——exec 同时承载只读
     /// 命令，纳入会退化成逢 exec 必探针）。
     had_writes: bool,
-    /// A2（2026-10-21 引入）：本轮守卫事件计数——④/⑥ 失败
+    /// （引入）：本轮守卫事件计数——④/⑥ 失败
     /// nudge、⑤/⑤′ 重复成功 nudge、⑦ 退化重试/放弃、⑧ 行文重复 nudge、
-    /// T1 无收据合成失败，每次实际发出即 +1（判定未触发不计）。turn 收尾
+    /// 无收据合成失败，每次实际发出即 +1（判定未触发不计）。turn 收尾
     /// 经 `finalize_turn` 落 usage 账本 `guard_event_stats` 表，
     /// `models.health` 按「原地打转」口径消费（tier 校准建议）。
     guard_events: u32,
@@ -214,14 +214,14 @@ impl TurnGuard {
         nudge
     }
 
-    /// T1（扩展计划 D3）：带执行收据核对的结果入账——生产 dispatch 路径
+    /// （扩展计划）：带执行收据核对的结果入账——生产 dispatch 路径
     /// （`apply_tool_guards`）唯一入口。收据先入环（cap 32 FIFO）；随后
     /// 一致性核对：
     /// - `error=None`（结果文本自称成功）但 `receipt=None`（无执行证明）
     ///   → 谎报/注入路径：合成失败签名（[`RECEIPT_MISSING_MARKER`]）按
     ///   失败语义入 ⑥/④ 计数，喂 escalation 判定，并返回合成 nudge；
     /// - 其余组合（有收据的成功 / 任意失败）→ 原样走
-    ///   [`Self::record_tool_outcome`]。
+    ///   [`Self:record_tool_outcome`]。
     pub fn record_tool_outcome_verified(
         &mut self,
         tool: &str,
@@ -250,7 +250,7 @@ impl TurnGuard {
         self.record_tool_outcome(tool, error)
     }
 
-    /// T1：收据入环（cap [`RECEIPT_RING_CAP`]，FIFO 驱逐最旧）。
+    /// 收据入环（cap [`RECEIPT_RING_CAP`]，FIFO 驱逐最旧）。
     fn record_receipt(&mut self, receipt: &str, ts_ms: u64) {
         self.receipts.push_back((receipt.to_string(), ts_ms));
         while self.receipts.len() > RECEIPT_RING_CAP {
@@ -258,7 +258,7 @@ impl TurnGuard {
         }
     }
 
-    /// T1：当前环内收据数（诊断/测试用）。
+    /// 当前环内收据数（诊断/测试用）。
     pub fn receipt_count(&self) -> usize {
         self.receipts.len()
     }
@@ -267,16 +267,16 @@ impl TurnGuard {
     /// has failed at least [`ALTERNATING_LOOP_HARD_STOP`] times this turn — the
     /// model is ignoring the nudges, so stop the turn to avoid burning the whole
     /// `max_turns` budget. The caller breaks the loop and surfaces the message.
-    /// J5：派生自 [`Self::escalating_signature`]（单一真相源）。
+    /// 派生自 [`Self:escalating_signature`]（单一真相源）。
     pub fn escalation_check(&self) -> Option<String> {
         self.escalating_signature()
             .map(|(sig, count)| Self::escalation_message(&sig, count))
     }
 
-    /// J5 (devtool-upgrade 阶段 6)：当前已到硬停阈值的第一个 `(tool, error)`
+    /// (devtool-upgrade)：当前已到硬停阈值的第一个 `(tool, error)`
     /// 签名 `(sig, count)`（无则 `None`）。escalation 审批化（loop 侧）据此
-    /// 发提问卡，批准后用 [`Self::clear_signature`] 清计数；
-    /// [`Self::escalation_check`] 亦由此派生。
+    /// 发提问卡，批准后用 [`Self:clear_signature`] 清计数；
+    /// [`Self:escalation_check`] 亦由此派生。
     pub fn escalating_signature(&self) -> Option<(String, u32)> {
         self.fail_freq
             .iter()
@@ -284,8 +284,8 @@ impl TurnGuard {
             .map(|(sig, count)| (sig.clone(), *count))
     }
 
-    /// J5：escalation 停轮文案（签名 + 次数 → 用户可见消息）。审批被拒 /
-    /// 超时 / 通路缺失时 loop 侧用同一文案停轮，与 [`Self::escalation_check`]
+    /// escalation 停轮文案（签名 + 次数 → 用户可见消息）。审批被拒 /
+    /// 超时 / 通路缺失时 loop 侧用同一文案停轮，与 [`Self:escalation_check`]
     /// 的输出一字不差。
     pub fn escalation_message(sig: &str, count: u32) -> String {
         let tool = sig.split('\x00').next().unwrap_or("tool");
@@ -295,7 +295,7 @@ impl TurnGuard {
         )
     }
 
-    /// J5：审批通过后清签名计数——用户确认可继续后，同一 `(tool, error)`
+    /// 审批通过后清签名计数——用户确认可继续后，同一 `(tool, error)`
     /// 从零重新计数；再次撞到硬停阈值会**再次发卡**（一次批准不等于永久
     /// 豁免该循环）。故意不清其它签名：其它循环的累计证据仍然有效。
     pub fn clear_signature(&mut self, sig: &str) {
@@ -311,7 +311,7 @@ impl TurnGuard {
         if !is_write_like_tool(tool) {
             return None;
         }
-        // E5：写类成功即置位（预算暂停探针触发闸；详情见字段注记）。
+        // 写类成功即置位（预算暂停探针触发闸；详情见字段注记）。
         self.had_writes = true;
         let sig = format!("{}\x00{}", tool, canonical_args(args));
         let count = self.success_counts.entry(sig).or_insert(0);
@@ -327,13 +327,13 @@ impl TurnGuard {
         }
     }
 
-    /// E5（2026-10-15 收尾保障）：本轮是否发生过写类工具成功——预算暂停
+    /// ：本轮是否发生过写类工具成功——预算暂停
     /// 前编译探针的触发闸（消费方 `loop/pre_pause_probe`）。
     pub(crate) fn had_writes(&self) -> bool {
         self.had_writes
     }
 
-    /// A2：本轮守卫事件总数（`finalize_turn` 落账用；判定未触发不计）。
+    /// 本轮守卫事件总数（`finalize_turn` 落账用；判定未触发不计）。
     pub fn guard_event_count(&self) -> u32 {
         self.guard_events
     }
@@ -420,11 +420,11 @@ impl TurnGuard {
     }
 }
 
-/// ⑥ 循环干预阶梯（2026-10-24）：`alt_count` 计次分级 nudge 文案——级别是
+/// ⑥ 循环干预阶梯：`alt_count` 计次分级 nudge 文案——级别是
 /// 计数的纯函数（无独立干预计数、无清零窗口）。每次失败都返回当级文案
 /// （nudge 通道逐次重现，模型不会「忘」上一轮的指导）；≥
 /// [`ALTERNATING_LOOP_HARD_STOP`] 不再进本函数（escalation 终级接手）。
-/// L0 文案与阶梯化前逐字节一致（既有测试/账本兼容）。
+/// 文案与阶梯化前逐字节一致（既有测试/账本兼容）。
 fn alternating_nudge(tool: &str, count: u32) -> String {
     let level = if count < LADDER_LEVEL_BOUNDS[0] {
         0
@@ -436,22 +436,22 @@ fn alternating_nudge(tool: &str, count: u32) -> String {
         3
     };
     match level {
-        // L0（3–5）：通用纠偏（原文案）。
+        // （3–5）：通用纠偏（原文案）。
         0 => format!(
             "\n[loop guard] {} 在本任务中已 {} 次报相同错误。中间的修改并没有消除这个错误——根因可能在别处。请换方向：检查依赖配置 / 构建配置 / 环境依赖是否正确安装，或换一条完全不同的实现路径；若实在无法解决，请在最终答复里说明阻塞点。",
             tool, count
         ),
-        // L1（6–11）：换方法——此前几轮的微调已被证伪，停止在同一方法上打磨。
+        // （6–11）：换方法——此前几轮的微调已被证伪，停止在同一方法上打磨。
         1 => format!(
             "\n[loop guard] {} 已 {} 次报相同错误——前几轮的修改没有解决问题，继续微调当前方法没有意义。请彻底放弃这一步的当前做法：换一个工具、换一条命令或换一种完全不同的实现方式来完成同样的目标。",
             tool, count
         ),
-        // L2（12–17）：换路径/分解——方法级换血仍无进展，质疑任务拆法与前提。
+        // （12–17）：换路径/分解——方法级换血仍无进展，质疑任务拆法与前提。
         2 => format!(
             "\n[loop guard] {} 已 {} 次报相同错误——多轮换方法仍无进展，说明前提假设可能有问题。请重新审视目标本身：换一条根本不同的实现路径，或把任务分解成更小的子步骤逐个击破，必要时先解决前置依赖，或明确放弃不可行的子目标。",
             tool, count
         ),
-        // L3（18–23）：绕过+记录缺口——停止尝试修复，转向有界交付。
+        // （18–23）：绕过+记录缺口——停止尝试修复，转向有界交付。
         _ => format!(
             "\n[loop guard] {} 已 {} 次报相同错误——干预阶梯最后一级。停止继续尝试：绕过该阻塞点完成其余能完成的工作，在最终答复里明确记录缺口（失败原因、已尝试过的方法、建议的人工处理方式），交付已完成的部分。不要再次重试同一调用。",
             tool, count
@@ -461,22 +461,22 @@ fn alternating_nudge(tool: &str, count: u32) -> String {
 
 /// Build a stable signature for a tool failure. Keys on `(tool, first error
 /// line)` — NOT on arguments. The first line is usually the discriminator
-/// (e.g. `error[E0432]: unresolved import ...`); taking the first line and
+/// (e.g. `error[]: unresolved import...`); taking the first line and
 /// truncating ignores volatile line numbers / surrounding output while still
 /// distinguishing genuinely-different errors. Char-bounded truncation so it is
 /// safe on multi-byte (e.g. Chinese) text.
 /// Whether a tool's result string indicates failure. Tools in this codebase
 /// signal errors three ways, and the guards must recognize all of them:
-/// - `Error: ...` — framework-wrapped (e.g. unknown tool).
-/// - `Tool error: ...` — `handle_tool_call` wrapping a tool's `Err(_)` return.
+/// - `Error:...` — framework-wrapped (e.g. unknown tool).
+/// - `Tool error:...` — `handle_tool_call` wrapping a tool's `Err(_)` return.
 /// - `Exit code: <N>\n...` — `ExecTool` returns this as `Ok(_)` for non-zero
 ///   exits. A non-zero exit IS a failure even though it's `Ok`, so without this
 ///   case the most common loop shape — repeated failing builds — would look like
 ///   a stream of successes and the guards would never fire.
-/// - `Command timed out ...` — `ExecTool` timeout-kill, also `Ok(_)`. Same
+/// - `Command timed out...` — `ExecTool` timeout-kill, also `Ok(_)`. Same
 ///   logic as the non-zero-exit case: a hung-command loop (interactive prompt
 ///   wait, long test suite) must count as repeated failures. This matches
-///   [`crate::loop_tools::exec_output_passed`] (the exec-shape truth source):
+///   [`crate:loop_tools:exec_output_passed`] (the exec-shape truth source):
 ///   all three exec failure forms (`Exit code:` / `Command timed out` / `Err`)
 ///   are recognized, keeping the guard / WAL / observer / Forge classifications
 ///   on the same scale.
@@ -501,7 +501,7 @@ fn error_signature(tool: &str, error: &str) -> String {
         .trim();
     // Skip ExecTool's `Exit code:` / `stdout:` / `stderr:` headers. The latter
     // two are INLINE prefixes on the same line as the content (e.g.
-    // "stderr: error[E0432]: ..."), so we strip the prefix and look at the
+    // "stderr: error[]:..."), so we strip the prefix and look at the
     // remainder — otherwise every build failure keys to "Exit code: N" and
     // distinct errors collide into a false-positive loop signal.
     let meaningful = stripped
@@ -570,6 +570,6 @@ fn shingles(s: &str, n: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

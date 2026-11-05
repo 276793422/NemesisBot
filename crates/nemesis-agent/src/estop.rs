@@ -1,11 +1,11 @@
 //! 全局急停开关（E-stop / Kill Switch）状态。
 //!
-//! 单一实例挂在 `SharedResources` 上（`gateway::run` 里只建一次），每个
+//! 单一实例挂在 `SharedResources` 上（`gateway:run` 里只建一次），每个
 //! `AgentLoop` 经 `set_estop` 绑到它。触发后，agent 循环在每轮顶部 break、
 //! 并在工具分发前拒绝调用。
 //!
-//! 线程安全：`AtomicBool`（廉价检查）+ `tokio::sync::watch`（异步订阅者，
-//! 供未来 Phase 2「中途打断 LLM 调用」的 select arm 使用）。
+//! 线程安全：`AtomicBool`（廉价检查）+ `tokio:sync:watch`（异步订阅者，
+//! 供未来 「中途打断 LLM 调用」的 select arm 使用）。
 //!
 //! 设计要点：状态本体**不**挂在 `AgentLoop` 上（AgentLoop 每次 start/stop
 //! 都重建），而是挂在 `SharedResources`（跨重启存活）。`AgentLoop` 只持有一
@@ -35,7 +35,7 @@ impl EstopState {
     /// 触发急停：冻结 agent 循环、拒绝后续工具调用。
     pub fn trigger(&self) {
         self.engaged.store(true, Ordering::Release);
-        // watch::send 出错只可能是无订阅者，忽略。
+        // watch:send 出错只可能是无订阅者，忽略。
         let _ = self.tx.send(true);
     }
 

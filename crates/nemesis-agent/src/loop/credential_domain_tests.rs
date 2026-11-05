@@ -1,6 +1,6 @@
-//! L26②（2026-11-02 三期）：dispatch 凭据闸 v2——vault 别名域绑定 loop 级测试。
+//! ②（2026-11-02 三期）：dispatch 凭据闸 v2——vault 别名域绑定 loop 级测试。
 //!
-//! 判定矩阵（设计 §3.4，config.vault.json 注入经 `set_config_path`）：
+//! 判定矩阵（设计，config.vault.json 注入经 `set_config_path`）：
 //! - 出域（绑定别名用在未授权 tool/slot）→ 工具不执行，拒绝串
 //!   `layer:credential_domain` 回模型（audit 链条目只在 security plugin
 //!   在场形态可达，本文件测无插件形态——拒绝串即审计面，诚实降级）；
@@ -383,7 +383,7 @@ async fn malformed_domain_config_fails_secure() {
     assert!(!events_text(&events).contains("OUT OF DOMAIN"));
 }
 
-/// 出域拒绝无冷却（对抗清单 §5.1 末行）：同键连续两次出域调用，每次
+/// 出域拒绝无冷却（对抗清单 末行）：同键连续两次出域调用，每次
 /// 确定性拒绝（判定臂无状态，v1 冷却属卡臂不属判定臂）；工具恒零执行。
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
@@ -422,7 +422,7 @@ async fn out_of_domain_rejects_deterministically_no_cooldown() {
     );
 }
 
-/// 出域拒绝的 audit 链条目（plugin 在场形态，§7 测试矩阵）：allow-all
+/// 出域拒绝的 audit 链条目（plugin 在场形态， 测试矩阵）：allow-all
 /// 插件装配后管线放行、判定臂拒绝 → auditor 日志可查 denied +
 /// policy_rule=security.credential_domain；值零参与（reason 无真值）。
 #[cfg(feature = "security")]

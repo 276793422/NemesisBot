@@ -1,10 +1,10 @@
-// R1（2026-09-21）：中间轮正文事件（AgentEvent::RoundText）的发布语义测试。
+// ：中间轮正文事件（AgentEvent:RoundText）的发布语义测试。
 //
 // 背景：LLM 循环里带工具调用的中间轮，其正文（模型的过程叙述）此前只进
 // history——web 前端只见工具卡与最终回复。修复后中间轮正文非空即经
 // agent_event_tx 广播 RoundText（web pump 默认路径投递 + 入环回放）。
 //
-// 批次二（2026-10-31）：RoundText 扩思考链字段（reasoning）——叙述与
+// RoundText 扩思考链字段（reasoning）——叙述与
 // 思考皆空才不发；thinking-only 轮照发；终答轮思考链以 ("", reasoning)
 // 形态发布（正文走 Done 既有通路）。
 //
@@ -14,8 +14,8 @@
 //    chat 语义事件 Vec（ToolCall/Done 等的通道）；
 // ③ 纯工具调用轮（叙述与思考皆空）不发布——无可观察输出；
 // ④ 最终回复轮正文不发布（它是 Done，常规渲染路径）；
-// ⑤ thinking-only 轮（叙述空、思考有值）照发布（批次二）；
-// ⑥ 终答轮思考链以 ("", reasoning) 发布（批次二）。
+// ⑤ thinking-only 轮（叙述空、思考有值）照发布；
+// ⑥ 终答轮思考链以 ("", reasoning) 发布。
 //
 // 自带迷你 Mock（兄弟模块私有类型不共享，f1/f8 同款）。
 
@@ -88,7 +88,7 @@ fn resp(content: &str, tool_calls: Vec<ToolCallInfo>, finished: bool) -> LlmResp
     }
 }
 
-/// 带思考链的响应（批次二）。
+/// 带思考链的响应。
 fn resp_r(
     content: &str,
     reasoning: Option<&str>,
@@ -216,7 +216,7 @@ async fn empty_prose_round_not_published() {
 
 #[tokio::test]
 async fn thinking_only_round_published() {
-    // 批次二：叙述空、思考有值的工具轮照发布（UI 折叠展示面）；
+    // 叙述空、思考有值的工具轮照发布（UI 折叠展示面）；
     // thinking-only RoundText 的 content 为空、reasoning 带值。
     let provider = ScriptedProvider {
         responses: std::sync::Mutex::new(vec![
@@ -253,7 +253,7 @@ async fn thinking_only_round_published() {
 
 #[tokio::test]
 async fn final_answer_reasoning_published_as_empty_content_round() {
-    // 批次二：终答轮思考链以 ("", reasoning) 发布——正文走 Done 通路，
+    // 终答轮思考链以 ("", reasoning) 发布——正文走 Done 通路，
     // 思考链单独成轮（直答轮也能看到思考）。
     let provider = ScriptedProvider {
         responses: std::sync::Mutex::new(vec![resp_r(

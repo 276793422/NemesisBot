@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -40,7 +40,7 @@ impl Tool for GrepTool {
             serde_json::from_str(args).map_err(|e| format!("Invalid JSON: {}", e))?;
         let pattern = v["pattern"].as_str().ok_or("missing 'pattern'")?;
         let re = regex::Regex::new(pattern).map_err(|e| format!("invalid regex: {}", e))?;
-        // FT（2026-09-17）：相对 path 锚定工作区根——此前只有缺省时回退
+        // FT：相对 path 锚定工作区根——此前只有缺省时回退
         // workspace，显式相对子目录按进程 cwd 解析（exe 直启形态下搜错树）。
         let root = match v["path"].as_str() {
             Some(s) if !s.is_empty() => {
@@ -59,7 +59,7 @@ impl Tool for GrepTool {
         let glob = v["glob"].as_str();
         let max = v["max_results"].as_u64().unwrap_or(50) as usize;
         let root_path = Path::new(&root);
-        // 2026-10-15（产品验证实验发现）：path=单文件此前落 grep_recursive 的
+        // （产品验证实验发现）：path=单文件此前落 grep_recursive 的
         // read_dir → Err 静默吞 → 假「No matches」且 ok=true，模型反复换
         // pattern 重试烧轮次（USAGCSV 轮实证：Cargo.toml 连查 5 次）。文件
         // 路径升为一等公民：直接扫该文件；glob 不匹配 / 超限 / 非 UTF-8
@@ -127,7 +127,7 @@ impl Tool for GrepTool {
 }
 
 /// git 单次执行的归一输出（普通 piped / 受限文件重定向两形态同构，
-/// [`GitTool::run_git`] 产物、三态判定与 commit 专用路径共用）。
+/// [`GitTool:run_git`] 产物、三态判定与 commit 专用路径共用）。
 struct GitOutput {
     success: bool,
     stdout: String,
@@ -136,7 +136,7 @@ struct GitOutput {
 
 /// Git tool — read queries (status/diff/log/show/branch) plus the daily-safe
 /// write actions (add/commit/branch_create/checkout/restore/stash) in the
-/// workspace. D1 (2026-09-04): the write surface is enum-whitelisted — push,
+/// workspace.: the write surface is enum-whitelisted — push,
 /// reset --hard, clean, rebase … are intentionally NOT reachable here (the
 /// model must use exec for those, which goes through the 8-layer security
 /// pipeline and approval). Write actions take dedicated params (paths/message/
@@ -150,7 +150,7 @@ impl GitTool {
         Self { workspace }
     }
 
-    /// git 子进程执行的单一入口。2026-10-19 黑窗根修后：普通模式 =
+    /// git 子进程执行的单一入口。 黑窗根修后：普通模式 =
     /// `output()`（隐式 piped）+ CREATE_NO_WINDOW 压黑窗（git.exe 是
     /// console 程序，release gateway 无 console 下默认 flags 会闪窗）；
     /// workspace-dacl 受限模式 = 工作区 `.exec_out/` 文件重定向 +
@@ -162,7 +162,7 @@ impl GitTool {
     fn run_git(&self, args: &[&str]) -> Result<GitOutput, String> {
         let mut c = std::process::Command::new("git");
         c.current_dir(&self.workspace).args(args);
-        // T4 环境凭据剥离（BUG-20261029-178）：git 子进程链会经钩子执行
+        // 环境凭据剥离：git 子进程链会经钩子执行
         // 任意仓库脚本（模型可控内容），钩子进程不得看到继承的凭据变量。
         let stripped = nemesis_utils::env_sanitize::sanitize_command(&mut c);
         if stripped > 0 {
@@ -204,7 +204,7 @@ impl GitTool {
     /// Run git with `args` in the workspace and format the output using the
     /// three-state convention shared by all read actions:
     /// fail with empty stdout → Err(stderr) / empty output → no-changes note /
-    /// otherwise → stdout. (D1: write actions reuse the same three states.)
+    /// otherwise → stdout. (write actions reuse the same three states.)
     fn run_three_state(&self, args: &[&str], action: &str) -> Result<String, String> {
         let out = self.run_git(args)?;
         if !out.success && out.stdout.trim().is_empty() {
@@ -217,8 +217,8 @@ impl GitTool {
     }
 
     /// Write actions take dedicated keys, not the free-form `args` string
-    /// (D1: anti flag-smuggling). `args` on a write action is an honest error
-    /// that tells the model the right shape (same philosophy as A1 edit hints).
+    /// (anti flag-smuggling). `args` on a write action is an honest error
+    /// that tells the model the right shape (same philosophy as edit hints).
     fn reject_freeform_args(
         &self,
         v: &serde_json::Value,
@@ -277,14 +277,14 @@ impl Tool for GitTool {
         let action = v["action"].as_str().ok_or("missing 'action'")?;
         let extra = v["args"].as_str().unwrap_or("");
 
-        // --- Read actions: free-form extra args, as before (D1 unchanged) ---
+        // --- Read actions: free-form extra args, as before (unchanged) ---
         let base: Vec<&str> = match action {
             "status" => vec!["status", "--short", "--branch"],
             "diff" => vec!["diff"],
             "log" => vec!["log", "--oneline", "-20"],
             "show" => vec!["show"],
             "branch" => vec!["branch", "-vv"],
-            // --- Write actions (D1): dedicated params, enum-whitelisted ---
+            // --- Write actions: dedicated params, enum-whitelisted ---
             "add" => {
                 self.reject_freeform_args(&v, action, false)?;
                 let paths = self.required_str(&v, "paths", action)?;
@@ -374,7 +374,7 @@ impl Tool for GitTool {
         };
         let mut cmd_args = base;
         if !extra.is_empty() {
-            // F3（2026-09-22 审计修复）：读操作此前接受 free-form 选项——
+            // （审计修复）：读操作此前接受 free-form 选项——
             // `git diff --output=<path>` 可写任意文件、`--ext-diff` 可让 git
             // 执行外部 diff 程序，读原语实为写/执行原语。封死规则：`--` 长
             // 选项与短选项一律拒绝；唯一例外是 schema 文档化的 `-<N>` 纯数字
@@ -417,7 +417,7 @@ pub(super) fn grep_recursive(
         Err(_) => return,
     };
     let mut kids: Vec<_> = entries.flatten().collect();
-    // 确定性走查序（2026-11-01）：`max` 截断让返回的命中子集依赖遍历序，
+    // 确定性走查序：`max` 截断让返回的命中子集依赖遍历序，
     // 而 read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）——每层
     // 按文件名排序，同一目录树跨平台命中同一子集（同 history_search 的
     // limit 截断先例）。
@@ -427,7 +427,7 @@ pub(super) fn grep_recursive(
             return;
         }
         let path = entry.path();
-        // BUG-20261103-343：目录符号链接跳过。file_type() 不穿越链接——
+        // 目录符号链接跳过。file_type() 不穿越链接——
         // 旧代码 path.is_dir() 跟随链接，链接环下同一文件以「loop\loop\...」
         // 假路径重复命中几十层（直到 OS 路径长度上限才收敛）。
         if entry.file_type().map(|t| t.is_symlink()).unwrap_or(false) && path.is_dir() {
@@ -463,7 +463,7 @@ pub(super) fn grep_recursive(
 /// 单文件逐行扫描（glob 过滤与 1MB 走查帽归调用方——目录走查里它们是噪声
 /// 过滤，显式单文件路径是明确意图，门槛不同：见 `MAX_GREP_SINGLE_FILE_BYTES`）。
 /// 返回是否真正扫描了内容（非 UTF-8 → false；调用方据此诚实注记，不以
-/// 「No matches」掩盖「根本没搜」——2026-10-15 假阴性缺陷的根修拆分）。
+/// 「No matches」掩盖「根本没搜」—— 假阴性缺陷的根修拆分）。
 fn grep_file(path: &Path, re: &regex::Regex, max: usize, out: &mut Vec<String>) -> bool {
     let Ok(content) = std::fs::read_to_string(path) else {
         return false;

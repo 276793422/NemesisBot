@@ -1,10 +1,10 @@
 //! chat_log 落盘时序测试（2026-09-21 切标签页丢消息修复）。
 //!
-//! 核心契约：**user 行在 LLM 调用前落盘**（turn 进行中即可见）——
+//! 核心契约：**user 行在 LLM 调用前落盘**（turn 进行中即可）——
 //! AI 处理期间（分钟级）用户切走路由再切回，前端 loadHistory 从
 //! chat_log 必须能拉到本轮 user 行，不再空视图。assistant 行仍在
 //! turn 末落盘，HD「一轮 = jsonl 恰好 +2 行」不变量由两处合计维持
-//! （既有 tests.rs::one_turn_appends_exactly_user_and_assistant_rows
+//! （既有 tests.rs:one_turn_appends_exactly_user_and_assistant_rows
 //! 继续守护完整轮的行数；本文件钉「进行中可见」的时序半边）。
 
 // 共享键测试持 std Mutex guard 跨 await（串行 chat_log 落盘窗口）——
@@ -74,10 +74,10 @@ fn timing_session_key(name: &str) -> String {
     )
 }
 
-/// W2（2026-10-25）：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
+/// ：未知窗口模型的首个 turn 会落一条「压缩已停用」系统
 /// 注记，破坏本文件「完整轮恰好 +2 行」类精确断言。夹具统一给 test-model
 /// 钉已知窗口（config.json 唯一真相源 fresh-read）→ 自动压缩路径惰性
-/// （信号远低于阈值），本文件继续只测 turn 持久化时序本身；W2 注记行为
+/// （信号远低于阈值），本文件继续只测 turn 持久化时序本身； 注记行为
 /// 由 w1_w2_note_tests 专测。
 fn pin_known_window(al: &AgentLoop) {
     let cfg_path = std::env::temp_dir().join(format!(
@@ -193,9 +193,9 @@ async fn user_row_lands_while_llm_turn_in_progress() {
     cleanup_timing_log(&key);
 }
 
-/// system 直调路径（process_system_message，:3936 同走
+/// system 直调路径（process_system_message，3936 同走
 /// `run_agent_loop_internal`）行为一致受益：完整轮仍恰好 +2 行、
-/// 首行 user（`[System: ...]` 前缀原文）。共享键测试须持
+/// 首行 user（`[System:...]` 前缀原文）。共享键测试须持
 /// CHAT_LOG_INTEGRATION_LOCK 串行。
 #[tokio::test]
 async fn system_message_turn_appends_user_then_assistant_rows() {

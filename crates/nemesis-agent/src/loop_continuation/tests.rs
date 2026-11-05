@@ -129,7 +129,7 @@ fn test_disk_recovery_on_startup() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -156,7 +156,7 @@ async fn test_disk_store_save_and_load() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -181,7 +181,7 @@ async fn test_disk_store_delete() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -271,7 +271,7 @@ fn test_continuation_snapshot_serialization() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -293,7 +293,7 @@ fn test_continuation_data_debug() {
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     let debug_str = format!("{:?}", data);
     assert!(debug_str.contains("tc_1"));
@@ -334,7 +334,7 @@ fn test_manager_has_continuation_sync() {
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     });
     manager.insert_continuation_sync("task-sync".to_string(), data);
 
@@ -395,7 +395,7 @@ fn test_continuation_store_list_pending_with_snapshots() {
             session_key: String::new(),
             peer_id: String::new(),
             image_refs: Vec::new(),
-            image_refs_by_user_turn: Vec::new(), // L1
+            image_refs_by_user_turn: Vec::new(),
         };
         store.save(&snapshot).unwrap();
     }
@@ -421,7 +421,7 @@ fn test_continuation_snapshot_clone() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     let cloned = snapshot.clone();
     assert_eq!(cloned.task_id, "task-clone");
@@ -451,7 +451,7 @@ fn test_continuation_data_with_ready_notify() {
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
 
     assert!(!data.ready_flag.load(std::sync::atomic::Ordering::SeqCst));
@@ -538,7 +538,7 @@ fn test_continuation_store_save_overwrite() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot1).unwrap();
 
@@ -553,7 +553,7 @@ fn test_continuation_store_save_overwrite() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot2).unwrap();
 
@@ -641,7 +641,7 @@ fn test_continuation_store_recover_skips_already_loaded() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -657,7 +657,7 @@ fn test_continuation_store_recover_skips_already_loaded() {
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     });
     manager.insert_continuation_sync("task-skip".to_string(), data);
 
@@ -683,7 +683,7 @@ fn test_continuation_store_recover_corrupted_messages() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -733,7 +733,7 @@ async fn test_handle_cluster_continuation_no_data() {
         &MockContinuationProvider::new(vec![]),
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -786,7 +786,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -843,7 +843,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -926,7 +926,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &tools,
         &outbound_tx,
         None,
@@ -970,7 +970,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1041,7 +1041,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1128,7 +1128,7 @@ fn test_continuation_snapshot_created_at() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     assert_eq!(snapshot.task_id, "t1");
     assert_eq!(snapshot.created_at, "2026-01-01T00:00:00Z");
@@ -1285,7 +1285,7 @@ fn test_disk_persistence_load_from_disk() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -1310,7 +1310,7 @@ async fn test_disk_store_remove_and_verify() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot).unwrap();
     assert!(store.load("task-rm").is_ok());
@@ -1359,7 +1359,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1441,7 +1441,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1523,7 +1523,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1593,7 +1593,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1689,7 +1689,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
     let tmp = TempDir::new().unwrap();
     let workspace = tmp.path().to_path_buf();
 
-    // Phase 1: write snapshot to disk via a manager that immediately drops.
+    // write snapshot to disk via a manager that immediately drops.
     // (spawn_blocking here is historical: with_disk_store's recovery now uses
     // try_lock, so it no longer needs a background thread — see the regression
     // test recover_from_disk_inside_async_runtime_does_not_panic below.)
@@ -1716,7 +1716,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         .unwrap();
     }
 
-    // Phase 2: new manager boots, recovers from disk, handles the callback.
+    // new manager boots, recovers from disk, handles the callback.
     let recovered_mgr =
         tokio::task::spawn_blocking(move || ContinuationManager::with_disk_store(&workspace))
             .await
@@ -1748,7 +1748,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1893,7 +1893,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
         &provider,
         "model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &tools,
         &outbound_tx,
         Some(Arc::clone(&observer)),
@@ -1949,7 +1949,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         &provider,
         "model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -1959,7 +1959,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
     )
     .await;
 
-    // BUG-20261102-322：名字承诺 persists_to_session_store——此前
+    // 名字承诺 persists_to_session_store——此前
     // `let _session` 丢弃、零断言，持久化分支（add_message/save）回归时
     // 测试照绿。assistant 回复必须真进 session_store。
     let session = store.get_or_create("persist_session");
@@ -1975,7 +1975,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
 
 #[tokio::test]
 async fn test_rwlock_tool_lookup_impl() {
-    // Covers the parking_lot::RwLock<HashMap> ToolLookup impl.
+    // Covers the parking_lot:RwLock<HashMap> ToolLookup impl.
     struct T;
     #[async_trait]
     impl Tool for T {
@@ -2013,7 +2013,7 @@ async fn test_load_continuation_falls_back_to_disk() {
         created_at: "2026-01-01T00:00:00Z".to_string(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snap).unwrap();
 
@@ -2027,7 +2027,7 @@ async fn test_load_continuation_falls_back_to_disk() {
 
 #[test]
 fn test_recover_to_manager_skips_corrupt_snapshot() {
-    // A corrupt .json file on disk makes load() fail → warn branch is hit and
+    // A corrupt.json file on disk makes load() fail → warn branch is hit and
     // the entry is skipped (no panic). with_disk_store's recovery uses
     // try_lock() for its sync memory lookups, so it is safe from any context
     // (including a tokio runtime worker thread).
@@ -2040,19 +2040,19 @@ fn test_recover_to_manager_skips_corrupt_snapshot() {
     assert!(!mgr.has_continuation_sync("corrupt"));
 }
 
-/// Regression for BUG #45 (2026-08-27): `ContinuationManager::with_disk_store`
+/// Regression for: `ContinuationManager:with_disk_store`
 /// runs `recover_to_manager` synchronously, which calls
 /// `has_continuation_sync`/`insert_continuation_sync`. Under the old code those
-/// used `tokio::sync::Mutex::blocking_lock()`, which panics with
+/// used `tokio:sync:Mutex:blocking_lock()`, which panics with
 /// "Cannot block the current thread from within a runtime" when invoked on a
 /// tokio runtime worker thread — exactly the context of gateway startup
 /// (`build_agent_loop` at agent_factory.rs:437 calls `with_disk_store` directly
-/// inside the async `gateway::run`, NOT via `spawn_blocking`). A leftover
+/// inside the async `gateway:run`, NOT via `spawn_blocking`). A leftover
 /// `rpc_cache/*.json` (gateway died mid-cluster-rpc) tripped `list_pending()`
 /// non-empty → the blocking_lock panic → a restart crash loop. The fix replaces
 /// `blocking_lock()` with `try_lock()` (non-blocking CAS, never parks the
 /// thread, safe from any context). This test seeds a real snapshot and calls
-/// `with_disk_store` directly from a `#[tokio::test]` (current_thread runtime
+/// `with_disk_store` directly from a `#[tokio:test]` (current_thread runtime
 /// worker thread) — the exact context that used to panic. It must recover the
 /// entry without panicking.
 #[tokio::test]
@@ -2075,7 +2075,7 @@ async fn recover_from_disk_inside_async_runtime_does_not_panic() {
         created_at: "2026-08-27T00:00:00Z".to_string(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     };
     store.save(&snapshot).unwrap();
     drop(store);
@@ -2090,7 +2090,7 @@ async fn recover_from_disk_inside_async_runtime_does_not_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-08-25 self-heal ordering regression: persist_final_reply must be
+// self-heal ordering regression: persist_final_reply must be
 // store-first, or a missing store entry rebuilds from chat_log that ALREADY
 // contains the final reply and add_message appends it a second time.
 // ---------------------------------------------------------------------------
@@ -2166,7 +2166,7 @@ fn test_persist_final_reply_none_store_still_logs() {
 }
 
 // -----------------------------------------------------------------------
-// rpc_cache TTL cleanup (2026-08-25)
+// rpc_cache TTL cleanup
 // -----------------------------------------------------------------------
 
 #[tokio::test]
@@ -2268,7 +2268,7 @@ async fn test_cleanup_old_snapshots_memory_only_manager_is_noop() {
     assert!(manager.has_continuation("mem-only").await);
 }
 
-// --- W3a: delete 警告臂、stale/cleanup TTL、磁盘写失败、save-barrier
+// ---: delete 警告臂、stale/cleanup TTL、磁盘写失败、save-barrier
 // 等待/超时臂、persist_final_reply save 错误、final outbound 发送失败、
 // observer_manager 路径 ---
 
@@ -2286,7 +2286,7 @@ fn snap(task: &str) -> ContinuationSnapshot {
         created_at: "2026-08-25T00:00:00+08:00".to_string(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
         final_persisted: false,
     }
 }
@@ -2356,7 +2356,7 @@ fn stale_task_ids_dir_extension_and_age_arms() {
         "fresh snapshots must not be stale: {none:?}"
     );
 
-    // (c) 等 20ms 后 max_age=0 → 全部 .json stale；.txt 不参与
+    // (c) 等 20ms 后 max_age=0 → 全部.json stale；.txt 不参与
     std::thread::sleep(Duration::from_millis(20));
     let stale = store.stale_task_ids(Duration::ZERO);
     assert_eq!(stale.len(), 2, "stale: {stale:?}");
@@ -2446,7 +2446,7 @@ fn not_ready_data() -> Arc<ContinuationData> {
         ready_flag: Arc::new(AtomicBool::new(false)),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
     })
 }
 
@@ -2560,7 +2560,7 @@ async fn final_outbound_send_error_warns_no_panic() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -2620,7 +2620,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         Some(Arc::new(nemesis_observer::Manager::new())),
@@ -2649,7 +2649,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
 }
 
 // ---------------------------------------------------------------------------
-// T6（多模态）：快照带图片路径引用 —— 磁盘剥离字节 / 加载重水合 / 旧快照兼容
+// （多模态）：快照带图片路径引用 —— 磁盘剥离字节 / 加载重水合 / 旧快照兼容
 // ---------------------------------------------------------------------------
 
 /// 最小 PNG（8 字节签名 + IHDR 长度前缀；与 image_attach 测试同形）。
@@ -2785,7 +2785,7 @@ async fn t6_disk_fallback_load_rehydrates_refs() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: refs.clone(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
         final_persisted: false,
         created_at: "2026-09-03T00:00:00Z".to_string(),
     };
@@ -2833,7 +2833,7 @@ async fn t6_disk_load_deleted_file_degrades_to_placeholder() {
         session_key: String::new(),
         peer_id: String::new(),
         image_refs: refs.clone(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
         final_persisted: false,
         created_at: "2026-09-03T00:00:00Z".to_string(),
     };
@@ -2923,10 +2923,10 @@ fn t6_rehydrate_noop_without_refs() {
 }
 
 // ---------------------------------------------------------------------------
-// L1（2026-09-04 四轮盲审）：按 user 轮的图片引用快照 + 逐轮恢复
+// （四轮盲审）：按 user 轮的图片引用快照 + 逐轮恢复
 // ---------------------------------------------------------------------------
 
-/// 最小合法 PNG 写入（与 T6 相关测试同款）。
+/// 最小合法 PNG 写入（与 相关测试同款）。
 fn write_l1_png(path: &std::path::Path) {
     let mut data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     data.extend_from_slice(b"l1");
@@ -3078,7 +3078,7 @@ async fn l1_legacy_flat_refs_still_rehydrate_last_turn() {
 }
 
 // ---------------------------------------------------------------------------
-// F-F（2026-09-04 四轮盲审）：vision=no 的续行投影
+// F-F（四轮盲审）：vision=no 的续行投影
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3186,7 +3186,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         &provider_no_vision,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3242,7 +3242,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         &provider_vision,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3261,7 +3261,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
 
 // ---------------------------------------------------------------------------
 // merge_real_tool_result：resume 装配同 id tool 消息替换语义
-// （门 3 G4 实机回归：repair 合成的 [TOOL_OUTCOME_UNKNOWN] 占位若被追加式
+// （门 3 实机回归：repair 合成的 [TOOL_OUTCOME_UNKNOWN] 占位若被追加式
 //  灌入真实结果 → 同 tool_call_id 双 tool 消息 → 严格 provider 400）
 // ---------------------------------------------------------------------------
 
@@ -3350,7 +3350,7 @@ fn merge_overwrites_existing_real_result_idempotently() {
 }
 
 // ---------------------------------------------------------------------------
-// 发现 F 2026-09-11 真机根修：单飞闸 + 快照延后回收
+// 发现 F 真机根修：单飞闸 + 快照延后回收
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -3404,7 +3404,7 @@ async fn test_finish_handling_defers_disk_snapshot_removal() {
 
 #[test]
 fn merge_keeps_existing_real_result_over_late_not_found() {
-    // 发现 G（2026-09-11 真机根修）：崩溃恢复路径里盘上快照已带**真实结果**
+    // 发现 G（真机根修）：崩溃恢复路径里盘上快照已带**真实结果**
     // （step 4 合入后写回），恢复轮询 query_task_result 落在 B 端存档清理之后
     // → 回灌 "remote task not found"——不得覆盖盘上幸存的真实结果。
     // 只有 repair 合成的占位才可被替换。
@@ -3430,7 +3430,7 @@ fn merge_keeps_existing_real_result_over_late_not_found() {
     );
 }
 
-// HD（2026-09-17）：续行重投递幂等闸——final_persisted 打标的磁盘快照在
+// HD：续行重投递幂等闸——final_persisted 打标的磁盘快照在
 // 重投递时必须直接收尾（不重跑 LLM、不重发回复、快照回收）。
 #[tokio::test]
 async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
@@ -3470,7 +3470,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         session_key: "test_session".to_string(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
         final_persisted: true,
     };
     store.save(&snapshot).unwrap();
@@ -3487,7 +3487,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3514,7 +3514,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
 }
 
 // -----------------------------------------------------------------------
-// 集群续行归属（2026-09-23）：source_node 从 bus metadata 流到出站 meta
+// 集群续行归属：source_node 从 bus metadata 流到出站 meta
 // 与 chat_log。缺席 = 逐字节历史行为（键不出现）。
 // -----------------------------------------------------------------------
 
@@ -3557,7 +3557,7 @@ async fn test_cluster_continuation_source_node_flows_to_outbound_meta() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3614,7 +3614,7 @@ async fn test_cluster_continuation_no_source_node_meta_absent() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
@@ -3681,10 +3681,10 @@ fn test_persist_final_reply_no_source_node_omits_key() {
 }
 
 // ============================================================
-// BUG-20261104-356：崩溃残留 `.tmp-` 原子写孤儿清扫
+// 崩溃残留 `.tmp-` 原子写孤儿清扫
 // ============================================================
 
-/// mtime 回拨 helper（std File::set_times；append 打开不改内容）。
+/// mtime 回拨 helper（std File:set_times；append 打开不改内容）。
 fn backdate_mtime(path: &std::path::Path, ago: std::time::Duration) {
     let f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
     f.set_times(std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - ago))
@@ -3697,7 +3697,7 @@ fn store_dir(root: &std::path::Path) -> std::path::PathBuf {
     nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(root)
 }
 
-/// 清扫臂：超龄孤儿删、新鲜孤儿与 .json 内容文件保留。
+/// 清扫臂：超龄孤儿删、新鲜孤儿与.json 内容文件保留。
 #[test]
 fn test_sweep_stale_tmp_orphans_removes_old_keeps_fresh_and_json() {
     let dir = TempDir::new().unwrap();

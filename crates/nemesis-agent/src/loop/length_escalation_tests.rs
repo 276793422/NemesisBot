@@ -1,8 +1,8 @@
-//! §6.2 翻倍阶梯（length_escalation）行为测试。
+//! 翻倍阶梯（length_escalation）行为测试。
 //!
 //! - 烧穿判定：`length` + 空正文 +（① 无工具调用 = 纯思考烧穿；② 工具
 //!   参数全为空对象/空串/非法 JSON 且 schema 需要参数 = 工具参数截断，
-//!   BUG 2026-10-23 第四形态）才翻倍（非空截断 / 带合法参数的工具调用
+//!   第四形态）才翻倍（非空截断 / 带合法参数的工具调用
 //!   形态不翻倍，既有 continue-generation 接管）；
 //! - 阶梯跳变：8192 起点撞顶直接跳 32K 地板；32768 起点顺 ×2；
 //! - 封顶收口：翻到 ceiling（默认 262144）仍空 = 停止重发、响应带
@@ -180,9 +180,9 @@ async fn non_empty_truncation_does_not_escalate() {
 
 #[tokio::test]
 async fn unknown_tool_schema_empty_args_conservatively_burned() {
-    // BUG 2026-10-23 第四形态改写（原 `tool_call_length_does_not_escalate`
+    // BUG 第四形态改写（原 `tool_call_length_does_not_escalate`
     // 的「参数可能被截断但交给下游」假设已被事故证伪——multiedit 大参数
-    // 零进度循环到停轮，见 docs/BUG/2026-10-23_max-tokens-8192截断撞顶复
+    // 零进度循环到停轮，见 docs/BUG/-23_max-tokens-8192截断撞顶复
     // 发.md）：length + 空正文 + 参数 `{}` 且 schema 未知 → 保守按截断烧
     // 穿翻倍。误升级代价 = 一次更高 cap 重发收敛；漏判代价 = 停轮。
     let (loop_, calls, _script) = scripted_pair(vec![
@@ -327,7 +327,7 @@ async fn options_none_never_escalates() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG 2026-10-23 第四形态专项：工具参数截断（schema 已知形态）
+// BUG 第四形态专项：工具参数截断（schema 已知形态）
 // ---------------------------------------------------------------------------
 
 /// 工具定义（按 props/required 构造 parameters schema）。
@@ -402,7 +402,7 @@ async fn truncated_empty_object_args_escalate() {
 #[tokio::test]
 async fn invalid_json_args_escalate() {
     // 事故形态重放（openai 兼容 lane）：截断 args 是非法 JSON 原文
-    // （2026-08-10 报告 EOF 指纹）→ 同样翻倍。
+    // （报告 EOF 指纹）→ 同样翻倍。
     let (loop_, calls, _script) = scripted_pair(vec![
         args_response("{\"edits\":[{\"old_string\""),
         ok_response("done"),
@@ -477,16 +477,16 @@ async fn mixed_valid_and_truncated_args_not_burned() {
 
 #[tokio::test]
 async fn learned_floor_above_u32_max_clamps_not_wraps() {
-    // 2026-10-23：learned floor 钳位不回绕——ceiling 被配成超 u32 巨值 +
+    // learned floor 钳位不回绕——ceiling 被配成超 u32 巨值 +
     // 阶梯爬过 2^32 时，裸 `as` 会把 floor 回绕成 0，首轮请求反而带
-    // max_tokens=0 打爆 provider。与 write-back 的 `.min(u32::MAX as u64)`
-    // 同一防护：首轮即钳到 u32::MAX。
+    // max_tokens=0 打爆 provider。与 write-back 的 `.min(u32:MAX as u64)`
+    // 同一防护：首轮即钳到 u32:MAX。
     let (loop_, calls, _script) = scripted_pair(vec![ok_response("done")]);
     loop_.note_escalated_floor("test-model", u32::MAX as u64 + 1);
     let resp = call_escalating(&loop_, "test-model", opts(8192))
         .await
         .expect("call should succeed");
     assert_eq!(resp.content, "done");
-    // 修复前：floor 回绕 Some(0)；修复后：钳位 Some(u32::MAX)。
+    // 修复前：floor 回绕 Some(0)；修复后：钳位 Some(u32:MAX)。
     assert_eq!(max_tokens_seq(&calls), vec![Some(u32::MAX)]);
 }

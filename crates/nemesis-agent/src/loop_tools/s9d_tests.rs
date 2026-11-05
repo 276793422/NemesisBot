@@ -1,4 +1,4 @@
-//! S9 覆盖率批次（Batch D：loop_tools.rs 文件工具错误臂 + cron + workflow
+//! 覆盖率批次（Batch D：loop_tools.rs 文件工具错误臂 + cron + workflow
 //! + web_fetch 本地环回）。
 //!
 //! 覆盖目标（基线缺口 → 测试）：
@@ -6,7 +6,7 @@
 //! - 209/238-240 ReadFileTool：读目录失败臂 + is_read_only。
 //! - 277/282/296 WriteFileTool：parent 是文件 → 建目录失败；路径是目录 →
 //!   写失败；preview 的 Create 臂。
-//! - 363-365 ListDirectoryTool::is_read_only。
+//! - 363-365 ListDirectoryTool:is_read_only。
 //! - 496/514/519-526 EditFileTool：读目录失败；readonly 写失败（探针
 //!   门控）；preview。
 //! - 550/560/573-581 AppendFileTool：建目录失败；路径是目录 → 打开失败；
@@ -20,11 +20,11 @@
 //! - 1871/1912/1969-1985 WebFetchTool：HTTP 非 2xx；HTML 无可提取文本；
 //!   非 HTML 与截断臂；truncate_str 多字节边界（本地 127.0.0.1 环回
 //!   服务器，纪律 3 允许的本地假服务）。
-//! - 3205-3206 SkillManageTool::do_create：SKILL.md 被目录占位 → 写失败
+//! - 3205-3206 SkillManageTool:do_create：SKILL.md 被目录占位 → 写失败
 //!   回滚臂。
 //! - 3368/3468/3525/5155/5167/5196/5131-5133：各工具无效 JSON 参数臂 +
 //!   WorkflowRunTool input 三臂/description/未知工作流失败。
-//! - 3490-3492 GrepTool::is_read_only。
+//! - 3490-3492 GrepTool:is_read_only。
 //! - 3571/3597/3603/3617/3630 grep_recursive：预满提前返回 / glob 过滤 /
 //!   >1MB 跳过 / 超长多字节行截断 / 行循环封顶（私有函数直调）。
 
@@ -57,7 +57,7 @@ fn empty_ctx() -> RequestContext {
     }
 }
 
-/// path → String（供 serde_json::json! 组装，转义自动处理）。
+/// path → String（供 serde_json:json! 组装，转义自动处理）。
 fn ps(p: &std::path::Path) -> String {
     p.to_string_lossy().to_string()
 }

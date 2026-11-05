@@ -1,26 +1,26 @@
-//! run_llm_loop 原样搬迁（P2 解剖对象：轮循环/重试环/工具批/steer/estop）。
+//! run_llm_loop 原样搬迁（解剖对象：轮循环/重试环/工具批/steer/estop）。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
-/// 一轮（round）的结局（§4.1）：继续下一轮，或携带终局事件结束本 turn。
-/// crate 内私有（P2 白名单：不进 pub 面）——P2-5 起器官 7（run_loop.rs）
+/// 一轮（round）的结局：继续下一轮，或携带终局事件结束本 turn。
+/// crate 内私有（白名单：不进 pub 面）—— 起器官 7（run_loop.rs）
 /// 与器官 8（tool_batch.rs）的统一返回面。
 pub(crate) enum TurnFlow {
     Continue,
     Stop(AgentEvent),
 }
 
-/// 本 turn 的可变状态（§4.1：原 run_llm_loop 的 12 个跨轮局部变量收拢；
-/// P2-4）。crate 内私有——器官 4（recovery.rs）签名按 §4.2 终态持
+/// 本 turn 的可变状态（原 run_llm_loop 的 12 个跨轮局部变量收拢；
+/// ）。crate 内私有——器官 4（recovery.rs）签名按 终态持
 /// `&TurnState`，故字段需跨模块可见；不进 pub 面。
 ///
-/// `force_stop` / `hit_async` **不进** TurnState（P2-5 退役）：它们是
+/// `force_stop` / `hit_async` **不进** TurnState（退役）：它们是
 /// "for 循环 break 出不去外层循环"的补偿机制；工具批次改为方法返回
 /// `TurnFlow` 后即无存在必要。per-round 暂存（replay_injections /
-/// replay_voice / request_had_images）由 [`AgentLoop::build_round_messages`]
+/// replay_voice / request_had_images）由 [`AgentLoop:build_round_messages`]
 /// 返回、当轮边界落盘即弃，不收拢——混进 TurnState 而忘记每轮清空 =
 /// 台账跨轮累积（重构期典型自坑点，特此钉死）。
 pub(crate) struct TurnState {
@@ -31,7 +31,7 @@ pub(crate) struct TurnState {
     pub(crate) validation_failures: u32,
     /// max_tokens 截断续写预算（organ 6；[`MAX_LENGTH_CONTINUATIONS`] 封顶）。
     pub(crate) length_continuations: u32,
-    /// M4-B（A13）：**空内容**撞 max_tokens cap 的独立计数——空产出撞 cap
+    /// B：**空内容**撞 max_tokens cap 的独立计数——空产出撞 cap
     /// 不是「大文件被截断」，继续喂 continue 提示只会每轮烧一次全量 prefill
     /// 而产出为零。连续 ≥[`MAX_EMPTY_LENGTH_CONTINUATIONS`] 提前停轮（诚实
     /// 报错），不再烧剩余续写预算。内容非空即清零。
@@ -47,18 +47,18 @@ pub(crate) struct TurnState {
     pub(crate) degenerate_nudge_pending: Option<String>,
     /// ⑧ 待再注入的跨轮行文重复 nudge（同上瞬时模式）。
     pub(crate) repetition_nudge_pending: Option<String>,
-    /// I1 (U7)：一次性 escape-hatch 闩（Accept 分支：终答在即但有未认领
+    /// ：一次性 escape-hatch 闩（Accept 分支：终答在即但有未认领
     /// steer——多给一轮，防 `!` 刷屏无限续 turn）。
     pub(crate) steer_escape_used: bool,
-    /// L2：break 点记录的终端原因（turn_end 边界标记不再靠文案嗅探）。
+    /// break 点记录的终端原因（turn_end 边界标记不再靠文案嗅探）。
     pub(crate) terminal_reason: Option<&'static str>,
-    /// K2 (U14)：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
+    /// ：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
     /// （fail-open，与 MAX_LLM_HOOK_RETRIES 同纪律）。
     pub(crate) turn_end_continues: u32,
-    /// P30（WS14）：canvas 语法预检回灌预算（本 turn 内计数；[`crate::canvas::MAX_SYNTAX_RETRIES`]
+    /// ：canvas 语法预检回灌预算（本 turn 内计数；[`crate:canvas:MAX_SYNTAX_RETRIES`]
     /// 封顶，耗尽后诚实放行——canvas 块按普通代码块留在正文，不发 CanvasOpen）。
     pub(crate) canvas_retries: u32,
-    /// I3 (U9)：turn 边界标记开关（heartbeat/cron/内部通道豁免）。
+    /// ：turn 边界标记开关（heartbeat/cron/内部通道豁免）。
     pub(crate) log_boundaries: bool,
     /// 本 turn 的 LLM 调用选项（max_tokens/temperature/reasoning_effort）。
     pub(crate) chat_opts: crate::types::ChatOptions,
@@ -68,7 +68,7 @@ pub(crate) struct TurnState {
 /// 报错，而不是无限续写。
 const MAX_LENGTH_CONTINUATIONS: u32 = 5;
 
-/// M4-B（A13）：空内容撞 cap 的续写容忍上限——第 1 次按截断续写（偶发
+/// B：空内容撞 cap 的续写容忍上限——第 1 次按截断续写（偶发
 /// 瞬态），连续第 2 次提前停轮（诚实报错），不再烧剩余 length-continuation
 /// 预算。集群续行循环（loop_continuation）同值复用——截断续写语义一处
 /// 定义，两处不漂移。
@@ -80,7 +80,7 @@ pub(crate) const LENGTH_CONTINUE_PROMPT: &str = "Output limit reached. Continue 
      no recap, no apology. If you were writing a large file, \
      break it into smaller writes.";
 
-/// L29（2026-11-02 改进项三期）流中断拼接续写提示：语境是「流被中断」而非
+/// 流中断拼接续写提示：语境是「流被中断」而非
 /// 「输出撞上限」，措辞与 LENGTH_CONTINUE_PROMPT 同族但场景化。partial 作
 /// assistant 前缀 + 本提示追加，模型从中断点续写。
 pub(crate) const STREAM_CONTINUE_PROMPT: &str = "Your previous response was interrupted mid-stream. \
@@ -90,7 +90,7 @@ pub(crate) const STREAM_CONTINUE_PROMPT: &str = "Your previous response was inte
 impl AgentLoop {
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
     ///
-    /// `turn_budget` (T3/U12): per-turn tool-round override. When set (>0) it
+    /// `turn_budget`: per-turn tool-round override. When set (>0) it
     /// REPLACES `config.max_turns` for this turn — the per-fire budget of a
     /// cron continuation. Exhaustion reuses the grace-round semantics (one
     /// finalize round, then a resumable stop with reason `budget_exhausted`).
@@ -105,7 +105,7 @@ impl AgentLoop {
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
-        // I3 (U9): durable turn boundary markers. Heartbeat sessions are
+        // : durable turn boundary markers. Heartbeat sessions are
         // exempt — they run periodically and would grow heartbeat.jsonl
         // without bound (3+ boundary lines per beat, forever).
         // 4th-pass fix: the heartbeat exemption keys on the CONTEXT user
@@ -123,9 +123,9 @@ impl AgentLoop {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_start", "");
         }
 
-        // 本 turn 可变状态收拢（§4.1 TurnState：12 跨轮局部变量；P2-4）。
+        // 本 turn 可变状态收拢（TurnState：12 跨轮局部变量）。
         // 字段语义见类型定义处注释。
-        // Work 时间线（2026-10-30）：turn 开始重置累加器——上一 turn 的
+        // Work 时间线：turn 开始重置累加器——上一 turn 的
         // 残余（中断/续行未消费）就此丢弃；喂入点在 emit_round_output 与
         // ToolEventHook（同点同源），取走在 turn.rs 最终回复落盘。
         self.work_recorder.begin(&context.session_key);
@@ -148,29 +148,29 @@ impl AgentLoop {
                 // declared (each model's real output ceiling, not a blanket
                 // cap — large files write in one shot instead of
                 // truncating); else agents.defaults.max_tokens; else 64K
-                // (DEFAULT_MAX_TOKENS, 2026-10-23 P0 — 旧值 8192 是小模型
+                // (DEFAULT_MAX_TOKENS, — 旧值 8192 是小模型
                 // 时代遗产，思考型模型 + 大参数工具调用必然撞顶).
                 // temperature 0.7.
-                // detached 模型覆盖回合（BUG 2026-10-08 dead-key 修复）按
+                // detached 模型覆盖回合（BUG dead-key 修复）按
                 // 覆盖模型名查 per-model 键。
                 max_tokens: Some(
                     self.current_max_tokens_override(instance.detached_model_name().as_deref())
                         .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32),
                 ),
                 temperature: Some(0.7),
-                // H4 (U16 half): per-model reasoning effort from config.json.
+                // (half): per-model reasoning effort from config.json.
                 reasoning_effort: self
                     .current_reasoning_effort_override(instance.detached_model_name().as_deref()),
                 ..Default::default()
             },
         };
 
-        // K1b (U14) 沿革：此处曾有 `'turn:` 标签，供 LLM post-hook 重呼环
-        // `break 'turn` 直停本 turn；P2 器官化后各出口改经器官返回值
-        // （§4.3 Err/Stop 约定）由骨架统一 push + break，标签闲置遂除
-        // （P2-5）。裸 `break` 仍只跳出最近层循环，语义不变。
+        // 沿革：此处曾有 `'turn:` 标签，供 LLM post-hook 重呼环
+        // `break 'turn` 直停本 turn； 器官化后各出口改经器官返回值
+        // （Err/Stop 约定）由骨架统一 push + break，标签闲置遂除
+        // 。裸 `break` 仍只跳出最近层循环，语义不变。
         loop {
-            // 器官 1（§4.2）：MCP/config 热重载 + cancel/estop 顶检 +
+            // 器官 1：MCP/config 热重载 + cancel/estop 顶检 +
             // max_turns/grace/cron 预算判定。Some = (终局事件, 终端原因)。
             if let Some((mut ev, reason)) =
                 self.prepare_round(turn_budget, cancel_token, &mut st, context.user == "cron")
@@ -178,7 +178,7 @@ impl AgentLoop {
                 if let Some(r) = reason {
                     st.terminal_reason = Some(r);
                 }
-                // E5（2026-10-15 收尾保障）：预算暂停前的收尾编译探针——
+                // ：预算暂停前的收尾编译探针——
                 // 本轮写过代码时跑一次快速编译检查，把树状态诚实注记进
                 // 暂停消息（只报告不回滚；无写操作/配置关/无生态标记全部
                 // 静默直通，暂停消息一字不动）。
@@ -189,7 +189,7 @@ impl AgentLoop {
                 break;
             }
 
-            // P8（集群无人值守硬化 A2）：会话 token 预算顶检。hard ≥100% =
+            // （集群无人值守硬化）：会话 token 预算顶检。hard ≥100% =
             // 终局 Error（文案以 SESSION_TOKEN_BUDGET_MARKER 开头——worker
             // classify_terminal_failure 识别为 fail_class=token_budget，走
             // 既有 error 回调链回 master）；soft ≥75% = 一次性提示 + 压缩，
@@ -200,7 +200,7 @@ impl AgentLoop {
                 break;
             }
 
-            // L13-b（2026-11-03 三期）：mandate 轮顶检。时限过期 / token
+            // b（三期）：mandate 轮顶检。时限过期 / token
             // 预算超限 / 调用次数超限 = 终局 Error（文案以
             // MANDATE_VIOLATION_MARKER 开头——worker classify_terminal_failure
             // 识别为 fail_class=mandate_violation，走既有 error 回调链回
@@ -212,13 +212,13 @@ impl AgentLoop {
                 break;
             }
 
-            // 器官 2（§4.2）：inbox claim → @file 展开 → URL 媒体预取 →
+            // 器官 2：inbox claim → @file 展开 → URL 媒体预取 →
             // 附加链 → chat_log 落行。
             self.claim_steer_messages(instance, context, &st).await;
 
-            // 器官 3（§4.2）：memory 预取 + annotated build + 瞬时注入族 +
+            // 器官 3：memory 预取 + annotated build + 瞬时注入族 +
             // LLM pre-hooks + tool_defs + LlmRequest observer + boundary
-            // marker/T8 台账。Err = hook 拦截终局。
+            // marker/ 台账。Err = hook 拦截终局。
             let (messages, tool_defs, active_model, request_had_images, round_start) = match self
                 .build_round_messages(instance, context, trace_id, voice_playback, &st)
                 .await
@@ -230,12 +230,12 @@ impl AgentLoop {
                 }
             };
 
-            // 器官 4（§4.2）：LLM 调用 + 上下文/429/transient 三恢复环 +
-            // post-hooks——P2-1 搬入 loop/recovery.rs。终局出口经 Err 返回
-            // 事件（§4.3 约定），骨架在此统一 push + break。
-            // P32（cache-warmer）：开关开启时快照本轮请求（消息 + 工具 defs
+            // 器官 4：LLM 调用 + 上下文/429/transient 三恢复环 +
+            // post-hooks—— 搬入 loop/recovery.rs。终局出口经 Err 返回
+            // 事件（约定），骨架在此统一 push + break。
+            // （cache-warmer）：开关开启时快照本轮请求（消息 + 工具 defs
             // 字节级副本）——warm 重放 = 同一请求 max_tokens=1，快照是「前缀
-            // 字节不变」的唯一真相源（G1 纪律同源）。默认关 = 仅一次新鲜读，
+            // 字节不变」的唯一真相源（纪律同源）。默认关 = 仅一次新鲜读，
             // 无克隆；多轮 turn 后写覆盖 → 天然收敛到最后一轮请求。
             // detached 模型覆盖回合不快照——warm 重放走 loop 主 provider/
             // 主模型，与覆盖请求不同源（重放会打到错误模型）。
@@ -281,7 +281,7 @@ impl AgentLoop {
 
             st.turns_used += 1;
 
-            // 器官 5（§4.2 → observer.rs）：LlmResponse observer 事件 +
+            // 器官 5（observer.rs）：LlmResponse observer 事件 +
             // data store 计价明细。
             let round_duration = round_start.elapsed();
             self.record_round_usage(
@@ -293,9 +293,9 @@ impl AgentLoop {
             )
             .await;
 
-            // 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全）：
+            // （口径补全）：
             // provider 实报输入 token 进 compaction 混合触发信号缓存（完整
-            // 输入 = prompt + cache_creation + cache_read，P8 会话预算记账
+            // 输入 = prompt + cache_creation + cache_read， 会话预算记账
             // 同口径，`usage_full_input` 单一真相源）；无 usage 的 lane 不写
             // = 纯估算诚实回落。
             if let Some(ref usage) = response.usage {
@@ -305,7 +305,7 @@ impl AgentLoop {
                 );
             }
 
-            // 器官 6（§4.2）：max_tokens 截断续写判定。Some(Continue) =
+            // 器官 6：max_tokens 截断续写判定。Some(Continue) =
             // 截断已追加续写提示（continue 下一轮）；Some(Stop) = 续写
             // 预算耗尽终局；None = 未截断（计数清零）落回终答判定。
             match self.handle_length_continuation(instance, context, &response, &mut st) {
@@ -328,7 +328,7 @@ impl AgentLoop {
                 st.repetition_nudge_pending = None;
             }
 
-            // 器官 7（§4.2）：终答判定。Some(Continue) = 续轮（steer
+            // 器官 7：终答判定。Some(Continue) = 续轮（steer
             // escape / turn-end hook / 退化 nudge 三出口归一）；Some(Stop)
             // = 终局事件（push + break）；None = 非终答落器官 8。
             match self
@@ -343,9 +343,9 @@ impl AgentLoop {
                 None => {}
             }
 
-            // 器官 8（§4.2 → tool_batch.rs）：中间消息落账 + 批次执行。
+            // 器官 8（tool_batch.rs）：中间消息落账 + 批次执行。
             // Continue = 批次毕；Stop = 终局事件 push + break（批内
-            // cancel/estop 亦走此出口——2026-10-31 双发遗留修正后单发）。
+            // cancel/estop 亦走此出口—— 双发遗留修正后单发）。
             match self
                 .execute_tool_batch(
                     instance,
@@ -366,13 +366,13 @@ impl AgentLoop {
             }
         }
 
-        // 器官 9（§4.2）：turn 收尾——state Idle + turn_end 边界标记。
+        // 器官 9：turn 收尾——state Idle + turn_end 边界标记。
         self.finalize_turn(instance, context, cancel_token, &st);
 
         events
     }
 
-    /// 器官 6（§4.2）：max_tokens 截断续写判定。返回 `Option<TurnFlow>`：
+    /// 器官 6：max_tokens 截断续写判定。返回 `Option<TurnFlow>`：
     /// `Some(Continue)` = 命中截断且续写预算未耗尽（已追加续写提示，骨架
     /// `continue` 下一轮）；`Some(Stop)` = 续写预算耗尽终局（骨架 push +
     /// break）；`None` = 未截断（计数清零，落回终答判定）。三态塞不进
@@ -398,7 +398,7 @@ impl AgentLoop {
         // agents.defaults > DEFAULT_MAX_TOKENS). If that ever becomes None
         // (provider's own default cap), gate on is_some(): the fallback
         // could false-positive against a higher cap.
-        // §6.2：翻倍阶梯发生过时优先用 escalated_to（事实值）——否则
+        // 翻倍阶梯发生过时优先用 escalated_to（事实值）——否则
         // config 8192 + learned floor 32768 时，完整响应 usage 10000 ≥ 8192
         // 会对未截断响应误触发 continue-generation。
         let token_cap = response
@@ -406,12 +406,12 @@ impl AgentLoop {
             .or(st.chat_opts.max_tokens.map(|t| t as u64))
             .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u64);
         let hit_cap = match response.usage.as_ref() {
-            // 有 usage：数值判定（精确）。§6.2：escalated_to 优先——config
+            // 有 usage：数值判定（精确）。：escalated_to 优先——config
             // 8192 + learned floor 32768 时，完整响应 usage 10000 ≥ 8192
             // 会对未截断响应误触发。
             Some(u) => (u.completion_tokens as u64) >= token_cap,
             // 无 usage（上游剥离 usage 的代理/流形态）：回落 finish_reason
-            // 判定（B1，2026-10-18 B 级清零）——finish_reason=="length" 是
+            // 判定——finish_reason=="length" 是
             // provider 的权威截断信号，不依赖本地 cap 猜测（chat_opts 缺省
             // 8192 的 false-positive 风险也随之消失）。CLI lane（claude-cli/
             // codex-cli）恒 "stop"/"tool_calls"（子进程吞截断信息），此回落
@@ -419,7 +419,7 @@ impl AgentLoop {
             None => response.finish_reason.as_deref() == Some("length"),
         };
         if hit_cap {
-            // M4-B（A13）：空内容撞 cap ≠ 大文件被截断——零产出继续喂
+            // B：空内容撞 cap ≠ 大文件被截断——零产出继续喂
             // continue 提示只会每轮烧一次全量 prefill。第 1 次按截断续写
             // （偶发瞬态），连续第 2 次提前停轮（诚实报错）。
             if response.content.trim().is_empty() {
@@ -430,7 +430,7 @@ impl AgentLoop {
                          stopping early to save prefill budget",
                         st.empty_length_continuations
                     );
-                    // §6.2：翻倍阶梯发生过的形态（思考烧穿）与非翻倍形态
+                    // 翻倍阶梯发生过的形态（思考烧穿）与非翻倍形态
                     // （配置上限太小）文案分开——前者给动作指引，不再误导
                     // 「上限太小没配置」。
                     let notice = match response.escalated_to {
@@ -501,8 +501,8 @@ impl AgentLoop {
         None
     }
 
-    /// 器官 7（§4.2）：终答判定——heartbeat 特例 → ⑦ 退化三判 → I1
-    /// steer escape → K2 turn-end hooks → Accept 落地。`Some(Continue)`
+    /// 器官 7：终答判定——heartbeat 特例 → ⑦ 退化三判 →
+    /// steer escape → turn-end hooks → Accept 落地。`Some(Continue)`
     /// = 续轮（escape/hook/nudge 三 `continue` 出口归一）；`Some(Stop)`
     /// = 终局事件（heartbeat/Accept/GiveUp 三 push+break 出口归一）；
     /// `None` = 非终答（有未完工具调用），落器官 8 工具批次。
@@ -529,7 +529,7 @@ impl AgentLoop {
                 let formatted = context.format_rpc_message(&content);
                 return Some(TurnFlow::Stop(AgentEvent::Done(formatted)));
             }
-            // 循环策略槽（WASM 样板工程批 1）：终答裁决开放。Builtin =
+            // 循环策略槽（WASM 样板工程）：终答裁决开放。Builtin =
             // 内置 TurnGuard 判定；显式裁决由宿主执行与内置完全相同的
             // 分支代码（canvas/hooks/steer/Done 骨架副作用不外泄，见
             // policy.rs 模块文档）。
@@ -560,7 +560,7 @@ impl AgentLoop {
                         Vec::new(),
                         response.reasoning_content.clone(),
                     );
-                    // 批次二（2026-10-31）：终答轮思考链以 `("", reasoning)`
+                    // 终答轮思考链以 `("", reasoning)`
                     // 形态发布——终答正文走 Done 既有通路，思考链单独成轮
                     // 供 Work 时间线 / UI 折叠展示（直答轮也能看到思考）。
                     // canvas/hook 续轮时每次 Accept 各对应一条新响应，不重发。
@@ -570,7 +570,7 @@ impl AgentLoop {
                         "",
                         response.reasoning_content.as_deref(),
                     );
-                    // P30（WS14）：canvas 块检出 + JS 语法预检。有问题且回灌
+                    // ：canvas 块检出 + JS 语法预检。有问题且回灌
                     // 预算未尽 → 反馈落 user 消息续一轮（模型整条重发自纠，
                     // 与 length-continuation / turn-end hook 同一持久回灌
                     // 形态）；预算耗尽 → 诚实放行（canvas 块按普通代码块
@@ -598,7 +598,7 @@ impl AgentLoop {
                             st.canvas_retries
                         );
                     }
-                    // I1 (U7) turn escape hatch: the model is about to
+                    // turn escape hatch: the model is about to
                     // finish, but an unclaimed steer message arrived in
                     // the last moments — hand it to the model for one
                     // more round instead of answering past it — pending
@@ -618,7 +618,7 @@ impl AgentLoop {
                         // iteration injects the steer message(s).
                         return Some(TurnFlow::Continue);
                     }
-                    // K2 (U14): turn-end lifecycle hooks (Stop
+                    // : turn-end lifecycle hooks (Stop
                     // dialect event). Runs after the assistant message
                     // is recorded, before the Done event. `Continue`
                     // injects the hook feedback as a user message and
@@ -661,7 +661,7 @@ impl AgentLoop {
                             }
                         }
                     }
-                    // P30（WS14）：终答合法且含 canvas 块 → 逐块发布
+                    // ：终答合法且含 canvas 块 → 逐块发布
                     // CanvasOpen（index 0 起递增）。放在 steer-escape /
                     // turn-end hook 判定**之后**：只有真正 Done 时才发布，
                     // 续轮重答时按新终答重新扫描，不产生双重 emit。
@@ -703,8 +703,8 @@ impl AgentLoop {
         None
     }
 
-    /// 器官 9（§4.2）：turn 收尾——state Idle + turn_end 边界标记。
-    /// I3 终端原因取 break-site latch（`st.terminal_reason`），不从 Done
+    /// 器官 9：turn 收尾——state Idle + turn_end 边界标记。
+    /// 终端原因取 break-site latch（`st.terminal_reason`），不从 Done
     /// 文案嗅探；`cancel_token` 入参为 cancelled 判定所需（计划签名漏列，
     /// 如实补上）。
     fn finalize_turn(
@@ -716,8 +716,8 @@ impl AgentLoop {
     ) {
         instance.set_state(crate::types::AgentState::Idle);
 
-        // I3 (U9): durable turn_end marker with the terminal reason.
-        // L2 (full review): the reason comes from the break-site latch
+        // : durable turn_end marker with the terminal reason.
+        // (full review): the reason comes from the break-site latch
         // (terminal_reason), not from sniffing the Done text — a model
         // reply containing the paused-after wording can no longer be
         // misclassified as max_turns.
@@ -729,33 +729,33 @@ impl AgentLoop {
         if st.log_boundaries {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
         } else if st.terminal_reason == Some("budget_exhausted") {
-            // T3 (U12): cron turns are exempt from per-turn boundary events
+            // : cron turns are exempt from per-turn boundary events
             // (a recurring job would grow the sidecar unboundedly), but a
             // budget-exhausted stop is a rare, one-shot terminal fact worth
             // exactly one marker — the budget's observability requirement.
             crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
         }
 
-        // A2（2026-10-21 引入）：守卫事件随 turn 收尾落账
-        // （⑥/④/⑤/⑤′/⑦/⑧/T1 nudge 总数 → `guard_event_stats` 表 →
+        // （引入）：守卫事件随 turn 收尾落账
+        // （⑥/④/⑤/⑤′/⑦/⑧/ nudge 总数 → `guard_event_stats` 表 →
         // `models.health` tier 校准建议）。0 事件内部短路不写行。
         self.record_guard_events_stats(st.turn_guard.guard_event_count());
     }
 
     // -----------------------------------------------------------------------
-    // Round organs（P2-3/P2-4：§4.2 器官 1-9 自 run_llm_loop 内联块收编为
+    // Round organs（/： 器官 1-9 自 run_llm_loop 内联块收编为
     // 方法，1-4/6/9 留本文件、5 留 observer.rs、4 系 recovery.rs；跨轮
     // 可变状态经 `&TurnState`/`&mut TurnState` 传递）
     // -----------------------------------------------------------------------
 
     /// 器官 1：MCP/config 热重载 + cancel/estop 顶检 + ①/② max_turns cap +
-    /// grace round + T3 cron 预算判定。`Some((终局事件, 终端原因))` = 结束
+    /// grace round + cron 预算判定。`Some((终局事件, 终端原因))` = 结束
     /// 本 turn（骨架 push + 记 terminal_reason + break）；grace 授予写回
     /// `st.grace_round`；其余 = `None` 继续。`is_cron_turn` 取
     /// `context.user == "cron"`（run_agent_loop_internal 按 cron_job_id
     /// 设置，同 log_boundaries 的判定惯例）——预算暂停文案随来源分岔：
     /// cron 延续可续（job 未删下次 fire 重获预算），派生执行（headless
-    /// run / 子代理）不可续（2026-10-15 产品验证实验 #2：run 模式撞预算
+    /// run / 子代理）不可续（产品验证实验 #2：run 模式撞预算
     /// 却收到 cron 文案「下次触发时会重新获得预算」，误导）。
     fn prepare_round(
         &self,
@@ -768,7 +768,7 @@ impl AgentLoop {
         let grace_round = &mut st.grace_round;
         // Auto-reload MCP tools if config file changed.
         self.check_mcp_reload();
-        // Phase 4a: re-resolve capability tier if config.json changed on
+        // a: re-resolve capability tier if config.json changed on
         // disk (dashboard model add, CLI `model set-tier` while running).
         self.check_config_reload();
 
@@ -788,7 +788,7 @@ impl AgentLoop {
                 "[AgentLoop] E-stop engaged at top of iteration, turns_used={}",
                 turns_used
             );
-            // reason 照记 "estop"（2026-10-31 与 tool_batch 批内 estop 臂同款
+            // reason 照记 "estop"（与 tool_batch 批内 estop 臂同款
             // 纪律）：finalize_turn 的 end_reason 优先采 terminal_reason——
             // 缺省 unwrap_or("done") 会把急停终局谎报成 done。
             return Some((
@@ -801,12 +801,12 @@ impl AgentLoop {
         }
 
         // ①/② max_turns cap + grace round. max_turns == 0 means unlimited
-        // (opt-in). T3 (U12): when a per-turn budget override is set
+        // (opt-in).: when a per-turn budget override is set
         // (cron continuation's max_rounds), it REPLACES the global cap for
         // this turn. On the first hit we grant one grace round (with
         // GRACE_ROUND_NUDGE injected below) so the model can finalize from
         // completed work; a second hit stops resumably — no work is lost.
-        // M6-1（2026-10-10 机制加固）：全局预算每轮新鲜读 config.json
+        // （机制加固）：全局预算每轮新鲜读 config.json
         // （`current_max_tool_iterations`；fallback 启动值）——dashboard/
         // CLI 改 `agents.defaults.max_tool_iterations` 即时生效，不等
         // mtime 翻转（同 tier 的热读纪律；turn_budget 仍最高优先）。
@@ -828,8 +828,8 @@ impl AgentLoop {
                     "[AgentLoop] paused after {} tool-call rounds (per-turn budget exhausted, grace round spent, cron={})",
                     effective_max_turns, is_cron_turn
                 );
-                // T3 (U12): budget-driven stop, message keyed by budget
-                // ORIGIN (2026-10-15): cron continuation is resumable (the
+                // : budget-driven stop, message keyed by budget
+                // ORIGIN: cron continuation is resumable (the
                 // job that fired this turn is NOT deleted — the next fire
                 // re-budgets), but a detached run (headless `run` /
                 // subagent) is not — promising a "next trigger" there is a
@@ -876,27 +876,27 @@ impl AgentLoop {
         st: &TurnState,
     ) {
         let log_boundaries = st.log_boundaries;
-        // I1 (U7): inbox claim — before EVERY LLM call of this turn, take
+        // : inbox claim — before EVERY LLM call of this turn, take
         // all pending steer messages (next-step) into history as real user
         // messages (persisted: they ARE genuine user input). Placement
         // after the existing history = same position as the time/env
         // injection's protected prefix zone (appended user turn), so the
         // provider prefix stays stable.
         //
-        // ROUND-5 EFFICIENCY FIX: claim BEFORE build_messages (it used to
+        // EFFICIENCY FIX: claim BEFORE build_messages (it used to
         // run after, so every steered round built the full message list
         // twice — skills catalog scan + instruction-chain file IO + 2
         // sha256s — and threw the first build away). One build, always.
         let steer_batch = self.inbox.claim_next_step(&context.session_key);
         if !steer_batch.is_empty() {
             for m in &steer_batch {
-                // L4 (full review) + round-5: strip the marker via the
-                // SINGLE shared rule (inbox::strip_steer_marker) — it is a
+                // (full review) + round-5: strip the marker via the
+                // SINGLE shared rule (inbox:strip_steer_marker) — it is a
                 // ROUTING signal, not content, and the same message must
                 // arrive marker-free whether injected in-turn (here) or
                 // replayed post-turn (drain path).
                 let content = crate::inbox::strip_steer_marker(&m.msg.content).to_string();
-                // I2：steer 消息与首轮同源（B1 原则延伸）——@文件引用同样
+                // steer 消息与首轮同源（原则延伸）——@文件引用同样
                 // 展开（同基准/同安全闸），不因注入时点而异。
                 let at_base = self
                     .workspace_root
@@ -912,7 +912,7 @@ impl AgentLoop {
                     #[cfg(not(feature = "security"))]
                     None,
                 );
-                // B1（2026-09-03 二次回归）：steer 消息与首轮同源——同样可能
+                // （二次回归）：steer 消息与首轮同源——同样可能
                 // 携带图片（media 引用 + 文本点名路径）。走与 process_admitted
                 // 同一附加链（URL 预取 + 统一附加 + 诚实注记 + image_refs），
                 // 不静默丢图。
@@ -932,7 +932,7 @@ impl AgentLoop {
                     None,
                 )
                 .await;
-                // J6：同 process_admitted——降采样开关 fresh-read，产物落 uploads。
+                // 同 process_admitted——降采样开关 fresh-read，产物落 uploads。
                 let downscale_dir = self.current_image_downscale().then(|| uploads_dir.clone());
                 let attach = crate::image_attach::attach_turn_images(
                     &content,
@@ -952,12 +952,12 @@ impl AgentLoop {
                 }
                 .merge_into_text(content);
                 instance.add_user_message_with_images(&content, &attach.ref_strings());
-                // L3（2026-09-04 四轮盲审）：steer 的 chat_log 行也要带图片
+                // （四轮盲审）：steer 的 chat_log 行也要带图片
                 // 路径引用——首轮路径用 append_chat_log_full_with_images，
                 // steer 路径却用 3 参变体丢掉 images → 会话浏览器/self-heal
                 // 重建/fork 时 steer 轮的图片凭空消失（instance 里有图、
                 // 落盘行无图，两套存储分叉）。
-                // BUG-20261025-19：steer 行带 `"steer": true` 标记——role
+                // steer 行带 `"steer": true` 标记——role
                 // 仍是 "user" 但不是轮首，rewind/fork 轮边界判定据此跳过
                 // （否则截断点切在 steer 行上，「撤销最后一轮」只删尾巴）。
                 crate::chat_log::append_chat_log_meta(
@@ -987,12 +987,12 @@ impl AgentLoop {
     }
 
     /// 器官 3：memory 预取 + annotated build + 瞬时注入族（voice/grace/
-    /// degenerate/repetition）+ K1b LLM pre-hooks + tool_defs 折叠 +
-    /// LlmRequest observer + durable llm_request marker + T8 projection
-    /// 台账（P2-3 连同 boundary marker 块一并收入——台账消费 organ 内
+    /// degenerate/repetition）+ LLM pre-hooks + tool_defs 折叠 +
+    /// LlmRequest observer + durable llm_request marker + projection
+    /// 台账（连同 boundary marker 块一并收入——台账消费 organ 内
     /// 产物 replay_injections/replay_voice/build_annotation）。返回
     /// `(messages, tool_defs, active_model, request_had_images, round_start)`
-    /// 五件套供器官 4；`Err` = hook 拦截终局事件（骨架 push + break，§4.3）。
+    /// 五件套供器官 4；`Err` = hook 拦截终局事件（骨架 push + break）。
     async fn build_round_messages(
         &self,
         instance: &AgentInstance,
@@ -1015,25 +1015,25 @@ impl AgentLoop {
         let degenerate_nudge_pending = &st.degenerate_nudge_pending;
         let repetition_nudge_pending = &st.repetition_nudge_pending;
         let log_boundaries = st.log_boundaries;
-        // P3.1 (sixth batch): auto-inject memory prefetch — async search
+        // .1 (sixth batch): auto-inject memory prefetch — async search
         // against the CURRENT (latest) user message, done OUTSIDE
         // build_messages (which is sync; search is async). Per round: the
         // latest user message changes when steer messages land, so
         // re-prefetching per LLM round keeps the section in sync with
         // what the model is about to see. Off (default) ⇒ None ⇒ the
-        // build is byte-identical to pre-P3.1.
+        // build is byte-identical to pre-.1.
         let memory_hits: Option<Vec<String>> = self.prefetch_memory_context(instance).await;
 
         // Build the message list from instance history (AFTER the steer
         // claim so injected turns are already included).
         //
-        // T8 (U9 ②): the annotated build + the injection records below
+        // (②): the annotated build + the injection records below
         // form this round's projection ledger — everything a later
         // byte-exact replay needs beyond the session store (the
-        // transient injections are never persisted). See `crate::replay`.
-        // WS9/P18：传会话 key——分支前情提要（Branch Context）节按会话
+        // transient injections are never persisted). See `crate:replay`.
+        // /：传会话 key——分支前情提要（Branch Context）节按会话
         // sidecar meta 注入（无摘要/非 fork 会话 = 字节不变）。
-        // prompt-pack pro（M4）：同时传来源通道——Pro 体系外部通道触发
+        // prompt-pack pro：同时传来源通道——Pro 体系外部通道触发
         // 来源降权节（Classic 体系该参数字节不变）。
         let (mut messages, build_annotation) = self.build_messages_with_memory_annotated_for(
             instance,
@@ -1119,9 +1119,9 @@ impl AgentLoop {
 
         debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
 
-        // K1b (U14): LLM-call-level pre hooks. Runs AFTER messages are
+        // : LLM-call-level pre hooks. Runs AFTER messages are
         // built (nudges included) and BEFORE the LlmRequest observer
-        // event — appended messages land in request_log and in the T8
+        // event — appended messages land in request_log and in the
         // replay ledger (byte-exact replay keeps holding).
         {
             let llm_hooks = self.hooks.llm_hooks.read().snapshot();
@@ -1162,7 +1162,7 @@ impl AgentLoop {
         // Sort by name so the order is stable across runs — a deterministic
         // tool order gives reproducible behaviour and avoids unnecessary prompt
         // variation between requests.
-        // Y1 (Phase4-a): fold AFTER the tier filter — description text only,
+        // : fold AFTER the tier filter — description text only,
         // byte-identical passthrough whenever folding is off/degrades.
         let tool_defs: Vec<crate::types::ToolDefinition> = self.effective_tool_defs(instance);
         debug!(
@@ -1198,11 +1198,11 @@ impl AgentLoop {
         instance.set_state(crate::types::AgentState::Thinking);
         let round_start = std::time::Instant::now();
 
-        // I3 (U9): durable llm_request marker (model + size estimate,
+        // : durable llm_request marker (model + size estimate,
         // no bodies). Heartbeat/internal-channel exemption (see
         // turn_start).
         //
-        // T8 (U9 ②): projection-ledger sidecar for this round — the
+        // (②): projection-ledger sidecar for this round — the
         // durable record of every non-persisted injection (full bodies),
         // enabling byte-exact replay from the session store. Same
         // cron/heartbeat/internal exemption as the marker above: those
@@ -1218,7 +1218,7 @@ impl AgentLoop {
                     turns_used
                 ),
             );
-            // L24: content-addressed snapshots of the instruction/tool faces
+            // content-addressed snapshots of the instruction/tool faces
             // this round actually sent (persona edits later must not blur
             // what a historical round saw). Best-effort store; the hashes
             // are recorded either way.
@@ -1244,7 +1244,7 @@ impl AgentLoop {
             });
         }
 
-        // T10（多模态 D4 ③）：provider 兜底提示的判定输入——最终请求里
+        // （多模态 ③）：provider 兜底提示的判定输入——最终请求里
         // 是否真的带了图片字节（vision=yes/默认放行时图才会进来；nudge/
         // hook 注入消息恒无图）。
         let request_had_images = messages.iter().any(|m| !m.images.is_empty());
@@ -1261,12 +1261,12 @@ impl AgentLoop {
     // -----------------------------------------------------------------------
 }
 
-// M4-B（A13）：空内容撞 max_tokens cap 提前停轮守卫测试。
+// B：空内容撞 max_tokens cap 提前停轮守卫测试。
 #[cfg(test)]
 #[path = "m4b_empty_cap_tests.rs"]
 mod m4b_empty_cap_tests;
 
-// B1（2026-10-18 B 级清零）：无 usage 时 finish_reason 截断回退测试。
+// ：无 usage 时 finish_reason 截断回退测试。
 #[cfg(test)]
 #[path = "length_fallback_tests.rs"]
 mod length_fallback_tests;

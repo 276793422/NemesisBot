@@ -1,7 +1,7 @@
 //! 会话回收站（2026-10-30）：`sessions.delete` 默认从硬删除改为「移入回收站」。
 //!
 //! 存储真相源 = `<workspace>/logs/trash/sessions/{deleted_at_ms}_{safe_key}/`
-//! （路径真相源 [`nemesis_path::resolve_trash_sessions_dir_in_workspace`]），
+//! （路径真相源 [`nemesis_path:resolve_trash_sessions_dir_in_workspace`]），
 //! 每个子目录装原 chat_log 三件套的改名副本（`chat.jsonl` / `boundary.jsonl` /
 //! `meta.json`）+ `trash.json` 清单。设计要点：
 //!
@@ -16,11 +16,11 @@
 //!   mtime 整目录 TTL 清扫（目录入站后不再变化，mtime ≈ 删除时刻）、不进
 //!   `sessions.list`（只扫 session_logs jsonl）。
 //!
-//! 冲突语义（拍板②）：恢复目标三件套（jsonl 或 meta）已存在 = 结构化
+//! 冲突语义：恢复目标三件套（jsonl 或 meta）已存在 = 结构化
 //! conflict 返回（调用方转提示）；web 键允许带 `new_sid` 改名恢复（新 sid 经
-//! [`SessionStore::sanitize_session_id`] 消毒后重验），复合键改名不支持。
+//! [`SessionStore:sanitize_session_id`] 消毒后重验），复合键改名不支持。
 //!
-//! 恢复事务（2026-11-02 复评 F3）：三段 rename 中途失败会留下「半成品」——
+//! 恢复事务（2026-11-02 复评）：三段 rename 中途失败会留下「半成品」——
 //! 一部分材料已到目标键、其余还在条目目录。恢复在首次 rename 前往条目内写
 //! 事务标记（`restore-in-progress.json`，含目标键）；重试按标记识别自己的
 //! 半成品，跳过冲突检查续作；换键恢复遇材料已分裂诚实拒绝（防「chat 留原
@@ -30,11 +30,11 @@
 //! # 寻址注入
 //!
 //! 核心函数全部走 [`TrashLocations`]（chat_log 三件套寻址 + 回收站根）。
-//! 生产 = [`TrashLocations::production`]（进程单例 path manager，文件名格式
-//! 由 chat_log 同源闭包决定）；测试一律 [`TrashLocations::with_dirs`] 注入
+//! 生产 = [`TrashLocations:production`]（进程单例 path manager，文件名格式
+//! 由 chat_log 同源闭包决定）；测试一律 [`TrashLocations:with_dirs`] 注入
 //! tempdir——进程单例 home 不可 per-test 重定向（OnceLock 固化，cov 系同款
-//! 约束），而真实 home 是在用数据目录，测试写它 = 污染。惯例先例：
-//! `nemesis-plugins-wasm::PluginManager::new_with_dirs`。
+//! 约束），而真实 home 是在用数据目录，测试写它 = 污染。惯例
+//! `nemesis-plugins-wasm:PluginManager:new_with_dirs`。
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -80,8 +80,8 @@ pub struct TrashManifest {
 
 /// 回收站寻址注入面：chat_log 三件套寻址 + 回收站根。
 ///
-/// 生产走 [`TrashLocations::production`]（与 chat_log 同源寻址，路径真相源
-/// 不搬出 chat_log）；测试走 [`TrashLocations::with_dirs`] 注入 tempdir。
+/// 生产走 [`TrashLocations:production`]（与 chat_log 同源寻址，路径真相源
+/// 不搬出 chat_log）；测试走 [`TrashLocations:with_dirs`] 注入 tempdir。
 #[derive(Clone)]
 pub struct TrashLocations {
     trash_root: PathBuf,
@@ -107,7 +107,7 @@ impl TrashLocations {
 
     /// 测试注入：回收站根 + session_logs 目录 + boundary 目录。文件名格式与
     /// chat_log 同源（`{safe}.jsonl` / `{safe}.meta.json`，
-    /// `safe = sanitize_path_segment`；chat_log.rs::log_path 注释即契约）。
+    /// `safe = sanitize_path_segment`；chat_log.rs:log_path 注释即契约）。
     pub fn with_dirs(
         trash_root: PathBuf,
         session_logs_dir: PathBuf,
@@ -425,7 +425,7 @@ pub fn trash_list_in(loc: &TrashLocations) -> Vec<serde_json::Value> {
 // 恢复 / 清除
 // ---------------------------------------------------------------------------
 
-/// 恢复事务标记文件名（2026-11-02 复评 F3）：条目目录内、首次 rename 前写入、
+/// 恢复事务标记文件名（复评）：条目目录内、首次 rename 前写入、
 /// 成功随整目录删除消失；语义见 [`trash_restore_in`]。
 const RESTORE_MARKER_FILE: &str = "restore-in-progress.json";
 
@@ -441,10 +441,10 @@ struct RestoreMarker {
 /// 恢复条目到原键（或 `new_sid` 改名后的新 web 键）。
 ///
 /// 返回两态（都是 `Ok`，handler 按字段转前端）：
-/// - `{"restored": <key>, ...}` —— 移回成功（含 project_id/project_path/title
+/// - `{"restored": <key>,...}` —— 移回成功（含 project_id/project_path/title
 ///   投影，handler 据此重挂项目归属或摘除陈旧字段）；
-/// - `{"conflict": true, "suggested_sid": ...}` —— 目标已存在（结构化冲突，
-///   拍板②：拒绝 + 提示；前端提示界面带 `new_sid` 重试即改名恢复）。
+/// - `{"conflict": true, "suggested_sid":...}` —— 目标已存在（结构化冲突，
+///   拒绝 + 提示；前端提示界面带 `new_sid` 重试即改名恢复）。
 ///
 /// 改名恢复**仅限 web 会话键**（`agent:main:session:` 前缀）；复合通道键
 /// （cluster B 端 `node/chat`）语义非裸 sid，诚实拒绝。孤儿目录（清单缺失）
@@ -498,7 +498,7 @@ pub fn trash_restore_in(
         }
     };
 
-    // 恢复事务标记（F3，2026-11-02 复评）：三段 rename 中途失败会把一部分
+    // 恢复事务标记（复评）：三段 rename 中途失败会把一部分
     // 材料留在目标键（chat 最先移、通常已过去）——不识别的话，重试的冲突
     // 检测把自己的半成品当成「别的会话占位」（conflict:true 永久卡死原名
     // 恢复），用户改道改名恢复更会把剩余材料移到另一个键（chat 留原键、
@@ -585,7 +585,7 @@ pub fn trash_restore_in(
         None => (None, None, manifest.as_ref().and_then(|m| m.title.clone())),
     };
 
-    // F3：写事务标记（首次恢复 / 改道覆写坏标记），先于任何 rename。
+    // 写事务标记（首次恢复 / 改道覆写坏标记），先于任何 rename。
     if !resuming {
         let raw = serde_json::to_string(&RestoreMarker {
             target_key: target_key.clone(),
@@ -623,7 +623,7 @@ pub fn trash_restore_in(
     for (_, from, to) in &restore_pairs {
         move_file_retry(from, to)?;
     }
-    // 完成性验证（F3）：期望集合逐一核实在目标键——rename 同卷原子（源消失
+    // 完成性验证：期望集合逐一核实在目标键——rename 同卷原子（源消失
     // = 目标在场），缺位 = 语义被破坏，诚实 Err 不报假成功（条目 + 标记保留
     // 可重试）。
     for i in &expected {

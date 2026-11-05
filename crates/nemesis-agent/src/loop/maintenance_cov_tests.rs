@@ -144,7 +144,7 @@ async fn handle_maintenance_clear_ok_receipt() {
     crate::chat_log::delete_chat_log(&key);
 }
 
-/// 行动代理 P0（2026-10-14）Undo 臂：✓ 回执带移除条数 + 文件还原注记
+/// 行动代理 Undo 臂：✓ 回执带移除条数 + 文件还原注记
 /// （checkpoint store 未挂载 → file_restore_note 兜底文案）；上一用户轮
 /// 从 chat_log 截掉。
 #[tokio::test]

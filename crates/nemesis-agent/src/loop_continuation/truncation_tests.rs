@@ -1,6 +1,6 @@
-//! 改进项二期 L28：集群续行循环的 max_tokens 截断判定 + 续写。
+//! ：集群续行循环的 max_tokens 截断判定 + 续写。
 //!
-//! 覆盖（执行清单 L28 步骤 3）：截断判定纯函数三态（数值命中 / length
+//! 覆盖（执行清单 步骤 3）：截断判定纯函数三态（数值命中 / length
 //! 回落 / escalated_to 防误判）、续写追加形态、空内容 2 连停、预算耗尽
 //! 诚实注记、截断带 tool_calls 丢弃。行为面用脚本化 provider 驱动完整
 //! handle_cluster_continuation（快照 → 续行 LLM 循环 → 出站）。
@@ -165,7 +165,7 @@ fn truncation_detection_finish_reason_fallback() {
 
 #[test]
 fn truncation_detection_escalated_to_precedence() {
-    // escalated_to 优先（§6.2 同因防误判）：config cap 4096，provider 已
+    // escalated_to 优先（同因防误判）：config cap 4096，provider 已
     // 翻倍到 16384——usage 10000 ≥ 4096 但 < 16384，是完整响应不是截断。
     let mut resp = full_resp("complete answer");
     resp.usage = usage(10_000);
@@ -212,7 +212,7 @@ async fn run_continuation(
         provider,
         "test-model",
         CAP,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         tools,
         &outbound_tx,
         None,
@@ -225,7 +225,7 @@ async fn run_continuation(
 }
 
 /// 续写追加形态：截断半截 → assistant 入对话 + 续写提示 user 追加 →
-/// 第二轮完整终答出站。
+/// 完整终答出站。
 #[tokio::test]
 async fn truncated_response_appends_continue_prompt_and_resumes() {
     let _logs = capture_logs();
@@ -253,7 +253,7 @@ async fn truncated_response_appends_continue_prompt_and_resumes() {
     assert_eq!(user.role, "user");
     assert_eq!(user.content, LENGTH_CONTINUE_PROMPT);
 
-    // 终局出站 = 第二轮完整回复（半截不冒充终局）。
+    // 终局出站 = 完整回复（半截不冒充终局）。
     let out = outbound_rx.try_recv().expect("final response sent");
     assert_eq!(out.content, "final complete answer");
 }
@@ -266,10 +266,10 @@ async fn empty_truncated_content_stops_after_two_rounds() {
     let provider = ScriptedProvider::new(vec![
         truncated_empty_resp(CAP),
         truncated_empty_resp(CAP),
-        truncated_empty_resp(CAP), // 第三轮不该被消费
+        truncated_empty_resp(CAP), // 不该被消费
     ]);
     // ceiling 钉在 cap（4096）= 阶梯被 ceiling 闸死不升档，测试专注空内容
-    // 守卫本体（L28 语义基线；阶梯行为有专项测试）。
+    // 守卫本体（语义基线；阶梯行为有专项测试）。
     let mut outbound_rx =
         run_continuation_with_ceiling(&provider, &HashMap::new(), CAP as u64).await;
 
@@ -311,7 +311,7 @@ async fn budget_exhaustion_emits_truncation_notice() {
 }
 
 /// 截断响应带 tool_calls 一律丢弃（执行半截 args 是写坏文件事故）：
-/// 已注册的探针工具绝不被执行，续写提示照常追加，第二轮终答出站。
+/// 已注册的探针工具绝不被执行，续写提示照常追加，终答出站。
 #[tokio::test]
 async fn truncated_tool_calls_are_dropped_not_executed() {
     let _logs = capture_logs();
@@ -356,7 +356,7 @@ async fn truncated_tool_calls_are_dropped_not_executed() {
 }
 
 // ---------------------------------------------------------------------------
-// L28+（改进项三期）：续写再撞顶翻倍阶梯（拍板 2 档封顶）
+// +：续写再撞顶翻倍阶梯（档封顶）
 // ---------------------------------------------------------------------------
 
 /// run_continuation 的自定义 ceiling 版（阶梯封顶测试需要不同 ceiling 值）。
@@ -405,7 +405,7 @@ fn truncated_at(content: &str, cap: u64) -> LlmResponse {
     truncated_content_resp(content, cap as u32)
 }
 
-/// 阶梯行为（拍板 2 档封顶 + 公式对齐主循环 `(c×2).max(32K 地板)`）：
+/// 阶梯行为（档封顶 + 公式对齐主循环 `(c×2).max(32K 地板)`）：
 /// 4096 撞顶 → 首升档直接跳 32K（地板抬升）→ 32K 再撞顶 → 次升档 65K
 /// → 65K 档完整回复终局。断言：三轮调用 + 末轮 messages 首轮 + 两对
 /// 续写追加 + 出站为完整回复。
@@ -425,7 +425,7 @@ async fn continuation_escalates_cap_on_repeated_truncation_two_step_cap() {
     assert_eq!(provider.call_count(), 3, "两次截断 + 一次终答");
     let out = outbound_rx.try_recv().expect("final response sent");
     assert_eq!(out.content, "final after escalation");
-    // 第三轮（65K 档）messages = 首轮 + 两对续写追加。
+    // （65K 档）messages = 首轮 + 两对续写追加。
     let first = provider.call_messages(0);
     let third = provider.call_messages(2);
     assert_eq!(third.len(), first.len() + 4);
@@ -443,7 +443,7 @@ async fn continuation_escalation_respects_ceiling() {
     ]);
     let mut outbound_rx = run_continuation_with_ceiling(&provider, &HashMap::new(), 20_000).await;
 
-    // ceiling 20000 < 首升档 32768 → 全程不升档，行为与 L28 基线一致：
+    // ceiling 20000 < 首升档 32768 → 全程不升档，行为与 基线一致：
     // 三轮调用（截断→截断→终答）。
     assert_eq!(provider.call_count(), 3);
     let out = outbound_rx.try_recv().expect("final response sent");

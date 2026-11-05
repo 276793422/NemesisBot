@@ -188,7 +188,7 @@ impl RequestLoggerObserver {
         // 压缩/摘要杂务调用（sender_id="summarizer"，compact.rs
         // emit_observer_events_around_llm 发出的 observer 事件）此前照常落成
         // `{timestamp}_{rand}` 对话目录——消息与回复皆空、时长秒级，看着像
-        // 「bot 在跟谁说话」（2026-11-03 BUG-3 实录：4 个空 summarizer 目录
+        // 「bot 在跟谁说话」（BUG-3 4 个空 summarizer 目录
         // 混进对话档案）。识别该身份改落 aux_ 前缀目录（杂务隔离，一眼可辨；
         // 内容照常记录不丢证据）。
         let logger = if data.sender_id == "summarizer" {
@@ -242,7 +242,7 @@ impl RequestLoggerObserver {
                 });
                 state.logger.log_raw_request_envelope(&envelope);
             } else {
-                // Convert serde_json::Value messages to LlmMessage structs.
+                // Convert serde_json:Value messages to LlmMessage structs.
                 let messages: Vec<crate::r#loop::LlmMessage> = data
                     .messages
                     .iter()
@@ -438,7 +438,7 @@ impl nemesis_observer::Observer for RequestLoggerObserver {
     }
 }
 
-/// Convert a `nemesis_observer::ConversationEvent` into the internal
+/// Convert a `nemesis_observer:ConversationEvent` into the internal
 /// `ConversationEvent` used by `RequestLoggerObserver`.
 ///
 /// Exposed as pub so that other observers (e.g. `ClusterRequestLoggerObserver`

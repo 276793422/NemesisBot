@@ -1,4 +1,4 @@
-//! A5（2026-09-04 devtool-upgrade 阶段 2）测试：文件工具工作区边界。
+//! （2026-09-04 devtool-upgrade）测试：文件工具工作区边界。
 //!
 //! 覆盖目标：
 //! - `validate_workspace_path` 校验矩阵：界内绝对/相对/深层新文件、界外
@@ -6,7 +6,7 @@
 //!   写不敏感 / Unix symlink 界内可达 + symlink 逃逸拒绝）。
 //! - 工具级带界形态：write_file 拒外放内、覆盖回执 + diff 块、新建无
 //!   覆盖标记、同内容覆盖无 diff 块；edit_file / append_file 拒外。
-//! - 无界默认形态向后兼容锚：`::default()` 照旧可写界外（基线注册 / 既有
+//! - 无界默认形态向后兼容锚：`:default()` 照旧可写界外（基线注册 / 既有
 //!   测试不变）。
 //! - `register_shared_tools` 注入接线：带界 config 注册出的 write_file
 //!   在注册表里就是带界形态（拒绝界外写入）。
@@ -296,7 +296,7 @@ async fn append_file_with_boundary_denies_outside() {
 #[tokio::test]
 async fn default_tools_without_boundary_keep_absolute_access() {
     // 向后兼容锚：无界默认形态（register_default_tools / 既有测试 / 老调用
-    // 方）照旧可写任意路径——A5 只在生产装配点注入边界。
+    // 方）照旧可写任意路径—— 只在生产装配点注入边界。
     let other = temp_dir("wf_default");
     let target = other.join("legacy.txt");
     let args = serde_json::json!({"path": ps(&target), "content": "x"}).to_string();
@@ -332,7 +332,7 @@ async fn register_shared_tools_inserts_bounded_write_file() {
 }
 
 // ---------------------------------------------------------------------------
-// FT（2026-09-17）：读族 5 工具带界形态 + grep 相对路径锚定
+// FT：读族 5 工具带界形态 + grep 相对路径锚定
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -486,7 +486,7 @@ async fn register_shared_tools_inserts_bounded_read_tools() {
 }
 
 // ---------------------------------------------------------------------------
-// B1（2026-10-31 项目 home 收编）：围栏第二根白名单矩阵
+// （项目 home 收编）：围栏第二根白名单矩阵
 // ---------------------------------------------------------------------------
 
 fn boundary_with_extra(root: &Path, extra: &Path) -> WorkspaceBoundary {
@@ -500,7 +500,7 @@ fn boundary_with_extra(root: &Path, extra: &Path) -> WorkspaceBoundary {
 
 #[test]
 fn extra_root_inside_absolute_ok() {
-    // 第二根（项目 agent home）内绝对路径放行——B1 的核心语义。
+    // 第二根（项目 agent home）内绝对路径放行—— 的核心语义。
     let root = temp_dir("x1_main");
     let home = temp_dir("x1_home");
     let target = home.join("IDENTITY.md");
@@ -537,7 +537,7 @@ fn extra_root_deep_new_file_ok() {
 
 #[test]
 fn outside_both_roots_denied() {
-    // 第二根之外仍是拒绝——B1 放大的只有白名单子树。
+    // 第二根之外仍是拒绝—— 放大的只有白名单子树。
     let root = temp_dir("x3_main");
     let home = temp_dir("x3_home");
     let other = temp_dir("x3_other");

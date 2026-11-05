@@ -1,13 +1,13 @@
-//! L18（改进项三期 2026-11-03）配置热发布世代化：AgentLoop 的 config 消费
+//! （2026-11-03）配置热发布世代化：AgentLoop 的 config 消费
 //! 面从「每读者独立直读盘」收敛为「持代引用」。
 //!
 //! 规格四要素的本面落点：
 //! - **配置变更 = 构建新代 prepared snapshot（校验→临时名→原子改名发布）**：
-//!   写入侧由 `nemesis_utils::write_file_atomic` 承担（config.json 全部保存点
+//!   写入侧由 `nemesis_utils:write_file_atomic` 承担（config.json 全部保存点
 //!   已同源，见 nemesis-config save_config 家族）；读取侧对应物是本文件的
 //!   prepare（读盘+解析=校验）→ publish（写锁内 CAS 改名换代）。
-//! - **消费者持代引用**：读者经 [`AgentLoop::config_generation`] 取
-//!   `Arc<serde_json::Value>`——不可变快照，代内恒一致；每轮 ≈20+ 次磁盘读
+//! - **消费者持代引用**：读者经 [`AgentLoop:config_generation`] 取
+//!   `Arc<serde_json:Value>`——不可变快照，代内恒一致；每轮 ≈20+ 次磁盘读
 //!   +JSON 解析收敛为每发布点一次。
 //! - **在途准备被取代 = retryable**：prepare 在锁外做 IO（含基线代号），
 //!   publish 时 CAS——基线已被并发发布者推进 = `Superseded`，调用方以最新
@@ -33,7 +33,7 @@ pub(crate) struct ConfigGeneration {
     /// 发布时锚定的盘上原始字节（变更闸与 CAS 收敛的比对基准）。
     /// **内容比对不赌钟**：mtime 等值判定在 Windows 粗时钟（毫秒级刷新
     /// 粒度）下同 tick 两次写不可分辨，闸不睁 → 解禁/换档不生效
-    ///（BUG-20261103 CI Windows shard4/8/10 五测连红实录；proxy_keys
+    ///（CI Windows /8/10 五测连红；proxy_keys
     /// 缓存同族同修）。config.json KB 级，每发布点一次直读比对成本可忽略。
     pub(crate) raw: Vec<u8>,
     /// 代内容（读者持 `Arc` 引用，代内恒一致）。
@@ -45,7 +45,7 @@ pub(crate) struct ConfigGeneration {
 pub(crate) struct PreparedConfig {
     /// 准备完成时的现行代号（CAS 基线）。
     pub(crate) base_generation: u64,
-    /// 准备所读的盘上原始字节（收敛比对基准，见 [`ConfigGeneration::raw`]）。
+    /// 准备所读的盘上原始字节（收敛比对基准，见 [`ConfigGeneration:raw`]）。
     pub(crate) raw: Vec<u8>,
     pub(crate) value: std::sync::Arc<serde_json::Value>,
 }
@@ -73,7 +73,7 @@ impl AgentLoop {
     }
 
     /// 发布协议：读盘（BOM 同源剥离）→ 内容比对 → 解析（校验，锁外）→
-    /// CAS 发布（内容闸内建，不赌钟——BUG-20261103 Windows 粗时钟实证）。
+    /// CAS 发布（内容闸内建，不赌钟—— Windows 粗时钟实证）。
     /// 返回 true = 本调用结果使现行代代表盘上最新内容（新发布或并发赢家
     /// 已收敛）；false = 闸未过/校验失败/重试耗尽（现行代保留）。
     ///

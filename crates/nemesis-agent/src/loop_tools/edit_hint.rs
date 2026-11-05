@@ -1,10 +1,10 @@
-//! A1/A2（2026-09-04 devtool-upgrade 阶段 1）：edit_file 失败反馈 → 修复指令，
+//! /（2026-09-04 devtool-upgrade）：edit_file 失败反馈 → 修复指令，
 //! 成功回 unified diff。
 //!
 //! 设计立场：所有失败消息都是**给模型的修复指令**——
 //! 上下文片段 + 编辑距离最近候选 + 唯一性判定——而不是一句静态文案。
-//! 消费方：`loop_tools.rs` 的 `EditFileTool`；`unified_diff`（A2）后续被
-//! A5/M2/A6 复用。
+//! 消费方：`loop_tools.rs` 的 `EditFileTool`；`unified_diff`后续被
+//! // 复用。
 
 use crate::args_validator::edit_distance;
 
@@ -20,7 +20,7 @@ fn preview_line(line: &str, max_chars: usize) -> String {
 }
 
 /// 带行号的文件内容预览：≤60 行全量；更长则 head 30 + 省略标记 + tail 15
-/// （与实施计划 A1 一致）。超长行截断到 200 字符。
+/// （与实施计划 一致）。超长行截断到 200 字符。
 fn numbered_preview(content: &str) -> String {
     let total = content.lines().count();
     let mut out = String::new();
@@ -48,7 +48,7 @@ fn normalize_line_endings_and_trailing(s: &str) -> String {
         .join("\n")
 }
 
-/// A1：`old_text` 未命中时生成给模型的修复指令。
+/// `old_text` 未命中时生成给模型的修复指令。
 ///
 /// 组成（按信息量排序）：
 /// 1. CRLF 差异提示——old_text 在行尾归一后能命中 = 换行风格不匹配；
@@ -125,7 +125,7 @@ pub(crate) fn build_not_found_hint(content: &str, old_text: &str) -> String {
     out
 }
 
-/// A1：`old_text` 多处命中时算每个命中的 1-based 行号。
+/// `old_text` 多处命中时算每个命中的 1-based 行号。
 /// `match_indices` 语义与 `matches().count()` 一致（非重叠）。
 pub(crate) fn match_line_numbers(content: &str, needle: &str) -> Vec<usize> {
     content
@@ -141,11 +141,11 @@ const DIFF_MAX_BYTES: usize = 4096;
 /// unified diff 上下文行数（对齐 `diff -u` 惯例）。
 const DIFF_CONTEXT: usize = 3;
 
-/// A2（2026-09-04）：手写简易 unified diff（不引新依赖）。
+/// ：手写简易 unified diff（不引新依赖）。
 ///
 /// 算法：公共前缀/后缀行定位唯一变更窗口 + 3 行上下文 + `-`/`+` 块。
 /// 单 hunk 视角（edit_file 每次只替换一处，多窗口场景不存在）。
-/// 行尾统一 LF 视角（`str::lines` 剥 `\r`）；无差异返回空串。
+/// 行尾统一 LF 视角（`str:lines` 剥 `\r`）；无差异返回空串。
 /// 超长输出回退统计摘要 `+n / -m lines (diff truncated …)`。
 pub(crate) fn unified_diff(path: &str, old: &str, new: &str) -> String {
     let old_lines: Vec<&str> = old.lines().collect();

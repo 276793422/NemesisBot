@@ -1,4 +1,4 @@
-//! P20（2026-09-25 能力扩展 WS7）：rewind 冲突预检编排测试（git 影子形态）。
+//! （2026-09-25）：rewind 冲突预检编排测试（git 影子形态）。
 //!
 //! 验证 `rewind_to_message` 的 force 语义全链路：
 //! - turn 收尾封印（seal_turn）后文件被外部修改 → rewind 默认**零副作用**
@@ -66,7 +66,7 @@ fn p20_modify(rel: &str) -> FileChange {
     }
 }
 
-/// 按 E3 真实写入形态摆行：user 行带 checkpoint_turn 标记。
+/// 按 真实写入形态摆行：user 行带 checkpoint_turn 标记。
 fn p20_append(key: &str, role: &str, content: &str, turn: Option<usize>) {
     crate::chat_log::append_chat_log_meta(
         key,
@@ -79,7 +79,7 @@ fn p20_append(key: &str, role: &str, content: &str, turn: Option<usize>) {
     );
 }
 
-/// sha256 hex（与 checkpoint::hash_on_disk 同口径，断言期望指纹用）。
+/// sha256 hex（与 checkpoint:hash_on_disk 同口径，断言期望指纹用）。
 fn p20_hash(content: &str) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
@@ -218,7 +218,7 @@ async fn p20_rewind_passes_through_when_seals_match_disk() {
 }
 
 // ---------------------------------------------------------------------------
-// F8（2026-09-27）：force 强过的强恢复动作落审计链台账（Merkle
+// ：force 强过的强恢复动作落审计链台账（Merkle
 // append-only；此前只有 tracing warn——轮转即失，不算诚实留痕）。
 // ---------------------------------------------------------------------------
 
@@ -280,7 +280,7 @@ async fn p20_rewind_force_records_audit_chain_event() {
 }
 
 // ---------------------------------------------------------------------------
-// R31（2026-10-23 会话回退波及面收窄）：rewind 是会话级 API，但 turn 序号
+// （会话回退波及面收窄）：rewind 是会话级 API，但 turn 序号
 // 与 checkpoint 索引是 loop 全局的——修复前回退会话 A 会把并发会话 B 在
 // 其回退点之后的文件变更静默碾掉（B 的封印=现盘，冲突预检判「干净」不
 // 拦），并把 B 的 checkpoint 条目整段清掉（永久摧毁 B 的 rewind/redo）。
@@ -314,7 +314,7 @@ async fn r31_rewind_session_scoped_other_session_paths_block_by_default() {
 
     // A turn1：a.txt → v2。turn 序号模拟 loop 全局计数器
     // （begin_turn_checkpoint 的 fetch_add），会话归属经 begin_for_session
-    // 穿针。R4：snapshot 同键归属（生产 tool_dispatch 与 begin 同源传会
+    // 穿针。：snapshot 同键归属（生产 tool_dispatch 与 begin 同源传会
     // 话键）。
     cp.begin_for_session(1, "a q1", Some(&key_a));
     std::fs::write(root.join("a.txt"), "a2").unwrap();
@@ -367,7 +367,7 @@ async fn r31_rewind_session_scoped_other_session_paths_block_by_default() {
     assert!(err.contains("没有可重做"), "{err}");
 
     // force 强过：a.txt 恢复到 t2 begin 树（=t1 完成态 v2）；全树恢复把
-    // b.txt 碾掉（force = 用户对波及面的显式意志，与 P20 外部冲突同款）。
+    // b.txt 碾掉（force = 用户对波及面的显式意志，与 外部冲突同款）。
     let out = al.rewind_to_message(&key_a, 0, true).await.unwrap();
     assert_eq!(out["blocked"], serde_json::Value::Null, "{out}");
     assert_eq!(out["forced"], true, "波及面 + force = 审计留痕: {out}");
@@ -398,7 +398,7 @@ async fn r31_scoped_truncate_and_conflict_report_are_session_scoped() {
         root.clone(),
     ));
 
-    // sA turn1 / sB turn2 / legacy turn3（begin 无会话）。R4：snapshot 与
+    // sA turn1 / sB turn2 / legacy turn3（begin 无会话）。：snapshot 与
     // begin 同键归属。
     cp.begin_for_session(1, "a1", Some("sA"));
     std::fs::write(root.join("a.txt"), "a2").unwrap();
@@ -474,7 +474,7 @@ async fn r31_old_payload_without_session_field_loads_as_same_session() {
     assert!(cp.list_meta().is_empty());
 }
 
-/// BUG-20261025-35 回归锁：scoped 截断的盘上镜像删除必须真实生效——截断
+/// 回归锁：scoped 截断的盘上镜像删除必须真实生效——截断
 /// 后以同目录新建 store（重启模拟），`load()` 不得复活已回退 turn。此前
 /// 裸单发 `remove_file` + `let _` 吞错：Windows 瞬时句柄（Defender/索引器
 /// ，fsutil 模块头注记的 CI 实证教训）删除失败静默残留，重启回载把已回退

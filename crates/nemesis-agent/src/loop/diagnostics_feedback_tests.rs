@@ -1,11 +1,11 @@
-//! C3（devtool-upgrade 阶段 2）：编辑后诊断回灌测试。
+//! （devtool-upgrade）：编辑后诊断回灌测试。
 //!
 //! 用 planted fake gopls（Python stdio LSP server，沿 nemesis-lsp
-//! `manager/tests.rs` 的确定性形态）驱动 [`AgentLoop::apply_diagnostics_feedback`]
+//! `manager/tests.rs` 的确定性形态）驱动 [`AgentLoop:apply_diagnostics_feedback`]
 //! 全决策表：ERROR 追加（格式/行号 1-based）、WARN-only 静默、开关关、
 //! 非触发写工具、无 manager、未注册语言、touch 失败、max_errors 截断。
 //! 全部失败路径都断言**原样返回**——诊断永不改写工具结果语义。
-//! P2（能力扩展 WS3）：默认值翻转为 true（显式 false 用例改显式构造）；
+//! ：默认值翻转为 true（显式 false 用例改显式构造）；
 //! fake server / PATH 辅助 `pub(super)` 供 `diagnostics_session_tests`
 //! 复用（PATH 是进程全局态，跨模块必须共一把 env 锁，否则并行互踩）。
 
@@ -34,10 +34,10 @@ impl Drop for PathRestore {
 
 /// 最小 fake gopls：initialize 握手 + didOpen/didChange 后按模式推一条
 /// publishDiagnostics（随后安静——wait_for_diagnostics 的 quiet 窗口收得住）。
-/// - `error`：1 条 severity 1（L2:C4 0-based → 显示 L3:5），source=fake
+/// - `error`：1 条 severity 1（0-based → 显示:5），source=fake
 /// - `warn`：1 条 severity 2（不该被回灌）
 /// - `multi`：3 条 severity 1（max_errors 截断测试）
-/// - `flood`：25 条 severity 1（P3 跨文件聚合 cap 测试）
+/// - `flood`：25 条 severity 1（跨文件聚合 cap 测试）
 const FAKE_GOPLS_PY: &str = r#"
 import sys, json
 
@@ -252,7 +252,7 @@ async fn disabled_returns_unchanged() {
 
     let out = AgentLoop::apply_diagnostics_feedback(
         Some(&mgr),
-        // P2（能力扩展 WS3）默认值翻转为 true；本用例测显式关，须显式构造。
+        // 默认值翻转为 true；本用例测显式关，须显式构造。
         DiagnosticsLoopConfig {
             enabled: false,
             max_errors: 20,
@@ -398,7 +398,7 @@ async fn no_server_on_path_returns_unchanged() {
     assert_eq!(mgr.session_count().await, 0, "无服务器时不得 spawn 会话");
 }
 
-/// 门 2「诊断闭环实机验证」载体：**真 rust-analyzer** 全链——坏 .rs 文件
+/// 门 2「诊断闭环实机验证」载体：**真 rust-analyzer** 全链——坏.rs 文件
 /// edit → didOpen → 真服务器分析 → publishDiagnostics(ERROR) → 回灌。
 /// `#[ignore]`：依赖本机 rust-analyzer + 冷启动秒级耗时，门禁不跑；
 /// 实机验证时 `cargo test -p nemesis-agent --lib diagnostics_feedback --
@@ -422,7 +422,7 @@ async fn real_rust_analyzer_closed_loop_gates() {
     std::fs::write(&main_rs, "fn main() {\n    let x = ;\n}\n").unwrap();
 
     let mgr = nemesis_lsp::LspManager::new(Some(Duration::from_secs(120)), None);
-    // 实测（2026-09-05 裸客户端 + 本测试）：rust-analyzer 冷启动首析
+    // 实测（裸客户端 + 本测试）：rust-analyzer 冷启动首析
     // ~10-25s（工作区加载完成才推首批诊断，且首推可能是空数组）→ 等待
     // 上限放宽到 90s。生产热路径（服务器已运行）毫秒级，默认
     // wait_max_ms=2000 面向热路径；冷启动 miss 属 best-effort 边界

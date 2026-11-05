@@ -1,4 +1,4 @@
-//! P32（能力扩展 Wave3）：prompt cache warmer（cache-warmer）。
+//! （Wave3）：prompt cache warmer（cache-warmer）。
 //!
 //! 语义：会话 idle 且 prompt cache TTL 将过期（idle 时长 ≥ 模型 cache TTL
 //! 的 [`WARM_TRIGGER_RATIO`]）→ 用上一轮请求的**字节级快照**重放一次
@@ -9,7 +9,7 @@
 //!
 //! 计划原文设想「TTL 两档（anthropic 5min/1h）从 provider 元数据读」。
 //! 实查结论：`nemesis-providers` 现网请求**不发** anthropic
-//! `cache_control`（`anthropic.rs::build_request_body` 无该键；OpenAI 兼容
+//! `cache_control`（`anthropic.rs:build_request_body` 无该键；OpenAI 兼容
 //! lane 的自动缓存 TTL 无文档），全仓库也不存在任何 prompt cache TTL 元
 //! 数据（`nemesis-config` 的 `cache_ttl_seconds` 属 Skills 搜索缓存，无
 //! 关）。「无源可读」→ 按计划自身的诚实降级条款执行：TTL 唯一可诚实来源
@@ -21,7 +21,7 @@
 //! # 开关语义（D-4：成本敏感 opt-in）
 //!
 //! `agents.cache_warmer.enabled` 默认 **false**——gateway 启动时
-//! [`AgentLoop::spawn_cache_warmer_if_enabled`] 一次新鲜读后直接返回：
+//! [`AgentLoop:spawn_cache_warmer_if_enabled`] 一次新鲜读后直接返回：
 //! 无定时器、无任务对象（零副作用）。运行中改 false → 下一 tick 退出
 //! （热关生效）；启动时关、运行中改 true **不热开**（无任务可感知，重启
 //! gateway 生效——刻意的诚实不对称，见 spawn 点注释）。
@@ -41,7 +41,7 @@ use super::*;
 /// warm 触发阈值：idle 时长 ≥ 模型 cache TTL × 0.9 即触发重放。
 pub(crate) const WARM_TRIGGER_RATIO: f64 = 0.9;
 
-/// warm 扫描周期（秒）。轻量 tokio interval，不挂 cron（P31 域）。
+/// warm 扫描周期（秒）。轻量 tokio interval，不挂 cron（域）。
 pub(crate) const WARM_SCAN_INTERVAL_SECS: u64 = 60;
 
 /// 单次 warm 重放的调用超时（秒）。`max_tokens=1` 的重放只有 prefill
@@ -52,7 +52,7 @@ pub(crate) const WARM_CALL_TIMEOUT_SECS: u64 = 120;
 /// 超限淘汰 anchor 最旧的会话）。
 pub(crate) const MAX_WARM_CANDIDATES: usize = 8;
 
-/// P32：warm 重放候选——某会话最近一次成功 LLM 请求的字节级快照。
+/// warm 重放候选——某会话最近一次成功 LLM 请求的字节级快照。
 ///
 /// 由 `run_loop` 在每次成功 LLM 轮后写入（后写覆盖 → 天然收敛到「最后一
 /// 轮请求」），warm 重放时原样重发（`max_tokens` 除外）。
@@ -120,8 +120,8 @@ pub(crate) fn warm_cost_allowed(estimated_usd: Option<f64>, cost_limit_usd: f64)
 }
 
 /// 解析 `agents.cache_warmer` 配置节（宽松：段缺失 / 形态非法 → 类型默认
-/// 值 `CacheWarmerConfig::default()` = 关 + $0.05）。类型与默认值单一真相
-/// 源在 `nemesis_config::CacheWarmerConfig`，此处只做容错解包。
+/// 值 `CacheWarmerConfig:default()` = 关 + $0.05）。类型与默认值单一真相
+/// 源在 `nemesis_config:CacheWarmerConfig`，此处只做容错解包。
 pub(crate) fn parse_cache_warmer_config(
     agents: Option<&serde_json::Value>,
 ) -> nemesis_config::CacheWarmerConfig {
@@ -138,7 +138,7 @@ pub(crate) fn parse_cache_warmer_config(
 impl AgentLoop {
     /// 新鲜读 config.json（同 `config_watch` 各 current_* 模式；standalone
     /// 无 config_path → `None`）。`pub(crate)`：provider_stream sink 构造
-    /// （L10）同源复用，不另抄第二份读文件逻辑。
+    /// 同源复用，不另抄第二份读文件逻辑。
     pub(crate) fn read_config_json(&self) -> Option<serde_json::Value> {
         let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
@@ -209,7 +209,7 @@ impl AgentLoop {
 
     /// warm 周期扫描主循环。每 tick：停机 / 热关 → 退出；estop → 跳过；
     /// 模型未声明 TTL → 跳过（诚实降级）；否则扫描到期候选（见
-    /// [`Self::warm_scan_once`]）。
+    /// [`Self:warm_scan_once`]）。
     pub(crate) async fn run_cache_warmer_loop(self: Arc<Self>) {
         info!(
             "[cache-warmer] active (scan every {}s; cost_limit from agents.cache_warmer)",
@@ -318,9 +318,9 @@ impl AgentLoop {
             max_tokens: Some(1),
             ..Default::default()
         };
-        // L10 观测面（2026-10-13）：warm 生命周期升 info!——Logs Dashboard
+        // 观测面：warm 生命周期升 info!——Logs Dashboard
         // 「llm」源可见（warm 花的是真金白银的 API 调用，开销必须可观测；
-        // 此前全程 debug! 只有开 trace 才看得见）。start 带估算成本口径。
+        // 此前全程 debug! 只有开 trace 才看得）。start 带估算成本口径。
         let started_at = std::time::Instant::now();
         info!(
             "[cache-warmer] {} warm start (model={}, est_cost={:?} USD, limit={} USD)",
@@ -364,7 +364,7 @@ impl AgentLoop {
 
     /// warm 重放成本保守估算（USD）。`None` = 价目表未命中（调用方保守
     /// 跳过）。口径：messages 文本 / tool_calls 参数 / 工具 defs schema 全
-    /// 按**全价 input** 计（token 估算同 `session::estimate_tokens` 的
+    /// 按**全价 input** 计（token 估算同 `session:estimate_tokens` 的
     /// chars×2/5），外加 1 个 output token——不假设任何 cache read 折扣。
     fn estimate_warm_cost_usd(
         &self,

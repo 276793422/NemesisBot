@@ -1,4 +1,4 @@
-//! H1 (2026-09-05): `todowrite` 工具测试。
+//! (2026-09-05): `todowrite` 工具测试。
 //!
 //! 覆盖计划验收三点：① 调用后 json 落盘正确；② 旧文件覆盖语义（全量
 //! 替换）；③ TodoUpdated 广播可见（web pump 的上游）。另加：args 校验、
@@ -40,7 +40,7 @@ fn tool_with(ws: &std::path::Path) -> TodoWriteTool {
 }
 
 fn todo_path(ws: &std::path::Path, session_key: &str) -> std::path::PathBuf {
-    // 与工具实现同款安全化（F-U4-4：':' / '/' / '\\' 一律 → '_'）。
+    // 与工具实现同款安全化（F-：':' / '/' / '\\' 一律 → '_'）。
     let safe = session_key.replace([':', '/', '\\'], "_");
     nemesis_path::resolve_sessions_dir_in_workspace(ws).join(format!("todo_{safe}.json"))
 }
@@ -184,7 +184,7 @@ async fn session_key_colons_sanitized_in_filename() {
     );
 }
 
-/// F-U4-4（2026-09-15 真机实证）：B 端 peer_chat 复合 session_key
+/// F-（真机实证）：B 端 peer_chat 复合 session_key
 /// `cluster_rpc:{node}/{chat}` 含 '/'（peer_chat_handler 设计），只中和
 /// ':' 会把文件名拆出中间目录 → write os error 3。修复后复合键必须
 /// 落盘为单层平铺文件。
@@ -220,7 +220,7 @@ async fn composite_peer_chat_key_writes_flat_file() {
 /// 安全管线放行：todowrite 归 FileWrite（空 target 不匹配 ABAC 规则 →
 /// default action）。默认配置下必须放行，否则工具在安全开启时不可用。
 #[cfg(feature = "security")]
-// multi_thread：管线 L7 scanner 层内部有 block_on（security crate 测试同款）。
+// multi_thread：管线 scanner 层内部有 block_on（security crate 测试同款）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn security_pipeline_allows_todowrite() {
     let plugin = nemesis_security::pipeline::SecurityPlugin::new(

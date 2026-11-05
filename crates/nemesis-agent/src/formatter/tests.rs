@@ -1,7 +1,7 @@
-//! A6：format-on-save 单元测试。
+//! format-on-save 单元测试。
 //!
 //! 覆盖：内置表逐条 + 配置覆盖表优先 / render_args 占位符 / annotate 组合 /
-//! spawn 链路（rustfmt 真格式化 .rs —— 工具链随 cargo 必在）/ 工具缺席静默 /
+//! spawn 链路（rustfmt 真格式化.rs —— 工具链随 cargo 必在）/ 工具缺席静默 /
 //! 超时 kill 静默（Windows=ping 计数挂起 / Unix=sleep）/ executor.enabled
 //! 诚实停用 / enabled=false 零副作用 / 非 UTF-8 文件静默 / 成功但内容未变
 //! 不注记。
@@ -139,7 +139,7 @@ fn annotate_reformat_composes_result_tool_and_diff() {
 // ---------------------------------------------------------------------------
 
 /// 工具链随 cargo 必在（rust-toolchain.toml 钉死 1.95.0，Windows/Linux CI
-/// 与开发机同源）——真格式化一条烂格式 .rs。
+/// 与开发机同源）——真格式化一条烂格式.rs。
 #[tokio::test]
 async fn rustfmt_reformats_bad_rs_file_and_annotates_result() {
     let dir = tempfile::tempdir().unwrap();

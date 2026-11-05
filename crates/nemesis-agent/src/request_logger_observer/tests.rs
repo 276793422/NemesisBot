@@ -737,7 +737,7 @@ async fn observer_trait_name_and_dispatch() {
     assert_eq!(observer.active_count(), 0);
 }
 
-// --- W3a: raw 模式失败兜底 envelope、无 name 的 tool_call 过滤 ---
+// ---: raw 模式失败兜底 envelope、无 name 的 tool_call 过滤 ---
 
 #[test]
 fn raw_mode_failure_fallback_writes_error_envelope() {
@@ -848,7 +848,7 @@ fn llm_response_skips_tool_calls_without_name() {
     );
 }
 
-/// 压缩杂务目录隔离（2026-11-03 BUG-3）回归锁：sender_id="summarizer"
+/// 压缩杂务目录隔离（BUG-3）回归锁：sender_id="summarizer"
 /// 的 observer 事件落 aux_ 前缀会话目录（此前照常落 `{timestamp}_{rand}`
 /// 对话目录——空消息空回复看着像「bot 在跟谁说话」）；普通用户对话照旧
 /// 默认命名不受影响。

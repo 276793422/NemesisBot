@@ -1,6 +1,6 @@
-//! L29（2026-11-02 改进项三期）：流中断拼接续写——partial 作 assistant 前缀
+//! （2026-11-02）：流中断拼接续写——partial 作 assistant 前缀
 //! 加续写提示重试（transient 环），成功后前拼出完整文本；开关
-//! `agents.stream_concat_retry` 默认开（拍板），显式 false 回退「重试从头」。
+//! `agents.stream_concat_retry` 默认开，显式 false 回退「重试从头」。
 //!
 //! 覆盖：extract 纯函数四态 / 拼接行为（messages 追加 + 内容前拼）/ 开关
 //! 关回退 / tc 标记不可续 / 重试再撞中断新 partial 覆盖 / 常量字面量互锚。
@@ -15,7 +15,7 @@ use crate::test_support::capture_logs;
 use async_trait::async_trait;
 
 // ---------------------------------------------------------------------------
-// 常量字面量互锚（providers 侧 failover::STREAM_* 的同文副本——任一端改
+// 常量字面量互锚（providers 侧 failover:STREAM_* 的同文副本——任一端改
 // 文本，两端测试必红；见 recovery.rs 常量注释分层约束）。
 // ---------------------------------------------------------------------------
 
@@ -395,7 +395,7 @@ async fn non_stream_transient_error_no_concat() {
 }
 
 // ---------------------------------------------------------------------------
-// 开关解析纯函数（config_watch::stream_concat_retry_from_value）
+// 开关解析纯函数（config_watch:stream_concat_retry_from_value）
 // ---------------------------------------------------------------------------
 
 #[test]

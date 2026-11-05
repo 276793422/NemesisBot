@@ -278,7 +278,7 @@ fn multithread_runtime() -> tokio::runtime::Runtime {
         .expect("multi-thread runtime")
 }
 
-/// deny *.rs 的最小管线（同 image_attach::deny_png_plugin 形态）。
+/// deny *.rs 的最小管线（同 image_attach:deny_png_plugin 形态）。
 #[cfg(feature = "security")]
 fn deny_rs_plugin() -> nemesis_security::pipeline::SecurityPlugin {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
@@ -332,7 +332,7 @@ fn test_security_allow_inlines() {
     assert!(out.contains("OKAY"));
 }
 
-// wave5：目录形态的 @引用 → read 管线诚实失败注记（File::open 目录 =
+// wave5：目录形态的 @引用 → read 管线诚实失败注记（File:open 目录 =
 // PermissionDenied，非 NotFound 臂）。
 #[test]
 fn expand_at_files_directory_ref_reports_honest_failure() {

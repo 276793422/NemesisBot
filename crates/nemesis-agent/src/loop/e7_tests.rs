@@ -1,4 +1,4 @@
-//! E7 (devtool-upgrade 阶段 5)：会话标题自动生成测试。
+//! (devtool-upgrade)：会话标题自动生成测试。
 //!
 //! - `sanitize_generated_title`：首行/剥引号/截 24 字（CJK 边界）/空 → None。
 //! - `spawn_session_title_job` 端到端：小模型生成 → sidecar meta 落盘。
@@ -10,7 +10,7 @@ use crate::chat_log::{self, write_session_meta_manual};
 
 // ---------- 录制型 mock：返回预设标题文本，记录收到的模型名 ----------
 
-/// 主 provider 占位（E7 路径不触碰它；断言它未被调用即 main 零烧）。
+/// 主 provider 占位（路径不触碰它；断言它未被调用即 main 零烧）。
 struct E7NoopProvider;
 
 #[async_trait]

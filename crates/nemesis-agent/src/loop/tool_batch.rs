@@ -1,38 +1,38 @@
-//! 工具批次执行（P2-2 器官 8 子器官自 `loop/run_loop.rs` 物理搬迁；docs/PLAN/
-//! 2026-09-23_agentloop-god-object-decomposition.md §4.2 表行 8/8a-8e）。
+//! 工具批次执行（器官 8 子器官自 `loop/run_loop.rs` 物理搬迁；docs/PLAN/
+//! 2026-09-23_.md /8a-8e）。
 //! 语义零变化：`__ASYNC__` 集群续行快照（8a）、`__BG_SPAWN__` 后台子代理
-//! 快照（8b，inline await 语义保持）、⑤/⑤′/⑥ 环守卫 + C3 诊断回灌 +
-//! spill/prune 门 + X1 projection（8c）、H5/I1/I3 指令链触碰（8d）、
+//! 快照（8b，inline await 语义保持）、⑤/⑤′/⑥ 环守卫 + 诊断回灌 +
+//! spill/prune 门 + projection（8c）、// 指令链触碰（8d）、
 //! escalation 与校验预算两终局判定（8e）。
 //!
-//! 器官出口约定（§4.3 对照表）：8a/8b 命中即 `Some(Done(中间消息))`/`Done`
+//! 器官出口约定（对照表）：8a/8b 命中即 `Some(Done(中间消息))`/`Done`
 //! 返回，骨架统一 `push + break`；8e 命中即 `Some(终局事件)` 返回，骨架置
 //! `terminal_reason` 后 push + break——事件向量与文案逐字节不变，golden
-//! transcript 把关。P2-5：批循环本体（中间消息落账 + 并行预计算 + 批次
-//! for）亦收编为 [`AgentLoop::execute_tool_batch`]，返回 `TurnFlow`；原
+//! transcript 把关。：批循环本体（中间消息落账 + 并行预计算 + 批次
+//! for）亦收编为 [`AgentLoop:execute_tool_batch`]，返回 `TurnFlow`；原
 //! `force_stop`/`hit_async` 两补偿闩随方法化退役。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
-/// P19（能力扩展 WS8）：批内 steer 跳批时给未执行调用合成的 tool 结果文本。
+/// ：批内 steer 跳批时给未执行调用合成的 tool 结果文本。
 /// 计划钦定文案（原样，不翻译）：模型据此知道调用被用户插队让路，而非
 /// 执行失败或结果未知。
 pub(crate) const STEER_SKIP_TOOL_RESULT: &str = "Skipped due to queued user message.";
 
 impl AgentLoop {
-    /// 器官 8 间隙检查（P19，能力扩展 WS8）：批内每个工具执行前的间隙做
+    /// 器官 8 间隙检查：批内每个工具执行前的间隙做
     /// **非阻塞 peek**（`has_next_step`，不认领）——peek 命中 steer（`!`
     /// 插队消息在 next_step 队列）→ 本调用起剩余全部未执行调用合成
     /// [`STEER_SKIP_TOOL_RESULT`] tool 结果（assistant tool_call / tool
     /// 结果消息对在落账时即完整合法；`repair_tool_message_pairs` 在每次
     /// build 的 `project_history_for_request` 里继续兜底）→ 终止当前批。
-    /// 返回 `TurnFlow::Continue`：下一轮器官 1 顶检 → 器官 2
+    /// 返回 `TurnFlow:Continue`：下一轮器官 1 顶检 → 器官 2
     /// `claim_steer_messages` 认领 steer（@file 展开 / 媒体附加 / chat_log
     /// 落行同源，此处不重复）→ steer 文本自然进下一轮 build_messages。
     ///
     /// 边界说明：
-    /// - **串行路径专属**：U5 并行预计算批（`skip_cancel_estop=true`）在
+    /// - **串行路径专属**： 并行预计算批（`skip_cancel_estop=true`）在
     ///   本检查可及之前已全部执行完，结果已存在——无可跳也不该跳（跳掉
     ///   已完成的工作只会制造未应答 tool_call）。并行窗口内到达的 steer
     ///   由下一轮器官 2 正常认领，语义不丢。
@@ -42,8 +42,8 @@ impl AgentLoop {
     /// - **队列模式天然惰性**：Queue 模式（steer_enabled=false）下
     ///   next_step 永远为空，检查恒不命中。
     /// - **守卫面诚实**：被跳调用不 emit observer ToolCall 事件、不记
-    ///   turn_guard 结果、不生成执行收据（T1）——它们确实没执行；事件流
-    ///   仅推 `AgentEvent::ToolResult`（前端卡片可见跳过原因）。
+    ///   turn_guard 结果、不生成执行收据——它们确实没执行；事件流
+    ///   仅推 `AgentEvent:ToolResult`（前端卡片可见跳过原因）。
     pub(crate) fn check_steer_skip_batch(
         &self,
         instance: &AgentInstance,
@@ -109,8 +109,8 @@ impl AgentLoop {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| target_id.clone());
 
-        // 子代理可见性（D5，2026-11-03）：集群 delegate 任务并入注册表
-        //（P3「delegate 并入同一列表」）。A 端生命周期视图——begin= 本处
+        // 子代理可见性：集群 delegate 任务并入注册表
+        //（「delegate 并入同一列表」）。A 端生命周期视图——begin= 本处
         //（`__ASYNC__` marker 落地），finish= 续行回灌（dispatch_continuation）；
         // B 端 transcript 留在对端节点不拉取（诚实边界：本行 events 环恒空）。
         // id/bg_task_id 直接用集群 task_id（gateway 侧跨节点状态面同键）。
@@ -146,9 +146,9 @@ impl AgentLoop {
             let channel = context.channel.clone();
             let chat_id = context.chat_id.clone();
             let session_key = context.session_key.clone();
-            // T6（多模态）：快照只落图片路径引用（磁盘侧剥离
+            // （多模态）：快照只落图片路径引用（磁盘侧剥离
             // base64 字节）。引用取自 instance 历史最后一条
-            // user turn（即本 turn 的 image_refs，:3468 写入）。
+            // user turn（即本 turn 的 image_refs，3468 写入）。
             let image_refs: Vec<String> = instance
                 .get_history()
                 .iter()
@@ -162,7 +162,7 @@ impl AgentLoop {
             let tc_id = tc.id.clone();
             let msgs = messages.clone();
             let task_id_spawn = task_id.clone();
-            // G5: 对端 ID 随快照落盘 —— A 侧重启后 first_start
+            // 对端 ID 随快照落盘 —— A 侧重启后 first_start
             // 恢复 pending 任务时才知道 poll 该问谁。
             let peer_id_spawn = target_id.clone();
             tokio::spawn(async move {
@@ -210,14 +210,14 @@ impl AgentLoop {
     }
 
     /// 器官 8b：`__BG_SPAWN__:{task_id}` 后台子代理续行快照 + 中间消息。
-    /// G4 (devtool-upgrade 阶段 3)：后台 subagent —— spawn 闭包
+    /// (devtool-upgrade)：后台 subagent —— spawn 闭包
     /// （background=true）已在闭包侧把任务转入后台 tokio 任务并
     /// 立即返回此 marker。这里与 __ASYNC__（集群）同构：存续行
     /// 快照 + 中间消息收尾本回合；任务完成时闭包侧向 bus 发布
     /// `subagent_continuation:{task_id}`，gate_inbound 拦截后走
     /// dispatch_continuation → handle_cluster_continuation 全复用
     /// （单飞闸认领 + 快照加载 + 续行 + 持久化 + finish_handling
-    /// 收口自清——磁盘快照保留到最终回复持久化后，发现 F 2026-09-11）。
+    /// 收口自清——磁盘快照保留到最终回复持久化后，发现 F）。
     ///
     /// 快照保存必须 **inline await**（不能像 __ASYNC__ 那样
     /// spawn）：后台子代理毫秒级即可完成并回灌，spawn 式保存要
@@ -243,7 +243,7 @@ impl AgentLoop {
             let channel = context.channel.clone();
             let chat_id = context.chat_id.clone();
             let session_key = context.session_key.clone();
-            // T6（多模态）：快照只落图片路径引用。引用取自
+            // （多模态）：快照只落图片路径引用。引用取自
             // instance 历史最后一条 user turn（同 __ASYNC__ 路径）。
             let image_refs: Vec<String> = instance
                 .get_history()
@@ -288,7 +288,7 @@ impl AgentLoop {
         AgentEvent::Done(formatted)
     }
 
-    /// 器官 8c：⑤/⑤′/⑥ 环守卫 + C3 诊断回灌 + spill/prune 门 + X1
+    /// 器官 8c：⑤/⑤′/⑥ 环守卫 + 诊断回灌 + spill/prune 门 +
     /// ⑤/⑥ Loop guards — mutually exclusive per call (success vs error).
     /// Use the shared helper so ExecTool's `Ok("Exit code: N")` for
     /// non-zero exits is detected as a failure — otherwise build
@@ -313,7 +313,7 @@ impl AgentLoop {
         // keeps re-sending the same (typo'd) args, that IS the repeat
         // we want to catch, regardless of the per-call auto-fix.
         // Detection stays consistent; the signature is the pre-fix form.
-        // X1 (U3 projection prune): the pure tool output, kept for
+        // (projection prune): the pure tool output, kept for
         // history. The ⑤/⑤′/⑥ guard nudges below decorate only the
         // MODEL-facing text; `guard_nudged` marks that a decoration
         // fired (the decorated form cannot be recomputed from the
@@ -358,16 +358,16 @@ impl AgentLoop {
             result
         };
 
-        // C3 (devtool-upgrade 阶段 2) 编辑后诊断回灌：写工具成功后，若
+        // (devtool-upgrade) 编辑后诊断回灌：写工具成功后，若
         // `agents.defaults.diagnostics_loop.enabled` 且该路径语言有已安装
         // LSP，同步文档 → 等 ERROR → 把诊断追加到工具结果尾部（"please
         // fix"），让模型同轮自纠——修复闭环。插在 ⑤′ 与 spill/gate 之间：
         // 反馈与工具结果同走一条模型可见管线（gate/spill/projection 都作
         // 用于装饰后的文本）。失败路径全部静默（开关关 / 非触发写工具 /
         // 无 manager / 无服务器 / 同步失败 / 无 ERROR）——永不拖垮工具调用。
-        // P2（能力扩展 WS3）：触发臂扩到 append_file/multiedit（枚举表
+        // ：触发臂扩到 append_file/multiedit（枚举表
         // DIAGNOSTICS_WRITE_TOOLS 单一真相源）；路径提取按 args 形态分派
-        // （multiedit = edits[].path）。P3：跨文件聚合 + stale 过滤（状态
+        // （multiedit = edits[].path）。：跨文件聚合 + stale 过滤（状态
         // 按 session_key 隔离在 diagnostics_touched）。
         #[cfg(feature = "lsp")]
         let result = if tool_succeeded
@@ -375,7 +375,7 @@ impl AgentLoop {
             && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
         {
             let paths = extract_diag_feedback_paths(&tc.name, &args_val);
-            // M5（2026-10-27 整改）：与 format-on-save 同源——钩子路径经
+            // ：与 format-on-save 同源——钩子路径经
             // resolve_tool_path 重算（相对路径锚定工作区根），不吃原始 args
             // 的 cwd 歧义。解析失败诚实跳过该路径。
             let paths: Vec<String> = paths
@@ -400,14 +400,14 @@ impl AgentLoop {
             result
         };
 
-        // G3 (U3) + G4 (U4) + X1 (U3 projection prune): model-free
+        // + + (projection prune): model-free
         // size gates, computed here but applied at the PROJECTION
         // (build_messages), not at history-write time. History keeps
         // `original_result` (the mid-section stays recoverable for
         // history replay / session branching); `gate_text` is the
         // bounded model-facing form the OLD code stored in history —
-        // byte-identical to pre-X1 behavior:
-        //   >= SPILL_THRESHOLD_CHARS  → spill whole text to disk, keep
+        // byte-identical to pre behavior:
+        //   >= SPILL_THRESHOLD_CHARS → spill whole text to disk, keep
         //                               preview + locator (readable back
         //                               via read_file offset/limit).
         //   > MAX_TOOL_RESULT_INLINE_CHARS (and no spill) → head +
@@ -416,7 +416,7 @@ impl AgentLoop {
         // prune tier (a spill failure must never lose a successful
         // tool call's content outright).
         //
-        // B3 (devtool-upgrade 阶段 3): when the registry HAS a spawn
+        // (devtool-upgrade): when the registry HAS a spawn
         // tool, both gate texts append the sub-agent hint (the elided
         // content is unreadable inline — a spawned sub-agent can read
         // it and return a digest). Hinted prune text is registry-
@@ -480,13 +480,13 @@ impl AgentLoop {
         // frequency, NOT reset by intervening successes (also handles ④
         // storm — consecutive identical — internally). On a repeated
         // failure, append a nudge so the model sees it in the error.
-        // Signature input is the post-gate text — same as pre-X1.
+        // Signature input is the post-gate text — same as pre-.
         let error_for_guard: Option<&str> = if tool_succeeded {
             None
         } else {
             Some(&gate_text)
         };
-        // T1（扩展计划 D3）：真实执行收据——本方法的 result 参数是
+        // （扩展计划）：真实执行收据——本方法的 result 参数是
         // registry 真实产物（dispatch 闸后的唯一成功面入口），对每个结果
         // 以实例密钥生成执行证明（绑定 tool+args+result+ts）入本轮收据
         // 环。结果自称成功但无收据（绕过执行点注入）会被
@@ -508,11 +508,11 @@ impl AgentLoop {
                         );
                     });
 
-        // X1: the recorded projection override — only when the final
+        // the recorded projection override — only when the final
         // model-facing text cannot be recomputed from the original
         // later: the spill tier (locator path embeds a wall-clock
         // stamp), any guard-nudge decoration (⑤/⑤′/⑥ — dynamic
-        // per-turn state), or B3's spawn-hinted prune (the hint flag
+        // per-turn state), or 's spawn-hinted prune (the hint flag
         // is registry state, not turn data). Otherwise None and
         // build_messages recomputes the pure prune (deterministic,
         // ledger-free).
@@ -529,8 +529,8 @@ impl AgentLoop {
         tool_succeeded
     }
 
-    /// 器官 8d：H5/I1/I3 指令链触碰（自写窗口登记 / 懒发现队列 /
-    /// H5 (U18): touch-driven instruction-chain invalidation. A
+    /// 器官 8d：// 指令链触碰（自写窗口登记 / 懒发现队列 /
+    /// : touch-driven instruction-chain invalidation. A
     /// successful read_file/write_file/edit_file may have touched
     /// a file on the workspace instruction chain — invalidate the
     /// context digests so the next build re-reads the chain.
@@ -549,14 +549,14 @@ impl AgentLoop {
             && let Some(path_str) = args_val.get("path").and_then(|v| v.as_str())
         {
             let touched = std::path::PathBuf::from(path_str);
-            // I1 (devtool-upgrade 阶段 3): record agent-authored
+            // (devtool-upgrade): record agent-authored
             // writes so the fs watcher's event for the same path is
             // dropped inside the self-write window (the agent knows
             // what it just wrote — must not surface as "外部修改").
             if matches!(tc.name.as_str(), "write_file" | "edit_file") {
                 self.note_self_write(path_str);
             }
-            // I3 (devtool-upgrade 阶段 3): lazy sub-directory
+            // (devtool-upgrade): lazy sub-directory
             // instruction discovery on successful reads — the file's
             // directory may carry AGENTS.md/CLAUDE.md that was never
             // injected (root chain only, by default). Queued here,
@@ -594,13 +594,13 @@ impl AgentLoop {
     /// 器官 8e-1：escalation 终局判定——(tool, error) 签名越 hard-stop
     /// ⑥ Escalation: same (tool, error) failed past the hard-stop
     /// threshold (24) — every level of the intervention ladder
-    /// （L0 通用 → L1 换方法 → L2 换路径/分解 → L3 绕过+记录缺口，
-    /// `turn_guard::alternating_nudge` 计次分级）has been ignored. Latch a
+    /// （通用 → 换方法 → 换路径/分解 → 绕过+记录缺口，
+    /// `turn_guard:alternating_nudge` 计次分级）has been ignored. Latch a
     /// stop event and break the tool batch; the outer-scope check after this
     /// for-loop ends the turn (a bare `break` here only exits the batch, not
     /// the LLM loop).
     ///
-    /// 循环干预阶梯终级（2026-10-24，取代 J5 审批化消费）：发**无超时严重
+    /// 循环干预阶梯终级（取代 审批化消费）：发**无超时严重
     /// 卡**问用户（`ask_doom_loop_terminal`：timeout_secs=0 + 免打扰直批
     /// 分支绕过——任何自动化开关都压不掉终级卡，烟雾报警器必须响）。
     /// 批准 = 清签名计数继续；用户选停止 / 急停 cancelled / asker 缺席 /
@@ -627,10 +627,10 @@ impl AgentLoop {
                 warn!(
                     "[AgentLoop] loop guard escalation: stopping turn to avoid burning max_turns on a stuck loop"
                 );
-                // P1（2026-09-11 真机日志分析）：升级停轮也是失败终止——
+                // （真机日志分析）：升级停轮也是失败终止——
                 // 记终端原因，turn_end 边界标记不再谎报 "done"。
                 // ESCALATION_MARKER 前缀逐字节保留（cluster_agent 跨 crate
-                // 识别依赖，2026-10-24 阶梯化不改编排文案）。
+                // 识别依赖， 阶梯化不改编排文案）。
                 return Some(AgentEvent::Done(context.format_rpc_message(
                     &crate::turn_guard::TurnGuard::escalation_message(&sig, count),
                 )));
@@ -640,7 +640,7 @@ impl AgentLoop {
     }
 
     /// 器官 8e-2：校验重试预算终局判定——连续畸形参数烧完预算即
-    /// Phase 2: bound consecutive validation failures so a struggling
+    /// bound consecutive validation failures so a struggling
     /// model cannot burn the whole max_turns budget on the same
     /// malformed arguments. Same latch pattern as escalation — a bare
     /// `break` here used to only exit the batch while the outer LLM
@@ -658,7 +658,7 @@ impl AgentLoop {
                 "[AgentLoop] Validation retry budget exhausted ({}); stopping turn.",
                 validation_failures
             );
-            // P1（2026-09-11 真机日志分析）：校验预算耗尽的 turn 是失败
+            // （真机日志分析）：校验预算耗尽的 turn 是失败
             // 终止（B 端曾把它包装成 success 回调 → 空交付结构性缺陷）。
             // 记终端原因 + 末事件为 Error——cluster_agent 据此发 error 回调。
             return Some(AgentEvent::Error(format!(
@@ -669,10 +669,10 @@ impl AgentLoop {
         }
         None
     }
-    /// 器官 8（§4.2 表行 8）：中间消息落账 + 并行预计算（U5）+ 批次循环，
-    /// 自 run_loop.rs 骨架收编（P2-5，与 8a-8e 同居本文件）。出口归一：
-    /// 批内 cancel/estop = `Stop(ev)` + `terminal_reason` 照记（2026-10-31
-    /// 双发遗留修正——P2 重构时「§9① 不顺手改」的 push Done + Continue
+    /// 器官 8：中间消息落账 + 并行预计算+ 批次循环，
+    /// 自 run_loop.rs 骨架收编（与 8a-8e 同居本文件）。出口归一：
+    /// 批内 cancel/estop = `Stop(ev)` + `terminal_reason` 照记（
+    /// 双发遗留修正—— 重构时「① 不顺手改」的 push Done + Continue
     /// 旧形态退役：它会让下一轮器官 1 顶检重发一次 Done = 聊天里两条
     /// 「已取消」；现与 8a/8b/8e 终局同一出口，骨架 push + break 一次到位）；
     /// 8a/8b 快照与 8e escalation/validation 两终局 = `Stop(ev)`
@@ -703,9 +703,9 @@ impl AgentLoop {
             tool_calls.clone(),
             response.reasoning_content.clone(),
         );
-        // R1（2026-09-21）：中间轮输出发布——模型多步执行时每轮的过程叙述
-        // （「我先看下 X 再改 Y」）此前只进 history，前端看不见；批次二
-        // （2026-10-31）叙述与思考链同发，皆空才不发（guard 在
+        // ：中间轮输出发布——模型多步执行时每轮的过程叙述
+        // （「我先看下 X 再改 Y」）此前只进 history，前端看不见；
+        // 叙述与思考链同发，皆空才不发（guard 在
         // emit_round_output 内）——thinking-only 轮（叙述空、思考有值）照发。
         self.emit_round_output(
             &context.session_key,
@@ -717,13 +717,13 @@ impl AgentLoop {
 
         // Execute each tool call.
         instance.set_state(crate::types::AgentState::ExecutingTool);
-        // U5 (sixth batch): precompute execution for an ALL-parallel-safe
+        // (sixth batch): precompute execution for an ALL-parallel-safe
         // batch (≥2 calls, every tool read-only OR explicitly opted in —
-        // G3: spawn). The for-loop then replays the serial guards on the
+        // spawn). The for-loop then replays the serial guards on the
         // precomputed results in source order — the audit chain stays
         // ordered = model source order (roadmap risk 3). cluster_rpc/exec
         // /writers are never parallel-safe → this stays None for those
-        // batches → the loop below runs byte-identical to pre-U5.
+        // batches → the loop below runs byte-identical to pre-.
         // `None` also when a cancel/estop is already engaged at batch
         // start (the for-loop's per-item check handles that case
         // unchanged).
@@ -741,7 +741,7 @@ impl AgentLoop {
                     instance.detached_depth(),
                     instance.detached_no_tools(),
                     instance.detached_allowed_tools(),
-                    // B2 职能工具围栏随行（serial 路径同款裁决；空白名单 =
+                    // 职能工具围栏随行（serial 路径同款裁决；空白名单 =
                     // 未围，parallel batch 内恒放行）。
                     instance.config().tool_fence_profession.clone(),
                     instance.config().tools.clone(),
@@ -751,14 +751,14 @@ impl AgentLoop {
         } else {
             None
         };
-        // U5: in the parallel path, cancel/estop are NOT re-checked per item
+        // in the parallel path, cancel/estop are NOT re-checked per item
         // — the batch was checkpointed non-cancelled above and runs to
         // completion (goal §四 documented semantic: a cancel arriving during
         // the parallel window takes effect on the NEXT turn, not mid-batch).
         // The serial path (precomputed.is_none()) keeps the per-item checks
         // byte-identical.
         let skip_cancel_estop = precomputed.is_some();
-        // 修④（BUG-C 2026-11-04）：批后急停检查点——并行批窗口内到达的急停
+        // 修④：批后急停检查点——并行批窗口内到达的急停
         // （precompute 内 biased select 已中断在飞收集并补发中断面
         // ToolFinished，见 tool_defs.rs 同款注释）在此收口：拒绝整批回灌、
         // 终局本轮（旧语义 = 批照跑完且回灌照常、下一轮边界才停）。per-item
@@ -781,7 +781,7 @@ impl AgentLoop {
                     "[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}",
                     tc.name, st.turns_used
                 );
-                // 单发 Done（2026-10-31 双发遗留修正）：原形态 push Done +
+                // 单发 Done（双发遗留修正）：原形态 push Done +
                 // Continue 落回骨架 → 下一轮器官 1 顶检再发一次并停轮 =
                 // 聊天里出现两条「已取消」。改走 Stop 出口与 8a/8b/8e 终局
                 // 归一（骨架 push + break + 收尾一次到位）。
@@ -806,7 +806,7 @@ impl AgentLoop {
                 ));
             }
 
-            // 器官 8 间隙检查（P19 能力扩展 WS8）：批内间隙 peek steer 队列
+            // 器官 8 间隙检查：批内间隙 peek steer 队列
             // ——有插队消息待注入 → 当前调用起剩余全部合成 Skipped tool
             // 结果并终止本批（Continue → 下一轮器官 2 认领 steer 进
             // build_messages）。串行路径专属，详见方法注释。
@@ -822,13 +822,13 @@ impl AgentLoop {
             }
 
             let tool_start = std::time::Instant::now();
-            // Phase 2 (small-model-tool-robustness): validate args against
+            // (small-model-tool-robustness): validate args against
             // the tool's schema before dispatch. Catches B-class failures;
             // auto-fixes high-confidence field-name typos (edit distance ≤2);
             // otherwise bounces a structured error back to the model so it
             // can self-correct on the next round.
             //
-            // U5 (sixth batch): when `precomputed` is Some, the execution
+            // (sixth batch): when `precomputed` is Some, the execution
             // already ran concurrently (above) — replay its result + the
             // `validation_failures` counter increment here, then fall
             // through to the SAME serial guards (observer/capture/
@@ -840,7 +840,7 @@ impl AgentLoop {
                 let p = &pc[batch_idx];
                 if p.validation_failed {
                     st.validation_failures += 1;
-                    // L14：校验失败回灌计入会话统计。
+                    // 校验失败回灌计入会话统计。
                     self.bump_session_stats(
                         &context.session_key,
                         crate::session_stats::StatCounter::ValidationFailures,
@@ -852,16 +852,16 @@ impl AgentLoop {
                 }
                 (p.result.clone(), p.duration_ms)
             } else {
-                // 修2（2026-11-04）：环境约束预拒统一注册点——detached +
+                // 环境约束预拒统一注册点——detached +
                 // 职能围栏两约束一处声明，串行/并行同源（并行预检消费
-                // 值形态 [`super::tool_dispatch::
+                // 值形态 [`super:tool_dispatch:
                 // environment_constraint_refusal_for`]）。环境性拒绝在
-                // 安全段之前权威拒绝：不弹审批卡、不进风险管线（BUG-A
-                // 2026-11-04 阻塞链的派发侧护栏之一）。
+                // 安全段之前权威拒绝：不弹审批卡、不进风险管线（
+                // 阻塞链的派发侧护栏之一）。
                 let r = match super::tool_dispatch::environment_constraint_refusal(
                     instance, &tc.name,
                 ) {
-                    // 压测①a（2026-09-30）：detached 工具闸——no_tools/白名单外
+                    // 压测①a：detached 工具闸——no_tools/白名单外
                     // 在派发现场权威拒绝（供给层只管 defs 可见性，上游端点
                     // 注入的调用不经供给层）。拒绝串回灌当工具结果，下游
                     // observer/turn_guard/spill 守卫照常按序跑。
@@ -877,7 +877,7 @@ impl AgentLoop {
                         crate::args_validator::Outcome::Valid => {
                             st.validation_failures = 0;
                             self.record_tool_validation_stats(false);
-                            // G2: dispatch at this instance's sub-agent depth so
+                            // dispatch at this instance's sub-agent depth so
                             // depth-aware tools (spawn) enforce max_depth.
                             self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
                                 .await
@@ -900,7 +900,7 @@ impl AgentLoop {
                         }
                         crate::args_validator::Outcome::Invalid { message, class } => {
                             st.validation_failures += 1;
-                            // L14：校验失败回灌计入会话统计（串行臂）。
+                            // 校验失败回灌计入会话统计（串行臂）。
                             self.bump_session_stats(
                                 &context.session_key,
                                 crate::session_stats::StatCounter::ValidationFailures,
@@ -910,7 +910,7 @@ impl AgentLoop {
                                 "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
                                 tc.name, tc.id, class, message
                             );
-                            // L10-建设：回灌单一真相源（与并行预计算臂同源——
+                            // 建设：回灌单一真相源（与并行预计算臂同源——
                             // 惰性供给时附 tools_schema_get 取回指引）。
                             super::tool_defs::validation_error_feedback(
                                 &message,
@@ -923,7 +923,7 @@ impl AgentLoop {
                 (r, tool_start.elapsed().as_millis() as u64)
             };
             let tool_duration = std::time::Duration::from_millis(tool_duration_ms);
-            // 同刻度判定（BUG-20261029-167）：observer/capture 的成败分类与
+            // 同刻度判定：observer/capture 的成败分类与
             // turn_guard/WAL 共用同一 helper——ExecTool 的 `Ok("Exit code: N")`
             // 与 `Ok("Command timed out …")` 都是失败，不共用会把失败循环记成
             // 成功流。
@@ -966,7 +966,7 @@ impl AgentLoop {
                 );
             }
 
-            // 器官 8a（§4.2 → tool_batch.rs）：__ASYNC__ 集群续行快照 +
+            // 器官 8a（tool_batch.rs）：__ASYNC__ 集群续行快照 +
             // 中间消息；Some = 终局 Done（return Stop，骨架 push + break）。
             if result.starts_with("__ASYNC__:")
                 && let Some(ev) = self
@@ -976,7 +976,7 @@ impl AgentLoop {
                 return TurnFlow::Stop(ev);
             }
 
-            // 器官 8b（§4.2 → tool_batch.rs）：__BG_SPAWN__ 后台子代理
+            // 器官 8b（tool_batch.rs）：__BG_SPAWN__ 后台子代理
             // 快照（inline await 语义保持）。
             if let Some(bg_task_id) = result.strip_prefix("__BG_SPAWN__:") {
                 let ev = self
@@ -992,19 +992,19 @@ impl AgentLoop {
             };
             events.push(AgentEvent::ToolResult(tool_result));
 
-            // 器官 8c（§4.2 → tool_batch.rs）：⑤/⑤′/⑥ 守卫 + C3 诊断
-            // 回灌 + spill/prune 门 + X1 projection + 历史落账；返回
+            // 器官 8c（tool_batch.rs）：⑤/⑤′/⑥ 守卫 + 诊断
+            // 回灌 + spill/prune 门 + projection + 历史落账；返回
             // tool_succeeded 供 8d 与边界判定。
             let tool_succeeded = self
                 .apply_tool_guards(instance, context, tc, result, &mut st.turn_guard)
                 .await;
 
-            // 器官 8d：H5/I1/I3 指令链触碰。
+            // 器官 8d：// 指令链触碰。
             self.touch_instruction_chain(instance, tc, tool_succeeded);
 
-            // 器官 8e（§4.2 → tool_batch.rs）：两终局判定（Some = 终局
+            // 器官 8e（tool_batch.rs）：两终局判定（Some = 终局
             // 事件 → terminal_reason 照记 + return Stop（骨架 push +
-            // break）；J5 批准继续 = None 落回批次）。
+            // break）； 批准继续 = None 落回批次）。
             if let Some(ev) = self.check_escalation(&mut st.turn_guard, context).await {
                 st.terminal_reason = Some("escalation");
                 return TurnFlow::Stop(ev);
@@ -1015,10 +1015,10 @@ impl AgentLoop {
             }
         }
 
-        // N2（机会项）：present_plan verdict 消费（批次边界，单一消费点）。
+        // ：present_plan verdict 消费（批次边界，单一消费点）。
         // 按 session_key 取走本会话的裁决（跨会话 turn 并发不串台）。
         // 驳回/超时 = 本轮结构性终止（模型不再获得下一轮，工具结果文本已落
-        // 历史，下条用户消息可见）；批准 = 模式已在工具内翻转，落回正常轮。
+        // 历史，下条用户消息可）；批准 = 模式已在工具内翻转，落回正常轮。
         if let Some(handle) = self.plan_present.read().clone()
             && let Some(verdict) = handle.verdicts.lock().remove(&context.session_key)
         {
@@ -1044,6 +1044,6 @@ impl AgentLoop {
     }
 }
 
-// P19（能力扩展 WS8）：批内 steer 跳批测试（声明 + 独立文件，无内联测试）。
+// ：批内 steer 跳批测试（声明 + 独立文件，无内联测试）。
 #[cfg(test)]
 mod p19_steer_skip_tests;

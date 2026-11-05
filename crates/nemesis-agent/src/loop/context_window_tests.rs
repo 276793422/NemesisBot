@@ -1,9 +1,9 @@
-//! N1（devtool-upgrade 阶段 1）：三级 context_window 解析链测试。
+//! （devtool-upgrade）：三级 context_window 解析链测试。
 //!
-//! L1 config 显式 > L2 价目表 catalog > L3 fallback-128k，外加 instance
-//! 默认值同源断言与「L3 猜大 → provider 溢出 → 应急压缩 → 重试成功」
+//! config 显式 > 价目表 catalog > fallback-128k，外加 instance
+//! 默认值同源断言与「 猜大 → provider 溢出 → 应急压缩 → 重试成功」
 //! 端到端回归锁（溢出应急链的机制测试本就存在于 tests.rs 的
-//! `test_run_with_context_error_and_retry_success`——这里补 L3 场景版）。
+//! `test_run_with_context_error_and_retry_success`——这里补 场景版）。
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -134,7 +134,7 @@ fn l3_fallback_when_neither_hits() {
 
 #[test]
 fn instance_default_matches_fallback() {
-    // instance.rs 的默认值必须与 FALLBACK_CONTEXT_WINDOW 同源（N1 前是
+    // instance.rs 的默认值必须与 FALLBACK_CONTEXT_WINDOW 同源（前是
     // 各写各的 32000）。
     let instance = AgentInstance::new(local_test_config());
     assert_eq!(instance.context_window(), FALLBACK_CONTEXT_WINDOW);
@@ -150,12 +150,12 @@ async fn agent_loop_resolves_all_three_tiers() {
     agent_loop.set_config_path(cfg_path);
     agent_loop.set_active_model("local");
 
-    // L3：config 条目存在但无 context_window、无 pricing。
+    // config 条目存在但无 context_window、无 pricing。
     let (w, source) = agent_loop.current_context_window_with_source();
     assert_eq!(w, None);
     assert_eq!(source, "fallback-128k");
 
-    // L2：注入价目表后同一 loop 命中 catalog。
+    // 注入价目表后同一 loop 命中 catalog。
     let pricing_dir = temp_dir_unique("loop-pricing");
     let store = std::sync::Arc::new(nemesis_data::PricingStore::open(&pricing_dir).unwrap());
     store
@@ -169,7 +169,7 @@ async fn agent_loop_resolves_all_three_tiers() {
     assert_eq!(w, Some(96_000));
     assert_eq!(source, "catalog");
 
-    // L1：config 显式 context_window 压过价目表。
+    // config 显式 context_window 压过价目表。
     let cfg_path = write_config(&dir, &ctx_entry("local", "obscure/local-7b", "64000"));
     agent_loop.set_config_path(cfg_path);
     let (w, source) = agent_loop.current_context_window_with_source();
@@ -180,10 +180,10 @@ async fn agent_loop_resolves_all_three_tiers() {
     assert_eq!(agent_loop.current_context_window(), Some(64_000));
 }
 
-/// N1 回归锁：L3 猜大（128k）但真实模型更小 → provider 报溢出 → 应急
+/// 回归锁： 猜大（128k）但真实模型更小 → provider 报溢出 → 应急
 /// 压缩（force_compression）→ 重试成功。机制与
 /// `test_run_with_context_error_and_retry_success` 相同，差异在配置侧
-/// **明确走 L3**（无 context_window 键、无价目表注入）。
+/// **明确走 **（无 context_window 键、无价目表注入）。
 #[tokio::test]
 async fn l3_guess_too_big_recovers_via_emergency_compression() {
     struct ContextErrorThenSuccessProvider {
@@ -220,7 +220,7 @@ async fn l3_guess_too_big_recovers_via_emergency_compression() {
         }
     }
 
-    // config 条目无 context_window、loop 无 pricing_store → L3 128k 生效。
+    // config 条目无 context_window、loop 无 pricing_store → 128k 生效。
     let dir = temp_dir_unique("l3-overflow");
     let cfg_path = write_config(&dir, &plain_entry("local", "obscure/local-7b"));
     let agent_loop = AgentLoop::new(
@@ -245,7 +245,7 @@ async fn l3_guess_too_big_recovers_via_emergency_compression() {
     let done: Vec<_> = events
         .iter()
         .filter_map(|e| match e {
-            // AgentEvent 经 loop.rs 的 use 从 crate::types 引入，super::* 可见。
+            // AgentEvent 经 loop.rs 的 use 从 crate:types 引入，super:* 可见。
             AgentEvent::Done(msg) => Some(msg.clone()),
             _ => None,
         })
@@ -254,7 +254,7 @@ async fn l3_guess_too_big_recovers_via_emergency_compression() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-20 压缩点一等公民化：resolve_compact_trigger 五臂
+// 压缩点一等公民化：resolve_compact_trigger 五臂
 // ---------------------------------------------------------------------------
 
 fn cc_entry(name: &str, full: &str, context_window: &str, compact: &str) -> String {
@@ -311,7 +311,7 @@ fn compact_trigger_user_above_window_clamps() {
 
 #[test]
 fn compact_trigger_unset_uses_window_ratio_config() {
-    // 未设压缩点 → 窗口×75% 既有行为（L1 config 来源透传）。
+    // 未设压缩点 → 窗口×75% 既有行为（config 来源透传）。
     let cfg: serde_json::Value = serde_json::from_str(&format!(
         "{{\"model_list\": [{}]}}",
         cc_entry("opus", "x/opus", "200000", "")

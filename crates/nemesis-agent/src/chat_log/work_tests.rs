@@ -78,7 +78,7 @@ fn test_work_meta_entry_writes_work_key_legacy_rows_omit() {
     assert_eq!(work["ended_at_ms"], 1_730_000_073_500i64);
     let rounds = work["rounds"].as_array().expect("rounds array");
     assert_eq!(rounds.len(), 2);
-    // 批次二（2026-10-31）：reasoning 字段 roundtrip——有值落键、空省略
+    // reasoning 字段 roundtrip——有值落键、空省略
     // （旧 jsonl 无该键照常解析 = 宽容读契约）。
     assert_eq!(rounds[0]["text"], "我先核对入口");
     assert_eq!(rounds[0]["reasoning"], "应该先看配置再动手");

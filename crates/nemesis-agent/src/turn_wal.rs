@@ -1,9 +1,9 @@
-//! L8（内部专项总计划重评估，2026-10-13）：工具调用三态 WAL（Write-Ahead
+//! （重评估，2026-10-13）：工具调用三态 WAL（Write-Ahead
 //! Log）。每个工具调用在 dispatch 瀑布里落三行 JSONL——admitted（过了全部
 //! 闸门）/ started（真实执行前）/ finished（含 ok）——写到
 //! `<workspace>/logs/turn_wal/wal.jsonl`。进程被强杀（`taskkill /F`、崩溃）
 //! 时，执行中的调用会留下「started 无 finished」的断头记录；下次启动
-//! [`TurnWal::recover_and_finalize`] 扫描补写 interrupted 收尾行并返回续轮
+//! [`TurnWal:recover_and_finalize`] 扫描补写 interrupted 收尾行并返回续轮
 //! 候选（pump 据此合成续轮消息，走正常 gate/admission 流程回到原会话）。
 //!
 //! 诚实边界：纯 `write` + `flush`（无 fsync）——数据落 OS 页缓存，进程级
@@ -157,12 +157,12 @@ impl TurnWal {
 
     /// 追加一行（内部：锁 → 轮转检查 → 写 → flush）。
     ///
-    /// 轮转与写共用同一把文件锁（BUG-20261030-204）：此前轮转判定+rename
+    /// 轮转与写共用同一把文件锁：此前轮转判定+rename
     /// 在锁外做，与并发写者（同一 loop 的并发 turn 任务，D-4 信号量放行）
     /// 竞态——①guard=None 窗口进来的写者被 `if let Some` 静默跳过（admitted
     /// 行无 warn 消失 = 恢复链盲区）；②rename 被瞬时句柄挡住（Windows
     /// AV/索引器是常态）时 guard 永久停在 None，此后**所有**行静默丢弃且
-    /// M2 degraded 报告永不触发。锁内轮转 + 失败重开兜底双修。
+    /// degraded 报告永不触发。锁内轮转 + 失败重开兜底双修。
     fn append_record(&self, rec: WalRecord) {
         let line = match serde_json::to_string(&rec) {
             Ok(l) => l,
@@ -184,7 +184,7 @@ impl TurnWal {
                 .and_then(|_| f.write_all(b"\n"))
             {
                 tracing::warn!("[TurnWal] WAL 写入失败（降级为无 WAL）: {e}");
-                // M2：写入失败面可观测（崩溃恢复窗口随之失效）。
+                // 写入失败面可观测（崩溃恢复窗口随之失效）。
                 nemesis_utils::degraded::report(
                     "turn_wal",
                     format!(
@@ -206,9 +206,9 @@ impl TurnWal {
     /// `wal.jsonl.old`（覆盖上一代），重开句柄。单代保留——最旧一代丢弃
     /// （诚实取舍：恢复窗口只保最新两代文件）。
     ///
-    /// 轮转失败不杀 WAL（BUG-20261030-204）：重开原文件尽力续写——老代码
+    /// 轮转失败不杀 WAL：重开原文件尽力续写——老代码
     /// 失败路径 guard 留 None，此后所有行被静默丢弃（写路径根本不走到
-    /// M2 degraded 报告的 write 失败分支，永久死亡不可观测）。
+    /// degraded 报告的 write 失败分支，永久死亡不可观测）。
     fn rotate_locked(
         &self,
         guard: &mut Option<std::fs::File>,
@@ -281,7 +281,7 @@ impl TurnWal {
     /// 2. TTL 内的 → 补写 interrupted 行 + 返回续轮候选；
     ///    TTL 外的 → 仅 WARN（诚实放弃，不续轮）；
     /// 3. drain 重写：wal.jsonl 只保留本次补写的 interrupted 行（供再次
-    ///    崩溃时留痕），删除 .old，保证恢复幂等（二次调用零候选）。
+    ///    崩溃时留痕），删除.old，保证恢复幂等（二次调用零候选）。
     pub fn recover_and_finalize(&self) -> Vec<ResumeCandidate> {
         let (records, bad) = self.read_all();
         if bad > 0 {
@@ -364,7 +364,7 @@ impl TurnWal {
             if let Err(e) = std::fs::write(&self.path, body) {
                 tracing::warn!("[TurnWal] 恢复期 drain 重写失败: {e}");
             }
-            // 兜底重开（BUG-20261030-204 同族）：写败/重开败任一发生都不许
+            // 兜底重开（同族）：写败/重开败任一发生都不许
             // guard 停在 None——否则此后所有 append 被 `if let Some` 静默
             // 跳过，WAL 无 warn 永久死亡。
             if guard.is_none()

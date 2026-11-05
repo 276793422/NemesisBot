@@ -1,4 +1,4 @@
-//! A4 测试：五级模糊替换级联的样例矩阵（每级 ≥1 正 1 反）+ 歧义行号 +
+//! 测试：五级模糊替换级联的样例矩阵（每级 ≥1 正 1 反）+ 歧义行号 +
 //! 跨度保护拒绝 + 级联顺序。纯函数测试（content/old/new 直入）。
 
 use super::*;
@@ -33,7 +33,7 @@ fn line_trimmed_negative_line_count_differs_falls_through() {
 
 #[test]
 fn line_trimmed_new_has_more_lines_at_eof_falls_through_no_panic() {
-    // 回归锁（2026-10-25 P0 实机 panic 实录：len 84 index 84）：匹配块触及
+    // 回归锁（实机 panic len 84 index 84）：匹配块触及
     // EOF 且 new 比 old 多行时，旧实现按 new 行数索引文件行越界 panic，杀死
     // agent loop 任务（无回调无失败上报）。守卫后本级不适用，落后续级
     // verbatim 路径安全完成追加。
@@ -134,7 +134,7 @@ fn block_anchor_ambiguous_pairs_reports_first_anchor_lines() {
 
 #[test]
 fn block_anchor_single_candidate_not_at_line_zero_matches() {
-    // 回归锁（2026-10-25 P0 实机 panic 实录：len 1 index 23）：build 曾收到
+    // 回归锁（实机 panic len 1 index 23）：build 曾收到
     // 起始行号却被当下标回查 cands——唯一候选起始行 >0 且 cands.len()==1 时
     // 必崩（此前只有起始行 0 的匹配侥幸活着）。契约修正后 build 收候选元组
     // 本身，任意起始行都安全。

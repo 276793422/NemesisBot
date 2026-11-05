@@ -1,4 +1,4 @@
-// K4 (devtool-upgrade 阶段 7)：IM 编码入口测试。
+// (devtool-upgrade)：IM 编码入口测试。
 //
 // 覆盖面：
 // ① 派发语法解析 `parse_user_dispatch`——/build /plan 双前缀、裸命令与
@@ -45,7 +45,7 @@ fn parse_multi_word_task_and_trimming() {
 
 #[test]
 fn parse_bare_command_not_matched() {
-    // 裸 /build（无尾随参数）= F1 模式切换，不属于派发语法。
+    // 裸 /build（无尾随参数）= 模式切换，不属于派发语法。
     assert!(parse_user_dispatch("/build").is_none());
     assert!(parse_user_dispatch("/plan").is_none());
     assert!(parse_user_dispatch("/build   ").is_none());

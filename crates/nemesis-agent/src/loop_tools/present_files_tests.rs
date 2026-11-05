@@ -1,4 +1,4 @@
-//! N5（2026-10-13 机会项）: present_files 交付物登记工具单元测试。
+//! （2026-10-13）: present_files 交付物登记工具单元测试。
 //!
 //! 覆盖：注册门控（workspace+bucket 双 Some → 注册 / 任一 None → 不注册）、
 //! schema（files 必填数组）、解析（path 必填 / title 缺省取文件名 / note

@@ -143,7 +143,7 @@ fn read_file_from_tree_error_faces() {
     let tree_hex = store.latest_tree_hex().unwrap();
 
     let json_store = {
-        // 无 .git 的 root → JSON 形态。
+        // 无.git 的 root → JSON 形态。
         let dir2 = tempfile::tempdir().unwrap();
         let root2 = dir2.path().join("plain");
         std::fs::create_dir_all(&root2).unwrap();
@@ -174,7 +174,7 @@ fn read_file_from_tree_error_faces() {
     );
 }
 
-/// hybrid_restore 失败面（R3 语义）：写入目标在盘上是目录 → **进 failures**
+/// hybrid_restore 失败面（语义）：写入目标在盘上是目录 → **进 failures**
 /// （旧形态静默吞掉——rewind 据此零推进）；待删文件不存在 = 快照语义已
 /// 达成（不计失败）；`..` 路径 safe_path 拒绝（不进任何 vec）。
 #[tokio::test]

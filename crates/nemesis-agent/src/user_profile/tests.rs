@@ -185,7 +185,7 @@ fn profile_roundtrip_via_disk() {
 
 // ---- sweep 证据窗（滚动 24h）----
 
-/// 2026-10-01T00:00:00Z = epoch 1790812800 秒（锚点常用于以下断言）。
+/// 01T00:00:00Z = epoch 1790812800 秒（锚点常用于以下断言）。
 const ANCHOR_MS: i64 = 1_790_812_800_000;
 
 #[test]
@@ -382,7 +382,7 @@ fn empty_substring_is_rejected_for_veto_forget_pin() {
 
 #[test]
 fn upsert_hit_clamps_out_of_range_confidence() {
-    // B-F2：LLM 反思通道候选可能带 >1.0 的越界置信度，命中合并路径必须
+    // B-：LLM 反思通道候选可能带 >1.0 的越界置信度，命中合并路径必须
     // 钳制（插入路径已有 clamp，这里钉命中路径）。
     let mut p = UserProfile::default();
     upsert_habit(&mut p, habit("用户偏好简洁回复", 0.4));
@@ -428,7 +428,7 @@ fn prune_keeps_pinned_over_higher_confidence() {
 
 #[test]
 fn render_folds_newlines_in_content() {
-    // B-F2：反思通道内容若夹带换行会伪造注入行结构——渲染层压成单行。
+    // B-：反思通道内容若夹带换行会伪造注入行结构——渲染层压成单行。
     let mut p = UserProfile::default();
     let mut h = habit("第一行\r\n第二行", 0.8);
     h.status = STATUS_ACTIVE.into();
@@ -466,7 +466,7 @@ fn veto_and_forget_and_pin_match_case_insensitively() {
 
 #[test]
 fn try_load_corrupt_profile_is_err_and_load_tolerates() {
-    // B-F3：损坏画像 try_load = Err（写路径禁用容错形态）；load_profile
+    // B-：损坏画像 try_load = Err（写路径禁用容错形态）；load_profile
     // 的展示容错语义保留（unwrap_or_default 不 panic）。
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
@@ -491,7 +491,7 @@ fn try_load_corrupt_profile_is_err_and_load_tolerates() {
     assert!(try_load_profile(dir2.path()).unwrap().habits.is_empty());
 }
 
-// ---- enable_profile 截断上限随 config（BUG-20261025-20）----
+// ---- enable_profile 截断上限随 config----
 
 /// enable 重跑（幂等锚点 + 清洗截断）必须按调用方传入的 config 上限截断，
 /// 不再硬编码 10——`max_entries` 配 20 的用户 disable→enable 循环后，

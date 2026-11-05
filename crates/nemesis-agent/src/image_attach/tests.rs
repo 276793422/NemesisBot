@@ -1,19 +1,19 @@
-//! T5 统一附加流程测试（goal 2026-09-03）。
+//! 统一附加流程测试（goal 2026-09-03）。
 //!
 //! 覆盖三态安全语义 + 审计链 path+hash + 水合降级 + 跨来源去重：
 //! 1. **点名路径放行**：无 file_rules 时附加**不走**文件工具的
 //!    `restrict_to_workspace`——工作区外的绝对路径照样附加（聊天用户点名
 //!    路径 = 主体意志，安全 8 层管线照常全跑）。
 //! 2. **file_rules 收紧**：`*.png` deny 规则经管线 Layer 3（ABAC）拦截
-//!    附加，诚实注明 `[图片未附加: ...]`；同消息的 .jpg 不受牵连。
+//!    附加，诚实注明 `[图片未附加:...]`；同消息的.jpg 不受牵连。
 //! 3. **文件工具 restrict=true**：同一工作区外路径，agent 自主 `read_file`
 //!    工具仍拒（工具层开关继续管 agent，不受附加语义影响）。
 //!
-//! 另：审计链事件记 target=path + reason=sha256（P4.2 hash-only 语义）、
-//! 水合成功/失效占位、URL 占位注记（T9 前诚实降级）。
+//! 另：审计链事件记 target=path + reason=sha256（.2 hash-only 语义）、
+//! 水合成功/失效占位、URL 占位注记（前诚实降级）。
 //!
 //! 注意：走真实 SecurityPlugin 的测试必须 multi_thread flavor——管线
-//! Layer 7（病毒扫描）无条件 `tokio::task::block_in_place`，current_thread
+//! Layer 7（病毒扫描）无条件 `tokio:task:block_in_place`，current_thread
 //! runtime 会 panic。
 
 use std::path::PathBuf;
@@ -32,7 +32,7 @@ fn png_bytes() -> Vec<u8> {
     v
 }
 
-/// 最小 JPEG（FF D8 FF 前缀）。
+/// 最小 JPEG（FF FF 前缀）。
 fn jpg_bytes() -> Vec<u8> {
     vec![0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10, b'J', b'F', b'I', b'F']
 }
@@ -211,7 +211,7 @@ async fn read_file_tool_restrict_still_rejects_outside_path() {
 }
 
 // ---------------------------------------------------------------------------
-// 审计链：path + sha256（P4.2 hash-only 语义）
+// 审计链：path + sha256（.2 hash-only 语义）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -328,7 +328,7 @@ fn media_disguised_text_file_gets_not_image_note() {
 
 #[test]
 fn media_url_without_prefetch_gets_honest_note() {
-    // T9 后同步入口不再拉网络：直接收到 URL 属调用方误用（loop.rs 先经
+    // 后同步入口不再拉网络：直接收到 URL 属调用方误用（loop.rs 先经
     // fetch_url_media 预取），诚实注明而非静默。
     let outcome = attach_turn_images(
         "hi",
@@ -349,7 +349,7 @@ fn media_url_without_prefetch_gets_honest_note() {
 }
 
 // ---------------------------------------------------------------------------
-// T9：URL 预取（fetch_url_media）——SSRF 闸 / 下载落盘 / 验真 / 同批去重
+// URL 预取（fetch_url_media）——SSRF 闸 / 下载落盘 / 验真 / 同批去重
 // ---------------------------------------------------------------------------
 
 /// 本地 mock 图床：循环 accept（至多 `max_hits` 个连接），每个请求回一段
@@ -426,7 +426,7 @@ async fn t9_url_download_lands_and_attaches_to_base64() {
 
     assert!(notes.is_empty(), "notes: {:?}", notes);
     assert_eq!(kept.len(), 1);
-    // 改写为 uploads 下的本地路径引用（url_ 前缀 + .png）。
+    // 改写为 uploads 下的本地路径引用（url_ 前缀 +.png）。
     let path = &kept[0].url;
     assert!(
         path.contains("uploads") && path.contains("url_") && path.ends_with(".png"),
@@ -523,7 +523,7 @@ async fn t9_local_media_passthrough_untouched() {
 }
 
 // ---------------------------------------------------------------------------
-// S1（2026-09-04 四轮盲审）：下载大小硬上限——Content-Length 预检 + 流式中止
+// （四轮盲审）：下载大小硬上限——Content-Length 预检 + 流式中止
 // ---------------------------------------------------------------------------
 
 /// 裸响应 mock：对每个连接原样回放 `response` 字节（测试自拼 HTTP 报文）。
@@ -608,7 +608,7 @@ async fn s1_streaming_read_aborts_when_body_exceeds_cap() {
 }
 
 // ---------------------------------------------------------------------------
-// 水合（build_messages 每轮重读的 T6 语义）
+// 水合（build_messages 每轮重读的 语义）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -662,7 +662,7 @@ fn hydrate_disguised_ref_degrades_to_placeholder() {
 }
 
 // ---------------------------------------------------------------------------
-// 注记合并（AttachOutcome::merge_into_text）
+// 注记合并（AttachOutcome:merge_into_text）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -684,7 +684,7 @@ fn merge_into_text_no_notes_returns_text_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
-// D6 每消息张数上限（二次回归 2026-09-03 补齐：两来源合计 ≤8，超出聚合注记）
+// 每消息张数上限（二次回归 补齐：两来源合计 ≤8，超出聚合注记）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -741,7 +741,7 @@ fn d6_cap_covers_media_source_after_text_source() {
         std::fs::write(&p, png_bytes()).unwrap();
         txt_paths.push(p);
     }
-    // 第 9~16 张走 media 引用（T8 上传形态）：必须不同文件（重复会被去重
+    // 第 9~16 张走 media 引用（上传形态）：必须不同文件（重复会被去重
     // 静默跳过，到不了上限分支）。
     let mut media_paths = Vec::new();
     for i in 0..8 {
@@ -811,8 +811,8 @@ fn d6_under_cap_no_note() {
 }
 
 // ---------------------------------------------------------------------------
-// A1（2026-09-03 二次回归）：重定向不跟随——SSRF 闸只校验首跳 URL，
-// 302 → 内网地址曾借共享池默认跟随策略绕过闸直打内网。现在 Policy::none()
+// （二次回归）：重定向不跟随——SSRF 闸只校验首跳 URL，
+// 302 → 内网地址曾借共享池默认跟随策略绕过闸直打内网。现在 Policy:none()
 // + 显式 is_redirection 拦截：诚实注记，重定向目标零连接。
 // ---------------------------------------------------------------------------
 #[tokio::test]
@@ -834,7 +834,7 @@ async fn t9_redirect_response_not_followed() {
             hits2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             let mut buf = [0u8; 4096];
             let _ = stream.read(&mut buf);
-            // 302 指向链路本地元数据端点（客户端 Policy::none 不会真连）。
+            // 302 指向链路本地元数据端点（客户端 Policy:none 不会真连）。
             let resp = "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             let _ = stream.write_all(resp.as_bytes());
         }
@@ -865,15 +865,15 @@ async fn t9_redirect_response_not_followed() {
     );
 }
 
-// C3（2026-09-03 二次回归）：扩展名按**内容签名表**定——URL 以 .png 结尾但
+// （二次回归）：扩展名按**内容签名表**定——URL 以.png 结尾但
 // 实际是 JPEG 时，落盘扩展名应为 jpg（Content-Type 同理可伪造）。
 #[tokio::test]
 async fn t9_extension_from_magic_not_url_or_content_type() {
-    // 最小 JPEG 签名（FF D8 FF）开头 + 可识别尾注。
+    // 最小 JPEG 签名（FF FF）开头 + 可识别尾注。
     let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
     jpeg.extend_from_slice(b"jpeg-bytes-from-mock");
     let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    // URL 叫 .png、Content-Type 谎报 image/png。
+    // URL 叫.png、Content-Type 谎报 image/png。
     let base = spawn_mock_image_server(jpeg, "image/png", hits, 2);
 
     let dir = tempfile::tempdir().unwrap();

@@ -1,13 +1,13 @@
-// I3 (devtool-upgrade 阶段 3)：子目录指令懒注入测试。
+// (devtool-upgrade)：子目录指令懒注入测试。
 //
-// 覆盖面（对应实施计划 I3 验收）：
+// 覆盖面（对应实施计划 验收）：
 // ① 单目录加载器 `load_dir_instruction_files`——仅 AGENTS.md / 仅 CLAUDE.md /
 //    双文件镜像折叠 / 双文件并存 / 双缺，五形态；chain 重构后行为不变；
 // ② 一次性渲染器——空表缺席、含标题/路径锚/内容/`</system-reminder>` 转义；
 // ③ 发现编排 `note_read_for_instructions`——根目录读不发现（根链常驻）、
 //    子目录读发现入队、相对路径按 workspace 根解析、工作区外忽略、
 //    同目录会话去重（claims）、空目录不认领（指令后到仍可发现）；
-// ④ 注入端到端——build_messages 携带一次性注入段；drain 后第二轮缺席
+// ④ 注入端到端——build_messages 携带一次性注入段；drain 后缺席
 //    （字节回稳）。
 //
 // 自带迷你 Mock（兄弟模块私有类型不共享）。
@@ -18,7 +18,7 @@ use super::*;
 // 夹具
 // ---------------------------------------------------------------------------
 
-/// 恒定回复的迷你 provider（同 f8_hidden_tools_tests 形状；I3 全部测试
+/// 恒定回复的迷你 provider（同 f8_hidden_tools_tests 形状； 全部测试
 /// 不真正调 LLM，只需要构造 AgentLoop）。
 struct I3MockProvider;
 

@@ -1,12 +1,12 @@
-//! T2（内部专项总计划 L1 codemode，2026-10-13）— `code_run` 测试矩阵。
+//! （codemode，2026-10-13）— `code_run` 测试矩阵。
 //!
 //! 覆盖面：脚本执行/完成值四形态、脚本错误回传文本、脚本内 tool() 过完整
 //! dispatch 瀑布（hooks 观测）+ 拒绝可 catch（estop / 安全管线 deny / 未知
 //! 工具 / 递归闸 / loop 不可用）、资源闸（timeout 中断 / 内存上限）、输出
 //! 截断、tier 双闸（声明 + mini 档 dispatch 拒绝）、args 校验、config 默认开
-//!（2026-10-25 拍板）+ 开关热生效联动 + 预算超时文案（审批等待注记）。
+//!（2026-10-25）+ 开关热生效联动 + 预算超时文案（审批等待注记）。
 //!
-//! 全部 multi_thread flavor：execute → spawn_blocking → `Handle::block_on`
+//! 全部 multi_thread flavor：execute → spawn_blocking → `Handle:block_on`
 //! 桥需要 driver 在后台线程被驱动（current_thread 会挂死——与生产形态
 //! 一致，见 code_run.rs 模块注释）。
 #![cfg(all(feature = "codemode", not(target_os = "android")))]
@@ -282,7 +282,7 @@ async fn estop_rejects_script_tool_calls() {
 async fn security_deny_rejects_script_tool_calls() {
     let mut al = AgentLoop::new(Box::new(NoopProvider), test_config());
     al.register_tool("echo_tool".to_string(), Box::new(EchoTool));
-    // default_action 默认 deny（SecurityPluginConfig::default）→ 一切拒绝。
+    // default_action 默认 deny（SecurityPluginConfig:default）→ 一切拒绝。
     al.set_security_plugin(Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
         nemesis_security::pipeline::SecurityPluginConfig {
             enabled: true,
@@ -339,7 +339,7 @@ async fn memory_limit_rejects_allocation_bomb() {
     assert!(!out.contains("survived"), "不得跑完: {out}");
 }
 
-/// P1-3（2026-10-25）：单次 tool() 吃穿剩余预算的超时路径——错误文案必须
+/// ：单次 tool() 吃穿剩余预算的超时路径——错误文案必须
 /// 带审批等待注记（模型/用户可自诊断：审批卡最长 300s，预算耗在等待上时
 /// 提示调 agents.codemode.timeout_secs）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -431,7 +431,7 @@ async fn tier_dispatch_gate_rejects_mini() {
 }
 
 // ---------------------------------------------------------------------------
-// config 默认开（2026-10-25 拍板）+ 资源默认值（timeout 300 = 审批卡对齐）
+// config 默认开+ 资源默认值（timeout 300 = 审批卡对齐）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -467,7 +467,7 @@ fn tool_description_documents_budget() {
 }
 
 // ---------------------------------------------------------------------------
-// 热生效联动（2026-10-25 默认开）：check_config_reload 比对注册状态增删
+// 热生效联动（默认开）：check_config_reload 比对注册状态增删
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -567,10 +567,10 @@ fn config_reload_missing_key_falls_back_to_enabled() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261029-157：timeout_secs=0（「不限时」语义）曾因 Instant 溢出 panic
+// timeout_secs=0（「不限时」语义）曾因 Instant 溢出 panic
 // ---------------------------------------------------------------------------
 
-/// timeout_secs=0 → Duration::MAX → `Instant::now() + Duration::MAX` 溢出
+/// timeout_secs=0 → Duration:MAX → `Instant:now() + Duration:MAX` 溢出
 /// panic（Add for Instant = checked_add().expect）→ spawn_blocking JoinError
 /// → 工具 Err。文档语义是「不限时、interrupt handler 轮询永假」——脚本必须
 /// 照常执行。修复后 deadline=None（checked_add None 即不限时）。
@@ -585,7 +585,7 @@ async fn unlimited_timeout_zero_secs_runs_script_without_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261029-158：console 聚合只有行数闸没有字节闸（宿主侧内存放大）
+// console 聚合只有行数闸没有字节闸（宿主侧内存放大）
 // ---------------------------------------------------------------------------
 
 /// 单行 3MB（JS 堆内合法）→ join_console_values 拷进 Rust 堆无字节预算。
@@ -620,7 +620,7 @@ async fn console_total_bytes_cap_notes_honestly() {
 }
 
 // ---------------------------------------------------------------------------
-// console 聚合（A2 残余）
+// console 聚合（残余）
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

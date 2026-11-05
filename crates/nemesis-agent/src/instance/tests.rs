@@ -252,7 +252,7 @@ fn instance_summary_cache_clear() {
 #[test]
 fn instance_context_window() {
     let mut instance = AgentInstance::new(test_config());
-    // N1：默认与 FALLBACK_CONTEXT_WINDOW 同源（原 32000 对编码场景过小）。
+    // 默认与 FALLBACK_CONTEXT_WINDOW 同源（原 32000 对编码场景过小）。
     assert_eq!(
         instance.context_window(),
         crate::r#loop::FALLBACK_CONTEXT_WINDOW
@@ -419,7 +419,7 @@ fn instance_clear_history_no_system_prompt() {
 
 #[test]
 fn instance_history_is_append_only() {
-    // S3.1: push_turn no longer truncates — history is strictly append-only.
+    // .1: push_turn no longer truncates — history is strictly append-only.
     // Bounding (drop-oldest with C-aware index adjustment) is the session
     // store's responsibility, never the instance's, so covers_up_to stays valid.
     let instance = AgentInstance::new(test_config());
@@ -643,7 +643,7 @@ fn replace_tool_result_dedupes_multiple_matches() {
     assert_eq!(tool_msgs[0].tool_call_id.as_deref(), Some("tc_X"));
 }
 
-// ----- W3a branch coverage -----
+// ----- branch coverage -----
 
 /// compress_history with >2 turns but NO non-system turns: early return at the
 /// `non_system.is_empty()` guard — history must be left untouched (no
@@ -678,7 +678,7 @@ fn compress_history_all_system_turns_is_noop() {
     );
 }
 
-// —— detached 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）——
+// —— detached 模型覆盖（BUG `board.plan.model` dead-key 修复）——
 
 struct MarkerProvider;
 

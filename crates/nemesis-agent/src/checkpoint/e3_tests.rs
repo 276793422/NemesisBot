@@ -1,4 +1,4 @@
-//! E3（devtool-upgrade 阶段 5）：消息级回退的 checkpoint 侧测试。
+//! （devtool-upgrade）：消息级回退的 checkpoint 侧测试。
 //!
 //! - `latest_tree_hex` / `tree_hex_before`：redo 前向恢复目标 + 陈旧性守卫
 //!   基线的读法（git 形态下按 turn 序取最后一个带 tree 的；JSON 形态恒
@@ -61,7 +61,7 @@ async fn git_mode_tree_queries_and_restore_to_tree() {
     );
 }
 
-/// JSON 形态：tree 查询恒 None；restore_to_tree 诚实报错（E3 redo 文件步
+/// JSON 形态：tree 查询恒 None；restore_to_tree 诚实报错（redo 文件步
 /// 据此跳过并注记，不静默装成功）。
 #[tokio::test]
 async fn json_mode_tree_queries_none_and_restore_errors() {

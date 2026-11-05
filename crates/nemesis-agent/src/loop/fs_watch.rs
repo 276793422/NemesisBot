@@ -1,6 +1,6 @@
 //! 文件系统监视与注入：start_fs_watcher、push/drain_external_changes、note_self_write、workspace/spill 根、set_snapshot_role/interactive_approval/skills_loader/commands_path/cc_hooks_bridge、run_session_end_hooks。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
@@ -38,37 +38,37 @@ impl AgentLoop {
         }
     }
 
-    /// G4 (U4): enable tool-result spill with the given root directory
+    /// : enable tool-result spill with the given root directory
     /// (expected `<home>/logs/spill`). Results above the spill threshold are
     /// written whole under this root and the conversation keeps a bounded
     /// preview + locator. Without a call, spilling stays disabled and results
-    /// use only the G3 prune tier.
+    /// use only the prune tier.
     pub fn set_spill_root(&self, root: std::path::PathBuf) {
         *self.spill_root.write() = Some(root);
     }
 
-    /// D2 (2026-08-24 arch review): read back the configured spill root, if
+    /// (arch review): read back the configured spill root, if
     /// any. Diagnostics/test seam for verifying factory wiring — both the
     /// main and cluster factories point at `<home>/logs/spill`.
     pub fn spill_root_path(&self) -> Option<std::path::PathBuf> {
         self.spill_root.read().clone()
     }
 
-    /// H3 (P2.2): enable skills-catalog digest injection by providing the
+    /// (.2): enable skills-catalog digest injection by providing the
     /// loader. The digest is injected (same point as the time/env hint) only
     /// when the catalog changed since the last injection for this session.
     pub fn set_skills_loader(&self, loader: Arc<nemesis_skills::loader::SkillsLoader>) {
         *self.skills_loader.write() = Some(loader);
     }
 
-    /// H5 (U18): enable the workspace instruction-chain section by giving
+    /// : enable the workspace instruction-chain section by giving
     /// the workspace root (chain root = this dir; the chain itself is read
     /// per-injection).
     pub fn set_workspace_root(&self, root: std::path::PathBuf) {
         *self.workspace_root.write() = Some(root);
     }
 
-    /// VM 档执行环境注记 resolver（B9 审计收口）。宿主侧在执行体桥挂载
+    /// VM 档执行环境注记 resolver（审计收口）。宿主侧在执行体桥挂载
     /// 成功时安装（见 nemesisbot agent_factory `register_tools_and_mcp`）：
     /// 每轮 build_messages 调用，非空返回值追加进 # Environment 快照；
     /// 未安装（headless/测试）= 零行为差异。
@@ -79,13 +79,13 @@ impl AgentLoop {
         *self.exec_env_resolver.write() = Some(resolver);
     }
 
-    /// 节点工作区根（装配时 [`Self::set_workspace_root`] 注入；未设 = None）。
-    /// F-U3-2：cluster agent 以此定位档案管线任务的工作副本目录。
+    /// 节点工作区根（装配时 [`Self:set_workspace_root`] 注入；未设 = None）。
+    /// F-：cluster agent 以此定位档案管线任务的工作副本目录。
     pub fn workspace_root(&self) -> Option<std::path::PathBuf> {
         self.workspace_root.read().clone()
     }
 
-    /// N7（2026-10-13）：注入工作区指令信任档（项目 loop 装配时解析注入；
+    /// ：注入工作区指令信任档（项目 loop 装配时解析注入；
     /// `projects.trust` WSAPI 对运行中 loop 热更新——下一轮 build_messages
     /// 即生效，区块逐 build 重渲染无残留）。
     pub fn set_instruction_trust(&self, trust: crate::workspace_instructions::InstructionTrust) {
@@ -97,7 +97,7 @@ impl AgentLoop {
         *self.instruction_trust.read()
     }
 
-    /// I1 (devtool-upgrade 阶段 3): start the workspace fs watcher. Call
+    /// (devtool-upgrade): start the workspace fs watcher. Call
     /// AFTER the `Arc<AgentLoop>` is finalized — the watcher handle is
     /// stored INSIDE the loop, so its callbacks hold a `Weak<AgentLoop>`
     /// (an Arc would cycle and leak). Requires `set_workspace_root` first;
@@ -123,7 +123,7 @@ impl AgentLoop {
                     // re-read from disk every build) so external instruction
                     // edits already surface next build — this call is the
                     // kept anchor (same shape as the dispatch path's
-                    // touch-driven H5 call) in case change-gating returns.
+                    // touch-driven call) in case change-gating returns.
                     l.invalidate_context_digests();
                 }
             })
@@ -156,9 +156,9 @@ impl AgentLoop {
         }
     }
 
-    /// I1: buffer an externally-changed workspace file (workspace-relative).
+    /// buffer an externally-changed workspace file (workspace-relative).
     /// Drops self-inflicted writes (the agent's own write_file/edit_file
-    /// within [`crate::fs_watcher::SELF_WRITE_WINDOW`]) and caps the buffer.
+    /// within [`crate:fs_watcher:SELF_WRITE_WINDOW`]) and caps the buffer.
     pub fn push_external_change(&self, rel_path: &str) {
         let norm = crate::fs_watcher::normalize_workspace_rel(rel_path);
         {
@@ -178,12 +178,12 @@ impl AgentLoop {
         }
     }
 
-    /// I1: one-shot drain for the build_messages `<external_changes>` section.
+    /// one-shot drain for the build_messages `<external_changes>` section.
     pub fn drain_external_changes(&self) -> Vec<String> {
         std::mem::take(&mut *self.external_changes.lock())
     }
 
-    /// I1: record an agent-authored write (dispatch path, successful
+    /// record an agent-authored write (dispatch path, successful
     /// write_file/edit_file) so the watcher's own event for the same path is
     /// dropped inside the self-write window.
     pub fn note_self_write(&self, path: &str) {
@@ -196,7 +196,7 @@ impl AgentLoop {
         );
     }
 
-    /// Full-review M4: set the context-snapshot message role ("user" |
+    /// Full-review: set the context-snapshot message role ("user" |
     /// "system"). Anything unrecognized stays/becomes "user" (default).
     pub fn set_snapshot_role(&self, role: &str) {
         let r = if role.eq_ignore_ascii_case("system") {
@@ -207,7 +207,7 @@ impl AgentLoop {
         *self.snapshot_role.write() = r.to_string();
     }
 
-    /// X2 (U8 refinement): tell the loop whether interactive approval
+    /// (refinement): tell the loop whether interactive approval
     /// (desktop popup) is wired. Called by the gateway after it attaches
     /// the approval adapter; renders into the `# Runtime Policy` snapshot
     /// section. Default `false` (standalone / non-desktop builds).

@@ -68,7 +68,7 @@ async fn test_list_directory_tool() {
 #[tokio::test]
 async fn test_list_directory_output_is_sorted() {
     let tmp = TempDir::new().unwrap();
-    // 乱序创建（BUG-20261101-268）：listing 顺序曾跟随 read_dir 平台序
+    // 乱序创建：listing 顺序曾跟随 read_dir 平台序
     // （NTFS 字典序 vs ext4 哈希序），而这是给 LLM 的目录清单——同目录
     // 跨平台输出必须同一行序。按名字排序断言。
     for name in ["zeta.txt", "alpha.txt", "mid.txt", "beta"] {
@@ -135,7 +135,7 @@ async fn test_edit_file_tool_old_text_not_found() {
 
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
-    // A1（2026-09-04）：失败反馈升级为修复指令——文案改为
+    // ：失败反馈升级为修复指令——文案改为
     // "old_text not found in {path}. {hint}"（带文件预览）。
     let err = result.unwrap_err();
     assert!(err.contains("not found in"), "got: {err}");
@@ -165,7 +165,7 @@ async fn test_edit_file_tool_duplicate_old_text() {
     assert!(result.unwrap_err().contains("appears 2 times"));
 }
 
-// A4（2026-09-04）：exact 未命中 → 五级模糊替换级联（EditFileTool 集成）。
+// ：exact 未命中 → 五级模糊替换级联（EditFileTool 集成）。
 #[tokio::test]
 async fn test_edit_file_tool_fuzzy_match_reports_level() {
     let tmp = TempDir::new().unwrap();
@@ -211,7 +211,7 @@ async fn test_edit_file_tool_fuzzy_total_failure_falls_back_to_not_found() {
     })
     .to_string();
 
-    // 全部级 0 命中 → 回退 A1 not-found 提示（含文件预览）。
+    // 全部级 0 命中 → 回退 not-found 提示（含文件预览）。
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -378,7 +378,7 @@ async fn test_sleep_tool_zero_duration() {
 #[test]
 fn test_register_default_tools_count() {
     let tools = register_default_tools();
-    // A7（2026-09-06）：+1 = multiedit。
+    // ：+1 = multiedit。
     assert_eq!(tools.len(), 11);
     assert!(tools.contains_key("message"));
     assert!(tools.contains_key("read_file"));
@@ -678,7 +678,7 @@ async fn test_memory_tools_with_executor() {
     assert!(result.contains("deleted"));
 }
 
-/// Regression (T7 e2e bug #2): the agent-facing memory tool wrappers must
+/// Regression (e2e bug #2): the agent-facing memory tool wrappers must
 /// expose EXACTLY the schemas `MemoryToolExecutor` consumes. The wrappers
 /// used to carry hand-copied schemas that drifted (store demanded `key` +
 /// tags-as-string; executor reads `memory_type`/`content`/tags-as-array) —
@@ -991,7 +991,7 @@ fn test_extract_edit_args_valid() {
     assert_eq!(path, "/a.txt");
     assert_eq!(old, "foo");
     assert_eq!(new, "bar");
-    // A3：replace_all 缺省 false。
+    // replace_all 缺省 false。
     assert!(!replace_all);
 }
 
@@ -1785,14 +1785,14 @@ async fn test_cron_tool_create_missing_schedule() {
     let args = serde_json::json!({"action": "create", "name": "test"}).to_string();
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
-    // 2026-10-19 schema 对齐：错误信息点名三个结构化字段（schedule 字符串
+    // schema 对齐：错误信息点名三个结构化字段（schedule 字符串
     // 已降级为回退通道，不再是一等参数）。
     assert!(result.unwrap_err().contains("at_seconds"));
 }
 
 #[tokio::test]
 async fn test_cron_tool_create_at_seconds_overflow_honest_err() {
-    // BUG-20261101-285 回归钉：at_seconds = i64::MAX/1000（换算层
+    // 回归钉：at_seconds = i64:MAX/1000（换算层
     // checked_mul 过检的最大值），合成加法 now + ms 溢出 i64——修复前
     // 裸 add 在 debug 构建 panic（打穿 gateway）、release 回绕负 at_ms
     // 被 compute_next_run 的 ms > now 过滤 = 静默僵尸任务；修复后诚实
@@ -2263,11 +2263,11 @@ async fn test_i2c_tool_invalid_json() {
     assert!(result.is_err());
 }
 
-/// 地址校验 fail-closed 回归锁（2026-09-26 复查修复；2026-10-14 BUG-13
+/// 地址校验 fail-closed 回归锁（复查修复； BUG-13
 /// 接线真实实现后沿用）：read/write 缺 bus/缺地址或垃圾地址必须报错
 /// （真实实现校验先于真实 I/O，消息跨平台确定性）；hex 字符串形态过
 /// 白名单（"0x05" 保留段拒绝）。纯函数面跨平台覆盖见
-/// nemesis-tools hardware::tests::test_i2c_parse_address_string_forms；
+/// nemesis-tools hardware:tests:test_i2c_parse_address_string_forms；
 /// 本用例验 execute() 接线（真实实现首行是平台闸，故 Linux 门控）。
 #[cfg(target_os = "linux")]
 #[tokio::test]
@@ -3638,7 +3638,7 @@ fn test_format_discovery_result_empty() {
     assert!(output.contains("None"));
 }
 
-// BUG-20261102-296：stdio 臂（command 参数）投影 process_exec 过 exec
+// stdio 臂（command 参数）投影 process_exec 过 exec
 // 同款管线；HTTP 臂 / 空 command / 非对象 args 维持静态档（None）。
 #[test]
 fn test_mcp_discover_operation_override_command_projects_process_exec() {
@@ -4033,7 +4033,7 @@ async fn test_cluster_rpc_execute_async_ack_includes_peer_name() {
 
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_ok(), "expected Ok, got Err: {:?}", result);
-    // task_id : target_id : target_name (resolved via peers_fn)
+    // task_id: target_id: target_name (resolved via peers_fn)
     assert_eq!(result.unwrap(), "__ASYNC__:t-456:node-node-abcdef:Alex");
 }
 
@@ -4630,7 +4630,7 @@ async fn test_cli_reference_tool_all_command_arms() {
             cmd
         );
         // Deepened assertion: the response must be for THIS command (header is
-        // `## {cmd} — ...`), not just any markdown blob.
+        // `## {cmd} —...`), not just any markdown blob.
         assert!(
             result.contains(&format!("## {}", cmd)),
             "command '{}' response should be headed by its own name",
@@ -4651,7 +4651,7 @@ async fn test_cli_reference_tool_all_command_arms() {
 // RunScriptTool — verifies the workflow `script` node's sandboxing delegate.
 // These tests exercise the REAL tool in-process (no Sandboxie box needed —
 // box containment is the MOVE_TOOL mechanism's job, proven by the executor
-// L2.2 tests). They pin the structured {stdout,stderr,exit_code} contract
+// .2 tests). They pin the structured {stdout,stderr,exit_code} contract
 // that ScriptNodeExecutor parses back into its NodeResult.
 // ---------------------------------------------------------------------------
 
@@ -4711,9 +4711,9 @@ async fn run_script_missing_args_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// W3a batch 5 — loop_tools gap tests (RunScriptTool arms, AsyncExecTool spawn
+// batch 5 — loop_tools gap tests (RunScriptTool arms, AsyncExecTool spawn
 // error, grep_recursive filters, GitTool fresh-repo arms, WorkflowRunTool
-// input typing, HistorySearchTool arg validation). Appended 2026-08-25.
+// input typing, HistorySearchTool arg validation). Appended.
 // ---------------------------------------------------------------------------
 
 fn script_ctx() -> RequestContext {
@@ -4860,7 +4860,7 @@ async fn async_exec_spawn_failure_errors() {
     assert!(err.contains("Failed to start command"), "got: {err}");
 }
 
-// --- grep_recursive direct tests (private fn, reachable via super::) -------
+// --- grep_recursive direct tests (private fn, reachable via super:) -------
 
 #[test]
 fn grep_recursive_skips_hidden_and_build_dirs() {
@@ -4946,7 +4946,7 @@ fn grep_recursive_respects_max_results() {
     let mut out = Vec::new();
     grep_recursive(tmp.path(), &re, None, 1, &mut out);
     assert_eq!(out.len(), 1, "max=1 must cap results: {out:?}");
-    // 确定性截断面（BUG-20261101-268）：max 截断取哪个文件曾依赖
+    // 确定性截断面：max 截断取哪个文件曾依赖
     // read_dir 顺序（平台实现细节）——现按文件名字典序走查，恒取 a.txt。
     assert!(
         out[0].replace('\\', "/").ends_with("a.txt:1: needle"),
@@ -5035,7 +5035,7 @@ async fn git_tool_log_with_extra_args_and_branch() {
     let tool = GitTool::new(cwd.clone());
     let ctx = script_ctx();
 
-    // F3（2026-09-22 审计修复）：读操作只接受 `-<N>` 数字形态与纯路径；
+    // （审计修复）：读操作只接受 `-<N>` 数字形态与纯路径；
     // 旧 free-form 选项（本用例此前的 `-3 --no-color`）从根上封死——
     // `--output=`/`--ext-diff` 等会把读原语变成写/执行原语。
     let log = tool
@@ -5137,7 +5137,7 @@ fn history_search_tool_metadata() {
 #[cfg(feature = "workflow")]
 #[tokio::test]
 async fn workflow_create_tool_surfaces_lint_warnings_in_hints() {
-    // 2026-09-23 计划类 C：DraftSummary.warnings 进工具响应 hints，
+    // 计划类 C：DraftSummary.warnings 进工具响应 hints，
     // 生成器按「修了重存」回路当轮自纠。
     use nemesis_providers::router::LLMProvider;
     use nemesis_workflow::engine::WorkflowEngine;
@@ -5205,11 +5205,11 @@ async fn workflow_create_tool_surfaces_lint_warnings_in_hints() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261029-178 回归锁——T4 环境凭据剥离闸的覆盖面（R235 工具面一致性
+// 回归锁—— 环境凭据剥离闸的覆盖面（工具面一致性
 // 审计）：exec/run_checks 经 make_piped_shell_command 接闸，但同族 LLM 驱动
 // exec 类 spawn 点 run_script / exec_async / git（background_start 见
 // background_registry/tests.rs）此前漏接——「单一泄漏闸」名不副实，脚本里
-// printenv 即可读出 agent 进程继承的凭据（T4 当初封堵的正是这条通道）。
+// printenv 即可读出 agent 进程继承的凭据（当初封堵的正是这条通道）。
 // 行为级验证：敏感探针变量必须对子进程不可见；非敏感探针变量必须原样可见
 // （证明探针管道本身工作，剥除不是全局误伤）。
 // ---------------------------------------------------------------------------
@@ -5262,7 +5262,7 @@ async fn exec_async_strips_sensitive_env_from_child() {
     let tmp = TempDir::new().unwrap();
     let out_path = tmp.path().join("bug178_async_probe.txt");
     let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
-    // exec_async 不读输出 ≠ 不漏——子进程命令可自行把环境落盘（T4 威胁
+    // exec_async 不读输出 ≠ 不漏——子进程命令可自行把环境落盘（威胁
     // 模型内的标准走法），故用重定向文件做行为探针。
     #[cfg(windows)]
     let command =
@@ -5321,7 +5321,7 @@ async fn git_tool_commit_hook_does_not_see_sensitive_env() {
         let _ = git(&["config", k, v]);
     }
     // pre-commit 钩子（cwd = 工作树根）：把可见环境写进探针文件。仓库
-    // 内容模型可控 → 钩子是 git 链路上的任意代码执行点，必须同受 T4 闸。
+    // 内容模型可控 → 钩子是 git 链路上的任意代码执行点，必须同受 闸。
     let hook = tmp.path().join(".git").join("hooks").join("pre-commit");
     std::fs::write(
         &hook,
@@ -5359,7 +5359,7 @@ async fn git_tool_commit_hook_does_not_see_sensitive_env() {
     );
 }
 
-/// BUG-20261103-343：workspace 内目录符号链接环必须跳过——旧实现
+/// workspace 内目录符号链接环必须跳过——旧实现
 /// `path.is_dir()` 跟随链接，环（loop → 根自身）= 同一文件以
 /// 「loop\loop\...」假路径重复命中几十层（红证实测 64 次），直到 OS
 /// 路径长度上限才收敛。链接创建免提权降级链：symlink_dir（开发者

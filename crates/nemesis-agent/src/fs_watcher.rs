@@ -1,13 +1,13 @@
-//! I1 (devtool-upgrade 阶段 3): workspace fs watcher — notify-based
+//! (devtool-upgrade): workspace fs watcher — notify-based
 //! recursive watch over the workspace root, with debounce + ignore table.
 //!
-//! Two consumers (both wired through `AgentLoop::start_fs_watcher`):
+//! Two consumers (both wired through `AgentLoop:start_fs_watcher`):
 //! 1. **Instruction chain** — a create/modify/remove of any AGENTS.md or
 //!    CLAUDE.md under the workspace calls `invalidate_context_digests()`
 //!    (round-5 note: digest state is stateless — sections re-read from disk
 //!    on every build — so external instruction edits already surface next
 //!    build; the invalidate call is the kept anchor, same shape as the
-//!    dispatch path's touch-driven H5 call).
+//!    dispatch path's touch-driven call).
 //! 2. **External-change notice** — other Create/Modify events land in the
 //!    loop's `external_changes` buffer and surface as a one-shot
 //!    `<external_changes>` section in the next context snapshot.
@@ -60,8 +60,8 @@ pub type PathCallback = Arc<dyn Fn(&str) + Send + Sync>;
 /// Callers must strip the workspace root first (a workspace that happens to
 /// live under a dir named `target` must not be ignored wholesale).
 ///
-/// Built-ins delegate to the SHARED truth `nemesis_path::is_workspace_ignored`
-/// (I2 收敛：watch 过滤与 @补全遍历用同一张表，不再各写一份漂移)；
+/// Built-ins delegate to the SHARED truth `nemesis_path:is_workspace_ignored`
+/// (收敛：watch 过滤与 @补全遍历用同一张表，不再各写一份漂移)；
 /// `extra` carries user-configured rules (`FsWatcherConfig.ignore`), where
 /// bare names match any component and `*.ext` matches by extension.
 pub fn is_ignored(rel: &Path, extra: &[String]) -> bool {
@@ -248,7 +248,7 @@ fn flush(
 #[cfg(test)]
 mod tests;
 
-// 产品性质回归锁：被 watch 的目录必须保持可删（2026-10-31 实证 notify
+// 产品性质回归锁：被 watch 的目录必须保持可删（实证 notify
 // recommended_watcher 不钉目录；防未来后端/模式更换引入钉住。Windows-only
 // 语义在文件内自挂 cfg(windows)）。
 #[cfg(all(test, windows))]

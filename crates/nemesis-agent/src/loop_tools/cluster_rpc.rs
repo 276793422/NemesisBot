@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -107,7 +107,7 @@ pub struct ClusterRpcTool {
     /// instead of attempting network calls that would fail unpredictably.
     /// This guard preserves LLM prompt cache hit rates (tool definition stays in prompt).
     enabled: Arc<std::sync::atomic::AtomicBool>,
-    /// Optional RPC call function: (target_node, action, payload) -> Result<serde_json::Value, String>
+    /// Optional RPC call function: (target_node, action, payload) -> Result<serde_json:Value, String>
     rpc_call_fn: Option<
         Arc<
             dyn Fn(
@@ -124,7 +124,7 @@ pub struct ClusterRpcTool {
     /// Each tuple: (node_id, node_name, capabilities).
     peers_fn: Option<Arc<dyn Fn() -> Vec<(String, String, Vec<String>)> + Send + Sync>>,
     /// 负载感知路由（最小版）：`target="auto"` 的解析器——网关注入的
-    /// `Cluster::pick_auto_route_target` 包装（在线节点按健康/负载评分取
+    /// `Cluster:pick_auto_route_target` 包装（在线节点按健康/负载评分取
     /// 最优，排除本节点）。None = 未装配（execute 对 "auto" 诚实报错，
     /// 不发送）。返回 None = 无可用候选（同样诚实报错）。
     auto_target_fn: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
@@ -194,7 +194,7 @@ impl ClusterRpcTool {
     }
 
     /// 负载感知路由（最小版）：注入 `target="auto"` 的解析器（网关侧
-    /// `Cluster::pick_auto_route_target` 的包装——在线节点按健康/负载评分
+    /// `Cluster:pick_auto_route_target` 的包装——在线节点按健康/负载评分
     /// 取最优，排除本节点）。未注入时 execute 对 "auto" 诚实报错。
     pub fn set_auto_target_fn(&mut self, f: Arc<dyn Fn() -> Option<String> + Send + Sync>) {
         self.auto_target_fn = Some(f);

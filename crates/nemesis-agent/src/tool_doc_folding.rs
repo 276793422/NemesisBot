@@ -1,9 +1,9 @@
-//! Y1 (Phase4-a): semantic tool-documentation folding — PURE helpers.
+//! : semantic tool-documentation folding — PURE helpers.
 //!
 //! With a large toolset (Big tier = 40+ tools) most tool
 //! descriptions are irrelevant to the current conversation. When enabled
 //! (`agents.tool_doc_folding`), the loop ranks tools by cosine similarity
-//! between the latest user message and each tool description (P3.1 embed
+//! between the latest user message and each tool description (.1 embed
 //! backend), keeps the top-N fully expanded, and collapses the rest to a
 //! one-line summary. Folding is orthogonal to tier supply: it rewrites the
 //! description TEXT only — every tool stays callable with its full
@@ -12,7 +12,7 @@
 //! Everything here is deterministic and side-effect free: same inputs →
 //! byte-identical outputs (no clocks, no map-iteration-order leakage —
 //! rank ties break alphabetically). The loop-side gating (config, tier,
-//! embed availability) lives in `AgentLoop::apply_tool_doc_folding`.
+//! embed availability) lives in `AgentLoop:apply_tool_doc_folding`.
 
 use crate::types::ToolDefinition;
 use std::collections::HashMap;
@@ -146,6 +146,6 @@ pub fn fold_tool_defs(
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

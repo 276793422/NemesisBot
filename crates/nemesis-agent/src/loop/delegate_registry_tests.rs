@@ -1,4 +1,4 @@
-// D5（子代理可见性，2026-11-03）：集群 delegate 任务并入子代理注册表
+// （子代理可见性）：集群 delegate 任务并入子代理注册表
 // 的 loop 级咬合测试。begin = `save_async_continuation`（`__ASYNC__`
 // marker 落地侧），finish = `dispatch_continuation`（续行回灌终态侧）。
 // 两条被测路径都不触发 LLM：save 侧 continuation_manager=None 跳过快照；

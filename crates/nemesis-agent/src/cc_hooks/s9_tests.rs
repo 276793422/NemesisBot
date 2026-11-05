@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：cc_hooks.rs 剩余未覆盖行。
+//! 覆盖率批次：cc_hooks.rs 剩余未覆盖行。
 //! - 226：enrich_tool_input 的 file_path 补齐臂收尾（三分支：已带
 //!   file_path / path 或 file 命中 / 无一命中）。
 //! - 328-334：run_hook_script spawn 失败（project_dir 不存在 → cwd 无效）。

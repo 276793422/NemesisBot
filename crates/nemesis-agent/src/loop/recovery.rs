@@ -1,24 +1,24 @@
-//! LLM 调用恢复环（P2-1 器官 4 自 `loop/run_loop.rs` 物理搬迁；docs/PLAN/
-//! 2026-09-23_agentloop-god-object-decomposition.md §4.2 表行 4/4a-4e）。
+//! LLM 调用恢复环（器官 4 自 `loop/run_loop.rs` 物理搬迁；docs/PLAN/
+//! 2026-09-23_.md /4a-4e）。
 //! 语义零变化：首呼 select 超时包装、context 压缩环（4a）、429 预算环（4b）、
 //! transient 退避环（4c）、LLM post-hooks 受守卫重呼（4d）；四处 tool_defs
-//! 重建（4a/4b/4c/B4 凭据卡重试）统一走 [`AgentLoop::effective_tool_defs`]——
-//! 与主调用同源同闸（BUG-20261102-306 根修：此前走 rebuild_full_tool_defs
+//! 重建（4a/4b/4c/ 凭据卡重试）统一走 [`AgentLoop:effective_tool_defs`]——
+//! 与主调用同源同闸（根修：此前走 rebuild_full_tool_defs
 //! 全量无闸重建，恢复重试请求绕过 tier/hidden/plan/connector 供给闸，且
 //! 过滤激活场景 prompt cache 前缀断裂）。
 //!
-//! 器官出口约定（§4.3 对照表）：原 `events.push(..) + break/ break 'turn`
+//! 器官出口约定（对照表）：原 `events.push(..) + break/ break 'turn`
 //! 的六个终局出口统一改为 `Err(终局事件)` 返回，骨架（run_llm_loop）统一
 //! `push + break`——事件向量与文案逐字节不变，golden transcript 把关。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
-/// L29（2026-11-02 改进项三期）流中断 partial 分隔符与 tool_calls 截断标记。
+/// 流中断 partial 分隔符与 tool_calls 截断标记。
 ///
 /// ⚠ 分层约束：`nemesis-providers` 只是 agent 的 dev-dependency（生产依赖
 /// 图不含），跨层通道只有 Display 文本——本常量为**字面量副本**，与
-/// providers 侧 `failover::STREAM_PARTIAL_SEPARATOR` /
+/// providers 侧 `failover:STREAM_PARTIAL_SEPARATOR` /
 /// `STREAM_TOOL_CALLS_TRUNCATED_MARK` 同文互锚（providers 侧测试钉
 /// 「Display contains 常量」，本 crate 测试钉字面量值——任一端改文本两端
 /// 测试必红）。提取只对头行（首个 `\n` 前）做标记判定，模型任意输出
@@ -26,13 +26,13 @@ use super::*;
 pub(crate) const STREAM_PARTIAL_SEPARATOR: &str = "\n\n--- 以下为中断前已生成的部分内容 ---\n";
 pub(crate) const STREAM_TOOL_CALLS_TRUNCATED_MARK: &str = "，工具调用已截断（不可拼接续写）";
 
-/// L29 流中断 partial 提取纯函数。
+/// 流中断 partial 提取纯函数。
 ///
 /// 从错误串解析 partial 与 tool_calls 截断标记：
 /// - 前缀锚 `stream interrupted from provider` 不命中 → `None`（非流中断）；
 /// - 分隔符不命中 → `None`（Display 契约破坏，保守不续写）；
 /// - 头行含 tool_calls 截断标记 → `has_tool_calls=true`（半截工具调用
-///   不可当纯文本续用——L02 纪律，调用方不拼接只重试）；
+///   不可当纯文本续用—— 纪律，调用方不拼接只重试）；
 /// - partial 全空白 → `None`（零产出无可续，等同「重试从头」旧行为）。
 pub(crate) fn extract_stream_partial(err: &str) -> Option<StreamPartial> {
     if !err.starts_with("stream interrupted from provider") {
@@ -59,7 +59,7 @@ impl AgentLoop {
     /// 器官 4：首呼（cancel/estop 可打断 + 超时包装）→ 失败分类进三恢复环 →
     /// post-hooks 终裁。`Ok` = 本轮响应；`Err` = 终局事件（含「已取消」/
     /// E-STOP / 恢复环耗尽 Error / post-hook Block），由骨架 push 后结束本
-    /// turn——与原控制流逐出口等价（§4.3）。
+    /// turn——与原控制流逐出口等价。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn call_llm_with_recovery(
         &self,
@@ -77,14 +77,14 @@ impl AgentLoop {
     ) -> Result<LlmResponse, AgentEvent> {
         let turns_used = st.turns_used;
         let chat_opts = &st.chat_opts;
-        // Clone provider Arc so RwLock guard is dropped before .await.
-        // Detached 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）：
+        // Clone provider Arc so RwLock guard is dropped before.await.
+        // Detached 模型覆盖（BUG `board.plan.model` dead-key 修复）：
         // 本回合带覆盖时走覆盖 provider（调用侧解析注入），否则 loop 主
-        // provider——L10 流式包装对两者同构（包任意 Arc<dyn LlmProvider>）。
+        // provider—— 流式包装对两者同构（包任意 Arc<dyn LlmProvider>）。
         let active_provider_base = instance
             .detached_model_provider()
             .unwrap_or_else(|| self.provider.read().clone());
-        // L10（2026-10-13）：流式观测 lane——包装后本函数五个调用点（首捕 +
+        // ：流式观测 lane——包装后本函数五个调用点（首捕 +
         // 四重试环）共享同一包装实例；重试 = 新流（seq 从 0 重开 + start 帧
         // 重置前端缓冲）。双闸不满足（event tx 未接线 / provider_stream_
         // events 关）→ None → 原 provider 原字节路径，零额外开销。
@@ -107,7 +107,7 @@ impl AgentLoop {
         // 注意：subscribe() 返回的是 owned Receiver（不借用 guard），所以这里
         // 拿完就能放掉 estop 的读锁。
         let mut estop_rx = self.security.subscribe();
-        // Use tokio::select! to allow cancellation / e-stop during the LLM call.
+        // Use tokio:select! to allow cancellation / e-stop during the LLM call.
         // P3B 撞墙检测起点：首次调用的失败时长供 transient 重试链比对。
         let first_call_start = std::time::Instant::now();
         // ②A：首捕同样包超时——挂死连接不再无限等（cancel/estop 臂
@@ -129,7 +129,7 @@ impl AgentLoop {
                 }
                 return Err(AgentEvent::Done("已取消".to_string()));
             }
-            // 急停：watch 翻成 engaged 才 resolve。（K1b 起该等待逻辑抽成
+            // 急停：watch 翻成 engaged 才 resolve。（起该等待逻辑抽成
             // wait_estop_engaged 共享——hook 重呼路径用同一段，防漂移。）
             _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
                 info!(
@@ -153,24 +153,24 @@ impl AgentLoop {
                 let first_call_failed_after = first_call_start.elapsed();
                 let err_lower = err.to_lowercase();
 
-                // T2a（扩展计划 D4-2a）：provider 侧错误分类器先行。分派语义：
+                // （扩展计划）：provider 侧错误分类器先行。分派语义：
                 //   Auth/Billing → 不进任何重试环直接终局（旧词表形态
                 //     "invalid api key" 含 "invalid" 会误入 context 压缩环
                 //     白烧 2 次重试；401/402 重试天然无意义），用户文案换
                 //     可行动提示，原始错误继续走 history/observer/capture
-                //     （诊断保真，T10 同纪律）。
+                //     （诊断保真， 同纪律）。
                 //   RateLimit/Timeout/Overloaded → 并集进对应恢复环（分类器
                 //     覆盖词表盲区：Gemini 配额 "exceeded your current quota"、
                 //     gRPC "deadline exceeded" 等旧词表不认即终局的文案）。
                 //   Format/None → 不借分类器分流（Format 终局与词表时代同
                 //     宿），走既有词表路径原样兜底。
-                // 分类器单点在 nemesis_utils::llm_error_class（providers 侧
+                // 分类器单点在 nemesis_utils:llm_error_class（providers 侧
                 // classify_error 同源委托；nemesis-agent 生产代码看不见
                 // providers——后者只是 dev-dependency）。
                 let classified = nemesis_utils::llm_error_class::classify_llm_error(&err);
                 match &classified {
                     Some(nemesis_utils::llm_error_class::LlmErrorClass::Auth) => {
-                        // B4（2026-10-18 凭据 vault §7）：先试凭据索要卡——
+                        // （凭据 vault）：先试凭据索要卡——
                         // broker/reloader 任一未装配返回 None，走原终局零
                         // 回归；卡 Stored 则热切新 provider 并一次受守卫重试。
                         if let Some(retried) = self
@@ -219,7 +219,7 @@ impl AgentLoop {
                     _ => {}
                 }
                 // 传输层盖章错误永不可能是 context 错误：`connect error`
-                // （2026-10-13 诚实化盖章，llm_error_class 早判分支同源锚）
+                // （诚实化盖章，llm_error_class 早判分支同源锚）
                 // = 请求根本没拿到 HTTP 响应，而 token/context/length/
                 // invalid 全是**响应体**（应用层）特征词。盖章错误的根因链
                 // 携带的词（rustls TLS 失败 "invalid peer certificate:
@@ -229,12 +229,12 @@ impl AgentLoop {
                 // 归宿是 transient 环（带退避、不动压缩状态）。分类器
                 // Timeout 判定对压缩环此前兑现不到（它只在下方 else 臂
                 // 取并集）——此闸补齐「双保险」的最后一臂。
-                // L02（2026-11-01）StreamInterrupted 前缀短路：必须先于全部
+                // StreamInterrupted 前缀短路：必须先于全部
                 // 词表判定——这类错误的 Display 尾段携带模型生成的任意文本
                 // （partial 全文），context 词表（"token"/"invalid"）、限流
                 // 词表（"429"/"rate limit"）、auth 词表（"expired"）对整段
-                // contains 匹配都会被内容污染误路由（对抗用例 A1/A2，设计
-                // 文档 §5.1）。用 starts_with 头行前缀锚——头行只含 provider
+                // contains 匹配都会被内容污染误路由（对抗用例 /，设计
+                // 文档）。用 starts_with 头行前缀锚——头行只含 provider
                 // /model/reason 字段，不可被 partial 内容伪造。
                 let is_stream_interrupted =
                     err_lower.starts_with("stream interrupted from provider");
@@ -288,13 +288,13 @@ impl AgentLoop {
                         "service unavailable",
                         // 500 落 Unknown Display（"status 500: {body}"）——裸
                         // "500" 会误匹配 body 数字（5000 tokens 等），用锚定
-                        // 格式。真机实证（2026-09-24 安卓端 glm-5.3-flash）：
+                        // 格式。真机实证（安卓端 glm-5.3-flash）：
                         // GLM anthropic lane 间歇 500 api_error「网络错误，
                         // 请稍后重试」，一次终局直接抛给用户；providers 侧
-                        // error_classifier::classify_by_status 早已把 500 归
+                        // error_classifier:classify_by_status 早已把 500 归
                         // Overloaded（可重试），loop 侧词表必须同口径。
                         "status 500",
-                        // L02（2026-11-01）：流中断兜底——前缀短路之外的
+                        // ：流中断兜底——前缀短路之外的
                         // 词表双保险（与 "connect error" 同款）：词表判定
                         // 不依赖 classify_llm_error 的入口短路也能独立命中
                         // transient 环。
@@ -303,10 +303,10 @@ impl AgentLoop {
                     .iter()
                     .any(|k| err_lower.contains(k));
 
-                    // ③a 429 限流重试环（2026-09-17 BUG 文档裁决④⑧）：
+                    // ③a 429 限流重试环：
                     // 分类词表对齐 provider 侧。与 context-compression 环
                     // 互斥（限流文案不含 token/context/length/invalid），
-                    // 与 transient 词表不重叠——三环不互吞。L02 起对
+                    // 与 transient 词表不重叠——三环不互吞。 起对
                     // StreamInterrupted 显式排除：其 Display 尾段携带的
                     // partial 全文可能含 "429"/"rate limit" 字样（模型
                     // 任意输出），误入限流环会把退避逻辑错用在流中断上。
@@ -315,7 +315,7 @@ impl AgentLoop {
                             .iter()
                             .any(|k| err_lower.contains(k));
 
-                    // T2a：分类器命中与词表判定取并集（RateLimit 优先序
+                    // 分类器命中与词表判定取并集（RateLimit 优先序
                     // 不变；Overloaded 按 llm_error_class 既有口径：
                     // 状态码 5xx 形态 → transient 环，纯文案形态 →
                     // RateLimit 环——两形态与词表时代归宿一致）。
@@ -376,11 +376,11 @@ impl AgentLoop {
                             raw_response_body: None,
                         })
                         .await;
-                        // L02：StreamInterrupted 终局 history 瘦身——只取
+                        // StreamInterrupted 终局 history 瘦身——只取
                         // Display 头行（首个 \n 之前，仅 provider/model/reason
                         // 元信息）进 history；partial 全文不进模型上下文
                         // （半截文本永不单独成为 assistant turn，设计文档
-                        // §4.2）。出站文本（下方 formatted）保留全文给用户；
+                        // ）。出站文本（下方 formatted）保留全文给用户；
                         // observer/capture 是观测面同样保留全文。
                         let history_err = if is_stream_interrupted {
                             last_err.lines().next().unwrap_or("").to_string()
@@ -402,7 +402,7 @@ impl AgentLoop {
                                 Some(last_err.as_str()),
                             );
                         }
-                        // T10（多模态 D4 ③）：同上——提示只进用户可见
+                        // （多模态 ③）：同上——提示只进用户可见
                         // 文案，last_err 原文继续走 history / observer /
                         // capture。
                         let formatted = context.format_rpc_message(&append_vision_fallback_hint(
@@ -463,7 +463,7 @@ impl AgentLoop {
 
         while retry_count < max_retries {
             retry_count += 1;
-            // L14：上下文错误环每次重试发起计入会话统计（三环同口径）。
+            // 上下文错误环每次重试发起计入会话统计（三环同口径）。
             self.bump_session_stats(
                 &context.session_key,
                 crate::session_stats::StatCounter::Retries,
@@ -554,7 +554,7 @@ impl AgentLoop {
                         Some(retry_err.as_str()),
                     );
                 }
-                // T10（多模态 D4 ③）：兜底提示只进用户可见
+                // （多模态 ③）：兜底提示只进用户可见
                 // 文案；retry_err 原文继续走 history /
                 // observer / capture（诊断不掺提示）。
                 let formatted = context.format_rpc_message(&append_vision_fallback_hint(
@@ -566,11 +566,11 @@ impl AgentLoop {
         }
     }
 
-    /// B4 卡超时（connector_tools 触发臂同值 300s；跨 crate 各持一份常量，
+    /// 卡超时（connector_tools 触发臂同值 300s；跨 crate 各持一份常量，
     /// 理由同彼处注记）。
     const B4_CREDENTIAL_CARD_TIMEOUT_SECS: u64 = 300;
 
-    /// B4（2026-10-18 凭据 vault §7）：Auth 失败 → 凭据索要卡 → Stored 则
+    /// （凭据 vault）：Auth 失败 → 凭据索要卡 → Stored 则
     /// 重建 provider 热切并**一次受守卫重试**（cancel/estop 臂与首呼同构；
     /// 再败 = 新终局文案）。broker/reloader 任一未装配、卡被拒/超时、重建
     /// 失败 → `None`（调用侧落原「停止重试」终局，字节不变）。
@@ -696,9 +696,9 @@ impl AgentLoop {
         }
     }
 
-    /// T2a：不可重试类（认证/计费）终局收尾——observer 错误事件 + history
+    /// 不可重试类（认证/计费）终局收尾——observer 错误事件 + history
     /// 落账 + capture flush 保留原始错误全文（诊断保真），用户可见文案换
-    /// 可行动提示。终局仪式与 [`Self::call_llm_with_recovery`] 词表终局
+    /// 可行动提示。终局仪式与 [`Self:call_llm_with_recovery`] 词表终局
     /// 块同构（capture 事件名同为 "llm_call_failed"）。
     // allow 理由（clippy too_many_arguments）：9 参签名与既有词表终局块
     // 同构（observer 事件/history/capture 各需独立实参），聚合 struct 反而
@@ -767,7 +767,7 @@ impl AgentLoop {
         let mut maybe_resp: Option<LlmResponse> = None;
         let max_retries = self.current_rate_limit_retries().max(0) as u32;
         let mut retries = 0u32;
-        // BUG 2026-09-21 ②B：总预算（等待 + 调用累计）——
+        // BUG ②B：总预算（等待 + 调用累计）——
         // 0 = 不限；②A：单次调用超时——0 = 不设。
         let budget_secs = self.current_rate_limit_budget_secs();
         let call_timeout = self.current_provider_call_timeout_secs();
@@ -777,7 +777,7 @@ impl AgentLoop {
         let budget_started = tokio::time::Instant::now();
         let mut budget_exhausted = false;
         while retries < max_retries {
-            // 停机感知（2026-10-24 tokio 停机 panic 根修，同 transient 环）：
+            // 停机感知（tokio 停机 panic 根修，同 transient 环）：
             // 循环顶先看停机令牌——stop 后不再继续盲试（限流梯子动辄数十
             // 秒等待，僵尸环会继续烧预算并重发调用）。
             if self.stop_token.is_cancelled() {
@@ -788,7 +788,7 @@ impl AgentLoop {
                 );
             }
             // ②B：进入下一轮等待+调用前先看预算——预算是
-            // 硬上限，超了直接终局（ sleep 也要算进去，
+            // 硬上限，超了直接终局（sleep 也要算进去，
             // 所以检查放循环头顶部）。
             if budget_secs > 0
                 && budget_started.elapsed() >= std::time::Duration::from_secs(budget_secs)
@@ -801,7 +801,7 @@ impl AgentLoop {
                 break;
             }
             retries += 1;
-            // L14：限流环每次重试发起计入会话统计（同 transient 环口径）。
+            // 限流环每次重试发起计入会话统计（同 transient 环口径）。
             self.bump_session_stats(
                 &context.session_key,
                 crate::session_stats::StatCounter::Retries,
@@ -822,7 +822,7 @@ impl AgentLoop {
                 "[AgentLoop] LLM rate limited, retry {retries}/{max_retries} in {wait}s: {}",
                 last_err
             );
-            // BUG 2026-09-21 ①：实时快照（WSAPI
+            // BUG ①：实时快照（WSAPI
             // agent.retry_status）——切走切回后前端占位区
             // 可查「第 N/M 次重试」，不再是哑转圈。
             self.set_rate_limit_status(
@@ -836,7 +836,7 @@ impl AgentLoop {
                     updated_at: std::time::Instant::now(),
                 },
             );
-            // 等待 sleep 与停机令牌 select（2026-10-24 根修，同 transient
+            // 等待 sleep 与停机令牌 select（根修，同 transient
             // 环）：stop() 后立即退出重试环——不再新注册 timer（runtime
             // 停机窗口里 timer 首次 poll = TimerEntry panic），也不再对
             // 已停机的 loop 重发调用。快照已在上方 set_rate_limit_status
@@ -859,7 +859,7 @@ impl AgentLoop {
             // move，同 transient 环纪律）。
             let r_msgs = self.build_messages(instance);
             let r_tools = self.effective_tool_defs(instance);
-            // BUG 2026-09-21 ②A：单次调用包超时（统一走
+            // BUG ②A：单次调用包超时（统一走
             // chat_call_bounded）——上游 429 后连接挂起
             // （不回响应体）时不再无限等待（实测挂死 27
             // 分钟）；超时按该次重试失败计，走既有环
@@ -888,7 +888,7 @@ impl AgentLoop {
                 }
             }
         }
-        // BUG 2026-09-21 ①：环出口统一清快照（成功 break /
+        // BUG ①：环出口统一清快照（成功 break /
         // 次数耗尽 / 预算终局三路都过这里；E-STOP abort
         // 路径由读侧过期兜底）。
         self.clear_rate_limit_status(&context.session_key);
@@ -927,11 +927,11 @@ impl AgentLoop {
             "[AgentLoop] LLM transient error, retrying up to {} times: {}",
             MAX_TRANSIENT_RETRIES, last_err
         );
-        // P3B 撞墙检测（2026-09-12）：prev 带入首次调用的失败
+        // P3B 撞墙检测：prev 带入首次调用的失败
         // 时长——相邻两次失败几乎同时长（±1s）= 大概率固定
         // 超时阈值拦截（provider timeout / 上游网关 / CC
         // Switch 类代理的固定超时），继续盲重试只是重复烧墙。
-        // 双端真机 S2 实证：评审 LLM 连续 4 次精确 120.01s
+        // 双端真机 实证：评审 LLM 连续 4 次精确 120.01s
         // 超时——根因 anthropic lane 默认 120s（已另行根修
         // 为全 lane 600s + per-model timeout_secs 覆盖）。
         let mut prev_fail_after = Some(first_call_failed_after);
@@ -939,10 +939,10 @@ impl AgentLoop {
         // ②A：transient 环内调用同样包超时——挂死的
         // 「真网络等待」形态不再把有限重试环变成无限挂。
         let call_timeout = self.current_provider_call_timeout_secs();
-        // L29（2026-11-02 改进项三期）：流中断拼接续写——首错为流中断且
-        // partial 可续（非空、无半截 tool_calls）且开关开（拍板默认开，
+        // ：流中断拼接续写——首错为流中断且
+        // partial 可续（非空、无半截 tool_calls）且开关开（默认开，
         // `agents.stream_concat_retry` 可回退）时，每次重试请求在末尾追加
-        // assistant(partial) + user(续写提示)（L28 同族语义），成功后把
+        // assistant(partial) + user(续写提示)（同族语义），成功后把
         // partial 前拼到续写段（history/出站只见完整文本；r_msgs 是局部
         // 变量不落 instance history，无重复 turn）。重试再撞流中断 → 新
         // partial 覆盖（更长 = 更接近完整）。环外读取开关 + 首错解析一次。
@@ -958,18 +958,18 @@ impl AgentLoop {
                 p.content.chars().count()
             );
         }
-        // 退避资格（2026-09-18 CI 实调）：失败耗时 <1s =
+        // 退避资格（CI 实调）：失败耗时 <1s =
         // 上游**立即**拒绝（连接拒绝 / DNS / mock 类）——
         // sleep 无意义（门已关上，等待解决不了），立即重试；
         // ≥1s = 真网络等待（上游在挣扎），按 1s/2s/4s 退避
         // 才有效。不设门槛的副作用实锤：integration
         // gateway/concurrent 5 会话共享 legacy session 串行
         // 处理，mock 立即失败链从 40ms 膨胀到 8s，5×8s 推出
-        // 30s 窗口（首挂实录；历史 3 连 PASS）。与 P3B 撞墙
+        // 30s 窗口（首挂；历史 3 连 PASS）。与 P3B 撞墙
         // 检测同哲学：立即失败的重试无效信号更早暴露。
         let mut backoff_eligible = first_call_failed_after >= std::time::Duration::from_secs(1);
         while retries < MAX_TRANSIENT_RETRIES {
-            // 停机感知（2026-10-24 tokio 停机 panic 根修）：循环顶先看停机
+            // 停机感知（tokio 停机 panic 根修）：循环顶先看停机
             // 令牌——立即拒绝形态（backoff_eligible=false，无 sleep）也会在
             // stop 后继续盲试，闸必须在环顶而不是只在退避处。
             if self.stop_token.is_cancelled() {
@@ -979,7 +979,7 @@ impl AgentLoop {
                 );
             }
             retries += 1;
-            // L14：transient 环每次重试发起计入会话统计（含最终失败的重试
+            // transient 环每次重试发起计入会话统计（含最终失败的重试
             // ——重试次数语义 = 发起数，不是成功数）。
             self.bump_session_stats(
                 &context.session_key,
@@ -1012,7 +1012,7 @@ impl AgentLoop {
                 }
             }
             let mut r_msgs = self.build_messages(instance);
-            // L29：拼接续写——partial 作 assistant 前缀 + 续写提示（局部
+            // 拼接续写——partial 作 assistant 前缀 + 续写提示（局部
             // messages，不落 instance history；成功后前拼出完整文本）。
             if let Some(p) = &partial {
                 r_msgs.push(LlmMessage {
@@ -1047,7 +1047,7 @@ impl AgentLoop {
             {
                 Ok(resp) => {
                     let mut resp = resp;
-                    // L29：拼接出完整文本（partial 是失败请求已产出的工作
+                    // 拼接出完整文本（partial 是失败请求已产出的工作
                     // 成果；续写段只是后半截）。usage 只记续写轮（失败请求
                     // 的 usage 随错误丢失——诚实边界，终端计费以 providers
                     // 上报为准）。
@@ -1059,7 +1059,7 @@ impl AgentLoop {
                 }
                 Err(e) => {
                     last_err = e;
-                    // L29：每轮以「最新错误的 partial」为准——重试再撞流
+                    // 每轮以「最新错误的 partial」为准——重试再撞流
                     // 中断 → 新 partial 覆盖（更长 = 更接近完整）；撞其他
                     // transient（timeout 等）→ extract None → 回退从头。
                     // 不可续形态（tc 标记）同回退。
@@ -1159,7 +1159,7 @@ impl AgentLoop {
                             reasoning_content: None,
                             images: Vec::new(),
                         });
-                        // Y1 (Phase4-a): fold the retry call's defs with
+                        // : fold the retry call's defs with
                         // the same gates/rendering as the main call —
                         // same query ⇒ same fold bytes.
                         let r_tools = self.effective_tool_defs(instance);
@@ -1235,10 +1235,10 @@ impl AgentLoop {
 }
 
 // ---------------------------------------------------------------------------
-// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// 自由函数归位（c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
-/// T10（多模态 D4 ③）：provider 4xx 兜底——请求带图且本轮调用最终失败时，
+/// （多模态 ③）：provider 4xx 兜底——请求带图且本轮调用最终失败时，
 /// 把逃生通道（probe 实测 / vision=no）附加到**用户可见**错误文案。措辞条件
 /// 化（"若该错误与图像输入有关"），对无关失败（网络超时等）不误导；历史、
 /// request_log 与 observer 事件里的原始错误保持干净（不带提示）。

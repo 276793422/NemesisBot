@@ -1,4 +1,4 @@
-//! Tests for the Claude Code delegation tool (H7 / U13 half; T5 permission
+//! Tests for the Claude Code delegation tool (/ half; permission
 //! tier + shared-layer refactor).
 
 use super::*;
@@ -27,7 +27,7 @@ fn test_claude_code_tool_schema() {
     assert!(t.description().contains("Claude Code"));
 }
 
-/// T5: the permission mode is a FIXED config tier — it must NOT appear in the
+/// the permission mode is a FIXED config tier — it must NOT appear in the
 /// model-facing schema.
 #[test]
 fn test_claude_code_permission_mode_not_in_schema() {
@@ -39,9 +39,9 @@ fn test_claude_code_permission_mode_not_in_schema() {
     );
 }
 
-/// T5: tier normalization — None → default acceptEdits; explicit camelCase
+/// tier normalization — None → default acceptEdits; explicit camelCase
 /// values pass through; legacy snake_case maps over; unknown → default.
-/// （值集与 claude CLI 2.1.240 `--help` 实测对齐——V4 真机修正。）
+/// （值集与 claude CLI 2.1.240 `--help` 实测对齐—— 真机修正。）
 #[test]
 fn test_claude_code_permission_mode_normalization() {
     assert_eq!(
@@ -56,7 +56,7 @@ fn test_claude_code_permission_mode_normalization() {
         ClaudeCodeTool::new("C:/fake".into(), None, Some("bypassPermissions")).permission_mode(),
         "bypassPermissions"
     );
-    // Legacy snake_case（T5 时代的错误值集）→ camelCase 映射。
+    // Legacy snake_case（时代的错误值集）→ camelCase 映射。
     assert_eq!(
         ClaudeCodeTool::new("C:/fake".into(), None, Some("accept_edits")).permission_mode(),
         "acceptEdits"
@@ -102,7 +102,7 @@ async fn test_claude_code_tool_timeout_returns_error() {
     };
     let t = ClaudeCodeTool::new(script.to_string_lossy().to_string(), Some(1), None);
     let ctx = test_ctx();
-    // The timeout surfaces as Result::Err carrying a STRUCTURED message
+    // The timeout surfaces as Result:Err carrying a STRUCTURED message
     // (never a panic, never a hang). Both channels are acceptable shape.
     let res = t.execute(r#"{"prompt":"do it"}"#, &ctx).await;
     let text = match res {
@@ -113,9 +113,9 @@ async fn test_claude_code_tool_timeout_returns_error() {
     assert!(text.contains("timed out"), "mentions timeout: {text}");
 }
 
-/// T5: the spawned CLI actually receives `--permission-mode <tier>` —
+/// the spawned CLI actually receives `--permission-mode <tier>` —
 /// default acceptEdits, and an explicitly configured tier. Values are the
-/// CLI's own camelCase set (V4 真机对齐：snake_case 会被真实 CLI 拒收)。
+/// CLI's own camelCase set (真机对齐：snake_case 会被真实 CLI 拒收)。
 #[tokio::test]
 async fn test_claude_code_permission_mode_flag_passed_to_cli() {
     let dir = tempfile::tempdir().unwrap();

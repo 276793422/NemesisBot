@@ -57,7 +57,7 @@ fn context_builder_empty_workspace() {
     let prompt = builder.build_system_prompt(false);
 
     // Time is intentionally not in the cached system prompt; it's injected
-    // per-request by AgentLoopExecutor::build_messages().
+    // per-request by AgentLoopExecutor:build_messages().
     assert!(!prompt.contains("Current Time"));
     assert!(prompt.contains("Environment"));
     assert!(prompt.contains("Workspace"));
@@ -790,7 +790,7 @@ fn skill_info_debug() {
     assert!(debug_str.contains("test-skill"));
 }
 
-// ----- W3a branch coverage -----
+// ----- branch coverage -----
 
 /// SKILL.md that exists but is NOT valid UTF-8: read_to_string fails → the
 /// skill is skipped silently; a sibling valid skill still loads.
@@ -1006,10 +1006,10 @@ fn pro_mode_heartbeat_skip_bootstrap_keeps_segments() {
     );
 }
 
-// --- E 线 tier 档位 + B 线画像注入（自进化升级 2026-10-14） ---
+// --- E 线 tier 档位 + B 线画像注入（自进化升级） ---
 //
-// 2026-10-14 动态注入迁移：画像/档位两段从 ContextBuilder（build 时冻结、
-// classic-only）迁到 loop::messages 的 merged snapshot 每轮重渲染。这里
+// 动态注入迁移：画像/档位两段从 ContextBuilder（build 时冻结、
+// classic-only）迁到 loop:messages 的 merged snapshot 每轮重渲染。这里
 // retarget 为自由函数级测试（段模板字节契约 + from_tier 映射）；snapshot
 // 路径的注入行为回归锁在 loop/messages 测试与 user_profile/tests.rs。
 
@@ -1058,8 +1058,8 @@ fn prompt_profile_from_tier_mapping() {
 
 #[test]
 fn user_profile_section_renders_after_persona_before_tools() {
-    // 画像段模板契约（user_profile::render_section 产物的包装形态）：
-    // 标题行 + 空行 + 渲染正文 + 尾注（同 loop::messages::user_profile_section_now
+    // 画像段模板契约（user_profile:render_section 产物的包装形态）：
+    // 标题行 + 空行 + 渲染正文 + 尾注（同 loop:messages:user_profile_section_now
     // 的包装模板——两处字节由各自断言钉住，防漂移）。
     let rendered = "- [style] 用户偏好简洁回复";
     let section = format!(
@@ -1072,7 +1072,7 @@ fn user_profile_section_renders_after_persona_before_tools() {
 }
 
 // ---------------------------------------------------------------------------
-// B3（2026-10-31 项目 home 收编）：bootstrap 渲染双根覆盖
+// （项目 home 收编）：bootstrap 渲染双根覆盖
 // ---------------------------------------------------------------------------
 
 /// 段提取：`## <filename>\n\n<content>` 形态里数某文件段出现的次数。
@@ -1125,7 +1125,7 @@ fn bootstrap_roots_home_only_renders_home_section() {
 
 #[test]
 fn bootstrap_roots_both_rendered_home_first_project_second() {
-    // 两边都有 → home 段在前、项目目录段在后（拍板④顺序）。
+    // 两边都有 → home 段在前、项目目录段在后（顺序）。
     let project = TempDir::new().unwrap();
     let home = TempDir::new().unwrap();
     std::fs::write(project.path().join("IDENTITY.md"), "project-identity").unwrap();
@@ -1193,7 +1193,7 @@ fn bootstrap_roots_skip_heartbeat_mode_multi_root() {
     assert!(home_pos < project_pos, "heartbeat 路径顺序同 home 在前");
 }
 
-// --- BUG-20261101-279：load_skills 顺序契约锁 ---
+// ---：load_skills 顺序契约锁 ---
 
 #[test]
 fn bug279_load_skills_sorts_by_name() {

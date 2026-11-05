@@ -1,4 +1,4 @@
-//! E3（devtool-upgrade 阶段 5）：消息级回退/重做的 AgentLoop 编排测试。
+//! （devtool-upgrade）：消息级回退/重做的 AgentLoop 编排测试。
 //!
 //! JSON 形态 checkpoint store + 手工摆两轮对话（行带 `checkpoint_turn`
 //! 标记 + store begin/snapshot 同步推进），验证：
@@ -42,8 +42,8 @@ async fn review_nov02_original_rewind_commit_failure_keeps_checkpoint() {
     delete_chat_log(&key);
 }
 
-/// F2 续作（2026-11-02 复评）回归锁：redo 前向恢复失败 = 零推进 + 条目
-/// 还栈可重试，对齐 rewind 侧对称失败契约（BUG-20261028-120）。旧形态
+/// 续作（复评）回归锁：redo 前向恢复失败 = 零推进 + 条目
+/// 还栈可重试，对齐 rewind 侧对称失败契约。旧形态
 /// （探针钉住的缺陷）：失败只注记、行回填照常、条目被消耗——文件没恢
 /// 复、对话已回填、重试撞「没有可重做的回退」三输。
 #[cfg(windows)]
@@ -87,7 +87,7 @@ async fn review_nov02_redo_file_failure_blocks_and_retains_retry_entry() {
     delete_chat_log(&key);
 }
 
-/// F2 续作半途失败摆法：code.txt 两轮变更（v1→v2→v3）+ side.txt 在
+/// 续作半途失败摆法：code.txt 两轮变更（v1→v2→v3）+ side.txt 在
 /// turn 2 被删（rewind 恢复它、redo 又要删它）。redo 只锁 side.txt——
 /// checkout（code→v3）成功、side 删除失败 = partial blocked；重试时盘面
 /// code=v3 与 undo 盘面（v2）的 diff 即自恢复面，冲突预检必须豁免。
@@ -123,7 +123,7 @@ async fn stage_redo_partial_fixture(tag: &str) -> (AgentLoop, String, tempfile::
     (al, key, dir)
 }
 
-/// F2 续作（2026-11-02 复评）回归锁：redo 前向恢复**半途失败** = 零推进
+/// 续作（复评）回归锁：redo 前向恢复**半途失败** = 零推进
 /// + 条目还栈（带自恢复面记录），重试豁免自漂移续补成功。不豁免的话重
 /// 试的冲突预检会把 code.txt 的已恢复状态 diff 成外部改动，dishonestly
 /// 逼用户 force 自己的操作。
@@ -260,7 +260,7 @@ async fn stage_two_turns(tag: &str) -> (AgentLoop, String, tempfile::TempDir) {
     (al, key, dir)
 }
 
-/// 按 E3 真实写入形态摆行：user 行带 checkpoint_turn 标记（run_agent_loop_
+/// 按 真实写入形态摆行：user 行带 checkpoint_turn 标记（run_agent_loop_
 /// internal 的 append_chat_log_meta 同构）。
 fn e3_append(key: &str, role: &str, content: &str, turn: Option<usize>) {
     crate::chat_log::append_chat_log_meta(
@@ -305,7 +305,7 @@ async fn e3_rewind_truncates_turn_aligned_and_restores_files() {
     delete_chat_log(&key);
 }
 
-/// R3 回归锁（2026-10-24 外评探针反转）：文件恢复失败时 rewind **零推进**
+/// 回归锁（外评探针反转）：文件恢复失败时 rewind **零推进**
 /// ——jsonl 不截断、checkpoint 保留、返回 blocked 结构化失败清单；解锁后
 /// 重试恢复正常推进。旧形态：恢复失败被吞、照常盖「applied」戳 + 无条件
 /// 截断对话 + 摧毁 checkpoint（文件没恢复、对话被截、重试不可能，三输）。
@@ -404,7 +404,7 @@ async fn e3_redo_rejects_after_new_activity() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261025-54 回归锁：行数守卫的盲区——clear 后**重填到与 kept_count
+/// 回归锁：行数守卫的盲区——clear 后**重填到与 kept_count
 /// 相同的行数**（内容/时间戳全不同），旧形态只查行数放行，把 removed_rows
 /// verbatim 回填进无关对话（陈旧行带着旧 checkpoint_turn 标记污染新对话）。
 /// 修复后行身份指纹不符，诚实拒绝且会话保持重填态。
@@ -432,7 +432,7 @@ async fn e3_redo_rejects_refilled_same_count_session() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261028 回归锁：redo 回填**写回失败**时 undo 条目必须还栈可重试。
+/// 回归锁：redo 回填**写回失败**时 undo 条目必须还栈可重试。
 /// removed_rows 是被回退对话行的唯一副本——修复前写回失败分支直接把弹出的
 /// 条目丢弃（冲突路径还栈、写回失败路径不还，不对称），文件占用解除后用户
 /// 重试撞「没有可重做的回退」，对话行永久丢失。share_mode(1)（仅
@@ -446,7 +446,7 @@ async fn redo_writeback_failure_restores_undo_entry_for_retry() {
 
     al.rewind_to_message(&key, 0, false).await.unwrap();
 
-    // 锁会话 jsonl：sanitize 与落盘侧同源（chat_log::log_path 同构）。
+    // 锁会话 jsonl：sanitize 与落盘侧同源（chat_log:log_path 同构）。
     let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&key);
     let jsonl = nemesis_path::default_path_manager()
         .sessions_log_dir()
@@ -509,7 +509,7 @@ async fn e3_edge_cases_empty_out_of_range_and_noop() {
     delete_chat_log(&empty_key);
 }
 
-// —— 行动代理 P0（2026-10-14）撤销一等动词：rewind_last_turn ——
+// —— 行动代理 撤销一等动词：rewind_last_turn ——
 
 /// 撤销最后一轮：两轮会话 undo → turn 2 整轮移除（user 行一并，与
 /// `rewind_to_message` 的「保留 index 所在轮」语义不同）、文件回 turn 2
@@ -568,7 +568,7 @@ async fn e3_undo_last_turn_single_turn_cut_to_zero_and_redo() {
     delete_chat_log(&key);
 }
 
-// —— E3（收官批 2026-10-15）：WSAPI 撤销入口 undo_last_turn 的 busy 闸 ——
+// —— （收官-15）：WSAPI 撤销入口 undo_last_turn 的 busy 闸 ——
 
 /// 会话处理中（busy）诚实拒绝且零副作用（对话行数/文件都不动）；释放后
 /// 放行直达 rewind_last_turn 语义。
@@ -597,7 +597,7 @@ async fn e3_undo_public_entry_rejects_busy_session() {
 
 // —— git 影子形态：redo 前向恢复目标 = rewind 时刻实时树 ——
 
-/// git 形态的两轮摆法（root 带 .git 目录 → store 构造期选 git backend）。
+/// git 形态的两轮摆法（root 带.git 目录 → store 构造期选 git backend）。
 /// turn 2 里写出的 v3 不在任何 begin 树里（begin 树 = 各 turn 开始态）。
 async fn stage_two_turns_git(tag: &str) -> (AgentLoop, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
@@ -633,7 +633,7 @@ async fn stage_two_turns_git(tag: &str) -> (AgentLoop, String, tempfile::TempDir
     (al, key, dir)
 }
 
-/// 回归（2026-09-06 门 5 实测发现）：redo 前向恢复目标必须是 rewind 时刻
+/// 回归（门 5 实测发现）：redo 前向恢复目标必须是 rewind 时刻
 /// 的**实时**树（含最后一个 turn 的变更），不是最后一个 begin 树（只到上
 /// 一 turn 开始态）。修复前 redo 后文件停 v2，与已回填的「turn 2 改成 v3」
 /// 对话行不一致。
@@ -690,11 +690,11 @@ async fn e3_git_rewind_redo_covers_undeclared_shell_side_effects() {
     delete_chat_log(&key);
 }
 
-// —— BUG-HUNT R71（BUG-20261024-02）：R31 scoped 截断 × redo 守卫口径 ——
+// ——： scoped 截断 × redo 守卫口径 ——
 
-/// R71 git 多会话摆法：A 两 turn（v1→v2→v3，turn 边界 begin 捕树）+ B 一
+/// git 多会话摆法：A 两 turn（v1→v2→v3，turn 边界 begin 捕树）+ B 一
 /// turn（无文件变更，begin 树={v3}）。B 的条目经 `begin_for_session` 穿针
-/// ——R31 起 scoped 截断按 session 字段放行其在 A 的回退中存活。
+/// —— 起 scoped 截断按 session 字段放行其在 A 的回退中存活。
 #[allow(clippy::type_complexity)]
 async fn stage_git_sessions_ab(
     tag: &str,
@@ -801,7 +801,7 @@ async fn r71_git_redo_still_rejects_after_genuinely_new_turn() {
     delete_chat_log(&key_b);
 }
 
-// —— 重新生成支撑（2026-10-20）：rewind_before_message ——
+// —— 重新生成支撑：rewind_before_message ——
 
 /// 三轮摆法（两轮 stage 的直延长：turn 3 begin → snapshot 捕 v3 → 工具改
 /// v4 → 行落盘）。返回时 code.txt = v4。
@@ -960,7 +960,7 @@ async fn e3_rewind_before_rejects_busy_session() {
     delete_chat_log(&key);
 }
 
-// —— BUG-HUNT R6（2026-10-23）：under_history_gate 会话闸补测 ——
+// ——：under_history_gate 会话闸补测 ——
 
 /// busy 闸补齐 rewind_to_message 入口（undo / rewind_before 已有专测）：
 /// 拒绝 + 零副作用 + 释放后放行。
@@ -1019,12 +1019,12 @@ async fn e3_gate_releases_session_after_inner_error() {
     delete_chat_log(&key);
 }
 
-// —— BUG-20261031-231：重写窗口内 busy 回绝留痕跳过 ——
+// ——：重写窗口内 busy 回绝留痕跳过 ——
 
 /// 回归锁：rewind/redo 的会话 jsonl 重写窗口（快照读取 → 截断写回）内，
 /// busy 分支的 D-2 回绝留痕（user 行 + 回执行）必须跳过落盘——此刻追加
 /// 的行会被截断按陈旧快照整文件重写静默吞掉（不在 undo 条目里，redo
-/// 无法恢复）。窗口外留痕行为不变（负对照臂）。AgentLoop::new 默认
+/// 无法恢复）。窗口外留痕行为不变（负对照臂）。AgentLoop:new 默认
 /// Reject 模式，busy 分支直达 persist_busy_refusal。
 #[tokio::test]
 async fn e3_busy_refusal_rows_skipped_inside_rewrite_window() {
@@ -1088,7 +1088,7 @@ async fn e3_busy_refusal_rows_skipped_inside_rewrite_window() {
     delete_chat_log(&key);
 }
 
-/// steer 注入行追加（BUG-20261025-19 写入形态：role=user + `"steer": true`
+/// steer 注入行追加（写入形态：role=user + `"steer": true`
 /// 标记、无 checkpoint_turn——run_loop 注入路径同构）。
 fn e3_append_steer(key: &str, content: &str) {
     crate::chat_log::append_chat_log_meta(
@@ -1102,7 +1102,7 @@ fn e3_append_steer(key: &str, content: &str) {
     );
 }
 
-/// BUG-20261025-19 回归锁：「撤销最后一轮」在最后一轮含 steer 注入时，
+/// 回归锁：「撤销最后一轮」在最后一轮含 steer 注入时，
 /// 截断点必须落在真实轮首——旧行为切在 steer 行上，只删掉 steer 尾巴、
 /// 轮的提问与首轮回复残留、文件也不回滚（restore 锚 None）。
 #[tokio::test]
@@ -1130,7 +1130,7 @@ async fn e3_rewind_last_turn_skips_steer_rows() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261025-19 回归锁：回退到含 steer 注入的轮首 = 整轮保留（steer
+/// 回归锁：回退到含 steer 注入的轮首 = 整轮保留（steer
 /// 与其后回复随轮走）——旧行为切在 steer 行上，轮被拦腰截断（后 steer
 /// 回复丢失）且回滚锚错位。
 #[tokio::test]
@@ -1184,7 +1184,7 @@ async fn e3_rewind_to_message_keeps_whole_steered_turn() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261025-19 回归锁：`rewind_before_message` 落在 steer 注入行上
+/// 回归锁：`rewind_before_message` 落在 steer 注入行上
 /// loud 拒绝（steer 行不是轮首，与 assistant 行同罪——旧行为放行会产生
 /// 「删 steer 尾巴留轮首」的破碎半轮）。
 #[tokio::test]
@@ -1197,9 +1197,9 @@ async fn e3_rewind_before_rejects_steer_row() {
     delete_chat_log(&key);
 }
 
-// —— M4（2026-10-27 整改）：redo 冲突预检（外部漂移检出 / 条目还栈 / force 强过） ——
+// ——：redo 冲突预检（外部漂移检出 / 条目还栈 / force 强过） ——
 
-/// M4 主链路：undo→redo 窗口内 IDE 手改文件（不产生 checkpoint turn，三守
+/// 主链路：undo→redo 窗口内 IDE 手改文件（不产生 checkpoint turn，三守
 /// 卫全盲）→ 无 force redo 结构化 blocked（drifted_paths 列出面、行与文件
 /// 零副作用）→ **条目还栈**（再次无 force 仍 blocked 而非「没有可重做」—
 /// —弹出不还回去则前端「确认覆盖 → force 重试」必撞空栈）→ force 强过
@@ -1257,7 +1257,7 @@ async fn e3_git_redo_conflict_blocks_external_drift_then_force_overrides() {
     delete_chat_log(&key);
 }
 
-/// M4 无漂移基线：undo→redo 窗口无人动文件 → 无 force 直接成功，回执带
+/// 无漂移基线：undo→redo 窗口无人动文件 → 无 force 直接成功，回执带
 /// `forced: false` + 空 `drifted_paths`（新回执字段对既有行为零差）。
 #[tokio::test]
 async fn e3_git_redo_without_drift_reports_not_forced() {
@@ -1278,7 +1278,7 @@ async fn e3_git_redo_without_drift_reports_not_forced() {
     delete_chat_log(&key);
 }
 
-/// M4 JSON 形态诚实跳过：无影子 tree（forward_tree=None）→ 冲突扫描不可
+/// JSON 形态诚实跳过：无影子 tree（forward_tree=None）→ 冲突扫描不可
 /// 用 = None = 不 blocked 照常 redo（前向恢复本就带不完整注记，扫描只是
 /// 增量防线，不能把 JSON 形态 redo 锁死）。
 #[tokio::test]
@@ -1299,7 +1299,7 @@ async fn e3_json_redo_conflict_scan_unavailable_honest_skip() {
     assert_eq!(total, 4, "JSON 形态行回填照常");
 }
 
-/// F8 对称（BUG-20261028-106）：force redo 覆盖外部漂移与 force rewind 是
+/// 对称：force redo 覆盖外部漂移与 force rewind 是
 /// 同级高影响强恢复动作，必须同款落 Merkle append-only 审计链——旧行为只
 /// 有 tracing warn（轮转即失，不算留痕），docstring 声称「审计留痕」实为
 /// 谎报。修复后链上落一条 session.redo/forced 事件（operation/decision/
@@ -1359,7 +1359,7 @@ async fn e3_redo_force_records_audit_chain_event() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261028-97 红证（窗口①）：集群任务已派发、回调未回（快照在册，
+/// 红证（窗口①）：集群任务已派发、回调未回（快照在册，
 /// 数小时级窗口）期间，rewind 必须诚实拒绝——旧行为放行：续行最终回复
 /// append 与 rewind 截断竞争，redo 行数守卫被续行新行击穿。
 #[tokio::test]
@@ -1383,7 +1383,7 @@ async fn rewind_rejects_while_continuation_snapshot_pending() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261028-97 红证（窗口②）：续行执行中（回调已到、LLM 续行进行时）
+/// 红证（窗口②）：续行执行中（回调已到、LLM 续行进行时）
 /// rewind 必须拒绝；guard 释放后放行——标记是 RAII 瞬态，不能永久锁死会话。
 #[tokio::test]
 async fn rewind_rejects_while_continuation_executing_then_releases() {
@@ -1404,7 +1404,7 @@ async fn rewind_rejects_while_continuation_executing_then_releases() {
     delete_chat_log(&key);
 }
 
-// —— BUG-20261030-221：gc 在途窗口 × redo 前向恢复 ——
+// ——：gc 在途窗口 × redo 前向恢复 ——
 
 /// 生产同款 gc 装配（弱引用读 loop 栈，agent_factory 同构）的 git 形态三轮
 /// 摆法。keep_turns=1：回退（restore_turn=3）截断后索引剩 turn1/turn2 →
@@ -1451,7 +1451,7 @@ async fn stage_gc_three_turns_git(
     (al, key, dir)
 }
 
-/// BUG-20261030-221 回归锁：gc 启用（keep_turns=1）时回退，forward_tree
+/// 回归锁：gc 启用（keep_turns=1）时回退，forward_tree
 /// 采集于 truncate 之前、压栈在 jsonl 提交之后——修复前 truncate 内联 gc
 /// 跑在压栈之前，此刻 forward_tree 既不在索引（本会话 turn ≥ 锚的条目刚
 /// 被截）也不在栈（条目未压），重建式 gc 把它的对象当孤儿清掉，redo 的

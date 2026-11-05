@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：checkpoint.rs 剩余未覆盖行。
+//! 覆盖率批次：checkpoint.rs 剩余未覆盖行。
 //! - 200（+198-203）：restore_code 的 Some(body) 写回臂——begin →
 //!   snapshot(Modify)（读原内容）→ 改写文件 → restore 写回 + Create 分支
 //!   删除新建文件。
@@ -69,7 +69,7 @@ async fn truncate_from_removes_persisted_turn_files() {
     std::fs::create_dir_all(&root).unwrap();
 
     let store = CheckpointStore::new(Some(ckpt_dir.clone()), root.clone());
-    // 新语义（2026-08-30 空 turn 不落盘）：只有产生文件快照的 turn 才落盘。
+    // 新语义（空 turn 不落盘）：只有产生文件快照的 turn 才落盘。
     store.begin(1, "first");
     store
         .snapshot(&FileChange {

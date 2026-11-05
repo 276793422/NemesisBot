@@ -39,14 +39,14 @@ pub struct RequestContext {
     /// Skipped during serialization since closures are not serializable.
     #[serde(skip)]
     pub async_callback: Option<AsyncCallback>,
-    /// F-U3-2（UAT U3 实证）：档案管线任务的工作副本路径基准。Some 时
+    /// F-（UAT 实证）：档案管线任务的工作副本路径基准。Some 时
     /// dispatch 层把文件类工具的相对 `path` / 执行类工具的相对（或缺省）
     /// `cwd` 重写进该目录——worker 误用相对路径不再静默落到工作副本之外
     /// （变更集只扫 exec 目录，落外面的文件=成果丢失+工作区污染）。普通
     /// 会话恒 None，零行为变化。
     #[serde(skip)]
     pub tool_path_base: Option<PathBuf>,
-    /// 行动代理 P0（PLAN §6.2 凭条 `approval_ref` 契约字段）：dispatch 过
+    /// 行动代理 （PLAN 凭条 `approval_ref` 契约字段）：dispatch 过
     /// `execute_tracked` 拿到的交互审批引用（= 审批卡 request_id）。仅
     /// ABAC RequireApproval 经人工批准时 Some；直通/规则表/免打扰/拒绝
     /// 恒 None——凭条不伪造背书。connector 工具把它写进本次调用的凭条。
@@ -205,11 +205,11 @@ pub struct ContextBuilder {
     /// 入口形态变体（pro 体系专属）：缺省 Interactive——gateway 主链路
     /// 渲染字节与历史一致（golden 不变）；headless/ACP 由各自入口显式设置。
     entrance: crate::prompt::Entrance,
-    /// B3（2026-10-31 项目 home 收编）：bootstrap 渲染专用双根覆盖。
-    /// `Some(roots)` 时 [`Self::load_bootstrap_files`] 按序渲染 roots
+    /// （项目 home 收编）：bootstrap 渲染专用双根覆盖。
+    /// `Some(roots)` 时 [`Self:load_bootstrap_files`] 按序渲染 roots
     /// （替代只作用于 BOOTSTRAP_FILES 六文件；`workspace` 字段其余消费点
     /// ——记忆模板/skills 目录/workspace 显示——零变化）。同名文件多根
-    /// 各渲染一段，不合并不去重（拍板④：单一文件拆两份的字面语义）。
+    /// 各渲染一段，不合并不去重（单一文件拆两份的字面语义）。
     /// `None` = 现状（渲染 `self.workspace`），主 loop/headless/acp/集群
     /// 逐字节不变。
     bootstrap_roots_override: Option<Vec<PathBuf>>,
@@ -252,9 +252,9 @@ impl PromptProfile {
 /// tier 档位段渲染（每轮消费，**纯状态派生**：两次变更之间字节稳定——
 /// prompt cache 前缀不受损）。Standard = 零字节。
 ///
-/// 归属说明（2026-10-14 动态注入迁移）：画像段 + 档位段原挂
+/// 归属说明（动态注入迁移）：画像段 + 档位段原挂
 /// `ContextBuilder`（build 时冻结、仅 classic 路径），现由
-/// `loop::messages::build_messages_inner` 的 merged snapshot 每轮重渲染
+/// `loop:messages:build_messages_inner` 的 merged snapshot 每轮重渲染
 /// ——tier 热切（`check_config_reload`）与画像 sweep 学习即时生效，且
 /// classic/pro 双体系统一覆盖。段文本经此处自由函数字节保留迁移。
 pub fn prompt_profile_section(profile: PromptProfile) -> String {
@@ -288,15 +288,15 @@ impl ContextBuilder {
         }
     }
 
-    /// B3：设置 bootstrap 渲染根序列（项目 home → 项目目录；按序全渲染，
-    /// 不去重）。只影响 [`Self::load_bootstrap_files`]；`None`（缺省）=
+    /// 设置 bootstrap 渲染根序列（项目 home → 项目目录；按序全渲染，
+    /// 不去重）。只影响 [`Self:load_bootstrap_files`]；`None`（缺省）=
     /// 渲染 `self.workspace`（旧行为逐字节一致）。
     pub fn set_bootstrap_roots(&mut self, roots: Vec<PathBuf>) -> &mut Self {
         self.bootstrap_roots_override = Some(roots);
         self
     }
 
-    /// B3：bootstrap 渲染根序列单一真相源——override 在场按序返回，缺席
+    /// bootstrap 渲染根序列单一真相源——override 在场按序返回，缺席
     /// = `[self.workspace]`（与旧行为同形）。
     fn bootstrap_roots(&self) -> Vec<&Path> {
         match &self.bootstrap_roots_override {
@@ -308,7 +308,7 @@ impl ContextBuilder {
     /// 选择提示词体系（prompt-pack pro）。
     ///
     /// 缺省 classic（`build_system_prompt` 原路径原字节）；显式选择 pro 后
-    /// 组装顺序变为：Pre 段（`crate::prompt` 段落池）→ 人格文件 → 行为段池
+    /// 组装顺序变为：Pre 段（`crate:prompt` 段落池）→ 人格文件 → 行为段池
     /// → 环境段。
     pub fn set_prompt_system(&mut self, system: crate::prompt::PromptSystem) -> &mut Self {
         self.prompt_system = system;
@@ -400,7 +400,7 @@ impl ContextBuilder {
                     }
                 }
             }
-            // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs
+            // read_dir 顺序是平台实现细节（NTFS 字典序 vs
             // ext4 哈希序），技能增删后哈希序还会洗牌——skills 段直接渲染进
             // system prompt（build_skills_section 按插入序出 bullet），字节
             // 跨重启/跨平台漂移打穿 prompt cache 前缀纪律。显式排序钉死。
@@ -427,7 +427,7 @@ impl ContextBuilder {
     /// 4. Memory context — may change
     /// 5. Core identity section (time, environment, workspace) — dynamic, at end for caching
     ///
-    /// prompt-pack pro（`set_prompt_system`）改走 [`Self::build_system_prompt_pro`]；
+    /// prompt-pack pro（`set_prompt_system`）改走 [`Self:build_system_prompt_pro`]；
     /// classic 原路径原字节，不动。
     pub fn build_system_prompt(&self, skip_bootstrap: bool) -> String {
         if self.prompt_system == crate::prompt::PromptSystem::Pro {
@@ -479,7 +479,7 @@ impl ContextBuilder {
     /// pro 模式组装（prompt-pack）：Pre 段 → 人格文件 → tools → skills →
     /// memory → Post 段 → 环境段。
     ///
-    /// 段落来源 `crate::prompt` 段落池（静态全中文，编译期嵌入）；各段之间
+    /// 段落来源 `crate:prompt` 段落池（静态全中文，编译期嵌入）；各段之间
     /// 维持 classic 的 "---" 分隔约定；启动构建后随会话冻结，prompt cache
     /// 语义不变。组装完成后过长度软预算（超限告警不截断）。
     fn build_system_prompt_pro(&self, skip_bootstrap: bool) -> String {
@@ -544,7 +544,7 @@ impl ContextBuilder {
     ///
     /// Time is intentionally NOT included here — the system prompt is built once
     /// at agent startup and cached. Time is injected per-request by
-    /// `AgentLoopExecutor::build_messages()` as an ephemeral system message
+    /// `AgentLoopExecutor:build_messages()` as an ephemeral system message
     /// inserted before the latest user message, which preserves prompt cache
     /// hits on the historical prefix.
     fn build_identity(&self) -> String {
@@ -563,7 +563,7 @@ impl ContextBuilder {
     }
 
     /// pro 版尾巴：Environment + Workspace，无 Important Rules——行为规则
-    /// 职能移交 `crate::prompt` 段落池（Post 层扩表后覆盖全部三条语义）。
+    /// 职能移交 `crate:prompt` 段落池（Post 层扩表后覆盖全部三条语义）。
     fn build_identity_pro(&self) -> String {
         self.build_environment_workspace()
     }
@@ -642,7 +642,7 @@ impl ContextBuilder {
     /// If `skip_bootstrap` is true, only loads config files without triggering
     /// initialization logic (used for heartbeat requests).
     ///
-    /// B3：渲染根 = [`Self::bootstrap_roots`]（override 在场按序多根，缺席
+    /// 渲染根 = [`Self:bootstrap_roots`]（override 在场按序多根，缺席
     /// = 单根 `self.workspace`）。多根时每根独立走完 BOOTSTRAP_FILES 序
     /// （同名文件各渲染一段）；BOOTSTRAP.md 初始化模式锚 `self.workspace`
     /// （workspace 级 init 概念，不随 override 走）。
@@ -707,8 +707,8 @@ impl ContextBuilder {
         }
     }
 
-    /// B3：读指定根下的 bootstrap 文件（目录缺席/文件不存在 = None；与
-    /// [`Self::read_workspace_file`] 同语义，根参数化）。
+    /// 读指定根下的 bootstrap 文件（目录缺席/文件不存在 = None；与
+    /// [`Self:read_workspace_file`] 同语义，根参数化）。
     fn read_file_in_dir(dir: &Path, filename: &str) -> Option<String> {
         match std::fs::read_to_string(dir.join(filename)) {
             Ok(content) => {
@@ -872,6 +872,6 @@ impl ContextBuilder {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

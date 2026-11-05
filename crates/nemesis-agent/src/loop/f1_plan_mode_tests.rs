@@ -1,6 +1,6 @@
-// F1 (devtool-upgrade 阶段 4)：plan/build 双模式测试。
+// (devtool-upgrade)：plan/build 双模式测试。
 //
-// 覆盖面（对应实施计划 F1 验收）：
+// 覆盖面（对应实施计划 验收）：
 // ① AgentMode 解析/序列化（parse 大小写宽容 / 未知 None / 默认 Build）；
 // ② 供给闸——Build 全量；Plan 只读白名单 ∪ mcp_* ∪ spawn；
 // ③ tier × mode 正交——Mini ∩ Plan 双过滤同时生效（交集语义）；
@@ -367,12 +367,12 @@ fn plan_mode_write_allowed_unit_cases() {
 }
 
 // ---------------------------------------------------------------------------
-// B4（2026-10-31 项目 home 收编）：项目形态 plan 产物根迁移
+// （项目 home 收编）：项目形态 plan 产物根迁移
 // ---------------------------------------------------------------------------
 
 #[test]
 fn plan_products_root_overrides_plans_dir_for_project_sessions() {
-    // 项目会话语义（拍板⑥）：产物根 = <agent_home>/plans；项目目录内的
+    // 项目会话语义：产物根 = <agent_home>/plans；项目目录内的
     // plans（含相对路径解析落点）一律不放行——高危禁写。
     let project_dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
@@ -404,7 +404,7 @@ fn plan_products_root_overrides_plans_dir_for_project_sessions() {
             serde_json::to_string(&home.path().join("notes.md")).unwrap()
         )
     ));
-    // 项目目录 plans/ 绝对路径 → 拒（旧放行点被 B4 收紧）。
+    // 项目目录 plans/ 绝对路径 → 拒（旧放行点被 收紧）。
     assert!(!al.plan_mode_write_allowed(
         "write_file",
         &format!(
@@ -588,7 +588,7 @@ async fn runtime_policy_snapshot_carries_mode_line() {
 }
 
 // ---------------------------------------------------------------------------
-// C7（devtool-upgrade 阶段 6）：lsp 的 rename op 是 plan 模式写类
+// （devtool-upgrade）：lsp 的 rename op 是 plan 模式写类
 // ---------------------------------------------------------------------------
 
 /// lsp 不在 PLAN_MODE_WRITE_TOOLS（整表拦会误伤只读 op）——rename 靠
@@ -626,7 +626,7 @@ fn c7_is_lsp_write_call_detects_rename_op() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-HUNT R13：供给闸与分发闸契约对齐（cron / todowrite）
+// ：供给闸与分发闸契约对齐（cron / todowrite）
 // ---------------------------------------------------------------------------
 
 /// PLAN_MODE_TOOLS 供给的工具不得被分发闸 100% 拒。此前 cron（静态表归

@@ -1,9 +1,9 @@
-//! WS2（能力扩展 P5/P6/P7）compact 域测试。
+//! compact 域测试。
 //!
-//! - P5：token 预算尾巴（`token_budget_boundary` + fresh-read 配置 +
+//! -：token 预算尾巴（`token_budget_boundary` + fresh-read 配置 +
 //!   `maybe_update_summary` 接线 + 0=旧按条数回退 + tool 对安全）；
-//! - P6：六节 schema 指令/解析/回退 + UPDATE 迭代语义（G1 前缀形状不破）；
-//! - P7：文件操作台账聚合/注入/累积/上限。
+//! -：六节 schema 指令/解析/回退 + UPDATE 迭代语义（前缀形状不破）；
+//! -：文件操作台账聚合/注入/累积/上限。
 //!
 //! 独立测试文件（生产文件只保留声明行，仓库 2026-08-25 纪律）。本文件自建
 //! 捕获型 mock provider 与 turn 构造器——`loop/tests.rs` 的同名辅助是模块
@@ -126,7 +126,7 @@ fn schema_reply() -> String {
 }
 
 // ---------------------------------------------------------------------------
-// P5：token 预算尾巴
+// token 预算尾巴
 // ---------------------------------------------------------------------------
 
 /// 纯函数：预算内尾巴 ≤ 预算；最后一条消息超预算也无条件保留（pi 语义）。
@@ -200,7 +200,7 @@ fn p5_fresh_read_config_default_and_override() {
     // 改盘即生效（无缓存/无重启）。
     std::fs::write(
         &cfg_path,
-        // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩。
+        // ：条目带 context_window=100——窗口已知才不禁自动压缩。
         serde_json::json!({
             "agents": {"defaults": {"compact_keep_recent_tokens": 0}},
             "model_list": [{"model_name": "test-model", "context_window": 100}]
@@ -219,7 +219,7 @@ async fn p5_zero_budget_falls_back_to_count_semantics() {
         std::env::temp_dir().join(format!("nemesis_test_ws2_zero_{}.json", std::process::id()));
     std::fs::write(
         &cfg_path,
-        // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩。
+        // ：条目带 context_window=100——窗口已知才不禁自动压缩。
         serde_json::json!({
             "agents": {"defaults": {"compact_keep_recent_tokens": 0}},
             "model_list": [{"model_name": "test-model", "context_window": 100}]
@@ -274,7 +274,7 @@ async fn p5_maybe_update_summary_token_budget_tail() {
     ));
     std::fs::write(
         &cfg_path,
-        // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩。
+        // ：条目带 context_window=100——窗口已知才不禁自动压缩。
         serde_json::json!({
             "agents": {"defaults": {"compact_keep_recent_tokens": 60}},
             "model_list": [{"model_name": "test-model", "context_window": 100}]
@@ -320,7 +320,7 @@ async fn p5_maybe_update_summary_token_budget_tail() {
 }
 
 // ---------------------------------------------------------------------------
-// P6：结构化 schema + UPDATE 迭代
+// 结构化 schema + UPDATE 迭代
 // ---------------------------------------------------------------------------
 
 /// schema 解析：六节齐 → Some（剥前导客套）；缺一节 / 无标题 → None。
@@ -379,7 +379,7 @@ fn p6_build_summary_instruction_fresh_vs_update() {
 }
 
 /// UPDATE 走线：existing 非空 → 尾部指令携带旧摘要 + 新增条数；schema 回复
-/// 被原样采信。G1 前缀形状不破：覆盖段消息仍是原样结构（指令是最后一条）。
+/// 被原样采信。 前缀形状不破：覆盖段消息仍是原样结构（指令是最后一条）。
 #[tokio::test]
 async fn p6_iterative_update_carries_existing_summary() {
     let provider = CaptureProvider::new(&schema_reply());
@@ -400,7 +400,7 @@ async fn p6_iterative_update_carries_existing_summary() {
     let captured = provider.captured.lock().unwrap();
     assert_eq!(captured.len(), 1);
     let msgs = &captured[0];
-    // G1 形状：system + 原样覆盖段 + 尾部指令（5 轮）。
+    // 形状：system + 原样覆盖段 + 尾部指令（5 轮）。
     assert_eq!(msgs.len(), 6);
     assert_eq!(msgs[0].role, "system");
     assert_eq!(msgs[0].content, "SYS");
@@ -431,7 +431,7 @@ async fn p6_schema_failure_falls_back_to_free_text() {
 }
 
 // ---------------------------------------------------------------------------
-// P7：文件操作台账
+// 文件操作台账
 // ---------------------------------------------------------------------------
 
 /// 工具名 → kind 映射 + 忽略面 + 去重（同 path 后声明 kind 覆盖、首现顺序）。

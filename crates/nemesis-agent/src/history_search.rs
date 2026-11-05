@@ -1,4 +1,4 @@
-//! Session full-text search (U20).
+//! Session full-text search.
 //!
 //! SQLite FTS5 index over the chat-log JSONL files (`session_logs/*.jsonl`),
 //! queryable by the `history_search` agent tool and the
@@ -215,7 +215,7 @@ pub fn reindex_session_logs() -> usize {
         }
     }
 
-    // Orphan purge (2026-08-23): rows whose source file no longer exists must
+    // Orphan purge: rows whose source file no longer exists must
     // go — pre-fix, deleted sessions' rows lingered forever and eventually
     // filled the search window with ghosts. The comparison is DB-vs-disk
     // directly: gating on the in-memory `indexed` map (`known == seen`) made
@@ -276,7 +276,7 @@ fn insert_row(
 pub fn index_append(session_key: &str, role: &str, content: &str, timestamp: &str) {
     // Namespace: the DB rows and the `indexed` map are keyed by FILE STEM
     // (colons replaced) — same as reindex_session_logs, since chat_log
-    // writes `<stem>.jsonl`. 2026-08-23 fix: this used to look up the RAW
+    // writes `<stem>.jsonl`. fix: this used to look up the RAW
     // session key, so for the normal production key form (`chan:chat:user`,
     // always contains ':') the "file already indexed" check never matched
     // and the incremental hook silently never fired — masked until the
@@ -454,7 +454,7 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
     if ql.is_empty() {
         return hits;
     }
-    // 确定性迭代序（2026-10-23）：limit 截断让返回的命中子集依赖遍历序，
+    // 确定性迭代序：limit 截断让返回的命中子集依赖遍历序，
     // 而 read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4 哈希序）。先按
     // mtime 降序 + 文件名升序 tiebreak 排序（最新会话优先），同一数据
     // 跨平台同一结果。
@@ -504,7 +504,7 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
 
 /// session_logs 目录的 JSONL 清单，最新 mtime 优先（文件名升序 tiebreak）。
 /// 只收常规文件（`*.jsonl` 目录不进清单）；非常规 mtime 的条目跳过
-/// （后续 File::open 也会失败，语义一致）。
+/// （后续 File:open 也会失败，语义一致）。
 fn jsonl_files_latest_first(rd: std::fs::ReadDir) -> Vec<PathBuf> {
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
         .flatten()

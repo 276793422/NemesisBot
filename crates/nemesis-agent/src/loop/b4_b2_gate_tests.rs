@@ -1,4 +1,4 @@
-// B4 + B2（2026-10-19 connector 边界梳理）：总开关双闸 + 独占接管闸测试。
+// + （connector 边界梳理）：总开关双闸 + 独占接管闸测试。
 //
 // 覆盖面：
 // ① `current_connectors_enabled` fresh-read——无 config_path / 缺键 / 坏
@@ -6,15 +6,15 @@
 //    `connectors.enabled=false` → false；
 // ② 供给闸（build_tool_defs）——总开关关闭时 connector_find/connector_invoke
 //    不上供给面，其余工具不连坐；改盘即恢复（fresh-read）；
-// ③ dispatch 闸（B4）——总开关关闭时两工具被诚实拒绝（防 prompt cache
+// ③ dispatch 闸——总开关关闭时两工具被诚实拒绝（防 prompt cache
 //    陈旧带出/在途请求漏网），位置在 security 之前（拒绝不付 judge 成本
 //    由闸序保证，测试钉住拒绝发生）；
-// ④ 独占闸（B2 dispatch 端）——出处感知：非 `connector-binding` 通道直调
+// ④ 独占闸（dispatch 端）——出处感知：非 `connector-binding` 通道直调
 //    独占表内工具被拦；绑定回灌通道放行（治理正向路由，拒了它连接器
 //    自己先瘫）；表外工具任何通道不拦；
 // ⑤ 供给器注入——set_exclusive_hidden_provider 后 current_exclusive_hidden_tools
 //    现算返回闭包输出；缺省（未注入，项目 loop / 独立装配形态）= 空表；
-// ⑥ B4×B2 交叉（层级闸）——总开关关 = 独占闸一并释放：被独占的原生工具
+// ⑥ × 交叉（层级闸）——总开关关 = 独占闸一并释放：被独占的原生工具
 //    恢复供给 + 直调恢复执行；总开关重开 = 独占接管恢复（回归锁：此前
 //    独占表无 master 短路，总闸关闭后能力落入「治理面没了 + 原生直调被
 //    拦」的砖死态）。
@@ -171,7 +171,7 @@ async fn build_tool_defs_filters_connector_tools_when_master_off() {
 }
 
 // ---------------------------------------------------------------------------
-// ③ dispatch 闸（B4）：总开关关闭时两工具被诚实拒绝
+// ③ dispatch 闸：总开关关闭时两工具被诚实拒绝
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -228,7 +228,7 @@ async fn dispatch_refuses_connector_tools_when_master_off() {
 }
 
 // ---------------------------------------------------------------------------
-// ④ 独占闸（B2 dispatch 端）：出处感知
+// ④ 独占闸（dispatch 端）：出处感知
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -283,7 +283,7 @@ async fn exclusive_gate_blocks_native_and_passes_binding_channel() {
 fn exclusive_provider_default_empty_and_wiring() {
     let agent_loop = gate_loop();
     // 缺省（未注入——独立装配形态，如本测试 / 集群 worker）→ 空表。
-    // 治理补全 P1 起项目/selfbuilt loop 也经 register_connector_governance
+    // 治理补全 起项目/selfbuilt loop 也经 register_connector_governance
     // 注入（全覆盖），不再是无注入的例子。
     assert!(agent_loop.current_exclusive_hidden_tools().is_empty());
 
@@ -297,7 +297,7 @@ fn exclusive_provider_default_empty_and_wiring() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑥ B4×B2 交叉（层级闸）：总开关关 = 独占闸一并释放（回原生直通）
+// ⑥ × 交叉（层级闸）：总开关关 = 独占闸一并释放（回原生直通）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -312,7 +312,7 @@ async fn master_off_releases_exclusive_takeover() {
 
     let dir = tempfile::tempdir().unwrap();
 
-    // 总开关开：原生工具被独占接管——供给面消失 + 直调被拦（B2 基线）。
+    // 总开关开：原生工具被独占接管——供给面消失 + 直调被拦（基线）。
     let cfg = write_config(&dir, r#"{"connectors": {"enabled": true}}"#);
     agent_loop.set_config_path(cfg);
     let names = def_names(&agent_loop.build_tool_defs());
@@ -332,7 +332,7 @@ async fn master_off_releases_exclusive_takeover() {
         "总开关开时独占直调必须被拦，实际: {out}"
     );
 
-    // 总开关关：独占闸一并释放（计划 B4 语义）——原生工具回供给面 + 直调
+    // 总开关关：独占闸一并释放（计划 语义）——原生工具回供给面 + 直调
     // 真正执行（connector 工具同时下线 = 用户在系统级显式放弃监管，能力
     // 不允许砖死在「两边都调不到」）。
     let cfg = write_config(&dir, r#"{"connectors": {"enabled": false}}"#);

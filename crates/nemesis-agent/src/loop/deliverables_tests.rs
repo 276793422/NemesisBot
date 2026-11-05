@@ -1,17 +1,17 @@
-//! N5（2026-10-13 机会项）：交付物登记的 loop 侧测试。
+//! （2026-10-13）：交付物登记的 loop 侧测试。
 //!
 //! - **dispatch 瀑布入桶**：present_files 工具真实走 `handle_tool_call`，
 //!   交付物按 session_key 分桶落入 `turn_deliverables`（工具登记、loop
 //!   drain 双侧同一 Arc 的接缝验证）。
 //! - **drain 语义**：`drain_turn_deliverables` 取走即清（第二次 drain 为
-//!   空）+ 去重走 `chat_log::dedup_presented_files`（title/note 取最后
+//!   空）+ 去重走 `chat_log:dedup_presented_files`（title/note 取最后
 //!   登记）。
 //! - **emit 事件**：`emit_deliverables_registered` 经 agent_event_tx 广播
 //!   `DeliverablesRegistered`（web pump → SSE/WS 的上游），字段与访问器
 //!   对齐（round_text/f1 先例）；空清单不发布；通道未装配 no-op。
 //! - 落盘行形状归 chat_log n5_tests（同一投影，两端各钉一头）；
 //!   `run_agent_loop_internal` 内 drain→落盘→emit 的调用次序由同一 fn
-//!   内的语句序保证（d3 先例：入口行编译保证 + 单元件各测）。
+//!   内的语句序保证（d3 入口行编译保证 + 单元件各测）。
 
 use super::*;
 

@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：types.rs 剩余未覆盖行。
+//! 覆盖率批次：types.rs 剩余未覆盖行。
 //! - 183-185：`default_tool_type` serde default（ToolDefinition 缺 "type" 字段反序列化）。
 //! - 366：`repair_tool_message_pairs` 内部循环收尾（多 tool_calls 中部分已应答的混合情形）。
 

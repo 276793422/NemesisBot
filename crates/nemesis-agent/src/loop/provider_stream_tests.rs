@@ -1,4 +1,4 @@
-//! provider_stream 覆盖（L10，2026-10-13）：sink 合并窗/相位序列/seq 单调、
+//! provider_stream 覆盖（2026-10-13）：sink 合并窗/相位序列/seq 单调、
 //! 空流零帧、error 截断终态、StreamingLlmProvider 合成增量与真实流两臂。
 
 use async_trait::async_trait;
@@ -325,7 +325,7 @@ impl LlmProvider for FailingStreamProvider {
     }
 }
 
-/// 重试桩（BUG-20261102-309）：首次 chat_streamed 送增量后失败（复刻
+/// 重试桩：首次 chat_streamed 送增量后失败（复刻
 /// recovery.rs 瞬态重试环拓扑——同一 wrapper/sink 跨首捕+重试两次调用）。
 struct RetryThenSuccessProvider {
     failed_once: std::sync::atomic::AtomicBool,
@@ -373,7 +373,7 @@ impl LlmProvider for RetryThenSuccessProvider {
     }
 }
 
-/// BUG-20261102-309 回归锁：recovery.rs 五调用点共享同一 wrapper/sink，
+/// 回归锁：recovery.rs 五调用点共享同一 wrapper/sink，
 /// 重试 = 新流（recovery.rs 模块注释钦定契约：seq 归零 + start 帧重置
 /// 前端缓冲）——第二次 chat() 必须以 start 开新流（前端卡片唯一 reset
 /// 信号），且本 attempt 文本纯净（上一 attempt 残尾不渗入）。
@@ -416,7 +416,7 @@ async fn retry_on_shared_sink_restarts_stream_with_start_frame() {
     assert_eq!(texts(&events)[4], "second-attempt-full");
 }
 
-/// BUG-20261102-309 对称臂：非流式 provider（trait 缺省 chat_streamed）
+/// 对称臂：非流式 provider（trait 缺省 chat_streamed）
 /// 跨两次 chat()——合成全量增量的判据 deltas_emitted 必须按 attempt 判定
 /// （重试成功的回复文本不得被上一 attempt 的 delta 历史短路丢失）。
 #[tokio::test]

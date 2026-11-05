@@ -1,4 +1,4 @@
-//! L22（2026-11-03 snooze 排队）：暂停期入站 pending sidecar 设施测试。
+//! （2026-11-03 snooze 排队）：暂停期入站 pending sidecar 设施测试。
 //!
 //! append/take 原子取走（rename 防双投 + 崩溃残留恢复臂）/ 上限诚实拒收 /
 //! 行内会话键烧入（pending_sessions 逆清洗还原）/ delete_chat_log 级联 /

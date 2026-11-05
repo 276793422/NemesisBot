@@ -144,8 +144,8 @@ fn is_discipline_path_matches_component_anywhere() {
 }
 
 /// Windows 形态路径（反斜杠分隔符）。Linux 上反斜杠是文件名普通字符，
-/// 不匹配才是正确平台行为——按 2026-09-02 标记约定挂 #[cfg(windows)]
-/// （Linux 编译期消失，nightly 不红；2026-09-24 run 35982550210 实证）。
+/// 不匹配才是正确平台行为——按 标记约定挂 #[cfg(windows)]
+/// （Linux 编译期消失，nightly 不红； run 35982550210 实证）。
 #[cfg(windows)]
 #[test]
 fn is_discipline_path_matches_windows_backslash_form() {
@@ -270,7 +270,7 @@ async fn falsification_fail_budget_exhaustion_escalates() {
         let rec = falsification_record(&ws, run);
         assert_eq!(rec["passed"], false, "run={run}");
     }
-    // 预算耗尽（D4）：停车升级不静默——Stop（warn 已发，产物留盘供评审注记）。
+    // 预算耗尽：停车升级不静默——Stop（warn 已发，产物留盘供评审注记）。
     assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
 }
 
@@ -282,9 +282,9 @@ fn exec_output_passed_treats_timeout_and_nonzero_as_failure() {
     // 成功形态：裸 stdout / 无输出。
     assert!(exec_output_passed("(no output)"));
     assert!(exec_output_passed("test result: ok. 1 passed"));
-    // 失败形态①：非零退出（B2 格式）。
+    // 失败形态①：非零退出（格式）。
     assert!(!exec_output_passed("Exit code: 2\nstdout: \nstderr: "));
-    // 失败形态②：超时收尸（B2 格式）——本回归的修复点。
+    // 失败形态②：超时收尸（格式）——本回归的修复点。
     assert!(!exec_output_passed(
         "Command timed out after 120 seconds. Partial output:\n(none)"
     ));
@@ -336,7 +336,7 @@ async fn falsification_noop_without_participation_or_declaration() {
     );
 }
 
-/// 复核修复回归：重新参与即证伪进度归零——同会话第二轮纪律任务不被
+/// 复核修复回归：重新参与即证伪进度归零——同会话纪律任务不被
 /// 上轮 `last_passed` 残留静默跳过（marker prompt = 新任务起点）。
 #[tokio::test]
 async fn marker_reentry_resets_progress_so_next_task_falsifies_again() {
@@ -349,7 +349,7 @@ async fn marker_reentry_resets_progress_so_next_task_falsifies_again() {
         chat_id: "1".to_string(),
         prompt: text.to_string(),
     };
-    // 第一轮：marker 参与 → 通过 → 下轮安静放行（last_passed）。
+    // marker 参与 → 通过 → 下轮安静放行（last_passed）。
     write_declaration(&ws, pass_cmd());
     f.on_user_prompt(&marker_prompt("[discipline:bugfix] fix a"))
         .await;
@@ -360,7 +360,7 @@ async fn marker_reentry_resets_progress_so_next_task_falsifies_again() {
         other => panic!("round 1: expected continue, got {other:?}"),
     }
     assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
-    // 第二轮：新 marker prompt（新任务）→ 进度归零 → 证伪重跑且重新从
+    // 新 marker prompt（新任务）→ 进度归零 → 证伪重跑且重新从
     // run 1 计（falsification-1.json 被覆写），修复前此处被 last_passed
     // 残留静默放行。
     f.on_user_prompt(&marker_prompt("[discipline:bugfix] fix b"))

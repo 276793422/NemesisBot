@@ -1,4 +1,4 @@
-//! turn.rs 异常收尾冲刷去重（BUG-20261031-237）回归测试。
+//! turn.rs 异常收尾冲刷去重回归测试。
 //!
 //! 终局错误在 history 落**裸错误**（`Error: {raw}`，recovery.rs 三处
 //! add_assistant_message），用户可见终局是**改写形态**（可行动提示

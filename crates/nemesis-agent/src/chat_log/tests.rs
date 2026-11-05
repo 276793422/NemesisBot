@@ -53,7 +53,7 @@ fn test_append_with_model_round_trip() {
     delete_chat_log(key); // cleanup
 }
 
-/// Single-source-of-truth row predicate (2026-08-25 fork-fix round): the
+/// Single-source-of-truth row predicate (fork-fix round): the
 /// fork's chat_log projection and the turns endpoint's `end_preview` MUST
 /// use the same rule, or the dialog preview would disagree with what the
 /// fork actually ends on. Pin it here.
@@ -69,7 +69,7 @@ fn test_is_projected_chat_row() {
     assert!(!is_projected_chat_row("system", "prompt"));
 }
 
-// 2026-08-25: delete_chat_log must also remove the title meta sidecar
+// delete_chat_log must also remove the title meta sidecar
 // (orphan-file fix); clear_chat_log must KEEP it (title survives a clear).
 #[test]
 fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
@@ -99,7 +99,7 @@ fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
     assert_eq!(rows2.len(), 0);
 }
 
-// --- W3a: error arms, cron/model markers, fork helpers, boundary sidecar ---
+// ---: error arms, cron/model markers, fork helpers, boundary sidecar ---
 
 use crate::session::StoredMessage;
 
@@ -149,10 +149,10 @@ fn test_append_full_with_cron_markers() {
     delete_chat_log(&key);
 }
 
-/// dirblock 挂死诊断（2026-09-02 extended-tests Linux nightly 首跑实录）。
+/// dirblock 挂死诊断（extended-tests Linux nightly 首跑）。
 ///
 /// Linux：后台线程每 90s 检查测试是否完成；未完成就把各线程内核态
-/// （stat 的 wchan + syscall 号）经 [`crate::test_support::force_stderr`]
+/// （stat 的 wchan + syscall 号）经 [`crate:test_support:force_stderr`]
 /// 旁路 libtest 捕获直接写 stderr，留挂死现场。其它平台：全 no-op 桩
 /// （/proc 依赖，无观测意义），保持测试体平台无关调同一 API。
 #[cfg(target_os = "linux")]
@@ -457,7 +457,7 @@ fn test_write_session_meta_dir_squatter_warns() {
     std::fs::remove_dir(&mp).unwrap();
 }
 
-// --- E4 (2026-09-05): sidecar meta 扩展 fork 血缘（parent/forked_at_turn）---
+// ---: sidecar meta 扩展 fork 血缘（parent/forked_at_turn）---
 
 fn e4_uniq_key(tag: &str) -> String {
     format!(
@@ -505,13 +505,13 @@ fn test_e4_lineage_and_title_upsert_both_directions() {
     delete_chat_log(&key2);
 }
 
-/// pre-E4 形态的 meta 文件（只有 title）兼容读取：血缘字段缺省为 None；
+/// pre 形态的 meta 文件（只有 title）兼容读取：血缘字段缺省为 None；
 /// 随后补写血缘时 title 保留（不抹旧数据）。
 #[test]
 fn test_e4_legacy_title_only_meta_compatible() {
     let key = e4_uniq_key("legacy");
     delete_chat_log(&key);
-    // 直接落一个 pre-E4 形态文件（无血缘字段）。
+    // 直接落一个 pre 形态文件（无血缘字段）。
     write_session_meta(&key, "legacy");
     let path = meta_path(&key);
     std::fs::write(&path, r#"{"title":"legacy"}"#).unwrap();
@@ -542,7 +542,7 @@ fn test_e4_read_meta_full_missing_file_is_none() {
     assert!(read_session_meta(&key).is_none());
 }
 
-// ===================== E7: 会话标题自动生成（meta 侧语义） =====================
+// =====================: 会话标题自动生成（meta 侧语义） =====================
 
 fn e7_uniq_key(tag: &str) -> String {
     format!(
@@ -596,7 +596,7 @@ fn test_e7_eligibility_matrix() {
         "手动命名成占位符也算用户意志 → 不覆盖"
     );
 
-    // pre-E7 旧 meta（无 title_manual 字段）→ 反序列化缺省 false，真实标题仍保护。
+    // pre 旧 meta（无 title_manual 字段）→ 反序列化缺省 false，真实标题仍保护。
     let key2 = e7_uniq_key("legacy");
     delete_chat_log(&key2);
     let path = meta_path(&key2);
@@ -671,7 +671,7 @@ fn test_e7_first_user_message_extraction() {
     delete_chat_log(&key);
 }
 
-// --- L6++（2026-09-08）：项目归属 sidecar ---
+// ---：项目归属 sidecar ---
 
 /// write_session_project 的 upsert 契约：已有 title meta 上落双字段且
 /// title 保留；重复写覆盖（幂等）；无绑定的会话读出双 None。
@@ -712,7 +712,7 @@ fn test_session_meta_project_roundtrip() {
     delete_chat_log(&key);
 }
 
-/// clear_session_project 契约（M4 sessions.delete/clear 的 forget 联动）：
+/// clear_session_project 契约（sessions.delete/clear 的 forget 联动）：
 /// 文件缺失 / 本就无归属 = no-op false；有归属 = true 且摘双字段保 title；
 /// 摘除后二次 clear = false（幂等，不空写）。
 #[test]
@@ -750,7 +750,7 @@ fn test_clear_session_project_semantics() {
     delete_chat_log(&key);
 }
 
-/// 旧形态 meta（pre-L6++ 磁盘上只有 title）加载后新字段为 None——
+/// 旧形态 meta（pre 磁盘上只有 title）加载后新字段为 None——
 /// serde default 兼容，不炸不误报绑定。
 #[test]
 fn test_session_meta_legacy_without_project_loads() {
@@ -774,7 +774,7 @@ fn test_session_meta_legacy_without_project_loads() {
     delete_chat_log(&key);
 }
 
-/// P2（2026-09-11 真机日志）：未送达标记 round-trip——mark 累加、clear 归零
+/// （真机日志）：未送达标记 round-trip——mark 累加、clear 归零
 /// 幂等、既有字段（title）保留、旧形态 meta（无 undelivered 字段）兼容。
 #[test]
 fn test_undelivered_mark_and_clear_roundtrip() {
@@ -815,9 +815,9 @@ fn test_undelivered_mark_and_clear_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG 2026-09-22（历史加载秒卡）：read_chat_log 单遍滑窗重写的契约锁。
+// BUG （历史加载秒卡）：read_chat_log 单遍滑窗重写的契约锁。
 // 窗口切的是 raw 行号坐标（不可解析行计入 total、boundary 行占位后过滤），
-// oldest_index/has_more 与旧两遍实现逐字段一致——E3 rewind 锚与前端行编
+// oldest_index/has_more 与旧两遍实现逐字段一致—— rewind 锚与前端行编
 // 号链靠它们。
 // ---------------------------------------------------------------------------
 
@@ -899,14 +899,14 @@ fn test_read_chat_log_whole_log_lane_same_semantics() {
     delete_chat_log(&key);
     write_mixed_rows(&key);
 
-    // usize::MAX（fork/rewind/export/share/CLI 形态）：与全量小窗同结果。
+    // usize:MAX（fork/rewind/export/share/CLI 形态）：与全量小窗同结果。
     let (page, total, has_more, oldest) = read_chat_log(&key, usize::MAX, None);
     assert_eq!(total, 7);
     assert_eq!(page.len(), 5);
     assert!(!has_more);
     assert_eq!(oldest, 0);
 
-    // usize::MAX + before_index：Option 占位窗口同样按 raw 坐标对齐
+    // usize:MAX + before_index：Option 占位窗口同样按 raw 坐标对齐
     // （boundary 行占位后过滤），[0..5) → u0,a0,u1,a1。
     let (page, _, _, oldest) = read_chat_log(&key, usize::MAX, Some(5));
     assert_eq!(page.len(), 4);
@@ -992,7 +992,7 @@ async fn test_read_chat_log_async_parity() {
 }
 
 // ---------------------------------------------------------------------------
-// SAN-01/D4：旧「只替换 `:`」映射的嵌套目录平化迁移
+// SAN-01/：旧「只替换 `:`」映射的嵌套目录平化迁移
 // ---------------------------------------------------------------------------
 
 /// 嵌套产物平移 + 平面文件不动 + 空目录顺手删除。
@@ -1047,8 +1047,8 @@ fn flattened_name_matches_new_sanitized_mapping() {
     );
 }
 
-/// BUG-20261030-205 回归锁：fork 复制（write_chat_log_rows）open 失败
-/// 不再无痕——返回 0 + M2 降级登记表有条目（健康面可见）。目录占位点
+/// 回归锁：fork 复制（write_chat_log_rows）open 失败
+/// 不再无痕——返回 0 + 降级登记表有条目（健康面可）。目录占位点
 /// 位 = 跨平台确定性 open 失败注入（Windows open 目录失败；Unix
 /// O_WRONLY|O_APPEND 对目录 EISDIR）。
 #[test]
@@ -1087,7 +1087,7 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
 }
 
 // ---------------------------------------------------------------------------
-// L14（2026-11-01）：会话执行统计 sidecar 字段（stats）读写契约
+// ：会话执行统计 sidecar 字段（stats）读写契约
 // ---------------------------------------------------------------------------
 
 /// stats round-trip：写入八字段 → 读回逐字段一致；全零不落盘（旧 meta

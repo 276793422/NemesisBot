@@ -1,6 +1,6 @@
 //! 轮内预算/限流重试常量与 429 退避梯子（裁决②③④⑧）、RateLimitStatus、限流状态 set/clear/retry_status/send_retry_progress。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
@@ -18,19 +18,19 @@ pub(crate) const GRACE_ROUND_NUDGE: &str = "工具调用预算已用尽，不要
 /// to get a successful response.
 pub(crate) const MAX_TRANSIENT_RETRIES: u32 = 3;
 
-/// 429 限流重试环（2026-09-17 BUG 文档裁决④⑧）：限流重试间隔阶梯（秒）——
+/// 429 限流重试环：限流重试间隔阶梯（秒）——
 /// 前 4 档翻倍爬升抓瞬时抖动，后 6 档每档 +30s 线性放宽等限流窗口过去；
 /// 总跨度 885s ≈ 14.8 分钟。上游带 Retry-After 时取 max(上游要求, 阶梯值)
 /// （裁决⑧遵从上游，但不低于本地阶梯）。
 const RATE_LIMIT_BACKOFF_LADDER: [u64; 10] = [5, 10, 20, 40, 60, 90, 120, 150, 180, 210];
 
-/// 限流分类词表：`rate limited by provider` = FailoverError::RateLimit 的
+/// 限流分类词表：`rate limited by provider` = FailoverError:RateLimit 的
 /// Display 前缀（llm_bridge 保真展平）；`429` / `too many requests` 兜底
 /// 裸文本形态（对齐 providers 侧 error_classifier 口径）；`overloaded` =
-/// FailoverError::Overloaded 的 Display 尾词（502/503 过载，状态码在展平
+/// FailoverError:Overloaded 的 Display 尾词（502/503 过载，状态码在展平
 /// 时已丢失）——providers 侧既有约定就是按限流对待（error_classifier
 /// 「Overloaded treated as rate_limit」），loop 层词表必须同步对齐，否则
-/// 过载首败即终局（2026-09-20 BUG 实证：provider codex is overloaded 一次
+/// 过载首败即终局（BUG 实证：provider codex is overloaded 一次
 /// 报死，复杂长链路任一轮踩 503 即全任务报废）。
 pub(crate) const RATE_LIMIT_ERROR_KEYWORDS: [&str; 4] = [
     "rate limited by provider",
@@ -39,10 +39,10 @@ pub(crate) const RATE_LIMIT_ERROR_KEYWORDS: [&str; 4] = [
     "overloaded",
 ];
 
-/// 展示标签（2026-10-13）：限流环内错误含 "overloaded"（FailoverError::
+/// 展示标签：限流环内错误含 "overloaded"（FailoverError:
 /// Overloaded 的 Display 尾词）→「上游过载」；其余（429 等真限流）→
 /// 「上游限流」。此前两态共用「上游限流」文案——号池过载（502/503）被
-/// 误报成限流，用户排障方向被带偏（gpt-5.6-sol 风暴实录）。环归类口径
+/// 误报成限流，用户排障方向被带偏（gpt-5.6-sol 风暴）。环归类口径
 /// 不变（Overloaded 照旧进限流环），只改展示层。
 pub(crate) fn rate_limit_display_label(err_text: &str) -> &'static str {
     if err_text.to_lowercase().contains("overloaded") {
@@ -75,22 +75,22 @@ pub(crate) fn rate_limit_wait_secs(err: &str, attempt: u32) -> u64 {
     )
 }
 
-/// BUG 2026-09-21 ②：单次上游调用超时默认 180s——429 后连接挂起（不回
+/// BUG ②：单次上游调用超时默认 180s——429 后连接挂起（不回
 /// 响应体）时旧行为可挂任意久（实测 27 分钟缺口）。0 = 关闭超时（退回
 /// 旧行为）。`agents.defaults.provider_call_timeout_secs` 覆盖。
-/// M6-3（2026-10-10 机制加固）：180→480——thinking 型模型 prefill 实测
+/// （机制加固）：180→480——thinking 型模型 prefill 实测
 /// 212s 撞破 180s 闸（诚实调用被超时误杀）；仍低于 provider lane 默认
 /// 600s，超时阶梯不倒挂。
 pub const DEFAULT_PROVIDER_CALL_TIMEOUT_SECS: u64 = 480;
-/// BUG 2026-09-21 ②：限流重试环总预算默认 900s（等待 + 调用累计）——
+/// BUG ②：限流重试环总预算默认 900s（等待 + 调用累计）——
 /// 10 次上限只限次数不限总时长（实测 46 分钟无熔断）。0 = 不限。
 /// `agents.defaults.rate_limit_budget_secs` 覆盖。
 pub const DEFAULT_RATE_LIMIT_BUDGET_SECS: u64 = 900;
-/// [`AgentLoop::retry_status`] 读侧过期阈值：写侧在 turn 被 abort（E-STOP
+/// [`AgentLoop:retry_status`] 读侧过期阈值：写侧在 turn 被 abort（E-STOP
 /// /进程取消）时来不及清——快照超时未更新即视为失效，读侧顺手回收。
 pub const RETRY_STATUS_STALE_SECS: u64 = 300;
 
-/// BUG 2026-09-21 ①：单会话限流重试的实时快照（WSAPI `agent.retry_status`
+/// BUG ①：单会话限流重试的实时快照（WSAPI `agent.retry_status`
 /// 读，前端切回会话后占位区显示「第 N/M 次重试」而非哑转圈）。
 #[derive(Debug, Clone)]
 pub struct RateLimitStatus {
@@ -99,26 +99,26 @@ pub struct RateLimitStatus {
     pub wait_secs: u64,
     pub model: String,
     /// 展示标签（「上游限流」/「上游过载」）——环归类不变，只改展示层
-    /// （2026-10-13）；由 [`rate_limit_display_label`] 生成。
+    /// ；由 [`rate_limit_display_label`] 生成。
     pub label: &'static str,
     /// 写入时刻（读侧判过期用 [`RETRY_STATUS_STALE_SECS`]）。
     pub updated_at: std::time::Instant,
 }
 
 impl AgentLoop {
-    /// BUG 2026-09-21 ①：重试环写实时快照（每轮覆盖）。
+    /// BUG ①：重试环写实时快照（每轮覆盖）。
     pub(crate) fn set_rate_limit_status(&self, session_key: &str, st: RateLimitStatus) {
         self.rate_limit_status
             .lock()
             .insert(session_key.to_string(), st);
     }
 
-    /// BUG 2026-09-21 ①：turn 收尾（成功/耗尽/预算终局）清快照。
+    /// BUG ①：turn 收尾（成功/耗尽/预算终局）清快照。
     pub(crate) fn clear_rate_limit_status(&self, session_key: &str) {
         self.rate_limit_status.lock().remove(session_key);
     }
 
-    /// BUG 2026-09-21 ①：WSAPI 读取口。超 [`RETRY_STATUS_STALE_SECS`] 未更新
+    /// BUG ①：WSAPI 读取口。超 [`RETRY_STATUS_STALE_SECS`] 未更新
     /// 的快照视为失效（E-STOP abort 清不掉的残留）——返回 None 并顺手回收。
     pub fn retry_status(&self, session_key: &str) -> Option<RateLimitStatus> {
         let map = self.rate_limit_status.lock();
@@ -144,7 +144,7 @@ impl AgentLoop {
                 message_type: String::new(),
                 meta: nemesis_types::channel::OutboundMeta {
                     model: Some(self.current_display_model()),
-                    // L2：会话键随行（web 通道按会话记录，进度条也进历史）。
+                    // 会话键随行（web 通道按会话记录，进度条也进历史）。
                     session_key: (!context.session_key.is_empty())
                         .then(|| context.session_key.clone()),
                     source_node: None,

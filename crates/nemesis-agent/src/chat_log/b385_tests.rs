@@ -1,8 +1,8 @@
-//! BUG-20261104-385 回归锁：自动标题写入的 check-then-write 原子化。
+//! 回归锁：自动标题写入的 check-then-write 原子化。
 //!
 //! 旧形态：`auto_title_eligible`（锁外读）→ `upsert_meta`（锁内盲写）——
 //! 检查与写盘之间的窗口里用户 rename（`write_session_meta_manual` 锁内置
-//! `title_manual=true`）插入时，自动标题照样落盘覆盖手动名（E7「手动改名
+//! `title_manual=true`）插入时，自动标题照样落盘覆盖手动名（「手动改名
 //! 永不覆盖」契约击穿）。修复后写点在 [`META_LOCK`] 下判定+落盘原子完成
 //! （与 `write_session_branch_summary` 的 detach 封印位同构），判定逻辑与
 //! `auto_title_eligible` 共用 `auto_title_writable` 单一真相源。
@@ -83,7 +83,7 @@ fn b385_eligibility_and_write_share_single_truth() {
     assert!(!auto_title_eligible(&key3));
     assert!(!write_session_meta_auto_title(&key3, "自动C"));
 
-    // 形态 5：pre-E7 legacy meta（无 title_manual 字段，真实标题）→ 反
+    // 形态 5：pre legacy meta（无 title_manual 字段，真实标题）→ 反
     // 序列化缺省 false → 双双拒绝（旧档兼容读侧保护）。
     let key4 = b385_uniq_key("legacy");
     delete_chat_log(&key4);

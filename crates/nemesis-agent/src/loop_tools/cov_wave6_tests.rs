@@ -361,7 +361,7 @@ async fn todowrite_reports_sessions_dir_creation_failure() {
 
 #[tokio::test]
 async fn todowrite_overwrites_corrupt_existing_file() {
-    // BUG-20261025-51 后临时名为唯一形态（.tmp-{pid}-{seq}-{nanos}），固定
+    // 后临时名为唯一形态（.tmp-{pid}-{seq}-{nanos}），固定
     // `.tmp` 路径预置注入失效，「tmp 写失败臂」externally 不可注入，归
     // helper 自身测试。改钉同主题不变量：旧缺陷可产出的撕裂损坏残留档
     // 不阻断重写——原子写整体替换后文件恢复完整 JSON。
@@ -395,7 +395,7 @@ async fn todowrite_reports_rename_failure_when_target_is_dir() {
         .await
         .err()
         .unwrap();
-    // BUG-20261025-51 后错误文本来自权威 helper："atomic write …: rename: …"
+    // 后错误文本来自权威 helper："atomic write …: rename: …"
     assert!(err.contains("rename"), "got: {err}");
 }
 
@@ -754,7 +754,7 @@ async fn register_shared_tools_lsp_both_manager_arms() {
     let tools = register_shared_tools(&cfg_ext);
     assert!(tools.contains_key("lsp"), "rust-analyzer expected on PATH");
 
-    // 臂 2：自建 manager（LspTool::new 兜底）。
+    // 臂 2：自建 manager（LspTool:new 兜底）。
     let cfg_self = SharedToolConfig {
         lsp_tool_enabled: true,
         ..Default::default()

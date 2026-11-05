@@ -1,24 +1,24 @@
-//! 声明式量化风险限制（P0 vault 计划 D2，2026-09-22 计划 §4）。
+//! 声明式量化风险限制（vault 计划，2026-09-22 计划）。
 //!
 //! 通用机制原则：本模块不认识任何业务名词——工具经
-//! [`Tool::limit_categories()`] 声明自己属于哪些类别（如 exec、
+//! [`Tool:limit_categories()`] 声明自己属于哪些类别（如 exec、
 //! mass_message），规则由配置 `security.limits`（类别 → {max, window_secs}）
 //! 提供，装配层（nemesisbot security_setup）启动时注入 [`set_rules`]。
 //! 未注入或类别无规则 = 不限（缺省全关）。
 //!
 //! 计数是**进程内滑动窗口**（`VecDeque<Instant>` 淘汰出窗项）：重启清零
-//! 是诚实的 v1 边界（计划 §4 明示），跨进程聚合留给后续批次。
+//! 是诚实的 v1 边界（计划 明示），跨进程聚合留给后续批次。
 //!
 //! 检查点：estop 之后、security 管线之前（限额不是内容安全——不付
 //! judge/scanner 成本）。超限不静默拒绝：走 auditor 审批直通车升级
-//! （D3，`request_limit_approval`），批准 = 计数 + 放行；拒绝/超时/
+//! （`request_limit_approval`），批准 = 计数 + 放行；拒绝/超时/
 //! 无审批通道 = fail-closed。
 
 use parking_lot::{Mutex, RwLock};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-/// 单类别规则（与 nemesis_config::RateLimitRule 同构——机制层不反向依赖
+/// 单类别规则（与 nemesis_config:RateLimitRule 同构——机制层不反向依赖
 /// 配置层的 serde 形态，装配层负责转换）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LimitRule {
@@ -111,7 +111,7 @@ pub fn record(categories: &[String]) {
 /// 检查与记录在**同一临界区**完成（RULES.read + COUNTERS.lock 一次持有到
 /// 结束，锁序恒为 RULES → COUNTERS）：旧实现分离两次加锁，check 与 record
 /// 之间存在 TOCTOU——两个并发调用都在对方 record 前看到 count = max-1，
-/// 双双放行，窗口计数超出 max（安全特性不允许，2026-09-21 复审修复）。
+/// 双双放行，窗口计数超出 max（安全特性不允许， 复审修复）。
 pub fn check_and_record(categories: &[String]) -> Option<OverLimit> {
     if categories.is_empty() {
         return None;

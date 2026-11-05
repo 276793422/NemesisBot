@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -99,7 +99,7 @@ impl CronTool {
 }
 
 /// Convert a whole-second duration from tool args to milliseconds
-/// (overflow-honest; 换算单一真相源在 [`nemesis_cron::secs_to_ms_checked`]).
+/// (overflow-honest; 换算单一真相源在 [`nemesis_cron:secs_to_ms_checked`]).
 fn secs_arg_to_ms(secs: u64) -> Result<i64, String> {
     nemesis_cron::secs_to_ms_checked(secs)
 }
@@ -152,12 +152,12 @@ impl Tool for CronTool {
                 // compatibility. Priority: at_seconds > every_seconds >
                 // cron_expr > schedule.
                 let schedule = if let Some(secs) = val.get("at_seconds").and_then(|v| v.as_u64()) {
-                    // BUG-20261101-285：受检组合加法——secs_arg_to_ms 只受检
-                    // 换算（ms ≤ i64::MAX），与 now 的最终合成此前是裸 add：
+                    // 受检组合加法——secs_arg_to_ms 只受检
+                    // 换算（ms ≤ i64:MAX），与 now 的最终合成此前是裸 add：
                     // at_seconds≈9.2233e15（schema 无上限；LLM 幻觉大整数是
                     // 常态）时换算过检、合成溢出——debug panic 打穿 gateway，
                     // release 回绕负值 at_ms 被 compute_next_run 的 ms > now
-                    // 过滤 = 静默僵尸任务（BUG-20261024-11「绝不回绕」禁的
+                    // 过滤 = 静默僵尸任务（「绝不回绕」禁的
                     // 失败形态，换算层修了组合层漏网）。溢出 = 诚实 Err 回灌。
                     let at_ms = secs_arg_to_ms(secs)?
                         .checked_add(chrono::Local::now().timestamp_millis())
@@ -198,7 +198,7 @@ impl Tool for CronTool {
                             .trim_end_matches('s');
                         let secs: i64 = secs_str.parse().map_err(|_| "Invalid interval")?;
                         // 负数/溢出与新结构化路径同源拒绝（u64 转换挡负值，
-                        // checked mul 挡 i64::MAX*1000 溢出 panic/回绕）。
+                        // checked mul 挡 i64:MAX*1000 溢出 panic/回绕）。
                         let secs = u64::try_from(secs).map_err(|_| "Invalid interval")?;
                         nemesis_cron::service::CronSchedule {
                             kind: "every".to_string(),
@@ -287,7 +287,7 @@ impl Tool for CronTool {
                     context.chat_id.clone()
                 };
 
-                // H1 (U12): continue_session=true routes the fired job back
+                // : continue_session=true routes the fired job back
                 // into THIS conversation's session (context/persona kept,
                 // reply persisted to this chat's history) via add_job_ext's
                 // session_key — the gateway's on_job handler consumes it.
@@ -298,7 +298,7 @@ impl Tool for CronTool {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                // T3 (U12): per-fire tool-round budget, only meaningful with
+                // : per-fire tool-round budget, only meaningful with
                 // continue_session=true. Fixed enum tiers (5/10/20) — the
                 // args_validator rejects off-enum values before dispatch, so a
                 // model cannot free-form this into a 1000-round budget. Default
@@ -456,15 +456,15 @@ impl Tool for SleepTool {
 }
 
 // ===========================================================================
-// Todo list tool (H1, devtool-upgrade 阶段 2)
+// Todo list tool (, devtool-upgrade)
 // ===========================================================================
 
 /// `todowrite`：全量提交式 todo 清单工具。
 ///
 /// 语义：每次调用**替换整个清单**（模型无需 diff 思维），落盘
 /// `{workspace}/sessions/todo_{safe_session_key}.json`（原子写：tmp + rename），
-/// 成功后广播 [`nemesis_types::agent::AgentEvent::TodoUpdated`]（web pump 转
-/// WS push + SSE，前端实时渲染）。**不回灌 prompt**——靠 H3 的 system
+/// 成功后广播 [`nemesis_types:agent:AgentEvent:TodoUpdated`]（web pump 转
+/// WS push + SSE，前端实时渲染）。**不回灌 prompt**——靠 的 system
 /// prompt few-shot 示范驱动模型维持清单。
 pub struct TodoWriteTool {
     /// 存储根 workspace（`sessions/` 目录挂其下）。
@@ -519,18 +519,18 @@ impl Tool for TodoWriteTool {
         let todos = parsed.todos;
 
         // 存储路径：sessions/todo_{safe_session_key}.json。安全化走仓内
-        // 单一真相源白名单消毒（SAN-05；F-U4-4：B 端 peer_chat 复合键
+        // 单一真相源白名单消毒（SAN-05；F-：B 端 peer_chat 复合键
         // `cluster_rpc:{node}/{chat}` 含 '/'（peer_chat_handler 设计：chat_id
         // 可能含 ':'，故用 '/' 分隔），只替换 ':' 会把文件名拆出中间目录 →
-        // write os error 3，2026-09-15 真机实证；当时本地实现
+        // write os error 3， 真机实证；当时本地实现
         // `replace([':', '/', '\\'], "_")`，现升级为
-        // nemesis_utils::sanitize::sanitize_path_segment，对运行时键族映射
+        // nemesis_utils:sanitize:sanitize_path_segment，对运行时键族映射
         // 一致，另兜住 `..` 与超长输入）。
         let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&context.session_key);
         let dir = nemesis_path::resolve_sessions_dir_in_workspace(&self.workspace);
         let path = dir.join(format!("todo_{safe_key}.json"));
 
-        // 原子写：BUG-20261025-51 起委托唯一临时名权威 helper（旧固定
+        // 原子写： 起委托唯一临时名权威 helper（旧固定
         // `todo_{key}.json.tmp` 同键并行工具调用互踩可产损坏 todo 文件）。
         let body = serde_json::to_string_pretty(&todos)
             .map_err(|e| format!("serialize todos failed: {e}"))?;
@@ -584,13 +584,13 @@ use nemesis_tools::registry::Tool as _;
 
 /// I2C bus tool - interacts with I2C devices (Linux only).
 ///
-/// BUG-13（2026-10-14）根修：此前是回显桩（假成功、无真实 I/O——模型以为
+/// BUG-13根修：此前是回显桩（假成功、无真实 I/O——模型以为
 /// 写入成功而硬件什么都没发生）。真实实现（ioctl 扫描/读写、参数校验、
-/// P8 地址策略、非 Linux 平台诚实报错）全在
-/// [`nemesis_tools::hardware::I2CTool`]，本层只做 `&str`→`Value` 解析与
+/// 地址策略、非 Linux 平台诚实报错）全在
+/// [`nemesis_tools:hardware:I2CTool`]，本层只做 `&str`→`Value` 解析与
 /// `ToolResult` 折叠（is_error→Err(for_llm)）；description/parameters
 /// 直接透传真实实现（单一真相源，随之获得 confirm/bus 等完整 schema
-/// 字段——一次性 prompt 文案漂移，接受）。P8 地址策略仍从注册点
+/// 字段——一次性 prompt 文案漂移，接受）。 地址策略仍从注册点
 /// `with_policy` 注入（config `tools.hardware` 段），校验在真实实现内
 /// 执行，与本路径同源。
 pub struct I2CTool {
@@ -643,7 +643,7 @@ impl Tool for I2CTool {
 
 /// SPI bus tool - interacts with SPI devices (Linux only).
 ///
-/// 薄适配器同 [`I2CTool`]：委托 [`nemesis_tools::hardware::SPITool`] 真实
+/// 薄适配器同 [`I2CTool`]：委托 [`nemesis_tools:hardware:SPITool`] 真实
 /// 实现（ZST，按调用临时构造；保持单元结构体形态，兼容既有
 /// `let tool = SPITool;` 构造点）。
 pub struct SPITool;
@@ -726,12 +726,12 @@ impl Tool for ForgeBridgeTool {
 // ===========================================================================
 // MCP Discovery Tools
 // ===========================================================================
-/// H1（2026-09-05）：`todowrite` 工具的接线配置。
+/// ：`todowrite` 工具的接线配置。
 #[derive(Clone, Debug)]
 pub struct TodoToolConfig {
     /// 存储根（`{workspace}/sessions/todo_{safe_session_key}.json`）。
     pub workspace: std::path::PathBuf,
-    /// TodoUpdated 广播通道（与 M1a ToolEventHook 同一 sender；None =
+    /// TodoUpdated 广播通道（与 ToolEventHook 同一 sender；None =
     /// 只落盘不广播——CLI / exec_worker 形态）。
     pub event_tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
 }

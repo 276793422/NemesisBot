@@ -1,6 +1,6 @@
 //! Tool-argument validation against a tool's JSON-Schema `parameters()`.
 //!
-//! Part of the small-model-tool-robustness plan (Phase 2). Catches B-class
+//! Part of the small-model-tool-robustness plan. Catches B-class
 //! failures — wrong field name, wrong type, missing required field, bad enum
 //! value — *before* dispatch, so the model gets a structured, actionable error
 //! it can self-correct from on the next round instead of a confusing runtime
@@ -116,7 +116,7 @@ pub fn validate(schema: &Value, args: &Value) -> Vec<Violation> {
     let mut out = Vec::new();
 
     // No `properties` (or empty) ⇒ the tool declares no object schema to
-    // enforce. The default `Tool::parameters()` returns `{"type":"object",
+    // enforce. The default `Tool:parameters()` returns `{"type":"object",
     // "properties":{}}`, so this is the common "undeclared schema" case — fail
     // open rather than rejecting every field as unknown.
     let props = match schema.get("properties").and_then(|p| p.as_object()) {
@@ -229,7 +229,7 @@ pub fn try_autofix(schema: &Value, args: &Value) -> Option<Value> {
         candidates.sort_by_key(|(_, d)| *d);
 
         if candidates.is_empty() {
-            // M12（2026-10-27 整改批次四）：无候选 = 纯多余字段，原样透传。
+            // ：无候选 = 纯多余字段，原样透传。
             // 此前整单放弃（None → 回灌错误）——一个无害多余字段会连累
             // 别处真实 typo 的修复；而 validate 本就不对它产违规，透传后
             // 「复验 clean」闸自然放行。
@@ -350,6 +350,6 @@ fn format_violations(schema: &Value, vs: &[Violation]) -> String {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// (quality-hardening goal 冲刺): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

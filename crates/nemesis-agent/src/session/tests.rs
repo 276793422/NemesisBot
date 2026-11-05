@@ -826,7 +826,7 @@ fn test_session_store_truncate_to_zero() {
     assert!(data.messages.is_empty());
 }
 
-/// BUG-20261025-79 锁：truncate_history 从头部丢弃 → summary_covers_up_to
+/// 锁：truncate_history 从头部丢弃 → summary_covers_up_to
 /// 同步前移（与 trim_to_limit 同一不变量）。covers 是 1-based（0=仅盖住
 /// system prompt），消费端 clamp(1, len)：陈旧大值在截短历史上会 clamp 到
 /// len → 整段历史被误判已摘要而丢弃；归零（saturating）= 历史全文发送 +
@@ -920,7 +920,7 @@ fn test_stored_session_debug() {
     assert!(debug_str.contains("test-key"));
 }
 
-// --- S1: summary_covers_up_to field (zero-behavior addition) ---
+// ---: summary_covers_up_to field (zero-behavior addition) ---
 
 #[test]
 fn test_stored_session_legacy_json_loads_covers_none() {
@@ -998,7 +998,7 @@ fn test_session_store_clear_resets_covers_up_to() {
     assert!(store.get_summary_covers_up_to("clear:key").is_none());
 }
 
-/// FIX (2026-08-25 两存储分叉摸底): "clear" must wipe the on-disk file too.
+/// FIX (两存储分叉摸底): "clear" must wipe the on-disk file too.
 /// The old version only cleared the in-memory entry, so a gateway restart
 /// reloaded the full history from `sessions/*.json` while chat_log had been
 /// truncated — the model "remembered" a conversation the user just cleared.
@@ -1034,7 +1034,7 @@ fn test_session_store_clear_removes_disk_file_no_revival_after_reload() {
     assert!(store3.get_history(key).is_empty());
 }
 
-// --- S3.1: store-level C-aware trimming (MAX_STORED_MESSAGES = 1000) ---
+// ---.1: store-level C-aware trimming (MAX_STORED_MESSAGES = 1000) ---
 
 fn stored_msgs(n: usize) -> Vec<StoredMessage> {
     (0..n)
@@ -1157,7 +1157,7 @@ fn test_save_path_order_keeps_covers_coherent_after_trim() {
     // messages, so the verbatim tail survives. The OLD order (history then
     // cache) overwrote the trim's adjustment, leaving covers too large and
     // dropping the verbatim tail.
-    // P5 注：这里模拟的是 store 层的纯 trim 数学——`instance_covers` 是任意
+    // 注：这里模拟的是 store 层的纯 trim 数学——`instance_covers` 是任意
     // 模拟值（6 只是个示意尾巴长度），真实边界由 compact 域按 token 预算
     // （compact_keep_recent_tokens，缺省 20000）算出，与本测试无关。
     let store = SessionStore::new_in_memory();
@@ -1651,11 +1651,11 @@ fn test_session_manager_cleanup_expired_with_timeout_expired() {
     assert!(mgr.is_empty());
 }
 
-/// BUG-20261102-326 红证：时钟回拨（last_active 在未来）不得误清活跃会话。
+/// 红证：时钟回拨（last_active 在未来）不得误清活跃会话。
 /// 修复前 `elapsed.num_seconds() as u64` 把负差值回绕成巨值恒真——NTP 步进
 /// 校正、跨机 workspace 迁移恢复（他机时钟超前）场景下，刚活跃的会话被
 /// cleanup_expired_with_timeout 立即摘除（对话上下文丢失）。与
-/// BUG-20261024-11（cron next_run 裸加法回绕）同族：有符号差值严禁塞进
+/// （cron next_run 裸加法回绕）同族：有符号差值严禁塞进
 /// 无符号比较。保号比较后负差值 → false（保留）。
 #[test]
 fn test_session_manager_cleanup_keeps_session_with_future_last_active() {
@@ -1716,7 +1716,7 @@ fn test_session_store_disk_save_and_reload_multiple() {
 }
 
 // ---------------------------------------------------------------------------
-// X1 (U3 projection prune): compaction pressure measures the projection.
+// (projection prune): compaction pressure measures the projection.
 // ---------------------------------------------------------------------------
 
 /// Compaction decisions must reflect what the PROVIDER sees (the folded
@@ -1764,7 +1764,7 @@ fn test_estimate_tokens_projected_bounded() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-08-25 自愈重建（TTL 生命周期不对称修复）: store json 被 7 天 TTL 清理
+// 自愈重建（TTL 生命周期不对称修复）: store json 被 7 天 TTL 清理
 // （或缺失）而 chat_log 还活着 → get_or_create 重放 jsonl，而不是新建一个
 // 空的失忆会话。夹具刻意是"脏数据"（不对称机制在野外产出的真实状态）——
 // 干净夹具正是这类 bug 在此前几轮测试里始终不可见的原因。
@@ -1812,7 +1812,7 @@ fn test_get_or_create_rebuilds_from_chat_log_when_store_missing() {
     crate::chat_log::delete_chat_log(key); // cleanup
 }
 
-/// Store 文件在（Z1 场景：文件在 store 构造后才出现）→ 磁盘回退获胜，
+/// Store 文件在（场景：文件在 store 构造后才出现）→ 磁盘回退获胜，
 /// 绝不用 jsonl 重放覆盖活上下文。
 #[test]
 fn test_get_or_create_no_rebuild_when_store_file_exists() {
@@ -1890,8 +1890,8 @@ fn test_in_memory_store_never_rebuilds_from_chat_log() {
     crate::chat_log::delete_chat_log(key); // cleanup
 }
 
-/// B1×self-heal 交互修复回归锁（agent-bench context_integrity 实证，
-/// 2026-09-25）：process_admitted 的物化顺序契约——`get_or_create` 必须先于
+/// ×self-heal 交互修复回归锁（agent-bench context_integrity 实证，
+/// ）：process_admitted 的物化顺序契约——`get_or_create` 必须先于
 /// 本轮 user 行落盘。物化先行 ⇒ 内存命中短路 ⇒ 重建分支不可达 ⇒ 本轮 user
 /// 行不被回放进模型上下文（run_with_trace 只 add 一次）。不物化则重建把它
 /// 回放 + 再 add = 首轮请求用户消息重复（生产 bug 形态）。
@@ -1908,7 +1908,7 @@ fn test_materialize_before_user_row_write_prevents_inflight_replay() {
     // 空条目只进内存，不落盘（与 fresh-key 行为一致）
     assert!(!store.file_exists(key));
 
-    // ② B1 早落盘：本轮 user 行进 chat_log。
+    // ② 早落盘：本轮 user 行进 chat_log。
     crate::chat_log::append_chat_log(key, "user", "本轮用户消息");
 
     // ③ get_or_create_instance 同款调用：内存命中 → 不得触发重建回放。
@@ -1970,7 +1970,7 @@ fn test_rebuild_caps_at_max_stored_messages_keeps_newest() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-08-25 management-op regression pins: clear/delete must leave BOTH
+// management-op regression pins: clear/delete must leave BOTH
 // stores empty, and the self-heal rebuild layer must NOT resurrect content
 // the user asked to remove. The compositions below mirror the exact call
 // sequences the Dashboard handlers run (handlers/sessions.rs).
@@ -2044,10 +2044,10 @@ fn test_deleted_session_does_not_resurrect_via_rebuild() {
 }
 
 // ---------------------------------------------------------------------------
-// W3a branch coverage (capture, save/load edge arms, migrate, cleanup)
+// branch coverage (capture, save/load edge arms, migrate, cleanup)
 // ---------------------------------------------------------------------------
 
-/// The ONLY `CaptureSink::init` caller in this test binary: after it runs the
+/// The ONLY `CaptureSink:init` caller in this test binary: after it runs the
 /// capture branches in set_history/add_message are live, and a shrinking
 /// set_history must auto-flush the write timeline to disk.
 #[test]
@@ -2115,8 +2115,8 @@ fn test_sanitize_session_id_charset() {
 
 /// save(): rename failure (destination path is a DIRECTORY on Windows) ->
 /// Err（底层 rename 失败，文案经 write_file_atomic 冒泡）and the temp file is
-/// cleaned up. BUG-20261025-78 后落盘走 nemesis_utils::file::write_file_atomic，
-/// 错误形状为 `save session <path>: atomic write <path>: rename: ...`；断言
+/// cleaned up. 后落盘走 nemesis_utils:file:write_file_atomic，
+/// 错误形状为 `save session <path>: atomic write <path>: rename:...`；断言
 /// `contains("rename")`（新旧实现都含，兼容两形态）。残留检查不依赖 tmp 命名：
 /// 失败后目录里除目标 DIRECTORY 外应无任何常规文件（helper 内部自清理）。
 #[test]
@@ -2380,8 +2380,8 @@ fn test_load_from_disk_in_memory_store_is_noop() {
     assert!(store.contains("mem:key"));
 }
 
-// F-E（2026-09-04 四轮盲审）：chat_log 行的 "images" 数组必须还原进
-// image_refs——硬编码 Vec::new() 会让 self-heal 重建 / fork 的图片引用
+// F-E（四轮盲审）：chat_log 行的 "images" 数组必须还原进
+// image_refs——硬编码 Vec:new() 会让 self-heal 重建 / fork 的图片引用
 // 凭空消失（两套存储分叉）。
 #[test]
 fn fe_projected_rows_restore_image_refs() {
@@ -2438,7 +2438,7 @@ fn fe_projected_rows_tolerates_malformed_images() {
     );
 }
 
-/// 测试用 tracing 捕获 writer（BUG-20261028-95 红证配套）。
+/// 测试用 tracing 捕获 writer（红证配套）。
 #[derive(Clone)]
 struct TraceCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
@@ -2459,7 +2459,7 @@ impl tracing_subscriber::fmt::MakeWriter<'_> for TraceCapture {
     }
 }
 
-/// BUG-20261028-95 红证：自愈重建（rebuild_from_chat_log）后的立即持久化
+/// 红证：自愈重建（rebuild_from_chat_log）后的立即持久化
 /// 失败不得静默——旧行为 `let _ = self.save(key)`，失忆自愈产物落盘失败
 /// （磁盘满/权限）时下一次 get_or_create 又要重建一遍，故障完全不可见。
 /// 造法：store json 位置被同名**目录**占住 → read_to_string 失败走 rebuild

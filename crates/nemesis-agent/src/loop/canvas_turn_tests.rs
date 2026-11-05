@@ -1,11 +1,11 @@
-// P30（WS14）：canvas 块终答检出 → CanvasOpen 事件 / 语法错误回灌自纠 /
+// ：canvas 块终答检出 → CanvasOpen 事件 / 语法错误回灌自纠 /
 // 回灌预算耗尽诚实放行 的轮级集成测试。
 //
 // 覆盖面：
 // ① 终答含合法 ```canvas 块 → agent_event_tx 广播 CanvasOpen（html/index/
 //    session_key/chat_id 访问器对齐），Done 照常抵达；
 // ② 终答 canvas 有语法错误 → 不发 CanvasOpen，回灌反馈落 user 消息
-//    （provider 下一次调用可见），模型重发自纠后发 CanvasOpen；
+//    （provider 下一次调用可），模型重发自纠后发 CanvasOpen；
 // ③ 连续错误烧穿回灌预算（MAX_SYNTAX_RETRIES）→ 诚实放行：不发
 //    CanvasOpen、Done 照常、canvas 块以普通代码块留在正文；
 // ④ json 数据岛（type="application/json"）不算语法错误，照常发布；

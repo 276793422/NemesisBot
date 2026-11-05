@@ -1,13 +1,13 @@
-//! Message preprocessing — `@文件引用` expansion（I2，devtool-upgrade 阶段 3）。
+//! Message preprocessing — `@文件引用` expansion（devtool-upgrade）。
 //!
-//! 扫描用户消息里的 `@path` / `@path#L10` / `@path#L10-20` 引用，把目标文件
+//! 扫描用户消息里的 `@path` / `@path#` / `@path#` 引用，把目标文件
 //! （或行切片）以 `<file_ref>` 块**前置**进消息文本——agent 无需额外的
 //! read_file 工具轮次即可看到被引用内容（@引用 + 行号语法）。
 //!
 //! 语义要点（与多模态附加链同一套纪律）：
 //! - **安全 8 层闸**：每个引用 = 一次程序化 `read_file` invocation 走
-//!   `SecurityPlugin::execute`（附加与普通 read 同权；拒绝诚实注明）。
-//! - **图片让位**：图片扩展名（[`image_path_detector::has_image_extension`]）
+//!   `SecurityPlugin:execute`（附加与普通 read 同权；拒绝诚实注明）。
+//! - **图片让位**：图片扩展名（[`image_path_detector:has_image_extension`]）
 //!   的引用静默跳过——同一消息里 attach_turn_images 会把它作为图片附加，
 //!   双注入（文本 + 像素）是浪费且有害。
 //! - **失败诚实注明**：路径形 token（含分隔符或扩展名）解析失败 →
@@ -20,7 +20,7 @@
 
 use std::path::Path;
 
-/// 单个 `<file_ref>` 块内容上限（计划 I2：≤8KB，超限截断 + locator）。
+/// 单个 `<file_ref>` 块内容上限（计划：≤8KB，超限截断 + locator）。
 pub const MAX_REF_BYTES: usize = 8 * 1024;
 /// 单文件读入上限（截头；行切片与 8KB 截断都只可能用头部）。
 const MAX_READ_BYTES: u64 = 1024 * 1024;
@@ -28,7 +28,7 @@ const MAX_READ_BYTES: u64 = 1024 * 1024;
 /// 一个 @引用（提取产物；路径尚未解析）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct FileRef {
-    /// 含行号语法的原始 token（`src/main.rs#L10-20`）。
+    /// 含行号语法的原始 token（`src/main.rs#`）。
     pub raw: String,
     /// 纯路径部分（`src/main.rs`）。
     pub path: String,
@@ -61,7 +61,7 @@ fn mid_word_at(content: &str, at_index: usize) -> bool {
         .unwrap_or(false)
 }
 
-/// 从 token 尾部解析 `#L10` / `#L10-20` 行号语法；解析失败整个 token 视为
+/// 从 token 尾部解析 `#` / `#` 行号语法；解析失败整个 token 视为
 /// 纯路径（文件名里带 `#L` 的极少见的形态保持原样可读）。
 fn split_line_syntax(token: &str) -> (String, Option<usize>, Option<usize>) {
     if let Some(idx) = token.find("#L") {
@@ -132,7 +132,7 @@ fn slice_lines(s: &str, start: usize, end: Option<usize>) -> String {
         .join("\n")
 }
 
-/// 单引用安全闸（与 image_attach::gate_and_hash 同一套 invocation 形态：
+/// 单引用安全闸（与 image_attach:gate_and_hash 同一套 invocation 形态：
 /// tool_name=read_file，8 层全跑；拒绝时错误串带 layer 前缀）。
 #[cfg(feature = "security")]
 fn gate_read(
@@ -197,7 +197,7 @@ fn read_head_text(
 #[cfg(feature = "security")]
 fn read_head_bytes(path: &Path) -> Result<Vec<u8>, String> {
     use std::io::Read;
-    // Read::take(self) 按值消费 —— file 不需要 mut。
+    // Read:take(self) 按值消费 —— file 不需要 mut。
     let file = std::fs::File::open(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => "文件不存在".to_string(),
         _ => format!("文件无法读取 ({})", e),
@@ -214,7 +214,7 @@ fn read_head_bytes(path: &Path) -> Result<Vec<u8>, String> {
 fn read_head_text(_security: Option<()>, path: &Path, _channel: &str) -> Result<String, String> {
     let bytes = {
         use std::io::Read;
-        // Read::take(self) 按值消费 —— file 不需要 mut。
+        // Read:take(self) 按值消费 —— file 不需要 mut。
         let file = std::fs::File::open(path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => "文件不存在".to_string(),
             _ => format!("文件无法读取 ({})", e),

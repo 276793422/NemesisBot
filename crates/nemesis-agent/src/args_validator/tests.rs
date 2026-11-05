@@ -172,9 +172,9 @@ fn multiple_violations_all_reported() {
     }
 }
 
-// ----- W3a: direct helper-arm coverage -----
+// -----: direct helper-arm coverage -----
 
-/// `Violation::message()` renders every variant precisely, including the
+/// `Violation:message()` renders every variant precisely, including the
 /// `UnknownField` WITHOUT a suggestion.
 #[test]
 fn violation_message_all_variants() {
@@ -288,7 +288,7 @@ fn try_autofix_no_unknowns_returns_none() {
     assert!(try_autofix(&schema, &serde_json::json!([1, 2])).is_none());
 }
 
-/// M12（2026-10-27 整改批次四）：无候选的纯多余字段**原样透传**，不再整单
+/// ：无候选的纯多余字段**原样透传**，不再整单
 /// 放弃——它连不累别处真实 typo 的修复。混入形态：`zzzzzz`（无近邻）+
 /// `patch`（path 的 d=1 typo）→ Fixed：typo 改名、多余字段原样保留。
 #[test]
@@ -303,7 +303,7 @@ fn try_autofix_passes_through_no_candidate_unknowns() {
     assert_eq!(fixed["path"], "a.txt");
     assert_eq!(fixed["zzzzzz"], "x", "no-candidate unknown passes through");
 
-    // check() 级同语义：整体 Outcome::Fixed（此前会整单回 Invalid）。
+    // check() 级同语义：整体 Outcome:Fixed（此前会整单回 Invalid）。
     let s = sample_schema();
     match check(&s, r#"{"patch":"a.txt","zzzzzz":"x"}"#) {
         Outcome::Fixed(f) => {

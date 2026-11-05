@@ -1,8 +1,8 @@
-//! W7（2026-10-25 加固）：
+//! （2026-10-25 加固）：
 //! MCP 工具惰性供给测试——供给闸（lazy on →
 //! tool_defs 无 mcp_* 长尾，有 meta 两件套 mcp_call + mcp_list；tier 白
-//! 名单放行 meta；BUG-20261025-32 补 mcp_list 豁免——查询面被长尾隐藏
-//! 一并裁掉则两步流程第一步无工具可用）、dispatch 解包（真实名重走瀑布、
+//! 名单放行 meta； 补 mcp_list 豁免——查询面被长尾隐藏
+//! 一并裁掉则两步流程无工具可用）、dispatch 解包（真实名重走瀑布、
 //! args 透传、四诚实拒绝臂）、mcp_list schema 查询面、lazy off 行为零变化。
 //!
 //! 独立测试文件（仓库纪律）。
@@ -80,10 +80,10 @@ fn w7_loop() -> AgentLoop {
     {
         let mut t = al.tools.write();
         t.insert("mcp_fake_echo".to_string(), Arc::new(McpEchoTool));
-        // 生产注册在 loop_tools 装配函数（恒注册）；裸 AgentLoop::new 不跑
+        // 生产注册在 loop_tools 装配函数（恒注册）；裸 AgentLoop:new 不跑
         // 装配——测试自插，等价供给闸面对的注册面。mcp_list 同为恒注册
-        // （BUG-20261025-32 补：首版 fixture 漏插导致长尾隐藏把两步流程的
-        // 查询面一起裁掉的缺陷在供给面测试里不可见）。
+        // （补：首版 fixture 漏插导致长尾隐藏把两步流程的
+        // 查询面一起裁掉的缺陷在供给面测试里不可）。
         t.insert(
             "mcp_call".to_string(),
             Arc::new(crate::loop_tools::McpCallTool),
@@ -178,9 +178,9 @@ fn lazy_on_meta_tool_bypasses_tier_whitelist() {
     );
 }
 
-// BUG-20261025-32：mcp_list 是两步流程的 schema 查询面（mcp_call 的描述与
+// mcp_list 是两步流程的 schema 查询面（mcp_call 的描述与
 // 错误臂都指路它），lazy on 的长尾隐藏必须豁免这个 meta 伴侣工具——否则
-// 模型第一步「查名字/查 schema」无工具可用，元流程自断（模型照指路调
+// 模型「查名字/查 schema」无工具可用，元流程自断（模型照指路调
 // mcp_list → tool not found → 循环空转）。
 #[test]
 fn lazy_on_supply_keeps_mcp_list_companion() {

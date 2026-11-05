@@ -1,4 +1,4 @@
-//! Inbox unit tests (I1 / U7).
+//! Inbox unit tests.
 
 use super::*;
 
@@ -20,7 +20,7 @@ fn msg(content: &str) -> QueuedMessage {
     }
 }
 
-/// A5：带 metadata 的消息构造器（priority_of / 高优先级用例）。
+/// 带 metadata 的消息构造器（priority_of / 高优先级用例）。
 fn msg_with_meta(content: &str, metadata: Vec<(&str, &str)>) -> QueuedMessage {
     let mut m = msg(content);
     m.msg.metadata = metadata
@@ -32,7 +32,7 @@ fn msg_with_meta(content: &str, metadata: Vec<(&str, &str)>) -> QueuedMessage {
     m
 }
 
-// A5（2026-10-21 引入）：优先级解析单点——metadata["priority"]
+// （引入）：优先级解析单点——metadata["priority"]
 // trim + 大小写不敏感 == "high" 才是 High；缺键/空/未知值一律 Normal。
 #[test]
 fn test_priority_of_metadata() {
@@ -51,7 +51,7 @@ fn test_priority_of_metadata() {
     assert_eq!(priority_of(&m.msg), MessagePriority::Normal);
 }
 
-// A5：High 插队语义——插到现有 High 连续段之后、第一个 Normal 之前
+// High 插队语义——插到现有 High 连续段之后、第一个 Normal 之前
 // （High 之间 FIFO；Normal 保持原有相对顺序）。
 #[test]
 fn test_high_priority_insertion_order() {
@@ -89,7 +89,7 @@ fn test_high_priority_insertion_order() {
     assert_eq!(drain(&inbox, "c"), vec!["h1", "h2", "n1", "n2"]);
 }
 
-// A5：软水位边界——容量 10，软水位 9。第 10 条 Normal（total=9 = 软水位）
+// 软水位边界——容量 10，软水位 9。第 10 条 Normal（total=9 = 软水位）
 // RejectedSoft（非 Rejected——硬上限未到）；同态下 High 与 steer 插话仍
 // 放行；硬上限（total=10）一律 Rejected。
 #[test]
@@ -128,9 +128,9 @@ fn test_soft_watermark_boundary() {
         QueuedForNextTurn
     );
 
-    // capacity=1：软水位 .max(1) 与硬上限同值 → 语义退化为纯容量上限
+    // capacity=1：软水位.max(1) 与硬上限同值 → 语义退化为纯容量上限
     // （第 1 条入队后 total=1，后续一律硬拒），不产生「软水位 0 全拒死」
-    // 的病理——这正是 .max(1) 存在的意义。
+    // 的病理——这正是.max(1) 存在的意义。
     let tiny = Inbox::new(1);
     assert_eq!(
         tiny.enqueue_for_mode("t", msg("n1"), false),
@@ -183,7 +183,7 @@ fn test_strip_steer_marker() {
 #[test]
 fn test_enqueue_routing_and_capacity() {
     let inbox = Inbox::new(3);
-    // A5 软水位（2026-10-21）：容量 3 → soft = max(2,1) = 2。
+    // 软水位：容量 3 → soft = max(2,1) = 2。
     assert_eq!(
         inbox.enqueue("s", msg("normal one")),
         EnqueueOutcome::QueuedForNextTurn
@@ -298,7 +298,7 @@ fn test_late_steer_transfers_on_normal_turn_end() {
     assert_eq!(inbox.pending("s"), (1, 0));
 }
 
-// C4（2026-10-24 cron 合闸）：同 job 待处理判定——next_turn / next_step
+// （cron 合闸）：同 job 待处理判定——next_turn / next_step
 // 都算；不同 job / 用户消息（无 cron_job_id）不命中；取走后判定复位。
 #[test]
 fn test_has_pending_cron_job() {

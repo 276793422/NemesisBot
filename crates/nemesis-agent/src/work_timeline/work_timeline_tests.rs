@@ -1,4 +1,4 @@
-//! Work 时间线累加器单元测试（work_timeline.rs，2026-10-30；批次二
+//! Work 时间线累加器单元测试（work_timeline.rs，2026-10-30；
 //! 2026-10-31 扩思考链）。
 //!
 //! 覆盖：分组规则（叙述/思考轮承接工具批次 / 纯工具轮 / 不误挂上一轮）、
@@ -38,7 +38,7 @@ fn test_grouping_empty_text_round_becomes_tools_only_round() {
     rec.push_round_output(SK, "第一轮有叙述", "");
     rec.tool_started(SK, "c1", "exec", "");
     rec.tool_finished(SK, "c1", true, 1, "");
-    // 第二轮空输出（皆空不建轮）→ 批次不得误挂上一轮。
+    // 空输出（皆空不建轮）→ 批次不得误挂上一轮。
     rec.tool_started(SK, "c2", "grep", "pat");
     rec.tool_finished(SK, "c2", true, 2, "hits");
 

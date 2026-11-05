@@ -1,15 +1,15 @@
 //! 消息级回退/重做：REWIND_UNDO_STACK_CAP/RewindUndoEntry、rewind/rewind_to_message/redo_rewind、checkpoint 挂载/列表、session_file_diff。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
-/// E3（devtool-upgrade 阶段 5）：每会话 undo 栈深度上限。超限丢最旧——
+/// （devtool-upgrade）：每会话 undo 栈深度上限。超限丢最旧——
 /// 内存态栈只服务本进程内的连续 undo/redo，不设界会话泄漏无界内存。
 const REWIND_UNDO_STACK_CAP: usize = 8;
 
-/// E3：一条消息级回退的 redo 依据（`rewind_to_message` 压栈，`redo_rewind`
+/// 一条消息级回退的 redo 依据（`rewind_to_message` 压栈，`redo_rewind`
 /// 弹栈反向）。被截断的 jsonl 行 VERBATIM 随行保存（原时间戳/标记不动），
 /// 影子 tree 支撑文件态的前向恢复与陈旧性守卫。
 #[derive(Debug, Clone)]
@@ -25,19 +25,19 @@ pub(crate) struct RewindUndoEntry {
     /// undo 完成后（`truncate_from` 之后的索引里）剩的最新 tree——redo 的
     /// 陈旧性守卫基线（期间任何新 checkpoint turn 都会改变它）。
     post_tree: Option<String>,
-    /// BUG-20261025-54：保留行集的内容身份指纹（sha256）。行数守卫只查
+    /// 保留行集的内容身份指纹（sha256）。行数守卫只查
     /// 数量——clear 后重填到与 kept_count 相同的行数会绕过它，把旧行
     /// verbatim 回填进无关对话；指纹维度补上「行数未变但内容已变」的
     /// 陈旧性判定。
     kept_rows_hash: String,
-    /// M4（2026-10-27 整改）：undo 完成时刻的**实时盘面**影子 tree（文件
+    /// ：undo 完成时刻的**实时盘面**影子 tree（文件
     /// 恢复已生效后的工作区快照）。redo 冲突预检以它为基线 diff 当前盘面
     /// ——基线必须是「回退刚结束时的盘」而不是 forward_tree：回退本身就
     /// 会把文件搬离前向目标（恢复到 begin 态），拿 forward_tree 当基线会
     /// 把合法回退误报成漂移。JSON 形态 / store 未挂载 / tree 写失败 = None
     /// （扫描诚实跳过）。
     undo_disk_tree: Option<String>,
-    /// F2 续作（2026-11-02 复评）：redo 自身已写到前向态的路径（restore
+    /// 续作（复评）：redo 自身已写到前向态的路径（restore
     /// 的 written+deleted）。重试时冲突预检豁免这些路径——上次重试恢复
     /// 半途失败还栈后，盘面上留着的是本操作自己写的半成品；不豁免会把自
     /// 恢复面误报成外部漂移，逼用户 force 自己的操作。条目本身是内存态，
@@ -45,7 +45,7 @@ pub(crate) struct RewindUndoEntry {
     redo_partial_written: Vec<String>,
 }
 
-/// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json::to_string` 后
+/// undo/redo 两侧共用的保留行集指纹：逐行 `serde_json:to_string` 后
 /// `'\n'` 连接进 sha256（与 `truncate_chat_log_rows` 落盘侧同序列化形态，
 /// 同 key 排序/转义，逐字节可比）。空行集 = 空 blob 的 sha256（恒定值，
 /// kept_count=0 的 redo 语义不变）。
@@ -61,9 +61,9 @@ fn kept_rows_fingerprint(rows: &[serde_json::Value]) -> String {
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// BUG-20261030-221：forward_tree 的 gc 在途保护 guard。采集后立即注册进
-/// [`AgentLoop::gc_inflight_trees`]（gc 保留集经 `undo_stack_tree_refs` 读
-/// 到它），压栈成功后 [`Self::defuse`]（栈条目接管保护）；任何早退路径
+/// forward_tree 的 gc 在途保护 guard。采集后立即注册进
+/// [`AgentLoop:gc_inflight_trees`]（gc 保留集经 `undo_stack_tree_refs` 读
+/// 到它），压栈成功后 [`Self:defuse`]（栈条目接管保护）；任何早退路径
 /// （恢复失败 blocked / 提交失败 blocked / no-op 不压栈）drop 自动注销。
 struct GcInflightGuard<'a> {
     al: &'a AgentLoop,
@@ -98,7 +98,7 @@ impl AgentLoop {
         *self.security.checkpoint_store.write() = Some(store);
     }
 
-    /// L6++（2026-09-08）：checkpoint store 只读口——项目 loop 工厂测试用
+    /// ：checkpoint store 只读口——项目 loop 工厂测试用
     /// 它断言影子库落在主 workspace（`logs/project_checkpoints/{pid}`）而非
     /// 用户项目目录。
     pub fn checkpoint_store(&self) -> Option<Arc<crate::checkpoint::CheckpointStore>> {
@@ -107,7 +107,7 @@ impl AgentLoop {
 
     /// Rewind the workspace to the start of turn `from_turn`: restores every file
     /// changed at or after that turn to its pre-edit content (the edit safety
-    /// net). Returns a structured [`RestoreReport`]（R3：失败项分明，不再只回
+    /// net). Returns a structured [`RestoreReport`]（失败项分明，不再只回
     /// 两 vec 吞掉写失败）。Errors if no checkpoint store is attached.
     /// Conversation rewinding (truncating session history) is handled
     /// by the caller — this only restores code.
@@ -133,24 +133,24 @@ impl AgentLoop {
         }
     }
 
-    /// E3 消息级回退：会话截断到 `message_index` 所在 turn 结束（该消息
+    /// 消息级回退：会话截断到 `message_index` 所在 turn 结束（该消息
     /// 及其 turn 的回复**保留**，其后所有行截掉），文件恢复到其后第一个
-    /// checkpoint turn 开始时的状态，并压入 undo 栈供 [`Self::redo_rewind`]
+    /// checkpoint turn 开始时的状态，并压入 undo 栈供 [`Self:redo_rewind`]
     /// 反向。
     ///
-    /// 定位契约：`message_index` 是 [`crate::chat_log::read_chat_log`]（=
+    /// 定位契约：`message_index` 是 [`crate:chat_log:read_chat_log`]（=
     /// `sessions.export` / `logs.session_detail` 的行序，同一 jsonl）里该
     /// 会话消息数组的下标。行→turn 精确定位靠 user 行的 `checkpoint_turn`
     /// 标记（本 turn begin 序号随 admission 穿针写入）；无标记的旧行退化为
     /// 「只截断对话不回滚文件」。
     ///
-    /// P20（2026-09-25 能力扩展）冲突预检：文件恢复锚存在时，先对各 turn
+    /// 冲突预检：文件恢复锚存在时，先对各 turn
     /// 封印的「变更后指纹」与现盘内容比对——有冲突且 `force == false` 时
     /// **零副作用拒绝**（返回 `blocked: true` + 结构化冲突清单 path/期望
     /// 指纹/当前指纹，前端可展示）；`force == true` 强过，回执与日志留痕
     /// （`forced: true`）。
     ///
-    /// R31（2026-10-23 会话回退波及面收窄）：回退是会话级 API，但 turn 序
+    /// （会话回退波及面收窄）：回退是会话级 API，但 turn 序
     /// 号与 checkpoint 索引是 loop 全局的——scoped 预检把回退区间内**其他
     /// 会话**声明过变更的路径单列进 `other_session_paths`（同为默认拒绝，
     /// `force` 显式强过）；文件恢复与截断也只作用于本会话的 checkpoint 条
@@ -158,7 +158,7 @@ impl AgentLoop {
     /// 复树内仍会被碾——这正是 other_session_paths 要拦的事，强过即用户
     /// 意志）。
     ///
-    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（BUG-HUNT R6——旧
+    /// 会话闸：经 [`Self:under_history_gate`] 真互斥（旧
     /// peek 存在「检查后、截断前」窗口，在飞回合的行会被陈旧快照截丢）。
     ///
     /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
@@ -182,7 +182,7 @@ impl AgentLoop {
         force: bool,
     ) -> Result<serde_json::Value, String> {
         // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
-        // BUG-20261102-302：非热路径不改变同步阻塞 IO 占住 tokio worker 的
+        // 非热路径不改变同步阻塞 IO 占住 tokio worker 的
         // 机制（read_chat_log_async 同款纪律），spawn_blocking 移出。
         let (rows, _total, _, _) = {
             let key = session_key.to_string();
@@ -205,8 +205,8 @@ impl AgentLoop {
 
         // 对话截断点：index 之后第一个 user 行（turn 边界——assistant 行
         // 属于所在 turn，必须随 turn 一起保留/截掉）。轮边界判定走
-        // [`crate::chat_log::is_user_turn_boundary`] 单一真相源（steer 注入
-        // 行是轮中间的 user 形态行，不算轮首——BUG-20261025-19）。
+        // [`crate:chat_log:is_user_turn_boundary`] 单一真相源（steer 注入
+        // 行是轮中间的 user 形态行，不算轮首）。
         let cut = rows[message_index + 1..]
             .iter()
             .position(crate::chat_log::is_user_turn_boundary)
@@ -216,22 +216,22 @@ impl AgentLoop {
             .await
     }
 
-    /// 行动代理 P0（2026-10-14）撤销一等动词后端：回退**最后一个用户轮**。
+    /// 行动代理 撤销一等动词后端：回退**最后一个用户轮**。
     /// 语义 = 把 jsonl 截到最后一个 user 行之前（该 user 行及其回复一并移
     /// 除）+ 文件还原到该轮开始前的 checkpoint 态 + 压 undo 栈（redo 可反
-    /// 向）。与 [`Self::rewind_to_message`] 共享 [`Self::rewind_from_cut`]
+    /// 向）。与 [`Self:rewind_to_message`] 共享 [`Self:rewind_from_cut`]
     /// 机体；差异只在截断点计算——本入口允许 cut=0（首轮即可撤销，单轮会
     /// 话「下单→撤销」剧本的主路径，`rewind_to_message` 的「保留 index 所
     /// 在轮」契约表达不了这个形态）。
     ///
     /// busy 检查省略：唯一调用方是会话维护尾巴（gate 已获取会话 = 串行保
     /// 证，会话正忙根本进不到这里）；WSAPI 面的同语义入口走
-    /// [`Self::undo_last_turn`]（会话闸 + 委托本方法）。
+    /// [`Self:undo_last_turn`]（会话闸 + 委托本方法）。
     pub(crate) async fn rewind_last_turn(
         &self,
         session_key: &str,
     ) -> Result<serde_json::Value, String> {
-        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 全量读同步阻塞 IO 直跑 tokio worker（非热路径
         // 不改变占住 worker 的机制），spawn_blocking 移出。
         let (rows, _total, _, _) = {
             let key = session_key.to_string();
@@ -242,7 +242,7 @@ impl AgentLoop {
             .map_err(|e| format!("rewind task join failed: {e}"))?
         };
         // 截断点 = 最后一个 user 行（turn 边界，user 行即轮首；steer 注入行
-        // 不是轮首，轮边界判定走单一真相源跳过——BUG-20261025-19，否则
+        // 不是轮首，轮边界判定走单一真相源跳过——，否则
         // 「撤销最后一轮」切在 steer 行上只删尾巴、轮残留在会话里）。没有
         // user 行 = 没有可撤销的轮次（诚实拒绝）。
         let cut = rows
@@ -254,9 +254,9 @@ impl AgentLoop {
             .await
     }
 
-    /// 行动代理 E3（收官批 2026-10-15）WSAPI 撤销入口：会话闸
-    /// （[`Self::under_history_gate`] 真互斥）+ 委托
-    /// [`Self::rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
+    /// 行动代理 （收官-15）WSAPI 撤销入口：会话闸
+    /// （[`Self:under_history_gate`] 真互斥）+ 委托
+    /// [`Self:rewind_last_turn`]。会话正在处理消息时零副作用诚实拒绝
     /// （对话与文件都不动）——`connectors.undo` 的域 B（write 无 undo 声
     /// 明）走此入口回退最后一轮。维护尾巴调用方不经此入口（gate 已持会
     /// 话），直接走内部方法。
@@ -265,12 +265,12 @@ impl AgentLoop {
             .await
     }
 
-    /// 重新生成支撑（2026-10-20，docs/BUG/2026-10-20_chat-regenerate-rewind-buttons-mismatch.md）：
+    /// 重新生成支撑（chat-regenerate-rewind-buttons-mismatch）：
     /// 回退到 `message_index` 行**之前**（`cut = message_index`——保留
-    /// `rows[..cut]`，该行及其后所有行移除）。与 [`Self::rewind_to_message`]
+    /// `rows[..cut]`，该行及其后所有行移除）。与 [`Self:rewind_to_message`]
     /// （turn 对齐：index 所在整轮保留）的差异只在截断点计算；本入口能表
     /// 达「保留提问、撤掉回复」（前端重新生成）与 cut=0（首轮重新生成，
-    /// 现有 turn 对齐入口表达不了的形态，[`Self::rewind_last_turn`] 注释
+    /// 现有 turn 对齐入口表达不了的形态，[`Self:rewind_last_turn`] 注释
     /// 为证）。
     ///
     /// 文件恢复锚零新增：cut 落在提问行上时，提问行自带本轮
@@ -279,8 +279,8 @@ impl AgentLoop {
     ///
     /// 契约：`message_index` 必须指向 user 行——assistant 行落点会产生
     /// 「删提问留回复」的破碎轮，loud 拒绝。会话闸与边界检查同
-    /// [`Self::rewind_to_message`]；共享 [`Self::rewind_from_cut`] 机体
-    /// （P20 冲突预检 / undo 栈 / F8 审计全量复用）。
+    /// [`Self:rewind_to_message`]；共享 [`Self:rewind_from_cut`] 机体
+    /// （冲突预检 / undo 栈 / 审计全量复用）。
     pub async fn rewind_before_message(
         &self,
         session_key: &str,
@@ -299,7 +299,7 @@ impl AgentLoop {
         message_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 全量读同步阻塞 IO 直跑 tokio worker（非热路径
         // 不改变占住 worker 的机制），spawn_blocking 移出。
         let (rows, _total, _, _) = {
             let key = session_key.to_string();
@@ -347,7 +347,7 @@ impl AgentLoop {
         report_index: usize,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        // BUG-20261031-231：jsonl 重写窗口登记（守卫持至函数退出，含全部
+        // jsonl 重写窗口登记（守卫持至函数退出，含全部
         // 早退路径）。本函数以进闸时刻的快照整文件重写会话 jsonl——窗口内
         // 绕闸追加（busy 回绝留痕 / snooze 唤醒行）会被截断静默吞掉；登记
         // 后追加方检查在旗诚实跳过，消灭「写了就被吞」面。
@@ -362,10 +362,10 @@ impl AgentLoop {
         });
         let removed: Vec<serde_json::Value> = rows[cut..].to_vec();
 
-        // P20（2026-09-25 能力扩展）：冲突预检——restore 锚之后各 turn 封印
+        // ：冲突预检——restore 锚之后各 turn 封印
         // 的「变更后指纹」vs 现盘内容。只读不突变（零副作用），冲突且未
         // force = 拒绝并列结构化清单；force = 强过（审计留痕）。
-        // R31（2026-10-23 会话回退波及面收窄）：scoped 预检——回退区间内
+        // （会话回退波及面收窄）：scoped 预检——回退区间内
         // 其他会话声明过变更的路径进 `other_session_paths` 同样默认拒绝
         // （restore 的全树恢复会碾掉它们，但它们不属于本会话的回退意图）。
         // 其他会话的 checkpoint 条目不会被 scoped 截断摧毁，其 rewind/redo
@@ -406,7 +406,7 @@ impl AgentLoop {
         // undo 依据采集：forward（redo 前向恢复目标）必须在任何突变前读
         // （truncate_from 会清掉 turn ≥ restore 的索引，兜底 latest 要趁
         // 索引还在时读）；post 基线相反——必须在 scoped 截断**之后**读
-        // （见步骤 1，R71 口径修复）。
+        // （见步骤 1， 口径修复）。
         let forward_tree = match self.attached_checkpoint() {
             // redo 前向恢复目标 = rewind 时刻的实时 tree（begin 树只到
             // 各 turn 开始态，最后一个 turn 的变更只在实况里）。仅文件
@@ -429,7 +429,7 @@ impl AgentLoop {
             None
         };
 
-        // BUG-20261030-221：forward_tree 从采集到压栈之间不在索引（待截条
+        // forward_tree 从采集到压栈之间不在索引（待截条
         // 目刚清）也不在栈（压栈在 jsonl 提交之后）——truncate_from_scoped
         // 内联 gc（及周期拍/并发会话 gc）撞进这个窗口会把它的对象当孤儿清
         // 掉，redo 的文件前向恢复必炸「tree 查找失败」。采集即注册在途保
@@ -441,7 +441,7 @@ impl AgentLoop {
         _gc_inflight.register();
 
         // 1) 文件恢复（先于 jsonl 截断——中途崩溃时对话完好，可重试）。
-        // R3（2026-10-24 外评）：恢复**不完整时零推进**——jsonl 不截断、
+        // （外评）：恢复**不完整时零推进**——jsonl 不截断、
         // checkpoint 索引不清（可重试），返回 blocked 结构化失败清单。旧形
         // 态吞掉恢复失败后照常盖「applied」戳 + 无条件 truncate_from_scoped
         // 摧毁 checkpoint：文件没恢复、对话被截、重试不可能，三输。
@@ -457,7 +457,7 @@ impl AgentLoop {
             if report.ok() {
                 written = report.written;
                 deleted = report.deleted;
-                // BUG-20261028-120：检查点退役（scoped 截断 + post 基线读取）
+                // 检查点退役（scoped 截断 + post 基线读取）
                 // 不在这里做——退役必须以「全部持久化提交成功」为前提，否则
                 // jsonl 写回失败 = 文件已恢复 + 回退锚已没 + 文案谎称「原会
                 // 话完好」的三输态。移到步骤 2 成功之后（2b）。
@@ -494,7 +494,7 @@ impl AgentLoop {
         // 2) jsonl 截断（tmp+rename 原子重写；verbatim 保留保留侧行）。
         let n = crate::chat_log::truncate_chat_log_rows(session_key, &rows[..cut]);
         if n != cut {
-            // BUG-20261028-120：此刻文件已恢复（file_restore=applied）但
+            // 此刻文件已恢复（file_restore=applied）但
             // jsonl 与 checkpoint 索引都未动——如实报结构化 partial，不再谎
             // 称「回退未生效（原会话完好）」。重试安全：restore_code 见文件
             // 已在目标 → written=[]；检查点退役只发生在提交成功后（2b）。
@@ -513,10 +513,10 @@ impl AgentLoop {
             }));
         }
 
-        // 2b) 提交成功 → 检查点退役（BUG-20261028-120：从步骤 1 移来）。
-        // R31：scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）原样
+        // 2b) 提交成功 → 检查点退役（从步骤 1 移来）。
+        // scoped 截断——其他会话的 checkpoint 条目（含落盘 JSON）原样
         // 保留，其回退历史不被本会话的回退摧毁。
-        // R71（BUG-20261024-02）：post 基线 = scoped 截断后的真实索引态，
+        // ：post 基线 = scoped 截断后的真实索引态，
         // 两侧同读截断后索引（redo 守卫 2 对照 latest_tree_hex 即同口径；
         // 截断前其他会话 turn ≥ t 的条目带树会被误判「undo 后工作区变了」）。
         if let (Some(t), Some(cp)) = (restore_turn, self.attached_checkpoint()) {
@@ -524,7 +524,7 @@ impl AgentLoop {
             post_tree = cp.latest_tree_hex();
         }
 
-        // F8（2026-09-27）：force 强过的强恢复动作落审计链台账——跳过冲突
+        // ：force 强过的强恢复动作落审计链台账——跳过冲突
         // 预检覆盖外部修改是高影响操作，warn! 日志轮转即失，Merkle
         // append-only 审计链才是「留痕」的诚实形态。截断成功后记账（文件
         // 恢复 + 截断都已生效，不为未发生的恢复记账）；审计链未启用（默认
@@ -557,9 +557,9 @@ impl AgentLoop {
             store.clear_session(session_key);
         }
 
-        // WS9/P17：回退谱系落盘（last_rewind）——截断成功后记录本会话丢
+        // /：回退谱系落盘（last_rewind）——截断成功后记录本会话丢
         // 掉了哪些行/轮（meta sidecar upsert；no-op 回退无谱系事实，不写）。
-        // WS9/P18：遗弃后缀 ≥3 轮且 small_model 已配置 → 后台生成分支
+        // /：遗弃后缀 ≥3 轮且 small_model 已配置 → 后台生成分支
         // 摘要写回**本会话** sidecar meta（回退后继续用的就是本会话；未
         // 达阈值/small_model 缺席 = 诚实跳过，不阻塞回退本体）。两步都在
         // 压 undo 栈前做——`removed` 下方要被 move 进栈条目。
@@ -582,7 +582,7 @@ impl AgentLoop {
         let redoable = !removed.is_empty();
         if redoable {
             let kept_rows_hash = kept_rows_fingerprint(&rows[..cut]);
-            // M4：undo 完成时刻的实时盘面快照（文件恢复已生效）——redo 冲
+            // undo 完成时刻的实时盘面快照（文件恢复已生效）——redo 冲
             // 突预检的漂移基线。取不到（JSON 形态/tree 写失败）= None，扫
             // 描诚实跳过。
             let undo_disk_tree = self
@@ -626,10 +626,10 @@ impl AgentLoop {
         }))
     }
 
-    /// M6（2026-10-27 整改批次五）：checkpoint gc 的**下界查询口**——
+    /// ：checkpoint gc 的**下界查询口**——
     /// 全会话 undo/redo 栈条目引用的全部影子 tree hex（forward/post/undo
     /// 盘面三族）+ 回退中尚未压栈的 forward_tree 在途保护集
-    /// （BUG-20261030-221）。gc 据此把这些 tree 并入保留集（栈是内存态，
+    /// 。gc 据此把这些 tree 并入保留集（栈是内存态，
     /// gc 掉栈里引用的 tree = redo 文件恢复必炸）。栈为内存态、重启即丢，
     /// 重启后无栈约束属设计语义（gc 不需要跨重启保守）。
     pub fn undo_stack_tree_refs(&self) -> Vec<String> {
@@ -653,20 +653,20 @@ impl AgentLoop {
         refs
     }
 
-    /// E3 redo：弹本会话 undo 栈顶，反向恢复——被截断的行 VERBATIM 回填
+    /// redo：弹本会话 undo 栈顶，反向恢复——被截断的行 VERBATIM 回填
     /// jsonl，文件恢复到 undo 时刻的影子 tree。行数/行身份/tree 基线三重
     /// 陈旧性守卫：undo 之后该会话有任何新消息（含 clear 后同数重填——
-    /// 行数守卫的盲区，BUG-20261025-54）、或任何地方有新 checkpoint turn
+    /// 行数守卫的盲区）、或任何地方有新 checkpoint turn
     /// （工作区变过），诚实拒绝（弹出的条目作废）。
     ///
     /// 诚实边界：redo 不重建 checkpoint 索引（undo 时 turn-*.json 已清），
     /// redo 过的区间无法再次 rewind；文件只恢复工作区内（tree 覆盖范围）。
-    /// 会话闸：经 [`Self::under_history_gate`] 真互斥（同 rewind 家族）。
+    /// 会话闸：经 [`Self:under_history_gate`] 真互斥（同 rewind 家族）。
     pub async fn redo_rewind(&self, session_key: &str) -> Result<serde_json::Value, String> {
         self.redo_rewind_with_force(session_key, false).await
     }
 
-    /// M4（2026-10-27 整改）：带 force 的 redo——冲突预检（见
+    /// ：带 force 的 redo——冲突预检（见
     /// `redo_rewind_inner`）检出外部漂移且未 force 时拒绝（结构化 blocked
     /// 回执，对齐 rewind 冲突块形态）；force=true 强过（审计留痕，回执带
     /// `forced: true`）。
@@ -686,7 +686,7 @@ impl AgentLoop {
         session_key: &str,
         force: bool,
     ) -> Result<serde_json::Value, String> {
-        // BUG-20261031-231：重写窗口登记（同 rewind_from_cut）——redo 的
+        // 重写窗口登记（同 rewind_from_cut）——redo 的
         // 截断写回同样以整文件重写落盘，守卫 1 读取与截断之间的绕闸追加
         // （busy 回绝留痕 / snooze 唤醒行）会被静默吞掉。
         let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
@@ -697,7 +697,7 @@ impl AgentLoop {
         .ok_or_else(|| "没有可重做的回退（先执行一次消息级回退）".to_string())?;
 
         // 守卫 1：会话行数未变（undo 后没发过新消息）。
-        // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
+        // 全量读同步阻塞 IO 直跑 tokio worker（非热路径
         // 不改变占住 worker 的机制），spawn_blocking 移出。
         let (rows, _total, _, _) = {
             let key = session_key.to_string();
@@ -714,14 +714,14 @@ impl AgentLoop {
                 rows.len()
             ));
         }
-        // 守卫 1b（BUG-20261025-54）：行身份指纹——行数相同但内容已变
+        // 守卫 1b：行身份指纹——行数相同但内容已变
         // （clear 后重填到 kept_count 行等）也判陈旧。旧守卫只查行数，
         // 同数重填会放行并把 removed_rows verbatim 回填进无关对话。
         if kept_rows_fingerprint(&rows) != entry.kept_rows_hash {
             return Err("回退后会话内容已变化，redo 已失效（行数未变但内容不同）".to_string());
         }
         // 守卫 2：工作区 tree 基线未变（undo 后没有新 checkpoint turn）。
-        // 基线两侧同口径：post 在 undo 侧 scoped 截断后采集（R71），其他
+        // 基线两侧同口径：post 在 undo 侧 scoped 截断后采集，其他
         // 会话的存量条目两侧同现，不构成「变化」。
         let cur_tree = self
             .attached_checkpoint()
@@ -730,9 +730,9 @@ impl AgentLoop {
             return Err("回退后工作区发生了新的变化，redo 已失效".to_string());
         }
 
-        // M4（2026-10-27 整改）：redo 冲突预检——undo→redo 窗口内的外部
+        // ：redo 冲突预检——undo→redo 窗口内的外部
         // 改动（IDE 手改等）不产生新 checkpoint turn，上面三守卫全盲
-        // （守卫 2 的基线在 undo 时已被截断索引钉住，索引外漂移不可见）。
+        // （守卫 2 的基线在 undo 时已被截断索引钉住，索引外漂移不可）。
         // 以 **undo 完成时刻的实时盘面**（undo_disk_tree）为基线 diff 当前
         // 盘面——基线不能用 forward_tree：回退本身就会把文件搬离前向目标
         // （恢复到 begin 态），拿它当基线会把合法回退误报成漂移。检出路径
@@ -746,7 +746,7 @@ impl AgentLoop {
             _ => None,
         }
         .unwrap_or_default();
-        // F2 续作（2026-11-02 复评）：redo 自身已写到前向态的路径不算外部
+        // 续作（复评）：redo 自身已写到前向态的路径不算外部
         // 漂移——上次重试恢复半途失败还栈后，盘面上留着的是本操作自己写
         // 的半成品；不豁免会把自恢复面误报成外部改动，逼用户 force 自己
         // 的操作。诚实边界：恰好落在这些路径上的真外部改动与之不可分辨
@@ -785,8 +785,8 @@ impl AgentLoop {
             );
         }
 
-        // 1) 文件前向恢复（F2 续作：恢复不完整走 blocked 提前返回，见下；
-        // R3：失败项带原因进 blocked 回执，不再静默空转）。
+        // 1) 文件前向恢复（续作：恢复不完整走 blocked 提前返回，见下；
+        // 失败项带原因进 blocked 回执，不再静默空转）。
         let mut file_restore = "skipped";
         let mut file_note: Option<String> = None;
         // 成功路径恒空（失败走上方 blocked 提前返回）——字段保留为响应形状
@@ -802,8 +802,8 @@ impl AgentLoop {
                         deleted = report.deleted;
                         file_restore = "applied";
                     } else {
-                        // F2 续作（2026-11-02 复评）：前向恢复不完整 = 零推进，
-                        // 对齐 rewind 侧对称失败契约（BUG-20261028-120）——旧
+                        // 续作（复评）：前向恢复不完整 = 零推进，
+                        // 对齐 rewind 侧对称失败契约——旧
                         // 形态吞掉失败后照常回填：文件没恢复、对话已回填、条
                         // 目被消耗，三态错位且不可重试。现在：条目还栈（带自
                         // 恢复面记录，重试时冲突预检豁免），回填不做，结构化
@@ -860,7 +860,7 @@ impl AgentLoop {
             // 写回失败是可重试阻塞点（文件占用/磁盘瞬时问题），不是终态
             // ——与上方冲突路径同语义：条目必须还栈（removed_rows 是被回
             // 退对话行的唯一副本，丢了 = 永久丢失且无法重试）。
-            // F2 续作：文件恢复此番已生效（written/deleted），还栈时记录
+            // 续作：文件恢复此番已生效（written/deleted），还栈时记录
             // 自恢复面——重试的冲突预检豁免这些路径（盘面上的它们是本操
             // 作自己写的，不是外部漂移）。
             let mut entry = entry;
@@ -878,7 +878,7 @@ impl AgentLoop {
             return Err("会话日志写回失败，重做未生效（会话保持回退态）".to_string());
         }
 
-        // F8 对称（BUG-20261028-106）：redo force 强过的强恢复动作同 rewind
+        // 对称：redo force 强过的强恢复动作同 rewind
         // 落审计链台账——覆盖 undo→redo 窗口内的外部漂移是高影响操作，
         // warn! 日志轮转即失，Merkle append-only 审计链才是「留痕」的诚实
         // 形态。回填写入成功后记账（文件恢复 + 回填都已生效，不为未发生的
@@ -926,13 +926,13 @@ impl AgentLoop {
         }))
     }
 
-    /// E3：checkpoint store 已挂载时克隆出 Arc（`rewind_to_message` /
+    /// checkpoint store 已挂载时克隆出 Arc（`rewind_to_message` /
     /// `redo_rewind` 的共享读法）。
     pub(crate) fn attached_checkpoint(&self) -> Option<Arc<crate::checkpoint::CheckpointStore>> {
         self.security.checkpoint_store.read().as_ref().cloned()
     }
 
-    /// M3（devtool-upgrade 阶段 5）：会话级文件 diff——某文件「最早
+    /// （devtool-upgrade）：会话级文件 diff——某文件「最早
     /// checkpoint 基线（pre-edit 态）vs 现盘」的 unified diff。
     ///
     /// 基线 = checkpoint 索引里首个声明过该文件的条目（git 形态读影子
@@ -942,7 +942,7 @@ impl AgentLoop {
     /// false` 诚实标注；diff 为空 → note 说明（可能已被回退/手动恢复）。
     /// `session_key` v1 只用于将来按会话收窄基线（现留参保调用形状稳定）。
     ///
-    /// BUG-20261103-347：树接口一律走 `repo_relative_path` 归一——影子
+    /// 树接口一律走 `repo_relative_path` 归一——影子
     /// tree 条目是 repo 相对形态，声明/查询串常态是工具入参逐字（绝对路
     /// 径），原样喂 `tree.get_path` 被 git2 拒（"should be relative, not
     /// a windows prefix"）。工作区外（hybrid）拿不到 repo 相对形态 → 落

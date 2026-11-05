@@ -1,4 +1,4 @@
-//! I1 (U7) inbox/steer integration tests — busy-mode behavior through
+//! inbox/steer integration tests — busy-mode behavior through
 //! `process_inbound_message`, steer injection verified against the provider's
 //! actually-received request messages.
 
@@ -187,7 +187,7 @@ async fn test_inbox_steer_mode_interjects_next_step() {
     // Inspect the provider's captured requests: some request must contain
     // the steer text as a user message.
     let captured = provider.captured.lock().unwrap();
-    // L4 (full review): the literal `!` marker is STRIPPED before injection
+    // (full review): the literal `!` marker is STRIPPED before injection
     // (routing signal, not content) — assert on the clean remainder.
     let injected = captured.iter().any(|msgs| {
         msgs.iter()
@@ -230,7 +230,7 @@ async fn test_inbox_capacity_limit() {
     let provider = CapturingProvider::new(vec![]);
     let lp = loop_with(ConcurrentMode::Queue, Box::new(provider)); // capacity 4
     assert!(lp.try_acquire_session("agent:s5"));
-    // A5 软水位（soft = 3）：前 3 条普通消息照常入队。
+    // 软水位（soft = 3）：前 3 条普通消息照常入队。
     for i in 0..3 {
         let outcome = lp.inbox.enqueue(
             "agent:s5",
@@ -287,7 +287,7 @@ async fn test_inbox_capacity_limit() {
 }
 
 // ===========================================================================
-// I2 (U8): context snapshot channel
+// : context snapshot channel
 // ===========================================================================
 
 use crate::instance::AgentInstance;
@@ -324,7 +324,7 @@ fn hist_with_user(content: &str) -> Vec<crate::types::ConversationTurn> {
     ]
 }
 
-/// I2: the snapshot is a USER-role message (no longer system), carrying the
+/// the snapshot is a USER-role message (no longer system), carrying the
 /// time/env section inside the <system-reminder> wrapper.
 #[test]
 fn test_snapshot_user_role_not_system() {
@@ -343,7 +343,7 @@ fn test_snapshot_user_role_not_system() {
     assert!(snap.content.contains("Current Time"));
 }
 
-/// I2: within the same minute the snapshot does NOT re-inject (no second
+/// within the same minute the snapshot does NOT re-inject (no second
 /// <system-reminder> message on the second build); the system prompt and
 /// all previously built messages stay byte-identical (append-only).
 #[test]
@@ -371,7 +371,7 @@ fn test_snapshot_time_changes_reinject_minimal() {
     );
 
     // Append-only freeze: m2's first len-1 messages byte-equal m1's
-    // (nothing rewritten, nothing removed). Full-review M2 fix: a minute
+    // (nothing rewritten, nothing removed). Full-review fix: a minute
     // tick between builds legitimately changes the snapshot content —
     // compare on a time-stripped projection so the test is not a 1-in-60
     // flake; the "same-minute no re-inject" behavior is already covered by
@@ -401,11 +401,11 @@ fn test_snapshot_time_changes_reinject_minimal() {
 }
 
 // ===========================================================================
-// I3 (U9): boundary events + consistency anchor
+// : boundary events + consistency anchor
 // ===========================================================================
 
 /// turn boundary markers are written to the chat log for a real turn:
-/// turn_start ... llm_request ... turn_end(reason=done) pairing.
+/// turn_start... llm_request... turn_end(reason=done) pairing.
 #[tokio::test]
 async fn test_boundary_events_written() {
     let provider = CapturingProvider::new(vec![]);
@@ -545,7 +545,7 @@ fn test_boundary_turn_end_max_turns_detection() {
     assert_eq!(reason, "max_turns");
 }
 
-/// G1 (dashboard gap exposure): `inbox_status` — read-only snapshot feeding
+/// (dashboard gap exposure): `inbox_status` — read-only snapshot feeding
 /// the `agent.inbox_status` WSAPI command. Pin counts/capacity/mode after
 /// direct enqueues; busy stays false (no turn is running here — the busy
 /// flag's lifecycle is owned by the gate/turn paths and pinned elsewhere).

@@ -242,7 +242,7 @@ fn current_events_hot_reload_three_branches() {
     let dir = tempfile::tempdir().unwrap();
     let hooks_json = dir.path().join("hooks.json");
 
-    // ① 内容变化 + 解析成功 → 原子换装（脚本计数可见）。
+    // ① 内容变化 + 解析成功 → 原子换装（脚本计数可）。
     std::fs::write(
         &hooks_json,
         r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"cmd /C echo hi"}]}]}}"#,

@@ -116,7 +116,7 @@ fn derive_refs_by_user_turn_and_rehydrate_roundtrip() {
     std::fs::write(&img, png_bytes()).unwrap();
     let img_ref = img.to_string_lossy().into_owned();
 
-    // 两 user 轮（第一轮带图）+ 中间 tool 轮。
+    // 两 user 轮（带图）+ 中间 tool 轮。
     let mut hydrated = vec![
         user_msg("第一轮"),
         tool_msg("t1", "out"),
@@ -195,7 +195,7 @@ fn project_no_vision_notes_last_user_differently() {
 }
 
 // ---------------------------------------------------------------------------
-// ContinuationStore::stale_task_ids
+// ContinuationStore:stale_task_ids
 // ---------------------------------------------------------------------------
 
 #[test]

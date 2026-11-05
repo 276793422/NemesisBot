@@ -360,7 +360,7 @@ async fn test_skill_manage_approval_required_but_no_manager() {
     );
 }
 
-// ---- GrepTool (Phase 2 coding tools) ----
+// ---- GrepTool (coding tools) ----
 
 #[tokio::test]
 async fn test_grep_tool_finds_matches_recursively() {
@@ -510,7 +510,7 @@ async fn test_git_tool_status_in_real_repo() {
 }
 
 // ---------------------------------------------------------------------------
-// N3（2026-10-13 机会项）：learned manifest 记账联动
+// ：learned manifest 记账联动
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -588,8 +588,8 @@ async fn delete_non_manifest_dir_still_succeeds() {
     assert!(!dir.exists());
 }
 
-/// BUG-20261029-179 回归锁：write_file 辅助文件此前零安全检查——安装路径
-/// 的装前检查（M5 目录形态）对可执行面（SURFACE_FILE_EXTENSIONS）整体
+/// 回归锁：write_file 辅助文件此前零安全检查——安装路径
+/// 的装前检查（目录形态）对可执行面（SURFACE_FILE_EXTENSIONS）整体
 /// lint（「恶意载荷藏在辅助脚本里无法再绕过检查」），agent 自写路径的
 /// 同一载荷却畅通落盘。修复后可执行面扩展名同闸，数据文件（非 surface
 /// 扩展名）与安装路径同口径放行。

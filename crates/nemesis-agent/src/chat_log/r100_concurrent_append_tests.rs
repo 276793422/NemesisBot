@@ -1,6 +1,6 @@
-//! R100（会话持久化面审计）：jsonl 追加的行原子性——并发写同一会话不得撕行。
+//! （会话持久化面审计）：jsonl 追加的行原子性——并发写同一会话不得撕行。
 //!
-//! 根因：`writeln!(file, "{}", entry)` 对 `serde_json::Value` 走 Display 的
+//! 根因：`writeln!(file, "{}", entry)` 对 `serde_json:Value` 走 Display 的
 //! 逐片段 `write_all`（append 模式下每个片段独立定位 EOF），同会话并发写
 //! （spawned 续行 final 落盘 vs 主循环下一条 user 行）可把别人的行插进本行
 //! JSON 片段中间 → 行撕裂（解析失败/缺字段）→ 消息从 UI 消失、rewind

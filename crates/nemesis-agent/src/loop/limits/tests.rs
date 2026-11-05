@@ -1,4 +1,4 @@
-//! P0 vault（D2）：limits 机制测试（滑动窗口、缺省全关、升级计数语义）。
+//! vault：limits 机制测试（滑动窗口、缺省全关、升级计数语义）。
 
 use super::*;
 use parking_lot::Mutex as PlMutex;

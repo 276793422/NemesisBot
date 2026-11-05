@@ -1,12 +1,12 @@
-//! T1（扩展计划 D3）：工具收据（tool receipts）——防幻觉执行证明。
+//! （扩展计划）：工具收据（tool receipts）——防幻觉执行证明。
 //!
 //! 每个真实执行的 registry 工具结果在进 loop 守卫前，由
 //! [`generate_receipt`] 以实例私有 [`ReceiptKey`] 计算 HMAC-SHA256
 //! 执行证明：`nmb-receipt-{ts_ms}-{b64url(sig)}`。收据不进 LLM 上下文、
-//! 不落盘（key 每实例随机生成），只入 [`crate::turn_guard::TurnGuard`]
+//! 不落盘（key 每实例随机生成），只入 [`crate:turn_guard:TurnGuard`]
 //! 的本轮收据环。结果文本自称成功但无收据（未来路径绕过执行点注入
 //! "成功"结果 / 谎报执行）会被
-//! [`crate::turn_guard::TurnGuard::record_tool_outcome_verified`]
+//! [`crate:turn_guard:TurnGuard:record_tool_outcome_verified`]
 //! 以合成失败签名喂 escalation 判定。
 //!
 //! args/result 先 SHA-256 再入 HMAC（两段式摘要）：

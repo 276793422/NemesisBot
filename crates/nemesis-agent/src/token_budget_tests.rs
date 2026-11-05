@@ -1,4 +1,4 @@
-//! P8 会话 token 预算闸测试（集群无人值守硬化 A2；独立测试文件——
+//! 会话 token 预算闸测试（集群无人值守硬化；独立测试文件——
 //! check-inline-tests 纪律，lib.rs `#[path]` 声明）。
 //!
 //! 覆盖：账本 seed 防双计（record 首记吃底账 / current 首查吃底账 /
@@ -122,7 +122,7 @@ fn seed_on_first_current_reads_db_aggregate() {
     let dir = tempfile::tempdir().unwrap();
     let ds = nemesis_data::DataStore::open(&dir.path().join("tb-seed.db")).unwrap();
     // 口径 = 完整输入（prompt + cache_creation + cache_read）+ output：
-    // 行1 (100+20)+30、行2 10+5（R2 后含 creation，本用例两行 creation=0）。
+    // 行1 (100+20)+30、行2 10+5（后含 creation，本用例两行 creation=0）。
     ds.insert_request_log(&usage_row("sess-a", 100, 20, 30))
         .unwrap();
     ds.insert_request_log(&usage_row("sess-a", 10, 0, 5))
@@ -136,8 +136,8 @@ fn seed_on_first_current_reads_db_aggregate() {
     assert_eq!(ledger.current(Some(&ds), "sess-empty"), 0);
 }
 
-/// R2 2026-10-22 回归锁：seed 底账含 cache_creation 行（Anthropic 形态——
-/// 整改前漏计，会话预算从底账种入时系统性偏低）。
+/// 回归锁：seed 底账含 cache_creation 行（Anthropic 形态——
+/// 此前漏计，会话预算从底账种入时系统性偏低）。
 #[test]
 fn seed_includes_cache_creation_tokens() {
     let _logs = capture_logs();
@@ -289,7 +289,7 @@ async fn organ_soft_notice_fires_once_below_100() {
             .await
             .is_none()
     );
-    // 第二轮同用量：闩住，仍 None（软档不终局、不重复触发）。
+    // 同用量：闩住，仍 None（软档不终局、不重复触发）。
     assert!(
         agent_loop
             .check_session_budget(&instance, &ctx)

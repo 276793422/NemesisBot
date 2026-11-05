@@ -1,10 +1,10 @@
-//! Z1 (Phase4-d): session forking — a TRUE branch, not a rollback.
+//! : session forking — a TRUE branch, not a rollback.
 //!
 //! Fork = copy a session's history up to a selected TURN boundary under a
 //! NEW session key. The original session is never touched (its later turns
 //! keep flowing); the new session starts with the copied prefix and its own
 //! ledger/boundary/chat-log files (keys ARE the ledger identity, so the new
-//! key's U9 replay ledger and boundary sidecar start fresh at the fork
+//! key's replay ledger and boundary sidecar start fresh at the fork
 //! point by construction).
 //!
 //! Turn semantics: a "turn" is one user→…→assistant exchange over the
@@ -12,7 +12,7 @@
 //! before the (N+1)-th user row); `N >= turn count` keeps the whole log
 //! (fork at head); the default is the whole log.
 //!
-//! ⚠ ROUND-3 FIX (2026-08-25 fork 第三轮): **the chat_log jsonl is the
+//! ⚠ FIX (2026-08-25 fork): **the chat_log jsonl is the
 //! single source of truth for turn semantics** — the fork dialog's turn
 //! table counts jsonl rows, the Dashboard renders jsonl rows, so the fork
 //! cut must be taken on the SAME rows the user picked by. Round 2
@@ -31,18 +31,18 @@
 //! Consequences of the fix, all by construction:
 //! - the new jsonl = the source jsonl's first-N-turn rows **verbatim**
 //!   (timestamps / model badges / cron markers preserved — see
-//!   `chat_log::write_chat_log_rows`);
-//! - the new store = `session::projected_messages_from_rows` over the same
+//!   `chat_log:write_chat_log_rows`);
+//! - the new store = `session:projected_messages_from_rows` over the same
 //!   cut rows — byte-identical to what a later self-heal rebuild of the
 //!   fork's jsonl would produce, so the fork's model context can never
 //!   silently shift the day its store json ages out of the TTL;
 //! - the summary is NEVER carried (jsonl records no summary; a store
 //!   summary text may reference folded/truncated content that isn't in
-//!   the fork). `ForkInfo::summary_kept` stays in the API shape and is
+//!   the fork). `ForkInfo:summary_kept` stays in the API shape and is
 //!   always `false`.
 //!
 //! Boundary events (`session_fork_out` / `session_fork_in`) land in the
-//! U9 sidecar for both keys.
+//! sidecar for both keys.
 
 use crate::chat_log;
 use crate::session::{self, SessionStore, StoredMessage};
@@ -60,10 +60,10 @@ pub struct ForkInfo {
     pub kept_messages: usize,
     /// chat_log rows excluded from the fork (source keeps them).
     pub dropped_messages: usize,
-    /// WS9/P18：被排除内容中的完整 user 轮数（`dropped_messages` 行换算
+    /// /：被排除内容中的完整 user 轮数（`dropped_messages` 行换算
     /// 成轮）——分支摘要触发阈值（≥3 轮）的判定输入。
     pub dropped_user_turns: usize,
-    /// F4（2026-09-26 复查）：被排除行的 **fork 时刻快照**（本次调用自己
+    /// （复查）：被排除行的 **fork 时刻快照**（本次调用自己
     /// 读到的 rows[cut..]）。消费方（分支摘要生成）必须用它而不是回头重
     /// 读源日志——fork 与重读之间源会话若有新行落盘（活会话异步回复），
     /// kept_messages 计数切片到新日志会把 fork 之后的内容混进「遗弃转写」。
@@ -78,8 +78,8 @@ pub struct ForkInfo {
 
 /// Count COMPLETE user turns over chat_log rows (round-3 truth source: the
 /// same rows the fork dialog counts and the Dashboard renders). 轮边界判定
-/// 走 [`crate::chat_log::is_user_turn_boundary`] 单一真相源——steer 注入行
-/// 是轮中间的 user 形态行，不计轮（BUG-20261025-19，否则轮计数虚增、分支
+/// 走 [`crate:chat_log:is_user_turn_boundary`] 单一真相源——steer 注入行
+/// 是轮中间的 user 形态行，不计轮（否则轮计数虚增、分支
 /// 摘要阈值与 rewind 谱系 dropped_turns 失真）。
 pub fn row_user_turn_count(rows: &[Value]) -> usize {
     rows.iter()
@@ -106,7 +106,7 @@ fn row_turn_cut(rows: &[Value], n: usize) -> usize {
 
 /// Count COMPLETE user turns in a STORED history.
 ///
-/// ⚠ SUPERSEDED (2026-08-25 fork 第三轮): the store is a lossy cache — turn
+/// ⚠ SUPERSEDED (fork): the store is a lossy cache — turn
 /// semantics must be counted on jsonl rows (`row_user_turn_count`), which
 /// is what the fork dialog and the Dashboard do. Kept (not deleted) per
 /// the code-change discipline.
@@ -118,7 +118,7 @@ pub fn user_turn_count(messages: &[StoredMessage]) -> usize {
 /// Message index where the fork cut lands for `--at N` over a STORED
 /// history.
 ///
-/// ⚠ SUPERSEDED (2026-08-25 fork 第三轮) by `row_turn_cut` — see
+/// ⚠ SUPERSEDED (fork) by `row_turn_cut` — see
 /// `user_turn_count`. Kept (not deleted) per the code-change discipline.
 #[allow(dead_code)]
 fn turn_cut(messages: &[StoredMessage], n: usize) -> usize {
@@ -171,11 +171,11 @@ pub fn fork_session(
     fork_session_opts(store, source_key, requested_new_key, at_turn, false)
 }
 
-/// 「完全独立会话」形态（2026-10-20）：`independent=true` 时跳过新 key 的
+/// 「完全独立会话」形态：`independent=true` 时跳过新 key 的
 /// 血缘 meta 写入（parent / forked_at_turn）——新会话生来无父分支，UI 谱系
 /// 视图视为平级独立会话（fork_reason 与分支摘要在 endpoint 侧同步跳过）。
 /// 内容拷贝 / store 重建 / boundary 审计事件与普通 fork 完全一致（审计兜底
-/// 不因独立形态减弱；boundary 行在 jsonl 内部，UI 不可见）。
+/// 不因独立形态减弱；boundary 行在 jsonl 内部，UI 不可）。
 pub fn fork_session_opts(
     store: &SessionStore,
     source_key: &str,
@@ -198,7 +198,7 @@ pub fn fork_session_opts(
             source_key
         ));
     }
-    // BUG-20261101-292：at_turn=0 此前被 `.max(1)` 静默 clamp 成 fork 1 轮
+    // at_turn=0 此前被 `.max(1)` 静默 clamp 成 fork 1 轮
     // ——同命令族 interactive_pick 显式拒 0（「无效轮次」），CLI --at 0 与
     // WSAPI at_turn 0 两个入口却静默改义，行为分裂。0 无合法语义（上方
     // turns >= 1 恒成立，空 fork 无意义），诚实拒绝；超界 min(turns)=全量
@@ -212,7 +212,7 @@ pub fn fork_session_opts(
     };
     let cut = row_turn_cut(&rows, at);
 
-    // BUG-20261101-292 横向同族：--new-key 空/空白值会经 unique_key 直接
+    // 横向同族：--new-key 空/空白值会经 unique_key 直接
     // 产出空名会话文件（sanitize_path_segment("") 仍为空 → `.jsonl` 点文
     // 件，session list 无法正常渲染成垃圾残留）。与上方 at_turn 0 同款
     // loud 纪律：非法值诚实拒绝，不静默纠偏。
@@ -231,7 +231,7 @@ pub fn fork_session_opts(
     // but jsonl-first keeps the write order the same as the live append
     // path — durable truth before derived cache).
     let chat_log_lines = chat_log::write_chat_log_rows(&new_key, &rows[..cut]);
-    // BUG-20261030-205：jsonl 落盘失败不再静默成功。旧形态下 open/write
+    // jsonl 落盘失败不再静默成功。旧形态下 open/write
     // 失败返回 0 被无视，fork 照常建 store 落 meta 返回成功——产出「store
     // 有历史、jsonl 真相源缺席」的半残 fork（self-heal 一跑历史清零），
     // 正是本函数 jsonl-first 契约要防的反形态。现按返回值校验：失败 =
@@ -246,7 +246,7 @@ pub fn fork_session_opts(
     }
 
     // 2) store side: mirror the self-heal construction over the SAME rows
-    // (single shared mapping — session::projected_messages_from_rows).
+    // (single shared mapping — session:projected_messages_from_rows).
     // `set_history` applies the store's own MAX_STORED_MESSAGES trim, so an
     // over-long prefix ages exactly like any long session. Summary is
     // never carried (round-3 rule, see module doc).
@@ -255,7 +255,7 @@ pub fn fork_session_opts(
     store.set_history(&new_key, messages);
     store.set_summary(&new_key, "");
     store.set_summary_covers_up_to(&new_key, None);
-    // L6++（2026-09-08）：项目归属继承——meta sidecar 是真相源（写新 key
+    // ：项目归属继承——meta sidecar 是真相源（写新 key
     // sidecar），store 缓存镜像同步，由下方 save 一并落盘。源无绑定 = 无
     // 操作（对话组 fork 仍是对话组；绑定不可变，继承即终态）。
     if let Some(meta) = chat_log::read_session_meta_full(source_key)
@@ -268,7 +268,7 @@ pub fn fork_session_opts(
         .save(&new_key)
         .map_err(|e| format!("写入新会话失败: {}", e))?;
 
-    // Boundary events on BOTH keys (U9 sidecar; new key = fresh ledger).
+    // Boundary events on BOTH keys (sidecar; new key = fresh ledger).
     chat_log::append_boundary_event(
         source_key,
         "session_fork_out",
@@ -289,7 +289,7 @@ pub fn fork_session_opts(
         ),
     );
 
-    // E4 (2026-09-05): 记录 fork 血缘到新 key 的 sidecar meta（parent +
+    // : 记录 fork 血缘到新 key 的 sidecar meta（parent +
     // forked_at_turn）。Upsert 语义——随后 fork endpoint 写 title 时保留
     // 这两字段；旧 meta 文件（只有 title）不受影响。independent 形态跳过
     // （fork_session_opts 文档：生来无父分支）。
@@ -300,9 +300,9 @@ pub fn fork_session_opts(
     Ok(ForkInfo {
         kept_messages: cut,
         dropped_messages: total - cut,
-        // WS9/P18：丢弃行的完整 user 轮数（分支摘要阈值判定输入）。
+        // /：丢弃行的完整 user 轮数（分支摘要阈值判定输入）。
         dropped_user_turns: row_user_turn_count(&rows[cut..]),
-        // F4：遗弃行快照随 ForkInfo 带出（见字段 doc）。
+        // 遗弃行快照随 ForkInfo 带出（见字段 doc）。
         dropped_rows: rows[cut..].to_vec(),
         at_turn: at,
         source_key: source_key.to_string(),
@@ -315,7 +315,7 @@ pub fn fork_session_opts(
 #[cfg(test)]
 mod tests;
 
-// WS9/P17+P18：fork 侧谱系扩展测试（dropped_user_turns / fork_reason /
+// /+：fork 侧谱系扩展测试（dropped_user_turns / fork_reason /
 // 链式祖先 / 分支摘要写入钳制）——独立测试文件（禁内联测试门禁）。
 #[cfg(test)]
 mod lineage_tests;

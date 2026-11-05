@@ -1,7 +1,7 @@
-//! BUG-20261031（bot 占用扫描目标项目 `.git\objects\pack` 致项目无法删除）
+//! （bot 占用扫描目标项目 `.git\objects\pack` 致项目无法删除）
 //! 回归锁。
 //!
-//! 根因（已确认）：旧实现 `GitBackend.repo`（`Mutex<git2::Repository>`）随
+//! 根因（已确认）：旧实现 `GitBackend.repo`（`Mutex<git2:Repository>`）随
 //! CheckpointStore 常驻 gateway 进程；影子库 `objects/info/alternates` 指向
 //! 目标项目 objects → libgit2 首次 `begin`（index.add_all 全工作区扫描）沿
 //! alternates mmap 目标项目 pack 数据文件，句柄直到 Repository drop 才释放。
@@ -113,11 +113,11 @@ fn probe_locked(stage: &str, files: &[PathBuf]) -> Vec<String> {
 #[cfg(windows)]
 fn shadow_store_must_not_hold_target_pack_files() {
     let (guard, root) = packed_target_project();
-    // 影子库落临时目录（模拟 L6++ 的 logs/project_checkpoints 形态：影子在
-    // 项目外，root 仅作 .git 探测锚）。
+    // 影子库落临时目录（模拟 的 logs/project_checkpoints 形态：影子在
+    // 项目外，root 仅作.git 探测锚）。
     let shadow = guard.path().join("shadow.git");
 
-    // 阶段 1：装配（repo open + alternates 后端初始化）
+    // 装配（repo open + alternates 后端初始化）
     let store = CheckpointStore::new_with_shadow(None, root.clone(), shadow);
     assert!(
         matches!(store.backend(), CheckpointBackend::Git),
@@ -126,11 +126,11 @@ fn shadow_store_must_not_hold_target_pack_files() {
     let files = pack_files(&root);
     let locked_assembly = probe_locked("after_new_with_shadow", &files);
 
-    // 阶段 2：turn 边界（write_current_tree：add_all + write_tree + commit）
+    // turn 边界（write_current_tree：add_all + write_tree + commit）
     store.begin(1, "scan target project");
     let locked_begin1 = probe_locked("after_begin_1", &files);
 
-    // 阶段 3：第二轮（commit 带 parent）
+    // （commit 带 parent）
     store.begin(2, "scan continue");
     let locked_begin2 = probe_locked("after_begin_2", &files);
 

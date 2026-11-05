@@ -1,18 +1,18 @@
 //! Work 时间线（ChatPanel 长任务时间线改造，2026-10-30，PLAN：
-//! docs/PLAN/2026-10-30_ChatPanel长任务时间线改造.md）。
+//! ChatPanel长任务时间线改造）。
 //!
 //! turn 级累加器：按真实时序收拢一个 turn 的「中间轮叙述 + 工具调用」，
 //! 最终回复落盘时随行写进 chat_log assistant 行（`"work"` 键）；执行中
-//! 经 [`AgentLoop::current_work_timeline`]（WSAPI `chat.work_current`）
+//! 经 [`AgentLoop:current_work_timeline`]（WSAPI `chat.work_current`）
 //! 只读快照，支撑「切走再切回」的全量恢复（活累加器无滑窗限制）。
 //!
 //! # 喂入点与单一真相源
 //!
-//! 喂入与既有事件发射**同点同源**：RoundText 在 [`crate::r#loop`]
+//! 喂入与既有事件发射**同点同源**：RoundText 在 [`crate:r#loop`]
 //! `emit_round_output`（tool_batch 每轮先叙述后工具的发布序，叙述与思考
-//! 皆空的轮不发——纯工具轮由 [`WorkRecorder::tool_started`] 的分组规则
+//! 皆空的轮不发——纯工具轮由 [`WorkRecorder:tool_started`] 的分组规则
 //! 自动成轮）；ToolStarted/ToolFinished 在
-//! [`crate::tool_event_hook::ToolEventHook`]。
+//! [`crate:tool_event_hook:ToolEventHook`]。
 //! 实时 WS 推送与落盘时间线是同一发射点的两个投影，无第二份转换逻辑。
 //!
 //! # 分组规则（一轮一个工具批次）
@@ -26,7 +26,7 @@
 //!
 //! [`MAX_WORK_ROUNDS`] 封顶轮数，超出置 `truncated` 诚实注记并停止追加；
 //! preview 沿用发射侧截断（ARGS_PREVIEW_CAP/RESULT_PREVIEW_CAP），此处
-//! 不放大。轮叙述为真实内容全量保留（用户拍板全落盘，2026-10-30）。
+//! 不放大。轮叙述为真实内容全量保留（全落盘，2026-10-30）。
 
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -137,7 +137,7 @@ impl WorkRecorder {
 
     /// 中间轮输出（emit_round_output 同点喂入；叙述 + 思考链同轮）。
     /// 两者皆空不建轮（trim 判定与观察面 emit_round_output 同口径；
-    /// 存储保留原文不修剪）。纯工具轮由 [`WorkRecorder::tool_started`]
+    /// 存储保留原文不修剪）。纯工具轮由 [`WorkRecorder:tool_started`]
     /// 的分组规则自动成轮。会话不匹配忽略。
     pub fn push_round_output(&self, session_key: &str, text: &str, reasoning: &str) {
         let mut slot = self.0.lock();

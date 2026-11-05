@@ -1,11 +1,11 @@
-//! 图片路径检测器（goal T4，真相源 §2 P2.1）。
+//! 图片路径检测器（goal，真相源.1）。
 //!
 //! 从用户消息文本中提取候选图片路径并验真：Windows 绝对（`C:\...`）/
 //! POSIX 绝对（`/...`）/ UNC（`\\server\share\a.png`）/ 工作区相对。
 //! 含空格的路径必须用引号包裹（`"..."` / `「...」`，shell 语义——空白是
 //! 行文与路径的边界，理由见 [`path_regex`] 文档）。
-//! 扩展名白名单 png/jpg/jpeg/webp/gif；验真 = 存在性 + 单图 ≤25MB（D6）
-//! + magic byte 嗅探（防文本伪装 .png）+ 同消息去重。
+//! 扩展名白名单 png/jpg/jpeg/webp/gif；验真 = 存在性 + 单图 ≤25MB
+//! + magic byte 嗅探（防文本伪装.png）+ 同消息去重。
 //!
 //! 误报防线（两层）：
 //! 1. **裸文件名（无任何路径分隔符/盘符/UNC 前缀）不是候选**——
@@ -17,11 +17,11 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// 单图大小上限（D6：25MB；真实上限在 provider 侧，bot 侧不过度设卡）。
+/// 单图大小上限（25MB；真实上限在 provider 侧，bot 侧不过度设卡）。
 pub const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 
-/// 每消息图片张数上限（D6：8 张，2026-09-03 用户定值；两来源合计、去重后计）。
-/// 超出部分不附加，由附加层聚合成一条诚实注记（[`super::attach_turn_images`]）。
+/// 每消息图片张数上限（8 张， 用户定值；两来源合计、去重后计）。
+/// 超出部分不附加，由附加层聚合成一条诚实注记（[`super:attach_turn_images`]）。
 pub const MAX_IMAGES_PER_MESSAGE: usize = 8;
 
 /// 扩展名白名单（小写比较）。
@@ -55,12 +55,12 @@ pub struct ImagePathCandidate {
 }
 
 impl ImagePathCandidate {
-    /// 是否附加成功（T5 统一 attach 流程的准入判断）。
+    /// 是否附加成功（统一 attach 流程的准入判断）。
     pub fn is_attachable(&self) -> bool {
         matches!(self.status, CandidateStatus::Ok { .. })
     }
 
-    /// 诚实失败原因（T5 文本注明用；Ok / 静默类返回 None）。
+    /// 诚实失败原因（文本注明用；Ok / 静默类返回 None）。
     pub fn failure_reason(&self) -> Option<String> {
         match &self.status {
             CandidateStatus::Ok { .. } => None,
@@ -82,7 +82,7 @@ impl ImagePathCandidate {
 
 /// 候选提取正则（OnceLock 缓存）。
 ///
-/// 两形态家族（2026-09-04 三份 CI 日志 28 处红的根修，shell 语义对齐）：
+/// 两形态家族（三份 CI 日志 28 处红的根修，shell 语义对齐）：
 /// - **无引号形态**：段字符类**不含任何空白**——空白是行文与路径的天然
 ///   边界。此前类含空格 + POSIX/相对分支无左锚点，`/a.png 和 /b.png` 被
 ///   贪心连成**一个**候选（`find_iter` 只取这一个重叠匹配，真路径全丢）。
@@ -93,7 +93,7 @@ impl ImagePathCandidate {
 ///   匹配后剥离成对包裹字符再解析（[`strip_path_quotes`]）。
 ///
 /// 段字符类其余部分：字母数字/下划线/`~`（**8.3 短名** `RUNNER~1`——CI
-/// runner 与开启短名生成的机器上 `std::env::temp_dir()` 真实返回这种路径，
+/// runner 与开启短名生成的机器上 `std:env:temp_dir()` 真实返回这种路径，
 /// `~` 曾不在类内导致文本点名路径全部失明）/CJK/谚文/拉丁扩展/点/括号/
 /// 连字符；不含分隔符与 Windows 文件名非法字符（`:*?"<>|`）。
 /// 扩展名要求前置点号 + 白名单词（防 "C:\\tempng" 之类吞段误报）。
@@ -115,7 +115,7 @@ fn path_regex() -> &'static regex::Regex {
             let unc = format!(r#"\\\\{name}[\\/](?:{name}[\\/])*{name}{ext}"#);
             // POSIX 绝对：/a/b.png（仅 / 分隔）
             let nix_abs = format!(r#"/(?:{name}/)*{name}{ext}"#);
-            // 相对（含 ./ ../ 与任意含分隔符的相对；\ / 均收）。段内无空白后，
+            // 相对（含./../ 与任意含分隔符的相对；\ / 均收）。段内无空白后，
             // 无锚点分支天然从真实路径起点起搏（行文前缀 "看 " 含空格进不了首段）。
             let rel = format!(r#"{seg}+(?:[\\/]{name}+)*[\\/]{name}{ext}"#);
             (win, unc, nix_abs, rel)
@@ -147,7 +147,7 @@ fn strip_path_quotes(raw: &str) -> &str {
 }
 
 /// 扩展名是否在白名单（大小写不敏感）。
-/// pub：T8 Web 上传端点复用同一白名单（单一真相源）。
+/// pub： Web 上传端点复用同一白名单（单一真相源）。
 pub fn has_image_extension(candidate: &str) -> bool {
     let lower = candidate.to_lowercase();
     IMAGE_EXTENSIONS
@@ -161,19 +161,19 @@ fn url_span_regex() -> &'static regex::Regex {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        // 非贪婪到第一个空白或闭合性标点（) > ] } " ' ，。；！？）为止。
+        // 非贪婪到第一个空白或闭合性标点（) > ] } " '，。；！？）为止。
         regex::Regex::new(r#"[A-Za-z][A-Za-z0-9+.-]*://[^\s)>\]}"'，。；！？]+"#)
             .expect("url span regex is static and valid")
     })
 }
 
 /// magic byte 嗅探（防文本伪装扩展名）。
-/// pub：T8 Web 上传端点落盘**前**复用同一嗅探（单一真相源，勿在他处重抄签名表）。
+/// pub： Web 上传端点落盘**前**复用同一嗅探（单一真相源，勿在他处重抄签名表）。
 pub fn sniff_magic(bytes: &[u8]) -> bool {
     ext_from_magic(bytes).is_some()
 }
 
-/// magic byte → 白名单扩展名（2026-09-03 二次回归 C3：URL 下载落盘按**内容**
+/// magic byte → 白名单扩展名（二次回归：URL 下载落盘按**内容**
 /// 定扩展名——Content-Type 可伪造/缺失、URL 后缀可说谎；与 [`sniff_magic`]
 /// 同一张签名表 = 单一真相源，勿在他处重抄）。
 pub fn ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
@@ -181,7 +181,7 @@ pub fn ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
     if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
         return Some("png");
     }
-    // JPEG: FF D8 FF
+    // JPEG: FF FF
     if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some("jpg");
     }
@@ -196,13 +196,13 @@ pub fn ext_from_magic(bytes: &[u8]) -> Option<&'static str> {
     None
 }
 
-/// 跨来源去重键（2026-09-03 二次回归 C1/C2）：分隔符 `\` → `/` 归一（检测器
+/// 跨来源去重键（二次回归）：分隔符 `\` → `/` 归一（检测器
 /// 明确接受 `\` `/` 混用路径，raw 小写化下 `C:\x\a.png` 与 `C:/x/a.png` 是
 /// 两个键 = 同图重复附加）；小写化**仅 Windows**（NTFS 大小写不敏感）。
-/// L5（2026-09-04 四轮盲审）：分隔符归一同样**仅 Windows**——POSIX 上 `\`
+/// （四轮盲审）：分隔符归一同样**仅 Windows**——POSIX 上 `\`
 /// 是合法文件名字符（`dir\a.png` 与 `dir/a.png` 是两个不同文件），归一会把
 /// 同消息里的两个不同文件错误去重掉一个。
-/// pub：T4 检测器与 T5 附加层（文本来源 + media 引用来源）共用同一键。
+/// pub： 检测器与 附加层（文本来源 + media 引用来源）共用同一键。
 pub fn dedup_key(resolved: &Path) -> String {
     let s = resolved.to_string_lossy();
     if cfg!(windows) {
@@ -213,7 +213,7 @@ pub fn dedup_key(resolved: &Path) -> String {
 }
 
 /// 单候选验真：存在性 + 大小上限 + magic byte。
-/// pub(crate)：T5 统一附加流程对 media 引用路径复用同一验真链。
+/// pub(crate)： 统一附加流程对 media 引用路径复用同一验真链。
 pub fn verify(resolved: &Path) -> CandidateStatus {
     let metadata = match std::fs::metadata(resolved) {
         Ok(m) => m,
@@ -253,7 +253,7 @@ pub fn verify(resolved: &Path) -> CandidateStatus {
     }
 }
 
-/// 扩展名 → OpenAI/Anthropic vision 通用 MIME（T5 附加 + 水合用）。
+/// 扩展名 → OpenAI/Anthropic vision 通用 MIME（附加 + 水合用）。
 /// 白名单外返回 None（调用方按不支持处理）。
 pub fn media_type_for_path(path: &Path) -> Option<&'static str> {
     let ext = path
@@ -269,7 +269,7 @@ pub fn media_type_for_path(path: &Path) -> Option<&'static str> {
     }
 }
 
-/// 从消息文本检测图片路径并验真（T4 主入口；T5 轮次摄取调用）。
+/// 从消息文本检测图片路径并验真（主入口； 轮次摄取调用）。
 ///
 /// - `workspace_dir`：工作区相对路径的解析基准；None 时相对候选不产出。
 /// - 相对候选不存在 → 静默丢弃（行文误报防线）；绝对/UNC 候选不存在 →
@@ -280,11 +280,11 @@ pub fn detect_image_paths(text: &str, workspace_dir: Option<&Path>) -> Vec<Image
     let mut seen: HashSet<String> = HashSet::new();
     let mut out = Vec::new();
 
-    // F-H（2026-09-04 四轮盲审）：先收集 URL span——`https://host/img/a.png`
+    // F-H（四轮盲审）：先收集 URL span——`https://host/img/a.png`
     // 里的 `/host/img/a.png` 会被 nix_abs（无左边界）抓成"POSIX 绝对路径"，
     // 产出假的 deliberate 候选（NotFound → 每次都往历史里灌一条"文件不存在"
     // 假注记；路径碰巧存在时还会错误附上本地文件）。URL 不是文本附加的
-    // 支持面（URL 走 media 引用预取，T9），落在 URL span 内的匹配整体跳过。
+    // 支持面（URL 走 media 引用预取），落在 URL span 内的匹配整体跳过。
     let url_spans: Vec<(usize, usize)> = url_span_regex()
         .find_iter(text)
         .map(|m| (m.start(), m.end()))
