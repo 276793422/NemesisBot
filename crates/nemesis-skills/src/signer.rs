@@ -148,9 +148,17 @@ impl SkillSigner {
         let key_pair = generate_key_pair()
             .map_err(|e| NemesisError::Security(format!("failed to generate key pair: {}", e)))?;
 
-        // Save private key.
+        // Save private key. BUG-20261105-035：私钥落盘 0o600 + 原子写（对齐
+        // auth.json BUG-20261025-39 的凭据面纪律——裸 std::fs::write 在 Unix
+        // 按 umask 常为 0644 世界可读，进程中断撕裂 = 半截 hex key）。
+        // 公钥与 meta 非敏感，维持普通写。
         let priv_path = out_path.join("skill_sign.key");
-        std::fs::write(&priv_path, &key_pair.private_key).map_err(NemesisError::Io)?;
+        nemesis_utils::write_file_atomic(
+            priv_path.to_string_lossy().as_ref(),
+            key_pair.private_key.as_bytes(),
+            0o600,
+        )
+        .map_err(NemesisError::Other)?;
 
         // Save public key.
         let pub_path = out_path.join("skill_sign.pub");
@@ -299,6 +307,15 @@ fn hex_decode(hex: &str) -> std::result::Result<[u8; 32], String> {
     let hex = hex.trim();
     if hex.len() != 64 {
         return Err(format!("expected 64 hex chars, got {}", hex.len()));
+    }
+    // BUG-20261105-035：非 ASCII 输入（字节数可能恰为 64 但含多字节字符）
+    // 会让下方 `&hex[i*2..i*2+2]` 字节切片落在 char boundary 之外直接 panic
+    // ——key 文件内容写坏时应报 Err 而非崩调用方，前置 ASCII 检查。
+    if !hex.is_ascii() {
+        return Err(format!(
+            "expected 64 ASCII hex chars, got {} bytes containing non-ASCII",
+            hex.len()
+        ));
     }
     let mut arr = [0u8; 32];
     for i in 0..32 {

@@ -867,8 +867,9 @@ impl GatewayCtx {
             let estop_for_dream = estop.clone();
             // W3（2026-10-25 加固）：触发期暂停句柄 + home（父会话存在性
             // 检查）。句柄必须在 set_on_job 前取出（本语句的外层互斥守卫到
-            // 语句结束才释放）；handler 执行期可能处于 web「立即运行」的
-            // `svc.lock().execute_job()` 外层锁内——句柄绕开外层互斥防自死锁。
+            // 语句结束才释放）；handler 执行期可能与 web「立即运行」并发
+            // （BUG-20261105-033 起 detached 形态：handler 在独立线程跑，
+            // 快照段已释放外层锁——句柄绕开外层互斥的原则不变）。
             let pause_handle_for_cron = cron_service.lock().unwrap().job_pause_handle();
             let home_for_cron = home.clone();
             cron_service

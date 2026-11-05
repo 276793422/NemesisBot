@@ -147,11 +147,6 @@ impl PathManager {
         *self.skills_config_path.write() = Some(path);
     }
 
-    /// Get the auth storage path.
-    pub fn auth_path(&self) -> PathBuf {
-        self.workspace().join("config").join("auth.json")
-    }
-
     /// Get the audit log directory.
     pub fn audit_log_dir(&self) -> PathBuf {
         resolve_audit_log_dir_in_workspace(&self.workspace())

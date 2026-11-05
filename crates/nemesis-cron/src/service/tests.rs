@@ -4605,3 +4605,188 @@ fn cron_tick_loop_survives_handler_panic() {
         "tick 循环必须在 handler panic 后继续（实际 {n} 拍）"
     );
 }
+
+// --- BUG-20261105-033: execute_job_detached（web「立即运行」异步化）---
+
+#[test]
+fn test_execute_job_detached_fires_and_persists() {
+    use std::sync::atomic::AtomicBool;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job(
+            "detached",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+
+    let fired = std::sync::Arc::new(AtomicBool::new(false));
+    let fired_clone = fired.clone();
+    svc.set_on_job(move |_job| {
+        fired_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok("fired".to_string())
+    });
+
+    // detached 语义：调用立即返回 Ok（不等待 handler 完成）。
+    svc.execute_job_detached(&job.id).expect("detached accept");
+
+    // 执行在独立线程完成——轮询等待收口（last_status 落定即为同步点，
+    // handler 在状态写回之前 fired）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let done = svc
+            .get_job(&job.id)
+            .map(|j| j.state.last_status.as_deref() == Some("executed"))
+            .unwrap_or(false);
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached execution did not settle in 5s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        fired.load(std::sync::atomic::Ordering::SeqCst),
+        "detached execute should fire the on_job handler"
+    );
+
+    // 盘上状态已持久化（与同步形态同径：save 而非仅内存）。
+    let data = crate::store::load(std::path::Path::new(&path)).unwrap();
+    let stored = data.jobs.iter().find(|j| j.id == job.id).unwrap();
+    assert_eq!(stored.state.last_status.as_deref(), Some("executed"));
+}
+
+#[test]
+fn test_execute_job_detached_error_recorded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    svc.set_on_job(move |_job| Err("det boom".to_string()));
+    let job = svc
+        .add_job(
+            "det_err",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+
+    svc.execute_job_detached(&job.id).unwrap();
+
+    // 错误同径记账：last_status="error" + last_error（不经返回值上抛）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let settled = svc
+            .get_job(&job.id)
+            .map(|j| {
+                j.state.last_status.as_deref() == Some("error")
+                    && j.state.last_error.as_deref() == Some("det boom")
+            })
+            .unwrap_or(false);
+        if settled {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached error did not settle in 5s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn test_execute_job_detached_not_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    // 快照段同步拒绝：不存在 = Err，不 spawn 线程。
+    let err = svc.execute_job_detached("no-such-job").unwrap_err();
+    assert!(err.contains("job not found"), "got: {err}");
+}
+
+#[test]
+fn test_execute_job_detached_poisoned_store_rejects() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json");
+    // 毒态构造：盘上坏 JSON → new 时 load 失败置毒（REL-002 链路）。
+    std::fs::write(&path, "{ not valid json").unwrap();
+    let svc = CronService::new(path.to_string_lossy().as_ref());
+    let err = svc.execute_job_detached("whatever").unwrap_err();
+    assert!(err.contains("拒绝手动触发"), "got: {err}");
+}
+
+#[test]
+fn test_execute_job_detached_does_not_block_caller() {
+    // 差分钉死 BUG-20261105-033 核心：handler 慢时 detached 调用必须在远
+    // 小于 handler 时长内返回（同步内联形态此断言必红——execute_job 阻塞
+    // 到 handler 完成）。测试钩子只在这条测试里用慢 handler。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let job = svc
+        .add_job(
+            "slow",
+            CronSchedule {
+                kind: "every".to_string(),
+                at_ms: None,
+                every_ms: Some(60000),
+                expr: None,
+                tz: None,
+            },
+            "m",
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+    svc.set_on_job(|_job| {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        Ok("slow done".to_string())
+    });
+
+    let t0 = std::time::Instant::now();
+    svc.execute_job_detached(&job.id).unwrap();
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(100),
+        "detached must return before the handler completes, took {elapsed:?}"
+    );
+
+    // 等线程收口再退出（tempdir drop 后线程仍在写盘会造成 save 失败噪声）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let done = svc
+            .get_job(&job.id)
+            .map(|j| j.state.last_status.as_deref() == Some("executed"))
+            .unwrap_or(false);
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached execution did not settle in 5s"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}

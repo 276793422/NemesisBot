@@ -439,19 +439,6 @@ async fn test_list_available_skills_with_registry() {
 }
 
 #[test]
-fn test_install_from_github_already_exists() {
-    let dir = tempfile::tempdir().unwrap();
-    let skill_dir = dir.path().join("skills").join("my-repo");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-
-    let installer = SkillInstaller::new(&dir.path().to_string_lossy());
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let result = rt.block_on(installer.install_from_github("org/my-repo"));
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("already exists"));
-}
-
-#[test]
 fn test_has_registry_with_matching_registry() {
     let dir = tempfile::tempdir().unwrap();
     let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
@@ -1027,28 +1014,6 @@ async fn test_install_from_registry_no_registry_manager() {
         .install_from_registry("github", "pdf", "1.0")
         .await;
     assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn test_install_from_github_connection_error() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut installer = SkillInstaller::new(temp.path().to_str().unwrap());
-    installer.set_github_base_url("http://127.0.0.1:1");
-    let result = installer.install_from_github("org/repo").await;
-    assert!(result.is_err());
-}
-
-#[tokio::test]
-async fn test_install_from_github_already_exists_v2() {
-    let temp = tempfile::tempdir().unwrap();
-    let skill_dir = temp.path().join("skills").join("repo");
-    std::fs::create_dir_all(&skill_dir).unwrap();
-    std::fs::write(skill_dir.join("SKILL.md"), "# Test").unwrap();
-
-    let installer = SkillInstaller::new(temp.path().to_str().unwrap());
-    let result = installer.install_from_github("org/repo").await;
-    assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("already exists"));
 }
 
 #[tokio::test]

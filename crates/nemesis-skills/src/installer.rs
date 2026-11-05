@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::install_gate::{InstallDecision, InstallPlan, PlanFile, SharedInstallGate};
 use crate::lockfile::{LockedSkill, SkillsLockfile};
-use crate::security_check::{check_skill_security, check_skill_security_dir};
+use crate::security_check::check_skill_security_dir;
 use crate::trust::{TrustState, VerificationOutcome};
 use crate::types::{
     AvailableSkill, InstallResult, SecurityCheckResult, SkillOrigin, validate_skill_identifier,
@@ -1169,97 +1169,6 @@ impl SkillInstaller {
             is_suspicious: dl_result.is_suspicious,
             summary: dl_result.summary,
         })
-    }
-
-    /// Install a skill from a GitHub repository.
-    ///
-    /// Downloads the SKILL.md file from the repository's main branch,
-    /// runs security checks, and installs to the workspace skills directory.
-    pub async fn install_from_github(&self, repo: &str) -> Result<()> {
-        let skill_name = Path::new(repo)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| repo.to_string());
-
-        let skill_dir = self.workspace.join("skills").join(&skill_name);
-
-        if skill_dir.exists() {
-            return Err(NemesisError::Validation(format!(
-                "skill '{}' already exists",
-                skill_name
-            )));
-        }
-
-        let url = format!("{}/{}/main/SKILL.md", self.github_base_url, repo);
-
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|e| NemesisError::Other(format!("failed to create HTTP client: {}", e)))?;
-
-        let response = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| NemesisError::Other(format!("failed to fetch skill: {}", e)))?;
-
-        if response.status() != reqwest::StatusCode::OK {
-            return Err(NemesisError::Other(format!(
-                "failed to fetch skill: HTTP {}",
-                response.status()
-            )));
-        }
-
-        let body = response
-            .text()
-            .await
-            .map_err(|e| NemesisError::Other(format!("failed to read response: {}", e)))?;
-
-        // Create skill directory.
-        std::fs::create_dir_all(&skill_dir).map_err(NemesisError::Io)?;
-
-        // Write SKILL.md atomically.
-        let skill_path = skill_dir.join("SKILL.md");
-        std::fs::write(&skill_path, &body).map_err(|e| {
-            // Clean up on failure.
-            nemesis_utils::fsutil::remove_dir_all_resilient(&skill_dir);
-            NemesisError::Io(e)
-        })?;
-
-        // Security check.
-        let check_result = check_skill_security(&body, &skill_name, "");
-        {
-            let mut last = self.last_security_check.lock().unwrap();
-            *last = Some(check_result.clone());
-        }
-
-        if check_result.blocked {
-            nemesis_utils::fsutil::remove_dir_all_resilient(&skill_dir);
-            return Err(NemesisError::Security(format!(
-                "skill '{}' blocked by security check: {}",
-                skill_name, check_result.block_reason
-            )));
-        }
-
-        if !check_result.lint_result.warnings.is_empty() {
-            warn!(
-                "skill has security warnings (score: {:.2}, {} issues)",
-                check_result.lint_result.score,
-                check_result.lint_result.warnings.len()
-            );
-        }
-
-        if let Some(ref quality) = check_result.quality_score
-            && quality.overall < 40.0
-        {
-            warn!(
-                "skill has low quality score (score: {:.0}/100)",
-                quality.overall
-            );
-        }
-
-        debug!("Installed skill '{}' from GitHub", skill_name);
-        Ok(())
     }
 
     /// Uninstall a skill by name.

@@ -214,7 +214,9 @@ async fn cron_run_executes_without_handler_and_reports_not_found() {
     let h = TasksHandler;
     let id = add_job(&ctx, "runner").await;
 
-    // 无 on_job handler（gateway 未装配）→ execute_job 记 "executed" 后 Ok。
+    // 无 on_job handler（gateway 未装配）→ execute_job_detached 记 "executed"
+    // 后 Ok。BUG-20261105-033：run 立即返回（执行在独立线程），list 断言
+    // 需轮询等线程收口（旧同步形态返回即已落定，直读会竞态假红）。
     let out = h
         .handle_cmd("cron.run", Some(serde_json::json!({ "id": id })), &ctx)
         .await
@@ -223,18 +225,29 @@ async fn cron_run_executes_without_handler_and_reports_not_found() {
     assert_eq!(out["ran"], true);
     assert_eq!(out["id"], id);
 
-    // last_status 落 "executed"。
-    let list = h
-        .handle_cmd("cron.list", None, &ctx)
-        .await
-        .unwrap()
-        .unwrap();
-    let job = list["jobs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|j| j["id"] == id.as_str())
-        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let job = loop {
+        let list = h
+            .handle_cmd("cron.list", None, &ctx)
+            .await
+            .unwrap()
+            .unwrap();
+        let found = list["jobs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|j| j["id"] == id.as_str())
+            .unwrap()
+            .clone();
+        if found["last_status"] == "executed" {
+            break found;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "detached execution did not settle in 5s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
     assert_eq!(job["last_status"], "executed");
 
     // 未知 id。

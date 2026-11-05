@@ -263,3 +263,55 @@ fn secret_read_io_error_loud_not_rotate() {
     drop(_lock);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// BUG-20261105-036：64 字节非 ASCII 损坏内容必须诚实 Err 而非 panic
+/// （`&hex[i*2..i*2+2]` 字节切片落 char boundary 外）——与 skills signer
+/// hex_decode 同族（BUG-20261105-035）。
+#[test]
+fn secret_non_ascii_corrupt_content_errors_not_panics() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-board-secret-nonascii-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("asset_secret.key");
+    let mut s = "a".repeat(61);
+    s.push('中'); // +3 字节 = 64 字节，i=31 切片 [62..64] 原 panic 点
+    assert_eq!(s.len(), 64);
+    std::fs::write(&path, &s).unwrap();
+
+    let err = load_or_create_secret(&path)
+        .expect_err("non-ASCII 64-byte content must Err honestly, not panic");
+    assert!(
+        err.contains("ASCII"),
+        "error must name the ASCII violation: {err}"
+    );
+    // 绝不静默重置：坏内容不得被覆盖成新密钥。
+    assert_eq!(std::fs::read(&path).unwrap(), s.as_bytes());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG-20261105-036：生成侧落盘走 write_file_atomic 0o600（凭据面纪律，
+/// 同 auth.json / skills skill_sign.key 家族）。
+#[test]
+#[cfg(unix)]
+fn secret_created_with_mode_0600() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-board-secret-mode-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = dir.join("config").join("asset_secret.key");
+    load_or_create_secret(&path).expect("first call creates");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "signing secret must not be world/group readable"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

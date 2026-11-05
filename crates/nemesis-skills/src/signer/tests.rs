@@ -501,3 +501,44 @@ fn test_hex_decode_roundtrip() {
     let decoded = hex_decode(&encoded).unwrap();
     assert_eq!(bytes, decoded);
 }
+
+// --- BUG-20261105-035: signer 键处理加固 ---
+
+#[test]
+fn test_hex_decode_rejects_non_ascii_without_panic() {
+    // 修复前：61 ASCII + 1 个三字节 UTF-8 字符 = 64 字节，i=30 的
+    // &hex[60..62] 切在多字节字符内部 → panic（byte index not a char
+    // boundary）。修复后：前置 is_ascii 检查 → Err。
+    let mut s = "a".repeat(61);
+    s.push('中'); // +3 字节 = 64 字节
+    assert_eq!(s.len(), 64);
+    let err = hex_decode(&s).unwrap_err();
+    assert!(err.contains("ASCII"), "got: {err}");
+}
+
+#[test]
+fn test_hex_decode_rejects_bad_hex_content() {
+    // ASCII 但非 hex 字符 → Err（既有行为回归钉）。
+    let err = hex_decode(&"zz".repeat(32)).unwrap_err();
+    assert!(!err.is_empty());
+    assert!(hex_decode(&"ab".repeat(32)).is_ok());
+}
+
+#[test]
+#[cfg(unix)]
+fn test_generate_key_pair_private_key_mode_0600() {
+    // BUG-20261105-035：私钥是凭据面文件，落盘必须 0o600（对齐 auth.json
+    // BUG-20261025-39 纪律）。Windows 无 POSIX 权限位，本测试 unix-only。
+    let dir = tempfile::tempdir().unwrap();
+    SkillSigner::generate_key_pair(&dir.path().to_string_lossy()).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(dir.path().join("skill_sign.key"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(
+        mode & 0o777,
+        0o600,
+        "private key must not be world/group readable"
+    );
+}
