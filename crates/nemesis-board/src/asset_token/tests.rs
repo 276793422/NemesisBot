@@ -172,6 +172,35 @@ fn sanitize_ref_rejects_traversal_and_accepts_plain_names() {
 }
 
 #[test]
+fn sanitize_ref_rejects_windows_reserved_names() {
+    // BUG-20261105-031：ref 落盘即文件名，Windows 保留设备名（含「紧跟
+    // 扩展名」形态，微软命名规范明文）有设备语义——Win11 26200 实机探针
+    // 实证 WriteAllText(CON) 报成功但 Test-Path=False、DIR-LIST 列出
+    // CON、同会话 ReadAllText 读回 1 字节（内容写设备不落盘，资产管线
+    // 行为不可预测：sha256 校验跨会话必挂 / COM1 类打开可阻塞）。
+    // 与 image_gen_tool / connectors / skills / ziwei-profile 同类清单
+    // 对齐（BUG-20261028-99 先例：22 名单全量）。
+    let reserved = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    for name in reserved {
+        // 裸名 + 大小写变体 + 带扩展名形态（stem 截断判定）全拒。
+        assert!(sanitize_asset_ref(name).is_err(), "must reject {name:?}");
+        let upper = name.to_ascii_uppercase();
+        assert!(sanitize_asset_ref(&upper).is_err(), "must reject {upper:?}");
+        let with_ext = format!("{name}.png");
+        assert!(
+            sanitize_asset_ref(&with_ext).is_err(),
+            "must reject {with_ext:?}"
+        );
+    }
+    // 保留名是 stem 前缀的子串不算（只有完整 stem 命中才拒）。
+    assert!(sanitize_asset_ref("constructor.md").is_ok());
+    assert!(sanitize_asset_ref("com10.bin").is_ok());
+}
+
+#[test]
 fn secret_load_create_and_corruption_semantics() {
     let dir = std::env::temp_dir().join(format!(
         "nemesis-board-secret-{}-{}",

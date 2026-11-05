@@ -142,6 +142,14 @@ pub fn issue_asset_bundle(
 /// 都过这道）。白名单字符集：字母/数字/`. _ -`，且不得以 `.` 开头
 /// （拦 `..`、隐藏文件）、不得为空、长度 ≤ 200。ref 落盘即文件名，
 /// 含路径分隔符或 `..` 序列的引用一律拒绝。
+///
+/// Windows 保留设备名（BUG-20261105-031）：ref 落盘即文件名，`CON`/
+/// `NUL`/`COM1` 等有设备语义——Win11 26200 实机探针实证 WriteAllText
+/// 报成功但文件不存在、同会话又可从设备读回（内容写设备不落盘，资产
+/// sha256 跨会话必挂，COM 类打开还可阻塞）。首段（第一个 `.` 之前的
+/// stem）命中 22 名单即拒（大小写不敏感，含「紧跟扩展名」形态——
+/// 微软命名规范明文），与 image_gen_tool / connectors / skills /
+/// ziwei-profile 同类清单对齐（BUG-20261028-99 先例）。
 pub fn sanitize_asset_ref(ref_name: &str) -> Result<(), String> {
     if ref_name.is_empty() {
         return Err("asset ref must not be empty".to_string());
@@ -159,6 +167,19 @@ pub fn sanitize_asset_ref(ref_name: &str) -> Result<(), String> {
         return Err(
             "asset ref may only contain ASCII letters, digits, '.', '_' and '-'".to_string(),
         );
+    }
+    const WINDOWS_RESERVED: [&str; 22] = [
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    let stem = ref_name.split_once('.').map_or(ref_name, |(s, _)| s);
+    if WINDOWS_RESERVED
+        .iter()
+        .any(|r| stem.eq_ignore_ascii_case(r))
+    {
+        return Err(format!(
+            "asset ref must not use Windows reserved device name '{stem}'"
+        ));
     }
     Ok(())
 }
