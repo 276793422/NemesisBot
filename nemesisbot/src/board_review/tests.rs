@@ -551,6 +551,63 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
     assert_eq!(deps.store.list_dispatches(issue.id).unwrap().len(), 2);
 }
 
+// T30 回归锁（2026-11-05 ET 实录根修）：锚点短路输出是确定性 FAIL，
+// 不得被 B2b 的 F6 强制臂合成取证请求拖进取证尝试——强制臂语义是
+// 「锚点已过 + 语义评审仍嫌疑」，短路 = 锚点未过，不属强制臂射程。
+// 旧行为下强制臂对短路输出合成请求 → 真机集群取证派发成功 → 单据
+// ⏳ 悬挂取代首轮短路 FAIL 处置，转人工评论丢锚点明细。断言痕迹级：
+// 取证即便失败兜底也不得留任何取证评论（单测 RpcClient 必败形态）。
+#[tokio::test]
+async fn anchor_fail_short_circuit_does_not_attempt_selfcheck() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, _ws) = review_deps("anchor-fail-no-selfcheck");
+    let issue = issue_in_review(
+        &deps.store,
+        "锚点短路不取证",
+        "[CHECK] re:验收完成标志XYZ",
+        "## 结论\n交付完成",
+    );
+    // 终态历史派发（round = 1-1 = 0 < max_redispatch=2 → FAIL 走重派臂；
+    // 远端 worker + re: 锚点对拓扑硬闸合法）。
+    deps.store
+        .insert_dispatch(
+            "task-anchor-ns-1",
+            issue.id,
+            "node-b",
+            &nemesis_board::Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch(
+            "task-anchor-ns-1",
+            nemesis_board::models::dispatch_state::DONE,
+        )
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("锚点短路 FAIL 必须闭环不报错");
+    assert!(reviewed, "短路 FAIL 应完成评审闭环（非跳过）");
+
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        !comments.iter().any(|c| {
+            c.content.contains("验收暂缓")
+                || c.content.contains("取证派发失败")
+                || c.content.contains("取证请求")
+        }),
+        "锚点短路轮不得尝试取证: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    // 短路 FAIL 照常走重派臂发车（与 anchor_fail_short_circuits_llm_and_redispatches 同断言）。
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InProgress,
+        "锚点 FAIL 语义 = ReviewVerdict::Fail，重派臂应发车"
+    );
+}
+
 #[tokio::test]
 async fn anchor_pass_falls_through_to_semantic_gate() {
     use nemesis_board::IssueStatus;
