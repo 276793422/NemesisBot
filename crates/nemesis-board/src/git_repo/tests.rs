@@ -1485,19 +1485,16 @@ fn sync_repo_swaps_stale_origin_to_declared_url() {
     // 步骤 url 是单一意图表达：既有 origin 指向别处（形态切换/迁移）必须
     // 改写后 fetch——回归锁（2026-11-04 repo_sync 沿用旧 origin 缺陷）。
     let (origin_a, bare_a) = bare_origin("swap-a");
-    // BUG-20261105-014：「同 seed，历史兼容」不能赌两轮 seeded_repo 的
-    // seed commit 落在同一 wall-clock 秒——Signature::now() 秒精度，
-    // 跨秒边界则两个独立 seed 的 commit id 不同 → dest 与 B 无共同
-    // 祖先 → merge_analysis 判分叉 → Merged 假红（间歇性：相位对齐
-    // 时通过）。改为从 origin_a bare-clone 出 bare_b，seed commit id
-    // 必同，「历史兼容」成为夹具显式保证而非运气。
-    let bare_b = temp_dir("swap-b-bare");
+    // B 直接裸克隆 A：两处 bare_origin 各自 ensure_repo 的首 commit 带
+    // Signature::now 墙钟（秒级粒度），两次建仓跨秒则 seed commit id 不同、
+    // A/B 历史分叉 → FF 判定误落 Merged（2026-11-05 CI coverage 实录：
+    // 「B 的 commit 应快进进来 left: Merged right: FastForward」）。裸克隆
+    // 保证 seed commit id 逐位一致，测试不再吃建仓速度竞态。
+    let bare_b = temp_dir("sync-swap-b-bare");
     {
         let mut builder = git2::build::RepoBuilder::new();
         builder.bare(true);
-        builder
-            .clone(origin_a.to_str().unwrap(), &bare_b)
-            .expect("bare_b 必须从 origin_a 克隆成功");
+        builder.clone(origin_a.to_str().unwrap(), &bare_b).unwrap();
     }
     let dest = temp_dir("sync-swap-dest");
     sync_repo_remote(bare_a.to_str().unwrap(), &dest, None, None, None).unwrap();
