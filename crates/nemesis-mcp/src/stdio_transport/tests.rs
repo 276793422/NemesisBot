@@ -452,6 +452,90 @@ time.sleep(30)
     t.close().await.unwrap();
 }
 
+/// BUG-20261105-037：server 存活但从不读 stdin，1MB 请求塞满 OS 管道缓冲
+/// 后 write_all 永久阻塞——写侧此前无超时（读侧 deadline 形同虚设；修复前
+/// 本测试会无限悬挂）。修复后 send 在 timeout_ms 内报 -3（message 指名写超
+/// 时）并断链；后续 send 快速 not_connected（-1），不再往脏帧上追写。
+#[tokio::test]
+async fn test_write_timeout_tears_down_when_server_stops_reading_stdin() {
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), "import time; time.sleep(30)".to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let big_req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        // ~1MB 参数 >> OS 管道缓冲（Windows 匿名管道 ~4-64KB），永不读 →
+        // write_all 阻塞直到写超时。
+        params: Some(serde_json::json!({ "blob": "x".repeat(1_000_000) })),
+    };
+    let started = std::time::Instant::now();
+    let err = t.send(&big_req, 800).await.unwrap_err();
+    assert_eq!(err.code, -3, "got: {}", err.message);
+    assert!(
+        err.message.contains("write to stdin timed out"),
+        "got: {}",
+        err.message
+    );
+    // 预算 800ms + 慢机余量；悬挂形态（修复前）根本走不到这里。
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "send must return near the deadline, took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        !t.is_connected(),
+        "write timeout must tear down the transport"
+    );
+
+    // 断链后快速失败：not_connected（-1），不再阻塞。
+    let err2 = t.send(&big_req, 800).await.unwrap_err();
+    assert_eq!(err2.code, -1, "got: {}", err2.message);
+    t.close().await.unwrap();
+}
+
+/// 对照面：小载荷（<<管道缓冲）写得进 → 走读侧超时（message = "request
+/// timed out"，非 "write to stdin timed out"）——证写超时判定只对真写阻塞
+/// 触发，不误伤正常写路径。
+#[tokio::test]
+async fn test_small_payload_write_completes_then_read_times_out() {
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), "import time; time.sleep(30)".to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: Some(serde_json::json!({ "k": "v" })),
+    };
+    let err = t.send(&req, 600).await.unwrap_err();
+    assert_eq!(err.code, -3);
+    assert!(
+        err.message.contains("request timed out"),
+        "got: {}",
+        err.message
+    );
+    assert!(
+        t.is_connected(),
+        "read timeout must NOT tear down the transport"
+    );
+    t.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn test_w4c_stdio_garbage_line_skipped_times_out() {
     // J3 起（devtool-upgrade 阶段 4）：服务器回一行非 JSON → 跳过继续读

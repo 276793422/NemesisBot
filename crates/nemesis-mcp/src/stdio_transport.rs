@@ -329,16 +329,42 @@ impl Transport for StdioTransport {
         line.push('\n');
 
         // Write to stdin.
+        // BUG-20261105-037：写侧同受 timeout_ms 约束。读侧 deadline 历经
+        // BUG-20261025-87/J3/R39 多轮加固，写腿此前完全无界——server 存活但
+        // 停止读 stdin（读线程死锁/单线程 server 忙于长调用不再排水）时，
+        // 大于 OS 管道缓冲的请求会让 write_all 永久阻塞，读侧超时形同虚设：
+        // 注册路径 adapter 外层超时只把悬挂切成「每次调用烧满预算且共享
+        // client 永不自愈」，one-shot 探测的 list_* 调用（manager.rs 无外层
+        // 包裹）则彻底裸奔。Transport trait 合同（"or the timeout elapses"）
+        // 覆盖整个 send，不止单读方向。
         let stdin = self.stdin.as_ref().ok_or(TransportError::not_connected())?;
-        {
+        let effective_timeout = if timeout_ms == 0 {
+            Duration::from_secs(30)
+        } else {
+            Duration::from_millis(timeout_ms)
+        };
+        let write_fut = async {
             let mut writer = stdin.lock().await;
-            writer.write_all(line.as_bytes()).await.map_err(|e| {
-                TransportError::send_failed(format!("failed to write to stdin: {e}"))
-            })?;
-            writer
-                .flush()
-                .await
-                .map_err(|e| TransportError::send_failed(format!("failed to flush stdin: {e}")))?;
+            writer.write_all(line.as_bytes()).await?;
+            writer.flush().await
+        };
+        match timeout(effective_timeout, write_fut).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                return Err(TransportError::send_failed(format!(
+                    "failed to write to stdin: {e}"
+                )));
+            }
+            Err(_) => {
+                // 写超时 = 请求行可能只落了一半，管道帧已脏——诚实断链
+                // （close 杀子进程 + 清 stdin/stdout），后续 send 走
+                // not_connected 快速失败，绝不往脏帧上追写下一条请求。
+                let _ = self.close().await;
+                return Err(TransportError::new(
+                    -3,
+                    "write to stdin timed out (MCP server not reading input); connection torn down",
+                ));
+            }
         }
 
         // 通知（id=None）按 JSON-RPC 语义无响应可等——写入即返回，不进读
@@ -363,11 +389,6 @@ impl Transport for StdioTransport {
             .stdout
             .as_ref()
             .ok_or(TransportError::not_connected())?;
-        let effective_timeout = if timeout_ms == 0 {
-            Duration::from_secs(30)
-        } else {
-            Duration::from_millis(timeout_ms)
-        };
 
         // J3：逐行读直到拿到带 id 的响应行（整体 deadline 不变）。无 id 的
         // JSON-RPC 通知（progress/log 是 MCP 标准行为）不是本次请求的响应，
