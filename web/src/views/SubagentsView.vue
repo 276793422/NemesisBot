@@ -84,6 +84,12 @@ const seenSeqs = new Set<number>()
 let lastSeq = 0
 let localSeq = -1 // 无 seq 的实时帧兜底（理论上子代理事件恒有 seq）
 let detailPoll: ReturnType<typeof setInterval> | null = null
+// 会话围栏（R575 BUG-20261106-006）：详情请求代次。加载期 backdrop 尚未
+// 显示（v-if="detail || detailNotFound" 双 false）表格仍可点，两次在飞
+// openDetail 的响应按**完成序**覆盖 detail/timeline——先点 A（慢）再点 B
+// （快），A 迟到会把正查看的 B 换成 A；A 拒绝则更把 B 翻成「任务不在册」。
+// 同 syncMissedChat/refreshWorkCurrent 的围栏纪律：迟到响应整包丢弃。
+let detailReqSeq = 0
 
 function pushTimeline(kind: string, data: any, seq: number) {
   if (seq > 0) {
@@ -110,6 +116,7 @@ function ingestRingEvents(events: any[]) {
 }
 
 async function openDetail(id: string) {
+  const req = ++detailReqSeq
   detailNotFound.value = false
   detailLoading.value = true
   timeline.value = []
@@ -117,16 +124,20 @@ async function openDetail(id: string) {
   lastSeq = 0
   try {
     const t = await request('subagents', 'detail', { id })
+    if (req !== detailReqSeq) return // 迟到响应：已有点开更新的任务，整包丢弃
     detail.value = t as SubagentRow
     const r = await request('subagents', 'events', { id, after_seq: 0 })
+    if (req !== detailReqSeq) return
     ingestRingEvents(r?.events || [])
     if (r?.gap) toast.warn('事件环有缺口（逐出/重启），仅显示保留部分')
     armDetailPoll(r?.running === true)
   } catch (e: any) {
+    if (req !== detailReqSeq) return // 迟到拒绝不得把正查看的详情翻成「任务不在册」
     detail.value = null
     detailNotFound.value = true
   } finally {
-    detailLoading.value = false
+    // 只有当前代次有权收 loading 旗标（迟到响应的 finally 不许碰新请求的状态）。
+    if (req === detailReqSeq) detailLoading.value = false
   }
 }
 
@@ -159,6 +170,8 @@ async function pollDetailEvents() {
 function closeDetail() {
   detail.value = null
   detailNotFound.value = false
+  // 围栏配套：作废在飞详情请求——迟到响应/拒绝不得重开或污染已关闭的抽屉。
+  detailReqSeq++
   if (detailPoll) { clearInterval(detailPoll); detailPoll = null }
 }
 

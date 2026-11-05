@@ -123,6 +123,16 @@ export const useChatStore = defineStore('chat', () => {
   // chat.work_current 活查询三路共用同一摄取与同一 flush。会话过滤在
   // ChatPanel 帧入口完成（异会话帧不入缓冲，同旧纪律）；reset 清空。
   const pendingWork = ref<WorkTimeline | null>(null)
+  // R575（BUG-20261106-005）：RoundText 幂等集。环回放（primeSeqBaseline /
+  // watchdog 重灌的 replayToolsFromRing）与实时 WS 帧在 sync 在飞窗口内会
+  // 双通道投递同一事件，RoundText 无 call_id 类天然幂等键（Started/Finished
+  // 有），重复摄取 = 时间线轮重复渲染。seq 会话内全局单调、三路投递一致 →
+  // 以 seq 去重（无 seq 的旧网关帧不去重，保持旧行为）。生命周期与
+  // pendingWork 缓冲严格同步——四处整缓冲清空点（flush / adopt /
+  // replaceMessages / reset）同步 clear：换会话必须清（seq 按会话单调，
+  // 不清会拿旧会话的大 seq 误抑新会话的轮），adopt 必须清（快照轮来自
+  // 后端活累加器、与环 seq 无映射，接管后重新放行）。
+  const roundTextSeqs = new Set<number>()
   // N5（2026-10-13 机会项）：进行中轮次的交付物缓冲（present_files 登记
   // 事件先于 assistant 回复帧到达——落盘后发布、回复帧最后发布，顺序由
   // 后端单 turn 串行保证；回复落地时 flush 挂载；reset 清空——语义同
@@ -264,6 +274,7 @@ export const useChatStore = defineStore('chat', () => {
     // 2026-10-30：重同步后进行中时间线不可信，清空防止误挂到下一轮
     //（进行中内容由 work_current 活查询 + 环回放重建）。
     pendingWork.value = null
+    roundTextSeqs.clear()
     pendingDeliverables.value = []
     // M6：行号锚随消息列表重推——watchdog 路径（fresh 对象无行号）归 null
     // 诚实降级；resync 路径（带 oldest_index 行号）重推出正确锚。
@@ -317,9 +328,15 @@ export const useChatStore = defineStore('chat', () => {
 
   /** 摄取中间轮输出（RoundText：叙述 + 思考链，2026-10-31 批次二）。
    *  一条输出开一轮——其后的工具批次落该轮（与后端 emit_round_output
-   *  发布序同构：叙述/思考 → Started/Finished×k）。皆空不建轮。 */
-  function ingestWorkRoundText(content: string, reasoning?: string) {
+   *  发布序同构：叙述/思考 → Started/Finished×k）。皆空不建轮。
+   *  R575（BUG-20261106-005）：带 seq 时按幂等集去重——环回放与实时帧
+   *  双通道投递同一事件只成一轮；无 seq（旧网关）不去重。 */
+  function ingestWorkRoundText(content: string, reasoning?: string, seq?: number) {
     if (!content && !reasoning) return
+    if (typeof seq === 'number') {
+      if (roundTextSeqs.has(seq)) return
+      roundTextSeqs.add(seq)
+    }
     const w = ensurePendingWork()
     w.rounds.push({ text: content, reasoning: reasoning || undefined, tools: [] })
     w.ended_at_ms = Date.now()
@@ -378,6 +395,7 @@ export const useChatStore = defineStore('chat', () => {
   function flushPendingWork(): WorkTimeline | undefined {
     const w = pendingWork.value
     pendingWork.value = null
+    roundTextSeqs.clear()
     return w && w.rounds.length ? w : undefined
   }
 
@@ -386,6 +404,9 @@ export const useChatStore = defineStore('chat', () => {
    *  现值（无进行中 turn 是事实）；调用方负责迟到快照的作废闸。 */
   function adoptWorkSnapshot(work: WorkTimeline | null | undefined) {
     pendingWork.value = work && work.rounds.length ? work : null
+    // R575：快照轮来自后端活累加器，与环 seq 无映射——接管后幂等集必须
+    // 重新放行（不清会拿旧集合误抑后续合法轮）。
+    roundTextSeqs.clear()
   }
 
   /** N5：收集交付物（`deliverables` push 帧，ChatPanel 按 session 过滤后
@@ -423,6 +444,7 @@ export const useChatStore = defineStore('chat', () => {
     // 同一条纪律。
     todos.value = []
     pendingWork.value = null
+    roundTextSeqs.clear()
     pendingDeliverables.value = []
     agentMode.value = 'build'
     historyLoading.value = false

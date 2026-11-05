@@ -577,7 +577,13 @@ function applyToolEventPayload(ev: any) {
       (typeof p.content === 'string' && p.content) ||
       (typeof p.reasoning === 'string' && p.reasoning)
     ) {
-      chatStore.ingestWorkRoundText(p.content ?? '', p.reasoning ?? '')
+      chatStore.ingestWorkRoundText(
+      p.content ?? '',
+      p.reasoning ?? '',
+      // R575（BUG-20261106-005）：环内 seq 随行传递——store 侧按 seq 幂等
+      // 去重（环回放与实时帧双通道投递同一事件只成一轮；无 seq 旧帧不去重）。
+      typeof ev?.seq === 'number' ? ev.seq : undefined,
+    )
     }
   }
 }
