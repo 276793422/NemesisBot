@@ -1135,11 +1135,12 @@ impl CronService {
     /// actually runs (the previous implementation only updated state and never
     /// fired the handler, so "run now" was a no-op for delivery). State is
     /// marked `"executed"` on success / `"error"` on handler failure.
+    ///
+    /// 同步语义：返回 = handler 已执行完、状态已写盘。供测试与需要
+    /// 「完成后才继续」的调用方使用；web「立即运行」走
+    /// [`Self::execute_job_detached`]（BUG-20261105-033：同步形态会把
+    /// 分钟级 agent turn 内联在 tokio worker + svc 外层锁内）。
     pub fn execute_job(&self, job_id: &str) -> Result<(), String> {
-        let start = std::time::Instant::now();
-        info!("[Cron] Executing job: id={}", job_id);
-        // REL-002 损坏守卫（BUG-20261025-49）：毒态下拒绝「先触发后记账」
-        // ——handler 副作用已发生而状态落不了盘 = 记账与事实分叉。先拒绝。
         if *self.load_poisoned.lock() {
             return Err(format!(
                 "cron store 加载失败（损坏/不可解析），拒绝手动触发（状态无法落盘）;\
@@ -1148,82 +1149,70 @@ impl CronService {
             ));
         }
         let now_ms = Local::now().timestamp_millis();
+        let callback_job = self.snapshot_job_for_execution(job_id)?;
+        run_job_execution(
+            &self.store,
+            &self.on_job,
+            &self.load_poisoned,
+            &self.store_path,
+            callback_job,
+            job_id,
+            now_ms,
+        );
+        Ok(())
+    }
 
-        // Read-lock: copy job for callback (mirror the fire loop pattern).
+    /// 快照段：毒态闸已在调用方前置；拷贝 job 供锁外执行（与 fire loop
+    /// 「Read-lock: copy job for callback」同形态）。
+    fn snapshot_job_for_execution(&self, job_id: &str) -> Result<CronJob, String> {
         let callback_job = {
             let s = self.store.lock();
             s.jobs.iter().find(|j| j.id == job_id).cloned()
         };
-        let Some(callback_job) = callback_job else {
-            error!("[Cron] Job not found for execution: id={}", job_id);
-            return Err(format!("job not found: {}", job_id));
-        };
+        callback_job.ok_or_else(|| format!("job not found: {}", job_id))
+    }
 
-        // G3：手动触发同款账本（trigger=manual 与计划触发区分；账本未
-        // 安装=零变化）。
-        let ledger_run_id = nemesis_taskstore::ledger::cron_job_run_id(job_id, now_ms);
-        nemesis_taskstore::ledger::begin_run(
-            &ledger_run_id,
-            "cron_job",
-            &callback_job.name,
-            "cron",
-            serde_json::json!({ "trigger": "manual" }),
-        );
-
-        // Call on_job handler (outside lock)——panic 隔离见
-        // invoke_handler_catch_panic（BUG-20261029；web 立即运行路径同源，
-        // panic 不再跨越 svc.lock() 外层互斥守卫传播）。
-        let handler_result = {
-            let on_job = self.on_job.lock();
-            invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
-        };
-
-        // G3：手动触发收口（None=无 handler，同 execute 语义视为完成）。
-        match &handler_result {
-            Some(Ok(_)) | None => {
-                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None)
-            }
-            Some(Err(e)) => {
-                nemesis_taskstore::ledger::settle_run(&ledger_run_id, "failed", Some(e))
-            }
+    /// Execute a job immediately, fire-and-forget（BUG-20261105-033）。
+    ///
+    /// web「立即运行」（tasks.cron.run）此前同步内联 [`Self::execute_job`]
+    /// ——handler 是分钟级 agent turn，期间：① tokio worker 被同步代码占住
+    /// （handle_cmd 是 async 上下文，同步直跑阻塞 reactor，logs.rs 的
+    /// spawn_blocking 纪律同款漏网）；② 调用方 `svc.lock()` 外层锁全程被
+    /// 持有 → dashboard 全部 cron 操作（list/add/update/toggle/delete）
+    /// 冻结到 turn 完成；③ on_job 锁被持有 → 到期计划触发排队延迟。
+    /// 本方法快照段（毒态闸 + store 锁内拷 job）微秒级返回，handler 执行、
+    /// 状态写回、账本收口在独立线程完成——三层阻塞全部解除。
+    /// 执行错误与 [`Self::execute_job`] 同径记账（last_status/账本/日志），
+    /// 不经返回值上抛（调用方只消费「已接受」）。
+    pub fn execute_job_detached(&self, job_id: &str) -> Result<(), String> {
+        if *self.load_poisoned.lock() {
+            return Err(format!(
+                "cron store 加载失败（损坏/不可解析），拒绝手动触发（状态无法落盘）;\
+                 请修复或删除后重载: {}",
+                self.store_path
+            ));
         }
-
-        // Write-lock: update state after execution.
-        {
-            let mut store = self.store.lock();
-            if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
-                job.state.last_run_at_ms = Some(now_ms);
-                job.updated_at_ms = Local::now().timestamp_millis();
-                match &handler_result {
-                    Some(Ok(_)) | None => {
-                        job.state.last_status = Some("executed".to_string());
-                        job.state.last_error = None;
-                    }
-                    Some(Err(e)) => {
-                        job.state.last_status = Some("error".to_string());
-                        job.state.last_error = Some(e.clone());
-                        error!(
-                            "[Cron] Manual execute failed: name={}, id={}, error={}",
-                            job.name, job.id, e
-                        );
-                    }
-                }
-                // Append to run history (capped).
-                job.state.push_history(
+        let now_ms = Local::now().timestamp_millis();
+        let callback_job = self.snapshot_job_for_execution(job_id)?;
+        let store = Arc::clone(&self.store);
+        let on_job = Arc::clone(&self.on_job);
+        let poisoned = Arc::clone(&self.load_poisoned);
+        let store_path = self.store_path.clone();
+        let job_id = job_id.to_string();
+        std::thread::Builder::new()
+            .name(format!("cron-exec-{}", &job_id[..job_id.len().min(8)]))
+            .spawn(move || {
+                run_job_execution(
+                    &store,
+                    &on_job,
+                    &poisoned,
+                    &store_path,
+                    callback_job,
+                    &job_id,
                     now_ms,
-                    job.state.last_status.clone().unwrap_or_default(),
-                    job.state.last_error.clone(),
                 );
-            }
-            // BUG-20261103-331：落盘与 mutate 同一临界区（对齐全仓 mutator
-            // 纪律——drop 后 save 的缝隙可被并发 mutator 借用插队落盘）。
-            self.save_store_locked(&store)?;
-        }
-        let elapsed = start.elapsed().as_millis();
-        info!(
-            "[Cron] Job executed: name={}, id={}, duration_ms={}",
-            callback_job.name, job_id, elapsed
-        );
+            })
+            .map_err(|e| format!("spawning cron execution thread: {e}"))?;
         Ok(())
     }
 
@@ -1474,6 +1463,105 @@ pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+/// 手动执行主体（[`CronService::execute_job`] 与
+/// [`CronService::execute_job_detached`] 共用单一真相源）：账本开账 →
+/// handler（on_job 锁内 + panic 隔离）→ 账本收口 → 状态写回落盘。
+/// 参数全值化/Arc 化——detached 形态在独立线程调用，不借 `&CronService`。
+///
+/// 落盘纪律：毒态复查（REL-002）+ 失败 warn 留痕（BUG-20261102-315 同族
+/// ——写回失败时 handler 副作用已发生，状态只在内存，重启后手动执行的
+/// 记账丢失必须可追溯；不改控制流）。测试钩子（persist_fail_next/
+/// persist_delay_ms）不进本路径——它们的唯一消费是 mutator 并发红证
+/// （w1b_tests），手动执行写回不参与该交错。
+fn run_job_execution(
+    store: &Mutex<CronStoreData>,
+    on_job: &Mutex<Option<Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>>>,
+    poisoned: &Mutex<bool>,
+    store_path: &str,
+    callback_job: CronJob,
+    job_id: &str,
+    now_ms: i64,
+) {
+    let start = std::time::Instant::now();
+    info!(
+        "[Cron] Executing job: name={}, id={}",
+        callback_job.name, job_id
+    );
+
+    // G3：手动触发同款账本（trigger=manual 与计划触发区分；账本未
+    // 安装=零变化）。
+    let ledger_run_id = nemesis_taskstore::ledger::cron_job_run_id(job_id, now_ms);
+    nemesis_taskstore::ledger::begin_run(
+        &ledger_run_id,
+        "cron_job",
+        &callback_job.name,
+        "cron",
+        serde_json::json!({ "trigger": "manual" }),
+    );
+
+    // Call on_job handler (outside store lock)——panic 隔离见
+    // invoke_handler_catch_panic（BUG-20261029）。
+    let handler_result = {
+        let on_job = on_job.lock();
+        invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
+    };
+
+    // G3：手动触发收口（None=无 handler，同 execute 语义视为完成）。
+    match &handler_result {
+        Some(Ok(_)) | None => {
+            nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None)
+        }
+        Some(Err(e)) => nemesis_taskstore::ledger::settle_run(&ledger_run_id, "failed", Some(e)),
+    }
+
+    // Write-lock: update state after execution.
+    {
+        let mut s = store.lock();
+        if let Some(job) = s.jobs.iter_mut().find(|j| j.id == job_id) {
+            job.state.last_run_at_ms = Some(now_ms);
+            job.updated_at_ms = Local::now().timestamp_millis();
+            match &handler_result {
+                Some(Ok(_)) | None => {
+                    job.state.last_status = Some("executed".to_string());
+                    job.state.last_error = None;
+                }
+                Some(Err(e)) => {
+                    job.state.last_status = Some("error".to_string());
+                    job.state.last_error = Some(e.clone());
+                    error!(
+                        "[Cron] Manual execute failed: name={}, id={}, error={}",
+                        job.name, job.id, e
+                    );
+                }
+            }
+            // Append to run history (capped).
+            job.state.push_history(
+                now_ms,
+                job.state.last_status.clone().unwrap_or_default(),
+                job.state.last_error.clone(),
+            );
+        }
+        // REL-002 毒态复查 + 落盘（毒态 = 盘上文件已被判定不可信，拒绝以
+        // 本进程视角覆盖；失败 warn 留痕，见函数头纪律注）。
+        if *poisoned.lock() {
+            warn!(
+                "[Cron] manual execute persist skipped (store poisoned): id={}",
+                job_id
+            );
+        } else if let Err(e) = crate::store::save(std::path::Path::new(store_path), &s) {
+            warn!(
+                "[Cron] manual execute persist failed: {} — last_status/history 未落盘，重启后手动执行记账丢失",
+                e
+            );
+        }
+    }
+    let elapsed = start.elapsed().as_millis();
+    info!(
+        "[Cron] Job executed: name={}, id={}, duration_ms={}",
+        callback_job.name, job_id, elapsed
+    );
 }
 
 fn generate_id() -> String {

@@ -299,12 +299,18 @@ impl TasksHandler {
     /// "Run now": fires the job's on_job handler immediately (without advancing
     /// the schedule). With execute_job now actually invoking on_job, this
     /// triggers the agent for real.
+    ///
+    /// BUG-20261105-033：走 detached 形态——handler 是分钟级 agent turn，
+    /// 同步内联（旧形态 svc.lock().execute_job()）会把 tokio worker（async
+    /// 上下文同步直跑）、svc 外层锁（dashboard 全部 cron 操作冻结）、
+    /// on_job 锁（计划触发排队）三层全部占住到 turn 完成。detached 快照段
+    /// 微秒级返回，执行在独立线程；错误同径记账（last_status/账本）。
     fn cron_run(
         &self,
         svc: &Arc<std::sync::Mutex<CronService>>,
         id: &str,
     ) -> Result<Option<serde_json::Value>, String> {
-        svc.lock().unwrap().execute_job(id)?;
+        svc.lock().unwrap().execute_job_detached(id)?;
         Ok(Some(serde_json::json!({ "ran": true, "id": id })))
     }
 }
