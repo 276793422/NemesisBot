@@ -283,5 +283,101 @@ impl CheckpointStore for FileCheckpointStore {
     }
 }
 
+/// 终态执行 checkpoint 目录按龄清扫（横扫五轮，2026-11-06）。
+///
+/// 生产写方：scheduler 每层 hook 与 run/cancel/resume 收尾各存一次
+/// checkpoint（`Checkpoint.terminal` 旗标 = 执行状态 ∈ 终态）；`restore_
+/// incomplete_executions` 明确跳过 terminal checkpoint——终态执行的
+/// checkpoint 目录此后零消费，而 store 的 `delete` API 全仓零生产调用，
+/// 目录随完成数单调增长。
+///
+/// 删除条件（同时满足）：目录内最新 checkpoint（按 `saved_at`）带
+/// `terminal=true` 旗标 **且** `saved_at`（缺省回落目录 mtime）早于
+/// `max_age`。`terminal=false`（Pending/Running/Waiting——human_review
+/// 可挂起任意久）**永不删**，restore 恢复链依赖它。目录内无可解析
+/// checkpoint（空 / 全部损坏已被隔离进 `.corrupt`）时回落目录 mtime
+/// 闸——没有任何可恢复数据可丢，`.corrupt` 隔离件随之清走。非目录
+/// 条目与隐藏目录不碰；扫描期损坏文件只跳过不隔离（清扫面不产生
+/// 读之外的写副作用）。删除走 fsutil 韧性包装（尽力而为，残留交
+/// 下轮）。返回清除目录数。
+pub fn sweep_stale_checkpoint_dirs(root: &Path, max_age: std::time::Duration) -> usize {
+    let checkpoints_dir = root.join("checkpoints");
+    let Ok(entries) = fs::read_dir(&checkpoints_dir) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !path.is_dir() || name.starts_with('.') {
+            continue;
+        }
+        // 最新 checkpoint：只读扫描 *.json，按 saved_at 取最大；损坏文件
+        // 跳过（不隔离——清扫面零写副作用，交 latest()/list() 既有路径处理）。
+        let mut latest: Option<(Checkpoint, chrono::DateTime<chrono::Utc>)> = None;
+        if let Ok(files) = fs::read_dir(&path) {
+            for file in files.flatten() {
+                let fp = file.path();
+                if fp.is_dir() || fp.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let Ok(bytes) = fs::read(&fp) else {
+                    continue;
+                };
+                if let Ok(cp) = serde_json::from_slice::<Checkpoint>(&bytes) {
+                    match &latest {
+                        None => latest = Some((cp.clone(), cp.saved_at)),
+                        Some((_, ts)) => {
+                            if cp.saved_at > *ts {
+                                latest = Some((cp.clone(), cp.saved_at));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let expired = match latest {
+            Some((cp, saved_at)) => {
+                if !cp.terminal {
+                    continue;
+                }
+                stale_anchor(
+                    Some(std::time::SystemTime::from(saved_at)),
+                    &path,
+                    now,
+                    max_age,
+                )
+            }
+            // 无可解析 checkpoint：回落目录 mtime 闸。
+            None => stale_anchor(None, &path, now, max_age),
+        };
+        if expired && nemesis_utils::fsutil::remove_dir_all_resilient(&path) {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// 锚点按龄判定：锚点缺席回落目录 mtime；无锚点或未来时间戳（时钟
+/// 偏斜）保守视为新鲜。
+fn stale_anchor(
+    anchor: Option<std::time::SystemTime>,
+    dir: &Path,
+    now: std::time::SystemTime,
+    max_age: std::time::Duration,
+) -> bool {
+    let fresh = match anchor {
+        Some(t) => now.duration_since(t).ok().map(|age| age < max_age),
+        None => dir
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .map(|age| age < max_age),
+    };
+    !fresh.unwrap_or(true)
+}
+
 #[cfg(test)]
 mod tests;

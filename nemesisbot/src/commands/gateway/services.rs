@@ -700,6 +700,10 @@ pub(crate) async fn init_services(
                 tokio::task::spawn_blocking(move || {
                     let tool =
                         crate::board_asset_tool::BoardAssetTool::new(verify_home.join("workspace"));
+                    // 崩溃孤儿 .part 先清（横扫四轮）：进行中的下载 mtime
+                    // 新鲜不受影响，残留按 24h 闸摘除后再做实体核验。
+                    let stale_parts =
+                        tool.sweep_stale_parts(crate::board_asset_tool::PART_STALE_TTL);
                     match tool.verify_cached_assets() {
                         Ok((checked, quarantined)) if quarantined > 0 => {
                             warn!(
@@ -716,6 +720,12 @@ pub(crate) async fn init_services(
                         Err(e) => {
                             warn!("[Gateway] Board asset cache verify skipped: {e}");
                         }
+                    }
+                    if stale_parts > 0 {
+                        info!(
+                            "[Gateway] Board asset cache: {stale_parts} stale .part swept \
+                             (crash orphans, 24h gate)"
+                        );
                     }
                 });
 

@@ -427,6 +427,42 @@ impl GatewayCtx {
             }
             migrate_legacy_workflow_dir(&home, &workflow_executions_dir, &workflow_checkpoints_dir);
 
+            // 横扫五轮（2026-11-06）：workflow 执行记录与 checkpoint 按龄清扫。
+            // executions/*.jsonl（一执行一文件）与 checkpoints/{exec}/（terminal
+            // 旗标快照 + 每层 hook 快照）此前只写不删——persistence 的
+            // cleanup/delete 与 checkpoint store 的 delete API 均零生产调用。
+            // 只清终态执行（Completed/Failed/Cancelled 且 ended_at/saved_at 超
+            // 龄）；Pending/Running/Waiting 永不删——human_review 可挂起任意
+            // 久，纯 mtime 闸会误删合法挂起执行。TTL 7 天对齐 session_logs /
+            // rpc_cache 口径；每日一拍（首拍 = 启动即扫）。
+            const WORKFLOW_SWEEP_TTL: std::time::Duration =
+                std::time::Duration::from_secs(7 * 24 * 3600);
+            let sweep_exec_dir = workflow_executions_dir.clone();
+            let sweep_cp_root = workflow_root.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await; // 首 tick 立即返回 = 启动即扫
+                    let exec_removed = nemesis_workflow::persistence::sweep_stale_execution_files(
+                        &sweep_exec_dir,
+                        WORKFLOW_SWEEP_TTL,
+                    );
+                    let cp_removed =
+                        nemesis_workflow::checkpoint::file_store::sweep_stale_checkpoint_dirs(
+                            &sweep_cp_root,
+                            WORKFLOW_SWEEP_TTL,
+                        );
+                    if exec_removed + cp_removed > 0 {
+                        info!(
+                            "[Gateway] Workflow sweep removed {} stale execution files and {} \
+                             stale checkpoint dirs (TTL 7d, terminal executions only)",
+                            exec_removed, cp_removed
+                        );
+                    }
+                }
+            });
+
             workflow_tool_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
             let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated_with_dirs(
                 llm_provider.clone(),
