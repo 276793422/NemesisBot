@@ -41,6 +41,16 @@ type reviewOutput struct {
 	} `json:"experience"`
 	NeedEvidence    *bool  `json:"need_evidence,omitempty"`
 	EvidenceRequest string `json:"evidence_request,omitempty"`
+	// 跨轮缺口清账（2026-11-05 机械对账闸配套）：提示词「待清账缺口」注入
+	// 段在场时逐条处置清单内编号；段缺席 = 旧格式，缺字段宽容降级。
+	GapClosure []gapDisposition `json:"gap_closure,omitempty"`
+}
+
+// gapDisposition 对应宿主 ReviewOutput::GapDisposition（serde 同名序列化）。
+type gapDisposition struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Evidence string `json:"evidence,omitempty"`
 }
 
 func NewTestAIReview() *TestAIReview { return &TestAIReview{} }
@@ -55,9 +65,10 @@ func (m *TestAIReview) Process(messages []Message) string {
 	// 锚点（原验收标准 + 证据），先命中证据锚点才能定案。
 	if strings.Contains(input, "<SELFCHK_EVIDENCE_OK>") {
 		return reviewMarshal(reviewOutput{
-			Verdict: "PASS",
-			Reasons: []string{"执行节点取证回报与验收标准逐项对照成立（二段验收，锚点 SELFCHK_EVIDENCE_OK）"},
-			Gap:     "",
+			Verdict:    "PASS",
+			Reasons:    []string{"执行节点取证回报与验收标准逐项对照成立（二段验收，锚点 SELFCHK_EVIDENCE_OK）"},
+			Gap:        "",
+			GapClosure: closureFor(scanPromptLedger(input), true),
 		})
 	}
 
@@ -70,9 +81,10 @@ func (m *TestAIReview) Process(messages []Message) string {
 		// M4.5 蒸馏链路：PASS + 经验槽位（scope 固定 t29auth——T29 派发
 		// 注入的检索键，任务文本含同名词即命中）。
 		return reviewMarshal(reviewOutput{
-			Verdict: "PASS",
-			Reasons: []string{"自检结果与交付物清单对照验收标准成立"},
-			Gap:     "",
+			Verdict:    "PASS",
+			Reasons:    []string{"自检结果与交付物清单对照验收标准成立"},
+			Gap:        "",
+			GapClosure: closureFor(scanPromptLedger(input), true),
 			Experience: &struct {
 				Category string `json:"category"`
 				Scope    string `json:"scope"`
@@ -85,34 +97,109 @@ func (m *TestAIReview) Process(messages []Message) string {
 		})
 	case strings.Contains(input, "<REVIEW_UNSURE>"):
 		return reviewMarshal(reviewOutput{
-			Verdict: "UNSURE",
-			Reasons: []string{"验收标准无法客观判定（测试锚点 REVIEW_UNSURE）"},
-			Gap:     "",
+			Verdict:    "UNSURE",
+			Reasons:    []string{"验收标准无法客观判定（测试锚点 REVIEW_UNSURE）"},
+			Gap:        "",
+			GapClosure: closureFor(scanPromptLedger(input), false),
 		})
 	case strings.Contains(input, "<REVIEW_NEED_EVIDENCE>"):
 		// P4 B2b 一段验收：证据不足挂起——need_evidence + 取证请求指示
 		// worker 回报携带 <SELFCHK_EVIDENCE_OK>（命中上方二段 PASS 分支）。
 		need := true
 		return reviewMarshal(reviewOutput{
-			Verdict: "UNSURE",
-			Reasons: []string{"验收标准无法从交付物清单客观判定，需要执行节点补充证据（测试锚点 REVIEW_NEED_EVIDENCE）"},
-			Gap:     "",
+			Verdict:         "UNSURE",
+			Reasons:         []string{"验收标准无法从交付物清单客观判定，需要执行节点补充证据（测试锚点 REVIEW_NEED_EVIDENCE）"},
+			Gap:             "",
+			GapClosure:      closureFor(scanPromptLedger(input), false),
 			NeedEvidence:    &need,
 			EvidenceRequest: "逐项回报交付落实情况与关键输出原文，回报末尾附带标记 <SELFCHK_EVIDENCE_OK> 表示取证完成。",
 		})
 	case strings.Contains(input, "<REVIEW_FAIL>"):
 		return reviewMarshal(reviewOutput{
-			Verdict: "FAIL",
-			Reasons: []string{"交付物清单与验收标准对不上（测试锚点 REVIEW_FAIL）"},
-			Gap:     "验收标准要求的内容未出现在交付物清单：T28 差距锚点",
+			Verdict:    "FAIL",
+			Reasons:    []string{"交付物清单与验收标准对不上（测试锚点 REVIEW_FAIL）"},
+			Gap:        "验收标准要求的内容未出现在交付物清单：T28 差距锚点",
+			GapClosure: closureFor(scanPromptLedger(input), false),
 		})
 	default:
 		return reviewMarshal(reviewOutput{
-			Verdict: "PASS",
-			Reasons: []string{"自检结果与交付物清单对照验收标准成立"},
-			Gap:     "",
+			Verdict:    "PASS",
+			Reasons:    []string{"自检结果与交付物清单对照验收标准成立"},
+			Gap:        "",
+			GapClosure: closureFor(scanPromptLedger(input), true),
 		})
 	}
+}
+
+// scanPromptLedger 提取验收提示词「待清账缺口」注入段（宿主
+// render_gap_ledger_prompt 专属节）里的缺口编号（- G<n>: 行，条目紧连）。
+// 不扫线程里旧 ❌ 评论的历史清单——结转清单每轮重新编号，历史编号与本轮
+// prior 可能不同，多收会被宿主 check_gap_closure 判「虚构编号」。段缺席
+// （无待清账缺口）返回空，输出不带 gap_closure（缺字段 = 旧格式宽容降级）。
+func scanPromptLedger(input string) []string {
+	ids := []string{}
+	seen := map[string]bool{}
+	inSection := false
+	collecting := false
+	for _, line := range strings.Split(input, "\n") {
+		t := strings.TrimSpace(line)
+		if !inSection {
+			if strings.Contains(t, "## 待清账缺口") {
+				inSection = true
+			}
+			continue
+		}
+		if strings.HasPrefix(t, "- G") {
+			rest := strings.TrimPrefix(t, "- G")
+			colon := strings.Index(rest, ":")
+			if colon < 0 {
+				continue
+			}
+			num := strings.TrimSpace(rest[:colon])
+			if num == "" {
+				continue
+			}
+			digit := true
+			for i := 0; i < len(num); i++ {
+				if num[i] < '0' || num[i] > '9' {
+					digit = false
+					break
+				}
+			}
+			if !digit {
+				continue
+			}
+			collecting = true
+			id := "G" + num
+			if !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+			continue
+		}
+		if collecting {
+			break // 连续条目段结束（renderer 保证条目紧连）
+		}
+	}
+	return ids
+}
+
+// closureFor 按归宿形态出账：closed 全部附确定性证据（机械闸要求
+// closed/obsolete 必填 evidence），open 免证据。
+func closureFor(ids []string, closed bool) []gapDisposition {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]gapDisposition, 0, len(ids))
+	for _, id := range ids {
+		d := gapDisposition{ID: id, Status: "open"}
+		if closed {
+			d.Status = "closed"
+			d.Evidence = "交付文本命中验收锚点、变更集已合并，缺口已消除（review 桩确定性清账）"
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 func (m *TestAIReview) Delay() time.Duration { return 0 }
