@@ -655,12 +655,20 @@ impl RpcServer {
             }),
         );
 
-        // ListActions handler
-        self.register_handler("list_actions", Box::new(|_payload| {
-            Ok(serde_json::json!({
-                "actions": ["ping", "get_info", "get_capabilities", "list_actions", "peer_chat", "peer_chat_callback"],
-            }))
-        }));
+        // ListActions handler — 动态枚举 handlers 容器（单一真相源）。
+        // 旧实现硬编码 6 个名字，与后续覆盖注册（cluster tasks.rs / gateway）漂移：
+        // hello、query_task_result、confirm_task_delivery 等真实 handler 从不出现。
+        // 闭包持有同一 Arc 的克隆，任何 register_handler 立即反映到下一次查询。
+        let handlers_snapshot = Arc::clone(&self.handlers);
+        self.register_handler(
+            "list_actions",
+            Box::new(move |_payload| {
+                let map = handlers_snapshot.read();
+                let mut names: Vec<String> = map.keys().cloned().collect();
+                names.sort();
+                Ok(serde_json::json!({ "actions": names }))
+            }),
+        );
 
         // peer_chat default handler — placeholder that returns an ACK.
         //

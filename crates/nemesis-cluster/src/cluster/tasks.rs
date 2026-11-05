@@ -598,8 +598,10 @@ impl Cluster {
     /// Register basic RPC handlers (ping, info, etc.).
     ///
     /// This can be called directly in daemon mode where RPCChannel is not
-    /// available. Registers: ping, get_capabilities, get_info, list_actions,
-    /// hello, and other default handlers.
+    /// available. Registers: ping, get_capabilities, get_info, hello,
+    /// query_task_result, confirm_task_delivery and other default handlers.
+    /// (list_actions is a RpcServer default that dynamically enumerates the
+    /// handler map — see rpc/server.rs — so it is not re-registered here.)
     ///
     /// Mirrors Go's `RegisterBasicHandlers() error`.
     pub fn register_basic_handlers(&self) -> Result<(), String> {
@@ -697,19 +699,10 @@ impl Cluster {
             }),
         )?;
 
-        // list_actions
-        let node_id = self.node_id.clone();
-        self.register_rpc_handler(
-            "list_actions",
-            Box::new(move |_payload| {
-                let schemas = crate::actions_schema::builtin_schemas();
-                let actions: Vec<String> = schemas.iter().map(|s| s.action.to_string()).collect();
-                Ok(serde_json::json!({
-                    "node_id": node_id,
-                    "actions": actions,
-                }))
-            }),
-        )?;
+        // list_actions 不在此覆盖：RpcServer 默认 handler 已动态枚举 handlers 容器
+        // （rpc/server.rs 单一真相源）。旧覆盖版走 actions_schema::builtin_schemas()，
+        // 与实际注册面漂移（含未注册的 forge_share/status/llm_proxy、漏 hello 等），
+        // 且 schema 输出形态在仓内零消费方，已删除。
 
         // hello
         let node_id = self.node_id.clone();
