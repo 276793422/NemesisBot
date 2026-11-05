@@ -3,8 +3,10 @@ use super::*;
 /// degraded 注册表按 kind 覆盖 detail（「最新现场」语义，degraded.rs 12-14 行）。
 /// 本模块触发 kind="chat_log" 失败登记的用例，若 report→snapshot 窗口与他方
 /// 报告交叠，自己的 tag 会被他方 detail 覆盖（2026-11-06 coverage job 连续
-/// 两次实录：opfail tag 蒸发 → 回归锁假红）。模块级互斥把登记敏感用例的
-/// 报告窗口串行化——只护登记窗口本身，不碰其余用例的并行度。
+/// 实录：opfail tag 蒸发 → 回归锁假红）。模块级互斥把登记敏感用例的报告
+/// 窗口串行化——只护模块内已知报告方；模块外的并行报告方（3550 用例全局
+/// 并行，无法逐一枚举）由回归锁的采样窗兜底，见
+/// test_write_chat_log_rows_open_failure_reports_degraded 注。
 static DEGRADED_REPORT_SER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
@@ -1090,18 +1092,38 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
         "content": "x",
         "timestamp": "2026-10-30T00:00:00+08:00"
     })];
-    // 报告窗口互斥（见文件顶 DEGRADED_REPORT_SER 注）：write 的 open 失败
-    // 登记与 snapshot 断言之间不许他方 chat_log 报告插入覆盖 tag。
+    // 报告窗口保护：模块内已知报告方由文件顶 DEGRADED_REPORT_SER 互斥锁住；
+    // 但注册表 detail 是「最新现场」语义（后到覆盖，degraded.rs 12-14 行），
+    // 全 crate 3550 用例并行下模块外的他方 chat_log 失败报告仍可在本测试
+    // report 与断言之间覆盖 tag（CI coverage 连续实录，模块互斥不足治本）。
+    // 登记 happen-before 返回 0 是铁的事实，故采样窗内 tag 出现过即算成立；
+    // 整窗未现 = 真回归，失败消息附当前条目自证（下轮失败直接点名覆盖者）。
     let _ser = DEGRADED_REPORT_SER
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     assert_eq!(write_chat_log_rows(&key, &rows), 0, "open 失败 = 0 行");
-    // 降级登记表有痕（详情带本测试独有 tag 路径段，避开并行测试噪声）。
-    assert!(
-        nemesis_utils::degraded::snapshot()
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+    let mut tag_seen = false;
+    let mut last_details: Vec<String> = Vec::new();
+    loop {
+        let chat: Vec<String> = nemesis_utils::degraded::snapshot()
             .iter()
-            .any(|d| d.kind == "chat_log" && d.detail.contains(&tag)),
-        "fork copy open 失败必须进降级登记表"
+            .filter(|d| d.kind == "chat_log")
+            .map(|d| d.detail.clone())
+            .collect();
+        if chat.iter().any(|d| d.contains(&tag)) {
+            tag_seen = true;
+            break;
+        }
+        last_details = chat;
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(
+        tag_seen,
+        "fork copy open 失败必须进降级登记表（采样窗内未见；当前 chat_log 条目：{last_details:?}）"
     );
     drop(_ser);
     std::fs::remove_dir(&lp).unwrap();
