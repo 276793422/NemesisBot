@@ -208,6 +208,15 @@ fn hex_decode_32(hex: &str) -> Result<Vec<u8>, String> {
     if hex.len() != 64 {
         return Err(format!("expected 64 hex chars, got {}", hex.len()));
     }
+    // BUG-20261105-036：非 ASCII 输入（字节数恰为 64 但含多字节字符）会让
+    // 下方字节切片落在 char boundary 之外 panic——模块不变量是「损坏内容
+    // 诚实 Err 绝不 panic」（BUG-20261105-035 同族：skills signer hex_decode）。
+    if !hex.is_ascii() {
+        return Err(format!(
+            "expected 64 ASCII hex chars, got {} bytes containing non-ASCII",
+            hex.len()
+        ));
+    }
     (0..32)
         .map(|i| {
             u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
@@ -244,10 +253,13 @@ pub fn load_or_create_secret(path: &std::path::Path) -> Result<Vec<u8>, String> 
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes).map_err(|e| format!("generate asset secret: {e}"))?;
     let hex = hex_encode(&bytes);
+    // BUG-20261105-036：签名熵落盘走 write_file_atomic 0o600（BUG-20261105-035
+    // 同族：凭据面纪律——裸 fs::write 按 umask 常为 0644 世界可读 + 中断撕裂）。
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    std::fs::write(path, &hex).map_err(|e| format!("write {}: {e}", path.display()))?;
+    nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), hex.as_bytes(), 0o600)
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(bytes.to_vec())
 }
 
