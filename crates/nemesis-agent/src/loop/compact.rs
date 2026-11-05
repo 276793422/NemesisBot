@@ -386,6 +386,14 @@ pub(crate) fn summarize_advance_worthwhile(
     let max_msg_tokens = summarizer_max_msg_tokens(context_window);
     let start = c.max(1).min(history.len());
     let end = new_c.min(history.len());
+    // 边界倒退（BUG-20261105-009）：`new_c > c` 是内置触发闸，但策略槽
+    // `Compact`（WASM 组件意志，契约=强制压缩无前置条件）绕过它——rewind
+    // 截断/config 热改 keep_recent_tokens 后 new_c < c 真实可达，切片
+    // `history[start..end]` 直接 panic 炸掉整个 turn。倒退 = 无新增可折叠
+    // 内容，与空切片同语义返回 false（跳过调用、不记失败）。
+    if end <= start {
+        return false;
+    }
     history[start..end].iter().any(|t| {
         (t.role == "user" || t.role == "assistant")
             && crate::session::estimate_tokens(&t.content) <= max_msg_tokens

@@ -23,8 +23,10 @@
 //! max_turns 1）、传输失败即时 Err 不重试、系统终态文本不重试防污染、
 //! 解析失败回灌自纠 ≤2 次（共 3 轮）。
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, LazyLock};
 
+use parking_lot::Mutex;
 use tracing::{info, warn};
 
 use crate::board_review::{BoardReviewDeps, is_system_terminal_text};
@@ -61,9 +63,21 @@ struct ProposalState {
     version: u64,
 }
 
+/// 剥离 assisted 建议评论的 @提及前缀（BUG-20261105-010）：assisted 模式
+/// 落盘形态是 `@<creator> {PROPOSAL_COMMENT_PREFIX}…`（mention 必须在
+/// 开头才有提醒语义），识别处 `starts_with` 对其直接失配 → 去重闸永久
+/// 失效 + 版本号恒 v1。只剥一次 `@<id> ` 形态，无前缀原样返回。
+fn strip_assisted_mention(content: &str) -> &str {
+    if let Some((_, rest)) = content.strip_prefix('@').and_then(|s| s.split_once(' ')) {
+        return rest;
+    }
+    content
+}
+
 /// 扫描根单评论得出建议在声状态。两类识别标记：建议评论
 ///（`PROPOSAL_COMMENT_PREFIX`）与策略闸拒绝评论（[`BLOCKED_COMMENT_PREFIX`]），
-/// 都是 system 评论；admin 评论（按插入序）出现即接管。
+/// 都是 system 评论（建议评论允许带 assisted @提及前缀，剥掉后比对）；
+/// admin 评论（按插入序）出现即接管。
 fn proposal_state(
     store: &nemesis_board::BoardStore,
     root_id: i64,
@@ -73,16 +87,13 @@ fn proposal_state(
     let mut last_admin: Option<i64> = None;
     let mut proposal_count: u64 = 0;
     for c in &comments {
+        let body = strip_assisted_mention(&c.content);
         let is_replan = c.ctype == nemesis_board::CommentType::System
-            && (c
-                .content
-                .starts_with(nemesis_board::replan::PROPOSAL_COMMENT_PREFIX)
-                || c.content.starts_with(BLOCKED_COMMENT_PREFIX));
+            && (body.starts_with(nemesis_board::replan::PROPOSAL_COMMENT_PREFIX)
+                || body.starts_with(BLOCKED_COMMENT_PREFIX));
         if is_replan {
             last_replan = Some(c.id);
-            if c.content
-                .starts_with(nemesis_board::replan::PROPOSAL_COMMENT_PREFIX)
-            {
+            if body.starts_with(nemesis_board::replan::PROPOSAL_COMMENT_PREFIX) {
                 proposal_count += 1;
             }
         }
@@ -99,6 +110,34 @@ fn proposal_state(
         pending,
         version: proposal_count + 1,
     })
+}
+
+// ---------- 起草 in-flight 去重（BUG-20261105-011）----------
+
+/// 起草中根单集合（进程内）。去重闸检查与建议落盘之间隔着分钟级 LLM
+/// 起草，评审 FAIL / sweep ticker / 收口评审等多触发源可在窗口内对同一
+/// 根单双过闸，各跑一次完整 LLM 后落两份重复建议（版本号同为 v1）。
+/// claim 在 root 解析后立刻占位（spawn 层只有 trigger_issue_id 拿不到
+/// root.id，必须放 draft 主体内），guard RAII 释放（`?` 早退路径覆盖）。
+static REPLAN_INFLIGHT: LazyLock<Mutex<HashSet<i64>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+struct ReplanInflightGuard(i64);
+
+impl Drop for ReplanInflightGuard {
+    fn drop(&mut self) {
+        REPLAN_INFLIGHT.lock().remove(&self.0);
+    }
+}
+
+/// 尝试占位：插入成功返回 guard，已有在飞起草返回 None。
+fn claim_replan_inflight(root_id: i64) -> Option<ReplanInflightGuard> {
+    let mut g = REPLAN_INFLIGHT.lock();
+    if g.insert(root_id) {
+        Some(ReplanInflightGuard(root_id))
+    } else {
+        None
+    }
 }
 
 /// 触发点④ 候选扫描（sweep ticker 周期体检）：非终态单满足「直接子单
@@ -373,6 +412,20 @@ pub(crate) async fn draft_replan_proposal(
     };
     // 去重闸：最新建议/拒绝类系统评论比最新人工评论新 = 建议仍在声，
     // 不重复起草（人工表态后自动放行下一轮）。
+    // in-flight 去重（BUG-20261105-011）：去重闸读的是评论表，而本任务
+    // 的建议要等分钟级 LLM 起草完才落盘——窗口内并发触发（评审 FAIL 与
+    // sweep ticker 同根单齐发）会双双读到 pending=false。同根单同时只放
+    // 一个起草在飞，guard 在所有返回路径上 RAII 释放。
+    let _inflight = match claim_replan_inflight(root.id) {
+        Some(g) => g,
+        None => {
+            info!(
+                "[BoardReplan] {} 起草已在飞（并发触发去重），跳过本次",
+                root.number
+            );
+            return Ok(false);
+        }
+    };
     let state = proposal_state(store, root.id)?;
     if state.pending {
         info!(
