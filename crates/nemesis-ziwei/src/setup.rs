@@ -148,9 +148,15 @@ impl SetupInfo {
 }
 
 /// 完整向导状态 = 标量 + 分析缓存（缓存非 Clone，整体不 Clone）。
+///
+/// `reserved` 是预占标记（单一真相源）：select_target 在锁内插入的 pid=0
+/// 占位态 `reserved=true`，窗口期内 abort 诚实拒绝；attach 完成写回与
+/// analyze 重建态均为 `false`。不能用 `pid==0` 推断——gateway 重启后
+/// analyze 路径（get_or_insert_with）会合法重建 pid=0 态，该态允许 abort。
 struct SetupState {
     info: SetupInfo,
     analysis: Option<AnalysisCache>,
+    reserved: bool,
 }
 
 /// 配置期向导管理器（gateway 装配一个全局实例；CLI/bridge 经全局槽访问）。
@@ -182,6 +188,39 @@ impl SetupManager {
 
     fn state_mut(&self) -> std::sync::MutexGuard<'_, Option<SetupState>> {
         self.state.lock().unwrap()
+    }
+
+    /// 归属校验式清态：仅当当前态属于 `id` 时清空（并发 select_target
+    /// 预占回收路径防误清易主态——旧实现无条件 `*state = None`）。
+    /// 返回是否真的清了自己的态。
+    fn clear_state_if_owned(&self, id: &str) -> bool {
+        let mut guard = self.state_mut();
+        match guard.as_ref() {
+            Some(st) if st.info.profile_id == id => {
+                *guard = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 归属校验式写回：仅当当前态属于 `id` 时替换为完整态（reserved 落
+    /// false，预占窗口收口）。当前态不存在或已易主 → 返回 false 且**不
+    /// 插入**——旧实现无条件写回，会把已被并发 abort 清理过的 draft
+    /// 复活成僵尸活动态。
+    fn publish_state_if_owned(&self, id: &str, info: SetupInfo) -> bool {
+        let mut guard = self.state_mut();
+        match guard.as_ref() {
+            Some(st) if st.info.profile_id == id => {
+                *guard = Some(SetupState {
+                    info,
+                    analysis: None,
+                    reserved: false,
+                });
+                true
+            }
+            _ => false,
+        }
     }
 
     /// 取活跃状态标量面。内存态不在（gateway 重启）时从 draft.json 重建：
@@ -258,7 +297,9 @@ impl SetupManager {
                 }
                 let id = format!("zw-pro-d{}", chrono::Utc::now().timestamp_millis());
                 // pid=0 占位形态：窗口期内 require_live_info 消费方诚实拒绝
-                // （「重新 select_target」），不会拿假基址干真活。
+                // （「重新 select_target」），不会拿假基址干真活。reserved=
+                // true 是预占标记：窗口期内 abort 诚实拒绝（防误删预占者
+                // 正在写的 draft + 写回复活僵尸态）。
                 *st = Some(SetupState {
                     info: SetupInfo {
                         profile_id: id.clone(),
@@ -271,6 +312,7 @@ impl SetupManager {
                         file_sha256: String::new(),
                     },
                     analysis: None,
+                    reserved: true,
                 });
                 id
             };
@@ -280,7 +322,9 @@ impl SetupManager {
             {
                 Ok(v) => Ok(v),
                 Err(e) => {
-                    *self.state_mut() = None;
+                    // 归属校验式回收：窗口内状态易主（并发方抢占）时不清
+                    // 他人态（旧实现无条件清）。
+                    self.clear_state_if_owned(&id);
                     Err(e)
                 }
             }
@@ -353,27 +397,24 @@ impl SetupManager {
                 stale_action: Some("notify_user".into()),
             },
         };
-        let draft = draft_dir(workspace, &id);
-        std::fs::create_dir_all(&draft).map_err(|e| format!("建 draft 目录失败：{e}"))?;
-        save_draft(workspace, &profile)?;
-        save_draft_anchors(
-            workspace,
-            &AnchorSet {
-                profile_id: id.clone(),
-                anchors: Vec::new(),
-            },
-        )?;
+        let draft = init_draft_files(workspace, &profile)?;
 
         // attach 会话（指纹校验在 attach 链内；失败则回滚 draft）
         let manager = crate::session::global().ok_or_else(|| {
-            let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-            crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string()
+            rollback_draft_error(
+                &draft,
+                crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string(),
+                "",
+            )
         })?;
         let session = match manager.attach(&profile, pid).await {
             Ok(s) => s,
             Err(e) => {
-                let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-                return Err(format!("attach 失败（draft 已回滚）：{e}"));
+                return Err(rollback_draft_error(
+                    &draft,
+                    format!("attach 失败：{e}"),
+                    "（draft 已回滚）",
+                ));
             }
         };
 
@@ -387,10 +428,18 @@ impl SetupManager {
             exe_name: exe_name.clone(),
             file_sha256: sha,
         };
-        *self.state_mut() = Some(SetupState {
-            info: info.clone(),
-            analysis: None,
-        });
+        // 归属校验式写回（reserved 落 false = 预占窗口收口）：窗口内状态
+        // 被并发方动过（已易主/被清）→ 诚实作废，回滚自己刚 attach 的会话
+        // 与 draft 面。旧实现无条件写回，会把被并发 abort 清理过的 draft
+        // 复活成僵尸活动态 + 注入会话泄漏。
+        if !self.publish_state_if_owned(&id, info.clone()) {
+            let _ = manager.detach(&id).await; // 已卸载=幂等成功
+            return Err(rollback_draft_error(
+                &draft,
+                "初始化期间向导状态已易主，本次 select_target 作废".to_string(),
+                "（会话与 draft 已回滚）",
+            ));
+        }
         tracing::info!(
             "[ziwei][setup] draft {id} 选定目标 pid={pid} base=0x{base:X} {exe_name}（{}）",
             session.arch
@@ -643,9 +692,14 @@ impl SetupManager {
                 }
             }
         }
-        std::fs::write(
-            draft_dir(workspace, &info.profile_id).join("analysis.json"),
-            serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?,
+        let analysis_bytes = serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?;
+        // 原子写（横扫族 C 二轮，2026-11-06）：与 draft.json/anchors.json 同惯例。
+        nemesis_utils::file::write_file_atomic(
+            &draft_dir(workspace, &info.profile_id)
+                .join("analysis.json")
+                .to_string_lossy(),
+            &analysis_bytes,
+            0o644,
         )
         .map_err(|e| format!("analysis.json 落盘失败：{e}"))?;
 
@@ -656,6 +710,7 @@ impl SetupManager {
         let st = guard.get_or_insert_with(|| SetupState {
             info: info.clone(),
             analysis: None,
+            reserved: false,
         });
         st.info = info.clone();
         st.analysis = Some(AnalysisCache {
@@ -2227,6 +2282,12 @@ impl SetupManager {
             .save(&profile, Some(&anchor_set))
             .map_err(|e| format!("profile 落盘失败：{e}"))?;
 
+        // 清理面降级注记（横扫族 C，2026-11-06）：save 已落盘不可回滚，
+        // 清理失败不把 commit 报成失败（假失败比静默残留更糟），但必须
+        // WARN + 返回值注记诚实暴露——残留 draft 会挡死新向导，静默吞掉
+        // 用户毫无线索（旧实现 `let _`）。
+        let mut cleanup_warnings: Vec<String> = Vec::new();
+
         // setup 快照迁到 profile 名下（M5 找回消费）
         let setup_dir = workspace.join("ziwei").join("setup").join(&info.profile_id);
         let setup_snaps = setup_dir.join("snapshots");
@@ -2234,20 +2295,35 @@ impl SetupManager {
         if setup_snaps.is_dir() {
             let _ = std::fs::create_dir_all(&target_snaps);
             if let Err(e) = std::fs::rename(&setup_snaps, &target_snaps) {
-                tracing::warn!(
-                    "[ziwei][setup] 快照迁移失败（{} → {}）：{e}；setup 目录保留",
+                let msg = format!(
+                    "快照迁移失败（{} → {}）：{e}；setup 目录保留",
                     setup_snaps.display(),
                     target_snaps.display()
                 );
-            } else {
-                let _ = nemesis_utils::fsutil::remove_dir_all_retry(&setup_dir);
+                tracing::warn!("[ziwei][setup] {msg}");
+                cleanup_warnings.push(msg);
+            } else if let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&setup_dir) {
+                let msg = format!("setup 目录清理失败（{}）：{e}", setup_dir.display());
+                tracing::warn!("[ziwei][setup] {msg}");
+                cleanup_warnings.push(msg);
             }
         }
 
         // draft 目录清除（anchors/profile 已在 profiles/ 落盘）
         let draft = draft_dir(workspace, &info.profile_id);
-        let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-        *self.state_mut() = None;
+        if let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&draft) {
+            let msg = format!(
+                "draft 目录清理失败（{}）：{e}；请手工删除，否则会挡住新向导",
+                draft.display()
+            );
+            tracing::warn!("[ziwei][setup] {msg}");
+            cleanup_warnings.push(msg);
+        }
+        // 归属校验式清态（与预占竞态修复同一不变量）：require_info 到此处
+        // 之间状态若被并发方动过（abort 清掉后新 select_target 预占），不得
+        // 无条件清掉他人态——旧实现无条件 None 会打断并发 select_target 的
+        // 预占窗口。
+        self.clear_state_if_owned(&info.profile_id);
         tracing::info!(
             "[ziwei][setup] draft {} 已提交为正式 profile（{} 函数 / {} 工具 / {} 锚）",
             info.profile_id,
@@ -2261,6 +2337,7 @@ impl SetupManager {
             "tools": profile.tools.len(),
             "anchors": anchor_set.anchors.len(),
             "profile_dir": store.dir(&info.profile_id).display().to_string(),
+            "cleanup_warnings": cleanup_warnings,
         }))
     }
 
@@ -2268,7 +2345,19 @@ impl SetupManager {
     /// gateway 重启后的孤儿 draft 也允许清理）。
     pub async fn abort(&self, workspace: &Path) -> Result<serde_json::Value, String> {
         let info = match self.state.lock().unwrap().as_ref() {
-            Some(st) => st.info.clone(),
+            Some(st) => {
+                // 预占窗口期（select_target 正在锁外建 draft/attach）：此刻
+                // abort 会删预占者正在写的 draft 目录、清态后被写回复活成
+                // 僵尸活动态。诚实拒绝——等 select_target 返回（成功后
+                // abort 走正常路径，失败后状态已被回收）。
+                if st.reserved {
+                    return Err(
+                        "向导正在初始化（select_target 预占中）：等当前 select_target 返回成功或失败后再 abort"
+                            .to_string(),
+                    );
+                }
+                st.info.clone()
+            }
             None => match latest_draft_id(workspace) {
                 Some(id) => SetupInfo {
                     profile_id: id,
@@ -2288,11 +2377,28 @@ impl SetupManager {
         {
             let _ = manager.detach(&info.profile_id).await; // 已卸载=幂等成功
         }
-        let _ = nemesis_utils::fsutil::remove_dir_all_retry(draft_dir(workspace, &info.profile_id));
-        let _ = nemesis_utils::fsutil::remove_dir_all_retry(
-            workspace.join("ziwei").join("setup").join(&info.profile_id),
-        );
-        *self.state_mut() = None;
+        // 删除失败必须说话（横扫族 C，2026-11-06）：旧实现 `let _` 静默——
+        // 残留 draft 会挡死新向导而用户看到的是「已放弃」假成功。透传 Err
+        // 且不清态（幂等可重试：detach 已卸载是幂等成功、目录已删是
+        // NotFound=Ok）。
+        let draft = draft_dir(workspace, &info.profile_id);
+        nemesis_utils::fsutil::remove_dir_all_retry(&draft).map_err(|e| {
+            format!(
+                "draft 目录清理失败（{}）：{e}；向导未收尾，可重试 abort",
+                draft.display()
+            )
+        })?;
+        let setup_dir = workspace.join("ziwei").join("setup").join(&info.profile_id);
+        nemesis_utils::fsutil::remove_dir_all_retry(&setup_dir).map_err(|e| {
+            format!(
+                "setup 目录清理失败（{}）：{e}；向导未收尾，可重试 abort",
+                setup_dir.display()
+            )
+        })?;
+        // 归属校验式清态（与预占竞态修复同一不变量）：读态与清态之间状态
+        // 被并发方替换时不清他人态（防御性——当前锁语义下 select_target 被
+        // draft 在册检查挡住，此窗口理论不可达，但不给未来留无条件写点）。
+        self.clear_state_if_owned(&info.profile_id);
         tracing::info!(
             "[ziwei][setup] draft {} 已放弃（会话卸载 + 目录清理）",
             info.profile_id
@@ -2330,6 +2436,23 @@ fn draft_json_path(workspace: &Path, profile_id: &str) -> PathBuf {
     draft_dir(workspace, profile_id).join("draft.json")
 }
 
+/// draft 回滚 + 诚实报错组装（横扫族 C 二轮，2026-11-06）：回滚失败时
+/// 「已回滚」类断言不得谎报——主错误保首位；回滚失败 WARN 留痕 + 注记
+/// 追加（残留 draft 可重试 abort 收尸：abort 无态时按 latest_draft_id
+/// 兜底拾取磁盘残留）。ok_suffix 仅在回滚成功时附加（如「（draft 已回滚）」）。
+fn rollback_draft_error(draft: &Path, base: String, ok_suffix: &str) -> String {
+    match nemesis_utils::fsutil::remove_dir_all_retry(draft) {
+        Ok(()) => format!("{base}{ok_suffix}"),
+        Err(e) => {
+            tracing::warn!("[ziwei][setup] draft 回滚失败（{}）：{e}", draft.display());
+            format!(
+                "{base}；draft 回滚失败（{}）：{e}，残留目录可重试 abort 收尸",
+                draft.display()
+            )
+        }
+    }
+}
+
 fn load_draft(workspace: &Path, profile_id: &str) -> Result<Profile, String> {
     let bytes = std::fs::read(draft_json_path(workspace, profile_id))
         .map_err(|e| format!("draft.json 读取失败（{profile_id}）：{e}"))?;
@@ -2338,8 +2461,39 @@ fn load_draft(workspace: &Path, profile_id: &str) -> Result<Profile, String> {
 
 fn save_draft(workspace: &Path, profile: &Profile) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(profile).map_err(|e| e.to_string())?;
-    std::fs::write(draft_json_path(workspace, &profile.profile_id), bytes)
-        .map_err(|e| format!("draft.json 写盘失败：{e}"))
+    // 原子写（横扫族 C 二轮，2026-11-06）：draft.json 是向导工作态真相源，
+    // 直写撕裂 → load_draft 解析失败 → 向导锁死；委托唯一权威 helper
+    //（对齐 ProfileStore 的 tmp+rename 惯例）。
+    nemesis_utils::file::write_file_atomic(
+        &draft_json_path(workspace, &profile.profile_id).to_string_lossy(),
+        &bytes,
+        0o644,
+    )
+    .map_err(|e| format!("draft.json 写盘失败：{e}"))
+}
+
+/// draft 三件套初始化（目录 + draft.json + 空 anchors.json）：任一步失败
+/// 即回滚整个 draft 目录后透传 Err——失败不留半成品（残留目录会被
+/// `latest_draft_id` 命中，挡死新向导，逼用户手工 abort 收尸）。与
+/// select_target_reserved 后续两个失败路径（会话管理器缺席 / attach 失败）
+/// 的清理对称。
+fn init_draft_files(workspace: &Path, profile: &Profile) -> Result<PathBuf, String> {
+    let id = &profile.profile_id;
+    let draft = draft_dir(workspace, id);
+    std::fs::create_dir_all(&draft).map_err(|e| format!("建 draft 目录失败：{e}"))?;
+    let saved = save_draft(workspace, profile).and_then(|_| {
+        save_draft_anchors(
+            workspace,
+            &AnchorSet {
+                profile_id: id.clone(),
+                anchors: Vec::new(),
+            },
+        )
+    });
+    if let Err(e) = saved {
+        return Err(rollback_draft_error(&draft, e, ""));
+    }
+    Ok(draft)
 }
 
 fn load_draft_anchors(workspace: &Path, profile_id: &str) -> Result<AnchorSet, String> {
@@ -2350,9 +2504,12 @@ fn load_draft_anchors(workspace: &Path, profile_id: &str) -> Result<AnchorSet, S
 
 fn save_draft_anchors(workspace: &Path, set: &AnchorSet) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(set).map_err(|e| e.to_string())?;
-    std::fs::write(
-        draft_dir(workspace, &set.profile_id).join("anchors.json"),
-        bytes,
+    nemesis_utils::file::write_file_atomic(
+        &draft_dir(workspace, &set.profile_id)
+            .join("anchors.json")
+            .to_string_lossy(),
+        &bytes,
+        0o644,
     )
     .map_err(|e| format!("anchors.json 写盘失败：{e}"))
 }

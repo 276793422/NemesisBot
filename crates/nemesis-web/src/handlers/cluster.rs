@@ -347,7 +347,14 @@ fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), S
     let mut cfg: serde_json::Value = if path.exists() {
         let content = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| format!("failed to read cluster config: {}", e))?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        // 横扫族 C 六轮（2026-11-06）：损坏静默当 `{}` 再回写 = 系统参数层
+        // （port/rpc_port/token 等）整段覆盖丢失——诚实拒绝。
+        serde_json::from_str(&content).map_err(|e| {
+            format!(
+                "cluster config parse failed (write refused, file intact): {}",
+                e
+            )
+        })?
     } else {
         serde_json::json!({})
     };
@@ -2258,7 +2265,13 @@ impl ClusterHandler {
         let mut cfg: serde_json::Value = if path.exists() {
             let content = nemesis_utils::fsutil::read_config_string(&path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
-            serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+            // 同 update_cluster_config_roaming：损坏不许静默 `{}` 回写毁参数层。
+            serde_json::from_str(&content).map_err(|e| {
+                format!(
+                    "cluster config parse failed (write refused, file intact): {}",
+                    e
+                )
+            })?
         } else {
             serde_json::json!({})
         };

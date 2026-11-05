@@ -175,11 +175,33 @@ impl Registry {
             return;
         }
         let arts = self.artifacts.lock();
-        if let Ok(json) = serde_json::to_string_pretty(&*arts) {
-            let tmp = atomic_tmp_path(&self.config.index_path);
-            if std::fs::write(&tmp, &json).is_ok() {
-                let _ = std::fs::rename(&tmp, &self.config.index_path);
+        // 横扫族 C 四轮（2026-11-06）：同步自动持久化失败不再静默——rename
+        // 失败 = 内存态有、盘上 index 陈旧，重启丢注册且 tmp 孤儿（计数器
+        // 唯一名不会覆盖）无任何线索。三臂（序列化/tmp 写/rename）失败均
+        // WARN 留痕；rename 失败时清掉 tmp 残留（resilient，其内部 WARN 兜底）。
+        let json = match serde_json::to_string_pretty(&*arts) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(error = %e, "[ForgeRegistry] index serialize failed — auto-persist skipped");
+                return;
             }
+        };
+        let tmp = atomic_tmp_path(&self.config.index_path);
+        if let Err(e) = std::fs::write(&tmp, &json) {
+            tracing::warn!(
+                path = %self.config.index_path,
+                error = %e,
+                "[ForgeRegistry] index tmp write failed — auto-persist skipped"
+            );
+            return;
+        }
+        if let Err(e) = std::fs::rename(&tmp, &self.config.index_path) {
+            tracing::warn!(
+                path = %self.config.index_path,
+                error = %e,
+                "[ForgeRegistry] index rename failed — on-disk index stale until next save"
+            );
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
         }
     }
 
