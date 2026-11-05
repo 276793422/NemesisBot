@@ -243,6 +243,86 @@ fn note_signal_roundtrip() {
     assert_eq!(after, Some(1234));
 }
 
+/// 修复⑤（2026-11-05 E2E 抓到）：auto 压缩成功采用后，provider 实报信号
+/// 必须作废（置 None）。实报描述的是**压缩前**整请求（含已被折叠进摘要的
+/// 前缀），对新状态失真——session_context_status 的
+/// `used = max(估算, 实报)` 与混合触发都会拿 stale 值把 used 顶回压缩前
+/// 水平（实测 covers=6/est=181 而徽标 pct=100）。None = 纯估算回落（
+/// note_compaction_provider_signal 既有语义），下一条消息的真实请求实报
+/// 重新注入。
+#[tokio::test]
+async fn auto_adoption_clears_stale_provider_signal() {
+    let (provider, _calls) = QueueProvider::boxed(vec![Ok("SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = keep_tokens_config("signalclear", 10);
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = low_estimate_history(); // 估算 74 < 75
+
+    agent_loop.note_compaction_provider_signal("s", 90); // 实报 90 ≥ 75 → 触发
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    let cache = instance
+        .get_summary_cache()
+        .expect("实报拉起触发，摘要应被采用");
+    assert_eq!(cache.covers_up_to, 7);
+    let stale = agent_loop
+        .compact_state
+        .lock()
+        .get("s")
+        .and_then(|s| s.last_provider_prompt_tokens);
+    assert_eq!(
+        stale, None,
+        "压缩成功采用后 provider 实报信号必须作废（stale 实报会把 used 顶回压缩前水平）"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// 修复⑤ force 臂：手动 /compact（force_compression）成功采用后同样作废
+/// stale 实报信号（force 与 auto 的成功点必须同语义）。
+#[tokio::test]
+async fn force_adoption_clears_stale_provider_signal() {
+    let (provider, _calls) = QueueProvider::boxed(vec![Ok("FORCE SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+
+    let instance = AgentInstance::new(test_config());
+    for i in 0..10 {
+        instance.add_user_message(&format!("msg_{i}")); // system + 10 = 11
+    }
+    agent_loop.note_compaction_provider_signal("s", 99999);
+
+    agent_loop.force_compression(&instance, "s").await;
+
+    let cache = instance.get_summary_cache().expect("force 摘要应被采用");
+    assert_eq!(cache.text, "FORCE SUMMARY");
+    let stale = agent_loop
+        .compact_state
+        .lock()
+        .get("s")
+        .and_then(|s| s.last_provider_prompt_tokens);
+    assert_eq!(
+        stale, None,
+        "force 压缩成功采用后 provider 实报信号必须作废"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // B2：无进展守卫
 // ---------------------------------------------------------------------------

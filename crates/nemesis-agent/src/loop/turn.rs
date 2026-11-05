@@ -328,6 +328,11 @@ impl AgentLoop {
         }
 
         let instance = self.get_or_create_instance(session_key);
+        // 2026-11-05 根修配套：装载时摘要快照。get_or_create_instance 无实
+        // 例池、总是新建并从 store 水合——装载快照即 store 当时的摘要态。
+        // turn 末持久化以「cache 相对装载是否变化」判定是否写摘要（见下方
+        // 持久化块注释）。
+        let summary_at_load = instance.get_summary_cache();
         let mut context = RequestContext::new(channel, chat_id, "agent", session_key);
         if is_cron_turn {
             // Round-5 fix: propagate cron origin so run_llm_loop's boundary
@@ -394,15 +399,27 @@ impl AgentLoop {
             // it AFTER would clobber the trim's adjustment and, for long
             // conversations (>MAX_STORED_MESSAGES), leave covers_up_to too large
             // so build_messages drops the verbatim tail.
-            match instance.get_summary_cache() {
-                Some(cache) => {
-                    store.set_summary(session_key, &cache.text);
-                    store.set_summary_covers_up_to(session_key, Some(cache.covers_up_to));
-                }
-                None => {
-                    store.set_summary(session_key, "");
-                    store.set_summary_covers_up_to(session_key, None);
-                }
+            // 2026-11-05 根修（压缩成果被抹）：摘要持久化从「无条件按本实例
+            // cache 写」改为「仅 cache 相对装载时变化才写」。cache 只有一条
+            // 变化路径：本 turn 内压缩成功（maybe_update_summary）——这正是
+            // 必须写回的场景。cache 与装载快照一致时，store 本来就是这个值
+            // （无实例池，装载即水合），写回是冗余；而 turn 进行中并发压缩
+            // （另一 turn 收尾触发或手动 /compact）可能已把**更新**的摘要写
+            // 入 store——无条件写回会用 stale 快照覆盖它：None 臂直接清空
+            // （15:01 自动压缩完成后 16ms 被「在么」turn 抹掉、17:05 手动压
+            // 缩被同机制抹掉，store 终态「全量历史+无摘要」=用户观测「压了
+            // 等于没压」），Some 臂则把 covers 回退到旧值。合法清空唯一路径
+            // 是 clear_session（它自己清 store，不经本块）；set_summary_cache
+            // (None) 生产零调用，cache 由 Some 变 None 不可达。
+            let cache_now = instance.get_summary_cache();
+            let cache_changed = match (&cache_now, &summary_at_load) {
+                (None, None) => false,
+                (Some(a), Some(b)) => a.covers_up_to != b.covers_up_to || a.text != b.text,
+                _ => true,
+            };
+            if let Some(cache) = cache_now.filter(|_| cache_changed) {
+                store.set_summary(session_key, &cache.text);
+                store.set_summary_covers_up_to(session_key, Some(cache.covers_up_to));
             }
 
             // Persist the full instance history (the store is the single source

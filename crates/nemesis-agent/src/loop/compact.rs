@@ -46,9 +46,6 @@ pub(crate) struct CompactState {
     /// 压缩注记按 [`CompactReason::StuckResume`] 档发（用户能看到「恢复」
     /// 而非以为一切照旧）。
     resumed_from_pause: bool,
-    /// W2：未知窗口停用注记的一次性闸（per-session
-    /// 发过不再发；限频之外的第二道防刷屏）。
-    suppressed_noticed: bool,
     /// 空转前缀一次性注记闸（2026-11-05 小窗口实测根修）：边界只覆盖
     /// system/超限轮（无可摘要内容）时跳过摘要并发一次性注记——不发注记
     /// 用户就面对「pct 长期 100% 却零解释」的无声态（本次事故的起点）。
@@ -78,8 +75,10 @@ const COMPACT_NO_PROGRESS_LIMIT: u32 = 2;
 
 /// N1（devtool-upgrade 阶段 1）：context_window 三级解析链的最后一级兜底。
 /// 历史 32000 对现代 128k+ 模型意味着 24000 token 就触发压缩（编码场景过早
-/// 失忆）——未配置且价目表未命中时按 128000 猜；猜大了也有既有溢出应急链
-/// （`context_length_exceeded` → `force_compression` → 重试）自愈。
+/// 失忆）——未配置且价目表未命中时按 128000 猜。2026-11-05 用户拍板：fallback
+/// 窗口下自动压缩**照常跑**（旧「窗口未知整条停用」形态废除）——猜大了有
+/// 既有溢出应急链（`context_length_exceeded` → `force_compression` → 重试）
+/// 自愈，猜小了只是早压不失忆，两个方向都比不压安全。
 pub const FALLBACK_CONTEXT_WINDOW: usize = 128_000;
 
 /// N1：三级 context_window 解析（纯函数，`AgentLoop` 与 CLI `model list` /
@@ -150,14 +149,10 @@ pub struct CompactTrigger {
     /// `"catalog"` / `"instance"`（实例窗口兜底 × 75%）/ `"fallback-128k"`
     /// （CLI 展示等无实例场景 × 75%；后两者 = 窗口来源 × 75%）。
     pub source: &'static str,
-    /// W2（2026-10-25 加固）：**窗口**来源（config/catalog/instance/
-    /// fallback-128k）。与 `source` 分离：用户压缩点（source="user"）下窗口
-    /// 另有来源；注记与 Dashboard 展示用窗口来源，不用触发点来源。
+    /// **窗口**来源（config/catalog/instance/fallback-128k）。与 `source`
+    /// 分离：用户压缩点（source="user"）下窗口另有来源；注记与 Dashboard
+    /// 展示用窗口来源，不用触发点来源。
     pub window_source: &'static str,
-    /// W2：true = 窗口未知（config+catalog 双 miss 且未设用户压缩点）——
-    /// 自动压缩停用（不猜着压）；手动 /compact 与 context_length_exceeded
-    /// 应急链不经过此判定，不受影响。
-    pub auto_suppressed: bool,
     /// Some(原值) = 用户压缩点超过真实窗口被钳到 window。想突破目录值先设
     /// `context_window`（L1 是用户显式意志）。
     pub clamped_from: Option<usize>,
@@ -179,9 +174,11 @@ pub fn resolve_compact_trigger(
 ) -> CompactTrigger {
     let (window_opt, window_source) = resolve_context_window_tiered(cfg, alias, pricing);
     let (window, fallback_source) = window_opt.map_or(fallback, |w| (w, window_source));
-    // W2：窗口来源独立记录——window_opt=Some 时是三级链来源（config/catalog），
+    // 窗口来源独立记录——window_opt=Some 时是三级链来源（config/catalog），
     // None 时是调用方兜底标签（agent 运行期 "instance" / CLI 展示
-    // "fallback-128k"）。
+    // "fallback-128k"）。2026-11-05 用户拍板：三级链全 miss 时按 fallback
+    // 窗口照常自动压缩（旧 W2「窗口未知整条停用」形态废除）——查内置
+    // 价目表已有（L2），查不到兜底 128k，两态都可压。
     let resolved_window_source: &'static str = if window_opt.is_some() {
         window_source
     } else {
@@ -191,16 +188,12 @@ pub fn resolve_compact_trigger(
         .and_then(|c| nemesis_types::capability::resolve_compact_context_tokens(c, alias))
         .filter(|t| *t > 0)
         .map(|t| t as usize);
-    // W2：未知窗口（三级链双 miss）且未设用户压缩点 = 不猜着压。用户显式
-    // 设了压缩点 = 显式意志，尊重（哪怕窗口仍是兜底值——钳制告知照常）。
-    let auto_suppressed = window_opt.is_none() && user.is_none();
     match user {
         Some(t) if t > window => CompactTrigger {
             window,
             trigger: window,
             source: "user",
             window_source: resolved_window_source,
-            auto_suppressed: false,
             clamped_from: Some(t),
         },
         Some(t) => CompactTrigger {
@@ -208,7 +201,6 @@ pub fn resolve_compact_trigger(
             trigger: t,
             source: "user",
             window_source: resolved_window_source,
-            auto_suppressed: false,
             clamped_from: None,
         },
         None => CompactTrigger {
@@ -216,7 +208,6 @@ pub fn resolve_compact_trigger(
             trigger: window * COMPACT_SUMMARIZE_RATIO / 100,
             source: fallback_source,
             window_source: resolved_window_source,
-            auto_suppressed,
             clamped_from: None,
         },
     }
@@ -314,11 +305,6 @@ pub(crate) fn compaction_note_text(
         tail
     )
 }
-
-/// W2：未知窗口停用自动压缩的一次性会话注记。
-/// （计划原拟引导「运行 model probe」——probe 只写 tier/vision 不写窗口，
-/// 按真实修复路径改为引导配置 `context_window`。）
-pub(crate) const COMPACT_SUPPRESSED_NOTE: &str = "[压缩已停用] 当前模型上下文窗口未知（按 128k 保守估计显示），自动压缩已停用（避免猜错窗口过早失忆）——为模型配置 context_window（Dashboard 模型管理或 config.json，或改用价目表可命中的标准模型名）后自动恢复；手动 /compact 不受影响。";
 
 /// 空转前缀一次性注记（2026-11-05 小窗口实测根修）：触发点已过但边界
 /// 无可摘要内容（逐字尾巴预算覆盖全部对话轮，前缀只剩 system/超限轮）时
@@ -555,35 +541,6 @@ impl AgentLoop {
         let trig = self.current_compact_trigger(instance.context_window());
         let context_window = trig.window;
 
-        // W2：未知窗口不猜着压——一次性注记后跳过整条
-        // 自动压缩路径（soft 预警 / summarize / stuck 记账全部不跑）。
-        // `force_compression`（context_length_exceeded 应急链）与手动
-        // /compact 不经过此函数，不受影响。窗口补配（config/context_window
-        // 或价目表命中）后 auto_suppressed 翻回 false，行为自动恢复。
-        if trig.auto_suppressed {
-            let fire = {
-                let mut states = self.compact_state.lock();
-                if states.len() > SESSION_STATE_MAX_ENTRIES {
-                    states.clear();
-                }
-                let st = states.entry(session_key.to_string()).or_default();
-                if st.suppressed_noticed {
-                    false
-                } else {
-                    st.suppressed_noticed = true;
-                    true
-                }
-            };
-            if fire {
-                warn!(
-                    "[AgentLoop] context window unknown for {} (source: {}); auto-summarization suppressed — set context_window (config/model_list) or use a catalog-known model name to re-enable; manual /compact unaffected",
-                    session_key, trig.window_source
-                );
-                crate::chat_log::append_chat_log(session_key, "system", COMPACT_SUPPRESSED_NOTE);
-            }
-            return;
-        }
-
         // C indexes the full history (system prompt at index 0); the verbatim
         // tail build_messages sends is history[C..]. Clamp to history length
         // for safety against a stale cache index.
@@ -705,8 +662,7 @@ impl AgentLoop {
         // parking_lot 不可重入，必须在下方锁作用域外发）。
         let mut soft_note_fired = false;
         // BUG 可见性修复（2026-11-03）：stuck 闩置位时的一次性聊天注记
-        // （此前只落 warn 日志，用户侧「98% 永不压缩」零解释——与 W2
-        // COMPACT_SUPPRESSED_NOTE 的停用态注记不对称）。锁内置文本，
+        // （此前只落 warn 日志，用户侧「98% 永不压缩」零解释）。锁内置文本，
         // 锁外 append_chat_log（同 soft_note_fired 纪律）。
         let mut stuck_note: Option<String> = None;
         {
@@ -971,9 +927,16 @@ impl AgentLoop {
                     covers_up_to: new_c,
                     text: summary,
                 }));
-                // 成功采用即清零（连续性只针对「反复无进展」）。
+                // 成功采用即清零（连续性只针对「反复无进展」）；同时作废
+                // provider 实报信号——它描述的是压缩前整请求（含已折叠前缀），
+                // 压缩后即过时：混合触发与 context_status 的 max(估算,实报)
+                // 会拿旧实报把 used 顶回压缩前水平（2026-11-05 E2E 实测：
+                // covers=6/est=181 而徽标 pct=100）。置 None = 纯估算回落
+                // （note_compaction_provider_signal 的既有语义），下一条
+                // 消息的真实请求实报会重新注入。
                 if let Some(st) = self.compact_state.lock().get_mut(session_key) {
                     st.no_progress = 0;
+                    st.last_provider_prompt_tokens = None;
                 }
                 // L14：auto 压缩成功采用计入会话统计。
                 self.bump_session_stats(
@@ -1166,6 +1129,11 @@ impl AgentLoop {
             // L14：压缩成功采用计入会话统计（force 路径 = 手动 /compact +
             // 上下文错误环内压缩；auto 路径的成功采用在 maybe_update_summary）。
             self.bump_session_stats(session_key, crate::session_stats::StatCounter::Compactions);
+            // 修复⑤：作废 provider 实报信号——与 auto 路径同款（实报描述
+            // 压缩前整请求，压缩后对新状态失真；置 None 回落纯估算）。
+            if let Some(st) = self.compact_state.lock().get_mut(session_key) {
+                st.last_provider_prompt_tokens = None;
+            }
             info!(
                 "[AgentLoop] Force-compressed: covers_up_to {} -> {} (verbatim tail {} -> {} messages)",
                 current_c,
@@ -1276,13 +1244,15 @@ impl AgentLoop {
     /// M5（devtool-upgrade 阶段 3）：会话级 context 占用快照（只读）。
     ///
     /// 口径与 `maybe_update_summary` 的压缩压力测量**同一公式**：
-    /// `used` = 摘要覆盖点之后的逐字尾部（build_messages 实际发给 LLM 的
-    /// 部分）按 MODEL-FACING 投影估算的 token 数；`window` = 三级解析链
-    /// （config `context_window` → 价目表 → 实例默认）给出的窗口。
-    /// `trigger`/`trigger_source`/`pct_trigger`（2026-10-20）= 有效压缩点
-    /// 及其来源（`compact_context_tokens` 到点即压 / 窗口×75%）。
-    /// 这样 Dashboard 显示的百分比就是「下一轮真实占用」而不是一个
-    /// 另一套口径的近似值。
+    /// `used` = max(摘要覆盖点之后的逐字尾部投影估算, provider 实报)——
+    /// 2026-11-05 用户拍板 token 实报化：判定面早已混合实报（同文件
+    /// maybe_update_summary 的 signal 公式），观测面对齐同源；CJK 载荷
+    /// 纯估算低估 1.88 倍实测（58,179 vs 实报 109,209），pct 会长期失真。
+    /// `window` = 三级解析链（config `context_window` → 价目表 → 实例
+    /// 默认）给出的窗口。`trigger`/`trigger_source`/`pct_trigger`
+    /// （2026-10-20）= 有效压缩点及其来源（`compact_context_tokens` 到点
+    /// 即压 / 窗口×75%）。这样 Dashboard 显示的百分比就是「下一轮真实
+    /// 占用」而不是另一套口径的近似值。
     ///
     /// 实例按回合从 store 重建（同 [`Self::compact_session`] 的读路径），
     /// 无驻留状态；store 未挂（standalone 简测）时按空历史计。
@@ -1300,20 +1270,35 @@ impl AgentLoop {
             .filter(|&c| c >= 1)
             .unwrap_or(0)
             .min(history.len());
-        let used = estimate_tokens_for_turns_projected(&history[covers..]);
+        // 2026-11-05 token 实报化：与判定面（maybe_update_summary signal）
+        // 同公式——provider 实报（上一轮整请求：system + tools + summary +
+        // tail）≥ 尾部估算，取大者 = 偏保守显示（安全侧）。无 usage 的
+        // lane / 新会话自然回落纯估算。
+        let estimated = estimate_tokens_for_turns_projected(&history[covers..]);
+        let provider_reported = self
+            .compact_state
+            .lock()
+            .get(session_key)
+            .and_then(|s| s.last_provider_prompt_tokens)
+            .map(|v| v as usize)
+            .unwrap_or(0);
+        let used = estimated.max(provider_reported);
         let pct = (used * 100).checked_div(window).unwrap_or(0).min(100);
         let pct_trigger = (used * 100).checked_div(trig.trigger).unwrap_or(0).min(100);
         let json = serde_json::json!({
             "session_key": session_key,
             "used_tokens": used,
+            // 观测透明：实报混合后的两个分量（前端可暂不消费，调试/口径
+            // 回查用）。
+            "estimated_tokens": estimated,
+            "provider_reported_tokens": provider_reported,
             "window": window,
             "pct": pct,
             "trigger": trig.trigger,
             "trigger_source": trig.source,
-            // W2（2026-10-25 加固）：窗口来源与自动压缩停用旗——前端对
-            // fallback 形态标红为可选尾随项，后端先行可交付。
+            // 窗口来源（config/catalog/instance/fallback-128k）——前端
+            // 徽标可据此标注窗口口径。
             "window_source": trig.window_source,
-            "auto_suppressed": trig.auto_suppressed,
             "pct_trigger": pct_trigger,
             "history_len": history.len(),
             "covers_up_to": covers,
@@ -1763,7 +1748,17 @@ pub(crate) async fn summarize_batch_owned(
         messages.push(sys.clone());
     }
     for m in batch {
-        messages.push(conversation_turn_to_llm_message(m));
+        let mut msg = conversation_turn_to_llm_message(m);
+        // 悬空 tool_calls 剥离（2026-11-05 三供应商实测根修）：调用方
+        // summarize_prefix_owned 的过滤已丢全部 tool 输出轮，assistant 轮
+        // 原样保留 tool_calls 会以悬空形态上行——严格上游（codex
+        // /responses）校验 tool_calls↔tool 输出配对直接 400（宽容上游放行
+        // 是侥幸不是正确）。摘要请求本就不摘要工具结构（见
+        // summarize_prefix_owned doc「tool_calls and tool results are not
+        // summarized」），剥字段保文本。G1 字节等价前提在此轮形态上已被
+        // tool 输出过滤打破，剥离使其重新成为合法请求。
+        msg.tool_calls = None;
+        messages.push(msg);
     }
     // Trailing instruction（P6：结构化 schema + UPDATE/台账上下文，单源
     // build_summary_instruction——prefix 字节不变纪律只覆盖前面的覆盖段，
@@ -2167,8 +2162,8 @@ mod ws2_compact_tests;
 mod compact_signal_tests;
 
 // ---------------------------------------------------------------------------
-// W1+W2（2026-10-25 加固）：压缩原因注记（档位/限频/落盘）+ 未知窗口
-// 停用自动压缩（auto_suppressed/window_source）测试。
+// W1（2026-10-25 加固）压缩原因注记（档位/限频/落盘）+ 压缩点解析窗口
+// 来源各臂测试（2026-11-05：fallback 窗口照常压缩回归锁，旧 W2 停用已废）。
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod w1_w2_note_tests;
