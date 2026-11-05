@@ -13,9 +13,13 @@
 #
 # 白名单（文件级，新增在此登记并写明理由）：
 #   crates/nemesis-providers/src/factory.rs     定义与内部转调
-#   nemesisbot/src/agent_factory.rs             主 loop（自热切 set_provider_and_model）+
-#                                               cluster loop（wrapper）+ 项目 loop（reload 自热切）
+#   nemesisbot/src/agent_factory/main.rs        主 loop（自热切 set_provider_and_model）
 #                                               + 两处 small_model 一次性通道
+#   nemesisbot/src/agent_factory/spec.rs        spec 装配路径（同上主 loop 语义）
+#   nemesisbot/src/agent_factory/shared.rs      共享装配路径（wrapper）
+#   nemesisbot/src/agent_factory/cluster.rs     cluster loop（wrapper）
+#                                               （2026-11-05 自 agent_factory.rs 单文件
+#                                               拆分落位，纯搬迁语义零新增）
 #   nemesisbot/src/commands/gateway/ctx.rs      workflow/security 快照（wrapper）——
 #                                               2026-09-23 gateway 拆解 PB-4/B4 自 gateway.rs
 #                                               纯搬迁（随 GatewayCtx 构建），语义零新增
@@ -46,7 +50,11 @@
 #                                               +构造，配置变更自然跟随；臂 1/2
 #                                               解析非默认槽模型，wrapper 不适用
 #                                               ——同 dreaming_job 每轮重读先例）
-#   crates/nemesis-web/src/handlers/board.rs    board.plan.model 拆解 planner 一次性
+#   crates/nemesis-web/src/handlers/board/plan.rs
+#                                               board.plan.model 拆解 planner 一次性
+#                                               （2026-11-05 自 board.rs 按
+#                                               dispatch/cascade/plan 子文件落位，纯搬迁
+#                                               语义零新增；调用点在 plan.rs）
 #                                               通道（每次拆解即时 load_config→
 #                                               resolve→构造，adapter 只喂单次
 #                                               run_planner 即弃，配置变更自然
@@ -67,7 +75,7 @@ cd "$(dirname "$0")/.."
 hits=$(grep -rnE "create_provider(_or_null)?\s*\(" crates nemesisbot/src --include='*.rs' 2>/dev/null \
   | grep -v '/tests' \
   | grep -v '_tests\.rs' \
-  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|crates/nemesis-providers/src/fallback_provider\.rs|nemesisbot/src/agent_factory\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/gateway/dreaming_job\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/commands/session\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs|crates/nemesis-web/src/handlers/forge\.rs|crates/nemesis-web/src/handlers/board\.rs|nemesisbot/src/security_calibrate\.rs):' \
+  | grep -vE '^(crates/nemesis-providers/src/factory\.rs|crates/nemesis-providers/src/fallback_provider\.rs|nemesisbot/src/agent_factory/main\.rs|nemesisbot/src/agent_factory/spec\.rs|nemesisbot/src/agent_factory/shared\.rs|nemesisbot/src/agent_factory/cluster\.rs|nemesisbot/src/commands/gateway/ctx\.rs|nemesisbot/src/commands/gateway/post_agent\.rs|nemesisbot/src/commands/gateway/runtime\.rs|nemesisbot/src/commands/gateway/dreaming_job\.rs|nemesisbot/src/commands/run\.rs|nemesisbot/src/commands/model\.rs|nemesisbot/src/commands/session\.rs|nemesisbot/src/projects/manager\.rs|crates/nemesis-web/src/handlers/models\.rs|crates/nemesis-web/src/handlers/forge\.rs|crates/nemesis-web/src/handlers/board/plan\.rs|nemesisbot/src/security_calibrate\.rs):' \
   || true)
 
 if [ -n "$hits" ]; then
