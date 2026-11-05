@@ -105,7 +105,12 @@ def collect_files(out_dir: Path):
     for sub in SCANNED_DIRS:
         root = out_dir / sub
         if not root.is_dir():
-            print(f"WARN: {sub}/ not found in {out_dir} — skipped", file=sys.stderr)
+            # 标准单文件部署布局不带 static/（前端由 include_dir! 嵌进主二进制，
+            # 运行时零磁盘 IO）——缺席是预期形态，按 SKIP 注记而非 WARN；
+            # 带了 static/ 的部署则全量入清单。
+            print(f"SKIP: {sub}/ not found in {out_dir} — embedded in the binary "
+                  f"for the standard layout; manifest covers the exe only",
+                  file=sys.stderr)
             continue
         for p in sorted(root.rglob("*")):
             if p.is_file():
