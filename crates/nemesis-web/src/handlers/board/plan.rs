@@ -2626,7 +2626,9 @@ pub fn fire_autopilot(
         return Err(estop_frozen_error());
     }
     let target = ap.target.trim().to_string();
-    if !target.is_empty() && cluster.is_none() {
+    // target="self" 单机本地执行面：不依赖集群（BUG 2026-11-05 同族——
+    // 守卫先于派发入口，须与 dispatch_issue_core 的 self 委托同步豁免）。
+    if !target.is_empty() && !target.eq_ignore_ascii_case("self") && cluster.is_none() {
         return Err(format!(
             "autopilot「{}」配置了派发目标 {target}，但集群未运行，无法派发",
             ap.name

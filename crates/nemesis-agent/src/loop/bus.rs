@@ -460,6 +460,7 @@ impl AgentLoop {
         response: String,
         err: Option<String>,
         check_sent_in_round: bool,
+        receipt: bool,
     ) {
         let response = match err {
             Some(e) => {
@@ -529,6 +530,9 @@ impl AgentLoop {
                     source_node: None,
                     task_id: None,
                     sync_via: None,
+                    // 回执标记由调用点声明语义（busy 排队/slash 确认=true，
+                    // 终局回复=false）——消费方按会话键等终局回复时跳过回执。
+                    receipt,
                 },
             };
             if let Err(e) = tx.send(outbound).await {
@@ -564,6 +568,9 @@ impl AgentLoop {
                 source_node: None,
                 task_id: None,
                 sync_via: None,
+                // 凭条卡 = connector 写类 op 回执，非回合产物（按会话键等
+                // 终局回复的消费方必须跳过）。
+                receipt: true,
             },
         };
         if let Err(e) = tx.send(outbound).await {
@@ -742,7 +749,7 @@ impl AgentLoop {
                     msg.channel, msg.session_key
                 );
             } else {
-                self.finish_message(msg, DRAINING_RECEIPT.to_string(), None, false)
+                self.finish_message(msg, DRAINING_RECEIPT.to_string(), None, false, true)
                     .await;
             }
             return;
@@ -772,8 +779,12 @@ impl AgentLoop {
                 // Busy receipt / busy bounce / queue-full / slash
                 // reply — publish inline. Never touches
                 // sent_in_round (may overlap the session's
-                // running turn; see finish_message).
-                self.finish_message(msg, response, None, false).await;
+                // running turn; see finish_message). 变体级语义 =
+                // 静态短路回复（零 LLM 内容）→ 一律打 receipt=true：
+                // 按会话键等终局回复的消费方（看板本地派发捕获）必须
+                // 跳过——NB-1 实录：queue-ack 被当终局回复 → 57ms
+                // 空交付 completed。
+                self.finish_message(msg, response, None, false, true).await;
             }
             GateOutcome::Coalesced { cron_job_id } => {
                 // C4（2026-10-24 cron 合闸）：重复 tick 静默丢弃——零出站
@@ -801,7 +812,9 @@ impl AgentLoop {
                     // 释放会话，不留永久 busy 死会话。正常路径在 drain 前
                     // 显式 drop（= 原 release_session）。
                     let _busy_guard = super::admission::SessionBusyGuard::new(&this, &session_key);
-                    this.finish_message(&m, receipt, None, false).await;
+                    // ⏳ 前置回执 = 系统回执（receipt=true）；其后真回复
+                    // （可能是 LLM 摘要）= 终局（receipt=false）。
+                    this.finish_message(&m, receipt, None, false, true).await;
                     let response = this.handle_maintenance(kind, &session_key).await;
                     drop(_busy_guard);
                     // 排队消息排空（2026-09-28 真模型验证发现）：
@@ -809,7 +822,7 @@ impl AgentLoop {
                     // 永久滞留 next_turn——与 admitted 尾部共用
                     // drain_next_turn_queue 对称排空。
                     this.drain_next_turn_queue(&session_key).await;
-                    this.finish_message(&m, response, None, false).await;
+                    this.finish_message(&m, response, None, false, false).await;
                 });
             }
             GateOutcome::UserDispatch {
@@ -833,7 +846,7 @@ impl AgentLoop {
                 let m = msg.clone();
                 self.spawn_turn_task(async move {
                     let (_, response, err) = this.process_ungated(&m).await;
-                    this.finish_message(&m, response, err, true).await;
+                    this.finish_message(&m, response, err, true, false).await;
                 });
             }
             GateOutcome::Admitted(admission) => {
@@ -841,7 +854,7 @@ impl AgentLoop {
                 let m = msg.clone();
                 self.spawn_turn_task(async move {
                     let (_, response, err) = this.process_admitted(&m, admission).await;
-                    this.finish_message(&m, response, err, true).await;
+                    this.finish_message(&m, response, err, true, false).await;
                 });
             }
         }

@@ -473,6 +473,9 @@ pub fn default_config() -> Config {
             delegate: DelegateToolConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
+            stream_concat_retry: true,
+            profession_tool_fence: true,
+            lazy_tool_schema: None,
             executor_tool_timeout_secs: default_executor_tool_timeout_secs(),
             defaults: AgentDefaults {
                 workspace: ws,
@@ -596,6 +599,7 @@ pub fn default_config() -> Config {
         health: None,
         logs: None,
         checkpoint: None,
+        plugins: None,
     }
 }
 /// Load MCP configuration from a separate config.mcp.json file.

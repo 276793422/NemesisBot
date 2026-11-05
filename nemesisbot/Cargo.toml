@@ -152,6 +152,10 @@ checkpoint-git = ["nemesis-agent/checkpoint-git", "nemesis-board/checkpoint-git"
 image-process = ["nemesis-agent/image-process"]
 history-search = ["nemesis-agent/history-search", "nemesis-web/history-search"]
 
+# git-https（2026-11-04 repo_sync 批）：git2/libgit2 https 传输（repo_sync/
+# publish 推送 https URL）。默认关（http 开箱即用）；Android/iotsmall 不开。
+git-https = ["nemesis-board/git-https"]
+
 # SQLite 用量账本（nemesis-data 的 rusqlite bundled ~1MB，iotsmall 里最后
 # 一个 SQLite 来源；history-search 只拆 FTS 检索面）。关 = DataStore 空账本
 # stub（写入 no-op、查询恒空、JSON 价目层照常，open() warn 一次），生产

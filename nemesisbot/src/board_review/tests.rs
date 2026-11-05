@@ -10292,3 +10292,87 @@ fn a1_duration_weighted_ranked_wiring() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Fix 3 回归锁（NB-1 重派本地臂断裂）：本地单历史派发 worker_id="self"
+/// 的 FAIL 重派必须走本地执行面 dispatch_issue_local，不得回落集群
+/// dispatch_issue_core——canonical_peer_id("self") 必然无解，旧行为以
+/// 「未知节点：self」⛔ 停车，本地单重派全断（实录 NB-1）。空集群注册表
+/// 下旧行为必报该错；新行为 stub 执行器被调 + 派发行存续 + 无 ⛔ 停车。
+#[tokio::test]
+async fn fail_redispatch_to_self_uses_local_executor_not_cluster() {
+    use nemesis_board::IssueStatus;
+
+    struct RecordingExecutor(std::sync::Mutex<Vec<(String, i64)>>);
+    impl nemesis_web::handlers::board::LocalDispatchExecutor for RecordingExecutor {
+        fn submit(
+            &self,
+            req: nemesis_web::handlers::board::LocalDispatchRequest,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push((req.task_id, req.issue_id));
+            Ok(())
+        }
+    }
+    // OnceLock 进程级首装胜出：本测试是唯一装 stub 的测试，且 stub 只在
+    // target="self" 分臂被调（集群路径测试不受影响）。
+    let submits = std::sync::Arc::new(RecordingExecutor(Default::default()));
+    nemesis_web::handlers::board::install_local_dispatch_executor(submits.clone());
+
+    // seed_worker_nodes=false = 集群注册表留空——旧行为（走 core）在此
+    // 必报「未知节点：self」，与「本地执行器被调」互斥，定性零歧义。
+    let (deps, _ws) = review_deps_ex("self-redispatch", false);
+    let issue = issue_in_review(
+        &deps.store,
+        "本地单FAIL重派走本地执行面",
+        "[CHECK] re:验收完成标志XYZ\n[CHECK] re:交付完成",
+        "## 结论\n交付完成",
+    );
+    // 历史派发 worker_id="self"（本地单首派的真实形态）——重派决策
+    // pick Same(last) 取到 "self"，落新分臂。
+    deps.store
+        .insert_dispatch(
+            "task-self-1",
+            issue.id,
+            "self",
+            &nemesis_board::Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch("task-self-1", nemesis_board::models::dispatch_state::DONE)
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("锚点短路 FAIL 必须闭环不报错");
+    assert!(reviewed, "短路 FAIL 应完成评审闭环（非跳过）");
+
+    // 新行为：self 分臂走本地执行器（submit 恰好一次、issue 对准）。
+    let calls = submits.0.lock().unwrap();
+    assert_eq!(
+        calls.len(),
+        1,
+        "重派必须恰好发车一次到本地执行器: {calls:?}"
+    );
+    assert_eq!(calls[0].1, issue.id, "本地发车必须对准本 issue");
+    drop(calls);
+
+    // 派发行存续（等执行器写回终态）→ in_progress 推进照常。
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InProgress,
+        "本地重派应推进 in_progress（镜像集群发车语义）"
+    );
+    assert!(
+        deps.store.has_active_dispatch(issue.id).unwrap(),
+        "新派发行应存续到执行器写回终态"
+    );
+
+    // 旧行为特征必须消失：⛔ 评论不得含「未知节点：self」。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    for c in &comments {
+        assert!(
+            !c.content.contains("未知节点：self"),
+            "不得走集群 core（canonical_peer_id(\"self\") 无解即 ⛔ 停车）: {}",
+            c.content
+        );
+    }
+}

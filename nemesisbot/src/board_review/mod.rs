@@ -2078,14 +2078,29 @@ async fn review_issue(
                 info!("[BoardReview] issue {issue_id} FAIL 复核期间已有在途派发接管，重派让位");
                 return Ok(true);
             }
-            match nemesis_web::handlers::board::dispatch_issue_core(
-                store,
-                Some(&deps.cluster),
-                issue_id,
-                &target,
-                &reviewer,
-                Some(&gap),
-            ) {
+            // 发车分臂：target="self" 走单机本地执行面（一等公民，与集群
+            // 是否启用无关——"self" 不是集群概念，canonical_peer_id("self")
+            // 必然无解，走 core 会以「未知节点：self」⛔ 停车，本地单重派
+            // 全断（实录 NB-1）。语义与 WSAPI issue.dispatch / flow 自动
+            // 派发的 self 分臂同源；其余目标照旧走集群 core。
+            let dispatch_result = if target.eq_ignore_ascii_case("self") {
+                nemesis_web::handlers::board::dispatch_issue_local(
+                    store,
+                    issue_id,
+                    &reviewer,
+                    Some(&gap),
+                )
+            } else {
+                nemesis_web::handlers::board::dispatch_issue_core(
+                    store,
+                    Some(&deps.cluster),
+                    issue_id,
+                    &target,
+                    &reviewer,
+                    Some(&gap),
+                )
+            };
+            match dispatch_result {
                 Ok(_) => {
                     info!("[BoardReview] issue {issue_id} FAIL → 重派 #{next_round} → {target}");
                     // 决策审计挪到实际派发成功后（2026-10-17 重构）：此前在

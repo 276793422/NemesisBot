@@ -37,6 +37,13 @@
 //! 诚实边界：副本基线核验只认 repo_base_sha（旧形态交付缺该键 = 拒绝
 //! 发布，不静默放行）；对账翻页有硬上限（页数封顶 = Inconclusive 保守判
 //! 失败，绝不冒充「扫尽不在」）。
+//!
+//! **op 路由双臂（2026-11-04 插件自持批 3a）**：create_op/reconcile_op
+//! 各自可走 connector 原语（`connector_invoke` 工具面）或
+//! `plugin:<slug>:<op>` guest 步引用（`run_flow_step`，与 on-transition/
+//! report 形态同源）——connector 字段随之转可选（仅 Native 形态需要）；
+//! git 推送凭据别名从 create_op 路由推导（Plugin → `plugin/<slug>/pat`，
+//! Native → `connector/<id>/pat`）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -52,6 +59,12 @@ use serde_json::{Value, json};
 const ST_PUBLISHED: &str = "published";
 const ST_ALREADY: &str = "already_published";
 const ST_FAILED: &str = "failed";
+
+/// 「请求确定未发出」错误标记（插件自持批 3a）：plugin 路由层失败（插件
+/// 未装配/停用/词表对账不过）与 dispatch 层拒（`⛔` 前缀）同语义——都不
+/// 可能产生远端副作用，重试安全。guest 四态 failed/running/malformed =
+/// guest 已执行过（可能已发 HTTP），**不带**本标记 → 走对账保守分支。
+const NOT_SENT_MARKER: &str = "[not-sent]";
 
 /// 发布协议声明（flow 模板 publish 步 args 解析产物；哑结构——全部是渲染
 /// 后的字面量，宿主不做任何域解释）。域剥离批 C-3：创建/对账的 op 名、
@@ -81,6 +94,11 @@ pub(crate) struct PublishProtocol {
     pub reconcile_limit: usize,
     /// 页数硬上限（缺省 5；封顶 = Inconclusive）。
     pub reconcile_max_pages: usize,
+    /// Gerrit 臂提交信息模板（可选；push_ref 以 `refs/for/` 开头时消费）。
+    /// parse 期已渲染条目 token（ext_key/title/board_issue/report_path），
+    /// 发布侧 rt 期再渲染 change_id/branch/task_id；模板未带 Change-Id
+    /// footer 由发布侧补齐（Gerrit 缺 footer 拒收）。
+    pub commit_message: Option<String>,
 }
 
 impl Default for PublishProtocol {
@@ -97,7 +115,54 @@ impl Default for PublishProtocol {
             reconcile_page_key: "page".to_string(),
             reconcile_limit: 20,
             reconcile_max_pages: 5,
+            commit_message: None,
         }
+    }
+}
+
+/// 发布 op 路由（插件自持批 3a）：connector 原语 op（走
+/// `connector_invoke` 工具面）或 `plugin:<slug>:<op>` guest 步引用（走
+/// `run_flow_step`——与 on-transition/report 形态 100% 同源）。创建与对账
+/// 可各自选臂（混搭合法：创建走 guest、对账走 connector 均是合法声明）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum OpRoute {
+    Native(String),
+    Plugin { slug: String, op: String },
+}
+
+/// 路由解析（单点）：`plugin:` 前缀经 `parse_plugin_step_ref` 判定，解析
+/// 失败 = 声明坏 loud 拒（不给运行期留「当原语名静默错」黑洞）；其余 =
+/// Native 自由文本（词表裁决在 connector 侧，宿主不域解释）。
+pub(crate) fn parse_op_route(op: &str) -> Result<OpRoute, String> {
+    if let Some((slug, step_op)) = nemesis_plugins_wasm::manifest::parse_plugin_step_ref(op) {
+        return Ok(OpRoute::Plugin {
+            slug: slug.to_string(),
+            op: step_op.to_string(),
+        });
+    }
+    if op.trim().starts_with("plugin:") {
+        return Err(format!(
+            "publish op '{op}' 是 plugin 引用形态但解析失败（需 plugin:<slug>:<op>，段 [a-z0-9_-]+）"
+        ));
+    }
+    Ok(OpRoute::Native(op.trim().to_string()))
+}
+
+/// git 推送凭据别名推导（单点，从 **create_op 路由**推导——推送是宿主侧
+/// git_repo 动作，凭据供给跟随创建方身份；对账臂不涉推送不取凭据）：
+/// Plugin → `plugin/<slug>/pat`（自持插件 PAT）；Native →
+/// `connector/<id>/pat`（connector 原语语义）。
+pub(crate) fn credential_alias(
+    connector: Option<&str>,
+    create_route: &OpRoute,
+) -> Result<String, String> {
+    match create_route {
+        OpRoute::Plugin { slug, .. } => Ok(format!("plugin/{slug}/pat")),
+        OpRoute::Native(_) => connector
+            .map(|c| format!("connector/{c}/pat"))
+            .ok_or_else(|| {
+                "connector 原语 create_op 缺 connector 声明（推送凭据别名无法推导）".to_string()
+            }),
     }
 }
 
@@ -139,6 +204,7 @@ impl nemesis_web::handlers::deliveries::DeliveryPublishBridge for DeliveryPublis
             &self.workspace,
             args,
             None,
+            None,
         )
         .await
     }
@@ -164,6 +230,9 @@ enum Preflight {
         /// 交付内容树（payload `tree` 原样透传；缺席/空 = None）——git 半边
         /// 重试幂等判断的等值锚（分支树 == 交付树 → 上次产物复用）。
         delivery_tree: Option<String>,
+        /// 交付基线树（payload `base_tree` 透传；缺席/空 = None）——Gerrit
+        /// 臂三方合并的基树锚（缺席时回落基线提交的树）。
+        base_tree: Option<String>,
         /// 交付 payload 的 `publish_stage`（F1 续作留痕）：`pr_pending` =
         /// 上次已到达发布条目创建阶段（进程崩溃/落账失败），重试先对账防
         /// 重复建条目；其余值（commit_generated/push_completed/published/
@@ -316,6 +385,7 @@ fn preflight(
         title,
         already_merged,
         delivery_tree,
+        base_tree: expected_tree,
         stage,
     })
 }
@@ -375,8 +445,10 @@ fn base_drift_detail(
 
 /// 发布主流程。返回值恒为结构化 outcome（`status` = published /
 /// already_published / failed + detail）——发布结果是第一公民结果不是传输
-/// 错误；`Err` 只用于请求形态非法（缺必填参数 / protocol 缺席）。
+/// 错误；`Err` 只用于请求形态非法（缺必填参数 / protocol 缺席 / op 路由
+/// 声明非法）。
 /// `pub(crate)`：flow 引擎 publish step 与外部入口（web）共用同一实现。
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn publish_task_delivery(
     db: &Arc<TaskDb>,
     store: &Arc<BoardStore>,
@@ -384,6 +456,7 @@ pub(crate) async fn publish_task_delivery(
     workspace: &Path,
     args: &Value,
     protocol: Option<&PublishProtocol>,
+    plugin_manager: Option<&Arc<nemesis_plugins_wasm::registry::PluginManager>>,
 ) -> Result<Value, String> {
     // 域剥离批 C-3：发布协议（创建/对账 op + args 形状）只来自 flow 模板
     // 声明；宿主无内置协议，缺席 = 诚实报错不猜。
@@ -391,12 +464,48 @@ pub(crate) async fn publish_task_delivery(
         "publish 协议声明缺失：publish 步须声明 create/reconcile op（域知识只在 flow 模板）——宿主无内置发布协议".to_string()
     })?;
     let task_id = arg_str(args, "task_id")?;
-    let connector = arg_str(args, "connector")?;
     let owner = arg_str(args, "owner")?;
     let repo = arg_str(args, "repo")?;
+    // op 路由双臂解析（批 3a）。声明面问题 = Err 上抛（请求形态非法），
+    // 不进结构化失败响应——装载期校验（parse_publish_step_protocol）已
+    // 挡住绝大多数，这里是运行期最后一道。
+    let create_route = parse_op_route(&protocol.create_op)?;
+    let reconcile_route = parse_op_route(&protocol.reconcile_op)?;
+    // connector 可选化：仅任一 op 是 Native 形态才必填——全 plugin 形态的
+    // 自持插件无 connector 概念（connector.toml 已退役）。
+    let connector = match (&create_route, &reconcile_route) {
+        (OpRoute::Native(_), _) | (_, OpRoute::Native(_)) => Some(arg_str(args, "connector")?),
+        _ => None,
+    };
     validate_task_id_for_branch(&task_id)?;
+    // plugin 路由臂的审计归因键（批 3a）：web 桥 protocol=None 在路由前
+    // 已诚实报错，够不着本段。
+    let session_key = format!("publish:{task_id}");
     let branch = format!("nemesis/task-{task_id}");
     let branch_key = format!("{task_id}:branch");
+    // 批 B（SC 套件 Gerrit 臂 + 代理）：可选步参（模板声明面，值已装载期
+    // config 渲染）——
+    // - push_ref：推送 refspec（缺省 refs/heads/{branch}；`refs/for/` 前缀
+    //   = Gerrit 评审形态：push 本身建 change，交付重整单提交 + Change-Id）；
+    // - proxy：git2 网络代理（socks5h://host:port；空值/含未渲染 token =
+    //   未配置语义——实例配置 proxy 键缺省空串，装载期渲染后即空）；
+    // - Change-Id：task_id 确定性派生（SHA-1）——重试重推同 Change-Id =
+    //   Gerrit 同一 change 的新 patchset，评审号稳定；仅 Gerrit 臂消费，
+    //   rt token 面恒可用（非 Gerrit 声明里引用 = 渲染为派生值，无副作用）。
+    let push_ref = args
+        .get("push_ref")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.contains("{{"))
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("refs/heads/{branch}"));
+    let proxy = args
+        .get("proxy")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.contains("{{"))
+        .map(str::to_string);
+    let change_id = nemesis_board::git_repo::derive_change_id(&task_id).ok();
 
     let pre = match preflight(db, store, &task_id, args) {
         Ok(Preflight::Already(v)) => return Ok(v),
@@ -410,6 +519,7 @@ pub(crate) async fn publish_task_delivery(
         title,
         already_merged,
         delivery_tree,
+        base_tree,
         stage,
     } = pre
     else {
@@ -477,6 +587,97 @@ pub(crate) async fn publish_task_delivery(
             ));
         }
     };
+    // ③.5 Gerrit 评审形态（批 B，SC 套件）：push_ref 以 `refs/for/` 开头 =
+    // Gerrit change 评审——push 本身建 change（无 MR 对象，REST 建条目走
+    // query-as-create：create_op = change_list 按 Change-Id 查询，已建 =
+    // 收口落账、未建 = 诚实失败留 pr_pending 由下轮对账收敛）。交付内容
+    // 重整为**单提交 atop 目标分支头**（refs/remotes/origin/<target>，目标
+    // 提交缺席 = 副本未 sync，诚实 Err）：
+    // - 交付树 = 当前 commit 的树（reuse/apply/already_merged 三臂通吃——
+    //   树是内容等价面）；基树 = payload `base_tree` 锚，缺席取基线提交的
+    //   树（基线漂移已在 preflight 挡过，此处只做树解析）；
+    // - 三方合并冲突 = 诚实 Err 人工 rebase；合并树 == 目标头树 = 诚实 Err
+    //   无可发布差异（交付已在目标分支）；目标分支被本地检出 = Err。
+    // 产出 commit 替换 commit_hex（refs/heads/{branch} 单亲重置——分支是
+    // 本地交付面，推送走 refs/for/<target>，远端主线零污染）。
+    let commit_hex = match push_ref.strip_prefix("refs/for/") {
+        Some(target) => {
+            let Some(change_id) = change_id.as_ref() else {
+                return Ok(fail_outcome(
+                    &task_id,
+                    &branch,
+                    "Change-Id 派生失败（git 哈希原语异常）——Gerrit 臂拒绝发布".to_string(),
+                ));
+            };
+            let delivery_tree_hex =
+                match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &commit_hex) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Ok(fail_outcome(
+                            &task_id,
+                            &branch,
+                            format!("Gerrit 臂交付树解析失败（确定失败，可重试）: {e}"),
+                        ));
+                    }
+                };
+            let base_tree_hex = match base_tree.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(t) => t.to_string(),
+                None => {
+                    match nemesis_board::git_repo::tree_of_commit_hex(&copy_dir, &expected_base) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            return Ok(fail_outcome(
+                                &task_id,
+                                &branch,
+                                format!(
+                                    "Gerrit 臂基树解析失败（基线提交 {expected_base} 不在副本仓——副本被重物化？可重试，再失败需人工核查）: {e}"
+                                ),
+                            ));
+                        }
+                    }
+                }
+            };
+            // 提交信息：commit_message 模板 rt 第二遍渲染（change_id/branch/
+            // task_id 运行期 token；条目 token 已在 parse 期消化）；模板未
+            // 带 Change-Id footer 时补齐——Gerrit 缺 footer 直接拒收
+            //（missing Change-Id）。
+            let mut message = match &protocol.commit_message {
+                Some(tpl) => crate::flow_engine::render_tokens(tpl, |key: &str| match key {
+                    "change_id" => Some(change_id.clone()),
+                    "branch" => Some(branch.clone()),
+                    "task_id" => Some(task_id.clone()),
+                    _ => None,
+                }),
+                None => format!("NemesisBot task {task_id}: {title}"),
+            };
+            if !message.contains("Change-Id:") {
+                while message.ends_with('\n') {
+                    message.pop();
+                }
+                message.push_str(&format!("\n\nChange-Id: {change_id}"));
+            }
+            match nemesis_board::git_repo::single_commit_atop(
+                &copy_dir,
+                &branch,
+                target,
+                &base_tree_hex,
+                &delivery_tree_hex,
+                &message,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return Ok(fail_outcome(
+                        &task_id,
+                        &branch,
+                        format!(
+                            "Gerrit 单提交重整失败（确定失败，可重试——同 Change-Id 幂等）: {e}"
+                        ),
+                    ));
+                }
+            }
+        }
+        None => commit_hex,
+    };
     // 阶段留痕（F1 续作；best-effort——留痕写失败不阻断发布本身，只降级
     // 重试续作的精确度，warn 可观测）。**阶段单调不回退**：pr_pending 现场
     // 续作时跳过中间态——把 pr_pending 覆盖成 commit_generated/push_completed
@@ -490,14 +691,41 @@ pub(crate) async fn publish_task_delivery(
     {
         tracing::warn!(task_id = %task_id, "[Publish] commit_generated 留痕失败: {e}");
     }
-    // ④ 推送（vault PAT；匿名路径 = 公开仓语义，与 clone 凭据对称）。
-    let cred = publish_credentials(workspace, &connector, &owner);
+    // ④ 推送（vault PAT；匿名路径 = 公开仓语义，与 clone 凭据对称）。凭据
+    // 别名从 create_op 路由推导（批 3a 单点）：Plugin → plugin/<slug>/pat
+    // （自持插件 PAT），Native → connector/<id>/pat。批 B：cred_secret 显式
+    // 覆盖优先（Gerrit = HTTP Basic 用户名 + HTTP Password，别名与 GitLab
+    // PAT 分开，如 plugin/sc-bugfix/gerrit_http_pass；cred_user 缺省回落
+    // owner——GitLab HTTPS+PAT 任意非空用户名语义不变）。
+    let cred = match args
+        .get("cred_secret")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(alias) => {
+            let user = args
+                .get("cred_user")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(owner.as_str());
+            publish_credentials(workspace, alias, user)
+        }
+        None => match credential_alias(connector.as_deref(), &create_route) {
+            Ok(alias) => publish_credentials(workspace, &alias, &owner),
+            Err(e) => {
+                return Ok(fail_outcome(&task_id, &branch, e));
+            }
+        },
+    };
     if let Err(e) = nemesis_board::git_repo::push_branch(
         &copy_dir,
         &branch,
         "origin",
-        &format!("refs/heads/{branch}"),
+        &push_ref,
         cred.as_ref().map(|(u, p)| (u.as_str(), p.as_str())),
+        proxy.as_deref(),
     ) {
         return Ok(fail_outcome(
             &task_id,
@@ -523,6 +751,7 @@ pub(crate) async fn publish_task_delivery(
             "base_sha" => Some(expected_base.clone()),
             "branch" => Some(branch.clone()),
             "task_id" => Some(task_id.clone()),
+            "change_id" => change_id.clone(),
             _ => None,
         })
     };
@@ -545,7 +774,10 @@ pub(crate) async fn publish_task_delivery(
     if pr_pending_retry {
         match reconcile_by_match(
             agent_loop,
-            &connector,
+            connector.as_deref(),
+            plugin_manager,
+            &reconcile_route,
+            &session_key,
             protocol,
             &rendered_reconcile_args,
             &rendered_match,
@@ -592,10 +824,12 @@ pub(crate) async fn publish_task_delivery(
     ) {
         tracing::warn!(task_id = %task_id, "[Publish] pr_pending 留痕失败: {e}");
     }
-    let (external_ref, external_url) = match invoke(
+    let (external_ref, external_url) = match invoke_route(
         agent_loop,
-        &connector,
-        &protocol.create_op,
+        connector.as_deref(),
+        plugin_manager,
+        &create_route,
+        &session_key,
         Value::Object(create_args),
     )
     .await
@@ -608,7 +842,10 @@ pub(crate) async fn publish_task_delivery(
                 None => {
                     match reconcile_by_match(
                         agent_loop,
-                        &connector,
+                        connector.as_deref(),
+                        plugin_manager,
+                        &reconcile_route,
+                        &session_key,
                         protocol,
                         &rendered_reconcile_args,
                         &rendered_match,
@@ -643,8 +880,13 @@ pub(crate) async fn publish_task_delivery(
                 }
             }
         }
-        // dispatch 层拒（estop/审批/安全层）——请求未发出，确定失败。
-        Err(text) if crate::connector_tools::error_text_dispatch_rejected(&text) => {
+        // 确定未发出（批 3a 两族）：dispatch 层拒（estop/审批/安全层，`⛔`
+        // 前缀）或 plugin 路由层失败（插件未装配/停用/词表对账不过，
+        // `[not-sent]` 标记）——两者都不可能产生远端副作用，重试安全。
+        Err(text)
+            if crate::connector_tools::error_text_dispatch_rejected(&text)
+                || text.starts_with(NOT_SENT_MARKER) =>
+        {
             return Ok(fail_outcome(
                 &task_id,
                 &branch,
@@ -657,7 +899,10 @@ pub(crate) async fn publish_task_delivery(
         Err(text) => {
             match reconcile_by_match(
                 agent_loop,
-                &connector,
+                connector.as_deref(),
+                plugin_manager,
+                &reconcile_route,
+                &session_key,
                 protocol,
                 &rendered_reconcile_args,
                 &rendered_match,
@@ -834,12 +1079,13 @@ fn resolve_issue_title(store: &BoardStore, task_id: &str) -> Option<String> {
     Some(issue.title)
 }
 
-/// vault 凭据（`connector/<id>/pat` → (owner, pat)）：与 clone 凭据同源同
-/// 别名。缺席 = None（匿名推送——公开仓合法路径；私有仓 push 会诚实失败）。
-fn publish_credentials(workspace: &Path, connector: &str, owner: &str) -> Option<(String, String)> {
+/// vault 凭据（别名直收——`connector/<id>/pat` 或 `plugin/<slug>/pat`，批
+/// 3a 别名推导单点在 [`credential_alias`]）→ (owner, pat)：与 clone 凭据
+/// 同源同别名。缺席 = None（匿名推送——公开仓合法路径；私有仓 push 会诚实
+/// 失败）。
+fn publish_credentials(workspace: &Path, alias: &str, owner: &str) -> Option<(String, String)> {
     let vault_path = nemesis_path::resolve_vault_path_in_workspace(workspace);
-    match crate::vault_runtime::resolve_alias_at(&vault_path, &format!("connector/{connector}/pat"))
-    {
+    match crate::vault_runtime::resolve_alias_at(&vault_path, alias) {
         Ok(pat) if !pat.trim().is_empty() => Some((owner.to_string(), pat)),
         _ => None,
     }
@@ -847,7 +1093,7 @@ fn publish_credentials(workspace: &Path, connector: &str, owner: &str) -> Option
 
 /// connector op 调用（connector_invoke 工具走主 loop 完整 dispatch 瀑布，
 /// 非旁路——estop/hidden/安全 8 层/凭据注入/回执全生效）。
-async fn invoke(
+async fn invoke_native(
     agent_loop: &AgentLoop,
     connector: &str,
     op: &str,
@@ -869,6 +1115,85 @@ async fn invoke(
         return Err(text);
     }
     Ok(text)
+}
+
+/// plugin 步调用（批 3a）：`run_flow_step(slug, op, {"op","args",
+/// "session_key"})` 四态映射（与 report_plugin_comment/plugin fetch 同源
+/// 解析单点 [`crate::flow_engine::plugin_step_outcome`]）。
+///
+/// 语义分族（错误三态决定对账分支——诚实边界）：
+/// - 路由层失败（子系统缺席/插件停用/词表对账不过）= **确定未发出**，
+///   错误带 [`NOT_SENT_MARKER`] 前缀 → publish_task_delivery 归「未发出
+///   确定失败」分支（重试安全）；
+/// - guest 四态 `done` = 载荷原样返回（`{"status":"done", ...}` 去 status
+///   后对象，JSON path 直读字段展开）；
+/// - `failed`/`running`/`skipped`/malformed = guest 已执行过或语义违规，
+///   错误**不带**标记 → 走「可能已送达」对账保守分支（failed = HTTP 层
+///   失败可能已发出；running = guest 异步未决；skipped = 发布步无跳过
+///   语义但声明者违约时不可断言零副作用）。
+async fn invoke_plugin(
+    plugin_manager: &nemesis_plugins_wasm::registry::PluginManager,
+    slug: &str,
+    op: &str,
+    session_key: &str,
+    args: Value,
+) -> Result<String, String> {
+    let input = json!({
+        "op": op,
+        "args": args,
+        "session_key": session_key,
+    })
+    .to_string();
+    let out_json = plugin_manager
+        .run_flow_step(slug, op, input)
+        .await
+        .map_err(|e| format!("{NOT_SENT_MARKER} plugin:{slug}:{op} 投递失败: {e}"))?;
+    match crate::flow_engine::plugin_step_outcome(&out_json) {
+        crate::flow_engine::PluginOutcome::Done(payload) => Ok(payload.to_string()),
+        crate::flow_engine::PluginOutcome::Skipped(_) => Err(format!(
+            "{NOT_SENT_MARKER} plugin:{slug}:{op} guest 自报 skipped——发布步无跳过语义（创建/对账必须实作）"
+        )),
+        crate::flow_engine::PluginOutcome::Running => Err(format!(
+            "plugin:{slug}:{op} guest 处理中（running）——发布是单 tick 同步语义，op 应同步完成后返回"
+        )),
+        crate::flow_engine::PluginOutcome::Failed(err) => {
+            Err(format!("plugin:{slug}:{op} 失败: {err}"))
+        }
+        crate::flow_engine::PluginOutcome::Malformed(err) => {
+            Err(format!("plugin:{slug}:{op} 出参畸形: {err}"))
+        }
+    }
+}
+
+/// op 路由统一入口（批 3a）：Native 臂 = connector_invoke 工具面原样；
+/// Plugin 臂 = run_flow_step 四态。臂前置条件缺失（Native 无 connector /
+/// Plugin 无子系统）= 诚实 Err。
+async fn invoke_route(
+    agent_loop: &Arc<AgentLoop>,
+    connector: Option<&str>,
+    plugin_manager: Option<&Arc<nemesis_plugins_wasm::registry::PluginManager>>,
+    route: &OpRoute,
+    session_key: &str,
+    args: Value,
+) -> Result<String, String> {
+    match route {
+        OpRoute::Native(op) => {
+            let connector = connector.ok_or_else(|| {
+                format!(
+                    "op '{op}' 是 connector 原语形态但 publish 步缺 connector 声明（自持插件请改用 plugin:<slug>:<op>）"
+                )
+            })?;
+            invoke_native(agent_loop, connector, op, args).await
+        }
+        OpRoute::Plugin { slug, op } => {
+            let manager = plugin_manager.ok_or_else(|| {
+                format!(
+                    "{NOT_SENT_MARKER} plugin:{slug}:{op} 投递失败: flow-step 插件子系统未装配（宿主壳缺席/总闸关）"
+                )
+            })?;
+            invoke_plugin(manager, slug, op, session_key, args).await
+        }
+    }
 }
 
 /// 创建结果解析（协议声明化）：result_ref JSON path 取「外部条目号」、
@@ -969,7 +1294,10 @@ fn match_item(item: &Value, expr: &str) -> ItemMatch {
 
 async fn reconcile_by_match(
     agent_loop: &Arc<AgentLoop>,
-    connector: &str,
+    connector: Option<&str>,
+    plugin_manager: Option<&Arc<nemesis_plugins_wasm::registry::PluginManager>>,
+    route: &OpRoute,
+    session_key: &str,
     protocol: &PublishProtocol,
     reconcile_args: &BTreeMap<String, String>,
     match_expr: &str,
@@ -987,10 +1315,12 @@ async fn reconcile_by_match(
             json!(protocol.reconcile_limit),
         );
         page_args.insert(protocol.reconcile_page_key.clone(), json!(page));
-        let text = match invoke(
+        let text = match invoke_route(
             agent_loop,
             connector,
-            &protocol.reconcile_op,
+            plugin_manager,
+            route,
+            session_key,
             Value::Object(page_args),
         )
         .await
@@ -1000,9 +1330,15 @@ async fn reconcile_by_match(
             Err(_) => return ReconcileOutcome::Inconclusive,
         };
         // 页体数组解析 FIRST：不可解析（截断/错误页）= 未能扫尽，不冒充
-        // 「扫尽不在」。
+        // 「扫尽不在」。三形态（批 3a）：顶层数组（connector 原语惯例）、
+        // `{"entries": [...]}` 包裹（plugin 步 done 契约同款）、其余 =
+        // Inconclusive。
         let list: Vec<Value> = match serde_json::from_str(text.trim()) {
             Ok(Value::Array(a)) => a,
+            Ok(Value::Object(ref o)) => match o.get("entries") {
+                Some(Value::Array(a)) => a.clone(),
+                _ => return ReconcileOutcome::Inconclusive,
+            },
             _ => return ReconcileOutcome::Inconclusive,
         };
         for item in &list {

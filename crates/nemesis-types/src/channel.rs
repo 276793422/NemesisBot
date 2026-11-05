@@ -154,6 +154,16 @@ pub struct OutboundMeta {
     /// 消息，出站帧不带该键，与历史行为逐字节一致。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_via: Option<String>,
+    /// 非回合产物标记（2026-11-05 NB-1）：本出站是系统回执（busy 排队/
+    /// 拒绝/drain/estop 冻结/slash 静态确认/压缩与限流进度/续行中途回执/
+    /// connector 凭条卡），不是 agent 对任务文本的回合回复。按
+    /// `meta.session_key` 匹配出站等终局回复的消费方（看板本地派发回复
+    /// 捕获）必须跳过 receipt=true——queue-ack 与终局回复在内容上都是
+    /// 文本，生产者打标是唯一真相源（不做文本匹配）。false = 正常回合
+    /// 回复（含错误终局），缺省 false，出站帧不带该键，与历史行为逐字节
+    /// 一致。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub receipt: bool,
 }
 
 /// Outbound message from the agent engine to a channel.

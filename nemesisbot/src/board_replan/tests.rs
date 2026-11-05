@@ -249,6 +249,67 @@ fn proposal_state_tracks_dedup_and_version() {
     assert_eq!(s.version, 2, "拒绝评论不计入建议版本");
 }
 
+/// 回归锁（BUG-20261105-010）：assisted 模式建议评论以 @提及前缀落盘
+///（`@<creator> 🔁 重规划建议：…`），识别处 starts_with 直接失配 →
+/// last_replan 永远 None → 去重闸对本根单终身失效（重复起草无限继续）
+/// + 版本号恒 v1。修复 = 识别前剥掉一次 `@<id> ` 前缀。
+#[test]
+fn proposal_state_recognizes_assisted_mention_prefix() {
+    let (deps, _dir) = replan_deps("proposal-mention");
+    let creator = Actor::admin("user-1");
+    let root = mk_issue(&deps.store, "根单", None, &creator);
+
+    // assisted × admin creator 的真实落盘形态（board_replan.rs 399-412）。
+    sys_comment(
+        &deps.store,
+        root.id,
+        &format!("@{} {PROPOSAL_COMMENT_PREFIX}计划 v1（t）", creator.id),
+    );
+    let s = proposal_state(&deps.store, root.id).unwrap();
+    assert!(
+        s.pending,
+        "带 @提及前缀的建议应识别为在声待表态（旧代码失配恒放行）"
+    );
+    assert_eq!(
+        s.version, 2,
+        "带前缀建议计入版本 → 下一版 = 2（旧代码恒 1）"
+    );
+
+    // 人工表态后正常接管放行。
+    deps.store
+        .add_comment(NewComment {
+            issue_id: root.id,
+            author: Actor::admin("user-1"),
+            content: "同意，按建议执行".to_string(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+    let s = proposal_state(&deps.store, root.id).unwrap();
+    assert!(!s.pending, "人工评论在后 = 接管，去重闸放行");
+    assert_eq!(s.version, 2, "人工表态不推版本");
+}
+
+/// 回归锁（BUG-20261105-011）：in-flight 占位语义——首 claim 成功、同根单
+/// 重复 claim 拒绝、不同根单互不影响、guard drop 后可再 claim。
+#[test]
+fn inflight_claim_blocks_concurrent_and_releases_on_drop() {
+    let g = claim_replan_inflight(9_100_001).expect("首 claim 应成功");
+    assert!(
+        claim_replan_inflight(9_100_001).is_none(),
+        "同根单在飞期间重复 claim 应拒绝"
+    );
+    assert!(
+        claim_replan_inflight(9_100_002).is_some(),
+        "不同根单互不影响"
+    );
+    drop(g);
+    assert!(
+        claim_replan_inflight(9_100_001).is_some(),
+        "guard 释放后同根单可再 claim"
+    );
+}
+
 // ---------- 起草闸跳过臂（draft_replan_proposal，Ok(false) 路径）----------
 
 #[tokio::test]

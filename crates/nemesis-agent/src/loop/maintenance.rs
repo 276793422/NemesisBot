@@ -185,9 +185,9 @@ impl AgentLoop {
         // ——RPC ACK 等待/落盘路径 panic 展开时释放会话）。正常路径在两个
         // 出口各显式 drop（= 原 release_session），均先于 drain。
         let _busy_guard = super::admission::SessionBusyGuard::new(self, session_key);
-        // ① 收据先发。
+        // ① 收据先发（系统回执 receipt=true——结果回灌才是终局）。
         let receipt = format!("⏳ 已把编码任务派发给节点 {node_id}，完成后自动回复结果。");
-        self.finish_message(msg, receipt, None, false).await;
+        self.finish_message(msg, receipt, None, false, true).await;
 
         // ② 会话一致性：user 行落盘（原命令原文——派发上下文可追溯）。
         // SB（2026-09-17）：同正常轮——首行落盘 = 会话物化 → 发布事件。
@@ -263,6 +263,7 @@ impl AgentLoop {
                         "⚠ 任务已提交但本实例不支持续行回灌（无 continuation manager），结果无法自动回复。".to_string(),
                         None,
                         true,
+                        false,
                     )
                     .await;
                 }
@@ -276,7 +277,7 @@ impl AgentLoop {
         }
 
         // ⑤ 同步结果或错误：直接回复（handle_tool_call 把错误编码在返回串）。
-        self.finish_message(msg, result, None, true).await;
+        self.finish_message(msg, result, None, true, false).await;
         drop(_busy_guard); // = release_session（同步出口；panic 展开由守卫兜底）
         // 排队消息排空（与 admitted/维护尾巴同源，2026-09-28 滞留修复）。
         self.drain_next_turn_queue(session_key).await;

@@ -1,0 +1,285 @@
+# bugfix-flow 域插件清单（两件套：plugin.toml + guest；connector.toml 已退役）。
+#
+# `wasm-sha256` 由 guest 构建后填入真实哈希（见 README）；
+# 根键必须位于任何 table 段之前——TOML 语义。
+# 流程编排全在宿主 flow 引擎（guest 无驻留）；本清单是声明面。
+#
+# 0.2.0（2026-11-02 外循环域剥离批 C）：域知识全部进模板声明——
+# - 导入循环 C-1：origin-type/origin-id/origin-meta 声明（建单坐标透传）；
+# - 状态回写 C-2：on-transition 声明（board 状态 → Gitea issue_comment）；
+# - 发布 C-3：publish 步声明化（create_pull/pr_list 协议参数全在模板）。
+# 0.2.1：land 步声明 `project`（任务副本项目绑定）。0.2.2：fetch 步补
+# `body_field`（实例 body 恒空 → 验收锚落通用兜底的模板漂移修复）。0.2.3：
+# guest 对齐 a641c176 新 WIT 合同重编。0.2.4：[config-schema] 上线，剧本
+# 字面量全换 {{config.*}}（演进详情在 git 历史）。
+# 0.3.0（2026-11-04 插件自持批）：三件套 → 两件套——connector.toml 退役，
+# 三路外部调用全改 guest 自报步骤（plugin:bugfix-flow:fetch|comment|
+# create_pull|pr_list，组合 world plugin-panel-flow-step）。取数/回帖/建
+# PR/对账 = http-send + secret-get 直连 Gitea REST（PAT 头 `token ` 形态）；
+# 实例配置与凭据自持写通道 = 面板「实例设置」表单（save_settings 命令：
+# config-set ×5 + secret-set pat）；PAT vault 别名 connector/gitea/pat →
+# plugin/bugfix-flow/pat（publish 步凭据按 create_op 路由推导，git 推送
+# 仍在宿主 git_repo 侧）。base_url 不进剧本声明（无缺省 = 防假缺省 URL，
+# 含 /api/v1 前缀）：模板即装即载，未配置时各路诚实报错；保存后 egress
+# `{{config.base_url}}` 与 guest config-get 同帧热生效。origin-id 改字面
+# `gitea` 前缀（plugin fetch 模板禁 {{connector}}/{{arg.*}}——渲染产物
+# `gitea/<owner>/<repo>#<n>` 与 0.2.x 逐字节同形，parse-origin-id 不变）。
+wasm-sha256 = "a6f6c8c670c0e20cef596c31d811d0a0fe1b7594b769e285c05f057d6e612e26"
+api-version = 1
+slug = "bugfix-flow"
+kind = "panel"
+name = "BUG 修复流水线"
+version = "0.3.0"
+description = "样板工程：Gitea BUG 修复流水线（自持形态：面板 + flow 剧本 + guest 直连 Gitea REST；导入/回写/发布走自报步骤，PAT 走 vault）"
+
+# 出网面：只准打 base_url 指向的实例（整条目 token，配置热渲染；未配置 =
+# 能力整体关闭）；凭据面：PAT（vault plugin/bugfix-flow/pat，面板表单写入）。
+# allow-private：自托管 Gitea 本就常驻企业内网（10.x/192.168.x/127.x），
+# 私网放行是产品语义不是测试后门——allowlist 仍钉 base_url 精确值，
+# DNS 钉地址（rebinding 防御）照常。
+[permissions]
+egress = ["{{config.base_url}}"]
+allow-private = true
+x-secret = ["pat"]
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+# 实例配置（插件页「配置」钮或面板「实例设置」表单可改；剧本 {{config.<键>}}
+# 装载期渲染）。base_url 无缺省（未设置 = 诚实报错，不猜 URL）；PAT 走
+# x-secret，不进这里——凭据面分离。
+[config-schema]
+base_url = { desc = "Gitea API 根（含 /api/v1 前缀，如 http://127.0.0.1:3000/api/v1；未设置时各路诚实报错）" }
+owner = { desc = "Gitea 仓库属主", default = "p0admin" }
+repo = { desc = "Gitea 仓库名", default = "durfmt" }
+state = { desc = "取数 issue 状态过滤（open/closed/all）", default = "open" }
+base_branch = { desc = "PR 目标分支", default = "main" }
+
+# 页面骨架：宿主预置组件按声明渲染（词汇 form/table/timeline/detail/actions）。
+# 数据绑定 flow://<template>/<view> = 宿主 flow 引擎代答；cmd://<name> = guest。
+[[ui.page]]
+route = "bugfix"
+title = "BUG 修复流水线"
+icon = "bug"
+
+[[ui.page.views]]
+kind = "table"
+bind = "flow://bugfix-pipeline/list"
+
+[[ui.page.views.columns]]
+key = "instance"
+label = "实例"
+
+[[ui.page.views.columns]]
+key = "title"
+label = "标题"
+
+[[ui.page.views.columns]]
+key = "state"
+label = "状态"
+
+[[ui.page.views.columns]]
+key = "step"
+label = "当前步"
+
+[[ui.page.views.columns]]
+key = "board_issue"
+label = "看板单"
+
+[[ui.page.views]]
+kind = "timeline"
+bind = "flow://bugfix-pipeline/timeline"
+
+[[ui.page.views]]
+kind = "detail"
+bind = "flow://bugfix-pipeline/detail"
+
+[[ui.page.views.columns]]
+key = "instance"
+label = "实例"
+
+[[ui.page.views.columns]]
+key = "state"
+label = "状态"
+
+[[ui.page.views.columns]]
+key = "current_step"
+label = "当前步"
+
+[[ui.page.views.columns]]
+key = "board_issue"
+label = "看板单"
+
+[[ui.page.views.columns]]
+key = "parked"
+label = "停车"
+
+# 人工闸确认表单：instance 留空 = 最近更新的实例。
+# fixloop 与 publish 两步都停 awaiting-gate，同一按钮同一机制。
+[[ui.page.views]]
+kind = "form"
+bind = "flow://bugfix-pipeline/confirm"
+
+[[ui.page.views.fields]]
+key = "instance"
+label = "实例（留空 = 最近更新）"
+placeholder = "如 12"
+
+# 停车实例恢复表单。
+[[ui.page.views]]
+kind = "form"
+bind = "flow://bugfix-pipeline/resume"
+
+[[ui.page.views.fields]]
+key = "instance"
+label = "实例（留空 = 最近更新）"
+placeholder = "如 12"
+
+# guest 动作：单条详情投影（Gitea index 整数序号；owner/repo 留空 = 实例配置）。
+[[ui.page.views]]
+kind = "form"
+bind = "cmd://gitea_get"
+
+[[ui.page.views.fields]]
+key = "owner"
+label = "仓库属主（留空 = 实例配置）"
+placeholder = "如 p0admin"
+
+[[ui.page.views.fields]]
+key = "repo"
+label = "仓库名（留空 = 实例配置）"
+placeholder = "如 durfmt"
+
+[[ui.page.views.fields]]
+key = "key"
+label = "Issue 序号"
+placeholder = "如 12"
+
+# 实例设置（自持写通道）：字段全可留空 = 保持原值；PAT 只写不读（保存后
+# 无法回显）。单条配置微调也可走插件页「配置」钮（同一实例配置面）。
+[[ui.page.views]]
+kind = "form"
+bind = "cmd://save_settings"
+
+[[ui.page.views.fields]]
+key = "base_url"
+label = "Gitea API 根（含 /api/v1）"
+placeholder = "如 http://127.0.0.1:3000/api/v1"
+
+[[ui.page.views.fields]]
+key = "owner"
+label = "仓库属主"
+placeholder = "如 p0admin"
+
+[[ui.page.views.fields]]
+key = "repo"
+label = "仓库名"
+placeholder = "如 durfmt"
+
+[[ui.page.views.fields]]
+key = "state"
+label = "取数状态（open/closed/all）"
+placeholder = "open"
+
+[[ui.page.views.fields]]
+key = "base_branch"
+label = "PR 目标分支"
+placeholder = "main"
+
+[[ui.page.views.fields]]
+key = "pat"
+label = "访问令牌（PAT）"
+field-type = "secret"
+placeholder = "留空 = 保持已存令牌"
+
+[[ui.page.views]]
+kind = "actions"
+bind = ""
+
+[[ui.page.views.buttons]]
+label = "同步 Gitea issue"
+command = "flow://bugfix-pipeline/fetch"
+
+[[ui.page.views.buttons]]
+label = "确认推进（最近实例）"
+command = "flow://bugfix-pipeline/confirm"
+
+[[ui.page.views.buttons]]
+label = "恢复停车实例"
+command = "flow://bugfix-pipeline/resume"
+
+# 剧本：取 → 落 → 修复循环（人工闸）→ 验收 → 发布（人工闸，缺口续行）→ 报告。
+# 域知识声明面：origin 三件套（C-1 建单坐标）+ on-transition（C-2 回写）+
+# publish 协议（C-3 真发布），三路全部 guest 自报步骤。宿主只提供通用原语
+# 与 token 插值。
+[[flow.template]]
+id = "bugfix-pipeline"
+interval-secs = 300
+origin-type = "gitea"
+# 字面 `gitea` 前缀（plugin fetch 模板禁 {{connector}}/{{arg.*}}）——渲染
+# 产物 `gitea/<owner>/<repo>#<n>` 与 0.2.x 逐字节同形。
+origin-id = "gitea/{{config.owner}}/{{config.repo}}#{{key}}"
+# 回写坐标落库载体：owner/repo 取实例配置（{{config.*}} 装载期渲染——缺省
+# 或插件页配置值），number 取条目键（{{key}} = key_field 指定的字段值，即
+# Gitea issue 序号）；board 单 origin_meta 由此透传落库。origin-meta 值域 =
+# 身份 token 表 {key, config.*}。
+origin-meta = { owner = "{{config.owner}}", repo = "{{config.repo}}", number = "{{key}}" }
+
+# board 状态转移 → Gitea issue 回帖（guest 自报 comment op）。args 值过
+# token 插值（严格渲染）：origin_meta.<key> 优先；v1 旧单 origin_meta 缺席
+# 时用 parse-origin-id 现场 origin_id 分解（`gitea/<owner>/<repo>#12` 形态）。
+[flow.template.on-transition]
+op = "plugin:bugfix-flow:comment"
+args = { owner = "{{origin_meta.owner}}", repo = "{{origin_meta.repo}}", index = "{{origin_meta.number}}", body = "{{transition.text}}" }
+parse-origin-id = { owner = "segment '/' 1", repo = "before '#' | segment '/' 2", number = "after '#'" }
+
+# 取数 = guest 自报 fetch op（http-send 直连 Gitea issues 列表）。owner/repo/
+# state 装载期渲染（换靶改配置不改清单）；key/title/body 三字段是宿主物化
+# 坐标（裸字段名——Gitea issue 对象 number/title/body 顶层；body_field 落实
+# 时提取 [CHECK] 行为验收锚）。
+[[flow.template.steps]]
+id = "fetch"
+kind = "plugin:bugfix-flow:fetch"
+args = { owner = "{{config.owner}}", repo = "{{config.repo}}", state = "{{config.state}}", limit = "50", key_field = "number", title_field = "title", body_field = "body" }
+
+[[flow.template.steps]]
+id = "land"
+kind = "board_land"
+args = { project = "gitea/{{config.owner}}/{{config.repo}}" }
+
+[[flow.template.steps]]
+id = "fixloop"
+kind = "agent_fixloop"
+gate = "manual"
+on-fail = "park_human"
+
+[[flow.template.steps]]
+id = "regress"
+kind = "check_regress"
+
+# 发布步（C-3 声明化，0.3.0 换 guest 自报步骤）：推交付分支 nemesis/task-
+# <task_id> + 建 PR + 缺口对账（Found/Absent/Inconclusive 三态）。connector
+# 键退役（双 op 均 plugin 引用，凭据别名 = plugin/bugfix-flow/pat 按
+# create_op 路由推导；git 推送仍在宿主 git_repo 侧）；owner/repo 来自
+# {{config.*}}（装载期渲染成字面量，之后按字面量语义）；create_args/
+# reconcile_args 是 JSON 对象串（值过 token 渲染：branch/commit/base_sha/
+# task_id 运行期，title/board_issue 等取数期；reconcile 翻页由宿主注入
+# limit/page 数字基参，guest 双形态透传远端）。人工闸：publish 与 fixloop
+# 共用面板确认按钮。
+# on-fail=continue：发布失败=缺口记账（不停车），report 照常出报告——
+# dossier/timeline 携带缺口，外部评论区仍拿到报告路径可查证；fixloop 的
+# park_human 语义保持不变（无交付=没法继续，必须停车）。
+[[flow.template.steps]]
+id = "publish"
+kind = "publish"
+gate = "manual"
+on-fail = "continue"
+args = { owner = "{{config.owner}}", repo = "{{config.repo}}", create_op = "plugin:bugfix-flow:create_pull", create_args = '{"owner": "{{config.owner}}", "repo": "{{config.repo}}", "head": "{{branch}}", "base": "{{config.base_branch}}", "title": "[{{board_issue}}] {{title}}", "body": "看板单 {{board_issue}}；交付分支 `{{branch}}`（commit {{commit}}，基线 {{base_sha}}）。\n\n来源 issue #{{ext_key}}；由 bugfix-flow 流水线自动发布。"}', result_ref = "$.number", result_url = "$.html_url", reconcile_op = "plugin:bugfix-flow:pr_list", reconcile_args = '{"owner": "{{config.owner}}", "repo": "{{config.repo}}", "state": "all"}', reconcile_match = "$.head.ref == {{branch}}" }
+
+# 报告回帖（guest 自报 comment op；connector = plugin 引用形态，op 段即引用
+# 组成；args_json 含 report_path token 渲染）。
+[[flow.template.steps]]
+id = "report"
+kind = "report"
+args = { connector = "plugin:bugfix-flow:comment", args_json = '{"owner": "{{config.owner}}", "repo": "{{config.repo}}", "index": "{{ext_key}}", "body": "NemesisBot 流水线完成「{{title}}」（看板单 {{board_issue}}）\n\n报告：{{report_path}}"}' }

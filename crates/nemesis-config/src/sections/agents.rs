@@ -138,6 +138,30 @@ pub struct AgentsConfig {
     /// future，已 spawn 的子进程可能成为孤儿（B4 后台注册表/停摆清扫兜底）。
     #[serde(default = "default_executor_tool_timeout_secs")]
     pub executor_tool_timeout_secs: u64,
+    /// L29 流断拼接开关（`agents.stream_concat_retry`）。默认开（拼接省
+    /// token）；显式 false = stream 断流回退「重试从头」。消费方
+    /// `config_watch::stream_concat_retry_from_value` 原始 JSON fresh-read
+    /// （nemesis-agent）——typed 字段化保证 save_config 往返不丢键
+    /// （P32 cache_warmer 同款预防，BUG-20261105-008：不建模则显式
+    /// 「重试从头」被任何 typed 保存静默抹掉回翻拼接）。
+    #[serde(default = "default_true")]
+    pub stream_concat_retry: bool,
+    /// B 端职能工具围栏总闸（`agents.profession_tool_fence`）。默认开；
+    /// 显式 false = 任务装配不写 `AgentConfig.tools` 白名单（供给/派发
+    /// 双闸的权威判据为空 = 不围）。消费方
+    /// `config_watch::current_profession_tool_fence` 世代快照原始读
+    /// （nemesisbot::cluster_agent）——typed 字段化同款预防
+    /// （BUG-20261105-008）。
+    #[serde(default = "default_true")]
+    pub profession_tool_fence: bool,
+    /// L10 工具参数面惰性供给（`agents.lazy_tool_schema`）。**缺省随
+    /// tier**（mini 强制惰性 / big·auto 恒全量 / normal 缺省惰性）——必须
+    /// `Option<bool>` 而非定值 bool：typed 字段化若写死默认会把「未表态」
+    /// 钉成显式值，破坏 tier 切换语义。None（缺席/null）= 交给消费方
+    /// `current_lazy_tool_schema` 裁决矩阵；Some(false)（normal 档全量）/
+    /// Some(true) 显式表态照常保留（BUG-20261105-008）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lazy_tool_schema: Option<bool>,
 }
 
 /// `agents.executor_tool_timeout_secs` 缺键默认（30 分钟）。

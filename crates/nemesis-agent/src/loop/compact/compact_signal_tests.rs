@@ -596,6 +596,26 @@ fn gate_blocks_oversized_only_segment() {
     assert!(summarize_advance_worthwhile(&history2, 0, 4, 100));
 }
 
+/// 回归锁（BUG-20261105-009）：边界倒退不 panic。`new_c > c` 是内置触发
+/// 闸，但策略槽 `Compact`（WASM 组件强制压缩意志）绕过它——rewind 截断 /
+/// config 热改 keep_recent_tokens 后 new_c < c 可达，切片曾直接 panic 炸
+/// turn。修复 = end <= start 短路返回 false。
+#[test]
+fn gate_no_panic_on_boundary_regression() {
+    let history = vec![
+        turn("system", "sys prompt"),
+        turn("user", "hi"),
+        turn("assistant", "yo"),
+    ];
+    // rewind 形态：covers_up_to 钳到缩短后的 history.len()=3，策略槽强推
+    // 的新边界 < c。旧代码此处 `history[3..2]` panic。
+    assert!(!summarize_advance_worthwhile(&history, 3, 2, 100));
+    // config 热改形态：keep 预算变大 → 新边界回退到 c 之前。
+    assert!(!summarize_advance_worthwhile(&history, 2, 1, 100));
+    // 零前进（end == start）：空切片同语义 false，显式短路。
+    assert!(!summarize_advance_worthwhile(&history, 1, 1, 100));
+}
+
 /// 行为回归（死亡螺旋逆向）：巨大 system + 小尾巴预算 → 首次触发被闸门
 /// 拦截（provider 零调用、失败计数零），历史长过尾巴预算后闸门自然放开
 /// → 摘要正常发生（covers 推进）。旧代码在第一段就烧掉 stuck 闩。

@@ -122,4 +122,25 @@ pub struct HostCallbacks {
             out_detail: *mut *mut c_char,
         ) -> c_int,
     >,
+    /// `secret-set(name, value) -> result<_, host-error>`（2026-11-03 自持
+    /// 写通道增补槽的宿主镜像；追加 pattern 同上）。宿主镜像恒填
+    /// `Some(cb_secret_set)`（见 `callbacks.rs`）。
+    pub secret_set: Option<
+        unsafe extern "C" fn(
+            env: *mut c_void,
+            name: *const c_char,
+            value: *const c_char,
+            out_detail: *mut *mut c_char,
+        ) -> c_int,
+    >,
+    /// `config-set(key, value) -> result<_, host-error>`（同批增补槽镜像）。
+    /// 宿主镜像恒填 `Some(cb_config_set)`（见 `callbacks.rs`）。
+    pub config_set: Option<
+        unsafe extern "C" fn(
+            env: *mut c_void,
+            key: *const c_char,
+            value: *const c_char,
+            out_detail: *mut *mut c_char,
+        ) -> c_int,
+    >,
 }

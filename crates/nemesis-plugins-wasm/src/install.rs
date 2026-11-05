@@ -63,6 +63,11 @@ pub struct LockfileEntry {
     pub installed_at_ms: u64,
     /// 签名者公钥前 16 hex（未签名 = 空）。
     pub signed_by: String,
+    /// 装配自动注册成功的 connector id（2026-11-03 域侧批：审计面 + 卸载
+    /// 提示；只记事实——冲突不覆盖/IO 失败的不在此列。`#[serde(default)]`
+    /// 旧形态 lockfile 零迁移）。
+    #[serde(default)]
+    pub connectors: Vec<String>,
 }
 
 /// 审批卡内容（装配漏斗第⑤步入参；Dashboard/CLI 渲染面）。
@@ -96,6 +101,9 @@ pub struct InstallReview {
     pub ui_pages: usize,
     /// flow 剧本模板数（kind=panel 的声明面摘要；其他 kind = 0）。
     pub flow_templates: usize,
+    /// 包内 connector.toml 声明的 connector id（2026-11-03 域侧批：装前
+    /// 可见「将注册 connector: gitea」；解析失败到不了审批卡——①段已拒）。
+    pub connectors: Vec<String>,
     /// manifest limits 被忽略的放宽请求。
     pub limits_ignored: Vec<String>,
     /// 来源目录。
@@ -134,6 +142,9 @@ pub struct ApprovedInstall {
     pub policy_meta: Option<PolicyMetaSnapshot>,
     /// flow 步骤面快照（kind=flow-step 时非空；2026-11-03 guest step 批）。
     pub step_meta: Option<StepMetaSnapshot>,
+    /// 装配自动注册**成功**的 connector id（⑥.5 事实面；冲突不覆盖/IO
+    /// 失败者不在列，与 lockfile 记账同源）。
+    pub connectors: Vec<String>,
 }
 
 /// `install` 的返回（第⑨步结果：装载与否由开关决定，调用方按此展示）。
@@ -288,6 +299,11 @@ impl PluginInstaller {
         let (manifest, outcome) = verify_manifest(&raw, &self.verifier)?;
         let trust_state = trust_state_for(&outcome, allow_unsigned)?;
 
+        // ①.5 包内 connector.toml 预检（2026-11-03 域侧批）：解析失败 =
+        // 拒绝安装（fail-closed，与 sha mismatch 同级——不装「看起来装好
+        // 但 connector 不可用」的插件；此处零突变，早拒早干净）。
+        let bundled_connector = self.parse_bundled_connector(source_dir)?;
+
         // 纯声明式面板（无载荷）：③④⑥ 三步诚实跳过——无字节可比对/
         // 可扫描/可编译，扩展点本体（ui/flow 段）全由宿主引擎兑现；
         // manifest 校验已保证声明式必为 panel 且至少一个页面。
@@ -339,6 +355,10 @@ impl PluginInstaller {
             wasm_sha256: actual_hash,
             ui_pages: manifest.ui.pages.len(),
             flow_templates: manifest.flow.templates.len(),
+            connectors: bundled_connector
+                .as_ref()
+                .map(|(id, _)| vec![id.clone()])
+                .unwrap_or_default(),
             limits_ignored: self.manager.limits().tighten_with(&manifest.limits).1,
             source_dir: source_dir.display().to_string(),
         };
@@ -371,11 +391,26 @@ impl PluginInstaller {
             (component, tool_meta, policy_meta, step_meta)
         };
 
+        // ⑥.5 connector 装配自动注册（2026-11-03 域侧批）：包内
+        // connector.toml → `<workspace>/connectors/<id>/`（落文件即注册，
+        // scan_connectors 目录扫描制）。冲突语义：目标在场且内容不同 =
+        // **不覆盖** + WARN（connector 含 base/clone_url 等用户必改字段，
+        // 覆盖即毁配置）；内容相同 = no-op。复制 IO 失败 = WARN 非致命
+        // （环境问题回落手动拷贝边界，安装不炸）。只记实际注册成功的 id
+        // （lockfile 记账与卸载提示同源）。
+        let registered_connectors = match &bundled_connector {
+            Some((id, body)) => self
+                .register_connector(id, body)
+                .into_iter()
+                .collect::<Vec<_>>(),
+            None => Vec::new(),
+        };
+
         // ⑦ lockfile（lockfile-first：落位之前写——失败 = 零突变干净中止，
         // 优于「报失败但新载荷已生效」的谎报；与 uninstall 的 remove-lockfile
         // 先行对称。load_one 不读 lockfile（sha 自洽比对），此处失败留下的
         // 元数据超前不破本进程装载，重装自愈。2026-09-30 复查 #5）
-        self.update_lockfile(&manifest, trust_state, &outcome)?;
+        self.update_lockfile(&manifest, trust_state, &outcome, &registered_connectors)?;
 
         // ⑧ 落位（升级路径：先清旧载荷；数据目录保留不动）。删除重试耗尽
         // 必须中止——继续落位会新旧载荷文件混布（2026-09-29 交付审查 L3）。
@@ -410,7 +445,72 @@ impl PluginInstaller {
             tool_meta,
             policy_meta,
             step_meta,
+            connectors: registered_connectors,
         })
+    }
+
+    /// ①.5 包内 connector.toml 预检：缺席 = None；解析失败 = fail-closed
+    /// 拒装（Manifest 错，零突变）。返回 (connector id, 原文)。
+    fn parse_bundled_connector(
+        &self,
+        source_dir: &Path,
+    ) -> Result<Option<(String, String)>, PluginError> {
+        let path = source_dir.join(nemesis_connectors::registry::MANIFEST_FILE);
+        let raw = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => {
+                return Err(PluginError::Manifest(format!(
+                    "read {}: {e}",
+                    path.display()
+                )));
+            }
+        };
+        let validated = nemesis_connectors::manifest::parse_connector_manifest(&raw)
+            .map_err(|e| PluginError::Manifest(format!("connector.toml 解析失败: {e}")))?;
+        Ok(Some((validated.id, raw)))
+    }
+
+    /// ⑥.5 connector 注册（单条）：见 install_core 内注释。返回注册成功
+    /// 的 id（冲突不覆盖/IO 失败 = None）。
+    fn register_connector(&self, id: &str, body: &str) -> Option<String> {
+        let dir = self
+            .manager
+            .workspace_root()
+            .join(nemesis_connectors::registry::CONNECTORS_DIR)
+            .join(id);
+        let target = dir.join(nemesis_connectors::registry::MANIFEST_FILE);
+        if let Ok(existing) = std::fs::read_to_string(&target) {
+            if existing == body {
+                tracing::info!(
+                    connector = id,
+                    "[WasmPlugin] connector 已在册且内容一致（no-op）"
+                );
+                return Some(id.to_string());
+            }
+            tracing::warn!(
+                connector = id,
+                target = %target.display(),
+                "[WasmPlugin] connector 已存在且内容不同，不覆盖（保留用户自定义；插件侧未注册该 connector，需手动合并）"
+            );
+            return None;
+        }
+        if std::fs::create_dir_all(&dir)
+            .and_then(|()| std::fs::write(&target, body))
+            .is_err()
+        {
+            tracing::warn!(
+                connector = id,
+                target = %target.display(),
+                "[WasmPlugin] connector 注册失败（复制 IO 错误；回落手动拷贝边界，安装不受影响）"
+            );
+            return None;
+        }
+        tracing::info!(
+            connector = id,
+            "[WasmPlugin] connector 已注册（装配自动注册）"
+        );
+        Some(id.to_string())
     }
 
     /// 病毒扫描（第④步）；Ok(Some(注记))=跳过，Err=拦截。
@@ -443,9 +543,12 @@ impl PluginInstaller {
     /// 编译后对账（第⑥步）：tool = probe get-metadata + 字段合法性；
     /// observer = 只编译验证（probe 由注册后首事件兜底）；
     /// policy = probe get-policy-metadata + ≥1 接管点校验（2026-10-22 批 4）；
-    /// panel = 只编译验证（2026-10-31 面板扩展批——壳 compile 期已验 world +
-    /// `handle-ui-command` 导出在场；页面/路由合法性是声明面，归 manifest
-    /// validate，无运行期元数据可探）；
+    /// panel = 探针 get-step-metadata 分诊（2026-11-03 组合 world 批）——
+    /// 成功 = panel 双导出 flow-step 的组合形态（按 flow-step 同规对账
+    /// kinds）；壳明报「not a flow-step plugin」= 纯面板（无运行期元数据；
+    /// 页面/路由合法性是声明面，归 manifest validate）——锚点是壳+宿主
+    /// 同仓发运的确定性错误文案（host_dll_freshness 测试钉壳陈旧）；
+    /// 其余错误原样上抛（真故障不吞）；
     /// flow-step = probe get-step-metadata + kind 词表非空 + 形态校验
     /// （2026-11-03 guest step 批——运行期路由按此对账）。
     #[allow(clippy::type_complexity)]
@@ -463,7 +566,7 @@ impl PluginInstaller {
         PluginError,
     > {
         let _ = trust_state;
-        if *manifest.kind == PluginKind::Observer || *manifest.kind == PluginKind::Panel {
+        if *manifest.kind == PluginKind::Observer {
             return Ok((None, None, None));
         }
         if *manifest.kind == PluginKind::Policy {
@@ -487,6 +590,29 @@ impl PluginInstaller {
             }
             return Ok((None, Some(pm), None));
         }
+        // panel 分诊（2026-11-03 组合 world 批）：kind=panel 组件可能是
+        // panel 双导出 flow-step 的组合形态——探针 get-step-metadata 试探。
+        // 成功 = 组合（快照进注册表，run_flow_step 按 flow-step 同规投递）；
+        // 壳「not a flow-step plugin」明报 = 纯面板（无步骤面，原样放行）；
+        // 其余 Err 原样上抛（真故障不吞——组合组件自报坏词表也必须装失败）。
+        if *manifest.kind == PluginKind::Panel {
+            let frame = probe_frame(self.manager.as_ref(), manifest);
+            match self
+                .manager
+                .runtime()
+                .probe_step_metadata(component, frame)
+                .await
+            {
+                Ok(meta) => {
+                    validate_step_kinds(&meta.kinds)?;
+                    return Ok((None, None, Some(StepMetaSnapshot { kinds: meta.kinds })));
+                }
+                Err(PluginError::Host(ref msg)) if msg.contains("not a flow-step plugin") => {
+                    return Ok((None, None, None));
+                }
+                Err(e) => return Err(e),
+            }
+        }
         // flow 步骤对账（2026-11-03 guest step 批）：探针 get-step-metadata
         // （紧超时同 validation 口径）；kind 词表非空 + 形态校验（1-64 字符
         // 无空白/控制字符）——模板 `plugin:<slug>:<op>` 引用的 op 必须在词
@@ -498,18 +624,7 @@ impl PluginInstaller {
                 .runtime()
                 .probe_step_metadata(component, frame)
                 .await?;
-            if meta.kinds.is_empty() {
-                return Err(PluginError::MetadataMismatch(
-                    "flow-step component must report at least one step kind".into(),
-                ));
-            }
-            for k in &meta.kinds {
-                if !crate::manifest::valid_step_op(k) {
-                    return Err(PluginError::MetadataMismatch(format!(
-                        "invalid step kind '{k}' (1-64 chars, no whitespace/control)"
-                    )));
-                }
-            }
+            validate_step_kinds(&meta.kinds)?;
             return Ok((None, None, Some(StepMetaSnapshot { kinds: meta.kinds })));
         }
         let frame = probe_frame(self.manager.as_ref(), manifest);
@@ -570,6 +685,7 @@ impl PluginInstaller {
         manifest: &PluginManifest,
         trust_state: PluginTrustState,
         outcome: &VerificationOutcome,
+        connectors: &[String],
     ) -> Result<(), PluginError> {
         let path = self.manager.plugins_dir().join("lockfile.json");
         // 文件缺失 = 全新 lockfile；损坏 = 诚实报错（静默重置会丢全部安装
@@ -592,6 +708,7 @@ impl PluginInstaller {
                 trust: trust_state.as_str().to_string(),
                 installed_at_ms: unix_millis(),
                 signed_by: outcome.public_key.chars().take(16).collect(),
+                connectors: connectors.to_vec(),
             },
         );
         let body = serde_json::to_string_pretty(&lockfile)
@@ -809,6 +926,25 @@ impl PluginInstaller {
     }
 }
 
+/// step kinds 词表对账（组合 world 批从 probe_and_reconcile 提取共用）：
+/// 非空 + 形态校验（1-64 字符无空白/控制字符）——模板 `plugin:<slug>:<op>`
+/// 引用的 op 必须在词表内，安装期就把越权引用拦在门外。
+fn validate_step_kinds(kinds: &[String]) -> Result<(), PluginError> {
+    if kinds.is_empty() {
+        return Err(PluginError::MetadataMismatch(
+            "flow-step component must report at least one step kind".into(),
+        ));
+    }
+    for k in kinds {
+        if !crate::manifest::valid_step_op(k) {
+            return Err(PluginError::MetadataMismatch(format!(
+                "invalid step kind '{k}' (1-64 chars, no whitespace/control)"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// 探针帧（安装/装载期；invoker/secrets 不注入——元数据自报不该碰能力面）。
 fn probe_frame(manager: &PluginManager, manifest: &PluginManifest) -> crate::runtime::CallFrame {
     // 探针发生在 register 之前（数据目录此时尚未创建）；guest 组件可能带
@@ -833,6 +969,8 @@ fn probe_frame(manager: &PluginManager, manifest: &PluginManifest) -> crate::run
         egress: Arc::new(crate::egress::EgressPolicy::default()),
         invoker: None,
         llm: None,
+        secret_write: None,
+        config_write: None,
         data_dir,
         audit: None,
         session_key: String::new(),
@@ -907,6 +1045,22 @@ fn ensure_plain_filename(name: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// lockfile 摘除前的条目 connector 清单（2026-11-03 域侧批：卸载提示
+/// 取证；读失败/条目缺席 = 空表，不阻塞卸载）。
+fn lockfile_connectors_of(manager: &PluginManager, slug: &str) -> Vec<String> {
+    let path = manager.plugins_dir().join("lockfile.json");
+    let Ok(s) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let Ok(lf) = serde_json::from_str::<PluginLockfile>(&s) else {
+        return Vec::new();
+    };
+    lf.plugins
+        .get(slug)
+        .map(|e| e.connectors.clone())
+        .unwrap_or_default()
+}
+
 /// lockfile 摘除单条目（原子写；漏斗锁内调用）。返回是否原本在场。
 fn remove_lockfile_entry(manager: &PluginManager, slug: &str) -> Result<bool, PluginError> {
     let path = manager.plugins_dir().join("lockfile.json");
@@ -939,6 +1093,9 @@ pub async fn uninstall(manager: &PluginManager, slug: &str) -> Result<bool, Plug
 /// 卸载本体（同步，漏斗锁由调用方持有）。`uninstall_blocking` 供无异步
 /// 上下文的 Drop 尽力清理使用（测试收尾单线程，无并发面）。
 fn uninstall_inner(manager: &PluginManager, slug: &str) -> Result<bool, PluginError> {
+    // 卸载提示取证先于摘除（摘了就查无此条）。connector **不随卸载删除**
+    // ——可能已被用户定制（base/clone_url 等），删除即毁配置。
+    let connectors = lockfile_connectors_of(manager, slug);
     let in_lockfile = remove_lockfile_entry(manager, slug)?;
     let existed = manager.unregister(slug);
     let removed = resilient_remove_dir_all(&manager.plugin_dir(slug)).map_err(|e| {
@@ -956,6 +1113,13 @@ fn uninstall_inner(manager: &PluginManager, slug: &str) -> Result<bool, PluginEr
             payload_removed = removed,
             lockfile_removed = in_lockfile,
             "[WasmPlugin] 已卸载（载荷/lockfile/开关记录清点）"
+        );
+    }
+    if !connectors.is_empty() {
+        tracing::info!(
+            slug,
+            connectors = ?connectors,
+            "[WasmPlugin] 插件曾注册 connector，未随卸载删除（可能已被定制；需手动清理走 <workspace>/connectors/<id>/）"
         );
     }
     Ok(existed || removed || in_lockfile)

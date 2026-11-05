@@ -689,6 +689,11 @@ fn test_full_config_roundtrip() {
             delegate: crate::DelegateToolConfig::default(),
             turn_wal: true,
             provider_stream_events: true,
+            // BUG-20261105-008 三键（serde 缺省 true/true/None）——全字段
+            // 初始化器补齐（值对齐 lib.rs Default）。
+            stream_concat_retry: true,
+            profession_tool_fence: true,
+            lazy_tool_schema: None,
             executor_tool_timeout_secs: 1800,
             defaults: AgentDefaults {
                 max_tokens: 256000,
@@ -3871,6 +3876,79 @@ fn test_typed_entry_without_unknown_keys_serializes_without_extra_noise() {
     // 10 个类型化字段（2026-09-11 LLM 协议选择器加入 protocol 后由 9→10），
     // 无 extra 噪音。
     assert_eq!(obj.len(), 10, "十个类型化字段，无 extra 噪音: {obj:#?}");
+}
+
+// ============================================================
+// 顶层/agents 级 raw 消费键 typed 保存保真（BUG-20261105-008 回归锁）
+// ============================================================
+
+#[test]
+fn test_typed_save_roundtrip_preserves_raw_consumed_keys() {
+    // config.json 被原始 JSON pointer/Value 消费、但 typed struct 曾未建模
+    // 的四个键（顶层 plugins.wasm.enabled / agents.stream_concat_retry /
+    // agents.profession_tool_fence / agents.lazy_tool_schema）在 typed
+    // load→save round-trip 后必须原样保留——此前任何 typed 保存
+    // （dashboard config/models/skills/profile 事务、save_live、
+    // ConfigStore::update、MCP manager 等 9 个调用点）都把它们静默抹掉：
+    // WASM 显式禁用静默回翻启用、断流「重试从头」回翻拼接、B 端职能围栏
+    // 静默重开、normal 档 schema 供给形态翻转。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let raw = serde_json::json!({
+        "plugins": {
+            "wasm": { "enabled": false },
+            "future_sibling_key": { "keep": true }
+        },
+        "agents": {
+            "stream_concat_retry": false,
+            "profession_tool_fence": false,
+            "lazy_tool_schema": false,
+            "defaults": { "llm": "test/m1" }
+        }
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let mut cfg = crate::load_config(&path).unwrap();
+    crate::save_config(&path, &mut cfg).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    // WASM 总闸显式禁用必须存活（runtime_enabled pointer /plugins/wasm/enabled）。
+    assert_eq!(after["plugins"]["wasm"]["enabled"], false);
+    // 段内未建模 sibling 键经 flatten 原样回吐。
+    assert_eq!(after["plugins"]["future_sibling_key"]["keep"], true);
+    // agents 级三键显式表态必须存活。
+    assert_eq!(after["agents"]["stream_concat_retry"], false);
+    assert_eq!(after["agents"]["profession_tool_fence"], false);
+    assert_eq!(after["agents"]["lazy_tool_schema"], false);
+}
+
+#[test]
+fn test_typed_save_absent_state_does_not_pin_lazy_schema_or_disable_wasm() {
+    // 未表态形态：lazy_tool_schema 缺席在保存后仍缺席（skip——「未表态 =
+    // tier 裁决矩阵」语义不得被钉成显式值）；agents 级两个定值默认键落
+    // 显式 true（与 turn_wal 同款，显式 true ≡ 缺席语义）；plugins 段不得
+    // 出现幽灵禁用（None → null，runtime_enabled pointer 下 = 缺键 = 缺省
+    // true 放行）。用 default_config()（生产 canonical 默认；derive 骨架
+    // Config::default() 的 bool 全 false，非生产语义）。
+    let mut cfg = crate::default_config();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    crate::save_config(&path, &mut cfg).unwrap();
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(
+        after["agents"].get("lazy_tool_schema").is_none(),
+        "lazy_tool_schema 未表态不得被钉成显式值: {}",
+        after["agents"]
+    );
+    assert_eq!(after["agents"]["stream_concat_retry"], true);
+    assert_eq!(after["agents"]["profession_tool_fence"], true);
+    assert!(
+        after["plugins"]["wasm"]["enabled"] != false,
+        "未表态不得落幽灵禁用: {}",
+        after["plugins"]
+    );
 }
 
 // ============================================================

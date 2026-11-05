@@ -953,6 +953,204 @@ async fn test_estop_blocks_dispatch_family_entries() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// BUG 2026-11-05 共享本地执行器 stub：LOCAL_DISPATCH_EXECUTOR 是进程级
+/// OnceLock（首装胜出）——本测试二进制内的 self 分臂测试共用同一 Arc，
+/// 各自持 PLAN_TEST_LOCK 串行 + delta 计数，互不踩计数。stub 只在
+/// target="self" 分臂被调（集群路径不受影响）。
+#[cfg(feature = "cluster")]
+struct RecordingLocalExecutor(std::sync::Mutex<Vec<(String, i64)>>);
+
+#[cfg(feature = "cluster")]
+impl crate::handlers::board::LocalDispatchExecutor for RecordingLocalExecutor {
+    fn submit(&self, req: crate::handlers::board::LocalDispatchRequest) -> Result<(), String> {
+        self.0.lock().unwrap().push((req.task_id, req.issue_id));
+        Ok(())
+    }
+}
+
+#[cfg(feature = "cluster")]
+fn shared_local_executor() -> std::sync::Arc<RecordingLocalExecutor> {
+    static SHARED: std::sync::OnceLock<std::sync::Arc<RecordingLocalExecutor>> =
+        std::sync::OnceLock::new();
+    SHARED
+        .get_or_init(|| {
+            let exec = std::sync::Arc::new(RecordingLocalExecutor(Default::default()));
+            crate::handlers::board::install_local_dispatch_executor(exec.clone());
+            exec
+        })
+        .clone()
+}
+
+/// BUG 2026-11-05 回归锁（手动派发缺 self 分臂）：WSAPI issue.dispatch 带
+/// target="self" 必须走本地执行面 dispatch_issue_local，不得直落集群单臂
+/// ——旧行为在空集群注册表（cluster=None）下报「集群未运行」（装配集群
+/// 时报「未知节点：self」），手动本地发车全断。修复形态 = self 委托下沉
+/// dispatch_issue_core 入口单点（全部调用方生效）；本测试经 WSAPI 入口
+/// 钉端到端行为。负对照臂：target="node-b" 仍走集群臂（空注册表报
+/// 「集群未运行」），防过修（self 分支不得吞掉集群目标）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_issue_dispatch_self_targets_local_executor() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸），
+    // 与 plan 链测试按 issue id 撞库——串行持锁 + 开场清残留。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+
+    let submits = shared_local_executor();
+    let dir = unique_dir("dispatch-self-local");
+    // make_ctx_with_board 的 AppState.cluster = None——旧行为（走 core）
+    // 在此必报「集群未运行」，与「本地执行器被调」互斥，定性零歧义。
+    let ctx = make_ctx_with_board(&dir);
+
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "手动本地发车" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = out["issue"]["id"].as_i64().unwrap();
+    let baseline = { submits.0.lock().unwrap().len() };
+
+    // 新行为：target="self" → 本地执行器直驱（不走集群查表）。
+    let out = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": id, "target": "self" }),
+    )
+    .await
+    .expect("target=self must dispatch via local executor");
+    let out = out.unwrap();
+    assert_eq!(out["dispatched"], true, "self dispatch must succeed: {out}");
+    let task_id = out["task_id"].as_str().unwrap();
+    assert!(
+        task_id.starts_with("local-"),
+        "task id must carry local- prefix: {task_id}"
+    );
+
+    // 块作用域持锁断言（词法上先于后续 await 结束，过 await_holding_lock）。
+    {
+        let calls = submits.0.lock().unwrap();
+        assert_eq!(
+            calls.len() - baseline,
+            1,
+            "executor must be called exactly once"
+        );
+        assert_eq!(
+            calls.last().unwrap().1,
+            id,
+            "local dispatch must target this issue"
+        );
+    }
+
+    // 派发行存续（等执行器写回终态）→ in_progress 推进照常（镜像集群发车）。
+    assert_eq!(
+        store_of(&ctx).get_issue(id).unwrap().status,
+        nemesis_board::IssueStatus::InProgress,
+    );
+
+    // 负对照：另一单 target="node-b" 仍走集群臂（无集群 → 「集群未运行」），
+    // self 分支不得吞掉集群目标。
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "集群目标不吞" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id2 = out["issue"]["id"].as_i64().unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": id2, "target": "node-b" }),
+    )
+    .await
+    .expect_err("cluster target must still hit cluster arm");
+    assert!(err.contains("集群未运行"), "{err}");
+    {
+        let calls = submits.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            baseline + 1,
+            "cluster-target dispatch must not consult the local executor"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG 2026-11-05 回归锁（core 层单点下沉）：dispatch_issue_core 对
+/// target="self" 恒委托本地执行面（含 cluster=None）——WSAPI 手动派发 /
+/// conflict resume 重派 / 送达失败 sweep 重试 / auto_dispatch（本地单
+/// assignee_id="self"）/ autopilot / plan 依赖波全部调用方一处语义生效。
+/// 旧行为 cluster=None 时在集群检查报「集群未运行」。负对照：非 self
+/// 目标照旧落集群臂且执行器零调用。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_dispatch_issue_core_self_delegates_to_local_executor() {
+    // 派发路径读 PLAN_CACHE/RUNNING_PLANS 进程级全局（BUG-② 派发闸）。
+    let _serial = PLAN_TEST_LOCK.lock().await;
+    clear_plan_globals();
+
+    let submits = shared_local_executor();
+    let dir = unique_dir("core-self-delegate");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "core self 委托单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let baseline = { submits.0.lock().unwrap().len() };
+
+    let out = super::dispatch_issue_core(&store, None, issue.id, "self", &Actor::admin("t"), None)
+        .expect("cluster=None + target=self must delegate to local executor");
+    assert_eq!(out["dispatched"], true, "self dispatch must succeed: {out}");
+    assert!(
+        out["task_id"].as_str().unwrap().starts_with("local-"),
+        "delegated dispatch must carry local- task id"
+    );
+
+    {
+        let calls = submits.0.lock().unwrap();
+        assert_eq!(
+            calls.len() - baseline,
+            1,
+            "executor must be called exactly once"
+        );
+        assert_eq!(calls.last().unwrap().1, issue.id);
+    }
+    assert_eq!(
+        store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InProgress,
+        "delegated dispatch must advance in_progress"
+    );
+
+    // 负对照：非 self 目标照旧落集群臂（None → 「集群未运行」），执行器零调用。
+    let issue2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "core 集群目标单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let err =
+        super::dispatch_issue_core(&store, None, issue2.id, "node-b", &Actor::admin("t"), None)
+            .unwrap_err();
+    assert!(err.contains("集群未运行"), "{err}");
+    {
+        let calls = submits.0.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            baseline + 1,
+            "cluster target must not consult the local executor"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_board_not_injected_and_unknown_cmd() {
     let dir = unique_dir("noinject");
@@ -9243,6 +9441,52 @@ async fn w5_cancel_active_dispatch_spawns_rpc_and_channel_post_reply_to() {
         assert_eq!(calls[0].3, "带引用的发言");
     }
     let _ = std::fs::remove_dir_all(&dir2);
+}
+
+/// 本地派发（worker_id="self"）issue.cancel：spawn_task_cancel 守卫跳过
+/// RPC——不产生「取消指令送达失败」误导评论（D5 sweep 同族：对 "self"
+/// 发 RPC = peer unresolvable）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_cancel_local_dispatch_skips_task_cancel_rpc() {
+    let dir = unique_dir("w5-cancel-self");
+    let cluster = offline_cluster(&dir, "w5-cc-s");
+    w5_inject_rpc(&cluster);
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        Some(cluster),
+        None,
+        None,
+    );
+    let actor = Actor::admin("w5");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "本地在途取消".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("local-w5-self", issue.id, "self", &actor)
+        .unwrap();
+    let out = dispatch(&ctx, "issue.cancel", serde_json::json!({ "id": issue.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["cancelled"], serde_json::json!(true), "{out}");
+    // 放出调度权（守卫路径不 spawn；若守卫失效，spawn 体在此窗口出闸）。
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("取消指令送达失败")),
+        "本地派发取消不得产生误导性送达失败评论: {comments:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// handler 杂项臂合集：bulk_archive 非数组 ids / autopilot.create+update

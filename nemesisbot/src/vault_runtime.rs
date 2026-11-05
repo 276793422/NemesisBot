@@ -54,6 +54,40 @@ pub fn open_unlocked_at(path: &Path) -> Result<nemesis_security::vault::VaultSto
     open_unlocked(path)
 }
 
+/// 打开（缺文件时按平台默认模式创建）并解锁 vault——自持写通道（WASM
+/// 插件面板表单 secret-set）用。与 CLI `open_or_create`（commands/vault.rs）
+/// 建库语义同源，但**不交互 prompt**（调用方在常驻进程内，读 stdin 是错的）：
+/// DPAPI 免口令直接建；argon2id 只认 `NEMESISBOT_VAULT_PASSPHRASE`，缺失 =
+/// 诚实 Err 带 CLI 一次性补救指引（`nemesisbot vault set <alias>` 建库）。
+pub fn open_or_create_unlocked_at(
+    path: &Path,
+) -> Result<nemesis_security::vault::VaultStore, String> {
+    use nemesis_security::vault::VaultMode;
+    if path.exists() {
+        return open_unlocked_at(path);
+    }
+    let mode = nemesis_security::vault::VaultStore::default_mode();
+    let pw = match mode {
+        VaultMode::Dpapi => None,
+        VaultMode::Argon2id => match std::env::var("NEMESISBOT_VAULT_PASSPHRASE") {
+            Ok(p) if !p.is_empty() => Some(p),
+            _ => {
+                return Err(format!(
+                    "vault 文件不存在（{}）且 argon2id 模式无 NEMESISBOT_VAULT_PASSPHRASE——\
+                     headless 进程不能交互输入口令；先跑一次 `nemesisbot vault set <alias>` 建库",
+                    path.display()
+                ));
+            }
+        },
+    };
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("vault 目录创建失败: {e}（{}）", dir.display()))?;
+    }
+    nemesis_security::vault::VaultStore::create(path, mode, pw.as_deref())
+        .map_err(|e| format!("vault 创建失败: {e}（文件: {}）", path.display()))
+}
+
 /// 打开并解锁 vault（每次解析现开）。文件不存在是常见态（还没人 set 过），
 /// 报错带创建指引。
 fn open_unlocked(path: &Path) -> Result<nemesis_security::vault::VaultStore, String> {

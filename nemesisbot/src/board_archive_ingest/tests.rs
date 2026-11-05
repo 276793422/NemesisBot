@@ -1363,6 +1363,24 @@ async fn sweep_sweep_missing_archives_leg2_transport_matrix() {
     let seen = tokio::sync::Mutex::<std::collections::HashSet<String>>::default();
     sweep_missing_archives(&f.store, &f.deps.workspace, &fake, &seen).await;
     assert_eq!(fake.call_count(), 0, "在途派发本来就没有档案");
+
+    // (e) 本地派发（worker_id="self"）→ 不拉（无远端 worker；真机教训：
+    // 对 "self" 发 transfer_pull = peer unresolvable 每 sweep 周期永续 WARN）。
+    let f = fixture("d5-self");
+    f.store
+        .insert_dispatch("local-t-d5s", f.issue_id, "self", &Actor::agent("node-a"))
+        .unwrap();
+    f.store
+        .finish_dispatch("local-t-d5s", dispatch_state::DONE)
+        .unwrap();
+    let fake = FakeTransport::new(vec![]);
+    let seen = tokio::sync::Mutex::<std::collections::HashSet<String>>::default();
+    sweep_missing_archives(&f.store, &f.deps.workspace, &fake, &seen).await;
+    assert_eq!(
+        fake.call_count(),
+        0,
+        "本地派发无档案可拉，禁止对 self 发 RPC"
+    );
 }
 
 /// replay_pending_merges 守卫臂：estop / 未冻结 / 冻结但无目录。

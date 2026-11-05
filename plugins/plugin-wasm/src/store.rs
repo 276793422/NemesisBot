@@ -138,9 +138,10 @@ pub(crate) fn fresh_store(
 /// fresh linker：宿主能力面（9 函数 → C 回调分发）+ wasi p2 空壳。
 ///
 /// 三个 world 的 host 接口同名同型（`nemesis:plugin/host@0.1.0`），组件只
-/// 绑定自己导入的；一次注册覆盖全部 world。llm-complete 恒注册（不按
-/// world 区分）——新版 bindgen 产出的组件可能无论 world 都 import 该函数
-///（import 裁剪不保证），缺席会让无辜组件实例化失败。
+/// 绑定自己导入的；一次注册覆盖全部 world。llm-complete / secret-set /
+/// config-set 恒注册（不按 world 区分）——新版 bindgen 产出的组件可能无论
+/// world 都 import 这些函数（import 裁剪不保证），缺席会让无辜组件实例化
+/// 失败。
 pub(crate) fn fresh_linker(engine: &wasmtime::Engine) -> Linker<ShellCtx> {
     let mut linker = Linker::new(engine);
     register_host_face(&mut linker);
@@ -155,7 +156,7 @@ pub(crate) fn fresh_linker(engine: &wasmtime::Engine) -> Linker<ShellCtx> {
 /// WIT host 接口实例名（package nemesis:plugin@0.1.0 的 interface host）。
 const HOST_INSTANCE: &str = "nemesis:plugin/host@0.1.0";
 
-/// 把 9 个宿主函数以动态 func_new 注册进 linker（类型在实例化期按组件
+/// 把 11 个宿主函数以动态 func_new 注册进 linker（类型在实例化期按组件
 /// 导入声明匹配——壳不声明 Canonical ABI 类型，只按 WIT 形状取参写果）。
 fn register_host_face(linker: &mut Linker<ShellCtx>) {
     // linker.instance 在 wasmtime 48 返回 Result（实例名重注册会 Err；此处
@@ -217,7 +218,10 @@ fn register_host_face(linker: &mut Linker<ShellCtx>) {
     });
     let _ = inst.func_new("http-send", |store, _f, params, results| {
         let env = store.data().env.0;
-        let req = val_to_json(&params[0]);
+        // body 是 option<list<u8>>——泛型序列化会落成数字数组，违反跨界
+        // b64 契约（宿主只认 base64 string|null，2026-11-03 空 body 实锤），
+        // 必须走专项编组。
+        let req = http_request_to_json(&params[0])?;
         results[0] = unsafe { call_http_send(env, &req) };
         Ok(())
     });
@@ -233,6 +237,20 @@ fn register_host_face(linker: &mut Linker<ShellCtx>) {
         let prompt = val_string(&params[0])?;
         let max_tokens = val_u32(&params[1])?;
         results[0] = unsafe { call_llm_complete(env, &prompt, max_tokens) };
+        Ok(())
+    });
+    let _ = inst.func_new("secret-set", |store, _f, params, results| {
+        let env = store.data().env.0;
+        let name = val_string(&params[0])?;
+        let value = val_string(&params[1])?;
+        results[0] = unsafe { call_secret_set(env, &name, &value) };
+        Ok(())
+    });
+    let _ = inst.func_new("config-set", |store, _f, params, results| {
+        let env = store.data().env.0;
+        let key = val_string(&params[0])?;
+        let value = val_string(&params[1])?;
+        results[0] = unsafe { call_config_set(env, &key, &value) };
         Ok(())
     });
 }
@@ -508,6 +526,60 @@ unsafe fn call_llm_complete(
     result_val(content.map(Val::String), tag, detail)
 }
 
+/// secret-set 分发（2026-11-03 自持写通道批）：槽缺失（legacy 宿主回调表）
+/// = 诚实 unavailable——fail-closed，绝不静默假装成功（与 llm-complete
+/// 同纪律）。
+unsafe fn call_secret_set(env: *mut c_void, name: &str, value: &str) -> wasmtime::component::Val {
+    let Some(cb) = callbacks() else {
+        return result_val(
+            None,
+            abi::host_err::UNAVAILABLE,
+            Some("callbacks not initialized".into()),
+        );
+    };
+    let Some(secret_set) = cb.secret_set else {
+        return result_val(
+            None,
+            abi::host_err::UNAVAILABLE,
+            Some("secret-set callback not available in this host".into()),
+        );
+    };
+    let mut detail_out: *mut c_char = std::ptr::null_mut();
+    let name_c = crate::abi::string_to_cstr(name);
+    let value_c = crate::abi::string_to_cstr(value);
+    let tag = secret_set(env, name_c, value_c, &mut detail_out);
+    take_back_cstr(name_c);
+    take_back_cstr(value_c);
+    let detail = take_out(detail_out);
+    result_val(None, tag, detail)
+}
+
+/// config-set 分发（2026-11-03 自持写通道批）：同 [`call_secret_set`] 纪律。
+unsafe fn call_config_set(env: *mut c_void, key: &str, value: &str) -> wasmtime::component::Val {
+    let Some(cb) = callbacks() else {
+        return result_val(
+            None,
+            abi::host_err::UNAVAILABLE,
+            Some("callbacks not initialized".into()),
+        );
+    };
+    let Some(config_set) = cb.config_set else {
+        return result_val(
+            None,
+            abi::host_err::UNAVAILABLE,
+            Some("config-set callback not available in this host".into()),
+        );
+    };
+    let mut detail_out: *mut c_char = std::ptr::null_mut();
+    let key_c = crate::abi::string_to_cstr(key);
+    let value_c = crate::abi::string_to_cstr(value);
+    let tag = config_set(env, key_c, value_c, &mut detail_out);
+    take_back_cstr(key_c);
+    take_back_cstr(value_c);
+    let detail = take_out(detail_out);
+    result_val(None, tag, detail)
+}
+
 // ---------------------------------------------------------------------------
 // Val 取参 helper
 // ---------------------------------------------------------------------------
@@ -550,13 +622,72 @@ fn log_level_int(v: &wasmtime::component::Val) -> Result<i32, wasmtime::Error> {
     }
 }
 
-/// 泛型 Val → JSON（http-request record 参数形态：字符串/数字/数组/对象/
-/// option/null；bytes 假定为 base64 string——由宿主 JSON 形态约定）。
-pub(crate) fn val_to_json(v: &wasmtime::component::Val) -> String {
-    let value = val_to_json_value(v);
-    value.to_string()
+/// http-request record Val → 跨界契约 JSON
+/// `{"method","url","headers":[[k,v],…],"body":b64|null}`（宿主
+/// `cb_http_send` 的解析对偶）。
+///
+/// body 的 WIT 形态是 `option<list<u8>>`——组件边界到达壳时是
+/// `Val::Option(Some(Val::List([Val::U8,…])))`，泛型 [`val_to_json`]
+/// 会把它落成数字数组，宿主 `as_str()` 失配 → body 静默丢失（2026-11-03
+/// 空 body 实锤：回帖全部记空 + 201）。这里专项编组：body 字节 base64
+/// 编码、None 保持 null；其余字段走泛型序列化。record 形态/字段类型失配
+/// 诚实报错（实例化期类型匹配后不该发生）。
+pub(crate) fn http_request_to_json(
+    v: &wasmtime::component::Val,
+) -> Result<String, wasmtime::Error> {
+    use base64::Engine as _;
+    use wasmtime::component::Val;
+    let w = |m: String| wasmtime::Error::msg(m);
+    let Val::Record(fields) = v else {
+        return Err(w(format!(
+            "host func param type mismatch: expected record http-request, got {v:?}"
+        )));
+    };
+    let mut obj = serde_json::Map::new();
+    for (k, val) in fields {
+        if k == "body" {
+            let encoded = match val {
+                Val::Option(None) => serde_json::Value::Null,
+                Val::Option(Some(inner)) => {
+                    let Val::List(items) = &**inner else {
+                        return Err(w(format!(
+                            "http-request body type mismatch: expected option<list<u8>>, got {inner:?}"
+                        )));
+                    };
+                    let mut bytes = Vec::with_capacity(items.len());
+                    for it in items.iter() {
+                        match it {
+                            Val::U8(n) => bytes.push(*n),
+                            other => {
+                                return Err(w(format!(
+                                    "http-request body element type mismatch: expected u8, got {other:?}"
+                                )));
+                            }
+                        }
+                    }
+                    serde_json::Value::String(
+                        base64::engine::general_purpose::STANDARD.encode(&bytes),
+                    )
+                }
+                other => {
+                    return Err(w(format!(
+                        "http-request body type mismatch: expected option<list<u8>>, got {other:?}"
+                    )));
+                }
+            };
+            obj.insert("body".into(), encoded);
+        } else {
+            obj.insert(k.clone(), val_to_json_value(val));
+        }
+    }
+    Ok(serde_json::Value::Object(obj).to_string())
 }
 
+/// 泛型 Val → JSON（字符串/数字/数组/对象/option/null 直映；**无二进制
+/// 语义**——`list<u8>` 落数字数组）。http-send 请求体带 `option<list<u8>>`
+/// 字段而跨界契约要求 base64 string|null，必须走 [`http_request_to_json`]
+/// 专项编组，不能用本函数（2026-11-03 空 body 实锤：泛型序列化把请求体
+/// 落成数字数组，宿主只认 base64 string，body 被静默丢弃）。
 pub(crate) fn val_to_json_value(v: &wasmtime::component::Val) -> serde_json::Value {
     use wasmtime::component::Val;
     match v {

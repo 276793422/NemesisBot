@@ -205,6 +205,13 @@ pub fn spawn_task_cancel(
     worker_id: &str,
     task_id: &str,
 ) {
+    // 本地派发（target="self"）没有远端任务可取消：RPC 对 "self" 只会
+    // peer unresolvable + 误导性失败评论。本地执行体不受 cancel 打断
+    //（跑完即止），写回终态幂等守卫保证派发行一致性——诚实跳过。
+    if worker_id == "self" {
+        tracing::info!("[Board] task_cancel 跳过（本地派发无远端任务）：task_id={task_id}");
+        return;
+    }
     let Some(rpc_client) = cluster.rpc_client_arc() else {
         tracing::warn!("[Board] task_cancel 未下发（RPC client 不可用）：task_id={task_id}");
         return;

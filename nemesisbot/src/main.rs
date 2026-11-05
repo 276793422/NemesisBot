@@ -167,6 +167,10 @@ mod forge_test_runner;
 /// 集群专业职能框架 M4：generate_image 工具（images-openai lane 唯一消费
 /// 点；prompt→b64→落盘 workspace/images/，路径 sanitization 钉死输出根）。
 mod image_gen_tool;
+/// target="self" 单机本地执行器（网关装配面）：看板派发 target="self" 上
+/// 总线直驱本机 AgentLoop，回复捕获→写回→评审触发镜像集群回调 Route 0。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod local_dispatch;
 /// M7/M8（2026-10-27 整改批次三）：logs 五族统一 TTL 清扫器——session_logs
 /// / boundary / request_logs / terminal / event_ledger 按 `config.logs.ttl`
 /// 逐族保留天数清扫（0=族关），启动扫一次 + 每 6h 一拍，每族每拍限量。

@@ -1,0 +1,22 @@
+[package]
+name = "jira-gitlab-flow-plugin"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 三方 SDK（export_panel_step! 一键导出组合 world；运行时钩子由 SDK 再导出，
+# guest 无需直接依赖 wit-bindgen）。
+nemesis-plugin-sdk = { path = "../../../../crates/nemesis-plugin-sdk" }
+serde_json = "1"
+
+# ⚠ guest 构建铁律（2026-11-03 实锤）：[profile.release] 必须完全缺省——
+# opt-level="z" / lto 等任何覆盖都会破坏 --gc-sections 对 SDK rlib 里 wire
+# 模块（host 独立组件绑定，world plugin-tool）component-type 段的裁除，
+# wasm-component-ld 合并 world 时被污染、误要求导出 tool#get-metadata。
+# 已知样板（panel-step-demo/stepdemo/translate/textstat）均无 profile 段。
+
+[workspace]

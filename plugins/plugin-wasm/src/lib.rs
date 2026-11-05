@@ -19,8 +19,12 @@
 //! | `nvwa_last_error` / `nvwa_free_string` | 线程局部错误槽 + 字符串所有权归还 |
 
 mod abi;
+#[cfg(test)]
+mod abi_tests;
 mod call;
 mod store;
+#[cfg(test)]
+mod store_tests;
 
 use std::collections::HashMap;
 use std::os::raw::{c_char, c_int, c_void};

@@ -225,7 +225,7 @@ echo ""
 echo "[Step 3/5] Building release..."
 START_TIME=$SECONDS
 
-if ! cargo build --release 2>&1; then
+if ! cargo build --release --features git-https 2>&1; then
     echo ""
     echo "[ERROR] Build failed!"
     exit 1
@@ -235,7 +235,7 @@ fi
 # 依赖，打包件 exe 必须带显示 loader。增量：仅 nemesisbot crate 重编；
 # 失败保留默认 exe，非致命）
 echo "  Building nemesisbot with vm-display (plugin-vm loader)..."
-if ! cargo build --release -p nemesisbot --features vm-display 2>&1; then
+if ! cargo build --release -p nemesisbot --features vm-display,git-https 2>&1; then
     echo "  WARN vm-display build failed, keeping default exe (VM display relay unavailable)"
 fi
 

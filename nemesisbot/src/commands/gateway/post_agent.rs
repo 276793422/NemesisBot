@@ -556,6 +556,60 @@ pub(crate) async fn init_post_agent(
         nemesis_web::handlers::projects::install_projects_bridge(projects_bridge);
     }
 
+    // --- target="self" 单机本地执行器装配（外循环本地执行面）---
+    // 派发 target="self" = 本机 AgentLoop 直驱（dispatch_issue_local →
+    // executor.submit 上总线）；submit 同步面只发车，等待/写回/评审在执行
+    // 器内部异步完成（镜像 RPC ACK 后异步回报语义）。Cluster Arc 在场
+    // 只是评审链（BoardReviewDeps）的既有形态要求，不是本地执行的前置
+    // 条件——但装配缺失时 dispatch_issue_local 诚实报「本地执行器未装配」。
+    // None 臂静默（对齐 A3 钩子「无集群不噪音」纪律；角色不符场景上方
+    // 已有独立 warn）。
+    // cluster_adapter_refs 在上方 take() 进 ClusterServiceAdapter 后恒为
+    // None（2026-09-20 真机验证教训）——cluster 引用统一取 cluster_arc_ref。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    match cluster_arc_ref.clone() {
+        Some(cluster_arc) => {
+            // 交付账本连接（BUG 2026-11-05 根修：本地执行器 completed 收口
+            // 捕获落账 `{task_id}:branch`——publish 查账键）。独立连接（多
+            // 连接 WAL 既定形态）；打不开 = 捕获缺席可观测，不炸装配。
+            let local_dispatch_task_db = match nemesis_taskstore::TaskDb::open(
+                &nemesis_path::resolve_tasks_db_path_in_workspace(
+                    &shared_resources.workspace_dir(),
+                ),
+            ) {
+                Ok(db) => Some(db),
+                Err(e) => {
+                    tracing::warn!(
+                        "[Gateway] 本地派发执行器交付账本连接打开失败（交付捕获将缺席）: {e}"
+                    );
+                    None
+                }
+            };
+            let executor = crate::local_dispatch::GatewayLocalExecutor::new(
+                bus.clone(),
+                projects_manager.clone(),
+                board_store.clone(),
+                shared_resources.workspace_dir(),
+                home.clone(),
+                board_moderator_loop.clone(),
+                cluster_arc,
+                shared_resources.estop.clone(),
+                board_estop_parked.clone(),
+                board_selfcheck_registry.clone(),
+                local_dispatch_task_db,
+                #[cfg(feature = "security")]
+                Some(ctx.outbound_dlp_slot.clone()),
+            );
+            nemesis_web::handlers::board::install_local_dispatch_executor(std::sync::Arc::new(
+                executor,
+            ));
+            info!("[Gateway] 本地派发执行器已装配（board target=\"self\" 单机执行面可用）");
+        }
+        None => tracing::debug!(
+            "[Gateway] 本地派发执行器未装配：集群适配器缺席（board target=\"self\" 派发将诚实报「本地执行器未装配」）"
+        ),
+    }
+
     // --- P2（2026-10-16）：Agent 持久实体 seed（tasks.db agents 表）---
     // main 身份投影（幂等）+ 项目 agent 镜像 + 半创建 sweep 收敛。三类
     // 失败都 warn 降级不炸 gateway（agents 记录是增强面，不是启动硬依赖；

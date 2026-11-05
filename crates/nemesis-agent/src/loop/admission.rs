@@ -432,10 +432,12 @@ impl AgentLoop {
             } => {
                 // 串行路径内联执行：⏳ 回执先发（会话已获取），干活，✓ 回执
                 // 随后；返回空串让调用方的 finish_message 早退（不重复发布）。
-                self.finish_message(&msg, receipt, None, false).await;
+                // ⏳ 前置回执打 receipt=true（系统回执非终局），真回复 false。
+                self.finish_message(&msg, receipt, None, false, true).await;
                 let response = self.handle_maintenance(kind, &session_key).await;
                 self.release_session(&session_key);
-                self.finish_message(&msg, response, None, false).await;
+                self.finish_message(&msg, response, None, false, false)
+                    .await;
                 (String::new(), String::new(), None)
             }
             GateOutcome::UserDispatch {
@@ -1461,6 +1463,12 @@ impl AgentLoop {
                                     source_node: None,
                                     task_id: None,
                                     sync_via: None,
+                                    // 队列重处理 = 终局形态（排队消息都是普通
+                                    // 任务文本，重处理时 busy 忽略类 slash 已
+                                    // 被 Immediate 短路不排队）→ false。legacy
+                                    // 直调方生产不实例化（tests / 排队 inline
+                                    // 回退），泵路径经 finish_message 打标。
+                                    receipt: false,
                                 },
                             };
                             let _ = tx.send(outbound).await;
@@ -1694,9 +1702,14 @@ impl AgentLoop {
 ///   `agent:main:session:{sid}`、cron/ProcessDirect 预置）
 /// - `agents:` —— G1 agent 实体族（`agents:{agent_id}:session:{sid}`，web
 ///   `agent_session_key` 构造、`agent_owner_of` 解析）
+/// - `board_dispatch:` —— 本地派发族（`board_dispatch:{task_id}`，本地
+///   执行器 submit 发布；按任务隔离会话。BUG 2026-11-05：缺此族时
+///   resolver 把键覆盖成路由缺省 `agent:main:main`，派发轮污染主会话）
 pub(crate) fn is_preset_session_key(session_key: &str) -> bool {
     !session_key.is_empty()
-        && (session_key.starts_with("agent:") || session_key.starts_with("agents:"))
+        && (session_key.starts_with("agent:")
+            || session_key.starts_with("agents:")
+            || session_key.starts_with("board_dispatch:"))
 }
 
 /// Extract a peer identifier from an inbound message.

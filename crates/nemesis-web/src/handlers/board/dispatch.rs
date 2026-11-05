@@ -524,7 +524,9 @@ pub(super) fn push_dispatch_baseline(
 
 /// 派发闸 → 登记 task + 派发绑定 → 推进 in_progress → fire-and-forget 发
 /// peer_chat RPC。`issue.dispatch`（WSAPI）与 gateway 的 autopilot 定时
-/// 触发共用（单一真相源）。`cluster` 传 `None` 时本地闸先行、集群缺失
+/// 触发共用（单一真相源）。`target="self"` 在入口即委托本地执行面
+/// [`dispatch_issue_local`]（BUG 2026-11-05 单点下沉，全部调用方生效）。
+/// `cluster` 传 `None` 时本地闸先行、集群缺失
 /// 最后报（校验矩阵不依赖集群实例，可单测）。`review_feedback`（Swarm
 /// M4）为 FAIL 重派专用——验收差距渲染进 dispatch prompt「上轮验收意见」
 /// 段；常规派发传 `None`。
@@ -537,6 +539,17 @@ pub fn dispatch_issue_core(
     actor: &Actor,
     review_feedback: Option<&str>,
 ) -> Result<serde_json::Value, String> {
+    // target="self" 单机本地执行面（一等公民，BUG 2026-11-05 单点下沉）：
+    // "self" 不是集群概念（canonical_peer_id 必然查无此节点），恒委托
+    // [`dispatch_issue_local`]（自带五闸镜像，estop/冲突冻结/状态/查重/
+    // 计划全部重查）。分臂放在入口最前 = WSAPI 手动派发 / conflict
+    // resume 重派 / 送达失败 sweep 重试 / auto_dispatch（本地单
+    // assignee_id="self"）/ autopilot / plan 依赖波 / board_bus 认领等
+    // 全部调用方一处语义生效，不再逐调用方补分臂。集群未装配（None）
+    // 也照常本地执行。
+    if target.eq_ignore_ascii_case("self") {
+        return dispatch_issue_local(store, issue_id, actor, review_feedback);
+    }
     // EST-01/02（派发单一入口 = 唯一落点）：estop 生效中一律诚实拒绝——
     // 释放后既有触发器（autopilot cron / 补派 / 停车场 sweep / 评审 fuse）
     // 自然覆盖恢复，无新增停车机制。
@@ -2310,6 +2323,40 @@ pub fn dispatch_issue_for_flow(
     explicit_target: Option<&str>,
     actor: &Actor,
 ) -> bool {
+    let pinned = explicit_target
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string());
+    // target="self" 单机本地执行面（一等公民，无回退语义）：恒走本地执行
+    // 器直驱本机 AgentLoop，与集群是否在无关（不走 RPC 回环；集群
+    // RPC-loopback-to-self 仍以显式节点名/id 达成）。分支置于集群检查
+    // 之前——"self" 不是集群概念，集群未启用也照常本地执行。字面量大小
+    // 写不敏感（词法层与集群同款）。
+    if pinned.as_deref().map(|t| t.eq_ignore_ascii_case("self")) == Some(true) {
+        return match dispatch_issue_local(store, issue.id, actor, None) {
+            Ok(_) => {
+                tracing::info!(
+                    "[Board] flow auto-dispatch: issue #{} → self（本地执行）",
+                    issue.number
+                );
+                true
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "[Board] flow auto-dispatch failed for issue #{}: {e}",
+                    issue.number
+                );
+                let _ = store.add_comment(nemesis_board::models::NewComment {
+                    issue_id: issue.id,
+                    author: nemesis_board::Actor::system("board"),
+                    content: format!("⛔ flow 导入自动派发失败：{e}"),
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::System,
+                });
+                false
+            }
+        };
+    }
     let Some(cluster) = cluster else {
         tracing::warn!(
             "[Board] flow: 集群未启用，issue #{} 留 backlog 等手动处理",
@@ -2317,10 +2364,6 @@ pub fn dispatch_issue_for_flow(
         );
         return false;
     };
-    let pinned = explicit_target
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .map(|t| t.to_string());
     let target = pinned.or_else(|| {
         pick_target_by_matcher(store, cluster, issue).or_else(|| {
             pick_fallback_target(live_board_config().as_ref(), store, cluster, issue)
@@ -2376,4 +2419,270 @@ pub fn dispatch_issue_for_flow(
     _actor: &Actor,
 ) -> bool {
     false
+}
+// ---------------------------------------------------------------------------
+// target="self" 单机本地执行面（一等公民，与集群是否启用无关）
+// ---------------------------------------------------------------------------
+
+/// 本地执行请求（target="self" 派发经 [`dispatch_issue_local`] 组装，交由
+/// 网关注册的执行器上总线驱动本机 AgentLoop）。
+#[cfg(feature = "cluster")]
+pub struct LocalDispatchRequest {
+    pub task_id: String,
+    pub issue_id: i64,
+    /// 展示编号（"NB-1" 形态， nemesis_board::Issue.number 原样透传，
+    /// 日志/评审上下文用）。
+    pub issue_number: String,
+    pub prompt: String,
+    /// 派发代际号（AOR 批二a ④）：claim 成功的 generation 原样下行，
+    /// 执行器写回时经 `write_back_board_dispatch` 回声——写回闸据此
+    /// 拒绝旧代迟到回调覆盖新一代派发。None = 老调用方未带（回声闸
+    /// 放行，兼容存量）。
+    pub generation: Option<i64>,
+}
+
+/// 本地执行器（gateway 侧装配，见 nemesisbot local_dispatch.rs）。`submit`
+/// 同步面只做校验/消息入总线（Err = 派发未成行，调用方走 F2 同款回滚）；
+/// 回复捕获/写回/评审触发在执行器内部异步完成（镜像 RPC ACK 后异步回报
+/// 语义——dispatched 行存续到执行器写回终态为止）。
+#[cfg(feature = "cluster")]
+pub trait LocalDispatchExecutor: Send + Sync {
+    fn submit(&self, req: LocalDispatchRequest) -> Result<(), String>;
+}
+
+#[cfg(feature = "cluster")]
+static LOCAL_DISPATCH_EXECUTOR: std::sync::OnceLock<std::sync::Arc<dyn LocalDispatchExecutor>> =
+    std::sync::OnceLock::new();
+
+/// 网关装配点（post_agent projects_manager 装配后调用；OnceLock 语义 =
+/// 首装胜出，网关单装配无竞态面）。
+#[cfg(feature = "cluster")]
+pub fn install_local_dispatch_executor(executor: std::sync::Arc<dyn LocalDispatchExecutor>) {
+    if LOCAL_DISPATCH_EXECUTOR.set(executor).is_err() {
+        tracing::warn!("[Board] 本地执行器重复安装，忽略（首装胜出）");
+    }
+}
+
+/// target="self" 单机本地派发：完整镜像 [`dispatch_issue_core`] 的闸门与
+/// 账务链（estop/冲突冻结/状态/查重/计划五闸 → 经验注入 → attempt →
+/// prompt → 账本开账 → claim("self") → 派发里程碑 → in_progress → 指派
+/// 回填），只把「集群 RPC 发车」换成「本地执行器上总线」。submit 失败 =
+/// 任务从未开始，走 F2 同款回滚（finish FAILED + 账本收口 + 状态/指派
+/// 回退 + ⛔ SEND_FAILURE_MARK 评论，sweep 按 MARK 前缀识别重试候选）。
+/// 本地面无 push_dispatch_baseline（对端收件箱协议）/无 canonical_peer_id
+/// （目标恒字面 "self"）/无 remote file 锚点闸（执行根在本机，file: 锚
+/// 可达）——三处省略是本地形态的结构性差异，不是闸门缺口。
+#[cfg(feature = "cluster")]
+pub fn dispatch_issue_local(
+    store: &Arc<BoardStore>,
+    issue_id: i64,
+    actor: &Actor,
+    review_feedback: Option<&str>,
+) -> Result<serde_json::Value, String> {
+    let executor = LOCAL_DISPATCH_EXECUTOR
+        .get()
+        .ok_or("本地执行器未装配（网关未安装本地派发面），target=\"self\" 不可用")?;
+
+    // EST-01/02：estop 生效中一律诚实拒绝（镜像 core，派发单一落点纪律）。
+    if board_estop_engaged() {
+        return Err(estop_frozen_error());
+    }
+    let issue = store.get_issue(issue_id)?;
+
+    // P5/F2 冲突冻结闸（镜像 core）。
+    if let Some(pid) = issue.project_id
+        && let Ok(project) = store.get_project(pid)
+        && project.conflict_frozen
+    {
+        return Err(format!(
+            "项目「{}」冲突冻结中，禁止派发（含重派/兜底/autopilot）：先 project.resume 人工落定冲突并补合并冻结期交付",
+            project.name
+        ));
+    }
+
+    // 状态闸（镜像 core）。
+    match issue.status {
+        IssueStatus::Backlog
+        | IssueStatus::Todo
+        | IssueStatus::InProgress
+        | IssueStatus::InReview => {}
+        other => return Err(format!("issue 处于 {other} 状态，不可派发")),
+    }
+
+    // 已有未完结派发 → 拒绝重复派发（镜像 core）。
+    if store.has_active_dispatch(issue.id)? {
+        return Err("该 issue 已有进行中的派发（等 worker 回报或超时后再试）".to_string());
+    }
+
+    // BUG-②：挂有未确认计划的父单不可直接派发（镜像 core；本函数 cfg
+    // cluster，RUNNING_PLANS/PLAN_CACHE 静态量直接可用）。
+    let now = std::time::Instant::now();
+    let running = RUNNING_PLANS
+        .lock()
+        .values()
+        .any(|r| r.issue_id == issue.id);
+    let ready_ids: Vec<String> = {
+        let mut cache = PLAN_CACHE.lock();
+        cache.retain(|_, p| now.duration_since(p.created_at) <= PLAN_TTL);
+        cache
+            .iter()
+            .filter(|(_, p)| p.issue_id == issue.id)
+            .map(|(id, _)| id.clone())
+            .collect()
+    };
+    if running || !ready_ids.is_empty() {
+        let state_word = if running {
+            "拆解进行中"
+        } else {
+            "待确认"
+        };
+        let id_hint = ready_ids
+            .first()
+            .map(|id| format!("（plan {id}）"))
+            .unwrap_or_default();
+        return Err(format!(
+            "该单挂有未确认的拆解计划（{state_word}{id_hint}）：到任务详情确认该计划，或等其过期（{}s）后重试",
+            PLAN_TTL.as_secs()
+        ));
+    }
+
+    let target = "self";
+    // M4.5：经验注入段在 prompt 组装前检索（镜像 core）。
+    let (experience_section, experience_ids) = render_issue_experience_section(store, &issue);
+    // PR5：重派轮次 = 历史派发行数 + 1（镜像 core）。
+    let attempt_count = store.list_dispatches(issue.id)?.len() as u32;
+    let attempt = (attempt_count > 0).then_some(attempt_count + 1);
+    let prompt = build_dispatch_prompt(
+        &issue,
+        render_dispatch_assets_section(store, issue.id)?.as_deref(),
+        review_feedback,
+        experience_section.as_deref(),
+        attempt,
+    );
+
+    // 本地 task id：`local-` 前缀 + uuid（写回路由按 issue_dispatch 表的
+    // task_id 匹配，前缀无路由语义，纯人读可辨）。
+    let task_id = format!("local-{}", uuid::Uuid::new_v4());
+
+    // G3：派发账本开账（镜像 core；收口点 = 执行器写回终态 + 本函数
+    // 两处派发中止）。
+    nemesis_taskstore::ledger::begin_run(
+        &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+        "board_dispatch",
+        &issue.title,
+        target,
+        serde_json::json!({ "issue_id": issue.id, "issue_number": issue.number }),
+    );
+
+    // M4.5：注入计数只认实际发车的派发（镜像 core）。
+    if !experience_ids.is_empty()
+        && let Err(e) = store.mark_team_memory_used(&experience_ids)
+    {
+        tracing::warn!("[Board] team_memory use_count 更新失败（不影响派发）：{e}");
+    }
+
+    // 2. 原子占用闸（R5-BUG-2 镜像 core；claim 目标 = "self"）。
+    //    远端签名升级：bool → Option<i64>（代际号）；None = 已被占用
+    //    → 竞态取消；Some(generation) 随执行器请求下行、写回时原样
+    //    回声（AOR 批二a ④ 写回闸拒绝旧代迟到回调——本地形态同一语义）。
+    let dispatch_generation = match store.try_claim_dispatch(&task_id, issue.id, target, actor)? {
+        Some(generation) => generation,
+        None => {
+            nemesis_taskstore::ledger::settle_run(
+                &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+                "cancelled",
+                Some("并发派发竞态：该 issue 已有进行中的派发"),
+            );
+            return Err("该 issue 已有进行中的派发（并发派发竞态，本次派发已取消）".to_string());
+        }
+    };
+
+    // C 里程碑 2（镜像 core；本地形态无基线下发 → 第 5 参 None）。
+    nemesis_board::archive_writer::write_dispatch_milestone(store, &issue, target, &task_id, None);
+
+    // 3. 状态推进 + 指派回填（镜像 core；转移失败回滚 claim 的 dispatch 行）。
+    let dispatch_prev_status = issue.status;
+    let dispatch_prev_assignee = issue.assignee;
+    let dispatch_prev_assignee_id = issue.assignee_id.clone();
+    let issue = if issue.status != IssueStatus::InProgress {
+        match store.transition_issue(issue.id, IssueStatus::InProgress, actor) {
+            Ok(i) => i,
+            Err(e) => {
+                let _ =
+                    store.finish_dispatch(&task_id, nemesis_board::models::dispatch_state::FAILED);
+                nemesis_taskstore::ledger::settle_run(
+                    &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+                    "failed",
+                    Some(&format!("状态转移失败：{e}")),
+                );
+                return Err(format!("派发中止：状态转移失败：{e}"));
+            }
+        }
+    } else {
+        issue
+    };
+    link_project_on_dispatch(store, issue.project_id);
+    if (issue.assignee != Some(AssignmentType::Worker)
+        || issue.assignee_id.as_deref() != Some(target))
+        && let Err(e) = store.assign_issue(
+            issue.id,
+            Some(AssignmentType::Worker),
+            Some(target.to_string()),
+            actor,
+        )
+    {
+        tracing::warn!("[Board] 派发回填指派失败（不阻断派发）：{e}");
+    }
+
+    // 4. 发车：执行器同步面失败 = 任务从未开始 → F2 同款回滚（诚实失败，
+    // ⛔ SEND_FAILURE_MARK 评论 = sweep 重试候选识别前缀）。
+    let submit_result = executor.submit(LocalDispatchRequest {
+        task_id: task_id.clone(),
+        issue_id: issue.id,
+        issue_number: issue.number.clone(),
+        prompt,
+        generation: Some(dispatch_generation),
+    });
+    if let Err(e) = submit_result {
+        let _ = store.finish_dispatch(&task_id, nemesis_board::models::dispatch_state::FAILED);
+        nemesis_taskstore::ledger::settle_run(
+            &nemesis_taskstore::ledger::board_dispatch_run_id(&task_id),
+            "failed",
+            Some(&e),
+        );
+        match store.rollback_dispatch_failure(
+            issue.id,
+            dispatch_prev_status,
+            dispatch_prev_assignee,
+            dispatch_prev_assignee_id,
+            &nemesis_board::Actor::system("board"),
+        ) {
+            Ok(true) => tracing::info!("[Board] 本地发车失败回退完成（issue={}）", issue.id),
+            Ok(false) => {}
+            Err(re) => tracing::warn!("[Board] 本地发车失败回退未执行（让位或异常）：{re}"),
+        }
+        let _ = store.add_comment(nemesis_board::models::NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!(
+                "{}: [local] 本地发车失败（{e}）",
+                nemesis_board::SEND_FAILURE_MARK
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        });
+        return Err(format!("本地发车失败：{e}"));
+    }
+
+    // 派发成功 = 单据回到执行轨道（镜像 core）。
+    archive_handoff_best_effort(&issue.number);
+    tracing::info!(
+        "[Board] 本地派发落定：issue #{} → self（task {task_id}）",
+        issue.number
+    );
+    Ok(serde_json::json!({
+        "dispatched": true,
+        "task_id": task_id,
+        "issue": issue_to_view(store, &issue)?,
+    }))
 }

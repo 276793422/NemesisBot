@@ -231,6 +231,53 @@ pub struct Config {
     /// [`CheckpointConfig`]。
     #[serde(default)]
     pub checkpoint: Option<CheckpointConfig>,
+    /// WASM 插件宿主开关段（`plugins.wasm.enabled`，缺省 true）。typed
+    /// 字段化保证 save_config 往返不丢键（P32 cache_warmer 同款预防，
+    /// BUG-20261105-008）：本键由 `crate::plugin_wasm::runtime_enabled`
+    /// 经原始 JSON pointer 消费、全仓无写入点（手编 config.json 是唯一
+    /// 设置途径）——不建模则任何 typed 保存（dashboard config/models/
+    /// skills/profile 事务、save_live、ConfigStore::update 等）静默抹掉
+    /// 用户显式禁用，子系统静默重启用。
+    #[serde(default)]
+    pub plugins: Option<PluginsHostConfig>,
+}
+
+/// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；BUG-20261105-008
+/// typed 字段化——先前该段不被顶层 [`Config`] 建模，typed 保存静默丢弃
+/// 整段。plugin_wasm.rs 模块注释早已点名该机制（panel_llm 因此落 side
+/// file），主闸 `plugins.wasm.enabled` 却仍留在裸读面）。段内未建模键经
+/// flatten extra 原样回吐（ModelConfig.extra 同款保真）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PluginsHostConfig {
+    /// WASM 插件子系统运行期总闸（缺省 true = 未表态放行；显式 false =
+    /// 禁用。消费方 `crate::plugin_wasm::runtime_enabled` 原始 pointer
+    /// 现读，本字段只保证保存面不丢键）。
+    #[serde(default = "default_plugins_wasm_enabled")]
+    pub wasm: PluginsWasmHostConfig,
+    /// 段内未建模键保真（round-trip 原样回吐，不收敛丢键）。
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// `plugins.wasm` 子段（仅运行期消费的 `enabled` 键）。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct PluginsWasmHostConfig {
+    /// 缺省 true（未表态 = 开；显式 false = 禁用——typed 保存必须保留）。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+impl Default for PluginsWasmHostConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
+/// `plugins.wasm` 缺键默认（enabled=true，与 runtime_enabled 的
+/// `unwrap_or(true)` 同源口径）。
+fn default_plugins_wasm_enabled() -> PluginsWasmHostConfig {
+    PluginsWasmHostConfig { enabled: true }
 }
 
 // ---------------------------------------------------------------------------

@@ -23,8 +23,9 @@
 //! [limits]                   # 可选；只允许在宿主全局上限内收紧
 //! fuel = 100_000_000
 //!
-//! [config-schema]            # 可选；实例配置声明（键 → 人读描述）
+//! [config-schema]            # 可选；实例配置声明（键 → 描述，或 描述+缺省值）
 //! target_lang = "翻译目标语言"
+//! owner = { desc = "Gitea owner", default = "octocat" }
 //!
 //! # —— 以下仅 kind = "panel"（2026-10-31 面板扩展批）——
 //! # 纯声明式面板：可省略 wasm / wasm-sha256（无载荷）
@@ -131,6 +132,7 @@ pub const CHART_TYPES: &[&str] = &["line", "bar", "pie"];
 pub const FLOW_STEP_KINDS: &[&str] = &[
     "connector_fetch", // connector op 拉外部条目 → 建实例
     "board_land",      // board 建单 + 任务副本（origin 三件套声明）
+    "repo_sync",       // 项目仓库确定性 clone-or-pull（注册表 directory 唯一真相源）
     "agent_fixloop",   // 派发执行 + 交付捕获（测试⇄分析⇄改码循环）
     "check_regress",   // 锚点双检 + 必检对账 + 评审
     "publish",         // publish 协议执行（模板声明：推送 + 建外部引用 + unknown 对账）
@@ -346,9 +348,11 @@ pub struct PluginManifest {
     /// 资源收紧覆盖（只允许收紧）。
     #[serde(default)]
     pub limits: BTreeMap<String, u64>,
-    /// 实例配置声明（键 → 人读描述；x-secret 键不在此——凭据面分离）。
+    /// 实例配置声明（键 → 描述（旧形态）或 描述+缺省值；x-secret 键不在
+    /// 此——凭据面分离）。缺省值供 flow 剧本 `{{config.<key>}}` 未配置时
+    /// 回落（2026-11-03 实例配置参数化批）。
     #[serde(default)]
-    pub config_schema: BTreeMap<String, String>,
+    pub config_schema: BTreeMap<String, ConfigSchemaEntry>,
     /// 面板页面声明（仅 `kind=panel` 可声明；2026-10-31 面板扩展批）。
     #[serde(default, rename = "ui")]
     pub ui: UiSection,
@@ -360,6 +364,44 @@ pub struct PluginManifest {
     /// 徽标双留痕，激活还要过「目标在 loop 注册表在场」闸（agent_factory 8d）。
     #[serde(default)]
     pub takeover: Vec<String>,
+}
+
+/// config-schema 条目值：纯人读描述（旧形态）或 描述+缺省值（untagged 双臂，
+/// 旧清单零迁移）。缺省值是 flow 剧本 `{{config.<key>}}` 未配置时的回落值
+/// （空串 = 无缺省，未配置即未设值）。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum ConfigSchemaEntry {
+    /// 纯人读描述（旧形态：`key = "描述"`）。
+    Desc(String),
+    /// 描述 + 缺省值（`key = { desc = "…", default = "…" }`）。
+    Full {
+        /// 人读描述（配置钮字段说明）。
+        desc: String,
+        /// 缺省值（未配置时 flow 剧本渲染回落；缺席/空 = 无缺省）。
+        #[serde(default)]
+        default: String,
+    },
+}
+
+impl ConfigSchemaEntry {
+    /// 人读描述（两形态归一）。
+    #[must_use]
+    pub fn desc(&self) -> &str {
+        match self {
+            Self::Desc(s) => s,
+            Self::Full { desc, .. } => desc,
+        }
+    }
+
+    /// 缺省值（`Desc` 形态或 `Full` 缺席/空 default = None）。
+    #[must_use]
+    pub fn default_value(&self) -> Option<&str> {
+        match self {
+            Self::Desc(_) => None,
+            Self::Full { default, .. } => (!default.is_empty()).then_some(default.as_str()),
+        }
+    }
 }
 
 /// 面板页面声明段（`ui` 表）。
@@ -561,8 +603,39 @@ impl PluginManifest {
         if self.version.len() > 64 {
             return Err(PluginError::Manifest("version exceeds 64 chars".into()));
         }
-        // egress allowlist 形态：host 或 host:port。
+        // egress allowlist 形态：host 或 host:port；或 `{{config.<key>}}`
+        // 整条目 token（2026-11-03 自持写通道批）——引用键必须在 config-schema
+        // 声明内（渲染白名单 = 声明键），且不得引用 x-secret 键（凭据不进
+        // allowlist；渲染表只有普通键）。`{{` 混入非整条目 token 形态 =
+        // loud 拒（嵌套/部分替换不做——deny-by-default 不留模糊面）。
         for entry in &self.permissions.egress {
+            if entry.contains("{{") {
+                let Some(inner) = entry
+                    .strip_prefix("{{")
+                    .and_then(|r| r.strip_suffix("}}"))
+                    .map(str::trim)
+                else {
+                    return Err(PluginError::Manifest(format!(
+                        "egress config token must be whole-entry {{config.<key>}}: {entry}"
+                    )));
+                };
+                let Some(key) = inner.strip_prefix("config.") else {
+                    return Err(PluginError::Manifest(format!(
+                        "egress token must reference config.<key> (declared config-schema): {entry}"
+                    )));
+                };
+                if !self.config_schema.contains_key(key) {
+                    return Err(PluginError::Manifest(format!(
+                        "egress config token references undeclared key '{key}' (declare it in config-schema first)"
+                    )));
+                }
+                if self.permissions.x_secret.iter().any(|s| s == key) {
+                    return Err(PluginError::Manifest(format!(
+                        "egress config token references x-secret key '{key}' (credentials never enter the egress allowlist)"
+                    )));
+                }
+                continue;
+            }
             let e = entry.to_lowercase();
             if e.is_empty()
                 || e.starts_with('.')
@@ -586,8 +659,15 @@ impl PluginManifest {
                 return Err(PluginError::Manifest(format!("invalid x-secret name: {s}")));
             }
         }
-        // config-schema 键不与 x-secret 冲突（同名键语义分裂）。
+        // config-schema 键不与 x-secret 冲突（同名键语义分裂）；`x-` 前缀
+        // 是保留命名空间（凭据面 = x-secret 声明）——配置键冒用 x- 前缀
+        // 等于把明文缺省值当凭据声明，loud 拒绝。
         for key in self.config_schema.keys() {
+            if key.starts_with("x-") {
+                return Err(PluginError::Manifest(format!(
+                    "config-schema key '{key}' uses reserved x- prefix (secret namespace; declare it in permissions.x-secret instead)"
+                )));
+            }
             if self.permissions.x_secret.iter().any(|s| s == key) {
                 return Err(PluginError::Manifest(format!(
                     "config-schema key '{key}' collides with x-secret declaration"
@@ -775,6 +855,32 @@ impl PluginManifest {
     #[must_use]
     pub fn config_schema_keys(&self) -> Vec<String> {
         self.config_schema.keys().cloned().collect()
+    }
+
+    /// config-schema 缺省值表（仅声明了非空 default 的键；flow 剧本
+    /// `{{config.<key>}}` 未配置时的回落底表）。
+    #[must_use]
+    pub fn config_schema_defaults(&self) -> BTreeMap<String, String> {
+        self.config_schema
+            .iter()
+            .filter_map(|(k, v)| v.default_value().map(|d| (k.clone(), d.to_string())))
+            .collect()
+    }
+
+    /// config-schema 声明明细（键 → 描述 + 可选缺省值；`wasm.config.get`
+    /// 投影给前端配置钮渲染字段说明与占位）。
+    #[must_use]
+    pub fn config_schema_detail(&self) -> Vec<(String, String, Option<String>)> {
+        self.config_schema
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k.clone(),
+                    v.desc().to_string(),
+                    v.default_value().map(str::to_string),
+                )
+            })
+            .collect()
     }
 }
 

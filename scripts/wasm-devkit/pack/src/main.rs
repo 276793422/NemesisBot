@@ -67,7 +67,7 @@ fn main() {
     let mut failed: Vec<String> = Vec::new();
     for name in &names {
         println!("\n=== [{name}] 编译 + 打包 ===");
-        match build_and_stage(&root, &examples_dir.join(name), name, &dist_dir) {
+        match build_and_stage(&examples_dir.join(name), name, &dist_dir) {
             Ok(staging) => {
                 ok += 1;
                 println!("[{name}] staging 就绪: {}", staging.display());
@@ -88,7 +88,7 @@ fn main() {
 }
 
 /// 单示例全流程：编译 → 哈希 → 填清单 → staging。返回 staging 目录。
-fn build_and_stage(root: &Path, example: &Path, name: &str, dist_dir: &Path) -> Result<PathBuf, String> {
+fn build_and_stage(example: &Path, name: &str, dist_dir: &Path) -> Result<PathBuf, String> {
     // 1. 编译（继承 stdout/stderr，失败信息原样透出）
     let status = Command::new("cargo")
         .args(["build", "--target", "wasm32-wasip2", "--release"])

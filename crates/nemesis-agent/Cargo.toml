@@ -121,7 +121,7 @@ rquickjs = { workspace = true, optional = true }
 # TerminateJobObject），estop/超时/drop 一次内核调用收整棵后代树。
 # 版本与 nemesis-health/nemesis-injector 等既有消费者一致。
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_Security"] }
 
 # Unix 臂：进程组 SIGKILL（pgid == pid，由 process_group(0) 保证）。
 [target.'cfg(unix)'.dependencies]

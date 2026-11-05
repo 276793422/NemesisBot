@@ -27,6 +27,10 @@ nemesis-prompts = { workspace = true }
 # checkpoint-git 穿透。关 = 执行体无交付管线（delivery 恒缺），
 # requires_evidence 建单自动置位跳过（否则证据闸对这些单恒 FAIL）。
 checkpoint-git = []
+# git-https（2026-11-04 repo_sync 批）：透传 git2/https（libgit2 TLS 传输）。
+# 默认关（http clone/push 开箱即用）；https URL 撞传输不支持时错误消息
+# 附开启提示。Windows 走系统 WinHTTP 零新依赖；Linux 走系统 OpenSSL。
+git-https = ["git2/https"]
 
 [lints]
 workspace = true

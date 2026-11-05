@@ -505,12 +505,12 @@ fn board_land_creates_and_is_idempotent() {
     let store = make_store(&ws);
     let mut inst = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
 
-    let first = start_board_land(&store, &mut inst, None).unwrap();
+    let first = start_board_land(&store, &mut inst, None, None).unwrap();
     assert_eq!(first["landed"], "created");
     let number = first["board_issue"].as_str().unwrap().to_string();
 
     // 幂等：同 origin 二次 land = existing 且同单号。
-    let second = start_board_land(&store, &mut inst, None).unwrap();
+    let second = start_board_land(&store, &mut inst, None, None).unwrap();
     assert_eq!(second["landed"], "existing");
     assert_eq!(second["board_issue"].as_str(), Some(number.as_str()));
 }
@@ -520,8 +520,43 @@ fn board_land_missing_project_err() {
     let ws = temp_ws("land-proj");
     let store = make_store(&ws);
     let mut inst = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
-    let err = start_board_land(&store, &mut inst, Some("不存在项目")).unwrap_err();
+    let err = start_board_land(&store, &mut inst, Some("不存在项目"), None).unwrap_err();
     assert!(err.contains("项目不存在"), "got: {err}");
+}
+
+/// body_preamble：流程契约前导确定性注入 description 头部（域模板声明面；
+/// worker 读单即读纪律）。空串/全空白 = 不注入（不产生空段落垃圾）。
+#[test]
+fn board_land_preamble_prepended_to_description() {
+    let ws = temp_ws("land-preamble");
+    let store = make_store(&ws);
+    let mut inst = inst_with_steps("tpl", &[("land", KIND_LAND, "", "")]);
+
+    let pre = "【修复流程契约】六阶段逐段留证据标记。";
+    let out = start_board_land(&store, &mut inst, None, Some(pre)).unwrap();
+    let landed = store.list_issues_by_origin("flow", "tpl/EXT-1", 1).unwrap();
+    assert_eq!(landed.len(), 1);
+    assert!(
+        landed[0]
+            .description
+            .starts_with(&format!("{pre}\n\n来源: flow tpl/EXT-1")),
+        "前导必须在 description 头部且紧跟来源行: {}",
+        landed[0].description
+    );
+
+    // 空白前导 = 不注入（description 无前导空段）。
+    let mut inst2 = inst_with_steps("tpl2", &[("land", KIND_LAND, "", "")]);
+    start_board_land(&store, &mut inst2, None, Some("   ")).unwrap();
+    let landed2 = store
+        .list_issues_by_origin("flow", "tpl2/EXT-1", 1)
+        .unwrap();
+    assert_eq!(landed2.len(), 1);
+    assert!(
+        landed2[0].description.starts_with("来源: flow tpl2/EXT-1"),
+        "空白前导不得注入: {}",
+        landed2[0].description
+    );
+    let _ = out;
 }
 
 #[test]
@@ -549,6 +584,20 @@ fn start_fixloop_dispatch_and_observe() {
         .unwrap();
     let out = start_fixloop(&store, &mut inst, &|_: &nemesis_board::Issue| false).unwrap();
     assert_eq!(out["observing"], true);
+}
+
+#[cfg(feature = "cluster")]
+#[test]
+fn materialize_exec_target_declares_execution_surface() {
+    // 执行面声明物化（2026-11-04 改版）：`self` = 单机本地执行面字面量，
+    // 恒等透传（消费端 dispatch_issue_for_flow 识别后走 dispatch_issue_local
+    // ——一等公民，与集群是否装配无关）；显式节点名原样透传；声明钉住
+    // 即走，无回退。
+    assert_eq!(materialize_exec_target("self"), "self");
+    assert_eq!(materialize_exec_target("SELF"), "SELF");
+    assert_eq!(materialize_exec_target("jgl-worker"), "jgl-worker");
+    // 空白在 args_get 层已过滤（None），此处只钉词法层 trim 语义。
+    assert_eq!(materialize_exec_target("self "), "self");
 }
 
 #[test]
@@ -691,7 +740,9 @@ fn materialize_instances_creates_skips_and_records_fetch() {
 // 外循环域剥离批 C 回归锁（计划 §六：模板映射契约 / 回写表 / publish 声明）
 // ---------------------------------------------------------------------------
 
-/// §六①：模板映射契约 fetch→land 全链（bugfix-flow 0.2.0 声明逐字段镜像）。
+/// §六①：模板映射契约 fetch→land 全链（构造模板；外循环域剥离批 C 0.2.0
+/// connector_fetch 声明形态的历史镜像——0.3.0 自持批起 bugfix-flow 本体已换
+/// plugin 自报步，平台对 connector_fetch 原语的接受度由本测试继续钉住）。
 /// Gitea 形 entries（顶层数组、number 整数）→ materialize（身份解析）→
 /// board_land（board 级 TaskOrigin 三件套透传 + 整串精确去重）。
 #[test]
@@ -760,7 +811,7 @@ fn gitea_shape_full_chain_materialize_to_land() {
 
     // 全链后半：board_land 建单 + origin 三件套透传（board 级 TaskOrigin）。
     let mut inst = flows.load("bugfix-pipeline", "12").unwrap();
-    let out = start_board_land(&store, &mut inst, None).unwrap();
+    let out = start_board_land(&store, &mut inst, None, None).unwrap();
     assert_eq!(out["landed"], "created");
     let number = out["board_issue"].as_str().unwrap().to_string();
 
@@ -792,7 +843,7 @@ fn gitea_shape_full_chain_materialize_to_land() {
     );
 
     // 整串精确去重：同 origin 二次 land = existing。
-    let second = start_board_land(&store, &mut inst, None).unwrap();
+    let second = start_board_land(&store, &mut inst, None, None).unwrap();
     assert_eq!(second["landed"], "existing");
 }
 
@@ -973,8 +1024,10 @@ fn parse_publish_step_protocol_honest_errors() {
     );
 }
 
-/// §六③：publish 声明契约——bugfix-flow 0.2.0 声明镜像（字段名/取数期
-/// token 渲染/缺省值 limit·page·20·5）。
+/// §六③：publish 声明契约——构造模板（外循环域剥离批 C 0.2.0 connector
+/// 原语声明形态的历史镜像——0.3.0 自持批起 bugfix-flow 本体已换 plugin 引用
+/// op；connector 原语臂的接受度由本测试继续钉住。字段名/取数期 token 渲染/
+/// 缺省值 limit·page·20·5）。
 #[test]
 fn parse_publish_step_protocol_gitea_declaration_contract() {
     let args: BTreeMap<String, String> = BTreeMap::from([
@@ -1134,6 +1187,175 @@ fn template_stamp_covers_switch_file() {
     std::fs::create_dir_all(plugins.join("new-slug")).unwrap();
     let bumped = template_stamp(&plugins, &cfg);
     assert_ne!(gone.1, bumped.1, "载荷目录条目数必须入戳");
+}
+
+// ---------------------------------------------------------------------------
+// 实例配置 token 装载期渲染（2026-11-03 参数化批：{{config.*}} → schema
+// 缺省值打底 + 开关文件运行值覆盖；条目级 token 不动）
+// ---------------------------------------------------------------------------
+
+/// scan_templates config 渲染夹具：写一个带 [config-schema] 的 panel 插件 +
+/// 翻开开关。`fetch_args_json` 参数化 = 待渲染声明；`switch_config` = None
+/// （纯缺省）或运行值 JSON 片段。
+fn write_cfg_sample(ws: &std::path::Path, fetch_args_json: &str, switch_config: Option<&str>) {
+    let dir = ws.join("plugins_wasm").join("cfg-sample");
+    std::fs::create_dir_all(&dir).unwrap();
+    let switch_body = match switch_config {
+        Some(c) => format!(r#"{{ "enabled": true, "config": {c} }}"#),
+        None => r#"{ "enabled": true }"#.to_string(),
+    };
+    std::fs::write(
+        ws.join("config").join("config.plugin.wasm.json"),
+        format!(r#"{{ "plugins": {{ "cfg-sample": {switch_body} }} }}"#),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("plugin.toml"),
+        format!(
+            r#"api-version = 1
+slug = "cfg-sample"
+kind = "panel"
+name = "配置样例"
+version = "0.1.0"
+
+[config-schema]
+owner = {{ desc = "属主", default = "def-owner" }}
+repo = {{ desc = "仓库", default = "def-repo" }}
+
+[[ui.page]]
+route = "cfg"
+title = "配置"
+
+[[flow.template]]
+id = "tpl"
+interval-secs = 0
+origin-type = "gitea"
+origin-id = "{{{{connector}}}}/{{{{arg.owner}}}}/{{{{arg.repo}}}}#{{{{key}}}}"
+origin-meta = {{ owner = "{{{{config.owner}}}}", repo = "{{{{config.repo}}}}" }}
+
+[flow.template.on-transition]
+op = "issue_comment"
+args = {{ owner = "{{{{origin_meta.owner}}}}" }}
+
+[[flow.template.steps]]
+id = "fetch"
+kind = "connector_fetch"
+args = {{ connector = "gitea", args_json = '{fetch_args_json}' }}
+
+[[flow.template.steps]]
+id = "land"
+kind = "board_land"
+args = {{ project = "gitea/{{{{config.owner}}}}/{{{{config.repo}}}}" }}
+"#
+        ),
+    )
+    .unwrap();
+}
+
+#[test]
+fn scan_renders_config_tokens_with_schema_defaults() {
+    let ws = temp_ws("cfgscan");
+    std::fs::create_dir_all(ws.join("config")).unwrap();
+    write_cfg_sample(
+        &ws,
+        r#"{"owner": "{{config.owner}}", "repo": "{{config.repo}}"}"#,
+        None,
+    );
+    let out = scan_templates(&ws.join("plugins_wasm"), &ws.join("config"));
+    assert_eq!(out.len(), 1, "缺省渲染不该跳过模板: {out:?}");
+    let t = &out[0].template;
+    // 缺省值渲染进步 args（含 JSON 串内）与 origin-meta。
+    let fetch = t.steps.iter().find(|s| s.kind == KIND_FETCH).unwrap();
+    assert_eq!(
+        fetch.args["args_json"],
+        r#"{"owner": "def-owner", "repo": "def-repo"}"#
+    );
+    let land = t.steps.iter().find(|s| s.kind == KIND_LAND).unwrap();
+    assert_eq!(land.args["project"], "gitea/def-owner/def-repo");
+    assert_eq!(t.origin_meta["owner"], "def-owner");
+    assert_eq!(t.origin_meta["repo"], "def-repo");
+    // 条目级 token 原样保留（下游逐条目渲染——契约不是遗漏）。
+    assert_eq!(
+        t.origin_id,
+        "{{connector}}/{{arg.owner}}/{{arg.repo}}#{{key}}"
+    );
+    assert_eq!(t.on_transition.args["owner"], "{{origin_meta.owner}}");
+}
+
+#[test]
+fn scan_config_tokens_runtime_override_wins_over_default() {
+    let ws = temp_ws("cfgover");
+    std::fs::create_dir_all(ws.join("config")).unwrap();
+    write_cfg_sample(
+        &ws,
+        r#"{"owner": "{{config.owner}}", "repo": "{{config.repo}}"}"#,
+        Some(r#"{ "owner": "real-owner" }"#),
+    );
+    let out = scan_templates(&ws.join("plugins_wasm"), &ws.join("config"));
+    assert_eq!(out.len(), 1);
+    let t = &out[0].template;
+    let fetch = t.steps.iter().find(|s| s.kind == KIND_FETCH).unwrap();
+    // 运行值覆盖 owner；未覆盖的 repo 落缺省。
+    assert_eq!(
+        fetch.args["args_json"],
+        r#"{"owner": "real-owner", "repo": "def-repo"}"#
+    );
+}
+
+#[test]
+fn scan_skips_template_with_undeclared_config_key() {
+    let ws = temp_ws("cfgskip");
+    std::fs::create_dir_all(ws.join("config")).unwrap();
+    // 引用 schema 未声明的 nope 键 → 残留检查 Err → 模板诚实跳过。
+    write_cfg_sample(&ws, r#"{"owner": "{{config.nope}}"}"#, None);
+    let out = scan_templates(&ws.join("plugins_wasm"), &ws.join("config"));
+    assert!(
+        out.is_empty(),
+        "未声明 config 键的模板必须跳过（不把字面量垃圾送 connector）: {out:?}"
+    );
+    // 直接断言渲染错误形态。
+    let raw = std::fs::read_to_string(ws.join("plugins_wasm/cfg-sample/plugin.toml")).unwrap();
+    let (m, _) = PluginManifest::parse(&raw).expect("shipped 形态必须可解析");
+    let t = &m.flow.templates[0];
+    let cfg = config_table(&m, None);
+    let declared: std::collections::BTreeSet<String> = m.config_schema.keys().cloned().collect();
+    assert!(render_config_tokens(t, &cfg, &declared).is_err());
+}
+
+#[test]
+fn render_config_tokens_renders_when_config_but_keeps_step_tokens() {
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.steps[0].when = "{{steps.s1.count}} > 0".to_string();
+    t.steps[1].when = "{{config.owner}} == gitlab".to_string();
+    t.steps[0]
+        .args
+        .insert("a".to_string(), "{{key}}/{{arg.x}}".to_string());
+    let cfg = BTreeMap::from([("owner".to_string(), "gitlab".to_string())]);
+    let declared = std::collections::BTreeSet::from(["owner".to_string()]);
+    let rendered = render_config_tokens(&t, &cfg, &declared).unwrap();
+    // when 参与装载期 config 渲染（config 值对实例静态）；steps 投影
+    // （`{{steps.*}}`）不属 config 词表，原样保留归运行期。
+    assert_eq!(rendered.steps[0].when, "{{steps.s1.count}} > 0");
+    assert_eq!(rendered.steps[1].when, "gitlab == gitlab");
+    // 条目级 token 原样。
+    assert_eq!(rendered.steps[0].args["a"], "{{key}}/{{arg.x}}");
+}
+
+#[test]
+fn render_config_tokens_declared_unset_renders_empty() {
+    // 可选键契约（SC 套件 proxy / gerrit_base_url 二选一形态）：键已声明
+    // 但未配置（无缺省无覆盖）= 空串，不再整模板拒绝；未声明 = 仍 Err。
+    let mut t = tpl("t", &[KIND_FETCH]);
+    t.steps[0]
+        .args
+        .insert("proxy".to_string(), "{{config.proxy}}".to_string());
+    let cfg = BTreeMap::new();
+    let declared = std::collections::BTreeSet::from(["proxy".to_string()]);
+    let rendered = render_config_tokens(&t, &cfg, &declared).unwrap();
+    assert_eq!(rendered.steps[0].args["proxy"], "");
+    // 同一引用换未声明键集 = 残留 Err（诚实拒绝不宽和）。
+    let undeclared = std::collections::BTreeSet::<String>::new();
+    assert!(render_config_tokens(&t, &cfg, &undeclared).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -1404,6 +1626,22 @@ fn writeback_decision_three_states() {
 }
 
 #[test]
+fn writeback_circuit_opens_at_threshold() {
+    // 连续失败 < 5 = 未熔断（继续重投）；达到 5 = 熔断停投；超限维持熔断。
+    // 钉死 WRITEBACK_MAX_RETRIES = 5（对齐 board 派发 max_send_retries 缺省），
+    // 改动阈值时此处必改——防魔数漂移。
+    assert_eq!(WRITEBACK_MAX_RETRIES, 5);
+    for n in 0..WRITEBACK_MAX_RETRIES {
+        assert!(
+            !writeback_circuit_open(n),
+            "连续失败 {n} 次不应熔断（阈值 {WRITEBACK_MAX_RETRIES}）"
+        );
+    }
+    assert!(writeback_circuit_open(WRITEBACK_MAX_RETRIES));
+    assert!(writeback_circuit_open(WRITEBACK_MAX_RETRIES + 1));
+}
+
+#[test]
 fn transition_state_roundtrip_and_corruption() {
     let flows = FlowStore::new(&temp_ws("wb-state"));
     // 缺席 = None（Adopt 面）。
@@ -1623,7 +1861,299 @@ fn validate_template_accepts_plugin_refs() {
     assert!(validate_template(&tpl("t", &[KIND_FETCH, "plugin:Bad_Slug:echo"])).is_err());
     assert!(validate_template(&tpl("t", &[KIND_FETCH, "plugin:stepdemo:has space"])).is_err());
     assert!(validate_template(&tpl("t", &[KIND_FETCH, "stepdemo:echo"])).is_err());
-    // plugin 引用不作 fetch（fetch 唯一性/首步约束不受影响）。
-    assert!(validate_template(&tpl("t", &["plugin:stepdemo:fetch"])).is_err());
+    // plugin 引用不作 fetch 的旧约束已被 plugin fetch 形态取代（见下）。
     assert!(validate_template(&tpl("t", &[KIND_FETCH, KIND_LAND, "plugin:x:y"])).is_ok());
+}
+
+#[test]
+fn validate_template_plugin_fetch_forms() {
+    // plugin fetch（2026-11-03 自持样板批）：首步合法 plugin 引用 = guest
+    // 专管取数——放行；与 connector_fetch 互斥（取数入口唯一）。
+    assert!(validate_template(&tpl("t", &["plugin:stepdemo:fetch", KIND_LAND])).is_ok());
+    // op 段允许冒号（专业参数化同款语法）。
+    assert!(validate_template(&tpl("t", &["plugin:acme-jira:issue:fetch", KIND_LAND])).is_ok());
+    // plugin fetch 首步 + connector_fetch 混用 = 拒（取数入口唯一）。
+    assert!(
+        validate_template(&tpl("t", &["plugin:stepdemo:fetch", KIND_FETCH, KIND_LAND])).is_err()
+    );
+    // 首步 plugin 引用坏形态照拒（宽放行只对合法引用）。
+    assert!(validate_template(&tpl("t", &["plugin:stepdemo", KIND_LAND])).is_err());
+    // plugin fetch 模板禁 connector_fetch 专管身份 token（{{connector}} 渲染
+    // 空串 = 身份静默错位；{{arg.*}} 未知 token = 静默零实例）——装载期 loud 拒。
+    let mut t = tpl("t", &["plugin:stepdemo:fetch", KIND_LAND]);
+    t.origin_id = "{{connector}}/PROJ#{{key}}".to_string();
+    assert!(validate_template(&t).is_err(), "{{connector}} 在 origin_id");
+    let mut t = tpl("t", &["plugin:stepdemo:fetch", KIND_LAND]);
+    t.origin_id = "jira/{{config.project_key}}#{{key}}".to_string();
+    assert!(validate_template(&t).is_ok(), "{{config.*}}/{{key}} 合法");
+    let mut t = tpl("t", &["plugin:stepdemo:fetch", KIND_LAND]);
+    t.origin_meta
+        .insert("issue_key".to_string(), "{{arg.jql}}".to_string());
+    assert!(validate_template(&t).is_err(), "{{arg.*}} 在 origin_meta");
+}
+
+#[test]
+fn plugin_fetch_entries_extraction() {
+    // 出参契约：done 负载 {"entries":[...]} 键必带且为数组；条目原始形态
+    // 透传（物化路径在 materialize_instances，不在此处）。
+    let payload =
+        serde_json::from_str::<Value>(r#"{"entries":[{"key":"A-1"},{"key":"A-2"}]}"#).unwrap();
+    let entries = plugin_fetch_entries(&payload, "t").expect("entries 数组");
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0]["key"], "A-1");
+    // 缺 entries 键 = Err（guest 契约坏了必响，不落零条目静默）。
+    let payload = serde_json::from_str::<Value>(r#"{"count":0}"#).unwrap();
+    assert!(plugin_fetch_entries(&payload, "t").is_err());
+    // entries 非数组 = Err。
+    let payload = serde_json::from_str::<Value>(r#"{"entries":"nope"}"#).unwrap();
+    assert!(plugin_fetch_entries(&payload, "t").is_err());
+    // 空数组 = 合法（本轮无新条目）。
+    let payload = serde_json::from_str::<Value>(r#"{"entries":[]}"#).unwrap();
+    assert_eq!(plugin_fetch_entries(&payload, "t").unwrap().len(), 0);
+}
+
+#[test]
+fn validate_template_report_plugin_reply_ref() {
+    // report 回帖 plugin 臂（2026-11-03 自持样板批）：connector =
+    // plugin:<slug>:<op> 引用——op 段即引用组成，无需另声明 op。
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND, KIND_REPORT]);
+    let report = t.steps.last_mut().unwrap();
+    report.args.insert(
+        "connector".to_string(),
+        "plugin:jira-fix:comment".to_string(),
+    );
+    assert!(validate_template(&t).is_ok(), "plugin 引用无需 op 声明");
+    // 坏引用 loud 拒。
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND, KIND_REPORT]);
+    let report = t.steps.last_mut().unwrap();
+    report
+        .args
+        .insert("connector".to_string(), "plugin:jira-fix".to_string());
+    assert!(validate_template(&t).is_err(), "缺 op 段");
+    // connector 原语形态照旧：带 connector 必须声明 op。
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND, KIND_REPORT]);
+    let report = t.steps.last_mut().unwrap();
+    report
+        .args
+        .insert("connector".to_string(), "jira".to_string());
+    assert!(validate_template(&t).is_err(), "原语缺 op");
+    let report = t.steps.last_mut().unwrap();
+    report
+        .args
+        .insert("op".to_string(), "issue_comment".to_string());
+    assert!(validate_template(&t).is_ok(), "原语带 op 照旧");
+}
+
+#[test]
+fn validate_template_gates_on_transition_plugin_refs() {
+    // on_transition 回写路由（2026-11-03 自持写通道批）：connector 原语
+    // op（自由文本，远端裁决）与空 op（缺省无回写）照旧过；`plugin:` 引
+    // 用形态必须过 parse_plugin_step_ref——非法引用 = 声明坏 loud 拒，
+    // 装载期诚实跳过模板，不给运行期游标留永久重试黑洞。
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.on_transition.op = "issue_comment".to_string();
+    assert!(validate_template(&t).is_ok(), "connector 原语 op 照旧");
+
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.on_transition.op.clear();
+    assert!(validate_template(&t).is_ok(), "空 op（无回写）照旧");
+
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.on_transition.op = "plugin:issue-import:note".to_string();
+    assert!(validate_template(&t).is_ok(), "合法 plugin 引用");
+
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.on_transition.op = "plugin:issue-import".to_string();
+    assert!(validate_template(&t).is_err(), "缺 op 段");
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.on_transition.op = "plugin:Bad_Slug:note".to_string();
+    assert!(validate_template(&t).is_err(), "坏 slug");
+    let mut t = tpl("t", &[KIND_FETCH, KIND_LAND]);
+    t.on_transition.op = "plugin:issue-import:has space".to_string();
+    assert!(validate_template(&t).is_err(), "坏 op");
+}
+
+#[test]
+fn shipped_issue_import_template_passes_validate_template() {
+    // 入库模板 drift 锁（引擎半边，同 jira-fix/bugfix-flow 锁理由）：install
+    // 期 manifest.validate 不含「恰好一个 fetch 且首步」引擎规则——那条在
+    // gateway 装载期才跑，drift 到装载期才红太晚；此测试把 shipped 声明钉在
+    // CI。0.2.0 自持形态锚点：fetch 打头（plugin: 自报步，非 connector_fetch
+    // ——connector 复用已退役）+ origin-id 字面 gitea 前缀（禁
+    // {{connector}}）。
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../plugins/wasm/issue-import/plugin.toml");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("shipped issue-import plugin.toml 不可读: {e}"));
+    let (m, _) = nemesis_plugins_wasm::manifest::PluginManifest::parse(&raw)
+        .expect("shipped 模板必须可解析");
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    for t in &m.flow.templates {
+        validate_template(t)
+            .unwrap_or_else(|e| panic!("shipped 模板 {} 必须过引擎校验: {e}", t.id));
+    }
+    // 轻量形态锚点：fetch→land 两步。
+    let t = &m.flow.templates[0];
+    assert_eq!(t.steps[0].kind, "plugin:issue-import:fetch");
+    assert_eq!(t.steps[1].kind, KIND_LAND);
+    assert!(
+        t.origin_id.starts_with("gitea/") && !t.origin_id.contains("{{connector}}"),
+        "origin-id 字面 gitea 前缀（plugin fetch 模板禁 {{connector}}/{{arg.*}}）"
+    );
+}
+
+#[test]
+fn shipped_jira_fix_template_passes_validate_template() {
+    // D3 入库模板 drift 锁（引擎半边，同 issue-import 锁理由）：五步
+    // jira-pipeline（无 publish）必须过引擎规则——「恰好一个 fetch 且首步」
+    // / origin_id 必声明 / report 带回写协议等在 gateway 装载期才跑。
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../plugins/wasm/jira-fix/plugin.toml");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("shipped jira-fix plugin.toml 不可读: {e}"));
+    let (m, _) = nemesis_plugins_wasm::manifest::PluginManifest::parse(&raw)
+        .expect("shipped 模板必须可解析");
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    for t in &m.flow.templates {
+        validate_template(t)
+            .unwrap_or_else(|e| panic!("shipped 模板 {} 必须过引擎校验: {e}", t.id));
+    }
+    // 五步形态锚点：fetch 打头（0.2.0 自持批 = plugin: 自报步，非
+    // connector_fetch），report 收尾；fixloop 带人工闸。
+    let t = &m.flow.templates[0];
+    assert_eq!(t.steps[0].kind, "plugin:jira-fix:fetch");
+    assert_eq!(t.steps[1].kind, KIND_LAND);
+    assert_eq!(t.steps.last().unwrap().kind, "report");
+    let fixloop = t
+        .steps
+        .iter()
+        .find(|s| s.kind == "agent_fixloop")
+        .expect("fixloop step");
+    assert_eq!(fixloop.gate, "manual");
+}
+
+#[test]
+fn shipped_bugfix_flow_template_passes_validate_template() {
+    // 3b 自持批入库模板 drift 锁（引擎半边，同 jira-fix/issue-import 锁理由）：
+    // 六步 bugfix-pipeline 必须过引擎规则；「恰好一个 fetch 且首步」等在
+    // gateway 装载期才跑，drift 到装载期才红太晚。0.3.0 自持形态锚点：
+    // fetch 打头（plugin: 自报步）+ report 收尾（connector = plugin 引用）
+    // + 双人工闸（fixloop/publish）+ publish 双 op 全 plugin 引用（无
+    // connector 原语键）+ origin-id 字面 gitea 前缀（禁 {{connector}}）。
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../plugins/wasm/bugfix-flow/plugin.toml");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("shipped bugfix-flow plugin.toml 不可读: {e}"));
+    let (m, _) = nemesis_plugins_wasm::manifest::PluginManifest::parse(&raw)
+        .expect("shipped 模板必须可解析");
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    for t in &m.flow.templates {
+        validate_template(t)
+            .unwrap_or_else(|e| panic!("shipped 模板 {} 必须过引擎校验: {e}", t.id));
+    }
+    let t = &m.flow.templates[0];
+    assert_eq!(t.steps[0].kind, "plugin:bugfix-flow:fetch");
+    assert_eq!(t.steps[1].kind, KIND_LAND);
+    assert_eq!(t.steps.last().unwrap().kind, "report");
+    // 双人工闸：fixloop 与 publish。
+    let fixloop = t
+        .steps
+        .iter()
+        .find(|s| s.kind == "agent_fixloop")
+        .expect("fixloop step");
+    assert_eq!(fixloop.gate, "manual");
+    let publish = t
+        .steps
+        .iter()
+        .find(|s| s.kind == "publish")
+        .expect("publish step");
+    assert_eq!(publish.gate, "manual");
+    // publish 双 op 全 plugin 引用（connector 原语键退役——0.3.0 自持形态）。
+    assert!(
+        !publish.args.contains_key("connector"),
+        "publish 无 connector 键"
+    );
+    assert_eq!(
+        publish.args.get("create_op").map(String::as_str),
+        Some("plugin:bugfix-flow:create_pull")
+    );
+    assert_eq!(
+        publish.args.get("reconcile_op").map(String::as_str),
+        Some("plugin:bugfix-flow:pr_list")
+    );
+    // 回写与报告回帖 = guest comment op（plugin 引用）。
+    assert_eq!(t.on_transition.op, "plugin:bugfix-flow:comment");
+    let report = t.steps.last().unwrap();
+    assert_eq!(
+        report.args.get("connector").map(String::as_str),
+        Some("plugin:bugfix-flow:comment")
+    );
+    // origin-id 字面 gitea 前缀（plugin fetch 模板禁 {{connector}}/{{arg.*}}）。
+    assert!(
+        t.origin_id.starts_with("gitea/") && !t.origin_id.contains("{{connector}}"),
+        "origin-id 必须字面 gitea 前缀: {}",
+        t.origin_id
+    );
+}
+
+#[test]
+fn shipped_jira_gitlab_flow_template_passes_validate_template() {
+    // 2026-11-04 入库模板 drift 锁（引擎半边，同 jira-fix/bugfix-flow 锁理由）：
+    // 七步 jira-gitlab-pipeline（Jira 取数 + 宿主 repo_sync 仓副本 + GitLab MR
+    // 发布）必须过引擎规则——「首步合法 plugin 引用且无 connector_fetch」/
+    // origin_id 必声明 / publish 协议等在 gateway 装载期才跑。
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../plugins/wasm/jira-gitlab-flow/plugin.toml");
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("shipped jira-gitlab-flow plugin.toml 不可读: {e}"));
+    let (m, _) = nemesis_plugins_wasm::manifest::PluginManifest::parse(&raw)
+        .expect("shipped 模板必须可解析");
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    for t in &m.flow.templates {
+        validate_template(t)
+            .unwrap_or_else(|e| panic!("shipped 模板 {} 必须过引擎校验: {e}", t.id));
+    }
+    // 七步形态锚点：fetch 打头（plugin: 自报步）+ repo_sync 仓副本（宿主
+    // 原语首用入库）+ report 收尾；唯一人工闸 = fixloop（publish 自动）。
+    let t = &m.flow.templates[0];
+    assert_eq!(t.steps[0].kind, "plugin:jira-gitlab-flow:fetch");
+    assert_eq!(t.steps[1].kind, "repo_sync");
+    assert_eq!(t.steps.last().unwrap().kind, "report");
+    let fixloop = t
+        .steps
+        .iter()
+        .find(|s| s.kind == "agent_fixloop")
+        .expect("fixloop step");
+    assert_eq!(fixloop.gate, "manual");
+    // 执行面显式声明（2026-11-04）：target = self = 本节点一等执行面——
+    // 单机形态不需要第二个节点；无回退（删声明才落匹配器阶梯）。
+    assert_eq!(
+        fixloop.args.get("target").map(String::as_str),
+        Some("self"),
+        "fixloop 必须声明本节点执行面"
+    );
+    let publish = t
+        .steps
+        .iter()
+        .find(|s| s.kind == "publish")
+        .expect("publish step");
+    assert!(
+        publish.gate.is_empty(),
+        "publish 无 gate（发布动作自动，修复内容人审）"
+    );
+    assert_eq!(
+        publish.args.get("create_op").map(String::as_str),
+        Some("plugin:jira-gitlab-flow:create_mr")
+    );
+    assert_eq!(
+        publish.args.get("reconcile_op").map(String::as_str),
+        Some("plugin:jira-gitlab-flow:mr_list")
+    );
+    // 回写 = guest comment op；origin-id 字面 jira 前缀（禁 {{connector}}）。
+    assert_eq!(t.on_transition.op, "plugin:jira-gitlab-flow:comment");
+    assert!(
+        t.origin_id.starts_with("jira/") && !t.origin_id.contains("{{connector}}"),
+        "origin-id 必须字面 jira 前缀: {}",
+        t.origin_id
+    );
 }

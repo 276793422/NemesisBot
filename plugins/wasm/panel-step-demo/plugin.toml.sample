@@ -1,0 +1,21 @@
+# panel-step-demo 示例插件 manifest 样例（组合 world plugin-panel-flow-step）。
+# `wasm-sha256` 行由 devkit pack 工具替换为真实哈希（根键必须位于任何
+# table 段之前——TOML 语义）；e2e 测试在
+# crates/nemesis-plugins-wasm/tests/e2e_guest.rs 内嵌同款 manifest 动态填 sha。
+wasm-sha256 = "<由 pack 工具填充>"
+api-version = 1
+slug = "panel-step-demo"
+kind = "panel"
+name = "PanelStepDemo"
+version = "0.1.0"
+description = "组合面板+flow步骤示例（面板管配置/凭据，步骤做写通道探针）"
+
+[permissions]
+x-secret = ["probe_token"]
+
+[limits]
+fuel = 20_000_000
+timeout-ms = 10_000
+
+[config-schema]
+probe_mode = "演示配置键"

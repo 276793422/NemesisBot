@@ -14,10 +14,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nemesis_plugins_wasm::PluginError;
-use nemesis_plugins_wasm::egress::is_private_ip;
+use nemesis_plugins_wasm::egress::{EgressPolicy, EgressRequest, is_private_ip, proxy_request};
 use nemesis_plugins_wasm::host_impl::SecretResolver;
 use nemesis_plugins_wasm::install::{AutoApprove, LockfileEntry, PluginInstaller, PluginLockfile};
 use nemesis_plugins_wasm::limits::PluginLimits;
+use nemesis_plugins_wasm::manifest::ConfigSchemaEntry;
 use nemesis_plugins_wasm::registry::PluginManager;
 
 mod common;
@@ -139,6 +140,74 @@ fn egress_private_ip_boundary() {
 }
 
 // ---------------------------------------------------------------------------
+// 出站代理臂（2026-11-04 SC 套件批）：proxy 配置在场 = DNS 解析/私网闸/
+// 钉地址整体移交代理侧——无真实代理也能行为区分（死代理端口秒级拒绝 vs
+// 直连路径先走 DNS）。`.invalid` TLD 是 RFC 6761 保留域（名字服务器应
+// NXDOMAIN），直连臂必然落「dns resolution failed」。
+// ---------------------------------------------------------------------------
+
+fn egress_request(host: &str) -> EgressRequest {
+    EgressRequest {
+        method: "GET".into(),
+        url: format!("http://{host}/x"),
+        headers: vec![],
+        body: None,
+    }
+}
+
+#[tokio::test]
+async fn egress_proxy_arm_skips_local_dns() {
+    let host = "sc-proxy-test.invalid";
+    let limits = PluginLimits {
+        egress_timeout_ms: 3_000,
+        ..PluginLimits::default()
+    };
+
+    // 直连臂（None）：不可解析 host → 本机 DNS 失败（现行为锚点）。
+    let direct = EgressPolicy {
+        ..EgressPolicy::from_permissions(vec![host.into()], true)
+    };
+    let err = proxy_request(&direct, &limits, egress_request(host))
+        .await
+        .expect_err("直连臂必须失败（.invalid 不可解析）");
+    assert!(
+        err.contains("dns resolution failed"),
+        "直连臂错误必须来自本机 DNS 解析：{err}"
+    );
+
+    // 代理臂：死代理 127.0.0.1:1（TCP 拒绝秒级）——错误必须来自连接代理
+    // 而非本机 DNS（DNS 已移交代理侧，socks5h 语义成立）。
+    let via_proxy = EgressPolicy {
+        proxy: Some("http://127.0.0.1:1".into()),
+        ..EgressPolicy::from_permissions(vec![host.into()], true)
+    };
+    let err = proxy_request(&via_proxy, &limits, egress_request(host))
+        .await
+        .expect_err("死代理臂必须失败（连接拒绝）");
+    assert!(
+        !err.contains("dns resolution failed"),
+        "代理臂不得做本机 DNS 解析：{err}"
+    );
+    assert!(
+        err.contains("request failed"),
+        "代理臂错误必须来自代理连接失败：{err}"
+    );
+
+    // 畸形代理 URL：构造 client 之前诚实报错（reqwest 的 Proxy::all 只在
+    // URL 解析层即时拒绝——残缺 IPv6 形态；未知 scheme 会推迟到请求期才报）。
+    let bad_proxy = EgressPolicy {
+        proxy: Some("http://[::1".into()),
+        ..EgressPolicy::from_permissions(vec![host.into()], true)
+    };
+    let err = proxy_request(&bad_proxy, &limits, egress_request(host))
+        .await
+        .expect_err("畸形代理 URL 必须失败");
+    assert!(
+        err.contains("proxy url invalid"),
+        "畸形代理 URL 错误必须带 proxy url invalid：{err}"
+    );
+}
+
 // BUG-20261103-346：egress allowlist IPv6 条目形态（钉端口此前永不命中）
 // ---------------------------------------------------------------------------
 
@@ -222,6 +291,7 @@ fn seed_lockfile(mgr: &PluginManager, slug: &str) {
                 trust: "review-required".into(),
                 installed_at_ms: 0,
                 signed_by: String::new(),
+                connectors: Vec::new(),
             },
         )]
         .into_iter()
@@ -490,6 +560,64 @@ fn takeover_deny_list_covers_host_privileged_family() {
     assert!(!manifest::takeover_denied("web_fetch"));
     assert!(!manifest::takeover_denied("sleep"));
     assert!(!manifest::takeover_denied("memory_search"));
+}
+
+#[test]
+fn config_schema_entry_two_forms_and_defaults() {
+    // 旧形态：纯描述字符串（零迁移，flow 剧本不得引用其缺省——无缺省可渲染）。
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"cfg-a\"\nkind = \"tool\"\n\
+         name = \"A\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+         \n[config-schema]\ngreeting = \"打招呼对象\"\n",
+        "a".repeat(64)
+    );
+    let m = PluginManifest::parse(&raw).expect("parse").0;
+    assert_eq!(m.config_schema["greeting"].desc(), "打招呼对象");
+    assert_eq!(m.config_schema_defaults().get("greeting"), None);
+
+    // 新形态：描述 + 缺省值（flow {{config.*}} 装载期渲染的供给面）。
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"cfg-b\"\nkind = \"tool\"\n\
+         name = \"B\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+         \n[config-schema]\nowner = {{ desc = \"属主\", default = \"octocat\" }}\n\
+         empty = {{ desc = \"声明无缺省\" }}\n",
+        "b".repeat(64)
+    );
+    let m = PluginManifest::parse(&raw).expect("parse").0;
+    assert_eq!(m.config_schema["owner"].desc(), "属主");
+    assert_eq!(
+        m.config_schema_defaults().get("owner").map(String::as_str),
+        Some("octocat")
+    );
+    assert_eq!(
+        m.config_schema_defaults().get("empty"),
+        None,
+        "空缺省不入缺省表（渲染面 = 无缺省）"
+    );
+    // detail 面（wasm.config.get schema 投影源）。
+    let detail = m.config_schema_detail();
+    assert!(detail.contains(&(
+        "owner".to_string(),
+        "属主".to_string(),
+        Some("octocat".to_string())
+    )));
+    assert!(detail.contains(&("empty".to_string(), "声明无缺省".to_string(), None)));
+
+    // x- 前缀键照拒（保留命名空间 = 凭据面；明文缺省值冒充凭据声明 loud 拒）。
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"cfg-c\"\nkind = \"tool\"\n\
+         name = \"C\"\nversion = \"0.1.0\"\ndescription = \"d\"\n\
+         \n[config-schema]\nowner = {{ desc = \"属主\", default = \"o\" }}\n\
+         x-token = {{ desc = \"冒充凭据\", default = \"t\" }}\n",
+        "c".repeat(64)
+    );
+    match PluginManifest::parse(&raw) {
+        Err(e) => assert!(e.to_string().contains("reserved"), "{e}"),
+        Ok((m, _)) => {
+            let err = m.validate().expect_err("x- 前缀 config-schema 键必须被拒");
+            assert!(err.to_string().contains("reserved"), "{err}");
+        }
+    }
 }
 
 #[test]
@@ -1039,6 +1167,1187 @@ fn flow_step_manifest_rejects_empty_kinds_at_probe_level_shape() {
     let (m, _) = PluginManifest::parse(raw).expect("flow-step manifest parses");
     assert_eq!(m.kind.as_str(), "flow-step");
     assert_eq!(m.slug, "flowstep-demo");
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 域侧批 H：connector 装配自动注册（install_core ①.5 预检 +
+// ⑥.5 注册 + lockfile 记账 + 卸载保留提示）
+// ---------------------------------------------------------------------------
+
+/// 最小合法 connector.toml（tool 绑定 = 免 base/http 的最简形态；id/描述
+/// 可参数化供冲突/一致性用例变化）。
+fn connector_toml(id: &str, description: &str) -> String {
+    format!(
+        "[connector]\nid = \"{id}\"\nname = \"Demo\"\nversion = \"0.1.0\"\n\
+         kind = \"rest\"\ndescription = \"{description}\"\n\n\
+         [[op]]\nid = \"ping\"\nintent = [\"探活\"]\nrisk = \"low\"\nclass = \"network\"\n\
+         tool = \"exec\"\nargs_schema = {{ type = \"object\", required = [], properties = {{}} }}\n"
+    )
+}
+
+/// 纯声明式面板源目录（+ 可选包内 connector.toml）。
+fn stage_declarative_with_connector(
+    root: &Path,
+    slug: &str,
+    connector_body: Option<&str>,
+) -> std::path::PathBuf {
+    let dir = root.join("src");
+    std::fs::create_dir_all(&dir).expect("stage dir");
+    std::fs::write(
+        dir.join("plugin.toml"),
+        panel_manifest_raw(slug, "main", false),
+    )
+    .expect("write plugin.toml");
+    if let Some(body) = connector_body {
+        std::fs::write(dir.join("connector.toml"), body).expect("write connector.toml");
+    }
+    dir
+}
+
+fn read_lockfile_entry(mgr: &PluginManager, slug: &str) -> Option<LockfileEntry> {
+    let s = std::fs::read_to_string(mgr.plugins_dir().join("lockfile.json")).ok()?;
+    let lf: PluginLockfile = serde_json::from_str(&s).expect("lockfile parses");
+    lf.plugins.get(slug).cloned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn install_registers_bundled_connector() {
+    let (ws, mgr) = fresh_manager();
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let body = connector_toml("demo-conn", "装配自动注册样例");
+    let src = stage_declarative_with_connector(tmp.path(), "conn-plugin", Some(&body));
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("install");
+
+    // 落文件即注册：scan_connectors 在册。
+    let found = nemesis_connectors::registry::scan_connectors(ws.path())
+        .into_iter()
+        .any(|c| c.connector.as_ref().map(|m| m.id.as_str()) == Some("demo-conn"));
+    assert!(found, "connector 必须在 scan_connectors 可见");
+
+    // 内容逐字节等于包内原文。
+    let target = ws.path().join("connectors/demo-conn/connector.toml");
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("connector file"),
+        body,
+        "注册内容必须逐字节等于包内 connector.toml"
+    );
+
+    // lockfile 记账（事实面：只记实际注册成功的 id）。
+    let entry = read_lockfile_entry(&mgr, "conn-plugin").expect("lockfile entry");
+    assert_eq!(entry.connectors, vec!["demo-conn".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn install_conflicting_connector_not_overwritten() {
+    let (ws, mgr) = fresh_manager();
+    // 用户已自定义 connector（描述是典型必改字段的替身）。
+    let user_body = connector_toml("demo-conn", "用户自定义版");
+    let cdir = ws.path().join("connectors/demo-conn");
+    std::fs::create_dir_all(&cdir).expect("mkdir");
+    std::fs::write(cdir.join("connector.toml"), &user_body).expect("seed user connector");
+
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let bundled = connector_toml("demo-conn", "插件包版本");
+    let src = stage_declarative_with_connector(tmp.path(), "conn-plugin", Some(&bundled));
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("install");
+
+    // 用户文件原样保留（覆盖即毁配置——核心冲突语义）。
+    assert_eq!(
+        std::fs::read_to_string(cdir.join("connector.toml")).expect("user connector"),
+        user_body,
+        "冲突时不得覆盖用户自定义 connector.toml"
+    );
+    // 事实面：未注册成功 = lockfile 不记。
+    let entry = read_lockfile_entry(&mgr, "conn-plugin").expect("lockfile entry");
+    assert!(
+        entry.connectors.is_empty(),
+        "冲突未注册不得进 lockfile 记账，got: {:?}",
+        entry.connectors
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn install_same_content_connector_noop_reregisters() {
+    let (ws, mgr) = fresh_manager();
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let body = connector_toml("demo-conn", "同内容重装");
+    let src = stage_declarative_with_connector(tmp.path(), "conn-plugin", Some(&body));
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("first install");
+    // 升级重装（同内容）：目标在场且逐字节一致 → no-op 且记账保留。
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("reinstall");
+
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("connectors/demo-conn/connector.toml"))
+            .expect("connector file"),
+        body,
+        "no-op 路径内容不变"
+    );
+    let entry = read_lockfile_entry(&mgr, "conn-plugin").expect("lockfile entry");
+    assert_eq!(
+        entry.connectors,
+        vec!["demo-conn".to_string()],
+        "内容一致 = 事实在册，记账保留"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn install_rejects_broken_bundled_connector() {
+    let (ws, mgr) = fresh_manager();
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    // 坏 connector.toml（id 大写出词表 + 无 op）→ ①.5 fail-closed 拒装。
+    let src = stage_declarative_with_connector(
+        tmp.path(),
+        "conn-plugin",
+        Some(
+            "[connector]\nid = \"BadConn\"\nname = \"B\"\nversion = \"0.1.0\"\n\
+             kind = \"rest\"\ndescription = \"d\"\n",
+        ),
+    );
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    let err = match installer.install(Path::new(&src), true).await {
+        Ok(_) => panic!("broken bundled connector must reject install"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, PluginError::Manifest(ref m) if m.contains("connector.toml")),
+        "got: {err:?}"
+    );
+    // 零突变：注册表/connector 目录/lockfile 三处全净。
+    assert!(mgr.get("conn-plugin").is_none(), "被拒插件不得进入注册表");
+    assert!(
+        !ws.path().join("connectors").exists(),
+        "被拒插件不得留下 connector 目录"
+    );
+    assert!(
+        read_lockfile_entry(&mgr, "conn-plugin").is_none(),
+        "被拒插件不得留 lockfile 条目"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uninstall_keeps_registered_connector() {
+    let (ws, mgr) = fresh_manager();
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let body = connector_toml("demo-conn", "卸载存活性样例");
+    let src = stage_declarative_with_connector(tmp.path(), "conn-plugin", Some(&body));
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("install");
+
+    nemesis_plugins_wasm::install::uninstall_blocking(&mgr, "conn-plugin").expect("uninstall");
+
+    // connector 不随卸载删除（可能已被用户定制）。
+    assert_eq!(
+        std::fs::read_to_string(ws.path().join("connectors/demo-conn/connector.toml"))
+            .expect("connector survives uninstall"),
+        body,
+        "卸载后 connector 必须存活"
+    );
+    assert!(
+        read_lockfile_entry(&mgr, "conn-plugin").is_none(),
+        "lockfile 已摘"
+    );
+}
+
+#[test]
+fn lockfile_connectors_field_backward_compat() {
+    // 旧形态（无 connectors 键）→ serde default 空表，解析零迁移。
+    let old = format!(
+        r#"{{"version":1,"plugins":{{"demo":{{"version":"0.1.0","wasm_sha256":"{}","trust":"review-required","installed_at_ms":0,"signed_by":""}}}}}}"#,
+        "a".repeat(64)
+    );
+    let lf: PluginLockfile = serde_json::from_str(&old).expect("old lockfile shape parses");
+    assert!(
+        lf.plugins["demo"].connectors.is_empty(),
+        "缺 connectors 键必须落空表（#[serde(default)]）"
+    );
+
+    // 新形态 roundtrip 保留记账。
+    let lf = PluginLockfile {
+        version: 1,
+        plugins: [(
+            "demo".to_string(),
+            LockfileEntry {
+                version: "0.2.0".into(),
+                wasm_sha256: String::new(),
+                trust: "review-required".into(),
+                installed_at_ms: 1,
+                signed_by: String::new(),
+                connectors: vec!["gitea".to_string()],
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+    let s = serde_json::to_string(&lf).expect("serialize");
+    let back: PluginLockfile = serde_json::from_str(&s).expect("roundtrip");
+    assert_eq!(back.plugins["demo"].connectors, vec!["gitea".to_string()]);
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-04 自持批 3c：issue-import 0.2.0 两件套（plugin.toml + guest 载荷）
+// 盘上真相 drift 锁——shipped 原文永远可解析可装配，清单/哈希不同步时 CI
+// 当场响（install 步骤③哈希对账吃真文件，不用等用户装机才红）
+// ---------------------------------------------------------------------------
+
+/// 仓库内 shipped 真相（`../../` = crate dir → 仓库根；测试只在本仓跑）。
+fn shipped_issue_import_manifest_raw() -> String {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/issue-import/plugin.toml");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "shipped issue-import plugin.toml 不可读（{}）: {e}",
+            path.display()
+        )
+    })
+}
+
+#[test]
+fn shipped_issue_import_manifest_is_valid() {
+    let raw = shipped_issue_import_manifest_raw();
+    let (m, _) = PluginManifest::parse(&raw).expect("shipped 模板必须可解析");
+    m.validate().expect("shipped 模板必须过 manifest.validate");
+    assert_eq!(m.slug, "issue-import");
+    assert_eq!(m.kind.as_str(), "panel");
+    assert!(
+        m.wasm_sha256.is_some(),
+        "载荷插件必须带 wasm-sha256（guest 构建后回填）"
+    );
+    assert_eq!(m.ui.pages.len(), 1);
+    // 自持面（0.2.0）：egress 只打实例基址（整条目 token），PAT 走 x-secret
+    // （面板表单 secret-set 写 vault plugin/issue-import/pat）；自托管 Gitea
+    // 常驻企业内网 → allow-private 是产品语义（allowlist 仍钉 base_url 精确值）。
+    assert_eq!(m.permissions.egress, ["{{config.base_url}}"]);
+    assert!(m.permissions.allow_private, "内网自托管 Gitea 是真实靶");
+    assert_eq!(m.permissions.x_secret, ["pat"]);
+    // 轻量模板形态：恰好 fetch→land 两步（0.2.0 fetch = guest 自报步，
+    // 0.1.x connector 复用已退役）+ origin 去重 + on-transition 回写。
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    let t = &m.flow.templates[0];
+    assert_eq!(t.id, "issue-import");
+    assert_eq!(t.steps.len(), 2);
+    assert_eq!(t.steps[0].kind, "plugin:issue-import:fetch");
+    assert_eq!(t.steps[1].kind, "board_land");
+    assert!(!t.origin_id.is_empty(), "origin 去重键必声明");
+    assert_eq!(t.origin_type, "gitea");
+    assert_eq!(t.on_transition.op, "plugin:issue-import:comment");
+    assert!(
+        !t.on_transition.parse_origin_id.is_empty(),
+        "parse-origin-id 兜旧单（C-2 声明面）"
+    );
+    // config-schema：base_url 无缺省（防假缺省 URL——未配置时 guest 诚实
+    // 报错），owner/repo/state 带声明缺省。
+    let base = m
+        .config_schema
+        .get("base_url")
+        .expect("base_url 必在 schema");
+    match base {
+        ConfigSchemaEntry::Full { default, .. } => {
+            assert!(default.is_empty(), "base_url 不得带缺省值（防假缺省）");
+        }
+        other => panic!("base_url 应为 Full 形态（带 desc），实际 {other:?}"),
+    }
+    for k in ["owner", "repo", "state"] {
+        assert!(
+            matches!(
+                m.config_schema.get(k),
+                Some(ConfigSchemaEntry::Full { default, .. }) if !default.is_empty()
+            ),
+            "{k} 必带声明缺省"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_issue_import_install_e2e() {
+    let (_ws, mgr) = fresh_manager();
+    // shipped 原文 + 真载荷直接过漏斗（零改写 = drift 锁的装配半边）。
+    // 声明式形态（0.1.x 只 stage plugin.toml）已随 connector 复用退役——
+    // 平台对纯声明式面板的接受度由 panel_declarative_register_and_invoke_
+    // honest_error + stage_declarative_with_connector 夹具家族继续钉住。
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("stage dir");
+    std::fs::write(src.join("plugin.toml"), shipped_issue_import_manifest_raw())
+        .expect("write plugin.toml");
+    let wasm_src =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/issue-import/plugin.wasm");
+    std::fs::copy(&wasm_src, src.join("plugin.wasm"))
+        .expect("stage shipped plugin.wasm（两件套必须同在）");
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("payload install（清单/哈希不同步在步骤③当场拒）");
+
+    // 落位 + lockfile 记账（新装默认不加载：注册表缺席 = 正常）。
+    let landed = mgr.plugins_dir().join("issue-import/plugin.toml");
+    assert_eq!(
+        std::fs::read_to_string(&landed).expect("landed manifest"),
+        shipped_issue_import_manifest_raw(),
+        "落位内容必须逐字节等于 shipped 原文"
+    );
+    let (m, _) = PluginManifest::parse(&shipped_issue_import_manifest_raw()).expect("parse");
+    let entry = read_lockfile_entry(&mgr, "issue-import").expect("lockfile entry");
+    assert_eq!(
+        entry.wasm_sha256,
+        m.wasm_sha256.clone().unwrap_or_default(),
+        "lockfile 记账 = 清单哈希 = shipped 载荷实测（三方一致）"
+    );
+    assert_eq!(
+        entry.trust, "review-required",
+        "--allow-unsigned 语义落 lockfile"
+    );
+    assert!(mgr.get("issue-import").is_none(), "新装默认不加载");
+}
+
+// ---------------------------------------------------------------------------
+// shipped jira-fix 域插件 drift 锁（两件套照 bugfix-flow 样板——0.2.0 自持
+// 批 connector.toml 退役；改动清单/哈希不同步时 CI 当场响）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shipped_jira_fix_manifest_is_valid() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/jira-fix/plugin.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "shipped jira-fix plugin.toml 不可读（{}）: {e}",
+            path.display()
+        )
+    });
+    let (m, _) = PluginManifest::parse(&raw).expect("shipped 模板必须可解析");
+    m.validate().expect("shipped 模板必须过 manifest.validate");
+    assert_eq!(m.slug, "jira-fix");
+    assert_eq!(m.kind.as_str(), "panel");
+    assert!(
+        m.wasm_sha256.is_some(),
+        "载荷插件必须带 wasm-sha256（guest 构建后回填）"
+    );
+    assert_eq!(m.ui.pages.len(), 1);
+    assert_eq!(m.ui.pages[0].route, "jira-fix");
+    // 自持面（0.2.0）：egress 只打实例基址（整条目 token），PAT 走 x-secret
+    // （面板表单 secret-set 写 vault plugin/jira-fix/pat）；自托管 Jira
+    // Server/DC 常驻企业内网 → allow-private 是产品语义（allowlist 仍钉
+    // base_url 精确值）。
+    assert_eq!(m.permissions.egress, ["{{config.base_url}}"]);
+    assert!(m.permissions.allow_private, "内网自托管 Jira 是真实靶");
+    assert_eq!(m.permissions.x_secret, ["pat"]);
+    // 单模板五步：取→落→修复循环（人工闸）→验收→报告；无 publish 步
+    // （Jira 不托管 git）。取数/回帖 = guest 自报步骤（plugin: 前缀）。
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    let t = &m.flow.templates[0];
+    assert_eq!(t.id, "jira-pipeline");
+    let kinds: Vec<&str> = t.steps.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "plugin:jira-fix:fetch",
+            "board_land",
+            "agent_fixloop",
+            "check_regress",
+            "report"
+        ]
+    );
+    assert!(!t.origin_id.is_empty(), "origin 去重键必声明");
+    assert_eq!(t.origin_type, "jira");
+    assert_eq!(t.on_transition.op, "plugin:jira-fix:comment");
+    assert!(
+        !t.on_transition.parse_origin_id.is_empty(),
+        "parse-origin-id 兜旧单（C-2 声明面）"
+    );
+    // report 步走 guest 自报 comment op（plugin: 协议前缀）。
+    let report = t.steps.last().expect("report step");
+    let report_connector = report.args.get("connector").map(String::as_str);
+    assert!(
+        report_connector.is_some_and(|c| c.starts_with("plugin:")),
+        "report 步必须声明 plugin: 协议（connector 字面键已退役）"
+    );
+    // config-schema：base_url 无缺省（防假缺省 URL——未配置时 guest 诚实
+    // 报错），project_key/max_results 带声明缺省。
+    let base = m
+        .config_schema
+        .get("base_url")
+        .expect("base_url 必在 schema");
+    match base {
+        ConfigSchemaEntry::Full { default, .. } => {
+            assert!(default.is_empty(), "base_url 不得带缺省值（防假缺省）");
+        }
+        other => panic!("base_url 应为 Full 形态（带 desc），实际 {other:?}"),
+    }
+    for k in ["project_key", "max_results"] {
+        assert!(
+            matches!(
+                m.config_schema.get(k),
+                Some(ConfigSchemaEntry::Full { default, .. }) if !default.is_empty()
+            ),
+            "{k} 必带声明缺省"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// shipped jira-gitlab-flow 域插件 drift 锁（2026-11-04；两件套照 jira-fix/
+// bugfix-flow 样板——Jira 取数 + GitLab 仓副本修复 + MR 发布全链；改动清单/
+// 哈希不同步时 CI 当场响）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shipped_jira_gitlab_flow_manifest_is_valid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/wasm/jira-gitlab-flow/plugin.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "shipped jira-gitlab-flow plugin.toml 不可读（{}）: {e}",
+            path.display()
+        )
+    });
+    let (m, _) = PluginManifest::parse(&raw).expect("shipped 模板必须可解析");
+    m.validate().expect("shipped 模板必须过 manifest.validate");
+    assert_eq!(m.slug, "jira-gitlab-flow");
+    assert_eq!(m.kind.as_str(), "panel");
+    assert!(
+        m.wasm_sha256.is_some(),
+        "载荷插件必须带 wasm-sha256（guest 构建后回填）"
+    );
+    assert_eq!(m.ui.pages.len(), 1);
+    assert_eq!(m.ui.pages[0].route, "jira-gitlab-flow");
+    // 自持面：egress 双基址（整条目 token，任一未配置 = 模板不注册），双 PAT
+    // 走 x-secret（pat = GitLab PRIVATE-TOKEN 兼推送密码——publish 凭据推导
+    // 钉死；jira_pat = Jira Bearer）；自托管双实例常驻企业内网 →
+    // allow-private 是产品语义（allowlist 仍钉 base_url 精确值）。
+    assert_eq!(
+        m.permissions.egress,
+        ["{{config.jira_base_url}}", "{{config.gitlab_base_url}}"]
+    );
+    assert!(m.permissions.allow_private, "内网自托管双实例是真实靶");
+    assert_eq!(m.permissions.x_secret, ["pat", "jira_pat"]);
+    // 单模板七步：取→仓副本→落→修复循环（唯一人工闸）→验收→发布（自动）
+    // →报告；publish 无 gate（发布动作自动，修复内容人审）。
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    let t = &m.flow.templates[0];
+    assert_eq!(t.id, "jira-gitlab-pipeline");
+    assert_eq!(t.origin_type, "jira");
+    assert!(!t.origin_id.is_empty(), "origin 去重键必声明");
+    assert!(
+        t.origin_id.contains("{{config.jira_project_key}}") && t.origin_id.contains("{{key}}"),
+        "origin-id 只可用 {{config.*}} 与 {{key}}（plugin fetch 专管 token 面）"
+    );
+    let kinds: Vec<&str> = t.steps.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "plugin:jira-gitlab-flow:fetch",
+            "repo_sync",
+            "board_land",
+            "agent_fixloop",
+            "check_regress",
+            "publish",
+            "report"
+        ]
+    );
+    // 唯一人工闸 = fixloop；publish 无 gate。
+    let by_id = |id: &str| {
+        t.steps
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| panic!("缺步骤 {id}"))
+    };
+    assert_eq!(by_id("fixloop").gate, "manual", "fixloop = 唯一人工闸");
+    assert_eq!(by_id("fixloop").on_fail, "park_human");
+    assert!(
+        by_id("publish").gate.is_empty(),
+        "publish 自动不停（无 gate）"
+    );
+    assert_eq!(
+        by_id("publish").on_fail,
+        "continue",
+        "发布失败缺口记账不停车"
+    );
+    assert_eq!(by_id("sync").on_fail, "park_human");
+    // repo_sync 仓副本声明：project/url/cred_secret（凭据与 publish 同源）。
+    let sync = by_id("sync");
+    assert_eq!(
+        sync.args.get("project").map(String::as_str),
+        Some("{{config.board_project}}")
+    );
+    assert!(
+        sync.args
+            .get("url")
+            .is_some_and(|u| u.contains("{{config.gitlab_base_url}}")),
+        "sync url 必含 gitlab_base_url token"
+    );
+    assert_eq!(
+        sync.args.get("cred_secret").map(String::as_str),
+        Some("plugin/jira-gitlab-flow/pat"),
+        "仓副本凭据 = publish 推送同源别名"
+    );
+    // publish 协议声明：双 op 均 plugin 引用 + result/reconcile 抽取坐标
+    // （GitLab MR 顶层字段 iid/web_url/source_branch）。
+    let publish = by_id("publish");
+    assert_eq!(
+        publish.args.get("create_op").map(String::as_str),
+        Some("plugin:jira-gitlab-flow:create_mr")
+    );
+    assert_eq!(
+        publish.args.get("reconcile_op").map(String::as_str),
+        Some("plugin:jira-gitlab-flow:mr_list")
+    );
+    assert_eq!(
+        publish.args.get("result_ref").map(String::as_str),
+        Some("$.iid")
+    );
+    assert_eq!(
+        publish.args.get("result_url").map(String::as_str),
+        Some("$.web_url")
+    );
+    assert_eq!(
+        publish.args.get("reconcile_match").map(String::as_str),
+        Some("$.source_branch == {{branch}}")
+    );
+    // report 步走 guest report op（回帖 + 幂等转状态一体）。
+    let report = by_id("report");
+    assert_eq!(
+        report.args.get("connector").map(String::as_str),
+        Some("plugin:jira-gitlab-flow:report")
+    );
+    // on-transition 回写（guest comment op + segment 分解兜旧单）。
+    assert_eq!(t.on_transition.op, "plugin:jira-gitlab-flow:comment");
+    assert!(
+        !t.on_transition.parse_origin_id.is_empty(),
+        "parse-origin-id 兜旧单（C-2 声明面）"
+    );
+    // config-schema：双 base_url 无缺省（防假缺省 URL——未配置时模板不注册），
+    // 其余六键带声明缺省。
+    for k in ["jira_base_url", "gitlab_base_url"] {
+        match m.config_schema.get(k).expect("base_url 必在 schema") {
+            ConfigSchemaEntry::Full { default, .. } => {
+                assert!(default.is_empty(), "{k} 不得带缺省值（防假缺省）");
+            }
+            other => panic!("{k} 应为 Full 形态（带 desc），实际 {other:?}"),
+        }
+    }
+    for k in [
+        "jira_project_key",
+        "jira_transition_name",
+        "gitlab_owner",
+        "gitlab_repo",
+        "gitlab_target_branch",
+        "board_project",
+    ] {
+        assert!(
+            matches!(
+                m.config_schema.get(k),
+                Some(ConfigSchemaEntry::Full { default, .. }) if !default.is_empty()
+            ),
+            "{k} 必带声明缺省"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_jira_gitlab_flow_install_e2e() {
+    let (_ws, mgr) = fresh_manager();
+    // shipped 原文 + 真载荷直接过漏斗（零改写 = drift 锁的装配半边；
+    // 清单/哈希不同步在步骤③当场拒）。
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("stage dir");
+    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/wasm/jira-gitlab-flow/plugin.toml");
+    let raw = std::fs::read_to_string(&manifest_path).expect("read shipped plugin.toml");
+    std::fs::write(src.join("plugin.toml"), &raw).expect("write plugin.toml");
+    let wasm_src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../plugins/wasm/jira-gitlab-flow/plugin.wasm");
+    std::fs::copy(&wasm_src, src.join("plugin.wasm"))
+        .expect("stage shipped plugin.wasm（两件套必须同在）");
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("payload install（清单/哈希不同步在步骤③当场拒）");
+
+    // 落位 + lockfile 记账（新装默认不加载：注册表缺席 = 正常）。
+    let landed = mgr.plugins_dir().join("jira-gitlab-flow/plugin.toml");
+    assert_eq!(
+        std::fs::read_to_string(&landed).expect("landed manifest"),
+        raw,
+        "落位内容必须逐字节等于 shipped 原文"
+    );
+    let (m, _) = PluginManifest::parse(&raw).expect("parse");
+    let entry = read_lockfile_entry(&mgr, "jira-gitlab-flow").expect("lockfile entry");
+    assert_eq!(
+        entry.wasm_sha256,
+        m.wasm_sha256.clone().unwrap_or_default(),
+        "lockfile 记账 = 清单哈希 = shipped 载荷实测（三方一致）"
+    );
+    assert_eq!(
+        entry.trust, "review-required",
+        "--allow-unsigned 语义落 lockfile"
+    );
+    assert!(mgr.get("jira-gitlab-flow").is_none(), "新装默认不加载");
+}
+
+// ---------------------------------------------------------------------------
+// shipped sc-bugfix 域插件 drift 锁（2026-11-04；两件套照 jira-gitlab-flow
+// 样板——Jira 取数 + GitLab/Gerrit 双臂仓副本修复 + MR/change 发布全链；
+// 改动清单/哈希不同步时 CI 当场响）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shipped_sc_bugfix_manifest_is_valid() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/sc-bugfix/plugin.toml");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "shipped sc-bugfix plugin.toml 不可读（{}）: {e}",
+            path.display()
+        )
+    });
+    let (m, _) = PluginManifest::parse(&raw).expect("shipped 模板必须可解析");
+    m.validate().expect("shipped 模板必须过 manifest.validate");
+    assert_eq!(m.slug, "sc-bugfix");
+    assert_eq!(m.kind.as_str(), "panel");
+    assert!(
+        m.wasm_sha256.is_some(),
+        "载荷插件必须带 wasm-sha256（guest 构建后回填）"
+    );
+    assert_eq!(m.ui.pages.len(), 1);
+    assert_eq!(m.ui.pages[0].route, "sc-bugfix");
+    // 自持面：egress 三基址（整条目 token，未配置源 = 条目丢弃；全部未配置
+    // = egress 整体关闭），四凭据走 x-secret（pat = GitLab PRIVATE-TOKEN
+    // 兼推送密码——publish 凭据推导钉死；jira_pat = Jira Bearer；
+    // jira_password = Jira Basic；gerrit_http_pass = Gerrit HTTP Basic）；
+    // 自托管三实例常驻企业内网 → allow-private 是产品语义（allowlist 仍钉
+    // base_url 精确值）。
+    assert_eq!(
+        m.permissions.egress,
+        [
+            "{{config.jira_base_url}}",
+            "{{config.gitlab_base_url}}",
+            "{{config.gerrit_base_url}}"
+        ]
+    );
+    assert!(m.permissions.allow_private, "内网自托管实例是真实靶");
+    assert_eq!(
+        m.permissions.x_secret,
+        ["pat", "jira_pat", "jira_password", "gerrit_http_pass"]
+    );
+    // 单模板双臂九步：取→仓副本（gitlab/gerrit 按 code_host 裁剪）→落→
+    // 修复循环（唯一人工闸）→验收→发布（双臂，自动）→报告。
+    assert_eq!(m.flow.templates.len(), 1, "单模板");
+    let t = &m.flow.templates[0];
+    assert_eq!(t.id, "sc-bugfix-pipeline");
+    assert_eq!(t.origin_type, "jira");
+    assert!(
+        !t.origin_id.contains("{{connector}}") && !t.origin_id.contains("{{arg."),
+        "origin-id 只可用 {{config.*}} 与 {{key}}（plugin fetch 专管 token 面）"
+    );
+    let by_id = |id: &str| {
+        t.steps
+            .iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| panic!("缺步骤 {id}"))
+    };
+    let kinds: Vec<&str> = t.steps.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        [
+            "plugin:sc-bugfix:fetch",
+            "repo_sync",
+            "repo_sync",
+            "board_land",
+            "agent_fixloop",
+            "check_regress",
+            "publish",
+            "publish",
+            "report"
+        ]
+    );
+    // 双臂 when：sync_gitlab/sync_gerrit 与 publish_gitlab/publish_gerrit
+    // 按 code_host 装载期裁剪（假臂 = Skipped 非失败）。
+    assert_eq!(by_id("sync-gitlab").when, "{{config.code_host}} == gitlab");
+    assert_eq!(by_id("sync-gerrit").when, "{{config.code_host}} == gerrit");
+    assert_eq!(
+        by_id("publish-gitlab").when,
+        "{{config.code_host}} == gitlab"
+    );
+    assert_eq!(
+        by_id("publish-gerrit").when,
+        "{{config.code_host}} == gerrit"
+    );
+    // 唯一人工闸 = fixloop；publish 无 gate；sync 失败停车（没法修复），
+    // publish 失败缺口记账不停车。
+    assert_eq!(by_id("fixloop").gate, "manual", "fixloop = 唯一人工闸");
+    assert_eq!(by_id("fixloop").on_fail, "park_human");
+    assert_eq!(by_id("sync-gitlab").on_fail, "park_human");
+    assert_eq!(by_id("sync-gerrit").on_fail, "park_human");
+    assert!(
+        by_id("publish-gitlab").gate.is_empty() && by_id("publish-gerrit").gate.is_empty(),
+        "publish 自动不停（无 gate）"
+    );
+    assert_eq!(by_id("publish-gitlab").on_fail, "continue");
+    assert_eq!(by_id("publish-gerrit").on_fail, "continue");
+    // repo_sync 双臂声明：project/url/cred_secret/cred_user（凭据各臂独立，
+    // 与 publish 同源别名）。
+    for (id, secret, user_key) in [
+        ("sync-gitlab", "plugin/sc-bugfix/pat", "gitlab_owner"),
+        (
+            "sync-gerrit",
+            "plugin/sc-bugfix/gerrit_http_pass",
+            "gerrit_username",
+        ),
+    ] {
+        let s = by_id(id);
+        assert_eq!(
+            s.args.get("cred_secret").map(String::as_str),
+            Some(secret),
+            "{id} 仓副本凭据别名"
+        );
+        assert!(
+            s.args
+                .get("cred_user")
+                .is_some_and(|u| u.contains(&format!("{{{{config.{user_key}}}}}"))),
+            "{id} cred_user 必含 {user_key} token（GitLab HTTPS+PAT 任意非空用户名；Gerrit HTTP Basic 真用户名）"
+        );
+    }
+    // publish_gitlab 协议声明（GitLab MR 顶层字段 iid/web_url/source_branch）。
+    let pg = by_id("publish-gitlab");
+    assert_eq!(
+        pg.args.get("create_op").map(String::as_str),
+        Some("plugin:sc-bugfix:create_mr")
+    );
+    assert_eq!(
+        pg.args.get("reconcile_op").map(String::as_str),
+        Some("plugin:sc-bugfix:mr_list")
+    );
+    assert_eq!(pg.args.get("result_ref").map(String::as_str), Some("$.iid"));
+    assert_eq!(
+        pg.args.get("result_url").map(String::as_str),
+        Some("$.web_url")
+    );
+    assert_eq!(
+        pg.args.get("reconcile_match").map(String::as_str),
+        Some("$.source_branch == {{branch}}")
+    );
+    // publish_gerrit 协议声明：refs/for/ 推送（宿主 Gerrit 臂触发）+
+    // change:<Change-Id> query-as-create + $.change_id 对账匹配 + Change-Id
+    // 页脚（宿主 derive_change_id 确定性派生，重试 = 同 change 新 patchset）。
+    let pr = by_id("publish-gerrit");
+    assert!(
+        pr.args
+            .get("push_ref")
+            .is_some_and(|r| r.starts_with("refs/for/")),
+        "Gerrit 臂必须推 refs/for/（宿主 publish Gerrit 臂触发形态）"
+    );
+    assert_eq!(
+        pr.args.get("create_op").map(String::as_str),
+        Some("plugin:sc-bugfix:change_list")
+    );
+    assert_eq!(
+        pr.args.get("reconcile_op").map(String::as_str),
+        Some("plugin:sc-bugfix:change_list")
+    );
+    assert_eq!(
+        pr.args.get("result_ref").map(String::as_str),
+        Some("$.number")
+    );
+    assert_eq!(
+        pr.args.get("result_url").map(String::as_str),
+        Some("$.web_url")
+    );
+    assert_eq!(
+        pr.args.get("reconcile_match").map(String::as_str),
+        Some("$.change_id == {{change_id}}")
+    );
+    let commit_msg = pr
+        .args
+        .get("commit_message")
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        commit_msg.contains("Change-Id: {{change_id}}"),
+        "commit_message 必带 Change-Id 页脚模板（宿主缺页脚时自动补，显式声明免歧义）"
+    );
+    // land 步六阶段契约前导（body_preamble → 宿主 board_land 注入 issue
+    // description 头部；worker 读单即读纪律）。静态纪律文本：六阶段词 +
+    // 证据标记 [UNDERSTOOD]/[ROOTCAUSE] 必在场，不放行语义必须钉住（声明
+    // 面 drift 锁）。
+    let land_pre = by_id("land")
+        .args
+        .get("body_preamble")
+        .map(String::as_str)
+        .unwrap_or_default();
+    assert!(
+        land_pre.contains("六阶段")
+            && land_pre.contains("[UNDERSTOOD]")
+            && land_pre.contains("[ROOTCAUSE]"),
+        "body_preamble 必带六阶段契约与证据标记"
+    );
+    assert!(
+        land_pre.contains("证据标记缺失 = 验收不放行"),
+        "前导必须钉住不放行语义"
+    );
+    // report 步走 guest report op（回帖 + 幂等转状态一体；转状态目标 =
+    // jira_transition_name 配置，留空 = 只回帖）。
+    assert_eq!(
+        by_id("report").args.get("connector").map(String::as_str),
+        Some("plugin:sc-bugfix:report")
+    );
+    // on-transition 回写（guest comment op + segment 分解兜旧单）。
+    assert_eq!(t.on_transition.op, "plugin:sc-bugfix:comment");
+    assert!(
+        !t.on_transition.parse_origin_id.is_empty(),
+        "parse-origin-id 兜旧单（C-2 声明面）"
+    );
+    // config-schema：三 base_url 无缺省（防假缺省 URL——未配置时 guest 诚实
+    // 报错）；jira_transition_name 无缺省（留空 = 只回帖不转状态，语义键）；
+    // 其余带声明缺省；code_host/jira_auth_mode 缺省即合法值域。
+    for k in [
+        "jira_base_url",
+        "gitlab_base_url",
+        "gerrit_base_url",
+        "jira_transition_name",
+    ] {
+        match m.config_schema.get(k).expect("schema 键必在") {
+            ConfigSchemaEntry::Full { default, .. } => {
+                assert!(
+                    default.is_empty(),
+                    "{k} 不得带缺省值（防假缺省/防瞎转状态）"
+                );
+            }
+            other => panic!("{k} 应为 Full 形态（带 desc），实际 {other:?}"),
+        }
+    }
+    for k in [
+        "code_host",
+        "jira_project_key",
+        "jira_auth_mode",
+        "gitlab_owner",
+        "gitlab_repo",
+        "gitlab_target_branch",
+        "gerrit_target_branch",
+        "board_project",
+    ] {
+        assert!(
+            matches!(
+                m.config_schema.get(k),
+                Some(ConfigSchemaEntry::Full { default, .. }) if !default.is_empty()
+            ),
+            "{k} 必带声明缺省"
+        );
+    }
+    assert_eq!(
+        m.config_schema.get("code_host").map(|e| match e {
+            ConfigSchemaEntry::Full { default, .. } => default.as_str(),
+            _ => "",
+        }),
+        Some("gitlab"),
+        "code_host 缺省 = gitlab 臂"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn shipped_sc_bugfix_install_e2e() {
+    let (_ws, mgr) = fresh_manager();
+    // shipped 原文 + 真载荷直接过漏斗（零改写 = drift 锁的装配半边；
+    // 清单/哈希不同步在步骤③当场拒）。
+    let tmp = tempfile::tempdir().expect("stage tmp");
+    let src = tmp.path().join("src");
+    std::fs::create_dir_all(&src).expect("stage dir");
+    let manifest_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/sc-bugfix/plugin.toml");
+    let raw = std::fs::read_to_string(&manifest_path).expect("read shipped plugin.toml");
+    std::fs::write(src.join("plugin.toml"), &raw).expect("write plugin.toml");
+    let wasm_src =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/wasm/sc-bugfix/plugin.wasm");
+    std::fs::copy(&wasm_src, src.join("plugin.wasm"))
+        .expect("stage shipped plugin.wasm（两件套必须同在）");
+
+    let installer = PluginInstaller::new(mgr.clone(), Arc::new(AutoApprove), None);
+    installer
+        .install(Path::new(&src), true)
+        .await
+        .expect("payload install（清单/哈希不同步在步骤③当场拒）");
+
+    // 落位 + lockfile 记账（新装默认不加载：注册表缺席 = 正常）。
+    let landed = mgr.plugins_dir().join("sc-bugfix/plugin.toml");
+    assert_eq!(
+        std::fs::read_to_string(&landed).expect("landed manifest"),
+        raw,
+        "落位内容必须逐字节等于 shipped 原文"
+    );
+    let (m, _) = PluginManifest::parse(&raw).expect("parse");
+    let entry = read_lockfile_entry(&mgr, "sc-bugfix").expect("lockfile entry");
+    assert_eq!(
+        entry.wasm_sha256,
+        m.wasm_sha256.clone().unwrap_or_default(),
+        "lockfile 记账 = 清单哈希 = shipped 载荷实测（三方一致）"
+    );
+    assert_eq!(
+        entry.trust, "review-required",
+        "--allow-unsigned 语义落 lockfile"
+    );
+    assert!(mgr.get("sc-bugfix").is_none(), "新装默认不加载");
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 自持写通道批：egress `{{config.<key>}}` 整条目 token——
+// manifest 校验（声明闸，validate 顺序在 x-secret 冲突检查之前）+
+// render_egress_tokens（渲染丢弃语义：配置缺席 = 条目丢弃不破
+// deny-by-default）
+// ---------------------------------------------------------------------------
+
+fn parse_manifest_with_egress(egress: &str, schema: &str, x_secret: &str) -> Result<(), String> {
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"demo\"\nkind = \"tool\"\n\
+         name = \"Demo\"\nversion = \"0.1.0\"\ndescription = \"demo\"\n\
+         [config-schema]\n{schema}\n\
+         [permissions]\n{x_secret}egress = [{egress}]\n",
+        "a".repeat(64)
+    );
+    match PluginManifest::parse(&raw) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[test]
+fn egress_config_token_manifest_validation() {
+    // 声明键整条目 token → 过。
+    assert!(
+        parse_manifest_with_egress("\"{{config.base_host}}\"", "base_host = \"string\"", "")
+            .is_ok()
+    );
+    // 未声明键 → loud 拒（渲染白名单 = config-schema 声明）。
+    let err = parse_manifest_with_egress("\"{{config.base_host}}\"", "", "").unwrap_err();
+    assert!(err.contains("undeclared"), "{err}");
+    // x-secret 键引用 → loud 拒（凭据不进 allowlist；键须同时声明在
+    // config-schema 才会走到 x-secret 臂——纯 x-secret 声明由 undeclared
+    // 臂先拦，冲突检查在本闸之后才跑）。
+    let err = parse_manifest_with_egress(
+        "\"{{config.token}}\"",
+        "token = \"string\"",
+        "x-secret = [\"token\"]\n",
+    )
+    .unwrap_err();
+    assert!(err.contains("x-secret"), "{err}");
+    // 非整条目 token 形态（前缀混排/嵌套替换不做）→ loud 拒。
+    let err =
+        parse_manifest_with_egress("\"{{config.base_host}}/api\"", "base_host = \"string\"", "")
+            .unwrap_err();
+    assert!(err.contains("whole-entry"), "{err}");
+    // `{{config.` 形态但缺右括号 → 同样 whole-entry 拒。
+    let err = parse_manifest_with_egress("\"{{config.base_host\"", "base_host = \"string\"", "")
+        .unwrap_err();
+    assert!(err.contains("whole-entry"), "{err}");
+    // 字面条目照旧：合法过、非法拒（原闸回归）。
+    assert!(parse_manifest_with_egress("\"example.com\"", "", "").is_ok());
+    let err = parse_manifest_with_egress("\"*.example.com\"", "", "").unwrap_err();
+    assert!(err.contains("invalid egress"), "{err}");
+}
+
+#[test]
+fn egress_token_render_matrix() {
+    use std::collections::BTreeMap;
+
+    use nemesis_plugins_wasm::egress::render_egress_tokens;
+
+    let mut cfg = BTreeMap::new();
+    cfg.insert("base_host".to_string(), "jira.example.com".to_string());
+
+    // 字面条目原样保留。
+    assert_eq!(
+        render_egress_tokens(&["example.com".to_string()], &cfg),
+        vec!["example.com".to_string()]
+    );
+    // token 解析出实例配置值。
+    assert_eq!(
+        render_egress_tokens(&["{{config.base_host}}".to_string()], &cfg),
+        vec!["jira.example.com".to_string()]
+    );
+    // 配置缺席 = 条目丢弃（allowlist 可被清空 = 出站能力整体关闭）。
+    assert!(
+        render_egress_tokens(&["{{config.absent}}".to_string()], &cfg).is_empty(),
+        "unresolvable token must drop the entry, not pass it through"
+    );
+    // 非整条目 `{{` 形态防御性丢弃（manifest validate 已 loud 拒）。
+    assert!(render_egress_tokens(&["{{config.base_host}}/api".to_string()], &cfg).is_empty());
+    // 混合条目：字面保留 + token 解析 + 缺席丢弃，逐条独立裁决。
+    assert_eq!(
+        render_egress_tokens(
+            &[
+                "a.com".to_string(),
+                "{{config.base_host}}".to_string(),
+                "{{config.absent}}".to_string(),
+            ],
+            &cfg
+        ),
+        vec!["a.com".to_string(), "jira.example.com".to_string()]
+    );
+    // 空配置 = 全 token 条目清空。
+    assert!(
+        render_egress_tokens(&["{{config.base_host}}".to_string()], &BTreeMap::new()).is_empty()
+    );
+
+    // URL 形态配置值提取 host:port（2026-11-03 demo 实证缺口：自持故事
+    // 操作员贴的自然是完整 URL——scheme 前缀混进 host 段会让 allowlisted
+    // 永不匹配）。
+    cfg.insert("base_url".to_string(), "http://127.0.0.1:46395".to_string());
+    assert_eq!(
+        render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg),
+        vec!["127.0.0.1:46395".to_string()]
+    );
+    // 无显式端口 → 裸 host 条目（scheme 默认端口不钉）。
+    cfg.insert("base_url".to_string(), "https://jira.corp.com".to_string());
+    assert_eq!(
+        render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg),
+        vec!["jira.corp.com".to_string()]
+    );
+    // URL 带路径 + 首尾空白（粘贴形态）→ 同样提取。
+    cfg.insert(
+        "base_url".to_string(),
+        " http://10.0.0.9:8123/rest/api/2/ ".to_string(),
+    );
+    assert_eq!(
+        render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg),
+        vec!["10.0.0.9:8123".to_string()]
+    );
+    // 含 :// 但解析失败（空 host）= 条目丢弃。
+    cfg.insert("base_url".to_string(), "http://:46395".to_string());
+    assert!(render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg).is_empty());
+    // 空值 = 条目丢弃（未配置语义，deny-by-default）。
+    cfg.insert("base_url".to_string(), String::new());
+    assert!(render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg).is_empty());
+    // IPv6 无显式端口 → 裸 host（与请求侧 host_str 去括号形态一致，精确
+    // 臂命中）；带显式端口条目语法无法表达 → 丢弃从严。
+    cfg.insert("base_url".to_string(), "http://[::1]/".to_string());
+    assert_eq!(
+        render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg),
+        vec!["::1".to_string()]
+    );
+    cfg.insert("base_url".to_string(), "http://[::1]:8080/".to_string());
+    assert!(render_egress_tokens(&["{{config.base_url}}".to_string()], &cfg).is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// 2026-11-03 组合 world 批：register 的 step 元数据闸矩阵。组合形态
+// （kind=panel 双导出 flow-step）的组件同报 step 快照——注册面按快照认，
+// manifest 仍是 kind=panel。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn register_step_meta_gate_matrix() {
+    use nemesis_plugins_wasm::PluginTrustState;
+    use nemesis_plugins_wasm::manifest::PluginManifest;
+    use nemesis_plugins_wasm::registry::StepMetaSnapshot;
+
+    let (_ws, mgr) = fresh_manager();
+    let parse = |slug: &str, kind: &str| {
+        let raw = format!(
+            "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"{slug}\"\nkind = \"{kind}\"\n\
+             name = \"{slug}\"\nversion = \"0.1.0\"\ndescription = \"d\"\n",
+            "a".repeat(64)
+        );
+        PluginManifest::parse(&raw).expect("parse").0
+    };
+
+    // ① kind=Panel + Some(step_meta)：组合形态接受，快照进注册表。
+    let reg = mgr
+        .register(
+            parse("combo", "panel"),
+            PluginTrustState::ReviewRequired,
+            1,
+            None,
+            None,
+            Some(StepMetaSnapshot {
+                kinds: vec!["fetch".into()],
+            }),
+        )
+        .expect("panel + step_meta accepted");
+    assert_eq!(
+        reg.step_meta.as_ref().expect("step meta").kinds,
+        vec!["fetch"]
+    );
+
+    // ② kind=Observer + Some(step_meta)：非 flow-step 载 step 元数据 = 拒
+    //    （observer 可过 tool/policy 闸，正好命中 step 闸的 kind 检查；
+    //    tool kind 会被更靠前的「缺 tool 快照」闸先拦，打不到这层）。
+    match mgr.register(
+        parse("misfit", "observer"),
+        PluginTrustState::ReviewRequired,
+        1,
+        None,
+        None,
+        Some(StepMetaSnapshot {
+            kinds: vec!["fetch".into()],
+        }),
+    ) {
+        Err(PluginError::Manifest(m)) => assert!(
+            m.contains("step metadata provided for non-flow-step plugin"),
+            "{m}"
+        ),
+        Err(other) => panic!("observer + step_meta rejected with unexpected error: {other:?}"),
+        Ok(_) => panic!("observer + step_meta must be rejected"),
+    }
+
+    // ③ kind=FlowStep + None：缺快照 = 对账拒。
+    match mgr.register(
+        parse("barestep", "flow-step"),
+        PluginTrustState::ReviewRequired,
+        1,
+        None,
+        None,
+        None,
+    ) {
+        Err(PluginError::MetadataMismatch(m)) => {
+            assert!(
+                m.contains("flow-step plugin missing metadata snapshot"),
+                "{m}"
+            )
+        }
+        Err(other) => {
+            panic!("flow-step without snapshot rejected with unexpected error: {other:?}")
+        }
+        Ok(_) => panic!("flow-step without snapshot must be rejected"),
+    }
+
+    // ④ kind=Panel + None：纯面板合法（无步骤面）。
+    let reg = mgr
+        .register(
+            parse("plain-panel", "panel"),
+            PluginTrustState::ReviewRequired,
+            1,
+            None,
+            None,
+            None,
+        )
+        .expect("pure panel accepted");
+    assert!(reg.step_meta.is_none(), "纯面板不得带 step 快照");
 }
 
 // BUG-20261103-334 横向排查定性钉（非缺陷修复）：三方开发者以记事本

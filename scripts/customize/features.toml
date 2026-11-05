@@ -538,6 +538,16 @@ desc = "Dashboard 使用统计页（UsageView），引入 echarts(~558KB)。IoT/
 category = "subsystems"
 default = true
 
+# git-https（2026-11-04 repo_sync 批）：libgit2 https 传输（repo_sync clone/pull、
+# publish 推送 https URL）。Windows 走系统 WinHTTP 零新依赖，Linux 走系统 OpenSSL
+# （setup-linux.sh 已装）；Android 不开（避免交叉编译 TLS 栈）。默认关（http 开箱即用）。
+[[feature]]
+id = "git-https"
+label = "git https 传输"
+desc = "libgit2 https 支持（repo_sync clone/pull 与 publish 推送 https 仓库 URL；http 恒可用）。桌面发行构建默认带上；Android 构建不开（诚实报传输不支持）"
+category = "subsystems"
+default = false
+
 [[feature]]
 id = "skins"
 label = "皮肤包系统"

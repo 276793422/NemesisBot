@@ -150,6 +150,29 @@ macro_rules! export_step {
     };
 }
 
+/// 组合面板+步骤插件一键导出（2026-11-03 组合 world 批；crate 根调用；
+/// 工程须有 `wit/plugin.wit` 合同副本）。
+///
+/// 展开顺序：生成 `plugin-panel-flow-step` world 绑定（`exports::nemesis::
+/// plugin::ui` 与 `exports::nemesis::plugin::flow_step` 及
+/// `nemesis::plugin::host` 导入模块）→ `export!($ty)`。`runtime_path`
+/// 语义同 [`export_tool!`]。组合 guest 必须同时实现两个 Guest trait：
+/// `exports::nemesis::plugin::ui::Guest::handle_ui_command`（Panel 帧，
+/// 有 secret-set / config-set 写面）与
+/// `exports::nemesis::plugin::flow_step::Guest`（`get_step_metadata` /
+/// `run_step`，FlowStep 帧——构造期即无写面，写通道只在 ui 帧授予）。
+#[macro_export]
+macro_rules! export_panel_step {
+    ($ty:ident) => {
+        ::nemesis_plugin_sdk::generate!({
+            path: "wit",
+            world: "plugin-panel-flow-step",
+            runtime_path: "nemesis_plugin_sdk",
+        });
+        ::nemesis_plugin_sdk::__export_impl!($ty);
+    };
+}
+
 /// generate!/export! 的顺序衔接（`export!` 宏由 generate! 展开产物定义到
 /// 调用 crate 根——必须在其后展开）；不对外稳定。片段全程 `ident`（宏链
 /// 逐层转发，`ty` 片段无法再匹配内层 `ident`）。
@@ -210,6 +233,10 @@ pub mod guide {
     pub const UI_GUEST: &str = "exports::nemesis::plugin::ui::Guest";
     /// flow 步骤插件 Guest trait（生成后位于插件 crate；2026-11-03 批）。
     pub const FLOW_STEP_GUEST: &str = "exports::nemesis::plugin::flow_step::Guest";
+    /// 组合面板+步骤插件 Guest traits（生成后位于插件 crate；2026-11-03
+    /// 组合 world 批；两个 trait 都要实现，缺一编译失败）。
+    pub const PANEL_STEP_GUESTS: &str =
+        "exports::nemesis::plugin::ui::Guest + exports::nemesis::plugin::flow_step::Guest";
 }
 
 pub mod types {

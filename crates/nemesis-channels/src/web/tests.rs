@@ -179,6 +179,7 @@ async fn test_send_to_session_forwards_model_badge() {
             source_node: Some("node-b".to_string()),
             task_id: None,
             sync_via: None,
+            receipt: false,
         },
     };
     let result = ch.send(msg).await;

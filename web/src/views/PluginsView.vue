@@ -73,6 +73,8 @@ interface WasmConfigData {
   enabled: boolean
   entries: Record<string, string>
   schema_keys: string[]
+  /** schema 明细（键 → 描述 + 可选缺省；旧网关缺此字段 → 回落 schema_keys）。 */
+  schema?: { key: string; desc: string; default: string | null }[]
   secret_keys: string[]
 }
 
@@ -487,16 +489,20 @@ onMounted(() => {
                       <div v-if="!Object.keys(wasmConfig.entries).length && !wasmConfig.schema_keys?.length" style="color: var(--text-muted); font-size: var(--text-sm);">
                         该插件未声明配置键。
                       </div>
-                      <div v-for="k in wasmConfig.schema_keys" :key="k" style="display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2);">
-                        <span style="font-family: var(--font-mono); font-size: var(--text-xs); min-width: 120px;">{{ k }}</span>
+                      <div v-if="wasmConfig.schema?.length" style="font-size: var(--text-xs); color: var(--text-muted); margin-bottom: var(--space-2);">
+                        值留空 = 用声明缺省；改动热生效（flow 剧本 <span v-pre style="font-family: var(--font-mono);">&#123;&#123;config.*&#125;&#125;</span> 下一轮装载即取新值）。
+                      </div>
+                      <div v-for="s in wasmConfig.schema?.length ? wasmConfig.schema : wasmConfig.schema_keys.map((k: string) => ({ key: k, desc: '', default: null }))" :key="s.key" style="display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-2);">
+                        <span style="font-family: var(--font-mono); font-size: var(--text-xs); min-width: 120px;" :title="s.desc">{{ s.key }}</span>
+                        <span v-if="s.desc" style="font-size: var(--text-xs); color: var(--text-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ s.desc }}</span>
                         <input
                           class="form-input"
-                          style="flex: 1;"
-                          :value="wasmConfig.entries[k] ?? ''"
-                          :placeholder="'未设置'"
-                          @change="wasmConfigSave(p.slug, k, ($event.target as HTMLInputElement).value)"
+                          :style="s.desc ? 'width: 220px;' : 'flex: 1;'"
+                          :value="wasmConfig.entries[s.key] ?? ''"
+                          :placeholder="s.default ? '缺省 ' + s.default : '未设置'"
+                          @change="wasmConfigSave(p.slug, s.key, ($event.target as HTMLInputElement).value)"
                         />
-                        <button class="btn btn-sm" @click="wasmConfigRemove(p.slug, k)">清除</button>
+                        <button v-if="wasmConfig.entries[s.key]" class="btn btn-sm" title="清除后回落声明缺省" @click="wasmConfigRemove(p.slug, s.key)">清除</button>
                       </div>
                     </div>
                   </template>

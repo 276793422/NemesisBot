@@ -117,6 +117,25 @@ pub trait LlmInvoker: Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>;
 }
 
+/// 凭据写回面（gateway 注入；2026-11-03 自持写通道批）。实现 =
+/// `VaultPluginSecretWriter`（vault 文件现开现解锁 → upsert → 原子落盘，
+/// 与读取同源语义）。alias = vault 裸别名 `plugin/<slug>/<name>`（不带
+/// `vault:` 前缀——前缀是组件侧视图，写面只认存储视图）。帧纪律：仅
+/// Panel 帧授予（面板命令通道 = 用户意志入口）；授予裁决集中在
+/// registry::build_frame，这里只消费帧内是否在场。
+pub trait SecretWriter: Send + Sync {
+    /// 按别名 upsert 一条凭据（Err = 人读失败文本，转 unavailable 语义）。
+    fn write(&self, alias: &str, value: &str) -> Result<(), String>;
+}
+
+/// 实例配置写回面（gateway 注入；同批）。实现 = Weak<PluginManager> 委派
+/// `set_config_key`（三闸 + config_io 锁 + 原子落盘，与 WSAPI
+/// `wasm.config.set` 单一真相源）。帧纪律同 SecretWriter：仅 Panel 帧授予。
+pub trait ConfigWriter: Send + Sync {
+    /// 写一条实例配置（Err = 人读失败文本；闸拒在 manager 内loud 报错）。
+    fn set_config(&self, slug: &str, key: &str, value: &str) -> Result<(), String>;
+}
+
 /// 实例配置（manifest config-schema 声明 + 操作员 entries；x-secret 键名集）。
 #[derive(Debug, Clone, Default)]
 pub struct InstanceConfig {
@@ -204,6 +223,11 @@ pub struct CallCaps {
     pub invoker: Option<Arc<dyn HostToolInvoker>>,
     /// 杂务 LLM 补全面（None = 未装配，恒 unavailable；2026-10-22 批 4）。
     pub llm: Option<Arc<dyn LlmInvoker>>,
+    /// 凭据写回面（None = 未装配/帧未授予，恒 unavailable；2026-11-03
+    /// 自持写通道批；仅 Panel 帧由 build_frame 授予）。
+    pub secret_write: Option<Arc<dyn SecretWriter>>,
+    /// 实例配置写回面（None = 未装配/帧未授予，恒 unavailable；同批）。
+    pub config_write: Option<Arc<dyn ConfigWriter>>,
     /// tokio runtime 句柄（同步 host 函数里 block_on 异步下游用）。
     pub tokio_handle: Option<tokio::runtime::Handle>,
     /// 审计器（None = 未装配，静默跳过）。

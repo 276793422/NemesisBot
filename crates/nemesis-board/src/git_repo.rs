@@ -243,11 +243,17 @@ pub fn head_tree_hex(root: &Path) -> Result<Option<String>, String> {
 /// 本层只收通用二元组）。
 /// 本地 config 钉 `core.autocrlf=false`（契约同 [`ensure_repo`]——基线
 /// tree 字节精确对账依赖行尾稳定）。
+/// 代理：见 [`apply_proxy`]——企业代理后仓库走 `proxy: Some(url)`。
 ///
 /// 诚实边界：本 crate 的 git2 为 `default-features = false`（无 TLS 后端
 /// ）——`https://` 远端会得到 libgit2 的「transport not supported」类
 /// 错误原样透传；http:// 与本地路径可用。
-pub fn clone_repo(url: &str, dest: &Path, cred: Option<(&str, &str)>) -> Result<String, String> {
+pub fn clone_repo(
+    url: &str,
+    dest: &Path,
+    cred: Option<(&str, &str)>,
+    proxy: Option<&str>,
+) -> Result<String, String> {
     if dest.join(".git").exists() {
         return head_commit_hex(dest)?.ok_or_else(|| {
             format!(
@@ -265,6 +271,9 @@ pub fn clone_repo(url: &str, dest: &Path, cred: Option<(&str, &str)>) -> Result<
     let mut fo = git2::FetchOptions::new();
     fo.remote_callbacks(callbacks);
     fo.download_tags(git2::AutotagOption::None);
+    let mut px = git2::ProxyOptions::new();
+    apply_proxy(&mut px, proxy);
+    fo.proxy_options(px);
     let mut builder = git2::build::RepoBuilder::new();
     builder.fetch_options(fo);
     // 克隆自带的 checkout **必须关过滤器**：local config 尚未落钉、libgit2
@@ -296,12 +305,14 @@ pub fn clone_repo(url: &str, dest: &Path, cred: Option<(&str, &str)>) -> Result<
 /// 远端推送（P3 PR 发布）：把本地分支推到 `remote` 的 `remote_ref`。
 /// 凭据语义同 [`clone_repo`]。push 前本地分支必须存在（缺 = Err）。
 /// force = false（快进失败 = Err——交付分支被外部移动必须人裁，不覆盖）。
+/// 代理语义同 [`apply_proxy`]（Gerrit refs/for 推送同路）。
 pub fn push_branch(
     root: &Path,
     local_branch: &str,
     remote: &str,
     remote_ref: &str,
     cred: Option<(&str, &str)>,
+    proxy: Option<&str>,
 ) -> Result<(), String> {
     let repo =
         Repository::open(root).map_err(|e| format!("打开项目仓库 {} 失败: {e}", root.display()))?;
@@ -314,12 +325,604 @@ pub fn push_branch(
     }
     let mut po = git2::PushOptions::new();
     po.remote_callbacks(callbacks);
+    let mut px = git2::ProxyOptions::new();
+    apply_proxy(&mut px, proxy);
+    po.proxy_options(px);
     let mut remote_obj = repo
         .find_remote(remote)
         .map_err(|e| format!("找不到远端 `{remote}`: {e}"))?;
     remote_obj
         .push(&[spec.as_str()], Some(&mut po))
         .map_err(|e| format!("推送 {spec} → {remote} 失败: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Gerrit 发布支撑（2026-11-04 SC 套件批）：确定性 Change-Id + 单提交 atop
+// ---------------------------------------------------------------------------
+
+/// 从种子串确定性派生 Gerrit Change-Id（`I<40hex>`，SHA-1 of seed）。
+/// 同一任务多次重试派生同一 Change-Id → Gerrit 服务端按 Change-Id 归并
+/// （push 建评审天然幂等，对账按此锚点回查——宿主 `{{change_id}}` 运行期
+/// token 的单一真相源）。
+pub fn derive_change_id(seed: &str) -> Result<String, String> {
+    let oid = git2::Oid::hash_object(git2::ObjectType::Commit, seed.as_bytes())
+        .map_err(|e| format!("Change-Id 派生失败: {e}"))?;
+    Ok(format!("I{oid}"))
+}
+
+/// 任意 commit 的 tree hex（commit 缺席 = Err——发布面的诚实契约；
+/// Gerrit 单提交臂从交付 commit 反查交付树用）。
+pub fn tree_of_commit_hex(root: &Path, commit_hex: &str) -> Result<String, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
+    let oid = git2::Oid::from_str(commit_hex).map_err(|e| format!("commit hash 形态非法: {e}"))?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("commit {commit_hex} 不在仓库 {}: {e}", root.display()))?;
+    Ok(commit.tree_id().to_string())
+}
+
+/// Gerrit 单提交形态：把交付树铸成**单亲 commit**，atop
+/// `refs/remotes/origin/{target_branch}` 远端头。交付分支 HEAD 可能是
+/// 档案管线「变更集合入」的 merge commit——Gerrit 对 merge change 评审
+/// 体验差（diff 噪声/revert 复杂），评审期望单提交基于最新分支头。
+///
+/// 语义：
+/// - 目标头 = `refs/remotes/origin/{target_branch}`（缺席 = Err——目标
+///   分支未同步过就谈不团单提交，先 repo_sync）；
+/// - 基线树 `base_tree_hex` 必给（调用方从 payload `base_tree` 或基线
+///   commit 的 tree 解析；两侧都缺 = 调用方诚实报错，本层不猜）；
+/// - 目标头树 == 基线树 → fast 形态：交付树直接单亲 atop 目标头（零合并）；
+/// - 否则三方合并（ancestor=基线树，ours=交付树，theirs=目标头树）——
+///   冲突 = Err（需人工 rebase，绝不产带冲突标记的提交）；
+/// - 合并后树与目标头树一致（目标已含交付）= Err（无可发布差异）；
+/// - 结果 force 落 `refs/heads/{branch}`（该分支正被工作树检出 = Err，
+///   不背工作树失同步）。
+///
+/// 返回新 commit hex。
+pub fn single_commit_atop(
+    root: &Path,
+    branch: &str,
+    target_branch: &str,
+    base_tree_hex: &str,
+    delivery_tree_hex: &str,
+    message: &str,
+) -> Result<String, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
+
+    if head_branch_name(&repo)? == branch {
+        return Err(format!(
+            "分支 {branch} 正被工作树检出——单提交重铸不允许在检出分支上进行"
+        ));
+    }
+
+    let target_commit = repo
+        .find_reference(&format!("refs/remotes/origin/{target_branch}"))
+        .map_err(|_| {
+            format!("远端 origin 上没有分支 `{target_branch}`——Gerrit 单提交需要先同步目标分支")
+        })?
+        .peel_to_commit()
+        .map_err(|e| format!("origin/{target_branch} 解析 commit 失败: {e}"))?;
+
+    let parse_tree = |hex: &str, what: &str| -> Result<git2::Tree<'_>, String> {
+        let oid =
+            git2::Oid::from_str(hex).map_err(|e| format!("{what} tree hash 形态非法: {e}"))?;
+        repo.find_tree(oid)
+            .map_err(|e| format!("{what} tree {hex} 不在仓库: {e}"))
+    };
+    let base_tree = parse_tree(base_tree_hex, "基线")?;
+    let delivery_tree = parse_tree(delivery_tree_hex, "交付")?;
+
+    let merged_tree_oid = if target_commit.tree_id() == base_tree.id() {
+        delivery_tree.id()
+    } else {
+        let theirs = target_commit
+            .tree()
+            .map_err(|e| format!("目标头 tree 解析失败: {e}"))?;
+        let mut merged = repo
+            .merge_trees(&base_tree, &delivery_tree, &theirs, None)
+            .map_err(|e| format!("三方合并失败: {e}"))?;
+        if merged.has_conflicts() {
+            return Err(format!(
+                "交付与目标分支 origin/{target_branch} 最新提交存在内容冲突——Gerrit 单提交需人工 rebase 后重发，不产带冲突标记的提交"
+            ));
+        }
+        merged
+            .write_tree_to(&repo)
+            .map_err(|e| format!("合并树落库失败: {e}"))?
+    };
+
+    if merged_tree_oid == target_commit.tree_id() {
+        return Err(format!(
+            "交付内容已包含在 origin/{target_branch} 最新提交中（合并后无差异）——无可发布变更"
+        ));
+    }
+
+    let sig = signature()?;
+    let merged_tree = repo
+        .find_tree(merged_tree_oid)
+        .map_err(|e| format!("合并树回读失败: {e}"))?;
+    // commit 不绑 ref（Some(refname) 会在 ref 现头 ≠ 指定父时拒绝——重试
+    // 重铸场景 ref 头是上一轮产物），落库后 force 更新分支 ref = 文档承诺
+    // 的「force 落 refs/heads/{branch}」（同 Change-Id 重试 = 新 patchset）。
+    let oid = repo
+        .commit(None, &sig, &sig, message, &merged_tree, &[&target_commit])
+        .map_err(|e| format!("单提交创建失败: {e}"))?;
+    repo.reference(
+        &format!("refs/heads/{branch}"),
+        oid,
+        true,
+        "nemesis-board: gerrit single-commit recast",
+    )
+    .map_err(|e| format!("分支 {branch} force 更新失败: {e}"))?;
+    Ok(oid.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// repo_sync 原语（2026-11-04 jira-gitlab-flow 批）：确定性 clone-or-pull
+// ---------------------------------------------------------------------------
+
+/// [`sync_repo_remote`] 结果形态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// 目标目录原本无仓库——全新克隆。
+    Cloned,
+    /// 仓库已存在但目标分支本地缺席——从 `origin/<branch>` 物化并检出。
+    Checkout,
+    /// 本地已包含远端全部提交——零动作。
+    UpToDate,
+    /// 可快进——本地分支推进到远端头。
+    FastForward,
+    /// 已分叉——三方合并出一笔双亲 merge commit。
+    Merged,
+}
+
+/// 工作区洁净判定：任何非 ignored 条目（改动/未跟踪）= 脏。
+pub fn workdir_is_clean(root: &Path) -> Result<bool, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开仓库 {} 失败: {e}", root.display()))?;
+    let statuses = repo
+        .statuses(None)
+        .map_err(|e| format!("读取工作区状态失败: {e}"))?;
+    Ok(!statuses.iter().any(|e| !e.status().is_ignored()))
+}
+
+/// https 远端错误附加 git-https feature 提示（无 TLS 形态的诚实指路）。
+fn tls_hint(e: String) -> String {
+    if e.contains("transport") {
+        format!(
+            "{e}（提示：https 远端需要 `git-https` feature——桌面构建默认启用，定制构建以 --features git-https 开启）"
+        )
+    } else {
+        e
+    }
+}
+
+/// 代理语义（2026-11-04 SC 套件批）：libgit2 **不读环境变量**——企业内网
+/// 「仅经代理可达」的仓库必须显式注入 ProxyOptions。三档：
+/// - `None` = libgit2 默认（不走代理，既有行为零变化——全部旧调用点即此态）；
+/// - `Some("")` = auto（读 http.proxy 配置 / 环境探测）；
+/// - `Some(url)` = 钉死指定代理（如 `socks5h://host:port`——DNS 解析移交
+///   代理侧，本机对目标域名不可解析是代理存在的理由）。
+fn apply_proxy(opts: &mut git2::ProxyOptions, proxy: Option<&str>) {
+    match proxy {
+        None => {}
+        Some("") => {
+            opts.auto();
+        }
+        Some(url) => {
+            opts.url(url);
+        }
+    }
+}
+
+/// checkout 选项（force + 禁行尾过滤器——字节精确契约同 [`clone_repo`]）。
+fn sync_checkout_options() -> git2::build::CheckoutBuilder<'static> {
+    let mut co = git2::build::CheckoutBuilder::new();
+    co.force();
+    co.disable_filters(true);
+    co
+}
+
+/// 目标目录已存在且非空（只探测存在性，不消费遍历顺序）。
+fn dir_is_nonempty(dest: &Path) -> Result<bool, String> {
+    if !dest.exists() {
+        return Ok(false);
+    }
+    let mut it =
+        std::fs::read_dir(dest).map_err(|e| format!("读取目录 {} 失败: {e}", dest.display()))?;
+    Ok(it.next().is_some())
+}
+
+/// 非空目录内的就地物化（等价克隆）。
+///
+/// 看板项目注册目录被 `project.create` 恒跑 `ensure_scaffold`（project.json /
+/// timeline.jsonl / .gitignore / docs//artifacts//records/ 预置在场），而
+/// libgit2 `RepoBuilder::clone` 拒绝非空目标——主路径 clone 必炸。此函数用
+/// `Repository::init`（非空目录合法）+ 加 origin + fetch + 建本地分支检出
+/// 完成同一件事，**scaffold 档案原样保留**（checkout 只写仓库跟踪文件，
+/// 不触碰未跟踪内容）。
+///
+/// 分支选取（确定性降链）：远端 HEAD symref → `origin/main` →
+/// `origin/master` → `origin/*` 字典序第一个。契约同 [`clone_repo`]：
+/// checkout 禁过滤器 + 事后钉 `core.autocrlf=false`。
+/// 返回 HEAD commit hex。
+fn init_fetch_checkout(
+    url: &str,
+    dest: &Path,
+    cred: Option<(&str, &str)>,
+    proxy: Option<&str>,
+) -> Result<String, String> {
+    let repo = Repository::init(dest).map_err(|e| format!("init {} 失败: {e}", dest.display()))?;
+    let mut callbacks = git2::RemoteCallbacks::new();
+    if let Some((user, pass)) = cred {
+        callbacks.credentials(move |_url, _user_from_url, _allowed| {
+            git2::Cred::userpass_plaintext(user, pass)
+        });
+    }
+    let mut fo = git2::FetchOptions::new();
+    fo.remote_callbacks(callbacks);
+    fo.download_tags(git2::AutotagOption::None);
+    let mut px = git2::ProxyOptions::new();
+    apply_proxy(&mut px, proxy);
+    fo.proxy_options(px);
+    let mut remote = repo
+        .remote("origin", url)
+        .map_err(|e| format!("加 origin {url} 失败: {e}"))?;
+    remote
+        .fetch(&[] as &[String], Some(&mut fo), None)
+        .map_err(|e| format!("fetch {url} 失败: {e}"))?;
+
+    // 远端默认分支：HEAD symref 优先（smart 传输才可靠；本地路径取不到
+    // 走降链），main/master 钉序兜底，最后字典序任选其一。
+    let head_default = remote.default_branch().ok().and_then(|buf| {
+        buf.as_str()
+            .ok()
+            .and_then(|s| s.strip_prefix("refs/heads/").map(str::to_string))
+    });
+    let branch = match head_default {
+        Some(b)
+            if repo
+                .find_reference(&format!("refs/remotes/origin/{b}"))
+                .is_ok() =>
+        {
+            b
+        }
+        _ => {
+            let mut picked: Option<String> = None;
+            for name in ["main", "master"] {
+                if repo
+                    .find_reference(&format!("refs/remotes/origin/{name}"))
+                    .is_ok()
+                {
+                    picked = Some(name.to_string());
+                    break;
+                }
+            }
+            if picked.is_none() {
+                let mut names: Vec<String> = repo
+                    .references_glob("refs/remotes/origin/*")
+                    .map_err(|e| format!("枚举 origin 分支失败: {e}"))?
+                    .filter_map(|r| {
+                        let r = r.ok()?;
+                        let name = r.name().ok()?;
+                        name.strip_prefix("refs/remotes/origin/")
+                            .filter(|s| *s != "HEAD")
+                            .map(str::to_string)
+                    })
+                    .collect();
+                names.sort();
+                picked = names.into_iter().next();
+            }
+            picked.ok_or_else(|| format!("远端 origin（{url}）没有任何分支——repo_sync 无从物化"))?
+        }
+    };
+
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let commit = repo
+        .find_reference(&remote_ref)
+        .and_then(|r| r.peel_to_commit())
+        .map_err(|e| format!("{remote_ref} 解析 commit 失败: {e}"))?;
+    if repo
+        .find_reference(&format!("refs/heads/{branch}"))
+        .is_err()
+    {
+        let mut local = repo
+            .branch(&branch, &commit, false)
+            .map_err(|e| format!("建本地分支 {branch} 失败: {e}"))?;
+        local
+            .set_upstream(Some(&format!("origin/{branch}")))
+            .map_err(|e| format!("设 {branch} upstream 失败: {e}"))?;
+    }
+    repo.set_head(&format!("refs/heads/{branch}"))
+        .map_err(|e| format!("切分支 {branch} 失败: {e}"))?;
+    repo.checkout_head(Some(&mut sync_checkout_options()))
+        .map_err(|e| format!("检出 {branch} 失败: {e}"))?;
+    {
+        let mut cfg = repo.config().map_err(|e| e.to_string())?;
+        cfg.set_bool("core.autocrlf", false)
+            .map_err(|e| format!("钉 core.autocrlf=false 失败: {e}"))?;
+    }
+    Ok(commit.id().to_string())
+}
+
+/// HEAD 所在分支名（detached HEAD = Err——不知道同步哪个分支）。
+fn head_branch_name(repo: &Repository) -> Result<String, String> {
+    let head = repo.head().map_err(|e| format!("仓库无 HEAD: {e}"))?;
+    if !head.is_branch() {
+        return Err(
+            "仓库处于 detached HEAD 且未声明 branch——repo_sync 不知道同步哪个分支".to_string(),
+        );
+    }
+    head.shorthand()
+        .map_err(|e| format!("HEAD 分支名解析失败: {e}"))
+        .map(str::to_string)
+}
+
+/// 确定性 clone-or-pull（flow 引擎 `repo_sync` 步的 git 半边）。
+///
+/// 与 [`clone_repo`] 的分工：clone_repo 的「已有 `.git` 幂等复用不 fetch」
+/// 是交付管线钉基线语义（任务副本一旦物化不被外部重写打断）；本函数是
+/// **同步原语**——流水线每轮任务开始前把项目仓库拉到远端最新：
+///
+/// - `dest` 无 `.git` → 全新克隆（checkout 禁过滤器 + `core.autocrlf=false`
+///   钉死契约同 clone_repo）；目录已存在且非空（看板项目 scaffold 已在场）
+///   → 就地物化（`init_fetch_checkout`——libgit2 clone 拒绝非空目标，
+///   init+fetch+建分支检出等价克隆，scaffold 档案原样保留）；`branch` 声明
+///   且 ≠ 克隆默认分支 → 从 `origin/<branch>` 建本地分支并检出
+///   （`SyncOutcome::Checkout`）；
+/// - 有 `.git` → 工作区脏 = Err（列脏项样本，绝不 stash/destroy）；fetch
+///   `origin/<branch>` 后对账：本地已含远端 = UpToDate；可快进 = 推进；分叉
+///   = `merge_commits` 纯树合并出**双亲 merge commit**（libgit2 merge 不触
+///   工作区，冲突在写树前整体发现——冲突 = Err 冲突路径明细，停车走人不
+///   猜）；合并树与本地树一致（远端改动已被本地包含）= 不产空 commit；
+/// - `branch` 缺省 = 本地当前分支（detached = Err）。
+///
+/// 返回 `(形态, 同步后的 HEAD commit hex)`。凭据语义同 [`clone_repo`]。
+/// https 远端在本 crate 无 TLS 默认形态下报 transport 错误——附加
+/// feature 启用提示后透传。
+pub fn sync_repo_remote(
+    url: &str,
+    dest: &Path,
+    branch: Option<&str>,
+    cred: Option<(&str, &str)>,
+    proxy: Option<&str>,
+) -> Result<(SyncOutcome, String), String> {
+    let want = branch.map(str::trim).filter(|b| !b.is_empty());
+
+    if !dest.join(".git").exists() {
+        let head = if dir_is_nonempty(dest)? {
+            init_fetch_checkout(url, dest, cred, proxy)
+                .map_err(|e| tls_hint(format!("repo_sync 就地物化失败: {e}")))?
+        } else {
+            clone_repo(url, dest, cred, proxy)
+                .map_err(|e| tls_hint(format!("repo_sync 克隆失败: {e}")))?
+        };
+        let repo = Repository::open(dest).map_err(|e| format!("打开克隆产物失败: {e}"))?;
+        if let Some(want) = want {
+            let current = head_branch_name(&repo)?;
+            if current != want {
+                let remote_commit = repo
+                    .find_reference(&format!("refs/remotes/origin/{want}"))
+                    .map_err(|_| {
+                        format!("远端 origin 上没有分支 `{want}`——repo_sync 无法检出声明分支")
+                    })?
+                    .peel_to_commit()
+                    .map_err(|e| format!("origin/{want} 解析 commit 失败: {e}"))?;
+                repo.branch(want, &remote_commit, false)
+                    .map_err(|e| format!("建本地分支 {want} 失败: {e}"))?;
+                repo.set_head(&format!("refs/heads/{want}"))
+                    .map_err(|e| format!("切分支 {want} 失败: {e}"))?;
+                repo.checkout_head(Some(&mut sync_checkout_options()))
+                    .map_err(|e| format!("检出 {want} 失败: {e}"))?;
+                return Ok((SyncOutcome::Checkout, remote_commit.id().to_string()));
+            }
+        }
+        return Ok((SyncOutcome::Cloned, head));
+    }
+
+    let repo =
+        Repository::open(dest).map_err(|e| format!("打开仓库 {} 失败: {e}", dest.display()))?;
+
+    // 脏态闸（列样本；绝不 stash/destroy——仓库里可能有人工未提交内容）。
+    {
+        let statuses = repo
+            .statuses(None)
+            .map_err(|e| format!("读取工作区状态失败: {e}"))?;
+        let mut sample: Vec<String> = Vec::new();
+        let mut total = 0usize;
+        for entry in statuses.iter().filter(|e| !e.status().is_ignored()) {
+            total += 1;
+            if sample.len() < 5 {
+                match entry.path() {
+                    Ok(p) => sample.push(p.to_string()),
+                    Err(_) => sample.push("<非 UTF-8 路径>".to_string()),
+                }
+            }
+        }
+        if total > 0 {
+            return Err(format!(
+                "仓库 {} 工作区脏（{total} 项：{}）——repo_sync 拒绝在未提交状态上同步远端，请先处理",
+                dest.display(),
+                sample.join("、")
+            ));
+        }
+    }
+
+    // 目标分支解析：声明优先；缺省 = 当前分支（detached = Err）。
+    let local_branch = match want {
+        Some(b) => b.to_string(),
+        None => head_branch_name(&repo)?,
+    };
+
+    // fetch 单 refspec（确定性 + 最小传输；凭据同 clone_repo）。
+    let mut callbacks = git2::RemoteCallbacks::new();
+    if let Some((user, pass)) = cred {
+        callbacks.credentials(move |_url, _user_from_url, _allowed| {
+            git2::Cred::userpass_plaintext(user, pass)
+        });
+    }
+    let mut fo = git2::FetchOptions::new();
+    fo.remote_callbacks(callbacks);
+    fo.download_tags(git2::AutotagOption::None);
+    let mut px = git2::ProxyOptions::new();
+    apply_proxy(&mut px, proxy);
+    fo.proxy_options(px);
+    {
+        // 步骤 url 是单一意图表达（确定性承诺：目录内容 = 该 url 远端最新）
+        // ——既有 origin 指向别处（形态切换/仓库迁移）时必须先对账改写，
+        // 否则 fetch 静默打到旧远端（跨远端凭据必 401，错误无从指认）。
+        // 注意：Remote 对象创建时缓存自己的 URL，remote_set_url 只写 config
+        // ——改写后必须重新 find_remote，fetch 才真正打新地址。
+        let cur_url = {
+            let remote = repo
+                .find_remote("origin")
+                .map_err(|e| format!("仓库 {} 没有 origin 远端: {e}", dest.display()))?;
+            remote.url().unwrap_or("").to_string()
+        };
+        if cur_url.trim_end_matches('/') != url.trim_end_matches('/') {
+            repo.remote_set_url("origin", url)
+                .map_err(|e| format!("改写 origin 远端为步骤 url 失败: {e}"))?;
+        }
+        let mut remote = repo
+            .find_remote("origin")
+            .map_err(|e| format!("仓库 {} 没有 origin 远端: {e}", dest.display()))?;
+        let spec = format!("+refs/heads/{local_branch}:refs/remotes/origin/{local_branch}");
+        remote
+            .fetch(&[spec.as_str()], Some(&mut fo), None)
+            .map_err(|e| tls_hint(format!("fetch origin/{local_branch} 失败: {e}")))?;
+    }
+
+    let remote_ref_name = format!("refs/remotes/origin/{local_branch}");
+    let remote_commit = repo
+        .find_reference(&remote_ref_name)
+        .map_err(|_| format!("远端 origin 上没有分支 `{local_branch}`（fetch 后仍缺席）"))?
+        .peel_to_commit()
+        .map_err(|e| format!("origin/{local_branch} 解析 commit 失败: {e}"))?;
+
+    // 本地分支缺席：从刚 fetch 的远端物化并检出（fetch 先行，指向必新鲜）。
+    if repo
+        .find_branch(&local_branch, git2::BranchType::Local)
+        .is_err()
+    {
+        repo.branch(&local_branch, &remote_commit, false)
+            .map_err(|e| format!("建本地分支 {local_branch} 失败: {e}"))?;
+        repo.set_head(&format!("refs/heads/{local_branch}"))
+            .map_err(|e| format!("切分支 {local_branch} 失败: {e}"))?;
+        repo.checkout_head(Some(&mut sync_checkout_options()))
+            .map_err(|e| format!("检出 {local_branch} 失败: {e}"))?;
+        return Ok((SyncOutcome::Checkout, remote_commit.id().to_string()));
+    }
+
+    // HEAD 必须停在对齐后的本地分支上（当前分支 ≠ 声明分支 → 检出切换）。
+    let current_branch = head_branch_name(&repo)?;
+    if current_branch != local_branch {
+        repo.set_head(&format!("refs/heads/{local_branch}"))
+            .map_err(|e| format!("切分支 {local_branch} 失败: {e}"))?;
+        repo.checkout_head(Some(&mut sync_checkout_options()))
+            .map_err(|e| format!("检出 {local_branch} 失败: {e}"))?;
+    }
+
+    let local_commit = repo
+        .find_branch(&local_branch, git2::BranchType::Local)
+        .map_err(|e| format!("本地分支 {local_branch} 解析失败: {e}"))?
+        .get()
+        .peel_to_commit()
+        .map_err(|e| format!("分支 {local_branch} 解析 commit 失败: {e}"))?;
+
+    // 合并形态判定（theirs = 刚 fetch 的远端引用）。
+    let remote_ref = repo
+        .find_reference(&remote_ref_name)
+        .map_err(|e| format!("读远端引用失败: {e}"))?;
+    let annotated = repo
+        .reference_to_annotated_commit(&remote_ref)
+        .map_err(|e| format!("远端引用转 annotated 失败: {e}"))?;
+    let (analysis, _pref) = repo
+        .merge_analysis(&[&annotated])
+        .map_err(|e| format!("合并形态判定失败: {e}"))?;
+    if analysis.is_up_to_date() {
+        return Ok((SyncOutcome::UpToDate, local_commit.id().to_string()));
+    }
+
+    let branch_ref = format!("refs/heads/{local_branch}");
+    if analysis.is_fast_forward() {
+        let mut co = sync_checkout_options();
+        repo.checkout_tree(remote_commit.as_object(), Some(&mut co))
+            .map_err(|e| format!("快进 checkout 失败: {e}"))?;
+        repo.find_reference(&branch_ref)
+            .map_err(|e| format!("读本地分支引用失败: {e}"))?
+            .set_target(
+                remote_commit.id(),
+                &format!("repo_sync: fast-forward to origin/{local_branch}"),
+            )
+            .map_err(|e| format!("快进推进 {local_branch} 失败: {e}"))?;
+        repo.set_head(&branch_ref)
+            .map_err(|e| format!("回设 HEAD 失败: {e}"))?;
+        repo.checkout_head(Some(&mut sync_checkout_options()))
+            .map_err(|e| format!("快进后刷新工作区失败: {e}"))?;
+        return Ok((SyncOutcome::FastForward, remote_commit.id().to_string()));
+    }
+
+    // 分叉：三方纯树合并（merge_commits 不触工作区，冲突在写树前整体暴露）。
+    let mut merged_index = repo
+        .merge_commits(&local_commit, &remote_commit, None)
+        .map_err(|e| format!("三方合并失败: {e}"))?;
+    if merged_index.has_conflicts() {
+        let mut paths: Vec<String> = Vec::new();
+        for conflict in merged_index
+            .conflicts()
+            .map_err(|e| format!("枚举冲突失败: {e}"))?
+        {
+            let conflict = conflict.map_err(|e| format!("读取冲突条目失败: {e}"))?;
+            let src = conflict
+                .our
+                .as_ref()
+                .or(conflict.ancestor.as_ref())
+                .or(conflict.their.as_ref());
+            if let Some(e) = src {
+                let p = String::from_utf8_lossy(&e.path).into_owned();
+                if !paths.contains(&p) {
+                    paths.push(p);
+                }
+            }
+        }
+        return Err(format!(
+            "远端 origin/{local_branch} 与本地 {local_branch} 分叉且合并冲突（{} 个文件：{}）——repo_sync 不猜，请人工合并后重跑",
+            paths.len(),
+            paths.iter().take(5).cloned().collect::<Vec<_>>().join("、")
+        ));
+    }
+    let tree_id = merged_index
+        .write_tree_to(&repo)
+        .map_err(|e| format!("写合并 tree 失败: {e}"))?;
+    let tree = repo
+        .find_tree(tree_id)
+        .map_err(|e| format!("读合并 tree 失败: {e}"))?;
+    if tree_id == local_commit.tree_id() {
+        // 合并树等于本地树（远端改动已被本地包含）——等价 UpToDate，不产空 commit。
+        return Ok((SyncOutcome::UpToDate, local_commit.id().to_string()));
+    }
+    let sig = git2::Signature::now(AUTHOR_NAME, AUTHOR_EMAIL)
+        .map_err(|e| format!("构造签名失败: {e}"))?;
+    let msg = format!("repo_sync: merge origin/{local_branch} into {local_branch}");
+    let merge_oid = repo
+        .commit(
+            Some(branch_ref.as_str()),
+            &sig,
+            &sig,
+            &msg,
+            &tree,
+            &[&local_commit, &remote_commit],
+        )
+        .map_err(|e| format!("merge commit 失败: {e}"))?;
+    let merge_commit = repo
+        .find_commit(merge_oid)
+        .map_err(|e| format!("回读 merge commit 失败: {e}"))?;
+    let mut co = sync_checkout_options();
+    repo.checkout_tree(merge_commit.as_object(), Some(&mut co))
+        .map_err(|e| format!("同步工作区到合并结果失败: {e}"))?;
+    Ok((SyncOutcome::Merged, merge_oid.to_string()))
 }
 
 // ---------------------------------------------------------------------------

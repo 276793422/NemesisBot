@@ -376,6 +376,13 @@ pub async fn sweep_missing_archives(
         else {
             continue; // 无终态派发（在途/未派 = 档案本来就还没有）
         };
+        // 本地派发（target="self"）没有远端 worker：无档案可拉、对 "self"
+        // 发 transfer_pull 只会 peer unresolvable 刷屏（Err 臂「下轮重试」
+        // 无去重 = 每 sweep 周期永续 WARN）。执行记录在 master 本机会话
+        // 日志里，档案簿记不适用 worker 回推语义。
+        if latest.worker_id == "self" {
+            continue;
+        }
         let task_id = &latest.task_id;
         // master 收件箱滞留的算「在路上」，腿 1 已处理，不空拉。
         // T8 读侧（2026-10-17 三轮审计）：收件箱目录名 = 落地侧消毒后的
