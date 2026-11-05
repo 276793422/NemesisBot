@@ -208,6 +208,12 @@ impl SetupManager {
     /// false，预占窗口收口）。当前态不存在或已易主 → 返回 false 且**不
     /// 插入**——旧实现无条件写回，会把已被并发 abort 清理过的 draft
     /// 复活成僵尸活动态。
+    ///
+    /// cfg 门：唯一生产调用方 select_target_reserved 是 `#[cfg(windows)]`
+    /// （Linux lib 目标下本方法成死码 → clippy -D 红，CI 42107156074 实录）；
+    /// 预占竞态单测（tests.rs publish_state_if_owned_closes_reservation_*）
+    /// 跨平台直测，故带 test 臂保活。
+    #[cfg(any(windows, test))]
     fn publish_state_if_owned(&self, id: &str, info: SetupInfo) -> bool {
         let mut guard = self.state_mut();
         match guard.as_ref() {
@@ -2440,6 +2446,11 @@ fn draft_json_path(workspace: &Path, profile_id: &str) -> PathBuf {
 /// 「已回滚」类断言不得谎报——主错误保首位；回滚失败 WARN 留痕 + 注记
 /// 追加（残留 draft 可重试 abort 收尸：abort 无态时按 latest_draft_id
 /// 兜底拾取磁盘残留）。ok_suffix 仅在回滚成功时附加（如「（draft 已回滚）」）。
+///
+/// cfg 门：生产调用方全在 `#[cfg(windows)]` select_target_reserved 内，
+/// 但 init_draft_files（any(windows, test) 门）内部也调它——门必须覆盖
+/// init_draft_files 的活窗，否则 Linux 测试目标 E0425 / Linux lib 目标死码。
+#[cfg(any(windows, test))]
 fn rollback_draft_error(draft: &Path, base: String, ok_suffix: &str) -> String {
     match nemesis_utils::fsutil::remove_dir_all_retry(draft) {
         Ok(()) => format!("{base}{ok_suffix}"),
@@ -2477,6 +2488,11 @@ fn save_draft(workspace: &Path, profile: &Profile) -> Result<(), String> {
 /// `latest_draft_id` 命中，挡死新向导，逼用户手工 abort 收尸）。与
 /// select_target_reserved 后续两个失败路径（会话管理器缺席 / attach 失败）
 /// 的清理对称。
+///
+/// cfg 门：唯一生产调用方 select_target_reserved 是 `#[cfg(windows)]`；
+/// 三件套单测（tests.rs init_draft_files_creates_all_three 等）跨平台
+/// 直测，故带 test 臂保活（同 publish_state_if_owned）。
+#[cfg(any(windows, test))]
 fn init_draft_files(workspace: &Path, profile: &Profile) -> Result<PathBuf, String> {
     let id = &profile.profile_id;
     let draft = draft_dir(workspace, id);

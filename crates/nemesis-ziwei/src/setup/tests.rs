@@ -8,8 +8,12 @@ use std::path::PathBuf;
 
 use super::{
     SetupInfo, SetupManager, SetupState, draft_dir, global, init_draft_files, load_draft,
-    rollback_draft_error, save_draft, save_draft_anchors,
+    save_draft, save_draft_anchors,
 };
+// rollback_draft_error 的诚实性单测是 windows 门（share_mode）——Linux 测试
+// 目标不引用它，跟随生产侧 cfg(windows) 门，避免未使用导入红。
+#[cfg(windows)]
+use super::rollback_draft_error;
 use nemesis_ziwei_profile::{AnchorSet, Machine, Profile, ProfileStore, SCHEMA_VERSION};
 
 // ── 夹具 ────────────────────────────────────────────────────────────────
