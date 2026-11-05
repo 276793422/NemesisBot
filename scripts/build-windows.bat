@@ -61,7 +61,7 @@ echo Use --help for usage information
 exit /b 1
 
 :show_help
-echo Usage: scripts\build-windows.bat [--clean] [--skip-plugin] [--help]
+echo Usage: scripts\build-windows.bat [--clean] [--skip-plugin] [--skip-ziwei] [--help]
 echo.
 echo Options:
 echo   --clean        Clean target before building
