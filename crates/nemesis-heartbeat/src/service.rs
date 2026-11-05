@@ -430,7 +430,10 @@ impl HeartbeatService {
     ///
     /// Returns true if all lines are empty (after trimming) or start with '#'.
     pub fn is_heartbeat_file_empty(&self, data: &[u8]) -> bool {
+        // BUG-20261105-030：剥 UTF-8 BOM（不在 is_whitespace 内，trim 不剥），
+        // 否则 BOM 开头的注释-only 文件被误判为有实质内容。
         let content = String::from_utf8_lossy(data);
+        let content = content.trim_start_matches('\u{feff}');
         for line in content.lines() {
             let trimmed = line.trim();
             // If line is not empty and not a comment, file has actual content
@@ -845,8 +848,15 @@ fn build_prompt_from_workspace(workspace: &Option<String>) -> String {
 }
 
 /// Check if the heartbeat file is empty (static version).
+///
+/// 生产 tick 路径（`execute_heartbeat_tick` → `build_prompt_from_workspace`）
+/// 消费。UTF-8 BOM 必须剥离（不在 `is_whitespace` 内，`trim` 不剥）：BOM
+/// 开头的注释-only 文件第一行是 `\u{feff}# ...`，不以 `#` 开头会被误判为
+/// 有实质内容 → 每拍空跑完整 agent loop（BUG-20261105-030；同族先例：
+/// nemesis-utils `fsutil::read_config_string` BOM 剥离）。
 fn is_heartbeat_file_empty_static(data: &[u8]) -> bool {
     let content = String::from_utf8_lossy(data);
+    let content = content.trim_start_matches('\u{feff}');
     for line in content.lines() {
         let trimmed = line.trim();
         if !trimmed.is_empty() && !trimmed.starts_with('#') {
