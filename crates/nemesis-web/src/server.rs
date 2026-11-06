@@ -1076,6 +1076,10 @@ impl WebServer {
         // 其路由面（/bridge、/d/*、/relay、/relay/login、/api/relay/status、
         // /health）是 relay 自有信任边界（设备/管理侧鉴权在 relay 模块内），
         // dashboard token 对其无意义，挂上会把 relay 整体 401。
+        // BUG-20261107-006（2026-11-07）：全量（dashboard hub）形态同样注册
+        // 这批 relay 路由（set_relay 注入后），却被上面的 route_layer 覆盖且
+        // 不在豁免清单——auth_token 非空时 relay 整体 401。修复 = 豁免清单
+        // 增补五条 relay 自有信任边界路径（批次三 dashboard 端点保持鉴权）。
         // CORS three-state（2026-10-16 hardening）：显式 origin 列表 → 生产
         // 层；显式 allow_all → dev 层（`*`）；二者皆无 → restrictive（拒绝
         // 跨域）。旧「空列表 = allow-all」缺省已废除——配置缺失不再静默
@@ -2701,6 +2705,23 @@ fn auth_exempt_path(path: &str) -> bool {
         // 鉴权上线时漏列（与 /api/sdk/ 漏列同类事故），外部回调恒 401。
         || path.starts_with("/api/workflow/webhook/")
         || path.starts_with("/api/sdk/")
+        // relay 自有信任边界（BUG-20261107-006，2026-11-07）：/bridge、/d/*、
+        // /relay、/relay/login、/api/relay/status 五条路由面在 relay-only 与
+        // 全量（dashboard hub）两种形态共用（build_router 里 set_relay 后统一
+        // 注册），设备/管理侧凭据是 relay 自有的 hello token / 设备访问令牌
+        // cookie / admin cookie——dashboard token 对其无意义。统一鉴权上线时
+        // 只对 relay-only 形态免挂中间件（见 build_router 注释），漏了全量
+        // 形态的同名路由：auth_token 非空时设备桥入/隧道/状态页整体 401
+        // （与 /api/sdk/、/api/workflow/webhook/ 漏列同类事故第三次）。
+        // 各路由自有闸：/bridge=hello token（10s 内）、/d/*=设备 cookie、
+        // /relay+login+status=admin cookie（ws token SHA-256）。批次三
+        // /api/relay/overview|enabled|client/reconnect **不豁免**——dashboard
+        // 信任边界（与 /api/status 同语义，见 build_router 批次三注释）。
+        || path == "/bridge"
+        || path.starts_with("/d/")
+        || path == "/relay"
+        || path == "/relay/login"
+        || path == "/api/relay/status"
 }
 
 /// 从请求提取 token：`X-Auth-Token` 头 → `?token=` 查询参数 →
