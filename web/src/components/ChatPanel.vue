@@ -2812,6 +2812,14 @@ onUnmounted(() => {
     clearTimeout(atDebounce)
     atDebounce = null
   }
+  // F2 兜底 timer 同族清理（W4 纪律，2026-11-06 审计）：stopGeneration 的
+  // 20s 强制复位兜底若跨卸载存活，会在死闭包上开火——stopping 在旧闭包里
+  // 恒 true（其清除者收尾帧处理与 busy watch 都随实例销毁），于是对捕获
+  // sid 盲写全局 busy 表 + 清在飞登记：后端仍在工具检查点等待的在跑轮
+  // （工具 >20s 是常态）被提前显示为空闲，同会话 20s 窗口内新发 turn 的
+  // 占用态也被误杀。busy 的收尾归各会话自己的收尾帧/断连复位，卸载后
+  // 代清越俎代庖；clearStopping 同步摘过渡态 + 取消 timer。
+  clearStopping()
   unwatchStatus()
   unwatchSession()
   unwatchStreaming()
