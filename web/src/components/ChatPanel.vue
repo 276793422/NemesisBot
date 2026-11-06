@@ -1222,7 +1222,9 @@ function onWatchdog() {
 // ---------------------------------------------------------------------------
 // M6（devtool-upgrade 阶段 7）：消息级回退——E3 rewind/redo 的首个前端入口。
 // message_index = 后端 chat_log jsonl 行号（ChatMessage.rowIndex：历史批次
-// 连续推导 + live 递增；error/system 是纯前端渲染不占行）。回退是前缀截断
+// 连续推导 + live 递增；客户端渲染的 error/system 不占行——后端落盘的
+// system 行（排队回执/compact 注记）占行，已在行号锚推导计入，
+// BUG-20261106-037）。回退是前缀截断
 // （保留目标之前、其后全部移除——undo 栈可 redo）。前端回退按钮组统一走
 // mode "before"（2026-10-20 横向扫描统一）：目标 = 本轮提问行
 // （planRegenerate 结构回溯，对 steer 插话/system 行稳健——旧「撤销此问

@@ -25,9 +25,11 @@ export interface ChatMessage {
    *  （已完成任务）/ 实时摄取 flush 挂载（live 落地）。直答与旧条目缺省。 */
   work?: WorkTimeline
   /** M6（devtool-upgrade 阶段 7）：本条消息在后端 chat_log jsonl 里的行号
-   *  （E3 rewind 的 message_index）。只有 user/assistant 行有值——error/
-   *  system 消息是纯前端渲染，后端无对应行。watchdog replaceMessages 重建
-   *  后不可信，置空诚实降级（菜单入口随之隐藏）。 */
+   *  （E3 rewind 的 message_index）。后端行经历史/重同步批次装载时编号——
+   *  user/assistant 之外，后端也会落盘 system 行（busy 排队回执/compact
+   *  注记，BUG-20261106-037），同样占一行。纯前端渲染的 error/system 消息
+   *  无对应行，不带行号。watchdog replaceMessages 重建后不可信，置空诚实
+   *  降级（菜单入口随之隐藏）。 */
   rowIndex?: number
   /** A1（2026-09-22 聊天切会话竞态）：本条消息在后端 chat_event_log 环里
    *  的会话内单调 seq。只有实时 receive 帧 / chat.sync 补拉路径产生
@@ -195,8 +197,9 @@ export const useChatStore = defineStore('chat', () => {
 
   // M6（devtool-upgrade 阶段 7）：下一行 live 消息的后端 chat_log 行号锚。
   // null = 尚无锚（历史未加载），此时 live 消息不编号（诚实降级）。派生式
-  // 见 recomputeNextRowIndex——历史批次与 live 行都只含 user/assistant，
-  // chat_log 与渲染消息 1:1 连续。
+  // 见 recomputeNextRowIndex——占行判定按「是否对应后端 jsonl 行」：
+  // user/assistant 恒占行，后端落盘的 system 行（排队回执/compact 注记）
+  // 也占行，纯前端渲染的 error/system 不占行（BUG-20261106-037）。
   let nextRowIndex: number | null = null
   // M6：Ctrl+K 命令面板选中命令后经此投递给 ChatPanel 输入框（跨组件；
   // ChatPanel watch 消费后清空）。命令面板「插入不发送」，参数型命令由
@@ -210,8 +213,10 @@ export const useChatStore = defineStore('chat', () => {
   const historyLoaded = ref(false)
 
   function addMessage(msg: ChatMessage) {
-    // M6：live user/assistant 行按 nextRowIndex 顺序编号（error/system 不
-    // 占行——后端 chat_log 无对应行）。无锚（历史未加载）不编号，诚实降级。
+    // M6：live user/assistant 行按 nextRowIndex 顺序编号（客户端 error/
+    // system 是纯前端渲染不占行——后端落盘的 system 行只随历史/重同步批
+    // 次进视图，锚重推时已在 recomputeNextRowIndex 计入）。无锚（历史未
+    // 加载）不编号，诚实降级。
     if (
       msg.rowIndex === undefined &&
       nextRowIndex !== null &&
@@ -231,14 +236,20 @@ export const useChatStore = defineStore('chat', () => {
     recomputeNextRowIndex()
   }
 
-  /** M6：重推 nextRowIndex 锚 = 首条带行号消息的行号 + 其后 user/assistant
-   *  消息总数（error/system 不占行）。无任何行号锚 → null。 */
+  /** M6：重推 nextRowIndex 锚 = 首条带行号消息的行号 + 其后**占行**消息
+   *  总数。占行判定（BUG-20261106-037）：带 rowIndex 的行 = 后端 jsonl 行
+   *  （含 system——排队回执/compact 注记是后端落盘的合法 system 行，各占
+   *  一行）；不带 rowIndex 的 user/assistant = watchdog 重灌的 fresh 对象
+   *  /本地回显（占行但行号未知）；不带 rowIndex 的 error/system = 纯前端
+   *  渲染（不占行）。无任何行号锚 → null。 */
   function recomputeNextRowIndex() {
     nextRowIndex = null
     let rows = 0
     let anchor: number | null = null
     for (const m of messages.value) {
-      if (m.role !== 'user' && m.role !== 'assistant') continue
+      const occupies =
+        m.rowIndex !== undefined || m.role === 'user' || m.role === 'assistant'
+      if (!occupies) continue
       if (anchor === null && m.rowIndex !== undefined) anchor = m.rowIndex
       rows++
     }
