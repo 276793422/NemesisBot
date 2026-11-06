@@ -152,6 +152,21 @@ fn gate_and_hash(_security: Option<()>, path: &Path, _channel: &str) -> Result<S
     Ok(String::new())
 }
 
+/// URL scheme 前缀判定（RFC 3986 §3.1：scheme 大小写不敏感——`HTTP://`
+/// 与 `http://` 等价）。字节级前缀比较会把大写形态误判成本地路径引用，
+/// 下游假报「文件不存在」（BUG-20261106-034）。
+fn url_has_scheme(url: &str, scheme: &str) -> bool {
+    url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme)
+}
+
+fn is_http_url(url: &str) -> bool {
+    url_has_scheme(url, "http://") || url_has_scheme(url, "https://")
+}
+
+fn is_data_url(url: &str) -> bool {
+    url_has_scheme(url, "data:")
+}
+
 /// 构建不跟随重定向的下载 client（2026-09-03 二次回归 A1 引入；J2a
 /// 2026-09-04 泛化为参数化构建器供 web_fetch 重定向循环复用同一语义）：
 /// 共享池默认策略跟随至多 10 跳重定向——SSRF 闸只校验**首跳** URL，
@@ -288,8 +303,8 @@ pub async fn fetch_url_media(
         // L4（2026-09-04 四轮盲审）：内联 base64（MediaAttachment.data）与
         // data: URI 不在设计面内（media 形态 = {id}|{path}|http(s) URL），
         // 诚实注明而非静默丢/当路径误报文件不存在。
-        if url.is_empty() || url.starts_with("data:") {
-            if m.data.is_some() || url.starts_with("data:") {
+        if url.is_empty() || is_data_url(url) {
+            if m.data.is_some() || is_data_url(url) {
                 notes.push(
                     "[图片未附加: 暂不支持内联 data 图片引用（请改用文件路径、上传或 URL）]"
                         .to_string(),
@@ -297,7 +312,7 @@ pub async fn fetch_url_media(
             }
             continue;
         }
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
+        if !is_http_url(url) {
             // 本地路径引用（T7/T8 落盘产物 / 用户点名路径）原样保留。
             kept.push(m.clone());
             continue;
@@ -594,13 +609,23 @@ pub fn attach_turn_images(
         if url.is_empty() {
             continue;
         }
-        if url.starts_with("http://") || url.starts_with("https://") {
+        if is_http_url(url) {
             // 防御分支：生产路径（loop.rs）已先经 fetch_url_media 预取，
             // 这里收到 URL 属调用方误用（本同步入口不拉网络），诚实注明。
             outcome.notes.push(format!(
                 "[图片未附加: URL 引用未经 fetch_url_media 预取 ({})]",
                 url
             ));
+            continue;
+        }
+        if is_data_url(url) {
+            // 与 fetch_url_media 的 data 臂同分类面（BUG-20261106-034
+            // 横向补齐）：直投 attach 的 data URI 同样诚实注明，不落
+            // 「文件不存在」路径定性假报。
+            outcome.notes.push(
+                "[图片未附加: 暂不支持内联 data 图片引用（请改用文件路径、上传或 URL）]"
+                    .to_string(),
+            );
             continue;
         }
         // 本地路径引用（T7/T8 落盘产物）：与文本候选同一验真 + 闸门链。
