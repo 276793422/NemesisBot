@@ -542,12 +542,25 @@ impl WebApprovalManager {
         let pattern = nemesis_security::approval_rules::pattern_for(operation, target);
         // L07：挂起点生成 diff 预览（args 只在这里可见；生成失败/不适用 =
         // None，卡片无预览区——预览是尽力而为的展示增强，不是审批闸的
-        // 组成部分，失败绝不阻断审批主链路）。
-        let (preview, preview_format) =
-            match crate::approval_preview::build_preview(operation, target, tool_args) {
-                Some((text, fmt)) => (Some(text), Some(fmt.to_string())),
-                None => (None, None),
-            };
+        // 组成部分，失败绝不阻断审批主链路）。BUG-20261106-033：args 的
+        // path 是相对 workspace 解析的（工具执行面语义），预览读侧必须同
+        // 坐标系——workspace 从 rules_path（<ws>/config/approval_rules.json）
+        // 两级 parent 推导；未配置 rules_path = None 退旧行为。
+        let preview_workspace = self
+            .rules_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        let (preview, preview_format) = match crate::approval_preview::build_preview(
+            preview_workspace.as_deref(),
+            operation,
+            target,
+            tool_args,
+        ) {
+            Some((text, fmt)) => (Some(text), Some(fmt.to_string())),
+            None => (None, None),
+        };
         let entry = PendingEntry {
             operation: operation.to_string(),
             target: target.to_string(),
