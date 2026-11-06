@@ -193,12 +193,12 @@ async fn run_eval(
     let llm_ref = nemesis_config::get_effective_llm(Some(&real_cfg));
     let resolution = nemesis_config::resolve_model_config(&real_cfg, &llm_ref)
         .with_context(|| format!("resolve model '{llm_ref}'"))?;
-    let real_base = resolution
-        .api_base
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches("/v1")
-        .to_string();
+    // 路径镜像拆分（BUG-20261106-027）：origin 给代理（verbatim 转发目标），
+    // path 镜像进盒内 api_base——盒内请求的相对路径必然与真实 lane 一致。
+    // 此前无条件 trim "/v1" + lane 感知加删 /v1，只在「HttpCompat base 恰以
+    // /v1 结尾」时成立（Zhipu v4 / Gemini v1beta 等预设全部上游 404）。
+    let (real_origin, real_base_path) = split_origin_path(resolution.api_base.trim());
+    let real_base_path = real_base_path.trim_end_matches('/').to_string();
     let model_name = resolution.model_name.clone();
     // Full ref with provider prefix — what model_list[].model expects
     // (real config stores e.g. "deepseek/deepseek-v4-flash" there while
@@ -388,13 +388,12 @@ async fn run_eval(
 
         // 6g — LLM proxy. The fake-key config is only complete once the
         // proxy port is known.
-        let api_base_host_for_meta = proxy_target_host(&real_base);
         // A3 每启动随机 fake key：发给盒内 agent 过代理闸，代理校验通过才
         // 换真 key。静态 "eval-fake-key" + 无校验代理 = 本地任意进程摸到
         // 环回端口即可在 eval 生命周期内蹭真 key（已修）。
         let fake_key = uuid::Uuid::new_v4().simple().to_string();
         let proxy = nemesis_eval_proxy::start(
-            real_base.clone(),
+            real_origin.clone(),
             resolution.api_key.clone(),
             fake_key.clone(),
         )
@@ -402,14 +401,14 @@ async fn run_eval(
         .context("start eval LLM proxy")?;
 
         let eval_result = run_phases(
-            api_base_host_for_meta.as_str(),
+            real_origin.as_str(),
             &real_home,
             kind,
             &home,
             &workspace,
             &model_name,
             &model_ref,
-            &box_api_base(proxy.api_base().as_str(), &model_ref, &resolution.protocol),
+            &box_api_base(proxy.api_base().as_str(), &real_base_path),
             &resolution.protocol,
             &fake_key,
             &sbieini,
@@ -624,10 +623,9 @@ async fn run_phases(
             "model": model_ref,
             // A3 每启动随机 fake key（与代理闸配对；不再是静态串）。
             "api_key": fake_key,
-            // lane 随 wire 协议而异：HttpCompat 带 /v1（provider 拼
-            // /chat/completions），Anthropic/Codex base 裸（provider 自己拼
-            // /v1/messages、/responses）。此前无条件 /v1 → claude lane 盒内
-            // 路径 /v1/v1/messages → 上游 404。见 box_api_base 文档。
+            // 路径镜像（BUG-20261106-027）：= 代理根 + 真实 api_base 的
+            // path——盒内请求相对路径与真实 lane 逐字节一致，任意 lane /
+            // base 形态同时成立。见 box_api_base 文档。
             "api_base": box_api_base,
             // 显式协议透传（空 = 自动）：裸名 + protocol 条目在盒内也要走
             // 同一 lane；旧二进制不识别此键（flatten extra 吞掉，零影响）。
@@ -1233,31 +1231,42 @@ fn proxy_target_host(real_base: &str) -> String {
     rest.split(['/', '?', ':']).next().unwrap_or("").to_string()
 }
 
-/// 盒内 agent 的 api_base（6d 写入盒内 config.json）。后缀随 wire lane
-/// 而异：HttpCompat 约定 base 带 `/v1`（provider 拼 `/chat/completions`）；
-/// Anthropic 拼 `/v1/messages`、Codex 拼 `/responses`——这两种 base 不带
-/// `/v1`。此前无条件带 `/v1`，claude lane 下盒内路径变成 `/v1/v1/messages`
-/// → 上游 404（2026-09-11 r10 真链路测试红的根因）。lane 判定与盒内
-/// factory 同源：直接问 `resolve_provider_selection`（前缀 + 显式 protocol
-/// 一起算），不在本地复制推断逻辑。解析失败兜底 HttpCompat 形态（保持
-/// 旧行为；盒内 factory 对同类输入会 loud 报错，不会静默走错协议）。
+/// Split an api_base into `(origin, base_path)`: `https://h:8080/v1` →
+/// (`https://h:8080`, `/v1`); no path → (`https://h`, ``). Origin = the
+/// verbatim pass-through target for the eval proxy; base_path = mirrored
+/// into the sandboxed agent's api_base (see `box_api_base`).
 #[cfg(target_os = "windows")]
-fn box_api_base(proxy_base: &str, llm_ref: &str, protocol: &str) -> String {
-    let provider_type = nemesis_providers::factory::resolve_provider_selection(
-        &nemesis_providers::factory::FactoryConfig {
-            proxy: String::new(),
-            llm_ref: llm_ref.to_string(),
-            protocol: protocol.to_string(),
-            ..Default::default()
-        },
-    )
-    .map(|sel| sel.provider_type)
-    .unwrap_or(nemesis_providers::factory::ProviderType::HttpCompat);
-    match provider_type {
-        nemesis_providers::factory::ProviderType::HttpCompat => proxy_base.to_string(),
-        // Anthropic /v1/messages、Codex /responses：base 不能带 /v1。
-        _ => proxy_base.trim_end_matches("/v1").to_string(),
+fn split_origin_path(base: &str) -> (String, String) {
+    let rest = base.split_once("://").map(|(_, r)| r).unwrap_or(base);
+    match rest.split_once('/') {
+        Some((authority, path)) => {
+            let origin_len = base.len() - rest.len() + authority.len();
+            (base[..origin_len].to_string(), format!("/{path}"))
+        }
+        None => (base.to_string(), String::new()),
     }
+}
+
+/// 盒内 agent 的 api_base（6d 写入盒内 config.json）。
+///
+/// 路径镜像规则（BUG-20261106-027）：盒内 base = 代理根 + 真实 api_base 的
+/// path 部分。代理是纯 verbatim 转发（origin + 收到的完整路径），而盒内与
+/// 真实两侧跑同一份 provider 代码、对 base 只做 path 后缀级归一（Anthropic
+/// 剥尾 `/v1` 再自拼 `/v1/messages`，Codex/HttpCompat 拼裸后缀），因此盒内
+/// 请求的相对路径与真实 lane 的相对路径逐字节一致——对任意 lane、任意
+/// base 形态（无 path / `/v1` / `/api/paas/v4` / `/v1beta`）同时成立。
+///
+/// 此前的 lane 感知形态（HttpCompat base 带 `/v1`、其余剥 `/v1`，配
+/// real_base 无条件剥 `/v1`）只在「HttpCompat base 恰以 `/v1` 结尾」时
+/// 成立：Zhipu `/api/paas/v4`、Z.ai `/api/paas/v4`、Gemini `/v1beta`、
+/// Doubao `/api/v3`、Qianfan `/v2` 等预设全部被多插一层 `/v1` → 上游 404；
+/// Codex lane + `api.openai.com/v1` 形态则丢 `/v1` → 404。2026-09-11 r10
+/// 的 `/v1/v1` 事故修复（lane 感知剥 `/v1`）修好了 Anthropic 但把不对称
+/// 留下了——本形态把两侧都锚到同一真相源（真实 api_base 的 path），该类
+/// 不对称整族消除。
+#[cfg(target_os = "windows")]
+fn box_api_base(proxy_base: &str, real_base_path: &str) -> String {
+    format!("{}{}", proxy_base.trim_end_matches('/'), real_base_path)
 }
 
 #[cfg(target_os = "windows")]

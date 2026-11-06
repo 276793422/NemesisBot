@@ -65,14 +65,18 @@ pub struct ProxyHandle {
 }
 
 impl ProxyHandle {
-    /// The `api_base` value to write into the sandboxed agent's config.
+    /// The proxy's bare root (`http://127.0.0.1:{port}`) for callers to
+    /// compose the sandboxed agent's api_base from.
     ///
-    /// 带 `/v1` 后缀是 HttpCompat（chat/completions）lane 的约定；Anthropic
-    /// lane（provider 拼 `/v1/messages`）与 Codex lane（拼 `/responses`）写入
-    /// 盒内 config 前必须去掉 `/v1`（否则盒内路径 `/v1/v1/messages` → 上游
-    /// 404，2026-09-11 r10 真链路红的根因）。lane 裁决见 eval.rs `box_api_base`。
+    /// 路径镜像契约（BUG-20261106-027）：调用方把真实 api_base 的 path 部分
+    /// 原样接到本根后面作为盒内 api_base（见 eval.rs `box_api_base`）。代理
+    /// 转发是 verbatim 的（本 origin + 收到的完整路径），镜像保证盒内请求的
+    /// 相对路径与真实 lane 逐字节一致——对任意 base 形态（无 path / `/v1` /
+    /// `/api/paas/v4` / `/v1beta`）与任意 lane 同时成立。此前本方法固定返回
+    /// 带 `/v1` 的 base，配合调用方按 lane 增删 `/v1`，只在「HttpCompat base
+    /// 恰以 `/v1` 结尾」时正确（Zhipu v4 / Gemini v1beta 等预设全部 404）。
     pub fn api_base(&self) -> String {
-        format!("http://127.0.0.1:{}/v1", self.port)
+        format!("http://127.0.0.1:{}", self.port)
     }
 
     /// Stop the proxy and wait for the task to finish.
@@ -85,8 +89,9 @@ impl ProxyHandle {
 /// Shared immutable proxy state: the one real endpoint and the real key.
 #[derive(Clone)]
 struct ProxyState {
-    /// Base URL of the real endpoint, e.g. `https://api.example.com` —
-    /// WITHOUT a trailing slash. The incoming path+query is appended verbatim.
+    /// Origin of the real endpoint, e.g. `https://api.example.com` —
+    /// `scheme://host[:port]` WITHOUT a path. The incoming path+query is
+    /// appended verbatim.
     real_base: String,
     /// The real API key (memory only — never written to disk).
     api_key: String,
@@ -98,7 +103,10 @@ struct ProxyState {
 
 /// Start the proxy on a random loopback port.
 ///
-/// - `real_base`: scheme://host[:port] of the real LLM endpoint (no path).
+/// - `real_base`: ORIGIN of the real LLM endpoint (`scheme://host[:port]`,
+///   no path). The incoming path+query is appended verbatim, so callers must
+///   mirror the real api_base's path into the sandboxed agent's api_base
+///   (see eval.rs `box_api_base`).
 /// - `api_key`:   the real key, substituted into auth headers.
 /// - `expected_client_key`: the per-launch random fake key issued to the
 ///   sandboxed agent (A3) — requests not carrying it are rejected 401.
