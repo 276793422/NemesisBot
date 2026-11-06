@@ -217,7 +217,7 @@ async fn cluster_task_list_empty_and_device_filtered() {
 
     // 空目录 → 空列表（root 不存在的早退臂）。
     let out = handler()
-        .cluster_task_list(&ctx, &ws, 50, 0, None)
+        .cluster_task_list(local_node_id(&ctx), &ws, 50, 0, None)
         .unwrap()
         .unwrap();
     assert_eq!(out["total"], 0);
@@ -226,7 +226,7 @@ async fn cluster_task_list_empty_and_device_filtered() {
     make_cluster_task_dir(dir.path(), "devB", "2026-08-25_08-00-00_task2");
 
     let out = handler()
-        .cluster_task_list(&ctx, &ws, 50, 0, None)
+        .cluster_task_list(local_node_id(&ctx), &ws, 50, 0, None)
         .unwrap()
         .unwrap();
     assert_eq!(out["total"], 2);
@@ -234,7 +234,7 @@ async fn cluster_task_list_empty_and_device_filtered() {
     // device_id 过滤。条目不带 device 字段（build_cluster_task_entry 只有
     // direction/peerNode）；local=None 时 direction="unknown"、peerNode=""。
     let out = handler()
-        .cluster_task_list(&ctx, &ws, 50, 0, Some("devA".to_string()))
+        .cluster_task_list(local_node_id(&ctx), &ws, 50, 0, Some("devA".to_string()))
         .unwrap()
         .unwrap();
     assert_eq!(out["total"], 1);
@@ -255,7 +255,7 @@ async fn cluster_task_detail_selects_perspective() {
     make_cluster_task_dir(dir.path(), "devB", "2026-08-25_09-00-00_task9");
 
     let self_view = handler()
-        .cluster_task_detail(&ctx, &ws, "task9", "self")
+        .cluster_task_detail(local_node_id(&ctx), &ws, "task9", "self")
         .unwrap()
         .unwrap();
     assert_eq!(self_view["id"], "task9");
@@ -263,7 +263,7 @@ async fn cluster_task_detail_selects_perspective() {
 
     // not found。
     let err = handler()
-        .cluster_task_detail(&ctx, &ws, "no-such-task", "self")
+        .cluster_task_detail(local_node_id(&ctx), &ws, "no-such-task", "self")
         .unwrap_err();
     assert!(err.contains("not found"), "{err}");
 }
@@ -294,7 +294,7 @@ async fn cluster_task_detail_perspective_with_real_local_node() {
 
     // self 视角：挑 local 设备的目录 → direction=outbound、peerNode 空。
     let self_view = handler()
-        .cluster_task_detail(&ctx, &ws, "taskK", "self")
+        .cluster_task_detail(local_node_id(&ctx), &ws, "taskK", "self")
         .unwrap()
         .unwrap();
     assert_eq!(self_view["id"], "taskK");
@@ -303,7 +303,7 @@ async fn cluster_task_detail_perspective_with_real_local_node() {
 
     // peer 视角：挑第一个非 local 设备 → direction=inbound、peerNode=对端。
     let peer_view = handler()
-        .cluster_task_detail(&ctx, &ws, "taskK", "peer")
+        .cluster_task_detail(local_node_id(&ctx), &ws, "taskK", "peer")
         .unwrap()
         .unwrap();
     assert_eq!(peer_view["id"], "taskK");

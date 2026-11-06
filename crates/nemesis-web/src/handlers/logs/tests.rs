@@ -198,7 +198,8 @@ fn parse_local_tool_results_success_with_args_and_duration() {
 ### Result
 hello contents
 
-### Duration 0.022s
+### Duration
+0.022s
 
 ---
 ";
@@ -224,7 +225,8 @@ fn parse_local_tool_results_error_branch() {
 ### Error
 permission denied
 
-### Duration 0.005s
+### Duration
+0.005s
 ";
     let out = parse_local_tool_results(md);
     assert_eq!(out.len(), 1);
