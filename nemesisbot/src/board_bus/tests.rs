@@ -64,6 +64,7 @@ fn post_payload(
 ) -> serde_json::Value {
     serde_json::json!({
         "v": 1, "ns": "board", "op": "comment.post", "corr_id": "c-1",
+        "_rpc": {"from": "node-b"},
         "body": {
             "client_msg_id": client_msg_id,
             "thread": {"kind": thread_kind, "id": thread_id},
@@ -141,13 +142,19 @@ fn test_comment_post_validation_errors() {
     let deps = make_deps(store.clone(), quota(8));
 
     // 缺 client_msg_id / thread / sender / content 逐个 VALIDATION。
+    // （带 _rpc.from——身份闸在此四臂之前，不带会被身份错误短路而测不到
+    // 目标字段臂。）
     for payload in [
-        serde_json::json!({"v": 1, "ns": "board", "op": "comment.post", "body": {}}),
         serde_json::json!({"v": 1, "ns": "board", "op": "comment.post",
+            "_rpc": {"from": "node-b"}, "body": {}}),
+        serde_json::json!({"v": 1, "ns": "board", "op": "comment.post",
+            "_rpc": {"from": "node-b"},
             "body": {"client_msg_id": "x"}}),
         serde_json::json!({"v": 1, "ns": "board", "op": "comment.post",
+            "_rpc": {"from": "node-b"},
             "body": {"client_msg_id": "x", "thread": {"kind": "channel", "id": 1}}}),
         serde_json::json!({"v": 1, "ns": "board", "op": "comment.post",
+            "_rpc": {"from": "node-b"},
             "body": {"client_msg_id": "x", "thread": {"kind": "channel", "id": 1},
                 "sender": {"type": "agent", "id": "node-b"}}}),
     ] {
@@ -158,6 +165,89 @@ fn test_comment_post_validation_errors() {
             Some(nemesis_cluster::envelope::error_code::VALIDATION)
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// BUG-20261107-008：comment.post 身份闸——sender 必须与传输层一致
+/// （type=agent + id=_rpc.from）。三拒绝臂（缺 _rpc.from / id 冒名 /
+/// type 冒充人类）+ type 缺省正控（缺省 agent 放行）。否则 worker 可
+/// 轮换 sender.id 绕额度三闸、sender.type="admin" 冒充人类（actor_label
+/// 信任标签）、冒名他节点污染溯源（swarm-impl-plan 原始契约回归）。
+#[tokio::test]
+async fn comment_post_rejects_sender_identity_mismatch() {
+    let (store, dir) = temp_store("identity-gate");
+    let deps = make_deps(store.clone(), quota(8));
+    let ch = store.get_channel_by_name("#dev").unwrap().unwrap();
+    let payload_with = |from: serde_json::Value, sender: serde_json::Value| {
+        serde_json::json!({
+            "v": 1, "ns": "board", "op": "comment.post", "corr_id": "id-1",
+            "_rpc": from,
+            "body": {
+                "client_msg_id": "id-1",
+                "thread": {"kind": "channel", "id": ch.id},
+                "sender": sender,
+                "content": "hello",
+                "reply_to": null,
+                "kind_tag": "text",
+            }
+        })
+    };
+    let sender_b = serde_json::json!({"type": "agent", "id": "node-b"});
+    let sender_c = serde_json::json!({"type": "agent", "id": "node-c"});
+    let sender_admin = serde_json::json!({"type": "admin", "id": "node-b"});
+
+    // ① 缺 _rpc.from（本地误调/伪造面）。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        payload_with(serde_json::Value::Null, sender_b.clone()),
+    ));
+    assert!(!ok, "缺 _rpc.from 必须拒绝");
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // ② sender.id 冒名（node-c 假冒 node-b）。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        payload_with(serde_json::json!({"from": "node-b"}), sender_c),
+    ));
+    assert!(!ok, "sender.id 与 _rpc.from 不一致必须拒绝");
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // ③ sender.type="admin" 冒充人类。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        payload_with(serde_json::json!({"from": "node-b"}), sender_admin),
+    ));
+    assert!(!ok, "sender.type=admin 冒充必须拒绝");
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // ④ 正控：type 缺省（=agent）+ id 与 from 一致 → 放行。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        payload_with(
+            serde_json::json!({"from": "node-b"}),
+            serde_json::json!({"id": "node-b"}),
+        ),
+    ));
+    assert!(ok, "type 缺省 + 身份一致应放行（code={code:?}）");
+
+    // 拒绝臂不落库（正控 1 条 + kind_tag 常规路径无关）。
+    assert_eq!(
+        store
+            .list_channel_messages(ch.id, 0, i64::MAX)
+            .unwrap()
+            .len(),
+        1
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -173,6 +263,7 @@ async fn comment_post_rejects_reserved_kind_tags_from_remote() {
     let payload_with_tag = |id: &str, tag: &str| {
         serde_json::json!({
             "v": 1, "ns": "board", "op": "comment.post", "corr_id": "c-1",
+            "_rpc": {"from": "node-b"},
             "body": {
                 "client_msg_id": id,
                 "thread": {"kind": "channel", "id": ch.id},
@@ -904,7 +995,8 @@ fn register_node(cluster: &Cluster, id: &str, role: NodeRole, category: &str, on
 }
 
 /// 自定 sender 的 comment.post 上行（post_payload 固定 node-b，投影测试
-/// 需要 sender ≠ assignee）。
+/// 需要 sender ≠ assignee）。BUG-20261107-008 身份闸要求 _rpc.from 与
+/// sender 一致——同源注入。
 fn comment_payload(
     client_msg_id: &str,
     sender: &str,
@@ -914,6 +1006,7 @@ fn comment_payload(
 ) -> serde_json::Value {
     serde_json::json!({
         "v": 1, "ns": "board", "op": "comment.post", "corr_id": "c-x",
+        "_rpc": {"from": sender},
         "body": {
             "client_msg_id": client_msg_id,
             "thread": {"kind": thread_kind, "id": thread_id},
@@ -1277,6 +1370,7 @@ async fn sweep_comment_post_missing_thread_id_and_rate_limit_denied() {
     let (ok, code, _) = parse_reply(handle_nb_bus(
         &deps,
         serde_json::json!({"v": 1, "ns": "board", "op": "comment.post", "corr_id": "q-0",
+            "_rpc": {"from": "node-b"},
             "body": {"client_msg_id": "q0", "thread": {"kind": "channel"},
                 "sender": {"type": "agent", "id": "node-b"}, "content": "x"}}),
     ));
