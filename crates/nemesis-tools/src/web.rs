@@ -123,20 +123,16 @@ impl Tool for WebFetchTool {
                     ));
                 }
 
-                // Read body with size limit
-                match response.bytes().await {
+                // Read body with size limit.
+                // BUG-20261107-005：旧形态 `bytes()` 全量读入内存后才核对
+                // max_size——SSRF 闸只挡内网，公网恶意站可在核对前把任意
+                // 大 body 灌进内存。换用共享流式累计闸，超限在读入中途即断。
+                match nemesis_utils::http_cap::read_body_capped(response, max_size as u64).await {
                     Ok(bytes) => {
-                        if bytes.len() > max_size {
-                            return ToolResult::error(&format!(
-                                "response too large: {} bytes (limit: {})",
-                                bytes.len(),
-                                max_size
-                            ));
-                        }
                         let content = String::from_utf8_lossy(&bytes);
                         ToolResult::success(&content)
                     }
-                    Err(e) => ToolResult::error(&format!("failed to read response body: {}", e)),
+                    Err(e) => ToolResult::error(&e),
                 }
             }
             Ok(Err(e)) => ToolResult::error(&format!("request failed: {}", e)),

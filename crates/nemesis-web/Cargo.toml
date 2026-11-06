@@ -50,7 +50,7 @@ nemesis-plugins-wasm = { workspace = true, optional = true }
 # cluster-roaming feature 已删，代理代码恒编译）。
 nemesis-plugin = { workspace = true }
 nemesis-workflow = { workspace = true, optional = true }
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 # 提示词资产单一真相源（M7）：cluster_persona_gen（人格生成三阶段）消费；
 # 零依赖纯静态文本，直接非 optional。
 nemesis-prompts = { workspace = true }

@@ -10,6 +10,11 @@ pub mod env_sanitize;
 pub mod degraded;
 pub mod file;
 pub mod fsutil;
+// HTTP 响应体流式累计闸（BUG-20261107-005）：「bytes() 全量读入后才查上限」
+// 形态的 workspace 共享单一真相源——读入中途超限即断。同 media/http_retry
+// 走 http 门控（reqwest 不进未启用方的依赖图）。
+#[cfg(feature = "http")]
+pub mod http_cap;
 pub mod http_retry;
 pub mod llm_error_class;
 // http 门控（BUG 2026-10-30）：media 模块核心是 reqwest 下载——未启用 `http`

@@ -588,6 +588,10 @@ impl GitHubRegistry {
     }
 
     /// Perform an HTTP GET request with error handling.
+    ///
+    /// BUG-20261107-005：与 [`crate::github_tree::download_file`] 同款旧
+    /// 形态收口——`bytes()` 全量读入后才核对 `self.max_size`，换用共享
+    /// 流式累计闸，超限在读入中途即断。
     async fn do_get(&self, url: &str) -> Result<Vec<u8>> {
         debug!("GitHub GET: {}", url);
 
@@ -608,20 +612,9 @@ impl GitHubRegistry {
             )));
         }
 
-        let body = response
-            .bytes()
+        nemesis_utils::http_cap::read_body_capped(response, self.max_size)
             .await
-            .map_err(|e| NemesisError::Other(format!("failed to read response: {}", e)))?;
-
-        if body.len() as u64 > self.max_size {
-            return Err(NemesisError::Other(format!(
-                "response too large: {} bytes (max {})",
-                body.len(),
-                self.max_size
-            )));
-        }
-
-        Ok(body.to_vec())
+            .map_err(NemesisError::Other)
     }
 
     /// Download all files under the given directory prefix from GitHub

@@ -95,6 +95,15 @@ async fn err_handler() -> impl IntoResponse {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+async fn huge_handler() -> impl IntoResponse {
+    // 仅比 MAX_PRICE_TABLE_BYTES 多 1 字节：客户端必须在读入中途断开
+    // （BUG-20261107-005），不会读完全量。loopback 传 64MB 亚秒级。
+    (
+        StatusCode::OK,
+        vec![b'x'; super::MAX_PRICE_TABLE_BYTES as usize + 1],
+    )
+}
+
 async fn spawn_server() -> String {
     let state = FixtureState::default();
     let app = Router::new()
@@ -104,6 +113,7 @@ async fn spawn_server() -> String {
         .route("/updated", get(updated_handler))
         .route("/broken", get(broken_handler))
         .route("/err", get(err_handler))
+        .route("/huge", get(huge_handler))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -254,6 +264,39 @@ async fn network_failure_records_failed_fetch() {
     assert!(
         meta.fetched_at.is_some(),
         "network failure must bump fetched_at"
+    );
+}
+
+// BUG-20261107-005 回归锁（旧 `bytes()` 形态必红：64MB+1 全量灌进内存
+// 后才核对上限；新形态在读入中途即断）。降级契约同步钉死：旧表不动 +
+// meta 留痕。
+#[tokio::test]
+async fn oversized_body_aborts_and_keeps_old_table() {
+    let base = spawn_server().await;
+    let store = tmp_store("oversize");
+    fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
+
+    let err = fetch_and_replace(&store, Some(&format!("{base}/huge")))
+        .await
+        .unwrap_err();
+    assert!(err.contains("exceeds limit"), "err: {err}");
+    assert!(err.contains("aborted mid-read"), "err: {err}");
+    assert_eq!(
+        store.lookup("test-model-a").unwrap().input_cost_per_million,
+        1.0,
+        "oversize failure must keep old table"
+    );
+    assert!(
+        store
+            .meta()
+            .source_url
+            .as_deref()
+            .unwrap_or("")
+            .ends_with("/huge"),
+        "oversize failure must record source_url, got {:?}",
+        store.meta().source_url
     );
 }
 
