@@ -126,15 +126,46 @@ fn persist(workspace: &Path, session_key: &str, items: &VecDeque<(String, u64)>)
     }
 }
 
+/// 建条目（若缺）+ 新会话登记插入序 + FIFO 逐出（victim = 最老插入的非本
+/// 会话条目）。lookup 与 insert 共用——BUG-20261106-021 之前只有 insert
+/// 登记 order/逐出，而生产路径恒为 lookup→insert（server.rs 入站咽喉点），
+/// insert 的 `created` 判定恒 false：`MAX_SESSIONS` 上限对全部生产路径
+/// 失效，map 与 sidecar 文件随会话累积无界增长。收口后两入口同纪律，
+/// map 与 order 恢复「始终同键集」不变量。
+fn ensure_entry(t: &mut DedupTable, session_key: &str) {
+    if t.map.contains_key(session_key) {
+        return;
+    }
+    t.map.insert(
+        session_key.to_string(),
+        DedupEntry {
+            items: VecDeque::new(),
+            loaded: false,
+        },
+    );
+    t.order.push_back(session_key.to_string());
+    if t.map.len() > MAX_SESSIONS {
+        let victim_idx = t
+            .order
+            .iter()
+            .position(|k| k.as_str() != session_key && t.map.contains_key(k.as_str()));
+        if let Some(idx) = victim_idx {
+            let key = t.order.remove(idx).expect("idx from position() is valid");
+            t.map.remove(&key);
+        }
+    }
+}
+
 /// 查重：命中返回**原 seq**（0 = 纯图消息无环行）并做 LRU touch；未命中
 /// 返回 None。首触碰惰性加载 sidecar（重启不失的读路径）。
 pub fn lookup(session_key: &str, client_msg_id: &str) -> Option<u64> {
     let mut t = table().lock().expect("chat_dedup table lock poisoned");
+    ensure_entry(&mut t, session_key);
     let seq = {
-        let entry = t.map.entry(session_key.to_string()).or_insert(DedupEntry {
-            items: VecDeque::new(),
-            loaded: false,
-        });
+        let entry = t
+            .map
+            .get_mut(session_key)
+            .expect("ensure_entry guarantees presence");
         if !entry.loaded {
             if let Some(ws) = workspace_dir() {
                 load_sidecar(&ws, session_key, entry);
@@ -156,7 +187,7 @@ pub fn lookup(session_key: &str, client_msg_id: &str) -> Option<u64> {
     };
     if let Some(seq) = seq {
         // LRU touch：命中移 back（entry 借用已随内层块结束释放）。
-        let entry = t.map.get_mut(session_key).expect("just inserted");
+        let entry = t.map.get_mut(session_key).expect("just ensured");
         entry.items.push_back((client_msg_id.to_string(), seq));
     }
     seq
@@ -167,13 +198,13 @@ pub fn lookup(session_key: &str, client_msg_id: &str) -> Option<u64> {
 pub fn insert(session_key: &str, client_msg_id: &str, seq: u64) {
     let snapshot: Vec<(String, u64)> = {
         let mut t = table().lock().expect("chat_dedup table lock poisoned");
-        let created = !t.map.contains_key(session_key);
+        ensure_entry(&mut t, session_key);
         let snapshot;
         {
-            let entry = t.map.entry(session_key.to_string()).or_insert(DedupEntry {
-                items: VecDeque::new(),
-                loaded: false,
-            });
+            let entry = t
+                .map
+                .get_mut(session_key)
+                .expect("ensure_entry guarantees presence");
             if !entry.loaded {
                 if let Some(ws) = workspace_dir() {
                     load_sidecar(&ws, session_key, entry);
@@ -191,21 +222,6 @@ pub fn insert(session_key: &str, client_msg_id: &str, seq: u64) {
                 entry.items.pop_front();
             }
             snapshot = entry.items.iter().cloned().collect();
-        }
-        // 新会话导致超员：逐出**最老插入**且非本会话的条目（FIFO——
-        // chat_event_log 同款纪律；被逐会话只是失去幂等窗口）。
-        if created {
-            t.order.push_back(session_key.to_string());
-            if t.map.len() > MAX_SESSIONS {
-                let victim_idx = t
-                    .order
-                    .iter()
-                    .position(|k| k.as_str() != session_key && t.map.contains_key(k.as_str()));
-                if let Some(idx) = victim_idx {
-                    let key = t.order.remove(idx).expect("idx from position() is valid");
-                    t.map.remove(&key);
-                }
-            }
         }
         snapshot
     };
@@ -244,4 +260,22 @@ pub(crate) mod test_support {
         t.map.clear();
         t.order.clear();
     }
+
+    /// 测试探针：map 大小（MAX_SESSIONS 逐出纪律回归锁用）。
+    pub fn table_size_for_tests() -> usize {
+        table().lock().unwrap().map.len()
+    }
+
+    /// 测试探针：order 是否含指定键（map/order 同键集不变量回归锁用）。
+    pub fn order_contains_for_tests(session_key: &str) -> bool {
+        table()
+            .lock()
+            .unwrap()
+            .order
+            .iter()
+            .any(|k| k.as_str() == session_key)
+    }
 }
+
+#[cfg(test)]
+mod tests;
