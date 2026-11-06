@@ -516,6 +516,21 @@ pub fn chat_log_exists(session_key: &str) -> bool {
     log_path(session_key).exists()
 }
 
+/// Does this session key have any materialized presence on disk — jsonl OR
+/// meta sidecar? Single-source occupation predicate for CREATE paths
+/// (`session_fork::unique_key` / `sessions.import` 预检)：meta 写入是
+/// upsert（已写字段保留），复用只残留 meta 的键会继承陈旧字段——含
+/// `allow_all=true`（安全装配 hydrate 后审批卡静默全自动放行）与
+/// `branch_summary`（新会话首轮 build_messages 注入）。meta-only 状态的
+/// Producer：trash 半途失败（jsonl 先移、meta rename 重试耗尽）/ 硬删
+/// 单文件重试耗尽（warn-only）/ 删除链中途崩溃。占用语义与
+/// `chat_trash::trash_restore_in` 的冲突判定对齐（jsonl ∥ meta）；
+/// boundary 是审计 sidecar 不计（clear 截断保留文件，restore 同款排除）。
+/// （BUG-20261106-038）
+pub fn session_occupied(session_key: &str) -> bool {
+    chat_log_exists(session_key) || meta_path(session_key).exists()
+}
+
 /// Write pre-read chat_log rows under `new_key`, VERBATIM (2026-08-25 fork
 /// 第三轮). Each row is a complete jsonl `Value` — original timestamps,
 /// model badges, cron markers, everything preserved byte-faithfully. This is

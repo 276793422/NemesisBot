@@ -1313,6 +1313,49 @@ fn normalize_content_image_url_http_and_detail() {
     );
 }
 
+// BUG-20261106-036：scheme 大小写不敏感（RFC 3986 §3.1）——大写 DATA:
+// 合法形态必须按 data URI 归一为 Base64（修复前字节级 strip_prefix 漏成
+// Url，内联 base64 被换成上游拉不到的伪 URL 静默透传）。
+#[test]
+fn normalize_content_uppercase_data_uri_scheme_is_base64() {
+    for prefix in ["DATA:", "Data:", "dAtA:"] {
+        let v = serde_json::json!([
+            { "type": "image_url", "image_url": { "url": format!("{prefix}image/png;base64,iVBORw0KGgo=") } }
+        ]);
+        let out = normalize_openai_content(&v).unwrap();
+        let SlotMessageContent::Parts(parts) = out else {
+            panic!("{prefix}: expected parts, got {out:?}");
+        };
+        assert_eq!(
+            parts[0],
+            nemesis_providers::types::ContentPart::Image {
+                image: nemesis_providers::types::ImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: "iVBORw0KGgo=".to_string(),
+                },
+                detail: None,
+            },
+            "{prefix}: 大写 scheme 必须按 data URI 解码"
+        );
+    }
+    // 小写对照臂：既有行为不变。
+    let v = serde_json::json!([
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgo=" } }
+    ]);
+    assert!(normalize_openai_content(&v).is_ok());
+}
+
+#[test]
+fn normalize_content_uppercase_data_uri_malformed_is_err_not_url() {
+    // 大写形态 + 非 base64 结构 → 归类为 data URI 后诚实 Err，
+    // 不落入 Url 臂（修复前 = Ok(Url)，伪 URL 静默透传）。
+    let v = serde_json::json!([
+        { "type": "image_url", "image_url": { "url": "DATA:image/png,notbase64" } }
+    ]);
+    let err = normalize_openai_content(&v).unwrap_err();
+    assert!(err.contains("base64"), "应按 data URI 校验报错: {err}");
+}
+
 #[test]
 fn normalize_content_unknown_part_is_err_not_silent() {
     let v = serde_json::json!([

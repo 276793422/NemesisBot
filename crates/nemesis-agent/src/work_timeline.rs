@@ -6,17 +6,6 @@
 //! 经 [`AgentLoop::current_work_timeline`]（WSAPI `chat.work_current`）
 //! 只读快照，支撑「切走再切回」的全量恢复（活累加器无滑窗限制）。
 //!
-//! # 并发隔离（BUG 2026-11-06 根修：单槽 → per-session-key 多槽）
-//!
-//! 同一 [`AgentLoop`](crate::AgentLoop) 上 turn 并发是常态——detached
-//! 子代理（`run_detached_events` 与父 turn 同 loop 异步跑）、多会话消息。
-//! 早期实现是 loop 级单槽（`Option<RecordingWork>`），子代理 turn 的
-//! `begin()` 会把父 turn 正在累加的槽整个抹掉，父 turn 收尾 `finish()`
-//! 拿到空槽 → 行不带 `work` 键（e2e 胶囊四态 2026-11-06 实证）；反向
-//! 子代理 `finish()` 还会错拿父 turn 半成品写进自己的 jsonl 行（跨会话
-//! 错归属）。现按 session_key 分槽：begin/feed/finish/snapshot 全部精确
-//! 按键隔离，并发 turn 互不扰动。
-//!
 //! # 喂入点与单一真相源
 //!
 //! 喂入与既有事件发射**同点同源**：RoundText 在 [`crate::r#loop`]
@@ -38,6 +27,25 @@
 //! [`MAX_WORK_ROUNDS`] 封顶轮数，超出置 `truncated` 诚实注记并停止追加；
 //! preview 沿用发射侧截断（ARGS_PREVIEW_CAP/RESULT_PREVIEW_CAP），此处
 //! 不放大。轮叙述为真实内容全量保留（用户拍板全落盘，2026-10-30）。
+//!
+//! # 槽模型（BUG-20261106-039 修复：单槽 → 按会话键分桶）
+//!
+//! 同一 AgentLoop 实例上会**并发/嵌套**跑多个 turn：spawn 工具（前台
+//! G0/G2 阻塞路径与后台 G4 路径，agent_factory SpawnFn 持同一 loop 的
+//! Weak 引用）在同一 loop 上跑 detached 子代理回合，board 评审/冲突消解/
+//! forge 测试等宿主流程也借同一 loop 跑 detached 任务（run_detached /
+//! run_detached_events）。单槽形态下 detached 的 begin() 互踩进行中父
+//! turn 的累积、detached 自身从不 finish（其最终行不落 chat_log），父
+//! turn 终局的 finish()（旧签名无键 take）会把**子代理的时间线**错误
+//! 归属进父 assistant 行的 work 键。现为按会话键的桶表：begin / 喂入 /
+//! finish / 快照全部按键路由，桶间天然隔离。
+//!
+//! 桶生命周期：begin 重置同键残余（中断/续行未消费照旧丢弃，语义不变）；
+//! chat turn 终局 finish 按键取走（turn.rs 最终回复落盘）；detached
+//! （run_detached_events）与集群续行（resume_execution_with_token）路径
+//! 无落盘点，函数收尾显式 finish 清桶（时间线丢弃——子代理过程可见面是
+//! 事件环 P1 详情视图，与改造前一致）。诚实边界：执行中 panic 的桶残留
+//! 到进程结束（无 sweep；常态几 KB/桶，uuid 键无同键 begin 可清）。
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -47,11 +55,6 @@ use serde::Serialize;
 
 /// 轮数上限（病态任务护栏）。超出不再追加，`truncated: true` 诚实注记。
 pub const MAX_WORK_ROUNDS: usize = 500;
-
-/// 崩溃 turn 残槽的清扫时限（begin 时顺带 retain）。正常路径 finish 必取
-/// 走自己的槽；只有 panic / 任务中止等跳过收尾的 turn 会留残槽——子代理
-/// key 是一次性 uuid 不会被 begin 覆盖，放任不管 = 长命 gateway 慢泄漏。
-pub const STALE_WORK_ENTRY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// 单次工具调用的记录（`work.rounds[].tools[]` 条目）。
 /// 形状单一真相源：本 struct 的 serde 输出 = chat_log 行 `"work"` 键 =
@@ -95,8 +98,8 @@ pub struct WorkTimeline {
     pub truncated: bool,
 }
 
-/// 进行中的累加状态（`WorkRecorder` 槽内物；finish 时转 `WorkTimeline`）。
-/// session_key 即 map 键，不在结构内重复存（单一真相源）。
+/// 进行中的累加状态（`WorkRecorder` 桶内物；finish 时转 `WorkTimeline`）。
+/// 会话键即桶键（HashMap 键为单一真相源），桶内不再重复存。
 #[derive(Debug, Clone)]
 struct RecordingWork {
     started_at_ms: u64,
@@ -137,22 +140,20 @@ impl RecordingWork {
 }
 
 /// turn 级时间线累加器（loop 持有 + ToolEventHook 共享同一 clone）。
-/// per-session-key 分槽：无槽（未 begin / 已 finish）= 该 key 全部喂入
-/// 静默忽略——零配置开销，并发 turn 按键天然隔离。
+/// 按会话键分桶（BUG-20261106-039：单槽在 spawn/评审/续行与父 turn 并发
+/// 互踩）。无桶（未 begin / 已 finish）= 该键全部喂入静默忽略——零配置
+/// 开销。
 #[derive(Clone, Default)]
 pub struct WorkRecorder(Arc<parking_lot::Mutex<HashMap<String, RecordingWork>>>);
 
 impl WorkRecorder {
-    /// turn 开始：重置该 key 的槽（上一 turn 的残余——中断/续行未消费
-    /// ——就此丢弃）；顺带清扫超时残槽（崩溃 turn 泄漏护栏）。
+    /// turn 开始：重置该键的桶（同键上一 turn 的残余——中断/续行未消费
+    /// ——就此丢弃）；其他键的桶不动（并发/嵌套 turn 互不串台）。
     pub fn begin(&self, session_key: &str) {
-        let mut map = self.0.lock();
-        let now = RecordingWork::now_ms();
-        map.retain(|_, w| now.saturating_sub(w.started_at_ms) < STALE_WORK_ENTRY_TTL_MS);
-        map.insert(
+        self.0.lock().insert(
             session_key.to_string(),
             RecordingWork {
-                started_at_ms: now,
+                started_at_ms: RecordingWork::now_ms(),
                 rounds: Vec::new(),
                 truncated: false,
             },
@@ -162,10 +163,10 @@ impl WorkRecorder {
     /// 中间轮输出（emit_round_output 同点喂入；叙述 + 思考链同轮）。
     /// 两者皆空不建轮（trim 判定与观察面 emit_round_output 同口径；
     /// 存储保留原文不修剪）。纯工具轮由 [`WorkRecorder::tool_started`]
-    /// 的分组规则自动成轮。无槽（未 begin / 已 finish）忽略。
+    /// 的分组规则自动成轮。无桶（未 begin / 已 finish）忽略。
     pub fn push_round_output(&self, session_key: &str, text: &str, reasoning: &str) {
-        let mut map = self.0.lock();
-        let Some(w) = map.get_mut(session_key) else {
+        let mut buckets = self.0.lock();
+        let Some(w) = buckets.get_mut(session_key) else {
             return;
         };
         if text.trim().is_empty() && reasoning.trim().is_empty() {
@@ -183,10 +184,10 @@ impl WorkRecorder {
     }
 
     /// 工具开始（ToolEventHook around 进入链前）。按分组规则落轮；
-    /// 同 call_id 幂等（重复 Started 只更新首条字段）。无槽忽略。
+    /// 同 call_id 幂等（重复 Started 只更新首条字段）。
     pub fn tool_started(&self, session_key: &str, call_id: &str, tool: &str, args_preview: &str) {
-        let mut map = self.0.lock();
-        let Some(w) = map.get_mut(session_key) else {
+        let mut buckets = self.0.lock();
+        let Some(w) = buckets.get_mut(session_key) else {
             return;
         };
         // 幂等：同 call_id 已在（异常重复 Started）→ 只刷新 args。
@@ -214,7 +215,7 @@ impl WorkRecorder {
     }
 
     /// 工具结束（ToolEventHook around 返回后）。全轮倒序找 call_id 更新；
-    /// 无匹配（Started 被截断丢弃等）诚实忽略。无槽忽略。
+    /// 无匹配（Started 被截断丢弃等）诚实忽略。
     pub fn tool_finished(
         &self,
         session_key: &str,
@@ -223,8 +224,8 @@ impl WorkRecorder {
         duration_ms: u64,
         result_preview: &str,
     ) {
-        let mut map = self.0.lock();
-        let Some(w) = map.get_mut(session_key) else {
+        let mut buckets = self.0.lock();
+        let Some(w) = buckets.get_mut(session_key) else {
             return;
         };
         let rec = w
@@ -241,8 +242,8 @@ impl WorkRecorder {
         rec.running = false;
     }
 
-    /// turn 终局：取走该 key 的时间线（槽移除；其他 key 不受影响）。无
-    /// 中间轮（直答）= None → 行不带 `work` 键。ended_at 取此刻。
+    /// turn 终局：按会话键取走该键的时间线（桶移除）。无桶 / 无中间轮
+    /// （直答）= None → 行不带 `work` 键。ended_at 取此刻。
     pub fn finish(&self, session_key: &str) -> Option<WorkTimeline> {
         let w = self.0.lock().remove(session_key)?;
         if w.rounds.is_empty() {
@@ -256,11 +257,11 @@ impl WorkRecorder {
         })
     }
 
-    /// 执行中只读快照（WSAPI `chat.work_current`）：不取槽、不扰动累加。
-    /// 无进行中 turn / 尚无任何轮 = None。
+    /// 执行中只读快照（WSAPI `chat.work_current`）：不取桶、不扰动累加。
+    /// 无桶（无进行中 turn）/ 尚无任何轮 = None。
     pub fn snapshot_json(&self, session_key: &str) -> Option<serde_json::Value> {
-        let map = self.0.lock();
-        let w = map.get(session_key)?;
+        let buckets = self.0.lock();
+        let w = buckets.get(session_key)?;
         if w.rounds.is_empty() {
             return None;
         }

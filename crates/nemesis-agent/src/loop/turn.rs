@@ -519,6 +519,9 @@ impl AgentLoop {
         // 取走累加器（直答无中间轮 = None → 行不带 work 键）。错误收尾的
         // turn 也走到这里（最终行 = 错误通知）——部分时间线随行落盘，重载
         // 后错误前的执行过程可辨（比"中断即全丢"多恢复一步）。
+        // BUG-20261106-039：finish 按会话键取走自己的桶——spawn/评审等
+        // detached 任务与父 turn 并发共用 recorder 时，无键 take 会把别人
+        // 的桶错误归属进本行。
         let work_timeline = self.work_recorder.finish(session_key);
         crate::chat_log::append_chat_log_meta(
             session_key,
@@ -803,6 +806,12 @@ impl AgentLoop {
             )
             .await;
         let duration_ms = start_time.elapsed().as_millis() as u64;
+        // BUG-20261106-039：detached 回合无 chat_log 落盘点（最终行不落
+        // 盘），时间线桶在此显式收口（丢弃——子代理过程可见面是事件环 P1
+        // 详情视图，与单槽时代一致）。不清桶会残留到进程结束：同 loop 的
+        // 父 turn finish 带键后不再误取，但 uuid 会话键永无同键 begin 可
+        // 覆盖。
+        let _ = self.work_recorder.finish(&session_key);
         let rounds = events
             .iter()
             .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
@@ -896,8 +905,16 @@ impl AgentLoop {
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Vec<AgentEvent> {
         instance.set_state(crate::types::AgentState::Thinking);
-        self.run_llm_loop(instance, context, trace_id, false, cancel_token, None)
-            .await
+        let events = self
+            .run_llm_loop(instance, context, trace_id, false, cancel_token, None)
+            .await;
+        // BUG-20261106-039：集群续行回合不在 run_agent_loop_internal 落盘
+        // 链上（最终回复由 loop_continuation 直接 append，行不带 work 键
+        // ——既有文档语义「续行未消费，下一 begin 丢弃」），桶在此收口：
+        // 不留跨 turn 残余，`chat.work_current` 在续行结束~下一消息之间
+        // 诚实回 None。
+        let _ = self.work_recorder.finish(&context.session_key);
+        events
     }
 }
 

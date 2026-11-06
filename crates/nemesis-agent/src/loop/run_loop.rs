@@ -125,9 +125,11 @@ impl AgentLoop {
 
         // 本 turn 可变状态收拢（§4.1 TurnState：12 跨轮局部变量；P2-4）。
         // 字段语义见类型定义处注释。
-        // Work 时间线（2026-10-30）：turn 开始重置累加器——上一 turn 的
-        // 残余（中断/续行未消费）就此丢弃；喂入点在 emit_round_output 与
-        // ToolEventHook（同点同源），取走在 turn.rs 最终回复落盘。
+        // Work 时间线（2026-10-30）：turn 开始重置本会话键的累加桶——同
+        // 键上一 turn 的残余（中断/续行未消费）就此丢弃；其他键的桶不动
+        // （spawn/评审等 detached 任务与父 turn 并发，BUG-20261106-039）。
+        // 喂入点在 emit_round_output 与 ToolEventHook（同点同源），取走
+        // 在 turn.rs 最终回复落盘。
         self.work_recorder.begin(&context.session_key);
         let mut st = TurnState {
             turns_used: 0,

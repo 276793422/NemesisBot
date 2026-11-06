@@ -99,6 +99,39 @@ fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
     assert_eq!(rows2.len(), 0);
 }
 
+// BUG-20261106-038: occupation predicate for CREATE paths (fork
+// `unique_key` / import 预检) — a meta-only residue occupies the key
+// (upsert-style meta writes preserve stale allow_all/branch_summary/title);
+// a boundary-only sidecar does NOT (audit-only, same exclusion as
+// trash_restore's conflict check).
+#[test]
+fn test_session_occupied_meta_only_counts_boundary_does_not() {
+    let key = format!(
+        "test:occupied:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key); // clean slate
+    assert!(!session_occupied(&key));
+
+    // Boundary sidecar alone: audit-only, NOT occupation.
+    append_boundary_event(&key, "turn_end", "audit row");
+    assert!(boundary_path(&key).exists());
+    assert!(!session_occupied(&key), "boundary sidecar must not occupy");
+
+    // Meta alone (trash half-failure shape): occupies.
+    write_session_meta(&key, "stale title");
+    assert!(session_occupied(&key), "meta-only residue must occupy");
+
+    // jsonl: occupies (baseline behavior unchanged).
+    append_chat_log(&key, "user", "row");
+    assert!(session_occupied(&key));
+
+    delete_chat_log(&key);
+}
+
 // --- W3a: error arms, cron/model markers, fork helpers, boundary sidecar ---
 
 use crate::session::StoredMessage;

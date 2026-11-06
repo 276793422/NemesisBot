@@ -1,13 +1,11 @@
 //! Work 时间线累加器单元测试（work_timeline.rs，2026-10-30；批次二
-//! 2026-10-31 扩思考链）。
+//! 2026-10-31 扩思考链；BUG-20261106-039 扩并发分桶）。
 //!
 //! 覆盖：分组规则（叙述/思考轮承接工具批次 / 纯工具轮 / 不误挂上一轮）、
-//! 输出开轮语义（皆空跳过 / thinking-only 开轮）、call_id 幂等、无槽
-//! （未 begin/已 finish）喂入忽略、finish 按 key 取走语义、快照不扰动、
-//! MAX_WORK_ROUNDS 截断诚实注记、begin 重置、reasoning 字段序列化
-//! （空省略 / 有值落键）；并发隔离回归锁（BUG 2026-11-06：per-session-key
-//! 分槽——detached 子代理 begin 不得抹父 turn、finish 只取自己 key、
-//! 崩溃残槽 begin 时清扫）。
+//! 输出开轮语义（皆空跳过 / thinking-only 开轮）、call_id 幂等、无桶喂入
+//! 忽略、finish 按键取走语义、并发桶隔离（spawn/评审 detached 与父 turn
+//! 互不串台）、快照不扰动、MAX_WORK_ROUNDS 截断诚实注记、begin 重置、
+//! reasoning 字段序列化（空省略 / 有值落键）。
 
 use super::*;
 
@@ -275,80 +273,69 @@ fn test_truncated_slot_refuses_tool_writes() {
     );
 }
 
-// —— 并发隔离（BUG 2026-11-06 回归锁：detached 子代理 begin 曾抹掉父
-//    turn 单槽，父行丢 work / 子行错拿父半成品——单槽时代 e2e 实证）——
-
-const SUB_K: &str = "subagent:capsule-visual:uuid-1";
-
 #[test]
-fn test_concurrent_begin_does_not_wipe_parent_recording() {
-    // 复刻 e2e 时序：父 turn begin → spawn 工具入账 → 子代理 turn begin
-    // （旧实现此处抹槽）→ 子代理收尾 → 父 turn 收尾。
+fn test_parallel_recordings_isolated() {
+    // BUG-20261106-039 核心回归锁：父 turn 与两个 detached 子代理在同一
+    // recorder 上交错 begin/喂入（spawn 前台阻塞 / 后台 G4 的真实时序）
+    // ——桶间互不串台，各键 finish 拿到自己的全量。单槽形态下：begin(S1)
+    // 互踩父累积、finish(P) 无键 take 错取别人的桶（红态：finish(P) 拿到
+    // S2 的时间线或 None）。
+    const P: &str = "agent:main:session:parent";
+    const S1: &str = "subagent:uuid-1";
+    const S2: &str = "subagent:uuid-2";
     let rec = WorkRecorder::default();
-    rec.begin(SK);
-    rec.tool_started(SK, "c-spawn", "spawn", "{\"task\":\"任务一\"}");
-    rec.begin(SUB_K); // 子代理并发开跑
-    rec.push_round_output(SUB_K, "子代理干活的叙述", "");
-    // 子代理收尾：只取走自己的槽；父的记录原样保留。
-    let sub_tl = rec.finish(SUB_K).expect("子代理时间线");
-    assert_eq!(sub_tl.rounds.len(), 1);
-    assert_eq!(sub_tl.rounds[0].text, "子代理干活的叙述");
-    // 父收尾：spawn 工具调用完整在案（旧实现此处 = None → 行丢 work）。
-    rec.tool_finished(SK, "c-spawn", true, 12, "ok");
-    let parent_tl = rec.finish(SK).expect("父 turn 时间线不得被子代理抹掉");
-    assert_eq!(parent_tl.rounds.len(), 1);
-    assert_eq!(parent_tl.rounds[0].tools[0].tool, "spawn");
-    assert!(parent_tl.rounds[0].tools[0].ok);
+
+    rec.begin(P);
+    rec.push_round_output(P, "父叙述", "");
+    rec.tool_started(P, "p1", "exec", "");
+    rec.tool_finished(P, "p1", true, 1, "");
+
+    // 前台 spawn：子代理 begin 互踩父（单槽形态）——分桶后父桶原样保留。
+    rec.begin(S1);
+    rec.push_round_output(S1, "子一叙述", "");
+    rec.tool_started(S1, "s1a", "read_file", "");
+    rec.tool_finished(S1, "s1a", true, 2, "");
+
+    // 后台 spawn：第二个子代理并发。
+    rec.begin(S2);
+    rec.push_round_output(S2, "子二叙述", "");
+
+    // 父先收尾（后台子仍在跑）——拿到的必须是父自己的全量，不是子代理的。
+    let tp = rec.finish(P).expect("parent timeline");
+    assert_eq!(tp.rounds.len(), 1);
+    assert_eq!(tp.rounds[0].text, "父叙述");
+    assert_eq!(tp.rounds[0].tools[0].call_id, "p1");
+
+    let t1 = rec.finish(S1).expect("sub1 timeline");
+    assert_eq!(t1.rounds.len(), 1);
+    assert_eq!(t1.rounds[0].text, "子一叙述");
+    assert_eq!(t1.rounds[0].tools[0].call_id, "s1a");
+
+    let t2 = rec.finish(S2).expect("sub2 timeline");
+    assert_eq!(t2.rounds.len(), 1);
+    assert_eq!(t2.rounds[0].text, "子二叙述");
+    assert!(t2.rounds[0].tools.is_empty());
+
+    // 三桶全部取走，无残余。
+    assert!(rec.finish(P).is_none());
+    assert!(rec.finish(S1).is_none());
+    assert!(rec.finish(S2).is_none());
 }
 
 #[test]
-fn test_finish_removes_only_its_own_key() {
+fn test_finish_takes_only_own_key() {
+    // BUG-20261106-039 次级回归锁：finish 按键路由——别人的键取不走本键
+    // 的桶（单槽无键 take 的错误归属形态）。detached 不再 finish 时父桶
+    // 也不会被误取。
+    const P: &str = "agent:main:session:parent";
+    const S: &str = "subagent:uuid-x";
     let rec = WorkRecorder::default();
-    rec.begin(SK);
-    rec.push_round_output(SK, "父叙述", "");
-    rec.begin(SUB_K);
-    assert!(rec.finish(SUB_K).is_none(), "子代理直答无中间轮");
-    // 子代理 finish 后父的槽仍在（旧实现单槽被 take 走 = 父丢全量）。
-    let parent_tl = rec.finish(SK).expect("父槽不被他人 finish 清走");
-    assert_eq!(parent_tl.rounds[0].text, "父叙述");
-}
+    rec.begin(P);
+    rec.push_round_output(P, "父内容", "");
 
-#[test]
-fn test_begin_replaces_same_key_only_and_sweeps_stale_entries() {
-    let rec = WorkRecorder::default();
-    rec.begin(SK);
-    rec.push_round_output(SK, "父进行中", "");
-    // 注入一个超时残槽（模拟崩溃 turn 遗留；子代理 key 一次性不复用）。
-    let stale_started = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-        now - STALE_WORK_ENTRY_TTL_MS - 1
-    };
-    let orphan = "subagent:crashed:uuid-dead";
-    rec.0.lock().insert(
-        orphan.to_string(),
-        RecordingWork {
-            started_at_ms: stale_started,
-            rounds: vec![WorkRound {
-                text: "崩溃残骸".to_string(),
-                reasoning: String::new(),
-                tools: Vec::new(),
-            }],
-            truncated: false,
-        },
-    );
-    // 同 key begin 只重置自己；顺带清扫超时残槽。
-    rec.begin(SK);
-    assert!(rec.0.lock().get(orphan).is_none(), "超时残槽须被清扫");
-    assert!(rec.finish(SK).is_none(), "同 key begin 重置旧残余");
-    // 新鲜的他 key 槽不受 retain 误伤。
-    rec.begin(SUB_K);
-    rec.begin("agent:main:session:fresh-check");
-    assert!(
-        rec.0.lock().contains_key(SUB_K),
-        "未超时的新条目不得被清扫误伤"
-    );
+    assert!(rec.finish(S).is_none(), "无桶键 finish = None");
+    // 关键：错键 finish 之后本键桶必须原样在。
+    let tl = rec.finish(P).expect("parent timeline intact");
+    assert_eq!(tl.rounds.len(), 1);
+    assert_eq!(tl.rounds[0].text, "父内容");
 }

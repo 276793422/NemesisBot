@@ -839,9 +839,15 @@ impl WebServer {
             // S5（2026-10-09）：入站 OpenAI 兼容端点（openai SDK 改 base_url
             // 即接入）。挂在统一鉴权之下（不进豁免清单——触发 agent 执行
             // 与 dashboard 同一信任边界；Bearer 头本就被中间件接受）。
+            // body 上限放宽到 26MB（BUG-20261106-035）：裸 lane 合同含
+            // base64 内联视觉（MB 级），axum 默认 2MB 会 413 拒合法请求。
             .route(
                 "/v1/chat/completions",
-                axum::routing::post(crate::openai_compat::handle_chat_completions),
+                axum::routing::post(crate::openai_compat::handle_chat_completions).layer(
+                    axum::extract::DefaultBodyLimit::max(
+                        crate::openai_compat::OPENAI_COMPAT_BODY_LIMIT_BYTES,
+                    ),
+                ),
             )
             // Session fork dialog backing (P3-1, 2026-08-24 UI entry gap)
             .route(
