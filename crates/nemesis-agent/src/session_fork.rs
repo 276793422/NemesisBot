@@ -136,11 +136,14 @@ fn turn_cut(messages: &[StoredMessage], n: usize) -> usize {
 
 /// Choose a fresh key: the given candidate, or `{source}__fork`; suffixed
 /// `_2`, `_3`, … while the store already knows the key (in-memory cache OR
-/// on-disk file) **or the jsonl exists** (round 3: a previous fork's jsonl
-/// survives its store json's 7-day TTL — reusing that key would APPEND the
-/// new prefix onto the old fork's log, duplicating it).
+/// on-disk file) **or the session is occupied on disk** (round 3: a
+/// previous fork's jsonl survives its store json's 7-day TTL — reusing that
+/// key would APPEND the new prefix onto the old fork's log, duplicating it;
+/// BUG-20261106-038: a meta-only leftover counts too — meta 写入是 upsert，
+/// 复用会继承陈旧 allow_all/branch_summary/title).
 fn unique_key(store: &SessionStore, source_key: &str, requested: Option<String>) -> String {
-    let taken = |k: &str| store.contains(k) || store.file_exists(k) || chat_log::chat_log_exists(k);
+    let taken =
+        |k: &str| store.contains(k) || store.file_exists(k) || chat_log::session_occupied(k);
     let base = requested.unwrap_or_else(|| format!("{}__fork", source_key));
     if !taken(&base) {
         return base;
