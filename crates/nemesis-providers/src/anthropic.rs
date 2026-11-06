@@ -332,9 +332,16 @@ impl AnthropicProvider {
         // H4 (U16 half): reasoning effort → Anthropic extended-thinking
         // budget. Anthropic has no "effort" wire field; it takes
         // `thinking: {type: "enabled", budget_tokens: N}`. Tier→budget is a
-        // FIXED documented mapping (low=1024 / medium=4096 / high=16384) —
-        // budgets must stay well under max_tokens, and these leave headroom
-        // under the 4096 default.
+        // FIXED documented mapping (low=1024 / medium=4096 / high=16384).
+        //
+        // BUG-20261107-003：Anthropic wire 约束 budget_tokens 必须**严格小于**
+        // max_tokens（违反 = 400 invalid_request_error，报文点名 thinking——
+        // 非流式 chat() 的剥块自愈会把它误判为 adaptive-only 端点、静默丢掉
+        // reasoning effort 并白烧一个 RTT；流式路径无自愈直接硬失败）。映射值
+        // ≥ max_tokens 时收敛到 max_tokens/2（思考 token 计入 max_tokens，
+        // 贴顶预算会把正文挤到个位数 token，留一半给答案）；max_tokens/2
+        // 容不下 API 下限 1024 时诚实不发 thinking 块。合法请求（映射值 <
+        // max_tokens）字节零改动，保 prompt cache。
         //
         // "off" = aux 杂务通道的显式禁思考标记（bypass_llm::aux_chat_options
         // 等组装点；aux_chat_options 的注释记载值空间专用化依据）→ 发
@@ -344,23 +351,18 @@ impl AnthropicProvider {
         // 仍发空（不猜）。主循环 effort 只会是 low/medium/high/None。
         if let Some(ref effort) = options.reasoning_effort {
             match effort.as_str() {
-                "low" => {
-                    body["thinking"] = serde_json::json!({
-                        "type": "enabled",
-                        "budget_tokens": 1024usize
-                    });
-                }
-                "medium" => {
-                    body["thinking"] = serde_json::json!({
-                        "type": "enabled",
-                        "budget_tokens": 4096usize
-                    });
-                }
-                "high" => {
-                    body["thinking"] = serde_json::json!({
-                        "type": "enabled",
-                        "budget_tokens": 16384usize
-                    });
+                tier @ ("low" | "medium" | "high") => {
+                    let mapped: i64 = match tier {
+                        "low" => 1024,
+                        "medium" => 4096,
+                        _ => 16384,
+                    };
+                    if let Some(budget) = Self::thinking_budget_under_max(mapped, max_tokens) {
+                        body["thinking"] = serde_json::json!({
+                            "type": "enabled",
+                            "budget_tokens": budget
+                        });
+                    }
                 }
                 "off" => {
                     body["thinking"] = serde_json::json!({ "type": "disabled" });
@@ -370,6 +372,21 @@ impl AnthropicProvider {
         }
 
         body
+    }
+
+    /// BUG-20261107-003：把 effort 映射的 thinking 预算收敛进 Anthropic
+    /// wire 约束——`budget_tokens` 必须严格小于 `max_tokens`（API 下限 1024，
+    /// 违反 = 400 invalid_request_error）。映射值合法（< max_tokens）时原值
+    /// 返回（请求字节不变）；超限时取 `max_tokens / 2`（思考 token 计入
+    /// max_tokens 预算，贴顶会把正文挤到个位数 token，留一半给答案）；
+    /// `max_tokens / 2` 也容不下 1024 下限（max_tokens < 2048）时返 None =
+    /// 调用方不发 thinking 块（天花板容不下思考，诚实降级不伪装）。
+    fn thinking_budget_under_max(mapped: i64, max_tokens: i64) -> Option<i64> {
+        if mapped < max_tokens {
+            return Some(mapped);
+        }
+        let half = max_tokens / 2;
+        if half >= 1024 { Some(half) } else { None }
     }
 
     /// Anthropic Messages API 非流式 POST（headers 与流式路径同源：
