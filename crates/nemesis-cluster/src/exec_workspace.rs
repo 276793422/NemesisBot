@@ -55,7 +55,16 @@ struct AssemblingMarker(PathBuf);
 
 impl AssemblingMarker {
     fn new(path: PathBuf) -> Self {
-        let _ = std::fs::write(&path, b"");
+        // 横扫族 C 四轮（2026-11-06）：标记写失败 = 守卫静默缺席，master D5
+        // 兜底不观望，装配窗口被 sweep 抢跑会复发 T-MRG-1 吞变更集——失败
+        // 必须 WARN 留痕（守卫签名不变，Drop 清理语义不变）。
+        if let Err(e) = std::fs::write(&path, b"") {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "[exec_workspace] assembling marker write failed — D5 fallback will not hold off"
+            );
+        }
         Self(path)
     }
 }

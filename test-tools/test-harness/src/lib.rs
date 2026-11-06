@@ -547,7 +547,7 @@ impl TestWorkspace {
             .kill_on_drop(true)
             .envs(coverage_cli_env())
             .spawn();
-        let mut child = match spawned {
+        let child = match spawned {
             Ok(c) => c,
             Err(e) => {
                 return CliOutput {
@@ -559,26 +559,26 @@ impl TestWorkspace {
         };
         // Write the script, then drop stdin so the child observes EOF —
         // that's the only way a REPL/wizard reading until EOF can terminate.
-        if let Some(mut stdin) = child.stdin.take() {
-            use tokio::io::AsyncWriteExt;
-            let _ = stdin.write_all(stdin_input.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-            drop(stdin);
-        }
-        // wait_with_output takes the Child by value; move it through an
-        // Option so the async block owns it. kill_on_drop(true) means a
-        // timeout (which drops the future, which drops the Child) kills
-        // the child instead of leaking it.
+        // The write happens INSIDE the same timeout guard as wait_with_output
+        // (BUG-20261106-012): a child that never reads stdin (e.g. a long
+        // assembly phase before the REPL starts) can let `write_all` block on
+        // a full OS pipe buffer forever — with the write outside the guard the
+        // timeout never fired, kill_on_drop never triggered (the Child wasn't
+        // dropped), and the whole runner hung with no protection.
         let mut child_opt = Some(child);
-        match tokio::time::timeout(Duration::from_secs(timeout_secs), async {
-            child_opt
-                .take()
-                .expect("child consumed twice")
-                .wait_with_output()
-                .await
-        })
-        .await
-        {
+        let wait_fut = async {
+            let mut c = child_opt.take().expect("child consumed twice");
+            if let Some(mut stdin) = c.stdin.take() {
+                use tokio::io::AsyncWriteExt;
+                let _ = stdin.write_all(stdin_input.as_bytes()).await;
+                let _ = stdin.shutdown().await;
+                drop(stdin);
+            }
+            // kill_on_drop(true) means a timeout (which drops the future,
+            // which drops the Child) kills the child instead of leaking it.
+            c.wait_with_output().await
+        };
+        match tokio::time::timeout(Duration::from_secs(timeout_secs), wait_fut).await {
             Ok(Ok(output)) => CliOutput {
                 exit_code: output.status.code().unwrap_or(-1),
                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),

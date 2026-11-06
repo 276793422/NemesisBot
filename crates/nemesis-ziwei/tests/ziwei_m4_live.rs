@@ -697,14 +697,26 @@ async fn m4_runtime_live_on_dummy_draw() {
         }
     }
     let mut cnt = (0u64, 0u64);
+    let mut quiet_streak = 0u32;
     for _ in 0..50 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let pull = sess.poll_captures(id).await.expect("chain poll");
         let evs = pull["events"].as_array().cloned().unwrap_or_default();
         let empty = evs.is_empty();
         count_by_id(&evs, id_top, id_chain, &mut cnt);
+        // BUG-20261106：单次空轮即判静仍会切在链点事件对的交付缝——draw
+        // 密集时（CI shard1 实录 top=10525 chain=10523，批量为 BUG-20261103
+        // 形态 3255 的 3 倍）顶层已入环、链点尾巴 >200ms 未落，稳定窗单拍
+        // 补排仍差 2 条假红。同族前科：BUG-20261103 本④段、69464270 ⑤段。
+        // 房规加严：连续两个空轮（间隔 200ms）方判安静；链点真丢事件时
+        // 安静照常到达但计数仍不齐，断言检测力不变。
         if empty {
-            break;
+            quiet_streak += 1;
+            if quiet_streak >= 2 {
+                break;
+            }
+        } else {
+            quiet_streak = 0;
         }
     }
     // 稳定窗：安静后仍可能有在途链点尾巴，补一拍再排一次。

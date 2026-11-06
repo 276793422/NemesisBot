@@ -1,4 +1,4 @@
-//! setup —— 配置期引擎 SetupManager（总控 / `紫微系统M3配置期引擎技术方案`）。
+//! setup —— 配置期引擎 SetupManager（M3，总控 §5.1 / `docs/PLAN/2026-10-23_紫微系统M3配置期引擎技术方案.md`）。
 //!
 //! 六步向导的 bot 侧状态机：选目标 → 快照 → 分析 → 候选/差分 → 标注 → 提交。
 //! 分析计算全在 [`nemesis_ziwei_rev`]（纯函数、进程无关）；本模块只做编排：
@@ -7,7 +7,7 @@
 //! draft 纪律（不走 `ProfileStore::save`）：draft 允许中途形态（tools 空、
 //! functions 空），全量校验只在 commit 时跑；commit = validate → 迁移到
 //! `workspace/ziwei/profiles/<id>/`（ProfileStore 写 profile.json + anchors.json）
-//! → setup 快照迁移到 profile 名下（找回消费）→ 删 draft 目录。
+//! → setup 快照迁移到 profile 名下（M5 找回消费）→ 删 draft 目录。
 //!
 //! 单向导会话：同一 gateway 进程同时只允许一个活跃 draft（`select_target`
 //! 幂等拒绝）。状态在内存；gateway 重启后 draft 目录仍在——`analyze` 可重算
@@ -74,7 +74,7 @@ const SNAP_TTL: std::time::Duration = std::time::Duration::from_secs(7 * 86400);
 #[cfg(windows)]
 const SNAP_MAX_KEPT: usize = 8;
 
-// ── 查询面硬上限（统一定义；bridge/未来 WSAPI 同源引用）──────────────
+// ── 查询面硬上限（单一真相源；bridge/未来 WSAPI 同源引用）──────────────
 
 /// 单次反汇编指令上限。
 pub const DISASM_MAX_INSNS: usize = 512;
@@ -102,19 +102,19 @@ struct AnalysisCache {
     exports: Vec<pe::Export>,
     /// .pdata 异常表（None = 无该数据目录；pe 查询/pdata 对账消费）。
     pdata: Option<Vec<(u32, u32)>>,
-    /// CFG 合法间接调用目标表（存表；v2 池 vtable 先验，查询面暂不暴露）。
+    /// CFG 合法间接调用目标表（B2 存表；v2 池 vtable 先验，查询面暂不暴露）。
     #[allow(dead_code)] // v2 池消费（summary 对账面已用界内计数）
     cfg_funcs: Vec<u32>,
-    /// TLS 回调 RVA（None = 目录缺席；pe tls 查询消费）。
+    /// TLS 回调 RVA（B2；None = 目录缺席；pe tls 查询消费）。
     tls_callbacks: Option<Vec<u32>>,
-    /// Debug 目录（PDB 路径白送语义；pe debug 查询消费）。
+    /// Debug 目录（B2；PDB 路径白送语义；pe debug 查询消费）。
     debug: Option<pe::DebugInfo>,
-    /// Rich 头工具链指纹（pe rich 查询消费）。
+    /// Rich 头工具链指纹（B2；pe rich 查询消费）。
     rich: Option<pe::RichInfo>,
-    /// 重定位表（存表；v2 池 vtable 扫描先验，查询面不暴露）。
+    /// 重定位表（B2 存表；v2 池 vtable 扫描先验，查询面不暴露）。
     #[allow(dead_code)] // v2 池消费
     relocs: Option<pe::RelocTable>,
-    #[allow(dead_code)] // 找回实装时消费（rescan 需要 arch）
+    #[allow(dead_code)] // M5 找回实装时消费（rescan 需要 arch）
     arch: Arch,
 }
 
@@ -148,9 +148,15 @@ impl SetupInfo {
 }
 
 /// 完整向导状态 = 标量 + 分析缓存（缓存非 Clone，整体不 Clone）。
+///
+/// `reserved` 是预占标记（单一真相源）：select_target 在锁内插入的 pid=0
+/// 占位态 `reserved=true`，窗口期内 abort 诚实拒绝；attach 完成写回与
+/// analyze 重建态均为 `false`。不能用 `pid==0` 推断——gateway 重启后
+/// analyze 路径（get_or_insert_with）会合法重建 pid=0 态，该态允许 abort。
 struct SetupState {
     info: SetupInfo,
     analysis: Option<AnalysisCache>,
+    reserved: bool,
 }
 
 /// 配置期向导管理器（gateway 装配一个全局实例；CLI/bridge 经全局槽访问）。
@@ -182,6 +188,45 @@ impl SetupManager {
 
     fn state_mut(&self) -> std::sync::MutexGuard<'_, Option<SetupState>> {
         self.state.lock().unwrap()
+    }
+
+    /// 归属校验式清态：仅当当前态属于 `id` 时清空（并发 select_target
+    /// 预占回收路径防误清易主态——旧实现无条件 `*state = None`）。
+    /// 返回是否真的清了自己的态。
+    fn clear_state_if_owned(&self, id: &str) -> bool {
+        let mut guard = self.state_mut();
+        match guard.as_ref() {
+            Some(st) if st.info.profile_id == id => {
+                *guard = None;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// 归属校验式写回：仅当当前态属于 `id` 时替换为完整态（reserved 落
+    /// false，预占窗口收口）。当前态不存在或已易主 → 返回 false 且**不
+    /// 插入**——旧实现无条件写回，会把已被并发 abort 清理过的 draft
+    /// 复活成僵尸活动态。
+    ///
+    /// cfg 门：唯一生产调用方 select_target_reserved 是 `#[cfg(windows)]`
+    /// （Linux lib 目标下本方法成死码 → clippy -D 红，CI 42107156074 实录）；
+    /// 预占竞态单测（tests.rs publish_state_if_owned_closes_reservation_*）
+    /// 跨平台直测，故带 test 臂保活。
+    #[cfg(any(windows, test))]
+    fn publish_state_if_owned(&self, id: &str, info: SetupInfo) -> bool {
+        let mut guard = self.state_mut();
+        match guard.as_ref() {
+            Some(st) if st.info.profile_id == id => {
+                *guard = Some(SetupState {
+                    info,
+                    analysis: None,
+                    reserved: false,
+                });
+                true
+            }
+            _ => false,
+        }
     }
 
     /// 取活跃状态标量面。内存态不在（gateway 重启）时从 draft.json 重建：
@@ -241,7 +286,7 @@ impl SetupManager {
         }
         #[cfg(windows)]
         {
-            // 在册检查与预占**同一把锁**内完成——旧形态
+            // BUG-20261105-019：在册检查与预占**同一把锁**内完成——旧形态
             // 检查后锁即释放，中间隔 exe 指纹读取 + attach await 才落位
             // state，两个并发 select_target 可双过闸（双 draft + 重复注入
             // 会话）。预占后后来者在锁上即被拒；本函数到收尾之间任何失败
@@ -258,7 +303,9 @@ impl SetupManager {
                 }
                 let id = format!("zw-pro-d{}", chrono::Utc::now().timestamp_millis());
                 // pid=0 占位形态：窗口期内 require_live_info 消费方诚实拒绝
-                // （「重新 select_target」），不会拿假基址干真活。
+                // （「重新 select_target」），不会拿假基址干真活。reserved=
+                // true 是预占标记：窗口期内 abort 诚实拒绝（防误删预占者
+                // 正在写的 draft + 写回复活僵尸态）。
                 *st = Some(SetupState {
                     info: SetupInfo {
                         profile_id: id.clone(),
@@ -271,6 +318,7 @@ impl SetupManager {
                         file_sha256: String::new(),
                     },
                     analysis: None,
+                    reserved: true,
                 });
                 id
             };
@@ -280,14 +328,16 @@ impl SetupManager {
             {
                 Ok(v) => Ok(v),
                 Err(e) => {
-                    *self.state_mut() = None;
+                    // 归属校验式回收：窗口内状态易主（并发方抢占）时不清
+                    // 他人态（旧实现无条件清）。
+                    self.clear_state_if_owned(&id);
                     Err(e)
                 }
             }
         }
     }
 
-    /// [`Self:select_target`] 的续体（预占已成立；pid/exe 指纹/draft/attach
+    /// [`Self::select_target`] 的续体（预占已成立；pid/exe 指纹/draft/attach
     /// 全在无锁区执行，失败由调用方回收预占）。
     #[cfg(windows)]
     async fn select_target_reserved(
@@ -353,27 +403,24 @@ impl SetupManager {
                 stale_action: Some("notify_user".into()),
             },
         };
-        let draft = draft_dir(workspace, &id);
-        std::fs::create_dir_all(&draft).map_err(|e| format!("建 draft 目录失败：{e}"))?;
-        save_draft(workspace, &profile)?;
-        save_draft_anchors(
-            workspace,
-            &AnchorSet {
-                profile_id: id.clone(),
-                anchors: Vec::new(),
-            },
-        )?;
+        let draft = init_draft_files(workspace, &profile)?;
 
         // attach 会话（指纹校验在 attach 链内；失败则回滚 draft）
         let manager = crate::session::global().ok_or_else(|| {
-            let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-            crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string()
+            rollback_draft_error(
+                &draft,
+                crate::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string(),
+                "",
+            )
         })?;
         let session = match manager.attach(&profile, pid).await {
             Ok(s) => s,
             Err(e) => {
-                let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-                return Err(format!("attach 失败（draft 已回滚）：{e}"));
+                return Err(rollback_draft_error(
+                    &draft,
+                    format!("attach 失败：{e}"),
+                    "（draft 已回滚）",
+                ));
             }
         };
 
@@ -387,10 +434,18 @@ impl SetupManager {
             exe_name: exe_name.clone(),
             file_sha256: sha,
         };
-        *self.state_mut() = Some(SetupState {
-            info: info.clone(),
-            analysis: None,
-        });
+        // 归属校验式写回（reserved 落 false = 预占窗口收口）：窗口内状态
+        // 被并发方动过（已易主/被清）→ 诚实作废，回滚自己刚 attach 的会话
+        // 与 draft 面。旧实现无条件写回，会把被并发 abort 清理过的 draft
+        // 复活成僵尸活动态 + 注入会话泄漏。
+        if !self.publish_state_if_owned(&id, info.clone()) {
+            let _ = manager.detach(&id).await; // 已卸载=幂等成功
+            return Err(rollback_draft_error(
+                &draft,
+                "初始化期间向导状态已易主，本次 select_target 作废".to_string(),
+                "（会话与 draft 已回滚）",
+            ));
+        }
         tracing::info!(
             "[ziwei][setup] draft {id} 选定目标 pid={pid} base=0x{base:X} {exe_name}（{}）",
             session.arch
@@ -404,7 +459,7 @@ impl SetupManager {
 
     // ── Step 2：snapshot ────────────────────────────────────────────────
 
-    /// 内存快照：头页 +.text/.rdata/.data 按 ≤1MB 分块读（MAX_FRAME 留余）。
+    /// 内存快照：头页 + .text/.rdata/.data 按 ≤1MB 分块读（MAX_FRAME 留余）。
     pub async fn snapshot(&self, workspace: &Path) -> Result<serde_json::Value, String> {
         #[cfg(not(windows))]
         {
@@ -522,7 +577,7 @@ impl SetupManager {
         let img = ImageMap::new(pe, section_blobs).map_err(|e| e.to_string())?;
         let bounds = container::pe_text_bounds(&img).ok_or("无可执行节（.text）")?;
 
-        // 种子装配（供给器化：入口/导出/pdata/CFG/TLS/nopsled 六源全部
+        // 种子装配（P0 供给器化：入口/导出/pdata/CFG/TLS/nopsled 六源全部
         // 可选，缺席来源诚实缺席；界内过滤在供给器内完成）。
         let contribs = container::pe_seed_contribs(&img, &exe_file);
         let mut seeds: Vec<u32> = Vec::new();
@@ -538,14 +593,14 @@ impl SetupManager {
         let set = funcs::recover(arch, &img, &seeds, bounds);
         let mut imports = pe::parse_imports_file(&exe_file, &img.pe).unwrap_or_default();
         // 延迟导入并入同形清单：xref 的 call [iat] 归因与 import_dlls 计数
-        // 自动覆盖 dd[13]（失名补全）。
+        // 自动覆盖 dd[13]（B2 失名补全）。
         let delay = pe::parse_delay_imports_file(&exe_file, &img.pe).unwrap_or_default();
         imports.extend(delay);
         let idx = xref::build(&img, &set, &imports);
         let reverse = xref::build_reverse(&idx, &set);
         let crt = crtsigs::fold(&img, &set, &imports);
 
-        // 目录解析面（缓存进 AnalysisCache；pe tls/debug/rich 查询与
+        // B2 目录解析面（缓存进 AnalysisCache；pe tls/debug/rich 查询与
         // v2 池消费）。pdata/exports 单独取全量清单（对账与 pe 查询要
         // 未过滤形态——供给器里那份是界内过滤后的）。
         let exports = pe::parse_exports_file(&exe_file, &img.pe).unwrap_or_default();
@@ -558,7 +613,7 @@ impl SetupManager {
 
         let rows = nemesis_ziwei_rev::package::function_table(&set, &idx, &crt, 128);
         let table = function_table_json(&rows);
-        // pdata 对账（3）：.pdata 界内起点数（权威表）vs discovered——
+        // pdata 对账（§5-3）：.pdata 界内起点数（权威表）vs discovered——
         // 差值 = 递归下降漏网函数线索（locate/gaps 交叉探查）；x86 恒 null。
         let pdata_funcs = pdata.as_ref().map(|v| {
             v.iter()
@@ -567,7 +622,7 @@ impl SetupManager {
                 .collect::<std::collections::BTreeSet<u32>>()
                 .len()
         });
-        // CFG 对账：CFG 表声明为合法间接调用目标的界内起点数 vs
+        // CFG 对账（B2）：CFG 表声明为合法间接调用目标的界内起点数 vs
         // discovered——guard:cf 目标上两者应高度一致，差值即漏网线索。
         let cfg_funcs_inb = cfg_funcs
             .iter()
@@ -603,7 +658,7 @@ impl SetupManager {
                 json!("无 .pdata 异常目录（x86 目标或快照无该数据目录）"),
             );
         }
-        // .6 LLM 建议标注：hook 已装才尝试（gateway ctx.rs 装桥）。
+        // T3.6 LLM 建议标注：hook 已装才尝试（gateway ctx.rs 装桥）。
         // 仅建议不落库——候选与注释进 profile 的唯一通路 = 显式 annotate；
         // 失败诚实注记，分析照常成功。
         if let Some(hook) = nemesis_ziwei_rev::package::llm_hook() {
@@ -643,9 +698,14 @@ impl SetupManager {
                 }
             }
         }
-        std::fs::write(
-            draft_dir(workspace, &info.profile_id).join("analysis.json"),
-            serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?,
+        let analysis_bytes = serde_json::to_vec_pretty(&summary).map_err(|e| e.to_string())?;
+        // 原子写（横扫族 C 二轮，2026-11-06）：与 draft.json/anchors.json 同惯例。
+        nemesis_utils::file::write_file_atomic(
+            &draft_dir(workspace, &info.profile_id)
+                .join("analysis.json")
+                .to_string_lossy(),
+            &analysis_bytes,
+            0o644,
         )
         .map_err(|e| format!("analysis.json 落盘失败：{e}"))?;
 
@@ -656,6 +716,7 @@ impl SetupManager {
         let st = guard.get_or_insert_with(|| SetupState {
             info: info.clone(),
             analysis: None,
+            reserved: false,
         });
         st.info = info.clone();
         st.analysis = Some(AnalysisCache {
@@ -725,7 +786,7 @@ impl SetupManager {
         Ok(f(cache))
     }
 
-    /// 查询面形态：闭包内部 `?`/`Err` 直通（Result 闭包 + 扁平化，
+    /// 查询面形态：闭包内部 `?`/`Err` 直通（ Result 闭包 + 扁平化，
     /// 避免 `Result<Result<Value>>>` 双层包裹漏出）。
     fn with_analysis_res<T>(
         &self,
@@ -735,7 +796,7 @@ impl SetupManager {
         self.with_analysis(workspace, f).and_then(|r| r)
     }
 
-    // ── 查询面（计划 Phase B）：只读、无审批、有界返回 ─────────
+    // ── 查询面（B1 计划 §2/§3 Phase B）：只读、无审批、有界返回 ─────────
 
     /// disasm：函数体反汇编投影（体内地址自动按起点 + 注记；无主地址诚实报错）。
     pub fn query_disasm(
@@ -1234,8 +1295,8 @@ impl SetupManager {
         })
     }
 
-    /// pe：结构清单投影（sections/exports/imports/pdata 四值 实现；
-    /// tls/debug/rich 三值 schema 已定型、解析器 填充）。
+    /// pe：结构清单投影（sections/exports/imports/pdata 四值 B1 实现；
+    /// tls/debug/rich 三值 schema 已定型、解析器 B2 填充）。
     pub fn query_pe(&self, workspace: &Path, what: &str) -> Result<serde_json::Value, String> {
         match what {
             "sections" | "exports" | "imports" | "pdata" | "tls" | "debug" | "rich" => {}
@@ -1635,7 +1696,7 @@ impl SetupManager {
 
     /// 差分窗口：各节当前内存 vs 最新快照（等待 `wait_secs` 秒后取现值）。
     /// 可写节（.data）的页单独归入 data_pages（DataArea 线索）。
-    /// .4 增强：`hook=true` 时观测窗并入临时 hook 计数——draft 已标注
+    /// T4.4 增强：`hook=true` 时观测窗并入临时 hook 计数——draft 已标注
     /// 函数逐个武装，窗末拉取命中数并退订（无函数/锚未命中诚实注记不阻断）。
     pub async fn diff_window(
         &self,
@@ -1663,11 +1724,11 @@ impl SetupManager {
                 .map_err(|e| e.to_string())?
                 .ok_or("无快照：先 snapshot")?;
 
-            // .4：观测窗前武装临时 hook（已标注函数；失败诚实注记不阻断）。
-            // 向导期 profile 只在 drafts/（profile_id 是
+            // T4.4：观测窗前武装临时 hook（已标注函数；失败诚实注记不阻断）。
+            // BUG-20261105-015：向导期 profile 只在 drafts/（profile_id 是
             // 本向导新造的毫秒戳，已提交库 ziwei/profiles/<id>/ 必不存在，
-            // ProfileStore:load 恒 NotFound → hook=true 整条死路）——读
-            // draft（load_draft 统一定义），解析走 profile 注入形态。
+            // ProfileStore::load 恒 NotFound → hook=true 整条死路）——读
+            // draft（load_draft 单一真相源），解析走 profile 注入形态。
             let hook_on = hook.unwrap_or(false);
             let mut hook_notes: Vec<String> = Vec::new();
             let mut armed: Vec<String> = Vec::new();
@@ -1704,7 +1765,7 @@ impl SetupManager {
                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
             }
 
-            // .4：窗末拉取命中计数 + 逐个退订
+            // T4.4：窗末拉取命中计数 + 逐个退订
             let mut hook_counts: Vec<serde_json::Value> = Vec::new();
             if hook_on {
                 let bindings = session.hooks();
@@ -1830,7 +1891,7 @@ impl SetupManager {
             .get("note")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        // 参数签名（LLM 推断的参数数/类型/描述——define_tool/call_fn 消费）。
+        // B4：参数签名（LLM 推断的参数数/类型/描述——define_tool/call_fn 消费）。
         let params_in = data.get("params").and_then(|v| v.as_array());
         let args: Vec<ArgSpec> = match params_in {
             None => Vec::new(),
@@ -1937,7 +1998,7 @@ impl SetupManager {
                             kind: LocateKind::BytePattern,
                             module: Some(info.exe_name.clone()),
                             pattern: anchor.pattern.clone(),
-                            // 发现地 RVA 作提示一并记录（找回以 pattern 为准；
+                            // 发现地 RVA 作提示一并记录（M5 找回以 pattern 为准；
                             // rva 字段让重复标注检查有据可依）
                             rva: Some(rva_u),
                         });
@@ -2050,7 +2111,7 @@ impl SetupManager {
             let type_ = nemesis_ziwei_profile::FieldType::parse(ty_raw).ok_or_else(|| {
                 format!("fields[{i}] type {ty_raw:?} 无法解析（如 u32/f64/char[16]）")
             })?;
-            // size_of 现为 u64 真值（u32 乘法回绕曾把
+            // BUG-20261028-123：size_of 现为 u64 真值（u32 乘法回绕曾把
             // `u64[536870913]` 缩成 8 溜过此闸）——向导 1MB size 上限自然
             // 拒掉溢出数组。
             if offset as u64 + type_.size_of() > size as u64 {
@@ -2227,27 +2288,48 @@ impl SetupManager {
             .save(&profile, Some(&anchor_set))
             .map_err(|e| format!("profile 落盘失败：{e}"))?;
 
-        // setup 快照迁到 profile 名下（找回消费）
+        // 清理面降级注记（横扫族 C，2026-11-06）：save 已落盘不可回滚，
+        // 清理失败不把 commit 报成失败（假失败比静默残留更糟），但必须
+        // WARN + 返回值注记诚实暴露——残留 draft 会挡死新向导，静默吞掉
+        // 用户毫无线索（旧实现 `let _`）。
+        let mut cleanup_warnings: Vec<String> = Vec::new();
+
+        // setup 快照迁到 profile 名下（M5 找回消费）
         let setup_dir = workspace.join("ziwei").join("setup").join(&info.profile_id);
         let setup_snaps = setup_dir.join("snapshots");
         let target_snaps = store.snapshots_dir(&info.profile_id);
         if setup_snaps.is_dir() {
             let _ = std::fs::create_dir_all(&target_snaps);
             if let Err(e) = std::fs::rename(&setup_snaps, &target_snaps) {
-                tracing::warn!(
-                    "[ziwei][setup] 快照迁移失败（{} → {}）：{e}；setup 目录保留",
+                let msg = format!(
+                    "快照迁移失败（{} → {}）：{e}；setup 目录保留",
                     setup_snaps.display(),
                     target_snaps.display()
                 );
-            } else {
-                let _ = nemesis_utils::fsutil::remove_dir_all_retry(&setup_dir);
+                tracing::warn!("[ziwei][setup] {msg}");
+                cleanup_warnings.push(msg);
+            } else if let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&setup_dir) {
+                let msg = format!("setup 目录清理失败（{}）：{e}", setup_dir.display());
+                tracing::warn!("[ziwei][setup] {msg}");
+                cleanup_warnings.push(msg);
             }
         }
 
         // draft 目录清除（anchors/profile 已在 profiles/ 落盘）
         let draft = draft_dir(workspace, &info.profile_id);
-        let _ = nemesis_utils::fsutil::remove_dir_all_retry(&draft);
-        *self.state_mut() = None;
+        if let Err(e) = nemesis_utils::fsutil::remove_dir_all_retry(&draft) {
+            let msg = format!(
+                "draft 目录清理失败（{}）：{e}；请手工删除，否则会挡住新向导",
+                draft.display()
+            );
+            tracing::warn!("[ziwei][setup] {msg}");
+            cleanup_warnings.push(msg);
+        }
+        // 归属校验式清态（与预占竞态修复同一不变量）：require_info 到此处
+        // 之间状态若被并发方动过（abort 清掉后新 select_target 预占），不得
+        // 无条件清掉他人态——旧实现无条件 None 会打断并发 select_target 的
+        // 预占窗口。
+        self.clear_state_if_owned(&info.profile_id);
         tracing::info!(
             "[ziwei][setup] draft {} 已提交为正式 profile（{} 函数 / {} 工具 / {} 锚）",
             info.profile_id,
@@ -2261,6 +2343,7 @@ impl SetupManager {
             "tools": profile.tools.len(),
             "anchors": anchor_set.anchors.len(),
             "profile_dir": store.dir(&info.profile_id).display().to_string(),
+            "cleanup_warnings": cleanup_warnings,
         }))
     }
 
@@ -2268,7 +2351,19 @@ impl SetupManager {
     /// gateway 重启后的孤儿 draft 也允许清理）。
     pub async fn abort(&self, workspace: &Path) -> Result<serde_json::Value, String> {
         let info = match self.state.lock().unwrap().as_ref() {
-            Some(st) => st.info.clone(),
+            Some(st) => {
+                // 预占窗口期（select_target 正在锁外建 draft/attach）：此刻
+                // abort 会删预占者正在写的 draft 目录、清态后被写回复活成
+                // 僵尸活动态。诚实拒绝——等 select_target 返回（成功后
+                // abort 走正常路径，失败后状态已被回收）。
+                if st.reserved {
+                    return Err(
+                        "向导正在初始化（select_target 预占中）：等当前 select_target 返回成功或失败后再 abort"
+                            .to_string(),
+                    );
+                }
+                st.info.clone()
+            }
             None => match latest_draft_id(workspace) {
                 Some(id) => SetupInfo {
                     profile_id: id,
@@ -2288,11 +2383,28 @@ impl SetupManager {
         {
             let _ = manager.detach(&info.profile_id).await; // 已卸载=幂等成功
         }
-        let _ = nemesis_utils::fsutil::remove_dir_all_retry(draft_dir(workspace, &info.profile_id));
-        let _ = nemesis_utils::fsutil::remove_dir_all_retry(
-            workspace.join("ziwei").join("setup").join(&info.profile_id),
-        );
-        *self.state_mut() = None;
+        // 删除失败必须说话（横扫族 C，2026-11-06）：旧实现 `let _` 静默——
+        // 残留 draft 会挡死新向导而用户看到的是「已放弃」假成功。透传 Err
+        // 且不清态（幂等可重试：detach 已卸载是幂等成功、目录已删是
+        // NotFound=Ok）。
+        let draft = draft_dir(workspace, &info.profile_id);
+        nemesis_utils::fsutil::remove_dir_all_retry(&draft).map_err(|e| {
+            format!(
+                "draft 目录清理失败（{}）：{e}；向导未收尾，可重试 abort",
+                draft.display()
+            )
+        })?;
+        let setup_dir = workspace.join("ziwei").join("setup").join(&info.profile_id);
+        nemesis_utils::fsutil::remove_dir_all_retry(&setup_dir).map_err(|e| {
+            format!(
+                "setup 目录清理失败（{}）：{e}；向导未收尾，可重试 abort",
+                setup_dir.display()
+            )
+        })?;
+        // 归属校验式清态（与预占竞态修复同一不变量）：读态与清态之间状态
+        // 被并发方替换时不清他人态（防御性——当前锁语义下 select_target 被
+        // draft 在册检查挡住，此窗口理论不可达，但不给未来留无条件写点）。
+        self.clear_state_if_owned(&info.profile_id);
         tracing::info!(
             "[ziwei][setup] draft {} 已放弃（会话卸载 + 目录清理）",
             info.profile_id
@@ -2330,6 +2442,28 @@ fn draft_json_path(workspace: &Path, profile_id: &str) -> PathBuf {
     draft_dir(workspace, profile_id).join("draft.json")
 }
 
+/// draft 回滚 + 诚实报错组装（横扫族 C 二轮，2026-11-06）：回滚失败时
+/// 「已回滚」类断言不得谎报——主错误保首位；回滚失败 WARN 留痕 + 注记
+/// 追加（残留 draft 可重试 abort 收尸：abort 无态时按 latest_draft_id
+/// 兜底拾取磁盘残留）。ok_suffix 仅在回滚成功时附加（如「（draft 已回滚）」）。
+///
+/// cfg 门：生产调用方全在 `#[cfg(windows)]` select_target_reserved 内，
+/// 但 init_draft_files（any(windows, test) 门）内部也调它——门必须覆盖
+/// init_draft_files 的活窗，否则 Linux 测试目标 E0425 / Linux lib 目标死码。
+#[cfg(any(windows, test))]
+fn rollback_draft_error(draft: &Path, base: String, ok_suffix: &str) -> String {
+    match nemesis_utils::fsutil::remove_dir_all_retry(draft) {
+        Ok(()) => format!("{base}{ok_suffix}"),
+        Err(e) => {
+            tracing::warn!("[ziwei][setup] draft 回滚失败（{}）：{e}", draft.display());
+            format!(
+                "{base}；draft 回滚失败（{}）：{e}，残留目录可重试 abort 收尸",
+                draft.display()
+            )
+        }
+    }
+}
+
 fn load_draft(workspace: &Path, profile_id: &str) -> Result<Profile, String> {
     let bytes = std::fs::read(draft_json_path(workspace, profile_id))
         .map_err(|e| format!("draft.json 读取失败（{profile_id}）：{e}"))?;
@@ -2338,8 +2472,44 @@ fn load_draft(workspace: &Path, profile_id: &str) -> Result<Profile, String> {
 
 fn save_draft(workspace: &Path, profile: &Profile) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(profile).map_err(|e| e.to_string())?;
-    std::fs::write(draft_json_path(workspace, &profile.profile_id), bytes)
-        .map_err(|e| format!("draft.json 写盘失败：{e}"))
+    // 原子写（横扫族 C 二轮，2026-11-06）：draft.json 是向导工作态真相源，
+    // 直写撕裂 → load_draft 解析失败 → 向导锁死；委托唯一权威 helper
+    //（对齐 ProfileStore 的 tmp+rename 惯例）。
+    nemesis_utils::file::write_file_atomic(
+        &draft_json_path(workspace, &profile.profile_id).to_string_lossy(),
+        &bytes,
+        0o644,
+    )
+    .map_err(|e| format!("draft.json 写盘失败：{e}"))
+}
+
+/// draft 三件套初始化（目录 + draft.json + 空 anchors.json）：任一步失败
+/// 即回滚整个 draft 目录后透传 Err——失败不留半成品（残留目录会被
+/// `latest_draft_id` 命中，挡死新向导，逼用户手工 abort 收尸）。与
+/// select_target_reserved 后续两个失败路径（会话管理器缺席 / attach 失败）
+/// 的清理对称。
+///
+/// cfg 门：唯一生产调用方 select_target_reserved 是 `#[cfg(windows)]`；
+/// 三件套单测（tests.rs init_draft_files_creates_all_three 等）跨平台
+/// 直测，故带 test 臂保活（同 publish_state_if_owned）。
+#[cfg(any(windows, test))]
+fn init_draft_files(workspace: &Path, profile: &Profile) -> Result<PathBuf, String> {
+    let id = &profile.profile_id;
+    let draft = draft_dir(workspace, id);
+    std::fs::create_dir_all(&draft).map_err(|e| format!("建 draft 目录失败：{e}"))?;
+    let saved = save_draft(workspace, profile).and_then(|_| {
+        save_draft_anchors(
+            workspace,
+            &AnchorSet {
+                profile_id: id.clone(),
+                anchors: Vec::new(),
+            },
+        )
+    });
+    if let Err(e) = saved {
+        return Err(rollback_draft_error(&draft, e, ""));
+    }
+    Ok(draft)
 }
 
 fn load_draft_anchors(workspace: &Path, profile_id: &str) -> Result<AnchorSet, String> {
@@ -2350,9 +2520,12 @@ fn load_draft_anchors(workspace: &Path, profile_id: &str) -> Result<AnchorSet, S
 
 fn save_draft_anchors(workspace: &Path, set: &AnchorSet) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(set).map_err(|e| e.to_string())?;
-    std::fs::write(
-        draft_dir(workspace, &set.profile_id).join("anchors.json"),
-        bytes,
+    nemesis_utils::file::write_file_atomic(
+        &draft_dir(workspace, &set.profile_id)
+            .join("anchors.json")
+            .to_string_lossy(),
+        &bytes,
+        0o644,
     )
     .map_err(|e| format!("anchors.json 写盘失败：{e}"))
 }
@@ -2397,7 +2570,7 @@ fn function_table_json(rows: &[nemesis_ziwei_rev::package::FuncRow]) -> Vec<serd
         .collect()
 }
 
-// ── 查询面辅助（入参容错 / 函数归属 / 语义名投影 / 可执行节界）────
+// ── 查询面辅助（B1：入参容错 / 函数归属 / 语义名投影 / 可执行节界）────
 
 /// 十六进制解析（`0x` 前缀可选，全 hex）。pub：bridge 层 rva 入参归一同源引用。
 pub fn parse_hex_u32(s: &str) -> Option<u32> {

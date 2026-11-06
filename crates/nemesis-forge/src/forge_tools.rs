@@ -725,20 +725,32 @@ impl ForgeToolExecutor {
         if artifact_type == "mcp" {
             let language = args["language"].as_str().unwrap_or("python");
             if let Some(mcp_dir) = artifact_path.parent() {
+                // 脚手架文件写失败 WARN 留痕（横扫族 C 四轮，2026-11-06）：
+                // test_cases.json 是用户显式传入的意图，静默丢失 = forge test
+                // 永远「无 tests 诚实跳过」且无线索；README/requirements/go.mod
+                // 装饰性但同面留痕。
+                async fn write_scaffold(dir: &std::path::Path, file: &str, content: &str) {
+                    let p = dir.join(file);
+                    if let Err(e) = tokio::fs::write(&p, content).await {
+                        tracing::warn!(
+                            path = %p.display(),
+                            error = %e,
+                            "[forge_tools] scaffold write failed"
+                        );
+                    }
+                }
                 match language {
                     "python" => {
-                        let requirements = "mcp>=1.0.0\n";
-                        let _ =
-                            tokio::fs::write(mcp_dir.join("requirements.txt"), requirements).await;
+                        write_scaffold(mcp_dir, "requirements.txt", "mcp>=1.0.0\n").await;
                         let readme = format!(
                             "# {}\n\nForge-generated MCP server.\n\n## Usage\n\n```bash\nuv run server.py\n```\n",
                             name
                         );
-                        let _ = tokio::fs::write(mcp_dir.join("README.md"), readme).await;
+                        write_scaffold(mcp_dir, "README.md", &readme).await;
                     }
                     "go" => {
                         let go_mod = format!("module forge-mcp-{}\n\ngo 1.21\n", name);
-                        let _ = tokio::fs::write(mcp_dir.join("go.mod"), go_mod).await;
+                        write_scaffold(mcp_dir, "go.mod", &go_mod).await;
                     }
                     _ => {}
                 }
@@ -752,8 +764,14 @@ impl ForgeToolExecutor {
             && let Some(parent) = artifact_path.parent()
         {
             let test_dir = parent.join("tests");
-            let _ = tokio::fs::create_dir_all(&test_dir).await;
-            let _ = tokio::fs::write(test_dir.join("test_cases.json"), test_data).await;
+            let _ = tokio::fs::create_dir_all(&test_dir).await; // 尽力而为：缺目录由写失败 WARN 浮出
+            if let Err(e) = tokio::fs::write(test_dir.join("test_cases.json"), test_data).await {
+                tracing::warn!(
+                    path = %test_dir.join("test_cases.json").display(),
+                    error = %e,
+                    "[forge_tools] test_cases.json write failed (forge test will skip honestly)"
+                );
+            }
         }
 
         // Register in registry
@@ -959,8 +977,19 @@ impl ForgeToolExecutor {
                 .workspace()
                 .join("skills")
                 .join(format!("{}-forge", skill_slug));
-            let _ = tokio::fs::create_dir_all(&skills_dir).await;
-            let _ = tokio::fs::write(skills_dir.join("SKILL.md"), &content).await;
+            // 副本失败 WARN 留痕不回滚：registry 内容已在上方更新、forge 主
+            // 副本在，缺副本=skills 列表看不见新版（横扫族 C 四轮，2026-11-06）。
+            let copy_result = match tokio::fs::create_dir_all(&skills_dir).await {
+                Ok(()) => tokio::fs::write(skills_dir.join("SKILL.md"), &content).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = copy_result {
+                tracing::warn!(
+                    path = %skills_dir.display(),
+                    error = %e,
+                    "[forge_tools] skill copy update failed (registry content updated)"
+                );
+            }
         }
 
         // Re-register MCP if active after update (mirrors Go behavior)
@@ -1714,7 +1743,10 @@ pub fn save_version_snapshot(artifact_path: &str, version: &str) -> std::io::Res
     let versions_dir = path.parent().unwrap_or(path).join(".versions");
     std::fs::create_dir_all(&versions_dir)?;
 
-    let content = std::fs::read_to_string(path).unwrap_or_default();
+    // 横扫族 C 五轮（2026-11-06）：读失败不再静默落空——空 .bak 伪装成
+    // 有效备份，restore 会恢复出空文件（回滚点被毁）。读失败诚实上抛，
+    // 由调用方决定处置；NotFound 也在内（工件不存在时快照无意义）。
+    let content = std::fs::read_to_string(path)?;
     let snapshot_path = versions_dir.join(format!("{}.bak", version));
     std::fs::write(&snapshot_path, content)?;
     Ok(())

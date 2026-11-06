@@ -36,3 +36,43 @@ describe('RequestList 迭代详情', () => {
     expect(wrapper.text()).toContain('关联集群任务')
   })
 })
+
+describe('RequestList 模型过滤（BUG-20261106-028 横向）', () => {
+  it('过滤选项从数据派生：含 provider 前缀的真实 model 串，无硬编码字面量', () => {
+    const wrapper = mount(RequestList, {
+      props: {
+        requests: [
+          makeRequest({ id: 'r1', model: 'zhipu/glm-4.7' }),
+          makeRequest({ id: 'r2', model: 'claude-opus-4-8' }),
+        ],
+        selectedId: 'r1',
+        sessions: [],
+        tasks: [],
+      },
+    })
+    const values = wrapper.findAll('select.form-select option').map((o: any) => o.element.value as string)
+    expect(values).toContain('all')
+    expect(values).toContain('zhipu/glm-4.7')
+    expect(values).toContain('claude-opus-4-8')
+    // 硬编码字面量不得回流（旧实现的两枚固定选项对带前缀的实际 model 串恒不命中）
+    expect(values).not.toContain('glm-4.7')
+    expect(values).not.toContain('claude-sonnet-4-5')
+  })
+
+  it('选中某模型后列表只剩该模型的条目', async () => {
+    const wrapper = mount(RequestList, {
+      props: {
+        requests: [
+          makeRequest({ id: 'r1', model: 'zhipu/glm-4.7' }),
+          makeRequest({ id: 'r2', model: 'claude-opus-4-8' }),
+        ],
+        selectedId: 'r1',
+        sessions: [],
+        tasks: [],
+      },
+    })
+    await wrapper.find('select.form-select').setValue('claude-opus-4-8')
+    const ids = wrapper.findAll('.list-item .item-id').map(n => n.text())
+    expect(ids).toEqual(['r2'])
+  })
+})

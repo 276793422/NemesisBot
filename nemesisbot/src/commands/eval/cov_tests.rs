@@ -139,46 +139,29 @@ fn exit_if_risk_flagged_noop_when_flag_clear() {
 }
 
 // ---------------------------------------------------------------------------
-// box_api_base — lane 分派：HttpCompat 保留 /v1，Anthropic/Codex 剥 /v1，
-// 解析失败兜底 HttpCompat 形态。
+// box_api_base — 路径镜像（BUG-20261106-027）：盒内 base = 代理根 + 真实
+// base 的 path，代理 verbatim 转发 → 相对路径逐字节一致（lane 无关）。
 // ---------------------------------------------------------------------------
 
 #[test]
-fn box_api_base_http_compat_keeps_v1() {
-    // 显式 openai 协议（API key 缺省但显式协议路径不看 key）。
+fn box_api_base_mirrors_path_verbatim() {
+    // /v1 形态（OpenAI/DeepSeek 类预设）。
     assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "any/model", "openai"),
+        box_api_base("http://127.0.0.1:9", "/v1"),
         "http://127.0.0.1:9/v1"
     );
-}
-
-#[test]
-fn box_api_base_anthropic_and_codex_trim_v1() {
-    // 前缀 anthropic（protocol 空）→ Anthropic lane → 剥 /v1。
+    // 非 /v1 形态（Zhipu /api/paas/v4、Gemini /v1beta）——旧 lane 感知形态
+    // 在这两类全部 404。
     assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "anthropic/claude-3", ""),
-        "http://127.0.0.1:9"
+        box_api_base("http://127.0.0.1:9", "/api/paas/v4"),
+        "http://127.0.0.1:9/api/paas/v4"
     );
-    // 显式 protocol 覆盖 provider 前缀：responses → Codex → 剥 /v1。
     assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "zhipu/glm", "responses"),
-        "http://127.0.0.1:9"
+        box_api_base("http://127.0.0.1:9", "/v1beta"),
+        "http://127.0.0.1:9/v1beta"
     );
-    // 无 /v1 后缀时剥除是 no-op。
-    assert_eq!(
-        box_api_base("http://127.0.0.1:9", "anthropic/claude-3", ""),
-        "http://127.0.0.1:9"
-    );
-}
-
-#[test]
-fn box_api_base_resolve_failure_falls_back_to_httpcompat_shape() {
-    // 裸名 + 默认协议 + 空 key → resolve 报 no-API-key 错 → 兜底 HttpCompat
-    // 形态（base 原样返回，不剥 /v1）。
-    assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "glm-5.3-flash", ""),
-        "http://127.0.0.1:9/v1"
-    );
+    // 无 path：盒内 base = 裸代理根。
+    assert_eq!(box_api_base("http://127.0.0.1:9", ""), "http://127.0.0.1:9");
 }
 
 // ---------------------------------------------------------------------------

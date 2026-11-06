@@ -53,7 +53,7 @@ fn test_append_with_model_round_trip() {
     delete_chat_log(key); // cleanup
 }
 
-/// Single-source-of-truth row predicate (fork-fix round): the
+/// Single-source-of-truth row predicate (2026-08-25 fork-fix round): the
 /// fork's chat_log projection and the turns endpoint's `end_preview` MUST
 /// use the same rule, or the dialog preview would disagree with what the
 /// fork actually ends on. Pin it here.
@@ -69,7 +69,7 @@ fn test_is_projected_chat_row() {
     assert!(!is_projected_chat_row("system", "prompt"));
 }
 
-// delete_chat_log must also remove the title meta sidecar
+// 2026-08-25: delete_chat_log must also remove the title meta sidecar
 // (orphan-file fix); clear_chat_log must KEEP it (title survives a clear).
 #[test]
 fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
@@ -99,7 +99,7 @@ fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
     assert_eq!(rows2.len(), 0);
 }
 
-// ---: error arms, cron/model markers, fork helpers, boundary sidecar ---
+// --- W3a: error arms, cron/model markers, fork helpers, boundary sidecar ---
 
 use crate::session::StoredMessage;
 
@@ -149,10 +149,10 @@ fn test_append_full_with_cron_markers() {
     delete_chat_log(&key);
 }
 
-/// dirblock 挂死诊断（extended-tests Linux nightly 首跑）。
+/// dirblock 挂死诊断（2026-09-02 extended-tests Linux nightly 首跑实录）。
 ///
 /// Linux：后台线程每 90s 检查测试是否完成；未完成就把各线程内核态
-/// （stat 的 wchan + syscall 号）经 [`crate::test_support:force_stderr`]
+/// （stat 的 wchan + syscall 号）经 [`crate::test_support::force_stderr`]
 /// 旁路 libtest 捕获直接写 stderr，留挂死现场。其它平台：全 no-op 桩
 /// （/proc 依赖，无观测意义），保持测试体平台无关调同一 API。
 #[cfg(target_os = "linux")]
@@ -271,7 +271,7 @@ fn test_directory_at_log_path_is_tolerated() {
     watchdog.step(1); // path resolved
     std::fs::create_dir_all(&path).unwrap();
     watchdog.step(2); // dir created
-    append_chat_log(&key, "user", "blocked"); // warn + return
+    append_chat_log(&key, "user", "blocked"); // warn + report(chat_log) + return
     watchdog.step(3); // append returned
     let (rows, total, _, _) = read_chat_log(&key, 10, None);
     watchdog.step(4); // read returned
@@ -439,7 +439,7 @@ fn test_clear_chat_log_truncates_both_files() {
     let key2 = uniq_key("clearblocked");
     let lp = log_path(&key2);
     std::fs::create_dir_all(&lp).unwrap();
-    clear_chat_log(&key2).expect_err("dir squatter = 诚实 Err（BUG-20261030-205）"); // warn + Err
+    clear_chat_log(&key2).expect_err("dir squatter = 诚实 Err（BUG-20261030-205）"); // warn + report(chat_log) + Err
     std::fs::remove_dir(&lp).unwrap();
 }
 
@@ -457,7 +457,7 @@ fn test_write_session_meta_dir_squatter_warns() {
     std::fs::remove_dir(&mp).unwrap();
 }
 
-// ---: sidecar meta 扩展 fork 血缘（parent/forked_at_turn）---
+// --- E4 (2026-09-05): sidecar meta 扩展 fork 血缘（parent/forked_at_turn）---
 
 fn e4_uniq_key(tag: &str) -> String {
     format!(
@@ -505,13 +505,13 @@ fn test_e4_lineage_and_title_upsert_both_directions() {
     delete_chat_log(&key2);
 }
 
-/// pre 形态的 meta 文件（只有 title）兼容读取：血缘字段缺省为 None；
+/// pre-E4 形态的 meta 文件（只有 title）兼容读取：血缘字段缺省为 None；
 /// 随后补写血缘时 title 保留（不抹旧数据）。
 #[test]
 fn test_e4_legacy_title_only_meta_compatible() {
     let key = e4_uniq_key("legacy");
     delete_chat_log(&key);
-    // 直接落一个 pre 形态文件（无血缘字段）。
+    // 直接落一个 pre-E4 形态文件（无血缘字段）。
     write_session_meta(&key, "legacy");
     let path = meta_path(&key);
     std::fs::write(&path, r#"{"title":"legacy"}"#).unwrap();
@@ -542,7 +542,7 @@ fn test_e4_read_meta_full_missing_file_is_none() {
     assert!(read_session_meta(&key).is_none());
 }
 
-// =====================: 会话标题自动生成（meta 侧语义） =====================
+// ===================== E7: 会话标题自动生成（meta 侧语义） =====================
 
 fn e7_uniq_key(tag: &str) -> String {
     format!(
@@ -596,7 +596,7 @@ fn test_e7_eligibility_matrix() {
         "手动命名成占位符也算用户意志 → 不覆盖"
     );
 
-    // pre 旧 meta（无 title_manual 字段）→ 反序列化缺省 false，真实标题仍保护。
+    // pre-E7 旧 meta（无 title_manual 字段）→ 反序列化缺省 false，真实标题仍保护。
     let key2 = e7_uniq_key("legacy");
     delete_chat_log(&key2);
     let path = meta_path(&key2);
@@ -671,7 +671,7 @@ fn test_e7_first_user_message_extraction() {
     delete_chat_log(&key);
 }
 
-// ---：项目归属 sidecar ---
+// --- L6++（2026-09-08）：项目归属 sidecar ---
 
 /// write_session_project 的 upsert 契约：已有 title meta 上落双字段且
 /// title 保留；重复写覆盖（幂等）；无绑定的会话读出双 None。
@@ -712,7 +712,7 @@ fn test_session_meta_project_roundtrip() {
     delete_chat_log(&key);
 }
 
-/// clear_session_project 契约（sessions.delete/clear 的 forget 联动）：
+/// clear_session_project 契约（M4 sessions.delete/clear 的 forget 联动）：
 /// 文件缺失 / 本就无归属 = no-op false；有归属 = true 且摘双字段保 title；
 /// 摘除后二次 clear = false（幂等，不空写）。
 #[test]
@@ -750,7 +750,7 @@ fn test_clear_session_project_semantics() {
     delete_chat_log(&key);
 }
 
-/// 旧形态 meta（pre 磁盘上只有 title）加载后新字段为 None——
+/// 旧形态 meta（pre-L6++ 磁盘上只有 title）加载后新字段为 None——
 /// serde default 兼容，不炸不误报绑定。
 #[test]
 fn test_session_meta_legacy_without_project_loads() {
@@ -774,7 +774,7 @@ fn test_session_meta_legacy_without_project_loads() {
     delete_chat_log(&key);
 }
 
-/// （真机日志）：未送达标记 round-trip——mark 累加、clear 归零
+/// P2（2026-09-11 真机日志）：未送达标记 round-trip——mark 累加、clear 归零
 /// 幂等、既有字段（title）保留、旧形态 meta（无 undelivered 字段）兼容。
 #[test]
 fn test_undelivered_mark_and_clear_roundtrip() {
@@ -815,9 +815,9 @@ fn test_undelivered_mark_and_clear_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG （历史加载秒卡）：read_chat_log 单遍滑窗重写的契约锁。
+// BUG 2026-09-22（历史加载秒卡）：read_chat_log 单遍滑窗重写的契约锁。
 // 窗口切的是 raw 行号坐标（不可解析行计入 total、boundary 行占位后过滤），
-// oldest_index/has_more 与旧两遍实现逐字段一致—— rewind 锚与前端行编
+// oldest_index/has_more 与旧两遍实现逐字段一致——E3 rewind 锚与前端行编
 // 号链靠它们。
 // ---------------------------------------------------------------------------
 
@@ -992,7 +992,7 @@ async fn test_read_chat_log_async_parity() {
 }
 
 // ---------------------------------------------------------------------------
-// SAN-01/：旧「只替换 `:`」映射的嵌套目录平化迁移
+// SAN-01/D4：旧「只替换 `:`」映射的嵌套目录平化迁移
 // ---------------------------------------------------------------------------
 
 /// 嵌套产物平移 + 平面文件不动 + 空目录顺手删除。
@@ -1047,12 +1047,25 @@ fn flattened_name_matches_new_sanitized_mapping() {
     );
 }
 
-/// 回归锁：fork 复制（write_chat_log_rows）open 失败
-/// 不再无痕——返回 0 + 降级登记表有条目（健康面可）。目录占位点
-/// 位 = 跨平台确定性 open 失败注入（Windows open 目录失败；Unix
-/// O_WRONLY|O_APPEND 对目录 EISDIR）。
+/// BUG-20261030-205 regression lock (contract updated 2026-11-06 after
+/// BUG-20261106-003 exclusive-create rework): with create_new, a pre-existing
+/// path lands on the **AlreadyExists benign-loser arm** — silent 0 rows by
+/// design (losing a concurrent fork race is expected; reporting it would
+/// flood the health surface). Injection = FILE squat (deterministic
+/// AlreadyExists both platforms); a DIR squat does NOT transfer: Windows
+/// create_new on a directory = ACCESS_DENIED(5) → PermissionDenied → generic
+/// reported arm (2026-11-06 local evidence), Unix = EEXIST → silent. Real IO
+/// failures still warn + degraded-report via the generic arm (mirrors
+/// write_chat_entry's reporting).
+/// Pins three things: (1) squat -> tolerant wrapper returns 0; (2) loser is
+/// SILENT — registry must NOT contain this test's unique tag (unique key, no
+/// parallel ambiguity; failure message prints current entries for direct
+/// evidence); (3) the key-targeted hook (arm_test_fail_open, the official
+/// injection mechanism post-003) is consumed once -> 0, then a fresh write
+/// succeeds. Fork rollback atomicity is pinned separately by session_fork's
+/// test_fork_jsonl_write_failure_fails_loudly_and_atomic.
 #[test]
-fn test_write_chat_log_rows_open_failure_reports_degraded() {
+fn test_write_chat_log_rows_squat_silent_loser_and_hook() {
     // 并行唯一性不能只靠时钟（Windows tick ~15.6ms）：追加进程内原子序号。
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tag = format!(
@@ -1068,26 +1081,45 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
     if let Some(parent) = lp.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
-    std::fs::create_dir_all(&lp).unwrap();
+    // 文件占位（非目录）：create_new 对「已存在路径」两平台同判
+    // AlreadyExists（Windows ERROR_FILE_EXISTS / Unix EEXIST）→ 静默败北臂。
+    std::fs::write(&lp, b"").unwrap();
 
     let rows = vec![serde_json::json!({
         "role": "user",
         "content": "x",
         "timestamp": "2026-10-30T00:00:00+08:00"
     })];
-    assert_eq!(write_chat_log_rows(&key, &rows), 0, "open 失败 = 0 行");
-    // 降级登记表有痕（详情带本测试独有 tag 路径段，避开并行测试噪声）。
+    // ① 占位（排他创建下 = AlreadyExists 败北）→ 宽容包装 0 行。
+    assert_eq!(write_chat_log_rows(&key, &rows), 0, "败北 = 0 行");
+    // ② 败北静默：注册表不得出现本测试独有 tag（独有 key 路径段，无并行
+    // 歧义）；若静默契约被破坏（误报降级），tag 立即现身被抓住，失败消息
+    // 附当前条目直读现场。
+    let chat: Vec<String> = nemesis_utils::degraded::snapshot()
+        .iter()
+        .filter(|d| d.kind == "chat_log")
+        .map(|d| d.detail.clone())
+        .collect();
     assert!(
-        nemesis_utils::degraded::snapshot()
-            .iter()
-            .any(|d| d.kind == "chat_log" && d.detail.contains(&tag)),
-        "fork copy open 失败必须进降级登记表"
+        !chat.iter().any(|d| d.contains(&tag)),
+        "AlreadyExists 败北臂必须静默，不得报降级（当前 chat_log 条目：{chat:?}）"
     );
-    std::fs::remove_dir(&lp).unwrap();
+    std::fs::remove_file(&lp).unwrap();
+
+    // ③ 官方注入钩子：消费一次 → 0；摘除后再写即成功（真实文件创建）。
+    let key2 = format!("test:forkcopy-hook:{tag}");
+    arm_test_fail_open(&key2);
+    assert_eq!(write_chat_log_rows(&key2, &rows), 0, "注入钩子 = 0 行");
+    assert_eq!(
+        write_chat_log_rows(&key2, &rows),
+        1,
+        "钩子消费一次即摘除，再写应成功"
+    );
+    delete_chat_log(&key2);
 }
 
 // ---------------------------------------------------------------------------
-// 会话执行统计 sidecar 字段（stats）读写契约
+// L14（2026-11-01）：会话执行统计 sidecar 字段（stats）读写契约
 // ---------------------------------------------------------------------------
 
 /// stats round-trip：写入八字段 → 读回逐字段一致；全零不落盘（旧 meta

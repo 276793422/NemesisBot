@@ -345,7 +345,14 @@ fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), S
     let mut cfg: serde_json::Value = if path.exists() {
         let content = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| format!("failed to read cluster config: {}", e))?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        // 横扫族 C 六轮（2026-11-06）：损坏静默当 `{}` 再回写 = 系统参数层
+        // （port/rpc_port/token 等）整段覆盖丢失——诚实拒绝。
+        serde_json::from_str(&content).map_err(|e| {
+            format!(
+                "cluster config parse failed (write refused, file intact): {}",
+                e
+            )
+        })?
     } else {
         serde_json::json!({})
     };
@@ -2248,7 +2255,13 @@ impl ClusterHandler {
         let mut cfg: serde_json::Value = if path.exists() {
             let content = nemesis_utils::fsutil::read_config_string(&path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
-            serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+            // 同 update_cluster_config_roaming：损坏不许静默 `{}` 回写毁参数层。
+            serde_json::from_str(&content).map_err(|e| {
+                format!(
+                    "cluster config parse failed (write refused, file intact): {}",
+                    e
+                )
+            })?
         } else {
             serde_json::json!({})
         };
@@ -2552,6 +2565,17 @@ impl ClusterHandler {
         Self::write_cluster_file(workspace, "SOUL.md", &pkg.soul_md)?;
         if !pkg.expertise_md.trim().is_empty() {
             Self::write_cluster_file(workspace, "EXPERTISE.md", &pkg.expertise_md)?;
+        } else {
+            // BUG-20261106-031：生成人格 apply 是三件套整体替换语义——本次无
+            // 知识库时清掉上一份人格的 EXPERTISE 残留，否则 B 端装配链路
+            // （agent_factory D4「有则注入」无条件）会把旧知识库混进新身份的
+            // prompt（前端无 EXPERTISE 编辑/删除入口，残留无从发现）。hire
+            // 链路的「EXPERTISE 保守不动（决策 2）」是商店聘用语义（商店人格
+            // 无 EXPERTISE 概念），与本入口不同族。
+            let stale = crate::handlers::resolve_path(workspace, "cluster/EXPERTISE.md")?;
+            if stale.exists() {
+                nemesis_utils::fsutil::remove_file_resilient(&stale);
+            }
         }
 
         // 2) Update node identity — runtime (immediate) + peers.toml [node] (persist).

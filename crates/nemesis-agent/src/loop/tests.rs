@@ -10129,7 +10129,11 @@ async fn a6_format_on_save_annotates_dispatch_result_for_write_tool() {
     let cfg_path = dir.path().join("config.json");
     std::fs::write(
         &cfg_path,
-        a6_config_json(serde_json::json!({ "enabled": true })),
+        // timeout_secs 显式给 60：默认 3s 在 CI 冷 runner 上会被 rustfmt 冷启
+        // （Defender 首扫 + rustup shim 冷链）撞死 → 静默原样 → 假红（42153577678
+        // shard5 实录，测试耗时 3.36s ≈ 3s 超时）。formatter 单测同款场景用
+        // enabled_json_with_timeout(60)——这里对齐。
+        a6_config_json(serde_json::json!({ "enabled": true, "timeout_secs": 60 })),
     )
     .unwrap();
 

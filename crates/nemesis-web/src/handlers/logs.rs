@@ -16,7 +16,7 @@ use chrono::NaiveDateTime;
 use nemesis_security::integrity::AuditEvent;
 // 无 feature 门：下方目录 helper（request/cluster/security/session/boundary）
 // 全部无门控使用 Path/PathBuf——门在导入上会让无 security 构建炸出 46 错
-// 级联（Windows 分片Linux 带 security 绿、Windows 裸 feature 红）。
+// 级联（2026-11-02 Windows 分片实录：Linux 带 security 绿、Windows 裸 feature 红）。
 use std::path::{Path, PathBuf};
 
 pub struct LogsHandler;
@@ -55,17 +55,30 @@ impl ModuleHandler for LogsHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
+        // BUG-20261106-024：本 handler 的列表/详情命令全是同步全量扫描
+        // （目录树 walk + 逐文件读 + 逐行 JSON parse / SHA-256 重算），
+        // 直跑 tokio worker 会占住 worker（BUG-20261102-302 同族——该轮
+        // 横向排查只扫了 read_chat_log/scan_session_logs 调用点，本文件
+        // 其余命令不在其范围）。spawn_blocking 移出，session_list 同款
+        // 纪律。重活一律 `LogsHandler.<cmd>`（unit struct 无状态，与
+        // self 等价）；session_usage 的 data_store 点查（有索引）不在此列。
         match cmd {
             "requests" => {
                 let limit = opt_u64(&data, "limit", 50);
                 let offset = opt_u64(&data, "offset", 0);
-                self.requests(workspace, limit, offset)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.requests(&ws, limit, offset))
+                    .await
+                    .map_err(|e| format!("logs.requests task join failed: {e}"))?
             }
             "request_detail" => {
                 let data = data.ok_or("missing data")?;
                 let id = crate::handlers::get_str(&data, "id")
                     .or_else(|_| crate::handlers::get_str(&data, "session"))?;
-                self.request_detail(workspace, &id)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.request_detail(&ws, &id))
+                    .await
+                    .map_err(|e| format!("logs.request_detail task join failed: {e}"))?
             }
             "cluster_task_list" => {
                 let limit = opt_u64(&data, "limit", 50);
@@ -75,7 +88,14 @@ impl ModuleHandler for LogsHandler {
                     .and_then(|d| d.get("device_id"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.cluster_task_list(ctx, workspace, limit, offset, device_filter)
+                // local_node_id 只碰 ctx（便宜），先取再进阻塞线程。
+                let local = local_node_id(ctx);
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.cluster_task_list(local, &ws, limit, offset, device_filter)
+                })
+                .await
+                .map_err(|e| format!("logs.cluster_task_list task join failed: {e}"))?
             }
             "cluster_task_detail" => {
                 let data = data.ok_or("missing data")?;
@@ -83,8 +103,15 @@ impl ModuleHandler for LogsHandler {
                 let perspective = data
                     .get("perspective")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("self");
-                self.cluster_task_detail(ctx, workspace, &task_id, perspective)
+                    .unwrap_or("self")
+                    .to_string();
+                let local = local_node_id(ctx);
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.cluster_task_detail(local, &ws, &task_id, &perspective)
+                })
+                .await
+                .map_err(|e| format!("logs.cluster_task_detail task join failed: {e}"))?
             }
             "security" => {
                 let limit = opt_u64(&data, "limit", 50);
@@ -94,16 +121,29 @@ impl ModuleHandler for LogsHandler {
                     .and_then(|d| d.get("risk_level"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.security(workspace, limit, offset, risk_level.as_deref())
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.security(&ws, limit, offset, risk_level.as_deref())
+                })
+                .await
+                .map_err(|e| format!("logs.security task join failed: {e}"))?
             }
             #[cfg(feature = "security")]
             "chain_list" => {
                 let limit = opt_u64(&data, "limit", 100);
                 let offset = opt_u64(&data, "offset", 0);
-                self.chain_list(workspace, limit, offset)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.chain_list(&ws, limit, offset))
+                    .await
+                    .map_err(|e| format!("logs.chain_list task join failed: {e}"))?
             }
             #[cfg(feature = "security")]
-            "chain_verify" => self.chain_verify(workspace),
+            "chain_verify" => {
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.chain_verify(&ws))
+                    .await
+                    .map_err(|e| format!("logs.chain_verify task join failed: {e}"))?
+            }
             "session_list" => {
                 let limit = opt_u64(&data, "limit", 50);
                 let offset = opt_u64(&data, "offset", 0);
@@ -120,7 +160,7 @@ impl ModuleHandler for LogsHandler {
                 let session = crate::handlers::get_str(&data, "session")?;
                 self.session_detail(ctx, workspace, &session).await
             }
-            // 单会话用量聚合（tokens/cost）。`session_key`
+            // M5（2026-09-05）：单会话用量聚合（tokens/cost）。`session_key`
             // 优先（精确键直查）；否则 `session_id`（sid 或 chat_log stem）
             // 按 [`session_usage_key`] 构造。消费方：ChatPanel 头部常驻条。
             "session_usage" => {
@@ -135,7 +175,7 @@ impl ModuleHandler for LogsHandler {
                     .unwrap_or("");
                 self.session_usage(ctx, session_id, session_key.as_deref())
             }
-            // (②): injection-ledger visibility. `injection_summary`
+            // G2 (U9 ②): injection-ledger visibility. `injection_summary`
             // aggregates the session's projection ledger (sources/positions,
             // NO raw content); `replay_verify` runs the byte-exact round
             // replay against the recorded raw request. Both depend only on
@@ -143,7 +183,10 @@ impl ModuleHandler for LogsHandler {
             "injection_summary" => {
                 let data = data.ok_or("missing data")?;
                 let session = crate::handlers::get_str(&data, "session")?;
-                self.injection_summary(workspace, &session)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.injection_summary(&ws, &session))
+                    .await
+                    .map_err(|e| format!("logs.injection_summary task join failed: {e}"))?
             }
             "replay_verify" => {
                 let data = data.ok_or("missing data")?;
@@ -161,21 +204,41 @@ impl ModuleHandler for LogsHandler {
                     .get("trace_id")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.replay_verify(
-                    ctx,
-                    workspace,
-                    &session,
-                    round,
-                    request_id.as_deref(),
-                    trace_id.as_deref(),
-                )
+                // store 解析只碰 ctx（便宜），重活（台账读 + 指纹扫 200 目录
+                // + 逐字节比对）移阻塞线程。
+                let store = replay_store_from_ctx(ctx)?;
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.replay_verify(
+                        store,
+                        &ws,
+                        &session,
+                        round,
+                        request_id.as_deref(),
+                        trace_id.as_deref(),
+                    )
+                })
+                .await
+                .map_err(|e| format!("logs.replay_verify task join failed: {e}"))?
             }
-            // spill 状态卡。`spill_status` 只读聚合 spill 树（文件数/
+            // G3: spill 状态卡。`spill_status` 只读聚合 spill 树（文件数/
             // 字节/最老 mtime + 保留天数配置）；`spill_cleanup` 按配置保留
             // 期立即清理一次并返回删除数。依赖仅 nemesis-agent（非可选）。
-            "spill_status" => self.spill_status(ctx),
-            "spill_cleanup" => self.spill_cleanup(ctx),
-            // cross-session full-text search over session_logs.
+            "spill_status" => {
+                let root = Self::spill_root_for(ctx)
+                    .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+                tokio::task::spawn_blocking(move || LogsHandler.spill_status(&root))
+                    .await
+                    .map_err(|e| format!("logs.spill_status task join failed: {e}"))?
+            }
+            "spill_cleanup" => {
+                let root = Self::spill_root_for(ctx)
+                    .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+                tokio::task::spawn_blocking(move || LogsHandler.spill_cleanup(&root))
+                    .await
+                    .map_err(|e| format!("logs.spill_cleanup task join failed: {e}"))?
+            }
+            // T6 (U20): cross-session full-text search over session_logs.
             // Fresh-first: the mtime-incremental reindex runs before the
             // query so newly appended messages are findable (the FTS arm
             // does not fall back to a linear scan on an empty-but-stale
@@ -188,15 +251,21 @@ impl ModuleHandler for LogsHandler {
                     return Err("query must not be empty".to_string());
                 }
                 let limit = opt_u64(&Some(data), "limit", 20);
-                self.history_search(&query, limit)
+                tokio::task::spawn_blocking(move || LogsHandler.history_search(&query, limit))
+                    .await
+                    .map_err(|e| format!("logs.history_search task join failed: {e}"))?
             }
-            "history_reindex" => self.history_reindex(),
+            "history_reindex" => tokio::task::spawn_blocking(move || LogsHandler.history_reindex())
+                .await
+                .map_err(|e| format!("logs.history_reindex task join failed: {e}"))?,
             _ => Err(format!("unknown command: logs.{}", cmd)),
         }
     }
 }
 
+// ---------------------------------------------------------------------------
 // Path helpers
+// ---------------------------------------------------------------------------
 
 fn opt_u64(data: &Option<serde_json::Value>, field: &str, default: usize) -> usize {
     data.as_ref()
@@ -211,7 +280,7 @@ fn request_log_dir(workspace: &str) -> PathBuf {
 }
 
 fn cluster_log_dir(workspace: &str) -> PathBuf {
-    // 路径唯一依据 = nemesis-path（写方 observer 与本读方共用拼接点）。
+    // 路径唯一真相源 = nemesis-path（写方 observer 与本读方共用拼接点）。
     nemesis_path::resolve_cluster_logs_dir_in_workspace(Path::new(workspace))
 }
 
@@ -223,7 +292,7 @@ fn session_log_dir(workspace: &str) -> PathBuf {
     nemesis_path::resolve_session_logs_dir_in_workspace(Path::new(workspace))
 }
 
-/// replay-ledger sidecar dir (`<workspace>/logs/boundary`)，与
+/// G2: replay-ledger sidecar dir (`<workspace>/logs/boundary`)，与
 /// `PathManager::boundary_events_dir` 同经 nemesis-path 唯一拼接点，
 /// 由 handler 的 workspace 派生（测试不依赖全局 path manager）。
 fn boundary_dir(workspace: &str) -> PathBuf {
@@ -319,7 +388,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             "triggerCluster": false,
             "messages": [],
         });
-        // fork 血缘回填（sidecar meta 的 parent/forked_at_turn，
+        // E4 (2026-09-05): fork 血缘回填（sidecar meta 的 parent/forked_at_turn，
         // fork_session 成功路径写入）。父会话标题就地解析一次（父已删/无 meta
         // 时缺省——前端回退显示 parent key）。缺血缘的条目不加字段。
         let (parent, forked_at) = read_meta_lineage(&path);
@@ -333,7 +402,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         if let Some(t) = forked_at {
             entry["forkedAtTurn"] = serde_json::Value::from(t);
         }
-        // 项目归属回填（sidecar meta 的 project_id/
+        // L6++（2026-09-08）：项目归属回填（sidecar meta 的 project_id/
         // project_path，sessions.create / fork 继承写入）。前端以
         // projects.list 联结显示名（注册表在 nemesisbot，后端不解析名字）。
         // 无绑定的条目不加字段（对话组会话零增量）。
@@ -344,13 +413,13 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         if let Some(pp) = project_path {
             entry["projectPath"] = serde_json::Value::String(pp);
         }
-        // 未送达 assistant 回复数（sidecar meta）。0 不加
+        // P2（2026-09-11）：未送达 assistant 回复数（sidecar meta）。0 不加
         // 字段（对话组会话零增量）——前端以此渲染未读徽标。
         let undelivered = read_meta_undelivered(&path);
         if undelivered > 0 {
             entry["undelivered"] = serde_json::Value::from(undelivered);
         }
-        // /：谱系扩展字段（sidecar meta 一次读全取）。分叉缘由
+        // WS9/P17：谱系扩展字段（sidecar meta 一次读全取）。分叉缘由
         // （fork 端点 reason 入参）、最近一次回退记录、分支摘要预览（~160
         // chars 截断——列表行不扛全文，注入全文在 agent 侧 meta 真相源）。
         // 无字段不加 = 老会话/无谱系事实零增量。
@@ -365,7 +434,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             let preview: String = bs.chars().take(160).collect();
             entry["branchSummaryPreview"] = serde_json::Value::String(preview);
         }
-        // （snooze）：暂停到点（sidecar meta）。无字段不加 =
+        // B11（2026-10-18 snooze）：暂停到点（sidecar meta）。无字段不加 =
         // 未暂停会话零增量——前端据此灰显 + ⏰ 到期徽标；note 跟随投影
         // （tooltip 展示）。
         if let Some((snoozed_until, snooze_note)) = read_meta_snooze(&path) {
@@ -376,7 +445,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         }
         sessions.push(entry);
     }
-    // /：祖先链补全（一次后处理遍历）。把带 `parent` 的条目升格成
+    // WS9/P17：祖先链补全（一次后处理遍历）。把带 `parent` 的条目升格成
     // 完整 lineage 组合视图：{parent_session_id, fork_point_seq, reason,
     // ancestors: [{id, title}...]}——真相源仍是 meta 的平面字段（parent/
     // forked_at_turn/fork_reason），此处只投影不落盘（无嵌套重复记账）。
@@ -424,7 +493,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             "ancestors": ancestors,
         });
     }
-    // 会话列表确定性 + 最近活跃优先。read_dir 顺序是平台
+    // BUG-20261102-325：会话列表确定性 + 最近活跃优先。read_dir 顺序是平台
     // 实现细节（NTFS 字典序 vs ext4 哈希序），前端侧栏「组内保持原排序」
     // 直接消费此序——无排序 = ext4 上每次启动列表漂移，且与新建会话乐观行
     // unshift 置顶（最近在前）语义矛盾。lastTime 是 Local offset RFC3339
@@ -458,8 +527,8 @@ fn read_meta_title(jsonl_path: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// fork lineage from the sidecar meta —
-/// `(parent_session_key, forked_at_turn)`, both `None` for pre meta files
+/// E4 (2026-09-05): fork lineage from the sidecar meta —
+/// `(parent_session_key, forked_at_turn)`, both `None` for pre-E4 meta files
 /// (only `title`) or absent sidecars.
 fn read_meta_lineage(jsonl_path: &Path) -> (Option<String>, Option<usize>) {
     let meta = jsonl_path.with_extension("meta.json");
@@ -477,8 +546,8 @@ fn read_meta_lineage(jsonl_path: &Path) -> (Option<String>, Option<usize>) {
     }
 }
 
-/// 项目归属 from the sidecar meta —
-/// `(project_id, project_path)`，pre meta（只有 title/血缘）或缺席
+/// L6++（2026-09-08）：项目归属 from the sidecar meta —
+/// `(project_id, project_path)`，pre-L6++ meta（只有 title/血缘）或缺席
 /// sidecar 时双 `None`。
 fn read_meta_project(jsonl_path: &Path) -> (Option<String>, Option<String>) {
     let meta = jsonl_path.with_extension("meta.json");
@@ -498,7 +567,7 @@ fn read_meta_project(jsonl_path: &Path) -> (Option<String>, Option<String>) {
     }
 }
 
-/// （真机日志）：未送达 assistant 回复计数 from the sidecar
+/// P2（2026-09-11 真机日志）：未送达 assistant 回复计数 from the sidecar
 /// meta（`mark_undelivered_reply` 打点 / `sessions.mark_delivered` 清零）。
 /// 无字段/缺席 sidecar = 0。
 fn read_meta_undelivered(jsonl_path: &Path) -> u32 {
@@ -511,7 +580,7 @@ fn read_meta_undelivered(jsonl_path: &Path) -> u32 {
         .unwrap_or(0)
 }
 
-/// （snooze）：读 sidecar meta 里的暂停标记（`sessions.
+/// B11（2026-10-18 snooze）：读 sidecar meta 里的暂停标记（`sessions.
 /// snooze` 写入 / sweeper 或 `unsnooze` 摘除）。无字段/缺席 sidecar =
 /// None；返回 `(snoozed_until, snooze_note)`——note 跟随投影供前端
 /// tooltip 展示。
@@ -529,7 +598,7 @@ fn read_meta_snooze(jsonl_path: &Path) -> Option<(String, Option<String>)> {
             Some((String::from(until), note))
         })
 }
-/// ：谱系扩展三字段一次 meta 读全取——`(fork_reason, last_rewind,
+/// WS9/P17：谱系扩展三字段一次 meta 读全取——`(fork_reason, last_rewind,
 /// branch_summary)`。缺席 sidecar / 旧形态文件 = 三 `None`（调用方逐项
 /// 判空，条目零增量）。`last_rewind` 以原样 JSON 对象透传（结构真相源在
 /// agent 侧 `RewindLineage`，这里只搬运不复制 schema）。
@@ -554,7 +623,7 @@ fn read_meta_lineage_ext(
     }
 }
 
-/// 会话 id → `RequestLog.session_key`。接受 sid（`s1`，Dashboard
+/// M5: 会话 id → `RequestLog.session_key`。接受 sid（`s1`，Dashboard
 /// sessions.list 语义）或 chat_log 文件 stem（`agent_main_session_s1`，
 /// scan_session_logs 的 id 语义）；构造规则与 chat handler / server.rs
 /// pump 同源（`agent:main:session:{sanitize(sid)}`）。
@@ -568,8 +637,8 @@ fn session_usage_key(session_id: &str) -> String {
     )
 }
 
-/// 会话条目就地回填 `tokens` / `cost` 两字段（best-effort
-/// 无 usage store 或单条聚合失败时静默跳过，字段缺省即前端不展示）。
+/// M5（2026-09-05）：会话条目就地回填 `tokens` / `cost` 两字段（best-effort
+/// ——无 usage store 或单条聚合失败时静默跳过，字段缺省即前端不展示）。
 /// `logs.session_list`（日志页会话浏览器）与 `sessions.list`（聊天侧栏）
 /// 两个消费方共用同一实现。页 ≤limit 条、`request_logs.session_key` 有
 /// 索引，逐条点查开销可忽略。
@@ -606,7 +675,32 @@ fn local_node_id(ctx: &RequestContext) -> Option<String> {
     }
 }
 
+/// replay_verify 的 store 解析（只碰 ctx，便宜）：live loop 的 store 优先
+/// （fork 可见性），否则盘载回退——与 fork API 同一裁决。调用方在 async
+/// 侧解析完毕，再把 Arc 交给阻塞线程做重活（BUG-20261106-024）。
+fn replay_store_from_ctx(
+    ctx: &RequestContext,
+) -> Result<std::sync::Arc<nemesis_agent::session::SessionStore>, String> {
+    if let Some(al) = ctx.state.agent_loop.read().as_ref()
+        && let Some(s) = al.session_store()
+    {
+        return Ok(s.clone());
+    }
+    let home = crate::handlers::require_home(ctx)?;
+    // home 是 home 根：先经 nemesis-path 转 workspace 再取
+    // sessions 目录（勿把 home 直接当 workspace 传入）。
+    Ok(std::sync::Arc::new(
+        nemesis_agent::session::SessionStore::new_with_storage(
+            nemesis_path::resolve_sessions_dir_in_workspace(&nemesis_path::workspace_dir(
+                Path::new(home),
+            )),
+        ),
+    ))
+}
+
+// ---------------------------------------------------------------------------
 // Markdown helpers (for *.request.md / *.response.md / *.Local.md)
+// ---------------------------------------------------------------------------
 
 /// Extract a `**Key**: value` header line from markdown.
 ///
@@ -674,7 +768,9 @@ pub(crate) fn extract_md_first_message(content: &str) -> String {
     trimmed[..end].to_string()
 }
 
+// ---------------------------------------------------------------------------
 // Filename helpers
+// ---------------------------------------------------------------------------
 
 /// Parse a request_logs dir name `{YYYY-MM-DD_HH-MM-SS}_{rand}` into (timestamp, suffix).
 pub(crate) fn parse_request_dir_name(name: &str) -> Option<(String, String)> {
@@ -718,7 +814,7 @@ pub(crate) fn list_subdirs_sorted_desc(dir: &Path) -> Vec<PathBuf> {
     subs
 }
 
-/// Sort files in a dir by their filename prefix numeric value (00, 01,...).
+/// Sort files in a dir by their filename prefix numeric value (00, 01, ...).
 fn sorted_files(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -745,7 +841,9 @@ fn file_type_name(filename: &str) -> &str {
     }
 }
 
+// ---------------------------------------------------------------------------
 // Audit chain segment collection + hashing
+// ---------------------------------------------------------------------------
 
 #[cfg(feature = "security")]
 fn collect_audit_segments(main_path: &Path) -> Vec<PathBuf> {
@@ -795,7 +893,7 @@ fn read_all_audit_events(main_path: &Path) -> Vec<AuditEvent> {
     events
 }
 
-/// 事件 hash 单一真相源委托（此处原是
+/// 事件 hash 单一真相源委托（BUG-20261102-305：此处原是
 /// `AuditChain::append_with_sign` 七字段公式的手抄拷贝——v1 公式追加
 /// source+reason 后拷贝版对追加事件恒算出「hash mismatch」假阳性）。
 /// 未支持版本（hash_version>1）返回空串 → 与任何存 hash 不等 → 上层
@@ -814,7 +912,9 @@ fn sanitize_session_key(key: &str) -> String {
     nemesis_utils::sanitize::sanitize_path_segment(key)
 }
 
+// ---------------------------------------------------------------------------
 // Security audit log parsing (pipe-delimited text format)
+// ---------------------------------------------------------------------------
 
 /// Parse a `security_audit_YYYY-MM-DD.log` file into AuditEntry JSON objects.
 ///
@@ -883,7 +983,9 @@ fn parse_security_audit_file(path: &Path) -> Vec<serde_json::Value> {
     out
 }
 
+// ---------------------------------------------------------------------------
 // Commands
+// ---------------------------------------------------------------------------
 
 impl LogsHandler {
     fn requests(
@@ -933,7 +1035,7 @@ impl LogsHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         // SAN-05：id 进路径前过白名单消毒（合法 `{ts}_{rand}` 目录名全字符
         // 在白名单内逐字节不变；`..`/分隔符/绝对路径塌成扁平段后诚实
-        // not found——裸 join 可被穿越读到 request_logs 之外）。
+        // not found——裸 join 可被穿越读到 request_logs 之外，BUG-HUNT R7）。
         let dir = request_log_dir(workspace).join(sanitize_session_key(id));
         if !dir.exists() {
             return Err(format!("request '{}' not found", id));
@@ -952,7 +1054,7 @@ impl LogsHandler {
 
     fn cluster_task_list(
         &self,
-        ctx: &RequestContext,
+        local: Option<String>,
         workspace: &str,
         limit: usize,
         offset: usize,
@@ -968,7 +1070,6 @@ impl LogsHandler {
             })));
         }
 
-        let local = local_node_id(ctx);
         let device_dirs: Vec<PathBuf> = if let Some(ref dev) = device_filter {
             // SAN-05 家族契约：id 形参数进路径前过白名单消毒（同文件
             // cluster_task_detail 的 task_id、request_detail 的 id 同纪律）。
@@ -1028,13 +1129,12 @@ impl LogsHandler {
 
     fn cluster_task_detail(
         &self,
-        ctx: &RequestContext,
+        local: Option<String>,
         workspace: &str,
         task_id: &str,
         perspective: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         let root = cluster_log_dir(workspace);
-        let local = local_node_id(ctx);
         let sanitized_target = sanitize_session_key(task_id);
 
         let mut candidates: Vec<(PathBuf, String)> = Vec::new();
@@ -1270,7 +1370,7 @@ impl LogsHandler {
         })))
     }
 
-    // cross-session full-text search via the agent-side FTS5
+    // T6 (U20): cross-session full-text search via the agent-side FTS5
     // index (crates/nemesis-agent/src/history_search.rs). NOTE: that module
     // resolves session_logs through the GLOBAL default path manager, not
     // this handler's `workspace` param — the two point at the same home in
@@ -1329,7 +1429,7 @@ impl LogsHandler {
         // File-based scan is the primary source — works even without the memory
         // manager (when enhanced memory / ONNX is disabled). Each *.jsonl is one
         // session. This decouples the dashboard's "对话历史" from the vector stack.
-        // 全目录全量解析（逐行 JSON parse）直跑 tokio
+        // BUG-20261102-302：全目录全量解析（逐行 JSON parse）直跑 tokio
         // worker 会占住 worker，spawn_blocking 移出（sessions.list 同款纪律）。
         let ws = workspace.to_string();
         let mut sessions = tokio::task::spawn_blocking(move || scan_session_logs(&ws))
@@ -1362,7 +1462,7 @@ impl LogsHandler {
             }
         }
 
-        // Optional keyword filter/rank over session summaries (lexical,
+        // Optional BM25 keyword filter/rank over session summaries (lexical,
         // independent of the memory manager). Drops non-matching sessions and
         // ranks the rest by relevance when `query` is supplied.
         #[cfg(feature = "memory")]
@@ -1430,9 +1530,9 @@ impl LogsHandler {
         })))
     }
 
-    /// `logs.session_usage` —— 单会话的 LLM 用量聚合
+    /// M5（2026-09-05）：`logs.session_usage` —— 单会话的 LLM 用量聚合
     /// （请求条数 / 输入 token（完整输入 = prompt + cache_creation +
-    /// cache_read， 口径）/ 输出 token / 总成本）。
+    /// cache_read，R2 2026-10-22 口径）/ 输出 token / 总成本）。
     /// 数据来自 `request_logs`（RequestLog.session_key 精确匹配）；无
     /// 数据库（usage 统计未启用）时诚实报错，前端静默降级为不展示。
     fn session_usage(
@@ -1473,10 +1573,10 @@ impl LogsHandler {
         // SAN-05：客户端 session 串进路径前过白名单消毒（磁盘 stem 本就是
         // sanitize_path_segment(key) 的产物，见 chat_log::log_path，对合法
         // 输入逐字节不变）——裸 join 可被 `..`/绝对路径顶替读工作区外
-        // jsonl（同 fs.rs tree_in 的 闸）。
+        // jsonl（同 fs.rs tree_in 的 F7 闸，BUG-HUNT R7）。
         let path =
             session_log_dir(workspace).join(format!("{}.jsonl", sanitize_session_key(session)));
-        // 整会话 jsonl 全量解析（逐行 JSON parse）在 wire
+        // BUG-20261102-302：整会话 jsonl 全量解析（逐行 JSON parse）在 wire
         // 路径直跑 tokio worker，spawn_blocking 移出（sessions.export 同款
         // 纪律）。
         let raw_lines = {
@@ -1501,13 +1601,13 @@ impl LogsHandler {
                 if let Some(name) = ln["cron_job_name"].as_str() {
                     msg["cron_job_name"] = serde_json::Value::String(name.to_string());
                 }
-                // 集群续行归属：刷新后历史重放同样显示「节点 X」
+                // 集群续行归属（2026-09-23）：刷新后历史重放同样显示「节点 X」
                 // 徽章。缺字段 = 旧条目/非集群，不带该键。
                 if let Some(node) = ln["source_node"].as_str() {
                     msg["source_node"] = serde_json::Value::String(node.to_string());
                 }
-                // 本 turn 声明式文件工具的变更清单（消息↔文件变更映射；
-                // 会话级 diff 查看器的数据源）。缺字段 = 旧条目/无变更，
+                // D3：本 turn 声明式文件工具的变更清单（消息↔文件变更映射；
+                // M3 会话级 diff 查看器的数据源）。缺字段 = 旧条目/无变更，
                 // 不带该键。
                 if let Some(fc) = ln["file_changes"].as_array() {
                     msg["file_changes"] = serde_json::Value::Array(fc.clone());
@@ -1552,7 +1652,7 @@ impl LogsHandler {
         })))
     }
 
-    /// (②): aggregate the session's projection ledger WITHOUT raw
+    /// G2 (U9 ②): aggregate the session's projection ledger WITHOUT raw
     /// content — per round: injection sources with final-vec positions and
     /// content sizes, summary-cache usage, the voice-append marker. This is
     /// the「本轮注入了什么」view the session browser lacked. `available:false`
@@ -1604,7 +1704,7 @@ impl LogsHandler {
                 "summary_covers_up_to":
                     rec.summary_as_of.as_ref().map(|s| s.covers_up_to),
             });
-            // snapshot hashes when recorded (hash-only — the bodies live
+            // L24: snapshot hashes when recorded (hash-only — the bodies live
             // in the content-addressed store, the panel stays a visibility
             // aid, not a second copy of the prompt bytes).
             if let Some(h) = &rec.system_prompt_sha256 {
@@ -1625,7 +1725,7 @@ impl LogsHandler {
         })))
     }
 
-    /// (②): verify one recorded round end-to-end — rebuild the message
+    /// G2 (U9 ②): verify one recorded round end-to-end — rebuild the message
     /// list from the session store + projection ledger, then byte-compare
     /// against the recorded `NN.AI.Request.raw.json` `body.messages`.
     ///
@@ -1633,9 +1733,11 @@ impl LogsHandler {
     /// when omitted the dir is auto-resolved by fingerprint: latest dir whose
     /// envelope carries the requested round AND the ledger record's exact
     /// role sequence (scanned newest-first, capped — audit path, not hot).
+    /// store 由调用方先经 [`replay_store_from_ctx`] 解析（BUG-20261106-024：
+    /// 只碰 ctx 的便宜部分留在 async 侧，重活整体进阻塞线程）。
     fn replay_verify(
         &self,
-        ctx: &RequestContext,
+        store: std::sync::Arc<nemesis_agent::session::SessionStore>,
         workspace: &str,
         session: &str,
         round: usize,
@@ -1708,27 +1810,9 @@ impl LogsHandler {
             })));
         };
 
-        // Session store: live loop's store first (fork visibility), else the
-        // disk-backed fallback — same resolution as the fork API.
-        let store: std::sync::Arc<nemesis_agent::session::SessionStore> = match ctx
-            .state
-            .agent_loop
-            .read()
-            .as_ref()
-            .and_then(|al| al.session_store())
-        {
-            Some(s) => s.clone(),
-            None => {
-                let home = crate::handlers::require_home(ctx)?;
-                // home 是 home 根：先经 nemesis-path 转 workspace 再取
-                // sessions 目录（勿把 home 直接当 workspace 传入）。
-                std::sync::Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
-                    nemesis_path::resolve_sessions_dir_in_workspace(&nemesis_path::workspace_dir(
-                        Path::new(home),
-                    )),
-                ))
-            }
-        };
+        // Session store resolution moved to [`replay_store_from_ctx`] —
+        // the caller resolves it (ctx access only) before the blocking
+        // thread picks up the heavy scan/verify work.
         // Store lookups key on the RAW session key; the ledger record carries
         // it (the request `session` param is the sanitized file stem).
         let store_key = if rec.session_key.is_empty() {
@@ -1804,9 +1888,9 @@ impl LogsHandler {
         }
     }
 
-    /// resolve the spill root the same way the agent factory points it —
-    /// the live loop's root first, else `<workspace>/logs/spill`（
-    /// 迁回 workspace， 设计指定位置；restrict_to_workspace 内 agent 可回读）。
+    /// G3: resolve the spill root the same way the agent factory points it —
+    /// the live loop's root first, else `<workspace>/logs/spill`（2026-08-31
+    /// 迁回 workspace，U4 设计指定位置；restrict_to_workspace 内 agent 可回读）。
     fn spill_root_for(ctx: &RequestContext) -> Option<PathBuf> {
         if let Some(al) = ctx.state.agent_loop.read().as_ref()
             && let Some(root) = al.spill_root_path()
@@ -1819,12 +1903,12 @@ impl LogsHandler {
         ))
     }
 
-    /// (spill 状态卡): read-only spill-tree aggregate + the retention
-    /// config so the card can explain what cleanup WOULD do.
-    fn spill_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let root = Self::spill_root_for(ctx)
-            .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
-        let st = nemesis_agent::spill::status(&root);
+    /// G3 (spill 状态卡): read-only spill-tree aggregate + the retention
+    /// config so the card can explain what cleanup WOULD do. root 由调用方
+    /// 先经 [`Self::spill_root_for`] 解析（BUG-20261106-024：树 walk 移
+    /// 阻塞线程）。
+    fn spill_status(&self, root: &Path) -> Result<Option<serde_json::Value>, String> {
+        let st = nemesis_agent::spill::status(root);
         let retention_days = spill_retention_days();
         Ok(Some(serde_json::json!({
             "root": root.display().to_string(),
@@ -1836,18 +1920,16 @@ impl LogsHandler {
         })))
     }
 
-    /// (spill 状态卡): run one retention sweep NOW (config retention; 0 =
+    /// G3 (spill 状态卡): run one retention sweep NOW (config retention; 0 =
     /// disabled → no-op) and return the deleted count plus the fresh status.
-    fn spill_cleanup(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let root = Self::spill_root_for(ctx)
-            .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+    fn spill_cleanup(&self, root: &Path) -> Result<Option<serde_json::Value>, String> {
         let retention_days = spill_retention_days();
         let deleted = if retention_days == 0 {
             0
         } else {
-            nemesis_agent::spill::cleanup_expired(&root, retention_days)
+            nemesis_agent::spill::cleanup_expired(root, retention_days)
         };
-        let st = nemesis_agent::spill::status(&root);
+        let st = nemesis_agent::spill::status(root);
         Ok(Some(serde_json::json!({
             "deleted": deleted,
             "retention_days": retention_days,
@@ -1859,7 +1941,7 @@ impl LogsHandler {
     }
 }
 
-/// retention config with the same default as `AgentDefaults`
+/// G3: retention config with the same default as `AgentDefaults`
 /// (`default_spill_retention_days` = 7); the live ConfigStore when absent
 /// (tests / early boot) falls back to that default.
 fn spill_retention_days() -> u64 {
@@ -1868,7 +1950,9 @@ fn spill_retention_days() -> u64 {
         .unwrap_or(7)
 }
 
-// Request / cluster log entry builders (parse raw.json +.md files)
+// ---------------------------------------------------------------------------
+// Request / cluster log entry builders (parse raw.json + .md files)
+// ---------------------------------------------------------------------------
 
 /// Build a top-level LlmRequestEntry summary from a request_logs/{ts}_{rand}/ dir.
 fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_json::Value {
@@ -2082,7 +2166,9 @@ fn parse_duration_seconds(value: &str) -> Option<u64> {
     }
 }
 
+// ---------------------------------------------------------------------------
 // Iteration parsing (group by `round` field in raw.json envelopes)
+// ---------------------------------------------------------------------------
 
 #[derive(Default)]
 struct IterationFiles {
@@ -2184,7 +2270,7 @@ fn read_json_round(path: &Path) -> Option<usize> {
         .map(|v| v as usize)
 }
 
-/// (②): cheap fingerprint check — does this request dir contain a raw
+/// G2 (U9 ②): cheap fingerprint check — does this request dir contain a raw
 /// request envelope for `round` whose role sequence matches the ledger record?
 /// The request envelope itself carries no session key, so role-sequence +
 /// round + messages-count is the identity proxy used to auto-locate it.
@@ -2207,7 +2293,7 @@ fn envelope_matches_round(
         .all(|(msg, role)| msg.get("role").and_then(|v| v.as_str()) == Some(role.as_str()))
 }
 
-/// (②): read `body.messages` from the raw.json envelope in `dir` that
+/// G2 (U9 ②): read `body.messages` from the raw.json envelope in `dir` that
 /// carries the requested `round` (files are `{NN}.{TYPE}` pairs; only
 /// `AI.Request.raw.json` entries qualify). Returns None if no such file.
 fn read_round_envelope(dir: &Path, round: usize) -> Option<Vec<serde_json::Value>> {
@@ -2405,6 +2491,7 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
     let mut in_args = false;
     let mut in_result = false;
     let mut in_error = false;
+    let mut in_duration = false;
 
     let flush = |out: &mut Vec<serde_json::Value>,
                  name: &mut String,
@@ -2470,6 +2557,7 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
             in_args = false;
             in_result = false;
             in_error = false;
+            in_duration = false;
             continue;
         }
         if !in_op {
@@ -2498,11 +2586,16 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
             in_args = false;
             in_result = false;
             in_error = false;
-            // parse "0.022s" on this line
+            in_duration = true;
+            // BUG-20261106-023：写入端（request_logger.rs `### Duration
+            // \n{:.3}s\n\n`）的值在标题的**下一行**。内联形态（`###
+            // Duration 0.02s`）是旧夹具/手写日志的宽容臂——解析成功就地
+            // 消费；失败则旗保持立起，留给下一行的值行消费。
             if let Some(rest) = trimmed.strip_prefix("### Duration") {
                 let s = rest.trim().trim_end_matches('s');
                 if let Ok(f) = s.parse::<f64>() {
                     current_duration_ms = (f * 1000.0) as u64;
+                    in_duration = false;
                 }
             }
             continue;
@@ -2522,10 +2615,21 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
             in_args = false;
             in_result = false;
             in_error = false;
+            in_duration = false;
             continue;
         }
         // Strip code fences
         if trimmed.starts_with("```") {
+            continue;
+        }
+        // BUG-20261106-023：Duration 值行（两行形态的下一行）。无论解析
+        // 成败都消费该行并清旗——坏值行不得落进正文累积。
+        if in_duration {
+            in_duration = false;
+            let s = trimmed.trim_end_matches('s');
+            if let Ok(f) = s.parse::<f64>() {
+                current_duration_ms = (f * 1000.0) as u64;
+            }
             continue;
         }
         // Field headers
@@ -2566,56 +2670,56 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
 #[cfg(all(test, feature = "security"))]
 mod tests;
 
-// history_search/history_reindex tests. Deliberately NOT
+// T6 (U20) history_search/history_reindex tests. Deliberately NOT
 // security-gated: these commands depend only on nemesis-agent (non-optional)
-// 但 FTS 本体随 history-search feature 进出（rusqlite），测试随之门控。
+// ——但 FTS 本体随 history-search feature 进出（rusqlite），测试随之门控。
 #[cfg(all(test, feature = "history-search"))]
 mod history_tests;
 
-// 覆盖率：requests/cluster_task/session 浏览面
-// （分页、device 过滤、self/peer perspective、cron 标记、 过滤）。
+// Phase 3 覆盖率（2026-08-25）：requests/cluster_task/session 浏览面
+// （分页、device 过滤、self/peer perspective、cron 标记、BM25 过滤）。
 #[cfg(test)]
 mod browse_tests;
 
-// security/chain_list/chain_verify 命令 +
+// Phase 3 批次 18（2026-08-25）：security/chain_list/chain_verify 命令 +
 // 管道格式解析 + meta sidecar + markdown helper 直测。链夹具用真实
 // AuditChain（integrity.rs 写入端）生成，保证格式断言钉的是真磁盘契约。
 #[cfg(all(test, feature = "security"))]
 mod wweb2_tests;
 
-// 覆盖率：episodic 富集（memory 门控）+ 审计链
+// R4 覆盖率（2026-08-27）：episodic 富集（memory 门控）+ 审计链
 // prev_hash mismatch 分支（security 门控），测试按 feature 各自包裹。
 #[cfg(all(test, any(feature = "memory", feature = "security")))]
 mod r4_tests;
 
-// （注入/replay 可见性）：injection_summary 聚合（无原文）
+// G2（U9 注入/replay 可见性，2026-08-28）：injection_summary 聚合（无原文）
 // + replay_verify 逐字节校验（指纹定位 + 显式 request_id + no_ledger）。
 // 不依赖 security/memory，纯 nemesis-agent replay 契约。
 #[cfg(test)]
 mod g2_tests;
 
-// （spill 状态卡）：spill_status 只读聚合 + spill_cleanup
+// G3（spill 状态卡，2026-08-28）：spill_status 只读聚合 + spill_cleanup
 // 按保留期立即清理。不依赖 security/memory。
 #[cfg(test)]
 mod g3_tests;
 
-// （fork 血缘标记）：scan_session_logs 的 parent/parentTitle/
-// forkedAtTurn 回填 + pre meta / 父会话已删的缺省分支。不依赖 security/memory。
+// E4（fork 血缘标记，2026-09-05）：scan_session_logs 的 parent/parentTitle/
+// forkedAtTurn 回填 + pre-E4 meta / 父会话已删的缺省分支。不依赖 security/memory。
 #[cfg(test)]
 mod e4_lineage_tests;
 
-// （项目归属回填）：scan_session_logs 的 projectId/
-// projectPath 回填 + 无绑定（对话组/pre meta）缺省分支。不依赖
+// L6++（2026-09-08，项目归属回填）：scan_session_logs 的 projectId/
+// projectPath 回填 + 无绑定（对话组/pre-L6++ meta）缺省分支。不依赖
 // security/memory。
 #[cfg(test)]
 mod project_binding_tests;
 
-// （snooze）：scan_session_logs 的 snoozedUntil/snoozeNote
+// B11（2026-10-18 snooze）：scan_session_logs 的 snoozedUntil/snoozeNote
 // 回填 + 无标记 meta / 无 meta 文件的零增量缺省。不依赖 security/memory。
 #[cfg(test)]
 mod b11_snooze_tests;
 
-// AGT 覆盖率批次：dispatch 层参数提取兜底臂、parse_cluster_dir_name
+// AGT 覆盖率批次（2026-09-24）：dispatch 层参数提取兜底臂、parse_cluster_dir_name
 // None 与 sorted_files 缺目录、scan_session_logs 空文件/undelivered 回填、审计链
 // 段收集（根无 parent/段目录不可读/空行）与 prev_hash mismatch、request/cluster
 // entry 坏 JSON 与无头 md 落穿、parse_request_iterations stub 迭代 + Local.md 挂接、

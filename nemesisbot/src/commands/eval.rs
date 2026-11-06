@@ -1,6 +1,6 @@
 //! `nemesisbot eval` — prompt / skill security behaviour assessment.
 //!
-//! Plan: eval-prompt-skill-security-assessment
+//! Plan: docs/PLAN/2026-08-14_eval-prompt-skill-security-assessment.md
 //! Four-layer architecture (command process / LLM proxy / sandboxed agent /
 //! monitor shell), all coordinated here (plan Step 6):
 //!
@@ -79,7 +79,7 @@ pub struct EvalCommon {
     /// when the box empties; this guards against resident background exes).
     #[arg(long, default_value_t = 1800)]
     pub observe_secs: u64,
-    /// Use./.nemesisbot as the real home (same as the global --local).
+    /// Use ./.nemesisbot as the real home (same as the global --local).
     #[arg(long)]
     pub local: bool,
     /// Exit with code 2 when the assessment concludes "risk". Exit codes:
@@ -93,7 +93,7 @@ pub struct EvalCommon {
 }
 
 pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
-    // 修订：Rules 分支前置独立处理——纯文件操作，跨平台可用，
+    // A1 修订：Rules 分支前置独立处理——纯文件操作，跨平台可用，
     // 不受下面的 Windows-only bail 影响。
     if let EvalAction::Rules { action } = action {
         return super::eval_rules::run(action, cli_local).await;
@@ -140,8 +140,8 @@ pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
 }
 
 /// `--fail-on-risk` 的退码执行点：在 run_eval 全部清理（box 清理 / ini
-/// restore / temp 目录）**完成之后**调用。：不走 Err 通道（main 的
-/// dispatch 是.await?，Result 只有 0/1 两态）；也绝不能在 run_phases /
+/// restore / temp 目录）**完成之后**调用。A4：不走 Err 通道（main 的
+/// dispatch 是 .await?，Result 只有 0/1 两态）；也绝不能在 run_phases /
 /// run_eval 深处 exit——那会跳过清理守卫把真实 Sandboxie.ini 留脏。
 #[cfg(target_os = "windows")]
 fn exit_if_risk_flagged() {
@@ -193,12 +193,12 @@ async fn run_eval(
     let llm_ref = nemesis_config::get_effective_llm(Some(&real_cfg));
     let resolution = nemesis_config::resolve_model_config(&real_cfg, &llm_ref)
         .with_context(|| format!("resolve model '{llm_ref}'"))?;
-    let real_base = resolution
-        .api_base
-        .trim()
-        .trim_end_matches('/')
-        .trim_end_matches("/v1")
-        .to_string();
+    // 路径镜像拆分（BUG-20261106-027）：origin 给代理（verbatim 转发目标），
+    // path 镜像进盒内 api_base——盒内请求的相对路径必然与真实 lane 一致。
+    // 此前无条件 trim "/v1" + lane 感知加删 /v1，只在「HttpCompat base 恰以
+    // /v1 结尾」时成立（Zhipu v4 / Gemini v1beta 等预设全部上游 404）。
+    let (real_origin, real_base_path) = split_origin_path(resolution.api_base.trim());
+    let real_base_path = real_base_path.trim_end_matches('/').to_string();
     let model_name = resolution.model_name.clone();
     // Full ref with provider prefix — what model_list[].model expects
     // (real config stores e.g. "deepseek/deepseek-v4-flash" there while
@@ -256,7 +256,7 @@ async fn run_eval(
     // 6e.5 — 原生插件闸（eval 监控 DLL 是插件目录一员；事件驱动装载 =
     // 开关即时生效）。关 = 诚实终止（监控事件缺失的评估没有结论价值，不
     // 静默降级）；签名策略与 exe 自验同一三态矩阵（enforce 态 fail-closed
-    // 拒载）。：先解析出实际装载文件（部署/开发双形态查找规则留在
+    // 拒载）。R1 整改：先解析出实际装载文件（部署/开发双形态查找规则留在
     // 本模块），闸验的就是它——开发形态仓库路径回退同样受验。缺席此处
     // fail-fast（不再拖到注入点才报，避免半装配现场）。位置在 6b 配置层与
     // 6e 沙盒就绪之后——分层 bail 顺序：config → model → sandbox → monitor。
@@ -283,7 +283,7 @@ async fn run_eval(
         None => monitor_dll_path()?,
     };
 
-    // 6f.0 — concurrent-eval lock。Sandboxie.ini 是全局
+    // 6f.0 — concurrent-eval lock（F1，2026-08-19）。Sandboxie.ini 是全局
     // 单文件：两个 eval 并发会互相覆盖/删除对方的 box 段（A 的
     // strip_stale restore 会删掉 B 正在用的段）。锁放 ini 旁（不是 home
     // 根——多 home 共用 SbieSvc/ini，必须护住 ini 本身）。原子 create_new
@@ -295,22 +295,22 @@ async fn run_eval(
     // The ConfigLevel / Template=SkipHook / AutoRecover / BlockNetworkFiles
     // keys are REQUIRED for Start.exe to launch anything in the box — without
     // them every spawn fails with ERROR_MOD_NOT_FOUND(126) + an error dialog
-    // (verified by the NemesisBox-vs-eval-box key diff,).
+    // (verified by the NemesisBox-vs-eval-box key diff, 2026-08-15).
     // A UNIQUE section name per run: SbieSvc caches per-section state and
     // repeated create/delete of the SAME section left it in a stale
     // "refuses to start processes" state (the `eval skill` exit-1 bug,
-    // ). A fresh name sidesteps the cache entirely. Still ≤33
+    // 2026-08-16). A fresh name sidesteps the cache entirely. Still ≤33
     // chars (SbieApi_QueryProcess box[34] limit).
     let eval_box = format!("NemesisEvalBox_{}", std::process::id());
     let eval_box_root = home.join("box_root");
     // Do NOT pre-create the box root: Sandboxie creates it on first launch,
     // and a pre-created root makes delete_sandbox's internal rmdir fail with
-    // Code 3 + a dialog (dialog-capture verified,).
+    // Code 3 + a dialog (dialog-capture verified, 2026-08-16).
     // Backup is SANITIZED: historical aborted eval runs leave NemesisEvalBox_*
     // sections in the real ini (their FileRootPath points at long-deleted temp
     // dirs — harmless but dirty, and they accumulate). Stripping them from the
     // in-memory backup means every eval run also restores the ini one run
-    // cleaner (observed: 11 stale sections accumulated).
+    // cleaner (observed 2026-08-18: 11 stale sections accumulated).
     let ini_backup = {
         let raw = std::fs::read_to_string(sandbox_root.join("Sandboxie.ini"))?;
         strip_stale_eval_sections(&raw)
@@ -339,8 +339,8 @@ async fn run_eval(
         }
 
         // 6f.1 — ClosedFilePath：封死盒内进程对真实凭据库的【读取】。
-        // Sandboxie 默认"隔离写、放行读"——实测盒内
-        // list_dir C:\Users\Zoo 能列出.aws/.azure/.bash_history，deny=0。
+        // Sandboxie 默认"隔离写、放行读"——实测（2026-08-18）盒内
+        // list_dir C:\Users\Zoo 能列出 .aws/.azure/.bash_history，deny=0。
         // eval 的目的是观察提示词会不会【尝试】偷凭据，凭据路径必须物理
         // 关闭：读这些路径 → SbieDrv 产生 deny 事件 → outbox-deny-* 规则
         // 的主信号成立。注意 ClosedFilePath 拦"打开"——目标文件不存在时
@@ -350,12 +350,12 @@ async fn run_eval(
         // 覆盖非默认 home 的部署形态。
         let user_profile = user_profile_dir();
         let prof_str = user_profile.display().to_string();
-        // 实测（SbieIni 受控实验）：`set section key value` 是
+        // 实测（2026-08-18，SbieIni 受控实验）：`set section key value` 是
         // **覆盖**语义（重复 set 只剩最后一条）；`set section key:序号` 写出
         // `key:1=...` 编辑语法行——Sandboxie 运行时**不认**。列表型 key 的
         // 正确写法是 `append` 子命令——它产出普通多行 `ClosedFilePath=...`。
         //（受控实验链：append 两次得到两行 ClosedFilePath=，格式正确。）
-        // 凭据关闭面扩到 20 条——浏览器（Chromium 系全家
+        // F3（2026-08-19）：凭据关闭面扩到 20 条——浏览器（Chromium 系全家
         // + Firefox）、云/容器 CLI（.aws/.azure/.gcloud/.kube/.docker/
         // .terraform.d）、包管理 token（.npmrc/.netrc/.pypirc/.cargo/
         // credentials*）、密钥环（.gnupg / Microsoft\Crypto）、git 内联
@@ -388,13 +388,12 @@ async fn run_eval(
 
         // 6g — LLM proxy. The fake-key config is only complete once the
         // proxy port is known.
-        let api_base_host_for_meta = proxy_target_host(&real_base);
-        // 每启动随机 fake key：发给盒内 agent 过代理闸，代理校验通过才
+        // A3 每启动随机 fake key：发给盒内 agent 过代理闸，代理校验通过才
         // 换真 key。静态 "eval-fake-key" + 无校验代理 = 本地任意进程摸到
         // 环回端口即可在 eval 生命周期内蹭真 key（已修）。
         let fake_key = uuid::Uuid::new_v4().simple().to_string();
         let proxy = nemesis_eval_proxy::start(
-            real_base.clone(),
+            real_origin.clone(),
             resolution.api_key.clone(),
             fake_key.clone(),
         )
@@ -402,14 +401,14 @@ async fn run_eval(
         .context("start eval LLM proxy")?;
 
         let eval_result = run_phases(
-            api_base_host_for_meta.as_str(),
+            real_origin.as_str(),
             &real_home,
             kind,
             &home,
             &workspace,
             &model_name,
             &model_ref,
-            &box_api_base(proxy.api_base().as_str(), &model_ref, &resolution.protocol),
+            &box_api_base(proxy.api_base().as_str(), &real_base_path),
             &resolution.protocol,
             &fake_key,
             &sbieini,
@@ -436,12 +435,12 @@ async fn run_eval(
     // eval error), but a failed ini restore on an otherwise-successful run
     // fails the command: an unrestored ini is real-environment pollution.
     clean_box(&start_exe, &eval_box, &eval_box_root);
-    // clean_box 的 delete_sandbox 是异步的——不等它完成就
+    // F2（2026-08-19）：clean_box 的 delete_sandbox 是异步的——不等它完成就
     // restore ini 的话，SbieSvc 可能正按一个（已被 restore 删掉的）段继续
     // 删除 → box_root 残留。等 box_root 消失（上限 15s；超时 WARN 放行，
     // 不让清理卡死主流程——SbieSvc 卡 registry hive 时由 close_temp 的重试兜）。
     wait_box_deleted(&eval_box_root, std::time::Duration::from_secs(15));
-    // ini 还原走 tmp+rename 原子写（save_rules 同款）。直接 fs::write
+    // F2：ini 还原走 tmp+rename 原子写（save_rules 同款）。直接 fs::write
     // 在写一半断电/崩溃时撕裂**全局** Sandboxie.ini——殃及 NemesisBox 主
     // 沙盒，不只是 eval。
     let ini_restore = (|| -> Result<()> {
@@ -472,9 +471,9 @@ async fn run_eval(
 }
 
 // ---------------------------------------------------------------------------
-// concurrent-eval lock
+// concurrent-eval lock（F1，2026-08-19）
 //
-// 并发池合同映射：这是 writer 池手法的
+// L19（改进项三期 2026-11-03）并发池合同映射：这是 writer 池手法的
 // **跨进程形态**，锁文件不能换成进程内 WorkPool——
 // - permit=1 全局串行：保护对象是 Sandboxie.ini 这个**全局单文件**（所有
 //   home 共用），进程内池的账本/信号量护不住跨进程资源，锁文件是同一
@@ -622,12 +621,11 @@ async fn run_phases(
         "model_list": [{
             "model_name": model_name,
             "model": model_ref,
-            // 每启动随机 fake key（与代理闸配对；不再是静态串）。
+            // A3 每启动随机 fake key（与代理闸配对；不再是静态串）。
             "api_key": fake_key,
-            // lane 随 wire 协议而异：HttpCompat 带 /v1（provider 拼
-            // /chat/completions），Anthropic/Codex base 裸（provider 自己拼
-            // /v1/messages、/responses）。此前无条件 /v1 → claude lane 盒内
-            // 路径 /v1/v1/messages → 上游 404。见 box_api_base 文档。
+            // 路径镜像（BUG-20261106-027）：= 代理根 + 真实 api_base 的
+            // path——盒内请求相对路径与真实 lane 逐字节一致，任意 lane /
+            // base 形态同时成立。见 box_api_base 文档。
             "api_base": box_api_base,
             // 显式协议透传（空 = 自动）：裸名 + protocol 条目在盒内也要走
             // 同一 lane；旧二进制不识别此键（flatten extra 吞掉，零影响）。
@@ -652,10 +650,10 @@ async fn run_phases(
     // 6i — clean box before the run.
     clean_box(start_exe, eval_box, eval_box_root);
 
-    // 6k — sandboxed agent. DETACHED_PROCESS +.output() is the verified
-    // stable combination (A/B tested): CREATE_NO_WINDOW exits
+    // 6k — sandboxed agent. DETACHED_PROCESS + .output() is the verified
+    // stable combination (A/B tested 2026-08-16): CREATE_NO_WINDOW exits
     // Start.exe with 0x40000004 (STATUS_CONTROL_C_EXIT) ~50% of the time;
-    // DETACHED with.status()+null stdio also fails; DETACHED +.output()
+    // DETACHED with .status()+null stdio also fails; DETACHED + .output()
     // exits 0 consistently.
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     let _agent_exit = Command::new(start_exe)
@@ -676,7 +674,7 @@ async fn run_phases(
     }
 
     // 6j — monitor shell (signed host + monitor DLL)。路径已在闸阶段解析
-    // （enforce 验签对象 = 这里注入的同一文件）。
+    // （enforce 验签对象 = 这里注入的同一文件，R1 整改）。
     let events_path = home.join("monitor_events.jsonl");
     let events_str = events_path.to_string_lossy().to_string();
     let sbiedll_str = sbiedll.to_string_lossy().to_string();
@@ -710,14 +708,14 @@ async fn run_phases(
     if let Some(errline) = events_raw.lines().find(|l| l.starts_with("# ERROR")) {
         bail!("environment problem, eval aborted: {errline}");
     }
-    // Event-cap truncation marker (plan): make the loss
+    // Event-cap truncation marker (plan 2026-08-18): make the loss
     // visible on the console — the file itself carries the # LIMIT line.
     if events_raw.lines().any(|l| l.starts_with("# LIMIT")) {
         println!(
             "[eval] WARN: 监控事件文件达上限被截断（普通事件已抑制，deny 事件仍记录）——普通规则的命中计数可能偏低"
         );
     }
-    // 监控壳异常退出降级：`# done` 行是 DLL 正常收尾
+    // F4（2026-08-19）监控壳异常退出降级：`# done` 行是 DLL 正常收尾
     //（盒空+尾窗+drain 完）才写的——它的存在=事件流完整性证书。
     // 有它 → 壳虽然异常退出（fuse 到/DLL watchdog ExitProcess(13)/被
     // 杀）但数据可信：WARN + 继续评估（meta.monitor_shell_exit 会如实
@@ -741,9 +739,9 @@ async fn run_phases(
 
     // 6n — pending files + agent report from the box mirror.
     // Box-mirror path derivation must mirror Sandboxie's own redirection
-    // (the reverse of nemesis_sandbox::pending:real_path_for_box):
-    //   real path under %USERPROFILE% → <box_root>\user\current\<rel>
-    //   anything else (any drive) → <box_root>\drive\<L>\<rel>
+    // (the reverse of nemesis_sandbox::pending::real_path_for_box):
+    //   real path under %USERPROFILE%  →  <box_root>\user\current\<rel>
+    //   anything else (any drive)      →  <box_root>\drive\<L>\<rel>
     // The temp home comes from %TEMP%, which may live on ANY drive — the
     // drive letter must be parsed from the path, never assumed to be C
     // (hard-coding C made every eval read fail on TEMP=D:\ machines; every
@@ -751,7 +749,7 @@ async fn run_phases(
     let box_mirror = box_mirror_for(home, eval_box_root, &user_profile_dir());
     // The worker writes its report to <workspace>/logs/eval where its
     // "workspace" env var == our home (config.json dir) — NOT home/workspace.
-    // (Verified box-mirror tree:.../.tmpX/logs/eval/tool_trace.json.)
+    // (Verified box-mirror tree: .../.tmpX/logs/eval/tool_trace.json.)
     let agent_report_dir = box_mirror.join("logs").join("eval");
     // Surface worker-side failures (the sandbox swallows the agent's stderr).
     if let Ok(err) = std::fs::read_to_string(box_mirror.join("worker_error.txt")) {
@@ -786,9 +784,9 @@ async fn run_phases(
             format!("alive: {alive}\nlisting:\n{listing}"),
         );
     }
-    // Read-side provenance markers（修复）：盒镜像读取失败/读到
+    // Read-side provenance markers（第五轮 V1 修复）：盒镜像读取失败/读到
     // 空文件时，缺省值绝不能是"合法空结果"——那会把 worker 中途死亡导致
-    // 的数据丢失洗白成"空但合法"的报告，assessor 判 Safe（事故的读侧
+    // 的数据丢失洗白成"空但合法"的报告，assessor 判 Safe（A2 事故的读侧
     // 变体）。缺省串带 _NEMESIS_UNREADABLE_ 标记；assessor 见标记 → 未知。
     let tool_trace = read_box_file_or_marker(&agent_report_dir, "tool_trace.json");
     let findings = read_box_file_or_marker(&agent_report_dir, "security_findings.json");
@@ -869,7 +867,7 @@ async fn run_phases(
         }))?,
     )?;
     // driver_events: keep the JSONL events + the semantic comment lines.
-    // `# LIMIT`（截断标记，plan）和 `# done`（含 suppressed 计数）
+    // `# LIMIT`（截断标记，plan 2026-08-18）和 `# done`（含 suppressed 计数）
     // 是评估者和人工判读需要的信息——只过滤 progress 等纯噪音注释。
     let event_lines: Vec<&str> = events_raw
         .lines()
@@ -887,7 +885,7 @@ async fn run_phases(
         event_lines.len()
     );
 
-    // 6q — assess the report (plan: rules-driven tri-classification).
+    // 6q — assess the report (plan 2026-08-17: rules-driven tri-classification).
     // 三通道立即落地（控制台/assessment.json/meta 段）；退码信号写进
     // 进程级 AtomicBool，run() 在清理守卫之后读到再 exit(2)——绝不能在
     // 这里直接 exit（会跳过 ini restore，见 assess_and_report 文档）。
@@ -908,11 +906,11 @@ static RISK_EXIT_FLAG: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 ///    未知带缺口明细 + 固定说明段）
 /// 2. assessment.json 写进报告目录（与 7 件套并排；机器可读 + 回放）
 /// 3. meta.json 追加 assessment 段
-/// 4. 返回 risk_exit 信号（fail-on-risk 且结论=有风险）——**不在这里
+/// 4. 返回 risk_exit 信号（--fail-on-risk 且结论=有风险）——**不在这里
 ///    exit**：本函数在 run_phases 尾部、run_eval 的清理守卫块**内部**被调
 ///    用，直接 exit(2) 会跳过 clean_box / ini restore / temp 清理（真实
 ///    Sandboxie.ini 留脏 = 环境污染）。信号沿 run_phases → run_eval →
-///    run() 传回，清理全部完成后才 exit(2)（修订的实现修正）。
+///    run() 传回，清理全部完成后才 exit(2)（A4 修订的实现修正）。
 #[cfg(target_os = "windows")]
 fn assess_and_report(out_dir: &Path, real_home: &Path, fail_on_risk: bool) -> bool {
     use crate::eval_assessor::{self, AssessResult, Conclusion};
@@ -926,7 +924,7 @@ fn assess_and_report(out_dir: &Path, real_home: &Path, fail_on_risk: bool) -> bo
         Err(e) => {
             let result = AssessResult {
                 conclusion: Conclusion::Unknown,
-                kind: read_kind_from_meta(out_dir), // 修复：读真实 kind 而非硬编码
+                kind: read_kind_from_meta(out_dir), // P3 修复：读真实 kind 而非硬编码
                 matched_rules: vec![],
                 gaps: vec![format!("规则文件损坏或无法加载：{e:#}")],
                 run_integrity: eval_assessor::RunIntegrity {
@@ -1092,7 +1090,7 @@ fn print_assessment(result: &crate::eval_assessor::AssessResult, fixed_notes: &[
     }
 }
 
-/// 安全结论的运行完整性回执（"为什么敢判安全"可）。
+/// 安全结论的运行完整性回执（"为什么敢判安全"可见）。
 #[cfg(target_os = "windows")]
 fn integrity_receipt(result: &crate::eval_assessor::AssessResult) -> String {
     // 旧报告（legacy）无运行状态字段——明说"未记录"而不是一排 "?"（后者
@@ -1147,7 +1145,7 @@ fn slug(kind: &str) -> String {
 /// Strip historical `[NemesisEvalBox*]` sections from a Sandboxie.ini body.
 /// Sections start at `[NemesisEvalBox` and run until the next `[` header or EOF.
 /// Used to sanitize the backup so the post-run restore also cleans stale
-/// sections from aborted runs (11 stale sections observed).
+/// sections from aborted runs (2026-08-18: 11 stale sections observed).
 #[cfg(target_os = "windows")]
 fn strip_stale_eval_sections(ini: &str) -> String {
     let mut out = String::with_capacity(ini.len());
@@ -1169,7 +1167,7 @@ fn strip_stale_eval_sections(ini: &str) -> String {
 }
 
 /// Derive the in-box mirror path for a real path, following Sandboxie's
-/// redirection layout (reverse of `nemesis_sandbox::pending:real_path_for_box`):
+/// redirection layout (reverse of `nemesis_sandbox::pending::real_path_for_box`):
 ///
 /// - real path under `user_profile` (case-insensitive prefix match — Windows
 ///   paths differ in case between env vars and canonicalization) →
@@ -1233,31 +1231,42 @@ fn proxy_target_host(real_base: &str) -> String {
     rest.split(['/', '?', ':']).next().unwrap_or("").to_string()
 }
 
-/// 盒内 agent 的 api_base（6d 写入盒内 config.json）。后缀随 wire lane
-/// 而异：HttpCompat 约定 base 带 `/v1`（provider 拼 `/chat/completions`）；
-/// Anthropic 拼 `/v1/messages`、Codex 拼 `/responses`——这两种 base 不带
-/// `/v1`。此前无条件带 `/v1`，claude lane 下盒内路径变成 `/v1/v1/messages`
-/// → 上游 404（r10 真链路测试红的根因）。lane 判定与盒内
-/// factory 同源：直接问 `resolve_provider_selection`（前缀 + 显式 protocol
-/// 一起算），不在本地复制推断逻辑。解析失败兜底 HttpCompat 形态（保持
-/// 旧行为；盒内 factory 对同类输入会 loud 报错，不会静默走错协议）。
+/// Split an api_base into `(origin, base_path)`: `https://h:8080/v1` →
+/// (`https://h:8080`, `/v1`); no path → (`https://h`, ``). Origin = the
+/// verbatim pass-through target for the eval proxy; base_path = mirrored
+/// into the sandboxed agent's api_base (see `box_api_base`).
 #[cfg(target_os = "windows")]
-fn box_api_base(proxy_base: &str, llm_ref: &str, protocol: &str) -> String {
-    let provider_type = nemesis_providers::factory::resolve_provider_selection(
-        &nemesis_providers::factory::FactoryConfig {
-            proxy: String::new(),
-            llm_ref: llm_ref.to_string(),
-            protocol: protocol.to_string(),
-            ..Default::default()
-        },
-    )
-    .map(|sel| sel.provider_type)
-    .unwrap_or(nemesis_providers::factory::ProviderType::HttpCompat);
-    match provider_type {
-        nemesis_providers::factory::ProviderType::HttpCompat => proxy_base.to_string(),
-        // Anthropic /v1/messages、Codex /responses：base 不能带 /v1。
-        _ => proxy_base.trim_end_matches("/v1").to_string(),
+fn split_origin_path(base: &str) -> (String, String) {
+    let rest = base.split_once("://").map(|(_, r)| r).unwrap_or(base);
+    match rest.split_once('/') {
+        Some((authority, path)) => {
+            let origin_len = base.len() - rest.len() + authority.len();
+            (base[..origin_len].to_string(), format!("/{path}"))
+        }
+        None => (base.to_string(), String::new()),
     }
+}
+
+/// 盒内 agent 的 api_base（6d 写入盒内 config.json）。
+///
+/// 路径镜像规则（BUG-20261106-027）：盒内 base = 代理根 + 真实 api_base 的
+/// path 部分。代理是纯 verbatim 转发（origin + 收到的完整路径），而盒内与
+/// 真实两侧跑同一份 provider 代码、对 base 只做 path 后缀级归一（Anthropic
+/// 剥尾 `/v1` 再自拼 `/v1/messages`，Codex/HttpCompat 拼裸后缀），因此盒内
+/// 请求的相对路径与真实 lane 的相对路径逐字节一致——对任意 lane、任意
+/// base 形态（无 path / `/v1` / `/api/paas/v4` / `/v1beta`）同时成立。
+///
+/// 此前的 lane 感知形态（HttpCompat base 带 `/v1`、其余剥 `/v1`，配
+/// real_base 无条件剥 `/v1`）只在「HttpCompat base 恰以 `/v1` 结尾」时
+/// 成立：Zhipu `/api/paas/v4`、Z.ai `/api/paas/v4`、Gemini `/v1beta`、
+/// Doubao `/api/v3`、Qianfan `/v2` 等预设全部被多插一层 `/v1` → 上游 404；
+/// Codex lane + `api.openai.com/v1` 形态则丢 `/v1` → 404。2026-09-11 r10
+/// 的 `/v1/v1` 事故修复（lane 感知剥 `/v1`）修好了 Anthropic 但把不对称
+/// 留下了——本形态把两侧都锚到同一真相源（真实 api_base 的 path），该类
+/// 不对称整族消除。
+#[cfg(target_os = "windows")]
+fn box_api_base(proxy_base: &str, real_base_path: &str) -> String {
+    format!("{}{}", proxy_base.trim_end_matches('/'), real_base_path)
 }
 
 #[cfg(target_os = "windows")]
@@ -1313,12 +1322,12 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 
 /// Delete the eval temp dir reliably. TempDir's Drop self-deletes but
 /// SILENTLY — a Sandboxie handle releasing a beat late leaks the whole temp
-/// tree with no trace (verified: failed-run dirs left in %TEMP%).
+/// tree with no trace (verified 2026-08-16: failed-run dirs left in %TEMP%).
 ///
 /// The blocker is SbieSvc holding the box's registry hive (box_root/RegHive*)
 /// open while it processes the async `delete_sandbox_silent` — deleting the
 /// temp dir before SbieSvc releases the hive fails with sharing violations
-/// that outlast short retries (verified). So: first wait for the
+/// that outlast short retries (verified 2026-08-16). So: first wait for the
 /// BOX ROOT itself to disappear (SbieSvc's own delete is the authority; up to
 /// ~10s), then close/remove the temp dir with retries.
 ///
@@ -1327,7 +1336,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
 /// never fails the eval result.
 #[cfg(target_os = "windows")]
 fn close_temp_with_retry(tmp: tempfile::TempDir, eval_box_root: &Path) {
-    // wait for SbieSvc to finish deleting the box (hive release).
+    // Phase 0: wait for SbieSvc to finish deleting the box (hive release).
     for _ in 0..20 {
         if !eval_box_root.exists() {
             break;
@@ -1336,11 +1345,11 @@ fn close_temp_with_retry(tmp: tempfile::TempDir, eval_box_root: &Path) {
     }
     let mut opt = Some(tmp);
     let path = opt.as_ref().expect("tempdir").path().to_path_buf();
-    // explicit close with retries for late handle release.
+    // Phase 1: explicit close with retries for late handle release.
     // NOTE: TempDir::close() neutralizes its inner path and mem::forget()s
     // itself even on FAILURE (verified against tempfile 3.27 source), so
     // after one failed attempt `opt` stays None — a second close() is
-    // impossible. Fall through to instead of returning early, or
+    // impossible. Fall through to Phase 2 instead of returning early, or
     // the promised remove_dir_all recovery below becomes dead code and the
     // box dir leaks silently under %TEMP%.
     for _ in 0..6 {
@@ -1354,7 +1363,7 @@ fn close_temp_with_retry(tmp: tempfile::TempDir, eval_box_root: &Path) {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    // close() keeps failing (or the TempDir was consumed by a failed
+    // Phase 2: close() keeps failing (or the TempDir was consumed by a failed
     // close, which forget()s it) — plain recursive delete on the same path.
     if path.exists() {
         let mut last_err = None;
@@ -1388,7 +1397,7 @@ fn sbieini_set(sbieini: &Path, section: &str, key: &str, value: &str) -> Result<
 
 /// SbieIni `append`：列表型 key（ClosedFilePath 等）的多值追加。
 /// `set` 是覆盖语义且 `set key:序号` 写出运行时不认的编辑语法行——
-/// 只有 append 产出 Sandboxie 认的普通多行 `key=value`（实测）。
+/// 只有 append 产出 Sandboxie 认的普通多行 `key=value`（2026-08-18 实测）。
 #[cfg(target_os = "windows")]
 fn sbieini_append(sbieini: &Path, section: &str, key: &str, value: &str) -> Result<()> {
     let out = Command::new(sbieini)
@@ -1405,7 +1414,7 @@ fn sbieini_append(sbieini: &Path, section: &str, key: &str, value: &str) -> Resu
 fn clean_box(start_exe: &Path, box_name: &str, box_root: &Path) {
     // Skip when the box root does not exist — delete_sandbox would run an
     // internal `rmdir` on a missing path and pop a "Delete command failed
-    // (Code 3)" dialog (dialog-capture verified,).
+    // (Code 3)" dialog (dialog-capture verified, 2026-08-16).
     if !box_root.exists() {
         return;
     }
@@ -1419,7 +1428,7 @@ fn clean_box(start_exe: &Path, box_name: &str, box_root: &Path) {
         .status();
 }
 
-/// 轮询等 box_root 被 SbieSvc 删除（clean_box 的删除是
+/// F2（2026-08-19）：轮询等 box_root 被 SbieSvc 删除（clean_box 的删除是
 /// 异步的）。上限 `max`；超时只 WARN 不报错——清理不能卡死主流程。
 #[cfg(target_os = "windows")]
 fn wait_box_deleted(box_root: &Path, max: std::time::Duration) {
@@ -1437,7 +1446,7 @@ fn wait_box_deleted(box_root: &Path, max: std::time::Duration) {
     }
 }
 
-/// Monitor DLL location（用户决定重构：部署优先，不绑死仓库）。
+/// Monitor DLL location（2026-08-18 用户决定重构：部署优先，不绑死仓库）。
 ///
 /// 查找规则：
 /// 1. exe 旁**存在 `plugins\` 目录**（部署形态标志）→ 只认

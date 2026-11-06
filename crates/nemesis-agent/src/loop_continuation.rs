@@ -326,6 +326,33 @@ impl ContinuationStore {
         }
     }
 
+    /// Literal-path load by an **already-sanitized** filename stem (scan
+    /// paths only: `recover_to_manager` / 目录扫描消费方). BUG-20261106-022
+    /// 第二层：stem 若再过 [`Self::snapshot_path`] 的消毒，hash 后缀形态
+    /// （78 字符恰中 `is_hash_suffix_form` 判定）会被强制回 hash 分支对
+    /// **stem 本身**再哈希——产出与原文件名不同的路径，读/删永远扑空
+    /// （hash 形态快照重启后永不能恢复、TTL 清理删盘不掉）。消毒必须只在
+    /// 原始 id → 文件名边界发生一次；扫描派生名按字面直用。
+    fn load_by_stem(&self, stem: &str) -> std::io::Result<ContinuationSnapshot> {
+        let path = self.base_dir.join(format!("{stem}.json"));
+        let json = std::fs::read_to_string(&path)?;
+        serde_json::from_str(&json).map_err(std::io::Error::other)
+    }
+
+    /// Literal-path delete by an already-sanitized filename stem（同
+    /// [`Self::load_by_stem`] 的纪律；[`Self::delete`] 只服务原始 id 调用方）。
+    fn delete_by_stem(&self, stem: &str) {
+        let path = self.base_dir.join(format!("{stem}.json"));
+        if path.exists()
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            warn!(
+                "[Continuation] Failed to delete continuation snapshot {}: {}",
+                stem, e
+            );
+        }
+    }
+
     /// List all pending task IDs on disk.
     ///
     /// Scans the cache directory for `.json` files and returns their task IDs
@@ -362,7 +389,7 @@ impl ContinuationStore {
                 continue;
             }
 
-            match self.load(task_id) {
+            match self.load_by_stem(task_id) {
                 Ok(snapshot) => {
                     let mut messages: Vec<LlmMessage> = match serde_json::from_str(
                         &snapshot.messages,
@@ -1079,9 +1106,30 @@ impl ContinuationManager {
             return 0;
         };
         let stale = store.stale_task_ids(max_age);
-        for task_id in &stale {
-            self.continuations.lock().await.remove(task_id);
-            store.delete(task_id);
+        for stem in &stale {
+            // BUG-20261106-022：内存键是**原始 task_id**（save_continuation
+            // 原样入键；recover_to_manager 按文件名 stem 回载）——本循环拿到
+            // 的是消毒后文件名 stem。task_id 含白名单外字符（`/`、`:`、空格、
+            // >80 字符；SAN-02：cluster_rpc args 模型可影响）时 sanitize(id)
+            // ≠ id，按 stem 直删永远 miss：TTL 清理删得掉盘上文件、删不掉
+            // 内存快照（含完整对话 JSON，重启前无界驻留）。改按
+            // 「sanitize(内存键) == stem」匹配——save 侧原键经消毒命中，
+            // recover 侧 stem 键经消毒幂等性同样命中；身份映射（真实 id 族）
+            // 退化为精确匹配，行为不变。SessionStore cleanup 的「从 JSON
+            // 内容取原键」范本在此不适用（stale_task_ids 只扫目录不读内容），
+            // 匹配式删除是等价收口。
+            {
+                let mut conts = self.continuations.lock().await;
+                let doomed: Vec<String> = conts
+                    .keys()
+                    .filter(|k| nemesis_utils::sanitize::sanitize_path_segment(k) == stem.as_str())
+                    .cloned()
+                    .collect();
+                for k in &doomed {
+                    conts.remove(k);
+                }
+            }
+            store.delete_by_stem(stem);
         }
         let tmp_removed = store.sweep_stale_tmp_orphans(nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE);
         if tmp_removed > 0 {

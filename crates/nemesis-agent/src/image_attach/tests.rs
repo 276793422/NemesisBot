@@ -18,7 +18,7 @@
 
 use std::path::PathBuf;
 
-use super::{AttachOutcome, attach_turn_images, hydrate_image_refs};
+use super::{AttachOutcome, attach_turn_images, hydrate_image_refs, is_data_url, is_http_url};
 use nemesis_types::channel::MediaAttachment;
 
 // ---------------------------------------------------------------------------
@@ -892,5 +892,112 @@ async fn t9_extension_from_magic_not_url_or_content_type() {
         path.ends_with(".jpg"),
         "落盘扩展名应按 magic 定为 jpg，got: {}",
         path
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261106-034：URL scheme 大小写不敏感（RFC 3986 §3.1）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn url_scheme_case_insensitive_helpers() {
+    // `HTTP://`/`HttpS://` 与小写等价；字节级前缀比较会把大写形态误判成
+    // 本地路径引用，下游假报「文件不存在」。
+    assert!(is_http_url("http://a/x.png"));
+    assert!(is_http_url("HTTP://a/x.png"));
+    assert!(is_http_url("HttpS://a/x.png"));
+    assert!(!is_http_url("ftp://a/x.png"));
+    assert!(!is_http_url("httpx://a/x.png"));
+    assert!(!is_http_url(""));
+    assert!(!is_http_url("htt"), "比 scheme 短");
+    assert!(!is_http_url("http:/a"), "单斜杠不冒充");
+    assert!(is_data_url("DATA:image/png;base64,AA"));
+    assert!(is_data_url("data:text/plain,x"));
+    assert!(!is_data_url("http://a"));
+}
+
+#[tokio::test]
+async fn t9_uppercase_scheme_url_prefetched() {
+    // 大写 scheme URL 必须走正常预取链（mock server 实拉）：修复前被误判
+    // 成本地路径原样 kept——不下载、不落盘，下游假报「文件不存在」。
+    let jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 1, 2, 3, 4];
+    let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let base = spawn_mock_image_server(jpeg, "image/jpeg", hits.clone(), 1);
+    let upper = base.replacen("http://", "HTTP://", 1);
+    assert_ne!(base, upper);
+
+    let dir = tempfile::tempdir().unwrap();
+    let uploads = dir.path().join("uploads");
+    let (kept, notes) =
+        fetch_url_media(&[media_ref(&format!("{upper}/i.png"))], &uploads, None).await;
+    assert!(notes.is_empty(), "notes: {notes:?}");
+    assert_eq!(kept.len(), 1);
+    assert!(
+        kept[0].url.starts_with(dir.path().to_str().unwrap()),
+        "应预取落盘为本地路径，got: {}",
+        kept[0].url
+    );
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "mock server 应收到 1 次请求"
+    );
+}
+
+#[test]
+fn attach_uppercase_scheme_url_classified_as_url() {
+    // attach_turn_images 来源 2 同族位点：大写 scheme URL 的注记应是
+    // 「未经 fetch_url_media 预取」（URL 定性），不得假报「文件不存在」
+    // （路径定性）。security=None（只验分类注记，不跑真闸）。
+    let outcome = attach_turn_images(
+        "",
+        &[media_ref("HTTP://example.com/i.png")],
+        None,
+        None,
+        "web",
+        None,
+    );
+    assert!(outcome.attached.is_empty());
+    assert!(
+        outcome
+            .notes
+            .iter()
+            .any(|n| n.contains("未经 fetch_url_media 预取")),
+        "notes: {:?}",
+        outcome.notes
+    );
+    assert!(
+        !outcome.notes.iter().any(|n| n.contains("文件不存在")),
+        "不得假报文件不存在（路径定性）：{:?}",
+        outcome.notes
+    );
+}
+
+#[test]
+fn attach_uppercase_data_url_classified_as_data() {
+    // 同族（BUG-20261106-034 横向补齐）：attach 层缺 data 分类分支，
+    // `DATA:` 直投 attach（绕过 fetch 预取）此前被当本地路径假报
+    // 「文件不存在」——现与 fetch 层同文案诚实注明。
+    let outcome = attach_turn_images(
+        "",
+        &[media_ref("DATA:image/png;base64,aGVsbG8=")],
+        None,
+        None,
+        "web",
+        None,
+    );
+    assert!(outcome.attached.is_empty());
+    assert!(
+        outcome
+            .notes
+            .iter()
+            .any(|n| n.contains("暂不支持内联 data 图片引用")),
+        "notes: {:?}",
+        outcome.notes
+    );
+    assert!(
+        !outcome.notes.iter().any(|n| n.contains("文件不存在")),
+        "不得假报文件不存在：{:?}",
+        outcome.notes
     );
 }

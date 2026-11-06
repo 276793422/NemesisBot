@@ -1,8 +1,8 @@
-//! 统一图片附加（goal，真相源.2 +.3）。
+//! 统一图片附加（goal T5，真相源 §2 P2.2 + P2.3）。
 //!
 //! 轮次摄取时两条来源统一处理：
-//! 1. `InboundMessage.media` 引用（Telegram 照片 / Web 上传落盘路径；URL 场景 接入）
-//! 2. 文本提取路径（主场景：用户在提示词里写本地图片路径）
+//! 1. `InboundMessage.media` 引用（Telegram 照片 / Web 上传落盘路径；URL 场景 T9 接入）
+//! 2. T4 文本提取路径（主场景：用户在提示词里写本地图片路径）
 //!
 //! **附加 = 一次程序化 file_read 走安全管线**：构造 `read_file` invocation 交
 //! `SecurityPlugin::execute`（8 层全跑：注入 → ABAC file_rules → 凭据 → DLP →
@@ -11,7 +11,7 @@
 //! 文件工具的 restrict_to_workspace 校验（该开关继续管 agent 自主工具调用，
 //! 三态见 tests.rs）；收紧走 file_rules（管线 Layer 3 照常拦截）。
 //!
-//! 字节水合不在附加时做：附加只产出**路径引用**（历史持久化同 存引用），
+//! 字节水合不在附加时做：附加只产出**路径引用**（历史持久化同 T6 存引用），
 //! build_messages 每轮按引用重读文件 → base64（[`hydrate_image_refs`]）。
 //! 文件已删/不可读 → 降级占位文本，不静默。
 
@@ -80,7 +80,7 @@ impl AttachOutcome {
     }
 }
 
-/// 从候选状态提取诚实注记（复用 的 failure_reason 语义）。
+/// 从候选状态提取诚实注记（复用 T4 的 failure_reason 语义）。
 fn candidate_note(c: &ImagePathCandidate) -> Option<String> {
     c.failure_reason()
         .map(|reason| format!("[图片未附加: {}]", reason))
@@ -109,7 +109,7 @@ fn gate_and_hash(
         };
         let (allowed, deny) = sec.execute(&invocation);
         if !allowed {
-            // DenyInfo 结构化回执 → 错误串带 layer 前缀（summary 原文）。
+            // F5: DenyInfo 结构化回执 → 错误串带 layer 前缀（summary 原文）。
             let msg = match deny {
                 Some(info) => {
                     format!("[layer:{}] {}", info.layer, info.summary)
@@ -119,7 +119,7 @@ fn gate_and_hash(
             return Err(msg);
         }
     }
-    // 读文件 + sha256（审计记 hash 不记像素；.2 盲区边界同款语义）。
+    // 读文件 + sha256（审计记 hash 不记像素；P4.2 盲区边界同款语义）。
     let bytes = std::fs::read(path).map_err(|e| format!("文件无法读取: {} ({})", path_str, e))?;
     let hash = {
         use sha2::{Digest, Sha256};
@@ -152,8 +152,23 @@ fn gate_and_hash(_security: Option<()>, path: &Path, _channel: &str) -> Result<S
     Ok(String::new())
 }
 
-/// 构建不跟随重定向的下载 client（二次回归 引入；
-/// 泛化为参数化构建器供 web_fetch 重定向循环复用同一语义）：
+/// URL scheme 前缀判定（RFC 3986 §3.1：scheme 大小写不敏感——`HTTP://`
+/// 与 `http://` 等价）。字节级前缀比较会把大写形态误判成本地路径引用，
+/// 下游假报「文件不存在」（BUG-20261106-034）。
+fn url_has_scheme(url: &str, scheme: &str) -> bool {
+    url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme)
+}
+
+fn is_http_url(url: &str) -> bool {
+    url_has_scheme(url, "http://") || url_has_scheme(url, "https://")
+}
+
+fn is_data_url(url: &str) -> bool {
+    url_has_scheme(url, "data:")
+}
+
+/// 构建不跟随重定向的下载 client（2026-09-03 二次回归 A1 引入；J2a
+/// 2026-09-04 泛化为参数化构建器供 web_fetch 重定向循环复用同一语义）：
 /// 共享池默认策略跟随至多 10 跳重定向——SSRF 闸只校验**首跳** URL，
 /// `302 → 内网地址` 会绕过闸直接打内网。所有拉取外部 URL 的 client 一律
 /// 用 Policy::none（重定向响应走 error_for_status 或由上层循环手动逐跳
@@ -184,23 +199,23 @@ fn no_redirect_client() -> &'static reqwest::Client {
     })
 }
 
-/// 按 SSRF 闸验证过的 IP 集**钉死 DNS** 的下载 client 构建器（
-/// 四轮盲审； 参数化供 web_fetch 复用）：闸解析验证过 ≠
+/// 按 SSRF 闸验证过的 IP 集**钉死 DNS** 的下载 client 构建器（2026-09-04
+/// 四轮盲审 S2；J2a 2026-09-04 参数化供 web_fetch 复用）：闸解析验证过 ≠
 /// reqwest 实际连接用的 IP——两次独立解析之间，rebinding 域名（攻击者控
 /// DNS、TTL 0）可先答公网 IP 过闸、再答内网/元数据 IP 收连接。
 /// `resolve(host, addr)` 把该 host 的全部连接钉在已验证 IP 上，reqwest 不再
 /// 发起第二次解析，TOCTOU 关闭。TLS SNI/证书校验仍按原 host（仅钉解析）。
 ///
 /// 构建失败返回 None，调用方回退 [`build_no_redirect_client`]（Policy::none
-/// 语义不丢；**绝不**回退到 reqwest 默认 client——默认会跟随重定向， 就
+/// 语义不丢；**绝不**回退到 reqwest 默认 client——默认会跟随重定向，A1 就
 /// 回来了）。
-// 唯一调用点在 security 布防分支（钉死路径）；feature 裁掉 security 时
+// 唯一调用点在 security 布防分支（S2 钉死路径）；feature 裁掉 security 时
 // 本函数随之裁掉，不留 dead-code 警告。
 #[cfg(feature = "security")]
 /// 构造「DNS 钉死 + 禁重定向」的 reqwest client（SSRF 防 rebinding TOCTOU
 /// 的另一半——校验过的 IP 直接做 resolve，后续连接不再走 DNS）。
 ///
-/// 行动代理 起 `pub`：connector_invoke 的 http 绑定是第二
+/// 行动代理 P0（2026-10-14）起 `pub`：connector_invoke 的 http 绑定是第二
 /// 消费点（nemesisbot/connector_tools.rs）——同源实现不复制。
 pub fn build_pinned_no_redirect_client(
     url: &str,
@@ -237,7 +252,7 @@ fn pinned_no_redirect_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqw
     )
 }
 
-/// （多模态 goal）：URL media 预取——把 http(s) 引用改为本地
+/// T9（多模态 goal 2026-09-03）：URL media 预取——把 http(s) 引用改为本地
 /// 路径引用，随后统一走同步附加链（验真/安全闸/hash 审计/去重/历史持久化
 /// 全复用，URL 项不新增旁路）。
 ///
@@ -245,14 +260,14 @@ fn pinned_no_redirect_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqw
 /// 1. **SSRF 闸**（安全管线 Layer 6 同一真相源 `ssrf::Guard`——DNS 解析后
 ///    校验回环/内网/链路本地/元数据端点；guard=None（feature 裁剪 / 插件未
 ///    挂 / ssrf 层配置关闭）直通，与 [`gate_and_hash`] 的三态语义一致）；
-///    四轮盲审：验证过的 IP 集会**钉死**到下载 client（防
+///    2026-09-04 四轮盲审 S2：验证过的 IP 集会**钉死**到下载 client（防
 ///    rebinding 域名在闸解析与实际连接之间换答案）；
-/// 2. **下载**（不跟随重定向的专用 client：30s 请求超时 + UA；流式
+/// 2. **下载**（不跟随重定向的专用 client：30s 请求超时 + UA；S1：流式
 ///    读取 + 25MB 硬上限，不再整包进内存）；
 /// 3. **验真**：非空、magic byte（与落盘图片同一张签名表）。
 ///
 /// 通过 → 落 `uploads_dir/url_{hash8}_{millis}.{ext}` 并改写为路径引用；
-/// 失败 → 诚实注明 `[图片未附加:...]` 并从 media 中移除（调用方合并注记）。
+/// 失败 → 诚实注明 `[图片未附加: ...]` 并从 media 中移除（调用方合并注记）。
 /// 同批同 URL 只拉一次（复用同一落盘路径，附加层照常跨来源去重）。
 pub async fn fetch_url_media(
     media: &[nemesis_types::channel::MediaAttachment],
@@ -269,9 +284,9 @@ pub async fn fetch_url_media(
     let mut fetched: std::collections::HashMap<String, PathBuf> = std::collections::HashMap::new();
     let mut dir_ready = false;
 
-    // F-K（四轮盲审）：每消息张数上限必须在**下载前**生效——
-    // 先全量下载落盘再被 丢弃 = 磁盘/带宽白烧（API 调用方可发任意长的
-    // media 数组，前端 8 张上限只管 UI）。溢出聚合一条诚实注记（与
+    // F-K（2026-09-04 四轮盲审）：每消息张数上限必须在**下载前**生效——
+    // 先全量下载落盘再被 D6 丢弃 = 磁盘/带宽白烧（API 调用方可发任意长的
+    // media 数组，前端 8 张上限只管 UI）。溢出聚合一条诚实注记（与 D6
     // 先到先得同语义）。
     let mut media: Vec<MediaAttachment> = media.to_vec();
     if media.len() > image_path_detector::MAX_IMAGES_PER_MESSAGE {
@@ -285,11 +300,11 @@ pub async fn fetch_url_media(
 
     for m in &media {
         let url = m.url.trim();
-        // （四轮盲审）：内联 base64（MediaAttachment.data）与
+        // L4（2026-09-04 四轮盲审）：内联 base64（MediaAttachment.data）与
         // data: URI 不在设计面内（media 形态 = {id}|{path}|http(s) URL），
         // 诚实注明而非静默丢/当路径误报文件不存在。
-        if url.is_empty() || url.starts_with("data:") {
-            if m.data.is_some() || url.starts_with("data:") {
+        if url.is_empty() || is_data_url(url) {
+            if m.data.is_some() || is_data_url(url) {
                 notes.push(
                     "[图片未附加: 暂不支持内联 data 图片引用（请改用文件路径、上传或 URL）]"
                         .to_string(),
@@ -297,8 +312,8 @@ pub async fn fetch_url_media(
             }
             continue;
         }
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            // 本地路径引用（/ 落盘产物 / 用户点名路径）原样保留。
+        if !is_http_url(url) {
+            // 本地路径引用（T7/T8 落盘产物 / 用户点名路径）原样保留。
             kept.push(m.clone());
             continue;
         }
@@ -312,7 +327,7 @@ pub async fn fetch_url_media(
         }
 
         // 1) SSRF 闸（Layer 6 同源 Guard；None = 直通，同管线三态语义）。
-        //    （四轮盲审）：验证过的 IP 取回并钉死到下载
+        //    S2（2026-09-04 四轮盲审）：验证过的 IP 取回并钉死到下载
         //    client（防 DNS rebinding TOCTOU——见 pinned_no_redirect_client
         //    文档）。Ok(空)=闸关/白名单直通（共享 client 正常解析）。
         #[cfg(feature = "security")]
@@ -351,7 +366,7 @@ pub async fn fetch_url_media(
                 continue;
             }
         };
-        // （二次回归）：重定向不跟随——client 已设 Policy::none()
+        // A1（2026-09-03 二次回归）：重定向不跟随——client 已设 Policy::none()
         //（SSRF 闸只校验首跳 URL，302 → 内网地址会绕过闸直打内网；且
         // error_for_status 只拒 4xx/5xx，3xx 会漏过）。重定向响应在此显式
         // 诚实注明失败，不读其 body、不放行。
@@ -374,7 +389,7 @@ pub async fn fetch_url_media(
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        // （四轮盲审）：流式读取 + 硬上限——旧实现 `resp.bytes()`
+        // S1（2026-09-04 四轮盲审）：流式读取 + 硬上限——旧实现 `resp.bytes()`
         // 先把整个 body 读进内存再看大小，远程可借大 body（30s 窗口内 GB 级）
         // 撑爆网关内存。现在：Content-Length 预检（超限未下载即拒）→ 分块
         // 累计（累计超限立即中止），内存占用恒 ≤ 25MB + 单块。
@@ -433,7 +448,7 @@ pub async fn fetch_url_media(
         }
 
         // 4) 落盘：url_{hash8(url)}_{millis}.{ext}（hash8 防碰撞可读前缀）。
-        // 扩展名（二次回归）：magic 已验真 → 优先按内容签名表
+        // 扩展名（2026-09-03 二次回归 C3）：magic 已验真 → 优先按内容签名表
         // 定扩展名（Content-Type 可伪造/缺失、URL 后缀可说谎）；URL 后缀只作
         // 兜底可读性（理论上 magic 过了而签名表没匹配上的形态不存在，
         // ext_from_magic 与 sniff_magic 同表——防御式兜底）。
@@ -509,15 +524,15 @@ fn pick_url_ext(url: &str, content_type: &str) -> String {
 
 /// 轮次摄取统一附加入口（loop.rs process_admitted / steer 路径调用）。
 ///
-/// 来源 1：文本提取路径（检测器，验真已含存在性/大小/magic/去重）。
-/// 来源 2：`media` 引用——本地路径（Telegram / Web 上传 / URL 预取
+/// 来源 1：文本提取路径（T4 检测器，验真已含存在性/大小/magic/去重）。
+/// 来源 2：`media` 引用——本地路径（T7 Telegram / T8 Web 上传 / T9 URL 预取
 ///         落盘产物；URL 须先经 [`fetch_url_media`] 预取，本同步入口不拉
 ///         网络，直接收到 URL 属调用方误用，诚实注明）。
 /// 两来源统一过安全闸 + 跨来源去重（解析路径大小写不敏感）。
-/// 张数上限：两来源合计 ≤[`image_path_detector::MAX_IMAGES_PER_MESSAGE`]，
+/// 张数上限（D6）：两来源合计 ≤[`image_path_detector::MAX_IMAGES_PER_MESSAGE`]，
 /// 超出部分不附加、聚合成一条诚实注记（先到先得：文本出现序 → media 追加序）。
 ///
-/// （devtool-upgrade）：`downscale_uploads = Some(uploads 目录)` 时，
+/// J6（devtool-upgrade 阶段 6）：`downscale_uploads = Some(uploads 目录)` 时，
 /// 超限候选（>25MB 或最长边 >8000px）先过降采样闸（[`image_downscale`]），
 /// 产物（uploads 内容寻址 `down_*.jpg`）替代原图走后续同一验真/闸门链；
 /// `None`（`agents.image_downscale` 关）= 原 25MB 硬拒绝行为，零变化。
@@ -534,9 +549,9 @@ pub fn attach_turn_images(
     let mut seen: HashSet<String> = HashSet::new();
     let mut overflow: Vec<String> = Vec::new();
 
-    // 来源 1：文本提取路径。非 Ok 候选按 failure_reason 诚实注明。
+    // 来源 1：文本提取路径（T4）。非 Ok 候选按 failure_reason 诚实注明。
     for candidate in image_path_detector::detect_image_paths(text, workspace_dir) {
-        // 降采样闸先行——超限候选在开关开时先降采样，产物替代原图走
+        // J6：降采样闸先行——超限候选在开关开时先降采样，产物替代原图走
         // 后续同一链；不可降 = 诚实拒绝注记；开关关恒 Keep（零行为变化）。
         let mut resolved = candidate.resolved.clone();
         match image_downscale::downscale_gate(&candidate.resolved, downscale_uploads) {
@@ -594,7 +609,7 @@ pub fn attach_turn_images(
         if url.is_empty() {
             continue;
         }
-        if url.starts_with("http://") || url.starts_with("https://") {
+        if is_http_url(url) {
             // 防御分支：生产路径（loop.rs）已先经 fetch_url_media 预取，
             // 这里收到 URL 属调用方误用（本同步入口不拉网络），诚实注明。
             outcome.notes.push(format!(
@@ -603,9 +618,19 @@ pub fn attach_turn_images(
             ));
             continue;
         }
-        // 本地路径引用（/ 落盘产物）：与文本候选同一验真 + 闸门链。
+        if is_data_url(url) {
+            // 与 fetch_url_media 的 data 臂同分类面（BUG-20261106-034
+            // 横向补齐）：直投 attach 的 data URI 同样诚实注明，不落
+            // 「文件不存在」路径定性假报。
+            outcome.notes.push(
+                "[图片未附加: 暂不支持内联 data 图片引用（请改用文件路径、上传或 URL）]"
+                    .to_string(),
+            );
+            continue;
+        }
+        // 本地路径引用（T7/T8 落盘产物）：与文本候选同一验真 + 闸门链。
         let path = PathBuf::from(url);
-        // 降采样闸先行（同文本来源）；产物由闸产出（合法 ≤8MB JPEG），
+        // J6：降采样闸先行（同文本来源）；产物由闸产出（合法 ≤8MB JPEG），
         // 以 best-effort 尺寸的 Ok 状态替代原图 verify 状态走既有 match。
         let mut attached_path = path.clone();
         let mut replaced = false;
@@ -679,7 +704,7 @@ pub fn attach_turn_images(
         }
     }
 
-    // 张数上限溢出：聚合成一条诚实注记（列表 = 被忽略的原文，按忽略序）。
+    // D6 张数上限溢出：聚合成一条诚实注记（列表 = 被忽略的原文，按忽略序）。
     if !overflow.is_empty() {
         outcome.notes.push(format!(
             "[图片未附加: 超过每消息 {} 张上限，已忽略 {} 张: {}]",
@@ -692,7 +717,7 @@ pub fn attach_turn_images(
     outcome
 }
 
-/// 水合：路径引用 → base64 图片（build_messages 每轮重建时调用， 语义）。
+/// 水合：路径引用 → base64 图片（build_messages 每轮重建时调用，T6 语义）。
 ///
 /// 每个引用重验真（存在/≤25MB/magic）后读取 → base64；失败引用降级为占位
 /// 文本行 `[图片已失效: <path>]`（调用方追加进消息文本），不静默、不炸。

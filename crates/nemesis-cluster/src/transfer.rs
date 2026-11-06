@@ -939,12 +939,13 @@ impl TransferSink {
         });
         // 横向同族：landed.json 是基线解包的 kind 探针，
         // 半截文件 = unpack_baseline 误判「空树基线」开跑（真实基线被丢）。
-        // 原子写对齐全仓持久化纪律。
+        // 原子写对齐全仓持久化纪律；序列化失败也诚实上抛不落空文件（横扫
+        // 族 C 五轮，2026-11-06——空 landed.json 同样是「空树」假信号）。
+        let receipt_json = serde_json::to_string_pretty(&receipt)
+            .map_err(|e| format!("序列化 landed.json 失败: {e}——staging 保留，重试 end 将重落"))?;
         nemesis_utils::file::write_file_atomic(
             &landed.join("landed.json").to_string_lossy(),
-            serde_json::to_string_pretty(&receipt)
-                .unwrap_or_default()
-                .as_bytes(),
+            receipt_json.as_bytes(),
             0o644,
         )
         .map_err(|e| format!("写 landed.json 失败: {e}"))?;
@@ -959,22 +960,37 @@ impl TransferSink {
             },
         );
         save_dedup(&self.inbox_root, &self.dedup.read());
-        // 5. 清 staging + 写幂等重放标记（end 重试防死锁，见函数头）。
+        // 5. 幂等重放标记先行 + staging 清理殿后（横扫族 C 四轮，2026-11-06）：
+        //    旧序先清 staging 再写标记且两步均静默——标记写失败 = staging 已
+        //    清 + 无重放标记，sender 重试 end 恒 Err「staging 不存在」= 标记
+        //    本要防的零丢失死锁换个入口复发；撕裂半截标记 json 同样让 replay
+        //    解析失败（landed.json BUG-20261104-365 的横向同族）。改为：标记
+        //    三步（目录/序列化/原子写）任一失败 → 保留 staging 诚实报错，
+        //    sender 重试 end 全量重落（落地整体替换幂等）；标记成功才清
+        //    staging——清理失败 resilient WARN 留痕，残留 staging 的重放仍走
+        //    标记臂返回缓存回复，无害。
         let done_reply = TransferEndReply {
             status: "ok".into(),
             error: None,
             file_count: Some(begin.files.len()),
             total_bytes: Some(begin.total_bytes),
         };
-        let _ = crate::fsutil::remove_dir_all_resilient(&st);
         let done_dir = self.inbox_root.join(".done");
-        let _ = std::fs::create_dir_all(&done_dir);
-        if let Ok(json) = serde_json::to_string(&done_reply) {
-            let _ = std::fs::write(
-                done_dir.join(format!("{}.json", sanitize_transfer_id(transfer_id))),
-                json,
-            );
-        }
+        std::fs::create_dir_all(&done_dir).map_err(|e| {
+            format!("写幂等重放标记失败（.done 目录）: {e}——staging 保留，重试 end 将全量重落")
+        })?;
+        let done_json = serde_json::to_string(&done_reply).map_err(|e| {
+            format!("写幂等重放标记失败（序列化）: {e}——staging 保留，重试 end 将全量重落")
+        })?;
+        nemesis_utils::file::write_file_atomic(
+            &done_dir
+                .join(format!("{}.json", sanitize_transfer_id(transfer_id)))
+                .to_string_lossy(),
+            done_json.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("写幂等重放标记失败: {e}——staging 保留，重试 end 将全量重落"))?;
+        let _ = crate::fsutil::remove_dir_all_resilient(&st);
         // 6. 落地回调（档案投影接线；失败不影响 ACK——数据已安全落地）。
         //    锁内 clone、锁外调用：回调慢/panic/重入
         //    都不持锁——持锁调回调会让回调内 set_* 重入死锁、panic 毒化锁。
@@ -1075,9 +1091,34 @@ fn staging_manifest_path(dir: &Path) -> PathBuf {
 }
 
 fn write_staging_manifest(dir: &Path, begin: &TransferBegin) {
-    let _ = std::fs::create_dir_all(dir);
-    if let Ok(json) = serde_json::to_string_pretty(begin) {
-        let _ = std::fs::write(staging_manifest_path(dir), json);
+    // 横扫族 C 四轮（2026-11-06）：写失败 WARN 留痕不再静默——staging 侧缺
+    // manifest 的后果已有诚实下游（块写入/end 读 None 拒绝），landed 侧是
+    // 审计镜像，但两侧缺写入现在都该有迹可循。
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        tracing::warn!(
+            dir = %dir.display(),
+            error = %e,
+            "[transfer] staging manifest dir create failed"
+        );
+        return;
+    }
+    match serde_json::to_string_pretty(begin) {
+        Ok(json) => {
+            if let Err(e) = std::fs::write(staging_manifest_path(dir), json) {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "[transfer] staging manifest write failed"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                dir = %dir.display(),
+                error = %e,
+                "[transfer] staging manifest serialize failed"
+            );
+        }
     }
 }
 

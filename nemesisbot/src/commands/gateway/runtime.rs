@@ -1437,11 +1437,17 @@ pub(crate) async fn run_runtime(
                                 obj.insert("enabled".to_string(), serde_json::json!(true));
                                 if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
                                     // REL-002：统一原子写入（cluster enable 开关写主配置）。
-                                    let _ = nemesis_utils::write_file_atomic(
+                                    // 托盘回调无 UI 渠道，写失败最低限 WARN 留痕（横扫
+                                    // 族 C 四轮，2026-11-06）——开关内存态已生效但重启丢。
+                                    if let Err(e) = nemesis_utils::write_file_atomic(
                                         &cfg_path.to_string_lossy(),
                                         updated.as_bytes(),
                                         0o600,
-                                    );
+                                    ) {
+                                        tracing::warn!(
+                                            "[Gateway] Tray: config.json write failed (cluster.enable not persisted): {e}"
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1458,11 +1464,16 @@ pub(crate) async fn run_runtime(
                             obj.insert("enabled".to_string(), serde_json::json!(true));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
                                 // REL-002：统一原子写入（config.cluster.json 含 token）。
-                                let _ = nemesis_utils::write_file_atomic(
+                                // 写失败 WARN 留痕（横扫族 C 四轮，2026-11-06）。
+                                if let Err(e) = nemesis_utils::write_file_atomic(
                                     &cluster_cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
                                     0o600,
-                                );
+                                ) {
+                                    tracing::warn!(
+                                        "[Gateway] Tray: config.cluster.json write failed (enable not persisted): {e}"
+                                    );
+                                }
                             }
                         }
                     }
@@ -1493,11 +1504,16 @@ pub(crate) async fn run_runtime(
                             obj.insert("enabled".to_string(), serde_json::json!(false));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
                                 // REL-002：统一原子写入（config.cluster.json 含 token）。
-                                let _ = nemesis_utils::write_file_atomic(
+                                // 写失败 WARN 留痕（横扫族 C 四轮，2026-11-06）。
+                                if let Err(e) = nemesis_utils::write_file_atomic(
                                     &cluster_cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
                                     0o600,
-                                );
+                                ) {
+                                    tracing::warn!(
+                                        "[Gateway] Tray: config.cluster.json write failed (disable not persisted): {e}"
+                                    );
+                                }
                             }
                         }
                         // Write config.json cluster.enabled = false
@@ -1509,12 +1525,17 @@ pub(crate) async fn run_runtime(
                         {
                             obj.insert("enabled".to_string(), serde_json::json!(false));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                // REL-002：统一原子写入。
-                                let _ = nemesis_utils::write_file_atomic(
+                                // REL-002：统一原子写入。写失败 WARN 留痕（横扫
+                                // 族 C 四轮，2026-11-06）。
+                                if let Err(e) = nemesis_utils::write_file_atomic(
                                     &cfg_path.to_string_lossy(),
                                     updated.as_bytes(),
                                     0o600,
-                                );
+                                ) {
+                                    tracing::warn!(
+                                        "[Gateway] Tray: config.json write failed (cluster.disable not persisted): {e}"
+                                    );
+                                }
                             }
                         }
                     }

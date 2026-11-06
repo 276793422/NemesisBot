@@ -7,6 +7,9 @@
 #   B. 裸 #[test] fn                           —— 生产文件里的测试函数
 #   C. 裸 #[tokio::test] fn                    —— 同上（异步形态）
 #   D. #[cfg(all(test,…))] mod xxx { …带body… } —— feature 门控内联测试模块
+#   E. #[cfg(any(test,…))] mod xxx { …带body… } —— 同 D（any 门控；2026-11-06
+#      补齐：正则此前只认 all(，any(test, feature) 形态的带 body mod 漏网
+#      ——实存实例 nemesis-memory lib.rs __test_fixture，已随本次同步迁独立文件）
 #
 # 合法形态（不算违规）：
 #   - `#[cfg(test)] mod xxx;`（分号结尾的声明，指向独立测试文件）
@@ -106,8 +109,8 @@ for my $f (@files) {
         if ($ln =~ /^\s*#\[\s*(::)?(tokio::)?test(\([^)]*\))?\s*\]/) {
             print "VIOLATION TESTFN $f:", $i + 1, ": ", $ln; $viol = 1;
         }
-        # 形态 A/D：cfg(test) 系属性后面紧跟「带 body 的 mod」
-        if ($ln =~ /^\s*#\[\s*cfg\(\s*(all\()?\s*test/) {
+        # 形态 A/D/E：cfg(test) 系属性后面紧跟「带 body 的 mod」（all/any 门控均计）
+        if ($ln =~ /^\s*#\[\s*cfg\(\s*((?:all|any)\()?\s*test/) {
             my $j = $i + 1;
             # 跳过空行、其他属性行、纯注释行
             while ($j < @lines && $lines[$j] =~ /^\s*(#\[.*\]|\/\/.*)?\s*$/) { $j++ }

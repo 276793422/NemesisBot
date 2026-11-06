@@ -1948,8 +1948,12 @@ impl BoardStore {
                 },
             )
             .map_err(|e| format!("append_pending_merge 读队列: {e}"))?;
+        // 横扫族 C 六轮（2026-11-06）：队列 JSON 损坏时静默当空 = 本次回写
+        // 把既有待补合并整条毁掉（且去重失效可重复登记）——诚实拒绝写。
         let mut queue: Vec<crate::models::PendingMerge> =
-            serde_json::from_str(&raw).unwrap_or_default();
+            serde_json::from_str(&raw).map_err(|e| {
+                format!("append_pending_merge: pending_merges 解析失败（原队列保留，本次登记未写入）: {e}")
+            })?;
         if queue.iter().any(|e| e.task_id == entry.task_id) {
             return Ok(());
         }
@@ -1980,8 +1984,12 @@ impl BoardStore {
                 },
             )
             .map_err(|e| format!("pop_pending_merge 读队列: {e}"))?;
+        // 同 append：损坏静默当队空会让消费方误判「无待补合并」悄然停车
+        // （队内条目既不消费也不毁——诚实拒绝比静默吞可见）。
         let mut queue: Vec<crate::models::PendingMerge> =
-            serde_json::from_str(&raw).unwrap_or_default();
+            serde_json::from_str(&raw).map_err(|e| {
+                format!("pop_pending_merge: pending_merges 解析失败（队列未弹出，原样保留）: {e}")
+            })?;
         let Some(head) = queue.first().cloned() else {
             return Ok(None);
         };
@@ -2778,7 +2786,15 @@ impl BoardStore {
     ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
         const KEY: &str = "granted_tags";
         let raw = self.get_meta(KEY)?.unwrap_or_else(|| "{}".to_string());
-        Ok(serde_json::from_str(&raw).unwrap_or_default())
+        // 只读投影：损坏按「无授予」处理是 fail-closed 安全方向（库内数据
+        // 不动），但静默隐形会让授权面悄然失效——WARN 留痕。
+        match serde_json::from_str::<std::collections::HashMap<String, Vec<String>>>(&raw) {
+            Ok(m) => Ok(m),
+            Err(e) => {
+                tracing::warn!("[board] granted_tags 解析失败（按无授予处理，库内数据保留）: {e}");
+                Ok(Default::default())
+            }
+        }
     }
 
     pub fn get_meta(&self, key: &str) -> Result<Option<String>, String> {
@@ -4561,11 +4577,12 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     let lead_type: Option<String> = row.get("lead_type")?;
     let lead_id: Option<String> = row.get("lead_id")?;
     let status: String = row.get("status")?;
+    let id: i64 = row.get("id")?;
     let pending_raw: String = row
         .get::<_, Option<String>>("pending_merges")?
         .unwrap_or_else(|| "[]".to_string());
     Ok(Project {
-        id: row.get("id")?,
+        id,
         name: row.get("name")?,
         description: row.get("description")?,
         status: coerce_project_status(status),
@@ -4575,7 +4592,13 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         acceptance_criteria: row.get("acceptance_criteria")?,
         directory: row.get("directory")?,
         conflict_frozen: row.get::<_, Option<i64>>("conflict_frozen")?.unwrap_or(0) != 0,
-        pending_merges: serde_json::from_str(&pending_raw).unwrap_or_default(),
+        // 只读投影：损坏按空队列展示（库内数据不动），WARN 留痕防静默。
+        pending_merges: serde_json::from_str(&pending_raw).unwrap_or_else(|e| {
+            tracing::warn!(
+                "[board] project #{id} pending_merges 解析失败（按空队列展示，库内数据保留）: {e}"
+            );
+            Default::default()
+        }),
         created_at: row.get("created_at")?,
     })
 }

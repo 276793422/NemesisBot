@@ -284,7 +284,14 @@ fn replay_verify_byte_exact_via_fingerprint() {
     make_request_dir(dir.path(), "2026-08-28_07-00-00_deadbeef", 1, &msgs);
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
 
@@ -312,7 +319,7 @@ fn replay_verify_explicit_request_id_also_works() {
 
     let out = LogsHandler
         .replay_verify(
-            &ctx,
+            replay_store_from_ctx(&ctx).unwrap(),
             &ws,
             STEM,
             1,
@@ -326,7 +333,14 @@ fn replay_verify_explicit_request_id_also_works() {
 
     // 非法目录名（路径穿越形态）直接 no_recording，不落盘读。
     let bad = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, Some("../evil"), None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            Some("../evil"),
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(bad["ok"], false);
@@ -354,7 +368,14 @@ fn replay_verify_content_mismatch_reports_first_diff() {
     make_request_dir(dir.path(), "2026-08-28_07-00-00_abcdef01", 1, &msgs);
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
 
@@ -371,7 +392,14 @@ fn replay_verify_no_ledger_reports_explicitly() {
     let ws = dir.path().to_string_lossy().to_string();
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(out["ok"], false);
@@ -397,7 +425,14 @@ fn replay_verify_no_recording_when_request_logs_empty() {
     // request_logs 目录不存在 → 指纹扫描无果。
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(out["ok"], false);
@@ -430,7 +465,14 @@ fn replay_verify_unavailable_when_history_trimmed() {
     make_request_dir(dir.path(), "2026-08-28_07-00-00_12345678", 1, &msgs);
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
 

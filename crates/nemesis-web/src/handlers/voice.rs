@@ -622,6 +622,13 @@ impl ModuleHandler for VoiceHandler {
                 "speaker_register_start" => {
                     let d = data.ok_or("missing data")?;
                     let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("owner");
+                    // BUG-20261106-020：NUL 名先拒——crate 层 SpeakerManager 会
+                    // 诚实拒绝但 register_stop 的 voiceprint 落盘不查返回值，
+                    // 放行会「落盘但惰性」假成功；且应先于 ensure_speaker_engine
+                    // 重装配（fail fast）。
+                    if name.contains('\0') {
+                        return Err("name must not contain NUL characters".to_string());
+                    }
                     self.ensure_speaker_engine(&voice_dir, &config_dir).await?;
                     self.cmd_speaker_register_start(&config_dir, name)
                 }
@@ -633,6 +640,11 @@ impl ModuleHandler for VoiceHandler {
                         .get("name")
                         .and_then(|v| v.as_str())
                         .ok_or("missing field: name")?;
+                    // BUG-20261106-020 同族门闸：NUL 名给明确错误而非
+                    // silent false（crate 层已拒，但 remove 返回值在此未消费）。
+                    if name.contains('\0') {
+                        return Err("name must not contain NUL characters".to_string());
+                    }
                     self.cmd_speaker_remove(&config_dir, name)
                 }
                 "speaker_list" => self.cmd_speaker_list(&config_dir),

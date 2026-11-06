@@ -187,13 +187,41 @@ impl AgentLoop {
     /// write_file/edit_file) so the watcher's own event for the same path is
     /// dropped inside the self-write window.
     pub fn note_self_write(&self, path: &str) {
+        let key = self.self_write_key(path);
         let mut writes = self.recent_self_writes.lock();
         // Prune expired entries opportunistically (map stays tiny).
         writes.retain(|_, t| t.elapsed() < crate::fs_watcher::SELF_WRITE_WINDOW);
-        writes.insert(
-            crate::fs_watcher::normalize_workspace_rel(path),
-            std::time::Instant::now(),
-        );
+        writes.insert(key, std::time::Instant::now());
+    }
+
+    /// raw 工具路径 → 与 fs_watcher 事件同形的 workspace-relative 归一形态
+    /// （`\`→`/` + lowercase + 绝对形态按组件剥 workspace 根前缀 + 清洗 `.`
+    /// 组件）。BUG-20261106-032：此前只做分隔符/大小写归一——工具层
+    /// resolve_workspace_path 原样接受绝对路径与 `./` 前缀相对形态，agent
+    /// 用这些形态写文件时登记的 key 与 watcher strip 后的 rel 事件失配，
+    /// 自写窗口过滤失效，agent 刚写的文件被谎报为「外部修改（非本会话
+    /// 操作）」污染下一轮上下文。剥根用 `Path::strip_prefix`（组件级）而非
+    /// 字符级——`<root>2/…` 与 `<root>` 是不同目录，字符级会误剥；剥不出
+    /// （workspace 外路径 / 无根设置）回落全路径归一形态，与旧行为一致。
+    fn self_write_key(&self, path: &str) -> String {
+        let norm = crate::fs_watcher::normalize_workspace_rel(path);
+        let rel = match self.workspace_root.read().clone() {
+            Some(root) => {
+                let rn = crate::fs_watcher::normalize_workspace_rel(&root.to_string_lossy());
+                match std::path::Path::new(&norm)
+                    .strip_prefix(std::path::Path::new(rn.trim_end_matches('/')))
+                {
+                    Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
+                    _ => std::path::PathBuf::from(norm),
+                }
+            }
+            None => std::path::PathBuf::from(norm),
+        };
+        rel.components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .map(|c| c.as_os_str().to_string_lossy().to_string())
+            .collect::<Vec<_>>()
+            .join("/")
     }
 
     /// Full-review: set the context-snapshot message role ("user" |

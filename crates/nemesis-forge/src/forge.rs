@@ -865,12 +865,21 @@ impl Forge {
         self.registry.add(artifact.clone());
 
         // 3. Copy to workspace/skills/ with -forge suffix
+        // （副本失败 WARN 留痕不回滚：forge 主副本已落盘已注册（上方 ? 诚实
+        // 透传），缺副本=skills 列表看不见；整单报错=假失败，横扫族 C 四轮，
+        // 2026-11-06。）
         let workspace_skill_dir = self
             .workspace
             .join("skills")
             .join(format!("{}-forge", name));
-        if std::fs::create_dir_all(&workspace_skill_dir).is_ok() {
-            let _ = std::fs::write(workspace_skill_dir.join("SKILL.md"), &skill_content);
+        if let Err(e) = std::fs::create_dir_all(&workspace_skill_dir)
+            .and_then(|_| std::fs::write(workspace_skill_dir.join("SKILL.md"), &skill_content))
+        {
+            tracing::warn!(
+                path = %workspace_skill_dir.display(),
+                error = %e,
+                "[forge] workspace skill copy failed (forge primary copy intact)"
+            );
         }
 
         // 4. Auto-validate if configured
@@ -928,7 +937,10 @@ impl Forge {
             {
                 let modified_time: chrono::DateTime<chrono::Local> = modified.into();
                 if modified_time < cutoff {
-                    let _ = std::fs::remove_file(entry.path());
+                    // 清理面语义（横扫族 C 三轮，2026-11-06）：过期建议删除
+                    // 失败 WARN 留痕（旧 `let _` 静默——滞留无任何线索），
+                    // 下轮周期自然重试。
+                    nemesis_utils::fsutil::remove_file_resilient(entry.path());
                 }
             }
         }

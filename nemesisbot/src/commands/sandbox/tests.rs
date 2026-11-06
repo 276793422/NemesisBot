@@ -432,6 +432,8 @@ fn test_s11b_run_startexe_timeout_fast_exit_true() {
     ));
 }
 
+// 刻意不挂 cfg(windows)：spawn 失败臂跨平台同语义（Linux spawn 非 .exe 同样
+// Err → false），Linux 上真跑且有效——挂标反而缩覆盖。
 #[test]
 fn test_s11b_run_startexe_timeout_spawn_err_false() {
     let tmp = tempfile::tempdir().unwrap();
@@ -445,6 +447,9 @@ fn test_s11b_run_startexe_timeout_spawn_err_false() {
     ));
 }
 
+#[cfg(windows)]
+// Windows-form：Linux 上 .bat spawn 即败走 Err 臂 → !ok 碰巧过、
+// 超时树杀分支从未被测（假绿）；同组 fast_exit_true 同由 2026-09-02 sweep 挂标。
 #[test]
 fn test_s11b_run_startexe_timeout_hang_tree_killed_false() {
     let tmp = tempfile::tempdir().unwrap();

@@ -144,17 +144,20 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function rename(session_id: string, title: string) {
+  /** 成败布尔（BUG-20261106-029 横向）：与 remove 同契约——调用方（侧栏）
+   *  依据返回值出失败 toast，不再静默吞。 */
+  async function rename(session_id: string, title: string): Promise<boolean> {
     try {
       await api.rename(session_id, title)
       const s = sessions.value.find(x => x.id === session_id)
       if (s) s.title = title
+      return true
     } catch {
-      // caller may surface a toast
+      return false
     }
   }
 
-  async function clear(session_id: string) {
+  async function clear(session_id: string): Promise<boolean> {
     try {
       await api.clear(session_id)
       const chatStore = useChatStore()
@@ -165,8 +168,9 @@ export const useSessionStore = defineStore('session', () => {
       if (currentId.value === session_id) {
         chatStore.reset()
       }
+      return true
     } catch {
-      // caller may surface a toast
+      return false
     }
   }
 

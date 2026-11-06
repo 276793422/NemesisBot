@@ -14,9 +14,10 @@
 //! - `NEMESISBOT_EVAL_TIMEOUT_SECS` total hard timeout in seconds (fuse)
 //!
 //! Exit codes: 0 = collected normally; 10 = env/config error;
-//! 11 = SbieDll load failure; 12 = session leader failure (environment
-//! problem — the command process must report and abort the whole eval);
-//! 13 = watchdog fired.
+//! 11 = SbieDll load failure (LoadLibrary failure or missing export);
+//! 12 = session leader failure or persistent box-enumeration failure
+//! (environment problem — the command process must report and abort the
+//! whole eval); 13 = watchdog fired.
 //!
 //! Windows only.
 
@@ -70,6 +71,35 @@ const MONITOR_TYPE_MASK: u32 = 0xFF;
 /// probe credentials" is exactly the combination where evidence matters most.
 const MAX_EVENTS_DEFAULT: u64 = 10_000_000;
 const MAX_BYTES_DEFAULT: u64 = 2 * 1024 * 1024 * 1024;
+
+/// Completion tail: the box must stay empty this long — VERIFIED by a
+/// successful enumeration — before collection finishes.
+const EMPTY_TAIL_MS: u64 = 2000;
+
+/// Consecutive failed box enumerations tolerated before declaring the
+/// driver comm broken (20 × 500ms rounds = 10s) and aborting with exit 12.
+/// A failed enumeration is "unknown", never "empty" — without this abort a
+/// persistently failing driver would either burn the whole watchdog fuse
+/// (exit 13, misdiagnosed by the command process) or never complete.
+const ENUM_FAIL_ABORT_STREAK: u32 = 20;
+
+/// Tail-window decision (pure; unit-tested). Only a round that VERIFIED the
+/// box is empty may arm or keep the window; anything else (processes alive,
+/// or the enumeration itself failing = unknown) resets it — the "empty for
+/// 2s" completion certificate must never be earned by a failed round.
+fn advance_empty_window(empty_since: Option<u64>, box_empty: bool, now: u64) -> Option<u64> {
+    if box_empty {
+        empty_since.or(Some(now))
+    } else {
+        None
+    }
+}
+
+/// Completion check (pure; unit-tested): the armed tail window has aged
+/// past EMPTY_TAIL_MS.
+fn collect_done(empty_since: Option<u64>, now: u64) -> bool {
+    matches!(empty_since, Some(t0) if now.saturating_sub(t0) > EMPTY_TAIL_MS)
+}
 
 /// Monitor event types (api_flags.h) — only the ones we label.
 fn type_label(t: u32) -> &'static str {
@@ -155,7 +185,6 @@ pub extern "C" fn Run() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(MAX_BYTES_DEFAULT);
 
-
     let Some(events_path) = events_path else {
         // Write diagnostics to the temp dir (always writable) so the failure
         // is diagnosable even without the events file path.
@@ -203,11 +232,32 @@ pub extern "C" fn Run() {
         unsafe { ExitProcess(11) }
     }
     unsafe {
-        let sl: FnSL = std::mem::transmute(GetProcAddress(hd, b"SbieApi_SessionLeader\0".as_ptr()));
-        let mc: FnMC = std::mem::transmute(GetProcAddress(hd, b"SbieApi_MonitorControl\0".as_ptr()));
-        let mg: FnMG = std::mem::transmute(GetProcAddress(hd, b"SbieApi_MonitorGetEx\0".as_ptr()));
-        let en: FnEnum = std::mem::transmute(GetProcAddress(hd, b"SbieApi_EnumProcessEx\0".as_ptr()));
-        let qp: FnQP = std::mem::transmute(GetProcAddress(hd, b"SbieApi_QueryProcess\0".as_ptr()));
+        // 2. Resolve exports. A load "success" with missing exports (version
+        //    mismatch / wrong DLL behind the env path) must fail loudly with
+        //    a # ERROR marker — calling a null fn pointer would crash the
+        //    signed host with zero diagnostics.
+        let names = [
+            "SbieApi_SessionLeader",
+            "SbieApi_MonitorControl",
+            "SbieApi_MonitorGetEx",
+            "SbieApi_EnumProcessEx",
+            "SbieApi_QueryProcess",
+        ];
+        let addrs: Vec<*mut c_void> = names
+            .iter()
+            .map(|n| GetProcAddress(hd, format!("{n}\0").as_ptr()))
+            .collect();
+        if let Some((missing, _)) = names.iter().zip(addrs.iter()).find(|(_, a)| a.is_null()) {
+            w(&format!(
+                "# ERROR missing SbieDll export: {missing} (SbieDll version mismatch?)"
+            ));
+            ExitProcess(11)
+        }
+        let sl: FnSL = std::mem::transmute(addrs[0]);
+        let mc: FnMC = std::mem::transmute(addrs[1]);
+        let mg: FnMG = std::mem::transmute(addrs[2]);
+        let en: FnEnum = std::mem::transmute(addrs[3]);
+        let qp: FnQP = std::mem::transmute(addrs[4]);
 
         // 2. Idempotent reset, then become the session leader. Failure here
         //    is an environment problem (another leader is registered) — the
@@ -268,7 +318,13 @@ pub extern "C" fn Run() {
                 // different box name → verifiably not ours → drop.
                 let (mut bn, mut inm, mut sid) = ([0u16; 34], [0u16; 96], [0u16; 96]);
                 let mut ses = 0u32;
-                let r = qp(pid as *mut c_void, bn.as_mut_ptr(), inm.as_mut_ptr(), sid.as_mut_ptr(), &mut ses);
+                let r = qp(
+                    pid as *mut c_void,
+                    bn.as_mut_ptr(),
+                    inm.as_mut_ptr(),
+                    sid.as_mut_ptr(),
+                    &mut ses,
+                );
                 if r == 0 {
                     let b = from_wide(&bn);
                     if !b.is_empty() && b != box_name {
@@ -289,12 +345,18 @@ pub extern "C" fn Run() {
 
         // 3.5 Initial process snapshot (informational; the eval box has no
         //     resident baseline — empty count is the completion signal).
+        //     A failed enumeration is logged honestly and the pid set stays
+        //     empty: per-event QueryProcess classification still attributes
+        //     box pids, so nothing is lost.
         let (mut pids, mut cnt) = ([0u32; 512], 512u32);
-        let _ = en(boxw.as_ptr(), 0, u32::MAX, pids.as_mut_ptr(), &mut cnt);
-        for i in 0..(cnt as usize).min(512) {
-            known_pids.insert(pids[i]);
+        if en(boxw.as_ptr(), 0, u32::MAX, pids.as_mut_ptr(), &mut cnt) == 0 {
+            for pid in pids.iter().take((cnt as usize).min(512)) {
+                known_pids.insert(*pid);
+            }
+            w(&format!("# initial process count={cnt}"));
+        } else {
+            w("# initial enum failed (pid attribution falls back to per-event QueryProcess)");
         }
-        w(&format!("# initial process count={cnt}"));
 
         // 4. Main loop: collect events until the box is empty, then a short
         //    tail window for stragglers, then off + exit.
@@ -307,6 +369,7 @@ pub extern "C" fn Run() {
         let mut suppressed_events: u64 = 0;
         let mut limit_marked = false;
         let mut empty_since: Option<u64> = None; // first tick where the box was empty
+        let mut enum_fail_streak: u32 = 0; // consecutive failed box enumerations
         loop {
             // -- drain the monitor buffer --
             loop {
@@ -365,45 +428,68 @@ pub extern "C" fn Run() {
                 // suppressed) so the heartbeat keeps a sane cadence through
                 // suppression.
                 let activity = total_events + suppressed_events;
-                if activity > 0 && activity % 500 == 0 {
-                    // Snapshot progress into the comment channel.
+                if activity > 0 && activity.is_multiple_of(500) {
+                    // Snapshot progress into the comment channel. A failed
+                    // enumeration reports procs=? honestly instead of a
+                    // stale capacity count.
                     let (mut p, mut c) = ([0u32; 512], 512u32);
-                    let _ = en(boxw.as_ptr(), 0, u32::MAX, p.as_mut_ptr(), &mut c);
-                    let mut imgs = Vec::new();
-                    for i in 0..(c as usize).min(4) {
-                        let (mut bn, mut inm, mut sid) = ([0u16; 34], [0u16; 96], [0u16; 96]);
-                        let mut ses = 0u32;
-                        if qp(p[i] as *mut c_void, bn.as_mut_ptr(), inm.as_mut_ptr(), sid.as_mut_ptr(), &mut ses) == 0 {
-                            imgs.push(format!("{}:{}", p[i], from_wide(&inm)));
+                    if en(boxw.as_ptr(), 0, u32::MAX, p.as_mut_ptr(), &mut c) == 0 {
+                        let mut imgs = Vec::new();
+                        for pid in p.iter().take((c as usize).min(4)) {
+                            let (mut bn, mut inm, mut sid) = ([0u16; 34], [0u16; 96], [0u16; 96]);
+                            let mut ses = 0u32;
+                            if qp(
+                                *pid as *mut c_void,
+                                bn.as_mut_ptr(),
+                                inm.as_mut_ptr(),
+                                sid.as_mut_ptr(),
+                                &mut ses,
+                            ) == 0
+                            {
+                                imgs.push(format!("{}:{}", pid, from_wide(&inm)));
+                            }
                         }
+                        w(&format!("# progress events={total_events} dropped={dropped_events} suppressed={suppressed_events} procs={c} [{}]", imgs.join(", ")));
+                    } else {
+                        w(&format!("# progress events={total_events} dropped={dropped_events} suppressed={suppressed_events} procs=?"));
                     }
-                    w(&format!("# progress events={total_events} dropped={dropped_events} suppressed={suppressed_events} procs={c} [{}]", imgs.join(", ")));
                 }
             }
 
             // -- enumerate the box --
             let (mut p, mut c) = ([0u32; 512], 512u32);
-            let _ = en(boxw.as_ptr(), 0, u32::MAX, p.as_mut_ptr(), &mut c);
+            let enum_ok = en(boxw.as_ptr(), 0, u32::MAX, p.as_mut_ptr(), &mut c) == 0;
             let now = GetTickCount64();
-            // Refresh the accumulated pid set: membership in this round's
-            // enumeration is the driver's own answer to "is this pid in the
-            // eval box", so every new pid is verifiably ours.
-            for i in 0..(c as usize).min(512) {
-                known_pids.insert(p[i]);
-            }
-
-            if c == 0 {
-                match empty_since {
-                    None => empty_since = Some(now), // start the tail window
-                    Some(t0) => {
-                        if now - t0 > 2000 {
-                            // Box empty for >2s: collect done.
-                            break;
-                        }
-                    }
+            if enum_ok {
+                enum_fail_streak = 0;
+                // Refresh the accumulated pid set: membership in this round's
+                // enumeration is the driver's own answer to "is this pid in the
+                // eval box", so every new pid is verifiably ours.
+                for pid in p.iter().take((c as usize).min(512)) {
+                    known_pids.insert(*pid);
                 }
             } else {
-                empty_since = None; // something is alive again — keep watching
+                enum_fail_streak += 1;
+                if enum_fail_streak == 1 {
+                    w("# WARN EnumProcessEx failed (failed rounds never arm the tail window)");
+                }
+                if enum_fail_streak >= ENUM_FAIL_ABORT_STREAK {
+                    w(&format!(
+                        "# ERROR EnumProcessEx failed {enum_fail_streak} rounds in a row — driver comm broken"
+                    ));
+                    ExitProcess(12)
+                }
+            }
+            // Completion certificate: only a round that VERIFIED the box is
+            // empty may arm the tail window — a failed enumeration is
+            // "unknown", never "empty" (ignoring the return value here used
+            // to conflate the two: a zeroed/stale count could either finish
+            // the collection with the agent still running or burn the whole
+            // watchdog fuse without ever completing).
+            empty_since = advance_empty_window(empty_since, enum_ok && c == 0, now);
+            if collect_done(empty_since, now) {
+                // Box empty for >EMPTY_TAIL_MS: collect done.
+                break;
             }
 
             Sleep(500);
@@ -421,3 +507,6 @@ pub extern "C" fn Run() {
         ExitProcess(0);
     }
 }
+
+#[cfg(test)]
+mod tests;

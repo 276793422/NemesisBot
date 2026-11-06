@@ -11,12 +11,12 @@
 //! Design constraints (user-approved):
 //! - **Pure pass-through**: path, query, body and headers are forwarded
 //!   verbatim; the proxy never parses the protocol, so it works with any
-//!   provider (OpenAI-compatible, Anthropic native,...). SSE responses are
+//!   provider (OpenAI-compatible, Anthropic native, ...). SSE responses are
 //!   forwarded byte-by-byte.
 //! - **Not an open proxy**: only the single real endpoint configured at
 //!   construction is ever contacted — a malicious skill inside the sandbox
 //!   cannot use it as an SSRF springboard.
-//! - **Per-launch client token**: the proxy enforces that every request
+//! - **Per-launch client token** (A3): the proxy enforces that every request
 //!   carries the per-launch random fake key issued for this eval run —
 //!   missing or mismatching auth is 401'd without touching the upstream.
 //!   Previously the proxy accepted ANY (or no) auth and statically hardcoded
@@ -65,14 +65,18 @@ pub struct ProxyHandle {
 }
 
 impl ProxyHandle {
-    /// The `api_base` value to write into the sandboxed agent's config.
+    /// The proxy's bare root (`http://127.0.0.1:{port}`) for callers to
+    /// compose the sandboxed agent's api_base from.
     ///
-    /// 带 `/v1` 后缀是 HttpCompat（chat/completions）lane 的约定；Anthropic
-    /// lane（provider 拼 `/v1/messages`）与 Codex lane（拼 `/responses`）写入
-    /// 盒内 config 前必须去掉 `/v1`（否则盒内路径 `/v1/v1/messages` → 上游
-    /// 404， r10 真链路红的根因）。lane 裁决见 eval.rs `box_api_base`。
+    /// 路径镜像契约（BUG-20261106-027）：调用方把真实 api_base 的 path 部分
+    /// 原样接到本根后面作为盒内 api_base（见 eval.rs `box_api_base`）。代理
+    /// 转发是 verbatim 的（本 origin + 收到的完整路径），镜像保证盒内请求的
+    /// 相对路径与真实 lane 逐字节一致——对任意 base 形态（无 path / `/v1` /
+    /// `/api/paas/v4` / `/v1beta`）与任意 lane 同时成立。此前本方法固定返回
+    /// 带 `/v1` 的 base，配合调用方按 lane 增删 `/v1`，只在「HttpCompat base
+    /// 恰以 `/v1` 结尾」时正确（Zhipu v4 / Gemini v1beta 等预设全部 404）。
     pub fn api_base(&self) -> String {
-        format!("http://127.0.0.1:{}/v1", self.port)
+        format!("http://127.0.0.1:{}", self.port)
     }
 
     /// Stop the proxy and wait for the task to finish.
@@ -85,12 +89,13 @@ impl ProxyHandle {
 /// Shared immutable proxy state: the one real endpoint and the real key.
 #[derive(Clone)]
 struct ProxyState {
-    /// Base URL of the real endpoint, e.g. `https://api.example.com` —
-    /// WITHOUT a trailing slash. The incoming path+query is appended verbatim.
+    /// Origin of the real endpoint, e.g. `https://api.example.com` —
+    /// `scheme://host[:port]` WITHOUT a path. The incoming path+query is
+    /// appended verbatim.
     real_base: String,
     /// The real API key (memory only — never written to disk).
     api_key: String,
-    /// Per-launch client token：本次 eval 发给盒内 agent 的随机 fake
+    /// Per-launch client token (A3)：本次 eval 发给盒内 agent 的随机 fake
     /// key——incoming auth 必须精确匹配它才转发（缺失/不匹配 = 401）。
     expected_client_key: String,
     client: reqwest::Client,
@@ -98,10 +103,13 @@ struct ProxyState {
 
 /// Start the proxy on a random loopback port.
 ///
-/// - `real_base`: scheme://host[:port] of the real LLM endpoint (no path).
-/// - `api_key`: the real key, substituted into auth headers.
+/// - `real_base`: ORIGIN of the real LLM endpoint (`scheme://host[:port]`,
+///   no path). The incoming path+query is appended verbatim, so callers must
+///   mirror the real api_base's path into the sandboxed agent's api_base
+///   (see eval.rs `box_api_base`).
+/// - `api_key`:   the real key, substituted into auth headers.
 /// - `expected_client_key`: the per-launch random fake key issued to the
-///   sandboxed agent — requests not carrying it are rejected 401.
+///   sandboxed agent (A3) — requests not carrying it are rejected 401.
 pub async fn start(
     real_base: String,
     api_key: String,
@@ -111,7 +119,7 @@ pub async fn start(
         real_base: real_base.trim_end_matches('/').to_string(),
         api_key,
         expected_client_key,
-        // 上游转发必须带总超时——reqwest 默认无超时，
+        // BUG-20261031-261：上游转发必须带总超时——reqwest 默认无超时，
         // 云端 LLM 半死（连接建立但响应挂起）时 eval 观察期整个被拖死。
         // 600s 对齐 provider lane 单请求超时阶梯（LLM 长回复合法形态）。
         client: reqwest::Client::builder()
@@ -169,7 +177,7 @@ async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> R
 }
 
 /// 从 incoming headers 提取客户端凭据（authorization 的 Bearer token 或
-/// x-api-key 裸值； 闸比对用）。
+/// x-api-key 裸值；A3 闸比对用）。
 fn client_key_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
     for h in AUTH_HEADERS {
         if let Some(v) = headers.get(h).and_then(|v| v.to_str().ok()) {
@@ -188,7 +196,7 @@ async fn forward_with_headers(
     headers: &axum::http::HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, ProxyError> {
-    // 闸：incoming auth 必须携带本次 eval 的每启动随机 fake key——缺失
+    // A3 闸：incoming auth 必须携带本次 eval 的每启动随机 fake key——缺失
     // 或不匹配一律 401，不触碰上游。防本地旁观进程摸到环回端口蹭真 key
     // （此前对任意/缺失 auth 无条件放行转发）。
     match client_key_from_headers(headers) {
@@ -224,7 +232,7 @@ async fn forward_with_headers(
     // Substitute the REAL key into the auth headers. Authorization is always
     // rewritten as "Bearer <real key>" (OpenAI-compatible providers expect
     // the Bearer scheme; sending the bare key earned 401s). x-api-key
-    // (Anthropic-style) carries the bare key. （闸已保证两个 auth 头至
+    // (Anthropic-style) carries the bare key. （A3 闸已保证两个 auth 头至
     // 少一个在场——此前的「无 auth 头自动补」分支随闸移除。）
     for h in AUTH_HEADERS {
         if headers.contains_key(h) {

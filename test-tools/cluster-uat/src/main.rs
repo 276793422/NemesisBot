@@ -6803,12 +6803,18 @@ async fn main() {
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 let t = comments_text(&mut ws, fail_issue).await;
                 if t.contains("重派预算已耗尽") {
-                    if !t.contains("客观锚点检查失败")
+                    // AOR 批一c §③（c8e36a7a，2026-11-04）后转人工评论的差距面
+                    // = 条目清单（「逐条差距：- [fail] [anchor] … 证据：…」，
+                    // render_gap_with_criteria 替代自由文本 gap——42153577678
+                    // core 实录：锚点明细 UAT30FAILNEEDLE 在场，仅旧字面头
+                    // 「客观锚点检查失败」退场）。断言按新契约对齐：清单头 +
+                    // 锚点原文（criterion 携带 [CHECK] re:UAT30FAILNEEDLE）。
+                    if !t.contains("逐条差距")
                         || !t.contains("UAT30FAILNEEDLE")
                     {
                         return fail(
                             "T30",
-                            format!("③转人工评论应携带锚点失败明细: {}", trunc(&t, 400)),
+                            format!("③转人工评论应携带锚点失败明细（AOR 条目清单）: {}", trunc(&t, 400)),
                         );
                     }
                     break;

@@ -117,6 +117,11 @@ function ingestRingEvents(events: any[]) {
 
 async function openDetail(id: string) {
   const req = ++detailReqSeq
+  // 换详情先拆旧 poll（BUG-20261106-009）：req 闸只挡首载响应，挡不住
+  // 旧任务的 2s 轮询——载入窗口内 detail.value 仍是 A，旧 poll 继续拉
+  // A 的事件灌进本函数刚清空的 timeline（lastSeq 也被清零 → A 全量
+  // 回灌）；B 就位后旧 poll 又改投 B。closeDetail 同款清理纪律。
+  if (detailPoll) { clearInterval(detailPoll); detailPoll = null }
   detailNotFound.value = false
   detailLoading.value = true
   timeline.value = []
@@ -148,11 +153,17 @@ function armDetailPoll(running: boolean) {
 
 async function pollDetailEvents() {
   if (!detail.value) return
+  // 在飞围栏（BUG-20261106-009）：捕获当前代次——清定时器只停未来 tick，
+  // 停不掉已在飞的响应；openDetail/closeDetail 换代后迟到响应整包丢弃，
+  // 不得把旧任务的事件写进新详情的 timeline。
+  const gen = detailReqSeq
   try {
     const r = await request('subagents', 'events', { id: detail.value.id, after_seq: lastSeq })
+    if (gen !== detailReqSeq) return
     if (r?.gap) {
       // 环逐出：seq 游标失效，全量重拉（seenSeqs 去重防重复渲染）
       const full = await request('subagents', 'events', { id: detail.value.id, after_seq: 0 })
+      if (gen !== detailReqSeq) return
       ingestRingEvents(full?.events || [])
     } else {
       ingestRingEvents(r?.events || [])
@@ -181,6 +192,10 @@ function handleWSMessage(frame: any) {
   const ev = frame.data
   const sid = ev?.subagent_id
   if (!sid) return
+  // 载入窗口闸（BUG-20261106-009）：换详情载入期间 detail.value 仍是旧
+  // 任务，旧任务的实时帧会把事件灌进已清空的新 timeline。载入完成后
+  // poll 按 after_seq 全量补齐，不丢事件。
+  if (detailLoading.value) return
   if (detail.value && sid === detail.value.id) {
     pushTimeline(String(ev.kind ?? 'Unknown'), ev.data ?? {}, Number(ev.seq ?? 0))
     timeline.value.sort((a, b) => a.seq - b.seq)

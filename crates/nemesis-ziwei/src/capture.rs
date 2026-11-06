@@ -110,7 +110,10 @@ impl CaptureStore {
             // TTL：mtime 早于 cutoff → 删整个 profile 目录
             match meta.modified() {
                 Ok(mtime) if now.duration_since(mtime).unwrap_or_default() > ttl => {
-                    if nemesis_utils::fsutil::remove_dir_all_retry(&dir).is_ok() {
+                    // 清理面语义（横扫族 C 二轮，2026-11-06）：sweep 是后台
+                    // 清扫，删除失败不炸 sweep 但必须 WARN 留痕（旧实现
+                    // `_retry().is_ok()` 静默跳过——过期目录滞留无任何线索）。
+                    if nemesis_utils::fsutil::remove_dir_all_resilient(&dir) {
                         report.expired_profiles += 1;
                     }
                     continue;
@@ -118,9 +121,15 @@ impl CaptureStore {
                 Err(_) => continue,
                 Ok(_) => {}
             }
-            // 容量：超限删最旧一半（行级重写）
-            if meta.len() > max_bytes && truncate_keep_newest(&file, max_bytes).is_ok() {
-                report.size_truncated += 1;
+            // 容量：超限删最旧一半（行级重写）；截断失败 WARN 留痕不计数
+            //（文件仍超限，下轮 sweep 重试）
+            if meta.len() > max_bytes {
+                match truncate_keep_newest(&file, max_bytes) {
+                    Ok(()) => report.size_truncated += 1,
+                    Err(e) => {
+                        tracing::warn!("[ziwei][capture] 截断失败（{}）：{e}", file.display())
+                    }
+                }
             }
             report.kept += 1;
         }

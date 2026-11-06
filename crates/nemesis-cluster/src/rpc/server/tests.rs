@@ -236,6 +236,56 @@ fn test_handler_replacement() {
     assert_eq!(result2.unwrap()["status"], "custom_pong");
 }
 
+// BUG-20261106-017 回归锁：list_actions 必须动态枚举 handlers 容器（单一真相源）。
+// 旧硬编码清单不随后续 register_handler 演进——cluster 注册的 hello 等真实 handler
+// 从不出现。修复后覆盖注册须立即反映，且结果按字典序排序。
+#[test]
+fn test_list_actions_reflects_late_registration_sorted() {
+    let server = make_server();
+    server.register_default_handlers();
+
+    // 默认态不含 cluster 侧才注册的 handler
+    let before = server
+        .handle_request_sync("list_actions", serde_json::json!({}))
+        .unwrap();
+    let names_before: Vec<String> = before["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(
+        !names_before.iter().any(|n| n == "hello"),
+        "default server should not list 'hello' before registration"
+    );
+
+    // 模拟 cluster/gateway 覆盖注册路径
+    server.register_handler(
+        "hello",
+        Box::new(|_payload| Ok(serde_json::json!({"status": "online"}))),
+    );
+    server.register_handler(
+        "query_task_result",
+        Box::new(|_payload| Ok(serde_json::json!({"status": "not_found"}))),
+    );
+
+    let after = server
+        .handle_request_sync("list_actions", serde_json::json!({}))
+        .unwrap();
+    let names: Vec<String> = after["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+        .collect();
+    assert!(names.contains(&"hello".to_string()));
+    assert!(names.contains(&"query_task_result".to_string()));
+    // 排序稳定性：与 sort 后的全序一致
+    let mut sorted = names.clone();
+    sorted.sort();
+    assert_eq!(names, sorted, "list_actions output must be sorted");
+}
+
 // -- Additional tests for RpcServerConfig --
 
 #[test]

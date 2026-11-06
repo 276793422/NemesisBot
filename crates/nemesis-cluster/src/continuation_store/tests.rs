@@ -106,6 +106,51 @@ async fn test_cleanup_old() {
     assert_eq!(removed2, 0);
 }
 
+// --- BUG-20261106-022 回归锁：cleanup_old 必须清掉「消毒形态文件名 stem
+// --- ≠ 原始 task_id」的内存条目。此前 `remove(stem)` 永远 miss（内存键
+// --- 是 save 原样入键的原始 id），超龄清扫删盘留内存（快照含完整对话
+// --- JSON，无界驻留）；`snapshots.cleanup`（ZERO 清全部）对这类条目
+// --- 反复执行也清不干净。
+
+#[tokio::test]
+async fn test_cleanup_old_removes_sanitized_id_memory_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = ContinuationStore::new(dir.path());
+
+    // 字符替换族：`/`、`:`、空格 → `_`（盘上文件名 ≠ 内存键）。
+    let char_weird = "weird/dir:name x";
+    // 超长族：>80 字符 → hash 后缀形态 stem。
+    let long_weird = format!("{}{}", "L".repeat(90), "/tail");
+    // 身份映射对照（真实 id 族——既有行为不回归）。
+    store.save(make_snapshot(char_weird)).await.unwrap();
+    store.save(make_snapshot(&long_weird)).await.unwrap();
+    store.save(make_snapshot("plain-id")).await.unwrap();
+
+    assert_eq!(store.len(), 3);
+    let cache = dir.path();
+    assert!(cache.join("weird_dir_name_x.json").exists());
+
+    // 全部超龄（sleep 保证 mtime 严格早于 cutoff）。
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let removed = store
+        .cleanup_old(std::time::Duration::from_nanos(1))
+        .await
+        .unwrap();
+    assert_eq!(removed, 3, "三个盘上快照都该被删");
+    // 内存侧三键全部清零——修复前两个 weird 键永存，len 停在 2。
+    assert_eq!(store.len(), 0, "消毒映射 id 的内存条目必须随超龄清扫移除");
+    assert!(!store.contains(char_weird));
+    assert!(!store.contains(&long_weird));
+    assert!(!store.contains("plain-id"));
+    // 盘上 .json 全清。
+    let leftover = std::fs::read_dir(cache)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .count();
+    assert_eq!(leftover, 0, "清扫后目录不应残留 .json");
+}
+
 #[tokio::test]
 async fn test_recover_from_disk() {
     let dir = tempfile::tempdir().unwrap();

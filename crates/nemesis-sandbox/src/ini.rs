@@ -99,7 +99,16 @@ pub fn upsert_box_section(
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create ini dir {}", parent.display()))?;
     }
-    let existing = std::fs::read_to_string(ini_path).unwrap_or_default();
+    // 横扫族 C 五轮（2026-11-06）：只把 NotFound 当「文件未建」回落空串
+    // （首次 upsert 合法）；其余读失败（锁/权限/编码）诚实上抛——静默回落
+    // 会把其他盒的既有指令整段丢掉后回写（瞬态读失败 = ini 毁容）。
+    let existing = match std::fs::read_to_string(ini_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(anyhow::anyhow!("read ini {}: {e}", ini_path.display()));
+        }
+    };
 
     // 切分：首节前的行 = preamble；之后每个 `[name]` 起一节，节内容 = 原
     // 始行（不 trim 不归一，逐字保留）。

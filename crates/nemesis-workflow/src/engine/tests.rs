@@ -962,6 +962,86 @@ async fn test_new_arc_runs_sub_workflow_child() {
     );
 }
 
+// BUG-20261106-018 回归锁：子执行被外部 cancel_execution 打成终态
+// Cancelled 时，父的 sub_workflow 节点必须诚实失败（Failed + 点名子执行
+// id），父执行终态 Failed——不得把 Cancelled 透传给调度器被当成功收账
+// （旧缺陷形态：下游继续跑、父执行报 Completed，取消语义被静默吞掉）。
+// 与 resume 侧 resume_subworkflow_node 的裁决（子执行 Failed/Cancelled →
+// 父节点 Failed）同一条契约，两条路径必须同语义。
+#[tokio::test]
+async fn test_sub_workflow_child_cancelled_fails_parent_honestly() {
+    use std::time::Duration;
+
+    let engine = WorkflowEngine::new_arc();
+
+    // 子工作流：delay 节点睡 10_000s——给外部 cancel_execution 留窗口。
+    let mut slow = make_node("slow", "delay", vec![]);
+    slow.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("child_wf", vec![slow]))
+        .unwrap();
+
+    // 父工作流：sub_workflow 节点 → 下游 transform（下游存在是为了断言
+    // 它不得抢跑：旧缺陷下它会执行、父报 Completed）。
+    let mut sub = make_node("call_child", "sub_workflow", vec![]);
+    sub.config = HashMap::from([
+        ("workflow".to_string(), serde_json::json!("child_wf")),
+        ("input".to_string(), serde_json::json!({})),
+    ]);
+    let mut downstream = make_node("after", "transform", vec!["call_child"]);
+    downstream.config = HashMap::from([("expression".to_string(), serde_json::json!("identity"))]);
+    engine
+        .register_workflow(make_workflow("parent_wf", vec![sub, downstream]))
+        .unwrap();
+
+    // 后台拉起父执行；轮询等子执行出现在账面（workflow_name == child_wf），
+    // 然后对子执行 id 打 cancel_execution。
+    let engine_for_run = engine.clone();
+    let run_handle = tokio::spawn(async move {
+        engine_for_run
+            .run("parent_wf", HashMap::new(), None)
+            .await
+            .unwrap()
+    });
+
+    let child_id = loop {
+        let execs = engine.list_executions(None).await;
+        if let Some(child) = execs.iter().find(|e| e.workflow_name == "child_wf") {
+            break child.id.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    engine.cancel_execution(&child_id).await.unwrap();
+
+    let parent = tokio::time::timeout(Duration::from_secs(5), run_handle)
+        .await
+        .expect("parent run did not resolve within 5s of child cancel")
+        .unwrap();
+
+    assert_eq!(
+        parent.state,
+        ExecutionState::Failed,
+        "子执行被取消时父执行必须诚实失败，不得 Completed（取消语义不得静默吞掉）"
+    );
+    // 调度器失败臂不写 node_result（与所有 Failed 节点同款），取消现场在
+    // 执行级 error 上：必须点名子执行 id 与取消语义。
+    let err = parent.error.as_deref().unwrap_or("");
+    assert!(
+        err.contains(&child_id) && err.contains("取消"),
+        "执行错误必须点名子执行 id 与取消语义，got: {}",
+        err
+    );
+    assert!(
+        !parent.node_results.contains_key("call_child"),
+        "失败节点不得写 node_result（调度器失败臂惯例）"
+    );
+    assert!(
+        !parent.node_results.contains_key("after"),
+        "下游节点不得在 sub_workflow 失败后抢跑"
+    );
+}
+
 #[tokio::test]
 async fn test_engine_with_executors() {
     let registry = NodeExecutorRegistry::new();
