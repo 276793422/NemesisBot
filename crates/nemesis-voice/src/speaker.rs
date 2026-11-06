@@ -112,6 +112,23 @@ impl Drop for SpeakerEngine {
     }
 }
 
+/// 名字 → C 字符串。内嵌 NUL（JSON `"\u0000"` 合法、可从 WSAPI speaker 命令
+/// 直达）时 `CString::new` 失败——BUG-20261106-020 之前这里 `.unwrap()` panic，
+/// 且调用方（web handler `cmd_speaker_remove`/`register_stop`）在持有
+/// `speaker_manager_state` std Mutex 的上下文里调用：panic 毒化锁 → 后续所有
+/// voice 命令对该锁的 `.lock().unwrap()` 连锁 panic，语音子系统进程内瘫痪。
+/// 现契约：诚实拒绝（None → 调用方返回 false，与 C API rc==0 失败同型），
+/// 库 API 对任意 `&str` 不 panic。
+fn speaker_name_cstr(name: &str) -> Option<CString> {
+    match CString::new(name) {
+        Ok(c) => Some(c),
+        Err(_) => {
+            tracing::warn!("[Speaker] name contains interior NUL, rejected");
+            None
+        }
+    }
+}
+
 impl SpeakerManager {
     pub fn new(dim: i32) -> Self {
         let manager = unsafe { sherpa::SherpaOnnxCreateSpeakerEmbeddingManager(dim) };
@@ -119,7 +136,9 @@ impl SpeakerManager {
     }
 
     pub fn register(&mut self, name: &str, embedding: &[f32]) -> bool {
-        let name_c = CString::new(name).unwrap();
+        let Some(name_c) = speaker_name_cstr(name) else {
+            return false;
+        };
         let rc = unsafe {
             sherpa::SherpaOnnxSpeakerEmbeddingManagerAdd(
                 self.manager,
@@ -134,7 +153,9 @@ impl SpeakerManager {
         if embeddings.is_empty() {
             return false;
         }
-        let name_c = CString::new(name).unwrap();
+        let Some(name_c) = speaker_name_cstr(name) else {
+            return false;
+        };
         let flattened: Vec<f32> = embeddings.iter().flat_map(|e| e.iter().copied()).collect();
         let n = embeddings.len() as libc::c_int;
         let rc = unsafe {
@@ -149,7 +170,9 @@ impl SpeakerManager {
     }
 
     pub fn remove(&mut self, name: &str) -> bool {
-        let name_c = CString::new(name).unwrap();
+        let Some(name_c) = speaker_name_cstr(name) else {
+            return false;
+        };
         let rc = unsafe {
             sherpa::SherpaOnnxSpeakerEmbeddingManagerRemove(self.manager, name_c.as_ptr())
         };
@@ -157,7 +180,9 @@ impl SpeakerManager {
     }
 
     pub fn verify(&self, name: &str, embedding: &[f32], threshold: f32) -> bool {
-        let name_c = CString::new(name).unwrap();
+        let Some(name_c) = speaker_name_cstr(name) else {
+            return false;
+        };
         let rc = unsafe {
             sherpa::SherpaOnnxSpeakerEmbeddingManagerVerify(
                 self.manager,

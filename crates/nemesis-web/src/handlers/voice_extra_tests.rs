@@ -200,6 +200,41 @@ mod voice_extra_tests {
         assert!(r.is_object());
     }
 
+    // BUG-20261106-020 回归锁：NUL 名在 WSAPI 边界诚实拒绝（crate 层
+    // SpeakerManager 也会拒，但边界拒绝给调用方明确错误，且 register_start
+    // 先于 ensure_speaker_engine 重装配——机器上无语音模型也确定性命中）。
+    #[tokio::test]
+    async fn speaker_remove_rejects_nul_name() {
+        let h = VoiceHandler::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(&dir);
+        let err = h
+            .handle_cmd(
+                "speaker_remove",
+                Some(serde_json::json!({ "name": "a\u{0000}b" })),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("NUL"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn speaker_register_start_rejects_nul_name() {
+        let h = VoiceHandler::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(&dir);
+        let err = h
+            .handle_cmd(
+                "speaker_register_start",
+                Some(serde_json::json!({ "name": "a\u{0000}b" })),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("NUL"), "{err}");
+    }
+
     #[tokio::test]
     async fn engine_status_idle() {
         let h = VoiceHandler::new();

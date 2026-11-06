@@ -259,3 +259,24 @@ fn speaker_engine_drop_null_panics_at_destroy() {
 fn speaker_manager_drop_null_panics_at_destroy() {
     let _ = null_speaker_manager();
 }
+
+// ===========================================================================
+// BUG-20261106-020：名字含内嵌 NUL（JSON "\u0000" 合法、WSAPI speaker 命令
+// 原样透传）→ CString::new 失败。此前 .unwrap() panic 且发生在调用方持
+// std Mutex 上下文（web handler 持 speaker_manager_state）→ 锁毒化 → 语音
+// 子系统进程内瘫痪。修复：FFI 之前诚实 false。null manager 下若误入 FFI
+// 会 panic "sherpa-onnx not initialized"——本测试同时锁「不 panic」与
+// 「不进 FFI」两件事。
+// ===========================================================================
+
+#[test]
+fn speaker_manager_nul_name_returns_false_before_ffi() {
+    let mut m = null_speaker_manager();
+    assert!(!m.register("a\0b", &[0.1; 192]));
+    assert!(!m.register_multi("a\0b", &[vec![0.1; 192]]));
+    assert!(!m.remove("a\0b"));
+    assert!(!m.verify("a\0b", &[0.1; 192], 0.7));
+    // 空 embeddings + NUL 名：早退在前，同样 false 不 panic
+    assert!(!m.register_multi("a\0b", &[]));
+    std::mem::forget(m);
+}
