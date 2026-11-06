@@ -154,6 +154,16 @@ pub fn build_cluster_agent_loop(
         agent_loop.add_tool_hook(Arc::new(
             nemesis_agent::discipline::DisciplineGateHook::new(discipline_state.clone()),
         ));
+        // BUG-20261106-042：与主 loop 同款——证伪 hook 带 security 句柄
+        // （规则层管线前置）。security feature 关闭 = 旧行为（诚实降级）。
+        #[cfg(feature = "security")]
+        agent_loop.add_lifecycle_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineFalsificationHook::new_with_security(
+                discipline_state.clone(),
+                shared.security_plugin.clone(),
+            ),
+        ));
+        #[cfg(not(feature = "security"))]
         agent_loop.add_lifecycle_hook(Arc::new(
             nemesis_agent::discipline::DisciplineFalsificationHook::new(discipline_state.clone()),
         ));

@@ -274,6 +274,61 @@ async fn falsification_fail_budget_exhaustion_escalates() {
     assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
 }
 
+/// BUG-20261106-042 回归：证伪命令触发安全规则层（rm -rf 命中命令守卫）→
+/// Continue 反馈 ⛔ SECURITY BLOCKED、**命令未执行**（tripwire 文件不存在）、
+/// 记录仍落盘（passed=false，审计 trail 完整）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn falsification_security_blocked_never_executes() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    let ws = tempdir();
+    // 触发命令守卫的内容（rm -rf 命中 rm_rf 规则）+ 若真执行会先留下
+    // tripwire 的前半段（echo 重定向）——拦截失效时此文件必出现。
+    write_declaration(&ws, "echo pwned> discipline_tripwire.txt & rm -rf /");
+    let mut scfg = SecurityPluginConfig::default();
+    // default_action 改 allow：隔离出命令守卫行为（default deny + 零规则
+    // 会让一切分类操作被 ABAC 默认动作拦——那是 tool_adapter 测试的臂）。
+    scfg.default_action = "allow".to_string();
+    let plugin = Arc::new(SecurityPlugin::new(scfg));
+    let f = DisciplineFalsificationHook::new_with_security(state(&ws), Some(plugin));
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("SECURITY BLOCKED"), "feedback={feedback}");
+            assert!(feedback.contains("命令未执行"), "feedback={feedback}");
+        }
+        other => panic!("expected continue, got {other:?}"),
+    }
+    assert!(
+        !ws.join("discipline_tripwire.txt").exists(),
+        "被拦命令不得执行（tripwire 文件不得存在）"
+    );
+    // 记录仍落盘（拦截也进审计 trail）：passed=false。
+    assert_eq!(falsification_record(&ws, 1)["passed"], false);
+}
+
+/// BUG-20261106-042 回归：良性证伪命令在规则层放行后照常执行——通过路径
+/// 不受新闸影响（放行不误伤）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn falsification_security_allows_benign_passthrough() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    let ws = tempdir();
+    write_declaration(&ws, pass_cmd());
+    let mut scfg = SecurityPluginConfig::default();
+    scfg.default_action = "allow".to_string();
+    let plugin = Arc::new(SecurityPlugin::new(scfg));
+    let f = DisciplineFalsificationHook::new_with_security(state(&ws), Some(plugin));
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪通过"), "feedback={feedback}");
+        }
+        other => panic!("expected continue, got {other:?}"),
+    }
+    assert_eq!(falsification_record(&ws, 1)["passed"], true);
+}
+
 /// 复核修复回归：**超时也是失败形态**——ExecTool 超时收尸返回
 /// `Ok("Command timed out …")`，无 `Exit code:` 前缀，旧判定误判为通过。
 #[test]
