@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { useWSAPI } from '../composables/useWSAPI'
@@ -339,6 +339,57 @@ const visibleNavGroups = computed(() => {
   out.splice(at >= 0 ? at + 1 : out.length, 0, { title: '定制', items })
   return out
 })
+
+// 折叠分组（2026-11-06 用户决策：左侧导航收敛）：分组标题变可点开关，
+// 管理/配置/其他默认收起；导航进组内页面自动展开；状态持久化 localStorage。
+// 纯渲染层行为——navModel 契约（皮肤脚本编程面）不动。
+const NAV_COLLAPSE_KEY = 'nb_nav_collapsed_groups'
+const NAV_DEFAULT_COLLAPSED = ['管理', '配置', '其他']
+const collapsedGroups = ref<Record<string, boolean>>(loadCollapsedGroups())
+
+function loadCollapsedGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(NAV_COLLAPSE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, boolean>
+      }
+    }
+  } catch {
+    // 存储损坏/隐私模式——回落默认形态
+  }
+  const def: Record<string, boolean> = {}
+  for (const t of NAV_DEFAULT_COLLAPSED) def[t] = true
+  return def
+}
+
+function persistCollapsedGroups() {
+  try {
+    localStorage.setItem(NAV_COLLAPSE_KEY, JSON.stringify(collapsedGroups.value))
+  } catch {
+    // 写不进就只保留会话内状态
+  }
+}
+
+function toggleGroup(title: string) {
+  if (appStore.sidebarCollapsed) return // 图标窄条无标签语义，不响应折叠
+  collapsedGroups.value[title] = !collapsedGroups.value[title]
+  persistCollapsedGroups()
+}
+
+// 导航进入被折叠组内的页面 → 自动展开该组（与手动切换同口径持久化）。
+// 不带 immediate：本组页面上手动收起后刷新不反弹，跨页导航才触发。
+watch(
+  () => route.path,
+  (path) => {
+    const hit = visibleNavGroups.value.find((g) => g.items.some((i) => i.route === path))
+    if (hit && collapsedGroups.value[hit.title]) {
+      collapsedGroups.value[hit.title] = false
+      persistCollapsedGroups()
+    }
+  },
+)
 </script>
 
 <template>
@@ -383,9 +434,18 @@ const visibleNavGroups = computed(() => {
 
     <nav class="sidebar-nav">
       <div v-for="group in visibleNavGroups" :key="group.title" class="nav-section">
-        <div class="nav-section-title">{{ group.title }}</div>
+        <div
+          class="nav-section-title nav-section-toggle"
+          :class="{ 'is-collapsed': collapsedGroups[group.title] }"
+          :title="collapsedGroups[group.title] ? '展开 ' + group.title : '收起 ' + group.title"
+          @click="toggleGroup(group.title)"
+        >
+          <span class="nav-chevron" aria-hidden="true">▸</span>
+          <span>{{ group.title }}</span>
+        </div>
         <a
           v-for="item in group.items"
+          v-show="!collapsedGroups[group.title]"
           :key="item.id"
           class="nav-item"
           :class="{ active: route.path === item.route }"
@@ -480,6 +540,34 @@ const visibleNavGroups = computed(() => {
 </template>
 
 <style scoped>
+/* 折叠分组开关（2026-11-06 导航收敛）：▸ 展开态朝下（rotate 90°），收起态朝右 */
+.nav-section-toggle {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nav-section-toggle:hover {
+  opacity: 0.8;
+}
+.nav-chevron {
+  display: inline-block;
+  font-size: 10px;
+  line-height: 1;
+  transition: transform 0.15s ease;
+  transform: rotate(90deg);
+}
+.nav-section-toggle.is-collapsed .nav-chevron {
+  transform: rotate(0deg);
+}
+/* 整栏收起（56px 图标条）：组开关无标签语义，藏箭头、禁手势 */
+.sidebar.collapsed .nav-chevron {
+  display: none;
+}
+.sidebar.collapsed .nav-section-toggle {
+  cursor: default;
+}
 .editor-badge {
   color: #e6a23c;
 }
