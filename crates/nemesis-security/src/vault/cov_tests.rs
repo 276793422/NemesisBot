@@ -21,6 +21,34 @@ fn temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// `VaultStore::create` 带瞬态重试：CI runner 上的外力（AV 扫描/临时区保留
+/// 清理）会在 create 的 DPAPI/argon2 seal → save 原子写窗口内删掉 temp
+/// 目录，rename 报 os error 3（2026-11-06 15:16Z shard7 实录）。helper 契约
+/// （nemesis-utils/src/file.rs）明示 rename 遇外部占用"由调用方决定重试或
+/// 上报"，此处选重试：换新 temp 目录最多 3 次；只吞 Io-rename 瞬态臂，
+/// 业务错误照常 panic——断言力不变。`rel` 为 vault 文件相对 temp 目录的
+/// 路径（嵌套路径仍走 create 的 create_dir_all 臂，不被此 helper 吃掉）。
+fn create_store_retrying(
+    tag: &str,
+    rel: &str,
+    mode: VaultMode,
+    passphrase: Option<&str>,
+) -> (PathBuf, VaultStore) {
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        let dir = temp_dir(&format!("{tag}-{attempt}"));
+        let p = dir.join(rel);
+        match VaultStore::create(&p, mode, passphrase) {
+            Ok(store) => return (dir, store),
+            Err(VaultError::Io(e)) if e.to_string().contains("rename:") => {
+                last_err = e.to_string();
+            }
+            Err(err) => panic!("create 失败（非瞬态 rename 噪声）: {err}"),
+        }
+    }
+    panic!("create 连续 3 次遇 rename 瞬态失败: {last_err}");
+}
+
 /// Display 两种模式拼写与 serde 落盘一致（76/78-82）。
 #[test]
 fn vault_mode_display_matches_serde_spelling() {
@@ -31,9 +59,7 @@ fn vault_mode_display_matches_serde_spelling() {
 /// Debug 永不输出 DEK 与条目值（172-178）。
 #[test]
 fn vault_store_debug_never_leaks_secrets() {
-    let dir = temp_dir("debug");
-    let p = dir.join("v.vault");
-    let mut store = VaultStore::create(&p, VaultMode::Dpapi, None).unwrap();
+    let (dir, mut store) = create_store_retrying("debug", "v.vault", VaultMode::Dpapi, None);
     store
         .set("api-key", "super-secret-value", "example.com", "cov")
         .unwrap();
@@ -53,9 +79,9 @@ fn vault_store_debug_never_leaks_secrets() {
 /// create 支持嵌套不存在的父目录（create_dir_all 臂，222）。
 #[test]
 fn create_creates_nested_parent_directories() {
-    let dir = temp_dir("nested");
-    let p = dir.join("level1").join("level2").join("v.vault");
-    let store = VaultStore::create(&p, VaultMode::Dpapi, None).unwrap();
+    let (dir, store) =
+        create_store_retrying("nested", "level1/level2/v.vault", VaultMode::Dpapi, None);
+    let p = store.path().to_path_buf();
     assert!(p.exists());
     assert_eq!(store.path(), p.as_path());
 
@@ -65,9 +91,8 @@ fn create_creates_nested_parent_directories() {
 /// open 目标存在但不可读（共享冲突）→ 非 NotFound 的 Io 臂（236）。
 #[test]
 fn open_unreadable_file_maps_to_io_error() {
-    let dir = temp_dir("unreadable");
+    let (dir, _) = create_store_retrying("unreadable", "v.vault", VaultMode::Dpapi, None);
     let p = dir.join("v.vault");
-    VaultStore::create(&p, VaultMode::Dpapi, None).unwrap();
 
     // 独占句柄：不共享 READ（0x0001）→ 后续 open 读取共享冲突。
     let holder = std::fs::OpenOptions::new()
@@ -91,11 +116,10 @@ fn open_unreadable_file_maps_to_io_error() {
 /// （352-354 / 368-370）；全链路 set → save → reopen → get。
 #[test]
 fn dpapi_store_full_lifecycle_with_idempotent_unlock() {
-    let dir = temp_dir("dpapi");
+    let (dir, mut store) = create_store_retrying("dpapi", "v.vault", VaultMode::Dpapi, None);
     let p = dir.join("v.vault");
 
     {
-        let mut store = VaultStore::create(&p, VaultMode::Dpapi, None).unwrap();
         assert!(store.is_unlocked());
         assert_eq!(store.mode(), VaultMode::Dpapi);
         store.set("alias-b", "value-b", "b.com", "second").unwrap();
@@ -123,9 +147,8 @@ fn dpapi_store_full_lifecycle_with_idempotent_unlock() {
 /// dpapi_blob 字段损坏（非法 base64）→ Corrupted 上抛（478-479）。
 #[test]
 fn open_with_corrupted_dpapi_blob_reports_corrupted() {
-    let dir = temp_dir("corrupt");
+    let (dir, _) = create_store_retrying("corrupt", "v.vault", VaultMode::Dpapi, None);
     let p = dir.join("v.vault");
-    VaultStore::create(&p, VaultMode::Dpapi, None).unwrap();
 
     let raw = std::fs::read_to_string(&p).unwrap();
     let mut v: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -145,11 +168,11 @@ fn open_with_corrupted_dpapi_blob_reports_corrupted() {
 /// 对口令解锁后可读。
 #[test]
 fn argon2_store_lock_wrong_then_right_passphrase() {
-    let dir = temp_dir("argon2");
+    let (dir, mut store) =
+        create_store_retrying("argon2", "v.vault", VaultMode::Argon2id, Some("right-pass"));
     let p = dir.join("v.vault");
 
     {
-        let mut store = VaultStore::create(&p, VaultMode::Argon2id, Some("right-pass")).unwrap();
         store.set("db-pw", "hunter2", "db.local", "cov").unwrap();
         store.save().unwrap();
     }
