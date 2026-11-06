@@ -272,7 +272,25 @@ impl ContinuationStore {
             {
                 // Extract task ID from filename
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    self.snapshots.lock().remove(stem);
+                    // BUG-20261106-022：内存键是原始 task_id（save 原样入键；
+                    // recover_from_disk 按文件名 stem 回载）——stem 是消毒
+                    // 形态，含白名单外字符的 id（SAN-02：远端可传任意串）
+                    // 按 stem 直删永远 miss，超龄清扫删盘留内存（快照含完整
+                    // 对话 JSON，无界驻留）。按「sanitize(内存键) == stem」
+                    // 匹配删除：save 侧原键经消毒命中，recover 侧 stem 键经
+                    // 消毒幂等命中，身份映射（真实 id 族）退化为精确匹配
+                    // 行为不变。
+                    {
+                        let mut snapshots = self.snapshots.lock();
+                        let doomed: Vec<String> = snapshots
+                            .keys()
+                            .filter(|k| nemesis_utils::sanitize::sanitize_path_segment(k) == stem)
+                            .cloned()
+                            .collect();
+                        for k in &doomed {
+                            snapshots.remove(k);
+                        }
+                    }
                     // LOW-5：韧性删除（同 remove()）。
                     let p = path.clone();
                     let ok = tokio::task::spawn_blocking(move || {

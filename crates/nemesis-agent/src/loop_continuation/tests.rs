@@ -2268,6 +2268,113 @@ async fn test_cleanup_old_snapshots_memory_only_manager_is_noop() {
     assert!(manager.has_continuation("mem-only").await);
 }
 
+// --- BUG-20261106-022 回归锁：cleanup_old_snapshots 必须清掉「消毒形态
+// --- 文件名 stem ≠ 原始 task_id」的内存条目。此前按 stem 直删永远 miss
+// --- （内存键是原始 id），TTL 清理删得掉盘上文件、删不掉内存快照（含
+// --- 完整对话 JSON，重启前无界驻留）。覆盖两类非恒等映射：字符替换
+// --- （`/`、`:`、空格 → `_`）与超长 hash 后缀形态（>80 字符 → 头60+hash16）。
+
+#[tokio::test]
+async fn test_cleanup_old_snapshots_removes_sanitized_id_memory_entries() {
+    let tmp = TempDir::new().unwrap();
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+
+    // 字符替换族：内存键含 `/`、`:`、空格，盘上文件名全 `_`。
+    let char_weird = "weird/dir:name x";
+    // 超长族：>80 字符 → sanitize 落 hash 后缀形态（78 字符），同样 ≠ 原键。
+    let long_weird = format!("{}{}", "L".repeat(90), "/tail");
+    // 身份映射对照（真实 id 族——既有行为不回归）。
+    let plain = "plain-id";
+    for task in [char_weird, long_weird.as_str(), plain] {
+        manager
+            .save_continuation(
+                task,
+                vec![make_message("user", "hi")],
+                "tc",
+                "rpc",
+                "chat",
+                "test_session",
+                "",
+            )
+            .await;
+    }
+    let cache = tmp.path().join("cluster").join("rpc_cache");
+    assert!(
+        cache.join("weird_dir_name_x.json").exists(),
+        "char-weird snapshot 必须落消毒形态文件名"
+    );
+    assert!(manager.has_continuation(char_weird).await);
+    assert!(manager.has_continuation(&long_weird).await);
+
+    // 全部超龄（sleep 保证 mtime 严格早于 cutoff）。
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    let removed = manager
+        .cleanup_old_snapshots(std::time::Duration::from_nanos(1))
+        .await;
+    assert_eq!(removed, 3, "三个盘上快照都该被删");
+    // 内存侧三键全部清除——修复前 char_weird / long_weird 两键永存。
+    assert!(
+        !manager.has_continuation(char_weird).await,
+        "消毒映射 id 的内存条目必须随 TTL 清理移除"
+    );
+    assert!(
+        !manager.has_continuation(&long_weird).await,
+        "hash 后缀形态 id 的内存条目必须随 TTL 清理移除"
+    );
+    assert!(!manager.has_continuation(plain).await);
+    // 盘上 .json 全清。
+    let leftover = std::fs::read_dir(&cache)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .count();
+    assert_eq!(leftover, 0, "清理后 rpc_cache 不应残留 .json");
+}
+
+// --- BUG-20261106-022 第二层回归锁：recover_to_manager 必须能恢复 hash
+// --- 后缀形态 stem 的盘上快照。此前 load 走 snapshot_path 把 stem 再消毒
+// --- ——hash 形态（78 字符恰中 is_hash_suffix_form）被强制回 hash 分支对
+// --- stem 本身再哈希，产出不存在文件的路径，恢复永远失败（warn + 跳过）。
+
+#[tokio::test]
+async fn test_recover_to_manager_handles_hash_form_stems() {
+    let tmp = TempDir::new().unwrap();
+    let weird = format!("{}{}", "L".repeat(90), "/tail");
+    {
+        let manager = ContinuationManager::with_disk_store(tmp.path());
+        manager
+            .save_continuation(
+                &weird,
+                vec![make_message("user", "hi")],
+                "tc",
+                "rpc",
+                "chat",
+                "test_session",
+                "",
+            )
+            .await;
+    }
+    let stem = nemesis_utils::sanitize::sanitize_path_segment(&weird);
+    // 显式恢复路径：裸 store + 内存为空的 manager（绕开 with_disk_store
+    // 构造期自动恢复，单独验证 recover_to_manager 本体）。
+    let store = ContinuationStore::new(tmp.path());
+    let manager2 = ContinuationManager::new();
+    let recovered = store.recover_to_manager(&manager2);
+    assert_eq!(recovered, 1, "hash 形态 stem 快照必须能从盘恢复");
+    // 恢复路径按文件名 stem 回载入内存（既有键空间语义），快照内容可读。
+    assert!(manager2.has_continuation(&stem).await);
+    // 幂等：已入内存的条目不重复恢复。
+    let again = store.recover_to_manager(&manager2);
+    assert_eq!(again, 0, "已在内存的快照不应重复恢复");
+    // 生产入口路径：with_disk_store 构造期自动恢复同样命中 hash 形态 stem
+    // （修复前此路径永远扑空——load 走 snapshot_path 把 stem 再消毒再哈希）。
+    let manager3 = ContinuationManager::with_disk_store(tmp.path());
+    assert!(
+        manager3.has_continuation(&stem).await,
+        "with_disk_store 构造期自动恢复必须能捞回 hash 形态快照"
+    );
+}
+
 // --- W3a: delete 警告臂、stale/cleanup TTL、磁盘写失败、save-barrier
 // 等待/超时臂、persist_final_reply save 错误、final outbound 发送失败、
 // observer_manager 路径 ---
