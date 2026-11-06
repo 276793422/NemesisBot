@@ -23,6 +23,12 @@ const onlyCron = ref(false)
 
 const filtered = computed(() => {
   let result = props.sessions
+  // 时间过滤（BUG-20261106-028）：timeFilter 此前只有声明+模板绑定，
+  // filtered 从不消费——选「今天/本周」完全无效（静默死控制，家族其余
+  // 五个过滤器均正常消费）。
+  if (timeFilter.value === 'today' || timeFilter.value === 'week') {
+    result = result.filter(s => inTimeWindow(s.lastTime, timeFilter.value as 'today' | 'week'))
+  }
   if (search.value) {
     const k = search.value.toLowerCase()
     result = result.filter(s =>
@@ -33,6 +39,22 @@ const filtered = computed(() => {
   }
   return result
 })
+
+// 时间窗判定：今天=本地自然日（当日 00:00 起的自然日比对）；本周=周一起
+// 的本地自然周（getDay 周日=0 → 偏移换算周一为一周起点）。不可解析的
+// 时间戳不过滤（诚实降级——不因格式意外隐藏条目）。
+function inTimeWindow(ts: string, mode: 'today' | 'week'): boolean {
+  const d = new Date(ts)
+  if (isNaN(d.getTime())) return true
+  const now = new Date()
+  if (mode === 'today') {
+    return d.getFullYear() === now.getFullYear()
+      && d.getMonth() === now.getMonth()
+      && d.getDate() === now.getDate()
+  }
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7))
+  return d.getTime() >= monday.getTime()
+}
 
 const selected = computed(() => {
   return props.sessions.find(s => s.id === props.selectedId) || filtered.value[0]
