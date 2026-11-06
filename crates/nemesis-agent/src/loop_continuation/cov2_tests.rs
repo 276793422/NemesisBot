@@ -224,6 +224,7 @@ async fn claim_failure_early_returns_without_processing() {
         None,
         true,
         None,
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 

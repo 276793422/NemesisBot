@@ -363,6 +363,8 @@ impl AgentLoop {
                     .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
                 // L28+：阶梯封顶与主循环同源（agents.defaults.max_output_ceiling）。
                 let max_tokens_ceiling = self.current_max_output_ceiling();
+                // BUG-20261106-041：estop 句柄（Arc clone 后放锁——guard 不跨 .await）。
+                let cont_estop = self.security.estop.read().clone();
 
                 crate::loop_continuation::handle_cluster_continuation(
                     mgr.as_ref(),
@@ -381,6 +383,7 @@ impl AgentLoop {
                     // F-F：active 模型 vision 解析（config.json 唯一真相源）。
                     self.current_vision().supported,
                     task_source_node.as_deref(),
+                    cont_estop.as_deref(),
                 )
                 .await;
             }
@@ -403,6 +406,9 @@ impl AgentLoop {
                 .unwrap_or(nemesis_types::capability::DEFAULT_MAX_TOKENS as u32);
             // L28+：阶梯封顶同样 spawn 前解析（闭包要求 'static）。
             let max_tokens_ceiling = self.current_max_output_ceiling();
+            // BUG-20261106-041：estop 句柄同样 spawn 前取值（'static 闭包要求
+            // owned Arc；guard 不进闭包）。
+            let spawned_estop = self.security.estop.read().clone();
 
             tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
@@ -425,6 +431,7 @@ impl AgentLoop {
                         session_store.as_ref().map(|v| v.as_ref()),
                         vision_supported,
                         task_source_node.as_deref(),
+                        spawned_estop.as_deref(),
                     )
                     .await;
                 }
@@ -1015,6 +1022,8 @@ impl AgentLoop {
             // Clone provider and model before .await (RwLock guards are not Send).
             let cont_provider = self.provider.read().clone();
             let cont_model = self.active_model.read().clone();
+            // BUG-20261106-041：estop 句柄（Arc clone 后放锁——guard 不跨 .await）。
+            let cont_estop = self.security.estop.read().clone();
             // L28：续行 cap 与主循环 chat_opts 同源。
             let max_tokens_cap = self
                 .current_max_tokens_override(Some(&cont_model))
@@ -1039,6 +1048,7 @@ impl AgentLoop {
                     // F-F：active 模型 vision 解析。
                     self.current_vision().supported,
                     task_source_node,
+                    cont_estop.as_deref(),
                 )
                 .await;
             }

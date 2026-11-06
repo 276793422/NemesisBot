@@ -203,6 +203,7 @@ async fn continuation_final_response_logs_info_fields() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
