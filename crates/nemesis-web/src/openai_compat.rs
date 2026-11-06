@@ -66,6 +66,13 @@ use std::time::Instant;
 /// 请求日志按此检索）。
 const OPENAI_LABEL: &str = "openai-api";
 
+/// `/v1/chat/completions` 入站 body 上限（路由层 `DefaultBodyLimit`）。
+/// 裸 lane 合同含 OpenAI 标准视觉形态——`image_url` data URI 的 base64
+/// 内联（4/3 膨胀，单图 MB 级、多图更甚），axum 默认 2MB 会把合法视觉
+/// 请求 413 拒在 handler 之前（BUG-20261106-035）。对齐上传端点 26MB
+/// 口径（25MB 载荷 + 1MB 余量）。
+pub(crate) const OPENAI_COMPAT_BODY_LIMIT_BYTES: usize = 26 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // 请求/响应 wire 形态
 // ---------------------------------------------------------------------------
@@ -157,6 +164,19 @@ impl OpenAiMessage {
     }
 }
 
+/// RFC 3986 §3.1：URL scheme 大小写不敏感——`DATA:`/`Data:` 与 `data:`
+/// 等价。字节级 `strip_prefix("data:")` 会把大写合法形态漏成
+/// `ImageSource::Url`（内联 base64 被换成上游拉不到的伪 URL；
+/// BUG-20261106-036，同族先例 = image_attach 的 `url_has_scheme`）。
+fn strip_data_scheme(url: &str) -> Option<&str> {
+    const P: &str = "data:";
+    if url.len() >= P.len() && url[..P.len()].eq_ignore_ascii_case(P) {
+        Some(&url[P.len()..])
+    } else {
+        None
+    }
+}
+
 /// OpenAI wire 多模态 content 归一（BUG-b 2026-10-30，纯函数供测试）：
 /// OpenAI 形态 `{"type":"image_url","image_url":{"url":...}}` 与内部
 /// [`ContentPart`] serde tag（`type:"image"`）不同，直接 `from_value` 会
@@ -192,8 +212,9 @@ pub(crate) fn normalize_openai_content(
                             .and_then(|u| u.as_str())
                             .ok_or_else(|| format!("image_url.url 缺失或非字符串: {p}"))?;
                         // data URI（data:<media_type>;base64,<data>）拆
-                        // Base64；其余按 http(s) URL 原样透传交 provider。
-                        let image = if let Some(rest) = url.strip_prefix("data:") {
+                        // Base64（scheme 大小写不敏感，BUG-20261106-036）；
+                        // 其余按 http(s) URL 原样透传交 provider。
+                        let image = if let Some(rest) = strip_data_scheme(url) {
                             let (meta, data) = rest.split_once(";base64,").ok_or_else(|| {
                                 format!("image_url data URI 非 base64 形态: {url}")
                             })?;
