@@ -1341,3 +1341,95 @@ fn test_resolve_home_env_tilde_expands() {
     assert!(s.contains("r408-tilde-home"), "custom segment lost: {s}");
     assert!(s.contains(".nemesisbot"), "suffix lost: {s}");
 }
+
+// =========================================================================
+// BUG-20261107-007：logging.general 解析单一真相源（parse_general_logging
+// / resolve_general_level）。此前写侧（log.rs）与读侧（init 装配）各自
+// 维护键表/值表：enabled 键写而不读（disable 无效）、FATAL 写侧接受读侧
+// 不识（静默落 INFO 宽松方向）。
+// =========================================================================
+
+#[test]
+fn parse_general_logging_defaults_when_file_missing() {
+    // 配置文件不存在：整体缺省（enabled/console 开、INFO、无文件层）。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = tmp.path().join("nonexistent.json");
+    let s = parse_general_logging(&cfg);
+    assert!(s.enabled);
+    assert!(s.enable_console);
+    assert_eq!(s.level, tracing::Level::INFO);
+    assert_eq!(s.file, None);
+}
+
+#[test]
+fn parse_general_logging_enabled_false_gate() {
+    // BUG-20261107-007 主缺陷之一：`log general disable` 写入的 enabled:false
+    // 键此前读侧零消费（装配无视该键）。解析层必须把它带出来，装配侧据此
+    // 走 quiet 同款早退。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let data = serde_json::json!({
+        "logging": {"general": {"enabled": false, "level": "ERROR"}}
+    });
+    fs::write(&cfg, data.to_string()).unwrap();
+    let s = parse_general_logging(&cfg);
+    assert!(!s.enabled, "enabled:false 必须被解析出来");
+    assert_eq!(s.level, tracing::Level::ERROR, "其余键照常解析");
+}
+
+#[test]
+fn parse_general_logging_fatal_maps_to_error() {
+    // BUG-20261107-007 主缺陷之二：CLI 接受 FATAL 写盘，读侧映射表不识
+    // 该值走 `_ => INFO` 兜底——比 ERROR 宽松两级、与「只要致命错」意图
+    // 完全相反。现 FATAL → ERROR（tracing 无 FATAL 级，ERROR 是最严档）。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let data = serde_json::json!({
+        "logging": {"general": {"enabled": true, "enable_console": false, "level": "FATAL"}}
+    });
+    fs::write(&cfg, data.to_string()).unwrap();
+    let s = parse_general_logging(&cfg);
+    assert_eq!(
+        s.level,
+        tracing::Level::ERROR,
+        "FATAL 必须映射 ERROR，不得落 INFO 兜底臂"
+    );
+}
+
+#[test]
+fn resolve_general_level_cli_value_domain_aligned() {
+    // 值域对齐锁：log.rs cmd_general_level 的 valid 表逐值过
+    // resolve_general_level，任何值都不得落入 INFO 兜底臂（INFO 自身除外）
+    // ——两表再漂移时此测试红。
+    let cli_valid = ["DEBUG", "INFO", "WARN", "ERROR", "FATAL", "TRACE"];
+    for s in cli_valid {
+        let resolved = resolve_general_level(s);
+        if s != "INFO" {
+            assert_ne!(
+                resolved,
+                tracing::Level::INFO,
+                "CLI 接受的级别 '{s}' 落了 INFO 兜底臂——写读两侧值域漂移"
+            );
+        }
+    }
+    // 别名与小写：WARNING 别名、trace 小写均识别。
+    assert_eq!(resolve_general_level("WARNING"), tracing::Level::WARN);
+    assert_eq!(resolve_general_level("trace"), tracing::Level::DEBUG);
+    // 真正未知的字符串维持 lenient INFO 兜底（既有语义）。
+    assert_eq!(resolve_general_level("LOUD"), tracing::Level::INFO);
+}
+
+#[test]
+fn init_logger_config_disabled_returns_without_layers() {
+    // 装配级行为锁：enabled=false 早退不 panic、flags 原样返回
+    // （与 --quiet 同款路径；subscriber 全局态在测试进程不可断言，
+    // 解析层断言见 parse_general_logging_enabled_false_gate）。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let cfg = tmp.path().join("config.json");
+    let data = serde_json::json!({
+        "logging": {"general": {"enabled": false}}
+    });
+    fs::write(&cfg, data.to_string()).unwrap();
+    let flags = init_logger_from_config(&cfg, &[]);
+    assert_eq!(flags, 0);
+}
