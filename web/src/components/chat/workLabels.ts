@@ -27,3 +27,28 @@ const TOOL_LABELS: Record<string, string> = {
 export function toolLabel(tool: string): string {
   return TOOL_LABELS[tool] ?? tool
 }
+
+/**
+ * spawn 行任务文本提取（2026-11-06 B 档历史钻取）。
+ *
+ * args_preview 是截断到 200 字符的调用参数 JSON（tool_event_hook
+ * ARGS_PREVIEW_CAP）：完整可 parse 时取 `task` 字段；截断则正则抠出
+ * `"task":"…"` 前缀，捕获组回包 JSON.parse 还原转义（\n/\" 等）。
+ * 提取失败返回空串（诚实降级为参数原文展示）。
+ */
+export function spawnTaskFromArgs(preview: string): string {
+  if (!preview) return ''
+  try {
+    const v = JSON.parse(preview)
+    if (v && typeof v === 'object' && typeof (v as Record<string, unknown>).task === 'string') {
+      return (v as Record<string, string>).task
+    }
+  } catch { /* 截断 JSON——走正则前缀提取 */ }
+  const m = /"task"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(preview)
+  if (!m) return ''
+  try {
+    return JSON.parse(`"${m[1]}"`)
+  } catch {
+    return m[1]
+  }
+}

@@ -10,6 +10,10 @@
  *           （definition 为一份合法的 cron+http+llm 小工作流，过 DAG 校验）
  *         - 最后一条 user 含 E2E_TOOL_EXEC → exec 工具调用（审批卡 e2e 用；
  *           命令含 E2E_APPROVAL_MARKER，由 e2e workspace 的安全 ask 规则拦审批）
+ *         - 最后一条 user 含 E2E_TOOL_SPAWN(2) → spawn 工具调用（background=true，
+ *           子代理胶囊视觉自测用；SPAWN2 先于 SPAWN 判——子串包含关系）
+ *         - 最后一条 user 含 E2E_SLOW     → 慢速臂：延迟 20s 再文本回复
+ *           （bg 子代理任务文本含此标记 → 子代理运行 ~20s，给 UI 截图留窗口）
  *         - 其余                          → 纯文本直答（E2E_MOCK_TEXT_REPLY 前缀）
  *     · 请求体 stream===true → 同样内容改走 SSE chunk 流（delta 拼接 + 终态帧
  *       + [DONE]），验证 gateway 侧流式聚合链路（stream_util::collect_stream_response）
@@ -57,6 +61,17 @@ const APPROVAL_COMMAND = 'echo E2E_APPROVAL_MARKER_OK'
 
 const TEXT_REPLY = 'E2E_MOCK_TEXT_REPLY：这是 mock 模型的确定性直答回复。'
 
+// 慢速臂延迟（E2E_SLOW 标记）：bg 子代理任务文本含标记 → 延迟应答，
+// 子代理保持 running ~20s，给子代理胶囊视觉自测留截图窗口。
+const SLOW_MS = 20_000
+
+// 子代理胶囊视觉自测的 spawn 任务文本（含 E2E_SLOW 标记 → 子代理 LLM
+// 调用走慢速臂，注册表 running 行维持 ~20s；两条任务文本可区分）。
+const SPAWN_TASKS = {
+  spawn_tool: 'E2E_SLOW 子代理胶囊视觉验证任务一：长任务深度分析与结论汇总',
+  spawn_tool_2: 'E2E_SLOW 子代理胶囊视觉验证任务二：全量回归测试编排与结果评审',
+}
+
 function lastRole(body) {
   const msgs = body?.messages
   if (!Array.isArray(msgs) || msgs.length === 0) return null
@@ -75,6 +90,10 @@ function routeRequest(body) {
   const text = lastUserText(body)
   if (text.includes('E2E_WF_GEN')) return 'workflow_create'
   if (text.includes('E2E_TOOL_EXEC')) return 'exec_tool'
+  // SPAWN2 必须先于 SPAWN 判——'E2E_TOOL_SPAWN2' 包含 'E2E_TOOL_SPAWN' 子串。
+  if (text.includes('E2E_TOOL_SPAWN2')) return 'spawn_tool_2'
+  if (text.includes('E2E_TOOL_SPAWN')) return 'spawn_tool'
+  if (text.includes('E2E_SLOW')) return 'slow_text'
   return 'text'
 }
 
@@ -176,6 +195,39 @@ function messagePayload(route, body) {
       usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
     }
   }
+  // spawn 工具调用（子代理胶囊视觉自测）：schema 只必填 task（spawn.rs），
+  // background=true 走后台注册表 → 前端胶囊；tools=readonly 让自动派生
+  // 角色走只读档（不碰写面，无审批面）。
+  if (route === 'spawn_tool' || route === 'spawn_tool_2') {
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: `call_mock_${route}`,
+                type: 'function',
+                function: {
+                  name: 'spawn',
+                  arguments: JSON.stringify({
+                    task: SPAWN_TASKS[route],
+                    background: true,
+                    tools: 'readonly',
+                  }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
+    }
+  }
   return {
     ...base,
     choices: [
@@ -240,17 +292,22 @@ const server = http.createServer((req, res) => {
       }
       const route = body ? routeRequest(body) : 'text'
       if (body) recordEvidence(body)
-      if (body?.stream === true) {
-        res.writeHead(200, {
-          'content-type': 'text/event-stream',
-          'cache-control': 'no-cache',
-          connection: 'keep-alive',
-        })
-        res.end(sseChunks(route, body))
-        return
+      const respond = () => {
+        if (body?.stream === true) {
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive',
+          })
+          res.end(sseChunks(route, body))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(messagePayload(route, body ?? {})))
       }
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify(messagePayload(route, body ?? {})))
+      // 慢速臂：延迟应答（JSON 与 SSE 两路同延迟）。
+      if (route === 'slow_text') setTimeout(respond, SLOW_MS)
+      else respond()
     })
     return
   }

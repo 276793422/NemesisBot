@@ -1491,3 +1491,61 @@ async fn gc_enabled_rewind_forward_tree_survives_inline_gc_for_redo() {
 
     delete_chat_log(&key);
 }
+
+/// BUG-20261106-040 回归锁：redo pop→恢复完成窗口的在途保护。redo 是先
+/// pop 后慢操作（全量 jsonl 读/指纹/冲突扫描/restore_to_tree）——pop 之后
+/// 条目离开 undo 栈，`undo_stack_tree_refs`（gc 保留集 extras 查询口）不再
+/// 覆盖条目三族 tree；窗口内并发 gc（其他会话 `truncate_from_scoped` 内联
+/// `gc_now` / gateway 周期拍）会把 forward_tree 闭包当孤儿清掉，redo 恒
+/// 「影子 tree 不可达」→ 永久 blocked（F2 条目还栈但重试永败，被回退的对
+/// 话行滞留内存条目）。修复 = pop 经保护单点 `pop_undo_entry_for_redo`
+/// （pop 与注册零窗口，guard 持至退出）。本测试以确定性顺序模拟「pop 后
+/// 窗口内并发 gc」：生产单点 pop → gc_now → 还栈 → 完整 redo——
+/// forward_tree（v4 blob 只在这里）必须在 gc 中存活、redo 完整前向恢复。
+#[tokio::test]
+async fn gc040_redo_pop_window_trees_survive_gc_between_pop_and_restore() {
+    let (al, key, dir) = stage_gc_three_turns_git("gc040").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    // 回退（同 221 场景）：文件回 v3，undo 条目压栈（forward_tree = v4 实时树）。
+    let out = al.rewind_to_message(&key, 2, false).await.unwrap();
+    assert_eq!(out["removed_count"], 2, "{out}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "v3");
+
+    // 生产单点 pop：条目离栈，三族 tree 必须即刻进在途保护集（与栈保护
+    // 无缝——set 比较规避 HashSet 迭代序）。
+    let refs_before = al.undo_stack_tree_refs();
+    let (entry, guard) = al.pop_undo_entry_for_redo(&key).unwrap();
+    let to_set = |v: Vec<String>| -> std::collections::HashSet<String> { v.into_iter().collect() };
+    assert_eq!(
+        to_set(al.undo_stack_tree_refs()),
+        to_set(refs_before),
+        "pop 后在途保护必须无缝接管栈保护（无保护真空窗口）"
+    );
+
+    // 窗口内并发 gc（确定性模拟）：未注册的 tree 闭包在此被清（221 红证
+    // 同机制——重建式 gc 保留集拿不到即当孤儿清）。
+    al.checkpoint_store().unwrap().gc_now();
+
+    // guard 持至 redo 退出是生产语义；测试在 gc 后还栈走完整 redo 链。
+    drop(guard);
+    {
+        let mut stacks = al.rewind_undo_stacks.lock();
+        stacks.entry(key.clone()).or_default().push_back(entry);
+    }
+    let out = al.redo_rewind(&key).await.unwrap();
+    assert_eq!(
+        out["file_restore"], "applied",
+        "forward_tree 必须在 pop 窗口内的 gc 中存活: {out}"
+    );
+    assert!(out["file_restore_note"].is_null(), "不得有失败注记: {out}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "v4",
+        "redo 前向恢复到 undo 时刻实时树"
+    );
+    let (_, total, _, _) = read_chat_log(&key, 100, None);
+    assert_eq!(total, 6, "行回填（保留 4 + 回填 2）");
+
+    delete_chat_log(&key);
+}

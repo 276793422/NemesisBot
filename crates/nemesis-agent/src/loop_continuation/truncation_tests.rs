@@ -219,6 +219,7 @@ async fn run_continuation(
         None,
         true, // vision_supported
         None, // source_node
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
     outbound_rx
@@ -395,6 +396,7 @@ async fn run_continuation_with_ceiling(
         None,
         true,
         None,
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
     outbound_rx

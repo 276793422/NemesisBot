@@ -740,6 +740,7 @@ async fn test_handle_cluster_continuation_no_data() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
     // No outbound should be sent
@@ -793,6 +794,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -850,6 +852,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -933,12 +936,160 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
     let outbound = outbound_rx.try_recv();
     assert!(outbound.is_ok());
     assert!(outbound.unwrap().content.contains("Tool executed"));
+}
+
+/// BUG-20261106-041 回归锁：急停已在触发态进入续行 → 迭代循环顶部闸
+/// 生效，一次 LLM 调用都不发起，终局走既有持久化+出站路径带诚实注记。
+#[tokio::test]
+async fn test_continuation_estop_engaged_at_entry_no_llm_call() {
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    let messages = vec![make_message("user", "Hello")];
+    manager
+        .save_continuation(
+            "task-estop-top",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+            "",
+        )
+        .await;
+
+    let estop = std::sync::Arc::new(crate::estop::EstopState::new());
+    estop.trigger();
+
+    // 若闸失效，这个响应会被消费——chat_calls 断言兜住。
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        finish_reason: None,
+        escalated_to: None,
+        content: "should never be produced".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    handle_cluster_continuation(
+        &manager,
+        "task-estop-top",
+        "task response",
+        false,
+        None,
+        &provider,
+        "test-model",
+        4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+        true, // F-F vision_supported
+        None, // source_node
+        Some(&estop),
+    )
+    .await;
+
+    // 零 LLM 调用：急停期间续行不得烧轮次。
+    assert_eq!(provider.chat_calls(), 0);
+    // 终局带诚实注记，走既有出站路径。
+    let outbound = outbound_rx.try_recv();
+    assert!(outbound.is_ok());
+    assert!(outbound.unwrap().content.contains("已急停"));
+}
+
+/// BUG-20261106-041 回归锁：首呼在飞期间触发急停 → 本轮允许完成
+/// （工具照常执行），下一迭代顶部闸生效不再开新 LLM 轮次。
+#[tokio::test]
+async fn test_continuation_estop_midway_stops_next_round() {
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    let messages = vec![make_message("user", "Hello")];
+    manager
+        .save_continuation(
+            "task-estop-mid",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+            "",
+        )
+        .await;
+
+    // 首响应带 tool_calls（未注册工具 → 错误结果入对话，循环继续迭代），
+    // 第二响应若被调用会产出终局——chat_calls 断言兜住不得发生。
+    let estop = std::sync::Arc::new(crate::estop::EstopState::new());
+    let provider = MockContinuationProvider::new_with_estop_trigger(
+        vec![
+            LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
+                content: String::new(),
+                tool_calls: vec![ToolCallInfo {
+                    id: "tc_estop_1".to_string(),
+                    name: "never_registered_tool".to_string(),
+                    arguments: r#"{}"#.to_string(),
+                }],
+                finished: false,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            },
+            LlmResponse {
+                finish_reason: None,
+                escalated_to: None,
+                content: "should never be produced".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            },
+        ],
+        estop.clone(),
+    );
+
+    handle_cluster_continuation(
+        &manager,
+        "task-estop-mid",
+        "task response",
+        false,
+        None,
+        &provider,
+        "test-model",
+        4096,
+        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+        true, // F-F vision_supported
+        None, // source_node
+        Some(&estop),
+    )
+    .await;
+
+    // 首呼完成（在飞允许），第二迭代顶闸——不再烧第二轮。
+    assert_eq!(provider.chat_calls(), 1);
+    // 终局带诚实注记，走既有出站路径。
+    let outbound = outbound_rx.try_recv();
+    assert!(outbound.is_ok());
+    assert!(outbound.unwrap().content.contains("已急停"));
 }
 
 #[tokio::test]
@@ -977,6 +1128,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1048,6 +1200,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1141,6 +1294,10 @@ struct MockContinuationProvider {
     error: std::sync::Mutex<Option<String>>,
     // F-F 回归锁：记录每次 chat() 收到的消息图片数（vision 投影验证用）。
     seen_image_counts: std::sync::Mutex<Vec<Vec<usize>>>,
+    // BUG-20261106-041：chat() 调用计数（estop 闸断言用）。
+    chat_calls: std::sync::atomic::AtomicUsize,
+    // BUG-20261106-041：首次 chat() 进入时触发 estop（中途急停场景模拟）。
+    estop_after_first_chat: Option<std::sync::Arc<crate::estop::EstopState>>,
 }
 
 impl MockContinuationProvider {
@@ -1149,6 +1306,8 @@ impl MockContinuationProvider {
             responses: std::sync::Mutex::new(responses),
             error: std::sync::Mutex::new(None),
             seen_image_counts: std::sync::Mutex::new(Vec::new()),
+            chat_calls: std::sync::atomic::AtomicUsize::new(0),
+            estop_after_first_chat: None,
         }
     }
 
@@ -1157,12 +1316,34 @@ impl MockContinuationProvider {
             responses: std::sync::Mutex::new(Vec::new()),
             error: std::sync::Mutex::new(Some(err)),
             seen_image_counts: std::sync::Mutex::new(Vec::new()),
+            chat_calls: std::sync::atomic::AtomicUsize::new(0),
+            estop_after_first_chat: None,
+        }
+    }
+
+    /// BUG-20261106-041：首次 chat() 进入时触发 estop 的构造形态
+    /// （中途急停场景：在飞首呼允许完成，下一轮不再开）。
+    fn new_with_estop_trigger(
+        responses: Vec<LlmResponse>,
+        estop: std::sync::Arc<crate::estop::EstopState>,
+    ) -> Self {
+        Self {
+            responses: std::sync::Mutex::new(responses),
+            error: std::sync::Mutex::new(None),
+            seen_image_counts: std::sync::Mutex::new(Vec::new()),
+            chat_calls: std::sync::atomic::AtomicUsize::new(0),
+            estop_after_first_chat: Some(estop),
         }
     }
 
     /// 每轮 chat() 各消息的 images.len()（F-F 断言用）。
     fn seen_image_counts(&self) -> Vec<Vec<usize>> {
         self.seen_image_counts.lock().unwrap().clone()
+    }
+
+    /// BUG-20261106-041：chat() 实际调用次数（estop 闸断言用）。
+    fn chat_calls(&self) -> usize {
+        self.chat_calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -1175,6 +1356,15 @@ impl crate::r#loop::LlmProvider for MockContinuationProvider {
         _options: Option<crate::types::ChatOptions>,
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
+        self.chat_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // BUG-20261106-041：首呼进入瞬间触发 estop（模拟用户在续行 LLM
+        // 调用在飞期间按下急停——本轮允许完成，下一轮顶闸）。
+        if self.chat_calls() == 1
+            && let Some(ref estop) = self.estop_after_first_chat
+        {
+            estop.trigger();
+        }
         self.seen_image_counts
             .lock()
             .unwrap()
@@ -1366,6 +1556,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1448,6 +1639,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1530,6 +1722,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         Some(store.as_ref()),
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1600,6 +1793,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1755,6 +1949,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1900,6 +2095,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -1956,6 +2152,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         Some(&store),
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -2674,6 +2871,7 @@ async fn final_outbound_send_error_warns_no_panic() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
     assert!(!manager.has_continuation("task-out").await);
@@ -2734,6 +2932,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         Some(&store),
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -3300,6 +3499,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         None,
         false, // vision_supported = false → 投影
         None,  // source_node
+        None,  // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
     let counts = provider_no_vision.seen_image_counts();
@@ -3356,6 +3556,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         None,
         true, // vision_supported = true → 零改动
         None, // source_node
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
     let counts = provider_vision.seen_image_counts();
@@ -3601,6 +3802,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -3671,6 +3873,7 @@ async fn test_cluster_continuation_source_node_flows_to_outbound_meta() {
         None,
         true,           // F-F vision_supported
         Some("node-b"), // worker 节点名（gateway Route 2 metadata 透传）
+        None,           // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 
@@ -3728,6 +3931,7 @@ async fn test_cluster_continuation_no_source_node_meta_absent() {
         None,
         true, // F-F vision_supported
         None, // 缺席 = 旧发布方/非集群 → 出站不带节点键
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 

@@ -322,6 +322,17 @@ pub fn build_agent_loop(
         agent_loop.add_tool_hook(Arc::new(
             nemesis_agent::discipline::DisciplineGateHook::new(discipline_state.clone()),
         ));
+        // BUG-20261106-042：证伪 hook 带 security 句柄——模型 authored 的
+        // falsification_cmd 执行前过规则层安全管线（与主循环 exec 同源闸面）。
+        // security feature 关闭 = 旧行为（无检查可装，诚实降级）。
+        #[cfg(feature = "security")]
+        agent_loop.add_lifecycle_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineFalsificationHook::new_with_security(
+                discipline_state.clone(),
+                shared.security_plugin.clone(),
+            ),
+        ));
+        #[cfg(not(feature = "security"))]
         agent_loop.add_lifecycle_hook(Arc::new(
             nemesis_agent::discipline::DisciplineFalsificationHook::new(discipline_state.clone()),
         ));

@@ -422,11 +422,16 @@ fn match_glob(pattern: &str, s: &str) -> bool {
         return false;
     }
 
-    // Check middle parts appear in order
-    let mut idx = parts[0].len();
+    // Middle parts appear in order strictly between the anchored prefix and
+    // suffix. BUG-20261107-002：旧实现从首段尾部起在**整个剩余串**（含尾段
+    // 锚地）上贪心推进，中段命中可以吃进尾段领地（`match_glob("a*bc*c",
+    // "abc")` 假阳性放行——最短合法长度 4 > 3）。改为把中段限制在锚定前后
+    // 缀之间的区域内贪心匹配：最早命中留下最大余量（交换论证），区域内
+    // 贪心对按序匹配完备，无需回溯。
+    let mut rest = &s[parts[0].len()..s.len() - parts[parts.len() - 1].len()];
     for part in &parts[1..parts.len() - 1] {
-        match s[idx..].find(part) {
-            Some(pos) => idx += pos + part.len(),
+        match rest.find(part) {
+            Some(pos) => rest = &rest[pos + part.len()..],
             None => return false,
         }
     }

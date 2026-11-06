@@ -353,6 +353,38 @@ fn test_fork_new_key_uniqueness() {
     }
 }
 
+/// BUG-20261106-038: a META-ONLY leftover at the auto candidate key
+/// (`{src}__fork`) must also pin the uniquifier — producer: trash half-
+/// failure / hard-delete single-file retry exhaustion leaves the meta
+/// sidecar behind while jsonl + store json are gone. Upsert-style meta
+/// writes (write_session_meta / write_session_parent / …) preserve stale
+/// fields, so silent reuse would inherit the dead session's
+/// allow_all/branch_summary/title into the fresh fork.
+#[test]
+fn test_fork_unique_key_skips_meta_only_stale_candidate() {
+    let src = unique_src();
+    seed_clean_log(&src);
+
+    let stale = format!("{}__fork", src);
+    crate::chat_log::write_session_meta(&stale, "已删分叉的陈旧标题");
+    assert!(!crate::chat_log::chat_log_exists(&stale));
+    assert!(crate::chat_log::session_occupied(&stale));
+
+    // In-memory store: store-side checks all miss; jsonl absent at the
+    // candidate; only the meta sidecar occupies it.
+    let store = SessionStore::new_in_memory();
+    let info = fork_session(&store, &src, None, None).unwrap();
+    assert_eq!(
+        info.new_key,
+        format!("{}__fork_2", src),
+        "meta-only leftover must pin the key"
+    );
+
+    delete_chat_log(&src);
+    delete_chat_log(&info.new_key);
+    delete_chat_log(&stale);
+}
+
 #[test]
 fn test_fork_errors_on_empty_or_turnless_source() {
     let dir = tempfile::tempdir().unwrap();

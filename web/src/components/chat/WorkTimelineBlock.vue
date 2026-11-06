@@ -13,8 +13,10 @@
  * snake_case 原样）；本组件纯渲染不改数据。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { WorkTimeline } from '../../stores/chat'
-import { toolLabel } from './workLabels'
+import { useRouter } from 'vue-router'
+import type { WorkTimeline, WorkToolEntry } from '../../stores/chat'
+import { toolLabel, spawnTaskFromArgs } from './workLabels'
+import { useWSAPI } from '../../composables/useWSAPI'
 
 const props = withDefaults(
   defineProps<{
@@ -73,6 +75,34 @@ function formatToolMs(ms: number): string {
   return `${s % 1 === 0 ? s : s.toFixed(1)}s`
 }
 
+// --- spawn 行钻取（2026-11-06 B 档）：历史/落地态里子代理调用的钻取入口 ---
+// 显示任务文本（替代原始参数 JSON），点击按任务文本匹配台账行 → 深链
+// /subagents?focus=<id>；台账缺席（过旧被逐出/WS 未就绪）回落台账页。
+const router = useRouter()
+const { request } = useWSAPI()
+
+function spawnTask(t: WorkToolEntry): string {
+  return t.tool === 'spawn' ? spawnTaskFromArgs(t.args_preview ?? '') : ''
+}
+
+async function openSpawn(t: WorkToolEntry) {
+  if (t.tool !== 'spawn') return
+  const task = spawnTaskFromArgs(t.args_preview ?? '')
+  if (!task) return
+  // 截断伪影剥离：后端预览截断以 … 收尾（tool_event_hook truncate_chars），
+  // 匹配前剥掉才能作为前缀命中台账行（展示侧保留 … = 诚实截断信号）。
+  const needle = task.endsWith('…') ? task.slice(0, -1) : task
+  let focus = ''
+  try {
+    const r = await request('subagents', 'list', {})
+    const tasks = (r?.tasks as Array<{ id: string; task: string }>) || []
+    const hit =
+      tasks.find((x) => x.task === needle) || tasks.find((x) => !!needle && x.task.startsWith(needle))
+    if (hit) focus = hit.id
+  } catch { /* WS 未就绪——落台账页 */ }
+  router.push(focus ? { path: '/subagents', query: { focus } } : { path: '/subagents' })
+}
+
 // 新内容到达（轮数或工具数增长）→ 通知宿主贴底（live 态才有意义）。
 watch(
   () => props.work.rounds.length + props.work.rounds.reduce((n, r) => n + r.tools.length, 0),
@@ -104,13 +134,22 @@ watch(
           <summary>💭 思考过程</summary>
           <div class="wt-think-body">{{ r.reasoning }}</div>
         </details>
-        <div v-for="t in r.tools" :key="t.call_id" class="wt-tool" :title="t.args_preview || t.tool">
+        <div
+          v-for="t in r.tools"
+          :key="t.call_id"
+          class="wt-tool"
+          :class="{ 'wt-tool-spawn': t.tool === 'spawn' }"
+          :title="t.args_preview || t.tool"
+          :data-task="spawnTask(t)"
+          @click="openSpawn(t)"
+        >
           <span class="wt-tool-status" :class="t.running ? 'is-running' : t.ok ? 'is-ok' : 'is-fail'">
             <span v-if="t.running" class="wt-spinner"></span>
             <template v-else>{{ t.ok ? '✓' : '✗' }}</template>
           </span>
           <span class="wt-tool-label">{{ toolLabel(t.tool) }}</span>
-          <span v-if="t.args_preview" class="wt-tool-args">{{ t.args_preview }}</span>
+          <span v-if="spawnTask(t)" class="wt-tool-args wt-tool-task">{{ spawnTask(t) }}</span>
+          <span v-else-if="t.args_preview" class="wt-tool-args">{{ t.args_preview }}</span>
           <span class="wt-tool-dur">{{ formatToolMs(t.duration_ms) }}</span>
         </div>
       </template>
@@ -292,5 +331,17 @@ details.wt-think > summary:hover {
   flex: none;
   font-size: 10px;
   opacity: 0.7;
+}
+/* spawn 行钻取（2026-11-06 B 档）：可点 + 悬停标签提亮（点击按任务文本
+   匹配台账行深链 /subagents?focus=<id>）。 */
+.wt-tool-spawn {
+  cursor: pointer;
+}
+.wt-tool-spawn:hover .wt-tool-label {
+  color: var(--accent, #3b82f6);
+}
+.wt-tool-task {
+  font-family: inherit;
+  opacity: 0.85;
 }
 </style>

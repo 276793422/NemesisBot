@@ -1340,6 +1340,12 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // 集群续行归属：实际干活的 worker 节点名（回调 metadata
     // source_node， 恢复发布同款）。缺席 = 旧快照/非集群路径，出站不带。
     source_node: Option<&str>,
+    // BUG-20261106-041：全局急停句柄。续行路径（集群 + 后台子代理同构）
+    // 在 gate_inbound 被 continuation 前缀拦截、不进主循环 turn-top estop
+    // 检查，此前整条链零 estop 感知——急停期间续行照常烧 LLM 轮次、嵌套
+    // 派发新任务、出站回复，违反「冻结全部 agent 活动」承诺。None（未
+    // 接线，测试/极简装配）= 不设闸（行为同旧）。
+    estop: Option<&crate::estop::EstopState>,
 ) {
     // Generate trace_id for observer event correlation.
     let trace_id = format!(
@@ -1509,6 +1515,21 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     let mut cap_escalations: u32 = 0;
 
     for iteration in 1..=max_iterations {
+        // estop 闸（BUG-20261106-041）：急停期间续行不得再开新 LLM 轮次。
+        // 与主循环「每轮顶部 break」纪律同构（estop.rs 模块文档）：在飞单次
+        // 调用允许完成（≤provider 单请求超时），下一轮不再开。终局带诚实
+        // 注记走既有持久化+出站路径——不留孤儿快照/悬挂任务，与主循环
+        // estop 终局文案同款措辞。
+        if estop.is_some_and(|e| e.is_engaged()) {
+            tracing::warn!(
+                "[Continuation] E-stop engaged, stopping continuation for task {task_id} \
+                 at iteration {iteration}"
+            );
+            final_content =
+                "⛔ 已急停 (E-STOP) — 续行已中止。发送 `nemesisbot estop --release` 恢复。"
+                    .to_string();
+            break;
+        }
         debug!(
             "[Continuation] Continuation LLM iteration {}/{}: task_id={}",
             iteration, max_iterations, task_id

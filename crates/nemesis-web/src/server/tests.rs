@@ -20,6 +20,61 @@ async fn test_build_router() {
     let _router = server.build_router();
 }
 
+// BUG-20261106-035：/v1/chat/completions 入站 body 上限回归——裸 lane
+// 合同含 base64 内联视觉（MB 级请求体），路由层必须放宽 axum 默认 2MB；
+// 同时新上限仍在（超 26MB 仍 413，不是无限放开）。
+#[tokio::test]
+async fn test_chat_completions_body_limit_lifted_but_bounded() {
+    let config = WebServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        auth_token: String::new(),
+        cors_origins: vec![],
+        cors_allow_all: false,
+        ws_path: "/ws".to_string(),
+        workspace: None,
+        home: None,
+        version: String::new(),
+        static_dir: None,
+        static_files: None,
+        index_file: "index.html".to_string(),
+    };
+    let app = WebServer::new(config).build_router();
+    use tower::ServiceExt;
+
+    // 3MB（> axum 默认 2MB）合法形态请求必须穿过 body 提取进入 handler
+    //（测试装配 agent_loop 未注入 → handler 诚实 503，但绝不是 413）。
+    let big = "x".repeat(3 * 1024 * 1024);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(format!(
+            r#"{{"model":"m","messages":[{{"role":"user","content":"{big}"}}]}}"#
+        )))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        "3MB body 不应被默认 2MB 上限 413 拒绝"
+    );
+
+    // 超新上限（26MB+1KB）仍受约束：413，不是无限放开。
+    let huge = "x".repeat(crate::openai_compat::OPENAI_COMPAT_BODY_LIMIT_BYTES + 1024);
+    let req = axum::http::Request::builder()
+        .method("POST")
+        .uri("/v1/chat/completions")
+        .header("content-type", "application/json")
+        .body(axum::body::Body::from(huge))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+        "超上限 body 仍应 413"
+    );
+}
+
 #[tokio::test]
 async fn test_build_router_with_static_dir() {
     let dir = tempfile::tempdir().unwrap();
