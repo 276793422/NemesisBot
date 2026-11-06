@@ -90,6 +90,53 @@ impl Drop for GcInflightGuard<'_> {
     }
 }
 
+/// BUG-20261106-040：redo 侧在途保护 guard（BUG-20261030-221 的对称补齐）。
+/// `redo_rewind_inner` **先 pop 后慢操作**（spawn_blocking 全量 jsonl 读 +
+/// 指纹 + 冲突扫描 + restore_to_tree）——pop 之后条目离开 undo 栈，
+/// [`AgentLoop::undo_stack_tree_refs`]（gc 保留集 extras 查询口）不再覆盖
+/// 条目三族 tree；并发 gc（其他会话 `truncate_from_scoped` 内联 `gc_now` /
+/// gateway 周期拍）撞进 pop→恢复完成窗口会把 forward_tree 闭包当孤儿清掉，
+/// restore_to_tree 恒「影子 tree 不可达」→ redo 永久 blocked（F2 条目还栈
+/// 但重试永败，被回退的对话行滞留内存条目）。rewind 侧同窗口已有
+/// [`GcInflightGuard`]（221），redo 侧漏接。pop 即注册、所有退出路径 Drop
+/// 注销：blocked 路径先还栈（栈条目接管保护）再注销；守卫 1/1b/2 陈旧作废
+/// 路径与成功路径条目已消费，注销即恢复可回收语义。
+pub(crate) struct RedoInflightGuard<'a> {
+    al: &'a AgentLoop,
+    trees: Vec<String>,
+}
+
+impl RedoInflightGuard<'_> {
+    fn for_entry<'a>(al: &'a AgentLoop, e: &RewindUndoEntry) -> RedoInflightGuard<'a> {
+        RedoInflightGuard {
+            al,
+            trees: [
+                e.forward_tree.clone(),
+                e.post_tree.clone(),
+                e.undo_disk_tree.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        }
+    }
+    fn register(&self) {
+        let mut inflight = self.al.gc_inflight_trees.lock();
+        for t in &self.trees {
+            inflight.insert(t.clone());
+        }
+    }
+}
+
+impl Drop for RedoInflightGuard<'_> {
+    fn drop(&mut self) {
+        let mut inflight = self.al.gc_inflight_trees.lock();
+        for t in &self.trees {
+            inflight.remove(t);
+        }
+    }
+}
+
 impl AgentLoop {
     /// Attach a checkpoint store for the edit safety net. When set, every writer
     /// tool call (write_file/edit_file/append_file/delete_file) snapshots the
@@ -681,6 +728,25 @@ impl AgentLoop {
         .await
     }
 
+    /// redo 的 pop 单点（BUG-20261106-040）：弹出栈顶条目的**同时**把条目
+    /// 三族 tree 注册进 gc 在途保护集——pop 与保护注册之间零窗口，redo 全程
+    /// （含 blocked 还栈前的慢操作段）forward_tree 闭包不被并发 gc 清掉。
+    /// 返回 guard 供调用方持有至函数退出（Drop 注销；blocked 路径先还栈、
+    /// 栈条目接管保护、再注销）。
+    pub(crate) fn pop_undo_entry_for_redo(
+        &self,
+        session_key: &str,
+    ) -> Option<(RewindUndoEntry, RedoInflightGuard<'_>)> {
+        let entry = self
+            .rewind_undo_stacks
+            .lock()
+            .get_mut(session_key)
+            .and_then(|s| s.pop_back())?;
+        let guard = RedoInflightGuard::for_entry(self, &entry);
+        guard.register();
+        Some((entry, guard))
+    }
+
     async fn redo_rewind_inner(
         &self,
         session_key: &str,
@@ -690,11 +756,11 @@ impl AgentLoop {
         // 截断写回同样以整文件重写落盘，守卫 1 读取与截断之间的绕闸追加
         // （busy 回绝留痕 / snooze 唤醒行）会被静默吞掉。
         let _rewrite_window = crate::chat_log::history_rewrite_begin(session_key);
-        let entry = {
-            let mut stacks = self.rewind_undo_stacks.lock();
-            stacks.get_mut(session_key).and_then(|s| s.pop_back())
-        }
-        .ok_or_else(|| "没有可重做的回退（先执行一次消息级回退）".to_string())?;
+        // BUG-20261106-040：pop 经保护单点——条目三族 tree 即刻进在途保护集，
+        // 后续慢操作（全量读/指纹/冲突扫描/restore）期间并发 gc 不清对象。
+        let (entry, _redo_inflight) = self
+            .pop_undo_entry_for_redo(session_key)
+            .ok_or_else(|| "没有可重做的回退（先执行一次消息级回退）".to_string())?;
 
         // 守卫 1：会话行数未变（undo 后没发过新消息）。
         // BUG-20261102-302：全量读同步阻塞 IO 直跑 tokio worker（非热路径
