@@ -4361,23 +4361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nemesis-session"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dashmap",
- "nemesis-utils",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
 name = "nemesis-skills"
 version = "0.1.0"
 dependencies = [
