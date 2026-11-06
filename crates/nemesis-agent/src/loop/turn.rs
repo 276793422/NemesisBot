@@ -519,7 +519,7 @@ impl AgentLoop {
         // 取走累加器（直答无中间轮 = None → 行不带 work 键）。错误收尾的
         // turn 也走到这里（最终行 = 错误通知）——部分时间线随行落盘，重载
         // 后错误前的执行过程可辨（比"中断即全丢"多恢复一步）。
-        let work_timeline = self.work_recorder.finish();
+        let work_timeline = self.work_recorder.finish(session_key);
         crate::chat_log::append_chat_log_meta(
             session_key,
             "assistant",

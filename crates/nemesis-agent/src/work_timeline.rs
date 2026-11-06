@@ -6,6 +6,17 @@
 //! 经 [`AgentLoop::current_work_timeline`]（WSAPI `chat.work_current`）
 //! 只读快照，支撑「切走再切回」的全量恢复（活累加器无滑窗限制）。
 //!
+//! # 并发隔离（BUG 2026-11-06 根修：单槽 → per-session-key 多槽）
+//!
+//! 同一 [`AgentLoop`](crate::AgentLoop) 上 turn 并发是常态——detached
+//! 子代理（`run_detached_events` 与父 turn 同 loop 异步跑）、多会话消息。
+//! 早期实现是 loop 级单槽（`Option<RecordingWork>`），子代理 turn 的
+//! `begin()` 会把父 turn 正在累加的槽整个抹掉，父 turn 收尾 `finish()`
+//! 拿到空槽 → 行不带 `work` 键（e2e 胶囊四态 2026-11-06 实证）；反向
+//! 子代理 `finish()` 还会错拿父 turn 半成品写进自己的 jsonl 行（跨会话
+//! 错归属）。现按 session_key 分槽：begin/feed/finish/snapshot 全部精确
+//! 按键隔离，并发 turn 互不扰动。
+//!
 //! # 喂入点与单一真相源
 //!
 //! 喂入与既有事件发射**同点同源**：RoundText 在 [`crate::r#loop`]
@@ -28,6 +39,7 @@
 //! preview 沿用发射侧截断（ARGS_PREVIEW_CAP/RESULT_PREVIEW_CAP），此处
 //! 不放大。轮叙述为真实内容全量保留（用户拍板全落盘，2026-10-30）。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -35,6 +47,11 @@ use serde::Serialize;
 
 /// 轮数上限（病态任务护栏）。超出不再追加，`truncated: true` 诚实注记。
 pub const MAX_WORK_ROUNDS: usize = 500;
+
+/// 崩溃 turn 残槽的清扫时限（begin 时顺带 retain）。正常路径 finish 必取
+/// 走自己的槽；只有 panic / 任务中止等跳过收尾的 turn 会留残槽——子代理
+/// key 是一次性 uuid 不会被 begin 覆盖，放任不管 = 长命 gateway 慢泄漏。
+pub const STALE_WORK_ENTRY_TTL_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// 单次工具调用的记录（`work.rounds[].tools[]` 条目）。
 /// 形状单一真相源：本 struct 的 serde 输出 = chat_log 行 `"work"` 键 =
@@ -79,9 +96,9 @@ pub struct WorkTimeline {
 }
 
 /// 进行中的累加状态（`WorkRecorder` 槽内物；finish 时转 `WorkTimeline`）。
+/// session_key 即 map 键，不在结构内重复存（单一真相源）。
 #[derive(Debug, Clone)]
 struct RecordingWork {
-    session_key: String,
     started_at_ms: u64,
     rounds: Vec<WorkRound>,
     truncated: bool,
@@ -120,33 +137,37 @@ impl RecordingWork {
 }
 
 /// turn 级时间线累加器（loop 持有 + ToolEventHook 共享同一 clone）。
-/// 槽空（未 begin / 已 finish）= 全部喂入静默忽略——零配置开销。
+/// per-session-key 分槽：无槽（未 begin / 已 finish）= 该 key 全部喂入
+/// 静默忽略——零配置开销，并发 turn 按键天然隔离。
 #[derive(Clone, Default)]
-pub struct WorkRecorder(Arc<parking_lot::Mutex<Option<RecordingWork>>>);
+pub struct WorkRecorder(Arc<parking_lot::Mutex<HashMap<String, RecordingWork>>>);
 
 impl WorkRecorder {
-    /// turn 开始：重置槽（上一 turn 的残余——中断/续行未消费——就此丢弃）。
+    /// turn 开始：重置该 key 的槽（上一 turn 的残余——中断/续行未消费
+    /// ——就此丢弃）；顺带清扫超时残槽（崩溃 turn 泄漏护栏）。
     pub fn begin(&self, session_key: &str) {
-        *self.0.lock() = Some(RecordingWork {
-            session_key: session_key.to_string(),
-            started_at_ms: RecordingWork::now_ms(),
-            rounds: Vec::new(),
-            truncated: false,
-        });
+        let mut map = self.0.lock();
+        let now = RecordingWork::now_ms();
+        map.retain(|_, w| now.saturating_sub(w.started_at_ms) < STALE_WORK_ENTRY_TTL_MS);
+        map.insert(
+            session_key.to_string(),
+            RecordingWork {
+                started_at_ms: now,
+                rounds: Vec::new(),
+                truncated: false,
+            },
+        );
     }
 
     /// 中间轮输出（emit_round_output 同点喂入；叙述 + 思考链同轮）。
     /// 两者皆空不建轮（trim 判定与观察面 emit_round_output 同口径；
     /// 存储保留原文不修剪）。纯工具轮由 [`WorkRecorder::tool_started`]
-    /// 的分组规则自动成轮。会话不匹配忽略。
+    /// 的分组规则自动成轮。无槽（未 begin / 已 finish）忽略。
     pub fn push_round_output(&self, session_key: &str, text: &str, reasoning: &str) {
-        let mut slot = self.0.lock();
-        let Some(w) = slot.as_mut() else {
+        let mut map = self.0.lock();
+        let Some(w) = map.get_mut(session_key) else {
             return;
         };
-        if w.session_key != session_key {
-            return;
-        }
         if text.trim().is_empty() && reasoning.trim().is_empty() {
             return;
         }
@@ -162,15 +183,12 @@ impl WorkRecorder {
     }
 
     /// 工具开始（ToolEventHook around 进入链前）。按分组规则落轮；
-    /// 同 call_id 幂等（重复 Started 只更新首条字段）。
+    /// 同 call_id 幂等（重复 Started 只更新首条字段）。无槽忽略。
     pub fn tool_started(&self, session_key: &str, call_id: &str, tool: &str, args_preview: &str) {
-        let mut slot = self.0.lock();
-        let Some(w) = slot.as_mut() else {
+        let mut map = self.0.lock();
+        let Some(w) = map.get_mut(session_key) else {
             return;
         };
-        if w.session_key != session_key {
-            return;
-        }
         // 幂等：同 call_id 已在（异常重复 Started）→ 只刷新 args。
         if let Some(rec) = w
             .rounds
@@ -196,7 +214,7 @@ impl WorkRecorder {
     }
 
     /// 工具结束（ToolEventHook around 返回后）。全轮倒序找 call_id 更新；
-    /// 无匹配（Started 被截断丢弃等）诚实忽略。
+    /// 无匹配（Started 被截断丢弃等）诚实忽略。无槽忽略。
     pub fn tool_finished(
         &self,
         session_key: &str,
@@ -205,13 +223,10 @@ impl WorkRecorder {
         duration_ms: u64,
         result_preview: &str,
     ) {
-        let mut slot = self.0.lock();
-        let Some(w) = slot.as_mut() else {
+        let mut map = self.0.lock();
+        let Some(w) = map.get_mut(session_key) else {
             return;
         };
-        if w.session_key != session_key {
-            return;
-        }
         let rec = w
             .rounds
             .iter_mut()
@@ -226,10 +241,10 @@ impl WorkRecorder {
         rec.running = false;
     }
 
-    /// turn 终局：取走时间线（槽清空）。无中间轮（直答）= None → 行不带
-    /// `work` 键。ended_at 取此刻。
-    pub fn finish(&self) -> Option<WorkTimeline> {
-        let w = self.0.lock().take()?;
+    /// turn 终局：取走该 key 的时间线（槽移除；其他 key 不受影响）。无
+    /// 中间轮（直答）= None → 行不带 `work` 键。ended_at 取此刻。
+    pub fn finish(&self, session_key: &str) -> Option<WorkTimeline> {
+        let w = self.0.lock().remove(session_key)?;
         if w.rounds.is_empty() {
             return None;
         }
@@ -242,11 +257,11 @@ impl WorkRecorder {
     }
 
     /// 执行中只读快照（WSAPI `chat.work_current`）：不取槽、不扰动累加。
-    /// 会话不匹配 / 无进行中 turn / 尚无任何轮 = None。
+    /// 无进行中 turn / 尚无任何轮 = None。
     pub fn snapshot_json(&self, session_key: &str) -> Option<serde_json::Value> {
-        let slot = self.0.lock();
-        let w = slot.as_ref()?;
-        if w.session_key != session_key || w.rounds.is_empty() {
+        let map = self.0.lock();
+        let w = map.get(session_key)?;
+        if w.rounds.is_empty() {
             return None;
         }
         let timeline = WorkTimeline {

@@ -2995,9 +2995,6 @@ onUnmounted(() => {
             </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>
           </div>
-          <!-- 子代理可见性 D1c：当前会话派生任务摘要抽屉（零行隐藏，
-               详情深链 /subagents?focus=<id>）。 -->
-          <SubagentDrawer :session-sid="effectiveSid || ''" />
         </div>
       </div>
     </div>
@@ -3175,6 +3172,11 @@ onUnmounted(() => {
     <div v-if="showSteerHint" class="steer-hint">
       ⚡ 将以插队（steer）模式发送，立即送达当前轮
     </div>
+
+    <!-- 子代理活动胶囊（2026-11-06 胶囊化改造，D1c 挂载点从 turn 级瞬态块
+         迁至 composer strip lane——live 容器只放 live 数据，终态行归消息流
+         WorkTimelineBlock；后台 spawn 在轮次结束后仍持续可见）。 -->
+    <SubagentDrawer :session-sid="effectiveSid || ''" />
 
     <!-- M5: 会话级 context/cost 常驻条（与压缩压力同口径；turn 完成即刷 + 30s 兜底） -->
     <div v-if="isDefaultChat && ctxPct !== null" class="usage-strip">

@@ -612,8 +612,10 @@ pub struct AgentLoop {
     /// Work 时间线累加器（2026-10-30 ChatPanel 长任务时间线改造）：turn
     /// 级「叙述+工具」按真实时序收拢，落盘随行（turn.rs 最终回复行）+
     /// `chat.work_current` 活查询。Arc 与 ToolEventHook 共享同一实例
-    /// （factory 经 [`Self::work_recorder`] 取 clone 注入 hook）；槽空 =
-    /// 喂入静默忽略，未装配路径零开销。
+    /// （factory 经 [`Self::work_recorder`] 取 clone 注入 hook）；
+    /// per-session-key 分槽（BUG 2026-11-06 根修：单槽会被同 loop 并发
+    /// 的 detached 子代理 begin 抹掉）——无槽 = 喂入静默忽略，未装配
+    /// 路径零开销。
     work_recorder: crate::work_timeline::WorkRecorder,
     /// Path to config.json — the single source of truth for per-model
     /// `model_tier`. `None` in standalone mode (no config.json to watch). Set

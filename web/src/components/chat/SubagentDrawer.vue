@@ -1,19 +1,26 @@
 <script setup lang="ts">
-// 会话内嵌子代理抽屉（子代理可见性 D1c，2026-11-03）。
+// 子代理活动胶囊（2026-11-06 胶囊化改造，取代旧「台账抽屉」形态）。
 //
-// 挂在 ChatPanel 交付物块之下：拉 subagents.list 后按父会话过滤出
-// 当前会话派生的子代理行（detached/bg_spawn/delegate 全形态），零行隐藏。
-// 「详情」深链到 /subagents?focus=<id> 独立页（台账+事件环时间线在彼处）。
-// delegate 行诚实注记：本节点只记 A 端生命周期，过程环在 B 端节点。
+// 三方调研确立的公共不变量（opencode/gemini-cli，见
+// docs/PLAN/2026-11-06_子代理胶囊化改造计划.md）：
+// - **live 容器只放 live 数据**：硬闸 `status === 'running'`——完成/失败/
+//   取消即从胶囊消失（无宽限窗）。BUG 根因（2026-11-06 截图）正是旧版
+//   只按会话过滤、终态台账行每轮在 live 容器重放。终态历史锚定在消息流
+//   WorkTimelineBlock（spawn 行 ✓/✗/用时已持久化），不在此处。
+// - 形态：单行胶囊（spinner + 任务名纯文本 ellipsis + 用时走表 + 悬停
+//   显现停止钮）。无徽标、无 markdown 渲染、无页脚、无点击跳转——
+//   live 态只是状态指示，钻取入口在历史工作块 spawn 行。
+// - 静止约束（opencode「stays at rest」）：首拉已在场的行不做入场动画，
+//   仅会话打开期间新出现的行淡入。
+//
+// 挂载点在 composer strip lane（宿主 ChatPanel 负责），非 turn 级瞬态块。
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
-import { useRouter } from 'vue-router'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { addMessageHandler, removeMessageHandler } from '../../composables/useWebSocket'
 
 const props = defineProps<{ sessionSid: string }>()
 
 const { request } = useWSAPI()
-const router = useRouter()
 
 interface SubagentRow {
   id: string
@@ -31,53 +38,71 @@ interface SubagentRow {
 const rows = ref<SubagentRow[]>([])
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-const ORIGIN_LABEL: Record<string, string> = {
-  detached: '内联',
-  bg_spawn: '后台',
-  delegate: '委派',
-}
-const STATUS_BADGE: Record<string, string> = {
-  running: 'badge-info',
-  done: 'badge-success',
-  failed: 'badge-error',
-  cancelled: 'badge-neutral',
-  interrupted: 'badge-warning',
-}
-const STATUS_LABEL: Record<string, string> = {
-  running: '运行中',
-  done: '已完成',
-  failed: '失败',
-  cancelled: '已终止',
-  interrupted: '已中断',
-}
-
+// A1 数据闸：会话过滤 **且** status === 'running'。台账注册表保留终态行
+// （ledger 语义，容量 500），它们属于历史不属于 live。
 const mine = computed(() =>
   rows.value.filter(
     (r) =>
-      r.parent_chat_id === props.sessionSid ||
-      (props.sessionSid && r.parent_session_key.endsWith(props.sessionSid)),
+      r.status === 'running' &&
+      (r.parent_chat_id === props.sessionSid ||
+        (!!props.sessionSid && r.parent_session_key.endsWith(props.sessionSid))),
   ),
 )
 
-function statusBadge(s: string): string {
-  return STATUS_BADGE[s] ?? 'badge-neutral'
+// --- 用时走表（仅在场时每秒走，行清空即停表）---
+const nowTick = ref(Date.now())
+let tickTimer: number | null = null
+watch(
+  () => mine.value.length,
+  (n) => {
+    if (n > 0 && tickTimer === null) {
+      nowTick.value = Date.now()
+      tickTimer = window.setInterval(() => (nowTick.value = Date.now()), 1000)
+    } else if (n === 0 && tickTimer !== null) {
+      window.clearInterval(tickTimer)
+      tickTimer = null
+    }
+  },
+  { immediate: true },
+)
+onBeforeUnmount(() => {
+  if (tickTimer !== null) window.clearInterval(tickTimer)
+})
+
+function elapsed(startedAtMs: number): string {
+  const s = Math.max(0, Math.floor((nowTick.value - startedAtMs) / 1000))
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
 }
-function statusLabel(s: string): string {
-  return STATUS_LABEL[s] ?? s
-}
-function originLabel(o: string): string {
-  return ORIGIN_LABEL[o] ?? o
-}
+
+// --- 入场动画静止约束：首拉在场的行不动画，之后新出现的行才淡入 ---
+const animIds = ref(new Set<string>())
+let bootedIds = new Set<string>()
+let firstLoadDone = false
 
 async function load() {
   try {
     const r = await request('subagents', 'list', {})
     rows.value = (r?.tasks as SubagentRow[]) || []
   } catch { /* WS 未就绪——下轮再试 */ }
+  const ids = new Set(mine.value.map((r) => r.id))
+  if (!firstLoadDone) {
+    bootedIds = ids
+    firstLoadDone = true
+  } else {
+    const fresh = [...ids].filter((id) => !bootedIds.has(id) && !animIds.value.has(id))
+    if (fresh.length) animIds.value = new Set([...animIds.value, ...fresh])
+  }
 }
 
-function openDetail(id: string) {
-  router.push({ path: '/subagents', query: { focus: id } })
+async function stop(r: SubagentRow) {
+  const excerpt = (r.task || '').slice(0, 40)
+  if (!window.confirm(`终止「${excerpt}」？运行中的执行链将收到取消信号。`)) return
+  try {
+    await request('subagents', 'cancel', { id: r.id })
+  } catch { /* WS 未就绪——行仍在，可重试 */ }
 }
 
 function handleWSMessage(frame: any) {
@@ -105,72 +130,101 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="mine.length" class="subagent-drawer">
-    <div class="drawer-header" @click="openDetail(mine[0].id)">
-      <span class="drawer-title">子代理（{{ mine.length }}）</span>
-      <span v-if="mine.some((r) => r.running)" class="badge badge-info">● 运行中</span>
+  <div v-if="mine.length" class="subagent-capsules" role="status">
+    <div
+      v-for="r in mine"
+      :key="r.id"
+      class="subagent-capsule"
+      :class="{ 'sc-anim': animIds.has(r.id) }"
+    >
+      <span class="sc-spinner"></span>
+      <span class="sc-task" :title="r.task">{{ r.task || '（无任务文本）' }}</span>
+      <span class="sc-elapsed">{{ elapsed(r.started_at_ms) }}</span>
+      <button class="sc-stop" type="button" title="终止此子代理" @click="stop(r)">✕</button>
     </div>
-    <div v-for="r in mine" :key="r.id" class="drawer-row" @click="openDetail(r.id)">
-      <span class="badge" :class="statusBadge(r.status)">{{ statusLabel(r.status) }}</span>
-      <span class="badge badge-neutral" :title="r.origin">{{ originLabel(r.origin) }}</span>
-      <span class="drawer-task">{{ r.task || '（无任务文本）' }}</span>
-      <span v-if="r.summary" class="drawer-summary" :title="r.summary">{{ r.summary }}</span>
-      <span v-else-if="r.error" class="drawer-summary drawer-error" :title="r.error">{{ r.error }}</span>
-    </div>
-    <div class="drawer-foot">详情见「子代理」页（台账 + 执行时间线）</div>
   </div>
 </template>
 
 <style scoped>
-.subagent-drawer {
-  margin: var(--space-2) 0;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md, 8px);
+/* 单行胶囊（opencode 视觉 DNA）：紧凑卡 padding 8px 12px / radius 6px /
+   0.5px 边框 / 13px 文字；spinner + 单行任务名 + 走表用时 + 悬停停止钮。 */
+.subagent-capsules {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0;
+}
+.subagent-capsule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 0.5px solid var(--border-color);
+  border-radius: 6px;
   background: var(--bg-secondary);
-  font-size: var(--text-sm);
-}
-.drawer-header {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  cursor: pointer;
-  border-bottom: 1px solid var(--border-color);
-  font-weight: 600;
-}
-.drawer-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  cursor: pointer;
+  font-size: 13px;
   min-width: 0;
 }
-.drawer-row:hover {
-  background: var(--bg-hover, rgba(128, 128, 128, 0.08));
+.sc-spinner {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--accent, #3b82f6);
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: sc-spin 0.8s linear infinite;
 }
-.drawer-task {
+@keyframes sc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.sc-task {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.drawer-summary {
-  margin-left: auto;
-  flex: 0 1 40%;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.sc-elapsed {
+  flex: none;
+  font-size: 11px;
   color: var(--text-muted);
-  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
 }
-.drawer-error {
-  color: var(--error, #e74c3c);
-}
-.drawer-foot {
-  padding: 2px var(--space-3) var(--space-2);
-  font-size: var(--text-xs);
+.sc-stop {
+  flex: none;
+  border: none;
+  background: none;
   color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+.subagent-capsule:hover .sc-stop {
+  opacity: 1;
+}
+.sc-stop:hover {
+  color: #e05252;
+  background: rgba(224, 82, 82, 0.12);
+}
+/* 入场动画：仅会话打开期间新出现的行（首拉在场行静止——opencode
+   「stays at rest」约束；动画类常驻无副作用，动画只播一次）。 */
+.sc-anim {
+  animation: sc-fade-in 150ms ease;
+}
+@keyframes sc-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 </style>

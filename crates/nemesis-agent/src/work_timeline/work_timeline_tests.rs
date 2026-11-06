@@ -2,9 +2,12 @@
 //! 2026-10-31 扩思考链）。
 //!
 //! 覆盖：分组规则（叙述/思考轮承接工具批次 / 纯工具轮 / 不误挂上一轮）、
-//! 输出开轮语义（皆空跳过 / thinking-only 开轮）、call_id 幂等、会话不
-//! 匹配忽略、finish 取走语义、快照不扰动、MAX_WORK_ROUNDS 截断诚实注记、
-//! begin 重置、reasoning 字段序列化（空省略 / 有值落键）。
+//! 输出开轮语义（皆空跳过 / thinking-only 开轮）、call_id 幂等、无槽
+//! （未 begin/已 finish）喂入忽略、finish 按 key 取走语义、快照不扰动、
+//! MAX_WORK_ROUNDS 截断诚实注记、begin 重置、reasoning 字段序列化
+//! （空省略 / 有值落键）；并发隔离回归锁（BUG 2026-11-06：per-session-key
+//! 分槽——detached 子代理 begin 不得抹父 turn、finish 只取自己 key、
+//! 崩溃残槽 begin 时清扫）。
 
 use super::*;
 
@@ -21,7 +24,7 @@ fn test_grouping_text_round_carries_its_batch() {
     rec.tool_started(SK, "c2", "edit_file", "{}");
     rec.tool_finished(SK, "c2", false, 7, "err");
 
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), 2);
     assert_eq!(tl.rounds[0].text, "我先看下配置");
     assert_eq!(tl.rounds[0].tools.len(), 1);
@@ -42,7 +45,7 @@ fn test_grouping_empty_text_round_becomes_tools_only_round() {
     rec.tool_started(SK, "c2", "grep", "pat");
     rec.tool_finished(SK, "c2", true, 2, "hits");
 
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), 2);
     assert_eq!(tl.rounds[1].text, "");
     assert_eq!(tl.rounds[1].tools.len(), 1);
@@ -55,7 +58,7 @@ fn test_thinking_only_output_opens_round() {
     let rec = WorkRecorder::default();
     rec.begin(SK);
     rec.push_round_output(SK, "", "先分析一下目录结构");
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), 1);
     assert_eq!(tl.rounds[0].text, "");
     assert_eq!(tl.rounds[0].reasoning, "先分析一下目录结构");
@@ -70,7 +73,7 @@ fn test_both_empty_output_is_skipped() {
     rec.push_round_output(SK, "", "");
     rec.push_round_output(SK, "   ", "");
     rec.push_round_output(SK, "", "   ");
-    let tl = rec.finish();
+    let tl = rec.finish(SK);
     assert!(tl.is_none(), "皆空输出不得产生轮");
 }
 
@@ -84,7 +87,7 @@ fn test_thinking_round_carries_tool_batch() {
     rec.tool_started(SK, "c1", "edit_file", "{}");
     rec.tool_finished(SK, "c1", true, 5, "ok");
 
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), 1, "思考轮必须承接自己的工具批次");
     assert_eq!(tl.rounds[0].reasoning, "先想清楚改哪里");
     assert_eq!(tl.rounds[0].tools.len(), 1);
@@ -99,7 +102,7 @@ fn test_thinking_then_tools_then_thinking_two_rounds() {
     rec.tool_started(SK, "c1", "exec", "");
     rec.tool_finished(SK, "c1", true, 1, "");
     rec.push_round_output(SK, "", "第二段思考");
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), 2);
     assert_eq!(tl.rounds[0].tools.len(), 1);
     assert!(tl.rounds[1].tools.is_empty());
@@ -112,7 +115,7 @@ fn test_first_event_is_tool_starts_tools_only_round() {
     rec.begin(SK);
     rec.tool_started(SK, "c1", "web_search", "q");
     rec.tool_finished(SK, "c1", true, 9, "r");
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), 1);
     assert!(tl.rounds[0].text.is_empty());
     assert_eq!(tl.rounds[0].tools.len(), 1);
@@ -126,7 +129,7 @@ fn test_duplicate_call_id_is_idempotent() {
     rec.tool_started(SK, "c1", "exec", "a=1");
     rec.tool_started(SK, "c1", "exec", "a=2");
     rec.tool_finished(SK, "c1", true, 5, "r");
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds[0].tools.len(), 1);
     assert_eq!(tl.rounds[0].tools[0].args_preview, "a=2");
 }
@@ -137,7 +140,7 @@ fn test_tool_finished_unknown_call_id_ignored() {
     rec.begin(SK);
     rec.push_round_output(SK, "t", "");
     rec.tool_finished(SK, "ghost", true, 5, "r");
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert!(tl.rounds[0].tools.is_empty());
 }
 
@@ -147,7 +150,7 @@ fn test_session_mismatch_feeds_ignored() {
     rec.begin(SK);
     rec.push_round_output("agent:main:session:other", "别串台", "");
     rec.tool_started("agent:main:session:other", "c1", "exec", "");
-    let tl = rec.finish();
+    let tl = rec.finish(SK);
     assert!(tl.is_none(), "不匹配喂入不得产生轮");
 }
 
@@ -156,13 +159,13 @@ fn test_finish_takes_slot_and_direct_answer_is_none() {
     let rec = WorkRecorder::default();
     rec.begin(SK);
     // 直答：无任何中间事件。
-    assert!(rec.finish().is_none(), "直答无中间轮 = 不带 work");
-    assert!(rec.finish().is_none(), "槽已清空，二次 finish 仍 None");
+    assert!(rec.finish(SK).is_none(), "直答无中间轮 = 不带 work");
+    assert!(rec.finish(SK).is_none(), "槽已清空，二次 finish 仍 None");
 
     rec.begin(SK);
     rec.push_round_output(SK, "t", "");
-    assert!(rec.finish().is_some());
-    assert!(rec.finish().is_none(), "finish 取走后槽空");
+    assert!(rec.finish(SK).is_some());
+    assert!(rec.finish(SK).is_none(), "finish 取走后槽空");
 }
 
 #[test]
@@ -179,7 +182,7 @@ fn test_snapshot_does_not_disturb_and_session_gated() {
     assert_eq!(v1["started_at_ms"], v2["started_at_ms"]);
     assert!(rec.snapshot_json("agent:main:session:zz").is_none());
     // 快照后 finish 仍能取走全量。
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), 1);
 }
 
@@ -226,7 +229,7 @@ fn test_max_rounds_truncation_honest_note() {
     for i in 0..(MAX_WORK_ROUNDS + 10) {
         rec.push_round_output(SK, &format!("r{i}"), "");
     }
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), MAX_WORK_ROUNDS);
     assert!(tl.truncated, "截断必须带诚实注记");
     // 截断形态序列化带 truncated 键。
@@ -240,7 +243,7 @@ fn test_begin_resets_previous_turn_residual() {
     rec.begin(SK);
     rec.push_round_output(SK, "上一轮残余", "");
     rec.begin(SK); // 新 turn：重置
-    let tl = rec.finish();
+    let tl = rec.finish(SK);
     assert!(tl.is_none(), "begin 后旧残余不得残留");
 }
 
@@ -257,7 +260,7 @@ fn test_truncated_slot_refuses_tool_writes() {
     rec.tool_finished(SK, "fill", true, 1, "");
     // 末轮已带批次后再来工具 → 纯工具轮路径 → 超限拒绝 + truncated。
     rec.tool_started(SK, "overflow", "exec", "");
-    let tl = rec.finish().expect("timeline");
+    let tl = rec.finish(SK).expect("timeline");
     assert_eq!(tl.rounds.len(), MAX_WORK_ROUNDS);
     assert!(tl.truncated);
     assert_eq!(
@@ -269,5 +272,83 @@ fn test_truncated_slot_refuses_tool_writes() {
         tl.rounds
             .iter()
             .all(|r| r.tools.iter().all(|t| t.call_id != "overflow"))
+    );
+}
+
+// —— 并发隔离（BUG 2026-11-06 回归锁：detached 子代理 begin 曾抹掉父
+//    turn 单槽，父行丢 work / 子行错拿父半成品——单槽时代 e2e 实证）——
+
+const SUB_K: &str = "subagent:capsule-visual:uuid-1";
+
+#[test]
+fn test_concurrent_begin_does_not_wipe_parent_recording() {
+    // 复刻 e2e 时序：父 turn begin → spawn 工具入账 → 子代理 turn begin
+    // （旧实现此处抹槽）→ 子代理收尾 → 父 turn 收尾。
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.tool_started(SK, "c-spawn", "spawn", "{\"task\":\"任务一\"}");
+    rec.begin(SUB_K); // 子代理并发开跑
+    rec.push_round_output(SUB_K, "子代理干活的叙述", "");
+    // 子代理收尾：只取走自己的槽；父的记录原样保留。
+    let sub_tl = rec.finish(SUB_K).expect("子代理时间线");
+    assert_eq!(sub_tl.rounds.len(), 1);
+    assert_eq!(sub_tl.rounds[0].text, "子代理干活的叙述");
+    // 父收尾：spawn 工具调用完整在案（旧实现此处 = None → 行丢 work）。
+    rec.tool_finished(SK, "c-spawn", true, 12, "ok");
+    let parent_tl = rec.finish(SK).expect("父 turn 时间线不得被子代理抹掉");
+    assert_eq!(parent_tl.rounds.len(), 1);
+    assert_eq!(parent_tl.rounds[0].tools[0].tool, "spawn");
+    assert!(parent_tl.rounds[0].tools[0].ok);
+}
+
+#[test]
+fn test_finish_removes_only_its_own_key() {
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.push_round_output(SK, "父叙述", "");
+    rec.begin(SUB_K);
+    assert!(rec.finish(SUB_K).is_none(), "子代理直答无中间轮");
+    // 子代理 finish 后父的槽仍在（旧实现单槽被 take 走 = 父丢全量）。
+    let parent_tl = rec.finish(SK).expect("父槽不被他人 finish 清走");
+    assert_eq!(parent_tl.rounds[0].text, "父叙述");
+}
+
+#[test]
+fn test_begin_replaces_same_key_only_and_sweeps_stale_entries() {
+    let rec = WorkRecorder::default();
+    rec.begin(SK);
+    rec.push_round_output(SK, "父进行中", "");
+    // 注入一个超时残槽（模拟崩溃 turn 遗留；子代理 key 一次性不复用）。
+    let stale_started = {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        now - STALE_WORK_ENTRY_TTL_MS - 1
+    };
+    let orphan = "subagent:crashed:uuid-dead";
+    rec.0.lock().insert(
+        orphan.to_string(),
+        RecordingWork {
+            started_at_ms: stale_started,
+            rounds: vec![WorkRound {
+                text: "崩溃残骸".to_string(),
+                reasoning: String::new(),
+                tools: Vec::new(),
+            }],
+            truncated: false,
+        },
+    );
+    // 同 key begin 只重置自己；顺带清扫超时残槽。
+    rec.begin(SK);
+    assert!(rec.0.lock().get(orphan).is_none(), "超时残槽须被清扫");
+    assert!(rec.finish(SK).is_none(), "同 key begin 重置旧残余");
+    // 新鲜的他 key 槽不受 retain 误伤。
+    rec.begin(SUB_K);
+    rec.begin("agent:main:session:fresh-check");
+    assert!(
+        rec.0.lock().contains_key(SUB_K),
+        "未超时的新条目不得被清扫误伤"
     );
 }
