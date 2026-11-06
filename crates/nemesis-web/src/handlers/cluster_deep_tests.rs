@@ -1859,6 +1859,46 @@ async fn persona_apply_full_ok_without_service() {
 }
 
 #[tokio::test]
+async fn persona_apply_clears_stale_expertise() {
+    // BUG-20261106-031：生成人格 apply 是三件套整体替换——本次 expertise_md
+    // 为空时，上一份人格的 EXPERTISE.md 残留必须被清掉（否则 B 端装配
+    // 「有则注入」把旧知识库混进新身份的 prompt）；非空时正常写入。
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("cluster")).unwrap();
+    std::fs::write(
+        dir.path().join("cluster/EXPERTISE.md"),
+        "# 旧人格的知识库\nRocketMQ 事务消息方案……",
+    )
+    .unwrap();
+    let cluster = test_cluster(&dir);
+    let ctx = ctx_ws(&dir, Some(cluster), None, None);
+
+    // 空 expertise_md → 旧残留被清 + IDENTITY/SOUL 换新
+    let result = handler
+        .handle_cmd("persona_apply", Some(apply_pkg()), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["applied"], true);
+    assert!(
+        !dir.path().join("cluster/EXPERTISE.md").exists(),
+        "空 expertise_md 时旧 EXPERTISE.md 残留必须被清除"
+    );
+
+    // 非空 expertise_md → 正常写入（对照臂，排除「清残留」误伤写入路径）
+    let mut pkg = apply_pkg();
+    pkg["expertise_md"] = serde_json::json!("# 新知识库\nKafka Exactly-Once 语义");
+    handler
+        .handle_cmd("persona_apply", Some(pkg), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let exp = std::fs::read_to_string(dir.path().join("cluster/EXPERTISE.md")).unwrap();
+    assert!(exp.contains("Kafka Exactly-Once"), "{exp}");
+}
+
+#[tokio::test]
 async fn persona_apply_service_not_running_note() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
