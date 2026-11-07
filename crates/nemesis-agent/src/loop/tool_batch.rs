@@ -491,7 +491,21 @@ impl AgentLoop {
                             );
                         pruned
                     }
-                    None => result,
+                    None => {
+                        // BUG-20261107-027（B30/X1 补洞）：gate 全文放行
+                        // （cap=0 关闭 / total ≤ cap 放大档）也可能与 const
+                        // 纯重算不同构——total > 8192 时下一轮请求/replay
+                        // 的 model_facing_content 会把它重算成有界裁剪形态，
+                        // 与本轮 dispatch 实际回灌的全文静默不一致（会话内
+                        // 缩水）。同走同构谓词（未裁方向）：重算会裁 → 记
+                        // 投影=全文钉死所见；total ≤ 8192 两边都不裁 → 照旧
+                        // 不记（纯重算语义零漂移）。
+                        prune_applied = !crate::prune::cap_prune_matches_recompute(
+                            tool_result_cap,
+                            result.chars().count(),
+                        );
+                        result
+                    }
                 },
             }
         };
