@@ -757,8 +757,10 @@ impl PluginManager {
                 reg.manifest.permissions.allow_private,
             );
             // 实例配置 `proxy` 键（SC 套件批）：出站代理 URL（http/socks5h）
-            // ——空/缺席 = None = 直连现行为；schema 可不声明该键（操作员
-            // config.set 显式写即生效）。
+            // ——空/缺席 = None = 直连现行为；schema 须声明该键才能写入
+            // （set_config_key 的 declared-keys 硬闸：所有 API 写路径——
+            // WSAPI config.set / panel guest config-set——都过闸，未声明键
+            // loud 拒，本键缺席即恒直连）。
             policy.proxy = cfg_table
                 .get("proxy")
                 .map(|s| s.trim().to_string())
@@ -831,6 +833,15 @@ impl PluginManager {
                 reg.manifest.slug
             )));
         }
+        // 运行期总闸：生产消费侧（PluginToolBridge::execute）自带一道，
+        // manager 入口自闸是 crate 内纪律（call_policy_point / run_flow_step /
+        // invoke_ui / spawn_observer_worker 同款）——绕开桥层直调 registry
+        // 的路径同样不翻闸（翻关后 guest 不执行任何代码，严格口径）。
+        if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
+            return Err(PluginError::NotAvailable(
+                "wasm plugin subsystem disabled (runtime master gate)".into(),
+            ));
+        }
         let frame = self.build_frame(&reg, false);
         self.runtime
             .execute_tool(reg.component, frame, args_json, exec_ctx)
@@ -858,6 +869,16 @@ impl PluginManager {
             return Err(PluginError::NotAvailable(format!(
                 "plugin '{slug}' disabled"
             )));
+        }
+        // 运行期总闸（BUG 修复）：面板命令通道此前是六个 guest 执行入口中
+        // 唯一漏接的——config 翻关后其余五口全热停，唯 ui.invoke 照常执行
+        // guest handle-ui-command（runtime_enabled 修复批次点名要热停的
+        // 「WSAPI 面板」面就是它）。闸在 audit_event 前：被拒转发不留痕，
+        // 与既有 disabled 检查同纪律。
+        if !nemesis_config::plugin_wasm::runtime_enabled(&self.workspace_root) {
+            return Err(PluginError::NotAvailable(
+                "wasm plugin subsystem disabled (runtime master gate)".into(),
+            ));
         }
         if reg.component == 0 {
             return Err(PluginError::NotAvailable(format!(
