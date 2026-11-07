@@ -21,23 +21,18 @@ fn normalize_docs(file: syn::File) -> syn::File {
     impl syn::fold::Fold for Norm {
         fn fold_attribute(&mut self, attr: syn::Attribute) -> syn::Attribute {
             let attr = syn::fold::fold_attribute(self, attr);
-            if attr.path().is_ident("doc") {
-                if let syn::Meta::NameValue(nv) = &attr.meta {
-                    if matches!(nv.value, syn::Expr::Lit(ref l) if matches!(l.lit, syn::Lit::Str(_)))
-                    {
-                        let mut out = attr.clone();
-                        if let syn::Meta::NameValue(nv2) = &mut out.meta {
-                            nv2.value = syn::Expr::Lit(syn::ExprLit {
-                                attrs: Vec::new(),
-                                lit: syn::Lit::Str(syn::LitStr::new(
-                                    "_",
-                                    proc_macro2::Span::call_site(),
-                                )),
-                            });
-                        }
-                        return out;
-                    }
+            if attr.path().is_ident("doc")
+                && let syn::Meta::NameValue(nv) = &attr.meta
+                && matches!(nv.value, syn::Expr::Lit(ref l) if matches!(l.lit, syn::Lit::Str(_)))
+            {
+                let mut out = attr.clone();
+                if let syn::Meta::NameValue(nv2) = &mut out.meta {
+                    nv2.value = syn::Expr::Lit(syn::ExprLit {
+                        attrs: Vec::new(),
+                        lit: syn::Lit::Str(syn::LitStr::new("_", proc_macro2::Span::call_site())),
+                    });
                 }
+                return out;
             }
             attr
         }
