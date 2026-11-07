@@ -140,8 +140,14 @@ async fn rewind_with_live_loop_but_no_checkpoint_store_errors() {
     assert_eq!(err, "turn is required");
 
     // Live loop without a checkpoint store → rewind propagates the error.
+    // （session_id 必填化后显式带参走 resolve_session_loop → 主槽 loop，
+    // 被测路径不变。）
     let err = handler
-        .handle_cmd("rewind", Some(serde_json::json!({ "turn": 3 })), &ctx)
+        .handle_cmd(
+            "rewind",
+            Some(serde_json::json!({ "turn": 3, "session_id": "s10b-rw" })),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("checkpoint store not attached"), "{err}");

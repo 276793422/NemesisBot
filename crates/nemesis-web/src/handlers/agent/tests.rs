@@ -161,14 +161,32 @@ async fn cancel_without_running_loop_returns_error() {
 }
 
 #[tokio::test]
-async fn rewind_without_running_loop_returns_error() {
+async fn rewind_without_session_id_bails() {
+    // 回归锁：session_id 必填。旧 None 分支以 WS 连接 id
+    // 伪造会话键（under_history_gate 两道防线对 bogus key 空转 + 按主 loop
+    // 全局 turn 序号恢复），现改为诚实报错（同族 compact/clear 纪律）。
     let handler = AgentHandler;
     let ctx = make_ctx_with_agent(Arc::new(MockAgentService::new(true)));
     let err = handler
         .handle_cmd("rewind", Some(serde_json::json!({"turn": 1})), &ctx)
         .await
         .unwrap_err();
-    assert_eq!(err, "Agent not running");
+    assert!(err.contains("missing session_id"), "{err}");
+}
+
+#[tokio::test]
+async fn rewind_blank_session_id_bails() {
+    let handler = AgentHandler;
+    let ctx = make_ctx_with_agent(Arc::new(MockAgentService::new(true)));
+    let err = handler
+        .handle_cmd(
+            "rewind",
+            Some(serde_json::json!({"turn": 1, "session_id": "   "})),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing session_id"), "{err}");
 }
 
 #[tokio::test]
@@ -323,7 +341,11 @@ async fn rewind_nonexistent_turn_returns_empty() {
     let ctx = make_ctx_with_loop(Some(dir.path().to_string_lossy().to_string()));
     // turn 999 was never begun → rewind returns Ok with empty writes/deletes.
     let r = handler
-        .handle_cmd("rewind", Some(serde_json::json!({"turn": 999})), &ctx)
+        .handle_cmd(
+            "rewind",
+            Some(serde_json::json!({"turn": 999, "session_id": "rw-miss"})),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -344,7 +366,11 @@ async fn rewind_without_checkpoint_store_errors() {
     // （handler 必须原样透传，不吞成 Ok）。
     let ctx = make_ctx_with_loop(None);
     let err = handler
-        .handle_cmd("rewind", Some(serde_json::json!({"turn": 1})), &ctx)
+        .handle_cmd(
+            "rewind",
+            Some(serde_json::json!({"turn": 1, "session_id": "rw-nostore"})),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert_eq!(err, "checkpoint store not attached");

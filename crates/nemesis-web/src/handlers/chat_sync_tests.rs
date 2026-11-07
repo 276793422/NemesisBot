@@ -141,20 +141,23 @@ async fn sync_replays_recorded_frames_with_window_semantics() {
 }
 
 #[tokio::test]
-async fn sync_defaults_to_connection_session_and_zero() {
+async fn sync_without_session_id_bails() {
+    // 回归锁：session_id 必填。旧 None 回落 ctx.session_id
+    // （WS 连接 id，非聊天会话 id）——对不存在的键 replay 恒空且 gap:false，
+    // 漏传方把「没补到」误当「已同步」静默丢帧；现改为诚实报错。
     let _guard = GLOBAL_TABLE_LOCK.lock().await;
-    let sid = unique_session("defaults");
-    let ctx = make_ctx(&sid); // 不带 session_id → 取 ctx.session_id
-    chat_event_log::record(&ring_key(&sid), "user", "hello", None, None);
-    chat_event_log::record(&ring_key(&sid), "assistant", "world", None, None);
-    let out = ChatHandler
-        .handle_cmd("sync", None, &ctx) // data 全缺省
+    let ctx = make_ctx("wire-bail");
+    let err = ChatHandler
+        .handle_cmd("sync", None, &ctx)
         .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(out["session_id"], sid.as_str());
-    assert_eq!(out["after_seq"], 0);
-    assert_eq!(out["events"].as_array().unwrap().len(), 2);
+        .unwrap_err();
+    assert!(err.contains("missing session_id"), "{err}");
+    // 空串 / 纯空白同样拒绝（不允许借空白字符串重新滑回 fallback 语义）。
+    let err = ChatHandler
+        .handle_cmd("sync", Some(serde_json::json!({"session_id": "  "})), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing session_id"), "{err}");
 }
 
 #[tokio::test]
