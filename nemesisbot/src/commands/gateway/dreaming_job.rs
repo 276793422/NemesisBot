@@ -7,6 +7,8 @@
 //! - [`fire_dreaming_sweep`]：on_job 触发入口。on_job 回调是同步
 //!   `Fn(&CronJob) -> Result<String, String>`，LLM sweep 是 30s+ 的异步长活
 //!   ——同步返回「已启动」，实际工作 spawn 到后台（不阻塞 cron tick 循环）。
+//!   进程级互斥（SWEEP_INFLIGHT）：计划触发与手动「立即运行」双触发时，
+//!   第二次诚实拒绝——并发 sweep 会同批候选交叉决策冲突。
 //! - sweep 本体在 [`run_and_report`]：盘上 config 为准（运行中改配置下次
 //!   sweep 生效）→ 小模型通道（`agents.small_model`，未配回落主模型）→
 //!   `run_sweep` 闭环 → 报告落 `workspace/logs/dreaming/sweep_<ts>.json`。
@@ -16,6 +18,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{info, warn};
 
@@ -145,12 +148,46 @@ pub fn sync_dreaming_job(
 // 触发入口（同步 on_job → 异步后台 sweep）
 // ---------------------------------------------------------------------------
 
+/// sweep 并发互斥（进程级单例）：计划触发与手动「立即运行」（tasks.cron.run
+/// → execute_job_detached）可能双触发同一 sweep——并发 sweep 会同批候选
+/// 交叉决策（run_sweep 的 taken 集合只是本轮内幂等）、LLM 成本双花、报告
+/// 同秒覆盖。已在跑时第二次触发诚实拒绝（Err 回传 job 运行史/web 可见）。
+static SWEEP_INFLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// sweep 执行槽占用句柄：Drop 时释放（panic/早退全覆盖）。
+struct SweepGuard<'a>(&'a AtomicBool);
+
+impl Drop for SweepGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// 抢占 sweep 执行槽：`Some` = 占到（调用方必须持 guard 至结束）；`None` = 已在跑。
+fn try_acquire_sweep_slot(flag: &AtomicBool) -> Option<SweepGuard<'_>> {
+    flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| SweepGuard(flag))
+}
+
 /// on_job 触发入口：同步快速返回「已启动」，sweep spawn 到后台。
 /// （on_job 是同步回调；LLM 决策 30s+ 不能阻塞 cron tick 循环。）
 pub fn fire_dreaming_sweep(mgr: Arc<MemoryManager>, home: PathBuf) -> Result<String, String> {
-    let handle = tokio::runtime::Handle::try_current()
-        .map_err(|_| "记忆 dreaming：当前无 tokio 运行时上下文，本次触发跳过".to_string())?;
+    let Some(guard) = try_acquire_sweep_slot(&SWEEP_INFLIGHT) else {
+        return Err(
+            "记忆 dreaming sweep 已在运行中——本次触发跳过（并发 sweep 会同批候选交叉决策）"
+                .to_string(),
+        );
+    };
+    let handle = match tokio::runtime::Handle::try_current() {
+        Ok(h) => h,
+        Err(_) => {
+            drop(guard); // Err 路径先释放执行槽（防一次环境失败锁死后续触发）
+            return Err("记忆 dreaming：当前无 tokio 运行时上下文，本次触发跳过".to_string());
+        }
+    };
     handle.spawn(async move {
+        let _inflight = guard;
         match run_and_report(mgr, home).await {
             Ok(report) => info!(
                 "[Dreaming] sweep 完成: candidates={} applied={} rejected={} merged={} promoted={} expired={} kept={}",
