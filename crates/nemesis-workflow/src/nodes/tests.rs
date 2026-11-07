@@ -1217,6 +1217,204 @@ async fn test_loop_node_with_unknown_child_type() {
     assert!(result.error.unwrap().contains("unknown node type"));
 }
 
+// ---------------------------------------------------------------------------
+// 缺陷 15 同类清账：condition 节点 / loop 条件表达式的幻觉字段守卫
+//（守卫求值单一真相源 eval_condition_with_falsifiability，与条件边共用）
+// ---------------------------------------------------------------------------
+
+fn wf_ctx_with_completed_condition(check_id: &str, result: bool) -> WorkflowContext {
+    let wf_ctx = WorkflowContext::new(HashMap::new());
+    wf_ctx.set_node_result(
+        check_id,
+        NodeResult {
+            node_id: check_id.to_string(),
+            output: serde_json::json!({ "condition_result": result }),
+            error: None,
+            state: ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+    wf_ctx
+}
+
+/// condition 节点幻觉字段（首段命中已完成节点）→ 节点 Failed 点名。
+/// 三种写法旧实现分别落恒真（非空即真）/ 字符串比较垃圾值 / 取反恒假，
+/// 路由由字面量残骸决定。
+#[tokio::test]
+async fn test_condition_node_hallucinated_field_fails_loud() {
+    let exec = ConditionNodeExecutor;
+    let wf_ctx = wf_ctx_with_completed_condition("check", true);
+    for cond in [
+        "{{check.passed}} == \"yes\"",
+        "{{check.passed}}",
+        "!{{check.passed}}",
+    ] {
+        let mut config = HashMap::new();
+        config.insert("condition".to_string(), serde_json::json!(cond));
+        let node = make_node("n1", "condition", config);
+        let result = exec.execute(&node, &HashMap::new(), &wf_ctx).await.unwrap();
+        assert_eq!(result.state, ExecutionState::Failed, "cond={cond}");
+        let err = result.error.unwrap_or_default();
+        assert!(
+            err.contains("n1") && err.contains("check.passed"),
+            "cond={cond}: {err}"
+        );
+    }
+}
+
+/// condition 节点真实字段不误伤：照常布尔路由进 condition_result。
+#[tokio::test]
+async fn test_condition_node_real_field_routes_normally() {
+    let exec = ConditionNodeExecutor;
+    let wf_ctx = wf_ctx_with_completed_condition("check", true);
+    // build_executor_context 同源形态：上游输出字段以 {{节点id.字段}} 暴露。
+    let mut ctx = HashMap::new();
+    ctx.insert(
+        "check.condition_result".to_string(),
+        serde_json::json!(true),
+    );
+    let mut config = HashMap::new();
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{check.condition_result}}"),
+    );
+    let node = make_node("n1", "condition", config);
+    let result = exec.execute(&node, &ctx, &wf_ctx).await.unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["condition_result"], serde_json::json!(true));
+}
+
+/// condition 节点不可证残留（首段不是任何已完成节点）→ 整条条件按
+/// 不成立（false），保留 s12b 跳过语义，节点照常 Completed。
+#[tokio::test]
+async fn test_condition_node_unprovable_leftover_is_false() {
+    let exec = ConditionNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{payload.flag}}"),
+    );
+    let node = make_node("n1", "condition", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["condition_result"], serde_json::json!(false));
+}
+
+/// 真实 LoopNodeExecutor：条件幻觉字段（body 子节点输出中不存在的字段）
+/// → 第 1 轮条件检查即诚实失败（旧实现残留「非空即真」恒真，静默跑满
+/// safety_cap）。
+#[tokio::test]
+async fn test_loop_condition_hallucinated_field_fails_loud() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    let exec = registry.get("loop").unwrap();
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(10));
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{inner.passed}} != \"stop\""),
+    );
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "delay", "config": { "seconds": 0 } }
+        ]),
+    );
+    let node = make_node("n1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap_or_default();
+    assert!(err.contains("n1") && err.contains("inner.passed"), "{err}");
+    // 第 0 轮已跑完（条件检查从第 2 轮开始）。
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 1);
+}
+
+/// 真实 LoopNodeExecutor：不可证残留 → 条件按不成立，第 1 轮后停止
+/// Completed（旧实现「非空即真」恒真，静默跑满 max_iterations=3）。
+#[tokio::test]
+async fn test_loop_condition_unprovable_leftover_stops_early() {
+    let registry = NodeExecutorRegistry::new_with_composite();
+    let exec = registry.get("loop").unwrap();
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(3));
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{outer.stop}} != true"),
+    );
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "delay", "config": { "seconds": 0 } }
+        ]),
+    );
+    let node = make_node("n1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 1);
+}
+
+/// LoopNodeStub 与真实执行器镜像：同一幻觉字段形态 → Failed 点名。
+#[tokio::test]
+async fn test_loop_stub_condition_hallucinated_field_fails_loud() {
+    let exec = LoopNodeStub;
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(10));
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{inner.passed}} != \"stop\""),
+    );
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "delay", "config": { "seconds": 0 } }
+        ]),
+    );
+    let node = make_node("n1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.unwrap_or_default();
+    assert!(err.contains("n1") && err.contains("inner.passed"), "{err}");
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 1);
+}
+
+/// LoopNodeStub 镜像：不可证残留 → 按不成立提前停止。
+#[tokio::test]
+async fn test_loop_stub_condition_unprovable_leftover_stops_early() {
+    let exec = LoopNodeStub;
+    let mut config = HashMap::new();
+    config.insert("max_iterations".to_string(), serde_json::json!(3));
+    config.insert(
+        "condition".to_string(),
+        serde_json::json!("{{outer.stop}} != true"),
+    );
+    config.insert(
+        "nodes".to_string(),
+        serde_json::json!([
+            { "id": "inner", "node_type": "delay", "config": { "seconds": 0 } }
+        ]),
+    );
+    let node = make_node("n1", "loop", config);
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["iterations"].as_u64().unwrap(), 1);
+}
+
 #[tokio::test]
 async fn test_sub_workflow_node_with_engine() {
     let engine = WorkflowEngine::new_arc();

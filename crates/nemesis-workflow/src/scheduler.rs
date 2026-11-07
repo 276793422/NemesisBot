@@ -559,7 +559,9 @@ async fn schedule_inner(
 /// must pass (AND). Any condition evaluating false skips the node.
 ///
 /// Unresolved placeholders (a `{{...}}` still present after template
-/// resolution) are split by provability:
+/// resolution) are split by provability — the guard semantics are the single
+/// source of truth in [`crate::nodes::eval_condition_with_falsifiability`],
+/// shared with the condition node and loop conditions:
 /// - head names a node whose result is **Completed** → its output is fully
 ///   known, the referenced field provably doesn't exist → `Err`: the
 ///   schedule aborts and the execution surfaces **Failed** naming the node
@@ -577,33 +579,21 @@ fn eval_edge_conditions(
         return Ok(true);
     };
     let ctx = build_executor_context(wf_ctx);
+    // 已完成集合提升到逐边循环外（同一 wf_ctx 快照，求值期间不变）。
+    let completed: std::collections::HashSet<String> = wf_ctx
+        .get_all_node_results()
+        .into_iter()
+        .filter(|(_, r)| r.state == ExecutionState::Completed)
+        .map(|(id, _)| id)
+        .collect();
+    let site = format!("节点 {:?} 的条件边", node_id);
     for edge in edges {
         let Some(cond) = &edge.condition else {
             continue;
         };
-        let resolved = crate::nodes::resolve_prompt_template(cond, &ctx);
-        if resolved.contains("{{") {
-            let all_results = wf_ctx.get_all_node_results();
-            let completed: std::collections::HashSet<&str> = all_results
-                .iter()
-                .filter(|(_, r)| r.state == ExecutionState::Completed)
-                .map(|(id, _)| id.as_str())
-                .collect();
-            let provable = crate::nodes::placeholder_refs(cond)
-                .into_iter()
-                .any(|(head, _)| completed.contains(head.as_str()));
-            if provable {
-                return Err(format!(
-                    "节点 {:?} 的条件边引用了已完成节点输出中不存在的字段（模板解析后仍残留 \
-                     {{{{…}}}}）：{:?}。请核对上游节点 id 与其输出字段名（condition 节点 \
-                     的输出字段是 condition_result）",
-                    node_id, cond
-                ));
-            }
-            // 引用不可证伪：变量未提供/节点未执行 → 整条条件不成立。
-            return Ok(false);
-        }
-        if !crate::nodes::evaluate_condition(cond, &ctx) {
+        // 守卫求值（缺陷 15 单一真相源）：可证残留 → Err（本函数既有
+        // 语义），不可证残留 → 整条条件按不成立。
+        if !crate::nodes::eval_condition_with_falsifiability(cond, &ctx, &completed, &site)? {
             return Ok(false);
         }
     }

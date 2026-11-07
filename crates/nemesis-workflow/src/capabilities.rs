@@ -100,7 +100,7 @@ pub fn capabilities() -> GeneratorCapabilities {
             summary: "条件判断，输出 {condition_result: bool}（ConditionNodeExecutor）".into(),
             required_config: vec![],
             optional_config: vec!["condition".into()],
-            config_notes: "表达式如 \"{{count}} > 5\"，支持 == != > < >= <=，支持前导 ! 取反（如 !{{check.passed}}）；缺省 \"false\"；通常作为出边的 condition 而不是独立节点".into(),
+            config_notes: "表达式如 \"{{count}} > 5\"，支持 == != > < >= <=，支持前导 ! 取反（如 !{{check.passed}}）；缺省 \"false\"；通常作为出边的 condition 而不是独立节点。引用的字段/变量必须真实存在——引用已完成节点的幻觉字段（如 {{check.passed}}，condition 输出字段是 condition_result）节点直接 Failed（绝不静默选边）".into(),
         },
         NodeCapability {
             node_type: "delay".into(),
@@ -181,8 +181,8 @@ pub fn capabilities() -> GeneratorCapabilities {
             node_type: "loop".into(),
             summary: "循环执行子节点（LoopNodeExecutor）".into(),
             required_config: vec!["nodes".into()],
-            optional_config: vec!["mode".into(), "max_iterations".into()],
-            config_notes: "mode ∈ counter/list；max_iterations 默认 10；nodes 是内联子节点数组".into(),
+            optional_config: vec!["mode".into(), "max_iterations".into(), "condition".into()],
+            config_notes: "mode ∈ counter/list；max_iterations 默认 10（上限 100）；nodes 是内联子节点数组；可选 condition 是每轮（首轮后）复查的表达式，false 即停——引用的字段必须真实存在，幻觉字段（如 {{子节点id.passed}}）循环直接 Failed，不可证引用按不成立停止".into(),
         },
         NodeCapability {
             node_type: "sub_workflow".into(),
@@ -242,7 +242,8 @@ pub fn capabilities() -> GeneratorCapabilities {
          前导 ! 取反（如 !{{check.passed}}）、字面布尔（true/false/yes/no/1/0）；\
          多条入边条件全过才执行（AND 语义）。引用的字段/变量必须真实存在——\
          condition 节点的输出字段是 condition_result；引用不存在的字段会在草稿期被 \
-         lint 预警、运行期直接 Failed（绝不静默选边）"
+         lint 预警、运行期直接 Failed（绝不静默选边）。condition 节点与 loop 节点的 \
+         condition 表达式同规则"
             .into(),
     ];
 

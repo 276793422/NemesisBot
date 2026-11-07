@@ -458,7 +458,7 @@ impl NodeExecutor for LoopNodeStub {
         &self,
         node: &NodeDef,
         context: &HashMap<String, serde_json::Value>,
-        _wf_ctx: &WorkflowContext,
+        wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
         let max_iter = node
@@ -496,6 +496,17 @@ impl NodeExecutor for LoopNodeStub {
         let mut actual_iterations: usize = 0;
         let mut loop_error: Option<String> = None;
 
+        // 条件守卫的已完成集合（缺陷 15 同类清账，同真实 LoopNodeExecutor）。
+        let mut completed: std::collections::HashSet<String> =
+            children.iter().map(|c| c.id.clone()).collect();
+        completed.extend(
+            wf_ctx
+                .get_all_node_results()
+                .into_iter()
+                .filter(|(_, r)| r.state == ExecutionState::Completed)
+                .map(|(id, _)| id),
+        );
+
         for i in 0..safety_cap {
             // Insert iteration index BEFORE condition check and child execution
             // so both `{{i}}` (form-placeholder syntax) and `{{loop_index}}`
@@ -503,11 +514,18 @@ impl NodeExecutor for LoopNodeStub {
             local_ctx.insert("i".to_string(), serde_json::json!(i));
             local_ctx.insert("loop_index".to_string(), serde_json::json!(i));
 
-            // Check loop condition (if provided) after the first iteration
+            // Check loop condition (if provided) after the first iteration.
+            // 守卫求值（缺陷 15 同类清账）：幻觉字段 → loop 诚实失败；
+            // 不可证残留 → 条件按不成立停止。与真实 LoopNodeExecutor 镜像。
             if !cond_expr.is_empty() && i > 0 {
-                let cond_result = evaluate_condition(cond_expr, &local_ctx);
-                if !cond_result {
-                    break;
+                let site = format!("节点 {:?}（loop）第 {} 轮条件", node.id, i);
+                match eval_condition_with_falsifiability(cond_expr, &local_ctx, &completed, &site) {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(e) => {
+                        loop_error = Some(e);
+                        break;
+                    }
                 }
             }
 
