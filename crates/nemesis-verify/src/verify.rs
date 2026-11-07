@@ -7,7 +7,8 @@
 //! - 结构坏（DER / 证书表 / 载体契约 / sid 引用证书缺席）→ [`VerifyOutcome::Malformed`]
 //! - 非支持版本/算法（SignedData version ≠ V1、非 SHA-256、非 ECDSA 套件）→
 //!   [`VerifyOutcome::UnsupportedVersion`]
-//! - 链断 / 根指纹不匹配 / 缺 codeSigning EKU → [`VerifyOutcome::Untrusted`]
+//! - 链断 / 签发者无 CA 资格 / pathLen 超限 / 根指纹不匹配 / 缺 codeSigning
+//!   EKU → [`VerifyOutcome::Untrusted`]
 //! - 摘要差（重算 vs SignedData messageDigest）→ [`VerifyOutcome::Tampered`]
 //! - 签名自洽验签失败 → [`VerifyOutcome::SignatureInvalid`]
 //! - 有效期过（链内任一证书）→ [`VerifyOutcome::Expired`]

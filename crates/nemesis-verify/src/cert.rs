@@ -14,6 +14,9 @@
 //!
 //! # 逐级验证内容（`verify_chain`）
 //! - 有效期 `not_before <= now <= not_after`
+//! - 签发者 CA 资格：BC.ca=true 且 KU 含 keyCertSign（RFC 5280 §6.1.4(k)/(l)，
+//!   终端证书不可作签发者——BUG-20261107-011 补齐）
+//! - pathLenConstraint：issuer 之下、leaf 之上的中间 CA 数 ≤ pathLen
 //! - AKI/SKI 匹配（两者在场时必须一致；X.509 扩展可省略，省略时跳过匹配）
 //! - 逐级 ECDSA-P256/SHA-256 签名（只认自家套件 `1.2.840.10045.4.3.2`）
 //! - 根必须自签（AKI==SKI 或 AKI 缺省 + 自签名验过）且 SHA-256(DER) 匹配锚
@@ -99,6 +102,10 @@ pub enum ChainError {
     Expired,
     /// 证书签名验不过。
     BadSignature,
+    /// 签发者无 CA 资格（缺 BasicConstraints.ca=true 或 KU 无 keyCertSign）。
+    IssuerNotCa,
+    /// BasicConstraints.pathLenConstraint 违规（签发者之下中间 CA 数超限）。
+    PathLenExceeded,
     /// leaf 缺 codeSigning EKU（D4）。
     MissingCodeSigningEku,
 }
@@ -114,6 +121,8 @@ impl std::fmt::Display for ChainError {
             ChainError::NoRootForIssuer => write!(f, "no trusted root for issuer"),
             ChainError::Expired => write!(f, "certificate expired"),
             ChainError::BadSignature => write!(f, "bad certificate signature"),
+            ChainError::IssuerNotCa => write!(f, "issuer certificate is not a CA"),
+            ChainError::PathLenExceeded => write!(f, "path length constraint exceeded"),
             ChainError::MissingCodeSigningEku => write!(f, "missing codeSigning EKU"),
         }
     }
@@ -234,6 +243,32 @@ impl Certificate {
             .unwrap_or(false)
     }
 
+    /// BasicConstraints 扩展（在场时）——签发者资格判据之一（CA 标志 + pathLen）。
+    pub fn ca_constraints(&self) -> Result<Option<BasicConstraints>, ChainError> {
+        let cert = self.parsed()?;
+        match cert
+            .tbs_certificate
+            .get::<BasicConstraints>()
+            .map_err(|e| ChainError::Malformed(format!("BC ext: {e}")))?
+        {
+            Some((_, bc)) => Ok(Some(bc)),
+            None => Ok(None),
+        }
+    }
+
+    /// KeyUsage 扩展（在场时）——签发者资格判据之二（keyCertSign 位）。
+    pub fn key_usage_flags(&self) -> Result<Option<KeyUsage>, ChainError> {
+        let cert = self.parsed()?;
+        match cert
+            .tbs_certificate
+            .get::<KeyUsage>()
+            .map_err(|e| ChainError::Malformed(format!("KU ext: {e}")))?
+        {
+            Some((_, ku)) => Ok(Some(ku)),
+            None => Ok(None),
+        }
+    }
+
     /// 是否在有效期 `[not_before, not_after]` 内（unix 秒）。
     pub fn is_valid_at(&self, now_unix: u64) -> Result<bool, ChainError> {
         let cert = self.parsed()?;
@@ -319,13 +354,28 @@ pub fn verify_chain(
         return Err(ChainError::Empty);
     }
 
-    // 逐级：有效期 + AKI/SKI + 逐级签名。
+    // 逐级：有效期 + AKI/SKI + 签发者 CA 资格 + 逐级签名。
     for (i, cert) in chain.iter().enumerate() {
         if !cert.is_valid_at(now_unix)? {
             return Err(ChainError::Expired);
         }
         if i + 1 < chain.len() {
             let issuer = &chain[i + 1];
+            // 签发者资格（RFC 5280 §6.1.4(k)/(l)；BUG-20261107-011：此前缺失
+            // ——锚定信任树内的合法终端证书可被持有者当签发者用（自造「伪中间
+            // + 伪 leaf」全真签名链），无限扩展信任子树且伪证书不入 CRL 管辖）。
+            // issuer 必须 BC.ca=true 且 KU 含 keyCertSign；v3 证书无 BC 扩展 =
+            // 终端实体，无 KU 扩展一并拒（fail-closed，keygen 生成侧 CA 恒带 KU）。
+            let (bc, _ku) = match (issuer.ca_constraints()?, issuer.key_usage_flags()?) {
+                (Some(bc), Some(ku)) if bc.ca && ku.0.contains(KeyUsages::KeyCertSign) => (bc, ku),
+                _ => return Err(ChainError::IssuerNotCa),
+            };
+            // pathLenConstraint：issuer（位置 j=i+1）之下、leaf 之上的中间 CA
+            // 数 = j-1 = i，不得超过 pathLen（发行锚 pathLen=0 语义：其下不得
+            // 再插中间 CA——三级链是本系统 profile 的唯一合法深度）。
+            if bc.path_len_constraint.is_some_and(|p| i > p as usize) {
+                return Err(ChainError::PathLenExceeded);
+            }
             // AKI/SKI 匹配（cert 无 AKI 时跳过——X.509 扩展可省略）。
             if let Some(aki) = cert.aki()? {
                 match issuer.ski()? {
