@@ -813,6 +813,19 @@ impl AgentLoop {
                 crate::session_stats::StatCounter::Retries,
             );
             let wait = rate_limit_wait_secs(&last_err, retries);
+            // BUG-20261107-020：单次等待钳入剩余预算。预算硬上限的检查在
+            // 循环顶，只看「已消耗」——管不住「本次将睡多久」。上游
+            // Retry-After 可达小时/天级（月度配额耗尽的常见形态），裸取
+            // 会让一次 sleep 直接突破预算（900s 硬上限名存实亡，turn 挂到
+            // 上游指定时刻）。钳制后：上游要求 ≤ 剩余预算时精确遵从
+            // （裁决⑧「遵从上游」语义不变），超出时截到剩余预算，下一轮
+            // 循环顶预算检查按既有路径终局。
+            let wait = if budget_secs > 0 {
+                let remaining = budget_secs.saturating_sub(budget_started.elapsed().as_secs());
+                wait.min(remaining)
+            } else {
+                wait
+            };
             let label = rate_limit_display_label(&last_err);
             // 「显式进度」：每次重试对用户可见；B 端
             // outbound_tx 未装配 → 静默重试。
