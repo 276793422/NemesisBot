@@ -429,13 +429,13 @@ impl BoardReviewConfig {
             return out;
         };
         let lower = slug.to_ascii_lowercase();
-        let preset = self.professions.get(&lower).or_else(|| {
+        let preset = profession_preset_lookup(&self.professions, &lower).or_else(|| {
             // 裸 family 回落：`dev:cpp` 无精确键 → `dev` 键（无冒号时精确
             // 查找已覆盖，不重复取）。
             let family = lower.split(':').next().unwrap_or(&lower);
             (family != lower)
                 .then_some(family)
-                .and_then(|f| self.professions.get(f))
+                .and_then(|f| profession_preset_lookup(&self.professions, f))
         });
         let builtin = builtin_profession_presets()
             .into_iter()
@@ -468,6 +468,20 @@ impl BoardReviewConfig {
         }
         out
     }
+}
+
+/// config 职能预设键查找（大小写不敏感——文档口径「键=职能 slug，大小写
+/// 不敏感」，与派发 matcher / `required_checks` 标签交集 /
+/// `dispatch_fallback_target` 钉住匹配同款纪律）。键是用户手写 JSON 键，
+/// 不在写入点归一（board.config.set 白名单不覆盖本嵌套 map），匹配侧统一
+/// 宽和：trim + ASCII 大小写不敏感。线性扫描（职能目录 ≤17 项，开销可忽略）。
+fn profession_preset_lookup<'a>(
+    map: &'a std::collections::HashMap<String, BoardProfessionReviewPreset>,
+    key: &str,
+) -> Option<&'a BoardProfessionReviewPreset> {
+    map.iter()
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
 }
 
 /// 代码内置职能预设（config `board.review.professions` 同名键逐维度
