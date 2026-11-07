@@ -1067,6 +1067,15 @@ async fn runtime_master_gate_hot_toggle_blocks_tool_and_panel_entries() {
     use nemesis_plugins_wasm::registry::ToolMetaSnapshot;
     use nemesis_plugins_wasm::runtime::ExecContext;
 
+    // 壳 crate 独立 workspace，CI 的 build --workspace 不产出 host DLL；
+    // 直构 manager 不经 fresh_manager，须自行 ensure（2026-11-08 CI 实锤：
+    // 全新 checkout 无开发路径 DLL，构造即 NotAvailable）。
+    // ensure 必须先于建目录（2026-11-08 CI 实锤二连）：冷缓存壳构建
+    // ~8 分钟，建目录在前会把 mkdir→build_dirs canonicalize 暴露成
+    // 8 分钟窗口，窗口内 workspace 目录消失 → "workspace root: os
+    // error 3"；ensure 在前则窗口缩至亚秒，与其余 fresh_manager 用例
+    // 同序。
+    common::ensure_host_dll();
     // workspace 必须是 tmp 的子目录：runtime_enabled 读
     // `<workspace_root.parent()>/config.json`（fresh_manager 形态的 parent
     // 是共享 Temp，不能在此形态下写 config.json——污染并行测试的缺省 true
@@ -1074,10 +1083,6 @@ async fn runtime_master_gate_hot_toggle_blocks_tool_and_panel_entries() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("workspace");
     std::fs::create_dir_all(&ws).expect("mkdir workspace");
-    // 壳 crate 独立 workspace，CI 的 build --workspace 不产出 host DLL；
-    // 直构 manager 不经 fresh_manager，须自行 ensure（2026-11-08 CI 实锤：
-    // 全新 checkout 无开发路径 DLL，构造即 NotAvailable）。
-    common::ensure_host_dll();
     let mgr = Arc::new(
         PluginManager::new_with_dirs(
             &ws,
