@@ -384,10 +384,14 @@ pub(crate) async fn init_agent(
     // workflow `tool` node can invoke them. The registry was created empty
     // during workflow init above; here we wrap each agent tool in an
     // `AgentToolAdapter` (the two `Tool` traits are incompatible) and register
-    // it. Each adapted tool runs the 8-layer security rule pipeline per call —
-    // no interactive approval popup, no guardian LLM judge — so batch
-    // workflows run unattended while still respecting workspace isolation and
-    // the other rule layers.
+    // it. Each adapted tool runs the same 8-layer security pipeline as the
+    // agent path (Layers 1-8, audit chain included) — including the ABAC
+    // approval arm: on RequireApproval the shared approval manager pops the
+    // interactive card and blocks until a verdict or timeout auto-deny. The
+    // dispatch-layer gates (estop / args_validator / hidden_tools / tier /
+    // plan-mode write gate) and the guardian judge are NOT on this path —
+    // they live in the agent loop's tool dispatch and are restored via the
+    // secure-executor closure (docs/PLAN workflow 安全闸补齐计划).
     #[cfg(feature = "workflow")]
     {
         let tools_guard = agent_loop.tools();
@@ -408,6 +412,26 @@ pub(crate) async fn init_agent(
         info!(
             "[Gateway] Bridged {} agent tools into the workflow tool registry",
             bridged
+        );
+    }
+
+    // workflow `tool` 节点安全执行通道（A 批五闸补齐）：把 AgentLoop 的
+    // dispatch 瀑布（estop/hidden/tier/plan 写闸/安全 8 层+审批/guardian/
+    // args_validator，闸序单一真相源零重实现）接到 tool 节点——替换引擎
+    // 构造期装的裸注册表直连 executor。归因（wf_instance/wf_node_id/
+    // wf_name/wf_trigger/wf_depth）与审批回源（chat_id/sender_id/
+    // session_key）随行；上方桥接注册表仍供 script 节点注册表车道使用
+    // （AgentToolAdapter → RemoteExecutorTool 隔离执行链不变）。
+    #[cfg(feature = "workflow")]
+    {
+        workflow_engine.set_tool_executor(Arc::new(
+            nemesis_workflow::nodes::RealToolNodeExecutor::new_with_secure_executor(
+                workflow_tool_registry.clone(),
+                Arc::new(super::workflow_secure_executor::WorkflowSecureExecutor::new(&agent_loop)),
+            ),
+        ));
+        info!(
+            "[Gateway] Workflow tool nodes wired to the agent dispatch waterfall (secure executor)"
         );
     }
 

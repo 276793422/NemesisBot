@@ -592,6 +592,7 @@ pub fn default_config() -> Config {
         board: None,
         usage: None,
         terminal: None,
+        workflow: None,
         projects: None,
         bridge: None,
         ui: None,

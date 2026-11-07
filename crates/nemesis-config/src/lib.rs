@@ -197,6 +197,10 @@ pub struct Config {
     /// 是 `terminal` cargo feature）。
     #[serde(default)]
     pub terminal: Option<TerminalConfig>,
+    /// workflow 引擎运行期参数（None = 全默认——墙钟保险丝 3600s，0=关；
+    /// A 批批 4）。
+    #[serde(default)]
+    pub workflow: Option<WorkflowRuntimeConfig>,
     /// 项目注册表参数（对话/项目双分组；None = 全默认——上限 4）。
     #[serde(default)]
     pub projects: Option<ProjectsConfig>,

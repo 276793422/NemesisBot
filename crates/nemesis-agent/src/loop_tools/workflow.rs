@@ -75,7 +75,7 @@ impl Tool for WorkflowRunTool {
         })
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let args_value: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("invalid JSON args: {}", e))?;
 
@@ -112,6 +112,11 @@ impl Tool for WorkflowRunTool {
         let trigger = nemesis_workflow::types::TriggerSource::AgentTool {
             tool_call_id: uuid::Uuid::new_v4().to_string(),
             recursion_depth: new_depth,
+            // A4 归因穿透：触发会话身份随 trigger 进引擎，tool 节点经
+            // WorkflowIdentity 回灌 dispatch（审批卡路由 + 审计来源）。
+            session_key: context.session_key.clone(),
+            chat_id: context.chat_id.clone(),
+            sender_id: context.user.clone(),
         };
 
         let execution = self

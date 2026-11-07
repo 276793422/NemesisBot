@@ -34,6 +34,9 @@ fn depth_from_trigger_extracts_agent_tool_recursion() {
     let agent = Some(TriggerSource::AgentTool {
         tool_call_id: "tc-1".to_string(),
         recursion_depth: 2,
+        session_key: String::new(),
+        chat_id: String::new(),
+        sender_id: String::new(),
     });
     assert_eq!(CallFrame::depth_from_trigger(&agent), 2);
 
@@ -52,6 +55,9 @@ fn push_rejects_depth_above_max() {
         trigger_source: Some(TriggerSource::AgentTool {
             tool_call_id: "tc".to_string(),
             recursion_depth: MAX_RECURSION_DEPTH + 1,
+            session_key: String::new(),
+            chat_id: String::new(),
+            sender_id: String::new(),
         }),
         recursion_depth: MAX_RECURSION_DEPTH + 1,
     };
@@ -72,6 +78,9 @@ fn push_accepts_depth_at_max() {
         trigger_source: Some(TriggerSource::AgentTool {
             tool_call_id: "tc".to_string(),
             recursion_depth: MAX_RECURSION_DEPTH,
+            session_key: String::new(),
+            chat_id: String::new(),
+            sender_id: String::new(),
         }),
         recursion_depth: MAX_RECURSION_DEPTH,
     };

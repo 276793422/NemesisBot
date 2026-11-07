@@ -751,3 +751,7 @@ pub use tool::*;
 
 #[cfg(test)]
 mod tests;
+// workflow 工具节点安全闸回归锁（A 批，PLAN 回归锁 1 + TriggerSource
+// 身份表测 + engine set_tool_executor identity e2e）。
+#[cfg(test)]
+mod tool_gate_tests;

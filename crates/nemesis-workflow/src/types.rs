@@ -111,6 +111,16 @@ pub enum TriggerSource {
         /// `WorkflowCallStack` rejects calls past `MAX_RECURSION_DEPTH`.
         #[serde(default)]
         recursion_depth: u32,
+        /// 触发会话键（安全闸补齐 A4 归因：随 WorkflowContext.identity
+        /// 下行，驱动会话级审批豁免与审计归因；空 = 旧序列化/测试形态）。
+        #[serde(default)]
+        session_key: String,
+        /// 触发对话 id（审批卡路由回源会话）。
+        #[serde(default)]
+        chat_id: String,
+        /// 触发者 id。
+        #[serde(default)]
+        sender_id: String,
     },
     /// Triggered by an inbound chat message routed to a workflow.
     Chat {
@@ -173,6 +183,53 @@ pub enum TriggerSource {
         /// of the same workflow-chat conversation.
         session_key: String,
     },
+}
+
+impl TriggerSource {
+    /// 人读触发源标签（安全闸补齐 A4：审计归因 metadata `wf_trigger`）。
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Cli => "cli",
+            Self::Cron => "cron",
+            Self::Webhook { .. } => "webhook",
+            Self::AgentTool { .. } => "agent-tool",
+            Self::Chat { .. } => "chat",
+            Self::Message { .. } => "message",
+            Self::WebUI { .. } => "web-ui",
+            Self::Event { .. } => "event",
+            Self::WorkflowChat { .. } => "workflow-chat",
+        }
+    }
+
+    /// 触发者身份三元组 `(session_key, chat_id, sender_id)` —— 安全闸补齐
+    /// A4：随 `WorkflowContext.identity` 下行，会话级豁免按 session_key
+    /// 裁决、审批卡按 chat_id 路由。变体没带的字段为空串（诚实：无触发
+    /// 会话身份，豁免闸按缺省处理，不猜身份）。
+    pub fn identity_triple(&self) -> (String, String, String) {
+        match self {
+            Self::Chat {
+                chat_id,
+                session_key,
+                sender_id,
+                ..
+            } => (session_key.clone(), chat_id.clone(), sender_id.clone()),
+            Self::AgentTool {
+                session_key,
+                chat_id,
+                sender_id,
+                ..
+            } => (session_key.clone(), chat_id.clone(), sender_id.clone()),
+            Self::Message {
+                chat_id, sender_id, ..
+            } => (String::new(), chat_id.clone(), sender_id.clone()),
+            Self::WorkflowChat {
+                chat_id,
+                session_key,
+                ..
+            } => (session_key.clone(), chat_id.clone(), String::new()),
+            _ => (String::new(), String::new(), String::new()),
+        }
+    }
 }
 
 /// Definition of a single node within a workflow DAG.

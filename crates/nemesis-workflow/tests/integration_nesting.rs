@@ -478,6 +478,9 @@ async fn agent_tool_trigger_recursion_depth_round_trips() {
             Some(TriggerSource::AgentTool {
                 tool_call_id: "tc_abc".to_string(),
                 recursion_depth: 2,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
             }),
         )
         .await
@@ -487,6 +490,7 @@ async fn agent_tool_trigger_recursion_depth_round_trips() {
         TriggerSource::AgentTool {
             tool_call_id,
             recursion_depth,
+            ..
         } => {
             assert_eq!(tool_call_id, "tc_abc");
             assert_eq!(*recursion_depth, 2);

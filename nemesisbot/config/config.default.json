@@ -53,6 +53,9 @@
     "enabled": false,
     "max_sessions": 4
   },
+  "workflow": {
+    "wall_clock_budget_secs": 3600
+  },
   "channels": {
     "whatsapp": {
       "enabled": false,

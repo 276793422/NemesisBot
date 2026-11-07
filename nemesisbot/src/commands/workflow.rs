@@ -419,7 +419,7 @@ async fn cmd_run(
     name: &str,
     input_args: &[String],
 ) -> Result<()> {
-    // home 仅被下方 sandbox 闸块消费——sandbox 关（desktop 等形态）时无引用。
+    // home 供墙钟预算与 sandbox world 读取 config.json（A 批批 4 起无条件消费）。
     #[cfg(not(feature = "sandbox"))]
     let _ = home;
     println!("Running workflow: {}", name);
@@ -480,6 +480,29 @@ async fn cmd_run(
     // Create engine and run. new_arc（非 new）：注册真实 sub_workflow 执行器
     // ——new() 的 stub 会让子工作流节点恒 Failed "no engine configured"。
     let engine = nemesis_workflow::engine::WorkflowEngine::new_arc();
+
+    // 墙钟保险丝（A 批批 4）：`workflow.wall_clock_budget_secs`（缺省
+    // 3600，0=关）——超时执行由引擎看门狗取消，落 Failed + 原因注记。
+    // config 缺失/不可解析 → 缺省 3600，不阻断 run。
+    // 诚实边界：CLI 是独立短生命周期进程，estop 状态无人触发（死开关，
+    // 行为等同 gateway estop 未按）；wall clock 预算独立生效。工具节点
+    // 不经 dispatch 瀑布（无 agent loop 可挂），安全闸=注册表既有语义。
+    let wall_clock_budget = nemesis_config::ConfigStore::load(&home.join("config.json"))
+        .ok()
+        .map(|store| {
+            store
+                .handle()
+                .read()
+                .workflow
+                .clone()
+                .unwrap_or_default()
+                .wall_clock_budget_secs
+        })
+        .unwrap_or_else(|| nemesis_config::WorkflowRuntimeConfig::default().wall_clock_budget_secs);
+    engine.set_wall_clock_budget_secs(wall_clock_budget);
+    if wall_clock_budget > 0 {
+        println!("  Wall clock budget: {}s", wall_clock_budget);
+    }
 
     // 统一执行世界：CLI 裸引擎此前是执行体隔离的逃逸路径——script
     // 节点落到 `ScriptNodeExecutor::new()` 的裸 spawn，executor.sandbox=true

@@ -537,6 +537,9 @@ fn trigger_source_agent_tool_with_recursion_depth() {
     let source = TriggerSource::AgentTool {
         tool_call_id: "tc_123".to_string(),
         recursion_depth: 2,
+        session_key: String::new(),
+        chat_id: String::new(),
+        sender_id: String::new(),
     };
     let json = serde_json::to_string(&source).unwrap();
     let back: TriggerSource = serde_json::from_str(&json).unwrap();

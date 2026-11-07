@@ -4218,6 +4218,7 @@ async fn test_workflow_run_records_agent_tool_trigger() {
         TriggerSource::AgentTool {
             tool_call_id,
             recursion_depth,
+            ..
         } => {
             assert!(!tool_call_id.is_empty(), "tool_call_id must be populated");
             assert_eq!(
@@ -4566,6 +4567,7 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
         TriggerSource::AgentTool {
             tool_call_id,
             recursion_depth,
+            ..
         } => {
             assert!(!tool_call_id.is_empty(), "tool_call_id must be populated");
             assert_eq!(

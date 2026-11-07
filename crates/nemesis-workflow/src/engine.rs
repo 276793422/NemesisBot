@@ -318,6 +318,11 @@ pub struct WorkflowEngine {
     /// execution is still in-flight (Running); completion removes the entry.
     /// Cancelled tokens cause scheduler + node executors to bail out promptly.
     cancel_tokens: DashMap<String, CancellationToken>,
+    /// 墙钟保险丝（A 批批 4）：执行超过该秒数即由看门狗 fire cancel token，
+    /// 调度器按取消路径收口（执行落 **Failed + 原因注记**，区别于用户取消
+    /// 的 Cancelled）。0 = 关（引擎默认关；
+    /// gateway 从 config `workflow.wall_clock_budget_secs` 读，缺省 3600）。
+    wall_clock_budget_secs: std::sync::atomic::AtomicU64,
     /// Observer / event-bus for workflow lifecycle events
     /// (Started/Completed/Failed/Cancelled). External systems (web dashboards,
     /// log shippers) register observers via [`event_manager`](Self::event_manager).
@@ -380,6 +385,7 @@ impl WorkflowEngine {
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            wall_clock_budget_secs: std::sync::atomic::AtomicU64::new(0),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
@@ -409,6 +415,7 @@ impl WorkflowEngine {
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            wall_clock_budget_secs: std::sync::atomic::AtomicU64::new(0),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
@@ -445,6 +452,7 @@ impl WorkflowEngine {
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            wall_clock_budget_secs: std::sync::atomic::AtomicU64::new(0),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
@@ -471,6 +479,7 @@ impl WorkflowEngine {
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            wall_clock_budget_secs: std::sync::atomic::AtomicU64::new(0),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
@@ -502,6 +511,7 @@ impl WorkflowEngine {
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            wall_clock_budget_secs: std::sync::atomic::AtomicU64::new(0),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
@@ -529,6 +539,7 @@ impl WorkflowEngine {
             checkpoint_store: parking_lot::RwLock::new(None),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            wall_clock_budget_secs: std::sync::atomic::AtomicU64::new(0),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
@@ -607,6 +618,7 @@ impl WorkflowEngine {
             checkpoint_store: parking_lot::RwLock::new(checkpoint_store),
             closed: RwLock::new(false),
             cancel_tokens: DashMap::new(),
+            wall_clock_budget_secs: std::sync::atomic::AtomicU64::new(0),
             event_manager: WorkflowEventManager::new(),
             call_stack: std::sync::Arc::new(crate::call_stack::WorkflowCallStack::new()),
             event_dispatcher: crate::event_dispatcher::EventDispatcher::default(),
@@ -682,6 +694,18 @@ impl WorkflowEngine {
             "agent",
             Arc::new(crate::nodes::AgentNodeExecutor::new(runner)),
         );
+    }
+
+    /// Replace the `tool` node executor (A 批五闸补齐).
+    ///
+    /// Gateway calls this after the AgentLoop exists to install a
+    /// [`RealToolNodeExecutor`] wired with the secure dispatch channel
+    /// (`new_with_secure_executor`) — tool nodes then run through the full
+    /// dispatch waterfall instead of hitting the bare registry. Registry
+    /// `register` is overwrite-by-type, so this swaps the stock executor
+    /// installed at construction.
+    pub fn set_tool_executor(&self, executor: Arc<dyn crate::nodes::NodeExecutor>) {
+        self.node_executors.register("tool", executor);
     }
 
     /// Register a custom [`NodeExecutor`] for a node type. Generalisation of
@@ -1906,8 +1930,32 @@ impl WorkflowEngine {
             serde_json::json!({ "trigger": execution.trigger_source.clone() }),
         );
 
-        // Initialize workflow context from execution input
-        let mut wf_ctx = WorkflowContext::new(execution.input.clone());
+        // Initialize workflow context from execution input. Identity is
+        // filled from the trigger source (安全闸补齐 A4 归因穿透：execution
+        // id / workflow name / trigger label / 触发者身份三元组 / 递归深度
+        // 随 wf_ctx 下行，tool 节点的 secure executor 消费——审计归因 +
+        // 审批卡路由 + 会话级豁免的身份来源；本注释取代原先「node executors
+        // cannot see their own execution id」的欠账标注).
+        let (trig_session, trig_chat, trig_sender) = execution
+            .trigger_source
+            .as_ref()
+            .map(|t| t.identity_triple())
+            .unwrap_or_default();
+        let wf_identity = crate::context::WorkflowIdentity {
+            execution_id: execution.id.clone(),
+            workflow_name: execution.workflow_name.clone(),
+            trigger_label: execution
+                .trigger_source
+                .as_ref()
+                .map(|t| t.label())
+                .unwrap_or("unknown")
+                .to_string(),
+            session_key: trig_session,
+            chat_id: trig_chat,
+            sender_id: trig_sender,
+            recursion_depth,
+        };
+        let mut wf_ctx = WorkflowContext::new_with_identity(wf_identity, execution.input.clone());
         for (k, v) in &workflow.variables {
             // Workflow YAML stores initial variables as strings; lift them to
             // Value::String so the rest of the engine only sees JSON values.
@@ -1917,6 +1965,43 @@ impl WorkflowEngine {
         // Stamp the execution with the workflow's structural hash so the
         // resume path can detect config drift (1b step 5).
         execution.workflow_hash = Some(workflow.hash());
+
+        // 墙钟保险丝（A 批批 4）：budget>0 时挂看门狗，到点置 timed_out 旗标
+        // 并 fire cancel token——调度器按取消路径收口，run_async 下方把该
+        // 路径的终态落 **Failed + 原因注记**（PLAN 口径「超时 → cancel +
+        // 终态 Failed 带原因注记」），与用户主动取消（Cancelled）区分。
+        // 调度返回后立即 abort 看门狗（正常完成的执行不得被迟到触发误杀
+        // ——abort 前 token 已从 cancel_tokens 摘除，即便竞态 fire 也无
+        // 消费方；迟到触发但调度已返回 Completed 的工作照实记 Completed
+        // ——工作真做完了，事后改判 Failed 才是造假）。0 = 关。
+        let wall_clock_watchdog = {
+            let budget = self
+                .wall_clock_budget_secs
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if budget > 0 {
+                let token = cancel_token.clone();
+                let execution_id = execution.id.clone();
+                let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = timed_out.clone();
+                Some((
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(budget)).await;
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        warn!(
+                            target: "nemesis_workflow::engine",
+                            execution_id = %execution_id,
+                            budget_secs = budget,
+                            "wall clock budget exceeded — cancelling execution"
+                        );
+                        token.cancel();
+                    }),
+                    timed_out,
+                    budget,
+                ))
+            } else {
+                None
+            }
+        };
 
         // Execute the workflow using the scheduler. When a checkpoint store
         // is wired, install a per-level hook so an interrupted execution can
@@ -1947,6 +2032,15 @@ impl WorkflowEngine {
             )
             .await
         };
+        if let Some((handle, _, _)) = &wall_clock_watchdog {
+            handle.abort();
+        }
+        // 看门狗是否已触发（含触发后调度才返回的竞态窗口）：true =
+        // Cancelled 收口改判 Failed + 原因注记。
+        let (wall_clock_timed_out, wall_clock_budget) = match &wall_clock_watchdog {
+            Some((_, flag, budget)) => (flag.load(std::sync::atomic::Ordering::Relaxed), *budget),
+            None => (false, 0),
+        };
 
         // Token is no longer needed; remove from map.
         self.cancel_tokens.remove(&execution.id);
@@ -1955,8 +2049,21 @@ impl WorkflowEngine {
 
         match schedule_result {
             Ok(ScheduleOutcome::Cancelled) => {
-                execution.state = ExecutionState::Cancelled;
-                execution.ended_at = Some(now);
+                // 墙钟看门狗触发的取消 → Failed + 原因注记（PLAN 口径
+                // 「超时 → cancel + 终态 Failed 带原因注记」），与用户主动
+                // 取消（Cancelled）区分；下方账本 settle 同样按 failed 带
+                // 原因，审计面可辨。
+                if wall_clock_timed_out {
+                    execution.state = ExecutionState::Failed;
+                    execution.error = Some(format!(
+                        "wall clock budget exceeded ({}s) — cancelled by watchdog",
+                        wall_clock_budget
+                    ));
+                    execution.ended_at = Some(now);
+                } else {
+                    execution.state = ExecutionState::Cancelled;
+                    execution.ended_at = Some(now);
+                }
             }
             Ok(ScheduleOutcome::Completed) => {
                 // Check if any node is in waiting state (human review)
@@ -2524,6 +2631,37 @@ impl WorkflowEngine {
         Ok(updated)
     }
 
+    /// Cancel every Running/Waiting execution in one shot（estop 联动入口，
+    /// A 批批 4：gateway estop watcher 消费）。逐个走 [`cancel_execution`]，
+    /// 已终态的执行保持不动（per-id 状态检查照常生效）。返回实际取消的
+    /// 执行 id 列表。
+    pub async fn cancel_all_running(&self) -> Vec<String> {
+        let ids: Vec<String> = {
+            let execs = self.executions.read().await;
+            execs
+                .iter()
+                .filter(|(_, e)| {
+                    matches!(e.state, ExecutionState::Running | ExecutionState::Waiting)
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        let mut cancelled = Vec::with_capacity(ids.len());
+        for id in &ids {
+            if self.cancel_execution(id).await.is_ok() {
+                cancelled.push(id.clone());
+            }
+        }
+        cancelled
+    }
+
+    /// 设置墙钟保险丝秒数（0 = 关）。引擎默认 0；gateway 装配期从 config
+    /// `workflow.wall_clock_budget_secs` 读（缺省 3600）。
+    pub fn set_wall_clock_budget_secs(&self, secs: u64) {
+        self.wall_clock_budget_secs
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Resume a waiting execution (e.g., after human review).
     ///
     /// Updates the waiting node's result with the reviewer's response, then
@@ -2726,6 +2864,38 @@ impl WorkflowEngine {
             .map(|(id, _)| id.clone())
             .collect();
 
+        // 墙钟保险丝——resume 段同款（批 4）：恢复后再次挂死同样要被兜住；
+        // 按调度段计时（human_review 的合法等待不占预算——罚的不是工作流的
+        // 锅）。语义与初始 run 一致：超时取消 → Failed + 原因注记。
+        let wall_clock_watchdog = {
+            let budget = self
+                .wall_clock_budget_secs
+                .load(std::sync::atomic::Ordering::Relaxed);
+            if budget > 0 {
+                let token = cancel_token.clone();
+                let execution_id = execution.id.clone();
+                let timed_out = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let flag = timed_out.clone();
+                Some((
+                    tokio::spawn(async move {
+                        tokio::time::sleep(std::time::Duration::from_secs(budget)).await;
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        warn!(
+                            target: "nemesis_workflow::engine",
+                            execution_id = %execution_id,
+                            budget_secs = budget,
+                            "wall clock budget exceeded during resume — cancelling execution"
+                        );
+                        token.cancel();
+                    }),
+                    timed_out,
+                    budget,
+                ))
+            } else {
+                None
+            }
+        };
+
         let schedule_result = scheduler::schedule_resume(
             &workflow.nodes,
             &workflow.edges,
@@ -2738,11 +2908,34 @@ impl WorkflowEngine {
 
         self.cancel_tokens.remove(&execution.id);
 
+        if let Some((handle, _, _)) = &wall_clock_watchdog {
+            handle.abort();
+        }
+        let wall_clock_timed_out = match &wall_clock_watchdog {
+            Some((_, flag, _)) => flag.load(std::sync::atomic::Ordering::Relaxed),
+            None => false,
+        };
+
         let now = Local::now();
         match schedule_result {
             Ok(ScheduleOutcome::Cancelled) => {
-                execution.state = ExecutionState::Cancelled;
-                execution.ended_at = Some(now);
+                // 看门狗触发的取消 → Failed + 原因注记；用户主动取消
+                // （cancel_execution 路径）保持 Cancelled。
+                if wall_clock_timed_out {
+                    let budget = match &wall_clock_watchdog {
+                        Some((_, _, b)) => *b,
+                        None => 0,
+                    };
+                    execution.state = ExecutionState::Failed;
+                    execution.error = Some(format!(
+                        "wall clock budget exceeded ({}s) — cancelled by watchdog during resume",
+                        budget
+                    ));
+                    execution.ended_at = Some(now);
+                } else {
+                    execution.state = ExecutionState::Cancelled;
+                    execution.ended_at = Some(now);
+                }
             }
             Ok(ScheduleOutcome::Completed) => {
                 // Detect whether a fresh `human_review` paused us again.

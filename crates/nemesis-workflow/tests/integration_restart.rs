@@ -627,6 +627,9 @@ async fn restored_execution_preserves_each_trigger_source_variant() {
         TriggerSource::AgentTool {
             tool_call_id: "tc-1".to_string(),
             recursion_depth: 1,
+            session_key: String::new(),
+            chat_id: String::new(),
+            sender_id: String::new(),
         },
         TriggerSource::Chat {
             chat_id: "c".to_string(),
