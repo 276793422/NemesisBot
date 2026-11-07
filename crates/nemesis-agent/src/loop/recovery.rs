@@ -282,6 +282,9 @@ impl AgentLoop {
                         "connection refused",
                         "temporarily unavailable",
                         "reset by peer",
+                        // 502/503/504 词边界命中（BUG-20261107-019，同 429）：
+                        // 裸 contains 会把长数字里嵌的 503（如 "1503"）误判
+                        // 瞬态——词表数字锚定纪律与 "status 500" 同门。
                         "502",
                         "503",
                         "504",
@@ -301,7 +304,7 @@ impl AgentLoop {
                         "stream interrupted",
                     ]
                     .iter()
-                    .any(|k| err_lower.contains(k));
+                    .any(|k| keyword_hit(&err_lower, k));
 
                     // ③a 429 限流重试环：
                     // 分类词表对齐 provider 侧。与 context-compression 环
@@ -310,10 +313,13 @@ impl AgentLoop {
                     // StreamInterrupted 显式排除：其 Display 尾段携带的
                     // partial 全文可能含 "429"/"rate limit" 字样（模型
                     // 任意输出），误入限流环会把退避逻辑错用在流中断上。
+                    // 数字关键词词边界命中（BUG-20261107-019）：裸
+                    // contains("429") 把端口号 ":8429/" 的 connect error
+                    // 误进限流环——connect error 必须走 transient 快速重试。
                     let is_rate_limit_error = !is_stream_interrupted
                         && RATE_LIMIT_ERROR_KEYWORDS
                             .iter()
-                            .any(|k| err_lower.contains(k));
+                            .any(|k| keyword_hit(&err_lower, k));
 
                     // 分类器命中与词表判定取并集（RateLimit 优先序
                     // 不变；Overloaded 按 llm_error_class 既有口径：

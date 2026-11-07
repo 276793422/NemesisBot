@@ -115,6 +115,35 @@ fn http_status_line_form_is_classified() {
 }
 
 #[test]
+fn rate_limit_429_matching_requires_word_boundary() {
+    // BUG-20261107-019 红证锚：裸 contains("429") 把长数字里嵌的 429
+    // （毫秒时长/端口号/计数）误判 RateLimit——比 Timeout 误判更重：
+    // 消费方把 RateLimit 记 provider cooldown + 限流退避梯子（5→210s），
+    // 而真形态应归 Timeout/瞬态快速重试。词边界纪律与 \b402\b/\b401\b 对齐。
+    // 毫秒时长形态：timeout 文案 + 数字嵌 429 → 必须归 Timeout（修复前进
+    // 限流词表 = RateLimit）。
+    assert_eq!(
+        classify_llm_error("request timed out after 2429ms"),
+        Some(LlmErrorClass::Timeout)
+    );
+    // 端口形态（无 "connect error" 盖章的裸 reqwest Display——流内错误事件
+    // 原样透传的形态）：数字嵌 429 不得命中限流词表。
+    assert_eq!(
+        classify_llm_error("error sending request for url (http://127.0.0.1:8429/v1)"),
+        None
+    );
+    // 真 429（独立成词）照常命中——既有形态零回归。
+    assert_eq!(
+        classify_llm_error("error: 429 slow down"),
+        Some(LlmErrorClass::RateLimit)
+    );
+    assert_eq!(
+        classify_llm_error("status 429"),
+        Some(LlmErrorClass::RateLimit)
+    );
+}
+
+#[test]
 fn image_errors_are_format_class() {
     assert_eq!(
         classify_llm_error("image dimensions exceed max 8000px"),

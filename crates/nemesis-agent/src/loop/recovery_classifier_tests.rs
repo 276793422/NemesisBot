@@ -514,3 +514,147 @@ async fn stream_interrupted_exhausted_history_pruned_but_outbound_full() {
         last_assistant.content
     );
 }
+
+// -- ⑩ BUG-20261107-019：数字关键词词边界——长数字嵌 429 不得进限流环 -------
+
+#[tokio::test(start_paused = true)]
+async fn connect_error_with_429_in_port_enters_transient_ring_not_rate_limit() {
+    // 红证：裸 contains("429") 把 URL 端口号 ":8429/" 里的 429 当限流——
+    // connect error 本应走 transient 环快速重试，误入限流环 = 退避梯子
+    // （5→210s）+「上游限流」误标 + FallbackProvider cooldown 记账。
+    // 词边界后："connect error" 词命中 → transient 环。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "unknown error from provider relay/m: connect error (model m): \
+                   error sending request for url (http://127.0.0.1:8429/v1): \
+                   error trying to connect: tcp connect error: os error 10061"
+            .to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "端口嵌 429 的 connect error 必须进 transient 环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "首败 + transient 环重试成功 = 恰好 2 次调用"
+    );
+    let mut saw_rate_limit_progress = false;
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            saw_rate_limit_progress = true;
+        }
+    }
+    assert!(
+        !saw_rate_limit_progress,
+        "不得进限流环（端口号里的 429 是数字巧合，非真实限流）"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn timeout_with_429_in_duration_enters_transient_ring_not_rate_limit() {
+    // 毫秒时长形态："timed out after 2429ms"——裸 contains("429") 误判限流
+    // （loop 词表先于 transient 判定），词边界后归 transient。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "request timed out after 2429ms: upstream deadline exceeded".to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "毫秒时长嵌 429 的 timeout 必须进 transient 环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "首败 + transient 环重试成功 = 恰好 2 次调用"
+    );
+    let mut saw_rate_limit_progress = false;
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            saw_rate_limit_progress = true;
+        }
+    }
+    assert!(
+        !saw_rate_limit_progress,
+        "不得进限流环（时长里的 429 是数字巧合，非真实限流）"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn genuine_429_still_enters_rate_limit_ring() {
+    // 对照面：独立成词的真 429 照旧进限流环（keyword_hit 词边界不误伤）。
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let provider = ClassifiedThenSuccess {
+        calls: calls.clone(),
+        fail_times: 1,
+        err_text: "upstream 429: slow down".to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "真 429 必须进限流环并恢复: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "首败 + 限流环重试成功 = 恰好 2 次调用"
+    );
+    let mut saw_progress = false;
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            saw_progress = true;
+        }
+    }
+    assert!(saw_progress, "限流环进度通知必须发出（对照面）");
+}

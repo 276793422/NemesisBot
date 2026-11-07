@@ -52,6 +52,33 @@ pub(crate) fn rate_limit_display_label(err_text: &str) -> &'static str {
     }
 }
 
+/// 词表命中判定：纯数字关键词要求词边界（两侧非 `[A-Za-z0-9_]`），其余
+/// 维持 contains 语义（BUG-20261107-019）。裸 contains("429") 会把长数字里
+/// 嵌的 429 误判进限流环——中转端口号（`:8429/`）的 connect error、毫秒
+/// 时长（`2429ms`）的 timeout 文案，本应走 transient 环快速重试，误入限流
+/// 环 = 退避梯子（5→210s）+「上游限流」误标 + FallbackProvider cooldown
+/// 记账。与 llm_error_class 词边界纪律（`\b402\b`/`\b401\b`/`\b403\b`/
+/// `\b429\b`，BUG-20261107-019 同批）对齐。
+pub(crate) fn keyword_hit(err_lower: &str, keyword: &str) -> bool {
+    if !keyword.bytes().all(|b| b.is_ascii_digit()) {
+        return err_lower.contains(keyword);
+    }
+    let hay = err_lower.as_bytes();
+    let needle = keyword.as_bytes();
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut i = 0;
+    while i + needle.len() <= hay.len() {
+        if &hay[i..i + needle.len()] == needle
+            && (i == 0 || !is_word(hay[i - 1]))
+            && (i + needle.len() == hay.len() || !is_word(hay[i + needle.len()]))
+        {
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
 /// 阶梯取值（attempt 从 1 起计；超出阶梯长度取末档）。
 pub(crate) fn rate_limit_ladder_secs(attempt: u32) -> u64 {
     RATE_LIMIT_BACKOFF_LADDER[(attempt as usize)

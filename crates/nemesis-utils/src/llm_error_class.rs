@@ -118,14 +118,18 @@ fn matches_rate_limit(msg: &str) -> bool {
         "rate limit",
         "rate_limit",
         "too many requests",
-        "429",
+        // "429" 已迁词边界正则（BUG-20261107-019）：裸 contains 会把长数字里
+        // 嵌的 429（中转端口号 ":8429/"、毫秒时长 "2429ms"、计数 "4290"）误判
+        // 限流——消费方据此记 provider cooldown + 限流退避梯子，真形态（timeout
+        // /connect error）本应走瞬态快速重试。与同文件 \b402\b/\b401\b/\b403\b
+        // 词边界纪律对齐。
         "exceeded your current quota",
         "resource has been exhausted",
         "resource_exhausted",
         "quota exceeded",
         "usage limit",
     ];
-    const REGEX_PATTERNS: &[&str] = &[r"exceeded.*quota", r"resource.*exhausted"];
+    const REGEX_PATTERNS: &[&str] = &[r"exceeded.*quota", r"resource.*exhausted", r"\b429\b"];
     contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)
 }
 
