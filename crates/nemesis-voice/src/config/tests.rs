@@ -9,14 +9,31 @@ fn punct_config_default_matches_documented_values() {
 }
 
 #[test]
-fn speaker_config_derived_default_returns_empty_model() {
-    // Derived #[derive(Default)] produces empty model_name despite the
-    // serde `default = "default_speaker_model"` attribute — that attribute
-    // only kicks in during deserialization of *partial* TOML.
-    // This test pins the current (slightly surprising) behavior.
+fn speaker_config_default_matches_serde_fn() {
+    // BUG-20261107-016：Default 与 serde default fn 收敛（同文件
+    // SttStreamConfig/PunctConfig 先例纪律）——旧 derive 零值形态已废。
     let s = SpeakerConfig::default();
-    assert_eq!(s.model_name, "");
+    assert_eq!(
+        s.model_name,
+        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
+    );
     assert_eq!(s.num_threads, 0);
+}
+
+#[test]
+fn speaker_config_default_paths_converge() {
+    // BUG-20261107-016 回归锁：derive 路径（SpeakerConfig::default()，被
+    // AppConfig 字段级 #[serde(default)] 的整段缺席 / load_or_default
+    // 兜底 / AppConfig::default() 模板消费）与 serde default fn 路径
+    //（段在场缺 model_name）必须同值——旧 derive 零值下此断言必红。
+    let derive_path = SpeakerConfig::default();
+    let serde_fn_path: SpeakerConfig =
+        toml::from_str("num_threads = 1\n").expect("partial speaker table should parse");
+    assert_eq!(derive_path.model_name, serde_fn_path.model_name);
+    assert_eq!(
+        derive_path.model_name,
+        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
+    );
 }
 
 #[test]
@@ -200,9 +217,12 @@ base = "https://example.com"
 
     // Punct defaulted (no #[serde(default)] on the field, but PunctConfig::default uses campplus-free values)
     assert_eq!(cfg.punct.model_name, "ct-transformer-zh-en");
-    // Speaker: missing [speaker] section → SpeakerConfig::default() → empty model_name
-    // (serde default fn only triggers when the field is omitted inside an existing section)
-    assert_eq!(cfg.speaker.model_name, "");
+    // Speaker: missing [speaker] section → SpeakerConfig::default()
+    //（BUG-20261107-016 收敛后与 serde default fn 同值）
+    assert_eq!(
+        cfg.speaker.model_name,
+        "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced"
+    );
 
     // base_dir derived from path parent
     assert_eq!(cfg.base_dir, tmpdir);
@@ -261,7 +281,8 @@ fn model_source_clones_correctly() {
 #[test]
 fn speaker_section_without_model_name_uses_serde_default_fn() {
     // [speaker] 段在场但缺 model_name → serde default = "default_speaker_model"
-    //（区别于整段缺失 → derive(Default) 的空串，见上面已有测试）
+    //（BUG-20261107-016 收敛后与整段缺席的 Default 路径同值，见
+    // speaker_config_default_paths_converge 回归锁）
     let tmpdir = std::env::temp_dir();
     let path = tmpdir.join(format!(
         "nemesisbot_voice_cfg_spk_{}_{}.toml",
