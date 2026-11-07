@@ -885,16 +885,18 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
         println!("  Cache Misses: {}", misses);
         println!("  Hit Rate:     {}", hit_rate);
 
-        // Performance rating
+        // Performance rating（fill 档用 saturating_mul：BUG-20261107-025
+        // 横向扫——max_size 是 config 来源 i64 无上界，`*80/*50` 溢出
+        // debug panic（CLI 假死）；评级展示逻辑，饱和即诚实极端值。）
         let rating = if count == 0 {
             "No entries yet"
         } else if total_requests > 0 && hits as f64 / total_requests as f64 >= 0.8 {
             "Excellent"
         } else if total_requests > 0 && hits as f64 / total_requests as f64 >= 0.5 {
             "Good"
-        } else if count >= config.search_cache.max_size * 80 / 100 {
+        } else if count >= config.search_cache.max_size.saturating_mul(80) / 100 {
             "Excellent (by fill)"
-        } else if count >= config.search_cache.max_size * 50 / 100 {
+        } else if count >= config.search_cache.max_size.saturating_mul(50) / 100 {
             "Good (by fill)"
         } else {
             "Low"

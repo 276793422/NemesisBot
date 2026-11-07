@@ -272,7 +272,14 @@ pub fn decay_sweep_with_days(
             continue;
         };
         let days = (now - seen.with_timezone(&chrono::Local)).num_days();
-        if days > decay_days * 2 {
+        // 受检乘法（BUG-20261107-025；同族先例：BUG-20261107-017 turn-wal
+        // TTL、spill.rs retention saturating_mul）——decay_days 是 config
+        // 来源 i64（`decay_days_or` 只挡 0/负，无上界），`*2` 溢出在 debug
+        // panic / release 环绕为负 → 全部条目误判 expired 被 prune 清空
+        // （静默毁数据）。饱和语义 = 「衰减门槛荒谬大 → 永不衰减」（诚实
+        // 极端值行为）。
+        let two_windows = decay_days.saturating_mul(2);
+        if days > two_windows {
             h.status = STATUS_EXPIRED.to_string();
         } else if days > decay_days {
             h.status = STATUS_DECAYING.to_string();

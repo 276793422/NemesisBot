@@ -2445,6 +2445,38 @@ fn test_sweep_channel_messages_respects_retention() {
     cleanup(&dir);
 }
 
+/// 回归锁（BUG-20261107-025 横向扫）：config 来源 retention_days 只挡 <=0
+/// 无上界，`*24*3600` 无受检乘法——debug panic（每日维护任务假死）/
+/// release 环绕 → cutoff 漂移（误删全表或漏扫）。饱和语义 = 荒谬大保留窗
+/// 什么都不删。
+#[test]
+fn test_sweep_channel_messages_absurd_retention_saturates() {
+    let (store, dir) = temp_store("sweep-saturate");
+    store.ensure_default_channels().unwrap();
+    let dev = store.get_channel_by_name("#dev").unwrap().unwrap();
+    store
+        .append_channel_message(NewChannelMessage {
+            channel_id: dev.id,
+            sender: sys_actor(),
+            content: "幸存消息".into(),
+            parent_id: None,
+            mtype: String::new(),
+        })
+        .unwrap();
+
+    // 2e14 天：serde 合法 i64，×86400 溢出 i64::MAX（≈9.2e18 / 86400 ≈ 1.07e14）。
+    assert_eq!(
+        store.sweep_channel_messages(200_000_000_000_000).unwrap(),
+        0
+    );
+    assert_eq!(
+        store.list_channel_messages(dev.id, 0, 100).unwrap().len(),
+        1,
+        "饱和语义 = 荒谬大保留窗什么都不删"
+    );
+    cleanup(&dir);
+}
+
 #[test]
 fn test_asset_register_lookup_upsert() {
     let (store, dir) = temp_store("asset-crud");
