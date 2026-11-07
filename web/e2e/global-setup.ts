@@ -258,6 +258,7 @@ async function main(): Promise<void> {
       '--state', path.join(NEMESISBOT_DIR, 'e2e-state.json'),
       '--log', path.join(NEMESISBOT_DIR, 'gateway-e2e.log'),
       '--health-url', HEALTH_URL,
+      '--web-port', String(E2E.webPort), // TIME_WAIT 容忍探测（supervisor spawn 前等端口可 bind）
     ],
     {
       cwd: E2E.repoRoot,

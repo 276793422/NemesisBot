@@ -10,9 +10,9 @@
  *
  * 自包含：本 spec 创建的 key 结束前删除，不影响其他 spec。
  */
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page } from './fixtures'
 import { BASE_URL, E2E, MODEL_A } from './env'
-import { newAuthedPage, wsapi } from './helpers'
+import { gotoRoute, newAuthedPage, wsapi } from './helpers'
 
 interface ProxyKeyRow {
   name: string
@@ -57,7 +57,7 @@ async function laneStatus(request: APIRequestContext, key: string): Promise<numb
 
 test('代理调用方 Key：UI 添加/启停/删除全链路 + lane 热生效', async ({ browser }) => {
   const page = await newAuthedPage(browser)
-  await page.goto(`${BASE_URL}/#/proxy-settings`)
+  await gotoRoute(page, `/#/proxy-settings`)
 
   // 卡片在页面 + 空态（e2e home 无 config.proxy_keys.json）
   const card = page.locator('.card', { hasText: '代理调用方 Key' })

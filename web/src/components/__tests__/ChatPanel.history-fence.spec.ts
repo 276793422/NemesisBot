@@ -52,7 +52,9 @@ async function mountAndCapture() {
   const sessionStore = useSessionStore()
   sessionStore.sessions = [
     { id: 's1', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'A', model: '' },
-    { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'B', model: '' },
+    // s2 非零计数：2026-11-07 起 ChatPanel 切换已知零消息会话跳过重拉（空拉
+    // 只会抹竞速回显）——本文件测「真切换照常重拉」，目标行必须非零才命中。
+    { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 3, firstMessage: 'B', model: '' },
   ] as any
   sessionStore.currentId = 's1'
 

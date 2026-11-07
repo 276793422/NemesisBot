@@ -52,6 +52,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

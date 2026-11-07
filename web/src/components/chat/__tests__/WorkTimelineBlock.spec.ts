@@ -1,8 +1,8 @@
 // WorkTimelineBlock spawn 行钻取测试（2026-11-06 B 档）。
 //
 // 契约：spawn 行显示任务文本（替代原始参数 JSON），可点击；点击按任务
-// 文本匹配 subagents.list 台账行 → router.push /subagents?focus=<id>；
-// 台账缺席/WS 未就绪回落台账页（无 focus）；非 spawn 行点击不导航。
+// 文本匹配 subagents.list 台账行 → router.push /executors?tab=subagents&focus=<id>；
+// 台账缺席/WS 未就绪回落执行单元页（无 focus）；非 spawn 行点击不导航。
 // spawnTaskFromArgs 纯函数（截断 JSON 正则前缀提取 + 转义还原）钉死。
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
@@ -109,7 +109,7 @@ describe('WorkTimelineBlock spawn 行钻取', () => {
     const w = await openBlock()
     await w.findAll('.wt-tool')[0].trigger('click')
     await flushPromises()
-    expect(pushMock).toHaveBeenCalledWith({ path: '/subagents', query: { focus: 'subagent:hit' } })
+    expect(pushMock).toHaveBeenCalledWith({ path: '/executors', query: { tab: 'subagents', focus: 'subagent:hit' } })
   })
 
   it('台账无精确匹配时前缀回落（截断任务文本）', async () => {
@@ -119,23 +119,23 @@ describe('WorkTimelineBlock spawn 行钻取', () => {
     const w = await openBlock('{"task":"修复登录验证模块并在完成后运行全量回归…')
     await w.findAll('.wt-tool')[0].trigger('click')
     await flushPromises()
-    expect(pushMock).toHaveBeenCalledWith({ path: '/subagents', query: { focus: 'subagent:px' } })
+    expect(pushMock).toHaveBeenCalledWith({ path: '/executors', query: { tab: 'subagents', focus: 'subagent:px' } })
   })
 
-  it('台账缺席（过旧被逐出）→ 回落台账页无 focus', async () => {
+  it('台账缺席（过旧被逐出）→ 回落执行单元页无 focus', async () => {
     requestMock.mockResolvedValue({ tasks: [{ id: 'subagent:x', task: '毫不相干' }] })
     const w = await openBlock()
     await w.findAll('.wt-tool')[0].trigger('click')
     await flushPromises()
-    expect(pushMock).toHaveBeenCalledWith({ path: '/subagents' })
+    expect(pushMock).toHaveBeenCalledWith({ path: '/executors', query: { tab: 'subagents' } })
   })
 
-  it('WS 未就绪 → 回落台账页', async () => {
+  it('WS 未就绪 → 回落执行单元页', async () => {
     requestMock.mockRejectedValue(new Error('ws down'))
     const w = await openBlock()
     await w.findAll('.wt-tool')[0].trigger('click')
     await flushPromises()
-    expect(pushMock).toHaveBeenCalledWith({ path: '/subagents' })
+    expect(pushMock).toHaveBeenCalledWith({ path: '/executors', query: { tab: 'subagents' } })
   })
 
   it('非 spawn 行点击不导航', async () => {

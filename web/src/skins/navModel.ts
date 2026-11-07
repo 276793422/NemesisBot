@@ -98,12 +98,17 @@ export const NAV_GROUPS: NavGroupModel[] = [
       { id: 'mcp', label: 'MCP', route: '/mcp', icon: 'M4 6h16M4 12h16M4 18h16' },
       // 2026-08-29：MCP 之下新增 HOOK/命令/插件页。
       // （子Agent 骨架页 2026-10-20 下线；2026-11-03 子代理可见性以实页
-      // /subagents 回归——spawn/后台/集群委派台账 + 事件环回放。）
+      // 回归——spawn/后台/集群委派台账 + 事件环回放；2026-11-07 并入执行
+      // 单元复合页 /executors。）
       { id: 'hooks', label: 'HOOK', route: '/hooks', icon: 'M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c.01-.7.2-1.4.57-2m6.65 2H5a2 2 0 0 1 0-4h.01L7.9 8.08A4 4 0 0 1 12 2a4 4 0 0 1 4 4c0 .35-.05.71-.14 1.05M12 8a4 4 0 0 1 4 4c0 1.1-.45 2.1-1.17 2.83L12 18' },
       { id: 'commands', label: '命令', route: '/commands', icon: 'M4 17l6-6-6-6M12 19h8' },
       { id: 'plugins', label: '插件', route: '/plugins', icon: 'M12 22v-5M9 8V2M15 8V2M6 8h12v4a6 6 0 0 1-12 0V8z' },
-      // 子代理任务（2026-11-03 子代理可见性 D1）：派生执行环台账 + 时间线。
-      { id: 'subagents', label: '子代理', route: '/subagents', icon: 'M12 2a3 3 0 0 1 3 3c0 1.3-.84 2.4-2 2.82V10h3a3 3 0 0 1 3 3v1.18c1.16.42 2 1.52 2 2.82a3 3 0 1 1-5.83-1H13v1.18a3 3 0 1 1-2 0V14H7.83A3.001 3.001 0 1 1 2 17c0-1.3.84-2.4 2-2.82V13a3 3 0 0 1 3-3h3V7.82A3.001 3.001 0 0 1 12 2z' },
+      // 执行单元（2026-11-07 布局重构，原「子代理」更名扩容）：agent 派生
+      // 执行单元复合页——【子代理】spawn/后台/集群委派台账 + 【后台任务】
+      // background_start 进程台账两 TAB（/executors?tab=）。旧 /subagents、
+      // /processes 路由 redirect 保深链兼容（?focus= 透传）。原独立「后台
+      // 任务」侧栏条目撤并（管理组 15 → 14 项）。
+      { id: 'executors', label: '执行单元', route: '/executors', icon: 'M12 2a3 3 0 0 1 3 3c0 1.3-.84 2.4-2 2.82V10h3a3 3 0 0 1 3 3v1.18c1.16.42 2 1.52 2 2.82a3 3 0 1 1-5.83-1H13v1.18a3 3 0 1 1-2 0V14H7.83A3.001 3.001 0 1 1 2 17c0-1.3.84-2.4 2-2.82V13a3 3 0 0 1 3-3h3V7.82A3.001 3.001 0 0 1 12 2z' },
       { id: 'channels', label: '通道', route: '/channels', icon: 'M22 12h-4l-3 9L9 3l-3 9H2' },
       // 行动连接器（2026-10-14 AI 原生行动代理）：注册表/回执/纸面账本只读面。
       { id: 'connectors', label: 'Connectors', route: '/connectors', icon: 'M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71' },

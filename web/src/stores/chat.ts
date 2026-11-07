@@ -179,8 +179,33 @@ export const useChatStore = defineStore('chat', () => {
   // （inflightTurns 还会让会话 id 复用时出幽灵占位）。调用点：session
   // remove/clear、auth logout（dropAllSessionState）、ChatPanel watchdog
   // 放弃分支。
+  // 会话级输入草稿表（2026-11-07 充分测试战役 webkit 全量竞速根修）。
+  // reset() 是后台恢复路径（SSE resync / gap 全量重载 / 路由重挂载补偿）与
+  // 切会话共用的状态重建入口——后台路径不该抹用户正在输入的草稿（多标签页
+  // 另一端同会话写入 → chat.activity 防抖全刷 → 草稿被清，实录 webkit 全量
+  // 4 例「fill 后发送钮恒 disabled」）。因此 reset() 不再碰 input；input 的
+  // 生命周期改为显式管理：切会话走 carryInput（旧会话草稿入表、新会话草稿
+  // 出表），发送链走 clearInput（既有），模块边界（workflow_chat 装配）显式
+  // clearInput，会话删除随 dropSessionState 清表项。
+  const draftBySid = new Map<string, string>()
+
+  function carryInput(oldSid: string | null | undefined, newSid: string | null | undefined) {
+    if (oldSid) {
+      draftBySid.set(oldSid, input.value)
+      input.value = (newSid && draftBySid.get(newSid)) || ''
+    } else if (newSid && draftBySid.has(newSid)) {
+      // oldSid=null（bootstrap 初始选定）：用户在无会话态已打的草稿不属于
+      // 任何会话，保留现值；仅当目标会话恰有历史存稿时恢复之。旧语义
+      // （无条件空白起步）在 ChatView 初始 switchTo 晚于用户输入的竞速窗
+      // 口里把草稿洗掉 → 发送钮恒 disabled（2026-11-07 充分测试战役
+      // webkit 全量实录，chat.spec fill→click 10s 超时 + 截图输入框空）。
+      input.value = draftBySid.get(newSid) ?? ''
+    }
+  }
+
   function dropSessionState(sessionId: string | null) {
     if (!sessionId) return
+    draftBySid.delete(sessionId)
     if (busyBySid.value[sessionId] !== undefined) {
       const next = { ...busyBySid.value }
       delete next[sessionId]
@@ -189,10 +214,19 @@ export const useChatStore = defineStore('chat', () => {
     clearInflightTurn(sessionId)
   }
 
+  /** 新建会话落地前的在建草稿归属（2026-11-07 FF chat e2e 全量实录）：
+   *  sessions.create 往返窗口内用户输入的文本意图发进新会话——session
+   *  store 在 create 落地 switchTo 前登记进草稿表，carryInput 原样恢复
+   *  （不登记则被当旧会话草稿洗掉 → 发送钮恒 disabled）。 */
+  function stageDraft(sid: string, text: string) {
+    draftBySid.set(sid, text)
+  }
+
   /** W3：登出等「一次清掉所有会话」场景的全量版。 */
   function dropAllSessionState() {
     busyBySid.value = {}
     inflightTurns.value = {}
+    draftBySid.clear()
   }
 
   // M6（devtool-upgrade 阶段 7）：下一行 live 消息的后端 chat_log 行号锚。
@@ -448,7 +482,8 @@ export const useChatStore = defineStore('chat', () => {
    */
   function reset() {
     messages.value = []
-    input.value = ''
+    // input 不在此清（见 draftBySid 注释）：后台全量重建路径不得抹用户草稿，
+    // 清空职责归 carryInput（切会话）/clearInput（发送链、模块边界）。
     // D-3：reset **不清 busy 表**——调用点都在 currentId 已切换之后，此时
     // 清 `streaming` 投影会误清新会话的占用态；busy 的生命周期归各会话自己
     // 的 assistant/error/断连帧收尾（setBusy(sid,false)），与 inflightTurns
@@ -486,6 +521,7 @@ export const useChatStore = defineStore('chat', () => {
     addMessage,
     prependHistory,
     anchorFreshSession,
+    stageDraft,
     replaceMessages,
     dropAssistantBelowSeq,
     dropTailIfSame,
@@ -504,6 +540,7 @@ export const useChatStore = defineStore('chat', () => {
     appendPendingDeliverables,
     flushPendingDeliverables,
     clearInput,
+    carryInput,
     /** F1：ModeChanged push / chat.set_mode 回包 / get_mode 对齐共用。 */
     setAgentMode(m: 'build' | 'plan') {
       agentMode.value = m

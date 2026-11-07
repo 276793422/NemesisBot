@@ -70,6 +70,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -101,11 +102,12 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 28 个模块（register_all 的无条件注册段； 起
+/// 无 feature 闸的 30 个模块（register_all 的无条件注册段； 起
 /// 含 projects，起含 canvas， 起含 roles——角色目录
 /// WSAPI 含 selfupdate——版本自切换通道；
 /// 含 quic——QUIC 中继 WSAPI（与集群解耦，零 Cluster 类型依赖）；
-/// 含 proxy——独立代理配置 config.proxy.json 读写面。board
+/// 含 proxy——独立代理配置 config.proxy.json 读写面，
+/// 含 subagents 与 background——后台进程实时输出。board
 /// 随 `board` feature 门控——nemesis-board 转 optional，SQLite
 /// 随它进出；connectors/paperbroker 随 `connectors` feature
 /// 门控——nemesis-security（被 connectors 无条件依赖）随之进出）。
@@ -138,6 +140,10 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
     "selfupdate",
     "quic",
     "proxy",
+    // 无条件注册但漏列（既有漂移，随本清单补齐）。
+    "subagents",
+    // 后台进程实时输出：background.list/output/kill/steer。
+    "background",
 ];
 
 // 结构不变量
@@ -145,7 +151,7 @@ const UNCONDITIONAL_MODULES: &[&str] = &[
 #[test]
 fn registry_all_modules_nonempty_no_dupes() {
     let reg = build_registry();
-    // 28 个无条件模块必须全在；12 个 feature 门控模块按 cfg 计入下限。
+    // 30 个无条件模块必须全在；12 个 feature 门控模块按 cfg 计入下限。
     // （cfg! 的 feature 参数必须是字面量，无法循环展开——逐个列出。）
     let gated_on = [
         cfg!(feature = "cluster"),

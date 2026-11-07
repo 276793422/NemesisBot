@@ -1052,6 +1052,13 @@ pub(crate) async fn init_post_agent(
     web_server.set_estop(shared_resources.estop.clone());
     info!("[Gateway] E-stop state injected into web server");
 
+    // 后台进程实时输出：同一 B4 注册表 Arc 注入 web 侧
+    // ——background.* WSAPI 与 agent 工具通道（background_start 等）同源，
+    // 操作员在 Dashboard 看到的就是 agent 起的那些进程。
+    web_server
+        .set_background_registry(std::sync::Arc::clone(&shared_resources.background_registry));
+    info!("[Gateway] Background process registry injected into web server");
+
     // EST-01/02（横扫加固）：同一 estop 实例注入看板派发族闸
     // （dispatch_issue_core 单一入口）——急停冻结全部自动/手动派发，而非
     // 只有 agent loop。board 关 = handlers::board 随 nemesis-board 退出编译

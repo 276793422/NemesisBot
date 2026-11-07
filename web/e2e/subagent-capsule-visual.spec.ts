@@ -6,16 +6,16 @@
  *   1. 运行中单胶囊（spinner + 任务文本 + 用时 + 悬停停止钮）
  *   2. 多任务并列（两条胶囊同容器）
  *   3. 完成后消失（终态行不进 live 容器——核心回归的活体验证）
- *   4. 历史工作块 spawn 行钻取（任务文本显示 + /subagents?focus=<id>
+ *   4. 历史工作块 spawn 行钻取（任务文本显示 + /executors?tab=subagents&focus=<id>
  *      深链 → 台账详情模态打开）
  *
  * 依赖 verify-mock-llm.mjs 的 spawn/slow 路由（任务文本含 E2E_SLOW →
  * 子代理 LLM 调用延迟 20s 应答，运行窗口给截图留时间）。
  */
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Page } from './fixtures'
 import fs from 'node:fs'
 import path from 'node:path'
-import { newAuthedPage, sendChat, wsapi } from './helpers'
+import { newAuthedPage, openSessionSidebar, sendChat, wsapi } from './helpers'
 const SHOT_DIR = path.join('test-results', 'subagent-capsule-visual', 'shots')
 
 function shot(page: Page, name: string): Promise<string> {
@@ -46,6 +46,29 @@ test('子代理胶囊四态截图：运行中/多任务/完成消失/历史钻�
   // 会话级「全部放行」按钮在有 sid 前是 disabled）；第二条起免卡。
   // 注：process_spawn 是 CRITICAL，卡上「总是允许」被后端忽略（F3 层级
   // 安全门），普通批准即可。
+
+  // 先种干净新会话再发送（2026-11-07 全量实录）：裸 sendChat 落在 auto-select
+  // sessions[0]（最近活跃）上，全量跑时可能是前面 spec 留下的项目会话
+  // （目录已移除 → 发送命中「项目当前不可用」诚实报错，turn 不跑、审批卡
+  // 永不来）。等 active 行 data-session-id 变化 = create()/switchTo/reset
+  // 全落地再 fill（disconnect/resync 两 spec 同款纪律）。
+  await openSessionSidebar(page)
+  const prevActive = await page
+    .locator('.session-item.active')
+    .getAttribute('data-session-id')
+    .catch(() => null)
+  await page.locator('.fn-new-chat').click()
+  // toPass 双条件环而非 expect.poll：poll 回调内 getAttribute 抛错立即传播
+  // 不重试（有效观察窗缩水成单次 actionTimeout）；且裸「active id 变化」在
+  // 零 active 行时会假绿（not.toBe(prevActive) 恒真）。此处断言 active 行
+  // 可见 AND id 已变——点击后新会话乐观行排到对话组底部被「显示更多」藏
+  // 掉的形态（cmpSessions 字典序根修前，2026-11-07 FF 全量实录）必红。
+  await expect(async () => {
+    const row = page.locator('.session-item.active')
+    await expect(row.first()).toBeVisible({ timeout: 2_000 })
+    const id = await row.first().getAttribute('data-session-id', { timeout: 1_000 })
+    expect(id, `active id 未变：${prevActive}`).not.toBe(prevActive)
+  }).toPass({ timeout: 15_000 })
 
   // —— 状态 1：单胶囊运行中 ——
   // detached 流时序（首轮实证）：spawn 后主代理落罐头回复「已派后台子代理
@@ -132,17 +155,19 @@ test('子代理胶囊四态截图：运行中/多任务/完成消失/历史钻�
     }
   })
   await spawnRow.click()
-  await page.waitForURL(/\/subagents/, { timeout: 15_000 })
+  // toHaveURL（轮询）而非 waitForURL：webkit same-document hash 导航事件
+  // 间歇不可见（见 processes-visual 同款注记）。
+  await expect(page).toHaveURL(/\/executors/, { timeout: 15_000 })
   // 深链 focus=<id> → 台账详情模态自动打开、聚焦被点任务（模态打开本身
   // 就是 focus 送达并消费的证据——openDetail 只由 route.query.focus 触发）。
   await expect(page.locator('.modal-wide')).toBeVisible({ timeout: 15_000 })
   await expect(page.locator('.modal-wide')).toContainText('任务二')
   await shot(page, 'state4-subagents-focus-detail.png')
-  // 路由层证据：pushState 确实带过 /subagents?focus=<id> 深链。
+  // 路由层证据：pushState 确实带过 /executors?tab=subagents&focus=<id> 深链。
   const pushUrls = await page.evaluate(
     () => (window as unknown as { __pushUrls?: string[] }).__pushUrls ?? [],
   )
-  expect(pushUrls.some((u) => /\/subagents\?focus=/.test(u))).toBeTruthy()
+  expect(pushUrls.some((u) => /\/executors\?tab=subagents&focus=/.test(u))).toBeTruthy()
 })
 
 test('胶囊停止钮真实取消链路 + 深色主题胶囊形态', async ({ browser }) => {

@@ -162,10 +162,26 @@ function cmpSessions(a: SessionEntry, b: SessionEntry): number {
     return title(a).localeCompare(title(b), 'zh-CN')
   }
   const key = sessionSort.value === 'created' ? 'startTime' : 'lastTime'
-  const ta = a[key] || ''
-  const tb = b[key] || ''
-  if (ta === tb) return 0 // 含双方皆空 → 稳定原序
-  return ta > tb ? -1 : 1 // 降序（新→旧）；空值自然沉底
+  // 必须解析成时间戳比较，不能裸字典序（服务端 scan_session_logs 同课：
+  // crates/nemesis-web/src/handlers/logs.rs 排序注记）。服务端行是 Local
+  // offset RFC3339（`2026-11-07T12:34+08:00`），乐观行是 toISOString 的
+  // UTC `Z` 形态（`2026-11-07T04:34Z`）——UTC+8 机器同日 10:00 后裸字符串
+  // 序把最新会话压到组底，点「新建对话」后 active 行落出 SHOW_MORE_CAP
+  // 可见窗（2026-11-07 FF 全量实录 capsule:38 点击后 10s 零 active 行）。
+  // 解析失败/空值沉底（降序最旧位），同刻稳定原序。
+  const ta = parseSessionTime(a[key])
+  const tb = parseSessionTime(b[key])
+  if (ta === tb) return 0
+  return ta > tb ? -1 : 1
+}
+
+/** lastTime/startTime 解析为毫秒时间戳；空值/不可解析（旧格式脏行）→
+ * NEGATIVE_INFINITY 沉底（仅向前语义：无时间锚不参与排序红利，与服务端
+ * scan_session_logs 口径一致）。 */
+function parseSessionTime(ts?: string): number {
+  if (!ts) return Number.NEGATIVE_INFINITY
+  const t = Date.parse(ts)
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t
 }
 
 // ---------------------------------------------------------------------------

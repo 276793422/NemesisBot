@@ -134,7 +134,7 @@ async fn explicit_id_serves_and_missing_is_404() {
 }
 
 #[tokio::test]
-async fn default_active_id_is_404() {
+async fn default_active_id_serves_empty_css() {
     let tmp = tempdir();
     write_skin(tmp.path(), "openlikebuddy", Some("skin/x.css"), None);
     let res = app(Some(tmp.path().to_str().unwrap()), "default")
@@ -146,7 +146,15 @@ async fn default_active_id_is_404() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), 404);
+    // 默认态（"default"/空）= 200 空 body：默认安装每次页面加载都拉本
+    // 端点，404 会在浏览器 console 记资源加载错误（纯噪音）；前端
+    // empty→回落内置的语义不变。坏部署（id 指向缺失包）仍 404。
+    assert_eq!(res.status(), 200);
+    assert!(res.headers().get("x-skin-id").is_none());
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(bytes.is_empty());
 }
 
 #[tokio::test]

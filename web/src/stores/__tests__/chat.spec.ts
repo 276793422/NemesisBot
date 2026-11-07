@@ -541,3 +541,79 @@ describe('chat store anchorFreshSession (M6-fix)', () => {
     expect(store.messages.map(m => m.rowIndex)).toEqual([0, 1, 2])
   })
 })
+
+// 2026-11-07 充分测试战役（webkit 全量实录根修）：会话级输入草稿表。
+// reset() 是后台恢复路径（SSE resync / gap 全量重载 / 路由重挂载补偿）与
+// 切会话共用的状态重建入口——后台路径不得抹用户正在输入的草稿（实录：
+// 前序 spec 遗留的 gateway 侧异步工作完成 → chat.activity → 防抖全刷 →
+// reset → fill 后发送钮恒 disabled，webkit 全量 4 例）。reset 不碰 input；
+// input 生命周期显式化：carryInput 切会话（旧草稿入表/新草稿出表）、
+// clearInput 发送链与模块边界、dropSessionState/dropAllSessionState 清表。
+describe('chat store session draft map (2026-11-07)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('reset preserves input (background rebuild must not wipe the draft)', () => {
+    const store = useChatStore()
+    store.input = '正在输入的草稿'
+    store.reset()
+    expect(store.input).toBe('正在输入的草稿')
+  })
+
+  it('carryInput parks the old draft and restores the target draft', () => {
+    const store = useChatStore()
+    store.input = 'A 会话的草稿'
+    store.carryInput('sid-a', 'sid-b')
+    expect(store.input).toBe('') // sid-b 无历史草稿 → 空白起步
+    store.input = 'B 会话的草稿'
+    store.carryInput('sid-b', 'sid-a')
+    expect(store.input).toBe('A 会话的草稿') // 切回 A 草稿复现
+    store.carryInput('sid-a', 'sid-b')
+    expect(store.input).toBe('B 会话的草稿')
+  })
+
+  it('carryInput tolerates null session ids (bootstrap / logout edges)', () => {
+    const store = useChatStore()
+    store.input = 'some draft'
+    store.carryInput(null, 'sid-1')
+    // null 旧会话不入表（无处可落）；初始选定不得洗用户已打的草稿——
+    // ChatView 初始 switchTo 晚于用户输入时，旧语义把草稿洗成空白 →
+    // 发送钮恒 disabled（2026-11-07 webkit 全量竞速实录根修）
+    expect(store.input).toBe('some draft')
+    store.carryInput('sid-1', null)
+    expect(store.input).toBe('')
+  })
+
+  it('carryInput with null oldSid restores a parked draft if the target has one', () => {
+    const store = useChatStore()
+    store.carryInput('sid-1', 'sid-2')
+    store.input = 'sid-2 存稿'
+    store.carryInput('sid-2', 'sid-1')
+    // 回到无会话态再初始选定 sid-2：恢复其存稿
+    store.carryInput(null, 'sid-2')
+    expect(store.input).toBe('sid-2 存稿')
+  })
+
+  it('dropSessionState clears the draft so a recreated session id starts clean', () => {
+    const store = useChatStore()
+    store.input = 'draft for sid-x'
+    store.carryInput('sid-x', 'sid-y')
+    store.dropSessionState('sid-x')
+    store.input = 'draft for sid-y'
+    store.carryInput('sid-y', 'sid-x')
+    expect(store.input).toBe('') // 复用 id 不得复活已删会话的草稿
+  })
+
+  it('dropAllSessionState clears every draft (logout)', () => {
+    const store = useChatStore()
+    store.input = 'draft a'
+    store.carryInput('sid-a', 'sid-b')
+    store.input = 'draft b'
+    store.carryInput('sid-b', 'sid-a')
+    store.input = 'live draft'
+    store.dropAllSessionState()
+    store.carryInput('sid-a', 'sid-b')
+    expect(store.input).toBe('')
+  })
+})

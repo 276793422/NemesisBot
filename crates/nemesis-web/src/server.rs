@@ -279,6 +279,10 @@ pub struct WebServer {
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
     /// Global e-stop state for /api/internal estop commands.
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// Gateway 级后台进程注册表（background.* WSAPI 投影面；gateway 注入，
+    /// flows into AppState。None = 未注入（headless/relay/测试装配）→
+    /// handler 诚实报错）。
+    background_registry: Option<Arc<nemesis_agent::BackgroundProcessRegistry>>,
     /// 签名验证启动自验状态（接入计划 §4；gateway 从 verify_policy 快照映射
     /// 注入，flows into AppState for security.signature_verify_status）。
     signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
@@ -340,7 +344,8 @@ pub struct WebServer {
     #[cfg(feature = "skins")]
     skins_dir: Option<String>,
     /// 激活皮肤 id（config `ui.skin`；"default"/空 = 内置皮肤，
-    /// `/skins/active.css` 404）。共享锁句柄：`set_skins` 注入，
+    /// `/skins/active.css` 200 空 body——404 会在默认安装的每次页面加载
+    /// 记一条 console 资源错误；坏包仍 404）。共享锁句柄：`set_skins` 注入，
     /// `skin_id_handle()` 交给 WSAPI skins handler，`set_active` 免重启
     /// 热翻。`skin_id()` 读快照。
     #[cfg(feature = "skins")]
@@ -385,6 +390,7 @@ impl WebServer {
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
             session_stats: None,
@@ -557,6 +563,12 @@ impl WebServer {
         self.estop = Some(estop);
     }
 
+    /// Set the gateway-level background process registry（background.* WSAPI
+    /// 投影面；gateway 注入共享 Arc——与 agent 工具通道同一注册表实例）。
+    pub fn set_background_registry(&mut self, reg: Arc<nemesis_agent::BackgroundProcessRegistry>) {
+        self.background_registry = Some(reg);
+    }
+
     /// Set the signature-verify startup self-check status（接入计划 §4；
     /// 只读快照，进程内不变——无 set 运行时入口）。
     pub fn set_signature_verify(
@@ -727,6 +739,7 @@ impl WebServer {
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
+            background_registry: self.background_registry.clone(),
             signature_verify: self.signature_verify.clone(),
             skills_install_gate: self.skills_install_gate.clone(),
             session_stats: self.session_stats.clone(),

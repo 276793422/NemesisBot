@@ -7,7 +7,7 @@
  * → agent 续行 → mock 收尾轮确定性回复。
  * （e2e workspace 的安全配置由 global-setup 预置该 ask 规则。）
  */
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { newAuthedPage, sendChat, waitAssistantReply } from './helpers'
 
 test('审批卡：ask 规则拦截 exec → 批准 → 工具执行 → 续行回复', async ({ browser }) => {

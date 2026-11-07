@@ -83,6 +83,7 @@ fn agt_make_state(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop,
+        background_registry: None,
         cron: None,
         board: None,
         signature_verify: None,

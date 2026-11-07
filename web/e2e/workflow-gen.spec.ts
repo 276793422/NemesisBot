@@ -14,9 +14,9 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { BASE_URL, DRAFTS_DIR, EVIDENCE_LAST_REQUEST } from './env'
-import { evidenceCount, evidenceSince, newAuthedPage, wsapi } from './helpers'
+import { evidenceCount, evidenceSince, gotoRoute, newAuthedPage, wsapi } from './helpers'
 
 const MANUAL_DRAFT = [
   'name: manual-draft-demo',
@@ -42,7 +42,7 @@ test('对话生成：布局/注入/工具调用草稿/画布预览/应用/编辑
   page.on('dialog', (d) => void d.accept()) // 应用同名替换确认 / 放弃确认
 
   // V1: 对话生成 TAB
-  await page.goto(`${BASE_URL}/#/workflows`)
+  await gotoRoute(page, `/#/workflows`)
   const genTab = page.locator('button.tab', { hasText: '对话生成' })
   await genTab.waitFor({ state: 'visible', timeout: 20_000 })
   await genTab.click()
@@ -93,7 +93,7 @@ test('对话生成：布局/注入/工具调用草稿/画布预览/应用/编辑
   // V7: 应用草稿 → 注册成功 + 草稿被消费
   await page.locator('button', { hasText: '应用草稿' }).first().click()
   await page.waitForTimeout(1500)
-  await page.goto(`${BASE_URL}/#/workflows`)
+  await gotoRoute(page, `/#/workflows`)
   const listTab = page.locator('button.tab', { hasText: '工作流列表' })
   await listTab.waitFor({ state: 'visible', timeout: 20_000 })
   await listTab.click()

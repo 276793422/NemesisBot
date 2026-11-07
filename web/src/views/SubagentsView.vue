@@ -51,6 +51,11 @@ const loading = ref(true)
 const filterStatus = ref('')
 const filterOrigin = ref('')
 let listTimer: ReturnType<typeof setInterval> | null = null
+// 卸载护栏（同 ProcessesView）：onMounted 的 async 续段可能跨卸载执行——
+// route 是全局 reactive，死实例的 openFromQuery 会照常消费/剥离 focus 深链
+// （模态开在已分离 DOM 上永不显示，活实例收不到深链），armListTimer/
+// armDetailPoll 装的轮询也无人清理。跨 await 的续段落点一律过闸。
+let alive = true
 
 async function loadList() {
   try {
@@ -67,6 +72,7 @@ const hasRunning = computed(() => tasks.value.some((t) => t.running))
 
 function armListTimer() {
   if (listTimer) clearInterval(listTimer)
+  if (!alive) return // 卸载后不得再装无人清理的定时器
   listTimer = setInterval(loadList, hasRunning.value ? 5000 : 20000)
 }
 
@@ -148,6 +154,7 @@ async function openDetail(id: string) {
 
 function armDetailPoll(running: boolean) {
   if (detailPoll) { clearInterval(detailPoll); detailPoll = null }
+  if (!alive) return // 卸载后不得再装无人清理的轮询
   if (running) detailPoll = setInterval(pollDetailEvents, 2000)
 }
 
@@ -285,11 +292,14 @@ function toolLabel(item: TimelineItem): string {
   return item.kind
 }
 
-// ChatPanel 抽屉深链：/subagents?focus=<id> 自动开详情。
+// ChatPanel 抽屉深链：/executors?tab=subagents&focus=<id> 自动开详情
+// （旧 /subagents 路由 redirect 保兼容）。
 async function openFromQuery() {
   const focus = route.query.focus
   if (typeof focus === 'string' && focus) {
+    if (!alive) return // 卸载后的续段不得消费/剥离 focus（死实例偷深链）
     await openDetail(focus)
+    if (!alive) return // openDetail 在途期间可能已被卸载
     // 用完即清（刷新页面不再自动弹）
     router.replace({ query: { ...route.query, focus: undefined } })
   }
@@ -303,6 +313,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  alive = false
   if (listTimer) clearInterval(listTimer)
   if (detailPoll) clearInterval(detailPoll)
   removeMessageHandler(handleWSMessage)

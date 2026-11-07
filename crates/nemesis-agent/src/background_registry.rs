@@ -236,6 +236,47 @@ impl BackgroundProcessRegistry {
         self.jobs.lock().await.len()
     }
 
+    /// 全量任务投影（WSAPI `background.list` 消费；按 id 倒序 = 新任务在前）。
+    /// 只投影元数据与产出计数，不含输出内容（内容走 [`Self::output`] 按单调
+    /// 坐标分页拉）。终态任务把 exit_code/success/killed 平铺进行（与
+    /// [`Self::output`] 的终态平铺同构）。
+    pub async fn list(&self) -> Vec<serde_json::Value> {
+        let jobs = self.jobs.lock().await;
+        let mut ids: Vec<u64> = jobs.keys().copied().collect();
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            let job = &jobs[&id];
+            let running = job.is_running().await;
+            let buf = job.output.lock().await;
+            let mut row = serde_json::json!({
+                "id": id,
+                "command": job.cmd,
+                "cwd": job.cwd,
+                "started_at_unix": job
+                    .started_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                "running": running,
+                "steerable": job.steerable,
+                "total_bytes": buf.produced,
+                "dropped_bytes": buf.dropped,
+            });
+            let status = job.status.lock().await;
+            if !running
+                && let Some(s) = status.as_ref()
+                && let Some(obj) = s.to_json().as_object()
+            {
+                for (k, v) in obj {
+                    row[k.as_str()] = v.clone();
+                }
+            }
+            rows.push(row);
+        }
+        rows
+    }
+
     /// 起一个后台任务。`command` 经平台 shell 解释（cmd /C 或 sh -c）。
     /// `steerable=false` → stdin 恒 null（旧行为，读 stdin 的命令即刻 EOF）；
     /// `steerable=true` → stdin 活管道（[`Self::steer`] 可注入，任务不读
@@ -370,6 +411,9 @@ impl BackgroundProcessRegistry {
             "running": running,
             "command": job.cmd,
             "cwd": job.cwd,
+            // steerable 随 output 面透出：UI 详情态据此决定是否渲染 stdin
+            // 注入框（与 start()/list() 同源，不另设查询命令）。
+            "steerable": job.steerable,
             "started_at_unix": job
                 .started_at
                 .duration_since(std::time::UNIX_EPOCH)

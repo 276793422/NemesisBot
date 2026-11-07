@@ -1339,6 +1339,7 @@ async fn test_handle_health_includes_running_and_sessions_reflects_state() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

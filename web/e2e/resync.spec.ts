@@ -12,8 +12,8 @@
  * "hasPinia":false}，vitest 源码形态可用但产物形态不同）；DOM 文本匹配也
  * 不行——多 spec 残留「新对话」重名。
  */
-import { expect, test } from '@playwright/test'
-import { newAuthedPage, sendChat, waitAssistantReply, wsapi, type WsapiResult } from './helpers'
+import { expect, test } from './fixtures'
+import { newAuthedPage, openSessionSidebar, sendChat, waitAssistantReply, wsapi, type WsapiResult } from './helpers'
 
 /** sessions.list 响应里的裸 sid 集合（data = { sessions: [{id,...}], bindings }） */
 function sessionIds(r: WsapiResult): string[] {
@@ -29,18 +29,32 @@ test('刷新重载：发送/回复落账 → reload → 历史重拉可见', asy
   // onMounted），那是最近活跃会话；前面的 spec 恰好留下断目录项目会话时
   // （场景 A 态），发送命中「项目当前不可用」诚实报错（实录）。点
   // 「＋ 新建对话」= create() 内 switchTo，currentId 必然落干净对话组会话。
-  const toggle = page.locator('.toolbar-toggle').first()
-  if (await toggle.isVisible().catch(() => false)) {
-    await toggle.click()
-  }
+  await openSessionSidebar(page)
 
   // 差分锚定新会话 id——但必须放在发送之后：sessions.create 是乐观插入
   // （store 注释原文「the server-side file materializes on the first
   // message」），sessions.list 扫的是 session_logs 文件，首条消息落盘前
   // 差分恒空（实录：点击后轮询 15s added=[] 而侧栏已有「新对话」行）。
   const before = new Set(sessionIds(await wsapi(page, 'sessions', 'list')))
+  // 点击后必须等新会话切换真正落地（active 行 data-session-id 变化 =
+  // create() WS 往返 + switchTo + ChatPanel reset 全完成）再 fill——
+  // 旧断言 `.fn-new-chat` toBeVisible 断的是刚点过的按钮自己，恒真秒过，
+  // fill 与 reset 竞速：reset 赢 = 输入被清空、发送钮恒 disabled（2026-11-07
+  // 全量实录；solo 空载时 reset 先到掩盖竞速）。
+  const prevActive = await page
+    .locator('.session-item.active')
+    .getAttribute('data-session-id')
+    .catch(() => null)
   await page.locator('.fn-new-chat').click()
-  await expect(page.locator('.fn-new-chat')).toBeVisible()
+  // toPass 双条件环而非 expect.poll：poll 回调内 getAttribute 抛错立即传播
+  // 不重试（capsule spec 同款注记）；且需断言 active 行可见 AND id 已变，
+  // 裸「id 变化」在零 active 行窗口会假绿。
+  await expect(async () => {
+    const row = page.locator('.session-item.active')
+    await expect(row.first()).toBeVisible({ timeout: 2_000 })
+    const id = await row.first().getAttribute('data-session-id', { timeout: 1_000 })
+    expect(id, `active id 未变：${prevActive}`).not.toBe(prevActive)
+  }).toPass({ timeout: 15_000 })
 
   const marker = `resync 往返验证 ${Date.now()}`
   await sendChat(page, marker)
@@ -60,10 +74,7 @@ test('刷新重载：发送/回复落账 → reload → 历史重拉可见', asy
 
   // 展开侧栏（若收起），按会话 id 精确点行——「first() = 最近活跃」的旧
   // 假设在 L6++ 侧栏布局下不成立：项目组恒在顶部，DOM 序 ≠ 活跃序（实录）。
-  const toggleAfter = page.locator('.toolbar-toggle').first()
-  if (await toggleAfter.isVisible().catch(() => false)) {
-    await toggleAfter.click()
-  }
+  await openSessionSidebar(page)
   const targetSession = page.locator(`.session-item[data-session-id="${sid}"]`)
   await expect(targetSession).toBeVisible({ timeout: 20_000 })
   await targetSession.click()

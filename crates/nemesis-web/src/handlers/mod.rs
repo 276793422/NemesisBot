@@ -135,6 +135,11 @@ pub mod subagents;
 // 子代理 WSAPI handler 测试（全局注册表纯内存态；断言按唯一 marker 过滤）。
 #[cfg(test)]
 mod subagents_handler_tests;
+// 后台进程实时输出 WSAPI：background.list/output/kill/
+// steer——B4 注册表的观察面投影（AppState 槽注入，与 agent 工具通道同一 Arc）。
+pub mod background;
+#[cfg(test)]
+mod background_handler_tests;
 // 独立代理配置 WSAPI（代理设置三项改造）：proxy.get/save——
 // `config.proxy.json`（env 段 + selfupdate 段）的读写面。无 feature 闸
 // （独立文件不依赖任何子系统）。
@@ -377,6 +382,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(roles::RolesHandler));
     // 子代理可见性：subagents.list/detail/cancel。
     router.register(Arc::new(subagents::SubagentsHandler));
+    // 后台进程实时输出（2026-11-06 P1）：background.list/output/kill/steer。
+    router.register(Arc::new(background::BackgroundHandler));
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));

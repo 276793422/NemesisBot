@@ -278,9 +278,11 @@ describe('P4：currentId watch 同会话免重拉', () => {
     expect(countHistoryRequests()).toBe(1)
 
     // 切到新会话 s2：loadedHistorySid 是 s1 → 正常 reset+重拉。
+    // s2 非零计数：2026-11-07 起切换已知零消息会话跳过重拉——本测试锚定
+    // 「真切换不误伤」，目标行必须非零才命中重拉分支。
     sessionStore.sessions = [
       { id: 's1', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'A', model: '' },
-      { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'B', model: '' },
+      { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 3, firstMessage: 'B', model: '' },
     ] as any
     sessionStore.currentId = 's2'
     await flushPromises()
@@ -690,9 +692,9 @@ describe('chat.activity 冷却/流式/重试状态机（2026-10-16 回检补口�
     // s2 触发多余 sync（activityLagSeq 是旧会话 seq 空间的值）。
     sessionStore.currentId = 's2'
     await flushPromises()
-    // 喂 s2 的 history 响应：清 historyLoading（否则 syncMissedChat 的
-    // :824 守卫把一切补拉闸掉，测试空转无区分度）；s2 基线 sync（若有）
-    // 也落在这之后，n 从这里起算。
+    // s2 是零消息行（2026-11-07 起切换跳过重拉，无新 history 请求，
+    // historyLoading 本就为 false）——喂一个 stale requestId 的空响应，
+    // 应被围栏丢弃、无副作用；s2 基线 sync（若有）落在这之后，n 从这里起算。
     feedHistory(lastRequestId(), [])
     await flushPromises()
     const n = getSyncN()

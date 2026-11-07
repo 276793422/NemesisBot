@@ -62,7 +62,9 @@ function prepareSessions() {
   const s = useSessionStore()
   s.sessions = [
     { id: 's1', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'A', model: '' },
-    { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'B', model: '' },
+    // s2 非零计数：2026-11-07 起切换已知零消息会话跳过重拉——本文件测「切
+    // 换后首个页响应走 page 分支」，目标行必须非零才有请求可喂。
+    { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 3, firstMessage: 'B', model: '' },
   ] as any
   s.currentId = 's1'
 }

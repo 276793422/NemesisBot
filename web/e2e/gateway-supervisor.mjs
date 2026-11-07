@@ -19,6 +19,7 @@
 import { spawn, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import http from 'node:http'
+import net from 'node:net'
 
 const args = process.argv.slice(2)
 function argOf(name, fallback) {
@@ -32,13 +33,44 @@ const HOME = argOf('--home')
 const STATE_FILE = argOf('--state')
 const LOG_FILE = argOf('--log')
 const HEALTH_URL = argOf('--health-url')
+const WEB_PORT = Number(argOf('--web-port', '0'))
 
 if (!BIN || !HOME || !STATE_FILE || !HEALTH_URL) {
   console.error('[gateway-supervisor] 缺参数：--bin/--home/--state/--health-url 必填')
   process.exit(1)
 }
 
+const HEALTH_PORT = Number(new URL(HEALTH_URL).port)
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// 端口可 bind 探测（TIME_WAIT 容忍，2026-11-07 充分测试战役加固）。
+// taskkill 后服务端套接字内核滞留 ~46-60s；gateway 的 web server 撞 busy
+// 会静默 bump +1（bind_with_port_walk，端口漂移让后续断言全空）而 health
+// server 无走查 = bind 失败即启动死亡。spawn 前等两个端口都能以临时 socket
+// bind 成功（bind 即关——listener 关闭不产生 TIME_WAIT），把「端口就绪」
+// 从猜测变成确定性前提。覆盖两个场景：initial spawn（零间隙链式 invocation，
+// 上一轮 teardown 刚 taskkill）与 /restart（mid-run 断线重连 spec）。
+function probeBind(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer()
+    srv.once('error', () => resolve(false))
+    srv.listen(port, '127.0.0.1', () => {
+      srv.close(() => resolve(true))
+    })
+  })
+}
+
+async function portsBindable(deadlineMs) {
+  if (!WEB_PORT) return true // 未传 --web-port（旧行为兼容）：跳过探测
+  const deadline = Date.now() + deadlineMs
+  for (;;) {
+    const ok = (await probeBind(WEB_PORT)) && (await probeBind(HEALTH_PORT))
+    if (ok) return true
+    if (Date.now() > deadline) return false
+    await sleep(500)
+  }
+}
 
 let gatewayProc = null
 
@@ -135,11 +167,23 @@ async function restart() {
   if (!(await gatewayGone(15_000))) {
     throw new Error('旧 gateway 15s 未退出（端口未释放，web 端口可能漂移）')
   }
-  const pid = spawnGateway()
-  if (!(await gatewayReady(90_000))) {
-    throw new Error(`gateway 重启后 90s 未就绪（pid=${pid}）\n--- gateway log tail ---\n${logTail()}`)
+  // TIME_WAIT 容忍 + spawn 验证重试（≤3 次）：health bind 撞 TIME_WAIT 会
+  // 让 gateway 启动即退，gatewayReady 永不满足——重杀重等重 spawn，不把
+  // 级联失败直接抛给测试。
+  let lastErr = ''
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    if (!(await portsBindable(60_000))) {
+      lastErr = `端口 ${WEB_PORT}/${HEALTH_PORT} 60s 不可 bind（TIME_WAIT 未退）`
+      console.error(`[gateway-supervisor] restart 第 ${attempt} 次尝试失败：${lastErr}`)
+      continue
+    }
+    const pid = spawnGateway()
+    if (await gatewayReady(90_000)) return pid
+    lastErr = `gateway 重启后 90s 未就绪（pid=${pid}）`
+    console.error(`[gateway-supervisor] restart 第 ${attempt} 次尝试失败：${lastErr}\n--- gateway log tail ---\n${logTail()}`)
+    killGateway()
   }
-  return pid
+  throw new Error(`restart 三次尝试全败：${lastErr}\n--- gateway log tail ---\n${logTail()}`)
 }
 
 const server = http.createServer((req, res) => {
@@ -160,8 +204,16 @@ const server = http.createServer((req, res) => {
   respond(404, { ok: false, error: 'not found' })
 })
 
-// 启动即拉起首个 gateway（global-setup 不再直接持有 gateway）
-spawnGateway()
+// 启动即拉起首个 gateway（global-setup 不再直接持有 gateway）。零间隙链式
+// invocation 时上一轮 gateway 可能刚被 teardown taskkill（TIME_WAIT 滞留）——
+// 先等端口可 bind 再 spawn；listener 先起（supervisor /health 恒可达，
+// global-setup 的 waitHttp 不被端口等待窗口拖爆）。
+;(async () => {
+  if (!(await portsBindable(60_000))) {
+    console.error('[gateway-supervisor] 初始 spawn：端口 60s 未就绪，仍尝试 spawn')
+  }
+  spawnGateway()
+})()
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[gateway-supervisor] listening on 127.0.0.1:${PORT} (gateway pid=${gatewayProc?.pid ?? '?'})`)
 })

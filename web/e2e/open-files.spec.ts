@@ -14,7 +14,7 @@
  * 注入节出现在 LLM 请求 messages 里才是「到达模型」的直接证据。
  */
 import fs from 'node:fs'
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { EVIDENCE_LAST_REQUEST } from './env'
 import { evidenceCount, evidenceSince, newAuthedPage, sendChat, waitAssistantReply } from './helpers'
 

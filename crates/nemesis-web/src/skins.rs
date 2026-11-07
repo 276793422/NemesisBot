@@ -29,9 +29,11 @@
 //! 可用，目标用户的皮肤可能就是没签名的）。解析/清洗/注入全在前端。
 //!
 //! 激活 id 来自 `config.json` 的 `ui.skin`（`"default"`/空 = 无皮肤，
-//! active.css 与 active/structure 都 404，前端回落原生 UI 并清缓存）。
-//! 激活 id 存共享锁（`Arc<RwLock<String>>`），WSAPI `skins.set_active`
-//! 免重启热翻。
+//! active.css 答 200 空 body（默认安装每次页面加载都拉它，404 会在
+//! console 记资源错误；前端 empty→回落内置分支照常工作）、
+//! active/structure 仍 404——结构/脚本只在 css 载荷成功后才被前端拉取，
+//! 默认态不会触达）。激活 id 存共享锁（`Arc<RwLock<String>>`），WSAPI
+//! `skins.set_active` 免重启热翻。
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -241,10 +243,25 @@ async fn handle_active_structure(State(host): State<SkinHost>) -> impl IntoRespo
 
 /// `GET /skins/active.css` — config `ui.skin` 指向的皮肤。响应头
 /// `X-Skin-Id` 回传激活 id（前端打 `data-skin` 属性的权威定义——localStorage
-/// 缓存可能过期）。
+/// 缓存可能过期）。内置默认态（`"default"`/空）答 **200 空 body**：默认
+/// 安装的每次页面加载前端都会拉本端点做校准，404 会在浏览器 console 记
+/// 一条资源加载错误（纯噪音）；前端 empty→回落内置分支语义不变。坏部署
+/// （id 指向缺失/损坏包）保持 404——部署错误该在控制台响。
 async fn handle_active_css(State(host): State<SkinHost>) -> impl IntoResponse {
     // 锁快照一次：load 与响应头用同一 id（热翻竞态下不会头/体分裂）。
     let active_id = host.active_id.read().clone();
+    if active_id.is_empty() || active_id == "default" {
+        let mut headers = header::HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            header::HeaderValue::from_static("text/css; charset=utf-8"),
+        );
+        headers.insert(
+            header::CACHE_CONTROL,
+            header::HeaderValue::from_static("no-store"),
+        );
+        return (StatusCode::OK, headers, String::new()).into_response();
+    }
     match host.load_css(&active_id) {
         Some(css) => {
             let mut headers = header::HeaderMap::new();

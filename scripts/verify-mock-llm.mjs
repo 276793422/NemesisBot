@@ -93,6 +93,14 @@ function routeRequest(body) {
   // SPAWN2 必须先于 SPAWN 判——'E2E_TOOL_SPAWN2' 包含 'E2E_TOOL_SPAWN' 子串。
   if (text.includes('E2E_TOOL_SPAWN2')) return 'spawn_tool_2'
   if (text.includes('E2E_TOOL_SPAWN')) return 'spawn_tool'
+  // 后台进程实时输出视觉自测（2026-11-06）：background_start 起慢输出进程
+  // （BGSTREAM 流式输出器每秒两行、持续 ~10min），tail/列表/详情三态有
+  // 实时数据可看。
+  // BIG 必须先于 BG 判——'E2E_TOOL_BG_BIG' 包含 'E2E_TOOL_BG' 子串（同
+  // SPAWN2/SPAWN 先例）。BIG = 大输出命令（~680KB > 256KB 环形缓冲），
+  // 边角 spec 验证丢弃徽标与 tail 起点语义；秒级跑完自终，steerable=false。
+  if (text.includes('E2E_TOOL_BG_BIG')) return 'bg_tool_big'
+  if (text.includes('E2E_TOOL_BG')) return 'bg_tool'
   if (text.includes('E2E_SLOW')) return 'slow_text'
   return 'text'
 }
@@ -217,6 +225,79 @@ function messagePayload(route, body) {
                     task: SPAWN_TASKS[route],
                     background: true,
                     tools: 'readonly',
+                  }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
+    }
+  }
+  // background_start 工具调用（后台进程实时输出视觉自测）：BGSTREAM 流式
+  // 输出器每秒两行纯 ASCII、持续 ~10 分钟。不依赖 ICMP 回应——2026-11-06
+  // 边角实测本机回环 ICMP 回应被拦（ping 127.0.0.1 100% 丢包），ping 不是
+  // 可用的实时输出载荷；但 ping -n 1 -w 1000 可以当睡眠用：拦 = 每请求等满
+  // -w 1000ms 才超时 → 每迭代 ~1s 真睡眠（ICMP 放行环境退化为瞬回全速，
+  // 8000 迭代仍有 ~3.4 分钟寿命 > 90s 测试窗口；224KB < 256KB 环形缓冲不触
+  // 丢弃）。steerable=true 保住 stdin 管道供 steer 面验证。
+  // ⚠️ 睡眠不能用 waitfor /t 1：2026-11-07 实测 waitfor 在 exec 管道环境
+  // 瞬回不睡眠（错误被 >nul 2>&1 吞掉），循环全速 ~39 迭代/s，1200 迭代
+  // ~31s 就自终——不到测试 kill 窗就退出，kill 断言假红温床。
+  // choice 会读 stdin，steerable 管道不能用；timeout 重定向 stdin 直接报错。
+  // 命令纯净（无危险 flag/脚本内容）→ 8 层管线直通，无审批卡。
+  if (route === 'bg_tool') {
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'call_mock_bg',
+                type: 'function',
+                function: {
+                  name: 'background_start',
+                  arguments: JSON.stringify({
+                    command:
+                      'for /l %i in (1,1,8000) do @(echo BGSTREAM-%i& echo BGSTREAM-B%i& ping -n 1 -w 1000 127.0.0.1>nul 2>&1)& ver>nul',
+                    steerable: true,
+                  }),
+                },
+              },
+            ],
+          },
+          finish_reason: 'tool_calls',
+        },
+      ],
+      usage: { prompt_tokens: 300, completion_tokens: 40, total_tokens: 340 },
+    }
+  }
+  // 大输出后台进程（边角 spec）：cmd for 循环瞬产 ~680KB，超 256KB 环形
+  // 缓冲 → 丢弃计数 > 0。纯净循环 echo，8 层直通无审批卡。
+  if (route === 'bg_tool_big') {
+    return {
+      ...base,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: null,
+            tool_calls: [
+              {
+                id: 'call_mock_bg_big',
+                type: 'function',
+                function: {
+                  name: 'background_start',
+                  arguments: JSON.stringify({
+                    command: 'for /l %i in (1,1,40000) do @echo 0123456789ABCDEF',
+                    steerable: false,
                   }),
                 },
               },

@@ -11,9 +11,9 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 import { BASE_URL, DRAFTS_DIR } from './env'
-import { newAuthedPage, wsapi } from './helpers'
+import { gotoRoute, newAuthedPage, wsapi } from './helpers'
 
 const WF_NAME = 'mock-diff-base'
 
@@ -86,7 +86,7 @@ const VARIANT_B = [
 ].join('\n')
 
 async function openGenTab(page: Page): Promise<void> {
-  await page.goto(`${BASE_URL}/#/workflows`)
+  await gotoRoute(page, `/#/workflows`)
   const genTab = page.locator('button.tab', { hasText: '对话生成' })
   await genTab.waitFor({ state: 'visible', timeout: 20_000 })
   await genTab.click()

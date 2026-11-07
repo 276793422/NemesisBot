@@ -21,6 +21,11 @@ const TOOL_LABELS: Record<string, string> = {
   cluster_rpc: '集群调用',
   board_issue: '看板操作',
   generate_image: '生成图片',
+  // 后台进程（2026-11-06 后台进程实时输出）。
+  background_start: '启动后台进程',
+  background_output: '读后台输出',
+  background_kill: '停止后台进程',
+  background_steer: '注入后台输入',
 }
 
 /** 工具名 → 展示标签。未收录（含 mcp_*）返回原名。 */
@@ -51,4 +56,24 @@ export function spawnTaskFromArgs(preview: string): string {
   } catch {
     return m[1]
   }
+}
+
+/**
+ * background_start 行的 job_id 提取（2026-11-06 后台进程实时输出）。
+ *
+ * result_preview 是截断的返回值 JSON（同 ARGS_PREVIEW_CAP 形态）：
+ * 完整可 parse 时取 `job_id` 数字字段；截断则正则抠 `"job_id":<digits>`。
+ * 提取失败返回 null（行渲染诚实降级为无内嵌 tail）。
+ */
+export function jobIdFromPreview(preview: string | null | undefined): number | null {
+  if (!preview) return null
+  try {
+    const v = JSON.parse(preview)
+    if (v && typeof v === 'object') {
+      const id = (v as Record<string, unknown>).job_id
+      if (typeof id === 'number' && Number.isFinite(id)) return id
+    }
+  } catch { /* 截断 JSON——走正则提取 */ }
+  const m = /"job_id"\s*:\s*(\d+)/.exec(preview)
+  return m ? Number(m[1]) : null
 }

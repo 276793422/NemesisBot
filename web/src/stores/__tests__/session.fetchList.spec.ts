@@ -89,4 +89,52 @@ describe('session store fetchList 在飞共享', () => {
     await store.fetchList(true)
     expect(store.bindings).toEqual({})
   })
+
+  // 2026-11-07 充分测试战役回归锁（firefox 全量轮 2/2 实证的确定性竞态）：
+  // sessions.create 是懒物化（首条消息才落 session_logs jsonl，服务端 list
+  // 枚举不到零消息会话）——create() 的乐观行 + switchTo 之后，任何一次整
+  // 表刷新（session.created SSE / receive 帧兜底）都会把未物化的 currentId
+  // 洗成孤儿：active 高亮灭、新会话从侧栏蒸发。fetchList 必须把 currentId
+  // 指向的旧行带上（服务端缺席 = 未物化，非已删除）。
+  it('乐观行保活：currentId 指向的未物化会话不被整表替换洗掉', async () => {
+    const store = useSessionStore()
+
+    // 既有会话已在列表（服务端真相）。
+    requestMock.mockResolvedValueOnce({ sessions: [row('old-1')] })
+    await store.fetchList(true)
+
+    // 新建：乐观行 + switchTo（服务端此刻尚无 jsonl）。
+    requestMock.mockResolvedValueOnce({ session_id: 'new-1', title: '新对话' })
+    await store.create()
+    expect(store.currentId).toBe('new-1')
+    expect(store.sessions.some(s => s.id === 'new-1')).toBe(true)
+
+    // 任何其他会话物化触发 session.created → force fetchList：服务端列表
+    // 仍不含零消息的 new-1。整表替换不得洗掉它。
+    requestMock.mockResolvedValueOnce({ sessions: [row('old-1'), row('other-2')] })
+    await store.fetchList(true)
+    expect(store.sessions.map(s => s.id)).toEqual(['new-1', 'old-1', 'other-2'])
+    expect(store.currentId).toBe('new-1')
+    expect(store.sessions.find(s => s.id === 'new-1')?.firstMessage).toBe('新对话')
+
+    // 物化后（首条消息已发，服务端列表含 new-1）→ 服务端版本接管（标题/
+    // messageCount 以服务端为准），不再保留本地行。
+    requestMock.mockResolvedValueOnce({ sessions: [row('new-1'), row('old-1'), row('other-2')] })
+    await store.fetchList(true)
+    expect(store.sessions.map(s => s.id)).toEqual(['new-1', 'old-1', 'other-2'])
+    expect(store.sessions.filter(s => s.id === 'new-1')).toHaveLength(1)
+  })
+
+  // 对照：currentId 为 null（未选中会话）时不做任何保活——列表纯随服务端。
+  it('currentId 为空时整表替换不做保活', async () => {
+    const store = useSessionStore()
+
+    requestMock.mockResolvedValueOnce({ sessions: [row('a')] })
+    await store.fetchList(true)
+    expect(store.sessions.map(s => s.id)).toEqual(['a'])
+
+    requestMock.mockResolvedValueOnce({ sessions: [row('b')] })
+    await store.fetchList(true)
+    expect(store.sessions.map(s => s.id)).toEqual(['b'])
+  })
 })

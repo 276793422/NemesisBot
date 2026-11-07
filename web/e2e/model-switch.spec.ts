@@ -5,7 +5,7 @@
  * agents.defaults.llm）→ set_default 切 B → 列表复核 → 切回 A
  * （后续 spec 的默认模型预期恢复一致）。
  */
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Page } from './fixtures'
 import { MODEL_A, MODEL_B } from './env'
 import { newAuthedPage, wsapi } from './helpers'
 

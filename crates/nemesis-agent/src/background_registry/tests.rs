@@ -113,6 +113,66 @@ async fn exit_code_preserved() {
     assert_eq!(done["success"].as_bool(), Some(false));
 }
 
+/// list() 投影：id 倒序、字段齐全、运行/终态两态正确、终态平铺。
+#[tokio::test]
+async fn list_projects_rows_newest_first_with_exit_flat() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let fin = reg
+        .start("echo list_done_marker", "/", false)
+        .await
+        .unwrap();
+    let fin_id = fin["job_id"].as_u64().unwrap();
+    let long = reg.start(long_cmd(), "/", false).await.unwrap();
+    let long_id = long["job_id"].as_u64().unwrap();
+    wait_done(&reg, fin_id, 15).await;
+
+    let rows = reg.list().await;
+    assert!(rows.len() >= 2, "两任务都在册: {}", rows.len());
+    let ids: Vec<u64> = rows.iter().map(|r| r["id"].as_u64().unwrap()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.reverse();
+    assert_eq!(ids, sorted, "id 倒序 = 新任务在前");
+
+    let fin_row = rows
+        .iter()
+        .find(|r| r["id"].as_u64() == Some(fin_id))
+        .unwrap();
+    assert_eq!(fin_row["running"], serde_json::json!(false));
+    assert_eq!(fin_row["exit_code"].as_i64(), Some(0));
+    assert_eq!(fin_row["success"], serde_json::json!(true));
+    assert_eq!(fin_row["killed"], serde_json::json!(false));
+    assert_eq!(fin_row["steerable"], serde_json::json!(false));
+    assert!(fin_row["total_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(fin_row["dropped_bytes"], serde_json::json!(0));
+    assert!(fin_row["started_at_unix"].as_u64().unwrap() > 0);
+    assert!(
+        fin_row["command"]
+            .as_str()
+            .unwrap()
+            .contains("list_done_marker")
+    );
+
+    let long_row = rows
+        .iter()
+        .find(|r| r["id"].as_u64() == Some(long_id))
+        .unwrap();
+    assert_eq!(long_row["running"], serde_json::json!(true));
+    // 运行中行无终态字段平铺。
+    assert!(long_row.get("exit_code").is_none());
+
+    // kill 后行翻终态（killed=true 平铺）。
+    reg.kill(long_id).await.unwrap();
+    let rows = reg.list().await;
+    let long_row = rows
+        .iter()
+        .find(|r| r["id"].as_u64() == Some(long_id))
+        .unwrap();
+    assert_eq!(long_row["running"], serde_json::json!(false));
+    assert_eq!(long_row["killed"], serde_json::json!(true));
+}
+
 #[tokio::test]
 async fn unknown_job_id_errors() {
     let reg = BackgroundProcessRegistry::new();
