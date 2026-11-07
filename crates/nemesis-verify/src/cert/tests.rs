@@ -1,6 +1,6 @@
 //! 证书链单测（v4：X.509 解析 + 链验证）。
 //!
-//! goal S1-2 判据六形态各 ≥1：正链 / 断链 / 过期 / EKU 错 / 签名坏 / 根不匹配，
+//! goal 判据六形态各 ≥1：正链 / 断链 / 过期 / EKU 错 / 签名坏 / 根不匹配，
 //! 全部经 keygen 低层积木 `issue_x509` 组合。
 
 use super::*;
@@ -86,7 +86,7 @@ fn valid_three_level_chain_verifies() {
     let (leaf, issuing, root) = (&chain[0], &chain[1], &chain[2]);
     assert_eq!(leaf.aki().unwrap(), issuing.ski().unwrap());
     assert_eq!(issuing.aki().unwrap(), root.ski().unwrap());
-    // D4 职责：leaf 带 codeSigning EKU；根自签、发行锚非自签。
+    // 职责：leaf 带 codeSigning EKU；根自签、发行锚非自签。
     assert!(leaf.has_code_signing_eku().unwrap());
     assert!(!issuing.has_code_signing_eku().unwrap());
     assert!(root.is_self_signed().unwrap());
@@ -173,7 +173,7 @@ fn wrong_root_anchor_detected() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：ChainError Display 全变体 / subject_public_key
+// AGT 覆盖率批次：ChainError Display 全变体 / subject_public_key
 // 三个失败臂 / SKI・AKI 剥除形态 / 签名算法不收 / KU 八组合 / chain blob
 // 往返与全部错误臂 / 无 AKI leaf 过链。
 // TBS 级变异积木：build_tbs → mutate → seal_certificate（签名在变异之后盖，
@@ -491,4 +491,188 @@ fn verify_chain_tolerates_leaf_without_aki() {
     let chain = vec![leaf, issuing, root];
     let anchor = chain[2].sha256_fingerprint();
     assert!(verify_chain(&chain, &anchor, NOW).is_ok());
+}
+
+// -------------------------------------------------------------------------
+// BUG-20261107-011：签发者 CA 资格 + pathLen（此前缺失——锚定信任树内的
+// 合法终端证书可被持有者当签发者用：自造「伪中间 + 伪 leaf」全真签名链，
+// 无限扩展信任子树且伪证书不入 CRL 管辖）
+// -------------------------------------------------------------------------
+
+/// 手动三级链夹具（保留全部私钥——攻击场景构造需要真 leaf / issuing 私钥）。
+fn fixture_with_keys(
+    nb: u64,
+    na: u64,
+) -> (
+    Vec<Certificate>,
+    [u8; 32],
+    p256::ecdsa::SigningKey, // leaf 私钥
+    p256::ecdsa::SigningKey, // issuing 私钥
+) {
+    let mk = || crypto::signing_key_from_hex(&crypto::generate_key_pair().private_key).unwrap();
+    let root_sk = mk();
+    let issuing_sk = mk();
+    let leaf_sk = mk();
+    let root_vk = *root_sk.verifying_key();
+    let issuing_vk = *issuing_sk.verifying_key();
+    let leaf_vk = *leaf_sk.verifying_key();
+
+    let root = issue_x509(
+        &root_vk,
+        &root_sk,
+        &ski_value(&root_vk).unwrap(),
+        TbsInput {
+            subject_cn: "NB Test Root",
+            subject_org: Some("NB Test"),
+            issuer_cn: "NB Test Root",
+            issuer_org: Some("NB Test"),
+            is_ca: true,
+            path_len: None,
+            ku_digital_signature: false,
+            ku_key_cert_sign: true,
+            ku_crl_sign: true,
+            eku_code_signing: false,
+            not_before_unix: nb,
+            not_after_unix: na,
+        },
+    )
+    .unwrap();
+    let issuing = issue_x509(
+        &issuing_vk,
+        &root_sk,
+        &ski_value(&root_vk).unwrap(),
+        TbsInput {
+            subject_cn: "NB Test Issuing",
+            subject_org: Some("NB Test"),
+            issuer_cn: "NB Test Root",
+            issuer_org: Some("NB Test"),
+            is_ca: true,
+            path_len: Some(0),
+            ku_digital_signature: true,
+            ku_key_cert_sign: true,
+            ku_crl_sign: true,
+            eku_code_signing: false,
+            not_before_unix: nb,
+            not_after_unix: na,
+        },
+    )
+    .unwrap();
+    let leaf = issue_x509(
+        &leaf_vk,
+        &issuing_sk,
+        &ski_value(&issuing_vk).unwrap(),
+        TbsInput {
+            subject_cn: "NB Test Leaf",
+            subject_org: Some("NB Test"),
+            issuer_cn: "NB Test Issuing",
+            issuer_org: Some("NB Test"),
+            is_ca: false,
+            path_len: None,
+            ku_digital_signature: true,
+            ku_key_cert_sign: false,
+            ku_crl_sign: false,
+            eku_code_signing: true,
+            not_before_unix: nb,
+            not_after_unix: na,
+        },
+    )
+    .unwrap();
+    let root_fp = root.sha256_fingerprint();
+    (vec![leaf, issuing, root], root_fp, leaf_sk, issuing_sk)
+}
+
+#[test]
+fn non_ca_issuer_rejected() {
+    let (chain, root_fp, leaf_sk, _) = fixture_with_keys(NOW - 100, FAR);
+    // 攻击链：伪 leaf 由**真 leaf 私钥真签**（AKI=真 leaf SKI），链
+    // [伪leaf, 真leaf, issuing, root]——修复前逐级签名/AKI-SKI/根锚全对得上
+    // → Valid；修复后真 leaf 无 CA 资格（is_ca=false）→ IssuerNotCa。
+    let atk_sk = crypto::signing_key_from_hex(&crypto::generate_key_pair().private_key).unwrap();
+    let atk_vk = *atk_sk.verifying_key();
+    let leaf_cert = &chain[0];
+    let rogue = issue_x509(
+        &atk_vk,
+        &leaf_sk,
+        &ski_value(&leaf_cert.subject_public_key().unwrap()).unwrap(),
+        TbsInput {
+            subject_cn: "Rogue Leaf",
+            subject_org: Some("NB Test"),
+            issuer_cn: "NB Test Leaf",
+            issuer_org: Some("NB Test"),
+            is_ca: false,
+            path_len: None,
+            ku_digital_signature: true,
+            ku_key_cert_sign: false,
+            ku_crl_sign: false,
+            eku_code_signing: true,
+            not_before_unix: NOW - 100,
+            not_after_unix: FAR,
+        },
+    )
+    .unwrap();
+    let full = vec![rogue, chain[0].clone(), chain[1].clone(), chain[2].clone()];
+    assert_eq!(
+        verify_chain(&full, &root_fp, NOW),
+        Err(ChainError::IssuerNotCa)
+    );
+    // 正常三级链仍通过（资格检查不伤合法链）。
+    verify_chain(&chain, &root_fp, NOW).unwrap();
+}
+
+#[test]
+fn path_len_blocks_rogue_intermediate() {
+    let (chain, root_fp, _, issuing_sk) = fixture_with_keys(NOW - 100, FAR);
+    // 第二道闸（纵深）：发行锚私钥被滥用真签伪中间（CA=true 合法 profile）
+    // ——发行锚 pathLen=0，其下不得再插中间 CA → PathLenExceeded。
+    let rogue_sk = crypto::signing_key_from_hex(&crypto::generate_key_pair().private_key).unwrap();
+    let rogue_vk = *rogue_sk.verifying_key();
+    let leaf_sk = crypto::signing_key_from_hex(&crypto::generate_key_pair().private_key).unwrap();
+    let leaf_vk = *leaf_sk.verifying_key();
+    let issuing_cert = &chain[1];
+    let rogue_mid = issue_x509(
+        &rogue_vk,
+        &issuing_sk,
+        &ski_value(&issuing_cert.subject_public_key().unwrap()).unwrap(),
+        TbsInput {
+            subject_cn: "Rogue Intermediate",
+            subject_org: Some("NB Test"),
+            issuer_cn: "NB Test Issuing",
+            issuer_org: Some("NB Test"),
+            is_ca: true,
+            path_len: None,
+            ku_digital_signature: true,
+            ku_key_cert_sign: true,
+            ku_crl_sign: true,
+            eku_code_signing: false,
+            not_before_unix: NOW - 100,
+            not_after_unix: FAR,
+        },
+    )
+    .unwrap();
+    let rogue_leaf = issue_x509(
+        &leaf_vk,
+        &rogue_sk,
+        &ski_value(&rogue_vk).unwrap(),
+        TbsInput {
+            subject_cn: "Rogue Leaf",
+            subject_org: Some("NB Test"),
+            issuer_cn: "Rogue Intermediate",
+            issuer_org: Some("NB Test"),
+            is_ca: false,
+            path_len: None,
+            ku_digital_signature: true,
+            ku_key_cert_sign: false,
+            ku_crl_sign: false,
+            eku_code_signing: true,
+            not_before_unix: NOW - 100,
+            not_after_unix: FAR,
+        },
+    )
+    .unwrap();
+    let full = vec![rogue_leaf, rogue_mid, chain[1].clone(), chain[2].clone()];
+    // issuing 在位置 2（j=2）：其下中间 CA 数 = j-1 = 1 > pathLen 0。
+    assert_eq!(
+        verify_chain(&full, &root_fp, NOW),
+        Err(ChainError::PathLenExceeded)
+    );
 }

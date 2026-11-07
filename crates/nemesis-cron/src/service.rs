@@ -28,7 +28,7 @@ pub struct CronPayload {
     /// Envelope field kept for store round-trip compat; not part of the declared
     /// schema and not consulted by the fire path — delivery is unconditional
     /// (documented verdict in nemesis-agent loop_tools cron tool). Honest-text
-    /// pass BUG-20261031-230: CLI/reference help must not claim it suppresses.
+    /// pass: CLI/reference help must not claim it suppresses.
     pub deliver: bool,
     pub channel: Option<String>,
     pub to: Option<String>,
@@ -38,7 +38,7 @@ pub struct CronPayload {
     /// time). Empty/None = fall through to routing-derived keying.
     #[serde(default)]
     pub session_key: Option<String>,
-    /// T3 (U12): per-fire tool-round budget for continuation turns. When set,
+    /// per-fire tool-round budget for continuation turns. When set,
     /// the fired turn's tool-iteration cap uses this value instead of the
     /// global `max_tool_iterations` (a scheduled continuation must not burn
     /// the full 100-round budget). Exhaustion stops gracefully via the
@@ -62,7 +62,7 @@ pub struct CronJobPatch {
     pub to: Option<String>,
     pub session_key: Option<String>,
     pub enabled: Option<bool>,
-    /// P1-2 (2026-08-24 UI entry gap): per-fire tool-round budget, patchable.
+    /// (UI entry gap): per-fire tool-round budget, patchable.
     /// Three states — `None` = leave unchanged, `Some(None)` = clear the
     /// budget (global default applies), `Some(Some(n))` = set the budget.
     /// Mirrors the `max_rounds` semantics of `CronPayload` / `add_job_ext`.
@@ -123,7 +123,7 @@ pub struct CronJob {
     pub delete_after_run: bool,
 }
 
-/// Cron store persistence（单一真相源在 [`crate::store`]——CLI 与 gateway
+/// Cron store persistence（统一定义在 [`crate::store`]——CLI 与 gateway
 /// 共用同一 loader/saver，禁止任何一方自行拼存储 JSON）。
 use crate::store::CronStoreData;
 
@@ -131,12 +131,12 @@ use crate::store::CronStoreData;
 #[allow(dead_code)]
 type JobHandlerFn = Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>;
 
-/// BUG-20261029 panic 隔离：on_job handler 是 gateway 侧大闭包（board
+/// panic 隔离：on_job handler 是 gateway 侧大闭包（board
 /// autopilot / 记忆 dreaming / 消息投递多分支），一次 panic 沿调用栈炸掉
 /// 常驻 tick 任务（spawn 于 [`CronService::run`]）→ cron 服务静默永久停摆
 /// （running 残留 true、handle 无人 await、panic 零日志面）。对齐 heartbeat
-/// BUG-20261028-113 的隔离纪律：catch_unwind 把 panic 映射为 Err(合成串)
-/// ——落进调用点既有失败记账面（G3 ledger settle failed + job.last_status
+/// 的隔离纪律：catch_unwind 把 panic 映射为 Err(合成串)
+/// ——落进调用点既有失败记账面（ledger settle failed + job.last_status
 /// =error + history），循环继续。诚实边界：panic=abort profile（iotsmall）
 /// 接不住（进程死即任务死，既有取舍）；handler 半程副作用由 Err 记账诚实
 /// 标注，不回滚。
@@ -162,7 +162,7 @@ fn invoke_handler_catch_panic(
     })
 }
 
-/// 系统内部 cron 作业的保留名字前缀（单一真相源）。这些前缀是 gateway
+/// 系统内部 cron 作业的保留名字前缀。这些前缀是 gateway
 /// on_job 分派分支（`ctx.rs` 按 `job.name.starts_with` 路由）与 board 启动
 /// 孤儿清理（按前缀 + id 判定）的**按名约定**——用户作业撞名会被劫持
 /// （message 被忽略、劫进系统分支）或被误删。用户面创建入口
@@ -185,14 +185,14 @@ pub struct CronService {
     running: Arc<Mutex<bool>>,
     stop_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
     on_job: Arc<Mutex<Option<Box<dyn Fn(&CronJob) -> Result<String, String> + Send + Sync>>>>,
-    /// REL-002 损坏守卫（BUG-20261025-49，gateway 侧补位）：store 加载失败
+    /// 损坏守卫（gateway 侧补位）：store 加载失败
     /// （损坏/半截/迁移失败）后置位——此后一切落盘拒绝，防止「空内存 store
-    /// 写穿盘上未知数据」。CLI（`commands/cron.rs` 的 REL-002 守卫）早已
+    /// 写穿盘上未知数据」。CLI（`commands/cron.rs` 的 守卫）早已
     /// 拒绝对损坏 store 做任何改动，gateway 侧此前只 warn + 空转，且
     /// `start()` 无条件 save —— 一次重启即把用户全部定时任务静默顶掉。
     /// `reload()` 成功 = 解毒（文件修复后的恢复入口）。
     load_poisoned: Arc<Mutex<bool>>,
-    /// Startup arm gate (H1, U12): a fresh process starts DISARMED —
+    /// Startup arm gate: a fresh process starts DISARMED —
     /// persisted jobs do not fire until the owning startup path calls
     /// [`CronService::arm`] (the gateway does this once bus+agent are ready).
     /// This is the "restart → paused pending confirmation" stance: a restart
@@ -201,16 +201,16 @@ pub struct CronService {
     /// for the process lifetime; only `new()` re-arms the gate).
     pending_arm: Arc<Mutex<bool>>,
     /// 测试钩子（仅 test 构建）：下一次落盘强制失败（一次性）——
-    /// BUG-20261103-331 并发交错红证用。
+    /// 并发交错红证用。
     #[cfg(test)]
     persist_fail_next: std::sync::atomic::AtomicBool,
     /// 测试钩子（仅 test 构建）：落盘前一次性停顿毫秒数（制造 mutate→save
-    /// 窗口，BUG-20261103-331 红证）。
+    /// 窗口， 红证）。
     #[cfg(test)]
     persist_delay_ms: std::sync::atomic::AtomicU64,
 }
 
-/// W3（2026-10-25 加固）：job 暂停句柄——供
+/// （加固）：job 暂停句柄——供
 /// `on_job` handler 在触发期 pause 自身 job（父会话已删除 → 诚实停车）。
 ///
 /// 为什么绕开 `Arc<Mutex<CronService>>`：handler 可能在调用方已持有外层
@@ -236,14 +236,14 @@ impl JobPauseHandle {
             return false;
         }
         job.enabled = false;
-        // W1b 不变量（对齐 toggle_job / enable_job / patch_job；BUG-20261025-49
+        // 不变量（对齐 toggle_job / enable_job / patch_job；
         // 补位）：停用作业不排程——残留旧 next_run 会让禁用作业带上幻影
         // 「下次触发」，且 recompute_next_runs 只碰 enabled 作业，幻影跨重启
-        // 存留。生产 W3 触发期路径此刻 next_run 已被触发循环置 None（本行
+        // 存留。生产 触发期路径此刻 next_run 已被触发循环置 None（本行
         // no-op），此行封的是非触发期调用面的不变量缺口。
         job.state.next_run_at_ms = None;
         job.updated_at_ms = Local::now().timestamp_millis();
-        // BUG-20261102-315：落盘失败必须留痕——静默吞错会让「自动暂停」只
+        // 落盘失败必须留痕——静默吞错会让「自动暂停」只
         // 活在内存，重启后 job 复活再触发（自愈但零痕迹，排障无从下手）。
         // 不改控制流：内存状态已真实推进，pause 语义在本进程内仍然成立。
         if let Err(e) = save_store_to_path(&self.store_path, &s) {
@@ -260,7 +260,7 @@ impl JobPauseHandle {
     }
 }
 
-/// 到期收集 + next_run 复位（**同一临界区**，BUG-20261028-131）。
+/// 到期收集 + next_run 复位（**同一临界区**）。
 ///
 /// 旧形态是两个锁段：collect（读锁挑出 due 列表）与 reset（写锁无条件把
 /// due 列表的 `next_run_at_ms` 践踏回 `None`）之间，并发 `patch_job`/
@@ -270,7 +270,7 @@ impl JobPauseHandle {
 /// 的排程 / 单发任务丢失。合并进单临界区后窗口结构性消除：并发 patch
 /// 要么整体落在前（next_run 已是未来 → 不满足到期谓词 → 不被收集 → 改期
 /// 被尊重），要么整体落在后（执行后 post-execution 保留臂接住——
-/// BUG-20261028-116 同源不变量：所有 patch 产出的 next_run 恒晚于本次
+/// 同源不变量：所有 patch 产出的 next_run 恒晚于本次
 /// fire 循环的 now_ms）。due 非空才落盘（保持旧形态「无 due 零写盘」）。
 fn collect_and_reset_due(
     store: &Mutex<CronStoreData>,
@@ -286,8 +286,8 @@ fn collect_and_reset_due(
         }
     }
     if !due.is_empty() {
-        // BUG-20261102-315：落盘失败必须留痕——内存 next_run 已复位而盘上
-        // 仍是旧值，重启后 recompute（H1 子句）会复活该触发点，本次触发
+        // 落盘失败必须留痕——内存 next_run 已复位而盘上
+        // 仍是旧值，重启后 recompute（子句）会复活该触发点，本次触发
         // 的副作用在重启后被重放。停摆调度器不可取（内存状态真实，丢了
         // 就是丢任务），但零痕迹等于排障黑洞：warn 记下「本次触发可能被
         // 重放」的事实。
@@ -354,7 +354,7 @@ impl CronService {
             info!("[Cron] Cron service already running, skipping");
             return Ok(());
         }
-        // REL-002 损坏守卫（BUG-20261025-49）：毒态下 start 的无条件
+        // 损坏守卫：毒态下 start 的无条件
         // recompute+save 正是把空内存 store 写穿损坏文件的元凶——先拒绝，
         // 不落盘、不 spawn（毒态下循环内的 save_store_to_path 不可达：
         // 解毒唯一入口是 load_store 成功，即 reload()/重建服务）。
@@ -384,14 +384,14 @@ impl CronService {
                 }
                 // Check jobs — mirrors Go's checkJobs()
                 let now_ms = Local::now().timestamp_millis();
-                // H1 arm gate: while disarmed (fresh process, gateway startup
+                // arm gate: while disarmed (fresh process, gateway startup
                 // not yet complete), due jobs are NOT fired and their
                 // next_run stays intact — they resume once arm() latches.
                 if *pending_arm_flag.lock() {
                     continue;
                 }
                 // Collect due jobs and reset their next_run in ONE critical
-                // section (BUG-20261028-131): the old two-lock-section shape
+                // section: the old two-lock-section shape
                 // let a concurrent patch_job slip a new future next_run into a
                 // due at-job between collect and reset — the reset then
                 // clobbered it back to None and the post-execution at-branch
@@ -418,7 +418,7 @@ impl CronService {
                         callback_job.name, callback_job.id
                     );
 
-                    // G3：触发账本开账（确定性 id=cron_job:{job}:{tick_ms}；
+                    // 触发账本开账（确定性 id=cron_job:{job}:{tick_ms}；
                     // 账本未安装=零变化，best-effort 不阻断触发）。单发
                     // 语义：进程死亡留给启动 sweep 诚实标 failed。
                     let ledger_run_id =
@@ -432,13 +432,13 @@ impl CronService {
                     );
 
                     // Call on_job handler (outside lock)——panic 隔离见
-                    // invoke_handler_catch_panic（BUG-20261029）。
+                    // invoke_handler_catch_panic。
                     let handler_result = {
                         let on_job = on_job.lock();
                         invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
                     };
 
-                    // G3：触发账本收口（无 handler 也算触发完成——与 cron
+                    // 触发账本收口（无 handler 也算触发完成——与 cron
                     // 自身 last_status="ok" 同口径）。
                     match &handler_result {
                         Some(Ok(_)) | None => {
@@ -499,7 +499,7 @@ impl CronService {
                                 {
                                     // 成功单发：下方 retain 删除，无需收尾。
                                 } else if job.state.next_run_at_ms.is_some() {
-                                    // BUG-20261028-116：执行期内被并发 patch 换入
+                                    // 执行期内被并发 patch 换入
                                     // 新调度——next_run 指向 patch 刚建立的未来触
                                     // 发点（改期闸保证 enabled 单发的 at 恒在未来）。
                                     // 本次触发消费的是「改期前」的调度，单发停摆
@@ -510,10 +510,10 @@ impl CronService {
                                     // 停摆保留。失败的 delete_after_run 任务被
                                     // retain 留作证据，但必须一并 disable——
                                     // 留着 enabled=true + 过期 at_ms 的僵尸会在
-                                    // 下次启动被 recompute_next_runs 的 H1 子句
+                                    // 下次启动被 recompute_next_runs 的 子句
                                     // 复活成 stale due time，每次网关重启都
                                     // 重放一次已失败的单发（副作用重复：建单/
-                                    // LLM turn）。（BUG-HUNT R34）
+                                    // LLM turn）。
                                     job.enabled = false;
                                     job.state.next_run_at_ms = None;
                                 }
@@ -523,12 +523,12 @@ impl CronService {
                                     Local::now().timestamp_millis(),
                                 );
                             } else {
-                                // BUG-20261025-41：作业在 handler 执行期内被并发
-                                // 停用（W3 pause_job 生产路径——触发期父会话已删
+                                // 作业在 handler 执行期内被并发
+                                // 停用（pause_job 生产路径——触发期父会话已删
                                 // 除自动暂停，pause 落盘先于本段）不得回填
                                 // next_run。裸重算会让停用作业带幻影「下次触发」
                                 // 持久化且跨重启存留（recompute_next_runs 只碰
-                                // enabled 作业）——违反 W1b 不变量（disabled 作业
+                                // enabled 作业）——违反 不变量（disabled 作业
                                 // 不排程，与 toggle/enable/patch 同一约束）。
                                 job.state.next_run_at_ms = None;
                             }
@@ -538,16 +538,16 @@ impl CronService {
                             j.id != *job_id
                                 || !j.delete_after_run
                                 || j.state.last_status.as_deref() != Some("ok")
-                                // BUG-20261028-116：执行期内并发 patch 换入的新
+                                // 执行期内并发 patch 换入的新
                                 // 调度若已建立 pending 未来触发（next_run=Some），
                                 // 不得按「成功单发即删」移除——否则删掉的是用户
                                 // 刚改好的新排程（patch 后 delete_after_run 跟随
                                 // 新 kind，旧三条件在 cron→at 改期场景全部命中）。
                                 || j.state.next_run_at_ms.is_some()
                         });
-                        // BUG-20261102-315：落盘失败必须留痕——执行后状态
+                        // 落盘失败必须留痕——执行后状态
                         // （last_status/history/停摆/删除）只活在内存，重启即
-                        // 丢；失败单发的 disable 落盘失败会让 R34 修过的
+                        // 丢；失败单发的 disable 落盘失败会让 修过的
                         // 「失败单发重启重放」僵尸复活。不置毒不改控制流：
                         // 内存状态真实，调度继续，但重启重放风险必须可追溯。
                         if let Err(e) = save_store_to_path(&store_path, &s) {
@@ -603,7 +603,7 @@ impl CronService {
     /// 被劫持进系统分支（message 被忽略）、在 gateway 启动 sync 被当孤儿
     /// 误删。内部注册走 [`Self::add_job_internal`]。
     ///
-    /// 死排程闸（BUG-20261024-11）：`enabled=true` 时若在创建时刻就算不出
+    /// 死排程闸：`enabled=true` 时若在创建时刻就算不出
     /// 任何下一次触发（过期 at / 非正或溢出的 every / 永不匹配的 cron /
     /// 未知 kind），loud 拒绝——否则任务会以「已排程」的假象永不触发。
     pub fn add_job_ext(
@@ -624,10 +624,10 @@ impl CronService {
                  触发时会被劫持、启动同步时会被误删，请换名字: {name:?}"
             ));
         }
-        // BUG-20261024-11：死排程闸——enabled 作业在创建时刻就算不出任何
+        // 死排程闸——enabled 作业在创建时刻就算不出任何
         // 下一次触发（过期 at / 非正 every / 间隔溢出 / 永不匹配的 cron
         // 表达式 / 未知 kind）＝ 永远不会 fire 的静默僵尸任务，loud 拒绝
-        // 而非假装已排程。disabled 作业放行（W1b 语义：不排程不触发，
+        // 而非假装已排程。disabled 作业放行（语义：不排程不触发，
         // enable_job 重算时才落 next_run）。
         if enabled && compute_next_run(&schedule, Local::now().timestamp_millis()).is_none() {
             return Err(format!(
@@ -635,10 +635,10 @@ impl CronService {
                  （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
             ));
         }
-        // BUG-20261030-222：空 message 闸（死排程闸同族不变量）——enabled
+        // 空 message 闸（死排程闸同族不变量）——enabled
         // 作业 message 空白 = 每次触发都落 on_job 的 "No message to
         // deliver"（status=ok）＝ 以已排程假象什么都不投递的静默僵尸，
-        // loud 拒绝。disabled 放行（W1b 对称：不触发；enable/toggle/patch
+        // loud 拒绝。disabled 放行（对称：不触发；enable/toggle/patch
         // 翻正路径同闸复检）。内部作业（board-ap/dreaming）message 恒空
         // 但走 add_job_internal 旁路，且 on_job 在 message 判空前按名分派
         // 拦截——不受本闸影响。
@@ -716,7 +716,7 @@ impl CronService {
         {
             let mut s = self.store.lock();
             s.jobs.push(job.clone());
-            // BUG #16 (W1b) + BUG-20261103-331：落盘、回滚与 mutate 同一临界
+            // +：落盘、回滚与 mutate 同一临界
             // 区——save 失败时内存回退（Err 必须意味着「未创建」），且窗口内
             // 无并发 mutator 可借 save 缝隙插入。
             if let Err(e) = self.save_store_locked(&s) {
@@ -728,7 +728,7 @@ impl CronService {
     }
 
     /// Remove a job. `Ok(false)` = 不存在；`Err` = 落盘失败（内存已回滚，
-    /// 与 [`Self::add_job_ext`] / [`Self::enable_job`] 同一 BUG #16 纪律：
+    /// 与 [`Self::add_job_ext`] / [`Self::enable_job`] 同一 纪律：
     /// Err 必须意味着"没删成"——吞掉保存错误会造成内存/磁盘分叉，调用方
     /// 以为删了而盘上任务照常触发）。
     pub fn remove_job(&self, job_id: &str) -> Result<bool, String> {
@@ -738,7 +738,7 @@ impl CronService {
             return Ok(false);
         };
         let job = store.jobs.remove(idx);
-        // BUG #16 sweep + BUG-20261103-331：save、回滚与 mutate 同一临界区
+        // sweep +：save、回滚与 mutate 同一临界区
         // ——save 失败按原下标插回（Err 必须意味着「没删成」），且回滚窗口
         // 内无并发 mutator（旧两段锁形态下，并发方的 save 可已把本方 removal
         // 持久化、本方回滚又在内存复活它——内存/盘分叉）。
@@ -801,7 +801,7 @@ impl CronService {
         schedule: Option<CronSchedule>,
     ) -> Result<(), String> {
         info!("[Cron] Job updated: id={}", job_id);
-        // 改名同受保留命名空间约束（与 add_job_ext 同一单一真相源）：改名
+        // 改名同受保留命名空间约束（与 add_job_ext 同一统一定义）：改名
         // 绕过创建闸 = 用户作业可被改成 `board-ap:{i64}` 形态——启动孤儿
         // 清理按形态+未注册 id 静默删除、on_job 分派按形态劫持（message
         // 被忽略），创建时防线防的正是这两个危害。
@@ -820,7 +820,7 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
-        // BUG-20261025-30：死排程闸延伸到更新路径（BUG-20261024-11 的闸只设
+        // 死排程闸延伸到更新路径（的闸只设
         // 在创建漏斗 add_job_ext）——给启用中的作业换入算不出任何下一次触发
         // 的调度 = 以「已排程」假象成为永不触发的静默僵尸，loud 拒绝。校验
         // 在任何变更应用前，Err = 无副作用。
@@ -833,26 +833,26 @@ impl CronService {
                  （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
             ));
         }
-        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        // sweep: snapshot for rollback on save failure (see add_job_ext).
         let before = job.clone();
         if let Some(n) = name {
             job.name = n.to_string();
         }
         if let Some(s) = schedule {
             job.schedule = s;
-            // BUG-20261025-41：delete_after_run 是 kind=="at" 的派生旗标（与
+            // delete_after_run 是 kind=="at" 的派生旗标（与
             // add_job_internal 同一派生式），换调度必须重算——at→周期 的改期
             // 若保留旧 true，任务首次成功触发即被 retain 静默删除（周期任务
             // 无声消失、零日志）。
             job.delete_after_run = job.schedule.kind == "at";
-            // W1b 不变量（对齐 patch_job）：disabled 作业不排程——裸写
+            // 不变量（对齐 patch_job）：disabled 作业不排程——裸写
             // next_run 会让禁用作业带上幻影「下次触发」。
             if job.enabled {
                 job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
             }
         }
         job.updated_at_ms = now_ms;
-        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // save、回滚与 mutate 同一临界区——save 窗口内并
         // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
         if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
@@ -869,7 +869,7 @@ impl CronService {
     /// `tasks.cron.update` handler.
     pub fn patch_job(&self, job_id: &str, patch: &CronJobPatch) -> Result<CronJob, String> {
         info!("[Cron] Job patched: id={}", job_id);
-        // 改名同受保留命名空间约束（单一真相源 [`reserved_prefix_hit`]，
+        // 改名同受保留命名空间约束（统一定义 [`reserved_prefix_hit`]，
         // 与 add_job_ext / update_job 同闸）：改名绕过创建闸 = 用户作业可被
         // 改成 `board-ap:{i64}` 形态——启动孤儿清理按形态+未注册 id 静默
         // 删除、on_job 分派按形态劫持。校验在任何变更应用前，Err = 无副作用。
@@ -888,12 +888,12 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
-        // BUG-20261025-30：死排程闸延伸到 patch 路径——按 patch 后的最终
+        // 死排程闸延伸到 patch 路径——按 patch 后的最终
         // (schedule, enabled) 组合判定：enabled 且算不出任何下一次触发 =
         // 永不触发的静默僵尸，loud 拒绝。校验在任何变更应用前，Err = 无副
-        // 作用（与上方保留前缀检查同位）。禁用终态放行（W1b：不排程不触发，
+        // 作用（与上方保留前缀检查同位）。禁用终态放行（不排程不触发，
         // 与 add_job_ext 对 disabled 死排程放行同语义；board 自动驾驶同步
-        // 另有 BUG-20261025-18 挂载防线前置，dreaming 更新失败走 warn 保留
+        // 另有 挂载防线前置，dreaming 更新失败走 warn 保留
         // 旧有效排程）。
         let final_schedule = patch
             .schedule
@@ -906,11 +906,11 @@ impl CronService {
                  （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
             ));
         }
-        // BUG-20261030-222：空 message 闸延伸到 patch 路径——按 patch 后的
+        // 空 message 闸延伸到 patch 路径——按 patch 后的
         // 最终 (message, enabled) 组合判定（与上方死排程闸同构）：改空启用
         // 中作业的 message、或翻正休眠空 message 作业，都是空转僵尸，loud
         // 拒绝。校验在任何变更应用前，Err = 无副作用。
-        // 保留前缀内部作业豁免（BUG-20261031-228）：board-ap:/memory-dreaming:
+        // 保留前缀内部作业豁免：board-ap:/memory-dreaming:
         // 作业 message 恒空但 on_job 在 message 判空**之前**按名分派拦截
         // （add_job_internal 旁路同一理由）——无豁免时 autopilot 启动同步/
         // 规则更新（arm_autopilot_job_with → patch_job）与 dreaming 配置
@@ -929,14 +929,14 @@ impl CronService {
                  （启用的任务每次触发都不会投递任何内容；请给出消息文本）"
             ));
         }
-        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        // sweep: snapshot for rollback on save failure (see add_job_ext).
         let before = job.clone();
         if let Some(n) = &patch.name {
             job.name = n.clone();
         }
         if let Some(sched) = &patch.schedule {
             job.schedule = sched.clone();
-            // BUG-20261025-41：delete_after_run 派生旗标随 kind 重算（同
+            // delete_after_run 派生旗标随 kind 重算（同
             // update_job——at→周期改期后不得保留单发删除语义）。
             job.delete_after_run = job.schedule.kind == "at";
             if job.enabled {
@@ -959,7 +959,7 @@ impl CronService {
                 Some(sk.clone())
             };
         }
-        // P1-2: three-state budget patch — Some(None) clears (global default
+        // three-state budget patch — Some(None) clears (global default
         // applies), Some(Some(n)) sets; None leaves unchanged.
         if let Some(new_budget) = patch.max_rounds {
             job.payload.max_rounds = new_budget;
@@ -974,7 +974,7 @@ impl CronService {
         }
         job.updated_at_ms = now_ms;
         let updated = job.clone();
-        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // save、回滚与 mutate 同一临界区——save 窗口内并
         // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
         if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
@@ -994,11 +994,11 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
-        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        // sweep: snapshot for rollback on save failure (see add_job_ext).
         // toggle is NOT idempotent — without rollback, a caller retrying after
         // a save failure would flip the job back.
         let before = job.clone();
-        // BUG-20261025-30：死排程闸延伸到 toggle 翻正方向（同 enable_job）
+        // 死排程闸延伸到 toggle 翻正方向（同 enable_job）
         // ——休眠死排程翻正 = 永不触发的静默僵尸，loud 拒绝。校验在任何变
         // 更应用前，Err = 无副作用（toggle 非幂等，拒绝后保持原状态）。
         let enabling = !job.enabled;
@@ -1013,10 +1013,10 @@ impl CronService {
                  （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
             ));
         }
-        // BUG-20261030-222：空 message 闸延伸到 toggle 翻正方向（同死排程
+        // 空 message 闸延伸到 toggle 翻正方向（同死排程
         // 闸家族）——休眠空 message 作业翻正 = 空转僵尸，loud 拒绝。校验
         // 在任何变更应用前，Err = 无副作用（toggle 非幂等，拒绝后保持原
-        // 状态）。保留前缀内部作业豁免（BUG-20261031-228，同 patch_job）：
+        // 状态）。保留前缀内部作业豁免（同 patch_job）：
         // 内部作业 message 恒空但 on_job 按名分派先行，闸只管用户作业。
         if enabling
             && reserved_prefix_hit(&job.name).is_none()
@@ -1028,14 +1028,14 @@ impl CronService {
             ));
         }
         job.enabled = enabling;
-        // 翻正 = 闸已保证 Some；停用 = W1b 不变量（对齐 enable_job /
+        // 翻正 = 闸已保证 Some；停用 = 不变量（对齐 enable_job /
         // patch_job）：disabled 作业不排程——残留旧 next_run 会让禁用作业
         // 带上幻影「下次触发」。
         job.state.next_run_at_ms = next;
         let new_state = job.enabled;
         info!("[Cron] Job toggled: id={}, enabled={}", job_id, new_state);
         job.updated_at_ms = now_ms;
-        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // save、回滚与 mutate 同一临界区——save 窗口内并
         // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
         if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
@@ -1060,7 +1060,7 @@ impl CronService {
             .iter_mut()
             .find(|j| j.id == job_id)
             .ok_or_else(|| format!("job not found: {}", job_id))?;
-        // BUG-20261025-30：死排程闸延伸到启用路径——休眠的死排程作业（如
+        // 死排程闸延伸到启用路径——休眠的死排程作业（如
         // 过期 at）启用 = 以「已启用」假象成为永不触发的静默僵尸，loud 拒
         // 绝。校验在任何变更应用前，Err = 无副作用。禁用方向不设闸。
         let next = if enabled {
@@ -1074,10 +1074,10 @@ impl CronService {
                  （可能原因：at 已过期 / every 间隔非正或溢出 / cron 表达式永不匹配 / 调度类型未知）"
             ));
         }
-        // BUG-20261030-222：空 message 闸延伸到启用路径（同死排程闸家族）
+        // 空 message 闸延伸到启用路径（同死排程闸家族）
         // ——休眠空 message 作业启用 = 空转僵尸，loud 拒绝。校验在任何变
         // 更应用前，Err = 无副作用。禁用方向不设闸。保留前缀内部作业豁免
-        // （BUG-20261031-228，同 patch_job/toggle_job）：内部作业 message
+        // （同 patch_job/toggle_job）：内部作业 message
         // 恒空但 on_job 按名分派先行，闸只管用户作业。
         if enabled
             && reserved_prefix_hit(&job.name).is_none()
@@ -1088,13 +1088,13 @@ impl CronService {
                  （启用的任务每次触发都不会投递任何内容；请先 patch 补上消息文本）"
             ));
         }
-        // BUG #16 sweep: snapshot for rollback on save failure (see add_job_ext).
+        // sweep: snapshot for rollback on save failure (see add_job_ext).
         let before = job.clone();
         job.enabled = enabled;
         job.state.next_run_at_ms = next;
         job.updated_at_ms = now_ms;
         let updated = job.clone();
-        // BUG-20261103-331：save、回滚与 mutate 同一临界区——save 窗口内并
+        // save、回滚与 mutate 同一临界区——save 窗口内并
         // 发 mutator 不得插入（否则本方失败回滚可抹掉对方已 Ok 的效果）。
         if let Err(e) = self.save_store_locked(&store) {
             if let Some(job) = store.jobs.iter_mut().find(|j| j.id == job_id) {
@@ -1106,7 +1106,7 @@ impl CronService {
     }
 
     /// Reload jobs from disk. Mirrors Go's `CronService.Load()`.
-    /// 加载成功 = 清除 REL-002 毒态（文件修复后的恢复入口）；失败 = 置毒。
+    /// 加载成功 = 清除 毒态（文件修复后的恢复入口）；失败 = 置毒。
     pub fn reload(&self) -> Result<(), String> {
         self.load_store()
     }
@@ -1120,7 +1120,7 @@ impl CronService {
         *self.on_job.lock() = Some(Box::new(handler));
     }
 
-    /// W3（2026-10-25 加固）：取 job 暂停句柄（见 [`JobPauseHandle`]）。
+    /// （加固）：取 job 暂停句柄（见 [`JobPauseHandle`]）。
     /// 在 `set_on_job` 前调用，闭包捕获句柄，触发期可安全 pause 自身 job。
     pub fn job_pause_handle(&self) -> JobPauseHandle {
         JobPauseHandle {
@@ -1138,7 +1138,7 @@ impl CronService {
     ///
     /// 同步语义：返回 = handler 已执行完、状态已写盘。供测试与需要
     /// 「完成后才继续」的调用方使用；web「立即运行」走
-    /// [`Self::execute_job_detached`]（BUG-20261105-033：同步形态会把
+    /// [`Self:execute_job_detached`]（同步形态会把
     /// 分钟级 agent turn 内联在 tokio worker + svc 外层锁内）。
     pub fn execute_job(&self, job_id: &str) -> Result<(), String> {
         if *self.load_poisoned.lock() {
@@ -1172,9 +1172,9 @@ impl CronService {
         callback_job.ok_or_else(|| format!("job not found: {}", job_id))
     }
 
-    /// Execute a job immediately, fire-and-forget（BUG-20261105-033）。
+    /// Execute a job immediately, fire-and-forget。
     ///
-    /// web「立即运行」（tasks.cron.run）此前同步内联 [`Self::execute_job`]
+    /// web「立即运行」（tasks.cron.run）此前同步内联 [`Self:execute_job`]
     /// ——handler 是分钟级 agent turn，期间：① tokio worker 被同步代码占住
     /// （handle_cmd 是 async 上下文，同步直跑阻塞 reactor，logs.rs 的
     /// spawn_blocking 纪律同款漏网）；② 调用方 `svc.lock()` 外层锁全程被
@@ -1182,7 +1182,7 @@ impl CronService {
     /// 冻结到 turn 完成；③ on_job 锁被持有 → 到期计划触发排队延迟。
     /// 本方法快照段（毒态闸 + store 锁内拷 job）微秒级返回，handler 执行、
     /// 状态写回、账本收口在独立线程完成——三层阻塞全部解除。
-    /// 执行错误与 [`Self::execute_job`] 同径记账（last_status/账本/日志），
+    /// 执行错误与 [`Self:execute_job`] 同径记账（last_status/账本/日志），
     /// 不经返回值上抛（调用方只消费「已接受」）。
     pub fn execute_job_detached(&self, job_id: &str) -> Result<(), String> {
         if *self.load_poisoned.lock() {
@@ -1288,12 +1288,12 @@ impl CronService {
         }
     }
 
-    /// 持有 store 锁期间的落盘（REL-002 毒态闸 + 测试钩子）。BUG-20261103-331：
+    /// 持有 store 锁期间的落盘（毒态闸 + 测试钩子）。：
     /// mutator 的 mutate→save→回滚必须整体在同一把 store 锁内完成——旧形态
     /// mutate 后 drop 锁再 save，save 窗口内并发 mutator 可插入并成功落盘
     /// （整 store 快照含本方 mutation），本方 save 失败的回滚会把对方已 Ok
     /// 的效果从内存抹掉（Ok 方效果丢失 + 内存/盘分叉）。同锁后窗口结构性
-    /// 消除（对齐 BUG-20261028-131「同一临界区」教训与 pause_job /
+    /// 消除（对齐 「同一临界区」教训与 pause_job /
     /// collect_and_reset_due 的既有正确形态）。调用方必须已持有 store 锁
     /// （parking_lot 不可重入）。
     fn save_store_locked(&self, data: &CronStoreData) -> Result<(), String> {
@@ -1330,12 +1330,12 @@ impl CronService {
         for job in &mut store.jobs {
             if job.enabled {
                 job.state.next_run_at_ms = compute_next_run(&job.schedule, now_ms);
-                // H1: while DISARMED, a past-due one-shot "at" job keeps its
+                // while DISARMED, a past-due one-shot "at" job keeps its
                 // stale due time instead of being recomputed to None — an
                 // "at" job whose time passed during downtime must fire once
                 // when the service arms (compute_next_run drops it because
                 // at_ms <= now; that drop is correct only for a fully
-                // restarted schedule, not a gated one). BUG-HUNT R34: 只限
+                // restarted schedule, not a gated one).: 只限
                 // 「从未执行过」的单发（last_run=None）——已执行失败的僵尸
                 // （error 被 retain 留证）不得每次重启重放；last_run=Some =
                 // 单发语义已消耗，重试走用户显式 update_job 换新 at_ms。
@@ -1368,7 +1368,7 @@ fn save_store_to_path(path: &str, data: &CronStoreData) -> Result<(), String> {
 }
 
 /// u64 秒 → i64 毫秒的唯一受检换算（CLI `cron add --every` 与 agent
-/// CronTool 共用的单一真相源）。溢出 = 诚实 Err，绝不回绕：回绕成负值
+/// CronTool 共用的统一定义）。溢出 = 诚实 Err，绝不回绕：回绕成负值
 /// 会产生永不触发的静默僵尸任务（`compute_next_run` 按 ms > 0 过滤），
 /// 正值错拍则产生错误间隔。
 pub fn secs_to_ms_checked(secs: u64) -> Result<i64, String> {
@@ -1378,10 +1378,10 @@ pub fn secs_to_ms_checked(secs: u64) -> Result<i64, String> {
         .ok_or_else(|| "seconds value too large".to_string())
 }
 
-/// cron 表达式「能否触发」组合判定（语法 + 语义，BUG-20261025-18 的单一
+/// cron 表达式「能否触发」组合判定（语法 + 语义， 的单一
 /// 真相源）：解析失败 = false；解析通过但从 `now_ms` 起算不出任何下一次
 /// 触发（永不匹配，如 `0 0 30 2 *`——2 月没有 30 日）= false。挂载面用
-/// 它在 enabled 作业上拒绝死排程（BUG-20261024-11 不变量覆盖
+/// 它在 enabled 作业上拒绝死排程（不变量覆盖
 /// add_job_internal 内部装配路径——autopilot/dreaming 挂载都走旁路）。
 pub fn cron_expr_can_fire(expr: &str, now_ms: i64) -> bool {
     if CronService::validate_schedule(expr).is_err() {
@@ -1403,7 +1403,7 @@ pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
         "every" => schedule
             .every_ms
             .filter(|&ms| ms > 0)
-            // BUG-20261024-11：受检加法——超大间隔把 next_run 推出 i64
+            // 受检加法——超大间隔把 next_run 推出 i64
             // 毫秒时间戳时 honest None，绝不回绕成负值（裸加法回绕负值
             // 会让 next_run <= now 恒真 → 每 tick 自旋触发 = 触发风暴）。
             .and_then(|ms| now_ms.checked_add(ms)),
@@ -1465,12 +1465,12 @@ pub fn compute_next_run(schedule: &CronSchedule, now_ms: i64) -> Option<i64> {
     }
 }
 
-/// 手动执行主体（[`CronService::execute_job`] 与
-/// [`CronService::execute_job_detached`] 共用单一真相源）：账本开账 →
+/// 手动执行主体（[`CronService:execute_job`] 与
+/// [`CronService:execute_job_detached`] 共用统一定义）：账本开账 →
 /// handler（on_job 锁内 + panic 隔离）→ 账本收口 → 状态写回落盘。
 /// 参数全值化/Arc 化——detached 形态在独立线程调用，不借 `&CronService`。
 ///
-/// 落盘纪律：毒态复查（REL-002）+ 失败 warn 留痕（BUG-20261102-315 同族
+/// 落盘纪律：毒态复查+ 失败 warn 留痕（同族
 /// ——写回失败时 handler 副作用已发生，状态只在内存，重启后手动执行的
 /// 记账丢失必须可追溯；不改控制流）。测试钩子（persist_fail_next/
 /// persist_delay_ms）不进本路径——它们的唯一消费是 mutator 并发红证
@@ -1490,7 +1490,7 @@ fn run_job_execution(
         callback_job.name, job_id
     );
 
-    // G3：手动触发同款账本（trigger=manual 与计划触发区分；账本未
+    // 手动触发同款账本（trigger=manual 与计划触发区分；账本未
     // 安装=零变化）。
     let ledger_run_id = nemesis_taskstore::ledger::cron_job_run_id(job_id, now_ms);
     nemesis_taskstore::ledger::begin_run(
@@ -1502,13 +1502,13 @@ fn run_job_execution(
     );
 
     // Call on_job handler (outside store lock)——panic 隔离见
-    // invoke_handler_catch_panic（BUG-20261029）。
+    // invoke_handler_catch_panic。
     let handler_result = {
         let on_job = on_job.lock();
         invoke_handler_catch_panic(on_job.as_ref(), &callback_job)
     };
 
-    // G3：手动触发收口（None=无 handler，同 execute 语义视为完成）。
+    // 手动触发收口（None=无 handler，同 execute 语义视为完成）。
     match &handler_result {
         Some(Ok(_)) | None => {
             nemesis_taskstore::ledger::settle_run(&ledger_run_id, "succeeded", None)
@@ -1543,7 +1543,7 @@ fn run_job_execution(
                 job.state.last_error.clone(),
             );
         }
-        // REL-002 毒态复查 + 落盘（毒态 = 盘上文件已被判定不可信，拒绝以
+        // 毒态复查 + 落盘（毒态 = 盘上文件已被判定不可信，拒绝以
         // 本进程视角覆盖；失败 warn 留痕，见函数头纪律注）。
         if *poisoned.lock() {
             warn!(

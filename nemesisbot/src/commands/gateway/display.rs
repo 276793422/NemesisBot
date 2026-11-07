@@ -9,7 +9,7 @@ use tracing::warn;
 use crate::common;
 
 /// Windows 默认浏览器命令构造（独立函数便于单测锁定不变量：程序不是
-/// shell、完整 URL 是唯一参数——BUG-20261025-29 回归锁）。门随 open_browser
+/// shell、完整 URL 是唯一参数—— 回归锁）。门随 open_browser
 /// 收放（desktop 非 android），非 desktop 构建下不参与编译。
 #[cfg(all(windows, feature = "desktop", not(target_os = "android")))]
 fn windows_browser_command(url: &str) -> std::process::Command {
@@ -23,7 +23,7 @@ fn windows_browser_command(url: &str) -> std::process::Command {
 pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // BUG-20261025-29 同病灶（与 nemesis-auth oauth.rs 同型）：旧实现
+        // 同病灶（与 nemesis-auth oauth.rs 同型）：旧实现
         // `cmd /c start {url}` + raw_arg 让 URL 里的字面 `&` 被 cmd 当命令
         // 分隔符——带查询串的 URL 在第一个 & 处被截断，余下 key=value 段被
         // 当独立命令执行。改 explorer 直启：URL 单一 argv 无 shell 中间层
@@ -177,14 +177,14 @@ pub(crate) fn print_gateway_banner(
     println!();
 }
 
-/// G9（2026-09-09 结构修复）：web host 解析——绑定地址与展示地址分离。
+/// （结构修复）：web host 解析——绑定地址与展示地址分离。
 ///
 /// 配置 host `"0.0.0.0"`/空 + `bind_all` = 绑定所有网卡。需要远端可达的
 /// 形态（集群启动、`--relay` 纯中继服务端）必须**如实绑定**：worker 跨机
 /// 拉资产走 HTTP、桥接入与状态页走公网，绑定回环则 bundle 广告出去的
 /// LAN IP 全是空头支票（旧逻辑无条件翻译成 127.0.0.1，逼用户手工把 host
-/// 配成 LAN IP 才能跑通 G9 场景；`--relay` 传 false 曾使 VPS 上 0.0.0.0
-/// 被静默回环——2026-09-19 真机验收修正）。单机场景维持保守回环绑定，
+/// 配成 LAN IP 才能跑通 场景；`--relay` 传 false 曾使 VPS 上 0.0.0.0
+/// 被静默回环—— 真机验收修正）。单机场景维持保守回环绑定，
 /// dashboard 不无谓暴露局域网。展示地址（gateway state / banner / 浏览器
 /// URL）永远用可进地址栏的地址——0.0.0.0 不是合法浏览器地址。
 /// 返回 (绑定 host, 展示 host)。
@@ -201,10 +201,10 @@ pub(crate) fn web_bind_and_display_hosts(configured: &str, bind_all: bool) -> (S
     }
 }
 
-/// G9：对外资产基址 host 选择——只在 socket **真实监听所有网卡**（绑定
+/// 对外资产基址 host 选择——只在 socket **真实监听所有网卡**（绑定
 /// unspecified 地址）时才广告 LAN IP（此时跨机可达为真，与 cluster 节点
 /// 注册挑 announce 地址同策略）；绑定回环或具体网卡时如实广告实际绑定
-/// 地址（回环绑定 + 广告 LAN IP = 承诺不可达 URL，正是 G9 病灶）。
+/// 地址（回环绑定 + 广告 LAN IP = 承诺不可达 URL，正是 病灶）。
 #[cfg_attr(
     not(all(feature = "board", feature = "cluster")),
     allow(dead_code) // 唯一调用点在 board+cluster 资产基址块；裁剪构建下不参与
@@ -217,7 +217,7 @@ pub(crate) fn advertise_host_for(bound_ip: std::net::IpAddr, lan_ip: Option<Stri
     }
 }
 
-/// G9：从本机 IP 列表与集群注册表已知 peer 地址推导**对外 NIC**——与任一
+/// 从本机 IP 列表与集群注册表已知 peer 地址推导**对外 NIC**——与任一
 /// peer 同网段的本机 IP 优先（peer 已证明在该网段内活动，本机同网段地址
 /// 即为跨机可达的最优候选），无信号回落首个非回环 IP。多重网卡机器
 /// （ICS/VPN/Hyper-V 虚拟适配器并存）靠这个选中真正连集群的网卡，而不是
@@ -266,12 +266,12 @@ fn parse_ipv4_octets(s: &str) -> Option<(u8, u8, u8, u8)> {
     Some((a, b, c, d))
 }
 
-/// G9 装配侧取数：本机 IP 列表 + 集群注册表已知 peer 地址（**排除本节点
+/// 装配侧取数：本机 IP 列表 + 集群注册表已知 peer 地址（**排除本节点
 /// 自己**——本节点注册地址是 get_all_local_ips 首猜，可能恰是要纠正的错
 /// NIC），交给纯函数选对外 NIC。
 /// `#[cfg]` 整段摘除（非 cfg_attr+dead_code）：签名/函数体引用
-/// `nemesis_cluster::`，feature 关闭时类型路径必须整体出编译（2026-09-12
-/// CI feature-matrix E0433 根修；两个调用点均在 all(board,cluster) 块内）。
+/// `nemesis_cluster:`，feature 关闭时类型路径必须整体出编译（
+/// CI feature-matrix 根修；两个调用点均在 all(board,cluster) 块内）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) fn select_lan_ip_for_advertisement(
     cluster: &nemesis_cluster::cluster::Cluster,

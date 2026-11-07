@@ -56,7 +56,7 @@ pub async fn resolve_seven_zip(runtime_dir: &Path) -> Result<PathBuf> {
 
 /// Fetch `url` with 3-attempt retry + honest HTTP status gating.
 ///
-/// BUG-20261101-267：此前不查状态码——GitHub 404/403 的 HTML 错误页被当
+/// 此前不查状态码——GitHub 404/403 的 HTML 错误页被当
 /// zip 字节落盘，由下游 SHA-256 校验拦下但诊断成 hash mismatch 而非真实
 /// HTTP 错误，且三次重试全打在同一错误页上。error_for_status 让错误状态
 /// 与网络错误同走重试链，错误消息诚实带状态码。

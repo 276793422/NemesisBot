@@ -14,11 +14,11 @@
 //!   `\\.\pipe\NemesisBox_<id>` instead.
 //!
 //! The spawn command is controlled INDEPENDENTLY by `start_exe`:
-//! - `None` → spawn the executor directly (Layer 1, or L2.1 transport testing).
-//! - `Some` → wrap with `Start.exe /box:<box>` (L2.2 real Sandboxie containment).
+//! - `None` → spawn the executor directly (Layer 1, or.1 transport testing).
+//! - `Some` → wrap with `Start.exe /box:<box>` (.2 real Sandboxie containment).
 //!
-//! See `docs/PLAN/2026-07-08_executor-separation.md` (Layer 1) and
-//! `docs/PLAN/2026-07-09_sandboxie-integration.md` (Layer 2).
+//! See `executor-separation` (Layer 1) and
+//! `sandboxie-integration` (Layer 2).
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -45,7 +45,7 @@ use crate::r#loop::{FileChange, Tool};
 /// Note: `exec_async` (background processes) is intentionally NOT here — a
 /// per-call child exits after one tool call, so a background-process handle it
 /// returned would be orphaned. It stays local until a long-lived executor model
-/// is introduced. `sleep` likewise stays local (no isolation value). The B4
+/// is introduced. `sleep` likewise stays local (no isolation value). The
 /// `background_start`/`background_output`/`background_kill` trio is local for
 /// the same reason, more strictly: the job registry lives in the gateway
 /// process (`SharedResources.background_registry`) and the exec_worker child
@@ -54,7 +54,7 @@ use crate::r#loop::{FileChange, Tool};
 pub const MOVE_TOOLS: &[&str] = &[
     "exec",
     "run_script",
-    // C8 (2026-09-06): run_checks spawns cargo/npm/go builds — same write
+    // run_checks spawns cargo/npm/go builds — same write
     // surface as exec (target/, node_modules/), so executor separation and
     // sandbox contain it identically. It waits in-call, so a per-call
     // subprocess is safe.
@@ -63,7 +63,7 @@ pub const MOVE_TOOLS: &[&str] = &[
     "write_file",
     "list_dir",
     "edit_file",
-    // A7 (2026-09-06): multiedit is a batch edit_file — same write surface,
+    // multiedit is a batch edit_file — same write surface,
     // contained identically (in-memory apply + write-all happens in the child).
     "multiedit",
     // 2026-11-06：append_file 并入 edit_file（action=append），追加的写面
@@ -79,8 +79,8 @@ pub const MOVE_TOOLS: &[&str] = &[
 // Wire protocol — one JSON line per direction (newline-delimited)
 // ---------------------------------------------------------------------------
 
-// P3 T1：wire 结构收编到 [`crate::executor_transport`]（gateway / exec_worker
-// 两侧单一真相源；per-call 路径产出 v1 字节形态不变——`ExecutorRequestRef`
+// wire 结构收编到 [`crate::executor_transport`]（gateway / exec_worker
+// 两侧单一权威定义；per-call 路径产出 v1 字节形态不变——`ExecutorRequestRef`
 // 空 `v`/`call_id` 跳序列化）。
 use crate::executor_transport::{ExecutorRequestRef, ExecutorResponseWire, StderrTail};
 
@@ -88,18 +88,18 @@ use crate::executor_transport::{ExecutorRequestRef, ExecutorResponseWire, Stderr
 // ExecutorChannel — spawns a fresh child per call, one request → one response
 // ---------------------------------------------------------------------------
 
-/// Type alias for the P5-2 strict fail-closed gate (keeps the struct decl and
+/// Type alias for the strict fail-closed gate (keeps the struct decl and
 /// `spawn_and_call` readable).
 pub type StrictGate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
-/// P24：Windows 盒 wrap 缺位时「用户态 ACL 档可否顶上」的选型钩子（gateway
+/// Windows 盒 wrap 缺位时「用户态 ACL 档可否顶上」的选型钩子（gateway
 /// 注入；nemesis-agent 刻意不依赖 nemesis-sandbox，决策以闭包传入——与
 /// `sandbox_probe` 同款模式）。true = 降级改走 stdio + 用户态标记，子进程
 /// engage 按 `executor.backend` 选型自装 ACL 围栏。
 pub type UserlandFallback = Arc<dyn Fn() -> bool + Send + Sync>;
 
 // ---------------------------------------------------------------------------
-// DACL 定向档（D3，2026-09-27）——受限令牌 spawn 事务的闭包 hook
+// DACL 定向档——受限令牌 spawn 事务的闭包 hook
 // ---------------------------------------------------------------------------
 
 /// DACL 定向档 spawn 请求（nemesis-agent 本地类型——刻意不依赖
@@ -150,7 +150,7 @@ pub struct ExecutorChannel {
     /// nemesis-agent deliberately does not depend on nemesis-config, so the
     /// decision is passed in as a closure rather than a stored bool.
     pub sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync>,
-    /// P5-2 严格模式 fail-closed 闸门（跨平台统一语义）：`Some` 时，凡
+    /// 严格模式 fail-closed 闸门（跨平台统一语义）：`Some` 时，凡
     /// `sandbox_probe()` 为 true（本次调用**要求**沙盒）的调用先过闸门——
     /// 闸门 `Err` 则**拒绝执行**并返回明确错误（fail-closed），不再走
     /// "warn + 无盒降级"（fail-open，现状）。闸门内部自行 live 读
@@ -160,33 +160,33 @@ pub struct ExecutorChannel {
     /// 注入（测试/裸构造）= 无闸门 = 现状。
     pub strict_gate: Option<StrictGate>,
     /// Sandboxie `Start.exe` path. `Some` → spawn via `Start.exe /box:<box>`
-    /// (real containment, L2.2). `None` → spawn the executor directly (Layer 1,
-    /// or L2.1 transport testing without the box).
+    /// (real containment,.2). `None` → spawn the executor directly (Layer 1,
+    /// or.1 transport testing without the box).
     pub start_exe: Option<PathBuf>,
     /// Sandboxie box name.
     pub box_name: String,
-    /// App home（gateway 侧解析好的）。U11：传给子进程读
+    /// App home（gateway 侧解析好的）。：传给子进程读
     /// `<home>/config.json` 的 `executor.allow_network`（用户态沙盒禁网
     /// 开关；`None` = 测试/裸构造，子进程按默认 false 处理）。
     pub home: Option<PathBuf>,
-    /// WS9/P22：gateway 侧租约开关透传——true 时 build_command 给子进程
+    /// ：gateway 侧租约开关透传——true 时 build_command 给子进程
     /// 设 `NEMESISBOT_LEASE=1`，executor 侧据此构造同根租约（写类工具互
     /// 斥跨进程）。子进程不读用户 config，装配语义由父进程钉死。
     pub lease_child: bool,
-    /// P24：Windows 盒 wrap 缺位时「用户态 ACL 档可顶」选型钩子（gateway
+    /// Windows 盒 wrap 缺位时「用户态 ACL 档可顶」选型钩子（gateway
     /// 注入，见 [`UserlandFallback`]）。`None` = 未注入（测试/裸构造）=
     /// 现状（无盒直接 spawn）字节不变。
     pub userland_fallback: Option<UserlandFallback>,
-    /// D3：DACL 定向档 spawn hook（gateway 注入，见 [`DaclSpawnHook`]）。
+    /// DACL 定向档 spawn hook（gateway 注入，见 [`DaclSpawnHook`]）。
     /// `None` = 未注入（测试/裸构造/trim 构建）= 现状字节不变。盒 wrap
     /// （`start_exe`）在场时本 hook 不抢（Sandboxie 更强，结构性防线）。
     pub dacl_spawn: Option<DaclSpawnHook>,
-    /// B1（2026-10-31 项目 home 收编）：围栏第二根（项目 agent home）。
+    /// （项目 home 收编）：围栏第二根（项目 agent home）。
     /// `env_pairs()` 写 `NEMESISBOT_EXECUTOR_EXTRA_ROOTS`，子进程侧
     /// `exec_worker` 解析合并进子进程围栏——exec 分离开关两侧围栏同根。
     /// 空 = 单根旧行为（主 loop / 工作流引擎零变化）。
     pub extra_roots: Vec<PathBuf>,
-    /// 子进程围栏 restrict 开关透传（BUG 修复 2026-11-04）：镜像主进程
+    /// 子进程围栏 restrict 开关透传（BUG 修复）：镜像主进程
     /// `WorkspaceBoundary.restrict`（`agents.defaults.restrict_to_workspace`，
     /// 同为装配期值——loop 边界与通道同点装配，重启才变，两侧不会漂移）。
     /// false 时 `env_pairs()` 写 `NEMESISBOT_EXECUTOR_RESTRICT=0`，子进程
@@ -198,8 +198,8 @@ pub struct ExecutorChannel {
 }
 
 impl ExecutorChannel {
-    /// Construct a channel in Layer-1 / L2.1 mode (direct spawn, no Start.exe
-    /// wrap). L2.2 sets `start_exe` via the `with_start_exe` builder.
+    /// Construct a channel in Layer-1 /.1 mode (direct spawn, no Start.exe
+    /// wrap)..2 sets `start_exe` via the `with_start_exe` builder.
     /// `sandbox_probe` is called per tool call to pick stdio vs named-pipe
     /// transport, so it must reflect the live config (the factory wires it to
     /// ConfigStore).
@@ -227,13 +227,13 @@ impl ExecutorChannel {
         }
     }
 
-    /// B1：设置围栏第二根（项目 loop 装配侧注入；空 = 单根旧行为）。
+    /// 设置围栏第二根（项目 loop 装配侧注入；空 = 单根旧行为）。
     pub fn with_extra_roots(mut self, roots: Vec<PathBuf>) -> Self {
         self.extra_roots = roots;
         self
     }
 
-    /// BUG 修复 2026-11-04：设置子进程围栏 restrict 镜像（装配侧从同一
+    /// BUG 修复：设置子进程围栏 restrict 镜像（装配侧从同一
     /// config 读主进程边界开关传入；true = 缺省不设 env，字节不变）。
     pub fn with_restrict_child(mut self, restrict: bool) -> Self {
         self.restrict_child = restrict;
@@ -241,20 +241,20 @@ impl ExecutorChannel {
     }
 
     /// Set the app home (child reads `executor.allow_network` from its
-    /// config.json; U11 userland sandbox network switch).
+    /// config.json; userland sandbox network switch).
     pub fn with_home(mut self, home: PathBuf) -> Self {
         self.home = Some(home);
         self
     }
 
-    /// Set the Sandboxie `Start.exe` path (L2.2: wraps the spawn for real box).
+    /// Set the Sandboxie `Start.exe` path (.2: wraps the spawn for real box).
     #[allow(dead_code)]
     pub fn with_start_exe(mut self, start_exe: PathBuf) -> Self {
         self.start_exe = Some(start_exe);
         self
     }
 
-    /// Set the P5-2 strict fail-closed gate (see [`ExecutorChannel::strict_gate`]).
+    /// Set the strict fail-closed gate (see [`ExecutorChannel::strict_gate`]).
     /// Injected by the gateway assembly (`exec_world`); tests use it to prove
     /// refusal happens BEFORE any spawn.
     pub fn with_strict_gate(mut self, gate: StrictGate) -> Self {
@@ -269,7 +269,7 @@ impl ExecutorChannel {
         self
     }
 
-    /// WS9/P22：透传租约开关给 executor 子进程（见 [`Self::lease_child`]）。
+    /// ：透传租约开关给 executor 子进程（见 [`Self::lease_child`]）。
     /// gateway 装配侧（exec_world）按 `agents.lease_enabled` 注入；测试/裸
     /// 构造默认 false（现状不变）。
     pub fn with_lease_child(mut self, lease: bool) -> Self {
@@ -277,21 +277,21 @@ impl ExecutorChannel {
         self
     }
 
-    /// P24：注入 Windows 盒缺位时的用户态 ACL 选型钩子（仅 stdio 通道——
+    /// 注入 Windows 盒缺位时的用户态 ACL 选型钩子（仅 stdio 通道——
     /// 即无 `with_start_exe` 的构造——有意义；盒 wrap 在场时判定短路）。
     pub fn with_userland_fallback(mut self, fallback: UserlandFallback) -> Self {
         self.userland_fallback = Some(fallback);
         self
     }
 
-    /// D3：注入 DACL 定向档 spawn hook（仅 Windows + gateway 装配侧；见
+    /// 注入 DACL 定向档 spawn hook（仅 Windows + gateway 装配侧；见
     /// [`ExecutorChannel::dacl_spawn`]）。盒 wrap 在场时 hook 不抢。
     pub fn with_dacl_spawn(mut self, hook: DaclSpawnHook) -> Self {
         self.dacl_spawn = Some(hook);
         self
     }
 
-    /// P24：Windows dispatch 通道判定（纯函数，单测可达）——盒 wrap 缺位
+    /// Windows dispatch 通道判定（纯函数，单测可达）——盒 wrap 缺位
     /// 且用户态 fallback 判定可顶 → stdio + 用户态标记（子进程自装 ACL）；
     /// 其余（盒在场 / 未注入 / 判定 false）→ 管道（现状）。
     #[cfg(windows)]
@@ -310,7 +310,7 @@ impl ExecutorChannel {
                 self.workspace.clone(),
             ),
         ];
-        // WS9/P22：租约透传（true 时才设——省 env 不含语义，子进程缺省 false）。
+        // /：租约透传（true 时才设——省 env 不含语义，子进程缺省 false）。
         if self.lease_child {
             env.push(("NEMESISBOT_LEASE".to_string(), "1".to_string()));
         }
@@ -320,7 +320,7 @@ impl ExecutorChannel {
                 home.to_string_lossy().into_owned(),
             ));
         }
-        // BUG 修复 2026-11-04：围栏 restrict 镜像透传——只在 false 时设
+        // BUG 修复：围栏 restrict 镜像透传——只在 false 时设
         // `NEMESISBOT_EXECUTOR_RESTRICT=0`（省 env 不含语义，子进程缺省
         // true = 旧行为：老网关/裸构造 spawn 的子进程围栏逐字节不变）。
         // 主进程 restrict=false 时子进程围栏同相放开（两侧同源 config，
@@ -329,7 +329,7 @@ impl ExecutorChannel {
         if !self.restrict_child {
             env.push(("NEMESISBOT_EXECUTOR_RESTRICT".to_string(), "0".to_string()));
         }
-        // B1：围栏第二根透传（平台原生路径分隔符 join；空 = 不设 env——
+        // 围栏第二根透传（平台原生路径分隔符 join；空 = 不设 env——
         // 子进程缺省空 vec，单根行为与旧版逐字节一致）。join 失败（路径
         // 含平台分隔符，如 Windows `;`）= 子进程围栏降级单根（拒绝方向，
         // 不放大可写集），warn 留痕不静默。
@@ -348,8 +348,8 @@ impl ExecutorChannel {
     }
 
     /// Build the spawn command. The wrap is controlled by `start_exe`:
-    /// - `Some` → `Start.exe /box:<box> nemesisbot.exe` (L2.2 real box).
-    /// - `None` → `nemesisbot.exe` directly (Layer 1 / L2.1 transport-only).
+    /// - `Some` → `Start.exe /box:<box> nemesisbot.exe` (.2 real box).
+    /// - `None` → `nemesisbot.exe` directly (Layer 1 /.1 transport-only).
     fn build_command(&self) -> Command {
         let mut cmd = if let Some(start) = &self.start_exe {
             let mut c = Command::new(start);
@@ -383,7 +383,7 @@ impl ExecutorChannel {
         ctx: &RequestContext,
     ) -> Result<String, String> {
         let request_line = self.build_request_line(tool, args, ctx)?;
-        // D3：DACL 定向档 hook 最先询问（kernel 强制写围栏 > 子进程自装完
+        // DACL 定向档 hook 最先询问（kernel 强制写围栏 > 子进程自装完
         // 整性档）。盒 wrap（start_exe）在场时不抢——Sandboxie 是更强档，
         // 这里是结构性防线，选型归 gateway 闭包语义管辖。
         // Ok(None) = 未启用/宽松降级 → 走现状分支（字节不变）；Err =
@@ -408,7 +408,7 @@ impl ExecutorChannel {
             }
         }
         if (self.sandbox_probe)() {
-            // P5-2 严格模式（fail-closed）：本次调用要求沙盒（sandbox_probe
+            // 严格模式（fail-closed）：本次调用要求沙盒（sandbox_probe
             // 为 true），先过严格闸门——不过则拒绝执行，绝不静默降级成无盒。
             // 闸门内部 live 读 executor.strict：false 时秒过（现状字节不变）。
             if let Some(gate) = &self.strict_gate
@@ -426,8 +426,8 @@ impl ExecutorChannel {
             }
             #[cfg(windows)]
             {
-                // P24（2026-09-26）：盒 wrap 缺位且 gateway 选型判定「用户态
-                // ACL 档可顶」→ 降级不走裸 spawn（L2.1 无盒），改走 stdio +
+                // 盒 wrap 缺位且 gateway 选型判定「用户态
+                // ACL 档可顶」→ 降级不走裸 spawn（.1 无盒），改走 stdio +
                 // 用户态标记——子进程 engage 按 executor.backend 选型自装
                 // ACL 完整性围栏（恒 Partial，实验档）。未注入/false = 现状
                 // 字节不变。注意 strict 闸门在上面已跑过且仍只认 Sandboxie
@@ -439,7 +439,7 @@ impl ExecutorChannel {
             }
             #[cfg(not(windows))]
             {
-                // U11: non-Windows userland sandbox (landlock 优先 / bwrap 兜底，
+                // non-Windows userland sandbox (landlock 优先 / bwrap 兜底，
                 // 见 nemesis_sandbox::backend)。与 Sandboxie 不同，用户态后端不
                 // 改变 stdio 通路——子进程（exec_worker）看到 env 标记后在启动时
                 // 对自身装上限制（自装式），stdio 传输照常。降级语义在子进程侧：
@@ -486,15 +486,15 @@ impl ExecutorChannel {
     }
 
     /// Drain child stderr in the background and retain the tail for failure
-    /// diagnostics. 实现收编到 [`StderrTail`]（P3 T1：per-call 与 persistent
-    /// 会话共用单一真相源）。
+    /// diagnostics. 实现收编到 [`StderrTail`]（per-call 与 persistent
+    /// 会话共用统一定义）。
     fn drain_stderr(child: &mut tokio::process::Child) -> StderrTail {
         StderrTail::spawn(child.stderr.take())
     }
 
     /// stdio transport (sandbox=false, or non-Windows userland sandbox): write
     /// stdin, read stdout. `userland_sandbox` sets the env marker the child
-    /// (`exec_worker`) reads at startup to self-apply landlock/bwrap (U11).
+    /// (`exec_worker`) reads at startup to self-apply landlock/bwrap.
     async fn spawn_and_call_stdio(
         &self,
         tool: &str,
@@ -561,11 +561,11 @@ impl ExecutorChannel {
         Self::parse_response(&resp_line)
     }
 
-    /// DACL 定向档 spawn 事务（D3）：gateway 注入的 [`DaclSpawnFn`] 内部
+    /// DACL 定向档 spawn 事务：gateway 注入的 [`DaclSpawnFn`] 内部
     /// 完成 write-restricted 令牌铸造 + `CreateProcessAsUserW` + stdio 往返
     /// （同步 FFI——这里 `spawn_blocking` 包住，不占 async 线程）。请求行与
     /// env 走 [`Self::env_pairs`] 同源，额外注入：
-    /// - `NEMESISBOT_EXECUTOR_SANDBOX=1`：两层叠加（推荐档，设计 §3.4）——
+    /// - `NEMESISBOT_EXECUTOR_SANDBOX=1`：两层叠加（推荐档，设计）——
     ///   子进程照常自装完整性标签，父进程再罩受限令牌写围栏；
     /// - `NEMESISBOT_SANDBOX_BACKEND=workspace-dacl`：拒绝台账 backend 标签
     ///   证据化（与 Start.exe wrap 注入 "sandboxie" 同一约定）。
@@ -606,9 +606,9 @@ impl ExecutorChannel {
         }
     }
 
-    /// Named-pipe transport (sandbox=true). L2.1: works with or without the box
+    /// Named-pipe transport (sandbox=true)..1: works with or without the box
     /// — `start_exe=None` spawns directly (transport test); `start_exe=Some`
-    /// wraps with Start.exe (real box, L2.2).
+    /// wraps with Start.exe (real box,.2).
     #[cfg(windows)]
     async fn spawn_and_call_pipe(&self, tool: &str, request_line: &str) -> Result<String, String> {
         use crate::executor_pipe;
@@ -642,7 +642,7 @@ impl ExecutorChannel {
             .map_err(|e| format!("failed to spawn executor child: {e}"))?;
         let stderr_tail = Self::drain_stderr(&mut child);
 
-        // 3. Wait for the child to connect — A4 装配纪律：等待循环耦合子进程
+        // 3. Wait for the child to connect — 装配纪律：等待循环耦合子进程
         //    存活断言（child 启动即崩 = 立即报退出码 + stderr 现场，不傻等
         //    满 30s 超时）。connect 探针幂等可重入（NamedPipeServer::connect
         //    cancel-safe），单次尝试限窗 500ms，超窗下轮重试；connect 的 io
@@ -750,7 +750,7 @@ impl ExecutorChannel {
 }
 
 // ---------------------------------------------------------------------------
-// P3 T3：persistent 子进程的 env 白名单 + home 重定向
+// persistent 子进程的 env 白名单 + home 重定向
 // ---------------------------------------------------------------------------
 
 /// persistent（常驻）执行体子进程的 env 白名单——常驻 spawn 走
@@ -826,7 +826,7 @@ where
 
 /// persistent 模式的 home 族重定向对：agent home 就是子进程的「家」——
 /// `HOME` / `USERPROFILE` 直指 agent home，应用配置/数据目录（APPDATA、
-/// XDG_*）落进 home 的常规子目录。浏览器身份（T6）由此天然隔离在 home 内。
+/// XDG_*）落进 home 的常规子目录。浏览器身份由此天然隔离在 home 内。
 pub fn home_redirect_env_pairs(home: &Path) -> Vec<(String, String)> {
     let home_str = home.to_string_lossy().into_owned();
     let mut v = vec![("HOME".to_string(), home_str.clone())];
@@ -848,17 +848,17 @@ pub fn home_redirect_env_pairs(home: &Path) -> Vec<(String, String)> {
 }
 
 // ---------------------------------------------------------------------------
-// Persistent route (P3 T7) — resident executor attachment point
+// Persistent route — resident executor attachment point
 // ---------------------------------------------------------------------------
 
-/// 常驻执行体调用的分型错误（T7）。语义边界只有一条线：**调用有没有发生**。
+/// 常驻执行体调用的分型错误。语义边界只有一条线：**调用有没有发生**。
 /// `Unavailable` = 调用未发生（实体未就绪 / 槽满 / spawn 失败在握手前）；
 /// `ToolFailed` = 调用已送达执行体（可能已有副作用），回落会造成重复执行——
 /// 必须原样上抛。这是 supervisor 侧 `SupervisorError` 的 agent crate 侧镜像
 /// （nemesis-agent 不依赖 nemesisbot，依赖倒置：trait 定义在本 crate，bot 侧
 /// 实现）。
 ///
-/// R1（2026-10-20）：回落策略由错误**携带**（`host_fallback` 位）——只有产生
+/// 回落策略由错误**携带**（`host_fallback` 位）——只有产生
 /// 错误的执行体自己知道当时路由到哪个后端：process 档宿主同文件视图，回落
 /// 语义安全；vm 档 guest 异文件视图，静默落宿主 = 在不同文件视图上执行 =
 /// 文件视图切换正确性 bug，必须禁。路由层无权代答（静态判断做不到——
@@ -872,7 +872,7 @@ pub enum PersistentCallError {
         message: String,
         host_fallback: bool,
     },
-    /// F1（2026-10-21 三轮复评）：身份生命周期已终结（删除/注销/代次失效）
+    /// （三轮复评）：身份生命周期已终结（删除/注销/代次失效）
     /// 的拒绝——调用未发生**且**该身份不该再执行任何工具。与 `Unavailable`
     /// 的区别：即便宿主同文件视图（process 档）也**禁止回落**——回落 =
     /// 已删身份的工具在宿主照常执行（探针实证的事故面）。调用方必须终止
@@ -896,13 +896,13 @@ impl std::fmt::Display for PersistentCallError {
     }
 }
 
-/// 常驻执行体的抽象（T7 依赖倒置）。生产实现 = nemesisbot 侧
+/// 常驻执行体的抽象（依赖倒置）。生产实现 = nemesisbot 侧
 /// `AgentRuntimeSupervisor`（按 agent_id 复用常驻子进程 + journal 语义）。
 #[async_trait]
 pub trait PersistentExecutor: Send + Sync {
     /// 在 `agent_id` 的常驻执行体内执行一次工具调用。`exec_root` 是本次
     /// 调用的工作区锚（main=workspace / project=项目目录 / selfbuilt=home，
-    /// 来自 agents 表记录——单一真相源），监督器 spawn 时写进子进程 env。
+    /// 来自 agents 表记录——统一定义），监督器 spawn 时写进子进程 env。
     async fn execute_persistent(
         &self,
         agent_id: &str,
@@ -913,7 +913,7 @@ pub trait PersistentExecutor: Send + Sync {
     ) -> Result<String, PersistentCallError>;
 }
 
-/// 挂在 [`RemoteExecutorTool`] 上的常驻路由（T7）：agent 身份惰性解析 +
+/// 挂在 [`RemoteExecutorTool`] 上的常驻路由：agent 身份惰性解析 +
 /// 常驻执行体句柄。`resolve` 在**每次工具调用时**执行（loop 建成早于实体
 /// seed——首次 boot 时装配完成时 agents 表还没种，静态绑定必空）；返回
 /// `None` = 实体未就绪，调用方回落 per-call 路径。
@@ -933,9 +933,9 @@ pub struct PersistentRoute {
 /// local impl, so the LLM sees identical schemas and the checkpoint safety net
 /// still snapshots file writes.
 ///
-/// P3 T7：`persistent` 有值时 execute 先询问常驻路由（身份解析成功 → 常驻
+/// `persistent` 有值时 execute 先询问常驻路由（身份解析成功 → 常驻
 /// 执行体；`Unavailable` → 回落本通道 per-call 链；`ToolFailed` → 原样上抛
-/// 不回落）。per-call 路径行为与 T7 前逐字节一致（回落即兼容）。
+/// 不回落）。per-call 路径行为与 前逐字节一致（回落即兼容）。
 pub struct RemoteExecutorTool {
     name: String,
     local: Box<dyn Tool>,
@@ -957,7 +957,7 @@ impl RemoteExecutorTool {
         }
     }
 
-    /// P3 T7：挂常驻路由（gateway 装配期调用；不挂 = 纯 per-call，行为与
+    /// 挂常驻路由（gateway 装配期调用；不挂 = 纯 per-call，行为与
     /// 既有 Layer 1/2 一致）。
     pub fn with_persistent(mut self, route: PersistentRoute) -> Self {
         self.persistent = Some(route);
@@ -968,7 +968,7 @@ impl RemoteExecutorTool {
 #[async_trait]
 impl Tool for RemoteExecutorTool {
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
-        // T7 常驻路由前置询问：身份解析成功 → 常驻执行体优先。安全 8 层 /
+        // 常驻路由前置询问：身份解析成功 → 常驻执行体优先。安全 8 层 /
         // estop / plan 模式闸全部在 loop dispatch 层先于本函数执行（构造性
         // 覆盖），常驻调用不构成旁路。
         if let Some(route) = &self.persistent
@@ -985,7 +985,7 @@ impl Tool for RemoteExecutorTool {
                     return Err(e);
                 }
                 Err(PersistentCallError::LifecycleRejected(message)) => {
-                    // F1（2026-10-21 三轮复评）：身份已终结（删除/注销/代次
+                    // （三轮复评）：身份已终结（删除/注销/代次
                     // 失效）——无论哪个后端档位都终止本次调用，绝不落 per-call
                     // 宿主路径（回落 = 已删身份的工具照常执行）。文案表达生命
                     // 周期拒绝，不再复用「文件视图不同」的档位切换指引。
@@ -1000,7 +1000,7 @@ impl Tool for RemoteExecutorTool {
                     host_fallback,
                 }) => {
                     if !host_fallback {
-                        // R1：产生错误的执行体声明「宿主回落不安全」（vm 档
+                        // 产生错误的执行体声明「宿主回落不安全」（vm 档
                         // guest 异文件视图）——静默落 per-call = 在宿主文件
                         // 视图上执行 = 文件视图切换。上抛诚实错误，附切换
                         // 指引；不 spawn 宿主执行器。
@@ -1011,7 +1011,7 @@ impl Tool for RemoteExecutorTool {
                         ));
                     }
                     // 调用未发生且宿主同视图——诚实降级到 per-call 路径（兼容
-                    // 回退是 PLAN P3 验收门明文；info 留痕不 warn——回落是设计
+                    // 回退是 PLAN 验收门明文；info 留痕不 warn——回落是设计
                     // 内形态）。
                     tracing::info!(
                         tool = %self.name,
@@ -1047,10 +1047,10 @@ impl Tool for RemoteExecutorTool {
 
 #[cfg(test)]
 mod tests;
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 // 覆盖率补充批次：stdio 成功回路 + stderr drain / userland 标记 / 超时 / 无响应退出。
-// 假子进程是 .cmd 批处理（Windows spawn 语义），整文件 Windows 形态。
+// 假子进程是.cmd 批处理（Windows spawn 语义），整文件 Windows 形态。
 #[cfg(all(test, windows))]
 mod cov_tests;

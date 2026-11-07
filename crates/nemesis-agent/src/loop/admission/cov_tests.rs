@@ -1,4 +1,4 @@
-// loop/admission.rs 覆盖率补充测试（K4(b) 审批卡回执语法 / 会话闸队列
+// loop/admission.rs 覆盖率补充测试（(b) 审批卡回执语法 / 会话闸队列
 // 账目 / inbox_status 模式快照）。
 //
 // 声明挂 admission.rs 的 cfg(test) 块——SessionBusyState 字段为
@@ -162,7 +162,7 @@ fn release_session_drains_queue_before_releasing() {
 }
 
 // ---------------------------------------------------------------------------
-// inbox_status：三模式快照（U7 dashboard 可见性）
+// inbox_status：三模式快照（dashboard 可见性）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -190,7 +190,7 @@ fn inbox_status_reflects_mode_and_busy() {
 }
 
 // ---------------------------------------------------------------------------
-// F2（2026-09-27）：空闲态 `!` steer 信号剥除（Steer 模式专属，第三条
+// 空闲态 `!` steer 信号剥除（Steer 模式专属，第三条
 // 时序补齐——busy 态 claim/transfer 两条已由 inbox 单一规则覆盖）。
 // ---------------------------------------------------------------------------
 
@@ -267,7 +267,7 @@ async fn f2_run_and_observe(
     (seen_content, user_row)
 }
 
-/// Steer 模式空闲：`! 前缀` 剥除后才进模型与 B1 早落盘（与 busy 态同形
+/// Steer 模式空闲：`! 前缀` 剥除后才进模型与 早落盘（与 busy 态同形
 /// ——标记是路由信号不是内容，模型/历史/上下文三面一致）。
 #[tokio::test]
 async fn f2_steer_mode_idle_admission_strips_marker() {
@@ -337,7 +337,7 @@ async fn f2_queue_mode_idle_keeps_marker_literal() {
 }
 
 // ---------------------------------------------------------------------------
-// C4（2026-10-24 cron 合闸）：busy 闸丢弃同 job 重复 tick
+// （cron 合闸）：busy 闸丢弃同 job 重复 tick
 // ---------------------------------------------------------------------------
 
 fn cron_tick(job: &str, key: &str, content: &str) -> nemesis_types::channel::InboundMessage {
@@ -409,7 +409,7 @@ fn cron_tick_coalesced_when_same_job_already_queued() {
 }
 
 // ---------------------------------------------------------------------------
-// R294（BUG-20261031-236）：busy 判定与入队之间的竞态孤儿 kick
+// busy 判定与入队之间的竞态孤儿 kick
 // ---------------------------------------------------------------------------
 
 /// 合法交织的坏终态 + kick 行为：回合持闸期间消息进 busy 分支，回合在本闸

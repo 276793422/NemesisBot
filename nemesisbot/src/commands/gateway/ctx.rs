@@ -1,18 +1,18 @@
 // ---------------------------------------------------------------------------
-// GatewayCtx（计划 §4.1）：跨相位状态收编容器 + `GatewayCtx::assemble`。
+// GatewayCtx（计划）：跨相位状态收编容器 + `GatewayCtx::assemble`。
 //
-// B1（§4.2）：PB-0 bootstrap + PB-1 单例预装配（计划口径原 1561–2459 行，
+// PB-0 bootstrap + PB-1 单例预装配（计划口径原 1561–2459 行，
 // Steps 1–9b）整体迁入 assemble；run() 前段收缩为一次 assemble 调用 + 影子
 // 重绑。`--relay` 纯中继早退（Step 5b）在 assemble 内部处理——返回 None 时
 // run() 直接 Ok 退出；run_relay 语义不变；channel_guard 仍护住 run() 全部
-// 早退路径（C10，留在 run() 骨架首部）。
+// 早退路径（留在 run() 骨架首部）。
 //
 // 字段清单 = PB-0/PB-1 产物中被下游相位（PB-2..PB-9）消费的完整集合：
-// §2.3.1 基础清单中本区间产物 + §2.3.2 十二变量表中产于本区间的条目
+// 基础清单中本区间产物 + 十二变量表中产于本区间的条目
 // （resolution / chat_secret_store / bridge_outbound_handle）。表外机械
 // 必需项（agent_outbound_tx / model_name / llm_provider / mcp_enabled /
 // skills_* / board_quota / config_path——SharedResources 字面量与 PB-8
-// judge、PB-6 svc_mgr 的直接消费点）按 §4.1 收编规则补入，实施报告如实
+// judge、PB-6 svc_mgr 的直接消费点）按 收编规则补入，实施报告如实
 // 记录。行号注记均为计划口径（拆解前 6,735 行版）。
 // ---------------------------------------------------------------------------
 
@@ -30,7 +30,7 @@ use super::fire_board_autopilot;
 use super::migrate_legacy_workflow_dir;
 use super::run_relay;
 
-/// T5（扩展计划 D2b）：出站单消息 DLP 脱敏——agent outbound → bus 桥内
+/// （扩展计划）：出站单消息 DLP 脱敏——agent outbound → bus 桥内
 /// 逐消息调用（agent 产出的唯一漏斗，channels manager 不重复过滤）。
 /// 槽空（init_agent 装配前，此窗口不可能有出站流量）= 直通；
 /// `Some(None)`（安全关闭）或无 DLP 引擎 = 直通；
@@ -73,39 +73,39 @@ fn apply_outbound_dlp(
     msg.content = redacted;
 }
 
-/// 跨相位状态容器（§4.1）。字段名与原 run() 局部名逐字一致——下游以影子
-/// 重绑（owned clone）沿用原名，所有权拓扑与原单绑定等价。晚绑定槽按 §0
+/// 跨相位状态容器。字段名与原 run() 局部名逐字一致——下游以影子
+/// 重绑（owned clone）沿用原名，所有权拓扑与原单绑定等价。晚绑定槽按
 /// 原则 6 只收编不改模式；feature 门字段沿用原局部声明门，逐字段保留。
 pub(crate) struct GatewayCtx {
-    // --- 身份与配置（§2.3.1）---
+    // --- 身份与配置---
     pub home: PathBuf,
     pub config_path: PathBuf,
     pub config_store: Arc<nemesis_config::ConfigStore>,
     /// 启动快照（一次性读；live 消费者走 config_store.handle()）。
     pub cfg: nemesis_config::Config,
     /// ProviderResolution 整体跨相位（原 1700 → PB-5 set_model_info/streaming、
-    /// §2.3.2）。
+    ///
     pub resolution: nemesis_config::ProviderResolution,
     /// `resolution.model_name` 快照（SharedResources/web model_info 消费）。
     pub model_name: String,
-    // --- 消息主干（§2.3.1）---
+    // --- 消息主干---
     pub bus: Arc<nemesis_bus::MessageBus>,
     pub cron_service: Arc<std::sync::Mutex<nemesis_cron::service::CronService>>,
     pub conv_router: nemesis_web::SharedConvRouter,
-    /// estop 单例（C8：集群装配前创建，四方共享同一 Arc）。
+    /// estop 单例（集群装配前创建，四方共享同一 Arc）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
-    // QUIC 中继（quic-relay）自 2026-10-23 QUIC 插件化 M1 起无 ctx 字段：
+    // QUIC 中继（quic-relay）自 QUIC 插件化 起无 ctx 字段：
     // 运行面在 plugin_roaming C-ABI 插件，句柄住 loader 静态槽
-    //（[`crate::roaming_plugin_loader::plugin_handle`]，进程级单例）——
+    //（[`crate::roaming_plugin_loader:plugin_handle`]，进程级单例）——
     // init_cluster 闸拉起、post_agent 注入 web 面、runtime teardown 停机。
     pub data_store: Option<Arc<nemesis_data::DataStore>>,
     /// Step 8 出站桥的 agent 端 mpsc 发送半（PB-4 装入 SharedResources）。
     pub agent_outbound_tx: tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
-    /// Step 8 出站桥任务句柄（§2.3.2：PB-9 teardown .abort()）。JoinHandle
+    /// Step 8 出站桥任务句柄（PB-9 teardown.abort()）。JoinHandle
     /// 非 Clone，run() 侧以引用重绑。
     pub bridge_outbound_handle: tokio::task::JoinHandle<()>,
     pub mcp_enabled: bool,
-    // --- PB-1 建栈子系统单例（§2.3.1，feature 门逐字沿用原局部声明）---
+    // --- PB-1 建栈子系统单例（feature 门逐字沿用原局部声明）---
     pub skills_loader_arc: Option<Arc<nemesis_skills::loader::SkillsLoader>>,
     pub skills_registry_arc: Option<Arc<nemesis_skills::registry::RegistryManager>>,
     #[cfg(feature = "board")]
@@ -121,21 +121,21 @@ pub(crate) struct GatewayCtx {
     /// 与 workflow 引擎共享的工具注册表（PB-4 AgentToolAdapter 桥接填装）。
     #[cfg(feature = "workflow")]
     pub workflow_tool_registry: Arc<nemesis_tools::registry::ToolRegistry>,
-    /// §2.3.2：原 1772 → set_chat_secret_store@5317（PB-5）。
+    /// 原 1772 → set_chat_secret_store@5317（PB-5）。
     #[cfg(feature = "workflow")]
     pub chat_secret_store: Arc<nemesis_workflow::chat_secrets::ChatSecretStore>,
-    // --- 晚绑定槽（§0 原则 6：模式不变，集中收编）---
+    // --- 晚绑定槽（原则 6：模式不变，集中收编）---
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_moderator_loop: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub autopilot_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>>,
-    /// Swarm M3 本节点对外 web 基址槽（PB-7 落槽、PB-5 资产签名读）。
+    /// Swarm 本节点对外 web 基址槽（PB-7 落槽、PB-5 资产签名读）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_asset_url_slot: nemesis_board::AdvertisedUrl,
-    /// Swarm M3 master 侧讨论额度台账（PB-2 讨论桥 + PB-5 board service）。
+    /// Swarm master 侧讨论额度台账（PB-2 讨论桥 + PB-5 board service）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_quota: Arc<nemesis_board::quota::QuotaLedger>,
-    /// T5（扩展计划 D2b）：出站 DLP 脱敏闸槽——Step 9 出站桥先于 Step 9b
+    /// （扩展计划）：出站 DLP 脱敏闸槽——Step 9 出站桥先于 Step 9b
     /// security_plugin 装配创建，init_agent 装配后回填。桥内逐消息查槽：
     /// 槽空 = 直通（装配前不可能有出站流量——agent loop 尚未创建）；
     /// `Some(None)` = 安全关闭直通；`Some(Some(plugin))` = 有 DLP 引擎才
@@ -151,7 +151,7 @@ pub(crate) struct GatewayCtx {
 impl GatewayCtx {
     /// Steps 1–9b：home/config/logger/relay 早退/state file 占位/LLM 解析
     /// （PB-0）+ workflow 引擎/bus/出站泵/cron/board/estop/槽位/forge/skills/
-    /// memory/DataStore（PB-1）。原文自 run() 前段逐字迁入（B1），仅两处机
+    /// memory/DataStore（PB-1）。原文自 run() 前段逐字迁入，仅两处机
     /// 械改写：relay 早退改 `?` + `Ok(None)`（结果等价）；末尾以字段简写构
     /// 造本结构体。
     pub(crate) async fn assemble(
@@ -166,7 +166,7 @@ impl GatewayCtx {
         // Step 2: Check configuration file exists
         let config_path = common::config_path(&home);
         if !config_path.exists() {
-            // 双击直启 goal（2026-09-17）：config 缺失不再硬退——auto-init
+            // 双击直启 goal：config 缺失不再硬退——auto-init
             // （Seed 种子语义：一切 only-if-absent，用户已有的 workspace/人格/
             // 子系统配置绝不被 clobber）后继续启动。显式 `nemesisbot gateway`
             // 同样走此路径：onboard CLI 保留（老用户 re-onboard 覆盖语义），
@@ -196,7 +196,7 @@ impl GatewayCtx {
             std::process::exit(1);
         }
 
-        // Step 3-2（SAN-01/D4）：旧「只替换 `:`」文件名映射的嵌套 session 目录
+        // Step 3-2（SAN-01）：旧「只替换 `:`」文件名映射的嵌套 session 目录
         // 平化（B 端复合键 `{node}/{chat}` 旧写 `<logs>/{node}/{chat}.jsonl`，
         // 白名单消毒后写平面 `{node}_{chat}.jsonl`）。幂等 + best-effort；
         // 必须先于任何会话读写执行（放 Step 3 后、agent/web 装配前）。
@@ -252,7 +252,7 @@ impl GatewayCtx {
         args.extend(extra_args.iter().cloned());
         let _log_flags = common::init_logger_from_config(&config_path, &args);
 
-        // Step 5a：独立代理配置 env 段注入（2026-10-31 代理设置三项改造批B）。
+        // Step 5a：独立代理配置 env 段注入（代理设置三项改造批B）。
         // 位置纪律：必须在 `init_logger_from_config` **之后**（注入日志要被
         // subscriber 捕获——首版放在 gateway.rs run() 顶部，早于 logger 初始化，
         // tracing 事件蒸发成静默注入，e2e 抓出后挪此处）且先于一切 reqwest
@@ -273,7 +273,7 @@ impl GatewayCtx {
             Err(e) => tracing::warn!("[Gateway] {e}；环境变量代理按未配置处理"),
         }
 
-        // Step 5b（goal：反向桥与多设备汇聚，一期批次一）：`--relay` 纯中继
+        // Step 5b（goal：反向桥与多设备汇聚，一期）：`--relay` 纯中继
         // 模式早退——只起 web server（状态页 `/relay` + `/bridge` 接入 +
         // `/d/<node_id>/` 转发），不起本地 agent/board/集群/discovery，状态页
         // 即全部 UI。bridge.server.token 空 → 拒绝启动（fail-closed）。
@@ -282,10 +282,10 @@ impl GatewayCtx {
             return Ok(None);
         }
 
-        // Step 5b-2（QUIC 中继统一入口，2026-10-21 拍板与 `quic relay` 分类
+        // Step 5b-2（QUIC 中继统一入口，与 `quic relay` 分类
         // 管理入口并存）：`--quic-relay` 早退——只跑自建 iroh 中继（与
         // `quic relay` 同源同一 `run_relay_server`），不装配 agent/board/
-        // 集群/discovery。读 config.quic.json relay 段（2026-10-23 解耦后
+        // 集群/discovery。读 config.quic.json relay 段（解耦后
         // 真相源）；token 空 = 拒绝启动（fail-closed，与 `--relay` 同款纪律）。
         if quic_relay {
             run_quic_relay(&home).await?;
@@ -318,7 +318,7 @@ impl GatewayCtx {
         }
 
         // Step 7: Resolve the default LLM model and create provider
-        // 双击直启 goal（2026-09-17）：resolve/create 失败不再硬退——warn + 降级
+        // 双击直启 goal：resolve/create 失败不再硬退——warn + 降级
         //（NullProvider，对话诚实报「未配置模型」），Dashboard 配好并设默认后
         // set_default 热切恢复。一次性 CLI 入口保持严格失败（见 agent_factory 注）。
         let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
@@ -337,7 +337,7 @@ impl GatewayCtx {
         };
 
         // Build the LLM provider once. The same Arc<dyn LLMProvider> is reused by
-        // the workflow engine (milestone 1a-E1, so workflow `llm` nodes route to
+        // the workflow engine (milestone 1a-, so workflow `llm` nodes route to
         // the same model) and the security guardian judge. The main agent loop
         // builds its own provider, so this is only needed when workflow or security
         // is enabled.
@@ -361,7 +361,7 @@ impl GatewayCtx {
             Arc<dyn nemesis_providers::router::LLMProvider>,
             Option<String>,
         ) = nemesis_providers::factory::create_provider_or_null(&factory_cfg);
-        // 默认跟随 wrapper（2026-09-22 方案A）：workflow 引擎与 guardian judge
+        // 默认跟随 wrapper（方案A）：workflow 引擎与 guardian judge
         // 持有的这份快照不再烘焙——热切默认模型后经槽委派自动跟随，引擎无
         // set_provider 也能换模型（捕获名判定语义见 default_slot 模块 doc）。
         #[cfg(any(feature = "workflow", feature = "security"))]
@@ -383,15 +383,15 @@ impl GatewayCtx {
 
         let model_name = resolution.model_name.clone();
 
-        // --- Workflow Engine (milestone 1a-E1) ---
+        // --- Workflow Engine (milestone 1a-) ---
         // Build an integrated engine that wires RealLLMNodeExecutor (so llm nodes
         // invoke the same provider as the agent) and RealToolNodeExecutor (so tool
         // nodes can dispatch to any later-registered tools). All workflow files
         // live under {home}/workspace/workflow/ with four subdirs:
-        //   definitions/  - YAML workflow definitions (loaded at startup)
-        //   templates/    - starter templates for the CLI workflow command
-        //   checkpoints/  - resume snapshots for in-flight recovery
-        //   executions/   - JSONL execution logs
+        //   definitions/ - YAML workflow definitions (loaded at startup)
+        //   templates/ - starter templates for the CLI workflow command
+        //   checkpoints/ - resume snapshots for in-flight recovery
+        //   executions/ - JSONL execution logs
         // Migrate any pre-refactor data from {home}/workflow/ first.
         #[cfg(feature = "workflow")]
         let workflow_engine: std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>;
@@ -474,7 +474,7 @@ impl GatewayCtx {
             // Load all workflow definitions from {home}/workspace/workflow/definitions/.
             engine.set_workflow_defs_dir(workflow_defs_dir.clone());
 
-            // U10 统一执行世界：workflow script 节点（无 registry 的装配路径）、
+            // 统一执行世界：workflow script 节点（无 registry 的装配路径）、
             // per-node `sandbox: false` 的受守卫直跑、引擎控制面写盘（persist/
             // delete 根外拒绝）都经同一个 ExecutionWorld。executor 分离开（默认）
             // → 无 world（行为不变）；开 → 与 agent 工具层同一条开关链
@@ -533,7 +533,7 @@ impl GatewayCtx {
                 }
             }
 
-            // Spawn cron-triggered workflows (milestone 1a-E2).
+            // Spawn cron-triggered workflows (milestone 1a-).
             let _workflow_cron_handles = engine.spawn_cron_triggers();
             let cron_wf_count = _workflow_cron_handles.len();
             if cron_wf_count > 0 {
@@ -544,7 +544,7 @@ impl GatewayCtx {
             }
 
             // Restore any in-flight executions paused at human_review nodes or
-            // interrupted by a previous crash (milestone 1b-A1 step 7). The checkpoint
+            // interrupted by a previous crash (milestone 1b step 7). The checkpoint
             // store lives under {home}/workspace/workflow/checkpoints/.
             match engine.restore_incomplete_executions().await {
                 Ok(n) if n > 0 => {
@@ -587,7 +587,7 @@ impl GatewayCtx {
         let (agent_outbound_tx, mut agent_outbound_rx) =
             tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(1024);
 
-        // T5（扩展计划 D2b）：出站 DLP 闸槽本体。init_agent（Step 9b 之后）
+        // （扩展计划）：出站 DLP 闸槽本体。init_agent（Step 9b 之后）
         // 回填装配好的 security_plugin（含 None=安全关闭）；桥闭包 clone 引用。
         #[cfg(feature = "security")]
         let outbound_dlp_slot = std::sync::Arc::new(std::sync::OnceLock::<
@@ -596,7 +596,7 @@ impl GatewayCtx {
 
         // Bridge: agent outbound mpsc → bus outbound broadcast
         let bus_out = bus.clone();
-        // T5（扩展计划 D2b）：出站 DLP 脱敏闸（槽由 init_agent 回填；
+        // （扩展计划）：出站 DLP 脱敏闸（槽由 init_agent 回填；
         // feature 裁剪 = 直通）。agent 产出的唯一漏斗——publish 前脱敏 +
         // 审计链留痕（operation=dlp_outbound_redact，reason=DLP 命中摘要，
         // 不落原始内容）。判定逻辑抽为 apply_outbound_dlp（可单测）。
@@ -629,7 +629,7 @@ impl GatewayCtx {
             nemesis_cron::service::CronService::new(&cron_store_path.to_string_lossy()),
         ));
 
-        // Swarm M3（§5.4）：本节点对外 web 基址槽（bind 后 set；G9 起可由
+        // Swarm：本节点对外 web 基址槽（bind 后 set； 起可由
         // 自愈任务随集群注册表知识更新——多重网卡选对 NIC、DHCP 换 IP 自动
         // 跟随。dispatch 签发资产 bundle 时经 store 的 AssetSignContext 读取；
         // 未 set = 基址未解析，签发诚实跳过）。
@@ -637,7 +637,7 @@ impl GatewayCtx {
         let board_asset_url_slot: nemesis_board::AdvertisedUrl =
             nemesis_board::AdvertisedUrl::default();
 
-        // W2 P1: Managed-agent board store — open (or create) {workspace}/board/board.db.
+        // Managed-agent board store — open (or create) {workspace}/board/board.db.
         // Injected into the web server below; failure logs a warning and leaves the
         // board unavailable (board.* WSAPI commands return "board service not
         // available") instead of blocking gateway startup.
@@ -646,7 +646,7 @@ impl GatewayCtx {
             let board_db = home.join("workspace").join("board").join("board.db");
             match nemesis_board::BoardStore::open(&board_db, "NB") {
                 Ok(store) => {
-                    // Swarm M2: 默认频道（#dev/#qa/#general/#team）幂等种子——首启建，
+                    // Swarm: 默认频道（#dev/#qa/#general/#team）幂等种子——首启建，
                     // 已有则 no-op。
                     if let Err(e) = store.ensure_default_channels() {
                         warn!("[Gateway] Board default channels seed failed: {}", e);
@@ -664,7 +664,7 @@ impl GatewayCtx {
             }
         };
 
-        // Swarm M2: board 维护循环 —— 启动即清扫一次频道消息 + 备份一次
+        // Swarm: board 维护循环 —— 启动即清扫一次频道消息 + 备份一次
         // board.db，之后每 24h 重复。频道消息按 `board.discussion.retention_days`
         // 清扫（0=永久）；备份经 VACUUM INTO 快照到 workspace/backups/
         // （`board.backup.keep`=0 关闭备份）。
@@ -709,7 +709,7 @@ impl GatewayCtx {
             );
         }
 
-        // Swarm M3: master 侧讨论额度台账（进程内存态，重启清零=诚实边界）。
+        // Swarm: master 侧讨论额度台账（进程内存态，重启清零=诚实边界）。
         // 配置三闸来自 board.discussion（0=该闸关闭）；经 live 句柄每次判定
         // 现读——config.json 热改额度即时生效（与 tier/hidden_tools 同语义）。
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -728,7 +728,7 @@ impl GatewayCtx {
             ))
         };
 
-        // Swarm M3: 主持人裁决用主 AgentLoop 后置装配桥（nb_bus 注册早于
+        // Swarm: 主持人裁决用主 AgentLoop 后置装配桥（nb_bus 注册早于
         // agent_loop 构建；build 完成后 set()）。
         #[cfg(all(feature = "board", feature = "cluster"))]
         let board_moderator_loop: std::sync::Arc<
@@ -742,14 +742,14 @@ impl GatewayCtx {
         let conv_router: nemesis_web::SharedConvRouter =
             std::sync::Arc::new(nemesis_web::ConvRouter::new());
 
-        // P1/T1-6 estop 保险丝：句柄在集群装配前创建——peer_chat_callback 里的
+        // / estop 保险丝：句柄在集群装配前创建——peer_chat_callback 里的
         // board 评审依赖集与下方 SharedResources 共享同一 Arc（跨 agent 重启存活）。
-        // F-U4-5（2026-09-15）：创建点从集群装配段上移到 cron 装配前——autopilot
+        // F-：创建点从集群装配段上移到 cron 装配前——autopilot
         // cron 闭包也捕获同一 Arc（急停中定时触发诚实跳过）。
         let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
         info!("[Gateway] Global e-stop (kill switch) initialized (released)");
 
-        // 紫微系统会话管理器（M1，总控 §9.1/§9.4）：feature + config 双闸开
+        // 紫微系统会话管理器（总控）：feature + config 双闸开
         // → 装配 SessionManager 全局槽 + estop 卸载钩子 + estop 上升沿订阅
         // （触发即全会话卸载序列，逐行审计日志）。闸关 = 不装配（WSAPI/CLI
         // 诚实报「未启用/未装配」，payload 零落盘）。
@@ -762,8 +762,8 @@ impl GatewayCtx {
                     zcfg.payload_dir.clone(),
                     zcfg.max_sessions,
                 ));
-                // T2.3：报警事件汇 → bus 出站（【紫微系统】前缀；web 通道推
-                // Dashboard，其余在线通道同源可见）。出站在 gateway 侧——
+                // .3：报警事件汇 → bus 出站（【紫微系统】前缀；web 通道推
+                // Dashboard，其余在线通道同源可）。出站在 gateway 侧——
                 // nemesis-ziwei 不依赖 bus（窄门面纪律）。
                 let bus_for_zw = bus.clone();
                 manager.set_event_sink(Arc::new(
@@ -784,7 +784,7 @@ impl GatewayCtx {
                         ));
                     },
                 ));
-                // T2.4：capture 清扫（interval 首 tick 即时触发 = 启动扫一遍
+                // .4：capture 清扫（interval 首 tick 即时触发 = 启动扫一遍
                 // + 每 10 分钟周期；TTL 取 config ziwei.runs_ttl_days）。
                 let cap = manager.capture();
                 let zw_ttl =
@@ -803,19 +803,19 @@ impl GatewayCtx {
                 });
                 nemesis_ziwei::session::set_global(manager);
                 nemesis_ziwei::session::register_estop_hook();
-                // T2.2 refresh 钩子（依赖方向：nemesis-web 不依赖 nemesisbot
+                // .2 refresh 钩子（依赖方向：nemesis-web 不依赖 nemesisbot
                 // ——钩子闭包桥回本 crate；loop 槽由工厂每次重建时更新）。
                 #[cfg(feature = "ziwei")]
                 {
                     nemesis_web::handlers::ziwei::set_refresh_hook(Arc::new(|ws| {
                         crate::ziwei_tools::refresh_current(ws)
                     }));
-                    // T5.2 失效/降级/找回事件钩子（ziwei 静态槽 → web 全局
+                    // .2 失效/降级/找回事件钩子（ziwei 静态槽 → web 全局
                     // EventHub 广播；Dashboard 横幅数据源）。
                     nemesis_ziwei::verify::set_event_hook(Arc::new(|event: &str, data| {
                         nemesis_web::chat_event_log::publish_global_event(event, data.clone());
                     }));
-                    // T3.6 LLM hook（同步签名 LlmFn）：专用线程 + current_thread
+                    // .6 LLM hook（同步签名 LlmFn）：专用线程 + current_thread
                     // runtime 桥到 default_slot provider 裸调用（board_review
                     // vision 同款；不经 agent loop）。gateway 运行时形态多样，
                     // 不赌 block_in_place。
@@ -856,7 +856,7 @@ impl GatewayCtx {
             }
         }
 
-        // W2 P4: board autopilot 的集群槽位。on_job 闭包在 cluster 创建之前
+        // board autopilot 的集群槽位。on_job 闭包在 cluster 创建之前
         // 装配（cron 服务先于 cluster 就绪），用 OnceLock 让闭包在 cluster 建
         // 好后取用；未启用集群时保持 None（target 为空的 autopilot 规则仍可
         // 纯本地建单）。
@@ -865,7 +865,7 @@ impl GatewayCtx {
             std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>,
         > = Arc::new(std::sync::OnceLock::new());
 
-        // P31 记忆 dreaming 的 memory manager 槽位。on_job 闭包在 memory
+        // 记忆 dreaming 的 memory manager 槽位。on_job 闭包在 memory
         // manager 创建之前装配（同 autopilot_cluster_slot 的 OnceLock 模式），
         // manager 建成后 set；memory.enabled=false 时保持 None（触发时诚实
         // 跳过）。
@@ -874,37 +874,37 @@ impl GatewayCtx {
             std::sync::OnceLock<Arc<nemesis_memory::manager::MemoryManager>>,
         > = Arc::new(std::sync::OnceLock::new());
 
-        // C3: Wire CronService — set_on_job handler + start.
+        // Wire CronService — set_on_job handler + start.
         // Mirrors Go's bot_service.go:392-399, 571-579.
         {
             let bus_for_cron = bus.clone();
             let router_for_cron = conv_router.clone();
-            // W2 P4: autopilot 分支捕获（board store + 集群槽位）。
+            // autopilot 分支捕获（board store + 集群槽位）。
             #[cfg(feature = "board")]
             let store_for_ap = board_store.clone();
             #[cfg(all(feature = "board", feature = "cluster"))]
             let slot_for_ap = autopilot_cluster_slot.clone();
-            // 全自动流转 D2：auto_plan 的 moderator 槽（board_moderator_loop 在
+            // 全自动流转：auto_plan 的 moderator 槽（board_moderator_loop 在
             // 本闭包装配前创建、agent_loop 建成后 set——同 OnceLock 模式）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let mod_slot_for_ap = board_moderator_loop.clone();
             #[cfg(all(feature = "board", feature = "cluster"))]
             let home_for_ap = home.clone();
-            // F-U4-5：急停中 autopilot 定时触发诚实跳过（与手动 autopilot.run
+            // F-：急停中 autopilot 定时触发诚实跳过（与手动 autopilot.run
             // 同一面；释放后下个周期自然恢复）。
             #[cfg(feature = "board")]
             let estop_for_ap = estop.clone();
-            // P31 记忆 dreaming 分支捕获（槽位 + home + 急停；同 board-ap 模式）。
+            // 记忆 dreaming 分支捕获（槽位 + home + 急停；同 board-ap 模式）。
             #[cfg(feature = "memory")]
             let slot_for_dream = dreaming_memory_slot.clone();
             #[cfg(feature = "memory")]
             let home_for_dream = home.clone();
             #[cfg(feature = "memory")]
             let estop_for_dream = estop.clone();
-            // W3（2026-10-25 加固）：触发期暂停句柄 + home（父会话存在性
+            // （加固）：触发期暂停句柄 + home（父会话存在性
             // 检查）。句柄必须在 set_on_job 前取出（本语句的外层互斥守卫到
             // 语句结束才释放）；handler 执行期可能与 web「立即运行」并发
-            // （BUG-20261105-033 起 detached 形态：handler 在独立线程跑，
+            // （起 detached 形态：handler 在独立线程跑，
             // 快照段已释放外层锁——句柄绕开外层互斥的原则不变）。
             let pause_handle_for_cron = cron_service.lock().unwrap().job_pause_handle();
             let home_for_cron = home.clone();
@@ -912,11 +912,11 @@ impl GatewayCtx {
                 .lock()
                 .unwrap()
                 .set_on_job(move |job: &nemesis_cron::service::CronJob| {
-                    // W2 P4: board autopilot job（名 `board-ap:{id}`）→ 模板建单
+                    // board autopilot job（名 `board-ap:{id}`）→ 模板建单
                     // +（可选）派发，不走消息总线。必须放在 message 判空前——
                     // autopilot job 的 message 恒为空，否则落 "No message to
                     // deliver"。
-                    // BUG-20261024-10：分派与孤儿清理同口径——按
+                    // 分派与孤儿清理同口径——按
                     // `board-ap:{i64}` 全形态判定（autopilot_id_from_job_name），
                     // 不再按裸前缀劫持存量撞名用户作业（非整数形态的到点
                     // 落回普通消息投递）。
@@ -924,7 +924,7 @@ impl GatewayCtx {
                     if nemesis_web::handlers::board::autopilot_id_from_job_name(&job.name)
                         .is_some()
                     {
-                        // F-U4-5：急停中定时触发跳过（记入 job run 历史，诚实
+                        // F-：急停中定时触发跳过（记入 job run 历史，诚实
                         // 可见；非 Err——到点跳过与 disabled 规则同语义）。
                         if estop_for_ap.is_engaged() {
                             return Ok(
@@ -952,11 +952,11 @@ impl GatewayCtx {
                         #[cfg(not(feature = "cluster"))]
                         return fire_board_autopilot(&job.name, store_for_ap.as_ref());
                     }
-                    // P31: 记忆 dreaming sweep job（名 `memory-dreaming:sweep`）→
+                    // 记忆 dreaming sweep job（名 `memory-dreaming:sweep`）→
                     // 全量条目 6 信号打分 + LLM 决策 + 宿主产出，不走消息总线。
                     // 必须放在 message 判空前——dreaming job 的 message 恒为空
                     //（同 board-ap 的拦截次序）。
-                    // BUG-20261024-10：dreaming 作业名是精确单值（保留命名
+                    // dreaming 作业名是精确单值（保留命名
                     // 空间内只有 sweep 一个合法作业），按精确名分派——存量
                     // 撞名（memory-dreaming:x）不再被劫持进 sweep。
                     #[cfg(feature = "memory")]
@@ -984,17 +984,17 @@ impl GatewayCtx {
                             .channel
                             .clone()
                             .unwrap_or_else(|| "web".to_string());
-                        // Phase 2: target the named conversation so the exchange is
+                        // target the named conversation so the exchange is
                         // persisted into its history (loop.rs adopts `agent:`-prefixed
                         // session_key verbatim). Opt 2: if a live WS tab is bound for
                         // this conversation, set chat_id = web:<ws_id> so the reply
                         // also live-pushes; otherwise chat_id falls back to `to`
                         // (delivery may fail-soft, but history is still saved).
                         let session_key = job.payload.session_key.clone().unwrap_or_default();
-                        // W3（2026-10-25 加固）：指向
+                        // （加固）：指向
                         // 会话的 job 触发期只读检查父会话是否仍在——已删除则自动
                         // pause（enabled=false，不删 job 可手动恢复）并放行 Err，
-                        // 不发布 InboundMessage（否则消息会经 SessionStore::
+                        // 不发布 InboundMessage（否则消息会经 SessionStore:
                         // get_or_create 的空会话兜底静默重建会话——「僵尸复活」）。
                         // 存在性 = 磁盘双臂任一（见 cron_parent_session_exists）。
                         if !session_key.is_empty()
@@ -1017,7 +1017,7 @@ impl GatewayCtx {
                             // chat_id 必须 "web:broadcast"（web 通道只认
                             // web:<session-id>/web:broadcast 两种形态——此前裸
                             // "cron" 在 WebChannel::send 的格式闸被丢弃，通知
-                            // 从未真正到达 Dashboard，2026-10-25 真实场景 C 抓出）。
+                            // 从未真正到达 Dashboard， 真实场景 C 抓出）。
                             bus_for_cron.publish_outbound(
                                 nemesis_types::channel::OutboundMessage::new(
                                     "web", "web:broadcast", &msg,
@@ -1046,7 +1046,7 @@ impl GatewayCtx {
                                 let mut m = std::collections::HashMap::new();
                                 m.insert("cron_job_id".to_string(), job.id.clone());
                                 m.insert("cron_job_name".to_string(), job.name.clone());
-                                // T3 (U12): per-fire tool-round budget — the agent
+                                // per-fire tool-round budget — the agent
                                 // loop reads this and caps the continuation turn's
                                 // tool iterations at this value (graceful stop via
                                 // the grace-round path; job survives).
@@ -1069,7 +1069,7 @@ impl GatewayCtx {
         }
 
         // Create Forge executor (always create instance for runtime toggle support).
-        // M2 + M3 + L1 + L2 + M4 all wired here.
+        // + + + + all wired here.
         #[cfg(feature = "forge")]
         let forge_enabled = cfg.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
         #[cfg(feature = "forge")]
@@ -1090,7 +1090,7 @@ impl GatewayCtx {
             } else {
                 nemesis_forge::config::ForgeConfig::default()
             };
-            // F-P1 truth-source fix: the master switch is config.json's `forge.enabled`
+            // F- truth-source fix: the master switch is config.json's `forge.enabled`
             // (-> `forge_enabled`, which gates the background tasks). Mirror it into
             // forge_config so `Forge::is_enabled()` (the per-tool-call recording
             // gate) reflects the real runtime state. config.forge.json is often
@@ -1107,10 +1107,10 @@ impl GatewayCtx {
             ));
             info!("[Gateway] Forge reflector initialized");
 
-            // ONE shared registry for the Phase 6 closed loop (pipeline + monitor +
+            // ONE shared registry for the closed loop (pipeline + monitor +
             // learning engine). Previously each got its own empty Registry (default
             // relative index_path), so deploy/monitor/feedback operated on disjoint
-            // stores. (F-C3) Dedicated path so it persists + reloads; separate from
+            // stores. (F-) Dedicated path so it persists + reloads; separate from
             // Forge's manual-create registry.json to avoid a two-instance collision.
             let forge_shared_registry = std::sync::Arc::new(
                 nemesis_forge::registry::Registry::new(nemesis_forge::types::RegistryConfig {
@@ -1120,11 +1120,11 @@ impl GatewayCtx {
                         .to_string(),
                 }),
             );
-            // F-D3: reload prior learned artifacts so they survive restart.
+            // F-: reload prior learned artifacts so they survive restart.
             let _ = forge_shared_registry.load().await;
 
             // Initialize Pipeline (3-stage validation). Built as Arc + sharing the
-            // closed-loop registry so it can be injected into the LearningEngine (F-C1).
+            // closed-loop registry so it can be injected into the LearningEngine (F-).
             let forge_pipeline = std::sync::Arc::new(nemesis_forge::pipeline::Pipeline::new(
                 forge_config.clone(),
                 forge_shared_registry.clone(),
@@ -1141,9 +1141,9 @@ impl GatewayCtx {
                 info!("[Gateway] Forge trace collection initialized");
             }
 
-            // Initialize learning engine (Phase 6 closed-loop). Shares the same
-            // registry as pipeline + monitor (F-C3); init_learning injects the
-            // pipeline + monitor into the engine so the loop runs (F-C1).
+            // Initialize learning engine (closed-loop). Shares the same
+            // registry as pipeline + monitor (F-); init_learning injects the
+            // pipeline + monitor into the engine so the loop runs (F-).
             let cycle_store = nemesis_forge::cycle_store::CycleStore::new(&forge_dir);
             let learning_engine = nemesis_forge::learning_engine::LearningEngine::with_forge_dir(
                 forge_config.clone(),
@@ -1173,9 +1173,9 @@ impl GatewayCtx {
 
             let forge = std::sync::Arc::new(forge);
 
-            // F-D3: reload Forge's manual-create registry so prior artifacts survive restart.
+            // F-: reload Forge's manual-create registry so prior artifacts survive restart.
             let _ = forge.registry().load().await;
-            // 2026-10-16 复查（LE3）：原 skill_creator 注入已随死接线删除——
+            // 复查：原 skill_creator 注入已随死接线删除——
             // `set_skill_creator` 有注入无读取（write-only）。生产技能创建
             // 走 run_cycle → execute_create_skill（pipeline 臂直写
             // forge/skills + registry）；agent 工具面 forge_create →
@@ -1314,7 +1314,7 @@ impl GatewayCtx {
                     "[Gateway] Memory manager created (data_dir={})",
                     memory_data_dir.display()
                 );
-                // P31：dreaming cron 闭包的槽位在这里补齐（闭包装配早于本处）。
+                // dreaming cron 闭包的槽位在这里补齐（闭包装配早于本处）。
                 let _ = dreaming_memory_slot.set(mgr.clone());
                 memory_manager_for_web = Some(mgr);
             } else {
@@ -1349,7 +1349,7 @@ impl GatewayCtx {
             if mcp_enabled { " + MCP" } else { "" }
         );
 
-        // Step 9b: Create DataStore for usage statistics（E1 二期：前移到集群回调
+        // Step 9b: Create DataStore for usage statistics（二期：前移到集群回调
         // 装配点之前——peer_chat_callback 闭包要捕获它，把 worker 回传的 usage
         // 记入 master 用量账本）
         let data_store = {
@@ -1367,7 +1367,7 @@ impl GatewayCtx {
             }
         };
 
-        // 旧位置首读迁移（BUG-20261025-20：迁移面随 cluster feature 门控——
+        // 旧位置首读迁移（迁移面随 cluster feature 门控——
         // `ensure_quic_config` 在 nemesis-cluster，关裁剪形态无消费方
         // （quic CLI/relay/status 同闸缺席），不做迁移是诚实语义）：客户端
         // 消费面 Cluster::setup_roaming 读 config.quic.json client 段——
@@ -1383,8 +1383,8 @@ impl GatewayCtx {
             info!("[Gateway] config.quic.json created（旧位置 QUIC 键已迁移，原键保留不删）");
         }
 
-        // plugin_roaming 装载（QUIC 插件化 M1）：**文件在场即加载**（计划
-        // 拍板「插件在场开关 | 文件在场即加载」，对齐 vm-display）——功能
+        // plugin_roaming 装载（QUIC 插件化）：**文件在场即加载**（计划
+        // 「插件在场开关 | 文件在场即加载」，对齐 vm-display）——功能
         // 闸不前置：relay.enabled / roaming.enabled 在各自消费点判（start
         // 处 token fail-closed 等），插件缺席/装载失败 = 服务端面诚实降级
         // （CLI 动态隐藏 + WSAPI not loaded）。init 配置 = config.quic.json
@@ -1468,8 +1468,8 @@ impl GatewayCtx {
 }
 
 /// `--quic-relay` 早退执行体（Step 5b-2）。调进 `quic relay` 分类管理入口的
-/// 同一实现（单一真相源，两入口行为必然一致）；插件缺席 = 诚实报错（旗标
-/// 恒编译——BUG-20261025-20：解析面 cfg 门控随 cluster feature，关 = 诚实
+/// 同一实现（统一定义，两入口行为必然一致）；插件缺席 = 诚实报错（旗标
+/// 恒编译——：解析面 cfg 门控随 cluster feature，关 = 诚实
 /// 报「未编译」，与 quic CLI 同源形态）。
 async fn run_quic_relay(home: &std::path::Path) -> Result<()> {
     #[cfg(not(feature = "cluster"))]
@@ -1489,7 +1489,7 @@ minimal-IoT 等裁剪形态缺席）——如需 --quic-relay 请启用 cluster 
     }
 }
 
-/// T3.6 LLM 建议标注底座：default_slot provider 裸调用（board_review
+/// .6 LLM 建议标注底座：default_slot provider 裸调用（board_review
 /// vision 先例；不经 agent loop/工具管线——输入是本仓打包的静态分析
 /// 函数表，输出只做建议解析，不落库）。仅在 ziwei feature 下编译。
 #[cfg(feature = "ziwei")]
@@ -1520,7 +1520,7 @@ async fn ziwei_llm_suggest(prompt: String) -> Result<String, String> {
     Ok(resp.content)
 }
 
-/// W3（2026-10-25 加固）：cron 父会话只读存在性
+/// （加固）：cron 父会话只读存在性
 /// 检查（纯磁盘，不物化会话）。任一臂在场即存在：
 /// - 臂1 `workspace/sessions/{safe}.json`——LLM 上下文存储（turn 边界落盘）；
 /// - 臂2 `workspace/session_logs/{safe}.jsonl`——用户可见 chat 历史（消息级
@@ -1544,12 +1544,12 @@ pub(crate) fn cron_parent_session_exists(home: &std::path::Path, session_key: &s
         .exists()
 }
 
-/// T5（扩展计划 D2b）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +
+/// （扩展计划）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +
 /// 装配前后槽语义）。security feature 门内——与被测函数同门。
 #[cfg(all(test, feature = "security"))]
 mod dlp_gate_tests;
 
-/// W3（2026-10-25 加固）：cron 父会话存在性检查单测（纯函数三臂 +
+/// （加固）：cron 父会话存在性检查单测（纯函数三臂 +
 /// 消毒对齐）。独立测试文件（仓库纪律：生产文件只留声明行）。
 #[cfg(test)]
 mod w3_session_gate_tests;

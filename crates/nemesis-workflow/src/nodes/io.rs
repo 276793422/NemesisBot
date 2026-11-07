@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -8,7 +8,7 @@ use super::*;
 use super::llm::{failed_node_result, resolve_runtime_string, resp_status_reason};
 use super::tool::resolve_template_value;
 
-/// HTTP 节点 SSRF 闸槽（BUG-20261102-324）：`SecurityPlugin::ssrf_guard()` 的
+/// HTTP 节点 SSRF 闸槽：`SecurityPlugin::ssrf_guard()` 的
 /// 克隆（Guard Clone 共享 inner，闸配置热更新对节点执行同效）。gateway 在
 /// 安全插件构建后注入；None（security feature 关 / security.enabled=false /
 /// ssrf 层关）= 直通——但重定向纪律（手动循环 + 跳数上限）不受槽影响。
@@ -23,7 +23,7 @@ pub fn set_http_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
     *HTTP_SSRF_GUARD_SLOT.write() = guard;
 }
 
-/// 重定向跨源判定（剥敏感头的开关，BUG-20261103-352 提取为纯函数单测）：
+/// 重定向跨源判定（剥敏感头的开关， 提取为纯函数单测）：
 /// host、端口、scheme 任一变化即跨源，对齐 reqwest
 /// `remove_sensitive_headers` 的判定形态（端口比
 /// `port_or_known_default()`、scheme 独立比较）。修复前只比
@@ -39,7 +39,7 @@ pub(super) fn redirect_cross_origin(base: &reqwest::Url, next: &reqwest::Url) ->
     cross_host || next.scheme() != base.scheme()
 }
 
-/// BUG-20261102-324：为当前跳构建 no-redirect client（重定向由调用方手动
+/// 为当前跳构建 no-redirect client（重定向由调用方手动
 /// 循环，每跳重建 = 每跳重新过闸）。security 构建下闸槽在场时先过闸
 /// （Err = 拦，调用方转 failed_node_result）；闸返回解析 IP 集时钉死 DNS
 ///（防 rebinding TOCTOU——闸解析过 ≠ reqwest 连接用的 IP；TLS SNI/证书
@@ -171,13 +171,13 @@ impl NodeExecutor for HTTPNodeExecutor {
             Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
         };
 
-        // BUG-20261102-324：手动重定向循环替代 `Client::new()` 默认自动跟随
+        // 手动重定向循环替代 `Client::new()` 默认自动跟随
         //（≤10 跳）——「先校验再发请求」的闸只覆盖显式 URL，对端 302 指内网
-        // /元数据端点即整条绕闸（web_fetch J2a / http-pool R36 同判例；
+        // /元数据端点即整条绕闸（web_fetch / http-pool 同判例；
         // workflow http 节点的 url 支持 {{var}} 运行时注入，威胁面与
         // web_fetch 同级）。语义对齐 reqwest 默认跟随：301/302/303 把非
         // GET/HEAD 转为 GET 并剥 body；307/308 保持 method+body；跨源
-        //（host/端口/scheme 任一变化，BUG-20261103-352）时剥敏感头；跳数
+        //（host/端口/scheme 任一变化）时剥敏感头；跳数
         // 上限 5。
         const HTTP_MAX_HOPS: usize = 5;
         const SENSITIVE_HEADERS: [&str; 3] = ["authorization", "cookie", "proxy-authorization"];
@@ -272,7 +272,7 @@ impl NodeExecutor for HTTPNodeExecutor {
             }
         }
 
-        // Read response body with a real 1MB cap（BUG-20261025-88：此前
+        // Read response body with a real 1MB cap（此前
         // 注释声称 "limit to 1MB" 但 `resp.bytes()` 实际无上限全量缓冲——
         // URL 支持 {{var}} 从不可信输入解析，指向大端点 = 内存耗尽面，
         // 且整包 ×2 拷贝（bytes→String）进 output 落 checkpoint/日志）。
@@ -296,7 +296,7 @@ impl NodeExecutor for HTTPNodeExecutor {
         }
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
-        // 诚实失败契约（2026-09-23 计划 A2）：≥400 是应用层失败，默认节点
+        // 诚实失败契约（计划）：≥400 是应用层失败，默认节点
         // Failed——全引擎不能只有 http 谎报成功（script 非零退出、tool 错误
         // 都 Failed）。完整响应保留在 output 供诊断；需要按状态码自行分支
         // 的工作流显式 `fail_on_http_error: false` 退出。
@@ -341,7 +341,7 @@ impl NodeExecutor for HTTPNodeExecutor {
 
 /// Pick the interpreter binary, file extension, and argv flag for a given
 /// `language` config value. Pure function so tests can verify language→binary
-/// mapping without spawning processes (BUG #4 + BUG #13 regression tests).
+/// mapping without spawning processes (+ regression tests).
 ///
 /// "bat" / "cmd" route to Windows `cmd.exe /C` — anything else would run
 /// batch syntax under bash and fail immediately on Windows hosts.
@@ -383,7 +383,7 @@ pub struct ScriptNodeExecutor {
     /// executor separation / Sandboxie contains the script identically to
     /// `exec`). `None` in unit tests / stub paths → direct spawn fallback.
     tools: Option<Arc<nemesis_tools::registry::ToolRegistry>>,
-    /// U10 统一执行世界。优先级：registry 工具车道 → world 工具车道（CLI/
+    /// 统一执行世界。优先级：registry 工具车道 → world 工具车道（CLI/
     /// 无 registry 装配）→ 受守卫 Spawn 车道（per-node `sandbox: false`
     /// 显式 opt-out）→ 裸 spawn（单测，无任何装配）。见模块文档
     /// `crates/nemesis-sandbox/src/exec_world.rs`。
@@ -409,7 +409,7 @@ impl ScriptNodeExecutor {
         }
     }
 
-    /// With a U10 execution world but no registry (CLI / bare engines):
+    /// With a execution world but no registry (CLI / bare engines):
     /// scripts route through the world's tool lane (executor child / box).
     pub fn with_world(world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>) -> Self {
         Self {
@@ -481,10 +481,10 @@ impl NodeExecutor for ScriptNodeExecutor {
         // bash and immediately fail.
         let (interpreter, _ext, flag) = select_script_interpreter(language);
         // Windows：裸 "bash"/"sh" 经 PATH 恒命中 System32 的 WSL launcher
-        // （feature 启用但无发行版 = exit 1 空壳，2026-09-02 CI 实证）→
+        // （feature 启用但无发行版 = exit 1 空壳， CI 实证）→
         // 解析到 Git/MSYS2 的真 bash。下方四条车道（registry 工具 args /
         // world SpawnOp / world 工具 args / 裸 spawn）消费同一解析结果；
-        // 单一真相源 nemesis-tools::shell。
+        // 统一定义 nemesis-tools::shell。
         let interpreter = nemesis_tools::shell::resolve_posix_shell_path(interpreter);
 
         // Sandbox-aware path: delegate to the `run_script` agent tool (a
@@ -514,7 +514,7 @@ impl NodeExecutor for ScriptNodeExecutor {
         // run_script not registered (minimal/test registry) → fall through
         // to the world / direct-spawn paths below.
 
-        // U10 per-node `sandbox` 开关（config key，bool）：
+        // per-node `sandbox` 开关（config key，bool）：
         // - 缺省 / `true`：跟随全局（registry → world 工具车道 → 受守卫
         //   Spawn 车道），与 agent `exec` 同一开关链。
         // - `false`：**显式 opt-out**——脚本在本进程内直跑（受守卫：
@@ -559,7 +559,7 @@ impl NodeExecutor for ScriptNodeExecutor {
         }
         // 无 world（单测/裸装配）→ 落到下方裸 spawn（保持旧行为）。
 
-        // U10 world 工具车道：无 registry 的装配（CLI `workflow run`、裸
+        // world 工具车道：无 registry 的装配（CLI `workflow run`、裸
         // engine）经执行世界调 `run_script` —— 与 agent `exec` 同一个
         // executor 子进程 / Sandboxie 盒开关，不再有「CLI 直 spawn 绕过
         // 沙盒」的逃逸路径。
@@ -605,7 +605,7 @@ impl NodeExecutor for ScriptNodeExecutor {
         // direct spawn.
         let mut cmd = tokio::process::Command::new(interpreter);
         cmd.arg(flag).arg(&resolved_script);
-        // 黑窗根修（2026-10-19）：直跑臂与生产 execution-world 车道
+        // 黑窗根修：直跑臂与生产 execution-world 车道
         // （guarded_direct_spawn）同纪律压 CREATE_NO_WINDOW。
         // （tokio Command 在 Windows 原生自带 creation_flags，无需 std CommandExt）
         #[cfg(windows)]

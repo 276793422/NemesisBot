@@ -123,11 +123,11 @@ impl TraceStore {
         let removed = original_count - kept.len();
 
         if removed > 0 {
-            // 原子重写（BUG-20261029-187）：cleanup 与 append 并发
+            // 原子重写：cleanup 与 append 并发
             // （record_trace_event 每次工具派发都写同一文件），旧实现
             // write+truncate 原地重写有两个丢失窗口——重写中途 crash 丢
             // 整个 trace 文件；重写期间到达的 append 被 truncate 抹掉。
-            // 与 experience_store F-D2 / registry F-D4 同族，统一走
+            // 与 experience_store F- / registry F- 同族，统一走
             // write_file_atomic（唯一临时名 + rename）：崩溃面收敛为
             // 「旧文件或新文件」，不产半截文件。
             if kept.is_empty() {

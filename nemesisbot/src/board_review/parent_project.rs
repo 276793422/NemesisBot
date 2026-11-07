@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
 
 /// 父单收口汇总验收：输入=父单目标/验收标准 + 全部子单状态与最新交付摘要
-/// （P1 阶段 LLM 汇总单判；P2 锚点检查器建成后自动升级双检）。三态：
+/// （阶段 LLM 汇总单判； 锚点检查器建成后自动升级双检）。三态：
 /// PASS → done（auto_close_parent 本身即收货授权，评论注明）；FAIL/UNSURE
 /// → 先试自动返工承接（差距/证据缺口可派发时，见 try_parent_remediation）
 /// ——承接被拒（预算用满/配置关/双空无差距）才转人工保持 in_review。
@@ -31,10 +31,10 @@ pub(super) async fn review_parent_issue(
     if parent.status != IssueStatus::InReview {
         return Ok(false);
     }
-    // 循环升级防抖（2026-10-16 用户裁决：除崩溃性问题外不让用户反复验收）：
+    // 循环升级防抖（用户裁决：除崩溃性问题外不让用户反复验收）：
     // 最近一条 auto_decide = parent_escalate_human 且其后无任何 admin 活动
     // = 已停车等人工、人工尚未表态——子单噪音（评论/善后事件）触发的钩子
-    // 复评一律跳过。此前每次钩子触发都重跑收口评审再升级一次（NB-101 实证
+    // 复评一律跳过。此前每次钩子触发都重跑收口评审再升级一次（实证
     // 20:45/20:50/22:01 三连升级），就是用户看到的「循环出错、循环人工」。
     // 出口 = 人工 review.retrigger（打回：先落 admin 评论再发车，此处放行
     // + 返工预算重置，自动验收重新开始）或人工直接处置状态。
@@ -47,12 +47,12 @@ pub(super) async fn review_parent_issue(
         );
         return Ok(false);
     }
-    // B1（职能→评审预设查表）：收口评审参数按父单职能解析（父单通常无
+    // （职能→评审预设查表）：收口评审参数按父单职能解析（父单通常无
     // 职能 = 全局值，行为不变）。
     let eff_review = cfg
         .review
         .resolve_for_profession(parent.required_profession.as_deref());
-    // U-B（§9.2）：LLM 端点不可用封存闸——父单收口挂起（pending=review，
+    // U-B：LLM 端点不可用封存闸——父单收口挂起（pending=review，
     // resume 走 spawn_board_review → review_issue 分流回本函数）。
     if nemesis_web::handlers::board_unavailable::frozen_now() {
         nemesis_web::handlers::board_unavailable::write_interruption(
@@ -66,12 +66,12 @@ pub(super) async fn review_parent_issue(
         warn!("[BoardReview] 父单 {parent_id} 收口挂起：LLM 端点不可用封存中（恢复后自动续评）");
         return Ok(false);
     }
-    // AOR 批二b（⑥ FINISH 谓词·入口面）：环境干净三条件（③ 活跃派发 /
+    // b（⑥ FINISH 谓词·入口面）：环境干净三条件（③ 活跃派发 /
     // ④ 未决 unknown / ⑤ cancelled 缺口闸——原 cancelled 检查并入谓词，语义
     // 不变）。①②（终态闭包/fail_class）刻意不在入口：in-flight 子单在场时
-    // 缺陷闸（M8 停车泊车）/ 父单分流 / FAIL 返工承接链必须照常跑，谓词在
+    // 缺陷闸（停车泊车）/ 父单分流 / FAIL 返工承接链必须照常跑，谓词在
     // 入口挡 ①② 会漏停车。完整五条件在 Pass 臂落 done 前终检（收口面）。
-    // 不满足 → 缺口评论显式列出（C-F4 去重）+ 不自动收口（转人工）。
+    // 不满足 → 缺口评论显式列出（C- 去重）+ 不自动收口（转人工）。
     let subtree = store.descendants(&[parent_id], nemesis_board::store::DescendantEdges::Subtree);
     let unsatisfied = nemesis_board::finish::evaluate_parent_entry_finish(store, &subtree);
     if !unsatisfied.is_empty() {
@@ -88,7 +88,7 @@ pub(super) async fn review_parent_issue(
     }
     let children = store.list_children(parent_id)?;
 
-    // ---- M8 缺陷闸门：子树在账缺陷非空 → 确定性转人工（不进语义评审）。
+    // ---- 缺陷闸门：子树在账缺陷非空 → 确定性转人工（不进语义评审）。
     // 扫整棵子树（SAN-08 同款闭包——done 子单之下的孙单声明也不能漏）。
     let defects = scan_unclosed_defects(store, &subtree)?;
     if !defects.is_empty() {
@@ -142,7 +142,7 @@ pub(super) async fn review_parent_issue(
     }
 
     // ---- 组装汇总输入：每子单状态 + 最新交付摘要（截断防 prompt 爆炸）----
-    // 段序（2026-10-17 NB-101 项目收口三轮误升级根修同款，横向扫同类）：
+    // 段序（项目收口三轮误升级根修同款，横向扫同类）：
     // 实物证据段在最前、子单交付摘要（worker 自述）垫后——worker_report
     // 有字节内联上限，超限截断从尾部吃起：截断时先牺牲转述保实物。
     let mut summary = if let Some(pid) = parent.project_id
@@ -171,10 +171,10 @@ pub(super) async fn review_parent_issue(
         ));
     }
 
-    // （实物证据段已前置到 summary 开头——2026-10-17 段序根修，见上方说明；
+    // （实物证据段已前置到 summary 开头—— 段序根修，见上方说明；
     // 此处不再重复注入。）
 
-    // 2026-10-17 NB-101 三轮误升级根修（父单同款）：收口 worker_report 携带
+    // 三轮误升级根修（父单同款）：收口 worker_report 携带
     // 实物证据段，默认 64KB 内联上限会把节选段截掉——用与项目收口一致的
     // 大预算（证据段自带 60K 字符节选总预算，此处只是不再二次截伤）。
     let mut prompt = nemesis_board::build_review_user_prompt_with_limits(
@@ -192,11 +192,11 @@ pub(super) async fn review_parent_issue(
         &[],
     );
 
-    // ---- 客观锚点双检（P2/B1，父单同款）：先便宜后昂贵 ----
+    // ---- 客观锚点双检（父单同款）：先便宜后昂贵 ----
     // 父单验收输入 = 子单交付汇总段；锚点全过 → 摘要拼进 prompt 仍审语义；
     // 有 fail → 合成 FAIL 短路（跳过 LLM），流经下方 verdict 分臂（父单
     // 不派发、无重派承接单位——转人工语义与 LLM FAIL 一致）。不安全锚点
-    // 行同款解析期拒绝 + 系统告警评论（T2-3）。
+    // 行同款解析期拒绝 + 系统告警评论。
     let (anchors, _semantic_fallback, rejected_anchors) =
         nemesis_board::parse_anchors(parent.acceptance_criteria.as_deref().unwrap_or(""));
     if !rejected_anchors.is_empty() {
@@ -215,13 +215,13 @@ pub(super) async fn review_parent_issue(
             warn!("[BoardReview] 父单 {parent_id} 锚点告警评论落库失败：{e}");
         }
     }
-    // 双根核验（子单同款，NB-22 锚点全败根修）：子单产物经档案管线合并在
+    // 双根核验（子单同款， 锚点全败根修）：子单产物经档案管线合并在
     // 项目目录，父单锚点同样要能核到它们。
     let parent_fallback = parent
         .project_id
         .and_then(|pid| store.get_project(pid).ok())
         .and_then(|p| project_archive_root(p.directory.as_deref()).ok());
-    // M2 三态分流（父单同款）：根全不可达 = 基础设施故障，转人工不产出
+    // 三态分流（父单同款）：根全不可达 = 基础设施故障，转人工不产出
     // 锚点 FAIL（父单无重派承接单位，FAIL 合成只会污染子单结论叙事）。
     if let Err(root_err) = nemesis_board::validate_anchor_roots(
         &anchors,
@@ -263,7 +263,7 @@ pub(super) async fn review_parent_issue(
             parent_id: None,
             ctype: CommentType::System,
         })?;
-        // 决策审计（2026-10-17 补齐，子单同款）：转人工终局决策落记录——
+        // 决策审计（补齐，子单同款）：转人工终局决策落记录——
         // 重放守卫据此判已定案，不跨重启反复重评审。
         record_auto_decide(
             deps,
@@ -274,7 +274,7 @@ pub(super) async fn review_parent_issue(
         );
         return Ok(true);
     }
-    // M7 exec 策略闸（父单同款：默认关闭 = 跳过注记）。
+    // exec 策略闸（父单同款：默认关闭 = 跳过注记）。
     let exec_policy = if cfg.review.exec_anchors_enabled {
         nemesis_board::ExecAnchorPolicy::Enabled {
             timeout_secs: cfg.review.exec_anchor_timeout_secs,
@@ -326,7 +326,7 @@ pub(super) async fn review_parent_issue(
                 .filter(|r| !r.passed)
                 .map(|r| format!("锚点失败: {} — {}", r.anchor.raw, r.detail))
                 .collect(),
-            // AOR 批一c §③：失败锚点自动成 FAIL 条目（同子单短路路径）。
+            // c §③：失败锚点自动成 FAIL 条目（同子单短路路径）。
             criteria: anchor_results
                 .iter()
                 .filter(|r| !r.passed)
@@ -354,16 +354,16 @@ pub(super) async fn review_parent_issue(
             ));
         }
         // 色审议需要评审 agent 在场；锚点短路 FAIL 是确定性判定，loop
-        // 未就绪也成立（明细评论照常落库，人工兜底可见）。
+        // 未就绪也成立（明细评论照常落库，人工兜底可）。
         let Some(agent_loop) = deps.moderator_loop.get() else {
             warn!("[BoardReview] 父单 {parent_id} 主 agent 未就绪，跳过收口验收（人工兜底）");
             return Ok(false);
         };
-        // PR4：父单收口预算块（恒纯文本单轮——见下方工具模式注释）。
+        // 父单收口预算块（恒纯文本单轮——见下方工具模式注释）。
         prompt.push_str(&render_review_budget_block(ReviewToolMode::NoTools));
-        // 父单收口恒纯文本（B2a 执行型验收只适用子单——父单工件分散在
+        // 父单收口恒纯文本（执行型验收只适用子单——父单工件分散在
         // 多个子单的 worker 会话，master 就地读文件无从对应）。
-        // B3/C2：父单职能分镜（父单通常无职能 = None）+ 预取禁令节（镜 1
+        // /：父单职能分镜（父单通常无职能 = None）+ 预取禁令节（镜 1
         // 多检查员时消费）。
         let review_lens = nemesis_prompts::board::review_lens_for_profession(
             parent.required_profession.as_deref().unwrap_or(""),
@@ -411,7 +411,7 @@ pub(super) async fn review_parent_issue(
                         &last_err,
                     );
                 }
-                // U-A：评审自身失败也是停车路径（父单无 N2 重评链——文本
+                // U-A：评审自身失败也是停车路径（父单无 重评链——文本
                 // 单轮），落停车档案 + 评论注记，resume=review.retrigger。
                 let handoff_note = park_with_handoff(
                     deps,
@@ -446,14 +446,14 @@ pub(super) async fn review_parent_issue(
     );
 
     let reviewer = Actor::agent(deps.cluster.node_id());
-    // S-O2 迟到评审守卫（同子单验收）：收口评审期间父单被人工改状态则
+    // S- 迟到评审守卫（同子单验收）：收口评审期间父单被人工改状态则
     // 结论整体让位（PASS 直推 done 是 backlog→done 合法边的同型竞态面）。
     if !review_still_relevant(deps, parent_id, output.verdict.as_str(), "父单收口") {
         return Ok(false);
     }
     match output.verdict {
         nemesis_board::ReviewVerdict::Pass => {
-            // EST-03（2026-09-16 横扫加固；2026-11-05 R528 补父单收口 PASS
+            // EST-03（横扫加固； 补父单收口 PASS
             // 臂）：收口评审 LLM 是长跑——发起时 estop 未生效不代表结束时
             // 仍未生效。落 done + on_issue_settled 级联（祖先链 sync/依赖
             // 补派/项目收口触发）前补检查点：挂起即停车入队（release 复评
@@ -462,9 +462,9 @@ pub(super) async fn review_parent_issue(
             if estop_fuse_engaged(deps, parent_id, ParkedKind::Parent) {
                 return Ok(false);
             }
-            // AOR 批二b（⑥ FINISH 谓词·收口面终检）：评审耗时数分钟，子树
+            // b（⑥ FINISH 谓词·收口面终检）：评审耗时数分钟，子树
             // 状态可能变化——落盘前以新鲜子树重验完整五条件，宁阻塞不盲收
-            // 口。阻塞 → 缺口评论（C-F4 去重）+ 不落 PASS 评论不记
+            // 口。阻塞 → 缺口评论（C- 去重）+ 不落 PASS 评论不记
             // parent_auto_close；缺口消除后既有 settle 钩子自动复评。
             let subtree_now =
                 store.descendants(&[parent_id], nemesis_board::store::DescendantEdges::Subtree);
@@ -500,7 +500,7 @@ pub(super) async fn review_parent_issue(
             );
             store.transition_issue(parent_id, IssueStatus::Done, &reviewer)?;
             info!("[BoardReview] 父单 {parent_id} 收口验收 PASS → done（auto_close_parent）");
-            // C-F5（复核 2026-09-16）：父单落 done 改走与子单落定同源的
+            // C-（复核）：父单落 done 改走与子单落定同源的
             // on_issue_settled 单一出口。此前只显式调项目收口触发
             // （notify_project_review_on_parent_done，on_issue_settled 内部
             // 同点调用，行为等价不重复），漏掉两条联动：多级看板沿祖先链
@@ -520,17 +520,17 @@ pub(super) async fn review_parent_issue(
             } else {
                 String::new()
             };
-            // 父单 FAIL 自动返工承接（2026-10-16）：差距具体（gap 非空）时
+            // 父单 FAIL 自动返工承接：差距具体（gap 非空）时
             // 先试自动承接——建「返工：」子单 + 子单自动派发单一入口发车，
             // 返工单落定后 sync 链经 PARENT_REVIEW_HOOK 自动复评本单（父单
             // 保持 in_review，不再无差别弹回人工）。UNSURE（证据不足）带
             // 可行动证据缺口（gap 或 reasons 非空）同样承接——补证据 = 补
-            // 差距（2026-10-16 用户裁决：除崩溃性问题外不让用户反复验收）；
+            // 差距（用户裁决：除崩溃性问题外不让用户反复验收）；
             // 双空（真无事可做）才落下方转人工路径。承接被拒/失败 → 落下方
             // 既有转人工路径（原因注记进评论）。
             let remediable = match verdict {
                 nemesis_board::ReviewVerdict::Fail => {
-                    // AOR 批一c §③：可返工性按渲染后差距判（条目清单在场即承接）。
+                    // c §③：可返工性按渲染后差距判（条目清单在场即承接）。
                     !nemesis_board::render_gap_with_criteria(&output).is_empty()
                 }
                 nemesis_board::ReviewVerdict::Unsure => {
@@ -621,14 +621,14 @@ pub(super) async fn review_parent_issue(
                 ver = verdict.as_str()
             );
             if verdict == nemesis_board::ReviewVerdict::Fail {
-                // AOR 批一c §③：人读评论用渲染后条目清单（旧格式回落 gap 原文）。
+                // c §③：人读评论用渲染后条目清单（旧格式回落 gap 原文）。
                 comment.push_str(&format!(
                     "\n差距：\n{}\n",
                     nemesis_board::render_gap_with_criteria(&output)
                 ));
             }
             append_reasons_unless_gapped(&mut comment, &output);
-            // 说清楚（2026-10-16 用户裁决）：升级必须带自动返工全程账目
+            // 说清楚（用户裁决）：升级必须带自动返工全程账目
             //（试了几轮、哪些返工单）——不是一句「未定案」就让用户盲裁。
             // 前缀两种形态都认（存量半角单，同轮数清点宽容逻辑）。
             let rem_children: Vec<&nemesis_board::Issue> = children
@@ -675,7 +675,7 @@ pub(super) async fn review_parent_issue(
                 "[BoardReview] 父单 {parent_id} 收口验收 verdict={} → 转人工（保持 in_review）",
                 verdict.as_str()
             );
-            // AOR 批三 5.3 触发点②：父单收口评审 FAIL 转人工 → 重规划起草
+            // 触发点②：父单收口评审 FAIL 转人工 → 重规划起草
             //（UNSURE 是证据缺口不是计划缺口，不触发；返工承接已覆盖 FAIL
             // 可返工形态，本钩子只承接承接失败/被拒/预算用尽的残留流）。
             if verdict == nemesis_board::ReviewVerdict::Fail {
@@ -690,8 +690,8 @@ pub(super) async fn review_parent_issue(
     Ok(true)
 }
 
-/// F3 项目收口汇总验收（fire-and-forget）：gateway 注册到
-/// `nemesis_web::handlers::board::set_project_review_hook`；触发前置
+/// 项目收口汇总验收（fire-and-forget）：gateway 注册到
+/// `nemesis_web::handlers:board::set_project_review_hook`；触发前置
 /// （全部顶层父单 done + 项目非空 + 状态 active/in_progress）在 web 侧
 /// notify 做过，此处 estop/配置双保险 + 验收执行 + 三态处置。
 pub(crate) fn spawn_project_review(deps: BoardReviewDeps, project_id: i64) {
@@ -708,7 +708,7 @@ pub(crate) fn spawn_project_review(deps: BoardReviewDeps, project_id: i64) {
     });
 }
 
-/// F3 项目收口汇总验收。返回 `Ok(false)` = 未评审即跳过（配置关/项目已
+/// 项目收口汇总验收。返回 `Ok(false)` = 未评审即跳过（配置关/项目已
 /// 收口/竞态防御复核不过/estop 冻结），`Ok(true)` = 评审闭环完成。
 pub(super) async fn review_project_completion(
     deps: &BoardReviewDeps,
@@ -767,7 +767,7 @@ pub(super) async fn review_project_completion(
         .filter(|i| i.parent_issue_id.is_none())
         .collect();
     if parents.is_empty() {
-        // M5-4（2026-10-10）：触发到复核之间项目被清空是异常态——静默跳过
+        // 触发到复核之间项目被清空是异常态——静默跳过
         // 会让「收口验收没跑」无人可见，升 WARN 带原因。
         warn!("[BoardReview] 项目 {project_id} 无顶层父单（触发后被清空/竞态），跳过收口验收");
         return Ok(false);
@@ -784,7 +784,7 @@ pub(super) async fn review_project_completion(
     for p in &parents {
         let subtree = store.descendants(&[p.id], nemesis_board::store::DescendantEdges::Subtree);
         if subtree.iter().any(|c| c.status == IssueStatus::Cancelled) {
-            // M5-4：范围缺口是「该项目交付不全」的强信号——升 WARN 保证
+            // 范围缺口是「该项目交付不全」的强信号——升 WARN 保证
             // 无人值守模式下可观测（转人工意图不变）。
             warn!(
                 "[BoardReview] 项目 {project_id} 父单 {}（{}）子树存在 cancelled 单，不自动收口（范围缺口转人工）",
@@ -794,9 +794,9 @@ pub(super) async fn review_project_completion(
         }
     }
 
-    // ---- M8 缺陷闸门（项目级）：全部顶层父单子树聚合扫描，在账缺陷非空
+    // ---- 缺陷闸门（项目级）：全部顶层父单子树聚合扫描，在账缺陷非空
     // → 确定性转人工不进语义评审。缺口评论落全部顶层父单（项目无 comment
-    // 载体，F3/M2 根不可达臂同款惯例）。
+    // 载体，/ 根不可达臂同款惯例）。
     let mut project_defects: Vec<UnclosedDefect> = Vec::new();
     for p in &parents {
         let sub = store.descendants(&[p.id], nemesis_board::store::DescendantEdges::Subtree);
@@ -863,23 +863,23 @@ pub(super) async fn review_project_completion(
     }
 
     // ---- 组装汇总输入：每顶层父单段 = 自身最新交付（若有）+ 子单交付
-    // 摘要（截断防 prompt 爆炸）。2026-09-12 根修：旧实现只取父单**自身**
+    // 摘要（截断防 prompt 爆炸）。 根修：旧实现只取父单**自身**
     // 最新 Delivery——实际数据流中 worker 交付评论落在叶子子单上（对比
     // review_parent_issue：它遍历的就是子单），父单自身常无 Delivery，
     // 聚合到空集 → 项目级锚点对「（无结构化交付汇报）」实核必然全 FAIL
-    // （双端真机 S2 实证：三条 re: 锚点全败，子单真实交付从未进入实核
+    // （双端真机 实证：三条 re: 锚点全败，子单真实交付从未进入实核
     // 文本）。聚合深度对齐 review_parent_issue（单层子单——planner 拆解
     // 纪律即单层），不引入新的嵌套深度语义。
     //
-    // 段序（2026-10-17 NB-101 三轮误升级根修的一部分）：**实物证据段在最
+    // 段序（三轮误升级根修的一部分）：**实物证据段在最
     // 前**、子单交付摘要（worker 自述）垫后——worker_report 有字节内联上
     // 限，超限截断从尾部吃起：实物证据（清单+最终报告节选）是不可再生的
     // 评审输入，交付摘要是已被独立验收过的转述（每张子单都有自己的
     // auto_decide），截断时先牺牲转述保实物。
-    // ---- F-U6-2（2026-09-15 U6 真机）：项目目录实物证据段（review_parent_issue
-    // 的 F-U3-6 同款——横向扫同类补齐）。项目收口验收标准与父单同形（「项目
+    // ---- F-（真机）：项目目录实物证据段（review_parent_issue
+    // 的 F- 同款——横向扫同类补齐）。项目收口验收标准与父单同形（「项目
     // 目录含 xxx」），但此前评审输入只有各子单 Delivery 声明摘要（worker 自述，
-    // 且 exec 工作副本路径 Linux/Windows 混杂）——U6 实证：父单收口评审凭
+    // 且 exec 工作副本路径 Linux/Windows 混杂）—— 实证：父单收口评审凭
     // 实物证据四条标准全过 PASS，项目收口评审却因「无项目目录实物直接取证 /
     // 子单仅有自评」判 UNSURE 转人工，两道评审同一标准结论矛盾。注入真实
     // 清单 + 内容节选后与父单收口同源对照（无绑定目录的存量项目诚实跳过）。
@@ -924,8 +924,8 @@ pub(super) async fn review_project_completion(
                 .find(|cm| cm.ctype == CommentType::Delivery)
                 .map(|cm| nemesis_utils::truncate(cm.content.trim(), 1500))
                 .unwrap_or_else(|| "（无结构化交付汇报）".to_string());
-            // F-U6-2：附子单独立验收结论（最新 auto_decide）——此前评审员
-            // 只看到「状态=done」会误读为「worker 自评」，U6 实证 UNSURE
+            // F-：附子单独立验收结论（最新 auto_decide）——此前评审员
+            // 只看到「状态=done」会误读为「worker 自评」， 实证 UNSURE
             // 理由即含「子单仅有自评 done、无独立验收结论」（事实错误：
             // 每张子单都有 agent 评审 auto_accept 决策入账）。只带决策词
             // 不带理由全文（防 prompt 爆炸）。
@@ -952,14 +952,14 @@ pub(super) async fn review_project_completion(
 
     // （实物证据段已前置到 summary 开头——见上方段序说明；此处不再重复
     // 注入。旧位置在交付摘要之后，64KB 内联截断会把节选段整体切掉，
-    // 实录：2026-10-17 三轮项目评审 prompt 全部停在文件清单中段。）
+    // 三轮项目评审 prompt 全部停在文件清单中段。）
 
-    // 验收标准聚合（F3 项目收口判定依据）：项目级 AC 在前（v10 列——此前
+    // 验收标准聚合（项目收口判定依据）：项目级 AC 在前（v10 列——此前
     // 只聚合父单 AC，project.create 存的项目级标准被静默丢弃），各顶层父单
     // 非空 AC 依序拼接；锚点行照常参与客观双检。
     let joined_ac = join_project_review_ac(Some(&project.acceptance_criteria), &parents);
 
-    // 内联上限：见模块级 CLOSURE_WORKER_REPORT_MAX_BYTES（2026-10-17 根修）。
+    // 内联上限：见模块级 CLOSURE_WORKER_REPORT_MAX_BYTES（根修）。
     let mut prompt = nemesis_board::build_review_user_prompt_with_limits(
         &format!("PROJECT-{}", project.id),
         &project.name,
@@ -980,11 +980,11 @@ pub(super) async fn review_project_completion(
             rejected_anchors.len()
         );
     }
-    // 双根核验（子单/父单同款，NB-22 锚点全败根修）：项目收口锚点核的也是
+    // 双根核验（子单/父单同款， 锚点全败根修）：项目收口锚点核的也是
     // 全项目产物（子单变更集都在项目目录）。
     let project_fallback = project_archive_root(project.directory.as_deref()).ok();
-    // M2 三态分流（项目收口同款）：根全不可达 = 基础设施故障，转人工——
-    // 缺口评论落全部顶层父单（项目无 comment 载体，F3 惯例同款）。
+    // 三态分流（项目收口同款）：根全不可达 = 基础设施故障，转人工——
+    // 缺口评论落全部顶层父单（项目无 comment 载体， 惯例同款）。
     if let Err(root_err) = nemesis_board::validate_anchor_roots(
         &anchors,
         resolve_anchor_root(deps),
@@ -1032,7 +1032,7 @@ pub(super) async fn review_project_completion(
                 parent_id: None,
                 ctype: CommentType::Comment,
             })?;
-            // 决策审计（2026-10-17 补齐，项目收口 LLM 臂同款）：转人工终局
+            // 决策审计（补齐，项目收口 LLM 臂同款）：转人工终局
             // 决策按父单落记录（project_review_already_concluded 据此判项目
             // 评审已定案，不跨重启反复重评审）。
             record_auto_decide(
@@ -1049,7 +1049,7 @@ pub(super) async fn review_project_completion(
         }
         return Ok(true);
     }
-    // M7 exec 策略闸（项目收口同款：默认关闭 = 跳过注记）。
+    // exec 策略闸（项目收口同款：默认关闭 = 跳过注记）。
     let exec_policy = if cfg.review.exec_anchors_enabled {
         nemesis_board::ExecAnchorPolicy::Enabled {
             timeout_secs: cfg.review.exec_anchor_timeout_secs,
@@ -1084,7 +1084,7 @@ pub(super) async fn review_project_completion(
                 .filter(|r| !r.passed)
                 .map(|r| format!("锚点失败: {} — {}", r.anchor.raw, r.detail))
                 .collect(),
-            // AOR 批一c §③：失败锚点自动成 FAIL 条目（同子单短路路径）。
+            // c §③：失败锚点自动成 FAIL 条目（同子单短路路径）。
             criteria: anchor_results
                 .iter()
                 .filter(|r| !r.passed)
@@ -1115,10 +1115,10 @@ pub(super) async fn review_project_completion(
             warn!("[BoardReview] 项目 {project_id} 主 agent 未就绪，跳过收口验收（人工兜底）");
             return Ok(false);
         };
-        // PR4：项目收口预算块（恒纯文本单轮——同父单边界）。
+        // 项目收口预算块（恒纯文本单轮——同父单边界）。
         prompt.push_str(&render_review_budget_block(ReviewToolMode::NoTools));
         // 项目级恒纯文本（同父单边界：工件分散在各 worker 会话）。
-        // C2：项目收口无职能分镜（lens=None），多检查员镜 1 消费预取禁令节
+        // 项目收口无职能分镜（lens=None），多检查员镜 1 消费预取禁令节
         // （项目目录 fallback 优先——架构工件就住在项目档案里）。
         let lens_reference = if cfg.review.checkers > 1 {
             prefetch_ban_section(resolve_anchor_root(deps), project_fallback.as_deref())
@@ -1175,7 +1175,7 @@ pub(super) async fn review_project_completion(
                     );
                 }
                 // 解析失败 → 全部顶层父单写转人工评论（项目无评论表，
-                // 落在父单线程里人必然看得见）。U-A：停车档案随父单落盘。
+                // 落在父单线程里人必然看得）。U-A：停车档案随父单落盘。
                 let comment_head = format!(
                     "🏛 项目「{}」收口验收无法完成（验收评审自身失败），请人工裁决。\n\n原因：{last_err}",
                     project.name
@@ -1223,13 +1223,13 @@ pub(super) async fn review_project_completion(
     Ok(true)
 }
 
-/// F3 三态落盘（独立 fn 供单测直测，不经 LLM）：
+/// 三态落盘（独立 fn 供单测直测，不经 LLM）：
 /// - PASS → 项目 completed（`board.review.auto_close_project` 本身即收口
 ///   授权，评论注明）。
-/// - FAIL/UNSURE → completed 回滚 in_progress（F2 状态机合法转移，P3
+/// - FAIL/UNSURE → completed 回滚 in_progress（状态机合法转移，
 ///   预留）；已在 in_progress 的不动；archived 完全不动（只 warn）。缺口
 ///   评论落全部顶层父单（@各自创建者；LLM gap 无法可靠映射到具体父单，
-///   诚实全量留痕），**不自动重开父单、不重派**（F3 边界）。
+///   诚实全量留痕），**不自动重开父单、不重派**（边界）。
 pub(super) fn apply_project_review_outcome(
     deps: &BoardReviewDeps,
     project: &nemesis_board::models::Project,
@@ -1318,10 +1318,10 @@ pub(super) fn apply_project_review_outcome(
                 );
             }
             if closed {
-                // F9 收口总结（P6）：completed 落定后异步生成档案 summary.md
+                // 收口总结：completed 落定后异步生成档案 summary.md
                 //（失败诚实留痕，不影响已落定的收口状态）。
                 crate::board_review::spawn_project_summary(deps.clone(), project.id);
-                // 任务档案自动导出（2026-09-29 goal）：同源触发，内部自守门
+                // 任务档案自动导出（goal）：同源触发，内部自守门
                 //（auto_on_complete 旗标默认开；失败父单评论留痕不阻塞收口）。
                 crate::board_review::spawn_project_dossier(deps.clone(), project.id);
             }
@@ -1353,7 +1353,7 @@ pub(super) fn apply_project_review_outcome(
                 ver = verdict.as_str()
             );
             if output.verdict == nemesis_board::ReviewVerdict::Fail {
-                // AOR 批一c §③：人读评论用渲染后条目清单（旧格式回落 gap 原文）。
+                // c §③：人读评论用渲染后条目清单（旧格式回落 gap 原文）。
                 comment.push_str(&format!(
                     "\n差距：\n{}\n",
                     nemesis_board::render_gap_with_criteria(output)
@@ -1428,9 +1428,9 @@ pub(super) fn apply_project_review_outcome(
     Ok(())
 }
 
-/// AutoAccept 收货 + settle 联动（P2 #0 断链修复）：评论「自动收货」→
+/// AutoAccept 收货 + settle 联动（#0 断链修复）：评论「自动收货」→
 /// 落 done → **必须**走 `on_issue_settled`（父单状态同步 + 依赖子单补派）
-/// ——与 WSAPI issue.status 落 done/cancelled 同一真相源；漏调即 T1-2
+/// ——与 WSAPI issue.status 落 done/cancelled 同一权威定义；漏调即
 /// 断链（子单 done 后续依赖子单永不派发、父单永不收口）。独立成 fn 供
 /// 回归测试直测联动（review_issue 主链需 LLM 才能到本分支）。
 pub(super) fn auto_accept_and_settle(
@@ -1456,10 +1456,10 @@ pub(super) fn auto_accept_and_settle(
     Ok(())
 }
 
-/// estop 保险丝（全自动流转 P1/T1-6）：急停挂起 = true 并把 issue 停车
+/// estop 保险丝（全自动流转）：急停挂起 = true 并把 issue 停车
 /// （release 后 [`spawn_estop_resume_watcher`] 复评恢复）。评论失败只
 /// warn——冻结本身不依赖落库。重复停车按 **(kind, issue_id)** 去重（防多
-/// 检查点重复入队/刷评论；BUG-6 根修 2026-10-13：旧键只看 issue_id，同一
+/// 检查点重复入队/刷评论；BUG-6 根修：旧键只看 issue_id，同一
 /// 单先走评审停车（kind=Issue）、后走父单/项目收口停车（kind=Parent/
 /// Project）会被吞号——后者永不复评）。
 pub(super) fn estop_fuse_engaged(deps: &BoardReviewDeps, issue_id: i64, kind: ParkedKind) -> bool {
@@ -1485,7 +1485,7 @@ pub(super) fn estop_fuse_engaged(deps: &BoardReviewDeps, issue_id: i64, kind: Pa
     true
 }
 
-/// 停车场 sweep 触发闸（estop × 节流；集群完备性加固 2026-09-11 从
+/// 停车场 sweep 触发闸（estop × 节流；集群完备性加固 从
 /// gateway 内联闭包抽取，可测）：急停挂起 → false 且**不消耗节流窗口**
 /// —— 急停期间的 announce 刷新不吃掉释放后的首次重试机会。非急停时按
 /// `min_interval` 节流（抗 announce 风暴），放行即盖章。gateway 装配的
@@ -1511,8 +1511,8 @@ pub(crate) fn park_sweep_gate(
 }
 
 /// estop 释放 watcher：订阅急停状态 watch，true→false 沿（释放）把停车
-/// 队列逐条复评——无限模式循环从断点恢复（T1-6「release 后恢复」）；再
-/// 按态补扫一轮 `replay_stuck_reviews`（R5-BUG-1：在 LLM 中途被打断的
+/// 队列逐条复评——无限模式循环从断点恢复（「release 后恢复」）；再
+/// 按态补扫一轮 `replay_stuck_reviews`（BUG-1：在 LLM 中途被打断的
 /// 在途评审不进停车场，release 后靠扫态兜底复活）。gateway 装配期调用
 /// 一次；四入口（CLI/托盘/Dashboard/WSAPI）最终都走同一
 /// `EstopState::release()`，watch 全覆盖。
@@ -1544,11 +1544,11 @@ pub(crate) fn spawn_estop_resume_watcher(deps: BoardReviewDeps) {
                     ParkedKind::Project => spawn_project_review(deps.clone(), *issue_id),
                 }
             }
-            // P4/E4（看板项目档案 goal）：急停挂起的合并补跑——PLACED 注册表
+            // /（看板项目档案 goal）：急停挂起的合并补跑——PLACED 注册表
             // 里尚存的条目（estop 触发时合并被拒、条目保留）逐个重试；在途
             // 派发自然按 Waiting* 跳过。
             crate::board_archive_ingest::retry_placed_merges(&deps);
-            // R5-BUG-1 根修：停车场只收「评审入口检查点被闸」的登记；已过
+            // BUG-1 根修：停车场只收「评审入口检查点被闸」的登记；已过
             // 检查点、在 LLM 中途被 estop 打断的评审不进队列（直接死亡），
             // drain 完停车场后按态补扫一遍兜底（复用启动重放/评审重放的
             // 守卫矩阵：无结论才重放、转人工 sticky、读失败 fail-closed）。
@@ -1621,13 +1621,13 @@ pub(super) fn project_review_already_concluded(
     })
 }
 
-/// 评审重放（2026-09-15 R4-BUG-2 根修；R5-BUG-1 扩展到 estop 释放沿）：
+/// 评审重放（BUG-2 根修；-BUG-1 扩展到 estop 释放沿）：
 /// 评审 spawn 是纯内存 fire-and-forget 任务，in-flight 评审死于两种场景
 /// 都无重触发——① master 重启杀掉（单据/父单永久卡 in_review、项目永久
 /// 卡「验收中」，真机实证：父单收口验收 spawn 15s 后 master 被杀，重启后
-/// NB-3 永卡 in_review）；② estop 在评审**入口检查点之后**打断（LLM 中途
+/// 永卡 in_review）；② estop 在评审**入口检查点之后**打断（LLM 中途
 /// 被杀）——此路不走 `estop_fuse_engaged` 停车登记，release 后 resume
-/// watcher 的停车场队列是空的，单据同样永卡（真机实证：NB-16 收口评审
+/// watcher 的停车场队列是空的，单据同样永卡（真机实证： 收口评审
 /// LLM 中被打断，release 后 10s 零复活）。与 estop resume watcher（冻结
 /// 恢复）互补，这里管「评审死了没结论」的按态恢复：
 ///
@@ -1672,7 +1672,7 @@ pub(crate) fn replay_stuck_reviews(deps: &BoardReviewDeps, skip: &[(ParkedKind, 
                     // worker 失败 ⛔=Comment），降级与失败形态的单同样转
                     // in_review 进验收决策链（board_dispatch.rs 写回注释），
                     // 重启后却因无 Delivery 被重放漏掉——单据永久卡死无自愈
-                    //（2026-09-30 17 场景观察点⑥）。dispatch 终态是更可靠的
+                    //（17 场景观察点⑥）。dispatch 终态是更可靠的
                     // 单一判据：write_back 先 finish_dispatch 再 add_comment，
                     // 评论可能失败丢失，终态必落盘；人工改 in_review（无
                     // dispatch 行）仍由 Delivery 分支兜底语义（有交付才算）。
@@ -1781,7 +1781,7 @@ pub(super) fn post_review_comment(
 }
 
 // ---------------------------------------------------------------------------
-// 看板项目档案 P6（F9）：收口总结生成
+// 看板项目档案：收口总结生成
 //
 // 项目 completed 后异步生成档案总结 `<archive>/docs/summary.md`（「AI 生成件」
 // 标注 + 生成时间 + 模型名）。复用评审通道（detached 纯文本单轮）+ tier 闸
@@ -1791,10 +1791,10 @@ pub(super) fn post_review_comment(
 
 /// 收口总结系统提示词（自由 Markdown，不走评审 verdict JSON——与评审
 /// 通道共用的是 LLM 调用通道本身，不是输出格式）。
-/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+/// 文本单一真相源在 `nemesis-prompts`（集中化）。
 use nemesis_prompts::board::PROJECT_SUMMARY_SYSTEM_PROMPT;
 
-/// F9 触发入口：项目收口（自动 PASS / 人工 project.update → completed）
+/// 触发入口：项目收口（自动 PASS / 人工 project.update → completed）
 /// 两条路径都汇到这里。异步不阻塞调用方；内部自守门（estop/tier/档案
 /// 目录缺失全部诚实跳过）。
 pub(crate) fn spawn_project_summary(deps: BoardReviewDeps, project_id: i64) {
@@ -1808,7 +1808,7 @@ pub(crate) fn spawn_project_summary(deps: BoardReviewDeps, project_id: i64) {
     });
 }
 
-/// 任务档案自动导出（2026-09-29 goal）：项目收口后把全项目任务记录整合
+/// 任务档案自动导出（goal）：项目收口后把全项目任务记录整合
 /// 成自包含目录（`<workspace>/logs/dossiers/`）。与 spawn_project_summary
 /// 同源双路径触发（自动 PASS / 人工 project.update → completed 两处调用
 /// 点）。纯本机整合（board.db + 项目档案 + 收件箱 + 账本），LLM 零参与
@@ -1865,7 +1865,7 @@ fn export_project_dossier(
         &out_root,
         &usage_of,
     )?;
-    // P4-d：自动导出凭证入交付账本（dossier 行，run_id=None 项目级）。
+    // d：自动导出凭证入交付账本（dossier 行，run_id=None 项目级）。
     crate::review_ledger::dossier_delivery(deps.cluster.task_db().as_ref(), project_id, &outcome);
     Ok(outcome)
 }
@@ -1946,12 +1946,12 @@ pub(crate) fn project_archive_root(directory: Option<&str>) -> Result<std::path:
     Ok(root)
 }
 
-/// F9 主体。前置检查全部通过才调 LLM；任何失败向上返回（由调用方留痕）。
+/// 主体。前置检查全部通过才调 LLM；任何失败向上返回（由调用方留痕）。
 pub(super) async fn run_project_summary(
     deps: &BoardReviewDeps,
     project_id: i64,
 ) -> Result<(), String> {
-    // 急停中不跑 LLM（ cosmetic 件不值得占保险丝语义，跳过即可）。
+    // 急停中不跑 LLM（cosmetic 件不值得占保险丝语义，跳过即可）。
     if deps.estop.is_engaged() {
         return Err("急停（E-STOP）生效中，收口总结跳过".to_string());
     }
@@ -2045,7 +2045,7 @@ pub(super) async fn run_project_summary(
     Ok(())
 }
 
-/// F9 事实清单（纯函数，单测直测）：项目行 + 逐单状态/末评摘录 + 决策流
+/// 事实清单（纯函数，单测直测）：项目行 + 逐单状态/末评摘录 + 决策流
 /// 压缩行。LLM 只看这份清单——不读盘、不猜。
 pub(super) fn build_summary_facts(
     store: &nemesis_board::BoardStore,

@@ -13,8 +13,11 @@
  * snake_case 原样）；本组件纯渲染不改数据。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import type { WorkTimeline } from '../../stores/chat'
-import { toolLabel } from './workLabels'
+import { useRouter } from 'vue-router'
+import type { WorkTimeline, WorkToolEntry } from '../../stores/chat'
+import { toolLabel, spawnTaskFromArgs, jobIdFromPreview } from './workLabels'
+import { useWSAPI } from '../../composables/useWSAPI'
+import ProcessOutputTail from '../process/ProcessOutputTail.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -27,7 +30,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{ (e: 'grown'): void }>()
 
-// 折叠态：落地默认收起（用户要看自己去点，2026-10-30 拍板）；执行中默认
+// 折叠态：落地默认收起（用户要看自己去点，2026-10-30 决策）；执行中默认
 // 展开实时滚动。两态是两个组件实例，各自的初值即终值（live 块随回复落地
 // 整体卸载，由落地态实例接棒）。
 const open = ref(props.live)
@@ -73,6 +76,52 @@ function formatToolMs(ms: number): string {
   return `${s % 1 === 0 ? s : s.toFixed(1)}s`
 }
 
+// --- spawn 行钻取（2026-11-06 B 档）：历史/落地态里子代理调用的钻取入口 ---
+// 显示任务文本（替代原始参数 JSON），点击按任务文本匹配台账行 → 深链
+// /executors?tab=subagents&focus=<id>；台账缺席（过旧被逐出/WS 未就绪）回落
+// 执行单元页子代理 TAB。
+const router = useRouter()
+const { request } = useWSAPI()
+
+function spawnTask(t: WorkToolEntry): string {
+  return t.tool === 'spawn' ? spawnTaskFromArgs(t.args_preview ?? '') : ''
+}
+
+async function openSpawn(t: WorkToolEntry) {
+  if (t.tool !== 'spawn') return
+  const task = spawnTaskFromArgs(t.args_preview ?? '')
+  if (!task) return
+  // 截断伪影剥离：后端预览截断以 … 收尾（tool_event_hook truncate_chars），
+  // 匹配前剥掉才能作为前缀命中台账行（展示侧保留 … = 诚实截断信号）。
+  const needle = task.endsWith('…') ? task.slice(0, -1) : task
+  let focus = ''
+  try {
+    const r = await request('subagents', 'list', {})
+    const tasks = (r?.tasks as Array<{ id: string; task: string }>) || []
+    const hit =
+      tasks.find((x) => x.task === needle) || tasks.find((x) => !!needle && x.task.startsWith(needle))
+    if (hit) focus = hit.id
+  } catch { /* WS 未就绪——落台账页 */ }
+  router.push(
+    focus ? { path: '/executors', query: { tab: 'subagents', focus } } : { path: '/executors', query: { tab: 'subagents' } },
+  )
+}
+
+// --- background_start 行（2026-11-06 后台进程实时输出）：内嵌迷你 live
+// tail + 深链 /executors?tab=processes&focus=<id>。job_id 直接从
+// result_preview 抽取
+//（start 返回值带 job_id），无需查台账——spawn 需要文本匹配而这里
+// id 是结构化的，两个钻取路径的差别是刻意的。tail 挂在行外（group
+// 包裹），点击 tail 区域不会误触发行级深链。 -1 哨兵 = 无 tail。
+function bgJob(t: WorkToolEntry): number {
+  return t.tool === 'background_start' ? (jobIdFromPreview(t.result_preview ?? '') ?? -1) : -1
+}
+
+function openBg(t: WorkToolEntry) {
+  const id = bgJob(t)
+  if (id >= 0) router.push({ path: '/executors', query: { tab: 'processes', focus: String(id) } })
+}
+
 // 新内容到达（轮数或工具数增长）→ 通知宿主贴底（live 态才有意义）。
 watch(
   () => props.work.rounds.length + props.work.rounds.reduce((n, r) => n + r.tools.length, 0),
@@ -97,21 +146,39 @@ watch(
     <div v-if="open" class="wt-body">
       <template v-for="(r, ri) in work.rounds" :key="ri">
         <div v-if="r.text" class="wt-round-text">{{ r.text }}</div>
-        <!-- 思考链折叠卡（批次二）：原生 details 默认收起（用户拍板：思考
+        <!-- 思考链折叠卡（批次二）：原生 details 默认收起（用户决策：思考
              是可看不可刷的次级内容，65k 级长文不默认展开）；正文 pre-wrap，
              高度钳制滚动——万级 token 思考不撑爆时间线。 -->
         <details v-if="r.reasoning" class="wt-think">
           <summary>💭 思考过程</summary>
           <div class="wt-think-body">{{ r.reasoning }}</div>
         </details>
-        <div v-for="t in r.tools" :key="t.call_id" class="wt-tool" :title="t.args_preview || t.tool">
-          <span class="wt-tool-status" :class="t.running ? 'is-running' : t.ok ? 'is-ok' : 'is-fail'">
-            <span v-if="t.running" class="wt-spinner"></span>
-            <template v-else>{{ t.ok ? '✓' : '✗' }}</template>
-          </span>
-          <span class="wt-tool-label">{{ toolLabel(t.tool) }}</span>
-          <span v-if="t.args_preview" class="wt-tool-args">{{ t.args_preview }}</span>
-          <span class="wt-tool-dur">{{ formatToolMs(t.duration_ms) }}</span>
+        <div
+          v-for="t in r.tools"
+          :key="t.call_id"
+          class="wt-tool-group"
+        >
+          <div
+            class="wt-tool"
+            :class="{ 'wt-tool-spawn': t.tool === 'spawn', 'wt-tool-bg': t.tool === 'background_start' }"
+            :title="t.args_preview || t.tool"
+            :data-task="spawnTask(t)"
+            @click="t.tool === 'spawn' ? openSpawn(t) : t.tool === 'background_start' ? openBg(t) : undefined"
+          >
+            <span class="wt-tool-status" :class="t.running ? 'is-running' : t.ok ? 'is-ok' : 'is-fail'">
+              <span v-if="t.running" class="wt-spinner"></span>
+              <template v-else>{{ t.ok ? '✓' : '✗' }}</template>
+            </span>
+            <span class="wt-tool-label">{{ toolLabel(t.tool) }}</span>
+            <span v-if="spawnTask(t)" class="wt-tool-args wt-tool-task">{{ spawnTask(t) }}</span>
+            <span v-else-if="t.args_preview" class="wt-tool-args">{{ t.args_preview }}</span>
+            <span class="wt-tool-dur">{{ formatToolMs(t.duration_ms) }}</span>
+          </div>
+          <!-- background_start 内嵌迷你 live tail（compact：4KB 窗口 +
+               「完整输出」深链 /executors?tab=processes&focus=<id>）；挂在行外——点击
+               tail 不触发行级深链。job_id 抽取失败（截断伪影）= 无 tail
+               诚实降级，行点击仍可深链台账页。 -->
+          <ProcessOutputTail v-if="bgJob(t) >= 0" :job-id="bgJob(t)" compact />
         </div>
       </template>
     </div>
@@ -292,5 +359,29 @@ details.wt-think > summary:hover {
   flex: none;
   font-size: 10px;
   opacity: 0.7;
+}
+/* spawn 行钻取（2026-11-06 B 档）：可点 + 悬停标签提亮（点击按任务文本
+   匹配台账行深链 /executors?tab=subagents&focus=<id>）。 */
+.wt-tool-spawn {
+  cursor: pointer;
+}
+.wt-tool-spawn:hover .wt-tool-label {
+  color: var(--accent, #3b82f6);
+}
+.wt-tool-task {
+  font-family: inherit;
+  opacity: 0.85;
+}
+/* background_start 行（2026-11-06 后台进程实时输出）：可点深链同 spawn；
+   group 包裹行 + 内嵌迷你 tail（tail 自带 margin-top）。 */
+.wt-tool-group {
+  display: flex;
+  flex-direction: column;
+}
+.wt-tool-bg {
+  cursor: pointer;
+}
+.wt-tool-bg:hover .wt-tool-label {
+  color: var(--accent, #3b82f6);
 }
 </style>

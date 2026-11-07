@@ -11,18 +11,16 @@ use std::sync::Arc;
 
 use tracing::warn;
 
-// ---------------------------------------------------------------------------
 // ProviderAdapter — providers → agent LlmProvider trait
-// ---------------------------------------------------------------------------
 
-/// T5（多模态，goal 2026-09-03）：agent LlmMessage → provider Message 的统一
+/// （多模态，goal）：agent LlmMessage → provider Message 的统一
 /// 转换。gateway 的 [`ProviderAdapter`] 与 CLI `agent` 命令的 adapter 共用
-/// （单一真相源，此前两处手写重复的转换收敛于此）。
+/// （统一定义，此前两处手写重复的转换收敛于此）。
 ///
 /// 转换规则：`images` 为空 → 纯文本字符串形态（与历史请求逐字节一致，prompt
 /// cache 前缀不破）；`images` 非空 → `MessageContent::Parts` 数组形态——文本
 /// part 在前（非空时），每张图片产出 `[图片: <path>]` 标注 part + 图片 part
-/// （Base64；`detail: None` 走服务端 auto，goal P2.2 锁定的线上形态）。
+/// （Base64；`detail: None` 走服务端 auto，goal.2 锁定的线上形态）。
 pub fn agent_message_to_provider(
     m: nemesis_agent::r#loop::LlmMessage,
 ) -> nemesis_providers::types::Message {
@@ -97,9 +95,9 @@ impl ProviderAdapter {
     }
 }
 
-/// L10（2026-10-13）：FailoverError → loop 层 String 的单一映射源（chat /
-/// chat_streamed 共用）。429 Retry-After 保真（2026-09-17 BUG 文档裁决④⑧）
-/// ——` (retry_after=Ns)` 后缀供 loop 层子串提取后取 max（上游要求 vs 本地
+/// FailoverError → loop 层 String 的单一映射源（chat /
+/// chat_streamed 共用）。429 Retry-After 保真
+/// ` (retry_after=Ns)` 后缀供 loop 层子串提取后取 max（上游要求 vs 本地
 /// 阶梯），不引入跨 crate 依赖。
 fn map_provider_error(e: &nemesis_providers::failover::FailoverError) -> String {
     match e {
@@ -111,8 +109,8 @@ fn map_provider_error(e: &nemesis_providers::failover::FailoverError) -> String 
     }
 }
 
-/// L10：agent 层 ChatOptions → provider 层（chat / chat_streamed 共用转换，
-/// 单一真相源——此前内联在 chat()）。
+/// agent 层 ChatOptions → provider 层（chat / chat_streamed 共用转换，
+/// 单一权威定义——此前内联在 chat()）。
 fn agent_options_to_provider(
     options: Option<nemesis_agent::types::ChatOptions>,
 ) -> nemesis_providers::types::ChatOptions {
@@ -122,7 +120,7 @@ fn agent_options_to_provider(
             max_tokens: opts.max_tokens.map(|t| t as i64),
             top_p: opts.top_p.map(|p| p as f64),
             stop: opts.stop,
-            reasoning_effort: opts.reasoning_effort.clone(), // H4: tier passes through
+            reasoning_effort: opts.reasoning_effort.clone(), // tier passes through
             extra: HashMap::new(),
         },
         None => nemesis_providers::types::ChatOptions {
@@ -136,7 +134,7 @@ fn agent_options_to_provider(
     }
 }
 
-/// L10：agent 层 ToolDefinition → provider 层（同上共用转换）。
+/// agent 层 ToolDefinition → provider 层（同上共用转换）。
 fn agent_tools_to_provider(
     tools: Vec<nemesis_agent::types::ToolDefinition>,
 ) -> Vec<nemesis_providers::types::ToolDefinition> {
@@ -153,7 +151,7 @@ fn agent_tools_to_provider(
         .collect()
 }
 
-/// L10：provider LLMResponse → agent LlmResponse（同上共用映射；finished
+/// provider LLMResponse → agent LlmResponse（同上共用映射；finished
 /// 判定见函数内注记——工具调用在场恒未终答）。
 fn provider_response_to_agent(
     resp: nemesis_providers::types::LLMResponse,
@@ -175,14 +173,14 @@ fn provider_response_to_agent(
     // finished 判定：工具调用在场 ⇒ 恒未终答（loop 侧必须 dispatch）。此前
     // `|| finish_reason == "stop"` 会被异常上游（stop 邮票 + tools 在场）静默
     // 丢掉工具调用——judge_final_answer 见 finished=true 直接当终答
-    // （2026-10-13 wal_crash 实证；与 chat() 共用同源语义）。
+    // （wal_crash 实证；与 chat() 共用同源语义）。
     let finished = tool_calls.is_empty();
     nemesis_agent::r#loop::LlmResponse {
         content: resp.content,
         tool_calls,
         finished,
         reasoning_content: resp.reasoning_content,
-        // §6.2：归一化停止原因透传（主 loop 输出翻倍阶梯判定输入）。
+        // 归一化停止原因透传（主 loop 输出翻倍阶梯判定输入）。
         finish_reason: Some(resp.finish_reason),
         escalated_to: None,
         usage: resp
@@ -220,7 +218,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             model
         };
 
-        // T5：转换收敛到统一 helper（含多模态 images → Parts 分支）。
+        // 转换收敛到统一 helper（含多模态 images → Parts 分支）。
         let provider_messages: Vec<nemesis_providers::types::Message> = messages
             .into_iter()
             .map(agent_message_to_provider)
@@ -246,12 +244,12 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
         }
     }
 
-    /// L10：流式 lane 覆写。真实流式经 `inner.chat_stream`（SSE 逐块）→
+    /// 流式 lane 覆写。真实流式经 `inner.chat_stream`（SSE 逐块）→
     /// 增量同步回调 `on_delta` + 聚合成 [`LlmResponse`]（语义与 `chat` 一致：
     /// 同参同返回，finished 判定同源）。三个诚实回落：
     /// - 首块即 "not implemented"（trait 缺省实现）→ 该 provider 无流式
     ///   lane，静默回落 `inner.chat`（非流式），成功后合成一条全量增量；
-    /// - 流中途 Err → 已聚合 partial 非空则包装 `StreamInterrupted`（L02
+    /// - 流中途 Err → 已聚合 partial 非空则包装 `StreamInterrupted`（
     ///   契约，对齐 collect_stream_response Err 臂：partial 随错误携带不
     ///   丢），空则 `map_provider_error` 原样上抛（429 保真）；
     /// - EOF 无 finish_reason（上游早断）→ 按 tool_calls 推导 finished，
@@ -278,7 +276,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
         let provider_options = agent_options_to_provider(options);
         let provider_tools = agent_tools_to_provider(tools);
 
-        // wire 语义闸（2026-10-14 T37/T42 根修）：provider 偏好非流式（显式
+        // wire 语义闸（/ 根修）：provider 偏好非流式（显式
         // stream=no，或 auto 且 lane 缺省非流式——anthropic/openai 兼容）时
         // 静默回落 chat()。此前本 lane 无条件走 chat_stream 真流式，越权覆盖
         // 了 chat() 内部的 stream_mode 语义：流式路径 raw 请求/响应体恒 None
@@ -362,7 +360,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                 if c.reasoning_content.is_some() {
                     reasoning_content = c.reasoning_content;
                 }
-                // §6.2：终态块的归一化停止原因（输出翻倍阶梯判定输入）。
+                // 终态块的归一化停止原因（输出翻倍阶梯判定输入）。
                 if c.finish_reason.is_some() {
                     finish_reason = c.finish_reason;
                 }
@@ -370,16 +368,15 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             match rx.recv().await {
                 Some(Ok(next)) => chunk = Some(next),
                 Some(Err(e)) => {
-                    // L02 契约对齐（stream_util::collect_stream_response Err 臂
+                    // 契约对齐（stream_util::collect_stream_response Err 臂
                     // 同款语义）：流中断但已聚合非空部分内容/工具调用 → 包装
                     // StreamInterrupted（partial 随错误 Display 携带不丢——
                     // recovery 按 "stream interrupted from provider" 前缀短路进
                     // transient 重试环，重试=全新请求 partial 不回灌；重试耗尽
                     // 终局通知保留全文）。空 → lane 原错误原样上抛（诚实分类
                     // 不吞）。⚠ 本聚合循环是 chat_streamed 自带的（不走
-                    // provider.chat() 内部的 collect_stream_response），漏接即
-                    // partial 丢弃——L21 agent-bench stream_break 终局臂实证
-                    // （2026-11-01）。
+                    // provider.chat 内部的 collect_stream_response），漏接即
+                    // partial 丢弃—— agent-bench stream_break 终局臂实证
                     if content.trim().is_empty() && last_tool_calls.is_empty() {
                         warn!("[LlmBridge] LLM stream error: {}", e);
                         return Err(map_provider_error(&e));
@@ -433,7 +430,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             })
             .collect();
         // finished 与 provider_response_to_agent 同源：工具调用在场恒未终答
-        // （"stop" 邮票 + tools 在场 = 异常上游，不丢工具调用，2026-10-13
+        // （"stop" 邮票 + tools 在场 = 异常上游，不丢工具调用，
         // wal_crash 实证）。
         let finished = tool_calls.is_empty();
         Ok(nemesis_agent::r#loop::LlmResponse {
@@ -441,7 +438,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             tool_calls,
             finished,
             reasoning_content,
-            // §6.2：归一化停止原因透传；EOF 无 finish_reason（上游早断）=
+            // 归一化停止原因透传；EOF 无 finish_reason（上游早断）=
             // None（不虚构终止原因，阶梯判定按缺省走）。
             finish_reason,
             escalated_to: None,
@@ -460,7 +457,7 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
 }
 
 impl ProviderAdapter {
-    /// L10：chat_streamed 的非流式回落（provider 无流式 lane / 空流）。
+    /// chat_streamed 的非流式回落（provider 无流式 lane / 空流）。
     /// 复用已转换的 provider 侧入参（不重复拷贝 agent 层 messages）；成功后
     /// 合成一条全量增量（loop 侧 StreamingLlmProvider 约定——非流式 provider
     /// 也产生一次完整「流」）。
@@ -497,9 +494,7 @@ impl ProviderAdapter {
     }
 }
 
-// ---------------------------------------------------------------------------
 // ForgeProviderBridge — providers → forge LLMCaller trait (async)
-// ---------------------------------------------------------------------------
 
 /// Async LLM provider adapter for Forge's Reflector + Pipeline.
 ///
@@ -567,7 +562,7 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             max_tokens,
             top_p: None,
             stop: None,
-            // 显式禁思考（aux 杂务三层治理 2026-09-28）：forge 草稿/评审/
+            // 显式禁思考（aux 杂务三层治理）：forge 草稿/评审/
             // 修复/语义反思都是杂务短输出，思考 token 计入 max_tokens 只会
             // 烧穿预算（真机 mt=500 间歇烧穿实证）。anthropic lane 映射为
             // thinking:{type:"disabled"}；openai-compat lane 过滤不透传。

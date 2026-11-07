@@ -1,4 +1,4 @@
-//! LLM 代理调用方 key 鉴权面（2026-11-03，docs/PLAN/2026-11-03_LLM代理调用方key管理.md）。
+//! LLM 代理调用方 key 鉴权面（2026-11-03，LLM代理调用方key管理）。
 //!
 //! 共享主 token 不区分调用方；本模块给代理面加 per-caller key：
 //! auth_middleware 在主 token 校验**之前**查本面（命中即按代理路径白名单
@@ -12,9 +12,9 @@
 //!   一律不匹配（回落主 token 校验必 401），防借道提权读会话/文件/配置。
 //!   白名单是**前置内存闸**：Dashboard 路径连盘都不 stat。
 //! - **宁可无 key 回落主 token，不可让配置故障拦死老路径**——缺文件/
-//!   损坏 = 空 key 表（宽和读在 `nemesis-config::proxy_keys_file::list`）。
-//! - key 比对复用 [`crate::api_handlers::verify_token`]（XOR 恒时比较，
-//!   比较语义单一真相源）；空 token 不参与匹配（防空串撞库）。
+//!   损坏 = 空 key 表（宽和读在 `nemesis-config::proxy_keys_file:list`）。
+//! - key 比对复用 [`crate::api_handlers:verify_token`]（XOR 恒时比较，
+//!   比较语义统一定义）；空 token 不参与匹配（防空串撞库）。
 
 use crate::api_handlers::AppState;
 use nemesis_config::proxy_keys_file::{self, ProxyKeyEntry};
@@ -38,9 +38,9 @@ const PROXY_KEY_ALLOWED_PATHS: [&str; 2] = ["/v1/chat/completions", "/api/chat/s
 /// 为什么比内容不比 mtime：Windows 文件时间刷新粒度粗（毫秒级——
 /// `write_file_atomic` 临时名「同 tick 相同 nanos」有 CI 实证），同 tick 内
 /// 「保存 → 下一请求」的 mtime 等值判定必拿陈旧表，禁用 key 照常放行
-///（BUG-20261103 CI Windows shard5/9 实录：`disabled_key_rejected_hot` 断言
+///（CI Windows `disabled_key_rejected_hot` 断言
 /// 死 + 路由侧 GET 打 POST-only completions 回 405 顶掉 401；Linux 纳秒时钟
-/// 掩盖该类，hot_reload 的 2026-10-22 Windows 假红同族）。key 表 KB 级，
+/// 掩盖该类，hot_reload 的 Windows 假红同族）。key 表 KB 级，
 /// 白名单 lane 每请求直读 + 字节比对成本可忽略，内容变才重解析——热生效
 /// 不赌任何钟，外部/手写文件落盘同样即刻生效。
 pub(crate) static CACHE: parking_lot::Mutex<
@@ -60,7 +60,7 @@ pub(crate) fn match_proxy_caller(state: &AppState, token: &str, path: &str) -> O
     }
     let keys = cached_keys(state)?;
     for k in keys.iter().filter(|k| k.enabled) {
-        // 恒时比较复用 verify_token（比较语义单一真相源）。
+        // 恒时比较复用 verify_token（比较语义统一定义）。
         if crate::api_handlers::verify_token(k.key.trim(), token) {
             return Some(ProxyCaller(Arc::new(k.name.clone())));
         }

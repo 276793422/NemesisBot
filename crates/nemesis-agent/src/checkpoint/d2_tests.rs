@@ -1,11 +1,11 @@
-//! D2：checkpoint git 影子库双形态回归（D4 约束的验收测试）。
+//! checkpoint git 影子库双形态回归（约束的验收测试）。
 //!
-//! - **git 形态**：fixture 是真 git 仓（`git2::Repository::init`），store 构造
+//! - **git 形态**：fixture 是真 git 仓（`git2::Repository:init`），store 构造
 //!   期自动选影子库后端；turn 边界写 tree → **shell/exec 副作用**（不经
-//!   `snapshot()` 声明的纯 fs 写、新建、删除）也在 rewind 覆盖内（D2 的
+//!   `snapshot()` 声明的纯 fs 写、新建、删除）也在 rewind 覆盖内（的
 //!   核心价值）；`logs/` 运行时属主目录不进影子树（影子 gitdir 自身就在
 //!   `logs/` 下——自引用陷阱）；重启后从 JSON 索引加载仍可 restore。
-//! - **JSON 形态**（D4）：无 `.git` 的仓走原 JSON 快照路径（存量 15 测试即
+//! - **JSON 形态**：无 `.git` 的仓走原 JSON 快照路径（存量 15 测试即
 //!   回归主体），这里补 `backend()` 断言 + `.git` 文件形态（linked
 //!   worktree）回落。
 //! - **跨模式安全**：git 形态落盘的 JSON 索引，在 `.git` 消失后以 JSON 形态
@@ -90,11 +90,11 @@ fn current_tree_entry(store: &CheckpointStore, rel: &str) -> Option<(git2::Oid, 
 }
 
 // ---------------------------------------------------------------------------
-// 后端选择（D4 两形态）
+// 后端选择（两形态）
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// libgit2 坑回归：空 pathspec + 回调 = 空指针段错误（2026-09-06 实测）
+// libgit2 坑回归：空 pathspec + 回调 = 空指针段错误（实测）
 // ---------------------------------------------------------------------------
 
 /// libgit2 `git_index_add_all` 空 pathspec + 回调组合 = STATUS_ACCESS_VIOLATION：
@@ -347,7 +347,7 @@ fn backend_selection_git_vs_json() {
 
 #[test]
 fn git_file_form_falls_back_to_json() {
-    // linked worktree / submodule 的 .git 是文件不是目录 → JSON 回落。
+    // linked worktree / submodule 的.git 是文件不是目录 → JSON 回落。
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("ws");
     std::fs::create_dir_all(&root).unwrap();
@@ -357,7 +357,7 @@ fn git_file_form_falls_back_to_json() {
 }
 
 // ---------------------------------------------------------------------------
-// git 形态：rewind 覆盖 shell 副作用（D2 核心验收）
+// git 形态：rewind 覆盖 shell 副作用（核心验收）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

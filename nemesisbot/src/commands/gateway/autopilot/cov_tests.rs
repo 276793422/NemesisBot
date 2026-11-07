@@ -5,7 +5,7 @@
 //! estop 闸（fire_autopilot 入口 BOARD_ESTOP OnceLock）在单测进程内不装配
 //! （「单测不装配零波及」先例）→ 判定为未急停，不影响本组断言。
 //!
-//! AOR 批三 5.2（2026-11-04）：sweep 策略化补测——assisted 零回归臂（超时
+//! （2026-11-04）：sweep 策略化补测——assisted 零回归臂（超时
 //! 失败/回流/让位）+ 自治臂（预算冻结/0=关/冻结类/estop 回落/同节点重派
 //! 失败回落/离线无可换节点回落）。**已知边界**：offline Cluster 的
 //! rpc_client_arc() 恒 None → dispatch_issue_core 恒 Err「RPC client 未
@@ -137,10 +137,10 @@ fn fire_with_target_but_no_cluster_is_rejected_before_issue() {
 }
 
 // ---------------------------------------------------------------------------
-// cov 补测（2026-09-25 第二批）：`sweep_dispatch_timeouts`（派发超时清扫，
+// cov 补测：`sweep_dispatch_timeouts`（派发超时清扫，
 // 此前零覆盖）。offline Cluster（不 start()：无 UDP/RPC/线程）；超时判定
 // 传 timeout_secs=0 让 age≥0 恒真，免回填时间戳。
-// AOR 批三 5.2（2026-11-04）：签名改 deps 四参（autonomous/max_redispatch），
+// 签名改 deps 四参（autonomous/max_redispatch），
 // 既有用例全部转 assisted（现状行为零回归面）。
 // ---------------------------------------------------------------------------
 
@@ -256,7 +256,7 @@ fn sweep_within_timeout_leaves_dispatch_untouched() {
     assert_eq!(store.list_active_dispatches().unwrap().len(), 1);
 }
 
-/// M5-2（2026-10-10 机制加固）：清扫失败回流验收决策链——in_progress 单
+/// （机制加固）：清扫失败回流验收决策链——in_progress 单
 /// 转移 in_review 且 issue_id 进返回列表（调用方据此 spawn 评审）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 #[test]
@@ -292,7 +292,7 @@ fn sweep_failure_flows_back_to_review_chain() {
     assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
 }
 
-/// M5-2 对照：非 in_progress 单（人工已动/已关闭）不回流——让位人工。
+/// 对照：非 in_progress 单（人工已动/已关闭）不回流——让位人工。
 #[cfg(all(feature = "board", feature = "cluster"))]
 #[test]
 fn sweep_failure_skips_non_inprogress_issue() {
@@ -322,7 +322,7 @@ fn sweep_failure_skips_non_inprogress_issue() {
 }
 
 // ---------------------------------------------------------------------------
-// cov 补测（AOR 批三 5.2，2026-11-04）：sweep 自治臂。autonomous=true 时
+// cov 补测：sweep 自治臂。autonomous=true 时
 // 失败判定不再一律落终态+回流，改走监察环链（预算冻结 / 冻结类 / 重派 /
 // 回落）。进程内 offline Cluster 无 RPC client → 重派恒 Err → 只覆盖
 // 决策臂与回落臂；成功臂归 cluster-uat。

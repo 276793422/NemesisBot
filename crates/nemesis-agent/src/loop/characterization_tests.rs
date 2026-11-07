@@ -1,22 +1,21 @@
-// Windows 基线专用（2026-09-24 nightly 实证）：golden 基线把 K3 环境
+// Windows 基线专用（nightly 实证）：golden 基线把 环境
 // 快照段的 Windows 平台块（platform: windows / default_shell: cmd /
 // time_cmd: date /t…）整段钉死（归一化清单规则 4 只归一时间行，且头部
 // 「平台路径分隔符不出现在任何录制面」的假设不覆盖该段平台行变化），
-// Linux 重放必漂移。按 2026-09-02 Windows 形态测试标记约定整套挂
+// Linux 重放必漂移。按 Windows 形态测试标记约定整套挂
 // #[cfg(windows)]：Linux 编译期消失（非运行期跳过），nightly 不再红。
 // 要放开 Linux 录制：先给归一化清单补环境块参数化规则（新规则）再重录。
 #![cfg(windows)]
-// P2-0 characterization + golden transcript harness
-// (docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §7 T1/T2)。
+// characterization + golden transcript harness
 //
-// golden transcript = P2 解剖的等价性最强证据：每个场景把**全部可观测输出
+// golden transcript = 解剖的等价性最强证据：每个场景把**全部可观测输出
 // 向量**录成一份 JSON 基线（事件向量 / provider 实收 messages+tool_defs /
 // observer 事件 / instance history / chat_log jsonl 行 / boundary sidecar
-// 行），P2 各 PR 重放后归一化逐字节 diff 必须为零（§7 T2）。
+// 行）， 各 PR 重放后归一化逐字节 diff 必须为零。
 //
-// 基线在 P1 物理拆分后的语义零变化代码上录制（nemesis-agent 2278 全绿），
+// 基线在 物理拆分后的语义零变化代码上录制（nemesis-agent 2278 全绿），
 // 入库于 `loop/testdata/golden/<scenario>.json`。重录：GOLDEN_RECORD=1
-// cargo test -p nemesis-agent golden（仅允许伴随行为变更 PR，见 §7.4）。
+// cargo test -p nemesis-agent golden（仅允许伴随行为变更 PR）。
 //
 // 归一化清单（冻结；录制与比对两端同规则；清单外差异一律视为漂移）：
 //   1. 递归剥离键：ts / time / timestamp / duration_ms / elapsed_ms /
@@ -26,25 +25,25 @@
 //   3. 会话键按进程 ID 派生（golden_scenario_p{pid}，见 session_key）：
 //      同进程内仍走 GOLDEN_LOCK 串行，跨进程（nextest 每测试独立进程）
 //      文件互不相干；文件用后即清。
-//   4. K3 shell 注入的时间/环境快照：`# Current Time / Environment
+//   4. shell 注入的时间/环境快照：`# Current Time / Environment
 //      snapshot` 段内的 `YYYY-MM-DD HH:MM (Weekday)` 行整行替换为
 //      `<TIME_SNAPSHOT>`（随钟逐分漂移的已知波动面；段内其余内容钉死）。
 // 平台路径分隔符不出现在任何录制面（全部相对内容），无需归一。
 //
-// T1 覆盖对照（§4.3 出口 → 锚点；★=本文件 golden 场景，☆=既有测试）：
-//   cancel/estop 顶检        ★golden_estop_top  ☆tests(estop_*)
-//   budget/max_turns 出口    ★golden_max_turns_exhausted ☆tests(length_*预算系)
-//   LLM pre-hook 拦截        ☆(hooks 侧 lifecycle 测试；golden 场景不接 hook 基建)
-//   select cancel/estop 臂   ★golden_estop_mid_llm
-//   context 环耗尽/transient 耗尽  ☆tests(2416 AlwaysContextError/445 ErrorProvider)
-//   post-hook Block/重呼      ☆(hooks 侧)
-//   截断续写/续写预算耗尽     ★golden_length_continuation ★golden_length_budget_exhausted
-//   steer escape/degenerate  ☆tests(degenerate/steer 系)
-//   heartbeat/Accept/GiveUp  ★golden_plain_qa（Accept 主路径）☆tests(heartbeat)
-//   批内 cancel/estop 单发（2026-10-31 双发遗留修正） ☆tests(estop_blocks_remaining_tools_in_batch)
-//   __ASYNC__/__BG_SPAWN__   ☆e3_tests / g4_background_spawn_tests（需 continuation
+// 覆盖对照（出口 → 锚点；★=本文件 golden 场景，☆=既有测试）：
+//   cancel/estop 顶检 ★golden_estop_top ☆tests(estop_*)
+//   budget/max_turns 出口 ★golden_max_turns_exhausted ☆tests(length_*预算系)
+//   LLM pre-hook 拦截 ☆(hooks 侧 lifecycle 测试；golden 场景不接 hook 基建)
+//   select cancel/estop 臂 ★golden_estop_mid_llm
+//   context 环耗尽/transient 耗尽 ☆tests(2416 AlwaysContextError/445 ErrorProvider)
+//   post-hook Block/重呼 ☆(hooks 侧)
+//   截断续写/续写预算耗尽 ★golden_length_continuation ★golden_length_budget_exhausted
+//   steer escape/degenerate ☆tests(degenerate/steer 系)
+//   heartbeat/Accept/GiveUp ★golden_plain_qa（Accept 主路径）☆tests(heartbeat)
+//   批内 cancel/estop 单发（双发遗留修正） ☆tests(estop_blocks_remaining_tools_in_batch)
+//   __ASYNC__/__BG_SPAWN__ ☆e3_tests / g4_background_spawn_tests（需 continuation
 //                             基建，standalone 不可达，不进 golden 场景集）
-//   escalation/validation    ★golden_validation_retry_budget
+//   escalation/validation ★golden_validation_retry_budget
 //   429 环 / transient 环 / context 环
 //                            ★golden_rate_limit_retry ★golden_transient_retry
 //                             ★golden_context_error_retry
@@ -83,7 +82,7 @@ fn is_timed_line(line: &str) -> bool {
         && b[10] == b' '
 }
 
-/// 字符串值归一化：时间快照行整行替换（K3 注入的时间/环境快照随钟走，
+/// 字符串值归一化：时间快照行整行替换（注入的时间/环境快照随钟走，
 /// 属已知波动面；行内其余快照内容保持钉死）。
 fn normalize_string(s: &str) -> String {
     if !s.contains("# Current Time / Environment snapshot") {
@@ -127,7 +126,7 @@ fn normalize_value(v: &mut serde_json::Value) {
     }
 }
 
-/// provider 一次实收调用（T2「provider 实收内容」录制面）。
+/// provider 一次实收调用（「provider 实收内容」录制面）。
 struct CapturedCall {
     model: String,
     messages: Vec<LlmMessage>,
@@ -224,8 +223,8 @@ fn tool_call_response(content: &str, calls: Vec<ToolCallInfo>) -> LlmResponse {
     }
 }
 
-/// completion_tokens 顶满默认 max_tokens（DEFAULT_MAX_TOKENS=64K，2026-10-23
-/// P0 前 8192）——截断信号。引用常量而非字面量：默认值再变 fixture 不再失真。
+/// completion_tokens 顶满默认 max_tokens（DEFAULT_MAX_TOKENS=64K，
+/// 前 8192）——截断信号。引用常量而非字面量：默认值再变 fixture 不再失真。
 fn cap_usage() -> Option<crate::loop_executor::ObserverUsageInfo> {
     let completion = nemesis_types::capability::DEFAULT_MAX_TOKENS;
     Some(crate::loop_executor::ObserverUsageInfo {
@@ -326,7 +325,7 @@ fn golden_dir() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/loop/testdata/golden")
 }
 
-/// 录制（GOLDEN_RECORD=1）或逐字节比对基线；diff 非零即 panic（§7.4 情况 1）。
+/// 录制（GOLDEN_RECORD=1）或逐字节比对基线；diff 非零即 panic（情况 1）。
 fn golden_assert(scenario: &str, transcript: GoldenTranscript) {
     let actual = transcript.finish();
     let pretty = serde_json::to_string_pretty(&actual).unwrap();
@@ -379,7 +378,7 @@ fn golden_config() -> AgentConfig {
 
 /// 会话键：按进程 ID 派生（nextest 纪律，CLAUDE.md 测试命令节）。nextest 每个
 /// 测试独立进程，进程内 GOLDEN_LOCK 管不了跨进程互踩——13 个 golden 场景共用
-/// 固定键会把同一对 chat_log/boundary 文件写花（实录 2026-10-10：本地全量
+/// 固定键会把同一对 chat_log/boundary 文件写花（本地全量
 /// nextest 10 失败全是本族；cargo test 单进程全绿，掩盖至今）。pid 派生后
 /// 跨进程各走各的文件；同进程内（cargo test 线程并行）键相同，GOLDEN_LOCK
 /// 继续承担串行。基线不含键（grep 实证），golden 文件字节不动。
@@ -511,7 +510,7 @@ fn assemble(scenario: &str, run: ScenarioRun) -> GoldenTranscript {
     }
 }
 
-// --- 场景（T2 场景集；锚点对照见文件头 T1 表） ---
+// --- 场景（场景集；锚点对照见文件头 表） ---
 
 /// 纯问答：单轮 Accept 落地（6981 出口主路径）。
 #[tokio::test]
@@ -834,7 +833,7 @@ async fn golden_estop_mid_llm() {
 }
 
 /// estop 顶检：engaged 状态直接拒收（5735 系出口，Done 一次性）。
-/// 2026-10-31 有意变更：turn_end detail done→estop（prepare_round estop
+/// 有意变更：turn_end detail done→estop（prepare_round estop
 /// 顶检臂 reason 照记，与批内 estop 臂同款纪律——急停终局不再谎报 done），
 /// golden 基线同步更新。
 #[tokio::test]

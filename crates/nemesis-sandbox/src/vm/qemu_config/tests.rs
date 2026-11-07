@@ -7,7 +7,7 @@ use super::*;
 // 内嵌模板自检（模板-解析器同编译期产物；改模板必过这组）
 // ---------------------------------------------------------------------------
 
-/// 五格矩阵全在（用户拍板：全格填真值，不因 guest 系统面进度留空格）。
+/// 五格矩阵全在（全格填真值，不因 guest 系统面进度留空格）。
 #[test]
 fn embedded_template_has_all_five_platforms() {
     let m = embedded_matrix();
@@ -38,7 +38,7 @@ fn embedded_windows_archive_pin_is_wellformed() {
     assert!(url.ends_with(".exe"));
     assert_eq!(e.sha512.len(), 128);
     assert!(e.sha512.bytes().all(|b| b.is_ascii_hexdigit()));
-    // binaries 带 .exe 后缀（Windows 形态）。
+    // binaries 带.exe 后缀（Windows 形态）。
     assert!(e.binaries.iter().all(|b| b.ends_with(".exe")));
 }
 

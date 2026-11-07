@@ -2,7 +2,7 @@
 // 会话回收站（Logs Dashboard 第 3 页签，2026-10-30）：sessions.trash_*
 // 四命令的只读+恢复视图。进入页签（组件挂载，v-else-if 链）即拉取列表。
 //
-// 恢复冲突流（拍板②）：无 new_sid 恢复若撞同 id 存活会话，后端回结构化
+// 恢复冲突流（决策②）：无 new_sid 恢复若撞同 id 存活会话，后端回结构化
 // `{conflict:true, suggested_sid}`（条目不消耗）→ 弹改名提示模态，输入框
 // 预填建议 sid（`{原sid}-restored-{ms}`），确认后带 new_sid 重试。
 //
@@ -72,7 +72,7 @@ async function load() {
 }
 
 // ---------------------------------------------------------------------------
-// 恢复（含拍板② 冲突改名流）
+// 恢复（含决策② 冲突改名流）
 // ---------------------------------------------------------------------------
 
 const conflictTarget = ref<TrashRow | null>(null)
@@ -85,7 +85,7 @@ async function doRestore(r: TrashRow, newSid?: string) {
     const res = (await api.trashRestore(r.entry, newSid)) as Record<string, unknown>
     if (res?.conflict === true) {
       // 结构化冲突：目标 sid 已有存活会话。条目不消耗——弹改名提示，
-      // 输入框预填后端建议 sid（拍板②「提示界面允许改名恢复」）。
+      // 输入框预填后端建议 sid（决策②「提示界面允许改名恢复」）。
       conflictTarget.value = r
       conflictSidBuf.value = String(res.suggested_sid ?? `${r.display_id}-restored`)
       return
@@ -222,7 +222,7 @@ onMounted(load)
       </table>
     </div>
 
-    <!-- 恢复冲突改名模态（拍板②：提示界面允许改名恢复） -->
+    <!-- 恢复冲突改名模态（决策②：提示界面允许改名恢复） -->
     <div v-if="conflictTarget" class="modal-backdrop" data-test="trash-conflict-modal" @click.self="conflictTarget = null">
       <div class="modal" style="max-width: 480px;">
         <div class="modal-header"><h3>会话 ID 冲突</h3></div>

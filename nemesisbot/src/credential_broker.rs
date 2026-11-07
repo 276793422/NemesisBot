@@ -1,4 +1,4 @@
-//! B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——**值不 transit 通道**。
+//! （2026-10-18 凭据 vault）：凭据索要卡 broker——**值不 transit 通道**。
 //!
 //! 触发点（模型 API key 401/403、connector 必需凭据槽位缺失）发卡阻塞等
 //! 裁决；Dashboard 凭据卡经 WSAPI `credential.respond` 提交值，broker
@@ -6,9 +6,9 @@
 //! 值的完整路径：用户 → WSAPI credential.respond → broker 落 vault →
 //! 调用点原地重解析。broker 内存零驻留凭据值（随裁决即弃）。
 //!
-//! 协议纪律（同 [`crate::web_approval::WebApprovalManager`]）：
+//! 协议纪律（同 [`crate::web_approval:WebApprovalManager`]）：
 //! - **先入册后广播**——反序时消费方秒点 respond 查表落空（ET Linux 假红
-//!   实录的同族时序缝）。
+//!   案例的同族时序缝）。
 //! - **单点广播**：`CredentialResolved` 只由等待侧（request_credential）
 //!   广播——它知道每个出口的最终结局（stored/denied/timeout）；respond 侧
 //!   只送通道裁决，不广播（无双发）。
@@ -20,10 +20,10 @@
 //!   `request_credential`（`LateInstallApprover` 同款）。
 //! - respond 落库失败 → 等待方在场 = 请求放回 pending（用户可修正重试，
 //!   剩余窗口由等待侧的 recv_timeout 决定）；等待方已亡 = 丢弃并诚实
-//!   报错（BUG-20261104-377：盲目重插会在 estop 冻结 / 超时宽限放弃后
+//!   报错（盲目重插会在 estop 冻结 / 超时宽限放弃后
 //!   制造前端悬空卡——重插的卡永无人收口、Resolved 广播永不发生）。
 //!
-//! vault 落盘面镜像 `nemesis-web::handlers::vault`（open/unlock/create 三
+//! vault 落盘面镜像 `nemesis-web::handlers:vault`（open/unlock/create 三
 //! 胶水同语义）：现开现解锁（无长驻句柄）；argon2id 模式口令取
 //! `NEMESISBOT_VAULT_PASSPHRASE`；覆盖写即轮换（卡片提交 = 显式轮换意图，
 //! 不再要 force 二次确认——卡面本身就是确认）。**凭据值不落日志/错误/审计**
@@ -31,7 +31,7 @@
 //!
 //! 装配：gateway 侧 `install()` 进静态槽（connector 等工具读取侧零接线
 //! 改动，automations TRIGGER_CACHE / plugins_wasm set_installer 先例）；
-//! respond 侧经 `nemesis_web::handlers::credential::set_broker` 暴露给
+//! respond 侧经 `nemesis_web::handlers:credential::set_broker` 暴露给
 //! WSAPI。headless run/acp 不装配（槽空 = 触发点走原错误路径零回归）。
 
 use std::collections::HashMap;
@@ -51,7 +51,7 @@ struct PendingEntry {
     key_name: String,
     created_at: Instant,
     tx: std::sync::mpsc::Sender<CredentialOutcome>,
-    /// BUG-20261104-377：等待方存活旗标——respond 落库失败决定「放回」
+    /// 等待方存活旗标——respond 落库失败决定「放回」
     /// 还是「丢弃」的依据。等待方退出时经 [`WaiterGuard`] 翻 false（含
     /// estop 冻结下 loop task 被放弃、future 被 abort 的形态）。
     alive: Arc<AtomicBool>,
@@ -62,7 +62,7 @@ struct PendingEntry {
 type PendingMap = parking_lot::Mutex<HashMap<String, PendingEntry>>;
 
 /// 等待方守卫（RAII）：`request_credential` 入册后持有，任何退出路径
-/// Drop。Drop 做 BUG-20261104-377 的自愈摘卡——respond 落库失败可能在
+/// Drop。Drop 做 的自愈摘卡——respond 落库失败可能在
 /// 等待方已死（estop 冻结下 future 被 abort / 超时宽限已放弃）后把卡
 /// 重插回 pending，Drop 持 pending 锁摘掉它并翻存活旗标（此后 respond
 /// 失败臂锁内读旗标=dead，不再重插）。**必须是 Drop guard 而非函数尾部
@@ -95,7 +95,7 @@ pub struct WebCredentialBroker {
 
 impl WebCredentialBroker {
     /// `workspace` 决定 vault 文件位置（`<workspace>/config/vault.enc`，
-    /// nemesis-path 单一真相源）；`event_tx` 为 None 时卡片事件只进 pending
+    /// nemesis-path 统一定义）；`event_tx` 为 None 时卡片事件只进 pending
     /// 表（无 SSE 广播——测试/无 web 形态）。
     pub fn new(
         workspace: PathBuf,
@@ -118,7 +118,7 @@ impl CredentialBroker for WebCredentialBroker {
         // std mpsc（非 tokio）：全同步语义，recv_timeout 是本协议的等待原语
         // （超时出册记账 + 竞速宽限都建立在它上面）。
         let (tx, rx) = std::sync::mpsc::channel();
-        // BUG-20261104-377：等待方存活旗标 + RAII 摘卡守卫。入册后立即建
+        // 等待方存活旗标 + RAII 摘卡守卫。入册后立即建
         // guard——本函数任何退出路径（正常收到裁决 / 超时 / estop 冻结下
         // future 被 abort）都触发 Drop：摘掉本卡（清掉 respond 失败臂可能
         // 重插的悬空卡）并翻存活旗标。
@@ -216,7 +216,7 @@ impl WebCredentialBroker {
             .collect()
     }
 
-    /// L06 复核点③（2026-11-01）：急停挂点——了结全部在途凭据卡（审批卡
+    /// 复核点③：急停挂点——了结全部在途凭据卡（审批卡
     /// `resolve_orphans` 同款语义，estop watcher 在 gateway runtime 装配）。
     /// 先摘后清（drain）：被摘出的卡不可能再被 respond 命中，两侧互斥；
     /// 清理**只送 Denied 不落 vault**（清理绝不产生存储，审批卡清理同纪律）。
@@ -281,7 +281,7 @@ impl CredentialResponder for WebCredentialBroker {
                 }))
             }
             Err(e) => {
-                // BUG-20261104-377：放回前在锁内验等待方存活——与
+                // 放回前在锁内验等待方存活——与
                 // WaiterGuard 的 Drop（摘卡+翻旗）同一把锁序列化，无「摘卡
                 // 后仍见 alive=true 又重插」残窗。等待方已亡（estop 冻结
                 // loop task 被放弃 / 超时宽限放弃）时重插 = 悬空卡：
@@ -311,7 +311,7 @@ impl CredentialResponder for WebCredentialBroker {
 }
 
 // ---------------------------------------------------------------------------
-// vault 落盘胶水（镜像 nemesis-web::handlers::vault 的 open/unlock/create）
+// vault 落盘胶水（镜像 nemesis-web::handlers:vault 的 open/unlock/create）
 // ---------------------------------------------------------------------------
 
 /// 写一条凭据进 vault。返回是否为覆盖（轮换）。卡片提交 = 显式轮换意图，

@@ -77,6 +77,7 @@ fn agt_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -323,7 +324,7 @@ async fn agt_replay_explicit_request_id_without_round_envelope() {
     let decoy = agt_request_dir(ws, "2026-08-28_07-00-02_d2", 2, &agt_msgs());
     let out = h
         .replay_verify(
-            &ctx,
+            replay_store_from_ctx(&ctx).unwrap(),
             ws.to_str().unwrap(),
             STEM,
             1,
@@ -341,7 +342,7 @@ async fn agt_replay_explicit_request_id_without_round_envelope() {
 #[cfg(feature = "memory")]
 #[tokio::test]
 async fn agt_session_list_bm25_query_on_empty_workspace() {
-    // query 无可匹配会话 → docs 空 → avg_len 0 守卫臂（1237-1238）+ BM25
+    // query 无可匹配会话 → docs 空 → avg_len 0 守卫臂（1237-1238）+
     // 块完整走空（1260）
     let dir = tempfile::tempdir().unwrap();
     let ctx = agt_ctx(&dir);
@@ -606,7 +607,7 @@ fn agt_parse_request_iterations_stub_and_locals_attachment() {
     std::fs::write(d.join("01.AI.Request.raw.json"), r1.to_string()).unwrap();
     std::fs::write(
         d.join("02.Local.md"),
-        "## Operation 1: exec\n**Name**: exec\n**Status**: ok\n### Arguments\n{\"path\":\"a\"}\n### Result\nhello\n### Duration 0.05s\n",
+        "## Operation 1: exec\n**Name**: exec\n**Status**: ok\n### Arguments\n{\"path\":\"a\"}\n### Result\nhello\n### Duration\n0.05s\n",
     )
     .unwrap();
     let resp1 = serde_json::json!({
@@ -706,7 +707,14 @@ async fn agt_replay_empty_record_key_store_fallback_unavailable() {
     agt_request_dir(ws, "2026-08-28_07-00-01_r1", 1, &agt_msgs());
 
     let out = LogsHandler
-        .replay_verify(&ctx, ws.to_str().unwrap(), STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            ws.to_str().unwrap(),
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(out["verdict"], "unavailable", "{out}");
@@ -737,7 +745,8 @@ fn agt_parse_local_tool_results_empty_name_and_duration_arms() {
         "```\n",
         "### Result\n",
         "out1\n",
-        "### Duration 0.02s\n",
+        "### Duration\n",
+        "0.02s\n",
         "## Operation 2: B\n",
         "**Name**: read\n",
         "**Status**: ok\n",
@@ -761,9 +770,69 @@ fn agt_parse_local_tool_results_empty_name_and_duration_arms() {
     // op2：无 Duration 行 → 不插 duration 字段（2272 落穿臂）；args 非法 → 字符串兜底
     assert!(out[1].get("duration_ms").is_none(), "{:?}", out[1]);
     assert_eq!(out[1]["args"], "not-json");
-    // op3：error 臂 + 坏 Duration 落穿（2335 臂）→ 仍无 duration 字段
+    // op3：error 臂 + 坏内联 Duration（宽容臂解析失败旗留立、其后无行可
+    // 消费）→ 仍无 duration 字段
     assert_eq!(out[2]["result"]["error"], "denied\n");
     assert!(out[2].get("duration_ms").is_none());
+}
+
+#[test]
+fn agt_parse_local_tool_results_duration_writer_two_line_form() {
+    // BUG-20261106-023 回归锁：写入端单一真相源（request_logger.rs
+    // log_local_operations）发射两行形态 `### Duration\n{:.3}s\n\n`，值在
+    // 标题的**下一行**。修复前读端只认同行内联形态 → 值行被当正文静默
+    // 丢弃 → duration_ms 恒 0 → flush 的 >0 守卫让
+    // logs.request_detail / logs.cluster_task_detail 的 iterations 永不
+    // 携带工具时长。夹具按写入端真实字节形态构造（含尾随空行 + --- 分隔）。
+    let content = concat!(
+        "## Operation 1: exec\n",
+        "**Name**: exec\n",
+        "**Status**: ok\n",
+        "### Arguments\n",
+        "```json\n",
+        "{\"cmd\":\"ls\"}\n",
+        "```\n",
+        "### Result\n",
+        "out\n",
+        "### Duration\n",
+        "0.022s\n",
+        "\n",
+        "---\n",
+        "\n",
+        "## Operation 2: exec\n",
+        "**Name**: exec\n",
+        "**Status**: ok\n",
+        "### Arguments\n",
+        "```json\n",
+        "{\"cmd\":\"sleep\"}\n",
+        "```\n",
+        "### Result\n",
+        "done\n",
+        "### Duration\n",
+        "1.500s\n",
+        "\n",
+        "---\n",
+        "\n",
+    );
+    let out = parse_local_tool_results(content);
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert_eq!(out[0]["name"], "exec");
+    assert_eq!(out[0]["args"]["cmd"], "ls");
+    assert_eq!(out[0]["duration_ms"], 22, "{:?}", out[0]);
+    assert_eq!(out[1]["duration_ms"], 1500, "{:?}", out[1]);
+
+    // 历史手写日志的内联形态（`### Duration 0.05s` 同行带值）宽容臂仍可用。
+    let inline = concat!(
+        "## Operation 1: exec\n",
+        "**Name**: exec\n",
+        "**Status**: ok\n",
+        "### Result\n",
+        "out\n",
+        "### Duration 0.05s\n",
+    );
+    let out = parse_local_tool_results(inline);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0]["duration_ms"], 50, "{:?}", out[0]);
 }
 
 #[test]
@@ -786,11 +855,9 @@ fn agt_build_iteration_json_unreadable_local_yields_empty_tool_results() {
     );
 }
 
-// -----------------------------------------------------------------------
 // Wave5 批次：cluster 任务目录 walk 的 continue 臂 + replay_verify dispatch
 // 层完整载体提取（round/request_id/trace_id 的 Some 臂——直调 bypass
 // dispatch 测不到）。
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_w5_walk_continue_arms_and_replay_dispatch_carriers() {

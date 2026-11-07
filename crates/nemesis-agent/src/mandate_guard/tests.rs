@@ -1,4 +1,4 @@
-//! L13-b mandate 执行面守卫单测（纯裁决矩阵——授权面/时限/预算/记录）。
+//! b mandate 执行面守卫单测（纯裁决矩阵——授权面/时限/预算/记录）。
 
 use super::*;
 use nemesis_types::cluster::MandateEnforcement;
@@ -141,6 +141,6 @@ fn terminal_notice_starts_with_marker() {
 
 #[test]
 fn now_unix_monotone_sane() {
-    // 2026-11-03 之后的合理量级（不接受 0 / 负数归零形态）
+    // 之后的合理量级（不接受 0 / 负数归零形态）
     assert!(now_unix() > 1_700_000_000);
 }

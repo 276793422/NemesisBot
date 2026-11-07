@@ -85,7 +85,7 @@ pub struct ConnectorMetaRaw {
     pub http: Option<HttpBaseRaw>,
     #[serde(default)]
     pub credentials: Option<BTreeMap<String, CredentialSlotRaw>>,
-    /// B2（2026-10-19 独占接管）：独占声明的 MCP server 名（单串或数组）。
+    /// （独占接管）：独占声明的 MCP server 名（单串或数组）。
     /// 非空 + 启用 = 该 server 的全部导出工具从模型工具面隐藏（`mcp_` 前缀
     /// 整组），只能经本 connector 的镜像 op / 显式 [[op]] 间接调用——治理闸
     /// 唯一入口；停用/删除/总开关关 = 原生直通恢复。缺省/空 = 不独占
@@ -100,7 +100,7 @@ pub struct ConnectorMetaRaw {
     pub clone_url: Option<String>,
 }
 
-/// B2：`exclusive_mcp` 两形态（`exclusive_mcp = "playwright-mcp"` 或
+/// `exclusive_mcp` 两形态（`exclusive_mcp = "playwright-mcp"` 或
 /// `exclusive_mcp = ["a", "b"]`）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -165,7 +165,7 @@ pub struct OpDefRaw {
     /// 回执主键字段名（如 `order_id`）。
     #[serde(default)]
     pub receipt: Option<String>,
-    /// E3（收官批）撤销声明：`{ op = "cancel_order", arg = "order_id" }` —
+    /// （收官批）撤销声明：`{ op = "cancel_order", arg = "order_id" }` —
     /// 本 op 可用 `op`（同 connector 内的另一 op）以凭条主键值填 `arg` 参
     /// 反向。校验三规则见 [`validate`]。
     #[serde(default)]
@@ -179,7 +179,7 @@ pub struct OpDefRaw {
     /// 内置动作绑定（demo 域专用，如 `builtin.demo`）。
     #[serde(default)]
     pub action: Option<String>,
-    /// M2（2026-10-19）script 声明式绑定：`[op.script]` 表。
+    /// script 声明式绑定：`[op.script]` 表。
     #[serde(default)]
     pub script: Option<ScriptOpRaw>,
     #[serde(default)]
@@ -193,7 +193,7 @@ pub struct HttpOpRaw {
     pub path: String,
 }
 
-/// M2（2026-10-19）script 绑定原始形态：`[op.script]`。
+/// script 绑定原始形态：`[op.script]`。
 ///
 /// 声明式语义（与 `tool = "exec"` 的差别）：超时/目录/输出截断是**作者
 /// 钉死的**，不是模型现场决定；命令模板 `{arg}` 占位从 args_schema 展开
@@ -221,7 +221,7 @@ pub struct ScriptOpRaw {
     pub capture: Option<u32>,
 }
 
-/// E3（收官批）撤销声明原始形态：`undo = { op = "cancel_order", arg = "order_id" }`。
+/// （收官批）撤销声明原始形态：`undo = { op = "cancel_order", arg = "order_id" }`。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpUndoRaw {
@@ -314,7 +314,7 @@ pub struct ValidatedConnector {
     /// 冲突时被 vault 凭据覆盖——执行面 merge 裁决）。
     pub static_headers: BTreeMap<String, String>,
     pub credentials: BTreeMap<String, CredentialBinding>,
-    /// B2：独占的 MCP server 名清单（归一后形态：去空白、去空、去重、保序）。
+    /// 独占的 MCP server 名清单（归一后形态：去空白、去空、去重、保序）。
     /// 空 = 不独占。
     pub exclusive_mcp: Vec<String>,
     /// `[connector].clone_url`（域剥离批 C）：任务副本 clone 源；None = 未声明。
@@ -347,13 +347,13 @@ pub struct ValidatedOp {
     pub confirm_required: bool,
     pub finance_budget: bool,
     pub receipt_key: Option<String>,
-    /// E3（收官批）撤销声明（校验通过后形态）。
+    /// （收官批）撤销声明（校验通过后形态）。
     pub undo: Option<OpUndo>,
     pub binding: OpBinding,
     pub args_schema: Option<serde_json::Value>,
 }
 
-/// E3（收官批）撤销声明（校验后形态）。
+/// （收官批）撤销声明（校验后形态）。
 #[derive(Debug, Clone)]
 pub struct OpUndo {
     /// 反向 op id。
@@ -376,7 +376,7 @@ pub enum OpBinding {
     Action {
         action: String,
     },
-    /// M2（2026-10-19）script 声明式绑定。
+    /// script 声明式绑定。
     Script {
         /// 命令模板（`{arg}` 占位待展开）。
         command: String,
@@ -465,7 +465,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
                     format!("connector `{}`: 凭据槽位 `{slot}` 的 prefix {e}", meta.id)
                 })?;
             }
-            // BUG-20261028-100：into 目标名与静态头名同闸——静态头/prefix
+            // into 目标名与静态头名同闸——静态头/prefix
             // 加载期 loud 拒，into 名却不验会让坏清单活到运行期才被 reqwest
             // 拒（报错离根因远）。装得进去 ≠ 校验得住。
             match &into {
@@ -494,7 +494,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         }
     }
 
-    // B2：独占声明归一（去空白、拒空项、去重保序）。server 名是否真实
+    // 独占声明归一（去空白、拒空项、去重保序）。server 名是否真实
     // 在册**不在此处校验**——独占声明可以走在装 MCP 之前（治理壳先行的
     // 合法形态），前缀匹配在运行期按当下注册真相计算，未注册 = 无工具
     // 可独占（无操作），不报错。
@@ -518,11 +518,11 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         }
     }
 
-    // 治理补全 P1（2026-10-19）：纯独占接管形态合法化——ops 为空但声明了
-    // exclusive_mcp 时不再要求 [[op]]（镜像 op 就是它的操作面，B2 语义下
+    // 治理补全：纯独占接管形态合法化——ops 为空但声明了
+    // exclusive_mcp 时不再要求 [[op]]（镜像 op 就是它的操作面， 语义下
     // 「整体接管一个 server、一个 op 都不写」是主场景；此前被迫写假 op）。
     // 既无 op 又无独占 = 连接器没有任何可调用面，仍拒绝。
-    // BUG-20261105-021：闸在归一化**之后**判——旧形态在归一化前看
+    // 闸在归一化**之后**判——旧形态在归一化前看
     // `meta.exclusive_mcp.is_none()`，`exclusive_mcp: []`（空数组是 Some）
     // 绕闸 → 零操作面死连接器静默入库。
     if raw.ops.is_empty() && exclusive_mcp.is_empty() {
@@ -540,7 +540,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
             return Err(format!("connector `{}`: op id `{}` 重复", meta.id, op.id));
         }
 
-        // kind↔绑定一致性 + 恰一绑定（M2 起 script 四选一）
+        // kind↔绑定一致性 + 恰一绑定（起 script 四选一）
         let http = op.http.is_some();
         let tool = op.tool.is_some();
         let action = op.action.is_some();
@@ -627,7 +627,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
             }
         };
 
-        // R4：args_schema 形态扫描（加载期）——只认本方校验器支持的关键词，
+        // args_schema 形态扫描（加载期）——只认本方校验器支持的关键词，
         // 超出白名单 loud 拒收（诚实拒绝假装支持：装得进去 ≠ 校验得住）。
         validate_args_schema_shape(&meta.id, &op.id, op.args_schema.as_ref())?;
 
@@ -648,7 +648,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
         });
     }
 
-    // E3（收官批）：undo 声明二次校验——引用完整性跨 op（前向引用合法：
+    // （收官批）：undo 声明二次校验——引用完整性跨 op（前向引用合法：
     // cancel_order 可声明在 place_order 之前），需全部 op 收集后统一检。
     // 规则：① undo.op 存在于本 connector ② undo.op ≠ 自身 ③ 源 op 已声明
     // receipt（撤销靠凭条主键回填，无主键的 op 谈不上撤销）+ 附带守卫：
@@ -706,7 +706,7 @@ fn validate(raw: ConnectorManifestRaw) -> Result<ValidatedConnector, String> {
 /// id / op id / 目录名字符集：`[a-z0-9_-]`，1..=64。附加 Windows 保留设备名
 /// 拒绝（`con`/`nul`/`com1` 等——id 同时派生注册目录与 sidecar 文件名，保留
 /// 名在 Windows 上连目录创建/文件写都会被 OS 拒且报错难懂；清单层诚实拒绝
-/// 带原因。边界补强 2026-10-20，与 image_gen 路径保留名校验同族）。
+/// 带原因。边界补强，与 image_gen 路径保留名校验同族）。
 pub(crate) fn validate_id(id: &str, what: &str) -> Result<(), String> {
     if id.is_empty() || id.len() > 64 {
         return Err(format!("{what} `{id}` 长度非法（1..=64）"));
@@ -733,7 +733,7 @@ pub(crate) fn validate_id(id: &str, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// args_schema 顶层白名单（R4 加载期 shape 扫描）：registry::validate_op_args
+/// args_schema 顶层白名单（加载期 shape 扫描）：registry::validate_op_args
 /// 消费的关键词全集。清单作者用了白名单外的 JSON Schema 关键词（pattern /
 /// items / oneOf…）时**加载即拒**——运行期校验器不认它们，装作支持 =
 /// 非法参数漏进出网。
@@ -742,7 +742,7 @@ const SCHEMA_OBJECT_KEYWORDS: &[&str] = &["type", "required", "properties"];
 /// 全仓清单大量使用，必须放行）。
 const SCHEMA_PROPERTY_KEYWORDS: &[&str] = &["type", "enum", "description", "minimum", "maximum"];
 
-/// 加载期 args_schema 形态扫描（R4）：顶层必须是 `type: "object"`；property
+/// 加载期 args_schema 形态扫描：顶层必须是 `type: "object"`；property
 /// type 限 string|number|integer|boolean（array/object 本方校验器不递归，不
 /// 放行）；required 必须是全字符串数组（registry 消费侧对形态坏**静默跳过**
 /// ——`as_array()` None / `as_str()` None 双重兜空，required 闸整体失效）；
@@ -842,7 +842,7 @@ fn validate_args_schema_shape(
                 }
                 // 边界只对数值型有意义：registry 校验器只对 number/integer
                 // 消费 min/max，string/boolean 上声明会被运行期静默跳过——
-                // 同「装作支持」防线，加载期 loud 拒（2026-10-16 四轮复查）。
+                // 同「装作支持」防线，加载期 loud 拒（四轮复查）。
                 if !matches!(
                     spec_obj.get("type").and_then(|v| v.as_str()),
                     Some("number" | "integer")
@@ -897,7 +897,7 @@ fn validate_header_value(value: &str) -> Result<(), String> {
 
 /// query 参数名校验：URL 结构字符（`&`/`=`/`#`/`?`）与空白/控制字符/
 /// 非 ASCII 拒。运行期 reqwest 会 percent-encode 兜底，但清单层与头名
-/// 同哲学——拼错的名字 loud 拒，不装作支持（BUG-20261028-100）。
+/// 同哲学——拼错的名字 loud 拒，不装作支持。
 fn validate_query_name(name: &str) -> Result<(), String> {
     if name.is_empty() {
         return Err("名字不能为空".into());
@@ -916,7 +916,7 @@ fn validate_query_name(name: &str) -> Result<(), String> {
 /// 校验 http path 占位符语法，返回占位符名列表。
 /// 合法形态：`{name}`（name 为 `[a-z0-9_]`，非空）；孤立 `}` 非法；孤立 `{`
 /// 或空名/非法字符 loud 报错。
-/// M2（2026-10-19）script 绑定校验：命令模板占位符语法 + 白名单 +
+/// script 绑定校验：命令模板占位符语法 + 白名单 +
 /// 声明式字段的边界（超时上限对齐 exec 工具闸；workdir 相对且禁越界；
 /// capture 有界）。全部解析期 loud 拒——装得进去 ≠ 执行得住，假声明
 /// （超 600 的 timeout、越界 workdir）不该活到运行期才炸。

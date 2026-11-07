@@ -1,17 +1,17 @@
-// I5 (devtool-upgrade 阶段 7)：打开文件上下文测试。
+// (devtool-upgrade)：打开文件上下文测试。
 //
 // 覆盖面：
 // ① 渲染——无状态时 `# Open Files` 段缺席；有状态时合并 digest 携带路径列表
 //    （顺序 = 上报顺序），且同状态两次 build 字节一致（多迭代稳定语义）；
 // ② 生命周期——clear 后段消失，且全部消息字节回到从未 set 过的基线
 //    （出轮清空 = 无跨轮陈旧泄漏）；
-// ③ 解析联测——metadata 键经 nemesis-types::channel::open_files_from_metadata
+// ③ 解析联测——metadata 键经 nemesis-types::channel:open_files_from_metadata
 //    单点清洗后与 AgentLoop 渲染端看到的一致（web 写入端共用 sanitize 单点，
 //    端到端形状由 websocket_handler 测试覆盖）。
 //
 // set/clear 的生产配对点在 process_admitted（进轮 set / 出轮 clear，词法
 // 相邻）；本文件直接操纵 pending_open_files 验证渲染与生命周期语义
-// （同 I3 直接操纵 drained 状态的先例——全 admitted-turn 编排不在此复刻）。
+// （同 直接操纵 drained 状态的先例——全 admitted-turn 编排不在此复刻）。
 //
 // 自带迷你 Mock（兄弟模块私有类型不共享）。
 
@@ -21,7 +21,7 @@ use super::*;
 // 夹具
 // ---------------------------------------------------------------------------
 
-/// 恒定回复的迷你 provider（同 i3_lazy_instructions_tests 形状；I5 全部测试
+/// 恒定回复的迷你 provider（同 i3_lazy_instructions_tests 形状； 全部测试
 /// 不真正调 LLM，只需要构造 AgentLoop）。
 struct I5MockProvider;
 

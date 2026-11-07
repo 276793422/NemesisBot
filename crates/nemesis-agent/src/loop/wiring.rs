@@ -1,12 +1,12 @@
 //! 其余装配 setter 与访问器：observer/cluster/security/session_store/data_store/forge/route_resolver/channel_manager/state_manager/continuation/estop/approval/question/memory 族/workflow_engine/agent_event_tx、wiring_status、get_registry/get_cluster/provider_arc/config_mut。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
 impl AgentLoop {
-    /// 对话生成（2026-09-22）：装配工作流引擎引用。工厂在 loop 构造后从
+    /// 对话生成：装配工作流引擎引用。工厂在 loop 构造后从
     /// SharedResources.workflow_engine 调用（feature-gated：no-workflow
     /// 编译不存在此方法）。
     #[cfg(feature = "workflow")]
@@ -23,7 +23,7 @@ impl AgentLoop {
         *self.security.estop.write() = Some(estop);
     }
 
-    /// M7：装配审批响应端（gateway 把 WebApprovalManager 挂上来；重复调用
+    /// 装配审批响应端（gateway 把 WebApprovalManager 挂上来；重复调用
     /// 覆盖前值）。WSAPI approval handler 经 `approval_responder()` 触达。
     pub fn set_approval_responder(
         &self,
@@ -32,12 +32,12 @@ impl AgentLoop {
         *self.security.approval_responder.write() = Some(responder);
     }
 
-    /// M7：取审批响应端（未装配 = `None`——handler 诚实报「未装配」）。
+    /// 取审批响应端（未装配 = `None`——handler 诚实报「未装配」）。
     pub fn approval_responder(&self) -> Option<Arc<dyn nemesis_types::agent::ApprovalResponder>> {
         self.security.approval_responder.read().clone()
     }
 
-    /// F7：挂结构化提问响应端（gateway 装配 WebQuestionBroker 后调用）。
+    /// 挂结构化提问响应端（gateway 装配 WebQuestionBroker 后调用）。
     pub fn set_question_responder(
         &self,
         responder: Arc<dyn nemesis_types::agent::QuestionResponder>,
@@ -45,17 +45,17 @@ impl AgentLoop {
         *self.security.question_responder.write() = Some(responder);
     }
 
-    /// F7：取提问响应端（未装配 = `None`——handler 诚实报「未装配」）。
+    /// 取提问响应端（未装配 = `None`——handler 诚实报「未装配」）。
     pub fn question_responder(&self) -> Option<Arc<dyn nemesis_types::agent::QuestionResponder>> {
         self.security.question_responder.read().clone()
     }
 
-    /// J5：装配 doom-loop 审批提问端（gateway 与 F7 responder 注入同一
+    /// 装配 doom-loop 审批提问端（gateway 与 responder 注入同一
     /// WebQuestionBroker Arc——同一 broker 的两个 trait 各挂一槽）。
     /// 未装配 = escalation 审批化不可用（诚实回退现行为）。
     ///
-    /// 件3 层1（2026-09-24）：loop 挂了 hooks 桥时在 asker 外套
-    /// [`crate::cc_hooks::ObservingQuestionAsker`]——提问发起前发
+    /// 件3 层1：loop 挂了 hooks 桥时在 asker 外套
+    /// [`crate::cc_hooks:ObservingQuestionAsker`]——提问发起前发
     /// `Notification`（kind=question, layer=loop），委托原样透传。网关在
     /// loop 构建后才调 setter（runtime 装配期），此处包装即最终生效；无桥
     /// （集群/裸构建）原样直挂零开销。
@@ -67,15 +67,15 @@ impl AgentLoop {
         *self.security.question_asker.write() = Some(asker);
     }
 
-    /// J5：取审批提问端（未装配 = `None`）。
+    /// 取审批提问端（未装配 = `None`）。
     pub(crate) fn question_asker(&self) -> Option<Arc<dyn nemesis_types::agent::QuestionAsker>> {
         self.security.question_asker.read().clone()
     }
 
-    /// §2：装配免打扰运行时态（无人值守计划 Part 2，gateway 与 auditor /
-    /// web security handler 同一 Arc）。消费方变迁（2026-10-24 循环干预
+    /// 装配免打扰运行时态（Part 2，gateway 与 auditor /
+    /// web security handler 同一 Arc）。消费方变迁（循环干预
     /// 阶梯）：`check_escalation` 的免打扰直批分支已删（终级卡 bypass，
-    /// 任何自动化开关压不掉）；auditor 侧的 §2 审批直批块走
+    /// 任何自动化开关压不掉）；auditor 侧的 审批直批块走
     /// nemesis-security 内部同 Arc，不经本槽。本槽保留=注入面不破坏
     /// （wiring 回环测试消费），当前无生产读取点。
     #[cfg(feature = "security")]
@@ -86,7 +86,7 @@ impl AgentLoop {
         *self.security.approval_auto.write() = Some(state);
     }
 
-    /// §2：免打扰是否生效（未装配/开关关 = false）。（2026-10-24 起
+    /// 免打扰是否生效（未装配/开关关 = false）。（起
     /// `check_escalation` 不再读它——终级卡不可自动批；仅测试消费。）
     #[cfg(feature = "security")]
     #[allow(dead_code)]
@@ -98,37 +98,37 @@ impl AgentLoop {
             .is_some_and(|s| s.enabled())
     }
 
-    /// B4（凭据 vault §7）：装配凭据索要卡 broker（gateway init_agent 一次性；
+    /// （凭据 vault）：装配凭据索要卡 broker（gateway init_agent 一次性；
     /// 重复调用覆盖——agent 重启重建 broker 后以最新为准）。
     pub fn set_credential_broker(&self, broker: Arc<dyn nemesis_types::agent::CredentialBroker>) {
         *self.security.credential_broker.write() = Some(broker);
     }
 
-    /// B4：取凭据 broker（未装配 = `None`——Auth 臂走原终局零回归）。
-    /// L25 起对外可见：TakeoverToolBridge 构造期快照捕获（回退态发卡面）。
+    /// 取凭据 broker（未装配 = `None`——Auth 臂走原终局零回归）。
+    /// 起对外可见：TakeoverToolBridge 构造期快照捕获（回退态发卡面）。
     pub fn credential_broker(&self) -> Option<Arc<dyn nemesis_types::agent::CredentialBroker>> {
         self.security.credential_broker.read().clone()
     }
 
-    /// B4：装配 provider 重建器（gateway 注入 `ModelProviderReloader`；
+    /// 装配 provider 重建器（gateway 注入 `ModelProviderReloader`；
     /// agent 重启重建 loop 后工厂重新调用 setter 自动跟进）。
     pub fn set_provider_reloader(&self, reloader: Arc<dyn super::ProviderReloader>) {
         *self.provider_reloader.write() = Some(reloader);
     }
 
-    /// B4：取 provider 重建器（未装配 = `None`）。
+    /// 取 provider 重建器（未装配 = `None`）。
     pub(crate) fn provider_reloader(&self) -> Option<Arc<dyn super::ProviderReloader>> {
         self.provider_reloader.read().clone()
     }
 
-    /// K1a (U14): 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
+    /// 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
     /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
     /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。
     pub fn add_tool_hook(&self, hook: Arc<dyn crate::hooks::ToolHook>) {
         self.hooks.tool_hooks.write().add(hook);
     }
 
-    /// K1b (U14): 注册一个 LLM 调用级钩子。pre 在 messages 组装后、
+    /// 注册一个 LLM 调用级钩子。pre 在 messages 组装后、
     /// LlmRequest observer 事件前运行（可 Append 提醒消息 / 拦下本轮）；
     /// post 在响应错误恢复后、LlmResponse observer 事件前运行（可
     /// Allow/Replace/有限 Retry/Block）。详见 `crate::hooks` 模块文档。
@@ -136,7 +136,7 @@ impl AgentLoop {
         self.hooks.llm_hooks.write().add(hook);
     }
 
-    /// K2 (U14): 注册一个 prompt/turn 生命周期钩子。on_user_prompt 在
+    /// 注册一个 prompt/turn 生命周期钩子。on_user_prompt 在
     /// `run_with_trace` 顶部、消息进 history **之前**运行（拦截则模型
     /// 永远看不到该消息）；on_turn_end 在最终答案被接受后、Done 事件前
     /// 运行（可注入 feedback 要求再答一轮，预算封顶 fail-open）。
@@ -157,7 +157,7 @@ impl AgentLoop {
         *self.reinject_tx.write() = Some(tx);
     }
 
-    /// L22（2026-11-03 snooze 排队）：暂停期消息恢复后的重注入入口——
+    /// （snooze 排队）：暂停期消息恢复后的重注入入口——
     /// gateway 的 snooze replay hook 把 `take_session_pending` 取出的消息
     /// 逐条塞回本 loop 的入站通道，与 drain 重注入同纪律：走私有通道而
     /// 非 bus.publish_inbound（bus 广播会 re-match workflow message-triggers，
@@ -180,10 +180,10 @@ impl AgentLoop {
         *self.memory.memory_executor.write() = Some(exec);
     }
 
-    /// P3.1 (sixth batch): wire the auto-inject channel — the memory manager
+    /// .1 (sixth batch): wire the auto-inject channel — the memory manager
     /// (read-only retrieval) plus the `auto_inject`/`top_k` flags read from
     /// `config.enhanced_memory.json`. Passing `auto_inject=false` (the
-    /// default everywhere) keeps the loop byte-identical to pre-P3.1.
+    /// default everywhere) keeps the loop byte-identical to pre-.1.
     /// The `manager` param is cfg-gated: absent (and so not suppressable)
     /// under `--no-default-features` — memory injection is a no-op there.
     #[cfg(feature = "memory")]
@@ -197,7 +197,7 @@ impl AgentLoop {
         *self.memory.memory_inject_cfg.write() = (auto_inject, top_k);
     }
 
-    /// P3.1 stub (memory feature off): accepts only the flags (the manager
+    /// .1 stub (memory feature off): accepts only the flags (the manager
     /// param doesn't exist without the memory crate). Injection stays off —
     /// `memory_inject_cfg` records `(false, _)` from the real builder, but
     /// `prefetch_memory_context` returns None regardless (no manager).
@@ -236,7 +236,7 @@ impl AgentLoop {
 
     /// Get the state manager (if configured).
     ///
-    /// BUG-20261028-126 Layer B：设备服务通知路由需要实时 last channel——
+    /// Layer B：设备服务通知路由需要实时 last channel——
     /// WorkspaceStateManager 是独立实例内存态（仅 new 时读盘一次），必须
     /// 共享 agent loop 持有的同一实例才能读到每轮 turn 的最新值。
     pub fn state_manager(
@@ -264,7 +264,7 @@ impl AgentLoop {
         info!("[AgentLoop] Route resolver configured");
     }
 
-    /// Set identity links（canonical_name -> 平台 ID 列表）。BUG-20261025-50
+    /// Set identity links（canonical_name -> 平台 ID 列表）。
     /// 接线：config `session.identity_links` 的运行时注入口——route_message
     /// 组装 RouteInput 时随身携带，跨平台 DM 身份归并才真正生效。
     pub fn set_identity_links(&mut self, links: HashMap<String, Vec<String>>) {
@@ -289,7 +289,7 @@ impl AgentLoop {
         self.cluster.as_ref()
     }
 
-    /// Set the observer manager for Phase 5 event emission.
+    /// Set the observer manager for event emission.
     /// Mirrors Go's `SetObserverManager()`.
     pub fn set_observer_manager(&mut self, mgr: Arc<nemesis_observer::Manager>) {
         self.observer_manager = Some(mgr);
@@ -316,7 +316,7 @@ impl AgentLoop {
         self.session_store.as_ref()
     }
 
-    /// ②typed checks 块捕获：任务 run 前建槽（`checks_capture` 模块文档是
+    /// typed checks 块捕获：任务 run 前建槽（`checks_capture` 模块文档是
     /// 语义真相源）。同会话键重复 begin = 覆盖（漏摘自愈，占用有界）。
     pub fn begin_checks_capture(&self, session_key: &str) {
         self.checks_capture.write().insert(
@@ -325,7 +325,7 @@ impl AgentLoop {
         );
     }
 
-    /// ②typed checks 块捕获：任务 run 后摘槽取记录（槽必移除，无泄漏）。
+    /// typed checks 块捕获：任务 run 后摘槽取记录（槽必移除，无泄漏）。
     /// 没跑检查 / 未 begin = 空列表（诚实缺席，交付 payload 不带 checks）。
     pub fn take_checks_capture(&self, session_key: &str) -> Vec<checks_capture::CheckRecord> {
         self.checks_capture
@@ -346,7 +346,7 @@ impl AgentLoop {
         self.continuation_manager = Some(manager);
     }
 
-    /// G4 (devtool-upgrade 阶段 3)：列出重启时遗留在盘上的后台 subagent
+    /// (devtool-upgrade)：列出重启时遗留在盘上的后台 subagent
     /// pending 快照（`bg_` 前缀，只读不删）。gateway 适配器启动期以这些 id
     /// 注入诚实丢失回执（后台任务是进程内 tokio 任务，gateway 重启即终止、
     /// 无对端可 poll）——回灌走正常续行路径，快照由 resume 自清。
@@ -362,7 +362,7 @@ impl AgentLoop {
         self.data_store = Some(store);
     }
 
-    /// 用量记账存储只读访问（全自动流转 P5/E1 二期 token 回传：cluster
+    /// 用量记账存储只读访问（全自动流转 / 二期 token 回传：cluster
     /// agent 执行完 peer_chat 任务后，以 session 聚合差值提取本轮 token
     /// 用量并随回调回传 master 记账）。未装配 = None。
     pub fn data_store(&self) -> Option<Arc<nemesis_data::DataStore>> {
@@ -400,7 +400,7 @@ impl AgentLoop {
     // Bus-integrated main loop
     // -----------------------------------------------------------------------
 
-    /// F1：注入 M1a 事件广播发送端（`SharedResources.agent_event_tx`）。
+    /// 注入 事件广播发送端（`SharedResources.agent_event_tx`）。
     /// 模式切换发布 `ModeChanged` 用；`None` = 发布静默跳过。
     pub fn set_agent_event_tx(
         &self,
@@ -409,7 +409,7 @@ impl AgentLoop {
         *self.agent_event_tx.write() = tx;
     }
 
-    /// L14（2026-11-01）：注入会话执行统计 sink（nemesisbot
+    /// 注入会话执行统计 sink（nemesisbot
     /// `session_stats::SessionStatsAggregator` 装配）。`None` = 不统计。
     pub fn set_session_stats_sink(
         &self,
@@ -418,7 +418,7 @@ impl AgentLoop {
         *self.session_stats.write() = sink;
     }
 
-    /// L14：sink 上抛单点——槽空静默跳过（未装配路径零开销）。
+    /// sink 上抛单点——槽空静默跳过（未装配路径零开销）。
     pub(crate) fn bump_session_stats(
         &self,
         session_key: &str,
@@ -429,10 +429,10 @@ impl AgentLoop {
         }
     }
 
-    /// ASM-08（2026-09-16 横扫存量加固）：关键接线面快照。
+    /// ASM-08（横扫存量加固）：关键接线面快照。
     ///
     /// gateway 级装配点（主/集群/项目 loop）在装配完成时用它断言「该接的
-    /// 都接了」，把 T37①/F-U3-2a/ASM-01 一族的「漏接静默」变成装配即炸
+    /// 都接了」，把 ①/F-/ASM-01 一族的「漏接静默」变成装配即炸
     /// （单测自己动手装配所以永远绿，生产装配的接线缺口只能在装配点掀）。
     /// 只报告状态不含策略——「哪些必须非空」的裁决归调用方
     /// （`agent_factory::assert_gateway_critical_wiring`）。`security_plugin`

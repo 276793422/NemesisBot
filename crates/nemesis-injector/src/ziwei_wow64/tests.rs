@@ -15,7 +15,7 @@ fn syswow64_kernel32_export_rvas() {
     let rvas = pe_export_rvas(&p, &["LoadLibraryW", "GetProcAddress"]).unwrap();
     assert!(rvas[0] > 0x1000 && rvas[1] > 0x1000);
     assert_ne!(rvas[0], rvas[1]);
-    // RVA 落在 32 位空间（< 4GB）——WOW64 kernel32 是 PE32
+    // RVA 落在 32 位空间（< 4GB）——WOW64 kernel32 是
     assert!(rvas[0] < u32::MAX as u64);
 }
 

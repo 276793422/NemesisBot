@@ -125,7 +125,7 @@ fn test_config_default_values() {
 use std::collections::HashMap;
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：chat() HTTP 矩阵（wiremock，uri 可配）
+// 补测：chat() HTTP 矩阵（wiremock，uri 可配）
 // ===========================================================================
 
 use wiremock::matchers::{method, path};

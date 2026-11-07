@@ -28,7 +28,7 @@ use crate::vector::{StoreConfig, VectorStore};
 /// on this value via `search_auto_inject`.
 pub const AUTO_INJECT_MIN_SCORE: f64 = 0.35;
 
-// -- P31 召回记账 metadata 键（Entry.metadata 内的保留键）-------------------
+// -- 召回记账 metadata 键（Entry.metadata 内的保留键）-------------------
 // 值形态：recall_count = 十进制计数；last_recall / last_recall_turn = 字符串。
 
 /// 累计召回次数（十进制字符串）。
@@ -38,7 +38,7 @@ pub const META_LAST_RECALL: &str = "last_recall";
 /// 最近一次召回的幂等标记（`session_key \u{1} turn_marker`）。
 pub const META_RECALL_TURN: &str = "last_recall_turn";
 
-/// W4：forget 谱系传导报告（`forget_with_cascade` 返回值）。
+/// forget 谱系传导报告（`forget_with_cascade` 返回值）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ForgetCascade {
     /// 源条目（keyword store / 向量镜像）是否发生了删除。
@@ -47,7 +47,7 @@ pub struct ForgetCascade {
     pub archived_derived: Vec<(String, String)>,
 }
 
-/// W4：正文摘要（preview/报告用，按字符截断——不用字节，避免切开 UTF-8）。
+/// 正文摘要（preview/报告用，按字符截断——不用字节，避免切开 UTF-8）。
 fn truncate_content(s: &str) -> String {
     if s.chars().count() <= 80 {
         s.to_string()
@@ -379,13 +379,13 @@ impl MemoryManager {
         Ok(())
     }
 
-    /// I5 (P3.4): embed a single text through the active vector store's
+    /// (.4): embed a single text through the active vector store's
     /// embedding backend. None when the vector store is inactive or the
     /// embedding call fails (callers degrade). The backend is whatever
     /// `init_vector_store` wired (ONNX plugin when loaded, n-gram fallback
     /// otherwise) — callers don't choose.
     pub fn embed_text(&self, text: &str) -> Option<Vec<f32>> {
-        // M5 fix (full review): clone the embed handle OUT of the read
+        // fix (full review): clone the embed handle OUT of the read
         // guard before the (tens-of-ms ONNX) call — holding the store lock
         // across inference blocked every store writer (init/reload).
         let embed = {
@@ -410,7 +410,7 @@ impl MemoryManager {
         // Close vector store.
         // ONNX plugin drop performs blocking I/O; must not run inside an
         // async context (tokio panics "Cannot drop a runtime where blocking
-        // is not allowed").  Move the drop to a blocking thread.
+        // is not allowed"). Move the drop to a blocking thread.
         {
             let vs = self.vector_store.write().take();
             if vs.is_some() {
@@ -486,7 +486,7 @@ impl MemoryManager {
                 // Display form ("short_term") — the read path
                 // (parse_memory_type_from_str) parses Display forms; the
                 // former Debug-lowercase ("shortterm") lost the type on
-                // roundtrip (BUG #15, quality-hardening goal W2c).
+                // roundtrip (, quality-hardening goal).
                 entry_type: entry.typ.to_string(),
                 content: entry.content.clone(),
                 metadata: entry.metadata.clone(),
@@ -572,7 +572,7 @@ impl MemoryManager {
     /// deliberate `memory_search`). Keyword fallback yields score 0.0 →
     /// callers' own bar filters it out, so degrade = no injection.
     ///
-    /// 2026-08-29 根因修复：store 层 0.7 预过滤曾把 0.35-0.7 之间的相关记忆
+    /// 根因修复：store 层 0.7 预过滤曾把 0.35-0.7 之间的相关记忆
     /// 静默裁掉，prefetch 外层的 0.35 阈值形同虚设——注入恒为空。
     pub async fn search_auto_inject(
         &self,
@@ -743,7 +743,7 @@ impl MemoryManager {
 
     /// Delete ("forget") a memory entry by ID.
     ///
-    /// BUG-2（2026-10-14）根修：此前只删 keyword store，向量镜像残留——
+    /// BUG-2根修：此前只删 keyword store，向量镜像残留——
     /// keyword 删除后 get/search 落到向量路径仍能召回已「遗忘」的条目。
     /// 对齐 `delete_by_id` 同款双删：keyword 主删 + 同 ID 向量镜像清理
     /// （返回值语义为「任一存储发生了删除」，与 delete_by_id 一致）。
@@ -770,7 +770,7 @@ impl MemoryManager {
         self.forget(id).await
     }
 
-    // -- W4（2026-10-25 加固）：forget 谱系传导 --
+    // -- （加固）：forget 谱系传导 --
 
     /// 反查 `id` 的 merge 派生条目（dreaming 谱系消费）：keyword store 扫
     /// `META_DREAM_MERGED_FROM`（逗号分隔源 id 列表）包含目标 id、且尚未
@@ -780,7 +780,7 @@ impl MemoryManager {
         if !self.is_enabled() {
             return Ok(Vec::new());
         }
-        // BUG-20261025-34：扫描面必须是合并视图（keyword + 向量权威副本）
+        // 扫描面必须是合并视图（keyword + 向量权威副本）
         // ——生产 keyword store 是 per-run 内存态，重启后历史 merge-derived
         // 条目只活在向量镜像里；只扫 keyword 会让 forget_with_cascade 的
         // 谱系传导在重启后静默变 no-op（源删了、派生全成无主孤儿）。与
@@ -845,10 +845,10 @@ impl MemoryManager {
         self.store.list(memory_type, limit, offset).await
     }
 
-    // -- P31 召回记账 / dreaming 更新通路 ----------------------------------
+    // -- 召回记账 / dreaming 更新通路 ----------------------------------
 
     /// Upsert 一条记忆（keyword store 整体替换 + vector 镜像字段级 patch）。
-    /// P31 dreaming 的宿主产出通路（touch/promote/expire 都不改正文，因此
+    /// dreaming 的宿主产出通路（touch/promote/expire 都不改正文，因此
     /// vector 侧无需重嵌入；merge 走 [`Self::store_entry`] 新建条目）。
     pub async fn update_entry(&self, entry: Entry) -> Result<(), String> {
         if !self.is_enabled() {
@@ -887,7 +887,7 @@ impl MemoryManager {
         }
     }
 
-    /// 全量记忆条目（P31 sweep 输入）：keyword store 全量 + vector 持久层
+    /// 全量记忆条目（sweep 输入）：keyword store 全量 + vector 持久层
     /// 全量按 id 归并，vector 版本优先（跨运行持久化的权威副本；keyword 的
     /// in-memory LocalStore 只含本运行写入）。
     pub async fn list_all_entries(&self) -> Result<Vec<Entry>, String> {
@@ -926,7 +926,7 @@ impl MemoryManager {
         Ok(merged.into_values().collect())
     }
 
-    /// 召回记账（P31 ①）：对一次检索命中的条目做标记式幂等 touch——
+    /// 召回记账（①）：对一次检索命中的条目做标记式幂等 touch——
     /// `recall_count` +1、`last_recall` 时间戳刷新。幂等键 =
     /// `session_key \u{1} turn_marker`：条目 metadata 里的 `last_recall_turn`
     /// 与之相同 = 同一轮已计数，诚实跳过（崩溃重启后依然幂等——标记随条目
@@ -981,7 +981,7 @@ impl MemoryManager {
         touched
     }
 
-    /// 检索 + 召回记账一步走（P31 ①的接线入口）：search 结果逐条 touch。
+    /// 检索 + 召回记账一步走（①的接线入口）：search 结果逐条 touch。
     /// loop 侧（auto-inject prefetch）拿得到会话上下文时应改用本方法传
     /// `session_key`/`turn_marker`；memory_search 工具层拿不到会话上下文，
     /// 以每轮执行独立 turn token 接线（见 memory_tools::execute_search）。

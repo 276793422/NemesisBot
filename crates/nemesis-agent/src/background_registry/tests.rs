@@ -1,4 +1,4 @@
-//! B4（2026-09-05）后台进程四动词测试（steer 为 L11 2026-11-03 扩展）。
+//! （2026-09-05）后台进程四动词测试（steer 为 2026-11-03 扩展）。
 //!
 //! 全部走真实子进程（cmd /C 或 sh -c），覆盖：echo 完成读回、退出码、
 //! 增量分页、kill（含幂等）、上限拒绝与已完成任务淘汰、输出 cap 丢头部
@@ -21,7 +21,7 @@ use crate::loop_tools::{SharedToolConfig, register_shared_tools};
 /// 串行化保确定性（生产无此竞争：工具调用天然串行穿 dispatch）。
 /// 纯逻辑用例（unknown_job_id_errors / tool_read_only_flags /
 /// registration_requires_registry）不起进程，不参与。
-/// 先例：chat_event_log GLOBAL_TABLE_LOCK。
+/// chat_event_log GLOBAL_TABLE_LOCK。
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn ctx() -> RequestContext {
@@ -111,6 +111,66 @@ async fn exit_code_preserved() {
     let done = wait_done(&reg, id, 15).await;
     assert_eq!(done["exit_code"].as_i64(), Some(7));
     assert_eq!(done["success"].as_bool(), Some(false));
+}
+
+/// list() 投影：id 倒序、字段齐全、运行/终态两态正确、终态平铺。
+#[tokio::test]
+async fn list_projects_rows_newest_first_with_exit_flat() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let fin = reg
+        .start("echo list_done_marker", "/", false)
+        .await
+        .unwrap();
+    let fin_id = fin["job_id"].as_u64().unwrap();
+    let long = reg.start(long_cmd(), "/", false).await.unwrap();
+    let long_id = long["job_id"].as_u64().unwrap();
+    wait_done(&reg, fin_id, 15).await;
+
+    let rows = reg.list().await;
+    assert!(rows.len() >= 2, "两任务都在册: {}", rows.len());
+    let ids: Vec<u64> = rows.iter().map(|r| r["id"].as_u64().unwrap()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    sorted.reverse();
+    assert_eq!(ids, sorted, "id 倒序 = 新任务在前");
+
+    let fin_row = rows
+        .iter()
+        .find(|r| r["id"].as_u64() == Some(fin_id))
+        .unwrap();
+    assert_eq!(fin_row["running"], serde_json::json!(false));
+    assert_eq!(fin_row["exit_code"].as_i64(), Some(0));
+    assert_eq!(fin_row["success"], serde_json::json!(true));
+    assert_eq!(fin_row["killed"], serde_json::json!(false));
+    assert_eq!(fin_row["steerable"], serde_json::json!(false));
+    assert!(fin_row["total_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(fin_row["dropped_bytes"], serde_json::json!(0));
+    assert!(fin_row["started_at_unix"].as_u64().unwrap() > 0);
+    assert!(
+        fin_row["command"]
+            .as_str()
+            .unwrap()
+            .contains("list_done_marker")
+    );
+
+    let long_row = rows
+        .iter()
+        .find(|r| r["id"].as_u64() == Some(long_id))
+        .unwrap();
+    assert_eq!(long_row["running"], serde_json::json!(true));
+    // 运行中行无终态字段平铺。
+    assert!(long_row.get("exit_code").is_none());
+
+    // kill 后行翻终态（killed=true 平铺）。
+    reg.kill(long_id).await.unwrap();
+    let rows = reg.list().await;
+    let long_row = rows
+        .iter()
+        .find(|r| r["id"].as_u64() == Some(long_id))
+        .unwrap();
+    assert_eq!(long_row["running"], serde_json::json!(false));
+    assert_eq!(long_row["killed"], serde_json::json!(true));
 }
 
 #[tokio::test]
@@ -322,7 +382,7 @@ async fn tool_read_only_flags() {
     assert!(BackgroundOutputTool::new(reg.clone()).is_read_only());
     assert!(!BackgroundStartTool::new("/", true, reg.clone()).is_read_only());
     assert!(!BackgroundKillTool::new(reg.clone()).is_read_only());
-    // L11：steer 是写动作（stdin 注入）。
+    // steer 是写动作（stdin 注入）。
     assert!(!BackgroundSteerTool::new(reg).is_read_only());
 }
 
@@ -342,7 +402,7 @@ async fn registration_requires_registry() {
     assert!(!tools.contains_key("background_kill"));
     assert!(!tools.contains_key("background_steer"));
 
-    // Some → 四动词齐全（L11 起含 steer）。
+    // Some → 四动词齐全（起含 steer）。
     let cfg = SharedToolConfig {
         workspace: Some(ws),
         background_registry: Some(Arc::new(BackgroundProcessRegistry::new())),
@@ -356,7 +416,7 @@ async fn registration_requires_registry() {
 }
 
 // ---------------------------------------------------------------------------
-// L11（2026-11-03）steer 动词：stdin 活管道 + 注入回执
+// steer 动词：stdin 活管道 + 注入回执
 // ---------------------------------------------------------------------------
 
 /// stdin→stdout 回显过滤器（steer e2e 的回执语义载体：注入什么回什么）。
@@ -512,7 +572,7 @@ fn process_alive(pid: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// A2 停止阶梯：优雅停 → 宽限窗 → 强杀升级
+// 停止阶梯：优雅停 → 宽限窗 → 强杀升级
 // ---------------------------------------------------------------------------
 
 /// TERM-忽略命令（POSIX 阶梯升级的前提：trap 掉 TERM 后必须靠 SIGKILL
@@ -555,7 +615,7 @@ async fn stop_ladder_terminates_stubborn_process() {
     // 阶梯契约 = 杀指令发完即返回，不等内核收割（见 stop_ladder 文档
     // 「调用方随后照常 try_wait 收尸」）。高载 runner 上 graceful 段 kill
     // 二进制 spawn 可吃掉大半宽限窗，升级段 KILL 投递→收割延迟几十 ms——
-    // 返回后立即断言 = Ok(None) 假红（2026-10-22 ET Linux 实录，3107 过
+    // 返回后立即断言 = Ok(None) 假红（ET Linux，3107 过
     // 仅此 1 挂）。给有界收割窗，超窗才判死。
     let reap_deadline = Instant::now() + Duration::from_secs(10);
     let st = loop {
@@ -637,8 +697,8 @@ async fn background_kill_ladder_terminates_stubborn_job_end_to_end() {
     assert_eq!(result["success"].as_bool(), Some(false));
 }
 
-/// BUG-20261029-178 回归锁：background_start 的平台 shell 与 ExecTool
-/// 「同语义」（本模块注释原文），语义含 T4 环境凭据剥离——此前漏接。
+/// 回归锁：background_start 的平台 shell 与 ExecTool
+/// 「同语义」（本模块注释原文），语义含 环境凭据剥离——此前漏接。
 /// 敏感探针变量必须剥、非敏感探针必须可见（探针管道自证）。
 #[tokio::test]
 async fn build_platform_shell_strips_sensitive_env() {

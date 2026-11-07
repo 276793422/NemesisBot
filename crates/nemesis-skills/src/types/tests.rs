@@ -64,7 +64,7 @@ fn test_validate_skill_identifier_path_traversal() {
 
 #[test]
 fn test_validate_skill_identifier_rejects_colon() {
-    // BUG-HUNT R35：`C:evil` 是盘符相对路径，PathBuf::join 遇带 prefix 成分
+    // `C:evil` 是盘符相对路径，PathBuf::join 遇带 prefix 成分
     // 会整体截断（路径逃出 workspace）；裸冒号还是 NTFS ADS 分隔符。
     assert!(validate_skill_identifier("C:evil").is_err());
     assert!(validate_skill_identifier("a:b").is_err());
@@ -795,7 +795,7 @@ fn test_validate_skill_identifier_whitespace_only() {
 
 #[test]
 fn test_validate_skill_identifier_rejects_windows_reserved_names() {
-    // BUG-HUNT R163 / BUG-20261025-90：保留设备名是合法 GitHub repo 名，
+    // /：保留设备名是合法 GitHub repo 名，
     // 作目录名在 Windows 上创建失败（诡异 IO 错误）。基名比对（首个 '.'
     // 前）、不分区大小写；非保留前缀（constant/config）不受影响。
     for name in [
@@ -818,7 +818,7 @@ fn test_validate_skill_identifier_rejects_windows_reserved_names() {
 
 #[test]
 fn test_validate_skill_identifier_rejects_trailing_dot_and_space() {
-    // BUG-HUNT R163 / BUG-20261025-90：尾点/尾空白被 Win32 落盘时静默截断，
+    // /：尾点/尾空白被 Win32 落盘时静默截断，
     // 记账名与磁盘目录名永久漂移。
     assert!(validate_skill_identifier("foo.").is_err());
     assert!(validate_skill_identifier("foo ").is_err());
@@ -842,7 +842,7 @@ fn test_to_lower_mixed_ascii_unicode() {
     assert_eq!(result, "hello123");
 }
 
-// --- W4b 补测（批次 14）：BrowseSort 序列化映射 ---
+// --- 补测：BrowseSort 序列化映射 ---
 
 #[test]
 fn test_browse_sort_as_str_all_variants() {

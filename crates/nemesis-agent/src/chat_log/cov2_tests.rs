@@ -11,7 +11,7 @@ use std::fs;
 #[cfg(windows)]
 use std::path::Path;
 
-/// 进程级唯一键前缀（2026-09-28 脆性修复，机制见 cov_tests.rs 同名 helper
+/// 进程级唯一键前缀（脆性修复，机制见 cov_tests.rs 同名 helper
 /// 注释）：静态前缀跨运行复用同一路径，Windows 删除挂起残留会让下轮夹具
 /// create_dir_all 撞 os error 183 自我延续红。pid + 启动纳秒后缀根治。
 fn cov_key(tag: &str) -> String {

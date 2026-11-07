@@ -37,7 +37,6 @@ members = [
     "crates/nemesis-plugin-sdk",
     "crates/nemesis-exec-protocol",
     "crates/nemesis-routing",
-    "crates/nemesis-session",
     "crates/nemesis-state",
     "crates/nemesis-taskstore",
     "crates/nemesis-utils",
@@ -75,6 +74,7 @@ members = [
     "crates/nemesis-ziwei-rev",
     "test-tools/fake-qmp",
     "test-tools/verify-probe",
+    "test-tools/comment-gate",
 ]
 
 [workspace.package]
@@ -256,7 +256,6 @@ nemesis-migrate = { path = "crates/nemesis-migrate" }
 nemesis-path = { path = "crates/nemesis-path" }
 nemesis-plugin = { path = "crates/nemesis-plugin" }
 nemesis-routing = { path = "crates/nemesis-routing" }
-nemesis-session = { path = "crates/nemesis-session" }
 nemesis-state = { path = "crates/nemesis-state" }
 nemesis-taskstore = { path = "crates/nemesis-taskstore" }
 nemesis-utils = { path = "crates/nemesis-utils" }

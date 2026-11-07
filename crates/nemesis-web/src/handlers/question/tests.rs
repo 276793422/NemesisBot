@@ -1,4 +1,4 @@
-//! F7（2026-09-06）：`question.respond` / `question.pending` WSAPI 测试——
+//! （2026-09-06）：`question.respond` / `question.pending` WSAPI 测试——
 //! 未装配诚实错、参数校验（selected 非字符串数组）、wired 链路触达
 //! FakeResponder（selected 原样透传）、pending 列表。
 
@@ -12,9 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness（与 approval tests 同款 AppState literal）
-// ---------------------------------------------------------------------------
 
 struct NoopProvider;
 
@@ -84,6 +82,7 @@ fn make_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -108,7 +107,7 @@ fn bare_loop() -> nemesis_agent::r#loop::AgentLoop {
 }
 
 /// 记录型 FakeResponder：respond 记录作答回显送达，pending 返回固定条目。
-/// B8：form_calls 记录表单作答（respond_form 通路）。
+/// form_calls 记录表单作答（respond_form 通路）。
 struct FakeResponder {
     calls: parking_lot::Mutex<Vec<(String, Vec<String>)>>,
     form_calls: parking_lot::Mutex<Vec<(String, std::collections::BTreeMap<String, String>)>>,
@@ -148,9 +147,7 @@ fn wired_ctx(dir: &tempfile::TempDir) -> (RequestContext, Arc<FakeResponder>) {
     (make_ctx(dir, Some(Arc::new(al))), fake)
 }
 
-// ---------------------------------------------------------------------------
 // 未装配 / 无 loop：诚实错
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn respond_without_agent_loop_is_honest_error() {
@@ -182,9 +179,7 @@ async fn respond_without_responder_is_honest_error() {
     assert!(err.contains("question broker not wired"), "err: {err}");
 }
 
-// ---------------------------------------------------------------------------
 // 参数校验
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn respond_rejects_missing_question_id() {
@@ -249,9 +244,7 @@ async fn unknown_cmd_is_honest_error() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // wired 链路：respond 触达 + pending 列表
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn respond_delivers_selection_to_responder() {
@@ -313,9 +306,7 @@ async fn pending_lists_responder_entries() {
     assert_eq!(fake.calls.lock().len(), 0, "pending must not consume calls");
 }
 
-// ---------------------------------------------------------------------------
-// B8（提问两形态）：values（表单作答）分支
-// ---------------------------------------------------------------------------
+// （提问两形态）：values（表单作答）分支
 
 #[tokio::test]
 async fn respond_values_delivers_form_to_responder() {

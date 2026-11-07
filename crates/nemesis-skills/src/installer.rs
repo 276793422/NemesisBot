@@ -1,8 +1,8 @@
 //! Skill installer - downloads, validates, and installs skills.
 //!
 //! Handles:
-//! - GitHub-based skill download（legacy 单文件 + P12 pinned 全树两路）
-//! - 安装门单一漏斗（P11-P16）：验签 → pin+完整性 → 安全扫描 → 版本龄 →
+//! - GitHub-based skill download（legacy 单文件 + pinned 全树两路）
+//! - 安装门单一漏斗：验签 → pin+完整性 → 安全扫描 → 版本龄 →
 //!   审批卡 → lockfile 记账，任何一环 block 即终止并给可读理由
 //! - Pre-install lint + quality checks
 //! - Post-install validation
@@ -29,19 +29,19 @@ use crate::types::{
 /// 浏览器 UA（GitHub API 要求 User-Agent，测试服务器无所谓）。
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-/// skills.lock.json 写串行锁（2026-10-13 同类横扫）：[`Installer::record_lockfile_entry`]
+/// skills.lock.json 写串行锁（同类横扫）：[`Installer::record_lockfile_entry`]
 /// 与 uninstall 的记账移除都是 load→改→save 的 RMW，并发安装/卸载时后写者以
 /// 旧快照整体覆盖先写者丢记账；只串行写者——读路径（verify/drift）吃 save
 /// 的原子性，无需入锁（对齐 learned::MANIFEST_WRITE_LOCK 先例）。
 static LOCKFILE_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// R2（2026-10-24）：安装落位临界区互斥——exists 检查→rename 落位→记账
+/// 安装落位临界区互斥——exists 检查→rename 落位→记账
 /// 三段必须原子（并发同名安装不得双双通过 exists 检查后互相覆盖/一输一赢
 /// 静默串台）。临界区全同步无 await，parking_lot 停等安全；异步审批在锁外。
 /// 技能安装是低频管理操作，全局一把锁足够（毫秒级落位段）。
 static INSTALL_COMMIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// F4（2026-11-02 复评）：进程内 in-flight 回滚备份登记表。键 = 备份目录
+/// （复评）：进程内 in-flight 回滚备份登记表。键 = 备份目录
 /// **完整路径**（非 slug——并发测试/多 workspace 下同名 slug 的备份互不
 /// 误伤）。进程退出登记表随之消失，「上次进程死在窗口内的备份」自动变回
 /// 真遗孤，下次启动的恢复式清扫照常收编——跨重启语义不变。
@@ -49,7 +49,7 @@ static INFLIGHT_BACKUPS: std::sync::LazyLock<
     parking_lot::Mutex<std::collections::HashSet<PathBuf>>,
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashSet::new()));
 
-/// GitHub 安装结果（P12 pinned 路径）。
+/// GitHub 安装结果（pinned 路径）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstallOutcome {
     /// 技能名（目标目录名）。
@@ -70,21 +70,21 @@ pub struct InstallOutcome {
 pub struct SkillInstaller {
     workspace: PathBuf,
     // Arc 包装：agent `install_skill` 工具持 `Arc<RegistryManager>` 共享
-    // 句柄（BUG-20261101-295 漏斗接线），经 `set_registry_manager_shared`
+    // 句柄（漏斗接线），经 `set_registry_manager_shared`
     // 注入同一实例；`set_registry_manager` 对 owned 值透明包 Arc。
     registry_manager: Option<std::sync::Arc<crate::registry::RegistryManager>>,
     github_base_url: String,
-    /// GitHub API base（P12 commit 解析；测试 seam 可换 wiremock）。
+    /// GitHub API base（commit 解析；测试 seam 可换 wiremock）。
     github_api_url: String,
-    /// `skills.allow_unsigned`（P11；默认 true 兼容存量，false = strict 拒绝无签名）。
+    /// `skills.allow_unsigned`（默认 true 兼容存量，false = strict 拒绝无签名）。
     allow_unsigned: bool,
-    /// `skills.min_age_days`（P16；默认 0 = 关）。
+    /// `skills.min_age_days`（默认 0 = 关）。
     min_age_days: i64,
-    /// `skills.min_age_policy`（P16；"warn" | "block"）。
+    /// `skills.min_age_policy`（"warn" | "block"）。
     min_age_policy: String,
-    /// TrustStore 文件路径（P11；默认 `<workspace>/config/skill_trust.json`）。
+    /// TrustStore 文件路径（默认 `<workspace>/config/skill_trust.json`）。
     trust_store_path: Option<PathBuf>,
-    /// 装前审批门（P13；None = AlwaysAllow，等价 `skills.install_approval=false`）。
+    /// 装前审批门（None = AlwaysAllow，等价 `skills.install_approval=false`）。
     install_gate: Mutex<Option<SharedInstallGate>>,
     last_security_check: Mutex<Option<SecurityCheckResult>>,
 }
@@ -126,17 +126,17 @@ impl SkillInstaller {
         self.github_base_url = url.to_string();
     }
 
-    /// Set the GitHub API base URL (for testing; P12 commit 解析用).
+    /// Set the GitHub API base URL (for testing; commit 解析用).
     pub fn set_github_api_url(&mut self, url: &str) {
         self.github_api_url = url.to_string();
     }
 
-    /// Set `skills.allow_unsigned`（P11；缺省 true）。
+    /// Set `skills.allow_unsigned`（缺省 true）。
     pub fn set_allow_unsigned(&mut self, allow: bool) {
         self.allow_unsigned = allow;
     }
 
-    /// Set `skills.min_age_days` / `skills.min_age_policy`（P16；policy: warn|block）。
+    /// Set `skills.min_age_days` / `skills.min_age_policy`（policy: warn|block）。
     pub fn set_age_policy(&mut self, min_age_days: i64, policy: &str) {
         self.min_age_days = min_age_days;
         self.min_age_policy = if policy.eq_ignore_ascii_case("block") {
@@ -146,12 +146,12 @@ impl SkillInstaller {
         };
     }
 
-    /// Set the TrustStore file path (P11; 缺省 `<workspace>/config/skill_trust.json`).
+    /// Set the TrustStore file path (; 缺省 `<workspace>/config/skill_trust.json`).
     pub fn set_trust_store_path(&mut self, path: PathBuf) {
         self.trust_store_path = Some(path);
     }
 
-    /// Set the install approval gate (P13; None = AlwaysAllow).
+    /// Set the install approval gate (; None = AlwaysAllow).
     pub fn set_install_gate(&mut self, gate: SharedInstallGate) {
         *self.install_gate.lock().unwrap() = Some(gate);
     }
@@ -192,17 +192,17 @@ impl SkillInstaller {
         *last = Some(result);
     }
 
-    // ==================== WS4 供应链安装门（P11-P16） ====================
+    // ==================== 供应链安装门 ====================
     //
     // 漏斗顺序（任何一环 block 即终止并给可读理由）：
-    //   验签(P11) → pin+完整性(P12) → 安全扫描(P15) → 版本龄(P16)
-    //   → 审批卡(P13) → lockfile 记账(P14)
+    //   验签() → pin+完整性() → 安全扫描() → 版本龄()
+    //   → 审批卡() → lockfile 记账()
     // 审批通过前内容只落在 staging（`<workspace>/.skill-staging/<slug>`，
     // 不放 skills/ 下——loader 扫描不跳过点开头目录，放里面会被当成技能加载）。
 
     /// staging 目录（审批通过前下载暂存）。
     ///
-    /// ⚠ 旧共享形态（`.skill-staging/<slug>`，R2 前的唯一形态）：审批等待
+    /// ⚠ 旧共享形态（`.skill-staging/<slug>`， 前的唯一形态）：审批等待
     /// 窗口内另一安装的预清理/下载会换写同目录内容，approve-A 装-B。现在
     /// 只作 `commit_install` 对外部手工构造 plan（无事务号）的兼容回落，
     /// 生产两路安装一律走 [`Self::staging_dir_tx`]。
@@ -210,7 +210,7 @@ impl SkillInstaller {
         self.workspace.join(".skill-staging").join(slug)
     }
 
-    /// staging 目录——R2（2026-10-24）逐事务唯一形态：`.skill-staging/<slug>.<tx>`。
+    /// staging 目录——逐事务唯一形态：`.skill-staging/<slug>.<tx>`。
     /// 审批等待期间另一安装的下载与本次计划的内容源物理隔离。
     fn staging_dir_tx(&self, slug: &str, tx: &str) -> PathBuf {
         self.workspace
@@ -218,7 +218,7 @@ impl SkillInstaller {
             .join(format!("{}.{}", slug, tx))
     }
 
-    /// R2：安装事务号（pid + 毫秒 + 进程内序号）。
+    /// 安装事务号（pid + 毫秒 + 进程内序号）。
     fn new_install_tx() -> String {
         use std::sync::atomic::{AtomicU64, Ordering};
         static TX_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -233,7 +233,7 @@ impl SkillInstaller {
         )
     }
 
-    /// R2：安装开始时清扫 staging 根下 24h 前的残留事务目录（崩溃/断电遗孤；
+    /// 安装开始时清扫 staging 根下 24h 前的残留事务目录（崩溃/断电遗孤；
     /// 成功与失败路径各自清理自己的，正常不积累）。best-effort：清扫失败
     /// 不影响本次安装。
     fn sweep_stale_staging(&self) {
@@ -255,7 +255,7 @@ impl SkillInstaller {
         }
     }
 
-    /// BUG-20261028-118：force 更新回滚备份根（`.skill-rollback/`）——与
+    /// force 更新回滚备份根（`.skill-rollback/`）——与
     /// staging **目录级隔离**。备份目录经 rename 落进来时继承旧技能目录的
     /// 历史 mtime，住进 `.skill-staging/` 会被 [`Self::sweep_stale_staging`]
     /// 的 24h 一刀切在回滚消费它之前删掉（失败场景 = 旧版本彻底丢失）。
@@ -264,29 +264,29 @@ impl SkillInstaller {
         self.workspace.join(".skill-rollback")
     }
 
-    /// F4（2026-11-02 复评）：进程内 in-flight 回滚备份登记表（键与语义见
+    /// （复评）：进程内 in-flight 回滚备份登记表（键与语义见
     /// 模块级 [`INFLIGHT_BACKUPS`]）。[`Self::recover_stale_rollbacks`] 借此
     /// 区分「本进程正在更新的活备份」与「上次进程死在窗口内的真遗孤」：
     /// 在册 = 跳过，未登记 = 照常恢复。登记表随进程消失，跨重启语义不变。
-    /// F4：登记 in-flight 备份（handler 建**新**备份时调，先于建备份的
+    /// 登记 in-flight 备份（handler 建**新**备份时调，先于建备份的
     /// rename——并发恢复式清扫从此刻起就视本备份为活物，不留「备份已
     /// 落盘、登记未跟上」的窗口）。重复登记幂等。
     pub fn register_inflight_backup(backup: &Path) {
         INFLIGHT_BACKUPS.lock().insert(backup.to_path_buf());
     }
 
-    /// F4：注销（`RollbackGuard` Drop 统一出口：成功消费 / 显式回滚 /
+    /// 注销（`RollbackGuard` Drop 统一出口：成功消费 / 显式回滚 /
     /// 取消复位 / 回滚失败留待下轮恢复，四态全走这里）。未登记也幂等。
     pub fn unregister_inflight_backup(backup: &Path) {
         INFLIGHT_BACKUPS.lock().remove(backup);
     }
 
-    /// F4：恢复式清扫的在册判定。
+    /// 恢复式清扫的在册判定。
     pub fn inflight_backup_registered(backup: &Path) -> bool {
         INFLIGHT_BACKUPS.lock().contains(backup)
     }
 
-    /// BUG-20261028-118：回滚备份**恢复优先**清扫——处理上次失败/取消
+    /// 回滚备份**恢复优先**清扫——处理上次失败/取消
     /// 遗孤（进程死在「备份已挪走、新版未落位」窗口，或任务取消 Drop
     /// guard 的 rename 也失败时）：
     /// - `skills/<slug>` 缺失 = 旧版本无着落 → 先 rename 回原位（恢复）；
@@ -295,7 +295,7 @@ impl SkillInstaller {
     /// 返回恢复的原位路径（可观测/测试断言用）。best-effort：单项失败不
     /// 中断整轮。
     ///
-    /// F4（2026-11-02 复评）：in-flight 备份经 [`INFLIGHT_BACKUPS`] 登记表
+    /// （复评）：in-flight 备份经 [`INFLIGHT_BACKUPS`] 登记表
     /// 识别并跳过——调用时机约束由**代码强制**（此前只是注释约定，并发安装
     /// 期间调用会把刚建的新备份误判遗孤搬回原位、毁掉在途更新）。真遗孤 =
     /// 本进程未登记（上次进程死在窗口内，登记表随进程消失）→ 照常恢复。
@@ -314,7 +314,7 @@ impl SkillInstaller {
                 continue;
             }
             // 备份命名 `<slug>.old-<pid>-<millis>`；按**最后一个** ".old-" 分隔
-            // 取 slug 段（BUG-20261029-150：split('.') 首段切分对含点 slug
+            // 取 slug 段（split('.') 首段切分对含点 slug
             // 错误——"my.skill.old-…" 被解析成 "my"，恢复错名 / 误删唯一备份；
             // slug 本身可合法含点）。无 ".old-" 标记的外来文件跳过不碰。
             let Some(slug) = ent
@@ -345,7 +345,7 @@ impl SkillInstaller {
         recovered
     }
 
-    /// R2：提交前 digest 复核——staging 现内容必须与审批通过的逐文件 sha256
+    /// 提交前 digest 复核——staging 现内容必须与审批通过的逐文件 sha256
     /// 完全一致（审批等待窗口内内容被换 = abort，不落位）。staging 缺席 +
     /// 空审批清单 = 合法（registry 未写文件的 Stub 历史契约）。
     fn verify_staging_matches_plan(
@@ -398,7 +398,7 @@ impl SkillInstaller {
         Ok((repo.to_string(), requested.to_string()))
     }
 
-    /// P12：GitHub commits API 统一解析 ref（sha/tag/branch/缺省 HEAD）→ (sha, commit date)。
+    /// GitHub commits API 统一解析 ref（sha/tag/branch/缺省 HEAD）→ (sha, commit date)。
     async fn resolve_commit(
         client: &reqwest::Client,
         api_base: &str,
@@ -445,7 +445,7 @@ impl SkillInstaller {
         Ok((sha, published_at))
     }
 
-    /// P11：对目录做验签 → `VerificationOutcome`（四态归约交给 trust 层）。
+    /// 对目录做验签 → `VerificationOutcome`（四态归约交给 trust 层）。
     #[cfg(feature = "security")]
     fn verify_signature_state(&self, dir: &Path) -> VerificationOutcome {
         if !dir.join(".signature").exists() {
@@ -480,7 +480,7 @@ impl SkillInstaller {
         VerificationOutcome::default()
     }
 
-    /// P11：按验签结论出四态；blocked 时附带可读理由并返回 Err（调用方清理 staging）。
+    /// 按验签结论出四态；blocked 时附带可读理由并返回 Err（调用方清理 staging）。
     fn enforce_trust(&self, outcome: &VerificationOutcome) -> Result<TrustState> {
         let trust = outcome.trust_state(self.allow_unsigned);
         if trust.installable() {
@@ -497,7 +497,7 @@ impl SkillInstaller {
         )))
     }
 
-    /// P16：版本龄检查。发布时间未知 → (None, "")。
+    /// 版本龄检查。发布时间未知 → (None, "")。
     /// min_age_days=0（默认）= 关，只回报年龄不裁决；block 策略返回 Err，
     /// warn 策略把文案追加进 warnings。
     fn check_age(
@@ -527,13 +527,13 @@ impl SkillInstaller {
         Ok((Some(age_days), format!("warn: {}", msg)))
     }
 
-    /// P12-P16：GitHub 安装 plan 阶段——解析 pin、下载到 staging、逐文件 sha256、
+    /// ：GitHub 安装 plan 阶段——解析 pin、下载到 staging、逐文件 sha256、
     /// 验签、安全扫描、版本龄；产出审批卡。block 环节清理 staging 后报错。
     pub async fn plan_github_install(&self, repo_ref: &str) -> Result<InstallPlan> {
         let (repo, requested_ref) = Self::parse_github_ref(repo_ref)?;
         let slug = repo.split('/').next_back().unwrap_or("skill").to_string();
-        // BUG-20261025-90：GitHub 臂与 registry 臂（install）/uninstall 共用
-        // 同一 slug 验证器（R35 单一真相源）。parse_github_ref 只拒 `..`/空白
+        // GitHub 臂与 registry 臂（install）/uninstall 共用
+        // 同一 slug 验证器（统一定义）。parse_github_ref 只拒 `..`/空白
         // /分隔符——Windows 保留设备名（con/aux/nul…）与尾点名是合法 GitHub
         // repo 名，直通 skills/ 路径拼装会产出保留名目录（IO 失败形态诡异）
         // 或被 Windows 截尾（"foo." 目录落盘成 "foo"，lockfile 记账 "foo."
@@ -557,12 +557,12 @@ impl SkillInstaller {
             .build()
             .map_err(|e| NemesisError::Other(format!("failed to create HTTP client: {}", e)))?;
 
-        // P12：pin 解析（无 @ref 时取默认分支当前 commit 记账，重装按 pin 精确取）。
+        // pin 解析（无 @ref 时取默认分支当前 commit 记账，重装按 pin 精确取）。
         let (commit, published_at) =
             Self::resolve_commit(&client, &self.github_api_url, &repo, &requested_ref).await?;
 
         // 下载到 staging（SHA 同时充当 trees API 与 raw URL 的 ref）。
-        // R2：逐事务唯一目录——旧共享形态下，plan 阶段产出审批卡后，另一
+        // 逐事务唯一目录——旧共享形态下，plan 阶段产出审批卡后，另一
         // 并发安装的预清理/下载会换写本计划的内容源（approve-A 装-B）。
         self.sweep_stale_staging();
         let tx = Self::new_install_tx();
@@ -583,7 +583,7 @@ impl SkillInstaller {
             return Err(e);
         }
 
-        // P11：验签（security_check 前置）。
+        // 验签（security_check 前置）。
         let outcome = self.verify_signature_state(&staging);
         let trust = match self.enforce_trust(&outcome) {
             Ok(t) => t,
@@ -603,8 +603,8 @@ impl SkillInstaller {
             trust_detail = "unsigned".to_string();
         }
 
-        // P15：SKILL.md 安全扫描（GitHub 路径缺 SKILL.md = 诚实报错，不是静默装空壳）。
-        // M5：lint 面扩展到 staging 整目录可执行面（SKILL.md + 辅助 .md +
+        // SKILL.md 安全扫描（GitHub 路径缺 SKILL.md = 诚实报错，不是静默装空壳）。
+        // lint 面扩展到 staging 整目录可执行面（SKILL.md + 辅助.md +
         // 脚本形态）——藏在 scripts/ 里的恶意载荷不再绕过检查。
         let skill_md_path = staging.join("SKILL.md");
         if !skill_md_path.exists() {
@@ -628,7 +628,7 @@ impl SkillInstaller {
             )));
         }
 
-        // P16：版本龄。
+        // 版本龄。
         let mut warnings = Vec::new();
         if !security.lint_result.passed {
             warnings.push(format!(
@@ -685,9 +685,9 @@ impl SkillInstaller {
         })
     }
 
-    /// P13/P14：commit 阶段——gate 裁决；approve 则 staging rename 落位 + lockfile 记账。
+    /// ：commit 阶段——gate 裁决；approve 则 staging rename 落位 + lockfile 记账。
     pub async fn commit_install(&self, plan: InstallPlan) -> Result<InstallOutcome> {
-        // R2：逐事务 staging（外部手工构造的旧形态 plan 无事务号 → 回落共享目录）。
+        // 逐事务 staging（外部手工构造的旧形态 plan 无事务号 → 回落共享目录）。
         let staging = if plan.staging_tx.is_empty() {
             self.staging_dir(&plan.slug)
         } else {
@@ -710,7 +710,7 @@ impl SkillInstaller {
             }
         }
 
-        // R2：提交前 digest 复核——plan 阶段锁定的逐文件 sha256 与 staging
+        // 提交前 digest 复核——plan 阶段锁定的逐文件 sha256 与 staging
         // 现内容比对（审批等待窗口内被换 = abort，不落位）。
         let approved = plan
             .files
@@ -722,7 +722,7 @@ impl SkillInstaller {
             return Err(e);
         }
 
-        // R2：落位临界区——exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下
+        // 落位临界区——exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下
         // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。全同步段。
         let _commit_guard = INSTALL_COMMIT_LOCK.lock();
 
@@ -759,7 +759,7 @@ impl SkillInstaller {
             warn!("failed to write origin tracking: {}", e);
         }
 
-        // P14：lockfile 记账。
+        // lockfile 记账。
         self.record_lockfile_entry(&LockedSkill {
             slug: plan.slug.clone(),
             source: plan.source.clone(),
@@ -794,7 +794,7 @@ impl SkillInstaller {
         })
     }
 
-    /// P14：写一条 lockfile 记账（load→record→save；失败只 warn——记账面非执行面）。
+    /// 写一条 lockfile 记账（load→record→save；失败只 warn——记账面非执行面）。
     fn record_lockfile_entry(&self, entry: &LockedSkill) {
         let _serial = LOCKFILE_WRITE_LOCK.lock();
         let mut lock = SkillsLockfile::load(&self.workspace);
@@ -810,7 +810,7 @@ impl SkillInstaller {
         self.commit_install(plan).await
     }
 
-    /// P14：单技能漂移检测（未记账 = NotFound）。
+    /// 单技能漂移检测（未记账 = NotFound）。
     pub fn verify_skill_drift(&self, slug: &str) -> Result<crate::lockfile::DriftReport> {
         let lock = SkillsLockfile::load(&self.workspace);
         if lock.get(slug).is_none() {
@@ -822,7 +822,7 @@ impl SkillInstaller {
         Ok(lock.verify_drift(&self.workspace, slug))
     }
 
-    /// P14：全量漂移检测（按 lockfile 记账逐条检测）。
+    /// 全量漂移检测（按 lockfile 记账逐条检测）。
     pub fn verify_all_drift(&self) -> Vec<crate::lockfile::DriftReport> {
         let lock = SkillsLockfile::load(&self.workspace);
         lock.skills
@@ -887,8 +887,8 @@ impl SkillInstaller {
 
     /// Install a skill from a named registry.
     ///
-    /// WS4 漏斗（registry 路径）：下载到 staging → malware 闸 → 验签(P11) →
-    /// 安全扫描(P15) → 版本龄(P16, lenient) → 审批门(P13) → 落位 + lockfile(P14)。
+    /// 漏斗（registry 路径）：下载到 staging → malware 闸 → 验签() →
+    /// 安全扫描() → 版本龄(, lenient) → 审批门() → 落位 + lockfile()。
     /// Mirrors Go `InstallFromRegistry`（对外签名/返回不变）。
     pub async fn install(
         &self,
@@ -896,13 +896,13 @@ impl SkillInstaller {
         slug: &str,
         version: &str,
     ) -> Result<InstallResult> {
-        // 路径安全（BUG-HUNT R35）：slug 只能是单一目录名，且校验必须发生在
+        // 路径安全：slug 只能是单一目录名，且校验必须发生在
         // staging 清理之前——下方 `remove_dir_all_resilient(staging)` 拿的是
         // `.skill-staging/<slug>` 的原始拼接，`../../x` 会经 OS 解析落到
         // workspace 外的任意目录被先行删除；registry 侧（github/clawhub/
         // modelscope）虽各自在 download_and_install 入口校验，但那发生在本
         // 清理之后，管不住删除。与 uninstall 的边界校验对称、与 registry/
-        // agent 工具共用同一验证器（单一真相源）。
+        // agent 工具共用同一验证器。
         validate_skill_identifier(slug).map_err(|e| {
             NemesisError::Validation(format!(
                 "path traversal denied: invalid skill slug '{}': {}",
@@ -927,8 +927,8 @@ impl SkillInstaller {
             NemesisError::NotFound(format!("registry '{}' not found", registry_name))
         })?;
 
-        // 下载到 staging（审批通过前不落 skills/）。
-        // R2：逐事务唯一目录 + 残留清扫——旧共享形态下，plan 产出审批卡后
+        // 下载到 staging（审批通过前不落 skills）。
+        // 逐事务唯一目录 + 残留清扫——旧共享形态下，plan 产出审批卡后
         // 另一并发安装的预清理/下载会换写本计划的内容源（approve-A 装-B）。
         self.sweep_stale_staging();
         let tx = Self::new_install_tx();
@@ -957,8 +957,8 @@ impl SkillInstaller {
             warn!("Warning: Skill '{}' is marked as suspicious", slug);
         }
 
-        // P11：验签（security_check 前置；无 .signature 时由 allow_unsigned 裁决）。
-        // L1（2026-09-26 复查）：拒绝时先清 staging 再上抛——审批未过的内容
+        // 验签（security_check 前置；无.signature 时由 allow_unsigned 裁决）。
+        // （复查）：拒绝时先清 staging 再上抛——审批未过的内容
         // 不得残留（plan_github_install 同场景本就有清理，此处对齐）。
         let outcome = self.verify_signature_state(&staging);
         if let Err(e) = self.enforce_trust(&outcome) {
@@ -966,9 +966,9 @@ impl SkillInstaller {
             return Err(e);
         }
 
-        // P15：SKILL.md 安全检查（缺 SKILL.md = 跳过检查、不记录——历史契约；
+        // SKILL.md 安全检查（缺 SKILL.md = 跳过检查、不记录——历史契约；
         // 存在但读不出 = fail loud，见下方 map_err）。
-        // M5：lint 面扩展到 staging 整目录可执行面（同 plan_github_install）。
+        // lint 面扩展到 staging 整目录可执行面（同 plan_github_install）。
         let mut security_result = SecurityCheckResult {
             lint_result: crate::lint::LintResult {
                 skill_name: String::new(),
@@ -1018,13 +1018,13 @@ impl SkillInstaller {
             }
         }
 
-        // P16：版本龄（registry 元数据缺失/查询失败 lenient 放行）。
+        // 版本龄（registry 元数据缺失/查询失败 lenient 放行）。
         let mut age_warnings = Vec::new();
         let published_at = match registry.get_skill_meta(slug).await {
             Ok(meta) => meta.published_at,
             Err(_) => None,
         };
-        // BUG-20261025-91：age 拒绝臂与其余拒绝臂同纪律——先清 staging 再上抛
+        // age 拒绝臂与其余拒绝臂同纪律——先清 staging 再上抛
         // （漏斗不变量：审批未过的内容不得残留；裸 `?` 会让被拒内容残留到
         // 24h 清扫）。plan_github_install 同场景本就有清理，此处对齐。
         let (reg_age_days, reg_age_decision) = match self.check_age(published_at, &mut age_warnings)
@@ -1036,7 +1036,7 @@ impl SkillInstaller {
             }
         };
 
-        // P13：审批门（缺省 AlwaysAllowGate = install_approval 关闭语义）。
+        // 审批门（缺省 AlwaysAllowGate = install_approval 关闭语义）。
         // 逐文件 sha256（staging 不存在的 registry 实现按空清单处理——历史契约：
         // StubRegistryProvider 不写任何文件也要能装成功）。
         let files_map = if staging.exists() {
@@ -1097,19 +1097,19 @@ impl SkillInstaller {
             )));
         }
 
-        // R2：提交前 digest 复核——审批等待窗口内 staging 内容被换 = abort
-        // （不落位、内容不进 skills/）。
+        // 提交前 digest 复核——审批等待窗口内 staging 内容被换 = abort
+        // （不落位、内容不进 skills）。
         if let Err(e) = self.verify_staging_matches_plan(&staging, &files_map) {
             nemesis_utils::fsutil::remove_dir_all_resilient(&staging);
             return Err(e);
         }
 
-        // R2：落位临界区——exists 复检→rename→记账在 INSTALL_COMMIT_LOCK 下
+        // 落位临界区——exists 复检→rename→记账在 INSTALL_COMMIT_LOCK 下
         // 原子（并发同名安装不得双双通过 exists 检查后互相覆盖）。全同步段，
         // parking_lot 停等安全；异步审批在锁外。
         let _commit_guard = INSTALL_COMMIT_LOCK.lock();
 
-        // BUG-20261025-92：函数开头的 exists 检查在下载 + 审批等待之前（可能
+        // 函数开头的 exists 检查在下载 + 审批等待之前（可能
         // 相距 300s+），不在本临界区内——等待窗口内另一安装落位时，rename 撞
         // 现存目录只给裸 IO 错误（Windows）/静默替换空目录（Unix）。与
         // commit_install 的「二次防御」同款：锁内诚实报 already exists，
@@ -1122,7 +1122,7 @@ impl SkillInstaller {
             )));
         }
 
-        // 落位 + P14 lockfile 记账（skills/ 父目录可能尚不存在；
+        // 落位 + lockfile 记账（skills/ 父目录可能尚不存在；
         // staging 不存在 = registry 没写任何文件——建空目录落位，保持历史行为）。
         if let Some(parent) = skill_dir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
@@ -1198,7 +1198,7 @@ impl SkillInstaller {
         // 韧性删除：用户点名的 uninstall 操作，瞬时句柄单发会假失败报错。
         nemesis_utils::fsutil::remove_dir_all_retry(&skill_dir).map_err(NemesisError::Io)?;
 
-        // P14：lockfile 同步移除（失败只 warn——目录已删，记账滞后可被 verify 检出）。
+        // lockfile 同步移除（失败只 warn——目录已删，记账滞后可被 verify 检出）。
         let _serial = LOCKFILE_WRITE_LOCK.lock();
         let mut lock = SkillsLockfile::load(&self.workspace);
         if lock.remove(skill_name)

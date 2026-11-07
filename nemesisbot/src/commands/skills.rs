@@ -16,7 +16,7 @@ pub enum SkillsAction {
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
-    /// Install a skill from registry or GitHub（WS4 漏斗：验签→pin→扫描→
+    /// Install a skill from registry or GitHub（漏斗：验签→pin→扫描→
     /// 版本龄→审批卡→lockfile 记账）
     Install {
         /// Skill reference (registry/slug or user/repo[@ref])
@@ -25,7 +25,7 @@ pub enum SkillsAction {
         #[arg(long)]
         yes: bool,
     },
-    /// WS4 P14：lockfile 漂移检测（缺省全量；name 查单条）
+    /// lockfile 漂移检测（缺省全量；name 查单条）
     Verify {
         /// Skill name (omit for all)
         name: Option<String>,
@@ -134,7 +134,7 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
             let repo = parts[1].trim_end_matches(".git").to_string();
             return Ok((parts[0].to_string(), repo));
         }
-        // (BUG #25, quality-hardening goal 冲刺 S10) 前缀命中但只有 owner
+        // (, quality-hardening goal 冲刺) 前缀命中但只有 owner
         // 段时原实现掉进下面的 shorthand 分支，产出 ("https:", "/github.com/
         // onlyowner") 垃圾解析。与 nemesis-web handlers/skills.rs 同修：
         // 前缀已匹配就直接报错，不再当 shorthand。
@@ -185,7 +185,7 @@ fn save_registry_config(
 ) -> Result<()> {
     let dir = skills_cfg.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
-    // REL-002：统一原子写入（config.skills.json）。
+    // 统一原子写入（config.skills.json）。
     nemesis_utils::write_file_atomic(
         &skills_cfg.to_string_lossy(),
         serde_json::to_string_pretty(config)
@@ -231,12 +231,12 @@ fn get_builtin_skills() -> Vec<(&'static str, &'static str)> {
 /// Detect the skill structure of a GitHub repository.
 /// Returns (index_type, skill_path_pattern, branch).
 ///
-/// (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) 改为 async fn 用
+/// (同类横向, quality-hardening goal 冲刺) 改为 async fn 用
 /// 【异步】reqwest client：唯一调用方 cmd_source_add 已随之 async 化，经
 /// run() 的 block_in_place 臂在 CLI 的 tokio runtime 上驱动（同文件 Search/
-/// Install/Learn 臂的既有模式）。reqwest::blocking::Client 内部嵌套 runtime，
+/// Install/Learn 臂的既有模式）。reqwest::blocking:Client 内部嵌套 runtime，
 /// 在 run_command 的 block_on 上下文 drop 必 panic（#27 同拓扑探针实证，
-/// 见 shutdown/tests.rs 探针段）。显式 .timeout(30s) 保持与 blocking 默认
+/// 见 shutdown/tests.rs 探针段）。显式.timeout(30s) 保持与 blocking 默认
 /// 超时语义一致。
 async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, String) {
     let branches = ["main", "master"];
@@ -550,8 +550,8 @@ async fn cmd_install(
     skill_ref: &str,
     yes: bool,
 ) -> Result<()> {
-    // WS4：安装统一走 SkillInstaller 漏斗（验签 P11 → pin P12 → 扫描 P15 →
-    // 版本龄 P16 → 审批卡 P13 → lockfile P14）。registry 解析失败的 GitHub
+    // 安装统一走 SkillInstaller 漏斗（验签 → pin → 扫描 →
+    // 版本龄 → 审批卡 → lockfile）。registry 解析失败的 GitHub
     // 回退也走漏斗（旧裸 raw 下载路径废弃——绕过供应链检查面）。
     let workspace = skills_dir
         .parent()
@@ -560,9 +560,9 @@ async fn cmd_install(
     let mut installer =
         nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
 
-    // P11/P16 主配置消费：主配置 config.json（home 根，common::config_path）
+    // / 主配置消费：主配置 config.json（home 根，common::config_path）
     // 的 skills 段。读不到按默认（allow_unsigned=true、龄闸关）。
-    // 2026-09-26 复查修复：此前读 workspace.join("config.json")——主配置
+    // 复查修复：此前读 workspace.join("config.json")——主配置
     // 现行布局在 home 根，CLI 装技能永远读不到用户 skills 安全策略，静默
     // 回落默认放行。
     if let Ok(cfg) = nemesis_config::load_config(main_cfg)
@@ -571,7 +571,7 @@ async fn cmd_install(
         installer.set_allow_unsigned(skills.allow_unsigned);
         installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
     }
-    // P13 CLI 通路：交互审批卡（--yes 跳过）。
+    // CLI 通路：交互审批卡（yes 跳过）。
     installer.set_install_gate(std::sync::Arc::new(CliInstallGate { yes }));
 
     let config = load_registry_config(skills_cfg);
@@ -675,7 +675,7 @@ fn normalize_repo_ref(repo: &str) -> String {
     }
 }
 
-/// WS4 P13 CLI 通路审批门：打印审批卡 → 交互确认；`--yes` 跳过；非交互
+/// CLI 通路审批门：打印审批卡 → 交互确认；`--yes` 跳过；非交互
 /// stdin 无 `--yes` = 拒绝（脚本/CI 必须显式确认，诚实不猜）。
 struct CliInstallGate {
     yes: bool,
@@ -725,7 +725,7 @@ impl nemesis_skills::install_gate::InstallGate for CliInstallGate {
     }
 }
 
-/// WS4 P14：lockfile 漂移检测（缺省全量；name 查单条）。
+/// lockfile 漂移检测（缺省全量；name 查单条）。
 fn cmd_verify(workspace: &std::path::Path, name: Option<&str>) -> Result<()> {
     let installer = nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
     match name {
@@ -765,7 +765,7 @@ fn cmd_verify(workspace: &std::path::Path, name: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Remove a skill（WS4 P14：走 SkillInstaller——路径围栏 + lockfile 记账同步移除）。
+/// Remove a skill（走 SkillInstaller——路径围栏 + lockfile 记账同步移除）。
 fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
     let installer = nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
     match installer.uninstall(name) {
@@ -779,7 +779,7 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
 }
 
 fn cmd_show(skills_dir: &std::path::Path, name: &str) -> Result<()> {
-    // 路径安全（BUG-20261101-295）：裸 join 无闸——读任意 `<target>/SKILL.md`
+    // 路径安全：裸 join 无闸——读任意 `<target>/SKILL.md`
     //，且无 SKILL.md 时列任意目录文件清单。与 web detail/open_dir 同源同闸。
     nemesis_skills::types::validate_skill_identifier(name)
         .map_err(|e| anyhow::anyhow!("skill name '{}' 非法：{}", name, e))?;
@@ -834,9 +834,9 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
     println!("  TTL: {} seconds", config.search_cache.ttl_secs);
 
     // Show runtime cache stats from the file-based cache
-    // 2026-08-28 修复：此前多拼一层 workspace（得到
+    // 修复：此前多拼一层 workspace（得到
     // `<workspace>/workspace/skills/.cache`——无人写入的目录）。缓存目录
-    // 唯一真相源 = nemesis-path::resolve_skills_cache_dir_in_workspace。
+    // 唯一依据 = nemesis-path::resolve_skills_cache_dir_in_workspace。
     let cache_dir = nemesis_path::resolve_skills_cache_dir_in_workspace(
         skills_cfg.parent().unwrap().parent().unwrap(),
     );
@@ -911,9 +911,9 @@ async fn cmd_cache_stats(skills_cfg: &std::path::Path) -> Result<()> {
 }
 
 async fn cmd_cache_clear(skills_cfg: &std::path::Path) -> Result<()> {
-    // 2026-08-28 修复：此前多拼一层 workspace（得到
+    // 修复：此前多拼一层 workspace（得到
     // `<workspace>/workspace/skills/.cache`——无人写入的目录）。缓存目录
-    // 唯一真相源 = nemesis-path::resolve_skills_cache_dir_in_workspace。
+    // 唯一依据 = nemesis-path::resolve_skills_cache_dir_in_workspace。
     let cache_dir = nemesis_path::resolve_skills_cache_dir_in_workspace(
         skills_cfg.parent().unwrap().parent().unwrap(),
     );
@@ -980,7 +980,7 @@ fn cmd_source_list(skills_cfg: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-/// (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) async 化：见
+/// (同类横向, quality-hardening goal 冲刺) async 化：见
 /// [`detect_skill_structure`] 注释——原同步实现内部 reqwest::blocking 在
 /// run_command 的 runtime 上下文 drop 必 panic；现由 run() 的 block_in_place
 /// 臂驱动，内部全异步 client（显式 30s 超时 = blocking 默认语义）。
@@ -1154,8 +1154,8 @@ fn cmd_validate(path: &str) -> Result<()> {
             println!("  Has description: {}", has_description);
             println!("  Has steps: {}", has_steps);
 
-            // Run security check（M5：path 为目录时 lint 整个可执行面，
-            // 辅助 .md / 脚本里的危险载荷也进诊断结论）
+            // Run security check（path 为目录时 lint 整个可执行面，
+            // 辅助.md / 脚本里的危险载荷也进诊断结论）
             let skill_name = skill_path.file_name().unwrap_or_default().to_string_lossy();
             let check = if skill_path.is_dir() {
                 nemesis_skills::security_check::check_skill_security_dir(
@@ -1234,7 +1234,7 @@ fn cmd_list_builtin() -> Result<()> {
     Ok(())
 }
 
-/// (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) async 化：理由同
+/// (同类横向, quality-hardening goal 冲刺) async 化：理由同
 /// [`cmd_source_add`]——blocking client 在 run_command 的 runtime 上下文
 /// drop 必 panic；30s 超时语义保持不变。
 async fn cmd_install_clawhub(
@@ -1244,8 +1244,8 @@ async fn cmd_install_clawhub(
     output_name: Option<&str>,
 ) -> Result<()> {
     let out_name = output_name.unwrap_or(skill_name);
-    // 路径安全（BUG-20261101-295 同族）：out_name 裸拼落盘目录——
-    // `--output-name ../..` 形态可把远端内容写出 skills/ 边界。
+    // 路径安全（同族）：out_name 裸拼落盘目录——
+    // `--output-name../..` 形态可把远端内容写出 skills/ 边界。
     nemesis_skills::types::validate_skill_identifier(out_name)
         .map_err(|e| anyhow::anyhow!("output name '{}' 非法：{}", out_name, e))?;
     println!("Installing from ClawHub: {}/{}", author, skill_name);
@@ -1333,7 +1333,7 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
         SkillsAction::Remove { name } => cmd_remove(&workspace, &name)?,
         SkillsAction::Source { action } => match action {
             SourceAction::List => cmd_source_list(&skills_cfg)?,
-            // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) add 已 async
+            // (同类横向, quality-hardening goal 冲刺) add 已 async
             // 化（内部异步 reqwest client），走同文件既有 block_in_place 桥。
             SourceAction::Add { url } => {
                 tokio::task::block_in_place(|| {
@@ -1368,7 +1368,7 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
             skill_name,
             output_name,
         } => {
-            // (BUG #27 同类横向, quality-hardening goal 冲刺 S11e) async 化桥接，
+            // (同类横向, quality-hardening goal 冲刺) async 化桥接，
             // 同 block_in_place 既有模式。
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_install_clawhub(
@@ -1406,13 +1406,13 @@ async fn cmd_learn(home: &std::path::Path, source: &str, name: Option<&str>) -> 
     }
     let cfg = nemesis_config::load_config(&cfg_path)?;
 
-    // ASM-05（2026-09-16 横扫存量加固）：agent 手写装配已删除，统一走
+    // ASM-05（横扫存量加固）：agent 手写装配已删除，统一走
     // agent_factory 工厂（run.rs 同范式；安全 8 层/estop/围栏随工厂生效，
     // 不再是安全旁路面）。
     nemesis_config::credentials::set_global_credentials_path(
         nemesis_config::credentials::credentials_path_for_home(home),
     );
-    // P0 vault（B1）：`vault:<alias>` 解析器同点注入。
+    // vault：`vault:<alias>` 解析器同点注入。
     #[cfg(feature = "security")]
     crate::vault_runtime::install(home);
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);

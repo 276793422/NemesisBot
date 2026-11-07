@@ -19,9 +19,9 @@ pub struct AgentConfig {
     pub max_turns: u32,
     /// Names of tools available to this agent.
     ///
-    /// B2 职能工具围栏（profession-capability-evolution 2026-10-14）：此
-    /// 字段非空 = 实例级工具白名单生效（供给闸 [`crate::loop::tool_defs`]
-    /// 与派发闸 [`crate::loop::tool_dispatch`] 双端交集/拒绝）。写入方只有
+    /// 职能工具围栏（profession-capability-evolution）：此
+    /// 字段非空 = 实例级工具白名单生效（供给闸 [`crate::loop:tool_defs`]
+    /// 与派发闸 [`crate::loop:tool_dispatch`] 双端交集/拒绝）。写入方只有
     /// cluster_agent 任务装配（B 端职能子单 / 讨论唤醒轮）；loop 级 config
     /// 恒空 → 主 loop/普通对话/项目 loop 零行为变化。
     pub tools: Vec<String>,
@@ -57,7 +57,7 @@ pub struct ConversationTurn {
     pub role: String,
     /// Text content of the turn.
     ///
-    /// X1 (U3 projection prune): for role="tool" turns this is the tool's
+    /// (projection prune): for role="tool" turns this is the tool's
     /// ORIGINAL output, un-pruned and un-spilled — the mid-section stays
     /// recoverable (history replay / session branching). The bounded,
     /// model-facing form is derived per-request via
@@ -70,11 +70,11 @@ pub struct ConversationTurn {
     pub tool_call_id: Option<String>,
     /// Timestamp of the turn (ISO 8601).
     pub timestamp: String,
-    /// Reasoning content from thinking-mode models (e.g., DeepSeek R1, GLM).
+    /// Reasoning content from thinking-mode models (e.g., DeepSeek, GLM).
     /// Stored for passing back to the API in subsequent turns.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
-    /// X1 (U3 projection prune): tool name for role="tool" turns. The prune
+    /// (projection prune): tool name for role="tool" turns. The prune
     /// marker embeds the tool name, and with the gates moved to the
     /// projection the recompute must be self-contained per turn (the name
     /// otherwise only lives on the preceding assistant turn's tool_calls,
@@ -82,7 +82,7 @@ pub struct ConversationTurn {
     /// non-tool turns — the marker then falls back to "tool".
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_name: Option<String>,
-    /// X1 (U3 projection prune): the COMPLETE model-facing replacement text,
+    /// (projection prune): the COMPLETE model-facing replacement text,
     /// recorded at tool time ONLY when it cannot be recomputed from
     /// `content` later — the spill tier (the locator path embeds a
     /// wall-clock stamp), any turn-guard nudge decoration (⑤/⑤′/⑥ —
@@ -99,7 +99,7 @@ pub struct ConversationTurn {
     /// already-projected turn is a no-op.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_result_projection: Option<String>,
-    /// T5/T6（多模态，goal 2026-09-03）：本 turn 附带的图片路径引用（路径
+    /// （多模态，goal）：本 turn 附带的图片路径引用（路径
     /// 注入 + media 落盘引用）。历史只存引用不存字节——build_messages 每轮
     /// 水合重读（文件已删 → 占位文本），provider 字节路径零影响。
     /// 旧会话文件无此键 → `#[serde(default)]` 加载为空。
@@ -108,7 +108,7 @@ pub struct ConversationTurn {
 }
 
 impl ConversationTurn {
-    /// X1 (U3 projection prune): the content the MODEL must see for this
+    /// (projection prune): the content the MODEL must see for this
     /// turn. Tool results keep their original in history; this is the
     /// bounded projection — the recorded override when present (spill
     /// locator / guard nudges — not recomputable), else the pure prune
@@ -174,7 +174,7 @@ pub struct ChatOptions {
     /// Stop sequences that end generation early.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop: Option<Vec<String>>,
-    /// H4 (U16 half): reasoning-effort tier ("low"|"medium"|"high"; None =
+    /// (half): reasoning-effort tier ("low"|"medium"|"high"; None =
     /// send nothing). Translated by each provider into its wire format.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
@@ -252,7 +252,7 @@ pub enum AgentState {
     Responding,
 }
 
-/// F1（devtool-upgrade 阶段 4）：agent 工作模式。
+/// （devtool-upgrade）：agent 工作模式。
 ///
 /// Plan 模式下文件修改类工具从供给与分发
 /// 两端被拦（双闸），agent 只能读代码并以文本形式呈现计划；`{workspace}/plans/`
@@ -278,7 +278,7 @@ impl AgentMode {
     }
 
     /// 从线上形态解析（大小写宽容）。未知值返回 None（调用方回灌错误，
-    /// 不静默落回默认——与 G1 未知档位 Err 同一纪律）。
+    /// 不静默落回默认——与 未知档位 Err 同一纪律）。
     pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_ascii_lowercase().as_str() {
             "build" => Some(AgentMode::Build),
@@ -465,6 +465,6 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

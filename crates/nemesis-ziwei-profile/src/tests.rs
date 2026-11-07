@@ -119,7 +119,7 @@ fn roundtrip_full_profile() {
     let s = serde_json::to_string(&p).unwrap();
     let p2: Profile = serde_json::from_str(&s).unwrap();
     assert_eq!(p, p2);
-    // 总控 §6.2 的 JSON 键形态："type" 字段与枚举 snake_case 都要还原。
+    // 总控 的 JSON 键形态："type" 字段与枚举 snake_case 都要还原。
     assert_eq!(
         p2.data_structures[0].fields[2].type_,
         FieldType::parse("char[32]").unwrap()
@@ -129,7 +129,7 @@ fn roundtrip_full_profile() {
 
 #[test]
 fn arg_ty_roundtrip_and_legacy_compat() {
-    // B4：ArgSpec.ty round-trip 保真
+    // ArgSpec.ty round-trip 保真
     let mut p = sample_profile();
     p.functions[0].args[0].ty = Some("u64".to_string());
     let s = serde_json::to_string(&p).unwrap();
@@ -187,7 +187,7 @@ fn reject_unknown_schema_version() {
     assert!(p.validate().is_err());
 }
 
-// ---------- BUG-20261103-329：profile_id 形态闸双轨不一 ----------
+// ----------：profile_id 形态闸双轨不一 ----------
 
 #[test]
 fn reject_hostile_internal_profile_id() {
@@ -452,7 +452,7 @@ fn store_rejects_path_traversal_id() {
 
 #[test]
 fn store_load_rejects_hostile_internal_id_hand_edit() {
-    // BUG-20261103-329 实链回归：干净目录名 + 盘上手改的恶意内部 id——
+    // 实链回归：干净目录名 + 盘上手改的恶意内部 id——
     // load 的 assert 只看请求侧 id，必须靠 validate 在读出侧拦下
     // （否则恶意 id 进会话键 / capture / snapshots 路径消费面）。
     let tmp = tempfile::tempdir().unwrap();
@@ -516,11 +516,11 @@ fn profile_id_shape() {
     assert_ne!(new_profile_id("另一个软件"), id);
 }
 
-// ── BUG-20261028-123/124/125 回归锁 ─────────────────────────────────────
+// ── /124/125 回归锁 ─────────────────────────────────────
 
 #[test]
 fn size_of_returns_u64_truth_no_wraparound() {
-    // BUG-20261028-123：u32 乘法在 `u64[536870913]` 上回绕——8×(2^29+1)
+    // u32 乘法在 `u64[536870913]` 上回绕——8×(2^29+1)
     // mod 2^32 = 8。size_of 必须回 u64 真值（修前 debug panic / release
     // 静默变小使 validate 越界闸失效）。
     let big = FieldType::parse("u64[536870913]").unwrap();
@@ -542,7 +542,7 @@ fn reject_overflow_array_field_out_of_bounds() {
 
 #[test]
 fn reject_windows_reserved_names_in_dest() {
-    // BUG-20261028-124：22 个 Windows 保留设备名（按「首个点之前」的
+    // 22 个 Windows 保留设备名（按「首个点之前」的
     // stem 判定、大小写不敏感）——修前只拦冒号，con.txt 等可溜过。
     for dest in ["con.txt", "reports/nul", "COM1.dat", "lpt9"] {
         let mut p = sample_profile();
@@ -565,7 +565,7 @@ fn reject_windows_reserved_names_in_dest() {
 
 #[test]
 fn reject_duplicate_struct_and_fn_names() {
-    // BUG-20261028-125：结构/函数语义名均按名引用（struct:/fn:/锚/
+    // 结构/函数语义名均按名引用（struct:/fn:/锚/
     // recover_confirm 接受集），重名即引用歧义。
     let mut p = sample_profile();
     let dup_ds = p.data_structures[0].clone();

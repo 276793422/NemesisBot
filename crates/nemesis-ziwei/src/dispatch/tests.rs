@@ -42,7 +42,7 @@ fn read_mem_resp_parse() {
 
 #[test]
 fn decode_v1_record() {
-    // 与 dummy-draw V1 记录同构：id u32 @0, value i64 @8, label char[16] @16, flags u32 @32
+    // 与 dummy-draw 记录同构：id u32 @0, value i64 @8, label char[16] @16, flags u32 @32
     let ds = DataStructure {
         name: "DataRecord".into(),
         size: 40,
@@ -167,7 +167,7 @@ fn decode_out_of_bounds_rejected() {
 
 #[test]
 fn decode_revalidates_field_bounds_u64_truth() {
-    // BUG-20261028-123 红证：u32 乘法回绕曾把 8×536870913 缩成 8 < 96
+    // 红证：u32 乘法回绕曾把 8×536870913 缩成 8 < 96
     // 溜过界检，随后 0 步长 + 巨量 with_capacity 可打爆进程。decode
     // 自含重验（u64 真值，不依赖调用方先跑 validate）必须 loud 拒绝。
     let ds = DataStructure {
@@ -185,7 +185,7 @@ fn decode_revalidates_field_bounds_u64_truth() {
     assert!(err.contains("越界"), "{err}");
 }
 
-// ── M4：call_fn 三态 / hook 事件拉取解析面 ─────────────────────────────
+// ──：call_fn 三态 / hook 事件拉取解析面 ─────────────────────────────
 
 #[test]
 fn callfn_resp_three_states() {

@@ -1,4 +1,4 @@
-//! W1b batch (Phase 3 batch 16): nemesis-cron gap tests.
+//! batch (batch 16): nemesis-cron gap tests.
 //!
 //! Targets the uncovered surface of `service.rs` found by auditing the
 //! existing 140-test suite:
@@ -476,7 +476,7 @@ fn test_w1b_add_job_store_write_error_propagates() {
 
 #[test]
 fn test_w1b_mutators_roll_back_on_save_failure() {
-    // BUG #16 sweep: update/patch/toggle/enable must roll their in-memory
+    // sweep: update/patch/toggle/enable must roll their in-memory
     // mutation back when persistence fails — otherwise a caller retrying
     // after Err sees the "failed" mutation applied (toggle would flip back).
     let (_dir, path) = tmp_store_path("cron.json");
@@ -588,7 +588,7 @@ fn test_w1b_execute_job_does_not_advance_next_run() {
 }
 
 // ---------------------------------------------------------------------------
-// toggle_job disable = clear next_run（BUG-20261025-30 反转旧钉死语义）
+// toggle_job disable = clear next_run（反转旧钉死语义）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -600,10 +600,10 @@ fn test_w1b_toggle_disable_clears_next_run() {
         .unwrap();
     let next_before = job.state.next_run_at_ms.unwrap();
 
-    // BUG-20261025-30：旧实现 toggle_job 停用不清 next_run（当时评估为
+    // 旧实现 toggle_job 停用不清 next_run（当时评估为
     // 「无害：fire loop + status 都按 enabled 过滤」并钉死）；实际 tasks.rs
     // 的作业 JSON 直接透传 next_run_at_ms，禁用作业带 stale 值 = UI 幻影
-    // 「下次触发」。现与 enable_job / patch_job 对齐（W1b 不变量：disabled
+    // 「下次触发」。现与 enable_job / patch_job 对齐（不变量：disabled
     // 作业不排程），停用即清除。
     let now_disabled = svc.toggle_job(&job.id).unwrap();
     assert!(!now_disabled);
@@ -624,12 +624,12 @@ fn test_w1b_toggle_disable_clears_next_run() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261025-41 回归锁：触发期停用 + delete_after_run 派生
+// 回归锁：触发期停用 + delete_after_run 派生
 // ---------------------------------------------------------------------------
 
-/// BUG-20261025-41a：作业在 handler 执行期内被停用（W3 pause_job 生产路径
+/// a：作业在 handler 执行期内被停用（pause_job 生产路径
 /// ——触发期父会话已删除自动暂停，pause 落盘先于 fire loop 的 post-handler
-/// 段）时，post-handler 不得为已停用作业重算 next_run——W1b 不变量
+/// 段）时，post-handler 不得为已停用作业重算 next_run—— 不变量
 /// （disabled 作业不排程）必须跨「触发路径」同样成立，幻影 next_run 会
 /// 持久化且跨重启存留（recompute_next_runs 只碰 enabled 作业）。
 #[tokio::test]
@@ -643,7 +643,7 @@ async fn test_bug41_fire_loop_pause_in_handler_leaves_no_phantom_next_run() {
     let paused2 = paused_out.clone();
     svc.set_on_job(move |job: &CronJob| {
         fired2.fetch_add(1, Ordering::SeqCst);
-        // 生产 W3 语义镜像：pause 自己（enabled=false 落盘）+ 诚实 Err。
+        // 生产 语义镜像：pause 自己（enabled=false 落盘）+ 诚实 Err。
         let paused = pause_handle.pause_job(&job.id);
         paused2.store(if paused { 1 } else { 2 }, Ordering::SeqCst);
         Err("[定时任务] 已自动暂停".to_string())
@@ -689,7 +689,7 @@ async fn test_bug41_fire_loop_pause_in_handler_leaves_no_phantom_next_run() {
     assert_eq!(after.state.last_status.as_deref(), Some("error"));
 }
 
-/// BUG-20261025-41b：delete_after_run 是 kind=="at" 的派生旗标，换调度必须
+/// b：delete_after_run 是 kind=="at" 的派生旗标，换调度必须
 /// 重算——at→周期 改期若保留旧 true，任务首次成功触发即被 retain 静默删除
 /// （周期任务无声消失）。update_job 与 patch_job 两条改期路径都钉。
 #[test]
@@ -833,8 +833,8 @@ async fn test_w1b_fire_loop_delete_after_run_error_keeps_job() {
     assert_eq!(after.state.last_error.as_deref(), Some("handler exploded"));
     assert_eq!(after.state.history.len(), 1);
     assert_eq!(after.state.history[0].status, "error");
-    // BUG-HUNT R34：留证必须伴随停摆——enabled=true + 过期 at_ms 的僵尸
-    // 会在下次启动被 recompute_next_runs 的 H1 子句复活，每次重启重放。
+    // 留证必须伴随停摆——enabled=true + 过期 at_ms 的僵尸
+    // 会在下次启动被 recompute_next_runs 的 子句复活，每次重启重放。
     assert!(
         !after.enabled,
         "failed delete_after_run job must be disabled (evidence kept, no restart replay)"
@@ -878,7 +878,7 @@ async fn test_w1b_fire_loop_appends_history_entries() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261102-315：触发循环落盘失败存活语义
+// 触发循环落盘失败存活语义
 // ---------------------------------------------------------------------------
 // 此前三处 `let _ = save_store_to_path`（pause_job / collect_and_reset_due /
 // 执行后状态写回）静默吞错。修复为 warn 留痕（不改控制流）。本测试锁住
@@ -940,29 +940,29 @@ async fn test_fire_loop_survives_persist_failure() {
 
 #[test]
 fn test_w1b_mutator_save_window_cannot_clobber_concurrent_ok_effect() {
-    // BUG-20261103-331 红证：T1(update_job) 在「mutate 后 drop 锁 → save」
-    // 的窗口内，T2(patch_job) 可完成 mutate+save（整 store 快照包含 T1 的
-    // mutation 并成功落盘、返回 Ok）；随后 T1 的 save 失败回滚把 T2 已 Ok
+    // 红证：(update_job) 在「mutate 后 drop 锁 → save」
+    // 的窗口内，(patch_job) 可完成 mutate+save（整 store 快照包含 的
+    // mutation 并成功落盘、返回 Ok）；随后 的 save 失败回滚把 已 Ok
     // 的效果从内存抹掉——Ok 方效果丢失 + 内存/盘分叉。修复后 save 与
-    // mutate 同锁，T2 必须排在 T1 完整临界区之后（红断言转绿）。
+    // mutate 同锁， 必须排在 完整临界区之后（红断言转绿）。
     let (_dir, path) = tmp_store_path("cron.json");
     let svc = Arc::new(CronService::new(&path));
     let job = svc
         .add_job("j", every_schedule(60000), "m", false, None, None)
         .unwrap();
 
-    // BUG-20261103-331 回归锁（修复后语义）：mutator 的 mutate→save→回滚
+    // 回归锁（修复后语义）：mutator 的 mutate→save→回滚
     // 全程持同一把 store 锁，save 窗口内并发 mutator 物理上只能排队到临界
-    // 区之后——修复前「T1 update 落盘失败回滚抹掉 T2 已 Ok patch」的交错
-    // 可达（红证实录：left:"j" right:"t2-name"，T2 借 drop-锁-再-save 的
-    // 缝隙插队 Ok）；修复后 T2 在 T1 的持锁 save 停顿窗口内发起也必须等
-    // T1 临界区（含回滚）完成，其 Ok 干净落在回滚后的状态上，clobber 结
+    // 区之后——修复前「 update 落盘失败回滚抹掉 已 Ok patch」的交错
+    // 可达（红证left:"j" right:"t2-name"， 借 drop-锁-再-save 的
+    // 缝隙插队 Ok）；修复后 在 的持锁 save 停顿窗口内发起也必须等
+    // 临界区（含回滚）完成，其 Ok 干净落在回滚后的状态上，clobber 结
     // 构性不可达。
-    // 时序：两旗标在 T1 启动前全部武装——T1 的 save 先消费 delay（持锁停
-    // 顿 1000ms）再消费 fail（Err+回滚）；主线程 200ms 后发起 T2（此刻正
-    // 值 T1 持锁停顿，T2 排队）；T1 走完临界区后 T2 才 mutate+save（旗标
-    // 已被消费光）→ Ok。旗标若移到 T2 之后：主线程自身会阻塞在 T2 的锁
-    // 竞争上，永远无法在 T1 save 期间 arm——那正是修复后的世界。
+    // 时序：两旗标在 启动前全部武装—— 的 save 先消费 delay（持锁停
+    // 顿 1000ms）再消费 fail（Err+回滚）；主线程 200ms 后发起 （此刻正
+    // 值 持锁停顿， 排队）； 走完临界区后 才 mutate+save（旗标
+    // 已被消费光）→ Ok。旗标若移到 之后：主线程自身会阻塞在 的锁
+    // 竞争上，永远无法在 save 期间 arm——那正是修复后的世界。
     svc.persist_delay_ms.store(1000, Ordering::SeqCst);
     svc.persist_fail_next.store(true, Ordering::SeqCst);
 
@@ -976,12 +976,12 @@ fn test_w1b_mutator_save_window_cannot_clobber_concurrent_ok_effect() {
         )
     });
 
-    // 给 T1 足够时间完成 mutate 并进入持锁 save 停顿窗口（200ms vs 窗口
-    // 1000ms：数量级余量；post-fix 形态下 T2 会阻塞在 store 锁上直到
-    // T1 临界区结束）。
+    // 给 足够时间完成 mutate 并进入持锁 save 停顿窗口（200ms vs 窗口
+    // 1000ms：数量级余量；post-fix 形态下 会阻塞在 store 锁上直到
+    // 临界区结束）。
     std::thread::sleep(Duration::from_millis(200));
 
-    // T2 patch（修复后形态：阻塞排队到 T1 完整临界区之后才执行）。
+    // patch（修复后形态：阻塞排队到 完整临界区之后才执行）。
     let patched = svc.patch_job(
         &job.id,
         &CronJobPatch {

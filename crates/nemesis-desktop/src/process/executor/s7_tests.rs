@@ -1,7 +1,7 @@
-//! S7 冲刺覆盖测试：process/executor.rs 的 stderr 数据读取分支和
+//! 冲刺覆盖测试：process/executor.rs 的 stderr 数据读取分支和
 //! 对已退出进程发优雅终止信号失败的分支。
 //!
-//! 子进程全部用无害命令（cmd /C ... / sh -c ...），不弹窗、不碰生产数据。
+//! 子进程全部用无害命令（cmd /C... / sh -c...），不弹窗、不碰生产数据。
 
 use super::*;
 

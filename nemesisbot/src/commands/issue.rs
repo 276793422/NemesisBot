@@ -1,7 +1,7 @@
-//! Issue command — managed-agent 看板 CLI（W2 P1）。
+//! Issue command — managed-agent 看板 CLI。
 //!
 //! 直接操作与 gateway 共享的 SQLite store（`{workspace}/board/board.db`，
-//! WAL + busy_timeout 支持多进程并发）。issue 参数接受人读编号（`NB-1`）。
+//! WAL + busy_timeout 支持多进程并发）。issue 参数接受人读编号（``）。
 
 use crate::common;
 use anyhow::Result;
@@ -46,7 +46,7 @@ pub enum IssueAction {
         #[arg(long)]
         project_id: Option<i64>,
     },
-    /// Show one issue (number like NB-1, or numeric id) with comments/activity
+    /// Show one issue (number like, or numeric id) with comments/activity
     Get { issue: String },
     /// Assign (or with `--clear`, unassign) an issue
     Assign {
@@ -99,7 +99,7 @@ fn open_store(local: bool) -> Result<BoardStore> {
     BoardStore::open(&db, "NB").map_err(|e| anyhow::anyhow!("打开看板库失败: {e}"))
 }
 
-/// Resolve `NB-1` / `1` → issue id.
+/// Resolve `` / `1` → issue id.
 fn resolve_issue_id(store: &BoardStore, spec: &str) -> Result<i64> {
     let trimmed = spec.trim();
     if let Ok(id) = trimmed.parse::<i64>() {

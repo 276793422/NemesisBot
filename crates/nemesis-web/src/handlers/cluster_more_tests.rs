@@ -21,9 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure (mirrors cluster_extra_tests.rs)
-// -----------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -65,6 +63,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -123,6 +122,7 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -178,6 +178,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -234,6 +235,7 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -773,7 +775,7 @@ async fn test_config_get_no_home_skips_master_enabled() {
 // config.save — additional validation cases
 // =======================================================================
 
-// BUG-20261031-251：以下 config.save 校验用例全部对齐真流量扁平形状
+// 以下 config.save 校验用例全部对齐真流量扁平形状
 // （此前 `{"cluster":{...}}` 嵌套形状无生产调用方，校验恒不生效）。
 
 #[tokio::test]
@@ -1558,7 +1560,7 @@ async fn test_status_fallback_config_exists_but_corrupt() {
     std::fs::write(dir.path().join("config/config.cluster.json"), "garbage").unwrap();
     let ctx = make_ctx(&dir);
 
-    // The runtime_status fallback uses serde_json::from_str::<Value>().ok()
+    // The runtime_status fallback uses serde_json::from_str:<Value>.ok()
     // which silently converts to None on parse failure → config is null,
     // but config_exists is still true (file exists).
     let result = handler
@@ -1652,6 +1654,7 @@ fn make_ctx_with_cluster(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -1714,6 +1717,7 @@ fn make_ctx_with_cluster_and_log_dir(dir: &tempfile::TempDir) -> RequestContext 
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -2463,7 +2467,7 @@ async fn test_topology_with_log_dir_uses_rpc_connections() {
     assert!(result["traces"].as_array().is_some());
 }
 
-// --- BUG-20261101-279：snapshots.list 顺序契约锁 ---
+// snapshots.list 顺序契约锁 ---
 
 #[tokio::test]
 async fn test_snapshots_list_sorted_by_name() {

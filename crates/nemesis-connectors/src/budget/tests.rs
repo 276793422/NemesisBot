@@ -1,4 +1,4 @@
-//! budget 单测：reserve/commit/release 三段原子语义（R3）。
+//! budget 单测：reserve/commit/release 三段原子语义。
 //! 既有五测迁移到 reserve 形态 + 新增 并发闸 / 共享单例 / 四路径收口。
 
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use super::{BudgetGuard, BudgetVerdict, Limits};
 
 const T0: i64 = 1_700_000_000_000;
 const HOUR_MS: i64 = 3_600_000;
-/// UTC 2023-11-14T23:59:59Z / 次日 00:00:01Z（跨日滚转边界）。
+/// UTC -14T23:59:59Z / 次日 00:00:01Z（跨日滚转边界）。
 const DAY1_LATE: i64 = 1_700_006_399_000;
 const DAY2_EARLY: i64 = 1_700_006_401_000;
 
@@ -114,7 +114,7 @@ fn rate_denial_message_mentions_quota() {
     assert!(msg.contains("1/1"), "文案应带已用/上限：{msg}");
 }
 
-// --- R3 新增：原子占用 / 幂等收口 / 共享单例 ---------------------------------
+// --- 新增：原子占用 / 幂等收口 / 共享单例 ---------------------------------
 
 #[test]
 fn concurrent_reserves_respect_limit() {
@@ -135,7 +135,7 @@ fn concurrent_reserves_respect_limit() {
     assert_eq!(results.iter().filter(|ok| **ok).count(), 1);
 }
 
-/// 远程 outcome → 收口动作的四路径账目语义（R3 决策表的账本侧验证）。
+/// 远程 outcome → 收口动作的四路径账目语义（决策表的账本侧验证）。
 #[test]
 fn outcome_to_settlement_four_paths() {
     // ① Done → commit：记账保留，release 无效
@@ -238,7 +238,7 @@ fn repeated_settlement_is_idempotent() {
 fn rate_limit_off_still_prunes_window_ticks() {
     // 限频关闭（max_ops_per_hour=0）也要清过期滑窗 tick：记账是无条件入窗
     // 的，retain 若只在限频开启时跑，长驻 gateway 的 windows vec 无界增长
-    //（2026-10-16 四轮复查）。修复后：下一次 reserve 扫掉全部过期 tick。
+    //（四轮复查）。修复后：下一次 reserve 扫掉全部过期 tick。
     let g = BudgetGuard::default();
     let lm = limits(0, f64::INFINITY, 0);
     for i in 0..5 {
@@ -251,7 +251,7 @@ fn rate_limit_off_still_prunes_window_ticks() {
     assert_eq!(win.len(), 1, "过期 tick 必须被扫除，不无限堆积");
 }
 
-// --- M3（2026-10-19）store-backed 真跨进程限额 ------------------------------
+// --- store-backed 真跨进程限额 ------------------------------
 
 use std::path::Path;
 

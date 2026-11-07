@@ -28,7 +28,7 @@ const MAX_LSP_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 /// 均在百字节级）。
 const MAX_LSP_HEADER_LINE_BYTES: usize = 64 * 1024;
 
-/// The operations this crate exposes. Four are read-only queries; C7 adds
+/// The operations this crate exposes. Four are read-only queries; adds
 /// the write-capable pair — `Rename` produces file edits that the CALLER
 /// (the agent tool) must push through the security pipeline before any
 /// disk write, and `CodeAction` lists quickfixes (apply stays out of
@@ -76,7 +76,7 @@ struct Session {
     /// ever held for a nanosecond copy).
     last_used: std::sync::Mutex<Instant>,
     inner: Mutex<Inner>,
-    /// C2：`textDocument/publishDiagnostics` 推送缓存（uri → 最近一次推送
+    /// `textDocument/publishDiagnostics` 推送缓存（uri → 最近一次推送
     /// 的完整列表）。诊断是推送语义且每次推送都带该 uri 的**全量**列表，所以
     /// 直接整表替换。std Mutex（纳秒级 insert/remove，同 last_used 惯例）。
     diagnostics: std::sync::Mutex<HashMap<String, Vec<proto::Diagnostic>>>,
@@ -87,24 +87,24 @@ struct Inner {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: i64,
-    /// C1：已 `didOpen` 的文档 uri → 已发送的最新 version。会话死亡/被
+    /// 已 `didOpen` 的文档 uri → 已发送的最新 version。会话死亡/被
     /// reap 时随 Inner 一起消失——新会话对空集合，下一个 touch 自然重发
     /// didOpen（服务器状态与新会话一致）。
     open_docs: HashMap<String, i64>,
 }
 
 impl Session {
-    /// C2：把一次 publishDiagnostics 推送写入缓存（整表覆盖该 uri）。
+    /// 把一次 publishDiagnostics 推送写入缓存（整表覆盖该 uri）。
     /// 键用 [`proto::uri_key`] 规范化——服务器回显的是它自己规范化后的
     /// URI 形态（rust-analyzer 的 url crate 会把 Windows 盘符小写），与
     /// 我们 didOpen 发射的字符串可能字面不同；双端都落 WHATWG 规范键后
-    /// 精确匹配才成立（2026-09-05 实机闭环验证根修）。
+    /// 精确匹配才成立（实机闭环验证根修）。
     fn record_diagnostics(&self, uri: &str, diags: Vec<proto::Diagnostic>) {
         let key = proto::uri_key(uri);
         self.diagnostics.lock().unwrap().insert(key, diags);
     }
 
-    /// C2：某 uri 的当前诊断快照（无推送过 = 空）。查找键同
+    /// 某 uri 的当前诊断快照（无推送过 = 空）。查找键同
     /// [`Self::record_diagnostics`] 规范化。
     fn diagnostics_for_uri(&self, uri: &str) -> Vec<proto::Diagnostic> {
         let key = proto::uri_key(uri);
@@ -168,7 +168,7 @@ impl Session {
                             // keep waiting for our own response
                         }
                         proto::Incoming::Notification { method } => {
-                            // C2：publishDiagnostics 推送进缓存（诊断是推送
+                            // publishDiagnostics 推送进缓存（诊断是推送
                             // 语义，只有我们读 stdout 时才被消费）；其余
                             // progress/log 噪音照旧跳过。
                             if method == "textDocument/publishDiagnostics"
@@ -191,14 +191,14 @@ impl Session {
             .map_err(|_| format!("LSP request {method} timed out after {timeout:?}"))?
     }
 
-    /// C2：不发送任何请求，纯读服务器主动推送。publishDiagnostics 是推送
+    /// 不发送任何请求，纯读服务器主动推送。publishDiagnostics 是推送
     /// 语义——只有当我们读 stdout 时才会被消费；编辑后服务器异步推（可能
     /// 连推多轮增量收敛），这里读到一条消息就把 quiet 窗口重新计时，连续
     /// `quiet` 无消息（≈ 编辑器的 debounce 收敛）或总时长到 `max` 兜底即
     /// 返回。途中的 server→client 请求照 never-ignore 政策回应（有的服务
     /// 器会阻塞等回复）；读流出错（服务器死了）同样终止——不会再有推送。
     ///
-    /// C3 实机验证修出的冷启动缺口（2026-09-05）：**首条非空
+    /// 实机验证修出的冷启动缺口：**首条非空
     /// publishDiagnostics 到达前** quiet 收敛不生效——（a）冷启动服务器
     /// （rust-analyzer 首析秒级）在 quiet 窗口内推不出任何东西，旧的
     /// 「单窗零消息即返回」把首推判成「已收敛」漏掉；（b）rust-analyzer
@@ -497,7 +497,7 @@ impl LspManager {
         }
     }
 
-    /// C7（devtool-upgrade 阶段 6）：`textDocument/rename` → 解析
+    /// （devtool-upgrade）：`textDocument/rename` → 解析
     /// WorkspaceEdit → 逐文件读盘应用 TextEdit。**本方法不写盘**——返回
     /// 每个文件的新全文，由调用方（lsp_tool）统一过安全 8 层审批后再落盘
     /// （两阶段：先全部过闸、再全部写入，避免半改名状态落到磁盘）。
@@ -554,9 +554,9 @@ impl LspManager {
         Ok(RenameOutcome { files, errors })
     }
 
-    /// C7：`textDocument/codeAction` — 列出当前位置的 quickfix。上下文
-    /// 带该文件当前诊断缓存（C2），让服务器给出针对性的修复动作。只列
-    /// 表不执行（apply 后置，见计划 C7 规格）。
+    /// `textDocument/codeAction` — 列出当前位置的 quickfix。上下文
+    /// 带该文件当前诊断缓存，让服务器给出针对性的修复动作。只列
+    /// 表不执行（apply 后置，见计划 规格）。
     pub async fn code_actions(
         &self,
         path: &Path,
@@ -784,22 +784,22 @@ impl Session {
 }
 
 impl LspManager {
-    /// C1（devtool-upgrade 阶段 2）：把磁盘上的文件全文同步给语言服务器
+    /// （devtool-upgrade）：把磁盘上的文件全文同步给语言服务器
     /// ——未 open 过则 `textDocument/didOpen`，已 open 则 `textDocument/didChange`
-    /// （full 同步）。C3 编辑后诊断回灌的入口之一。
+    /// （full 同步）。 编辑后诊断回灌的入口之一。
     pub async fn touch_file(&self, path: &Path) -> Result<(), String> {
         self.sync_doc(path, None).await
     }
 
-    /// C1：工具刚写完的内容直接同步（文本来自参数，免重读磁盘）。
+    /// 工具刚写完的内容直接同步（文本来自参数，免重读磁盘）。
     pub async fn notify_change(&self, path: &Path, new_text: &str) -> Result<(), String> {
         self.sync_doc(path, Some(new_text)).await
     }
 
     /// didOpen/didChange 共同实现。尽力而为语义：文件类型不支持、该语言
-    /// 没配服务器、服务器不在 PATH —— 三者都静默 `Ok(())`（诊断闭环是
+    /// 没配服务器、服务器不在 PATH —— 三者都静默 `Ok()`（诊断闭环是
     /// 优化不是依赖，语言服务器缺席绝不能拖垮编辑路径）；会话 spawn 失败
-    /// / 写管道失败/写超时（server 僵死不消费 stdin，BUG-20261103-337）
+    /// / 写管道失败/写超时（server 僵死不消费 stdin）
     /// 仍返回 Err（调用方记日志决定后续）。
     async fn sync_doc(&self, path: &Path, text_override: Option<&str>) -> Result<(), String> {
         let Some(lang) = registry::lang_for_path(path) else {
@@ -852,7 +852,7 @@ impl LspManager {
                 )
             }
         };
-        // BUG-20261103-337：通知写包 `request_timeout` 预算。request 路径
+        // 通知写包 `request_timeout` 预算。request 路径
         // 的写有外层 timeout 包裹（`Session::request` 的 fut 整体在预算
         // 内），通知路径（touch_file/notify_change → 本函数）此前裸写——
         // server 活着但停止消费 stdin（僵死）时，超管道缓冲的大全文写
@@ -876,11 +876,11 @@ impl LspManager {
         }
     }
 
-    /// C2：某文件的当前诊断快照（被动读缓存；无会话/不支持类型 = 空）。
+    /// 某文件的当前诊断快照（被动读缓存；无会话/不支持类型 = 空）。
     /// 诊断按 uri 匹配——双端都过 [`proto::uri_key`] WHATWG 规范化：
     /// 服务器（rust-analyzer 等 url-crate 系）回显的是它规范化后的形态
     /// （Windows 盘符小写），与本端发射字符串字面不同也能对上
-    /// （2026-09-05 实机闭环验证根修）。
+    /// （实机闭环验证根修）。
     pub async fn diagnostics_for(&self, path: &Path) -> Vec<proto::Diagnostic> {
         let Some(lang) = registry::lang_for_path(path) else {
             return vec![];
@@ -896,8 +896,8 @@ impl LspManager {
         }
     }
 
-    /// C2：等待并收集某文件的诊断。无会话（文档从未 touch/notify 同步过）
-    /// 诚实返回空——不 spawn，等待语义只对服务器已见过的文档成立；C3 的
+    /// 等待并收集某文件的诊断。无会话（文档从未 touch/notify 同步过）
+    /// 诚实返回空——不 spawn，等待语义只对服务器已见过的文档成立； 的
     /// 调用序是编辑 → notify_change → wait，会话必然已存在。
     pub async fn wait_for_diagnostics(
         &self,
@@ -941,9 +941,9 @@ fn is_transport_error(e: &str) -> bool {
 /// mid-read leaving half-consumed bytes in the BufReader (every later
 /// request on this session then reads desynced frames), a `without
 /// Content-Length`/`bad Content-Length`/`exceeds cap` reader consumed an
-/// unknown amount of the stream (BUG-20261102-311: the parse-failure form
+/// unknown amount of the stream (the parse-failure form
 /// was missing from this list — same "unknown amount consumed" family as
-/// BUG-20261029-136's header cap), and `bad JSON body` means the server's
+/// 's header cap), and `bad JSON body` means the server's
 /// framing can't be trusted either. Unlike transport death these don't
 /// respawn in-call (retrying into a cold server doubles the wall clock) —
 /// the session is evicted so the NEXT query starts fresh.
@@ -1033,7 +1033,7 @@ fn method_noun(op: LspOp) -> &'static str {
     }
 }
 
-/// C7：单文件改名应用结果——新全文已按 TextEdit 算好，**尚未写盘**。
+/// 单文件改名应用结果——新全文已按 TextEdit 算好，**尚未写盘**。
 #[derive(Debug, Clone)]
 pub struct AppliedFileEdit {
     pub path: String,
@@ -1041,7 +1041,7 @@ pub struct AppliedFileEdit {
     pub edit_count: usize,
 }
 
-/// C7：rename 全量结果。`files` 是成功应用的文件（待调用方过闸+落盘）；
+/// rename 全量结果。`files` 是成功应用的文件（待调用方过闸+落盘）；
 /// `errors` 是读盘/应用失败的文件（不整体失败——一个文件坏不该挡住其余
 /// 文件的审批，但两个列表都必须如实上报，调用方决定取舍）。
 #[derive(Debug, Clone)]

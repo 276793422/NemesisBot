@@ -24,7 +24,7 @@ pub fn engine(cache_root: Option<&std::path::Path>) -> Result<wasmtime::Engine, 
     }
     let engine = build_engine(cache_root)?;
     // 真正落单例：此前只 get 不 set，单例契约失效——每次调用新建 Engine
-    // 并随之泄漏一个永不退出的 epoch ticker 线程（2026-09-29 交付审查 M1）。
+    // 并随之泄漏一个永不退出的 epoch ticker 线程（交付审查）。
     // 并发首调竞态下输家的 engine 被丢弃（一次性，可接受；生产首调在
     // gateway 装配期单点发生）。缓存配置以首个成功构造者为准。
     let _ = ENGINE.set(engine.clone());
@@ -63,7 +63,7 @@ fn enable_workspace_cache(root: &std::path::Path) -> Result<wasmtime::Cache, Str
     // 是 `directory` 且没有 `enabled` 开关（空 `[cache]` 表即启用，见
     // wasmtime-internal-cache config.rs 的 create_new_config 模板）——写
     // `dir=`/`enabled=` 任一未知键都会让整个 config 解析失败回退无缓存
-    //（2026-09-29 实证：每次进程启动必 warn）。directory 同时剥 `\\?\`
+    //（实证：每次进程启动必 warn）。directory 同时剥 `\\?\`
     // verbatim 前缀（config 里的路径走常规形态最稳，verbatim 只认反斜杠
     // 且会被下面的斜杠替换破坏）。
     let dir_str = dir.to_string_lossy();

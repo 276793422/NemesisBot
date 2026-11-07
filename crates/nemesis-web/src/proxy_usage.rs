@@ -1,4 +1,4 @@
-//! LLM 代理请求用量记账（docs/PLAN/2026-11-03_代理请求用量记账.md）。
+//! LLM 代理请求用量记账（代理请求用量记账）。
 //!
 //! 入站 LLM 代理面的两个裸转发端点（`/v1/chat/completions` 带 tools lane、
 //! `/api/chat/stream`）不经过 AgentLoop，organ 5（loop observer 的每轮
@@ -17,7 +17,7 @@
 //! - 与 organ 5 的刻意偏差：上游错误也记一笔（status=500、token 全 0、
 //!   error_message 在账）——代理错误本身是值得观测的请求事件。
 //! - 与 organ 5 的另一处差异：provider_type 恒空串（同 organ 5 口径，
-//!   该列自 A3 起未再消费）。
+//!   该列自 起未再消费）。
 
 use crate::api_handlers::AppState;
 use nemesis_providers::types::UsageInfo;
@@ -34,7 +34,7 @@ pub(crate) struct ProxyUsageRecord<'a> {
     /// 200 = 转发成功；500 = 上游错误 / 断流 / 无终态。
     pub status_code: i32,
     pub error_message: Option<&'a str>,
-    /// `proxy:openai-api:{uuid}` / `proxy:chat-stream:{uuid}`（§2.4 命名）。
+    /// `proxy:openai-api:{uuid}` / `proxy:chat-stream:{uuid}`（命名）。
     pub session_key: String,
     /// `openai-proxy-{uuid simple}` / `chat-stream-proxy-{uuid simple}`。
     pub trace_id: String,
@@ -95,7 +95,7 @@ pub(crate) fn record_proxy_usage(ds: Option<&nemesis_data::DataStore>, rec: Prox
     }
 }
 
-/// 执行模型解析单一真相源：调用方点名优先（sse_chat 的 req.model），
+/// 执行模型解析统一定义：调用方点名优先（sse_chat 的 req.model），
 /// 空 = master 活跃模型（AppState 展示字段与 set_default 同一更新点），
 /// 再空 = 默认槽文本（default-following 语义的可读名）。bare lane 恒传
 /// `None`（执行模型 = master 活跃模型，不消费调用方回显名）。

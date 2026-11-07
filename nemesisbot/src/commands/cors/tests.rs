@@ -653,7 +653,7 @@ fn test_cors_default_config_values() {
 }
 
 // ===========================================================================
-// run() 全臂（S11c，quality-hardening goal 冲刺 S11）—— 此前 LH=0，40 个既有
+// run() 全臂（quality-hardening goal 冲刺）—— 此前 LH=0，40 个既有
 // 测试只覆盖 helper（load_or_create_cors 等），dispatch 层从没跑过。
 // env home 隔离 + GLOBAL_STATE_LOCK 串行；配置落 {home}/config/cors.json。
 // ===========================================================================
@@ -1031,7 +1031,7 @@ mod run_arm {
 }
 
 // ===========================================================================
-// wave_a（R7 中批补盲，2026-08-27）：此前 run_arm 已铺满主干臂，这里只补
+// wave_a（中批补盲）：此前 run_arm 已铺满主干臂，这里只补
 // 仍然真实的缺口 —— ① cdn 标签重复/已存在删除臂（179/231）、② 纯 origin
 // 未命中删除臂（243）、③ https://localhost 走 contains-only 第三个条件
 // （366-368 短路时前两个 starts_with 吃掉命中）、④ 显式空数组的 (none)

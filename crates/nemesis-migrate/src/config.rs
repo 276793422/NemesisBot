@@ -78,7 +78,7 @@ pub fn rewrite_workspace_path(path: &str) -> String {
     path.replace(".openclaw", ".nemesisbot")
 }
 
-/// Convert a HashMap<String, Value> into a serde_json::Value::Object.
+/// Convert a HashMap<String, Value> into a serde_json::Value:Object.
 pub fn hashmap_to_value(map: HashMap<String, serde_json::Value>) -> serde_json::Value {
     serde_json::Value::Object(map.into_iter().collect())
 }

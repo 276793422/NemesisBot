@@ -1,11 +1,11 @@
-//! Sessions handler 补测（Phase 3 覆盖率，2026-08-25）。
+//! Sessions handler 补测（覆盖率，2026-08-25）。
 //!
 //! 既有 `handlers/tests.rs` 已覆盖 list happy path（含 web 前缀剥离）与
 //! delete 级联停用 cron。这里补齐剩余可达缺口：各命令缺参的 bail 臂
 //! （rename/delete/clear/export 的 missing session_id / missing title）。
 //! create/rename 的 happy path 会经 `chat_log::write_session_meta` 写
 //! `default_path_manager()` 单例 home（进程级 OnceLock，web 测试进程会烤到
-//! `~/.nemesisbot`）——为不污染真实 home，明确不测（豁免记录 §9.4）。
+//! `~/.nemesisbot`）——为不污染真实 home，明确不测（豁免记录）。
 
 use super::sessions::SessionsHandler;
 use crate::api_handlers::AppState;
@@ -56,6 +56,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -131,7 +132,7 @@ async fn unknown_cmd_errors() {
     assert!(err.contains("unknown sessions cmd"), "{err}");
 }
 
-// M3（devtool-upgrade 阶段 5）：file_diff 的 bail 臂——缺参 / agent loop
+// （devtool-upgrade）：file_diff 的 bail 臂——缺参 / agent loop
 // 未装配（ctx 的 agent_loop=None）诚实报错。
 #[tokio::test]
 async fn file_diff_bails_on_missing_params_and_unwired_loop() {
@@ -161,7 +162,7 @@ async fn file_diff_bails_on_missing_params_and_unwired_loop() {
         .unwrap_err();
     assert_eq!(err, "missing session_id");
 
-    // 参数齐但 loop 未装配。G6 起走 resolve_session_loop 单一裁决点，
+    // 参数齐但 loop 未装配。 起走 resolve_session_loop 单一裁决点，
     // 文案随其统一为 "agent loop not running"（原 handler 内联「未装配」）。
     let err = h
         .handle_cmd(

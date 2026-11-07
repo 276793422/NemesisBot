@@ -1,6 +1,6 @@
-//! vault 别名域绑定（L26②，2026-11-02 三期）：alias → (工具,槽位) 白名单。
+//! vault 别名域绑定（②，2026-11-02 三期）：alias → (工具,槽位) 白名单。
 //!
-//! 绑定配置落 `<workspace>/config/config.vault.json`（拍板：配置落 vault
+//! 绑定配置落 `<workspace>/config/config.vault.json`（配置落 vault
 //! 配置文件；config.cluster.json / config.forge.json 同族 sidecar 形态）。
 //! 绑定是**策略元数据不是秘密**：明文 JSON，不进 vault.enc——可读、可手
 //! 编、可 version control，泄密面为零（不含值）。
@@ -113,7 +113,7 @@ impl VaultDomainConfig {
     }
 }
 
-/// slot 层级匹配（设计 §3.3）：绑定 `slot` 覆盖字段路径 `field` 当且仅当
+/// slot 层级匹配（设计）：绑定 `slot` 覆盖字段路径 `field` 当且仅当
 /// `field == slot`（顶槽本体 / 精确叶）或 `field` 是 `slot` 的直接层级后代
 /// （`{slot}.叶`——顶槽绑定盖全部叶子）。不做通配符语法（层级语义已覆盖）。
 fn slot_covers(slot: &str, field: &str) -> bool {
@@ -127,7 +127,7 @@ fn slot_covers(slot: &str, field: &str) -> bool {
             .is_some()
 }
 
-/// 绑定文件在 config 目录下的标准路径（`config_path.parent()` 消费形态）。
+/// 绑定文件在 config 目录下的标准路径（`config_path.parent` 消费形态）。
 pub fn vault_domain_config_path_in(config_dir: &Path) -> std::path::PathBuf {
     config_dir.join(VAULT_DOMAIN_CONFIG_FILE)
 }

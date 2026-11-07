@@ -609,7 +609,7 @@ mod extra_platform_tray_tests {
 
 #[test]
 fn test_system_tray_new_evaluates_lazy_log_fields() {
-    // `tracing::info!(menu_count = config.menu_items.len(), ...)` evaluates
+    // `tracing::info!(menu_count = config.menu_items.len(),...)` evaluates
     // field expressions lazily — they only run when a subscriber is enabled.
     // Install a thread-local subscriber that enables everything so the
     // field expression actually executes.
@@ -621,7 +621,7 @@ fn test_system_tray_new_evaluates_lazy_log_fields() {
         fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
             tracing::span::Id::from_u64(1)
         }
-        // tracing_core 无默认实现的必需方法（E0046）；no-op 即可——惰性字段
+        // tracing_core 无默认实现的必需方法；no-op 即可——惰性字段
         // 求值发生在 Event 构造时，与 event() 的实现体无关。
         fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
         fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}

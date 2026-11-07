@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): ChannelsHandler error arms
+//! (quality-hardening goal 冲刺, web): ChannelsHandler error arms
 //! and sensitive-field masking the gated `mod tests` skips — missing
 //! config.json load failure, update without a config payload, update whose
 //! payload fails channels re-parse, and `mask_sensitive_fields` recursion.
@@ -49,6 +49,7 @@ fn make_state() -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

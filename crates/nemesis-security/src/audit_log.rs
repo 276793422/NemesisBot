@@ -150,7 +150,7 @@ impl AuditLogger {
                 sanitize_reason(reason),
                 policy_rule,
             );
-            // 明文审计不允许静默丢行：写失败必须可见（BUG 2026-10-29 横扫
+            // 明文审计不允许静默丢行：写失败必须可见（横扫
             // 角度 A）。句柄已打开时写失败多为磁盘满/IO 瞬时错误，后续行
             // 继续 best-effort，但本次丢失必须留痕。
             if let Err(e) = file.write_all(log_line.as_bytes()) {
@@ -220,8 +220,8 @@ fn sanitize_reason(reason: &str) -> String {
     utils::truncate(&s, 100)
 }
 
-/// Sanitize a string for CSV output（单一真相源：原地委托
-/// `nemesis_utils::sanitize::sanitize_csv`，语义含 `\r` 触发）。
+/// Sanitize a string for CSV output（统一定义：原地委托
+/// `nemesis_utils::sanitize:sanitize_csv`，语义含 `\r` 触发）。
 pub fn sanitize_csv(s: &str) -> String {
     nemesis_utils::sanitize::sanitize_csv(s)
 }

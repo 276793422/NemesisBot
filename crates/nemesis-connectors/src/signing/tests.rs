@@ -1,4 +1,4 @@
-//! D6.1 签名对抗测试：签验正常链 / 篡改 / 调换 / 吊销 / 不受信 / registry 拒收。
+//! .1 签名对抗测试：签验正常链 / 篡改 / 调换 / 吊销 / 不受信 / registry 拒收。
 
 use std::path::Path;
 
@@ -150,7 +150,7 @@ fn test_registry_rejects_tampered_and_honors_verified() {
     assert_eq!(l.trust, ConnectorTrust::Verified);
     assert!(parse_connector_manifest("x").is_err()); // sanity：parse 函数在场
 
-    // find_connector 正常放行（M1：trust 随返回值透出）。
+    // find_connector 正常放行（trust 随返回值透出）。
     let (found, found_trust) =
         crate::registry::find_connector(ws.path(), "sample").expect("完好连接器可用");
     assert_eq!(found.id, "sample");

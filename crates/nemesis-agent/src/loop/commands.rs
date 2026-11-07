@@ -1,6 +1,6 @@
 //! slash 命令：handle_command(_with_context)、rewrite_custom_command/skill_fallback、process_system_message、历史请求与发布、record_last_channel/chat_id、get_startup_info、set_chat_seq_lookup。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
@@ -48,7 +48,7 @@ impl AgentLoop {
 
         // Extract subagent result from message content.
         // Format: "Task 'label' completed.\n\nResult:\n<actual content>"
-        // Mirrors Go's: if idx := strings.Index(content, "Result:\n"); idx >= 0 { content = content[idx+8:] }
+        // Mirrors Go's: if idx:= strings.Index(content, "Result:\n"); idx >= 0 { content = content[idx+8:] }
         let content = if let Some(idx) = msg.content.find("Result:\n") {
             &msg.content[idx + 8..]
         } else {
@@ -58,7 +58,7 @@ impl AgentLoop {
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
-        // B1（2026-09-22）：user 行落盘职责上移（原在 run_agent_loop_internal
+        // user 行落盘职责上移（原在 run_agent_loop_internal
         // 开头）——system 路径内容 / 时点 / checkpoint 缺省保持原样，仅位置
         // 随职责移动到调用方。
         let sys_user_row = format!("[System: {}] {}", msg.sender_id, content);
@@ -75,7 +75,7 @@ impl AgentLoop {
                     images: &[],
                     file_changes: &[],
                     deliverables: &[],
-                    checkpoint_turn: None, // E3：system 直调不经 gate/preamble，无 checkpoint 标记
+                    checkpoint_turn: None, // system 直调不经 gate/preamble，无 checkpoint 标记
                     steer: false,
                     work: None,
                 },
@@ -115,7 +115,7 @@ impl AgentLoop {
         &self,
         msg: &nemesis_types::channel::InboundMessage,
     ) {
-        // 解析/组装走 crate::history 共享件（BUG 2026-09-23 入站过滤链：
+        // 解析/组装走 crate::history 共享件（BUG 入站过滤链：
         // web 咽喉点 HistoryFilter 与本路径共用同一组装逻辑，防漂移）。
         let req = match crate::history::HistoryRequest::parse(&msg.content) {
             Ok(r) => r,
@@ -137,7 +137,7 @@ impl AgentLoop {
         };
 
         let limit = req.effective_limit();
-        // HD（2026-09-17）：session_id 原样回显——前端收到后与当前选中会话
+        // HD：session_id 原样回显——前端收到后与当前选中会话
         // 比对，快速切换会话时迟到响应按归属丢弃（防串台）。
         let req_session_id = msg
             .metadata
@@ -165,16 +165,16 @@ impl AgentLoop {
         };
 
         // Read history from chat log (separate from session store).
-        // _async（BUG 2026-09-22）：阻塞读移出 tokio worker——大日志秒级
+        // _async（BUG）：阻塞读移出 tokio worker——大日志秒级
         // 读曾占住 worker 并把本响应拖到前端 10s 失败围栏之后。
         let (page, total_count, has_more, oldest_index) =
             crate::chat_log::read_chat_log_async(&session_key, limit, req.before_index).await;
 
-        // A1（2026-09-22 聊天切会话竞态）：历史读取**之后**采样环尾 seq——
+        // （聊天切会话竞态）：历史读取**之后**采样环尾 seq——
         // 「seq ≤ last_seq 的 assistant 实时帧必已含于本批次」的推断前提是
         // assistant 入环点在 chat_log 落盘之后（user 行入环早于落盘，前端
         // 剔除规则只作用于 assistant 帧）。未注入回调 → 0 → 响应字段缺省，
-        // 前端跳过剔除（A2 同文兜底）。
+        // 前端跳过剔除（同文兜底）。
         let last_seq = self
             .chat_seq_lookup
             .read()
@@ -205,15 +205,15 @@ impl AgentLoop {
         has_more: bool,
         oldest_index: usize,
         total_count: usize,
-        // HD（2026-09-17）：session_id 回显（前端会话归属校验）；None = 解析
+        // HD：session_id 回显（前端会话归属校验）；None = 解析
         // 失败路径（前端围栏按无归属放行，不因错误响应丢帧）。
         session_id: Option<&str>,
-        // A1（2026-09-22）：历史读取时刻的环尾 seq（0 = 未注入回调/环空，
+        // 历史读取时刻的环尾 seq（0 = 未注入回调/环空，
         // 序列化时省略——前端按无 last_seq 走同文兜底）。
         last_seq: u64,
     ) {
-        // 组装唯一真相源 crate::history::history_response_json（HD 回显 /
-        // A1 last_seq 省略规则只写一处）；本函数只保留 transport。
+        // 组装唯一依据 crate::history:history_response_json（HD 回显 /
+        // last_seq 省略规则只写一处）；本函数只保留 transport。
         let content = match crate::history::history_response_json(
             request_id,
             messages,
@@ -279,7 +279,7 @@ impl AgentLoop {
     // Session busy state management
     // -----------------------------------------------------------------------
 
-    /// A1（2026-09-22 聊天切会话竞态）：注入环尾 seq 查询回调
+    /// （聊天切会话竞态）：注入环尾 seq 查询回调
     /// （nemesis-web `chat_event_log::latest_seq`，gateway 装配期调用）。
     /// `handle_history_request` 采样进历史响应 `last_seq`，前端据此剔除
     /// 「先于历史快照渲染的 assistant 实时帧」。未注入（standalone）→
@@ -288,20 +288,20 @@ impl AgentLoop {
         *self.chat_seq_lookup.write() = Some(f);
     }
 
-    /// 自定义 slash 命令改写（改写型，区别于内置命令的短路型）。K3 补齐后
+    /// 自定义 slash 命令改写（改写型，区别于内置命令的短路型）。 补齐后
     /// 四段解析链（每段只在上一段未命中时生效）：
     ///
     /// 1. **自定义命令**：`/name args` → 命令表模板中的 `$ARGUMENTS` 替换为
     ///    `args`（模板无占位符且带参数 → 追加为独立段）。
     /// 2. **`` !`cmd` `` 注入**：对展开后的模板文本 regex 扫 `` !`cmd` `` →
-    ///    同步执行（复用 C8 exec 内核 `run_one_stage`，3s 超时，workspace 为
+    ///    同步执行（复用 exec 内核 `run_one_stage`，3s 超时，workspace 为
     ///    cwd）→ stdout（≤4KB，字符边界截断）替换进模板；失败注记
-    ///    `[command failed: ...]`。相同命令一段模板内只执行一次（结果复用）。
+    ///    `[command failed:...]`。相同命令一段模板内只执行一次（结果复用）。
     ///    信任边界（诚实声明）：这是用户自己配置的模板/参数 = 用户本机终端
     ///    同级信任，**不**过 9 层安全管线（管线管的是 LLM 工具调用）；且只在
     ///    命令模板路径生效——普通消息不做注入（不放大攻击面）。
     /// 3. **内置深度模板**：命令表未命中时查产品内置模板库（评审/排障/
-    ///    修复纪律，`crate::prompt::slash`）→ 整段展开改写。用户配置恒可
+    ///    修复纪律，`crate::prompt:slash`）→ 整段展开改写。用户配置恒可
     ///    覆盖内置默认（不在 [`Self::BUILTIN_SLASH_COMMANDS`] 内置短路名单，
     ///    自定义同名命令优先）；内置路径**不做** shell 注入展开（模板是
     ///    编译期产品文本，`$ARGUMENTS` 纯文本替换，不放大攻击面）。
@@ -320,7 +320,7 @@ impl AgentLoop {
         }
         let rest = &content[1..]; // '/' 为 1 字节 ASCII，字节切片安全
         // 拷贝为 owned：name/args 借用自 msg.content，而技能回落要可变借
-        // msg（E0502）——slash 消息本就低频，两次小分配无所谓。
+        // msg——slash 消息本就低频，两次小分配无所谓。
         let (name, args) = match rest.split_once(char::is_whitespace) {
             Some((n, a)) => (n.to_string(), a.trim().to_string()),
             None => (rest.to_string(), String::new()),
@@ -356,7 +356,7 @@ impl AgentLoop {
                 cmd.prompt.clone()
             }
         };
-        // K3：`` !`cmd` `` 注入（展开后的模板文本；模板与参数都可能携带）。
+        // `` !`cmd` `` 注入（展开后的模板文本；模板与参数都可能携带）。
         let expanded = self.expand_shell_injections(expanded).await;
         info!(
             "[AgentLoop] custom command /{} expanded (prompt {} chars)",
@@ -386,7 +386,7 @@ impl AgentLoop {
         true
     }
 
-    /// K3：技能回落（只在命令表未命中时被 [`Self::rewrite_custom_command`]
+    /// 技能回落（只在命令表未命中时被 [`Self::rewrite_custom_command`]
     /// 调用）。命中已装技能 → 改写为技能驱动提示词；否则不动。
     fn rewrite_skill_fallback(
         &self,
@@ -579,7 +579,7 @@ impl AgentLoop {
 }
 
 // ---------------------------------------------------------------------------
-// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// 自由函数归位（c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
 /// Build an agent-scoped main session key.

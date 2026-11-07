@@ -1,6 +1,6 @@
-//! P5 第 4 步 — `vm.*` WSAPI + 桌面级 VM 管理面。
+//! 第 4 步 — `vm.*` WSAPI + 桌面级 VM 管理面。
 //!
-//! 依赖方向（同 [`crate::handlers::agents`] 先例）：nemesis-web 不反向依赖
+//! 依赖方向（同 [`crate::handlers:agents`] 先例）：nemesis-web 不反向依赖
 //! nemesisbot（[`VmSupervisor`](../..) 与 QEMU 管线在那边），所以这里定义
 //! [`VmBridge`] trait + 模块级槽，nemesisbot 在 gateway 装配时把实现装进
 //! 槽。加速器探针（WHPX/KVM）也在 bridge 侧完成——本 crate 的 `vm` feature
@@ -9,7 +9,7 @@
 //! 命令族（实施计划锁定）：`vm.overview` / `vm.config.get` / `vm.config.set`
 //! / `vm.image.list` / `vm.image.build` / `vm.instance.list` /
 //! `vm.instance.sleep` / `vm.instance.wake` / `vm.instance.kill` /
-//! `vm.gc.run`；B3 自举族：`vm.bootstrap.status`（只读，无闸）/
+//! `vm.gc.run`； 自举族：`vm.bootstrap.status`（只读，无闸）/
 //! `vm.bootstrap.install_qemu` / `vm.bootstrap.enable_accel`（enabled 闸）。
 //! 未装配（headless / 独立 web 测试 / `vm` feature 关）时
 //! handler 不注册，命令诚实未知。
@@ -17,9 +17,7 @@
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Bridge trait + 进程级槽
-// ---------------------------------------------------------------------------
 
 /// nemesisbot 侧 VM 监督能力的抽象（实现在 nemesisbot `VmSupervisor`）。
 /// 查询面同步（文件/registry 快查）；生命周期与镜像面异步（QEMU 停起/
@@ -62,7 +60,7 @@ pub trait VmBridge: Send + Sync {
     async fn gc_run(&self) -> serde_json::Value;
 
     /// 环境自举状态全量（**只读探针，不受 `executor.vm.enabled` 闸约束**
-    /// ——查询不是安装动作；总开关关闭态安装卡也要能显示引导）。QEMU
+    /// 查询不是安装动作；总开关关闭态安装卡也要能显示引导）。QEMU
     /// 在场三态 + 加速器引导八态 + 基础镜像在场 + 安装任务槽。
     fn bootstrap_status(&self) -> serde_json::Value;
 
@@ -76,7 +74,7 @@ pub trait VmBridge: Send + Sync {
     /// 子进程 fire-and-forget），其余分支返回可复制的引导命令原文。
     async fn bootstrap_enable_accel(&self) -> Result<serde_json::Value, String>;
 
-    /// B6 快速试玩状态（**只读探针，不受 enabled 闸约束**——查询不是
+    /// 快速试玩状态（**只读探针，不受 enabled 闸约束**——查询不是
     /// 动作）：enabled / image_ready（base.qcow2）/ arch_
     /// supported / running 一次取齐（Dashboard 试玩卡四态渲染的单命令面）。
     fn try_status(&self) -> serde_json::Value;
@@ -87,8 +85,8 @@ pub trait VmBridge: Send + Sync {
     async fn try_start(&self) -> Result<serde_json::Value, String>;
 
     /// 试玩实例内执行 shell 命令（guest `exec` 工具；未运行时自动先
-    /// ensure_running）。`timeout_secs`：B8c 可选超时透传（秒；None=guest
-    /// 缺省 60s（B8e 口径），>600 由 handler 钳制到 guest 硬上限——慢命令
+    /// ensure_running）。`timeout_secs`： 可选超时透传（秒；None=guest
+    /// 缺省 60s（口径），>600 由 handler 钳制到 guest 硬上限——慢命令
     /// 如 apt 全程不再假超时）。**enabled 闸**；estop 冻结闸在 handler 层。
     async fn try_exec(
         &self,
@@ -100,18 +98,18 @@ pub trait VmBridge: Send + Sync {
     /// 方向 = 安全方向：estop 中放行（handler 层不设冻结闸）。
     async fn try_stop(&self) -> Result<serde_json::Value, String>;
 
-    /// 项目工作副本同步状态（B9-3；**只读**：不开闸、不落盘、不触碰
+    /// 项目工作副本同步状态（**只读**：不开闸、不落盘、不触碰
     /// VM 实例——status 永远不该把睡眠的实例拽起来）。`project` 接受
     /// 项目 id 或名称；无基线 = `has_baseline:false`（无从对账，不是
     /// 「无变更」）。
     async fn sync_status(&self, project: &str) -> Result<serde_json::Value, String>;
 
-    /// 项目工作副本一键提交（B9-3；commit 闸：宿主变更推 VM + VM 侧
+    /// 项目工作副本一键提交（commit 闸：宿主变更推 VM + VM 侧
     /// 修改回拉宿主，冲突落提问卡等用户裁决）。`project` 接受项目 id
     /// 或名称。
     async fn sync_commit(&self, project: &str) -> Result<serde_json::Value, String>;
 
-    /// 项目工作副本强制重同步（B9-3；force_full：清空 VM 工作副本后
+    /// 项目工作副本强制重同步（force_full：清空 VM 工作副本后
     /// 以宿主当前内容整体覆盖重建基线——VM 内未回传的改动将丢失，调用
     /// 方需在 UI 层诚实披露）。
     async fn sync_resync(&self, project: &str) -> Result<serde_json::Value, String>;
@@ -145,9 +143,7 @@ pub(crate) fn set_vm_bridge_for_test(bridge: Option<Arc<dyn VmBridge>>) {
 #[cfg(test)]
 pub(crate) static VM_BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-// ---------------------------------------------------------------------------
 // WSAPI handler
-// ---------------------------------------------------------------------------
 
 pub struct VmHandler;
 
@@ -264,8 +260,8 @@ impl ModuleHandler for VmHandler {
                         "命令过长（上限 {TRY_EXEC_MAX_CHARS} 字符）——试玩通道不承载长脚本"
                     ));
                 }
-                // B8c：可选超时透传（秒）。缺省/0=None（guest 默认 60s，
-                // B8e 口径）；
+                // 可选超时透传（秒）。缺省/0=None（guest 默认 60s，
+                // 口径）；
                 // >600 钳制到 guest exec 硬上限（同源 600s）。
                 let timeout_secs = data
                     .get("timeout")
@@ -292,7 +288,7 @@ impl ModuleHandler for VmHandler {
                 let project = crate::handlers::get_str(&data, "project")?;
                 Ok(Some(bridge.sync_resync(&project).await?))
             }
-            // P5-R2 ⑥：显示能力探针（**只读，无闸**——查询不是动作；前端
+            // ⑥：显示能力探针（**只读，无闸**——查询不是动作；前端
             // 据此决定「查看屏幕」入口是否可见与提示文案）。三段拼装：
             // ① `compiled`（vm-display feature 编译态）② config display /
             // desktop 现值 ③ 插件 endpoint（None = plugin-vm 未装载或
@@ -345,7 +341,7 @@ const TRY_EXEC_MAX_CHARS: usize = 2000;
 /// 试玩命令超时上限（秒）——与 guest `EXEC_MAX_TIMEOUT_SECS` 同源钳制。
 const TRY_EXEC_MAX_TIMEOUT_SECS: u64 = 600;
 
-/// estop 冻结闸（B6 试玩 start/exec：agent 活动形态——急停触发时诚实
+/// estop 冻结闸（试玩 start/exec：agent 活动形态——急停触发时诚实
 /// 拒绝；stop/status 不经此闸，停机与只读方向恒放行）。检查点在 handler
 /// 层——`ctx.state.estop` 与 estop WSAPI / 托盘 / CLI 四入口同源。
 fn refuse_if_estopped(ctx: &RequestContext) -> Result<(), String> {

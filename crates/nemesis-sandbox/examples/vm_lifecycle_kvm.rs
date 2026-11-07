@@ -1,4 +1,4 @@
-//! VM 生命周期实机验证（P5 第 3 步 E 线 / G3 电池真腿，KVM 宿主）：在
+//! VM 生命周期实机验证（第 3 步 E 线 / 电池真腿，KVM 宿主）：在
 //! `/dev/kvm` 在场的 Linux 宿主上跑完整「冷启 → marker → **真 savevm 睡眠**
 //! → **真 loadvm 唤醒** → 冷重启持久重挂」闭环——CI 里只有 fake-qmp 状态机
 //! 覆盖，本示例是唯一穿透真实 QEMU 睡眠线的验收载体。
@@ -232,7 +232,7 @@ async fn run_lifecycle(
 
     // [5] 真睡眠（savevm → quit）：Ok = QEMU 已退出且快照在 qcow2 内。
     //    savevm 大内存需分钟级——预算 600s 起步。
-    // P5_PRE_SLEEP_SECS：诊断辅助（远程 savevm 死因归因实验）——在落 marker
+    // _PRE_SLEEP_SECS：诊断辅助（远程 savevm 死因归因实验）——在落 marker
     // 与发 savevm 之间插入纯等待，分离「spawn+15s 定时器」与「savevm 触发」
     // 两个重叠锚点。缺省 0 = 行为不变。
     let pre_sleep: u64 = std::env::var("P5_PRE_SLEEP_SECS")
@@ -247,14 +247,14 @@ async fn run_lifecycle(
         println!("    [diag] 等待结束，准备发 savevm（QEMU 仍活着 = 非定时器锚）");
     }
     step(5, "真 savevm 睡眠（Snapshot 线）");
-    // fs 落盘闸（2026-10-18 远程取证定谳的冷启 0-byte 文件根因）：savevm 后
+    // fs 落盘闸（远程取证定谳的冷启 0-byte 文件根因）：savevm 后
     // quit 对 guest 是断电——进程 kill 语义。ext4 默认 5s commit 间隔内未提交
     // 的写（inode 已提交、数据在 journal/页缓存）随 RAM 蒸发，冷启看到的正是
     // 「0 字节文件」：agent 二进制、launcher、systemd unit（systemd 把空 unit
     // 文件按 masked 处理）、网络配置全部空心化。savevm 前必须让 guest 把
     // 页缓存/journal 全部落盘（syncfs 语义），这是睡眠线的 fs 静默契约——
     // 编排层持有 agent 连接，sync 在这里做（lifecycle 的 sleep 是 QMP 层，
-    // 不持有 agent；运行时接线处同契约，见实施计划 §9）。
+    // 不持有 agent；运行时接线处同契约，见实施计划）。
     exec(&mut stream, "sync", Duration::from_secs(60))
         .await
         .map_err(|e| format!("savevm 前 guest sync 失败（fs 静默契约）: {e}"))?;
@@ -327,7 +327,7 @@ async fn run_lifecycle(
         .map_err(|e| format!("唤醒实例 stop 收敛失败: {e}"))?;
 
     // [7] 冷重启（同 overlay 重挂，无 loadvm）：磁盘 marker 仍在 = 持久
-    //    重挂成立（G3 门 2 的 VM 内非共享子树路径）；RAM marker 缺席 =
+    //    重挂成立（门 2 的 VM 内非共享子树路径）；RAM marker 缺席 =
     //    真冷启负面判据（tmpfs 随重启清空——证明不是意外 wake 形态串场）。
     step(7, "冷重启同 overlay 重挂（持久性）");
     let vm_cold = VmInstance::start(start_params(format!("{id}-cold"), None))

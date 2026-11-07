@@ -240,7 +240,7 @@ fn test_just_past_boundary_is_expired() {
 }
 
 // -----------------------------------------------------------------------
-// G3: configurable expiry threshold + message age
+// configurable expiry threshold + message age
 // -----------------------------------------------------------------------
 
 #[test]
@@ -313,7 +313,7 @@ fn test_json_roundtrip_bye() {
 
 #[test]
 fn test_runtime_backend_absent_defaults_to_none() {
-    // P5 第 4 步 ③ wire 兼容回归（G4）：旧节点 / Go 节点的 announce 无
+    // wire 兼容回归：旧节点 / Go 节点的 announce 无
     // `runtime_backend` 字段 → serde default None = 未宣告，互通无碍。
     let go_style_json = format!(
         r#"{{"version":"1.0","type":"announce","node_id":"old-node","name":"Old",
@@ -619,7 +619,7 @@ fn test_protocol_version_value() {
 }
 
 // -----------------------------------------------------------------------
-// professions / tier wire compat（集群专业职能框架 M2）
+// professions / tier wire compat（集群专业职能框架）
 // -----------------------------------------------------------------------
 
 #[test]
@@ -718,7 +718,7 @@ fn bye_message_defaults_professions() {
     assert_eq!(parsed.tier, None);
 }
 
-// -- P2 agent 清单（AgentAnnouncement，2026-10-16）--
+// -- agent 清单（AgentAnnouncement）--
 
 /// 旧节点 UDP 载荷无 agents 字段 → serde default 空 = 未宣告（不炸、
 /// 与 professions 缺字段同语义）；新载荷 to_bytes/from_bytes 往返保全。
@@ -736,7 +736,7 @@ fn announce_agents_default_and_roundtrip() {
     let parsed: DiscoveryMessage = serde_json::from_str(old_json).unwrap();
     assert!(parsed.agents.is_empty(), "缺 agents 键 = 未宣告");
 
-    // 半旧形态：条目在但无 state 键（T8 前的 P2 wire）→ serde default 空。
+    // 半旧形态：条目在但无 state 键（前的 wire）→ serde default 空。
     let legacy_entry_json = r#"{
         "version": "1.0", "type": "announce",
         "node_id": "n-p2", "name": "P2Node",
@@ -794,7 +794,7 @@ fn bye_message_defaults_agents() {
 }
 
 // -----------------------------------------------------------------------
-// A1 P3: iroh_id wire 兼容
+// iroh_id wire 兼容
 // -----------------------------------------------------------------------
 
 /// iroh_id 经 with_iroh_id 携带后序列化往返保全。
@@ -860,7 +860,7 @@ fn iroh_id_absent_defaults_none() {
 }
 
 // -----------------------------------------------------------------------
-// build wire compat（A1 运行时硬化批 2026-10-19）
+// build wire compat（运行时硬化-19）
 // -----------------------------------------------------------------------
 
 /// 旧节点（无 build 字段）的 announce 必须能被新节点解析：serde default
@@ -925,7 +925,7 @@ fn announce_build_roundtrip_preserved() {
 }
 
 // -----------------------------------------------------------------------
-// L13-a（2026-11-03 三期）：mandate 公钥 wire 兼容
+// a（三期）：mandate 公钥 wire 兼容
 // -----------------------------------------------------------------------
 
 /// mandate_pubkey 经 with_mandate_pubkey 携带后序列化往返保全。

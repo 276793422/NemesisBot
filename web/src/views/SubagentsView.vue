@@ -51,6 +51,11 @@ const loading = ref(true)
 const filterStatus = ref('')
 const filterOrigin = ref('')
 let listTimer: ReturnType<typeof setInterval> | null = null
+// 卸载护栏（同 ProcessesView）：onMounted 的 async 续段可能跨卸载执行——
+// route 是全局 reactive，死实例的 openFromQuery 会照常消费/剥离 focus 深链
+// （模态开在已分离 DOM 上永不显示，活实例收不到深链），armListTimer/
+// armDetailPoll 装的轮询也无人清理。跨 await 的续段落点一律过闸。
+let alive = true
 
 async function loadList() {
   try {
@@ -67,6 +72,7 @@ const hasRunning = computed(() => tasks.value.some((t) => t.running))
 
 function armListTimer() {
   if (listTimer) clearInterval(listTimer)
+  if (!alive) return // 卸载后不得再装无人清理的定时器
   listTimer = setInterval(loadList, hasRunning.value ? 5000 : 20000)
 }
 
@@ -117,6 +123,11 @@ function ingestRingEvents(events: any[]) {
 
 async function openDetail(id: string) {
   const req = ++detailReqSeq
+  // 换详情先拆旧 poll（BUG-20261106-009）：req 闸只挡首载响应，挡不住
+  // 旧任务的 2s 轮询——载入窗口内 detail.value 仍是 A，旧 poll 继续拉
+  // A 的事件灌进本函数刚清空的 timeline（lastSeq 也被清零 → A 全量
+  // 回灌）；B 就位后旧 poll 又改投 B。closeDetail 同款清理纪律。
+  if (detailPoll) { clearInterval(detailPoll); detailPoll = null }
   detailNotFound.value = false
   detailLoading.value = true
   timeline.value = []
@@ -143,16 +154,23 @@ async function openDetail(id: string) {
 
 function armDetailPoll(running: boolean) {
   if (detailPoll) { clearInterval(detailPoll); detailPoll = null }
+  if (!alive) return // 卸载后不得再装无人清理的轮询
   if (running) detailPoll = setInterval(pollDetailEvents, 2000)
 }
 
 async function pollDetailEvents() {
   if (!detail.value) return
+  // 在飞围栏（BUG-20261106-009）：捕获当前代次——清定时器只停未来 tick，
+  // 停不掉已在飞的响应；openDetail/closeDetail 换代后迟到响应整包丢弃，
+  // 不得把旧任务的事件写进新详情的 timeline。
+  const gen = detailReqSeq
   try {
     const r = await request('subagents', 'events', { id: detail.value.id, after_seq: lastSeq })
+    if (gen !== detailReqSeq) return
     if (r?.gap) {
       // 环逐出：seq 游标失效，全量重拉（seenSeqs 去重防重复渲染）
       const full = await request('subagents', 'events', { id: detail.value.id, after_seq: 0 })
+      if (gen !== detailReqSeq) return
       ingestRingEvents(full?.events || [])
     } else {
       ingestRingEvents(r?.events || [])
@@ -181,6 +199,10 @@ function handleWSMessage(frame: any) {
   const ev = frame.data
   const sid = ev?.subagent_id
   if (!sid) return
+  // 载入窗口闸（BUG-20261106-009）：换详情载入期间 detail.value 仍是旧
+  // 任务，旧任务的实时帧会把事件灌进已清空的新 timeline。载入完成后
+  // poll 按 after_seq 全量补齐，不丢事件。
+  if (detailLoading.value) return
   if (detail.value && sid === detail.value.id) {
     pushTimeline(String(ev.kind ?? 'Unknown'), ev.data ?? {}, Number(ev.seq ?? 0))
     timeline.value.sort((a, b) => a.seq - b.seq)
@@ -270,11 +292,14 @@ function toolLabel(item: TimelineItem): string {
   return item.kind
 }
 
-// ChatPanel 抽屉深链：/subagents?focus=<id> 自动开详情。
+// ChatPanel 抽屉深链：/executors?tab=subagents&focus=<id> 自动开详情
+// （旧 /subagents 路由 redirect 保兼容）。
 async function openFromQuery() {
   const focus = route.query.focus
   if (typeof focus === 'string' && focus) {
+    if (!alive) return // 卸载后的续段不得消费/剥离 focus（死实例偷深链）
     await openDetail(focus)
+    if (!alive) return // openDetail 在途期间可能已被卸载
     // 用完即清（刷新页面不再自动弹）
     router.replace({ query: { ...route.query, focus: undefined } })
   }
@@ -288,6 +313,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  alive = false
   if (listTimer) clearInterval(listTimer)
   if (detailPoll) clearInterval(detailPoll)
   removeMessageHandler(handleWSMessage)

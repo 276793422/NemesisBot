@@ -1,6 +1,6 @@
 //! notify sweep 可投递性裁决测试（外置：`#[cfg(test)] mod tests;` 约定）。
 //!
-//! BUG-20261025-48 回归锁：sweep 重投前必须复查交付状态——义务已终或交付
+//! 回归锁：sweep 重投前必须复查交付状态——义务已终或交付
 //! 已拒绝的箱行清箱停车，拒绝语义不被投递回泼。
 
 use nemesis_taskstore::deliveries::DeliveryRecord;

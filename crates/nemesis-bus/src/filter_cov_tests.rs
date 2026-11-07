@@ -89,7 +89,7 @@ async fn rejected_decision_carries_reason_and_stops_chain() {
     );
 }
 
-/// BUG-20261102-321 红绿证：run 可观测性契约（docstring）承诺「Intercepted
+/// 红绿证：run 可观测性契约（docstring）承诺「Intercepted
 /// 记 info、Rejected 记 warn」——修复前实现两分支都 info，warn+ 日志级别
 /// 下链终止拒绝事件不可见。本测试以 WARN 级捕获 subscriber 验证：Rejected
 /// 必须以 warn 出现、Intercepted 必须保持 info（不得一起升级）。

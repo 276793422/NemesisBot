@@ -150,9 +150,7 @@ fn forge_dir(workspace: &str) -> PathBuf {
     PathBuf::from(workspace).join("forge")
 }
 
-// ---------------------------------------------------------------------------
 // Core commands
-// ---------------------------------------------------------------------------
 
 impl ForgeHandler {
     fn status(
@@ -296,9 +294,7 @@ impl ForgeHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Experiences
-// ---------------------------------------------------------------------------
 
 impl ForgeHandler {
     fn experiences_stats(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
@@ -330,9 +326,7 @@ impl ForgeHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Reflections
-// ---------------------------------------------------------------------------
 
 impl ForgeHandler {
     fn reflections_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
@@ -414,9 +408,7 @@ impl ForgeHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Learning Cycles
-// ---------------------------------------------------------------------------
 
 impl ForgeHandler {
     fn cycles_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
@@ -429,9 +421,7 @@ impl ForgeHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Registry (Artifacts)
-// ---------------------------------------------------------------------------
 
 impl ForgeHandler {
     fn registry_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
@@ -478,7 +468,7 @@ impl ForgeHandler {
             .get("status")
             .and_then(|v| v.as_str())
             .ok_or("missing 'status' field")?;
-        // 状态值必须能反序列化为 ArtifactStatus（R17，单一真相源校验）：
+        // 状态值必须能反序列化为 ArtifactStatus（统一定义校验）：
         // 此前任意字符串直写 registry.json，而 Registry::load 用
         // Vec<Artifact> 严格反序列化——一个毒值让整个注册表加载必炸
         // 且无自愈（web 统计静默归零、CLI 反思去重失效会追加重复条目）。
@@ -494,7 +484,7 @@ impl ForgeHandler {
         }
 
         // registry.json 是 load→改→写 RMW（并发 registry_update 后写覆盖先写
-        // 丢状态翻转），与 config 同族文件共用写串行锁（2026-10-13）。
+        // 丢状态翻转），与 config 同族文件共用写串行锁。
         // 锁在 update_json_file 内；顶层是数组，Value 事务天然兼容。
         let registry_file = forge_dir(workspace).join("registry.json");
         super::config::update_json_file(&registry_file, |v| {
@@ -537,9 +527,7 @@ impl ForgeHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Legacy commands
-// ---------------------------------------------------------------------------
 
 impl ForgeHandler {
     fn artifacts(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
@@ -606,11 +594,11 @@ impl ForgeHandler {
         let reflections_dir = fd.join("reflections");
         let reflector = nemesis_forge::reflector::Reflector::with_reflections_dir(reflections_dir);
 
-        // use_llm 消费（2026-10-16 R16 缺陷 21）：R11 契约「use_llm = 是否用
+        // use_llm 消费（缺陷 21）： 契约「use_llm = 是否用
         // LLM 做语义分析，gateway 与 CLI 同语义」的第三入口——此前本命令
         // 无条件纯统计反思，Dashboard 手动反思在默认配置（use_llm=true）下
         // 永远拿不到 LLM 洞察，静默缺失。接线与 CLI `forge reflect` 同源：
-        // 杂务链（resolve_judge_caller 单一真相源：judge_model → small_model
+        // 杂务链（resolve_judge_caller 统一定义：judge_model → small_model
         // → 主模型）挂 reflector，带全量 artifacts（LLM 看到已部署技能不重复
         // 提名，注册表先从盘回载）+ 统一杂务预算；use_llm=false 或无可用模型
         // = 统计反思，响应 `llm_insights` 字段诚实标注（LLM 调用失败也落
@@ -725,7 +713,7 @@ impl ForgeHandler {
             let mut default_config = nemesis_forge::config::ForgeConfig::default();
             default_config.enabled = enabled;
             if let Ok(json) = serde_json::to_string_pretty(&default_config) {
-                // REL-002：原子写入。
+                // 原子写入。
                 let _ = nemesis_utils::write_file_atomic(
                     &forge_config_path.to_string_lossy(),
                     json.as_bytes(),
@@ -779,7 +767,7 @@ impl ForgeHandler {
 
         // Ensure config.forge.json exists — auto-create from defaults if missing.
         // 纯创建（非 RMW），锁外执行；随后的 update_json_file 事务罩真正的
-        // 读→改→写（与 config_save 等写臂互斥，同族配置写串行锁，2026-10-13）。
+        // 读→改→写（与 config_save 等写臂互斥，同族配置写串行锁）。
         let forge_config_path =
             nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         if !forge_config_path.exists() {
@@ -789,7 +777,7 @@ impl ForgeHandler {
             let default_config = nemesis_forge::config::ForgeConfig::default();
             let json = serde_json::to_string_pretty(&default_config)
                 .map_err(|e| format!("failed to serialize default forge config: {}", e))?;
-            // REL-002：原子写入。
+            // 原子写入。
             nemesis_utils::write_file_atomic(
                 &forge_config_path.to_string_lossy(),
                 json.as_bytes(),
@@ -829,9 +817,7 @@ impl ForgeHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 struct ExperienceStatsResult {
     total_count: usize,
@@ -1071,7 +1057,7 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
     }
     let mut results = Vec::new();
     if let Ok(month_entries) = std::fs::read_dir(dir) {
-        // 月目录按名排序（R18）：read_dir 顺序是平台实现细节（NTFS 字典序
+        // 月目录按名排序：read_dir 顺序是平台实现细节（NTFS 字典序
         // vs ext4 哈希序），无序基上「取尾/倒序截尾」=任意子集。升序迭代
         // 保持本函数「旧→新」返回契约（消费方 `cycles.last()` 取最新、
         // `.rev().take(100)` 取最新 100）。
@@ -1110,12 +1096,12 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
     results
 }
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): narrow arms not
+// (, quality-hardening goal 冲刺 web): narrow arms not
 // reached by forge_extra_tests.rs — offline only.
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：config.save 运行时 start/stop 联动（真
+// AGT 覆盖率批次：config.save 运行时 start/stop 联动（真
 // Forge + is_running 翻转）、learning.toggle 运行时旗标 + 非 object 配置
 // 跳过臂、experiences 统计的空行/非法行/全非法三态、深目录读取器的目录型
 // 文件兜底与 learning/reflections 深路径。豁免（live 全局 store 命中臂）
@@ -1138,7 +1124,7 @@ fn forge_test_cmd(
         .get("name")
         .and_then(|v| v.as_str())
         .ok_or("missing 'name'")?;
-    // name 围栏（R17 引入，R18 起走 forge crate 单一真相源）：单段目录名，
+    // name 围栏（引入， 起走 forge crate 统一定义）：单段目录名，
     // 拒 `../x` 穿越读面与 `C:evil` 盘符相对形态（is_absolute()==false 但
     // join 整段换基座）。合法技能目录名是 kebab/单段（slugify 产物）。
     nemesis_forge::forge::valid_skill_dir_name(name)?;

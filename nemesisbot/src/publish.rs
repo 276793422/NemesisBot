@@ -13,7 +13,7 @@
 //!    payload.repo_base_sha（版本绑定的发布侧消费——基线漂移拒绝发布，绝不
 //!    把 patch 糊到漂移基线上）；内联 patch 在场且未截断。
 //! 2. **git 半边**：副本仓内 HEAD 建分支 `nemesis/task-<task_id>` + 应用
-//!    patch + commit（[`nemesis_board::git_repo::apply_patch_new_branch`]，
+//!    patch + commit（[`nemesis_board::git_repo:apply_patch_new_branch`]，
 //!    libgit2 原生零外部 git）→ `push_branch` 推 origin（vault PAT，同
 //!    clone 凭据语义；push 有 TCP 确认，失败重推幂等——同内容快进）。
 //! 3. **发布条目创建**：protocol.create_op + create_args（模板声明，运行期
@@ -27,7 +27,7 @@
 //! 5. **落账**：`mark_delivery_published_with_payload`（published 终态 +
 //!    payload 单事务同落）+ external_ref/external_url/published_*。
 //!
-//! 续作留痕（2026-11-02 复评 F1 移植）：交付 payload 的 `publish_stage`
+//! 续作留痕（2026-11-02 复评 移植）：交付 payload 的 `publish_stage`
 //! 单调记账（commit_generated → push_completed → pr_pending → published，
 //! **只前进不后退**——pr_pending 续作跳过中间态写入，防把现场覆盖回退）。
 //! push/创建阶段失败后的重试凭此续作：分支已存在走内容级幂等复用（git 层
@@ -38,7 +38,7 @@
 //! 发布，不静默放行）；对账翻页有硬上限（页数封顶 = Inconclusive 保守判
 //! 失败，绝不冒充「扫尽不在」）。
 //!
-//! **op 路由双臂（2026-11-04 插件自持批 3a）**：create_op/reconcile_op
+//! **op 路由双臂（2026-11-04 插件自持a）**：create_op/reconcile_op
 //! 各自可走 connector 原语（`connector_invoke` 工具面）或
 //! `plugin:<slug>:<op>` guest 步引用（`run_flow_step`，与 on-transition/
 //! report 形态同源）——connector 字段随之转可选（仅 Native 形态需要）；
@@ -60,7 +60,7 @@ const ST_PUBLISHED: &str = "published";
 const ST_ALREADY: &str = "already_published";
 const ST_FAILED: &str = "failed";
 
-/// 「请求确定未发出」错误标记（插件自持批 3a）：plugin 路由层失败（插件
+/// 「请求确定未发出」错误标记（插件自持a）：plugin 路由层失败（插件
 /// 未装配/停用/词表对账不过）与 dispatch 层拒（`⛔` 前缀）同语义——都不
 /// 可能产生远端副作用，重试安全。guest 四态 failed/running/malformed =
 /// guest 已执行过（可能已发 HTTP），**不带**本标记 → 走对账保守分支。
@@ -120,7 +120,7 @@ impl Default for PublishProtocol {
     }
 }
 
-/// 发布 op 路由（插件自持批 3a）：connector 原语 op（走
+/// 发布 op 路由（插件自持a）：connector 原语 op（走
 /// `connector_invoke` 工具面）或 `plugin:<slug>:<op>` guest 步引用（走
 /// `run_flow_step`——与 on-transition/report 形态 100% 同源）。创建与对账
 /// 可各自选臂（混搭合法：创建走 guest、对账走 connector 均是合法声明）。
@@ -196,7 +196,7 @@ pub(crate) fn install(
 impl nemesis_web::handlers::deliveries::DeliveryPublishBridge for DeliveryPublisher {
     async fn publish(&self, args: &Value) -> Result<Value, String> {
         // 域剥离批 C-3：WSAPI 桥无 flow 模板声明面，协议缺席 → 诚实报错
-        // （域知识只在 flow 模板；dashboard 发布表单随域退役批一并处理）。
+        // （域知识只在 flow 模板；dashboard 发布表单随域退役并处理）。
         publish_task_delivery(
             &self.db,
             &self.store,
@@ -233,7 +233,7 @@ enum Preflight {
         /// 交付基线树（payload `base_tree` 透传；缺席/空 = None）——Gerrit
         /// 臂三方合并的基树锚（缺席时回落基线提交的树）。
         base_tree: Option<String>,
-        /// 交付 payload 的 `publish_stage`（F1 续作留痕）：`pr_pending` =
+        /// 交付 payload 的 `publish_stage`（续作留痕）：`pr_pending` =
         /// 上次已到达发布条目创建阶段（进程崩溃/落账失败），重试先对账防
         /// 重复建条目；其余值（commit_generated/push_completed/published/
         /// 缺省）走常规路径。
@@ -323,7 +323,7 @@ fn preflight(
         || expected_tree
             .as_deref()
             .is_some_and(|et| !head_tree.is_empty() && et == head_tree);
-    // 第三臂（2026-11-02 真链发现）：交付已并入副本（ingest 在任务完成时即
+    // 第三臂（真链发现）：交付已并入副本（ingest 在任务完成时即
     // 合并进副本 main，publish 人工闸在后是常态时序）——副本内容态等值交付
     // 内容态（交付 payload `tree` = worker 交付后内容树，随 checks_binds.head_tree
     // 同源落账）时 patch 再套必失败：发布分支直接取 HEAD 内容。等值是内容级
@@ -354,9 +354,9 @@ fn preflight(
     {
         return Err(PREFLIGHT_PATCH_TRUNCATED.to_string());
     }
-    // 2026-11-02 复评 F1：空白判定用 `trim().is_empty()`，但**存储/解析
+    // 复评：空白判定用 `trim().is_empty()`，但**存储/解析
     // 保留原始字节**——`.map(str::trim)` 会剥掉 patch 末尾换行，而末尾换行
-    // 是标准文本 diff 解析格式的一部分（实测 git2::Diff::from_buffer 拒绝
+    // 是标准文本 diff 解析格式的一部分（实测 git2::Diff:from_buffer 拒绝
     // 「无尾换行」的合法 patch）。
     let patch = rec
         .payload
@@ -405,8 +405,8 @@ const PREFLIGHT_NO_PATCH: &str =
 /// - 分支在场且指向树等值交付树（payload `tree` 锚）→ `Ok(Some(commit))`
 ///   直接复用上次产物（免 git 层探针）；
 /// - 分支在场、交付树锚缺席 = `Ok(None)` → 落入
-///   [`nemesis_board::git_repo::apply_patch_new_branch`] 的内容级复用探针
-///   （父基线一致 + patch-over-HEAD tree 等值，2026-11-02 复评 F1 移植）——
+///   [`nemesis_board::git_repo:apply_patch_new_branch`] 的内容级复用探针
+///   （父基线一致 + patch-over-HEAD tree 等值， 复评 移植）——
 ///   载荷无 `tree` 锚也能安全续作，等值校验由 git 层完成；
 /// - 分支在场且树不等值（有锚可比）→ Err 诚实拒绝不猜（分支被其他内容占用）。
 fn branch_reuse_decision(
@@ -466,7 +466,7 @@ pub(crate) async fn publish_task_delivery(
     let task_id = arg_str(args, "task_id")?;
     let owner = arg_str(args, "owner")?;
     let repo = arg_str(args, "repo")?;
-    // op 路由双臂解析（批 3a）。声明面问题 = Err 上抛（请求形态非法），
+    // op 路由双臂解析（a）。声明面问题 = Err 上抛（请求形态非法），
     // 不进结构化失败响应——装载期校验（parse_publish_step_protocol）已
     // 挡住绝大多数，这里是运行期最后一道。
     let create_route = parse_op_route(&protocol.create_op)?;
@@ -478,7 +478,7 @@ pub(crate) async fn publish_task_delivery(
         _ => None,
     };
     validate_task_id_for_branch(&task_id)?;
-    // plugin 路由臂的审计归因键（批 3a）：web 桥 protocol=None 在路由前
+    // plugin 路由臂的审计归因键（a）：web 桥 protocol=None 在路由前
     // 已诚实报错，够不着本段。
     let session_key = format!("publish:{task_id}");
     let branch = format!("nemesis/task-{task_id}");
@@ -527,7 +527,7 @@ pub(crate) async fn publish_task_delivery(
     };
     let pr_pending_retry = stage.as_deref() == Some("pr_pending");
 
-    // ③ git 半边。重试幂等双层（2026-11-02 真链第二缺口 + 复评 F1）：上次
+    // ③ git 半边。重试幂等双层（真链第二缺口 + 复评）：上次
     // 发布可能 git 半边已完成（分支已推、条目创建卡审批/网络）——失败文案
     // 承诺「可重试」，重试不能被自己上次的分支挡死。上层快路：分支在场且
     // 指向树 == 交付树（payload 锚）→ 直接复用该 commit；锚缺席 → 落入
@@ -678,7 +678,7 @@ pub(crate) async fn publish_task_delivery(
         }
         None => commit_hex,
     };
-    // 阶段留痕（F1 续作；best-effort——留痕写失败不阻断发布本身，只降级
+    // 阶段留痕（续作；best-effort——留痕写失败不阻断发布本身，只降级
     // 重试续作的精确度，warn 可观测）。**阶段单调不回退**：pr_pending 现场
     // 续作时跳过中间态——把 pr_pending 覆盖成 commit_generated/push_completed
     // 后，若本次重试又在对账/创建窗口中断，下次重试丢失 pr_pending 语义 →
@@ -692,7 +692,7 @@ pub(crate) async fn publish_task_delivery(
         tracing::warn!(task_id = %task_id, "[Publish] commit_generated 留痕失败: {e}");
     }
     // ④ 推送（vault PAT；匿名路径 = 公开仓语义，与 clone 凭据对称）。凭据
-    // 别名从 create_op 路由推导（批 3a 单点）：Plugin → plugin/<slug>/pat
+    // 别名从 create_op 路由推导（a 单点）：Plugin → plugin/<slug>/pat
     // （自持插件 PAT），Native → connector/<id>/pat。批 B：cred_secret 显式
     // 覆盖优先（Gerrit = HTTP Basic 用户名 + HTTP Password，别名与 GitLab
     // PAT 分开，如 plugin/sc-bugfix/gerrit_http_pass；cred_user 缺省回落
@@ -766,7 +766,7 @@ pub(crate) async fn publish_task_delivery(
         .collect();
     let rendered_match = rt(&protocol.reconcile_match);
 
-    // pr_pending 续作（F1）：上次若已到达创建阶段（publish_stage =
+    // pr_pending 续作：上次若已到达创建阶段（publish_stage =
     // pr_pending：进程崩溃/落账失败留下），**先对账再决定**——已建成条目
     // 直接收敛落账（不重复建）；扫尽确认不在才安全重建；扫不尽维持保守
     // 失败（重复建条目风险不静默承担）。对账走同一条声明化翻页匹配通路
@@ -880,7 +880,7 @@ pub(crate) async fn publish_task_delivery(
                 }
             }
         }
-        // 确定未发出（批 3a 两族）：dispatch 层拒（estop/审批/安全层，`⛔`
+        // 确定未发出（a 两族）：dispatch 层拒（estop/审批/安全层，`⛔`
         // 前缀）或 plugin 路由层失败（插件未装配/停用/词表对账不过，
         // `[not-sent]` 标记）——两者都不可能产生远端副作用，重试安全。
         Err(text)
@@ -954,7 +954,7 @@ pub(crate) async fn publish_task_delivery(
 
 /// ⑥ 落账收敛：published 终态 + 外部引用留痕（**单事务**——状态与留痕要么
 /// 同落要么都不落，杜绝「状态已 published 而 payload 无引用」的半行账让
-/// 重试误判，2026-11-02 复评 F1）。正常创建与 pr_pending 对账续作共用此
+/// 重试误判， 复评）。正常创建与 pr_pending 对账续作共用此
 /// 出口。`external_url` 允许 None（对账只拿到引用号没拿到链接），落账为
 /// null、响应同形。
 #[allow(clippy::too_many_arguments)]
@@ -1117,15 +1117,15 @@ async fn invoke_native(
     Ok(text)
 }
 
-/// plugin 步调用（批 3a）：`run_flow_step(slug, op, {"op","args",
+/// plugin 步调用（a）：`run_flow_step(slug, op, {"op","args",
 /// "session_key"})` 四态映射（与 report_plugin_comment/plugin fetch 同源
-/// 解析单点 [`crate::flow_engine::plugin_step_outcome`]）。
+/// 解析单点 [`crate::flow_engine:plugin_step_outcome`]）。
 ///
 /// 语义分族（错误三态决定对账分支——诚实边界）：
 /// - 路由层失败（子系统缺席/插件停用/词表对账不过）= **确定未发出**，
 ///   错误带 [`NOT_SENT_MARKER`] 前缀 → publish_task_delivery 归「未发出
 ///   确定失败」分支（重试安全）；
-/// - guest 四态 `done` = 载荷原样返回（`{"status":"done", ...}` 去 status
+/// - guest 四态 `done` = 载荷原样返回（`{"status":"done",...}` 去 status
 ///   后对象，JSON path 直读字段展开）；
 /// - `failed`/`running`/`skipped`/malformed = guest 已执行过或语义违规，
 ///   错误**不带**标记 → 走「可能已送达」对账保守分支（failed = HTTP 层
@@ -1165,7 +1165,7 @@ async fn invoke_plugin(
     }
 }
 
-/// op 路由统一入口（批 3a）：Native 臂 = connector_invoke 工具面原样；
+/// op 路由统一入口（a）：Native 臂 = connector_invoke 工具面原样；
 /// Plugin 臂 = run_flow_step 四态。臂前置条件缺失（Native 无 connector /
 /// Plugin 无子系统）= 诚实 Err。
 async fn invoke_route(
@@ -1197,7 +1197,7 @@ async fn invoke_route(
 }
 
 /// 创建结果解析（协议声明化）：result_ref JSON path 取「外部条目号」、
-/// result_url path 取人读链接（scheme 闸 [`crate::flow_engine::safe_external_url`]）。
+/// result_url path 取人读链接（scheme 闸 [`crate::flow_engine:safe_external_url`]）。
 /// 直接对象或单元素数组都认；认不出的形态交给对账（不猜）。
 fn parse_publish_result(
     text: &str,
@@ -1223,13 +1223,13 @@ fn parse_publish_result(
 /// `reconcile_match` 比较式逐条匹配同仓条目（state=all——open/closed 一并
 /// 认，报告既有条目比重复建一个诚实）。
 ///
-/// 翻页（BUG-20261028 对账固定首页根修的协议化形态）：条目总数超过单页
+/// 翻页（对账固定首页根修的协议化形态）：条目总数超过单页
 /// limit 时目标可能落在后续页——逐页扫描 + 硬上限：满页才翻下一页，不足
 /// 一页 = 末页即停；页数硬上限防对端异常（恒满页/无限分页）把对账变成
 /// 无界循环。limit/page 参数键名与页大小由 protocol 声明（宿主逐页注入/
 /// 覆盖模板基参）。
 ///
-/// 三态结论（BUG-20261029 回顾收紧）：Absent = 扫到不足一页的短页仍无命中
+/// 三态结论（回顾收紧）：Absent = 扫到不足一页的短页仍无命中
 /// （**扫尽确认不在**，重试建条目安全）；Inconclusive = 页数硬上限封顶 /
 /// 某页响应不可解析 / 查询本身失败 / **命中但引用不可读**（**未能扫尽或判
 /// 不清**——保守判失败可重试，但重试存在重复建条目风险，操作者文案必须
@@ -1330,7 +1330,7 @@ async fn reconcile_by_match(
             Err(_) => return ReconcileOutcome::Inconclusive,
         };
         // 页体数组解析 FIRST：不可解析（截断/错误页）= 未能扫尽，不冒充
-        // 「扫尽不在」。三形态（批 3a）：顶层数组（connector 原语惯例）、
+        // 「扫尽不在」。三形态（a）：顶层数组（connector 原语惯例）、
         // `{"entries": [...]}` 包裹（plugin 步 done 契约同款）、其余 =
         // Inconclusive。
         let list: Vec<Value> = match serde_json::from_str(text.trim()) {

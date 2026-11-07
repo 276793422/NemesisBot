@@ -1,5 +1,5 @@
-//! L1 (U19): the agent-facing `lsp` tool — read-only semantic code queries
-//! (definition / references / implementation / hover) plus C7's write-capable
+//! the agent-facing `lsp` tool — read-only semantic code queries
+//! (definition / references / implementation / hover) plus 's write-capable
 //! `rename` (server-computed WorkspaceEdit applied through the security
 //! pipeline) and `code_action` quickfix listing. Driven through real language
 //! servers by `nemesis-lsp`.
@@ -23,15 +23,15 @@ use crate::loop_tools::{Tool, WorkspaceBoundary};
 
 pub struct LspTool {
     manager: Arc<LspManager>,
-    /// M3（2026-10-27 整改）：rename 落盘的工作区边界（与 write_file 等文件
+    /// rename 落盘的工作区边界（与 write_file 等文件
     /// 工具同源的第二道闸）。`gate_and_write` 对 WorkspaceEdit 逐文件过
     /// `validate_workspace_path`，越界文件进拒绝清单不落盘；相对路径解析
     /// 基点也随边界根（无边界维持 cwd 兼容——测试 / 独立 runner 形态）。
     boundary: Option<Arc<WorkspaceBoundary>>,
-    /// C7：rename 落盘闸宿主（SecurityPlugin）。rename 的每文件新全文以
+    /// rename 落盘闸宿主（SecurityPlugin）。rename 的每文件新全文以
     /// 合成 `write_file` 调用走完整 8 层管线（注入/凭据/DLP/scanner 见真
     /// 内容），auditor 审批在 `execute()` 内同步生效；guardian 语义二审
-    /// 经 `guardian_gate` 与 dispatch 同源（BUG-20261025-37：此前文档
+    /// 经 `guardian_gate` 与 dispatch 同源（此前文档
     /// 声称继承但实现缺失，high 模式下同内容直写会被送审、rename 直落）。
     /// None（feature 裁剪 /
     /// 插件未注入）时 rename 直接落盘——与 executor 分离前普通写工具的
@@ -49,7 +49,7 @@ impl LspTool {
     ///
     /// Self-built-manager fallback path (tests, standalone agent runners).
     /// Production goes through [`LspTool::with_manager`] so the gateway owns
-    /// the singleton and can `shutdown_all()` on graceful exit (C5).
+    /// the singleton and can `shutdown_all()` on graceful exit.
     pub fn new(timeout_secs: Option<u64>, idle_secs: Option<u64>) -> Self {
         Self {
             manager: Arc::new(LspManager::new(
@@ -61,7 +61,7 @@ impl LspTool {
         }
     }
 
-    /// C5（2026-09-04 devtool-upgrade）: external-manager construction —
+    /// （devtool-upgrade）: external-manager construction —
     /// agent_factory creates ONE `Arc<LspManager>` in `SharedResources`,
     /// hands it here, to the web server (`set_lsp_manager`), and calls
     /// `shutdown_all()` on gateway teardown. Without this, the tool built
@@ -75,7 +75,7 @@ impl LspTool {
         }
     }
 
-    /// M3（2026-10-27 整改）：挂工作区边界（生产装配形态）。rename 落盘
+    /// 挂工作区边界（生产装配形态）。rename 落盘
     /// 逐文件过 `validate_workspace_path`，相对路径解析基点 = 边界根。
     /// `new` / `with_manager` 签名不动（25+ 处测试调用点零波及）。
     pub fn with_boundary(mut self, boundary: Arc<WorkspaceBoundary>) -> Self {
@@ -83,7 +83,7 @@ impl LspTool {
         self
     }
 
-    /// The backing manager (C5 test/observability access).
+    /// The backing manager (test/observability access).
     pub fn manager(&self) -> &Arc<LspManager> {
         &self.manager
     }
@@ -152,7 +152,7 @@ impl Tool for LspTool {
             .and_then(|p| p.as_str())
             .ok_or("Missing 'path' argument")?;
         let path = PathBuf::from(path_str);
-        // M3：相对路径解析基点与文件工具同源——有边界按边界根（工作区），
+        // 相对路径解析基点与文件工具同源——有边界按边界根（工作区），
         // 无边界回落进程 cwd（测试 / 独立 runner 形态）。旧注释声称「与
         // exec/file 工具同一 cwd 约定」失实：文件工具在生产形态锚定的是
         // 工作区根，不是 cwd。
@@ -228,7 +228,7 @@ impl Tool for LspTool {
 }
 
 impl LspTool {
-    /// C7：rename 全链路。
+    /// rename 全链路。
     ///
     /// 1. 服务器算 WorkspaceEdit，逐文件读盘应用成新全文（manager::rename，
     ///    不写盘）；
@@ -237,7 +237,7 @@ impl LspTool {
     ///    dispatch 同源），全部放行才进入写阶段——半改名状态是破碎代码，
     ///    宁可全有全无；
     /// 3. 逐文件写盘 → `notify_change` 回同步服务器文档 → 主文件等诊断
-    ///    （编辑后闭环，复用 C2 的推送缓存：同一会话的 drain 顺带把其余
+    ///    （编辑后闭环，复用 的推送缓存：同一会话的 drain 顺带把其余
     ///    被改文件的推送也收进缓存）。
     async fn execute_rename(
         &self,
@@ -257,10 +257,10 @@ impl LspTool {
             return Err(format!("rename produced no applicable file edits{suffix}"));
         }
 
-        // Phase 1 + 2: gate ALL files, then write ALL files (atomic enough:
+        // + 2: gate ALL files, then write ALL files (atomic enough:
         // a mid-write failure is reported honestly with which files landed).
-        // cfg 分支取引用（`()` 占位不 impl Deref，as_deref 在 no-security
-        // 编译下不存在——单 crate 无 feature 构建曾在此炸 E0599，25 号
+        // cfg 分支取引用（`` 占位不 impl Deref，as_deref 在 no-security
+        // 编译下不存在——单 crate 无 feature 构建曾在此炸，25 号
         // 雷区家族：workspace 全量 feature 统一会掩盖这个分支）。
         #[cfg(feature = "security")]
         let security = self.security.as_deref();
@@ -269,9 +269,9 @@ impl LspTool {
         let (written, rejected) =
             gate_and_write(&outcome.files, security, self.boundary.as_deref(), context).await?;
 
-        // Phase 3: resync server docs and harvest diagnostics. notify_change
+        // resync server docs and harvest diagnostics. notify_change
         // is best-effort (diagnostics closure is an optimization, not a
-        // dependency — same policy as C3's edit path). 只同步实际落盘的文件
+        // dependency — same policy as 's edit path). 只同步实际落盘的文件
         // （被边界拒绝的文件内容未变，回灌服务器反而制造幻影文档状态）。
         let written_set: std::collections::HashSet<&str> =
             written.iter().map(|s| s.as_str()).collect();
@@ -357,22 +357,43 @@ impl LspTool {
     }
 }
 
-/// C7 两阶段落盘：先全部过安全闸（合成 `write_file` ToolInvocation 走完整
+/// 两阶段落盘：先全部过安全闸（合成 `write_file` ToolInvocation 走完整
 /// 8 层管线——注入/凭据/DLP/scanner 看到的是真实新全文；guardian 语义二审
-/// 经 `guardian_gate` 与 dispatch 同源，BUG-20261025-37），全部放行才逐文
+/// 经 `guardian_gate` 与 dispatch 同源），全部放行才逐文
 /// 件写盘。任一文件被拦（规则层或 guardian）→ 一个字节都不落盘（半改名=
 /// 破碎代码）。无闸形态（feature 裁剪/插件未注入）直接写——gate 缺席≠gate
 /// 通过，语义与无闸的普通写工具一致。
 ///
-/// M3（2026-10-27 整改）：安全闸之前先做**逐文件工作区边界预分**——
+/// 安全闸之前先做**逐文件工作区边界预分**——
 /// `validate_workspace_path` 通过的文件才进闸+写阶段，越界文件进拒绝清单
 /// （部分成功语义，与 rename 跨文件自然对齐：拒一处不连坐其余文件）。
 /// 全部被拒时 written 为空，由调用方定失败语义。
 ///
 /// 返回（实际落盘路径, 拒绝清单[(路径, 原因)]）；写盘中途失败 = Err 且错误
-/// 消息**自带已落盘清单**（BUG-20261104-381：此前 `?` 直接返回丢现场——
+/// 消息**自带已落盘清单**（此前 `?` 直接返回丢现场——
 /// 模型只看到第 N 个文件的 IO 失败，不知道前 N-1 个已改，半改名状态不可
 /// 见无法补救；闸已全过，失败只可能是 IO 层）。
+/// 合成 write_file 调用的**审批路由键**（K4b 与 dispatch 同源）：管线层 3
+/// 从 invocation metadata 提取这三个键构造 ApprovalContext——审批卡按发起
+/// 对话路由（IM 通道卡片回源，见 ChannelApprovalManager 的 chat_id 寻址）、
+/// 审批续执行（respond_stale）按 session_key 回灌原会话。此前 gate_and_write
+/// 构造 invocation 时 metadata 为空 HashMap，rename 落盘的审批卡在这两条
+/// 路径上全瞎（guardian 二审的 ctx 是单独填的，两侧不对称暴露这是遗漏）。
+#[cfg(feature = "security")]
+pub(crate) fn approval_routing_metadata(
+    context: &RequestContext,
+) -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    m.insert("approval_chat_id".to_string(), context.chat_id.clone());
+    m.insert("approval_sender_id".to_string(), context.user.clone());
+    // 审批续执行（2026-10-22）：重启补裁按它把裁决消息回灌原会话。
+    m.insert(
+        "approval_session_key".to_string(),
+        context.session_key.clone(),
+    );
+    m
+}
+
 #[cfg(feature = "security")]
 async fn gate_and_write(
     files: &[AppliedFileEdit],
@@ -382,9 +403,9 @@ async fn gate_and_write(
 ) -> Result<(Vec<String>, Vec<(String, String)>), String> {
     // 边界预分：越界文件不进闸（省审批面）也不落盘。界内文件带**解析后
     // 的绝对路径**进闸+落盘（相对路径锚定边界根）——预分只校验不替换落点
-    // 的话，相对路径会写进进程 cwd（污染源树/丢文件，M3 实测抓到的缺陷）。
+    // 的话，相对路径会写进进程 cwd（污染源树/丢文件， 实测抓到的缺陷）。
     // None 边界 = resolve 透传（行为同前）。
-    // 族 = WriteDelete（2026-11-01 复核修正）：rename 落盘是写操作（与
+    // 族 = WriteDelete（复核修正）：rename 落盘是写操作（与
     // 下方合成 `write_file` 安全闸同一口径）——围栏按写删族问闸，full-only
     // 时界外照拒（与审批层回落判定同源），双开才放；误标 Read 会围栏比
     // 审批层松（两层分叉）。
@@ -415,7 +436,9 @@ async fn gate_and_write(
                 args: args.clone(),
                 user: String::new(),
                 source: context.channel.clone(),
-                metadata: std::collections::HashMap::new(),
+                // K4b：审批路由键随行（与 dispatch 构造点同一组键，见
+                // approval_routing_metadata 的 doc）。
+                metadata: approval_routing_metadata(context),
             };
             let (allowed, deny) = security.execute(&invocation);
             if !allowed {
@@ -433,7 +456,7 @@ async fn gate_and_write(
                     info.summary
                 ));
             }
-            // BUG-20261025-37：guardian 与 dispatch 同源（单一真相源
+            // guardian 与 dispatch 同源（统一定义
             // guardian_gate）。合成 write_file 无 op 投影，危级走静态表——
             // 与 dispatch 无 override 路径完全同口径。
             let danger = security.tool_danger_level("write_file");
@@ -460,7 +483,7 @@ async fn gate_and_write(
         }
     }
     if !write_errors.is_empty() {
-        // BUG-20261104-381：写盘中途失败必须带**已落盘清单**——半改名状态
+        // 写盘中途失败必须带**已落盘清单**——半改名状态
         // 对调用方可见才能正确补救。此前 `?` 直接返回 Err，注释承诺的
         // 「已落盘者如实上报」做不到：模型只看到第 N 个文件的 IO 失败，
         // 不知道前 N-1 个已经改了（会盲目重试整个 rename）。
@@ -505,7 +528,7 @@ async fn gate_and_write(
         }
     }
     if !write_errors.is_empty() {
-        // BUG-20261104-381：同 security 形态——失败必须带已落盘清单。
+        // 同 security 形态——失败必须带已落盘清单。
         return Err(format!(
             "rename write phase failed; {} file(s) already written: [{}]; errors: {}",
             written.len(),

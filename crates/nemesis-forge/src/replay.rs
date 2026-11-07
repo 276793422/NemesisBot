@@ -31,7 +31,7 @@ pub struct FailureRecord {
 /// 扫 turn WAL 目录，提取失败记录（按 session+tool 去重，保留最新）。
 ///
 /// 扫描范围含**轮换代**：`wal.jsonl` 写满轮换为 `wal.jsonl.old`（turn_wal
-/// 单点轮换语义），只扫当前代会漏掉轮换点前最近一批失败（四路评审 C-F3
+/// 单点轮换语义），只扫当前代会漏掉轮换点前最近一批失败（四路评审 C-
 /// 根修）。跨代去重按 ts 保最新——旧代与当前代的重叠记录天然合并。
 pub fn extract_failures(workspace: &Path) -> Result<Vec<FailureRecord>, String> {
     let wal_dir = workspace.join("logs").join("turn_wal");
@@ -111,7 +111,7 @@ pub fn extract_failures(workspace: &Path) -> Result<Vec<FailureRecord>, String> 
 
 /// 失败记录 → 重放用例。重放语义：原任务重跑，执行零错误即过。
 ///
-/// name 的会话段走 [`nemesis_utils::sanitize::sanitize_path_segment`]
+/// name 的会话段走 [`nemesis_utils::sanitize:sanitize_path_segment`]
 /// 单一真相源（SAN-05）：超 80 字符自动带 FNV 短哈希后缀。本地旧实现
 /// `take(24) + 非字母数字转 _` 是裸截断身份——cluster 会话键
 /// `{node_id}/{chat}` 的节点 id 普遍 12+ 字符，前 24 字符全是公共前缀，
@@ -146,7 +146,7 @@ fn replay_dir(workspace: &Path) -> PathBuf {
     workspace.join("forge").join("replay")
 }
 
-/// 读用例区文件。缺失 = Ok(空)；**损坏 = Err**（四路评审 C-F2 根修——
+/// 读用例区文件。缺失 = Ok(空)；**损坏 = Err**（四路评审 C- 根修——
 /// 静默当空会让 confirm/ingest 以空基线回写，整区用例被销毁）。
 fn read_cases(file: &Path) -> Result<Vec<TestCase>, String> {
     let content = match std::fs::read_to_string(file) {
@@ -193,7 +193,7 @@ pub fn ingest(
 
 /// 待审确认：pending → confirmed（按 name；全部 = None）。
 ///
-/// **写序（四路评审 C-F1 根修）：confirmed 先写、pending 后写。** 中间
+/// **写序（四路评审 C- 根修）：confirmed 先写、pending 后写。** 中间
 /// 崩溃的最坏形态 = 用例两区重名（name 幂等去重自愈），不再是
 /// 「pending 已截、confirmed 未写」的整批销毁。
 pub fn confirm(workspace: &Path, name: Option<&str>) -> Result<usize, String> {

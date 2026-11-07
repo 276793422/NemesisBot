@@ -282,7 +282,7 @@ fn test_smtp_password_explicit() {
     assert_eq!(ch.smtp_password(), "smtp_pass");
 }
 
-// ---- F5（2026-09-22 审计修复）：SMTP/IMAP IO 超时 ----------------------------
+// ---- （审计修复）：SMTP/IMAP IO 超时 ----------------------------
 
 #[tokio::test(start_paused = true)]
 async fn test_io_timeout_pending_future_times_out() {
@@ -369,11 +369,11 @@ async fn test_smtp_send_black_hole_times_out() {
     );
 }
 
-// BUG-20261029-142：start() 把 sender_map 交给 IMAP 轮询任务的必须是共享
+// start() 把 sender_map 交给 IMAP 轮询任务的必须是共享
 // 克隆——裸 DashMap::clone() 是逐 shard 深拷贝，任务侧写入的回复线索
 // （chat_id -> 发件人/主题）落私有副本，send() 的读路径（self.sender_map
 // .get）读原表恒 miss，邮件回复线程化静默失效（Re: 主题恒落默认值）。
-// 本测试复刻任务侧捕获形态（与字段同源 .clone()）写入后，断言结构体侧
+// 本测试复刻任务侧捕获形态（与字段同源.clone()）写入后，断言结构体侧
 // 读路径可见——旧实现（裸 DashMap）红，Arc 化后绿。
 #[test]
 fn test_sender_map_shared_between_task_clone_and_read_path() {
@@ -404,12 +404,12 @@ fn test_sender_map_shared_between_task_clone_and_read_path() {
     );
 }
 
-// ---- BUG-20261031-244：收件黑洞（IMAP 轮询到标已读为止，从不发布总线） ----
+// ----：收件黑洞（IMAP 轮询到标已读为止，从不发布总线） ----
 
 /// 起一个只讲最小 IMAP 方言的假服务器（单连接）：greeting → LOGIN/SELECT OK →
 /// SEARCH 返回 1 封 → FETCH 头（Alice / Hello there / m1）→ FETCH 正文
 /// （"Hello body"）→ STORE/LOGOUT OK。命令匹配按内容不按 tag，tag 响应号
-/// 与客户端 next_tag 顺序（NB001..NB007）对齐。
+/// 与客户端 next_tag 顺序（..）对齐。
 async fn spawn_fake_imap() -> std::net::SocketAddr {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -477,7 +477,7 @@ async fn test_poll_loop_publishes_inbound_email_to_bus() {
         smtp_host: "smtp.example.com".to_string(),
         imap_username: "user".to_string(),
         imap_password: "pass".to_string(),
-        poll_interval: 3600, // 首 tick 立即触发，测试期内不再第二轮询
+        poll_interval: 3600, // 首 tick 立即触发，测试期内不再询
         ..Default::default()
     };
     let ch = EmailChannel::new(config, tx).unwrap();

@@ -1,4 +1,4 @@
-//! 桥帧 RPC 通道测试（goal 二期批次六 + 三期批次八/九）。
+//! 桥帧 RPC 通道测试（goal 二期 + 三期）。
 //!
 //! 覆盖：pending 表 round-trip / 发送失败快速收口 / 超时 / hub 侧上行分流
 //! （request 喂本地链、response 唤醒 pending、跨节点诚实 error）/ 设备侧
@@ -247,7 +247,7 @@ async fn hub_sink_response_wakes_pending_via_bridge_send() {
         )
         .await
     });
-    // 三期批次八起 authenticate_device 触发 member_sync 广播——跳过之，
+    // 三期起 authenticate_device 触发 member_sync 广播——跳过之，
     // 等真正的 ClusterRpc 下行帧。
     let frame = loop {
         let f = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
@@ -308,7 +308,7 @@ async fn device_bridge_round_trip_and_downstream_request() {
     assert!(matches!(err, RpcClientError::Connection(_)));
 
     // 挂载上行 → 端到端：send_over_bridge → 上行帧进入 rx → 模拟 hub 回
-    // response（经 handle_downstream）→ 完成。三期批次八起 bridge_online
+    // response（经 handle_downstream）→ 完成。三期起 bridge_online
     // = 出口活 + 成员在表——先收一帧 sync 塞表（模拟 hub 广播先行）。
     let (up_tx, mut up_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeFrame>();
     dev.attach_uplink(up_tx);
@@ -369,7 +369,7 @@ async fn device_bridge_round_trip_and_downstream_request() {
     assert!(!BridgeSend::bridge_online(dev.as_ref(), "node-hub"));
 }
 
-/// 三期批次八：`member_sync` 合并（registry 注册 + via-bridge 哨兵 + 成员
+/// 三期：`member_sync` 合并（registry 注册 + via-bridge 哨兵 + 成员
 /// 表全量替换 + 自己跳过 + 离线过滤 + detach 失效降级 + bridge_online 判定）。
 #[tokio::test]
 async fn member_sync_merges_registry_and_member_table() {
@@ -383,7 +383,7 @@ async fn member_sync_merges_registry_and_member_table() {
     ));
 
     // 挂载上行（会话活）但成员表空 → hub 节点不在表 → bridge_online false
-    // （三期批次八收紧后的语义：经桥可达 = 出口活 + 成员在表）。
+    // （三期收紧后的语义：经桥可达 = 出口活 + 成员在表）。
     let (up_tx, _up_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeFrame>();
     dev.attach_uplink(up_tx);
     assert!(!BridgeSend::bridge_online(dev.as_ref(), "node-hub"));
@@ -447,7 +447,7 @@ async fn member_sync_merges_registry_and_member_table() {
     assert!(BridgeSend::bridge_online(dev.as_ref(), "node-peer"));
     assert!(!BridgeSend::bridge_online(dev.as_ref(), "node-dead"));
 
-    // 全量替换：第二轮 sync 中 peer 消失 → 出表（过期成员清除）。
+    // 全量替换： sync 中 peer 消失 → 出表（过期成员清除）。
     let payload2 = serde_json::json!({
         "members": [
             {"node_id": "node-hub", "name": "VpsHub", "online": true,
@@ -468,7 +468,7 @@ async fn member_sync_merges_registry_and_member_table() {
     assert!(!BridgeSend::bridge_online(dev.as_ref(), "node-hub"));
 }
 
-/// 三期批次八：畸形 member_sync 载荷（无 members 数组）不 panic、不清表。
+/// 三期：畸形 member_sync 载荷（无 members 数组）不 panic、不清表。
 #[tokio::test]
 async fn member_sync_malformed_payload_is_tolerated() {
     let server = test_server();
@@ -503,7 +503,7 @@ async fn member_sync_malformed_payload_is_tolerated() {
 }
 
 // ---------------------------------------------------------------------------
-// 三期批次九：跨桥转发（hub 三分支泛化）
+// 三期：跨桥转发（hub 三分支泛化）
 // ---------------------------------------------------------------------------
 
 /// 转发测试环境：双桥入设备（bridge-a ↔ node-a、bridge-b ↔ node-b）注册
@@ -570,7 +570,7 @@ fn forward_env() -> ForwardEnv {
     ForwardEnv { hub, rx_a, rx_b }
 }
 
-/// 三期批次九：跨桥转发端到端——A 上行请求 `to=node-b` → hub 原帧转发
+/// 三期：跨桥转发端到端——A 上行请求 `to=node-b` → hub 原帧转发
 /// bridge-b（不回帧）；B 的响应 `to=node-a` → hub 按同款映射回程转发
 /// bridge-a。全程无中转表（响应 `to` 即发起方集群 id）。
 #[tokio::test]
@@ -635,7 +635,7 @@ async fn hub_forwards_request_and_response_between_bridges() {
     assert_eq!(back.msg_type, "response");
 }
 
-/// 三期批次九：转发不可达面——目标无映射 / 来源自环 → 请求方向诚实
+/// 三期：转发不可达面——目标无映射 / 来源自环 → 请求方向诚实
 /// error 回来源链路；响应回程不可转发 → 静默丢弃（发起方 pending 超时收口）。
 #[tokio::test]
 async fn hub_forward_unreachable_falls_to_honest_error() {

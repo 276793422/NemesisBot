@@ -141,7 +141,7 @@ fn test_parse_with_extra_fields() {
 
 #[test]
 fn test_auto_inject_defaults_off_and_top_k_3() {
-    // Grey-release invariant (P3.1): absent fields default to auto_inject=false
+    // Grey-release invariant (.1): absent fields default to auto_inject=false
     // (message stream byte-identical to pre-feature) and top_k=3.
     let config: EmbeddingConfig = serde_json::from_str("{}").unwrap();
     assert!(!config.auto_inject);
@@ -157,7 +157,7 @@ fn test_auto_inject_defaults_off_and_top_k_3() {
 }
 
 // ============================================================
-// R1 coverage: load/save edge arms + resolve_model_files search order
+// coverage: load/save edge arms + resolve_model_files search order
 // ============================================================
 
 #[test]
@@ -195,7 +195,7 @@ fn test_load_returns_default_on_malformed_json() {
 fn test_resolve_model_files_searches_data_dir_when_no_local_path() {
     // No local_model_path → resolver probes {data}/<model_name>/model.onnx.
     //
-    // BUG #34 lesson: embedding_data_dir anchors at config_dir.parent(). A
+    // lesson: embedding_data_dir anchors at config_dir.parent(). A
     // bare tempdir would resolve data into the SHARED %TEMP% root and pollute
     // every other test's "model missing" premise. Always nest a private
     // ws/config layout so the whole tree stays inside this test's tmpdir.

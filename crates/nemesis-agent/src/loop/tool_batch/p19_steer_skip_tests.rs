@@ -1,4 +1,4 @@
-//! P19（能力扩展 WS8）批内 steer 跳批测试。
+//! 批内 steer 跳批测试。
 //!
 //! 覆盖三面：
 //! 1. 单元面——`check_steer_skip_batch` 直调：peek 命中 → 剩余调用合成
@@ -9,7 +9,7 @@
 //!    排进 inbox（模拟用户在工具执行窗口插队）→ 工具 B 不再执行、下次
 //!    LLM 请求里 call_2 的 tool 结果 = Skipped 文本、steer 文本（剥 `!`）
 //!    以 user 消息进同一请求、assistant(tool_calls) → tool 结果对完整。
-//! 3. 并行面——U5 并行预计算批（全只读工具）：批在间隙检查可及前已全部
+//! 3. 并行面—— 并行预计算批（全只读工具）：批在间隙检查可及前已全部
 //!    执行完，steer 不跳批（跳掉已完成的工作只会制造未应答 tool_call），
 //!    两个真实结果照常回灌，steer 由下一轮器官 2 正常认领。
 
@@ -134,7 +134,7 @@ impl Tool for ProbeTool {
     }
 }
 
-/// 只读探测工具（U5 并行路径准入形态）。
+/// 只读探测工具（并行路径准入形态）。
 struct ReadOnlyProbeTool {
     marker: String,
     executed: Arc<AtomicBool>,
@@ -280,7 +280,7 @@ async fn steer_skip_unit_synthesizes_results_and_keeps_pairs_legal() {
         "repair 必须零改动——消息对在落账时即完整"
     );
 
-    // skip_cancel_estop=true（U5 并行预计算路径）→ 检查惰性。
+    // skip_cancel_estop=true（并行预计算路径）→ 检查惰性。
     let mut events2 = Vec::new();
     let fired2 = lp.check_steer_skip_batch(&instance, &ctx, &calls, 0, true, &mut events2);
     assert!(!fired2, "并行预计算路径不做批内跳批");
@@ -412,9 +412,9 @@ async fn steer_mid_serial_batch_skips_remaining_and_injects_next_round() {
     assert_eq!(lp.inbox.pending(key), (0, 0));
 }
 
-// --- 3. 并行面：U5 预计算批不跳批 ------------------------------------------
+// --- 3. 并行面： 预计算批不跳批 ------------------------------------------
 
-/// 全只读双工具批走 U5 并行预计算：批内 steer 到达不跳批（两者都已执行，
+/// 全只读双工具批走 并行预计算：批内 steer 到达不跳批（两者都已执行，
 /// 真实结果照常回灌），steer 由下一轮器官 2 正常认领。
 #[tokio::test]
 async fn steer_during_parallel_batch_does_not_skip_completed_work() {

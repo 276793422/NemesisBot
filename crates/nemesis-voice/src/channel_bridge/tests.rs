@@ -1,10 +1,10 @@
-//! Tests for `channel_bridge`（S12 覆盖率冲刺，2026-08-26）。
+//! Tests for `channel_bridge`（覆盖率冲刺，2026-08-26）。
 //!
 //! 可达面：`LocalVoiceTranscriber::new` 的 STT 模型缺失 fail-fast（空
 //! voice_dir → load_or_default 拿默认配置 → ensure_stt_model 在空目录
 //! sources 下 Err）。
 //!
-//! R6（2026-08-27）修订：new 的全套本地夹具可走到 SttEngine 的 FFI 符号
+//! （2026-08-27）修订：new 的全套本地夹具可走到 SttEngine 的 FFI 符号
 //! 查找处 panic；is_available / transcribe 前半（ReadWave 封送）用白盒
 //! null SttEngine 可测。剩余不可达 = FFI 成功语义（真模型 + 真 DLL）。
 
@@ -27,7 +27,7 @@ fn local_transcriber_new_without_models_fails_fast() {
 }
 
 // ===========================================================================
-// R6（2026-08-27）：全套本地夹具 + 白盒 null 引擎
+// 全套本地夹具 + 白盒 null 引擎
 // ===========================================================================
 
 /// 最小完整 config.toml（AppConfig 非 serde(default) 字段全给）+

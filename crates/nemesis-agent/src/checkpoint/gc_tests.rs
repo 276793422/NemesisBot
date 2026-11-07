@@ -1,4 +1,4 @@
-//! M6（2026-10-27 整改批次五）：checkpoint gc 回归。
+//! （2026-10-27）：checkpoint gc 回归。
 //!
 //! - **纯函数**：保留集三合一（turn 窗 ∪ 时间窗 ∪ extras ∪ 保护集）、
 //!   零维全清、不可解析时间无时间窗豁免。
@@ -140,7 +140,7 @@ fn retention_unparseable_time_no_day_exemption() {
 // JSON 形态
 // ---------------------------------------------------------------------------
 
-/// 无 .git 工作区 + 直接落 turn-N.json 镜像（load 回载进索引）。
+/// 无.git 工作区 + 直接落 turn-N.json 镜像（load 回载进索引）。
 fn json_fixture(mirrors: &[(usize, &str)]) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("ws");
@@ -470,7 +470,7 @@ mod git_gc {
         assert_eq!(store.list_meta().len(), 4);
     }
 
-    // BUG-96（2026-10-28 二次复查）：残留 .gc-old 两分支回归。
+    // BUG-96（二次复查）：残留.gc-old 两分支回归。
     // 常态残留：上轮收尾删除重试耗尽的遗留不阻塞本轮 gc（修复前 rename#1
     // 目标非空必败 → gc 永久卡死），且本轮顺手清走。
     #[test]
@@ -500,13 +500,13 @@ mod git_gc {
         );
     }
 
-    // 破损态自愈：objects 缺席 + .gc-old 在场（上轮 rename#2 失败且回滚也
+    // 破损态自愈：objects 缺席 +.gc-old 在场（上轮 rename#2 失败且回滚也
     // 失败）→ 搬回自愈后 gc 照常完成（修复前 odb 打不开，永久报错）。
     #[test]
     fn gc_git_broken_state_self_heals_from_gc_old() {
         let (_d, root, store, trees) = fixture();
         let shadow = nemesis_path::logs_dir_in_workspace(&root).join("checkpoints.git");
-        // 精确复刻破损态：objects 原样搬进 .gc-old 名下（= 回滚失败现场）。
+        // 精确复刻破损态：objects 原样搬进.gc-old 名下（= 回滚失败现场）。
         std::fs::rename(
             shadow.join("objects"),
             shadow.with_file_name("checkpoints.git.gc-old"),
@@ -538,8 +538,8 @@ mod git_gc {
     }
 }
 
-/// `dir_size` 链接项跳过（BUG-20261029-139，collect_relative_files
-/// BUG-20261029-138 同族横向清扫）：跟随版 `is_dir()` 会把 junction/
+/// `dir_size` 链接项跳过（collect_relative_files
+/// 同族横向清扫）：跟随版 `is_dir()` 会把 junction/
 /// symlink 当目录 push 进栈——外指链接把目标树字节计入 total（体积虚报），
 /// 自指链接无限 push/pop 死循环（gc 任务挂死）。本测试用外指链接钉跟随
 /// 语义（自指死循环不可断言，同一跟随语义的推论）；git objects 树正常

@@ -1,9 +1,9 @@
-//! scheduler —— poll 调度器（T2.1/T2.3）：bot 侧 interval 轮询 + on_change
+//! scheduler —— poll 调度器（.1/.3）：bot 侧 interval 轮询 + on_change
 //! 快照比对 + notify DSL 报警（限频）+ capture 落盘。
 //!
 //! 生命周期：attach 成功后按 profile.tools[] 的 `poll_report` 工具逐个
 //! spawn（一工具一任务）；detach / estop 时 abort（Session.poll_tasks）。
-//! payload 无状态——所有调度都在 bot 侧（T2.1 触点注释）。
+//! payload 无状态——所有调度都在 bot 侧（.1 触点注释）。
 //!
 //! 报警限频（对齐集群 WARN 限频惯例）：同一工具在窗口内只发一次
 //! （默认 60s，窗口常量 [`ALERT_RATE_LIMIT`] 单点定义）。
@@ -39,7 +39,7 @@ pub type EventSink = Arc<dyn Fn(ZiweiEvent) + Send + Sync>;
 /// attach + 按需调度的一站式入口（WSAPI/测试同源）。
 ///
 /// 结构地址解析：`struct:Name` → 会话 `struct_addrs`（attach 时注入；
-/// M3 起由锚自动解析）。解析失败 = 该工具诚实停用（warn 一次，不炸会话）。
+/// 起由锚自动解析）。解析失败 = 该工具诚实停用（warn 一次，不炸会话）。
 pub async fn attach_and_schedule(
     manager: &Arc<SessionManager>,
     profile: &Profile,
@@ -157,7 +157,7 @@ async fn poll_loop(ctx: PollCtx) {
         if on_change && !changed {
             continue;
         }
-        // 变化（或 every 模式）→ capture 回流（BUG-20261105-020：落盘失败
+        // 变化（或 every 模式）→ capture 回流（落盘失败
         // warn 可观测——静默吞 = 磁盘满时审计面永久缺口且无人知晓）。
         if let Err(e) = capture.append(
             &profile_id,

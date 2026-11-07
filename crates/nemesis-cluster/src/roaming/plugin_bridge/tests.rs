@@ -1,4 +1,4 @@
-//! `effective_rendezvous_state` merge 规则钉死（Phase 2 观测性）：
+//! `effective_rendezvous_state` merge 规则钉死（观测性）：
 //! 插件段缺席/旧插件 = 宿主快照原样；从未跑 tick = 无失败可报；
 //! 最后动作失败 = 失败形态（registry_url 插件自带兜底链）；最后动作成功 =
 //! 宿主快照（members_sink 同拍写入，成功语义未变）。
@@ -39,7 +39,7 @@ fn plugin_absent_keeps_host_snapshot() {
     // 旧插件（无 registry_sync 段）/循环未挂 → 宿主快照原样（旧行为不回归）。
     let host = Some(host_state(true, 1_000, 4, ""));
     assert_eq!(effective_rendezvous_state(host.clone(), None), host);
-    // 宿主快照缺席（循环未挂的 N0 形态）也保持 None。
+    // 宿主快照缺席（循环未挂的 形态）也保持 None。
     assert_eq!(effective_rendezvous_state(None, None), None);
 }
 
@@ -144,7 +144,7 @@ fn plugin_registry_sync_section_deserializes() {
 }
 
 // ---------------------------------------------------------------------------
-// L16（2026-11-02 三期）：TrustGateDialer 吊销 veto + 放行透传
+// （三期）：TrustGateDialer 吊销 veto + 放行透传
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;

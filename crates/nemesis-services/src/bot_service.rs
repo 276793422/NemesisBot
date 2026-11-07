@@ -130,7 +130,7 @@ impl EnabledComponents {
 //
 // In the Go code, BotService holds concrete pointers to each subsystem
 // (forgeSvc, memoryMgr, channelMgr, etc.). In Rust, we use trait objects
-// behind Arc<dyn ...> to decouple the services crate from each subsystem
+// behind Arc<dyn...> to decouple the services crate from each subsystem
 // crate, avoiding circular dependencies. When the concrete crates are
 // wired together at the application layer, they inject their instances
 // through the `inject_*` methods.
@@ -600,7 +600,7 @@ impl BotService {
         let (cancel_tx, _) = tokio::sync::broadcast::channel(1);
         *self.cancel_tx.lock() = Some(cancel_tx);
 
-        // Phase 1: Load configuration
+        // Load configuration
         debug!("[BotService] Starting component: {}", "load_config");
         if let Err(e) = self.load_config() {
             self.set_state_with_error(BotState::Error, &e);
@@ -610,13 +610,13 @@ impl BotService {
             )));
         }
 
-        // Phase 2: Validate configuration.
+        // Validate configuration.
         debug!("[BotService] Starting component: {}", "validate_config");
-        // 校验失败不再拦截启动（BUG-20261029-149）：gateway 对无模型配置走
+        // 校验失败不再拦截启动：gateway 对无模型配置走
         // NullProvider 降级哲学（对话面诚实报「未配置模型」，Dashboard 配好
         // 后 set_default 热切恢复），服务面生命周期不应被模型面校验闸死——
-        // 此前 Phase 2 失败 → state=Error → health/heartbeat/devices 三服务
-        // （唯一启动点在本函数 Phase 4）永不启动，且 Error 态 can_stop()=false
+        // 此前 失败 → state=Error → health/heartbeat/devices 三服务
+        // （唯一启动点在本函数）永不启动，且 Error 态 can_stop()=false
         // 令 shutdown 跳过 bot stop。现降级：warn + last_error 记录 + 继续，
         // state 终态 Running（诚实反映「降级运行」）。写路径校验（save_config）
         // 维持严格——「写严格 / 启动宽容」对称。
@@ -631,7 +631,7 @@ impl BotService {
             }
         };
 
-        // Phase 3: Initialize components
+        // Initialize components
         debug!("[BotService] Starting component: {}", "init_components");
         if let Err(e) = self.init_components() {
             self.set_state_with_error(BotState::Error, &e);
@@ -641,7 +641,7 @@ impl BotService {
             )));
         }
 
-        // Phase 4: Start services
+        // Start services
         debug!("[BotService] Starting component: {}", "start_services");
         if let Err(e) = self.start_services() {
             self.stop_all();
@@ -861,7 +861,7 @@ impl BotService {
 
     /// Inject a Forge service instance.
     ///
-    /// Called during Phase 4 of initialization when forge is enabled.
+    /// Called during of initialization when forge is enabled.
     /// The caller creates the concrete Forge instance and injects it here.
     pub fn inject_forge(&self, forge: Arc<dyn ForgeService>) {
         debug!("[BotService] Injecting {} service", "forge");
@@ -1029,9 +1029,9 @@ impl BotService {
         let config_str = serde_json::to_string_pretty(config_json)
             .map_err(nemesis_types::error::NemesisError::Serialization)?;
 
-        // BUG-20261025-51：落盘走 REL-002 权威 helper（唯一临时名）——旧手搓
+        // 落盘走 权威 helper（唯一临时名）——旧手搓
         // 固定 `json.tmp` 同名互踩（dashboard 保存 × CLI 写模型等并发/跨进程），
-        // 正是 REL-002 文档点名「不在各模块重复自制 tmp+rename」的路径。
+        // 正是 文档点名「不在各模块重复自制 tmp+rename」的路径。
         nemesis_utils::file::write_file_atomic(
             &self.config.config_path.to_string_lossy(),
             config_str.as_bytes(),
@@ -1086,7 +1086,7 @@ impl BotService {
     // Internal lifecycle phases
     // -----------------------------------------------------------------------
 
-    /// Phase 1: Load configuration from disk.
+    /// Load configuration from disk.
     ///
     /// Reads the config.json file and populates the internal state with
     /// the parsed configuration. The workspace path is derived from the
@@ -1155,7 +1155,7 @@ impl BotService {
         Ok(())
     }
 
-    /// Phase 2: Validate the loaded configuration.
+    /// Validate the loaded configuration.
     ///
     /// Checks that:
     /// - Configuration has been loaded
@@ -1190,16 +1190,16 @@ impl BotService {
         Ok(())
     }
 
-    /// Phase 3: Initialize all components.
+    /// Initialize all components.
     ///
     /// Uses the 4-phase initialization pattern from the Go code:
-    /// - Phase 1 (sequential): Core components with inter-dependencies
+    /// - (sequential): Core components with inter-dependencies
     ///   (provider, message bus, agent loop, channel manager).
-    /// - Phase 2 (parallel): Independent services (cron, heartbeat, state,
+    /// - (parallel): Independent services (cron, heartbeat, state,
     ///   health server).
-    /// - Phase 3 (sequential): Wire up service dependencies (cron tool,
+    /// - (sequential): Wire up service dependencies (cron tool,
     ///   heartbeat handler, device service).
-    /// - Phase 4 (conditional): Forge, Observer, Memory, LearningEngine.
+    /// - (conditional): Forge, Observer, Memory, LearningEngine.
     ///
     /// In this Rust implementation, the concrete service creation is delegated
     /// to the application wiring layer via dependency injection. The init
@@ -1219,7 +1219,7 @@ impl BotService {
 
         let _workspace = self.inner.read().resolved_workspace.clone();
 
-        // --- Phase 1: Sequential core setup ---
+        // ---: Sequential core setup ---
         // These components have inter-dependencies and must be created in order.
         // In the Go code: provider -> msgBus -> agentLoop + channelMgr (parallel)
         // -> wire agent <-> channelMgr.
@@ -1246,7 +1246,7 @@ impl BotService {
             Component::Channels.label()
         );
 
-        // --- Phase 2: Parallel independent service creation ---
+        // ---: Parallel independent service creation ---
         // In Go, these run in parallel using errgroup. In Rust, the application
         // layer creates them using the parallel_init utilities. Here we just
         // track which ones should be enabled.
@@ -1290,8 +1290,8 @@ impl BotService {
             Component::Skills.label()
         );
 
-        // --- Phase 3: Wire up service dependencies (sequential) ---
-        // These steps depend on the services created in Phase 2.
+        // ---: Wire up service dependencies (sequential) ---
+        // These steps depend on the services created in.
         // The actual wiring happens at the application layer.
 
         // Security (config-driven)
@@ -1312,7 +1312,7 @@ impl BotService {
             );
         }
 
-        // --- Phase 4: Forge and Observer setup ---
+        // ---: Forge and Observer setup ---
         // These depend on agentLoop + provider being available.
 
         // Forge self-learning module
@@ -1353,7 +1353,7 @@ impl BotService {
         Ok(())
     }
 
-    /// Phase 4: Start all initialized services in dependency order.
+    /// Start all initialized services in dependency order.
     ///
     /// The start order mirrors the Go code:
     /// 1. Heartbeat service

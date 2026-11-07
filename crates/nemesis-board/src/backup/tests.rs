@@ -1,4 +1,4 @@
-//! 备份 + 恢复演练测试（Swarm M2 出口判据「备份恢复演练通过」）。
+//! 备份 + 恢复演练测试（Swarm 出口判据「备份恢复演练通过」）。
 
 use super::*;
 use std::path::PathBuf;

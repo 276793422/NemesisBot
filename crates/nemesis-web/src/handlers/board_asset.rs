@@ -1,4 +1,4 @@
-//! Swarm M3（§5.4/D6）：看板资产下载端点——引用随包走、内容按需 HTTP 拉。
+//! Swarm：看板资产下载端点——引用随包走、内容按需 HTTP 拉。
 //!
 //! `GET /api/board/asset/{ref}?asset_token=&expires_at=` —— 公开端点，
 //! **故意不走 dashboard verify_token**（web token 不跨节点，worker 没有
@@ -7,7 +7,7 @@
 //!
 //! 校验序列（每步都先于下一步，任一失败即诚实拒绝）：
 //! 1. board 服务/资产配置就绪（503）
-//! 2. 引用名字符白名单（[`nemesis_board::asset_token::sanitize_asset_ref`]，
+//! 2. 引用名字符白名单（[`nemesis_board::asset_token:sanitize_asset_ref`]，
 //!    400——路径分隔符/`..`/隐藏名在字符集层就数学排除）
 //! 3. token + expires_at query 齐（400）
 //! 4. asset 表登记白名单（404——只认登记过的 ref，未登记一律不存在）

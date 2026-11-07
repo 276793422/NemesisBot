@@ -44,7 +44,7 @@ const SEED: &str = r#"{
   ]
 }"#;
 
-// --- copy -------------------------------------------------------------------
+// copy -------------------------------------------------------------------
 
 #[test]
 fn copy_deep_copies_entry_with_key_and_extras() {
@@ -116,7 +116,7 @@ fn copy_rejects_collision_and_missing_source() {
     );
 }
 
-// --- rename -----------------------------------------------------------------
+// rename -----------------------------------------------------------------
 
 #[test]
 fn rename_updates_entry_and_syncs_all_references() {
@@ -237,7 +237,7 @@ fn rename_of_default_is_allowed_and_config_hot_follows() {
     assert_eq!(renamed["is_default"], true);
 }
 
-// --- test（真实现） -----------------------------------------------------------
+// test（真实现） -----------------------------------------------------------
 
 /// 微型假 OpenAI 端点：收一请求回一响应（手写 HTTP/1.1，零依赖）。
 async fn fake_chat_server(mode: FakeMode) -> String {
@@ -407,7 +407,7 @@ async fn test_missing_model_is_command_error() {
     assert!(err.contains("not found"), "{err}");
 }
 
-// --- new_model 扩展（2026-10-27 漏项补救：换实际调用的 LLM ID） ---------------
+// new_model 扩展（漏项补救：换实际调用的 LLM ID） ---------------
 
 #[test]
 fn rename_with_new_model_changes_model_field_too() {
@@ -523,7 +523,7 @@ fn copy_with_new_model_overrides_copy_model_field() {
     assert_eq!(cfg["model_list"][0]["model"], "qwen/qwen3-30b");
 }
 
-// --- 用户报障复现（2026-10-27）：copy → set_default(copy) → 「弹回原模型」 ----
+// 用户报障复现：copy → set_default(copy) → 「弹回原模型」 ----
 
 fn repro_seed(defaults_llm: &str) -> String {
     format!(
@@ -609,12 +609,12 @@ fn repro_default_llm_was_model_string_then_copy_set_default() {
     assert_default_is(&dir, &h, "glm-copy");
 }
 
-// --- 引用归属隐患修复（2026-10-27）：共享模型串的复制体不得认领引用 ----------
+// 引用归属隐患修复：共享模型串的复制体不得认领引用 ----------
 //
 // 此前「身份集三形态任一命中」（model_name / model 串 / 别名）的宽匹配，在
 // 复制体未换模型串时与原始条目身份重叠：rename 偷默认指针 + 假热切、
 // update_field 假热切（内存/磁盘默认分叉）、list/proxy_overview 双行同标
-// 默认、delete 误挡。修法 = ref_owner（resolver 同序归属判定）单一真相源，
+// 默认、delete 误挡。修法 = ref_owner（resolver 同序归属判定）统一定义，
 // 五个消费点全部换装。
 
 /// 偷默认场景种子：原始条目 glm 是默认，复制体 glm-copy 未换模型串
@@ -828,7 +828,7 @@ fn ref_owner_pass_order_exact_beats_soft() {
     // ① 精确名命中压倒软匹配（偷默认闸门的本体）。
     assert_eq!(ref_owner(&entries, "glm").as_deref(), Some("glm"));
     assert_eq!(ref_owner(&entries, "glm-copy").as_deref(), Some("glm-copy"));
-    // ② 无精确名命中 → 模型串首命中（与 resolver 第二段同序）。
+    // ② 无精确名命中 → 模型串首命中（与 resolver 同序）。
     assert_eq!(ref_owner(&entries, "zhipu/glm-4.7").as_deref(), Some("glm"));
     // ③ 别名首命中。
     assert_eq!(ref_owner(&entries, "glm-4.7").as_deref(), Some("glm"));

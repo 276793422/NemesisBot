@@ -177,7 +177,7 @@ impl VectorStore {
     }
 
     /// Query the vector store for similar entries.
-    /// Clone the embedding handle out (M5): lets callers run inference
+    /// Clone the embedding handle out: lets callers run inference
     /// WITHOUT holding the store's RwLock across the (slow) embed call.
     pub fn embed_handle(
         &self,
@@ -186,7 +186,7 @@ impl VectorStore {
     }
 
     // Round-5: removed dead `embed_raw` (zero callers). A second public embed
-    // path beside embed_handle invited bypassing the M5 lock-discipline fix.
+    // path beside embed_handle invited bypassing the lock-discipline fix.
     // The Arc-returning embed_handle is the one sanctioned way out.
 
     pub fn query(
@@ -204,7 +204,7 @@ impl VectorStore {
     /// must go through here: the auto-inject prefetch (loop.rs) uses 0.35 to
     /// catch loosely-related memories, and a store-level 0.7 pre-filter
     /// silently empties those results before the caller's own threshold is
-    /// ever applied (2026-08-29 注入为空的根因——两层阈值叠加，外层失效).
+    /// ever applied (注入为空的根因——两层阈值叠加，外层失效).
     pub fn query_with_threshold(
         &self,
         query: &str,
@@ -284,7 +284,7 @@ impl VectorStore {
         found
     }
 
-    /// 字段级 patch（P31 记忆 dreaming / 召回记账）：按 id 原位更新
+    /// 字段级 patch（记忆 dreaming / 召回记账）：按 id 原位更新
     /// metadata/tags/type/updated_at，不触碰 content 与 embedding——调用方
     /// 契约是 content 不变（touch/promote/expire 都不改正文；merge 是新建
     /// 条目）。返回是否命中；命中时重写持久化文件（全量重写语义与
@@ -321,7 +321,7 @@ impl VectorStore {
 
     /// Rewrite the entire JSONL persist file from the current docs.
     fn rewrite_persist_file(&self, docs: &[IndexedDoc]) {
-        // BUG-20261025-59：唯一临时名权威 helper（旧固定 `*.jsonl.tmp` 双写者
+        // 唯一临时名权威 helper（旧固定 `*.jsonl.tmp` 双写者
         // 同名互踩 + 失败残留 tmp）。不可序列化条目跳过（与旧姿态一致）；
         // 写失败 warn（旧实现全静默——静默丢持久化连排查线索都没有）。
         let mut body = String::new();

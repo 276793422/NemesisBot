@@ -94,7 +94,7 @@ fn parse_rejects_oversized_fixture() {
 
 #[test]
 fn parse_rejects_flow_nesting_bomb() {
-    // BUG-20261101-276：远端技能不可信内容——flow 集合深嵌套炸弹在
+    // 远端技能不可信内容——flow 集合深嵌套炸弹在
     // serde_yaml 递归下降里栈溢出（abort 不可捕获），必须被词法闸
     // 先行诚实拒绝（喂给 serde_yaml 之前）。
     let bomb = format!(
@@ -150,7 +150,7 @@ fn parse_rejects_fixture_path_traversal() {
 
 #[test]
 fn parse_rejects_fixture_path_windows_drive_and_root_forms() {
-    // R18 收紧的拒绝面：`C:evil` 盘符相对形态 is_absolute()==false 且无
+    // 收紧的拒绝面：`C:evil` 盘符相对形态 is_absolute()==false 且无
     // `..`，但 join 整段换基座（夹具写出沙盒）；绝对路径与根相对
     //（`\x`、`/x`）同理拒。
     for bad in ["C:evil.txt", "/abs.txt", "\\root.txt", "a/../b.txt"] {

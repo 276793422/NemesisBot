@@ -1,4 +1,4 @@
-//! C6 install 模块测试：目录覆盖不变量（平台无关）+ run_process 平台孪生
+//! install 模块测试：目录覆盖不变量（平台无关）+ run_process 平台孪生
 //! 测试（2026-09-02 纪律：Windows 形态测试挂 `#[cfg(windows)]`——Linux 上
 //! 编译期消失而非运行期跳过）。
 
@@ -168,7 +168,7 @@ async fn run_install_timeout_is_honest_error() {
     assert!(err.contains("timed out"), "err: {err}");
 }
 
-/// 非零退出 = Err 含输出尾（安装器报错原文可见）。
+/// 非零退出 = Err 含输出尾（安装器报错原文可）。
 #[tokio::test]
 async fn run_install_nonzero_exit_carries_output_tail() {
     let cmd = if cfg!(windows) {

@@ -91,7 +91,7 @@ impl ContinuationStore {
         // Check if a save might be in progress. write_file_atomic 的临时名
         // 形如 `.tmp-{pid}-{seq}-{nanos}`（nemesis-utils），与目标文件同
         // 目录且不含目标信息——旧实现探测 `<task_id>.json.tmp` 与实际临时
-        // 名永不相交，barrier 是死代码（T7，2026-10-17 三轮审计）。改为扫
+        // 名永不相交，barrier 是死代码（三轮审计）。改为扫
         // 目录 `.tmp-` 前缀：任何原子写在场即视为可能有一场针对本 id 的
         // 保存（保守方向正确——误判只多等一轮重试窗口，漏判才会读到半
         // 成品；崩溃残留的 `.tmp-` 代价 = 缺失快照的 load 多等 5s 才
@@ -161,7 +161,7 @@ impl ContinuationStore {
         let removed = self.snapshots.lock().remove(task_id).is_some();
 
         // Also delete from disk.
-        // LOW-5（2026-10-17 四轮审计）：韧性删除（spawn_blocking 包裹退避
+        // LOW-5（四轮审计）：韧性删除（spawn_blocking 包裹退避
         // 重试——Windows 瞬时句柄对单文件同理成立）。
         let path = self.snapshot_path(task_id);
         if path.exists() {
@@ -206,7 +206,7 @@ impl ContinuationStore {
     /// Deletes snapshot files from disk whose modification time exceeds
     /// the specified duration. Also removes them from memory. Additionally
     /// sweeps crash-orphaned `.tmp-` atomic-write residue older than the
-    /// fixed grace window（BUG-20261104-356，与 max_age 无关的固定宽限）。
+    /// fixed grace window（与 max_age 无关的固定宽限）。
     pub async fn cleanup_old(
         &self,
         max_age: std::time::Duration,
@@ -222,7 +222,7 @@ impl ContinuationStore {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
 
-            // BUG-20261104-356：崩溃残留 `.tmp-` 孤儿清扫。write_file_atomic
+            // 崩溃残留 `.tmp-` 孤儿清扫。write_file_atomic
             // 的错误路径自清理临时文件，但进程崩溃/断电留在 create↔rename
             // 窗口时孤儿永存——此前所有清扫/列表路径只认 `.json` 扩展名，
             // 孤儿在 Dashboard 快照页不可见、`snapshots.cleanup`（ZERO 清
@@ -232,7 +232,7 @@ impl ContinuationStore {
             // 远超在写临时文件毫秒~秒级生命周期）：max_age=ZERO 也绝不误删
             // 在写临时文件；刚崩出来的新鲜孤儿留到下一轮 sweep，无正确性
             // 影响。删除失败 warn-and-continue（卫生清扫不因单文件中断；
-            // `.json` 臂的 Err 上抛语义不变——R389 观察项③裁决在案）。
+            // `.json` 臂的 Err 上抛语义不变—— 观察项③裁决在案）。
             let is_tmp_orphan = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -272,7 +272,25 @@ impl ContinuationStore {
             {
                 // Extract task ID from filename
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    self.snapshots.lock().remove(stem);
+                    // BUG-20261106-022：内存键是原始 task_id（save 原样入键；
+                    // recover_from_disk 按文件名 stem 回载）——stem 是消毒
+                    // 形态，含白名单外字符的 id（SAN-02：远端可传任意串）
+                    // 按 stem 直删永远 miss，超龄清扫删盘留内存（快照含完整
+                    // 对话 JSON，无界驻留）。按「sanitize(内存键) == stem」
+                    // 匹配删除：save 侧原键经消毒命中，recover 侧 stem 键经
+                    // 消毒幂等命中，身份映射（真实 id 族）退化为精确匹配
+                    // 行为不变。
+                    {
+                        let mut snapshots = self.snapshots.lock();
+                        let doomed: Vec<String> = snapshots
+                            .keys()
+                            .filter(|k| nemesis_utils::sanitize::sanitize_path_segment(k) == stem)
+                            .cloned()
+                            .collect();
+                        for k in &doomed {
+                            snapshots.remove(k);
+                        }
+                    }
                     // LOW-5：韧性删除（同 remove()）。
                     let p = path.clone();
                     let ok = tokio::task::spawn_blocking(move || {
@@ -402,7 +420,7 @@ impl ContinuationStore {
         let final_path = self.snapshot_path(&snapshot.task_id);
         let json = serde_json::to_string_pretty(snapshot)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        // REL-002（2026-09-23）：统一原子写入（sync_all + 唯一临时名 + 失败
+        // 统一原子写入（sync_all + 唯一临时名 + 失败
         // 清理），spawn_blocking 包裹避免 async 上下文阻塞——快照写入低频，
         // 快照损坏会导致续行失败，原子性值得这点开销。
         let path_str = final_path.to_string_lossy().to_string();
@@ -442,7 +460,7 @@ impl ContinuationStore {
     }
 
     fn snapshot_path(&self, task_id: &str) -> PathBuf {
-        // T7（2026-10-17 三轮审计）：task_id 远端可控，路径成分前消毒
+        // （三轮审计）：task_id 远端可控，路径成分前消毒
         // （crate 单一包装，与 task_result_store / cluster_task / transfer
         // 同源）。save/load/remove 都走本函数，映射自动对称；内存索引仍用
         // 原 id（load 先查内存再落盘，两把钥匙各开各的锁）。

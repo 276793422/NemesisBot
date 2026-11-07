@@ -14,11 +14,11 @@ use std::time::Duration;
 /// 默认请求超时（秒）；`request_timeout_secs == 0` 视作缺省。
 const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 30;
 
-/// 单个回调连接的墙钟上限（BUG-20261103-344 横向同族）：真浏览器连上即发
+/// 单个回调连接的墙钟上限（横向同族）：真浏览器连上即发
 /// GET，10s 上限只淘汰静默/挂死连接（本地扫描、健康检查），不伤真回调。
 const CALLBACK_CONN_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// 带 bounded 超时的共享 HTTP client（BUG-20261028-104a：reqwest 默认
+/// 带 bounded 超时的共享 HTTP client（a：reqwest 默认
 /// client 零超时，挂死端点会让 `auth login` 无限卡住）。
 fn http_client(cfg: &OAuthProviderConfig) -> reqwest::Client {
     let secs = if cfg.request_timeout_secs == 0 {
@@ -168,7 +168,7 @@ impl OAuthProviderConfig {
             interval_hint_secs as u64
         };
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval));
-        // BUG-20261101-264：默认 Burst 会在挂起恢复后把错过的 tick 逐个补发
+        // 默认 Burst 会在挂起恢复后把错过的 tick 逐个补发
         // ——token 端点被密集轮询（OAuth 服务器对此限流/锁流）。Delay 从
         // 当前时刻重排。
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -177,7 +177,7 @@ impl OAuthProviderConfig {
             if remaining.is_zero() {
                 return Err("device code authentication timed out after 15 minutes".to_string());
             }
-            // BUG-20261103-330：轮询等待必须被剩余 deadline 有界化。裸
+            // 轮询等待必须被剩余 deadline 有界化。裸
             // tick.tick().await 在间隔 ≥ 剩余时间（间隔是远端可控值：原始
             // i32 上限 ≈68 年；parse_flexible_int 的 i64→i32 截断同样可造
             // 出荒谬大值）时永久挂起——deadline 只在 loop 顶检查，await
@@ -256,7 +256,7 @@ impl OAuthProviderConfig {
 
     /// Wait for the OAuth callback on the local HTTP server.
     ///
-    /// BUG-20261025-60：坏连接只淘汰该次连接（accept 错误 / 传输层读错误 /
+    /// 坏连接只淘汰该次连接（accept 错误 / 传输层读错误 /
     /// state 不匹配 / 响应写出失败），warn 后继续监听——5 分钟窗口内任何
     /// 本地进程敲端口（扫描、健康检查、陈旧回调标签页）都不该能打死整个
     /// 登录流程；旧实现一次坏连接即整体 Err 退出。唯一完成路径 = state
@@ -278,7 +278,7 @@ impl OAuthProviderConfig {
                 }
             };
 
-            // BUG-20261103-344（横向同族）：单连接墙钟上限——旧实现内联
+            // （横向同族）：单连接墙钟上限——旧实现内联
             // await handle_callback，静默连接（本地扫描/健康检查敲端口不发
             // 数据）会把循环挂死到外层 300s 超时，期间真浏览器回调全部无法
             // 被服务；超时按 per-connection 淘汰，继续监听。
@@ -343,7 +343,7 @@ impl OAuthProviderConfig {
         // 响应一律 best-effort：对端提前关连接导致的写出失败不改变结论
         // （code 已到手不该因回显失败作废；拒绝/终态也不因回显失败升级）。
         if params.get("state").is_none_or(|s| s != expected_state) {
-            // BUG-20261025-60：state 不匹配只拒绝本次连接（RFC 6749 的
+            // state 不匹配只拒绝本次连接（RFC 6749 的
             // CSRF 防御语义是丢弃伪造请求，不是终止等待真回调）。
             let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h2>State mismatch</h2></body></html>").await;
             let _ = stream.flush().await;
@@ -355,7 +355,7 @@ impl OAuthProviderConfig {
             return Ok(Some(code.clone()));
         }
         let error_msg = params.get("error").cloned().unwrap_or_default();
-        // BUG-20261105-007：头块必须 \r\n\r\n 终结（同函数另两臂 348/353
+        // 头块必须 \r\n\r\n 终结（同函数另两臂 348/353
         // 均正确，唯独此臂漏一个 \r\n——body 并进头块，浏览器等不到头块
         // 结束，连接关闭后渲染不出提示页，只见空响应错误）。
         let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Type: text/html\r\n\r\n<html><body><h2>No authorization code received</h2></body></html>").await;
@@ -626,7 +626,7 @@ struct ParsedDeviceCode {
     interval: i32,
 }
 
-/// 单次回调连接的失败分类（BUG-20261025-60）。
+/// 单次回调连接的失败分类。
 enum CallbackFailure {
     /// 只淘汰本次连接（accept/读/写 IO 错误、state 不匹配）——继续监听
     /// 等真回调。
@@ -666,7 +666,7 @@ fn parse_flexible_int(val: &serde_json::Value) -> i32 {
     }
 }
 
-/// BUG-20261103-330：轮询等待时长必须有界——远端可控的轮询间隔（原始
+/// 轮询等待时长必须有界——远端可控的轮询间隔（原始
 /// i32 ≈68 年上限 / i64→i32 截断荒谬值）不得把等待推出 15 分钟 deadline。
 /// 契约：返回值 ≤ remaining 恒成立（旧公式 `Duration::from_secs(interval)`
 /// 无此上界）；剩余时间耗尽返回零（loop 顶 deadline 检查随即给出终态，
@@ -826,8 +826,8 @@ fn parse_query_params(query: &str) -> HashMap<String, String> {
 
 /// URL-decode a string.
 ///
-/// BUG-20261028-111：percent-encoding 的解码必须按 UTF-8 字节序列整体重组。
-/// 旧实现逐字节 `b as char`，multibyte 序列（如 `中` = %E4%B8%AD）被拆成
+/// percent-encoding 的解码必须按 UTF-8 字节序列整体重组。
+/// 旧实现逐字节 `b as char`，multibyte 序列（如 `中` = %%%AD）被拆成
 /// 三个独立码位产出 mojibake。现按字节收集后 `from_utf8_lossy` 重组——
 /// 合法 UTF-8 正确还原，非法序列以 U+FFFD 诚实降级（不伪造码位）。
 fn url_decode(s: &str) -> String {
@@ -860,7 +860,7 @@ fn hex_val(b: u8) -> u8 {
 
 /// URL-encode a string.
 ///
-/// BUG-20261028-111：按 RFC 3986，multibyte 字符必须对其 **UTF-8 字节序列**
+/// 按 RFC 3986，multibyte 字符必须对其 **UTF-8 字节序列**
 /// 逐字节 percent-encode。旧实现 `s.chars()` + `c as u8` 把 char 截断到低
 /// 字节（'中' U+4E2D → %2D，恰是 '-'），产出错误编码。改 `s.bytes()` 后
 /// 非 ASCII 字节自然落入 %XX 分支；ASCII 输入 byte-identical。
@@ -880,7 +880,7 @@ fn url_encode(s: &str) -> String {
 fn open_browser_impl(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        // BUG-20261025-29：旧实现 `cmd /c start {url}`（raw_arg 原样拼接）把
+        // 旧实现 `cmd /c start {url}`（raw_arg 原样拼接）把
         // 未加引号的 URL 直通 cmd——查询串里的字面 `&` 是 cmd 命令分隔符，
         // 浏览器只收到第一个 & 之前的残缺 URL（缺 client_id/PKCE/state，
         // OAuth 浏览器登录必败），余下每个 key=value 段被当独立命令执行
@@ -920,7 +920,7 @@ fn open_browser_impl(url: &str) -> Result<(), String> {
 }
 
 /// Windows 默认浏览器命令构造（独立函数便于单测锁定不变量：程序不是
-/// shell、完整 URL 是唯一参数——BUG-20261025-29 回归锁）。
+/// shell、完整 URL 是唯一参数—— 回归锁）。
 #[cfg(target_os = "windows")]
 fn windows_browser_command(url: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new("explorer");

@@ -1,13 +1,13 @@
-//! 子代理任务注册表 WSAPI handler（子代理可见性 P1/P2，2026-11-03）—
+//! 子代理任务注册表 WSAPI handler（子代理可见性 /，2026-11-03）—
 //! `subagents.list` / `subagents.detail` / `subagents.events` /
 //! `subagents.cancel`。
 //!
 //! 三种子代理形态（内联 detached / `__BG_SPAWN__` 后台 / 集群 delegate
-//! P3 并入）的统一台账读面 + 用户面终止。数据面单一真相源 =
-//! `nemesis_agent::subagent_registry::global()`（gateway 启动早期注入
+//! 并入）的统一台账读面 + 用户面终止。数据面单一权威 =
+//! `nemesis_agent::subagent_registry:global()`（gateway 启动早期注入
 //! workspace 落盘路径）。
 //!
-//! `events` = 详情抽屉的对话环回放（D4）：registry id == 子代理会话键
+//! `events` = 详情抽屉的对话环回放：registry id == 子代理会话键
 //! （spawn 侧 `session_key_override` 同键），泵侧 tool/RoundText 帧全
 //! 按 `record_tool(session_key)` 落 `chat_event_log` 环——直接按 id
 //! `replay_after`，不走 `chat.sync`（它硬编码 `agent:main:session:{sid}`

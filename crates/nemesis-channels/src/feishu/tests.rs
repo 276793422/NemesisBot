@@ -153,7 +153,7 @@ fn test_extract_json_from_protobuf() {
     assert!(result.unwrap().contains("evt_1"));
 }
 
-// BUG-20261104-384 回归锁：循环尾退避等待必须真的睡满时长，且可被取消
+// 回归锁：循环尾退避等待必须真的睡满时长，且可被取消
 // 打断。旧形态 `select! { sleep => {}, async {} => {} }` 空 async 臂立即
 // Ready，sleep 被完全短路（断连后零间隔重连锤击远端 API）。
 

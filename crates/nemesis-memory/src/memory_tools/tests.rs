@@ -1403,15 +1403,15 @@ async fn test_execute_search_all_types() {
 }
 
 // ============================================================
-// Phase 1: UT — Tool executor with vector store (3 tests)
+// UT — Tool executor with vector store (3 tests)
 // ============================================================
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_execute_store_and_search_with_vector_store() {
@@ -1456,10 +1456,10 @@ async fn test_execute_store_and_search_with_vector_store() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_execute_list_with_vector_store_entries() {
@@ -1501,10 +1501,10 @@ async fn test_execute_list_with_vector_store_entries() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_execute_forget_removes_from_vector_store() {
@@ -1555,7 +1555,7 @@ async fn test_execute_forget_removes_from_vector_store() {
 }
 
 // ============================================================
-// S5 coverage: failing-backend error branches + display arms
+// coverage: failing-backend error branches + display arms
 // ============================================================
 
 use crate::episodic::{Episode, EpisodicStore};
@@ -2402,7 +2402,7 @@ fn test_truncate_text_walks_back_to_char_boundary() {
     assert_eq!(truncate_text("short", 200), "short");
 }
 
-// ---- R1 coverage: forget-action validation + status listing ----
+// ---- coverage: forget-action validation + status listing ----
 
 #[tokio::test]
 async fn delete_by_id_requires_an_id() {
@@ -2439,7 +2439,7 @@ async fn list_status_reports_fresh_manager_counts() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：execute_search 结果格式化循环（既有测试的
+// AGT 覆盖率批次：execute_search 结果格式化循环（既有测试的
 // mock store 全部返回空结果，循环从未执行——正分与零分双臂一起钉）；
 // memory_list/graph_query 后端 Err → "query failed" 透传臂。
 // ---------------------------------------------------------------------------
@@ -2517,7 +2517,7 @@ async fn agt_search_output_formats_positive_and_zero_scores() {
     assert!(result.success);
     // 正分条目 → "[75%]" 后缀（score > 0.0 臂）
     assert!(result.content.contains("[75%]"), "got: {}", result.content);
-    // 零分条目 → 无百分号后缀（else 臂）；B15 日期戳 [YYYY-MM-DD] 在场
+    // 零分条目 → 无百分号后缀（else 臂）； 日期戳 [YYYY-MM-DD] 在场
     // （created_at 恒有值 = 恒带前缀，无回落分支）。
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let expected_zero = format!("[ID: id-zero] [{today}] zero score doc");
@@ -2550,7 +2550,7 @@ async fn agt_list_graph_query_backend_error_reports_query_failed() {
 }
 
 // ============================================================
-// L08（2026-11-01）graph 渲染日期戳回归锁：B15 修复后 graph 段是
+// graph 渲染日期戳回归锁： 修复后 graph 段是
 // 唯一不带日期的检索渲染面——三处（search graph 段 / graph_query /
 // graph_related）补 `[YYYY-MM-DD]` 前缀（created_at 自 INIT 就在
 // GraphTriple 上，纯渲染缺口，无历史裸数据）。三则端到端锁钉死

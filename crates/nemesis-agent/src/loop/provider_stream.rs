@@ -1,4 +1,4 @@
-//! L10 provider 流式输出 lane（2026-10-13 内部专项 T3）。
+//! provider 流式输出 lane（2026-10-13 内部专项）。
 //!
 //! 两个组件：
 //! - [`ProviderStreamSink`]：增量合并窗 + `AgentEvent::ProviderStream` 发射
@@ -17,7 +17,7 @@
 //! start 帧重置前端缓冲）。cache warmer / compact / probe / forge 等**不经过**
 //! call_llm_with_recovery 的调用路径不产生流事件（观测面聚焦主 turn）。
 //!
-//! 已知边界：上游超时路径（`chat_call_bounded` 内部 `tokio::time::timeout`
+//! 已知边界：上游超时路径（`chat_call_bounded` 内部 `tokio::time:timeout`
 //! drop chat future）没有同步钩子通知 sink——该次流的 error 帧缺席，靠重试
 //! 新流的 start 帧重置前端缓冲、终答回复覆盖收口；cancel/estop 两臂在
 //! recovery.rs 显式补 error 帧（sink 引用另持一份）。观测 lane 语义，最终
@@ -43,9 +43,9 @@ struct SinkState {
     started: std::time::Instant,
 }
 
-/// L10：provider 流事件的发射 sink（每 `call_llm_with_recovery` 一个）。
+/// provider 流事件的发射 sink（每 `call_llm_with_recovery` 一个）。
 pub(crate) struct ProviderStreamSink {
-    /// 显式全路径：prelude 的 `AgentEvent` 是本 crate legacy 旧枚举，M1a
+    /// 显式全路径：prelude 的 `AgentEvent` 是本 crate legacy 旧枚举，
     /// 事件枚举在 nemesis-types（与 agent_event_tx 字段同型）。
     tx: tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>,
     session_key: String,
@@ -147,7 +147,7 @@ impl ProviderStreamSink {
         self.any_deltas.load(Ordering::Relaxed)
     }
 
-    /// 新流边界重置（BUG-20261102-309）：sink 跨重试环共享（recovery.rs
+    /// 新流边界重置：sink 跨重试环共享（recovery.rs
     /// 五调用点同一包装实例），重试 = 新流——seq 归零、合并缓冲/相位状态
     /// 清空，下一次 chat() 的首增量重新惰性发 start（前端卡片唯一 reset
     /// 信号），上一 attempt 的残尾不再渗入本流；合成增量判据
@@ -172,7 +172,7 @@ impl ProviderStreamSink {
     }
 
     fn emit_with_elapsed(&self, seq: u64, phase: &str, text: &str, elapsed_ms: Option<u64>) {
-        // 注意：M1a 事件枚举是 `nemesis_types::agent::AgentEvent`（agent_event_tx
+        // 注意： 事件枚举是 `nemesis_types::agent:AgentEvent`（agent_event_tx
         // 同型）；prelude 的 `AgentEvent` 是本 crate legacy types.rs 的旧枚举。
         let _ = self
             .tx
@@ -188,7 +188,7 @@ impl ProviderStreamSink {
     }
 }
 
-/// L10：把 `chat()` 路由进流式 lane 的 provider 包装器（见模块头）。
+/// 把 `chat()` 路由进流式 lane 的 provider 包装器（见模块头）。
 pub(crate) struct StreamingLlmProvider {
     inner: Arc<dyn LlmProvider>,
     sink: std::sync::Arc<ProviderStreamSink>,
@@ -217,7 +217,7 @@ impl LlmProvider for StreamingLlmProvider {
         options: Option<crate::types::ChatOptions>,
         tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
-        // 重试 = 新流（BUG-20261102-309）：sink 跨重试环共享，每个 chat()
+        // 重试 = 新流：sink 跨重试环共享，每个 chat()
         // 入口重置流状态——首增量重新惰性发 start（前端 reset 信号）、seq
         // 归零、上一 attempt 残尾/相位不渗入本流。
         self.sink.reset_for_new_stream();
@@ -251,7 +251,7 @@ impl LlmProvider for StreamingLlmProvider {
 // ---------------------------------------------------------------------------
 
 impl AgentLoop {
-    /// `agents.provider_stream_events` 新鲜读（config.json 唯一真相源；无
+    /// `agents.provider_stream_events` 新鲜读（config.json 唯一依据；无
     /// config / 段缺失 → 默认 true——观测面默认开，wire 行为回落见
     /// `chat_streamed` 缺省实现）。
     pub(crate) fn provider_stream_events_enabled(&self) -> bool {
@@ -264,7 +264,7 @@ impl AgentLoop {
             .unwrap_or(true)
     }
 
-    /// L10：为本轮 LLM 调用构造流 sink。前置双闸：agent_event_tx 已注入
+    /// 为本轮 LLM 调用构造流 sink。前置双闸：agent_event_tx 已注入
     /// （standalone / 未接线 → None，零开销）+ `agents.provider_stream_
     /// events` 开启（每轮新鲜读，与 tier/config_watch 同语义——dashboard
     /// 或 CLI 改配置下轮即生效）。

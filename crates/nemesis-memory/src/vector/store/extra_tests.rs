@@ -694,7 +694,7 @@ fn test_delete_rewrites_persist_file() {
     assert!(content.contains("rw2"));
 }
 
-// ---- S5 coverage: new() error arm, async load_persisted, persist parent fail ----
+// ---- coverage: new() error arm, async load_persisted, persist parent fail ----
 
 #[test]
 fn vector_store_new_fails_without_plugin() {
@@ -770,7 +770,7 @@ async fn persist_entry_fails_when_parent_is_file() {
 }
 
 // ---------------------------------------------------------------------------
-// query_with_threshold（2026-08-29 注入为空根因修复）：store 层 0.7 预过滤
+// query_with_threshold（注入为空根因修复）：store 层 0.7 预过滤
 // 曾把 0.35-0.7 之间的相关记忆静默裁掉，注入 prefetch 外层的 0.35 形同虚设。
 // ---------------------------------------------------------------------------
 

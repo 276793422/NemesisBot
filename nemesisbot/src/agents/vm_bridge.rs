@@ -1,11 +1,11 @@
-//! P5 第 4 步 — [`VmBridge`](nemesis_web::handlers::vm::VmBridge) 的
+//! 第 4 步 — [`VmBridge`](nemesis_web::handlers:vm::VmBridge) 的
 //! [`VmSupervisor`] 实现（bot 侧桥——nemesis-web 不反向依赖本 crate，
 //! trait 在 web 侧定义、实现在这里，gateway 装配期装槽）。
 //!
 //! 职责边界：本模块只做**投影与转发**——typed config 解析/校验/持久化、
 //! 加速器探针包装、镜像构建后台任务（脚本 spawn + 日志落盘 + 存量
 //! overlay 安全 rebase）、生命周期命令错误分类翻译。QEMU 管线细节全在
-//! [`crate::agents::vm_runtime`] 与 nemesis-sandbox，不在这里重复。
+//! [`crate::agents:vm_runtime`] 与 nemesis-sandbox，不在这里重复。
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -49,7 +49,7 @@ struct ImageJob {
 
 static IMAGE_JOB: Mutex<Option<ImageJob>> = Mutex::new(None);
 
-/// 进行中的 QEMU 安装任务（B3 自举族——与 IMAGE_JOB 同款单飞闸；两闸独立：
+/// 进行中的 QEMU 安装任务（自举族——与 IMAGE_JOB 同款单飞闸；两闸独立：
 /// 装 QEMU 与建镜像互不阻塞）。
 struct BootstrapJob {
     started_ms: u64,
@@ -64,7 +64,7 @@ pub(crate) fn bootstrap_log_path(workspace: &Path) -> PathBuf {
 }
 
 /// 镜像构建成功收尾日志行（run_image_build 唯一成功出口；CLI 前台臂以
-/// 本行判定成败——单一真相源。「换装失败」分支不含本串，不误判）。
+/// 本行判定成败——统一定义。「换装失败」分支不含本串，不误判）。
 pub(crate) const IMAGE_BUILD_DONE_LINE: &str = "换装完成";
 
 /// 安装/构建任务是否在飞（CLI 前台臂轮询用；WSAPI 面看各 list 的 job 槽）。
@@ -73,7 +73,7 @@ pub(crate) fn image_job_running() -> bool {
 }
 
 // ===========================================================================
-// B7 —— Windows 宿主镜像构建 WSL 自动路由
+// —— Windows 宿主镜像构建 WSL 自动路由
 //
 // 探针四态 + 解析/分类纯函数 + 路径翻译。纯函数跨平台（解析/分类可在
 // 任何宿主上单测）；真 spawn 探测 cfg(windows)。构建管线本体
@@ -97,7 +97,7 @@ pub(crate) struct WslProbe {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 // Ready/NoDistro 的构造点全在 cfg(windows) 探针与 cfg(test) 单测里——Linux
 // 非 test 构建天然无构造（spawn 探测只在 Windows 跑），条件 allow 消
-// dead_code（CI Linux clippy 实录 2026-10-19）；Windows/test 侧 lint 照常在场。
+// dead_code（CI Linux clippy）；Windows/test 侧 lint 照常在场。
 // 变体本身不可 cfg 裁剪：classify_image_route 跨平台读全四态。
 #[cfg_attr(not(any(windows, test)), allow(dead_code))]
 pub(crate) enum WslState {
@@ -246,7 +246,7 @@ pub(crate) fn wsl_spawn_probe() -> WslProbe {
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
-                    // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾。
+                    // 有界排干（横扫角度 B）：1 MiB 丢头保尾。
                     let out = nemesis_utils::pipe_cap::drain_capped_sync(stdout);
                     let err = nemesis_utils::pipe_cap::drain_capped_sync(stderr);
                     return Some((status.code().unwrap_or(-1), out, err));
@@ -390,7 +390,7 @@ pub(crate) fn classify_image_route(
     }
 }
 
-// VM 资源查找链（2026-10-22 三拍：**没有资源目录**——镜像构建脚本与
+// VM 资源查找链（三拍：**没有资源目录**——镜像构建脚本与
 // guest 全部内嵌在 plugin_vm.dll，用时经 `crate::vm_resources` 释放到
 // `<workspace>/tools/vm/released/`）。候选链：① **释放态** = released
 // 根（构建面先 `vm_resources::ensure_released` 触发释放；状态面只
@@ -428,8 +428,8 @@ fn vm_image_script_path(workspace: &Path) -> Option<PathBuf> {
 /// ① 释放态 = released 根内 `guest/<短arch>/nemesis-guest`（布局与
 /// build-guest.sh 的 `bin/bin_guest/<短arch>/` 一致）；② 开发形态 = 仓库
 /// target 交叉编译产物（guest 命名跟 **target** 走不跟宿主走：
-/// guest_target 恒为 linux-musl，cargo 产物恒无 .exe——build-guest.sh 的
-/// .exe 只用于宿主冒烟件；B5 全新环境实跑抓出的 P5 遗留错配）。
+/// guest_target 恒为 linux-musl，cargo 产物恒无.exe——build-guest.sh 的
+/// .exe 只用于宿主冒烟件； 全新环境实跑抓出的 遗留错配）。
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn guest_bin_candidates_with(
     released: Option<&Path>,
@@ -492,14 +492,14 @@ pub(crate) struct ImageBuildInputs {
     pub arch: String,
     pub base_url: String,
     pub sha256: String,
-    /// 镜像 variant（P5-R2 ② 接线）：config `desktop: "full"` →
+    /// 镜像 variant（② 接线）：config `desktop: "full"` →
     /// `--variant desktop`（带桌面镜像——display=vnc 的前置）；`minimal` →
     /// 空（脚本默认 base variant）。与 build-vm-image.sh 的
     /// VARIANT 值域同源。
     pub variant_arg: Vec<String>,
 }
 
-/// config `desktop` → 构建脚本 variant 参数（P5-R2 ② 接线；两臂同源消费）。
+/// config `desktop` → 构建脚本 variant 参数（② 接线；两臂同源消费）。
 /// `full` = `["--variant", "desktop"]`；`minimal` = 空（脚本默认 base）。
 pub(crate) fn variant_args(desktop: &str) -> Vec<String> {
     match desktop {
@@ -512,7 +512,7 @@ pub(crate) fn image_build_inputs(
     settings: &nemesis_config::ExecutorVmConfig,
     workspace: &Path,
 ) -> Result<ImageBuildInputs, String> {
-    // ---- 资源释放触发（2026-10-22 三拍：内嵌资源用时释放——**只有
+    // ---- 资源释放触发（三拍：内嵌资源用时释放——**只有
     // 这里**写盘；状态面全是 exists 探测）。插件缺席/不可用 = 记下现场，
     // 回落开发链；开发链也缺席时把释放现场一并报出（不许静默吞）。----
     let released = crate::vm_resources::ensure_released(workspace);
@@ -565,10 +565,10 @@ pub(crate) fn image_build_inputs(
 
     #[cfg(windows)]
     {
-        // B7：Windows 宿主不再硬拒绝——前置同 Linux 口径，再探 WSL：
+        // Windows 宿主不再硬拒绝——前置同 Linux 口径，再探 WSL：
         // 就绪 = 自动经 `wsl.exe -e bash` 跑同一管线（产物路径翻译 /mnt 形态，
         // staging→promote 换装链复用）；任何一环缺席 = 诚实报错 + 可复制修复命令。
-        // P5 既定边界保留：镜像一次构建双端复用，Linux 构建回传仍是等价出路。
+        // 既定边界保留：镜像一次构建双端复用，Linux 构建回传仍是等价出路。
         let probe = wsl_probe_fresh();
         match probe.state {
             WslState::Ready => {
@@ -628,7 +628,7 @@ pub(crate) fn image_build_inputs(
 
 /// [`VmSupervisorError`] → WSAPI 字符串（带分类前缀，页面可区分「档没开」
 /// 「身份已终结」「操作失败」三类——Unavailable 可回落、LifecycleRejected
-/// 身份已终结禁回落（F1）、Failed 有副作用可能绝不回落）。
+/// 身份已终结禁回落、Failed 有副作用可能绝不回落）。
 fn err_string(e: VmSupervisorError) -> String {
     match e {
         VmSupervisorError::Unavailable(m) => format!("不可用: {m}"),
@@ -715,7 +715,7 @@ fn update_vm_config(home: &Path, vm: &nemesis_config::ExecutorVmConfig) -> Resul
     Ok(())
 }
 
-/// 追加一行进构建日志（逐行 flush——页面轮询 tail 实时可见）。
+/// 追加一行进构建日志（逐行 flush——页面轮询 tail 实时可）。
 fn log_line(path: &Path, line: &str) {
     use std::io::Write as _;
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -842,7 +842,7 @@ impl VmBridge for VmSupervisor {
     fn config_set(&self, vm: serde_json::Value) -> Result<(), String> {
         let typed: nemesis_config::ExecutorVmConfig =
             serde_json::from_value(vm).map_err(|e| format!("executor.vm 配置解析失败: {e}"))?;
-        // 值域校验与配置装载同源（ExecutorVmConfig::validate 单一真相源）。
+        // 值域校验与配置装载同源（ExecutorVmConfig::validate 统一定义）。
         typed
             .validate()
             .map_err(|e| format!("executor.vm 配置校验失败: {e}"))?;
@@ -904,7 +904,7 @@ impl VmBridge for VmSupervisor {
             "VM 档未开启（executor.vm.enabled=false）：镜像构建不可用".to_string()
         })?;
 
-        // 输入裁决（与 CLI 前台臂共用的单一真相源）——内嵌资源释放触发点。
+        // 输入裁决（与 CLI 前台臂共用的统一定义）——内嵌资源释放触发点。
         let inputs = image_build_inputs(&settings, self.workspace())?;
 
         // 单飞闸 + 任务登记。
@@ -988,7 +988,7 @@ impl VmBridge for VmSupervisor {
 
     async fn gc_run(&self) -> serde_json::Value {
         let swept = self.sweep_orphans().await;
-        // P5-R4：手动 GC 面同吃磁盘垃圾回收（孤儿 overlay / 换装残留）。
+        // 手动 GC 面同吃磁盘垃圾回收（孤儿 overlay / 换装残留）。
         let disk_gc = self.sweep_disk_garbage();
         let used = disk_usage_bytes(self.workspace());
         let decision = self.vm_config().map(|c| match gc_decision(used, &c.gc) {
@@ -1096,9 +1096,9 @@ impl VmBridge for VmSupervisor {
             }),
         };
 
-        // 基础镜像在场（build 链产出的正式位）+ 构建路由六态（B7：Windows
+        // 基础镜像在场（build 链产出的正式位）+ 构建路由六态（Windows
         // 宿主经 WSL 自动构建的可达面——「能不能点」与「缺什么怎么补」
-        // 同一份事实，B2 八态同款每态给可执行下一步）。
+        // 同一份事实， 八态同款每态给可执行下一步）。
         let image_ready = vm_images_root(workspace).join("base.qcow2").exists();
         let image_route = image_route_json(workspace, &arch);
 
@@ -1265,7 +1265,7 @@ impl VmBridge for VmSupervisor {
         }
         match self.try_launch_claim() {
             // 生产装配（gateway 注入自引用）：后台冷启 + 发起即返回——前端
-            // 轮询 try.status 的 starting/running 转绿。真机教训（2026-10-19）：
+            // 轮询 try.status 的 starting/running 转绿。真机
             // 冷启动同步等 30-60s 必撞前端 30s WSAPI 超时（用户看到
             // 「timeout: vm.try.start」弹窗，而 QEMU 实际已成功启动）。
             Some(sup) => {
@@ -1325,8 +1325,8 @@ impl VmBridge for VmSupervisor {
             .ensure_running(TRY_AGENT_ID)
             .await
             .map_err(err_string)?;
-        // B8c：可选超时透传（缺省与 guest EXEC_DEFAULT_TIMEOUT_SECS 同源
-        // 60s——B8e 把 guest 默认 30→60 后 host 若还按 30 预算，60s 长命令
+        // 可选超时透传（缺省与 guest EXEC_DEFAULT_TIMEOUT_SECS 同源
+        // 60s—— 把 guest 默认 30→60 后 host 若还按 30 预算，60s 长命令
         // 撞 host 墙钟先死；上限 600s 与 guest 硬上限同源钳制，handler 已钳
         // 一次，这里兜底防御）。
         let guest_timeout = timeout_secs.unwrap_or(60).clamp(1, 600);
@@ -1393,7 +1393,7 @@ impl VmBridge for VmSupervisor {
     }
 
     // -----------------------------------------------------------------
-    // B9-3 项目工作副本同步（WSAPI vm.sync.status / vm.commit / vm.resync
+    // 项目工作副本同步（WSAPI vm.sync.status / vm.commit / vm.resync
     // 同一面；CLI vm commit/resync 走 /api/internal 转发到同一桥）。
     // -----------------------------------------------------------------
 
@@ -1459,8 +1459,8 @@ impl VmBridge for VmSupervisor {
     }
 }
 
-/// B6 快速试玩固定 agent_id（骑既有 supervisor 全套机制——registry/槽位/
-/// 睡眠线/满员闸与 agent 实例完全同构，`vm.instance.list` 如实可见）。
+/// 快速试玩固定 agent_id（骑既有 supervisor 全套机制——registry/槽位/
+/// 睡眠线/满员闸与 agent 实例完全同构，`vm.instance.list` 如实可）。
 pub(crate) const TRY_AGENT_ID: &str = "try-dashboard";
 
 /// 试玩单次调用墙钟预算（握手 + exec；预设命令均秒级，30s guest 侧超时
@@ -1498,7 +1498,7 @@ fn load_wake_line(workspace: &Path, agent_id: &str) -> Option<String> {
     }
 }
 
-/// B9-3 同步目标解析（按项目 id 精确 → 名称回退）。返回注册表条目：
+/// 同步目标解析（按项目 id 精确 → 名称回退）。返回注册表条目：
 /// `entry.id` 是同步账本的键、`entry.path` 是同步根。
 pub(super) fn resolve_project_entry(
     workspace: &Path,
@@ -1514,7 +1514,7 @@ pub(super) fn resolve_project_entry(
         .ok_or_else(|| format!("项目不存在: {project}（id 或名称皆未命中注册表）"))
 }
 
-/// B9-3 commit/resync 目标全解析：项目条目 + VM 档会话的 agent_id。
+/// commit/resync 目标全解析：项目条目 + VM 档会话的 agent_id。
 /// VM 实例常驻 gateway 进程——agent 记录不在（管理器未装配 / 会话未建）
 /// 或非 VM 档 = 诚实报错，不假装同步了。
 pub(super) fn resolve_sync_target(
@@ -1558,13 +1558,13 @@ fn record_json(
         "disk_gb": r.disk_gb,
         "has_snapshot": r.snapshot_tag.is_some(),
         "has_state_file": r.state_path.is_some(),
-        // P5-R2 显示面：display_port 在场（运行中实例）= 前端「查看屏幕」
+        // 显示面：display_port 在场（运行中实例）= 前端「查看屏幕」
         // 入口的能力依据之一（配合 config display + 插件在位探测）。
         "display_port": r.display_port,
     })
 }
 
-/// `bootstrap_status.image_route` 段（B2 八态同款：事实采集 → 纯函数分类
+/// `bootstrap_status.image_route` 段（八态同款：事实采集 → 纯函数分类
 /// → 每态给可执行下一步 + 复制命令）。分类逻辑在
 /// [`classify_image_route`]（纯函数，单测钉六态）；本函数只做「探针取事实 +
 /// 每态 JSON 形态」。Windows 探针走 TTL 缓存（轮询面不重复 spawn）。
@@ -1651,8 +1651,8 @@ fn image_route_json(workspace: &Path, arch: &str) -> serde_json::Value {
 }
 
 /// 镜像构建后台任务：脚本 spawn → 日志逐行落盘 → 成功后 rebase/换装 →
-/// 任务槽清位。任何失败只进日志（页面 tail 可见），不 panic。
-/// B7：spawn 主体由 inputs 裁决（native bash / 经 `wsl.exe -e bash`——
+/// 任务槽清位。任何失败只进日志（页面 tail 可），不 panic。
+/// spawn 主体由 inputs 裁决（native bash / 经 `wsl.exe -e bash`——
 /// Windows 宿主自动路由）；staging 传给子进程前翻译 /mnt 形态，宿主侧
 /// promote 换装链仍用原生形态（字节不变）。
 async fn run_image_build(
@@ -1714,7 +1714,7 @@ async fn run_image_build(
         .arg(&base_url)
         .arg("--arch")
         .arg(&arch);
-    // P5-R2 ②：desktop=full → --variant desktop（带桌面镜像——display=vnc
+    // ②：desktop=full → --variant desktop（带桌面镜像——display=vnc
     // 的前置；minimal = 脚本默认 base variant）。
     for a in &variant_arg {
         cmd.arg(a);
@@ -1801,8 +1801,8 @@ async fn run_image_build(
     IMAGE_JOB.lock().expect("image job lock").take();
 }
 
-/// QEMU 安装后台任务（B3 自举族）：平台分派 → 日志逐行落盘 → 任务槽清位。
-/// 幂等（已装 = already_installed 早退）；失败只进日志（页面 tail 可见），
+/// QEMU 安装后台任务（自举族）：平台分派 → 日志逐行落盘 → 任务槽清位。
+/// 幂等（已装 = already_installed 早退）；失败只进日志（页面 tail 可），
 /// 不 panic。成功后探针复检由 bootstrap_status 轮询自然转绿。
 async fn run_qemu_install(workspace: PathBuf) {
     let log_path = bootstrap_log_path(&workspace);
@@ -1920,7 +1920,7 @@ async fn promote_staging(workspace: &Path, staging: &Path, log_path: &Path) -> R
                 .arg("rebase")
                 .arg("-b")
                 .arg(&new_base)
-                // 新版 qemu-img 换 backing 强制显式格式（B7 真机走查实锤：
+                // 新版 qemu-img 换 backing 强制显式格式（真机走查实锤：
                 // 缺 -F 报 "backing format must be specified"；overlay 全族
                 // 均为本管线 create -F qcow2 产物，格式恒 qcow2）。
                 .arg("-F")

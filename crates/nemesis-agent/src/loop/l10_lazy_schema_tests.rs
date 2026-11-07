@@ -1,4 +1,4 @@
-//! L10-建设（改进项三期 2026-11-02）：
+//! 建设（2026-11-02）：
 //! 工具惰性 schema 供给测试——档位裁决矩阵（mini 强制惰性 / normal 缺省
 //! 惰性 / normal config off / big·Auto 恒全量）、折叠保真（name+description
 //! 全保 + 占位 + 取回工具豁免）、解锁账与注记渲染（空键跳过/去重/append
@@ -7,7 +7,7 @@
 //! 注入集成。
 //!
 //! 独立测试文件（仓库纪律）。形态同 w7_lazy_supply_tests（裸 AgentLoop +
-//! 手插工具 + tempdir config + std::mem::forget）。
+//! 手插工具 + tempdir config + std::mem:forget）。
 
 use super::AgentLoop;
 use crate::context::RequestContext;
@@ -68,7 +68,7 @@ impl Tool for StubTool {
     }
 }
 
-/// normal 白名单外桩（tier 可见性镜像的负样本——normal 档供给面看不见）。
+/// normal 白名单外桩（tier 可见性镜像的负样本——normal 档供给面看不）。
 struct MiniInvisibleTool;
 
 #[async_trait]
@@ -175,7 +175,7 @@ fn def_by_name(al: &AgentLoop, name: &str) -> Option<crate::types::ToolDefinitio
 }
 
 // ---------------------------------------------------------------------------
-// 档位裁决矩阵（current_lazy_tool_schema 单一真相源）
+// 档位裁决矩阵（current_lazy_tool_schema 统一定义）
 // ---------------------------------------------------------------------------
 
 // mini 强制惰性：即使 config 显式关（用户意志不覆盖强制面——字节节省对
@@ -493,7 +493,7 @@ fn unlock_section_append_only_prefix_stable() {
 }
 
 // ---------------------------------------------------------------------------
-// 校验回灌指引（validation_error_feedback 单一真相源）
+// 校验回灌指引（validation_error_feedback 统一定义）
 // ---------------------------------------------------------------------------
 
 #[test]

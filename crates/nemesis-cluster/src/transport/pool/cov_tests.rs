@@ -21,7 +21,7 @@ fn sync_pool_reuses_live_connection() {
     assert!(reused.is_ok(), "必须复用池内存活连接而不是重连死端口");
 }
 
-/// LOW-10（2026-10-17 四轮审计）：close() 后迟到的 return_connection 不
+/// LOW-10（四轮审计）：close() 后迟到的 return_connection 不
 /// 触碰三账——active_count 不下溢（debug 构建下 usize 回绕会 panic）、
 /// 不复活池内条目、许可补还保持信号量自洽。
 #[test]
@@ -67,4 +67,4 @@ fn return_connection_after_close_is_benign() {
 }
 
 // 注：get_with_context（test-only API）已删除——生产零调用方，select 双
-// ready 竞态漏许可的分析结论记录于四轮审计报告 §3。
+// ready 竞态漏许可的分析结论记录于四轮审计报告 。

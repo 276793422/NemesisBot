@@ -29,7 +29,7 @@ pub struct TriggerConfig {
     pub config: HashMap<String, serde_json::Value>,
 }
 
-/// Timezone a cron trigger evaluates its expression in (milestone 1b-C4).
+/// Timezone a cron trigger evaluates its expression in (milestone 1b-).
 ///
 /// Most users write cron expressions thinking of wall-clock local time
 /// ("0 9 * * * *" = "9am my time"), so [`CronTimezone::Local`] is the
@@ -409,7 +409,7 @@ fn match_glob(pattern: &str, s: &str) -> bool {
         return false;
     }
 
-    // BUG-20261028-120：首尾 part 不得重叠——"a*a" 不能匹配 "a"（同一
+    // 首尾 part 不得重叠——"a*a" 不能匹配 "a"（同一
     // 字符无法既做开头又做结尾）。旧实现只查 starts_with/ends_with，
     // 长度不足时假阳性放行（message/event 触发器 glob 语义错误）。
     // 字节长度判定，与下方 idx 字节偏移推进同语义。
@@ -422,11 +422,16 @@ fn match_glob(pattern: &str, s: &str) -> bool {
         return false;
     }
 
-    // Check middle parts appear in order
-    let mut idx = parts[0].len();
+    // Middle parts appear in order strictly between the anchored prefix and
+    // suffix. BUG-20261107-002：旧实现从首段尾部起在**整个剩余串**（含尾段
+    // 锚地）上贪心推进，中段命中可以吃进尾段领地（`match_glob("a*bc*c",
+    // "abc")` 假阳性放行——最短合法长度 4 > 3）。改为把中段限制在锚定前后
+    // 缀之间的区域内贪心匹配：最早命中留下最大余量（交换论证），区域内
+    // 贪心对按序匹配完备，无需回溯。
+    let mut rest = &s[parts[0].len()..s.len() - parts[parts.len() - 1].len()];
     for part in &parts[1..parts.len() - 1] {
-        match s[idx..].find(part) {
-            Some(pos) => idx += pos + part.len(),
+        match rest.find(part) {
+            Some(pos) => rest = &rest[pos + part.len()..],
             None => return false,
         }
     }

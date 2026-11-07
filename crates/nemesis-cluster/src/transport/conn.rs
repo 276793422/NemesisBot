@@ -74,7 +74,7 @@ impl Connection {
     /// Send a framed message (4-byte length prefix + payload).
     pub fn send(&mut self, data: &[u8]) -> Result<(), ConnectionError> {
         let stream = self.stream.as_mut().ok_or(ConnectionError::NotConnected)?;
-        // LOW-9（2026-10-17 四轮审计）：发送侧帧长预检——`as u32` 截断 >
+        // LOW-9（四轮审计）：发送侧帧长预检——`as u32` 截断 >
         // 4GiB 载荷会写出假长度前缀，对端 recv 按 MAX_FRAME_SIZE 拒收并断
         // 链（双方都进入难排查的不一致态）。现有调用方不可能产生超限帧，
         // 这是护栏不是修复。
@@ -228,7 +228,7 @@ impl WireMessage {
 
     /// Create a heartbeat keepalive message.
     ///
-    /// T2（2026-10-17）：旧实现的心跳是裸 4 字节零载荷帧——写循环再包一层
+    /// 旧实现的心跳是裸 4 字节零载荷帧——写循环再包一层
     /// 长度前缀后，对端收到的是 4 字节零载荷，`from_bytes` JSON parse 必败，
     /// 每拍刷一条 parse WARN 且不刷新活跃时间。合法心跳走统一组帧/加密
     /// 链路，对端 read loop parse 成功即刷新活跃时间并静默丢弃。
@@ -352,17 +352,17 @@ impl Default for TcpConnConfig {
 /// Mirrors Go's `TCPConn`:
 /// - Read loop: reads framed messages, JSON-parses them, sends to recv channel;
 ///   enforces the idle timeout — no frame within `idle_timeout` really closes
-///   the connection（T1：旧的独立 idle monitor 只 warn 不 close，是空转假动作）
+///   the connection（旧的独立 idle monitor 只 warn 不 close，是空转假动作）
 /// - Write loop: reads from send channel, writes framed messages to TCP
 /// - Heartbeat（可选）：发送 `type="heartbeat"` 的合法 `WireMessage` 保活帧，
-///   对端 read loop parse 成功即刷新活跃时间并静默丢弃（T2）
+///   对端 read loop parse 成功即刷新活跃时间并静默丢弃
 /// - Auth token: optionally sent on start before any data
 ///
 /// 泛型于底层流 `S`（`AsyncRead + AsyncWrite`）：默认 `TokioTcpStream`（LAN
-/// TCP 路径，全部既有调用点零改动）；iroh 跨网路径（QUIC 插件化 M3）同泛型
+/// TCP 路径，全部既有调用点零改动）；iroh 跨网路径（QUIC 插件化）同泛型
 /// 传 loopback `TokioTcpStream`——插件把 iroh bi-stream 一次性 loopback TCP
-/// 监听交接给宿主（`rpc::server::serve_roaming_loopback`），帧协议/AEAD/
-/// 空闲监测与 LAN TCP 路径零分叉（A1 P2 双栈）。
+/// 监听交接给宿主（`rpc::server:serve_roaming_loopback`），帧协议/AEAD/
+/// 空闲监测与 LAN TCP 路径零分叉（双栈）。
 pub struct TcpConn<S = TokioTcpStream> {
     node_id: String,
     address: String,
@@ -492,7 +492,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
                 if closed_r.load(Ordering::SeqCst) {
                     break;
                 }
-                // T1（2026-10-17）：空闲超时在读循环强制执行——read_frame
+                // 空闲超时在读循环强制执行——read_frame
                 // 阻塞在半开连接（对端死亡无 FIN/RST）上时，超时即真正断链：
                 // 读循环退出 → recv_tx drop → receive() 返回 None →
                 // handle_connection 收尾 close，conn 槽位归还。旧的独立
@@ -533,7 +533,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
                             Ok(msg) => {
                                 *last_used_r.write() = Instant::now();
                                 if msg.msg_type == "heartbeat" {
-                                    // T2：心跳帧只做保活（上面已刷新活跃时间），
+                                    // 心跳帧只做保活（上面已刷新活跃时间），
                                     // 不进消息队列——无人 receive 时也不会灌满
                                     // recv channel；服务端对非 request 类型本就忽略。
                                     trace!("[Transport] Heartbeat received: id={}", msg.id);
@@ -641,7 +641,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
         });
 
         // --- Optional heartbeat ---
-        // T2（2026-10-17）：心跳 = 合法 WireMessage（type="heartbeat"），
+        // 心跳 = 合法 WireMessage（type="heartbeat"），
         // 经统一写循环加组帧/加密；活跃时间由写循环写成功时刷新。
         let heartbeat_task = if let Some(hb_interval) = heartbeat_interval {
             let closed_h = self.closed.clone();
@@ -649,7 +649,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
             let node_id_h = self.node_id.clone();
             Some(tokio::spawn(async move {
                 let mut interval = tokio::time::interval(hb_interval);
-                // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的心跳逐个
+                // 默认 Burst 在挂起恢复后把错过的心跳逐个
                 // 补发，发送通道满时 try_send 失败直接 break——心跳任务被一次
                 // 突发误杀。Delay = 错过即从当前时刻重排。
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

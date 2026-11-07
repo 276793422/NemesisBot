@@ -1,4 +1,4 @@
-//! WS9/P22：会话租约（WorkspaceLease）——workspace 级写租约（v1 粒度 =
+//! ：会话租约（WorkspaceLease）——workspace 级写租约（v1 粒度 =
 //! 整个工作区的写类操作互斥）。
 //!
 //! 背景：主 loop / 项目 loop / executor 子进程 / cron sweep 多个执行体
@@ -12,13 +12,13 @@
 //!   `workspace_lease.lock.holder.json` 记 `{holder, acquired_at, acq_id}`
 //!   ——锁本身不可读名字，sidecar 专供人/前端展示（`probe` 读取；进程死
 //!   亡后 sidecar 残留 = 陈旧记录，probe 诚实标注）。`acq_id` 是
-//!   per-acquire 唯一 id（F6，2026-09-27）：清理侧只删自己那份，防同
+//!   per-acquire 唯一 id（2026-09-27）：清理侧只删自己那份，防同
 //!   holder 名相邻持有的时序竞态误删他人 sidecar。
 //!
 //! 持锁形态（架构要点）：**guard 不出借**——`fd-lock` 的
 //! `RwLockWriteGuard<'lock, File>` 借用 `RwLock` 本体，「自持锁 + 自持
 //! guard」是自引用结构，借用检查容不下；轮询重试循环里 guard 携带
-//! `'a` 逃逸更是 E0499 必然。因此锁由**专用 std 线程**持有（线程内
+//! `'a` 逃逸更是 必然。因此锁由**专用 std 线程**持有（线程内
 //! try_write 轮询 → 持 guard → 阻塞等释放信号；sync 阻塞在独立线程无
 //! 害），调用方只拿 owned 的 [`LeaseAcquisition`]（Drop 发释放信号）。
 //!
@@ -30,10 +30,10 @@
 //! - 开关 `agents.lease_enabled`（默认 true）在**装配期**消费
 //!   （agent_factory 构造 `SharedToolConfig.workspace_lease`）——改配置
 //!   需重启生效（与 executor 段同语义）；
-//! - **F8 豁免（诚实边界）**：rewind/redo 的文件恢复（checkpoint
+//! - ** 豁免（诚实边界）**：rewind/redo 的文件恢复（checkpoint
 //!   `git_restore` / `hybrid_restore`，checkout+删除直达工作区）**不走租
 //!   约**——它是用户显式发起的独占操作，前置已有 busy 闸（目标会话不在
-//!   执行中）+ P20 冲突预检 + force 审计留痕；且「恢复」的本职就是覆盖
+//!   执行中）+ 冲突预检 + force 审计留痕；且「恢复」的本职就是覆盖
 //!   工作区现状，包进租约会与其他执行体的写意图对峙排队，语义打架。
 //!   并发写互斥的担保范围 = 写类**工具**调用，不含恢复类运维动作。
 
@@ -112,7 +112,7 @@ impl WorkspaceLease {
     pub async fn acquire(self: &Arc<Self>) -> io::Result<LeaseAcquisition> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<io::Result<()>>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        // F6（2026-09-27）：per-acquire 唯一 id——sidecar 的清理比对键从
+        // per-acquire 唯一 id——sidecar 的清理比对键从
         // holder 名换成它。同 holder 名的相邻持有（同二进制先后两次获取）
         // 在「A 落 guard → B 抢到锁写 sidecar → A 才执行清理」的时序下，
         // 按名比对会误删 B 的 sidecar（B 持锁却查无此人）；uuid 比对下 A
@@ -133,9 +133,9 @@ impl WorkspaceLease {
         // Err 路径给线程补发 release，防「线程已持锁却无人释放」悬挂。
         let wait = async {
             // 两层 `?` 剥掉 JoinError / RecvError 后，剩锁线程的**诚实判
-            // 决**（`io::Result<()>`：Ok=获取成功 / Err=争用超时或故障），
+            // 决**（`io::Result<>`：Ok=获取成功 / Err=争用超时或故障），
             // 原样作为本 async 块的结果——不可 `let _` 吞掉（否则拒绝会
-            // 被伪装成成功，2026-09-26 scratch 实证过的真 bug）。
+            // 被伪装成成功， scratch 实证过的真 bug）。
             tokio::task::spawn_blocking(move || ready_rx.recv())
                 .await
                 .map_err(|e| io::Error::other(format!("租约等待任务失败: {e}")))?
@@ -215,7 +215,7 @@ impl WorkspaceLease {
     }
 
     /// 持有者 sidecar 落盘（best-effort；sidecar 失败不影响锁的互斥性）。
-    /// `acq_id` 是 per-acquire 唯一键（F6），清理侧只认它。
+    /// `acq_id` 是 per-acquire 唯一键，清理侧只认它。
     fn write_holder(&self, acq_id: &str) {
         let v = serde_json::json!({
             "holder": self.holder,
@@ -251,7 +251,7 @@ impl WorkspaceLease {
             .map(|p| p.join(format!("{LOCK_FILE_NAME}.holder.json")));
         let mut held = false;
         let mut note = String::new();
-        // F7（2026-09-26 复查）：探针只读化——锁文件不存在 = 从未有租约，
+        // （复查）：探针只读化——锁文件不存在 = 从未有租约，
         // 直接诚实汇报返回，不创建 logs/ 与锁载体文件（状态查询不得有副
         // 作用；此前 create(true) 让首次探测凭空造出锁文件）。
         if !lock_path.exists() {
@@ -311,7 +311,7 @@ fn read_holder_json(holder_path: &std::path::Path) -> Option<serde_json::Value> 
     serde_json::from_str(&data).ok()
 }
 
-/// 清**自己的** sidecar（F6：按 per-acquire 唯一 `acq_id` 比对——只删
+/// 清**自己的** sidecar（按 per-acquire 唯一 `acq_id` 比对——只删
 /// **本次获取**写下的那份。旧实现按 holder 名比对，同 holder 名的相邻
 /// 持有在「A 落 guard → B 抢锁写 sidecar → A 才清理」的时序下会误删 B
 /// 的记录；id 比对下时序竞态无害。旧格式 sidecar（无 acq_id）不删——
@@ -338,7 +338,7 @@ pub struct LeaseAcquisition {
     holder_path: PathBuf,
     #[allow(dead_code)]
     holder: String,
-    /// F6：本次获取的唯一 id（与 sidecar 里的 `acq_id` 同源，诊断用）。
+    /// 本次获取的唯一 id（与 sidecar 里的 `acq_id` 同源，诊断用）。
     #[allow(dead_code)]
     acq_id: String,
 }
@@ -351,7 +351,7 @@ impl Drop for LeaseAcquisition {
     }
 }
 
-/// WS9/P22：需要租约的写类工具清单（v1）。`exec` **不在账**——见模块
+/// ：需要租约的写类工具清单（v1）。`exec` **不在账**——见模块
 /// 文档「接线」小节的诚实边界（命令面包装拦不到效果面，不做假拦截）。
 /// 2026-11-06：append_file 并入 edit_file（action=append），6 项。
 pub const LEASE_WRITE_TOOLS: [&str; 6] = [
@@ -368,7 +368,7 @@ pub const LEASE_WRITE_TOOLS: [&str; 6] = [
 /// agent 内部 `crate::r#loop::Tool` trait（与被包装工具同一 trait 对象）；
 /// 协议面（description/parameters）与行为面（preview/preview_all/只读声
 /// 明/凭据槽位/限额类别等）**全量透传 inner**——checkpoint 安全网（依赖
-/// preview_all）、P20 冲突预检、安全 8 层、prompt cache 前缀全部不受包
+/// preview_all）、 冲突预检、安全 8 层、prompt cache 前缀全部不受包
 /// 装影响；唯一被改写的是 execute：acquire → inner.execute → drop 释放。
 pub struct LeaseGuardTool {
     inner: Arc<dyn Tool>,

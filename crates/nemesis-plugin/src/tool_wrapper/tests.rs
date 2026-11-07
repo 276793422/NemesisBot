@@ -401,7 +401,7 @@ fn test_pluginable_tool_no_args() {
     assert_eq!(result["echo"], "no input");
 }
 
-// ---- Phase 4 coverage for 95%+ target ----
+// ---- coverage for 95%+ target ----
 
 #[test]
 fn test_tool_wrapper_fields_are_set() {

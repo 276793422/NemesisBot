@@ -1,5 +1,5 @@
 //! Elevation: detect whether the process is admin, and re-launch self elevated
-//! via `ShellExecuteW("runas", ...)`. Mirrors the `spawn_elevated` pattern in
+//! via `ShellExecuteW("runas",...)`. Mirrors the `spawn_elevated` pattern in
 //! `nemesis-web/src/handlers/cluster.rs:2053` (the project's existing elevation
 //! primitive), kept here so `nemesis-sandbox` is self-contained.
 //!

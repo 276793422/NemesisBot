@@ -1,4 +1,4 @@
-//! 宿主侧 C-ABI 桥（QUIC 插件化 M2，拍板 6「导出一个对象，对象里面导出不同的
+//! 宿主侧 C-ABI 桥（QUIC 插件化，「导出一个对象，对象里面导出不同的
 //! 子对象」的宿主消费面）：nemesis-cluster / nemesis-web / nemesisbot 统一经
 //! 本桥调 plugin_roaming，不摸 dlopen / 句柄细节。
 //!
@@ -8,10 +8,10 @@
 //!   「文件在场即加载」→ 桥槽恒有插件；CLI 进程需先显式装载再走桥）；
 //! - 本桥不依赖 nemesisbot（依赖方向 nemesisbot → nemesis-cluster），所以
 //!   ok:false 错误展开与 loader `call_roaming` 同文案**两处镜像**（改文案两边同步）；
-//! - 名册循环（拍板 7）的 register/members HTTP 往返在插件内跑，宿主只经
+//! - 名册循环的 register/members HTTP 往返在插件内跑，宿主只经
 //!   [`set_members_sink`] 挂成员回流漏斗、经 [`registry_start`]/
 //!   [`registry_stop_fire_and_forget`] 控循环启停；
-//! - M3 客户端连接面：拨号 [`dial`]/[`close_conn`]、端点启停
+//! - 客户端连接面：拨号 [`dial`]/[`close_conn`]、端点启停
 //!   [`endpoint_start`]/[`endpoint_stop`]、快照 [`status_snapshot`]；入站
 //!   交接经 [`set_incoming_sink`] 挂 server 臂受理漏斗。rpc/client 拨号臂
 //!   面向 [`RoamingDialer`] 抽象（生产 [`BridgeDialer`]，测试注入假插件）。
@@ -35,7 +35,7 @@ static PLUGIN: OnceLock<&'static RoamingPluginHandle> = OnceLock::new();
 /// RwLock 而非 OnceLock：热更/重装时 loader 重新注入可整体替换。
 static MEMBERS_SINK: RwLock<Option<Arc<dyn Fn(&str) + Send + Sync>>> = RwLock::new(None);
 
-/// 入站连接漏斗（M3：notify_incoming → server 臂受理循环）。
+/// 入站连接漏斗（notify_incoming → server 臂受理循环）。
 static INCOMING_SINK: RwLock<Option<Arc<dyn Fn(&IncomingConn) + Send + Sync>>> = RwLock::new(None);
 
 /// 注入已装载的插件句柄（loader 专属——`HANDLE.get()` 得到的引用即
@@ -71,7 +71,7 @@ pub fn dispatch_members_json(json: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// 入站连接交接面（M3：accept 臂——插件开 loopback 端口通知宿主受理）
+// 入站连接交接面（accept 臂——插件开 loopback 端口通知宿主受理）
 // ---------------------------------------------------------------------------
 
 /// 入站连接交接载荷（`notify_incoming` v2 三参投影；server 臂消费——
@@ -191,10 +191,10 @@ async fn call_bridge<T: DeserializeOwned>(
 }
 
 // ---------------------------------------------------------------------------
-// 身份面（M2：宿主控制面身份操作全部改走桥）
+// 身份面（宿主控制面身份操作全部改走桥）
 // ---------------------------------------------------------------------------
 
-/// 身份材料（`identity_keygen`/`identity_ensure` 响应投影）。M3 起 seed 不出
+/// 身份材料（`identity_keygen`/`identity_ensure` 响应投影）。 起 seed 不出
 /// 插件（插件是 endpoint 唯一消费者——identity_payload 一律不带 secret）。
 #[derive(Debug, Clone, Deserialize)]
 pub struct IdentityInfo {
@@ -203,7 +203,7 @@ pub struct IdentityInfo {
 }
 
 /// 身份确保存在（无文件生成 + 落盘 + 返回身份）。等价旧宿主
-/// `RoamingIdentity::load_or_create`（M3 起 secret 不再经 ABI 回宿主）。
+/// `RoamingIdentity::load_or_create`（起 secret 不再经 ABI 回宿主）。
 pub async fn identity_ensure() -> BridgeOutcome<IdentityInfo> {
     call_bridge("roaming_identity_keygen", |h| h.identity_keygen(false)).await
 }
@@ -225,7 +225,7 @@ pub async fn get_iroh_id() -> BridgeOutcome<String> {
 }
 
 // ---------------------------------------------------------------------------
-// 名册循环控制面（M2：发现循环搬插件，宿主只控启停）
+// 名册循环控制面（发现循环搬插件，宿主只控启停）
 // ---------------------------------------------------------------------------
 
 /// 拉起/热更名册循环（幂等：插件侧停旧起新）。`config_json` 形态 =
@@ -271,7 +271,7 @@ pub fn registry_stop_fire_and_forget() {
 }
 
 // ---------------------------------------------------------------------------
-// 客户端连接面（M3：dial/close/endpoint 启停/状态快照）
+// 客户端连接面（dial/close/endpoint 启停/状态快照）
 // ---------------------------------------------------------------------------
 
 /// 拨号回执（`roaming_dial` 响应投影）。
@@ -351,7 +351,7 @@ pub async fn status_snapshot() -> BridgeOutcome<EndpointStatus> {
 }
 
 // ---------------------------------------------------------------------------
-// 名册循环运行状态（Phase 2 观测性：插件 registry_sync 段 → 宿主 rendezvous
+// 名册循环运行状态（观测性：插件 registry_sync 段 → 宿主 rendezvous
 // 段最终形态。此前失败态只进插件日志，宿主快照只在成功路径覆写——前端
 // 「同步失败」徽标是死分支）
 // ---------------------------------------------------------------------------
@@ -493,7 +493,7 @@ pub fn extract_iroh_hex(addr: &str) -> Option<&str> {
     if hex.is_empty() { None } else { Some(hex) }
 }
 
-/// 带信任闸的生产 dialer（L16② 吊销后拒连出站臂）：拨号前查本地 TrustBook
+/// 带信任闸的生产 dialer（② 吊销后拒连出站臂）：拨号前查本地 TrustBook
 /// 吊销名单——revoked 一票 veto（诚实 Err，调用方 ⛔ 重试语义照常），其余
 /// （簿缺席 / unknown / trusted）透传内层拨号臂。close 无信任面直透传。
 ///

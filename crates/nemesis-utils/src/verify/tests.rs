@@ -1,4 +1,4 @@
-//! BUG-20261104-368 行为锁（与 nemesis-web api_handlers/extra_tests.rs 同款四臂）。
+//! 行为锁（与 nemesis-web api_handlers/extra_tests.rs 同款四臂）。
 use super::verify_token;
 
 #[test]

@@ -130,7 +130,7 @@ pub enum TriggerSource {
         sender_id: String,
         content: String,
     },
-    /// Triggered from the dashboard / WebSocket UI (milestone 1c-E7).
+    /// Triggered from the dashboard / WebSocket UI (milestone 1c-).
     /// Carries the WebSocket session_id so downstream handlers can attribute
     /// the run back to the originating user.
     WebUI {
@@ -311,7 +311,7 @@ impl Workflow {
 
     /// Compute a stable SHA-256 hash of the workflow's structural content.
     ///
-    /// Used by the Checkpointer (1b-A1) to detect config drift between
+    /// Used by the Checkpointer (1b-) to detect config drift between
     /// checkpoint save and resume — if the workflow definition changed
     /// (nodes added/removed, edges rewired, node configs altered) the hash
     /// changes and the resume path can refuse or warn.
@@ -362,7 +362,7 @@ pub struct NodeResult {
 
 /// A workflow execution instance.
 ///
-/// Extended in 1a-B1 with `trigger_source`, `chat_id`, `session_key`, `owner`,
+/// Extended in 1a with `trigger_source`, `chat_id`, `session_key`, `owner`,
 /// `tags`, `workflow_hash` to support agent tool calls, cron ownership, UI
 /// filtering, and Checkpointer config-drift detection. All new fields use
 /// `#[serde(default)]` so old JSONL files load with sensible defaults.
@@ -379,14 +379,14 @@ pub struct Execution {
     pub ended_at: Option<DateTime<Local>>,
     #[serde(default)]
     pub error: Option<String>,
-    /// Per-execution variables. JSON-typed since 1b-B3 so workflows can carry
+    /// Per-execution variables. JSON-typed since 1b so workflows can carry
     /// arbitrary structures. Old JSONL files stored `HashMap<String, String>`
     /// — `serde_json::Value` deserialises those as `Value::String` automatically,
     /// so no explicit migration is required.
     #[serde(default)]
     pub variables: HashMap<String, serde_json::Value>,
 
-    // --- 1a-B1 additions ---
+    // --- 1a additions ---
     /// What triggered this execution. `None` for legacy executions created
     /// before the field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]

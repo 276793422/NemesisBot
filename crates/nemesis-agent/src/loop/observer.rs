@@ -1,13 +1,13 @@
-//! 轮内用量观察（P2-4 器官 5 自 `loop/run_loop.rs` 内联块收编；docs/PLAN/
-//! 2026-09-23_agentloop-god-object-decomposition.md §4.2 表行 5）。
+//! 轮内用量观察（器官 5 自 `loop/run_loop.rs` 内联块收编；docs/PLAN/
+//! 2026-09-23_.md）。
 //! LlmResponse observer 事件发射 + data store 计价明细落账（RequestLog，
-//! A3 分项计价 + 实际命中条目名）。语义零变化：`&mut LlmResponse` 仅为
+//! 分项计价 + 实际命中条目名）。语义零变化：`&mut LlmResponse` 仅为
 //! `raw_request_body/raw_response_body` 的 `take()`（大报文进 observer，
 //! 不留副本）；无出口——纯观察器官，骨架 `st.turns_used += 1` 后调用。
 use super::*;
 
 impl AgentLoop {
-    /// 器官 5（§4.2）：LlmResponse observer 事件 + data store 计价明细。
+    /// 器官 5：LlmResponse observer 事件 + data store 计价明细。
     /// 调用点在 `st.turns_used += 1` 之后，`turns_used` 即当前轮次（1 起）。
     pub(crate) async fn record_round_usage(
         &self,
@@ -50,7 +50,7 @@ impl AgentLoop {
             let model_name = self.active_model.read().clone();
             let cache_creation = usage.cache_creation_tokens.unwrap_or(0);
             let cache_read = usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0);
-            // A3：分项计价 + 实际命中条目名（未命中 → 空名 + 全 0，
+            // 分项计价 + 实际命中条目名（未命中 → 空名 + 全 0，
             // 明细行可区分「未命中」与「命中免费条目」）。
             let breakdown = ds.compute_cost_breakdown(
                 &model_name,
@@ -94,9 +94,9 @@ impl AgentLoop {
             }
         }
 
-        // P8（集群无人值守硬化 A2）：会话 token 预算累计。口径与
+        // （集群无人值守硬化）：会话 token 预算累计。口径与
         // `aggregate_session_usage` 账本一致 = 完整输入（prompt +
-        // cache_creation + cache_read，`usage_full_input` 单一真相源）+
+        // cache_creation + cache_read，`usage_full_input` 统一定义）+
         // output。budget 关闭（0，默认）时零 config 读直接跳过；开启时
         // fresh-read 每轮一次（与 current_max_tool_iterations 同频）。
         // 本调用位于 `insert_request_log` 之后——seed-on-miss 路径读到的

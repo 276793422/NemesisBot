@@ -1,4 +1,4 @@
-//! MemoryStore 后端契约测试（S6）：双生产后端（LocalStore / TfIdfLocalStore）
+//! MemoryStore 后端契约测试：双生产后端（LocalStore / TfIdfLocalStore）
 //! 共享同一套语义契约，换后端不破语义。
 //!
 //! 本模块只提供**通用契约驱动**（泛型后端 + 断言），不含任何 `#[test]` 入口；

@@ -1,9 +1,9 @@
-//! Tests for the projection-ledger replay (T8 / U9 ②).
+//! Tests for the projection-ledger replay (/ ②).
 //!
 //! Isolation note: the ledger sidecar resolves through the process-global
 //! `default_path_manager()` boundary dir. Every test uses a unique session
 //! key and removes its own `<key>.replay.jsonl` (+ boundary sidecar) at the
-//! end — same precedent as the T6 history_search tests.
+//! end — same precedent as the history_search tests.
 
 use super::*;
 use crate::context::RequestContext;
@@ -579,7 +579,7 @@ fn test_trimmed_history_reports_unavailable() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Acceptance (goal T8): a FULL turn with a real tool loop — the ledger
+/// Acceptance (goal): a FULL turn with a real tool loop — the ledger
 /// records every round, and each round replays from the session store +
 /// ledger BYTE-EXACTLY against what the provider actually received
 /// (`serde_json::to_value` per message — the same serialization the
@@ -698,7 +698,7 @@ async fn test_full_turn_replay_byte_exact() {
         }
     }
 
-    // L24: the instruction/tool faces this turn sent are snapshotted —
+    // the instruction/tool faces this turn sent are snapshotted —
     // hashes recorded per round + content-addressed objects on disk whose
     // bytes re-hash to the recorded values (acceptance #1).
     let sp = records[0]
@@ -741,7 +741,7 @@ async fn test_full_turn_replay_byte_exact() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Acceptance (goal X1 / U3): a full turn whose tool result is OVERSIZED
+/// Acceptance (goal /): a full turn whose tool result is OVERSIZED
 /// (above the 8192-char inline budget, below the spill threshold). Three
 /// properties must hold end-to-end:
 ///   1. HISTORY keeps the ORIGINAL bytes (recoverable mid-section);
@@ -917,7 +917,7 @@ async fn test_x1_pruned_tool_result_replay_byte_exact() {
 }
 
 // ---------------------------------------------------------------------------
-// W3a: 分支补漏（append 失败臂 / 越界注入 push / voice 变异 / verify 的
+// 分支补漏（append 失败臂 / 越界注入 push / voice 变异 / verify 的
 // tool_calls 与 field 臂 / char-boundary 帮助函数 / verify_session_round 的
 // Rebuilt 路径 / read_raw_request_messages）
 // ---------------------------------------------------------------------------
@@ -1149,7 +1149,7 @@ fn read_raw_request_messages_variants() {
     assert!(read_raw_request_messages(&na).is_none());
 }
 
-/// T10（多模态 D4）：vision=no 轮的台账重放——重建路径用同一共享投影函数
+/// （多模态）：vision=no 轮的台账重放——重建路径用同一共享投影函数
 /// 把历史 image_refs 重放为占位文本，与生产 build 字节一致；且重建视图
 /// 不含任何图片字节（图片根本没进请求，文件甚至可以不存在）。
 #[test]
@@ -1251,7 +1251,7 @@ fn test_rebuild_reapplies_vision_projection() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// F-D（2026-09-04 四轮盲审）：vision=no 会话在 build 之后又追加了 user 轮
+/// F-D（四轮盲审）：vision=no 会话在 build 之后又追加了 user 轮
 /// ——重放必须先截断到当轮窗口再投影（生产投影的就是当轮窗口）。先投影
 /// 全长再截断的旧实现会把"最新 user 轮"的 rposition 落到后来追加的轮上，
 /// 当前轮/历史轮注记错位 → 字节漂移（重放恒红）。
@@ -1342,7 +1342,7 @@ fn test_rebuild_vision_projection_truncates_before_projecting() {
 }
 
 // ---------------------------------------------------------------------------
-// L24: 内容寻址快照库（system prompt + tool defs）
+// 内容寻址快照库（system prompt + tool defs）
 // ---------------------------------------------------------------------------
 
 /// sha256_hex 基准向量（FIPS 空串 / "abc" 标准值）。
@@ -1472,7 +1472,7 @@ fn l24_load_object_rejects_non_canonical_hash() {
 }
 
 /// rebuild 三态之一：快照在场且完整性通过 → store 首条漂移后仍还原为
-/// 快照字节（P0 判据：人格文件变更不污染历史轮重建）。
+/// 快照字节（判据：人格文件变更不污染历史轮重建）。
 #[test]
 fn l24_rebuild_restores_system_prompt_from_snapshot() {
     let tmp = tempfile::tempdir().unwrap();

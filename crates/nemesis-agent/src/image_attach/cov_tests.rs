@@ -1,5 +1,5 @@
 //! image_attach 覆盖率补充测试（URL 预取失败面 / 钉死 DNS client /
-//! 降采样闸接入两来源 / D6 溢出与 data: 注记 / 水合降级）。
+//! 降采样闸接入两来源 / 溢出与 data: 注记 / 水合降级）。
 
 #[cfg(feature = "image-process")]
 use std::io::Cursor;
@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{attach_turn_images, fetch_url_media, hydrate_image_refs, pick_url_ext};
 // build_pinned_no_redirect_client 在 security 闸后（SSRF 钉死 client）——
-// import 同闸（2026-10-24 N3，最小 feature 集编译破损补口）。
+// import 同闸（最小 feature 集编译破损补口）。
 #[cfg(feature = "security")]
 use super::build_pinned_no_redirect_client;
 use nemesis_types::channel::MediaAttachment;
@@ -90,7 +90,7 @@ fn text_candidate_not_found_gets_honest_note() {
 }
 
 // ---------------------------------------------------------------------------
-// 钉死 DNS client 构建器（S2；security feature）
+// 钉死 DNS client 构建器（security feature）
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "security")]
@@ -277,7 +277,7 @@ async fn uploads_dir_creation_failure_gets_note() {
 }
 
 // ---------------------------------------------------------------------------
-// J6 降采样闸接入统一附加（两来源）
+// 降采样闸接入统一附加（两来源）
 // ---------------------------------------------------------------------------
 
 /// 文本来源：超分辨率图先降采样 → 注记 + 产物（uploads down_*.jpg）附加。

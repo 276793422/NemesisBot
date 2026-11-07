@@ -19,9 +19,7 @@ use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-// ---------------------------------------------------------------------------
 // Test infrastructure: build an AppState for testing
-// ---------------------------------------------------------------------------
 
 fn make_state(
     auth_token: &str,
@@ -60,6 +58,7 @@ fn make_state(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -100,9 +99,7 @@ async fn ws_connect(
         .0
 }
 
-// ---------------------------------------------------------------------------
 // handle_websocket_upgrade auth tests (HTTP layer, not WS upgrade)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_upgrade_no_token_returns_unauthorized_when_auth_required() {
@@ -184,9 +181,7 @@ async fn test_upgrade_no_auth_required_allows_connection() {
     let _ws = ws_connect(&addr, None).await;
 }
 
-// ---------------------------------------------------------------------------
 // handle_websocket full lifecycle tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_websocket_chat_send_message_round_trip() {
@@ -554,9 +549,7 @@ async fn test_websocket_chat_send_missing_content_sends_error() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // SendQueue tests with real WebSocket sink (covers lines 57-79)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_send_queue_integrates_with_websocket() {
@@ -649,9 +642,7 @@ async fn test_broadcast_to_session_with_nonexistent_session_fails() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // WsQuery deserialization edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_ws_query_deserialize_with_unicode_token() {
@@ -682,9 +673,7 @@ fn test_ws_query_deserialize_invalid_type() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // handle_text_message additional dispatch tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_handle_request_type_returns_none() {
@@ -723,9 +712,7 @@ fn test_handle_chat_send_with_voice_playback_null() {
     assert_eq!(result.voice_playback, None);
 }
 
-// ---------------------------------------------------------------------------
-// I5（devtool-upgrade 阶段 7）：chat.send data.open_files → metadata
-// ---------------------------------------------------------------------------
+// （devtool-upgrade）：chat.send data.open_files → metadata
 
 #[test]
 fn test_handle_chat_send_open_files_into_metadata() {
@@ -838,9 +825,7 @@ fn test_handle_history_request_with_null_optional_fields() {
     assert!(content["before_index"].is_null());
 }
 
-// ---------------------------------------------------------------------------
 // Protocol message parser edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_handle_text_message_empty_bytes() {
@@ -873,9 +858,7 @@ fn test_handle_text_message_with_trailing_whitespace() {
     assert!(result.is_ok());
 }
 
-// ---------------------------------------------------------------------------
 // build_broadcast_message and build_pong content tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_build_broadcast_message_unicode_content() {
@@ -920,9 +903,7 @@ fn test_build_broadcast_message_includes_timestamp() {
     assert!(msg.timestamp.is_some());
 }
 
-// ---------------------------------------------------------------------------
 // Stress tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_websocket_multiple_messages_in_sequence() {
@@ -980,9 +961,7 @@ async fn test_multiple_concurrent_websocket_sessions() {
     assert_eq!(final_count, 0);
 }
 
-// ---------------------------------------------------------------------------
 // Authenticated WebSocket flow integration tests
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_websocket_with_correct_token_connects_and_works() {
@@ -1006,9 +985,7 @@ async fn test_websocket_with_correct_token_connects_and_works() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Integration: WS API router request dispatch (covers lines 201-237)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_websocket_request_type_without_router_sends_error() {
@@ -1090,10 +1067,8 @@ async fn test_websocket_request_type_with_router_dispatches() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// A5（2026-10-21 引入）：chat.send data.priority → metadata
+// （引入）：chat.send data.priority → metadata
 //（与 open_files 同款单点模式；队列侧 `inbox::priority_of` 同口径解析）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_handle_chat_send_priority_into_metadata() {

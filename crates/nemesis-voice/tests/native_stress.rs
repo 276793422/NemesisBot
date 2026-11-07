@@ -1,10 +1,10 @@
 // Windows-only：SttEngine / PunctEngine / TtsEngine 三个引擎模块均
 // `#[cfg(target_os = "windows")]`——Linux 上整个测试目标编译期消失
-// （Windows 形态测试约定），否则 E0432 unresolved imports。
+// （Windows 形态测试约定），否则 unresolved imports。
 #![cfg(windows)]
 
-//! native 并发压测（§四.2，2026-10-16）——保留共享能力的三个引擎包装
-//! （SttEngine / PunctEngine / TtsEngine，`docs/INFO/2026-10-15_voice-ffi-safety-audit.md`
+//! native 并发压测（§四.2）——保留共享能力的三个引擎包装
+//! （SttEngine / PunctEngine / TtsEngine，`voice-ffi-safety-audit`
 //! C-1/C-3/C-8）在真实 native 模型下的并发 `&self` 调用压力。
 //!
 //! 常规套件不跑（`#[ignore]`）：需要真实模型（数百 MB 下载 + 每次冷启动

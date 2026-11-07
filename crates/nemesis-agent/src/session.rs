@@ -749,11 +749,10 @@ impl SessionStore {
 
         let session_path = storage_dir.join(format!("{}.json", filename));
 
-        // 落盘委托 REL-002 权威 helper（唯一 tmp + fsync + 失败清理），与
-        // nemesis-session::save_chat_session 同源（BUG-51 同族迁移）。旧手搓
-        // 版无 fsync：rename 落盘后进程崩溃可能留下空/半截 JSON；且错误文案、
-        // tmp 命名与权威 helper 双源分裂。helper 内部唯一 tmp 同样防同键并发
-        // save（主循环 + summarize 任务）互相踩 tmp。
+        // 落盘委托 REL-002 权威 helper（唯一 tmp + fsync + 失败清理；BUG-51
+        // 同族迁移）。旧手搓版无 fsync：rename 落盘后进程崩溃可能留下空/半截
+        // JSON；且错误文案、tmp 命名与权威 helper 双源分裂。helper 内部唯一
+        // tmp 同样防同键并发 save（主循环 + summarize 任务）互相踩 tmp。
         nemesis_utils::file::write_file_atomic(
             &session_path.to_string_lossy(),
             data.as_bytes(),

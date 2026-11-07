@@ -222,7 +222,7 @@ struct TestClient {
 
 impl TestClient {
     fn new(stream: tokio::io::DuplexStream) -> Self {
-        // tokio::io::split 返回 (ReadHalf, WriteHalf)。
+        // tokio::io:split 返回 (ReadHalf, WriteHalf)。
         let (read, write) = tokio::io::split(stream);
         Self {
             write,
@@ -250,7 +250,7 @@ impl TestClient {
     /// 默认 5s 到达（LoopDriver 生产装配用例用）。
     // 唯一调用方在下方 Windows 形态测试里——Linux 下不加门会死代码告警，
     // 撞 clippy -D warnings 门禁。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     async fn recv_within(&mut self, budget: Duration) -> Value {
         let line = tokio::time::timeout(budget, self.lines.next_line())
             .await
@@ -315,7 +315,7 @@ async fn parse_error_yields_minus_32700() {
     assert_eq!(frame["error"]["code"], -32700);
 }
 
-/// BUG-20261029-160 回归锁：入站帧无长度上限（失控客户端发一条无换行
+/// 回归锁：入站帧无长度上限（失控客户端发一条无换行
 /// 超大「行」→ `lines()`/`next_line()` 无限物化直到 OOM）。契约：超限帧
 /// 在 cap 处截断 → 不可解析 → 回 -32700（id 未知 → null）→ **服务继续**
 /// （后续合法帧正常响应），不终止连接。
@@ -591,7 +591,7 @@ async fn prompt_to_unknown_session_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// AcpApprovalManager（M7 → ACP 桥；multi_thread：block_in_place 依赖）
+// AcpApprovalManager（ACP 桥；multi_thread：block_in_place 依赖）
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "security")]
@@ -644,7 +644,7 @@ async fn gate_denies_when_outbound_closed() {
         .request("exec", "t", "HIGH", "why", Duration::from_secs(1))
         .await;
     assert_eq!(o, PermissionOutcome::Denied);
-    // M13 同族：register 先于 send，发送失败早退臂也必须自清条目。
+    // 同族：register 先于 send，发送失败早退臂也必须自清条目。
     assert!(
         pending.inner.lock().unwrap().is_empty(),
         "发送失败臂同样不得滞留登记表（M13）"
@@ -668,7 +668,7 @@ async fn pending_resolve_unknown_id_is_honest_false() {
     ));
 }
 
-/// M13（2026-10-27 整改批次四）：gate 超时臂自清——登记表不再持有超时
+/// gate 超时臂自清——登记表不再持有超时
 /// 条目（此前滞留泄漏），迟到 resolve 诚实 false。
 #[tokio::test]
 async fn gate_timeout_removes_own_pending_entry() {
@@ -690,7 +690,7 @@ async fn gate_timeout_removes_own_pending_entry() {
     assert!(!pending.resolve("perm-0", None));
 }
 
-/// BUG-20261029-177 回归锁：两个 session 的 gate 共享 server 级登记表，
+/// 回归锁：两个 session 的 gate 共享 server 级登记表，
 /// rpc_id 必须全局唯一。旧实现 per-gate 计数——两个 session 的首个审批
 /// 都铸 "perm-0"，后者 register 顶掉前者 oneshot sender（前者未经裁决即
 /// Denied），其失败清理臂 resolve(perm-0, None) 再误摘后者的条目把后者
@@ -754,7 +754,7 @@ async fn concurrent_session_gates_do_not_collide_on_pending_registry() {
 }
 
 // ---------------------------------------------------------------------------
-// Coverage 追加（2026-09-24）：版本协商失配 / mcpServers 忽略 / 工厂失败 /
+// Coverage 追加：版本协商失配 / mcpServers 忽略 / 工厂失败 /
 // prompt 缺参与空块 / cancel 静默 / 空行跳过 / EOF 收尾 / 生产装配
 // （RealSessionFactory + LoopDriver）。
 // ---------------------------------------------------------------------------
@@ -951,7 +951,7 @@ async fn eof_ends_server_cleanly_after_draining_output() {
     assert!(r.is_ok(), "serve must return Ok on clean EOF: {r:?}");
 }
 
-/// M1a hook 事件 → update 载荷映射（830-846）：ToolStarted/ToolFinished
+/// hook 事件 → update 载荷映射（830-846）：ToolStarted/ToolFinished
 /// 映射为 tool_call / tool_call_update，其余变体（ModeChanged 等未宣告
 /// 形态）诚实跳过返回 None。
 #[test]
@@ -1035,7 +1035,7 @@ async fn real_factory_without_config_fails_loud() {
     assert!(err.contains("onboard"), "报错必须带补救指引: {err}");
 }
 
-/// 生产装配全流程（K1 同源）：config.json 在（同 agent_factory::tests 先例，
+/// 生产装配全流程（同源）：config.json 在（同 agent_factory::tests 先例，
 /// api_base 指向 127.0.0.1:9 连接拒绝、离线装配不发请求）→ session/new
 /// 装配成功 → prompt 打到不可达 LLM → Error 结局映射 stopReason=refusal
 /// （失败诚实呈现）。进程全局注入（credentials 路径 / vault 解析器 /

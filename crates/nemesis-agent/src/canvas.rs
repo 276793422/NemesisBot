@@ -1,7 +1,7 @@
-//! P30（WS14）Canvas widget —— agent 侧 ```canvas 块检出 + JS 语法预检。
+//! Canvas widget —— agent 侧 ```canvas 块检出 + JS 语法预检。
 //!
 //! agent 终答里的 ```canvas fenced 块经本模块检出并预检后，由 AgentLoop
-//! 发布 [`nemesis_types::agent::AgentEvent::CanvasOpen`]（web pump 转 SSE
+//! 发布 [`nemesis_types::agent:AgentEvent::CanvasOpen`]（web pump 转 SSE
 //! `canvas.open`），前端 CanvasPanel 以 iframe 渲染。语法不过的块不发布，
 //! 错误明细回灌模型自纠（`CanvasScan::feedback_text`，接入点在
 //! `loop/run_loop.rs::judge_final_answer` 的 Accept 分支）。
@@ -395,7 +395,7 @@ struct BracketFrame {
 /// 首行，1 起；列按字符计）。已知启发式边界：
 /// - `/` 的正则 vs 除号歧义用「前驱 token」启发式判定（关键字/运算符/
 ///   开括号后 = 正则；标识符/数字/闭括号/字符串后 = 除号）——极端书写
-///   形态可能误判；误判为除号只损失正则内的括号隔离（罕见），误判为正则
+///   形态可能误判；误判为除号只损失正则内的括号隔离（罕），误判为正则
 ///   会吞掉后续真实代码（已尽量往除号方向保守）。
 /// - 非平衡类语法错误（关键字重复、缺分号等）不检——如实边界。
 pub fn check_js_syntax(js: &str) -> Vec<JsSyntaxIssue> {

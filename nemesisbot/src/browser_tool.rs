@@ -1,11 +1,11 @@
-//! P5-R1：`browser` 工具——VM 档 guest 内 headless chromium 的宿主侧入口。
+//! `browser` 工具——VM 档 guest 内 headless chromium 的宿主侧入口。
 //!
 //! 执行链：LLM 调 `browser` → 本工具（标准 dispatch：8 层管线 + 审计链
 //! 照常全跑）→ 解析闭包定位 agent 记录 → 档位校验（**仅 VM 档**）→
 //! `VmSupervisor::browser_call` → guest 执行体（nemesis-guest src/browser.rs，
 //! chromium + CDP）。
 //!
-//! 设计锚点（plan P5-R1）：
+//! 设计锚点（plan）：
 //! - **VM 档专用，不回落**：进程档没有浏览器执行体（guest 内 chromium 是
 //!   唯一形态），非 VM 档诚实报错——与 ToolFailed「绝不回落」语义同源
 //!   （宿主回落 = 环境切换的正确性事故，不是降级）。
@@ -154,7 +154,7 @@ impl nemesis_agent::r#loop::Tool for VmBrowserTool {
         }
 
         // VM 依赖面（supervisor + 错误型）随 `vm` feature——裁剪形态诚实
-        // 报「未编译」（同 voice-capture 拆分先例：设备路径运行期诚实报）。
+        // 报「未编译」（同 voice-capture 拆分设备路径运行期诚实报）。
         #[cfg(feature = "vm")]
         {
             let sup = mgr.vm_supervisor().ok_or_else(|| {

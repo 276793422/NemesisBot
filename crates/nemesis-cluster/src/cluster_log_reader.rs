@@ -395,7 +395,7 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
         dt.with_timezone(&chrono::Local)
             .format("%H:%M:%S")
             .to_string()
-    // LOW-1（2026-10-17 四轮审计）：字节切片 boundary 安全——len≥19 守卫
+    // LOW-1（四轮审计）：字节切片 boundary 安全——len≥19 守卫
     // 不保证 [11..19] 是 char boundary，畸形 ts 行（本地写坏才可能出现，
     // 但 WSAPI handler panic 不可接受）走 get() 安全切片，None 回落原文。
     } else if let Some(slice) = ts.get(11..19) {
@@ -559,7 +559,7 @@ fn format_event(entry: &ClusterLogEvent) -> Option<FormattedEvent> {
 
 /// Truncate an ID to 8 characters for display.
 /// id 源自磁盘日志/对端数据，可能含多字节文本——裸字节截断会 panic
-/// （2026-10-11 横扫修复），走边界安全版。
+/// （横扫修复），走边界安全版。
 fn short_id(id: &str) -> &str {
     nemesis_utils::string_utils::truncate_bytes_at_boundary(id, 8)
 }

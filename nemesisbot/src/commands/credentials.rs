@@ -1,4 +1,4 @@
-//! `nemesisbot credentials` — model API key 迁移（U15）。
+//! `nemesisbot credentials` — model API key 迁移。
 //!
 //! 注意：这里管理的是 **模型 API key** 的 yaml 引用存储
 //! （`workspace/config/credentials.yaml`），与 `nemesisbot auth` 的

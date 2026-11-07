@@ -17,7 +17,7 @@ fn test_default_timeout() {
     assert_eq!(handler.timeout_secs(), 7200);
 }
 
-// 集群完备性加固 2026-09-11：llm_timeout 单一真相源（0=不限，文档口径）。
+// 集群完备性加固：llm_timeout 单一真相源（0=不限，文档口径）。
 #[test]
 fn llm_timeout_from_config_zero_is_unlimited() {
     assert_eq!(
@@ -1127,8 +1127,8 @@ fn test_peer_chat_handler_setters() {
 ///
 /// After the session_key isolation refactor:
 ///   - source_node_id ← rpc_meta.from (NOT payload._source.node_id)
-///   - chat_id        ← payload._source.chat_id (fallback "default")
-///   - session_key    ← "cluster_rpc:{source_node_id}/{chat_id}"
+///   - chat_id ← payload._source.chat_id (fallback "default")
+///   - session_key ← "cluster_rpc:{source_node_id}/{chat_id}"
 #[tokio::test]
 async fn test_session_key_composite_with_node_id_and_chat_id() {
     let task_list = Arc::new(ClusterTaskList::new(std::env::temp_dir()));
@@ -1249,7 +1249,7 @@ async fn test_session_key_no_rpc_meta_falls_back_to_chat_id() {
 }
 
 // ============================================================
-// W3b coverage batch: setter bodies (set_llm_channel /
+// coverage batch: setter bodies (set_llm_channel /
 // set_rpc_client / set_timeout), cluster-queue enqueue +
 // queue-full Ack error, the REAL LLM timeout arm (existing
 // SlowLlmChannel drops tx → "closed" arm, never the timeout
@@ -1395,7 +1395,7 @@ async fn test_w3b_handle_cluster_queue_enqueues_to_work_queue() {
     assert_eq!(next, "w3b-ct-1");
 }
 
-// 压测②（2026-09-30 三设备）：带取证 marker 的任务路由进优先通道——
+// 压测②（三设备）：带取证 marker 的任务路由进优先通道——
 // handler 级验证（队列级插队语义见 cluster_task/tests.rs；marker 常量
 // 与 master 侧 build_selfcheck_prompt 同源）。
 #[tokio::test]
@@ -1535,7 +1535,7 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
             cap[0].get("error").is_none(),
             "error field omitted when empty"
         );
-        // 回归（T37 真机 bug）：发送方身份必须随 wire 帧 `from` 走并在
+        // 回归（真机 bug）：发送方身份必须随 wire 帧 `from` 走并在
         // server 注入的 `_rpc.from` 落到 handler——留空会让 master 记账键
         // `cluster_rpc:{worker}/{task_id}` 的 worker 段变空。
         assert_eq!(
@@ -1635,7 +1635,7 @@ async fn test_w3b_send_callback_or_persist_deletes_after_successful_callback() {
 }
 
 // ============================================================
-// S4 coverage: empty-content ack, persist_result skip arm with a
+// coverage: empty-content ack, persist_result skip arm with a
 // persister attached, callback delete-Err / set_result-Err arms,
 // and the retry-warn field line under a subscriber.
 // ============================================================
@@ -1861,7 +1861,7 @@ async fn test_s4_send_callback_retry_warn_field_line() {
     assert!(!ok, "all callback retries should be exhausted");
 }
 
-/// P2A（2026-09-12 NB-15）：fail_class wire 契约——error 回调携带结构化
+/// P2A：fail_class wire 契约——error 回调携带结构化
 /// 分类字段；`None` 时字段整个不落（旧 master 忽略未知字段，兼容面不变）。
 #[tokio::test]
 async fn test_p2a_fail_class_field_wire_contract() {
@@ -1935,9 +1935,9 @@ async fn test_p2a_fail_class_field_wire_contract() {
     server.stop().unwrap();
 }
 
-// -- P4 交付门：delivery 字段 wire 契约 --------------------------------------
+// --：delivery 字段 wire 契约 --------------------------------------
 
-/// P4（2026-10-17 交付门）：delivery 字段 wire 契约——`Some` 时整个 JSON
+/// delivery 字段 wire 契约——`Some` 时整个 JSON
 /// 原样落 payload["delivery"]；`None` 时字段整个不落（旧 master 忽略未知
 /// 字段，兼容面与 usage/fail_class 同款）。
 #[tokio::test]
@@ -2021,7 +2021,7 @@ async fn test_p4_delivery_field_wire_contract() {
     server.stop().unwrap();
 }
 
-// -- required_profession_from_payload（集群专业职能框架 M3）---------------
+// -- required_profession_from_payload（集群专业职能框架）---------------
 
 #[test]
 fn required_profession_from_payload_arms() {
@@ -2047,7 +2047,7 @@ fn required_profession_from_payload_arms() {
 }
 
 // ---------------------------------------------------------------------------
-// T44C 真机注入回归锁（2026-10-01）：回调必须走拨号穿透（must-reach）。
+// T44C 真机注入回归锁：回调必须走拨号穿透（must-reach）。
 //
 // registry 判 Offline 但对端实际可达（真实 TCP echo 在听）时，回调仍须
 // 拨号送达。门禁瞬断的反面教材（T44C iptables run2 实证）：heal 滞后窗
@@ -2136,7 +2136,7 @@ async fn test_send_callback_dials_through_offline_registry() {
 }
 
 // ---------------------------------------------------------------------------
-// peer_chat_ack_rejected（BUG-1，2026-10-17）：A 端拒单判定单一真相源
+// peer_chat_ack_rejected（BUG-1）：A 端拒单判定单一真相源
 // ---------------------------------------------------------------------------
 
 // B 端拒单 ACK（工作队列满）→ true。
@@ -2168,7 +2168,7 @@ fn test_ack_rejected_conservative_on_malformed_payload() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-1（2026-10-17）B 端拒单回滚：队列满 → error ACK + 两处登记回滚
+// BUG-1B 端拒单回滚：队列满 → error ACK + 两处登记回滚
 // ---------------------------------------------------------------------------
 
 // 队列满拒单时：ACK status=error；set_running 占位被 delete 回滚（A 端
@@ -2248,7 +2248,7 @@ async fn test_queue_full_rejection_without_source_node_skips_persister() {
 }
 
 // ============================================================
-// L13-b mandate 前置闸（四道校验 × posture 矩阵 + enforcement 投影）
+// b mandate 前置闸（四道校验 × posture 矩阵 + enforcement 投影）
 // ============================================================
 
 use crate::roaming::mandate::{
@@ -2482,9 +2482,9 @@ async fn mandate_task_id_mismatch_rejected() {
 
 #[tokio::test]
 async fn mandate_no_pinned_key_verify_degrades_to_accept() {
-    // BUG-20261104 CI UAT T-MRG 实录：verify 模式 + 簿未激活（L13a
+    // CI UAT T-MRG verify 模式 + 簿未激活（
     // BookAbsent 纪律——announce 不建簿，激活唯一路径 = 管理面）= regime
-    // 休眠 → 放行旧行为（L13b §3.3 默认形态承诺）。旧断言「必须拒」在
+    // 休眠 → 放行旧行为（默认形态承诺）。旧断言「必须拒」在
     // 默认形态下构成派发死锁：全新 4 节点集群 A 必签（sign_enabled 缺省
     // true）+ B 必验 + 钉存永不激活 = T-MRG-1/2/3/4/7 五测连红全滞留
     // backlog。管理面激活（mandate-pin-forced/trust-add）+ announce 重钉
@@ -2532,7 +2532,7 @@ async fn mandate_no_pinned_key_require_rejected() {
 
 #[tokio::test]
 async fn mandate_corrupt_book_fail_closed() {
-    // BUG-20261104-358：trust.toml 在场但损坏 = regime 已激活而验签基础
+    // trust.toml 在场但损坏 = regime 已激活而验签基础
     // 设施失效 → verify 模式也不降级（拒，ACK 文案指明簿损坏）——降级只
     // 给簿缺席（regime 休眠）；坏簿静默放行 = 已激活验签面被无声降级。
     let tmp = tempfile::tempdir().unwrap();

@@ -1,7 +1,7 @@
-//! Skills catalog digest injection (H3 / P2.2).
+//! Skills catalog digest injection (/.2).
 //!
 //! Renders the installed-skills catalog as a compact digest (one line per
-//! skill, name + truncated description). Since I2 (U8) the digest rides the
+//! skill, name + truncated description). Since the digest rides the
 //! MERGED snapshot message as one section among several (time/env + skills +
 //! workspace instructions) inside a single <system-reminder> wrapper,
 //! injected on EVERY build before the last user message — the injection is
@@ -11,11 +11,11 @@
 //!
 //! Round-5 note (dead state removed): the original change-detection design
 //! (hash the merged content, inject only when it changed) was superseded by
-//! the I2 merged-snapshot semantics — with the time section always present
+//! the merged-snapshot semantics — with the time section always present
 //! and re-emitted every build, the stored hash gated nothing. The map and
 //! per-build sha256 bookkeeping were removed; `should_inject` is now a
 //! documented passthrough kept for the loop.rs call shape. If true
-//! change-gating returns (e.g. per-field supersedes headers per U8's full
+//! change-gating returns (e.g. per-field supersedes headers per 's full
 //! design), rebuild it as a SnapshotProjection, not by resurrecting this.
 
 use sha2::{Digest, Sha256};
@@ -67,9 +67,9 @@ pub fn digest_message(rendered: &str) -> String {
 
 /// Digest emission state handle (round-5: stateless).
 ///
-/// The original change-detection map was dead under I2 merged-snapshot
+/// The original change-detection map was dead under merged-snapshot
 /// semantics (see module doc). Kept as a type so the AgentLoop field and
-/// the H5 touch-invalidation call chain (`invalidate_context_digests`)
+/// the touch-invalidation call chain (`invalidate_context_digests`)
 /// stay intact — the RE-READ of instruction files already happens every
 /// build (sections are re-rendered from disk each time), so touch
 /// invalidation is structurally covered. If change-gating returns, this is
@@ -87,7 +87,7 @@ impl DigestState {
         Self
     }
 
-    /// Decide the context-digest message for this build. Under I2
+    /// Decide the context-digest message for this build. Under
     /// merged-snapshot semantics this ALWAYS re-emits (the injection is not
     /// persisted in history; every build must carry it, byte-identically
     /// when nothing changed — deterministic rendering preserves the provider
@@ -97,7 +97,7 @@ impl DigestState {
         Some(rendered.to_string())
     }
 
-    /// H5 (U18): touch-driven invalidation. Structurally a no-op since
+    /// touch-driven invalidation. Structurally a no-op since
     /// round-5 (sections re-read from disk on every build — there is no
     /// cached rendering to invalidate); kept for the call-chain shape and
     /// as the anchor if change-gating returns.

@@ -375,7 +375,7 @@ fn test_expand_home_no_tilde() {
 
 #[test]
 fn test_expand_home_backslash_prefix() {
-    // BUG-20261102-319：OpenClaw 侧路径 `~\` 反斜杠形态（Windows 手写惯例）
+    // OpenClaw 侧路径 `~\` 反斜杠形态（Windows 手写惯例）
     // 此前原样穿透——与 `~/` 形态展开分叉。home 不可用的环境展开退回原样
     // （dirs_home Err 分支），断言仅在 home 可用时生效。
     if dirs_home().is_ok() {
@@ -824,7 +824,7 @@ fn test_rel_path_with_no_filename() {
 }
 
 // ============================================================
-// Coverage Phase 2: Target previously uncovered branches
+// Coverage: Target previously uncovered branches
 // ============================================================
 
 #[test]
@@ -1371,7 +1371,7 @@ fn test_resolve_nemesisbot_home_override_takes_priority_over_env() {
 fn test_resolve_openclaw_home_with_tilde() {
     // 持锁读 env：~ 展开间接走 dirs_home()，不持锁会与 userprofile_fallback
     // 的「移除 HOME → 设 USERPROFILE」两步窗口并发（Linux 上 USERPROFILE
-    // 预先不存在 → 窗口内双变量全空 → dirs_home Err）。2026-10-09 Linux
+    // 预先不存在 → 窗口内双变量全空 → dirs_home Err）。 Linux
     // CI 实证（returns_ok 同族竞态先红）。
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
     let result = resolve_openclaw_home("~/openclaw");
@@ -1988,8 +1988,8 @@ fn test_run_full_migration_interactive_confirm_scenarios() {
 fn run_confirm_scenarios_parent() {
     let exe = std::env::current_exe().expect("current_exe");
     // 子进程过滤名用裸函数名子串（非 --exact）：libtest 的可见测试名不带
-    // crate 前缀（`migrate::tests::…`），而 module_path!() 展开含 crate 名
-    // （`nemesis_migrate::migrate::tests::…`），--exact 永不匹配（2026-08-25
+    // crate 前缀（`migrate::tests:…`），而 module_path! 展开含 crate 名
+    // （`nemesis_migrate::migrate::tests:…`），--exact 永不匹配（
     // 真跑抓到：outcome 守卫 panic。函数名在本 crate 唯一，子串即精确）。
     let filter = "test_run_full_migration_interactive_confirm_scenarios";
 
@@ -2070,11 +2070,11 @@ fn run_confirm_scenarios_parent() {
 }
 
 // ---------------------------------------------------------------------------
-// execute() 的 ConvertConfig 臂端到端（BUG-20261025-67 原子写收编锁）
+// execute() 的 ConvertConfig 臂端到端（原子写收编锁）
 // ---------------------------------------------------------------------------
 
 /// ConvertConfig 经 execute() 全链：合并既有（现有模型保留、迁移模型追加），
-/// 原子写产物正确、无 .tmp-* 残留。旧形态裸 fs::write 语义产物相同
+/// 原子写产物正确、无.tmp-* 残留。旧形态裸 fs::write 语义产物相同
 /// （半锁），机制收编由写点唯一化保证。
 ///
 /// 与 bot 侧 write_migrated_config 同纪律、同 helper。

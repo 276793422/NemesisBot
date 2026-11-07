@@ -517,7 +517,7 @@ fn test_content_eq_different_node_type() {
 }
 
 /// 职能/档位是稳定内容字段：content_eq 必须把它们纳入比较，否则周期
-/// 广播携带的职能变化会被注册表当冗余 upsert 跳过（M2）。
+/// 广播携带的职能变化会被注册表当冗余 upsert 跳过。
 #[test]
 fn content_eq_distinguishes_professions_and_tier() {
     let base = ExtendedNodeInfo {

@@ -78,7 +78,7 @@ async fn test_unregister_nonexistent() {
 async fn test_start_execution_basic() {
     let engine = WorkflowEngine::new();
     // 注：链条用 transform 而非 tool——裸引擎的 tool 占位执行器现在显式
-    // Failed（BUG S12b-1 去假成功），不再适合当「无副作用的第二种节点」。
+    // Failed（BUG -1 去假成功），不再适合当「无副作用的第二种节点」。
     let nodes = vec![
         make_node("n1", "llm", vec![]),
         make_node("n2", "transform", vec!["n1"]),
@@ -309,7 +309,7 @@ async fn test_resume_nonexistent_execution() {
 }
 
 // -----------------------------------------------------------------------
-// BUG-20261024-13：多等待节点并行时 resume 的确定性
+// 多等待节点并行时 resume 的确定性
 // -----------------------------------------------------------------------
 
 /// 两个 human_review 同层并行（无依赖 → 同一拓扑层并发执行）双双 Waiting。
@@ -460,7 +460,7 @@ async fn test_resume_target_not_in_waiting_set_rejected() {
 }
 
 // -----------------------------------------------------------------------
-// resume_execution runs downstream nodes (1b-A1 step 5 regression)
+// resume_execution runs downstream nodes (1b step 5 regression)
 // -----------------------------------------------------------------------
 
 #[tokio::test]
@@ -526,7 +526,7 @@ async fn test_resume_runs_downstream_nodes() {
     assert_eq!(review_state, ExecutionState::Completed);
 }
 
-/// 缺陷 9 回归（2026-09-23 E2E 实测）：生产 scheduler 路径上 human_review
+/// 缺陷 9 回归（E2E 实测）：生产 scheduler 路径上 human_review
 /// 进入 Waiting 后必须暂停调度——下游不得在 resume 前抢跑。旧实现只在
 /// deprecated `start_execution` 路径处理 Waiting（本文件既有测试恰好都走
 /// 那条路径，掩盖了生产路径缺陷）；本测试钉死生产 `run` 路径语义。
@@ -904,7 +904,7 @@ async fn test_engine_new_arc() {
     assert!(!engine.is_closed().await);
 }
 
-// new_arc 必须注册真实 sub_workflow 执行器（2026-10-20 生产构造点回归锁）：
+// new_arc 必须注册真实 sub_workflow 执行器（生产构造点回归锁）：
 // 基础构造 new() 的注册表预置 SubWorkflowNodeStub——子工作流节点恒 Failed
 // "cannot execute: no engine configured"，CLI（workflow.rs）与 agent 工厂
 // （agent.rs）此前都踩这个坑。本测试走完整链路：父工作流 sub_workflow 节点
@@ -959,6 +959,86 @@ async fn test_new_arc_runs_sub_workflow_child() {
     assert!(
         sub_result.metadata.contains_key("execution_id"),
         "sub_workflow node should record child execution_id"
+    );
+}
+
+// BUG-20261106-018 回归锁：子执行被外部 cancel_execution 打成终态
+// Cancelled 时，父的 sub_workflow 节点必须诚实失败（Failed + 点名子执行
+// id），父执行终态 Failed——不得把 Cancelled 透传给调度器被当成功收账
+// （旧缺陷形态：下游继续跑、父执行报 Completed，取消语义被静默吞掉）。
+// 与 resume 侧 resume_subworkflow_node 的裁决（子执行 Failed/Cancelled →
+// 父节点 Failed）同一条契约，两条路径必须同语义。
+#[tokio::test]
+async fn test_sub_workflow_child_cancelled_fails_parent_honestly() {
+    use std::time::Duration;
+
+    let engine = WorkflowEngine::new_arc();
+
+    // 子工作流：delay 节点睡 10_000s——给外部 cancel_execution 留窗口。
+    let mut slow = make_node("slow", "delay", vec![]);
+    slow.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("child_wf", vec![slow]))
+        .unwrap();
+
+    // 父工作流：sub_workflow 节点 → 下游 transform（下游存在是为了断言
+    // 它不得抢跑：旧缺陷下它会执行、父报 Completed）。
+    let mut sub = make_node("call_child", "sub_workflow", vec![]);
+    sub.config = HashMap::from([
+        ("workflow".to_string(), serde_json::json!("child_wf")),
+        ("input".to_string(), serde_json::json!({})),
+    ]);
+    let mut downstream = make_node("after", "transform", vec!["call_child"]);
+    downstream.config = HashMap::from([("expression".to_string(), serde_json::json!("identity"))]);
+    engine
+        .register_workflow(make_workflow("parent_wf", vec![sub, downstream]))
+        .unwrap();
+
+    // 后台拉起父执行；轮询等子执行出现在账面（workflow_name == child_wf），
+    // 然后对子执行 id 打 cancel_execution。
+    let engine_for_run = engine.clone();
+    let run_handle = tokio::spawn(async move {
+        engine_for_run
+            .run("parent_wf", HashMap::new(), None)
+            .await
+            .unwrap()
+    });
+
+    let child_id = loop {
+        let execs = engine.list_executions(None).await;
+        if let Some(child) = execs.iter().find(|e| e.workflow_name == "child_wf") {
+            break child.id.clone();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    engine.cancel_execution(&child_id).await.unwrap();
+
+    let parent = tokio::time::timeout(Duration::from_secs(5), run_handle)
+        .await
+        .expect("parent run did not resolve within 5s of child cancel")
+        .unwrap();
+
+    assert_eq!(
+        parent.state,
+        ExecutionState::Failed,
+        "子执行被取消时父执行必须诚实失败，不得 Completed（取消语义不得静默吞掉）"
+    );
+    // 调度器失败臂不写 node_result（与所有 Failed 节点同款），取消现场在
+    // 执行级 error 上：必须点名子执行 id 与取消语义。
+    let err = parent.error.as_deref().unwrap_or("");
+    assert!(
+        err.contains(&child_id) && err.contains("取消"),
+        "执行错误必须点名子执行 id 与取消语义，got: {}",
+        err
+    );
+    assert!(
+        !parent.node_results.contains_key("call_child"),
+        "失败节点不得写 node_result（调度器失败臂惯例）"
+    );
+    assert!(
+        !parent.node_results.contains_key("after"),
+        "下游节点不得在 sub_workflow 失败后抢跑"
     );
 }
 
@@ -1062,7 +1142,7 @@ async fn test_with_executors_and_persistence() {
 }
 
 // ---------------------------------------------------------------------------
-// Cancellation integration tests (1a-A2)
+// Cancellation integration tests (1a-)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1153,7 +1233,7 @@ async fn test_close_cancels_all_in_flight() {
 }
 
 // ---------------------------------------------------------------------------
-// Dual-mode entry points: run_blocking + start_async (1a-C1)
+// Dual-mode entry points: run_blocking + start_async (1a-)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1328,7 +1408,7 @@ async fn test_create_execution_then_run_async_separately() {
 }
 
 // ---------------------------------------------------------------------------
-// TriggerSource integration (1a-C2)
+// TriggerSource integration (1a-)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1510,7 +1590,7 @@ fn test_trigger_source_via_run_blocking() {
 }
 
 // ---------------------------------------------------------------------------
-// WorkflowEvent observer integration (1a-C3)
+// WorkflowEvent observer integration (1a-)
 // ---------------------------------------------------------------------------
 
 use crate::events::{WorkflowEvent, WorkflowObserver};
@@ -2105,7 +2185,7 @@ fn workflows_matching_event_empty_when_no_workflows() {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-checkpoint tests (1b-A1 step 6)
+// Auto-checkpoint tests (1b step 6)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -2456,7 +2536,7 @@ async fn workflow_summary_includes_chat_index() {
 // ---------------------------------------------------------------------------
 // End-to-end trigger-input → LLM-prompt pipeline tests.
 //
-// These exist because every prior bug in this area (BUG #10/#11 template
+// These exist because every prior bug in this area (/#11 template
 // resolution; the build_executor_context bug that dropped `input` fields)
 // was missed by node-level tests that called `executor.execute(&node, &ctx)`
 // directly with a hand-built HashMap. Those tests bypass the scheduler, the
@@ -2659,7 +2739,7 @@ mod e2e_input_pipeline {
         };
         // Force the upstream's captured response (defined by CaptureProvider)
         // to look like an output object with a `content` field. Since the
-        // LLM executor wraps the raw response as {"text": "...", ...}, we
+        // LLM executor wraps the raw response as {"text": "...",...}, we
         // reference {{upstream.text}} instead — the actual output schema.
         let downstream = NodeDef {
             id: "downstream".to_string(),
@@ -2876,7 +2956,7 @@ mod e2e_input_pipeline {
 }
 
 // ---------------------------------------------------------------------------
-// U10 统一执行世界：控制面写守卫（writable_roots）
+// 统一执行世界：控制面写守卫（writable_roots）
 // ---------------------------------------------------------------------------
 
 /// 窄根世界：roots 只含 `allowed`（模拟 gateway 只授 definitions/
@@ -2912,7 +2992,7 @@ fn temp_root(tag: &str) -> std::path::PathBuf {
     p
 }
 
-/// U10 原验收「引擎越界写被拦」：defs_dir 配到世界根外 → persist_workflow
+/// 原验收「引擎越界写被拦」：defs_dir 配到世界根外 → persist_workflow
 /// 被守卫拒（Err 带 guard 标记），文件不落盘。
 #[tokio::test]
 async fn u10_guard_denies_out_of_root_persist_workflow() {
@@ -3009,7 +3089,7 @@ async fn u10_install_composite_node_executors_on_bare_engine() {
 }
 
 // =========================================================================
-// W4a coverage batch — engine.rs gap closure
+// coverage batch — engine.rs gap closure
 // =========================================================================
 
 /// CheckpointStore double with scriptable failure points. Used to drive the
@@ -3446,7 +3526,7 @@ async fn w4a_persist_workflow_error_paths() {
     );
 }
 
-/// delete_workflow_file: .yaml removed through the guard; .yml/.json
+/// delete_workflow_file:.yaml removed through the guard;.yml/.json
 /// best-effort removal; idempotent when nothing exists (engine.rs ~1469-1497).
 #[tokio::test]
 async fn w4a_delete_workflow_file_variants() {
@@ -3463,7 +3543,7 @@ async fn w4a_delete_workflow_file_variants() {
         .unwrap();
     assert!(root.join("del_yaml.yaml").exists());
 
-    // .yml + .json variants written manually (load accepts all three).
+    // .yml +.json variants written manually (load accepts all three).
     std::fs::write(root.join("del_yml.yml"), "name: del_yml\n").unwrap();
     std::fs::write(root.join("del_json.json"), "{\"name\":\"del_json\"}").unwrap();
 
@@ -3944,7 +4024,7 @@ async fn w4a_resume_scheduler_error_marks_failed() {
 /// — state stays Waiting with ended_at=None and the waiting node is
 /// recorded in the checkpoint (engine.rs ~2296-2305 + ~2330-2334).
 ///
-/// 缺陷 9 修复后的语义（2026-09-23）：两段审批必须**串行**。首跑调度器在
+/// 缺陷 9 修复后的语义：两段审批必须**串行**。首跑调度器在
 /// n1 Waiting 时立即打住，n2 不得抢跑（node_results 无 n2 条目）；第一次
 /// resume 落实 n1 的批复，调度推进到 n2 再次 Waiting；第二次 resume 才
 /// Completed。旧断言「首跑后 n1/n2 同时 Waiting」钉住的正是抢跑缺陷。
@@ -4014,7 +4094,7 @@ async fn w4a_resume_second_human_review_stays_waiting() {
     assert_eq!(cp.waiting_node.as_deref(), Some(waiting[0].as_str()));
     assert!(!cp.terminal);
 
-    // 第二段批复落地：执行走完，终态 Completed。
+    // 批复落地：执行走完，终态 Completed。
     let finished = engine
         .resume_execution(
             &exec.id,
@@ -4099,7 +4179,7 @@ async fn w4a_cancel_execution_error_paths() {
     );
 }
 
-/// persist_execution U10 refusal end-to-end: persistence dir outside the
+/// persist_execution refusal end-to-end: persistence dir outside the
 /// execution world's writable roots -> no JSONL file is written (the run
 /// itself still succeeds) (engine.rs ~2409-2414).
 #[tokio::test]
@@ -4288,7 +4368,7 @@ async fn w4a_new_integrated_bad_checkpoint_root_degrades() {
 }
 
 // ---------------------------------------------------------------------------
-// (BUG S12b-1) Bare-engine tool node must fail loudly, not fake success
+// (BUG -1) Bare-engine tool node must fail loudly, not fake success
 // ---------------------------------------------------------------------------
 
 /// `WorkflowEngine::new()`（CLI 裸引擎）跑 tool 节点：占位 ToolNodeExecutor
@@ -4369,7 +4449,7 @@ async fn integrated_engine_tool_node_still_executes() {
 }
 
 // ===========================================================================
-// S12b batch（quality-hardening goal 冲刺）：
+// batch（quality-hardening goal 冲刺）：
 // ① validate_dag 直测三臂（空图 / 未知依赖视为已满足 / 环检测）
 // ② 运行期 deadlock guard：未知依赖编译期放行、运行期永不满足 → Failed
 //    （engine.rs ~2051-2062；与 validate_dag 的“treat as satisfied”刻意不对称）
@@ -4410,7 +4490,7 @@ fn s12b_validate_dag_cycle_detected() {
 
 #[tokio::test]
 async fn s12b_condition_false_branch_dropped_but_downstream_still_completes() {
-    // 实测钉当前语义（S12b batch）：条件边为假时 should_run_node 把该节点从
+    // 实测钉当前语义（batch）：条件边为假时 should_run_node 把该节点从
     // runnable 静默丢弃（scheduler.rs ~297-301，无 Skipped 结果），但调度器按
     // 拓扑层级继续推进——依赖它的下游节点**照常执行并完成**。整个执行
     // Completed 而非 Failed。（「条件假分支的下游是否应该跟随跳过」是个设计
@@ -4451,7 +4531,7 @@ async fn s12b_condition_false_branch_dropped_but_downstream_still_completes() {
     );
 }
 
-/// 缺陷 15 端到端（2026-09-23 E 级复核实测）：条件边引用**已完成节点**
+/// 缺陷 15 端到端（E 级复核实测）：条件边引用**已完成节点**
 /// 输出中不存在的字段（幻觉字段），生产 run 路径必须 Failed 且错误点名
 /// 节点与字段——不再落「非空即真」静默选边。
 #[tokio::test]
@@ -4573,7 +4653,7 @@ async fn s12b_restore_latest_err_on_iterated_id_continues() {
 }
 
 // ---------------------------------------------------------------------------
-// Call-stack teardown under concurrency（R29：共享栈身份移除回归锁）
+// Call-stack teardown under concurrency（共享栈身份移除回归锁）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -4652,7 +4732,7 @@ async fn concurrent_settlers_remove_own_frame_not_stack_top() {
 
 #[tokio::test]
 async fn test_executions_tracking_cap_evicts_oldest_terminal() {
-    // R53 资源生命周期审计：executions 表原先只增不删（字段语义
+    // 资源生命周期审计：executions 表原先只增不删（字段语义
     // 「Active and completed executions」），常驻 gateway 里 cron 工作流
     // 周期性落 Execution（node_results 携带 LLM 输出）→ 随进程寿命无界
     // 增长。契约：超 MAX_TRACKED_EXECUTIONS 逐最老**终态**；全活跃时
@@ -4665,7 +4745,7 @@ async fn test_executions_tracking_cap_evicts_oldest_terminal() {
         ))
         .unwrap();
 
-    // 阶段 1：全部 Running（活跃）→ 允许超上限。
+    // 全部 Running（活跃）→ 允许超上限。
     let mut ids = Vec::new();
     for _ in 0..(MAX_TRACKED_EXECUTIONS + 10) {
         let e = engine
@@ -4680,7 +4760,7 @@ async fn test_executions_tracking_cap_evicts_oldest_terminal() {
         "全活跃时不得逐出（取消/列表语义不受上限影响）"
     );
 
-    // 阶段 2：全部标终态 → 再建 1 条触发逐出，回到上限。
+    // 全部标终态 → 再建 1 条触发逐出，回到上限。
     {
         let mut execs = engine.executions.write().await;
         for id in &ids {
@@ -4703,7 +4783,7 @@ async fn test_executions_tracking_cap_evicts_oldest_terminal() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261025-42 回归锁：取消语义状态机（run 前取消被尊重 + 取消 Waiting
+// 回归锁：取消语义状态机（run 前取消被尊重 + 取消 Waiting
 // 落终态 checkpoint 防重启复活）
 // ---------------------------------------------------------------------------
 
@@ -4733,7 +4813,7 @@ impl crate::nodes::NodeExecutor for W42CountingExecutor {
     }
 }
 
-/// BUG-20261025-42a：create 与 run 之间落下的 cancel 必须被尊重——
+/// a：create 与 run 之间落下的 cancel 必须被尊重——
 /// run_async 不得重跑工作流、不得把 Cancelled 覆盖成终态、不得执行任何
 /// 节点副作用。旧实现快照走读锁且 token 在锁外插入：cancel 先到（无
 /// token 可点、状态翻 Cancelled）→ run_async 照跑全图，计数执行器证明
@@ -4780,7 +4860,7 @@ async fn test_cancel_before_run_is_honored_side_effects_never_execute() {
     );
 }
 
-/// BUG-20261025-42b：取消 Waiting 执行必须留下终态 checkpoint——旧实现
+/// b：取消 Waiting 执行必须留下终态 checkpoint——旧实现
 /// cancel 只翻状态不落盘 checkpoint，最近一份 checkpoint 停留在非终态的
 /// Waiting 快照上，进程重启后 restore_incomplete_executions（只跳过
 /// terminal || all_completed）会把已取消的执行复活成 Waiting（可 resume）。
@@ -4864,7 +4944,7 @@ async fn test_cancel_waiting_saves_terminal_checkpoint_not_resurrected() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261028-107 红证：run_async 早退路径孤儿 cancel token
+// 红证：run_async 早退路径孤儿 cancel token
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -4930,7 +5010,7 @@ async fn test_run_async_recursion_limit_does_not_orphan_cancel_token() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261028-108 红证：sanitize 文件名碰撞静默覆盖/误删
+// 红证：sanitize 文件名碰撞静默覆盖/误删
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -5002,7 +5082,7 @@ async fn test_delete_workflow_file_skips_collision_sibling_file() {
 }
 
 // ===========================================================================
-// BUG-20261028-119：同名定义文件组的加载赢家必须跨平台确定
+// 同名定义文件组的加载赢家必须跨平台确定
 // ===========================================================================
 
 #[tokio::test]
@@ -5058,7 +5138,7 @@ nodes:
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261031-239 红证：workflow YAML variables 在进程内 resume 中丢失
+// 红证：workflow YAML variables 在进程内 resume 中丢失
 // ---------------------------------------------------------------------------
 
 /// 捕获执行器：把 execute 时刻 wf_ctx 里的 workflow 变量 `greeting` 记下来。
@@ -5090,7 +5170,7 @@ impl crate::nodes::NodeExecutor for VarCaptureExecutor {
     }
 }
 
-/// BUG-20261031-239：workflow.variables（YAML `variables:` 段）只在 run_async
+/// workflow.variables（YAML `variables:` 段）只在 run_async
 /// 开头 seeding 进 wf_ctx，执行记录的 variables 字段从不回写；human_review
 /// 挂起后进程内 resume 用 execution.variables 重建 wf_ctx——YAML 变量不在
 /// 其中，下游节点读到的 `greeting` 是空。对齐面：resume 路径自身回写
@@ -5143,7 +5223,7 @@ async fn test_workflow_variables_survive_in_process_resume() {
 }
 
 // -----------------------------------------------------------------------
-// BUG-20261102-NN：sub_workflow 等待节点评审路由的错误臂
+// NN：sub_workflow 等待节点评审路由的错误臂
 // -----------------------------------------------------------------------
 
 /// 造一个「父执行停在 sub_workflow 节点（子执行停在自己的 human_review）」
@@ -5258,7 +5338,7 @@ async fn test_sub_workflow_resume_missing_child_execution_restores_waiting() {
     assert!(engine.cancel_tokens.is_empty());
 }
 
-/// 多等待同层（BUG-20261103-349）：human_review 与 sub_workflow 并联（无
+/// 多等待同层：human_review 与 sub_workflow 并联（无
 /// 依赖）同时 Waiting。resume human_review 后，公共尾段 schedule_resume
 /// **不得整体重跑**仍 Waiting 的 sub_workflow 节点——SubWorkflowNodeExecutor
 /// 每次 execute 都 spawn 新子执行，重跑 = 旧子执行孤儿化（永停 Waiting、
@@ -5363,7 +5443,7 @@ async fn test_multi_waiting_subworkflow_sibling_not_respawned() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261104-382：sub_workflow 跨 workflow 引用环检测（注册期闸）
+// sub_workflow 跨 workflow 引用环检测（注册期闸）
 // ---------------------------------------------------------------------------
 
 fn make_sub_node(id: &str, target: &str, depends_on: Vec<&str>) -> NodeDef {
@@ -5515,7 +5595,7 @@ async fn b382_composite_child_subworkflow_reference_in_cycle() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261104-383：event trigger 自触发/互触发环闸（TRIGGER_CHAIN_KEY）
+// event trigger 自触发/互触发环闸（TRIGGER_CHAIN_KEY）
 // ---------------------------------------------------------------------------
 
 /// 事件终态 data 里的触发链保留键（与引擎发布点同源）。

@@ -36,14 +36,22 @@ pub struct StdioTransport {
     stdout: Option<Mutex<BufReader<tokio::process::ChildStdout>>>,
     /// Whether the transport is currently connected.
     connected: bool,
-    /// G2：浏览器 profile 显式覆盖（gateway agent loop 装配经 McpManager
+    /// 浏览器 profile 显式覆盖（gateway agent loop 装配经 McpManager
     /// 注入；None = 连接时回落进程 env `NEMESISBOT_BROWSER_PROFILE`——执行体
     /// 子进程上下文标记）。
     browser_profile: Option<String>,
-    /// G2：注入 opt-in 闸（server 配置 `browser_profile`）。false = 永不
+    /// 注入 opt-in 闸（server 配置 `browser_profile`）。false = 永不
     /// 注入（普通 MCP 零变化）；裸 `new()` 构造恒 false（一次性探测不塞
     /// 身份）。
     browser_profile_opt_in: bool,
+    /// BUG-20261107-012：写阶段帧脏标记。send 的写阶段（write_all+flush）
+    /// 被调用方取消（外层 tokio timeout drop future——注册路径 adapter 外层
+    /// 超时恒小于本 transport 内层超时，BUG-20261105-037 的内层写超时断链
+    /// 在该路径不可达）时，请求行可能只落了一半、管道帧已脏而断链不触发。
+    /// 写开始置 true、正常返回臂显式复位；取消 = 复位不执行 = 残留，下一
+    /// 次 send 开头检测到即诚实断链，绝不往半行残留后追写下一条请求。
+    /// connect() 重建子进程时复位（新管道帧干净）。
+    write_interrupted: bool,
 }
 
 impl StdioTransport {
@@ -61,6 +69,7 @@ impl StdioTransport {
             connected: false,
             browser_profile: None,
             browser_profile_opt_in: false,
+            write_interrupted: false,
         }
     }
 
@@ -70,7 +79,7 @@ impl StdioTransport {
         Self::from_config_with_profile(config, None)
     }
 
-    /// G2：从配置构造 + 显式 per-agent profile 覆盖（gateway agent loop
+    /// 从配置构造 + 显式 per-agent profile 覆盖（gateway agent loop
     /// 装配路径——共享 gateway 进程 env 无法 per-agent）。opt-in 闸仍来自
     /// 配置（`browser_profile: false` 的 server 即使给了显式目录也不注入）。
     pub fn from_config_with_profile(
@@ -84,11 +93,11 @@ impl StdioTransport {
     }
 }
 
-/// P0 vault（B3）：解析 "KEY=VALUE" 列表中可含引用的 VALUE
+/// vault：解析 "KEY=VALUE" 列表中可含引用的 VALUE
 /// （vault:/env:/yaml: 前缀经 nemesis-config 全局解析器现查；字面量原样）。
 /// 解析失败的变量跳过（error! 带键名与根因），其余原序返回。
 ///
-/// 2026-10-15 第十三轮：语法规则单一真相源 =
+/// 语法规则单一权威 =
 /// `nemesis_config::validate_mcp_env_line`（CLI `mcp add` 写入面与
 /// Dashboard server.add·update 同源）——非法行 loud WARN + 跳过（原文不
 /// 落日志），不再静默丢弃（此前无 `=` 的行无声消失，用户以为变量已注入）；
@@ -115,7 +124,7 @@ pub(crate) fn resolved_env(env: &[String]) -> Vec<(String, String)> {
 }
 
 // ---------------------------------------------------------------------------
-// J3: stdout 行分类（响应 / 通知 / 垃圾行）
+// stdout 行分类（响应 / 通知 / 垃圾行）
 // ---------------------------------------------------------------------------
 
 /// `classify_line` 的分类结果。抽成纯函数便于单测——真实的 subprocess
@@ -127,7 +136,7 @@ enum LineKind {
     Progress(String),
     /// 其他通知（log / cancelled / initialized 等）。
     Notification(String),
-    /// BUG-20261025-56：server→client 请求（`id` + `method` 并存——
+    /// server→client 请求（`id` + `method` 并存——
     /// JSON-RPC 响应永不携带 `method`，sampling/roots/elicitation 等形态）。
     /// 客户端未宣告这些能力，无法应答；只能跳过（吞成响应会让 id 撞车的
     /// server 请求变成我方工具调用的「空成功」）。
@@ -138,7 +147,7 @@ enum LineKind {
 
 /// 按行内容分类。判定规则：JSON 且带 `id` 无 `method` = 响应；JSON 带
 /// `method` 无 `id` = 通知（JSON-RPC 通知就是无 id 请求）；`id` + `method`
-/// 并存 = server→client 请求（BUG-20261025-56，此前误归响应）；其余 =
+/// 并存 = server→client 请求（此前误归响应）；其余 =
 /// 垃圾行。
 fn classify_line(line: &str) -> LineKind {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
@@ -168,21 +177,21 @@ fn classify_line(line: &str) -> LineKind {
 }
 
 // ---------------------------------------------------------------------------
-// P3 T6 + G2: per-agent browser profile injection
+// +: per-agent browser profile injection
 // ---------------------------------------------------------------------------
 
-/// 浏览器 profile 注入（P3 T6 引入，G2 2026-10-18 批四修正）。
+/// 浏览器 profile 注入（引入， 修正）。
 ///
 /// 两条生产路径，同一 helper 消费：
-/// - **gateway agent loop 路径**（G2）：selfbuilt agent 的常驻 loop 携带
+/// - **gateway agent loop 路径**：selfbuilt agent 的常驻 loop 携带
 ///   agent home 的 browser-profile/ 目录，经 `McpManager` 显式注入
 ///   transport——共享 gateway 进程 env 无法 per-agent，走显式覆盖。
-/// - **执行体子进程路径**（P3 T6 语义保留）：执行体监督器 spawn 子进程时
+/// - **执行体子进程路径**（语义保留）：执行体监督器 spawn 子进程时
 ///   设 `NEMESISBOT_BROWSER_PROFILE`（nemesisbot `agents/runtime.rs` 的
 ///   `base_executor_env`），是「本进程处于 agent 执行体上下文」的标记；
 ///   transport 连接时 env 回落读取。
 ///
-/// **opt-in 闸（G2）**：注入只对配置显式 `browser_profile: true` 的
+/// **opt-in 闸**：注入只对配置显式 `browser_profile: true` 的
 /// server 生效——不按服务名猜，普通 MCP 默认零变化（共享 server 不被塞
 /// 身份）。server args 已显式带 `--user-data-dir`（空格或 `=` 形态）=
 /// 用户配置优先，不重复注入。纯函数便于单测（进程级 env 无法在并行测试
@@ -214,7 +223,7 @@ impl Transport for StdioTransport {
             return Ok(());
         }
 
-        // G2：profile 解析——显式覆盖（agent loop 装配注入）优先，回落进程
+        // profile 解析——显式覆盖（agent loop 装配注入）优先，回落进程
         // env 标记（执行体子进程上下文）；opt-in 闸不满足时恒 None（普通
         // MCP 零变化）。
         let profile = if self.browser_profile_opt_in {
@@ -235,14 +244,14 @@ impl Transport for StdioTransport {
         .stderr(Stdio::piped());
 
         // MCP server 多为 console 程序(node/python 等)；gateway 以托盘/
-        // 无控制台运行（release windows 子系统，2026-09-21）时，不压
+        // 无控制台运行（release windows 子系统）时，不压
         // CREATE_NO_WINDOW 会给每个 server 弹一个新控制台窗口。stdio 全走
         // 管道，不受影响。
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
         // Inject environment variables.
-        // P0 vault（B3，2026-09-22 计划）：env VALUE 支持 vault:/env:/yaml:
+        // vault（计划）：env VALUE 支持 vault:/env:/yaml:
         // 引用，spawn 前现查（discover 一次性路径同走本 transport，单一
         // 消费点）。解析失败的变量跳过并 error!——server 侧会以缺凭据
         // 响亮失败，日志带根因。解析逻辑抽纯函数便于单测。
@@ -263,7 +272,7 @@ impl Transport for StdioTransport {
             .take()
             .ok_or_else(|| TransportError::send_failed("failed to get stdout pipe"))?;
 
-        // 第十五轮缺陷 18：stderr 管道必须持续排水——此前 `Stdio::piped()`
+        // 缺陷 18：stderr 管道必须持续排水——此前 `Stdio::piped()`
         // 捕获后无人读：话痨型 server（node/python 的运行日志走 stderr 是
         // 常态）写满 OS 管道缓冲后会阻塞在 stderr 写上，进程整体挂死，
         // 表现为「跑得好好的，一阵之后全部请求神秘超时」。排水任务逐行读
@@ -289,6 +298,9 @@ impl Transport for StdioTransport {
         self.stdin = Some(Mutex::new(stdin));
         self.stdout = Some(Mutex::new(BufReader::new(stdout)));
         self.connected = true;
+        // BUG-20261107-012：新子进程 = 新管道，旧帧脏标记作废（否则残留
+        // 标记会让重连后的第一次 send 误断链）。
+        self.write_interrupted = false;
 
         Ok(())
     }
@@ -322,6 +334,20 @@ impl Transport for StdioTransport {
             return Err(TransportError::not_connected());
         }
 
+        // BUG-20261107-012：上次请求的写入被调用方取消在中途（外层 tokio
+        // timeout drop future——注册路径 adapter 外层超时恒小于本 transport
+        // 内层超时，下方 BUG-20261105-037 的内层写超时断链在该路径不可达）
+        // 时，请求行可能只落了一半、管道帧已脏。检测到残留标记 = 帧脏 →
+        // 诚实断链，绝不往半行残留后追写下一条请求。
+        if self.write_interrupted {
+            self.write_interrupted = false;
+            let _ = self.close().await;
+            return Err(TransportError::new(
+                -2,
+                "previous request write was interrupted mid-frame (caller cancelled); connection torn down",
+            ));
+        }
+
         // Serialize the request.
         let mut line = serde_json::to_string(request).map_err(|e| {
             TransportError::send_failed(format!("failed to serialize request: {e}"))
@@ -348,14 +374,21 @@ impl Transport for StdioTransport {
             writer.write_all(line.as_bytes()).await?;
             writer.flush().await
         };
+        // 写开始即置脏标记：write_all/flush 被取消（外层 drop future）时
+        // 下方复位不会执行，标记残留到下一次 send 开头被检测（见上）。
+        // 三个正常返回臂都显式复位——写 IO 错误臂复位是安全的（管道破裂
+        // 后写句柄已坏，下次写立刻失败，不存在「往半行后拼接」的通路）。
+        self.write_interrupted = true;
         match timeout(effective_timeout, write_fut).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => self.write_interrupted = false,
             Ok(Err(e)) => {
+                self.write_interrupted = false;
                 return Err(TransportError::send_failed(format!(
                     "failed to write to stdin: {e}"
                 )));
             }
             Err(_) => {
+                self.write_interrupted = false;
                 // 写超时 = 请求行可能只落了一半，管道帧已脏——诚实断链
                 // （close 杀子进程 + 清 stdin/stdout），后续 send 走
                 // not_connected 快速失败，绝不往脏帧上追写下一条请求。
@@ -368,7 +401,7 @@ impl Transport for StdioTransport {
         }
 
         // 通知（id=None）按 JSON-RPC 语义无响应可等——写入即返回，不进读
-        // 循环空转满 deadline（BUG-20261025-87：notifications/initialized
+        // 循环空转满 deadline（notifications/initialized
         // 旧实现每次连接固定烧满 timeout（client 侧 1s）才 Err(timeout)，
         // 错误虽被 send_notification 吞掉，纯延迟照常落地——启动全量挂载
         // 逐 server 串行放大成 N×1s，mcp_discover 每次探测同付 1s）。
@@ -390,7 +423,7 @@ impl Transport for StdioTransport {
             .as_ref()
             .ok_or(TransportError::not_connected())?;
 
-        // J3：逐行读直到拿到带 id 的响应行（整体 deadline 不变）。无 id 的
+        // 逐行读直到拿到带 id 的响应行（整体 deadline 不变）。无 id 的
         // JSON-RPC 通知（progress/log 是 MCP 标准行为）不是本次请求的响应，
         // 记 trace 后跳过；非 JSON 行（服务器 banner）同样跳过。旧实现读
         // 一行就当响应解析：服务器在响应前先发通知会让通知行反序列化失败
@@ -421,7 +454,7 @@ impl Transport for StdioTransport {
 
                 match classify_line(&buf) {
                     LineKind::Response => {
-                        // R39：id 匹配闸。超时/重试后，上一请求的迟到响应仍挂
+                        // id 匹配闸。超时/重试后，上一请求的迟到响应仍挂
                         // 在 stdout 缓冲里——无闸会把旧响应错配给新请求（工具
                         // 结果张冠李戴）。id 不符 = 陈旧响应，trace 后跳过继续
                         // 读；id=None（通知形态，无响应可匹配）与解析失败保持
@@ -452,7 +485,7 @@ impl Transport for StdioTransport {
                         );
                     }
                     LineKind::ServerRequest(method) => {
-                        // BUG-20261025-56：server→client 请求（id+method 并存）
+                        // server→client 请求（id+method 并存）
                         // 不是本次请求的响应——旧形态归 Response，id 撞车时被
                         // 当响应吞掉（result=None 空成功）。客户端未宣告
                         // sampling/roots 能力，无法应答，跳过（server 侧自行

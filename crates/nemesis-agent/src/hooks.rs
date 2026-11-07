@@ -1,6 +1,6 @@
-//! Tool-level hook points (K1a — U14 seventh batch / Phase 1 of
-//! `docs/PLAN/2026-07-04_agent-hook-discipline-gate.md`), plus LLM-call-level
-//! hooks (K1b — Phase 2,「LLM 调用级才拦思考」层).
+//! Tool-level hook points (— seventh batch / of
+//! `agent-hook-discipline-gate`), plus LLM-call-level
+//! hooks (—,「LLM 调用级才拦思考」层).
 //!
 //! # 布点（handle_tool_call，loop.rs）
 //!
@@ -11,7 +11,7 @@
 //! 的最终 result）
 //! ```
 //!
-//! # LLM 调用级布点（K1b，run_llm_loop）
+//! # LLM 调用级布点（run_llm_loop）
 //!
 //! ```text
 //! messages 组装完（含 nudges）→ LlmRequest observer 事件之前：
@@ -27,7 +27,7 @@
 //! 预算 [`MAX_LLM_HOOK_RETRIES`] 封顶，耗尽后**放行上一个 response** 并响亮
 //! warn（fail-open——坏 hook 不能把会话锁死）。重呼带同样的取消/急停 select
 //! 守卫。**账本边界（诚实标注）**：重呼会发 LlmRequest observer 事件（
-//! request_log 可见），但**不**追加 T8 projection ledger 记录——与既有
+//! request_log 可），但**不**追加 projection ledger 记录——与既有
 //! transient 重试同款（每轮一次 build 记录；ledger 驱动匹配，多出的
 //! request_log 条目不会破坏 verify）。pre 注入的消息则**会**记入
 //! ledger（INJECTION_LLM_HOOK），主请求保持逐字节可重放。
@@ -39,15 +39,15 @@
 //!    （它在 pre hooks 之前无条件运行，就是事实上的 pre[0]），Forge 在 post
 //!    hooks 之后记录最终 result（就是事实上的 post 末位）。字面转换要把
 //!    security.execute + guardian 子路径搬进 async trait 边界，纯机械风险、
-//!    零行为收益，且直接威胁验收③（security/Forge 行为不变）——按代码修改
-//!    守则不赌。K2 的 hooks 方言层只需要 user hooks + 事件，不需要 uniformity。
-//! 2. **pre/post 钩子异步**（`#[async_trait]`）：K2 的方言 hook 是**子进程脚本**
+//!    零行为收益，且直接威胁 security/Forge 行为不变性——按代码修改
+//!    守则不赌。本项目 hooks 方言层只需要 user hooks + 事件，不需要 uniformity。
+//! 2. **pre/post 钩子异步**（`#[async_trait]`）：本项目方言 hook 是**子进程脚本**
 //!    （stdin JSON / env / 退出码），同步 trait 装不下。用户钩子运行时注册、
 //!    数量少（个位数），异步开销可忽略。
 //!
 //! # 覆盖范围与旁路
 //!
-//! 所有工具分发收口在 `AgentLoop::handle_tool_call`（loop.rs），包括 U5
+//! 所有工具分发收口在 `AgentLoop::handle_tool_call`（loop.rs），包括
 //! 并行批（`precompute_parallel_batch` 内部逐个调 handle_tool_call_at_depth）——
 //! 单一插入点即全覆盖。LLM 调用级钩子布在生产主路径 `run_llm_loop`（loop.rs 的
 //! `'turn` 循环）；`loop_executor.rs` 是 legacy 旁路（生产零构造），不铺死
@@ -81,19 +81,19 @@ pub struct HookToolCall {
     pub channel: String,
     /// Chat/conversation ID on that channel.
     pub chat_id: String,
-    /// Session key of the conversation driving this dispatch (K2: hooks dialect
+    /// Session key of the conversation driving this dispatch (hooks dialect
     /// scripts key per-session state off payload `session_id`).
     pub session_key: String,
     /// Wall-clock instant when this dispatch entered `handle_tool_call` —
     /// *before* the security section (whose approval/question asks can block
     /// for minutes). Around hooks time the whole dispatch from this point
     /// instead of from their own start, so UI durations include approval
-    /// waits (BUG-B 2026-11-04: hook chain is built after the security
+    /// waits (hook chain is built after the security
     /// section, a self-timer reported 0ms while the call sat 215s on an
     /// approval card). `None` = non-dispatch origin (tests) — consumers
     /// fall back to their own timer.
     pub dispatch_started: Option<std::time::Instant>,
-    /// 修②⑥（BUG-C 2026-11-04）：本次 dispatch 的稳定调用 id——与 turn WAL
+    /// 本次 dispatch 的稳定调用 id——与 turn WAL
     /// `call_id_for` 同一派生（`raw_id` 非空用原值，否则时间戳兜底），事件
     /// 面与 WAL 面共用同一 id。急停中断执行链时，dispatch 可据此补发
     /// interrupted ToolFinished（对齐 ToolStarted 的 id，UI 卡片不悬空）。
@@ -126,7 +126,7 @@ pub enum PostHookAction {
 /// hook only implements what it needs.
 #[async_trait]
 pub trait ToolHook: Send + Sync {
-    /// Diagnostic name (logs / future hooks.json wiring in K2).
+    /// Diagnostic name (logs / future hooks.json wiring in).
     fn name(&self) -> String {
         "unnamed-hook".to_string()
     }
@@ -144,7 +144,7 @@ pub trait ToolHook: Send + Sync {
         HookDecision::Allow
     }
 
-    /// Around 包装（waterfall 语义，2026-08-29 三段化补齐）：默认直通
+    /// Around 包装（waterfall 语义， 三段化补齐）：默认直通
     /// 调 `next()`。实现可测量耗时/重试/替换结果——但**取消信号不可被包装层
     /// 脱离**，且必须恰好调用一次 `next`。
     async fn around_tool_use(
@@ -288,7 +288,7 @@ pub async fn run_post_hooks(
 }
 
 // ---------------------------------------------------------------------------
-// LLM-call-level hooks (K1b —「拦思考」层)
+// LLM-call-level hooks (—「拦思考」层)
 // ---------------------------------------------------------------------------
 
 /// Per-round budget for post-LLM `Retry` demands. Exhausted → the previous
@@ -309,7 +309,7 @@ pub struct HookLlmCall {
 
 /// Pre-LLM decision. Append-only contract: hooks may APPEND messages
 /// (reminders, discipline prompts) but not rewrite history — the request log
-/// and the T8 replay ledger both depend on the built prefix being stable.
+/// and the replay ledger both depend on the built prefix being stable.
 #[derive(Debug, Clone)]
 pub enum LlmRequestDecision {
     /// Send as built.
@@ -342,7 +342,7 @@ pub enum LlmResponseDecision {
 /// (neither method overridden) can never change behavior.
 #[async_trait]
 pub trait LlmHook: Send + Sync {
-    /// Diagnostic name (logs / K2 hooks.json wiring).
+    /// Diagnostic name (logs / hooks.json wiring).
     fn name(&self) -> String {
         "unnamed-llm-hook".to_string()
     }
@@ -485,7 +485,7 @@ pub async fn run_llm_post_hooks(
 }
 
 // ---------------------------------------------------------------------------
-// Prompt/turn lifecycle hooks (K2 — 方言 SessionStart/UserPromptSubmit/Stop 桥)
+// Prompt/turn lifecycle hooks (— 方言 SessionStart/UserPromptSubmit/Stop 桥)
 // ---------------------------------------------------------------------------
 
 /// Per-turn safety cap for `TurnEndDecision::Continue` demands (dialect Stop-hook
@@ -540,7 +540,7 @@ pub enum TurnEndDecision {
     Continue { feedback: String },
 }
 
-/// A prompt/turn lifecycle hook (K2). The hooks-dialect bridge is the primary
+/// A prompt/turn lifecycle hook. The hooks-dialect bridge is the primary
 /// consumer; defaults are permissive so an observer implements only what it
 /// needs.
 #[async_trait]
@@ -649,14 +649,14 @@ mod tests;
 #[cfg(test)]
 mod cov_tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 
 // ---------------------------------------------------------------------------
-// 内建示例：Metrics 管线插件（2026-08-29 三段化的 around 参考实现）。
+// 内建示例：Metrics 管线插件（三段化的 around 参考实现）。
 // 只读安全：计时 + tracing，无业务副作用。agent_factory 主 loop 注册，
-// 「插件」页（T4）可展示/启停。
+// 「插件」页可展示/启停。
 // ---------------------------------------------------------------------------
 
 /// 每工具调用计时的 around 插件（waterfall 包装示例）。

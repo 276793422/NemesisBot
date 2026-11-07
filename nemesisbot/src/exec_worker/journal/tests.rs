@@ -138,7 +138,7 @@ fn ring_cap_evicts_oldest_and_compacts_on_reopen() {
 }
 
 // ===========================================================================
-// R2 两相账（2026-10-18 三方复评）：意图行 / 未决面 / 原子压缩 / 盘写失败
+// 两相账（三方复评）：意图行 / 未决面 / 原子压缩 / 盘写失败
 // 内存兜底。
 // ===========================================================================
 
@@ -193,7 +193,7 @@ fn intent_skipped_when_done_already_present() {
 }
 
 /// 盘写失败（`.runtime` 被文件占位 → 建目录失败）不再放弃记账：仍 admit
-/// 进内存环——进程内 replay at-most-once 保持；账本置不可信（见 F2 用例）。
+/// 进内存环——进程内 replay at-most-once 保持；账本置不可信（见 用例）。
 #[test]
 fn disk_write_failure_still_admits_to_memory() {
     let ws = tempfile::tempdir().unwrap();
@@ -271,10 +271,10 @@ fn half_written_intent_line_skipped_on_load() {
 }
 
 // ===========================================================================
-// F1/F2（二轮复评 2026-10-18）：重写中断恢复 + durable 闸
+// /（二轮复评）：重写中断恢复 + durable 闸
 // ===========================================================================
 
-/// F1：current 缺席 + tmp 在场（Unix rename 未完成 / 旧实现删-改间隙遗留）
+/// current 缺席 + tmp 在场（Unix rename 未完成 / 旧实现删-改间隙遗留）
 /// → open 采纳 tmp 为账本，保留集内的完成记录与未决意图全部可见。
 #[test]
 fn recovery_adopts_tmp_when_current_missing() {
@@ -304,7 +304,7 @@ fn recovery_adopts_tmp_when_current_missing() {
     assert!(!tmp.exists(), "采纳后 tmp 应已 rename 归位");
 }
 
-/// F1：current 缺席 + bak + tmp（Windows 舞步「current→bak」后中断）→
+/// current 缺席 + bak + tmp（Windows 舞步「current→bak」后中断）→
 /// 优先恢复 bak（旧账 = tmp 保留集的信息超集，恢复即无丢失），tmp 作
 /// 废弃重写残留清理。
 #[test]
@@ -322,7 +322,7 @@ fn recovery_prefers_bak_when_current_missing() {
     assert!(!bak.exists() && !tmp.exists(), "恢复后两处残留应清干净");
 }
 
-/// F1：current 在场 + tmp/bak 残留（替换已完成、清理未做）→ 残留清干净，
+/// current 在场 + tmp/bak 残留（替换已完成、清理未做）→ 残留清干净，
 /// 账本照常回载。
 #[test]
 fn recovery_cleans_leftovers_when_current_present() {
@@ -342,7 +342,7 @@ fn recovery_cleans_leftovers_when_current_present() {
     );
 }
 
-/// F2：加载读错误（journal.jsonl 是目录 → 读必败且非 NotFound）→
+/// 加载读错误（journal.jsonl 是目录 → 读必败且非 NotFound）→
 /// durable=false：record_intent 返回 false（serve_line 闸的旗标源），
 /// 内存未决面照常登记——不当空账静默放行。
 #[test]
@@ -402,7 +402,7 @@ fn compaction_failure_with_current_present_keeps_durable() {
     );
 }
 
-/// F2：append 失败 → durable=false 且 **sticky**——同一实例上修复存储也
+/// append 失败 → durable=false 且 **sticky**——同一实例上修复存储也
 /// 不复信（本进程生命周期内有副作用工具保持拒绝）；新实例（等价重启）
 /// 读正常账恢复可信。
 #[test]

@@ -1,4 +1,4 @@
-//! U-A（2026-10-12 停车现场工程 §9.1）：停车现场标准化（handoff 交接文档）。
+//! U-A（2026-10-12 停车现场工程）：停车现场标准化（handoff 交接文档）。
 //!
 //! 所有停车路径（熔断 / UNSURE 闸 / 预算 / 重评耗尽 / 重拆耗尽 / 派发无
 //! 匹配 / LLM 封存）统一产出双轨现场：
@@ -8,14 +8,14 @@
 //! **LLM 接手链路**：用户对节点说「继续 NB-x」→ agent 读 handoff JSON →
 //! 按 `suggested_action` 行动——`manual_check` 类才需要人，`retry`/
 //! `redispatch` 类走既有入口直接续流。把「转人工」变成「转下一个 LLM
-//! 会话」。verdict_chain 由 U-C timeline 聚合提取（单一真相源）；档案随
+//! 会话」。verdict_chain 由 U-C timeline 聚合提取；档案随
 //! 单子保留（可追溯），由 dossier 收口导出汇总归档，不删。
 //!
-//! `stop_kind` 枚举稳定（供 Forge Reflect 远期消费，§9.4）：`unsure_streak`
+//! `stop_kind` 枚举稳定（供 Forge Reflect 远期消费）：`unsure_streak`
 //! `fail_streak` `budget` `retry_exhausted` `worker_loop` `capability_fail`
 //! `infra` `defect_gate` `parent_unresolved` `project_unresolved` `no_match`
 //! `plan_exhausted` `llm_unavailable` `unsure` `redispatch_budget`
-//! `required_checks`（后三者为 BUG-20261029-170 回填：EscalateHuman 臂
+//! `required_checks`（后三者为 回填：EscalateHuman 臂
 //! verdict 分型与必需检查契约闸一直在写这三个值，词表缺席致徽标落兜底）。
 //!
 //! `suggested_action` 枚举：`manual_check`（真机走查才需要人）/ `retry`
@@ -117,7 +117,7 @@ pub fn archive_handoff(workspace: &Path, issue_number: &str) -> Result<Option<Pa
 /// stop_kind → 人话标签（决策面板/徽标 tooltip 用；前端只渲染不翻译，
 /// 单一真相源在后端——16 种停车类型 + 未知兜底；词表与生产写入面的一致
 /// 性由 tests::test_stop_kind_label_covers_production_kinds 钉住，
-/// BUG-20261029-170：新停车路径引入新 stop_kind 必须同步补本表）。
+/// 新停车路径引入新 stop_kind 必须同步补本表）。
 pub fn stop_kind_label(stop_kind: &str) -> &'static str {
     match stop_kind {
         "unsure_streak" => "连续不确定",
@@ -133,18 +133,18 @@ pub fn stop_kind_label(stop_kind: &str) -> &'static str {
         "no_match" => "无匹配节点",
         "plan_exhausted" => "拆解重试耗尽",
         "llm_unavailable" => "LLM 不可用",
-        // BUG-20261029-170 回填（生产写入面在册、词表缺席三类）：
+        // 回填（生产写入面在册、词表缺席三类）：
         // EscalateHuman 臂 verdict 诚实分型——单轮 UNSURE ≠ streak 闸、
         // 评审重派预算耗尽 ≠ token 预算（board_review.rs 停车漏斗）。
         "unsure" => "单轮评审不确定",
         "redispatch_budget" => "重派预算耗尽",
-        // 必需检查契约闸（2026-10-22 拍板项 B：零证据不放行）。
+        // 必需检查契约闸（既定项 B：零证据不放行）。
         "required_checks" => "必需检查未满足",
         _ => "停车待处理",
     }
 }
 
-/// verdict_chain 提取（单一真相源 = U-C timeline 聚合）：auto_decide 活动
+/// verdict_chain 提取（统一定义 = U-C timeline 聚合）：auto_decide 活动
 /// 行 = 每轮决策（决策词 + verdict + reasons 全程链，不只最后一轮）。
 pub fn verdict_chain_from(store: &BoardStore, issue_id: i64) -> Vec<serde_json::Value> {
     crate::timeline::collect_issue_timeline(store, issue_id, Vec::new())

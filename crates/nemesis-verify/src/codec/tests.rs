@@ -1,4 +1,4 @@
-//! codec 多态分派单测（M5 补测，quality-hardening goal 2026-08-25）：
+//! codec 多态分派单测（补测，quality-hardening goal 2026-08-25）：
 //! 魔数探测（detect_format）、codec 选取（detect_codec）、RawCodec 语义。
 
 use super::*;
@@ -20,7 +20,7 @@ fn detect_codec_dispatches_by_behavior() {
         pe_codec.compute_l(mz_garbage).is_err(),
         "MZ dispatches to PeCodec"
     );
-    // PE32+ 变体的 MZ 同样进 PE codec
+    // + 变体的 MZ 同样进 PE codec
     let mz2 = b"MZ\x00\x00\x00\x00".as_slice();
     assert!(detect_codec(mz2).compute_l(mz2).is_err());
 
@@ -73,6 +73,6 @@ fn codec_error_display_is_debug_string() {
         CodecError::Malformed("ELF L 5 > file len 4".into()).to_string(),
         r#"Malformed("ELF L 5 > file len 4")"#
     );
-    // 实现 std::error::Error（可装箱进 anyhow）
+    // 实现 std::error:Error（可装箱进 anyhow）
     let _: &dyn std::error::Error = &CodecError::Truncated;
 }

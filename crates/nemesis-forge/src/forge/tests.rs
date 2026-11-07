@@ -83,7 +83,7 @@ fn test_forge_reflect_now_without_reflector() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_fl2_forge_stop_completes_cleanly() {
-    // F-L2: Forge::stop() must cleanly signal + flush + join background tasks
+    // F-: Forge::stop() must cleanly signal + flush + join background tasks
     // without hanging. (The gateway calls this on graceful shutdown.)
     use std::sync::Arc;
     let dir = tempfile::tempdir().unwrap();
@@ -96,7 +96,7 @@ async fn test_fl2_forge_stop_completes_cleanly() {
 
 #[test]
 fn test_fm11_frontmatter_added_when_separator_not_at_start() {
-    // F-M11: a "---" horizontal rule NOT at content start must not be treated
+    // F-: a "---" horizontal rule NOT at content start must not be treated
     // as existing frontmatter (old `contains("---")` skipped adding the wrapper).
     let dir = tempfile::tempdir().unwrap();
     let forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
@@ -116,7 +116,7 @@ fn test_fm11_frontmatter_added_when_separator_not_at_start() {
 
 #[test]
 fn test_fp1_is_enabled_reflects_config() {
-    // F-P1: is_enabled() is the runtime gate the per-tool-call recording path
+    // F-: is_enabled() is the runtime gate the per-tool-call recording path
     // checks (so forge.enabled=false actually stops collection).
     let dir = tempfile::tempdir().unwrap();
     let mut cfg = ForgeConfig::default();
@@ -170,7 +170,7 @@ fn test_create_skill() {
 
 #[test]
 fn test_create_skill_rejects_dangerous_content() {
-    // F-S1 regression: a skill with dangerous commands must be rejected BEFORE
+    // F- regression: a skill with dangerous commands must be rejected BEFORE
     // the file is written — otherwise it becomes an agent instruction.
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();
@@ -753,7 +753,7 @@ async fn test_reflection_cycle_writes_report() {
     }
 }
 
-/// 语义反思接入（2026-09-28）：run_reflection_cycle 带 LLM provider 时，
+/// 语义反思接入：run_reflection_cycle 带 LLM provider 时，
 /// 报告落盘「LLM Insights」节（活渲染链 = Reflector::format_report_markdown，
 /// 反思 insights 非空即渲染；注意不是 report.rs 里只有测试消费的
 /// format_report_from_report 的「LLM Deep Analysis」头）。
@@ -946,8 +946,8 @@ async fn test_cleanup_cycle_empty_state() {
 
 #[tokio::test]
 async fn test_cleanup_cycle_removes_old_traces() {
-    // 2026-10-22 验证轮二回归锁：run_cleanup_cycle 必须按
-    // trace.max_trace_age_days 滚动清理 traces JSONL（P0-F1 接线后盘上
+    // 验证轮二回归锁：run_cleanup_cycle 必须按
+    // trace.max_trace_age_days 滚动清理 traces JSONL（接线后盘上
     // 只增不删的缺口）。旧事件（2020）删、新事件（now）留。
     let dir = tempfile::tempdir().unwrap();
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
@@ -1273,7 +1273,7 @@ async fn test_reflection_cycle_learning_disabled() {
 }
 
 // =========================================================================
-// S8 coverage batch (quality-hardening goal 冲刺 S8)
+// coverage batch (quality-hardening goal 冲刺)
 // =========================================================================
 
 /// Bridge whose share_reflection always fails — drives the cluster-share
@@ -1329,7 +1329,7 @@ fn test_s8_forge_new_tracing_fields() {
 /// Background loops (reflector/cleanup) fire once their interval elapses.
 /// Real time with 1s intervals: the reflection tick must write a report
 /// (observable proof the loop body ran); the cleanup tick runs with no data
-/// (early return).（collector_loop 已随聚合线移除，2026-10-22——可观测信号
+/// (early return).（collector_loop 已随聚合线移除，——可观测信号
 /// 从 aggregates.jsonl 换成反思报告。）
 #[tokio::test]
 async fn test_s8_background_loops_fire_intervals() {
@@ -1592,7 +1592,7 @@ fn test_s8_create_skill_auto_validate_with_pipeline() {
         "# S8 Skill\nLong enough body so the functional validation passes its length check.\n";
     let artifact = forge
         .create_skill(
-            // R18：入口 slugify 是防穿越纵深的一部分——`_` 归一为 `-`，
+            // 入口 slugify 是防穿越纵深的一部分——`_` 归一为 `-`，
             // 注册名与落盘目录都用归一后的 slug。
             "s8_auto_validate",
             content,
@@ -1616,7 +1616,7 @@ fn test_s8_cleanup_prompt_suggestions_prompts_is_file() {
     forge.cleanup_prompt_suggestions(30); // must not panic
 }
 
-/// F-R4 回归钉（2026-10-16 复查）：store_distilled_draft 的 dedup 只挡
+/// F- 回归钉（复查）：store_distilled_draft 的 dedup 只挡
 /// 活跃产物——Degraded 旧产物不再永久阻塞同名重蒸馏（对齐
 /// LearningEngine::find_artifact_by_fingerprint 的状态过滤口径，与
 /// disable_degraded_skills「降级产物应能被替代品顶替」语义一致）。
@@ -1661,7 +1661,7 @@ fn test_store_distilled_draft_allows_re_distill_when_degraded() {
     assert_eq!(updated.status, nemesis_types::forge::ArtifactStatus::Draft);
 }
 
-/// F-R4 反面钉：活跃产物（Active）照旧阻塞——dedup 语义只是收窄到
+/// F- 反面钉：活跃产物（Active）照旧阻塞——dedup 语义只是收窄到
 /// 降级/归档两态，不是整体放开。
 #[test]
 fn test_store_distilled_draft_skips_when_active_exists() {
@@ -1702,7 +1702,7 @@ fn test_store_distilled_draft_skips_when_active_exists() {
 /// "elapsed < interval" branch of each loop (the else-arms of the
 /// `elapsed >= interval` checks) before the second tick fires the action.
 /// Observable proof the ladder semantics hold: no report before the interval
-/// elapses, a report after.（collector_loop 已随聚合线移除，2026-10-22。）
+/// elapses, a report after.（collector_loop 已随聚合线移除，。）
 #[tokio::test]
 async fn test_s8_background_loops_interval_ladder() {
     let _g = crate::test_support::quiet_trace_guard();
@@ -1743,7 +1743,7 @@ async fn test_s8_background_loops_interval_ladder() {
 }
 
 // =========================================================================
-// auto_skill 蒸馏（2026-10-15 W2）：slugify / 落盘注册 / CLI 独立入口 / cycle Step 5
+// auto_skill 蒸馏：slugify / 落盘注册 / CLI 独立入口 / cycle Step 5
 // =========================================================================
 
 /// 返回固定合法蒸馏 JSON 的 mock（frontmatter 契约满足 parse_distill_response）。
@@ -1810,7 +1810,7 @@ fn test_valid_skill_dir_name_fence() {
     assert!(valid_skill_dir_name("a/b").is_err());
     assert!(valid_skill_dir_name("a\\b").is_err());
     // Windows 盘符相对形态：is_absolute()==false 且无分隔符，但
-    // Path::join 整段换基座（R18 新增的拒绝面）。
+    // Path::join 整段换基座（新增的拒绝面）。
     assert!(valid_skill_dir_name("C:evil").is_err());
     assert!(valid_skill_dir_name("c:skills").is_err());
 }
@@ -1927,7 +1927,7 @@ async fn test_reflection_cycle_auto_skill_off_writes_no_draft() {
 }
 
 // ---------------------------------------------------------------------------
-// use_llm 接线咬合（2026-10-15 第十一轮）：该键此前只在 CLI 消费，gateway
+// use_llm 接线咬合：该键此前只在 CLI 消费，gateway
 // 的 run_reflection_cycle 无条件走 reflect_with_llm / 蒸馏——设 false 省
 // 成本的意图被静默无视。修复后 false = 循环内零 LLM 调用（统计反思照跑、
 // 报告照落盘但无 LLM Insights 节；auto_skill 蒸馏一并关）。
@@ -2019,10 +2019,10 @@ async fn test_auto_skill_skipped_when_use_llm_false() {
 }
 
 // ---------------------------------------------------------------------------
-// F-S1 安全闸 + 0=关 惯例（2026-10-16 R16 复查）
+// F- 安全闸 + 0=关 惯例（复查）
 // ---------------------------------------------------------------------------
 
-/// 返回含危险命令（curl | bash）蒸馏草稿的 mock——F-S1 闸回归（R16 缺陷 20）。
+/// 返回含危险命令（curl | bash）蒸馏草稿的 mock——F- 闸回归（缺陷 20）。
 /// 蒸馏提示词喂的是经验摘要（外部交互衍生物、潜在注入面），产出的 SKILL.md
 /// 必须过 security_errors 闸才能落盘（与 create_skill 同一规则）。
 struct DangerousDistillMockLLM;
@@ -2042,7 +2042,7 @@ impl crate::reflector_llm::LLMCaller for DangerousDistillMockLLM {
     }
 }
 
-/// F-S1 闸（R16 缺陷 20）：蒸馏草稿含危险命令时被拦——Ok(None)（与 skip
+/// F- 闸（缺陷 20）：蒸馏草稿含危险命令时被拦——Ok(None)（与 skip
 /// 同面），SKILL.md 不落盘、注册表无条目。回归钉咬合：摘掉
 /// store_distilled_draft 的 security_errors 闸，本测试必红（危险草稿落盘
 /// 并返回 slug）。
@@ -2077,7 +2077,7 @@ async fn test_distill_draft_security_gate_rejects_dangerous_content() {
     );
 }
 
-/// 0=关 惯例（R16 缺陷 22）：reflection.interval_secs=0 → 反思循环不 spawn。
+/// 0=关 惯例（缺陷 22）：reflection.interval_secs=0 → 反思循环不 spawn。
 /// 旧实现 `elapsed >= 0` 恒真 = 每秒一轮反思（use_llm=true 时每秒一次 LLM
 /// 调用）——本仓 0=关 惯例下用户设 0 的意图是关闭循环。回归钉咬合：摘掉
 /// start() 的 interval==0 守卫，本测试必红（~1.2s 首轮反思即写报告）。

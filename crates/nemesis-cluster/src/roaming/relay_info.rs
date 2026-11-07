@@ -1,4 +1,4 @@
-//! QUIC 中继显示面（纯函数，零 iroh 依赖；QUIC 插件化 M1 后宿主侧仅存的
+//! QUIC 中继显示面（纯函数，零 iroh 依赖；QUIC 插件化 后宿主侧仅存的
 //! relay 相关代码——运行面整体迁入 plugin_roaming）。
 //!
 //! 三个消费者：
@@ -7,7 +7,7 @@
 //! - 插件侧证书路径契约的对账基准（plugin-roaming relay_server.rs 文档
 //!   「与宿主 relay_info.rs 同源」——落盘路径不许两边漂移）。
 //!
-//! `advertised_relay_url` 依赖宿主本机 IP 探测（[`crate::network::get_local_ip`]），
+//! `advertised_relay_url` 依赖宿主本机 IP 探测（[`crate::network:get_local_ip`]），
 //! 故留宿主不进插件（插件侧无此函数——对外 URL 由宿主显示面计算）。
 
 use std::net::Ipv4Addr;

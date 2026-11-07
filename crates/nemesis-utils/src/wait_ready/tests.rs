@@ -28,7 +28,7 @@ async fn ready_on_first_poll_returns_immediately() {
     assert_eq!(aliveness_calls.load(Ordering::Relaxed), 0);
 }
 
-/// A4 纪律核心：子进程早死 = 立即 ChildDied 带调用方给的现场，绝不傻等
+/// 纪律核心：子进程早死 = 立即 ChildDied 带调用方给的现场，绝不傻等
 /// deadline（deadline 5s，断言总耗不受虚拟时钟影响，这里 time 自动推进）。
 #[tokio::test(start_paused = true)]
 async fn child_died_surfaces_detail_immediately() {
@@ -70,7 +70,7 @@ async fn timeout_when_child_stays_alive_but_never_ready() {
     assert_eq!(err, ReadyError::Timeout);
 }
 
-/// 探针前两轮 None、第三轮 Some：重试语义成立（真实轮询到达形态）。
+/// 探针前两轮 None、 Some：重试语义成立（真实轮询到达形态）。
 #[tokio::test]
 async fn poll_retried_until_ready() {
     let n = Arc::new(AtomicUsize::new(0));

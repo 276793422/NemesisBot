@@ -61,8 +61,8 @@ fn gate_allows_when_library_absent() {
     let _ = std::fs::remove_dir_all(&config);
 }
 
-/// R1 回归锁（三评 probe 转正）：enforce 态下 env 权威覆盖指向未签名
-/// 文件 = 拒载（整改前闸只查 plugins/、查不到即 Allow，装载器却照装 env
+/// 回归锁（三评 probe 转正）：enforce 态下 env 权威覆盖指向未签名
+/// 文件 = 拒载（旧闸只查 plugins/、查不到即 Allow，装载器却照装 env
 /// 文件——验签对象 ≠ 装载对象）。warn 缺省态同文件放行且 `Allow { path }`
 /// 携带的就是它（调用方按此定点装载）。
 #[test]
@@ -126,7 +126,7 @@ fn enforce_blocks_unsigned_env_override_host() {
     }
 }
 
-/// R1 回归锁：`gate_load_path` 对显式路径的三态行为——enforce 验的就是
+/// 回归锁：`gate_load_path` 对显式路径的三态行为——enforce 验的就是
 /// 调用方给的那个文件（eval 监控 DLL 开发形态仓库路径受验的通道）；
 /// 路径感知变体不自行选路。
 #[test]
@@ -170,7 +170,7 @@ fn gate_load_path_verifies_explicit_file() {
 }
 
 /// 统一解析入口：非 wasm 插件在无库环境解析为 None；解析结果与
-/// `gate_load` 的 `Allow { path }` 同源（单一真相源契约）。
+/// `gate_load` 的 `Allow { path }` 同源（统一定义契约）。
 #[test]
 fn resolve_load_path_matches_gate_allow_path() {
     let config = temp_dir("resolve_sync");

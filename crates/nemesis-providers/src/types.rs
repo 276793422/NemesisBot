@@ -33,7 +33,7 @@ pub struct LLMResponse {
     pub finish_reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<UsageInfo>,
-    /// Reasoning content from thinking-mode models (e.g., DeepSeek R1, GLM).
+    /// Reasoning content from thinking-mode models (e.g., DeepSeek, GLM).
     /// Must be passed back to the API in subsequent turns.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
@@ -91,7 +91,7 @@ pub enum ImageSource {
     Base64 { media_type: String, data: String },
 }
 
-/// 多模态内容部分（D1，已批准；真相源 §2 P1.1）。
+/// 多模态内容部分（已批准；真相源.1）。
 /// internally tagged（`type` 字段判别）：Text / Image。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -101,21 +101,21 @@ pub enum ContentPart {
     },
     Image {
         image: ImageSource,
-        /// 视觉计费档；None 不传（D2：成本旋钮，默认服务端 auto）。
+        /// 视觉计费档；None 不传（成本旋钮，默认服务端 auto）。
         #[serde(skip_serializing_if = "Option::is_none")]
         detail: Option<ImageDetail>,
     },
 }
 
-/// 消息内容多态（D1=A，已批准）：纯文本保持字符串形态（字节兼容现网请求
+/// 消息内容多态（=A，已批准）：纯文本保持字符串形态（字节兼容现网请求
 /// 与 prompt cache 前缀），含图时为数组形态。
 ///
-/// 序列化契约（字节快照测试锁定，goal T1/T2 纪律 6）：
-/// - `Text`   → JSON 字符串（与历史 `content: String` 逐字节一致）
-/// - `Parts`  → JSON 数组（每项为 ContentPart；agent 层保证纯文本折叠为 Text）
+/// 序列化契约（字节快照测试锁定，goal / 纪律 6）：
+/// - `Text` → JSON 字符串（与历史 `content: String` 逐字节一致）
+/// - `Parts` → JSON 数组（每项为 ContentPart；agent 层保证纯文本折叠为 Text）
 ///
 /// 反序列化接受字符串 / 数组 / null —— 旧集群续行快照 content 恒为字符串，
-/// 必须可加载（goal T1 向后兼容红线；null 为兜底宽容）。
+/// 必须可加载（goal 向后兼容红线；null 为兜底宽容）。
 #[derive(Debug, Clone, PartialEq)]
 pub enum MessageContent {
     /// 纯文本（默认；序列化为 JSON 字符串）。
@@ -218,7 +218,7 @@ impl MessageContent {
         self.to_text().contains(needle)
     }
 
-    /// CLI 委派类降级投影（D7）：取文本视图；含图时追加"不支持视觉输入"
+    /// CLI 委派类降级投影：取文本视图；含图时追加"不支持视觉输入"
     /// 占位说明——诚实降级，不静默丢图、不假装传了。
     pub fn to_prompt_text_with_image_note(&self) -> String {
         let n = self.images().len();
@@ -285,7 +285,7 @@ pub struct Message {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<chrono::DateTime<chrono::Local>>,
-    /// Reasoning content from thinking-mode models (e.g., DeepSeek R1, GLM).
+    /// Reasoning content from thinking-mode models (e.g., DeepSeek, GLM).
     /// Must be passed back to the API in subsequent assistant turns.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
@@ -329,8 +329,8 @@ impl Message {
 }
 
 /// 单条消息的 content → OpenAI 兼容请求 content 值。
-/// - `Text`   → JSON 字符串（字节兼容现网请求，prompt cache 前缀不变）
-/// - `Parts`  → 数组：Text → `{"type":"text",text}`；
+/// - `Text` → JSON 字符串（字节兼容现网请求，prompt cache 前缀不变）
+/// - `Parts` → 数组：Text → `{"type":"text",text}`；
 ///   Base64 图 → `{"type":"image_url","image_url":{"url":"data:<media_type>;base64,<data>"}}`；
 ///   Url 图 → 原样 url；`detail` 透传（None 不传）。
 pub fn openai_content_value(parts: &[ContentPart]) -> serde_json::Value {
@@ -411,7 +411,7 @@ pub struct ChatOptions {
     pub top_p: Option<f64>,
     pub stop: Option<Vec<String>>,
     pub extra: HashMap<String, serde_json::Value>,
-    /// H4 (U16 half): reasoning-effort tier ("low"|"medium"|"high"; None =
+    /// (half): reasoning-effort tier ("low"|"medium"|"high"; None =
     /// send nothing). Providers translate as their wire format requires
     /// (OpenAI-compatible: `reasoning_effort`; Anthropic: `thinking`
     /// budget_tokens via a fixed tier→budget map). 杂务调用另有 "off"

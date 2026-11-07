@@ -20,18 +20,18 @@
 //! system message routing, history requests, cluster continuation, slash
 //! commands, session busy management, summarization, and startup info.
 // ===========================================================================
-// P1 物理拆分（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）：
+// 物理拆分：
 // 单文件 loop.rs 拆为 17 个子模块 + 本根文件（struct AgentLoop/散项/测试挂载/re-export）。
-// 语义零变化：子模块经 `use super::*` 取根 re-export，根经 glob re-export 保持
+// 语义零变化：子模块经 `use super:*` 取根 re-export，根经 glob re-export 保持
 // `crate::r#loop::X` 既有路径逐字节不变；字段零改动（struct 留根，impl 分居后代模块）。
 // ===========================================================================
 //
-// 锁纪律（§原则 5 / P2-6）：本模块（含全部子模块）显式固化「guard 不跨
-// await」为编译器检查——lock()/read()/write() 的 guard 持有时跨 .await 即告警。
+// 锁纪律（§原则 5）：本模块（含全部子模块）显式固化「guard 不跨
+// await」为编译器检查——lock()/read()/write() 的 guard 持有时跨.await 即告警。
 #![warn(clippy::await_holding_lock)]
 
 pub(crate) mod prelude {
-    //! 子模块共享导入面（P1 兼容垫片；P1-c 可选溶解为各文件显式导入）。
+    //! 子模块共享导入面（兼容垫片；-c 可选溶解为各文件显式导入）。
     #![allow(unused_imports)]
     pub(crate) use std::collections::HashMap;
     pub(crate) use std::sync::Arc;
@@ -74,7 +74,7 @@ mod bypass_llm;
 pub use bypass_llm::*;
 #[allow(unused_imports)]
 pub(crate) use bypass_llm::*;
-// P32（cache-warmer）：idle 会话 prompt cache 保活（TTL×90% 触发 1-token
+// （cache-warmer）：idle 会话 prompt cache 保活（TTL×90% 触发 1-token
 // 重放 + 价目表经济闸；默认关零副作用，语义见 cache_warmer.rs 模块注释）。
 mod cache_warmer;
 #[allow(unused_imports)]
@@ -111,10 +111,10 @@ mod fs_watch;
 pub use fs_watch::*;
 #[allow(unused_imports)]
 pub(crate) use fs_watch::*;
-/// §6.2（2026-10-12 无人值守）：撞顶翻倍阶梯——空输出 `length` 烧穿时
+/// （无人值守）：撞顶翻倍阶梯——空输出 `length` 烧穿时
 /// max_tokens 翻倍重发（32K 地板 / config 封顶）+ per-model 学习缓存。
-/// pub(crate)：L28+（改进项三期）续行续写再撞顶复用同一阶梯公式与
-/// ESCALATION_FLOOR 地板（单一真相源，不抄数字）。
+/// pub(crate)：+续行续写再撞顶复用同一阶梯公式与
+/// ESCALATION_FLOOR 地板（统一定义，不抄数字）。
 pub(crate) mod length_escalation;
 mod llm_types;
 #[allow(unused_imports)]
@@ -136,13 +136,13 @@ mod observer;
 pub use observer::*;
 #[allow(unused_imports)]
 pub(crate) use observer::*;
-// 循环流程策略 trait 层（WASM 样板工程批 1）：CompactPolicy /
+// 循环流程策略 trait 层（WASM 样板工程）：CompactPolicy /
 // FinalJudgePolicy / ValidationPolicy 三策略 + TitleCallback 单点回调；
 // 哨兵 Builtin 默认实现，行为零变化（见 policy.rs 模块文档）。
 pub mod policy;
 
-// E5（2026-10-15 收尾保障）：预算暂停前收尾编译探针（触发闸/探针执行/
-// 诚实注记；计划 docs/PLAN/2026-10-15_编码基准固化与E5收尾保障计划.md 项②）。
+// 预算暂停前收尾编译探针（触发闸/探针执行/
+// 诚实注记）。
 mod pre_pause_probe;
 #[allow(unused_imports)]
 pub(crate) use pre_pause_probe::*;
@@ -186,12 +186,12 @@ mod tool_dispatch;
 pub use tool_dispatch::*;
 #[allow(unused_imports)]
 pub(crate) use tool_dispatch::*;
-// L13-b（2026-11-03 三期）：mandate 执行面守卫 loop 侧接线（槽/轮顶检；
+// b（三期）：mandate 执行面守卫 loop 侧接线（槽/轮顶检；
 // 纯类型+marker 在顶层 crate::mandate_guard）。
 mod mandate_guard;
 #[allow(unused_imports)]
 pub(crate) use mandate_guard::*;
-// P8（集群无人值守硬化 A2）：会话 token 预算闸 loop 侧接线（顶检器官/
+// （集群无人值守硬化）：会话 token 预算闸 loop 侧接线（顶检器官/
 // 记账/观测；纯类型+账本在顶层 crate::token_budget）。
 mod token_budget;
 #[allow(unused_imports)]
@@ -216,21 +216,21 @@ pub(crate) use wiring::*;
 // AgentLoop -- core execution engine
 // ---------------------------------------------------------------------------
 
-/// 钩子三槽收拢（P3-1，§5.1 HooksState）：K1a/K1b/K2 三代钩子管理器原
+/// 钩子三槽收拢（HooksState）：// 三代钩子管理器原
 /// AgentLoop 三字段逐字迁入，锁类型不变；访问经 `self.hooks.<field>`。
 /// setter（`add_tool_hook`/`add_llm_hook`/`add_lifecycle_hook`）留在
 /// `AgentLoop` 上一行委托，外部 API 零变化。
 pub(crate) struct HooksState {
-    /// K1a (U14): user tool hooks — pre runs after the fixed security gate,
+    /// user tool hooks — pre runs after the fixed security gate,
     /// post runs after execute and before Forge. RwLock so hooks can be
-    /// registered from `&self` post-construction (K2 hooks.json wiring).
+    /// registered from `&self` post-construction (hooks.json wiring).
     /// See `crate::hooks` module doc for the full 布点图.
     pub(crate) tool_hooks: parking_lot::RwLock<crate::hooks::ToolHookManager>,
-    /// K1b (U14): LLM-call-level hooks — pre may append reminder messages
+    /// LLM-call-level hooks — pre may append reminder messages
     /// (visible in request_log), post may allow/replace/retry/block the
     /// response. See `crate::hooks` module doc（LLM 调用级布点）.
     pub(crate) llm_hooks: parking_lot::RwLock<crate::hooks::LlmHookManager>,
-    /// K2 (U14): prompt/turn lifecycle hooks — on_user_prompt runs in
+    /// prompt/turn lifecycle hooks — on_user_prompt runs in
     /// `run_with_trace` BEFORE the message enters history (blocked prompts
     /// are never seen by the model), on_turn_end runs after the final
     /// answer is accepted, before the turn ends. Primary consumer: the
@@ -238,7 +238,7 @@ pub(crate) struct HooksState {
     pub(crate) lifecycle_hooks: parking_lot::RwLock<crate::hooks::LifecycleHookManager>,
 }
 
-/// 内存四槽收拢（P3-2，§5.1 MemoryState）：executor（store/forget 审批门
+/// 内存四槽收拢（MemoryState）：executor（store/forget 审批门
 /// 载体）/ inject manager（只读检索自动注入）/ inject cfg / tool_vec_cache
 /// （语义折叠嵌入缓存）原字段逐字迁入，cfg 门与锁类型不变；访问经
 /// `self.memory.<field>`。setter（`set_memory_executor`/`set_memory_inject`
@@ -252,7 +252,7 @@ pub(crate) struct MemoryState {
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)] // placeholder when memory feature is off
     pub(crate) memory_executor: parking_lot::RwLock<Option<()>>,
-    /// P3.1 (sixth batch): memory manager for the AUTO-INJECT channel —
+    /// .1 (sixth batch): memory manager for the AUTO-INJECT channel —
     /// read-only retrieval (top-K vector search over the current user
     /// message) feeding the `# Memory Context` snapshot section. Deliberately
     /// SEPARATE from `memory_executor`: that one gates store/forget behind
@@ -264,11 +264,11 @@ pub(crate) struct MemoryState {
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)] // placeholder when memory feature is off
     pub(crate) memory_inject_manager: parking_lot::RwLock<Option<()>>,
-    /// P3.1: auto_inject flag + top_k loaded from config.enhanced_memory.json
+    /// .1: auto_inject flag + top_k loaded from config.enhanced_memory.json
     /// by the factory (`set_memory_inject`). Tuple so both values travel
     /// together on the one setter. Default (false, 3) = feature off.
     pub(crate) memory_inject_cfg: parking_lot::RwLock<(bool, usize)>,
-    /// Y1 (Phase4-a): per-tool description embedding cache (tool name →
+    /// per-tool description embedding cache (tool name →
     /// (description bytes, vector)) for semantic doc folding. Entries
     /// re-embed only when a tool's description text changes, so after the
     /// first round folding adds no embed calls beyond the query itself.
@@ -280,9 +280,9 @@ pub(crate) struct MemoryState {
         parking_lot::RwLock<std::collections::HashMap<String, (String, Vec<f32>)>>,
 }
 
-/// 安全/应急六槽收拢（P3-3，§5.1 SecurityState）：security_plugin（cfg 门）、
+/// 安全/应急六槽收拢（SecurityState）：security_plugin（cfg 门）、
 /// checkpoint_store（编辑安全网快照）、estop（全局急停）、approval/question
-/// responder（M7/F7 响应端）、question_asker（J5 发起端）原字段逐字迁入，
+/// responder（/ 响应端）、question_asker（发起端）原字段逐字迁入，
 /// 锁类型不变；访问经 `self.security.<field>`。setter
 /// （`set_security_plugin`/`set_estop`/`set_checkpoint_store`/
 /// `set_approval_responder`/`set_question_responder`/`set_question_asker`）
@@ -307,41 +307,41 @@ pub(crate) struct SecurityState {
     /// `SharedResources.estop` 重新绑定到**同一个** Arc——所以急停状态在
     /// agent 重启后自动保持。
     pub(crate) estop: parking_lot::RwLock<Option<Arc<crate::estop::EstopState>>>,
-    /// M7 (devtool-upgrade 阶段 4)：审批响应端（`ApprovalResponder`）。
+    /// (devtool-upgrade)：审批响应端（`ApprovalResponder`）。
     /// gateway 装配 WebApprovalManager 后挂在这里，WSAPI `approval.respond` /
     /// `approval.pending` 经 AppState 的 agent_loop 槽触达（不经 security 依赖）。
     /// 未装配 = `None`，approval handler 诚实报「未装配」。
     pub(crate) approval_responder:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::ApprovalResponder>>>,
-    /// F7 (devtool-upgrade 阶段 5)：结构化提问响应端（`QuestionResponder`）。
+    /// (devtool-upgrade)：结构化提问响应端（`QuestionResponder`）。
     /// gateway 装配 WebQuestionBroker 后挂在这里，WSAPI `question.respond` /
     /// `question.pending` 经 AppState 的 agent_loop 槽触达（同审批先例）。
     /// 未装配 = `None`，question handler 诚实报「未装配」。
     pub(crate) question_responder:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionResponder>>>,
-    /// J5 (devtool-upgrade 阶段 6)：doom-loop 终级卡的提问发起端
-    /// （`QuestionAsker`）——gateway 注入与 F7 responder 同源的
-    /// WebQuestionBroker Arc 的另一半 trait。循环干预阶梯（2026-10-24）
+    /// (devtool-upgrade)：doom-loop 终级卡的提问发起端
+    /// （`QuestionAsker`）——gateway 注入与 responder 同源的
+    /// WebQuestionBroker Arc 的另一半 trait。循环干预阶梯
     /// 的 escalation 终级经此发**无超时严重卡**问用户（批准续跑/停止）。
     /// 未装配 = `None` = 审批通路缺失，escalation 直接停轮（fail-closed）。
     pub(crate) question_asker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionAsker>>>,
-    /// B4（2026-10-18 凭据 vault §7）：凭据索要卡 broker——Auth 失败经此向
+    /// （凭据 vault）：凭据索要卡 broker——Auth 失败经此向
     /// 用户发卡要凭据（值不 transit agent 事件：respond 侧先落 vault 再送
     /// 裁决，等待侧只拿 `CredentialOutcome`）。gateway 装配
     /// WebCredentialBroker 后挂在这里（approval/question responder 同族）。
     /// 未装配 = `None`，Auth 臂走原「停止重试」终局零回归。
     pub(crate) credential_broker:
         parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::CredentialBroker>>>,
-    /// L25（2026-11-02）：凭据发卡防滥用占位表（同 `(session_key, alias)`
+    /// 凭据发卡防滥用占位表（同 `(session_key, alias)`
     /// TTL 窗内至多一张卡）。纯内存态随 loop 重建清零；与 broker 同族，
     /// dispatch 注入失败臂与 TakeoverToolBridge 回退态共用（wrapper 持
     /// 自有实例，语义等价）。
     pub(crate) credential_card_guard: Arc<crate::r#loop::credential_injection::CredentialCardGuard>,
-    /// §2 免打扰运行时态（无人值守计划 Part 2，security feature）：gateway
-    /// 注入与 auditor / web security handler 同一 Arc（editor_access 单一
-    /// 真相源同款双注入）。（2026-10-24 循环干预阶梯起 `check_escalation`
-    /// 不再读它——终级卡不可自动批；auditor 侧 §2 直批块走 nemesis-security
+    /// 免打扰运行时态（Part 2，security feature）：gateway
+    /// 注入与 auditor / web security handler 同一 Arc（editor_access
+    /// 同款双注入）。（循环干预阶梯起 `check_escalation`
+    /// 不再读它——终级卡不可自动批；auditor 侧 直批块走 nemesis-security
     /// 内部同 Arc。本槽保留=注入面不破坏，仅测试消费。）
     #[cfg(feature = "security")]
     pub(crate) approval_auto:
@@ -349,7 +349,7 @@ pub(crate) struct SecurityState {
 }
 
 impl SecurityState {
-    /// 顶检 engaged 判定（原 organ 1 顶检 + U5 预计算门 + 批内检查三处
+    /// 顶检 engaged 判定（原 organ 1 顶检 + 预计算门 + 批内检查三处
     /// 内联写法收敛于此）。未接线（None）= false = 永不阻塞。
     pub(crate) fn is_engaged(&self) -> bool {
         self.estop
@@ -361,7 +361,7 @@ impl SecurityState {
 
     /// 订阅急停状态（原 recovery 首呼与 hook 重呼两处内联收敛于此）。
     /// 返回 owned Receiver（不借用 guard）——拿完即可放锁，等待臂跨
-    /// await 不持锁（P2-6 锁纪律）。
+    /// await 不持锁（锁纪律）。
     pub(crate) fn subscribe(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
         self.estop.read().as_ref().map(|e| e.subscribe())
     }
@@ -395,12 +395,12 @@ pub struct AgentLoop {
     state_manager: Option<Arc<nemesis_state::workspace_state::WorkspaceStateManager>>,
     /// Session store for persistent history.
     session_store: Option<Arc<SessionStore>>,
-    /// A1（2026-09-22 聊天切会话竞态）：环尾 seq 查询回调（nemesis-web 的
+    /// （聊天切会话竞态）：环尾 seq 查询回调（nemesis-web 的
     /// `chat_event_log::latest_seq` 经 gateway 装配注入——crate 方向
     /// agent←web 不可直调，走依赖注入，同 session_store 模式）。
     /// `handle_history_request` 在读取历史**之后**采样，随响应下发
     /// `last_seq`；`None`（standalone / 未注入）→ 响应不带 last_seq，
-    /// 前端走尾部同文兜底（A2）。
+    /// 前端走尾部同文兜底。
     chat_seq_lookup: parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str) -> u64 + Send + Sync>>>,
     /// Running flag for the bus consumption loop.
     running: AtomicBool,
@@ -409,7 +409,7 @@ pub struct AgentLoop {
     /// select——停机后重试环立即退出，不再把 1s/2s/4s 退避与限流梯子等待
     /// 的 timer 注册拖进 runtime 停机窗口（TimerEntry 首次 poll 撞停机 =
     /// "A Tokio 1.x context was found, but it is being shutdown" panic；
-    /// 实录：gateway boot 测试停机后 30ms 仍见 "LLM transient error,
+    /// gateway boot 测试停机后 30ms 仍见 "LLM transient error,
     /// retrying"）。独立于 `running` 的原因：
     /// process_direct 直调路径（moderator/guardian/headless run/ACP）从不
     /// 置 running=true，拿 running 当闸会误杀这些路径的重试；本令牌只在
@@ -417,11 +417,11 @@ pub struct AgentLoop {
     stop_token: tokio_util::sync::CancellationToken,
     /// Per-session busy state with queue length tracking.
     session_busy: parking_lot::Mutex<HashMap<String, SessionBusyState>>,
-    /// BUG 2026-09-21 ①：单会话限流重试实时快照（写侧重试环、读侧
+    /// BUG ①：单会话限流重试实时快照（写侧重试环、读侧
     /// `retry_status`/WSAPI `agent.retry_status`）。turn 收尾即清；abort
     /// 残留由读侧过期兜底（[`RETRY_STATUS_STALE_SECS`]）。
     rate_limit_status: parking_lot::Mutex<HashMap<String, RateLimitStatus>>,
-    /// Session busy check: mode-aware I1 (U7).
+    /// Session busy check: mode-aware.
     /// Concurrent request handling mode.
     concurrent_mode: ConcurrentMode,
     /// Re-injection sender into the agent's own inbound mpsc (round-5 review
@@ -444,13 +444,13 @@ pub struct AgentLoop {
     /// queue mode is permanently retired.
     #[allow(dead_code)]
     queue_size: usize,
-    /// 件4（2026-09-24 三合一收口）：纪律闭环共享态。None = 未启用
-    /// （`agents.discipline.enabled=false`，D5 灰度默认关）——闸/证伪钩子
+    /// 件4：纪律闭环共享态。None = 未启用
+    /// （`agents.discipline.enabled=false`， 灰度默认关）——闸/证伪钩子
     /// 不注册、`/discipline` 提示未启用。字段本体在根（工厂构造后经
     /// `set_discipline` 注入，admission gate 与钩子各自借出 Arc）。
     pub(crate) discipline:
         parking_lot::RwLock<Option<std::sync::Arc<crate::discipline::DisciplineState>>>,
-    /// T1（扩展计划 D3）：工具收据签名密钥——每实例随机（OsRng），不进
+    /// （扩展计划）：工具收据签名密钥——每实例随机（OsRng），不进
     /// LLM 上下文不落盘。`apply_tool_guards` 对每个真实执行的 registry
     /// 结果生成执行证明入 TurnGuard 收据环。
     receipt_key: crate::tool_receipts::ReceiptKey,
@@ -461,7 +461,7 @@ pub struct AgentLoop {
     /// Semaphore for limiting concurrent continuation spawns.
     /// `None` when `max_continuation_permits == 0` (inline mode).
     continuation_semaphore: Option<Arc<tokio::sync::Semaphore>>,
-    /// D (2026-09-23 多会话并行清账) D-4：loop 级并发 turn 上限（安全阀）。
+    /// D (多会话并行清账) D-4：loop 级并发 turn 上限（安全阀）。
     /// `None`（`max_concurrent_turns == 0`，构造缺省）不设限——独立/测试
     /// 路径行为不变；>0 时每个 spawned turn 任务在任务体内先取许可再执行
     /// （泵不被阻塞，超限任务在信号量上 FIFO 排队：诚实等待，不丢失不
@@ -486,7 +486,7 @@ pub struct AgentLoop {
     /// uses the full 7-level priority cascade instead of the default-agent fallback.
     route_resolver: Option<RouteResolver>,
     /// Identity links（canonical_name -> 平台 ID 列表）——每次组装 RouteInput
-    /// 随身携带（BUG-20261025-50 接线：config `session.identity_links` 此前
+    /// 随身携带（接线：config `session.identity_links` 此前
     /// 只声名未读取，route_message 恒传空表，跨平台身份归并永不生效）。
     identity_links: HashMap<String, Vec<String>>,
     /// Optional observer event callback (mirrors Go's observerMgr).
@@ -499,14 +499,14 @@ pub struct AgentLoop {
     /// on the `nemesis-cluster` crate. The caller can downcast to the concrete
     /// cluster type. Mirrors Go's `AgentLoop.cluster`.
     cluster: Option<Arc<dyn std::any::Any + Send + Sync>>,
-    /// Observer manager for Phase 5 event emission.
+    /// Observer manager for event emission.
     /// Mirrors Go's `AgentLoop.observerMgr`.
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
-    /// 安全/应急六槽（P3-3 收拢 [`SecurityState`]；字段语义见该类型）。
+    /// 安全/应急六槽（收拢 [`SecurityState`]；字段语义见该类型）。
     security: SecurityState,
     /// MCP Manager for dynamic tool discovery and hot-reload.
     mcp_manager: Option<std::sync::Mutex<nemesis_mcp::manager::McpManager>>,
-    /// G2（2026-10-18 批四）：per-agent 浏览器 profile（工厂经 setter 注入，
+    /// per-agent 浏览器 profile（工厂经 setter 注入，
     /// `enable_mcp_reload` 转交给 McpManager——server 配置 opt-in
     /// `browser_profile: true` 的浏览器类 spawn 时拿 `--user-data-dir`）。
     /// None = env 回落语义（主/项目 loop 恒 None 零变化）。
@@ -526,7 +526,7 @@ pub struct AgentLoop {
     /// the token for the corresponding session is cancelled, causing the
     /// LLM loop to break at the next check point.
     cancel_tokens: dashmap::DashMap<String, tokio_util::sync::CancellationToken>,
-    /// L13-b（2026-11-03 三期）：mandate 执行面守卫槽（cluster_agent per-task
+    /// b（三期）：mandate 执行面守卫槽（cluster_agent per-task
     /// set/take；work queue 串行使 loop 级槽安全，与 cancel token 的
     /// per-session DashMap 不同——mandate 授权书绑定单个任务而非会话族）。
     /// None = 无守卫 = 旧行为直通。
@@ -535,39 +535,39 @@ pub struct AgentLoop {
     /// across sessions in this MVP — adequate for single-session deployments;
     /// multi-session isolation is a documented follow-up.
     turn_counter: std::sync::atomic::AtomicUsize,
-    /// W6（2026-10-25 加固）：在途
+    /// （加固）：在途
     /// turn 计数（turn 任务体开始 +1 / 结束 -1，含 spawn 与 inline
     /// continuation 两臂）——优雅停机 drain 的有界等待 gauge。与 checkpoint
     /// 用 [`Self::turn_counter`]（单调计数，非在途 gauge）语义正交。
     in_flight_turns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    /// W6：停机 drain 闸——置位后泵拒绝新 turn（外部通道诚实回执，内部
+    /// 停机 drain 闸——置位后泵拒绝新 turn（外部通道诚实回执，内部
     /// 通道静默丢），在途 turn 照常收尾。estop（冻结 agent 活动）与之正交。
     draining: std::sync::atomic::AtomicBool,
-    /// D3（devtool-upgrade 阶段 5）：本 turn 声明式文件工具的变更流水，按
+    /// （devtool-upgrade）：本 turn 声明式文件工具的变更流水，按
     /// session_key 分桶。dispatch 瀑布（`preview_all` 处）顺带收集（独立于
     /// checkpoint 是否挂载）；`run_agent_loop_internal` 在 assistant 最终
     /// 回复落盘时 drain+去重，写进 chat_log jsonl 行的 `file_changes` 字段
-    /// （消息↔文件变更映射；M3 会话级 diff 查看器的数据源）。Arc 外壳：
+    /// （消息↔文件变更映射； 会话级 diff 查看器的数据源）。Arc 外壳：
     /// dispatch 瀑布闭包是 `Fn`（'static），须经 Arc 捕获共享。清理时点 =
     /// drain（写后即清）+ turn 开始兜底清（上轮异常短路未走到落盘也不残留
     /// 到本轮）；steer 注入不重入 `run_agent_loop_internal`，正在跑的 turn
     /// 缓冲不受影响。
     turn_file_changes: Arc<parking_lot::Mutex<HashMap<String, Vec<FileChange>>>>,
-    /// N5（2026-10-13 机会项）：本 turn 的交付物流水（`present_files` 工具
+    /// 本 turn 的交付物流水（`present_files` 工具
     /// 登记），按 session_key 分桶。与 [`Self::turn_file_changes`] 同一缓冲
     /// 模式：assistant 最终回复落盘时 drain+去重，写进 chat_log jsonl 行的
     /// `deliverables` 字段（前端交付物卡片；「该看什么」产物指引，区别于
     /// file_changes 的「改了什么」变更映射）。清理时点同 file_changes。
     turn_deliverables:
         Arc<parking_lot::Mutex<HashMap<String, Vec<crate::chat_log::PresentedFile>>>>,
-    /// E3（devtool-upgrade 阶段 5）：消息级回退的 undo 栈，按 session_key
+    /// （devtool-upgrade）：消息级回退的 undo 栈，按 session_key
     /// 分栈（会话间互不干扰，栈内严格 LIFO）。`rewind_to_message` 压栈，
     /// `redo_rewind` 弹栈反向。内存态（重启即失——redo 只对本次进程内的
     /// undo 有效，诚实边界）；每栈上限 [`REWIND_UNDO_STACK_CAP`]，超限丢
     /// 最旧。
     rewind_undo_stacks:
         parking_lot::Mutex<HashMap<String, std::collections::VecDeque<RewindUndoEntry>>>,
-    /// BUG-20261030-221：回退中、尚未压入 undo 栈的 forward_tree 在途保护
+    /// 回退中、尚未压入 undo 栈的 forward_tree 在途保护
     /// 集。forward_tree 采集于 truncate 之前、压栈在 jsonl 提交之后——这个
     /// 窗口里它既不在索引（本会话 turn ≥ 锚的条目待截）也不在栈里，重建式
     /// gc 的保留集看不到它 = 当孤儿对象清掉，redo 的文件前向恢复必炸「tree
@@ -575,45 +575,46 @@ pub struct AgentLoop {
     /// 注销由 rewind 模块的 RAII guard 管理（早退路径 drop 兜底，不残留陈
     /// 旧 hex——残留 = gc 永久清不掉对应对象，反向泄漏）。
     gc_inflight_trees: parking_lot::Mutex<std::collections::HashSet<String>>,
-    /// K1a/K1b/K2 钩子三槽（P3-1 收拢 [`HooksState`]；字段语义见该类型）。
+    /// // 钩子三槽（收拢 [`HooksState`]；字段语义见该类型）。
     hooks: HooksState,
-    /// 内存四槽（P3-2 收拢 [`MemoryState`]；字段语义见该类型）。
+    /// 内存四槽（收拢 [`MemoryState`]；字段语义见该类型）。
     memory: MemoryState,
-    /// Capability tier (small-model-tool-robustness plan, Phase 4a). Resolved at
+    /// Capability tier (small-model-tool-robustness plan, a). Resolved at
     /// construction from the active model's `model_tier` config (see
-    /// [`nemesis_types::capability`]). Drives tool-set size (Phase 3),
-    /// validation-retry budget (Phase 2), and format-repair gating (Phase 5).
+    /// [`nemesis_types::capability`]). Drives tool-set size,
+    /// validation-retry budget, and format-repair gating.
     /// `RwLock` so it can be re-resolved if the active model switches at runtime.
     tier: parking_lot::RwLock<nemesis_types::capability::ModelTier>,
-    /// F1（devtool-upgrade 阶段 4）：plan/build 工作模式。Build=默认全量；
+    /// （devtool-upgrade）：plan/build 工作模式。Build=默认全量；
     /// Plan=只读白名单供给（build_tool_defs 第三过滤层）+ 分发端写类拦截
     /// （`handle_tool_call_at_depth` 入口，防 MCP/未知写工具与陈旧 defs
     /// 漏网）+ plans/ 写放行。运行时态不持久化（重启回 Build）；
     /// `/plan` `/build` 与 WSAPI `chat.set_mode` 双入口改同一份状态。
-    /// N2（2026-10-13）：Arc 化——同一槽与 present_plan 工具共享
+    /// Arc 化——同一槽与 present_plan 工具共享
     /// （PlanPresentHandle.mode，批准臂直接翻转），本侧读写经 Deref 零变化。
     mode: Arc<parking_lot::RwLock<crate::types::AgentMode>>,
-    /// N2：present_plan 审批结论槽（与工具共享 PlanPresentHandle；批次尾
+    /// present_plan 审批结论槽（与工具共享 PlanPresentHandle；批次尾
     /// `remove` 按 session_key 消费——Rejected/Timeout 结构化终止本轮）。
     /// None = 工具未注册（headless 形态），消费点恒 None 零开销。
     plan_present: parking_lot::RwLock<Option<Arc<crate::loop_tools::PlanPresentHandle>>>,
-    /// F1：M1a 事件广播发送端——模式切换后发布 `ModeChanged`（前端徽标
+    /// 事件广播发送端——模式切换后发布 `ModeChanged`（前端徽标
     /// 实时刷新；chat_id 缺省空 = 只进 SSE EventHub，不路由具体会话）。
     /// `None`（standalone / 未注入）→ 发布静默跳过（观察者通道空转是常态）。
     agent_event_tx: parking_lot::RwLock<
         Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
     >,
-    /// L14（2026-11-01）：会话执行统计 sink——loop 内部计数（LLM 重试/
-    /// 校验失败回灌/压缩成功）经 [`crate::session_stats::SessionStatsSink`]
+    /// 会话执行统计 sink——loop 内部计数（LLM 重试/
+    /// 校验失败回灌/压缩成功）经 [`crate::session_stats:SessionStatsSink`]
     /// 上抛宿主聚合器（nemesisbot `session_stats` 装配注入）。`None`
     /// （standalone / 未注入）= 不统计，调用点零开销。
     session_stats:
         parking_lot::RwLock<Option<std::sync::Arc<dyn crate::session_stats::SessionStatsSink>>>,
-    /// Work 时间线累加器（2026-10-30 ChatPanel 长任务时间线改造）：turn
+    /// Work 时间线累加器（ChatPanel 长任务时间线改造）：turn
     /// 级「叙述+工具」按真实时序收拢，落盘随行（turn.rs 最终回复行）+
     /// `chat.work_current` 活查询。Arc 与 ToolEventHook 共享同一实例
-    /// （factory 经 [`Self::work_recorder`] 取 clone 注入 hook）；槽空 =
-    /// 喂入静默忽略，未装配路径零开销。
+    /// （factory 经 [`Self::work_recorder`] 取 clone 注入 hook）。按会话
+    /// 键分桶（BUG-20261106-039：spawn/评审/续行与父 turn 并发共用本
+    /// loop）；无桶 = 喂入静默忽略，未装配路径零开销。
     work_recorder: crate::work_timeline::WorkRecorder,
     /// Path to config.json — the single source of truth for per-model
     /// `model_tier`. `None` in standalone mode (no config.json to watch). Set
@@ -621,65 +622,65 @@ pub struct AgentLoop {
     /// so dashboard-added models and CLI `model set-tier` are picked up live,
     /// with no stale snapshot.
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
-    /// G1（2026-10-18 三方复评整改批三）：per-loop 附加隐藏表——自建 agent
+    /// per-loop 附加隐藏表——自建 agent
     /// tool_policy（deny/hidden/allow 折算）的 loop 级供给闸输入。与 config
     /// `agents.hidden_tools` 在 [`Self::current_hidden_tools`] 单点合并，
     /// 供给闸（build_tool_defs）与 dispatch 闸天然双闸对齐；通配语义同
     /// `tool_name_matches_hidden`。空 = 零影响（主 loop / 项目 loop 不触碰）。
     extra_hidden_tools: parking_lot::RwLock<Vec<String>>,
-    /// B2（2026-10-19 connector 独占接管）：独占隐藏表供给器——闭包由装配方
+    /// （connector 独占接管）：独占隐藏表供给器——闭包由装配方
     /// （nemesisbot agent_factory）注入，每次调用现扫连接器注册表（磁盘真相）
     /// 及 MCP 工具快照，返回当下应从工具面隐藏的**完整工具名清单**（独占
     /// server 前缀命中，扣除 sidecar 豁免；封禁语义照隐）。与
-    /// `extra_hidden_tools`（G1 全量替换槽）分槽的原因：①写者冲突——G1 每次
+    /// `extra_hidden_tools`（全量替换槽）分槽的原因：①写者冲突—— 每次
     /// 全量替换，共用会互相清空；②语义分野——extra 是**绝对闸**（任何出处
     /// 都拒），独占是**出处感知闸**（`connector-binding` 通道的治理回灌放行，
     /// 见 tool_dispatch），消费点必须能区分两表。供给器缺省（项目 loop /
     /// 独立装配）= 空表 = 独占闸不生效。
     exclusive_hidden_provider:
         parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> Vec<String> + Send + Sync>>>,
-    /// F4（二轮复评 2026-10-18）：per-loop tool_policy allow 白名单。非空 =
+    /// （二轮复评）：per-loop tool_policy allow 白名单。非空 =
     /// 白名单语义——不在名单的工具不供给（build_tool_defs）且 dispatch 拒绝
     /// （双闸同源现读本槽）。取代旧「注册面 ∖ allow 折算进隐藏表」：折算只
     /// 吃注册期快照，MCP 热加载的新工具漏拦；槽值每回合现读，动态新工具
     /// 天然落闸。精确名匹配，不扩通配语法。空 = 零影响。
     tool_policy_allow: parking_lot::RwLock<Vec<String>>,
-    /// 循环流程策略槽（WASM 样板工程批 1，`policy` 模块是设计真相源）：
+    /// 循环流程策略槽（WASM 样板工程，`policy` 模块承载设计定义）：
     /// 三策略 + 标题回调。三策略恒持实现——默认零逻辑哨兵（裁决
-    /// `Builtin` → 宿主原逻辑路径），WASM 桥（批 4 PolicyBridge）激活
+    /// `Builtin` → 宿主原逻辑路径），WASM 桥（PolicyBridge）激活
     /// 组件时整槽替换，桥故障回退 = 换回哨兵；全量替换语义镜像
     /// [`Self::set_extra_hidden_tools`]。标题槽例外为 `Option`——内置
-    /// 路径依赖宿主 small_model 资源（D5 形态对照，见 policy.rs）。
+    /// 路径依赖宿主 small_model 资源（形态对照，见 policy.rs）。
     compact_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::CompactPolicy>>,
     final_judge_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::FinalJudgePolicy>>,
     validation_policy: parking_lot::RwLock<std::sync::Arc<dyn policy::ValidationPolicy>>,
     title_callback: parking_lot::RwLock<Option<std::sync::Arc<dyn policy::TitleCallback>>>,
-    /// ②typed checks 块捕获槽表（诚实边界收口 2026-10-19）：会话键 → 记录
+    /// typed checks 块捕获槽表：会话键 → 记录
     /// 槽。集群 worker 任务 run 前后 begin/take（`checks_capture` 模块文档
-    /// 是语义真相源）；并发任务按 session_key 精确归属互不串账。空表 =
+    /// 以此为语义依据）；并发任务按 session_key 精确归属互不串账。空表 =
     /// 零影响（主 loop / 项目 loop 不触碰；查表 miss 仅一次读锁 + 名单比对）。
     checks_capture: checks_capture::ChecksCaptureMap,
-    /// G1：记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以记录为
-    /// 唯一真相源——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
+    /// 记录级 tier 钉死（自建 agent 档位契约）。`Some` = tier 以
+    /// 记录为准——[`Self::refresh_active_tier`] 短路（config 重解析/换模型
     /// 不覆盖记录档位）；`None` = config 驱动（主/项目 loop 语义不变）。
     tier_override: parking_lot::RwLock<Option<nemesis_types::capability::ModelTier>>,
-    /// prompt-pack pro（2026-09-27）：提示词体系选择。启动装配型——工厂按
+    /// prompt-pack pro：提示词体系选择。启动装配型——工厂按
     /// `agents.prompt_system` 注入；Pro 时工具描述走
-    /// [`crate::prompt::tool_description`] 档位表（按 tier 取档），Classic
+    /// [`crate::prompt:tool_description`] 档位表（按 tier 取档），Classic
     /// 恒回落注册表原文（字节不变）。缺省 Classic。
     prompt_system: parking_lot::RwLock<crate::prompt::PromptSystem>,
-    /// N1（devtool-upgrade 阶段 1）：分层价目表（workspace/data）。三级
-    /// context_window 解析链的第 L2 级——config 未显式配置 `context_window`
+    /// （devtool-upgrade）：分层价目表（workspace/data）。三级
+    /// context_window 解析链的第 级——config 未显式配置 `context_window`
     /// 时按价目表 `max_input_tokens` 猜。`None`（未注入/打开失败）→ 直接落到
-    /// L3 fallback（[`FALLBACK_CONTEXT_WINDOW`]）。
+    /// fallback（[`FALLBACK_CONTEXT_WINDOW`]）。
     pricing_store: parking_lot::RwLock<Option<std::sync::Arc<nemesis_data::PricingStore>>>,
-    /// C3（devtool-upgrade 阶段 2）：共享 LspManager 单例（与 LspTool 同一
-    /// 实例，见 SharedResources.lsp_manager / C5）。编辑后诊断回灌（修复
+    /// （devtool-upgrade）：共享 LspManager 单例（与 LspTool 同一
+    /// 实例，见 SharedResources.lsp_manager）。编辑后诊断回灌（修复
     /// 闭环）用它同步文档 + 等诊断。`None`（未注入 / standalone）→ 反馈
     /// 静默跳过。Set via `set_lsp_manager` by the agent factory.
     #[cfg(feature = "lsp")]
     lsp_manager: parking_lot::RwLock<Option<Arc<nemesis_lsp::LspManager>>>,
-    /// P3（能力扩展 WS3）：会话级诊断采集登记（跨文件聚合 + stale 过滤
+    /// 会话级诊断采集登记（跨文件聚合 + stale 过滤
     /// 状态面）。语义与生命周期见 `config_watch::DiagnosticsTouchRegistry`
     /// ——仅声明/初始化挂靠于此（结构体字段），逻辑全在 config_watch.rs
     /// （计划 §冲突面登记：诊断域改动不进 loop.rs 主体）。
@@ -687,104 +688,104 @@ pub struct AgentLoop {
     diagnostics_touched: parking_lot::Mutex<config_watch::DiagnosticsTouchRegistry>,
     /// 自定义 slash 命令表路径（`config.commands.json`；主 agent 专用，集群
     /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
-    /// 自定义命令表热重载器（HotReloader 统一收编，2026-08-29：原
+    /// 自定义命令表热重载器（HotReloader 统一收编，原
     /// path/mtime/cache 三字段手写 mtime 模式收编为一行声明）。
     commands_hot:
         parking_lot::RwLock<Option<nemesis_config::HotReloader<nemesis_config::CommandsConfig>>>,
-    /// hooks 方言桥（2026-08-29 T3）：PreCompact/PostCompact 触发用。
+    /// hooks 方言桥：PreCompact/PostCompact 触发用。
     /// SessionEnd 经 SessionEndHookManager（factory 清理点直接调桥）。
     cc_bridge: parking_lot::RwLock<Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>>>,
-    /// G4 (U4): root directory for tool-result spill files
+    /// root directory for tool-result spill files
     /// (`<home>/logs/spill`). `None` disables spilling (results fall back to
-    /// the G3 prune tier). Set via `set_spill_root` by the agent factory.
+    /// the prune tier). Set via `set_spill_root` by the agent factory.
     spill_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
-    /// H3 (P2.2): skills loader for the catalog digest. `None` disables the
+    /// (.2): skills loader for the catalog digest. `None` disables the
     /// digest injection entirely. Set via `set_skills_loader`.
     skills_loader: parking_lot::RwLock<Option<Arc<nemesis_skills::loader::SkillsLoader>>>,
-    /// H3 (P2.2): digest emission handle. Round-5: stateless under I2
+    /// (.2): digest emission handle. Round-5: stateless under
     /// merged-snapshot semantics (sections re-render from disk every build;
     /// the old per-session hash map gated nothing and was removed — see
     /// skills_digest.rs module doc).
     skills_digest_state: std::sync::Arc<crate::skills_digest::DigestState>,
-    /// I1 (U7): per-session message inbox for Queue/Steer modes. Unused in
+    /// per-session message inbox for Queue/Steer modes. Unused in
     /// Reject mode (kept anyway — trivial cost, simplifies mode switching).
     inbox: crate::inbox::SharedInbox,
-    /// V5 (2026-08-23): abort handles of the Queue/Steer pump's spawned turn
+    /// abort handles of the Queue/Steer pump's spawned turn
     /// tasks. The pump itself is aborted by the adapter on stop; without
     /// tracking, those spawned turns would be orphaned and keep publishing
-    /// replies after the "stop". `stop()` aborts them (mirrors the serial
+    /// replies after the "stop()". `stop` aborts them (mirrors the serial
     /// pump where aborting the one task killed the in-flight turn). Reject
     /// mode never spawns — stays empty.
     turn_task_handles: parking_lot::Mutex<Vec<tokio::task::AbortHandle>>,
-    /// H5 (U18): workspace root for the AGENTS.md/CLAUDE.md instruction
+    /// workspace root for the AGENTS.md/CLAUDE.md instruction
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
     workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
-    /// VM 档执行环境注记 resolver（B9 审计收口）。`Some` 时每轮
+    /// VM 档执行环境注记 resolver（审计收口）。`Some` 时每轮
     /// build_messages 调用一次，非空返回值作为一行追加进 # Environment
     /// 快照（bot 侧安装：档位 per-call 现读，vm 档返回 guest 路径语义行，
     /// process 档返回空串 = 字节不变）。`None`（headless/测试/未装配）=
     /// 零行为差异。nemesis-agent 不识 VM 概念，注记内容由宿主侧决定。
     exec_env_resolver:
         parking_lot::RwLock<Option<std::sync::Arc<dyn Fn() -> String + Send + Sync>>>,
-    /// N7（2026-10-13）：工作区指令信任档（见
-    /// [`crate::workspace_instructions::InstructionTrust`]）。缺省 Trusted
+    /// 工作区指令信任档（见
+    /// [`crate::workspace_instructions:InstructionTrust`]）。缺省 Trusted
     /// ——主/集群 loop 不经显式注入即为主循环行为；项目 loop 装配时按注册
     /// 表条目 × 全局策略注入。运行中经 `projects.trust` WSAPI 热更新。
     instruction_trust: parking_lot::RwLock<crate::workspace_instructions::InstructionTrust>,
-    /// I1 (devtool-upgrade 阶段 3): fs-watcher keep-alive handle. `None` =
+    /// (devtool-upgrade): fs-watcher keep-alive handle. `None` =
     /// not started / disabled / failed (warn-once). Callbacks hold a
     /// Weak<AgentLoop> (handle lives INSIDE the loop — Arc would cycle).
     fs_watcher: parking_lot::RwLock<Option<crate::fs_watcher::WatcherHandle>>,
-    /// I1: externally-changed workspace files observed since the last
+    /// externally-changed workspace files observed since the last
     /// build_messages drain (capped; one-shot — drained on next build).
     external_changes: parking_lot::Mutex<Vec<String>>,
-    /// I1: agent-authored writes (write_file/edit_file) for the self-write
+    /// agent-authored writes (write_file/edit_file) for the self-write
     /// window — watcher events for these paths within
-    /// [`crate::fs_watcher::SELF_WRITE_WINDOW`] are dropped (the agent knows
+    /// [`crate::fs_watcher:SELF_WRITE_WINDOW`] are dropped (the agent knows
     /// what it just wrote). Normalized workspace-relative lowercase.
-    // I1: pub(crate) so sibling test modules (fs_watcher/tests.rs) can age
+    // pub(crate) so sibling test modules (fs_watcher/tests.rs) can age
     // entries past the self-write window without sleeping.
     pub(crate) recent_self_writes:
         parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>,
-    /// Full-review M4: context-snapshot message role ("user" default;
-    /// "system" restores the pre-I2 shape for strict chat templates that
+    /// Full-review: context-snapshot message role ("user" default;
+    /// "system" restores the pre shape for strict chat templates that
     /// reject adjacent user/user pairs).
     snapshot_role: parking_lot::RwLock<String>,
-    /// T2 codemode（2026-10-25 默认开 + 热生效联动）：装配期构造并 set_loop
+    /// codemode（默认开 + 热生效联动）：装配期构造并 set_loop
     /// 的 code_run 工具实例。enabled 开关切的是注册表成员资格（本实例的
     /// register/remove，见 config_watch::sync_codemode_registration），不是
     /// 重建——timeout/memory 是构造期值，改键需 loop 重建生效。feature
     /// 关/Android 时字段整体缺席。
     #[cfg(all(feature = "codemode", not(target_os = "android")))]
     code_run_tool: parking_lot::RwLock<Option<std::sync::Arc<crate::code_run::CodeRunTool>>>,
-    /// X2 (U8 refinement): whether interactive approval (desktop popup
+    /// (refinement): whether interactive approval (desktop popup
     /// adapter wired to the auditor by the gateway) is reachable. Rendered
     /// into the merged context snapshot's `# Runtime Policy` section. The
     /// guardian line reads the security plugin's live judge; the tier line
     /// reads the live capability tier — all three are state (no clocks), so
     /// the section renders deterministically: same state ⇒ same bytes.
     interactive_approval: parking_lot::RwLock<bool>,
-    /// I5（devtool-upgrade 阶段 7）：当前轮客户端上报的「当前打开文件」路径
+    /// （devtool-upgrade）：当前轮客户端上报的「当前打开文件」路径
     /// （WSAPI `chat.send` data.open_files → metadata["open_files"] → bus 全链
-    /// 路透传，解析走 nemesis-types::channel::open_files_from_metadata 单点）。
+    /// 路透传，解析走 nemesis-types::channel:open_files_from_metadata 单点）。
     /// Ephemeral per-turn：`process_admitted` 进轮前 set、出轮后 clear（词法
     /// 配对防泄漏——cron/heartbeat/continuation 等非 process_admitted 路径
     /// 天然读不到，无陈旧泄漏）。build_messages 渲染进 merged digest section
     /// （空 = 无 section，字节稳定）；digest 内容随既有 InjectionRecord 台账
     /// 落账 → 字节级回放免费一致。只存路径不读内容（annotation 语义）。
     pending_open_files: parking_lot::RwLock<Vec<String>>,
-    /// 对话生成（2026-09-22）：当前轮 workflow_edit 注入目标（WSAPI
+    /// 对话生成：当前轮 workflow_edit 注入目标（WSAPI
     /// `chat.send` data.workflow_edit → metadata["workflow_edit"]，解析走
-    /// nemesis-types::channel::workflow_edit_from_metadata 单点）。与
+    /// nemesis-types::channel:workflow_edit_from_metadata 单点）。与
     /// pending_open_files 同款 per-turn ephemeral 生命周期：process_admitted
     /// set、出轮 clear。Some → build_messages 渲染能力表/当前定义 section。
     /// 引擎引用只服务「已注册工作流」的当前定义读取；no-workflow 编译下
     /// 整个字段消失。
     pending_workflow_edit: parking_lot::RwLock<Option<nemesis_types::channel::WorkflowEditTarget>>,
-    /// L10-建设（改进项三期 2026-11-02）：惰性 schema 供给的 per-session
+    /// 建设：惰性 schema 供给的 per-session
     /// 解锁账（tools_schema_get 取回成功的工具名，按解锁顺序 append、只增
-    /// 不减、去重）。schema_unlock_section 渲染累积注记的真相源——
+    /// 不减、去重）。schema_unlock_section 渲染累积注记的落点——
     /// append-only 保证字节前缀稳定（prompt cache 只失效尾部）。进程内存
     /// 态：重启即清，模型重取即回（诚实边界，不持久化）。
     tool_schema_unlocks: parking_lot::RwLock<std::collections::HashMap<String, Vec<String>>>,
@@ -793,32 +794,32 @@ pub struct AgentLoop {
     #[cfg(feature = "workflow")]
     workflow_engine:
         parking_lot::RwLock<Option<std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>>>,
-    /// L18 配置世代快照（2026-11-03）：当前已发布代（None = standalone /
+    /// 配置世代快照：当前已发布代（None = standalone /
     /// 绑定后从未发布成功）。读者经 `config_generation()` 持 Arc 引用（代内
     /// 恒一致）；发布点唯一三处（绑定强制 / round start mtime 闸 / 模型切换
     /// 对账），读者绝不发布——「执行开始钉代（嵌套不跨代）」由发布点分布
     /// 保证。裸 mtime 锚 `config_mtime` 已退役并入代对象（mtime 与内容同源
     /// 携带）。机制与刻意偏差见 `loop/config_gen.rs` 模块文档。
     config_gen: parking_lot::RwLock<Option<std::sync::Arc<config_gen::ConfigGeneration>>>,
-    /// 用户画像注入段缓存（B 线动态注入，2026-10-14）：`(profile_mtime_ns,
+    /// 用户画像注入段缓存（B 线动态注入）：`(profile_mtime_ns,
     /// 渲染段)`。build_messages 每轮按 `<workspace>/config/user_profile.json`
     /// mtime 门控重读——sweep 学习 / veto / disable 即时生效，文件未变时
     /// 走缓存（零磁盘 IO、字节稳定）。mtime 读取失败（文件不存在）缓存
     /// `None`。config 侧 `user_profile.enabled` 开关每次门控未命中时现读
     /// （config.json mtime 已有独立检测，开关热生效路径经它兜底）。
     user_profile_cache: parking_lot::RwLock<((Option<u128>, Option<u128>), String)>,
-    /// P32（cache-warmer）：会话 → 最近一次成功 LLM 请求的字节级快照（warm
+    /// （cache-warmer）：会话 → 最近一次成功 LLM 请求的字节级快照（warm
     /// 重放候选）。仅 `agents.cache_warmer.enabled=true` 时被写入（默认关 =
     /// 永空）；逻辑全在 cache_warmer.rs（计划 §冲突面登记：warmer 域改动
     /// 不进 loop.rs 主体）。
     warm_candidates: parking_lot::Mutex<HashMap<String, cache_warmer::WarmCandidate>>,
-    /// N2 (devtool-upgrade 阶段 4)：小模型专职杂务通道（`agents.small_model`）。
-    /// 手动 compact（E6 `/compact`）的摘要调用优先走它（省 token——摘要不需
+    /// (devtool-upgrade)：小模型专职杂务通道（`agents.small_model`）。
+    /// 手动 compact（`/compact`）的摘要调用优先走它（省 token——摘要不需
     /// 要旗舰档智力）；未配置 = `None`，诚实回退主模型。自动压缩（质量敏感）
     /// 刻意不消费本字段，维持主模型。工厂在 loop 构造后从 config 解析装配；
     /// 运行期改配置需重启 Agent（与 lsp_tool 等启动期装配项同一约定）。
     small_model: parking_lot::RwLock<Option<SmallModelSlot>>,
-    /// spawn 共享槽的 loop 侧镜像（2026-09-28 角色目录与分档供给）：与
+    /// spawn 共享槽的 loop 侧镜像（角色目录与分档供给）：与
     /// SpawnTool 持有同一 `Arc<OnceLock<SpawnFn>>`（factory 组装后
     /// `set_spawn_slot` 注入），供 `client_spawn`（WSAPI `chat.spawn`）绕过
     /// 工具表直接驱动同一 detached 通道。`None` = standalone/未注入 →
@@ -826,49 +827,49 @@ pub struct AgentLoop {
     spawn_slot: parking_lot::RwLock<
         Option<std::sync::Arc<std::sync::OnceLock<crate::loop_tools::SpawnFn>>>,
     >,
-    /// 子代理可见性（D5，2026-11-03）：本 loop 的宿主形态标识（`main` /
+    /// 子代理可见性：本 loop 的宿主形态标识（`main` /
     /// `project:{pid}` / `agent:{id}`）。集群 delegate 任务入册
     /// （`save_async_continuation` → `subagent_registry`）时抄给注册表
     /// `loop_origin` 字段——详情/列表视图按它区分「哪个宿主委派的跨节点
     /// 任务」。factory 组装后 `set_loop_origin` 注入；缺省 `main`（主 loop
     /// 形态与其 spawn 闭包硬编码一致，standalone 测试形态同值）。
     loop_origin: parking_lot::RwLock<String>,
-    /// 语音 realtime P1（W4 L2）：语音对话模式提示词注入开关。gateway 侧把
+    /// 语音 realtime：语音对话模式提示词注入开关。gateway 侧把
     /// `chat.realtime.voice_prompt` 热态经 `set_voice_prompt` 接线（仿 estop
     /// late-binding 模式）；`build_messages` 每轮读取，`true` 且 tier≠mini 才
-    /// 渲染 L2 section（关 = 无 section = prompt 字节不变，cache 不动）。
+    /// 渲染 section（关 = 无 section = prompt 字节不变，cache 不动）。
     /// `None`（standalone / 未装配）= 永不注入。
     voice_prompt: parking_lot::RwLock<Option<Arc<std::sync::atomic::AtomicBool>>>,
-    /// M5（2026-10-27 整改）：写后钩子的路径解析基点——与工具表同一
+    /// 写后钩子的路径解析基点——与工具表同一
     /// `Arc<WorkspaceBoundary>` 实例（factory 注入）。写后钩子（format-on-
     /// save、诊断回灌）此前从**原始 args** 抠 path：模型给相对路径而 cwd
     /// 与工作区根不一致时，钩子摸到的是 cwd 下的同名文件（误格式化/误诊
-    /// 断）——两套真相源。钩子处用 [`crate::loop_tools::resolve_tool_path`]
+    /// 断）——两套依据。钩子处用 [`crate::loop_tools::resolve_tool_path`]
     /// + 本字段重算 = 执行器与钩子同一落点。
     ///
     /// `None` = 无界形态（resolve 按原样透传）。
     workspace_boundary: parking_lot::RwLock<Option<Arc<crate::loop_tools::WorkspaceBoundary>>>,
-    /// B4（2026-10-31 项目 home 收编）：plan 模式产物根。`Some(dir)` =
-    /// 项目会话放行 `<agent_home>/plans`（拍板⑥：项目目录/plans 是高危
+    /// （项目 home 收编）：plan 模式产物根。`Some(dir)` =
+    /// 项目会话放行 `<agent_home>/plans`（项目目录/plans 是高危
     /// 禁写，计划产物只落 Bot 域 home）；`None` = 回落
     /// `workspace_root/plans`（主会话旧行为，逐字节不变）。
     plan_products_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
-    /// P8（集群无人值守硬化 A2）：per-session token 预算账本（累计 + soft
+    /// （集群无人值守硬化）：per-session token 预算账本（累计 + soft
     /// 一次性闩）。类型与 seed 防双计语义见 [`crate::token_budget`]；接线
     /// 全在 loop/token_budget.rs（计划 §冲突面登记：预算域改动不进
     /// loop.rs 主体）。
     token_budget: crate::token_budget::SessionTokenBudgetLedger,
-    /// §6.2（2026-10-12 无人值守）：per-model 翻倍阶梯学习缓存——撞顶后
+    /// （无人值守）：per-model 翻倍阶梯学习缓存——撞顶后
     /// 记录该模型实际需要的 max_tokens，后续轮次/后续 turn 直接从 floor
     /// 起步不再烧撞顶轮。config.json mtime 变化清空（用户显式改配置 =
     /// 重置学习）。语义与接线见 loop/length_escalation.rs。
     escalated_floors: parking_lot::Mutex<HashMap<String, u64>>,
-    /// L8（内部专项总计划重评估）：工具调用三态 WAL。`None`（standalone /
+    /// （重评估）：工具调用三态 WAL。`None`（standalone /
     /// 未装配 / `agents.turn_wal=false`）= 不落盘；gateway 装配期经
     /// `set_turn_wal` 注入（仿 estop late-binding 模式），dispatch 三态
     /// 写入 + 启动恢复扫描消费。
     turn_wal: parking_lot::RwLock<Option<Arc<crate::turn_wal::TurnWal>>>,
-    /// B4（2026-10-18 凭据 vault §7）：provider 重建器——Auth 卡 Stored 后用
+    /// （凭据 vault）：provider 重建器——Auth 卡 Stored 后用
     /// 新凭据重建 provider 并热切。gateway 注入 `ModelProviderReloader`
     /// （读 config.json → resolve → factory 同源装配）。crate 只定义合同，
     /// 装配细节（raw patch / resolve / create）全在 bot 侧——生产代码不依赖
@@ -876,7 +877,7 @@ pub struct AgentLoop {
     provider_reloader: parking_lot::RwLock<Option<Arc<dyn ProviderReloader>>>,
 }
 
-/// B4（2026-10-18 凭据 vault §7）：Auth 失败 → 凭据卡 → provider 重建的
+/// （凭据 vault）：Auth 失败 → 凭据卡 → provider 重建的
 /// 装配合同。实现方（bot 侧 `ModelProviderReloader`）持有 config.json 路径
 /// 与 workspace，负责 raw patch 与 factory 同源重建。
 pub trait ProviderReloader: Send + Sync {
@@ -1057,21 +1058,21 @@ impl AgentLoop {
         *self.voice_prompt.write() = Some(flag);
     }
 
-    /// M5（2026-10-27 整改）：装配写后钩子的路径解析边界（factory 在
-    /// loop 构造后注入，与工具表同一 `Arc` 实例——单一真相源）。
+    /// 装配写后钩子的路径解析边界（factory 在
+    /// loop 构造后注入，与工具表同一 `Arc` 实例——同源）。
     pub fn set_workspace_boundary(&self, boundary: Arc<crate::loop_tools::WorkspaceBoundary>) {
         *self.workspace_boundary.write() = Some(boundary);
     }
 
-    /// B4（2026-10-31 项目 home 收编）：装配侧注入 plan 模式产物根
+    /// （项目 home 收编）：装配侧注入 plan 模式产物根
     /// （项目 loop = `<agent_home>/plans`；主/集群/headless 不注入 = 回落
     /// workspace_root/plans 旧行为）。`plan_mode_write_allowed` 与拒绝
-    /// 文案、/plan 切换回执同读本槽——单一真相源。
+    /// 文案、/plan 切换回执同读本槽——同源。
     pub fn set_plan_products_root(&self, root: std::path::PathBuf) {
         *self.plan_products_root.write() = Some(root);
     }
 
-    /// M5 测试观察口（生产路径只写不读快照——dispatch 处局部克隆）。
+    /// 测试观察口（生产路径只写不读快照——dispatch 处局部克隆）。
     #[cfg(test)]
     pub(crate) fn hook_boundary_for_test(
         &self,
@@ -1079,7 +1080,7 @@ impl AgentLoop {
         self.workspace_boundary.read().clone()
     }
 
-    /// L8 turn WAL late-binding（gateway 装配；仿 estop 模式）。装配后
+    /// turn WAL late-binding（gateway 装配；仿 estop 模式）。装配后
     /// dispatch 三态写入生效；启动恢复扫描见 run_bus_impl 的恢复循环。
     pub fn set_turn_wal(&self, wal: Arc<crate::turn_wal::TurnWal>) {
         *self.turn_wal.write() = Some(wal);
@@ -1090,7 +1091,7 @@ impl AgentLoop {
         self.turn_wal.read().clone()
     }
 
-    /// N2（机会项）：`present_plan` 计划审批 late-binding（gateway 装配；仿
+    /// `present_plan` 计划审批 late-binding（gateway 装配；仿
     /// set_turn_wal 模式）。装配后 plan 模式下模型可调 `present_plan` 把计划
     /// 交给用户审批；批准=翻转 build 模式 + 广播 ModeChanged，驳回/超时=
     /// 本轮结构性终止（tool_batch 消费 verdict）。
@@ -1098,12 +1099,12 @@ impl AgentLoop {
         *self.plan_present.write() = Some(handle);
     }
 
-    /// R1（2026-09-21）：中间轮输出发布（[`nemesis_types::agent::AgentEvent::RoundText`]）。
+    /// 中间轮输出发布（[`nemesis_types::agent:AgentEvent::RoundText`]）。
     /// web pump 的默认路径即覆盖全部投递（注入 session_id + record_tool 入环 +
     /// tool_event 通道 WS push），本方法只负责发；agent_event_tx 未装配
     /// （CLI / B 端 worker）为 no-op。
     ///
-    /// 批次二（2026-10-31）：扩为叙述 + 思考链双输入（`("", reasoning)` 形态
+    /// 扩为叙述 + 思考链双输入（`("", reasoning)` 形态
     /// 供终答轮思考链发射）——皆空才跳过，thinking-only 轮照发（UI 折叠展示）。
     fn emit_round_output(
         &self,
@@ -1117,8 +1118,8 @@ impl AgentLoop {
         if content.trim().is_empty() && reasoning.trim().is_empty() {
             return;
         }
-        // Work 时间线喂入（2026-10-30）：与事件发射同点同源——先喂累加器
-        // （落盘真相源，与 tx 在场与否无关），再发实时事件（观察面）。
+        // Work 时间线喂入：与事件发射同点同源——先喂累加器
+        // （落盘为准，与 tx 在场与否无关），再发实时事件（观察面）。
         self.work_recorder
             .push_round_output(session_key, content, reasoning);
         if let Some(tx) = self.agent_event_tx.read().as_ref() {
@@ -1137,7 +1138,7 @@ impl AgentLoop {
         self.work_recorder.clone()
     }
 
-    /// 修⑥（BUG-C 2026-11-04）：急停中断面的 ToolFinished 补发。被 estop
+    /// 急停中断面的 ToolFinished 补发。被 estop
     /// select 臂 drop 的执行链（含 ToolEventHook）发不出终态——按 hook 同一
     /// 发射点（Work 累加器 + broadcast）补发 interrupted 记录：同 call_id
     /// （hook 侧 ToolStarted 已带）、真实墙钟（dispatch 入口起算，含审批
@@ -1173,14 +1174,14 @@ impl AgentLoop {
         }
     }
 
-    /// 执行中 turn 的时间线快照（WSAPI `chat.work_current`，2026-10-30）：
+    /// 执行中 turn 的时间线快照（WSAPI `chat.work_current`）：
     /// 只读、不扰动累加。会话不匹配 / 无进行中 turn / 尚无任何中间轮 =
     /// `None`（前端回落环回放）。落盘形态（finish）见 turn.rs 最终回复行。
     pub fn current_work_timeline(&self, session_key: &str) -> Option<serde_json::Value> {
         self.work_recorder.snapshot_json(session_key)
     }
 
-    /// SB（2026-09-17）：会话物化事件——`session_key` 的 jsonl 首行落盘后
+    /// SB：会话物化事件——`session_key` 的 jsonl 首行落盘后
     /// 发布 SessionCreated（web pump → SSE `session.created` + WS push），
     /// 前端 force 刷新会话列表（修「首条消息隐式创建的会话不进侧栏，须
     /// 手动刷新」）。调用点必须在 append **前**取 exists、append 后发布；
@@ -1199,8 +1200,8 @@ impl AgentLoop {
         }
     }
 
-    /// N5（2026-10-13 机会项）：交付物登记事件发布
-    /// ([`nemesis_types::agent::AgentEvent::DeliverablesRegistered`])。交付物
+    /// 交付物登记事件发布
+    /// ([`nemesis_types::agent:AgentEvent::DeliverablesRegistered`])。交付物
     /// 随 assistant 行落盘（chat_log 权威源）后调用；web pump 转 SSE
     /// `deliverables` + WS push，前端缓冲挂到即将落地的 assistant 回复卡。
     /// agent_event_tx 未装配（CLI / B 端 worker）为 no-op；空清单不发布。
@@ -1222,7 +1223,7 @@ impl AgentLoop {
             });
         }
     }
-    /// P30（WS14）：canvas 打开事件发布（[`nemesis_types::agent::AgentEvent::CanvasOpen`]）。
+    /// canvas 打开事件发布（[`nemesis_types::agent:AgentEvent::CanvasOpen`]）。
     /// 终答里检出**全部合法**的 ```canvas 块后逐块发布；web pump 转 SSE
     /// `canvas.open`（内层 data 展平 + session_id 注入），前端 CanvasPanel
     /// 渲染。`html` 载荷完整不截断（面板需要全量文档）；agent_event_tx 未
@@ -1300,199 +1301,198 @@ impl AgentLoop {
 
 #[cfg(test)]
 mod inbox_tests;
-// 自定义 slash 命令改写（2026-08-29）：rewrite_custom_command 决策表测试。
+// 自定义 slash 命令改写：rewrite_custom_command 决策表测试。
 #[cfg(test)]
 mod commands_tests;
-// P32（cache-warmer）：TTL 解析 / 90% 触发 / 经济闸 / 快照淘汰 / 热关退出测试。
+// （cache-warmer）：TTL 解析 / 90% 触发 / 经济闸 / 快照淘汰 / 热关退出测试。
 #[cfg(test)]
 mod cache_warmer_tests;
-// N1 (devtool-upgrade 阶段 1)：三级 context_window 解析链测试。
+// (devtool-upgrade)：三级 context_window 解析链测试。
 #[cfg(test)]
 mod context_window_tests;
-// M5（2026-10-27 整改）：写后钩子路径解析边界（相对路径锚工作区根 / 越界
+// 写后钩子路径解析边界（相对路径锚工作区根 / 越界
 // 跳过 / 注入回路同 Arc）。
 #[cfg(test)]
 mod m5_hook_boundary_tests;
-// P0 vault（C1/C2，2026-09-22 计划 §3）：凭据别名最后一刻注入机制。
-// pub（BUG-HUNT R17）：接管 wrapper（bot 层）需在 execute 入口自调注入——
+// vault（计划）：凭据别名最后一刻注入机制。
+// pub：接管 wrapper（bot 层）需在 execute 入口自调注入——
 // dispatch 层读槽位与 execute 之间的翻位竞态要求「注入+路径决策」同点原子。
 pub mod credential_injection;
-// P0 vault（D2，2026-09-22 计划 §4）：声明式量化风险限制（滑动窗口 + 超限升级）。
+// vault（计划）：声明式量化风险限制（滑动窗口 + 超限升级）。
 pub mod limits;
-// P0 vault（C3）：注入机制测试（纯函数 + loop 级四表面防泄漏）。
+// vault：注入机制测试（纯函数 + loop 级四表面防泄漏）。
 #[cfg(test)]
 mod credential_injection_tests;
-// L26②（2026-11-02 三期）：dispatch 凭据闸 v2——别名域绑定 loop 级测试
+// ②（三期）：dispatch 凭据闸 v2——别名域绑定 loop 级测试
 // （出域拒绝零执行 / 域内直过 / 顶槽盖叶 / 精确叶收窄 / 无绑定 v1 零回归 /
 // 配置缺席与损坏 fail-secure）。
 #[cfg(test)]
 mod credential_domain_tests;
-// S2②（2026-10-09 高优差距批次一）：主线工具输出凭据/DLP 复扫（脱敏式；
+// ②：主线工具输出凭据/DLP 复扫（脱敏式；
 // 8 层管线只看入参，出侧此前零检查）。
 #[cfg(feature = "security")]
 mod output_rescan;
-// S2②：复扫测试（凭据/DLP 双路 + 组合 + 观测档不改写）。
+// ②：复扫测试（凭据/DLP 双路 + 组合 + 观测档不改写）。
 #[cfg(all(test, feature = "security"))]
 mod output_rescan_tests;
-// L5（2026-10-12 内部专项 T0）：续行回灌路径复扫测试（cluster/子代理两条
+// （内部专项）：续行回灌路径复扫测试（cluster/子代理两条
 // 路 × inline/spawned 两臂 + 无插件明文直通）。
 #[cfg(all(test, feature = "security"))]
 mod l5_continuation_rescan_tests;
-// L2（2026-10-12 内部专项 T0）：压缩失败诚实报错回归锁（context 重试环
+// （内部专项）：压缩失败诚实报错回归锁（context 重试环
 // 有界耗尽 → 响亮 Err + history 落账 + covers 不推进；第 1 轮恢复臂）。
 #[cfg(test)]
 mod l2_compaction_fail_tests;
-// L8（2026-10-13 内部专项 T3）：turn WAL 循环级测试（dispatch 三态落盘 /
+// （内部专项）：turn WAL 循环级测试（dispatch 三态落盘 /
 // 开关关闭零落盘 / 总线级断头续轮）。WAL 文件级生命周期归 turn_wal/tests.rs。
 #[cfg(test)]
 mod turn_wal_loop_tests;
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
-// E5（2026-10-15 收尾保障）：预算暂停前编译探针测试（纯函数 + loop 级咬合锁）。
+// 预算暂停前编译探针测试（纯函数 + loop 级咬合锁）。
 #[cfg(test)]
 mod pre_pause_probe_tests;
-// G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
+// (devtool-upgrade)：subagent 后台化 + 完成回灌测试。
 #[cfg(test)]
 mod g4_background_spawn_tests;
-// D5（子代理可见性 2026-11-03）：集群 delegate 并入注册表咬合测试
+// （子代理可见性）：集群 delegate 并入注册表咬合测试
 //（begin = save_async_continuation / finish = dispatch_continuation）。
 #[cfg(test)]
 mod delegate_registry_tests;
-// E6 (devtool-upgrade 阶段 2)：手动会话维护（/compact /clear）测试。
+// (devtool-upgrade)：手动会话维护（/compact /clear）测试。
 #[cfg(test)]
 mod e6_maintenance_tests;
-// C3 (devtool-upgrade 阶段 2)：编辑后诊断回灌测试（fake LSP server）。
+// (devtool-upgrade)：编辑后诊断回灌测试（fake LSP server）。
 #[cfg(all(test, feature = "lsp"))]
 mod diagnostics_feedback_tests;
-// P2/P3 (能力扩展 WS3)：诊断回灌触发臂扩展 + 跨文件聚合 + stale 过滤测试。
+// /：诊断回灌触发臂扩展 + 跨文件聚合 + stale 过滤测试。
 #[cfg(all(test, feature = "lsp"))]
 mod diagnostics_session_tests;
-// G0 (devtool-upgrade 阶段 3)：SpawnTool 生产化 + run_detached 测试。
+// (devtool-upgrade)：SpawnTool 生产化 + run_detached 测试。
 #[cfg(test)]
 mod spawn_detached_tests;
-// F8 (devtool-upgrade 阶段 3)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
+// (devtool-upgrade)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod f8_hidden_tools_tests;
-// G1（2026-10-18 三方复评整改批三）：per-loop 附加闸槽（extra_hidden 合并 +
+// per-loop 附加闸槽（extra_hidden 合并 +
 // tier_override 钉死 vs config 驱动）测试。
 #[cfg(test)]
 mod g1_agent_slots_tests;
 
-// 循环流程策略槽（WASM 样板工程批 1）：哨兵默认 / 槽替换 / 裁决映射 /
+// 循环流程策略槽（WASM 样板工程）：哨兵默认 / 槽替换 / 裁决映射 /
 // 标题回调 Option 语义测试。
 #[cfg(test)]
 mod policy_slots_tests;
-// B2（profession-capability-evolution 2026-10-14）：职能工具围栏双闸测试。
+// （profession-capability-evolution）：职能工具围栏双闸测试。
 #[cfg(test)]
 mod tool_fence_tests;
-// WASM 插件 min-tier 双闸（2026-09-30 插件体系复查 #2：秩刻度 + 供给绕白名单
+// WASM 插件 min-tier 双闸（插件体系复查 #2：秩刻度 + 供给绕白名单
 // 按秩过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod min_tier_tests;
-// 角色目录与分档供给（2026-09-28）：`agents.roles.hidden` fresh-read /
+// 角色目录与分档供给：`agents.roles.hidden` fresh-read /
 // visible_roles 单一裁决 / spawn role dispatch 闸 / fork inherit_context
 // dispatch 改写测试。
 #[cfg(test)]
 mod role_catalog_tests;
-// M5 (devtool-upgrade 阶段 3)：会话级 context 占用快照测试。
+// (devtool-upgrade)：会话级 context 占用快照测试。
 #[cfg(test)]
 mod m5_context_status_tests;
-// I3 (devtool-upgrade 阶段 3)：子目录指令懒注入（发现 + 会话去重 + 一次性注入）测试。
+// (devtool-upgrade)：子目录指令懒注入（发现 + 会话去重 + 一次性注入）测试。
 #[cfg(test)]
 mod i3_lazy_instructions_tests;
-// F1 (devtool-upgrade 阶段 4)：plan/build 双模式（供给过滤 + dispatch 闸 +
+// (devtool-upgrade)：plan/build 双模式（供给过滤 + dispatch 闸 +
 // plans/ 写放行 + slash 切换 + ModeChanged 事件）测试。
 #[cfg(test)]
 mod f1_plan_mode_tests;
-// N7（2026-10-13 机会项）：工作区指令信任档（isolated 整段跳过 / annotate
+// 工作区指令信任档（isolated 整段跳过 / annotate
 // 横幅 / trusted verbatim + 运行中热更新）测试。
 #[cfg(test)]
 mod n7_instruction_trust_tests;
-// N2（2026-10-13 机会项）：present_plan 计划审批（批准翻 build + 驳回/
+// present_plan 计划审批（批准翻 build + 驳回/
 // 超时结构性停轮 + ModeChanged 广播 + 供给双闸）循环级测试。
 #[cfg(test)]
 mod present_plan_loop_tests;
-// J3 (devtool-upgrade 阶段 4)：MCP 客户端补齐 agent 侧测试（前缀前向推导
+// (devtool-upgrade)：MCP 客户端补齐 agent 侧测试（前缀前向推导
 // 回归锁 + 同名冲突改名）。
 #[cfg(test)]
 mod mcp_reload_tests;
-// N2 (devtool-upgrade 阶段 4)：`agents.small_model` 小模型杂务通道测试
+// (devtool-upgrade)：`agents.small_model` 小模型杂务通道测试
 // （摘要路由小模型 / 主模型零调用 / 自动压缩路径不受影响）。
 #[cfg(test)]
 mod n2_small_model_tests;
-// prompt-pack pro（M3）：`prompt_system` 双体系闸门测试（Classic 字节不变 /
+// prompt-pack pro：`prompt_system` 双体系闸门测试（Classic 字节不变 /
 // Pro 分档取值 / 表外回落 / 运行时切回）。
 #[cfg(test)]
 mod prompt_system_tests;
-// D3 (devtool-upgrade 阶段 5)：消息↔文件变更映射的 agent 侧测试
+// (devtool-upgrade)：消息↔文件变更映射的 agent 侧测试
 // （dispatch 瀑布收集独立于 checkpoint 挂载 / drain 即清 + 去重）。
 #[cfg(test)]
 mod d3_tests;
 
-// N5（2026-10-13 机会项）：交付物登记——dispatch 入桶 / drain 即清去重 /
+// 交付物登记——dispatch 入桶 / drain 即清去重 /
 // DeliverablesRegistered 事件广播（字段+访问器）/ 空清单与未接线 no-op。
 #[cfg(test)]
 mod deliverables_tests;
-// E3 (devtool-upgrade 阶段 5)：消息级回退/重做编排测试
+// (devtool-upgrade)：消息级回退/重做编排测试
 // （turn 对齐截断 + 文件恢复 + redo 回填 + 陈旧性守卫）。
 #[cfg(test)]
 mod e3_tests;
-// M3 (devtool-upgrade 阶段 5)：会话级 diff 查看器测试（git/JSON 双形态
+// (devtool-upgrade)：会话级 diff 查看器测试（git/JSON 双形态
 // 基线对比 + 未挂载/未知路径诚实报错）。stage_two_turns 内含 git init
 // 分支 → 随 checkpoint-git 进出。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod m3_tests;
-// E7 (devtool-upgrade 阶段 5)：会话标题自动生成测试（清洗规则 / 端到端
+// (devtool-upgrade)：会话标题自动生成测试（清洗规则 / 端到端
 // spawn 落盘 / 无小模型与手动改名跳过）。
 #[cfg(test)]
 mod e7_tests;
-// I5 (devtool-upgrade 阶段 7)：打开文件上下文测试（digest section 渲染
+// (devtool-upgrade)：打开文件上下文测试（digest section 渲染
 // 有/无两形态字节稳定 + per-turn set/clear 生命周期 + 解析纯函数联测）。
 #[cfg(test)]
 mod i5_open_files_tests;
-// K4 (devtool-upgrade 阶段 7)：IM 编码入口测试（派发语法解析 + 自足续行
+// (devtool-upgrade)：IM 编码入口测试（派发语法解析 + 自足续行
 // 快照构造的合法消息序列 + B 端变更摘要渲染封顶/溢出注记）。
 #[cfg(test)]
 mod k4_user_dispatch_tests;
-// 429 限流重试环测试（2026-09-17 BUG 文档裁决④⑧：阶梯 + Retry-After 取
+// 429 限流重试环测试（阶梯 + Retry-After 取
 // max + 显式进度 + 终局诚实 + 与 context/transient 环互斥）。
 #[cfg(test)]
 mod chat_log_timing_tests;
 #[cfg(test)]
 mod rate_limit_retry_tests;
-// T2a（扩展计划 D4-2a）：错误分类器分派测试（Auth/Billing 零重试终局 +
+// （扩展计划）：错误分类器分派测试（Auth/Billing 零重试终局 +
 // "invalid api key" 不误入压缩环回归 + 词表盲区配额/deadline 文案进对应环）。
 #[cfg(test)]
 mod recovery_classifier_tests;
-// 停机感知回归锁（2026-10-24 tokio 停机 panic 根修）：retry_transient/
+// 停机感知回归锁（tokio 停机 panic 根修）：retry_transient/
 // retry_rate_limited 重试 sleep 被 stop() 唤醒 + 循环顶停机闸
 // （process_direct 直调任务不在 turn_task_handles，abort 覆盖不到，停机
 // 令牌是唯一出口）。
 #[cfg(test)]
 mod recovery_stop_tests;
-// 恢复环 tool_defs 供给闸回归锁（BUG-20261102-306）：三恢复环重试请求的
+// 恢复环 tool_defs 供给闸回归锁：三恢复环重试请求的
 // 工具面必须与主链路 effective_tool_defs 同源（hidden/tier 等供给闸在
 // 恢复重试上同样生效）。
 #[cfg(test)]
 mod recovery_supply_gate_tests;
-// R1 (2026-09-21)：中间轮正文事件（RoundText）发布语义测试（带叙述的
+// 中间轮正文事件（RoundText）发布语义测试（带叙述的
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]
 mod round_text_tests;
-// P30（WS14）：canvas 终答检出/回灌自纠/预算放行 轮级测试。
+// canvas 终答检出/回灌自纠/预算放行 轮级测试。
 #[cfg(test)]
 mod canvas_turn_tests;
-// §2 免打扰（2026-10-11 无人值守计划 Part 2）：wiring 注入/判定回环 +
+// 免打扰（Part 2）：wiring 注入/判定回环 +
 // check_escalation 自动批准臂（清签名继续 / 关闭态停轮 / 配置闸 AND 极性）。
 #[cfg(all(test, feature = "security"))]
 mod approval_auto_tests;
-// P2-0（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §7 T1/T2）：
-// characterization + golden transcript harness（基线在 loop/testdata/golden/）。
+// characterization + golden transcript harness（基线在 loop/testdata/golden）。
 #[cfg(test)]
 mod characterization_tests;
-// messages.rs 覆盖率补充（K3 shell 注入失败面 / I3 note_read 早退 /
-// P3.1 prefetch 门槛链 / workflow_edit section 三形态）。
+// messages.rs 覆盖率补充（shell 注入失败面 / note_read 早退 /
+// .1 prefetch 门槛链 / workflow_edit section 三形态）。
 #[cfg(test)]
 mod messages_cov_tests;
 // maintenance.rs 覆盖率补充（handle_maintenance 错误臂 / user 直派发
@@ -1507,15 +1507,15 @@ mod tool_dispatch_cov_tests;
 // finish_message sent_in_round 跳过 / 续行无管理器存活）。
 #[cfg(test)]
 mod bus_cov_tests;
-// W6（2026-10-25 加固）：优雅停机 drain 测试（在途 gauge / drain 闸 /
+// （加固）：优雅停机 drain 测试（在途 gauge / drain 闸 /
 // 有界等待）。
 #[cfg(test)]
 mod w6_drain_tests;
-// W7（2026-10-25 加固）：MCP 惰性供给测试（供给闸 / dispatch 解包 /
+// （加固）：MCP 惰性供给测试（供给闸 / dispatch 解包 /
 // mcp_list schema 查询面）。
 #[cfg(test)]
 mod w7_lazy_supply_tests;
-// L10-建设（改进项三期 2026-11-02）：惰性 schema 供给测试（档位裁决矩阵 /
+// 建设：惰性 schema 供给测试（档位裁决矩阵 /
 // 折叠保真 / 解锁账与注记渲染 / dispatch 拦截臂 / 校验回灌指引）。
 #[cfg(test)]
 mod l10_lazy_schema_tests;
@@ -1529,7 +1529,7 @@ mod tools_trait_cov_tests;
 // estop 翻转唤醒）。
 #[cfg(test)]
 mod llm_types_cov_tests;
-// §6.2 翻倍阶梯（length_escalation）行为测试：烧穿判定/阶梯跳变/封顶收口/
+// 翻倍阶梯（length_escalation）行为测试：烧穿判定/阶梯跳变/封顶收口/
 // 学习缓存。
 #[cfg(test)]
 mod length_escalation_tests;
@@ -1539,7 +1539,7 @@ mod length_escalation_tests;
 mod config_gen_tests;
 #[cfg(test)]
 mod config_watch_tests;
-// L29（2026-11-02 改进项三期）流中断拼接续写测试：extract 纯函数四态 /
+// 流中断拼接续写测试：extract 纯函数四态 /
 // 拼接行为 / 开关回退 / tc 不可续 / 重复中断覆盖 / 常量互锚。
 #[cfg(test)]
 mod recovery_concat_tests;
@@ -1547,7 +1547,7 @@ mod recovery_concat_tests;
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
 mod tool_dispatch_sec_cov_tests;
-// L10（2026-10-13）provider 流式输出 lane 覆盖：sink 合并窗/相位序列、
+// provider 流式输出 lane 覆盖：sink 合并窗/相位序列、
 // 空流零帧、error 截断终态、包装器合成增量与真实流两臂。
 #[cfg(test)]
 mod provider_stream_tests;
@@ -1563,52 +1563,52 @@ mod stream_ledger_tests;
 #[cfg(test)]
 mod aux_ledger_tests;
 
-// P20 (2026-09-25 能力扩展 WS7): rewind 冲突预检（外部修改拒绝 + force 强
+// rewind 冲突预检（外部修改拒绝 + force 强
 // 过 + redo 往返）编排测试。用例全部 git 形态（stage_sealed_two_turns
 // git init）→ 随 checkpoint-git 进出。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod p20_tests;
 
-// WS9（能力扩展 P17+P18）：rewind 谱系落盘（last_rewind）+ 分支摘要生成
+// （+）：rewind 谱系落盘（last_rewind）+ 分支摘要生成
 // （small_model 通道 / 无小模型诚实跳过 / build_messages 注入）编排测试。
 #[cfg(test)]
 mod ws9_lineage_tests;
 
-// BUG-20261025-36：画像注入缓存键含 config.json mtime（enabled 翻转
+// 画像注入缓存键含 config.json mtime（enabled 翻转
 // 只动 config 不动画像文件，单键时代 disable 进程生命周期内不生效）。
 #[cfg(test)]
 mod r36_profile_cache_tests;
 
-// bypass_llm.rs 覆盖率补充（aux 杂务三层治理 2026-09-28）：重试原语 +
+// bypass_llm.rs 覆盖率补充（aux 杂务三层治理）：重试原语 +
 // 重试版护栏（空输出触发重试 / 两次全败诚实上抛 / 超时包住全部尝试）+
 // aux options 显式禁思考标记。
 #[cfg(test)]
 mod bypass_llm_tests;
 
-// B4 + B2（2026-10-19 connector 边界梳理）：总开关双闸 + 独占接管闸。
+// + （connector 边界梳理）：总开关双闸 + 独占接管闸。
 // fresh-read 语义（config.json 现值为权威，翻转无需重启）与出处感知
 // （connector-binding 回灌放行）的行为钉子。
 #[cfg(test)]
 mod b4_b2_gate_tests;
 
-// turn 末持久化 stale-cache-wipe 回归锁（2026-11-05 压缩成果被抹根修）：
+// turn 末持久化 stale-cache-wipe 回归锁（压缩成果被抹根修）：
 // cache=None 臂不得清空 store 中并发压缩刚写入的摘要（15:01 自动压缩
 // 16ms 竞态被抹 + 17:05 手动压缩同机制被抹的设备实证）；Some 臂照常写回。
 #[cfg(test)]
 mod turn_end_summary_wipe_tests;
 
-// L10-量测（改进项三期 2026-11-02）：tool defs 字节量测埋点（单一真相源
-// 一致性 / hidden_tools 闸联动 / 序列化口径钉子——L10-建设惰性 schema
+// 量测：tool defs 字节量测埋点（口径
+// 一致性 / hidden_tools 闸联动 / 序列化口径钉子——建设惰性 schema
 // 前后对比基线的口径稳定性回归锁）。
 #[cfg(test)]
 mod tool_defs_metrics_tests;
 
-// L19（改进项三期 2026-11-03）：U5 并行批接统一 WorkPool 后的行为钉子
+// 并行批接统一 WorkPool 后的行为钉子
 // （批级预检全批拒绝零执行 / 累计字节口径 / 正常批源序不变）。
 #[cfg(test)]
 mod l19_parallel_batch_tests;
 
-// L22（改进项三期 2026-11-03 snooze 排队）：gate_inbound 暂停闸行为钉子
+// （snooze 排队）：gate_inbound 暂停闸行为钉子
 // （用户排队回执 / cron 静默 Coalesced / 超限成对拒收 / slash 穿透 /
 // 未暂停准入）+ inject_inbound 重注入入口接线契约。
 #[cfg(test)]

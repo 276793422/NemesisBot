@@ -1,5 +1,5 @@
-//! Credential Vault —— 凭据加密存储（P0 安全升级，2026-09-22）。
-//! 计划：`docs/PLAN/2026-09-22_credential-vault-and-risk-limits.md`
+//! Credential Vault —— 凭据加密存储（安全升级，2026-09-22）。
+//! 计划：`credential-vault-and-risk-limits`
 //!
 //! 设计要点（与计划文档对齐）：
 //! - **单一真相源**：秘密以 AES-256-GCM 逐条加密落盘（路径由调用方给定，约定
@@ -353,7 +353,7 @@ impl VaultStore {
         self.file.entries.keys().cloned().collect()
     }
 
-    /// 原子写盘 — REL-002（2026-09-23）起委托统一 helper
+    /// 原子写盘 — 起委托统一 helper
     /// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理；
     /// 0600 创建即挂，取代本处自制 `.tmp` rename）。
     pub fn save(&self) -> Result<(), VaultError> {
@@ -369,7 +369,7 @@ impl VaultStore {
         &self.path
     }
 
-    /// 导出若干别名为可迁移密文 blob（P6-R2 agent 迁移）。
+    /// 导出若干别名为可迁移密文 blob（agent 迁移）。
     ///
     /// 语义：用**随机一次性导出 DEK** 重封所选条目（AES-256-GCM，AAD 仍是
     /// 别名——与 [`VaultEntry`] 常规落盘形态完全同构），导出 DEK 经
@@ -434,7 +434,7 @@ impl VaultStore {
         serde_json::to_vec(&file).map_err(|e| VaultError::Crypto(format!("序列化失败: {e}")))
     }
 
-    /// 从 [`VaultStore::export_entries`] 产物导入条目（P6-R2 agent 迁移）。
+    /// 从 [`VaultStore::export_entries`] 产物导入条目（agent 迁移）。
     ///
     /// 语义：用 `passphrase` 还原导出 DEK，把每条目用**本 vault 的 DEK**
     /// 重封落进本 vault（已存在的别名按 `set` 轮换语义覆盖，元数据保留
@@ -758,7 +758,7 @@ mod dpapi {
 
 // ---------------------------------------------------------------------------
 // 模型 key 迁移核心（raw Value，CLI `vault migrate` 与 WSAPI
-// `models.migrate_keys` 共用的单一真相源；自 nemesisbot/commands/vault.rs 下沉）
+// `models.migrate_keys` 共用的统一定义；自 nemesisbot/commands/vault.rs 下沉）
 // ---------------------------------------------------------------------------
 
 /// `migrate_model_keys_to_vault` 的报告（CLI 输出与 WSAPI 投影共用）。
@@ -811,7 +811,7 @@ impl VaultMigrateReport {
 /// CLI 壳 = 整体报错），绝不带着半迁移态静默继续。
 ///
 /// **纯内存**：本函数不落任何盘——持久化与顺序不变量由调用方保证
-/// （BUG-20261028-119 后的完整口径）：
+/// （后的完整口径）：
 /// ① **vault 落盘先于 config 回写**——先剥离明文再落 vault 的中间态 =
 /// 配置指 `vault:<alias>` 但 vault 没有该别名的断链盘面；
 /// ② **creds 改写后于 config 提交**——config 提交是事务点，事务点之前
@@ -855,7 +855,7 @@ pub fn migrate_model_keys_to_vault(
             continue;
         }
         if api_key.starts_with(nemesis_config::vault_ref::VAULT_PREFIX) {
-            // 残留清扫（BUG-20261028-119）：config 已指 vault 但 creds 仍留
+            // 残留清扫：config 已指 vault 但 creds 仍留
             // 同名明文别名 = 上次迁移 config 已提交、creds 回写失败的现场
             // ——顺手清掉，让重试真正收敛（明文彻底离盘）。
             // 在场守卫：vault 缺席该条目（vault.enc 丢失/重置后的损坏态）
@@ -885,7 +885,7 @@ pub fn migrate_model_keys_to_vault(
             match creds.as_ref().and_then(|c| c.keys.get(alias)) {
                 Some(v) => (v.clone(), Some(alias.to_string())),
                 None => {
-                    // 断引自修复（BUG-20261028-119）：vault 已有同名条目 =
+                    // 断引自修复：vault 已有同名条目 =
                     // 先前迁移已把值收进 vault 但 config 提交失败（旧顺序在
                     // 事务点前删别名的现场）——直接把引用升格 `vault:<alias>`，
                     // 死路变自愈；vault 无此条目才是真断引，照旧不动配置。
@@ -968,7 +968,7 @@ fn vault_alias_for(
 }
 
 // 覆盖率补充批次整文件 Windows 形态（DPAPI 生命周期 + OpenOptionsExt 共享
-// 锁句柄），Linux 上编译期消失（2026-09-02 约定；nightly/coverage 均跑不跑）。
+// 锁句柄），Linux 上编译期消失（约定；nightly/coverage 均跑不跑）。
 #[cfg(all(test, windows))]
 mod cov_tests;
 #[cfg(test)]

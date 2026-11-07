@@ -1,4 +1,4 @@
-//! WeCom（企业微信）通道（P25，Wave 3）。
+//! WeCom（企业微信）通道（Wave 3）。
 //!
 //! **出站**：群机器人 webhook POST——群机器人 webhook 是企业微信群内
 //! 「添加机器人」生成的 HTTPS 地址，POST JSON（`msgtype: text|markdown`），
@@ -327,8 +327,8 @@ impl Channel for WeComChannel {
         debug!(chat_id = %msg.chat_id, "[WeComChannel] sending message via webhook");
         self.base.record_sent();
         self.send_webhook(&webhook, &msg).await?;
-        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        // 出站同步镜像（mqtt/websocket 镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（回环防护）。
         self.base.sync_outbound(&msg).await;
         Ok(())
     }
@@ -403,7 +403,7 @@ async fn callback_verify(
     }
 }
 
-/// POST 收消息：智能机器人回调（JSON `{"encrypt": ...}`）或经典应用回调
+/// POST 收消息：智能机器人回调（JSON `{"encrypt":...}`）或经典应用回调
 /// （XML `<Encrypt>...</Encrypt>`）双形态。
 ///
 /// 流程：提取密文 → 验签 → 解密 → receiveid 校验 → 容忍式 JSON 解析 →

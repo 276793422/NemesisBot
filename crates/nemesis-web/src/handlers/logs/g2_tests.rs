@@ -1,4 +1,4 @@
-//! G2（U9 注入/replay 可见性，2026-08-28）：
+//! （注入/replay 可见性，2026-08-28）：
 //!
 //! - `injection_summary`：台账聚合投影（source/index/role/chars），绝不回传原文
 //! - `replay_verify`：session store + 台账重建 → 与 request_logs 原始请求
@@ -63,6 +63,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -183,9 +184,7 @@ fn make_request_dir(
     dir
 }
 
-// ---------------------------------------------------------------------------
 // injection_summary
-// ---------------------------------------------------------------------------
 
 #[test]
 fn injection_summary_aggregates_without_raw_content() {
@@ -265,9 +264,7 @@ fn injection_summary_missing_ledger_reports_unavailable() {
     assert!(out["rounds"].as_array().unwrap().is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // replay_verify
-// ---------------------------------------------------------------------------
 
 #[test]
 fn replay_verify_byte_exact_via_fingerprint() {
@@ -288,7 +285,14 @@ fn replay_verify_byte_exact_via_fingerprint() {
     make_request_dir(dir.path(), "2026-08-28_07-00-00_deadbeef", 1, &msgs);
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
 
@@ -316,7 +320,7 @@ fn replay_verify_explicit_request_id_also_works() {
 
     let out = LogsHandler
         .replay_verify(
-            &ctx,
+            replay_store_from_ctx(&ctx).unwrap(),
             &ws,
             STEM,
             1,
@@ -330,7 +334,14 @@ fn replay_verify_explicit_request_id_also_works() {
 
     // 非法目录名（路径穿越形态）直接 no_recording，不落盘读。
     let bad = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, Some("../evil"), None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            Some("../evil"),
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(bad["ok"], false);
@@ -358,7 +369,14 @@ fn replay_verify_content_mismatch_reports_first_diff() {
     make_request_dir(dir.path(), "2026-08-28_07-00-00_abcdef01", 1, &msgs);
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
 
@@ -375,7 +393,14 @@ fn replay_verify_no_ledger_reports_explicitly() {
     let ws = dir.path().to_string_lossy().to_string();
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(out["ok"], false);
@@ -401,7 +426,14 @@ fn replay_verify_no_recording_when_request_logs_empty() {
     // request_logs 目录不存在 → 指纹扫描无果。
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(out["ok"], false);
@@ -434,7 +466,14 @@ fn replay_verify_unavailable_when_history_trimmed() {
     make_request_dir(dir.path(), "2026-08-28_07-00-00_12345678", 1, &msgs);
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, None, None)
+        .replay_verify(
+            replay_store_from_ctx(&ctx).unwrap(),
+            &ws,
+            STEM,
+            1,
+            None,
+            None,
+        )
         .unwrap()
         .unwrap();
 

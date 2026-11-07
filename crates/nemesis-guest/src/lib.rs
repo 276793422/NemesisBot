@@ -1,4 +1,4 @@
-//! P5 guest agent 协议循环库（桌面级 VM 第 1 步，2026-10-17）。
+//! guest agent 协议循环库（桌面级 VM 第 1 步，2026-10-17）。
 //!
 //! VM 内执行体的**协议侧**实现：消费 [`nemesis_exec_protocol`] 的 wire
 //! 结构与传输原语，把「一行 v2 请求」变成「一行 v2 响应」（call_id 恒
@@ -19,7 +19,7 @@
 //!   本身严格逐请求应答）。
 //!
 //! **不进本 crate 的东西**（诚实边界）：
-//! - 幂等 journal（P3 persistent 语义）——VM 侧持久化归第 3 步
+//! - 幂等 journal（persistent 语义）——VM 侧持久化归第 3 步
 //!   savevm/wake 一并设计；
 //! - workspace 边界的 nemesis-path 归一化（8.3 短名等 Windows 语义）——
 //!   guest 栖息地是 musl Linux，std canonicalize 语义即正确语义；
@@ -34,11 +34,11 @@ use nemesis_exec_protocol::{
 use tokio::io::{AsyncWriteExt, BufReader};
 
 pub mod tools;
-// B9-1/B9-2 内部方法（bulk_write/bulk_read/bulk_read_chunk/hash_tree/
+// / 内部方法（bulk_write/bulk_read/bulk_read_chunk/hash_tree/
 // bulk_delete）：gateway 同步引擎专用通道（internal_call），**不进 agent
 // 工具面**——宿主侧 VM_GUEST_TOOLS 子集闸不认识它们。
 pub(crate) mod bulk;
-// P5-R1 guest 内浏览器（headless chromium + CDP）：宿主 `browser` 工具的
+// guest 内浏览器（headless chromium + CDP）：宿主 `browser` 工具的
 // 执行体，经 tools::dispatch 的 "browser" 分支进入。与 bulk 同理不进
 // VM_GUEST_TOOLS 子集（宿主 VmBrowserTool 是唯一入口）。
 pub(crate) mod browser;
@@ -54,7 +54,7 @@ pub fn default_workspace() -> PathBuf {
 /// guest agent：协议循环 + 工具派发（不可变，跨连接共享；`Clone` 供
 /// accept 循环每连接克隆）。
 ///
-/// **首帧 token 挑战鉴权**（P5 第 2 步，NAT-TCP 通道的访问闸）：配置了
+/// **首帧 token 挑战鉴权**（第 2 步，NAT-TCP 通道的访问闸）：配置了
 /// token（[`GuestAgent::with_token`]，VM 内经 launcher 从 SMBIOS DMI
 /// serial 注入）时，连接的**第一行**必须是鉴权帧 `{"v":2,"auth":"<token>"}`
 /// ——对则回 ok 行、错则回错误行并断开。顶层 `"auth"` 键是协议保留键
@@ -150,7 +150,7 @@ impl GuestAgent {
                 Ok(BoundedLine::Line(l)) => l,
                 Ok(BoundedLine::Eof) => return Ok(()),
                 Ok(BoundedLine::Overflow) => {
-                    // 巨帧（BUG-20261028-128）：回一行诚实错误后收尾连接。
+                    // 巨帧：回一行诚实错误后收尾连接。
                     // 不 drain——帧已失步，drain 只给对端白嫖带宽；合法巨帧
                     // （bulk 分块 base64 ≈11MiB）远低于闸，超限即失控/攻击。
                     let resp = frame_error_line(

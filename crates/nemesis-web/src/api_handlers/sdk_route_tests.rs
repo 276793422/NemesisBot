@@ -1,4 +1,4 @@
-// P2-2 (2026-08-24 UI entry gap): HTTP-level oneshot tests for the two SDK
+// (UI entry gap): HTTP-level oneshot tests for the two SDK
 // download routes. The handlers are stateless (no State extractor — static
 // embedded artifacts), so these build a minimal stateless router and run
 // under every feature combo, including `--no-default-features`. The last
@@ -101,7 +101,7 @@ async fn test_sdk_pip_route_serves_sdist_zip() {
 
 /// Prove the routes are wired into the REAL router that the gateway serves
 /// (not just the minimal test router above). Same construction as
-/// server::tests::test_build_router.
+/// server::tests:test_build_router.
 #[tokio::test]
 async fn test_sdk_routes_registered_in_full_router() {
     let config = crate::server::WebServerConfig {

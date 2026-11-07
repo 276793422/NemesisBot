@@ -204,7 +204,7 @@ async fn pump_continuation_without_manager_warns_and_survives() {
     assert!(orx.try_recv().is_err());
 }
 
-/// 泵 slash 改写回归（2026-09-28 真模型验证发现的接线缺失）：生产泵路径
+/// 泵 slash 改写回归（真模型验证发现的接线缺失）：生产泵路径
 /// 必须在 gate 前完成四段解析链改写——内置深度模板（/security-review）
 /// 以模板展开形态进 LLM（含 $ARGUMENTS 注入），而不是原样透传斜杠文本。
 #[tokio::test]
@@ -279,7 +279,7 @@ async fn pump_expands_builtin_template_before_gate() {
     );
 }
 
-/// R294（BUG-20261031-235）红/绿证：回合体 panic 跳过尾巴 release_session
+/// 红/绿证：回合体 panic 跳过尾巴 release_session
 /// → 会话永久 busy（Reject 全拒 / Queue/Steer 排队到满，直到 agent 重启
 /// ——clear_session_busy 只挂在停机路径）。工具执行已被 tool_dispatch 的
 /// catch_unwind 单独包住，但回合体其余部分（provider 响应解析/预处理/
@@ -317,7 +317,7 @@ async fn panic_mid_turn_releases_session_busy() {
     pump.await.unwrap(); // 泵退出；spawn 的 turn 任务独立继续跑
 
     // 等 turn 任务展开完成（InFlightTurnGuard 的 Drop 在 panic 展开路径
-    // 减账——W6；in_flight_turns 归零 = 任务体已落定）。
+    // 减账——；in_flight_turns 归零 = 任务体已落定）。
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while al.in_flight_turns() > 0 {
         assert!(

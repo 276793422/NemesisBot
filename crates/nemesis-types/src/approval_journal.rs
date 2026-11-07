@@ -1,6 +1,6 @@
 //! 审批台账（统一任务层 approvals 表的内存投影与契约）。
 //!
-//! P1 审批持久化：pending 落库 + 裁决条件更新幂等（先到先得，与
+//! 审批持久化：pending 落库 + 裁决条件更新幂等（先到先得，与
 //! WebApprovalManager 的「respond 先移除后裁决」单次生效语义一致）。
 //! trait 放 nemesis-types（全仓叶子依赖，无新增依赖边）：web/IM/ACP
 //! 三个审批 broker（`#[cfg(feature = "security")]` 门内）引用它不牵连
@@ -9,12 +9,12 @@
 //! 语义契约（实现方承诺）：
 //! - `record_pending` 幂等（同 id 重复落库不报错不覆盖）；
 //! - `record_decision` 只在 status='pending' 的行上生效且**原子**：
-//!   并发双裁决恰有一方拿到 `Ok(true)`（`UPDATE ... WHERE status='pending'`）；
+//!   并发双裁决恰有一方拿到 `Ok(true)`（`UPDATE... WHERE status='pending'`）；
 //! - `find_pending` 按 full id 或 short_id 命中 pending 行（IM 回执
 //!   与重启补裁共用）。
 //!
 //! 重启补裁语义：原操作进程已死，裁决为**记账性质**（原任务不会继续）；
-//! 跨重启续执行归 P3 在途调用幂等域，本契约只承诺「可裁决且只生效一次」。
+//! 跨重启续执行归 在途调用幂等域，本契约只承诺「可裁决且只生效一次」。
 
 use serde::{Deserialize, Serialize};
 
@@ -24,7 +24,7 @@ pub mod status {
     pub const APPROVED: &str = "approved";
     pub const DENIED: &str = "denied";
     pub const EXPIRED: &str = "expired";
-    /// L07（2026-11-01）：孤儿卡系统清理——请求已终局（estop/会话清空/
+    /// 孤儿卡系统清理——请求已终局（estop/会话清空/
     /// loop 停止）而卡未决，系统代关。效果恒等于拒绝（清理绝不产生批准）。
     pub const ORPHANED: &str = "orphaned";
 }
@@ -57,7 +57,7 @@ pub enum ApprovalDecision {
     Approved,
     Denied,
     Expired,
-    /// L07：孤儿卡系统清理（estop/会话清空/loop 停止）——记账性质，
+    /// 孤儿卡系统清理（estop/会话清空/loop 停止）——记账性质，
     /// 效果恒等于拒绝。
     Orphaned,
 }

@@ -1,17 +1,17 @@
 //! 单轮驱动：CHANGES_SUMMARY_CAP/render_turn_changes_summary、ProcessOptions、DetachedOpts、spawn_session_title_job、get_or_create_instance、run(_with_trace/_detached/_detached_events)、resume_execution(_with_token)、drain_turn_file_changes、drain_turn_deliverables。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
-/// K4 (c): B 端 peer_chat 任务完成回报的变化摘要段。
+/// (c): B 端 peer_chat 任务完成回报的变化摘要段。
 ///
 /// B 端执行节点处理 `cluster_rpc:` 会话的最后一轮时，把本轮声明式文件
 /// 工具变更以紧凑列表追加到最终回复（chat_log 落盘与出站发布共用同一
 /// 字符串，日志与通道看到的完全一致）。上限 [`CHANGES_SUMMARY_CAP`] 条，
 /// 溢出诚实注记（不静默截断）；顺序 = drain 顺序（确定性，重放字节稳定）。
-/// 诚实边界：只覆盖**最终轮**——B 端多轮续行的历史轮变更不聚合（M3 会话
+/// 诚实边界：只覆盖**最终轮**——B 端多轮续行的历史轮变更不聚合（会话
 /// 级聚合是远期项）。
 const CHANGES_SUMMARY_CAP: usize = 20;
 
@@ -74,7 +74,7 @@ impl Default for ProcessOptions {
         }
     }
 }
-/// G0 (devtool-upgrade 阶段 3)：`run_detached` 选项。
+/// (devtool-upgrade)：`run_detached` 选项。
 ///
 /// 构造用 `Default`（全空 = 全继承主 loop）。语义详见
 /// [`AgentLoop::run_detached`]。
@@ -83,13 +83,13 @@ pub struct DetachedOpts<'a> {
     /// 子代理可用工具白名单（工具名集合）。`None` / 空 = 继承主 loop
     /// 全量供给（仍经 tier 过滤）。由 `effective_tool_defs` 消费。
     pub allowed_tools: Option<&'a [&'a str]>,
-    /// 嵌套深度（0 = 顶层 spawn）。G2 消费两处：`run_detached` 把它写到
+    /// 嵌套深度（0 = 顶层 spawn）。 消费两处：`run_detached` 把它写到
     /// instance（`detached_depth`），SpawnTool 层执行
     /// `agents.subagent.max_depth` 深度限制（`parent+1 > max_depth` 拒绝）；
-    /// G4 后台化续行时同值透传。
+    /// 后台化续行时同值透传。
     pub depth: usize,
     /// 模型覆盖：ready-made (provider, 模型名) 对。Some = 本回合 LLM 调用
-    /// 走该 provider/模型（BUG 2026-10-08 `board.plan.model` dead-key 修复：
+    /// 走该 provider/模型（BUG `board.plan.model` dead-key 修复：
     /// 之前字段是 `Option<String>` 占位从未消费，planner 永远用主模型）。
     /// provider 解析在调用侧完成（Adapter 桥在消费 crate，agent crate 不建
     /// provider）；None = 主模型字节不变。
@@ -97,46 +97,46 @@ pub struct DetachedOpts<'a> {
     /// 工具轮预算（>0 时作为 `turn_budget` 传入，REPLACE
     /// `config.max_turns`；0 = 用主配置默认）。
     pub max_turns: u32,
-    /// Swarm M1（裸提示词模式）：替换主 loop 人格 system_prompt（本回合
+    /// Swarm （裸提示词模式）：替换主 loop 人格 system_prompt（本回合
     /// 专用）。None = 继承主 loop 人格。供 board planner / 验收 / 主持人等
     /// 结构化子系统使用——它们需要无人格污染的纯净调用，不是"另一个
     /// 人格的 agent"。
     pub system_prompt: Option<&'a str>,
-    /// Swarm M1：零工具供给。true = 本回合不向模型暴露任何工具定义
+    /// Swarm：零工具供给。true = 本回合不向模型暴露任何工具定义
     /// （`effective_tool_defs` 直返空）；false = 正常供给链
     /// （tier → 白名单 → hidden）。与 max_turns=1 组合即纯文本单轮调用。
     pub no_tools: bool,
-    /// Swarm M1：会话标签，注入 session_key（`subagent:{label}:{uuid}`）与
-    /// trace_id，供日志检索与可观测（G13）。None = 维持 `subagent:{uuid}`。
+    /// Swarm：会话标签，注入 session_key（`subagent:{label}:{uuid}`）与
+    /// trace_id，供日志检索与可观测。None = 维持 `subagent:{uuid}`。
     pub label: Option<&'a str>,
-    /// prompt-pack pro（M4）：子代理角色模板。None = 继承主人格（默认，
+    /// prompt-pack pro：子代理角色模板。None = 继承主人格（默认，
     /// 兼容现状）；Some(role) = 主人格 + 角色段叠加（角色定位 / 硬边界 /
-    /// 输出契约 / 内容边界，见 [`crate::prompt::SubagentRole`]）。与
+    /// 输出契约 / 内容边界，见 [`crate::prompt:SubagentRole`]）。与
     /// `system_prompt` 的关系：显式 `system_prompt` 优先（裸提示词模式照旧
     /// 替换人格），`role` 只在没有显式覆盖时叠加。
     pub role: Option<crate::prompt::SubagentRole>,
-    /// 子代理可见性（P1/D7）：会话键覆盖。Some = 本回合直接用作 session_key
+    /// 子代理可见性：会话键覆盖。Some = 本回合直接用作 session_key
     /// / chat_id / trace 关联（后台子代理续行要求快照与回灌同键，见
     /// `agent_factory` 后台路径）；None = 默认 `subagent:{label}:{uuid}` 派生。
     pub session_key_override: Option<String>,
-    /// 子代理可见性（P1/D6）：外部取消令牌。Some = 本回合改用该令牌
+    /// 子代理可见性：外部取消令牌。Some = 本回合改用该令牌
     /// （注册表「终止」直达执行链）；None = 自造一次性令牌（行为不变）。
     pub cancel_token: Option<Arc<tokio_util::sync::CancellationToken>>,
-    /// 子代理可见性（P1）：注册表条目 id。Some = 回合结束时把终态回写
+    /// 子代理可见性：注册表条目 id。Some = 回合结束时把终态回写
     /// 注册表（Cancelled > Done > Failed 裁决 + 轮数/摘要摘录）；None =
-    /// 零动作（K1/K2 headless 等无注册表路径行为不变）。
+    /// 零动作（/ headless 等无注册表路径行为不变）。
     pub registry_id: Option<String>,
 }
 
 impl AgentLoop {
-    /// E7 (devtool-upgrade 阶段 5)：会话标题自动生成——assistant 回复落盘
+    /// (devtool-upgrade)：会话标题自动生成——assistant 回复落盘
     /// 后触发；后台任务取首条 user 消息（≤500 字）→ 小模型生成 ≤24 字标题
     /// → 写 sidecar meta（只填「无标题/仅占位符」的会话，手动改名永不覆盖，
     /// 见 `chat_log::write_session_meta_auto_title`）。未配置
     /// `agents.small_model` / 无资格 / 首条消息缺失 → 不 spawn（返回 None）。
     /// 返回 JoinHandle 供测试 await；生产调用点丢弃句柄。
     ///
-    /// 循环策略槽（WASM 样板工程批 1，D5 单点回调形态对照）：标题回调在槽
+    /// 循环策略槽（WASM 样板工程， 单点回调形态对照）：标题回调在槽
     /// 则整段接管生成（small_model 前置不再必需——回调自带生成来源）；
     /// 无回调走内置小模型路径。两者皆缺 = 不 spawn（原行为）。
     pub(crate) fn spawn_session_title_job(
@@ -180,7 +180,7 @@ impl AgentLoop {
         }))
     }
 
-    /// D3：drain 本 session 的 turn 文件变更缓冲（取走即清 + 按 path 去重，
+    /// drain 本 session 的 turn 文件变更缓冲（取走即清 + 按 path 去重，
     /// kind 取最后声明——投影规则见 `chat_log::dedup_file_changes`）。
     /// assistant 最终回复落盘前调用。
     pub(crate) fn drain_turn_file_changes(&self, session_key: &str) -> Vec<FileChange> {
@@ -192,7 +192,7 @@ impl AgentLoop {
         crate::chat_log::dedup_file_changes(drained)
     }
 
-    /// N5：drain 本 session 的交付物流水（取走即清 + 按 path 去重，title/note
+    /// drain 本 session 的交付物流水（取走即清 + 按 path 去重，title/note
     /// 取最后登记——投影规则见 `chat_log::dedup_presented_files`）。
     /// assistant 最终回复落盘前调用（与 `drain_turn_file_changes` 同点）。
     pub(crate) fn drain_turn_deliverables(
@@ -207,7 +207,7 @@ impl AgentLoop {
         crate::chat_log::dedup_presented_files(drained)
     }
 
-    /// N5：交付物流水桶共享访问器——agent_factory 把同一 Arc 注入
+    /// 交付物流水桶共享访问器——agent_factory 把同一 Arc 注入
     /// SharedToolConfig（present_files 工具登记、loop drain 双侧共用）。
     pub fn turn_deliverables_bucket(
         &self,
@@ -269,7 +269,7 @@ impl AgentLoop {
     /// Run the agent loop for a specific session.
     /// Mirrors Go's `runAgentLoop()`.
     ///
-    /// T5（多模态）：`image_refs` 是本 turn 已通过安全闸的图片路径引用
+    /// （多模态）：`image_refs` 是本 turn 已通过安全闸的图片路径引用
     /// （process_admitted 统一附加产出），随 user turn 进
     /// `ConversationTurn.image_refs`；无图调用方传 `&[]`。
     pub(crate) async fn run_agent_loop_internal(
@@ -301,23 +301,23 @@ impl AgentLoop {
         );
         let start_time = std::time::Instant::now();
 
-        // D3：本 turn 文件变更缓冲从空开始（正常路径上轮 drain 已清；这里
-        // 兜底上轮异常短路未走到 assistant 落盘的残留）。N5 交付物流水同点
+        // 本 turn 文件变更缓冲从空开始（正常路径上轮 drain 已清；这里
+        // 兜底上轮异常短路未走到 assistant 落盘的残留）。 交付物流水同点
         // 同规则兜底。
         self.turn_file_changes.lock().remove(session_key);
         self.turn_deliverables.lock().remove(session_key);
 
-        // B1（2026-09-22 聊天切会话竞态）：user 行落盘职责已上移到调用方——
+        // （聊天切会话竞态）：user 行落盘职责已上移到调用方——
         // process_admitted 在预处理链之前落原始文本（「接纳即落盘」，消除
-        // 早切回空视图），process_system_message 落 [System: ...] 行（内容
+        // 早切回空视图），process_system_message 落 [System:...] 行（内容
         // 与时点保持原样）。本函数不再写 user 行；assistant 行仍在函数末尾
         // 落盘，HD「一轮 = jsonl 恰好 +2 行」不变量由两处合计维持。
-        // 取舍（2026-09-25 修订）：store 条目由 process_admitted 在本函数之前
+        // 取舍（修订）：store 条目由 process_admitted 在本函数之前
         // 物化（get_or_create 先于 user 行落盘）——物化先行是硬契约：否则新
         // 会话双缺失时 get_or_create_instance 走 rebuild_from_chat_log，把
-        // B1 已落盘的本轮 user 行回放进模型上下文，下方 add_user_message
+        // 已落盘的本轮 user 行回放进模型上下文，下方 add_user_message
         // 再加一次 → 首轮请求用户消息重复（agent-bench context_integrity
-        // 实证）。turn 末 store 仍以 instance 全量 set_history 为单一真相源。
+        // 实证）。turn 末 store 仍以 instance 全量 set_history 为统一定义。
 
         // Emit conversation_start observer event.
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
@@ -337,7 +337,7 @@ impl AgentLoop {
         }
 
         let instance = self.get_or_create_instance(session_key);
-        // 2026-11-05 根修配套：装载时摘要快照。get_or_create_instance 无实
+        // 根修配套：装载时摘要快照。get_or_create_instance 无实
         // 例池、总是新建并从 store 水合——装载快照即 store 当时的摘要态。
         // turn 末持久化以「cache 相对装载是否变化」判定是否写摘要（见下方
         // 持久化块注释）。
@@ -379,7 +379,7 @@ impl AgentLoop {
         // the "summary not injected / silent amnesia" bug this refactor fixes.)
 
         // Extract final response once (shared by session store, chat log, and observer).
-        // K4 (c)：`mut`——`cluster_rpc:` 会话（B 端执行节点）本轮有文件变更
+        // (c)：`mut`——`cluster_rpc:` 会话（B 端执行节点）本轮有文件变更
         // 时，完成回报会在下方追加变更摘要段（落盘与出站共用同一字符串）。
         let mut final_response = events
             .iter()
@@ -408,7 +408,7 @@ impl AgentLoop {
             // it AFTER would clobber the trim's adjustment and, for long
             // conversations (>MAX_STORED_MESSAGES), leave covers_up_to too large
             // so build_messages drops the verbatim tail.
-            // 2026-11-05 根修（压缩成果被抹）：摘要持久化从「无条件按本实例
+            // 根修（压缩成果被抹）：摘要持久化从「无条件按本实例
             // cache 写」改为「仅 cache 相对装载时变化才写」。cache 只有一条
             // 变化路径：本 turn 内压缩成功（maybe_update_summary）——这正是
             // 必须写回的场景。cache 与装载快照一致时，store 本来就是这个值
@@ -453,15 +453,15 @@ impl AgentLoop {
         // user 行已在函数开头（LLM 循环前）落盘（切页恢复，见上方注释）——
         // 这里只补 assistant 行，HD「一轮 = jsonl 恰好 +2 行」不变量由
         // 两处合计维持。
-        // D3：本 turn 声明式文件工具变更随 assistant 行落盘（消息↔文件
-        // 变更映射；M3 会话级 diff 查看器的数据源）。drain 即清（下 turn
+        // 本 turn 声明式文件工具变更随 assistant 行落盘（消息↔文件
+        // 变更映射； 会话级 diff 查看器的数据源）。drain 即清（下 turn
         // 从空开始）；去重规则见 `chat_log::dedup_file_changes`。
         let turn_changes = self.drain_turn_file_changes(session_key);
-        // N5：本 turn 交付物随 assistant 行落盘（前端交付物卡片的数据源；
+        // 本 turn 交付物随 assistant 行落盘（前端交付物卡片的数据源；
         // 与 file_changes 并列不重叠——「该看什么」产物指引 vs「改了什么」
         // 变更映射）。drain 即清，与 file_changes 同点同节奏。
         let turn_deliverables = self.drain_turn_deliverables(session_key);
-        // K4 (c) (devtool-upgrade 阶段 7): B 端 peer_chat 任务完成回报带
+        // (c) (devtool-upgrade): B 端 peer_chat 任务完成回报带
         // 变更摘要——`cluster_rpc:` 会话（B 端执行节点）本轮有声明式文件
         // 变更时，把紧凑列表追加进最终回复。落盘与出站共用同一字符串：
         // chat_log、channel 回执（含 rpc correlation 前缀包裹）看到的完全
@@ -472,14 +472,14 @@ impl AgentLoop {
         {
             final_response.push_str(&summary);
         }
-        // BUG 2026-10-23（对话链路三缺陷 BUG-2）：异常收尾轮的中间正文落盘。
+        // BUG （对话链路三缺陷 BUG-2）：异常收尾轮的中间正文落盘。
         // 正常轮 chat_log 只写最终回复（「一轮 = jsonl 恰好 +2 行」不变量），
         // 中间轮正文只进内存 history / session store——turn 死于错误时最终
         // 行 = 错误通知，用户轮内看到的所有流式正文（分析/表格）重载后凭空
-        // 消失，前端只剩一行错误（ziwei-e2e 2026-10-23 实证：两轮各只剩一行
+        // 消失，前端只剩一行错误（ziwei-e2e 实证：两轮各只剩一行
         // guard 错误）。Error 收尾时把本轮中间 assistant 正文冲刷为独立
         // chat_log 行（错误行之前），重载后对话连贯、断点可辨。Done 收尾不
-        // 冲刷——正常轮保持 +2 行不变量（E3 rewind/fork 的结构假设）。
+        // 冲刷——正常轮保持 +2 行不变量（rewind/fork 的结构假设）。
         let abnormal_ending = matches!(
             events.iter().rev().find_map(|e| match e {
                 AgentEvent::Done(_) => Some(false),
@@ -502,7 +502,7 @@ impl AgentLoop {
                 .filter(|c| {
                     !c.trim().is_empty()
                         && c.as_str() != final_response.as_str()
-                        // BUG-20261031-237：终局错误的 history 形态（裸
+                        // 终局错误的 history 形态（裸
                         // `Error: {raw}`，recovery.rs 三处 add_assistant_message
                         // 是全仓唯一来源）在用户可见终局为改写形态（可行动提示
                         // `Error: {hint}（原始错误：{raw}）`/ vision 兜底提示
@@ -524,11 +524,14 @@ impl AgentLoop {
                 );
             }
         }
-        // Work 时间线（2026-10-30 ChatPanel 长任务时间线改造）：turn 终局
+        // Work 时间线（ChatPanel 长任务时间线改造）：turn 终局
         // 取走累加器（直答无中间轮 = None → 行不带 work 键）。错误收尾的
         // turn 也走到这里（最终行 = 错误通知）——部分时间线随行落盘，重载
         // 后错误前的执行过程可辨（比"中断即全丢"多恢复一步）。
-        let work_timeline = self.work_recorder.finish();
+        // BUG-20261106-039：finish 按会话键取走自己的桶——spawn/评审等
+        // detached 任务与父 turn 并发共用 recorder 时，无键 take 会把别人
+        // 的桶错误归属进本行。
+        let work_timeline = self.work_recorder.finish(session_key);
         crate::chat_log::append_chat_log_meta(
             session_key,
             "assistant",
@@ -540,19 +543,19 @@ impl AgentLoop {
                 images: &[],
                 file_changes: &turn_changes,
                 deliverables: &turn_deliverables,
-                checkpoint_turn: None, // E3：标记只在 user 行（turn 开始锚）
+                checkpoint_turn: None, // 标记只在 user 行（turn 开始锚）
                 steer: false,
                 work: work_timeline.as_ref(),
             },
         );
 
-        // N5：交付物实时面——落盘**之后**发布（与 emit_session_created 同一
+        // 交付物实时面——落盘**之后**发布（与 emit_session_created 同一
         // 纪律：persisted 先于 pushed）。web pump → SSE `deliverables` + WS
         // push，前端缓冲挂到即将落地的 assistant 回复卡；历史映射（chat_log
         // 权威源）覆盖重载/重同步窗口。空清单 emit 内部短路。
         self.emit_deliverables_registered(session_key, chat_id, &turn_deliverables);
 
-        // E7：会话标题自动生成（assistant 回复落盘后；无资格/未配置小模型
+        // 会话标题自动生成（assistant 回复落盘后；无资格/未配置小模型
         // 内部诚实跳过。通常首轮触发——meta 已有标题后不再重复）。
         let _ = self.spawn_session_title_job(session_key);
 
@@ -637,7 +640,7 @@ impl AgentLoop {
         turn_budget: Option<u32>,
         image_refs: &[String],
     ) -> Vec<AgentEvent> {
-        // K2 (U14): prompt-level lifecycle hooks (dialect SessionStart +
+        // prompt-level lifecycle hooks (dialect SessionStart +
         // UserPromptSubmit dialect events). Runs BEFORE `add_user_message`
         // so a blocked prompt NEVER enters history — the model doesn't see
         // it, matching the dialect's block semantics. `resume_execution` does not
@@ -666,7 +669,7 @@ impl AgentLoop {
         }
 
         // Add user message to instance history.
-        // T5（多模态）：带图片路径引用的变体（引用进 ConversationTurn.image_refs，
+        // （多模态）：带图片路径引用的变体（引用进 ConversationTurn.image_refs，
         // build_messages 每轮水合；无图时与 add_user_message 等价）。
         instance.add_user_message_with_images(user_message, image_refs);
         instance.set_state(crate::types::AgentState::Thinking);
@@ -682,12 +685,12 @@ impl AgentLoop {
         .await
     }
 
-    /// G0 (devtool-upgrade 阶段 3)：派生一个**分离执行**的子代理回合。
+    /// (devtool-upgrade)：派生一个**分离执行**的子代理回合。
     ///
     /// 与主路径的本质关系：不走 bus、不写 session store / chat_log（会话
     /// 只存在于本次派生的临时 instance，跑完即弃），但**复用
     /// `run_with_trace` 全链路**——工具调度、安全 8 层、guardian、hook、
-    /// tier 过滤、args 校验、spill、turn_guard、C3 诊断回灌全部同源生效
+    /// tier 过滤、args 校验、spill、turn_guard、 诊断回灌全部同源生效
     /// （这是与 legacy `nemesis-tools` 异步版的本质差异：子代理拥有与主
     /// loop 相同的全套治理）。最终 assistant 文本从 `Done` 事件提取。
     ///
@@ -712,8 +715,8 @@ impl AgentLoop {
         }
     }
 
-    /// Swarm M1：detached 会话键构造。`label` 注入段（`subagent:{label}:{uuid}`）
-    /// 供日志检索与可观测（G13）；None 维持 `subagent:{uuid}` 现状。pub：
+    /// Swarm：detached 会话键构造。`label` 注入段（`subagent:{label}:{uuid}`）
+    /// 供日志检索与可观测；None 维持 `subagent:{uuid}` 现状。pub：
     /// spawn 闭包（agent_factory，crate 外）登记注册表时用同一派生规则。
     pub fn detached_session_key(label: Option<&str>) -> String {
         match label {
@@ -722,15 +725,15 @@ impl AgentLoop {
         }
     }
 
-    /// K1/K2（devtool-upgrade 阶段 4）：[`AgentLoop::run_detached`] 的**事件
+    /// （devtool-upgrade）：[`AgentLoop::run_detached`] 的**事件
     /// 全集**变体。同一条 `run_with_trace` 链路（工具调度、安全 8 层、
     /// guardian、tier、spill、turn_guard 全部同源），但把事件 `Vec` 原样
-    /// 交还调用方——headless `run` 文本模式折 Done/Error，NDJSON 模式（K2）
+    /// 交还调用方——headless `run` 文本模式折 Done/Error，NDJSON 模式
     /// 逐事件序列化。会话语义同 run_detached：临时 instance 跑完即弃。
     pub async fn run_detached_events(&self, task: &str, opts: DetachedOpts<'_>) -> Vec<AgentEvent> {
-        // Swarm M1（裸提示词模式）：system_prompt 覆盖须在 AgentInstance::new
+        // Swarm （裸提示词模式）：system_prompt 覆盖须在 AgentInstance::new
         // 之前——构造函数把它注入为 history 首轮 system turn。
-        // prompt-pack pro（M4）：显式 `system_prompt` 优先（裸提示词替换）；
+        // prompt-pack pro：显式 `system_prompt` 优先（裸提示词替换）；
         // 否则 `role` 存在时把角色模板叠加到主人格之后（None = 纯继承）。
         let mut cfg = self.config.clone();
         if let Some(sp) = opts.system_prompt {
@@ -738,13 +741,13 @@ impl AgentLoop {
         } else if let Some(role) = opts.role {
             cfg.system_prompt = Some(role.render_system_prompt(cfg.system_prompt.as_deref()));
         }
-        // 子代理可见性（P1/D7）：会话键覆盖（后台续行要求快照/回灌同键）；
+        // 子代理可见性：会话键覆盖（后台续行要求快照/回灌同键）；
         // None = 默认派生（行为不变）。
         let session_key = match &opts.session_key_override {
             Some(k) => k.clone(),
             None => Self::detached_session_key(opts.label),
         };
-        // 子代理可见性（P1/D6）：外部取消令牌（注册表「终止」直达执行链）；
+        // 子代理可见性：外部取消令牌（注册表「终止」直达执行链）；
         // None = 自造一次性令牌（行为不变）。
         let cancel_token = opts
             .cancel_token
@@ -760,11 +763,11 @@ impl AgentLoop {
         if opts.no_tools {
             instance.set_detached_no_tools(true);
         }
-        // G2: record the sub-agent nesting depth on the instance — the serial
+        // record the sub-agent nesting depth on the instance — the serial
         // dispatch reads it back (instance.detached_depth()) and injects it
         // into depth-aware tools so `agents.subagent.max_depth` is enforced.
         instance.set_detached_depth(opts.depth);
-        // 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）：
+        // 模型覆盖（BUG `board.plan.model` dead-key 修复）：
         // ready-made (provider, 模型名) 对直接注入 instance——本回合
         // effective_model / call_llm_with_recovery / chat_opts per-model 键
         // 都经它消费；None 时零动作（主模型路径字节不变）。
@@ -784,7 +787,7 @@ impl AgentLoop {
             approval_ref: None,
         };
         let trace_id = format!("subagent-{}", uuid::Uuid::new_v4().simple());
-        // Swarm G13：detached 路径补合成 ConversationStart/End。run_llm_loop
+        // Swarm：detached 路径补合成 ConversationStart/End。run_llm_loop
         // 只发 LlmRequest/LlmResponse，而请求日志观察者（RequestLoggerObserver
         // / ClusterRequestLoggerObserver）的 active 表以 start 事件注册
         // trace_id——缺 start 则全部事件被静默丢弃，评审/子代理/无头任务的
@@ -812,6 +815,12 @@ impl AgentLoop {
             )
             .await;
         let duration_ms = start_time.elapsed().as_millis() as u64;
+        // BUG-20261106-039：detached 回合无 chat_log 落盘点（最终行不落
+        // 盘），时间线桶在此显式收口（丢弃——子代理过程可见面是事件环 P1
+        // 详情视图，与单槽时代一致）。不清桶会残留到进程结束：同 loop 的
+        // 父 turn finish 带键后不再误取，但 uuid 会话键永无同键 begin 可
+        // 覆盖。
+        let _ = self.work_recorder.finish(&session_key);
         let rounds = events
             .iter()
             .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
@@ -832,10 +841,10 @@ impl AgentLoop {
                 })
             })
             .unwrap_or_default();
-        // 子代理可见性（P1）：终态回写注册表。裁决 Cancelled > Done > Failed：
+        // 子代理可见性：终态回写注册表。裁决 Cancelled > Done > Failed：
         // 令牌已取消 = 用户「终止」命中（即使事件里已有 Done 也按用户意志记
         // Cancelled）；有 Done = 完成；其余（纯 Error / 空输出）= Failed。
-        // registry_id 未挂载（K1/K2 headless 等）= 零动作。
+        // registry_id 未挂载（/ headless 等）= 零动作。
         if let Some(id) = opts.registry_id.as_deref() {
             let status = if cancel_token.is_cancelled() {
                 crate::subagent_registry::SubagentStatus::Cancelled
@@ -894,7 +903,7 @@ impl AgentLoop {
         .await
     }
 
-    /// `resume_execution` 的带取消令牌变体（W2 P4 per-task cancel）：集群续行
+    /// `resume_execution` 的带取消令牌变体（per-task cancel）：集群续行
     /// 任务执行前由 cluster_agent 注册 token，cancel_task 下行时可中断 LLM 循环。
     /// 语义与 [`Self::resume_execution`] 相同，仅 token 透传。
     pub async fn resume_execution_with_token(
@@ -905,12 +914,20 @@ impl AgentLoop {
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> Vec<AgentEvent> {
         instance.set_state(crate::types::AgentState::Thinking);
-        self.run_llm_loop(instance, context, trace_id, false, cancel_token, None)
-            .await
+        let events = self
+            .run_llm_loop(instance, context, trace_id, false, cancel_token, None)
+            .await;
+        // BUG-20261106-039：集群续行回合不在 run_agent_loop_internal 落盘
+        // 链上（最终回复由 loop_continuation 直接 append，行不带 work 键
+        // ——既有文档语义「续行未消费，下一 begin 丢弃」），桶在此收口：
+        // 不留跨 turn 残余，`chat.work_current` 在续行结束~下一消息之间
+        // 诚实回 None。
+        let _ = self.work_recorder.finish(&context.session_key);
+        events
     }
 }
 
-// BUG-20261031-237：异常收尾冲刷去重回归（终局错误行禁双份落盘）。
+// 异常收尾冲刷去重回归（终局错误行禁双份落盘）。
 #[cfg(test)]
 #[path = "turn_flush_dedup_tests.rs"]
 mod turn_flush_dedup_tests;

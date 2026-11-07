@@ -560,7 +560,7 @@ fn test_i2c_parse_bus_invalid() {
 #[test]
 fn test_i2c_parse_address_valid() {
     let tool = I2CTool::new();
-    // P8 白名单收紧后可自由寻址空间起点是 0x08（0x03-0x07 属保留段）。
+    // 白名单收紧后可自由寻址空间起点是 0x08（0x03-0x07 属保留段）。
     assert!(
         tool.parse_address(&serde_json::json!({"address": 0x08}))
             .is_ok()
@@ -600,7 +600,7 @@ fn test_i2c_parse_address_invalid() {
     );
 }
 
-/// 字符串地址形态统一解析（2026-09-26 复查修复的回归锁）：桩路径此前对
+/// 字符串地址形态统一解析（复查修复的回归锁）：桩路径此前对
 /// 字符串形态静默跳过白名单校验（fail-open），真实实现则诚实报错——两路
 /// 现共用 parse_i2c_address，数字/十六进制/十进制字符串全形态同源。
 #[test]
@@ -1100,7 +1100,7 @@ fn test_i2c_parse_bus_whitespace() {
 #[test]
 fn test_i2c_parse_address_boundary_exact() {
     let tool = I2CTool::new();
-    // P8 白名单收紧后可自由寻址空间起点是 0x08（0x03-0x07 属保留段）。
+    // 白名单收紧后可自由寻址空间起点是 0x08（0x03-0x07 属保留段）。
     // Exact lower boundary (0x08) is valid
     assert!(
         tool.parse_address(&serde_json::json!({"address": 0x08}))
@@ -1539,7 +1539,7 @@ fn test_i2c_parse_address_float_rejected() {
 
 #[test]
 fn test_i2c_parse_address_string_form_whitelisted_and_fail_closed() {
-    // 2026-09-26 复查修复后的契约（旧断言「字符串恒拒」编码的正是被修的
+    // 复查修复后的契约（旧断言「字符串恒拒」编码的正是被修的
     // fail-open 桩行为，已随契约翻转）：字符串形态经 parse_i2c_address
     // 统一解析后同样过白名单——白名单内放行，保留段被拒（而非旧桩的
     // 「跳过校验」）。
@@ -1648,7 +1648,7 @@ fn test_spi_parameters_required_and_confirm() {
 }
 
 // ============================================================
-// W4a coverage gap closure (direct calls to the private per-action
+// coverage gap closure (direct calls to the private per-action
 // methods). NOTE: execute() short-circuits with a "Linux only"
 // error on non-Linux hosts BEFORE any action dispatch, so every
 // existing execute()-based validation test passes vacuously on
@@ -1656,13 +1656,13 @@ fn test_spi_parameters_required_and_confirm() {
 // exercises the real validation logic; the trailing
 // #[cfg(not(target_os = "linux"))] arms after validation ARE
 // reachable (no device existence check), while scan() requires an
-// actual /dev/i2c-N node (see §9.4 exemption).
+// actual /dev/i2c-N node (see exemption).
 // ============================================================
 
 #[tokio::test]
 async fn w4a_i2c_detect_reports_no_buses_on_this_host() {
     // 前提：本机无 /dev/i2c-* 节点（detect 只做 metadata 枚举，节点存在时
-    // 如实列出）。真实 Linux 板子常挂 24+ 个 i2c 节点（2026-09-01 远端实测
+    // 如实列出）。真实 Linux 板子常挂 24+ 个 i2c 节点（远端实测
     // "Found 24 I2C bus(es)"）→ 机器依赖，按 SKIP 约定退出。
     if std::path::Path::new("/dev/i2c-0").exists() {
         eprintln!(
@@ -1730,7 +1730,7 @@ async fn w4a_i2c_read_validation_and_platform_arm() {
     // valid args on a non-Linux host: falls through to the
     // "platform not supported" silent arm (length clamped to 256).
     // Linux 上合法参数走真实 /dev/i2c-1 打开路径（本机无节点/无权限 →
-    // error），平台臂不可达 → 与生产 cfg 臂同谓词门控（2026-09-01 远端
+    // error），平台臂不可达 → 与生产 cfg 臂同谓词门控（远端
     // 首跑暴露）。
     #[cfg(not(target_os = "linux"))]
     {
@@ -1979,7 +1979,7 @@ async fn w4a_spi_read_validation_and_platform_arm() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): direct private-method calls for paths that the
+// coverage: direct private-method calls for paths that the
 // public execute() cannot reach on Windows (cfg(linux) dispatch)
 // ===========================================================================
 
@@ -2043,7 +2043,7 @@ async fn s2_spi_read_device_invalid_speed_errors_in_validation() {
 }
 
 // ===========================================================================
-// P8 GPIO 白名单（2026-09-25 三批合并）：HardwarePolicy 单一真相源。
+// GPIO 白名单（三批合并）：HardwarePolicy 统一定义。
 // 内置默认 = I2C 规范可自由寻址空间 0x08-0x77（旧 (0x03..=0x77) 放行
 // 保留段 0x03-0x07 的洞一并堵上）；deny 优先于 allow；拒绝理由面向
 // 模型可自纠（段用途 + 放行办法）。

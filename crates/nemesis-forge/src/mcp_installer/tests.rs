@@ -136,7 +136,7 @@ async fn test_invalid_json_config_is_installed_false() {
     assert!(!installer.is_installed("anything"));
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[tokio::test]
 async fn test_s8_install_into_brand_new_workspace() {
@@ -151,7 +151,7 @@ async fn test_s8_install_into_brand_new_workspace() {
     assert!(installer.is_installed("fresh"));
 }
 
-// --- P1 单一真相源对齐回归钉（2026-10-16）---
+// --- 单一真相源对齐回归钉---
 
 #[tokio::test]
 async fn test_install_preserves_existing_server_fields() {
@@ -261,7 +261,7 @@ async fn test_uninstall_preserves_other_servers_and_fields() {
 
 #[tokio::test]
 async fn test_uninstall_absent_entry_does_not_rewrite_file() {
-    // P1-b 回归钉（2026-10-16 diff 复查）：卸载不存在的条目 = no-op，不得
+    // b 回归钉（diff 复查）：卸载不存在的条目 = no-op，不得
     // 触碰文件——McpConfig 顶层无 flatten extra，no-op 重写会把宽容解析不
     // 认识的外来顶层键整体剥掉（旧影子 schema 之前的实现只在确实移除时才
     // 写盘）。回归钉咬合：把 uninstall 的 no-op 短路摘掉（无条件 save），

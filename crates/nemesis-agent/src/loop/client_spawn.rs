@@ -19,7 +19,7 @@ impl AgentLoop {
         *self.spawn_slot.write() = Some(slot);
     }
 
-    /// 注入宿主形态标识（子代理可见性 D5，factory 组装后调用）：`main` /
+    /// 注入宿主形态标识（子代理可见性，factory 组装后调用）：`main` /
     /// `project:{pid}` / `agent:{id}`——delegate 任务入册时抄给注册表
     /// `loop_origin`。缺省 `main`（主 loop 不注入即正确）。
     pub fn set_loop_origin(&self, origin: &str) {
@@ -92,7 +92,7 @@ impl AgentLoop {
         })
     }
 
-    /// 发布委派回执落会话事件（[`nemesis_types::agent::AgentEvent::
+    /// 发布委派回执落会话事件（[`nemesis_types::agent:AgentEvent:
     /// SubagentReplyLanded`]）。持久化**之后**调用（前端收到即 resync，
     /// 行必须已在盘上）；agent_event_tx 未装配（CLI / B 端 worker）为
     /// no-op。摘录 rune 安全截断 500 字符（toast 展示用，全文在 chat_log）。
@@ -120,7 +120,7 @@ impl AgentLoop {
     /// 前台等待最终回复）。`role` 空串 = 缺省（档位推导）；`tools_profile`
     /// 按 SpawnTool 同款值域（"readonly"|"full"，调用方归一化非空传入）。
     ///
-    /// 子代理可见性（BUG 修复 2026-11-04，路由修正同日）：`parent_chat_id`
+    /// 子代理可见性（BUG 修复，路由修正同日）：`parent_chat_id`
     /// = 发起连接级房间 id（`web:{连接id}`，SessionManager send_queue 的键
     /// ——server.rs 事件泵剥前缀查房间表投递子代理工具事件与回执；会话级
     /// id 查不到房间 = 帧静默丢弃）；`parent_session_key` = 发起会话键（
@@ -131,7 +131,7 @@ impl AgentLoop {
     /// 父会话持久化（与 admission 早落盘 + 集群续行回复持久化同源语义）：
     /// 委派请求先行落 user 行（会话首建发 SessionCreated，侧栏即时出现），
     /// 成功回复落 assistant 行、失败落错误注记行——chat_log + SessionStore
-    /// 双写，+2 行不变量保持（E3 rewind 结构假设），会话不留悬空请求。
+    /// 双写，+2 行不变量保持（rewind 结构假设），会话不留悬空请求。
     /// `parent_session_key` 空 = 只派发不落盘（防御分支；handler 恒传实值）。
     /// 槽未注入 / 闭包未 set = 诚实 `Err`。
     pub async fn client_spawn(
@@ -148,7 +148,7 @@ impl AgentLoop {
                 .to_string()
         })?;
         if !parent_session_key.is_empty() {
-            // B1×self-heal 同序：store 先物化（get_or_create 内存命中短路，
+            // ×self-heal 同序：store 先物化（get_or_create 内存命中短路，
             // 重建分支在 user 行落盘**前**走完——admission.rs 同序防双计入）。
             if let Some(ref store) = self.session_store {
                 let _ = store.get_or_create(parent_session_key);
@@ -171,7 +171,7 @@ impl AgentLoop {
                 },
             );
             if !log_existed {
-                // P6-R4：WSAPI 入口无 sender 上下文，principal 空串 = 不落盘
+                // WSAPI 入口无 sender 上下文，principal 空串 = 不落盘
                 // （函数内部短路）。
                 crate::chat_log::write_session_meta_principal(parent_session_key, "");
                 self.emit_session_created(parent_session_key);

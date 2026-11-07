@@ -1,4 +1,4 @@
-//! R101（工作流 DAG 语义审计）：失败路径兄弟任务遗弃——schedule_inner 收集
+//! （工作流 DAG 语义审计）：失败路径兄弟任务遗弃——schedule_inner 收集
 //! 循环 `return Err` 时剩余 JoinHandle 被 drop = 任务 detach，工作流已宣告
 //! 失败后兄弟节点仍在跑副作用；engine 失败路径只 remove token 不 cancel
 //! （drop≠cancel，detach 任务持有的 clone 永不触发），且 token 已出 map、

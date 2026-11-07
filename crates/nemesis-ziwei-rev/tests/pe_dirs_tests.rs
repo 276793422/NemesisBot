@@ -1,4 +1,4 @@
-//! B2 目录解析面 + P0 容器分派单元回归钉。
+//! 目录解析面 + 容器分派单元回归钉。
 //!
 //! 查询面不暴露 relocs / CFG meta 变体——解析器本身在此直接断言。
 //! PeInfo 字段全 pub，测试直构最小结构（不走完整 PE 夹具）。
@@ -10,7 +10,7 @@ use nemesis_ziwei_rev::pe::{
     SectionInfo,
 };
 
-/// 最小 PeInfo：一节 .rdata（rva 0x2000 / raw 0x600 / 0x300B）+ 指定目录。
+/// 最小 PeInfo：一节.rdata（rva 0x2000 / raw 0x600 / 0x300B）+ 指定目录。
 fn mini_pe(dirs: &[(usize, u32, u32)]) -> PeInfo {
     let mut directories = vec![(0u32, 0u32); 16];
     for (idx, rva, size) in dirs {
@@ -34,7 +34,7 @@ fn mini_pe(dirs: &[(usize, u32, u32)]) -> PeInfo {
     }
 }
 
-/// 文件容器：0x600..0x900 为 .rdata 原始字节。
+/// 文件容器：0x600..0x900 为.rdata 原始字节。
 fn mini_file() -> Vec<u8> {
     let mut f = vec![0u8; 0x900];
     f[0..2].copy_from_slice(b"MZ");
@@ -202,7 +202,7 @@ fn cfg_table_real_pe_ground_truth() {
 
 #[test]
 fn binheaders_magic_dispatch() {
-    // ELF 魔数 → Elf 占位（P1 实装，分派先到）
+    // ELF 魔数 → Elf 占位（实装，分派先到）
     assert!(matches!(
         BinHeaders::parse(b"\x7fELF\x02\x01\x01rest..."),
         Ok(BinHeaders::Elf)
@@ -228,7 +228,7 @@ fn arch_namespaces_and_disassembler_gate() {
     assert!(!Arch::Arm64.disassembler_available());
 }
 
-// ── BUG-20261029-154 回归锁：损坏 PE 的 u32 算术溢出必须诚实降级非 panic ──
+// ── 回归锁：损坏 PE 的 u32 算术溢出必须诚实降级非 panic ──
 
 /// 节 rva 顶到地址空间顶部（rva+size 破 u32 域）：RVA 映射与节归属判定
 /// 必须 u64 中间算术给出诚实结果（旧代码 debug panic / release 回绕）。

@@ -279,6 +279,10 @@ pub struct WebServer {
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
     /// Global e-stop state for /api/internal estop commands.
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// Gateway 级后台进程注册表（background.* WSAPI 投影面；gateway 注入，
+    /// flows into AppState。None = 未注入（headless/relay/测试装配）→
+    /// handler 诚实报错）。
+    background_registry: Option<Arc<nemesis_agent::BackgroundProcessRegistry>>,
     /// 签名验证启动自验状态（接入计划 §4；gateway 从 verify_policy 快照映射
     /// 注入，flows into AppState for security.signature_verify_status）。
     signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
@@ -340,7 +344,8 @@ pub struct WebServer {
     #[cfg(feature = "skins")]
     skins_dir: Option<String>,
     /// 激活皮肤 id（config `ui.skin`；"default"/空 = 内置皮肤，
-    /// `/skins/active.css` 404）。共享锁句柄：`set_skins` 注入，
+    /// `/skins/active.css` 200 空 body——404 会在默认安装的每次页面加载
+    /// 记一条 console 资源错误；坏包仍 404）。共享锁句柄：`set_skins` 注入，
     /// `skin_id_handle()` 交给 WSAPI skins handler，`set_active` 免重启
     /// 热翻。`skin_id()` 读快照。
     #[cfg(feature = "skins")]
@@ -385,6 +390,7 @@ impl WebServer {
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
             session_stats: None,
@@ -557,6 +563,12 @@ impl WebServer {
         self.estop = Some(estop);
     }
 
+    /// Set the gateway-level background process registry（background.* WSAPI
+    /// 投影面；gateway 注入共享 Arc——与 agent 工具通道同一注册表实例）。
+    pub fn set_background_registry(&mut self, reg: Arc<nemesis_agent::BackgroundProcessRegistry>) {
+        self.background_registry = Some(reg);
+    }
+
     /// Set the signature-verify startup self-check status（接入计划 §4；
     /// 只读快照，进程内不变——无 set 运行时入口）。
     pub fn set_signature_verify(
@@ -727,6 +739,7 @@ impl WebServer {
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
+            background_registry: self.background_registry.clone(),
             signature_verify: self.signature_verify.clone(),
             skills_install_gate: self.skills_install_gate.clone(),
             session_stats: self.session_stats.clone(),
@@ -839,9 +852,15 @@ impl WebServer {
             // S5（2026-10-09）：入站 OpenAI 兼容端点（openai SDK 改 base_url
             // 即接入）。挂在统一鉴权之下（不进豁免清单——触发 agent 执行
             // 与 dashboard 同一信任边界；Bearer 头本就被中间件接受）。
+            // body 上限放宽到 26MB（BUG-20261106-035）：裸 lane 合同含
+            // base64 内联视觉（MB 级），axum 默认 2MB 会 413 拒合法请求。
             .route(
                 "/v1/chat/completions",
-                axum::routing::post(crate::openai_compat::handle_chat_completions),
+                axum::routing::post(crate::openai_compat::handle_chat_completions).layer(
+                    axum::extract::DefaultBodyLimit::max(
+                        crate::openai_compat::OPENAI_COMPAT_BODY_LIMIT_BYTES,
+                    ),
+                ),
             )
             // Session fork dialog backing (P3-1, 2026-08-24 UI entry gap)
             .route(
@@ -1070,6 +1089,10 @@ impl WebServer {
         // 其路由面（/bridge、/d/*、/relay、/relay/login、/api/relay/status、
         // /health）是 relay 自有信任边界（设备/管理侧鉴权在 relay 模块内），
         // dashboard token 对其无意义，挂上会把 relay 整体 401。
+        // BUG-20261107-006（2026-11-07）：全量（dashboard hub）形态同样注册
+        // 这批 relay 路由（set_relay 注入后），却被上面的 route_layer 覆盖且
+        // 不在豁免清单——auth_token 非空时 relay 整体 401。修复 = 豁免清单
+        // 增补五条 relay 自有信任边界路径（批次三 dashboard 端点保持鉴权）。
         // CORS three-state（2026-10-16 hardening）：显式 origin 列表 → 生产
         // 层；显式 allow_all → dev 层（`*`）；二者皆无 → restrictive（拒绝
         // 跨域）。旧「空列表 = allow-all」缺省已废除——配置缺失不再静默
@@ -2695,6 +2718,23 @@ fn auth_exempt_path(path: &str) -> bool {
         // 鉴权上线时漏列（与 /api/sdk/ 漏列同类事故），外部回调恒 401。
         || path.starts_with("/api/workflow/webhook/")
         || path.starts_with("/api/sdk/")
+        // relay 自有信任边界（BUG-20261107-006，2026-11-07）：/bridge、/d/*、
+        // /relay、/relay/login、/api/relay/status 五条路由面在 relay-only 与
+        // 全量（dashboard hub）两种形态共用（build_router 里 set_relay 后统一
+        // 注册），设备/管理侧凭据是 relay 自有的 hello token / 设备访问令牌
+        // cookie / admin cookie——dashboard token 对其无意义。统一鉴权上线时
+        // 只对 relay-only 形态免挂中间件（见 build_router 注释），漏了全量
+        // 形态的同名路由：auth_token 非空时设备桥入/隧道/状态页整体 401
+        // （与 /api/sdk/、/api/workflow/webhook/ 漏列同类事故第三次）。
+        // 各路由自有闸：/bridge=hello token（10s 内）、/d/*=设备 cookie、
+        // /relay+login+status=admin cookie（ws token SHA-256）。批次三
+        // /api/relay/overview|enabled|client/reconnect **不豁免**——dashboard
+        // 信任边界（与 /api/status 同语义，见 build_router 批次三注释）。
+        || path == "/bridge"
+        || path.starts_with("/d/")
+        || path == "/relay"
+        || path == "/relay/login"
+        || path == "/api/relay/status"
 }
 
 /// 从请求提取 token：`X-Auth-Token` 头 → `?token=` 查询参数 →

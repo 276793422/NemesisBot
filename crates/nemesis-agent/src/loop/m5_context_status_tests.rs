@@ -1,4 +1,4 @@
-//! M5（devtool-upgrade 阶段 3）：`AgentLoop::session_context_status` 测试。
+//! （devtool-upgrade）：`AgentLoop::session_context_status` 测试。
 //!
 //! 契约：与压缩压力测量**同一公式**（摘要覆盖点之后的逐字尾部 ×
 //! MODEL-FACING 投影估算 ÷ 三级解析链窗口），即显示的百分比 =
@@ -161,7 +161,7 @@ fn covers_clamped_into_history_bounds() {
     assert_eq!(st["pct"], 0);
 }
 
-/// P8（2026-10-10 集群无人值守硬化 A2）：`session_tokens_used` 观测字段。
+/// （集群无人值守硬化）：`session_tokens_used` 观测字段。
 /// 预算关闭（无 config_path）也能查——账目直读累计器；未记账会话 = 0。
 #[test]
 fn session_tokens_used_reports_budget_ledger() {
@@ -176,8 +176,8 @@ fn session_tokens_used_reports_budget_ledger() {
     assert_eq!(st2["session_tokens_used"], 0);
 }
 
-/// R2 2026-10-22 回归锁：`record_round_usage` 的预算 delta = 完整输入
-/// （prompt + cache_creation + cache_read，`usage_full_input` 单一真相源）
+/// 回归锁：`record_round_usage` 的预算 delta = 完整输入
+/// （prompt + cache_creation + cache_read，`usage_full_input` 统一定义）
 /// + output——Anthropic 形态（creation>0）不再漏计。走真实 record_round_usage
 /// 接线（observer 落账 + 预算累计），不手捏 delta。
 #[tokio::test]
@@ -238,7 +238,7 @@ async fn record_round_usage_budget_delta_includes_cache_creation() {
     assert_eq!(agg.output_tokens, 30);
 }
 
-/// 2026-10-20 压缩点一等公民化：`trigger`/`trigger_source`/`pct_trigger`
+/// 压缩点一等公民化：`trigger`/`trigger_source`/`pct_trigger`
 /// 观测字段。无用户键 → trigger = 窗口×75%（instance 兜底语义）；设了
 /// `compact_context_tokens` → 到点即压 + source=user。
 #[test]

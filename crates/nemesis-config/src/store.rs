@@ -86,7 +86,7 @@ impl ConfigStore {
 }
 
 /// Read-only view onto the live config held by a [`ConfigStore`]. Cheap to
-/// clone (Arc bump). `read()` returns a `RwLockReadGuard` — keep it short.
+/// clone (Arc bump). `read` returns a `RwLockReadGuard` — keep it short.
 #[derive(Clone)]
 pub struct ConfigHandle {
     config: Arc<RwLock<Config>>,
@@ -100,7 +100,6 @@ impl ConfigHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Process-wide singleton.
 //
 // WSAPI handlers (sandbox/config/channels…) historically read config.json
@@ -108,8 +107,7 @@ impl ConfigHandle {
 // through AppState (which has dozens of test constructors). The singleton
 // gives them a zero-wiring way to reach the *same* live store the gateway
 // installed, so a dashboard write is visible everywhere instantly. Set once
-// at gateway startup; `global()` returns None in CLI subcommands / tests.
-// ---------------------------------------------------------------------------
+// at gateway startup; `global` returns None in CLI subcommands / tests.
 
 static GLOBAL_STORE: std::sync::OnceLock<Arc<ConfigStore>> = std::sync::OnceLock::new();
 
@@ -127,8 +125,7 @@ pub fn global() -> Option<Arc<ConfigStore>> {
     GLOBAL_STORE.get().cloned()
 }
 
-// ---------------------------------------------------------------------------
-// 进程级配置写串行锁（2026-10-13 同类横扫）。
+// 进程级配置写串行锁（同类横扫）。
 //
 // config.json（及 config.skills.json 等同族配置）的每个写命令臂都是
 // load→改→save 的 RMW，而 WSAPI 每请求帧独立 tokio::spawn 并发分发——
@@ -140,12 +137,11 @@ pub fn global() -> Option<Arc<ConfigStore>> {
 // 纪律：**只在命令臂最外层取一次**，覆盖整段 RMW（从 load 到 save 落盘）；
 // 辅助函数与 [`ConfigStore`] 内部**不得**重复取（Mutex 非重入，嵌套即死锁）。
 // 读路径不入锁（rename 原子性保证读到完整旧值或完整新值）。
-// ---------------------------------------------------------------------------
 
 static CONFIG_WRITE_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// 取配置写串行锁。用法：写命令臂首行 `let _cfg_serial =
-/// nemesis_config::config_write_lock();`，guard 存活到 save 落盘为止。
+/// nemesis_config::config_write_lock;`，guard 存活到 save 落盘为止。
 /// 见上方锁注释的取锁纪律（只在命令臂取、勿嵌套）。
 pub fn config_write_lock() -> parking_lot::MutexGuard<'static, ()> {
     CONFIG_WRITE_LOCK.lock()

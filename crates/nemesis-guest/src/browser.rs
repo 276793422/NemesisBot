@@ -1,8 +1,8 @@
-//! P5-R1：guest 内浏览器（headless chromium + CDP）。
+//! ：guest 内浏览器（headless chromium + CDP）。
 //!
 //! 宿主 `browser` 工具的**执行体**：在 VM 内拉起/复用一个常驻 headless
 //! chromium，经 Chrome DevTools Protocol（CDP）执行导航/点击/输入/取文/
-//! 截图等动作。设计锚点（plan P5-R1）：
+//! 截图等动作。设计锚点（plan）：
 //!
 //! - **常驻 + 登录态**：chromium 以 `--user-data-dir=<workspace>/.browser-
 //!   profile` 启动，profile 落 VM 盘（overlay 承载）——跨 savevm 睡眠/唤醒
@@ -31,7 +31,7 @@
 //!   target 的 webSocketDebuggerUrl，单命令单连接（无状态，防会话泄漏）。
 //!
 //! 截图默认落 `<workspace>/uploads/browser-<ts>.png`——uploads 子树经
-//! vm_sync 回灌宿主，vision 评审 M5 同源（与 nemesis-guest-screenshot
+//! vm_sync 回灌宿主，vision 评审 同源（与 nemesis-guest-screenshot
 //! desktop 版同一条回传链）。
 
 use std::path::Path;
@@ -390,7 +390,7 @@ async fn evaluate(target_id: &str, expression: &str) -> Result<serde_json::Value
 
 /// JSON 字符串字面量嵌入（JS 字符串字面量的安全子集——JSON 转义在 JS 里
 /// 语义相同；U+2028/2029 这两个 JSON 合法但裸 JS 字符串非法的码点，
-/// serde_json 会转义为   形态，安全）。
+/// serde_json 会转义为 形态，安全）。
 fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }

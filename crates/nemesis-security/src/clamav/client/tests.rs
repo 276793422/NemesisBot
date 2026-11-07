@@ -469,7 +469,7 @@ async fn test_client_scan_stream_connection_refused() {
 }
 
 // ============================================================
-// Fake clamd protocol server tests (2026-08-25 coverage push)
+// Fake clamd protocol server tests (coverage push)
 // ============================================================
 // 手搓假 clamd：tokio TcpListener 127.0.0.1:0，每个连接读一行 `nCMD\n`
 // 按脚本应答后关闭（对端读到 EOF 结束多行命令）。协议要点：
@@ -769,7 +769,7 @@ async fn fake_server_with_timeout_client_roundtrip() {
 
 #[tokio::test]
 async fn fake_server_scan_file_error_response_is_not_infected() {
-    // "<path>: ... ERROR" → clean 且 path 清空（ERROR 分支）。
+    // "<path>:... ERROR" → clean 且 path 清空（ERROR 分支）。
     let addr = serve_clamd(Arc::new(|cmd: &str| {
         if let Some(path) = cmd.strip_prefix("SCAN ") {
             format!("{}: Access denied ERROR\n", path).into_bytes()
@@ -811,7 +811,7 @@ async fn send_command_read_error_breaks_out_of_loop() {
     let _ = srv.await;
 }
 
-/// BUG-20261104-375：读侧总闸。clamd 半死形态（TCP 已 accept 但不回包）
+/// 读侧总闸。clamd 半死形态（TCP 已 accept 但不回包）
 /// 下 send_command 的 read_line 循环必须被 self.timeout 截断——修复前无界
 /// 挂死，Layer 7 block_in_place 内一并挂死、工具调用永不返回。外层 5s
 /// 守闸把「缺修复」形态转成测试红而非套件挂死。

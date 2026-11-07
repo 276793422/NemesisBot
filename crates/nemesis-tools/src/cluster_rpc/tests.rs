@@ -443,7 +443,7 @@ fn test_stub_cluster_default() {
 }
 
 // ============================================================
-// W4a coverage gap closure (parameters() peer-description arms
+// coverage gap closure (parameters() peer-description arms
 // and the async submit failure arm)
 // ============================================================
 

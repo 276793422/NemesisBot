@@ -1,4 +1,4 @@
-//! recover —— 失效找回的逐锚重扫引擎（T5.3）。
+//! recover —— 失效找回的逐锚重扫引擎（.3）。
 //!
 //! 输入 = 旧 profile 锚集（中性 [`AnchorLite`] 形态，跨 crate 不耦合
 //! ziwei-profile）+ 新目标 exe 文件字节；输出 = 每锚命中判定 + 整体
@@ -86,7 +86,7 @@ pub fn load_image(file: &[u8]) -> Result<ImageMap, String> {
     ImageMap::new(pe_info, blobs).map_err(|e| format!("镜像组装失败：{e}"))
 }
 
-/// 逐锚重扫全流程（T5.3 主入口）。
+/// 逐锚重扫全流程（.3 主入口）。
 pub fn rescan(file: &[u8], anchors: &[AnchorLite]) -> Result<RecoverVerdict, String> {
     let img = load_image(file)?;
     let imports = pe::parse_imports_file(file, &img.pe).unwrap_or_default();
@@ -188,7 +188,7 @@ fn scan_anchor(
                 r.note = "str_ref 锚缺 text".into();
                 return r;
             };
-            // 空 text 与缺 text 同类（BUG-20261029-156）：save 期校验只保护
+            // 空 text 与缺 text 同类：save 期校验只保护
             // 本方写入，load 侧不校验——手改/旧版 profile 空串会一路到这里，
             // windows(0) 直接 panic。与缺 pattern/value/imports 注记分支对称。
             if text.is_empty() {
@@ -206,7 +206,7 @@ fn scan_anchor(
                 };
                 for (off, w) in blob.windows(needle.len()).enumerate() {
                     if w == needle {
-                        // 命中 RVA 走 saturating（BUG-20261029-154 同族：损坏
+                        // 命中 RVA 走 saturating（同族：损坏
                         // PE 节基址近顶 + 节内偏移可溢出）
                         hits.push(sec.rva.saturating_add(off as u32));
                     }
@@ -286,7 +286,7 @@ fn scan_exec(img: &ImageMap, bytes: &[u8], mask: &[u8]) -> Vec<u32> {
                 .zip(mask)
                 .all(|((&b, &p), &m)| b & m == p & m)
             {
-                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                // saturating 防 u32 加法溢出（同族）
                 hits.push(sec.rva.saturating_add(off as u32));
             }
         }

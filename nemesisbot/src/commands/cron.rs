@@ -1,6 +1,6 @@
 //! Cron command - manage scheduled jobs.
 //!
-//! 存储读写统一走 `nemesis-cron`（`CronService` + `store` 模块单一真相源，
+//! 存储读写统一走 `nemesis-cron`（`CronService` + `store` 模块统一定义，
 //! 与 gateway 同一形态；旧版手拼裸数组是 docs/REPORT/2026-10-13_cron-
 //! store-format-split-cli-vs-gateway-fix.md 记录的格式分裂 BUG，已修）。
 //! 本文件不再出现任何存储 JSON 拼装。
@@ -63,7 +63,7 @@ pub enum CronAction {
 /// （WSAPI `tasks.cron.*`，与 gateway 同进程，天然无此问题），或先停掉
 /// gateway 再用 CLI。
 ///
-/// 检测链复用 estop/dashboard 的跨进程先例：`<workspace>/state/gateway.json`
+/// 检测链复用 estop/dashboard 的跨进程`<workspace>/state/gateway.json`
 /// 存在且 `web_port>0` → GET `/api/health` 探活；**只有确认 200 才拦**——
 /// 无 state 文件 / 端口无效 / 探活失败（stale 文件、进程已死）一律放行，
 /// 宁可漏拦也不误伤 gateway 不在场的正常 CLI 使用。
@@ -98,7 +98,7 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
     let home = common::resolve_home(local);
     let store_path = common::cron_store_path(&home);
 
-    // REL-002 损坏守卫：存储存在但解析失败（含旧形态迁移失败）⇒ 拒绝一切
+    // 损坏守卫：存储存在但解析失败（含旧形态迁移失败）⇒ 拒绝一切
     // 改动——后续 save 会拿空/半态 store 顶掉盘上未知数据。
     if store_path.exists() {
         nemesis_cron::store::load(&store_path).map_err(|e| {
@@ -150,7 +150,7 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 if secs == 0 {
                     anyhow::bail!("--every 必须 > 0 秒（0 秒间隔的任务永远不会触发）");
                 }
-                // BUG-20261024-11：受检换算——旧的 `(secs * 1000) as i64`
+                // 受检换算——旧的 `(secs * 1000) as i64`
                 // 在超大 --every 下 u64 乘法回绕（release）/ panic（debug），
                 // 回绕负值还会被 compute_next_run 的 ms>0 过滤成永不触发的
                 // 静默僵尸任务。
@@ -226,10 +226,10 @@ fn ensure_user_job(svc: &CronService, id: &str) -> Result<()> {
     Ok(())
 }
 
-/// 启停一个任务（BUG-20261028-102：不再吞错）。
+/// 启停一个任务（不再吞错）。
 ///
 /// 此前把 `enable_job` 的**所有** Err 一律打印成 "Job not found."：
-/// ①死排程闸的 loud 拒绝（BUG-20261025-30——「调度永远不会有下一次触发」，
+/// ①死排程闸的 loud 拒绝（「调度永远不会有下一次触发」，
 /// 启用只会得到永不触发的静默僵尸）被伪装成任务不存在；②收尾落盘失败
 /// 同样被吞（服务层已回滚内存、盘上状态未变，但用户看到的是成功语义的
 /// not found）。现对齐 Remove 臂三态语义与 web 面 `cron_toggle`（透传

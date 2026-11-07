@@ -1,7 +1,7 @@
 //! 评审取证自取（evidence-on-demand，2026-10-15）：`board_evidence_read`
 //! 工具——评审 agent 在项目档案根围栏内只读交付文件。
 //!
-//! 背景（NB-102/NB-103 真机实证）：变更集注入层是「任意硬编码上限」——
+//! 背景（/ 真机实证）：变更集注入层是「任意硬编码上限」——
 //! 单文件节选、总预算、文件数名额，超限即「未附内容」，评审员对内容无法
 //! 核对只能 UNSURE 转人工。上限再宽也是猜的（「随便写点小作文不就超了」
 //! ——用户 2026-10-15）。正确性不该由注入预算决定：清单与节选只是省轮次
@@ -11,7 +11,7 @@
 //!
 //! 围栏（安全 8 层之前的结构性第一道闸）：
 //! - issue 参数解析本单单号 → project_id → 档案根（`project_archive_root`
-//!   单一真相源，目录缺失诚实报错）；
+//!   统一定义，目录缺失诚实报错）；
 //! - path 参数过 [`nemesis_board::resolve_subtree_path`]（与锚点实核同一
 //!   逻辑单点：拒绝对路径 / `..` / UNC / 盘符 / 8.3 短名，canonicalize 后
 //!   强制仍在档案根子树内——符号链接越界同拦）；
@@ -20,7 +20,7 @@
 //!
 //! 注册面：仅主 agent（`agent_factory.rs` 8b 块，store 未装配 = 不注册）。
 //! 主对话（big 档全量供给）也会看到本工具——它对主 agent 同样无害且有用
-//! （「读一下 NB-103 交付的 PRD」）；mini/normal 档走 `tier_allowed_tools`
+//! （「读一下 交付的 PRD」）；mini/normal 档走 `tier_allowed_tools`
 //! 白名单天然不含本工具。
 //!
 //! 评审消费：`board_review.rs` 的 `ReviewToolMode::EvidenceOnly`（远端
@@ -56,7 +56,7 @@ impl BoardEvidenceTool {
     }
 }
 
-/// 解析后的入参（execute 内部第一步；独立成纯结构便于单测）。
+/// 解析后的入参（execute 内部；独立成纯结构便于单测）。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct EvidenceReadArgs {
     pub issue: String,

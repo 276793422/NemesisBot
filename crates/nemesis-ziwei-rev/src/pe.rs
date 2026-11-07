@@ -1,10 +1,10 @@
-//! pe —— 轻量 PE 解析（T3.1）。
+//! pe —— 轻量 PE 解析（.1）。
 //!
 //! 双布局：磁盘文件（PointerToRawData 映射）与内存快照（节 blob 独立存储，
 //! VirtualAddress 映射）。头部结构两者逐字节同形；映射只在节区段不同。
 //! 全程有界读取——损坏/截断输入返回 Err，绝不 panic。
 //!
-//! 先例：nemesis-injector::ziwei_wow64::pe_export_rvas（M1 已验证的
+//! nemesis-injector::ziwei_wow64:pe_export_rvas（已验证的
 //! Toolhelp + 导出表走法）；本模块是更完整的纯解析版本。
 
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ impl SectionInfo {
     }
 }
 
-/// 数据目录索引（我们关心的子集；B2 六解析器补齐 TLS/LoadConfig/DelayImport/
+/// 数据目录索引（我们关心的子集； 六解析器补齐 TLS/LoadConfig/DelayImport/
 /// Debug/Reloc 五个索引——口径对齐 winnt.h IMAGE_DIRECTORY_ENTRY）。
 pub const DIRECTORY_EXPORT: usize = 0;
 pub const DIRECTORY_IMPORT: usize = 1;
@@ -141,8 +141,8 @@ impl PeInfo {
         let opt = coff + 20;
         let magic = u16_at(bytes, opt)?;
         let (image_base, dd_off) = match magic {
-            0x10B => (u32_at(bytes, opt + 28)? as u64, opt + 96), // PE32
-            0x20B => (u64_at(bytes, opt + 24)?, opt + 112),       // PE32+
+            0x10B => (u32_at(bytes, opt + 28)? as u64, opt + 96),
+            0x20B => (u64_at(bytes, opt + 24)?, opt + 112), // +
             m => return Err(PeError::BadOptionalMagic(m)),
         };
         let entry_rva = u32_at(bytes, opt + 16)?;
@@ -193,7 +193,7 @@ impl PeInfo {
     /// 磁盘布局映射：RVA → 文件内偏移（走 raw_ptr/raw_size）。
     pub fn rva_to_file_offset(&self, rva: u32) -> Option<usize> {
         for s in &self.sections {
-            // 节界比较走 u64（BUG-20261029-154 同族）：损坏 PE 的节
+            // 节界比较走 u64（同族）：损坏 PE 的节
             // rva/raw_size 可顶到 u32 边界，u32 加法 debug panic / release
             // 回绕——把「诚实映射失败」变成崩溃或错误节命中。
             let start = s.rva as u64;
@@ -354,7 +354,7 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
     let mut out = Vec::new();
     // 遍历 IMAGE_IMPORT_DESCRIPTOR（20 字节/项，全零终止；上限 512 DLL 防御）
     for di in 0..512 {
-        // 目录基址越界即断（BUG-20261029-154 同族：checked 防 u32 加法溢出）
+        // 目录基址越界即断（同族：checked 防 u32 加法溢出）
         let desc_rva = match dir_rva.checked_add((di * 20) as u32) {
             Some(v) => v,
             None => break,
@@ -382,7 +382,7 @@ pub fn parse_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDll>, Pe
         } else {
             first_thunk
         };
-        // BUG-20261105-017：thunk 语义按 machine 分支——32 位 PE（0x14C）
+        // thunk 语义按 machine 分支——32 位 PE（0x14C）
         // 的 IMAGE_THUNK_DATA32 是 4 字节槽（stride ×4、u32 读、序号旗标
         // 0x8000_0000）；旧形态无条件按 64 位读会把相邻两个 32 位 thunk 拼
         // 成一个 u64、IAT 槽 RVA 跨度翻倍、序号判断用错掩码。
@@ -455,7 +455,7 @@ pub fn parse_pdata_file(file: &[u8], pe: &PeInfo) -> Option<Vec<(u32, u32)>> {
     (!out.is_empty()).then_some(out)
 }
 
-// ── B2 目录解析面（六解析器；磁盘文件形态，缺席 = None/空，绝不 panic）──
+// ── 目录解析面（六解析器；磁盘文件形态，缺席 = None/空，绝不 panic）──
 
 /// VA → RVA（镜像基址归一；低于基址的野 VA 诚实 None）。
 fn va_to_rva(va: u64, image_base: u64) -> Option<u32> {
@@ -488,7 +488,7 @@ pub fn parse_cfg_function_table(file: &[u8], pe: &PeInfo) -> Option<Vec<u32>> {
     }
     // 条目格式（GFIDS 表）：每条目 = 4 字节 LE RVA + GuardFlags 高 4 位字节的
     // 补充元数据（stride = 4 + meta）。真 PE 对质（Win11 notepad/cmd/where
-    // 探针）：131/142/8 条全读出升序 .text RVA；若按 8 字节 VA 读则全表无法
+    // 探针）：131/142/8 条全读出升序.text RVA；若按 8 字节 VA 读则全表无法
     // 映射回镜像——RVA 形态是唯一与真实二进制自洽的解读。
     let meta_bytes = ((flags >> 28) & 0xF) as usize;
     let stride = 4 + meta_bytes;
@@ -510,7 +510,7 @@ pub fn parse_cfg_function_table(file: &[u8], pe: &PeInfo) -> Option<Vec<u32>> {
 }
 
 /// TLS 目录回调数组（dd[9]）→ 回调函数 RVA 清单（隐藏入口种子：动态库
-/// 加载/DLL_PROCESS_ATTACH 前最先执行的用户代码，递归下降与 .pdata 都
+/// 加载/DLL_PROCESS_ATTACH 前最先执行的用户代码，递归下降与.pdata 都
 /// 不覆盖 TLS 回调）。AddressOfCallBacks 是 VA 指针数组（NULL 终止）。
 pub fn parse_tls_callbacks(file: &[u8], pe: &PeInfo) -> Option<Vec<u32>> {
     const OFF_CALLBACKS: usize = 24; // IMAGE_TLS_DIRECTORY64.AddressOfCallBacks
@@ -564,7 +564,7 @@ pub fn parse_delay_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDl
     for di in 0..512 {
         let desc_off = match dir_rva.checked_add((di * 32) as u32) {
             Some(v) => pe.rva_to_file_offset(v),
-            None => None, // 目录基址越界（BUG-20261029-154 同族）
+            None => None, // 目录基址越界（同族）
         };
         let desc_off = match desc_off {
             Some(o) => o,
@@ -598,7 +598,7 @@ pub fn parse_delay_imports_file(file: &[u8], pe: &PeInfo) -> Result<Vec<ImportDl
             }
         };
         let iat_rva = norm(iat_field, rva_form);
-        // BUG-20261105-017：thunk 语义按 machine 分支（同 parse_imports_file
+        // thunk 语义按 machine 分支（同 parse_imports_file
         // ——延迟导入名字表/IAT 同为 4 字节槽 / 32 位形态）。
         let is32 = pe.machine == 0x14C;
         let stride: u32 = if is32 { 4 } else { 8 };
@@ -657,7 +657,7 @@ pub struct DebugEntry {
 #[derive(Debug, Clone, Serialize)]
 pub struct DebugInfo {
     pub entries: Vec<DebugEntry>,
-    /// RSDS/NB10 CodeView 载荷里的 PDB 路径（缺席 None）。
+    /// RSDS/ CodeView 载荷里的 PDB 路径（缺席 None）。
     pub pdb_path: Option<String>,
 }
 
@@ -700,7 +700,7 @@ pub fn parse_debug_file(file: &[u8], pe: &PeInfo) -> Option<DebugInfo> {
             if let Some(p) = payload
                 && p.len() >= 24
             {
-                // RSDS：magic 4 + GUID 16 + age 4 → 路径；NB10：magic 4 + sig 4 + age 4 → 路径
+                // RSDS：magic 4 + GUID 16 + age 4 → 路径；magic 4 + sig 4 + age 4 → 路径
                 let (skip, ok_magic) = if &p[0..4] == b"RSDS" {
                     (24usize, true)
                 } else if &p[0..4] == b"NB10" {
@@ -800,7 +800,7 @@ pub struct RelocBlock {
     pub offsets: Vec<u16>,
 }
 
-/// 重定位表（dd[5]）解析产物。B2 只存表（v2 池 vtable 扫描先验），查询面
+/// 重定位表（dd[5]）解析产物。 只存表（v2 池 vtable 扫描先验），查询面
 /// 不暴露。
 #[derive(Debug, Clone, Serialize)]
 pub struct RelocTable {
@@ -821,7 +821,7 @@ pub fn parse_relocations_file(file: &[u8], pe: &PeInfo) -> Option<RelocTable> {
     // 块游标按目录起点 + 已消费 BlockSize 走；64 块 / 4MB 防御
     let mut cur = dir_rva;
     let end_rva = dir_rva.saturating_add(dir_size);
-    // 余量判边界而非 cur+8（BUG-20261029-154 同族：cur 可顶到 u32::MAX，
+    // 余量判边界而非 cur+8（同族：cur 可顶到 u32::MAX，
     // cur+8 debug panic）
     while end_rva.saturating_sub(cur) >= 8 && blocks.len() < 64 {
         let Some(off) = pe.rva_to_file_offset(cur) else {

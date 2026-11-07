@@ -56,7 +56,7 @@ fn paths_match(a: &Path, b: &Path) -> bool {
 #[cfg(windows)]
 fn pid_listening_on(addr: &str) -> Option<u32> {
     // CREATE_NO_WINDOW：gateway 托盘/无控制台运行（release windows 子系统，
-    // 2026-09-21）时，console 子进程 netstat 会各自弹新控制台（输出经
+    // ）时，console 子进程 netstat 会各自弹新控制台（输出经
     // .output() 收集，不受影响）。
     let mut cmd = std::process::Command::new("netstat");
     cmd.args(["-ano", "-p", "tcp"]);
@@ -67,7 +67,7 @@ fn pid_listening_on(addr: &str) -> Option<u32> {
     }
     let out = cmd.output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
-    // Line shape: "  TCP    127.0.0.1:3310    0.0.0.0:0    LISTENING    1234"
+    // Line shape: " TCP 127.0.0.1:3310 0.0.0.0:0 LISTENING 1234"
     for line in text.lines() {
         let p: Vec<&str> = line.split_whitespace().collect();
         if p.len() >= 5 && p[0] == "TCP" && p[3] == "LISTENING" && p[1] == addr {

@@ -1,5 +1,5 @@
 //! U-B 探针纯函数单测。探针主循环（tokio 循环 + provider 裸调用）与
-//! resume 全链路属集成面——V15 E2E 真机演练覆盖（GLM 端口改错 → 封存 →
+//! resume 全链路属集成面—— E2E 真机演练覆盖（GLM 端口改错 → 封存 →
 //! 恢复 → 探针解封续做）；此处只钉可独立判定的决策函数。
 
 use super::{probe_tick_secs, resume_dispatchable};

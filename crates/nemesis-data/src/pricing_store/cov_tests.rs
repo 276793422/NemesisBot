@@ -106,12 +106,12 @@ fn downloaded_layer_loads_and_lookups() {
     assert_eq!(store.lookup("dl-model").expect("hit").model_id, "dl-model");
 }
 
-/// BUG-HUNT R11：upsert_custom / remove_custom 写盘失败（磁盘满 / 权限 /
+/// upsert_custom / remove_custom 写盘失败（磁盘满 / 权限 /
 /// AV 锁）不得清空内存自定义层。原实现 `mem::take` 后
 /// `write_json_atomic(...)?` 提前返回——磁盘旧文件完好，内存层却被清空，
 /// pricing 查表静默丢失全部自定义覆盖直到进程重启（remove 的 no-op 分支
 /// 注释「没删东西也要把 take 走的还回去」证明还回义务已知，唯独漏了写盘
-/// 失败路径）。阻断写盘的手法（BUG-20261025-51 后写路径委托唯一临时名
+/// 失败路径）。阻断写盘的手法（后写路径委托唯一临时名
 /// 权威 helper，固定 `.tmp` 路径预置注入失效）：目标文件
 /// `pricing_custom.json` 本体预置为目录，helper 的 rename 落盘必失败
 ///（目录不可被文件 rename 替换）。

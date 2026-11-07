@@ -120,7 +120,7 @@ fn get_config_node_list(config: &HashMap<String, serde_json::Value>, key: &str) 
 ///
 /// The slot starts empty (so unit tests and embedded deployments work
 /// without a database) and is populated once via
-/// [`crate::engine::WorkflowEngine::set_usage_store`].
+/// [`crate::engine:WorkflowEngine::set_usage_store`].
 pub type UsageStoreSlot = Arc<parking_lot::RwLock<Option<Arc<nemesis_data::DataStore>>>>;
 
 /// Construct a fresh empty slot. Used by the engine and by tests that don't
@@ -159,7 +159,7 @@ fn record_llm_usage(
         started_at.timestamp_nanos_opt().unwrap_or(0),
         counter
     );
-    // A3：分项计价 + 实际命中条目名（未命中 → 空名 + 全 0）。工作流节点
+    // 分项计价 + 实际命中条目名（未命中 → 空名 + 全 0）。工作流节点
     // 没有 session_key（DAG 上下文非会话），记空串；TTFT 无流式通路记 NULL。
     let in_toks = usage.prompt_tokens;
     let out_toks = usage.completion_tokens;
@@ -316,7 +316,7 @@ impl NodeExecutorRegistry {
 
     /// Register a custom executor for a node type. Overwrites any existing
     /// executor for the same type. Safe to call through shared reference
-    /// (e.g. `Arc<WorkflowEngine>::node_executors.register(...)`) thanks to
+    /// (e.g. `Arc<WorkflowEngine>:node_executors.register(...)`) thanks to
     /// interior mutability.
     pub fn register(&self, node_type: &str, executor: Arc<dyn NodeExecutor>) {
         self.executors
@@ -734,8 +734,8 @@ async fn execute_inline_node(
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：按节点域分文件。纯代码搬家，行为零变更；
-// 各子模块 pub 项经 pub use 保持原 nodes:: 路径不变。
+// 机械拆分：按节点域分文件。纯代码搬家，行为零变更；
+// 各子模块 pub 项经 pub use 保持原 nodes:路径不变。
 // ---------------------------------------------------------------------------
 mod control;
 mod io;

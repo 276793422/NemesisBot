@@ -1,4 +1,4 @@
-//! S7 冲刺覆盖测试：process/manager.rs 的 spawn_wait_for_result 路径 —
+//! 冲刺覆盖测试：process/manager.rs 的 spawn_wait_for_result 路径 —
 //! approval.submit 通知处理器在「无结果通道」时的警告分支、有通道时的
 //! 投递、以及 shutdown 信号分支。
 //!

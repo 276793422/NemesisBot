@@ -1,13 +1,13 @@
-//! Tests for `vad`（S12 覆盖率冲刺，2026-08-26）。
+//! Tests for `vad`（覆盖率冲刺，2026-08-26）。
 //!
 //! 可达面：`VadEngine::new` 缺模型 fail-fast；全套夹具下的
 //! #[repr(C)] 结构构造（SileroVad / TenVad / VadModelConfig）→ 无 DLL 时在
 //! FFI 符号查找处 panic（不加载任何真 DLL）。
 //!
-//! R6（2026-08-27）修订：S12 原把 accept_waveform / is_speech_detected /
+//! （2026-08-27）修订： 原把 accept_waveform / is_speech_detected /
 //! is_empty / front / pop / flush / reset / Drop 归为「结构性豁免」——过保守。
 //! 同 crate 测试可以**白盒构造** `VadEngine { vad: null }`（字段私有但子模块
-//! 可见），每个包装方法都会执行到 FFI 符号查找处 panic——参数封送代码真实
+//! 可），每个包装方法都会执行到 FFI 符号查找处 panic——参数封送代码真实
 //! 走过。真正剩下的不可达只有：`new` 的 `is_null → bail` 臂（创建调用在
 //! panic 前不会返回 null）和各方法的**成功返回值语义**（需要真 DLL + 真模型）。
 
@@ -43,7 +43,7 @@ fn vad_new_missing_model_bails() {
 
 #[test]
 fn vad_new_zero_window_size_bails_before_ffi() {
-    // window_size=0 构造期拒绝（BUG-HUNT R27）：0 窗口会让 SileroVoiceDetector
+    // window_size=0 构造期拒绝：0 窗口会让 SileroVoiceDetector
     // 的喂窗循环死循环——drain(..0) 空集不消耗缓冲、`len() >= 0` 恒真，管线
     // 线程忙循环卡死。模型在场（避免先撞 model not found）也必须 Err 且不触
     // FFI 符号查找 panic。
@@ -80,7 +80,7 @@ fn vad_new_nondefault_params_builds_structs_until_ffi() {
 }
 
 // ---------------------------------------------------------------------------
-// R6（2026-08-27）：白盒 null 引擎 → 各包装方法的封送代码走到 FFI 符号查找。
+// 白盒 null 引擎 → 各包装方法的封送代码走到 FFI 符号查找。
 // 注意：这些测试**不能**用 `#[should_panic]`——VadEngine 的 Drop 同样在 null
 // 上 panic，展开时析构再 panic = 双 panic → fail-fast 击穿进程。统一
 // `catch_panic_msg`（闭包边界截住展开）+ `mem::forget`（跳过析构），见

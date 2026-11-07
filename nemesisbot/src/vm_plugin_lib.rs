@@ -1,4 +1,4 @@
-//! plugin-vm 库查找 + v4 签名闸——**兼容薄壳**（QUIC 插件化 M1 泛化）。
+//! plugin-vm 库查找 + v4 签名闸——**兼容薄壳**（QUIC 插件化 泛化）。
 //!
 //! 真相源已上移 [`crate::plugin_lib`]（按 [`PluginLibSpec`] 参数化：
 //! VM / Roaming 两个插件臂共用查找链与签名裁决）；本模块只保留 VM

@@ -21,7 +21,7 @@ thread_local! {
 }
 
 /// Set a progress callback for the current thread's download operations.
-/// Called with messages like "model.onnx ... 70% (217.4/310.5 MB, 7066 KB/s)".
+/// Called with messages like "model.onnx... 70% (217.4/310.5 MB, 7066 KB/s)".
 pub fn set_progress(cb: Option<Box<dyn Fn(&str) + Send + 'static>>) {
     PROGRESS_CB.with(|p| *p.borrow_mut() = cb);
 }
@@ -34,7 +34,7 @@ fn report_progress(msg: &str) {
     });
 }
 
-/// 把模型清单的 `local` 字段钉死在模型目录内（BUG-20261101-269）。
+/// 把模型清单的 `local` 字段钉死在模型目录内。
 ///
 /// 拒绝：空 / 绝对路径 / 盘符或冒号 / 根前缀 / 任何非 Normal 组件
 /// （`..`、`.`）；反斜杠先归一为 `/`。同族位点全部有闸（image_gen
@@ -115,9 +115,9 @@ pub fn ensure_stt_model(cfg: &AppConfig) -> Result<PathBuf> {
         model_name
     ))?;
     if source.files.is_empty() {
-        // BUG-20261029-148：`files = []` 是合法 TOML（serde 不拒），此前零跑
+        // `files = []` 是合法 TOML（serde 不拒），此前零跑
         // 下载后无条件 Ok(dir)——Ready 假成功（目录恒空，下游装载必炸且伪装成
-        // 已就绪）。与 ensure_vad_model（BUG-20261029-145）及
+        // 已就绪）。与 ensure_vad_model及
         // model_source_installed「空 files = 无法验证 = 未安装」判据对齐。
         anyhow::bail!(
             "STT model source '{}' declares no files in config [models.sources]; add the file list",
@@ -137,7 +137,7 @@ pub fn ensure_stt_model(cfg: &AppConfig) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Ensure streaming STT model is ready (realtime P1 W1). Returns the model directory.
+/// Ensure streaming STT model is ready (realtime). Returns the model directory.
 pub fn ensure_stt_stream_model(cfg: &AppConfig) -> Result<PathBuf> {
     let model_name = &cfg.stt_stream.model_name;
     let dir = cfg.model_dir().join("stt_stream").join(model_name);
@@ -174,7 +174,7 @@ pub fn ensure_stt_stream_model(cfg: &AppConfig) -> Result<PathBuf> {
         model_name
     ))?;
     if source.files.is_empty() {
-        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 同 ensure_stt_model——空 files 零跑下载后
         // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
         anyhow::bail!(
             "Streaming STT model source '{}' declares no files in config [models.sources]; add the file list",
@@ -194,7 +194,7 @@ pub fn ensure_stt_stream_model(cfg: &AppConfig) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// 只探测不下载：流式 STT 模型四件套齐才返回目录（realtime P1 管线启动用）。
+/// 只探测不下载：流式 STT 模型四件套齐才返回目录（realtime 管线启动用）。
 /// 缺件 = None——管线侧 warn 降级为仅离线识别，**绝不在这里触发下载**
 /// （60s 级下载阻塞采集线程；安装走 install_model 的显式入口）。
 pub fn probe_stt_stream_model(cfg: &AppConfig) -> Option<PathBuf> {
@@ -250,7 +250,7 @@ pub fn ensure_vad_model(cfg: &AppConfig) -> Result<PathBuf> {
         model_name
     ))?;
     if source.files.is_empty() {
-        // BUG-20261029-145：`files = []` 是合法 TOML 值（serde 不拒），此处
+        // `files = []` 是合法 TOML 值（serde 不拒），此处
         // 裸索引 files[0] 曾在下载空跑后 panic（index out of bounds），报错
         // 零引导性。诚实 bail 指向 config 修复路径；与 model_source_installed
         // 「空 files = 无法验证 = 未安装」的判据一致。
@@ -308,7 +308,7 @@ pub fn ensure_tts_model(cfg: &AppConfig) -> Result<PathBuf> {
         model_name
     ))?;
     if source.files.is_empty() {
-        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 同 ensure_stt_model——空 files 零跑下载后
         // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
         anyhow::bail!(
             "TTS model source '{}' declares no files in config [models.sources]; add the file list",
@@ -360,7 +360,7 @@ pub fn ensure_punct_model(cfg: &AppConfig) -> Result<PathBuf> {
         model_name
     ))?;
     if source.files.is_empty() {
-        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 同 ensure_stt_model——空 files 零跑下载后
         // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
         anyhow::bail!(
             "Punctuation model source '{}' declares no files in config [models.sources]; add the file list",
@@ -416,7 +416,7 @@ pub fn ensure_speaker_model(cfg: &AppConfig) -> Result<PathBuf> {
         model_name
     ))?;
     if source.files.is_empty() {
-        // BUG-20261029-148：同 ensure_stt_model——空 files 零跑下载后
+        // 同 ensure_stt_model——空 files 零跑下载后
         // 无条件 Ok(dir) = Ready 假成功；诚实 bail 对齐 VAD（BUG-145）判据。
         anyhow::bail!(
             "Speaker model source '{}' declares no files in config [models.sources]; add the file list",
@@ -437,12 +437,12 @@ pub fn ensure_speaker_model(cfg: &AppConfig) -> Result<PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Install-by-name 通路（模型设置弹窗，2026-10-25）
+// Install-by-name 通路（模型设置弹窗）
 // ---------------------------------------------------------------------------
 
-/// Per-source 安装态判定（`voice.model_catalog` / `voice.set_model` 的单一真相源）：
+/// Per-source 安装态判定（`voice.model_catalog` / `voice.set_model` 的统一定义）：
 /// 该 (category, name) source 声明的全部文件都已落地且非空目录布局成立——与
-/// `ensure_model_core` 的本地命中同判（弱于「任一 .onnx 在场」的子目录扫描，
+/// `ensure_model_core` 的本地命中同判（弱于「任一.onnx 在场」的子目录扫描，
 /// 半截下载不会误报已安装）。空 files 列表 = 无法验证 = 未安装。
 pub fn model_source_installed(cfg: &AppConfig, category: &str, name: &str) -> bool {
     let Some(source) = cfg
@@ -544,7 +544,7 @@ fn ensure_model_core(cfg: &AppConfig, category: &str, model_name: &str) -> Resul
 /// 整个下载体在独立 std 线程上执行：reqwest::blocking 的 Client 在函数返回时
 /// drop，其内部 runtime 的关闭需要 block——调用线程若在 tokio runtime context
 /// （CLI `voice download` 的 main.rs 同步段、网关语音管线 create_detector），
-/// drop 即 panic（BUG-20261029-146；bootstrap.rs 运行库下载有同坑的独立线程
+/// drop 即 panic（bootstrap.rs 运行库下载有同坑的独立线程
 /// 先例）。thread_local 进度回调 take-and-move 进下载线程（Box 装回新线程的
 /// thread_local），调用方 set_progress 的 SSE 进度链路保持不变。
 #[cfg(feature = "download")]
@@ -747,7 +747,7 @@ fn download_file_resume(
                 .with_context(|| format!("Failed to rename {}", display_name))?;
             return Ok(());
         }
-        // Server didn't support Range — fall through to full download, overwrite .part
+        // Server didn't support Range — fall through to full download, overwrite.part
     }
 
     // Full download

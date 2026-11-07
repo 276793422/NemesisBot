@@ -43,20 +43,20 @@ pub struct AnthropicConfig {
     pub default_model: String,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
-    /// 出站代理 URL（代理接线修复 2026-09-17）：http/socks5（reqwest
+    /// 出站代理 URL（代理接线修复）：http/socks5（reqwest
     /// `Proxy::all`）；None = 直连。来自模型条目 `proxy` 字段，经
     /// FactoryConfig 透传。格式非法时 warn 回落直连（与 HttpProvider 同
     /// 策略——启动不能被一个坏代理 URL 杀死）。
     #[serde(default)]
     pub proxy: Option<String>,
-    /// per-model 流式开关（2026-10-13 stream 键）：空（auto）= 维持非流式
+    /// per-model 流式开关（stream 键）：空（auto）= 维持非流式
     /// （现状）；"yes" = `chat()` 内部走流式（聚合固有 `chat_stream`，对外
     /// 签名不变）——非流式请求等完整补全才回响应头，推理型模型 + 大上下文
     /// 会撞中转链路 ~120s 墙钟（gpt-5.6-sol 风暴根因，anthropic lane 同墙）。
     /// 经 FactoryConfig.stream_mode 透传，构造期消费。
     #[serde(default)]
     pub stream_mode: String,
-    /// per-model 缓存断点显式化（B13，2026-10-18 B 级清零）：true 时在
+    /// per-model 缓存断点显式化：true 时在
     /// request body 的 tools 清单尾 + system 尾各注入
     /// `cache_control:{type:"ephemeral"}`（Anthropic prompt caching 是手动
     /// 断点语义——无断点 = 零缓存命中，长 system prompt + 大工具清单每轮
@@ -66,8 +66,8 @@ pub struct AnthropicConfig {
     pub cache_breakpoints: bool,
 }
 
-// P3A 超时对齐（2026-09-12）：120s 曾与 openai 兼容 lane 的 600s 口径分裂
-// （超时阶梯「provider 单请求 600s」只对 http lane 成立）——双端真机 S2 评审
+// P3A 超时对齐：120s 曾与 openai 兼容 lane 的 600s 口径分裂
+// （超时阶梯「provider 单请求 600s」只对 http lane 成立）——双端真机 评审
 // LLM 连续精确 120.01s 超时的根因。全 lane 统一 600s，per-model 可经模型
 // 条目 extra `timeout_secs` 覆盖（provider_resolver → FactoryConfig 透传）。
 fn default_timeout() -> u64 {
@@ -124,7 +124,7 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(mut config: AnthropicConfig) -> Self {
-        // base_url 构造期归一（2026-10-23）：本 lane chat() 自拼 `/v1/messages`，
+        // base_url 构造期归一：本 lane chat() 自拼 `/v1/messages`，
         // 而 preset 推断默认（anthropic/claude 前缀）带 `/v1` 尾缀，factory 原样
         // 传入 → `/v1/v1/messages` 每次 404。归一收在构造边界，任何构造方自动安全。
         config.base_url = normalize_base_url(&config.base_url);
@@ -201,7 +201,7 @@ impl AnthropicProvider {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
-                    // 回归 F1 防御：system 位不支持图像 Parts，raw 序列化会产出
+                    // 回归 防御：system 位不支持图像 Parts，raw 序列化会产出
                     // wire 非法块。system 是内部指令位（无"用户附带"语义），
                     // 取纯文本视图即可，与 codex system 分支同语义。
                     system_parts.push(serde_json::json!({
@@ -211,8 +211,8 @@ impl AnthropicProvider {
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // Tool result。D7 同族降级（回归 F1）：tool_result 在本实现
-                        // 只承载文本（图像进 tool_result 属 Phase 5），Parts 走
+                        // Tool result。 同族降级（回归）：tool_result 在本实现
+                        // 只承载文本（图像进 tool_result 属），Parts 走
                         // 文本视图 + 诚实注记，防 raw 序列化产出非法 wire 块。
                         api_messages.push(serde_json::json!({
                             "role": "user",
@@ -235,7 +235,7 @@ impl AnthropicProvider {
                     if !msg.tool_calls.is_empty() {
                         let mut content: Vec<serde_json::Value> = Vec::new();
                         if !msg.content.is_empty() {
-                            // D7 同族降级（回归 F1）：assistant 不产出图像，Parts
+                            // 同族降级（回归）：assistant 不产出图像，Parts
                             // 降级为文本视图 + 诚实注记。
                             content.push(serde_json::json!({
                                 "type": "text",
@@ -248,14 +248,14 @@ impl AnthropicProvider {
                                 .as_deref()
                                 .or_else(|| tc.function.as_ref().map(|f| f.name.as_str()))
                                 .unwrap_or("");
-                            // 参数单一真相源 = function.arguments（String JSON）：
+                            // 参数单一权威 = function.arguments（String JSON）：
                             // LlmProvider 桥（llm_bridge::agent_message_to_provider /
                             // CLI agent adapter）只填这一份（arguments: None），
                             // OpenAI lane 的共享序列化同样只发它。此前这里只读
                             // HashMap 版 `tc.arguments` → 桥场景历史 assistant
                             // tool_use input 恒 `{}`，模型下一轮模仿历史空参形态
-                            //（UAT U3 glm-5.3-flash「write 后 exec 空参」根因，
-                            // 2026-09-15 wire 抓包实锤：响应参数完整、进历史即丢）。
+                            //（UAT glm-5.3-flash「write 后 exec 空参」根因，
+                            // wire 抓包实锤：响应参数完整、进历史即丢）。
                             // 解析失败/缺失时回退 HashMap 版（部分内部路径直填），
                             // 非 object 结果不采纳（anthropic wire 要求 input 为
                             // object），两者皆缺才 {}。
@@ -288,7 +288,7 @@ impl AnthropicProvider {
                             "content": content
                         }));
                     } else {
-                        // D7 同族降级（回归 F1）：同上，Parts 防非法 wire 块。
+                        // 同族降级（回归）：同上，Parts 防非法 wire 块。
                         api_messages.push(serde_json::json!({
                             "role": "assistant",
                             "content": msg.content.to_prompt_text_with_image_note()
@@ -297,8 +297,8 @@ impl AnthropicProvider {
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // D7 同族降级（回归 F1）：同 user tool_result，Parts 走
-                        // 文本视图 + 诚实注记（图像进 tool_result 属 Phase 5）。
+                        // 同族降级（回归）：同 user tool_result，Parts 走
+                        // 文本视图 + 诚实注记（图像进 tool_result 属）。
                         api_messages.push(serde_json::json!({
                             "role": "user",
                             "content": [{
@@ -333,7 +333,7 @@ impl AnthropicProvider {
             body["tools"] = serde_json::json!(translate_tools(tools));
         }
 
-        // B13（cache_breakpoints，2026-10-18 B 级清零）：Anthropic prompt
+        // （cache_breakpoints）：Anthropic prompt
         // caching 是手动断点语义，无断点 = 零缓存命中（长 system prompt +
         // 大工具清单每轮全价重算）。开启时在两个稳定前缀的尾部各放一个
         // ephemeral 断点：tools 清单尾 + system 尾（官方推荐顺序 tools →
@@ -377,38 +377,40 @@ impl AnthropicProvider {
             }
         }
 
-        // H4 (U16 half): reasoning effort → Anthropic extended-thinking
+        // (half): reasoning effort → Anthropic extended-thinking
         // budget. Anthropic has no "effort" wire field; it takes
         // `thinking: {type: "enabled", budget_tokens: N}`. Tier→budget is a
-        // FIXED documented mapping (low=1024 / medium=4096 / high=16384) —
-        // budgets must stay well under max_tokens, and these leave headroom
-        // under the 4096 default.
+        // FIXED documented mapping (low=1024 / medium=4096 / high=16384).
+        //
+        // BUG-20261107-003：Anthropic wire 约束 budget_tokens 必须**严格小于**
+        // max_tokens（违反 = 400 invalid_request_error，报文点名 thinking——
+        // 非流式 chat() 的剥块自愈会把它误判为 adaptive-only 端点、静默丢掉
+        // reasoning effort 并白烧一个 RTT；流式路径无自愈直接硬失败）。映射值
+        // ≥ max_tokens 时收敛到 max_tokens/2（思考 token 计入 max_tokens，
+        // 贴顶预算会把正文挤到个位数 token，留一半给答案）；max_tokens/2
+        // 容不下 API 下限 1024 时诚实不发 thinking 块。合法请求（映射值 <
+        // max_tokens）字节零改动，保 prompt cache。
         //
         // "off" = aux 杂务通道的显式禁思考标记（bypass_llm::aux_chat_options
         // 等组装点；aux_chat_options 的注释记载值空间专用化依据）→ 发
         // `thinking: {type: "disabled"}`——不发块的旧语义留给服务端默认，
         // 而 GLM 等兼容端点默认开思考，思考 token 计入 max_tokens 会烧穿
-        // 杂务预算（2026-09-28 真机 mt=64 5/5 空输出实证）。unknown 值
+        // 杂务预算（真机 mt=64 5/5 空输出实证）。unknown 值
         // 仍发空（不猜）。主循环 effort 只会是 low/medium/high/None。
         if let Some(ref effort) = options.reasoning_effort {
             match effort.as_str() {
-                "low" => {
-                    body["thinking"] = serde_json::json!({
-                        "type": "enabled",
-                        "budget_tokens": 1024usize
-                    });
-                }
-                "medium" => {
-                    body["thinking"] = serde_json::json!({
-                        "type": "enabled",
-                        "budget_tokens": 4096usize
-                    });
-                }
-                "high" => {
-                    body["thinking"] = serde_json::json!({
-                        "type": "enabled",
-                        "budget_tokens": 16384usize
-                    });
+                tier @ ("low" | "medium" | "high") => {
+                    let mapped: i64 = match tier {
+                        "low" => 1024,
+                        "medium" => 4096,
+                        _ => 16384,
+                    };
+                    if let Some(budget) = Self::thinking_budget_under_max(mapped, max_tokens) {
+                        body["thinking"] = serde_json::json!({
+                            "type": "enabled",
+                            "budget_tokens": budget
+                        });
+                    }
                 }
                 "off" => {
                     body["thinking"] = serde_json::json!({ "type": "disabled" });
@@ -420,10 +422,25 @@ impl AnthropicProvider {
         body
     }
 
+    /// BUG-20261107-003：把 effort 映射的 thinking 预算收敛进 Anthropic
+    /// wire 约束——`budget_tokens` 必须严格小于 `max_tokens`（API 下限 1024，
+    /// 违反 = 400 invalid_request_error）。映射值合法（< max_tokens）时原值
+    /// 返回（请求字节不变）；超限时取 `max_tokens / 2`（思考 token 计入
+    /// max_tokens 预算，贴顶会把正文挤到个位数 token，留一半给答案）；
+    /// `max_tokens / 2` 也容不下 1024 下限（max_tokens < 2048）时返 None =
+    /// 调用方不发 thinking 块（天花板容不下思考，诚实降级不伪装）。
+    fn thinking_budget_under_max(mapped: i64, max_tokens: i64) -> Option<i64> {
+        if mapped < max_tokens {
+            return Some(mapped);
+        }
+        let half = max_tokens / 2;
+        if half >= 1024 { Some(half) } else { None }
+    }
+
     /// Anthropic Messages API 非流式 POST（headers 与流式路径同源：
-    /// x-api-key + anthropic-version 2023-06-01 + JSON）。send 失败诚实
-    /// 映射（2026-10-13）：真超时→Timeout；DNS/连接拒绝等传输错误→
-    /// Unknown + "connect error: <根因链>"（可 failover，J1 同族）。
+    /// x-api-key + anthropic-version + JSON）。send 失败诚实
+    /// 映射：真超时→Timeout；DNS/连接拒绝等传输错误→
+    /// Unknown + "connect error: <根因链>"（可 failover， 同族）。
     async fn post_messages(
         client: &reqwest::Client,
         url: &str,
@@ -442,7 +459,7 @@ impl AnthropicProvider {
             .map_err(|e| transport_error("anthropic", model, &e))
     }
 
-    /// Anthropic Messages API 流式请求（B 根修 2026-09-17）。
+    /// Anthropic Messages API 流式请求（B 根修）。
     ///
     /// wire：POST {base}/v1/messages + `stream: true`，SSE 事件族
     /// （message_start / content_block_start / content_block_delta /
@@ -453,7 +470,7 @@ impl AnthropicProvider {
     /// 其余→stop），随 message_stop 发终态 chunk 并按 block 顺序 flush
     /// tool_calls；usage = message_start 的 input_tokens（含 cache 维度）+
     /// message_delta 的 output_tokens。EOF 无 message_stop 合成终态 chunk
-    ///（对齐 HttpProvider 语义）；流读错误 → Timeout（可 failover，J1 同族）；
+    ///（对齐 HttpProvider 语义）；流读错误 → Timeout（可 failover， 同族）；
     /// error 事件 → Format（overloaded_error → Overloaded）。
     /// 注：本流式路径**没有** thinking 块 wire 兼容回退（adaptive-only 端点
     /// 加用户显式 effort 档仍会 400——既有行为，非杂务通道回归面；杂务全走
@@ -500,7 +517,7 @@ impl AnthropicProvider {
             {
                 Ok(r) => r,
                 Err(e) => {
-                    // 诚实化（2026-10-13）：真超时→Timeout；其余传输错误→
+                    // 诚实化：真超时→Timeout；其余传输错误→
                     // Unknown + "connect error: <根因链>"（不伪装）。
                     let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
                     return;
@@ -534,7 +551,7 @@ impl AnthropicProvider {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             if content_type.contains("application/json") {
-                // body 读传输失败诚实上抛（BUG-20261029-153 同族）：空串会让
+                // body 读传输失败诚实上抛（同族）：空串会让
                 // 下方 from_str 落 Format 伪装应用层错误，fallback 链不轮转。
                 // unwrap_or_default 只留给 4xx 路径（状态码本身已定类）。
                 let raw = match resp.text().await {
@@ -606,7 +623,7 @@ impl AnthropicProvider {
             let mut stream = resp.bytes_stream();
             use futures::StreamExt;
             let mut buffer = String::new();
-            // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符，BUG-HUNT R38）。
+            // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符）。
             let mut utf8_pending: Vec<u8> = Vec::new();
             // index -> (tool_use id, name, 累积 partial_json)
             let mut pending_tools: HashMap<usize, (String, String, String)> = HashMap::new();
@@ -619,7 +636,7 @@ impl AnthropicProvider {
             let mut stop_reason: Option<String> = None;
             let mut accumulated_reasoning = String::new();
 
-            // 墙钟约束（2026-10-16 NB-123 实证根修，与 http_provider 同门）：
+            // 墙钟约束（实证根修，与 http_provider 同门）：
             // reqwest client 级 `.timeout()` 在 `bytes_stream()` 读路径不兜底
             // ——上游静默停流时整个任务在 `stream.next()` 挂死。以「请求起点
             // + timeout_secs」为绝对墙钟线，到线即 Timeout（可重试/可故障
@@ -665,13 +682,13 @@ impl AnthropicProvider {
                             error = %e,
                             "[Provider] Anthropic SSE stream read error"
                         );
-                        // 诚实化（2026-10-13）：客户端超时→Timeout；其余
+                        // 诚实化：客户端超时→Timeout；其余
                         // 读错误→Unknown + "connect error: <根因链>"。
                         let _ = tx.send(Err(transport_error("anthropic", &model, &e))).await;
                         return;
                     }
                 };
-                // 增量解码（R38）：劈在 chunk 边界上的多字节字符先 holdback，
+                // 增量解码：劈在 chunk 边界上的多字节字符先 holdback，
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
@@ -812,7 +829,7 @@ impl AnthropicProvider {
                                 .pointer("/error/message")
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("stream error");
-                            // BUG-20261103-351：流内 error 事件与真相源同判
+                            // 流内 error 事件与真相源同判
                             //（llm_error_class / from_status 同门语义）——此前除
                             // overloaded_error 外全砸 Format（不可重试，fallback
                             // 放弃轮转），rate_limit_error / api_error 等瞬态故障
@@ -968,11 +985,11 @@ fn anthropic_final_chunk(
 }
 
 /// 单条消息 content → Anthropic Messages API content 值：
-/// - `Text`  → JSON 字符串（字节兼容现网请求，prompt cache 前缀不变）
+/// - `Text` → JSON 字符串（字节兼容现网请求，prompt cache 前缀不变）
 /// - `Parts` → blocks 数组：Text → `{"type":"text",text}`；
 ///   Base64 图 → `{"type":"image","source":{"type":"base64",media_type,data}}`；
 ///   Url 图 → `{"type":"image","source":{"type":"url",url}}`。
-///   （Anthropic image block 无 detail 字段——D2 透传仅 OpenAI 形态适用。）
+///   （Anthropic image block 无 detail 字段—— 透传仅 OpenAI 形态适用。）
 fn anthropic_content_value(content: &crate::types::MessageContent) -> serde_json::Value {
     match content {
         crate::types::MessageContent::Text(_) => {
@@ -1130,7 +1147,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
             completion_tokens: completion,
             total_tokens: prompt + completion,
             // cached_tokens is intentionally None here; Anthropic uses cache_read_tokens
-            // instead. The fallback chain in loop_executor.rs uses .or(cached_tokens).
+            // instead. The fallback chain in loop_executor.rs uses.or(cached_tokens).
             cached_tokens: None,
             cache_creation_tokens: cache_creation,
             cache_read_tokens: cache_read,
@@ -1158,7 +1175,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
     }
 }
 
-/// thinking 块 wire 兼容回退判定（2026-09-28 aux 杂务通道回归根修）：
+/// thinking 块 wire 兼容回退判定（aux 杂务通道回归根修）：
 /// adaptive-thinking-only 模型（新 Claude 系，思考走服务端自适应）拒绝
 /// **一切**显式 thinking 块——enabled 与 disabled 皆 400。三条件缺一
 /// 不可：请求确实带了 thinking 块 + 4xx + 错误体点名 thinking 字段，
@@ -1192,7 +1209,7 @@ impl LLMProvider for AnthropicProvider {
         model: &str,
         options: &ChatOptions,
     ) -> Result<LLMResponse, FailoverError> {
-        // per-model `stream` 键（2026-10-13）：`yes` = 内部流式化——复用固有
+        // per-model `stream` 键：`yes` = 内部流式化——复用固有
         // `chat_stream`（SSE 解析/tool_calls 累积/usage 全同源）聚合为非流式
         // `LLMResponse`，`chat()` 对调用方签名不变。语义对齐 protocol：构造期
         // 消费，改条目需重新设默认或重启。auto（缺省）维持非流式现状。
@@ -1224,7 +1241,7 @@ impl LLMProvider for AnthropicProvider {
             // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
             let retry_after = crate::failover::retry_after_from_headers(resp.headers());
             let text = resp.text().await.unwrap_or_default();
-            // thinking 块 wire 兼容回退（2026-09-28 复查二轮发现）：adaptive-only
+            // thinking 块 wire 兼容回退（复查二轮发现）：adaptive-only
             // 模型（新 Claude 系）拒绝**一切**显式 thinking 块（400，enabled 与
             // disabled 皆然）——aux 杂务的 `thinking:{type:"disabled"}` 在这类
             // 模型上会从「服务端默认自适应思考」退化成两次 400 后诚实失败。
@@ -1266,7 +1283,7 @@ impl LLMProvider for AnthropicProvider {
             }
         }
 
-        // body 读取与 JSON 解析拆分（BUG-20261029-153）：resp.json() 一步把
+        // body 读取与 JSON 解析拆分：resp.json() 一步把
         // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
         // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
         // （可重试，与 send/SSE 读路径同判）；解析失败→Format 带 body 摘要
@@ -1295,7 +1312,7 @@ impl LLMProvider for AnthropicProvider {
         model: &str,
         options: &ChatOptions,
     ) -> tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>> {
-        // trait 投影（B 根修 2026-09-17）：trait 默认实现是「不支持」，anthropic
+        // trait 投影（B 根修）：trait 默认实现是「不支持」，anthropic
         // lane 在此接通真流式（此前该协议整条 lane 无流式能力）。完全限定调用
         // 解析到本类型固有 impl。
         AnthropicProvider::chat_stream(self, messages, tools, model, options)
@@ -1303,7 +1320,7 @@ impl LLMProvider for AnthropicProvider {
 
     fn stream_preferred(&self, _model: &str) -> bool {
         // 与 chat() 的内部切换同判据（986 行）：anthropic lane auto = 非流式
-        // （2026-10-13 stream 键语义），显式 yes 才流式。
+        // （stream 键语义），显式 yes 才流式。
         self.config.stream_mode == "yes"
     }
 

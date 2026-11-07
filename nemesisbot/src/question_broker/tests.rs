@@ -1,4 +1,4 @@
-//! F7：WebQuestionBroker 单元测试。
+//! WebQuestionBroker 单元测试。
 //!
 //! 覆盖八条路径：作答送达 + pending 清理 / 超时 Timeout 结局 + 迟到 respond
 //! unknown / 双 respond 竞速先到先得 / 载荷校验（空选择、非候选、单选多项
@@ -6,7 +6,7 @@
 //! （QuestionAsked 载荷 + QuestionResolved answered/timeout 两路）。等待侧
 //! 测试在纯同步线程跑（走 `recv` 直等分支）。
 //!
-//! B8（提问两形态）：表单作答送达（AnsweredForm）+ 表单校验（未知键/必填
+//! （提问两形态）：表单作答送达（AnsweredForm）+ 表单校验（未知键/必填
 //! 空缺/select 非候选——留卡可重试）+ 两形态互斥守卫（选项卡收表单作答
 //! 或反之诚实报错）+ trim 规约与可选空值剔除 + 广播/pending 携带 fields。
 //!
@@ -37,7 +37,7 @@ fn make_req(id: &str, multi: bool) -> QuestionRequest {
     }
 }
 
-/// B8：表单形态请求（select 必填 + text 可选 + select 可选三字段）。
+/// 表单形态请求（select 必填 + text 可选 + select 可选三字段）。
 fn make_form_req(id: &str) -> QuestionRequest {
     QuestionRequest {
         question_id: id.to_string(),
@@ -90,7 +90,7 @@ fn broker_with_events() -> (
 
 /// 在独立线程发起提问（模拟工具 spawn_blocking 上下文）。
 ///
-/// §2 免打扰短路测试会置换进程级 APPROVAL_AUTO 槽（nemesis-web 全局态）
+/// 免打扰短路测试会置换进程级 APPROVAL_AUTO 槽（nemesis-web 全局态）
 /// ——所有 ask 路径统一在 crate 级 APPROVAL_AUTO_SLOT_LOCK 下跑（board_bus
 /// 置换测试同锁），避免与置换窗口交叠 flake。
 fn slot_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -117,7 +117,7 @@ fn ask_async(
     rx
 }
 
-/// B8：表单形态 ask（同 ask_async 的锁与线程纪律）。
+/// 表单形态 ask（同 ask_async 的锁与线程纪律）。
 fn ask_form_async(
     broker: std::sync::Arc<WebQuestionBroker>,
     id: &str,
@@ -136,7 +136,7 @@ fn ask_form_async(
 /// 预算 30s 而非 1s：ask 线程要先过 crate 级 APPROVAL_AUTO_SLOT_LOCK——
 /// 全并行下锁被其他 ask 路径测试持到各自 respond 到达为止，排队深度 =
 /// 并发 ask 测试数，1s 预算会把「还在排队」误判成「没进 pending」假红
-/// （本地全量并行实证：wait_pending 1s 红 → 级联 3-4 测，2026-10-14）。
+/// （本地全量并行实证：wait_pending 1s 红 → 级联 3-4 测）。
 fn wait_pending(broker: &WebQuestionBroker, want: usize) {
     for _ in 0..600 {
         if broker.pending().len() >= want {
@@ -150,7 +150,7 @@ fn wait_pending(broker: &WebQuestionBroker, want: usize) {
 /// 有界等待广播事件（正常毫秒级到达）。超时即 panic 带定性提示，而不是让
 /// 整条 libtest 永久挂起——run3 实证：APPROVAL_AUTO enabled 态外借窗口把
 /// 并行 ask 短路成 Timeout（不广播），无界 recv 就把全套件拖死（dump 级
-/// 定案，2026-10-13）；挂死远比断言红难排查。
+/// 定案）；挂死远比断言红难排查。
 async fn recv_scoped<T>(rx: &mut tokio::sync::mpsc::Receiver<T>) -> T {
     tokio::time::timeout(Duration::from_secs(15), rx.recv())
         .await
@@ -271,7 +271,7 @@ fn pending_lists_question_metadata() {
     assert_eq!(list[0]["question"], "用哪个包管理器?");
     assert_eq!(list[0]["options"][0], "pnpm");
     assert_eq!(list[0]["multi"], false);
-    // B8：选项形态 fields 空数组照常透传（前端按选项卡渲染）。
+    // 选项形态 fields 空数组照常透传（前端按选项卡渲染）。
     assert_eq!(list[0]["fields"], serde_json::Value::Array(Vec::new()));
     assert_eq!(list[0]["timeout_secs"], 10);
     assert_eq!(list[0]["chat_id"], "chat-1");
@@ -338,7 +338,7 @@ async fn ask_in_tokio_context_uses_block_in_place_and_still_resolves() {
     // pending 未现前禁止盲目 respond：ask 线程可能还在 slot_lock 队列里，
     // 此时 respond 必然 unknown 假红，且失败后 waiter 继续持锁到
     // recv_timeout 到期（最长 10s），把锁质押给整条并行队列形成级联
-    // （本地全量并行实证：本测 270 行 unwrap 假红连锁 3-4 测，2026-10-14）。
+    // （本地全量并行实证：本测 270 行 unwrap 假红连锁 3-4 测）。
     // 定性 panic 优于误导性 unknown；waiter 自身 recv_timeout 会到期放锁。
     let mut entered = false;
     for _ in 0..600 {
@@ -361,7 +361,7 @@ async fn ask_in_tokio_context_uses_block_in_place_and_still_resolves() {
 }
 
 // ---------------------------------------------------------------------------
-// §2 免打扰（2026-10-11 无人值守计划 Part 2）：开关开 = 提问短路超时语义
+// 免打扰（Part 2）：开关开 = 提问短路超时语义
 // ---------------------------------------------------------------------------
 
 /// 置换窗口守卫：装 enabled 态，Drop 时恢复 Some(disabled)——对一切生产
@@ -404,7 +404,7 @@ fn auto_approve_on_short_circuits_ask_to_timeout_without_pending() {
     // 守卫）先恢复、`_serial` 后释放，置换窗口全程被锁覆盖。提前 drop 锁
     // 会留下「锁已空闲但 enabled 仍在装」的窗口，并行 ask 路径测试撞进短
     // 路分支（不广播不登记）→ broadcast_carries 挂死（run3 实证，dump 级
-    // 定案 2026-10-13）。
+    // 定案）。
 
     assert_eq!(
         outcome,
@@ -421,7 +421,7 @@ fn auto_approve_on_short_circuits_ask_to_timeout_without_pending() {
     assert!(broker.respond("q-auto", vec!["pnpm".into()]).is_err());
 }
 
-/// 循环干预阶梯（2026-10-24）：`bypass_auto_approve=true` 绕过免打扰直批
+/// 循环干预阶梯：`bypass_auto_approve=true` 绕过免打扰直批
 /// 分支——终级卡（escalation 停车问询）任何自动化开关都压不掉（用户裁决
 /// 第 5 点：烟雾报警器必须响）。免打扰开 + bypass → 照常广播、照常进
 /// pending、照常等作答。
@@ -455,7 +455,7 @@ fn bypass_auto_approve_skips_auto_short_circuit() {
     assert!(broker.pending().is_empty());
 }
 
-/// 循环干预阶梯（2026-10-24）：`timeout_secs == 0` = 永不超时——
+/// 循环干预阶梯：`timeout_secs == 0` = 永不超时——
 /// `rx.recv()` 无限等（不是 `recv_timeout(0)` 的立即返回）。唯一了结路径
 /// = 作答 / 急停 cancelled。测试：ask 后等一段（足以让错误的
 /// recv_timeout(0) 落 Timeout），迟到作答仍送达 Answered。
@@ -484,7 +484,7 @@ fn timeout_zero_waits_indefinitely_until_answer() {
     assert!(broker.pending().is_empty());
 }
 
-/// 循环干预阶梯（2026-10-24）：`cancel_pending_all`（estop watcher 入口）
+/// 循环干预阶梯：`cancel_pending_all`（estop watcher 入口）
 /// 把全部 pending 提问以 Cancelled 强制了结——等待方醒来拿
 /// `QuestionOutcome::Cancelled`、前端收 resolved("cancelled") 广播摘卡、
 /// pending 清空。返回值 = 了结条数。
@@ -529,7 +529,7 @@ fn cancel_pending_all_wakes_waiter_with_cancelled_and_broadcasts() {
 }
 
 // ---------------------------------------------------------------------------
-// B8（提问两形态）：表单作答 / 校验 / 两形态互斥
+// （提问两形态）：表单作答 / 校验 / 两形态互斥
 // ---------------------------------------------------------------------------
 
 #[test]

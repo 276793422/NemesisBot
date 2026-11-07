@@ -1,4 +1,4 @@
-//! 磁盘水位（M2，2026-10-27 整改批次一）。
+//! 磁盘水位（2026-10-27）。
 //!
 //! workspace 所在卷剩余空间查询 + 阈值评级纯函数。API 选型零新依赖：
 //! Windows = `windows-sys` `GetDiskFreeSpaceExW`（workspace 已有 0.59），

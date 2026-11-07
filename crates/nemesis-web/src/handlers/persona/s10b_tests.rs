@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): persona.rs uncovered
+//! (quality-hardening goal 冲刺, web): persona.rs uncovered
 //! helpers + offline shop preview/download paths (cache-injected, no real
 //! GitHub) + activate/restore archive-directory arms.
 //!
@@ -21,9 +21,7 @@ use super::*;
 use crate::ws_router::ModuleHandler;
 use std::sync::Arc;
 
-// -----------------------------------------------------------------------
 // Pure helpers (direct calls)
-// -----------------------------------------------------------------------
 
 #[test]
 fn is_agent_file_skips_quickstart_and_executive_prefixes() {
@@ -79,9 +77,7 @@ fn parse_sections_unclosed_frontmatter_uses_whole_content_as_body() {
     assert!(parsed.sections.is_empty());
 }
 
-// -----------------------------------------------------------------------
 // Offline shop.preview / shop.download (cache injection, SHOP_TEST_LOCK)
-// -----------------------------------------------------------------------
 
 const TOOLS_AGENT_MD: &str = "---\nname: Toolsmith\ndescription: uses tools\ntools: everything\n---\n\n# Toolsmith Agent\n\n## 🧰 Tools\n- shell\n- browser\n";
 
@@ -133,6 +129,7 @@ fn persona_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -211,9 +208,7 @@ async fn shop_download_writes_tools_md_with_extra_section() {
     assert!(dir.path().join("personas/toolsmith/SOUL.md").is_file());
 }
 
-// -----------------------------------------------------------------------
 // ensure_initialized / cmd_activate archive-directory arms
-// -----------------------------------------------------------------------
 
 #[test]
 fn ensure_initialized_archives_workspace_memory_dir_into_default() {

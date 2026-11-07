@@ -46,7 +46,7 @@ fn test_resolve_log_file_path_general() {
     let dir = tempfile::tempdir().unwrap();
     let logs_dir = dir.path().join("logs").join("gateway");
     std::fs::create_dir_all(&logs_dir).unwrap();
-    // New JSONL daily format: nemesisbot.YYYY-MM-DD (no .log suffix).
+    // New JSONL daily format: nemesisbot.YYYY-MM-DD (no.log suffix).
     std::fs::write(logs_dir.join("nemesisbot.2026-06-17"), "log content").unwrap();
 
     let ws = dir.path().to_string_lossy().to_string();
@@ -189,7 +189,7 @@ fn test_sanitize_map_nested() {
     assert_eq!(config["port"], 8080);
 }
 
-// F2（2026-09-22 审计修复）：数组此前从不递归——model_list[] 条目的
+// （审计修复）：数组此前从不递归——model_list[] 条目的
 // api_key 明文原样返回。数组内对象、数组内嵌数组都必须可达。
 #[test]
 fn test_sanitize_map_recurses_array_entries() {
@@ -213,7 +213,7 @@ fn test_sanitize_map_recurses_array_entries() {
     assert_eq!(map["name"], "keep-me");
 }
 
-// F2 复核补严（2026-09-22）：敏感键的值若是**字符串数组**，元素此前落
+// 复核补严：敏感键的值若是**字符串数组**，元素此前落
 // 递归的 `_ => {}` 不打码——数组内字符串元素必须直接掩码。
 #[test]
 fn test_sanitize_map_masks_string_arrays_under_sensitive_keys() {
@@ -364,7 +364,7 @@ fn test_resolve_log_file_path_security_with_files() {
 
     let ws = dir.path().to_string_lossy().to_string();
     let path = resolve_log_file_path(&ws, "security").unwrap();
-    // Phase B1-1: security 路径固定指向 logs/security_logs/audit.jsonl
+    // Phase: security 路径固定指向 logs/security_logs/audit.jsonl
     assert!(path.contains("audit.jsonl"));
     assert!(path.contains("security_logs"));
 }
@@ -421,6 +421,7 @@ fn test_app_state_session_manager_ref() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -651,6 +652,7 @@ fn test_app_state_default_values() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -688,9 +690,7 @@ fn test_logs_query_deserialize_defaults() {
     assert!(query.n.is_none());
 }
 
-// -----------------------------------------------------------------------
 // Cluster log path resolution tests
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_resolve_log_file_path_cluster_with_existing_files() {
@@ -748,9 +748,7 @@ fn test_resolve_log_file_path_cluster_empty_directory() {
     assert!(resolve_log_file_path(&ws, "cluster").is_none());
 }
 
-// -----------------------------------------------------------------------
-// API handler integration tests via tower::ServiceExt::oneshot
-// -----------------------------------------------------------------------
+// API handler integration tests via tower::ServiceExt:oneshot
 
 /// Helper to create a minimal AppState for testing API handlers.
 fn make_test_state(workspace: Option<String>, auth_token: &str) -> Arc<AppState> {
@@ -787,6 +785,7 @@ fn make_test_state(workspace: Option<String>, auth_token: &str) -> Arc<AppState>
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

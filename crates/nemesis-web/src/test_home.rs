@@ -10,7 +10,7 @@
 //! 使用纪律：
 //! - 重定向 home 的测试：锁内重定向，guard 携带锁（还原先于放锁）；
 //! - 只经单例读写 chat_log / meta 的测试：测试体首行
-//!   `let _home = crate::test_home::lock_home();`。
+//!   `let _home = crate::test_home:lock_home();`。
 
 use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 

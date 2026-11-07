@@ -1,4 +1,4 @@
-//! Tests for the shared CLI-delegation layer (T5 / U13 A7+A9).
+//! Tests for the shared CLI-delegation layer (/ +).
 
 use super::*;
 
@@ -14,7 +14,7 @@ fn test_resolve_cc_permission_mode_tiers() {
     assert_eq!(resolve_cc_permission_mode("manual"), "manual");
     assert_eq!(resolve_cc_permission_mode("dontAsk"), "dontAsk");
     assert_eq!(resolve_cc_permission_mode("plan"), "plan");
-    // Legacy snake_case（T5 时代错误值集）→ camelCase 映射。
+    // Legacy snake_case（时代错误值集）→ camelCase 映射。
     assert_eq!(resolve_cc_permission_mode("accept_edits"), "acceptEdits");
     assert_eq!(resolve_cc_permission_mode("default"), "acceptEdits");
     assert_eq!(
@@ -113,7 +113,7 @@ impl FakeArgEchoCli {
 }
 
 // ---------------------------------------------------------------------------
-// find_cli_on_path Windows 候选挑选（V4 真机 bug 的回归测试）
+// find_cli_on_path Windows 候选挑选（真机 bug 的回归测试）
 // ---------------------------------------------------------------------------
 
 /// npm 布局：`where claude` 第一行是无扩展名 POSIX shim（Windows 上
@@ -166,7 +166,7 @@ fn test_pick_windows_exec_candidate_first_exec_wins() {
 }
 
 // ---------------------------------------------------------------------------
-// run_cli_delegation 执行结果三臂 + find_cli_on_path 负例（M7 补测）
+// run_cli_delegation 执行结果三臂 + find_cli_on_path 负例（补测）
 // ---------------------------------------------------------------------------
 
 /// 非零退出是 **Ok**（工具层契约：CLI 失败也要把 stdout/stderr 原样带回
@@ -236,7 +236,7 @@ fn test_find_cli_on_path_missing_command_is_none() {
 }
 
 // ---------------------------------------------------------------------------
-// L27 env 窄版闸：第三方 CLI 子进程不继承 NEMESISBOT_*（行为面 E2E）
+// env 窄版闸：第三方 CLI 子进程不继承 NEMESISBOT_*（行为面 E2E）
 // ---------------------------------------------------------------------------
 
 /// 行为面断言：委派子进程 env 里 `NEMESISBOT_*` 已剥、命名空间外变量保留

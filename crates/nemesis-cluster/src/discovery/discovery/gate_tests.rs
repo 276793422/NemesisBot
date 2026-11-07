@@ -1,4 +1,4 @@
-//! G3: [`AnnounceWarnGate`] 限频闸门单测。
+//! [`AnnounceWarnGate`] 限频闸门单测。
 
 use super::{AnnounceWarnGate, DRIFT_WARN_THRESHOLD_SECS};
 use std::time::Duration;

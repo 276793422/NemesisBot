@@ -881,7 +881,7 @@ pub async fn test_board_p4_config_surface(ws: &TestWorkspace, bin: &Path) -> Vec
         }
     }
 
-    // 3.7 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）：
+    // 3.7 必需检查契约（项 B「必需的必须跑」，2026-10-22 决策）：
     // review.required_checks whole-map 键面（写入 → get 回读 → 空数组规则
     // loud 拒绝 → 空对象恢复 = 契约关闭；尾位纪律）。
     {
@@ -1961,7 +1961,7 @@ pub async fn test_board_project_archive(ws: &TestWorkspace, bin: &Path) -> Vec<T
     let ws_prefix = ws.workspace().to_string_lossy().to_string();
     // CI Windows runner 的 %TEMP% 是 8.3 短名形态（`C:\Users\RUNNER~1\...`，
     // 真名 runneradmin），而服务端返回的 directory 是 canonical 展开后的
-    // 真名路径——裸字符串前缀比对在短名环境必假红（2026-09-18 CI 实录）。
+    // 真名路径——裸字符串前缀比对在短名环境必假红（2026-09-18 CI 案例）。
     // 两侧都过 std::fs::canonicalize 归一（verbatim 前缀 + 真名，两侧一致）
     // 后再做组件级 starts_with；canonicalize 失败（目录不存在等）回退原值。
     let canonical_str = |p: &std::path::Path| -> String {

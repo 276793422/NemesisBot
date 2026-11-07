@@ -1,11 +1,11 @@
-//! T8（多模态 goal 2026-09-03）：Dashboard 图片上传端点 + uploads 暂存目录
+//! （多模态 goal 2026-09-03）：Dashboard 图片上传端点 + uploads 暂存目录
 //! TTL 清扫。
 //!
 //! `POST /api/upload/image`（走现有 Dashboard 鉴权，`X-Auth-Token` 约定同
 //! `/api/internal`）：raw body + `?name=<原始文件名>` → 白名单扩展名 + 25MB
-//! 上限 + magic byte 三道校验 → 落 `{workspace}/uploads/`（路径唯一真相源
+//! 上限 + magic byte 三道校验 → 落 `{workspace}/uploads/`（路径唯一依据
 //! `nemesis_path::resolve_uploads_dir_in_workspace`）→ 返回 `{id, path,
-//! size}`。写后即落盘（`std::fs::write` 关 fd 即 flush，纪律 4）。
+//! size}`。写后即落盘（`std::fs:write` 关 fd 即 flush，纪律 4）。
 //!
 //! uploads 是 **temp 语义**：[`sweep_uploads_older_than`] 按 mtime 清 7 天
 //! 旧文件（gateway 启动 + 周期，照 task_result_store 惯例）；用户点名路径
@@ -23,7 +23,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// 上传体大小上限（与 T4/T5 水合验真的 `MAX_IMAGE_BYTES` 同一真相源）。
+/// 上传体大小上限（与 / 水合验真的 `MAX_IMAGE_BYTES` 同一真相源）。
 pub use nemesis_agent::image_path_detector::MAX_IMAGE_BYTES as UPLOAD_MAX_BYTES;
 
 /// 路由层的 body 硬上限：25MB 有效载荷 + 1MB 余量（超限 axum 直接 413，
@@ -37,10 +37,10 @@ pub const UPLOADS_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 ///
 /// 校验序（任一失败即拒绝，不落盘）：
 /// 1. `X-Auth-Token`（空 token 配置 = 鉴权可选，同 `/api/internal` 约定）；
-/// 2. `?name=` 白名单扩展名（png/jpg/jpeg/webp/gif，复用 T4 检测器真相源）；
+/// 2. `?name=` 白名单扩展名（png/jpg/jpeg/webp/gif，复用 检测器真相源）；
 /// 3. ≤25MB（`MAX_IMAGE_BYTES`）；
-/// 4. magic byte 嗅探（复用 T4 `sniff_magic`，防文本伪装 .png）；落盘扩展名
-///    按**内容**定（`ext_from_magic`，F-C 2026-09-04——`?name=` 只过协议门，
+/// 4. magic byte 嗅探（复用 `sniff_magic`，防文本伪装.png）；落盘扩展名
+///    按**内容**定（`ext_from_magic`，F-C ——`?name=` 只过协议门，
 ///    content/type 不失配）。
 pub async fn handle_upload_image(
     State(state): State<std::sync::Arc<crate::api_handlers::AppState>>,
@@ -92,9 +92,9 @@ pub async fn handle_upload_image(
         ));
     }
 
-    // 4) magic byte（落盘前嗅探；与水合验真的 T4 真相源同一张签名表）。
-    // F-C（2026-09-04 四轮盲审）：落盘扩展名按**内容**定（ext_from_magic），
-    // 不信 `?name=` 的声明——JPEG 字节命名 .png 会以 .png 落盘，下游水合
+    // 4) magic byte（落盘前嗅探；与水合验真的 真相源同一张签名表）。
+    // F-C（四轮盲审）：落盘扩展名按**内容**定（ext_from_magic），
+    // 不信 `?name=` 的声明——JPEG 字节命名.png 会以.png 落盘，下游水合
     // 按扩展名定 media_type 时 content/type 失配。嗅探失败（非图片字节）
     // 照旧 415 拒绝、不落盘。
     let ext = match nemesis_agent::image_path_detector::ext_from_magic(&body) {
@@ -123,7 +123,7 @@ pub async fn handle_upload_image(
             })),
         ));
     }
-    // id：web_{millis}_{seq:04x}.{ext}（2026-09-03 二次回归 SUS-2：同一毫秒
+    // id：web_{millis}_{seq:04x}.{ext}（二次回归 SUS-2：同一毫秒
     // 并发上传只靠 millis 会碰撞互覆，补进程内原子序号；前端只持 id 不解析
     // 格式，resolve_media_ref 裸文件名校验兼容）。
     static UPLOAD_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -159,7 +159,7 @@ pub async fn handle_upload_image(
 }
 
 /// 解析 WSAPI `chat.send` media 项：`{id}` → uploads 内的文件（id 只允许
-/// 裸文件名，防路径穿越）；`{path}` → 原样引用（用户点名路径语义，T5 附加
+/// 裸文件名，防路径穿越）；`{path}` → 原样引用（用户点名路径语义， 附加
 /// 时照常过安全管线）。返回本地路径字符串；解析失败返回 None（调用方诚实
 /// 注记）。
 pub fn resolve_media_ref(item: &serde_json::Value) -> Option<String> {
@@ -243,7 +243,7 @@ pub fn spawn_uploads_sweeper() {
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-25）：uploads 目录创建失败 500、成功落盘的
+// AGT 覆盖率批次：uploads 目录创建失败 500、成功落盘的
 // 日志字段求值（最小 INFO subscriber）、sweep 的目录项跳过 + removed 日志。
 // 豁免（写盘失败竞态 dest + 6h 周期臂）见 agt_tests 文件头注。
 #[cfg(test)]

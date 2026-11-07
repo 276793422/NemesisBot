@@ -1494,7 +1494,7 @@ fn test_scanner_config_multiple_engines() {
 }
 
 // =========================================================================
-// S11b 覆盖率冲刺：scanner run() 分发 arm + cmd_check 深路径（installed/
+// 覆盖率冲刺：scanner run() 分发 arm + cmd_check 深路径（installed/
 // failed/pending/db 状态、url 截断、recommendations、persist）+
 // download_engine（本地 TcpListener 假 HTTP：非归档/404/坏 zip/tar.gz+
 // detect）+ cmd_install / cmd_clamav_install_inner 离线全路径 +
@@ -1505,20 +1505,20 @@ fn test_scanner_config_multiple_engines() {
 // install/update/info/test 无 clamav 配置）。
 // =========================================================================
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct S11bTempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for S11bTempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn s11b_temp_home_env() -> S11bTempHomeEnv {
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -1529,13 +1529,13 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
 
 /// PATH → 空临时目录（RAII 恢复）。让 lookup_system_clamav 确定性返回
 /// None（which 只扫 PATH）。必须持 GLOBAL_STATE_LOCK 使用。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct S11bMinimalPathEnv {
     _tmp: tempfile::TempDir,
     old: Option<std::ffi::OsString>,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl S11bMinimalPathEnv {
     fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
@@ -1545,7 +1545,7 @@ impl S11bMinimalPathEnv {
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for S11bMinimalPathEnv {
     fn drop(&mut self) {
         match self.old.take() {
@@ -1637,7 +1637,7 @@ fn s11b_serve(file: &str, status: u16, body: Vec<u8>, hits: usize) -> String {
 
 // ------------------------------ run() 分发 --------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_dispatch_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1690,7 +1690,7 @@ async fn test_s11b_run_dispatch_arms() {
     assert!(crate::common::scanner_config_path(&th.home).exists());
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_run_clamav_subcommand_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1834,7 +1834,7 @@ fn test_s11b_cmd_check_installed_failed_disabled_and_url_truncate() {
     );
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_s11b_cmd_check_pending_and_recommendations() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -1907,7 +1907,7 @@ async fn test_s11b_download_engine_invalid_zip_keeps_archive_and_returns_target(
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("dl");
     std::fs::create_dir_all(&target).unwrap();
-    // 坏 zip 的跨环境确定性契约（2026-09-02 重写）：解压必失败 → 归档保留
+    // 坏 zip 的跨环境确定性契约（重写）：解压必失败 → 归档保留
     // （"Could not auto-extract" 分支）+ 返回 target、不 Err。旧版钉的是
     // PS 5.1 rc=0 quirk（异常进 error 流但退出码 0 → 代码误判成功删归档，
     // 当时的本机手工实证）；vs2026 CI 镜像起 PS 已改为非零退出直接暴露该
@@ -1956,7 +1956,7 @@ async fn test_s11b_download_engine_tar_gz_extracts_and_detects_exe_dir() {
 
 // ------------------------ cmd_install / install_inner ---------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_cmd_install_empty_and_stub_and_delegate() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -2130,7 +2130,7 @@ async fn test_s11b_clamav_install_inner_download_branches() {
 
 // ------------------- cmd_clamav enable/disable/update/info ----------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn test_s11b_cmd_clamav_enable_disable_update_info() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -2208,7 +2208,7 @@ async fn test_s11b_cmd_clamav_enable_disable_update_info() {
 
 // --------------------- PATH 收窄下 lookup 确定性 ---------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn test_s11b_lookup_system_clamav_none_with_minimal_path() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -2219,7 +2219,7 @@ fn test_s11b_lookup_system_clamav_none_with_minimal_path() {
 }
 
 // ===========================================================================
-// wave_b（coverage 补测，2026-08-27）：miss 行清零补洞。
+// wave_b（coverage 补测）：miss 行清零补洞。
 //
 // 目标行（scanner.rs）与本模块的对应关系：
 //  - 169-175（lookup_system_clamav 命中返 Some(parent)）→
@@ -2268,7 +2268,7 @@ fn test_s11b_lookup_system_clamav_none_with_minimal_path() {
 // ===========================================================================
 
 // 整 mod Windows 形态（6/6 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod wave_b {
     use super::{
         cmd_check, cmd_clamav_install_inner, cmd_clamav_update, lookup_system_clamav,
@@ -2316,7 +2316,7 @@ mod wave_b {
         }
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_lookup_system_clamav_hits_fake_exe_in_narrow_path() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2331,7 +2331,7 @@ mod wave_b {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_check_disabled_dash_row_and_weird_state_fallback_arm() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2374,7 +2374,7 @@ mod wave_b {
         assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "weird");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_check_system_path_discovery_persists_and_truncates_url() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2411,7 +2411,7 @@ mod wave_b {
         assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_install_discovers_system_path_and_generates_confs() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2446,7 +2446,7 @@ mod wave_b {
         assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_install_reports_conf_generation_failures_but_continues() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2483,7 +2483,7 @@ mod wave_b {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn wave_b_update_resolves_path_via_system_lookup_when_unconfigured() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2493,7 +2493,7 @@ mod wave_b {
         let cfg_path = tmp.path().join("config.scanner.json");
         // clamav_path 与 data_dir 都为空 ⇒ 路径靠系统 PATH 发现、data_dir 走
         // fallback（= 发现目录）。发现目录里没有 freshclam 二进制 ⇒ 更新阶段
-        // 快失败 Err("freshclam ...")，全程离线确定。
+        // 快失败 Err("freshclam...")，全程离线确定。
         s11b_write_cfg(
             &cfg_path,
             &[],
@@ -2512,7 +2512,7 @@ mod wave_b {
 }
 
 // ---------------------------------------------------------------------------
-// BUG#35 回归：URL 列展示截断必须落在 char boundary（含非 ASCII 的 URL
+// 回归：URL 列展示截断必须落在 char boundary（含非 ASCII 的 URL
 // 曾因裸 &url[..37] 直接 panic）。三态：短原样 / 长 ASCII 精确 37 /
 // 长多字节不 panic 且边界安全。
 // ---------------------------------------------------------------------------
@@ -2554,7 +2554,7 @@ fn test_url_display_truncated_multibyte_never_panics_and_stays_on_boundary() {
 }
 
 // ===========================================================================
-// r10 批（coverage 补测，2026-08-27）：A 类 miss 收尾。目标行（scanner.rs）
+// r10 批（coverage 补测）：A 类 miss 收尾。目标行（scanner.rs）
 // 与本模块的对应：
 //
 // 直接命中（in-process / 子进程）：
@@ -2602,30 +2602,30 @@ mod r10_process_boundary {
     // mod 级 use 按半拆：裸 mock-server 测试只用 BufRead/BufReader/Write/
     // TcpListener/Path/Duration；Read/TcpStream/PathBuf/Command/Stdio/Instant
     // 只被 Windows 形态子进程测试使用，随之门控。
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::io::Read;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::net::TcpStream;
     use std::path::Path;
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::path::PathBuf;
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::process::{Command, Stdio};
     use std::time::Duration;
-    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, sweep)
     use std::time::Instant;
 
-    /// S3 minimal-path guard 的兄弟实现（wave_b 版是 mod 私有，借不到）。
+    /// minimal-path guard 的兄弟实现（wave_b 版是 mod 私有，借不到）。
     /// Drop 按 prev-value 恢复。必须持 crate::GLOBAL_STATE_LOCK 使用。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct R10NarrowPath {
         _dir: tempfile::TempDir,
         old: Option<std::ffi::OsString>,
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl R10NarrowPath {
         fn new(files: &[&str]) -> Self {
             let dir = tempfile::tempdir().unwrap();
@@ -2642,7 +2642,7 @@ mod r10_process_boundary {
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl Drop for R10NarrowPath {
         fn drop(&mut self) {
             match self.old.take() {
@@ -2656,14 +2656,14 @@ mod r10_process_boundary {
     // 子进程装置（r9_process_boundary 的同步版 + 显式 home/env 注入）
     // ---------------------------------------------------------------------
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct R10Outcome {
         code: i32,
         stdout: String,
         stderr: String,
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_system_root() -> PathBuf {
         std::env::var_os("SystemRoot")
             .map(PathBuf::from)
@@ -2673,7 +2673,7 @@ mod r10_process_boundary {
 
     /// 给子进程用的合成 PATH：<prepend> 头插 + 最小系统目录。
     /// 不读父进程 PATH，杜绝与并行 env 用例的任何耦合。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_synthetic_path(prepend: Option<&Path>) -> String {
         let root = r10_system_root();
         let mut parts: Vec<String> = Vec::new();
@@ -2691,7 +2691,7 @@ mod r10_process_boundary {
     /// `cmd --config-file x --datadir y` rc=0），无 /c 时进入交互读 stdin，
     /// 而 std 里父进程给了 null 句柄 ⇒ 立即 EOF ⇒ 退出码 0。updater 只验
     /// 「文件存在 + exit 0」，故成立；绝不产生窗口（console 继承宿主控制台）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_copy_cmd_as(dest_dir: &Path, name: &str) -> PathBuf {
         let src = r10_system_root().join("System32").join("cmd.exe");
         assert!(
@@ -2705,12 +2705,12 @@ mod r10_process_boundary {
         dst
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct R10Child {
         child: Option<std::process::Child>,
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl Drop for R10Child {
         fn drop(&mut self) {
             if let Some(mut c) = self.child.take() {
@@ -2722,7 +2722,7 @@ mod r10_process_boundary {
 
     /// 起裸子进程：stdin null（cmd.exe 桩读 EOF 立退 / 服务型不被终端牵住）、
     /// stdout/stderr 全捕获、显式 env + CLI 覆盖 profile。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_spawn_raw(
         bin: &Path,
         args: &[&str],
@@ -2742,7 +2742,7 @@ mod r10_process_boundary {
 
     /// 起 bin + args + env 并等到退出；deadline 内未退则 kill，code=-2 由
     /// 调用方响亮断言。适合「跑完即退」的驱动 CLI 与 mock 镜像以外的场景。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_spawn(
         bin: &Path,
         args: &[&str],
@@ -2767,7 +2767,7 @@ mod r10_process_boundary {
         (guard, outcome)
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_reap(child: &mut std::process::Child, deadline_secs: u64) -> R10Outcome {
         let deadline = Instant::now() + Duration::from_secs(deadline_secs);
         loop {
@@ -2801,14 +2801,14 @@ mod r10_process_boundary {
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_bin() -> PathBuf {
         test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
     }
 
     /// 准备隔离 home：env 放 `<tmp>`，则子进程 resolve 得 `<tmp>\.nemesisbot`。
     /// 返回 (cfg 文件路径)。工作目录照 r9 惯例中立化（temp 根）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_stage_home(env_home_base: &Path) -> PathBuf {
         let home = env_home_base.join(".nemesisbot");
         let cfg_dir = home.join("workspace").join("config");
@@ -2816,7 +2816,7 @@ mod r10_process_boundary {
         crate::common::scanner_config_path(&home)
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_read_cfg(cfg: &Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(cfg).unwrap()).unwrap()
     }
@@ -2825,7 +2825,7 @@ mod r10_process_boundary {
 
     /// 169-173：窄 PATH 下只有 clamscan.exe —— 迭代第 1 个名字命中（wave_b
     /// 只钉了 clamd.exe 的第 0 个），覆盖同一返回段的另一入口顺序。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_lookup_system_clamav_hits_via_clamscan_only() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2842,7 +2842,7 @@ mod r10_process_boundary {
 
     /// 651-655：changed 保持 false 的收尾臂 —— enabled 名字在 engines map
     /// 中不存在 ⇒ 渲染循环零迭代，既不 marshal 也绝不触发保存重写。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cmd_check_skips_save_when_enabled_name_absent_from_engines_map() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2914,7 +2914,7 @@ mod r10_process_boundary {
 
     // ----------------------- exit(1) 家族（子进程）-----------------------
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_expect_rc1(o: &R10Outcome, what: &str, marker: &str) {
         assert_eq!(
             o.code, 1,
@@ -2933,7 +2933,7 @@ mod r10_process_boundary {
 
     /// 382-387：非法引擎名 → Unknown engine + Available 列表 + exit(1)。
     /// 合法性检查在 load 配置之前 ⇒ 天然与隔离 home 内容无关。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_add_unknown_engine_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2953,7 +2953,7 @@ mod r10_process_boundary {
     }
 
     /// 440-441：remove 一个不存在的引擎名 → exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_remove_unknown_engine_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2968,7 +2968,7 @@ mod r10_process_boundary {
     }
 
     /// 457-461：enable 一个未配置的引擎名 → exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_enable_unknown_engine_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2983,7 +2983,7 @@ mod r10_process_boundary {
     }
 
     /// 920-922：scanner clamav install 而 engines map 没有 clamav → exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_clamav_install_unconfigured_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2998,7 +2998,7 @@ mod r10_process_boundary {
     }
 
     /// 1138-1140：scanner clamav update 未配置 → exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_clamav_update_unconfigured_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3013,7 +3013,7 @@ mod r10_process_boundary {
     }
 
     /// 1221-1222：scanner clamav info 未配置 → exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_clamav_info_unconfigured_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3029,7 +3029,7 @@ mod r10_process_boundary {
 
     /// 1262-1266（头部未配置 exit(1)）+ 875（ClamavAction::Test 分发臂）：
     /// 同一次子进程同时点亮两处 —— Test 分发此前没有任何存活调用路径。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_clamav_test_unconfigured_exits_1_and_lights_dispatch_arm() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3164,11 +3164,11 @@ mod r10_process_boundary {
 
     // -------------------- ⭐ freshclam 更新成功链 -------------------------
 
-    /// 1102-1106（Step7 Ok(Ok(())) 成功臂）+ 1122-1125 persist：CLI 子进程跑
+    /// 1102-1106（Step7 Ok(Ok()) 成功臂）+ 1122-1125 persist：CLI 子进程跑
     /// `scanner clamav install`；freshclam 桩 = cmd.exe 副本（见
     /// r10_copy_cmd_as）。子进程 stdin=null ⇒ 桩读 EOF 秒退 0 ⇒ updater 判
     /// 成功 ⇒ db_status=ready 持久化。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_install_full_chain_marks_db_ready_via_stub_freshclam() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3224,7 +3224,7 @@ mod r10_process_boundary {
     /// 1147-1211 update 成功链：path 空 ⇒ 系统 PATH 发现（合成 PATH 头插桩
     /// 目录）⇒ 1156 data_dir 已配置臂 ⇒ 1165-1176 conf 现场生成 ⇒ 1189-1194
     /// 成功打印 ⇒ 1196-1209 持久化（含 1202-1204 空 path 回填臂）⇒ 1211。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_update_success_chain_resolves_via_path_and_persists_ready() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3345,7 +3345,7 @@ mod r10_process_boundary {
     /// 出 —— 它要一直监听到驱动发 SHUTDOWN；守卫 Drop 兜底清理。就绪探测：
     /// mock 进程需几百毫秒起步，TCP 连上即算就绪；提前夭折则响亮失败并回
     /// 带 stderr。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_spawn_mock(image: &Path, addr: &str, mode: &str) -> R10Child {
         let child = r10_spawn_raw(
             image,
@@ -3390,7 +3390,7 @@ mod r10_process_boundary {
 
     /// 共同夹具：镜像复制 + 服务启动 + 引擎配置写入；返回 (地址, 采样文件,
     /// 服务守卫)。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_setup_mock_scan(mode: &str, tmp: &Path) -> (String, PathBuf, R10Child) {
         let mock_dir = tmp.join("mockbin");
         std::fs::create_dir_all(&mock_dir).unwrap();
@@ -3413,7 +3413,7 @@ mod r10_process_boundary {
     }
 
     /// 把【当前测试二进制】复制为指定名字（ownership 的路径匹配前提）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_copy_self_image(dest_dir: &Path, name: &str) -> PathBuf {
         let src = std::env::current_exe().expect("current_exe");
         let dst = dest_dir.join(name);
@@ -3423,7 +3423,7 @@ mod r10_process_boundary {
 
     /// 保留一个临时环回端口供 mock 使用（bind→取号→释放端口再交还 mock 重
     /// bind 的窗口极小，且 mock 起不来会在就绪探测处响亮失败）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_reserve_loopback_address() -> String {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         l.local_addr().unwrap().to_string()
@@ -3432,7 +3432,7 @@ mod r10_process_boundary {
     /// 1288-1289 / 1291 / 1293-1298（INFECTED 打印臂）：全链
     /// start-reuse(PING) → ownership 命中镜像 → is_ready(PING) → SCAN 裁决
     /// FOUND → SHUTDOWN → 结果区 INFECTED + Virus 行，rc=0。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_test_scan_reports_infected_via_owned_mock_daemon() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3461,7 +3461,7 @@ mod r10_process_boundary {
     }
 
     /// 1293-1301 的 CLEAN 侧互斥臂：同样全链，裁决 OK ⇒ Status CLEAN。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_test_scan_reports_clean_via_owned_mock_daemon() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3488,7 +3488,7 @@ mod r10_process_boundary {
     /// WARN + 1280 短眠 + 1282-1286 is_ready=false → exit(1)：地址用
     /// 127.0.0.1:1（特权保留口，连接必然瞬时拒绝）、clamav_path 留空跳过
     /// Manager —— 全程离线秒级完成。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cli_test_unreachable_daemon_warns_then_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3532,7 +3532,7 @@ mod r10_process_boundary {
         );
     }
 
-    // --------------------- R10 终测补测：config-guard 退码臂 ----------------
+    // --------------------- 终测补测：config-guard 退码臂 ----------------
     // scanner.rs 三处「配置缺引擎/未知引擎 → eprintln + std::process::exit(1)」
     // 是纯 CLI 守卫，不需要真引擎/真网络。当前 merged lcov 显示 miss：
     //   cmd_add 382-387（Unknown engine + Available 列表）
@@ -3542,7 +3542,7 @@ mod r10_process_boundary {
     // 走默认空 engines map ⇒ contains_key 恒 false，三臂确定性可达。
 
     /// cmd_add 未知引擎名 → 打印 Unknown engine + Available 清单后 exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cmd_add_unknown_engine_lists_available_and_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3577,7 +3577,7 @@ mod r10_process_boundary {
     }
 
     /// cmd_remove 配置里没有该引擎 → not found in configuration + exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cmd_remove_missing_engine_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3602,7 +3602,7 @@ mod r10_process_boundary {
     }
 
     /// cmd_enable 配置里没有该引擎 → Add it first 提示 + exit(1)。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_cmd_enable_missing_engine_exits_1() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3627,7 +3627,7 @@ mod r10_process_boundary {
 }
 
 // ---------------------------------------------------------------------------
-// wave_a（2026-09-25）：is_valid_engine / url_display_truncated /
+// wave_a：is_valid_engine / url_display_truncated /
 // lookup_system_clamav 三个小纯函数（此前无直测）。
 // ---------------------------------------------------------------------------
 

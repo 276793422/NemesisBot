@@ -1,11 +1,11 @@
-//! voice.rs 纯逻辑覆盖（Phase 3 批次 18，2026-08-25）。
+//! voice.rs 纯逻辑覆盖（2026-08-25）。
 //!
 //! 子模块（非 sibling 文件）以获得私有项访问。只测不依赖音频设备 / DLL 的
 //! 纯逻辑：DialogueSttOutput 缓冲语义、check_model_subdir_any 文件探测、
 //! voice 配置读回退、cmd_status 文件探测、speaker 持久化与阈值校验、
 //! tts 长度上限、空状态 shutdown / 全关初始化 no-op。
 //!
-//! 结构性豁免（见台账 §9.4）：WASAPI 采集、SpeexDSP AEC、kokoro TTS、
+//! 结构性豁免（见台账）：WASAPI 采集、SpeexDSP AEC、kokoro TTS、
 //! espeak、SenseVoice STT 的真 DLL 加载与推理臂；setup/install 真下载臂。
 
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
@@ -61,6 +61,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -88,9 +89,7 @@ fn collector() -> (
     (seen, Arc::new(f))
 }
 
-// -----------------------------------------------------------------------
 // 纯映射 / 探测 helper
-// -----------------------------------------------------------------------
 
 #[test]
 fn model_label_maps_known_and_passthrough() {
@@ -111,26 +110,24 @@ fn check_model_subdir_any_variants() {
     // 2) 空目录 → false
     std::fs::create_dir_all(base.join("empty")).unwrap();
     assert!(!check_model_subdir_any(&base.join("empty")));
-    // 3) 子目录存在但没有 .onnx → false
+    // 3) 子目录存在但没有.onnx → false
     let no_onnx = base.join("m1").join("sub");
     std::fs::create_dir_all(&no_onnx).unwrap();
     std::fs::write(no_onnx.join("weights.bin"), b"x").unwrap();
     assert!(!check_model_subdir_any(&base.join("m1")));
-    // 4) 子目录里有 .onnx → true
+    // 4) 子目录里有.onnx → true
     let with_onnx = base.join("m2").join("sub");
     std::fs::create_dir_all(&with_onnx).unwrap();
     std::fs::write(with_onnx.join("model.onnx"), b"x").unwrap();
     assert!(check_model_subdir_any(&base.join("m2")));
-    // 5) .onnx 直接放顶层（不在子目录里）→ false（模型必须按子目录组织）
+    // 5).onnx 直接放顶层（不在子目录里）→ false（模型必须按子目录组织）
     let top = base.join("m3");
     std::fs::create_dir_all(&top).unwrap();
     std::fs::write(top.join("model.onnx"), b"x").unwrap();
     assert!(!check_model_subdir_any(&top));
 }
 
-// -----------------------------------------------------------------------
 // DialogueSttOutput / InputBoxSttOutput 缓冲语义
-// -----------------------------------------------------------------------
 
 fn make_dialogue(push: Arc<dyn Fn(&str) + Send + Sync>) -> DialogueSttOutput {
     DialogueSttOutput {
@@ -207,9 +204,7 @@ fn input_box_output_invokes_push_fn_verbatim() {
     assert_eq!(got, vec!["verbatim text"]);
 }
 
-// -----------------------------------------------------------------------
 // voice / voiceprint 配置读写
-// -----------------------------------------------------------------------
 
 #[test]
 fn ensure_voice_config_writes_default_once() {
@@ -259,9 +254,7 @@ fn read_voiceprint_config_defaults_when_missing_or_corrupt() {
     assert_eq!(got["speakers"], serde_json::json!({}));
 }
 
-// -----------------------------------------------------------------------
 // cmd_status 文件探测
-// -----------------------------------------------------------------------
 
 #[test]
 fn cmd_status_full_layout_reports_ready() {
@@ -329,9 +322,7 @@ fn cmd_status_without_config_uses_data_dir_and_not_ready() {
     assert!(r["model_dir"].as_str().unwrap().contains("data"));
 }
 
-// -----------------------------------------------------------------------
 // speaker 持久化 / 阈值校验
-// -----------------------------------------------------------------------
 
 fn seed_voiceprint(cfg_dir: &std::path::Path, names: &[&str]) {
     std::fs::create_dir_all(cfg_dir).unwrap();
@@ -446,13 +437,11 @@ fn cmd_speaker_list_reads_seeded_voiceprint() {
     assert_eq!(names, vec!["alice", "bob"]);
 }
 
-// -----------------------------------------------------------------------
 // shutdown / init / tts 上限
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn voice_shutdown_idle_is_safe() {
-    // 拿 S10a 引入的 crate 级测试锁：voice_shutdown 会 take() 全部全局会话状态，
+    // 拿 引入的 crate 级测试锁：voice_shutdown 会 take() 全部全局会话状态，
     // 与 s10_tests 的注入类测试并发会互相偷状态（env-test-race-lock-pattern）。
     let _guard = super::s10_tests::voice_state_lock_guard();
     // 无任何活跃会话时 shutdown 不 panic、状态保持空。

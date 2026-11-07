@@ -3,7 +3,7 @@
 #[cfg(all(feature = "board", feature = "cluster"))]
 use tracing::{info, warn};
 
-/// Swarm M4 批作业（§6）：写回把 issue 推进到 in_review 时携带评审触发
+/// Swarm 批作业：写回把 issue 推进到 in_review 时携带评审触发
 /// 目标——回调闭包据此 spawn 验收 agent（`board.auto_review` 闸在评审
 /// 任务内读配置判定）。
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -16,7 +16,7 @@ pub(crate) struct BoardWritebackOutcome {
     pub(crate) settled: bool,
 }
 
-/// W2 P2 派发写回：board 派发（`issue.dispatch`）的 task_id 命中
+/// 派发写回：board 派发（`issue.dispatch`）的 task_id 命中
 /// issue_dispatch 表 → 终结派发（幂等）+ worker 结果评论 + 状态推进
 /// （成功 → in_review 等 coordinator 验收；失败留在 in_progress）。
 /// 返回是否为 board 派发任务——是则 peer_chat_callback 跳过 agent 续行
@@ -25,8 +25,8 @@ pub(crate) struct BoardWritebackOutcome {
 /// 唯一调用点在 peer_chat_callback（cluster 编译时）——board-only 构建下
 /// 该函数不可达，cfg 需同时含 cluster 以免 dead_code 告警。
 ///
-/// Swarm M3 交付线程（§5.6/G5）：成功且 worker 按四段汇报格式回流 →
-/// ctype='delivery' 首评（原样保留，M4 验收 agent 同源解析）；没按格式 →
+/// Swarm 交付线程：成功且 worker 按四段汇报格式回流 →
+/// ctype='delivery' 首评（原样保留， 验收 agent 同源解析）；没按格式 →
 /// 全文当普通评论（诚实降级）。汇报超 64KB → 全文落资产 + 截断内联 +
 /// 引用注记（全文走层 2 HTTP 资产拉取）。
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -75,7 +75,7 @@ pub(crate) fn write_back_board_dispatch(
             };
         }
     };
-    // D0b 修正：写回守卫只拦真正终态（done/failed/cancelled）——
+    // 修正：写回守卫只拦真正终态（done/failed/cancelled）——
     // RUNNING（已开跑）的派发回调必须照常写回，否则 issue 卡死 in_progress。
     let already_terminal = matches!(
         disp.state.as_str(),
@@ -92,11 +92,11 @@ pub(crate) fn write_back_board_dispatch(
             settled: false,
         };
     }
-    // AOR 批二a ④：代际写回闸。worker 原样回声派发代际号——回声与当前
+    // a ④：代际写回闸。worker 原样回声派发代际号——回声与当前
     // 行代际不一致 = 旧代迟到回调（重派后新一代已接手该 issue），拒绝
     // 覆盖：不落终态、不收账、不评论 worker 结果、不触发评审，系统评论
     // 留痕后诚实早退（settled=false，互斥释放波不误触发）。回声缺席
-    // （旧 B 端不认识该键 / CD3 恢复路径无 payload）= 放行，向后兼容。
+    // （旧 B 端不认识该键 / 恢复路径无 payload）= 放行，向后兼容。
     if let Some(echo) = echoed_generation
         && echo != disp.generation
     {
@@ -125,9 +125,9 @@ pub(crate) fn write_back_board_dispatch(
         };
     }
 
-    // M4-A 交付守卫（2026-10-10）：status 成功但「汇报」是系统终态文本
+    // A 交付守卫：status 成功但「汇报」是系统终态文本
     // （急停/取消/轮次暂停/hook 拦截/退化放弃）或空串——这不是 worker 的
-    // 任务汇报，不得当交付收货推 in_review（A11 实证：急停文本进了交付
+    // 任务汇报，不得当交付收货推 in_review（实证：急停文本进了交付
     // 线程，评审拿它当 worker 自述）。按任务失败处置（FAILED + ⛔ 评论，
     // 诚实失败可重派），走既有失败漏斗。
     let delivery_guard_tripped = status != "error"
@@ -146,7 +146,7 @@ pub(crate) fn write_back_board_dispatch(
     };
     match bstore.finish_dispatch(task_id, terminal) {
         Ok(true) => {
-            // G3：派发账本收口（DONE→succeeded / FAILED→failed；幂等 CAS，
+            // 派发账本收口（DONE→succeeded / FAILED→failed；幂等 CAS，
             // 重复写回不翻账）。账本未安装=零变化。
             nemesis_taskstore::ledger::settle_run(
                 &nemesis_taskstore::ledger::board_dispatch_run_id(task_id),
@@ -163,8 +163,8 @@ pub(crate) fn write_back_board_dispatch(
             );
             let worker_actor = nemesis_board::Actor::agent(&disp.worker_id);
             let (ctype, content) = if reported_error {
-                // 失败汇报不做格式判定——错误输出原样留痕。P2A（2026-09-12
-                // NB-15）：worker 结构化失败分类（如有）落结构化标记行，
+                // 失败汇报不做格式判定——错误输出原样留痕。P2A（
+                // ）：worker 结构化失败分类（如有）落结构化标记行，
                 // review_issue 读线程后据此避免同 worker 同模型盲重派
                 //（能力类失败重派必复现）；人看也是一眼可读的分类。
                 let mut c = if delivery_guard_tripped {
@@ -181,7 +181,7 @@ pub(crate) fn write_back_board_dispatch(
                 }
                 (nemesis_board::CommentType::Comment, c)
             } else if nemesis_board::parse_delivery_report(response).is_some() {
-                // 结构化汇报 → 交付线程首评（G5）。超限先做截断+资产注记。
+                // 结构化汇报 → 交付线程首评。超限先做截断+资产注记。
                 (
                     nemesis_board::CommentType::Delivery,
                     delivery_inline_or_asset(bstore, workspace, response),
@@ -203,16 +203,16 @@ pub(crate) fn write_back_board_dispatch(
                 warn!("[Gateway] board writeback comment failed (task_id={task_id}): {e}");
             }
             // 成功 → in_review（coordinator/验收 agent 处置）；worker 上报
-            // 失败（P1 error 回调）**同样**转 in_review 进验收决策链——
+            // 失败（error 回调）**同样**转 in_review 进验收决策链——
             // 失败评论（⛔ Comment）正是 review_issue 无 Delivery 时的诚实
             // 降级输入：锚点必然 FAIL 短路 → 走同一重派/预算/转人工漏斗。
             // 旧实现把失败单留在 in_progress 且不触发 review，max_redispatch
-            // 预算耗不出去，单据卡死无人接手（2026-09-11 双端真机 S2 实证：
-            // NB-15 重派轮 error 回调后 90s 无任何决策动作）。推进成功与
-            // 失败均携带 M4 评审触发目标。
+            // 预算耗不出去，单据卡死无人接手（双端真机 实证：
+            // 重派轮 error 回调后 90s 无任何决策动作）。推进成功与
+            // 失败均携带 评审触发目标。
             //
-            // P4/E4（看板项目档案 goal 合并批）分流：档案管线派发（基线行
-            // 在场）且交付成功 = **合并先行**（E4 时序：交付→合并→in_review
+            // /（看板项目档案 goal 合并批）分流：档案管线派发（基线行
+            // 在场）且交付成功 = **合并先行**（时序：交付→合并→in_review
             // →评审）——这里不转 in_review：变更集已落地 = 立即合并（落地腿
             // 先到），未落地 = 等 ingest 腿触发并补「📦 变更集在途」评论；
             // 评审由合并路径 spawn（issue_for_review=None）。失败派发与非
@@ -260,7 +260,7 @@ pub(crate) fn write_back_board_dispatch(
                 "[Gateway] board dispatch writeback done (task_id={task_id}, issue_id={}, state={terminal})",
                 disp.issue_id
             );
-            // C 里程碑 3（看板项目档案 goal P2）：交付落定 → records/NB-xx/
+            // C 里程碑 3（看板项目档案 goal）：交付落定 → records/NB-xx/
             // delivery.md + timeline。成功/失败交付都入档（零信息丢失）；
             // 写失败不阻塞写回（writer 内部 WARN+审计）；存量项目静默跳过。
             if let Ok(issue) = bstore.get_issue(disp.issue_id) {
@@ -381,7 +381,7 @@ fn floor_char_boundary(s: &str, max: usize) -> &str {
 }
 
 // ---------------------------------------------------------------------------
-// 档案停摆哨兵（BUG-2026-10-15 C 可观测；NB-120 实证 1.5h 双端「正常」死等
+// 档案停摆哨兵（BUG- C 可观测； 实证 1.5h 双端「正常」死等
 // ——交付评论后变更集永不落地，master 只能干等 ingest 腿。链条必须自己喊出来）
 // ---------------------------------------------------------------------------
 
@@ -392,9 +392,9 @@ fn floor_char_boundary(s: &str, max: usize) -> &str {
 #[cfg(all(feature = "board", feature = "cluster"))]
 const INFLIGHT_MARKER: &str = "📦 交付已收，变更集在途";
 /// 停摆警示评论前缀（本 sweep 落；幂等：最新在途评论之后已有警示 = 不重复）。
-/// 单一真相源在 nemesis-board（issue.list attention 投影同源消费，2026-10-15 上移）。
+/// 单一真相源在 nemesis-board（issue.list attention 投影同源消费， 上移）。
 // 唯一消费点在下方 gate 内的 sweep_archive_stalls——随其一起按 board+cluster
-// 裁剪（board 关时 nemesis_board 不在依赖图，常量留场 = E0433）。
+// 裁剪（board 关时 nemesis_board 不在依赖图，常量留场 =）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 const STALL_MARKER: &str = nemesis_board::STALL_MARKER;
 /// 在途警示阈值（秒）：交付评论后超过此值仍未合并 = 停摆。生产 15 分钟。
@@ -444,7 +444,7 @@ pub(crate) fn sweep_archive_stalls(
         // 在途锚已收口排除：在途评论之后已有合并成功评论（🔀）= 该轮交付
         // 已正常合并。评审 FAIL 重派回 in_progress 的单，上一轮「在途→合并」
         // 评论对仍在评论流，且新一轮尚未交付（无新在途评论）——旧锚不得判
-        // 成本轮停摆（NB-122 实录：第 1 轮 31s 合入，第 2 轮执行中被误报
+        // 成本轮停摆（第 1 轮 31s 合入，第 2 轮执行中被误报
         // 「955s 未合入」）。新一轮交付会落新在途评论成为锚点，旧合并评论
         // 在锚点之前、不进判定窗口。
         if comments[idx + 1..].iter().any(|c| {
@@ -484,6 +484,6 @@ pub(crate) fn sweep_archive_stalls(
 }
 
 // tests 消费 gate 内的 sweep_archive_stalls/ARCHIVE_STALL_WARN_SECS——随门
-// 裁剪（board 关时 --tests 不进编译，避免 E0433；对齐 bridges.rs cov_tests 先例）。
+// 裁剪（board 关时 --tests 不进编译，避免；对齐 bridges.rs cov_tests 先例）。
 #[cfg(all(test, feature = "board", feature = "cluster"))]
 mod tests;

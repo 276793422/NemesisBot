@@ -1,4 +1,4 @@
-//! M4-B（A13）：空内容撞 max_tokens cap 的提前停轮守卫测试。
+//! B：空内容撞 max_tokens cap 的提前停轮守卫测试。
 //!
 //! 器官 6（[`AgentLoop::handle_length_continuation`]）直测：空产出撞 cap
 //! ≠ 大文件被截断，继续喂 continue 提示只会每轮烧一次全量 prefill。守卫

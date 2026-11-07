@@ -1,6 +1,6 @@
-// G0 (devtool-upgrade 阶段 3)：SpawnTool 生产化 + run_detached 测试。
+// (devtool-upgrade)：SpawnTool 生产化 + run_detached 测试。
 //
-// 覆盖面（对应实施计划 G0 验收）：
+// 覆盖面（对应实施计划 验收）：
 // ① 无 spawn_fn（旧装配路径）诚实报错，行为不回归；
 // ② 闭包参数透传——task 原样、agent_id 缺省 "default"、model=SpawnConfig
 //    .default_model、channel/chat_id 来自 RequestContext；schema 中 agent_id
@@ -71,7 +71,7 @@ fn spawn_config(max_concurrent: usize) -> crate::loop_tools::SpawnConfig {
     crate::loop_tools::SpawnConfig {
         default_model: "test-model".to_string(),
         max_concurrent,
-        // G2：默认 1（顶层可 spawn，子代理不可再 spawn）——绝大多数用例
+        // 默认 1（顶层可 spawn，子代理不可再 spawn）——绝大多数用例
         // 都是顶层深度 0 的调用，1 = 放行不干扰。
         max_depth: 1,
     }
@@ -529,7 +529,7 @@ async fn run_detached_allowlist_flows_into_instance() {
 }
 
 // ---------------------------------------------------------------------------
-// G1：tools 档位（readonly 缺省 / full / 未知拒绝）+ readonly 白名单供给
+// tools 档位（readonly 缺省 / full / 未知拒绝）+ readonly 白名单供给
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -664,7 +664,7 @@ async fn spawn_tools_profile_unknown_rejected_before_spawn() {
     );
 }
 
-/// 验收（G1）：readonly 档子代理——① 供给含白名单读工具、无 write_file；
+/// 验收：readonly 档子代理——① 供给含白名单读工具、无 write_file；
 /// ② 模型硬调 write_file → dispatch 回灌 "Error: Unknown tool 'write_file'"，
 /// 下一轮 LLM 请求可见（模型可自纠，readonly 子代理写不出去）。
 #[tokio::test]
@@ -771,7 +771,7 @@ async fn readonly_profile_hides_writer_and_feeds_unknown_tool_back() {
 
     let messages = state.second_messages.lock().unwrap().join("\n");
     assert!(
-        // 压测①a（2026-09-30 三设备）dispatch 闸接线后：白名单外硬调在
+        // 压测①a（三设备）dispatch 闸接线后：白名单外硬调在
         // unknown tool 判定之前就被 detached 白名单闸拒绝回灌（比
         // unknown tool 更精确的拒绝面——工具存在但本轮不允许）。
         messages.contains("outside the allowed tool set"),
@@ -779,8 +779,8 @@ async fn readonly_profile_hides_writer_and_feeds_unknown_tool_back() {
     );
 }
 
-/// 压测①a NoTools 臂（2026-09-30 三设备）端到端：评审形态的 detached run
-/// （no_tools=true，供给层 0 defs）收到上游端点注入的工具调用（NB-54 实锤
+/// 压测①a NoTools 臂（三设备）端到端：评审形态的 detached run
+/// （no_tools=true，供给层 0 defs）收到上游端点注入的工具调用（实锤
 /// 形态）时，dispatch 闸现场拒绝回灌——run 不炸、拒绝串进消息历史。与
 /// readonly 白名单臂测试（上）互补，合成 ①a 双闸的完整覆盖。
 #[tokio::test]
@@ -886,7 +886,7 @@ async fn notools_run_refuses_injected_tool_call_at_dispatch() {
 }
 
 // ---------------------------------------------------------------------------
-// G2：深度限制（agents.subagent.max_depth）
+// 深度限制（agents.subagent.max_depth）
 // ---------------------------------------------------------------------------
 
 /// 单元级：max_depth=2、父深度 1（子代理）发起 spawn → 放行，闭包收到
@@ -981,7 +981,7 @@ async fn spawn_depth_limit_rejects_before_spawn() {
         .expect("深度 0 + max_depth 1 必须放行顶层 spawn");
 }
 
-/// 验收（G2）e2e：`run_detached` 派生的子代理（depth=1）的 LLM 调 spawn →
+/// 验收e2e：`run_detached` 派生的子代理（depth=1）的 LLM 调 spawn →
 /// 串行分发注入 instance 深度 → SpawnTool 拒绝 → 错误作为工具结果回灌
 /// 下一轮 LLM 请求（模型可见，能改道自己完成任务）。
 #[tokio::test]
@@ -1095,7 +1095,7 @@ async fn run_detached_depth_enforcement_grandchild_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑥ 裸提示词模式（Swarm M1）：system_prompt 覆盖 + no_tools 零供给 + label
+// ⑥ 裸提示词模式（Swarm）：system_prompt 覆盖 + no_tools 零供给 + label
 // ---------------------------------------------------------------------------
 
 /// 捕获每次请求的 (首条 system 消息内容, 工具名列表) 的迷你 provider。
@@ -1224,7 +1224,7 @@ async fn detached_session_key_label_format() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑥ Swarm G13：detached 路径补合成 ConversationStart/End
+// ⑥ Swarm：detached 路径补合成 ConversationStart/End
 // ---------------------------------------------------------------------------
 
 /// 请求日志观察者（RequestLoggerObserver/ClusterRequestLoggerObserver）的

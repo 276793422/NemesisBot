@@ -413,7 +413,7 @@ fn test_deref_str_default_used() {
 
 #[test]
 fn test_validate_skill_identifier_with_spaces() {
-    // "  my-skill  " has spaces but trim() makes it "my-skill"
+    // " my-skill " has spaces but trim() makes it "my-skill"
     assert!(validate_skill_identifier("  my-skill  ").is_ok());
 }
 
@@ -424,7 +424,7 @@ fn test_validate_skill_identifier_no_slash() {
 
 #[test]
 fn test_validate_skill_identifier_with_special_chars() {
-    // Special chars that are not backslash or .. are ok
+    // Special chars that are not backslash or.. are ok
     assert!(validate_skill_identifier("my-skill-v2").is_ok());
     assert!(validate_skill_identifier("my_skill").is_ok());
     assert!(validate_skill_identifier("my.skill").is_ok());

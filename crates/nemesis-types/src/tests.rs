@@ -35,7 +35,7 @@ fn test_constants() {
         is_internal_channel,
     };
 
-    // BUG-20261029-184：零消费死常量已删除，仅钉活常量单一真相源值。
+    // 零消费死常量已删除，仅钉活常量单一真相源值。
     assert_eq!(CLUSTER_CONTINUATION_PREFIX, "cluster_continuation:");
     assert_eq!(RPC_CHANNEL_TIMEOUT_SECS, 86400);
     assert_eq!(BUS_CHANNEL_CAPACITY, 1024);

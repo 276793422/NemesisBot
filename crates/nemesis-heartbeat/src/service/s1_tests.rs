@@ -1,4 +1,4 @@
-//! S1 coverage batch (2026-08-26): nemesis-heartbeat remaining gaps.
+//! coverage batch (2026-08-26): nemesis-heartbeat remaining gaps.
 //!
 //! The spawned-task "static twin" functions (`execute_heartbeat_tick`,
 //! `build_prompt_from_workspace`, `is_heartbeat_file_empty_static`,
@@ -9,7 +9,7 @@
 //! formats) never fire in the real-timer tests. This module calls them
 //! directly — they are private to `service` but visible from this child
 //! module — and additionally installs a thread-local tracing subscriber so
-//! the lazy `tracing::*!` macro field arguments (never evaluated without an
+//! the lazy `tracing:*!` macro field arguments (never evaluated without an
 //! enabled subscriber) execute too.
 
 use super::*;

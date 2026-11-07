@@ -1,6 +1,6 @@
 //! 提示词包引擎门面（prompt pack facade）。
 //!
-//! 文本资产的单一真相源在 [`nemesis_prompts`] crate（独立零依赖，目录
+//! 文本资产的统一定义在 [`nemesis_prompts`] crate（独立零依赖，目录
 //! `crates/nemesis-prompts/`，治理规范见其 README.md）。本模块只保留与
 //! nemesis-agent / nemesis-config 类型绑定的引擎件：
 //!
@@ -8,7 +8,7 @@
 //! - tier→描述档位映射与查表回落（[`tool_description`]）；
 //! - 组装预算告警（[`check_budget`]，tracing 消费点）。
 //!
-//! 全部文本符号经此处 re-export，crate 内调用方路径（`crate::prompt::X`）
+//! 全部文本符号经此处 re-export，crate 内调用方路径（`crate::prompt:X`）
 //! 与既有代码保持不变。
 //!
 //! 设计约束（与资产 crate 一致）：
@@ -22,7 +22,7 @@
 use nemesis_types::capability::ModelTier;
 
 // ---------------------------------------------------------------------------
-// 文本资产 re-export（单一真相源在 nemesis-prompts）
+// 文本资产 re-export（统一定义在 nemesis-prompts）
 // ---------------------------------------------------------------------------
 
 pub use nemesis_prompts::aux::{
@@ -75,7 +75,7 @@ impl PromptSystem {
         }
     }
 
-    /// 从 `Config` 取键并解析的便捷入口（ factory 侧避免手写 trim 分派）。
+    /// 从 `Config` 取键并解析的便捷入口（factory 侧避免手写 trim 分派）。
     pub fn from_config(cfg: &nemesis_config::AgentsConfig) -> Self {
         Self::parse(&cfg.prompt_system)
     }

@@ -1,6 +1,6 @@
-//! DACL 定向档 D3：write-restricted 受限令牌 + CreateProcessAsUserW spawn。
+//! DACL 定向档：write-restricted 受限令牌 + CreateProcessAsUserW spawn。
 //!
-//! 设计文档：`docs/PLAN/2026-09-27_windows-acl-targeted-deny-design.md` §2/§3.3。
+//! 设计文档：`windows-acl-targeted-deny-design` 。
 //! Windows + `acl` feature 编译（与 acl_impl 同门控）。
 //!
 //! ## 为什么不是 `SandboxBackend` trait 的第三形态
@@ -32,7 +32,7 @@
 //!   * 九组白名单（首版生产）→ 生产任务 B 实锤围栏失守：Authenticated
 //!     Users 在 restricting 列表，而 **C:\ 根默认 DACL 给 Authenticated
 //!     Users Modify（OI/CI 继承，Windows 标准形态）**→ 所有用户自建目录
-//!     树（含本仓库 target/）在 restricting 侧放行，cmd 重定向写
+//!     树（含本仓库 target）在 restricting 侧放行，cmd 重定向写
 //!     `target\dacl-uat-outside.txt` 成功；
 //!   * 组面二分矩阵（token_tests `restricted_token_minimal_restricting_
 //!     set_probe`）定稿：**Everyone 单组即满足初始化**（空集/au-only/
@@ -40,11 +40,11 @@
 //!     生产白名单 = `["S-1-1-0"]`。
 //! - **`S-1-5-12` 明确不用**：它是内核 legacy write-restricted 标记（先于
 //!   flag 机制的 svchost 时代产物）——只要出现在 restricting 列表，无论
-//!   flag 组合如何子进程初始化必死（诊断矩阵 15 行实证）。设计 §2 原假设
+//!   flag 组合如何子进程初始化必死（诊断矩阵 15 行实证）。设计 原假设
 //!   「混入 S-1-5-12 即 write-restricted 型」已被推翻：写只查语义来自
 //!   flag 本身。
-//! - workspace_sid：D1 从工作区路径确定性派生；树上预置了它的 GRANT ACE
-//!   （D2 standing ACE）——写工作区内第二检查经它放行；它是 restricting
+//! - workspace_sid： 从工作区路径确定性派生；树上预置了它的 GRANT ACE
+//!   （standing ACE）——写工作区内第二检查经它放行；它是 restricting
 //!   列表里**唯一的扩面**。
 //! - **用户自身 SID 与高特权组不进 restricting 列表**（收窄面）：用户/admin
 //!   专属 DACL 上的写类访问第一检查过、第二检查无人放行 → 拒绝。
@@ -70,7 +70,7 @@
 //!   fence e2e 断言用户/admin 专属 DACL 面与 Authenticated Users 面被拒
 //!   （后者是 C:\ 根默认 Modify 的最大开口位，2026-09-28 收窄）；
 //! - hardlink 缺口（工作区内对外部文件造 hardlink = 写外部数据，同一权限
-//!   位无法区分）——设计 §4.2，v1 记录为已知边界；
+//!   位无法区分）——设计，v1 记录为已知边界；
 //! - 不防网络 / 读面 / 进程注入——与完整性标签档同一结构性边界；
 //! - **console 分配面（2026-09-27 全链实证定稿）**：restricted 令牌子进程
 //!   对 **新** console 分配（\Device\ConDrv 写类访问）必死
@@ -84,7 +84,7 @@
 //!   诚实边界：console-less 树内第三方工具以默认 flags spawn console 子进程
 //!   仍会死（我们控制不了的深层 spawn），受限模式下 exec 工具链必须全程
 //!   DETACHED 或依赖顶部附着。
-//! - 本档不申请 strict 合格（P24 契约：strict 只认 Sandboxie）。
+//! - 本档不申请 strict 合格（契约：strict 只认 Sandboxie）。
 
 use std::ffi::c_void;
 use std::path::Path;
@@ -150,7 +150,7 @@ unsafe impl Sync for WriteRestrictedToken {}
 /// （本机 admin 账号实证 exit 23）。白名单之外只放行 logon sid（本会话
 /// 对象面）。
 ///
-/// **为什么只有 Everyone（S-1-1-0）——2026-09-28 围栏失守排查实证**：
+/// **为什么只有 Everyone（S-1-1-0）—— 围栏失守排查实证**：
 /// 生产任务 B 抓出「受限 exec 的 cmd 重定向写 C:\AI\NemesisBot_Rust\target\
 /// 成功」——根因是 Authenticated Users（S-1-5-11）在 restricting 列表，
 /// 而 **C:\ 根默认 DACL 给 Authenticated Users Modify（OI/CI 继承，Windows
@@ -254,9 +254,9 @@ unsafe fn mint_restricted(
     }
 }
 
-/// 受限子进程尽力**附着**父进程 console（DACL 定向档生产链，D4 接线）。
+/// 受限子进程尽力**附着**父进程 console（DACL 定向档生产链， 接线）。
 /// 附着是打开既有 condrv 对象（非写类访问）——白名单 restricting 下放行
-/// （2026-09-27 实证：附着成功且附着后默认 flags 孙进程存活）；成功后本
+/// （实证：附着成功且附着后默认 flags 孙进程存活）；成功后本
 /// 进程树内默认 flags spawn 继承该 console，不再触**新分配**面 → 第三方
 /// 链式工具链（cargo→rustc 类）可用。父进程 console-less（服务化启动）
 /// 时失败返回 false——调用方按「全链 DETACHED」降级（exec 工具链的深层
@@ -280,7 +280,7 @@ pub fn create_write_restricted_token(workspace_sid: &str) -> Result<WriteRestric
 /// 组面显式给定形态（测试对照实验专用）：`groups` 为追加进 restricting 列表
 /// 的组 SID 字符串（logon sid 与 ws_sid 恒在）。生产 `create_write_
 /// restricted_token` 走白名单；最小集实验传 `&[]` 验证「无组面」下子进程
-/// 初始化 / fence 语义（2026-09-28 围栏失守排查）。
+/// 初始化 / fence 语义（围栏失守排查）。
 #[cfg(test)]
 pub(crate) fn create_write_restricted_token_with_groups(
     workspace_sid: &str,
@@ -629,7 +629,7 @@ fn create_inherit_pipe(sa: &SECURITY_ATTRIBUTES) -> Result<(HANDLE, HANDLE), Str
     Ok((r, w))
 }
 
-/// raw 句柄包成 owned `std::fs::File`（Drop 自动 CloseHandle；读写同用）。
+/// raw 句柄包成 owned `std::fs:File`（Drop 自动 CloseHandle；读写同用）。
 fn to_file(h: HANDLE) -> std::fs::File {
     use std::os::windows::io::FromRawHandle;
     // SAFETY：h 是 CreatePipe 返回的有效裸句柄，所有权在此移交 File——每个
@@ -685,7 +685,7 @@ fn build_unicode_env_block(extra: &[(String, String)]) -> Result<Vec<u16>, Strin
 }
 
 // ---------------------------------------------------------------------------
-// availability 探针（状态面 / 选型用——D4 接线）
+// availability 探针（状态面 / 选型用—— 接线）
 // ---------------------------------------------------------------------------
 
 /// DACL 定向档本机可用性（令牌可开 + 两个 restricting SID 可解析）。

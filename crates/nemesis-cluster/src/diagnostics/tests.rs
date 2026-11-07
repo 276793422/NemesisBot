@@ -39,7 +39,7 @@ fn test_collect_os_version_returns_nonempty() {
 
 #[test]
 fn test_collect_os_version_matches_os_const() {
-    // Cross-platform fallback path returns std::env::consts::OS exactly.
+    // Cross-platform fallback path returns std::env:consts::OS exactly.
     // Windows returns "ProductName (Build N)"; Linux returns the
     // /etc/os-release PRETTY_NAME — verify against each platform's source
     // of truth instead of guessing substrings.

@@ -1,4 +1,4 @@
-//! A4 装配纪律 helper：**等待「子进程就绪」的循环
+//! 装配纪律 helper：**等待「子进程就绪」的循环
 //! 必须耦合子进程存活断言**。
 //!
 //! 病灶形态：spawn 子进程后轮询某个就绪信号（HTTP health / 管道连接 /
@@ -49,7 +49,7 @@ impl std::fmt::Display for ReadyError {
 /// - `aliveness`：存活断言，`Some(why)` = 子进程已死，立即
 ///   [`ReadyError::ChildDied`]（`why` 是退出码/信号现场字符串）。
 ///
-/// 时序基线用 `tokio::time::Instant`（测试 `start_paused` 虚拟时钟下可确定性跑）。
+/// 时序基线用 `tokio::time:Instant`（测试 `start_paused` 虚拟时钟下可确定性跑）。
 pub async fn wait_for_ready<T, P, PF, A, AF>(
     poll_interval: Duration,
     deadline: Duration,
@@ -70,7 +70,7 @@ where
             Ok(None) => {}
             Err(_elapsed) => {}
         }
-        // ② A4 纪律核心：就绪未达成 → 断言子进程存活，早死立即报死因。
+        // ② 纪律核心：就绪未达成 → 断言子进程存活，早死立即报死因。
         if let Some(why) = aliveness().await {
             return Err(ReadyError::ChildDied { detail: why });
         }

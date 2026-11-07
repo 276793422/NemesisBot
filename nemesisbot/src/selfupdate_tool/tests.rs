@@ -17,7 +17,7 @@ fn manifests_nonempty_and_readonly_flag() {
     let check = SelfupdateCheckTool;
     assert!(!check.description().is_empty());
     assert!(check.parameters().is_object());
-    // 只读检查：进 U5 并行读池（fail-closed 默认的例外须显式声明）。
+    // 只读检查：进 并行读池（fail-closed 默认的例外须显式声明）。
     assert!(check.is_read_only());
 
     let apply = SelfupdateApplyTool;
@@ -29,7 +29,7 @@ fn manifests_nonempty_and_readonly_flag() {
 
 #[tokio::test]
 async fn apply_without_manager_errors_honestly() {
-    // 自钉前置条件（2026-10-13 根修）：同 bin 的 gateway full_assembly 冒烟
+    // 自钉前置条件（根修）：同 bin 的 gateway full_assembly 冒烟
     // 在测试进程里跑生产 run()，会把 manager 装进进程级全局槽（OnceLock 时代
     // 无法清除，断言「未装配」只能赌执行顺序 → 偶发假红）。槽已 RwLock 化，
     // arrange 段先清，本测试不再依赖顺序。

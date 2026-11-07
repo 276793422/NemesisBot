@@ -84,6 +84,6 @@ impl Default for ConvRouter {
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): Default impl.
+// (, quality-hardening goal 冲刺 web): Default impl.
 #[cfg(test)]
 mod s10b_tests;

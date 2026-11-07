@@ -1,4 +1,4 @@
-//! L07（2026-11-01）：审批卡 diff 预览单测——分派表按序首中、四种形态
+//! （2026-11-01）：审批卡 diff 预览单测——分派表按序首中、四种形态
 //! 全命中、失败路径诚实注记、截断与二进制边界。
 
 use super::*;
@@ -8,16 +8,16 @@ use super::*;
 #[test]
 fn dispatch_non_object_args_returns_none() {
     // args 缺失 / 非对象 = 不产预览（保持现状，卡片无预览区）。
-    assert!(build_preview("file_write", "t", &serde_json::Value::Null).is_none());
-    assert!(build_preview("file_write", "t", &serde_json::json!("str")).is_none());
-    assert!(build_preview("file_write", "t", &serde_json::json!([1])).is_none());
+    assert!(build_preview(None, "file_write", "t", &serde_json::Value::Null).is_none());
+    assert!(build_preview(None, "file_write", "t", &serde_json::json!("str")).is_none());
+    assert!(build_preview(None, "file_write", "t", &serde_json::json!([1])).is_none());
 }
 
 #[test]
 fn dispatch_command_form_hits_before_others_present() {
     // 只有 command 形态命中；path+content 同场时不抢（按序首中是确定性契约）。
     let args = serde_json::json!({ "command": "ls -la", "cwd": "/tmp" });
-    let (text, fmt) = build_preview("process_exec", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "process_exec", "t", &args).unwrap();
     assert_eq!(fmt, "text");
     assert!(text.contains("ls -la"));
     assert!(text.contains("/tmp"));
@@ -32,7 +32,7 @@ fn dispatch_edits_takes_priority_over_write_form() {
     let args = serde_json::json!({
         "edits": [{ "path": p.to_str().unwrap(), "old_text": "hello", "new_text": "world" }]
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains("-hello"));
     assert!(text.contains("+world"));
@@ -43,7 +43,7 @@ fn dispatch_write_form_path_content() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("new.txt");
     let args = serde_json::json!({ "path": p.to_str().unwrap(), "content": "abc\n" });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains("+abc"));
 }
@@ -59,7 +59,7 @@ fn dispatch_append_form_diffs_against_existing_tail() {
     let args = serde_json::json!({
         "path": p.to_str().unwrap(), "action": "append", "content": "line2\n"
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains(" line1"), "现盘内容保持无前缀变化: {text}");
     assert!(text.contains("+line2"), "追加行以新增行渲染: {text}");
@@ -77,7 +77,7 @@ fn dispatch_append_form_new_file_is_full_add() {
     let args = serde_json::json!({
         "path": p.to_str().unwrap(), "action": "append", "content": "seed\n"
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains("+seed"));
 }
@@ -90,7 +90,7 @@ fn dispatch_edit_form_old_new_text() {
     let args = serde_json::json!({
         "path": p.to_str().unwrap(), "old_text": "two", "new_text": "2"
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains("-one two three"));
     assert!(text.contains("+one 2 three"));
@@ -100,12 +100,12 @@ fn dispatch_edit_form_old_new_text() {
 fn dispatch_no_matching_form_returns_none() {
     // 对象 args 但无任何已知形态字段 = 不产预览。
     let args = serde_json::json!({ "foo": 1 });
-    assert!(build_preview("file_write", "t", &args).is_none());
+    assert!(build_preview(None, "file_write", "t", &args).is_none());
 }
 
 #[test]
 fn dispatch_confusing_args_content_wins_over_command() {
-    // 对抗 P5（形态混淆）：args 同时带 content 与 command——分派表按序首中
+    // 对抗 （形态混淆）：args 同时带 content 与 command——分派表按序首中
     // （write 先于 command），一次只产一种 preview，不拼接。
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("mix.txt");
@@ -114,7 +114,7 @@ fn dispatch_confusing_args_content_wins_over_command() {
         "content": "hello\n",
         "command": "rm -rf /"
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff", "write 形态胜出");
     assert!(text.contains("+hello"));
     assert!(!text.contains("将执行命令"), "不拼接命令现场");
@@ -128,7 +128,7 @@ fn write_new_file_full_addition_diff() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("fresh.txt");
     let args = serde_json::json!({ "path": p.to_str().unwrap(), "content": "l1\nl2\n" });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     // 空文件行数修正：空侧记 0。
     assert!(text.contains("@@ -0,0 +1,2 @@"), "hunk header: {text}");
@@ -145,7 +145,7 @@ fn write_existing_file_replacement_diff() {
     let p = dir.path().join("exist.txt");
     std::fs::write(&p, "keep\nold value\nkeep tail\n").unwrap();
     let args = serde_json::json!({ "path": p.to_str().unwrap(), "content": "keep\nnew value\nkeep tail\n" });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains("-old value"));
     assert!(text.contains("+new value"));
@@ -161,7 +161,7 @@ fn write_binary_target_annotated_no_diff() {
     bytes.extend_from_slice(&[0u8; 16]); // NUL 在 8KB 探测窗内 → 二进制
     std::fs::write(&p, &bytes).unwrap();
     let args = serde_json::json!({ "path": p.to_str().unwrap(), "content": "text\n" });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "text");
     assert!(text.contains("二进制文件"));
 }
@@ -174,7 +174,7 @@ fn write_oversized_target_downgrades_to_note() {
     let big = "x".repeat(MAX_DIFF_SOURCE_BYTES as usize + 1);
     std::fs::write(&p, &big).unwrap();
     let args = serde_json::json!({ "path": p.to_str().unwrap(), "content": "small\n" });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "text");
     assert!(text.contains("较大"));
     assert!(!text.contains("+small"));
@@ -187,7 +187,7 @@ fn write_read_failure_degrades_to_note_with_new_content() {
     let p = dir.path().join("as_dir");
     std::fs::create_dir(&p).unwrap();
     let args = serde_json::json!({ "path": p.to_str().unwrap(), "content": "secret-ish\n" });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "text");
     assert!(text.contains("读取当前文件失败"));
     assert!(text.contains("secret-ish"));
@@ -203,7 +203,7 @@ fn edit_old_text_miss_honest_note() {
     let args = serde_json::json!({
         "path": p.to_str().unwrap(), "old_text": "NOT PRESENT", "new_text": "x"
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "text");
     // 预览忠实原则：不命中就如实说执行时会报错，不假装能替换。
     assert!(text.contains("未在当前文件中命中"));
@@ -217,7 +217,7 @@ fn edit_missing_file_degrades_to_note() {
     let args = serde_json::json!({
         "path": p.to_str().unwrap(), "old_text": "a", "new_text": "b"
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "text");
     assert!(text.contains("读取当前文件失败"));
 }
@@ -236,7 +236,7 @@ fn multiedit_same_file_sequential_accumulation() {
             { "path": p.to_str().unwrap(), "old_text": "X B", "new_text": "Y" }
         ]
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains("-A B C"));
     assert!(text.contains("+Y C"));
@@ -253,7 +253,7 @@ fn multiedit_miss_enters_notes_not_diff() {
             { "path": p.to_str().unwrap(), "old_text": "MISS", "new_text": "x" }
         ]
     });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.contains("+done"));
     assert!(text.contains("未命中"));
@@ -263,10 +263,10 @@ fn multiedit_miss_enters_notes_not_diff() {
 #[test]
 fn multiedit_empty_or_malformed_returns_none() {
     // 空 edits 数组 = 不产预览。
-    assert!(build_preview("file_write", "t", &serde_json::json!({ "edits": [] })).is_none());
+    assert!(build_preview(None, "file_write", "t", &serde_json::json!({ "edits": [] })).is_none());
     // 条目形态不齐（缺 new_text）= 诚实不产。
     let args = serde_json::json!({ "edits": [{ "path": "x", "old_text": "a" }] });
-    assert!(build_preview("file_write", "t", &args).is_none());
+    assert!(build_preview(None, "file_write", "t", &args).is_none());
 }
 
 // ---------- command 形态 ----------
@@ -274,7 +274,7 @@ fn multiedit_empty_or_malformed_returns_none() {
 #[test]
 fn command_preview_shows_verbatim_command_and_cwd() {
     let args = serde_json::json!({ "command": "echo $SECRET_TOKEN", "cwd": "C:/work" });
-    let (text, fmt) = build_preview("process_exec", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "process_exec", "t", &args).unwrap();
     assert_eq!(fmt, "text");
     // 命令逐字展示（忠实原则）——env 变量名在命令里就显示变量名。
     assert!(text.contains("echo $SECRET_TOKEN"));
@@ -284,11 +284,11 @@ fn command_preview_shows_verbatim_command_and_cwd() {
 #[test]
 fn command_preview_default_cwd_placeholder() {
     let args = serde_json::json!({ "command": "dir" });
-    let (text, _) = build_preview("process_exec", "t", &args).unwrap();
+    let (text, _) = build_preview(None, "process_exec", "t", &args).unwrap();
     assert!(text.contains("(默认工作目录)"));
     // 空 cwd 同样落占位符。
     let args2 = serde_json::json!({ "command": "dir", "cwd": "" });
-    let (text2, _) = build_preview("process_exec", "t", &args2).unwrap();
+    let (text2, _) = build_preview(None, "process_exec", "t", &args2).unwrap();
     assert!(text2.contains("(默认工作目录)"));
 }
 
@@ -306,7 +306,7 @@ fn truncate_large_multibyte_preview_at_char_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("cn.txt");
     let args = serde_json::json!({ "path": p.to_str().unwrap(), "content": content });
-    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
     assert_eq!(fmt, "diff");
     assert!(text.len() <= MAX_PREVIEW_BYTES + 128, "截断后不应远超上限");
     assert!(text.contains("[预览已截断"));
@@ -365,4 +365,101 @@ fn human_size_units() {
     assert_eq!(human_size(512), "512 B");
     assert_eq!(human_size(2048), "2.0 KB");
     assert_eq!(human_size(3 * 1024 * 1024), "3.0 MB");
+}
+
+// ---------- BUG-20261106-033：预览读侧 workspace 坐标系 ----------
+
+#[test]
+fn relative_write_resolved_against_workspace() {
+    // BUG-20261106-033：args path 是相对 workspace 解析的（工具执行面
+    // resolve_workspace_path 语义），预览读侧必须同坐标系——否则相对形态
+    // 按进程 cwd 直读，cwd ≠ workspace 时读不到现盘文件 → 误报「全量新增」，
+    // 批准者看到假 diff（违反预览忠实原则）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("docs").join("a.md");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "keep\nexisting body\n").unwrap();
+    let args = serde_json::json!({
+        "path": "docs/a.md",
+        "content": "keep\nreplaced body\n"
+    });
+    let (text, fmt) = build_preview(Some(dir.path()), "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains("-existing body"), "必须读到现盘内容：{text}");
+    assert!(text.contains("+replaced body"));
+    assert!(
+        !text.contains("@@ -0,0"),
+        "现盘文件存在 = 不是全量新增：{text}"
+    );
+    // 对照臂（红）：None（旧行为）= raw path 按 cwd 直读——cwd 下该相对
+    // 路径不存在 → 全量新增假 diff。同一 args，坐标系不同结果不同。
+    let (old_text, old_fmt) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert_eq!(old_fmt, "diff");
+    assert!(
+        old_text.contains("@@ -0,0 +1,2 @@"),
+        "None（旧行为）对照臂：cwd 无此文件 → 全量新增：{old_text}"
+    );
+}
+
+#[test]
+fn relative_edit_resolved_against_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("src").join("e.txt");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "alpha beta gamma\n").unwrap();
+    let args = serde_json::json!({
+        "path": "src/e.txt", "old_text": "beta", "new_text": "BETA"
+    });
+    let (text, fmt) = build_preview(Some(dir.path()), "file_edit", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains("-alpha beta gamma"), "{text}");
+    assert!(text.contains("+alpha BETA gamma"));
+}
+
+#[test]
+fn relative_multiedit_resolved_against_workspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("m.txt");
+    std::fs::write(&p, "one two\n").unwrap();
+    let args = serde_json::json!({
+        "edits": [{ "path": "m.txt", "old_text": "two", "new_text": "2" }]
+    });
+    let (text, fmt) = build_preview(Some(dir.path()), "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains("-one two"), "{text}");
+    assert!(text.contains("+one 2"));
+    // 对照臂（红）：None = cwd 直读读不到 → 注记「old_text 未命中」失真。
+    let (old_text, _) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert!(
+        old_text.contains("old_text 未命中"),
+        "None（旧行为）对照臂：读不到现盘 → 误报未命中：{old_text}"
+    );
+}
+
+#[test]
+fn relative_append_resolved_against_workspace() {
+    // append 臂与其余三臂同坐标系（合并补齐：BUG-033 修复只接了
+    // write/edit/multiedit 三臂，append 臂遗留 raw path 直读 = 同族假
+    // diff——相对路径按 cwd 读不到现盘 → 追加被误渲染成全量新增）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("logs").join("app.log");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "line1\n").unwrap();
+    let args = serde_json::json!({
+        "path": "logs/app.log", "action": "append", "content": "line2\n"
+    });
+    let (text, fmt) = build_preview(Some(dir.path()), "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains(" line1"), "现盘内容保持无前缀变化：{text}");
+    assert!(text.contains("+line2"), "{text}");
+    assert!(
+        !text.contains("@@ -0,0"),
+        "读到现盘 = 追加不是全量新增：{text}"
+    );
+    // 对照臂（红）：None = cwd 直读 → 现盘文件不存在 → 全量新增假 diff。
+    let (old_text, _) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert!(
+        old_text.contains("@@ -0,0 +1,1 @@"),
+        "None（旧行为）对照臂：cwd 无此文件 → 全量新增：{old_text}"
+    );
 }

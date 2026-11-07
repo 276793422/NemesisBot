@@ -345,9 +345,9 @@ fn test_unrestricted_allows_path_traversal() {
     let tool = make_tool(); // restrict = false
     let _result = tool.guard_command("cat ../etc/passwd", std::path::Path::new("."));
     // Should NOT be blocked by path traversal (though it might be blocked by deny patterns
-    // due to containing "cat ../etc/passwd" - that is fine, path traversal specifically should
+    // due to containing "cat../etc/passwd" - that is fine, path traversal specifically should
     // not trigger when not restricted)
-    // Actually this would be blocked by $( ) patterns or other patterns. Let's use a simpler case.
+    // Actually this would be blocked by $ patterns or other patterns. Let's use a simpler case.
     let result = tool.guard_command("ls ..", std::path::Path::new("."));
     assert!(
         result.is_ok(),
@@ -437,7 +437,7 @@ fn test_truncate_short_output() {
 
 #[test]
 fn test_truncate_long_output() {
-    // G3: head+marker+tail semantics (matched to nemesis-agent::prune).
+    // head+marker+tail semantics (matched to nemesis-agent::prune).
     let long_output: String = "x".repeat(15_000);
     let truncated = ShellTool::truncate_output(&long_output);
     assert!(truncated.contains("truncated"));
@@ -919,7 +919,7 @@ fn test_truncate_empty_output() {
 
 #[test]
 fn test_truncate_large_output() {
-    // Use a large ASCII string to safely test truncation. G3: head+tail
+    // Use a large ASCII string to safely test truncation.: head+tail
     // keeps ~8000 chars + marker, within the local budget.
     let large_output = "x".repeat(15000);
     let truncated = ShellTool::truncate_output(&large_output);
@@ -941,7 +941,7 @@ fn test_truncate_exactly_one_over_limit() {
 
 #[test]
 fn test_truncate_multibyte_no_panic() {
-    // G3: char-based slicing — the old byte-slice form panicked on Chinese
+    // char-based slicing — the old byte-slice form panicked on Chinese
     // output straddling the limit (str-slice-multibyte-panic class).
     let output = "中".repeat(10_001);
     let truncated = ShellTool::truncate_output(&output);
@@ -999,7 +999,7 @@ fn test_new_with_config_disabled_patterns() {
 }
 
 // ============================================================
-// W4a coverage gap closure (new_with_config error arms, setters,
+// coverage gap closure (new_with_config error arms, setters,
 // get_short_path, workspace path-scan loop)
 // ============================================================
 
@@ -1039,7 +1039,7 @@ fn w4a_new_with_config_empty_custom_falls_back_to_defaults() {
     );
 }
 
-#[cfg(windows)] // Windows-form CLI test（ping -n 是 Windows 旗标，Linux 是 -c，2026-09-02 约定）
+#[cfg(windows)] // Windows-form CLI test（ping -n 是 Windows 旗标，Linux 是 -c， 约定）
 #[tokio::test]
 async fn w4a_set_timeout_enforced_by_execute() {
     // set_timeout changes the default timeout used when args carry no
@@ -1084,7 +1084,7 @@ fn w4a_get_short_path_escapes_spaces() {
 
 #[test]
 fn w4a_guard_workspace_path_scan_absolute_outside_paths_are_blocked() {
-    // BUG-20261025-55 回归锁（旧名 ..._are_not_blocked 钉的是恒 no-op 的
+    // 回归锁（旧名..._are_not_blocked 钉的是恒 no-op 的
     // 伪守卫：strip_prefix 只有路径在 cwd 之内才 Ok，真正在外的路径走
     // Err 分支直接放行）。修复后无歧义绝对路径在工作区外 = 拦。
     let tool = make_restricted_tool();
@@ -1135,8 +1135,8 @@ fn w4a_guard_skips_flag_ambiguous_paths_and_url_tails() {
 #[test]
 fn w4a_guard_dotted_filename_inside_cwd_not_blocked() {
     // 旧「dotted 组件必拦」是死分支时代的产物：`..leak.txt` 是以点开头
-    // 的**文件名**（不含 ../ ..\，非穿越），文本上位于 cwd 之内——修复
-    // 后按 starts_with 判定在内 → 放行。真正的穿越形态（..\ / ../）
+    // 的**文件名**（不含../..\，非穿越），文本上位于 cwd 之内——修复
+    // 后按 starts_with 判定在内 → 放行。真正的穿越形态（..\ /..）
     // 由前置 traversal 检查拦。
     let tool = make_restricted_tool();
     let (cwd, cmd) = if cfg!(windows) {
@@ -1157,7 +1157,7 @@ fn w4a_guard_dotted_filename_inside_cwd_not_blocked() {
 }
 
 // ===========================================================================
-// BUG-20261025-55 回归锁：guard_command 工作区路径扫描恒 no-op——strip_prefix
+// 回归锁：guard_command 工作区路径扫描恒 no-op——strip_prefix
 // 只有路径在 cwd 之内才 Ok（方向性倒置），restrict=true 下区外绝对路径畅通。
 // 修复后按 starts_with 拦截；旧形态 is_ok 必红。
 // ===========================================================================
@@ -1178,7 +1178,7 @@ fn bug55_guard_blocks_absolute_path_outside_workspace() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): guard_command restrict=true with an in-workspace
+// coverage: guard_command restrict=true with an in-workspace
 // absolute path (the strip_prefix-Ok / not-".." fall-through edge)
 // ===========================================================================
 
@@ -1196,7 +1196,7 @@ fn s2_shell_guard_command_in_workspace_absolute_path_passes() {
 }
 
 // ===========================================================================
-// resolve_posix_shell_path（2026-09-02 CI 首跑实证）：Windows 系统 PATH 中
+// resolve_posix_shell_path（CI 首跑实证）：Windows 系统 PATH 中
 // System32 恒排最前，`Command::new("bash")` 命中的是 WSL launcher（feature
 // 启用但无发行版 = exit 1 空壳）。helper 按 ProgramFiles 驱动探测 Git/MSYS2
 // 安装路径。探测是否命中是机器态（装没装 Git）——断言写成宽容式：命中 →
@@ -1253,7 +1253,7 @@ fn resolve_posix_shell_path_sh_resolution_agrees_with_bash() {
     assert_eq!(bash != "bash", sh != "sh");
 }
 
-// B8d：超时树杀——此前 `timeout(dur, output())` 超时丢 future 不 kill，
+// 超时树杀——此前 `timeout(dur, output())` 超时丢 future 不 kill，
 // 被超时命令继续在后台跑。钉死「超时后命令链不再推进」：marker 由命令链
 // 末段落盘，孤儿若存活必在自然结束点后写入 → 断言红。
 #[tokio::test]

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// W2 P4: board autopilot cron 触发 + 派发超时 sweep
+// board autopilot cron 触发 + 派发超时 sweep
 // ---------------------------------------------------------------------------
 
 // 唯一消费者 sweep_dispatch_timeouts 为 all(board,cluster) 门——随门收放，
@@ -31,7 +31,7 @@ fn resolve_autopilot_job<'a>(
 /// cron on_job 的 board autopilot 分支（job 名 `board-ap:{id}`）：按规则
 /// 模板建单（target 非空时派发）并落 last_run_at；返回值进 job run 历史。
 /// disabled 规则到点跳过（启停是用户意图，不算故障）。
-/// 全自动流转 D2：auto_plan 规则经 moderator 槽自动拆解（槽晚填 OnceLock；
+/// 全自动流转：auto_plan 规则经 moderator 槽自动拆解（槽晚填 OnceLock；
 /// hub 传 None——cron 装配早于 web server，诚实降级无 SSE 推送）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) fn fire_board_autopilot(
@@ -75,21 +75,21 @@ pub(crate) fn fire_board_autopilot(
     Ok(format!("autopilot「{}」已触发: {out}", ap.name))
 }
 
-/// 一轮派发超时清扫（W2 P4-①②，board 派发无人回报时的兜底）。逐条
+/// 一轮派发超时清扫（①②，board 派发无人回报时的兜底）。逐条
 /// dispatched 记录判定：
 ///   ① 派发超过 `timeout_secs` 未回报 → 超时失败；
 ///   ② worker 在注册表且明确离线、且距派发 ≥ 离线宽限期（600s，容忍抖动）
 ///      → 离线失败。peer 缺失不判——未发现的 worker 可能只是还没上线，
 ///      保守等超时。
 /// `fail_dispatch_checked` 是竞态闸（state IN dispatched/running + generation
-/// 等值，AOR 批三 5.2 双闸代际扩展）：赢者补 ⛔ 系统评论 + dispatch_failed
+/// 等值， 双闸代际扩展）：赢者补 ⛔ 系统评论 + dispatch_failed
 /// 站内通知；输者（worker 恰好回报/代际已变）不动，下一轮自然不再列出。
 ///
-/// M5-2（2026-10-10 机制加固）：assisted 模式下清扫失败的 issue **回流验
+/// （机制加固）：assisted 模式下清扫失败的 issue **回流验
 /// 收决策链**——推进 in_progress → in_review 并把 issue_id 返回给调用方
 /// spawn 标准评审 agent 定案。
 ///
-/// AOR 批三 5.2（sweep 策略化）：`autonomous=true` 时失败判定不再一律落
+/// （sweep 策略化）：`autonomous=true` 时失败判定不再一律落
 /// 终态+回流，改走监察环自治链：
 ///   - 监察环预算（独立于 unlimited_mode 的硬防线）：派发轮次（派发行数
 ///     − 1）≥ `max_redispatch`（0=关自动重派）→ 🛑 冻结停车（评论+通知+
@@ -117,7 +117,7 @@ pub(crate) fn sweep_dispatch_timeouts(
         FailClassPolicy, latest_fail_class, pick_sweep_switch_target, redispatch_policy,
     };
 
-    /// 竞态赢者落定三件套（assisted 与自治共用的单一真相源）：G3 账本收账
+    /// 竞态赢者落定三件套（assisted 与自治共用的统一定义）： 账本收账
     /// + ⛔ System 评论 + dispatch_failed 站内通知。
     fn sweep_fail_settle(
         store: &std::sync::Arc<nemesis_board::BoardStore>,
@@ -155,7 +155,7 @@ pub(crate) fn sweep_dispatch_timeouts(
         );
     }
 
-    /// M5-2 回流（单一真相源）：in_progress → in_review；`true` = 调用方把
+    /// 回流：in_progress → in_review；`true` = 调用方把
     /// issue_id push 进返回列表（spawn 评审）。非 in_progress（人工已动）
     /// 让位不回流；转移失败只 WARN。
     fn sweep_reflow_to_review(
@@ -186,7 +186,7 @@ pub(crate) fn sweep_dispatch_timeouts(
         }
     }
 
-    /// 自治冻结停车（AOR 批三 5.2）：🛑 System 评论 + dispatch_failed 通知 +
+    /// 自治冻结停车：🛑 System 评论 + dispatch_failed 通知 +
     /// in_review 冻结（**不回流评审链**——autonomous 前置 unlimited=true，
     /// 评审重派环会绕过监察环硬防线）+ record_auto_decide 审计漏斗留痕。
     fn sweep_freeze_park(
@@ -230,7 +230,7 @@ pub(crate) fn sweep_dispatch_timeouts(
             "[Board][Sweep] issue {} 自治冻结停车：{reason}；{note}",
             rec.issue_id
         );
-        // AOR 批三 5.3 触发点③：自治冻结停车 → 重规划起草（建议≠授权；
+        // 触发点③：自治冻结停车 → 重规划起草（建议≠授权；
         // 本函数是同步 fn，spawn_replan_draft 内部有 runtime 在场闸——
         // 无 runtime 的直调方诚实跳过）。
         crate::board_replan::spawn_replan_draft(deps.clone(), rec.issue_id, "sweep_freeze");
@@ -275,7 +275,7 @@ pub(crate) fn sweep_dispatch_timeouts(
         } else {
             format!("派发超时（{timeout_secs}s 无回报）")
         };
-        // 竞态闸（双闸之一，批三 5.2 代际扩展）：赢者才能收尾/自治。
+        // 竞态闸（双闸之一， 代际扩展）：赢者才能收尾/自治。
         let rec = match store.fail_dispatch_checked(&record.task_id, &reason, record.generation) {
             Ok(Some(rec)) => Some(rec),
             Ok(None) => None, /* 输竞态（worker 恰好回报/代际已变），下轮不再列出 */
@@ -297,7 +297,7 @@ pub(crate) fn sweep_dispatch_timeouts(
             continue;
         }
 
-        // ---- 自治臂（AOR 批三 5.2）----
+        // ---- 自治臂----
         // 监察环预算（独立于 unlimited_mode 的硬防线）：派发轮次 = 派发行数 − 1。
         let rounds = store
             .list_dispatches(rec.issue_id)
@@ -368,8 +368,8 @@ pub(crate) fn sweep_dispatch_timeouts(
             }
             continue;
         };
-        // 自治重派走派发单一入口（EST-01/02 estop 闸 / F1 目标校验 / P1 拓扑
-        // 闸全生效）；review_feedback 带失败原因（worker 侧可见）。
+        // 自治重派走派发单一入口（EST-01/02 estop 闸 / 目标校验 / 拓扑
+        // 闸全生效）；review_feedback 带失败原因（worker 侧可）。
         match nemesis_web::handlers::board::dispatch_issue_core(
             store,
             Some(cluster),

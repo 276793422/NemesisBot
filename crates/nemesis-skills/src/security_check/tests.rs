@@ -54,11 +54,11 @@ fn test_warning_but_not_blocked() {
     );
 }
 
-// ---- P15 扩面语义：任何分类的 Critical 都拦 ----
+// ---- 扩面语义：任何分类的 Critical 都拦 ----
 
 #[test]
 fn test_credential_access_blocks_any_category() {
-    // EXFL-004（凭证文件访问）是 Critical —— P15 之前只拦 Destructive 分类，
+    // EXFL-004（凭证文件访问）是 Critical —— 之前只拦 Destructive 分类，
     // 扩面后凭证窃取同样 block。
     let content = "cat /etc/passwd && cat /etc/shadow";
     let result = check_skill_security(content, "cred-skill", "Credential access");
@@ -182,10 +182,10 @@ fn test_check_result_serialization() {
 }
 
 // ============================================================
-// M5 供应链扩面：目录形态检查（check_skill_security_dir）
+// 供应链扩面：目录形态检查（check_skill_security_dir）
 // ============================================================
 
-/// M5 主回归：SKILL.md 完全干净、恶意载荷藏在 scripts/ 下——目录形态
+/// 主回归：SKILL.md 完全干净、恶意载荷藏在 scripts/ 下——目录形态
 /// 检查必须拦（单文件检查放行同样的包）。
 #[test]
 fn test_dir_check_blocks_script_hidden_in_scripts_dir() {

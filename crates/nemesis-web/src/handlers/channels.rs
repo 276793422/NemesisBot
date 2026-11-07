@@ -134,9 +134,9 @@ impl ChannelsHandler {
     }
 }
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): error arms
+// (, quality-hardening goal 冲刺 web): error arms
 // (missing config file / update payload validation) + sensitive-field
 // masking recursion（mask_sensitive_fields 已上移 handlers/mod.rs 共享，
-// 2026-09-25 凭据回显脱敏批次）.
+// 凭据回显脱敏批次）.
 #[cfg(test)]
 mod s10b_tests;

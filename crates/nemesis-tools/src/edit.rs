@@ -30,9 +30,9 @@ impl EditFileTool {
         };
 
         if self.restrict {
-            // 双侧统一归一化（nemesis-path 单一真相源）：补 symlink resolve
+            // 双侧统一归一化（nemesis-path 统一定义）：补 symlink resolve
             // 防护 + 组件级比较防 `C:\ws2` 前缀误判 + workspace 侧归一化防
-            // 8.3 短名/大小写失配（CI RUNNER~1 家族，2026-09-01）。
+            // 8.3 短名/大小写失配（CI RUNNER~1 家族）。
             let resolved = canonicalize_for_compare(&resolved);
             let ws = canonicalize_for_compare(&self.workspace);
             if !resolved.starts_with(&ws) {
@@ -143,9 +143,9 @@ impl AppendFileTool {
         };
 
         if self.restrict {
-            // 双侧统一归一化（nemesis-path 单一真相源）：补 symlink resolve
+            // 双侧统一归一化（nemesis-path 统一定义）：补 symlink resolve
             // 防护 + 组件级比较防 `C:\ws2` 前缀误判 + workspace 侧归一化防
-            // 8.3 短名/大小写失配（CI RUNNER~1 家族，2026-09-01）。
+            // 8.3 短名/大小写失配（CI RUNNER~1 家族）。
             let resolved = canonicalize_for_compare(&resolved);
             let ws = canonicalize_for_compare(&self.workspace);
             if !resolved.starts_with(&ws) {

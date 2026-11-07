@@ -272,14 +272,14 @@ fn test_no_persistence_no_files() {
 fn test_restore_after_restart() {
     let tmp = tempfile::tempdir().unwrap();
 
-    // Phase 1: write results
+    // write results
     {
         let store = TaskResultStore::with_disk_persistence(100, tmp.path());
         store.store_success("restart-1", "peer_chat", serde_json::json!("response-1"));
         store.store_failure("restart-2", "forge_share", "error-2");
     }
 
-    // Phase 2: simulate restart — new store from same directory
+    // simulate restart — new store from same directory
     let store = TaskResultStore::with_disk_persistence(100, tmp.path());
     let loaded = store.load_from_disk();
     assert_eq!(loaded, 2);
@@ -298,7 +298,7 @@ fn test_restore_after_restart() {
     assert!(store.get("restart-1").is_none());
     assert!(store.get("restart-2").is_some());
 
-    // Phase 3: another restart — only restart-2 should load
+    // another restart — only restart-2 should load
     let store = TaskResultStore::with_disk_persistence(100, tmp.path());
     let loaded = store.load_from_disk();
     assert_eq!(loaded, 1);
@@ -420,7 +420,7 @@ async fn test_async_eviction_deletes_disk() {
 async fn test_async_full_lifecycle() {
     let tmp = tempfile::tempdir().unwrap();
 
-    // Phase 1: write
+    // write
     {
         let store = AsyncTaskResultStore::with_disk_persistence(100, tmp.path());
         store
@@ -434,7 +434,7 @@ async fn test_async_full_lifecycle() {
         assert!(store.cleanup_delivered_async("life-1").await);
     }
 
-    // Phase 2: restart — only life-2 should be on disk
+    // restart — only life-2 should be on disk
     let store = AsyncTaskResultStore::with_disk_persistence(100, tmp.path());
     let loaded = store.load_from_disk_async().await;
     assert_eq!(loaded, 1);
@@ -444,7 +444,7 @@ async fn test_async_full_lifecycle() {
     // Cleanup life-2
     assert!(store.cleanup_delivered_async("life-2").await);
 
-    // Phase 3: another restart — nothing left
+    // another restart — nothing left
     let store = AsyncTaskResultStore::with_disk_persistence(100, tmp.path());
     let loaded = store.load_from_disk_async().await;
     assert_eq!(loaded, 0);
@@ -822,10 +822,10 @@ async fn test_async_store_get_nonexistent() {
 }
 
 // ============================================================
-// W3b coverage batch: I/O failure arms that the existing suite
+// coverage batch: I/O failure arms that the existing suite
 // never drives — cache_dir creation warn, read_dir failure,
 // per-file read failure, tmp-write / rename / delete failures
-// (sync + async).（GoTaskResultStore 相关用例随 T4 死代码删除）
+// (sync + async).（GoTaskResultStore 相关用例随 死代码删除）
 // ============================================================
 
 #[test]
@@ -889,7 +889,7 @@ fn test_w3b_write_to_disk_rename_failure_when_dest_is_directory() {
 
 #[test]
 fn test_w3b_write_to_disk_temp_failure_when_cache_dir_unusable() {
-    // BUG-20261025-51 后临时名为唯一形态（.tmp-{pid}-{seq}-{nanos}），
+    // 后临时名为唯一形态（.tmp-{pid}-{seq}-{nanos}），
     // 固定 `.tmp` 路径预置注入失效；temp 写失败面改由「cache_dir 本体是
     // 文件」触发（helper create_dir_all 失败 → Err → warn）。不变量不变：
     // 写盘失败 → 内存条目仍在、目标文件未产生。
@@ -981,7 +981,7 @@ async fn test_w3b_async_load_from_disk_read_failures() {
 }
 
 // ============================================================
-// S4 coverage: sync eviction + blocked disk delete, async load
+// coverage: sync eviction + blocked disk delete, async load
 // arms, async eviction, async blocked delete.
 // ============================================================
 
@@ -1097,7 +1097,7 @@ async fn test_s4_async_cleanup_blocked_path_warns() {
     assert!(path.is_dir());
 }
 
-// ---- G1: sweep_older_than tests (2026-09-01 cluster resilience goal) ----
+// ----: sweep_older_than tests (cluster resilience goal) ----
 
 /// 陈旧结果（stored_at 超 max_age）被磁盘清除 + 内存同步清理；新鲜结果保留。
 #[test]
@@ -1179,12 +1179,12 @@ fn test_sweep_no_persistence_noop() {
     assert!(store.get("sweep-mem").is_some(), "fresh memory entry kept");
 }
 
-/// Bug D 回归（2026-09-08 真机 R1c 发现）：set_running 占位条目不随盘复活。
+/// Bug D 回归（真机 发现）：set_running 占位条目不随盘复活。
 /// 占位代表的在途工作随进程死亡而消失（B 端 peer_chat 任务不进
 /// ClusterTaskList，重启后无人重跑）；占位若被 load_from_disk 回载，
 /// query_task_result 永远回答 "running"，A 端恢复轮询被吊到 24h 安全网。
 /// 正确行为：加载时丢弃占位 + 删除残file（重启后的 B 诚实回答 not_found），
-/// 真结果（response/error）照常回载（G1 语义不受影响）。
+/// 真结果（response/error）照常回载（语义不受影响）。
 #[test]
 fn test_load_from_disk_drops_running_placeholder() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1225,7 +1225,7 @@ fn test_load_from_disk_drops_running_placeholder() {
     assert!(tmp.path().join("task-fail.json").exists());
 }
 
-/// T4 回归（2026-10-17）：异步回载同款丢弃 running 占位（Bug D 对齐）——
+/// 回归：异步回载同款丢弃 running 占位（Bug D 对齐）——
 /// 占位随盘复活会让 query_task_result 永远回答 "running"，A 端恢复轮询
 /// 被吊死到 24h 安全网。
 #[tokio::test]
@@ -1271,7 +1271,7 @@ async fn test_async_load_from_disk_drops_running_placeholder() {
     assert!(tmp.path().join("task-real.json").exists());
 }
 
-// LOW-6（2026-10-17 四轮审计）：容量逐出锚定 stored_at 最老条目——HashMap
+// LOW-6（四轮审计）：容量逐出锚定 stored_at 最老条目——HashMap
 // 迭代序不定，此前 keys().next() 随机逐出；时间戳全解析失败回落首键保底。
 #[test]
 fn oldest_stored_key_anchors_on_stored_at() {

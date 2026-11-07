@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::Connection;
 
-/// 当前 schema 版本。P2（agents 表）/P4（交付泛化）/项 C（通知三段）
+/// 当前 schema 版本。（agents 表）/（交付泛化）/项 C（通知三段）
 /// 增表时：追加迁移步 + 本常量 +1，历史步永不改写。
 pub(crate) const LATEST_SCHEMA_VERSION: i64 = 4;
 
@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS deliveries (
 );
 "#;
 
-/// v2（P2）：Agent 持久实体表——持久身份（uuid）/ home 与执行根 /
+/// v2：Agent 持久实体表——持久身份（uuid）/ home 与执行根 /
 /// 记忆命名空间 / 凭据引用（vault 别名）/ 工具策略 / 档位 / 运行时
 /// 后端 / 多租户预留（principal）/ 归属节点。三类组（main/project/
 /// selfbuilt）同表，`kind` 区分；`status` 承载两阶段创建
@@ -114,7 +114,7 @@ CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
 CREATE INDEX IF NOT EXISTS idx_agents_kind ON agents(kind);
 "#;
 
-/// v3（P4 交付门）：deliveries 拒绝语义——`rejected_at`/`reject_reason`
+/// v3：deliveries 拒绝语义——`rejected_at`/`reject_reason`
 /// 两列（与 approvals 的 decided_at/decision_note 列式先例对称）。
 /// rejected 是终态：从任何非 rejected 状态条件进入（状态迁移走
 /// `reject_delivery`，带原因留痕）。
@@ -123,7 +123,7 @@ ALTER TABLE deliveries ADD COLUMN rejected_at TEXT;
 ALTER TABLE deliveries ADD COLUMN reject_reason TEXT;
 "#;
 
-/// v4（项 C 通知三段，2026-10-22）：deliveries 通知义务四列 + 出站失败
+/// v4（项 C 通知三段）：deliveries 通知义务四列 + 出站失败
 /// 重试箱 notify_outbox。`notify_state` 与 `status` 双维正交（status 说
 /// 「交付证据到哪一步」，notify_state 说「出站通知义务走到哪一段」）：
 /// pending（有义务，初始）→ channel_accepted → confirmed；none = 无义务；
@@ -196,7 +196,7 @@ impl TaskDb {
                 .to_string());
         }
         let mut conn = Self::migrate(conn)?;
-        // BUG-20261025-48：连接默认事务行为钉 IMMEDIATE。unchecked_transaction
+        // 连接默认事务行为钉 IMMEDIATE。unchecked_transaction
         // （merge_delivery_payload 的 RMW）继承此默认——DEFERRED 在 WAL 多连接
         // 下「读后快照被并发写推进 → UPDATE 升级写锁 BUSY」，docstring 承诺的
         // 「读与写之间不被插队」不成立；IMMEDIATE 在 BEGIN 时就拿写锁，RMW

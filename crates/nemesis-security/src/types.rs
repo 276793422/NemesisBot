@@ -40,12 +40,12 @@ pub enum OperationType {
     RegistryDelete,
     // 进程内编排/查询/交互（无外部副作用或副作用经自闸二次过滤）：
     // 定时器、会话内问答卡、静态表查询、子代理/工作流触发（其内部工具
-    // 调用各自过闸）。W5 盲点修复配套：给「纯内置编排面」一个诚实的
+    // 调用各自过闸）。 盲点修复配套：给「纯内置编排面」一个诚实的
     // LOW 档家，避免它们误挂 ProcessExec/Network* 名实不符的档位。
     Internal,
     // 紫微系统（三方程序受控接管）：附加/注入/原语调用/hook 子工具。
     // CRITICAL——把代码送进三方进程并调用其内部函数，风险量级与
-    // ProcessExec 同档；审批矩阵见紫微总控 §9.2（配置期每步审批卡，
+    // ProcessExec 同档；审批矩阵见紫微总控 （配置期每步审批卡，
     // 使用期按 profile run_policy）。
     Ziwei,
 }
@@ -166,7 +166,7 @@ pub fn operation_type_from_slug(slug: &str) -> Option<OperationType> {
 }
 
 /// slug 的危级标签（"LOW"/"MEDIUM"/"HIGH"/"CRITICAL"）。未知名 fail-closed
-/// 返回 "CRITICAL"——与管线 [`crate::pipeline::SecurityPlugin::
+/// 返回 "CRITICAL"——与管线 [`crate::pipeline:SecurityPlugin:
 /// effective_tool_operation`] 的未知名姿态同口径。
 pub fn danger_level_of_slug(slug: &str) -> String {
     match operation_type_from_slug(slug) {
@@ -194,7 +194,7 @@ pub struct ToolInvocation {
     pub metadata: std::collections::HashMap<String, String>,
 }
 
-/// F5 (devtool-upgrade 阶段 2): structured deny feedback from the 8-layer
+/// (devtool-upgrade): structured deny feedback from the 8-layer
 /// pipeline. Replaces the free-text `Option<String>` so consumers (agent loop
 /// replay to the model, image gate, tests) can present layer / policy /
 /// summary / suggestion separately.
@@ -208,7 +208,7 @@ pub struct DenyInfo {
     /// The policy/component that fired (same identifier as the audit
     /// JSONL policy column).
     pub policy: String,
-    /// Original free-text reason (unchanged from the pre-F5 message).
+    /// Original free-text reason (unchanged from the pre message).
     pub summary: String,
     /// Fixed per-layer remediation hint for the model.
     pub suggestion: Option<String>,
@@ -358,7 +358,7 @@ pub fn matches_pattern(target: &str, pattern: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// 进程级工具操作类型声明表（W5 盲点修复配套）
+// 进程级工具操作类型声明表（盲点修复配套）
 // ---------------------------------------------------------------------------
 // 动态注册面（MCP 桥 / WASM 插件桥）在工具注册期声明操作类型；管线查表
 // lookup-first（声明优先于内置表）。修复前的盲点：内置表 `_ => None` +
@@ -428,31 +428,31 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "list_directory" | "list_dir" => Some(OperationType::DirRead),
         "create_directory" | "create_dir" => Some(OperationType::DirCreate),
         "delete_directory" | "delete_dir" => Some(OperationType::DirDelete),
-        // B4（2026-09-05）：background_start 语义等同 exec（起进程）→ 同档
+        // background_start 语义等同 exec（起进程）→ 同档
         // ProcessExec，命令本体照常过 8 层管线。background_output /
         // background_kill 只操作本注册表内的自有任务（命令已在 start 时过
-        // 闸，读自有缓冲/杀自属子进程不构成新攻击面）——W5 盲点修复前走
+        // 闸，读自有缓冲/杀自属子进程不构成新攻击面）—— 盲点修复前走
         // 「未知名放行」分支，修复后未知名 = CRITICAL fail-closed，这里
         // 显式映射 Internal（LOW）保留原例外语义，不靠未知名兜底。
-        // L11（2026-11-03）：background_steer 向自有任务 stdin 注入文本 =
-        // 操控进程行为，风险与起进程同级 → exec 类审批口径（清单拍板项），
+        // background_steer 向自有任务 stdin 注入文本 =
+        // 操控进程行为，风险与起进程同级 → exec 类审批口径（清单决策项），
         // 与 background_output/kill 的 Internal 例外**刻意不同档**。
         "exec" | "execute_command" | "shell" | "exec_async" | "background_start" | "background_steer" | "cron"
         | "run_script"
-        // C8：构建/测试 runner（MOVE_TOOLS 成员，写 target/；plan 模式
+        // 构建/测试 runner（MOVE_TOOLS 成员，写 target/；plan 模式
         // 同源派生拦截）。
         | "run_checks"
-        // U13：外部 CLI 委派（claude/codex 子进程跑任务）。
-        // A3（委派持续操控）：delegate_start 语义等同 exec（起子代理进程）
+        // 外部 CLI 委派（claude/codex 子进程跑任务）。
+        // （委派持续操控）：delegate_start 语义等同 exec（起子代理进程）
         // → 同档 ProcessExec。
         | "claude_code" | "codex_delegate" | "delegate_start" => {
             Some(OperationType::ProcessExec)
         }
-        // F3（2026-09-22 审计修复）：`git`/`grep` 同为 MOVE_TOOLS 但此前未
-        // 分类 → 管线 None 放行（fail-open），U10 注释承诺的 declared_
+        // （审计修复）：`git`/`grep` 同为 MOVE_TOOLS 但此前未
+        // 分类 → 管线 None 放行（fail-open）， 注释承诺的 declared_
         // operation_type 机制未落地，这里直接补表。FileRead=LOW 让 8 层
         // 全部生效（注入检测/凭据扫描/DLP/审计链）；git 的写子命令由工具
-        // 白名单收口（只暴露 add/commit 等 D1 安全写），危险写走 exec。
+        // 白名单收口（只暴露 add/commit 等 安全写），危险写走 exec。
         "git" | "grep" => Some(OperationType::FileRead),
         "spawn" => Some(OperationType::ProcessSpawn),
         // 桌面自动化：控制其他应用窗口/键鼠（效果面 ≈ 操纵 GUI 程序）→
@@ -467,12 +467,12 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 浏览器自动化 = 网络面向能力；MCP 发现的静态档只承载 HTTP 臂
         // （url → NetworkRequest，SSRF 由 extract_url 覆盖）——stdio 臂
         // （LLM 可控 command spawn）经工具 `operation_override` 每次调用
-        // 投影 process_exec 过 exec 同款管线（BUG-20261102-296；静态表
+        // 投影 process_exec 过 exec 同款管线（静态表
         // 无法按参数分档，投影是唯一通道）。旧注记「拉起配置的 MCP server
         // 进程」只对配置驱动路径成立，agent 工具的 command 来自 LLM。
         "browser" | "mcp_discover" => Some(OperationType::NetworkRequest),
         "screen_capture" => Some(OperationType::FileWrite),
-        // H1（2026-09-05）：todowrite 本质是 workspace 内写文件（sessions/
+        // todowrite 本质是 workspace 内写文件（sessions/
         // todo_*.json），归 FileWrite 走同类审查（空 target 不匹配任何
         // ABAC 规则 → default action 兜底，默认配置放行）。
         "todowrite" => Some(OperationType::FileWrite),
@@ -489,7 +489,7 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 扫描/DLP/审计链全跑；不做 executor 隔离（不出 MOVE_TOOLS——
         // 沙盒断网反而打不通端点）。
         "generate_image" => Some(OperationType::NetworkRequest),
-        // 只读语义代码查询（L1/U19）。
+        // 只读语义代码查询。
         "lsp" => Some(OperationType::FileRead),
         // 硬件具名档（此前未映射 → 旧未知名放行；补齐后走具名类型）。
         "i2c" => Some(OperationType::HardwareI2C),
@@ -508,7 +508,7 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "memory_store" => Some(OperationType::FileWrite),
         "memory_forget" => Some(OperationType::FileDelete),
         // 进程内编排/查询/交互面（LOW）：纯会话机制（发消息/睡眠/问答卡/
-        // 子代理编排——其内部工具调用各自过闸）、静态表查询、B4 自有任务
+        // 子代理编排——其内部工具调用各自过闸）、静态表查询、自有任务
         // 读写（工作流触发的 internal 档经 WorkflowTool::operation_override
         // 按 action 投影，2026-11-06 三合一后不再走本静态表）。这些工具没有
         // 外部副作用面，挂 exec/network 档名实不符；Internal = LOW 且全 8 层
@@ -517,7 +517,7 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         | "cli_reference" | "history_search" | "mcp_list"
         | "memory_search" | "memory_list" | "background_output"
         | "background_kill"
-        // A3（委派持续操控）：send/output/stop 只操控本注册表内的自有子
+        // （委派持续操控）：send/output/stop 只操控本注册表内的自有子
         // 代理（进程已在 delegate_start 时过闸；steer 文本作为工具入参照
         // 过注入检测层）——对齐 background_output/kill 例外语义。
         | "delegate_send" | "delegate_output" | "delegate_stop" => {
@@ -526,7 +526,7 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 紫微系统：ziwei_bridge 元工具（配置期操作者，每步审批卡）——
         // Ziwei=CRITICAL 让 guardian/approval 全链照跑。动态子工具
         // （profile.tools[] 固化面）在注册期经 declare_tool_operation
-        // 声明同款 Ziwei 档（T2.2）。
+        // 声明同款 Ziwei 档（.2）。
         "ziwei_bridge" => Some(OperationType::Ziwei),
         _ => None,
     }
@@ -551,16 +551,16 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        // L11（2026-11-03）：background_steer 与 exec 同档 ProcessExec——
+        // background_steer 与 exec 同档 ProcessExec——
         // target 取注入文本本体，让 Layer 2 命令守卫与凭据扫描对 steer
-        // 载荷照常工作（同 run_script 的 BUG-20261028-118 纪律：ProcessExec
+        // 载荷照常工作（同 run_script 的 纪律：ProcessExec
         // 档工具不得空 target 过闸）。
         "background_steer" => args
             .get("text")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        // BUG-20261028-118：run_script 与 exec 同为 ProcessExec 档任意代码
+        // run_script 与 exec 同为 ProcessExec 档任意代码
         // 执行——target 取 script 本体，让 Layer 2 命令守卫与 preexec 脚本
         // 内容扫描照常工作（此前无臂 → target 恒空 → 两层被
         // `!target.is_empty()` 前置整体跳过）。spawn/claude_code 等
@@ -571,7 +571,7 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        // BUG-20261028-118：multiedit 的 path 内嵌在 edits[].path（顶层无
+        // multiedit 的 path 内嵌在 edits[].path（顶层无
         // path）——取首个 edit 的 path 作 target，审计链/审计日志与按路径
         // 匹配的 ABAC 规则对 multiedit 生效（与 edit_file 对齐）。
         "multiedit" => args
@@ -603,11 +603,11 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        // BUG-20261102-296：mcp_discover 的 stdio 臂（`command` 参数）是
+        // mcp_discover 的 stdio 臂（`command` 参数）是
         // LLM 可控的任意进程 spawn（经工具 operation_override 投影
         // process_exec 过 exec 同款管线）——target 取命令行本体让 Layer 2
-        // 命令守卫 / process_rules / 审计链照常工作（BUG-20261028-118
-        // run_script 同款先例：无臂 → target 恒空 → 两层被
+        // 命令守卫 / process_rules / 审计链照常工作（
+        // run_script 同款无臂 → target 恒空 → 两层被
         // `!target.is_empty()` 前置整体跳过）；HTTP 臂（无 command）取 url。
         "mcp_discover" => {
             let command = args
@@ -655,7 +655,7 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        // 图像生成（M4）：审计 target = 输出相对路径（prompt 是自由文本，
+        // 图像生成：审计 target = 输出相对路径（prompt 是自由文本，
         // 注入检测/凭据扫描层已全文过筛，不重复进 target 字段）。
         "generate_image" => args
             .get("output")
@@ -676,11 +676,11 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
 pub fn extract_url(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
         "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"
-        // BUG-20261102-296：mcp_discover HTTP 臂的 url 此前无臂 → Layer 6
+        // mcp_discover HTTP 臂的 url 此前无臂 → Layer 6
         // SSRF 对该工具整体失明（LLM 可控 url 任指内网/metadata 端点）。
         // 与 web_fetch 同语义同闸；loopback 目标走 ssrf.allowed_hosts 例外
         // （web_fetch 先例）。stdio 臂无 url 字段 → 空串照常跳过。
-        // BUG-20261102-304：browser navigate 臂同族补齐（296 横向扫描漏网
+        // browser navigate 臂同族补齐（296 横向扫描漏网
         // ）——MCP 浏览器在本机用户会话内导航 LLM 可控 url 且页面内容回流
         // （extract_text），SSRF 失明 = web_fetch 拦得住的内网/metadata
         // 目标 browser 拦不住。非 navigate 动作无 url 字段 → 空串照常跳过
@@ -729,7 +729,7 @@ pub fn is_safe_command(command: &str) -> (bool, String) {
 /// Validate path is within workspace and safe.
 pub fn validate_path(path: &str, workspace: &str) -> Result<String, String> {
     use nemesis_path::paths::canonicalize_for_compare;
-    // 2026-09-01 8.3 短名统一修复（与 auditor::validate_path_internal 同款）：
+    // 8.3 短名统一修复（与 auditor::validate_path_internal 同款）：
     // 裸 canonicalize + 词法回退在「workspace 已存在（canonicalize 成长名）
     // 而 path 尚不存在（create 前守卫常态，回退保留 RUNNER~1 短名）」时前缀
     // 比较恒 false → 根内写入全被误拒。canonicalize_for_compare 借最长存在
@@ -756,7 +756,7 @@ pub fn validate_path(path: &str, workspace: &str) -> Result<String, String> {
 
     // Check dangerous system paths —— 对**原始输入**与规范化结果都查：
     // 规范化会把 POSIX 风格输入经根祖先拼成 Windows 盘符路径（/etc/passwd →
-    // C:\etc\passwd），只查规范化结果会漏掉字面前缀命中（2026-09-01）。
+    // C:\etc\passwd），只查规范化结果会漏掉字面前缀命中。
     let dangerous = [
         "/etc/passwd",
         "/etc/shadow",

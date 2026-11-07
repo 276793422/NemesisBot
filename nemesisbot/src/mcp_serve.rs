@@ -1,12 +1,12 @@
-//! P23（能力扩展 WS10）：`nemesisbot mcp-serve` —— stdio MCP server。
+//! `nemesisbot mcp-serve` —— stdio MCP server。
 //!
 //! 把 NemesisBot 的能力作为 MCP（Model Context Protocol）server 通过 stdio
 //! 暴露，Claude Code / Cursor 等 MCP 客户端零改造接入。协议层复用
-//! `nemesis-mcp` 的 server 侧实现（[`nemesis_mcp::server::McpServer`]：
+//! `nemesis-mcp` 的 server 侧实现（[`nemesis_mcp::server:McpServer`]：
 //! initialize / tools/list / tools/call / resources / ping 全套），本模块
-//! 只补 stdio ndjson 帧循环与 K1 式装配。
+//! 只补 stdio ndjson 帧循环与 式装配。
 //!
-//! 装配与 ACP（`crate::acp.rs`）同构：进程启动时**一次完整 K1 式装配**
+//! 装配与 ACP（`crate::acp.rs`）同构：进程启动时**一次完整 式装配**
 //! （`build_security_plugin` + `SharedResources` + `build_agent_loop`，与
 //! `commands/run.rs` 逐行同源）——安全 8 层 + guardian + tier 过滤 +
 //! turn_guard 与 gateway **同源生效**，MCP 出口不是安全旁路。`run` 工具
@@ -44,7 +44,7 @@ use tokio::io::AsyncBufReadExt;
 pub const SERVER_NAME: &str = "nemesisbot";
 
 // ---------------------------------------------------------------------------
-// K1 式装配（ACP / run 同源）
+// 式装配（ACP / run 同源）
 // ---------------------------------------------------------------------------
 
 /// mcp-serve 的装配产物。`security_active` 是「安全 8 层是否真实在位」的
@@ -73,7 +73,7 @@ impl std::fmt::Debug for McpServeAssembly {
     }
 }
 
-/// 一次完整 K1 式装配（`commands/run.rs` 同源：config 加载 → credentials/
+/// 一次完整 式装配（`commands/run.rs` 同源：config 加载 → credentials/
 /// vault（调用方 run_command 已做）→ security plugin → SharedResources →
 /// build_agent_loop）。装配失败 = Err（含用户可读 remedy）。
 pub async fn assemble(home: &Path) -> Result<McpServeAssembly, String> {
@@ -89,7 +89,7 @@ pub async fn assemble(home: &Path) -> Result<McpServeAssembly, String> {
         .map_err(|e| format!("failed to load config: {e}"))?;
     let workspace = crate::common::workspace_path(home);
 
-    // SecurityPlugin——与 gateway 完全同一构造（K1 提取的单一真相源）。
+    // SecurityPlugin——与 gateway 完全同一构造（提取的统一定义）。
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
     let security_plugin =
         crate::security_setup::build_security_plugin(home, security_enabled).await;
@@ -300,7 +300,7 @@ async fn tool_run(asm: Arc<McpServeAssembly>, args: Value) -> ToolCallResult {
             },
         )
         .await;
-    // 折叠语义与 `nemesisbot run` 同源（commands::run::fold_text：Done 优先）。
+    // 折叠语义与 `nemesisbot run` 同源（commands::run:fold_text：Done 优先）。
     match crate::commands::run::fold_text(&events) {
         (Some(m), _) => ToolCallResult::ok(m),
         (None, Some(e)) => ToolCallResult::err(format!("agent error: {e}")),
@@ -309,7 +309,7 @@ async fn tool_run(asm: Arc<McpServeAssembly>, args: Value) -> ToolCallResult {
 }
 
 /// `sessions_list` 工具：Dashboard `sessions.list` 同源扫描
-/// （`nemesis_web::handlers::logs::scan_session_logs`），裁剪成紧凑字段。
+/// （`nemesis_web::handlers:logs::scan_session_logs`），裁剪成紧凑字段。
 async fn tool_sessions_list(asm: Arc<McpServeAssembly>, args: Value) -> ToolCallResult {
     let workspace = asm.workspace.to_string_lossy().to_string();
     let all = nemesis_web::handlers::logs::scan_session_logs(&workspace);
@@ -435,7 +435,7 @@ pub fn search_memory_files(workspace: &Path, query: &str, limit: usize) -> Vec<M
     hits
 }
 
-/// 递归收集 .md 文件（深度 ≤4、≤200 个——防劫持遍历）。
+/// 递归收集.md 文件（深度 ≤4、≤200 个——防劫持遍历）。
 fn collect_markdown_files(dir: &Path, depth: usize, out: &mut Vec<std::path::PathBuf>) {
     if depth > 4 || out.len() >= 200 {
         return;
@@ -444,7 +444,7 @@ fn collect_markdown_files(dir: &Path, depth: usize, out: &mut Vec<std::path::Pat
         return;
     };
     let mut kids: Vec<_> = entries.flatten().collect();
-    // 确定性走查序（2026-11-01）：≤200 截断发生在收集过程中（提前
+    // 确定性走查序：≤200 截断发生在收集过程中（提前
     // return），哪些文件参与轻量检索依赖遍历序，而 read_dir 顺序是平台
     // 实现细节（NTFS 字典序 vs ext4 哈希序）——每层按文件名排序，同一
     // 记忆库跨平台截断出同一子集。
@@ -491,7 +491,7 @@ fn tool_board_issue_query(asm: &McpServeAssembly, args: &Value) -> ToolCallResul
         Err(e) => return ToolCallResult::err(format!("failed to open board store: {e}")),
     };
 
-    // 单卡详情优先：number（NB-1 / 数字 id）→ issue + 评论。
+    // 单卡详情优先：number（/ 数字 id）→ issue + 评论。
     if let Some(number) = args
         .get("number")
         .and_then(|v| v.as_str())
@@ -605,7 +605,7 @@ fn is_notification(line: &str) -> bool {
 /// `nemesisbot mcp-serve`：stdio 上跑 MCP server 直到 stdin EOF。
 /// stdout 只承载协议帧；日志/装配横幅一律 stderr（ACP 同纪律）。
 pub async fn run_server(home: std::path::PathBuf) -> Result<(), String> {
-    // 会话日志平化迁移（SAN-01/D4）与 gateway / acp 同源（幂等 best-effort）
+    // 会话日志平化迁移（SAN-01）与 gateway / acp 同源（幂等 best-effort）
     // ——sessions_list 扫 session_logs，旧嵌套目录历史先平化再服务。
     nemesis_agent::chat_log::migrate_nested_session_logs();
 

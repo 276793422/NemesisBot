@@ -1,4 +1,4 @@
-//! WS9/P17+P18：fork 侧谱系扩展测试（独立测试文件——禁内联测试仓库门禁）。
+//! /+：fork 侧谱系扩展测试（独立测试文件——禁内联测试仓库门禁）。
 //!
 //! 覆盖：ForkInfo.dropped_user_turns 换算（分支摘要阈值判定的输入）、
 //! fork_reason 落盘 + upsert 保留语义、链式 fork 的祖先键链、
@@ -39,7 +39,7 @@ fn seed_turns(key: &str, turns: usize) {
     }
 }
 
-/// P18：ForkInfo.dropped_user_turns = 被排除行的完整 user 轮数（摘要触
+/// ForkInfo.dropped_user_turns = 被排除行的完整 user 轮数（摘要触
 /// 发阈值 ≥3 的判定输入）。
 #[test]
 fn fork_reports_dropped_user_turns() {
@@ -62,7 +62,7 @@ fn fork_reports_dropped_user_turns() {
     delete_chat_log(&info_full.new_key);
 }
 
-/// P17：fork_reason 落盘（新会话 meta），upsert 保留已有字段；空白缘由
+/// fork_reason 落盘（新会话 meta），upsert 保留已有字段；空白缘由
 /// 诚实不写（谱系视图回退通用「fork」）。
 #[test]
 fn fork_reason_written_and_upsert_preserved() {
@@ -101,7 +101,7 @@ fn fork_reason_written_and_upsert_preserved() {
     delete_chat_log(&new_key);
 }
 
-/// P17：链式 fork——A → B → C 各级 parent 链正确，且各级缘由互不串写
+/// 链式 fork——A → B → C 各级 parent 链正确，且各级缘由互不串写
 /// （每个新会话自己的 meta 记自己的缘由）。
 #[test]
 fn chained_fork_parent_chain_and_reasons() {
@@ -129,7 +129,7 @@ fn chained_fork_parent_chain_and_reasons() {
     delete_chat_log(&c_info.new_key);
 }
 
-/// P18：分支摘要写入——空串跳过（不产生无意义 meta）、超长截断到
+/// 分支摘要写入——空串跳过（不产生无意义 meta）、超长截断到
 /// BRANCH_SUMMARY_MAX_CHARS（防御性二次钳制）。
 #[test]
 fn branch_summary_writer_skips_empty_and_caps_length() {
@@ -157,7 +157,7 @@ fn branch_summary_writer_skips_empty_and_caps_length() {
     delete_chat_log(&key);
 }
 
-/// 「完全独立会话」（2026-10-20）：fork_session_opts(independent=true) 跳过
+/// 「完全独立会话」：fork_session_opts(independent=true) 跳过
 /// 新 key 的血缘 meta 写入（parent / forked_at_turn），内容拷贝照常；
 /// boundary 审计事件双写照常（审计兜底不因独立形态减弱）。
 #[test]

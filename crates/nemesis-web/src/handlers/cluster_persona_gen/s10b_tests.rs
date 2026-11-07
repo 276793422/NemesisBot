@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): drive the full
+//! (quality-hardening goal 冲刺, web): drive the full
 //! `generate_persona` three-stage pipeline against a wiremock OpenAI-compatible
 //! backend (process-local, no real network) — the existing tests only cover the
 //! pure helpers (extract/unwrap/check_*), never the retry loop:
@@ -17,7 +17,7 @@ use std::sync::Arc;
 use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-// --- wire helpers -----------------------------------------------------------
+// wire helpers -----------------------------------------------------------
 
 fn tool_args_response(args: serde_json::Value) -> ResponseTemplate {
     let arguments = serde_json::to_string(&args).unwrap();
@@ -126,7 +126,7 @@ fn provider_for(server: &MockServer) -> Arc<HttpProvider> {
 const INPUT: &str = "后端工程师岗位，负责订单中台微服务架构，要求熟悉 Go 语言、分布式事务消息、\
 分库分表治理与可观测性建设，五年以上经验，能带小团队推进技术方案落地。";
 
-// --- tests ------------------------------------------------------------------
+// tests ------------------------------------------------------------------
 
 #[tokio::test]
 async fn generate_persona_clean_run_completes_with_full_coverage() {

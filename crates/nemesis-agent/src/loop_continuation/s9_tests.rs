@@ -1,7 +1,7 @@
-//! S9 覆盖率批次：loop_continuation.rs 剩余未覆盖行。
+//! 覆盖率批次：loop_continuation.rs 剩余未覆盖行。
 //! - 164：ContinuationStore::delete 的 remove 失败 warn（快照路径预置为
 //!   目录）。
-//! - 187：list_pending 的扩展名分支收尾（.json + 非 .json 混合目录）。
+//! - 187：list_pending 的扩展名分支收尾（.json + 非.json 混合目录）。
 //! - 479-483：wait_for_continuation 超时耗尽 → warn + None（直接构造
 //!   未就绪条目 + barrier_timeout=0，确定性）。
 //! - 931/934：handle_cluster_continuation 最终响应 info! 参数行 + 块收尾
@@ -43,7 +43,7 @@ fn snapshot_for(task: &str) -> ContinuationSnapshot {
         created_at: chrono::Local::now().to_rfc3339(),
         peer_id: String::new(),
         image_refs: Vec::new(),
-        image_refs_by_user_turn: Vec::new(), // L1
+        image_refs_by_user_turn: Vec::new(),
         final_persisted: false,
     }
 }
@@ -71,7 +71,7 @@ async fn store_delete_blocked_by_directory_warns() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// list_pending：.json 收进列表、非 .json 忽略（181-188 全分支收尾）。
+/// list_pending：.json 收进列表、非.json 忽略（181-188 全分支收尾）。
 #[test]
 fn store_list_pending_mixed_extensions() {
     let dir = tempfile::tempdir().expect("tempdir").keep();
@@ -114,7 +114,7 @@ async fn wait_for_continuation_expired_deadline_falls_back() {
                 ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 peer_id: String::new(),
                 image_refs: Vec::new(),
-                image_refs_by_user_turn: Vec::new(), // L1
+                image_refs_by_user_turn: Vec::new(),
             }),
         );
     }
@@ -196,13 +196,14 @@ async fn continuation_final_response_logs_info_fields() {
         &provider,
         "test-model",
         4096,
-        262144, // L28+ max_tokens_ceiling（测试 = 默认封顶）
+        262144, // + max_tokens_ceiling（测试 = 默认封顶）
         &std::collections::HashMap::<String, Arc<dyn Tool>>::new(),
         &outbound_tx,
         None,
         None,
         true, // F-F vision_supported
         None, // source_node（归属断言见专项测试）
+        None, // estop（测试未接线 = 不设闸，旧行为）
     )
     .await;
 

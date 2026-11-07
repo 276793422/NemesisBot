@@ -1,4 +1,4 @@
-//! N2 (2026-10-13 机会项): present_plan 计划审批工具单元测试。
+//! (2026-10-13): present_plan 计划审批工具单元测试。
 //!
 //! 覆盖：注册门控（handle Some→注册 / None→不注册）、schema（plan 必填 /
 //! title 可选）、批准臂（mode 翻 Build + ModeChanged 事件 + verdict 落

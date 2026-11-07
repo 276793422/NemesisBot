@@ -1,4 +1,4 @@
-//! Tests for `HooksHandler` (P4). Private-method tests run under every
+//! Tests for `HooksHandler`. Private-method tests run under every
 //! feature combo (module declared from `hooks.rs`, same pattern as
 //! `models/tests.rs`); one dispatch-level test proves the `ctx.home` wiring.
 
@@ -147,9 +147,7 @@ async fn set_accepts_bare_top_level_form() {
     assert_eq!(r["summary"]["total"], 1);
 }
 
-// ---------------------------------------------------------------------------
 // Dispatch wiring (ctx.home path)
-// ---------------------------------------------------------------------------
 
 /// Same AppState scaffold as coding/models tests (agent_loop None etc.).
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
@@ -199,6 +197,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

@@ -97,10 +97,10 @@ fn resampler_new_succeeds_with_unusual_rates() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：设备枚举 / 伪设备名 fail-fast / far-end 单例
+// 覆盖率冲刺：设备枚举 / 伪设备名 fail-fast / far-end 单例
 // 只做 cpal 设备**枚举**与名字匹配失败路径——不 open 任何真实音频流
 // （真麦克风/真扬声器打开是红线，报告里列结构性豁免）。
-// 【R6 修订 2026-08-27】：默认设备路径补真机守卫测试（Ok/Err 双收，不断言
+// 【 修订 】：默认设备路径补真机守卫测试（Ok/Err 双收，不断言
 // 硬件在场；播放用 gain=0.0 静音，采集只开即弃）——964 行缺口的主体在
 // AudioCapture/AudioPlayback 的默认设备路径，纯豁免撑不起口径，改为
 // 「有硬件机器覆盖全臂、无硬件机器覆盖 bail 臂」的机器态守卫式。
@@ -190,7 +190,7 @@ fn far_end_sample_rate_defaults_to_48000() {
 #[test]
 fn set_far_end_sample_rate_roundtrip_and_default_restore() {
     let _guard = FAR_RATE_LOCK.lock().unwrap();
-    // BUG-20261029-181 回归锁：FAR_END_RATE 此前全仓无 store 点（死接线，
+    // 回归锁：FAR_END_RATE 此前全仓无 store 点（死接线，
     // 注释声称「由 AudioPlayback::new 写入」从未发生）——setter 是 loopback
     // 初始化成功后登记实际参考信号采样率的唯一通路，far_resampler 靠它
     // 把重采样源率钉对。
@@ -217,18 +217,18 @@ fn resampler_ratio_and_reset() {
 }
 
 // ===========================================================================
-// R6（2026-08-27）：默认设备路径——机器态守卫式（Ok/Err 双收）
+// 默认设备路径——机器态守卫式（Ok/Err 双收）
 // 有音频硬件的机器覆盖完整臂；无硬件的机器覆盖 default_device bail 臂。
 // 播放全部 gain=0.0（静音）；采集开即弃（不消费数据）。
 //
-// 【2026-09-01 CI 0xc0000005 事故】GitHub windows-2025 runner **有虚拟输出
+// 【 CI 0xc0000005 事故】GitHub windows-2025 runner **有虚拟输出
 // endpoint、无输入设备**（capture 测试 400ms sleep 臂在 <10ms 内完成 =
 // bail；play_blocking 在飞未归 = 真开了流）。cpal 0.15 WASAPI 后端在其
 // 虚拟输出设备上打开/播放输出流时音频线程原生层 ACCESS_VIOLATION，整个
 // 测试进程秒死。native AV 无法被 Rust panic 机制捕获，测试探针也无法
 // 预判（探针本身就要开流）——因此凡会打开**真实输出流**的测试一律走
 // [`hw_audio_enabled`] opt-in 闸（SKIP 约定：eprintln + return）。
-// 【2026-09-02 二轮修订】env 门控真流后 CI 二连崩：在飞集合移到
+// 【 二轮修订】env 门控真流后 CI 二连崩：在飞集合移到
 // audio_capture_* / list_devices——**设备枚举/默认设备查询同样挂死+AV**，
 // 且行为随并发时序漂移（首轮枚举测试全过、二轮全卡）。崩溃面 = cpal WASAPI
 // 在 CI 虚拟音频栈上的任意 host 交互，测试层不可根治 → ci.yml 已
@@ -243,7 +243,7 @@ fn hw_audio_enabled() -> bool {
 
 const HW_AUDIO_SKIP_MSG: &str = "SKIP: 会打开真实输出流（cpal WASAPI 在 CI 虚拟音频设备上播放会 0xc0000005 崩进程，2026-09-01）— 补齐命令：设 NEMESISBOT_VOICE_HW_TESTS=1";
 
-/// CI 虚拟音频栈双保险闸（2026-09-01/09-02 二连崩）：二轮实证崩溃面不止
+/// CI 虚拟音频栈双保险闸（/09-02 二连崩）：二轮实证崩溃面不止
 /// 播放流——GitHub runner 上**设备枚举/默认设备查询**（input_devices /
 /// default_input_device）同样挂死 + native AV，且行为随并发时序漂移。
 /// ci.yml 已 `--exclude nemesis-voice` 整体规避；此闸是摘掉 exclude 后的

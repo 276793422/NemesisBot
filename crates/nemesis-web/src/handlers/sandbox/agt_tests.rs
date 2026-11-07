@@ -3,7 +3,7 @@
 //! 与 tests / s10b_tests 互补，聚焦仍缺的确定性错误臂：
 //! - `Default` impl + 命令表无重复
 //! - `pending` 的 enumerate 错误臂：box_root 预置为普通文件 → walk 的
-//!   read_dir 失败 → `enumerate box: ...`
+//!   read_dir 失败 → `enumerate box:...`
 //! - `set_network` 的 Sandboxie.ini 重写失败臂（base 目录被文件占位 →
 //!   create_dir_all 失败）与 Start.exe /reload 缺失 spawn 失败臂（ini 写
 //!   成功但 runtime 未就绪 → spawn Err）
@@ -63,6 +63,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -138,7 +139,7 @@ async fn agt_set_network_ini_rewrite_failure_arm() {
 
 // Start.exe /reload spawn 失败臂是 Sandboxie Windows 形态（Linux stub 路径
 // 无 spawn 步骤、诚实返回 Ok + restart_hint，Linux CI 实证假红），照
-// 2026-09-02 约定按平台门控。
+// 约定按平台门控。
 #[cfg(windows)] // Windows-form test（Sandboxie Start.exe /reload 语义，Linux nightly: excluded）
 #[tokio::test]
 async fn agt_set_network_reload_spawn_failure_arm() {
@@ -167,10 +168,8 @@ async fn agt_set_network_reload_spawn_failure_arm() {
     assert!(content.contains("AllowNetworkAccess=y"), "{content}");
 }
 
-// ---------------------------------------------------------------------------
 // Wave5 批次：Default impl、current_executor 的 CLI fallback 读失败臂、
 // self_test 的 Windows 无后端诚实臂（supported:false，不 spawn 子进程）。
-// ---------------------------------------------------------------------------
 
 /// `Default` impl 三行（trait 转发 new）。
 #[test]
@@ -207,7 +206,7 @@ fn w5_current_executor_missing_config_defaults_to_all_false() {
 #[tokio::test]
 async fn w5_selftest_reports_unsupported_without_userland_backend() {
     // 若机器装了 landlock/bwrap 等价物（Windows 上没有）则本测试前提失效，
-    // 诚实跳过；正常 Windows 机 detect_backend(false) == None（P1 后带
+    // 诚实跳过；正常 Windows 机 detect_backend(false) == None（后带
     // 网络选型入参，Windows 两态恒 None）。
     if nemesis_sandbox::backend::detect_backend(false).is_some() {
         eprintln!("skip: userland backend present, unsupported arm unreachable");

@@ -1,7 +1,7 @@
 //! Forge A 线行为回归执行器（自进化升级，2026-10-14）。
 //!
-//! 实现 [`nemesis_forge::skill_tests::SkillTestRunner`]：对一条用例在隔离
-//! 临时 workspace 中构建真实 AgentLoop（与 K1 headless `run` 同一装配链：
+//! 实现 [`nemesis_forge::skill_tests:SkillTestRunner`]：对一条用例在隔离
+//! 临时 workspace 中构建真实 AgentLoop（与 headless `run` 同一装配链：
 //! 安全插件 / tier / spill / turn_guard 全同源），按序执行用例的 turns
 //! 脚本，采集 transcript（工具调用 / final 文本 / 错误 / 文件效果 / 预算）。
 //!
@@ -79,7 +79,7 @@ impl SkillTestRunner for BotSkillTestRunner {
                 .map_err(|e| format!("write fixture {}: {e}", fx.path))?;
         }
 
-        // 5. 装配 AgentLoop（镜像 commands::run 的 K1 链：安全插件同一构造）。
+        // 5. 装配 AgentLoop（镜像 commands::run 的 链：安全插件同一构造）。
         let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
         let security_plugin =
             crate::security_setup::build_security_plugin(&home, security_enabled).await;
@@ -164,7 +164,7 @@ impl SkillTestRunner for BotSkillTestRunner {
 
         // 10. 显式关闭并删除临时 home（TempDir drop 静默忽略删除失败——
         //     Windows AV/索引器瞬时句柄是常态，残留会持续堆积磁盘；close()
-        //     把失败诚实上报，仅 warn 不吞执行结果。四路评审 A-F3）。
+        //     把失败诚实上报，仅 warn 不吞执行结果。四路评审 A）。
         if let Err(e) = tmp.close() {
             tracing::warn!(
                 "[ForgeTest] temp home cleanup failed ({}): {e}",
@@ -210,7 +210,7 @@ fn skill_name_of(content: &str) -> String {
 }
 
 /// 递归收集相对路径（跳过 skills/ 自身与隐藏文件）。符号链接/junction
-/// 一律跳过（不跟随不收集，symlink_metadata 判定，R204/BUG-20261029-135
+/// 一律跳过（不跟随不收集，symlink_metadata 判定，/
 /// 同族）——被测 agent 可在临时工作区造自指链接，跟随版递归挂死 runner；
 /// 目标树文件也不得以 `link/` 前缀污染 files_exist 断言面。
 fn collect_relative_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
@@ -248,7 +248,7 @@ fn collect_relative_files(root: &Path, dir: &Path, out: &mut Vec<String>) {
 mod tests;
 
 // ---------------------------------------------------------------------------
-// C 线失败重放执行面（用例管理在 nemesis_forge::replay；执行装配同 K1 链）
+// C 线失败重放执行面（用例管理在 nemesis_forge::replay；执行装配同 链）
 // ---------------------------------------------------------------------------
 
 /// 重放执行（confirmed 集）：逐条经进程内 AgentLoop 重跑，回传结果摘要。
@@ -302,7 +302,7 @@ async fn replay_once(home: &Path, case: &TestCase) -> Result<ExecutionTranscript
         .map_err(|e| format!("build agent loop: {e}"))?;
 
     // 同 run_case：0-turn 用例在执行前诚实拒绝（join 出空任务文本会让
-    // detached loop 空转一轮，transcript 无意义——四路评审 A-F4）。
+    // detached loop 空转一轮，transcript 无意义——四路评审 A）。
     if case.turns.is_empty() {
         return Err("replay case has no turns".into());
     }
@@ -349,7 +349,7 @@ async fn replay_once(home: &Path, case: &TestCase) -> Result<ExecutionTranscript
     files.sort();
 
     // 同 run_case：显式 close 诚实化临时 home 清理失败（TempDir drop 静默
-    // 忽略删除失败，Windows 瞬时句柄残留会持续堆积。四路评审 A-F3）。
+    // 忽略删除失败，Windows 瞬时句柄残留会持续堆积。四路评审 A）。
     if let Err(e) = tmp.close() {
         tracing::warn!(
             "[ForgeTest] temp home cleanup failed ({}): {e}",
@@ -374,7 +374,7 @@ async fn replay_once(home: &Path, case: &TestCase) -> Result<ExecutionTranscript
     })
 }
 
-/// Stage 2 judge 层杂务模型回落链适配器（2026-10-14 三轮复查：部署闸与
+/// Stage 2 judge 层杂务模型回落链适配器（三轮复查：部署闸与
 /// CLI/WSAPI 的 judge 口径对齐）。每次 `chat` 现场解析
 /// `resolve_judge_caller`（judge_model → agents.small_model → 主模型）——
 /// 模型热切即时生效，无陈旧 Arc；全链失败 = 诚实 Err（评估层 fail-closed

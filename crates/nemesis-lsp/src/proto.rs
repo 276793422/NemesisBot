@@ -1,5 +1,5 @@
 //! LSP wire protocol: Content-Length framing, JSON-RPC envelopes, and
-//! response parsing for the four read-only operations (L1 / U19).
+//! response parsing for the four read-only operations.
 //!
 //! Everything here is pure — no process, no async — so the framing and
 //! parsing rules are unit-testable in isolation from any language server.
@@ -183,7 +183,7 @@ pub fn is_transient_error(err: &Value) -> bool {
 // URI helpers (LSP uses file:// URIs; we work in paths)
 // ---------------------------------------------------------------------------
 
-/// Path → `file://` URI，url crate（WHATWG）形态。2026-09-05 根修背景：
+/// Path → `file://` URI，url crate（WHATWG）形态。 根修背景：
 /// 真实语言服务器（rust-analyzer 等，url-crate 系）会把收到的 URI 按
 /// WHATWG 规范化——Windows 盘符小写（`C:` → `c:`）——推送诊断时回显的
 /// 是**规范化后**的形态，与任何字面精确匹配的记录/查询永远 miss（实机
@@ -224,7 +224,7 @@ pub fn path_to_uri(p: &std::path::Path) -> String {
 /// URI → **规范化键**。服务器推送的诊断按此键记录、本地查询按此键查找
 /// ——字符串形态不同但语义相同的 URI 落到同一个键上。
 ///
-/// 归一范围（对齐真实服务器的实际行为，2026-09-05 实机闭环验证）：
+/// 归一范围（对齐真实服务器的实际行为， 实机闭环验证）：
 /// **Windows 盘符小写**（WHATWG file-URL 规则，rust-analyzer 的 url
 /// crate 把 `C:` 规范成 `c:` 回显）——纯字符串级实现，不依赖宿主平台
 /// 路径语义，Windows/POSIX 行为一致。先过 `Url::parse` + 重序列化
@@ -247,10 +247,10 @@ pub fn uri_key(uri: &str) -> String {
     s
 }
 
-/// file::// URI → path string (percent-decoded). Tolerant of unencoded
+/// file:// URI → path string (percent-decoded). Tolerant of unencoded
 /// characters: bytes that are not `%XX` escapes pass through as-is, so URIs
 /// that servers echo back in raw form still decode. （不走 url crate：本端
-/// 解码显示不是 2026-09-05 的 miss 根因，且此实现对未编码原始形态更宽容、
+/// 解码显示不是 的 miss 根因，且此实现对未编码原始形态更宽容、
 /// 保留 `/` 分隔符的显示一致性——有既有测试钉住。）
 pub fn uri_to_path(uri: &str) -> String {
     let rest = uri.strip_prefix("file://").unwrap_or(uri);
@@ -367,7 +367,7 @@ pub fn parse_hover(result: &Value) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// WorkspaceEdit / CodeAction 解析 + TextEdit 应用（C7 写型 LSP）
+// WorkspaceEdit / CodeAction 解析 + TextEdit 应用（写型 LSP）
 // ---------------------------------------------------------------------------
 
 /// One LSP `TextEdit`: replace `range_start..range_end` (0-based, UTF-16
@@ -576,7 +576,7 @@ pub fn apply_text_edits(content: &str, edits: &[TextEdit]) -> Result<String, Str
 }
 
 // ---------------------------------------------------------------------------
-// Diagnostics (C2：textDocument/publishDiagnostics 消费)
+// Diagnostics (textDocument/publishDiagnostics 消费)
 // ---------------------------------------------------------------------------
 
 /// One published diagnostic, reduced to the fields the model needs.
@@ -592,7 +592,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    /// C7：还原成 LSP Diagnostic JSON——`textDocument/codeAction` 的
+    /// 还原成 LSP Diagnostic JSON——`textDocument/codeAction` 的
     /// `context.diagnostics` 参数要求把当前诊断原样回传（服务器按它决定
     /// 给哪些 quickfix）。
     pub fn to_json(&self) -> Value {

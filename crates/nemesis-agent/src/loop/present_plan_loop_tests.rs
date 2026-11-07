@@ -1,4 +1,4 @@
-//! N2 (2026-10-13 机会项): present_plan 循环级测试。
+//! (2026-10-13): present_plan 循环级测试。
 //!
 //! 覆盖：真实 run_with_trace 链路下——批准臂（mode 翻 Build + 循环继续 +
 //! 后续轮可达）、驳回臂（结构性停轮：LLM 拿不到下一轮 + Done 文案 +
@@ -191,7 +191,7 @@ async fn approve_continues_loop_and_flips_build() {
     .await;
     let events = run_turn(&h).await;
 
-    // 循环继续：第二轮 LLM 可达并产出终稿。
+    // 循环继续： LLM 可达并产出终稿。
     assert_eq!(*h.provider_calls.lock().unwrap(), 2, "批准后循环必须继续");
     assert!(
         events

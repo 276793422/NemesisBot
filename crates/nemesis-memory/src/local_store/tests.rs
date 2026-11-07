@@ -96,7 +96,7 @@ async fn test_delete_removes_entry() {
 
 #[tokio::test]
 async fn test_delete_archives_to_sidecar() {
-    // P2 archive-on-forget: delete must NOT hard-delete — it appends the entry
+    // archive-on-forget: delete must NOT hard-delete — it appends the entry
     // to <stem>.archive.jsonl so a forgotten memory stays inspectable/recoverable.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("store.jsonl");
@@ -325,7 +325,7 @@ fn test_tfidf_score_partial_overlap() {
     assert!(score > 0.0 && score < 1.0, "Expected (0, 1), got {score}");
 }
 
-// ---- S5 coverage: blank-line skip, flush parent fail, metadata tokens, tfidf edges ----
+// ---- coverage: blank-line skip, flush parent fail, metadata tokens, tfidf edges ----
 
 #[tokio::test]
 async fn load_skips_blank_lines() {
@@ -362,7 +362,7 @@ async fn store_flush_fails_when_parent_is_file() {
     let path = blocker.join("store.jsonl");
 
     // load: path does not exist → Ok. store(): flush → atomic write 的
-    // create_dir_all(parent=file) 失败（BUG-20261029-183 起走统一原子写
+    // create_dir_all(parent=file) 失败（起走统一原子写
     // helper，目录错误从写文件步骤冒出）。
     let store = TfIdfLocalStore::new(&path).await.unwrap();
     let err = store
@@ -423,7 +423,7 @@ fn tfidf_score_df_zero_terms_contribute_nothing() {
     assert!(score > 0.0 && score <= 1.0, "got {score}");
 }
 
-// ---- R1 coverage: TfIdf flush directory-creation failure arm ----
+// ---- coverage: TfIdf flush directory-creation failure arm ----
 
 #[tokio::test]
 async fn tfidf_flush_fails_when_parent_is_a_file() {
@@ -432,7 +432,7 @@ async fn tfidf_flush_fails_when_parent_is_a_file() {
     std::fs::write(&blocker, b"x").unwrap();
 
     // Constructor only records the path; the parent check fires on flush()
-    // （BUG-20261029-183 起走统一原子写 helper，目录错误从写文件步骤冒出）。
+    // （起走统一原子写 helper，目录错误从写文件步骤冒出）。
     let store = TfIdfLocalStore::new(blocker.join("store.jsonl"))
         .await
         .unwrap();
@@ -446,7 +446,7 @@ async fn tfidf_flush_fails_when_parent_is_a_file() {
     );
 }
 
-// ---- MemoryStore 契约套件（S6）：TfIdfLocalStore 端挂接 ----
+// ---- MemoryStore 契约套件：TfIdfLocalStore 端挂接 ----
 // 契约驱动本体在 crate::contract_tests（双后端共享），此处只做实例化。
 // 每个契约用独立 tempdir + 独立 store，杜绝用例间状态串扰。
 

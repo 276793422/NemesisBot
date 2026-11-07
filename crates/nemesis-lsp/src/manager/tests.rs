@@ -1,5 +1,5 @@
 //! Manager unit tests (pure helpers) + the live rust-analyzer acceptance
-//! test (L1/U19 验收 ① and ③). Live tests skip with a stderr note when
+//! test (/ 验收 ① and ③). Live tests skip with a stderr note when
 //! rust-analyzer is not installed — the skip itself mirrors the
 //! registration semantics (no server ⇒ no capability).
 
@@ -22,7 +22,7 @@ fn lsp_op_parse_and_method() {
     assert_eq!(LspOp::parse("references"), Some(LspOp::References));
     assert_eq!(LspOp::parse("implementation"), Some(LspOp::Implementation));
     assert_eq!(LspOp::parse("hover"), Some(LspOp::Hover));
-    // C7：写型/列表型 op 纳入解析表（此前 rename 显式不在表内——只读时代的
+    // 写型/列表型 op 纳入解析表（此前 rename 显式不在表内——只读时代的
     // 断言，写型落地后翻转）。
     assert_eq!(LspOp::parse("rename"), Some(LspOp::Rename));
     assert_eq!(LspOp::parse("code_action"), Some(LspOp::CodeAction));
@@ -47,7 +47,7 @@ fn transport_error_detection() {
     ));
 }
 
-/// BUG-20261027-93: timeout / frame-desync errors leave the session
+/// timeout / frame-desync errors leave the session
 /// untrustworthy (possible half-consumed BufReader bytes or a still-wedged
 /// server) — each must be classified as session poisoning so the session
 /// gets evicted, while well-formed LSP errors and transport-death strings
@@ -66,12 +66,12 @@ fn session_poisoning_detection() {
     assert!(is_session_poisoning(
         "Content-Length 99999999 exceeds cap 67108864"
     ));
-    // R205（BUG-20261029-136）：头行超限与 body 超限同族——读过未知量
+    // 头行超限与 body 超限同族——读过未知量
     // 字节、会话不可信，必须驱逐。
     assert!(is_session_poisoning(
         "header line 131072 bytes exceeds cap 65536"
     ));
-    // BUG-20261102-311：Content-Length 值 parse 失败（非数字）同族——
+    // Content-Length 值 parse 失败（非数字）同族——
     // 头块已被消费、body 边界未知，会话不可信（此前漏出词表：裸 Err
     // 返回、session 滞留表里直到 idle reap）。
     assert!(is_session_poisoning(
@@ -98,7 +98,7 @@ fn find_root_walks_to_marker_then_falls_back() {
 
     // No marker anywhere: falls back to the file's own directory — assert
     // strictly only when no marker lurks somewhere above the temp tree
-    // (machine-dependent: a stray .git/Cargo.toml in an ancestor would
+    // (machine-dependent: a stray.git/Cargo.toml in an ancestor would
     // legitimately win).
     let bare = tmp.path().join("loose.py");
     std::fs::write(&bare, "x = 1\n").unwrap();
@@ -183,11 +183,11 @@ pub fn caller() -> u32 {
 }
 ";
 
-/// fixture 仓库根（2026-10-28 迁址）：**不用 %TEMP%，也不用 target/**。
+/// fixture 仓库根（迁址）：**不用 %TEMP%，也不用 target/**。
 /// ① CI Windows runner 实证存在未知外部清扫者会删 %TEMP% 下的 fixture
 /// 目录（三起一现象：four_ops is_file 假 / canonicalize 设立期失败 /
-/// idle_sessions 中途 metadata code 3 目录整个消失——诊断插桩 2026-10-27
-/// 实录，查询路径与父目录全路径 NotFound）。② 本机实测 fixture 放
+/// idle_sessions 中途 metadata code 3 目录整个消失——诊断插桩
+/// 查询路径与父目录全路径 NotFound）。② 本机实测 fixture 放
 /// `target/` 下时 rust-analyzer 对在盘文件回 "file not found"（canonicalize
 /// 成功、文件存在）——RA 的 VFS 默认排除路径中含 target 组件的目录。
 /// ③ 不能放仓库树内：RA 会从 fixture 向上摸到真实 workspace（数百 crate
@@ -256,7 +256,7 @@ fn long_path(p: &Path) -> PathBuf {
     }
 }
 
-/// Err 臂现场采样（2026-10-28 CI shard6 之谜：「file does not exist」在
+/// Err 臂现场采样（CI 之谜：「file does not exist」在
 /// canonicalize 刚成功之后持续 30s+，armchair 排查全部排除——真红时把原始
 /// OS 错误码与父目录现场打出来一次定位）。仅 existence 类错误打印，正常
 /// 重试不刷屏。
@@ -296,8 +296,8 @@ fn dump_existence_diag(path: &Path) {
 
 /// rust-analyzer answers definition queries with null until indexing
 /// finishes — retry until a deadline instead of treating the cold-start
-/// null as "no definition". 90s deadline：本机首跑实录冷启动 >30s 才答出
-/// 首个 definition（2026-10-28），CI 2 核 runner 只会更慢。
+/// null as "no definition". 90s deadline：本机首跑案例冷启动 >30s 才答出
+/// 首个 definition，CI 2 核 runner 只会更慢。
 async fn query_until(
     mgr: &LspManager,
     op: LspOp,
@@ -352,12 +352,12 @@ async fn live_lock() -> tokio::sync::MutexGuard<'static, ()> {
 /// 返回 "server closed the stream"）。按机器依赖测试惯例 SKIP，不算 FAIL；
 /// 逻辑性失败（位置错/空结果）不在此列，照常 assert。
 // 下方 live 测试跨平台编译（裸 #[tokio::test]），helper 同样跨平台；
-// 无 cfg 门控（门了会在 Linux 上 E0425，也不构成 dead_code）。
+// 无 cfg 门控（门了会在 Linux 上，也不构成 dead_code）。
 fn server_env_unusable(last: &str) -> bool {
     last.starts_with("ERR:") && last.contains("server closed")
 }
 
-/// L1/U19 验收 ①: four read-only operations produce correct results on a
+///  验收 ①: four read-only operations produce correct results on a
 /// real (tiny) cargo repo with real symbols, through a real rust-analyzer
 /// process. 验收 ③ (lifecycle) is asserted at the tail.
 #[tokio::test]
@@ -423,7 +423,7 @@ async fn rust_analyzer_four_ops_on_real_repo() {
     assert_eq!(mgr.session_count().await, 0);
 }
 
-/// L1/U19 验收 ③: idle sessions are reaped lazily, and a reaped session
+///  验收 ③: idle sessions are reaped lazily, and a reaped session
 /// transparently respawns on the next query.
 ///
 /// Determinism notes: the retry cadence (500ms) sits well under the idle
@@ -546,7 +546,7 @@ async fn unsupported_file_and_missing_file_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// Deterministic fake-server tests (M7 补测): a python LSP server answering
+// Deterministic fake-server tests (补测): a python LSP server answering
 // framed JSON-RPC over stdio, planted on PATH as a `gopls` shim. This pins
 // the `Session::request` retry loop (transient -32800), the per-request
 // timeout, and the mid-request-death respawn — behaviors the live
@@ -820,7 +820,7 @@ else:
 /// Plant `fake_lsp_server.py` + a `gopls` shim (mode baked in) in a fresh
 /// temp dir, and prepend that dir to PATH for the test's duration.
 /// `gopls` is chosen because the machine running tests has no real gopls
-/// on PATH (verified 2026-08-25); even if one existed, the prepended dir
+/// on PATH (verified); even if one existed, the prepended dir
 /// wins resolution order.
 fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
     let lock = FAKE_ENV_LOCK.lock().unwrap();
@@ -951,7 +951,7 @@ async fn fake_server_unresponsive_times_out() {
     let _ = mgr.shutdown_all().await;
 }
 
-/// BUG-20261027-93 red→green: a query that TIMES OUT (wedged server) must
+/// red→green: a query that TIMES OUT (wedged server) must
 /// evict + tree-kill the session so the NEXT query recovers on a fresh
 /// server — not stay cached on a session that is (a) likely still wedged
 /// and (b) possibly holding half-consumed bytes in its BufReader (frame
@@ -1002,7 +1002,7 @@ async fn fake_server_death_mid_request_respawns_once() {
 }
 
 // ---------------------------------------------------------------------------
-// S1 补测（2026-08-26）：null-error 字段回退 / 额外头行容错 / PATH 无服务器
+// 补测：null-error 字段回退 / 额外头行容错 / PATH 无服务器
 // ---------------------------------------------------------------------------
 
 /// `"error": null` in a response: the field is present but JSON-null — the
@@ -1034,7 +1034,7 @@ async fn s1_fake_server_extra_headers_are_skipped() {
     let _ = mgr.shutdown_all().await;
 }
 
-/// R205（BUG-20261029-136）：崩溃/被替换的语言服务器输出无换行长流——
+/// 崩溃/被替换的语言服务器输出无换行长流——
 /// 头行超限必须被 cap 拒绝并按 poisoning 驱逐，而不是无上界累积进
 /// String（gateway OOM 面）。修复前 `read_line` 无上界：超长行被照常
 /// 吞下、随后 EOF → transport 族 → respawn 一次 → 新会话同样死 → 报
@@ -1057,8 +1057,8 @@ async fn fake_server_giant_header_line_is_capped_and_poisons_session() {
     let _ = mgr.shutdown_all().await;
 }
 
-/// BUG-20261102-311：Content-Length 值 parse 失败（`Content-Length: abc`）
-/// ——头块已被消费、body 边界未知（BUG-93/R205 钦定的「读过未知量字节」
+/// Content-Length 值 parse 失败（`Content-Length: abc`）
+/// ——头块已被消费、body 边界未知（BUG-93/ 钦定的「读过未知量字节」
 /// 同族），会话中毒必须驱逐。修复前该形态漏出 is_session_poisoning 词表：
 /// 裸 Err 返回、session 滞留表里（count==1，直到 idle reap 才清），后续
 /// 请求在错位字节流上连环 desync。
@@ -1118,7 +1118,7 @@ async fn s1_missing_server_on_path_yields_not_installed_error() {
 }
 
 // ---------------------------------------------------------------------------
-// C1 补测（devtool-upgrade 阶段 2）：didOpen/didChange 文档同步
+// 补测（devtool-upgrade）：didOpen/didChange 文档同步
 // ---------------------------------------------------------------------------
 
 /// 读 fake server 记录的文档同步通知（docs_seen.jsonl，无文件=空）。
@@ -1244,7 +1244,7 @@ async fn c1_missing_server_is_silent_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// C2 补测（devtool-upgrade 阶段 2）：publishDiagnostics 消费
+// 补测（devtool-upgrade）：publishDiagnostics 消费
 // ---------------------------------------------------------------------------
 
 /// 推完一条即安静：wait_for_diagnostics 在 quiet 窗口收敛后返回（远早于
@@ -1279,7 +1279,7 @@ async fn c2_wait_for_diagnostics_quiet_returns_pushes() {
     let _ = mgr.shutdown_all().await;
 }
 
-/// C3 实机验证回归（2026-09-05）：冷启动服务器首推慢于 quiet 窗口
+/// 实机验证回归：冷启动服务器首推慢于 quiet 窗口
 /// （600ms >> 150ms）时，drain_pushes 必须跨过静默窗等到首推——首条
 /// publishDiagnostics 到达前 quiet 收敛不生效（max 兜底），不得把
 /// 「还没推」当「已收敛」返回空。真 rust-analyzer（首析秒级）在门 2
@@ -1297,7 +1297,7 @@ async fn c3_cold_slow_first_push_still_caught() {
     let _ = mgr.shutdown_all().await;
 }
 
-/// C3 回归（2026-09-05 实机暴露的第二个缺口）：**空数组推送（清屏语义）
+/// 回归（实机暴露的第二个缺口）：**空数组推送（清屏语义）
 /// 不解锁 quiet 收敛**——rust-analyzer 工作区就绪先推 `n=0` 空推送、
 /// 随后沉默，若空推送也算「见过诊断」，一个 quiet 间隙就会在真诊断前
 /// 提前返回空。锁死新语义：只推空 → 等满 max 兜底（时长上界证明未提前
@@ -1320,7 +1320,7 @@ async fn c3_empty_clear_push_does_not_converge_early() {
     let _ = mgr.shutdown_all().await;
 }
 
-/// C3 回归（2026-09-05 实机根修）：服务器按 WHATWG 规范化回显 URI
+/// 回归（实机根修）：服务器按 WHATWG 规范化回显 URI
 /// （rust-analyzer 真机：Windows 盘符 `C:` → `c:`；fake 这里模拟编码
 /// 归一 `.` → `%2E`）——诊断 record/lookup 必须按规范化键匹配。旧实现
 /// 字面精确匹配，真机永远 miss（快照恒空、闭环静默失效）。
@@ -1340,14 +1340,14 @@ async fn c3_normalized_uri_echo_still_matches() {
 }
 
 // ===========================================================================
-// R337（BUG-20261103-337）：通知写无界挂死 → 超时预算 + 中毒驱逐
+// 通知写无界挂死 → 超时预算 + 中毒驱逐
 // ===========================================================================
 
-/// BUG-20261103-337 red→green：server **活着但停止消费 stdin**（僵死）时，
+/// red→green：server **活着但停止消费 stdin**（僵死）时，
 /// didOpen/didChange 带文件全文的通知写会塞满管道缓冲并永久阻塞——request
 /// 路径的写有外层 timeout 包裹，通知路径（touch_file/notify_change →
 /// sync_doc）此前裸写，agent 工具会卡满 executor 看门狗（默认 1800s）。
-/// 修复前本测试挂死（外部 timeout 强杀 = 红证实录）；修复后 notify_change
+/// 修复前本测试挂死（外部 timeout 强杀 = 红证）；修复后 notify_change
 /// 在 request_timeout 预算内诚实报错，wedged 会话被驱逐（session_count
 /// 归零），下一次 touch 自愈到新会话。
 #[tokio::test]
@@ -1426,7 +1426,7 @@ async fn c2_wait_for_diagnostics_max_caps_endless_pusher() {
 
 /// 请求途中（响应之前）到达的推送也被缓存——request() 读循环的
 /// Notification 臂，不经过 wait_for_diagnostics 就能查到。
-/// C7：fake 服务器覆盖 rename + code_actions 全链路（无 rust-analyzer 的
+/// fake 服务器覆盖 rename + code_actions 全链路（无 rust-analyzer 的
 /// 环境/CI 也能跑）：WorkspaceEdit 解析 → 磁盘应用 → errors 路径（canned
 /// 响应里第二个文件不存在）→ 磁盘未动；codeAction 列表解析。
 #[tokio::test]
@@ -1480,7 +1480,7 @@ async fn c2_pushes_during_requests_are_cached_too() {
 }
 
 // ===========================================================================
-// C7 补测（devtool-upgrade 阶段 6）：写型 op 入口守卫 + 活体 rename
+// 补测（devtool-upgrade）：写型 op 入口守卫 + 活体 rename
 // ===========================================================================
 
 /// query() 的写型守卫：Rename/CodeAction 必须走专用入口，不许从格式化
@@ -1511,7 +1511,7 @@ async fn c7_rename_rejects_empty_name_before_server() {
     assert!(err.contains("empty"), "{err}");
 }
 
-/// C7 活体验收：真实 rust-analyzer 对 fixture 符号 rename → WorkspaceEdit
+/// 活体验收：真实 rust-analyzer 对 fixture 符号 rename → WorkspaceEdit
 /// 解析 → 逐位置应用后新全文恰好两处改名（定义 + 引用），且**不落盘**
 /// （manager 只算不写，落盘是 lsp_tool 过安全闸后的职责）。
 #[tokio::test]

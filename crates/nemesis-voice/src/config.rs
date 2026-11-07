@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// C4（2026-10-24 告警降噪）：已 WARN 过的缺失配置路径。读取点挂在每轮/
+/// （告警降噪）：已 WARN 过的缺失配置路径。读取点挂在每轮/
 /// 心跳路径上时（实测 24 次/进程），同一路径的「文件缺失用默认」逐轮刷屏
 /// 无信息量——每路径只 WARN 一次，后续降 debug。
 fn warned_missing_paths() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
@@ -65,7 +65,7 @@ pub struct SttConfig {
     pub num_threads: u32,
 }
 
-/// 流式 STT（realtime P1 W1）：模型名 + sherpa 内建端点参数。
+/// 流式 STT（realtime）：模型名 + sherpa 内建端点参数。
 /// 模型文件名约定固定（encoder.onnx/decoder.onnx/joiner.onnx/tokens.txt，由
 /// config.toml sources 条目的 local 字段落地同名），不进本配置。
 /// `#[serde(default)]` 于 AppConfig：旧 config.toml 缺本段 = 默认值，零迁移。
@@ -151,12 +151,26 @@ fn default_speaker_model() -> String {
     "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced".into()
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SpeakerConfig {
     #[serde(default = "default_speaker_model")]
     pub model_name: String,
     #[serde(default)]
     pub num_threads: u32,
+}
+
+// BUG-20261107-016：非零 serde 字段默认 → 手写 impl Default（同文件
+// SttStreamConfig/PunctConfig 先例纪律）。derive 零值会让整段缺席路径
+//（AppConfig 的 `#[serde(default)] speaker` / `load_or_default` 兜底 /
+// `AppConfig::default()` 模板）拿到空 model_name，ensure_speaker_model
+// 报「Speaker model ''」误导性错误；收敛后三路同源 default_speaker_model。
+impl Default for SpeakerConfig {
+    fn default() -> Self {
+        Self {
+            model_name: default_speaker_model(),
+            num_threads: 0,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -211,7 +225,7 @@ pub struct ModelSource {
     pub category: String,
     pub repo: String,
     /// 人类可读描述（模型管理弹窗展示）。可选：缺省 = 空串（前端回退显示
-    /// name+repo）。config.toml 是模型目录的单一真相源，描述跟随条目走。
+    /// name+repo）。config.toml 是模型目录的统一定义，描述跟随条目走。
     #[serde(default)]
     pub description: String,
     pub files: Vec<ModelFile>,
@@ -270,7 +284,7 @@ impl AppConfig {
 }
 
 /// 就地改写 config.toml 文本中 `[<category>]` 节的 `model_name` 行（`voice.set_model`
-/// 命令的单一真相源，纯函数便于单测）。
+/// 命令的统一定义，纯函数便于单测）。
 ///
 /// 设计：字节级最小改动——只替换 value 引号内的内容，缩进 / `=` 两侧空白 /
 /// 行尾注释 / 其余全部字节原样保留（serde 往返会抹掉用户注释，config 编辑器

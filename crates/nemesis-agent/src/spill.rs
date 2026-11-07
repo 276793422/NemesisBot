@@ -1,4 +1,4 @@
-//! Tool-result spill storage (U4).
+//! Tool-result spill storage.
 //!
 //! Results too large even for the pruned inline form (see `prune.rs` for the
 //! smaller tier) are written whole to a session-scoped file under
@@ -17,7 +17,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Results at or above this many chars spill to disk instead of being kept
-/// (pruned) inline. Must be >= `crate::prune::MAX_TOOL_RESULT_INLINE_CHARS`
+/// (pruned) inline. Must be >= `crate::prune:MAX_TOOL_RESULT_INLINE_CHARS`
 /// so the two tiers compose: <=8192 inline, 8193..65535 pruned inline,
 /// >=65536 spilled (and the spill REPLACES the inline text entirely with a
 /// > short preview + locator).
@@ -33,7 +33,7 @@ const SPILL_PREVIEW_CHARS: usize = 2000;
 /// becomes `_`.
 ///
 /// SAN-05：本函数曾是仓内唯一的白名单消毒器（金标准），已晋升为
-/// `nemesis_utils::sanitize::sanitize_path_segment` 单一真相源；此处保留
+/// `nemesis_utils::sanitize:sanitize_path_segment` 单一权威定义；此处保留
 /// 薄包装维持模块内调用点与测试不动。
 fn sanitize_segment(raw: &str) -> String {
     nemesis_utils::sanitize::sanitize_path_segment(raw)
@@ -63,7 +63,7 @@ pub enum SpillOutcome {
 
 /// Full-text spill with bounded preview + locator. `stamp` is the caller's
 /// sortable timestamp suffix (e.g. `20260821_153000_123`). `hint_subagent`
-/// (B3) appends the spawn hint to the locator when the registry has a spawn
+/// appends the spawn hint to the locator when the registry has a spawn
 /// tool (see `prune::prune_tool_result` for the recomputability caveat —
 /// spill text is already projection-recorded regardless).
 pub fn spill_tool_result(
@@ -112,7 +112,7 @@ pub fn spill_tool_result(
     ))
 }
 
-/// C8（2026-09-05）：工具主动存档——**无条件**整体落盘，返回文件路径。
+/// 工具主动存档——**无条件**整体落盘，返回文件路径。
 ///
 /// 与 [`spill_tool_result`] 的 ≥64KB 自动闸不同：run_checks 的回灌是聚焦后
 /// 的错误摘录，全量输出无论大小都要有处可查（read_file/grep 可检索），所以
@@ -137,7 +137,7 @@ pub fn save_tool_output(
     Ok(path)
 }
 
-/// U4 retention cleanup: delete spill files older than `retention_days`
+/// retention cleanup: delete spill files older than `retention_days`
 /// (by file mtime), then remove session dirs that became empty (and the
 /// spill root itself if it became empty). Returns the number of files
 /// deleted. Failures on individual files/dirs WARN but never abort the sweep
@@ -147,7 +147,7 @@ pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
     if retention_days == 0 {
         return 0;
     }
-    // BUG-20261101-271：受检换算——typed config 字段 spill_retention_days
+    // 受检换算——typed config 字段 spill_retention_days
     // 是无上限 i64，手写巨值会让 `days * 86400` 溢出（debug panic /
     // release 回绕可构造出秒级小值 → cutoff 变「现在」 → 新鲜 spill 文件
     // 被误判过期全删）。两级受检：saturating_mul 封顶乘积 + checked_sub
@@ -228,7 +228,7 @@ pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
     deleted
 }
 
-/// G3 (Logs Dashboard spill 卡): read-only spill state — file count, total
+/// (Logs Dashboard spill 卡): read-only spill state — file count, total
 /// bytes, and the OLDEST file's mtime (RFC3339). A missing/unreadable root
 /// yields the all-zero status (the tree simply doesn't exist yet).
 #[derive(Debug, Default, Clone, serde::Serialize)]
@@ -276,6 +276,6 @@ pub fn status(root: &Path) -> SpillStatus {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

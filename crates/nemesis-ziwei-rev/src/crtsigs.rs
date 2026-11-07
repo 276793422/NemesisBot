@@ -1,4 +1,4 @@
-//! crtsigs —— MSVC CRT 折叠（T3.3）。
+//! crtsigs —— MSVC CRT 折叠（.3）。
 //!
 //! 「疑似库函数」判定器：命中即从候选集折叠（排除出标注建议）。
 //! 两路判定：
@@ -49,12 +49,12 @@ const CRT_SIGNATURES: &[(&str, &[Option<u8>])] = &[
             Some(0x85),
             Some(0xC9), // test rcx, rcx
             Some(0x74),
-            None, // jz ...
+            None, // jz...
             Some(0x48),
             Some(0x85),
             Some(0xD2), // test rdx, rdx
             Some(0x74),
-            None, // jz ...
+            None, // jz...
         ],
     ),
     // 2) __security_check_cookie 经典：cmp rcx, [__cookie]; jne fail; ret
@@ -70,7 +70,7 @@ const CRT_SIGNATURES: &[(&str, &[Option<u8>])] = &[
             None,
             None, // cmp rcx, [rip+disp32]
             Some(0x75),
-            None,       // jne ...
+            None,       // jne...
             Some(0xC3), // ret
         ],
     ),

@@ -1,8 +1,8 @@
-//! M5（devtool-upgrade 阶段 3）：`DataStore::aggregate_session_usage` 测试。
+//! （devtool-upgrade）：`DataStore::aggregate_session_usage` 测试。
 //!
 //! 会话级用量聚合的三个契约：
 //! 1. 求和口径——`input_tokens` = 完整输入（prompt + cache_creation +
-//!    cache_read，R2 2026-10-22 补全 creation 列），cost 直接 SUM；
+//!    cache_read， 2026-10-22 补全 creation 列），cost 直接 SUM；
 //! 2. session_key **精确匹配**隔离（不是 LIKE 子串——两个会话互不污染）；
 //! 3. 未知 key → 全零聚合（前端按零值不渲染，而非报错）。
 
@@ -63,7 +63,7 @@ fn aggregate_sums_input_including_cache_read() {
     let _ = fs::remove_file(&db_path);
 }
 
-/// R2 2026-10-22 回归锁：cache_creation 列计入聚合（Anthropic 形态——
+/// 回归锁：cache_creation 列计入聚合（Anthropic 形态——
 /// 整改前漏计 creation，会话预算/压缩信号系统性偏低）。
 #[test]
 fn aggregate_sums_input_including_cache_creation() {
@@ -120,7 +120,7 @@ fn unknown_key_yields_zero_aggregate() {
     let _ = fs::remove_file(&db_path);
 }
 
-// ---------- aggregate_session_usage_by_task（E1 维度 4 集群委派聚合） ----------
+// ---------- aggregate_session_usage_by_task（维度 4 集群委派聚合） ----------
 
 /// 按 `/{task_id}` 后缀聚合：worker 段不同的多行（重派/不同 worker 身份形态）
 /// 全部计入；其他任务的行不串账；无行 → 全零。

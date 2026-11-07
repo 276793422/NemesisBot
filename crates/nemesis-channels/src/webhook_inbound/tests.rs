@@ -445,7 +445,7 @@ async fn test_start_stop_idempotent() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): Channel trait is_running impl
+// coverage: Channel trait is_running impl
 // ===========================================================================
 
 /// The trait's is_running impl was never called (existing tests poke the

@@ -1,4 +1,4 @@
-//! plugin-vm 显示通道 vtable（P5-R2 ④）——host 导出给 plugin-vm 的
+//! plugin-vm 显示通道 vtable（④）——host 导出给 plugin-vm 的
 //! vm-display 窄接口。
 //!
 //! **本文件是唯一权威定义**。plugins/plugin-vm cdylib（非 workspace
@@ -12,7 +12,7 @@
 //! 从未做过双向闸——plugin-vm 是一方插件，靠自身 v4 签名机制保证安全，
 //! 通路不必封死，但 ABI 相等性必须双向确认）。
 //!
-//! 体积纪律：类型本体零依赖（只 `std::os::raw`），不拖任何运行时进宿主。
+//! 体积纪律：类型本体零依赖（只 `std::os:raw`），不拖任何运行时进宿主。
 
 use std::os::raw::c_char;
 
@@ -22,10 +22,10 @@ pub const HOST_VM_DISPLAY_ABI_VERSION: u32 = 1;
 
 /// `display_port_query` 返回值约定：`>0` = 该 agent 的 QEMU VNC 回环端口；
 /// 负数错误码：
-/// - [`PORT_QUERY_ERR_UNKNOWN`]（-1）：未知 agent id；
-/// - [`PORT_QUERY_ERR_NOT_RUNNING`]（-2）：agent 存在但 VM 未运行；
-/// - [`PORT_QUERY_ERR_NO_DISPLAY`]（-3）：未开显示（config display=none）；
-/// - [`PORT_QUERY_ERR_INTERNAL`]（-4）：宿主内部错误（supervisor 缺席等）。
+/// - [`PORT_QUERY_ERR_UNKNOWN`]（1）：未知 agent id；
+/// - [`PORT_QUERY_ERR_NOT_RUNNING`]（2）：agent 存在但 VM 未运行；
+/// - [`PORT_QUERY_ERR_NO_DISPLAY`]（3）：未开显示（config display=none）；
+/// - [`PORT_QUERY_ERR_INTERNAL`]（4）：宿主内部错误（supervisor 缺席等）。
 pub const PORT_QUERY_ERR_UNKNOWN: i32 = -1;
 pub const PORT_QUERY_ERR_NOT_RUNNING: i32 = -2;
 pub const PORT_QUERY_ERR_NO_DISPLAY: i32 = -3;

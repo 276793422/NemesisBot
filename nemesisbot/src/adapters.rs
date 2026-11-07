@@ -208,10 +208,10 @@ pub struct AgentLoopServiceAdapter {
     /// Shared reference with AppState — updated on each start/stop.
     agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     bus: Arc<nemesis_bus::MessageBus>,
-    /// L6++（2026-09-08）：主桥 skip 谓词——命中=true 的消息**不喂主 loop**
+    /// 主桥 skip 谓词——命中=true 的消息**不喂主 loop**
     /// （由项目调度器转发进对应项目 loop）。装配期 set 一次（OnceLock），
     /// start() 每次读取 → loop stop/start 循环后谓词仍生效。默认未设置 =
-    /// 全部放行（既有行为零影响）。谓词实现 = ProjectLoopManager::
+    /// 全部放行（既有行为零影响）。谓词实现 = ProjectLoopManager:
     /// bridge_should_skip，单一裁决点在 route_decision 纯函数。
     skip_predicate: std::sync::OnceLock<
         Arc<dyn Fn(&nemesis_types::channel::InboundMessage) -> bool + Send + Sync>,
@@ -245,7 +245,7 @@ impl AgentLoopServiceAdapter {
         }
     }
 
-    /// L6++：装配期设置主桥 skip 谓词（gateway 组装点调用一次；重复设置
+    /// 装配期设置主桥 skip 谓词（gateway 组装点调用一次；重复设置
     /// 忽略后者——OnceLock 语义）。None 判定的消息照常进主 loop。
     pub fn set_skip_predicate(
         &self,
@@ -260,7 +260,7 @@ impl AgentLoopServiceAdapter {
         self.state.lock().unwrap().agent_loop.clone()
     }
 
-    /// W7（WASM 插件框架）：当前 loop 持有器句柄（与 AppState 共享同一 Arc，
+    /// （WASM 插件框架）：当前 loop 持有器句柄（与 AppState 共享同一 Arc，
     /// start/stop 每次刷新）。热装 hook 捕获它而非裸 Weak——agent 重启后
     /// 仍解析到最新 loop；None = 停机窗口（重启路径 register_plugin_tools
     /// 会从注册表重新拉起，热装事件此时丢弃是诚实降级）。
@@ -311,7 +311,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
         // instead of being published raw by an inline recursion.
         agent_loop.set_reinject_tx(agent_inbound_tx.clone());
 
-        // G4 (devtool-upgrade 阶段 3)：重启丢失的后台 subagent 任务 —— 注入
+        // (devtool-upgrade)：重启丢失的后台 subagent 任务 —— 注入
         // 诚实丢失回执。后台任务是进程内 tokio 任务，gateway 重启即终止、
         // 无对端可 poll（cluster first_start 对空 peer_id 快照本就跳过）。
         // 快照**保留**：回灌走正常续行路径（gate → dispatch_continuation →
@@ -362,7 +362,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
-                        // L6++：项目会话消息不进主 loop（项目调度器转发）。
+                        // 项目会话消息不进主 loop（项目调度器转发）。
                         // system/无归属消息照常放行（谓词只对 ToProject 命中）。
                         if let Some(pred) = skip.as_ref()
                             && pred(&msg)
@@ -375,7 +375,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                         total_dropped += n;
-                        // P2-1：接收侧真实丢失计入 bus 指标（发布侧
+                        // 接收侧真实丢失计入 bus 指标（发布侧
                         // no_receiver_dropped 不含 lag 丢帧——两者语义不同）。
                         bus_for_lag.record_inbound_lagged(n);
                         tracing::warn!(
@@ -426,7 +426,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
         if let Some(ref al) = state.agent_loop {
             al.stop();
             al.clear_session_busy();
-            // L07（2026-11-01）孤儿卡配对清理：loop 停止 = 在途请求终局——
+            // 孤儿卡配对清理：loop 停止 = 在途请求终局——
             // 未决审批卡在 abort handle 前定向关闭（等待方收到拒绝裁决而非
             // 随任务 abort 消失；卡不残留到超时窗口）。trait 默认空实现 =
             // 无审批面形态零开销。
@@ -538,7 +538,7 @@ impl WebServerOps for WebServerOpsAdapter {
                 source_node.as_deref(),
             ))
         });
-        // P2（2026-09-11 真机日志）：assistant 回复推送失败（会话无活动
+        // （真机日志）：assistant 回复推送失败（会话无活动
         // 连接——典型如崩溃恢复回复回到已断开的驱动端）时打未读标记；
         // 内容已照常落盘（chat_log），标记只承载「有未读」通知事实，
         // 前端拉历史后经 sessions.mark_delivered 清零。
@@ -601,10 +601,10 @@ impl WebServerOps for WebServerOpsAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// DeviceService adapter（BUG-20261028-126 Layer C）
+// DeviceService adapter（Layer C）
 // ---------------------------------------------------------------------------
 
-/// Adapter wrapping `nemesis_devices::service::DeviceService` to implement the
+/// Adapter wrapping `nemesis_devices::service:DeviceService` to implement the
 /// `nemesis_services::DeviceService` trait.
 ///
 /// 长寿命持有链：init_services 构造 + 接线 → `BotService.inject_devices`
@@ -653,7 +653,7 @@ impl LifecycleService for DeviceServiceAdapter {
 impl nemesis_services::DeviceService for DeviceServiceAdapter {}
 
 /// 设备通知的 last channel 供给器：从 AgentLoopServiceAdapter 实时取
-/// agent loop 持有的 WorkspaceStateManager（BUG-20261028-126 Layer B）。
+/// agent loop 持有的 WorkspaceStateManager（Layer B）。
 ///
 /// 不缓存：state manager 独立实例内存态只在 new 时读盘一次，agent 每轮
 /// turn 写入的是 loop 自己那份实例——必须经 getter 共享同一实例实时读。

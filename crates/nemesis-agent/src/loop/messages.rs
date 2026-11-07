@@ -1,22 +1,22 @@
-//! 消息组装：shell 注入族（K3）、expand_shell_injections、build_messages*、prefetch_memory_context、note_read_for_instructions、invalidate_context_digests、render_workflow_edit_section。
+//! 消息组装：shell 注入族、expand_shell_injections、build_messages*、prefetch_memory_context、note_read_for_instructions、invalidate_context_digests、render_workflow_edit_section。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
 
 // -------------------------------------------------------------------------
-// K3（devtool-upgrade 阶段 4）：`` !`cmd` `` shell 注入
+// （devtool-upgrade）：`` !`cmd` `` shell 注入
 // -------------------------------------------------------------------------
 
-/// K3：`` !`cmd` `` 注入的超时（秒）——模板注入是"顺手拿点上下文"，不是
+/// `` !`cmd` `` 注入的超时（秒）——模板注入是"顺手拿点上下文"，不是
 /// 长任务入口；卡死命令 3s 收尸。
 const SHELL_INJECTION_TIMEOUT_SECS: u64 = 3;
-/// K3：注入 stdout 的字符上限（超出按字符边界截断——byte 切片会在多字节
+/// 注入 stdout 的字符上限（超出按字符边界截断——byte 切片会在多字节
 /// 字符上 panic，见 str-slice 教训）。
 pub(crate) const SHELL_INJECTION_OUTPUT_CAP: usize = 4096;
 
-/// K3：扫描文本中所有 `` !`cmd` `` token，返回（token 全长 span, 命令原文
+/// 扫描文本中所有 `` !`cmd` `` token，返回（token 全长 span, 命令原文
 /// trim 后）。扫描按 byte 找 `!` + `` ` ``（都是单字节 ASCII，不会落在多字
 /// 节序列内部，切片安全）；无闭合反引号的 `!` 按字面保留（不进列表）。
 fn shell_injection_spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
@@ -38,7 +38,7 @@ fn shell_injection_spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
     out
 }
 
-/// K3：提取去重后的注入命令清单（首次出现序）。
+/// 提取去重后的注入命令清单（首次出现序）。
 pub(crate) fn extract_shell_injections(text: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (_, cmd) in shell_injection_spans(text) {
@@ -49,7 +49,7 @@ pub(crate) fn extract_shell_injections(text: &str) -> Vec<String> {
     out
 }
 
-/// K3：把每个 `` !`cmd` `` token 替换为 `resolve(cmd)` 的产物（纯函数，
+/// 把每个 `` !`cmd` `` token 替换为 `resolve(cmd)` 的产物（纯函数，
 /// 测试对象）。空命令 token 与未闭合 token 保持字面不动（与
 /// [`extract_shell_injections`] 的跳过语义对齐，两边永不分歧）。
 pub(crate) fn substitute_shell_injections(text: &str, resolve: &dyn Fn(&str) -> String) -> String {
@@ -72,7 +72,7 @@ pub(crate) fn substitute_shell_injections(text: &str, resolve: &dyn Fn(&str) -> 
     out
 }
 
-/// K3：执行单个注入命令并产出替换文本。成功（exit 0）→ stdout 去尾随空白
+/// 执行单个注入命令并产出替换文本。成功（exit 0）→ stdout 去尾随空白
 /// 并截断（空输出给 `(no output)` 占位，让 LLM/模板有确定内容）；spawn 失败、
 /// 超时或非零退出 → `[command failed: <cmd>: <原因>]` 注记（stderr 尾部
 /// 随注记带上，≤200 字符，便于人诊断）。
@@ -106,7 +106,7 @@ async fn exec_shell_injection(cmd: &str, cwd: Option<&std::path::Path>) -> Strin
     }
 }
 
-/// K3：注入输出按字符数截断（头 4096 字符 + 截断注记）。
+/// 注入输出按字符数截断（头 4096 字符 + 截断注记）。
 pub(crate) fn cap_injection_output(s: &str) -> String {
     if s.chars().count() <= SHELL_INJECTION_OUTPUT_CAP {
         return s.to_string();
@@ -116,7 +116,7 @@ pub(crate) fn cap_injection_output(s: &str) -> String {
     out
 }
 
-/// K3：取 stderr 的最后一个非空行并按字符数截断（注记保持单行可读）。
+/// 取 stderr 的最后一个非空行并按字符数截断（注记保持单行可读）。
 pub(crate) fn tail_line(s: &str, cap: usize) -> String {
     let line = s.lines().rev().map(str::trim).find(|l| !l.is_empty());
     let line = line.unwrap_or("");
@@ -130,7 +130,7 @@ pub(crate) fn tail_line(s: &str, cap: usize) -> String {
 }
 
 impl AgentLoop {
-    /// K3：对文本中的 `` !`cmd` `` 逐个执行并替换（相同命令只执行一次）。
+    /// 对文本中的 `` !`cmd` `` 逐个执行并替换（相同命令只执行一次）。
     /// 无注入时零开销直返；cwd 取 workspace_root（未设则继承进程 cwd）。
     pub(crate) async fn expand_shell_injections(&self, text: String) -> String {
         let cmds = extract_shell_injections(&text);
@@ -147,15 +147,15 @@ impl AgentLoop {
         substitute_shell_injections(&text, &|c| results.get(c).cloned().unwrap_or_default())
     }
 
-    /// I3 (devtool-upgrade 阶段 3): lazy sub-directory instruction discovery.
+    /// (devtool-upgrade): lazy sub-directory instruction discovery.
     /// Called on a SUCCESSFUL read_file whose path resolves inside the
     /// workspace: if the file's directory (≠ workspace root — the root chain
     /// is always injected) carries AGENTS.md/CLAUDE.md and was never claimed
     /// this session, queue its contents for the next build's one-shot
-    /// injection (same channel shape as the I1 external_changes section).
+    /// injection (same channel shape as the external_changes section).
     ///
     /// Directories without instruction files stay UNCLAIMED so instructions
-    /// added later (agent- or user-authored) are still discovered on a later
+    /// added later (agent or user-authored) are still discovered on a later
     /// read. Relative paths resolve against the workspace root (read_file
     /// accepts them); outside-root paths are silently ignored. Loop-level
     /// state is not needed — the instance owns claims+buffer (per-session
@@ -196,7 +196,7 @@ impl AgentLoop {
         );
     }
 
-    /// H5 (U18): touch-driven digest invalidation. Called by the dispatch
+    /// touch-driven digest invalidation. Called by the dispatch
     /// path when a read_file/write_file/edit_file call touched a file that
     /// is on the session's instruction chain — the next build_messages
     /// re-reads the chain and re-injects. `session_key` is the stable key
@@ -210,7 +210,7 @@ impl AgentLoop {
         self.skills_digest_state.clear_all();
     }
 
-    /// P3.1 (sixth batch): retrieve relevant long-term memories for the
+    /// .1 (sixth batch): retrieve relevant long-term memories for the
     /// LATEST user message (vector top-K, score-thresholded, deduped by
     /// pairwise cosine > 0.92 — goal §三 semantics). `None` whenever the
     /// feature is off (default), the manager/vector store is absent, or no
@@ -240,7 +240,7 @@ impl AgentLoop {
             // AUTO_INJECT_MIN_SCORE (0.35) gates INSIDE search_auto_inject —
             // the plain search() runs the store's 0.7 bar (memory_search
             // tuning), which silently emptied loosely-related injection hits
-            // (2026-08-29 根因).
+            // (根因).
             let result = mgr
                 .search_auto_inject(&query, top_k.max(1) + 2)
                 .await
@@ -255,7 +255,7 @@ impl AgentLoop {
                         .nth(300)
                         .map(|(i, _)| i)
                         .unwrap_or(content.len());
-                    // B15（2026-10-18 B 级清零）：auto-inject 召回同样带日期
+                    // auto-inject 召回同样带日期
                     // 戳（时效判断不靠运气）；位于动态注入段尾部，稳定前缀
                     // 字节不受影响。
                     (
@@ -303,17 +303,17 @@ impl AgentLoop {
     /// prompt-cache hits; only the trailing user message and the dynamic marker
     /// are billed at the cache-miss rate. The platform/shell hint steers the
     /// model away from interactive commands that hang the exec tool (e.g. bare
-    /// Windows `date` vs `date /t`) — small-model-tool-robustness plan Phase 1.
+    /// Windows `date` vs `date /t`) — small-model-tool-robustness plan.
     ///
-    /// P3.1 (sixth batch): `memory_hits` (caller-side async prefetch — search
+    /// .1 (sixth batch): `memory_hits` (caller-side async prefetch — search
     /// is async, this fn is sync) renders a `# Memory Context` section into
     /// the merged snapshot. `None`/empty = no section, byte-identical to
-    /// pre-P3.1 output.
+    /// pre-.1 output.
     pub fn build_messages(&self, instance: &AgentInstance) -> Vec<LlmMessage> {
         self.build_messages_with_memory(instance, None)
     }
 
-    /// P3.1 companion: same as [`build_messages`] plus an optional
+    /// .1 companion: same as [`build_messages`] plus an optional
     /// pre-fetched memory-hit section.
     pub fn build_messages_with_memory(
         &self,
@@ -324,20 +324,20 @@ impl AgentLoop {
             .0
     }
 
-    /// B 线动态注入（2026-10-14）：用户画像段（mtime 门控每轮重渲染）。
+    /// B 线动态注入：用户画像段（mtime 门控每轮重渲染）。
     ///
     /// - 门控：`<workspace>/config/user_profile.json` **与 config.json 的
     ///   mtime 双键**任一未变 → 走缓存（字节稳定）；变了 → 重读并重渲染。
     ///   config.json 的 `user_profile.enabled` 开关翻转**只动 config 不动
     ///   画像文件**，且 disable 后 sweep no-op 永不再写画像（mtime 冻结）
     ///   ——单键时代缓存永不过期，关闭的开关在进程生命周期内不生效
-    ///   （BUG-20261025-36：disable 后画像段仍持续注入每条消息）。config
+    ///   （disable 后画像段仍持续注入每条消息）。config
     ///   mtime 每轮一次 stat，与 `check_config_reload` 同款成本。
     /// - 失败语义：workspace 未设 / profile 文件不存在 / config 读取失败
     ///   → 空 section（诚实降级，不炸构建）；profile 解析失败 → 空 +
     ///   warn（损坏画像不注入，等用户修复或 sweep 重建）。
     /// - 内容纯状态派生（文件内容渲染）：两次变更之间字节稳定 → prompt
-    ///   cache 前缀不受损；随 InjectionRecord 台账回放一致（同 I5 机制）。
+    ///   cache 前缀不受损；随 InjectionRecord 台账回放一致（同 机制）。
     pub(crate) fn user_profile_section_now(&self) -> String {
         let Some(ref root) = *self.workspace_root.read() else {
             return String::new();
@@ -396,7 +396,7 @@ impl AgentLoop {
         section
     }
 
-    /// 对话生成（2026-09-22）：渲染 workflow_edit 会话的 merged-digest section。
+    /// 对话生成：渲染 workflow_edit 会话的 merged-digest section。
     ///
     /// - `_new`（workflow_name=None）：能力表 + 两阶段引导（先查
     ///   workflow 工具 action=capabilities，产出走 action=create 草稿，
@@ -456,8 +456,8 @@ impl AgentLoop {
         out
     }
 
-    /// T8 (U9 ②) companion: [`build_messages_with_memory`] plus a
-    /// [`crate::replay::BuildAnnotation`] recording everything a later
+    /// (②) companion: [`build_messages_with_memory`] plus a
+    /// [`crate::replay:BuildAnnotation`] recording everything a later
     /// byte-exact replay needs that is NOT derivable from the final session
     /// file — the digest injection's final-vec position, the folded history
     /// length, and the summary-cache state AS OF this build (the session
@@ -465,7 +465,7 @@ impl AgentLoop {
     /// Byte-identical output to the unannotated build; the annotation rides
     /// alongside and never feeds the provider.
     ///
-    /// prompt-pack pro（M4）：`channel` = 本回合来源通道（RequestContext
+    /// prompt-pack pro：`channel` = 本回合来源通道（RequestContext
     /// 传入；None = 未知/调用方不提供）。Pro 体系下非 web 的外部通道触发
     /// 来源降权节；Classic 体系无论传什么都字节不变。
     pub fn build_messages_with_memory_annotated(
@@ -477,10 +477,10 @@ impl AgentLoop {
         self.build_messages_inner(instance, memory_hits, None, channel)
     }
 
-    /// WS9/P18：session_key 感知变体——生产路径（`run_loop.rs` 的
+    /// ：session_key 感知变体——生产路径（`run_loop.rs` 的
     /// `build_round_messages`）传 `Some(&context.session_key)` 以注入分支
     /// 前情提要节；测试/replay 兼容路径继续走无 key 的旧签名（其余字节
-    /// 路径完全一致）。`channel` 同穿（prompt-pack pro M4 外部来源降权节）；
+    /// 路径完全一致）。`channel` 同穿（prompt-pack pro 外部来源降权节）；
     /// 传 None = 不注入（与旧签名等价）。
     pub fn build_messages_with_memory_annotated_for(
         &self,
@@ -518,7 +518,7 @@ impl AgentLoop {
             active_cache.map(|c| (c.text.as_str(), c.covers_up_to)),
         );
 
-        // T10（多模态）：最新 user 注入点的判定提前——vision 投影与后面的
+        // （多模态）：最新 user 注入点的判定提前——vision 投影与后面的
         // digest 注入共用同一个 index（纯 turns 派生，与注入内容无关）。
         let last_user_idx = turns
             .iter()
@@ -526,7 +526,7 @@ impl AgentLoop {
             .filter(|&i| i > 0)
             .filter(|_| turns.first().is_some_and(|t| t.role == "system"));
 
-        // T10（多模态 D4）：vision=no 时把 image_refs 投影为稳定占位文本
+        // （多模态）：vision=no 时把 image_refs 投影为稳定占位文本
         // （当前轮拒绝注明 / 历史轮已省略）。supported（默认放行含）零改动
         // ——纯文本请求字节不受影响（字节兼容验收 #2）。投影发生在
         // turn → 请求消息转换**之前**，图片字节根本不进请求；占位写入的是
@@ -548,7 +548,7 @@ impl AgentLoop {
             vision_projected,
         };
 
-        // I2 (U8): time/env becomes the FIRST section of the merged context
+        // time/env becomes the FIRST section of the merged context
         // snapshot (was a standalone system-role dyn_msg). Minute granularity:
         // the timestamp truncates to the minute so a burst of calls within
         // the same minute does not churn the digest (runtime-context
@@ -560,7 +560,7 @@ impl AgentLoop {
         let env_hint = "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
         #[cfg(not(target_os = "windows"))]
         let env_hint = "platform: unix\ndefault_shell: sh\ntime_cmd: use `date`";
-        // FT（2026-09-17）：Environment 快照注入工作区绝对路径——治「模型
+        // FT：Environment 快照注入工作区绝对路径——治「模型
         // 不知道工作区在哪」的提示词半边（工具层相对路径锚定是另一半）。
         // 路径整个会话不变 → 字节稳定纪律成立（不触发重注入）。
         let mut snapshot_section = format!(
@@ -572,7 +572,7 @@ impl AgentLoop {
         {
             snapshot_section.push_str(&format!("\nworkspace: {}", root.display()));
         }
-        // VM 档执行环境注记（B9 审计收口）：resolver 每 build 现查档位
+        // VM 档执行环境注记（审计收口）：resolver 每 build 现查档位
         //（与 BackendRoutingExecutor 同源语义——切档下一轮即真），vm 档
         // 追加 guest 路径语义行，process 档空串不追加（字节不变，golden
         // 快照不受扰）。常量文本跨轮稳定，cache 前缀不受损。
@@ -584,7 +584,7 @@ impl AgentLoop {
         }
         snapshot_section.push_str("\n(本快照取代之前的时间/环境快照)");
 
-        // T5/T6（多模态）：turn → 请求消息统一走 `turn_to_request_message`
+        // /（多模态）：turn → 请求消息统一走 `turn_to_request_message`
         // （与 replay 重建共用；image_refs 每轮水合重读，失效 → 占位文本）。
         let turn_to_msg = |turn: &crate::types::ConversationTurn| turn_to_request_message(turn);
 
@@ -592,7 +592,7 @@ impl AgentLoop {
         // is a system prompt at turns[0] to protect (otherwise there's no
         // cached prefix to preserve).
         //
-        // H3 (P2.2) + H5 (U18) + I2 (U8): the skills-catalog digest, the
+        // (.2) + +: the skills-catalog digest, the
         // workspace instruction chain, AND the time/env snapshot ride ONE
         // injection point as a single MERGED message (sections inside one
         // <system-reminder> wrapper), with the same prefix-protection
@@ -600,11 +600,11 @@ impl AgentLoop {
         // deterministic rendering keeps it byte-identical while nothing
         // changed, which is what preserves the provider prefix. Sections
         // re-read from disk each build, so file touches are picked up
-        // naturally (H5's invalidate call is a structural no-op).
+        // naturally ('s invalidate call is a structural no-op).
         let context_digest_msg: Option<LlmMessage> = {
             let loader = self.skills_loader.read().clone();
             let ws_root = self.workspace_root.read().clone();
-            // Build the merged content: time/env snapshot (I2) + skills
+            // Build the merged content: time/env snapshot + skills
             // section (if any) + workspace instructions section (if any).
             // The snapshot is ALWAYS present (time always renders), so the
             // merged message exists for every session.
@@ -618,7 +618,7 @@ impl AgentLoop {
                 }
             }
             if let Some(ref root) = ws_root {
-                // N7（2026-10-13）：信任档三分——isolated 整段跳过（指令链
+                // 信任档三分——isolated 整段跳过（指令链
                 // 完全不进上下文）；annotate 注入但前置不可信来源横幅；
                 // trusted verbatim（主循环行为，缺省）。区块逐 build 重渲染
                 // ——运行中 `projects.trust` 热更新下一轮即生效，无残留。
@@ -642,13 +642,13 @@ impl AgentLoop {
                     }
                 }
             }
-            // I3 (devtool-upgrade 阶段 3): lazily discovered sub-directory
+            // (devtool-upgrade): lazily discovered sub-directory
             // instructions — one-shot section drained from the instance
             // (same channel shape as the external_changes section below;
             // empty between discoveries keeps the merged message
             // byte-stable). Claims live on the instance, so dedup is
             // session-scoped.
-            // N7：惰性发现区块同样受信任档约束——isolated 只排空不渲染
+            // 惰性发现区块同样受信任档约束——isolated 只排空不渲染
             // （缓冲有界，内容不进上下文）；annotate 前置同款横幅。恒排空
             // （claims 是 session 级一次性），trust 决定的是渲染与否。
             let pending_instructions = instance.drain_pending_instructions();
@@ -671,7 +671,7 @@ impl AgentLoop {
                     sections.push(rendered);
                 }
             }
-            // P3.1 (sixth batch): pre-fetched memory hits as a section. The
+            // .1 (sixth batch): pre-fetched memory hits as a section. The
             // caller (run_llm_loop) did the async search against the CURRENT
             // user message; here we only render. Empty/None ⇒ no section ⇒
             // byte-identical output to auto_inject=false.
@@ -687,7 +687,7 @@ impl AgentLoop {
                         "# Memory Context\n{body}\n\n(以上是自动检索到的相关长期记忆，可能与当前对话有关，也可能无关——自行判断取舍。)"
                     ));
             }
-            // I1 (devtool-upgrade 阶段 3): externally-changed workspace
+            // (devtool-upgrade): externally-changed workspace
             // files since the last build — one-shot section (drained here;
             // absent when nothing changed, keeping the message byte-stable
             // between turns). The watcher-side ignore table + self-write
@@ -698,7 +698,7 @@ impl AgentLoop {
                     &external_changes,
                 ));
             }
-            // I5（devtool-upgrade 阶段 7）：当前轮客户端上报的打开文件路径
+            // （devtool-upgrade）：当前轮客户端上报的打开文件路径
             // —— per-turn ephemeral 状态（process_admitted set / 出轮 clear）。
             // 只渲染路径不读内容（annotation 语义；agent 真正读文件仍走
             // read_file 工具与安全 8 层，零新增信任面）。空 = 无 section
@@ -716,21 +716,21 @@ impl AgentLoop {
                     "# Open Files (client-reported)\n{body}\n\n(以上是客户端上报的当前打开文件路径，顺序=上报顺序，仅供参考——读取文件仍受安全策略约束。)"
                 ));
             }
-            // 对话生成（2026-09-22）：workflow_edit 会话上下文。命名会话渲染
+            // 对话生成：workflow_edit 会话上下文。命名会话渲染
             // 当前定义 YAML（引擎未装配/未找到时诚实注明）；_new 会话渲染
             // 能力表引导块。空目标 = 无 section（字节稳定）。内容随既有
-            // InjectionRecord 台账落账 → 回放免费一致（同 I5 机制）。
+            // InjectionRecord 台账落账 → 回放免费一致（同 机制）。
             let wf_edit_target = self.pending_workflow_edit.read().clone();
             if let Some(target) = wf_edit_target {
                 sections.push(self.render_workflow_edit_section(&target));
             }
-            // WS9/P18：分支前情提要（Branch Context）。fork/rewind 遗弃
+            // /：分支前情提要（Branch Context）。fork/rewind 遗弃
             // 后缀 ≥3 轮时由 small_model 生成的六节结构化摘要，落盘在会话
             // sidecar meta 的 branch_summary 字段；这里每次构建重读注入
             // （内容写定后不变 ⇒ 字节稳定；meta 无摘要/摘要为空 = 无
             // section，与既有节的字节稳定纪律同形）。session_key=None
             // （旧签名兼容路径）不注入。内容随既有 InjectionRecord 台账
-            // 落账 → replay 一致（同 I5/workflow_edit 机制）。
+            // 落账 → replay 一致（同 /workflow_edit 机制）。
             if let Some(sk) = session_key
                 && let Some(meta) = crate::chat_log::read_session_meta_full(sk)
                 && let Some(summary) = meta.branch_summary
@@ -740,7 +740,7 @@ impl AgentLoop {
                     "# Branch Context（分支前情提要）\n{summary}\n\n(以上是本会话建立时被遗弃部分的结构化前情提要——那些内容不在本会话上下文里，供理解背景用；其中未完成事项与结论供参考，勿当作已确认事实。)"
                 ));
             }
-            // X2 (U8 refinement): runtime policy facts as the LAST section.
+            // (refinement): runtime policy facts as the LAST section.
             // All three inputs are plain state rendered without clocks —
             // deterministic (same state ⇒ identical bytes, so the merged
             // message stays byte-stable between turns and the historical
@@ -762,10 +762,10 @@ impl AgentLoop {
             let guardian_on = false;
             let approval_on = *self.interactive_approval.read();
             let tier_now = *self.tier.read();
-            // F1（devtool-upgrade 阶段 4）：模式进快照——Plan 时模型当轮就
+            // （devtool-upgrade）：模式进快照——Plan 时模型当轮就
             // 能读到「不许改文件」，与供给/分发双闸互补（提醒是软约束）。
             let mode_now = self.mode();
-            // B4：plan 放行目录动态写入（单一真相源 plan_products_dir——
+            // plan 放行目录动态写入（统一定义 plan_products_dir——
             // 项目会话 = <agent_home>/plans，主会话 = <workspace>/plans）。
             // 静态旧文案「plans/」会把项目会话的模型引向已禁写的项目目录
             // plans/，必吃一次拒绝回灌才能自纠。
@@ -779,12 +779,12 @@ impl AgentLoop {
                 ),
                 crate::types::AgentMode::Build => "build（正常全量工具）".to_string(),
             };
-            // 语音 realtime P1（W4 L2）：语音对话模式提示词。热态经
+            // 语音 realtime：语音对话模式提示词。热态经
             // voice_prompt Arc<AtomicBool>（gateway `set_voice_prompt` 注入，
             // `chat_config_set` 改内存热态即被下轮读到）；true 且 tier≠mini
-            // （计划 §七-5：mini 档跳过 L2 只走 L1 兜底）才渲染 section。
+            // （计划 §七-5：mini 档跳过 只走 兜底）才渲染 section。
             // 关 = 无 section = prompt 字节不变 cache 不动；内容纯状态派生
-            // → 字节稳定；随 InjectionRecord 台账回放一致（同 I5 机制）。
+            // → 字节稳定；随 InjectionRecord 台账回放一致（同 机制）。
             let voice_prompt_on = self
                 .voice_prompt
                 .read()
@@ -795,16 +795,16 @@ impl AgentLoop {
                     "# Voice Dialogue Mode（语音对话）\n当前处于语音对话模式：你的回复将被朗读给用户听。\n- 用口语化的短句回复，避免书面腔和长段落\n- 不要使用 markdown（标题、列表、粗体、表格等符号念不出来）\n- 代码、链接、长列表用一句话概括（例如「完整代码我放在了回复里，请在屏幕上查看」）\n(以上是宿主按语音对话开关注入的模式提示，非用户发言。)".to_string(),
                 );
             }
-            // B 线动态注入（2026-10-14）：用户画像段——mtime 门控每轮重渲染，
+            // B 线动态注入：用户画像段——mtime 门控每轮重渲染，
             // sweep 学习 / veto / disable 即时生效（原挂 ContextBuilder build
             // 时冻结，仅 classic 路径覆盖；迁入 snapshot 后 classic/pro 与所有
             // loop 统一）。内容纯状态派生 → 字节稳定；随 InjectionRecord 台账
-            // 回放一致（同 I5 机制）；空 = 无 section。
+            // 回放一致（同 机制）；空 = 无 section。
             let profile_section = self.user_profile_section_now();
             if !profile_section.is_empty() {
                 sections.push(profile_section);
             }
-            // E 线动态注入（2026-10-14）：tier 档位段——每轮从 live tier 渲染
+            // E 线动态注入：tier 档位段——每轮从 live tier 渲染
             // （`check_config_reload` 热切后下轮即生效，原 build 时冻结会滞后
             // 到重启）。纯状态派生字节稳定；Standard 档 = 零字节无 section。
             let tier_section = crate::context::prompt_profile_section(
@@ -828,7 +828,7 @@ impl AgentLoop {
                 tier_now,
                 mode_line,
             ));
-            // prompt-pack pro（M4）：输入数据声明 + 外部来源降权，只在 Pro
+            // prompt-pack pro：输入数据声明 + 外部来源降权，只在 Pro
             // 体系渲染（Classic 体系字节不变承诺——golden 特征测试钉住
             // messages 全文）。两节内容纯状态派生（channel 一轮内不变）→
             // 字节稳定纪律成立；随 InjectionRecord 台账回放一致。
@@ -841,7 +841,7 @@ impl AgentLoop {
                     sections.push(crate::prompt::render_external_channel_section(ch));
                 }
             }
-            // L10-建设（改进项三期 2026-11-02）：已解锁 schema 注记节——惰性
+            // 建设：已解锁 schema 注记节——惰性
             // 供给下模型经 tools_schema_get 取回过的 schema 在这里持续携带。
             // 累积渲染（append-only 前缀稳定，新增只失效 cache 尾部）；lazy
             // 关 = 无节零字节；session_key None 不注入（Branch Context 同款
@@ -863,9 +863,9 @@ impl AgentLoop {
                 self.skills_digest_state
                     .should_inject("", &merged) // stateless since round-5
                     .map(|m| LlmMessage {
-                        // I2 (U8): user-role snapshot (was system) — the
+                        // user-role snapshot (was system) — the
                         // system prompt stays byte-frozen; dynamic facts
-                        // arrive as conversation messages. M4: role is
+                        // arrive as conversation messages.: role is
                         // configurable for strict chat templates that
                         // reject adjacent user/user pairs.
                         role: self.snapshot_role.read().clone(),
@@ -885,7 +885,7 @@ impl AgentLoop {
                 messages.extend(turns[..idx].iter().map(turn_to_msg));
                 if let Some(d) = context_digest_msg {
                     messages.push(d);
-                    // T8 (U9 ②): final-vec position of the digest injection —
+                    // (②): final-vec position of the digest injection —
                     // recorded because it is rebuilt-on-every-request and never
                     // persisted, so replay must re-insert it at this position.
                     annotation.digest_index = Some(messages.len() - 1);
@@ -903,10 +903,10 @@ impl AgentLoop {
 }
 
 // ---------------------------------------------------------------------------
-// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// 自由函数归位（c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
-/// P3.1 (sixth batch): cheap text similarity (char-bigram Jaccard) for the
+/// .1 (sixth batch): cheap text similarity (char-bigram Jaccard) for the
 /// auto-inject dedup pass. Approximates "same memory, near-identical text"
 /// without another embedding call — the dedup bar (0.92) is deliberately
 /// high so only true near-duplicates are dropped.
@@ -931,14 +931,14 @@ pub(crate) fn textwise_similar(a: &str, b: &str) -> f64 {
     inter / union
 }
 
-/// G1 (U1): build an LLM wire message from a ConversationTurn preserving the
+/// build an LLM wire message from a ConversationTurn preserving the
 /// original structure (role/content/tool_calls/tool_call_id/reasoning) — the
 /// same projection `build_messages`'s `turn_to_msg` performs. Shared by the
 /// summarizers so the summary request's prefix messages are byte-equal to the
 /// main loop's.
 ///
-/// T6（多模态）：摘要请求**不发图片字节**（摘要模型可能是不支持视觉的廉价
-/// 档，且图片字节会破坏 G1 前缀复用的字节等价前提）——历史 turn 的
+/// （多模态）：摘要请求**不发图片字节**（摘要模型可能是不支持视觉的廉价
+/// 档，且图片字节会破坏 前缀复用的字节等价前提）——历史 turn 的
 /// `image_refs` 在此不水合，`images` 恒空。失效图片的占位文本也只出现在
 /// 主循环请求（`turn_to_request_message`）里，摘要请求保持纯文本。
 pub(crate) fn conversation_turn_to_llm_message(
@@ -958,7 +958,7 @@ pub(crate) fn conversation_turn_to_llm_message(
     }
 }
 
-/// T5/T6（多模态）：主循环请求的 history turn → 请求消息转换（`build_messages`
+/// （多模态）：主循环请求的 history turn → 请求消息转换（`build_messages`
 /// 与 replay 重建共用，水合语义单点）。路径引用**每轮重读**：验真通过 →
 /// base64 字节进 `LlmMessage.images`；文件已删/失效 → 占位文本行
 /// `[图片已失效: <path>]` 追加进 content（诚实降级，不静默、不炸）。
@@ -976,11 +976,11 @@ pub(crate) fn turn_to_request_message(turn: &crate::types::ConversationTurn) -> 
     msg
 }
 
-/// T10（多模态 D4）：vision=no 模型的 image_refs 确定性投影（纯函数，生产
+/// （多模态）：vision=no 模型的 image_refs 确定性投影（纯函数，生产
 /// build 与 replay 重建共用）。带引用的 turn 一律清空 `image_refs` 并把占位
 /// 文本行追加进 content：
 /// - 最新 user 轮（本轮要发的图）→ `[图片未发送: 当前模型 vision=no（不支持
-///   图像输入），图片已忽略]`（拒绝注明，文本照常处理，与 T5 失败路径同构）；
+///   图像输入），图片已忽略]`（拒绝注明，文本照常处理，与 失败路径同构）；
 /// - 其余（历史）轮 → `[图片已省略: 当前模型仅支持文本]`（模型中途切换不
 ///   砖会话）。
 ///

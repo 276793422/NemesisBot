@@ -565,7 +565,7 @@ mod failover_extra {
         assert!(matches!(ol503, FailoverError::Overloaded { .. }));
 
         // Unknown（400 保持 Unknown——不可重试两类等价，形态不迁移；
-        // 500 已按 BUG-20261025-83 对齐 class_by_status 归 Overloaded）
+        // 500 已按 对齐 class_by_status 归 Overloaded）
         let unk400 = FailoverError::from_status("p", "m", 400, "bad", None);
         assert!(matches!(unk400, FailoverError::Unknown { .. }));
         let ol500 = FailoverError::from_status("p", "m", 500, "internal", None);

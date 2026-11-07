@@ -2344,58 +2344,76 @@ mod r10_exit_two_and_output {
 }
 
 // ---------------------------------------------------------------------------
-// box_api_base —— 盒内 api_base 的 lane 后缀（2026-09-11 r10 真链路红根因钉）
+// box_api_base / split_origin_path —— 路径镜像（BUG-20261106-027）
 // ---------------------------------------------------------------------------
-// 此前盒内 api_base 无条件带 /v1；Anthropic lane（provider 自己拼
-// /v1/messages）下盒内路径变成 /v1/v1/messages → 上游 404 → 评估结论
-// Unknown → exit 0 ≠ 2。lane 判定必须与盒内 factory 同源（前缀 + 显式
-// protocol）。
+// 此前形态：lane 感知增删 /v1（HttpCompat 带、其余剥）+ real_base 无条件剥
+// /v1——只在「HttpCompat base 恰以 /v1 结尾」时正确：Zhipu /api/paas/v4、
+// Gemini /v1beta 等预设全部多插 /v1 → 上游 404；Codex + /v1 形态丢 /v1 →
+// 404。现规则：盒内 base = 代理根 + 真实 base 的 path，代理 verbatim 转发
+// → 相对路径逐字节一致，任意 lane / base 形态同时成立。
+// 2026-09-11 r10 的 /v1/v1 lane 感知测试组随形态退役。
 
 #[test]
-fn box_api_base_anthropic_prefix_lane_drops_v1() {
-    let base = box_api_base("http://127.0.0.1:12345/v1", "anthropic/glm-5.3-flash", "");
-    assert_eq!(
-        base, "http://127.0.0.1:12345",
-        "Anthropic lane 盒内 base 必须裸（provider 拼 /v1/messages）"
-    );
-}
-
-#[test]
-fn box_api_base_claude_alias_prefix_lane_drops_v1() {
-    let base = box_api_base("http://127.0.0.1:12345/v1", "claude/some-model", "");
-    assert_eq!(base, "http://127.0.0.1:12345");
-}
-
-#[test]
-fn box_api_base_openai_compat_lane_keeps_v1() {
-    let base = box_api_base(
-        "http://127.0.0.1:12345/v1",
-        "deepseek/deepseek-v4-flash",
-        "",
-    );
-    assert_eq!(
-        base, "http://127.0.0.1:12345/v1",
-        "HttpCompat lane 盒内 base 必须带 /v1（provider 拼 /chat/completions）"
-    );
-}
-
-#[test]
-fn box_api_base_bare_name_keeps_v1() {
-    // 裸名默认 HttpCompat（Request B 根修语义）→ /v1 保留。
-    let base = box_api_base("http://127.0.0.1:12345/v1", "glm-5.3-flash", "");
+fn box_api_base_mirrors_v1_path() {
+    let base = box_api_base("http://127.0.0.1:12345", "/v1");
     assert_eq!(base, "http://127.0.0.1:12345/v1");
 }
 
 #[test]
-fn box_api_base_explicit_protocol_anthropic_drops_v1() {
-    // 显式 protocol 优先于前缀推断（LLM 协议选择器语义）：裸名 + anthropic。
-    let base = box_api_base("http://127.0.0.1:12345/v1", "glm-5.3-flash", "anthropic");
+fn box_api_base_zhipu_v4_preset_mirror() {
+    // BUG-20261106-027 主案例：Zhipu 预设 base 不以 /v1 结尾——旧 lane
+    // 感知形态多插 /v1 → /api/paas/v4/v1/chat/completions 404；镜像保真。
+    let base = box_api_base("http://127.0.0.1:12345", "/api/paas/v4");
+    assert_eq!(base, "http://127.0.0.1:12345/api/paas/v4");
+}
+
+#[test]
+fn box_api_base_gemini_v1beta_mirror() {
+    // 同族：/v1beta 后缀（Gemini 预设）也不得被动 /v1。
+    let base = box_api_base("http://127.0.0.1:12345", "/v1beta");
+    assert_eq!(base, "http://127.0.0.1:12345/v1beta");
+}
+
+#[test]
+fn box_api_base_empty_path_bare_root() {
+    // 真实 base 无 path：盒内 base = 代理根，lane 后缀直接落根上。
+    let base = box_api_base("http://127.0.0.1:12345", "");
     assert_eq!(base, "http://127.0.0.1:12345");
 }
 
 #[test]
-fn box_api_base_legacy_openai_prefix_is_codex_drops_v1() {
-    // 旧前缀语义刻意保留：显式 "openai/x" → Codex（拼 /responses）→ base 裸。
-    let base = box_api_base("http://127.0.0.1:12345/v1", "openai/gpt-5.2", "");
-    assert_eq!(base, "http://127.0.0.1:12345");
+fn box_api_base_proxy_base_trailing_slash_normalized() {
+    // 代理根防御性去尾斜杠，避免 `//v1` 双斜杠形态。
+    let base = box_api_base("http://127.0.0.1:12345/", "/v1");
+    assert_eq!(base, "http://127.0.0.1:12345/v1");
+}
+
+#[test]
+fn split_origin_path_splits_authority_from_path() {
+    let (o, p) = split_origin_path("https://api.example.com:8080/v1");
+    assert_eq!(o, "https://api.example.com:8080");
+    assert_eq!(p, "/v1");
+}
+
+#[test]
+fn split_origin_path_no_path() {
+    let (o, p) = split_origin_path("https://api.example.com");
+    assert_eq!(o, "https://api.example.com");
+    assert_eq!(p, "");
+}
+
+#[test]
+fn split_origin_path_deep_path_keeps_trailing_slash() {
+    // 尾斜杠由调用方（real_base_path trim）处理，split 本身保真。
+    let (o, p) = split_origin_path("https://open.bigmodel.cn/api/paas/v4/");
+    assert_eq!(o, "https://open.bigmodel.cn");
+    assert_eq!(p, "/api/paas/v4/");
+}
+
+#[test]
+fn split_origin_path_codex_default_base() {
+    // Codex 默认 base（chatgpt.com/backend-api/codex，无 /v1）同样拆得干净。
+    let (o, p) = split_origin_path("https://chatgpt.com/backend-api/codex");
+    assert_eq!(o, "https://chatgpt.com");
+    assert_eq!(p, "/backend-api/codex");
 }

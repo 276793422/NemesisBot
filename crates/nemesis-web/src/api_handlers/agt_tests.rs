@@ -54,7 +54,7 @@ fn agt_make_state(
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: None,
-        // AppState 双声明（workflow 门控真型 / `Arc<()>` 桩），按 combo 装配
+        // AppState 双声明（workflow 门控真型 / `Arc<>` 桩），按 combo 装配
         // 保证无 workflow feature 也编译。
         #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(
@@ -68,6 +68,7 @@ fn agt_make_state(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -86,9 +87,7 @@ fn agt_unique_sid() -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
 // find_latest_request_summary：顶层非目录项 continue
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_find_latest_skips_nondir_top_level_entries() {
@@ -102,9 +101,7 @@ fn agt_find_latest_skips_nondir_top_level_entries() {
     assert!(got.ends_with("b.md"), "got {got}");
 }
 
-// ---------------------------------------------------------------------------
 // read_log_entries：非法 UTF-8 → 读失败兜底
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_read_log_entries_invalid_utf8_returns_empty() {
@@ -119,9 +116,7 @@ fn agt_read_log_entries_invalid_utf8_returns_empty() {
     assert!(read_log_entries(p.to_str().unwrap(), 5).is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // /api/internal：shutdown 发送失败 → 500
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_internal_shutdown_send_fail_maps_to_500() {
@@ -142,9 +137,7 @@ async fn agt_internal_shutdown_send_fail_maps_to_500() {
     assert_eq!(body.0["error"], "send failed", "{}", body.0);
 }
 
-// ---------------------------------------------------------------------------
 // resolve_fork_store：活 agent 店分支
-// ---------------------------------------------------------------------------
 
 /// 哑 Provider：只供 AgentLoop 构造，任何调用都是测试缺陷。
 struct AgtNoopProvider;
@@ -187,9 +180,7 @@ async fn agt_resolve_fork_store_prefers_live_agent_store() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // fork：非空但零 user 轮次 → 500 诚实上抛
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_fork_assistant_only_log_maps_to_500() {

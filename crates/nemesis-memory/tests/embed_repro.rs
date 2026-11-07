@@ -18,7 +18,7 @@ use nemesis_memory::vector::{cosine_similarity, new_embedding_func};
 const PLUGIN: &str = r"C:\AI\NemesisBot\NemesisBot_Rust\bin\bin_windows\plugins\plugin_onnx.dll";
 const CONFIG_DIR: &str =
     r"C:\AI\NemesisBot\NemesisBot_Rust\bin\bin_windows\.nemesisbot\workspace\config";
-/// 用户当轮的真实提问（request_logs/2026-08-29_00-16-40_8af0/00.request.md）。
+/// 用户当轮的真实提问（request_logs/-29_00-16-40_8af0/00.request.md）。
 const QUERY: &str = "我记得周六下午我要做点事情，但是我忘了是啥了";
 /// 用户手动添加的记忆条目（vector_store.jsonl 中 00:16:14 那条）。
 const ENTRY: &str = "周六下午20点，要直播AI写驱动。";
@@ -59,7 +59,7 @@ fn deploy_env_embed_and_similarity() {
 ///
 /// 注意：不走 `with_config_dir`——它探测的是「测试进程 exe 旁」的 plugins/，
 /// 且探测失败会把 config.enhanced_memory.json 的 enabled 静默写回 false
-/// （2026-08-29 实测踩坑）。这里手工初始化，等价且无副作用。
+/// （实测踩坑）。这里手工初始化，等价且无副作用。
 #[test]
 #[ignore]
 fn deploy_env_manager_search_auto_inject_end_to_end() {

@@ -1,4 +1,4 @@
-//! N2 (devtool-upgrade 阶段 4)：`agents.small_model` 小模型杂务通道测试。
+//! (devtool-upgrade)：`agents.small_model` 小模型杂务通道测试。
 //! - `resolve_summary_provider`：未配置 → 主模型；已配置 → 小模型
 //!   （provider 与模型名绑在同一槽位换，杜绝两者失配）。
 //! - `compact_session` 端到端：摘要 LLM 调用落到小模型 provider，主模型零调用。
@@ -214,7 +214,7 @@ async fn force_compression_opts_false_explicitly_uses_main() {
     assert!(small_log.models().is_empty());
 }
 
-// ---------- chore_completion（E4 杂务文本补全单一入口） ----------
+// ---------- chore_completion（杂务文本补全单一入口） ----------
 
 #[tokio::test]
 async fn chore_completion_routes_to_small_model_when_configured() {

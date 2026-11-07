@@ -108,7 +108,7 @@ fn cosine_similarity_large_vectors_do_not_overflow_to_nan() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：引擎构造分支 + FFI 结构甄别
+// 覆盖率冲刺：引擎构造分支 + FFI 结构甄别
 // 无 DLL 时 sherpa_fn 包装器在符号查找处 panic "sherpa-onnx not initialized"
 // ——should_panic 测试正好覆盖 #[repr(C)] 结构构造后到 FFI 调用之间的代码。
 // ===========================================================================
@@ -147,7 +147,7 @@ fn speaker_manager_new_panics_at_symbol_lookup() {
 }
 
 // ===========================================================================
-// R6（2026-08-27）：白盒 null 指针 → embed / manager 各方法的封送路径
+// 白盒 null 指针 → embed / manager 各方法的封送路径
 // （走到 FFI 符号查找处 panic）。剩余不可达 = FFI 成功返回值语义（真 DLL）。
 // 注意：两个引擎的 Drop 同样在 null 上 panic——持有 null 实例的测试一律
 // `mem::forget` 收尾；方法 panic 用 `catch_panic_msg` 截住展开（should_panic
@@ -258,4 +258,25 @@ fn speaker_engine_drop_null_panics_at_destroy() {
 #[should_panic(expected = "sherpa-onnx not initialized")]
 fn speaker_manager_drop_null_panics_at_destroy() {
     let _ = null_speaker_manager();
+}
+
+// ===========================================================================
+// BUG-20261106-020：名字含内嵌 NUL（JSON "\u0000" 合法、WSAPI speaker 命令
+// 原样透传）→ CString::new 失败。此前 .unwrap() panic 且发生在调用方持
+// std Mutex 上下文（web handler 持 speaker_manager_state）→ 锁毒化 → 语音
+// 子系统进程内瘫痪。修复：FFI 之前诚实 false。null manager 下若误入 FFI
+// 会 panic "sherpa-onnx not initialized"——本测试同时锁「不 panic」与
+// 「不进 FFI」两件事。
+// ===========================================================================
+
+#[test]
+fn speaker_manager_nul_name_returns_false_before_ffi() {
+    let mut m = null_speaker_manager();
+    assert!(!m.register("a\0b", &[0.1; 192]));
+    assert!(!m.register_multi("a\0b", &[vec![0.1; 192]]));
+    assert!(!m.remove("a\0b"));
+    assert!(!m.verify("a\0b", &[0.1; 192], 0.7));
+    // 空 embeddings + NUL 名：早退在前，同样 false 不 panic
+    assert!(!m.register_multi("a\0b", &[]));
+    std::mem::forget(m);
 }

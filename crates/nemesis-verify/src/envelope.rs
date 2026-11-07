@@ -1,16 +1,16 @@
 //! Envelope v4（Authenticode 对齐）：CMS SignedData 签名块 + v4 locator footer。
 //!
-//! # v4 CMS 层（S2-1 起，本文件上半段）
+//! # v4 CMS 层（起，本文件上半段）
 //! 签名载荷 = **CMS SignedData**（PKCS#7，Authenticode 形态，微软工具可解析）：
 //! - eContentType = SPC_INDIRECT_DATA_OBJID，eContent = `[0]` 直接包
 //!   SpcIndirectDataContent SEQUENCE（**无 OCTET STRING 包装**，MS 对 RFC 5652 的知名偏离）
 //! - SpcIndirectDataContent = `{ data SpcAttributeTypeAndOptionalValue, messageDigest DigestInfo }`
 //!   （data 在前；data.value = SpcPeImageData；DigestInfo.digestAlgorithm 带 NULL parameters）
 //! - SignerInfo 认证属性：contentType / messageDigest / signingTime / SPC_SP_OPUS_INFO
-//! - SignedData.version 钉 **V1**（Authenticode 约定）；证书集**含全部三级证书（含根）**
-//!   （S0-4 实证：缺根 → Windows 链引擎报 CERT_E_CHAINING 而非 UNTRUSTEDROOT；嵌入根≠信任根）
-//! - 构造经 `cms` crate builder（S0-6 选型）+ 类型化后处理（V1 改写，version 不在签名覆盖面）
-//! - 载体：PE → Certificate Table（归 S3）；ELF/raw → locator footer v4（S2-3，见下）
+//! - SignedData.version 钉 ****（Authenticode 约定）；证书集**含全部三级证书（含根）**
+//!   （实证：缺根 → Windows 链引擎报 CERT_E_CHAINING 而非 UNTRUSTEDROOT；嵌入根≠信任根）
+//! - 构造经 `cms` crate builder（选型）+ 类型化后处理（改写，version 不在签名覆盖面）
+//! - 载体：PE → Certificate Table（归）；ELF/raw → locator footer v4（见下）
 //!
 //! ## v4 FOOTER（ELF/raw 载体，明文 64B，文件/overlay 末尾）
 //! 布局 `[ 原内容 ][ CMS ContentInfo DER ][ v4 footer ]`（无对齐要求；
@@ -18,21 +18,21 @@
 //!
 //! | 偏移 | 长度 | 字段 |
 //! |------|------|------|
-//! | 0  | 8  | magic `NMBSIG\x04\x00` |
-//! | 8  | 1  | format_ver（=4）|
-//! | 9  | 1  | sig_algo（2=ecdsa-p256）|
-//! | 10 | 1  | format_tag（2=ELF / 3=Raw；1=PE 走 Certificate Table 不用 footer）|
-//! | 11 | 1  | reserved（0）|
-//! | 12 | 4  | reserved（0）|
-//! | 16 | 8  | content_len（被保护原始内容长度，u64 LE）|
-//! | 24 | 8  | cms_off（CMS DER 文件内绝对偏移，u64 LE）|
-//! | 32 | 4  | cms_len（CMS DER 长度，u32 LE）|
-//! | 36 | 4  | footer_crc32（footer\[0..36\] 校验，LE）|
+//! | 0 | 8 | magic `NMBSIG\x04\x00` |
+//! | 8 | 1 | format_ver（=4）|
+//! | 9 | 1 | sig_algo（2=ecdsa-p256）|
+//! | 10 | 1 | format_tag（2=ELF / 3=Raw；1=PE 走 Certificate Table 不用 footer）|
+//! | 11 | 1 | reserved（0）|
+//! | 12 | 4 | reserved（0）|
+//! | 16 | 8 | content_len（被保护原始内容长度，u64 LE）|
+//! | 24 | 8 | cms_off（CMS DER 文件内绝对偏移，u64 LE）|
+//! | 32 | 4 | cms_len（CMS DER 长度，u32 LE）|
+//! | 36 | 4 | footer_crc32（footer\[0..36\] 校验，LE）|
 //! | 40 | 24 | reserved（0）|
 //!
-//! # 历史（v3 NMBSIG，S5-3 已删除）
+//! # 历史（v3 NMBSIG， 已删除）
 //! v3 envelope（Ed25519→P-256 时代的 footer+body 自定义布局）随最后一个生产
-//! 消费方迁移整体退役（S5-3）：v4 管线对 v3 签名文件 = NoSignature（S4-1 破坏性
+//! 消费方迁移整体退役：v4 管线对 v3 签名文件 = NoSignature（破坏性
 //! 声明），v3 形态只剩测试里的 footer 字节字面量（破坏性钉死用）。footer 定位
 //! 机制（magic 末尾扫描 + overlay 下界 + 排除区）由 v4 [`find_footer_v4`] 延续。
 
@@ -84,8 +84,8 @@ fn rd_u64(b: &[u8], off: usize) -> u64 {
 }
 
 // ============================================================================
-// v4 CMS SignedData 层（S2-1，Authenticode 形态；S0-6 选型 = cms crate builder
-// + 类型化后处理。载荷假设全部经 S0-6 spike 实证，见 goal §七 S0-6 五条结论）
+// v4 CMS SignedData 层（Authenticode 形态； 选型 = cms crate builder
+// + 类型化后处理。载荷假设全部经 spike 实证，见 goal §七 五条结论）
 // ============================================================================
 
 use cms::builder::{SignedDataBuilder, SignerInfoBuilder};
@@ -132,42 +132,42 @@ pub const OID_ATTR_SIGNING_TIME: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.5");
 /// SPC_NESTED_SIGNATURE（SignerInfo **无认证**属性：嵌套完整签名 ContentInfo）。
 ///
-/// 追加多签名的微软真实载体——2026-09-12 signtool `/as` 双签名对照实验实证
+/// 追加多签名的微软真实载体—— signtool `/as` 双签名对照实验实证
 /// （spike dual1.exe asn1parse）：signtool 双签名 = **单** WIN_CERTIFICATE 条目
 /// 单 CMS，第二个签名以本属性挂在主 SignerInfo 的 unauthenticatedAttributes
 /// （属性值 = SET { 完整嵌套 ContentInfo DER }），signtool verify 的
 /// 「Signature Index」从属性树枚举；**多 WIN_CERTIFICATE 条目形态 Windows
-/// 主签名枚举不可见，v4 否决**（原 S3-3 多条目方案因此推翻）。
+/// 主签名枚举不可见，v4 否决**（原 多条目方案因此推翻）。
 pub const OID_SPC_NESTED_SIGNATURE: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.4.1.311.2.4.1");
 
-/// SpcIndirectDataContent ::= SEQUENCE { data SpcAttributeTypeAndOptionalValue,
-/// messageDigest DigestInfo }——真 MS 形态（[MS-OSHARED] §2.1.3 + osslsig.der 实测；
-/// S0-6 推翻「DigestInfo 在前」的初版假设）。
+/// SpcIndirectDataContent:= SEQUENCE { data SpcAttributeTypeAndOptionalValue,
+/// messageDigest DigestInfo }——真 MS 形态（[MS-OSHARED] + osslsig.der 实测；
+/// 推翻「DigestInfo 在前」的初版假设）。
 #[derive(Sequence)]
 pub struct SpcIndirectDataContent<'a> {
     pub data: SpcAttributeTypeAndOptionalValue,
     pub message_digest: DigestInfo<'a>,
 }
 
-/// SpcAttributeTypeAndOptionalValue ::= SEQUENCE { type OID, value ANY DEFINED BY type }。
+/// SpcAttributeTypeAndOptionalValue:= SEQUENCE { type OID, value ANY DEFINED BY type }。
 /// value 不加 `#[asn1(type=...)]`：der_derive 0.7 非 optional type-attr 字段按值 binding
-/// 会撞 E0308（S0-6 坑位 5a），Any 字段经 from_der 显式装入。
+/// 会撞 （坑位 5a），Any 字段经 from_der 显式装入。
 #[derive(Sequence)]
 pub struct SpcAttributeTypeAndOptionalValue {
     pub type_: ObjectIdentifier,
     pub value: Any,
 }
 
-/// DigestInfo ::= SEQUENCE { digestAlgorithm AlgorithmIdentifier, digest OCTET STRING }。
-/// digestAlgorithm 带 NULL parameters（osslsigncode 形态，S0-6 实证）。
+/// DigestInfo:= SEQUENCE { digestAlgorithm AlgorithmIdentifier, digest OCTET STRING }。
+/// digestAlgorithm 带 NULL parameters（osslsigncode 形态， 实证）。
 #[derive(Sequence)]
 pub struct DigestInfo<'a> {
     pub digest_algorithm: AlgorithmIdentifierOwned,
     pub digest: OctetStringRef<'a>,
 }
 
-/// SpcPeImageData ::= SEQUENCE { flags BIT STRING, file [0] EXPLICIT SpcLink OPTIONAL }。
+/// SpcPeImageData:= SEQUENCE { flags BIT STRING, file [0] EXPLICIT SpcLink OPTIONAL }。
 /// flags = `03 02 07 80`（bit0 置位，osslsig.der 逐字节一致）；file = "<<<Obsolete>>>"。
 #[derive(Sequence)]
 pub struct SpcPeImageData<'a> {
@@ -177,7 +177,7 @@ pub struct SpcPeImageData<'a> {
     pub file: Option<SpcLink>,
 }
 
-/// SpcLink ::= CHOICE { url [0] IMPLICIT IA5String, moniker [1], file [2] EXPLICIT SpcString }。
+/// SpcLink:= CHOICE { url [0] IMPLICIT IA5String, moniker [1], file [2] EXPLICIT SpcString }。
 #[derive(Choice)]
 pub enum SpcLink {
     #[asn1(context_specific = "0", tag_mode = "IMPLICIT", type = "IA5String")]
@@ -186,7 +186,7 @@ pub enum SpcLink {
     File(SpcString),
 }
 
-/// SpcString ::= CHOICE { unicode [0] IMPLICIT BMPString, ascii [1] IMPLICIT IA5String }。
+/// SpcString:= CHOICE { unicode [0] IMPLICIT BMPString, ascii [1] IMPLICIT IA5String }。
 #[derive(Choice)]
 pub enum SpcString {
     #[asn1(context_specific = "0", tag_mode = "IMPLICIT")]
@@ -195,7 +195,7 @@ pub enum SpcString {
     Ascii(Ia5String),
 }
 
-/// SpcSpOpusInfo ::= SEQUENCE { programName [0] EXPLICIT SpcString OPTIONAL,
+/// SpcSpOpusInfo:= SEQUENCE { programName [0] EXPLICIT SpcString OPTIONAL,
 /// moreInfo [1] EXPLICIT SpcLink OPTIONAL }（osslsigncode 形态：ascii 名 + url）。
 #[derive(Sequence)]
 pub struct SpcSpOpusInfo {
@@ -214,16 +214,16 @@ pub fn sha256_algorithm() -> Result<AlgorithmIdentifierOwned> {
 }
 
 /// 构造 SpcIndirectDataContent DER（eContent 载荷；digest = PE byte-range 摘要，
-/// S3-1 前 Raw 场景用整内容 SHA-256。opus 信息不属于此结构——它是 SignerInfo 认证属性）。
+/// 前 Raw 场景用整内容 SHA-256。opus 信息不属于此结构——它是 SignerInfo 认证属性）。
 ///
 /// file 链接字段**手工编码**（osslsigncode 产物逐字节形态）：
-/// `30 26 | 03 02 07 80 | A0 20 | A2 1E | 80 1C | <28B BMP UTF-16BE "<<<Obsolete>>>">`
+/// `30 26 | 03 02 07 80 | 20 | 1E | 80 1C | <28B BMP UTF-16BE "<<<Obsolete>>>">`
 /// 即 SpcPeImageData { flags, file [0] EXPLICIT { [2] CONSTRUCTED { [0] BMP } } }。
 /// 不能走 [`SpcLink::File`] der_derive 编码：Choice 型 variant 上的
 /// `tag_mode="EXPLICIT"` 被 der_derive 按 IMPLICIT 式标签替换处理
 /// （选中 tag `0x80`｜`0x02` = `0x82`，丢 constructed 位）→ 非法 ASN.1；
 /// Windows 解码 SpcIndirectData 中断 → 文件摘要比对失败报 HashMismatch
-/// （S3-2 对照实验实证：我方产物与 osslsigncode 产物仅差 0x82/0xA2 一字节）。
+/// （对照实验实证：我方产物与 osslsigncode 产物仅差 0x82/0xA2 一字节）。
 /// 各段长度均 < 128，单字节长度形式。
 pub fn build_spc_indirect_data(content_digest: &[u8; 32]) -> Result<Vec<u8>> {
     const OBSOLETE_NAME: &str = "<<<Obsolete>>>";
@@ -232,11 +232,11 @@ pub fn build_spc_indirect_data(content_digest: &[u8; 32]) -> Result<Vec<u8>> {
         bmp.extend_from_slice(&u.to_be_bytes());
     }
     debug_assert_eq!(bmp.len(), 28);
-    // SpcLink 层：A2 1E { 80 1C <BMP> }（[2] constructed { [0] IMPLICIT BMPString }）
+    // SpcLink 层： 1E { 80 1C <BMP> }（[2] constructed { [0] IMPLICIT BMPString }）
     let mut link = Vec::with_capacity(4 + bmp.len());
     link.extend_from_slice(&[0xA2, (bmp.len() + 2) as u8, 0x80, bmp.len() as u8]);
     link.extend_from_slice(&bmp);
-    // file [0] EXPLICIT：A0 len { link }
+    // file [0] EXPLICIT： len { link }
     let mut file_field = Vec::with_capacity(2 + link.len());
     file_field.extend_from_slice(&[0xA0, link.len() as u8]);
     file_field.extend_from_slice(&link);
@@ -273,13 +273,13 @@ fn signing_time_attribute(signed_at: u64) -> Result<Attribute> {
 
 /// 构造 Authenticode 形态 CMS SignedData，返回完整 ContentInfo DER。
 ///
-/// - `content_digest`：被签内容摘要（S3-1 起 = PE byte-range digest；过渡期 Raw = 整内容 SHA-256）
-/// - `certs`：证书链（**必须含全部三级含根**，leaf 在前——S0-4 实证约束；
+/// - `content_digest`：被签内容摘要（起 = PE byte-range digest；过渡期 Raw = 整内容 SHA-256）
+/// - `certs`：证书链（**必须含全部三级含根**，leaf 在前—— 实证约束；
 ///   签名者取 certs[0]）
 /// - `program_name` / `more_info_url`：SPC_SP_OPUS_INFO 字段（两者全 None 时省略该属性）
 ///
-/// MS 载荷形态（S0-6 实证）：eContent `[0]` 直接包 SEQUENCE；SignedData.version 钉 V1
-/// （cms builder 按 RFC 5652 强制 V3，构造后类型化改写；version 不在签名覆盖面）。
+/// MS 载荷形态（实证）：eContent `[0]` 直接包 SEQUENCE；SignedData.version 钉
+/// （cms builder 按 RFC 5652 强制，构造后类型化改写；version 不在签名覆盖面）。
 pub fn build_signed_data(
     content_digest: &[u8; 32],
     sk: &SigningKey,
@@ -307,7 +307,7 @@ pub fn build_signed_data(
         sdb.add_certificate(CertificateChoices::Certificate(c.parsed()?))
             .map_err(cms_err)?;
     }
-    // Authenticode 要求 sid = IssuerAndSerialNumber（非 SubjectKeyIdentifier，S0-6 实证）
+    // Authenticode 要求 sid = IssuerAndSerialNumber（非 SubjectKeyIdentifier， 实证）
     let leaf_x509 = leaf.parsed()?;
     let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
         issuer: leaf_x509.tbs_certificate.issuer.clone(),
@@ -318,12 +318,12 @@ pub fn build_signed_data(
         .map_err(|e| anyhow!("cms signer info builder: {:?}", e))?;
     // messageDigest / contentType 由 builder finalize 自动补齐；signingTime +
     // statementType + opus 手动加。statementType：signtool / osslsigncode 默认都带；
-    // S3-2 对照实验实证缺失时 Windows 报 HashMismatch（同证书同钥匙，ossl builder
+    // 对照实验实证缺失时 Windows 报 HashMismatch（同证书同钥匙，ossl builder
     // 产物通过、我方 builder 唯一结构性差异即此属性）。
     sib.add_signed_attribute(signing_time_attribute(signed_at)?)
         .map_err(cms_err)?;
     {
-        // SpcStatementType ::= SEQUENCE { OID MS_INDIVIDUAL_CODE_SIGNING }
+        // SpcStatementType:= SEQUENCE { OID MS_INDIVIDUAL_CODE_SIGNING }
         //（值 = 单元素 SEQUENCE 包 OID，osslsigncode 产物逐字节同形态）
         let oid_b = OID_SPC_INDIVIDUAL_CODE_SIGNING.as_bytes();
         let mut stmt_der = vec![0x30, (oid_b.len() + 2) as u8, 0x06, oid_b.len() as u8];
@@ -357,13 +357,13 @@ pub fn build_signed_data(
         })
         .map_err(cms_err)?;
     }
-    // cms 的 SignatureBitStringEncoding 挂在 ecdsa::der::Signature（DER 包装类型）
-    // 上，非根 ecdsa::Signature（S0-6 坑位 5b）
+    // cms 的 SignatureBitStringEncoding 挂在 ecdsa::der:Signature（DER 包装类型）
+    // 上，非根 ecdsa::Signature（坑位 5b）
     sdb.add_signer_info::<SigningKey, ecdsa::der::Signature<p256::NistP256>>(sib)
         .map_err(cms_err)?;
 
     let content_info = sdb.build().map_err(cms_err)?;
-    // Authenticode 钉 SignedData.version = V1：parse → set → re-encode（类型化库调用，
+    // Authenticode 钉 SignedData.version =：parse → set → re-encode（类型化库调用，
     // 非字节级手撸；version 不在签名覆盖面内，改写不破签名）
     let mut sd = SignedData::from_der(content_info.content.to_der()?.as_slice())?;
     sd.version = CmsVersion::V1;
@@ -375,18 +375,18 @@ pub fn build_signed_data(
 }
 
 // ---------------------------------------------------------------------------
-// S3-3：嵌套签名层（追加多签名的微软真实形态：SPC_NESTED_SIGNATURE 属性）
+// 嵌套签名层（追加多签名的微软真实形态：SPC_NESTED_SIGNATURE 属性）
 // ---------------------------------------------------------------------------
 
 /// 嵌套展开深度上限（signtool /as 实测一层；防御性上限防构造环）。
 const MAX_NESTED_DEPTH: usize = 8;
 
-/// S3-3：把 `nested_cms`（我方完整 ContentInfo DER）作为 **SPC_NESTED_SIGNATURE
+/// 把 `nested_cms`（我方完整 ContentInfo DER）作为 **SPC_NESTED_SIGNATURE
 /// 无认证属性**挂到 `host_cms`（他方 CMS）主 SignerInfo 的 unauthenticatedAttributes。
 ///
 /// 返回变长后的完整 host ContentInfo DER。核心不变量（测试钉死）：
 /// **主签名字节零变化**——unauthenticatedAttributes 不在签名覆盖面（RFC 5652
-/// §5.4/§5.6：签名只盖 signedAttrs），host 的 signedAttrs/signature 原样保留，
+/// 签名只盖 signedAttrs），host 的 signedAttrs/signature 原样保留，
 /// 主签名验签结果不变。类型化 round-trip（parse → 改 → re-encode）对 DER
 /// 规范形字节等价，唯一新增 = unauthAttrs 一条属性。
 ///
@@ -432,10 +432,10 @@ pub fn append_nested_signature(host_cms: &[u8], nested_cms: &[u8]) -> Result<Vec
     .to_der()?)
 }
 
-/// S3-3：枚举一份 CMS 里的全部签名 = 主签名 + 递归展开 SPC_NESTED_SIGNATURE
+/// 枚举一份 CMS 里的全部签名 = 主签名 + 递归展开 SPC_NESTED_SIGNATURE
 /// 嵌套链（先序：signtool「Signature Index」同序——Index 0 = 主签名）。
 ///
-/// S4-1 verify 管线的枚举原语（逐个签名验链/digest，按根锚定位自方）；
+/// verify 管线的枚举原语（逐个签名验链/digest，按根锚定位自方）；
 /// 单签名 CMS → `[cms]`。解析失败的嵌套体诚实报错（不静默吞）。
 pub fn enumerate_signatures(cms: &[u8]) -> Result<Vec<Vec<u8>>> {
     enumerate_signatures_inner(cms, 0)
@@ -477,14 +477,14 @@ fn nested_signature_children(cms: &[u8]) -> Result<Vec<Vec<u8>>> {
     Ok(out)
 }
 
-/// S3-3：已签名文件策略入口（三态）——未签名首签 / 自方旧签名替换 / 他方签名
+/// 已签名文件策略入口（三态）——未签名首签 / 自方旧签名替换 / 他方签名
 /// 嵌套共存。`our_cms` 须以**当前 `pe_bytes` 的 Authenticode digest** 构造
-/// （S3-1 [`crate::pe::authenticode_digest`]；表/嵌套操作不动内容区 → 三态
+/// （[`crate::pe:authenticode_digest`]；表/嵌套操作不动内容区 → 三态
 /// 之下 digest 恒定）。`root_anchor_fp` = 我方根证书 SHA-256 指纹（定位自方）。
 ///
-/// 判定（读证书表 [`crate::pe::read_certificate_entries`]）：
-/// - 无条目 → 未签名 → [`crate::pe::append_certificate_table`] 首签；
-/// - 全部条目皆自方（证书集含根锚）→ 剥表重签（[`crate::pe::replace_certificate_table`]，
+/// 判定（读证书表 [`crate::pe:read_certificate_entries`]）：
+/// - 无条目 → 未签名 → [`crate::pe:append_certificate_table`] 首签；
+/// - 全部条目皆自方（证书集含根锚）→ 剥表重签（[`crate::pe:replace_certificate_table`]，
 ///   旧自方签名整体消失）；
 /// - 存在他方条目（且无自方条目）→ 主条目（首条目，Windows primary）挂我方
 ///   嵌套（[`append_nested_signature`]）+ 表重写——他方签名字节不变，我方签名
@@ -534,36 +534,36 @@ pub fn resign_pe_file(
 }
 
 // ---------------------------------------------------------------------------
-// S2-2：SignedData 解析（verify/view 的消费面；S4-1 接线到九态管线）
+// SignedData 解析（verify/view 的消费面； 接线到九态管线）
 // ---------------------------------------------------------------------------
 
-/// 结构坏（DER 形态 / OID 不符 / 自洽校验失败）——S4 映射 `VerifyOutcome::Malformed`。
+/// 结构坏（DER 形态 / OID 不符 / 自洽校验失败）—— 映射 `VerifyOutcome::Malformed`。
 fn malformed(msg: impl std::fmt::Display) -> anyhow::Error {
     anyhow!("malformed SignedData: {msg}")
 }
 
-/// 结构合法但本实现不接受的版本/套件——S4 映射 `VerifyOutcome::UnsupportedVersion`。
+/// 结构合法但本实现不接受的版本/套件—— 映射 `VerifyOutcome::UnsupportedVersion`。
 fn unsupported(msg: impl std::fmt::Display) -> anyhow::Error {
     anyhow!("unsupported SignedData: {msg}")
 }
 
-/// 解析后的 CMS 签名（结构 + 自洽信息；**不含任何信任判断**——链/EKU/根锚/吊销归 S4 管线）。
+/// 解析后的 CMS 签名（结构 + 自洽信息；**不含任何信任判断**——链/EKU/根锚/吊销归 管线）。
 #[derive(Debug)]
 pub struct ParsedSignature {
-    /// SpcIndirectDataContent.message_digest.digest（S4 与重算的 byte-range digest 比对，
+    /// SpcIndirectDataContent.message_digest.digest（与重算的 byte-range digest 比对，
     /// 不等 → Tampered）。
     pub content_digest: [u8; 32],
     /// data.type（PE = SPC_PE_IMAGE_DATA）。
     pub content_type: ObjectIdentifier,
-    /// 证书集（leaf 在前、含根——S0-4 约束；解析只要求非空可解析，含根检查归链验证）。
+    /// 证书集（leaf 在前、含根—— 约束；解析只要求非空可解析，含根检查归链验证）。
     pub certs: Vec<crate::cert::Certificate>,
-    /// 签名者序列号（SerialNumber 原始整数字节，S4 与 leaf 证书比对定位签名者）。
+    /// 签名者序列号（SerialNumber 原始整数字节， 与 leaf 证书比对定位签名者）。
     pub signer_serial: Vec<u8>,
     /// 签名者 issuer（Name DER，同上）。
     pub signer_issuer_der: Vec<u8>,
-    /// 验签消息 = signedAttrs 的 SET OF（0x31）DER（RFC 5652 §5.4 口径，S2-1 实测）。
+    /// 验签消息 = signedAttrs 的 SET OF（0x31）DER（RFC 5652 口径， 实测）。
     pub signature_message: Vec<u8>,
-    /// SignerInfo.signature（DER ECDSA 包装，S4 解为 `ecdsa::der::Signature` 后验签）。
+    /// SignerInfo.signature（DER ECDSA 包装， 解为 `ecdsa::der:Signature` 后验签）。
     pub signature: Vec<u8>,
     /// messageDigest 属性值（解析期已核对 == SHA256(eContent 内容体)，自洽）。
     pub message_digest: [u8; 32],
@@ -578,7 +578,7 @@ pub struct ParsedSignature {
 ///
 /// 结构级诚实失败：
 /// - 外层 DER 坏 / contentType 非 signedData / SignedData DER 坏 → Malformed
-/// - version != V1（Authenticode 钉死）→ Unsupported
+/// - version != （Authenticode 钉死）→ Unsupported
 /// - eContentType 非 SPC_INDIRECT_DATA / eContent 缺失 / SPC 载荷坏 / 内容摘要
 ///   算法非 SHA-256 → Malformed 或 Unsupported
 /// - 证书集缺失 / signerInfos 数 != 1 / sid 非 IssuerAndSerialNumber /
@@ -624,7 +624,7 @@ pub fn parse_signed_data(der: &[u8]) -> Result<ParsedSignature> {
     }
     content_digest.copy_from_slice(spc.message_digest.digest.as_bytes());
 
-    // 证书集：必须存在且逐张可解析（嵌入≠信任；含根约束在 S4 链验证层）
+    // 证书集：必须存在且逐张可解析（嵌入≠信任；含根约束在 链验证层）
     let cert_set = sd
         .certificates
         .as_ref()
@@ -640,7 +640,7 @@ pub fn parse_signed_data(der: &[u8]) -> Result<ParsedSignature> {
         }
     }
 
-    // signerInfos：恰一个；sid = IssuerAndSerialNumber（Authenticode 要求，S0-6 实证）
+    // signerInfos：恰一个；sid = IssuerAndSerialNumber（Authenticode 要求， 实证）
     let sis = sd.signer_infos.0.as_slice();
     if sis.len() != 1 {
         return Err(malformed(format!(
@@ -661,8 +661,8 @@ pub fn parse_signed_data(der: &[u8]) -> Result<ParsedSignature> {
     // signature_algorithm = 组合签名套件。接受两个 OID：
     // - ecdsa-with-SHA256（RFC 5758 标准，osslsigncode 所写）；
     // - id-ecPublicKey（signtool 对 ECDSA 证书的现实怪癖：复用证书 SPKI 的
-    //   算法标识符，Windows 原样接受——S3-1 参照交叉验证实证）。
-    // 曲线归属在 S4 验签时由签名者证书 SPKI 决定，此处不重复判断。
+    //   算法标识符，Windows 原样接受—— 参照交叉验证实证）。
+    // 曲线归属在 验签时由签名者证书 SPKI 决定，此处不重复判断。
     if si.digest_alg.oid != OID_SHA256 {
         return Err(unsupported("SignerInfo 摘要算法非 SHA-256"));
     }
@@ -717,7 +717,7 @@ pub fn parse_signed_data(der: &[u8]) -> Result<ParsedSignature> {
         }
     }
     let message_digest = message_digest.ok_or_else(|| malformed("messageDigest 属性缺席"))?;
-    // 自洽闸：messageDigest == SHA256(eContent 内容体)（MS 口径，S0-6 实测命中）
+    // 自洽闸：messageDigest == SHA256(eContent 内容体)（MS 口径， 实测命中）
     {
         use sha2::Digest;
         let expect: [u8; 32] = sha2::Sha256::digest(econtent.value()).into();
@@ -728,7 +728,7 @@ pub fn parse_signed_data(der: &[u8]) -> Result<ParsedSignature> {
         }
     }
 
-    // 签名必须可按 DER ECDSA 解析（早期诚实失败；密码学验签归 S4）
+    // 签名必须可按 DER ECDSA 解析（早期诚实失败；密码学验签归）
     if <ecdsa::der::Signature<p256::NistP256>>::try_from(si.signature.as_bytes()).is_err() {
         return Err(malformed("signature 非 DER ECDSA 形态"));
     }
@@ -765,7 +765,7 @@ fn spc_link_to_string(l: SpcLink) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// S2-3：v4 locator footer（ELF/raw 载体；PE 走 Certificate Table 归 S3）
+// v4 locator footer（ELF/raw 载体；PE 走 Certificate Table 归）
 // ---------------------------------------------------------------------------
 
 /// envelope 末尾 magic（8B，v4）。
@@ -854,7 +854,7 @@ pub fn parse_footer_v4(bytes: &[u8; FOOTER_LEN]) -> Result<ParsedFooterV4> {
 
 /// 从文件末尾往前扫描，定位最近的 v4 footer（返回 footer 偏移）。
 ///
-/// 只认 v4 magic；`overlay_start`：ELF 为 L（overlay 起点，之下不可见），Raw 传 0；
+/// 只认 v4 magic；`overlay_start`：ELF 为 L（overlay 起点，之下不可），Raw 传 0；
 /// `excludes` 区间内的命中跳过（排除区——如 PE 证书表域）。
 pub fn find_footer_v4(
     bytes: &[u8],
@@ -883,7 +883,7 @@ pub fn find_footer_v4(
 
 /// ELF/raw 载体装配：`[ 原内容 ][ CMS ContentInfo DER ][ v4 footer ]`。
 ///
-/// PE 载体不用本函数（Certificate Table，S3-2）。`content_len` = 被保护内容
+/// PE 载体不用本函数（Certificate Table）。`content_len` = 被保护内容
 /// 长度，由调用方按载体契约给定——经 [`sign_carrier_v4`] 接线时：ELF =
 /// codec L（overlay 不入保护域）、Raw = 全文件。
 pub fn attach_v4(bytes: &[u8], cms_der: &[u8], format_tag: u8, content_len: usize) -> Vec<u8> {
@@ -896,16 +896,16 @@ pub fn attach_v4(bytes: &[u8], cms_der: &[u8], format_tag: u8, content_len: usiz
     out
 }
 
-/// S3-4：ELF/raw 载体签名装配（codec 接线单一入口）。
+/// ELF/raw 载体签名装配（codec 接线单一入口）。
 ///
 /// 保护域由 codec 裁决：ELF = `[0, L)`（compute_l；overlay 不入保护域），
 /// Raw = 全文件（compute_l = None）。format_tag 按魔数
-/// 探测（[`crate::codec::detect_format`]），不接受调用方指定；PE 魔数输入
-/// 诚实拒绝——PE 载体走 Certificate Table 路径（S3-2/S3-3），footer 形态
+/// 探测（[`crate::codec:detect_format`]），不接受调用方指定；PE 魔数输入
+/// 诚实拒绝——PE 载体走 Certificate Table 路径，footer 形态
 /// 不产双重载体。
 ///
-/// CMS 的 content_digest 由调用方按同一保护域预计算（[`crate::pe::authenticode_digest`]
-/// 对应 PE；此处对应 [`crate::codec::ExecutableCodec::content_hash`]），
+/// CMS 的 content_digest 由调用方按同一保护域预计算（[`crate::pe:authenticode_digest`]
+/// 对应 PE；此处对应 [`crate::codec:ExecutableCodec::content_hash`]），
 /// 本函数只管载体布局与 footer 记账。
 pub fn sign_carrier_v4(bytes: &[u8], cms_der: &[u8]) -> Result<Vec<u8>> {
     let tag = detect_format(bytes);
@@ -916,7 +916,7 @@ pub fn sign_carrier_v4(bytes: &[u8], cms_der: &[u8]) -> Result<Vec<u8>> {
     Ok(attach_v4(bytes, cms_der, tag, content_len))
 }
 
-/// S3-4：v4 载体验证侧提取结果（codec 接线闭环的字段面）。
+/// v4 载体验证侧提取结果（codec 接线闭环的字段面）。
 #[derive(Debug)]
 pub struct V4CarrierVerbatim {
     /// 定位到的 v4 footer 起始偏移。
@@ -927,11 +927,11 @@ pub struct V4CarrierVerbatim {
     pub cms_der: Vec<u8>,
     /// 按载体契约重算的 `[0, content_len)` digest（codec 裁决规则）。
     pub content_digest: [u8; 32],
-    /// 重算 digest == CMS 内嵌 content_digest（结构层闭环；密码学验签归 S4-1）。
+    /// 重算 digest == CMS 内嵌 content_digest（结构层闭环；密码学验签归）。
     pub cms_digest_matches: bool,
 }
 
-/// S3-4：v4 载体验证侧提取（codec 接线）：定位 footer → 提取 → 重算 digest 对齐。
+/// v4 载体验证侧提取（codec 接线）：定位 footer → 提取 → 重算 digest 对齐。
 ///
 /// 交叉校验（诚实失败）：ELF 的 footer content_len 必须 == codec L（保护域 =
 /// 结构区，违约 = 载体被外部改写或畸形）；content_len 超文件长由 content_hash
@@ -968,7 +968,7 @@ pub fn extract_carrier_v4(bytes: &[u8]) -> Result<V4CarrierVerbatim> {
 
 /// 定位校验后的提取：返回 `(content_len, CMS DER 切片)`。
 ///
-/// crafted footer 越界防钳（BUG #22 家族纪律）：
+/// crafted footer 越界防钳（家族纪律）：
 /// cms 区间溢出 / 越过 footer / 空区间 / content_len 压到 CMS 区 → 诚实报错（非 panic）。
 pub fn extract_v4(bytes: &[u8], footer_offset: usize) -> Result<(usize, &[u8])> {
     let fend = footer_offset

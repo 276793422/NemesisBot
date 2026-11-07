@@ -1,9 +1,9 @@
-//! 语音 realtime 热态 + TTS 接力注册（realtime P1 G3/G6）
+//! 语音 realtime 热态 + TTS 接力注册（realtime）
 //!
 //! **无条件编译**（不挂 `voice` feature、不挂平台 cfg）：`server.rs` 的出站
 //! 广播路径每帧都查热态，热态默认全 false = 逐字节现状。真实现（TTS 入队、
 //! 打断）在 `handlers/voice.rs`（`voice` feature + Windows）——本模块只持有
-//! 跨进程共享的开关面与注册槽，两侢单一真相源。
+//! 跨进程共享的开关面与注册槽，两侢统一定义。
 //!
 //! 生命周期：gateway 启动时 [`init_realtime_hot`] 从 `config.chat.json` 的
 //! `realtime` 段装载；运行期 `voice.chat_config_set` 写盘后同步 apply（热生
@@ -18,7 +18,7 @@ pub const CHAT_CONFIG_FILENAME: &str = "config.chat.json";
 pub const DEFAULT_CHAT_CONFIG: &str =
     include_str!("../../../nemesisbot/config/config.chat.default.json");
 
-/// realtime 热态（G6 机制级开关）。全部 AtomicBool：读方（管线循环、出站
+/// realtime 热态（机制级开关）。全部 AtomicBool：读方（管线循环、出站
 /// 广播）无锁热查；写方只有 config 写盘路径。
 #[derive(Debug, Default)]
 pub struct RealtimeHot {
@@ -34,7 +34,7 @@ pub struct RealtimeHot {
     pub barge_in: AtomicBool,
     /// 语音化清洗（spoken_form）：接力播放前把 markdown/代码/链接转口播话术。
     pub spoken_form: AtomicBool,
-    /// 语音对话提示词（L2）：回复倾向口语短句（tier=mini 不注入）。
+    /// 语音对话提示词：回复倾向口语短句（tier=mini 不注入）。
     pub voice_prompt: AtomicBool,
 }
 
@@ -103,9 +103,7 @@ pub fn voice_prompt_flag() -> Arc<AtomicBool> {
         .clone()
 }
 
-// ---------------------------------------------------------------------------
-// TTS 接力注册槽（G3）
-// ---------------------------------------------------------------------------
+// TTS 接力注册槽
 
 /// 对话模式的接力注册：session_key 寻址 + TTS/配置目录 + agent loop 句柄
 /// （barge-in 取消当前轮用；装配失败/非 agent 会话 = None，仅降级取消）。

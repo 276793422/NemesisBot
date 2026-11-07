@@ -1,4 +1,4 @@
-//! F1（2026-09-05）：`chat.set_mode` / `chat.get_mode`（plan/build 双模式）
+//! （2026-09-05）：`chat.set_mode` / `chat.get_mode`（plan/build 双模式）
 //! WSAPI 测试——参数校验（缺 mode / 未知值 Err）、翻转生效、ModeChanged
 //! 事件发布（带 `web:{session_id}` 路由键）。
 
@@ -11,9 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness（与 m5_session_usage_tests 同款）
-// ---------------------------------------------------------------------------
 
 struct NoopProvider;
 
@@ -83,6 +81,7 @@ fn make_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -112,9 +111,7 @@ fn f1_agent_loop() -> (
     (al, rx)
 }
 
-// ---------------------------------------------------------------------------
 // 参数校验
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn set_mode_requires_agent_loop() {
@@ -155,7 +152,7 @@ async fn set_mode_rejects_unknown_value() {
     let dir = tempfile::tempdir().unwrap();
     let (al, _rx) = f1_agent_loop();
     let ctx = make_ctx(&dir, Some(Arc::new(al)));
-    // 未知值回灌错误（不静默落回默认——与 G1 未知档位同一纪律）。
+    // 未知值回灌错误（不静默落回默认——与 未知档位同一纪律）。
     let err = ChatHandler
         .handle_cmd(
             "set_mode",
@@ -170,9 +167,7 @@ async fn set_mode_rejects_unknown_value() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 翻转 + 事件
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn set_mode_flips_and_publishes_routed_event() {

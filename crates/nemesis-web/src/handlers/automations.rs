@@ -1,4 +1,4 @@
-//! Automations（B12，2026-10-18）：**工具事件触发 workflow** 的注册表 + 匹配泵。
+//! Automations（2026-10-18）：**工具事件触发 workflow** 的注册表 + 匹配泵。
 //!
 //! 注册表落 `<workspace>/config/automation_triggers.json`（数组，每条
 //! `{id, pattern, workflow_id, cooldown_secs, enabled, created_at}`）；
@@ -54,9 +54,7 @@ pub struct AutomationTrigger {
     pub created_at: u64,
 }
 
-// ---------------------------------------------------------------------------
 // Registry file + process cache
-// ---------------------------------------------------------------------------
 
 /// 注册表路径（`<workspace>/config/automation_triggers.json`）。
 pub(crate) fn registry_path(workspace: &Path) -> PathBuf {
@@ -110,9 +108,7 @@ pub fn load_and_cache(workspace: &Path) -> Result<usize, String> {
     Ok(n)
 }
 
-// ---------------------------------------------------------------------------
 // Matching core（纯函数，单测面）
-// ---------------------------------------------------------------------------
 
 /// pattern 匹配：`*` 结尾 = 前缀通配（`mcp_*` 命中 `mcp_fetch`、裸 `*` 命中
 /// 一切）；否则精确相等。
@@ -180,9 +176,7 @@ pub(crate) fn select_firing(
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // Event pump（gateway 侧一次性任务）
-// ---------------------------------------------------------------------------
 
 /// 订阅 agent 事件广播的工具事件泵。manager 级一次性任务（不随 agent 重启
 /// 泄）；广播 sender 全部 drop（gateway 收尾）→ `recv()` Closed → 任务退出。
@@ -264,9 +258,7 @@ pub fn spawn_event_pump(
     })
 }
 
-// ---------------------------------------------------------------------------
 // WSAPI handler
-// ---------------------------------------------------------------------------
 
 /// `automations.*` WSAPI（module: "automations"）。
 ///

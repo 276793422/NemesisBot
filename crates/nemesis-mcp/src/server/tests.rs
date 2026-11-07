@@ -248,7 +248,7 @@ fn resource_count_via_list() {
     assert!(resources.is_empty());
 }
 
-// BUG-20261101-286 回归钉：tools/list / resources/list 必须按 name/uri
+// 回归钉：tools/list / resources/list 必须按 name/uri
 // 排序输出——注册表是 HashMap，迭代序是进程随机态，不排序则外部 MCP
 // 客户端每次重启拿到的数组顺序洗牌。
 #[tokio::test]

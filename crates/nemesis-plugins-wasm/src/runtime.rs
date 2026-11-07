@@ -29,7 +29,7 @@ pub(crate) struct CallFrame {
     pub(crate) slug: String,
     pub(crate) kind: PluginKind,
     /// 本插件生效限制表（全局上限 ∧ manifest 收紧；壳侧 store 的
-    /// fuel/内存/帧预算/超时全部取自这里——执行路径的单一真相源）。
+    /// fuel/内存/帧预算/超时全部取自这里——执行路径的统一定义）。
     pub(crate) limits: PluginLimits,
     pub(crate) logs: Arc<PluginLogBuffer>,
     pub(crate) config: Arc<InstanceConfig>,
@@ -42,7 +42,7 @@ pub(crate) struct CallFrame {
     /// unavailable）。授予裁决集中在 registry::build_frame。
     pub(crate) llm: Option<Arc<dyn LlmInvoker>>,
     /// 凭据写回面（仅 Panel 帧授予；None = 未授予恒 unavailable，
-    /// 2026-11-03 自持写通道批）。授予裁决集中在 registry::build_frame。
+    /// 自持写通道批）。授予裁决集中在 registry::build_frame。
     pub(crate) secret_write: Option<Arc<dyn SecretWriter>>,
     /// 实例配置写回面（仅 Panel 帧授予；同上）。
     pub(crate) config_write: Option<Arc<dyn ConfigWriter>>,
@@ -194,7 +194,7 @@ impl PluginRuntime {
             .await
             .map_err(|_| PluginError::Timeout { ms: timeout_ms })?
             .map_err(|e| PluginError::Trap(format!("join: {e}")))?
-        // 已知边界（2026-09-29 交付审查 M3，形态不变）：外层超时返回后
+        // 已知边界（交付审查，形态不变）：外层超时返回后
         // spawn_blocking 闭包继续跑到 guest 自行结束（permit 随闭包释放）
         // ——epoch 闸只约束 wasm 执行，宿主调用（http-egress/tool-invoke）
         // 不受 epoch/fuel 约束，恶意插件可用「帧预算 × 无界宿主调用时长」
@@ -336,7 +336,7 @@ impl PluginRuntime {
     ///
     /// 帧纪律：非观察者帧（guest 动作要经 invoker 走 tool-invoke 全闸）；
     /// llm 只在 build_frame 双闸授予时在场（manifest `x-llm` × 宿主总闸
-    /// `panel_llm_enabled`，2026-11-01 决策 C——授予裁决在供给面单一收口，
+    /// `panel_llm_enabled`， 决策 C——授予裁决在供给面单一收口，
     /// 这里不二次改写；未授予 = None 恒 unavailable）；session key 从入参
     /// 投影抽取（审计 user 字段，策略点同源）。
     pub(crate) async fn call_ui(
@@ -395,8 +395,8 @@ impl PluginRuntime {
     /// 步骤帧会带写通道，绕过「写通道只 panel 帧授予」纪律。v1 边界：
     /// flow-step 帧不开 llm-complete，要 LLM 的编排用 agent_fixloop）；
     /// session key 从入参投影抽取（flow 实例键，审计 user 字段，策略点同源）。
-    /// 幂等/重试防重责任在 guest（拍板 1）：宿主每 tick 重投 run-step，
-    /// 入参带 attempts 计数；运行期无审批卡（拍板 2），闸门全在安装期漏斗。
+    /// 幂等/重试防重责任在 guest：宿主每 tick 重投 run-step，
+    /// 入参带 attempts 计数；运行期无审批卡，闸门全在安装期漏斗。
     pub(crate) async fn call_flow_step(
         &self,
         comp: u64,

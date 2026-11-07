@@ -238,7 +238,7 @@ impl WsApi {
 /// model_list 与 precheck_ai_models 契约探针共用此表。新增场景模型时只改
 /// 这里——config 条目自动跟随，探针自动覆盖。缺此探针时 TestAIServer
 /// 二进制过期（Go 源有新模型、exe 未重建）会让对应场景以 60/120s 纯超时
-/// +「N 项回退」假报告形态失败，误导为产品代码回归（2026-11-02 实录：
+/// +「N 项回退」假报告形态失败，误导为产品代码回归（2026-11-02 案例：
 /// 10-22 旧 exe 缺 L21 断流/chain 模型，3 场景 100%→0%，排查 10 分钟）。
 const REQUIRED_AI_MODELS: &[&str] = &[
     "testai-1.1",
@@ -334,7 +334,7 @@ fn missing_models(served: &[&str]) -> Vec<&'static str> {
         .collect()
 }
 
-/// TestAIServer 契约探针（启动期 fail-fast，2026-11-02 实录闭环）：
+/// TestAIServer 契约探针（启动期 fail-fast，2026-11-02 案例闭环）：
 /// `/v1/models` 必须覆盖 REQUIRED_AI_MODELS 全集。旧二进制缺新模型时
 /// 场景会以 60/120s 纯超时 +「N 项回退」假报告形态失败（误导为产品回归），
 /// 此处在 spawn AI Server 后立即拦截并给出重建指引。

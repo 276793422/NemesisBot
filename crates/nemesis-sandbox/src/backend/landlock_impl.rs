@@ -1,4 +1,4 @@
-//! Linux landlock 自装后端（U11 链条第一档）。
+//! Linux landlock 自装后端（链条第一档）。
 //!
 //! landlock 是非特权进程 LSM：进程对**自身**施加 FS 访问限制，后代进程
 //! 继承，**不可逆**——与 executor 子进程模型天然契合（子进程启动时装上，
@@ -37,7 +37,7 @@ impl SandboxBackend for LandlockBackend {
     }
 
     fn availability(&self) -> Availability {
-        // 探测：HardRequirement + V1 基础权限集（Linux 5.13 全集）。landlock
+        // 探测：HardRequirement + 基础权限集（Linux 5.13 全集）。landlock
         // crate 的 Ruleset::default() 会探测运行内核；HardRequirement 模式下
         // 内核不支持（ABI::Unsupported：未编入/启动参数禁用）→ 立即 Err
         // （crate 文档：immediately inform about unsupported Landlock features）。
@@ -52,7 +52,7 @@ impl SandboxBackend for LandlockBackend {
     }
 
     fn apply_to_self(&self, conf: &SandboxConf) -> Result<Enforcement, String> {
-        // 目标 ABI = V3（kernel 6.2+）：FS 权限全集的稳定点（V4+ 增量是
+        // 目标 ABI = （kernel 6.2+）：FS 权限全集的稳定点（+ 增量是
         // AccessNet/IOCTL 等，本后端不用）。BestEffort 在更老内核自动降到
         // 内核与请求的交集 → PartiallyEnforced → Partial 语义的来源。
         let abi = ABI::V3;
@@ -86,9 +86,9 @@ impl SandboxBackend for LandlockBackend {
             .map_err(|e| format!("landlock restrict_self: {e}"))?;
 
         // FS-only LSM：allow_network=false 在本后端不可强制（ABI 4+ 的
-        // AccessNet 仅覆盖 TCP 且需 kernel 6.7+；ABI≤V3 上 from_all 返回空集、
+        // AccessNet 仅覆盖 TCP 且需 kernel 6.7+；ABI≤ 上 from_all 返回空集、
         // handle_access 直接报错——见 landlock::AccessNet 文档）。禁网期望交给
-        // bwrap 后端（--unshare-net），这里诚实记缺口。
+        // bwrap 后端（unshare-net），这里诚实记缺口。
         let mut gaps: Vec<String> = Vec::new();
         if !conf.allow_network {
             gaps.push(

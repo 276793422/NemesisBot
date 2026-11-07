@@ -55,7 +55,7 @@ pub struct WorkflowSummary {
 }
 
 /// Trigger summary within a workflow list response. `driven` and `reason`
-/// come from [`crate::driver_status::driver_status_for`] — the UI treats
+/// come from [`crate::driver_status:driver_status_for`] — the UI treats
 /// these as authoritative and renders whatever they say.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TriggerSummary {
@@ -118,7 +118,7 @@ fn sanitize_workflow_filename(name: &str) -> String {
     }
 }
 
-/// 读取 workflow 定义文件并返回其内容里的 workflow 名（BUG-20261028-108
+/// 读取 workflow 定义文件并返回其内容里的 workflow 名（
 /// 碰撞守卫辅助）。parse 失败返回 None——坏文件没有可辨认的属主。
 /// serde_yaml 可直接吃 JSON（YAML 1.2 超集），三种扩展名同一解析。
 fn workflow_file_owner(path: &Path) -> Option<String> {
@@ -129,7 +129,7 @@ fn workflow_file_owner(path: &Path) -> Option<String> {
 }
 
 /// [`scheduler::ProgressHook`] implementation that saves a checkpoint after
-/// every level (1b-A1 step 6). Borrows the engine for the duration of the
+/// every level (1b step 6). Borrows the engine for the duration of the
 /// scheduler call — constructed locally in `run_async` so it never outlives
 /// the engine reference.
 struct CheckpointHook<'a> {
@@ -174,7 +174,7 @@ impl<'a> scheduler::ProgressHook for CheckpointHook<'a> {
 
 /// Snapshot a [`WorkflowContext`] into its serialisable form.
 ///
-/// Used by [`WorkflowEngine::save_checkpoint`] (1b-A1 step 6) when persisting
+/// Used by [`WorkflowEngine::save_checkpoint`] (1b step 6) when persisting
 /// in-flight state. Variables and input are pulled directly; `node_results`
 /// are converted one at a time so we can swap `DateTime<Local>` for UTC and
 /// the state enum for its snake_case string.
@@ -273,7 +273,7 @@ pub enum EngineError {
     RecursionLimitExceeded(String),
 }
 
-/// executions 跟踪表上限（R53 资源生命周期审计）：字段语义是「Active and
+/// executions 跟踪表上限（资源生命周期审计）：字段语义是「Active and
 /// completed executions」——终态条目原本永不移除，常驻 gateway 里 cron
 /// 工作流周期性落 Execution（node_results 携带 LLM 输出，KB 级/条），
 /// 随进程寿命无界增长。超上限逐出最老的**终态**条目（Completed/Failed/
@@ -296,7 +296,7 @@ pub struct WorkflowEngine {
     /// Wrapped in Arc so composite executors (parallel/loop) can hold a
     /// back-reference for dispatching to their own children — without this,
     /// parallel/loop children silently fall back to the inline-node stub
-    /// which skips LLM/tool/agent/etc types (BUG #1).
+    /// which skips LLM/tool/agent/etc types.
     pub(crate) node_executors: Arc<NodeExecutorRegistry>,
     /// Optional persistence directory. If empty, persistence is disabled.
     persistence_dir: Option<PathBuf>,
@@ -322,7 +322,7 @@ pub struct WorkflowEngine {
     /// (Started/Completed/Failed/Cancelled). External systems (web dashboards,
     /// log shippers) register observers via [`event_manager`](Self::event_manager).
     event_manager: WorkflowEventManager,
-    /// Per-engine workflow call stack (1c-F2). Tracks every in-flight
+    /// Per-engine workflow call stack (1c-). Tracks every in-flight
     /// execution so we can enforce MAX_RECURSION_DEPTH for AgentTool
     /// nestings and provide diagnostics (snapshot of active frames).
     call_stack: std::sync::Arc<crate::call_stack::WorkflowCallStack>,
@@ -332,7 +332,7 @@ pub struct WorkflowEngine {
     /// Business code (workflow lifecycle, forge, etc.) calls
     /// [`publish_event`] when something interesting happens.
     event_dispatcher: crate::event_dispatcher::EventDispatcher,
-    /// Per-workflow chat serialization state (1c-E8 workflow chat page).
+    /// Per-workflow chat serialization state (1c workflow chat page).
     /// Bundles the per-workflow mutex map + pending-execution guard map so
     /// the WebSocket send handler (acquire + store_guard) and the reply
     /// observer (take_guard + drop) share one instance without extra plumbing
@@ -344,7 +344,7 @@ pub struct WorkflowEngine {
     /// Gateway fills it via [`Self::set_usage_store`] after constructing the
     /// `DataStore`. Empty by default so unit tests work without a database.
     usage_store: crate::nodes::UsageStoreSlot,
-    /// U10 统一执行世界（可选装配）。挂上后：控制面写盘点
+    /// 统一执行世界（可选装配）。挂上后：控制面写盘点
     /// （persist_workflow / delete_workflow_file / persist_execution）过
     /// `check_writable` 守卫；script 节点获得 world 工具/Spawn 车道。
     /// `None`（单测/裸装配）= 完全旧行为。经 [`Self::set_execution_world`]
@@ -355,7 +355,7 @@ pub struct WorkflowEngine {
     /// `set_execution_world` 重注册 script 执行器时保留 tools 车道用；
     /// 其余构造器恒 `None`。
     script_tools: Option<Arc<nemesis_tools::registry::ToolRegistry>>,
-    /// BUG-20261104-382：注册序列化锁。环检测（读全表引用图）与
+    /// 注册序列化锁。环检测（读全表引用图）与
     /// `workflows.insert` 必须原子——两个并发 register（A→B 与 B→A 同刻
     /// 提交）在无锁时可在彼此的图快照里都看不到对方，双双过闸后插入
     /// 成环。注册/更新是低频操作，整段持锁无代价。`unregister` 只删边
@@ -557,7 +557,7 @@ impl WorkflowEngine {
     ///
     /// Returns `Arc<Self>` because the `sub_workflow` executor holds a back
     /// reference. This is the recommended constructor for gateway / service
-    /// integration (milestone 1a-E1).
+    /// integration (milestone 1a-).
     pub fn new_integrated(
         provider: Arc<dyn LLMProvider>,
         tools: Arc<nemesis_tools::registry::ToolRegistry>,
@@ -665,13 +665,13 @@ impl WorkflowEngine {
         // gateway would run ParallelNodeStub / LoopNodeStub which call
         // execute_inline_node() and silently skip LLM/tool/agent/etc
         // children — they'd report Completed with a "skipped" marker while
-        // doing none of the actual work (BUG #1).
+        // doing none of the actual work.
         NodeExecutorRegistry::install_composite_executors(&engine.node_executors);
 
         engine
     }
 
-    /// Register an [`AgentRunner`] for `agent` workflow nodes (milestone 1b-D2).
+    /// Register an [`AgentRunner`] for `agent` workflow nodes (milestone 1b-).
     ///
     /// Call this after gateway has constructed the AgentLoop. The runner
     /// is responsible for bridging `agent` workflow nodes to the actual
@@ -712,7 +712,7 @@ impl WorkflowEngine {
     /// parse or validate are skipped with a warning log; other files are still
     /// loaded. Returns the number of workflows successfully registered.
     ///
-    /// Used by the gateway (milestone 1a-E1) to populate the engine from
+    /// Used by the gateway (milestone 1a-) to populate the engine from
     /// `{home}/workspace/workflow/definitions/` at startup.
     pub fn load_workflows_from_dir(&self, dir: &Path) -> Result<usize, EngineError> {
         let entries = match std::fs::read_dir(dir) {
@@ -730,7 +730,7 @@ impl WorkflowEngine {
         };
 
         let mut count = 0usize;
-        // BUG-20261028-119：read_dir 迭代序是平台实现细节（NTFS 字典序 vs
+        // read_dir 迭代序是平台实现细节（NTFS 字典序 vs
         // ext4 哈希序）。register_workflow 对重名是后者静默覆盖——同名定义
         // 文件组（用户拷贝变体忘改 name 的常见错误）的加载赢家随平台漂移，
         // cron/触发器/节点配置在 Windows 与 Linux 部署上静默不同。显式按
@@ -788,7 +788,7 @@ impl WorkflowEngine {
     /// falls back to local with a warning, so a typo doesn't silently disable
     /// a schedule.
     ///
-    /// Used by gateway (milestone 1a-E2) to register cron schedules at startup.
+    /// Used by gateway (milestone 1a-) to register cron schedules at startup.
     pub fn list_cron_workflows(
         &self,
     ) -> Vec<(
@@ -985,7 +985,7 @@ impl WorkflowEngine {
         &self.event_dispatcher
     }
 
-    /// Access the per-workflow chat serialization state (1c-E8).
+    /// Access the per-workflow chat serialization state (1c-).
     /// The WebSocket send handler and the reply observer share this instance
     /// to serialize concurrent workflow_chat sends to the same workflow.
     pub fn workflow_chat_state(
@@ -1009,7 +1009,7 @@ impl WorkflowEngine {
     /// Borrow the checkpoint store, if configured. Returns `None` when
     /// checkpoints are disabled (in-memory engine, no persistence dir).
     ///
-    /// Used by gateway restart-recovery (1b-A1 step 7) to enumerate and
+    /// Used by gateway restart-recovery (1b step 7) to enumerate and
     /// resume in-flight executions.
     pub fn checkpoint_store(&self) -> Option<Arc<dyn CheckpointStore>> {
         self.checkpoint_store.read().clone()
@@ -1023,7 +1023,7 @@ impl WorkflowEngine {
     }
 
     /// Scan the checkpoint store for in-flight executions and restore them
-    /// into the engine's in-memory map. Called by gateway on startup (1b-A1
+    /// into the engine's in-memory map. Called by gateway on startup (1b-
     /// step 7) so executions paused at `human_review` survive process
     /// restarts.
     ///
@@ -1072,7 +1072,7 @@ impl WorkflowEngine {
             // We need to know the workflow_name to do the lookup, but the
             // checkpoint doesn't carry it directly — derive from execution_id
             // is fragile. Instead, store it on the checkpoint going forward
-            // (1b-A1 step 7 enhancement): we look it up by scanning registered
+            // (1b step 7 enhancement): we look it up by scanning registered
             // workflows whose hash matches.
             let workflow = self
                 .workflows
@@ -1155,7 +1155,7 @@ impl WorkflowEngine {
     }
 
     /// Save a checkpoint for `execution_id` capturing the current state of
-    /// `wf_ctx`. Best-effort: returns `Ok(())` if no store is configured.
+    /// `wf_ctx`. Best-effort: returns `Ok()` if no store is configured.
     ///
     /// `completed_nodes` is the set of node IDs that have already finished
     /// (extracted from `wf_ctx` when not supplied explicitly). `waiting_node`
@@ -1238,7 +1238,7 @@ impl WorkflowEngine {
             )));
         }
 
-        // BUG-20261104-382：sub_workflow 跨 workflow 引用环检测（persist_workflow
+        // sub_workflow 跨 workflow 引用环检测（persist_workflow
         // 同闸——成环只可能经这两个入口发生，见方法 doc）。check+insert 在
         // register_lock 内原子完成：并发双 register（A→B 与 B→A 同刻提交）
         // 在无锁时可在彼此的图快照里都看不到对方、双双过闸后插入成环。
@@ -1249,9 +1249,9 @@ impl WorkflowEngine {
         Ok(())
     }
 
-    /// BUG-20261104-382：sub_workflow 跨 workflow 引用环检测（注册期闸）。
+    /// sub_workflow 跨 workflow 引用环检测（注册期闸）。
     ///
-    /// [`crate::nodes::SubWorkflowNodeExecutor`] 经
+    /// [`crate::nodes:SubWorkflowNodeExecutor`] 经
     /// `engine.run(name, input, None)` 触发子执行——`TriggerSource::None` 的
     /// `depth_from_trigger` = 0，[`MAX_RECURSION_DEPTH`] 闸只数 `AgentTool`
     /// 帧，sub_workflow 链完全绕过。而 `parser::validate` 只查**单 workflow**
@@ -1318,7 +1318,7 @@ impl WorkflowEngine {
                 );
             }
         }
-        // BUG-20261104-383：事件触发环闸。引擎发布的终态事件 data 携带
+        // 事件触发环闸。引擎发布的终态事件 data 携带
         // TRIGGER_CHAIN_KEY（产出它的触发链，见发布点注释）；链上已出现的
         // workflow 不再触发——否则「监听 workflow.completed」的工作流完成即
         // 匹配自己，每次完成 spawn 新执行再完成再发布，无限风暴（A→B→A
@@ -1397,7 +1397,7 @@ impl WorkflowEngine {
         self.workflow_defs_dir.read().clone()
     }
 
-    /// U10：装配统一执行世界。
+    /// 装配统一执行世界。
     ///
     /// 挂上后：① 控制面写盘点（`persist_workflow` / `delete_workflow_file` /
     /// `persist_execution`）过 `check_writable` 守卫（越界拒）；② 重注册
@@ -1422,7 +1422,7 @@ impl WorkflowEngine {
         );
     }
 
-    /// Query the attached execution world (U10). `None` = bare engine
+    /// Query the attached execution world. `None` = bare engine
     /// (unit tests / no assembly) — all guards inert, script falls to bare
     /// spawn.
     pub fn execution_world(&self) -> Option<Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>> {
@@ -1438,7 +1438,7 @@ impl WorkflowEngine {
         NodeExecutorRegistry::install_composite_executors(&self.node_executors);
     }
 
-    /// 控制面写守卫（U10）：world 未装配 = 放行（单测/裸装配旧行为）；
+    /// 控制面写守卫：world 未装配 = 放行（单测/裸装配旧行为）；
     /// 装配后 path 必须落在 world 的 writable_roots 内。
     fn guard_engine_write(&self, path: &std::path::Path) -> Result<(), EngineError> {
         let world = self.execution_world.read().clone();
@@ -1510,7 +1510,7 @@ impl WorkflowEngine {
     /// without changing the canonical workflow name.
     ///
     /// History: this used to be the first 8 hex chars (32 bit); the 64-bit form
-    /// landed with the 2026-10-16 security hardening (32-bit collisions would
+    /// landed with the security hardening (32-bit collisions would
     /// misroute URLs and share chat passwords). 8-hex legacy links keep working
     /// via prefix matching in [`Self::workflow_by_chat_index`].
     pub fn chat_index(workflow_name: &str) -> String {
@@ -1576,7 +1576,7 @@ impl WorkflowEngine {
             )
         })?;
 
-        // BUG-20261104-382：环检测 + 落盘 + 内存注册整段在 register_lock 内
+        // 环检测 + 落盘 + 内存注册整段在 register_lock 内
         // 原子完成（与 register_workflow 同闸同锁）——check 与 insert 之间隔
         // 着写盘 IO，无锁窗口足以让并发注册互相漏看成环。锁内失败臂（碰撞
         // 守卫/写守卫/fs::write/check）先于 insert 返回，盘面不会留半注册态。
@@ -1590,7 +1590,7 @@ impl WorkflowEngine {
             "{}.yaml",
             sanitize_workflow_filename(&workflow.name)
         ));
-        // BUG-20261028-108 碰撞守卫：不同 workflow 名可能 sanitize 出同一
+        // 碰撞守卫：不同 workflow 名可能 sanitize 出同一
         // 文件名（如 "a/b" 与 "a:b" 同落 a_b.yaml），直接覆盖 = 静默丢掉
         // 别人的定义。只放行两类：同名覆盖（UI update 正常路径）与坏文件
         // （parse 失败，本就加载不出来）。
@@ -1605,7 +1605,7 @@ impl WorkflowEngine {
                 path_dbg(&path)
             )));
         }
-        // U10 控制面写守卫：定义文件必须落在执行世界的 writable_roots 内
+        // 控制面写守卫：定义文件必须落在执行世界的 writable_roots 内
         // （文件名已 sanitize，守卫兜配置错位/未来回归）。
         self.guard_engine_write(&path)?;
         let yaml = serde_yaml::to_string(&workflow).map_err(|e| {
@@ -1619,7 +1619,7 @@ impl WorkflowEngine {
     }
 
     /// Delete a workflow from disk + memory (UI delete path).
-    /// Returns Ok(()) even if the in-memory entry was already absent (idempotent).
+    /// Returns Ok() even if the in-memory entry was already absent (idempotent).
     /// Returns error if persistence is configured and the on-disk file exists
     /// but cannot be removed.
     pub fn delete_workflow_file(&self, name: &str) -> Result<(), EngineError> {
@@ -1632,9 +1632,9 @@ impl WorkflowEngine {
         if let Some(dir) = dir {
             let candidate = dir.join(format!("{}.yaml", sanitize_workflow_filename(name)));
             if candidate.exists() {
-                // BUG-20261028-108 碰撞守卫：文件可能属于 sanitize 同名的
+                // 碰撞守卫：文件可能属于 sanitize 同名的
                 // 另一 workflow（存量盘面事实），只删内容名字匹配（或无属
-                // 主的坏文件）。跳过 yaml 不 early-return——下方 .yml/.json
+                // 主的坏文件）。跳过 yaml 不 early-return——下方.yml/.json
                 // 变体仍属本名，照常处理。
                 let owner_ok = match workflow_file_owner(&candidate) {
                     Some(owner) if owner != name => {
@@ -1650,20 +1650,20 @@ impl WorkflowEngine {
                     _ => true,
                 };
                 if owner_ok {
-                    // U10 控制面写守卫（删除同守卫：能删就能写）。
+                    // 控制面写守卫（删除同守卫：能删就能写）。
                     self.guard_engine_write(&candidate)?;
                     std::fs::remove_file(&candidate).map_err(|e| {
                         EngineError::PersistenceError(format!("remove {:?}: {}", candidate, e))
                     })?;
                 }
             }
-            // Also try .yml + .json variants — load_workflows_from_dir accepts all three.
+            // Also try.yml +.json variants — load_workflows_from_dir accepts all three.
             for ext in &["yml", "json"] {
                 let p = dir.join(format!("{}.{}", sanitize_workflow_filename(name), ext));
                 if !p.exists() {
                     continue;
                 }
-                // BUG-20261028-108 碰撞守卫（同 yaml 主文件）：属他人则跳过。
+                // 碰撞守卫（同 yaml 主文件）：属他人则跳过。
                 if let Some(owner) = workflow_file_owner(&p)
                     && owner != name
                 {
@@ -1803,7 +1803,7 @@ impl WorkflowEngine {
         }
 
         // Load the execution snapshot and arm the cancellation token under a
-        // single write lock (BUG-20261025-42a). The old snapshot was a plain
+        // single write lock (a). The old snapshot was a plain
         // read with the token inserted later, outside any lock: a
         // cancel_execution landing in between found no token to fire, flipped
         // the recorded state to Cancelled, and this function then ran the
@@ -1841,7 +1841,7 @@ impl WorkflowEngine {
         let workflow = match self.get_workflow(&execution.workflow_name) {
             Some(w) => w,
             None => {
-                // BUG-20261028-107：早退必须回收刚装的 cancel token（resume
+                // 早退必须回收刚装的 cancel token（resume
                 // 路径同款清理——「a failed lookup must not leave it
                 // orphaned」）。留着 = 此后任何 run_async 都撞「already in
                 // flight」，执行记录永久 Running，workflow 重新注册也救不回。
@@ -1852,7 +1852,7 @@ impl WorkflowEngine {
             }
         };
 
-        // 1c-F2: push a call-stack frame for this execution. The depth comes
+        // 1c-: push a call-stack frame for this execution. The depth comes
         // from the trigger source (AgentTool-triggered runs carry a depth;
         // everything else is 0). Push can reject if a caller bypassed the
         // WorkflowTool's pre-check and tried to start at depth > MAX.
@@ -1889,12 +1889,12 @@ impl WorkflowEngine {
             recursion_depth,
         };
         if let Err(reason) = self.call_stack.push(frame) {
-            // BUG-20261028-107：同上，早退前回收 cancel token。
+            // 同上，早退前回收 cancel token。
             self.cancel_tokens.remove(execution_id);
             return Err(EngineError::RecursionLimitExceeded(reason));
         }
 
-        // G3：运行账本开账（确定性 id=workflow_run:{execution_id}；账本
+        // 运行账本开账（确定性 id=workflow_run:{execution_id}；账本
         // 未安装=零变化，best-effort 不阻断执行）。放在递归闸之后——
         // 超限拒绝不产生开账行。Waiting（人工审批挂起）的 run 保持开账，
         // resume 收口；终态在下方 settle。
@@ -1916,7 +1916,7 @@ impl WorkflowEngine {
         }
 
         // Stamp the execution with the workflow's structural hash so the
-        // resume path can detect config drift (1b-A1 step 5).
+        // resume path can detect config drift (1b step 5).
         execution.workflow_hash = Some(workflow.hash());
 
         // Execute the workflow using the scheduler. When a checkpoint store
@@ -1970,7 +1970,7 @@ impl WorkflowEngine {
                     execution.state = ExecutionState::Completed;
                     execution.ended_at = Some(now);
                 } else {
-                    // 缺陷 10 修复（2026-09-23）：停在人工审批的执行**没有结束**，
+                    // 缺陷 10 修复：停在人工审批的执行**没有结束**，
                     // ended_at 必须保持空——旧实现上方无条件写 Some(now)，Waiting
                     // 分支不回清，观察方（UI/监控/审批队列）会把它当已完结。
                     // 与下方 resume 路径（still_waiting → ended_at = None）同款语义。
@@ -1985,7 +1985,7 @@ impl WorkflowEngine {
             }
         }
 
-        // G3：运行账本收口（仅终态；Waiting 保持开账等 resume——挂起的
+        // 运行账本收口（仅终态；Waiting 保持开账等 resume——挂起的
         // 执行本身没有结束，账面如实镜像）。幂等：resume 收口同值 CAS。
         match execution.state {
             ExecutionState::Completed => {
@@ -2003,7 +2003,7 @@ impl WorkflowEngine {
 
         // Copy results from context into execution
         execution.node_results = wf_ctx.get_all_node_results();
-        // BUG-20261031-239：变量同样回写——workflow.variables（YAML
+        // 变量同样回写——workflow.variables（YAML
         // `variables:` 段）只在上方 seeding 进 wf_ctx，execution.variables
         // 始终空；resume（resume_execution_node）与 cancel（cancel_execution
         // 的终态 checkpoint）都从 execution.variables 重建 wf_ctx，human_review
@@ -2067,7 +2067,7 @@ impl WorkflowEngine {
         // observers see Started, then either Completed/Failed/Cancelled).
         let workflow_name_for_event = execution.workflow_name.clone();
         let execution_id_for_event = execution.id.clone();
-        // BUG-20261104-383：三个终态事件共享同一份 data 骨架；触发链 =
+        // 三个终态事件共享同一份 data 骨架；触发链 =
         // 上代事件携带的链（若本执行由事件触发）+ 本 workflow 名，随
         // TRIGGER_CHAIN_KEY 发布——订阅端（workflows_matching_event）据此
         // 拒绝把链上已出现的 workflow 再次触发，断掉 event trigger
@@ -2323,7 +2323,7 @@ impl WorkflowEngine {
                     .insert(node_id.clone(), result.clone());
 
                 // Merge output into context. 双写命名空间键与整对象：
-                // {{节点id.字段}} / {{节点id}}（能力表承诺的传值语法，2026-09-23
+                // {{节点id.字段}} / {{节点id}}（能力表承诺的传值语法，
                 // 计划类 C 文档-引擎对齐）；平铺键保留，存量工作流不受影响
                 // （同名平铺键后到者覆盖，能力表已引导生成器用命名空间形式）。
                 if let Some(obj) = result.output.as_object() {
@@ -2475,7 +2475,7 @@ impl WorkflowEngine {
         execution.ended_at = Some(Local::now());
 
         // Fire the cancellation token while still holding the state lock
-        // (BUG-20261025-42a): the run/resume side inserts its token under
+        // (a): the run/resume side inserts its token under
         // the same lock, so there is no window where we flip the state but
         // miss a token that appears right after — either the scheduler sees
         // the fired token, or we observed the pre-run state and the run side
@@ -2489,7 +2489,7 @@ impl WorkflowEngine {
 
         self.persist_execution(&updated).await;
 
-        // BUG-20261025-42b: flip the latest checkpoint to terminal so a
+        // b: flip the latest checkpoint to terminal so a
         // cancelled execution is not resurrected by
         // restore_incomplete_executions on the next process restart (that
         // path only skips `terminal || all_completed` checkpoints). Cancelling
@@ -2533,7 +2533,7 @@ impl WorkflowEngine {
     /// `Completed`) are skipped; only nodes downstream of the waiting node
     /// actually re-execute.
     ///
-    /// If a checkpoint store is configured (1b-A1), the new state is saved
+    /// If a checkpoint store is configured (1b-), the new state is saved
     /// to a fresh checkpoint so a crash mid-resume still recovers.
     ///
     /// On success, returns the updated execution. The execution's terminal
@@ -2547,7 +2547,7 @@ impl WorkflowEngine {
         self.resume_execution_node(id, review_result, None).await
     }
 
-    /// 节点定向 resume（BUG-20261024-13）。
+    /// 节点定向 resume。
     ///
     /// `target_node = Some(id)` 把评审结果落到指定等待节点；多个 human_review
     /// 同层并行时（同一拓扑层并发执行、双双 Waiting），无定向的 resume 无法
@@ -2575,7 +2575,7 @@ impl WorkflowEngine {
                 )));
             }
 
-            // BUG-20261024-13：候选按 id 排序保证确定性；target 必须命中
+            // 候选按 id 排序保证确定性；target 必须命中
             // 等待集合（已解析/未执行的节点 loud 拒绝），无定向且候选多于
             // 一个时 loud 拒绝——绝不随机选边。
             let mut waiting_ids: Vec<String> = execution
@@ -2611,7 +2611,7 @@ impl WorkflowEngine {
                 }
                 None => waiting_ids[0].clone(),
             };
-            // BUG-20261102-NN：结果覆写移出临界区——sub_workflow 等待节点的
+            // NN：结果覆写移出临界区——sub_workflow 等待节点的
             // 评审要路由进子执行（需读原结果的 metadata.execution_id），错误
             // 臂也要能把执行干净恢复回 Waiting（覆写过的结果无从恢复）。
             if let Some(approved) = review_result.get("approved")
@@ -2624,7 +2624,7 @@ impl WorkflowEngine {
             }
 
             // Mark as Running while schedule_resume executes. Arm the fresh
-            // cancellation token under the same lock (BUG-20261025-42a): a
+            // cancellation token under the same lock (a): a
             // cancel_execution landing after the lock release must find the
             // token to fire — the old outside-the-lock insert let cancel slip
             // into the gap, flip the state to Cancelled, and the resume then
@@ -2647,7 +2647,7 @@ impl WorkflowEngine {
             Some(w) => w,
             None => {
                 self.cancel_tokens.remove(id);
-                // BUG-20261102-NN：状态翻 Running 发生在临界区，查找失败
+                // NN：状态翻 Running 发生在临界区，查找失败
                 // 必须翻回去——否则执行卡在 Running 且无 token，进程内
                 // 永远无法再 resume（重启才被 checkpoint 治愈）。
                 self.restore_waiting_after_failed_resume(id).await;
@@ -2671,7 +2671,7 @@ impl WorkflowEngine {
             }
         }
 
-        // BUG-20261102-NN：sub_workflow 等待节点的评审路由。父执行停在
+        // NN：sub_workflow 等待节点的评审路由。父执行停在
         // sub_workflow 节点 = 子执行停在它自己的 human_review——评审必须
         // 路由进子执行再按子执行终态同步父节点结果；旧实现把评审 JSON
         // 直接覆写进父节点结果并放行父下游（子执行孤儿化、子下游永不
@@ -2769,7 +2769,7 @@ impl WorkflowEngine {
             }
         }
 
-        // G3：resume 路径账本收口（首跑 run_async 的开账行凭确定性 id
+        // resume 路径账本收口（首跑 run_async 的开账行凭确定性 id
         // 直解；再次 Waiting 保持开账等下一次 resume）。
         let ledger_run_id = nemesis_taskstore::ledger::workflow_run_id(&execution.id);
         match execution.state {
@@ -2835,7 +2835,7 @@ impl WorkflowEngine {
         Ok(execution)
     }
 
-    /// BUG-20261102-NN：sub_workflow 等待节点的评审路由（resume 侧）。
+    /// NN：sub_workflow 等待节点的评审路由（resume 侧）。
     ///
     /// 父执行的 sub_workflow 节点停在 Waiting = 子执行停在它自己的
     /// human_review。评审路由进子执行（递归 [`resume_execution_node`]），
@@ -2844,7 +2844,7 @@ impl WorkflowEngine {
     ///   （与 [`SubWorkflowNodeExecutor`] 产出同形），返回后公共尾段
     ///   续跑父下游；
     /// - 子执行再次 Waiting（嵌套审批）→ 父节点结果刷新为子工作流当前
-    ///   快照，父保持 Waiting 等下一次 resume（非终态 checkpoint、G3
+    ///   快照，父保持 Waiting 等下一次 resume（非终态 checkpoint、
     ///   账本保持开账）；
     /// - 子执行 Failed/Cancelled → 父诚实失败（错误点名子执行）。
     ///
@@ -2988,7 +2988,7 @@ impl WorkflowEngine {
         Ok(execution)
     }
 
-    /// BUG-20261102-NN：resume 错误臂统一恢复——状态翻 Running 发生在
+    /// NN：resume 错误臂统一恢复——状态翻 Running 发生在
     /// 临界区，任何错误返回前必须翻回 Waiting（旧实现 workflow 查找
     /// 失败会留下 state=Running + 无 token 的卡死形态，进程内永远无法
     /// 再 resume，重启才被 checkpoint 治愈）。
@@ -3000,7 +3000,7 @@ impl WorkflowEngine {
         }
     }
 
-    /// resume 早期收口（不经 schedule_resume 的臂）：G3 账本 + checkpoint +
+    /// resume 早期收口（不经 schedule_resume 的臂）： 账本 + checkpoint +
     /// persist + 内存回写。`waiting_node` 仅在父执行保持 Waiting 时传
     /// （非终态 checkpoint 的 waiting_node 字段）；终态臂传 None。
     async fn settle_resume_outcome(
@@ -3008,7 +3008,7 @@ impl WorkflowEngine {
         execution: Execution,
         waiting_node: Option<String>,
     ) -> Execution {
-        // G3：resume 路径账本收口；再次 Waiting 保持开账等下一次 resume。
+        // resume 路径账本收口；再次 Waiting 保持开账等下一次 resume。
         let ledger_run_id = nemesis_taskstore::ledger::workflow_run_id(&execution.id);
         match execution.state {
             ExecutionState::Completed => {
@@ -3100,7 +3100,7 @@ impl WorkflowEngine {
                 "{}_{}.jsonl",
                 execution.workflow_name, execution.id
             ));
-            // U10 控制面写守卫：`workflow_name` 来自用户 YAML（此处**未**
+            // 控制面写守卫：`workflow_name` 来自用户 YAML（此处**未**
             // sanitize——`../evil` 能拼出逃逸路径），守卫是这条链的唯一
             // 拦截层。persist 是 best-effort：拒 = warn + 跳过，不 fail 执行。
             if let Err(e) = self.guard_engine_write(&file_path) {
@@ -3150,7 +3150,7 @@ impl Default for WorkflowEngine {
     }
 }
 
-/// BUG-20261104-382 同族单一真相源：收集一个 workflow 定义的全部
+/// 同族统一定义：收集一个 workflow 定义的全部
 /// sub_workflow 引用目标（顶层节点 + parallel/loop 复合子节点递归——
 /// composite children 运行时经 registry 同样分派到 SubWorkflowNodeExecutor
 /// → engine.run，逃过收集就是逃过环闸）。空目标名跳过（执行器同样拒绝空名）。
@@ -3246,8 +3246,8 @@ fn find_path_back_to_start(
     dfs(start, start, graph, &mut path, &mut visited)
 }
 
-/// BUG-20261104-383：从事件 data / `TriggerSource::Event.data` 里读出触发链
-/// （[`crate::event_dispatcher::TRIGGER_CHAIN_KEY`] → JSON 字符串数组）。
+/// 从事件 data / `TriggerSource::Event.data` 里读出触发链
+/// （[`crate::event_dispatcher:TRIGGER_CHAIN_KEY`] → JSON 字符串数组）。
 /// 缺键/形态不对一律按空链处理——链只由引擎发布点写入，读到脏形态放行
 /// （宁可少拦不误拦；手动 fire_event 本就没有链键）。
 fn trigger_chain_from_value(value: Option<&serde_json::Value>) -> Vec<String> {
@@ -3273,7 +3273,7 @@ fn event_trigger_chain_of(trigger: Option<&TriggerSource>) -> Vec<String> {
     }
 }
 
-/// BUG-20261024-13 同族单一真相源：多等待节点并存时取 id 最小者作为
+/// 同族统一定义：多等待节点并存时取 id 最小者作为
 /// 「当前等待节点」（checkpoint 的 waiting_node 可观测性字段）——HashMap
 /// 迭代序随机会让重启前后漂移，确定性优先。run 与 resume 两处 checkpoint
 /// 收口共用。

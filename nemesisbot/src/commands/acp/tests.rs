@@ -8,7 +8,7 @@
 //! GLOBAL_STATE_LOCK 卡死 → 整个测试进程死锁。现走 `run_with_io` 注入
 //! duplex：EOF 由测试自己制造，确定性即刻返回，无需超时容忍臂。
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod tests {
     use crate::tests::{EnvHomeGuard, singleton_test_home};
 

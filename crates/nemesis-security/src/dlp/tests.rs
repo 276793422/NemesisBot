@@ -559,7 +559,7 @@ fn test_ib_detected() {
     assert!(result.has_matches);
 }
 
-// === L1: confidence-aware blocking ===
+// ===: confidence-aware blocking ===
 
 #[test]
 fn test_low_confidence_phone_does_not_block() {
@@ -605,7 +605,7 @@ fn test_medium_confidence_ssn_blocks() {
     );
 }
 
-// === L2: checksum validation (demote fakes to Low) ===
+// ===: checksum validation (demote fakes to Low) ===
 
 #[test]
 fn test_credit_card_luhn_demotes_fake_card() {
@@ -696,7 +696,7 @@ fn test_scan_text_max_length_multibyte_no_panic() {
 }
 
 // ============================================================
-// S3 batch 3: dynamic-rule filter arms / redact / tool-output
+// batch 3: dynamic-rule filter arms / redact / tool-output
 // truncation / severity downgrade / defensive validator arms
 // ============================================================
 

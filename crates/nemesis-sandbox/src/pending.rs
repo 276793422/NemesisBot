@@ -3,15 +3,15 @@
 //! The box virtual FS lives under `FileRootPath` (=`<home>/workspace/tools/sandboxie/box/NemesisBox`)
 //! and mirrors real paths in two forms (confirmed `user/current` empirically;
 //! `drive/<L>` is the standard Sandboxie layout for non-userprofile paths):
-//!   <box_root>/user/<marker>/<rest>  ↔  %USERPROFILE%\<rest>
-//!   <box_root>/drive/<L>/<rest>      ↔  <L>:\<rest>
+//!   <box_root>/user/<marker>/<rest> ↔ %USERPROFILE%\<rest>
+//!   <box_root>/drive/<L>/<rest> ↔ <L>:\<rest>
 //! Box metadata (RegHive*, DONT-USE.TXT, desktop.ini) is not under `user`/`drive`
 //! so it's naturally excluded — only mirrored real files are returned.
 //!
 //! **SAFETY (containment backstop):** pending/commit are scoped to the WORKSPACE
 //! subtree. Files the box wrote OUTSIDE the workspace (exec damage, system paths)
 //! are never offered for commit — the user only ever sees their own workspace
-//! writes, never the contained damage. See sandboxie-integration plan §3.5.
+//! writes, never the contained damage. See sandboxie-integration plan.
 
 use std::path::{Path, PathBuf};
 
@@ -33,13 +33,13 @@ pub fn real_path_for_box(box_path: &Path, box_root: &Path, user_profile: &Path) 
     let first = comps.next()?.as_os_str().to_string_lossy().to_string();
     match first.as_str() {
         "user" => {
-            // user/<marker>/<rest>  →  %USERPROFILE%\<rest>  (marker is "current" / username)
+            // user/<marker>/<rest> → %USERPROFILE%\<rest> (marker is "current" / username)
             let _marker = comps.next()?;
             let rest: PathBuf = comps.collect();
             Some(user_profile.join(rest))
         }
         "drive" => {
-            // drive/<L>/<rest>  →  <L>:\<rest>
+            // drive/<L>/<rest> → <L>:\<rest>
             let letter = comps.next()?.as_os_str().to_string_lossy().to_string();
             let rest: PathBuf = comps.collect();
             Some(PathBuf::from(format!("{}:\\", letter)).join(rest))
@@ -74,7 +74,7 @@ fn walk(
     }
     let rd = match std::fs::read_dir(dir) {
         Ok(r) => r,
-        // BUG-8（2026-10-14）根修：此前静默吞掉（return Ok），枚举截断
+        // BUG-8根修：此前静默吞掉（return Ok），枚举截断
         // 伪装成「没有待提交」。WARN 留痕 + 跳过该目录继续——Windows 上
         // AV/索引器瞬时句柄是常态不是异常，fail-loud 会把 `sandbox pending`
         // 变脆；诚实可观测优于静默截断。

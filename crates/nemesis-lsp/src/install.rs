@@ -1,14 +1,14 @@
-//! C6（devtool-upgrade 阶段 6）：LSP 服务器自举——安装命令目录 + 后台安装执行器。
+//! （devtool-upgrade）：LSP 服务器自举——安装命令目录 + 后台安装执行器。
 //!
 //! 两条安装通路，信任级不同：
 //! - **一键安装**（dashboard `coding.lsp_install`）走 AgentLoop 的 exec
 //!   dispatch（安全 8 层 + 审批卡 + executor 隔离），本模块只供命令目录；
 //! - **静默自举**（`agents.lsp_tool.auto_install=true` 时网关启动期后台
 //!   执行 [`auto_install_missing`]）——用户显式配置 = standing consent，
-//!   与 A6 formatter / LSP 服务器 spawn 同信任级（基础设施装配，不走 8 层）。
+//!   与 formatter / LSP 服务器 spawn 同信任级（基础设施装配，不走 8 层）。
 //!
 //! 命令形态：目录存 program+args（不进 shell——目录是常量，无需引号解析；
-//! Windows 上 npm 是 .cmd 不是 PE，须 `cmd /C` 包装）。rust-analyzer 的
+//! Windows 上 npm 是.cmd 不是 PE，须 `cmd /C` 包装）。rust-analyzer 的
 //! 官方二进制下载形态后置（rustup 组件安装已覆盖主流场景）。
 
 use std::time::Duration;
@@ -141,7 +141,7 @@ async fn run_process(
     timeout: Duration,
 ) -> Result<RunOutput, String> {
     // 安装程序（npm/cargo 等）是 console 程序；gateway 托盘/无控制台运行
-    // （release windows 子系统，2026-09-21）时压掉弹窗（stdio 走 null/管道）。
+    // （release windows 子系统）时压掉弹窗（stdio 走 null/管道）。
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
@@ -160,7 +160,7 @@ async fn run_process(
     let stdout = child.stdout.take().ok_or("stdout not captured")?;
     let stderr = child.stderr.take().ok_or("stderr not captured")?;
     // 独立任务排水（join 句柄在 wait 之后收——超时分支里任务随进程死）。
-    // 有界排干（BUG 2026-10-29 横扫角度 B）：1 MiB 丢头保尾，读错误按
+    // 有界排干（横扫角度 B）：1 MiB 丢头保尾，读错误按
     // EOF 收尾（诚实报错路径不受影响）。
     let out_task =
         tokio::spawn(async move { nemesis_utils::pipe_cap::drain_capped_async(stdout).await });

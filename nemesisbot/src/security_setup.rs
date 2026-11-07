@@ -1,4 +1,4 @@
-//! SecurityPlugin 构造的单一真相源（K1，devtool-upgrade 阶段 4）。
+//! SecurityPlugin 构造的统一定义（devtool-upgrade）。
 //!
 //! 原本内联在 `commands/gateway.rs` Step 9b/9c 的整段装配逻辑原样抽出，
 //! 供 `gateway` 与 headless `run` 两个入口共用——headless 也必须吃到与
@@ -14,10 +14,10 @@
 //!
 //! 测试：`commands/gateway/tests.rs` 的 load_security_rules /
 //! apply_security_layer_switches / load_scanner_full_config 系列继续以
-//! `crate::security_setup::` 全路径覆盖这些函数（随代码同源验证）。
+//! `crate::security_setup:` 全路径覆盖这些函数（随代码同源验证）。
 
 // use 语句随 security feature 走——feature off 时只剩空桩，模块级 use
-// 会变成 unused import warning（--no-default-features 编译门干净）。
+// 会变成 unused import warning（no-default-features 编译门干净）。
 #[cfg(feature = "security")]
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ use tracing::{info, warn};
 #[cfg(feature = "security")]
 use crate::common;
 
-/// `config.security.json` 缺失自愈（2026-09-30 F3，真机 Linux 事故根修）：
+/// `config.security.json` 缺失自愈（真机 Linux 事故根修）：
 /// 文件缺失时从编译期内嵌平台模板落一份到 `<home>/config/`（只在不存在时
 /// 落，**绝不覆盖已有文件**），返回配置路径。
 ///
@@ -97,7 +97,7 @@ pub(crate) async fn build_security_plugin(
     // we read it once more here to avoid reordering init (the SecurityPlugin
     // must be constructed before rules can be loaded onto it).
     let mut security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
-    // F3 缺失自愈：不存在则先落平台模板（绝不覆盖已有文件），后续读取/
+    // 缺失自愈：不存在则先落平台模板（绝不覆盖已有文件），后续读取/
     // 规则加载拿到的都是同一份刚落盘的配置。
     let sec_config_path = ensure_security_config(home);
     // Read config.security.json once; pull both audit_chain and the DLP
@@ -129,7 +129,7 @@ pub(crate) async fn build_security_plugin(
             "{}/workspace/logs/security_logs/audit_chain.jsonl",
             home.display()
         );
-        // 审计链目录显式自建（复核 2026-09-16）：security_logs 目录此前的
+        // 审计链目录显式自建（复核）：security_logs 目录此前的
         // 唯一创建点是 init_audit_log_file——`audit_log_file_enabled=false`
         // + `audit_chain_enabled=true` 组合下链 append 会因目录缺失静默丢
         // 事件（integrity.rs 写入是 `let _ =`）。两者开关独立，目录供给也
@@ -146,7 +146,7 @@ pub(crate) async fn build_security_plugin(
         security_config.audit_chain_path = Some(chain_path.clone());
         info!("[Security] Audit chain enabled at {}", chain_path);
     }
-    // CFG-05（2026-09-16 死键接线）：审批卡超时 + 放行事件日志开关。
+    // CFG-05（死键接线）：审批卡超时 + 放行事件日志开关。
     // 两键此前在模板/typed 声明但从未被 runtime 读取（恒 Default），
     // 属假姿态。缺键 = Default（300s / true），旧行为不变。
     if let Some(t) = sec_json
@@ -154,7 +154,7 @@ pub(crate) async fn build_security_plugin(
         .and_then(|v| v.get("approval_timeout_seconds"))
         .and_then(|x| x.as_u64())
     {
-        // 0 值守卫（复核 2026-09-16）：接线前该键是死键写 0 无害；接线后
+        // 0 值守卫（复核）：接线前该键是死键写 0 无害；接线后
         // 0 直通审批等待 = 所有审批卡秒超时自动拒绝（功能坏死）。拒绝
         // 0 值并保持默认 300——「永不超时」语义将来要支持时须全链路
         // （IM/审批卡/桌面弹窗）统一，届时显式实现。
@@ -175,7 +175,7 @@ pub(crate) async fn build_security_plugin(
         security_config.log_all_operations = b;
         info!("[Security] log_all_operations: {}", b);
     }
-    // L6（2026-10-12 T1）：pre-exec 脚本内容扫描开关（默认开）。独立键 +
+    // pre-exec 脚本内容扫描开关（默认开）。独立键 +
     // security.enabled 主闸兼容（主闸关 = 全管线短路）。构造期消费
     // （关 = 扫描器不装配）；命中走升级审批卡而非硬拦，见 preexec 模块。
     if let Some(b) = sec_json
@@ -186,7 +186,7 @@ pub(crate) async fn build_security_plugin(
         security_config.preexec_scan_enabled = b;
         info!("[Security] preexec_scan_enabled: {}", b);
     }
-    // T4（扩展计划 D2a）：子进程环境凭据清洗开关（默认开）。进程级静态，
+    // （扩展计划）：子进程环境凭据清洗开关（默认开）。进程级静态，
     // 三处 spawn 点（agent loop exec/run_checks 闸 + nemesis-tools
     // shell/async_shell）统一查询；缺键 = 开（旧行为的唯偏离点是多剥
     // 凭据变量，属默认加固）。
@@ -206,9 +206,9 @@ pub(crate) async fn build_security_plugin(
     let sec_config_path = common::security_config_path(home);
     load_security_rules(&plugin, &sec_config_path);
 
-    // P0 vault（D2/D4，2026-09-22 计划 §4）：config.security.json 的 typed
+    // vault（计划）：config.security.json 的 typed
     // `limits` 段 → agent 限额注册表。缺省空表 = 全关；进程级滑动窗口，
-    // 重启清零（计划 §4 诚实边界）。读失败按未配置处理（缺省语义一致，
+    // 重启清零（计划 诚实边界）。读失败按未配置处理（缺省语义一致，
     // 不阻塞启动）。
     let limit_rules = match nemesis_config::load_security_config(&sec_config_path) {
         Ok(sec) => {
@@ -231,9 +231,9 @@ pub(crate) async fn build_security_plugin(
     };
     nemesis_agent::r#loop::limits::set_rules(limit_rules);
 
-    // D1 硬拦保护路径（自杀形态，2026-09-16 用户裁决：不进 exec_unknown_policy
+    // 硬拦保护路径（自杀形态， 用户裁决：不进 exec_unknown_policy
     // 开关）：workspace root + home + `~`。判定在 auditor（命令归一化后扫）。
-    // A-F3 豁免（同日用户裁决方案 1）：workspace root 注入为豁免路径——目标
+    // A- 豁免（同日用户裁决方案 1）：workspace root 注入为豁免路径——目标
     // 为 workspace 内严格后代时「后代臂」不硬拦（法定作业区日常删除交正常
     // 治理）；workspace 本体/祖先/home 非工作区部分照旧硬拦。
     let workspace_root = common::workspace_path(home);
@@ -245,14 +245,14 @@ pub(crate) async fn build_security_plugin(
     plugin
         .auditor()
         .set_self_destruct_exempt_path(&workspace_root.to_string_lossy());
-    // L6（2026-10-12 T1）：pre-exec 扫描的相对脚本路径解析根（workspace，
-    // 与 D1 保护路径同源）。未注入 = 相对路径不解析（诚实降级）。
+    // pre-exec 扫描的相对脚本路径解析根（workspace，
+    // 与 保护路径同源）。未注入 = 相对路径不解析（诚实降级）。
     plugin.set_preexec_workspace_root(&workspace_root.to_string_lossy());
 
-    // Full Access 编辑器放行开关(2026-09-20 用户裁决):创建运行
+    // Full Access 编辑器放行开关(用户裁决):创建运行
     // 时态(**双关,不持久化——进程重启一律回关,必须用户手动再开**),同一
     // Arc 双注入:auditor(evaluate_request 短路判定)+ web editor handler
-    // (WSAPI editor.get/set 读写 + SSE 广播)——单一真相源。初始 roots =
+    // (WSAPI editor.get/set 读写 + SSE 广播)——统一定义。初始 roots =
     // 主 workspace;项目 registry 全部项目根由 editor.get/set 每次刷新
     // 纠正(运行期漂移 fail-safe)。headless `run` 共用本函数:槽安装无
     // 端口也无害。
@@ -261,7 +261,7 @@ pub(crate) async fn build_security_plugin(
     nemesis_web::handlers::editor::install_editor_access(editor_access.clone());
     editor_access.set_workspace_roots(vec![workspace_root.to_string_lossy().to_string()]);
 
-    // §2 免打扰开关（无人值守计划 Part 2，2026-10-11）：config.json 是
+    // 免打扰开关（Part 2）：config.json 是
     // **持久真相源**（`security.approvals.auto_approve`，默认 false = 现网
     // 零变化），运行期投影同一 Arc 双注入：auditor（RequireApproval 臂
     // 自动放行 + 计数）+ web security handler（WSAPI status 透传 +
@@ -283,7 +283,7 @@ pub(crate) async fn build_security_plugin(
         info!("[Security] approvals.auto_approve: true (unattended mode)");
     }
 
-    // 会话级全部放行（2026-10-24 长任务无人值守计划）：持久真相源 = 会话
+    // 会话级全部放行（长任务）：持久权威 = 会话
     // sidecar `{safe_key}.meta.json` 的 `allow_all` 字段（无 TTL 无自动关闭
     // ——纯手动开关，重启后从 sidecar 回载，与免打扰的 config 真相源形态
     // 不同）。运行期投影同一 Arc 双注入：auditor（RequireApproval 臂按
@@ -375,8 +375,8 @@ pub(crate) async fn build_security_plugin(
 }
 
 /// Apply the `layers.dlp` config from `config.security.json` onto a
-/// [`nemesis_security::pipeline::SecurityPluginConfig`]（构造期字段，与
-/// 层开关同阶段）。gateway（[`build_security_plugin`]）与 A4 校准
+/// [`nemesis_security::pipeline:SecurityPluginConfig`]（构造期字段，与
+/// 层开关同阶段）。gateway（[`build_security_plugin`]）与 校准
 /// （`security_calibrate` 的只读生产同源装配）共用——生产面与校准面
 /// 读同一份 DLP 配置，规则评估语义不漂移。缺键 = 保持当前值。
 #[cfg(feature = "security")]
@@ -412,7 +412,7 @@ pub(crate) fn apply_dlp_config(
 }
 
 /// Apply the `layers.<name>.enabled` switches from `config.security.json`
-/// onto a [`nemesis_security::pipeline::SecurityPluginConfig`] **before**
+/// onto a [`nemesis_security::pipeline:SecurityPluginConfig`] **before**
 /// plugin construction — construction time is the only place layer engines
 /// can be turned off (reload cannot rebuild layers).
 ///
@@ -442,7 +442,7 @@ pub(crate) fn apply_security_layer_switches(
     flag("credential", &mut config.credential_enabled);
     flag("ssrf", &mut config.ssrf_enabled);
 
-    // SSRF 主机白名单（2026-10-14 connector e2e 实需接线）：SsrfConfig
+    // SSRF 主机白名单（connector e2e 实需接线）：SsrfConfig
     // 一直支持 `allowed_hosts`（命中即跳过全部检查），但配置面此前不可达
     // ——唯一开关是整层 `enabled=false`，而那会把 guard 变 None，触发
     // connector http 绑定的 fail-closed 拒绝（层关 = 全拒，不是放行）。
@@ -459,7 +459,7 @@ pub(crate) fn apply_security_layer_switches(
             .collect();
     }
 
-    // CFG-06（2026-09-16 死键接线）：注入检测阈值。原键
+    // CFG-06（死键接线）：注入检测阈值。原键
     // `layers.injection.extra.threshold` 此前只在 reload 里读后丢弃
     // （`_` 前缀），构造期从未读取——恒 Default 0.7，属假姿态。
     // 范围外值拒绝（warn）保持 Default。
@@ -496,7 +496,7 @@ pub(crate) fn load_security_rules(
     use nemesis_security::types::{OperationType, SecurityRule};
 
     if !config_path.exists() {
-        // F3 之后此处只在 ensure_security_config 自愈写入失败时可达——
+        // 之后此处只在 ensure_security_config 自愈写入失败时可达——
         // 那是必须让人看见的异常（ABAC 规则空 + 全拒风险），不能 info 悄过。
         warn!(
             "[Security] config file not found and self-heal did not produce it: {}, using defaults (ABAC rules empty)",
@@ -527,7 +527,7 @@ pub(crate) fn load_security_rules(
         info!("[Security] default_action: {}", action);
     }
 
-    // D1（2026-09-16 用户裁决）：exec/spawn 未知命令姿态开关。键存在才
+    // （用户裁决）：exec/spawn 未知命令姿态开关。键存在才
     // 注入——老配置缺键保持 auditor 空串（= default_action 旧行为），
     // 不悄悄变语义。
     if let Some(policy) = config.get("exec_unknown_policy").and_then(|v| v.as_str()) {
@@ -535,7 +535,7 @@ pub(crate) fn load_security_rules(
         info!("[Security] exec_unknown_policy: {}", policy);
     }
 
-    // D2（2026-09-16 用户裁决）：guardian（LLM judge）故障姿态开关。
+    // （用户裁决）：guardian（LLM judge）故障姿态开关。
     // 键存在才注入；空串语义 = 旧行为（Err 落空放行）。
     if let Some(policy) = config
         .get("guardian_failure_policy")
@@ -545,7 +545,7 @@ pub(crate) fn load_security_rules(
         info!("[Security] guardian_failure_policy: {}", policy);
     }
 
-    // 无上下文 LLM 命令审计（2026-09-16 用户拍板默认 off）：覆盖面开关。
+    // 无上下文 LLM 命令审计（默认 off）：覆盖面开关。
     // 键存在才注入——缺键 = 空串 = off（judge 不装配，零 LLM 成本，连旧
     // CRITICAL 审都不跑）。装配点（gateway set_judge）与消费点（agent
     // loop guardian_should_review）同读 plugin 上这一份。
@@ -598,7 +598,7 @@ pub(crate) fn load_security_rules(
     }
 
     // Dir rules —— 键名真相源 `dir_rules`；`directory_rules` 是出厂模板的
-    // 历史键名。F-U4-7（2026-09-15 真机实证）：键名失配曾导致模板整段目录
+    // 历史键名。F-（真机实证）：键名失配曾导致模板整段目录
     // 规则静默失明（if let 不命中、无任何告警），叠加模板 default_action=
     // allow 形成目录删除裸奔面（worker agent rm 掉自身 home 的真实事故）。
     // 现读作别名并 WARN 提示改名；两者同现时 `dir_rules` 优先。

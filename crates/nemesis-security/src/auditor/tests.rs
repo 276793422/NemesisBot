@@ -60,7 +60,7 @@ fn test_auditor_allow_with_rules() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // glob 方言 match-all（后只认 `*`/`**`；裸 `.*` 曾靠正则
             // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
             pattern: "**".to_string(),
             action: "allow".to_string(),
@@ -732,7 +732,7 @@ fn test_auditor_set_rules_overwrites() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // glob 方言 match-all（后只认 `*`/`**`；裸 `.*` 曾靠正则
             // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
             pattern: "**".to_string(),
             action: "allow".to_string(),
@@ -757,7 +757,7 @@ fn test_auditor_set_rules_overwrites() {
     auditor.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            // glob 方言 match-all（D12-1 后只认 `*`/`**`；裸 `.*` 曾靠正则
+            // glob 方言 match-all（后只认 `*`/`**`；裸 `.*` 曾靠正则
             // 任意字符语义 match-all，字面点号后退化为「含点号才命中」）。
             pattern: "**".to_string(),
             action: "deny".to_string(),
@@ -1394,7 +1394,7 @@ fn test_auditor_with_approval_manager_deny() {
 
 #[test]
 fn test_auditor_with_approval_manager_deny_note_in_message() {
-    // F6: 拒绝备注随 verdict 送达 → 拼进拒绝消息回灌给模型（纠错回喂）。
+    // 拒绝备注随 verdict 送达 → 拼进拒绝消息回灌给模型（纠错回喂）。
     // 空备注/None 不追加冒号尾巴。
     struct MockNoteManager {
         note: Option<&'static str>,
@@ -1692,7 +1692,7 @@ fn test_get_audit_log_malformed_line() {
 }
 
 // ============================================================
-// 2026-08-25 coverage push: approval-manager getter, log write
+// coverage push: approval-manager getter, log write
 // error arms, default-arm rules, validate_path Ok arms,
 // filter mismatch arms, monitor loop, read-error path
 // ============================================================
@@ -1848,7 +1848,7 @@ fn test_evaluate_request_default_arm_hardware_and_system_rules() {
 #[test]
 fn test_validate_path_inside_workspace_ok_and_dotdot_escape_denied() {
     let ws = tempfile::tempdir().unwrap();
-    // ① 工作区内真实文件 → canonicalize 后 strip_prefix Ok(rel)，rel 不以 .. 开头 → Ok
+    // ① 工作区内真实文件 → canonicalize 后 strip_prefix Ok(rel)，rel 不以.. 开头 → Ok
     std::fs::write(ws.path().join("file.txt"), "x").unwrap();
     let ok = validate_path_internal(
         &ws.path().join("file.txt").to_string_lossy(),
@@ -1858,7 +1858,7 @@ fn test_validate_path_inside_workspace_ok_and_dotdot_escape_denied() {
     assert!(ok.contains("file.txt"), "validated path: {ok}");
 
     // ② 双方都不存在 → canonicalize 回退原始路径 → strip_prefix Ok("../..")
-    //    → rel 以 .. 开头 → "path outside workspace"
+    //    → rel 以.. 开头 → "path outside workspace"
     let missing_ws = ws.path().join("ws_missing");
     let escape = missing_ws.join("..").join("secret.txt");
     let err = validate_path_internal(&escape.to_string_lossy(), &missing_ws.to_string_lossy())
@@ -1950,7 +1950,7 @@ async fn monitor_security_status_tick_then_shutdown() {
 }
 
 // ============================================================
-// S3 batch 3: export 父目录 / 显式 log_file_path 成功写入 /
+// batch 3: export 父目录 / 显式 log_file_path 成功写入 /
 // validate_path Err 臂 / monitor 关停臂
 // ============================================================
 
@@ -2013,7 +2013,7 @@ async fn test_monitor_security_status_shutdown_arm() {
 }
 
 // ---------------------------------------------------------------------------
-// F3（devtool-upgrade 阶段 5）：审批 pattern 记忆——自动放行 + 层级安全门
+// （devtool-upgrade）：审批 pattern 记忆——自动放行 + 层级安全门
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -2073,7 +2073,7 @@ fn approval_rule_auto_allows_matching_exec_prefix() {
     assert!(!allowed);
     assert!(err.unwrap().contains("approval required"));
 
-    // 命中前缀：cargo test --release 自动放行（F4 验收语义）。
+    // 命中前缀：cargo test --release 自动放行（验收语义）。
     let (allowed, err, _) = auditor.request_permission(&exec_request("r1", "cargo test --release"));
     assert!(allowed, "matching prefix must auto-allow");
     assert!(err.is_none());
@@ -2171,8 +2171,8 @@ fn approval_rule_auto_allow_is_audit_marked_auto_by_rule() {
 }
 
 // ===========================================================================
-// CMD 族修复行为测试（2026-09-16 第二批·灾难复发批）
-// deny-first 三遍扫 / 归一化 / 内层解释器载荷 / 自杀形态 / D1 / D2
+// CMD 族修复行为测试（·灾难复发批）
+// deny-first 三遍扫 / 归一化 / 内层解释器载荷 / 自杀形态 / /
 // ===========================================================================
 
 fn allow_auditor() -> SecurityAuditor {
@@ -2323,7 +2323,7 @@ fn self_destruct_workspace_subpath_window_not_blocked() {
 
 #[test]
 fn self_destruct_single_file_delete_not_blocked() {
-    // 诚实边界：无递归旗标的单文件删除是 ABAC/D1 治理面，不进硬拦。
+    // 诚实边界：无递归旗标的单文件删除是 ABAC/ 治理面，不进硬拦。
     let auditor = auditor_with_protected(&["/home/zoo/proj"]);
     let (allowed, _, _) = auditor.request_permission(&exec_request("sd11", "rm build/output.txt"));
     assert!(allowed);
@@ -2349,7 +2349,7 @@ fn self_destruct_windows_forms_denied() {
 
 #[test]
 fn self_destruct_full_path_and_exe_suffix_bins_denied() {
-    // 闭环批 2026-10-13：bin_key 取 basename + 剥 .exe——`/bin/rm`、
+    // 闭环-13：bin_key 取 basename + 剥.exe——`/bin/rm`、
     // `del.exe` 全路径/带后缀形态此前打不中 DESTRUCTIVE_BINS（key 带目录/
     // 后缀），自毁硬拦对这种形态整体失明（fail-open）。保护集覆盖两族
     // 目标（POSIX 家目录 + Windows 用户目录），命令形态与目标逐条对应。
@@ -2377,7 +2377,7 @@ fn auditor_with_protected_and_exempt(paths: &[&str], exempt: &str) -> SecurityAu
 
 #[test]
 fn self_destruct_workspace_descendant_exempt_a_f3() {
-    // A-F3 方案 1：目标为 workspace（豁免路径）内严格后代的绝对路径不再
+    // A- 方案 1：目标为 workspace（豁免路径）内严格后代的绝对路径不再
     // 硬拦——`rm -rf <ws>/node_modules` 是日常重装依赖操作，交正常治理。
     let auditor =
         auditor_with_protected_and_exempt(&["/home/zoo", "/home/zoo/proj"], "/home/zoo/proj");
@@ -2468,7 +2468,7 @@ fn exec_unknown_auditor(default_action: &str, policy: &str) -> SecurityAuditor {
 
 #[test]
 fn exec_unknown_policy_ask_intercepts_unmatched() {
-    // D1=ask：无规则命中 → RequireApproval（default deny 被 ask 分支抢先）。
+    // =ask：无规则命中 → RequireApproval（default deny 被 ask 分支抢先）。
     let auditor = exec_unknown_auditor("deny", "ask");
     let (allowed, _, _) = auditor.request_permission(&exec_request("d1a", "someunknown --flag"));
     assert!(!allowed);
@@ -2541,7 +2541,7 @@ impl ApprovalManager for DownManager {
 
 #[test]
 fn guardian_failure_approval_fails_closed_without_manager() {
-    // D2 fail-closed：无 manager = Err（调用方按拒绝处理）。
+    // fail-closed：无 manager = Err（调用方按拒绝处理）。
     let auditor = ask_auditor();
     let res = auditor.request_guardian_failure_approval("exec", "guardian judge error", None);
     assert!(res.is_err(), "no manager must fail closed");
@@ -2566,7 +2566,7 @@ fn guardian_failure_approval_routes_to_running_manager() {
 }
 
 // ===========================================================================
-// Full Access 编辑器放行开关(2026-09-20 用户裁决)
+// Full Access 编辑器放行开关(用户裁决)
 // 短路位置:自毁硬拦之后、规则遍之前——三条行为锁:
 // ① 开关关(或未注入)= 旧行为逐字节一致;② 自毁硬拦不被开关绕过;
 // ③ 开关开 = 绕过显式 deny 规则,审计 policy_rule=`editor_access:*`。
@@ -2715,7 +2715,7 @@ fn audit_jsonl_explicit_disable_wins() {
 }
 
 /// limit 升级但无审批 manager：Err fail-closed，且拒绝决策落审计
-/// （A-F5 语义——fail-closed 也是安全决策，必须可追溯）。
+/// （A- 语义——fail-closed 也是安全决策，必须可追溯）。
 #[test]
 fn test_request_limit_approval_no_manager_fails_closed_with_audit() {
     let dir = tempfile::tempdir().unwrap();
@@ -2749,7 +2749,7 @@ fn test_request_limit_approval_no_manager_fails_closed_with_audit() {
 }
 
 // ---------------------------------------------------------------------------
-// §2 免打扰（2026-10-11 无人值守计划 Part 2）：RequireApproval 自动放行臂
+// 免打扰（Part 2）：RequireApproval 自动放行臂
 // ---------------------------------------------------------------------------
 
 use crate::approval_auto::ApprovalAutoApproveState;
@@ -2813,8 +2813,8 @@ fn approval_auto_on_allows_and_marks_auto_by_config() {
 }
 
 // ===========================================================================
-// L6（2026-10-12 T1）：pre-exec force_approval 升格语义
-// 非硬拒判定一律升格 RequireApproval（policy=preexec_scan）；F3「总是允许」
+// pre-exec force_approval 升格语义
+// 非硬拒判定一律升格 RequireApproval（policy=preexec_scan）；「总是允许」
 // 规则表对带旗标请求跳过（卡片必须到达人）；硬拒（deny 规则）不受影响。
 // ===========================================================================
 
@@ -2897,7 +2897,7 @@ fn approval_auto_non_cluster_channel_no_persist() {
 #[test]
 fn approval_auto_persist_layer_gate_blocks_critical_nonexec() {
     // 层级门：CRITICAL 非 exec 自动放行本身不做闸（无人值守语义），但
-    // 不落持久规则（与 M7 always 同门——CRITICAL 只允许 process_exec 豁免）。
+    // 不落持久规则（与 always 同门——CRITICAL 只允许 process_exec 豁免）。
     let (auditor, state) = auto_auditor(true);
     let dir = tempfile::tempdir().unwrap();
     auditor.set_approval_rules(rules_hot(&dir, &[]));
@@ -2922,7 +2922,7 @@ fn approval_auto_persist_layer_gate_blocks_critical_nonexec() {
     assert!(rules.is_empty(), "CRITICAL 非 exec 不落规则: {rules:?}");
 }
 
-// ---------- CMD-12（2026-10-13）：deny 规则的复合命令分段命中 ----------
+// ---------- CMD-12：deny 规则的复合命令分段命中 ----------
 
 fn deny_exec_auditor(pattern: &str) -> SecurityAuditor {
     let config = AuditorConfig {
@@ -3084,7 +3084,7 @@ fn force_approval_escalates_default_allow_decision() {
     assert!(err.unwrap().contains("approval required"));
 }
 
-// ---- 行动代理 P0（PLAN §6.2 凭条 approval_ref）：request_permission_tracked 语义回归锁 ----
+// ---- 行动代理 （PLAN 凭条 approval_ref）：request_permission_tracked 语义回归锁 ----
 // 契约：第三值（approval_ref）仅在「RequireApproval 经交互审批管理器人工批准」时为
 // Some(req.id)；直通 / 规则表 auto_by_rule / 免打扰 auto / 策略拒绝 / 拒绝 / 无管理器
 // pending 恒 None——凭条不伪造背书。
@@ -3198,8 +3198,8 @@ fn tracked_auto_by_rule_returns_none() {
 }
 
 // ---------------------------------------------------------------------------
-// 会话级全部放行（2026-10-24 长任务无人值守计划）：RequireApproval 自动放行
-// 臂（F3 → session → §2 → 人工卡；含 force 卡与 CRITICAL，deny 不可达）。
+// 会话级全部放行（长任务）：RequireApproval 自动放行
+// 臂（session → → 人工卡；含 force 卡与 CRITICAL，deny 不可达）。
 // ---------------------------------------------------------------------------
 
 use crate::session_allow_all::SessionAllowAllState;
@@ -3373,7 +3373,7 @@ fn session_allow_all_cluster_ask_matches_by_session_key() {
 
 #[test]
 fn session_allow_all_beats_auto_config_in_audit_attribution() {
-    // 优先级钉死：session 块先于 §2 免打扰——两者都开时审计归因必须是
+    // 优先级钉死：session 块先于 免打扰——两者都开时审计归因必须是
     // session_allow_all（更具体的意图先落标记）。
     let dir = tempfile::tempdir().unwrap();
     let auditor = SecurityAuditor::new(AuditorConfig {
@@ -3408,8 +3408,8 @@ fn session_allow_all_beats_auto_config_in_audit_attribution() {
     );
 }
 
-// ===== L01 敏感 flag 放行臂二次校验（2026-11-01）=====
-// pattern 归约（规则表 allow / F3 审批记忆）不区分破坏性 flag——命中
+// ===== 敏感 flag 放行臂二次校验=====
+// pattern 归约（规则表 allow / 审批记忆）不区分破坏性 flag——命中
 // 敏感 flag 的命令必须降级人工确认，不得静默自动放行。
 
 #[test]
@@ -3456,7 +3456,7 @@ fn l01_f3_memory_rule_flag_gate_e2e() {
     };
     auditor.set_approval_rules(rules_hot(&dir, &[git_push_rule]));
 
-    // 无 flag → F3 记忆规则自动放行（无 request_id = 没弹卡）。
+    // 无 flag → 记忆规则自动放行（无 request_id = 没弹卡）。
     let (allowed, _, request_id) =
         auditor.request_permission_tracked(&exec_request("l01c", "git push origin main"), None);
     assert!(allowed, "plain push 由记忆规则自动放行");
@@ -3475,13 +3475,13 @@ fn l01_f3_memory_rule_flag_gate_e2e() {
     assert_eq!(auditor.pending_count(), 1, "fall through 后必须入 pending");
 }
 
-// BUG-20261104-386：audit.jsonl 追加的行原子性——`writeln!` 是正文与
+// audit.jsonl 追加的行原子性——`writeln!` 是正文与
 // "\n" 两次 write，append 模式下每片段独立定位 EOF，多线程安全判定并发
 // 落审计可把别人的行插进本行中间粘成一行；读端 `get_audit_log` 对 parse
 // 失败行 trace 级静默跳过 = 审计事件丢失（人工放行 CRITICAL 的 approved
-// 事件恰在此链，A-F5 可追溯性要求不得丢）。修复 = 整行（含换行）单次
+// 事件恰在此链，A- 可追溯性要求不得丢）。修复 = 整行（含换行）单次
 // write_all（O_APPEND / FILE_APPEND_DATA 每次 write 定位原子）。与
-// chat_log R100 同族。
+// chat_log 同族。
 //
 // 真红注记：撕裂是时序竞态，旧代码下本测试红是概率性的（长 reason +
 // 多线程 + 高频次提高命中面）；修复后按 OS 追加原子性应当确定性绿。

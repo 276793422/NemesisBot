@@ -1,13 +1,13 @@
-//! Swarm M3：master 侧 `nb_bus` 装配（board 信封协议的 gateway 侧 glue）。
+//! Swarm：master 侧 `nb_bus` 装配（board 信封协议的 gateway 侧 glue）。
 //!
-//! 职责（impl-plan §5.1-§5.3）：RPC 层只注册一个 [`nemesis_cluster::envelope::NB_BUS_ACTION`]
+//! 职责（impl-plan）：RPC 层只注册一个 [`nemesis_cluster::envelope:NB_BUS_ACTION`]
 //! action，信封内 `ns/op` 路由——加功能不加 action。
 //!
 //! - `board.comment.post`（worker 上行发言）：幂等预检 → 额度三闸 → 落库
-//!   （G12 幂等 + seq 台账）→ 立即返回首响，裁决器 + wake 下行在 tokio
+//!   （幂等 + seq 台账）→ 立即返回首响，裁决器 + wake 下行在 tokio
 //!   任务里异步跑（handler 不等投递）。
 //! - `board.sync`（worker 上线补拉）：`since_seq` → 台账增量。
-//! - wake 下行（master → worker）：裁决器产出目标 → 组装 §5.2② 唤醒包
+//! - wake 下行（master → worker）：裁决器产出目标 → 组装 ② 唤醒包
 //!   （线程上下文 20 条 + reply_hint.max_turns_left + seq）→ 逐个 RPC 投递；
 //!   离线/额度耗尽跳过（board.sync 兜底 / 推人）。
 //! - 规则③（频道无 @ → 主持人）：master 本地 agent 直调裁决（[SILENT] 或
@@ -42,18 +42,18 @@ pub struct MasterBusDeps {
     /// 主 AgentLoop 后置装配桥：nb_bus 注册时 agent_loop 尚未构建
     /// （gateway 装配顺序），构建完成后 `set()` 填入；主持人裁决经它直调。
     pub moderator_loop: Arc<OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
-    /// G（goal P3）：master workspace 根——交付回传文件的落盘父目录
+    /// G（goal）：master workspace 根——交付回传文件的落盘父目录
     /// （`board/files/issue_<id>/`，与附件通道同目录约定）。
     pub workspace: std::path::PathBuf,
     /// 交付落盘时间戳源（`{ms}_{safe_name}` 命名前缀）。缺省墙钟；测试
-    /// 注入固定值使「预埋同名目录→写必失败」成为确定性事件。2026-10-10
+    /// 注入固定值使「预埋同名目录→写必失败」成为确定性事件。
     /// run170 s1 假红根治：旧的静态 8s 时间窗赌处理器取点落窗内，慢机上
-    /// 布阵+前置开销吃穿窗沿（实录该测试墙钟 20.4s）；布阵线程又追不上
+    /// 布阵+前置开销吃穿窗沿（实测该测试墙钟 20.4s）；布阵线程又追不上
     /// 爬行时钟——一切铺窗策略治不了这个类，时间可注入才能根治。
     pub now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
-/// 线程上下文随 wake 包下发的条数（impl-plan §5.2②：默认 20）。
+/// 线程上下文随 wake 包下发的条数（impl-plan ②：默认 20）。
 const WAKE_CONTEXT_MESSAGES: usize = 20;
 
 /// 注册 master 侧 `nb_bus` handler（gateway 在 cluster Arc 化之后调用）。
@@ -77,7 +77,7 @@ fn handle_nb_bus(
         }
     };
 
-    // D0b（goal P2）：ns="task" 路由——worker 出队开跑上报（queued vs
+    // （goal）：ns="task" 路由——worker 出队开跑上报（queued vs
     // executing 分界，重平衡只挪 queued 单）。
     if env.ns == "task" {
         let reply = match env.op.as_str() {
@@ -94,7 +94,7 @@ fn handle_nb_bus(
         return Ok(reply.to_json());
     }
 
-    // M5（2026-10-10 集群无人值守硬化）：ns="approval"——worker ask 上行
+    // （集群无人值守硬化）：ns="approval"——worker ask 上行
     // 登记/摘除（跨节点批复桥的 master 侧数据源；注册表与 SSE 发布在
     // nemesis_web::remote_approval，board_bus 只做信封路由）。
     if env.ns == nemesis_web::remote_approval::NS_APPROVAL {
@@ -124,7 +124,7 @@ fn handle_nb_bus(
     }
 
     let reply = match env.op.as_str() {
-        "comment.post" => handle_comment_post(deps, &env),
+        "comment.post" => handle_comment_post(deps, &env, rpc_from_node(&payload)),
         "comment.list" => handle_comment_list(deps, &env),
         "sync" => handle_sync(deps, &env),
         "claimable.list" => handle_claimable_list(deps, &env, rpc_from_node(&payload)),
@@ -148,13 +148,13 @@ fn str_field(body: &serde_json::Value, key: &str) -> String {
         .to_string()
 }
 
-/// M5：worker ask 上行登记（ns="approval" op="ask_register"）。`_rpc.from`
+/// worker ask 上行登记（ns="approval" op="ask_register"）。`_rpc.from`
 /// 即 worker 身份（RPC server 注入，防伪造）；登记进远程审批注册表并广播
 /// SSE `approval-remote-requested`（master Dashboard 卡片数据源）。同
 /// request_id 重登 = 覆盖（防御性幂等——裁决真相源仍在 worker 的 pending
 /// 表，先到先得）。
 ///
-/// §2 免打扰（无人值守计划 Part 2）：开关开 = 不登记不广播不弹卡，直接
+/// 免打扰（Part 2）：开关开 = 不登记不广播不弹卡，直接
 /// spawn 下发 `approved=true` 给 worker（send_verdict 失败只 warn——worker
 /// 侧照常按 300s 超时拒绝，无人值守语义退化为「暂缓」而非卡死 master）。
 fn handle_approval_ask_register(
@@ -239,7 +239,7 @@ fn handle_approval_ask_register(
     )
 }
 
-/// M5：worker ask 摘除上行（ns="approval" op="ask_closed"）——本节点裁决
+/// worker ask 摘除上行（ns="approval" op="ask_closed"）——本节点裁决
 /// 生效（本地 Dashboard 批复）后通知 master 同步关卡。幂等：条目不存在 =
 /// success {closed:false}（重复上行不报错；超时自动拒在 worker 侧不产生
 /// 本上行——注册表 TTL 到期自然过期）。
@@ -281,7 +281,7 @@ fn handle_approval_ask_closed(env: &Envelope) -> EnvelopeResponse {
     EnvelopeResponse::success(env, serde_json::json!({ "closed": closed }))
 }
 
-/// D0b：worker 出队开跑上报（ns="task" op="started"）。`_rpc.from` 必须与
+/// worker 出队开跑上报（ns="task" op="started"）。`_rpc.from` 必须与
 /// 派发 worker_id 一致（防伪造）；非 dispatched 态 = 诚实 failure（重复
 /// 上报/已终态）。queued vs executing 的分界由此确立。
 fn handle_task_started(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> EnvelopeResponse {
@@ -312,7 +312,7 @@ fn handle_task_started(deps: &MasterBusDeps, env: &Envelope, from_node: &str) ->
             EnvelopeResponse::success(env, serde_json::json!({ "running": true }))
         }
         Ok(false) => {
-            // claim 竞速（T43 实证）：dispatch_issue_core 的派发行在
+            // claim 竞速（实证）：dispatch_issue_core 的派发行在
             // submit ACK 之后才落库（board.rs try_claim_dispatch 在
             // submit_peer_chat 之后），而 worker 空闲即取即跑——started
             // 上报可跑赢插行，此刻任务**正在执行**。行不存在 = 可重试
@@ -345,7 +345,7 @@ fn handle_task_started(deps: &MasterBusDeps, env: &Envelope, from_node: &str) ->
     }
 }
 
-/// G（goal P3）交付文件回传（ns="task" op="delivery.files"）：worker 把
+/// G（goal）交付文件回传（ns="task" op="delivery.files"）：worker 把
 /// 交付清单里的文件（base64）推给 master，master 落盘 `board/files/issue_<id>/`
 /// 并 add_attachment 登记——前端详情弹窗附件区即可下载（与 attachment.add
 /// 同一落点）。
@@ -517,8 +517,27 @@ fn fallback_envelope(payload: &serde_json::Value) -> Envelope {
     }
 }
 
-/// `board.comment.post`：幂等 → 额度 → 落库 → 异步裁决投递。
-fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse {
+/// `board.comment.post`：身份闸 → 幂等 → 额度 → 落库 → 异步裁决投递。
+///
+/// 身份闸（BUG-20261107-008）：worker 上行身份必须与传输层一致——
+/// swarm-impl-plan 原始契约「身份从帧的 `_rpc.from` 取（伪造不了），落库
+/// author=agent{from_node}」；信封 body 里的 `sender` 字段是客户端可断言
+/// 的冗余投影，不是信任锚。不校验则 worker 可（a）轮换 sender.id 绕额度
+/// 三闸（额度按 sender.id 记账）、（b）sender.type="admin" 冒充人类发言
+/// （actor_label 信任标签进全集群 LLM 上下文）、（c）冒名其他节点污染
+/// 溯源。worker 正常发送侧（cluster_agent build_comment_post_envelope）
+/// 恒发 `{type:"agent", id:self_node_id}`，校验零误伤；dashboard 本地
+/// 发言走 from_local 旁路（web 层登录鉴权）不经本函数。
+fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> EnvelopeResponse {
+    if from_node.is_empty() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                "missing _rpc.from (sender identity)",
+            ),
+        );
+    }
     let body = &env.body;
     let client_msg_id = match envelope::client_msg_id(body) {
         Some(id) => id.to_string(),
@@ -569,6 +588,19 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
             EnvelopeError::new(envelope::error_code::VALIDATION, "missing sender.id"),
         );
     };
+    // 身份一致性闸（BUG-20261107-008）：sender.type 只认 agent（admin/system
+    // 只能本地产生），sender.id 必须等于传输层身份。
+    if sender_type != "agent" || sender_id != from_node {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                format!(
+                    "sender 身份与传输层不一致（要求 agent/{from_node}，收到 {sender_type}/{sender_id}）"
+                ),
+            ),
+        );
+    }
     let Some(content) = body
         .get("content")
         .and_then(|v| v.as_str())
@@ -585,7 +617,7 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    // D11-1（2026-10-13 第 6 轮审计）：远端 kind_tag 白名单——store 侧
+    // （第 6 轮审计）：远端 kind_tag 白名单——store 侧
     // `CommentType::from_str(kind_tag)` 对未知值回退 Comment，但
     // "system"/"status_change"/"comment" 三值**有**映射：worker 上行可自
     // 选 ctype 落成系统/状态变更/普通评论形态（讨论区伪装系统痕迹、伪造
@@ -647,8 +679,8 @@ pub enum PostError {
     DedupCheck(String),
 }
 
-/// wake 计划 → 首响摘要（goal P1/F3）。独立纯函数：幂等命中与新落库两条
-/// 路径共用同一形态——「相同首响」契约（G12）由同源生成保证。
+/// wake 计划 → 首响摘要（goal）。独立纯函数：幂等命中与新落库两条
+/// 路径共用同一形态——「相同首响」契约由同源生成保证。
 fn wake_summary_json(plan: &WakePlan) -> serde_json::Value {
     serde_json::json!({
         "woke": plan.targets,
@@ -664,9 +696,9 @@ fn wake_summary_json(plan: &WakePlan) -> serde_json::Value {
 /// ③ 落库（全副作用 + seq 台账）→ ④ 新消息异步裁决 + wake 下行（handler
 /// 立即返回首响，投递不占 ACK）。worker RPC 上行（[`handle_comment_post`]，
 /// `from_local=false`）与 dashboard 本地发言（[`post_discussion_locally`]，
-/// `from_local=true`）共用，G3/G12 语义同源。
+/// `from_local=true`）共用，/ 语义同源。
 ///
-/// `from_local` 同时是 M5 审批回源闸（D11-2，2026-10-13 第 6 轮审计）：
+/// `from_local` 同时是 审批回源闸（第 6 轮审计）：
 /// `/approve|/deny <短号>` → 远程审批 verdict 是**人**的裁决——曾对一切
 /// 来源开放，worker 经 board.comment.post 上行一条同形文本即可批复自己
 /// 的待审批卡（审批闸被执行方自答击穿）。回源只走 dashboard 本地发言
@@ -683,8 +715,8 @@ fn post_discussion_core(
     kind_tag: &str,
     from_local: bool,
 ) -> Result<PostedMessage, PostError> {
-    // ⓪ wake 裁决前置（goal P1/F3）：裁决器是纯函数，先于落库计算——
-    // 幂等命中与新落库的首响都带 wake 摘要，G12「相同首响」契约不破；
+    // ⓪ wake 裁决前置（goal）：裁决器是纯函数，先于落库计算——
+    // 幂等命中与新落库的首响都带 wake 摘要，「相同首响」契约不破；
     // 异步任务只做投递 + 主持人裁决。
     let mut ctx = WakeContext {
         thread_kind: thread_kind.to_string(),
@@ -729,7 +761,7 @@ fn post_discussion_core(
         &nodes,
     );
 
-    // ① 幂等预检（不扣额度）：重复请求直接返回缓存首响 + 当前 wake 摘要（G12）。
+    // ① 幂等预检（不扣额度）：重复请求直接返回缓存首响 + 当前 wake 摘要。
     match deps.store.check_duplicate(&sender.id, client_msg_id) {
         Ok(Some(cached)) => {
             let mut response = cached;
@@ -785,7 +817,7 @@ fn post_discussion_core(
     }
 
     // ④ 异步投递 + 主持人裁决：plan/nodes 已在 ⓪ 裁决段算好（move 进任务），
-    // wake 摘要已随首响带回前端（F3）——本任务只做投递 + 主持人裁决。
+    // wake 摘要已随首响带回前端——本任务只做投递 + 主持人裁决。
     ctx.seq = posted.seq;
 
     let deps_for_task = DepsForTask {
@@ -794,9 +826,9 @@ fn post_discussion_core(
         cluster: deps.cluster.clone(),
         moderator_loop: deps.moderator_loop.clone(),
     };
-    // 首响附 wake 摘要（F3）——在 spawn 前（plan 被 move 进异步任务）。
+    // 首响附 wake 摘要——在 spawn 前（plan 被 move 进异步任务）。
     let wake_summary = wake_summary_json(&plan);
-    // panic 留痕（2026-10-11 planner 事故固化）：裁决投递链 panic 不再
+    // panic 留痕（planner 事故固化）：裁决投递链 panic 不再
     // 无声——ERROR 日志 + issue 线程系统评论（讨论线程无单可挂，只记日志）。
     // 取消（关机/estop）= 正常流不留痕。
     let handle = tokio::spawn(async move {
@@ -828,10 +860,10 @@ fn post_discussion_core(
         });
     }
 
-    // M5（2026-10-10 集群无人值守硬化）：看板评论回源——issue 线程的
+    // （集群无人值守硬化）：看板评论回源——issue 线程的
     // `/approve|/deny <短号>` 评论转发远程审批（短号在注册表才动作，杂散
     // 同形文本零影响；失败留痕为系统评论）。与 deliver_wakeups 并行的旁路
-    // spawn，不阻塞首响。D11-2：只认本地发言（见 fn doc）。
+    // spawn，不阻塞首响。：只认本地发言（见 fn doc）。
     if from_local
         && thread_kind == thread_kind::ISSUE
         && nemesis_web::remote_approval::looks_like_approval_reply(content)
@@ -888,7 +920,7 @@ pub fn post_discussion_locally(
     }
 }
 
-/// [`nemesis_board::service::DiscussionIngress`] 实现：dashboard 发言桥
+/// [`nemesis_board::service:DiscussionIngress`] 实现：dashboard 发言桥
 /// （gateway 装配进 BoardService，web 层 `board.channel.post` 经它入管线）。
 pub struct LocalDiscussionIngress {
     pub deps: MasterBusDeps,
@@ -918,9 +950,9 @@ impl nemesis_board::service::DiscussionIngress for LocalDiscussionIngress {
     }
 }
 
-/// `board.comment.list`（D2 读取臂）：worker 轮询讨论线程——纯查表回
+/// `board.comment.list`（读取臂）：worker 轮询讨论线程——纯查表回
 /// 消息清单，不落库、不占额度三闸（额度管的是写侧噪声，读是廉价操作）。
-/// 错误处理沿 comment.post 的 envelope 先例：字段缺失 = VALIDATION，
+/// 错误处理沿 comment.post 的 envelope 字段缺失 = VALIDATION，
 /// 存储失败 = INTERNAL。limit 收敛 1..=500（防单次全量拖库；线程本身
 /// 受写侧额度约束不会大，收敛是防御性的）。
 fn handle_comment_list(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse {
@@ -1016,7 +1048,7 @@ fn handle_comment_list(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
     }
 }
 
-/// `board.sync`：增量补拉（G8 的 master 侧）。
+/// `board.sync`：增量补拉（的 master 侧）。
 fn handle_sync(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse {
     let since_seq = env
         .body
@@ -1066,7 +1098,7 @@ struct WakeContext {
 }
 
 /// wake 下行 + 主持人裁决（tokio 任务主体）。plan/nodes 由同步段算好传入
-/// （F3：裁决已随首响带回前端，本任务只做投递 + 主持人裁决）。
+/// （裁决已随首响带回前端，本任务只做投递 + 主持人裁决）。
 async fn deliver_wakeups(
     deps: DepsForTask,
     ctx: WakeContext,
@@ -1076,7 +1108,7 @@ async fn deliver_wakeups(
     let self_node_id = deps.cluster.node_id().to_string();
     let thread_key = format!("{}:{}", ctx.thread_kind, ctx.thread_id);
 
-    // 审计日志（G3 出口：谁被唤醒 / 谁被跳过 / 为什么）。
+    // 审计日志（出口：谁被唤醒 / 谁被跳过 / 为什么）。
     let skipped_summary: Vec<String> = plan
         .skipped
         .iter()
@@ -1094,7 +1126,7 @@ async fn deliver_wakeups(
     );
 
     // 线程额度耗尽 → 不再投递只推人（护栏握在 master 手里；dashboard
-    // 通知在批次 E 接线，此处先日志可见）。
+    // 通知在批次 E 接线，此处先日志可）。
     let turns_left = deps.quota.turns_left(&thread_key);
     if turns_left == 0 {
         tracing::warn!(
@@ -1129,8 +1161,8 @@ async fn deliver_wakeups(
     // wake.post 下行：逐个在线目标投递；失败 warn（board.sync 兜底）。
     // 被点名的是主持人自己 → 本地裁决（master 没有 worker handler，不
     // 给自己发 wake.post）；此时 master 以**参与者**身份回话（@all/@点名
-    // 已把其他人直接唤醒，master 不该再以裁决者口吻转达点名——2026-10-23
-    // 用户实录：@all 后 master 把消息转述成对 @Product Manager 的喊话）。
+    // 已把其他人直接唤醒，master 不该再以裁决者口吻转达点名——
+    // 用户@all 后 master 把消息转述成对 @Product Manager 的喊话）。
     let mut need_moderator = plan.to_moderator;
     let mut master_woken = false;
     if !plan.targets.is_empty() {
@@ -1195,11 +1227,11 @@ async fn deliver_wakeups(
 ///   [SILENT]，见 cluster_agent::build_discussion_prompt）——名册降级为
 ///   上下文（标注「已被直接唤醒，无需转达」），不再诱导转达式点名。
 ///
-/// 发送者身份渲染（LLM 投影的单一真相源，2026-10-23 身份透传）：Actor.kind
+/// 发送者身份渲染（LLM 投影的统一定义， 身份透传）：Actor.kind
 /// 全链路落库齐全（上行带 type / DB 存 type / 台账投影带 sender_type），此前
 /// 丢失在 wake 信封与 prompt 渲染——worker 的 LLM 只见裸 id，无从知晓说话的
 /// 是人还是节点（@all 后人类名不在节点名册，agent 想 @ 说话对象只能 @ 自己
-/// ——2026-10-23 用户实录）。admin=人类用户 / agent=集群节点 / system=系统
+/// —— 用户）。admin=人类用户 / agent=集群节点 / system=系统
 /// 播报；未知/空 kind 退化为裸 id（旧 master wake 包兼容，零破坏）。
 pub(crate) fn actor_label(kind: &str, id: &str) -> String {
     match kind {
@@ -1251,10 +1283,10 @@ fn build_moderator_prompt(
 ///
 /// `participant=false`（规则③：频道无 @）→ 裁决者模式：LLM 决定是否要点名
 /// 他人。`participant=true`（master 被 @/@all 显式唤醒）→ 参与者模式：像
-/// worker 一样正常回话（他人已被直接唤醒，转达点名是冗余——2026-10-23
-/// 用户实录：@all 后 master 把消息转述成对含空格名节点的喊话）。
+/// worker 一样正常回话（他人已被直接唤醒，转达点名是冗余——
+/// 用户@all 后 master 把消息转述成对含空格名节点的喊话）。
 ///
-/// §9.6 注意点 1：主 agent 人格 system prompt 可能污染结构化输出——解析
+/// 注意点 1：主 agent 人格 system prompt 可能污染结构化输出——解析
 /// 从宽（全文扫 @token / [SILENT] 子串），不做严格格式断言。
 async fn run_moderator(
     deps: DepsForTask,
@@ -1270,7 +1302,7 @@ async fn run_moderator(
     };
 
     let thread_ctx = build_thread_context_text(&deps.store, &ctx)?;
-    // F5（goal P1）：节点名册注入——主持人 LLM 不知道有谁就无法做出 informed
+    // （goal）：节点名册注入——主持人 LLM 不知道有谁就无法做出 informed
     // 的 @ 点名（「设备之间不会互相交互」的深层根因）。名册与裁决器投影同源。
     let roster = nodes
         .iter()
@@ -1373,7 +1405,7 @@ async fn run_moderator(
     Ok(())
 }
 
-/// 组装 §5.2② wake.post 下行信封（唤醒原因 + 线程上下文 + 新消息 +
+/// 组装 ② wake.post 下行信封（唤醒原因 + 线程上下文 + 新消息 +
 /// reply_hint + seq）。issue 线程随带 title / prd_summary（描述截断），
 /// worker 醒来一次拿全背景。
 fn build_wake_envelope(
@@ -1383,7 +1415,7 @@ fn build_wake_envelope(
     event_label: &str,
 ) -> Result<serde_json::Value, String> {
     let messages = thread_context_json(store, ctx)?;
-    // F7（goal P1）：频道名透传——channel 线程此前 title 恒空，worker 只见
+    // （goal）：频道名透传——channel 线程此前 title 恒空，worker 只见
     // 不透明的 "channel:N"，不知道自己在 #dev 还是 #general。
     let (title, prd_summary) = if ctx.thread_kind == thread_kind::ISSUE {
         match store.get_issue(ctx.thread_id) {
@@ -1443,7 +1475,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{t}…")
 }
 
-/// 线程上下文最近 N 条（§5.2②：messages 数组）。issue → 评论；channel →
+/// 线程上下文最近 N 条（②：messages 数组）。issue → 评论；channel →
 /// 频道消息。
 fn thread_context_json(
     store: &nemesis_board::BoardStore,
@@ -1517,7 +1549,7 @@ fn build_thread_context_text(
 }
 
 // ---------------------------------------------------------------------------
-// Worker 侧 nb_bus（G4 被动响应 + G8 离线补拉）
+// Worker 侧 nb_bus（被动响应 + 离线补拉）
 // ---------------------------------------------------------------------------
 
 /// board.sync 补拉周期（兜底通道节拍；实时靠 wake.post 推送，60s 一拍
@@ -1526,20 +1558,20 @@ const BOARD_SYNC_INTERVAL_SECS: u64 = 60;
 /// 单次补拉上限（与 master 侧 handle_sync 的 clamp 上限对齐）。
 const BOARD_SYNC_PULL_LIMIT: i64 = 500;
 
-/// worker 下行幂等状态（impl-plan §5.2②：每线程记录已处理最大 seq，
+/// worker 下行幂等状态（impl-plan ②：每线程记录已处理最大 seq，
 /// `seq ≤` 已处理的直接丢弃——RPC 重发/TCP 重传天然免疫）。进程内存态
 /// （重启清零；重启后 board.sync 从 0 重拉，agent 自行判断过时——impl-plan
-/// §5.2③ 的诚实边界）。
+/// ③ 的诚实边界）。
 pub struct WorkerWakeState {
     inner: std::sync::Mutex<WorkerWakeInner>,
     /// 盘上快照路径（Some = 每次 commit/advance 原子落盘；None = 纯内存，
-    /// 测试/无需持久化场景）。G8（2026-09-09 双机）：worker 重启水位接续，
+    /// 测试/无需持久化场景）。（双机）：worker 重启水位接续，
     /// 历史 @ 不再全量重放（此前内存态归零 → board.sync since_seq=0 →
     /// 已处理的讨论整批重跑，重复发言只被模型沉默行为侥幸掩盖）。
     persist_path: Option<std::path::PathBuf>,
 }
 
-/// 盘上快照形态（ participated 可由 threads.keys() 重建，不落盘）。
+/// 盘上快照形态（participated 可由 threads.keys() 重建，不落盘）。
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 struct WorkerWakeSnapshot {
     threads: HashMap<String, i64>,
@@ -1568,7 +1600,7 @@ impl WorkerWakeState {
         }
     }
 
-    /// G8：从盘上快照恢复（无文件/损坏 → 空账起步，不炸）。之后每次
+    /// 从盘上快照恢复（无文件/损坏 → 空账起步，不炸）。之后每次
     /// commit/advance 落盘——重启后 peek/since_seq 从上次位置继续，
     /// 已处理的历史 wake 不再重新入队执行。
     pub fn load_or_create(snapshot_path: std::path::PathBuf) -> Self {
@@ -1650,7 +1682,7 @@ impl WorkerWakeState {
         let Ok(json) = serde_json::to_string(snapshot) else {
             return;
         };
-        // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩；
+        // 委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩；
         // mkdir 由 helper 内部承担）。
         if let Err(e) =
             nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o644)
@@ -1766,7 +1798,7 @@ fn handle_wake_post(deps: &WorkerBusDeps, env: &Envelope, from_node: &str) -> En
     }
 }
 
-/// §5.2② wake 包 → DiscussionEvent（缺字段 = validation 错误）。
+/// ② wake 包 → DiscussionEvent（缺字段 = validation 错误）。
 fn parse_wake_body(env: &Envelope, from_node: &str) -> Result<DiscussionEvent, String> {
     let body = &env.body;
     let Some(thread_kind) = body
@@ -1860,7 +1892,7 @@ fn parse_wake_body(env: &Envelope, from_node: &str) -> Result<DiscussionEvent, S
     })
 }
 
-/// G8 周期补拉：常驻任务，每 [`BOARD_SYNC_INTERVAL_SECS`] 一拍向在线
+/// 周期补拉：常驻任务，每 [`BOARD_SYNC_INTERVAL_SECS`] 一拍向在线
 /// coordinator 发 board.sync，把「@我的 / 我参与的线程」里离线错过的
 /// 讨论补进 cluster agent loop。找不到 coordinator / 无 RPC / 请求失败
 /// → 本拍跳过（下一拍再试），不炸不重试风暴。
@@ -1948,7 +1980,7 @@ async fn worker_sync_once(
         .cloned()
         .unwrap_or_default();
     let mut enqueued = 0usize;
-    // 投递失败条目的最小 seq（2026-09-18 T26 根因）：sync 第一拍可能跑得
+    // 投递失败条目的最小 seq（根因）：sync 第一拍可能跑得
     // 比 cluster agent loop 就绪更早（重启后 ticker 立即 tick，loop 要等
     // 装配完成才 set_sender）→ inbox.send 失败（no active loop）。此前
     // advance_watermark 无条件推进 latest → 该条目被跳过且永不重拉——
@@ -1986,12 +2018,12 @@ async fn worker_sync_once(
         }
         // 补拉事件不带线程历史（master 台账里查不到 per-thread 投影）——
         // agent 拿到的就是补投到醒为止的最小信息，过时与否自行判断
-        // （impl-plan §5.2③）。
+        // （impl-plan ③）。
         // reply_to 必须是 master 台账 message id（DiscussionEvent 契约）；
         // sync 台账投影里只有线程 seq，冒充 id 会与全局评论 id 空间相撞
         // ——worker 原样回传 post，parent_id 错挂到别的单子的评论上
-        // （run4 实录 2026-10-14：NB-43 讨论回帖 parent=2/3/4/5 全是
-        // NB-1 时代的评论 id）。补拉是批量追赶形态，回复落根评论
+        // （run4： 讨论回帖 parent=2/3/4/5 全是
+        // 时代的评论 id）。补拉是批量追赶形态，回复落根评论
         // （reply_to=None）即诚实且无碰撞。
         let event = DiscussionEvent {
             thread_kind: kind.to_string(),
@@ -2026,7 +2058,7 @@ async fn worker_sync_once(
     Ok(enqueued)
 }
 
-/// G8 游标推进目标：无投递失败 → 推进到 master `latest`；有失败条目 →
+/// 游标推进目标：无投递失败 → 推进到 master `latest`；有失败条目 →
 /// 只推进到失败条目之前（下一拍重拉重试，agent loop 就绪后自然补投），
 /// 且永不越过 `latest`（`fail-1` 可能大于 latest 当响应乱序时）。
 fn sync_advance_target(first_undelivered_seq: Option<i64>, latest: i64) -> i64 {
@@ -2036,8 +2068,8 @@ fn sync_advance_target(first_undelivered_seq: Option<i64>, latest: i64) -> i64 {
     }
 }
 
-/// G8 过滤：补拉条目只入队「@我的 / 我参与的线程」。@ 匹配与 master
-/// 裁决器同源（[`nemesis_board::arbitrator::mentions_node`]：id/name 精准，
+/// 过滤：补拉条目只入队「@我的 / 我参与的线程」。@ 匹配与 master
+/// 裁决器同源（[`nemesis_board::arbitrator:mentions_node`]：id/name 精准，
 /// @role: 命中本节点拓扑角色或功能类别——@role:qa fan-out 时离线的节点
 /// 靠这条兜回来）。自己的发言不唤醒自己。
 fn sync_entry_targets_me(
@@ -2060,16 +2092,16 @@ fn sync_entry_targets_me(
 }
 
 // ======================================================================
-// 集群任务认领（board.claimable.list / board.claim，2026-10-22 计划 §3）
+// 集群任务认领（board.claimable.list / board.claim）
 //
 // 讨论组「认领制」的 master 侧：worker 上行浏览待领单 / 认领。原子置位
 // （store.claim_issue）→ 派发单一入口落队（dispatch_issue_core，estop/
 // 冻结/重复派发/父单计划/RPC 全闸与预算保险丝自然继承）→ 播报双落
 // （issue 系统评论 + #team 频道）。硬闸与派发器完全同源（rank_peers
-// 严格档打单个候选）——松弛是派发器兜底的特权，自评认领不松弛（Q2）。
+// 严格档打单个候选）——松弛是派发器兜底的特权，自评认领不松弛。
 // ======================================================================
 
-/// `board.claimable.list`：worker 上行浏览待领单（Q3：全量可领单 +
+/// `board.claimable.list`：worker 上行浏览待领单（全量可领单 +
 /// 硬闸满足标记）。资格闸不过的单直接不出现；硬闸不过的单带
 /// `blocked_reason` 照常出现（LLM 自评「谁看合适」的依据）。
 fn handle_claimable_list(
@@ -2153,7 +2185,7 @@ fn handle_claimable_list(
     EnvelopeResponse::success(env, serde_json::json!({ "items": items, "count": count }))
 }
 
-/// `board.claim`：worker 上行认领（§3.4 动作序列）。全程快速同步——
+/// `board.claim`：worker 上行认领（动作序列）。全程快速同步——
 /// 派发落队走 dispatch_issue_core 内部既有异步链，handler 不等投递。
 fn handle_claim(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> EnvelopeResponse {
     // ① 身份：RPC server 注入 `_rpc.from`，空 = 伪造面/本地误调。
@@ -2198,7 +2230,7 @@ fn handle_claim(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> Envelo
             );
         }
     };
-    // ④ 资格闸（browse/claim 同源单一真相源；拒绝原因即 claimable_check 文案）。
+    // ④ 资格闸（browse/claim 同源单一权威定义；拒绝原因即 claimable_check 文案）。
     if let Err(msg) = deps.store.claimable_check(issue.id) {
         return EnvelopeResponse::failure(
             env,
@@ -2216,7 +2248,7 @@ fn handle_claim(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> Envelo
         );
     };
     let claimer = claimer_candidate(&info);
-    // ⑥ 硬闸（Q2：强制 profession/tier 匹配、严格不松弛、原因明示）。
+    // ⑥ 硬闸（强制 profession/tier 匹配、严格不松弛、原因明示）。
     if let Err(reason) = claim_gate(&issue, &claimer) {
         return EnvelopeResponse::failure(
             env,
@@ -2295,7 +2327,7 @@ fn handle_claim(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> Envelo
     )
 }
 
-/// issue 引用解析：纯数字 = 内部 id，否则按人读编号（NB-15）。
+/// issue 引用解析：纯数字 = 内部 id，否则按人读编号。
 fn resolve_issue_ref(
     store: &Arc<nemesis_board::BoardStore>,
     issue_ref: &str,
@@ -2347,7 +2379,7 @@ fn claim_match_input(issue: &nemesis_board::Issue) -> nemesis_board::MatchInput<
     }
 }
 
-/// 认领硬闸（Q2 拍板：严格不松弛）。判定与派发器完全同源：
+/// 认领硬闸（严格不松弛）。判定与派发器完全同源：
 /// [`nemesis_board::rank_peers`] 严格档打单个候选，空 = 硬条件 1-6 至少
 /// 一条不过。Err 文案 = [`claim_gate_reason`] 人读逐条对照。
 fn claim_gate(
@@ -2364,7 +2396,7 @@ fn claim_gate(
     }
 }
 
-/// 硬闸不符的人读原因（逐条对照 rank_peers 硬条件 1-6；Q2 拍板「拒绝
+/// 硬闸不符的人读原因（逐条对照 rank_peers 硬条件 1-6； 「拒绝
 /// 原因明示」，如「需职能 dev:cpp，本节点 [ui-design]」）。收集全部不符
 /// 项（一次看清为什么不行，不首条即停）。
 fn claim_gate_reason(
@@ -2463,8 +2495,8 @@ fn claim_gate_reason(
     reasons.join("；")
 }
 
-/// 认领播报双落（§3.4-4）：issue 系统评论（权威留痕）+ `#team` 频道系统
-/// 消息（Q4 团队频道）。全 best-effort：认领与派发在播报前已成立，播报
+/// 认领播报双落（4）：issue 系统评论（权威留痕）+ `#team` 频道系统
+/// 消息（团队频道）。全 best-effort：认领与派发在播报前已成立，播报
 /// 失败只 WARN 不回滚。
 fn announce_claim(
     store: &Arc<nemesis_board::BoardStore>,
@@ -2531,7 +2563,7 @@ fn announce_claim(
     }
 }
 
-/// 认领播报落点频道（Q4 拍板：#team = 团队）。
+/// 认领播报落点频道（#team = 团队）。
 const CLAIM_ANNOUNCE_CHANNEL: &str = "#team";
 
 #[cfg(test)]

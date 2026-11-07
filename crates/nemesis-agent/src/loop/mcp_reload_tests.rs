@@ -1,6 +1,6 @@
-// J3 (devtool-upgrade 阶段 4)：MCP 客户端补齐的 agent 侧测试。
+// (devtool-upgrade)：MCP 客户端补齐的 agent 侧测试。
 //
-// 覆盖面（对应实施计划 J3 验收）：
+// 覆盖面（对应实施计划 验收）：
 // ① `registered_server_prefixes` 纯函数——前向推导已注册服务器前缀
 //    （替代旧实现按第 3 个下划线反向切的 bug）：
 //    - server 名含下划线（`my_server`）时旧实现 `underscores[2]` 会

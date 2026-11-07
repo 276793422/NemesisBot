@@ -1,4 +1,4 @@
-//! P2：[`nemesis_web::handlers::agents::AgentsBridge`] 的 nemesisbot 侧实现
+//! [`nemesis_web::handlers:agents::AgentsBridge`] 的 nemesisbot 侧实现
 //! （依赖方向：nemesisbot → nemesis-web 合法，反向不合法——trait 定义在
 //! web 侧，实现落在 Manager 所在的这边）。
 //!
@@ -38,7 +38,7 @@ fn vm_or_err(mgr: &AgentManager) -> Result<std::sync::Arc<dyn super::VmBackend>,
 }
 
 /// AgentRecord → web 投影（serde 序列化面；不出 tool_policy/persona_refs
-/// 内部载荷——管理面最小可见）。
+/// 内部载荷——管理面最小可）。
 fn to_info(rec: nemesis_taskstore::AgentRecord) -> AgentInfo {
     let credential_count = rec.credential_refs.as_array().map(Vec::len).unwrap_or(0);
     AgentInfo {
@@ -52,7 +52,7 @@ fn to_info(rec: nemesis_taskstore::AgentRecord) -> AgentInfo {
         tier: rec.tier,
         runtime_backend: rec.runtime_backend,
         memory_namespace: rec.memory_namespace,
-        // P6-R4（D4 预留）：主体标识投影（空串 = 未绑定）。
+        // （预留）：主体标识投影（空串 = 未绑定）。
         principal: rec.principal,
         credential_count,
         created_at: rec.created_at.clone(),
@@ -89,7 +89,7 @@ impl AgentsBridge for AgentManager {
         principal: &str,
     ) -> Result<AgentInfo, String> {
         let tier = validate_tier(tier)?;
-        // runtime_backend 值域校验在 create_agent 落库前做（单一真相源
+        // runtime_backend 值域校验在 create_agent 落库前做（统一定义
         // `runtime_backend::validate`）——桥面薄透传，非法值同样 loud 拒绝。
         let rec = self.create_agent(super::CreateAgentParams {
             name: name.to_string(),
@@ -98,7 +98,7 @@ impl AgentsBridge for AgentManager {
             tool_policy: serde_json::json!({}),
             persona_refs: serde_json::Value::Null,
             credential_refs: serde_json::json!([]),
-            // P6-R4（D4 预留）：主体标识薄透传（空 = 未绑定）。
+            // （预留）：主体标识薄透传（空 = 未绑定）。
             principal: principal.to_string(),
         })?;
         Ok(to_info(rec))
@@ -112,7 +112,7 @@ impl AgentsBridge for AgentManager {
         self.remove(agent_id).await
     }
 
-    // -- T9 生命周期面（P5 第 4 步起按记录 runtime_backend 分派档位）------
+    // -- 生命周期面（第 4 步起按记录 runtime_backend 分派档位）------
 
     async fn sleep(&self, agent_id: &str) -> Result<bool, String> {
         if backend_of(self, agent_id) == nemesis_taskstore::agents::runtime_backend::VM {
@@ -127,7 +127,7 @@ impl AgentsBridge for AgentManager {
     }
 
     async fn wake(&self, agent_id: &str) -> Result<(), String> {
-        // exec_root 取自记录（T7 同源语义：main=workspace / project=项目
+        // exec_root 取自记录（同源语义：main=workspace / project=项目
         // 目录 / selfbuilt=home）。VM 档宿主路径不进 guest（签名同形保留
         // 审计语义）。
         let rec = self
@@ -144,7 +144,7 @@ impl AgentsBridge for AgentManager {
                 .await
                 .map_err(|e| e.to_string())?;
         }
-        // wake 是一次显式活动：记 last_active（P2 touch 消费点）。
+        // wake 是一次显式活动：记 last_active（touch 消费点）。
         let _ = self.touch(agent_id);
         Ok(())
     }
@@ -192,7 +192,7 @@ impl AgentsBridge for AgentManager {
             .unwrap_or(false)
     }
 
-    // -- G1 会话面（agents.send / resolve_session_loop agents 臂）-------------
+    // -- 会话面（agents.send / resolve_session_loop agents 臂）-------------
 
     fn loop_for_agent(
         &self,
@@ -213,12 +213,12 @@ impl AgentsBridge for AgentManager {
             "agent 会话面未装配（loop manager 未接线，网关需为装配 gateway 模式）".to_string()
         })?;
         lm.send_message(agent_id, msg).await?;
-        // 投递是一次显式活动：记 last_active（P2 touch 消费点，尽力而为）。
+        // 投递是一次显式活动：记 last_active（touch 消费点，尽力而为）。
         let _ = self.touch(agent_id);
         Ok(())
     }
 
-    // -- P6-R2 迁移面 ------------------------------------------------------
+    // -- - 迁移面 ------------------------------------------------------
 
     async fn migrate(
         &self,

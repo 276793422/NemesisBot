@@ -5,7 +5,7 @@
 //!
 //! 语义裁决：习惯生成**免确认**自动生效；本 handler 只承担**后门动作**
 //! （veto/forget/pin）与开关管理（enable/disable）。展示面走 `list`。
-//! 开关真相源 = config.json `user_profile.enabled`（live 缓存优先）。
+//! 开关权威 = config.json `user_profile.enabled`（live 缓存优先）。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_agent::user_profile as up;
@@ -94,7 +94,7 @@ impl ProfileHandler {
             entry.enabled = true;
             Ok(())
         })?;
-        // 截断上限与 sweep 同源：config 现读 max_entries（BUG-20261025-20）。
+        // 截断上限与 sweep 同源：config 现读 max_entries。
         let max_entries = crate::handlers::config::load_config(&home)
             .ok()
             .and_then(|cfg| cfg.user_profile)

@@ -146,7 +146,7 @@ fn wal_lenient_read_only_conn_no_panic() {
     assert_ne!(mode, "wal", "只读连接不应进入 WAL");
 }
 
-// ------------------------------------------------------------- L20 门面
+// ------------------------------------------------------------- 门面
 
 /// 门面测试用最小两步迁移链（真实迁移链归属各存储 crate，这里只验装配序）。
 static FACADE_MIGRATIONS: &[Migration] = &[
@@ -246,7 +246,7 @@ fn open_sqlite_store_rejects_newer_version_drift() {
 fn open_sqlite_store_old_version_migrates_with_backup() {
     let dir = tempfile::tempdir().unwrap();
     let p = temp_db(dir.path(), "facade_oldver");
-    // 手工构造 v1 库（只跑链上第一步）。
+    // 手工构造 v1 库（只跑链上）。
     {
         let conn = rusqlite::Connection::open(&p).unwrap();
         conn.execute_batch(FACADE_MIGRATIONS[0].sql).unwrap();

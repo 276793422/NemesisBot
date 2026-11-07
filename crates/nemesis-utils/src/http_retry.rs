@@ -54,7 +54,7 @@ pub fn should_retry(status_code: u16) -> bool {
 
 /// Cancellable sleep that aborts when the provided future resolves.
 ///
-/// Mirrors the Go `sleepWithCtx(ctx, duration)` function. Returns `Ok(())` if
+/// Mirrors the Go `sleepWithCtx(ctx, duration)` function. Returns `Ok()` if
 /// the sleep completed, or `Err(cancelled_value)` if `cancel_rx` resolved first.
 ///
 /// # Arguments
@@ -83,7 +83,7 @@ where
 /// # Returns
 /// `Some(Ok(response))` on success, `Some(Err(error))` on failure, or `None` if
 /// the request body could not be cloned for retry.
-// http 门控（BUG 2026-10-30）：本文件唯一 reqwest 类型化函数——未启用 `http`
+// http 门控：本文件唯一 reqwest 类型化函数——未启用 `http`
 // feature 的消费方（nemesis-guest musl 交叉构建）不编译它，reqwest 不进依赖图。
 #[cfg(feature = "http")]
 pub async fn do_request_with_retry_reqwest(
@@ -180,7 +180,7 @@ where
             }
         }
 
-        // Linear backoff: 1s, 2s, 3s, ...
+        // Linear backoff: 1s, 2s, 3s,...
         let delay = RETRY_DELAY_UNIT * (attempt + 1);
         sleep(delay).await;
     }

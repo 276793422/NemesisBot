@@ -1,5 +1,5 @@
-//! connector 注册表 CLI（行动代理 P0，2026-10-14；签名信任族 D6.1，2026-10-15；
-//! 管理对称族 B5，2026-10-19）。
+//! connector 注册表 CLI（行动代理，2026-10-14；签名信任族.1，2026-10-15；
+//! 管理对称族，2026-10-19）。
 //!
 //! `nemesisbot connector <action>`：list / receipts / ledger / demo +
 //! 签名信任族 sign / keygen / trust / trust-list / trust-revoke +
@@ -481,7 +481,7 @@ fn validate_hex64(value: &str, what: &str) -> Result<()> {
 /// enable/disable 的 id-or-dir 解析：**双臂**——清单 id 命中或注册目录名
 /// 命中都算（顺手捕获 manifest id：sidecar 按 id 键控，dir ≠ id 的条目
 /// 展示路径也必须对）；双臂皆未命中按 (裸名, None) 直通（不在册/损坏由
-/// set_connector_enabled 诚实拒绝）。id 命中优先（id 全局唯一，指南 §3.1）。
+/// set_connector_enabled 诚实拒绝）。id 命中优先（id 全局唯一，指南）。
 fn resolve_connector_dir(workspace: &std::path::Path, id_or_dir: &str) -> (String, Option<String>) {
     let loaded = nemesis_connectors::registry::scan_connectors(workspace);
     if let Some(l) = loaded.iter().find(|l| {
@@ -576,9 +576,9 @@ fn resolve_trust_entry(
     }
 }
 
-// ============ 30 秒四承诺演示（收官批 A3，2026-10-15） ============
+// ============ 30 秒四承诺演示（收官批） ============
 
-/// 纸面券商模板原文（include_str! 单一真相源——幕 2/3 用的就是 workspace
+/// 纸面券商模板原文（include_str! 单一权威定义——幕 2/3 用的就是 workspace
 /// 里那份模板；模板坏了 demo 同步坏，本身就是清单契约的活演示）。
 const PAPER_BROKER_TEMPLATE: &str =
     include_str!("../../workspace/connectors/paper-broker/connector.toml");

@@ -1,11 +1,11 @@
-//! WS9（能力扩展 P17+P18）：rewind 侧谱系与分支摘要的 AgentLoop 编排测试。
+//! （+）：rewind 侧谱系与分支摘要的 AgentLoop 编排测试。
 //!
-//! - P17：`rewind_to_message` 截断后写 `last_rewind` 谱系进本会话 sidecar
+//! -`rewind_to_message` 截断后写 `last_rewind` 谱系进本会话 sidecar
 //!   meta（no-op 回退 = 无谱系事实，不写）；
-//! - P18：遗弃后缀 ≥3 个完整 user 轮且 `agents.small_model` 已配置 →
+//! -遗弃后缀 ≥3 个完整 user 轮且 `agents.small_model` 已配置 →
 //!   mock 小模型生成结构化摘要落盘（`branch_summary`）；
-//! - P18 降级：小模型未配置 = 诚实跳过（谱系照写、摘要缺席、不阻塞回退）；
-//! - P18 注入：`branch_summary` 在 `build_messages` 里成为 `# Branch
+//! - 降级：小模型未配置 = 诚实跳过（谱系照写、摘要缺席、不阻塞回退）；
+//! - 注入：`branch_summary` 在 `build_messages` 里成为 `# Branch
 //!   Context` 临时 system 节（仅显式传 session_key 的路径——主循环
 //!   `build_round_messages` 的接线形态）。
 //!
@@ -45,7 +45,7 @@ impl LlmProvider for Ws9NoopProvider {
     }
 }
 
-/// 假小模型：固定回复（E7 TitleProvider 同款形态）。
+/// 假小模型：固定回复（TitleProvider 同款形态）。
 struct Ws9SmallProvider {
     response: String,
 }
@@ -121,7 +121,7 @@ async fn ws9_wait_for(mut pred: impl FnMut() -> bool, max: Duration) -> bool {
     pred()
 }
 
-/// P17：rewind 截断把 `last_rewind`（at_index/dropped_rows/dropped_turns）
+/// rewind 截断把 `last_rewind`（at_index/dropped_rows/dropped_turns）
 /// 写进本会话 meta；no-op 回退（末尾消息）无谱系事实，不写。
 #[tokio::test]
 async fn ws9_rewind_writes_last_rewind_meta() {
@@ -158,7 +158,7 @@ async fn ws9_rewind_writes_last_rewind_meta() {
     delete_chat_log(&key);
 }
 
-/// P18：rewind 遗弃 ≥3 轮 + small_model 已配置 → mock 小模型生成结构化
+/// rewind 遗弃 ≥3 轮 + small_model 已配置 → mock 小模型生成结构化
 /// 摘要，后台落盘到本会话 meta 的 branch_summary。
 #[tokio::test]
 async fn ws9_rewind_generates_branch_summary_via_small_model() {
@@ -202,7 +202,7 @@ async fn ws9_rewind_generates_branch_summary_via_small_model() {
     delete_chat_log(&key);
 }
 
-/// P18 降级：small_model 未配置 = 诚实跳过——回退本体成功、谱系照写、
+/// 降级：small_model 未配置 = 诚实跳过——回退本体成功、谱系照写、
 /// branch_summary 缺席、绝不回退主模型（Noop 主 provider 若被调用会返回
 /// "ok"——meta 里不该出现）。
 #[tokio::test]
@@ -230,7 +230,7 @@ async fn ws9_rewind_without_small_model_honestly_skips() {
     delete_chat_log(&key);
 }
 
-/// P18 注入：branch_summary 在 build_messages（显式传 session_key 的主循环
+/// 注入：branch_summary 在 build_messages（显式传 session_key 的主循环
 /// 形态）里成为 `# Branch Context` 临时节；不传 session_key（旧路径）不注入。
 #[tokio::test]
 async fn ws9_branch_summary_injected_into_build_messages() {

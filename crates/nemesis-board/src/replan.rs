@@ -1,4 +1,4 @@
-//! AOR 批三 5.3：重规划器（replanner）纯逻辑层。
+//! 重规划器（replanner）纯逻辑层。
 //!
 //! 职责边界与 [`crate::planner`] / [`crate::review`] 同构：本模块**不含
 //! 任何 LLM 调用**——系统提示词 re-export、建议输出 schema、解析与校验、
@@ -19,7 +19,7 @@ use crate::planner::PlannedSubIssue;
 pub use nemesis_prompts::board::REPLAN_SYSTEM_PROMPT;
 
 /// 重规划系统提示词软预算告警挂在包装层：超
-/// [`nemesis_prompts::board::REPLAN_SOFT_BUDGET_BYTES`] 时 WARN 不截断
+/// [`nemesis_prompts::board:REPLAN_SOFT_BUDGET_BYTES`] 时 WARN 不截断
 /// （提示词资产失控的治理信号，对齐 planner 先例；资产 crate 零运行时
 /// 依赖，tracing 消费点住本 crate）。
 pub fn replan_system_prompt() -> &'static str {
@@ -61,7 +61,7 @@ pub struct ReplanAction {
     /// 动作类型（语义主干，缺失 = 解析失败回灌，不猜）。
     #[serde(default)]
     pub op: Option<ReplanOp>,
-    /// cancel/modify：被处置子单的看板编号（如 `NB-12`）。
+    /// cancel/modify：被处置子单的看板编号（如 ``）。
     #[serde(default)]
     pub number: String,
     /// add：新子单标题。
@@ -72,7 +72,7 @@ pub struct ReplanAction {
     #[serde(default)]
     pub acceptance_criteria: String,
     /// add：执行所需职能 slug（`family[:spec]`；空串 = 无职能需求；
-    /// 格式校验同 planner D9，同一 `validate_slug` 单一真相源）。
+    /// 格式校验同 planner，同一 `validate_slug` 统一定义）。
     #[serde(default)]
     pub required_profession: String,
     /// add：批内依赖序号（0 起始，**只计 add 动作**；与 planner 的
@@ -131,7 +131,7 @@ fn add_actions(output: &ReplanOutput) -> Vec<&ReplanAction> {
 ///   （title/description/acceptance_criteria——v1 不做派发属性改写）；
 /// - add 的 title 非空、required_profession 非空时过职能 slug 校验
 ///   （与 planner 同一 `validate_slug`）、depends_on 界内（add 批）+
-///   无自引用 + 无环（复用 planner DFS 单一真相源）。
+///   无自引用 + 无环（复用 planner DFS 统一定义）。
 ///
 /// 空 actions 合法（诚实无建议）。
 pub fn parse_replan(raw: &str) -> Result<ReplanOutput, ReplanParseError> {
@@ -230,7 +230,7 @@ pub fn parse_replan(raw: &str) -> Result<ReplanOutput, ReplanParseError> {
 
     // add 批自引用 + 环检测：把 add 动作按批内序重建成 PlannedSubIssue
     // 视图（depends_on 语义就是 add 批内序号，与 planner 同款），复用
-    // planner DFS 单一真相源。先显式查自引用（planner 视图里拿不到
+    // planner DFS 统一定义。先显式查自引用（planner 视图里拿不到
     // 「这是第几个 add」的动作下标语境）。
     for (k, a) in adds.iter().enumerate() {
         if a.depends_on.contains(&k) {
@@ -275,7 +275,7 @@ pub fn build_replan_retry_prompt(prev_output: &str, error: &ReplanParseError) ->
 
 /// 从建议输出构造 add 批的 [`PlannedSubIssue`] 列表（供执行臂直接喂
 /// `confirm_plan` 单一入口）。depends_on 保持 add 批内序号（parse_replan
-/// 已校验界内/无自引用/无环，语义与 planner 拆解批一致，confirm_plan
+/// 已校验界内/无自引用/无环，语义与 planner 拆解致，confirm_plan
 /// 原样消费）；required_role 缺省 worker、tags/backend/capabilities
 /// 空——v1 重规划不引入新资源声明，需要时人工补。
 pub fn replan_adds_as_planned(output: &ReplanOutput) -> Vec<PlannedSubIssue> {

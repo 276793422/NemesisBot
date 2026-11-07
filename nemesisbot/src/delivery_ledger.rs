@@ -1,11 +1,11 @@
-//! P4-c（2026-10-17）— A 端交付账本 web 面（[`nemesis_web::handlers::deliveries`]
+//! c（2026-10-17）— A 端交付账本 web 面（[`nemesis_web::handlers:deliveries`]
 //! bridge 实现）。
 //!
-//! 真相源 = tasks.db `deliveries` 表；本模块只做两件事：
+//! 权威 = tasks.db `deliveries` 表；本模块只做两件事：
 //! - **投影**：`DeliveryRecord` → web 侧 `DeliveryInfo`（payload 结构化
 //!   摘要展开到顶层，patch 体不进列表视图）。
 //! - **裁决审计**：`confirm`/`reject` 走 `append_direct_audit_event` 留痕
-//!   （F8 先例；security 裁剪形态无审计链，仅 DB 状态转移 + tracing）。
+//!   （先例；security 裁剪形态无审计链，仅 DB 状态转移 + tracing）。
 //!
 //! 审计槽与 cluster_init.rs 回调同款惰性取法：本模块在 post_agent 装配时
 //! security 插件槽可能还空着（init_agent 之后才 set），闭包持有槽 Arc、
@@ -52,7 +52,7 @@ impl DeliveryLedgerBridge {
     }
 
     /// 裁决面审计留痕（operation = delivery_confirm / delivery_reject；
-    /// 审计链未启用 = tracing debug 兜底可见）。
+    /// 审计链未启用 = tracing debug 兜底可）。
     #[cfg(feature = "security")]
     fn audit(&self, operation: &str, target: &str, decision: &str, reason: &str) {
         if let Some(plugin) = self.plugin() {
@@ -99,13 +99,13 @@ impl DeliveryLedgerBridge {
             patch_truncated: rec.payload.get("patch_truncated").and_then(|v| v.as_bool()),
             patch_path: str_field(&rec.payload, "patch_path"),
             patch_present,
-            // 不可变 tree 标识（G4）：worker 交付 payload 自带（capture 时
+            // 不可变 tree 标识：worker 交付 payload 自带（capture 时
             // 写入），旧格式 payload 缺键 = null 诚实降级。
             commit: str_field(&rec.payload, "commit"),
             head_tree: str_field(&rec.payload, "tree"),
             base_tree: str_field(&rec.payload, "base_tree"),
             // 发布留痕：发布落账后 payload 注入的外部引用/链接/时间。
-            // 域剥离批（2026-11-02）键改通用 external_*；旧 pr_* 键只读
+            // 域剥离批键改通用 external_*；旧 pr_* 键只读
             // 垫片**全仓仅此一处**（v1 已发布数据兼容查看；新写入全用
             // external_*，见 publish.rs 落账段）。
             external_ref: num_field(&rec.payload, "external_ref")

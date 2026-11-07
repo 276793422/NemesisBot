@@ -1,4 +1,4 @@
-//! connector.toml detached Ed25519 签名（D6.1，2026-10-15）。
+//! connector.toml detached Ed25519 签名（.1，2026-10-15）。
 //!
 //! 签名载体 = detached 签名文件 `connector.toml.sig`（toml 保持人手可编），
 //! JSON 形态 `{algorithm, public_key, signature}`，载荷 = connector.toml
@@ -19,7 +19,7 @@ use std::path::Path;
 /// detached 签名文件名（与 connector.toml 同目录）。
 pub const SIG_FILE: &str = "connector.toml.sig";
 
-// 信任库类型 re-export：CLI/WSAPI 消费方经 `nemesis_connectors::signing::`
+// 信任库类型 re-export：CLI/WSAPI 消费方经 `nemesis_connectors::signing:`
 // 取用即可，无需直接依赖 nemesis-security。
 #[cfg(feature = "security")]
 pub use nemesis_security::signature::{TrustLevel, TrustStore, TrustedKey};

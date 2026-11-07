@@ -1,7 +1,7 @@
-//! L19 统一 WorkPool 设施（改进项三期 2026-11-03）。
+//! 统一 WorkPool 设施（2026-11-03）。
 //!
-//! 池化组件的四条统一手法（单一真相源：`2026-11-01_改进项落地执行清单`
-//! L19 节；未来任何池化组件设计时对照，不各造各的）：
+//! 池化组件的四条统一手法（统一定义：`2026-11-01_改进项落地执行清单`
+//! 节；未来任何池化组件设计时对照，不各造各的）：
 //!
 //! 1. **CPU 准入上限** [`cpu_admission_permits`] = `max(1, available_parallelism()-1)`
 //!    ——给宿主进程（gateway）留一核，不把调度器饿死。
@@ -20,7 +20,7 @@
 //! - **spawn 形态**（[`WorkPool::try_submit`]）：future 必须 `'static`，
 //!   许可+账本预留由 worker future 自持；[`WorkTask`] 提供 join/cancel/settle。
 //! - **借用形态**（[`WorkPool::try_reserve`] + [`WorkPool::permits`]）：
-//!   执行体是借用局部状态的 future（无法 `'static` spawn，如 U5 并行批）时，
+//!   执行体是借用局部状态的 future（无法 `'static` spawn，如 并行批）时，
 //!   只共享全局准入信号量与双上限账本；预留守卫（[`PoolReservation`]）由
 //!   调用方 future 自持到执行结束。
 //!
@@ -41,7 +41,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 /// 共用的默认 retained input 字节上限（64 MiB）。
 pub const DEFAULT_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
 
-/// 手法1 单一真相源：CPU 准入 = `max(1, available_parallelism() - 1)`
+/// 手法1 统一定义：CPU 准入 = `max(1, available_parallelism() - 1)`
 /// ——至少 1 个许可，至多 N-1（给宿主进程留一核）。
 pub fn cpu_admission_permits() -> usize {
     std::thread::available_parallelism()

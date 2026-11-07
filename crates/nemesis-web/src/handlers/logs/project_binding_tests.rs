@@ -1,6 +1,6 @@
-//! L6++（2026-09-08）：scan_session_logs 的项目归属回填——sidecar meta 带
+//! （2026-09-08）：scan_session_logs 的项目归属回填——sidecar meta 带
 //! `project_id`/`project_path` 的条目补 `projectId`/`projectPath` 两字段；
-//! 无绑定（对话组会话/pre-L6++ meta）干净缺省不加字段。前端以 projects.list
+//! 无绑定（对话组会话/pre meta）干净缺省不加字段。前端以 projects.list
 //! 联结显示名（注册表在 nemesisbot，后端不解析名字）。
 //!
 //! 夹具镜像 e4_lineage_tests：workspace=tempdir，手工落 jsonl + meta.json
@@ -50,7 +50,7 @@ fn scan_backfills_project_id_and_path() {
 #[test]
 fn scan_unbound_sessions_get_no_project_fields() {
     let ws = tempfile::tempdir().unwrap();
-    // pre-L6++ meta：只有 title → 不加项目字段。
+    // pre meta：只有 title → 不加项目字段。
     seed_session(
         ws.path(),
         "agent_main_session_old",

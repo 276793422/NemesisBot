@@ -6,7 +6,7 @@ import { useToast } from '../../../composables/useToast'
 // - 列表渲染：标题（无 title 回退 display_id）/ 原 sid / 时间 / 条数 / 大小 /
 //   来源徽标 / 孤儿徽标；空态文案；
 // - 直接恢复成功 → toast + trashList 重拉；
-// - 拍板② 冲突改名流：`{conflict:true, suggested_sid}` → 改名模态 + 输入框
+// - 决策② 冲突改名流：`{conflict:true, suggested_sid}` → 改名模态 + 输入框
 //   预填建议 sid → 确认带 new_sid 重试；空 sid 拒发；
 // - 彻底删除（单条）/清空回收站：二次确认模态，取消不发请求，确认才调
 //   trash_purge / trash_purge_all。

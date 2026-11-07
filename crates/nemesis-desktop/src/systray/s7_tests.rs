@@ -1,10 +1,10 @@
-//! S7 冲刺覆盖测试：systray.rs 的 tracing 惰性字段求值。
+//! 冲刺覆盖测试：systray.rs 的 tracing 惰性字段求值。
 //!
-//! `SystemTray::new` 里的 `tracing::info!(title = ..., menu_count = ...)`
+//! `SystemTray::new` 里的 `tracing::info!(title =..., menu_count =...)`
 //! 字段表达式只在事件被某个 subscriber 启用时才求值；测试环境默认没有
 //! subscriber，所以那行字段表达式（含 `config.menu_items.len()`）从未
 //! 执行。这里装一个启用一切的线程本地 subscriber 让它真正跑一遍。
-//! （真托盘/真窗口创建路径属结构性不可达，见 S7 报告。）
+//! （真托盘/真窗口创建路径属结构性不可达，见 报告。）
 
 use super::*;
 

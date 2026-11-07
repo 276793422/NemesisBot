@@ -266,7 +266,7 @@ impl ProcessManager {
         let handshake_msg = PipeMessage::handshake();
         child.send_message(&handshake_msg)?;
 
-        // Wait for ACK with a bounded wait (BUG-20261025-70: the old
+        // Wait for ACK with a bounded wait (the old
         // `while elapsed < ACK_TIMEOUT` shell never iterated — clippy
         // never_loop flatten left an unbounded blocking read while holding
         // the manager-wide state lock; a hung child = permanent deadlock).
@@ -550,7 +550,7 @@ impl ProcessManager {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // Sample the real process state first (BUG-20261025-71):
+                        // Sample the real process state first:
                         // the `exited` flag is only set by try_wait/terminate
                         // paths — without polling, a child that crashed on its
                         // own never flips the flag and `is_process_alive`
@@ -642,7 +642,7 @@ impl ProcessManager {
 
     /// Clean up stale (dead) children synchronously.
     pub fn cleanup_stale(&self) {
-        // Sample the real process state first (BUG-20261025-71 — same
+        // Sample the real process state first (— same
         // try_wait-first discipline as the monitor loop: without it a
         // self-exited child keeps a stale `exited == false` flag and is
         // never swept).

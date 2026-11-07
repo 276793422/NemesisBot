@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
@@ -191,7 +189,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
     }
 
     // Auto-adjust paths for local mode before saving (mirrors Go behavior)
-    // When --local is used or .nemesisbot is detected in current directory,
+    // When --local is used or.nemesisbot is detected in current directory,
     // workspace and other paths should be relative to the config directory
     if is_local_mode(config_path) {
         let config_dir = config_path.parent().unwrap_or(Path::new("."));
@@ -201,10 +199,10 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
             let default_workspace_path = user_home.join(".nemesisbot").join("workspace");
 
             let ws = &config.agents.defaults.workspace;
-            // 只重写「默认工作区」的等价拼法（BUG-20261025-76）：旧
+            // 只重写「默认工作区」的等价拼法：旧
             // starts_with("~/")/starts_with(home) 会把任何 home 下的自定义
             // 路径（甚至仅共享字符串前缀的 C:\Users\me2 家族）误判成默认
-            // 形态，每次落盘静默改写成 .nemesisbot/workspace，用户自定义
+            // 形态，每次落盘静默改写成.nemesisbot/workspace，用户自定义
             // workspace 被丢弃（会话/历史/记忆集体「消失」）。Path 组件相等
             // 比较天然免疫字符串前缀堂亲与分隔符/大小写变体；空串不在此
             // 处理（加载期 adjust_paths_for_environment 会解析默认值）。
@@ -232,7 +230,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
         error!("[Config] Failed to serialize config: {}", e);
         e
     })?;
-    // REL-002（2026-09-23）：统一原子写入（tmp+sync+rename，失败清理）。
+    // 统一原子写入（tmp+sync+rename，失败清理）。
     // 0600（unix）保护 API keys/tokens；Windows 权限为 no-op。
     nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), content.as_bytes(), 0o600)
         .map_err(|e| {
@@ -245,7 +243,7 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
     Ok(())
 }
 
-/// Check if we're in local mode (config is in current directory's .nemesisbot).
+/// Check if we're in local mode (config is in current directory's.nemesisbot).
 pub fn is_local_mode(config_path: &Path) -> bool {
     if let Ok(cwd) = std::env::current_dir() {
         let local_dir = cwd.join(".nemesisbot");
@@ -283,11 +281,11 @@ pub fn is_local_mode(config_path: &Path) -> bool {
 /// - NEMESISBOT_SECURITY_ENABLED
 /// - NEMESISBOT_FORGE_ENABLED
 ///
-/// BUG-20261025-22：布尔覆盖（`*_ENABLED` / `RESTRICT_TO_WORKSPACE`）的
+/// 布尔覆盖（`*_ENABLED` / `RESTRICT_TO_WORKSPACE`）的
 /// 识别集 = Go `strconv.ParseBool` 全集（true/false/t/f/1/0，大小写不敏感）
 /// 与项目自身宽容惯例 yes/no/on/off；值无法识别时**保留 config 文件值 +
 /// warn 留痕**——与同函数数值臂的「解析失败 = 不动 config」惯例一致，
-/// 严禁旧形态的 `parse().unwrap_or(硬编码默认)`（设 `=1` 想开安全会被
+/// 严禁旧形态的 `parse.unwrap_or(硬编码默认)`（设 `=1` 想开安全会被
 /// 静默关掉、设 `=0` 想关 web 会被静默打开——intent 反转 + fail-open）。
 pub fn apply_env_overrides(config: &mut Config) {
     // Agent defaults
@@ -411,7 +409,7 @@ pub fn apply_env_overrides(config: &mut Config) {
     }
 }
 
-/// 布尔 env 覆盖的宽容识别（BUG-20261025-22 单一真相源）。
+/// 布尔 env 覆盖的宽容识别。
 ///
 /// 识别集：`true/false/t/f/1/0`（= Go `strconv.ParseBool` 全集，大小写
 /// 不敏感）+ `yes/no/on/off`（项目宽容布尔惯例，同 `normalize_stream_value`
@@ -487,9 +485,9 @@ pub fn default_config() -> Config {
                 temperature: 0.7,
                 max_tool_iterations: 100,
                 // concurrent_request_mode intentionally omitted — filled by
-                // `..Default::default()` → `default_concurrent_request_mode()`
-                // (E1: single truth source; a stale "reject" literal lived here
-                // until 2026-09-05 and silently outvoted the default fn).
+                // `..Default::default` → `default_concurrent_request_mode`
+                // (single truth source; a stale "reject" literal lived here
+                // until and silently outvoted the default fn).
                 queue_size: 8,
                 ..Default::default()
             },
@@ -504,7 +502,10 @@ pub fn default_config() -> Config {
             },
             maixcam: MaixCamConfig {
                 host: "0.0.0.0".to_string(),
-                port: 18790,
+                // 与 MaixCamConfig 类型缺省（8888）对齐——旧值 18790 与
+                // gateway.port 出厂值撞号，maixcam 使能即绑定冲突
+                // （BUG-20261107-015）。
+                port: 8888,
                 ..Default::default()
             },
             line: LineConfig {
@@ -651,7 +652,7 @@ pub fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
         error!("[Config] Failed to serialize MCP config: {}", e);
         e
     })?;
-    // REL-002：统一原子写入；0600（unix）——子系统配置同样可能含凭据。
+    // 统一原子写入；0600（unix）——子系统配置同样可能含凭据。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
         |e| {
             error!("[Config] Failed to write MCP config: {}", e);
@@ -705,7 +706,7 @@ pub fn save_security_config(path: &Path, cfg: &SecurityConfig) -> Result<()> {
         error!("[Config] Failed to serialize security config: {}", e);
         e
     })?;
-    // REL-002：统一原子写入；0600（unix）——含 limits 规则与策略。
+    // 统一原子写入；0600（unix）——含 limits 规则与策略。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
         |e| {
             error!("[Config] Failed to write security config: {}", e);
@@ -759,7 +760,7 @@ pub fn save_scanner_config(path: &Path, cfg: &ScannerFullConfig) -> Result<()> {
         error!("[Config] Failed to serialize scanner config: {}", e);
         e
     })?;
-    // REL-002：统一原子写入。
+    // 统一原子写入。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
         |e| {
             error!("[Config] Failed to write scanner config: {}", e);
@@ -813,7 +814,7 @@ pub fn save_skills_config(path: &Path, cfg: &SkillsFullConfig) -> Result<()> {
         error!("[Config] Failed to serialize skills config: {}", e);
         e
     })?;
-    // REL-002：统一原子写入。
+    // 统一原子写入。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
         |e| {
             error!("[Config] Failed to write skills config: {}", e);
@@ -829,7 +830,7 @@ pub fn save_skills_config(path: &Path, cfg: &SkillsFullConfig) -> Result<()> {
 // ============================================================================
 /// Expand ~ in a path to the user's home directory.
 /// Mirrors Go's `ExpandHome` function.
-/// BUG-20261102-319：`~\` 反斜杠形态（Windows 手写惯例）与 `~/` 同判——
+/// `~\` 反斜杠形态（Windows 手写惯例）与 `~/` 同判——
 /// 此前只认 `~/`，与 nemesisbot/src/commands/log.rs 的本地 expand_tilde
 /// （认 `~\`）分叉，同义两形态异判。`~\` 前两字节是 ASCII，`&path[2..]`
 /// 切片安全（`~x` 无斜杠仍按字面量，多字节 panic 面与 paths::expand_home
@@ -858,12 +859,12 @@ impl WorkspaceResolver {
         }
 
         if let Ok(home) = std::env::var("NEMESISBOT_HOME") {
-            // Expand ~ to user home, then append .nemesisbot (matching Go behavior)
+            // Expand ~ to user home, then append.nemesisbot (matching Go behavior)
             let expanded = expand_tilde(&home);
             return expanded.join(".nemesisbot");
         }
 
-        // Auto-detect: if .nemesisbot exists in current directory
+        // Auto-detect: if.nemesisbot exists in current directory
         let local_path = PathBuf::from("./.nemesisbot");
         if local_path.exists() {
             return local_path;
@@ -912,7 +913,7 @@ impl ConfigLoader {
             std::fs::create_dir_all(parent)?;
         }
         let content = serde_json::to_string_pretty(config)?;
-        // REL-002：统一原子写入（与 save_config 同 0600）。
+        // 统一原子写入（与 save_config 同 0600）。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| ConfigError::Io(std::io::Error::other(e)))?;
         Ok(())

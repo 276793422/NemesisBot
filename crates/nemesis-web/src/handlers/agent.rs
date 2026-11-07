@@ -75,7 +75,7 @@ impl AgentHandler {
         })))
     }
 
-    /// U7 dashboard visibility (G1): per-session inbox snapshot for the chat
+    /// dashboard visibility: per-session inbox snapshot for the chat
     /// UI's queued/steer chip. `data.session_id` is the raw conversation id
     /// the client sends with chat messages — the SAME session_key build rule
     /// as the web inbound chokepoint (server.rs process_messages: empty →
@@ -101,7 +101,7 @@ impl AgentHandler {
                 nemesis_agent::session::SessionStore::sanitize_session_id(&sid)
             )
         };
-        // L6++ G4（2026-09-08）：归属解析（项目会话查项目 loop 的 inbox；
+        // 归属解析（项目会话查项目 loop 的 inbox；
         // 不可用走既有的 available:false 降级形态，附加诚实 error 字段）。
         let resolved = crate::handlers::projects::resolve_session_loop(ctx, &session_key);
         match resolved {
@@ -130,7 +130,7 @@ impl AgentHandler {
         }
     }
 
-    /// BUG 2026-09-21 ①：单会话限流重试实时快照（切走切回后前端占位区显示
+    /// BUG ①：单会话限流重试实时快照（切走切回后前端占位区显示
     /// 「第 N/M 次重试」而非哑转圈）。session_id 归属解析与 inbox_status
     /// 完全同规则（同 chokepoint 的 key 构造 + 项目 loop 归属）。
     fn retry_status(
@@ -161,7 +161,7 @@ impl AgentHandler {
                     "max_retries": st.max_retries,
                     "wait_secs": st.wait_secs,
                     "model": st.model,
-                    // 展示标签（2026-10-13）：「上游限流」/「上游过载」按真类；
+                    // 展示标签：「上游限流」/「上游过载」按真类；
                     // 旧 loop 无此字段时前端回落「上游限流」。
                     "label": st.label,
                 }))),
@@ -184,7 +184,7 @@ impl AgentHandler {
                 svc.start()?; // Factory rebuilds AgentLoop from disk config
                 tracing::info!("[Agent] Started with fresh config");
                 update_model_info(ctx);
-                // 模型热切联动（BUG 2026-09-21）：主 loop 刚按盘上 config 重
+                // 模型热切联动（BUG）：主 loop 刚按盘上 config 重
                 // 建，项目 loop 仍停在 gateway 装配时的 provider——同步之
                 // （bridge 未装配 = no-op；解析失败项目 loop 保持现状）。
                 if let Some(bridge) = crate::handlers::projects::projects_bridge() {
@@ -212,14 +212,14 @@ impl AgentHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // L6++ G4（2026-09-08）：可选 session_id——取消落在会话归属的 loop
+        // 可选 session_id——取消落在会话归属的 loop
         // （resolve_session_loop 单一裁决点：项目会话→项目 loop，其余→主
-        // loop）。2026-10-31 停止按钮修复收窄：带 session_id = 精确取消
+        // loop）。 停止按钮修复收窄：带 session_id = 精确取消
         // 该会话（cancel_session），不再 cancel_all_sessions——loop 内其他
         // 并发会话不该被误伤（同 loop 令牌表 key 同构：两侧同走
         // `agent:main:session:{sanitize(sid)}`，server.rs:1858 派生 =
         // 此处构造）。cancelled 语义 = 0/1（会话有无在跑轮次）；cancelled=0
-        // 供前端 W5 复位判定。不带 session_id = 主 loop 全取消（现状不变）。
+        // 供前端 复位判定。不带 session_id = 主 loop 全取消（现状不变）。
         match data
             .as_ref()
             .and_then(|d| d.get("session_id"))
@@ -258,9 +258,9 @@ impl AgentHandler {
         }
     }
 
-    /// `agent.rewind {turn}` — restore the workspace to the start of the given
-    /// turn (the edit safety net). Returns the paths written back and deleted.
-    /// L6++ G4：可选 session_id——项目会话回退项目目录文件（项目 loop 的
+    /// `agent.rewind {turn, session_id}` — restore the workspace to the start
+    /// of the given turn (the edit safety net). Returns the paths written back
+    /// and deleted. session_id 指向项目会话时回退项目目录文件（项目 loop 的
     /// checkpoint 影子库在主 workspace `logs/project_checkpoints/<pid>/`）。
     async fn rewind(
         &self,
@@ -272,34 +272,28 @@ impl AgentHandler {
             .get("turn")
             .and_then(|v| v.as_u64())
             .ok_or("turn is required")? as usize;
-        // BUG-20261105-024：历史手术面统一持会话闸（rewind_to_message/undo/
-        // redo/delete/clear/compact 同族纪律，R6 家族一致性）——旧形态裸调
+        // 历史手术面统一持会话闸（rewind_to_message/undo/
+        // redo/delete/clear/compact 同族纪律）——旧形态裸调
         // al.rewind(turn)，与在途轮次的会话落库/jsonl 写入并发竞争。
-        let (session_key, agent_loop) = match data
+        // session_id 必填：旧 None 分支以 WS 连接 id
+        // （ctx.session_id = 每连接随机 16-hex，不是聊天会话 id）伪造会话键，
+        // 会话闸的两道防线（集群续行在途检查 + per-key busy 锁）对不存在的
+        // 键恒空转，与真实会话在飞回合的互斥消失；且恢复按主 loop 全局
+        // turn 序号走，调用方拿连接 id 无从对应。对齐同族纪律
+        // （chat.compact/clear、sessions.rewind_to_message 均必填
+        // session_id）：缺失诚实报错。首方前端从不调 agent.rewind（消息级
+        // 回退走 sessions.rewind_to_message），收紧零破坏。
+        let sid = data
             .get("session_id")
             .and_then(|v| v.as_str())
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            Some(sid) => {
-                let session_key = format!(
-                    "agent:main:session:{}",
-                    nemesis_agent::session::SessionStore::sanitize_session_id(sid)
-                );
-                let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
-                (session_key, Some(al))
-            }
-            None => {
-                // 缺省 = 当前聊天会话（chat.rs sync 同构缺省形态）。
-                let session_key = format!(
-                    "agent:main:session:{}",
-                    nemesis_agent::session::SessionStore::sanitize_session_id(&ctx.session_id)
-                );
-                (session_key, ctx.state.agent_loop.read().clone())
-            }
-        };
-        let Some(al) = agent_loop else {
-            return Err("Agent not running".to_string());
-        };
+            .ok_or("missing session_id (agent.rewind is session-scoped)")?;
+        let session_key = format!(
+            "agent:main:session:{}",
+            nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+        );
+        let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
         let report = al
             .under_history_gate(&session_key, "回退", || al.rewind(turn))
             .await?;
@@ -307,7 +301,7 @@ impl AgentHandler {
             "turn": turn,
             "written": report.written,
             "deleted": report.deleted,
-            // R3：失败项不再被吞——非空 = 工作区部分恢复态。
+            // 失败项不再被吞——非空 = 工作区部分恢复态。
             "failures": report.failures.iter().map(|(p, e)| {
                 serde_json::json!({ "path": p, "error": e })
             }).collect::<Vec<_>>(),
@@ -315,7 +309,7 @@ impl AgentHandler {
     }
 
     /// `agent.checkpoints` — list checkpoint turns (for a rewind picker UI).
-    /// L6++ G4：可选 session_id——项目会话列项目 loop 的 checkpoint。
+    /// 可选 session_id——项目会话列项目 loop 的 checkpoint。
     async fn checkpoints(
         &self,
         data: Option<serde_json::Value>,
@@ -382,12 +376,12 @@ fn update_model_info(ctx: &RequestContext) {
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): real-AgentLoop
+// (, quality-hardening goal 冲刺 web): real-AgentLoop
 // arms (cancel/checkpoints/rewind Some-loop + turn guards).
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：retry_status 全函数（unavailable / ok 无
+// AGT 覆盖率批次：retry_status 全函数（unavailable / ok 无
 // 重试）、cancel/rewind/checkpoints 的 session_id 归属解析分派臂、start 的
 // bridge 热切联动（reload_provider_all）+ update_model_info 的 config 缺失
 // 落空臂。结构性豁免见 agt_tests 文件头注。

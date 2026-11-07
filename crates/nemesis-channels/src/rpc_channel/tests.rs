@@ -1299,7 +1299,7 @@ async fn test_rpc_send_rpc_like_but_not_prefix() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): tracing field arms (timeout_secs / sweep counters),
+// coverage: tracing field arms (timeout_secs / sweep counters),
 // cleanup task weak-upgrade break, Channel::is_running trait impl
 // ===========================================================================
 

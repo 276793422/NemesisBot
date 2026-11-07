@@ -1,7 +1,7 @@
-//! 桥客户端状态槽（goal 批次三：通道页【中继通道】数据源）。
+//! 桥客户端状态槽（goal：通道页【中继通道】数据源）。
 //!
 //! 桥客户端跑在 nemesisbot（bin crate），而通道页的数据出口在 nemesis-web
-//! ——nemesisbot 依赖 nemesis-web，所以状态用「模块级全局槽」回传：客户端
+//! nemesisbot 依赖 nemesis-web，所以状态用「模块级全局槽」回传：客户端
 //! 主循环在状态迁移点调 [`report_client_status`]，HTTP 端点
 //! `GET /api/relay/overview` 调 [`client_status`] 读取。手动重连按钮调
 //! [`kick_reconnect`]，客户端主循环在退避等待与会话主 select 两处监听

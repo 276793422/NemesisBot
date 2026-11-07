@@ -1,4 +1,4 @@
-//! 429 限流重试环测试（2026-09-17 BUG 文档裁决④⑧）。
+//! 429 限流重试环测试（2026-09-17）。
 //!
 //! 覆盖：阶梯 + Retry-After 取 max（纯函数）；重试成功恢复；耗尽后结构化
 //! 终局文案；`agents.defaults.rate_limit_retries` fresh-read 覆盖生效；
@@ -57,7 +57,7 @@ impl LlmProvider for RateLimitedThenSuccess {
 
 #[test]
 fn ladder_follows_10_step_design() {
-    // 裁决④：5s→10s→20s→40s→60s→90s→120s→150s→180s→210s。
+    // 5s→10s→20s→40s→60s→90s→120s→150s→180s→210s。
     let want = [5u64, 10, 20, 40, 60, 90, 120, 150, 180, 210];
     for (i, w) in want.iter().enumerate() {
         assert_eq!(rate_limit_ladder_secs(i as u32 + 1), *w);
@@ -67,7 +67,7 @@ fn ladder_follows_10_step_design() {
 
 #[test]
 fn retry_after_and_ladder_take_max() {
-    // 裁决⑧：遵从 Retry-After，但不低于本地阶梯。
+    // 遵从 Retry-After，但不低于本地阶梯。
     assert_eq!(
         rate_limit_wait_secs("rate limited by provider p/m (retry_after=120s)", 1),
         120,
@@ -117,7 +117,7 @@ async fn rate_limit_retry_succeeds_and_notifies_progress() {
         "限流重试后必须恢复: {events:?}"
     );
 
-    // 裁决③「显式进度」：两次失败 → 恰好两条进度通知经 outbound_tx。
+    // 「显式进度」：两次失败 → 恰好两条进度通知经 outbound_tx。
     let mut progresses = Vec::new();
     while let Ok(msg) = rx.try_recv() {
         if msg.content.contains("重试") {
@@ -133,7 +133,7 @@ async fn rate_limit_retry_succeeds_and_notifies_progress() {
 #[tokio::test(start_paused = true)]
 async fn rate_limit_exhausted_yields_structured_terminal_error() {
     // 默认 10 次（fresh-read 无 config_path = 默认口径）：1 首捕 + 10 重试
-    // = 11 次调用；终局文案结构化标注（裁决④），不再裸抛。
+    // = 11 次调用；终局文案结构化标注，不再裸抛。
     let provider = RateLimitedThenSuccess {
         calls: std::sync::atomic::AtomicUsize::new(0),
         fail_times: usize::MAX,
@@ -164,7 +164,7 @@ async fn rate_limit_exhausted_yields_structured_terminal_error() {
 
 #[tokio::test(start_paused = true)]
 async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
-    // 2026-09-20 BUG：`provider codex is overloaded`（FailoverError::Overloaded
+    // BUG：`provider codex is overloaded`（FailoverError::Overloaded
     // 展平形态，状态码已丢）此前两环都不命中 → 一次终局。词表加 overloaded
     // 后必须按限流对待（对齐 error_classifier 既有约定）并显式进度。
     let provider = RateLimitedThenSuccess {
@@ -200,7 +200,7 @@ async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
     }
     assert_eq!(progresses.len(), 2, "过载进度通知: {progresses:?}");
     assert!(progresses[0].contains("第 1/10 次"));
-    // 2026-10-13：过载与限流展示层分家——过载错误进环但文案必须是
+    // 过载与限流展示层分家——过载错误进环但文案必须是
     // 「上游过载」而非「上游限流」（排障方向不再被带偏）。
     assert!(
         progresses[0].contains("上游过载") && !progresses[0].contains("上游限流"),
@@ -210,7 +210,7 @@ async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
 
 #[tokio::test(start_paused = true)]
 async fn overloaded_exhausted_yields_structured_terminal_error() {
-    // 过载耗尽同样走结构化终局（不裸抛）；2026-10-13 起标签按真类
+    // 过载耗尽同样走结构化终局（不裸抛）； 起标签按真类
     // 「上游过载」（环归类口径不变，只改展示层）。
     let provider = RateLimitedThenSuccess {
         calls: std::sync::atomic::AtomicUsize::new(0),
@@ -243,7 +243,7 @@ async fn overloaded_exhausted_yields_structured_terminal_error() {
 
 #[tokio::test(start_paused = true)]
 async fn rate_limit_retries_config_override_takes_effect() {
-    // `agents.defaults.rate_limit_retries` fresh-read（F8 模式）：设 2 →
+    // `agents.defaults.rate_limit_retries` fresh-read（模式）：设 2 →
     // 1 首捕 + 2 重试 = 3 次调用即终局。
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("config.json");
@@ -295,7 +295,7 @@ async fn rate_limit_retries_config_override_takes_effect() {
     );
 }
 
-// -- BUG 2026-09-21 ②A：单次调用超时 ---------------------------------------
+// --：单次调用超时 ---------------------------------------
 
 /// 永不返回的 provider（429 后连接挂起、不回响应体的形态；也是纯首捕
 /// 挂死的形态）。
@@ -412,13 +412,13 @@ async fn hanging_first_call_times_out_into_transient_loop_and_terminates() {
     );
 }
 
-// -- BUG 2026-09-21 ②B：重试环总预算 ---------------------------------------
+// --：重试环总预算 ---------------------------------------
 
 #[tokio::test(start_paused = true)]
 async fn retry_budget_exhausted_yields_budget_terminal_error() {
     // ②B：预算（等待+调用累计）超限直接终局——10 次上限只限次数不限总
     // 时长（实测 46 分钟）的补丁。预算 30s + 单次调用超时 60s：首捕 429
-    // 后首轮调用挂满 60s，第二轮循环顶预算检查命中 → 终局「已重试 1 次」。
+    // 后首轮调用挂满 60s，循环顶预算检查命中 → 终局「已重试 1 次」。
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("config.json");
     std::fs::write(
@@ -456,7 +456,7 @@ async fn retry_budget_exhausted_yields_budget_terminal_error() {
     );
 }
 
-// -- BUG 2026-09-21 ①：retry_status 快照 ------------------------------------
+// -- BUG ①：retry_status 快照 ------------------------------------
 
 #[test]
 fn retry_status_snapshot_roundtrip_and_expiry() {
@@ -519,9 +519,9 @@ fn retry_status_snapshot_roundtrip_and_expiry() {
     assert!(agent_loop.retry_status(key).is_none(), "clear 后 = None");
 }
 
-// -- 2026-09-24：上游 500（Unknown Display）落入 transient 环 ----------------
+// --：上游 500（Unknown Display）落入 transient 环 ----------------
 
-/// 真机同款 500 错误文本（GLM anthropic lane 间歇 api_error，2026-09-24
+/// 真机同款 500 错误文本（GLM anthropic lane 间歇 api_error，
 /// 安卓端 request body 截 200 字符形态；旧词表只认 502/503/504，500 一次
 /// 终局直接抛给用户）。
 const GLM_500_ERR: &str = "unknown error from provider anthropic: status 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"1234\",\"message\":\"[1234][网络错误，错误id：202609241154091cf269318c4d4e07，请稍后重试]\"}";
@@ -627,7 +627,7 @@ async fn upstream_status_500_exhausts_transient_ring_without_rate_limit_ring() {
 
 #[test]
 fn rate_limit_display_label_distinguishes_overload() {
-    // 2026-10-13：过载与限流展示层分家——环归类不变，只改标签。
+    // 过载与限流展示层分家——环归类不变，只改标签。
     assert_eq!(
         rate_limit_display_label("provider codex is overloaded"),
         "上游过载"
@@ -650,4 +650,142 @@ fn rate_limit_display_label_distinguishes_overload() {
         "上游限流"
     );
     assert_eq!(rate_limit_display_label(""), "上游限流");
+}
+
+// -- BUG-20261107-020：单次等待钳入剩余预算 ----------------------------------
+
+/// 恒返限流错误（Retry-After 由 err_text 携带）。
+struct AlwaysRateLimitedWithRetryAfter {
+    err_text: String,
+}
+
+#[async_trait]
+impl LlmProvider for AlwaysRateLimitedWithRetryAfter {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Err(self.err_text.clone())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn huge_retry_after_is_capped_to_remaining_budget() {
+    // 红证：Retry-After 3600s > 预算 30s——修复前循环顶预算检查只看
+    // 「已消耗」，管不住本次将睡多久 → 一次 sleep(3600) 直接突破预算硬
+    // 上限（turn 挂到上游指定时刻）。修复后等待被钳到剩余预算（30s），
+    // 下一轮循环顶预算检查按既有路径终局。
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"agents": {"defaults": {
+            "rate_limit_retries": 10,
+            "rate_limit_budget_secs": 30,
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+
+    let provider = AlwaysRateLimitedWithRetryAfter {
+        err_text: "rate limited by provider codex/gpt-test (retry_after=3600s)".to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_config_path(cfg_path);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let errs: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errs.iter().any(|m| m.contains("总时长超过 30 秒预算")),
+        "钳制后下一轮循环顶预算检查必须终局: {errs:?}"
+    );
+    // 进度通知显示的是钳制后的等待秒数（30s），不是上游的 3600s。
+    let mut progresses = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            progresses.push(msg.content);
+        }
+    }
+    assert_eq!(progresses.len(), 1, "只应有一轮重试进度: {progresses:?}");
+    assert!(
+        progresses[0].contains("等待 30 秒"),
+        "等待必须钳到剩余预算（30s）而非上游 3600s: {}",
+        progresses[0]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_after_within_budget_is_honored_exactly() {
+    // 对照面（裁决⑧「遵从上游」不变）：Retry-After 600s ≤ 预算 900s
+    // 剩余——精确遵从（等待 600s），一次重试后成功恢复。
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"agents": {"defaults": {
+            "rate_limit_retries": 10,
+            "rate_limit_budget_secs": 900,
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+
+    let provider = RateLimitedThenSuccess {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        fail_times: 1,
+        err_text: "rate limited by provider codex/gpt-test (retry_after=600s)".to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_config_path(cfg_path);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "预算内 Retry-After 必须遵从上游并恢复: {events:?}"
+    );
+    let mut progresses = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            progresses.push(msg.content);
+        }
+    }
+    assert_eq!(progresses.len(), 1, "进度通知: {progresses:?}");
+    assert!(
+        progresses[0].contains("等待 600 秒"),
+        "预算内的上游要求必须精确遵从（600s）: {}",
+        progresses[0]
+    );
 }

@@ -60,6 +60,44 @@ fn install_locks() -> &'static std::sync::Mutex<std::collections::HashSet<String
     INSTANCE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
+// BUG-20261107-018：引擎加载串行闸。engine_state 的 std Mutex 只保护指针
+// 读写，不覆盖「检查 → spawn_blocking 秒级加载 → 回写」窗口——并发 start
+// 全部过闸、各自构造完整引擎（SenseVoice 一份数百 MB 起，lang_remedy 翻倍），
+// 末者覆盖写 + punct/aec 状态被多任务竞争写。tokio Mutex 跨整个 start 函数
+// 持有（含 await 与 spawn_blocking 等待）：第二个调用者在闸上等待，拿到闸时
+// 引擎已加载 → already_loaded fast-path；失败路径闸随 guard 释放，可重试。
+#[cfg(target_os = "windows")]
+pub(crate) fn stt_engine_gate() -> &'static Mutex<()> {
+    static INSTANCE: OnceLock<Mutex<()>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(target_os = "windows")]
+fn tts_engine_gate() -> &'static Mutex<()> {
+    static INSTANCE: OnceLock<Mutex<()>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(target_os = "windows")]
+fn speaker_engine_gate() -> &'static Mutex<()> {
+    static INSTANCE: OnceLock<Mutex<()>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(()))
+}
+
+/// BUG-20261107-018：会话槽原子占位——锁内 check+set 合一。check 与 set
+/// 分离时，中间的任何 await（引擎加载、resolve_session_loop、乃至
+/// lock().await 自身的挂起点）都是并发切换点：两个并发 start 双双过闸，
+/// 各起一套管线 / 末者覆盖槽位。返回 false = 已有会话在跑（value 被丢弃）。
+#[cfg(target_os = "windows")]
+pub(crate) async fn try_insert<T>(slot: &Mutex<Option<T>>, value: T) -> bool {
+    let mut guard = slot.lock().await;
+    if guard.is_some() {
+        return false;
+    }
+    *guard = Some(value);
+    true
+}
+
 #[cfg(target_os = "windows")]
 fn model_label(model: &str) -> &str {
     match model {
@@ -115,9 +153,7 @@ struct TtsPlaybackItem {
     volume: u64,
 }
 
-// ---------------------------------------------------------------------------
-// Persistent engine state (Phase 1)
-// ---------------------------------------------------------------------------
+// Persistent engine state
 
 #[cfg(target_os = "windows")]
 fn stt_engine_state() -> &'static std::sync::Mutex<Option<nemesis_voice::SttEngine>> {
@@ -206,10 +242,8 @@ const VOICEPRINT_CONFIG_FILENAME: &str = "config.voice.print.json";
 #[cfg(target_os = "windows")]
 const DEFAULT_SPEAKER_THRESHOLD: f32 = 0.65;
 
-// ---------------------------------------------------------------------------
 // Realtime 共享态（barge-in 需要 tts_playback_loop 与 STT 管线跨任务共享
 // 播放进度；tts_relay 入队需要可复用的播放通道）
-// ---------------------------------------------------------------------------
 
 /// 当前播放的停止句柄（barge-in 跨线程切播放用；播放间隙为 None）。
 /// AudioPlayback 本体因 cpal Stream 是 !Send——播放循环线程持本体，
@@ -235,7 +269,7 @@ fn tts_last_play_end() -> &'static std::sync::Mutex<Option<std::time::Instant>> 
     INSTANCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
-/// barge-in 判定常量（G4）：最短持续防咳嗽/桌响误触发；尾窗允许抢最后一句话。
+/// barge-in 判定常量：最短持续防咳嗽/桌响误触发；尾窗允许抢最后一句话。
 #[cfg(target_os = "windows")]
 const BARGE_MIN_SUSTAIN: std::time::Duration = std::time::Duration::from_millis(250);
 #[cfg(target_os = "windows")]
@@ -254,9 +288,7 @@ struct RealtimePipelineParams {
     registration: Option<Arc<crate::voice_relay::RelayRegistration>>,
 }
 
-// ---------------------------------------------------------------------------
-// STT output interface (Phase 3)
-// ---------------------------------------------------------------------------
+// STT output interface
 
 /// Trait for routing STT recognition results.
 #[cfg(target_os = "windows")]
@@ -394,9 +426,7 @@ impl SttOutput for DialogueSttOutputWrapper {
     }
 }
 
-// ---------------------------------------------------------------------------
-// TTS input interface (Phase 3)
-// ---------------------------------------------------------------------------
+// TTS input interface
 
 /// Trait for text input sources that trigger TTS synthesis.
 #[cfg(target_os = "windows")]
@@ -603,7 +633,7 @@ impl ModuleHandler for VoiceHandler {
                         .and_then(|d| d.get("silence_timeout"))
                         .and_then(|v| v.as_f64())
                         .unwrap_or(3.0);
-                    // realtime 接力寻址（G6）：会话 id 由前端随启动请求带上
+                    // realtime 接力寻址：会话 id 由前端随启动请求带上
                     let dialogue_session = data
                         .as_ref()
                         .and_then(|d| d.get("session_id"))
@@ -630,6 +660,13 @@ impl ModuleHandler for VoiceHandler {
                 "speaker_register_start" => {
                     let d = data.ok_or("missing data")?;
                     let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("owner");
+                    // BUG-20261106-020：NUL 名先拒——crate 层 SpeakerManager 会
+                    // 诚实拒绝但 register_stop 的 voiceprint 落盘不查返回值，
+                    // 放行会「落盘但惰性」假成功；且应先于 ensure_speaker_engine
+                    // 重装配（fail fast）。
+                    if name.contains('\0') {
+                        return Err("name must not contain NUL characters".to_string());
+                    }
                     self.ensure_speaker_engine(&voice_dir, &config_dir).await?;
                     self.cmd_speaker_register_start(&config_dir, name)
                 }
@@ -641,6 +678,11 @@ impl ModuleHandler for VoiceHandler {
                         .get("name")
                         .and_then(|v| v.as_str())
                         .ok_or("missing field: name")?;
+                    // BUG-20261106-020 同族门闸：NUL 名给明确错误而非
+                    // silent false（crate 层已拒，但 remove 返回值在此未消费）。
+                    if name.contains('\0') {
+                        return Err("name must not contain NUL characters".to_string());
+                    }
                     self.cmd_speaker_remove(&config_dir, name)
                 }
                 "speaker_list" => self.cmd_speaker_list(&config_dir),
@@ -664,9 +706,7 @@ impl ModuleHandler for VoiceHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Voice config helpers (config.voice.json)
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 fn ensure_voice_config(config_dir: &std::path::Path) -> PathBuf {
@@ -710,9 +750,7 @@ fn read_chat_config(config_dir: &std::path::Path) -> serde_json::Value {
         .unwrap_or_else(|| serde_json::from_str(DEFAULT_CHAT_CONFIG).unwrap_or_default())
 }
 
-// ---------------------------------------------------------------------------
 // Voiceprint config helpers (config.voice.print.json)
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 fn voiceprint_path(config_dir: &std::path::Path) -> PathBuf {
@@ -741,13 +779,13 @@ fn write_voiceprint_config(
     let path = voiceprint_path(config_dir);
     // 首写前建父目录：读路径（read_voiceprint_config）容忍文件/目录缺失回退默认，
     // 写路径此前直接 fs::write，config/ 目录不存在时首写会以裸 OS error 3 失败
-    // （BUG #18，与同文件 ensure_voice_config 的 create_dir_all 行为对齐）。
+    // （与同文件 ensure_voice_config 的 create_dir_all 行为对齐）。
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     let content = serde_json::to_string_pretty(data)
         .map_err(|e| format!("failed to serialize voiceprint config: {}", e))?;
-    // REL-002：统一原子写入（声纹配置）。
+    // 统一原子写入（声纹配置）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
         .map_err(|e| format!("failed to write voiceprint config: {}", e))
 }
@@ -755,7 +793,7 @@ fn write_voiceprint_config(
 /// config.voice.json RMW 事务唯一入口——写串行锁在函数内取得，罩
 /// 「宽容读（缺失种子由 [`read_voice_config`] 承担）→ 闭包改 → 原子落盘」
 /// 全程；闭包返回 Err 不落盘（abort 语义）。调用方结构上不可能忘锁
-///（2026-10-13 闭包事务收口）。纪律：闭包内不得再调任何 update_* /
+///（闭包事务收口）。纪律：闭包内不得再调任何 update_* /
 /// [`nemesis_config::config_write_lock`]（Mutex 非重入，嵌套即死锁）。
 #[cfg(target_os = "windows")]
 fn update_voice_config<T>(
@@ -806,9 +844,7 @@ fn push_speaker_rejected(session_id: &str, session_mgr: Arc<crate::session::Sess
     }
 }
 
-// ---------------------------------------------------------------------------
 // Graceful shutdown — cancel all active voice sessions and release engines
-// ---------------------------------------------------------------------------
 
 /// Cancel all active voice sessions and release all engines.
 /// Called during gateway shutdown to ensure spawn_blocking tasks exit promptly.
@@ -954,9 +990,7 @@ pub async fn init_engines_from_config(workspace: &std::path::Path) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Windows implementation
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 impl VoiceHandler {
@@ -1004,7 +1038,7 @@ impl VoiceHandler {
             })
         };
 
-        // AEC 库（可选，单独下载到 tools/voice/aec/）
+        // AEC 库（可选，单独下载到 tools/voice/aec）
         let aec_lib = voice_dir.join("aec").join("aec.dll");
         let aec_ready = aec_lib.exists();
 
@@ -1134,7 +1168,7 @@ impl VoiceHandler {
         let dir = voice_dir.to_path_buf();
         let hub = ctx.state.event_hub.clone();
 
-        // 进度桥（2026-10-25 本地模型页进度条）：bootstrap 下载/解压回调 →
+        // 进度桥（本地模型页进度条）：bootstrap 下载/解压回调 →
         // SSE progress 事件（phase=runtime）。publish 同步 &self，跨线程安全。
         let progress_hub = hub.clone();
         let progress: nemesis_voice::ProgressSink =
@@ -1526,7 +1560,7 @@ impl VoiceHandler {
 
         let new_content = nemesis_voice::config::set_model_name_in_config(&content, category, name)
             .map_err(|e| e.to_string())?;
-        // REL-002：统一原子写入（voice config.toml，与 cmd_config_set 同源）
+        // 统一原子写入（voice config.toml，与 cmd_config_set 同源）
         nemesis_utils::write_file_atomic(
             &config_path.to_string_lossy(),
             new_content.as_bytes(),
@@ -1565,7 +1599,7 @@ impl VoiceHandler {
         std::fs::create_dir_all(voice_dir)
             .map_err(|e| format!("failed to create voice dir: {}", e))?;
         let config_path = voice_dir.join("config.toml");
-        // REL-002：统一原子写入（voice config.toml）。
+        // 统一原子写入（voice config.toml）。
         nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write config: {}", e))?;
         Ok(Some(serde_json::json!({ "success": true })))
@@ -1584,8 +1618,8 @@ impl VoiceHandler {
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
         // 锁在 update_voice_config 内：读（缺失种子）→合并 13 字段→原子写
-        // 全程串行（2026-10-13 闭包事务收口）。aec_filter_length/aec_preprocess
-        // 为 STT 启动读取的 AEC 进阶参数（BUG-20261031-252：此前持久化块
+        // 全程串行（闭包事务收口）。aec_filter_length/aec_preprocess
+        // 为 STT 启动读取的 AEC 进阶参数（此前持久化块
         // 漏接——FE 发送、运行期读取、保存不落盘 = 改了存不上）。
         update_voice_config(config_dir, |current| {
             if let Some(obj) = current.as_object_mut() {
@@ -1768,12 +1802,19 @@ impl VoiceHandler {
         let session_id = ctx.session_id.clone();
         let session_mgr = ctx.state.session_manager.clone();
 
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
+        // BUG-20261107-018：占位原子化——早检（函数头）与占位之间隔着引擎
+        // 加载 await，双 start 双双过早检会各起一套麦克风管线（双采集 +
+        // 末者覆盖）。
+        if !try_insert(
+            stt_state(),
+            SttSession {
                 cancel: cancel.clone(),
                 dialogue_output: None,
-            });
+            },
+        )
+        .await
+        {
+            return Err("STT dictation already running".to_string());
         }
 
         let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
@@ -1903,10 +1944,10 @@ impl VoiceHandler {
         let path = ensure_chat_config(config_dir);
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("failed to serialize chat config: {}", e))?;
-        // REL-002：统一原子写入（chat config）。
+        // 统一原子写入（chat config）。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write chat config: {}", e))?;
-        // realtime 热态同步（G6）：写盘成功即 apply（缺 realtime 键 = no-op，
+        // realtime 热态同步：写盘成功即 apply（缺 realtime 键 = no-op，
         // 不动现有热态）。管线循环/出站广播读 AtomicBool，下一拍生效。
         if let Some(rt) = data.get("realtime") {
             crate::voice_relay::apply_realtime_config(rt);
@@ -1914,9 +1955,7 @@ impl VoiceHandler {
         Ok(Some(serde_json::json!({ "success": true })))
     }
 
-    // -----------------------------------------------------------------------
-    // Phase 1: Engine start / stop
-    // -----------------------------------------------------------------------
+    // Engine start / stop
 
     async fn cmd_engine_start(
         &self,
@@ -1937,6 +1976,10 @@ impl VoiceHandler {
         voice_dir: &std::path::Path,
         config_dir: &std::path::Path,
     ) -> Result<Option<serde_json::Value>, String> {
+        // BUG-20261107-018：闸跨整个函数持有（含 spawn_blocking 等待），
+        // 并发 start 序列化——后者拿到闸时引擎已加载，走 already_loaded
+        // fast-path，不再各自构造完整引擎。
+        let _gate = stt_engine_gate().lock().await;
         {
             let guard = stt_engine_state().lock().unwrap();
             if guard.is_some() {
@@ -2074,6 +2117,8 @@ impl VoiceHandler {
         &self,
         voice_dir: &std::path::Path,
     ) -> Result<Option<serde_json::Value>, String> {
+        // BUG-20261107-018：同 cmd_stt_engine_start——闸序列化并发加载。
+        let _gate = tts_engine_gate().lock().await;
         {
             let guard = tts_engine_state().lock().unwrap();
             if guard.is_some() {
@@ -2141,6 +2186,9 @@ impl VoiceHandler {
         voice_dir: &std::path::Path,
         config_dir: &std::path::Path,
     ) -> Result<Option<serde_json::Value>, String> {
+        // BUG-20261107-018：同 cmd_stt_engine_start——闸序列化并发加载
+        //（ensure_speaker_engine 的 register/test 前置自动加载同受益）。
+        let _gate = speaker_engine_gate().lock().await;
         {
             let guard = speaker_engine_state().lock().unwrap();
             if guard.is_some() {
@@ -2222,9 +2270,7 @@ impl VoiceHandler {
         }
     }
 
-    // -----------------------------------------------------------------------
     // Speaker verification commands
-    // -----------------------------------------------------------------------
 
     async fn cmd_speaker_status(
         &self,
@@ -2470,7 +2516,7 @@ impl VoiceHandler {
                 manager.remove(name);
             }
         }
-        // 锁在 update_voiceprint_config 内：读→删→写 = RMW（2026-10-13 闭包事务收口）。
+        // 锁在 update_voiceprint_config 内：读→删→写 = RMW（闭包事务收口）。
         update_voiceprint_config(config_dir, |vp_cfg| {
             if let Some(speakers) = vp_cfg.get_mut("speakers").and_then(|v| v.as_object_mut()) {
                 speakers.remove(name);
@@ -2511,7 +2557,7 @@ impl VoiceHandler {
             return Err("Threshold must be between 0.0 and 1.0".to_string());
         }
         *speaker_threshold_state().lock().unwrap() = threshold;
-        // 锁在 update_voiceprint_config 内：读→改→写 = RMW（2026-10-13 闭包事务收口）。
+        // 锁在 update_voiceprint_config 内：读→改→写 = RMW（闭包事务收口）。
         update_voiceprint_config(config_dir, |vp_cfg| {
             vp_cfg["threshold"] = serde_json::json!(threshold);
             Ok(())
@@ -2550,21 +2596,19 @@ impl VoiceHandler {
                 return Err("未注册声纹，请先录制声纹".to_string());
             }
 
-            // Check not already testing
-            {
-                let state = speaker_test_state().lock().await;
-                if state.is_some() {
-                    return Err("测试已在进行中".to_string());
-                }
-            }
-
+            // BUG-20261107-018：占位原子化——check 与 set 之间隔着两次
+            // lock().await 挂起点，双测试会话旧代码里双双过闸、末者覆盖。
             let cancel = CancellationToken::new();
-            {
-                let mut state = speaker_test_state().lock().await;
-                *state = Some(SpeakerTestSession {
+            if !try_insert(
+                speaker_test_state(),
+                SpeakerTestSession {
                     cancel: cancel.clone(),
                     auto_loaded_stt,
-                });
+                },
+            )
+            .await
+            {
+                return Err("测试已在进行中".to_string());
             }
 
             let session_id = ctx.session_id.to_string();
@@ -2791,9 +2835,7 @@ impl VoiceHandler {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Phase 2: Pipeline start / stop (uses persistent engine)
-    // -----------------------------------------------------------------------
+    // Pipeline start / stop (uses persistent engine)
 
     async fn cmd_pipeline_start(
         &self,
@@ -2838,12 +2880,19 @@ impl VoiceHandler {
         let session_id = ctx.session_id.clone();
         let session_mgr = ctx.state.session_manager.clone();
 
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
+        // BUG-20261107-018：占位原子化——check 与 set 之间虽无长 await，
+        // 两次 lock().await 本身就是挂起点，无条件覆盖写会让并发双 start
+        // 双双占槽、各起一套管线（前者成幽灵采集）。
+        if !try_insert(
+            stt_state(),
+            SttSession {
                 cancel: cancel.clone(),
                 dialogue_output: None,
-            });
+            },
+        )
+        .await
+        {
+            return Err("STT pipeline already running".to_string());
         }
 
         let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
@@ -2889,9 +2938,7 @@ impl VoiceHandler {
         }
     }
 
-    // -------------------------------------------------------------------
     // Dictation mode: STT → input box
-    // -------------------------------------------------------------------
 
     async fn cmd_stt_to_input_start(
         &self,
@@ -2926,12 +2973,18 @@ impl VoiceHandler {
         let session_id = ctx.session_id.clone();
         let session_mgr = ctx.state.session_manager.clone();
 
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
+        // BUG-20261107-018：占位原子化（同 cmd_stt_pipeline_start——两次
+        // lock().await 挂起点之间无条件覆盖 = 并发双 start 双管线）。
+        if !try_insert(
+            stt_state(),
+            SttSession {
                 cancel: cancel.clone(),
                 dialogue_output: None,
-            });
+            },
+        )
+        .await
+        {
+            return Err("STT already running. Stop current session first.".to_string());
         }
 
         let sid_clone = session_id.clone();
@@ -2978,9 +3031,7 @@ impl VoiceHandler {
         }
     }
 
-    // -------------------------------------------------------------------
     // Dialogue mode: STT → accumulate → auto-send on silence
-    // -------------------------------------------------------------------
 
     async fn cmd_stt_dialogue_start(
         &self,
@@ -3014,7 +3065,7 @@ impl VoiceHandler {
         let target_sr = cfg.audio.target_sample_rate;
         let cfg_for_detector = cfg.clone();
 
-        // realtime 装配（G6）：热态开 + 前端给了会话 id → 注册接力 + 管线
+        // realtime 装配：热态开 + 前端给了会话 id → 注册接力 + 管线
         // 参数。resolve 失败（项目会话目录消失等）= 降级为 agent_loop:None
         // （barge-in 只停播不取消轮，管线照常跑）。
         let hot = crate::voice_relay::realtime_hot_state();
@@ -3063,7 +3114,6 @@ impl VoiceHandler {
                 }
             }
         }
-        crate::voice_relay::set_relay_registration(registration);
 
         let cancel = CancellationToken::new();
         let session_id = ctx.session_id.clone();
@@ -3092,18 +3142,28 @@ impl VoiceHandler {
             })),
         });
 
+        // BUG-20261107-018：占位原子化（锁内 check+set 合一），且先于一切
+        // 全局副作用——relay 注册是全局单槽，双 start 并发时败者若先覆写
+        // 注册再在会话槽竞争落败，会留下指向自己 session 的孤儿注册。
+        // 占位成功者独占后续全部全局写；函数头部的早检只是 fast-path。
+        if !try_insert(
+            stt_state(),
+            SttSession {
+                cancel: cancel.clone(),
+                dialogue_output: Some(dialogue_output.clone()),
+            },
+        )
+        .await
+        {
+            return Err("STT already running. Stop current session first.".to_string());
+        }
+
+        crate::voice_relay::set_relay_registration(registration);
+
         // Store dialogue output for reset command
         {
             let mut ds = dialogue_state().lock().await;
             *ds = Some(dialogue_output.clone());
-        }
-
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
-                cancel: cancel.clone(),
-                dialogue_output: Some(dialogue_output.clone()),
-            });
         }
 
         let output: Box<dyn SttOutput> = Box::new(DialogueSttOutputWrapper {
@@ -3171,7 +3231,7 @@ impl VoiceHandler {
             }
         });
 
-        // 采集源（W7 注入面）在管线线程内构造：cpal Stream 是 !Send，源从不过
+        // 采集源（注入面）在管线线程内构造：cpal Stream 是 !Send，源从不过
         // 线程边界；失败经 output.send_text 上报（对话模式吞 [ 前缀状态消息 =
         // 与旧管线内失败同表现）。
         tokio::task::spawn_blocking(move || {
@@ -3205,7 +3265,7 @@ impl VoiceHandler {
                     let _ = output.flush();
                 }
                 session.cancel.cancel();
-                // 清 relay 注册（G3）：出站广播即刻回前端自播；迟到的 dispatch
+                // 清 relay 注册：出站广播即刻回前端自播；迟到的 dispatch
                 // 因注册槽空而丢弃。
                 crate::voice_relay::set_relay_registration(None);
                 // 接力播放一并停（关=立刻安静）：清注册只挡住后续入队，已入
@@ -3239,9 +3299,7 @@ impl VoiceHandler {
         }
     }
 
-    // -------------------------------------------------------------------
     // TTS playback: frontend-driven queue
-    // -------------------------------------------------------------------
 
     async fn cmd_tts_playback(
         &self,
@@ -3305,9 +3363,7 @@ impl VoiceHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // TTS enqueue（前端 tts_playback 与 realtime tts_relay 共用）
-// ---------------------------------------------------------------------------
 
 /// 入队一条 TTS 播放（懒建播放通道：首次调用 spawn 播放循环，之后复用）。
 #[cfg(target_os = "windows")]
@@ -3345,7 +3401,7 @@ async fn tts_enqueue_item(
         .map_err(|_| "TTS playback channel closed".to_string())
 }
 
-/// TTS 接力入队（voice_relay::relay_dispatch 落点，G3）：assistant 回复
+/// TTS 接力入队（voice_relay::relay_dispatch 落点）：assistant 回复
 /// 清洗 → 切句 → 播放队列。spoken_form 开 = 口播话术转换；关 = 仅长句软
 /// 切分。注册槽空 = no-op（竞态安全：stop 清注册后迟到的 dispatch 丢弃）。
 #[cfg(target_os = "windows")]
@@ -3396,9 +3452,7 @@ pub async fn relay_enqueue(content: &str) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Barge-in（G4）：停当前播放 + 撤播放队列 + 取消 agent 当前轮 + 前端标注
-// ---------------------------------------------------------------------------
+// Barge-in：停当前播放 + 撤播放队列 + 取消 agent 当前轮 + 前端标注
 
 #[cfg(target_os = "windows")]
 fn trigger_barge_in(
@@ -3463,9 +3517,7 @@ fn barge_speaker_ok(audio: &[f32], target_sr: u32) -> bool {
     }
 }
 
-// ---------------------------------------------------------------------------
 // TTS playback loop (blocking background task)
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 fn tts_playback_loop(
@@ -3597,9 +3649,7 @@ fn handle_tts_failure(
     }
 }
 
-// ---------------------------------------------------------------------------
 // STT loop (blocking, creates its own engine — legacy fallback)
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 #[allow(dead_code)]
@@ -3724,9 +3774,7 @@ fn run_stt_loop(
     );
 }
 
-// ---------------------------------------------------------------------------
 // STT pipeline (blocking, uses persistent engine)
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 fn run_stt_pipeline(
@@ -3748,7 +3796,7 @@ fn run_stt_pipeline(
 
     let mut detector = nemesis_voice::create_detector(cfg);
 
-    // 流式引擎懒建（W2）：模型缺 = warn + 本轮降级仅离线（不阻塞下载，
+    // 流式引擎懒建：模型缺 = warn + 本轮降级仅离线（不阻塞下载，
     // 安装走 install_model model=stt_stream）。
     let mut stream_engine: Option<nemesis_voice::StreamSttEngine> = None;
     if let Some(rt) = realtime
@@ -3823,8 +3871,8 @@ fn run_stt_pipeline(
             }
         };
 
-        // realtime 流式分支（W2）：喂流式引擎 + partial 草稿上屏（变化才发，
-        // 省带宽；早于段尾 final 数秒可见）。
+        // realtime 流式分支：喂流式引擎 + partial 草稿上屏（变化才发，
+        // 省带宽；早于段尾 final 数秒可）。
         if let Some(ref se) = stream_engine {
             se.accept_waveform(&cleaned, target_sr);
             se.decode();
@@ -3835,7 +3883,7 @@ fn run_stt_pipeline(
             }
         }
 
-        // barge-in 判定（G4）：is_speaking 在本块 process 之前读（状态滞后
+        // barge-in 判定：is_speaking 在本块 process 之前读（状态滞后
         // 一块 ~100ms；BARGE_MIN_SUSTAIN 250ms 守卫覆盖该滞后，行为无碍）。
         // 前置闸 = AEC 已装载（无 AEC 时 TTS 回声会被 VAD 听成用户说话，
         // 必自打断）；窗口 = 播放中或尾窗 300ms；声纹开 = onset 起音频 owner 校验。
@@ -3908,7 +3956,7 @@ fn run_stt_pipeline(
                     }
                 }
 
-                // 段尾 final 来源（W2）：two_pass 开（或无流式引擎）= 离线整段
+                // 段尾 final 来源：two_pass 开（或无流式引擎）= 离线整段
                 // 精识（原路径，准确）；关 = 流式 partial 直接作 final（省一次
                 // 精识，延迟更低）。两种来源都把流式流复位对齐下一段。
                 let stream_final = stream_engine.as_ref().map(|se| {
@@ -4055,9 +4103,7 @@ fn push_stt_dialogue(
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 #[cfg(target_os = "windows")]
 fn check_model_subdir_any(parent: &std::path::Path) -> bool {
@@ -4092,7 +4138,7 @@ fn has_onnx_file(dir: &std::path::Path) -> bool {
 
 /// 当前配置变体名（`cfg.<category>.model_name` 投影；未知类别 = None）。
 /// `voice.status` 的 `models.<cat>.current` 与 `voice.model_catalog` 的
-/// `is_current` 共用（单一真相源）。
+/// `is_current` 共用。
 #[cfg(target_os = "windows")]
 fn current_model_name_of(cfg: &nemesis_voice::AppConfig, category: &str) -> Option<String> {
     match category {
@@ -4123,36 +4169,36 @@ fn installed_variants(model_dir: &std::path::Path, category: &str) -> Vec<String
     out
 }
 
-// Phase 3 批次 18（2026-08-25）：voice.rs 纯逻辑子模块测试。子模块（而非
+// voice.rs 纯逻辑子模块测试。子模块（而非
 // sibling 文件）是为了访问本文件私有项（DialogueSttOutput 缓冲语义 /
 // check_model_subdir_any / read_voice_config 回退 / cmd_status 文件探测 /
 // cmd_speaker_* 持久化）。原生音频臂（WASAPI / AEC / kokoro / espeak /
-// SenseVoice 真 DLL）不可 mock → 结构性豁免（台账 §9.4 VE-voice-1）。
+// SenseVoice 真 DLL）不可 mock → 结构性豁免（台账 VE-voice-1）。
 #[cfg(all(test, target_os = "windows"))]
 mod wweb2_tests;
 
-// quality-hardening goal 冲刺 S10a（2026-08-25）：voice.rs 非豁免行覆盖第二子模块。
-// 聚焦 VE1 豁免范围外的 WSAPI dispatch 提取臂、start/stop 状态机（注入会话）、
+// quality-hardening goal 冲刺：voice.rs 非豁免行覆盖第二子模块。
+// 聚焦 豁免范围外的 WSAPI dispatch 提取臂、start/stop 状态机（注入会话）、
 // 配置读写、纯逻辑 helper 与 push 广播路径。测试间全局状态竞态由模块内
 // voice_state_lock() 串行化（wweb2_tests::voice_shutdown_idle_is_safe 也持有同一把锁）。
 #[cfg(all(test, target_os = "windows"))]
 mod s10_tests;
 
-// AGT 覆盖率批次（2026-09-24）：第三子模块。setup/install_runtime/install_aec/
+// AGT 覆盖率批次：第三子模块。setup/install_runtime/install_aec/
 // install_model 的 create_dir 失败与锁/config 门、tts 与 tts_playback 纯校验段、
 // init_engines_from_config fail-fast、注入 SpeakerManager 的 remove/status/shutdown
 // 臂。同样持有 s10_tests::voice_state_lock 串行化全局状态。
 #[cfg(all(test, target_os = "windows"))]
 mod agt_tests;
 
-// Wave4 覆盖率批次（2026-09-25）：第四子模块。config_get/set、voice_config
+// Wave4 覆盖率批次：第四子模块。config_get/set、voice_config
 // 全字段合并、chat_config 回环、speakers 表投影、engine_stop 三模型空态、
 // pipeline/dictation/dialogue/speaker_test/register stop 的空状态诚实报错、
 // tts_playback_stop 与 register_cancel 幂等成功、engine_status 空态投影。
 #[cfg(all(test, target_os = "windows"))]
 mod w4_tests;
 
-// MC 覆盖率批次（2026-10-25）：模型设置弹窗三命令——model_catalog 分组与
+// MC 覆盖率批次：模型设置弹窗三命令——model_catalog 分组与
 // installed/is_current 投影（含缺 config 回退内嵌模板）、set_model 就地改写
 // 保注释 + 未安装/未知变体/类别错误拒绝、status 扩展字段（current/installed/
 // stt_stream 条目）。纯 FS 读写不触全局单例，无需 voice_state_lock。

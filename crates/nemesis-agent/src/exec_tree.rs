@@ -1,9 +1,9 @@
-//! 修6（BUG-C 执行体面，2026-11-04）：同步 exec 族子进程树的生命周期守卫。
+//! （执行体面，2026-11-04）：同步 exec 族子进程树的生命周期守卫。
 //!
 //! 同步 exec 族（`exec` / `run_script` / `run_checks` 的 `run_one_stage`
 //! 注入内核）spawn 的 shell 子进程会派生真实工作进程（cargo/rustc/编译器）。
 //! 此前收杀面只有超时臂的 `tree_kill`（taskkill /T）——estop 与中途 drop
-//! 完全不触达，卡死会话里的进程树继续烧 CPU（BUG-A/BUG-C 现场）。
+//! 完全不触达，卡死会话里的进程树继续烧 CPU（/ 现场）。
 //!
 //! 本模块给每次 spawn 挂一个守卫：
 //!
@@ -16,7 +16,7 @@
 //! （RAII——未来被取消即收树，Batch 2 estop select 臂依赖此语义）；
 //! `kill_session_trees` 会话级 sweep（estop 联动入口，Batch 2 接线）。
 //!
-//! 纪律：只收同步 exec 族；B4 `background_start` 有自己的注册表/stop
+//! 纪律：只收同步 exec 族； `background_start` 有自己的注册表/stop
 //! ladder，不进本注册表。正常完成路径 `mark_complete` 后 Drop 变 no-op
 //! ——正常路径零行为变化。终止原因单调记录（Estop > Timeout > Drop），
 //! 供 run_checks / exec 的「被 estop 终止」诚实标注消费（不记失败/超时）。
@@ -238,7 +238,7 @@ fn register_tree(session_key: &str, inner: &Arc<ExecTreeInner>) {
 }
 
 /// estop 联动入口（Batch 2 接线）：终止该会话全部在飞 exec 树。纪律
-/// （PLAN 修6 钦定）：锁内只快照、杀在锁外——terminate 虽是薄内核调用，
+/// （PLAN 钦定）：锁内只快照、杀在锁外——terminate 虽是薄内核调用，
 /// 杀在锁外杜绝任何自阻塞面。返回发出收杀的守卫数。
 pub(crate) fn kill_session_trees(session_key: &str) -> usize {
     let snapshot: Vec<Arc<ExecTreeInner>> = {
@@ -254,7 +254,7 @@ pub(crate) fn kill_session_trees(session_key: &str) -> usize {
         .count()
 }
 
-/// estop 联动入口（Batch 2 ③ 执行面 sweep）：终止**全部会话**在飞 exec 树。
+/// estop 联动入口（执行面 sweep）：终止**全部会话**在飞 exec 树。
 /// gateway 侧 estop watcher 挂在全局 estop 状态上（不分 session）——急停
 /// 冻结的是整个进程的全部 agent 活动，任何会话的在飞子进程树都应被收，
 /// 不能只靠逐会话 kill_session_trees（watcher 拿不到「哪些会话在飞」的

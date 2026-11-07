@@ -10,7 +10,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 
-/// 下载 stall 检测窗（BUG-20261101-278）：reqwest::get 内部 Client::new()
+/// 下载 stall 检测窗：reqwest::get 内部 Client::new()
 /// 零超时——半死源（TCP 已建但不发数据）让 `sandbox install` 永久挂死。
 /// 不设总超时是刻意的：GitHub 直链实测低至 ~10KB/s，安装器 ~4.5MB 的合法
 /// 慢速流不能被总超时误杀；read_timeout 只惩罚响应分片间隔超窗的 stall。
@@ -30,7 +30,7 @@ fn download_client() -> reqwest::Client {
 }
 
 /// Download `filename`'s expected SHA-256 from the checksums file.
-/// Format per line: `<sha256>  <filename>` (two-space separated).
+/// Format per line: `<sha256> <filename>` (two-space separated).
 pub async fn fetch_expected_sha256(checksums_url: &str, filename: &str) -> Result<String> {
     let text = download_client()
         .get(checksums_url)
@@ -45,7 +45,7 @@ pub async fn fetch_expected_sha256(checksums_url: &str, filename: &str) -> Resul
         if line.is_empty() {
             continue;
         }
-        // `<hash>  <file>` — split on whitespace, last token is filename.
+        // `<hash> <file>` — split on whitespace, last token is filename.
         let mut parts = line.split_whitespace();
         let hash = parts.next().unwrap_or("");
         let file = parts.next().unwrap_or("");

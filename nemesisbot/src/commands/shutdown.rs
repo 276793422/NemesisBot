@@ -28,7 +28,7 @@ pub fn run(local: bool) -> Result<()> {
         {
             // On Windows, send CTRL_BREAK_EVENT or use taskkill
             // CREATE_NO_WINDOW：gateway 托盘/无控制台运行时，console 子进程
-            // (taskkill) 会各自弹新控制台；输出经 .output() 收集，不受影响。
+            // (taskkill) 会各自弹新控制台；输出经.output() 收集，不受影响。
             let result = {
                 use std::os::windows::process::CommandExt;
                 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -73,14 +73,14 @@ pub fn run(local: bool) -> Result<()> {
         return Ok(());
     }
 
-    // (BUG #31, quality-hardening goal 冲刺 S11e) legacy 无消费方：全仓库没有
+    // (, quality-hardening goal 冲刺) legacy 无消费方：全仓库没有
     // 任何代码读取 shutdown.signal 文件（PID 臂与 HTTP 臂是仅有的两条活路径）。
     // 仅为外部脚本兼容保留写入；成功走 HTTP 后仍会清理。
     let signal_path = home.join("shutdown.signal");
     std::fs::write(&signal_path, chrono::Local::now().to_rfc3339())?;
     println!("  Shutdown signal file written: {}", signal_path.display());
 
-    // (BUG #31, quality-hardening goal 冲刺 S11e) Method 3 重写：旧实现打
+    // (, quality-hardening goal 冲刺) Method 3 重写：旧实现打
     // `/api/shutdown` —— 该路由在 nemesis-web 从未注册，必 404，是一条死臂。
     // 现在打既有内部控制端点 `POST /api/internal` body {"cmd":"shutdown"}
     // （gateway 经 InternalCommand mpsc 走 Ctrl+C 同源的优雅停机），鉴权用
@@ -132,12 +132,12 @@ pub fn run(local: bool) -> Result<()> {
 /// Returns `Ok(http_status)` on a completed round-trip (the CLI inspects
 /// success/non-success), `Err(message)` for transport failure.
 ///
-/// (BUG #31 / BUG #27 同类横向, quality-hardening goal 冲刺 S11e；机制勘误
-/// 见 BUG #50, 2026-08-28) 为什么是「独立线程 + 私有 runtime + 【异步】client」
+/// (/ 同类横向, quality-hardening goal 冲刺；机制勘误
+/// 见,) 为什么是「独立线程 + 私有 runtime + 【异步】client」
 /// 而不是 `reqwest::blocking`：本命令以同步签名被 main.rs 的 async
 /// `run_command` 直接调用（本批次不允许改 main.rs 把它 await 化），而
 /// `run_command` 运行在 multi-thread runtime 的 block_on 上下文里。
-/// `reqwest::blocking::Client` 在该上下文的问题分两层：
+/// `reqwest::blocking:Client` 在该上下文的问题分两层：
 ///   1. debug 构建：new() 内部 wait::enter() 的嵌套-runtime 守卫（reqwest
 ///      0.12.28 src/blocking/wait.rs，**带 `#[cfg(debug_assertions)]`**）会让
 ///      守卫 shell runtime 在 async 上下文内建+弃 → tokio panic「Cannot drop
@@ -148,12 +148,12 @@ pub fn run(local: bool) -> Result<()> {
 ///      这里把整段 HTTP 调用搬到一条全新 OS 线程上执行：新线程没有任何 ambient
 ///      runtime context，私有 runtime 的创建与销毁都合法；且全程使用异步 client，
 ///      两种 profile 下都安全。
-///      探针测试见 shutdown/tests.rs（红对照按 profile 断言，见 BUG #50）。
+///      探针测试见 shutdown/tests.rs（红对照按 profile 断言）。
 fn post_internal_shutdown(port: u16, token: &str) -> Result<u16, String> {
     let url = format!("http://127.0.0.1:{}/api/internal", port);
     let token = token.to_string();
 
-    // 手工设 Content-Type/body，不依赖 reqwest 的 .json() 序列化路径，
+    // 手工设 Content-Type/body，不依赖 reqwest 的.json() 序列化路径，
     // 保持显式可控的请求形状。
     let body = serde_json::to_vec(&serde_json::json!({ "cmd": "shutdown" }))
         .map_err(|e| format!("serialize body: {e}"))?;

@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): SecurityHandler arms the
+//! (quality-hardening goal 冲刺, web): SecurityHandler arms the
 //! gated `mod tests` skips — audit offset paging + malformed-line skipping +
 //! decision normalization (approved→allow), direct flatten/extract fallback
 //! arms, and config load/save error propagation.
@@ -63,6 +63,7 @@ fn make_ctx(ws: &str) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

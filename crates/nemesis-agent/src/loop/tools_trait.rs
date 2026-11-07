@@ -1,6 +1,6 @@
 //! Tool trait 与 FileChange(Kind)、工具注册/移除/枚举、MCP reload/refresh/snapshot 族、校验统计与重试预算。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
@@ -28,7 +28,7 @@ pub enum FileChangeKind {
 
 /// MCP 工具快照条目（`refresh_mcp_snapshot` 产出）。
 ///
-/// 消费方：`McpListTool`（name + description 列表展示）；B2 独占接管
+/// 消费方：`McpListTool`（name + description 列表展示）； 独占接管
 /// （name 供给闸/隐藏表比对，parameters 供镜像 op 的 args_schema 预检与
 /// connector_find 展示）。快照在 MCP 注册/reload 时整表重建。
 #[derive(Debug, Clone)]
@@ -36,9 +36,9 @@ pub struct McpToolSnapshotEntry {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
-    /// server 自述只读提示（B3 透传；None = 未声明）。
+    /// server 自述只读提示（透传；None = 未声明）。
     pub read_only_hint: Option<bool>,
-    /// server 自述破坏性提示（B3 透传；None = 未声明）。
+    /// server 自述破坏性提示（透传；None = 未声明）。
     pub destructive_hint: Option<bool>,
 }
 
@@ -56,7 +56,7 @@ pub trait Tool: Send + Sync {
     /// context should override this method.
     fn set_context(&self, _channel: &str, _chat_id: &str) {}
 
-    /// G2 (devtool-upgrade 阶段 3): notify the tool of the invocation's
+    /// (devtool-upgrade): notify the tool of the invocation's
     /// sub-agent nesting depth (0 = top-level agent, N = N levels deep).
     /// Called by `handle_tool_call_at_depth` right before execute, same
     /// injection pattern as `set_context`. Default no-op; depth-aware tools
@@ -77,13 +77,13 @@ pub trait Tool: Send + Sync {
         serde_json::json!({"type": "object", "properties": {}})
     }
 
-    /// MCP annotations 透传（B3，治理补全 2026-10-19）：server 自述只读
+    /// MCP annotations 透传（治理补全）：server 自述只读
     /// 提示。缺省 None（内置工具不声明语义——它们有自己的 op 分档）。
     fn read_only_hint(&self) -> Option<bool> {
         None
     }
 
-    /// MCP annotations 透传（B3）：server 自述破坏性提示。缺省 None。
+    /// MCP annotations 透传：server 自述破坏性提示。缺省 None。
     fn destructive_hint(&self) -> Option<bool> {
         None
     }
@@ -98,14 +98,14 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// A7（2026-09-06）：checkpoint 预检多点版——默认与 [`Tool::preview`]
+    /// checkpoint 预检多点版——默认与 [`Tool::preview`]
     /// 等价（单文件）；multiedit 覆盖为逐文件清单，让检查点安全网在一次
-    /// dispatch 内快照全部待改文件。调用点（K1a 瀑布）只消费本方法。
+    /// dispatch 内快照全部待改文件。调用点（瀑布）只消费本方法。
     fn preview_all(&self, args: &str) -> Vec<FileChange> {
         self.preview(args).into_iter().collect()
     }
 
-    /// U5 (sixth batch): whether this tool is a pure read with no side effects
+    /// (sixth batch): whether this tool is a pure read with no side effects
     /// (filesystem read, list, search, web fetch — safe to run concurrently
     /// with other read-only calls in the same tool batch). Default `false`
     /// — FAIL-CLOSED: a tool that has not declared itself read-only never
@@ -115,25 +115,25 @@ pub trait Tool: Send + Sync {
         false
     }
 
-    /// G3 (devtool-upgrade 阶段 6): whether this tool may join the U5
+    /// (devtool-upgrade): whether this tool may join the
     /// parallel pre-execution pool. Default = [`Self::is_read_only`] —
     /// pure reads stay the only automatic joiners. Override to `true` only
     /// for tools whose concurrent execution is safe by construction: the
     /// spawn tool opts in because (a) every pool dispatch injects the
     /// instance's sub-agent depth via `handle_tool_call_at_depth` (no-op
-    /// for tools that don't override `set_invocation_depth`), (b) G0's own
+    /// for tools that don't override `set_invocation_depth`), (b) 's own
     /// semaphore caps real concurrent sub-agents (`agents.subagent.
     /// max_concurrent`) on top of the pool's 4-permit limiter, (c) the
     /// full dispatch waterfall (estop/hidden/Plan/security/hooks) still
     /// runs inside each `handle_tool_call_at_depth` call, and (d) detached
     /// sub-agents own isolated instances/sessions — no shared mutable
     /// state with sibling spawns. Writers must NOT opt in: a `false` here
-    /// keeps the whole batch serial (fail-closed, same as U5).
+    /// keeps the whole batch serial (fail-closed, same as).
     fn is_parallel_safe(&self) -> bool {
         self.is_read_only()
     }
 
-    /// P0 vault（C1，2026-09-22 计划 §3）：声明本工具参数中承载凭据**别名**
+    /// vault（计划）：声明本工具参数中承载凭据**别名**
     /// 的槽位（顶层字段名，如 `"credential"`）。声明了槽位的工具，其参数
     /// 里这些字段的 `vault:<alias>` 引用会在 dispatch 最内层、execute 前
     /// 一刻被改写为真值（见 loop/credential_injection 模块）——工具执行的
@@ -143,7 +143,7 @@ pub trait Tool: Send + Sync {
         &[]
     }
 
-    /// P0 vault（D2，2026-09-22 计划 §4）：声明本工具归属的量化风险限制
+    /// vault（计划）：声明本工具归属的量化风险限制
     /// 类别（与 `security.limits` 配置键对应；空 = 不参与限额）。机制不
     /// 认识业务名词——类别语义（"exec"、"mass_message"…）由工具声明、
     /// 由配置绑定，本 crate 只提供滑动窗口计数与超限升级。
@@ -151,7 +151,7 @@ pub trait Tool: Send + Sync {
         &[]
     }
 
-    /// WASM 插件 min-tier（2026-09-30 插件体系复查 #2）：声明本工具的最低
+    /// WASM 插件 min-tier（插件体系复查 #2）：声明本工具的最低
     /// 调用档（"mini"/"normal"/"big"；None = 无档位声明）。声明了档位的
     /// 工具在供给面绕过 tier 白名单（mini/normal 白名单本就不含 `plugin.*`
     /// 名，逐名收录不可扩展）、按档位秩比较供给/分发（active ≥ min 才
@@ -161,7 +161,7 @@ pub trait Tool: Send + Sync {
         None
     }
 
-    /// connector 动态工具的操作投影（行动代理 P0，2026-10-14）：dispatch
+    /// connector 动态工具的操作投影（行动代理）：dispatch
     /// 嗅探本方法的返回值，把 op_type slug / 强审批文案 / 回执上下文写进
     /// invocation metadata（`override_op_type` / `override_force_approval` /
     /// `connector_receipt_ctx`），管线层读键裁决——静态表无法感知动态 op 的
@@ -201,7 +201,7 @@ impl AgentLoop {
         self.tools.write().insert(name, Arc::from(tool));
     }
 
-    /// J3 (devtool-upgrade 阶段 4)：注册 MCP 工具——同名不再静默覆盖。
+    /// (devtool-upgrade)：注册 MCP 工具——同名不再静默覆盖。
     /// 旧路径直接 HashMap insert：sanitize 撞名的两个工具（同 server 内
     /// `search-file`/`search_file`，或两 server 名 sanitize 后相同）后者
     /// 无声顶掉前者，无任何痕迹。已存在时 warn 并依序改注册为
@@ -226,12 +226,12 @@ impl AgentLoop {
         } else {
             base
         };
-        // W5 盲点修复配套：MCP 动态工具注册期声明操作类型（进程级 declare
+        // 盲点修复配套：MCP 动态工具注册期声明操作类型（进程级 declare
         // 表，管线 lookup-first）。基线恒取 FileRead（LOW）——annotations
-        // 已透传（B3，definition.annotations → read_only/destructive_hint），
+        // 已透传（definition.annotations → read_only/destructive_hint），
         // 但那是 connector 镜像基线（mirror_baseline）与 Dashboard 展示面的
         // 消费维度；8 层 declare 面按 hints 精确分档是独立后续项（治理补全
-        // 计划明示不做，见 docs/PLAN/2026-10-19_connector治理补全批次.md）。
+        // 计划明示不做，见 connector治理补全批次）。
         // 声明后全管线照跑（注入检测/凭据扫描/DLP/审计链），默认配置下不
         // 产生新审批摩擦。
         #[cfg(feature = "security")]
@@ -252,7 +252,7 @@ impl AgentLoop {
     /// Returns true if the tool was found and removed.
     pub fn remove_tool_shared(&mut self, name: &str) -> bool {
         if self.tools.write().remove(name).is_some() {
-            // W5 配套：注销时同步撤销操作类型声明（重注册 = 重声明，不残留旧档）。
+            // 配套：注销时同步撤销操作类型声明（重注册 = 重声明，不残留旧档）。
             #[cfg(feature = "security")]
             nemesis_security::types::undeclare_tool_operation(name);
             debug!("[AgentLoop] Removed shared tool: {}", name);
@@ -263,7 +263,7 @@ impl AgentLoop {
         }
     }
 
-    /// W7（WASM 插件框架）：注册插件工具桥（gateway 装配期 + 热装回调共用；
+    /// （WASM 插件框架）：注册插件工具桥（gateway 装配期 + 热装回调共用；
     /// `&self` + 内部写锁，与 [`Self::register_mcp_tool`] 同模式）。撞名时
     /// 诚实改名 `_2/_3…`（返回实际注册名）。操作类型声明由调用方按 guest
     /// `operation_type` 声明（[`Self::register_mcp_tool`] 的 FileRead 基线
@@ -290,7 +290,7 @@ impl AgentLoop {
         name
     }
 
-    /// W7：注销插件工具（热卸载/禁用回调；返回是否确实在册）。
+    /// 注销插件工具（热卸载/禁用回调；返回是否确实在册）。
     pub fn remove_plugin_tool(&self, name: &str) -> bool {
         if self.tools.write().remove(name).is_some() {
             debug!("[AgentLoop] Removed plugin tool: {}", name);
@@ -301,7 +301,7 @@ impl AgentLoop {
         }
     }
 
-    /// 工具接管层（2026-10-23）：按名摘出注册工具（Arc 所有权转移）——
+    /// 工具接管层：按名摘出注册工具（Arc 所有权转移）——
     /// 接管 wrapper 双态持有内置实例的前提（注册后 `Box` 已 `Arc::from`，
     /// 唯一取回路径）。摘除后注册表短暂缺席，调用方须紧随 wrapper 注册
     ///（[`Self::register_plugin_tool`] 同名回插）。非在册名返回 None。
@@ -319,7 +319,7 @@ impl AgentLoop {
         self.tools.read().keys().cloned().collect()
     }
 
-    /// L6++（2026-09-08）：按名取注册工具的 `parameters()` JSON。项目 loop
+    /// 按名取注册工具的 `parameters()` JSON。项目 loop
     /// 工厂测试用它对两 loop 的共有工具逐同名比对 schema 字节一致（prompt
     /// cache 契约——同名工具 schema 漂移会让切会话组的请求缓存全失效）。
     /// None = 未注册。
@@ -327,14 +327,14 @@ impl AgentLoop {
         self.tools.read().get(name).map(|t| t.parameters())
     }
 
-    /// G2（2026-10-18 批四）：注入 per-agent 浏览器 profile（须在
+    /// 注入 per-agent 浏览器 profile（须在
     /// `enable_mcp_reload` 之前——装配期随 manager 转 MCP spawn 链）。
     /// None = env 回落语义（主/项目 loop 恒 None）。
     pub fn set_browser_profile(&mut self, profile: Option<String>) {
         self.browser_profile = profile;
     }
 
-    /// G2：当前生效的 per-agent 浏览器 profile（工厂测试与可观测面）。
+    /// 当前生效的 per-agent 浏览器 profile（工厂测试与可观测面）。
     pub fn browser_profile(&self) -> Option<&str> {
         self.browser_profile.as_deref()
     }
@@ -346,7 +346,7 @@ impl AgentLoop {
     /// the manager checks if the config file changed and loads new servers.
     pub fn enable_mcp_reload(&mut self, config_path: std::path::PathBuf) {
         let mut mgr = nemesis_mcp::manager::McpManager::new(config_path);
-        // G2（2026-10-18 批四）：per-agent 浏览器 profile 随 manager 走——
+        // per-agent 浏览器 profile 随 manager 走——
         // 启动全量挂载与后续热重载补挂都经 mgr.discover_tools 单点消费
         // （注入与否的 opt-in 闸在 transport 侧按 server 配置执行）。
         mgr.set_browser_profile(self.browser_profile.clone());
@@ -392,7 +392,7 @@ impl AgentLoop {
             None => return,
         };
 
-        // 热重载收编登记（2026-08-29）：本处是 manager 重建 + 工具注册副作用
+        // 热重载收编登记：本处是 manager 重建 + 工具注册副作用
         // （重语义），非纯数据加载——保留独立实现并登记（同 tier 注记）。
         let changed = {
             match mgr.lock() {
@@ -406,7 +406,7 @@ impl AgentLoop {
         }
 
         // Collect existing MCP server prefixes to detect what's new.
-        // J3：先取 mgr（锁序 mgr → tools 与下方发现循环一致），配置 server
+        // 先取 mgr（锁序 mgr → tools 与下方发现循环一致），配置 server
         // 名 + 工具键快照后交给纯函数 [`registered_server_prefixes`] 正推。
         let (configured_servers, tool_keys) = {
             let configured: Vec<String> = match mgr.lock() {
@@ -484,7 +484,7 @@ impl AgentLoop {
         self.mcp_tool_snapshot.clone()
     }
 
-    /// P2B（2026-09-12 NB-15 根修配套）：工具参数校验结果落账（DataStore
+    /// P2B（根修配套）：工具参数校验结果落账（DataStore
     /// 天×模型 upsert，`models.health` 数据源——worker 端 validation_budget
     /// 失败沉淀为可观测的长期趋势，供 tier 校准决策）。无 data_store 静默
     /// 跳过；写失败只 warn——审计是增值动作，不反压轮次。
@@ -497,7 +497,7 @@ impl AgentLoop {
         }
     }
 
-    /// A2（2026-10-21 引入）：turn 收尾守卫事件落账
+    /// （引入）：turn 收尾守卫事件落账
     /// （`guard_event_stats` 天×模型 upsert，`models.health` 按「原地打转」
     /// 口径消费——tier 校准建议的数据面）。0 事件不写行；无 data_store
     /// 静默跳过；写失败只 warn——审计是增值动作，不反压轮次。
@@ -513,13 +513,13 @@ impl AgentLoop {
         }
     }
 
-    /// Phase 2: check a tool call's arguments against the registered tool's
+    /// check a tool call's arguments against the registered tool's
     /// schema. Returns Valid / Fixed / Invalid. Unknown tools return Valid so
     /// the existing unknown-tool path in `handle_tool_call` reports them
     /// (class C, not a schema failure).
     ///
-    /// 循环策略槽（WASM 样板工程批 1）：校验裁决先过
-    /// [`crate::r#loop::policy::ValidationPolicy`]——`Builtin` 裁决走下方
+    /// 循环策略槽（WASM 样板工程）：校验裁决先过
+    /// [`crate::r#loop::policy:ValidationPolicy`]——`Builtin` 裁决走下方
     /// 内置 schema 校验 + autofix；`Valid`/`Fixed`/`Reject` 由宿主映射为
     /// 同形态 `Outcome`（Reject 按 schema violation 类计，计 failure 预算）。
     /// 串行（tool_batch）与并行（tool_defs 预计算）两路共用本入口。
@@ -553,7 +553,7 @@ impl AgentLoop {
         }
     }
 
-    /// Phase 2: per-request consecutive-validation-failure budget, tier-aware.
+    /// per-request consecutive-validation-failure budget, tier-aware.
     /// Mini models get 3, Normal/Big 2（P2C：Big 1→2，并行工具批首个坏调用
     /// 即烧光 budget=1，模型没机会自纠；见 capability.rs 注释）.
     pub(crate) fn validation_retry_budget(&self) -> u32 {
@@ -562,11 +562,11 @@ impl AgentLoop {
 }
 
 // ---------------------------------------------------------------------------
-// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// 自由函数归位（c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
-/// J3 (devtool-upgrade 阶段 4)：从「配置的 server 名 × 已注册工具键」正推
-/// 已注册前缀。与 [`nemesis_mcp::manager::McpManager::find_new_servers`] 的
+/// (devtool-upgrade)：从「配置的 server 名 × 已注册工具键」正推
+/// 已注册前缀。与 [`nemesis_mcp::manager:McpManager::find_new_servers`] 的
 /// 前缀计算同源（`mcp_<sanitize(server)>_`），再看工具表里有没有以它开头
 /// 的键。旧实现从注册键反推切分（数下划线取 [2]）：`underscores[2]` 是
 /// 第 3 个下划线，注释声称 `mcp_<srv>_` 实则多切一段（server 或工具名含

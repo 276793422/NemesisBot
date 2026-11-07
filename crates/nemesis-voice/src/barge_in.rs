@@ -1,4 +1,4 @@
-//! Barge-in decision state machine — realtime P1（G4）
+//! Barge-in decision state machine — realtime
 //!
 //! 用户在 TTS 播放中开口 → 打断播放 + 取消 agent 当前轮。触发判定拆成
 //! 纯逻辑（本模块，可单测）与执行（handlers/voice.rs 管线，碰全局态）：

@@ -38,9 +38,9 @@ pub fn lint(wf: &Workflow) -> Vec<String> {
     warnings
 }
 
-/// L1：推理模型的思维链会消耗输出预算——max_tokens 过小则只出思维链无文本
+/// 推理模型的思维链会消耗输出预算——max_tokens 过小则只出思维链无文本
 /// （glm-5.3-flash 实测 max_tokens=200 全军覆没，见 BUG 清账缺陷 2）。
-/// L4：model 填了档位名（如 "small"）——provider 400「模型不存在」
+/// model 填了档位名（如 "small"）——provider 400「模型不存在」
 /// （E2E 实测，生成器把模型档位概念泄漏进 model 字段）。
 fn lint_llm(
     node_id: &str,
@@ -88,7 +88,7 @@ fn lint_llm(
     }
 }
 
-/// L3：凭据引用必须整值（`env:`/`yaml:`/`vault:` 前缀开头）。内嵌在
+/// 凭据引用必须整值（`env:`/`yaml:`/`vault:` 前缀开头）。内嵌在
 /// `Bearer vault:x`、`?key=env:X` 这类值里不会被模板层识别，会当字面量
 /// 静默发出——部署前拦住。
 fn lint_http(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
@@ -119,7 +119,7 @@ fn lint_http(node: &crate::types::NodeDef, warnings: &mut Vec<String>) {
     }
 }
 
-/// L5：`{{节点id.output}}` 占位符——`output` 不是任何节点的输出字段名，
+/// `{{节点id.output}}` 占位符——`output` 不是任何节点的输出字段名，
 /// 模板不会替换、字面量原样发给下游（E2E 实测生成器高频臆造此形式，
 /// 见 BUG 清账缺陷 6）。字段名按节点类型枚举：http 是 body/status_code，
 /// llm 是 text；整个输出 JSON 用 `{{节点id}}`。
@@ -145,7 +145,7 @@ fn lint_output_placeholder(node: &crate::types::NodeDef, warnings: &mut Vec<Stri
     }
 }
 
-/// L6：条件边引用了不存在的节点 id，或引用 condition 节点时字段名不是
+/// 条件边引用了不存在的节点 id，或引用 condition 节点时字段名不是
 /// `condition_result`（E 级复核实测：生成器把 condition 输出字段幻觉成
 /// `passed`，`{{check.passed}}` 运行期解析不到、落「非空即真」兜底，路由
 /// 与数据脱钩）。草稿期点名字段让生成器当轮自纠；运行期调度器把未解析

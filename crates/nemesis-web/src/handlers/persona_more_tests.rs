@@ -41,9 +41,7 @@ impl LifecycleService for MockAgentService {
 }
 impl AgentLoopService for MockAgentService {}
 
-// ---------------------------------------------------------------------------
 // Test infra
-// ---------------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -91,6 +89,7 @@ fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> Request
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -162,9 +161,7 @@ async fn init_workspace(dir: &tempfile::TempDir) -> RequestContext {
     ctx
 }
 
-// ---------------------------------------------------------------------------
 // file.save — non-active persona does not sync to root
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_file_save_non_active_no_root_sync() {
@@ -198,9 +195,7 @@ async fn test_file_save_non_active_no_root_sync() {
     assert!(alt_id.contains("Alt Modified"));
 }
 
-// ---------------------------------------------------------------------------
 // file.save — creates parent dirs
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_file_save_creates_persona_dir_parent() {
@@ -229,9 +224,7 @@ async fn test_file_save_creates_persona_dir_parent() {
     let _ = ws; // suppress unused warning
 }
 
-// ---------------------------------------------------------------------------
 // file.get — non-existent persona dir returns empty
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_file_get_unknown_persona_returns_empty() {
@@ -249,9 +242,7 @@ async fn test_file_get_unknown_persona_returns_empty() {
     assert_eq!(r["name"], "IDENTITY.md");
 }
 
-// ---------------------------------------------------------------------------
 // list — broken PERSONA.json skips the persona
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_list_skips_persona_with_invalid_json() {
@@ -271,9 +262,7 @@ async fn test_list_skips_persona_with_invalid_json() {
     assert_eq!(arr[0]["dir"], "default");
 }
 
-// ---------------------------------------------------------------------------
 // list — file subset per persona
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_list_partial_files() {
@@ -304,9 +293,7 @@ async fn test_list_partial_files() {
     assert_eq!(files[0], "IDENTITY.md");
 }
 
-// ---------------------------------------------------------------------------
 // list — non-directory entries in personas/ skipped
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_list_skips_stray_files() {
@@ -324,9 +311,7 @@ async fn test_list_skips_stray_files() {
     assert_eq!(arr[0]["dir"], "default");
 }
 
-// ---------------------------------------------------------------------------
 // current — when no IDENTITY.md exists in workspace, defaults are used
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_current_no_identity_uses_defaults() {
@@ -340,9 +325,7 @@ async fn test_current_no_identity_uses_defaults() {
     assert_eq!(r["name"], "default");
 }
 
-// ---------------------------------------------------------------------------
 // current — workspace initialized only with SOUL.md (no IDENTITY.md)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_current_with_only_soul_archives_partial() {
@@ -360,9 +343,7 @@ async fn test_current_with_only_soul_archives_partial() {
     assert!(archived.contains("Just Soul"));
 }
 
-// ---------------------------------------------------------------------------
 // activate — directory in archive that doesn't exist (HEARTBEAT.md)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_activate_with_heartbeat_archived() {
@@ -388,9 +369,7 @@ async fn test_activate_with_heartbeat_archived() {
     assert!(archived.contains("Heartbeat content"));
 }
 
-// ---------------------------------------------------------------------------
 // activate — memory directory archived and restored
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_activate_archives_and_restores_memory_dir() {
@@ -433,9 +412,7 @@ async fn test_activate_archives_and_restores_memory_dir() {
     assert!(ws.join("memory/dev_note.md").exists());
 }
 
-// ---------------------------------------------------------------------------
 // activate — default MEMORY.md created for new persona without memory/
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_activate_creates_default_memory_md() {
@@ -461,9 +438,7 @@ async fn test_activate_creates_default_memory_md() {
     assert!(mem.contains("长期记忆"));
 }
 
-// ---------------------------------------------------------------------------
 // restore — restoring back from non-default persona
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_restore_switches_back_to_default() {
@@ -496,9 +471,7 @@ async fn test_restore_switches_back_to_default() {
     assert_eq!(active["name"], "default");
 }
 
-// ---------------------------------------------------------------------------
 // remove — removing active persona switches to default
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_remove_active_switches_to_default() {
@@ -540,9 +513,7 @@ async fn test_remove_active_switches_to_default() {
     assert!(!ws.join("personas/go").exists());
 }
 
-// ---------------------------------------------------------------------------
 // remove — non-active persona
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_remove_non_active_persona() {
@@ -568,9 +539,7 @@ async fn test_remove_non_active_persona() {
     assert_eq!(active["name"], "default");
 }
 
-// ---------------------------------------------------------------------------
 // file.get — corrupted PERSONA.json handled
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_file_get_returns_existing_content() {
@@ -590,9 +559,7 @@ async fn test_file_get_returns_existing_content() {
     assert_eq!(r["content"], "# Custom Agent");
 }
 
-// ---------------------------------------------------------------------------
 // file.save — then file.get verifies content
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_file_save_then_get_round_trip() {
@@ -621,9 +588,7 @@ async fn test_file_save_then_get_round_trip() {
     assert_eq!(r["content"], "# Updated Soul\n\nNew soul rules.");
 }
 
-// ---------------------------------------------------------------------------
 // current — multiple personas (default + extra)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_current_after_extra_persona_added() {
@@ -640,9 +605,7 @@ async fn test_current_after_extra_persona_added() {
     assert_eq!(r["emoji"], "🎯");
 }
 
-// ---------------------------------------------------------------------------
 // shop.browse / shop.search / shop.preview / shop.download missing workspace
-// ---------------------------------------------------------------------------
 
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
@@ -677,6 +640,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -734,9 +698,7 @@ async fn test_shop_download_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // shop.browse with division filter (no network, just param parsing)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_shop_browse_with_division_filter() {
@@ -761,9 +723,7 @@ async fn test_shop_search_with_query() {
     let _ = h.handle_cmd("shop.search", Some(data), &ctx).await;
 }
 
-// ---------------------------------------------------------------------------
 // Unknown command on persona
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_persona_unknown_command_with_workspace() {
@@ -774,9 +734,7 @@ async fn test_persona_unknown_command_with_workspace() {
     assert_eq!(err, "unknown command: persona.nope");
 }
 
-// ---------------------------------------------------------------------------
 // shop.refresh happy path (no network needed)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_persona_shop_refresh_clears_caches() {

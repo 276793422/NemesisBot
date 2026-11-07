@@ -1,7 +1,7 @@
-//! Shell 命令前缀归约（B5）。
+//! Shell 命令前缀归约。
 //!
 //! 把完整命令行归约成可读前缀（`cargo build --release --features foo` →
-//! `cargo build *`），供审批 pattern 记忆（F3）与前缀粒度审批匹配（F4）
+//! `cargo build *`），供审批 pattern 记忆与前缀粒度审批匹配
 //! 生成/展示 pattern 用。纯函数、无状态，不参与 deny 管线判断。
 //!
 //! 归约规则：
@@ -54,7 +54,7 @@ pub fn tokenize_command(cmd: &str) -> Vec<String> {
     tokens
 }
 
-/// 顶层复合命令分段（CMD-12，2026-10-13；复检批加固）。
+/// 顶层复合命令分段（CMD-12，；复检批加固）。
 ///
 /// 在**原文**上按顶层操作符切分：`&&` / `||` / `;` / `|` / `&` / 换行。
 /// 引号感知（同 [`tokenize_command`]：单双引号内不切分；不支持引号内
@@ -75,7 +75,7 @@ pub fn tokenize_command(cmd: &str) -> Vec<String> {
 ///   `rm -rf *`）。
 /// - allow（审批 pattern 记忆）：**全部段命中才放**——`cd *` 不得罩住
 ///   `cd x && rm -rf y` 的删除段。
-/// - 归约（[`crate::approval_rules::pattern_for`]）：复合命令不构成
+/// - 归约（[`crate::approval_rules:pattern_for`]）：复合命令不构成
 ///   前缀规则（单一 pattern 表达不了全段语义，宁拒绝不放宽）。
 pub fn command_segments(cmd: &str) -> Vec<String> {
     let (segments, balanced) = scan_segments(cmd, true);
@@ -251,7 +251,7 @@ fn is_env_assignment(token: &str) -> bool {
     first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// 剥 token 序列头部的 `VAR=value` 环境变量前缀（D12-5 单一真相源：
+/// 剥 token 序列头部的 `VAR=value` 环境变量前缀（统一定义：
 /// 写侧 [`reduce_command`] 与读侧 `approval_rules::matches_rule` 都在
 /// **tokenize 之后**剥——在原串上剥的 [`strip_env_assignments`] 看见的
 /// 首 token 带引号（`"FOO=1" cargo test`），`is_env_assignment` 判非

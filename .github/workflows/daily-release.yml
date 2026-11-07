@@ -192,6 +192,24 @@ jobs:
       # 该有的都要有）。fatal：CI 是无人值守的最后一道防线，不允许
       # 「vm-display 编译失败就静默降级成无装载器二进制照发」——与本地构建
       # 脚本的 WARN 非 fatal 语义刻意不同（本地失败有人在场，nightly 无人兜底）。
+      # 紫微载荷 DLL 现场编译（2026-11-06）：cdb3641e 把 payload DLL 退出版本库
+      # （bin/ gitignore）后，CI checkout 无 bin/*.dll，主二进制编译期空内嵌 =
+      # 用户包的 ziwei 模块诚实残废（manifest 仅注记缺席）。与 vm-display 同
+      # fatal 语义（nightly 无人兜底，不允许静默降级成无载荷二进制照发）；
+      # Windows-only——Linux 无 MSVC 链接器编不了 cdylib，Linux 包 ziwei 本就
+      # 诚实降级（select_target cfg(windows) stub 同构）。
+      - name: Build ziwei payload DLL (fatal, windows only)
+        shell: bash
+        if: matrix.platform == 'windows'
+        run: |
+          rustup target add i686-pc-windows-msvc
+          cd plugins/ziwei-agent-dll
+          cargo build --release --target x86_64-pc-windows-msvc
+          cargo build --release --target i686-pc-windows-msvc
+          mkdir -p bin
+          cp target/x86_64-pc-windows-msvc/release/ziwei_agent_dll.dll bin/ziwei_agent_x64.dll
+          cp target/i686-pc-windows-msvc/release/ziwei_agent_dll.dll bin/ziwei_agent_x86.dll
+
       - name: Build nemesisbot (release, vm-display)
         shell: bash
         run: cargo build --release -p nemesisbot --features vm-display

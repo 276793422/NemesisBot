@@ -1,11 +1,11 @@
-//! outbox.rs AGT 覆率批次（2026-09-25）。CD6 死信面 handler 此前无任何测试
+//! outbox.rs AGT 覆率批次（2026-09-25）。 死信面 handler 此前无任何测试
 //! 模块，本批补全确定性臂：
 //! - dead_list：只列 dead 态条目（pending 不混入），entry_json 字段透传
 //! - dead_replay：dead → pending 全链（attempts / 退避窗口 / 错误清零、
 //!   created_at 刷新落盘）+ 未知 task_id 诚实报错
 //! - 缺参 / 错型 task_id bail、未知命令、workspace 未配置 bail
 //!
-//! 磁盘布局唯一真相源 nemesis-cluster::outbox：`<ws>/cluster/outbox/
+//! 磁盘布局唯一依据 nemesis-cluster::outbox：`<ws>/cluster/outbox/
 //! <task_id>/entry.json`，本测试直接落盘构造，不需要活实例（与生产约束
 //! 一致：web 层只持 workspace 根）。
 
@@ -63,6 +63,7 @@ fn agt_ctx(ws: Option<&str>) -> RequestContext {
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
             session_stats: None,

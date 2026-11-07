@@ -54,7 +54,7 @@ fn load_bindings(workspace: &str) -> BTreeMap<String, SessionBinding> {
         Ok(s) => match serde_json::from_str::<BindingFile>(&s) {
             Ok(f) => f.bindings,
             Err(e) => {
-                // BUG-20261025-40：解析失败不能静默返空——空表会被下次写整体
+                // 解析失败不能静默返空——空表会被下次写整体
                 // 覆盖，全部绑定丢失后 get-or-create 重新发芽复制会话（本文件
                 // 头部记载的 55 秒 5 空会话事故的复发放大器）。保留返空恢复
                 // 语义，但必须留痕。
@@ -70,7 +70,7 @@ fn load_bindings(workspace: &str) -> BTreeMap<String, SessionBinding> {
 }
 
 /// 原子落盘（torn write 会砸掉全部绑定 → 空会话复制机器复发）。
-/// BUG-20261025-40：换 REL-002 唯一权威 helper——手搓 tmp+rename 无
+/// 换 唯一权威 helper——手搓 tmp+rename 无
 /// sync_all，断电可落零长度目标，叠加 load 静默返空即整表清零链。
 fn save_bindings(
     workspace: &str,
@@ -230,7 +230,7 @@ pub fn remove_session(workspace: &str, session_id: &str) -> usize {
     bindings.retain(|_, b| b.session_id != sid);
     let removed = before - bindings.len();
     if removed > 0 {
-        // 持久化失败不能全静默（BUG-20261025-40：BUG-20261025-38 同族镜像）：
+        // 持久化失败不能全静默（同族镜像）：
         // 内存已摘、盘上仍在，重启后绑定回归——后果有界（live_bindings 按
         // 存活过滤），但零痕迹不该是默认。
         if let Err(e) = save_bindings(workspace, &bindings) {
@@ -256,7 +256,7 @@ pub fn live_bindings(workspace: &str) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-25）：get_or_create_session 的 manual_title 臂
+// AGT 覆盖率批次：get_or_create_session 的 manual_title 臂
 // （title_manual 旗标落 sidecar）+ 存活工件种子后的幂等命中。豁免（收括号
 // lcov 伪零 + 锁毒化臂）见 agt_tests 头注。
 #[cfg(test)]

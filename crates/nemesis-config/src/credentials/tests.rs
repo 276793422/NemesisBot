@@ -1,4 +1,4 @@
-//! Tests for U15 credentials.yaml (`yaml:<alias>` references + import).
+//! Tests for credentials.yaml (`yaml:<alias>` references + import).
 
 use super::*;
 use crate::{Config, ModelConfig};
@@ -34,9 +34,7 @@ fn model_config_with_key(api_key: &str) -> Config {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Reference resolution (env > yaml > literal)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_yaml_reference_resolves() {
@@ -181,9 +179,7 @@ fn test_env_reference_wins_when_prefixed_env() {
     unsafe { std::env::remove_var(&var) };
 }
 
-// ---------------------------------------------------------------------------
 // File IO
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_credentials_save_load_roundtrip() {
@@ -231,9 +227,7 @@ fn test_load_credentials_missing_file_is_error() {
     assert!(err.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // `credentials import`
-// ---------------------------------------------------------------------------
 
 /// Build a temp home with a config.json whose model_list has the given api_keys.
 fn temp_home_with_keys(keys: &[&str]) -> (tempfile::TempDir, PathBuf, PathBuf) {
@@ -360,9 +354,7 @@ fn test_sanitize_alias() {
     assert_eq!(sanitize_alias(""), "model");
 }
 
-// ---------------------------------------------------------------------------
-// Coverage batch 2026-08-25: file-IO error branches + import corner cases.
-// ---------------------------------------------------------------------------
+// Coverage batch: file-IO error branches + import corner cases.
 
 #[test]
 fn test_load_credentials_blank_file_is_default() {
@@ -592,9 +584,7 @@ fn test_import_empty_model_name_uses_model_string() {
     assert_eq!(creds.keys.get("openai_gpt-9").unwrap(), "sk-nine");
 }
 
-// ---------------------------------------------------------------------------
-// G4 (U15 dashboard badge): classify_key_source 四分支 + 零明文
-// ---------------------------------------------------------------------------
+// (dashboard badge): classify_key_source 四分支 + 零明文
 
 #[test]
 fn classify_key_source_covers_all_four_kinds() {
@@ -631,9 +621,7 @@ fn classify_key_source_serializes_without_plaintext() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// P0 vault（B2/B3）：vault: 引用的旁路防护与来源徽标
-// ---------------------------------------------------------------------------
+// vault：vault: 引用的旁路防护与来源徽标
 
 /// classify_key_source：vault: 分支——kind=vault，reference=别名，值永不出。
 #[test]
@@ -660,7 +648,7 @@ fn run_import_never_downgrades_vault_reference() {
     let report = super::run_import(&config_path, &cred_path).unwrap();
     assert_eq!(report.migrated.len(), 0, "vault: 引用不是明文，不得迁移");
     assert_eq!(report.skipped_reference, 1);
-    // 配置未被改写（引用保持 vault:）。
+    // 配置未被改写（引用保持 vault）。
     let cfg_text = std::fs::read_to_string(&config_path).unwrap();
     assert!(cfg_text.contains("vault:keep-me"));
     // credentials.yaml 不应被创建/写入。

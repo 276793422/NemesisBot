@@ -206,7 +206,7 @@ fn frontmatter_preserved_with_crlf() {
 #[test]
 fn no_frontmatter_no_leading_blank() {
     // 无 frontmatter 的候选不得带前导空行——fm 为空串时旧实现
-    // format!("{fm}\n…") 注入 "\n"，人工应用后逐轮累积（R72 根修回归锁）。
+    // format!("{fm}\n…") 注入 "\n"，人工应用后逐轮累积（根修回归锁）。
     let body = "## 步骤\n\n做事。\n\n## 注意\n\n- 不要越权\n";
     let c = apply(
         Operator::ReorderConstraints,
@@ -225,7 +225,7 @@ fn no_frontmatter_no_leading_blank() {
 
 #[test]
 fn empty_frontmatter_no_leading_blank() {
-    // 空 fence（---\n---）按无 frontmatter 处理（C-F5 语义，fence 行作为
+    // 空 fence（\n）按无 frontmatter 处理（C- 语义，fence 行作为
     // 引导文本原样保留在头部）——候选同样不得带前导空行。
     let content = "---\n---\n## 步骤\n\n做事。\n\n## 注意\n\n- 不要越权\n";
     let c = apply(

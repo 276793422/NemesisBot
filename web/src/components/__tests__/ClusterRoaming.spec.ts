@@ -155,7 +155,7 @@ describe('ClusterRoaming', () => {
   })
 
   it('集群闸未开（cluster_gate.open=false）时徽标说集群未启用而非待重启', async () => {
-    // 2026-10-22 用户实录：只开 roaming.enabled 而集群本体闸未开 → 重启
+    // 2026-10-22 用户案例：只开 roaming.enabled 而集群本体闸未开 → 重启
     // 永远不生效，横幅必须给定向指引而不是「重启网关后生效」无限循环。
     wsapiRequest.mockResolvedValue({
       available: true,

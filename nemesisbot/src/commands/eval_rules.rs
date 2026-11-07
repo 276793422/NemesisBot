@@ -1,7 +1,7 @@
-//! `nemesisbot eval rules ...` —— 规则管理命令组（plan Step 3）。
+//! `nemesisbot eval rules...` —— 规则管理命令组（plan Step 3）。
 //!
 //! 纯文件操作（读改写 `workspace/config/eval_rules.json`），无平台门控、
-//! 无沙盒依赖——run() 里 Rules 分支前置独立处理（A1 修订）。
+//! 无沙盒依赖——run() 里 Rules 分支前置独立处理（修订）。
 //!
 //! add/edit 校验 JSON 结构 + 正则合法性 + id 规则（add 冲突拒绝、
 //! edit 要求存在、remove/enable/disable 不存在报错）。
@@ -18,21 +18,21 @@ use crate::eval_assessor;
 pub enum RulesAction {
     /// List all rules (disabled ones marked).
     List {
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
     /// Show one rule's full definition.
     Show {
         id: String,
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
     /// Interactive rule wizard — answer a few questions, no JSON needed.
     /// (For programmatic/batch use, keep `add --file`.)
     New {
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
@@ -41,7 +41,7 @@ pub enum RulesAction {
         /// Path to the rule JSON file.
         #[arg(long)]
         file: PathBuf,
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
@@ -51,28 +51,28 @@ pub enum RulesAction {
         /// Path to the new rule JSON file.
         #[arg(long)]
         file: PathBuf,
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
     /// Remove a rule.
     Remove {
         id: String,
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
     /// Enable a rule.
     Enable {
         id: String,
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
     /// Disable a rule.
     Disable {
         id: String,
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
@@ -81,7 +81,7 @@ pub enum RulesAction {
         /// Skip the confirmation prompt.
         #[arg(long)]
         force: bool,
-        /// Use ./.nemesisbot as home (same as the global --local).
+        /// Use./.nemesisbot as home (same as the global --local).
         #[arg(long)]
         local: bool,
     },
@@ -89,7 +89,7 @@ pub enum RulesAction {
 
 pub async fn run(action: RulesAction, cli_local: bool) -> Result<()> {
     use RulesAction as A;
-    // Z1 修复：每个子命令带 --local（与 eval prompt/skill 的 EvalCommon.local
+    // 修复：每个子命令带 --local（与 eval prompt/skill 的 EvalCommon.local
     // 对齐——全局 --local 也仍然有效，两者取或）。缺它时用户按 eval 其他
     // 子命令的肌肉记忆写 `eval rules list --local` 会 clap 报错。
     let (local, act, writes): (bool, A, bool) = match action {
@@ -105,9 +105,9 @@ pub async fn run(action: RulesAction, cli_local: bool) -> Result<()> {
     };
     let home = common::resolve_home(cli_local || local);
 
-    // BB4（第十轮）防静默建家：--local 指向的 {cwd}/.nemesisbot 不存在时，
+    // 防静默建家：--local 指向的 {cwd}/.nemesisbot 不存在时，
     // resolve_home 仍返回该路径，load_rules 会在那里**静默创建**完整 home
-    //（实测：在仓库根跑 `eval rules add --local` 就地长出一棵 .nemesisbot/）。
+    //（实测：在仓库根跑 `eval rules add --local` 就地长出一棵.nemesisbot）。
     // 写命令拒绝；只读命令直接展示内置默认集（不落盘、不建目录）。
     let local_missing = (cli_local || local) && !home.exists();
     if local_missing {
@@ -356,7 +356,7 @@ fn cmd_reset(path: &std::path::Path, force: bool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// 交互式规则向导（2026-08-19 用户决定：手写 JSON 对用户不可接受——
+// 交互式规则向导（用户决定：手写 JSON 对用户不可接受——
 // 转义/AND-OR 拆分/字段名全是工程师知识。向导把这一切包掉：用户只回答
 // "想抓什么"，程序生成正则、拆 OR、起 id、校验、预览、确认后写入。）
 // ---------------------------------------------------------------------------
@@ -527,7 +527,7 @@ fn cmd_new(path: &std::path::Path) -> Result<()> {
     // ── 校验 + id 去重 ──
     let mut file = eval_assessor::load_rules(path)?;
     for r in &mut rules {
-        // id 冲突时自动加后缀（-2、-3…）
+        // id 冲突时自动加后缀（2、-3…）
         let mut n = 1;
         let base = r.id.clone();
         while file.rules.iter().any(|x| x.id == r.id) {

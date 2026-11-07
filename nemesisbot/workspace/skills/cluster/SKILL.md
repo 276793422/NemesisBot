@@ -305,20 +305,12 @@ LLM: 诗歌已生成完成！
 ### 动态服务发现
 
 ```javascript
-// 1. 获取所有在线节点
-let nodes = cluster_rpc(peer_id: "any", action: "get_info")
+// 1. 对目标节点查询可用 actions（返回名字数组，随注册动态变化）
+let actions = cluster_rpc(peer_id: "node-xyz", action: "list_actions")
+// actions.actions = ["diagnostics.system", "get_capabilities", "get_info",
+//                    "hello", "list_actions", "peer_chat", "ping", ...]
 
-// 2. 为每个节点获取功能列表
-for (let node of nodes.peers) {
-  let actions = cluster_rpc(
-    peer_id: node.id,
-    action: "list_actions"
-  )
-  // 存储节点功能信息
-  cache[node.id] = actions.actions
-}
-
-// 3. 根据能力选择合适的节点
+// 2. 根据节点能力选择合适的目标节点
 let targetNode = findNodeWithCapability("llm")
 ```
 
@@ -340,9 +332,9 @@ let targetNode = findNodeWithCapability("llm")
 ### 系统默认 Actions
 
 #### 1. ping
-- **功能**: 健康检查
+- **功能**: 健康检查（主动探针端点，回传身份 announce 供对端入册）
 - **参数**: 无
-- **返回**: `{status: "ok", node_id: "..."}`
+- **返回**: `{status: "pong", node_id, timestamp, announce?}`
 
 #### 2. get_capabilities
 - **功能**: 获取节点能力列表
@@ -350,14 +342,14 @@ let targetNode = findNodeWithCapability("llm")
 - **返回**: `{capabilities: ["..."]}`
 
 #### 3. get_info
-- **功能**: 获取集群信息
+- **功能**: 获取节点信息（与 announce 广播同构的全量身份）
 - **参数**: 无
-- **返回**: `{node_id: "...", peers: [...]}`
+- **返回**: `{node_id, name, addresses, rpc_port, role, category, tags, capabilities, professions, tier, agents, status}`
 
 #### 4. list_actions
-- **功能**: 获取所有可用 actions
+- **功能**: 动态枚举节点当前注册的全部 RPC actions（覆盖注册立即反映）
 - **参数**: 无
-- **返回**: `{actions: [{name, description, parameters, returns, examples}]}`
+- **返回**: `{actions: ["ping", "get_info", ...]}`（排序后的 action 名字数组）
 
 #### 5. peer_chat
 - **功能**: 与对等节点进行智能对话和任务协作
@@ -367,9 +359,9 @@ let targetNode = findNodeWithCapability("llm")
 - **使用场景**: 任务协作、智能对话、服务请求、信息查询
 
 #### 6. hello
-- **功能**: 示例问候处理器
-- **参数**: `{from?: string, timestamp?: string}`
-- **返回**: `{greeting, timestamp, node_id, status}`
+- **功能**: 连通性问候（最简可用性探针）
+- **参数**: 无（payload 被忽略）
+- **返回**: `{node_id, status: "online", message}`
 
 ---
 

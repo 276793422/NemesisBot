@@ -179,7 +179,8 @@ async fn test_do_get_too_large_response() {
         .do_get(&format!("{}/org/repo/main/skills.json", server.uri()))
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("too large"));
+    // BUG-20261107-005：消息换版（共享流式累计闸），超限在读入中途即断。
+    assert!(err.to_string().contains("exceeds limit"));
 }
 
 #[tokio::test]
@@ -756,7 +757,7 @@ async fn test_search_dispatches_to_two_layer_when_no_author() {
 }
 
 // ============================================================
-// S5 coverage: search loop limit-break arms and malformed
+// coverage: search loop limit-break arms and malformed
 // skill-path skips
 // ============================================================
 

@@ -1,6 +1,6 @@
-// F8 (devtool-upgrade 阶段 3)：`agents.hidden_tools` 双闸测试。
+// (devtool-upgrade)：`agents.hidden_tools` 双闸测试。
 //
-// 覆盖面（对应实施计划 F8 验收）：
+// 覆盖面（对应实施计划 验收）：
 // ① 通配匹配器——精确命中 / `mcp_*` 前缀通配 / 裸 `*` 全隐 / 不命中 / 空表；
 // ② `current_hidden_tools` 新鲜读——无 config_path、缺键、坏 JSON → 空表
 //    （不隐藏），合法键 → 解析+trim+跳过空项；
@@ -231,7 +231,7 @@ async fn runtime_flip_unhides_without_restart() {
     let dir = tempfile::tempdir().unwrap();
     let cfg_path = dir.path().join("config.json");
 
-    // 阶段 1：隐藏 → 供给无 + dispatch 拒。
+    // 隐藏 → 供给无 + dispatch 拒。
     std::fs::write(&cfg_path, r#"{"agents": {"hidden_tools": ["echo_*"]}}"#).unwrap();
     agent_loop.set_config_path(cfg_path.clone());
     let ctx = RequestContext::new("web", "chat1", "session1", "sess1");
@@ -244,7 +244,7 @@ async fn runtime_flip_unhides_without_restart() {
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
     assert!(out.contains("hidden by configuration"), "实际: {out}");
 
-    // 阶段 2：改盘解除隐藏 → 下一轮 round start 发布新代（L18 世代化）→
+    // 改盘解除隐藏 → 下一轮 round start 发布新代（世代化）→
     // 供给回来 + dispatch 放行执行。
     std::fs::write(&cfg_path, r#"{"agents": {"hidden_tools": []}}"#).unwrap();
     agent_loop.check_config_reload();

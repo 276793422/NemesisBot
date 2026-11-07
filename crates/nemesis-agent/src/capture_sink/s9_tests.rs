@@ -1,9 +1,9 @@
-//! S9 覆盖率批次：capture_sink.rs 剩余未覆盖行。
+//! 覆盖率批次：capture_sink.rs 剩余未覆盖行。
 //! - 207：flush 的 05.error.txt 写失败 warn。
 //! - 234：write_json 的 fs::write 失败 warn。
 //! - 245-247：write_jsonl 的 File::create 失败 warn + return。
 //!
-//! 后两者直接调模块私有 helper（子模块可见），目标路径预置为目录 →
+//! 后两者直接调模块私有 helper（子模块可），目标路径预置为目录 →
 //! 写/创建确定性失败。207 需要 flush 内部时间戳命中预置的
 //! `{ts}_{signal}` 目录名——秒内双跑 + 回环重试（跨秒即换新
 //! session key 重来），实际确定性。

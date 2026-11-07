@@ -1,4 +1,4 @@
-//! BUG-20261104-361 回归钉：`models.add` 模型 identifier 形态校验——此前
+//! 回归钉：`models.add` 模型 identifier 形态校验——此前
 //! WSAPI add 零校验（连 CLI 的 `contains('/')` 闸都没有），`../../etc/passwd`
 //! 等穿越形态可落盘。校验走 `validate_model_identifier` 单一真相源（与 CLI
 //! `model add` 同源），且在触碰 config.json **之前**执行（非法形态错误优先于
@@ -53,6 +53,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

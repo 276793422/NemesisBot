@@ -3,7 +3,7 @@
 //! Performs a comprehensive security scan on skill content before installation.
 //! Blocking rules:
 //! - Lint score < 0.3 (30/100): Blocked (severe dangerous patterns)
-//! - Any critical severity issue: Blocked（P15 扩面：任何分类的 Critical 都拦，
+//! - Any critical severity issue: Blocked（扩面：任何分类的 Critical 都拦，
 //!   不再只看 Destructive 分类——凭证窃取/下载执行链/按键记录等同级致命）
 //! - Lint score < 0.6 (60/100): Warning only (not blocked)
 //! - Quality score is informational only (never blocks)
@@ -14,14 +14,14 @@ use crate::lint::{LintResult, LintSeverity, SkillLinter};
 use crate::quality::QualityScorer;
 use crate::types::SecurityCheckResult;
 
-/// 阻断规则单一真相源（M5 重构：两个检查入口共用，规则不再双写）。
+/// 阻断规则单一真相源（重构：两个检查入口共用，规则不再双写）。
 fn apply_block_rules(result: &mut SecurityCheckResult, lint_result: &LintResult) {
     if lint_result.score < 0.3 {
         result.blocked = true;
         result.block_reason = "security score too low".to_string();
         return;
     }
-    // 任何 Critical severity issue（P15 扩面，不再单一 Destructive 开关；
+    // 任何 Critical severity issue（扩面，不再单一 Destructive 开关；
     // 分类计数随 warnings 可由调用方汇总）。
     if let Some(w) = lint_result
         .warnings
@@ -72,10 +72,10 @@ pub fn check_skill_security(
     result
 }
 
-/// 对技能目录做装前安全检查（M5 目录形态入口）。
+/// 对技能目录做装前安全检查（目录形态入口）。
 ///
-/// lint 面扩展到整个技能目录的可执行面（[`crate::lint::SURFACE_FILE_EXTENSIONS`]：
-/// SKILL.md + 全部 .md + 脚本/解释型语言形态）——恶意载荷藏在辅助脚本里
+/// lint 面扩展到整个技能目录的可执行面（[`crate::lint:SURFACE_FILE_EXTENSIONS`]：
+/// SKILL.md + 全部.md + 脚本/解释型语言形态）——恶意载荷藏在辅助脚本里
 /// 无法再绕过检查；quality 评分仍只吃 SKILL.md 内容（元数据载体）。阻断
 /// 规则与 [`check_skill_security`] 同源（`apply_block_rules`）。
 pub fn check_skill_security_dir(

@@ -1,9 +1,9 @@
-//! L9 selfupdate 单测：journal 往返、待装包（updates/ pending）往返与损坏
+//! selfupdate 单测：journal 往返、待装包（updates/ pending）往返与损坏
 //! 整清、commit 身份提取、boot 收口相位矩阵、PID 存活探测；`selfupdate`
 //! feature 下追加 zip/tar.gz 双臂解包（含 `./` 前缀、unix mode、目录跳过、
 //! symlink/嵌套条目拒收、条目名归一）、plugins 绑定校验矩阵、plugins 安装
 //! /回滚舞步、apply/download 前置闸（estop/journal/单飞/平台——全部先于网
-//! 络，可离线测）与 **R1 签名更新清单**套件（验签解析往返/篡改/字段校验/
+//! 络，可离线测）与 ** 签名更新清单**套件（验签解析往返/篡改/字段校验/
 //! exe+plugins 摘要绑定/applied 副本写入读回/sequence 顺序闸矩阵）。exe
 //! 本体验签的在线路径归集成验证（见 docs/REPORT 交付记录的诚实边界节）。
 
@@ -41,9 +41,7 @@ fn journal(phase: &str, target: &str, old: &str) -> UpdateJournal {
     }
 }
 
-// ---------------------------------------------------------------------------
 // journal
-// ---------------------------------------------------------------------------
 
 #[test]
 fn journal_roundtrip_and_clear() {
@@ -96,9 +94,7 @@ fn save_journal_err_when_state_unwritable() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-// ---------------------------------------------------------------------------
 // commit 身份
-// ---------------------------------------------------------------------------
 
 #[test]
 fn commit_matches_prefix_and_empty_semantics() {
@@ -137,11 +133,9 @@ fn release_body_commit_extraction() {
     assert_eq!(extract_commit_from_release_body(short), None);
 }
 
-// ---------------------------------------------------------------------------
 // 发布列表同源解析（check / apply 单一权威源）
-// ---------------------------------------------------------------------------
 
-/// 复评整改 B1b 回归锁：首条 release 无主包资产、更旧的第二条有 →
+/// 复评整改 回归锁：首条 release 无主包资产、更旧的第二条有 →
 /// resolve 落在第二条，meta（tag/body commit/下载 URL）同源——check 展示
 /// 与 apply 实际下载从此指向同一对象。
 #[test]
@@ -198,9 +192,7 @@ fn parse_release_list_rejects_non_array() {
     assert!(err.contains("不是列表"), "诚实报错: {err}");
 }
 
-// ---------------------------------------------------------------------------
 // boot 收口相位矩阵
-// ---------------------------------------------------------------------------
 
 #[test]
 fn boot_recovery_no_journal_is_none() {
@@ -235,7 +227,7 @@ fn boot_recovery_success_sweeps_staging_residue() {
     let ws = tmp_dir("boot-sweep");
     let full = "0123456789abcdef0123456789abcdef01234567";
     save_journal(&ws, &journal("restarting", full, "nowhere.old")).unwrap();
-    // staging 残留（新布局）：back/ 抽屉 = exe .old 文件 + plugins .old/.new
+    // staging 残留（新布局）：back/ 抽屉 = exe.old 文件 + plugins.old/.new
     // 目录（PID 后缀形态，与生产 staging_paths/plugins_staging_paths 同构）。
     let exe = ws.join("current.exe");
     std::fs::write(&exe, b"new-image").unwrap();
@@ -379,7 +371,7 @@ fn rollback_missing_old_is_noop_message() {
     );
 }
 
-/// R2 复查补口：restarting + commit 不匹配 + `.old` 缺失 = 无可恢复现场的
+/// 复查补口：restarting + commit 不匹配 + `.old` 缺失 = 无可恢复现场的
 /// noop——journal 照常清（重试修不回来，留着只会闸死后续 apply），但 action
 /// 必须是 rollback_noop 而非失实的 rolled_back。
 #[test]
@@ -407,10 +399,8 @@ fn boot_recovery_missing_old_is_noop_not_rolled_back() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-// ---------------------------------------------------------------------------
 // plugins 整包替换舞步（rollback 侧不门控 feature——journal 双字段随主
 // 结构进出，boot 收口在任何 feature 组合下都可能读到 plugins 舞步记录）
-// ---------------------------------------------------------------------------
 
 /// 双空字段（旧 journal / 无插件包）= plugins 侧 noop，可识别前缀在场。
 #[test]
@@ -424,7 +414,7 @@ fn rollback_plugins_noop_when_no_journal_fields() {
     assert!(detail.contains("无 plugins 舞步记录"), "{detail}");
 }
 
-/// rollback_update 合成语义：exe .old 缺席 + plugins 双字段空 = 双 noop
+/// rollback_update 合成语义：exe.old 缺席 + plugins 双字段空 = 双 noop
 /// （noop=true 的唯一形态——boot 收口据此判 rollback_noop 而非 rolled_back）。
 #[test]
 fn rollback_update_double_noop_when_no_recoverable_state() {
@@ -467,7 +457,7 @@ fn rollback_update_exe_side_real_rollback_not_noop() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// plugins 回滚全舞步（清单驱动，N1 修复后语义）：backup 归位（同名让位先
+/// plugins 回滚全舞步（清单驱动， 修复后语义）：backup 归位（同名让位先
 /// 删）→ 清单 new_install 条目清理（用户自装件不受伤——不在清单 = 不动）→
 /// staging 双目录收尾；二次调用幂等 = noop 前缀。
 #[test]
@@ -540,7 +530,7 @@ fn rollback_plugins_restores_and_clears_new_only_then_noop() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// N1 回归锁（外评 2026-10-23 W0′ 崩溃窗口反演）：journal 已写 + 新文件已
+/// 回归锁（外评 ′ 崩溃窗口反演）：journal 已写 + 新文件已
 /// stage 进 new_dir、backup 尚未让位任何文件——清单 Replaced 条目在 backup
 /// 缺席时**跳过**（plugins/ 里就是旧版），绝不当 new-only 删掉。修复前的
 /// 差集推断在这窗口会把用户旧插件删光还谎报 rollback_noop。
@@ -595,7 +585,7 @@ fn rollback_w0_prime_staged_without_backup_keeps_original() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// N1 回归锁（外评 2026-10-23 部分失败重试窗口反演）：首轮回滚在 z.dll 上
+/// 回归锁（外评 部分失败重试窗口反演）：首轮回滚在 z.dll 上
 /// 失败（运行中映射），a.dll 已归位；重试轮 a.dll 的 backup 已不在——清单
 /// Replaced 条目 backup 缺席 = 已归位，跳过。修复前差集推断会把已归位的
 /// a.dll 当 new-only 删掉。
@@ -780,7 +770,7 @@ fn remove_loaded_file_removes_and_ignores_missing() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// R2 复查补口 + back/ 抽屉迁位（2026-10-27）：新布局 = `back/` 抽屉整目录
+/// 复查补口 + back/ 抽屉迁位：新布局 = `back/` 抽屉整目录
 /// 韧性删（staging_paths 本体生成的五件套全在抽屉内，随整删一起走——含
 /// 历史 `.failed` 诊断，已被 boot 收口 detail 记录过）；旧布局过渡兼容 =
 /// 根目录历史 `.old-{pid}`/`.new-{pid}` 逐文件删、根目录 `.failed` 诊断现场
@@ -800,7 +790,7 @@ fn sweep_stale_staging_removes_pid_suffixed_leaves_failed() {
     for f in &stale {
         std::fs::write(f, b"stale").unwrap();
     }
-    // 旧布局过渡面：根目录他进程 PID 残留 + 根目录 .failed 诊断现场。
+    // 旧布局过渡面：根目录他进程 PID 残留 + 根目录.failed 诊断现场。
     let legacy_old = ws.join(format!(
         "nemesisbot.old-{}",
         std::process::id() + 1 // 模拟他进程 PID 残留（避开本进程真名）
@@ -834,15 +824,13 @@ fn sweep_stale_staging_removes_pid_suffixed_leaves_failed() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-// ---------------------------------------------------------------------------
-// R2：回滚诚实化（失败保留现场）/ 单飞 / 跨进程锁 / staging 名去固定化
-// ---------------------------------------------------------------------------
+// 回滚诚实化（失败保留现场）/ 单飞 / 跨进程锁 / staging 名去固定化
 
-/// R2 主断言（boot restarting 相位）：回滚执行失败 → action=recovery_failed、
+/// 主断言（boot restarting 相位）：回滚执行失败 → action=recovery_failed、
 /// journal **保留**（下次 boot 重试）、目标 exe 内容不被破坏。
 /// 失败注入（Windows）：.old 被本进程以 share_mode=0 独占打开 → rename 报
-/// 占用。Windows 舞步下运行中 exe（target）先让位 .failed，第二步 .old→target
-/// 撞锁失败后 .failed 回手——target 最终保持原内容。
+/// 占用。Windows 舞步下运行中 exe（target）先让位.failed，.old→target
+/// 撞锁失败后.failed 回手——target 最终保持原内容。
 #[cfg(windows)]
 #[test]
 fn rollback_failure_keeps_journal_and_reports_recovery_failed() {
@@ -861,7 +849,7 @@ fn rollback_failure_keeps_journal_and_reports_recovery_failed() {
         ),
     )
     .unwrap();
-    // 独占 .old（无共享）→ rename(.old→target) 必败。
+    // 独占.old（无共享）→ rename(.old→target) 必败。
     let _lock = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(0)
@@ -887,7 +875,7 @@ fn rollback_failure_keeps_journal_and_reports_recovery_failed() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// R2 主断言（boot staging 相位）：回滚失败同样 recovery_failed + journal 保留。
+/// 主断言（boot staging 相位）：回滚失败同样 recovery_failed + journal 保留。
 #[cfg(windows)]
 #[test]
 fn boot_recovery_staging_rollback_failure_keeps_journal() {
@@ -911,7 +899,7 @@ fn boot_recovery_staging_rollback_failure_keeps_journal() {
 }
 
 /// Windows 舞步正例（boot restarting 相位，目标被占用态由测试文件模拟）：
-/// 回滚成功 = target 内容为 .old、.old 消失、被替换的 exe 留 .failed 诊断
+/// 回滚成功 = target 内容为.old、.old 消失、被替换的 exe 留.failed 诊断
 /// 现场（与回滚源同目录——随 old 路径推导，journal 布局透明）、journal 清除。
 #[test]
 fn boot_recovery_rollback_windows_dance_leaves_failed_diagnostics() {
@@ -947,7 +935,7 @@ fn boot_recovery_rollback_windows_dance_leaves_failed_diagnostics() {
 }
 
 /// staging 名 PID 后缀去固定化：两名字都带 pid、互不相同、住 back/ 抽屉
-/// （exe 同级 back 目录——2026-10-27 迁位；stem 形态与旧 with_extension 一致）。
+/// （exe 同级 back 目录—— 迁位；stem 形态与旧 with_extension 一致）。
 #[cfg(feature = "selfupdate")]
 #[test]
 fn staging_paths_are_pid_suffixed_and_distinct() {
@@ -998,15 +986,13 @@ fn install_lock_serializes_holders() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---------------------------------------------------------------------------
 // PID 存活探测
-// ---------------------------------------------------------------------------
 
 #[test]
 fn wait_for_pid_exit_returns_fast_for_dead_pid() {
     // Windows：u32::MAX 不可能是真实 PID——tasklist 探不到 → 判死。
     // Linux：procps 4 的 /usr/bin/kill 对超 pid_t 域的值反而 rc=0
-    // （判活假象，CI 实录 2026-10-14；bash builtin rc=1 但 Command 找的
+    // （判活假象，CI；bash builtin rc=1 但 Command 找的
     // 是 PATH 上的二进制）——改用 ns_last_pid+N 构造「合法域内但当前
     // 未分配」的死 PID；procfs 不可读则诚实跳过（环境探针纪律）。
     #[cfg(windows)]
@@ -1031,9 +1017,7 @@ fn wait_for_pid_exit_timeout_for_self() {
     assert!(!wait_for_pid_exit(std::process::id(), 1_000));
 }
 
-// ---------------------------------------------------------------------------
 // feature=selfupdate：zip 解包 + apply 前置闸（离线可达的三闸）
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "selfupdate")]
 mod gated {
@@ -1105,10 +1089,8 @@ mod gated {
         assert!(err.contains("子目录嵌套"), "{err}");
     }
 
-    // -----------------------------------------------------------------------
-    // tar.gz 臂（Linux 主包 / macOS 留位同型）：CI `tar -czf … -C staging .`
+    // tar.gz 臂（Linux 主包 / macOS 留位同型）：CI `tar -czf … -C staging.`
     // 条目带 `./` 前缀、目录条目跳过、裸名 nemesisbot、unix mode 记录。
-    // -----------------------------------------------------------------------
 
     fn tar_gz_bytes(entries: Vec<(tar::EntryType, &str, Option<u32>, Vec<u8>)>) -> Vec<u8> {
         let enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
@@ -1228,9 +1210,7 @@ mod gated {
         assert!(normalize_entry_name("").unwrap_err().contains("空"));
     }
 
-    // -----------------------------------------------------------------------
-    // R1：sequence 顺序闸（签名清单权威，列表位次判定退役）
-    // -----------------------------------------------------------------------
+    // sequence 顺序闸（签名清单权威，列表位次判定退役）
 
     use crate::selfupdate::{DowngradeVerdict, downgrade_gate_error, sequence_verdict};
 
@@ -1256,7 +1236,7 @@ mod gated {
         );
     }
 
-    /// 闸语义（R1 语义反转）：Downgrade 与 **Unknown** 未显式豁免都拒；
+    /// 闸语义（语义反转）：Downgrade 与 **Unknown** 未显式豁免都拒；
     /// allow_downgrade 豁免两者；Upgrade 恒放行；Same 恒拒（防御性——
     /// 同版应在更早的同版闸短路，漏到此处 = 异常形态，诚实拒绝）。
     #[test]
@@ -1288,7 +1268,7 @@ mod gated {
         );
     }
 
-    /// force（强制更新，2026-10-30）只豁免 `Same` 臂——「重装当前版本」的
+    /// force（强制更新）只豁免 `Same` 臂——「重装当前版本」的
     /// 意志，不是降级豁免：Downgrade/Unknown 在 force 下仍由
     /// `allow_downgrade` 管辖。
     #[test]
@@ -1317,9 +1297,7 @@ mod gated {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // R1：签名更新清单（验签解析 / 完整性绑定 / applied 副本链路）
-    // -----------------------------------------------------------------------
+    // 签名更新清单（验签解析 / 完整性绑定 / applied 副本链路）
 
     /// 测试签名锚：keygen 三级链 + 根证书指纹（与 builtin_root_anchors 无关，
     /// 免环境注入——boot 端到端不测的原因，见模块头诚实边界）。
@@ -1563,7 +1541,7 @@ mod gated {
         );
     }
 
-    /// journal 旧文件兼容：R1 之前的 journal JSON（无 target_manifest 键）
+    /// journal 旧文件兼容： 之前的 journal JSON（无 target_manifest 键）
     /// 必须能反序列化（serde default 空 = 无清单，收口不写 applied 副本）。
     #[test]
     fn journal_without_target_manifest_field_loads() {
@@ -1605,7 +1583,7 @@ mod gated {
         ws: PathBuf,
         estop: std::sync::Arc<nemesis_agent::estop::EstopState>,
     ) -> SelfUpdateManager {
-        // 2026-10-21 两段式改版：审批卡退役（确认在 Dashboard 侧完成，v4 验签
+        // 两段式改版：审批卡退役（确认在 Dashboard 侧完成，v4 验签
         // 是安全闸）——Manager 不再持有 ApprovalManager；新增下载编排三件
         // （download_flight/download_cancel/download_progress）+ check 缓存。
         SelfUpdateManager {
@@ -1625,9 +1603,7 @@ mod gated {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // 两段式 D2：pending 包（updates/）往返与损坏整清
-    // -----------------------------------------------------------------------
+    // 两段式：pending 包（updates）往返与损坏整清
 
     fn sample_pending() -> PendingUpdate {
         PendingUpdate {
@@ -1669,7 +1645,7 @@ mod gated {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 坏 meta（用户拍板：坏包宁可重下）→ None + 整清 updates/。
+    /// 坏 meta（坏包宁可重下）→ None + 整清 updates/。
     #[test]
     fn pending_bad_meta_clears_updates_dir() {
         let dir = tmp_dir("pending-bad-meta");
@@ -1718,10 +1694,10 @@ mod gated {
         assert!(err.contains("estop"), "estop 闸拒下载: {err}");
     }
 
-    // apply 全链路主体：Windows + Linux 同一份 cfg 编译体（2026-10-22 Linux
+    // apply 全链路主体：Windows + Linux 同一份 cfg 编译体（Linux
     // 接入）；macOS/android 是桩（诚实拒，见下方 apply_refused_on_stub_platforms
-    // _before_any_network）。闸序测试与被测函数同 cfg 域（漏 gate 实录：Linux
-    // coverage 三连红，2026-10-14——教训保持）。
+    // _before_any_network）。闸序测试与被测函数同 cfg 域（漏 gate Linux
+    // coverage 三连红，——教训保持）。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
     async fn apply_denied_by_estop() {
@@ -1748,7 +1724,7 @@ mod gated {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    /// apply 失败反馈面（2026-10-23 挂死修复）：Err 必须入案
+    /// apply 失败反馈面（挂死修复）：Err 必须入案
     /// last_apply_error（status 投影面 + downgrade_denied 旗标）；第二次尝试
     /// 发起时先清旧错、失败再落新错——编排进行中 status 不残留上一轮失败
     /// （前端粘滞态解挂依据）。estop/journal 两闸离线可达，恰好覆盖记录流转。
@@ -1793,7 +1769,7 @@ mod gated {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// R2 进程内单飞：flight 已被持有时 apply 诚实拒绝（estop 未触发、
+    /// 进程内单飞：flight 已被持有时 apply 诚实拒绝（estop 未触发、
     /// journal 干净——单飞闸是这一轮唯一的拒绝者）。
     #[cfg(any(windows, target_os = "linux"))]
     #[tokio::test]
@@ -1813,7 +1789,7 @@ mod gated {
     /// 平台闸（桩平台：macOS 留位 / Android APK 发行形态）：必须**先于一切
     /// 网络/磁盘动作**诚实拒绝——Android 文案点名 APK 通道（非「暂不支持」，
     /// 那是能力缺席不是形态错位）；macOS 文案「暂不支持」+ 手动替换指引。
-    /// 本测试在 Windows/Linux 编译期消失（Linux 2026-10-22 起接入全链路主
+    /// 本测试在 Windows/Linux 编译期消失（Linux 起接入全链路主
     /// 体），由对应桩平台的本地构建兜底执行。
     #[cfg(all(test, not(any(target_os = "windows", target_os = "linux"))))]
     #[tokio::test]
@@ -1882,9 +1858,7 @@ mod gated {
         );
     }
 
-    // -----------------------------------------------------------------------
     // plugins 整包替换：绑定校验矩阵 + 安装舞步 + sweep 面
-    // -----------------------------------------------------------------------
 
     fn manifest_with_plugins(table: &[(&str, &str)]) -> crate::selfupdate::UpdateManifest {
         crate::selfupdate::UpdateManifest {
@@ -1906,7 +1880,7 @@ mod gated {
             .collect()
     }
 
-    /// ②-b 绑定闸语义矩阵（用户拍板「1. 可以加」）：空表 = 诚实降级 Ok；
+    /// ②-b 绑定闸语义矩阵（「1. 可以加」）：空表 = 诚实降级 Ok；
     /// 集合差异（数量不等 / 名单不同）= 拒；摘要失配 = 拒；全链大小写不
     /// 敏感（CI 侧 sha256sum 小写 / 手写大写清单同命中）。
     #[test]
@@ -1985,7 +1959,7 @@ mod gated {
         }
     }
 
-    /// 安装舞步（用户拍板「2. 可以」）：new_dir 全集先写 + 同名让位进
+    /// 安装舞步（「2. 可以」）：new_dir 全集先写 + 同名让位进
     /// backup + 只同名覆盖不删（用户自装插件不受伤）。
     #[test]
     fn install_plugins_files_replaces_and_preserves_extras() {
@@ -2031,7 +2005,7 @@ mod gated {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 同名**目录**冲突预检（拍板 ② 目录面）：包内平面文件撞既有目录 =
+    /// 同名**目录**冲突预检（目录面）：包内平面文件撞既有目录 =
     /// 诚实拒绝，用户目录原地不动、backup 不创建（预检先于任何落盘）。
     /// 不拒的后果：目录被让位进 backup，回滚名单只认文件、收尾整删 backup
     /// = 用户自装内容永久丢失。
@@ -2082,12 +2056,10 @@ mod gated {
         let _ = std::fs::remove_dir_all(&ws);
     }
 
-    // -----------------------------------------------------------------------
-    // 完整性检查（2026-10-30）：纯分类器（hand-build 清单）+ 签名基线全链
+    // 完整性检查：纯分类器（hand-build 清单）+ 签名基线全链
     //（save_applied_manifest → integrity_snapshot_at）。判定语义：ok /
     // mismatch / missing / unreadable（逐文件）+ ok / mismatch / no_baseline /
     // baseline_error（总判定）；extra_files 信息性收集不定罪。
-    // -----------------------------------------------------------------------
 
     /// hand-build 清单（纯分类器用——不经验签，直接喂分类器）。
     fn manifest_for(exe_bytes: &[u8], plugins: &[(&str, &[u8])]) -> UpdateManifest {

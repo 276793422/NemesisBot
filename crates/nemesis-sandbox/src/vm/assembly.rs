@@ -1,10 +1,10 @@
-//! QEMU 命令行装配（纯函数，P5 第 2 步）——生命周期/镜像/网络/隔离语义
+//! QEMU 命令行装配（纯函数， 第 2 步）——生命周期/镜像/网络/隔离语义
 //! 的**唯一参数产地**。
 //!
-//! 设计纪律（实施计划 §5「GPU/音频」扩展点）：
+//! 设计纪律（实施计划 「GPU/音频」扩展点）：
 //! - 所有 QEMU 参数集中在本模块纯函数产出（调用方只传 spec，不拼字符串）
 //!   ——GPU/音频/显示恢复 = 只改这里 + 配置 schema 加键；
-//! - 显示面（P5-R2）：默认 `-display none`（headless 服务器形态字节不变，
+//! - 显示面：默认 `-display none`（headless 服务器形态字节不变，
 //!   测试锚定）；`display_vnc_port = Some(port)` 时装配 `-vnc 127.0.0.1:<display>`
 //!   （回环绑定——NAT 零暴露闸同源；port=真实 TCP 端口，display=port-5900
 //!   反向换算，见 VNC_DISPLAY_BASE 注——QEMU 冒号后数字是显示器编号而非
@@ -12,7 +12,7 @@
 //!   不在 QEMU 层做**：`-vnc
 //!   ...,readonly` 会锁死所有 viewer 且改档需重启 VM——per-session 观察档
 //!   由 plugin-vm 在 RFB 客户端→服务端方向过滤写类消息（类型 4/5/6）实现。
-//! - hostfwd **恒绑 127.0.0.1**（G2 宿主零暴露面闸——装配层钉死，测试
+//! - hostfwd **恒绑 127.0.0.1**（宿主零暴露面闸——装配层钉死，测试
 //!   断言；外部接口不可达由绑定语义保证）；
 //! - 首帧 token 挑战鉴权的 token 经 `-smbios type=1,serial=<token>` 传入
 //!   guest（guest launcher 读 DMI serial 注入 env）——per-instance token
@@ -29,7 +29,7 @@ pub const GUEST_AGENT_PORT: u16 = 48500;
 /// QMP 绑定地址（恒 127.0.0.1——QMP 无鉴权，回环绑定是唯一暴露面控制）。
 pub const QMP_BIND: &str = "127.0.0.1";
 
-/// NAT hostfwd 绑定地址（恒 127.0.0.1——G2 宿主零暴露面闸）。
+/// NAT hostfwd 绑定地址（恒 127.0.0.1—— 宿主零暴露面闸）。
 pub const NAT_BIND: &str = "127.0.0.1";
 
 /// VNC 显示绑定地址（恒 127.0.0.1——与 NAT 闸同源：VNC 只绑回环，外部
@@ -37,7 +37,7 @@ pub const NAT_BIND: &str = "127.0.0.1";
 pub const VNC_BIND: &str = "127.0.0.1";
 
 /// QEMU `-vnc` 的显示器编号基准（真实 TCP 端口 = 5900 + 编号——QEMU 全
-/// 版本稳定语义；2026-10-21 真机探针定谳：`-vnc 127.0.0.1:12345` 绑定
+/// 版本稳定语义； 真机探针定谳：`-vnc 127.0.0.1:12345` 绑定
 /// 18245，`port=` 子选项不存在（Invalid parameter），无直写端口语法）。
 pub const VNC_DISPLAY_BASE: u16 = 5900;
 
@@ -78,7 +78,7 @@ pub struct VmLaunchSpec {
     /// wake 载体 B：`-incoming file:<path>`（migrate-to-file 状态文件，
     /// WHPX 备选线——早验判定 WHPX savevm 不可行，见实施计划附录）。
     pub incoming_file: Option<PathBuf>,
-    /// 显示面（P5-R2）：Some(port) = VNC 监听**真实 TCP 端口**（127.0.0.1；
+    /// 显示面：Some(port) = VNC 监听**真实 TCP 端口**（127.0.0.1；
     /// QEMU 参数按 display=port-5900 反向换算，见 VNC_DISPLAY_BASE 注）；
     /// None = `-display none`（默认无头形态，字节不变）。端口由调用方走
     /// `alloc_loopback_port` 同机制分配（临时端口段恒 ≥5900）。
@@ -123,7 +123,7 @@ pub fn build_qemu_args(spec: &VmLaunchSpec) -> Vec<String> {
         None => args.extend(display_args().iter().map(|s| s.to_string())),
     }
     // 绝对指点设备（usb-tablet）：q35 默认不带任何 pointer 硬件（探针
-    // 实录：guest /proc/bus/input/devices 只有键盘类 event，X 无鼠标可
+    // guest /proc/bus/input/devices 只有键盘类 event，X 无鼠标可
     // 拾取）——VNC 操作档的 PointerEvent 是绝对坐标，usb-tablet 是 QEMU
     // 绝对指针的标准载体（usbhid 通用驱动，guest 侧零额外配置）。
     // q35 也无默认 USB 总线（裸 `-device usb-tablet` 实测 `No 'usb-bus'
@@ -176,7 +176,7 @@ pub fn build_qemu_args(spec: &VmLaunchSpec) -> Vec<String> {
 /// 1. **逗号闸**：`-drive file=...,format=qcow2` / `-virtfs local,path=...` /
 ///    `-smbios type=1,serial=...` / `-incoming file:...`（QEMU 8.0+ 支持
 ///    `file:<path>,offset=` 子选项）都是「单 argv 内逗号分隔子选项」形态——
-///    路径/值里的 `,` 会被 QEMU 当子选项分隔符（L6++ 项目路径用户任意、
+///    路径/值里的 `,` 会被 QEMU 当子选项分隔符（项目路径用户任意、
 ///    可含逗号），产生离谱报错甚至静默错配。诚实拒绝优于猜测转义（QEMU
 ///    各解析点的转义语义无法本地验证、版本间有漂移）。
 /// 2. **wake 载体互斥**：`-loadvm` 与 `-incoming` 同时装配互相打架（规格

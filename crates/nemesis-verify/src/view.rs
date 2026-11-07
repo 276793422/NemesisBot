@@ -3,7 +3,7 @@
 //! 对应"查看 vs 验证分离"的查看侧（Windows 文件属性→数字签名 tab 的"查看证书"）：
 //! 纯本地解析，不联网、不查吊销、不下 Valid/Revoked 结论——只展示签名元数据 + 证书链。
 //!
-//! v4 Authenticode（S4-3）：签名枚举 = PE（Certificate Table 主签名 +
+//! v4 Authenticode：签名枚举 = PE（Certificate Table 主签名 +
 //! SPC_NESTED_SIGNATURE 嵌套树展开）+ ELF/raw（v4 footer 载体单个）。证书链展示
 //! 顺序经 AKI→SKI 结构排序（leaf→root，复用 verify 的结构排序；链断降级证书集
 //! 原序展示）。解析失败的个体签名诚实跳过；无签名 / 载体坏 = 空视图。

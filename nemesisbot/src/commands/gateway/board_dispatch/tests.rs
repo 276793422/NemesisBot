@@ -77,7 +77,7 @@ fn new_inflight_comment_resets_episode() {
     // 注入时钟在评论落库后采样：created_at 由 BoardStore 落库时取秒级
     // Utc::now()——先采 now 后插评论，插入撞到下一秒就产生负年龄，
     // threshold 0 的闸（now - created_at < 0 → skip）把警示吞掉出假红
-    // （2026-10-19 CI shard3 实录）。落库后采样保证 created_at ≤ now。
+    // （CI）。落库后采样保证 created_at ≤ now。
     let now = chrono::Utc::now().timestamp();
     assert_eq!(sweep_archive_stalls(&store, 0, now), 1);
 
@@ -110,7 +110,7 @@ fn non_in_progress_issues_not_flagged() {
     assert_eq!(sweep_archive_stalls(&store, 0, now), 0);
 }
 
-/// 旧在途锚已收口不误报（NB-122 实录回归，2026-10-16）：评审 FAIL 重派回
+/// 旧在途锚已收口不误报（回归案例）：评审 FAIL 重派回
 /// in_progress 后，上一轮「在途→合并」评论对仍在评论流、新一轮未交付——
 /// 旧在途锚不得判成本轮停摆；新一轮在途评论成为锚后警示照常（不过度抑制）。
 #[test]

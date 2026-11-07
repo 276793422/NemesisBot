@@ -7,7 +7,7 @@
 //   InvalidDomainCharacter——交不到 contains_control_chars 手里。
 // - 76（InvalidHost 的 '@'/'[' 形态）：EmbeddedCredentials 检查（69-74）
 //   先于本臂——'@' 早已被 username 分流；"["/"]" 被 url crate 拒绝。
-// - 83（InvalidPort）：port 已是 u16，to_string().parse::<u16>() 恒 Ok，
+// - 83（InvalidPort）：port 已是 u16，to_string().parse:<u16> 恒 Ok，
 //   条件永假。
 // - 264（NoAddresses）：tokio lookup_host 失败走 Err→DnsFailed；Ok 但空
 //   迭代在系统解析器上无已知触发形态。

@@ -162,10 +162,26 @@ function cmpSessions(a: SessionEntry, b: SessionEntry): number {
     return title(a).localeCompare(title(b), 'zh-CN')
   }
   const key = sessionSort.value === 'created' ? 'startTime' : 'lastTime'
-  const ta = a[key] || ''
-  const tb = b[key] || ''
-  if (ta === tb) return 0 // 含双方皆空 → 稳定原序
-  return ta > tb ? -1 : 1 // 降序（新→旧）；空值自然沉底
+  // 必须解析成时间戳比较，不能裸字典序（服务端 scan_session_logs 同课：
+  // crates/nemesis-web/src/handlers/logs.rs 排序注记）。服务端行是 Local
+  // offset RFC3339（`2026-11-07T12:34+08:00`），乐观行是 toISOString 的
+  // UTC `Z` 形态（`2026-11-07T04:34Z`）——UTC+8 机器同日 10:00 后裸字符串
+  // 序把最新会话压到组底，点「新建对话」后 active 行落出 SHOW_MORE_CAP
+  // 可见窗（2026-11-07 FF 全量实录 capsule:38 点击后 10s 零 active 行）。
+  // 解析失败/空值沉底（降序最旧位），同刻稳定原序。
+  const ta = parseSessionTime(a[key])
+  const tb = parseSessionTime(b[key])
+  if (ta === tb) return 0
+  return ta > tb ? -1 : 1
+}
+
+/** lastTime/startTime 解析为毫秒时间戳；空值/不可解析（旧格式脏行）→
+ * NEGATIVE_INFINITY 沉底（仅向前语义：无时间锚不参与排序红利，与服务端
+ * scan_session_logs 口径一致）。 */
+function parseSessionTime(ts?: string): number {
+  if (!ts) return Number.NEGATIVE_INFINITY
+  const t = Date.parse(ts)
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t
 }
 
 // ---------------------------------------------------------------------------
@@ -451,8 +467,15 @@ async function del(id: string) {
   closeMenus()
   // 2026-10-30：默认移入回收站（90 天 TTL，日志页可恢复），不再是硬删除。
   if (!confirm('删除这个会话？将移入回收站，90 天后自动清除；可在 日志 → 回收站 恢复。')) return
+  // 失败反馈 + pin 只在真删成功后清（BUG-20261106-029 横向）：store.remove
+  // 内部吞错返回布尔，旧实现在 await 前就 unpin（删除失败 pin 白丢）且
+  // 忽略返回值（失败零反馈）。对齐同文件 batchDeleteSelected 的 ok 判定。
+  const ok = await sessionStore.remove(id)
+  if (!ok) {
+    toast.error('删除会话失败')
+    return
+  }
   unpinIfDeleted(id)
-  await sessionStore.remove(id)
 }
 
 async function renameSession(s: { id: string; title?: string; firstMessage: string }) {
@@ -461,13 +484,17 @@ async function renameSession(s: { id: string; title?: string; firstMessage: stri
   if (name === null) return
   const trimmed = name.trim()
   if (!trimmed) return
-  await sessionStore.rename(s.id, trimmed)
+  // store.rename 吞错返回布尔（同 remove 契约）；失败必须出声（BUG-20261106-029
+  // 横向——store 注释「caller may surface a toast」而旧 caller 不 surface）。
+  const ok = await sessionStore.rename(s.id, trimmed)
+  if (!ok) toast.error('重命名失败')
 }
 
 async function clearSession(s: { id: string; title?: string; firstMessage: string }) {
   closeMenus()
   if (!confirm(`清空「${s.title || s.firstMessage || s.id}」的所有消息？会话保留，历史清空。`)) return
-  await sessionStore.clear(s.id)
+  const ok = await sessionStore.clear(s.id)
+  if (!ok) toast.error('清空失败')
 }
 
 async function exportSession(s: { id: string; title?: string; firstMessage: string }) {
@@ -569,20 +596,27 @@ const prLoading = ref(false)
 
 function openChanges(s: SessionEntry) {
   closeMenus()
-  prSession.value = { id: s.id, name: title(s) }
+  // 在飞围栏（BUG-20261106-029）：stale 导出响应不得写别人（或新开）的弹窗
+  // ——旧实现 then 无条件覆盖 prMessages（关 A 开 B 后 A 晚到 → B 弹窗显 A
+  // 的 file_changes）、catch 无条件关 prSession（A 晚败 → 正在看的 B 弹窗
+  // 被强制关掉）。围栏=响应到达时 prSession 仍是本会话。
+  const sid = s.id
+  prSession.value = { id: sid, name: title(s) }
   prMessages.value = []
   prLoading.value = true
   sessionStore
-    .exportSession(s.id)
+    .exportSession(sid)
     .then((resp) => {
+      if (prSession.value?.id !== sid) return
       prMessages.value = resp.messages ?? []
     })
     .catch(() => {
+      if (prSession.value?.id !== sid) return
       toast.error('加载会话消息失败')
       prSession.value = null
     })
     .finally(() => {
-      prLoading.value = false
+      if (prSession.value?.id === sid) prLoading.value = false
     })
 }
 
@@ -695,7 +729,7 @@ async function detachSession(s: SessionEntry) {
 // 批量管理（2026-10-30 回收站）：多选模式——顶部功能区「☑ 批量」进入，
 // 行点击改为勾选/取消（不再切换会话），底部浮动工具条 全选 / 删除所选(N) /
 // 取消。删除 = 逐条顺序调 sessions.delete（默认移入回收站；每条过各自的
-// history gate），单条失败不中断批次，完成后刷新 + toast 汇总（拍板③：
+// history gate），单条失败不中断批次，完成后刷新 + toast 汇总（决策③：
 // 批量删除 = 批量进回收站，真删除去 日志 → 回收站）。
 // ---------------------------------------------------------------------------
 const batchMode = ref(false)

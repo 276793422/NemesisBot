@@ -1,4 +1,4 @@
-//! 反向桥批次一端到端测试：真 WebServer（随机端口）+ mock 桥设备
+//! 反向桥端到端测试：真 WebServer（随机端口）+ mock 桥设备
 //! （tokio-tungstenite 直连 `/bridge`）+ 原始 TCP 浏览器客户端。
 //!
 //! 覆盖 goal 测试面：token 拒止（welcome{ok:false}）、access_check 三态
@@ -26,9 +26,7 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as TungMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-// ---------------------------------------------------------------------------
 // 测试基建
-// ---------------------------------------------------------------------------
 
 /// 起一个带中继的 WebServer（127.0.0.1 随机端口）。
 /// 返回 (地址, relay, 关停闸)——关停闸必须保活：broadcast sender 全部
@@ -115,7 +113,7 @@ async fn recv_frame(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Brid
     }
 }
 
-/// 收下一帧业务帧（跳过 member_sync 广播与心跳噪声——三期批次八起注册
+/// 收下一帧业务帧（跳过 member_sync 广播与心跳噪声——三期起注册
 /// 即广播，设备 ws 流里的 MemberSync 不属业务语义，与心跳噪声同待跳过）。
 async fn recv_business_frame(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> BridgeFrame {
     loop {
@@ -226,7 +224,7 @@ fn sha256_hex(input: &str) -> String {
 }
 
 /// HTTP 隧道测试的设备侧响应模板：收 ConnOpen + 请求 → 回指定响应字节 →
-/// 等服务端收口通知。2026-09-19 修复后：响应完整性由 content-length 界定，
+/// 等服务端收口通知。 修复后：响应完整性由 content-length 界定，
 /// 设备侧不再发 EOF 帧（EOF 约定保留为无长度头响应的兜底，专项测试覆盖）；
 /// 收口权在服务端 handler——body 读满后回发 `ConnClose("response complete")`。
 /// 返回 (conn_id, 完整请求字节)。
@@ -280,7 +278,7 @@ async fn serve_http_request(
             }
             // 心跳/成员同步噪声跳过（真实桥通道里会有；MemberSync 是注册
             // 即广播的成员快照，到达时序随平台调度漂移——Linux CI 上曾在
-            // 收口等待窗口内晚到（2026-09-20 Extended 失败实录），与
+            // 收口等待窗口内晚到（Extended 失败），与
             // recv_business_frame 的噪声清单对齐）。
             BridgeFrame::MemberSync { .. } | BridgeFrame::Heartbeat | BridgeFrame::Pong => continue,
             other => panic!("期望 ConnClose 收口通知，实际 {other:?}"),
@@ -289,9 +287,7 @@ async fn serve_http_request(
     (conn_id, req_bytes)
 }
 
-// ---------------------------------------------------------------------------
 // ① /bridge 握手：token 拒止（welcome{ok:false}）+ 正常接入
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn bridge_hello_wrong_token_gets_rejected_via_ws() {
@@ -321,9 +317,7 @@ async fn bridge_hello_correct_token_gets_welcome_and_registers_device() {
     ws.close(None).await.ok();
 }
 
-// ---------------------------------------------------------------------------
 // ② 授权流（/d/{nid}/__auth POST）端到端：access_check 转发 + cookie 语义
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn auth_flow_end_to_end_forwards_hash_to_device() {
@@ -417,9 +411,7 @@ async fn auth_flow_end_to_end_forwards_hash_to_device() {
     assert_eq!(status3, 200);
 }
 
-// ---------------------------------------------------------------------------
 // ③ /d/ 三道门 + 状态页门关 404
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn device_route_gates_offline_and_unauthorized() {
@@ -460,9 +452,7 @@ async fn device_route_gates_offline_and_unauthorized() {
     dev_ws.close(None).await.ok();
 }
 
-// ---------------------------------------------------------------------------
 // ④ HTTP 隧道端到端（fin/EOF 语义、502、POST 体转发）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn http_tunnel_round_trip_content_length_semantics() {
@@ -642,9 +632,7 @@ async fn http_tunnel_lengthless_response_eof_fallback() {
     assert!(headers.iter().any(|(k, _)| k == "content-type"));
 }
 
-// ---------------------------------------------------------------------------
 // ⑤ WS 长泵：升级穿透 + 双向帧搬运（原始 TCP 浏览器，全程串行）
-// ---------------------------------------------------------------------------
 
 /// 原始 TCP 上写 ws 升级请求（不读响应——101 由设备侧下发）。
 async fn raw_ws_connect_write(addr: std::net::SocketAddr, path: &str, cookie: &str) -> TcpStream {
@@ -782,9 +770,7 @@ async fn ws_tunnel_upgrade_and_bidirectional_frames() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // ⑤+ 上行缓冲内存闸：宣告不可能帧长 → 泵断连而非无界累积
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn ws_tunnel_up_buf_cap_closes_connection_on_impossible_frame_flood() {
@@ -818,7 +804,7 @@ async fn ws_tunnel_up_buf_cap_closes_connection_on_impossible_frame_flood() {
 
     // 设备持续喂「宣告 1<<40 字节帧长」的帧头字节——解析器诚实 None
     // （等待臂），残余永远滞留 up_buf；超过 MAX_BRIDGE_UP_BUF 后泵必须
-    // 断连（ConnClose）而非无界累积（R5-1 伴生内存闸回归锁）。
+    // 断连（ConnClose）而非无界累积（伴生内存闸回归锁）。
     let evil = {
         let mut head = vec![0x82u8, 127];
         head.extend_from_slice(&(1u64 << 40).to_be_bytes());
@@ -855,18 +841,21 @@ async fn ws_tunnel_up_buf_cap_closes_connection_on_impossible_frame_flood() {
     };
     assert!(!reason.is_empty(), "断连必须带原因：{reason}");
 
-    // 浏览器侧 socket 随泵收口关闭。
+    // 浏览器侧 socket 随泵收口关闭。Windows 关闭形态二象：优雅 FIN=Ok(0)；
+    // 有在途数据时中止式 RST=ConnectionReset——两者都证明连接已关闭
+    // （负载下 RST/FIN 竞速），只拒「读到了数据」与超时。
     let mut chunk = [0u8; 64];
     let n = tokio::time::timeout(std::time::Duration::from_secs(10), browser.read(&mut chunk))
         .await
-        .expect("读浏览器关闭超时")
-        .expect("读失败");
-    assert_eq!(n, 0, "浏览器连接应已关闭");
+        .expect("读浏览器关闭超时");
+    match n {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("浏览器连接应已关闭，得到 {other:?}"),
+    }
 }
 
-// ---------------------------------------------------------------------------
 // ⑥ 状态页 ws token 门
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn relay_status_page_gate_and_api() {
@@ -945,9 +934,7 @@ async fn relay_status_page_gate_and_api() {
     dev_ws.close(None).await.ok();
 }
 
-// ---------------------------------------------------------------------------
 // ⑦ 多设备并发（真 ws 全链路）：两台设备同时接入、各自隧道互不串线
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn two_devices_concurrent_tunnels_do_not_cross() {
@@ -993,11 +980,9 @@ async fn two_devices_concurrent_tunnels_do_not_cross() {
     assert_eq!(r2.2, b"from-node-b");
 }
 
-// ---------------------------------------------------------------------------
-// ⑧ `--relay` 纯中继形态（relay_only，2026-09-20）：dashboard 全量路由
+// ⑧ `--relay` 纯中继形态（relay_only）：dashboard 全量路由
 //    不装配——/api/* 信任边界是本机/内网，纯中继绑 0.0.0.0 公网，暴露
 //    即失守；公网只留 /health + 反向桥路由。
-// ---------------------------------------------------------------------------
 
 /// 最小静态资源 stub——证明 relay_only 即使 static_files 配了也不挂
 /// （dashboard SPA 在纯中继形态下 404）。
@@ -1059,11 +1044,9 @@ async fn relay_only_server_hides_dashboard_and_management_api() {
     shutdown_tx.send(()).ok();
 }
 
-// ---------------------------------------------------------------------------
 // ⑨ 浏览器端 SHA-256 兜底脚本：http://<公网IP> 非安全上下文下
 //    crypto.subtle 不存在（真机暴露：输令牌报 reading 'digest'）——
 //    两个门页必须内嵌纯 JS 回落实现，submit 不再裸调 WebCrypto。
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn relay_pages_embed_sha256_fallback_js() {

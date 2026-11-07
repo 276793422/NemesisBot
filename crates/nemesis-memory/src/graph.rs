@@ -181,7 +181,7 @@ pub trait GraphStore: Send + Sync {
 /// `triples.jsonl`. Every mutation (upsert, add, remove, delete) triggers
 /// an atomic rewrite of the corresponding file.
 ///
-/// 键归一策略（BUG-20261029-182）：所有 map 键（entity 名、triple 索引键）
+/// 键归一策略：所有 map 键（entity 名、triple 索引键）
 /// 一律小写归一，任何大小写形态的查询命中同一份数据；`GraphEntity.name` /
 /// `GraphTriple.subject/object` 字段保留原始大小写供展示与持久化。
 pub struct InMemoryGraphStore {
@@ -195,7 +195,7 @@ pub struct InMemoryGraphStore {
     persistence_dir: Option<PathBuf>,
     /// Ensures data is loaded from disk at most once.
     load_once: OnceLock<()>,
-    /// persist 串行锁（横扫八期补网，2026-10-14）：persist 的 tmp 文件名是
+    /// persist 串行锁（横扫八期补网）：persist 的 tmp 文件名是
     /// 固定的（`entities.jsonl.tmp`/`triples.jsonl.tmp`），并发 persist 互踩
     /// 同一 tmp ⇒ rename 出交错坏文件。manager 单例被主 loop/项目 loop/集群
     /// B 端共享，变更入口并发面真实。锁取在 persist 本体内，变更方法结构上
@@ -270,7 +270,7 @@ impl InMemoryGraphStore {
                     continue;
                 }
                 if let Ok(triple) = serde_json::from_str::<GraphTriple>(trimmed) {
-                    // 键统一小写归一（BUG-20261029-182），与 add_triple 同源。
+                    // 键统一小写归一，与 add_triple 同源。
                     let subject = triple.subject.to_lowercase();
                     let object = triple.object.to_lowercase();
 
@@ -309,7 +309,7 @@ impl InMemoryGraphStore {
 
         let final_path = dir.join("entities.jsonl");
 
-        // BUG-20261025-59：唯一临时名权威 helper（旧固定 `entities.jsonl.tmp`
+        // 唯一临时名权威 helper（旧固定 `entities.jsonl.tmp`
         // 双写者同名互踩可产损坏文件；helper 内建 flush+sync+失败清理）。
         // 任一条目序列化失败 = 整体重写放弃（活文件不动，与旧语义一致且
         // 不再残留半截 tmp）。
@@ -346,7 +346,7 @@ impl InMemoryGraphStore {
 
         let final_path = dir.join("triples.jsonl");
 
-        // BUG-20261025-59：唯一临时名权威 helper（同 persist_entities_locked）。
+        // 唯一临时名权威 helper（同 persist_entities_locked）。
         // 去重语义不变：同一 (subject, predicate, object) 只落一行。
         let mut body = String::new();
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
@@ -391,7 +391,7 @@ impl GraphStore for InMemoryGraphStore {
     async fn add_triple(&self, triple: GraphTriple) -> Result<(), String> {
         self.ensure_loaded();
 
-        // 键统一小写归一（BUG-20261029-182）：索引键小写，值保留原始大小写。
+        // 键统一小写归一：索引键小写，值保留原始大小写。
         let subject = triple.subject.to_lowercase();
         let object = triple.object.to_lowercase();
 
@@ -417,7 +417,7 @@ impl GraphStore for InMemoryGraphStore {
     async fn upsert_entity(&self, entity: GraphEntity) -> Result<(), String> {
         self.ensure_loaded();
 
-        // 键统一小写归一（BUG-20261029-182），与 load_from_disk 同源。
+        // 键统一小写归一，与 load_from_disk 同源。
         let key = entity.name.to_lowercase();
         self.entities.insert(key, entity);
 
@@ -438,7 +438,7 @@ impl GraphStore for InMemoryGraphStore {
     ) -> Result<bool, String> {
         self.ensure_loaded();
 
-        // 键统一小写归一（BUG-20261029-182）；值匹配与 query_triples 的
+        // 键统一小写归一；值匹配与 query_triples 的
         // lowercase 比较语义对齐（任何大小写形态定位同一条 triple）。
         let subject_key = subject.to_lowercase();
         let object_key = object.to_lowercase();
@@ -489,7 +489,7 @@ impl GraphStore for InMemoryGraphStore {
         let mut discovered_entities: Vec<GraphEntity> = Vec::new();
 
         // BFS queue: (current_entity, path_so_far)。键统一小写归一
-        // （BUG-20261029-182）：start 与邻居都以小写键查表/去重，PathHop
+        // start 与邻居都以小写键查表/去重，PathHop
         // 值保留 triple 原始大小写供展示。
         let start = start_entity.to_lowercase();
         let mut queue: VecDeque<(String, Vec<PathHop>)> = VecDeque::new();
@@ -542,7 +542,7 @@ impl GraphStore for InMemoryGraphStore {
         let mut result = Vec::new();
         let mut seen: HashSet<(String, String, String)> = HashSet::new();
 
-        // 键统一小写归一（BUG-20261029-182）。
+        // 键统一小写归一。
         let entity_key = entity.to_lowercase();
 
         // Triples where entity is the subject.
@@ -625,7 +625,7 @@ impl GraphStore for InMemoryGraphStore {
         };
 
         for (subject, predicate, object) in triples_to_remove {
-            // Remove from subject index（键小写归一，BUG-20261029-182：
+            // Remove from subject index（键小写归一，
             // 收集到的 subject/object 是原始大小写值，查索引键必须归一）。
             let subject_key = subject.to_lowercase();
             let object_key = object.to_lowercase();

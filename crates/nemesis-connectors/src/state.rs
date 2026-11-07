@@ -1,15 +1,15 @@
-//! B2（2026-10-19 独占接管）：connector 运行态 sidecar——per-tool 例外表。
+//! （2026-10-19 独占接管）：connector 运行态 sidecar——per-tool 例外表。
 //!
 //! 存放 `<workspace>/config/connector_state/<connector_id>.json`：
 //! `{"blocked": [...], "exempt": [...], "enabled": true|null}`（工具名 =
-//! 完整 mcp 工具名；`enabled` 是 A3-a（治理补全 P2）扩进来的启停覆盖位：
+//! 完整 mcp 工具名；`enabled` 是 -a（治理补全）扩进来的启停覆盖位：
 //! Some = 用户意志（Dashboard/CLI 翻位恒写这里），None = 清单
 //! `[connector] enabled` 键（作者安装缺省）生效——签名清单字节从此恒稳定）。
 //!
 //! **为什么外置而不进 connector.toml**：带分离签名的清单，其字节被签名
 //! 覆盖——例外调整若写清单 = 每次微调都要重签，治理动作的摩擦大到没人
-//! 用，等于没有例外。sidecar 与清单分离（先例：wasm 插件实例配置），
-//! 签名清单恒不可变，例外状态是活的运行态。A3-a（治理补全 P2）落地后，
+//! 用，等于没有例外。sidecar 与清单分离（wasm 插件实例配置），
+//! 签名清单恒不可变，例外状态是活的运行态。-a（治理补全）落地后，
 //! `set_enabled` 对签名条目的「翻位破坏验签」矛盾同样经 sidecar 松绑——
 //! 启停不再触碰 connector.toml。
 //!
@@ -19,7 +19,7 @@
 //! - `blocked` **封禁** = 连接器路也不提供镜像 op——该能力对 agent 完全
 //!   消失（原生侧独占闸照隐）。
 //! - `default`（两表皆无）= 镜像接管基线（receipt 恒写；档位按 server 自述
-//!   annotations hints 四档定，B3——未声明 = medium/read 保守基线）。
+//!   annotations hints 四档定，——未声明 = medium/read 保守基线）。
 //!
 //! 删 connector 不清 sidecar（重装同名 id 自动恢复策略；孤儿文件无害，
 //! 不做隐式清理——「删数据」是显式动作）。每调用现读磁盘：无缓存、无
@@ -35,7 +35,7 @@ pub struct ToolPolicyState {
     pub blocked: Vec<String>,
     #[serde(default)]
     pub exempt: Vec<String>,
-    /// 启停覆盖（A3-a）：Some = 用户意志（覆盖清单 `[connector] enabled`），
+    /// 启停覆盖（a）：Some = 用户意志（覆盖清单 `[connector] enabled`），
     /// None = 清单缺省生效。存量 sidecar 无此键 = None，零迁移。
     #[serde(default)]
     pub enabled: Option<bool>,
@@ -57,7 +57,7 @@ pub fn state_dir(workspace: &Path) -> PathBuf {
     workspace.join("config").join("connector_state")
 }
 
-/// 单 connector 的 sidecar 路径。id 字符集由 [`super::manifest::validate_id`]
+/// 单 connector 的 sidecar 路径。id 字符集由 [`super::manifest:validate_id`]
 /// 钉死（`[a-z0-9_-]`）——路径安全（无分隔符/`..`/大小写歧义）。
 pub fn state_path(workspace: &Path, connector_id: &str) -> Result<PathBuf, String> {
     super::manifest::validate_id(connector_id, "connector id")
@@ -167,7 +167,7 @@ fn undone_marker_path(workspace: &Path, receipt_id: &str) -> Option<PathBuf> {
     Some(undone_dir(workspace).join(format!("{receipt_id}.json")))
 }
 
-/// 撤销防重标记（边界补强 2026-10-20）：域 C 反向 op **发起执行后**落
+/// 撤销防重标记（边界补强）：域 C 反向 op **发起执行后**落
 /// 标记（无论 verdict 成败——反向 op 可能已在对端生效，与 unknown 凭条
 /// 同保守语义），后续对同凭条的 undo 一律拒绝——重复执行反向 op 会叠加
 /// 外部副作用（双退款形态）。写失败 WARN + 继续（与凭条同纪律：观测
@@ -205,15 +205,15 @@ pub fn is_undone(workspace: &Path, receipt_id: &str) -> bool {
     undone_marker_path(workspace, receipt_id).is_some_and(|p| p.is_file())
 }
 
-/// effective enabled 单点合并（A3-a）：sidecar 有值 = 用户意志胜；缺省
+/// effective enabled 单点合并（a）：sidecar 有值 = 用户意志胜；缺省
 /// （None）= 清单 `[connector] enabled` 键（作者安装缺省）。合并落点在
-/// [`crate::registry::scan_connectors`] / [`crate::registry::find_connector`]
+/// [`crate::registry:scan_connectors`] / [`crate::registry:find_connector`]
 /// 两处出口，全部消费面（list / find / invoke 闸 / 独占隐藏表）自动同源。
 pub fn effective_enabled(state: &ToolPolicyState, manifest_enabled: bool) -> bool {
     state.enabled.unwrap_or(manifest_enabled)
 }
 
-/// 翻启停位（A3-a）：恒写 sidecar，清单字节不动——签名条目可正常启停。
+/// 翻启停位（a）：恒写 sidecar，清单字节不动——签名条目可正常启停。
 /// 没有「清除回清单缺省」的入口（两态开关；真要恢复作者缺省 = 删 sidecar
 /// 文件或改清单，都是显式动作）。
 pub fn set_enabled(workspace: &Path, connector_id: &str, enabled: bool) -> Result<(), String> {

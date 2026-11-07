@@ -95,7 +95,20 @@ export const useSessionStore = defineStore('session', () => {
     listInflight = (async () => {
       try {
         const resp = await api.list()
-        sessions.value = resp.sessions ?? []
+        const incoming: SessionEntry[] = resp.sessions ?? []
+        // 乐观行保活（2026-11-07 充分测试战役 firefox 全量竞态根修）：
+        // sessions.create 是懒物化（首条消息才落 session_logs jsonl，服务端
+        // list 枚举 jsonl 不含零消息会话）——create() 的乐观行 + switchTo
+        // 之后，任何一次整表刷新（session.created SSE / receive 帧兜底）
+        // 都会把未物化的 currentId 洗成孤儿：active 高亮灭、新会话从侧栏
+        // 蒸发（首条消息发出物化后才恢复）。整表替换前把 currentId 指向的
+        // 旧行带上（服务端缺席 = 未物化，非已删除——删除走 remove() 本地
+        // 即清 currentId）。
+        if (currentId.value && !incoming.some((s) => s.id === currentId.value)) {
+          const prev = sessions.value.find((s) => s.id === currentId.value)
+          if (prev) incoming.unshift(prev)
+        }
+        sessions.value = incoming
         bindings.value = resp.bindings ?? {}
         lastListFetch.value = Date.now()
       } catch (e) {
@@ -108,53 +121,91 @@ export const useSessionStore = defineStore('session', () => {
     return listInflight
   }
 
+  // 在飞 create 登记（2026-11-07 侧栏新建→秒发竞速修复，FF chat e2e 实录）：
+  // sessions.create 是一次网络往返，往返期间 currentId 仍指旧会话——此窗口
+  // 内的发送会绑到旧会话（消息+回复全落旧会话，视图随后切到新空会话，两者
+  // 皆不可见；快速真实用户同样可触发，非测试专属问题）。ChatPanel 发送链
+  // 先 await settlePendingCreates() 再回显读锚，把「新建后立即发送」归约成
+  // ChatPanel 自建链（markJustCreated 路径）同款语义。
+  let pendingCreates: Promise<string | null>[] = []
+
+  /** 等全部在飞 create 落定。返回本次等到的 create 结果（sid；null=建失败）。
+   *  循环兜并发：等待期间新起的 create 下一轮继续等。无在飞时立即返回空表。 */
+  async function settlePendingCreates(): Promise<(string | null)[]> {
+    const settled: (string | null)[] = []
+    while (pendingCreates.length > 0) {
+      const batch = await Promise.all([...pendingCreates])
+      settled.push(...batch)
+    }
+    return settled
+  }
+
   /**
    * 新建会话。`opts.markJustCreated` 仅限「建完立即原地发送」的调用方
    * （ChatPanel 发送链）：置 justCreatedSid 让 ChatPanel 的会话切换 watch
    * 跳过 reset+loadHistory——视图已回显首条用户消息且服务端历史必为空。
    * 新建对话按钮等其它调用方不置标记，维持「清空视图进新会话」的既有行为
-   * （2026-09-26「发送后右侧无反应」BUG 的修复件）。
+   * （2026-09-26「发送后右侧无反应」BUG 的修复件）；这类 create 在途窗口内
+   * 到达的发送由 settlePendingCreates() 归约成发送链同款语义（见上）。
    */
   async function create(
     title?: string,
     projectId?: string,
     opts?: { markJustCreated?: boolean },
   ): Promise<string | null> {
-    try {
-      const resp = await api.create(title, projectId)
-      const sid = resp.session_id
-      // Optimistically insert at top — the server-side file materializes on
-      // the first message, so this row is editable immediately. L6++：带
-      // projectId 的乐观行直接落对应项目组（等 list 刷新前即可见）。
-      sessions.value.unshift({
-        id: sid,
-        channel: 'web',
-        startTime: new Date().toISOString(),
-        lastTime: new Date().toISOString(),
-        messageCount: 0,
-        firstMessage: resp.title || '新对话',
-        model: '',
-        ...(projectId ? { projectId } : {}),
-      })
-      switchTo(sid)
-      if (opts?.markJustCreated) justCreatedSid.value = sid
-      return sid
-    } catch {
-      return null
-    }
+    const exec = (async (): Promise<string | null> => {
+      try {
+        const resp = await api.create(title, projectId)
+        const sid = resp.session_id
+        // Optimistically insert at top — the server-side file materializes on
+        // the first message, so this row is editable immediately. L6++：带
+        // projectId 的乐观行直接落对应项目组（等 list 刷新前即可见）。
+        sessions.value.unshift({
+          id: sid,
+          channel: 'web',
+          startTime: new Date().toISOString(),
+          lastTime: new Date().toISOString(),
+          messageCount: 0,
+          firstMessage: resp.title || '新对话',
+          model: '',
+          ...(projectId ? { projectId } : {}),
+        })
+        // 新建在飞窗口内的草稿归属（2026-11-07 FF chat e2e 全量实录）：用户点
+        // 「新建对话」后、sessions.create 往返期间输入的文本意图发进新会话——
+        // 落地时登记进草稿表，switchTo→carryInput 原样恢复。不登记则 carryInput
+        // 把它当旧会话草稿洗掉 → 发送钮恒 disabled（fill 后 click 10s 超时实录；
+        // 真实用户慢网点新建后立即打字同样命中）。发送链路径 input 已被发送链
+        // 读走清空，快照 '' 无副作用。
+        const chat = useChatStore()
+        chat.stageDraft(sid, chat.input)
+        switchTo(sid)
+        if (opts?.markJustCreated) justCreatedSid.value = sid
+        return sid
+      } catch {
+        return null
+      }
+    })()
+    pendingCreates.push(exec)
+    void exec.then(() => {
+      pendingCreates = pendingCreates.filter((p) => p !== exec)
+    })
+    return exec
   }
 
-  async function rename(session_id: string, title: string) {
+  /** 成败布尔（BUG-20261106-029 横向）：与 remove 同契约——调用方（侧栏）
+   *  依据返回值出失败 toast，不再静默吞。 */
+  async function rename(session_id: string, title: string): Promise<boolean> {
     try {
       await api.rename(session_id, title)
       const s = sessions.value.find(x => x.id === session_id)
       if (s) s.title = title
+      return true
     } catch {
-      // caller may surface a toast
+      return false
     }
   }
 
-  async function clear(session_id: string) {
+  async function clear(session_id: string): Promise<boolean> {
     try {
       await api.clear(session_id)
       const chatStore = useChatStore()
@@ -165,8 +216,9 @@ export const useSessionStore = defineStore('session', () => {
       if (currentId.value === session_id) {
         chatStore.reset()
       }
+      return true
     } catch {
-      // caller may surface a toast
+      return false
     }
   }
 
@@ -231,5 +283,5 @@ export const useSessionStore = defineStore('session', () => {
     showSidebar.value = !showSidebar.value
   }
 
-  return { sessions, bindings, currentId, listLoading, listError, showSidebar, projects, justCreatedSid, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
+  return { sessions, bindings, currentId, listLoading, listError, showSidebar, projects, justCreatedSid, fetchList, fetchProjects, create, settlePendingCreates, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
 })

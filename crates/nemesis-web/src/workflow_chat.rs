@@ -30,12 +30,12 @@ use std::sync::Arc;
 /// Top-level dispatch for `module == "workflow_chat"` messages.
 ///
 /// `bound_workflow` is the workflow a workflow-chat session was bound to at
-/// WS upgrade time (2026-10-16 hardening). When set, the client-supplied
+/// WS upgrade time (hardening). When set, the client-supplied
 /// `index` is ignored — the session can only ever talk to its own workflow.
 /// Dashboard-originated sessions pass `None` and keep resolving `index`.
 ///
 /// Returns `Ok(Some(IncomingMessage))` is never produced here — workflow_chat
-/// never forwards to the bus. Returns `Ok(())` on successful handling (whether
+/// never forwards to the bus. Returns `Ok` on successful handling (whether
 /// or not the workflow has finished — that's async via the observer) and
 /// `Err(String)` on protocol errors so the caller can surface them.
 pub async fn handle_workflow_chat_message(
@@ -240,7 +240,7 @@ async fn handle_history_request(
     let session_key = format!("wf_chat:{}", workflow_name);
     let limit = clamp_history_limit(req.limit);
     // chat_log::read_chat_log_async returns (page, total, has_more, oldest_index)
-    // — same shape we need to forward to the client. _async（BUG 2026-09-22）：
+    // same shape we need to forward to the client. _async（BUG）：
     // 阻塞读移出 tokio worker。
     let (page, total_count, has_more, oldest_index) =
         nemesis_agent::chat_log::read_chat_log_async(&session_key, limit, req.before_index).await;
@@ -269,7 +269,7 @@ async fn handle_history_request(
     Ok(())
 }
 
-/// Protocol-level hard cap for `history_request` page size (2026-10-16
+/// Protocol-level hard cap for `history_request` page size (
 /// hardening): chat_log switches to whole-file mode at limit >= 100_000, so
 /// an unbounded client value let any chat client force a full-log scan + a
 /// giant page allocation. Missing or 0 → default 50; anything above 200 is

@@ -13,7 +13,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-/// F3 回归锁（2026-11-02 复评，probe 转正）：恢复中途失败（boundary 被
+/// 回归锁（复评，probe 转正）：恢复中途失败（boundary 被
 /// share-mode 锁卡死）后——①改道改名恢复 = 材料分裂，诚实拒绝而非假成功
 /// 会话分裂；②解除锁后同目标重试 = 按事务标记续作完成，而非 conflict:true
 /// 永久卡死。Windows 形态（share_mode 锁 + rename 目标存在即败）。
@@ -70,7 +70,7 @@ fn review_nov02_partial_restore_resumes_and_rename_switch_refused() {
     );
 }
 
-/// F3 回归锁（便携形态，不依赖 Windows 锁）：手工构造半成品状态（chat 已到
+/// 回归锁（便携形态，不依赖 Windows 锁）：手工构造半成品状态（chat 已到
 /// 目标键 + 事务标记在条目内），恢复须续作完成而非报 conflict。
 #[test]
 fn review_nov02_trash_marker_resume_completes_instead_of_conflict() {
@@ -96,7 +96,7 @@ fn review_nov02_trash_marker_resume_completes_instead_of_conflict() {
     assert!(!t.entry_dir(&entry).exists(), "条目清掉");
 }
 
-/// F3 回归锁（便携）：材料已分裂（chat 在标记目标、其余在条目）时换键恢复
+/// 回归锁（便携）：材料已分裂（chat 在标记目标、其余在条目）时换键恢复
 /// 诚实拒绝，且拒绝不锁死条目——同目标重试仍可完成。
 #[test]
 fn review_nov02_trash_split_materials_refuse_target_switch() {
@@ -128,7 +128,7 @@ fn review_nov02_trash_split_materials_refuse_target_switch() {
     assert!(!t.entry_dir(&entry).exists());
 }
 
-/// F3 区分锁（2026-11-02 复评）：meta-only（真实空会话）改名恢复 = 全部材料
+/// 区分锁（复评）：meta-only（真实空会话）改名恢复 = 全部材料
 /// 一致地到新键、原键清空——与「半途分裂」是两回事，不得误伤。
 #[test]
 fn review_nov02_meta_only_rename_restore_is_consistent_not_split() {
@@ -314,7 +314,7 @@ fn trash_moves_three_files_and_writes_manifest() {
     assert!(dir.join("trash.json").is_file(), "清单已写");
     assert!(dir.is_dir());
 
-    // 原三件套消失（jsonl 移走 = sessions.list 不再可见）。
+    // 原三件套消失（jsonl 移走 = sessions.list 不再可）。
     assert!(!t.loc.log_path(&key).exists(), "原 jsonl 已移走");
     assert!(!t.loc.meta_path(&key).exists(), "原 meta 已移走");
     assert!(!t.loc.boundary_path(&key).exists(), "原 boundary 已移走");
@@ -435,7 +435,7 @@ fn restore_conflict_returns_structured_not_error() {
     // 冲突路径不移动任何文件（三件套仍在回收站）。
     assert!(t.entry_dir(&entry).join("chat.jsonl").is_file());
 
-    // 拍板②：提示界面带建议 sid 改名恢复。
+    // 提示界面带建议 sid 改名恢复。
     let out = trash_restore_in(&t.loc, &entry, Some(&suggested)).expect("改名恢复须成功");
     assert_eq!(out["renamed"], true);
     let new_key = out["restored"].as_str().unwrap().to_string();

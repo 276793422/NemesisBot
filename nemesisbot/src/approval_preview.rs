@@ -1,6 +1,6 @@
-//! L07（2026-11-01）：审批卡 diff 预览生成——挂起点（拦截处）把「将要发生
+//! （2026-11-01）：审批卡 diff 预览生成——挂起点（拦截处）把「将要发生
 //! 的变化」算成 unified diff / 命令现场，随审批卡下发。设计文档：
-//! `docs/PLAN/2026-11-01_L07审批卡diff预览与孤儿卡清理_设计文档.md`。
+//! `审批卡diff预览与孤儿卡清理_设计文档`。
 //!
 //! 分派按 **args 字段形态**（content / old_text+new_text / edits[] /
 //! command）而非工具名——挂起点收到的 operation 是 op_type 字符串，
@@ -21,9 +21,16 @@ const BINARY_SNIFF_BYTES: usize = 8 * 1024;
 /// 生成审批卡预览。返回 `(文本, 格式)`；`None` = 不产预览（args 缺失 /
 /// 非白名单形态）——卡片无预览区，保持现状。
 ///
+/// `workspace`：工具层 `resolve_workspace_path` 的 join 语义真相源——args
+/// 的 path 是**相对 workspace** 解析的（工具执行面），预览侧读现盘必须同
+/// 坐标系，否则相对路径形态的预览按进程 cwd 读（cwd ≠ workspace 时读错
+/// 文件 / 误报「全量新增」，违反预览忠实原则——BUG-20261106-033）。绝对
+/// 路径不受影响；None（未配置 workspace 的环境）保持旧行为。
+///
 /// `format`：`"diff"` = unified diff（前端按行首字符染色）；`"text"` =
 /// 等宽纯文本。
 pub fn build_preview(
+    workspace: Option<&std::path::Path>,
     _operation: &str,
     _target: &str,
     args: &serde_json::Value,
@@ -31,9 +38,9 @@ pub fn build_preview(
     if !args.is_object() {
         return None;
     }
-    // 分派表按序首中（P5：一次只产一种 preview，不拼接）。
+    // 分派表按序首中（一次只产一种 preview，不拼接）。
     if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
-        return build_multiedit_preview(edits);
+        return build_multiedit_preview(workspace, edits);
     }
     // edit_file action=append（2026-11-06 append_file 并入）：追加语义，
     // 必须在 write 臂之前判——args 形态同为 path+content，落到 write 臂
@@ -44,20 +51,20 @@ pub fn build_preview(
             args.get("content").and_then(|v| v.as_str()),
         )
     {
-        return build_append_preview(path, content);
+        return build_append_preview(workspace, path, content);
     }
     if let (Some(path), Some(new_text)) = (
         args.get("path").and_then(|v| v.as_str()),
         args.get("content").and_then(|v| v.as_str()),
     ) {
-        return build_write_preview(path, new_text);
+        return build_write_preview(workspace, path, new_text);
     }
     if let (Some(path), Some(old_text), Some(new_text)) = (
         args.get("path").and_then(|v| v.as_str()),
         args.get("old_text").and_then(|v| v.as_str()),
         args.get("new_text").and_then(|v| v.as_str()),
     ) {
-        return build_edit_preview(path, old_text, new_text);
+        return build_edit_preview(workspace, path, old_text, new_text);
     }
     if let Some(command) = args.get("command").and_then(|v| v.as_str()) {
         return Some((build_command_preview(command, args), "text"));
@@ -65,13 +72,34 @@ pub fn build_preview(
     None
 }
 
+/// args path → 预览读侧的实际路径：绝对原样；相对按 workspace join（与
+/// 工具层 resolve_workspace_path 的 `workspace.join(target)` 同语义——
+/// BUG-20261106-033：此前 raw path 直读 = 相对形态按进程 cwd 解析，cwd
+/// ≠ workspace 时预览读的是另一个文件或误报不存在）。无 workspace 时
+/// 保持 raw（旧行为，测试环境）。
+fn resolve_preview_path(workspace: Option<&std::path::Path>, path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        match workspace {
+            Some(ws) => ws.join(p),
+            None => p.to_path_buf(),
+        }
+    }
+}
+
 /// write_file / append_file（args 形态 `path` + `content`）：读现盘 vs 新
 /// 内容的 unified diff；文件不存在 = 全量新增；二进制/大文件 = 注记形态。
 /// （2026-11-06 起此臂实际只服务 write_file——append 形态已被上一臂截获，
 /// 但 args 形态判别保留兜底：无 action 键的 path+content 仍落这里。）
-fn build_write_preview(path: &str, new_content: &str) -> Option<(String, &'static str)> {
-    let p = std::path::Path::new(path);
-    match std::fs::metadata(p) {
+fn build_write_preview(
+    workspace: Option<&std::path::Path>,
+    path: &str,
+    new_content: &str,
+) -> Option<(String, &'static str)> {
+    let p = resolve_preview_path(workspace, path);
+    match std::fs::metadata(&p) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             // 新文件 = 全量新增 diff。
             let body = unified_diff("", new_content, path);
@@ -94,7 +122,7 @@ fn build_write_preview(path: &str, new_content: &str) -> Option<(String, &'stati
                     "text",
                 ));
             }
-            match std::fs::read(p) {
+            match std::fs::read(&p) {
                 Err(e) => Some((
                     truncate_preview(&format!(
                         "读取当前文件失败：{e}\n将写入的新内容如下：\n{}",
@@ -123,10 +151,16 @@ fn build_write_preview(path: &str, new_content: &str) -> Option<(String, &'stati
 
 /// edit_file action=append（2026-11-06 append_file 并入后的追加形态）：
 /// diff = 现盘 vs 现盘 + 追加内容；文件不存在 = 全量新增（与 append 的
-/// create 语义一致）；二进制/大文件 = 注记形态。
-fn build_append_preview(path: &str, appended: &str) -> Option<(String, &'static str)> {
-    let p = std::path::Path::new(path);
-    match std::fs::metadata(p) {
+/// create 语义一致）；二进制/大文件 = 注记形态。坐标系与其余三臂同源
+/// （resolve_preview_path——BUG-20261106-033 同族：相对路径按 workspace
+/// 解析，不按进程 cwd）。
+fn build_append_preview(
+    workspace: Option<&std::path::Path>,
+    path: &str,
+    appended: &str,
+) -> Option<(String, &'static str)> {
+    let p = resolve_preview_path(workspace, path);
+    match std::fs::metadata(&p) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let body = unified_diff("", appended, path);
             Some((truncate_preview(&body), "diff"))
@@ -148,7 +182,7 @@ fn build_append_preview(path: &str, appended: &str) -> Option<(String, &'static 
                     "text",
                 ));
             }
-            match std::fs::read(p) {
+            match std::fs::read(&p) {
                 Err(e) => Some((
                     truncate_preview(&format!(
                         "读取当前文件失败：{e}\n将追加的内容如下：\n{}",
@@ -179,12 +213,13 @@ fn build_append_preview(path: &str, appended: &str) -> Option<(String, &'static 
 /// edit_file（`path` + `old_text` + `new_text`）：现盘做首次替换模拟 vs
 /// 原文的 unified diff。与工具实现同语义（old_text 必须命中）。
 fn build_edit_preview(
+    workspace: Option<&std::path::Path>,
     path: &str,
     old_text: &str,
     new_text: &str,
 ) -> Option<(String, &'static str)> {
-    let p = std::path::Path::new(path);
-    match std::fs::read(p) {
+    let p = resolve_preview_path(workspace, path);
+    match std::fs::read(&p) {
         Err(e) => Some((
             format!(
                 "读取当前文件失败：{e}\n将把：\n{}\n替换为：\n{}",
@@ -223,9 +258,12 @@ fn build_edit_preview(
     }
 }
 
-/// multiedit（`edits: [{path, old_text, new_text}, ...]`）：逐文件模拟替换
+/// multiedit（`edits: [{path, old_text, new_text},...]`）：逐文件模拟替换
 /// （同文件按序累积——与工具原子语义一致），每文件一段 diff。
-fn build_multiedit_preview(edits: &[serde_json::Value]) -> Option<(String, &'static str)> {
+fn build_multiedit_preview(
+    workspace: Option<&std::path::Path>,
+    edits: &[serde_json::Value],
+) -> Option<(String, &'static str)> {
     if edits.is_empty() {
         return None;
     }
@@ -242,7 +280,7 @@ fn build_multiedit_preview(edits: &[serde_json::Value]) -> Option<(String, &'sta
             return None; // 条目形态不齐 = 非本工具的 args，诚实不产。
         };
         let entry = files.entry(path.to_string()).or_insert_with(|| {
-            let bytes = std::fs::read(p_std(path)).unwrap_or_default();
+            let bytes = std::fs::read(resolve_preview_path(workspace, path)).unwrap_or_default();
             let text = if is_binary(&bytes) {
                 None
             } else {
@@ -285,10 +323,6 @@ fn build_multiedit_preview(edits: &[serde_json::Value]) -> Option<(String, &'sta
         return None;
     }
     Some((truncate_preview(&out), "diff"))
-}
-
-fn p_std(path: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(path)
 }
 
 /// exec 类（`command` + 可选 `cwd`）：完整命令现场。env 不展开（防凭据经
@@ -355,7 +389,7 @@ fn unified_diff(old: &str, new: &str, path: &str) -> String {
         new.lines().collect()
     };
     // 空文件行数修正：lines() 对空串给 0 行，但「空文件 → 有内容」要显式
-    // 表达为全量新增（-0,0 +1,N）。
+    // 表达为全量新增（0,0 +1,N）。
     let (old_label, new_label) = (format!("a/{path}"), format!("b/{path}"));
     if a.is_empty() && b.is_empty() {
         return String::new();

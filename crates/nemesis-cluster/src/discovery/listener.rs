@@ -19,7 +19,7 @@ use crate::types::{ExtendedNodeInfo, NodeStatus};
 use nemesis_types::cluster::{NodeInfo, NodeRole};
 
 // ---------------------------------------------------------------------------
-// 解密失败来源追踪（L2，2026-09-27 修订）
+// 解密失败来源追踪（修订）
 // ---------------------------------------------------------------------------
 //
 // token 失配 = 安全边界在正常工作，不是错误——局域网内多个集群各配各的
@@ -65,7 +65,7 @@ pub(crate) struct DecryptDropTracker {
     total_drops: AtomicU64,
     /// 首见序号分配器（summary 排序的确定性 tie-break——`first_seen_secs_
     /// ago` 只有秒级粒度，同秒内多来源若只按它排会退回 HashMap 迭代序
-    /// （随机），summary 顺序不稳定，2026-09-28 cov_tests 抖动实证）。
+    /// （随机），summary 顺序不稳定， cov_tests 抖动实证）。
     next_seq: AtomicU64,
 }
 
@@ -237,7 +237,7 @@ impl UdpListener {
         let handle = std::thread::Builder::new()
             .name("discovery-udp-listen".into())
             .spawn(move || {
-                // BUG-4（2026-10-17）：4K → 16K。超长 announce（多网卡 +
+                // BUG-4：4K → 16K。超长 announce（多网卡 +
                 // APIPA 补齐 + 大 capabilities/professions 载荷）此前被
                 // 静默截断（Windows WSAEMSGSIZE 按截断 / Linux 静默）→
                 // 解密或解析失败仅 DEBUG 线，形成「对端在发、本端永收」。
@@ -321,7 +321,7 @@ impl UdpListener {
                         // 或已死亡对端时，ICMP Port Unreachable 会让下一次 recv_from
                         // 返回 WSAECONNRESET（ConnectionReset）。这是「一次旧发送对应
                         // 一次回报」的瞬时错误——消费掉即可恢复接收，绝不能当致命错误
-                        // 退出，否则发现层接收线程静默死亡、后续所有帧被无视（T40 UAT
+                        // 退出，否则发现层接收线程静默死亡、后续所有帧被无视（UAT
                         // 实证：解密失败账本冻结、节点永不入表）。等价于 win32 的
                         // SIO_UDP_CONNRESET=0 语义，但无需平台 ioctl，Unix 无此错误形态、
                         // 该分支恒不命中。
@@ -335,7 +335,7 @@ impl UdpListener {
                             // Socket closed or other fatal error——绝不能静默：
                             // 线程 break 后接收面假死（socket 仍绑定、send 面
                             // 照常），症状是「对端在发、本端永收不到」，无此
-                            // 日志就无法与帧未到达区分（T41 UAT 排障实证）。
+                            // 日志就无法与帧未到达区分（UAT 排障实证）。
                             tracing::error!(
                                 error = %e,
                                 kind = ?e.kind(),
@@ -412,7 +412,7 @@ impl UdpListener {
     /// Encrypt (if configured) and send a discovery message to a specific
     /// unicast target (`host:port`). Best-effort companion to `broadcast()`
     /// for peers unreachable by subnet broadcast（异端口拓扑定向单播，
-    /// 见 [`crate::discovery::ClusterCallbacks::peer_udp_endpoints`]）。
+    /// 见 [`crate::discovery:ClusterCallbacks::peer_udp_endpoints`]）。
     pub fn send_unicast(&self, target: &str, msg: &DiscoveryMessage) {
         let data = match msg.to_bytes() {
             Ok(d) => d,
@@ -444,14 +444,14 @@ impl UdpListener {
 /// **Note**: On Windows this uses `GetAdaptersAddresses` via `std::net` and
 /// falls back gracefully if the local interface list is unavailable.
 ///
-/// # 部署假设注记（L4/L5，2026-09-27）
+/// # 部署假设注记
 ///
 /// UDP 广播发现依赖**物理层可达**：
-/// - **L4（AP 隔离）**：无线 AP 开启客户端隔离（AP isolation / guest 网络）
+/// - **（AP 隔离）**：无线 AP 开启客户端隔离（AP isolation / guest 网络）
 ///   时，同网段客户端之间二层互不可达——广播发出去了但对端收不到，发现层
 ///   无感知也无解。排查路径：确认两端在同一网段且 AP 未开隔离；仍不通时用
 ///   `peer_udp_endpoints` 配置定向单播（走已知 host:port，不依赖广播）。
-/// - **L5（255.255.255.255 出广域）**：受限网络（部分蜂窝/企业网）会把
+/// - **（255.255.255.255 出广域）**：受限网络（部分蜂窝/企业网）会把
 ///   255.255.255.255 定向到 WAN 或直接吞掉；缓解=子网定向广播（`ip|!mask`，
 ///   本函数第二类条目）通常仍在本网段内可达。多宿主/异端口拓扑同理，兜底
 ///   都是一致的：显式配置 `peer_udp_endpoints` 定向单播。
@@ -530,7 +530,7 @@ fn compute_broadcast(ip: Ipv4Addr, mask: [u8; 4]) -> Ipv4Addr {
 /// Get all local IPv4 addresses by enumerating network interfaces.
 /// Returns addresses suitable for inclusion in announce messages.
 ///
-/// Delegates to `crate::network::get_all_local_ips()` which enumerates
+/// Delegates to `crate::network:get_all_local_ips()` which enumerates
 /// all network interfaces (matching Go's `GetAllLocalIPs()` behavior),
 /// filters virtual/loopback/link-local, and sorts by priority.
 pub fn get_all_local_ips() -> Vec<String> {
@@ -581,7 +581,7 @@ fn message_to_node_info(msg: &DiscoveryMessage) -> ExtendedNodeInfo {
 
     let display_name = if msg.name.is_empty() {
         // node_id 来自对端 announce 的 wire 数据，可能是多字节文本——
-        // 裸字节截断会 panic（2026-10-11 横扫修复），走边界安全版。
+        // 裸字节截断会 panic（横扫修复），走边界安全版。
         format!(
             "node-{}",
             nemesis_utils::string_utils::truncate_bytes_at_boundary(&msg.node_id, 8)

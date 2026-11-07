@@ -1,4 +1,4 @@
-//! archive_writer 里程碑写入测试（看板项目档案 goal P2/C）。
+//! archive_writer 里程碑写入测试（看板项目档案 goal /C）。
 
 use super::*;
 use crate::models::NewIssue;

@@ -79,7 +79,7 @@ fn cli_mode_overwrites_persona() {
 }
 
 // ===========================================================================
-// BUG-20261103-353 回归锁：onboard 曾把 agents.defaults.restrict_to_workspace
+// 回归锁：onboard 曾把 agents.defaults.restrict_to_workspace
 // 强制改写 false（注释声称「security module enforces rules」，但安全管线不含
 // 工作区包围——包围唯一执法点是 agent 侧 WorkspaceBoundary），fresh 装机
 // 开箱即无文件系统写约束（`..` 相对路径越界写实机复现 ok:true）。修复后
@@ -137,7 +137,7 @@ fn common_config(home: &std::path::Path) -> std::path::PathBuf {
 }
 
 // ===========================================================================
-// wave5 round2 batch-2（2026-09-25）：onboard_default 的 local=true 臂——
+// wave5 batch-2：onboard_default 的 local=true 臂——
 // agents.defaults.workspace 改写为相对路径 ".nemesisbot/workspace"
 //（既有 onboard 测试全部 local=false，该分支从未执行）。
 // ===========================================================================
@@ -146,7 +146,7 @@ mod w5b2 {
     use super::super::{OnboardMode, onboard_default};
 
     /// Cli 模式 + local=true：主 config 的 agents.defaults.workspace 必须
-    /// 被改写为 ".nemesisbot/workspace"（--local 布局语义）。
+    /// 被改写为 ".nemesisbot/workspace"（local 布局语义）。
     #[test]
     fn w5_cli_mode_local_true_rewrites_default_workspace() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -168,8 +168,8 @@ mod w5b2 {
 }
 
 // ===========================================================================
-// R55 持久化静默失败审计：人格文件安装（install_if_absent）此前是裸
-// std::fs::write——(1) 漏掉 REL-002 原子写横扫（半截 IDENTITY.md = 截断
+// 持久化静默失败审计：人格文件安装（install_if_absent）此前是裸
+// std::fs:write——(1) 漏掉 原子写横扫（半截 IDENTITY.md = 截断
 // 人格，与配置文件同类伤害）；(2) 写失败静默 + 调用方无条件打印「installed」
 // 假成功提示。修复后返回 bool 汇总计数，失败诚实报 Warning。
 // ===========================================================================

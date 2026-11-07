@@ -1,4 +1,4 @@
-//! E5（2026-10-15 收尾保障）：预算暂停前收尾编译探针测试。
+//! （2026-10-15）：预算暂停前收尾编译探针测试。
 //!
 //! - 纯函数：select_probe_command（生态选择 + 优先序）/ first_error_excerpt
 //!   （cargo short 行摘录 / stdout 回落 / 截断）/ probe_note（四形态文案）。
@@ -26,7 +26,7 @@ fn select_probe_command_by_marker() {
         "必须连测试一起编：{command}"
     );
 
-    // go：go.mod → go build ./...
+    // go：go.mod → go build./...
     let ws = tempfile::tempdir().unwrap();
     std::fs::write(ws.path().join("go.mod"), "module x\n").unwrap();
     let (marker, command) = select_probe_command(ws.path()).unwrap();

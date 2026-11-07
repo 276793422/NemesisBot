@@ -441,7 +441,7 @@ async fn test_transcribe_file_with_directory() {
     let dir = tempfile::tempdir().unwrap();
     // A directory path that exists but is not a file — reading will fail
     let result = t.transcribe_file(dir.path()).await;
-    // Should fail because std::fs::read on a directory errors
+    // Should fail because std::fs:read on a directory errors
     assert!(result.is_err());
 }
 

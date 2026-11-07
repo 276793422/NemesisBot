@@ -1,9 +1,9 @@
-//! L13-b（2026-11-03 三期）：任务 mandate 执行面守卫——类型 + marker + 纯
+//! b（2026-11-03 三期）：任务 mandate 执行面守卫——类型 + marker + 纯
 //! 裁决函数（顶层 pub 模块，与 token_budget 同布局：loop 侧接线在
 //! `r#loop::mandate_guard`）。
 //!
 //! B 端 PeerChatHandler 前置闸（nemesis-cluster）验签通过后，把授权投影
-//! （[`nemesis_types::cluster::MandateEnforcement`]）随 `ClusterTask.mandate`
+//! （[`nemesis_types::cluster:MandateEnforcement`]）随 `ClusterTask.mandate`
 //! 投递；nemesisbot cluster_agent 装配本守卫进 AgentLoop（`set_mandate_guard`），
 //! run 结束摘除（`take_mandate_guard`），违规记录随回调 response 追加块
 //! 交回 master。干预面两处：
@@ -17,14 +17,14 @@
 //!    介入）。
 //!
 //! mandate 缺失 = 无守卫 = 旧行为（旧节点兼容；语义与 B 端 verify posture
-//! 同方向）。**语义分层**（设计文档 §5）：超工具面 = 拒该次调用（任务
+//! 同方向）。**语义分层**（设计文档）：超工具面 = 拒该次调用（任务
 //! 继续）；时限 / token 预算 / 调用次数超限 = 任务终局 + marker。
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// 任务终局 marker（Error 事件文案前缀）。nemesisbot
-/// `classify_terminal_failure` 单一真相源：识别为 `mandate_violation`。
+/// `classify_terminal_failure` 统一定义：识别为 `mandate_violation`。
 pub const MANDATE_VIOLATION_MARKER: &str = "⛔ mandate 违规";
 
 /// dispatch 调用级拒绝前缀（完整文案 = "Error: " + 本前缀 + 细节）。
@@ -34,7 +34,7 @@ pub const MANDATE_CALL_DENIED_PREFIX: &str = "mandate denied";
 pub const MAX_RECORDED_VIOLATIONS: usize = 32;
 
 /// 当前 unix 秒（与 nemesis-cluster mandate 模块同一时钟假设：NTP，与
-/// announce 过期 G3 同口径）。
+/// announce 过期 同口径）。
 pub fn now_unix() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
 }
@@ -68,7 +68,7 @@ impl MandateGuard {
         }
     }
 
-    /// 调用级裁决（dispatch 消费）。`Ok(())` = 放行；`Err(reason)` = 拒该
+    /// 调用级裁决（dispatch 消费）。`Ok` = 放行；`Err(reason)` = 拒该
     /// 次调用（任务继续——终局归轮顶检）。
     ///
     /// 判定序：时限 → 工具面 → 调用次数（预算类排最后——不合法调用不烧

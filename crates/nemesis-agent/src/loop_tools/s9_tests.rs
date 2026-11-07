@@ -1,4 +1,4 @@
-//! S9 覆盖率批次（loop_tools 单点）：
+//! 覆盖率批次（loop_tools 单点）：
 //! - claude_code_tool.rs:87 / codex_tool.rs:91 — execute 首行 from_str 的
 //!   map_err 闭包（非法 JSON 参数）；既有 tests.rs 只喂合法 JSON。
 //! - cli_delegation.rs:158 — `where` 命中但无 Windows 可执行扩展名候选 →
@@ -90,7 +90,7 @@ fn find_cli_on_path_extensionless_shim_falls_back_to_first_line() {
     );
 }
 
-/// 查询带 .cmd 扩展名的名字 → 命中且带可执行扩展名 → pick 分支（162）。
+/// 查询带.cmd 扩展名的名字 → 命中且带可执行扩展名 → pick 分支（162）。
 #[test]
 #[cfg(windows)]
 fn find_cli_on_path_exec_extension_candidate_is_picked() {

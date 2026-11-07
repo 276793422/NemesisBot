@@ -224,7 +224,7 @@ export function useChatApi() {
     }> => request('sessions', 'trash_list'),
 
     /** 恢复。同 id 冲突 → 结构化 `{conflict:true, suggested_sid}`（条目不
-     *  消耗）；带 `new_sid` 改名恢复（拍板②）。 */
+     *  消耗）；带 `new_sid` 改名恢复（决策②）。 */
     trashRestore: (entry: string, new_sid?: string): Promise<Record<string, unknown>> =>
       request('sessions', 'trash_restore', new_sid ? { entry, new_sid } : { entry }),
 

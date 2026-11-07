@@ -1,5 +1,5 @@
 #![cfg(windows)]
-//! M4 实弹集成（总控 §M4 验收）：dummy-draw 场景 A 闭环。
+//! 实弹集成（总控 验收）：dummy-draw 场景 A 闭环。
 //!
 //! 覆盖：resolve 锚扫描真值（唯一命中 + 锚点回读逐字等于 pattern + 距入口
 //! ≤64B）、call_fn 真值/超时看门狗/单飞拒绝/SEH 救援（宿主存活）、hook
@@ -89,7 +89,7 @@ impl DrawContract {
     }
 }
 
-/// spawn dummy-draw（--tick-ms=3 加速）并解析全部契约行；tick 行由防堵
+/// spawn dummy-draw（tick-ms=3 加速）并解析全部契约行；tick 行由防堵
 /// 线程吞掉。
 fn spawn_draw(exe: &Path) -> (KillGuard, DrawContract) {
     let mut cmd = Command::new(exe);
@@ -218,7 +218,7 @@ fn ft(spec: &str) -> FieldType {
     FieldType::parse(spec).expect("字段类型")
 }
 
-/// M4 profile：push_record/slow_op/crash_op 用 13B 唯一锚；feed_render 带
+/// profile：push_record/slow_op/crash_op 用 13B 唯一锚；feed_render 带
 /// 1 级链（运行期地址由 FN_ 契约直供——8×0x90 前缀不唯一，锚扫描只作
 /// 形态合法位）。
 fn m4_profile(profile_id: &str) -> Profile {
@@ -376,7 +376,7 @@ fn m4_profile(profile_id: &str) -> Profile {
     }
 }
 
-/// M4 验收主链路：resolve 真值 → call_fn 三态 → hook 1000 逐条 → 2 级链 → 退订。
+/// 验收主链路：resolve 真值 → call_fn 三态 → hook 1000 逐条 → 2 级链 → 退订。
 #[tokio::test(flavor = "multi_thread")]
 async fn m4_runtime_live_on_dummy_draw() {
     let Some(exe) = dummy_exe("x64", "dummy-draw") else {
@@ -681,9 +681,9 @@ async fn m4_runtime_live_on_dummy_draw() {
         .id as u64;
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     // 排空共享环（防两批之间残留导致计数不齐），统计两 id 事件数。
-    // BUG-20261103：原「空轮即 break」单趟 drain 会切在链点事件对的交付缝
+    // 原「空轮即 break」单趟 drain 会切在链点事件对的交付缝
     // 里——链点事件在顶层事件处理之后落盘，慢机上顶层已入环、链点尾巴未
-    // 落时空轮提前判静，1:1 收敛差一条假红（CI shard1 实录 top=3255
+    // 落时空轮提前判静，1:1 收敛差一条假红（CI top=3255
     // chain=3254；本文件 ⑤ 退订段 69464270 同族前科）。同房规改法：poll
     // 至安静（5s 预算）+ 稳定窗补一拍排尾；链点真丢事件时安静照常到达但
     // 计数仍不齐，断言检测力不变。
@@ -697,14 +697,26 @@ async fn m4_runtime_live_on_dummy_draw() {
         }
     }
     let mut cnt = (0u64, 0u64);
+    let mut quiet_streak = 0u32;
     for _ in 0..50 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let pull = sess.poll_captures(id).await.expect("chain poll");
         let evs = pull["events"].as_array().cloned().unwrap_or_default();
         let empty = evs.is_empty();
         count_by_id(&evs, id_top, id_chain, &mut cnt);
+        // BUG-20261106：单次空轮即判静仍会切在链点事件对的交付缝——draw
+        // 密集时（CI shard1 实录 top=10525 chain=10523，批量为 BUG-20261103
+        // 形态 3255 的 3 倍）顶层已入环、链点尾巴 >200ms 未落，稳定窗单拍
+        // 补排仍差 2 条假红。同族前科：BUG-20261103 本④段、69464270 ⑤段。
+        // 房规加严：连续两个空轮（间隔 200ms）方判安静；链点真丢事件时
+        // 安静照常到达但计数仍不齐，断言检测力不变。
         if empty {
-            break;
+            quiet_streak += 1;
+            if quiet_streak >= 2 {
+                break;
+            }
+        } else {
+            quiet_streak = 0;
         }
     }
     // 稳定窗：安静后仍可能有在途链点尾巴，补一拍再排一次。

@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): ConvRouter::Default impl
+//! (quality-hardening goal 冲刺, web): ConvRouter::Default impl
 //! (delegates to new — empty, no bindings).
 
 use super::*;

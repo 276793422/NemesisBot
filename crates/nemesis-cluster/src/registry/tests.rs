@@ -300,7 +300,7 @@ fn test_evict_stale_removes_old_offline_peers() {
 }
 
 // 阈值是外部配置 u64：u64::MAX（写「永不驱逐」的常见形态）曾直接进
-// chrono::Duration::seconds——panic 带 / 2^63 负回绕（阈值落未来 → Offline
+// chrono::Duration:seconds——panic 带 / 2^63 负回绕（阈值落未来 → Offline
 // 全量驱逐反向事故）。钳位 100 年后不 panic 且零驱逐零误标。
 #[test]
 fn test_health_thresholds_u64_max_no_panic_no_mass_eviction() {
@@ -1022,7 +1022,7 @@ fn test_addr_matches_host_mismatch() {
 }
 
 // ============================================================
-// S4 coverage: mark_failed fall-through + static-peer health skip.
+// coverage: mark_failed fall-through + static-peer health skip.
 // ============================================================
 
 /// One failure stays below the Offline threshold and exits the if-let body;
@@ -1054,7 +1054,7 @@ fn test_s4_check_health_skips_static_peer() {
     );
 }
 
-// ---- G2: 主动健康探针失败/自愈（2026-09-01 集群韧性 goal）----
+// ----: 主动健康探针失败/自愈（集群韧性 goal）----
 
 /// 连续失败达阈值：Online → Offline 翻转（仅第 threshold 次返回 true）。
 #[test]

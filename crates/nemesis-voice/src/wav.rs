@@ -1,11 +1,11 @@
-//! Minimal WAV codec — realtime P1（W7 测试注入面）
+//! Minimal WAV codec — realtime （测试注入面）
 //!
 //! RIFF/WAVE 解析（PCM16 / float32，多声道 → mono 平均）与 mono PCM16 写入。
 //! 只服务测试夹具与本地采集回放，不做完整格式兼容。
 
 use anyhow::Result;
 
-/// Chunk word-aligned advance（饱和算术，BUG 2026-10-29 横扫角度 B）。
+/// Chunk word-aligned advance（饱和算术， 横扫角度 B）。
 ///
 /// `size` 是 chunk 头里的**未信任 u32**。旧式 `body_start + size.div_ceil(2)*2`
 /// 在 32 位目标（armeabi-v7a 是显式支持面）上对 `size = 0xFFFFFFFF` 溢出：

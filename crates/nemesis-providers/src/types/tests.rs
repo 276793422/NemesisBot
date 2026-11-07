@@ -509,7 +509,7 @@ fn test_tool_definition_serialization() {
 }
 
 // ============================================================
-// T1 内容类型多态（D1=A）验证：serde 三态 + 旧快照兼容 + helper
+// 内容类型多态（=A）验证：serde 三态 + 旧快照兼容 + helper
 // ============================================================
 
 #[test]
@@ -580,7 +580,7 @@ fn test_message_content_serde_roundtrip_three_forms() {
 #[test]
 fn test_legacy_continuation_snapshot_string_content_loads() {
     // 旧集群续行快照 messages 字段存 provider Message 的 raw JSON，
-    // content 恒为字符串（goal T1 向后兼容红线）：from_value 加载路径必须可用
+    // content 恒为字符串（goal 向后兼容红线）：from_value 加载路径必须可用
     let legacy = serde_json::json!([
         { "role": "user", "content": "看看这个" },
         {

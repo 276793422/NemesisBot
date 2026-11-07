@@ -28,7 +28,7 @@ pub trait MemoryStore: Send + Sync {
     /// Retrieve a single entry by ID.
     async fn get(&self, id: &str) -> Result<Option<Entry>, String>;
 
-    /// Upsert：按 id 整体替换（不存在则插入）。P31 记忆 dreaming / 召回记账
+    /// Upsert：按 id 整体替换（不存在则插入）。 记忆 dreaming / 召回记账
     /// 的更新通路（touch 只改 metadata，不改正文）。默认实现 = delete + store
     ///（对 Vec/Map 型后端语义等价）；后端可覆盖出更高效/更干净的路径
     ///（如 TfIdfLocalStore 必须覆盖——默认路径会误触 delete 的归档 sidecar）。

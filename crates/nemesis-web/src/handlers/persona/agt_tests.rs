@@ -21,11 +21,9 @@ fn agt_default_impl_matches_new() {
     let _n = PersonaHandler::new();
 }
 
-// ---------------------------------------------------------------------------
 // Wave5 批次：invalidate_cache 三清臂 + fetch_agent_content 的「树中查无
 // 此 agent」诚实臂（种子缓存后短路，不打网络）+ extract_identity_info 的
 // ASCII 冒号无空格形态（197）。
-// ---------------------------------------------------------------------------
 
 /// 种子三级缓存 → invalidate_cache() 全清（253-258）。
 /// 触碰全局缓存：持 tests::SHOP_TEST_LOCK 串行。

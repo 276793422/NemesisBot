@@ -1,15 +1,15 @@
-//! 集群专业职能框架 M5：验收链图像工件取回 + vision 评审。
+//! 集群专业职能框架：验收链图像工件取回 + vision 评审。
 //!
 //! worker（ui-design 职能等）交付 PNG 时经 board_asset publish 产出引用
 //! bundle 粘进交付评论；本模块在 master 评审侧：
 //! 1. 从交付/线程评论**文本**中提取图像 bundle（数据非指令——bundle 只
 //!    当取货凭据，内容不进 prompt 指令位）；
-//! 2. 程序化取回（复用 [`crate::board_asset_tool::BoardAssetTool::do_fetch`]
+//! 2. 程序化取回（复用 [`crate::board_asset_tool:BoardAssetTool::do_fetch`]
 //!    单一实现：HTTP 直连 + RPC 分块兜底 + sha256 校验）；
 //! 3. base64 image part 进评审裸调用（providers 多模态管线；provider 取
 //!    `default_slot::current()`——与主 loop 活跃模型同源，不经 nemesis-agent
 //!    改动）→ `parse_review` 三态契约与文本评审完全同源；
-//! 4. **诚实降级**（计划 §2.7 预案，按次触发而非一刀切）：无默认模型槽 /
+//! 4. **诚实降级**（计划 预案，按次触发而非一刀切）：无默认模型槽 /
 //!    视觉调用失败 → 回落文本评审 + prompt 注记「图片已取回本地 <path>，
 //!    转人工查看」——功能不残（图在 master 工作区随时可看），仅验收自动
 //!    化打折。
@@ -127,14 +127,14 @@ pub(crate) async fn collect_review_images(
         return Vec::new();
     }
 
-    // 与 BoardAssetTool::assets_dir 同源（nemesis-path 单一真相源）。
+    // 与 BoardAssetTool::assets_dir 同源（nemesis-path 统一定义）。
     let assets_dir = nemesis_path::resolve_board_assets_dir_in_workspace(workspace);
     let tool = BoardAssetTool::new(workspace.to_path_buf()).with_cluster(cluster.clone());
     let mut out = Vec::new();
     for b in bundles {
         let dest = assets_dir.join(&b.asset_ref);
         // 先本地：实体已在（上次取回/本机 worker publish）→ 免网络。
-        // D10-1：尺寸前置闸——曾只查 is_file 就整读 sha256（超限实体全量
+        // 尺寸前置闸——曾只查 is_file 就整读 sha256（超限实体全量
         // 过哈希），尺寸检查推迟到取回+整读之后。本地已在但超限 = 该 ref
         // 永远过不了单张上限 → 直接跳过（不重取不整读）。
         let local_meta = std::fs::metadata(&dest).ok().filter(|m| m.is_file());

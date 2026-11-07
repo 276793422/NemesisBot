@@ -127,7 +127,7 @@ fn overwrite_auto_flushes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// --- W3a: ringbuffer bounds, disabled arms, flush IO-error arm ---
+// ---: ringbuffer bounds, disabled arms, flush IO-error arm ---
 
 fn disabled_sink() -> CaptureSink {
     CaptureSink {

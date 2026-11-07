@@ -1,4 +1,4 @@
-//! deliveries 表 —— 交付账本（P1 建表；P4 交付门泛化：拒绝语义 + 查询面；
+//! deliveries 表 —— 交付账本（建表； 泛化：拒绝语义 + 查询面；
 //! 项 C 通知三段：notify_state 与出站失败重试箱）。
 //!
 //! 幂等键 UNIQUE：同键重复 `record_delivery` 返回 `Ok(false)`（已记过，
@@ -10,7 +10,7 @@
 //! 通知义务（notify_state，与 status 双维正交）：pending（有义务）→
 //! channel_accepted → confirmed；none = 记账时声明无出站义务；legacy =
 //! v4 前旧账（不参与通知管线）；dead = 重试耗尽死信终态。通道 send 失败
-//! 的出站消息进 `notify_outbox` 指数退避重试（CD6 同款退避曲线）。
+//! 的出站消息进 `notify_outbox` 指数退避重试（同款退避曲线）。
 
 use rusqlite::{OptionalExtension, params};
 
@@ -67,20 +67,20 @@ fn row_to_delivery(r: &rusqlite::Row<'_>) -> rusqlite::Result<DeliveryRecord> {
     })
 }
 
-// -- 通知重试参数（CD6 TransferOutbox 同款曲线，本地常量对齐）------------
+// -- 通知重试参数（TransferOutbox 同款曲线，本地常量对齐）------------
 // nemesis-taskstore 不依赖 nemesis-cluster（依赖方向），数值在此对齐；
 // 两侧改动必须同步（漂移 = 两个重试面行为分叉）。
 
 /// 通知失败退避起步（秒）——15s 起步指数爬升。
 pub const NOTIFY_BACKOFF_BASE_SECS: u64 = 15;
-/// 退避封顶（秒）——10 分钟（CD6 裁决⑩）。
+/// 退避封顶（秒）——10 分钟。
 pub const NOTIFY_BACKOFF_CAP_SECS: u64 = 600;
-/// 死信 age 闸（秒）——7 天，对齐 task_result TTL（CD6 裁决⑨）。
+/// 死信 age 闸（秒）——7 天，对齐 task_result TTL。
 pub const NOTIFY_DEAD_LETTER_AGE_SECS: i64 = 7 * 24 * 3600;
-/// 死信 attempts 闸——与 age 先到先死（CD6 裁决⑨）。
+/// 死信 attempts 闸——与 age 先到先死。
 pub const NOTIFY_DEAD_LETTER_MAX_ATTEMPTS: i64 = 1000;
 
-/// 通知重试退避曲线（CD6 `push_backoff_secs` 同款）：15s ×
+/// 通知重试退避曲线（`push_backoff_secs` 同款）：15s ×
 /// 2^(n-1) 封顶 600s。`attempts` 从 1 起计（首次失败 = 第 1 次 → 15s）。
 pub fn notify_backoff_secs(attempts: i64) -> u64 {
     let shift = attempts.saturating_sub(1).clamp(0, 6) as u32;
@@ -89,7 +89,7 @@ pub fn notify_backoff_secs(attempts: i64) -> u64 {
         .min(NOTIFY_BACKOFF_CAP_SECS)
 }
 
-/// 通知死信闸（CD6 同款双条件，任一命中即判死）：入箱年龄超 7 天，
+/// 通知死信闸（同款双条件，任一命中即判死）：入箱年龄超 7 天，
 /// 或累计失败 ≥1000 次。`age_secs` 为负（created_at 在未来/解析异常）
 /// 按 0 处理——age 闸不因时钟抖动误判死。
 pub fn notify_dead_lettered(age_secs: i64, attempts: i64) -> bool {
@@ -217,7 +217,7 @@ impl TaskDb {
                     params![idempotency_key, now_rfc3339()],
                 )
                 .map_err(|e| format!("tasks.db confirm delivery failed: {e}"))?;
-            // BUG-20261025-48：义务走完终点必须同步清重试债——sweep 调度以
+            // 义务走完终点必须同步清重试债——sweep 调度以
             // notify_outbox.next_retry_at 为准（deliveries.notify_next_retry_at
             // 只是镜像），只置 NULL 不清箱会让已确认的交付仍被重投一次。
             if n > 0 {
@@ -341,10 +341,10 @@ impl TaskDb {
         })
     }
 
-    /// 拒绝交付（P4 交付门）：任何非 rejected 状态 → rejected（终态），
+    /// 拒绝交付：任何非 rejected 状态 → rejected（终态），
     /// 带 `reason` 留痕。幂等：已 rejected 再拒 = `Ok(false)`。
     /// 拒绝已 confirmed 的交付合法（人工复核推翻自动验收的入口）。
-    /// 拒绝同时终止通知义务（清重试到期）并清空重试箱（BUG-20261025-48：
+    /// 拒绝同时终止通知义务（清重试到期）并清空重试箱（
     /// sweep 只看箱内 next_retry_at，箱内残留行会让已拒绝的交付内容仍被
     /// 重投——拒绝语义必须拦住下游投递，不能只改账面状态）。
     pub fn reject_delivery(&self, idempotency_key: &str, reason: &str) -> Result<bool, String> {
@@ -368,7 +368,7 @@ impl TaskDb {
         })
     }
 
-    /// 发布交付（P3 外循环，2026-10-25：PR 发布）：recorded/delivered/
+    /// 发布交付（外循环，PR 发布）：recorded/delivered/
     /// confirmed → published（终态——已推远端并开出 PR；published 蕴含
     /// 验收+发布两段语义，confirm 的 `WHERE IN ('recorded','delivered')`
     /// 收窄天然不会把 published 翻回去）。**branch 行常态是 recorded**——
@@ -391,8 +391,8 @@ impl TaskDb {
         })
     }
 
-    /// 浅合并交付 payload（G4，2026-10-18 批六：评审 anchor_summary 注记）。
-    /// read-modify-write 单事务（BUG-20261025-48：连接默认行为已在
+    /// 浅合并交付 payload（评审 anchor_summary 注记）。
+    /// read-modify-write 单事务（连接默认行为已在
     /// `TaskDb::open` 钉 `TransactionBehavior::Immediate`——unchecked_transaction
     /// 继承之，BEGIN 时即拿写锁，读与写之间不被其他连接的写插队；DEFERRED
     /// 下读后快照被推进会让 UPDATE 直接 BUSY，承诺不成立）。`patch` 的顶层
@@ -435,7 +435,7 @@ impl TaskDb {
         })
     }
 
-    /// published 终态 + payload 合并**单事务**版（2026-11-02 复评 F1：发布
+    /// published 终态 + payload 合并**单事务**版（复评：发布
     /// 落账原子化——状态与 PR 留痕要么同落要么都不落，杜绝「状态已
     /// published 而 payload 无 pr_number」的半行账让重试误判）。事务语义同
     /// `merge_delivery_payload`（Immediate 写锁前置）。幂等键不存在 = `Err`。

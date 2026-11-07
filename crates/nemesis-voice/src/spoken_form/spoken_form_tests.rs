@@ -1,5 +1,5 @@
-//! spoken_form.rs 语料矩阵测试（W7-9；跨平台，常规 CI）。
-//! 逐形态钉死计划 §四 W4 表格的清洗行为与 §七-6 固定话术文案。
+//! spoken_form.rs 语料矩阵测试（跨平台，常规 CI）。
+//! 逐形态钉死计划 §四 表格的清洗行为与 §七-6 固定话术文案。
 
 use super::{
     FUSE_CODE_DENSITY, MAX_PIECES, SPOKEN_CODE, SPOKEN_CODE_INLINE, SPOKEN_FILE, SPOKEN_LINK,

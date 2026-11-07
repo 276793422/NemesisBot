@@ -1,5 +1,5 @@
 #![cfg(windows)]
-//! M3 实弹集成（总控 §M3 验收 §4）：dummy-draw 从零走配置向导。
+//! 实弹集成（总控 验收）：dummy-draw 从零走配置向导。
 //!
 //! select_target → snapshot → analyze → candidates → diff_window →
 //! annotate/define_struct/define_tool → commit → read_struct 真值断言。
@@ -170,7 +170,7 @@ fn cand_find<'a>(
         .find(|c| c["kind"] == kind && pred(c))
 }
 
-/// M3 §4 验收主链路：七步向导 + 真值断言。
+/// 验收主链路：七步向导 + 真值断言。
 #[tokio::test(flavor = "multi_thread")]
 async fn m3_wizard_full_flow_on_dummy_draw() {
     let Some(exe) = dummy_exe("x64", "dummy-draw") else {
@@ -223,7 +223,7 @@ async fn m3_wizard_full_flow_on_dummy_draw() {
         );
         ev.log("Step3 analyze", &ana);
 
-        // ── Step 4：candidates（§4 四类锚全命中断言）──
+        // ── Step 4：candidates（四类锚全命中断言）──
         let cands = setup.candidates(&ws).expect("Step4 candidates");
         // nopsled：push_record/feed_render 入口 8×0x90
         let nops = cand_find(&cands, "byte_pattern", |c| {
@@ -292,7 +292,7 @@ async fn m3_wizard_full_flow_on_dummy_draw() {
         ev.log("Step6a annotate push_record", &ann);
 
         // feed_render：第二处 nopsled（候选里另找；缺席诚实注记——
-        // push_record 入口 E9 thunk 的解码闭包可能吞并相邻 sled，
+        // push_record 入口 thunk 的解码闭包可能吞并相邻 sled，
         // 「保守闭包宁欠勿误」启发式边界，不影响验收主链）
         let feed = cands["candidates"].as_array().unwrap().iter().find(|c| {
             c["kind"] == "byte_pattern"

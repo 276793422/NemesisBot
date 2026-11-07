@@ -35,7 +35,7 @@ fn test_log_discovery_without_node_id() {
 }
 
 // ============================================================
-// S4 coverage: unknown lifecycle event arm + field lines under a
+// coverage: unknown lifecycle event arm + field lines under a
 // no-op subscriber (field expressions only evaluate when the
 // callsite is enabled).
 // ============================================================

@@ -112,7 +112,7 @@ async fn hang_budget_times_out_honestly() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dead_server_gives_io_or_connect_not_hang() {
     // 杀 QEMU（此处 = fake 服务关停）后的诚实错误面：连接失败 / IO 错 /
-    // 预算内超时——不挂死、不吞错。平台分岔（本机实测 2026-10-17）：
+    // 预算内超时——不挂死、不吞错。平台分岔（本机实测）：
     // Linux 对死端口 connect 快速 ECONNREFUSED；Windows 对刚关闭的
     // listener 端口 SYN 黑洞（连 RST 都不给）→ 诚实超时。两者都受
     // connect 预算约束——本质断言 = 有界时间 + 诚实错误。

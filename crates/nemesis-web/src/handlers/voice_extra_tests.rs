@@ -53,6 +53,7 @@ mod voice_extra_tests {
             webhook_rate_limiter: Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
             session_stats: None,
@@ -164,10 +165,10 @@ mod voice_extra_tests {
     #[cfg(feature = "voice-capture")]
     #[tokio::test]
     async fn devices_returns_object() {
-        // 【2026-09-02 CI nemesis-web 0xc0000005】本测试经 cmd_devices() 穿透
-        // 调用 nemesis_voice::audio::list_devices() → cpal host 设备枚举。
+        // 【 CI nemesis-web 0xc0000005】本测试经 cmd_devices() 穿透
+        // 调用 nemesis_voice::audio:list_devices() → cpal host 设备枚举。
         // cpal 0.15 WASAPI 在 GitHub runner 虚拟音频栈上**枚举/查询同样挂死 +
-        // native ACCESS_VIOLATION**（voice crate 2026-09-01/09-02 二连崩同族雷；
+        // native ACCESS_VIOLATION**（voice crate /09-02 二连崩同族雷；
         // nemesis-web 测试此前从未在 CI 跑到——voice 被排除后首跑即暴露）。
         // CI=true 且未 opt-in 时 SKIP（与 nemesis-voice audio::tests 的
         // ci_audio_unsafe 同语义；ci.yml 已 --exclude nemesis-voice，本闸是
@@ -198,6 +199,41 @@ mod voice_extra_tests {
             .unwrap()
             .unwrap();
         assert!(r.is_object());
+    }
+
+    // BUG-20261106-020 回归锁：NUL 名在 WSAPI 边界诚实拒绝（crate 层
+    // SpeakerManager 也会拒，但边界拒绝给调用方明确错误，且 register_start
+    // 先于 ensure_speaker_engine 重装配——机器上无语音模型也确定性命中）。
+    #[tokio::test]
+    async fn speaker_remove_rejects_nul_name() {
+        let h = VoiceHandler::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(&dir);
+        let err = h
+            .handle_cmd(
+                "speaker_remove",
+                Some(serde_json::json!({ "name": "a\u{0000}b" })),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("NUL"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn speaker_register_start_rejects_nul_name() {
+        let h = VoiceHandler::new();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(&dir);
+        let err = h
+            .handle_cmd(
+                "speaker_register_start",
+                Some(serde_json::json!({ "name": "a\u{0000}b" })),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert!(err.contains("NUL"), "{err}");
     }
 
     #[tokio::test]
@@ -282,7 +318,7 @@ mod voice_extra_tests {
         assert!(err.contains("missing field: threshold"));
     }
 
-    // ---- config-set I/O commands (no audio) ----
+    // config-set I/O commands (no audio) ----
 
     #[tokio::test]
     async fn voice_config_set_persists_fields() {
@@ -316,7 +352,7 @@ mod voice_extra_tests {
         assert_eq!(r["stt_enabled"], true);
         assert_eq!(r["tts_enabled"], false);
         assert_eq!(r["capture_device"], "Mic0");
-        // BUG-20261031-252：AEC 进阶参数持久化（此前漏接——FE 发送、
+        // AEC 进阶参数持久化（此前漏接——FE 发送、
         // STT 启动读取、保存不落盘 = 改了存不上）。
         assert_eq!(r["aec_filter_length"], 2048);
         assert_eq!(r["aec_preprocess"], false);
@@ -386,7 +422,7 @@ mod voice_extra_tests {
         assert!(r["threshold"].is_number());
     }
 
-    // ---- stop / idle commands (no audio device required) ----
+    // stop / idle commands (no audio device required) ----
 
     #[tokio::test]
     async fn stop_setup_when_idle_errors() {
@@ -555,7 +591,7 @@ mod voice_extra_tests {
         assert!(err.contains("missing data"));
     }
 
-    // ---- tts / tts_playback argument validation (no audio reached) ----
+    // tts / tts_playback argument validation (no audio reached) ----
 
     #[tokio::test]
     async fn tts_missing_data() {
@@ -642,5 +678,91 @@ mod voice_extra_tests {
             .await
             .unwrap_err();
         assert!(err.contains("missing field: content"));
+    }
+
+    // -------------------------------------------------------------------
+    // BUG-20261107-018 回归锁：引擎加载串行闸 + 会话槽原子占位。
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn try_insert_is_atomic_under_concurrency() {
+        use crate::handlers::voice::try_insert;
+        // 8 个并发 claim 恰好一个成功；胜者值在槽内；后续 claim 全部失败。
+        //（注意：断言之间不得持有槽锁——tokio Mutex 非重入，本测试首个
+        // 版本曾在持锁状态下调 try_insert 把自己永久阻塞。）
+        let slot = Arc::new(tokio::sync::Mutex::new(None::<u32>));
+        let handles: Vec<_> = (0..8u32)
+            .map(|i| {
+                let slot = slot.clone();
+                tokio::spawn(async move { try_insert(&slot, i).await })
+            })
+            .collect();
+        let mut wins = 0usize;
+        let mut winner: Option<u32> = None;
+        for (i, h) in handles.into_iter().enumerate() {
+            if h.await.expect("join") {
+                wins += 1;
+                winner = Some(i as u32);
+            }
+        }
+        assert_eq!(wins, 1, "并发 claim 必须恰好一个成功");
+        assert_eq!(
+            slot.lock().await.as_ref(),
+            winner.as_ref(),
+            "胜者值必须在槽内"
+        );
+        // 已占位：后续 claim 失败且不覆盖（旧无条件覆盖写形态在这里翻车）。
+        assert!(!try_insert(&slot, 99u32).await, "占位后 claim 必须失败");
+        assert_eq!(
+            slot.lock().await.as_ref(),
+            winner.as_ref(),
+            "失败 claim 不得覆盖现有值"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_start_blocked_while_gate_held() {
+        // 闸持有期间 engine_start 必须阻塞（无闸的旧代码：检查锁一放就
+        // 直通 spawn_blocking，双 start 各自构造完整引擎）。无 config.toml
+        // 的临时 workspace → 闸放行后诚实报 config not found，全程不触碰
+        // 真实模型。走 handle_cmd 真实派发路径（engine_start → stt 臂）。
+        use crate::handlers::voice::stt_engine_gate;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(&dir);
+        // spawn 要求 'static：手工构造 owned 副本（RequestContext 全 owned 字段）。
+        let task_ctx = RequestContext {
+            session_id: ctx.session_id.clone(),
+            chat_id: ctx.chat_id.clone(),
+            workspace: ctx.workspace.clone(),
+            home: ctx.home.clone(),
+            state: ctx.state.clone(),
+            auth_method: crate::session::AuthMethod::default(),
+        };
+
+        let _hold = stt_engine_gate().lock().await;
+        let h = tokio::spawn(async move {
+            let handler = VoiceHandler::new();
+            handler
+                .handle_cmd(
+                    "engine_start",
+                    Some(serde_json::json!({ "model": "stt" })),
+                    &task_ctx,
+                )
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !h.is_finished(),
+            "闸持有期间 engine_start 必须阻塞（若已结束=闸缺失，并发加载回归）"
+        );
+        drop(_hold);
+        let res = h
+            .await
+            .expect("join")
+            .expect_err("无 config.toml 应诚实失败");
+        assert!(
+            res.contains("config.toml not found"),
+            "闸放行后应继续原路径报错: {res}"
+        );
     }
 }

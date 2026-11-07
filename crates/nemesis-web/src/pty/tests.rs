@@ -1,4 +1,4 @@
-//! pty.rs 测试 —— L8 PTY 内嵌终端。
+//! pty.rs 测试 —— PTY 内嵌终端。
 //!
 //! 三层：
 //! 1. 纯逻辑（shell 选择 / control JSON 解析 / 管理器注册-满员-kill）；
@@ -28,9 +28,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 /// 注册表 + estop kill-all 会误伤并发会话，必须全局串行）。
 pub(super) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-// ---------------------------------------------------------------------------
 // 夹具
-// ---------------------------------------------------------------------------
 
 /// 安装 terminal.enabled=true 的**模块级测试覆盖**（幂等；重复 set 无害，
 /// 首设生效）。不碰进程级 config store——见模块顶部隔离说明。
@@ -96,6 +94,7 @@ fn make_state(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop,
+        background_registry: None,
         cron: None,
         board: None,
         signature_verify: None,
@@ -165,9 +164,7 @@ async fn read_until_marker(ws: &mut WsStream, marker: &str, timeout: Duration) -
     }
 }
 
-// ---------------------------------------------------------------------------
 // 纯逻辑
-// ---------------------------------------------------------------------------
 
 /// shell 覆盖优先；平台默认非空（Windows=powershell.exe / Unix=$SHELL|sh）。
 #[test]
@@ -245,12 +242,10 @@ fn manager_register_cap_and_kill_all() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// 满员拒绝臂 reap（BUG-20261031-233）
-// ---------------------------------------------------------------------------
+// 满员拒绝臂 reap
 
 /// Unix 僵尸子进程计数（state=='Z' 且 ppid==本进程）。
-/// /proc/<pid>/stat 形如 `pid (comm) state ppid ...`——comm 可含空格括号，
+/// /proc/<pid>/stat 形如 `pid (comm) state ppid...`——comm 可含空格括号，
 /// 以最后一个 `)` 为界取其后字段。
 #[cfg(unix)]
 fn count_zombie_children() -> usize {
@@ -285,7 +280,7 @@ fn count_zombie_children() -> usize {
 
 /// 满员拒绝臂（handle_pty_socket 满员闸）行为钉：超员连接收到上限文案、
 /// 会话不注册，且 **kill 不留 Unix 僵尸**——portable-pty 0.9 的
-/// `ChildKiller for std::process::Child`（Unix）kill=SIGHUP 后循环
+/// `ChildKiller for std::process:Child`（Unix）kill=SIGHUP 后循环
 /// `try_wait`（waitpid WNOHANG）主动收尸（lib.rs:340-365），拒绝臂的
 /// `child.kill()` 自带 reap。此钉防两件事回归：①上限拒绝语义被改坏；
 /// ②若未来 kill 语义换成裸信号（或 portable-pty 升级改契约），僵尸泄漏
@@ -296,8 +291,8 @@ fn count_zombie_children() -> usize {
 /// （max=4）则沿用——循环连满对两种配置都成立；nextest 每测独立进程时
 /// 本测试配置恒自装生效。
 ///
-/// Windows hosted runner 同 bug234 双保险闸（取证史：2026-11-02 0828e85bb
-/// CI shard8 本测试 SLOW>68min 楔死整 run，服务端路径即 spawn→kill→拒注册，
+/// Windows hosted runner 同 bug234 双保险闸（取证史： 0828e85bb
+/// CI 本测试 SLOW>68min 楔死整 run，服务端路径即 spawn→kill→拒注册，
 /// connect_pty 侧 connect_async 无超时永久悬等；当晚 pty 模块 13 提交零
 /// 改动、同晨 3fb49d9f CI 全绿=非回归，estop ConPTY kill 四连楔死同家族
 /// 病理）。
@@ -363,7 +358,7 @@ async fn capacity_reject_delivers_limit_message_and_leaves_no_zombie() {
     // 计数按**基线差**断言而非绝对零：coverage 插桩跑全仓 lib 测试同进程
     // 并发，他测的子进程退出后由 tokio 孤儿收割器异步收尸，重载下瞬时
     // 无关僵尸可滞留数秒；取轮询前计数为基线，被拒会话若真泄漏（基线
-    // 之上永久 +1）照样在窗末响亮红。2026-11-04 coverage 实录 1 次误伤
+    // 之上永久 +1）照样在窗末响亮红。 coverage 1 次误伤
     // （b7259d9f 绿 / a9c17a3e 红，期间 Linux 可见代码零变化=环境方差非
     // 回归）；等待窗 5s→15s 同源加宽。
     #[cfg(unix)]
@@ -389,7 +384,7 @@ async fn capacity_reject_delivers_limit_message_and_leaves_no_zombie() {
     }
 }
 
-/// 急停必须杀掉「stalled client」会话（BUG-20261031-234）：会话任务的
+/// 急停必须杀掉「stalled client」会话：会话任务的
 /// estop watch 在 select 循环里，而循环在 `socket.send().await`（客户端
 /// TCP 背压——网络挂起/浏览器休眠是常态）期间不被轮询——自醒路径失效，
 /// 宿主侧 `kill_all_for_estop()` 挂点是唯一兜底（vm_display 同款纪律，
@@ -398,7 +393,7 @@ async fn capacity_reject_delivers_limit_message_and_leaves_no_zombie() {
 /// 注册表即时清空。
 ///
 /// Windows hosted runner 同 estop_engage_kills_session 双保险闸（ConPTY
-/// kill 路径四连楔死实录，见彼处取证史）。注：任务真停进 send 的前提在
+/// kill 路径四连楔死，见彼处取证史）。注：任务真停进 send 的前提在
 /// Unix（`yes` 灌速 GB/s 级）下确定成立，红证以 Unix 为准；Windows flood
 /// 较慢、任务未必真停——但绿证两条路径（自醒/宿主侧）任一生效即过，
 /// 不影响回归钉价值。
@@ -426,7 +421,7 @@ async fn bug234_estop_kills_stalled_client_session() {
     let estop = Arc::new(nemesis_agent::estop::EstopState::new());
     let addr = start_server(make_state("", Some(estop.clone()))).await;
 
-    // 生产 watcher 形态复刻（post_agent.rs BUG-20261031-234 修复同款主体
+    // 生产 watcher 形态复刻（post_agent.rs 修复同款主体
     // 三行）：estop 触发 → 宿主侧 kill_all_for_estop() 直杀。测试环境无
     // gateway 装配，watcher 在此自装；红证（poll-only 形态，修复前函数
     // 不存在不可能带 watcher 编译）已先行捕获：estop 触发后 5s 注册表
@@ -485,9 +480,7 @@ async fn bug234_estop_kills_stalled_client_session() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // 真 PTY roundtrip + 安全闸
-// ---------------------------------------------------------------------------
 
 /// 端到端：WS 客户端连 /ws/pty → 真 shell 起来 → echo 标记往返。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -542,26 +535,26 @@ async fn token_mismatch_rejected_401() {
 
 /// estop 触发 → 会话被 kill、socket 被服务端关闭（安全红线测试）。
 ///
-/// 取证史（CI windows-2022 连续楔死，本机零复现）：round1 进程挂死
-/// 100min+（reap 阻塞 runtime drop，已根修为裸线程）；round2/round3
-/// nextest 120s 硬杀 TIMEOUT；round4 裸线程看门狗 abort@110.8s 精确触发
+/// 看门狗演进结论（CI windows-2022 连续楔死，本机零复现）：进程挂死
+/// （reap 阻塞 runtime drop，已根修为裸线程）；nextest 硬杀 TIMEOUT；
+/// 裸线程看门狗 abort 精确触发
 /// （runtime 全员陷在同步代码里连 tokio timer 都转不动，fn 内 100s tokio
-/// 看门狗再次未生效），并**证伪 round3 前置假设「nextest 对 crash 记 FAIL
+/// 看门狗再次未生效），并**证伪 前置假设「nextest 对 crash 记 FAIL
 /// 并回显捕获输出」**——进程 abort 后捕获输出随进程蒸发，CI 日志 stdout
 /// tail 为空、标记号全失。四轮四种死法全部指向同一点：ConPTY 会话
 /// **kill 路径**在 hosted runner 上不可靠（pty.rs reap 裸线程注释同源
-/// 实录）；同轮优雅 close 的 roundtrip/401 测试全绿，佐证楔死只在 kill 面。
+/// ）；同轮优雅 close 的 roundtrip/401 测试全绿，佐证楔死只在 kill 面。
 ///
-/// 处置（2026-10-10 round4 后）：与 cpal 音频测试同款 CI 双保险闸——
+/// 处置（后）：与 cpal 音频测试同款 CI 双保险闸——
 /// Windows CI 默认 SKIP（`NEMESISBOT_PTY_ESTOP_TESTS=1` 可 opt-in 复现），
 /// Linux CI 与本机照常全量跑（Linux 走 Unix PTY 无 ConPTY，四连死仅
-/// windows-2022 实录）。取证结构保留备 opt-in 轮取证：fn 内 100s tokio
+/// windows-2022）。取证结构保留备 opt-in 轮取证：fn 内 100s tokio
 /// 看门狗（楔死时 timer 不转所以只在慢而非楔时生效）+ 裸 OS 线程 110s
 /// 看门狗（不依赖 runtime，楔死时 abort 自曝，夹在 fn 内 100s 与 nextest
 /// 120s 之间；panic 路径先解除 DONE——别在 unwind 中段补刀砸掉 FAIL 报告）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn estop_engage_kills_session() {
-    // Windows hosted runner 双保险闸（round1-4 实录见上）。放最前：早退
+    // Windows hosted runner 双保险闸（见上）。放最前：早退
     // 时不留看门狗线程、不占 TEST_LOCK。
     #[cfg(windows)]
     {

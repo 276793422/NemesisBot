@@ -434,7 +434,7 @@ async fn test_tool_loop_max_iterations_reached() {
 }
 
 // ============================================================
-// W4a coverage gap closure (per-tool timeout arm: a tool slower
+// coverage gap closure (per-tool timeout arm: a tool slower
 // than config.timeout_secs is cut off with a timeout ToolResult)
 // ============================================================
 

@@ -1,4 +1,4 @@
-//! 统一回执（感知层核心信物，PLAN §3.5 / §5.1）。
+//! 统一回执（感知层核心信物，PLAN）。
 //!
 //! 每个关键动作一条带编号凭条，append-only jsonl 落
 //! `<workspace>/data/receipts/receipts-YYYYMMDD.jsonl`（UTC 日轮换）。
@@ -33,7 +33,7 @@ pub struct Receipt {
     pub class: String,
     /// executed | denied_approval | budget_blocked | trust_blocked |
     /// disabled | error | unknown（结果未知——远程回执 envelope 缺 outcome
-    /// 时 master 侧落此值，预算占用保留不回吐，见 R3 决策表第四臂）
+    /// 时 master 侧落此值，预算占用保留不回吐，见 决策表第四臂）
     pub outcome: String,
     /// sha256(canonical args json) 前 16 hex（args 原文不落盘）。
     pub args_digest: String,
@@ -52,7 +52,7 @@ pub struct Receipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_key: Option<String>,
     /// 是否可撤销（决定回执卡上的「可撤销」提示）。
-    /// default：撤销动词（2026-10-14）之前落盘的历史行没有本字段——
+    /// default：撤销动词之前落盘的历史行没有本字段——
     /// 缺 default 会把全部存量合法回执行解析成损坏行静默跳过（IT 实证）。
     #[serde(default)]
     pub undoable: bool,
@@ -104,10 +104,10 @@ pub fn append_receipt(workspace: &Path, r: &Receipt) -> Result<(), String> {
         .open(&path)
         .map_err(|e| format!("打开回执文件失败 {}: {e}", path.display()))?;
     let line = serde_json::to_string(r).map_err(|e| format!("序列化回执失败: {e}"))?;
-    // BUG-20261104-386：整行（含换行）单次 write_all 行原子性——多会话
+    // 整行（含换行）单次 write_all 行原子性——多会话
     // agent loop 并发执行 connector 工具时无锁 append 的 `writeln!`（正文
     // 与 "\n" 两次 write）可粘行，回执（可撤销凭据）读端损坏行静默跳过 =
-    // 撤销面缺口。与 auditor audit.jsonl（chat_log R100 同族）同修法。
+    // 撤销面缺口。与 auditor audit.jsonl（chat_log 同族）同修法。
     let mut buf = line;
     buf.push('\n');
     f.write_all(buf.as_bytes())

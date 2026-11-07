@@ -1,4 +1,4 @@
-//! Tests for `CodingHandler` (P2-1).
+//! Tests for `CodingHandler`.
 //!
 //! `lsp_status` asserts structure, NOT availability — which servers are on
 //! PATH is machine-dependent, so a test asserting `available == false` would
@@ -54,6 +54,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -108,7 +109,7 @@ async fn coding_config_reads_defaults_from_fresh_home() {
     assert_eq!(r["codex"]["enabled"], false);
     assert_eq!(r["claude_code"]["permission_mode"], "");
     assert_eq!(r["codex"]["sandbox"], "");
-    // E1 (2026-09-05): fresh default is queue — this assertion rides the whole
+    // fresh default is queue — this assertion rides the whole
     // flip chain (serde default → Default impl → handler read side).
     assert_eq!(r["concurrent"]["mode"], "queue");
     assert_eq!(r["concurrent"]["queue_size"], 8);
@@ -145,7 +146,7 @@ async fn coding_config_reads_written_sections() {
     assert_eq!(r["claude_code"]["permission_mode"], "plan");
     assert_eq!(r["codex"]["enabled"], true);
     assert_eq!(r["codex"]["sandbox"], "workspace_write");
-    // E2: concurrent card read side (the shape config.set_field writes).
+    // concurrent card read side (the shape config.set_field writes).
     assert_eq!(r["concurrent"]["mode"], "steer");
     assert_eq!(r["concurrent"]["queue_size"], 12);
 }
@@ -159,9 +160,7 @@ async fn coding_unknown_command_errors() {
     assert!(r.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// C6（devtool-upgrade 阶段 6）: lsp_status 安装目录 + lsp_install 诚实报错
-// ---------------------------------------------------------------------------
+// （devtool-upgrade）: lsp_status 安装目录 + lsp_install 诚实报错
 
 #[cfg(feature = "lsp")]
 #[tokio::test]

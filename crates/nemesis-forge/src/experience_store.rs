@@ -6,7 +6,7 @@
 //!
 //! 注：聚合读写面（`AggregatedExperience` / `read_aggregated` /
 //! `get_top_patterns` 家族 / 每日限额）2026-10-22 整体移除——全链零生产
-//! 调用，是 write-only 死数据（审计 P2-a）。经验分析消费 `read_all` /
+//! 调用，是 write-only 死数据（审计 -a）。经验分析消费 `read_all` /
 //! `read_recent`。
 
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ use crate::types::CollectedExperience;
 
 /// An experience store persisting to the flat `experiences.jsonl` file.
 /// `cleanup` additionally sweeps legacy per-month `YYYYMM/YYYYMMDD.jsonl`
-/// subdirectories left by the pre-F-D1 date-based layout.
+/// subdirectories left by the pre-F- date-based layout.
 pub struct ExperienceStore {
     base_dir: PathBuf,
 }
@@ -97,8 +97,8 @@ impl ExperienceStore {
         // at base_dir — where the live collector actually writes — was never
         // cleaned and grew unbounded. Trim old CollectedExperience entries by
         // timestamp and atomically rewrite. Unparseable lines (e.g. legacy
-        // aggregate pollution from before F-D1) are dropped during the
-        // rewrite. (F-D2)
+        // aggregate pollution from before F-) are dropped during the
+        // rewrite. (F-)
         let flat = self.base_dir.join("experiences.jsonl");
         if flat.exists() {
             let cutoff_dt = chrono::Local::now() - chrono::Duration::days(max_age_days);
@@ -124,7 +124,7 @@ impl ExperienceStore {
                     }
                 }
                 // Atomic rewrite (temp + rename) so a crash can't truncate the
-                // file. BUG-20261025-59：唯一临时名权威 helper——旧固定
+                // file.：唯一临时名权威 helper——旧固定
                 // `experiences.jsonl.tmp` 与 Collector 对同一活文件的 append
                 // 共享目录，双写者同名互踩可产损坏内容被 rename 进活文件；
                 // 且旧名被残留垃圾占用时重写被静默吞掉。清理是 best-effort：
@@ -168,7 +168,7 @@ impl ExperienceStore {
     /// Reads the file once but **parses only the last `limit` lines**, bounding
     /// parse cost regardless of file size. Used by the reflection cycle so a
     /// large (age-bounded) file doesn't make each 6h tick increasingly slow.
-    /// (F-P2)
+    /// (F-)
     pub async fn read_recent(&self, limit: usize) -> std::io::Result<Vec<CollectedExperience>> {
         let file_path = self.base_dir.join("experiences.jsonl");
         if !file_path.exists() {

@@ -1,4 +1,4 @@
-//! runs / attempts 统一层通用 API（最小面；P2/P4 在此扩展）。
+//! runs / attempts 统一层通用 API（最小面；/ 在此扩展）。
 //!
 //! 状态机：`pending → running → succeeded | failed | cancelled`。
 //! 终态不可再转移（恢复重入语义由上层 status 语义承载；这里守住
@@ -18,7 +18,7 @@ fn is_terminal_str(s: &str) -> bool {
 
 #[derive(Debug, Clone, Default)]
 pub struct NewRun {
-    /// 领域归类：`cluster_task` / `board_dispatch` / `agent_run` / ...
+    /// 领域归类：`cluster_task` / `board_dispatch` / `agent_run` /...
     pub kind: String,
     pub title: String,
     pub action: String,
@@ -60,7 +60,7 @@ impl TaskDb {
         self.create_run_with_id(&id, run)
     }
 
-    /// 以调用方指定的 id 建 run（status=pending）。G3 运行账本漏斗的
+    /// 以调用方指定的 id 建 run（status=pending）。 运行账本漏斗的
     /// 确定性 id 入口（`board_dispatch:{task_id}` / `cron_job:{job}:{ms}` /
     /// `workflow_run:{execution_id}`）——id 先于内容确定，跨重启凭 id 直解，
     /// 不需要内存关联表。幂等：id 已在账（防御性重入/并发建账）→ 原样
@@ -96,7 +96,7 @@ impl TaskDb {
     }
 
     /// 转移状态。终态不可再转移（幂等重入同值放行）；非法值响亮拒绝。
-    /// R5：守卫下推到单语句 CAS——SELECT 后裸 UPDATE 在两连接并发时后写
+    /// 守卫下推到单语句 CAS——SELECT 后裸 UPDATE 在两连接并发时后写
     /// 会覆盖先到的终态；现在放行条件（同值幂等 / 当前非终态）编码进
     /// WHERE，终态互斥由单条 UPDATE 的原子性保证，先到的终态写赢。
     pub fn set_run_status(&self, run_id: &str, status: &str) -> Result<(), String> {
@@ -122,7 +122,7 @@ impl TaskDb {
                 return Ok(());
             }
             // n=0：不存在 / 当前是不同终态 / 竞争窗口内刚被并发改写。
-            // 重读定性好报错（R5 回归锁：竞争败方 Err，胜方唯一）。
+            // 重读定性好报错（回归锁：竞争败方 Err，胜方唯一）。
             let current: Option<String> = conn
                 .query_row(
                     "SELECT status FROM runs WHERE id = ?1",
@@ -177,7 +177,7 @@ impl TaskDb {
     }
 
     /// 记一次执行尝试（seq 自动递增；重派语义的账面）。
-    /// R5：终态 run 拒绝新尝试（收口后不再重派——重开须新 run）。
+    /// 终态 run 拒绝新尝试（收口后不再重派——重开须新 run）。
     pub fn begin_attempt(&self, run_id: &str, worker: &str) -> Result<i64, String> {
         self.with_conn(|conn| {
             // run 存在性先验（外键在 PRAGMA foreign_keys 未开时不拦——
@@ -207,7 +207,7 @@ impl TaskDb {
     }
 
     /// 收口一次尝试（只能终态收口：succeeded|failed|cancelled；pending/
-    /// running/非法值拒绝——R5 对齐本注释与实现）。
+    /// running/非法值拒绝—— 对齐本注释与实现）。
     pub fn finish_attempt(
         &self,
         attempt_id: i64,
@@ -278,7 +278,7 @@ impl TaskDb {
     }
 
     /// 某类目下未收口的 run（pending/running，created_at 升序）。
-    /// G3 启动 sweep 的扫描面：重启孤儿按 kind 圈定（cron_job 单发语义
+    /// 启动 sweep 的扫描面：重启孤儿按 kind 圈定（cron_job 单发语义
     /// 的在途触发），不越界到他类目（board/cluster/workflow 的在途 run
     /// 由各自生产收口路径负责，重启不等于死亡）。
     pub fn list_open_runs(&self, kind: &str) -> Result<Vec<RunRecord>, String> {

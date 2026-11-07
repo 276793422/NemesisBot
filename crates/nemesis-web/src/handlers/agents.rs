@@ -1,7 +1,7 @@
-//! P2（2026-10-16）— `agents.list/get/create/remove` WSAPI + Agent 持久
+//! （2026-10-16）— `agents.list/get/create/remove` WSAPI + Agent 持久
 //! 实体管理面。
 //!
-//! 依赖方向（同 [`crate::handlers::projects`] 先例）：nemesis-web 不能反向
+//! 依赖方向（同 [`crate::handlers:projects`] 先例）：nemesis-web 不能反向
 //! 依赖 nemesisbot（`AgentManager` 与 tasks.db 在那边），所以这里定义
 //! [`AgentsBridge`] trait + 模块级槽，nemesisbot 在 gateway 装配时把实现
 //! 装进槽。handler 全部经 bridge 走；未装配（headless / 独立 web 测试）
@@ -14,9 +14,7 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_types::channel::InboundMessage;
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Bridge trait + 进程级槽
-// ---------------------------------------------------------------------------
 
 /// agent 条目的 web 侧投影（serde 序列化直接进 WSAPI 响应）。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -33,12 +31,12 @@ pub struct AgentInfo {
     pub project_id: Option<String>,
     /// `auto` / `mini` / `normal` / `big`（空 = auto）。
     pub tier: String,
-    /// 运行时后端档位（P5 第 4 步）：`process` / `vm`——工具执行走哪个
+    /// 运行时后端档位（第 4 步）：`process` / `vm`——工具执行走哪个
     /// 常驻执行体（下次调用现读生效，切档无需重启）。
     pub runtime_backend: String,
     /// 空 = 主 workspace 记忆域；`agents/<id>` = 独占域。
     pub memory_namespace: String,
-    /// 主体标识（P6-R4 D4 预留，只投影不读——多租户闸未做）。空串 = 未绑定。
+    /// 主体标识（预留，只投影不读——多租户闸未做）。空串 = 未绑定。
     pub principal: String,
     /// 凭据引用条数（引用清单不出 web 面——凭据本体在 vault）。
     pub credential_count: usize,
@@ -48,16 +46,16 @@ pub struct AgentInfo {
 
 /// nemesisbot 侧 agent 实体管理能力的抽象（实现在 nemesisbot
 /// `AgentManager`）。查询面全同步——真相源是 tasks.db（SQLite 快查）；
-/// 生命周期面（T9）走异步——sleep/wake 涉及子进程停起（tokio IO）。
+/// 生命周期面走异步——sleep/wake 涉及子进程停起（tokio IO）。
 #[async_trait::async_trait]
 pub trait AgentsBridge: Send + Sync {
-    /// 列出全部记录（main/project/selfbuilt 三类组并存可见）。
+    /// 列出全部记录（main/project/selfbuilt 三类组并存可）。
     fn list(&self) -> Vec<AgentInfo>;
     /// 单条查询。
     fn get(&self, agent_id: &str) -> Result<AgentInfo, String>;
     /// 创建自建 agent（两阶段：provisioning → home 物化 → active）。
     /// `runtime_backend`：`process|vm`（空串同 process；值域校验在实现侧
-    /// 单一真相源，非法值 loud 拒绝）。`principal`：主体标识（P6-R4 D4
+    /// 统一定义，非法值 loud 拒绝）。`principal`：主体标识（
     /// 预留薄透传，空 = 未绑定）。
     fn create(
         &self,
@@ -66,29 +64,29 @@ pub trait AgentsBridge: Send + Sync {
         runtime_backend: &str,
         principal: &str,
     ) -> Result<AgentInfo, String>;
-    /// 运行时后端切档（P5 第 4 步，G4 ⑦「上层无感」写入口）：落库后下一
+    /// 运行时后端切档（第 4 步， ⑦「上层无感」写入口）：落库后下一
     /// 次工具调用现读生效，无需重启 loop 或迁移会话。
     fn update_backend(&self, agent_id: &str, runtime_backend: &str) -> Result<AgentInfo, String>;
     /// 删除记录（main 不可删；物理 home 保留——解除实体注册不做文件清除）。
     /// 异步：删除联动常驻执行体停机（evict 等在途调用收尾）。
     async fn remove(&self, agent_id: &str) -> Result<(), String>;
 
-    /// sleep（P3 T9）：常驻执行体优雅退出（状态全在 home 落盘）。返回
+    /// sleep：常驻执行体优雅退出（状态全在 home 落盘）。返回
     /// false = 槽本来就不在（或常驻档未开——无进程可睡）。
     async fn sleep(&self, agent_id: &str) -> Result<bool, String>;
 
-    /// wake（P3 T9）：按记录重拉常驻执行体（exec_root 取自记录；home 即
+    /// wake：按记录重拉常驻执行体（exec_root 取自记录；home 即
     /// 状态——journal/配置/浏览器 profile 从盘上回载）。错误 = 记录不存在 /
     /// 常驻档关闭 / spawn 失败（诚实上抛）。
     async fn wake(&self, agent_id: &str) -> Result<(), String>;
 
-    /// 槽位快照（T8 宣告同源数据）：当前哪些 agent 有常驻槽、活没活。
+    /// 槽位快照（宣告同源数据）：当前哪些 agent 有常驻槽、活没活。
     fn slots(&self) -> Vec<AgentSlotInfo>;
 
     /// 常驻档是否开启（config `executor.persistent.enabled` 现读）。
     fn persistent_enabled(&self) -> bool;
 
-    /// G1：解析（惰性构建）自建 agent 的常驻 LLM loop。消费面 =
+    /// 解析（惰性构建）自建 agent 的常驻 LLM loop。消费面 =
     /// `resolve_session_loop` 的 agents 臂（审批/提问/会话级命令路由）。
     /// 同步面——构建链（sqlite 记录读 + 工厂装配）无 await；错误 =
     /// 不存在 / main·project 正门重定向 / 构建失败（诚实上抛）。
@@ -97,24 +95,22 @@ pub trait AgentsBridge: Send + Sync {
         agent_id: &str,
     ) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>, String>;
 
-    /// G1：投递一条入站消息进 agent loop（`agents.send` 面；出站回复经
+    /// 投递一条入站消息进 agent loop（`agents.send` 面；出站回复经
     /// loop 的 agent_outbound 链按 chat_id 回到发起连接）。
     async fn send_to_agent(&self, agent_id: &str, msg: InboundMessage) -> Result<(), String>;
 
-    /// P6-R2：跨节点迁移编排（A 端，源节点）。返回 JSON 明细（task_id/
+    /// 跨节点迁移编排（A 端，源节点）。返回 JSON 明细（task_id/
     /// target/tombstone 等）——诚实错误（目标不在线/在途任务/并发迁移/
     /// 非 selfbuilt/VM 档）不做静默降级。
     async fn migrate(&self, agent_id: &str, target_node: &str)
     -> Result<serde_json::Value, String>;
 }
 
-// ---------------------------------------------------------------------------
-// agent 会话键（G1 会话身份单一真相源）
-// ---------------------------------------------------------------------------
+// agent 会话键（会话身份统一定义）
 
 /// agent 会话键形态：`agents:{agent_id}:session:{sid}`。sid 消毒同主会话
-/// 纪律（[`nemesis_agent::session::SessionStore::sanitize_session_id`]
-/// 单一真相源）。本函数与 [`agent_owner_of`] 是该形态的构造/解析单点。
+/// 纪律（[`nemesis_agent::session:SessionStore::sanitize_session_id`]
+/// 统一定义）。本函数与 [`agent_owner_of`] 是该形态的构造/解析单点。
 pub fn agent_session_key(agent_id: &str, session_id: &str) -> String {
     let sid = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
     format!("agents:{agent_id}:session:{sid}")
@@ -131,7 +127,7 @@ pub fn agent_owner_of(session_key: &str) -> Option<String> {
     Some(id.to_string())
 }
 
-/// 常驻槽位快照的 web 投影（T9；supervisor `SlotState` 的同构镜像——
+/// 常驻槽位快照的 web 投影（supervisor `SlotState` 的同构镜像——
 /// web crate 不反向依赖 nemesisbot，字段手工对齐）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AgentSlotInfo {
@@ -169,9 +165,7 @@ pub(crate) fn set_agents_bridge_for_test(bridge: Option<Arc<dyn AgentsBridge>>) 
 #[cfg(test)]
 pub(crate) static AGENTS_BRIDGE_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-// ---------------------------------------------------------------------------
 // WSAPI handler
-// ---------------------------------------------------------------------------
 
 pub struct AgentsHandler;
 
@@ -217,12 +211,12 @@ impl ModuleHandler for AgentsHandler {
                 // runtime_backend 可选（缺省 process；空串同 process）。
                 let runtime_backend =
                     crate::handlers::get_str(&data, "runtime_backend").unwrap_or_default();
-                // principal 可选（P6-R4 D4 预留；缺省空串 = 未绑定）。
+                // principal 可选（预留；缺省空串 = 未绑定）。
                 let principal = crate::handlers::get_str(&data, "principal").unwrap_or_default();
                 let info = bridge.create(&name, &tier, &runtime_backend, &principal)?;
                 Ok(Some(serde_json::json!({ "agent": info })))
             }
-            // P5 第 4 步：运行时后端切档（G4 ⑦「上层无感」——落库即生效，
+            // 第 4 步：运行时后端切档（⑦「上层无感」——落库即生效，
             // 下次工具调用现读，无需重启 loop）。
             "update" => {
                 let data = data.ok_or("missing data")?;
@@ -243,7 +237,7 @@ impl ModuleHandler for AgentsHandler {
                     "note": "仅解除实体注册，未删除 home 目录内的任何文件",
                 })))
             }
-            // T9 生命周期面：sleep/wake（常驻执行体停起）+ slots（槽位快照）。
+            // 生命周期面：sleep/wake（常驻执行体停起）+ slots（槽位快照）。
             "sleep" => {
                 let data = data.ok_or("missing data")?;
                 let agent_id = crate::handlers::get_str(&data, "agent_id")?;
@@ -272,7 +266,7 @@ impl ModuleHandler for AgentsHandler {
                 "persistent_enabled": bridge.persistent_enabled(),
                 "slots": bridge.slots(),
             }))),
-            // G1：给自建 agent 的常驻 LLM loop 投递一条消息。用户行先入
+            // 给自建 agent 的常驻 LLM loop 投递一条消息。用户行先入
             // 环（chat.sync / 历史可见性），不回 echo——本响应即发起方
             // ack；agent 回复经 loop 出站链路按 chat_id 回到本连接
             // （receive 帧，session_id 盖章仅 main 形态——v1 已知边界）。
@@ -311,7 +305,7 @@ impl ModuleHandler for AgentsHandler {
                     "note": "回复经 agent loop 出站链路异步送达发起连接（receive 帧）",
                 })))
             }
-            // P6-R2：跨节点迁移（A 端编排——12 步序列在 nemesisbot 侧；
+            // 跨节点迁移（A 端编排——12 步序列在 nemesisbot 侧；
             // 本面只透传 agent_id/target_node，返回编排明细 JSON）。
             "migrate" => {
                 let data = data.ok_or("missing data")?;

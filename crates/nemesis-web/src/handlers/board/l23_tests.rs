@@ -1,4 +1,4 @@
-//! L23（三期 2026-11-03）：autopilot 父会话绑定 handler 层测试。
+//! （三期 2026-11-03）：autopilot 父会话绑定 handler 层测试。
 //!
 //! home 单例经 HomeGuard 重定向到 tempdir（sessions_snooze_tests 同款纪律，
 //! test_home::lock_home 可重入锁跨测试串行）：chat_log 的 append/read/clear
@@ -293,7 +293,7 @@ async fn l23_sessions_delete_cascades_pause_bound_autopilot() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// sessions.clear 级联：L23 规格明确 clear 也在裁决范围（空会话继承零
+/// sessions.clear 级联： 规格明确 clear 也在裁决范围（空会话继承零
 /// 上下文 = 绑定无意义）——绑定规则自动暂停（不同于普通 cron job 的
 /// 「clear 不级联」先例）。
 #[tokio::test]

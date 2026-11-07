@@ -1,6 +1,6 @@
 //! roaming 段配置解析（config.cluster.json 顶层 `roaming` 对象）。
 //!
-//! 单一真相源：[`resolved_roaming`] 纯函数——缺文件 / 坏 JSON / 缺段 /
+//! 统一定义：[`resolved_roaming`] 纯函数——缺文件 / 坏 JSON / 缺段 /
 //! 字段类型不符一律落默认值（照 `Cluster::roaming_enabled_in_config`
 //! 的严格语义惯例：`enabled` 必须是严格 JSON bool，缺省恒 false）。
 //!
@@ -86,7 +86,7 @@ impl Default for RelaySettings {
 
 /// roaming 叠加层开关（config.cluster.json 顶层 `roaming` 段解析产物）。
 ///
-/// 2026-10-23 起只剩 enabled——QUIC 客户端/服务端配置全部迁
+/// 起只剩 enabled——QUIC 客户端/服务端配置全部迁
 /// `config.quic.json`（[`super::quic_config`]）。
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RoamingOverlayConfig {
@@ -117,7 +117,7 @@ pub(crate) fn parse_roaming_value(cfg: Option<&serde_json::Value>) -> RoamingOve
 
 /// 从 relay 段 JSON 解析 [`RelaySettings`]——config.rs 与 quic_config.rs 共用
 ///（旧 `roaming.relay` 与新 `config.quic.json` 的 `relay` 段字段一一对应，
-/// 解析规则同源单一真相源）。
+/// 解析规则同源统一定义）。
 pub(crate) fn parse_relay_settings(relay: &serde_json::Value) -> RelaySettings {
     let mut out = RelaySettings::default();
     out.enabled = strict_bool(relay.get("enabled"));

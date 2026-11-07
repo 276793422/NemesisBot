@@ -1,6 +1,6 @@
 use super::*;
 
-// F6（2026-11-02 复评）：测试与辅助函数按生产实现同款 feature 条件门控
+// （复评）：测试与辅助函数按生产实现同款 feature 条件门控
 // ——裁剪构建（无 health/heartbeat）下本模块其余测试照常编译运行。
 
 #[cfg(feature = "health")]
@@ -284,7 +284,7 @@ async fn test_agent_loop_adapter_trait_object() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：AgentLoopServiceAdapter 全
+// 补测（quality-hardening goal 冲刺）：AgentLoopServiceAdapter 全
 // 生命周期三分支（预建 start / 重建 start / 重建失败 Err）+ stop 幂等 +
 // cancel 委托两态 + agent_loop_ref 同步；WebServerOpsAdapter 全方法。
 // =========================================================================
@@ -384,7 +384,7 @@ async fn agent_loop_adapter_rebuild_after_stop_degrades_on_bad_config() {
     adapter.stop().expect("stop before rebuild");
     assert!(adapter.current().is_none());
 
-    // 重建降级分支（双击直启语义 2026-09-17）：删 config.json → 工厂回落
+    // 重建降级分支（双击直启语义）：删 config.json → 工厂回落
     // 默认模型（无 key）→ resolve 失败 → NullProvider 降级装配（Ok 不
     // Err）——无 LLM 不是启动错误；状态变为已启动。
     std::fs::remove_file(home.join("config.json")).unwrap();
@@ -456,7 +456,7 @@ async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
 }
 
 // =========================================================================
-// R10 补测批（coverage-95 goal）：bridge Lagged/Closed 组合臂 + agent 任务
+// 补测批（coverage-95 goal）：bridge Lagged/Closed 组合臂 + agent 任务
 // 轮询行 + HealthServer 绑定冲突 error 臂。
 //
 // 手法：
@@ -548,7 +548,7 @@ mod r10 {
         crate::common::ensure_default_logger();
         // 先占住一个真实端口（resident listener 保活到测试结束），
         // HealthServer 起在同一地址 → bind failed Err 字符串 → adapter
-        // spawn 闭包里的 error!("[Main] Health server error: ..") 分支。
+        // spawn 闭包里的 error!("[Main] Health server error:..") 分支。
         let occupied =
             std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral bind for occupation");
         let port = occupied.local_addr().unwrap().port();
@@ -569,8 +569,8 @@ mod r10 {
 
 // =========================================================================
 // wave4b 追加（coverage）：AgentLoopServiceAdapter 两块此前未触达的装配
-// 逻辑——① L6++ 主桥 skip 谓词（set_skip_predicate + 桥内命中 continue /
-// 未命中放行，用计数 LLM provider 做真断言）；② G4 重启遗留后台 subagent
+// 逻辑——① 主桥 skip 谓词（set_skip_predicate + 桥内命中 continue /
+// 未命中放行，用计数 LLM provider 做真断言）；② 重启遗留后台 subagent
 // 丢失回执注入（stale bg_ 快照 → start() 注入 system 消息 → 续行 LLM →
 // 快照自清）。
 // =========================================================================
@@ -655,7 +655,7 @@ mod wave4b {
         pred()
     }
 
-    /// L6++ 主桥 skip 谓词：装配期 set 一次 → 命中谓词的消息不进主 loop
+    /// 主桥 skip 谓词：装配期 set 一次 → 命中谓词的消息不进主 loop
     ///（桥 continue 丢给项目调度器），未命中的照常进 loop 触发 LLM。
     #[tokio::test]
     async fn skip_predicate_blocks_matched_messages_from_main_loop() {
@@ -718,7 +718,7 @@ mod wave4b {
         assert!(!LifecycleService::is_running(&adapter));
     }
 
-    /// G4 重启恢复：盘上遗留 bg_ 前缀续行快照 → start() 注入诚实丢失回执
+    /// 重启恢复：盘上遗留 bg_ 前缀续行快照 → start() 注入诚实丢失回执
     ///（system 消息）→ loop 走续行路径以 error 结果续行 LLM → 完成后快照
     /// 自清。全链 in-process mock，无外部依赖。
     #[tokio::test]

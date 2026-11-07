@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 // Re-export the canonical types from nemesis-types so consumers can use
-// `nemesis_forge::types::Experience` etc.
+// `nemesis_forge::types:Experience` etc.
 pub use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus, Experience, Reflection};
 
 /// Simple wrapper used by the collector for deduplication and storage.
@@ -59,10 +59,10 @@ pub struct RegistryConfig {
     pub index_path: String,
 }
 
-// `AggregatedExperience`（聚合记录）2026-10-22 整体移除：聚合写入线
+// `AggregatedExperience`（聚合记录） 整体移除：聚合写入线
 // （Collector::flush → aggregates.jsonl）与其读者面（ExperienceStore 的
 // read_aggregated/get_top_patterns 家族）全仓零生产调用，是 write-only
-// 死数据（审计 P2-a）。经验分析消费 `CollectedExperience`（read_all/
+// 死数据（审计 -a）。经验分析消费 `CollectedExperience`（read_all/
 // read_recent）。
 
 #[cfg(test)]

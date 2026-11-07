@@ -2,7 +2,7 @@
 //! 态与 `find_system_7z` 的 where 命中 / 候选目录遍历 / None 收口。
 //!
 //! 确定性方案：PATH 注入用例与 tests.rs 的 probe 共用
-//! [`super::cov_tests::PATH_LOCK`] 串行——
+//! [`super::cov_tests:PATH_LOCK`] 串行——
 //! - 前插 fakebin → where 必命中 → (true, "system")（139-140 + 155）；
 //! - PATH 换成空目录 + 本机无 Program Files 7z → 候选遍历到 None →
 //!   (false, "none")（141-142 + 166/167）；

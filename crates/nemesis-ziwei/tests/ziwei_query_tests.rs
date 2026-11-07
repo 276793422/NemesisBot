@@ -1,9 +1,9 @@
-//! 查询面（B1/B2）集成测试：纯文件种子（PE 夹具 + draft.json + 快照落盘），
+//! 查询面集成测试：纯文件种子（PE 夹具 + draft.json + 快照落盘），
 //! 无活进程——`require_info` 磁盘重建 + `with_analysis` 自动 analyze 让
 //! `SetupManager::new()` 直调查询方法即可走全链路。
 //!
 //! 夹具契约（手构最小 x64 PE，布局与断言一一对应）。image_base =
-//! 0x140000000（标准 x64 默认基址，B2 的 VA→RVA 换算依赖它）。.text
+//! 0x140000000（标准 x64 默认基址， 的 VA→RVA 换算依赖它）。.text
 //! @rva 0x1000（raw 0x400）：func0@0x1000 为 8 个 nop 加 mov eax,
 //! 0xDEADBEEF 加对 func2@0x1030 的 call 加 ret；func2 为 mov rax,rcx 加对
 //! func1@0x1020 的 call 加 ret；func1 为 lea rax,[rip+0xFE5]（指向 0x200C
@@ -15,7 +15,7 @@
 //! 延迟导入描述符@0x2110（FAKE_DELAY.dll / delay_read）、debug 目录@0x21A0
 //! （RSDS@0x21C0 → C:\fake\query.pdb）、重定位块@0x21F0。DOS stub 带
 //! Rich 头（key=0x11112222，一条 {prod 1, build 24, count 1} 指纹）。
-//! .data @rva 0x3000（raw 0x800）：UTF-16LE 宽串 L"query_wide_str"（B3）。
+//! .data @rva 0x3000（raw 0x800）：UTF-16LE 宽串 L"query_wide_str"。
 
 use std::path::PathBuf;
 
@@ -50,7 +50,7 @@ fn build_pe() -> (Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>) {
     // DOS 头：MZ + e_lfanew=0x80
     f[0..2].copy_from_slice(b"MZ");
     f[0x3C..0x40].copy_from_slice(&0x80u32.to_le_bytes());
-    // DOS stub Rich 头（B2 工具链指纹）：DanS 块@0x40 + 一条指纹@0x50 +
+    // DOS stub Rich 头（工具链指纹）：DanS 块@0x40 + 一条指纹@0x50 +
     // "Rich"+key@0x58 + 16B 对齐垫@0x60（e_lfanew=0x80 之前）
     let key: u32 = 0x1111_2222;
     f[0x40..0x44].copy_from_slice(&(0x536E_6144u32 ^ key).to_le_bytes()); // DanS^key
@@ -64,9 +64,9 @@ fn build_pe() -> (Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>) {
     f[0x86..0x88].copy_from_slice(&3u16.to_le_bytes()); // num_sections
     f[0x94..0x96].copy_from_slice(&240u16.to_le_bytes()); // optional_size
     f[0x96..0x98].copy_from_slice(&0x0022u16.to_le_bytes()); // characteristics
-    // Optional header（PE32+）
+    // Optional header（+）
     let opt = 0x98usize;
-    f[opt..opt + 2].copy_from_slice(&0x020Bu16.to_le_bytes()); // PE32+ magic
+    f[opt..opt + 2].copy_from_slice(&0x020Bu16.to_le_bytes()); // + magic
     f[opt + 16..opt + 20].copy_from_slice(&0x1000u32.to_le_bytes()); // entry
     f[opt + 24..opt + 32].copy_from_slice(&IMAGE_BASE.to_le_bytes()); // image_base
     f[opt + 32..opt + 36].copy_from_slice(&0x1000u32.to_le_bytes()); // section_align
@@ -131,7 +131,7 @@ fn build_pe() -> (Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>) {
     f[r + 4..r + 8].copy_from_slice(&0x1013u32.to_le_bytes()); // .EndAddress
     f[r + 0x0C..r + 0x17].copy_from_slice(b"HELLO_ZIWEI"); // @0x200C
     f[r + 0x17] = 0x00; // NUL @0x2017
-    // B2 数据目录内容（全部落在 .rdata 0x2000..0x2200 界内）。
+    // 数据目录内容（全部落在.rdata 0x2000..0x2200 界内）。
     // w32/w64 以参数形式传 f（零捕获闭包——可变捕获会与下方直接写冲突）。
     let w32 =
         |f: &mut Vec<u8>, off: usize, v: u32| f[off..off + 4].copy_from_slice(&v.to_le_bytes());
@@ -192,7 +192,7 @@ fn build_pe() -> (Vec<u8>, Vec<u8>, Vec<(String, Vec<u8>)>) {
     // DIR64 重定位项（type 10 offset 8）
     f[r + 0x1F8..r + 0x1FA].copy_from_slice(&((10u16 << 12) | 8).to_le_bytes());
 
-    // .data @raw 0x800：UTF-16LE 宽串 L"query_wide_str"（B3；偶数位
+    // .data @raw 0x800：UTF-16LE 宽串 L"query_wide_str"（偶数位
     // 0x00 已是零初值，只写可打印字节）
     for (k, ch) in b"query_wide_str".iter().enumerate() {
         f[0x800 + k * 2] = *ch;
@@ -492,7 +492,7 @@ fn search_string_exact() {
 #[test]
 fn search_string_wide_and_summary_count() {
     let fx = fixture("search-wide");
-    // 宽串文本直接命中（UTF-16LE 扫描进同一 StrRef 索引，B3）
+    // 宽串文本直接命中（UTF-16LE 扫描进同一 StrRef 索引）
     let out = fx
         .mgr
         .query_search(&fx.dir, "string", "query_wide_str")
@@ -573,7 +573,7 @@ fn pe_sections_pdata_exports_imports() {
 
     let exports = fx.mgr.query_pe(&fx.dir, "exports").unwrap();
     assert_eq!(exports["total"], 0);
-    // imports 合并了延迟导入（B2）：主表空，唯一 DLL = FAKE_DELAY.dll
+    // imports 合并了延迟导入：主表空，唯一 DLL = FAKE_DELAY.dll
     let imports = fx.mgr.query_pe(&fx.dir, "imports").unwrap();
     assert_eq!(imports["total"], 1);
     assert_eq!(imports["imports"][0]["dll"], "FAKE_DELAY.dll");
@@ -681,7 +681,7 @@ fn analyze_summary_pdata_reconciliation() {
     let summary = fx.mgr.analyze(&fx.dir).unwrap();
     assert_eq!(summary["pdata_funcs"], 1); // .pdata 只登记 func0
     assert_eq!(summary["functions"], 4); // 递归下降三函数 + TLS/CFG 种子补 tls_func
-    assert_eq!(summary["cfg_funcs"], 4); // CFG 表四条目全在 .text 界内 = discovered 对齐
+    assert_eq!(summary["cfg_funcs"], 4); // CFG 表四条目全在.text 界内 = discovered 对齐
     let by_src = &summary["seeds_by_source"];
     assert_eq!(by_src["entry"], 1);
     assert_eq!(by_src["pdata"], 1);
@@ -695,7 +695,7 @@ fn analyze_summary_pdata_reconciliation() {
     assert_eq!(out["count"], 8);
 }
 
-// ── annotate params 签名（B4：LLM 推断的参数落 draft.functions[].args）──
+// ── annotate params 签名（LLM 推断的参数落 draft.functions[].args）──
 
 #[test]
 fn annotate_params_signature_persisted() {

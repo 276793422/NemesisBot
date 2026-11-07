@@ -1,7 +1,7 @@
 //! 职能目录：slug 语法、内置目录、min_tier 元数据（集群专业职能框架）。
 //!
 //! 本模块是纯函数与静态文本（crate 零依赖纪律）：slug 校验、内置目录
-//! 查询、tier 常量。tier 口径与 [`crate::subagents::role_tier`] 同源同值
+//! 查询、tier 常量。tier 口径与 [`crate::subagents:role_tier`] 同源同值
 //! （mini/normal/big 字符串），消费方负责与 ModelTier 的映射。
 //!
 //! slug 语法：`family[:spec]`，段字符集 `[a-z0-9_-]+`，如 `product`、
@@ -31,8 +31,8 @@ pub struct ProfessionMeta {
 
 /// 内置职能目录（6 职能 + dev:cpp 样板）。
 ///
-/// 单一真相源：planner 提示词的值域清单以字面文本写入
-/// `crate::board::PLANNER_SYSTEM_PROMPT`（const 不能插值），由
+/// 统一定义：planner 提示词的值域清单以字面文本写入
+/// `crate::board:PLANNER_SYSTEM_PROMPT`（const 不能插值），由
 /// nemesis-board 的 sync 测试逐 slug 钉住与本目录一致。
 pub const CATALOG: &[ProfessionMeta] = &[
     ProfessionMeta {
@@ -188,8 +188,8 @@ pub fn find_builtin(slug: &str) -> Option<&'static ProfessionMeta> {
 ///
 /// 节点 tier 已知（`Some` 非空白）且低于职能 `min_tier` → `false`（排除）；
 /// 节点 tier 未知（`None`，含旧节点）或**空白串**（`Some("")`/纯空白——
-/// BUG-20261103-345：hand-edit `tier = ""` 或 wire 空字段经 serde 落成
-/// `Some("")`，与「无信息」同语义）→ fail-open 放行（D3）。节点输入
+/// hand-edit `tier = ""` 或 wire 空字段经 serde 落成
+/// `Some("")`，与「无信息」同语义）→ fail-open 放行。节点输入
 /// trim + 归一小写（peers.toml 手写 `BIG` 也能比对；min_tier 是内置常量
 /// 恒小写）。非空未知串（如手写 typo）维持 rank 最低挡——fail-open 只对
 /// 「无信息」，有信息但档位低一律挡（tier_gate_rank_semantics 钉死）。

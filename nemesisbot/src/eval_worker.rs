@@ -70,13 +70,13 @@ async fn run_inner() -> Result<()> {
     let config_path = workspace.join("config.json");
     let cfg = nemesis_config::load_config(&config_path)
         .with_context(|| format!("load eval config {}", config_path.display()))?;
-    // U15: if the sanitized config carries `yaml:<alias>` api_key references,
+    // if the sanitized config carries `yaml:<alias>` api_key references,
     // resolve them against the eval home's credentials.yaml (missing file
     // fails loud with the remedy — no silent empty key).
     nemesis_config::credentials::set_global_credentials_path(
         nemesis_config::credentials::credentials_path_for_home(&workspace),
     );
-    // P0 vault（B1）：`vault:<alias>` 解析器同点注入（eval 沙箱 home 的 vault）。
+    // vault：`vault:<alias>` 解析器同点注入（eval 沙箱 home 的 vault）。
     #[cfg(feature = "security")]
     crate::vault_runtime::install(&workspace);
     let config_store = Arc::new(nemesis_config::ConfigStore::from_config(cfg, config_path));
@@ -110,7 +110,7 @@ async fn run_inner() -> Result<()> {
         })
     });
     // build_agent_loop returns an Arc; require sole *strong* ownership before
-    // mutating. (Arc::get_mut would wrongly refuse here: since G0 the factory's
+    // mutating. (Arc::get_mut would wrongly refuse here: since the factory's
     // spawn closure keeps a Weak<AgentLoop> alive in the spawn slot, and
     // get_mut demands zero weak refs. try_unwrap only needs strong==1 — the
     // Weak is an unobservable implementation detail, not a sharer.)
@@ -305,7 +305,7 @@ impl EvalTaggingObserver {
     ) -> LayerFindings {
         let mut out = LayerFindings::default();
 
-        // L1 injection
+        // injection
         if let Some(det) = self.plugin.injection_detector() {
             let r = det.analyze_tool_input(tool, args_value);
             out.injection = Some(InjectionFinding {
@@ -314,12 +314,12 @@ impl EvalTaggingObserver {
                 // level is already a lowercase string ("low".."critical") — clone
                 // it directly. (Was `format!("{:?}", r.level)` which serialized
                 // as "\"low\"" — doubly-quoted, forcing rule authors into
-                // four-escape regexes. Fixed per assessor plan C2.)
+                // four-escape regexes. Fixed per assessor plan.)
                 level: r.level.clone(),
             });
         }
 
-        // L2 command guard (exec-like tools with a command field)
+        // command guard (exec-like tools with a command field)
         if let Some(guard) = self.plugin.command_guard()
             && let Some(cmd) = args_value.get("command").and_then(|v| v.as_str())
         {
@@ -339,7 +339,7 @@ impl EvalTaggingObserver {
             }
         }
 
-        // L3 credentials — args in, result out
+        // credentials — args in, result out
         if let Some(scanner) = self.plugin.credential_scanner() {
             let r_in = scanner.scan_content(args_str);
             out.credentials_in = if r_in.has_matches {
@@ -357,7 +357,7 @@ impl EvalTaggingObserver {
             }
         }
 
-        // L4 DLP — args in, result out
+        // DLP — args in, result out
         if let Some(dlp) = self.plugin.dlp_engine() {
             let r_in = dlp.scan_tool_input(tool, args_value);
             out.dlp_in = if r_in.has_matches {
@@ -375,7 +375,7 @@ impl EvalTaggingObserver {
             }
         }
 
-        // L5 SSRF (url-ish fields)
+        // SSRF (url-ish fields)
         if let Some(ssrf) = self.plugin.ssrf_guard() {
             for key in ["url", "endpoint", "base_url"] {
                 if let Some(url) = args_value.get(key).and_then(|v| v.as_str()) {
@@ -396,8 +396,8 @@ impl EvalTaggingObserver {
             }
         }
 
-        // L6 audit chain: append-only log, skipped for tagging.
-        // L7 scanner / L8 guardian: v2 (plan).
+        // audit chain: append-only log, skipped for tagging.
+        // scanner / guardian: v2 (plan).
 
         out
     }

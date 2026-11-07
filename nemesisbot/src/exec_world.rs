@@ -1,4 +1,4 @@
-//! U10 统一执行世界 —— gateway / CLI 共用的 executor 通道装配 + workflow
+//! 统一执行世界 —— gateway / CLI 共用的 executor 通道装配 + workflow
 //! 引擎的 [`ExecutionWorld`] 桥。
 //!
 //! 背景（为什么存在）：2026-07-17 的「script 走 exec 路径」改造把 gateway 的
@@ -21,21 +21,21 @@
 //!   agent 工具层与 workflow 引擎共用同一套就绪/probe 逻辑（各自持有独立的
 //!   `ExecutorChannel` 实例——它只是无状态配置持有器，per-call spawn，共享无益）。
 //! - [`build_workflow_world`]（`sandbox` feature 门控）：把通道包成
-//!   [`ExecutorWorld`]（实现 `nemesis_sandbox::exec_world::ExecutionWorld`），
+//!   [`ExecutorWorld`]（实现 `nemesis_sandbox::exec_world:ExecutionWorld`），
 //!   交给 `WorkflowEngine::set_execution_world`：
 //!   - **Tool 车道**（`supports_tool_calls() = true`）：无工具注册表的装配
 //!     （CLI）经 `spawn_and_call("run_script", …)` 走 executor 子进程/盒——
 //!     与 agent `exec` 同一开关链；
 //!   - **Spawn 车道**：per-node `sandbox: false` 显式 opt-out 的受守卫直跑
 //!     （cwd 根 + env 清洗 + CREATE_NO_WINDOW + 超时，见
-//!     `nemesis_sandbox::exec_world::guarded_direct_spawn`）；
+//!     `nemesis_sandbox::exec_world:guarded_direct_spawn`）；
 //!   - **writable_roots**：引擎控制面写盘守卫（persist/delete 拒绝根外写）。
 //!
 //! 诚实边界：
 //! - `sandbox` feature 编译期裁掉时本模块的 world 部分（含 CLI 的沙盒路由）
 //!   一并裁掉——gateway 的 script 节点仍经注册表车道走 ExecutorChannel
 //!   （Layer 1 不依赖本模块），但 CLI 裸引擎回退裸 spawn（与裁剪前行为一致，
-//!   IoT/minimal 构建本就不装 Sandboxie）。U11（Linux 用户态沙盒）落地时
+//!   IoT/minimal 构建本就不装 Sandboxie）。（Linux 用户态沙盒）落地时
 //!   把 SandboxBackend 挂进 nemesis-sandbox 后可解除此门控。
 //! - Tool 车道的 `RequestContext` 是合成的静态标识（channel=workflow），
 //!   不承载会话语义——executor 子进程只把它用于日志/安全层上下文。
@@ -47,8 +47,8 @@ use std::sync::Arc;
 
 use nemesis_config::ConfigHandle;
 
-/// R1（2026-10-18 三方复评）：**常驻执行体侧**的隔离策略判读（supervisor
-/// spawn/execute 决策消费；2026-10-18 三轮复查修正措辞——per-call 通道
+/// （三方复评）：**常驻执行体侧**的隔离策略判读（supervisor
+/// spawn/execute 决策消费； 三轮复查修正措辞——per-call 通道
 /// **不消费本结构**，见下「与 per-call 侧的关系」）。
 ///
 /// 背景：常驻路由（`agents/runtime.rs`）此前不读 `executor.strict`/`executor.
@@ -59,12 +59,12 @@ use nemesis_config::ConfigHandle;
 /// （[`build_executor_channel`]）保留既有 ConfigHandle 闭包闸——它必须校验
 /// **构造期**是否挂上 Start.exe（通道态，本结构表达不了），故两侧是**同语义
 /// 两实现**而非共享代码：同键（sandbox/strict/allow_network）、同缺省（键
-/// 缺失 = false）、同就绪三元组（`SandboxPaths::engine_ready` 单一真相源）。
+/// 缺失 = false）、同就绪三元组（`SandboxPaths::engine_ready` 统一定义）。
 /// 配置真相源只有一个（config.json）；判读语义的一致性靠本对齐纪律维持，
 /// 不靠代码共享。
 ///
 /// 纪律与 supervisor 的 `persistent_settings`/allow_network/sandbox 现读一致：
-/// **磁盘是唯一真相源**（config.json raw JSON 现读，缺段/缺键/文件缺失/解析
+/// **磁盘是唯一依据**（config.json raw JSON 现读，缺段/缺键/文件缺失/解析
 /// 失败 = false，与 `ExecutorSeparationConfig` 的 serde default 同缺省），不持
 /// ConfigHandle——判读随磁盘改动即时生效，无快照表。就绪性不缓存：
 /// [`Self::strict_backend_ready`] 每次实测（引擎/后端就绪是机器态，缓存会撒谎）。
@@ -120,7 +120,7 @@ impl ExecutorIsolationPolicy {
             {
                 // Linux/macOS 用户态后端（landlock/bwrap/Seatbelt）按能力
                 // 探测，不消费 home——参数仅为 Windows 盒臂（SandboxPaths）
-                // 存在，此臂显式弃用（2026-10-18 CI Linux clippy 门禁）。
+                // 存在，此臂显式弃用（CI Linux clippy 门禁）。
                 let _ = home;
                 nemesis_sandbox::backend::detect_backend(self.allow_network()).is_some()
             }
@@ -133,7 +133,7 @@ impl ExecutorIsolationPolicy {
     }
 }
 
-/// 构建 executor 分离通道（单一真相源，gateway agent 层与 workflow 引擎共用）。
+/// 构建 executor 分离通道（统一定义，gateway agent 层与 workflow 引擎共用）。
 ///
 /// 返回 `Ok(None)` = `executor.enabled = false`（Layer 0：无通道）。
 /// 就绪语义与优雅降级和 agent 工具层完全一致：
@@ -143,7 +143,7 @@ impl ExecutorIsolationPolicy {
 /// - `executor.sandbox` 的实时翻转由注入的 probe 闭包承担（每次工具调用读
 ///   ConfigStore，不重启进程生效）。
 ///
-/// P5-2 严格模式（`executor.strict`，默认 false=现状字节不变）：通道在所有
+/// 严格模式（`executor.strict`，默认 false=现状字节不变）：通道在所有
 /// 分支都挂 [`nemesis_agent::StrictGate`]——闸门 live 读 strict，false 秒过；
 /// true 时对"要求沙盒"的调用做就绪性复检，不过则**拒绝执行**（fail-closed，
 /// 见 `spawn_and_call`），不再静默降级。按平台：
@@ -165,11 +165,11 @@ pub fn build_executor_channel(
     build_executor_channel_with_extra_roots(home, workspace_dir, config_handle, Vec::new())
 }
 
-/// B1（2026-10-31 项目 home 收编）：围栏第二根透传形态。`extra_roots` 写进
+/// （项目 home 收编）：围栏第二根透传形态。`extra_roots` 写进
 /// per-call 子进程 env `NEMESISBOT_EXECUTOR_EXTRA_ROOTS`（`exec_worker` 侧
 /// 解析合并进子进程围栏）——exec 分离开关两侧（主进程/子进程）围栏同根，
 /// 不传 = 单根旧行为（主 loop/工作流引擎零变化）。项目 loop 传
-/// `[<agent_home>]`（拍板⑤）；**不传 gateway home**（过度放行）。
+/// `[<agent_home>]`；**不传 gateway home**（过度放行）。
 #[cfg_attr(not(feature = "sandbox"), allow(unused_variables))]
 pub fn build_executor_channel_with_extra_roots(
     home: &Path,
@@ -194,7 +194,7 @@ pub fn build_executor_channel_with_extra_roots(
     // executor.sandbox (dashboard stop/start, config edit) takes effect WITHOUT
     // a gateway restart.
     // ⚠ 闭包必须用 clone 出来的句柄（strict/lease/net 四个探针同款）——直接
-    // move `config_handle` 本体会让后文的 `.clone()` 全部 E0382。
+    // move `config_handle` 本体会让后文的 `.clone()` 全部 。
     let sandbox_handle = config_handle.clone();
     let strict_handle = config_handle.clone();
     let sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
@@ -204,7 +204,7 @@ pub fn build_executor_channel_with_extra_roots(
             .as_ref()
             .is_some_and(|ec| ec.sandbox)
     });
-    // Live strict probe (P5-2): the gate re-reads this per call, so flipping
+    // Live strict probe: the gate re-reads this per call, so flipping
     // executor.strict takes effect on the next tool call — no restart.
     let strict_now: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
         strict_handle
@@ -213,7 +213,7 @@ pub fn build_executor_channel_with_extra_roots(
             .as_ref()
             .is_some_and(|ec| ec.strict)
     });
-    // WS9/P22：租约透传探针——子进程不读用户 config，`agents.lease_enabled`
+    // /：租约透传探针——子进程不读用户 config，`agents.lease_enabled`
     // 的装配语义由父进程在 spawn 时经 `NEMESISBOT_LEASE=1` 钉死。live 读与
     // 严格闸门同款（租约实际是装配期字段，重启才变；这里 live 读保持家族
     // 一致，无额外代价）。
@@ -221,13 +221,13 @@ pub fn build_executor_channel_with_extra_roots(
     let lease_child_now: Arc<dyn Fn() -> bool + Send + Sync> =
         Arc::new(move || lease_handle.read().agents.lease_enabled);
 
-    // BUG 修复 2026-11-04：子进程围栏 restrict 镜像——装配期一次读（与
+    // BUG 修复：子进程围栏 restrict 镜像——装配期一次读（与
     // 主 loop 边界同点同源：agent_factory 的 WorkspaceBoundary.restrict
     // 也是装配期读 cfg，重启才变，两侧不会漂移；不像 sandbox/strict 走
     // live 探针——那两个是运行期可翻的开关，restrict 不是）。
     let restrict_child = config_handle.read().agents.defaults.restrict_to_workspace;
 
-    // P24（2026-09-26）：Windows 盒缺位时的用户态 ACL 降级选型——**显式
+    // Windows 盒缺位时的用户态 ACL 降级选型——**显式
     // `executor.backend = "acl"`** 且 AclBackend 本机可用才可顶（子进程
     // engage 同判据 opt-in 自装）。auto/未知值/不可用 → false 维持现状裸
     // spawn（auto 不回落实验档——默认行为字节不变）。仅 fail-open 增强：
@@ -256,7 +256,7 @@ pub fn build_executor_channel_with_extra_roots(
         })
     };
 
-    // ── D3/D4（2026-09-27）：DACL 定向档 spawn hook ─────────────────────────
+    // ── /：DACL 定向档 spawn hook ─────────────────────────
     // live 读 `executor.acl.dacl`（热生效，与 sandbox_probe 同链路）：
     // - 关 → `Ok(None)`：走现状路径（字节不变）；
     // - 开 → 懒铸造 write-restricted 受限令牌（一次；结果含失败也缓存——
@@ -294,14 +294,14 @@ pub fn build_executor_channel_with_extra_roots(
                 .executor
                 .as_ref()
                 .is_some_and(|ec| ec.acl.strict);
-            // 就绪性探针（D4 状态面同源）：机器不支持 → 按降级链处理。
+            // 就绪性探针（状态面同源）：机器不支持 → 按降级链处理。
             if let nemesis_sandbox::backend::Availability::Unavailable(reason) =
                 nemesis_sandbox::backend::dacl_availability()
             {
                 let msg = format!("workspace-dacl backend unavailable: {reason}");
                 return if strict_on { Err(msg) } else { Ok(None) };
             }
-            // 受限输出捕获残留清扫（D4，2026-09-28 复查改位）：exec 工具在
+            // 受限输出捕获残留清扫（复查改位）：exec 工具在
             // 受限模式下输出落 workspace/.exec_out/（std 匿名管道受限下创建
             // 必死——loop_tools ShellOutputCapture；基线 DELETE 恢复后受限侧
             // 读回自删可成功，本清扫降级为崩溃残留兜底）。gateway（普通令牌）
@@ -340,7 +340,7 @@ pub fn build_executor_channel_with_extra_roots(
                             return Err(e);
                         }
                     };
-                    // standing GRANT ACE 树（D2）——受限令牌的 restricting 侧在
+                    // standing GRANT ACE 树——受限令牌的 restricting 侧在
                     // 工作区内的**放行凭据**：不铺树则双合取检查在工作区内也拒
                     // （写操作全死，不只树外）。幂等（已达标对象只读跳过）；
                     // 目录 ACE 带 OI|CI 继承，新建文件自动获得——一次铺树够用。
@@ -394,20 +394,20 @@ pub fn build_executor_channel_with_extra_roots(
     // Sandboxie Layer-2 attach decision (feature-gated; computed on every
     // platform that compiles the feature — on non-Windows Start.exe never
     // exists under home, so it falls through to the stdio path).
-    // F2（2026-09-26 复查，契约注记）：**显式 `executor.backend="acl"` 不抢
+    // （复查，契约注记）：**显式 `executor.backend="acl"` 不抢
     // 盒**——盒就绪时盒照常上岗，本判定不看 backend；ACL 档只走下面的
-    // userland_fallback 钩子（盒缺位的 stdio 通道才咨询，见 P24 契约与
+    // userland_fallback 钩子（盒缺位的 stdio 通道才咨询，见 契约与
     // nemesis-sandbox backend 模块决策表）。读代码者勿把「显式 acl 被盒
     // 压制」当 bug——降级选型语义本就如此。
     #[cfg(feature = "sandbox")]
     let (start_exe, will_attach): (std::path::PathBuf, bool) = {
         let paths = nemesis_sandbox::SandboxPaths::new(home);
         // 就绪三元组（Start.exe 在场 + SbieSvc Running + 引擎归属）单一真
-        // 相源 = SandboxPaths::engine_ready（P3 ② 常驻盒监督器共用）。
+        // 相源 = SandboxPaths::engine_ready（② 常驻盒监督器共用）。
         (paths.start_exe(), paths.engine_ready())
     };
 
-    // ── P5-2 strict gate, per platform (see fn docs) ─────────────────────────
+    // ── strict gate, per platform (see fn docs) ─────────────────────────
     // The attach decision must be made ONCE here — the gate captures what
     // construction actually attaches, not just the path on disk (an engine that
     // came up AFTER this agent started leaves the channel box-less even though
@@ -455,7 +455,7 @@ pub fn build_executor_channel_with_extra_roots(
     };
     #[cfg(all(feature = "sandbox", not(windows)))]
     let strict_gate: nemesis_agent::StrictGate = {
-        // P1（2026-09-25）：选型上下文与 exec_worker::engage 同源——live 读
+        // 选型上下文与 exec_worker::engage 同源——live 读
         // executor.allow_network 再选后端（禁网 + bwrap 可用 → bwrap；这里
         // 只关心存在性，detect 不返回 Unavailable 后端）。
         let net_handle = config_handle.clone();
@@ -511,7 +511,7 @@ pub fn build_executor_channel_with_extra_roots(
                 .with_strict_gate(strict_gate)
                 .with_lease_child((lease_child_now)())
                 .with_restrict_child(restrict_child);
-            // D3：DACL hook 挂载（盒在场时 agent 侧 start_exe 闸保证不咨询）。
+            // DACL hook 挂载（盒在场时 agent 侧 start_exe 闸保证不咨询）。
             #[cfg(all(feature = "sandbox", windows))]
             let channel = match dacl_hook {
                 Some(hook) => channel.with_dacl_spawn(hook),
@@ -559,7 +559,7 @@ pub fn build_executor_channel_with_extra_roots(
         .with_strict_gate(strict_gate)
         .with_lease_child((lease_child_now)())
         .with_restrict_child(restrict_child)
-        // P24：Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，
+        // Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，
         // 判定面不存在 → 现状不变）。
         .with_userland_fallback({
             #[cfg(all(feature = "sandbox", windows))]
@@ -571,7 +571,7 @@ pub fn build_executor_channel_with_extra_roots(
                 Arc::new(|| false)
             }
         });
-    // D3：DACL 定向档 spawn hook（cfg 门控同 userland_fallback；未挂 = 现状
+    // DACL 定向档 spawn hook（cfg 门控同 userland_fallback；未挂 = 现状
     // 字节不变）。
     #[cfg(all(feature = "sandbox", windows))]
     let channel = match dacl_hook {

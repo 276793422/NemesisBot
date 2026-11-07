@@ -1,6 +1,6 @@
 use super::*;
 
-/// W4c：给测试用的消息总线 sender（external 通道入站发布修复后构造函数需要 bus）。
+/// 给测试用的消息总线 sender（external 通道入站发布修复后构造函数需要 bus）。
 fn w4c_test_bus() -> tokio::sync::broadcast::Sender<InboundMessage> {
     tokio::sync::broadcast::channel(16).0
 }
@@ -769,7 +769,7 @@ fn test_process_input_line_returns_same_chat_id_in_both_slots() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：BUG #10 回归测试（input EXE 行发布到 bus——修复前
+// 补测： 回归测试（input EXE 行发布到 bus——修复前
 // 只 debug 日志直接丢弃，Go 原版 external.go:192 HandleMessage 有发布）+ 允许列表
 // 拦截 + sync_to_targets 联动 + send 真写 output EXE stdin + 长驻 input 的 cancel 臂
 // ===========================================================================
@@ -781,7 +781,7 @@ fn w4c_write_bat(name: &str, body: &str) -> std::path::PathBuf {
     p
 }
 
-/// BUG #10 回归：input EXE 输出的每一行必须作为 InboundMessage 发布到 bus。
+/// 回归：input EXE 输出的每一行必须作为 InboundMessage 发布到 bus。
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn test_w4c_external_input_publishes_to_bus() {
@@ -996,7 +996,7 @@ async fn test_w4c_external_stop_cancels_long_running_input() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): no-receiver publish warn arm / empty-line skip /
+// coverage: no-receiver publish warn arm / empty-line skip /
 // Channel::is_running trait impl / output EXE broken-pipe write error arm
 // ===========================================================================
 

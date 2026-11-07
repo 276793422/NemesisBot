@@ -3,7 +3,7 @@
 //! 覆盖：① 未完成清单 → Continue + 提醒点名未完成项；② 全 completed →
 //! Stop；③ 清单文件缺失 → Stop；④ 清单损坏 → Stop（fail-open）；⑤
 //! `stop_hook_active` 自限跳过；⑥ 写读同源回归——真实 `TodoWriteTool`
-//! 落盘的文件 hook 必须读到（sanitize/路径同构，F-U4-4）。
+//! 落盘的文件 hook 必须读到（sanitize/路径同构，F）。
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -153,7 +153,7 @@ async fn stop_hook_active_skips() {
 
 #[tokio::test]
 async fn writer_reader_parity_different_session_keys() {
-    // 写读同源：多种 session_key 形态（含 F-U4-4 的 '/' 复合键）经真实
+    // 写读同源：多种 session_key 形态（含 F- 的 '/' 复合键）经真实
     // 工具落盘后，hook 用同一 sanitize 真相源都能找到同一份文件。
     let ws = unique_workspace("parity");
     let tool = TodoWriteTool::new(ws.to_path_buf(), None);

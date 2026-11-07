@@ -8,7 +8,7 @@ fn cron_and_webhook_are_driven() {
 
 #[test]
 fn all_known_trigger_types_are_driven() {
-    // After P3 wired EventDispatcher + inbound-bus subscription, all four
+    // After wired EventDispatcher + inbound-bus subscription, all four
     // trigger types have runtime drivers. This test pins that invariant.
     assert!(driver_status_for("cron").driven);
     assert!(driver_status_for("webhook").driven);

@@ -12,7 +12,7 @@ use std::path::Path;
 /// home 还原 + 锁释放**同 guard 内定序**：Drop 先还 home、后放锁（结构体
 /// Drop 体先于字段释放，字段按声明序释放）。锁 = 全 crate 共享的
 /// `test_home::HOME_RACE_LOCK`（模块内私有锁挡不住跨模块的 chat_log
-/// 单例读写，2026-09-23 share/s10b export 偶发 count 0 的教训）。
+/// 单例读写， share/s10b export 偶发 count 0 的教训）。
 struct HomeGuard {
     old: std::path::PathBuf,
     _lock: parking_lot::ReentrantMutexGuard<'static, ()>,
@@ -25,7 +25,7 @@ impl Drop for HomeGuard {
 }
 
 /// 重定向单例 home + 造 workspace 的 logs/session_logs 目录。workspace 取
-/// `<tmp>/workspace`——与单例 `workspace()`（home/workspace）同一派生规则，
+/// `<tmp>/workspace()`——与单例 `workspace`（home/workspace）同一派生规则，
 /// meta 写入（走单例）与存活判定（走入参）落同一目录。
 fn isolate(home: &Path) -> HomeGuard {
     let lock = crate::test_home::lock_home();
@@ -181,11 +181,11 @@ fn empty_or_overlong_key_is_rejected() {
     assert!(set_binding(&ws, "", "abc").is_err());
 }
 
-// ===== BUG-20261025-40 回归锁：损坏注册表装载 loud + 恢复语义 =====
+// ===== 回归锁：损坏注册表装载 loud + 恢复语义 =====
 
-/// 日志捕获 sink（BUG-20261025-38/39 同形态）。DefaultGuard 必须由测试体
+/// 日志捕获 sink（/39 同形态）。DefaultGuard 必须由测试体
 /// 持有——关在 setup 内会随 setup 返回卸载 thread-local subscriber，
-/// 之后的 emit 全部丢失（R113 实录教训）。
+/// 之后的 emit 全部丢失（教训）。
 #[derive(Clone)]
 struct WarnSink40(std::sync::Arc<std::sync::Mutex<String>>);
 
@@ -199,7 +199,7 @@ impl std::io::Write for WarnSink40 {
     }
 }
 
-/// BUG-20261025-40：session_bindings.json 损坏时装载必须 loud 留痕（静默
+/// session_bindings.json 损坏时装载必须 loud 留痕（静默
 /// 返空会被下次保存整体覆盖，get-or-create 重新发芽复制会话 = 本文件头部
 /// 记载的 55 秒 5 空会话事故放大器），且恢复语义保持。
 #[test]

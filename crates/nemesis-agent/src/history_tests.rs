@@ -63,7 +63,7 @@ fn golden_full_fields() {
     assert_eq!(v["total_count"], serde_json::json!(42));
     // HD：会话归属回显。
     assert_eq!(v["session_id"], "sid-abc");
-    // A1：last_seq>0 必须下发。
+    // last_seq>0 必须下发。
     assert_eq!(v["last_seq"], serde_json::json!(17));
     // 字段集封闭：不允许契约外字段悄悄进出入（serde_json Map 键序为字典序，
     // 断言按键集合比较）。
@@ -93,7 +93,7 @@ fn last_seq_zero_is_omitted() {
     let json = history_response_json("r", &sample_messages(), false, 0, 2, Some("s"), 0)
         .expect("serializable");
     let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-    // A1：0 = 未注入回调/环空，序列化时省略（前端走兜底，旧前端零影响）。
+    // 0 = 未注入回调/环空，序列化时省略（前端走兜底，旧前端零影响）。
     assert!(v.get("last_seq").is_none());
 }
 

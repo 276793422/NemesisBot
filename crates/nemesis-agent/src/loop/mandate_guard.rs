@@ -1,4 +1,4 @@
-//! L13-b mandate 执行面守卫的 AgentLoop 接线（槽 + 轮顶检）。类型与纯裁决
+//! b mandate 执行面守卫的 AgentLoop 接线（槽 + 轮顶检）。类型与纯裁决
 //! 在 [`crate::mandate_guard`]；本文件是私有字段 glue（与 token_budget.rs
 //! 同布局：私有字段访问需要 `r#loop` 模块后代身份）。dispatch 调用闸在
 //! `tool_dispatch.rs`（estop 之后），轮顶检在 run_loop 骨架
@@ -28,7 +28,7 @@ impl AgentLoop {
     }
 
     /// 摘除守卫（run 结束各臂共用；违规记录由调用方在摘除后经
-    /// [`crate::mandate_guard::MandateGuard::violation_report`] 消费）。
+    /// [`crate::mandate_guard:MandateGuard::violation_report`] 消费）。
     pub fn take_mandate_guard(&self) -> Option<std::sync::Arc<crate::mandate_guard::MandateGuard>> {
         self.mandate_guard.write().take()
     }
@@ -49,10 +49,10 @@ impl AgentLoop {
     ///
     /// 判定序：时限 → token 预算 → 调用次数；任一超限 = 终局
     /// `Some(AgentEvent::Error(...))`——文案以
-    /// [`crate::mandate_guard::MANDATE_VIOLATION_MARKER`] 开头，worker
+    /// [`crate::mandate_guard:MANDATE_VIOLATION_MARKER`] 开头，worker
     /// `classify_terminal_failure` 识别为 `mandate_violation`，master
     /// board_review 按能力类失败处理。提示同时入 instance 历史（下一会话
-    /// 上下文可见停机原因，M4-B 同款形态）。guard 缺席 = 零开销直通。
+    /// 上下文可见停机原因，-B 同款形态）。guard 缺席 = 零开销直通。
     pub(crate) fn check_mandate_round(
         &self,
         instance: &AgentInstance,

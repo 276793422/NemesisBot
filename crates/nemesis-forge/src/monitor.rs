@@ -143,7 +143,7 @@ impl DeploymentMonitor {
     /// - otherwise => "negative"
     pub fn classify_verdict(&self, improvement_score: f64, _artifact: &Artifact) -> String {
         let threshold = self.config.learning.degrade_threshold;
-        // F-M2: only fall back to -0.2 when the threshold is the unset default
+        // F-: only fall back to -0.2 when the threshold is the unset default
         // (0.0); respect a user-configured stricter/looser threshold instead of
         // silently overriding any non-negative value.
         let threshold = if threshold == 0.0 { -0.2 } else { threshold };
@@ -177,7 +177,7 @@ impl DeploymentMonitor {
         let recent_traces: Vec<&ConversationTrace> = traces
             .iter()
             .filter(|t| {
-                // 全量偏移感知解析（2026-10-22 验证轮二）：旧实现 `[..19]`
+                // 全量偏移感知解析（验证轮二）：旧实现 `[..19]`
                 // 截断后硬贴 "Z"，把本地墙上时间当 UTC——轨迹时刻被平移
                 // ±时区差（+08:00 用户窗口老边界放宽 8h，负时区收窄）。该
                 // 过滤器在轨迹臂接线前零生产调用方，接线后成为真实喂入者，
@@ -192,7 +192,7 @@ impl DeploymentMonitor {
             return outcomes;
         }
 
-        // 样本护栏（2026-10-23 验证轮四接线）：`min_traces_for_analysis`
+        // 样本护栏（验证轮四接线）：`min_traces_for_analysis`
         // 此前零消费者（死键）。窗口内轨迹少于 N 条不做实效分析——样本
         // 太少，结论即噪声。0 = 不设下限（默认，护栏关）；存量配置模板
         // 自带 5 的部署按其声明生效。
@@ -526,7 +526,7 @@ impl DeploymentMonitor {
 
 // ----- Helper functions (matching Go's helper functions) -----
 
-/// Build conversation traces from raw trace events (audit P0-F2, 2026-10-22).
+/// Build conversation traces from raw trace events (audit -,).
 ///
 /// Groups events by `session_key` (insertion order preserved), maps
 /// `tool_call` events to tool steps, and emits a `tool_error` signal for

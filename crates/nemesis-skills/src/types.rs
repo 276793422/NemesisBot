@@ -130,7 +130,7 @@ pub struct SkillMeta {
     /// Download count. 0 when unavailable.
     #[serde(default)]
     pub downloads: i64,
-    /// Publish time (unix seconds) when the registry provides it (P16 版本龄);
+    /// Publish time (unix seconds) when the registry provides it (版本龄);
     /// None = unknown (e.g. clawhub convex metadata has no such field).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub published_at: Option<i64>,
@@ -184,7 +184,7 @@ impl BrowseSort {
         }
     }
 
-    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str:FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Self {
         match s {
             "downloads" => Self::Downloads,
@@ -493,7 +493,7 @@ pub fn validate_skill_identifier(slug: &str) -> std::result::Result<(), String> 
     if trimmed.len() > 64 {
         return Err("skill identifier too long (max 64 characters)".to_string());
     }
-    // Windows host-name hygiene (BUG-20261025-90): reserved device names as a
+    // Windows host-name hygiene: reserved device names as a
     // directory name fail to create on Windows with cryptic IO errors; a
     // trailing dot/space is silently stripped by Win32 on save ("foo." ->
     // dir "foo") while the lockfile keeps the original name -> permanent

@@ -1,4 +1,4 @@
-//! 子进程环境凭据清洗（扩展计划 T4 / D2a）。
+//! 子进程环境凭据清洗（扩展计划）。
 //!
 //! LLM 驱动的 exec 类工具 spawn 子进程时环境**默认全继承**——agent 进程里
 //! 可见的模型 API key / vault 口令等凭据原样进入子进程环境（`exec` 里
@@ -9,7 +9,7 @@
 //! 起不来）：当前黑名单模式均不与其相交，列入只为防御未来模式扩充时误杀
 //! 运行底座。
 //!
-//! **窄版闸**（`*_narrow`，改进项二期 L27）：只剥 bot 内部命名空间
+//! **窄版闸**（`*_narrow`）：只剥 bot 内部命名空间
 //! （`NEMESISBOT_*`），**不碰关键词黑名单**——消费场景是第三方 CLI 委派
 //! （nemesis-agent `loop_tools::run_cli_delegation`）：第三方 CLI 自身
 //! auth 依赖的 env key（如 `*_API_KEY*`）必须保留，全词表剥离会砍掉其
@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// 的 exec/run_checks 共用闸 + nemesis-tools shell/async_shell +
 /// run_script/exec_async/git + background_start 平台 shell 等）直接查本
 /// 静态——免逐工具穿 config（工具结构体无 config 通路）。**覆盖面靠
-/// 家族清点维护，不数固定个数**（BUG-20261029-178：曾因「三处」计数
+/// 家族清点维护，不数固定个数**（曾因「三处」计数
 /// 口径漂移漏接 4 个同族 spawn 点；新增 spawn 点必须显式接闸）。
 static CHILD_ENV_SANITIZE_ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -56,7 +56,7 @@ const WHITELIST: &[&str] = &[
 
 /// 黑名单子串（大小写不敏感）：变量名含任一即剥。
 /// `PASSWD` 是 PASSWORD 的标准变体拼写（MYSQL_PASSWD / FTP_PASSWD /
-/// ORACLE_PASSWD 等真实工具变量名——BUG-20261030-215：漏词导致这些凭据
+/// ORACLE_PASSWD 等真实工具变量名——：漏词导致这些凭据
 /// 既不被 spawn 前剥除、也不被 shell_bleed 泄漏检测识别，两道防线同漏）。
 const BLACKLIST_SUBSTRINGS: &[&str] =
     &["KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD", "CREDENTIAL"];

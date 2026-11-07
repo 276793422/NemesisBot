@@ -18,6 +18,13 @@ progress.txt
 # 测试污染（id="test-node"/"wc-flagless"）提交入库。运行时自生成，防御性忽略。
 /nemesisbot/cluster/
 /crates/nemesis-web/static
+# 紫微注入载荷 DLL（x64/x86）：build-windows.bat 每次现场编译并拷入此目录，
+# nemesis-ziwei build.rs 编译期 include_bytes! 嵌进主二进制——与 static/ 同构
+# 的「构建产物+编译期嵌入」，不入库。缺席是设计形态（PAYLOAD_EMBEDDED=false
+# 运行期诚实报错并指路构建方法）；入库反而制造版本漂移（同一份源码不同次
+# 构建字节不同，sweep 提交会把任意一次构建的字节卷进历史，clone 得到的载荷
+# 与 HEAD 源码无对应关系）。曾误入库（32e38c2f 起），git rm --cached 移除。
+/plugins/ziwei-agent-dll/bin
 # 皮肤 clean-room 开发的本地参考材料（观感规格提取），第三方派生物：只留本地，
 # 永不入库（skins 仓库铁律同理——仓库内不出现任何三方产品痕迹）。
 /.wb-ref/

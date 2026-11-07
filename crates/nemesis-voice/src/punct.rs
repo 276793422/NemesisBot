@@ -14,7 +14,7 @@ pub struct PunctEngine {
     /// 串行化 punct 上的一切 FFI 调用。上游对 OfflinePunctuation 无线程安全
     /// 承诺（沉默 → 按非线程安全对待），而 channel_bridge 的
     /// `VoiceTranscriber: Send + Sync` 契约允许并发 `transcribe`——按处置
-    /// 规则加锁，宁慢不炸。依据：`docs/INFO/2026-10-15_voice-ffi-safety-audit.md` C-3。
+    /// 规则加锁，宁慢不炸。依据：`voice-ffi-safety-audit` C-3。
     lock: Mutex<()>,
     punct: *const sherpa::SherpaOnnxOfflinePunctuation,
 }

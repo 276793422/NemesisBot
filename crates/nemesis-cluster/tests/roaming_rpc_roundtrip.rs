@@ -1,4 +1,4 @@
-//! QUIC 插件化 M3 验收：iroh RPC 环回集成测试（宿主全链 + 插件模拟器）。
+//! QUIC 插件化 验收：iroh RPC 环回集成测试（宿主全链 + 插件模拟器）。
 //!
 //! 真实 iroh QUIC 传输本体已在 plugin_roaming 插件内（插件侧 32/32 测试
 //! 覆盖拨号/accept/trust 闸）；本文件验**宿主侧全链**：
@@ -8,7 +8,7 @@
 //! `handle_request` 分发。
 //!
 //! 插件用进程内模拟器替身：一次性 loopback TCP 监听作「传输层」，每条
-//! 入站连接开 L2 loopback 监听 + `dispatch_incoming` 通知 + 双向 splice——
+//! 入站连接开 loopback 监听 + `dispatch_incoming` 通知 + 双向 splice——
 //! 与真插件 accept 后的 loopback 交接协议逐字同构（dial 侧 [`LocalDialer`]
 //! 同理，真插件走桥 FFI 时替换为 BridgeDialer）。服务器 TCP 不 start()——
 //! roaming 臂只需要 handler 表。
@@ -47,7 +47,7 @@ async fn run_plugin_simulator(listener: tokio::net::TcpListener, remote_hex: Str
         let conn_id = conn_seq;
         let remote_hex = remote_hex.clone();
         tokio::spawn(async move {
-            // 一次性 loopback L2 监听（插件 accept 后开的交接端口）。
+            // 一次性 loopback 监听（插件 accept 后开的交接端口）。
             let Ok(l2) = tokio::net::TcpListener::bind("127.0.0.1:0").await else {
                 return;
             };

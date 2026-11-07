@@ -1,9 +1,9 @@
-//! DACL 定向档 D1：workspace SID 确定性派生。
+//! DACL 定向档：workspace SID 确定性派生。
 //!
-//! 设计文档：`docs/PLAN/2026-09-27_windows-acl-targeted-deny-design.md` §3.1。
+//! 设计文档：`windows-acl-targeted-deny-design` 。
 //! write-restricted 受限令牌方案的身份锚——工作区路径派生出一个**确定性**
-//! 的自定义 SID，树上 standing GRANT ACE（D2）与子进程 restricting SIDs
-//! （D3）以它对齐。
+//! 的自定义 SID，树上 standing GRANT ACE与子进程 restricting SIDs
+//! 以它对齐。
 //!
 //! ## 派生规则（确定性三步）
 //!
@@ -17,7 +17,7 @@
 //!   一真实路径 → 同一 SID。standing ACE 是持久物，派生不稳定 = 旧 ACE 全
 //!   部失效（复检候选 2a 实证的 junction 语义在这里是助力：路径解析一次到
 //!   位）。
-//! - **strip_verbatim**：`std::fs::canonicalize` 在 Windows 产出
+//! - **strip_verbatim**：`std::fs:canonicalize` 在 Windows 产出
 //!   `\\?\C:\...`（UNC 为 `\\?\UNC\server\share`）形态；剥掉前缀让 hash
 //!   输入是普通绝对路径（日志展示 SID 溯源时可读）。
 //! - **lowercase**：NTFS 大小写不敏感，`C:\Ws` 与 `c:\ws` 是同一目录，必
@@ -27,14 +27,14 @@
 //!   共享授权面，等价于用户手动合并授权（本地单用户场景可接受）。
 //!
 //! 本模块是纯逻辑（SHA-256 + 字符串拼装），全平台编译——Windows 消费方
-//! （D2 `ensure_grant_ace_tree` / D3 `token.rs`）各自接线；非 Windows 平台
+//! （`ensure_grant_ace_tree` / `token.rs`）各自接线；非 Windows 平台
 //! 编译无害（供跨平台单测钉纯函数行为）。
 
 use std::path::Path;
 
 use sha2::{Digest, Sha256};
 
-// 非 Windows 平台：lib 目标无消费方（D2/D3 接线都在 cfg(windows) 侧），
+// 非 Windows 平台：lib 目标无消费方（/ 接线都在 cfg(windows) 侧），
 // 但跨平台单测仍钉这三个纯函数的行为——诚实 allow（有单测证明活性），
 // 非 Windows 下防 dead_code 撞 clippy -D warnings 门禁。
 
@@ -73,7 +73,7 @@ pub(crate) fn sid_from_digest(digest: &[u8; 32]) -> String {
 
 /// 从工作区路径派生 workspace SID（确定性）。
 ///
-/// 路径不存在/不可达 → Err（canonicalize 失败）——D2 的 standing ACE 打在
+/// 路径不存在/不可达 → Err（canonicalize 失败）—— 的 standing ACE 打在
 /// 不存在的树上无意义，fail-closed 交给调用方（executor 装配点工作区必然
 /// 存在；测试路径用真实 tempdir）。
 #[cfg_attr(not(windows), allow(dead_code))]

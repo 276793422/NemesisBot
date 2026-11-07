@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -391,7 +391,7 @@ pub(super) fn percent_decode(s: &str) -> String {
     result
 }
 
-/// web_fetch 手动重定向循环的跳数上限（J2a 2026-09-04）。严于 reqwest
+/// web_fetch 手动重定向循环的跳数上限。严于 reqwest
 /// 默认的 10 跳：每跳都要过 SSRF 闸 + 重新建连，5 跳足够覆盖正常业务
 /// 跳转，更长的链几乎总是开放重定向滥用或循环。
 const WEB_FETCH_MAX_REDIRECTS: usize = 5;
@@ -403,11 +403,11 @@ const WEB_FETCH_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKi
 pub struct WebFetchTool {
     /// Maximum response body size in bytes.
     pub max_size: usize,
-    /// J2b（2026-09-06）：workspace 根（spill 存档用）。空 = 无 spill 落点
+    /// workspace 根（spill 存档用）。空 = 无 spill 落点
     /// （超限时退回旧「截断+注记」行为，诚实不静默）。生产注册处必填；
     /// 旧测试构造路径不带（断言截断注记的用例不受扰）。
     workspace: String,
-    /// J2a（2026-09-04）：SSRF 闸宿主（SecurityPlugin）。重定向改为手动
+    /// SSRF 闸宿主（SecurityPlugin）。重定向改为手动
     /// 循环后**每一跳**都重新过闸（旧实现自动跟随 ≤10 跳、闸只查首跳，
     /// `302 → 内网` 直接绕闸）。None（feature 裁剪 / 插件未注入）时跳数
     /// 上限仍生效，仅不做内网校验。
@@ -428,15 +428,15 @@ impl WebFetchTool {
         }
     }
 
-    /// J2b：设置 workspace 根（超限全文存档到 `{workspace}/logs/spill/`）。
+    /// 设置 workspace 根（超限全文存档到 `{workspace}/logs/spill/`）。
     pub fn with_workspace(mut self, workspace: &str) -> Self {
         self.workspace = workspace.to_string();
         self
     }
 
-    /// J2a：为本跳 URL 构建请求 client（SSRF 闸逐跳复查）。
+    /// 为本跳 URL 构建请求 client（SSRF 闸逐跳复查）。
     ///
-    /// 三态（与图片 URL 预取 T9/S2 同一真相源 `ssrf::Guard`）：
+    /// 三态（与图片 URL 预取 / 同一真相源 `ssrf::Guard`）：
     /// - `Err` = 闸拦截（回环/内网/链路本地/元数据/用户 CIDR/非 http(s)）
     ///   → 整个请求报错；
     /// - `Ok(ips)` 非空 = 钉死 DNS 的专用 client（防 rebinding TOCTOU）；
@@ -465,7 +465,7 @@ impl WebFetchTool {
         Ok(plain.clone())
     }
 
-    /// 响应体下载 + HTML 提取（原 execute 内联管线；J2a 拆出以便重定向
+    /// 响应体下载 + HTML 提取（原 execute 内联管线； 拆出以便重定向
     /// 循环收敛到最终 URL 后调用。`url` 报告的是**最终** URL，消息文本
     /// 格式与旧实现字节一致）。
     async fn read_body(
@@ -518,8 +518,8 @@ impl WebFetchTool {
         self.bound_reply(text, url, &content_type, body.len(), html, session_key)
     }
 
-    /// J2b：超 `max_size` 的提取文本不再「截断+注记」，而是全文存档到
-    /// workspace spill 目录 + 回灌 2KB preview + locator（B1 同款语义——
+    /// 超 `max_size` 的提取文本不再「截断+注记」，而是全文存档到
+    /// workspace spill 目录 + 回灌 2KB preview + locator（同款语义——
     /// read_file/grep 可检索全量）。存档失败（无 workspace/磁盘错误）退回
     /// 旧「截断+注记」行为，诚实注明。低于限值时回灌格式与旧实现字节一致。
     fn bound_reply(
@@ -600,18 +600,18 @@ impl WebFetchTool {
     }
 }
 
-/// J2b：web_fetch 超限回灌的 preview 字符预算（与 spill 层
+/// web_fetch 超限回灌的 preview 字符预算（与 spill 层
 /// `SPILL_PREVIEW_CHARS` 同量级）。
 const WEB_FETCH_PREVIEW_CHARS: usize = 2000;
 
-/// J2b：取前 `max_chars` 个字符（char-boundary 安全），返回
+/// 取前 `max_chars` 个字符（char-boundary 安全），返回
 /// `(preview, 总字符数)`。
 pub(super) fn preview_chars(s: &str, max_chars: usize) -> (String, usize) {
     let total = s.chars().count();
     (s.chars().take(max_chars).collect(), total)
 }
 
-/// J2b：HTML 判定——Content-Type 含 `text/html`，或 Content-Type 未标明时
+/// HTML 判定——Content-Type 含 `text/html`，或 Content-Type 未标明时
 /// 按内容兜底（trim 后小写前缀 `<!doctype html` / `<html`；只看前 1KB，
 /// 避免为判定扫描整个 body）。
 pub(super) fn looks_like_html(content_type: &str, body: &[u8]) -> bool {
@@ -623,7 +623,7 @@ pub(super) fn looks_like_html(content_type: &str, body: &[u8]) -> bool {
     head.starts_with("<!doctype html") || head.starts_with("<html")
 }
 
-/// J2b：HTML → 可读文本（html2text 渲染：script/style 剥除、链接/列表/
+/// HTML → 可读文本（html2text 渲染：script/style 剥除、链接/列表/
 /// 标题结构保留为 markdown 形态；替代旧 regex 剥标签管线——旧管线把
 /// 全页压成单行、链接 URL 丢失、表格/列表结构全毁）。80 列渲染宽度。
 /// 渲染错误（html5ever 极端容错，实践中几乎不可达）诚实降级为空 →
@@ -650,7 +650,7 @@ impl Tool for WebFetchTool {
         "Fetch a URL and extract readable content. Use this to get weather info, news, articles, or any web content.".to_string()
     }
 
-    // P0 vault（D4）：外呼抓取参与 web_fetch 类别限额。
+    // vault：外呼抓取参与 web_fetch 类别限额。
     fn limit_categories(&self) -> &[&str] {
         &["web_fetch"]
     }
@@ -670,7 +670,7 @@ impl Tool for WebFetchTool {
         })
     }
 
-    // P0 vault（C1/S3a）：headers 槽位承载凭据别名（模型传 `vault:<alias>`，
+    // vault：headers 槽位承载凭据别名（模型传 `vault:<alias>`，
     // dispatch 最内层改写真值——历史/预览只见别名）。
     fn credential_arg_keys(&self) -> &[&str] {
         &["headers"]
@@ -680,7 +680,7 @@ impl Tool for WebFetchTool {
         let start_url = extract_url(args)?;
         let headers = extract_headers(args)?;
 
-        // J2a（2026-09-04）：手动重定向循环替代 reqwest 默认自动跟随——
+        // 手动重定向循环替代 reqwest 默认自动跟随——
         // 旧实现用默认 client（≤10 跳自动跟随），SSRF 闸只查首跳 URL，
         // `302 → 内网` 直接绕闸。现在每一跳都重新过闸 + 可钉死 DNS；
         // 跳数上限 5；3xx 无 Location / 相对 Location 都诚实处理。
@@ -692,7 +692,7 @@ impl Tool for WebFetchTool {
 
         let mut current = start_url;
         let mut hops: usize = 0;
-        // S3a：自定义 headers 只上**首跳**——Authorization 等跟随重定向会
+        // 自定义 headers 只上**首跳**——Authorization 等跟随重定向会
         // 泄漏给 302 指向的第三方目标（凭据外泄面）。
         let mut first_hop = true;
         loop {
@@ -787,7 +787,7 @@ pub(super) fn extract_url(args: &str) -> Result<String, String> {
     Ok(args.trim().to_string())
 }
 
-/// S3a：解析 + 校验 `headers` 参数（首跳自定义头）。诚实拒绝面：
+/// 解析 + 校验 `headers` 参数（首跳自定义头）。诚实拒绝面：
 /// - 非 JSON / 无 headers 键 = 空表（向后兼容旧调用形态）；
 /// - 值非字符串 / 头名或值非法（reqwest 层会 panic，必须前置校验）；
 /// - 逐跳协议头 denylist（host/content-length/connection/transfer-encoding
@@ -845,7 +845,7 @@ pub(super) fn extract_headers(args: &str) -> Result<Vec<(String, String)>, Strin
     Ok(out)
 }
 
-/// S3a：headers 值类型的人读名（错误文案用）。
+/// headers 值类型的人读名（错误文案用）。
 fn v_type_name(v: &serde_json::Value) -> &'static str {
     match v {
         serde_json::Value::Null => "null",

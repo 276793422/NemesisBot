@@ -33,7 +33,7 @@ const rendezvous = computed(() => (status.value?.rendezvous ?? null) as
 
 // 集群本体闸链（cluster_gate，加法字段；旧后端缺席 = 视为开，回落旧行为）。
 // roaming 的装配在 gateway 启动路径被集群本体三道闸前置——闸未开时「重启网关」
-// 永远不生效，横幅不能再说「重启网关后生效」误导用户无限重启（2026-10-22 实录）。
+// 永远不生效，横幅不能再说「重启网关后生效」误导用户无限重启（2026-10-22 案例）。
 const gateClosed = computed(
   () => status.value?.cluster_gate != null && !status.value.cluster_gate.open,
 )

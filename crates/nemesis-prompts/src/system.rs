@@ -33,7 +33,7 @@ struct Segment {
     layer: Layer,
 }
 
-/// 段落池注册表（单一真相源）。确定性顺序 = 表内顺序；增删段落只改这里。
+/// 段落池注册表。确定性顺序 = 表内顺序；增删段落只改这里。
 static SEGMENTS: &[Segment] = &[
     Segment {
         id: "identity_base",

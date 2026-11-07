@@ -1,4 +1,4 @@
-//! B2（2026-09-04 devtool-upgrade 阶段 1）：exec 超时收尸保留残余输出 +
+//! （2026-09-04 devtool-upgrade）：exec 超时收尸保留残余输出 +
 //! 默认/上限 cap 的单元与集成测试。
 
 use crate::context::RequestContext;
@@ -153,7 +153,7 @@ async fn normal_failure_path_unchanged() {
 
 #[tokio::test]
 async fn large_output_pipe_not_deadlocked() {
-    // B2 设计点回归：并发排干管道——输出超 ~64KB 管道缓冲时子进程不能被
+    // 设计点回归：并发排干管道——输出超 ~64KB 管道缓冲时子进程不能被
     // 墙钟顶破成假超时（只 wait 不读的老毛病）。120s：本测试区分的是
     // 「死锁（永不完成→超时）」与「完成（tail 到达）」，墙钟只兜死锁；
     // PowerShell 启动 + 2 万行在满载机（多套件并发/AV 扫描）可破 60s，

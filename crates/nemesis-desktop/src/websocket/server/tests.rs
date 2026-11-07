@@ -372,7 +372,7 @@ fn test_child_connection_child_id() {
 }
 
 // ============================================================
-// Phase 4: Integration tests for higher coverage
+// Integration tests for higher coverage
 // ============================================================
 
 #[tokio::test]

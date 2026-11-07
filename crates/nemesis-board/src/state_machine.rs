@@ -1,4 +1,4 @@
-//! Issue 状态机（开发计划 §1.1）。
+//! Issue 状态机（开发计划）。
 //!
 //! 状态集：`backlog / todo / in_progress / in_review / done / blocked / cancelled`。
 //! `done` 是终态；`cancelled` 唯一终态出口 = reopen 回 `backlog`（发现④

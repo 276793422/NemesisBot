@@ -10,7 +10,7 @@ fn agt_observer_name_is_stable_contract() {
         std::sync::Arc::new(SessionManager::with_default_timeout()),
         std::sync::Arc::new(nemesis_workflow::engine::WorkflowEngine::new()),
     );
-    // <WorkflowObserver as 本模块 impl>::name()——经 trait 对象同款路径调用。
+    // <WorkflowObserver as 本模块 impl>:name()——经 trait 对象同款路径调用。
     let n: &str = WorkflowObserver::name(&observer);
     assert_eq!(n, "workflow_chat_reply_observer");
 }

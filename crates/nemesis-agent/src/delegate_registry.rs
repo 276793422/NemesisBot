@@ -1,4 +1,4 @@
-//! A3 委派持续操控（2026-10-18 差距修正计划批 1）— delegate 四工具。
+//! 委派持续操控（2026-10-18）— delegate 四工具。
 //!
 //! 把外部 CLI 编码代理（claude / codex）从「spawn-wait 一次性委派」升级为
 //! 「注册-操控」：`delegate_start` 起一个**带 stdin 活管道**的常驻子代理，
@@ -7,15 +7,15 @@
 //! （claude）= 会话恢复。既有一次性 `claude_code`/`codex_delegate` 工具不动
 //! （新增不改写）。
 //!
-//! 结构（对 B4 后台注册表的扩展面，`background_registry` 复用件逐字节同源）：
-//! - 输出缓冲/管道排干/监督收尸/树杀/工作区围栏复用 B4 的
+//! 结构（对 后台注册表的扩展面，`background_registry` 复用件逐字节同源）：
+//! - 输出缓冲/管道排干/监督收尸/树杀/工作区围栏复用 的
 //!   `OutputBuffer`/`spawn_pump`/`supervise`/`tree_kill`/`resolve_cwd`——
-//!   delegate 条目 = 「B4 条目 + stdin 写口 + 协议抽取 + 墙钟上限」，
+//!   delegate 条目 = 「 条目 + stdin 写口 + 协议抽取 + 墙钟上限」，
 //!   offset 分页坐标语义与 `background_output` 一致；
 //! - 协议 adapter 是**纯函数面**（[`DelegateProtocolKind`]）：构造 spawn
 //!   参数、编码 stdin 帧、从 stdout NDJSON 行抽取 assistant 文本与
 //!   session_id——每个 CLI 一个实现，版本漂移只改一处；
-//! - estop 联动：manager 持 [`crate::estop::EstopState`] 的弱引用 watcher
+//! - estop 联动：manager 持 [`crate::estop:EstopState`] 的弱引用 watcher
 //!   （首个 delegate 启动时 lazy spawn；manager 随 loop 重建销毁后 watcher
 //!   自行退出，不泄漏）——急停触发 = 全部 delegate 关 stdin + 树杀，与 PTY
 //!   终端同语义；estop 已触发时 `delegate_start` 直接拒绝。
@@ -31,7 +31,7 @@
 //!   workspace vault 逐名解密注入子进程 env（白名单显式，不全量 dump；
 //!   vault 缺席/锁定/别名缺失 → 诚实报错，不静默空注）。
 //!
-//! 运行闸：config `agents.delegate.enabled`（默认关，U13 claude_code/
+//! 运行闸：config `agents.delegate.enabled`（默认关， claude_code/
 //! codex_delegate 同款 opt-in）+ CLI 在场探测（claude/codex 至少一个在
 //! PATH，都没有则四工具不注册）。墙钟上限 `agents.delegate.max_lifetime_secs`
 //! （默认 3600）= 子代理最长寿命，到点树杀并在输出流留诚实注记。
@@ -77,7 +77,7 @@ const CODEX_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 /// stop 后等子进程退出的上限（超过如实报 still terminating）。
 const STOP_WAIT: Duration = Duration::from_secs(6);
 
-/// A2 stop 优雅窗：stdin EOF 后等 delegate 自然退出的时长（空闲态的
+/// stop 优雅窗：stdin EOF 后等 delegate 自然退出的时长（空闲态的
 /// claude/codex 收到 EOF 立即自退，窗内即走；轮次中的收不了，交给 kill
 /// 旗标走 supervise 阶梯）。预算约束：EOF 窗 2s + 阶梯宽限 3s + 强杀
 /// 生效 ≈ 5.5s < [`STOP_WAIT`]（6s），超窗诚实报 still terminating。
@@ -95,7 +95,7 @@ pub enum DelegateProtocolKind {
     /// EOF on stdin = 优雅收尾。
     ClaudeStreamJson,
     /// `codex app-server`——JSON-RPC over stdio：initialize →
-    /// thread/start → turn/start（2026-10-19 实机对齐，见模块文档）。
+    /// thread/start → turn/start（实机对齐，见模块文档）。
     CodexAppServer,
 }
 
@@ -288,7 +288,7 @@ impl DelegateEntry {
     }
 }
 
-/// F7：启动在途预留（spawn 已发生、entry 未插表的窗口凭证）。estop
+/// 启动在途预留（spawn 已发生、entry 未插表的窗口凭证）。estop
 /// watcher / stop_all / 容量闸经它看见并处置「启动中」的子进程；cancel
 /// = kill 旗 + start_kill（进程杀，树杀交 supervise 收尸）。
 struct StartReservation {
@@ -310,7 +310,7 @@ impl StartReservation {
     }
 }
 
-/// R6（2026-10-20）：启动许可 RAII——容量闸「检查+占位」的占位半边。取得
+/// 启动许可 RAII——容量闸「检查+占位」的占位半边。取得
 /// 发生在 entries 锁内（并发准入串行化），持有跨 build_args/spawn/estop
 /// 复检；reservation 落入 starting（座位改由 starting 计数）即 Drop 释放。
 /// 三段口径 `entries + starting + permits` 全程守恒不超 [`MAX_DELEGATES`]，
@@ -329,12 +329,12 @@ impl Drop for StartingPermit {
 /// 与 background 注册表同生命周期语义）。
 pub struct DelegateManager {
     entries: Mutex<HashMap<u64, Arc<DelegateEntry>>>,
-    /// F7：启动在途预留（spawn 已发生、entry 未插表）。容量口径 =
+    /// 启动在途预留（spawn 已发生、entry 未插表）。容量口径 =
     /// entries + starting；estop watcher / stop_all / Drop 同时排空本表，
     /// 封「estop 摸不到启动中子进程」与「并发 start 借未插表窗口破
     /// MAX_DELEGATES」两个窗口。短临界区同步锁（永不跨 await）。
     starting: SyncMutex<Vec<Arc<StartReservation>>>,
-    /// R6：启动许可计数（spawn 前的座位占位）。与 entries/starting 构成
+    /// 启动许可计数（spawn 前的座位占位）。与 entries/starting 构成
     /// 三段口径；许可获取在 entries 锁内 → 并发准入串行化，瞬态超额不可能。
     starting_permits: Arc<AtomicUsize>,
     #[cfg(test)]
@@ -358,7 +358,7 @@ impl Drop for DelegateManager {
                 tracing::debug!(count = n, "[DelegateRegistry] dropped — kill flags raised");
             }
         }
-        // F7：启动在途同款 best-effort 排空。
+        // 启动在途同款 best-effort 排空。
         if let Some(mut starting) = self.starting.try_lock() {
             for r in starting.drain(..) {
                 r.cancel();
@@ -445,7 +445,7 @@ impl DelegateManager {
         }
         self.ensure_estop_watcher();
 
-        // 满员闸（R6：检查+占位同临界区）：口径三段 = 已插表 + 启动在途 +
+        // 满员闸（检查+占位同临界区）：口径三段 = 已插表 + 启动在途 +
         // 已发许可。先淘汰最旧的已完成条目；仍满才拒绝。许可也在本 entries
         // 锁内取得——并发准入在此串行化，permit 跨 build_args/spawn/estop
         // 复检持有（RAII，任何早退路径 Drop 自动释放），reservation 落入
@@ -502,7 +502,7 @@ impl DelegateManager {
             .current_dir(cwd)
             .envs(&env)
             // 三条管道全开：stdin = steer 通道（本模块存在的理由），输出双
-            // 管道并发排干（B2 教训：不排干 64KB 管道缓冲卡死子进程）。
+            // 管道并发排干（不排干 64KB 管道缓冲卡死子进程）。
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -536,7 +536,7 @@ impl DelegateManager {
             kill_flag.clone(),
         ));
 
-        // F7：spawn 已发生 → 先落启动预留，再进握手/首帧/插表窗口。estop
+        // spawn 已发生 → 先落启动预留，再进握手/首帧/插表窗口。estop
         // 复检、stop_all、Drop、容量闸都经预留看见并处置「启动中」的子
         // 进程；所有失败路径经 helper 杀 + 摘（见 finish_start_failed）。
         let reservation = Arc::new(StartReservation {
@@ -545,10 +545,10 @@ impl DelegateManager {
             kill_flag: kill_flag.clone(),
         });
         self.starting.lock().push(reservation.clone());
-        // R6：座位已由 starting 计数接管 → 释放许可（三段口径守恒）。
+        // 座位已由 starting 计数接管 → 释放许可（三段口径守恒）。
         drop(permit);
 
-        // F7：estop 复检——入口闸到 spawn 之间（容量锁 await 点）触发的
+        // estop 复检——入口闸到 spawn 之间（容量锁 await 点）触发的
         // 急停，estop watcher 摸不到未入表进程，由本复检兜住。
         if self.estop.read().as_ref().is_some_and(|e| e.is_engaged()) {
             self.finish_start_failed(&reservation);
@@ -606,7 +606,7 @@ impl DelegateManager {
             }
         }
         if let Some(p) = prompt {
-            // F7：不再裸 `?` 丢子进程——首帧失败（stdin 已断/进程已死）与
+            // 不再裸 `?` 丢子进程——首帧失败（stdin 已断/进程已死）与
             // 握手失败同收尾形态：杀 + 入册供诊断 + 摘预留 + 诚实报错。
             if let Err(e) = write_user_frame(&entry, p).await {
                 self.fail_start_with_entry(&reservation, &entry, id).await;
@@ -614,7 +614,7 @@ impl DelegateManager {
             }
         }
 
-        // F7 终检（entries 锁内同步裁决）：estop 或容量被并发 start 打破
+        // 终检（entries 锁内同步裁决）：estop 或容量被并发 start 打破
         // → 拒绝（杀子进程、不插表——策略性拒绝不产诊断条目）。座位守恒：
         // 每个在途 start 占一个「座位」（starting 或 entries 二其一），
         // 终检通过后摘预留与插表同锁完成，总数不超闸。
@@ -657,7 +657,7 @@ impl DelegateManager {
         }))
     }
 
-    /// F7：启动失败统一收尾（estop 复检/终检拒绝）——经预留杀子进程 +
+    /// 启动失败统一收尾（estop 复检/终检拒绝）——经预留杀子进程 +
     /// 摘预留。封掉「supervise 任务持 Child Arc → kill_on_drop 永不触发
     /// → 孤儿进程」窗口。
     fn finish_start_failed(&self, reservation: &Arc<StartReservation>) {
@@ -667,7 +667,7 @@ impl DelegateManager {
             .retain(|r| !Arc::ptr_eq(r, reservation));
     }
 
-    /// F7：起步即坏（握手/首帧失败）收尾——杀子进程 + 条目入册供诊断 +
+    /// 起步即坏（握手/首帧失败）收尾——杀子进程 + 条目入册供诊断 +
     /// 摘预留。杀与既有语义同源（kill 旗 → supervise 树杀）；差异是失败
     /// 路径不再可能丢下无旗的活进程。
     async fn fail_start_with_entry(
@@ -740,7 +740,7 @@ impl DelegateManager {
 
     /// 停止：优雅关 stdin（EOF = claude 完成当前轮后自退）→ 优雅窗内等
     /// 自然退出 → 仍活着置 kill 旗标（supervise 停止阶梯：优雅停→宽限窗
-    /// →强杀升级，A2）。
+    /// →强杀升级）。
     ///
     /// claude print 模式没有 interrupt 帧（stream-json 输入只有 user 帧），
     /// 「现在就停」的语义 = EOF + 优雅窗 + 树杀阶梯——硬停诚实文档化；
@@ -755,7 +755,7 @@ impl DelegateManager {
             let _ = s.shutdown().await;
         }
         if entry.is_running().await {
-            // A2 优雅窗：EOF 后先给一段自然收尾窗（空闲态的 delegate 自
+            // 优雅窗：EOF 后先给一段自然收尾窗（空闲态的 delegate 自
             // 退且 exit.killed 诚实保持 false；轮次中的收不了——交给下
             // 方 kill 旗标走 supervise 阶梯）。
             let graceful_deadline = Instant::now() + DELEGATE_EOF_GRACE;
@@ -803,7 +803,7 @@ impl DelegateManager {
                 e.kill_flag.store(true, Ordering::Relaxed);
             }
         }
-        // F7：启动在途一并排空（未入表进程——estop watcher / 关停路径
+        // 启动在途一并排空（未入表进程——estop watcher / 关停路径
         // 由此覆盖 spawn～插表窗口）。
         let pending: Vec<Arc<StartReservation>> = {
             let mut s = self.starting.lock();
@@ -950,7 +950,7 @@ async fn rpc_round(
     }
     let deadline = Instant::now() + timeout;
     let needle = format!("\"id\":{id}");
-    // BUG-20261103-341：响应行可能跨两次 50ms 轮询到达（spawn_pump 的
+    // 响应行可能跨两次 50ms 轮询到达（spawn_pump 的
     // 8KB read() 部分送达 / read_chunk 的 MAX_CHUNK_BYTES 截断）。旧实现
     // 按轮询批次逐行解析——劈成两片的行各自过不了 serde_json 权威解析
     // （头片被消费丢弃、尾片无 needle 语义）→ 响应永久丢失 → 握手
@@ -959,7 +959,7 @@ async fn rpc_round(
     let mut carry = String::new();
     loop {
         if !entry.is_running().await {
-            // A4 装配纪律：死亡现场带退出码——status 槽（supervise 已填终态）
+            // 装配纪律：死亡现场带退出码——status 槽（supervise 已填终态）
             // 优先，竞态窗内未填则 try_wait 子进程兜底，两者皆空 = 收尸中。
             let detail = match entry.status.lock().await.clone() {
                 Some(s) => s
@@ -1021,7 +1021,7 @@ fn truncate_diag(s: &str) -> String {
     if s.len() <= 400 {
         s.to_string()
     } else {
-        // BUG-HUNT R15：`&s[..400]` 在非字符边界 panic——两个调用方的输入
+        // `&s[..400]` 在非字符边界 panic——两个调用方的输入
         // 都是外部 CLI 输出/JSON 错误串（serde_json 不转义非 ASCII，中文
         // 原样保留），握手失败诊断恰是最容易混入 CJK 的路径。先落到边界
         // 再切（与 code_run/messages 等 in-repo 截断同纪律）。
@@ -1038,7 +1038,7 @@ fn truncate_diag(s: &str) -> String {
 /// （`global_vault_resolver`）解析——与 provider api_key / channel token /
 /// MCP env 的 `vault:<alias>` 是**同一条链**（nemesisbot 启动路径注入，
 /// 含 argon2 `NEMESISBOT_VAULT_PASSPHRASE` 解锁臂与每次现开现解语义）。
-/// 这里不直开 vault 文件：那会绕开注入点且复制解锁逻辑（单一真相源）。
+/// 这里不直开 vault 文件：那会绕开注入点且复制解锁逻辑。
 ///
 /// 任一名失败（解析器未安装/vault 缺席/锁定/别名不存在）→ Err 逐项列明
 /// （诚实失败，不静默空注——子代理拿不到预期凭据会在远端以更隐蔽的方式
@@ -1105,7 +1105,7 @@ pub struct DelegateStartTool {
     max_lifetime: Duration,
     claude_path: Option<String>,
     codex_path: Option<String>,
-    /// F8：config `agents.delegate.permission_mode` 缺省值——args 缺省/空
+    /// config `agents.delegate.permission_mode` 缺省值——args 缺省/空
     /// 时落地（语义 = 默认值非强制：args 显式值恒优先，对齐字段文档
     /// 「passthrough」）。
     default_permission_mode: String,
@@ -1205,7 +1205,7 @@ impl Tool for DelegateStartTool {
             .unwrap_or("")
             .trim()
             .to_string();
-        // F8：args 缺省/空 → config 缺省值（默认值语义，显式 args 恒优先）。
+        // args 缺省/空 → config 缺省值（默认值语义，显式 args 恒优先）。
         if permission_mode.is_empty() {
             permission_mode = self.default_permission_mode.clone();
         }

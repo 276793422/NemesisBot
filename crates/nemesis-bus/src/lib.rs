@@ -1,7 +1,7 @@
 //! NemesisBot - Message Bus
 //!
 //! Central pub/sub system using tokio broadcast channels.
-//! Replaces Go channels with tokio::sync::broadcast for multi-subscriber support.
+//! Replaces Go channels with tokio::sync:broadcast for multi-subscriber support.
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::constants::BUS_CHANNEL_CAPACITY;
@@ -33,7 +33,7 @@ pub struct MessageBus {
     inbound_lagged: AtomicU64,
     /// 接收侧真实丢失（出站）：语义同上。
     outbound_lagged: AtomicU64,
-    /// P6a（2026-09-11 日志降噪）：fan-out 警告每方向只发一次——gateway 启动
+    /// （日志降噪）：fan-out 警告每方向只发一次——gateway 启动
     /// 期固定多订阅者（agent loop / web dispatch / cluster 桥各订一份）属正常
     /// 形态，逐订阅 WARN 只是每世代 3 条启动噪音。
     inbound_fanout_warned: AtomicBool,
@@ -65,7 +65,7 @@ impl MessageBus {
 
     /// Inbound 订阅者计数（发布侧就绪探测）。
     ///
-    /// cluster 恢复链路（T19 二层根修）在 publish 前用本方法等待
+    /// cluster 恢复链路（二层根修）在 publish 前用本方法等待
     /// AgentLoop 订阅就位——broadcast send 对无接收者是静默丢弃。
     pub fn inbound_receiver_count(&self) -> usize {
         self.inbound_tx.receiver_count()
@@ -144,11 +144,11 @@ impl MessageBus {
     /// unintentional and may indicate a bug where a component subscribes
     /// more than once.
     ///
-    /// P6a：警告只发一次（每方向）——多订阅者是 gateway 启动的正常形态，
+    /// 警告只发一次（每方向）——多订阅者是 gateway 启动的正常形态，
     /// 逐次 WARN 是每世代固定启动噪音。
     pub fn subscribe_inbound(&self) -> broadcast::Receiver<InboundMessage> {
         let existing = self.inbound_tx.receiver_count();
-        // BUG-20261030-214：`total` 必须是**订阅后**总数——旧实现打新增前
+        // `total` 必须是**订阅后**总数——旧实现打新增前
         // 计数（首个订阅者打 total=0），恒差 1，排障时订阅拓扑口径失真。
         // fan-out warn 里的 existing_receivers 是「既有数」语义，保持不动。
         info!(
@@ -172,7 +172,7 @@ impl MessageBus {
     /// fan-out concern as `subscribe_inbound` (warn-once per bus).
     pub fn subscribe_outbound(&self) -> broadcast::Receiver<OutboundMessage> {
         let existing = self.outbound_tx.receiver_count();
-        // BUG-20261030-214：同 subscribe_inbound——total 打订阅后总数。
+        // 同 subscribe_inbound——total 打订阅后总数。
         info!(
             "[Bus] New outbound subscriber, total receivers={}",
             existing + 1

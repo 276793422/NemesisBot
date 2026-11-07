@@ -1,6 +1,6 @@
 //! Degraded-path test for `history_search::search` — ISOLATED binary.
 //!
-//! WHY a dedicated binary (same rationale as `history_search_fts.rs`, X3):
+//! WHY a dedicated binary (same rationale as `history_search_fts.rs`,):
 //! `search()` first tries the FTS index; on ANY DB failure it must degrade to
 //! `search_linear` (a direct grep-style scan of `session_logs/*.jsonl`).
 //! The in-lib tests never exercised that fallback — the lib test process has

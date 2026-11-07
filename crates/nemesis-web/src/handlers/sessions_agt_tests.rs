@@ -59,6 +59,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -110,9 +111,7 @@ fn seed_ws_artifact(ws: &std::path::Path, sid: &str, title: &str) {
     .unwrap();
 }
 
-// ---------------------------------------------------------------------------
 // mark_delivered：缺参 / 错型 / 正常清零
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_mark_delivered_guards_and_clear() {
@@ -148,9 +147,7 @@ async fn agt_mark_delivered_guards_and_clear() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-// ---------------------------------------------------------------------------
 // create：binding_key 原子 get-or-create 全链 + plain 标题臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_create_binding_key_roundtrip_and_plain_title_arms() {
@@ -224,7 +221,7 @@ async fn agt_create_binding_key_roundtrip_and_plain_title_arms() {
     );
     nemesis_agent::chat_log::delete_chat_log(&key4);
 
-    // ⑤ plain create + 显式标题：提取链 + manual meta（E7 用户意志）。
+    // ⑤ plain create + 显式标题：提取链 + manual meta（用户意志）。
     let out = run(
         &ctx,
         "create",
@@ -242,9 +239,7 @@ async fn agt_create_binding_key_roundtrip_and_plain_title_arms() {
     nemesis_agent::chat_log::delete_chat_log(&key5);
 }
 
-// ---------------------------------------------------------------------------
 // set_binding / remove_binding：缺参 / 错型 / 全链
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_set_and_remove_binding_guards_and_roundtrip() {
@@ -312,9 +307,7 @@ async fn agt_set_and_remove_binding_guards_and_roundtrip() {
     assert_eq!(out["removed"], false);
 }
 
-// ---------------------------------------------------------------------------
 // rename 带 title 的 happy path
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_rename_with_title_writes_manual_meta() {
@@ -352,9 +345,7 @@ async fn agt_rename_with_title_writes_manual_meta() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-// ---------------------------------------------------------------------------
 // rewind_to_message / redo：缺参 bail（参数解析在前，loop 检查在后）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_rewind_to_message_and_redo_param_guards() {

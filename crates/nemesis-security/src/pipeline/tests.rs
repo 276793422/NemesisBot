@@ -57,7 +57,7 @@ fn test_dangerous_command_blocked() {
     assert!(err.unwrap().summary.contains("command guard"));
 }
 
-// BUG-20261028-118 红证（管线级）：run_script 与 exec 同为 ProcessExec 档
+// 红证（管线级）：run_script 与 exec 同为 ProcessExec 档
 // 任意代码执行，危险 script 内容必须同样被 Layer 2 命令守卫拦截——此前
 // extract_target 无 run_script 臂 → target 空 → 守卫被 `!target.is_empty()`
 // 前置整体跳过（exec 拦得住的 run_script 放行）。
@@ -109,17 +109,17 @@ fn test_credential_in_args_blocked() {
     assert!(err.unwrap().summary.contains("credential"));
 }
 
-// BUG-20261030-210 红证（管线级）：Layer 4 凭据扫描此前只扫 args 顶层
+// 红证（管线级）：Layer 4 凭据扫描此前只扫 args 顶层
 // string 值——嵌套载荷（multiedit edits[].new_text、headers 对象、数组）
 // 整体跳过；credential 模式集中 ~20 条（EC/DSA/PGP 私钥头、SendGrid、
 // Slack webhook、npm token、裸 Bearer、…）DLP 无对应规则 → 嵌套位置
-// 双层全漏。L1 注入与 L5 DLP 均递归提取文本，L4 同样必须递归。
+// 双层全漏。 注入与 DLP 均递归提取文本， 同样必须递归。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_credential_nested_multiedit_new_text_blocked() {
     let plugin = make_plugin();
     // SendGrid 键形态样本用分段拼接构造：完整字面量会触发 GitHub push
     // protection（合成占位串，非真实密钥）；运行时拼接结果与原字面量
-    // 逐字节一致，凭据扫描器检测语义不变（BUG-20261030-210 回归测试）。
+    // 逐字节一致，凭据扫描器检测语义不变（回归测试）。
     let sg_key = format!(
         "SG Key: SG.{}.{}",
         "abcdefghijklmnopqrstuv", "wxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abc"
@@ -188,7 +188,7 @@ fn test_ssrf_blocked() {
     assert!(err.unwrap().summary.contains("SSRF"));
 }
 
-// BUG-20261102-296 端到端：mcp_discover 的 stdio 臂（LLM 可控 command）经
+// 端到端：mcp_discover 的 stdio 臂（LLM 可控 command）经
 // dispatch 嗅探 operation_override 投影 process_exec 后走 exec 同款 ABAC
 // 规则——默认配置形态的 `process_rules.exec` 危险命令 deny 规则照常拦截；
 // 无投影（HTTP 臂形态）维持静态 NetworkRequest 档，process 规则不适用。
@@ -271,7 +271,7 @@ async fn test_mcp_discover_stdio_projection_hits_process_rules() {
     assert!(allowed2, "url form keeps the static NetworkRequest path");
 }
 
-// BUG-20261102-296：mcp_discover 的 url 进 Layer 6 SSRF——内网/回环目标
+// mcp_discover 的 url 进 Layer 6 SSRF——内网/回环目标
 // 与 web_fetch 同判（此前 extract_url 无臂 → SSRF 对该工具整体失明）。
 #[test]
 fn test_mcp_discover_http_arm_ssrf_guarded() {
@@ -293,10 +293,10 @@ fn test_mcp_discover_http_arm_ssrf_guarded() {
     assert!(err.unwrap().summary.contains("SSRF"));
 }
 
-// BUG-20261102-304：browser navigate 的 url 进 Layer 6 SSRF——MCP 浏览器
+// browser navigate 的 url 进 Layer 6 SSRF——MCP 浏览器
 // 导航 LLM 可控 URL 且页面内容回流（extract_text），与 web_fetch 同语义
 // 同判（此前 extract_url 无 browser 臂 → SSRF 对该工具整体失明，
-// BUG-20261102-296 横向扫描漏网）。deny 臂在 Layer 6 提前返回，纯 #[test]。
+// 横向扫描漏网）。deny 臂在 Layer 6 提前返回，纯 #[test]。
 #[test]
 fn test_browser_navigate_ssrf_guarded() {
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
@@ -323,7 +323,7 @@ async fn test_register_rules() {
         enabled: true,
         default_action: "deny".to_string(),
         file_rules: vec![SecurityRule {
-            // glob 方言（D12-1 后 matcher 只认 `*`/`**` 通配；regex 风味
+            // glob 方言（后 matcher 只认 `*`/`**` 通配；regex 风味
             // `/tmp/.*` 是旧契约漂移——字面点号后失配，deny 静默失效）。
             pattern: "/tmp/**".to_string(),
             action: "allow".to_string(),
@@ -439,7 +439,7 @@ async fn test_safe_network_request_allowed() {
     assert!(allowed);
 }
 
-/// W5 盲点修复后：未知名工具不再在表查找处提前返回，会走完整管线到
+/// 盲点修复后：未知名工具不再在表查找处提前返回，会走完整管线到
 /// Layer 7（scanner 的 block_in_place 需要 tokio reactor）→ 测试转 async。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_unknown_tool_still_checked() {
@@ -455,7 +455,7 @@ async fn test_unknown_tool_still_checked() {
     let _ = plugin.execute(&inv);
 }
 
-/// W5 盲点修复回归钉：未知名工具不再 fail-open。修复前 `None => allow`
+/// 盲点修复回归钉：未知名工具不再 fail-open。修复前 `None => allow`
 /// 整跳 8 层（注入载荷畅通无阻）；修复后按 ProcessExec（CRITICAL）过全
 /// 管线——同一条注入载荷必须被第 1 层拦截。
 #[test]
@@ -482,7 +482,7 @@ fn test_unknown_tool_fail_closed() {
     assert!(plugin.is_critical_tool("never_registered_tool"));
 }
 
-/// W5 配套回归钉：声明表 lookup-first 对管线生效——declare 后未知名升为
+/// 配套回归钉：声明表 lookup-first 对管线生效——declare 后未知名升为
 /// 具名档（LOW → 不再按 CRITICAL fail-closed）。
 #[test]
 fn test_declared_tool_pipeline_lookup_first() {
@@ -996,7 +996,7 @@ async fn test_plugin_set_rules_override() {
     plugin.set_rules(
         OperationType::FileRead,
         vec![SecurityRule {
-            // glob 方言（D12-1 后 matcher 只认 `*`/`**` 通配；regex 风味
+            // glob 方言（后 matcher 只认 `*`/`**` 通配；regex 风味
             // `/tmp/.*` 是旧契约漂移——字面点号后失配，deny 静默失效）。
             pattern: "/tmp/**".to_string(),
             action: "deny".to_string(),
@@ -1044,7 +1044,7 @@ async fn test_plugin_network_rules() {
         ssrf_enabled: false,
         default_action: "allow".to_string(),
         network_rules: vec![SecurityRule {
-            // glob 方言（D12-1 后只认 `*`/`**`；旧 regex 风味 `.*` 曾使该
+            // glob 方言（后只认 `*`/`**`；旧 regex 风味 `.*` 曾使该
             // allow 规则整体失配、断言靠 default allow 侥幸绿——死覆盖）。
             pattern: "https://trusted.com/**".to_string(),
             action: "allow".to_string(),
@@ -1072,7 +1072,7 @@ fn test_plugin_hardware_rules() {
         enabled: true,
         default_action: "allow".to_string(),
         file_rules: vec![SecurityRule {
-            // glob 方言（D12-1 后只认 `*`/`**`；regex 风味 `/dev/.*` 曾使
+            // glob 方言（后只认 `*`/`**`；regex 风味 `/dev/.*` 曾使
             // deny 静默失效，且无 runtime 的同步测试曾因此落进 Layer 7 的
             // tokio block_in_place 而 panic——deny 命中即提前返回不进扫描层）。
             pattern: "/dev/**".to_string(),
@@ -1168,7 +1168,7 @@ async fn test_dlp_inbound_write_low_confidence_allowed() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_dlp_inbound_write_high_confidence_blocked() {
-    // Genuine secret written to a local file still blocks inbound (L3 only
+    // Genuine secret written to a local file still blocks inbound (only
     // demotes Low-confidence matches, not High/Medium).
     let plugin = SecurityPlugin::new(SecurityPluginConfig {
         enabled: true,
@@ -1296,7 +1296,7 @@ async fn test_plugin_execute_download_allowed() {
 }
 
 // ============================================================
-// Dir rules / Layer-7 blocked / judge / scanner lifecycle (2026-08-25)
+// Dir rules / Layer-7 blocked / judge / scanner lifecycle
 // ============================================================
 
 #[test]
@@ -1306,7 +1306,7 @@ fn test_plugin_dir_rules_deny() {
         enabled: true,
         default_action: "allow".to_string(),
         dir_rules: vec![SecurityRule {
-            // glob 方言（D12-1 后 matcher 只认 `*`/`**` 通配；regex 风味
+            // glob 方言（后 matcher 只认 `*`/`**` 通配；regex 风味
             // `/tmp/.*` 是旧契约漂移——字面点号后失配，deny 静默失效）。
             pattern: "/tmp/**".to_string(),
             action: "deny".to_string(),
@@ -1354,7 +1354,7 @@ async fn test_plugin_set_judge_and_is_critical_tool() {
     assert!(plugin.judge().is_some());
 
     // exec → process_exec（CRITICAL）；read_file → LOW；
-    // 未知工具 → W5 fail-closed = true（与 effective_tool_operation 同口径）。
+    // 未知工具 → fail-closed = true（与 effective_tool_operation 同口径）。
     assert!(plugin.is_critical_tool("exec"));
     assert!(!plugin.is_critical_tool("read_file"));
     assert!(plugin.is_critical_tool("totally_unknown_tool"));
@@ -1376,7 +1376,7 @@ async fn test_plugin_set_judge_and_is_critical_tool() {
     assert_eq!(plugin.tool_danger_level("totally_unknown_tool"), "CRITICAL");
 }
 
-// ---- guardian_mode 覆盖裁决（2026-09-16 无上下文 LLM 命令审计） ----
+// ---- guardian_mode 覆盖裁决（无上下文 LLM 命令审计） ----
 
 #[test]
 fn guardian_mode_default_off_never_reviews() {
@@ -1597,10 +1597,10 @@ async fn test_plugin_execute_layer7_blocks_infected_path() {
     assert!(e.summary.contains("/tmp/dl.exe"), "{}", e.summary);
 }
 
-// BUG-20261029-171 红证：multiedit 待写内容内嵌 edits[].new_text（顶层
+// 红证：multiedit 待写内容内嵌 edits[].new_text（顶层
 // 无 content/data/body/html 键，上方键循环取不到）+ extract_paths 无
 // multiedit 臂——双盲区 = multiedit 写盘内容完全绕过 Layer 7（write_file
-// 拦得住的 multiedit 拦不住；BUG-20261028-118 同族漂移在扫描面复发）。
+// 拦得住的 multiedit 拦不住； 同族漂移在扫描面复发）。
 // content-only 引擎隔离内容臂：file 臂恒干净，命中必来自 new_text 扫描。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(feature = "scanner")]
@@ -1624,11 +1624,11 @@ async fn test_plugin_execute_layer7_blocks_infected_multiedit_content() {
     assert!(e.summary.contains("new_text"), "{}", e.summary);
 }
 
-// BUG-20261102-310 红证：edit_file 待写内容是顶层 new_text（edit.rs schema
-// required 键，execute 落 tokio::fs::write）——Layer 7 内容键循环
+// 红证：edit_file 待写内容是顶层 new_text（edit.rs schema
+// required 键，execute 落 tokio::fs:write）——Layer 7 内容键循环
 // ["content","data","body","html"] 不含 new_text，multiedit 特判只覆盖
 // edits[] 数组 = edit_file 写盘内容完全绕过病毒扫描（write_file/multiedit
-// 拦得住的 edit_file 拦不住；BUG-20261029-171 同族漂移在扫描面复发）。
+// 拦得住的 edit_file 拦不住； 同族漂移在扫描面复发）。
 // content-only 引擎隔离内容臂：file 臂恒干净，命中必来自 new_text 扫描。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(feature = "scanner")]
@@ -1648,6 +1648,108 @@ async fn test_plugin_execute_layer7_blocks_infected_edit_file_new_text() {
     assert_eq!(e.layer, "virus");
     assert!(e.summary.contains("virus scanner"), "{}", e.summary);
     assert!(e.summary.contains("new_text"), "{}", e.summary);
+}
+
+// BUG-20261107-009 红证①：run_script 脚本本体是顶层 script 键（exec.rs
+// schema required 键，spawn 直接执行）——Layer 7 内容键循环此前不含
+// script = run_script 脚本内容完全绕过病毒扫描（write_file/edit_file 拦
+// 得住的 run_script 拦不住；BUG-20261029-171/20261102-310 同族漂移在
+// 扫描面第三次复发）。content-only 引擎隔离内容臂：file 臂恒干净，命中
+// 必来自 script 键扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_blocks_infected_run_script_content() {
+    let plugin = make_plugin();
+    install_content_only_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "run_script".to_string(),
+        args: serde_json::json!({
+            "interpreter": "bash",
+            "script": "X5O!P%@AP[EICAR]"
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("virus scanner"), "{}", e.summary);
+    assert!(e.summary.contains("script"), "{}", e.summary);
+}
+
+// BUG-20261107-009 红证②：run_script 载荷内嵌可执行路径（`bash -c
+// ./tools/implant` 的 implant）此前零扫描——extract_paths exec 臂无
+// run_script。MockVirus 全拦引擎下路径臂先于内容臂：命中消息带路径
+// token（修复前无臂 → 唯一可能命中来自内容臂，消息是 script 键名），
+// 路径断言同时证明补臂生效与内容臂兜底并存。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_scans_run_script_path_tokens() {
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "run_script".to_string(),
+        args: serde_json::json!({
+            "interpreter": "bash",
+            "script": "./tools/implant --silent"
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("./tools/implant"), "{}", e.summary);
+}
+
+// BUG-20261107-009 红证③：background_start 的 command 与 exec 完全同形
+// （types.rs 归 ProcessExec——「命令本体照常过 8 层管线」承诺），此前
+// extract_paths exec 臂无 background_start = 后台命令的可执行路径 token
+// 不进病毒扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_scans_background_start_command() {
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "background_start".to_string(),
+        args: serde_json::json!({"command": "/tmp/implant.exe --serve"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("/tmp/implant.exe"), "{}", e.summary);
+}
+
+// BUG-20261107-009 红证④：mcp_discover stdio 臂（LLM 可控 command spawn，
+// BUG-20261102-296 投影 process_exec 过管线——投影只写 metadata，管线
+// 看到的 tool_name 仍是 mcp_discover）此前 extract_paths 无臂 = MCP
+// server 二进制路径不进病毒扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_scans_mcp_discover_command() {
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "mcp_discover".to_string(),
+        args: serde_json::json!({"command": "/tmp/evilserver.exe", "args": ["--stdio"]}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("/tmp/evilserver.exe"), "{}", e.summary);
 }
 
 #[tokio::test]
@@ -1745,7 +1847,7 @@ async fn test_plugin_audit_log_dir_is_file_degrades_gracefully() {
 }
 
 // ============================================================
-// S3 batch 4: hardware/registry 规则注册臂
+// batch 4: hardware/registry 规则注册臂
 // ============================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1758,7 +1860,7 @@ async fn test_register_rules_hardware_and_registry_arms() {
         enabled: true,
         default_action: "allow".to_string(),
         hardware_rules: vec![SecurityRule {
-            // glob 方言 match-all（D12-1 后只认 `*`/`**`；装饰性规则，
+            // glob 方言 match-all（后只认 `*`/`**`；装饰性规则，
             // 断言不触及——工具名映射表无 hardware/registry 工具）。
             pattern: "**".to_string(),
             action: "deny".to_string(),
@@ -1784,9 +1886,9 @@ async fn test_register_rules_hardware_and_registry_arms() {
     assert!(a1);
 }
 
-// ======================== F5: DenyInfo 结构化反馈验收 ========================
+// ========================: DenyInfo 结构化反馈验收 ========================
 
-// F5（devtool-upgrade 阶段 2）验收：每层注入一个用例，断言 deny 携带
+// （devtool-upgrade）验收：每层注入一个用例，断言 deny 携带
 // layer / policy / suggestion 三要素。summary 保留各层原文（由上方各层
 // 既有测试覆盖）；policy 标识与审计 JSONL 的 policy 列同源，可对账。
 
@@ -1948,7 +2050,7 @@ async fn test_deny_info_layer_virus() {
 }
 
 // ---------------------------------------------------------------------------
-// CFG-05/06（2026-09-16 死键接线）回归
+// CFG-05/06（死键接线）回归
 // ---------------------------------------------------------------------------
 
 /// `approval_timeout_seconds` 此前从未从 config 接进 AuditorConfig（恒
@@ -2073,7 +2175,7 @@ async fn cfg06_injection_threshold_consumed_by_detector() {
 }
 
 // ---------------------------------------------------------------------------
-// F8（2026-09-27）：非工具管线的直接审计记账入口（rewind force 等强恢复
+// 非工具管线的直接审计记账入口（rewind force 等强恢复
 // 动作落 Merkle append-only 审计链；tracing 日志不算留痕——轮转即失）
 // ---------------------------------------------------------------------------
 
@@ -2129,7 +2231,7 @@ fn test_append_direct_audit_event_none_when_chain_disabled() {
 }
 
 // ===========================================================================
-// L6（2026-10-12 T1）：pre-exec 脚本内容扫描——管线级矩阵
+// pre-exec 脚本内容扫描——管线级矩阵
 // ===========================================================================
 
 const PREEXEC_PAYLOAD: &str =
@@ -2217,7 +2319,7 @@ async fn preexec_inline_bash_c_passes_pipeline() {
     assert!(allowed, "inline form must pass, got: {err:?}");
 }
 
-// ===== connector 动态工具 metadata 投影（行动代理 P0，2026-10-14）=====
+// ===== connector 动态工具 metadata 投影（行动代理）=====
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn override_op_type_metadata_respected_by_pipeline() {
@@ -2352,7 +2454,7 @@ fn danger_level_of_slug_fail_closed_on_unknown() {
     );
 }
 
-// ---- 行动代理 P0（PLAN §6.2）：execute_tracked 必须透传审批引用（Cell 槽位）----
+// ---- 行动代理 （PLAN）：execute_tracked 必须透传审批引用（Cell 槽位）----
 // 无交互审批路径（直通/拦截）第三值恒 None；装配批准 manager 后 Some（pipeline
 // 的 ABAC 层自生成 req.id = uuid，测试做动态契约断言不钉死具体值）。
 
@@ -2424,7 +2526,7 @@ async fn execute_tracked_propagates_interactive_approval_ref() {
     );
 }
 
-// BUG-20261104-374 红证（管线级）：SecurityPlugin::new 构造 AuditChain 后
+// 红证（管线级）：SecurityPlugin::new 构造 AuditChain 后
 // 不回载盘上链尾——audit_chain_path 是固定路径续写，重启（重新 new）后
 // 首个事件 prev_hash=全零，与盘上既有链断裂，logs.chain_verify 全量校验
 // 恒 FAIL（防篡改链被正常重启本身打穿；load_segments 方法在、测试在、

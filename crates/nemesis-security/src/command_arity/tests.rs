@@ -1,4 +1,4 @@
-//! command_arity 单测（B5）：分词 + 归约表 + env 前缀跳过，30+ 常见命令。
+//! command_arity 单测：分词 + 归约表 + env 前缀跳过，30+ 常见命令。
 
 use super::*;
 
@@ -320,7 +320,7 @@ fn reduce_longest_match_beats_shorter_high_arity_first() {
     assert_eq!(reduce_command("pnpm run build --prod"), "pnpm run build *");
 }
 
-// ---------- CMD-12（2026-10-13）：command_segments 顶层复合分段 ----------
+// ---------- CMD-12：command_segments 顶层复合分段 ----------
 
 use crate::command_arity::command_segments;
 
@@ -399,7 +399,7 @@ fn test_segments_redirection_amp_not_split() {
     );
     // `>|`（强制覆盖重定向，bash）：`|` 前导 `>` 不切
     assert_eq!(segs("cmd >| out.txt"), vec!["cmd >| out.txt"]);
-    // `<&N`（fd 复制重定向，bash）：`&` 前导 `<` 不切（闭环批 2026-10-13
+    // `<&N`（fd 复制重定向，bash）：`&` 前导 `<` 不切（闭环-13
     // 补齐——此前 `cmd <&0` 把 `&` 当操作符切出假段 `&0`）
     assert_eq!(segs("cmd <&0"), vec!["cmd <&0"]);
     assert_eq!(

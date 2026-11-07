@@ -1,8 +1,8 @@
-//! M5（2026-10-10 集群无人值守硬化）— 跨节点批复桥（master 侧注册表 + 回源）。
+//! （2026-10-10 集群无人值守硬化）— 跨节点批复桥（master 侧注册表 + 回源）。
 //!
 //! worker 执行看板任务时的 ABAC 审批 ask 卡在 worker 本地 Dashboard（裁决/
 //! 超时真相源留 worker，300s 语义不变）；人不在 worker 前 = ask 必超时被拒
-//! （评估期 A6/P6 实证）。本模块给 master 侧两个批复入口，裁决经 RPC 下发
+//! （评估期 / 实证）。本模块给 master 侧两个批复入口，裁决经 RPC 下发
 //! worker 本地 pending：
 //!
 //! - **Dashboard 代理批复**：`approval.remote_list` / `approval.remote_respond`
@@ -139,7 +139,7 @@ impl RemoteAskRegistry {
     /// 存活条目快照（remote_list；TTL 惰性清理 + 剩余秒数升序——快过期的
     /// 卡片排前面）。裁决窗口已过但注册表 +60s 兜底未扫的条目不进快照：
     /// worker 侧超时自动拒已生效，条目已不可裁决，列出去只会让刷新页面的
-    /// 客户端种一张随即自摘的死卡（2026-10-15 真机实证「刷新闪审批卡」）。
+    /// 客户端种一张随即自摘的死卡（真机实证「刷新闪审批卡」）。
     pub fn snapshot(&self) -> Vec<serde_json::Value> {
         let mut map = self.lock();
         Self::sweep(&mut map);
@@ -169,7 +169,7 @@ pub fn registry() -> &'static RemoteAskRegistry {
 
 /// 回执语法解析（与 channel_approval::parse_reply / loop 侧同源格式：
 /// `/approve <id>` / `/deny <id>`，id 不含空白）。返回 (是否批准, id)。
-/// 本函数是格式单一真相源——channel_approval 委托此处。
+/// 本函数是格式单一权威定义——channel_approval 委托此处。
 pub fn parse_approval_reply(content: &str) -> Option<(bool, &str)> {
     let trimmed = content.trim();
     let (approved, rest) = if let Some(rest) = trimmed.strip_prefix("/approve ") {
@@ -218,8 +218,8 @@ pub fn publish_resolved(data: serde_json::Value) {
 }
 
 /// 裁决下发 worker（RPC [`ACTION_APPROVAL_RESPOND`]；**always 钉死 false**
-/// ——规则记忆只允许 worker 本地 Dashboard 显式批准落盘，防远程误批产生
-/// 永久放行）。Ok(()) = worker 确认送达；Err = 传输/超时/worker 报错
+/// 规则记忆只允许 worker 本地 Dashboard 显式批准落盘，防远程误批产生
+/// 永久放行）。Ok = worker 确认送达；Err = 传输/超时/worker 报错
 /// （调用方留痕，注册表条目保留可重试）。
 pub async fn send_verdict(
     cluster: &nemesis_cluster::cluster::Cluster,

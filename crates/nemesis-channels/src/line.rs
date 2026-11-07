@@ -58,7 +58,7 @@ pub struct LineSource {
     #[serde(rename = "type")]
     pub source_type: String,
     /// LINE webhook JSON uses camelCase keys (`userId`/`groupId`/`roomId`).
-    /// BUG #11 fix (2026-08-25): 缺 rename 时反序列化得到 None，
+    /// fix: 缺 rename 时反序列化得到 None，
     /// 导致所有入站消息 sender_id/chat_id 变成 "unknown"。
     #[serde(rename = "userId", alias = "user_id")]
     pub user_id: Option<String>,
@@ -138,7 +138,7 @@ impl LineChannel {
         Self::verify_signature_with_secret(&self.config.channel_secret, body, signature)
     }
 
-    /// 签名校验单一真相源：`signature` 必须等于 base64(HMAC-SHA256(body,
+    /// 签名校验统一定义：`signature` 必须等于 base64(HMAC-SHA256(body,
     /// secret))；解码失败（空串/非法字符）与长度不符一律拒绝；比较为常时
     /// 逐字节 XOR，不给时序侧信道留口子。`verify_signature`（&self 面）与
     /// `handle_webhook_connection`（secret 参数面）都从这里走，杜绝双实现漂移。
@@ -283,7 +283,7 @@ impl LineChannel {
         // 签名闸（fail-closed）：LINE 平台发出的每个 webhook 都带
         // X-Line-Signature；缺头/空头的请求不可能来自 LINE。旧形态静默放行
         // （200 + 直接入总线），任何能摸到监听端口的进程都能伪造
-        // userId/chat_id 投毒（BUG-20261025-75）。
+        // userId/chat_id 投毒。
         if signature.is_empty() {
             warn!("[LineChannel] webhook request missing X-Line-Signature; rejecting");
             let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
@@ -291,7 +291,7 @@ impl LineChannel {
             return;
         }
 
-        // Verify signature（单一真相源：base64 + 常时比较）
+        // Verify signature（统一定义：base64 + 常时比较）
         if !Self::verify_signature_with_secret(channel_secret, body, signature) {
             warn!("[LineChannel] invalid webhook signature");
             let resp = "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n";
@@ -447,7 +447,7 @@ impl Channel for LineChannel {
 
         self.base.record_sent();
 
-        // BUG-20261101-277: LINE 硬限 5000 字符（服务端 400 拒收整条），预算
+        // LINE 硬限 5000 字符（服务端 400 拒收整条），预算
         // 4900 留余量。reply token 一次性——首块走 reply()，其余块走 push。
         let chunks = split_message(&msg.content, 4900);
 

@@ -162,7 +162,7 @@ mod wave5 {
         let g = EnvHomeGuard::new();
         let home = g.home();
         seed(&home);
-        // 双旗标已启用 + token 为空 → F4 WARN + 幂等早退（不重新生成）。
+        // 双旗标已启用 + token 为空 → WARN + 幂等早退（不重新生成）。
         update_cluster_config(&home, "enabled", serde_json::json!(true)).unwrap();
         update_main_config_cluster(&home, true).unwrap();
         run(ClusterAction::Enable, false)
@@ -234,7 +234,7 @@ mod wave5 {
         let g = EnvHomeGuard::new();
         let home = g.home();
         seed(&home);
-        // BUG-20261102-297：空 token 现在先于 bind 被 fail-closed 拦下——
+        // 空 token 现在先于 bind 被 fail-closed 拦下——
         // 本测的是 bind 冲突臂，补一个字面量 token 让流程走到 bind。
         update_cluster_config(&home, "token", serde_json::json!("w5-node-tok-0001")).unwrap();
         // 静态 peers（含 rpc_port 字段）→ run_node 头段装载循环。
@@ -299,7 +299,7 @@ rpc_port = 21195
 }
 
 // ---------------------------------------------------------------------------
-// wave6（2026-09-25）：w5 吃剩的离线可达臂——token 双写非对象 JSON 的
+// wave6：w5 吃剩的离线可达臂——token 双写非对象 JSON 的
 // 静默跳过区、enable 失步修复的「仅主开关已开」方向、disable 双关幂等。
 // ---------------------------------------------------------------------------
 mod wave6 {

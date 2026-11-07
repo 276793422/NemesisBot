@@ -1,4 +1,4 @@
-//! 模板键保真回归锁（BUG-20261024-12）。
+//! 模板键保真回归锁。
 //!
 //! 不变量：`nemesisbot/config/config.default.json`（编译期嵌入、随发行分发的
 //! 声明面）中的每一个叶子键，都必须能穿越 typed `Config` 的 load → save 往返

@@ -20,9 +20,10 @@
  * 必然扑空（首版 3 失败的根因）。sid 一律取自侧栏选中行
  * `.session-item.active` 的 data-session-id（与 locator 同源，零失配）。
  */
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import {
   newAuthedPage,
+  openSessionSidebar,
   restartGateway,
   sendChat,
   waitAssistantReply,
@@ -53,15 +54,29 @@ function maxSeq(events: SyncEvent[]): number {
 /** UI 驱动种子：展开侧栏 → 新建对话 → 发送并等回复 → 返回会话 sid。 */
 async function seedViaUi(page: Awaited<ReturnType<typeof newAuthedPage>>, marker: string) {
   // 展开侧栏（若收起）——「显示会话列表」toggle，resync.spec 同款。
-  const toggle = page.locator('.toolbar-toggle').first()
-  if (await toggle.isVisible().catch(() => false)) {
-    await toggle.click()
-  }
+  await openSessionSidebar(page)
   // 显式新建对话：新页面挂载 auto-select sessions[0]（最近活跃），可能落
   // 在前面 spec 留下的会话上；点「＋ 新建对话」= create() 内 switchTo，
   // currentId 必然落干净会话（resync.spec 实录纪律）。
+  // 点击后必须等新会话切换真正落地（active 行 data-session-id 变化 =
+  // create() WS 往返 + switchTo + ChatPanel reset 全完成）再 fill——
+  // 旧断言 `.fn-new-chat` toBeVisible 断的是刚点过的按钮自己，恒真秒过，
+  // fill 与 reset 竞速：reset 赢 = 输入被清空、发送钮恒 disabled（2026-11-07
+  // 全量实录；solo 空载时 reset 先到掩盖竞速）。
+  const prevActive = await page
+    .locator('.session-item.active')
+    .getAttribute('data-session-id')
+    .catch(() => null)
   await page.locator('.fn-new-chat').click()
-  await expect(page.locator('.fn-new-chat')).toBeVisible()
+  // toPass 双条件环而非 expect.poll：poll 回调内 getAttribute 抛错立即传播
+  // 不重试（capsule spec 同款注记）；且需断言 active 行可见 AND id 已变，
+  // 裸「id 变化」在零 active 行窗口会假绿。
+  await expect(async () => {
+    const row = page.locator('.session-item.active')
+    await expect(row.first()).toBeVisible({ timeout: 2_000 })
+    const id = await row.first().getAttribute('data-session-id', { timeout: 1_000 })
+    expect(id, `active id 未变：${prevActive}`).not.toBe(prevActive)
+  }).toPass({ timeout: 15_000 })
 
   await sendChat(page, marker)
   await waitAssistantReply(page, 'E2E_MOCK_TEXT_REPLY', 45_000)
@@ -150,10 +165,7 @@ test('gateway 重启：环形缓冲随进程消失 → chat.sync 诚实上报 ga
   await expect(page.locator('.chat-input-area textarea')).toBeVisible({ timeout: 20_000 })
 
   // 重新选中会话（reload 后 currentId 不持久化），历史从磁盘重拉
-  const toggle = page.locator('.toolbar-toggle').first()
-  if (await toggle.isVisible().catch(() => false)) {
-    await toggle.click()
-  }
+  await openSessionSidebar(page)
   const target = page.locator(`.session-item[data-session-id="${sid}"]`)
   await expect(target).toBeVisible({ timeout: 20_000 })
   await target.click()

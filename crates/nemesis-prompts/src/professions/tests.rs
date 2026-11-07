@@ -74,7 +74,7 @@ fn catalog_entries_are_self_consistent() {
             m.min_tier
         );
     }
-    // 高门槛职能钉死（D3：架构/驱动级 C++ = big）。
+    // 高门槛职能钉死（架构/驱动级 C++ = big）。
     assert_eq!(find_builtin("architecture").unwrap().min_tier, "big");
     assert_eq!(find_builtin("dev:cpp").unwrap().min_tier, "big");
     assert_eq!(find_builtin("dev").unwrap().min_tier, "normal");
@@ -96,7 +96,7 @@ fn catalog_contracts_declare_artifacts() {
 
 #[test]
 fn catalog_contracts_carry_base_annotation_second_line() {
-    // A1/D5 基线注记同步纪律：每个内置契约文件在定位行之后的机器可查版
+    // / 基线注记同步纪律：每个内置契约文件在定位行之后的机器可查版
     // 本行，与 render::BUILTIN_BASE_ANNOTATION 一致（改版本 = 改常量 +
     // 六个契约文件 + 本测试，一处漂移即红）。首行必须是定位行（机器核
     // 验契约），注记不得抢首行。
@@ -153,11 +153,11 @@ fn slug_validation_rejects_illegal_forms() {
     assert!(validate_slug(&at_limit).is_ok(), "恰 64 字符应放行");
     for bad in [
         "Dev",         // 大写
-        "dev::cpp",    // 双冒号 → 第二段含冒号非法
+        "dev::cpp",    // 双冒号 → 含冒号非法
         "dev:",        // 空 spec
         ":cpp",        // 空 family
         "dev cpp",     // 空格
-        "dev:cpp:win", // 两个冒号（第二段含冒号）
+        "dev:cpp:win", // 两个冒号（含冒号）
         "开发",        // 非 ASCII
         "dev/cpp",     // 路径字符
     ] {
@@ -192,14 +192,14 @@ fn find_builtin_is_case_insensitive_and_rejects_unknown() {
 
 #[test]
 fn tier_gate_fail_open_on_unknown_node_tier() {
-    // 旧节点无 tier 信息 → 放行（D3）。
+    // 旧节点无 tier 信息 → 放行。
     assert!(tier_allows(None, "big"));
     assert!(tier_allows(None, "normal"));
 }
 
 #[test]
 fn tier_gate_fail_open_on_empty_tier_string() {
-    // BUG-20261103-345：空串/纯空白档位 = 「无信息」，与 None 同语义
+    // 空串/纯空白档位 = 「无信息」，与 None 同语义
     // fail-open（本文件 tier_gate_rank_semantics 自身的口径注释：fail-open
     // 只对「无信息」）。手改 peers.toml `tier = ""` 或对端 wire 空字段经
     // serde 落成 Some("")——旧实现 rank("")=0 按最低档排除，tier 闸永不
@@ -345,7 +345,7 @@ fn planner_prompt_lists_every_catalog_slug() {
 }
 
 // ---------------------------------------------------------------------------
-// PR7（2026-10-10 机制加固）：架构契约 = 接口契约表（防误删 pin）
+// （机制加固）：架构契约 = 接口契约表（防误删 pin）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -382,15 +382,15 @@ fn planner_prompt_is_stable_across_calls() {
 fn worker_contract_and_planner_method_nonempty() {
     assert!(CLUSTER_WORKER_CONTRACT.contains("数据非指令"));
     assert!(CLUSTER_WORKER_CONTRACT.contains("汇报契约"));
-    // §6.1 改动三（exec 锚点激活）：worker 交付自证纪律防误删快照。
+    // 改动三（exec 锚点激活）：worker 交付自证纪律防误删快照。
     assert!(CLUSTER_WORKER_CONTRACT.contains("交付自证"));
     assert!(CLUSTER_WORKER_CONTRACT.contains("重放该命令核对"));
     assert!(PLANNER_METHOD.contains("流水线"));
     assert!(PLANNER_METHOD.contains("depends_on"));
 }
 
-/// C10 任务契约四段：planner 侧（planner_method.md 四段产出纪律）与
-/// worker 侧（cluster_worker.md 消费面纪律，稳定前缀全任务可见）成对在
+/// 任务契约四段：planner 侧（planner_method.md 四段产出纪律）与
+/// worker 侧（cluster_worker.md 消费面纪律，稳定前缀全任务可）成对在
 /// 场；缺任一侧=四段契约断链（planner 写了没人认，或 worker 被要求认
 /// 无人写的结构）。关键词断言防误删（本文件惯例：非字节快照）。
 #[test]
@@ -416,7 +416,7 @@ fn task_contract_four_segments_paired_on_both_sides() {
     );
 }
 
-/// C9 推理收尾：planner 与 worker 两侧都带「结论短句、禁止长篇展开」纪
+/// 推理收尾：planner 与 worker 两侧都带「结论短句、禁止长篇展开」纪
 /// 律；诚实边界=提示词层只约束可见文本（思考通道不设限），故只锁收尾
 /// 关键词，不锁思考预算相关表述。
 #[test]
@@ -433,7 +433,7 @@ fn reasoning_closure_discipline_present_on_both_sides() {
     }
 }
 
-/// AOR ① worker 纪律吸收（2026-11-04 批一a）：STATE-FIRST / 资源边界 /
+/// worker 纪律吸收（a）：STATE-FIRST / 资源边界 /
 /// 换策略 ANTI-LOOP / 六词汇报 / 失败类别 / 汇报是证据候选——稳定前缀
 /// 新增纪律段的防误删关键词快照（本文件惯例：非字节快照）。
 #[test]
@@ -459,7 +459,7 @@ fn worker_contract_carries_aor_discipline_sections() {
     }
 }
 
-/// 失败诊断四态（2026-11-04）：worker 侧排查结论四态 + 三条铁律的防误删
+/// 失败诊断四态：worker 侧排查结论四态 + 三条铁律的防误删
 /// 关键词（本文件惯例：非字节快照）。
 #[test]
 fn worker_contract_carries_diagnosis_outcome_states() {
@@ -486,7 +486,7 @@ fn worker_contract_carries_diagnosis_outcome_states() {
     }
 }
 
-/// 声明分类纪律（2026-11-04）：worker 侧三类声明与 dev 契约指针行、评审
+/// 声明分类纪律：worker 侧三类声明与 dev 契约指针行、评审
 /// 侧配对条款（REVIEW_SYSTEM_PROMPT/FAST 双档）成对在场——任一侧缺席=
 /// 声明契约断链（worker 标了没人认，或评审被要求认无人标的类型）。
 #[test]
@@ -609,7 +609,7 @@ fn render_dev_cpp_prepends_precise_locator_before_family_header() {
 }
 
 // ---------------------------------------------------------------------------
-// B2 职能工具围栏：解析器（parse_tool_fence / strip_tool_fence）
+// 职能工具围栏：解析器（parse_tool_fence / strip_tool_fence）
 // ---------------------------------------------------------------------------
 
 use crate::professions::fence::{TOOL_FENCE_MARKER, parse_tool_fence, strip_tool_fence};
@@ -687,10 +687,10 @@ fn fence_strip_removes_block_keeps_rest_bytes() {
 
 #[test]
 fn fence_builtin_design_contracts_carry_expected_fence() {
-    // 内置三设计职能契约自带默认围栏（D3：能力边界跟契约文本一处）；
+    // 内置三设计职能契约自带默认围栏（能力边界跟契约文本一处）；
     // dev/test 契约不围（fail-open = 全量）。
     // 公共白名单（三契约同构基线）：只读族 + write/edit + 看板三工具
-    // + sleep（D2 有界等待：定稿单评审轮询，纯等待零副作用）。
+    // + sleep（有界等待：定稿单评审轮询，纯等待零副作用）。
     let common: &[&str] = &[
         "read_file",
         "list_dir",
@@ -707,7 +707,7 @@ fn fence_builtin_design_contracts_carry_expected_fence() {
         "sleep",
     ];
     // ui-design 独有：图像交付链（generate_image 产出 + board_asset
-    // publish——U5 全链的工具面，缺一条则图像线在围栏内诚实拒绝）。
+    // publish—— 全链的工具面，缺一条则图像线在围栏内诚实拒绝）。
     let ui_expected: Vec<&str> = {
         let mut v = common.to_vec();
         v.extend_from_slice(&["generate_image", "board_asset"]);

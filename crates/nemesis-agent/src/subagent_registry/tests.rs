@@ -166,7 +166,7 @@ fn begin_overwrites_duplicate_id_without_duplicating_order() {
 }
 
 // ===========================================================================
-// BUG-20261104-354 回归锁：persist 曾手搓固定 tmp 名（tasks.json.tmp）+
+// 回归锁：persist 曾手搓固定 tmp 名（tasks.json.tmp）+
 // 裸 fs::write——并发 begin/finish/cancel 是功能常态路径（多子代理同时
 // 收尾），两个 persist 竞争同一 tmp 路径时交错写可产出坏混合体，rename
 // 把好账本顶成坏账本（重启 load 失败 = 整册清空）。修复后走

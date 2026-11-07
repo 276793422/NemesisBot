@@ -1,4 +1,4 @@
-//! recover 重扫引擎单测（合成 PE32+ 镜像，夹具复用 crate 级 tests.rs 构造器）。
+//! recover 重扫引擎单测（合成 + 镜像，夹具复用 crate 级 tests.rs 构造器）。
 
 use super::{AnchorLite, load_image, parse_pattern, rescan};
 use crate::tests::test_pe_file;
@@ -40,7 +40,7 @@ fn pattern_parse_forms() {
 fn load_image_from_synthetic_file() {
     let img = load_image(&test_pe_file()).expect("合成 PE 组装");
     assert_eq!(img.pe.sections.len(), 2);
-    // .text 头 5 字节 = E8 03 00 00 00
+    // .text 头 5 字节 = 03 00 00 00
     assert_eq!(
         img.read_rva(0x1000, 5),
         Some(&[0xE8, 0x03, 0x00, 0x00, 0x00][..])
@@ -60,7 +60,7 @@ fn byte_pattern_hit_and_wildcard() {
     assert!(r.hit);
     assert_eq!(r.found_rva, Some(0x1020));
     assert_eq!(r.hit_count, 1);
-    // 通配：B8 ?? ?? ?? 5A → 0x1008
+    // 通配： ?? ?? ?? 5A → 0x1008
     let a = anchor("byte_pattern", "imm_fn", |a| {
         a.pattern = Some("B8 ?? ?? ?? 5A".into());
     });

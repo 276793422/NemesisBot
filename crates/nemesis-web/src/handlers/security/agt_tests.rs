@@ -63,6 +63,7 @@ fn agt_ctx(
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            background_registry: None,
             signature_verify: sig,
             skills_install_gate: None,
             session_stats: None,
@@ -87,9 +88,7 @@ fn agt_default_impl_matches_new() {
     let _ = SecurityHandler::new();
 }
 
-// ---------------------------------------------------------------------------
 // signature_verify_status：双槽透传
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_signature_verify_status_injected_and_degraded() {
@@ -132,9 +131,7 @@ async fn agt_signature_verify_status_injected_and_degraded() {
     assert_eq!(out["detail"], "self-check ok");
 }
 
-// ---------------------------------------------------------------------------
 // audit / stats：非 jsonl 目录项跳过
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_audit_and_stats_skip_non_jsonl_entries() {
@@ -166,9 +163,7 @@ async fn agt_audit_and_stats_skip_non_jsonl_entries() {
     assert_eq!(out["by_level"]["LOW"], 1, "{out}");
 }
 
-// ---------------------------------------------------------------------------
 // approvals.clear：无文件 removed=0 + config 目录创建失败
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_approvals_clear_missing_file_and_dir_create_fail() {

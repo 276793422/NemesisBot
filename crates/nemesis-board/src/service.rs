@@ -7,15 +7,15 @@
 //! Dashboard 写路径全部堵死（两 worker 集群里无人可写）。派发（dispatch）
 //! 的天然闸门是集群在线（`dispatch_issue_core` 报「集群未运行」），与 role 无关。
 //!
-//! 单节点部署（cluster 关闭）gateway 按 Coordinator 注入（board 计划 §1.2）。
+//! 单节点部署（cluster 关闭）gateway 按 Coordinator 注入（board 计划）。
 
 use crate::store::BoardStore;
 use nemesis_types::cluster::NodeRole;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// 本地发言入口桥（Swarm M3 批次 E）：把 dashboard 人工发言接进 master
-/// 讨论管线（幂等/额度三闸/裁决投递与 worker 上行同源，G3/G12 语义单一
+/// 本地发言入口桥（Swarm 批次 E）：把 dashboard 人工发言接进 master
+/// 讨论管线（幂等/额度三闸/裁决投递与 worker 上行同源，/ 语义单一
 /// 真相）。实现方在 nemesisbot（`board_bus::LocalDiscussionIngress`）——
 /// 本 crate 不依赖 cluster/agent，故以 trait 倒置；未注入 = 发言不可用
 /// （讨论总线未装配），调用方诚实报错。
@@ -39,14 +39,14 @@ pub trait DiscussionIngress: Send + Sync {
 pub struct BoardService {
     store: Arc<BoardStore>,
     role: NodeRole,
-    /// 资产下载密钥（Swarm M3 §5.4；gateway 装配时经 [`BoardService::with_asset_secret`]
+    /// 资产下载密钥（Swarm；gateway 装配时经 [`BoardService::with_asset_secret`]
     /// 注入）。None = 本节点未配资产服务——下载端点诚实 503，签发 helper
     /// 诚实报错。密钥永不出节点：签发/验证都用本节点自己的 secret。
     asset_secret: Option<Arc<[u8]>>,
     /// 资产实体目录（`<workspace>/board/assets`；与 secret 一起装配，
     /// 下载端点的白名单根——端点只服务此目录下、asset 表已登记的 ref）。
     assets_dir: Option<PathBuf>,
-    /// 讨论发言桥（Swarm M3 批次 E；`with_discussion` 注入）。None =
+    /// 讨论发言桥（Swarm 批次 E；`with_discussion` 注入）。None =
     /// board+cluster 讨论总线未装配，`channel.post` 诚实拒绝。
     discussion: Option<Arc<dyn DiscussionIngress>>,
 }
@@ -111,7 +111,7 @@ impl BoardService {
     }
 
     /// 本节点是否看板权威（coordinator）。**仅诊断/展示用途**——自
-    /// 2026-08-31 起写权限与 role 无关（见模块文档）。
+    /// 起写权限与 role 无关（见模块文档）。
     pub fn is_coordinator(&self) -> bool {
         self.role == NodeRole::Coordinator
     }

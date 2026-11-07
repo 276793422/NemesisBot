@@ -60,7 +60,7 @@ fn test_cleanup_expired() {
     assert!(mgr.list_pending().is_empty());
 }
 
-// timeout_secs 是外部配置 u64：u64::MAX 曾直接进 chrono::Duration::seconds
+// timeout_secs 是外部配置 u64：u64::MAX 曾直接进 chrono::Duration:seconds
 // （panic 带 / 2^63 负回绕 → pending 全量立即过期的反向事故）。钳位后不
 // panic 且 pending 存活。
 #[test]

@@ -1,4 +1,4 @@
-//! L19（改进项三期 2026-11-03）：U5 并行批接统一 WorkPool 后的行为钉子。
+//! （2026-11-03）： 并行批接统一 WorkPool 后的行为钉子。
 //!
 //! - 批级预检：>128 调用 / args 字节超 8 MiB → 全批类型化拒绝（零执行
 //!   零挂起——带执行计数器的工具断言计数不动）。
@@ -104,7 +104,7 @@ fn oversized_call(id: &str, bytes: usize) -> crate::types::ToolCallInfo {
 
 /// 调用数超 128 上限 → 全批拒绝，零执行（预检在 fut 构造前短路）。
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // L19_POOL_SER 序列化闸有意跨 await 持有
+#[allow(clippy::await_holding_lock)] // _POOL_SER 序列化闸有意跨 await 持有
 async fn l19_batch_over_call_cap_rejects_whole_batch_without_execution() {
     let _ser = L19_POOL_SER.lock();
     let _logs = capture_logs();
@@ -144,7 +144,7 @@ async fn l19_batch_over_call_cap_rejects_whole_batch_without_execution() {
 
 /// args 累计字节超 8 MiB → 全批拒绝，零执行。
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // L19_POOL_SER 序列化闸有意跨 await 持有
+#[allow(clippy::await_holding_lock)] // _POOL_SER 序列化闸有意跨 await 持有
 async fn l19_batch_over_input_bytes_cap_rejects_whole_batch_without_execution() {
     let _ser = L19_POOL_SER.lock();
     let _logs = capture_logs();
@@ -180,7 +180,7 @@ async fn l19_batch_over_input_bytes_cap_rejects_whole_batch_without_execution() 
 /// 容量连贯」钉子（旧共享池形态下小机器 max_pending < 128 会中段拒绝，
 /// 专属池 pending 上限=批上限后此回归封死）。
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // L19_POOL_SER 序列化闸有意跨 await 持有
+#[allow(clippy::await_holding_lock)] // _POOL_SER 序列化闸有意跨 await 持有
 async fn l19_batch_at_call_cap_reserves_and_executes_whole_batch() {
     let _ser = L19_POOL_SER.lock();
     let _logs = capture_logs();
@@ -217,7 +217,7 @@ async fn l19_batch_at_call_cap_reserves_and_executes_whole_batch() {
 
 /// 正常批（小调用）行为不变：全部执行成功 + 源序（join_all 保序）。
 #[tokio::test]
-#[allow(clippy::await_holding_lock)] // L19_POOL_SER 序列化闸有意跨 await 持有
+#[allow(clippy::await_holding_lock)] // _POOL_SER 序列化闸有意跨 await 持有
 async fn l19_normal_batch_unchanged_source_order() {
     let _ser = L19_POOL_SER.lock();
     let _logs = capture_logs();

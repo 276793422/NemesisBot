@@ -1,11 +1,11 @@
-//! 项目状态机（全自动流转 P3/F2）。
+//! 项目状态机（全自动流转）。
 //!
 //! 状态集：`active / in_progress / completed / archived`。主链
 //! `active → in_progress → completed`；`archived` 是各活跃态共用的归档
 //! 旁路（`active/in_progress → archived`），`archived → active` 为重开。
-//! `completed → in_progress` 为 P4 F3 项目级验收 FAIL 自动回退预留。
+//! `completed → in_progress` 为 项目级验收 FAIL 自动回退预留。
 //! 非法转移由 [`validate_transition`] 拒绝——写入口统一收在
-//! [`crate::store::BoardStore::update_project`]。
+//! [`crate::store:BoardStore::update_project`]。
 
 use crate::models::ProjectStatus;
 
@@ -20,7 +20,7 @@ pub fn can_transition(from: ProjectStatus, to: ProjectStatus) -> bool {
         (Active, InProgress | Archived) => true,
         // in_progress：收口完成或归档。
         (InProgress, Completed | Archived) => true,
-        // completed：归档，或 F3 验收 FAIL 自动回退重开（P4 接线）。
+        // completed：归档，或 验收 FAIL 自动回退重开（接线）。
         (Completed, Archived | InProgress) => true,
         // archived：重开回 active。
         (Archived, Active) => true,

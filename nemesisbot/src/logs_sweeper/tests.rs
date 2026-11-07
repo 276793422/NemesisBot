@@ -1,4 +1,4 @@
-//! M7/M8 清扫器测试：TTL 纯函数 / 账本末行判定 / 各族夹具删留 /
+//! 清扫器测试：TTL 纯函数 / 账本末行判定 / 各族夹具删留 /
 //! 全 0 不扫 / meta 配对同删。
 //!
 //! 纪律对齐：断言**内容**（read_dir 枚举产物）而非目录存在性（Windows
@@ -18,7 +18,7 @@ fn now() -> SystemTime {
 /// 方向说明：夹具 mtime = 真实当下、不可回拨（std 无稳定 API，不引
 /// filetime），所以把 sweep 的 `now` 参数推进到未来——夹具相对它就是
 /// 「40 天前」。拨反（now - 40d）会让 `duration_since(mtime)` 出 Err
-/// 恒不超龄，全夹具零删除（首跑实录）。
+/// 恒不超龄，全夹具零删除（首跑）。
 fn old_now() -> SystemTime {
     SystemTime::now() + Duration::from_secs(40 * 86400)
 }
@@ -604,7 +604,7 @@ fn all_zero_ttl_sweeps_nothing() {
     assert_eq!(names(&sl), vec!["ancient.jsonl"], "夹具原样保留");
 }
 
-// —— trash：回收站条目目录（拍板① 90d） ——
+// —— trash：回收站条目目录（90d） ——
 
 #[test]
 fn trash_family_sweeps_entry_dirs_and_outlives_other_families() {
@@ -622,7 +622,7 @@ fn trash_family_sweeps_entry_dirs_and_outlives_other_families() {
     std::fs::write(entry.join("trash.json"), "{}").unwrap();
 
     // 时钟拨 40 天：其余族全部超龄（默认 7~30d），trash(90d) 未超龄——
-    // 「回收站保留期长于所有日志族」的拍板语义在此被单独钉住。
+    // 「回收站保留期长于所有日志族」的既定语义在此被单独钉住。
     let stats = sweep_workspace_logs(
         ws.path(),
         &LogsTtl::default(),

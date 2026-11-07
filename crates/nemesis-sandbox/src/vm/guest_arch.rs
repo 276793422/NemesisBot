@@ -1,17 +1,17 @@
-//! GuestArch / QemuAccel / QEMU 机型映射表（P5 底座，轮次 5「接口必须留好」）。
+//! GuestArch / QemuAccel / QEMU 机型映射表（底座，「接口必须留好」）。
 //!
-//! **aarch64 预留纪律**（用户拍板原话：「我们可以不做相关的功能，但是接口
+//! **aarch64 预留纪律**（原话：「我们可以不做相关的功能，但是接口
 //! 必须留好，arm64 架构，不管是 windows 还是 linux 都是有大量需求的，只是
 //! 我们目前还没支持」）：枚举与机型/accel 映射表带全 arm 条目（条目在位、
 //! 标注「当前不产出」）；选了 aarch64 = 诚实报不支持（不是静默改道）。
 
-/// Guest CPU 架构。单一真相源——配置解析、QEMU 装配、镜像描述三面同源消费。
+/// Guest CPU 架构。单一权威定义——配置解析、QEMU 装配、镜像描述三面同源消费。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GuestArch {
     /// 当前唯一产出档（两台目标宿主均 x86_64）。
     X86_64,
-    /// 接口在位、当前不产出（2026-10-17）：不产镜像、不启动运行。
-    /// 恢复路径见实施计划 §5：cloud image 换 arm 变体 → 镜像管线 target
+    /// 接口在位、当前不产出：不产镜像、不启动运行。
+    /// 恢复路径见实施计划：cloud image 换 arm 变体 → 镜像管线 target
     /// 切换 → KVM/WHPX arm 档启用。
     AArch64,
 }
@@ -27,7 +27,7 @@ impl GuestArch {
         }
     }
 
-    /// 解析配置字符串。未知值 loud 拒绝（对齐 `executor.backend` P24 先例
+    /// 解析配置字符串。未知值 loud 拒绝（对齐 `executor.backend` 先例
     /// ——选型错误不静默改道）。
     pub fn parse(s: &str) -> Result<Self, String> {
         match s {
@@ -109,7 +109,7 @@ pub enum Production {
 }
 
 /// 机型/accel 映射表（`arch × accel` 全组合在位——编译期存在性由单测断言，
-/// G0 门「aarch64 条目编译期存在性」）。
+/// 门「aarch64 条目编译期存在性」）。
 ///
 /// 机型选型：
 /// - x86_64 → `q35`（现代 PCIe 机型，Debian generic cloud image 标准启动面）。
@@ -141,7 +141,7 @@ pub fn machine_spec(arch: GuestArch, accel: QemuAccel) -> MachineSpec {
     }
 }
 
-/// guest 显示/音频装配（§5 边界与预留的扩展点落点）：
+/// guest 显示/音频装配（边界与预留的扩展点落点）：
 /// 当前固定 `-display none` + 无音频设备（headless 服务器形态——guest 内
 /// 浏览器走 offscreen/Xvfb）。GPU/音频恢复路径 = 装配表加 virtio-gpu/audio
 /// 段 + 配置 schema 加 display/audio 键；本函数是唯一改动点。

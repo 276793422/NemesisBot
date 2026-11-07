@@ -170,7 +170,7 @@ fn test_simplify_command_double_slash_comment() {
 
 #[test]
 fn test_simplify_command_normalizes_quotes() {
-    // CMD-11①：归一化单一真相源 = normalize_exec_command——引号整体剥除
+    // 归一化单一权威 = normalize_exec_command——引号整体剥除
     // （shell 执行前也会剥，留下的引号曾打断 pattern 两侧匹配）。
     let simplified = Guard::simplify_command(r#"echo "hello""#);
     assert_eq!(simplified, "echo hello");
@@ -251,7 +251,7 @@ fn test_all_network_recon_commands() {
     assert!(guard.check("wireshark").is_err());
 }
 
-// BUG-20261104-373：netcat_bind 旧正则 `-\b[l]\b` 要求 l 独立成词，
+// netcat_bind 旧正则 `-\b[l]\b` 要求 l 独立成词，
 // listen flag 组合形态（l 后跟其他 flag 字母无词边界）恒打不中——
 // `nc -lvp 4444` 等 bind shell 标准形态全部漏网。修复 = `-[a-z]*l`
 // （与 chmod_recursive 的 flag 组合覆盖同模式）。
@@ -275,7 +275,7 @@ fn test_bug373_netcat_bind_combined_flags() {
     assert!(guard.check("echo hi").is_ok());
 }
 
-// BUG-20261104-373 横向：blocklist 全表 flag 变体/紧凑值/等价写法同族缺口。
+// 横向：blocklist 全表 flag 变体/紧凑值/等价写法同族缺口。
 #[test]
 fn test_bug373_horizontal_flag_variants() {
     let guard = Guard::new(true);
@@ -512,7 +512,7 @@ fn test_list_entries_metadata() {
 fn strict_mode_blocks_partial_keyword_match() {
     let mut guard = Guard::new(true);
     guard.config.strict_mode = true;
-    // "curl |" 是 strict 关键字；黑名单只拦 "curl ... | sh|bash"，
+    // "curl |" 是 strict 关键字；黑名单只拦 "curl... | sh|bash"，
     // "curl | grep" 不命中黑名单、但被 strict 部分匹配层拦截。
     let r = guard.check("curl | grep foo");
     assert!(r.is_err());
@@ -525,7 +525,7 @@ fn strict_mode_blocks_partial_keyword_match() {
 }
 
 // ===========================================================================
-// CMD 族修复 Guard 层测试（2026-09-16 第二批·灾难复发批）
+// CMD 族修复 Guard 层测试（·灾难复发批）
 // ===========================================================================
 
 #[test]
@@ -564,7 +564,7 @@ fn new_blocklist_forms_are_blocked() {
         "powershell -EncodedCommand AAAA",
         "pwsh -enc AAAA",
         "cmd /c rd /s /q c:\\data",
-        // CMD-11②：metadata 缺失补齐条目的行为面（pip uninstall）
+        // metadata 缺失补齐条目的行为面（pip uninstall）
         "pip uninstall -y requests",
     ] {
         assert!(

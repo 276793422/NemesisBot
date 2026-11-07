@@ -1,8 +1,8 @@
-//! outbox 发件箱测试（P3/D2）。
+//! outbox 发件箱测试。
 //!
 //! goal 单测面：入队落盘/幂等、推送全链（fake transport）、dedup 免传、
-//! 断点续传（have 跳块）、中途失败保 pending 重试、D4 worker 侧护栏 +
-//! 重武装、启动清扫（pushing 重置 + cluster_logs 残留补入队）、D5 pull。
+//! 断点续传（have 跳块）、中途失败保 pending 重试、 worker 侧护栏 +
+//! 重武装、启动清扫（pushing 重置 + cluster_logs 残留补入队）、 pull。
 
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -163,7 +163,7 @@ async fn enqueue_copies_records_and_is_idempotent() {
     assert!(ob.enqueue("no-such-task", "node-m").is_err());
 }
 
-/// BUG-20261104-365：并发入队互斥回归钉——四路触发源（终态钩子 / master
+/// 并发入队互斥回归钉——四路触发源（终态钩子 / master
 /// 兜底 pull RPC / 启动清扫 / 周期残留清扫线程）可对同一 task_id 并发
 /// enqueue，无锁时后到者的 remove_dir_all 会删掉先到者复制到一半的载荷，
 /// 「entry.json 在场 = 载荷完整」不变量被破坏（半套载荷推送 master
@@ -287,7 +287,7 @@ async fn mid_push_failure_keeps_pending_and_retries() {
     assert_eq!(entry.attempts, 1);
     assert!(entry.last_error.as_deref().unwrap().contains("中断"));
 
-    // CD6：退避窗口已设（15s 起步）→ 下一 tick 跳过，不再发 begin。
+    // 退避窗口已设（15s 起步）→ 下一 tick 跳过，不再发 begin。
     assert!(entry.next_retry_at.is_some(), "失败必须设置退避窗口（CD6）");
     ob.process_once().await;
     assert!(outbox_dir(&ws).join("task-1").exists(), "退避窗口内不重试");
@@ -316,12 +316,12 @@ async fn mid_push_failure_keeps_pending_and_retries() {
 }
 
 // ---------------------------------------------------------------------------
-// CD6（2026-09-17 裁决⑨⑩⑪）：退避封顶 + 死信 + 健康联动 + 重放口
+// （⑪）：退避封顶 + 死信 + 健康联动 + 重放口
 // ---------------------------------------------------------------------------
 
 #[test]
 fn push_backoff_sequence_caps_at_ten_minutes() {
-    // 15s 起步指数爬升 → 600s（10 分钟）封顶（裁决⑩）。
+    // 15s 起步指数爬升 → 600s（10 分钟）封顶。
     let expect = [15u64, 30, 60, 120, 240, 480, 600];
     for (i, want) in expect.iter().enumerate() {
         assert_eq!(push_backoff_secs(i as u32 + 1), *want, "attempts={}", i + 1);
@@ -355,7 +355,7 @@ async fn dead_letter_age_gate_parks_entry() {
     let ob = make_outbox(&ws, ft.clone(), limit_from(&Arc::new(AtomicU64::new(0))));
     ob.process_once().await;
 
-    // age 过 7 天闸 → 转 dead 停车，不推送（裁决⑨）。
+    // age 过 7 天闸 → 转 dead 停车，不推送。
     let entry: OutboxEntry =
         serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
     assert_eq!(entry.state, "dead");
@@ -478,7 +478,7 @@ async fn replay_dead_letter_resets_and_repushes() {
 }
 
 // ---------------------------------------------------------------------------
-// D4 worker 侧护栏
+// worker 侧护栏
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -588,7 +588,7 @@ async fn sweep_skips_unknown_device_dir() {
 }
 
 // ---------------------------------------------------------------------------
-// D5 兜底拉取
+// 兜底拉取
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -612,7 +612,7 @@ fn request_pull_queues_when_records_exist() {
     assert_eq!(ob.request_pull(""), "no_archive");
 }
 
-/// BUG-20261104-361（T-MRG-1 吞变更集）：档案管线装配未完（基线 sidecar
+/// （T-MRG-1 吞变更集）：档案管线装配未完（基线 sidecar
 /// 与 `.assembling-*` 标记都在场）时 request_pull 不得把无变更集的执行
 /// 记录抢先入队——幂等闸会吞掉随后带变更集的正常入队，master 空集宽容
 /// 把改动静默合并为「无变更」。诚实答 assembling 观望；装配完成（标记
@@ -652,7 +652,7 @@ fn request_pull_defers_while_assembling() {
 }
 
 // ---------------------------------------------------------------------------
-// P4/E2：通用推送 push_transfer_dir（基线推送与 outbox 共用真相源）
+// /：通用推送 push_transfer_dir（基线推送与 outbox 共用真相源）
 // ---------------------------------------------------------------------------
 
 /// 在目录里落两个文件（push_transfer_dir 输入）。
@@ -737,7 +737,7 @@ async fn push_transfer_dir_nothing_to_send_and_dedup() {
 }
 
 // ---------------------------------------------------------------------------
-// P4/E3：变更集搭车入队
+// /：变更集搭车入队
 // ---------------------------------------------------------------------------
 
 /// 组装一份合法变更集目录（write_changeset 正路）。
@@ -832,7 +832,7 @@ fn task_dir_name_derivation_matches_logger_format() {
     assert!(derive_task_id_from_dir("2026-09-14_10-30-00-123").is_none());
 }
 
-// F-NEW-3 年龄闸（2026-10-17 四轮审计）：目录名 ts 前缀距今超龄判定。
+// F-NEW-3 年龄闸（四轮审计）：目录名 ts 前缀距今超龄判定。
 #[test]
 fn residual_age_gate_classifies_dir_names() {
     let now = chrono::Local::now();
@@ -862,7 +862,7 @@ fn residual_age_gate_classifies_dir_names() {
     assert!(residual_dir_older_than(&multibyte, now, 24 * 3600));
 }
 
-/// BUG-20261030-201：request_pull 对停车条目（dead/over_limit）诚实报
+/// request_pull 对停车条目（dead/over_limit）诚实报
 /// 停车态——不谎报 "queued"（master sweep 对 queued 无停车闸，谎报 =
 /// 每轮空拉无限循环）；翻回 pending（手动重放）后恢复 queued 语义。
 #[test]

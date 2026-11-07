@@ -1,4 +1,4 @@
-//! QMP 客户端（QEMU Machine Protocol over TCP，P5 第 2 步）。
+//! QMP 客户端（QEMU Machine Protocol over TCP， 第 2 步）。
 //!
 //! 面向本仓 lifecycle 的最小 QMP 面：连接 → 握手（greeting +
 //! `qmp_capabilities`）→ `execute`（带超时）→ `query-status` / `quit`。
@@ -79,7 +79,7 @@ pub fn classify_line(line: &str) -> Result<QmpLine, String> {
 }
 
 /// QMP 客户端（一条 TCP 连接一个实例；QMP server 每连接独立会话，多次
-/// 控制操作各起新连接即可——[`crate::vm::lifecycle`] 的用法）。
+/// 控制操作各起新连接即可——[`crate::vm:lifecycle`] 的用法）。
 pub struct QmpClient {
     reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
     write: tokio::net::tcp::OwnedWriteHalf,
@@ -186,7 +186,7 @@ impl QmpClient {
         }
     }
 
-    /// `query-status` → 客户机状态串（"running" / "paused" / ...）。
+    /// `query-status` → 客户机状态串（"running" / "paused" /...）。
     pub async fn query_status(&mut self, timeout: Duration) -> Result<String, QmpError> {
         let ret = self.execute("query-status", None, timeout).await?;
         Ok(ret["status"].as_str().unwrap_or("<no status>").to_string())
@@ -218,7 +218,7 @@ impl QmpClient {
         Ok(output)
     }
 
-    /// `migrate` 到 `uri`（P5 sleep 备选线载体：`file:<path>`）。返回 =
+    /// `migrate` 到 `uri`（sleep 备选线载体：`file:<path>`）。返回 =
     /// 迁移任务已被受理（非完成）——完成轮询用 [`Self::query_migrate`]。
     pub async fn migrate(&mut self, uri: &str, timeout: Duration) -> Result<(), QmpError> {
         self.execute("migrate", Some(serde_json::json!({ "uri": uri })), timeout)
@@ -227,7 +227,7 @@ impl QmpClient {
     }
 
     /// `query-migrate` → 迁移任务状态串（"active" / "completed" /
-    /// "failed" / ...）。
+    /// "failed" /...）。
     pub async fn query_migrate(&mut self, timeout: Duration) -> Result<String, QmpError> {
         let ret = self.execute("query-migrate", None, timeout).await?;
         Ok(ret["status"].as_str().unwrap_or("<no status>").to_string())

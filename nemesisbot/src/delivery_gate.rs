@@ -1,6 +1,6 @@
-//! P4 交付门（持久 Agent 实体 P4-c，2026-10-17）：worker 侧交付分支捕获。
+//! （持久 Agent 实体 -c，2026-10-17）：worker 侧交付分支捕获。
 //!
-//! PLAN「分支/PR 交付门」的 B 端半边：任务执行前记基线 tree（git 形态才有
+//! PLAN「分支/PR 」的 B 端半边：任务执行前记基线 tree（git 形态才有
 //! ——JSON 形态无影子库，诚实跳过不造证据），成功收口时把工作区实时 tree
 //! 捕获为交付分支（`refs/heads/nemesis/run-<task_id>`，force 覆盖——重派
 //! 重跑同任务同分支），patch 落盘 `logs/deliveries/<task_id>.patch` 留底，
@@ -8,7 +8,7 @@
 //! PATCH_MAX_BYTES 截断位）。A 端（master）把整包入 deliveries 表——
 //! 证据包自包含，跨节点可审无需二次 RPC。
 //!
-//! 诚实边界：交付门是增强证据面，任何失败（无 .git / 影子库不可用 /
+//! 诚实边界：是增强证据面，任何失败（无.git / 影子库不可用 /
 //! patch 写盘失败）= `None` + warn，绝不阻断任务回调主链路（回调才是
 //! 结果交付的唯一路径；证据缺席可观测但不停摆）。
 
@@ -27,7 +27,7 @@ pub(crate) fn delivery_base_tree(agent_loop: &AgentLoop) -> Option<String> {
         .and_then(|store| store.current_tree_hex())
 }
 
-/// checkpoint-git 关：无影子库，基线恒 None（D4 JSON 形态语义）。
+/// checkpoint-git 关：无影子库，基线恒 None（JSON 形态语义）。
 #[cfg(not(feature = "checkpoint-git"))]
 pub(crate) fn delivery_base_tree(_agent_loop: &AgentLoop) -> Option<String> {
     None
@@ -40,7 +40,7 @@ pub(crate) fn delivery_base_tree(_agent_loop: &AgentLoop) -> Option<String> {
 /// canonical 语义）。`checks` = 任务窗口内检查类工具的执行证据
 /// （`checks_capture` 捕获，cluster_agent run 前后 begin/take；空 = 没跑
 /// 过检查，诚实缺席不造值）。`checks_head_tree` = checks 窗口关闭时刻的
-/// 实时影子 tree（take 后同源快照；P2 版本绑定——与 capture 时刻的
+/// 实时影子 tree（take 后同源快照； 版本绑定——与 capture 时刻的
 /// `tree` 独立派生，评审门交叉对账「检查就是在交付那棵树上跑的」）。
 ///
 /// 返回 payload["delivery"] 值：`DeliveryBranchCapture` 序列化 + `branch`
@@ -66,7 +66,7 @@ pub(crate) fn capture_task_delivery(
     )
 }
 
-/// checkpoint-git 关：交付门是 git 影子库增强证据面——恒 None。模块头
+/// checkpoint-git 关：是 git 影子库增强证据面——恒 None。模块头
 /// 诚实边界语义不变：证据缺席可观测但不停摆（回调主链路照常）。
 #[cfg(not(feature = "checkpoint-git"))]
 pub(crate) fn capture_task_delivery(
@@ -80,7 +80,7 @@ pub(crate) fn capture_task_delivery(
     None
 }
 
-/// 工作区根若是真实 git 仓库（P1 任务专属 clone 等），取 HEAD commit SHA
+/// 工作区根若是真实 git 仓库（任务专属 clone 等），取 HEAD commit SHA
 /// ——交付版本链的「基于哪个 SHA」。 unborn HEAD（init 后无提交）/ 非
 /// 仓库 / 打开失败 = None（诚实缺席，不造值）。
 #[cfg(feature = "checkpoint-git")]
@@ -108,7 +108,7 @@ const EXEC_REPO_EXCLUDE: &str = "# nemesisbot exec 基线仓库：管线自产�
 _debug/
 ";
 
-/// 档案任务执行前就绪 exec 副本的 git 基线仓库（BUG 2026-11-01 交付账本
+/// 档案任务执行前就绪 exec 副本的 git 基线仓库（交付账本
 /// 空记录根修第一半：worker 全部文件改动发生在 `cluster/exec/<task_id>/`
 /// 副本里，副本是裸文件树，主 workspace 影子库 JSON 形态捕获恒缺席）。
 ///
@@ -118,8 +118,8 @@ _debug/
 /// commit**——add 回调复用 `is_workspace_ignored`（与 checkpoint 写树同一
 /// 剪枝真相源）加管线自产物。基线 SHA 同时持久化到 `.git/nemesis_baseline`
 /// （gitdir 内文件，天然不进树不进 diff）——async 续行/进程重启后重入仍能
-/// 取回真基线：worker 合法 commit 会移动 HEAD（T1 实证），HEAD 当基线 =
-/// diff 恒空失真（BUG 2026-11-01 C 后半）。续行/重派重入 = 优先读持久化
+/// 取回真基线：worker 合法 commit 会移动 HEAD（实证），HEAD 当基线 =
+/// diff 恒空失真（C 后半）。续行/重派重入 = 优先读持久化
 /// 锚点，可解析即复用；锚点缺席（升级边缘）回落 HEAD + 诚实注记。config
 /// 与排除文件每次重钉（幂等）。
 ///
@@ -129,7 +129,7 @@ _debug/
 pub(crate) fn ensure_exec_repo(exec_dir: &std::path::Path) -> Result<String, String> {
     let dot_git = exec_dir.join(".git");
     if dot_git.exists() && !dot_git.is_dir() {
-        // linked worktree / submodule 的 .git 文件形态：照 checkpoint.rs
+        // linked worktree / submodule 的.git 文件形态：照 checkpoint.rs
         // 同一裁决，不碰（init/open 语义歧义，诚实放弃）。
         return Err(format!(
             ".git 为文件形态（worktree 链接？），exec 基线仓库不可用：{}",
@@ -171,7 +171,7 @@ pub(crate) fn ensure_exec_repo(exec_dir: &std::path::Path) -> Result<String, Str
     }
 
     // 重入锚点：优先持久化锚点（定格时落盘，见上）——HEAD 可能已被
-    // worker 合法 commit 移动（T1 实证：async 续行形态 worker 中途提交），
+    // worker 合法 commit 移动（实证：async 续行形态 worker 中途提交），
     // 不再是稳定锚点；锚点缺席（升级边缘）回落 HEAD + 诚实注记。
     let anchor_path = dot_git.join("nemesis_baseline");
     if let Ok(sha) = std::fs::read_to_string(&anchor_path) {
@@ -248,20 +248,20 @@ pub(crate) fn ensure_exec_repo(exec_dir: &std::path::Path) -> Result<String, Str
     Ok(commit_oid.to_string())
 }
 
-/// exec 副本路径的交付捕获（BUG 2026-11-01 根修第二半）：改动在
+/// exec 副本路径的交付捕获（根修第二半）：改动在
 /// `cluster/exec/<task_id>/` 副本里，主 workspace 影子库（JSON 形态）捕获
 /// 恒缺席——本函数从副本就地 diff。
 ///
-/// 1. 基线锚定三链（BUG 2026-11-01 C 后半：worker 合法 commit 移动 HEAD，
-///    HEAD 当基线 = base==head、diff 恒空，T1 实证 files_changed=0）：
+/// 1. 基线锚定三链（C 后半：worker 合法 commit 移动 HEAD，
+///    HEAD 当基线 = base==head、diff 恒空， 实证 files_changed=0）：
 ///    透传 `baseline_sha` → `.git/nemesis_baseline` 持久锚点（
 ///    [`ensure_exec_repo`] 定格时落盘）→ HEAD（旧形态 fallback + warn）；
-///    作用域块内取完即关——libgit2 句柄不驻留，BUG-20261031 同族纪律；
+///    作用域块内取完即关——libgit2 句柄不驻留， 同族纪律；
 /// 2. 临时影子库 `logs/exec_checkpoints/<task_id>.git` 挂副本工作树
 ///    （`CheckpointStore::new_with_shadow` 复用 checkpoint.rs capture/
-///    diff/patch/files 单一真相源；alternates 直读副本对象库，零拷贝）；
+///    diff/patch/files 单一权威定义；alternates 直读副本对象库，零拷贝）；
 ///    影子库自钉 `core.autocrlf=false`（fresh bare init 无键 → libgit2
-///    回落系统级 true → add 时 CRLF→LF 重写 → 字节失真伪 diff，T1 smudge
+///    回落系统级 true → add 时 CRLF→LF 重写 → 字节失真伪 diff， smudge
 ///    同族）+ 本地排除文件副本一份（影子是独立 gitdir，副本仓库的 exclude
 ///    对它不可见；捕获侧回调已剪大头，这是双保险）；
 /// 3. capture（base=副本基线 tree，head=副本实时树——同一剪枝真相源，
@@ -501,7 +501,7 @@ pub(crate) fn capture_task_delivery_with_store(
 /// `patch_root` = patch 留底落点（`logs/deliveries/<task_id>.patch` 相对
 /// 该根申报 wire）；`repo_base_sha` = 显式版本链「基于哪个 SHA」（主路径 =
 /// workspace 仓库 HEAD 探测；exec 路径 = 定格基线 commit——HEAD 会被
-/// worker 合法提交移动，探测即失真「基于自己」，BUG 2026-11-01 C 后半；
+/// worker 合法提交移动，探测即失真「基于自己」， C 后半；
 /// None = 键不出现，诚实缺席）。
 #[cfg(feature = "checkpoint-git")]
 #[allow(clippy::too_many_arguments)]
@@ -580,14 +580,14 @@ fn delivery_payload_with_persist(
             "patch_path".into(),
             serde_json::Value::String(patch_display),
         );
-        // ②typed checks 块：任务窗口内检查类工具的执行证据。空 = 没跑过
+        // typed checks 块：任务窗口内检查类工具的执行证据。空 = 没跑过
         // 检查（诚实缺席——文档类职能的合法形态，绝不造空壳条目）。
         if !checks.is_empty()
             && let Ok(v) = serde_json::to_value(&checks)
         {
             obj.insert("checks".into(), v);
         }
-        // P2 版本绑定（2026-10-25）：checks 窗口的基线/关闭 tree 与 capture
+        // 版本绑定：checks 窗口的基线/关闭 tree 与 capture
         // 时刻的 `base_tree`/`tree` 独立派生——评审门交叉对账「这些检查就
         // 是在交付的那棵树上跑的」。两者都缺席（JSON 形态调用方）= 键不出
         // 现（诚实缺席，加法演进不破旧 payload 形态）。
@@ -601,9 +601,9 @@ fn delivery_payload_with_persist(
             }
             obj.insert("checks_binds".into(), serde_json::Value::Object(binds));
         }
-        // P2 版本链「基于哪个 SHA」：显式传值（主路径 = workspace 仓库 HEAD
+        // 版本链「基于哪个 SHA」：显式传值（主路径 = workspace 仓库 HEAD
         // 探测；exec 路径 = 定格基线 commit——HEAD 会被 worker 合法提交移动，
-        // 路径探测即失真「基于自己」，BUG 2026-11-01 C 后半）。None = 键不
+        // 路径探测即失真「基于自己」， C 后半）。None = 键不
         // 出现（诚实缺席，不造值）。
         if let Some(sha) = repo_base_sha {
             obj.insert(
@@ -616,7 +616,7 @@ fn delivery_payload_with_persist(
 }
 
 /// checkpoint-git 关（minimal-iot / desktop 等裁剪形态）：影子库 git 代码面
-/// 整族不编译（`checkpoint.rs` 交付族随门裁剪）——交付门按模块诚实边界恒
+/// 整族不编译（`checkpoint.rs` 交付族随门裁剪）——按模块诚实边界恒
 /// None（证据缺席可观测但不停摆，回调主链路零变化）。
 #[cfg(not(feature = "checkpoint-git"))]
 pub(crate) fn capture_task_delivery_with_store(

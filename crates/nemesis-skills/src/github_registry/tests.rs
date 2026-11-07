@@ -823,7 +823,7 @@ fn test_validate_skill_identifier() {
     assert!(validate_skill_identifier("").is_err());
     // Invalid: contains backslash
     assert!(validate_skill_identifier("path\\to\\skill").is_err());
-    // Invalid: contains ..
+    // Invalid: contains..
     assert!(validate_skill_identifier("skill..traversal").is_err());
 }
 

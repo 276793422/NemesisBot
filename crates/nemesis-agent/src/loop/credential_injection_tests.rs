@@ -1,4 +1,4 @@
-//! P0 vault（C3，2026-09-22 计划 §3）：凭据别名注入测试。
+//! vault（2026-09-22 计划）：凭据别名注入测试。
 //!
 //! 两层：纯函数（改写语义）+ loop 级（四表面防泄漏——模型上下文/事件流
 //! 里只有别名，真值只到达工具 execute）。
@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 /// 本文件专用 mock provider（s9_tests 同款：测试文件自包含）。
-/// pub(super)：L26② 域绑定测试（credential_domain_tests）复用。
+/// pub(super)：② 域绑定测试（credential_domain_tests）复用。
 pub(super) struct MockLlmProvider {
     responses: std::sync::Mutex<Vec<LlmResponse>>,
 }
@@ -145,7 +145,7 @@ fn unknown_alias_fails_loud() {
     assert!(err.contains("vault set"), "应带补救指引: {err}");
 }
 
-/// 槽位是字面量（非 vault:）：原样通过（向后兼容）。
+/// 槽位是字面量（非 vault）：原样通过（向后兼容）。
 #[test]
 fn literal_slot_untouched() {
     let _g = VAULT_SLOT_LOCK.lock();
@@ -166,7 +166,7 @@ fn malformed_json_passthrough() {
 }
 
 // ---------------------------------------------------------------------------
-// S3a：对象槽递归（string→string 结构的字符串叶子改写，如 web_fetch headers）
+// 对象槽递归（string→string 结构的字符串叶子改写，如 web_fetch headers）
 // ---------------------------------------------------------------------------
 
 /// 对象槽的 vault: 叶子改写为真值；非 vault 叶子与同层其它键不动。
@@ -413,7 +413,7 @@ async fn loop_unknown_alias_blocks_execution() {
         captured.lock().unwrap().is_empty(),
         "注入失败时工具不得执行"
     );
-    // 错误串带指引、进 ToolResult（模型可见）。
+    // 错误串带指引、进 ToolResult（模型可）。
     let tool_results: Vec<String> = events
         .iter()
         .filter_map(|e| match e {
@@ -430,11 +430,11 @@ async fn loop_unknown_alias_blocks_execution() {
 }
 
 // ---------------------------------------------------------------------------
-// L25（2026-11-02）：结构化错误 + 发卡恢复 + 防滥用占位
+// 结构化错误 + 发卡恢复 + 防滥用占位
 // ---------------------------------------------------------------------------
 
 /// 结构化错误：字段（field/alias/message）齐全，Display 与 legacy 错误串
-/// 字节一致（模型可读契约零回归）。L26 oracle 改写生效后 message 为
+/// 字节一致（模型可读契约零回归）。 oracle 改写生效后 message 为
 /// 通用文案（无「别名不存在」marker、无别名回显）——存在性信号收敛。
 #[test]
 fn structured_error_display_matches_legacy_byte_exact() {
@@ -672,7 +672,7 @@ async fn card_recovery_empty_alias_skips_broker() {
 }
 
 // ---------------------------------------------------------------------------
-// L26（2026-11-02）：oracle 收敛 + 闸面探测（find_declared_vault_references）
+// oracle 收敛 + 闸面探测（find_declared_vault_references）
 // ---------------------------------------------------------------------------
 
 /// oracle 收敛：非 marker 根因（vault 已锁定）原文透传——环境级差分对任意
@@ -694,7 +694,7 @@ fn oracle_non_marker_error_preserved_verbatim() {
 }
 
 /// oracle 收敛：空 `vault:` 引用文案保留（无解析器安装的根因串不含
-/// marker → 原样透传；alias 空 → L25 发卡不发）。
+/// marker → 原样透传；alias 空 → 发卡不发）。
 #[test]
 fn oracle_empty_alias_message_preserved() {
     let _g = VAULT_SLOT_LOCK.lock();
@@ -776,7 +776,7 @@ fn find_declared_vault_references_multi_and_no_slots() {
     assert!(find_declared_vault_references(&bare, r#"{"credential":"vault:x"}"#).is_empty());
 }
 
-/// guard 合成键（L26 闸冷却键 `gate:{tool}:{aliases}`）非空语义——绕开
+/// guard 合成键（闸冷却键 `gate:{tool}:{aliases}`）非空语义——绕开
 /// guard 空别名恒 false 规则；同键占位/释放/TTL 与普通键同生命周期。
 #[test]
 fn guard_composite_gate_key_lifecycle() {

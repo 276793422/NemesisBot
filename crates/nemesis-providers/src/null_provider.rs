@@ -3,7 +3,7 @@
 //! 网关必须能在「用户还没配置任何模型」的全新安装上启动（双击直启：先见
 //! Dashboard、后配 LLM）。factory 对缺 key loud 拒绝是正确设计（防半配置
 //! 静默裸奔），但**启动装配点**不能被它杀死——装配点改用
-//! [`crate::factory::create_provider_or_null`]，构造失败时拿到本 provider：
+//! [`crate::factory:create_provider_or_null`]，构造失败时拿到本 provider：
 //! 每次调用诚实报「未配置模型，请到 Dashboard → 模型管理配置并设为默认」，
 //! 用户配好并 set_default 热切（canonical_swap_params）后立即恢复。
 //! 一次性 CLI 入口（`run` / `model probe` / Dashboard 连通性测试）保持严格

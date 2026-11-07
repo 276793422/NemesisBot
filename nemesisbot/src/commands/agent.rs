@@ -98,21 +98,21 @@ pub async fn run(
             println!("  Session: {}", session);
             println!("  Home: {}", home.display());
 
-            // D-3（复核 2026-09-16）：会话日志平化迁移（SAN-01/D4）——REPL
+            // D-3（复核）：会话日志平化迁移（SAN-01）——REPL
             // 入口与 gateway 同源执行（幂等 best-effort）：process_direct 的
             // 持久化路径读写 session_logs，旧嵌套目录历史先平化再服务。
             nemesis_agent::chat_log::migrate_nested_session_logs();
 
-            // ASM-05（2026-09-16 横扫存量加固）：迁移到 agent_factory 工厂装配
+            // ASM-05（横扫存量加固）：迁移到 agent_factory 工厂装配
             // （run.rs headless 同范式）——手写装配是安全矩阵的空洞：无
             // security_plugin（8 层管线整体旁路）、无 estop、无 workspace_root
             // （路径重写静默失效）、无 tier/pricing/config_path。ASM-08 启动
-            // 断言在工厂内兜底。U15 credentials 全局路径一并补齐（与 run.rs
+            // 断言在工厂内兜底。 credentials 全局路径一并补齐（与 run.rs
             // 同源；此前手写路径漏设，credentials.yaml 的 key 解析不到）。
             nemesis_config::credentials::set_global_credentials_path(
                 nemesis_config::credentials::credentials_path_for_home(&home),
             );
-            // P0 vault（B1）：`vault:<alias>` 解析器同点注入。
+            // vault：`vault:<alias>` 解析器同点注入。
             #[cfg(feature = "security")]
             crate::vault_runtime::install(&home);
             let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
@@ -125,7 +125,7 @@ pub async fn run(
             let observer_mgr = Arc::new(nemesis_observer::Manager::new());
             let has_request_logger =
                 crate::agent_factory::register_request_logger_observer(&observer_mgr, &cfg, &home);
-            // C-F3（复核 2026-09-16）：恢复 ASM-05 工厂化时丢失的 minimal 装配
+            // C-（复核）：恢复 ASM-05 工厂化时丢失的 minimal 装配
             // ——HEAD 手写装配原有 skills_loader/skills_registry/forge(+executor)
             // /workflow_engine/cron_service，工厂化改写时 `..Default::default()`
             // 把四件静默归 None（skills/forge/workflow_run/cron 工具组从 REPL
@@ -452,7 +452,7 @@ pub async fn run(
                             );
                         }
                     }
-                    // REL-002：统一原子写入（主 config.json）。
+                    // 统一原子写入（主 config.json）。
                     nemesis_utils::write_file_atomic(
                         &cfg_path.to_string_lossy(),
                         serde_json::to_string_pretty(&cfg)
@@ -466,7 +466,7 @@ pub async fn run(
                 println!("Restart agent/gateway to apply changes.");
             }
             AgentSetAction::ConcurrentMode { mode, queue_size } => {
-                // E2: steer accepted — the runtime has supported it since I1;
+                // steer accepted — the runtime has supported it since;
                 // this gate just forgot to allow it (loop.rs parses all three).
                 if mode != "reject" && mode != "queue" && mode != "steer" {
                     anyhow::bail!(
@@ -496,7 +496,7 @@ pub async fn run(
                             );
                         }
                     }
-                    // REL-002：统一原子写入（主 config.json）。
+                    // 统一原子写入（主 config.json）。
                     nemesis_utils::write_file_atomic(
                         &cfg_path.to_string_lossy(),
                         serde_json::to_string_pretty(&cfg)

@@ -4,7 +4,7 @@
  * 建单 → 列表可见 → 状态机流转 in_progress → 评论 → 评论可读 →
  * 单条时间线可查。全部走 WSAPI request/response，纯数据面冒烟。
  */
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { newAuthedPage, wsapi } from './helpers'
 
 interface IssueView {

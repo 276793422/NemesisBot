@@ -1,10 +1,10 @@
-//! Swarm M1：任务拆解 planner 纯逻辑层。
+//! Swarm：任务拆解 planner 纯逻辑层。
 //!
 //! 职责边界：本模块**不含任何 LLM 调用**——提示词模板、拆解输出 schema、
 //! 解析与校验、回灌重试提示词都是纯函数（单测零依赖）；LLM 调用编排
 //! （`run_detached` 裸提示词模式 + 失败回灌 ≤2 次）在 gateway 装配层。
 //!
-//! 拆解输出 schema 见 `docs/PLAN/2026-09-09_swarm-impl-plan.md` §3.1；
+//! 拆解输出 schema 见 `swarm-impl-plan`；
 //! `depends_on` 用**批内序号**（0 起始）——LLM 无从预知落库 id，序号在
 //! 落库时映射为真实 issue id（`issue_dependency` 表）。
 
@@ -18,7 +18,7 @@ pub const MAX_SUBISSUES: usize = 20;
 /// 其中 `[CHECK]` 锚点指令段与 `crate::anchor` 解析器同步演化
 /// （同 `REPORT_FORMAT_SECTION` 契约；防误删快照见 planner/tests.rs）。
 ///
-/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）；此处 re-export 保持
+/// 文本单一真相源在 `nemesis-prompts`（集中化）；此处 re-export 保持
 /// 既有公开路径不变。
 pub use nemesis_prompts::board::PLANNER_SYSTEM_PROMPT;
 
@@ -41,7 +41,7 @@ pub fn planner_system_prompt() -> &'static str {
     p
 }
 
-/// planner 输出的单个子单（§3.1 schema；serde 宽容：缺字段用默认值）。
+/// planner 输出的单个子单（schema；serde 宽容：缺字段用默认值）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlannedSubIssue {
     pub title: String,
@@ -51,17 +51,17 @@ pub struct PlannedSubIssue {
     pub required_role: String,
     #[serde(default)]
     pub required_tags: Vec<String>,
-    /// 集群专业职能框架（M2）：执行所需职能 slug（`family[:spec]`）；
-    /// 空串 = 无职能需求。格式校验见 [`parse_plan`]（D9 三臂）。
+    /// 集群专业职能框架：执行所需职能 slug（`family[:spec]`）；
+    /// 空串 = 无职能需求。格式校验见 [`parse_plan`]（三臂）。
     #[serde(default)]
     pub required_profession: String,
-    /// 派发需求运行时后端（P6-R1，2026-10-21）：`process`|`vm`（大小写
+    /// 派发需求运行时后端：`process`|`vm`（大小写
     /// 不敏感，解析期小写归一）；空串 = 无需求不过闸。匹配端是精确命中
     /// 加 fail-closed 硬闸、不参与松弛（见 matcher 硬条件 6）。值域校验见
     /// [`parse_plan`]。
     #[serde(default)]
     pub required_backend: String,
-    /// 环境能力硬条件（NB-122 批 2026-10-16）：执行所需节点能力词（小写
+    /// 环境能力硬条件（16）：执行所需节点能力词（小写
     /// 短词，与节点宣告的 capabilities 同词表）。匹配是**全量硬闸**——每项
     /// 都必须命中，且不参与松弛（环境缺口松弛不出来）；空 = 无能力需求。
     /// 词表纪律（只能写集群画像 caps 里出现过的词）在提示词侧约束；本侧只
@@ -162,8 +162,8 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
     Ok(plan)
 }
 
-/// D9 校验臂内核：`required_profession` 非空时格式必须合法（slug 语法
-/// `^[a-z0-9_-]+(:[a-z0-9_-]+)?$`）。返回 `Some(PlanParseError)` = 格式
+/// 校验臂内核：`required_profession` 非空时格式必须合法（slug 语法
+/// `^[a-z0-9_-]+([a-z0-9_-]+)?$`）。返回 `Some(PlanParseError)` = 格式
 /// 非法（挂进既有回灌重试）；格式合法但目录未知（用户自定义职能）=
 /// `None` 保留派发（匹配端诚实找不到）。空串/空白 = 无职能需求。
 fn profession_format_error(index: usize, raw: &str) -> Option<PlanParseError> {
@@ -178,7 +178,7 @@ fn profession_format_error(index: usize, raw: &str) -> Option<PlanParseError> {
     })
 }
 
-/// 后端值校验臂（P6-R1）：入参必须是**已归一**（trim + 小写）的值，非空时
+/// 后端值校验臂：入参必须是**已归一**（trim + 小写）的值，非空时
 /// 值域 = `process`|`vm`。返回 `Some(PlanParseError)` = 非法（挂进既有回灌
 /// 重试）；空串/空白由调用方先行短路 = 无后端需求。
 fn backend_format_error(index: usize, normalized: &str) -> Option<PlanParseError> {
@@ -192,7 +192,7 @@ fn backend_format_error(index: usize, normalized: &str) -> Option<PlanParseError
     })
 }
 
-/// 能力词校验臂（NB-122 批）：每项必须是非空单段短词（不含空白；节点
+/// 能力词校验臂（批）：每项必须是非空单段短词（不含空白；节点
 /// 宣告的 capabilities 都是单段词，含空格的项永远无法命中=变相停车）。
 /// 返回 `Some(PlanParseError)` = 任一项非法（挂进回灌重试）。
 fn capabilities_format_error(index: usize, caps: &[String]) -> Option<PlanParseError> {
@@ -217,11 +217,11 @@ fn capabilities_format_error(index: usize, caps: &[String]) -> Option<PlanParseE
 pub struct LenientPlan {
     pub plan: Vec<PlannedSubIssue>,
     /// 降级明细：`(子单序号, 原始非法值)`。落库层逐条写 issue 系统评论
-    /// 「required_profession=`…` 非法，已降级无职能」+ WARN（D9）。
+    /// 「required_profession=`…` 非法，已降级无职能」+ WARN。
     pub downgraded: Vec<(usize, String)>,
 }
 
-/// D9 末轮宽和臂：与 [`parse_plan`] 同一解析与全部校验，唯一差别 =
+/// 末轮宽和臂：与 [`parse_plan`] 同一解析与全部校验，唯一差别 =
 /// `required_profession` 格式非法**不报错**——该子单职能置空照常收进
 /// 计划，降级明细随结果返回。仅供回灌预算（首跑+≤2）耗尽的最后一轮
 /// 使用；严格版 [`parse_plan`] 是常规路径。
@@ -262,7 +262,7 @@ pub fn parse_plan_lenient(raw: &str) -> Result<LenientPlan, PlanParseError> {
         if profession_format_error(i, &sub.required_profession).is_some() {
             downgraded.push((i, std::mem::take(&mut sub.required_profession)));
         }
-        // 宽和臂后端处理（P6-R1）：非法值置空（照能力词「剔除非法」先例，
+        // 宽和臂后端处理：非法值置空（照能力词「剔除非法」先例，
         // 不进 required_profession 专属降级台账）+ WARN 留痕。非法后端值在
         // 匹配端永不命中，置空让计划落地；严格臂前两轮已给过自纠机会。
         if !sub.required_backend.trim().is_empty() {
@@ -278,7 +278,7 @@ pub fn parse_plan_lenient(raw: &str) -> Result<LenientPlan, PlanParseError> {
                 sub.required_backend.clear();
             }
         }
-        // 宽和臂能力词处理（NB-122 批）：非法项（空/trim 后含空白/超长）直接
+        // 宽和臂能力词处理（批）：非法项（空/trim 后含空白/超长）直接
         // 剔除、合法项保留——非法能力词在匹配端永远无法命中，剔除比整字段
         // 降级更贴近意图；不记 downgrades（该台账语义是 required_profession
         // 专属，confirm_plan 按它写职能降级评论）。
@@ -310,7 +310,7 @@ pub fn parse_plan_lenient(raw: &str) -> Result<LenientPlan, PlanParseError> {
     Ok(LenientPlan { plan, downgraded })
 }
 
-/// E6 共享文件分析（看板项目档案 goal，拆解期第 1 层冲突防线）：
+/// 共享文件分析（看板项目档案 goal，拆解期第 1 层冲突防线）：
 /// [TOUCH] 声明聚合——两个子任务声明写同一路径且**无直接依赖边**
 /// （互不 depends_on）= 并行改同一文件，回传合并必然冲突 → 校验失败
 /// 回灌重试（复用既有 PLAN_BAD 机制与重试预算）。有依赖边=串行执行，
@@ -362,7 +362,7 @@ fn extract_json_array(raw: &str) -> Option<String> {
 }
 
 /// 批内依赖环检测（DFS 三色标记；发现环指明成员，便于回灌自纠）。
-/// pub(crate)：replan 的 add 批依赖环检测共用（同一单一真相源，AOR 批三 5.3）。
+/// pub(crate)：replan 的 add 批依赖环检测共用（同一统一定义）。
 pub(crate) fn detect_cycle(plan: &[PlannedSubIssue]) -> Result<(), PlanParseError> {
     // 0=未访问 1=在栈 2=已完成
     let mut color = vec![0u8; plan.len()];
@@ -409,7 +409,7 @@ pub(crate) fn detect_cycle(plan: &[PlannedSubIssue]) -> Result<(), PlanParseErro
 }
 
 /// 拆解用户提示词（user 段）：父任务上下文 + 可选团队经验注入槽
-/// （M4.5 集体记忆接线点；空切片 = 不渲染该段）。
+/// （.5 集体记忆接线点；空切片 = 不渲染该段）。
 pub fn build_planner_user_prompt(
     title: &str,
     description: &str,
@@ -440,7 +440,7 @@ pub fn build_planner_user_prompt(
             prompt.push_str(&format!("- {exp}\n"));
         }
     }
-    // R-10（goal P4）：集群画像注入——拆解即按可执行者拆（技术选型/role/
+    // R-10（goal）：集群画像注入——拆解即按可执行者拆（技术选型/role/
     // required_tags 与真实节点能力对齐，防「拆出无人能执行的任务」）。
     if let Some(profile) = cluster_profile
         && !profile.trim().is_empty()
@@ -461,7 +461,7 @@ pub fn build_planner_user_prompt(
 /// 解析失败后的回灌重试提示词（把错误与原输出喂回，要求自纠）。
 pub fn build_retry_prompt(prev_output: &str, error: &PlanParseError) -> String {
     // 截断必须走 rune 边界安全版（与 review 同源）：裸 `&prev_output[..4000]`
-    // 在中文输出上会因字节下标落在多字节字符内部 panic（2026-10-11 真机实证，
+    // 在中文输出上会因字节下标落在多字节字符内部 panic（真机实证，
     // panic 顺带杀死整个规划 tokio 任务，看板零留痕）。
     let prev = crate::review::truncate_bytes(prev_output, 4000);
     format!(
@@ -475,7 +475,7 @@ mod cov_tests;
 #[cfg(test)]
 mod tests;
 
-/// R-9（goal P4）：解析 acceptance_criteria 里的 `[TOUCH] <路径>` 行——
+/// R-9（goal）：解析 acceptance_criteria 里的 `[TOUCH] <路径>` 行——
 /// 子单写资源声明，调度互斥与交付回传清单的素材。非 [TOUCH] 行忽略；
 /// 路径 trim 后去空；相对路径形态不做强校验（宽容解析）。
 pub fn parse_touch_paths(acceptance_criteria: &str) -> Vec<String> {

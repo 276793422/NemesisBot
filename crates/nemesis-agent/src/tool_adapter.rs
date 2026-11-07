@@ -1,5 +1,5 @@
 //! Adapter that exposes the agent-loop's tools through the
-//! `nemesis_tools::registry::Tool` trait so the workflow engine's tool node
+//! `nemesis_tools::registry:Tool` trait so the workflow engine's tool node
 //! (`RealToolNodeExecutor`) can invoke them.
 //!
 //! ## Why this exists
@@ -8,12 +8,12 @@
 //! - `crate::r#loop::Tool` — used by the agent loop. `execute(&self, args: &str,
 //!   context: &RequestContext) -> Result<String, String>`, no `name()`,
 //!   `description()` returns an owned `String`.
-//! - `nemesis_tools::registry::Tool` — used by the workflow engine's
+//! - `nemesis_tools::registry:Tool` — used by the workflow engine's
 //!   `ToolRegistry`. `name() -> &str`, `execute(&self, args: &Value) ->
 //!   ToolResult`.
 //!
 //! They cannot be unified. The workflow tool node (`RealToolNodeExecutor`)
-//! holds a `nemesis_tools::registry::ToolRegistry`, and `gateway.rs` created
+//! holds a `nemesis_tools::registry:ToolRegistry`, and `gateway.rs` created
 //! that registry *empty* — so every `tool` node failed with `tool not found`.
 //! This adapter bridges the two: it wraps an agent tool and re-exposes it under
 //! the nemesis-tools schema, then `gateway` registers the adapted tools into
@@ -42,7 +42,7 @@ use crate::r#loop::Tool as AgentTool;
 /// Synthetic request context used when invoking agent tools from a workflow.
 ///
 /// v1 limitation: the adapter is constructed once at registration time, and
-/// `nemesis_tools::Tool::execute(&self, args)` does not receive per-call
+/// `nemesis_tools::Tool:execute(&self, args)` does not receive per-call
 /// workflow context (node id / execution id / trigger user). We therefore
 /// synthesize a static context. The security check operates on `tool_name +
 /// args` (the actual operation), which is what matters; threading
@@ -52,7 +52,7 @@ fn workflow_request_context() -> RequestContext {
     RequestContext::new("workflow", "workflow", "workflow", "workflow")
 }
 
-/// Adapter wrapping an agent-loop tool as a `nemesis_tools::registry::Tool`.
+/// Adapter wrapping an agent-loop tool as a `nemesis_tools::registry:Tool`.
 pub struct AgentToolAdapter {
     name: String,
     description: String,
@@ -123,7 +123,7 @@ impl nemesis_tools::registry::Tool for AgentToolAdapter {
                 };
                 let (allowed, deny) = security.execute(&invocation);
                 if !allowed {
-                    // F5 (devtool-upgrade 阶段 2): structured DenyInfo —
+                    // (devtool-upgrade): structured DenyInfo —
                     // layer/policy 落日志，summary 原文 + suggestion 进结果。
                     let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
                         layer: "unknown",
@@ -170,7 +170,7 @@ impl nemesis_tools::registry::Tool for AgentToolAdapter {
         };
 
         // Inject synthetic channel/chat_id for context-aware tools (message,
-        // spawn, cluster_rpc, ...). No-op for tools that don't override
+        // spawn, cluster_rpc,...). No-op for tools that don't override
         // `set_context`.
         let ctx = workflow_request_context();
         self.inner.set_context(&ctx.channel, &ctx.chat_id);

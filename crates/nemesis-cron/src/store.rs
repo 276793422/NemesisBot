@@ -1,7 +1,7 @@
 //! Cron 存储文件 IO —— CLI（`nemesisbot cron`）与 gateway（`CronService`）
-//! 共用的单一真相源。
+//! 共用的统一定义。
 //!
-//! 背景（docs/REPORT/2026-10-13_cron-store-format-split-cli-vs-gateway-fix.md）：
+//! 背景（cron-store-format-split-cli-vs-gateway-fix）：
 //! CLI 曾自行拼「裸数组」形态写 `jobs.json`，gateway 的 `CronStoreData`
 //! envelope（`{"version":1,"jobs":[...]}`）永远解析不了它——CLI 写盘后
 //! gateway 启动即 WARN + 空 store，gateway 首次保存又把 CLI 任务整体顶掉。
@@ -53,7 +53,7 @@ pub fn parse(text: &str) -> Result<CronStoreData, String> {
     }
 }
 
-/// Save the store atomically（REL-002：半截文件 = 任务清单损坏）。
+/// Save the store atomically（半截文件 = 任务清单损坏）。
 /// 权限 0o600：任务清单可能带用户话术，不比 config 敏感面宽。
 pub fn save(path: &Path, data: &CronStoreData) -> Result<(), String> {
     let json = serde_json::to_string_pretty(data).map_err(|e| format!("ser: {}", e))?;

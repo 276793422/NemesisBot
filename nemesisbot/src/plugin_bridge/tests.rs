@@ -1,4 +1,4 @@
-//! plugin_bridge 单元测试（W5-3 附属；独立测试文件——生产文件零内联测试）。
+//! plugin_bridge 单元测试（附属；独立测试文件——生产文件零内联测试）。
 
 use super::*;
 use nemesis_agent::r#loop::Tool as _;
@@ -59,7 +59,7 @@ fn temp_home() -> (
 ) {
     // env 注入必须活到用例体内的 loader 读取完成——锁句柄随元组交还调用方
     // 持有至用例结束（WASM_HOST_DLL_LOCK 与 native_plugins_tests 共享，
-    // 2026-10-22 竞态实录：两模块并行互踩 NEMESIS_WASM_HOST_DLL）。
+    // 竞态两模块并行互踩 NEMESIS_WASM_HOST_DLL）。
     let lock = crate::WASM_HOST_DLL_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -144,7 +144,7 @@ fn operation_mapping_covers_wordlist() {
         Some(OperationType::NetworkRequest)
     );
     // 未声明（空串）/未知 = None：不声明 → dispatch 未注册名 fail-closed
-    // CRITICAL（WIT 合同口径，2026-09-30 #3 从紧）。大小写敏感不猜。
+    // CRITICAL（WIT 合同口径， #3 从紧）。大小写敏感不猜。
     assert_eq!(PluginToolBridge::map_operation(""), None);
     assert_eq!(PluginToolBridge::map_operation("filesystem"), None);
     assert_eq!(PluginToolBridge::map_operation("Read"), None);
@@ -188,7 +188,7 @@ fn bridge_is_read_only_follows_declaration() {
 
 #[test]
 fn bridge_min_tier_follows_manifest_snapshot() {
-    // min-tier 接线（2026-09-30 #2）：桥按安装期对账快照声明最低档，
+    // min-tier 接线（#2）：桥按安装期对账快照声明最低档，
     // 数据随 meta 走（无边车表无漂移）。
     let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
@@ -232,7 +232,7 @@ async fn install_approver_unbound_is_fail_closed() {
 
 #[test]
 fn rescan_output_redacts_credentials_on_success_text() {
-    // 2026-09-30 复查 #1/#3：出站复扫单点行为钉死——命中即脱敏，
+    // 复查 #1/#3：出站复扫单点行为钉死——命中即脱敏，
     // 审计只进 summary（此处只验文本面）。
     let (_lock, _dir, home) = temp_home();
     let manager = Arc::new(
@@ -299,7 +299,7 @@ async fn estop_watcher_initial_alignment() {
 }
 
 // ---------------------------------------------------------------------------
-// 策略桥投影（批 4）：截断纯函数回归面（字符边界——M2 家族）。
+// 策略桥投影：截断纯函数回归面（字符边界—— 家族）。
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -343,7 +343,7 @@ fn truncate_chars_exact_count_no_ellipsis() {
 }
 
 // ---------------------------------------------------------------------------
-// 策略桥全链（批 5）：真组件（policy-sample）经漏斗安装 → PolicyBridge
+// 策略桥全链：真组件（policy-sample）经漏斗安装 → PolicyBridge
 // trait 方法裁决投影 → register_policy_bridges 装配计数随注册表浮动。
 // fixture 缺席（wasm target 未装等）诚实 SKIP——同 nemesis-plugins-wasm
 // tests/policy_sample 纪律。
@@ -431,7 +431,7 @@ async fn manager_with_policy_sample() -> Option<(tempfile::TempDir, Arc<PluginMa
         None,
     );
     installer.install(&staged, true).await.expect("install");
-    // 新纪律（2026-10-22）：安装 ≠ 加载——测试语义 =「用户已开开关」，
+    // 新纪律：安装 ≠ 加载——测试语义 =「用户已开开关」，
     // 开关开后策略点才可路由（PolicyBridge 断言全按已装载态写）。
     installer
         .set_enabled("policy-sample", true)
@@ -602,7 +602,7 @@ async fn register_policy_bridges_count_follows_registry() {
     assert_eq!(n, 3, "三点全接管 = 计数 3");
 
     // 禁用 → 再装配 = 0（摘桥回内置哨兵的决策面；开关走 installer 单一
-    // 真相源——registry 的 set_enabled_plugin 已退役）。
+    // 权威定义——registry 的 set_enabled_plugin 已退役）。
     let installer = nemesis_plugins_wasm::install::PluginInstaller::new(
         manager.clone(),
         Arc::new(nemesis_plugins_wasm::install::AutoApprove),
@@ -644,7 +644,7 @@ impl nemesis_agent::r#loop::LlmProvider for NoopLlmProvider {
 }
 
 // ---------------------------------------------------------------------------
-// 工具接管层（2026-10-23 批 B）：wrapper 双态路由 + 凭据槽纪律 + 漂移钉 +
+// 工具接管层（批 B）：wrapper 双态路由 + 凭据槽纪律 + 漂移钉 +
 // 对账/装配。侧表进程级共享——状态类用例串行锁 + `tt_` 专名前缀防并行互踩。
 // ---------------------------------------------------------------------------
 
@@ -806,7 +806,7 @@ async fn takeover_wrapper_routes_by_switch_and_hides_credential_slots() {
         "stub-v1"
     );
     assert!(nemesis_agent::r#loop::Tool::is_read_only(&wrapper));
-    // 凭据槽恒空（BUG-HUNT R17 回归锁：双态路由是 TOCTOU 来源，注入收进
+    // 凭据槽恒空（回归锁：双态路由是 TOCTOU 来源，注入收进
     // wrapper 回退态分支自做——见 execute 注释；dispatch 层恒不注入）。
     assert!(wrapper.credential_arg_keys().is_empty());
 }
@@ -843,7 +843,7 @@ impl nemesis_agent::r#loop::Tool for RecordingBuiltin {
     }
 }
 
-/// TOCTOU 闭合回归锁（BUG-HUNT R17）：回退态注入与路径决策同点原子。
+/// TOCTOU 闭合回归锁：回退态注入与路径决策同点原子。
 /// 此前「keys 双态路由 + dispatch 层注入」在翻位与两读之间有竞态窗口——
 /// keys 读到回退态槽位、明文改写完成后 active 刚翻真 → 明文进 wasm 沙盒。
 /// 现契约：dispatch 层对 wrapper 恒见空槽位；回退态 execute 入口自注入
@@ -1076,7 +1076,7 @@ async fn apply_takeovers_gate_and_rebuild_semantics() {
     assert_eq!(super::takeover_switch_state("tt_apply_probe"), Some(true));
 }
 
-// ==================== 运行期总闸·执行/供给面（2026-11-01 复查补漏） ====================
+// ==================== 运行期总闸·执行/供给面（复查补漏） ====================
 
 #[tokio::test]
 // temp_home 的 std 锁是测试 home 隔离串行（守卫活满用例；同 routes_by_switch
@@ -1232,7 +1232,7 @@ async fn supply_faces_follow_runtime_master_gate() {
     assert_eq!(super::apply_takeovers(&l4, &manager, true), 1, "接管恢复");
 }
 
-// ── BUG-20261101-271：plugins.wasm.limits.call_timeout_secs 巨值乘算溢出 ──
+// ──：plugins.wasm.limits.call_timeout_secs 巨值乘算溢出 ──
 // config.json 手写 u64::MAX → 旧实现 `n * 1000` debug panic（gateway 装配
 // 崩）/ release 回绕可构造小值使「巨值=不收紧」语义翻转。修复 = checked_mul
 // 失败跳过收紧用默认。
@@ -1262,7 +1262,7 @@ fn read_runtime_config_call_timeout_secs_normal_tighten_applies() {
     assert_eq!(out.limits.timeout_ms, 5_000);
 }
 
-// ── L25（2026-11-02）：回退态发卡恢复 ──────────────────────────────
+// ──：回退态发卡恢复 ──────────────────────────────
 
 /// mock broker：卡载荷契约断言（request_id 非空 / key_name=裸别名 /
 /// reason 无值）+ key_name 写进共享集合（模拟 respond 落 vault），恒回
@@ -1301,7 +1301,7 @@ impl nemesis_types::agent::CredentialBroker for CardBroker {
     }
 }
 
-/// L25 回归锁（回退态）：注入失败 → 发卡 → Stored → 原地重注入 → 内置
+/// 回归锁（回退态）：注入失败 → 发卡 → Stored → 原地重注入 → 内置
 /// 执行体收到真值；接管态（active=true）不经过注入/发卡——别名原文进
 /// wasm 桥（诚实 Err），零新卡。broker 缺席形态由
 /// takeover_credential_injection_atomic_with_path_decision（None broker
@@ -1312,7 +1312,7 @@ impl nemesis_types::agent::CredentialBroker for CardBroker {
 #[allow(clippy::await_holding_lock)]
 async fn takeover_fallback_raises_card_and_retries_with_truth() {
     let (_lock, _dir, home) = temp_home();
-    // 全局 vault 解析器卫生（R17 用例同款：temp_home 串行锁保证本二进制
+    // 全局 vault 解析器卫生（用例同款：temp_home 串行锁保证本二进制
     // 内无并发写者）。
     nemesis_config::clear_global_vault_resolver();
     let store = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));

@@ -1,4 +1,4 @@
-//! autopilot CLI 测试（W2 P4 看板定时自动化离线臂）。
+//! autopilot CLI 测试（看板定时自动化离线臂）。
 //!
 //! 全部 `run()` 分发臂走 `NEMESISBOT_HOME` 临时根 + 共享 SQLite
 //! （`{workspace}/board/board.db`），无端口无网络：`Run` 子命令经
@@ -6,19 +6,19 @@
 //! 进程级 → 持 `crate::GLOBAL_STATE_LOCK` 串行 + Windows-form 惯例
 //! （CI Linux nightly 跳过，同 2026-09-02 sweep）。
 // 整文件 Windows 形态（全部分发臂走 env 重定向 + Windows 惯例）——文件级
-// 门控，Linux 下 `use super::*` 不产生未用导入告警。
+// 门控，Linux 下 `use super:*` 不产生未用导入告警。
 #![cfg(windows)]
 
 use super::*;
 
 /// RAII 守卫：NEMESISBOT_HOME → 临时根（drop 撤销）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct TempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl TempHomeEnv {
     fn new() -> Self {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -29,7 +29,7 @@ impl TempHomeEnv {
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for TempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
@@ -37,7 +37,7 @@ impl Drop for TempHomeEnv {
 }
 
 /// 重新打开 run() 刚写过的共享库，断言持久化副作用。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn reopen_store(home: &std::path::Path) -> std::sync::Arc<BoardStore> {
     let db = crate::common::workspace_path(home)
         .join("board")
@@ -50,7 +50,7 @@ fn reopen_store(home: &std::path::Path) -> std::sync::Arc<BoardStore> {
 }
 
 /// 经 store 直接预置一条规则（绕开 CLI，隔离被测臂）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn seed_rule(store: &BoardStore, name: &str, target: &str, enabled: bool) -> i64 {
     store
         .create_autopilot(&NewAutopilot {
@@ -71,7 +71,7 @@ fn seed_rule(store: &BoardStore, name: &str, target: &str, enabled: bool) -> i64
         .id
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_list_empty_then_create_then_list_nonempty() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -109,7 +109,7 @@ fn w_run_list_empty_then_create_then_list_nonempty() {
     run(AutopilotAction::List, false).unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_create_rejects_invalid_cron() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -144,7 +144,7 @@ fn w_run_create_rejects_invalid_cron() {
     );
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_update_patches_fields_and_rejects_invalid_cron() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -197,7 +197,7 @@ fn w_run_update_patches_fields_and_rejects_invalid_cron() {
     assert!(err.to_string().contains("cron 表达式无效"), "{err}");
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_enable_disable_remove_and_remove_missing() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -234,7 +234,7 @@ fn w_run_enable_disable_remove_and_remove_missing() {
     assert!(store.get_autopilot(id).is_err(), "删除后应不可再取");
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_fire_creates_issue_and_runs_lists_history() {
     let _g = crate::GLOBAL_STATE_LOCK
@@ -264,7 +264,7 @@ fn w_run_fire_creates_issue_and_runs_lists_history() {
     run(AutopilotAction::Runs { id }, false).unwrap();
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn w_run_fire_targeted_rule_rejected_without_cluster() {
     let _g = crate::GLOBAL_STATE_LOCK

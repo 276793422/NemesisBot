@@ -1,6 +1,6 @@
-//! LLM provider 错误的**纯文本分类**——模式表与判定逻辑的单一真相源。
+//! LLM provider 错误的**纯文本分类**——模式表与判定逻辑的统一定义。
 //!
-//! T2a（扩展计划 D4-2a）：
+//! （扩展计划）：
 //! 原实现在 nemesis-providers `error_classifier`，但 agent loop 生产代码看不见
 //! providers（nemesis-agent 对 providers 只有 dev-dependency，loop 经本地
 //! `LlmProvider` trait 解耦）——分类逻辑若留在 providers，loop 只能继续用
@@ -36,7 +36,7 @@ pub enum LlmErrorClass {
 pub fn classify_llm_error(error_msg: &str) -> Option<LlmErrorClass> {
     let msg = error_msg.to_lowercase();
 
-    // L02 流中断短路（2026-11-01）：**必须最先**——StreamInterrupted 的
+    // 流中断短路：**必须最先**——StreamInterrupted 的
     // Display 尾段携带模型生成的任意文本（partial 全文），状态码提取
     // （partial 里恰有 "status: 429" 形态）与后续全部词表匹配（"token"/
     // "expired"/"unauthorized" 等）都会被内容污染误分类。归 Timeout 类 =
@@ -75,7 +75,7 @@ pub fn classify_llm_error(error_msg: &str) -> Option<LlmErrorClass> {
 /// Classify by HTTP status code.
 ///
 /// 状态码→类别映射的**单一真相源**：providers 侧 `FailoverError::from_status`
-/// 委托本表（BUG-20261025-83——此前 from_status 自带只认 502/503 的私有表，
+/// 委托本表（此前 from_status 自带只认 502/503 的私有表，
 /// 408/500/521-524/529 落非 retriable Unknown，与文本分类路径、loop 词表
 /// 三面口径分裂，fallback 轮转在主级间歇 500 类故障时失效）。
 pub fn class_by_status(status: u16) -> Option<LlmErrorClass> {
@@ -93,10 +93,10 @@ pub fn class_by_status(status: u16) -> Option<LlmErrorClass> {
 
 /// Classify by message pattern matching.
 fn class_by_message(msg: &str) -> Option<LlmErrorClass> {
-    // 传输层连接失败（2026-10-13 诚实化配套）：`failover::transport_error`
+    // 传输层连接失败（诚实化配套）：`failover::transport_error`
     // 把 DNS/连接拒绝/SYN 黑洞/中途断流统一盖章 "connect error (model X):
     // <根因链>" 前缀。必须**先于** auth/format 判定——错误链里携带的
-    // URL/系统文案可能含孤立三位数字（如端口号 :401/），放行到 auth 分支
+    // URL/系统文案可能含孤立三位数字（如端口号:401），放行到 auth 分支
     // 会被 `\b401\b` 误分类成 Auth 而跳过一切重试。归 Timeout 类 = 同属
     // 「瞬态、可重试/可故障转移」处置；真实根因在消息链里不丢，只是重试
     // 归宿与超时同门。
@@ -130,14 +130,18 @@ fn matches_rate_limit(msg: &str) -> bool {
         "rate limit",
         "rate_limit",
         "too many requests",
-        "429",
+        // "429" 已迁词边界正则（BUG-20261107-019）：裸 contains 会把长数字里
+        // 嵌的 429（中转端口号 ":8429/"、毫秒时长 "2429ms"、计数 "4290"）误判
+        // 限流——消费方据此记 provider cooldown + 限流退避梯子，真形态（timeout
+        // /connect error）本应走瞬态快速重试。与同文件 \b402\b/\b401\b/\b403\b
+        // 词边界纪律对齐。
         "exceeded your current quota",
         "resource has been exhausted",
         "resource_exhausted",
         "quota exceeded",
         "usage limit",
     ];
-    const REGEX_PATTERNS: &[&str] = &[r"exceeded.*quota", r"resource.*exhausted"];
+    const REGEX_PATTERNS: &[&str] = &[r"exceeded.*quota", r"resource.*exhausted", r"\b429\b"];
     contains_any(msg, PATTERNS) || matches_any_regex(msg, REGEX_PATTERNS)
 }
 
@@ -212,9 +216,9 @@ pub fn is_image_size_error(msg: &str) -> bool {
 /// Extract HTTP status code from error message.
 pub fn extract_http_status(msg: &str) -> Option<u16> {
     // Look for patterns like "status: 429", "status 429", "HTTP 429".
-    // 两个模式均 (?i)（BUG-20261102-317）：classify_llm_error 与 providers
+    // 两个模式均 (?i)：classify_llm_error 与 providers
     // classify_error 传进来的都是 to_lowercase() 后的文本，大写 "HTTP" 字面
-    // 在该语境恒 miss——"HTTP/1.1 503 ..." 纯状态行形态分类落 None，fallback
+    // 在该语境恒 miss——"HTTP/1.1 503..." 纯状态行形态分类落 None，fallback
     // 不轮转；(?i) 同时让原始大小写文本直调时的 "Status:"/"HTTP" 首字母
     // 大写形态也命中。
     let patterns = [
@@ -249,7 +253,7 @@ pub fn error_chain_msg(e: &(dyn std::error::Error + 'static)) -> String {
     msg
 }
 
-/// 连接建立类失败判定（U-B 2026-10-12 端点不可用封存专用；**不进**
+/// 连接建立类失败判定（U-B 端点不可用封存专用；**不进**
 /// [`LlmErrorClass`]——failover 语义里连接失败≈Timeout 可重试，但封存判定
 /// 必须区分「连接建立失败」与「慢模型跑满超时」：前者=端点死了值得封存，
 /// 后者=端点活着只是慢，计入会误封存）。

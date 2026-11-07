@@ -1,16 +1,14 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
 // 跨子文件引用（机械拆分）：serde default helper 定义在 agents.rs
 use super::agents::default_worker_max_inflight;
 
-/// 停车场兜底派发档位（`board.dispatch_fallback`；用户裁决 2026-09-29：
+/// 停车场兜底派发档位（`board.dispatch_fallback`；用户裁决：
 /// 角色缺失是集群常态，默认不停车但仍保角色纪律）。三档语义：
 /// - `Off` = 无人匹配即诚实停车等节点（旧 false）。
-/// - `Role`（默认）= 松弛阶梯走到「丢职能」为止（D13 ②保职能丢标签 →
+/// - `Role`（默认）= 松弛阶梯走到「丢职能」为止（②保职能丢标签 →
 ///   ③丢职能保角色标签）：职能与随行的 tier 门槛放开，但 worker/coordinator
 ///   **角色纪律保留**（架构单可降级给开发，不可降级给 coordinator）。
 /// - `Full` = 阶梯全开 ②③④，角色也放开（旧 true）。
@@ -79,7 +77,7 @@ impl<'de> Deserialize<'de> for DispatchFallbackMode {
     }
 }
 
-/// 自治模式总开关（AOR 批三 5.1；默认 `Assisted` = 现状零回归）。
+/// 自治模式总开关（默认 `Assisted` = 现状零回归）。
 /// 与 `unlimited_mode` 正交并存：unlimited 管**评审处置环**自动化
 /// （FAIL 预算 ∞ 与 UNSURE 继续重派），autonomy 管**监察环**自动化
 /// （超时/离线自动重派与触发式重估）。
@@ -149,8 +147,8 @@ pub struct BoardFlagConfig {
     pub dispatch_timeout_secs: u64,
     /// sweep 扫描间隔秒数（默认 20s；不暴露到配置模板，供测试调快）。
     pub dispatch_sweep_interval_secs: u64,
-    /// 指派后自动派发（W2.5 接口预留；默认 false = 不自动派发）。用户拍板
-    /// （2026-08-31）：现阶段不做自动派发，但留出接口——置 true 后，
+    /// 指派后自动派发（.5 接口预留；默认 false = 不自动派发）。
+    /// 现阶段不做自动派发，但留出接口——置 true 后，
     /// `issue.assign` 指派给 worker 成功即自动走派发单一入口
     /// （dispatch_issue_core；失败不回滚指派，⛔ 系统评论留痕）。
     pub auto_dispatch: bool,
@@ -158,35 +156,35 @@ pub struct BoardFlagConfig {
     pub discussion: BoardDiscussionConfig,
     /// 每日备份配置（`board.backup`）。
     pub backup: BoardBackupConfig,
-    /// 任务拆解配置（`board.plan`；Swarm M1）。
+    /// 任务拆解配置（`board.plan`；Swarm）。
     pub plan: BoardPlanConfig,
-    /// 任务档案导出配置（`board.dossier`；2026-09-29）。
+    /// 任务档案导出配置（`board.dossier`）。
     pub dossier: BoardDossierConfig,
-    /// in_review 自动触发验收 agent（Swarm M3+；默认 true）。删除本键即回
+    /// in_review 自动触发验收 agent（Swarm +；默认 true）。删除本键即回
     /// 「纯人工验收」。
     pub auto_review: bool,
-    /// 验收 PASS 是否自动 done（Swarm M3+；默认 false = 人工签字放行）。
+    /// 验收 PASS 是否自动 done（Swarm +；默认 false = 人工签字放行）。
     pub auto_accept: bool,
-    /// FAIL 重派上限，超次转 UNSURE 等人工（Swarm M4）。
+    /// FAIL 重派上限，超次转 UNSURE 等人工（Swarm）。
     pub max_redispatch: u32,
-    /// 子单全部落定后父单自动收口（全自动流转 P1；默认 false = 停 in_review
+    /// 子单全部落定后父单自动收口（全自动流转；默认 false = 停 in_review
     /// 等人工）。true 时父单进 in_review 即触发一次汇总验收（输入=全部子单
     /// 结论 + 各子单最新交付汇报），PASS 自动 done；FAIL/UNSURE 转人工。
     /// 存在 cancelled 子单的父单不适用（范围缺口必须人工裁决）。
     pub auto_close_parent: bool,
-    /// 无限模式（全自动流转 P1；用户裁定 2026-09-10；默认 false = 护栏生效）。
+    /// 无限模式（全自动流转；用户裁定；默认 false = 护栏生效）。
     /// true：max_redispatch 视为 ∞（FAIL 无限重派）、UNSURE 带「无法定案」
-    /// 意见继续重派——但 §6.4B 语义变化（2026-10-12 批准）：UNSURE 连续达到
+    /// 意见继续重派——但 B 语义变化（批准）：UNSURE 连续达到
     /// `board.review.max_unsure_streak`（默认 2，0=不限恢复完全旧行为）转
     /// 人工——unlimited 放大的是重派次数不设限，不是无收敛重派授权。
     /// estop 急停不受影响（保险丝非护栏）。停滞仍可观测：连续重派且差距无
     /// 变化时 WARN 告警（只告警不停）。
     pub unlimited_mode: bool,
-    /// 自治模式总开关（AOR 批三 5.1；默认 `Assisted` = 现状零回归）。见
+    /// 自治模式总开关（默认 `Assisted` = 现状零回归）。见
     /// [`BoardAutonomy`] 类型文档：与 unlimited_mode 正交并存，矛盾态在
     /// 加载期降级 / 面板保存硬拒两处拦截。
     pub autonomy: BoardAutonomy,
-    /// 停车场兜底派发档位（集群完备性加固 2026-09-11 引入；2026-09-29 三档化，
+    /// 停车场兜底派发档位（集群完备性加固 引入； 三档化，
     /// 默认 `Role` = 角色缺失是常态：职能/tier 门槛随职能放开，但角色纪律
     /// 保留，不停车）。`Off` = 无人匹配即停车等节点；`Full` = 全松弛（角色
     /// 也放开）。所有档位：派发前落 ⚠ 系统评论留痕（松弛级说明）；无任何
@@ -197,26 +195,26 @@ pub struct BoardFlagConfig {
     /// 大小写不敏感）。Some 且该节点不在线 = 诚实停车**不悄悄换人**（钉住
     /// 即点名）；None = 在线节点里松弛排序自动选。
     pub dispatch_fallback_target: Option<String>,
-    /// 派发准入控制（goal P2/D0；默认 1）：自动派发链里，目标 worker 的
+    /// 派发准入控制（goal /；默认 1）：自动派发链里，目标 worker 的
     /// 在途派发数达到该上限 → 本单不派、留 backlog——新节点上线后由 sweep
     /// 自然承接（防「同波多就绪单全挤单 worker、后上线的设备接不到活」）。
     /// 0 = 不限（旧行为）。人工 `issue.dispatch` 显式派发不受此闸（人类明确
     /// 意图，后果自担）。
     #[serde(default = "default_worker_max_inflight")]
     pub worker_max_inflight: i64,
-    /// 验收 agent 行为配置（全自动流转 P4；`board.review` 段）。
+    /// 验收 agent 行为配置（全自动流转；`board.review` 段）。
     pub review: BoardReviewConfig,
-    /// 自动流转预算保险丝（全自动流转 P4；`board.budget` 段；0 = 该项关闭）。
+    /// 自动流转预算保险丝（全自动流转；`board.budget` 段；0 = 该项关闭）。
     pub budget: BoardBudgetConfig,
-    /// 项目档案传输护栏（看板项目档案 goal P3/D4；`board.archive` 段）。
+    /// 项目档案传输护栏（看板项目档案 goal /；`board.archive` 段）。
     pub archive: BoardArchiveConfig,
-    /// 合并冲突自动处置（看板项目档案 goal P5/F1；默认 false = human 档：
+    /// 合并冲突自动处置（看板项目档案 goal /；默认 false = human 档：
     /// 项目域冻结等人工解，`project.resume` 续行）。true = auto 档：AI 硬解
     /// →机械失败重派原 worker→离线三轮接触→换人——项目不停摆为第一原则，
     /// 重派循环套既有预算保险丝打满转人工。开关只控制冲突处置策略，不改
     /// 变影响域（冻结始终限本项目，不株连其他项目）。
     pub conflict_auto_resolve: bool,
-    /// 重派决策量化（能力扩展 P34；默认 false = D3 换节点重派维持匹配器
+    /// 重派决策量化（默认 false = 换节点重派维持匹配器
     /// 决策表现状行为字节等价）。true：换节点候选在匹配器排序之上叠加
     /// worker × 任务类型历史成功率指纹三档权重（prefer 提前 / avoid 靠后，
     /// 非绝对排除；样本 <3 一律 neutral），重派换节点评论带档位留痕。
@@ -224,7 +222,7 @@ pub struct BoardFlagConfig {
     pub fingerprint_weighting: bool,
     /// LLM 端点不可用期封存（U-B 断网封存；`board.unavailable` 段）。
     pub unavailable: BoardUnavailableConfig,
-    /// 重规划器配置（AOR 批三 5.3；`board.replan` 段）。
+    /// 重规划器配置（`board.replan` 段）。
     pub replan: BoardReplanConfig,
 }
 
@@ -258,7 +256,7 @@ impl Default for BoardFlagConfig {
     }
 }
 
-/// 重规划器配置（AOR 批三 5.3；`config.json` 的 `board.replan` 段）。
+/// 重规划器配置（`config.json` 的 `board.replan` 段）。
 /// 重规划 = 事件驱动的**建议**产出（proposal ≠ authorization）：四个触发
 /// 点（重派无意义失败停车 / 父评审 FAIL / 冻结类停车 / FINISH 谓词被
 /// unknown 阻塞超时）命中时收集证据 → LLM 起草结构化建议 → 落看板系统
@@ -294,23 +292,23 @@ impl Default for BoardReplanConfig {
     }
 }
 
-/// 验收 agent 行为配置（`board.review` 段；全自动流转 P4）。
+/// 验收 agent 行为配置（`board.review` 段；全自动流转）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BoardReviewConfig {
     /// 执行型验收轮数上限（默认 1 = 只跑一轮纯文本验收，与历史行为字节
     /// 等价）。>1 且最近一次派发的 worker 是本机节点时，验收 agent 以只读
     /// 工具白名单最多执行 N 轮取证后再下结论；远端 worker 一律纯文本
-    /// （B2a 安全闸）。
+    /// （安全闸）。
     pub max_turns: u32,
-    /// 验收需要更多证据时允许向执行 worker 发起一轮自检（B2b；默认 false）。
+    /// 验收需要更多证据时允许向执行 worker 发起一轮自检（默认 false）。
     /// worker 在其安全 8 层内按证据请求取证，回报后触发二段验收。
     pub selfcheck: bool,
-    /// 项目验收（F3）：项目下全部顶层父单 done 后自动汇总验收，PASS 自动
+    /// 项目验收：项目下全部顶层父单 done 后自动汇总验收，PASS 自动
     /// completed（默认 false = completed 仅人工/归档脚本设置）。FAIL/UNSURE
     /// 只写缺口评论 + 回滚 completed→in_progress，不自动重开父单。
     pub auto_close_project: bool,
-    /// 多检查员面板（全自动流转 P5/B3）：每次验收并行发出的评审路数
+    /// 多检查员面板（全自动流转）：每次验收并行发出的评审路数
     /// （默认 1 = 单检查员，与历史行为字节等价）。>1 时 N 路独立评审多数
     /// 投票聚合（平票/无多数 → Unsure 转人工，fail-safe 不偏向自动收货）；
     /// 消费侧收敛上限 5，并发上限 4。
@@ -320,28 +318,28 @@ pub struct BoardReviewConfig {
     /// （保留注入防线与三态 JSON 契约，关闭取证/经验）。无法识别的值安全
     /// 回落 thorough（宁可全量也不放水）。
     pub tier: String,
-    /// exec: 锚点执行开关（M7 + §6.1 激活；代码默认 false = 安全缺省不变，
+    /// exec: 锚点执行开关（+ 激活；代码默认 false = 安全缺省不变，
     /// 三机环境配置开启）。开启后 `[CHECK] exec:<命令>` 在锚点根目录以子进程
-    /// 执行，退出码 0 = 过。planner 对可运行时验证的子单应产出此形态（§6.1
+    /// 执行，退出码 0 = 过。planner 对可运行时验证的子单应产出此形态（
     /// 改动二），危险命令形态解析期黑名单拒绝；环境依赖缺失诚实跳过不进
     /// 失败集（探针闸）。
     pub exec_anchors_enabled: bool,
     /// exec: 锚点单条执行超时秒数（默认 120；超时 = 不过 + kill）。
     pub exec_anchor_timeout_secs: u64,
-    /// 评审自身失败自动重评次数（N2；默认 1，**0 = 关**回旧行为——评审
+    /// 评审自身失败自动重评次数（默认 1，**0 = 关**回旧行为——评审
     /// LLM 调用失败恒转人工）。评审 LLM 失败（非 verdict）时延迟自动重评，
     /// 全部重评仍失败才转人工。约束：estop / 单据状态已变则不重试（尊重
     /// 迟到评审守卫）；每次重评审计评论留痕。与 fail_class 重派方向相反
-    ///——重评不重派，评审侧故障不放大成 worker 重写循环。
+    ///重评不重派，评审侧故障不放大成 worker 重写循环。
     pub failure_retries: u32,
-    /// UNSURE 连续转人工阈值（§6.4 B；默认 **2**，**0 = 不限**=旧行为）。
+    /// UNSURE 连续转人工阈值（B；默认 **2**，**0 = 不限**=旧行为）。
     /// 同签名 UNSURE 连续达到阈值 → 复用 EscalateHuman 路径转人工（自带
     /// 清账 + 审计 + reasons 评论）。语义：给一次 worker 自愈机会，超出
-    /// 即认定「只有人能解」（NB-8 第 4 轮实证）。unlimited_mode 下 UNSURE
-    /// 处置从「无限重派」限缩为「同签名连续 2 轮转人工」（2026-10-12
+    /// 即认定「只有人能解」（第 4 轮实证）。unlimited_mode 下 UNSURE
+    /// 处置从「无限重派」限缩为「同签名连续 2 轮转人工」（
     /// 用户批准的语义变化）。
     pub max_unsure_streak: u32,
-    /// 职能→评审预设查表（职能能力演进 B1；`board.review.professions`
+    /// 职能→评审预设查表（职能能力演进；`board.review.professions`
     /// 嵌套 map，键=职能 slug，大小写不敏感）。查表三层覆盖：职能预设 >
     /// 本结构全局字段 > 内置默认；slug 先精确匹配再裸 family 回落
     /// （`dev:cpp` 无精确键时落 `dev` 键——自定义 spec 项继承 family 预设）。
@@ -351,19 +349,19 @@ pub struct BoardReviewConfig {
     /// 缺键零迁移（`#[serde(default)]`，空 map = 全部走全局/内置）。
     #[serde(default)]
     pub professions: std::collections::HashMap<String, BoardProfessionReviewPreset>,
-    /// 父单收口 FAIL 自动返工承接轮数上限（2026-10-16；默认 **2**，**0 = 关**
+    /// 父单收口 FAIL 自动返工承接轮数上限（默认 **2**，**0 = 关**
     /// = 旧行为恒转人工）。FAIL（差距具体）时自动创建「返工：」子单承接差距
     /// 并派发，返工单落定后 sync 链自动复评父单；UNSURE（证据不足）不在此列
     /// 恒转人工（返工修不了「无法判定」）。轮数按「返工：」前缀子单累计数计
     /// （含 cancelled——按尝试计不按存活计），超限保持转人工。
     pub parent_remediation_max: u32,
-    /// 交付证据契约总闸（G4，2026-10-18 批六；默认 false = 语义不变）。
+    /// 交付证据契约总闸（默认 false = 语义不变）。
     /// 开启后**所有**单子验收 PASS 前置校验最新派发任务的交付记录在场
     /// （delivered/confirmed），缺失 = 降级 FAIL「缺交付证据」（不凭自然
     /// 语言进 done）。issue 级 `requires_evidence`（AC 含 file: 锚点自动
     /// 置位）不受本闸控制、恒生效——本闸是全局加码，不是全局豁免。
     pub require_delivery_evidence: bool,
-    /// 交付证据 typed 块强制闸（诚实边界收口 ②，2026-10-19；默认 **false**
+    /// 交付证据 typed 块强制闸（②，；默认 **false**
     /// 烧入期）。true 后交付证据闸要求 `$.delivery.files` typed 块**在场**
     /// （git tree diff 确定性派生，任何 git 交付都应可派生——缺席 = 证据面
     /// 残缺，FAIL「交付缺类型化证据块」）。`checks` 块**恒可选**（没跑检查
@@ -371,7 +369,7 @@ pub struct BoardReviewConfig {
     /// 时**无论本闸开关都验形态（path 形态闸 + sha256 hex 形态 + cmd 非空），
     /// 验不过 = FAIL——加法演进，旧 payload 缺席块行为不变。
     pub evidence_typed_required: bool,
-    /// 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板；键 = 匹配键，
+    /// 必需检查契约（项 B「必需的必须跑」，；键 = 匹配键，
     /// 值 = 必需锚点 id 列表）。匹配键与 issue `required_tags` 做**大小写
     /// 不敏感交集**（与派发 matcher 标签硬条件同规则同词表）；命中任一
     /// 标签键 → 该键的检查列表生效（多键命中取并集）；无标签命中 → 落
@@ -384,7 +382,7 @@ pub struct BoardReviewConfig {
     /// 双检既有短路。空 map = 契约关闭（默认，零回归）。
     #[serde(default)]
     pub required_checks: std::collections::HashMap<String, Vec<String>>,
-    /// 必检计划闸（P2 外循环，2026-10-25；默认 **false** 烧入期）。开启后
+    /// 必检计划闸（外循环，；默认 **false** 烧入期）。开启后
     /// 验收 PASS 前对账必检计划：单据正文反引号包裹的多词命令（如
     /// `` `cargo test` ``）= 本单必检项，worker 交付证据 `checks[]` 里没有
     /// 对应执行记录 = 交付不完整（PASS 降级 FAIL「计划内检查未跑」），
@@ -396,7 +394,7 @@ pub struct BoardReviewConfig {
 }
 
 impl BoardReviewConfig {
-    /// 职能评审参数解析（B1 单一入口）：全局字段打底 → 内置默认预设 →
+    /// 职能评审参数解析（单一入口）：全局字段打底 → 内置默认预设 →
     /// config 职能预设逐维度覆盖。`profession` 空/None = 无职能，返回全局值。
     pub fn resolve_for_profession(&self, profession: Option<&str>) -> BoardReviewParams {
         let mut out = BoardReviewParams {
@@ -449,7 +447,7 @@ impl BoardReviewConfig {
     }
 }
 
-/// 代码内置职能预设（B1；config `board.review.professions` 同名键逐维度
+/// 代码内置职能预设（config `board.review.professions` 同名键逐维度
 /// 覆盖）。`dev:*` 无内置预设（实现单评审与通用评审无差异诉求，维持全局
 /// 默认）。
 fn builtin_profession_presets() -> [(&'static str, BoardProfessionReviewPreset); 2] {
@@ -473,7 +471,7 @@ fn builtin_profession_presets() -> [(&'static str, BoardProfessionReviewPreset);
     ]
 }
 
-/// 职能评审预设（`board.review.professions.<slug>`；B1）。三个键全 Option：
+/// 职能评审预设（`board.review.professions.<slug>`）。三个键全 Option：
 /// 只覆盖显式设置的维度，其余沿用内置预设/全局 `board.review.*`——局部
 /// 预设不必照抄全局值。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -501,9 +499,9 @@ pub struct BoardReviewParams {
 impl Default for BoardReviewConfig {
     fn default() -> Self {
         Self {
-            // M6-3（2026-10-10）：默认 1 → 0（0 = 不限，取证到能下结论为
+            // 默认 1 → 0（0 = 不限，取证到能下结论为
             // 止）。max_turns=1 时评审 agent 单轮取证经常不够下结论 → UNSURE
-            // 转人工或假 FAIL；doom-loop / estop 守卫仍在，0 语义安全（T17
+            // 转人工或假 FAIL；doom-loop / estop 守卫仍在，0 语义安全（
             // 已对齐 UI min=0）。
             max_turns: 0,
             selfcheck: false,
@@ -524,7 +522,7 @@ impl Default for BoardReviewConfig {
     }
 }
 
-/// 自动流转预算保险丝（`board.budget` 段；全自动流转 P4/E1；0 = 关闭）。
+/// 自动流转预算保险丝（`board.budget` 段；全自动流转 /；0 = 关闭）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BoardBudgetConfig {
@@ -534,10 +532,10 @@ pub struct BoardBudgetConfig {
     pub max_total_redispatch: u32,
     /// 单个父单从创建起的墙钟预算秒数（超时不再自动重派转人工；0 = 关闭）。
     pub wall_clock_budget_secs: u64,
-    /// 单个父单全链 token 预算（E1 二期：worker 经回调回传的用量累计，
+    /// 单个父单全链 token 预算（二期：worker 经回调回传的用量累计，
     /// input+output 口径；0 = 关闭。依赖集群回传，单机路径无 token 记账）。
     pub max_tokens_per_parent: u64,
-    /// 单个子单送达失败自动重试次数上限（F2 重试池；**按本单 ⛔ 标记评论
+    /// 单个子单送达失败自动重试次数上限（重试池；**按本单 ⛔ 标记评论
     /// 计数**，与 max_total_redispatch 的父单全链派发行口径互不掺和）。
     /// 超限 → 🛑 系统评论转人工、出池。默认 5（退避阶梯 60+120+240+480+960
     /// = 1860s ≈ 31 分钟内重试 5 次，此后第 6 次失败熔断）；0 = 关闭保险丝
@@ -557,7 +555,7 @@ impl Default for BoardBudgetConfig {
     }
 }
 
-/// 项目档案传输护栏（`board.archive` 段；看板项目档案 goal P3/D4）。
+/// 项目档案传输护栏（`board.archive` 段；看板项目档案 goal）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BoardArchiveConfig {
@@ -576,7 +574,7 @@ impl Default for BoardArchiveConfig {
     }
 }
 
-/// 任务档案导出配置（`board.dossier` 段；2026-09-29）。导出本体见
+/// 任务档案导出配置（`board.dossier` 段）。导出本体见
 /// `nemesis_board::dossier`（单任务树/整项目两入口；WSAPI `dossier.export`
 /// 与 CLI `nemesisbot dossier export`）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -596,8 +594,8 @@ impl Default for BoardDossierConfig {
     }
 }
 
-/// 任务拆解配置（`board.plan` 段；Swarm M1；超时重拆四键 2026-10-11 无人值守
-/// 硬化 §5#1——凡可致流程停滞处必有开关）。
+/// 任务拆解配置（`board.plan` 段；Swarm；超时重拆四键 无人值守
+/// 硬化 #1——凡可致流程停滞处必有开关）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BoardPlanConfig {
@@ -605,7 +603,7 @@ pub struct BoardPlanConfig {
     pub model: Option<String>,
     /// 拆解后跳过人工确认闸直接建单派发（默认 false = 拆完等人确认）。
     /// 消费点：`issue_plan` 一段异步拆解产出 plan_ready 时现读本旗标，
-    /// true 即自动 confirm 发车（全自动流转 P1 接线；planner 失败仍转
+    /// true 即自动 confirm 发车（全自动流转 接线；planner 失败仍转
     /// 人工通知，不自动重试）。
     pub auto_confirm: bool,
     /// 单次拆解链超时阈值秒数（默认 1200 = 20 分钟，用户裁定；0 = 不限）。
@@ -619,7 +617,7 @@ pub struct BoardPlanConfig {
     /// 拆解超时是否自动重拆（默认 true）。false = 超时不重拆，直接转人工
     /// 评论（现行为补强前的语义，保留开关）。
     pub timeout_reattempt: bool,
-    /// gateway 重启后自动恢复中断拆解（N1；默认 true）。重启杀拆解任务且
+    /// gateway 重启后自动恢复中断拆解（默认 true）。重启杀拆解任务且
     /// RUNNING_PLANS 是内存态——旧行为 = 父单停留「已开始拆解」评论态等
     /// 手动重拆（无人值守语义下 = 流程中断）。true 时启动扫描满足
     /// 「状态为 backlog/todo 且带拆解中评论形态且不在 RUNNING_PLANS」的
@@ -673,7 +671,7 @@ impl Default for BoardUnavailableConfig {
     }
 }
 
-/// 频道讨论区配置（`board.discussion` 段；Swarm M2/M3）。
+/// 频道讨论区配置（`board.discussion` 段；Swarm）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BoardDiscussionConfig {
@@ -685,7 +683,7 @@ pub struct BoardDiscussionConfig {
     pub hourly_budget_per_node: u32,
     /// 每节点每分钟 board.comment.post 上行限速（默认 12，0=不限）。
     pub rate_limit_per_min: u32,
-    /// D2 定稿评审有界等待（秒；默认 1800，0=不等直接裁决）。定稿单
+    /// 定稿评审有界等待（秒；默认 1800，0=不等直接裁决）。定稿单
     /// worker 据此 sleep + 轮询讨论线程（双阈值的时间维；条数维在提示词
     /// 契约里按职能自选）。消费面 = 定稿单任务提示词渲染（master config
     /// 经 planner/派发描述传给 worker，worker 本地 config 不作数）。
@@ -704,7 +702,7 @@ impl Default for BoardDiscussionConfig {
     }
 }
 
-/// 看板数据库每日备份配置（`board.backup` 段；Swarm M2）。
+/// 看板数据库每日备份配置（`board.backup` 段；Swarm）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct BoardBackupConfig {

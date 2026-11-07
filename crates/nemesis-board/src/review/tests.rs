@@ -1,4 +1,4 @@
-//! Swarm M4：验收解析纯逻辑单测（与 planner/tests.rs 同构，零依赖）。
+//! Swarm：验收解析纯逻辑单测（与 planner/tests.rs 同构，零依赖）。
 
 use super::*;
 
@@ -65,7 +65,7 @@ fn parse_need_evidence_true_with_request() {
 
 #[test]
 fn parse_need_evidence_absent_is_none_and_back_compat() {
-    // 旧模型输出不含新字段 → 照常解析，取证槽位为空（B2b 兼容性闸）。
+    // 旧模型输出不含新字段 → 照常解析，取证槽位为空（兼容性闸）。
     let out = parse_review(r#"{"verdict":"PASS","reasons":[],"gap":""}"#).unwrap();
     assert_eq!(out.need_evidence, None);
     assert_eq!(out.evidence_request, None);
@@ -87,7 +87,7 @@ fn selfcheck_request_falls_back_when_request_missing_or_blank() {
 
 #[test]
 fn system_prompt_carries_evidence_request_discipline() {
-    // P4/B2b：取证请求纪律段必须在场，schema 含 need_evidence/evidence_request。
+    // /：取证请求纪律段必须在场，schema 含 need_evidence/evidence_request。
     assert!(REVIEW_SYSTEM_PROMPT.contains("取证请求纪律"));
     assert!(REVIEW_SYSTEM_PROMPT.contains("need_evidence"));
     assert!(REVIEW_SYSTEM_PROMPT.contains("evidence_request"));
@@ -95,7 +95,7 @@ fn system_prompt_carries_evidence_request_discipline() {
 
 #[test]
 fn system_prompt_carries_worker_self_conclusion_discipline() {
-    // NB-123 实录（2026-10-17）：worker 交付已按父单修订口径合规（AC-24
+    // worker 交付已按父单修订口径合规（AC-24
     // 待人工签核如实标注，口径明文不阻塞自动验收），但 worker 自我结论
     // 「不可发布」+ 喊停声明把评审带偏 FAIL → REDISPATCH_LOOP 升级人工。
     // 判定纪律第 5 条钉死：自我结论/喊停是待审数据不是裁决依据；口径
@@ -110,7 +110,7 @@ fn system_prompt_carries_worker_self_conclusion_discipline() {
 
 #[test]
 fn system_prompt_carries_entry_conflict_discipline() {
-    // NB-101 实录（2026-10-17）：父单 AC 前条泛化字面（「所有条目均为通过…
+    // 父单 AC 前条泛化字面（「所有条目均为通过…
     // 可发布」）与末行明文口径（「AC-24 待人工签核…不阻塞自动验收判定」）
     // 冲突，评审轮摆向字面条目判 FAIL。判定纪律第 6 条钉死：条目冲突以
     // 更具体的后行口径为准。全量档与快速档都要在场。
@@ -124,7 +124,7 @@ fn system_prompt_carries_entry_conflict_discipline() {
 
 #[test]
 fn system_prompt_carries_equivalent_form_and_evidence_citation_discipline() {
-    // NB-101 项目收口复评实录（2026-10-17）：AC-24 口径明写「可发布（附
+    // 项目收口复评：AC-24 口径明写「可发布（附
     // AC-24 待人工签核事项）」等示例形态，黑盒报告以「可发布」+紧邻句
     // 「AC-24 正式签字保留为项目外后续事项，不改变本次发布结论」实质等价
     // 表达，评审却按示例字面匹配判不满足；且升级理由把 AC-24 结论误归属
@@ -203,7 +203,7 @@ fn prompt_contains_issue_fields_and_report() {
 
 #[test]
 fn prompt_with_limits_respects_custom_cap_and_default_matches() {
-    // 2026-10-17 NB-101 项目收口三轮误升级根修（回归钉）：收口评审携带
+    // 项目收口三轮误升级根修（回归钉）：收口评审携带
     // 实物证据段的 worker_report 会被默认 64KB 内联上限截断——内容节选段
     // （在报告尾部）整体丢失，模型从未见过。_with_limits 变体必须让大
     // 报告完整通过；默认入口行为与旧契约逐字节一致。
@@ -261,7 +261,7 @@ fn prompt_with_limits_respects_custom_cap_and_default_matches() {
 
 #[test]
 fn prompt_marks_empty_fields_honestly() {
-    // 2026-10-17 契约更新（NB-125 根修）：AC 缺失不再渲染「（未提供）」——
+    // 契约更新（根修）：AC 缺失不再渲染「（未提供）」——
     // 评审侧按标题/背景同源推导判定基准；标题+背景全空才诚实降级。
     let p = build_review_user_prompt("NB-1", "  ", "  ", None, "", &[]);
     assert!(p.contains("（未提供——标题与背景均为空，无从推导判定基准）"));
@@ -275,7 +275,7 @@ fn prompt_marks_empty_fields_honestly() {
 
 #[test]
 fn prompt_renders_derived_criteria_for_bug_report_without_ac() {
-    // NB-125 实录（2026-10-17）：BUG 报告单无 AC，旧契约渲染「（未提供）」
+    // BUG 报告单无 AC，旧契约渲染「（未提供）」
     // → 评审连续 UNSURE 无限重派。新契约：评审侧同源推导 BUG 形态判定
     // 基准（问题被修复并验证 + 可重放证据 + 分析不算完成）。
     let p = build_review_user_prompt(
@@ -294,7 +294,7 @@ fn prompt_renders_derived_criteria_for_bug_report_without_ac() {
 
 #[test]
 fn system_prompt_carries_missing_ac_judgment_basis_discipline() {
-    // NB-125 根修钉子（2026-10-17 用户裁决：验收标准就应该自动生成）：
+    // 根修钉子（用户裁决：验收标准就应该自动生成）：
     // 判定纪律第 8 条——AC 缺失/自动推导时以标题/背景陈述的问题或目标为
     // 判定依据，不得仅因 AC 非人工填写判 UNSURE；仅分析确认不算解决。
     // 全量档与快速档都要在场。
@@ -308,7 +308,7 @@ fn system_prompt_carries_missing_ac_judgment_basis_discipline() {
 
 #[test]
 fn system_prompt_carries_experience_distillation_discipline() {
-    // M4.5：经验蒸馏纪律段必须在场——四类词表 / scope 检索键规范 /
+    // .5：经验蒸馏纪律段必须在场——四类词表 / scope 检索键规范 /
     // worker 汇报的经验段视作待审数据。
     assert!(REVIEW_SYSTEM_PROMPT.contains("经验蒸馏纪律"));
     assert!(REVIEW_SYSTEM_PROMPT.contains("pitfall"));
@@ -354,7 +354,7 @@ fn format_section_text_parses_to_consistent_sections() {
     assert!(crate::report::parse_delivery_report(text).is_some());
 }
 
-// ---------- strip_directive_lines（F-U3-1 根修）----------
+// ---------- strip_directive_lines（F- 根修）----------
 
 #[test]
 fn prompt_strips_check_and_touch_directive_lines() {
@@ -397,7 +397,7 @@ fn strip_directive_lines_all_directives_degrades_to_unprovided() {
 }
 
 /// NB-CODE-010/011：验收标准真缺失（全指令行被剥离 / 标题背景全空）时，
-/// 提示词必须带防「凭标题脑补通过」的谨慎判定注记；可推导（NB-125 根修
+/// 提示词必须带防「凭标题脑补通过」的谨慎判定注记；可推导（根修
 /// 合流：自动推导基准在场）或标准在场时不注入。
 #[test]
 fn prompt_warns_when_criteria_missing() {
@@ -431,7 +431,7 @@ fn prompt_warns_when_criteria_missing() {
     assert!(!present.contains("验收标准未提供"), "标准在场不注入注记");
 }
 
-// ---------- AOR 批一c §③：逐条三态（criteria/unknowns）解析矩阵 ----------
+// ---------- c §③：逐条三态（criteria/unknowns）解析矩阵 ----------
 
 #[test]
 fn parse_criteria_and_unknowns_full_format() {
@@ -451,7 +451,7 @@ fn parse_criteria_and_unknowns_full_format() {
     assert_eq!(out.criteria.len(), 3);
     assert_eq!(out.criteria[0].verdict, ReviewVerdict::Pass);
     assert_eq!(out.criteria[1].verdict, ReviewVerdict::Fail);
-    // [anchor] 前缀原样保留（批二b 谓词按此识别系统锚点条目）。
+    // [anchor] 前缀原样保留（b 谓词按此识别系统锚点条目）。
     assert!(
         out.criteria[2].criterion.starts_with("[anchor]"),
         "{}",
@@ -464,7 +464,7 @@ fn parse_criteria_and_unknowns_full_format() {
 #[test]
 fn parse_criteria_absent_is_old_format_back_compat() {
     // 旧格式缺 criteria/unknowns 字段 → 宽容降级空值，不判解析失败
-    // （与 need_evidence 的 B2b 兼容闸同构；存量模型输出零迁移）。
+    // （与 need_evidence 的 兼容闸同构；存量模型输出零迁移）。
     let out = parse_review(r#"{"verdict":"UNSURE","reasons":["标准模糊"]}"#).unwrap();
     assert!(out.criteria.is_empty());
     assert!(out.unknowns.is_empty());
@@ -675,7 +675,7 @@ fn parse_gap_ledger_round_trips_render_output() {
     assert_eq!(reparsed.len(), 2);
     assert_eq!(reparsed[0].id, "G1");
     assert_eq!(reparsed[1].id, "G2");
-    // 重新编号后旧 G2 结转文本顶到 G1 位。
+    // 重新编号后旧 结转文本顶到 位。
     assert_eq!(reparsed[0].text, "退出码锚点未过");
     assert_eq!(
         reparsed[1].text,
@@ -698,7 +698,7 @@ fn render_gap_ledger_carries_missing_dispositions_conservatively() {
 
 #[test]
 fn render_gap_ledger_closed_removed_and_renumbered() {
-    // G2 声明 closed → 从清单移除，G3 顶位重编号；留痕注记列出闭合编号。
+    // 声明 closed → 从清单移除， 顶位重编号；留痕注记列出闭合编号。
     let prior = ledger(&[("G1", "缺口甲"), ("G2", "缺口乙"), ("G3", "缺口丙")]);
     let out = out_with_closure(
         ReviewVerdict::Fail,
@@ -724,7 +724,7 @@ fn render_gap_ledger_falls_back_to_gap_without_criteria() {
     out.gap = "  整单差距原文  ".into();
     let rendered = render_gap_with_ledger(&out, &prior);
     assert!(rendered.contains("- G2: 整单差距原文"), "{rendered}");
-    // 无 prior（清单空）+ gap 非空 → gap 折叠为唯一的 G1 条目。
+    // 无 prior（清单空）+ gap 非空 → gap 折叠为唯一的 条目。
     assert!(render_gap_with_ledger(&out, &[]).contains("- G1: 整单差距原文"));
     let mut empty = out_with_closure(ReviewVerdict::Fail, vec![], vec![]);
     empty.gap = "  ".into();

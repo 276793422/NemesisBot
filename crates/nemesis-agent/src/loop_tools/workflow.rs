@@ -274,7 +274,7 @@ impl WorkflowTool {
                     .to_string(),
             );
         }
-        // 语义 lint（2026-09-23 计划类 C）：warning 不阻断，但经 hints 进
+        // 语义 lint（计划类 C）：warning 不阻断，但经 hints 进
         // 本轮自纠回路——修了重存，或向用户确认属有意配置。
         for w in &summary.warnings {
             hints.push(format!(

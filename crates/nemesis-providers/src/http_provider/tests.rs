@@ -1,10 +1,10 @@
 use super::*;
 
-/// BUG-HUNT R61 回归钉：SSE `data` 字段名后空格可选（规范语义）——此前
+/// 回归钉：SSE `data` 字段名后空格可选（规范语义）——此前
 /// 只认 `"data: "` 带空格形态，无空格上游（`data:{...}`，合规服务存在）
 /// 事件全被跳过 → 流式回复静默变空。anthropic lane 双臂 / codex lane
 /// strip_prefix 单臂早已兼容，本 lane 是唯一缺口。
-/// BUG-20261029-191 起多行 `data:` 行按规范拼接为单一载荷（每行值后接
+/// 起多行 `data:` 行按规范拼接为单一载荷（每行值后接
 /// 换行，serde_json 容忍）；旧行为逐行独立解析会把按行拆分的 JSON 拆碎。
 #[test]
 fn data_payload_recognizes_both_space_forms() {
@@ -45,7 +45,7 @@ fn data_payload_ignores_non_data_lines() {
     );
 }
 
-/// BUG-20261029-191 功能钉：按行拆分发送的 JSON（pretty-print SSE 形态）
+/// 功能钉：按行拆分发送的 JSON（pretty-print SSE 形态）
 /// 拼接后可完整解析——旧行为逐行独立解析，每行 from_str 失败 continue
 /// 静默丢全部内容。
 #[test]
@@ -773,7 +773,7 @@ async fn test_chat_stream_returns_channel() {
     let mut rx = provider.chat_stream(&messages, &[], "test", &ChatOptions::default());
 
     // Should eventually get an error (connection refused / timeout).
-    // Use tokio::time::timeout to avoid hanging.
+    // Use tokio::time:timeout to avoid hanging.
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await;
 
     // The channel should return something (likely an error).
@@ -1076,7 +1076,7 @@ async fn test_chat_connection_error() {
         .await;
     assert!(result.is_err());
     match result {
-        // 2026-10-13 诚实传输错误映射：reqwest 连接失败（非超时）不再伪装成
+        // 诚实传输错误映射：reqwest 连接失败（非超时）不再伪装成
         // Timeout，落 Unknown + "connect error" 前缀（provider/model 编进
         // message——Unknown 变体无 model 槽位）。
         Err(FailoverError::Unknown { provider, message }) => {
@@ -1094,7 +1094,7 @@ async fn test_chat_connection_error() {
 
 #[tokio::test]
 async fn test_chat_http_401_error() {
-    // Use mock-server pattern via reqwest::Response::builder
+    // Use mock-server pattern via reqwest::Response:builder
     // We'll test error handling logic by simulating HTTP errors
 
     let config = HttpProviderConfig {
@@ -1862,7 +1862,7 @@ fn test_build_request_body_with_system_and_user_messages() {
 }
 
 // ============================================================
-// T2：http_provider 跟随 openai_compat 的 vision 数组适配（共享 helper）
+// http_provider 跟随 openai_compat 的 vision 数组适配（共享 helper）
 // ============================================================
 
 #[test]
@@ -1909,7 +1909,7 @@ fn test_build_request_body_image_parts_openai_format() {
 }
 
 // ===========================================================================
-// B 根修补测（2026-09-17）：200-包装错误诚实化守卫。CC Switch 实测对未知
+// B 根修补测：200-包装错误诚实化守卫。CC Switch 实测对未知
 // 路径回 HTTP 200 + 错误 JSON（{"code":500,"msg":"404 NOT_FOUND"}），旧
 // 逻辑 chat() 静默空响应 / chat_stream() 静默空流——集群人格生成 0.4s 假
 // 失败根因链的一环。这里钉死：chat() 两分支（error 键 / choices 缺失）+
@@ -2036,9 +2036,9 @@ async fn test_b_chat_stream_json_200_with_choices_synthesizes_stream() {
 
 #[tokio::test]
 async fn test_b_chat_stream_json_200_carries_reasoning_content() {
-    // BUG-20261025-23：合成路径此前硬编码 reasoning_content=None，stream=yes
+    // 合成路径此前硬编码 reasoning_content=None，stream=yes
     // 撞上忽略 stream 的思考型模型端点时丢 reasoning——该字段是多轮回放的
-    // 功能性输入（deepseek 形态 API 第二轮缺它直接 400）。契约：合成终态帧
+    // 功能性输入（deepseek 形态 API 缺它直接 400）。契约：合成终态帧
     // 与非流式 parse 同源携带 message.reasoning_content。
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -2129,7 +2129,7 @@ async fn test_b_chat_stream_json_200_no_choices_maps_format() {
 
 #[tokio::test]
 async fn test_b_chat_stream_silent_stall_hits_wall_clock_deadline() {
-    // NB-123 实证根修（2026-10-16）：上游静默停流（连而不答、不发 [DONE]、
+    // 实证根修：上游静默停流（连而不答、不发 [DONE]、
     // 不断连）时，reqwest client 级 `.timeout()` 在 bytes_stream() 读路径不
     // 兜底——旧代码整个任务在 stream.next() 挂死。契约：SSE 读必须受
     // timeout_secs 绝对墙钟线约束，到线产 Timeout（可重试/可故障转移）。

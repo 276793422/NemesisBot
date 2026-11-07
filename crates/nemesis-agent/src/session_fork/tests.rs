@@ -1,4 +1,4 @@
-//! Z1 (Phase4-d) session-fork tests — ROUND 3 (2026-08-25 fork 第三轮):
+//! session-fork tests — (2026-08-25 fork):
 //! jsonl is the single source of truth for turn semantics. The fork cut is
 //! taken on jsonl rows, the new jsonl is a VERBATIM copy, and the new store
 //! is derived from the same rows (shared mapping with the self-heal
@@ -187,7 +187,7 @@ fn test_fork_at_turn_boundary_verbatim_copy_and_store_mirror() {
     }
 }
 
-/// ROUND-3 REGRESSION (the production incident this fix is for): the
+/// REGRESSION (the production incident this fix is for): the
 /// source's SessionStore is compaction-truncated (starts mid-August, the
 /// July turns are gone), polluted with a non-empty tool intermediate, a
 /// tool row and an empty assistant row, ends on a DIFFERENT 9th turn, and
@@ -284,7 +284,7 @@ fn test_fork_round3_regression_divergent_polluted_store() {
     assert_eq!(store.get_history(&src).len(), 23);
     assert!(store.get_summary(&src).contains("paste them here"));
 
-    // Boundary events on both keys (U9 sidecar).
+    // Boundary events on both keys (sidecar).
     let out_ev = read_boundary_events(&src);
     assert!(
         out_ev
@@ -325,7 +325,7 @@ fn test_fork_new_key_uniqueness() {
         assert_eq!(rows.len(), 6);
     }
 
-    // ROUND-3 guard: a previous fork's jsonl outlives its store json (7-day
+    // guard: a previous fork's jsonl outlives its store json (7-day
     // TTL deletes only the store side). The uniquifier must consult the
     // jsonl too, or the next fork would APPEND onto the surviving log and
     // duplicate the whole prefix.
@@ -351,6 +351,38 @@ fn test_fork_new_key_uniqueness() {
     for k in [&src, &i1.new_key, &i2.new_key, &i3.new_key, &i4.new_key] {
         delete_chat_log(k);
     }
+}
+
+/// BUG-20261106-038: a META-ONLY leftover at the auto candidate key
+/// (`{src}__fork`) must also pin the uniquifier — producer: trash half-
+/// failure / hard-delete single-file retry exhaustion leaves the meta
+/// sidecar behind while jsonl + store json are gone. Upsert-style meta
+/// writes (write_session_meta / write_session_parent / …) preserve stale
+/// fields, so silent reuse would inherit the dead session's
+/// allow_all/branch_summary/title into the fresh fork.
+#[test]
+fn test_fork_unique_key_skips_meta_only_stale_candidate() {
+    let src = unique_src();
+    seed_clean_log(&src);
+
+    let stale = format!("{}__fork", src);
+    crate::chat_log::write_session_meta(&stale, "已删分叉的陈旧标题");
+    assert!(!crate::chat_log::chat_log_exists(&stale));
+    assert!(crate::chat_log::session_occupied(&stale));
+
+    // In-memory store: store-side checks all miss; jsonl absent at the
+    // candidate; only the meta sidecar occupies it.
+    let store = SessionStore::new_in_memory();
+    let info = fork_session(&store, &src, None, None).unwrap();
+    assert_eq!(
+        info.new_key,
+        format!("{}__fork_2", src),
+        "meta-only leftover must pin the key"
+    );
+
+    delete_chat_log(&src);
+    delete_chat_log(&info.new_key);
+    delete_chat_log(&stale);
 }
 
 #[test]
@@ -380,7 +412,7 @@ fn test_fork_errors_on_empty_or_turnless_source() {
     assert!(err2.contains("jsonl"), "unexpected error: {err2}");
 }
 
-/// BUG-20261101-292：at_turn=0 诚实拒绝（CLI --at 0 / WSAPI at_turn 0）。
+/// at_turn=0 诚实拒绝（CLI --at 0 / WSAPI at_turn 0）。
 /// 此前 `.max(1)` 静默 clamp 成 fork 1 轮——与 interactive_pick 的
 /// `Ok(n) if n >= 1` 拒 0 臂行为分裂，静默纠偏违反 loud 纪律。
 #[test]
@@ -397,7 +429,7 @@ fn test_fork_rejects_zero_turn_boundary() {
     delete_chat_log(&src);
 }
 
-/// BUG-20261101-292 横向同族：--new-key 空/空白值诚实拒绝（此前会经
+/// 横向同族：--new-key 空/空白值诚实拒绝（此前会经
 /// unique_key 产出空名会话文件垃圾残留）。
 #[test]
 fn test_fork_rejects_empty_new_key() {
@@ -490,11 +522,11 @@ fn superseded_store_helpers_count_and_cut_correctly() {
     assert_eq!(turn_cut(&[], 0), 0);
 }
 
-// --- E4 (2026-09-05): fork 成功路径写血缘 sidecar meta ---
+// ---: fork 成功路径写血缘 sidecar meta ---
 
 /// fork_session 在新 key 上落 `parent` + `forked_at_turn`（血缘）；随后
 /// fork endpoint 写 title（api_handlers 的 rename 臂语义）时 upsert 保留
-/// 血缘 —— E4 的验收契约「fork 后 list 返回 parent 字段」的数据侧前提。
+/// 血缘 —— 的验收契约「fork 后 list 返回 parent 字段」的数据侧前提。
 #[test]
 fn test_fork_writes_parent_lineage_meta() {
     let dir = tempfile::tempdir().unwrap();
@@ -524,9 +556,9 @@ fn test_fork_writes_parent_lineage_meta() {
     delete_chat_log(&src);
 }
 
-// --- L6++（2026-09-08）：fork 继承项目归属 ---
+// ---：fork 继承项目归属 ---
 
-/// 源会话带项目绑定时 fork：新 key 的 sidecar meta（真相源）与 store 缓存
+/// 源会话带项目绑定时 fork：新 key 的 sidecar meta与 store 缓存
 /// 镜像都带同一绑定，且随 store.save 落盘（六矩阵⑥ 的数据侧前提——路由
 /// owner_of miss 时回读 sidecar 兜底）。源无绑定 = fork 后仍无绑定。
 #[test]
@@ -539,7 +571,7 @@ fn test_fork_inherits_project_binding() {
 
     let info = fork_session(&store, &src, None, Some(1)).unwrap();
 
-    // sidecar meta（真相源）双字段就位，title/血缘共存。
+    // sidecar meta双字段就位，title/血缘共存。
     let meta = crate::chat_log::read_session_meta_full(&info.new_key).expect("fork 落 meta");
     assert_eq!(meta.project_id.as_deref(), Some("p-deadbeef"));
     assert_eq!(meta.project_path.as_deref(), Some("/tmp/proj_x"));
@@ -563,7 +595,7 @@ fn test_fork_inherits_project_binding() {
         "绑定随 save 落盘"
     );
 
-    // 无绑定源：fork 后仍无绑定（meta 只带 E4 血缘，project 双字段缺席）。
+    // 无绑定源：fork 后仍无绑定（meta 只带 血缘，project 双字段缺席）。
     let src2 = unique_src();
     seed_clean_log(&src2);
     let info2 = fork_session(&store, &src2, None, None).unwrap();
@@ -578,7 +610,7 @@ fn test_fork_inherits_project_binding() {
     delete_chat_log(&src2);
 }
 
-/// BUG-20261025-19 回归锁：steer 注入行（`"steer": true`）是轮中间的
+/// 回归锁：steer 注入行（`"steer": true`）是轮中间的
 /// user 形态行——不计轮、不作 fork 切点；无标记行（含 `[steer] ` 内容
 /// 前缀的旧行——内容前缀不是契约，存储字段才是）按旧行为照常计轮。
 #[test]
@@ -606,7 +638,7 @@ fn test_row_turn_count_and_cut_skip_steer_rows() {
     assert_eq!(row_user_turn_count(&[row("user", "legacy")]), 1);
 }
 
-/// BUG-20261030-205 回归锁：fork 的 jsonl 落盘失败必须诚实 Err + 原子
+/// 回归锁：fork 的 jsonl 落盘失败必须诚实 Err + 原子
 /// 回退。旧代码把 open 失败（返回 0）静默吞掉——fork 照常建 store 落
 /// meta 写 boundary 并返回成功，产出「store 有历史、jsonl 真相源缺席」
 /// 的半残 fork（self-heal 一跑历史清零）。注入走 chat_log 的 key 定向

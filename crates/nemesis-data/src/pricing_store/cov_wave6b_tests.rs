@@ -2,7 +2,7 @@
 //!
 //! 分层查表的正向/降级路径由既有 cov_tests 覆盖，这里只补 trim 后为空
 //! 的入口卫兵。tempfile 不在本 crate dev-deps，沿本目录惯例用
-//! `std::env::temp_dir` + 进程 id 命名，测后清理。
+//! `std::env:temp_dir` + 进程 id 命名，测后清理。
 
 use crate::pricing_store::PricingStore;
 use std::path::PathBuf;

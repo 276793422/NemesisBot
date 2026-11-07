@@ -165,7 +165,7 @@ impl Detector {
     /// Uses both pattern-based scoring (65%) AND the Classifier's heuristic
     /// analysis (35%) — matching Go's `AnalyzeToolInput` behavior.
     ///
-    /// M18+M19: When strict mode is enabled AND the tool is high-risk
+    /// When strict mode is enabled AND the tool is high-risk
     /// (file_write, process_exec, shell_exec, exec), the detection threshold
     /// is lowered by 30% (minimum 0.3).
     pub fn analyze_tool_input(&self, tool_name: &str, args: &serde_json::Value) -> InjectionResult {
@@ -189,7 +189,7 @@ impl Detector {
             };
         }
 
-        // M18+M19: Lower threshold for high-risk tools in strict mode
+        // Lower threshold for high-risk tools in strict mode
         let effective_threshold = if cfg.strict_mode && Self::is_high_risk_tool(tool_name) {
             (cfg.threshold * 0.7).max(0.3)
         } else {

@@ -1,4 +1,4 @@
-//! ClusterFrameSink 槽测试（批次六）。
+//! ClusterFrameSink 槽测试。
 
 use super::*;
 

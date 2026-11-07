@@ -520,18 +520,18 @@ fn test_cmd_llm_config_both_options() {
 }
 
 // ===========================================================================
-// run() 全臂 + cmd_llm_status 深分支（S11c，quality-hardening goal 冲刺 S11）
+// run() 全臂 + cmd_llm_status 深分支（quality-hardening goal 冲刺）
 // —— 既有 41 个测试只直调 helper/cmd_*，dispatch 层（log.rs:588-682）从没
 // 跑过；cmd_llm_status 的 enabled+目录列表分支（304-335）和 llm 缺失 else
 // 分支（337-340）也没到过。env home 隔离 + GLOBAL_STATE_LOCK 串行。
-// 注意：cmd_llm_config 传非法 detail_level 会 std::process::exit(1)（370 行）
+// 注意：cmd_llm_config 传非法 detail_level 会 std::process:exit(1)（370 行）
 // 直接杀死测试进程——绝不测非法值。
 // ===========================================================================
 
 mod run_arm {
     use super::*;
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK
             .lock()
@@ -546,20 +546,20 @@ mod run_arm {
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn seed_home(home: &std::path::Path) {
         std::fs::create_dir_all(home).unwrap();
         std::fs::write(home.join("config.json"), "{}").unwrap();
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn read_cfg(home: &std::path::Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap()).unwrap()
     }
 
     // --- Llm 子树 ---
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn llm_subtree_dispatch_enable_disable_status_config_type() {
         with_env_home(|home| {
@@ -687,7 +687,7 @@ mod run_arm {
 
     // --- General 子树 ---
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn general_subtree_dispatch_all_actions() {
         with_env_home(|home| {
@@ -763,7 +763,7 @@ mod run_arm {
 
     // --- 顶层命令（别名 + Status/Config/SetLevel/文件/控制台）---
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn top_level_dispatch_aliases_status_and_config() {
         with_env_home(|home| {
@@ -806,7 +806,7 @@ mod run_arm {
         });
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn top_level_file_and_console_switches() {
         with_env_home(|home| {
@@ -844,27 +844,27 @@ mod run_arm {
 }
 
 // ===========================================================================
-// wave_a（R7 中批补盲，2026-08-27）：① logging 段存在但缺 llm 键的默认注入
+// wave_a（中批补盲）：① logging 段存在但缺 llm 键的默认注入
 // （194-198 / 356-360 / 425-432 —— 注意 read_logging_config 对「连 logging
 // 段都没有」的输入会兜底整份默认，永远打不进这些注入臂，必须造 partial）、
 // ② llm:{} 空对象的双默认填充（204-226 全程）、③ status 空串字段默认填充
 // （287/290）、④ 旧 console 键 fallback 闭包（553-557 or_else 体）、⑤
 // write_logging_config 写失败冒泡（181 `?`）。
-// 已知不可测：cmd_llm_config 非法 detail_level 走 std::process::exit(1)
+// 已知不可测：cmd_llm_config 非法 detail_level 走 std::process:exit(1)
 // （366-370），在测试进程内无法断言 → 豁免池。
 // ===========================================================================
 
 mod wave_a {
     // run/LlmAction/LogAction 只有下方 Windows 形态的 dispatch 测试使用，
     // 随之门控（Linux 上拆开导入，避免 unused import 死代码）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     use super::super::{LlmAction, LogAction, run};
     use super::super::{
         cmd_general_console, cmd_llm_enable, cmd_llm_status, default_logging_config,
         write_logging_config,
     };
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK
             .lock()
@@ -932,7 +932,7 @@ mod wave_a {
         cmd_llm_status(&cfg, &workspace).expect("空串字段走默认填充分支");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn dispatch_type_raw_creates_llm_section_with_save_raw() {
         // logging 段存在但没有 llm 键 + dispatch 层 Type raw → 425-432 带
@@ -997,12 +997,12 @@ mod wave_a {
 }
 
 // ===========================================================================
-// wave_c（coverage 补测，2026-08-27）：cmd_llm_config 的 llm 段缺省注入臂
+// wave_c（coverage 补测）：cmd_llm_config 的 llm 段缺省注入臂
 // （355-361）。既有 Config 测试全部基于 make_config（llm 键已存在）或
 // None/None「无改动」路径；「logging 段存在但缺 llm 键」的 partial 配置只
 // 测过 enable（194-198）/ type raw（425-432）两个入口，config 入口的默认
-// 注入从未跑过。全部走合法 detail_level——非法值会 std::process::exit(1)
-// 杀死测试进程（见 S11c 头注），绝不碰。
+// 注入从未跑过。全部走合法 detail_level——非法值会 std::process:exit(1)
+// 杀死测试进程（见 头注），绝不碰。
 // ===========================================================================
 
 mod wave_c {
@@ -1066,7 +1066,7 @@ mod wave_c {
 // r10（覆盖率 A 类 miss 补充）：
 // - enable 对「字段存在但为空串」的填充臂（wave_a 只测了字段缺失形态；
 //   unwrap_or("") 使两条输入殊途同归，但显式空串是独立夹具、补上更稳）。
-// - 非法 detail_level 的 std::process::exit(1)（366-370）：进程内必然杀死
+// - 非法 detail_level 的 std::process:exit(1)（366-370）：进程内必然杀死
 //   测试二进制（wave_a/wave_c 两代头注都判「豁免池」），子进程解锁——
 //   run_cli 自动接 coverage_cli_env，断言退码 1 与错误文案。
 // ===========================================================================
@@ -1094,14 +1094,14 @@ fn r10_llm_enable_fills_explicit_empty_string_fields() {
 }
 
 // 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r10_subprocess {
     use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn r10_invalid_detail_level_exits_1_in_child_process() {
-        // 进程内 std::process::exit(1) 会杀掉测试二进制 → 只能在子进程钉。
+        // 进程内 std::process:exit(1) 会杀掉测试二进制 → 只能在子进程钉。
         let ws = TestWorkspace::new().expect("workspace");
         std::fs::create_dir_all(ws.home()).unwrap();
         std::fs::write(ws.config_path(), r#"{"logging":{"llm":{"enabled":true}}}"#).unwrap();

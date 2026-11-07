@@ -1,4 +1,4 @@
-//! S9 覆盖率批次（Batch D：loop_tools.rs 文件工具错误臂 + cron + workflow
+//! 覆盖率批次（Batch D：loop_tools.rs 文件工具错误臂 + cron + workflow
 //! + web_fetch 本地环回）。
 //!
 //! 覆盖目标（基线缺口 → 测试）：

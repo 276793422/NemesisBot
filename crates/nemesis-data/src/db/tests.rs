@@ -38,7 +38,7 @@ fn init_db_creates_parent_dirs_schema_and_is_idempotent() {
     drop(conn);
 
     // 幂等：第二次 init（user_version 已 = SCHEMA_VERSION，跳过迁移）不报错，
-    // 版本保持当前值（A3 起为 2）
+    // 版本保持当前值（起为 2）
     let conn2 = init_db(&db_path).expect("re-init on existing db should be idempotent");
     let ver: i32 = conn2
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -78,7 +78,7 @@ fn init_db_root_drive_path_parent_none() {
     );
 }
 
-// -------------------------------------------------- B10（2026-10-18 存储韧性）
+// -------------------------------------------------- （存储韧性）
 
 #[test]
 fn init_db_rejects_foreign_file_loudly() {
@@ -127,7 +127,7 @@ fn init_db_rejects_newer_schema_version() {
 #[test]
 fn init_db_migration_from_v1_keeps_backup() {
     // 手法③：模拟旧版库（fresh v1 + user_version=1）→ init_db 走全迁移
-    // 链升到当前版，且迁移前 .bak.1 在场（头合法 + 版本 = 旧版 1）。
+    // 链升到当前版，且迁移前.bak.1 在场（头合法 + 版本 = 旧版 1）。
     let base = temp_base("b10_migrate_bak");
     let db_path = base.join("usage.db");
     {

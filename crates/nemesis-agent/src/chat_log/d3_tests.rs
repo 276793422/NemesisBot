@@ -1,9 +1,9 @@
-//! D3（devtool-upgrade 阶段 5）：消息↔文件变更映射的 chat_log 侧测试。
+//! （devtool-upgrade）：消息↔文件变更映射的 chat_log 侧测试。
 //!
 //! - `append_chat_log_meta` 全字段入口：`file_changes` 字段写入形状
 //!   （`[{path, kind}]`），空清单/旧签名行**不带**该键（宽容读契约）。
 //! - `dedup_file_changes` 投影：按 path 去重、首次出现顺序、kind 取最后
-//!   一次声明（M3 依赖此形状）。
+//!   一次声明（依赖此形状）。
 //! - 与 checkpoint 语义正交：这里只钉 jsonl 行形状，恢复语义在 checkpoint
 //!   自己的测试里。
 

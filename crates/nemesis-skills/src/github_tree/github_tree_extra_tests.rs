@@ -355,7 +355,8 @@ async fn test_download_file_too_large() {
     let err = download_file(&client, &format!("{}/file.txt", server.uri()), 10)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("too large"));
+    // BUG-20261107-005：消息换版（共享流式累计闸），超限在读入中途即断。
+    assert!(err.to_string().contains("exceeds limit"));
 }
 
 #[tokio::test]
@@ -417,8 +418,8 @@ async fn test_download_file_zero_max_size_does_not_use_default() {
     let err = download_file(&client, &format!("{}/file.txt", server.uri()), 0)
         .await
         .unwrap_err();
-    // With max_size=0, any content > 0 is too large
-    assert!(err.to_string().contains("too large"));
+    // With max_size=0, any content > 0 exceeds the limit (BUG-20261107-005 消息换版)
+    assert!(err.to_string().contains("exceeds limit"));
 }
 
 // ============================================================
@@ -483,7 +484,7 @@ fn test_tree_response_tree_can_be_huge() {
 }
 
 // ============================================================
-// S5 coverage: blob==prefix continue arm, path traversal
+// coverage: blob==prefix continue arm, path traversal
 // Security error, parent-create Io failure
 // ============================================================
 

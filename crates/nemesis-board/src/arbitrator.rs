@@ -1,10 +1,10 @@
-//! Swarm M3：定向投递裁决器（master 侧纯逻辑，无集群依赖）。
+//! Swarm：定向投递裁决器（master 侧纯逻辑，无集群依赖）。
 //!
-//! 裁决语义（impl-plan §5.3）：新消息落库后决定「唤醒了谁 / 跳过了谁 /
+//! 裁决语义（impl-plan）：新消息落库后决定「唤醒了谁 / 跳过了谁 /
 //! 为什么」，投递链路可审计：
 //! - ① `@name` / `@node-id` 精准点名（id/name 均可，大小写不敏感）→ 定点投递；
 //! - ② `@role:qa` 点名角色 → 该角色**全部**在线节点投递（点名角色=该角色都该知道）；
-//! - ②' `@all` 群发（goal P1/F2）→ 全部在线其他节点投递（离线 skip，board.sync 补拉兜底；
+//! - ②' `@all` 群发（goal）→ 全部在线其他节点投递（离线 skip，board.sync 补拉兜底；
 //!   发送者本人排除；额度三闸照常逐节点扣减）；
 //! - ③ 频道消息无 @ → 只投主持人（master 本地直调 run_direct 裁决）；
 //! - ④ issue 评论无 @ → 投该 issue 指派节点。
@@ -34,7 +34,7 @@ pub struct NodeCandidate {
 /// 裁决输入：一条新落库的讨论消息。
 #[derive(Debug, Clone)]
 pub struct WakeInput<'a> {
-    /// [`crate::models::thread_kind`] 词表（issue / channel）。
+    /// [`crate::models:thread_kind`] 词表（issue / channel）。
     pub thread_kind: &'a str,
     /// 消息原文（@ 解析的对象）。
     pub content: &'a str,
@@ -121,7 +121,7 @@ pub(crate) fn extract_mentions_with_roster(content: &str, names: &[&str]) -> Vec
         }
         let token: String = rest
             .chars()
-            // BUG-20261029-169：ASCII 常见标点同为 token 终止符——
+            // ASCII 常见标点同为 token 终止符——
             // `@role:qa, 请查看` / `@all, 集合` 此前把 `,` 吃进 token
             // （"role:qa," / "all,"），@all/@role: 精确比对落空静默
             // not_found 不唤醒（roster 形态有词边界不受影响，同源语义
@@ -144,10 +144,10 @@ pub(crate) fn extract_mentions_with_roster(content: &str, names: &[&str]) -> Vec
 /// `@role:x` 角色点名按规则②语义判定：x 匹配该节点的拓扑角色或功能类别
 /// 也算点名（master fan-out 时节点离线 → skip → board.sync 补拉靠这里兜住
 /// 「@role:qa 我在场却没被唤醒」的缺口）。
-/// `@all` 群发（goal P1/F2）：任意节点都算被点名——在线者即时 wake，离线者
+/// `@all` 群发（goal）：任意节点都算被点名——在线者即时 wake，离线者
 /// 经 board.sync 补拉兜底（本函数正是 sync 过滤的同源匹配）。
 ///
-/// worker 侧 board.sync 过滤与 master 裁决共用同一匹配语义（单一真相源）。
+/// worker 侧 board.sync 过滤与 master 裁决共用同一匹配语义。
 pub fn mentions_node(
     content: &str,
     node_id: &str,
@@ -263,7 +263,7 @@ pub fn resolve_wake_targets(input: &WakeInput<'_>, nodes: &[NodeCandidate]) -> W
                 });
             }
         } else if token.to_lowercase() == "all" {
-            // @all 群发（goal P1/F2，用户拍板计入）：唤醒全部在线其他节点；
+            // @all 群发（goal /，计入）：唤醒全部在线其他节点；
             // 离线节点 → skipped(offline)，board.sync 补拉兜底。发送者本人
             // 由 push_target_or_skip 统一排除。额度三闸照常逐节点扣减。
             for node in nodes {

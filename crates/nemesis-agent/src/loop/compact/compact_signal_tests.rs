@@ -1,9 +1,9 @@
-//! 自查② + B2（2026-10-18 B 级清零）compact 域测试。
+//! + （2026-10-18）compact 域测试。
 //!
-//! - 自查②：混合触发信号——provider 实报（完整输入 = prompt +
-//!   cache_creation + cache_read，`usage_full_input` 单一真相源）参与触发
+//! -混合触发信号——provider 实报（完整输入 = prompt +
+//!   cache_creation + cache_read，`usage_full_input` 统一定义）参与触发
 //!   比较（取大者早触发，安全侧）；无 usage 的 lane 回落纯估算（不多触发）；
-//! - B2：无进展守卫——摘要采用前用同轴估算比较压缩前后（基线 = 旧摘要 +
+//! -无进展守卫——摘要采用前用同轴估算比较压缩前后（基线 = 旧摘要 +
 //!   尾巴，不含 provider 实报的 system+tools 开销——2026-10-19 根修），省幅
 //!   不足 5% 弃用并计入 no_progress；连续 2 次暂停自动压缩（stuck 闩，
 //!   provider 不再被调）；成功采用清零计数。
@@ -101,7 +101,7 @@ fn keep_tokens_config(tag: &str, keep: usize) -> std::path::PathBuf {
         "nemesis_test_compact_signal_{tag}_{}.json",
         std::process::id()
     ));
-    // W2（2026-10-25）：条目带 context_window=100——窗口已知才不禁自动压缩
+    // 条目带 context_window=100——窗口已知才不禁自动压缩
     // （本文件测的是信号/预算机制，不是窗口解析；与 instance
     // set_context_window(100) 的阈值语义一致）。
     std::fs::write(
@@ -116,9 +116,9 @@ fn keep_tokens_config(tag: &str, keep: usize) -> std::path::PathBuf {
     path
 }
 
-/// 2026-10-20 压缩点一等公民化：keep + per-model `compact_context_tokens`
+/// 压缩点一等公民化：keep + per-model `compact_context_tokens`
 /// 二合一配置（active_model = config.model = "test-model"，条目按别名命中）。
-/// W2：条目同时带 context_window=100（窗口已知；compact>0 时停用闸本就不
+/// 条目同时带 context_window=100（窗口已知；compact>0 时停用闸本就不
 /// 触发，带上是为钳制臂与旧语义逐位一致）。
 fn compact_point_config(tag: &str, keep: usize, compact: i64) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -156,7 +156,7 @@ fn low_estimate_history() -> AgentInstance {
 }
 
 // ---------------------------------------------------------------------------
-// 自查②：混合触发信号
+// 混合触发信号
 // ---------------------------------------------------------------------------
 
 /// provider 实报 ≥ threshold 而字符估算 < threshold → 实报把触发拉起来
@@ -222,7 +222,7 @@ async fn no_provider_signal_falls_back_to_estimate() {
     let _ = std::fs::remove_file(&cfg_path);
 }
 
-/// note 记账：写入 per-session 状态（P8 同口径的值由调用方聚合，此处钉
+/// note 记账：写入 per-session 状态（同口径的值由调用方聚合，此处钉
 /// 存取往返与 None 起点）。
 #[test]
 fn note_signal_roundtrip() {
@@ -243,7 +243,7 @@ fn note_signal_roundtrip() {
     assert_eq!(after, Some(1234));
 }
 
-/// 修复⑤（2026-11-05 E2E 抓到）：auto 压缩成功采用后，provider 实报信号
+/// 修复⑤（E2E 抓到）：auto 压缩成功采用后，provider 实报信号
 /// 必须作废（置 None）。实报描述的是**压缩前**整请求（含已被折叠进摘要的
 /// 前缀），对新状态失真——session_context_status 的
 /// `used = max(估算, 实报)` 与混合触发都会拿 stale 值把 used 顶回压缩前
@@ -324,11 +324,11 @@ async fn force_adoption_clears_stale_provider_signal() {
 }
 
 // ---------------------------------------------------------------------------
-// B2：无进展守卫
+// 无进展守卫
 // ---------------------------------------------------------------------------
 
 /// 估算单独超阈值（无实报）→ 触发；摘要与尾巴同尺寸 → 守卫弃用 + no_progress
-/// 计数；连续 2 次弃用 → stuck 暂停（第三轮 provider 不再被调）。
+/// 计数；连续 2 次弃用 → stuck 暂停（provider 不再被调）。
 #[tokio::test]
 async fn b2_no_progress_discard_then_pause() {
     // 触发形态：context_window=100（threshold 75），system(4) + 8 × 10 tok
@@ -450,8 +450,8 @@ async fn b2_effective_summary_adopted_and_counter_resets() {
     let _ = std::fs::remove_file(&cfg_path);
 }
 
-/// 回归锁（2026-10-19 复查根修）：provider 实报含 system+tools 常量开销时，
-/// B2 基线不得跟着抬高——否则零进展摘要的 saved 被开销污染成「有效」，
+/// 回归锁（复查根修）：provider 实报含 system+tools 常量开销时，
+/// 基线不得跟着抬高——否则零进展摘要的 saved 被开销污染成「有效」，
 /// 守卫被架空（开销 ≥ 5%×signal 时恒过闸）。基线必须用同轴估算
 /// （旧摘要 + 尾巴），provider 信号只参与触发判定。
 #[tokio::test]
@@ -518,7 +518,7 @@ async fn b2_baseline_is_estimate_axis_not_inflated_provider_signal() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-20 压缩点一等公民化：用户压缩点触发 + 钳制一次性告知
+// 压缩点一等公民化：用户压缩点触发 + 钳制一次性告知
 // ---------------------------------------------------------------------------
 
 /// 用户压缩点 < 默认 75% 点：到点即压（不乘比例）——估算 74 在默认
@@ -577,7 +577,7 @@ async fn user_compact_point_not_reached_no_trigger() {
 }
 
 /// 超窗口钳制 + 一次性告知：压缩点 500 > 实例窗口 100 → 钳到 100；
-/// 第一轮进入状态块即置 clamped_noticed（不等软位/触发位），第二轮不重复。
+/// 进入状态块即置 clamped_noticed（不等软位/触发位），不重复。
 #[tokio::test]
 async fn clamp_notice_fires_once_even_below_soft() {
     let (provider, calls) = QueueProvider::boxed(vec![]);
@@ -608,7 +608,7 @@ async fn clamp_notice_fires_once_even_below_soft() {
         .map(|s| s.clamped_noticed);
     assert_eq!(noticed, Some(true), "首轮即一次性告知");
 
-    // 第二轮：状态仍在（一次性闸保持），无 panic、无重复触发副作用。
+    // 状态仍在（一次性闸保持），无 panic、无重复触发副作用。
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
         .await;
@@ -623,7 +623,7 @@ async fn clamp_notice_fires_once_even_below_soft() {
 }
 
 // ---------------------------------------------------------------------------
-// 空转前缀闸（2026-11-05 小窗口实测根修）：system turn 占据前缀时
+// 空转前缀闸（小窗口实测根修）：system turn 占据前缀时
 // `new_c > c` 是假前进——空转曾按失败记账，两轮烧掉 stuck 闩暂停自动压缩。
 // ---------------------------------------------------------------------------
 
@@ -676,7 +676,7 @@ fn gate_blocks_oversized_only_segment() {
     assert!(summarize_advance_worthwhile(&history2, 0, 4, 100));
 }
 
-/// 回归锁（BUG-20261105-009）：边界倒退不 panic。`new_c > c` 是内置触发
+/// 回归锁：边界倒退不 panic。`new_c > c` 是内置触发
 /// 闸，但策略槽 `Compact`（WASM 组件强制压缩意志）绕过它——rewind 截断 /
 /// config 热改 keep_recent_tokens 后 new_c < c 可达，切片曾直接 panic 炸
 /// turn。修复 = end <= start 短路返回 false。
@@ -698,7 +698,7 @@ fn gate_no_panic_on_boundary_regression() {
 
 /// 行为回归（死亡螺旋逆向）：巨大 system + 小尾巴预算 → 首次触发被闸门
 /// 拦截（provider 零调用、失败计数零），历史长过尾巴预算后闸门自然放开
-/// → 摘要正常发生（covers 推进）。旧代码在第一段就烧掉 stuck 闩。
+/// → 摘要正常发生（covers 推进）。旧代码在就烧掉 stuck 闩。
 #[tokio::test]
 async fn noop_prefix_gate_blocks_then_opens_as_history_grows() {
     let (provider, calls) = QueueProvider::boxed(vec![Ok("SUMMARY".to_string())]);

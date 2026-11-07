@@ -25,9 +25,11 @@ export interface ChatMessage {
    *  （已完成任务）/ 实时摄取 flush 挂载（live 落地）。直答与旧条目缺省。 */
   work?: WorkTimeline
   /** M6（devtool-upgrade 阶段 7）：本条消息在后端 chat_log jsonl 里的行号
-   *  （E3 rewind 的 message_index）。只有 user/assistant 行有值——error/
-   *  system 消息是纯前端渲染，后端无对应行。watchdog replaceMessages 重建
-   *  后不可信，置空诚实降级（菜单入口随之隐藏）。 */
+   *  （E3 rewind 的 message_index）。后端行经历史/重同步批次装载时编号——
+   *  user/assistant 之外，后端也会落盘 system 行（busy 排队回执/compact
+   *  注记，BUG-20261106-037），同样占一行。纯前端渲染的 error/system 消息
+   *  无对应行，不带行号。watchdog replaceMessages 重建后不可信，置空诚实
+   *  降级（菜单入口随之隐藏）。 */
   rowIndex?: number
   /** A1（2026-09-22 聊天切会话竞态）：本条消息在后端 chat_event_log 环里
    *  的会话内单调 seq。只有实时 receive 帧 / chat.sync 补拉路径产生
@@ -177,8 +179,33 @@ export const useChatStore = defineStore('chat', () => {
   // （inflightTurns 还会让会话 id 复用时出幽灵占位）。调用点：session
   // remove/clear、auth logout（dropAllSessionState）、ChatPanel watchdog
   // 放弃分支。
+  // 会话级输入草稿表（2026-11-07 充分测试战役 webkit 全量竞速根修）。
+  // reset() 是后台恢复路径（SSE resync / gap 全量重载 / 路由重挂载补偿）与
+  // 切会话共用的状态重建入口——后台路径不该抹用户正在输入的草稿（多标签页
+  // 另一端同会话写入 → chat.activity 防抖全刷 → 草稿被清，实录 webkit 全量
+  // 4 例「fill 后发送钮恒 disabled」）。因此 reset() 不再碰 input；input 的
+  // 生命周期改为显式管理：切会话走 carryInput（旧会话草稿入表、新会话草稿
+  // 出表），发送链走 clearInput（既有），模块边界（workflow_chat 装配）显式
+  // clearInput，会话删除随 dropSessionState 清表项。
+  const draftBySid = new Map<string, string>()
+
+  function carryInput(oldSid: string | null | undefined, newSid: string | null | undefined) {
+    if (oldSid) {
+      draftBySid.set(oldSid, input.value)
+      input.value = (newSid && draftBySid.get(newSid)) || ''
+    } else if (newSid && draftBySid.has(newSid)) {
+      // oldSid=null（bootstrap 初始选定）：用户在无会话态已打的草稿不属于
+      // 任何会话，保留现值；仅当目标会话恰有历史存稿时恢复之。旧语义
+      // （无条件空白起步）在 ChatView 初始 switchTo 晚于用户输入的竞速窗
+      // 口里把草稿洗掉 → 发送钮恒 disabled（2026-11-07 充分测试战役
+      // webkit 全量实录，chat.spec fill→click 10s 超时 + 截图输入框空）。
+      input.value = draftBySid.get(newSid) ?? ''
+    }
+  }
+
   function dropSessionState(sessionId: string | null) {
     if (!sessionId) return
+    draftBySid.delete(sessionId)
     if (busyBySid.value[sessionId] !== undefined) {
       const next = { ...busyBySid.value }
       delete next[sessionId]
@@ -187,16 +214,26 @@ export const useChatStore = defineStore('chat', () => {
     clearInflightTurn(sessionId)
   }
 
+  /** 新建会话落地前的在建草稿归属（2026-11-07 FF chat e2e 全量实录）：
+   *  sessions.create 往返窗口内用户输入的文本意图发进新会话——session
+   *  store 在 create 落地 switchTo 前登记进草稿表，carryInput 原样恢复
+   *  （不登记则被当旧会话草稿洗掉 → 发送钮恒 disabled）。 */
+  function stageDraft(sid: string, text: string) {
+    draftBySid.set(sid, text)
+  }
+
   /** W3：登出等「一次清掉所有会话」场景的全量版。 */
   function dropAllSessionState() {
     busyBySid.value = {}
     inflightTurns.value = {}
+    draftBySid.clear()
   }
 
   // M6（devtool-upgrade 阶段 7）：下一行 live 消息的后端 chat_log 行号锚。
   // null = 尚无锚（历史未加载），此时 live 消息不编号（诚实降级）。派生式
-  // 见 recomputeNextRowIndex——历史批次与 live 行都只含 user/assistant，
-  // chat_log 与渲染消息 1:1 连续。
+  // 见 recomputeNextRowIndex——占行判定按「是否对应后端 jsonl 行」：
+  // user/assistant 恒占行，后端落盘的 system 行（排队回执/compact 注记）
+  // 也占行，纯前端渲染的 error/system 不占行（BUG-20261106-037）。
   let nextRowIndex: number | null = null
   // M6：Ctrl+K 命令面板选中命令后经此投递给 ChatPanel 输入框（跨组件；
   // ChatPanel watch 消费后清空）。命令面板「插入不发送」，参数型命令由
@@ -210,8 +247,10 @@ export const useChatStore = defineStore('chat', () => {
   const historyLoaded = ref(false)
 
   function addMessage(msg: ChatMessage) {
-    // M6：live user/assistant 行按 nextRowIndex 顺序编号（error/system 不
-    // 占行——后端 chat_log 无对应行）。无锚（历史未加载）不编号，诚实降级。
+    // M6：live user/assistant 行按 nextRowIndex 顺序编号（客户端 error/
+    // system 是纯前端渲染不占行——后端落盘的 system 行只随历史/重同步批
+    // 次进视图，锚重推时已在 recomputeNextRowIndex 计入）。无锚（历史未
+    // 加载）不编号，诚实降级。
     if (
       msg.rowIndex === undefined &&
       nextRowIndex !== null &&
@@ -231,14 +270,20 @@ export const useChatStore = defineStore('chat', () => {
     recomputeNextRowIndex()
   }
 
-  /** M6：重推 nextRowIndex 锚 = 首条带行号消息的行号 + 其后 user/assistant
-   *  消息总数（error/system 不占行）。无任何行号锚 → null。 */
+  /** M6：重推 nextRowIndex 锚 = 首条带行号消息的行号 + 其后**占行**消息
+   *  总数。占行判定（BUG-20261106-037）：带 rowIndex 的行 = 后端 jsonl 行
+   *  （含 system——排队回执/compact 注记是后端落盘的合法 system 行，各占
+   *  一行）；不带 rowIndex 的 user/assistant = watchdog 重灌的 fresh 对象
+   *  /本地回显（占行但行号未知）；不带 rowIndex 的 error/system = 纯前端
+   *  渲染（不占行）。无任何行号锚 → null。 */
   function recomputeNextRowIndex() {
     nextRowIndex = null
     let rows = 0
     let anchor: number | null = null
     for (const m of messages.value) {
-      if (m.role !== 'user' && m.role !== 'assistant') continue
+      const occupies =
+        m.rowIndex !== undefined || m.role === 'user' || m.role === 'assistant'
+      if (!occupies) continue
       if (anchor === null && m.rowIndex !== undefined) anchor = m.rowIndex
       rows++
     }
@@ -437,7 +482,8 @@ export const useChatStore = defineStore('chat', () => {
    */
   function reset() {
     messages.value = []
-    input.value = ''
+    // input 不在此清（见 draftBySid 注释）：后台全量重建路径不得抹用户草稿，
+    // 清空职责归 carryInput（切会话）/clearInput（发送链、模块边界）。
     // D-3：reset **不清 busy 表**——调用点都在 currentId 已切换之后，此时
     // 清 `streaming` 投影会误清新会话的占用态；busy 的生命周期归各会话自己
     // 的 assistant/error/断连帧收尾（setBusy(sid,false)），与 inflightTurns
@@ -475,6 +521,7 @@ export const useChatStore = defineStore('chat', () => {
     addMessage,
     prependHistory,
     anchorFreshSession,
+    stageDraft,
     replaceMessages,
     dropAssistantBelowSeq,
     dropTailIfSame,
@@ -493,6 +540,7 @@ export const useChatStore = defineStore('chat', () => {
     appendPendingDeliverables,
     flushPendingDeliverables,
     clearInput,
+    carryInput,
     /** F1：ModeChanged push / chat.set_mode 回包 / get_mode 对齐共用。 */
     setAgentMode(m: 'build' | 'plan') {
       agentMode.value = m

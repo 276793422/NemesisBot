@@ -324,7 +324,7 @@ fn test_search_no_match() {
 }
 
 // ============================================================
-// S5 coverage: browse cursor pagination and parse-fallback arms
+// coverage: browse cursor pagination and parse-fallback arms
 // ============================================================
 
 fn registry_with_three() -> MockRegistry {

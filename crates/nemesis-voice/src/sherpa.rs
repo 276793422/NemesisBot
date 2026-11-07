@@ -265,7 +265,7 @@ pub struct SherpaOnnxOfflineRecognizerResult {
 
 // =============================================================================
 // Online (streaming) Recognizer structs (STT) — v1.13.2 exact match
-// 语音 realtime P1（2026-09-28）：流式识别边说边出 partial。结构体布局对照
+// 语音 realtime：流式识别边说边出 partial。结构体布局对照
 // sherpa-onnx v1.13.2 c-api.h 逐字段核对（与 Offline 同版本纪律）。
 // =============================================================================
 
@@ -594,13 +594,13 @@ static SHERPA_LIB: OnceLock<Library> = OnceLock::new();
 ///
 /// On Windows, uses LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR so that transitive
 /// dependencies (onnxruntime.dll etc.) are resolved from the DLL's own
-/// directory, not from the system PATH.  Without this flag Windows would
+/// directory, not from the system PATH. Without this flag Windows would
 /// load whatever onnxruntime.dll it finds first (e.g. from Python, Edge,
 /// Office …), which is often too old for the Kokoro TTS model.
 ///
 /// ⚠ 该 flag 只保护 `sherpa-onnx-c-api.dll` 自身这一次 LoadLibraryEx——它
 /// **内部**再 `LoadLibrary("onnxruntime.dll")` 时走默认搜索序（应用目录 →
-/// System32 → …），DLL_LOAD_DIR 不参与。实测（2026-09-28，Win11）：System32
+/// System32 → …），DLL_LOAD_DIR 不参与。实测（Win11）：System32
 /// 内置 onnxruntime 1.17.1（WebView2/Edge 组件）抢先命中，sherpa-onnx
 /// v1.13.2 请求 ORT API 24 被旧 ORT 拒绝，sherpa 不检查空指针 → 进程
 /// ACCESS_VIOLATION（离线 STT 同崩）。故加载前先 `SetDllDirectory(dll 目录)`
@@ -972,7 +972,7 @@ pub fn to_cstr(s: &str) -> CString {
 }
 
 // =============================================================================
-// Tests (Phase 3 覆盖率，2026-08-25) — 纯 helper + 未初始化状态判定
+// Tests (覆盖率，) — 纯 helper + 未初始化状态判定
 // =============================================================================
 
 #[cfg(test)]

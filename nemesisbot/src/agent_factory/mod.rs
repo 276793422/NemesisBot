@@ -23,16 +23,16 @@ use crate::common;
 #[cfg(test)]
 mod tests;
 
-// T2b（扩展计划 D4）fallback 链装配测试（无 cluster 门——纯装配逻辑）。
+// （扩展计划）fallback 链装配测试（无 cluster 门——纯装配逻辑）。
 #[cfg(test)]
 mod fallback_chain_tests;
 
-// B4（2026-10-18 凭据 vault §7）ModelProviderReloader 测试（无 feature
+// （凭据 vault）ModelProviderReloader 测试（无 feature
 // 门——字段决策与 patch 写盘都是纯逻辑；provider 重建用离线安全条目）。
 #[cfg(test)]
 mod reloader_tests;
 
-// L6++（2026-09-08）项目 loop 工厂测试（非 cluster 门控——与 tests.rs 的
+// 项目 loop 工厂测试（非 cluster 门控——与 tests.rs 的
 // #![cfg(feature = "cluster")] 顶部门不同，本模块默认构建必跑；模块名含
 // "projects" 对齐 goal 门命令 `cargo test -p nemesisbot projects` 的过滤词）。
 #[cfg(test)]
@@ -42,7 +42,7 @@ mod projects_factory_tests;
 #[cfg(test)]
 mod midnight_tests;
 
-// BUG-20261025-50 路由 config 接线测试（无 feature 门——纯映射逻辑默认
+// 路由 config 接线测试（无 feature 门——纯映射逻辑默认
 // 构建必跑；模块名含 route_resolver 对齐过滤词）。
 #[cfg(test)]
 mod route_resolver_tests;
@@ -58,7 +58,7 @@ mod route_resolver_tests;
 /// or values that don't change between restarts.
 pub struct SharedResources {
     pub home: PathBuf,
-    /// K1（devtool-upgrade 阶段 4）：agent 工作区根（skills / uploads /
+    /// （devtool-upgrade）：agent 工作区根（skills / uploads /
     /// logs / plans 等的挂载点）。空 = 未覆盖，[`SharedResources::workspace_dir`]
     /// 回退 `<home>/workspace` canonical 布局；headless `run --workspace DIR`
     /// 显式设置（config.json 仍从 home 解析，工作区可独立指定）。
@@ -107,12 +107,12 @@ pub struct SharedResources {
     /// Approval manager slot, filled by the gateway after the agent loop is
     /// built. Lets `skill_manage` request interactive approval when enabled.
     pub approval_slot: nemesis_agent::loop_tools::ApprovalManagerSlot,
-    /// F7（2026-09-06）：question 工具的 broker 槽，gateway 在 agent loop 建
+    /// question 工具的 broker 槽，gateway 在 agent loop 建
     /// 好后填 `WebQuestionBroker`（与 approval_slot 同一个「先建槽后填」的
-    /// 模式——重启重建的 AgentLoop 拿到的都是同一槽 Arc，晚填也可见）。
+    /// 模式——重启重建的 AgentLoop 拿到的都是同一槽 Arc，晚填也可）。
     /// 不依赖 security feature（提问是交互动作，不是安全动作）。
     pub question_slot: nemesis_agent::loop_tools::QuestionBrokerSlot,
-    /// WS4（P13）/BUG-20261101-295：`install_skill` 工具的装前审批门槽，
+    /// `install_skill` 工具的装前审批门槽，
     /// gateway 建 `LateWebSkillsGate` 后填（先建槽后填，同 approval_slot）。
     /// 槽内 None = 无审批面直装（headless / `install_approval=false`）；
     /// 漏斗其余闸（staging/验签/扫描/lockfile）与门无关恒生效。
@@ -156,7 +156,7 @@ pub struct SharedResources {
     /// 后自动保持——这才是真急停（不会一重启自己解除）。
     pub estop: Arc<nemesis_agent::estop::EstopState>,
 
-    /// P3 T7：常驻执行体监督器槽。gateway（agent_build）恒 Some；headless
+    /// 常驻执行体监督器槽。gateway（agent_build）恒 Some；headless
     /// run / acp / 测试等无常驻形态 None（工厂跳过常驻路由挂接，per-call
     /// 行为零变化——RemoteExecutorTool 不挂 persistent 即旧形态）。
     pub agent_runtime: Option<Arc<crate::agents::runtime::AgentRuntimeSupervisor>>,
@@ -167,30 +167,30 @@ pub struct SharedResources {
     /// / tier / DLP toggles flip live without a gateway restart.
     pub config_store: Arc<nemesis_config::ConfigStore>,
 
-    /// C5（2026-09-04）：LSP manager 单例。LspTool 注册用同一个 Arc；
+    /// LSP manager 单例。LspTool 注册用同一个 Arc；
     /// gateway 优雅停机 `shutdown_all()` 收尸语言服务器子进程；web server
-    /// `set_lsp_manager` 持同一引用（阶段 2 诊断闭环 C1-C3 消费）。
+    /// `set_lsp_manager` 持同一引用（诊断闭环 - 消费）。
     /// LspManager 构造零进程（会话按查询惰性起），未启用 LSP 时持有无代价。
     #[cfg(feature = "lsp")]
     pub lsp_manager: Arc<nemesis_lsp::LspManager>,
 
-    /// M1a（devtool-upgrade 阶段 1）：工具事件广播通道。gateway::run 建一次
+    /// （devtool-upgrade）：工具事件广播通道。gateway::run 建一次
     /// broadcast channel，Some 时每个 AgentLoop 挂 ToolEventHook（纯观察者）；
     /// 接收端交给 nemesis-web pump（Dashboard WS push + EventHub）。
     /// None = 不挂 hook（CLI/exec_worker 等无 web 的形态零开销）。
     pub agent_event_tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
 
-    /// L14（2026-11-01）：会话执行统计聚合器单例（gateway 建一次，跨 loop
+    /// 会话执行统计聚合器单例（gateway 建一次，跨 loop
     /// 重建存活——主/集群/项目 loop 共享同一账本）。Some 时 build 出的每个
     /// loop 挂 SessionStatsSink（loop 内部计数上抛）；None = 不统计零开销。
     pub session_stats: Option<Arc<crate::session_stats::SessionStatsAggregator>>,
 
-    /// B4（devtool-upgrade 阶段 3）：后台进程注册表单例。gateway::run 建一次，
+    /// （devtool-upgrade）：后台进程注册表单例。gateway::run 建一次，
     /// 跨 agent 重启存活；gateway 进程退出（Drop）时给残余任务发 kill 旗标。
     /// 经 SharedToolConfig 注入三件套工具（background_start/output/kill）。
     pub background_registry: Arc<nemesis_agent::BackgroundProcessRegistry>,
 
-    /// W5-3（WASM 插件框架）：插件注册表单例。gateway init_agent 建一次
+    /// （WASM 插件框架）：插件注册表单例。gateway init_agent 建一次
     /// （config `plugins.wasm.enabled=false` = None 整面子系统缺席）；跨
     /// agent 重启存活——每次 build_agent_loop 重建时桥工具重新注册 + invoker
     /// 重新挂接（Weak 指旧 loop，重启后 upgrade 失败）。estop watcher 是
@@ -206,7 +206,7 @@ pub struct SharedResources {
     /// ACP 显式 Acp——各自入口的语境说明段随身份基座注入。
     pub entrance: nemesis_agent::prompt::Entrance,
 
-    // ---------------- 全自动流转 P3/D1：board_issue 工具依赖 ----------------
+    // ---------------- 全自动流转 /：board_issue 工具依赖 ----------------
     // gateway 装配期注入；store=None（run/acp/测试等 headless 路径）= 工具
     // 不注册，零影响。注册在主 agent——「对 master 说一句话建单」的入口；
     // cluster agent（worker）不装：worker 的 board.db 是本地 dashboard 视图，
@@ -223,7 +223,7 @@ pub struct SharedResources {
     /// set，与 approval_slot/question_slot 同款；重启重建的 loop 共享同一槽）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_moderator_slot: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
-    /// home 目录（A1 auto_confirm 旗标现读）。
+    /// home 目录（auto_confirm 旗标现读）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_home: std::path::PathBuf,
     /// SSE 事件 hub（plan_ready/plan_failed 推送；None = 不推）。
@@ -298,7 +298,7 @@ impl Default for SharedResources {
 // ---------------------------------------------------------------------------
 
 impl SharedResources {
-    /// K1：agent 工作区根。显式 `workspace` 覆盖优先；空（未设置）回退
+    /// agent 工作区根。显式 `workspace` 覆盖优先；空（未设置）回退
     /// `<home>/workspace` canonical 布局——所有既有构造点（gateway /
     /// eval_worker / 测试 Default 字面量）行为逐字节不变。
     pub fn workspace_dir(&self) -> PathBuf {
@@ -310,10 +310,10 @@ impl SharedResources {
     }
 }
 
-/// ASM-08（2026-09-16 横扫存量加固，用户裁决 D5=fail）：gateway 级装配完成点
+/// ASM-08（横扫存量加固，用户裁决 =fail）：gateway 级装配完成点
 /// 的机械自检——关键件未接线即装配失败。
 ///
-/// 治 T37①（用量账本）/F-U3-2a（workspace_root）/ASM-01（security_plugin）
+/// 治 ①（用量账本）/F-（workspace_root）/ASM-01（security_plugin）
 /// 一族「漏接静默」：功能在组件层正确且有单测，但生产装配点漏接不报错，
 /// 直到真机才炸。单测自己动手装配所以永远绿——接线缺口只能在装配点掀。
 /// 主/集群/项目三个 builder 的收尾各调一次（headless run/acp 走主 builder，
@@ -323,7 +323,7 @@ impl SharedResources {
 /// - `security_plugin` 不做恒 Some 要求——`security.enabled=false`（用户
 ///   显式关安全）或 feature 裁剪时 shared 为 None 是文档化合法态；断言的
 ///   是一致性：**shared 有而 loop 没接 = 装配漏项 → fail**。
-/// - `pricing_store` 只 WARN 不 fail：open 失败是磁盘环境问题（N1 的设计
+/// - `pricing_store` 只 WARN 不 fail：open 失败是磁盘环境问题（的设计
 ///   选择=优雅降级不阻断启动），不是接线遗漏；「是否调用过 set」由装配
 ///   矩阵测试兜住（tests.rs wiring 系）。
 // 非 security 组合下 `shared` 的唯一消费点（security_plugin 一致性检查）
@@ -367,8 +367,8 @@ fn assert_gateway_critical_wiring(
     Ok(())
 }
 
-/// ASM-05（2026-09-16 横扫存量加固）：`logging.llm.enabled` →
-/// RequestLoggerObserver 注册的单一真相源。gateway Step 9d 与 CLI
+/// ASM-05（横扫存量加固）：`logging.llm.enabled` →
+/// RequestLoggerObserver 注册的统一定义。gateway Step 9d 与 CLI
 /// `nemesisbot agent` 共用（此前 agent.rs 手写装配里还有一份逐字拷贝，
 /// 随 ASM-05 迁移收敛到这里）。
 ///
@@ -420,8 +420,8 @@ pub(crate) fn register_request_logger_observer(
 }
 
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：按装配入口分文件。纯代码搬家，行为零变更；
-// 各子模块 pub 项经 pub use 保持原 agent_factory:: 路径不变。
+// 机械拆分：按装配入口分文件。纯代码搬家，行为零变更；
+// 各子模块 pub 项经 pub use 保持原 agent_factory:路径不变。
 // ---------------------------------------------------------------------------
 #[cfg(feature = "cluster")]
 mod cluster;
@@ -435,6 +435,6 @@ pub use cluster::*;
 pub use main::*;
 pub use project::*;
 // shared 全是内部 helper（拆前即 crate 内私有），pub(crate) 覆盖 crate 内
-// 直引（如 image_gen_tool/tests.rs）与子模块 use super::* 两种解析
+// 直引（如 image_gen_tool/tests.rs）与子模块 use super:* 两种解析
 pub(crate) use shared::*;
 pub use spec::*;

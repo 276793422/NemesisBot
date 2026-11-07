@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): forge handler narrow arms
+//! (quality-hardening goal 冲刺, web): forge handler narrow arms
 //! not reached by `forge_extra_tests.rs` (which covers the main command
 //! flows), all offline:
 //!
@@ -61,6 +61,7 @@ fn build_state(ws: &str, forge: Option<Arc<nemesis_forge::forge::Forge>>) -> App
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -115,9 +116,7 @@ async fn run(
     ForgeHandler::new().handle_cmd(cmd, data, ctx).await
 }
 
-// -----------------------------------------------------------------------
 // stats / reflections.list / reflect narrow arms
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn stats_loads_existing_forge_config_file() {
@@ -180,9 +179,7 @@ async fn reflect_reports_write_failure_but_returns_analysis() {
     assert!(msg.contains("报告写入失败"), "got: {}", msg);
 }
 
-// -----------------------------------------------------------------------
 // config.save runtime arms + garbage sub-arms
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_save_enable_with_forge_instance_triggers_runtime_start() {
@@ -254,9 +251,7 @@ async fn config_save_with_garbage_forge_config_silently_recreates() {
     );
 }
 
-// -----------------------------------------------------------------------
 // learning.toggle error arms
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn learning_toggle_fails_when_forge_config_is_a_directory() {
@@ -271,7 +266,7 @@ async fn learning_toggle_fails_when_forge_config_is_a_directory() {
     )
     .await
     .unwrap_err();
-    // 2026-10-13 闭包事务收口：读/解析错误统一走 update_json_file 的
+    // 闭包事务收口：读/解析错误统一走 update_json_file 的
     // 「read/parse {path}: {e}」形态——fail-closed 与「点名肇事文件」语义
     // 不变，前缀词随统一错误面收敛。
     assert!(err.contains("read "), "got: {}", err);
@@ -296,9 +291,7 @@ async fn learning_toggle_fails_when_forge_config_unparseable() {
     assert!(err.contains("config.forge.json"), "got: {}", err);
 }
 
-// -----------------------------------------------------------------------
 // Direct helper coverage
-// -----------------------------------------------------------------------
 
 #[test]
 fn compute_experience_stats_unreadable_file_returns_zeros() {

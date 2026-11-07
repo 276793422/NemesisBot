@@ -140,7 +140,7 @@ fn encrypted_garbage_drops_and_valid_delivers() {
     a.stop().unwrap();
 }
 
-/// tracker 单元语义：同源静默累积（不重复首见）、异源分开计条、
+/// tracker 单元语义：同源静默累积（不重复首）、异源分开计条、
 /// cap 16 淘汰最旧来源。
 #[test]
 fn tracker_dedupes_same_source_and_evicts_oldest() {

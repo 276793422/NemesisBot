@@ -70,7 +70,7 @@ fn presets_cover_every_bool_feature() {
 /// **except** the pinned deliberate-off list below. Off-listing a default-on
 /// feature requires revisiting this exception set (that's the point of the
 /// guard). 2026-09-28 细粒度化：desktop 刻意关 maixcam（嵌入式视觉模组，
-/// 桌面无此硬件）/ line（长尾 IM 通道）——批次一拍板，非漏配。
+/// 桌面无此硬件）/ line（长尾 IM 通道）——批次一决策，非漏配。
 const DESKTOP_DELIBERATE_OFF: &[&str] = &["channels-maixcam", "channels-line"];
 
 #[test]

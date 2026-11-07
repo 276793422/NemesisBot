@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// I5 (P3.4): runtime-injected embedding function. Providers do NOT
+/// (.4): runtime-injected embedding function. Providers do NOT
 /// depend on any embedding crate — the assembly layer (agent_factory)
 /// injects this closure (typically wrapping nemesis-memory's vector store).
 /// `None` = embedding unavailable for this text → caller degrades.
@@ -27,7 +27,7 @@ pub enum Policy {
     RoundRobin,
     #[default]
     Fallback,
-    /// I5 (P3.4): semantic routing — embed the conversation text and pick
+    /// (.4): semantic routing — embed the conversation text and pick
     /// the candidate whose (embedded) description is closest by cosine.
     /// Requires an injected SemanticEmbedder at runtime; without one the
     /// selection degrades to Fallback (fail-open, never blocks).
@@ -195,7 +195,7 @@ pub struct Candidate {
     pub quality_score: f64,
     #[serde(default)]
     pub priority: i32,
-    /// I5 (P3.4): natural-language "what this model is good at". Used by
+    /// (.4): natural-language "what this model is good at". Used by
     /// Policy::Semantic (embedded at selection time, cached by description
     /// hash). Empty = not considered for semantic matching.
     #[serde(default)]
@@ -366,7 +366,7 @@ pub trait LLMProvider: Send + Sync {
 
     /// Send a streaming chat completion request.
     ///
-    /// 流式协议上 trait（B 根修 2026-09-17）：此前 `chat_stream` 只是
+    /// 流式协议上 trait（B 根修）：此前 `chat_stream` 只是
     /// HttpProvider 的固有方法，SSE/persona 侧槽只能装配裸 HttpProvider
     /// （只讲 OpenAI wire），主模型切 anthropic 协议后整条 lane 断粮
     /// （CC Switch 对 OpenAI 路径回 200 包装错误 → 空响应静默成功）。
@@ -388,12 +388,12 @@ pub trait LLMProvider: Send + Sync {
         rx
     }
 
-    /// 流式偏好裁决（2026-10-14 T37/T42 根修）：当前配置下该 provider 的
+    /// 流式偏好裁决（/ 根修）：当前配置下该 provider 的
     /// LLM wire 请求是否应为流式。显式 per-model `stream` 键恒赢（yes=流 /
     /// no=非流），缺省（auto）按 lane 缺省——codex lane 流式（上游排队墙钟
-    /// 语义，2026-10-13），anthropic / openai 兼容 lane 非流式。
+    /// 语义），anthropic / openai 兼容 lane 非流式。
     ///
-    /// 唯一消费点是 llm_bridge 的 `chat_streamed`（L10 观测 lane）：偏好非
+    /// 唯一消费点是 llm_bridge 的 `chat_streamed`（观测 lane）：偏好非
     /// 流式时静默回落 `chat()`——流式路径 raw 请求/响应体恒 None 且 usage
     /// 依赖上游 chunk 自带，越权走流式曾致集群 usage 回传断粮 + raw 日志
     /// 响应件缺失（观测 lane 不得改写 wire 语义）。默认 false：CLI 型 /
@@ -410,7 +410,7 @@ pub trait LLMProvider: Send + Sync {
     fn name(&self) -> &str;
 }
 
-/// 流式不支持判定（单一真相源，2026-10-30）：provider 未覆写
+/// 流式不支持判定（统一定义）：provider 未覆写
 /// [`LLMProvider::chat_stream`] 时 trait 缺省实现发出的错误。消费方：
 /// llm_bridge `chat_streamed` 回落非流式、openai_compat 裸转发流式回落
 /// 非流式——两条链路同判一处，不各自维护子串匹配。
@@ -430,9 +430,9 @@ pub struct Router {
     metrics: Arc<MetricsCollector>,
     config: RwLock<RouterConfig>,
     rr_counters: DashMap<String, AtomicU64>,
-    /// I5 (P3.4): injected embedder (None ⇒ Semantic degrades to Fallback).
+    /// (.4): injected embedder (None ⇒ Semantic degrades to Fallback).
     semantic_embedder: RwLock<Option<SemanticEmbedder>>,
-    /// I5: cached description vectors, keyed by the description text.
+    /// cached description vectors, keyed by the description text.
     semantic_desc_cache: DashMap<String, Arc<Vec<f64>>>,
 }
 
@@ -449,10 +449,10 @@ impl Router {
         }
     }
 
-    /// I5 (P3.4): inject the embedding closure (assembly-time; providers
+    /// (.4): inject the embedding closure (assembly-time; providers
     /// stays free of embedding-crate dependencies). Without a call,
     /// Policy::Semantic selection degrades to Fallback. Swapping the
-    /// embedder also invalidates the cached description vectors (M3 fix:
+    /// embedder also invalidates the cached description vectors (fix:
     /// a new backend produces a different vector space — stale entries
     /// would be compared against nothing).
     pub fn set_semantic_embedder(&self, embedder: SemanticEmbedder) {
@@ -580,13 +580,13 @@ impl Router {
         }
     }
 
-    /// I5 (P3.4): semantic selection. Embeds nothing per candidate unless a
+    /// (.4): semantic selection. Embeds nothing per candidate unless a
     /// SemanticEmbedder is injected; every text must embed (None anywhere ⇒
     /// degrade to Fallback with a single warn — fail-open).
     fn select_semantic(&self, matching: &[&Candidate]) -> Option<Candidate> {
         // This internal path (select_by_policy) carries NO intent text, so
         // semantic matching is impossible — degrades deterministically to
-        // priority order. M3 fix: the warning fires ONCE per process
+        // priority order. fix: the warning fires ONCE per process
         // (select() can be called per request; per-call warns flood logs).
         static SEMANTIC_DEGRADE_WARNED: std::sync::atomic::AtomicBool =
             std::sync::atomic::AtomicBool::new(false);
@@ -608,7 +608,7 @@ impl Router {
             .cloned()
     }
 
-    /// I5 (P3.4): semantic selection with an explicit INTENT text (the
+    /// (.4): semantic selection with an explicit INTENT text (the
     /// conversation excerpt or the routing alias description). Weights the
     /// conversation: last user message is the dominant signal (0.7), last
     /// assistant reply secondary (0.3) — callers pass the already-weighted
@@ -801,7 +801,7 @@ impl Router {
 /// 历史：这里曾写成 `c.model == resolved || resolved.contains('/') &&
 /// c.model == resolved`——右半边是左半边的子集，整个表达式恒等于
 /// `c.model == resolved`，前缀形态从未匹配过（clippy overly_complex_bool_expr
-/// 抓出，2026-08-21 修复）。model 的 `provider/name` 双形态是真实需求
+/// 抓出， 修复）。model 的 `provider/name` 双形态是真实需求
 ///（config.model_list 存全名、agents.defaults.llm 存裸名，见
 /// nemesisbot/src/commands/eval.rs 的 model_ref 组装）。
 fn model_matches(candidate_model: &str, requested: &str) -> bool {

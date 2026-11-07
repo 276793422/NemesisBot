@@ -1,4 +1,4 @@
-//! chunk_source — realtime P1（W7 测试注入面）
+//! chunk_source — realtime （测试注入面）
 //!
 //! 把「音频从哪来」从 STT 管线里抽出来：生产 = 麦克风（[`MicSource`]），
 //! 测试 = WAV 文件逐块喂入（[`WavSource`]）。管线只认 [`AudioChunkSource`]，

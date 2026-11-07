@@ -1,4 +1,4 @@
-//! L14 聚合器测试：事件计数 / 审批配对与裁决归类 / 映射 FIFO 淘汰 /
+//! 聚合器测试：事件计数 / 审批配对与裁决归类 / 映射 FIFO 淘汰 /
 //! 节流边界 / 读盘一致性。会话键全程纳秒唯一化（chat_log 测试同款纪律，
 //! 规避并行测试撞键），起止各一次 `delete_chat_log` 清理。
 
@@ -206,7 +206,7 @@ fn test_all_fields_combined() {
     let key = uniq_key("combo");
     cleanup(&key);
     let agg = SessionStatsAggregator::default();
-    // 事件路：工具 2 调 1 败 + 审批 2 请求 1 批 1 拒。
+    // 事件路：工具 2 调 1 败 + 审 请求 1 拒。
     agg.observe(&tool_started(&key, "c1"));
     agg.observe(&tool_finished(&key, "c1", true));
     agg.observe(&tool_started(&key, "c2"));

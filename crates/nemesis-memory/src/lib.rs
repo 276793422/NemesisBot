@@ -24,16 +24,16 @@ mod dreaming_tests;
 #[cfg(test)]
 mod contract_tests;
 
-// W4（2026-10-25 加固）：memory_forget 谱系传导（merge 派生连带归档）测试。
+// （加固）：memory_forget 谱系传导（merge 派生连带归档）测试。
 #[cfg(test)]
 mod w4_cascade_tests;
 
-// W5（2026-10-25 加固）：dreaming 近期召回硬保护（expire 排除）测试。
+// （加固）：dreaming 近期召回硬保护（expire 排除）测试。
 #[cfg(test)]
 mod w5_recency_protect_tests;
 
+// re-export 壳放独立文件（BUG-20261106-014：inline mod { body } 形态违反
+// 「测试代码放独立文件」纪律，check-inline-tests.sh 形态 E 补齐后必拦）。
 #[cfg(any(test, feature = "test-fixture"))]
 #[doc(hidden)]
-pub mod __test_fixture {
-    pub use crate::vector::test_fixture::*;
-}
+pub mod __test_fixture;

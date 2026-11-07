@@ -1,7 +1,7 @@
-//! nemesis-lsp: minimal LSP client (L1 / U19; C7 adds the write-capable ops).
+//! nemesis-lsp: minimal LSP client (/; adds the write-capable ops).
 //!
 //! Gives the agent four semantic code queries — definition / references /
-//! implementation / hover — plus rename and code-action listing (C7) by
+//! implementation / hover — plus rename and code-action listing by
 //! driving real language servers (rust-analyzer, gopls,
 //! typescript-language-server, pyright, clangd) over stdio. Rename stops at
 //! computed per-file new text: writing to disk is the agent tool's job, so

@@ -112,7 +112,7 @@ impl FileEpisodicStore {
 
     /// Sanitise a session key so it can be used as a file name.
     ///
-    /// D-1（复核 2026-09-16）：刻意**不迁** `nemesis_utils::sanitize::sanitize_path_segment`
+    /// D-1（复核）：刻意**不迁** `nemesis_utils::sanitize:sanitize_path_segment`
     /// （SAN-05 真相源）——白名单会把本 store 既有文件名里的空格/非 ASCII/`@`
     /// 等字符映射成 `_`，直接迁移 = 已落盘的 `.jsonl` 文件名对不上（记忆数据
     /// 「消失」，比规则分歧严重）。本 9 字符 blacklist 保留面更宽但已稳定运行；
@@ -218,8 +218,8 @@ impl EpisodicStore for FileEpisodicStore {
                         out.push_str(&serde_json::to_string(ep).unwrap_or_default());
                         out.push('\n');
                     }
-                    // BUG-20261029-183：原子重写（旧 fs::write 截断原地写，
-                    // 崩溃窗口丢整段会话；BUG-20261025-59 同族漏修兄弟）。
+                    // 原子重写（旧 fs::write 截断原地写，
+                    // 崩溃窗口丢整段会话； 同族漏修兄弟）。
                     nemesis_utils::file::write_file_atomic(
                         &path.to_string_lossy(),
                         out.as_bytes(),
@@ -320,8 +320,8 @@ impl EpisodicStore for FileEpisodicStore {
                         lines.push(line);
                     }
                     let content = lines.join("\n") + "\n";
-                    // BUG-20261029-183：原子重写（同 delete_by_id，
-                    // BUG-20261025-59 同族漏修兄弟）。
+                    // 原子重写（同 delete_by_id，
+                    // 同族漏修兄弟）。
                     nemesis_utils::file::write_file_atomic(
                         &path.to_string_lossy(),
                         content.as_bytes(),

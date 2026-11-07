@@ -1,4 +1,4 @@
-//! proxy.keys.* handler 测试（2026-11-03 LLM代理调用方key管理 P5）。
+//! proxy.keys.* handler 测试（2026-11-03 LLM代理调用方key管理）。
 //!
 //! 每用例独立 tempdir（文件互不共享），无进程级单例可污染——不持锁。
 //! keys.add 的防呆与查重在 config 层（`proxy_keys_file` 单测已覆盖底层），
@@ -54,6 +54,7 @@ fn make_ctx(dir: &tempfile::TempDir, auth_token: &str) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

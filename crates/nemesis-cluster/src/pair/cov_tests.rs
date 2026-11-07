@@ -122,7 +122,7 @@ async fn pair_happy_path_literal_port_full_flow() {
 #[tokio::test]
 async fn pair_happy_path_derived_port() {
     let port = spawn_fake_server(FakeReply::Payload(cov_info_payload()));
-    // 找一个字面候选确实拒连的端口（ ephemeral 高位段 -10000 一般空闲，
+    // 找一个字面候选确实拒连的端口（ephemeral 高位段 -10000 一般空闲，
     // 但防碰撞仍先验证）。
     let literal = port - 10000;
     let literal_free = std::net::TcpStream::connect(("127.0.0.1", literal)).is_err();
@@ -212,7 +212,7 @@ async fn pair_missing_identity_errors_without_write() {
     assert!(!path.exists(), "零写入");
 }
 
-/// BUG-20261101-263：对端真实 id 含非法字符（`:`/`/`）→ BadIdentity，
+/// 对端真实 id 含非法字符（`:`/`/`）→ BadIdentity，
 /// 写盘前拒绝（零写入纪律）——坏 id 落 peers.toml 表键会切坏下游
 /// session_key 与续行 marker 复合键协议。
 #[tokio::test]

@@ -1,11 +1,11 @@
-//! P5/F5 冲突硬解执行体（auto 档，`board.config.conflict_auto_resolve`）。
+//! 冲突硬解执行体（auto 档，`board.config.conflict_auto_resolve`）。
 //!
 //! 项目不停摆为第一原则，永远有下一步动作（goal 钦定链路）：
 //!
 //! 1. **AI 强制硬解**（复用评审 LLM 通道 detached 调用 + tier 闸拒 mini）：
 //!    输入=冲突三阶段内容（我方/对方/基线）+ 子单任务意图；输出只允许改
 //!    冲突文件（范围钉死，越界拒绝）——「以当前仓库内容为主，不乱搞」；
-//!    无置信回落；产出经 [`nemesis_board::git_repo::commit_resolution`]
+//!    无置信回落；产出经 [`nemesis_board::git_repo:commit_resolution`]
 //!    合入 + commit（message 带 `conflict_auto_resolve` 标记+解题理由）。
 //! 2. **机械失败路径**（产出无法应用/重试 `RESOLVE_MAX_ATTEMPTS` 轮仍败，
 //!    N=3 含错误反馈重试——非置信问题，是不造假的诚实失败）→ 立刻放弃
@@ -13,14 +13,14 @@
 //! 3. **原 worker 离线** → 三轮主动接触（t0/+60s/+120s，[`Cluster::probe_peer`]
 //!    帧级真探）→ 任一轮应答照发原 worker；三轮全无 → 直接换人
 //!    （`rank_dispatch_candidates` 选历史未用在线候选——探针已证不可达，
-//!    D3 的「同 worker 连败≥2 才换」规则不适用于接触性失败）。否决
-//!    「排队等原 worker 回来」（停摆风险，用户拍板）。
+//!    的「同 worker 连败≥2 才换」规则不适用于接触性失败）。否决
+//!    「排队等原 worker 回来」（停摆风险）。
 //! 4. 换人后原 worker 归来 → 派发记录已被新 target supersede（既有语义），
-//!    旧变更集按 E8 归属校验作废，不会双版本打架。
+//!    旧变更集按 归属校验作废，不会双版本打架。
 //! 5. 重派循环套既有预算保险丝（`budget_breach`），打满转人工——兜底，
 //!    非常态（回落 human 档：项目冻结 + 停车）。
 //!
-//! F7 审计：`conflict_auto_resolve`（硬解成功）/ `conflict_redispatch`
+//! 审计：`conflict_auto_resolve`（硬解成功）/ `conflict_redispatch`
 //!（硬解败重派原 worker）/ `conflict_switch_worker`（换人）全走
 //! `record_auto_decide` 单一漏斗；彻底失败回落 human 档记 `conflict`。
 
@@ -41,7 +41,7 @@ pub(crate) const PROBE_SCHEDULE_SECS: &[u64] = &[0, 60, 120];
 /// 上下文——硬解只看冲突邻域也够）。
 const PROMPT_SIDE_CAP_BYTES: usize = 16 * 1024;
 
-/// lockfile 清单（E5/F6：清单类文件 AI 解时理由必须含「建议重新生成」
+/// lockfile 清单（/：清单类文件 AI 解时理由必须含「建议重新生成」
 /// ——锁文件正确解法是重新生成而不是手工缝合）。
 const LOCKFILE_NAMES: &[&str] = &[
     "package-lock.json",
@@ -118,7 +118,7 @@ async fn run_resolver(
         fallback_freeze(&deps, &issue, &task_id, "主 agent 未就绪，无法硬解，转人工");
         return;
     };
-    // F5 tier 闸拒 mini：小模型硬解合并冲突是造假重灾区——human 档兜底。
+    // tier 闸拒 mini：小模型硬解合并冲突是造假重灾区——human 档兜底。
     if matches!(
         agent_loop.tier(),
         nemesis_types::capability::ModelTier::Mini
@@ -214,7 +214,7 @@ async fn run_resolver(
     let message = format!(
         "merge: 冲突 AI 硬解（conflict_auto_resolve，task {task_id}）\n\n解题理由：\n{reasons}"
     );
-    // E4 合并串行闸：落盘 commit 与在途合并互斥（std Mutex 持锁不跨 await
+    // 合并串行闸：落盘 commit 与在途合并互斥（std Mutex 持锁不跨 await
     // ——本段无 await，同步持锁安全）。
     let commit = {
         let _serial = crate::board_archive_ingest::MERGE_SERIAL
@@ -276,7 +276,7 @@ async fn run_resolver(
 }
 
 /// 机械失败后的重派链：原 worker 三轮主动接触（任一应答照发）→ 三轮全无
-/// 换人（D3 决策表）→ 预算保险丝打满回落 human 档。
+/// 换人（决策表）→ 预算保险丝打满回落 human 档。
 async fn redispatch_after_failed_resolve(
     deps: crate::board_review::BoardReviewDeps,
     issue: Issue,
@@ -290,7 +290,7 @@ async fn redispatch_after_failed_resolve(
         return;
     }
     let store = deps.store.as_ref();
-    // E1 预算保险丝：打满转人工（兜底，非常态）。
+    // 预算保险丝：打满转人工（兜底，非常态）。
     match crate::board_review::load_board_flags(&deps.home) {
         Ok(flags) => {
             if let Some(breach) = crate::board_review::budget_breach(&deps, &issue, &flags) {
@@ -366,8 +366,8 @@ async fn redispatch_after_failed_resolve(
         worker_id.clone()
     } else {
         // 三轮全无 → 换人：探针已证原 worker 不可达，直接选历史未用在线
-        // 候选（D3 的「同 worker 连败≥2 才换」规则不适用——接触性失败即
-        // 刻换人；用户拍板否决排队等）。无未用候选才回落原 worker（照发，
+        // 候选（的「同 worker 连败≥2 才换」规则不适用——接触性失败即
+        // 刻换人；否决排队等）。无未用候选才回落原 worker（照发，
         // dispatch_issue_core 对不可达目标诚实 fail_task）。
         let dispatches = match store.list_dispatches(issue.id) {
             Ok(d) => d,
@@ -432,7 +432,7 @@ async fn redispatch_after_failed_resolve(
         }
         target
     };
-    // 发车（新派发 = 新 task_id = 新基线下发；旧变更集由 E8 归属校验作废）。
+    // 发车（新派发 = 新 task_id = 新基线下发；旧变更集由 归属校验作废）。
     match nemesis_web::handlers::board::dispatch_issue_core(
         &deps.store,
         Some(&deps.cluster),
@@ -531,7 +531,7 @@ fn override_content(
 // ---------------------------------------------------------------------------
 
 /// 硬解 system prompt（范围钉死：只允许改冲突文件；以当前仓库内容为主）。
-/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+/// 文本单一真相源在 `nemesis-prompts`（集中化）。
 use nemesis_prompts::board::CONFLICT_RESOLVER_SYSTEM_PROMPT;
 
 /// 组装硬解 user prompt（任务意图 + 冲突三阶段内容）。

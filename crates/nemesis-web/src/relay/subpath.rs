@@ -1,4 +1,4 @@
-//! 桥子路径支持（goal：反向桥与多设备汇聚，一期批次二）。
+//! 桥子路径支持（goal：反向桥与多设备汇聚，一期）。
 //!
 //! 经中继远程访问某设备面板时，浏览器看到的 URL 是
 //! `/d/<node_id>/...`（中继侧路径），中继把**原样 URI** 封帧转发给设备；
@@ -32,7 +32,7 @@ use tower::Service;
 /// 均为 KB 量级，16MB 已远超正常范围）。
 const MAX_HTML_BYTES: usize = 16 * 1024 * 1024;
 
-/// 桥子路径 service 外壳（goal 批次二）。
+/// 桥子路径 service 外壳（goal）。
 ///
 /// **为什么是 service 外壳而不是 `Router::layer` 中间件**：axum 0.8 的
 /// `Router::layer` 包装在每个 Route endpoint 外，运行于**路由匹配之后**
@@ -85,8 +85,8 @@ impl Service<Request<Body>> for BridgeSubpathService {
 ///
 /// 三种形态（详见模块头注释）：
 /// - `/d/<自身>/...` → 剥前缀，返回 `Some("/d/<自身>/")`
-/// - `/d/<其他>...`  → 内置中继的转发请求，不动，返回 None
-/// - 其余（直连）    → 返回 `Some("/")`
+/// - `/d/<其他>...` → 内置中继的转发请求，不动，返回 None
+/// - 其余（直连） → 返回 `Some("/")`
 pub(crate) fn strip_self_prefix(node_id: &Option<String>, uri: &mut http::Uri) -> Option<String> {
     let path = uri.path().to_string();
     let Some(rest) = path.strip_prefix("/d/") else {
@@ -133,7 +133,7 @@ fn rewrite_path_and_query(uri: &http::Uri, new_path: &str) -> Result<http::Uri, 
     http::Uri::from_parts(parts).map_err(|e| format!("URI 重组失败: {e}"))
 }
 
-/// HTML 响应注入 `<base href>`（goal 批次二）。
+/// HTML 响应注入 `<base href>`（goal）。
 ///
 /// 仅处理 `text/html` 且有 body 的响应；注入点 = `<head>` 标签闭合后
 /// （退而 `<html>` 后；再退最前）。HTML 已含 `<base ` 时不重复注入。
@@ -183,7 +183,7 @@ pub(crate) fn inject_base_tag(html: &[u8], base: &str) -> Option<Vec<u8>> {
         return None;
     }
     let tag = format!(r#"<base href="{}">"#, base).into_bytes();
-    // 注入点优先级：<head ...> > <html ...> > 最前。vite 产物恒有小写
+    // 注入点优先级：<head...> > <html...> > 最前。vite 产物恒有小写
     // `<head>`；取 marker 后第一个 `>` 即标签闭合（HTML 标签属性不含
     // 裸 `>`，此简化安全）。
     for marker in [&b"<head"[..], &b"<html"[..]] {

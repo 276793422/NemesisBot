@@ -78,8 +78,8 @@ fn resolve_absolute_passthrough_and_relative_against_root() {
     // 未注入 root：相对路径不解析（诚实降级），绝对路径照常。
     assert!(s.resolve("./evil.sh").is_none());
     // 绝对性判定是平台语义（Path::is_absolute）：Windows 认盘符路径、
-    // Unix 认根路径——各验各的形态（Linux CI 实录：`C:/tmp/x.sh` 在
-    // Linux 不是绝对路径，硬编码 Windows 形态会假红，2026-10-14）。
+    // Unix 认根路径——各验各的形态（Linux CI `C:/tmp/x.sh` 在
+    // Linux 不是绝对路径，硬编码 Windows 形态会假红）。
     #[cfg(windows)]
     let abs = "C:/tmp/x.sh";
     #[cfg(not(windows))]

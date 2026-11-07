@@ -1,9 +1,9 @@
-// WASM 插件 min-tier 双闸测试（2026-09-30 插件体系复查 #2）。
+// WASM 插件 min-tier 双闸测试（插件体系复查 #2）。
 //
 // 覆盖面：
 // ① 秩刻度——plugin_min_tier_rank / active_tier_rank 全枚举 + 兜底臂；
 // ② 供给闸——声明 min_tier 的工具绕过 tier 白名单按秩供给（Big 档可见、
-//    Mini 档按档收敛），无声明工具走原白名单路径（Mini 档照旧不可见）；
+//    Mini 档按档收敛），无声明工具走原白名单路径（Mini 档照旧不可）；
 // ③ dispatch 闸——Mini 档调 big 档插件工具被拦（防缓存/竞态漏网），
 //    Big 档同一工具放行执行；未注册工具文案不回归。
 //

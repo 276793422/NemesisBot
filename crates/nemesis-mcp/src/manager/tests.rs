@@ -42,7 +42,7 @@ fn test_new_without_config_file() {
     assert!(mgr.list_servers().is_empty());
 }
 
-/// G2（2026-10-18 批四）：per-agent 浏览器 profile setter/getter roundtrip
+/// per-agent 浏览器 profile setter/getter roundtrip
 /// ——默认 None（共享形态零变化）；设置/清除自由往返（discover_tools 是
 /// 唯一消费点，本测只锁 manager 载体面）。
 #[test]
@@ -174,7 +174,7 @@ fn test_find_new_servers_all_registered() {
 }
 
 // ---------------------------------------------------------------------------
-// content-change detection（BUG-20261104-359：内容比对不赌 mtime 粒度）
+// content-change detection（内容比对不赌 mtime 粒度）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -213,7 +213,7 @@ fn test_check_config_changed_detects_write() {
     assert!(!mgr.check_config_changed());
 }
 
-/// BUG-20261104-359 回归钉：同刻改写（mtime 钉回旧值）必须检出——
+/// 回归钉：同刻改写（mtime 钉回旧值）必须检出——
 /// Dashboard `save_mcp_config` 直写与热更检查撞同刻（Windows 毫秒级粒度
 /// CI 实证同族）时旧 mtime 闸漏检 = 新 server 永不挂载。
 #[test]
@@ -607,7 +607,7 @@ fn test_default_timeout_value_is_30() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：discovery 三函数——discover_tools（成功/起不来/
+// 补测：discovery 三函数——discover_tools（成功/起不来/
 // init 错误/超时 + 工具执行矩阵）、discover_server_metadata（stdio 成功+超时）、
 // discover_server_metadata_http（wiremock 成功/超时/5xx）
 // ===========================================================================
@@ -694,7 +694,7 @@ async fn test_w4c_discover_tools_success_and_execute_matrix() {
     assert!(!r.is_error);
     assert_eq!(r.content, "called");
 
-    // image 内容分支（规范形态 data+mimeType → 诚实注记，BUG-20261104-380）
+    // image 内容分支（规范形态 data+mimeType → 诚实注记）
     let r = tools[0].execute(serde_json::json!({"img": true})).await;
     assert!(!r.is_error);
     assert!(
@@ -722,7 +722,7 @@ async fn test_w4c_discover_tools_adapter_timeout() {
     // timeout_secs=8 → adapter 8s 超时（slow 分支睡 10s，8 < 10 断言仍成立）。
     // 注意不能太小：initialize 里的 notifications/initialized 通知固定等 1s
     // 传输超时，外加 Python 子进程冷启动——workspace 并行全量负载下 3s 预算
-    // 会被握手挤爆（discover 失败假红，2026-09-14），给足余量。
+    // 会被握手挤爆（discover 失败假红），给足余量。
     let cfg = w4c_fake_server_config("slow-srv", 8);
     let tools = mgr.discover_tools(&cfg).await.unwrap();
     let r = tools[0].execute(serde_json::json!({"slow": true})).await;
@@ -939,7 +939,7 @@ async fn test_w4c_discover_server_metadata_http_error_status() {
 }
 
 // ===========================================================================
-// S1 补测（2026-08-26）：timeout_secs=0 的 30s 回退臂；initialize 成功后
+// 补测：timeout_secs=0 的 30s 回退臂；initialize 成功后
 // list_tools/list_resources/list_prompts 失败的 warn!/Vec::new() 回退臂
 // （stdio + HTTP 两个变体）
 // ===========================================================================
@@ -1055,7 +1055,7 @@ async fn test_s1_discover_server_metadata_http_list_failures() {
 }
 
 // ---------------------------------------------------------------------------
-// S1 coverage batch (2026-08-26): save_config parent() == None arm (line 93).
+// coverage batch: save_config parent() == None arm (line 93).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1073,7 +1073,7 @@ fn test_s1_save_config_root_drive_parent_none() {
 }
 
 // ---------------------------------------------------------------------------
-// W1（2026-10-15）discover --header 到线 e2e（R9 补锁：此前 43 测试零
+// discover --header 到线 e2e（补锁：此前 43 测试零
 // header 覆盖——传递链断裂会静默变成裸探测，「探测能通、安装后 401」
 // 断层复活而无测试报警）
 // ---------------------------------------------------------------------------
@@ -1146,7 +1146,7 @@ async fn test_discover_http_without_matching_header_fails() {
     );
 }
 
-// --- 第十四轮缺陷 17：前缀碰撞加载面 warn（可观测，不拒载）-----------
+// --- 缺陷 17：前缀碰撞加载面 warn（可观测，不拒载）-----------
 
 #[test]
 fn r17_load_config_with_colliding_names_succeeds_intact() {
@@ -1172,10 +1172,10 @@ fn r17_load_config_with_colliding_names_succeeds_intact() {
     assert_eq!(groups[0].0, "mcp_pet_v2_");
 }
 
-// --- BUG-20261025-47：save_config 原子写收编回归锁 --------------------
+// ---：save_config 原子写收编回归锁 --------------------
 // 旧实现手搓 config.mcp.mcp.tmp + rename（无 sync/cleanup），与同文件
 // web 写路径（nemesis_config::save_mcp_config → write_file_atomic）漂移；
-// 收编后两条纪律必须同时成立：无 .tmp 残留 + 盘上可被权威读侧读回。
+// 收编后两条纪律必须同时成立：无.tmp 残留 + 盘上可被权威读侧读回。
 
 #[test]
 fn r47_save_config_atomic_no_tmp_residue_and_round_trips() {
@@ -1190,7 +1190,7 @@ fn r47_save_config_atomic_no_tmp_residue_and_round_trips() {
 
     mgr.save_config().expect("save_config must succeed");
 
-    // 纪律一：目录里只有目标文件本身，任何 .tmp 形态残留都不允许
+    // 纪律一：目录里只有目标文件本身，任何.tmp 形态残留都不允许
     // （旧手搓路径失败时留下 config.mcp.mcp.tmp；write_file_atomic 失败即清理）。
     let entries: Vec<String> = std::fs::read_dir(tmp.path())
         .unwrap()
@@ -1213,10 +1213,10 @@ fn r47_save_config_atomic_no_tmp_residue_and_round_trips() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261103-336 回归锁：one-shot 探测的内层逐请求超时必须跟随外层预算
+// 回归锁：one-shot 探测的内层逐请求超时必须跟随外层预算
 // （+1s 让位宽限）。此前两处 one-shot（stdio / HTTP）走裸 McpClient::new()，
 // 内层硬编码 30s——调用方传 timeout>30 放宽预算被内层静默截断（外层形同
-// 虚设，报错形态是内层 -3 timeout）。2026-10-15 第十二轮只修了
+// 虚设，报错形态是内层 -3 timeout）。 只修了
 // from_server_config 注册路径，本位点同族漏配。红证（CLI 实跑）：31s 慢
 // server + --timeout 35 → 修复前 32s 失败于内层；修复后 ~31s 成功。
 // 行为级区分度需 >30s 墙钟（不可入 CI），接线咬合以纯函数断言钉死：

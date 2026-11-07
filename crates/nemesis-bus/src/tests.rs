@@ -811,7 +811,7 @@ async fn test_inbound_sender_works_even_after_bus_closed() {
         voice_playback: None,
     });
 
-    // broadcast::Sender::send should succeed because the underlying
+    // broadcast::Sender:send should succeed because the underlying
     // channel is still open (close only sets the AtomicBool).
     assert!(
         result.is_ok(),
@@ -867,7 +867,7 @@ async fn test_multiple_inbound_senders_share_channel() {
 async fn test_inbound_sender_no_receivers_returns_error() {
     let bus = MessageBus::new();
     let sender = bus.inbound_sender();
-    // No subscribers. broadcast::Sender::send returns Err when there are
+    // No subscribers. broadcast::Sender:send returns Err when there are
     // no active receivers.
     let result = sender.send(InboundMessage {
         channel: "test".to_string(),
@@ -1328,7 +1328,7 @@ async fn test_with_capacity_overflow_drops_oldest() {
 #[tokio::test]
 async fn test_publish_inbound_no_receivers_after_dropping_receiver_increments_no_receiver_dropped()
 {
-    // 语义澄清（P2-1）：lagged 与发布侧 dropped 是两个不同维度的丢失——
+    // 语义澄清：lagged 与发布侧 dropped 是两个不同维度的丢失——
     // 慢消费者 lag 不影响发布侧计数（send 成功），只有「无接收者时发布」
     // 才计入 no_receiver_dropped。真实 lag 记账见
     // test_lagged_receiver_loss_recorded_via_record_lagged。
@@ -1416,7 +1416,7 @@ async fn test_publish_outbound_no_receivers_after_dropping_receiver_increments_n
     assert_eq!(bus.no_receiver_dropped_outbound(), initial_dropped + 5);
 }
 
-/// 接收侧真实丢失记账（P2-1 新增）：容量 2 灌 10 条 → 接收端 `recv()`
+/// 接收侧真实丢失记账（新增）：容量 2 灌 10 条 → 接收端 `recv()`
 /// 返回 `Lagged(8)`（2 条缓冲 + 8 条被覆盖跳过）；发布侧计数不动；显式
 /// `record_inbound_lagged(8)` 后 lagged 计数 = 8。出站同型。
 #[tokio::test]
@@ -1505,7 +1505,7 @@ async fn test_broadcast_send_failure_with_active_but_slow_receiver() {
         });
     }
 
-    // BUG-20261102-322：名字承诺 send_failure——20 条灌进容量 3 的广播道、
+    // 名字承诺 send_failure——20 条灌进容量 3 的广播道、
     // 接收端零消费，tokio broadcast 语义保证 Lagged（落后超过容量必报）。
     // 此前「exercised the send operation」零验证，Lagged 计数路径回归照绿。
     let mut saw_lagged = false;

@@ -1,4 +1,4 @@
-//! image_path_detector 单测（goal T4 验证清单）：
+//! image_path_detector 单测（goal 验证清单）：
 //! 中文/空格/引号路径、UNC、多路径去重、工作区相对、
 //! 不存在/超限/magic 失败原因、普通文本不误判。
 
@@ -28,7 +28,7 @@ fn write_png(path: &Path, extra: &[u8]) -> u64 {
     data.len() as u64
 }
 
-/// 写一个伪装 .png 的纯文本文件。
+/// 写一个伪装.png 的纯文本文件。
 fn write_fake_png(path: &Path) {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();
@@ -69,8 +69,8 @@ fn test_windows_path_forward_slash_mix() {
 
 // UNC 是 Windows 形态语义（`\` 是分隔符、`\\server` 是根）：POSIX 上
 // `Path::has_root()` 对反斜杠前缀返回 false → 按相对路径处理 → 本测试的
-// 「deliberate + 诚实 NotFound」前提不成立。2026-09-02 约定：Windows 形态
-// 测试挂 #[cfg(windows)]，Linux 上编译期消失而非运行期跳过（2026-09-04
+// 「deliberate + 诚实 NotFound」前提不成立。 约定：Windows 形态
+// 测试挂 #[cfg(windows)]，Linux 上编译期消失而非运行期跳过（
 // Linux CI 红 9 处的根因之一）。
 #[test]
 #[cfg(windows)]
@@ -83,7 +83,7 @@ fn test_unc_path_detected() {
     assert_eq!(out[0].raw, r"\\server\share\photos\风景.png");
     assert!(out[0].deliberate);
     // 单机无该共享 → 诚实失败（deliberate → failure_reason 有内容）。
-    // 断言只锁「诚实失败」不锁具体分支（2026-09-23 全量回归假红根修）：
+    // 断言只锁「诚实失败」不锁具体分支（全量回归假红根修）：
     // UNC 存在性检查走 SMB/MUP 名字解析，`\\server` 不可达时的 OS 错误码
     // 随网络状态浮动——常态为 ERROR_PATH_NOT_FOUND(3) → NotFound，但高并
     // 发负载（全量测试 + 集群组件同时在跑）下可返回超时类错误 →
@@ -251,8 +251,8 @@ fn test_duplicate_paths_deduped() {
 
 // Windows 文件系统语义（大小写不敏感去重）——cfg(windows)：非 Windows 平台
 // `A.png` 与 `a.png` 是两个不同文件（dedup_key 按 cfg!(windows) 小写化），
-// 本测试的「变体应去重」前提只在 Windows 成立（2026-09-03 二次回归 C2；
-// 2026-09-02 约定：Windows 形态测试挂标记，编译期消失而非运行期跳过）。
+// 本测试的「变体应去重」前提只在 Windows 成立（二次回归；
+// 约定：Windows 形态测试挂标记，编译期消失而非运行期跳过）。
 #[test]
 #[cfg(windows)]
 fn test_case_insensitive_dedup_on_windows() {
@@ -266,7 +266,7 @@ fn test_case_insensitive_dedup_on_windows() {
     assert_eq!(out.len(), 1, "大小写变体应去重: {:?}", out);
 }
 
-// 2026-09-03 二次回归 C1：`\` 与 `/` 混用路径必须去重为同一张（检测器明确
+// 二次回归：`\` 与 `/` 混用路径必须去重为同一张（检测器明确
 // 接受混用；旧实现 raw 小写化不分隔符归一 → 同图重复附加）。
 #[test]
 fn test_mixed_separator_paths_deduped() {
@@ -283,7 +283,7 @@ fn test_mixed_separator_paths_deduped() {
     assert_eq!(out.len(), 1, "分隔符变体应去重: {:?}", out);
 }
 
-// 2026-09-03 二次回归 C3：ext_from_magic 与 sniff_magic 同签名表（sniff ==
+// 二次回归：ext_from_magic 与 sniff_magic 同签名表（sniff ==
 // ext.is_some），且各签名映射到正确扩展名（URL 落盘按内容定扩展名）。
 #[test]
 fn test_ext_from_magic_matches_sniff_and_names() {
@@ -304,10 +304,10 @@ fn test_ext_from_magic_matches_sniff_and_names() {
     }
 }
 
-// 2026-09-03 二次回归 C1：dedup_key 分隔符归一。**Windows 形态语义**——
-// 归一与小写化都只 cfg!(windows)（L5：POSIX 上 `\` 是合法文件名字符），
+// 二次回归：dedup_key 分隔符归一。**Windows 形态语义**——
+// 归一与小写化都只 cfg!(windows)（POSIX 上 `\` 是合法文件名字符），
 // POSIX 侧的「不归一」前提由 test_posix_backslash_filename_not_deduped
-// 锁定。挂 #[cfg(windows)]（2026-09-02 约定；2026-09-04 Linux CI 红 9 处
+// 锁定。挂 #[cfg(windows)]（约定； Linux CI 红 9 处
 // 的根因之一）。
 #[test]
 #[cfg(windows)]
@@ -318,7 +318,7 @@ fn test_dedup_key_separator_normalized() {
     assert!(!a.contains('\\'), "归一后不应残留反斜杠");
 }
 
-// L5（2026-09-04 四轮盲审）：分隔符归一仅 Windows——POSIX 上 `\` 是合法
+// （四轮盲审）：分隔符归一仅 Windows——POSIX 上 `\` 是合法
 // 文件名字符，`dir\a.png` 与 `dir/a.png` 是两个不同文件，归一会把同消息里
 // 的两个不同文件错误去重掉一个。
 #[cfg(not(windows))]
@@ -338,10 +338,10 @@ fn test_posix_backslash_filename_not_deduped() {
     assert_eq!(out.len(), 2, "POSIX 反斜杠文件名不应被归一去重: {:?}", out);
 }
 
-// F-H（2026-09-04 四轮盲审）：URL 内的路径形态不是文本附加候选——
+// F-H（四轮盲审）：URL 内的路径形态不是文本附加候选——
 // `https://host/img/a.png` 的 `/host/img/a.png` 会被 nix_abs（无左边界）
 // 抓成"POSIX 绝对路径"（假 deliberate → 每次灌一条假"文件不存在"注记；
-// 碰巧存在时错误附加本地文件）。URL 附加走 media 引用预取（T9），文本
+// 碰巧存在时错误附加本地文件）。URL 附加走 media 引用预取，文本
 // 提及不产出候选。
 #[test]
 fn test_url_text_mentions_not_candidates() {
@@ -413,11 +413,11 @@ fn test_no_workspace_dir_relative_dropped() {
 }
 
 // ============================================================
-// 2026-09-04 CI 回归根修回归锁（28 处红 → 正则两形态家族重构）
+// CI 回归根修回归锁（28 处红 → 正则两形态家族重构）
 // ============================================================
 
 // `~`（8.3 短名）回归：段字符类此前不含 `~`，`C:\Users\RUNNER~1\...`
-// （GitHub Actions Windows runner 的 std::env::temp_dir() 真实返回形态，
+// （GitHub Actions Windows runner 的 std::env:temp_dir() 真实返回形态，
 // 开启 8.3 短名生成的机器同理）永不匹配 → 文本点名路径全部失明（Windows
 // CI 红 19 处）。`~` 在 Windows/POSIX 文件名里都合法，用字面 RUNNER~1
 // 目录名做双平台确定性回归。

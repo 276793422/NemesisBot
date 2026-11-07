@@ -1,5 +1,5 @@
 //! vm_sync 宿主侧单测（纯宿主可跑：选源/打包/账本/安全闸；带真实 VM 的
-//! 全链路归 B9-2/B9-3 真机臂——本文件不假装测 VM 内行为）。
+//! 全链路归 / 真机臂——本文件不假装测 VM 内行为）。
 
 use std::path::PathBuf;
 
@@ -37,7 +37,7 @@ fn admits_prefix_and_exact_dir_match() {
     for rel in [
         "src/main.rs",
         "gitignore-note.md",
-        "targeting.rs", // 前缀是目录形态（含 /），不能误伤同名前缀文件
+        "targeting.rs", // 前缀是目录形态（含），不能误伤同名前缀文件
     ] {
         assert!(admits(rel), "应保留: {rel}");
     }
@@ -284,7 +284,7 @@ async fn write_json_atomic_writes_content_and_leaves_no_tmp() {
 }
 
 // ---------------------------------------------------------------------------
-// rel 安全闸（B9-2 commit 回读的防御闸先备）
+// rel 安全闸（commit 回读的防御闸先备）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -300,13 +300,13 @@ fn safe_rel_rejects_traversal_and_absolute() {
 }
 
 // ---------------------------------------------------------------------------
-// B9-2 开工闸：git status -z 解析 / 宿主 meta diff / 三方裁决真值表
+// 开工闸：git status -z 解析 / 宿主 meta diff / 三方裁决真值表
 // ---------------------------------------------------------------------------
 
 #[test]
 fn parse_status_z_collects_rename_delete_untracked() {
     let ex = SyncExclusion { is_git: true };
-    // porcelain v1 -z 形态：每条目 `XY <path>\0`；R/C 条目再跟第二段 old\0。
+    // porcelain v1 -z 形态：每条目 `XY <path>\0`；R/C 条目再跟 old\0。
     let mut raw: Vec<u8> = Vec::new();
     let push = |raw: &mut Vec<u8>, segs: &[&[u8]]| {
         for s in segs {
@@ -433,7 +433,7 @@ fn diff_trees_changed_and_deleted() {
 }
 
 // ---------------------------------------------------------------------------
-// B9-2 commit 闸：tar 回读宿主（safe_rel 防御 + 内容 + unix exec 位）
+// commit 闸：tar 回读宿主（safe_rel 防御 + 内容 + unix exec 位）
 // ---------------------------------------------------------------------------
 
 fn build_tar(entries: &[(&str, Option<&[u8]>, Option<u32>)]) -> Vec<u8> {
@@ -511,7 +511,7 @@ fn extract_tar_to_host_rejects_traversal_entry() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-262：tar 条目读走 read_entry_capped 单一真相源
+// tar 条目读走 read_entry_capped 单一真相源
 // （extract_tar_to_host_with_caps 可注入小 cap 钉行为）
 // ---------------------------------------------------------------------------
 
@@ -556,13 +556,13 @@ fn extract_tar_to_host_default_cap_constant_present() {
     );
     // 哨兵断言走 const 块：对 `const` 断言在编译期验证（零运行时成本，
     // 违约直接编译失败），也满足 clippy 1.95 `assertions_on_constants`
-    //（-D warnings，CI 44a5e913 inline 实录两红）。
+    //（D warnings，曾触发 inline 检查两红）。
     const _: () = assert!(super::PULL_TOTAL_MAX_BYTES > 0);
     const _: () = assert!(super::PULL_CHUNK_MAX_BYTES > 0);
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-262：pull wire 闸纯函数（chunk 计数 / 单块与总量预算）
+// pull wire 闸纯函数（chunk 计数 / 单块与总量预算）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -600,7 +600,7 @@ fn check_pull_chunk_budget_rejects_single_and_total() {
 }
 
 // ---------------------------------------------------------------------------
-// 组件 symlink 闸（2026-10-20 复查批；与 guest 侧 extract_tar_safe 同族）
+// 组件 symlink 闸（复查批；与 guest 侧 extract_tar_safe 同族）
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
@@ -647,7 +647,7 @@ fn extract_tar_to_host_refuses_final_symlink_no_clobber() {
 }
 
 // ---------------------------------------------------------------------------
-// B9-2 旧基线兼容：缺 host_meta 键 = 空表（全量嫌疑 + 阈值兜底）
+// 旧基线兼容：缺 host_meta 键 = 空表（全量嫌疑 + 阈值兜底）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -670,7 +670,7 @@ fn baseline_without_host_meta_loads_empty_map() {
 }
 
 // ---------------------------------------------------------------------------
-// B9-2 跨平台 commit 校验闸：大小写碰撞（大小写不敏感宿主回传互覆防线）
+// 跨平台 commit 校验闸：大小写碰撞（大小写不敏感宿主回传互覆防线）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -740,7 +740,7 @@ fn case_gate_enforcement_follows_host_fs() {
 }
 
 // ---------------------------------------------------------------------------
-// 挂起表裁决（H3 停车语义：diverged_verdict 纯函数）
+// 挂起表裁决（停车语义：diverged_verdict 纯函数）
 // ---------------------------------------------------------------------------
 
 fn parked_entry(host_sha: &str, vm_sha: &str) -> DivergedEntry {
@@ -829,7 +829,7 @@ fn diverged_parked_host_missing_then_host_appears_is_merge() {
 }
 
 // ---------------------------------------------------------------------------
-// P5-R1：.browser-profile 排除（登录态 VM 本地；D-P6-1 可迁移形态预埋）
+// .browser-profile 排除（登录态 VM 本地；D- 可迁移形态预埋）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -839,7 +839,7 @@ fn browser_profile_excluded_uploads_admitted() {
     assert!(!admits(".browser-profile/Default/Cookies"));
     assert!(!admits(".browser-profile")); // 精确目录名边缘形态
     // uploads/ 刻意**不**排除：browser 截图落 <workspace>/uploads/，经
-    // vm_sync 回灌宿主 → vision 评审 M5 同源。
+    // vm_sync 回灌宿主 → vision 评审 同源。
     assert!(admits("uploads/browser-1730000000000.png"));
 }
 

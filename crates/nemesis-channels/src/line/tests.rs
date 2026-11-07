@@ -957,7 +957,7 @@ async fn test_line_full_lifecycle_with_real_webhook() {
 
     // Should have received the message on the bus
     // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
-    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    // try_recv 会与 publish 竞态（gate flake）——必须带超时 recv。
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
         .await
         .expect("timed out: webhook 200 must be followed by bus publish")
@@ -1036,7 +1036,7 @@ async fn test_line_full_lifecycle_valid_signature() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
     // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
-    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    // try_recv 会与 publish 竞态（gate flake）——必须带超时 recv。
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
         .await
         .expect("timed out: webhook 200 must be followed by bus publish")
@@ -1076,7 +1076,7 @@ async fn test_line_full_lifecycle_lowercase_signature_header() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
     // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
-    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    // try_recv 会与 publish 竞态（gate flake）——必须带超时 recv。
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
         .await
         .expect("timed out: webhook 200 must be followed by bus publish")
@@ -1145,7 +1145,7 @@ async fn test_line_full_lifecycle_group_chat_id() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
     // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
-    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    // try_recv 会与 publish 竞态（gate flake）——必须带超时 recv。
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
         .await
         .expect("timed out: webhook 200 must be followed by bus publish")
@@ -1184,7 +1184,7 @@ async fn test_line_full_lifecycle_room_chat_id() {
     assert!(response.starts_with("HTTP/1.1 200 OK"));
 
     // webhook 服务器是 spawn 的任务：HTTP 200 先于 bus publish 返回，
-    // try_recv 会与 publish 竞态（2026-08-31 gate flake）——必须带超时 recv。
+    // try_recv 会与 publish 竞态（gate flake）——必须带超时 recv。
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), bus_rx.recv())
         .await
         .expect("timed out: webhook 200 must be followed by bus publish")
@@ -1253,7 +1253,7 @@ async fn test_line_full_lifecycle_no_body_separator() {
     ch.stop().await.unwrap();
 }
 
-/// 旧形态必红锁（BUG-20261025-75）：缺 X-Line-Signature 头的请求必须 401 且
+/// 旧形态必红锁：缺 X-Line-Signature 头的请求必须 401 且
 /// 绝不入总线。旧形态 fail-open 会返回 200 并把伪造事件发布到 bus（本测试
 /// 断言 401 + 总线为空，双断言任一在旧形态下都红）。
 #[tokio::test]
@@ -1464,7 +1464,7 @@ async fn test_line_push_with_empty_text() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：webhook HTTP 最小解析全路径——合法签名投递+存 reply
+// 补测：webhook HTTP 最小解析全路径——合法签名投递+存 reply
 // token、错签名 401、坏 JSON 400、事件守卫（非 message/无 text/无 source 跳过）、
 // running=false 直连即断
 // ===========================================================================
@@ -1734,7 +1734,7 @@ async fn test_w4c_line_webhook_not_running_closes_without_response() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): read Ok(0) early-return / event without message
+// coverage: read Ok(0) early-return / event without message
 // field / webhook accept-loop break after stop
 // ===========================================================================
 

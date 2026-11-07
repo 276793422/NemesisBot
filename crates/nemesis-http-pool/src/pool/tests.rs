@@ -734,7 +734,7 @@ async fn test_download_file_connection_refused() {
 }
 
 // ================================================================
-// BUG-HUNT R36: strict (no-redirect) vs compat (auto-follow) download
+// strict (no-redirect) vs compat (auto-follow) download
 // ================================================================
 
 /// 302 重定向双服务器：A 任何请求回 302 → Location 指向 B；A/B 各带命中
@@ -2440,7 +2440,7 @@ async fn test_download_file_with_auth_params() {
 }
 
 // ================================================================
-// BUG-20261025-61 回归锁（旧形态必红）：重试配置接线两面——
+// 回归锁（旧形态必红）：重试配置接线两面——
 // PoolConfig.max_retries / retry_delay 此前声名从未消费（retry_request
 // 硬编码 3 / 500ms 基数），max_retries=0（关重试）完全无效；POST 非幂等
 // 此前对请求超时也重试（服务端可能已处理后双提交）。
@@ -2545,14 +2545,14 @@ async fn bug61_post_json_request_timeout_not_retried() {
 }
 
 // ================================================================
-// D10-1 download_file_capped 双闸回归锁（R180）
+// download_file_capped 双闸回归锁
 //
-// 此前 2545 行测试无一覆盖 cap 闸（R36 只钉了 strict 的重定向语义）——
+// 此前 2545 行测试无一覆盖 cap 闸（只钉了 strict 的重定向语义）——
 // 安全闸无回归锁 = 未来重构可静默拆掉。两道闸各一锁 + 边界各一锁 +
 // strict 版同源语义一锁。断言钉死实现的具体错误文案（分支执行证明）。
 // ================================================================
 
-/// D10-1 专用：响应**不带 Content-Length**（chunked 编码）——驱动
+/// 专用：响应**不带 Content-Length**（chunked 编码）——驱动
 /// `download_file_capped_on` 的流式硬上限分支（缺/谎报 CL 时由实收字节
 /// 兜底的那条路；共享基建硬编码 CL 无法构造该形态）。
 async fn start_chunked_server(response_body: Vec<u8>) -> (String, tokio::task::JoinHandle<()>) {

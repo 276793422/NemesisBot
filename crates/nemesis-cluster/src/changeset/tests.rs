@@ -1,4 +1,4 @@
-//! changeset 测试（P4/E3+E8）。
+//! changeset 测试。
 
 use super::*;
 use std::path::PathBuf;
@@ -134,7 +134,7 @@ fn read_rejects_malformed_manifest_paths() {
     let _ = contents;
 }
 
-/// 旧清单（无 skipped 键，BUG-2026-10-15 之前的产物）解析 = 空 vec，
+/// 旧清单（无 skipped 键，BUG- 之前的产物）解析 = 空 vec，
 /// serde default 双向兼容。
 #[test]
 fn read_manifest_without_skipped_key_is_backward_compatible() {

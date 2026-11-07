@@ -1,6 +1,6 @@
-//! F3 (devtool-upgrade 阶段 5): SecurityHandler 的 approvals.list / approvals.clear
+//! (devtool-upgrade): SecurityHandler 的 approvals.list / approvals.clear
 //! 命令——「总是允许」规则表管理（纯文件 IO：nemesis-web 不依赖
-//! nemesis-security，条目原样透传；路径唯一真相源 nemesis-path）。
+//! nemesis-security，条目原样透传；路径唯一依据 nemesis-path）。
 
 use super::*;
 use crate::ws_router::{ModuleHandler, RequestContext};
@@ -49,6 +49,7 @@ fn make_ctx(ws: &str) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -84,7 +85,7 @@ async fn approvals_list_missing_file_is_empty_and_entries_passthrough() {
         .unwrap();
     assert_eq!(resp["rules"].as_array().unwrap().len(), 0);
 
-    // 落两条规则 → 原样透传（ nemesis-web 不解释条目形状）。
+    // 落两条规则 → 原样透传（nemesis-web 不解释条目形状）。
     let path = rules_file(&ws);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(

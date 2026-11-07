@@ -1,19 +1,19 @@
-//! Swarm M1：智能选节点匹配器（纯函数，无集群依赖）。
+//! Swarm：智能选节点匹配器（纯函数，无集群依赖）。
 //!
-//! 打分语义（impl-plan §3.2 + 集群专业职能框架 M2 + P6-R1 backend 闸）：
+//! 打分语义（impl-plan + 集群专业职能框架 + - backend 闸）：
 //! - `required_role` 是**硬条件**：给了但无人精确命中 → 空结果（诚实留
 //!   backlog，不硬塞给错误角色）；
 //! - `required_tags` 是**硬条件**：给了则必须有交集；
 //! - `required_profession` 是**硬条件 3**：给了则节点必须宣告同 slug
 //!   （精确匹配，无继承；`dev` 不命中 `dev:cpp`，反向亦然）；
-//! - **硬条件 4（tier 门槛，D3）**：职能有 min_tier 且节点 tier 已知但
+//! - **硬条件 4（tier 门槛）**：职能有 min_tier 且节点 tier 已知但
 //!   低于门槛 → 排除；tier 未知（None，旧节点）fail-open 放行。tier
-//!   门槛**不参与松弛**（D13）——有职能的松弛级照常带门槛；
-//! - **硬条件 5（能力硬闸，NB-122 批 2026-10-16）**：`required_capabilities`
+//!   门槛**不参与松弛**——有职能的松弛级照常带门槛；
+//! - **硬条件 5（能力硬闸， -16）**：`required_capabilities`
 //!   非空则节点必须**全量命中**所列能力词（大小写不敏感、trim 后精确词
-//!   匹配）。**不参与松弛**——环境缺口松弛不出来，D13 阶梯每一级都带本
+//!   匹配）。**不参与松弛**——环境缺口松弛不出来， 阶梯每一级都带本
 //!   条件（无节点具备 = 诚实停车，不硬塞给装不出环境的节点）；
-//! - **硬条件 6（backend 闸，P6-R1 2026-10-21）**：`required_backend`
+//! - **硬条件 6（backend 闸，- 2026-10-21）**：`required_backend`
 //!   非空则节点必须**精确宣告同值**（`process`|`vm`，大小写不敏感）。
 //!   节点未宣告（None）= **fail-closed 排除**——形态错配是环境事实不是
 //!   能力档位，与 capabilities 硬条件 5 同款、刻意不同于 tier 闸的
@@ -37,11 +37,11 @@ pub struct PeerCandidate {
     pub tags: Vec<String>,
     /// 能力词（capabilities 广播；小写短语如 "rust" / "docker"）。
     pub capabilities: Vec<String>,
-    /// 节点宣告的职能 slug 清单（`family[:spec]`；M2 匹配数据源）。
+    /// 节点宣告的职能 slug 清单（`family[:spec]`； 匹配数据源）。
     pub professions: Vec<String>,
     /// 节点自报档位（mini/normal/big；None = 未宣告，tier 闸 fail-open）。
     pub tier: Option<String>,
-    /// 节点宣告的运行时后端（P6-R1：`process`|`vm`；None = 未宣告，
+    /// 节点宣告的运行时后端（`process`|`vm`；None = 未宣告，
     /// backend 闸 fail-closed——需求非空时直接排除）。
     pub runtime_backend: Option<String>,
 }
@@ -55,10 +55,10 @@ pub struct MatchInput<'a> {
     pub required_tags: &'a [String],
     /// 需求职能 slug；None/空 = 不限职能（硬条件 3/4 跳过）。
     pub required_profession: Option<&'a str>,
-    /// 需求能力词（硬条件 5，NB-122 批）：非空则必须全量命中节点
+    /// 需求能力词（硬条件 5， 批）：非空则必须全量命中节点
     /// capabilities；**不参与松弛**。空 = 不限能力。
     pub required_capabilities: &'a [String],
-    /// 需求运行时后端（硬条件 6，P6-R1）：非空则节点必须精确宣告同值
+    /// 需求运行时后端（硬条件 6）：非空则节点必须精确宣告同值
     /// （大小写不敏感；节点未宣告 = 排除）；**不参与松弛**。
     /// None/空 = 不过闸（旧节点混编零回归）。
     pub required_backend: Option<&'a str>,
@@ -83,7 +83,7 @@ pub fn rank_peers(
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_lowercase);
-    // 职能归一（小写）；空串视作未给。min_tier 只查内置目录（M1：用户
+    // 职能归一（小写）；空串视作未给。min_tier 只查内置目录（用户
     // 自定义职能无门槛元数据 → 门槛跳过）。
     let prof_need = input
         .required_profession
@@ -129,14 +129,14 @@ pub fn rank_peers(
             {
                 return None;
             }
-            // 硬条件 4：tier 门槛（D3，不参与松弛）。节点 tier 已知且低于
+            // 硬条件 4：tier 门槛（不参与松弛）。节点 tier 已知且低于
             // 职能 min_tier → 排除；未知（None）fail-open 放行。
             if let Some(min_tier) = prof_min_tier
                 && !nemesis_prompts::professions::meta::tier_allows(peer.tier.as_deref(), min_tier)
             {
                 return None;
             }
-            // 硬条件 5：能力全量命中（NB-122 批；大小写不敏感、trim 精确词
+            // 硬条件 5：能力全量命中（批；大小写不敏感、trim 精确词
             // 匹配）。不参与松弛——pick_relaxed 各级 make() 原样携带本条件。
             if !input.required_capabilities.is_empty()
                 && !input.required_capabilities.iter().all(|need| {
@@ -150,7 +150,7 @@ pub fn rank_peers(
             {
                 return None;
             }
-            // 硬条件 6：backend 精确命中（P6-R1；大小写不敏感）。节点未宣告
+            // 硬条件 6：backend 精确命中（大小写不敏感）。节点未宣告
             // （None）= fail-closed 排除——形态错配是环境事实不是能力档位，
             // 刻意不同于 tier 闸的 fail-open。不参与松弛（进程节点松弛不出
             // VM，pick_relaxed 各级 make() 原样携带本条件）。
@@ -199,19 +199,19 @@ pub fn pick_peer(
         .map(|(id, _)| id)
 }
 
-/// D13 松弛阶梯的纯函数内核（fallback 序，调用方先自己跑过严格匹配 =
+/// 松弛阶梯的纯函数内核（fallback 序，调用方先自己跑过严格匹配 =
 /// 阶梯 ①「全条件」）：②保职能丢标签 → ③丢职能（保角色/标签）→ ④全松
 /// 弛（职能/角色/标签均放开）。返回 `(节点 id, 松弛级说明)`，说明字符串
 /// 供调用方评论留痕。
 ///
-/// `depth` 截断阶梯（2026-09-29 三档化）：[`RelaxDepth::Role`] 走到 ③ 为
+/// `depth` 截断阶梯（三档化）：[`RelaxDepth::Role`] 走到 ③ 为
 /// 止（角色纪律保留——架构单可降级给开发，不可降级给 coordinator）；
 /// [`RelaxDepth::Full`] 走满 ②③④。
 ///
-/// tier 门槛**不参与松弛**（D13）：门槛是 required_profession 的函数，
+/// tier 门槛**不参与松弛**：门槛是 required_profession 的函数，
 /// 有职能的松弛级照常带门槛，职能被丢掉后门槛自然随行——不存在「保留
 /// 门槛要求但放开职能」的中间态。required_capabilities 同样**不参与松弛**
-/// （硬条件 5，NB-122 批）：能力是环境事实，缺口松弛不出来——各级原样
+/// （硬条件 5， 批）：能力是环境事实，缺口松弛不出来——各级原样
 /// 携带，无节点具备 = 全阶梯走完仍 None = 调用方诚实停车。
 ///
 /// 无职能子单：② 蜕化为「保角色丢标签」（与旧 fallback 一级等价），③
@@ -236,12 +236,12 @@ pub fn pick_relaxed<'a>(
             required_role: role,
             required_profession: prof,
             required_tags: tags,
-            // 硬条件 5 不参与松弛（NB-122 批）：能力是环境事实，松弛各级
+            // 硬条件 5 不参与松弛（批）：能力是环境事实，松弛各级
             // 原样携带——无节点具备 = 全阶梯走完仍 None = 调用方诚实停车。
             required_capabilities: base.required_capabilities,
-            // 硬条件 6 同款（P6-R1）：进程节点松弛不出 VM——backend 需求
+            // 硬条件 6 同款：进程节点松弛不出 VM——backend 需求
             // 各级原样携带，无 VM 节点 = 全阶梯走完仍 None = 诚实停车
-            // （D-P6-2 裁决）。
+            // （D- 裁决）。
             required_backend: base.required_backend,
             description: base.description,
         }
@@ -279,7 +279,7 @@ pub fn pick_relaxed<'a>(
     None
 }
 
-/// 松弛阶梯深度档（`pick_relaxed` 的截断点；2026-09-29 三档化的内核侧
+/// 松弛阶梯深度档（`pick_relaxed` 的截断点； 三档化的内核侧
 /// 投影——`Off` 不进入本函数，由调用方在 fallback 入口处诚实停车）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelaxDepth {

@@ -17,9 +17,9 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { E2E } from './env'
-import { newAuthedPage, restartGateway, wsapi, wsChatSend } from './helpers'
+import { newAuthedPage, openSessionSidebar, restartGateway, wsapi, wsChatSend } from './helpers'
 
 const PROJ_NAME = '专利-e2e'
 const PROJ_DIR = path.join(E2E.home, 'e2e-history-project')
@@ -53,10 +53,7 @@ test('项目会话历史：目录删除后组不可用但历史完整可读', as
   await page.reload()
   await expect(page.locator('.chat-input-area textarea')).toBeVisible({ timeout: 20_000 })
 
-  const toggle = page.locator('.toolbar-toggle').first()
-  if (await toggle.isVisible().catch(() => false)) {
-    await toggle.click()
-  }
+  await openSessionSidebar(page)
   await expect(page.locator('.group-header').first()).toBeVisible({ timeout: 20_000 })
 
   // U1: 项目组可见 + unavailable 态

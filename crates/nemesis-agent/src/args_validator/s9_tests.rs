@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：args_validator.rs 剩余未覆盖行。
+//! 覆盖率批次：args_validator.rs 剩余未覆盖行。
 //! - 338：format_violations 的 "Accepted fields" 追加臂——需要
 //!   violations 里含 UnknownField 且 schema 有非空 properties。
 //!   经由 `check()` 走歧义 typo 碰撞（两个未知字段最近邻同一目标 →

@@ -1,4 +1,4 @@
-//! mattermost 通道测试（P26）：纯函数单测 + mock REST 出站形态断言 +
+//! mattermost 通道测试：纯函数单测 + mock REST 出站形态断言 +
 //! mock WS 网关入站全链路。真实 Mattermost 平台端到端挂账（无凭证）。
 
 use super::*;

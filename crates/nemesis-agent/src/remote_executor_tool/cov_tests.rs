@@ -42,7 +42,7 @@ async fn stdio_roundtrip_success_drains_stderr() {
     assert_eq!(out, "cov-ok");
 }
 
-/// userland_sandbox 标记（U11 非 Windows 通路；Windows 上经私有 fn 直调，
+/// userland_sandbox 标记（非 Windows 通路；Windows 上经私有 fn 直调，
 /// 只证 env 标记分支不破坏 stdio 回路）。
 #[tokio::test]
 async fn stdio_userland_sandbox_sets_env_marker() {

@@ -2,8 +2,8 @@
 // read_all/read_recent/count/clear/cleanup).
 //
 // 聚合 API（append_aggregated/read_aggregated/get_top_patterns/get_stats/
-// 每日限额/file_newer_than/walk_jsonl_files）2026-10-22 随生产代码整体移除
-// （审计 P2-a），对应测试同步删除。
+// 每日限额/file_newer_than/walk_jsonl_files） 随生产代码整体移除
+// （审计 -a），对应测试同步删除。
 
 use super::*;
 use crate::types::Experience;
@@ -23,7 +23,7 @@ fn make_experience(tool: &str) -> Experience {
 
 #[tokio::test]
 async fn test_fp2_read_recent_returns_last_n() {
-    // F-P2: read_recent parses only the last `limit` lines (bounding parse cost
+    // F-: read_recent parses only the last `limit` lines (bounding parse cost
     // regardless of file size).
     use crate::types::CollectedExperience;
     let dir = tempfile::tempdir().unwrap();
@@ -65,7 +65,7 @@ async fn test_fp2_read_recent_returns_last_n() {
 
 #[tokio::test]
 async fn test_fd2_cleanup_trims_flat_file_by_age() {
-    // F-D2: cleanup must trim the flat experiences.jsonl by age (previously it
+    // F-: cleanup must trim the flat experiences.jsonl by age (previously it
     // only cleaned YYYYMM/ subdirs and skipped the flat file entirely).
     use crate::types::CollectedExperience;
     let dir = tempfile::tempdir().unwrap();
@@ -318,7 +318,7 @@ async fn test_append_experiences_raw_format() {
 
 #[tokio::test]
 async fn test_append_immediately_visible_to_read_all() {
-    // 回归测试（2026-09-03 Linux CI flake 根因）：tokio `fs::File::write_all`
+    // 回归测试（Linux CI flake 根因）：tokio `fs::File:write_all`
     // 只把字节提交给后台阻塞任务，`append` 返回时数据可能尚未写入文件
     // （观测特征：文件存在但 len=0 且 created==modified）。缺 `flush` 时本
     // 测试在暖进程里数轮内必红；flush 在位则确定性通过。
@@ -386,7 +386,7 @@ async fn test_read_all_skips_blank_lines() {
 #[tokio::test]
 async fn test_cleanup_drops_legacy_aggregate_lines() {
     // Lines that parse as the retired AggregatedExperience (legacy pollution,
-    // type removed 2026-10-22) are dropped during the flat-file rewrite even
+    // type removed) are dropped during the flat-file rewrite even
     // when young. The line is hand-built in the old wire format because the
     // type no longer exists.
     use crate::types::CollectedExperience;
@@ -431,7 +431,7 @@ async fn test_cleanup_drops_legacy_aggregate_lines() {
 }
 
 #[tokio::test]
-// BUG-20261025-59 前身语义钉已随根修更新：旧实现固定 `experiences.jsonl.tmp`
+// 前身语义钉已随根修更新：旧实现固定 `experiences.jsonl.tmp`
 // 被目录形态残留垃圾占用时写入失败、重写被静默吞掉（本测试原名
 // `test_cleanup_rename_skipped_when_tmp_write_fails`，钉的正是「残留垃圾
 // 永久禁用修剪」这一缺陷姿态）。现走唯一临时名权威 helper——残留垃圾
@@ -486,7 +486,7 @@ async fn test_s8_cleanup_ignores_non_jsonl_files_and_missing_flat() {
 
     let store = ExperienceStore::new(dir.path());
     let removed = store.cleanup(1).await.unwrap();
-    // Only the dated .jsonl file is old enough; notes.txt untouched and the
+    // Only the dated.jsonl file is old enough; notes.txt untouched and the
     // flat experiences.jsonl does not exist at all.
     assert_eq!(removed, 1);
     assert!(month.join("notes.txt").exists());

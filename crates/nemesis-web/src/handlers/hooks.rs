@@ -1,10 +1,10 @@
-//! Hooks handler — P4 (2026-08-24 UI entry gap) 设置页「Hooks」Tab 后端。
+//! Hooks handler — (2026-08-24 UI entry gap) 设置页「Hooks」Tab 后端。
 //! （2026-08-29：路径收编至 `<workspace>/config/hooks.json`，legacy 一次性
 //! copy-once 迁移——见 cc_hooks::migrate_legacy_home_hooks_config。）
 //!
-//! `<workspace>/config/hooks.json` 是 hooks.json 方言（K2，`nemesis_agent::cc_hooks`）：
+//! `<workspace>/config/hooks.json` 是 hooks.json 方言（`nemesis_agent::cc_hooks`）：
 //! 八事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop/
-//! SubagentStart/SubagentStop/Notification（2026-09-24 三合一收口件2+件3，
+//! SubagentStart/SubagentStop/Notification（2026-09-24 +件3，
 //! 后三事件），每条 hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
 //!
 //! - `get`：读文件；**不存在 → 返回空模板而非错误**（fresh home 常态）。
@@ -118,7 +118,7 @@ impl HooksHandler {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create config dir: {e}"))?;
         }
-        // REL-002：统一原子写入（hooks.json）。
+        // 统一原子写入（hooks.json）。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write hooks.json: {e}"))?;
         Ok(Some(serde_json::json!({
@@ -128,7 +128,7 @@ impl HooksHandler {
     }
 }
 
-/// 每事件脚本数 + 总数（`CcEvents::script_counts` 单一真相源）。
+/// 每事件脚本数 + 总数（`CcEvents::script_counts` 统一定义）。
 fn events_summary(events: &CcEvents) -> serde_json::Value {
     let counts = events.script_counts();
     let mut obj = serde_json::Map::new();

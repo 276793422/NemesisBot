@@ -20,7 +20,7 @@ fn test_handle_chat_send_empty_content() {
     assert!(result.unwrap_err().contains("empty"));
 }
 
-// BUG-1（2026-09-03 二次回归）：纯图片消息合法——content 空但带 media 引用
+// BUG-1（二次回归）：纯图片消息合法——content 空但带 media 引用
 // 放行；引用解析失败诚实注记进文本（测试环境无该上传文件 → 注记 + media 空）。
 #[test]
 fn test_handle_chat_send_pure_media_passes() {
@@ -46,12 +46,12 @@ fn test_handle_chat_send_empty_content_with_empty_media_rejected() {
     assert!(result.unwrap_err().contains("empty"));
 }
 
-// 四轮盲审（2026-09-04）补强：真实可解析的上传 id → media 填充解析出的
+// 四轮盲审补强：真实可解析的上传 id → media 填充解析出的
 // 路径（上方 BUG-1 测试只锚定失败臂——注记 + media 空；成功臂必须有测试
 // 钉住，防止解析路径回归成「永远注记」）。
 // 竞态纪律（env-test-race-lock-pattern）：resolve_media_ref 走 PathManager
 // 单例 → 需重定向进程全局 home；持全 crate 共享的 test_home 锁串行 +
-// RAII 恢复（模块内私有锁挡不住跨模块竞态，2026-09-23）。
+// RAII 恢复（模块内私有锁挡不住跨模块竞态）。
 #[test]
 fn test_handle_chat_send_resolvable_media_id_populates_media() {
     let _guard = crate::test_home::lock_home();
@@ -834,7 +834,7 @@ async fn test_send_queue_send_after_drop() {
     assert!(result.unwrap_err().contains("send queue stopped"));
 }
 
-// ---- 写者循环语义（mock sink 直测 run_send_writer） ----
+// 写者循环语义（mock sink 直测 run_send_writer） ----
 
 /// 测试替身 sink：记录帧序与 flush 次数；可注入 feed/flush 失败。
 #[derive(Default, Clone)]
@@ -1016,7 +1016,7 @@ async fn writer_feed_failure_signals_done() {
 }
 
 /// close 请求（SessionManager 逐出路径）：biased 序 close 臂排在 hi/lo 之后
-/// → 在途必达帧先排空，再发 Close 帧收尾。僵尸逐出根修（2026-10-24）的
+/// → 在途必达帧先排空，再发 Close 帧收尾。僵尸逐出根修的
 /// 契约面：客户端必须收到 Close 才会走 onclose 自动重连。
 #[tokio::test]
 async fn writer_close_request_drains_pending_then_sends_close_frame() {

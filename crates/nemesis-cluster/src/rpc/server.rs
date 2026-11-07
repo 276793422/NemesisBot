@@ -316,7 +316,7 @@ impl RpcServer {
         // handshake is performed, eliminating the BufReader desync bug where
         // `read_line('\n')` could consume frame bytes past the newline.
         //
-        // idle_timeout 接线（T1，2026-10-17）：读循环空闲超时强制断链——
+        // idle_timeout 接线：读循环空闲超时强制断链——
         // 半开连接（对端死亡无 FIN/RST）不再永久占用 conn_count 槽位，
         // 泄漏满 max_connections 拒绝一切新连接的瘫痪链从「无限窗口」
         // 收敛到「idle_timeout 窗口」。
@@ -358,10 +358,10 @@ impl RpcServer {
     }
 
     // -----------------------------------------------------------------------
-    // A1 P2：iroh 入站连接桥（QUIC 插件化 M3）
+    // iroh 入站连接桥（QUIC 插件化）
     // -----------------------------------------------------------------------
 
-    /// 装配漫游入站受理臂（QUIC 插件化 M3）：挂桥漏斗（插件 accept iroh
+    /// 装配漫游入站受理臂（QUIC 插件化）：挂桥漏斗（插件 accept iroh
     /// 连接 → notify_incoming → mpsc）+ spawn 消费循环（逐条
     /// [`Self::serve_roaming_loopback`]）。trust 闸在插件 accept 侧先行
     /// （trust.toml 语义镜像宿主旧 TrustBook——revoked 一票否决 → trusted
@@ -407,7 +407,7 @@ impl RpcServer {
         Ok(())
     }
 
-    /// 受理一条入站交接（QUIC 插件化 M3）：插件已为该 iroh bi-stream 开了
+    /// 受理一条入站交接（QUIC 插件化）：插件已为该 iroh bi-stream 开了
     /// 一次性 loopback TCP 监听——本端 `TcpStream::connect(127.0.0.1:port)`
     /// 后既有帧管线照跑（`TcpConn` + `handle_request`，与 TCP accept 路径
     /// 零行为分叉）。连接中途失败 best-effort `close_conn` 收插件侧半开
@@ -655,12 +655,20 @@ impl RpcServer {
             }),
         );
 
-        // ListActions handler
-        self.register_handler("list_actions", Box::new(|_payload| {
-            Ok(serde_json::json!({
-                "actions": ["ping", "get_info", "get_capabilities", "list_actions", "peer_chat", "peer_chat_callback"],
-            }))
-        }));
+        // ListActions handler — 动态枚举 handlers 容器（单一真相源）。
+        // 旧实现硬编码 6 个名字，与后续覆盖注册（cluster tasks.rs / gateway）漂移：
+        // hello、query_task_result、confirm_task_delivery 等真实 handler 从不出现。
+        // 闭包持有同一 Arc 的克隆，任何 register_handler 立即反映到下一次查询。
+        let handlers_snapshot = Arc::clone(&self.handlers);
+        self.register_handler(
+            "list_actions",
+            Box::new(move |_payload| {
+                let map = handlers_snapshot.read();
+                let mut names: Vec<String> = map.keys().cloned().collect();
+                names.sort();
+                Ok(serde_json::json!({ "actions": names }))
+            }),
+        );
 
         // peer_chat default handler — placeholder that returns an ACK.
         //
@@ -670,7 +678,7 @@ impl RpcServer {
         //   2. **gateway.rs:1189 用真正的 PeerChatHandler 再次覆盖**，做完整工作：
         //      提取 `payload._rpc.from`、自动注册未知节点、入队 ClusterTaskList 异步处理。
         //
-        // gateway 通过 `cluster.register_rpc_handler("peer_chat", ...)` 注册（不是直接
+        // gateway 通过 `cluster.register_rpc_handler("peer_chat",...)` 注册（不是直接
         // 调 `rpc_server.register_handler`），cluster 内部转发到 server。此默认桩仅在
         // 非 gateway 场景（轻量 cluster node）下生效。
         // **修改 peer_chat 行为的正确位置是 gateway.rs:1189，不是这里。**

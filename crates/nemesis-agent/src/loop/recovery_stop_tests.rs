@@ -2,7 +2,7 @@
 //! 与 `retry_rate_limited` 的重试等待 sleep 必须被 `stop()` 唤醒、循环顶
 //! 必须看停机令牌——否则 gateway 停机后重试环继续睡退避/限流梯子并在停机
 //! 窗口里新注册 timer，撞 tokio
-//! "A Tokio 1.x context was found, but it is being shutdown" panic（实录：
+//! "A Tokio 1.x context was found, but it is being shutdown" panic（
 //! gateway boot 测试停机后 30ms 仍见 "LLM transient error, retrying"）。
 //!
 //! 为什么 abort 覆盖不到：`process_direct` 直调路径（看板 moderator /
@@ -89,7 +89,7 @@ async fn stop_cancels_transient_retry_backoff_sleep() {
                 .await
         })
     };
-    // 落进第一段 1s 退避 sleep 后停机。
+    // 落进 1s 退避 sleep 后停机。
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     agent_loop.stop();
 
@@ -211,7 +211,7 @@ async fn stop_cancels_rate_limit_retry_wait_sleep() {
                 .await
         })
     };
-    // 落进第一段 3s 限流等待 sleep 后停机。
+    // 落进 3s 限流等待 sleep 后停机。
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     agent_loop.stop();
 

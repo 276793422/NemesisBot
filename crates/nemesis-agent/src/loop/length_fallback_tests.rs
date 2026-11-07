@@ -1,4 +1,4 @@
-//! B1（2026-10-18 B 级清零）：无 usage 时 finish_reason 截断回退测试。
+//! （2026-10-18）：无 usage 时 finish_reason 截断回退测试。
 //!
 //! 器官 6（[`AgentLoop::handle_length_continuation`]）的截断判定此前只认
 //! usage 数值（completion_tokens ≥ cap）；上游剥离 usage 的代理/流形态下

@@ -4,9 +4,9 @@
 //! AgentLoop 入口把模板中的 `$ARGUMENTS` 替换为 `args` 后作为用户消息进入正常
 //! LLM 轮次（改写型，区别于内置命令的短路型）。四维度：name / description /
 //! argument_hint / prompt —— schema 与作用域层级无关（单 workspace 起步，
-//! 多级合并为后续扩展，见 docs/PLAN/2026-08-29_slash-commands.md）。
+//! 多级合并为后续扩展，见 slash-commands）。
 //!
-//! 单一真相源 = 本文件；AgentLoop 改写与 Dashboard 管理页（CommandsView）都
+//! 单一权威 = 本文件；AgentLoop 改写与 Dashboard 管理页（CommandsView）都
 //! 经由这里读写。
 
 use serde::{Deserialize, Serialize};
@@ -55,7 +55,7 @@ pub fn load_commands_config(path: &Path) -> CommandsConfig {
     }
 }
 
-/// 保存（REL-002 2026-09-23 起走统一原子 helper，取代本文件自制
+/// 保存（现走统一原子 helper，取代本文件自制
 /// tmp+rename——唯一临时名 + sync_all + 失败清理）。
 pub fn save_commands_config(path: &Path, cfg: &CommandsConfig) -> Result<(), String> {
     let body = serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize: {e}"))?;

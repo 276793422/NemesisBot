@@ -181,7 +181,7 @@ fn summary_schema_sections_and_ledger_heading_are_protocol_stable() {
 #[test]
 fn summary_schema_suffix_lists_all_sections() {
     let s = aux::render_summary_schema_suffix();
-    // S4 起：后缀以「标识符保全」硬性规则开头，输出格式句在其后。
+    // 起：后缀以「标识符保全」硬性规则开头，输出格式句在其后。
     assert!(
         s.starts_with("\n\n标识符保全"),
         "后缀以空行 + 标识符保全规则开头"
@@ -199,7 +199,7 @@ fn summary_schema_suffix_lists_all_sections() {
 
 #[test]
 fn summary_identifier_preservation_rule_reaches_all_summary_paths() {
-    // S4 契约：标识符保全规则必须经由共享后缀抵达全部三路摘要调用
+    // 契约：标识符保全规则必须经由共享后缀抵达全部三路摘要调用
     //（首次全量 / UPDATE 迭代 / multipart 合并）——分支摘要走
     // render_summary_schema_suffix 本体，由上一用例覆盖。
     let marker = "逐字保留";
@@ -520,7 +520,7 @@ fn precedents_block_renders_entries_with_data_caveat() {
 }
 
 // ---------------------------------------------------------------------------
-// B3/C2 评审 lens（profession-capability-evolution 2026-10-14）
+// / 评审 lens（profession-capability-evolution）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -589,7 +589,7 @@ fn review_lens_for_profession_maps_families() {
 
 #[test]
 fn checker_lens_rotation_is_table_driven() {
-    // C2：checkers=2 取镜 1+2；≥3 全开；超出回绕（上限 5 > 3 镜）。
+    // checkers=2 取镜 1+2；≥3 全开；超出回绕（上限 5 > 3 镜）。
     assert_eq!(board::checker_lens_for_index(0).id, "constraint-compliance");
     assert_eq!(board::checker_lens_for_index(1).id, "test-escape");
     assert_eq!(
@@ -602,7 +602,7 @@ fn checker_lens_rotation_is_table_driven() {
 
 #[test]
 fn review_lens_table_invariants() {
-    // D6 表驱动注册表不变量：池大小合法 + id 唯一（审计引用的前提）。
+    // 表驱动注册表不变量：池大小合法 + id 唯一（审计引用的前提）。
     const {
         assert!(board::CHECKER_LENS_COUNT >= 2, "异构化至少两镜");
         assert!(board::CHECKER_LENS_COUNT <= board::REVIEW_LENSES.len());
@@ -617,7 +617,7 @@ fn review_lens_table_invariants() {
 }
 
 // ---------------------------------------------------------------------------
-// 集中化资产完整性（M7）：每个模块的常量非空且非占位
+// 集中化资产完整性：每个模块的常量非空且非占位
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -639,8 +639,8 @@ fn all_migrated_prompt_constants_are_nonempty() {
     assert!(spawn::SPAWN_SUBAGENT_SYSTEM_PROMPT.contains("You are a subagent"));
     assert!(spawn::SUBAGENT_TOOL_SYSTEM_PROMPT.contains("You are a subagent"));
 
-    // 补收（漏网扫描第二轮）：forge 生成/修复 prompt（SKILL_AUTHOR/
-    // SCRIPT_AUTHOR 已随死接线 factory 模块删除，2026-09-28）。
+    // 补收（漏网扫描）：forge 生成/修复 prompt（SKILL_AUTHOR/
+    // SCRIPT_AUTHOR 已随死接线 factory 模块删除）。
     assert!(forge::SKILL_GENERATOR_SYSTEM_PROMPT.contains("技能定义生成器"));
     assert!(forge::SKILL_FIXER_SYSTEM_PROMPT.contains("技能定义生成器"));
 
@@ -666,7 +666,7 @@ fn all_migrated_prompt_constants_are_nonempty() {
 }
 
 // ---------------------------------------------------------------------------
-// AOR 提示词纪律吸收（2026-11-04 批一a）：拆解判据/依赖语义/UNKNOWN +
+// 提示词纪律吸收（a）：拆解判据/依赖语义/UNKNOWN +
 // 两档评审 ANTI-LOOP——防误删关键词快照（本文件惯例：非字节快照）。
 // ---------------------------------------------------------------------------
 
@@ -725,7 +725,7 @@ fn review_prompts_both_tiers_carry_anti_loop_discipline() {
 
 #[test]
 fn review_prompts_both_tiers_carry_per_criterion_discipline() {
-    // AOR 批一c §③：逐条三态判定纪律——两档都要带 criteria/unknowns
+    // c §③：逐条三态判定纪律——两档都要带 criteria/unknowns
     // schema、[anchor] 条目纪律与「宁细勿粗」拆条要求。
     for (name, text) in [
         ("thorough", board::REVIEW_SYSTEM_PROMPT),

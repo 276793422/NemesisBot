@@ -8,7 +8,7 @@
 //!   损坏 = 空 key 表 + WARN——按无 key 处理回落主 token 校验，**绝不因
 //!   配置问题锁死共享 token 老路径**。
 //! - 变更操作（[`add_key`] / [`remove_key`] / [`set_enabled`]）= 整段 RMW
-//!   罩 `config_write_lock`（BUG-20261103-333 纪律：锁取在函数首行覆盖
+//!   罩 `config_write_lock`（纪律：锁取在函数首行覆盖
 //!   读底 + 落盘全程，并发保存不丢更新）。
 //! - 纯 serde_json 读写，不进 typed Config——独立文件红利同 proxy_file：
 //!   彻底绕开 typed save 静默抹键的回归类（2026-09-03）。
@@ -45,7 +45,7 @@ pub struct ProxyKeysFile {
     pub keys: Vec<ProxyKeyEntry>,
 }
 
-/// 配置文件路径：`<config_dir>/config.proxy_keys.json`（单一真相源）。
+/// 配置文件路径：`<config_dir>/config.proxy_keys.json`。
 pub fn proxy_keys_config_path(config_dir: &Path) -> PathBuf {
     config_dir.join("config.proxy_keys.json")
 }

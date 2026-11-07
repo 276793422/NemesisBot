@@ -4,7 +4,7 @@ use super::*;
 
 #[test]
 fn bug_shaped_title_generates_fix_and_evidence_criteria() {
-    // NB-125 原单形态：标题陈述故障现象。
+    // 原单形态：标题陈述故障现象。
     let ac = generate_acceptance_criteria(
         "项目代码无法正确启动，能看到初始界面无法看到游戏主界面",
         "项目代码无法正确启动。你自己打开游戏看看。",

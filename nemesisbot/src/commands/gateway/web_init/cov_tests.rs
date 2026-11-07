@@ -82,7 +82,7 @@ async fn init_web_branch_matrix_via_assemble() {
     assert!(w.enabled_channels.is_empty());
     drop(w);
 
-    // 变体 C：websocket on（回环 :0）→ Some 臂 + sync 目标登记。
+    // 变体 C：websocket on（回环:0）→ Some 臂 + sync 目标登记。
     ctx.cfg.channels.websocket.enabled = true;
     ctx.cfg.channels.websocket.host = "127.0.0.1".into();
     ctx.cfg.channels.websocket.port = 0;
@@ -242,9 +242,9 @@ async fn assemble_coverage_arms_capture_off_board_db_failure_and_relay_gate() {
     assert!(err.to_string().contains("bridge.server.token"), "{err}");
 }
 
-/// Step 5b-2（QUIC 中继统一入口，2026-10-21）：`--quic-relay` 早退臂。
+/// Step 5b-2（QUIC 中继统一入口）：`--quic-relay` 早退臂。
 /// config.quic.json 缺席 → relay 段解析回落默认（token 空）→ 与
-/// `--relay` 同款 fail-closed 拒绝启动（不 bind 任何端口）。2026-10-23
+/// `--relay` 同款 fail-closed 拒绝启动（不 bind 任何端口）。
 /// 解耦：断言随错误文案迁移（roaming.relay.token → quic.json relay.token）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn assemble_quic_relay_early_exit_fails_closed_on_empty_token() {
@@ -256,7 +256,7 @@ async fn assemble_quic_relay_early_exit_fails_closed_on_empty_token() {
     assert!(err.to_string().contains("relay.token"), "{err}");
 }
 
-/// 旧位置 QUIC 键迁移在 assemble 期触发（M4 起恒编译——cluster-roaming
+/// 旧位置 QUIC 键迁移在 assemble 期触发（起恒编译——cluster-roaming
 /// feature 已删，迁移与消费面同闸恒在）：cluster.json 带 roaming 段 client
 /// 三键老形态 + quic.json 缺席 → assemble 后 quic.json 在场且三键迁入。
 /// 钉住「assemble 必须做迁移」语义面：客户端消费面 `Cluster::setup_roaming`
@@ -295,7 +295,7 @@ async fn assemble_migrates_legacy_quic_keys_to_config_quic_json() {
 }
 
 // ===========================================================================
-// wave5 round2（2026-09-25）：CORS 新路径直写（修旧变体 G 的 legacy-copy
+// wave5：CORS 新路径直写（修旧变体 G 的 legacy-copy
 // 一次性语义缺陷——旧测写 legacy 路径，首跑即被拷贝到新路径，后续覆写
 // 不再生效，dev/origins 两臂从未真正执行）、全通道 enabled push 矩阵、
 // bridge.server.token 空值 info 臂、enabled cluster + bridge server token
@@ -474,7 +474,7 @@ async fn w5_init_web_bridge_hub_rpc_hub_assembly_with_enabled_cluster() {
     assert!(w.bridge_client_launch.is_none(), "client 关 → launch None");
 }
 
-/// BUG-20261025-52 回归锁：出站桥**先订阅再 spawn**——wiring 返回后立即
+/// 回归锁：出站桥**先订阅再 spawn**——wiring 返回后立即
 /// 发布的消息（桥任务首 poll 之前）不得丢失。旧形态（任务体内订阅）下发布
 /// 时桥尚未订阅（receiver_count=0 → 发布侧 no-receiver 丢弃），首收在 5s
 /// 超时内确定性红（不挂死）。

@@ -1,4 +1,4 @@
-//! BUG-20261025-36 回归锁：画像注入缓存键必须含 config.json mtime。
+//! 回归锁：画像注入缓存键必须含 config.json mtime。
 //!
 //! 此前缓存键只有画像文件（user_profile.json）mtime——enabled 开关翻转
 //! 只动 config.json 不动画像文件，且 disable 后 sweep no-op 永不再写

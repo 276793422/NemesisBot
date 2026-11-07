@@ -310,7 +310,7 @@ fn test_build_manifest_with_subdirectory() {
     assert!(content.contains("Guide"));
 }
 
-/// 签名载荷确定性（2026-09-26 复查修复回归锁）：此前拼接跟随 read_dir
+/// 签名载荷确定性（复查修复回归锁）：此前拼接跟随 read_dir
 /// 枚举顺序（排序只作用于 files 列表、不作用于被签名的 combined）——
 /// 枚举序漂移 = 同目录两次构建载荷不同 = 签验失败/漏检。现在先排序后
 /// 拼接，重复构建必须字节一致。
@@ -334,7 +334,7 @@ fn test_build_manifest_deterministic_across_builds() {
     );
 }
 
-/// 非 UTF-8 文件（二进制资产）不再令签名/验证失败（2026-09-26 复查修复
+/// 非 UTF-8 文件（二进制资产）不再令签名/验证失败（复查修复
 /// 回归锁：此前 read_to_string 遇非 UTF-8 直接 Err）。
 #[test]
 fn test_sign_and_verify_with_binary_asset() {
@@ -463,7 +463,7 @@ fn test_sign_skill_with_binary_key() {
     );
     assert!(result.is_ok());
 
-    // Verify the .signature file was created
+    // Verify the.signature file was created
     assert!(skill_dir.join(".signature").exists());
     let sig: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(skill_dir.join(".signature")).unwrap())
@@ -502,7 +502,7 @@ fn test_hex_decode_roundtrip() {
     assert_eq!(bytes, decoded);
 }
 
-// --- BUG-20261105-035: signer 键处理加固 ---
+// ---: signer 键处理加固 ---
 
 #[test]
 fn test_hex_decode_rejects_non_ascii_without_panic() {
@@ -527,8 +527,8 @@ fn test_hex_decode_rejects_bad_hex_content() {
 #[test]
 #[cfg(unix)]
 fn test_generate_key_pair_private_key_mode_0600() {
-    // BUG-20261105-035：私钥是凭据面文件，落盘必须 0o600（对齐 auth.json
-    // BUG-20261025-39 纪律）。Windows 无 POSIX 权限位，本测试 unix-only。
+    // 私钥是凭据面文件，落盘必须 0o600（对齐 auth.json
+    // 纪律）。Windows 无 POSIX 权限位，本测试 unix-only。
     let dir = tempfile::tempdir().unwrap();
     SkillSigner::generate_key_pair(&dir.path().to_string_lossy()).unwrap();
     use std::os::unix::fs::PermissionsExt;

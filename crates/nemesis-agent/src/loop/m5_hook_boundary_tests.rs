@@ -1,4 +1,4 @@
-//! M5（2026-10-27 整改）：写后钩子路径解析边界测试。
+//! （2026-10-27）：写后钩子路径解析边界测试。
 //!
 //! 缺陷：写后钩子（format-on-save / 诊断回灌）从**原始 args** 抠 path——
 //! 模型给相对路径而进程 cwd ≠ 工作区根时，钩子摸到 cwd 下的同名文件
@@ -105,7 +105,7 @@ fn hook_resolution_rejects_out_of_workspace_absolute_path() {
     assert!(err.contains("outside the workspace"), "{err}");
 }
 
-/// 无界形态（None）：路径原样透传（基线/测试行为不变——M5 修复对无界
+/// 无界形态（None）：路径原样透传（基线/测试行为不变—— 修复对无界
 /// 形态零行为差）。
 #[test]
 fn hook_resolution_without_boundary_passes_through() {

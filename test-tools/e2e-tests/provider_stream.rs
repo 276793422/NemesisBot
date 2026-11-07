@@ -166,7 +166,7 @@ async fn run_stream_flow(cfg: &serde_json::Value) -> Result<()> {
         // WS 三级协议信封：终答回复是 {type:"message", module:"chat",
         // cmd:"receive"}。注意 **role 判别必须带上**：用户消息回显也是
         // receive 帧（data.role="user"，seq 同一历史流水），只看信封会把
-        // 回显当终答回复、提前 1s 断线（首跑实录：LLM 还在飞就退了）。
+        // 回显当终答回复、提前 1s 断线（首跑案例：LLM 还在飞就退了）。
         if v["type"] == "message" && v["module"] == "chat" && v["cmd"] == "receive" {
             if v["data"]["role"].as_str() != Some("assistant") {
                 continue;

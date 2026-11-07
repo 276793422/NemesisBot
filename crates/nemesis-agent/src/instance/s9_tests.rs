@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：instance.rs 剩余未覆盖行。
+//! 覆盖率批次：instance.rs 剩余未覆盖行。
 //! - 333：compress_history 的 debug! 参数行（需 subscriber + 历史 > 2 条）。
 //! - 392/402：set_history 保留旧 system prompt（旧史有 system、新史无 → 回插 0 位）。
 

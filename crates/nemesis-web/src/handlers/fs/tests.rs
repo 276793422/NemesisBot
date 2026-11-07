@@ -17,7 +17,7 @@ fn setup_workspace() -> TempDir {
     std::fs::create_dir_all(ws.join("src")).unwrap();
     std::fs::write(ws.join("src").join("main.rs"), "m").unwrap();
     std::fs::write(ws.join("src").join("util.rs"), "u").unwrap();
-    // 共享忽略表里的运行时目录（补全必须不可见）。
+    // 共享忽略表里的运行时目录（补全必须不可）。
     std::fs::create_dir_all(ws.join("node_modules").join("dep")).unwrap();
     std::fs::write(ws.join("node_modules").join("dep").join("index.js"), "x").unwrap();
     std::fs::create_dir_all(ws.join("logs")).unwrap();
@@ -127,9 +127,7 @@ fn test_nonexistent_workspace_errors() {
     assert!(err.contains("workspace not found"), "{}", err);
 }
 
-// ---------------------------------------------------------------------------
 // handle_cmd 层（RequestContext 直构；build_state 形态同 memory/s10b_tests）
-// ---------------------------------------------------------------------------
 
 fn build_state(ws: &str) -> AppState {
     AppState {
@@ -170,6 +168,7 @@ fn build_state(ws: &str) -> AppState {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -252,9 +251,7 @@ fn test_module_name() {
     assert_eq!(FsHandler.module_name(), "fs");
 }
 
-// ---------------------------------------------------------------------------
-// M4：fs.tree 目录树（懒展开 / 忽略表 / 500 上限 / 越权拒绝）
-// ---------------------------------------------------------------------------
+// fs.tree 目录树（懒展开 / 忽略表 / 500 上限 / 越权拒绝）
 
 fn tree(ws: &TempDir, path: &str, depth: u64) -> serde_json::Value {
     let h = FsHandler::new();
@@ -262,7 +259,7 @@ fn tree(ws: &TempDir, path: &str, depth: u64) -> serde_json::Value {
         .unwrap()
 }
 
-/// 根层列出：忽略表同补全（node_modules/logs 不可见）、目录在前文件在后、
+/// 根层列出：忽略表同补全（node_modules/logs 不可）、目录在前文件在后、
 /// depth 边界子目录 children=null（懒展开点）、展开的空目录 children=[]。
 #[test]
 fn tree_root_lists_depth_and_ignore() {
@@ -332,7 +329,7 @@ fn tree_lazy_expand_subdir() {
     assert_eq!(names, vec!["main.rs", "util.rs"], "{v}");
 }
 
-/// 越权/不存在诚实拒绝：`..` 逃逸、绝对路径（含盘符形态——F7：join 遇
+/// 越权/不存在诚实拒绝：`..` 逃逸、绝对路径（含盘符形态——：join 遇
 /// 绝对路径替换整个 root，显式拒绝）、缺失目录。
 #[test]
 fn tree_rejects_traversal_and_missing() {
@@ -354,7 +351,7 @@ fn tree_rejects_traversal_and_missing() {
     assert!(err.contains("workspace not found"), "{err}");
 }
 
-/// F7（2026-10-14）回归锁：绝对路径（含 Windows 盘符形态）显式拒绝——
+/// 回归锁：绝对路径（含 Windows 盘符形态）显式拒绝——
 /// `PathBuf::join` 遇绝对路径替换整个 root，此前只拒 `..` 时
 /// `fs.tree {path: "C:/Windows"}` 可列举任意目录。盘符形态是 Windows
 /// 语义（Unix 上归一化剥前导 `/` 后无绝对形态存活，闸不可达）。
@@ -419,9 +416,7 @@ async fn tree_handle_cmd_defaults() {
     assert_eq!(out["entries"].as_array().unwrap().len(), 2);
 }
 
-// ---------------------------------------------------------------------------
 // fs.open：聊天文件链接打开（决策纯函数面——spawn 臂不进单测）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn openable_extension_whitelist() {
@@ -457,7 +452,7 @@ fn path_contains_boundary() {
     }
 }
 
-/// BUG-20261029-173 回归锁：target 含多字节字符且字节总长超过 root 时，
+/// 回归锁：target 含多字节字符且字节总长超过 root 时，
 /// 旧实现 `t[..r.len()]` 字节切片会切在多字节字符中间 → str 切片 panic
 /// （`fs.open` 带模型输出的 CJK 绝对路径即可触发，WS handler 任务崩）。
 /// 修复 = `str::get(..r.len())` 边界安全切片，非边界诚实返回 false。
@@ -593,7 +588,7 @@ async fn open_handle_cmd_error_paths() {
     assert!(err.contains("越出 workspace"), "{err}");
 }
 
-// ---- 存在性回退（2026-10-19 用户设计：CJK 引导语粘连剥前缀找真实文件）----
+// 存在性回退（用户设计：CJK 引导语粘连剥前缀找真实文件）----
 
 /// 相对路径头粘连：「见docs/总结.md」→ 剥引导语 → docs/总结.md 命中。
 #[test]
@@ -634,7 +629,7 @@ fn open_resolve_fallback_skips_dotdot_candidates() {
         "见../sibling.md",
     )
     .unwrap_err();
-    // 若候选未过 .. 闸，这里会打开 outer/sibling.md 而非报错。
+    // 若候选未过.. 闸，这里会打开 outer/sibling.md 而非报错。
     assert!(err.contains("文件不存在"), "{err}");
 }
 

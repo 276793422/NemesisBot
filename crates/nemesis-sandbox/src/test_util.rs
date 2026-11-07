@@ -1,4 +1,4 @@
-//! 测试共享工具（S6 覆盖率批次引入）。
+//! 测试共享工具（覆盖率批次引入）。
 //!
 //! `capture_logs`：装一个 thread-local tracing subscriber（sink 到 /dev/null），
 //! 让 `tracing::info!/warn!/debug!` 的参数表达式行被真实求值——无 subscriber

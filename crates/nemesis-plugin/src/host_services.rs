@@ -66,7 +66,7 @@ pub struct HostServices {
     /// out_rgba: 输出缓冲区（调用者分配），写入 RGBA 数据
     /// out_rgba_len: 输出缓冲区大小（字节）
     /// out_width/out_height: 写入图像尺寸
-    /// 返回: 0=成功, 负数=错误（-1=参数无效, -2=解码失败, -3=缓冲区不足）
+    /// 返回: 0=成功, 负数=错误（1=参数无效, -2=解码失败, -3=缓冲区不足）
     pub decode_png: Option<
         extern "C" fn(
             png_data: *const u8,
@@ -252,7 +252,7 @@ extern "C" fn host_free_string(ptr: *mut c_char) {
 /// Write a C string (src) into a caller-provided buffer (buf of buf_len bytes).
 /// Returns the number of bytes written (excluding null terminator), or negative on error.
 fn write_cstr_to_buf(src: *const c_char, buf: *mut c_char, buf_len: usize) -> i32 {
-    // BUG-20261031-243：src null 必须在此拦截——OnceLock 未 set 时
+    // src null 必须在此拦截——OnceLock 未 set 时
     // host_get_workspace_dir / host_get_plugin_config_dir 会传 null 进来；
     // libc_strlen 的 null→0 守卫反而把 0 长度放行到 copy_nonoverlapping，
     // 从空指针读 1 字节 = UB。同文件 host_get_plugin_data_dir 对 ws 指针

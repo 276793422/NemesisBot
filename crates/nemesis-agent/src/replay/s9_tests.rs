@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：replay.rs 剩余未覆盖行。
+//! 覆盖率批次：replay.rs 剩余未覆盖行。
 //! - 165：append_projection_record 的 ledger open 失败 warn——ledger 路径
 //!   预置为目录 → OpenOptions open 失败（Windows 打开目录 → access denied）。
 //! - 356-359 / 499-503：结构性不可达（LlmMessage 序列化永不失败；

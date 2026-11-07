@@ -595,28 +595,98 @@ fn test_effort_anthropic_budget_mapping() {
         reasoning_content: None,
         extra: HashMap::new(),
     }];
-    let mk = |tier: Option<&str>| {
+    let mk = |tier: Option<&str>, max_tokens: Option<i64>| {
         let mut o = ChatOptions::default();
         o.reasoning_effort = tier.map(|t| t.to_string());
+        o.max_tokens = max_tokens;
         provider.build_request_body(&messages, &[], "claude-3", &o)
     };
-    // Fixed tier→budget map.
+    // Fixed tier→budget map（max_tokens 给足余量——主循环默认底座 64K，
+    // BUG-20261107-003 后映射值 ≥ max_tokens 会走钳制，不再是纯映射）。
     for (tier, budget) in [("low", 1024), ("medium", 4096), ("high", 16384)] {
-        let b = mk(Some(tier));
+        let b = mk(Some(tier), Some(65536));
         assert_eq!(b["thinking"]["type"], "enabled", "tier {tier}");
         assert_eq!(b["thinking"]["budget_tokens"], budget, "tier {tier}");
     }
     // "off"（aux 杂务通道显式禁思考标记，2026-09-28）→ 显式 disabled 块。
-    let off = mk(Some("off"));
+    let off = mk(Some("off"), None);
     assert_eq!(off["thinking"]["type"], "disabled");
     assert!(off["thinking"].get("budget_tokens").is_none());
     // None / unknown → no thinking block（服务端默认，不猜）。
-    for none_case in [mk(None), mk(Some("banana"))] {
+    for none_case in [mk(None, None), mk(Some("banana"), None)] {
         assert!(
             none_case.get("thinking").is_none(),
             "no thinking block for unset/unknown"
         );
     }
+}
+
+// BUG-20261107-003：effort 映射预算 ≥ max_tokens 时收敛进 wire 约束
+// （budget_tokens 必须严格小于 max_tokens，API 下限 1024）。
+#[test]
+fn test_bug_003_budget_clamped_when_max_tokens_too_small() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: "Hello".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+    let mk = |tier: &str, max_tokens: i64| {
+        let mut o = ChatOptions::default();
+        o.reasoning_effort = Some(tier.to_string());
+        o.max_tokens = Some(max_tokens);
+        provider.build_request_body(&messages, &[], "claude-3", &o)
+    };
+    // 超限收敛到 max_tokens/2（留一半给正文——思考 token 计入 max_tokens）。
+    // 修前这些组合发出 budget ≥ max_tokens 的 wire-invalid 请求（每请求必
+    // 400；非流式被剥块自愈静默丢 effort，流式硬失败）。
+    assert_eq!(mk("high", 8192)["thinking"]["budget_tokens"], 4096);
+    assert_eq!(mk("high", 16384)["thinking"]["budget_tokens"], 8192);
+    assert_eq!(mk("medium", 4096)["thinking"]["budget_tokens"], 2048);
+    // 恰好等于下限：max_tokens=2048 → 预算 1024（API 下限，仍严格 < max）。
+    assert_eq!(mk("high", 2048)["thinking"]["budget_tokens"], 1024);
+    assert_eq!(mk("medium", 2048)["thinking"]["budget_tokens"], 1024);
+    // max_tokens/2 容不下 1024 下限 → 诚实不发 thinking 块（降级不伪装）。
+    assert!(mk("high", 2047).get("thinking").is_none());
+    assert!(mk("medium", 1024).get("thinking").is_none());
+    assert!(mk("low", 1024).get("thinking").is_none());
+}
+
+// BUG-20261107-003：合法请求（映射值 < max_tokens）字节零改动。
+#[test]
+fn test_bug_003_legal_budget_byte_unchanged() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: "Hello".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+    let mk = |tier: &str, max_tokens: i64| {
+        let mut o = ChatOptions::default();
+        o.reasoning_effort = Some(tier.to_string());
+        o.max_tokens = Some(max_tokens);
+        provider.build_request_body(&messages, &[], "claude-3", &o)
+    };
+    // 主循环默认底座（agents.defaults.max_tokens=65536）全部原值。
+    for (tier, budget) in [("low", 1024), ("medium", 4096), ("high", 16384)] {
+        assert_eq!(
+            mk(tier, 65536)["thinking"]["budget_tokens"],
+            budget,
+            "tier {tier}"
+        );
+    }
+    // 贴边合法（映射值恰好 < max_tokens）也原值——不多事。
+    assert_eq!(mk("high", 16385)["thinking"]["budget_tokens"], 16384);
+    assert_eq!(mk("medium", 8193)["thinking"]["budget_tokens"], 4096);
+    assert_eq!(mk("low", 2048)["thinking"]["budget_tokens"], 1024);
 }
 
 use serde_json::json;

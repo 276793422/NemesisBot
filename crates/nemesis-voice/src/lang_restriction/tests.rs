@@ -38,7 +38,7 @@ fn needs_remedy_only_for_disallowed_concrete_lang() {
 }
 
 // ===========================================================================
-// S12 覆盖率冲刺（2026-08-26）：LangRestriction::new/apply/Drop
+// 覆盖率冲刺：LangRestriction::new/apply/Drop
 // apply 的 needs_remedy=false 两臂（None / 白名单内）不碰识别器，纯逻辑可达；
 // needs_remedy=true 臂走 decode_recognizer（null 识别器 → FFI 符号查找 panic，
 // 无 DLL 红线内）。Drop 的 null 识别器分支是 no-op。
@@ -94,7 +94,7 @@ fn lang_restriction_drop_null_recognizer_is_noop() {
 #[test]
 #[should_panic(expected = "sherpa-onnx not initialized")]
 fn lang_restriction_drop_nonnull_recognizer_panics_at_destroy() {
-    // R6（2026-08-27）：非 null 指针（悬垂但不解引用）→ Drop 走 136 行
+    // 非 null 指针（悬垂但不解引用）→ Drop 走 136 行
     // SherpaOnnxDestroyOfflineRecognizer → 无 DLL 在符号查找处 panic。
     // 指针本身从不被解引用——panic 发生在 FFI 函数指针解析处。
     let lr = LangRestriction::new(zh_remedy(), std::ptr::dangling());

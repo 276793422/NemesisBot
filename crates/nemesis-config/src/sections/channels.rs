@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
@@ -44,7 +42,7 @@ pub struct ChannelsConfig {
     pub websocket: WebSocketChannelConfig,
     #[serde(default)]
     pub external: ExternalConfig,
-    // Wave 3（WS12 gateway 集成面）：存量 feature-gated 通道补缺 + 五新通道。
+    // Wave 3（gateway 集成面）：存量 feature-gated 通道补缺 + 五新通道。
     // 字段对照 nemesis-channels 侧各通道 Config（真相源在各通道 mod 顶部），
     // gateway web_init 逐字段转换到 ChannelInitConfig。
     #[serde(default)]
@@ -77,12 +75,12 @@ pub struct WhatsAppConfig {
     pub enabled: bool,
     #[serde(default)]
     pub bridge_url: String,
-    /// 桥 API key（出站鉴权凭据；WS12 补齐——通道侧 `api_key: Option<String>`
+    /// 桥 API key（出站鉴权凭据； 补齐——通道侧 `api_key: Option<String>`
     /// 此前无 config 出口，装配点空串 → None）。支持 vault/env/yaml 引用。
     #[serde(default)]
     pub api_key: String,
     /// 出站代理 URL（桥可部署在远端，与 telegram 同构；空 = 直连）。
-    /// BUG-20261024-12：模板早已声明 `channels.whatsapp.proxy`，typed 字段
+    /// 模板早已声明 `channels.whatsapp.proxy`，typed 字段
     /// 缺失 → 读取端静默忽略、typed save 静默删除。
     #[serde(default)]
     pub proxy: String,
@@ -236,7 +234,7 @@ pub struct WebChannelConfig {
     pub enabled: bool,
     #[serde(default = "default_web_host")]
     pub host: String,
-    // flexible_i64: 历史 CLI 把端口写成字符串（BUG #41），容忍两种磁盘形态
+    // flexible_i64: 历史 CLI 把端口写成字符串，容忍两种磁盘形态
     #[serde(
         default = "default_web_port",
         deserialize_with = "deserialize_flexible_i64"
@@ -256,7 +254,7 @@ pub struct WebChannelConfig {
     pub sync_to: Vec<String>,
 }
 
-// SEC-002（2026-09-22 审查）：手写 Debug 替代 derive——auth_token 一律脱敏
+// SEC-002（审查）：手写 Debug 替代 derive——auth_token 一律脱敏
 // （Debug/panic/错误上下文会把整个 config 打进日志）。字段名保留，值只输出
 // 形态；其余字段与 derive 输出一致。
 impl std::fmt::Debug for WebChannelConfig {
@@ -287,9 +285,9 @@ impl Default for WebChannelConfig {
         Self {
             // 与字段级 `#[serde(default = "default_true")]` 收敛（serde 双路径
             // 纪律：web 键整体缺席走这里、enabled 字段缺席走字段级 default，
-            // 两路必须同值——BUG-20261028-109：曾为 false，精简 config.json
+            // 两路必须同值——：曾为 false，精简 config.json
             // （channels 段或 web 子段缺席）会静默关掉 dashboard 唯一 UI，
-            // 与出厂模板/default_config()/migrate 产物的 enabled:true 相反。
+            // 与出厂模板/default_config/migrate 产物的 enabled:true 相反。
             enabled: true,
             host: default_web_host(),
             port: default_web_port(),
@@ -309,7 +307,7 @@ pub struct WebSocketChannelConfig {
     pub enabled: bool,
     #[serde(default)]
     pub host: String,
-    // flexible_i64: 历史 CLI 把端口写成字符串（BUG #41），容忍两种磁盘形态
+    // flexible_i64: 历史 CLI 把端口写成字符串，容忍两种磁盘形态
     #[serde(default, deserialize_with = "deserialize_flexible_i64")]
     pub port: i64,
     #[serde(default)]
@@ -346,8 +344,7 @@ pub struct ExternalConfig {
     pub web_session_id: String,
 }
 
-// ---------------------------------------------------------------------------
-// feature-gated 通道 config（Wave 3 WS12 集成面补齐）
+// feature-gated 通道 config（Wave 3 集成面补齐）
 //
 // 与 nemesis-channels 侧各通道 Config 字段一一对应（真相源在各通道 mod 顶部
 // 的 `pub struct XConfig`）；`enabled` / `sync_to` 是宿主侧路由字段（通道侧
@@ -355,9 +352,8 @@ pub struct ExternalConfig {
 // 消费）。秘密字段在 config.json 里只存 `vault:` / `env:` / `yaml:` 引用，
 // gateway 装配点统一经 resolve_secret_or_empty / resolve_auth_token_or_random
 // 解析（见 web_init.rs 各转换臂）。
-// ---------------------------------------------------------------------------
 
-/// Matrix 通道配置（对应 `nemesis_channels::matrix::MatrixConfig`）。
+/// Matrix 通道配置（对应 `nemesis_channels::matrix:MatrixConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MatrixConfig {
     #[serde(default)]
@@ -381,7 +377,7 @@ pub struct MatrixConfig {
     pub sync_to: Vec<String>,
 }
 
-/// IRC 通道配置（对应 `nemesis_channels::irc::IRCConfig`）。
+/// IRC 通道配置（对应 `nemesis_channels::irc:IRCConfig`）。
 /// Default 对齐通道侧（use_tls=true、退避 5/300）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -432,7 +428,7 @@ impl Default for IrcConfig {
     }
 }
 
-/// Signal 通道配置（对应 `nemesis_channels::signal::SignalConfig`，
+/// Signal 通道配置（对应 `nemesis_channels::signal:SignalConfig`，
 /// signal-cli-rest-api 桥接形态）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SignalConfig {
@@ -450,7 +446,7 @@ pub struct SignalConfig {
     pub sync_to: Vec<String>,
 }
 
-/// Mastodon 通道配置（对应 `nemesis_channels::mastodon::MastodonConfig`）。
+/// Mastodon 通道配置（对应 `nemesis_channels::mastodon:MastodonConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MastodonConfig {
     #[serde(default)]
@@ -467,7 +463,7 @@ pub struct MastodonConfig {
     pub sync_to: Vec<String>,
 }
 
-/// Bluesky 通道配置（对应 `nemesis_channels::bluesky::BlueskyConfig`）。
+/// Bluesky 通道配置（对应 `nemesis_channels::bluesky:BlueskyConfig`）。
 /// Default 对齐通道侧（poll_interval=10）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -510,8 +506,8 @@ impl Default for BlueskyConfig {
     }
 }
 
-/// WeCom（企业微信）通道配置（P25，对应 `nemesis_channels::wecom::WeComConfig`）。
-/// 字段默认全空——通道侧 new() 对 listen_addr/callback_path 有空值归一。
+/// WeCom（企业微信）通道配置（对应 `nemesis_channels::wecom:WeComConfig`）。
+/// 字段默认全空——通道侧 new 对 listen_addr/callback_path 有空值归一。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct WeComConfig {
     #[serde(default)]
@@ -543,7 +539,7 @@ pub struct WeComConfig {
     pub sync_to: Vec<String>,
 }
 
-/// Mattermost 通道配置（P26，对应 `nemesis_channels::mattermost::MattermostConfig`）。
+/// Mattermost 通道配置（对应 `nemesis_channels::mattermost:MattermostConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MattermostConfig {
     #[serde(default)]
@@ -565,7 +561,7 @@ pub struct MattermostConfig {
     pub sync_to: Vec<String>,
 }
 
-/// nostr 通道配置（P27，对应 `nemesis_channels::nostr::NostrConfig`）。
+/// nostr 通道配置（对应 `nemesis_channels::nostr:NostrConfig`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct NostrConfig {
     #[serde(default)]
@@ -589,7 +585,7 @@ pub struct NostrConfig {
 }
 
 /// MQTT 订阅 topic filter → 回包 topic 映射条目（对应
-/// `nemesis_channels::mqtt::MqttTopicMapping`）。
+/// `nemesis_channels::mqtt:MqttTopicMapping`）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MqttTopicMapping {
     /// 订阅的 topic filter（支持 `+`/`#` 通配）。
@@ -600,7 +596,7 @@ pub struct MqttTopicMapping {
     pub reply_topic: String,
 }
 
-/// MQTT 通道配置（P28，对应 `nemesis_channels::mqtt::MqttChannelConfig`）。
+/// MQTT 通道配置（对应 `nemesis_channels::mqtt:MqttChannelConfig`）。
 /// Default 对齐通道侧文档默认值（broker 127.0.0.1:1883、keep-alive 30、
 /// clean_session=true、退避 5、QoS 1）——通道侧对 broker_host 空值响亮报错、
 /// 端口/keep-alive 原样透传 rumqttc，缺省值必须在 config 层给足。
@@ -685,8 +681,8 @@ impl Default for MqttConfig {
     }
 }
 
-/// 微信个人微信通道配置（P29，iLink Bot API，对应
-/// `nemesis_channels::wechat::WeChatConfig`）。Default 对齐通道侧
+/// 微信个人微信通道配置（iLink Bot API，对应
+/// `nemesis_channels::wechat:WeChatConfig`）。Default 对齐通道侧
 /// （base_url/send_path/回调监听/签名方案均为通道侧常量——协议形态为
 /// 实现假设，真机校准只需要改 config）。
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -72,7 +72,7 @@ impl ToolExecutor for ToolWrapper {
             metadata: serde_json::Map::new(),
         };
 
-        // Phase 1: Pre-execution — ask plugins if we should proceed
+        // Pre-execution — ask plugins if we should proceed
         {
             let mgr = self.plugin_mgr.lock();
             let (allowed, err) = mgr.execute(&mut invocation);
@@ -81,7 +81,7 @@ impl ToolExecutor for ToolWrapper {
             }
         }
 
-        // Phase 2: Execute the original tool
+        // Execute the original tool
         let result = self.original_tool.execute(args);
         match &result {
             Ok(val) => {
@@ -92,7 +92,7 @@ impl ToolExecutor for ToolWrapper {
             }
         }
 
-        // Phase 3: Post-execution — let plugins inspect/modify result
+        // Post-execution — let plugins inspect/modify result
         {
             let mgr = self.plugin_mgr.lock();
             let (allowed, err) = mgr.execute(&mut invocation);

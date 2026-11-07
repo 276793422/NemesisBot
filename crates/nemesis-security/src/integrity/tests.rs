@@ -122,7 +122,7 @@ fn test_verify_chain() {
     assert!(!AuditChain::verify_chain(&[e1, tampered]));
 }
 
-// ---- BUG-20261102-305：hash 覆盖面缺 source/reason ----
+// ----：hash 覆盖面缺 source/reason ----
 // 旧公式只进 prev/timestamp/operation/tool/user/target/decision 七字段，
 // 篡改 jsonl 行的 reason（为何放行/拒绝的取证叙述）不破坏链验证。
 
@@ -802,7 +802,7 @@ fn test_export_empty_chain() {
 }
 
 // ============================================================
-// S3 batch 3: rotated-segment export / tampered load_chain /
+// batch 3: rotated-segment export / tampered load_chain /
 // verify_range edge arms / cross-segment get_event / fresh close
 // ============================================================
 
@@ -911,7 +911,7 @@ fn test_get_event_across_rotated_segments_and_close() {
 }
 
 // ---------------------------------------------------------------------------
-// append 全程串行并发回归钉（横扫九期，2026-10-14）：链不变量
+// append 全程串行并发回归钉（横扫九期）：链不变量
 // 「行 i.prev == 行 i-1.hash」——修复前 last_hash 读/写两次独立取锁，
 // 并发 append 各读到同一 prev ⇒ 链分叉（verify 必 FAIL）。
 // ---------------------------------------------------------------------------
@@ -965,7 +965,7 @@ fn concurrent_appends_keep_chain_linked() {
 
 #[test]
 fn test_append_persist_failure_does_not_advance_chain() {
-    // BUG（2026-10-29 横扫角度 A）：落盘失败曾静默吞 + 内存链照常推进 +
+    // BUG（横扫角度 A）：落盘失败曾静默吞 + 内存链照常推进 +
     // 恒返回 Ok——内存与盘脱节后 verify 按盘上行校验从此必 FAIL，事发零
     // 可见。盘先行后：落盘失败必须返回 Err、内存链尾不动（下个事件重用
     // 同一 prev_hash，内存==磁盘保持一致），恢复后链继续且盘上可验。
@@ -1012,7 +1012,7 @@ fn test_append_persist_failure_does_not_advance_chain() {
     );
 }
 
-/// BUG-20261104-374：链尾回载（重启断链）。链状态（last_hash）是进程内存
+/// 链尾回载（重启断链）。链状态（last_hash）是进程内存
 /// 态而 storage_path 固定路径续写——重启后不回载则首个事件 prev_hash=全零，
 /// 与盘上既有链断裂，verify_chain 全量校验恒 FAIL。回归锁：第一生命周期
 /// 落两个事件 → 模拟重启（全新 AuditChain + load_segments）→ 续写一个
@@ -1072,7 +1072,7 @@ fn test_bug374_chain_restart_replays_tail_from_disk() {
     );
 }
 
-/// BUG-20261104-374 反向语义：回载缺失形态（不调 load_segments 直接续写）
+/// 反向语义：回载缺失形态（不调 load_segments 直接续写）
 /// 必然产生断链——钉住缺陷机理本身，防未来有人误删回载接线后测试静默变绿。
 #[test]
 fn test_bug374_without_replay_chain_breaks() {

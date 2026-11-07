@@ -339,6 +339,14 @@ fn write_chat_entry(
     // Windows FILE_APPEND_DATA），行间只可能整体排序、不可能半行插入。
     let mut line = entry.to_string();
     line.push('\n');
+    // FTS 索引原子性：取增量插入互斥句柄并**持锁跨「文件写入 + 索引插行」**
+    // ——reindex 的 mtime 采样在索引锁外、全量重读在锁内，不持锁的 append
+    // 落进该缝隙时 reindex 已按文件行号索引到本行，随后的增量插入仍按
+    // MAX(seq)+1 再插一行同内容（seq 指向不存在的行号），且 racing reindex
+    // 已登记新 mtime、后续 reindex 恒跳过该文件 → 幻影重复行跨查询存活。
+    // 锁毒化（None）= 回落无锁 best-effort（旧行为），下次全量 reindex 自愈。
+    #[cfg(feature = "history-search")]
+    let mut fts_guard = crate::history_search::append_guard();
     if let Err(e) = file.write_all(line.as_bytes()) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
         // M2：写入失败面可观测（磁盘满/句柄失效等）。
@@ -359,14 +367,18 @@ fn write_chat_entry(
     // U20 (sixth batch): lazy FTS index hook — best-effort, failures inside
     // are swallowed (the next full reindex repairs). Timestamp mirrors the
     // entry written above. history-search 关：整段不编译（FTS 索引随
-    // rusqlite 进出，chat_log 本体照常写）。
+    // rusqlite 进出，chat_log 本体照常写）。持锁走 guard 变体（同锁不可
+    // 重入），毒化回落独立入口。
     #[cfg(feature = "history-search")]
     {
         let ts = entry
             .get("timestamp")
             .and_then(|t| t.as_str())
             .unwrap_or("");
-        crate::history_search::index_append(session_key, role, content, ts);
+        match fts_guard.as_mut() {
+            Some(g) => g.index_append(session_key, role, content, ts),
+            None => crate::history_search::index_append(session_key, role, content, ts),
+        }
     }
 }
 
@@ -514,6 +526,21 @@ pub(crate) fn log_path(session_key: &str) -> PathBuf {
 /// 7-day TTL (append would duplicate the whole prefix).
 pub fn chat_log_exists(session_key: &str) -> bool {
     log_path(session_key).exists()
+}
+
+/// Does this session key have any materialized presence on disk — jsonl OR
+/// meta sidecar? Single-source occupation predicate for CREATE paths
+/// (`session_fork::unique_key` / `sessions.import` 预检)：meta 写入是
+/// upsert（已写字段保留），复用只残留 meta 的键会继承陈旧字段——含
+/// `allow_all=true`（安全装配 hydrate 后审批卡静默全自动放行）与
+/// `branch_summary`（新会话首轮 build_messages 注入）。meta-only 状态的
+/// Producer：trash 半途失败（jsonl 先移、meta rename 重试耗尽）/ 硬删
+/// 单文件重试耗尽（warn-only）/ 删除链中途崩溃。占用语义与
+/// `chat_trash::trash_restore_in` 的冲突判定对齐（jsonl ∥ meta）；
+/// boundary 是审计 sidecar 不计（clear 截断保留文件，restore 同款排除）。
+/// （BUG-20261106-038）
+pub fn session_occupied(session_key: &str) -> bool {
+    chat_log_exists(session_key) || meta_path(session_key).exists()
 }
 
 /// Write pre-read chat_log rows under `new_key`, VERBATIM (2026-08-25 fork
@@ -769,7 +796,9 @@ pub fn create_chat_log_exclusive(
 /// 横向同族）——同目录唯一临时文件 + `sync_all` 先于 rename，断电/崩溃
 /// 要么原文件完好、要么截断后完好，不会出现半截文件。与 fork 的
 /// [`write_chat_log_rows`] 同一宽容边界：不走 `history_search::index_append`
-/// （原样重写不加新词），FTS 懒索引下次全量重建时自愈。
+/// （原样重写不加新词），并主动 `invalidate_session` 摘除索引登记——重写
+/// 后 DB 旧行 seq 与新文件行号失配，增量插入基线不可信；FTS 由下次全量
+/// 重建时自愈。
 ///
 /// 返回写入行数。`kept` 为空 = 清空文件（保留文件本身，会话仍可用）。
 pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
@@ -827,6 +856,11 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
     // 序列化两侧同走 serde_json::to_string(Value)（同 key 排序/转义），字节
     // 可比。差集记账是保守方向：匹配错位只会多记「被删」，不会漏记。
     ledger_truncate_diff(session_key, &raw_lines, &kept_lines);
+    // FTS 懒索引：整体重写后 DB 旧行 seq 与新文件行号失配，增量插入的
+    // MAX(seq)+1 基线不可信——摘除登记让增量钩子让位，下次全量 reindex
+    // 重建（消费方查询前恒先 reindex，自愈即时）。
+    #[cfg(feature = "history-search")]
+    crate::history_search::invalidate_session(session_key);
     written
 }
 
@@ -1030,8 +1064,18 @@ pub fn delete_chat_log(session_key: &str) {
     // 扫 jsonl 会把「已删除」的会话复活。走 fsutil 韧性重试（NotFound 在
     // 重试原语内部已归一为成功），耗尽才 warn 留痕。
     let path = log_path(session_key);
-    if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&path) {
-        tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
+    let jsonl_removed = match nemesis_utils::fsutil::remove_file_retry(&path) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
+            false
+        }
+    };
+    // FTS 懒索引：jsonl 真删后摘除索引登记——同键重建会话的增量插入若仍
+    // 按旧 DB 行推 seq，会插出与文件行号错位的幻影行。
+    #[cfg(feature = "history-search")]
+    if jsonl_removed {
+        crate::history_search::invalidate_session(session_key);
     }
     let bpath = boundary_path(session_key);
     if let Err(e) = nemesis_utils::fsutil::remove_file_retry(&bpath) {
@@ -1076,6 +1120,10 @@ pub fn clear_chat_log(session_key: &str) -> Result<(), String> {
         return Err(format!("清空会话日志失败 ({}): {e}", path.display()));
     }
     ledger_truncate_diff(session_key, &raw_lines, &[]);
+    // FTS 懒索引：清空后 DB 旧行全部失配（文件 0 行），摘除登记让增量
+    // 钩子让位，下次全量 reindex 重建。
+    #[cfg(feature = "history-search")]
+    crate::history_search::invalidate_session(session_key);
     let bpath = boundary_path(session_key);
     if bpath.exists()
         && let Err(e) = fs::write(&bpath, "")

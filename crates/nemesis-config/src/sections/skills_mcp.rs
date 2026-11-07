@@ -1,6 +1,4 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
@@ -11,16 +9,16 @@ pub struct SkillsConfig {
     /// Whether `skill_manage` writes require interactive approval (default false).
     #[serde(default)]
     pub manage_approval: bool,
-    /// P11 验签：无签名技能是否放行（默认 true 兼容存量；false = strict，拒绝无签名）。
+    /// 验签：无签名技能是否放行（默认 true 兼容存量；false = strict，拒绝无签名）。
     #[serde(default = "default_skills_allow_unsigned")]
     pub allow_unsigned: bool,
-    /// P13 装前审批：安装走审批卡（默认 true；CLI 可 --yes 跳过，WSAPI 走审批基建）。
+    /// 装前审批：安装走审批卡（默认 true；CLI 可 --yes 跳过，WSAPI 走审批基建）。
     #[serde(default = "default_skills_install_approval")]
     pub install_approval: bool,
-    /// P16 版本龄下限（天；默认 0 = 关）。
+    /// 版本龄下限（天；默认 0 = 关）。
     #[serde(default)]
     pub min_age_days: i64,
-    /// P16 版本龄策略："warn"（默认）| "block"。
+    /// 版本龄策略："warn"（默认）| "block"。
     #[serde(default = "default_skills_min_age_policy")]
     pub min_age_policy: String,
 }
@@ -52,7 +50,7 @@ fn default_skills_min_age_policy() -> String {
     "warn".to_string()
 }
 
-/// MCP 主配置（config.mcp.json 顶层）。**单一真相源**（2026-08-31 收敛）：
+/// MCP 主配置（config.mcp.json 顶层）。**单一真相源**（收敛）：
 /// 此前 nemesis-config 与 nemesis-mcp 各持一份服务器配置结构（`env:
 /// Vec<String>` vs `Option<Vec<String>>`、`timeout: i64` vs
 /// `timeout_secs: u64`），同一份 config.mcp.json 出现两种解析结果——用户
@@ -90,7 +88,7 @@ impl<'de> serde::Deserialize<'de> for McpConfig {
     }
 }
 
-/// 宽容解析 config.mcp.json（2026-08-31 根因修复："invalid type: null,
+/// 宽容解析 config.mcp.json（根因修复："invalid type: null,
 /// expected a sequence" 一类解析崩溃的统一出口）。接受三种顶层形状：
 /// 1. 本项目标准形状 `{enabled, servers: [...], timeout}`；
 /// 2. Claude Desktop 生态形状 `{"mcpServers": {name: {...}}}`（map，name
@@ -206,7 +204,7 @@ pub struct McpServerConfig {
     pub tags: Vec<String>,
     #[serde(default)]
     pub command: String,
-    /// G2（2026-10-18 三方复评整改批四）：浏览器 profile 注入 opt-in 闸。
+    /// 浏览器 profile 注入 opt-in 闸。
     /// true = 本 server 允许宿主按上下文注入 per-agent Chromium
     /// `--user-data-dir`（gateway agent loop 路径 = agent home
     /// browser-profile/；执行体子进程路径 = `NEMESISBOT_BROWSER_PROFILE`
@@ -215,12 +213,12 @@ pub struct McpServerConfig {
     /// 优先，不重复注入。false 序列化跳过（存量 config.mcp.json 字节稳定）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub browser_profile: bool,
-    /// 未类型化键兜底（2026-09-03 二次回归 F2 同族根修，对齐 `ModelConfig.extra`
+    /// 未类型化键兜底（二次回归 同族根修，对齐 `ModelConfig.extra`
     /// 惯例）：typed `save_config` round-trip 时编译器保证保留未知键，不再静默
     /// 抹掉（如未来新增的 per-server 键）。空 map 序列化跳过 → 无 unknown 键的
     /// 条目输出形态与既有字节一致。注意：PartialEq 参与相等比较（round-trip
     /// 两侧携带同一 extra 时语义不变）。
-    /// L7：BTreeMap 键序确定（同 `ModelConfig.extra`，字节稳定）。
+    /// BTreeMap 键序确定（同 `ModelConfig.extra`，字节稳定）。
     #[serde(
         flatten,
         default,
@@ -288,14 +286,14 @@ impl McpServerConfig {
         self
     }
 
-    /// Builder: 打开浏览器 profile 注入 opt-in（G2）。
+    /// Builder: 打开浏览器 profile 注入 opt-in。
     pub fn browser_profile(mut self, yes: bool) -> Self {
         self.browser_profile = yes;
         self
     }
 }
 
-/// MCP HTTP 头行语法校验（单一真相源，2026-10-15 第十二轮复查）：CLI
+/// MCP HTTP 头行语法校验（统一定义， 复查）：CLI
 /// `mcp add`/`mcp discover`、Dashboard `server.add`/`server.update`、运行期
 /// `resolved_header_pairs` 三方同源。只验语法，绝不解引用、绝不回显值段
 /// （值段可能夹带真凭据；错误文案只接头名/引用名——两者非秘密）。
@@ -343,7 +341,7 @@ pub fn validate_mcp_header_line(line: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// MCP stdio env 行语法校验（"KEY=VALUE"；2026-10-15 第十三轮单一真相源——
+/// MCP stdio env 行语法校验（"KEY=VALUE"； 单一权威定义——
 /// CLI `mcp add` 写入面 / Dashboard server.add·update / 运行期
 /// `resolved_env` WARN 跳过同源）：缺 `=` / 键名空 / 键名含空白 / 整值
 /// `vault:`/`env:`/`yaml:` 引用名为空或带首尾空格。与
@@ -384,7 +382,7 @@ pub fn validate_mcp_env_line(line: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// 宽容字符串列表反序列化（单一真相源收敛配套）：`null` → 空表；
+/// 宽容字符串列表反序列化（统一定义收敛配套）：`null` → 空表；
 /// `{"K":"V"}` → `["K=V"]`（LLM/外部生态最常见的 env 写法）；`["a","b"]`
 /// → 原样；标量 → 单元素表。元素非字符串时尽力转字符串。
 fn flexible_string_list<'de, D>(d: D) -> std::result::Result<Vec<String>, D::Error>

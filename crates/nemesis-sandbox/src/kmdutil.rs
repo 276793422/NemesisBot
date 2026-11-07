@@ -13,7 +13,7 @@ use anyhow::{Context, Result};
 
 use crate::{DRIVER_SERVICE, FILTER_ALTITUDE, USERMODE_SERVICE};
 
-/// Build the `KmdUtil install SbieDrv ...` command (kernel mini-filter driver).
+/// Build the `KmdUtil install SbieDrv...` command (kernel mini-filter driver).
 pub fn install_driver(kmdutil: &Path, sbiedrv_sys: &Path, sbiemsg_dll: &Path) -> Command {
     let mut c = Command::new(kmdutil);
     c.arg("install")
@@ -26,7 +26,7 @@ pub fn install_driver(kmdutil: &Path, sbiedrv_sys: &Path, sbiemsg_dll: &Path) ->
     c
 }
 
-/// Build the `KmdUtil install SbieSvc ...` command (user-mode service).
+/// Build the `KmdUtil install SbieSvc...` command (user-mode service).
 /// KmdUtil auto-quotes the binary path (`kmdutil.c:408-417`).
 pub fn install_service(kmdutil: &Path, sbiesvc_exe: &Path, sbiemsg_dll: &Path) -> Command {
     let mut c = Command::new(kmdutil);
@@ -63,7 +63,7 @@ pub fn delete(kmdutil: &Path, name: &str) -> Command {
 /// `tolerant`: when true, a non-zero exit is logged but not propagated (used for
 /// `stop`/`delete` of services that may already be gone).
 pub fn run(mut cmd: Command, tolerant: bool) -> Result<()> {
-    // 黑窗根修（2026-10-19）：KmdUtil 是 console 程序，gateway（无 console）
+    // 黑窗根修：KmdUtil 是 console 程序，gateway（无 console）
     // 路径（Dashboard 引擎装卸/提权子进程）下默认 flags 会闪窗。单一出口
     // crate::suppress_console。
     crate::suppress_console(&mut cmd);
@@ -106,7 +106,7 @@ fn format_command(cmd: &Command) -> String {
 
 /// Set `HKLM\...\Services\SbieDrv\IniPath = <ini_path>` so Sandboxie.ini lives
 /// under our app home instead of `C:\Windows` (`core/drv/conf.c:256-269`).
-/// Uses `reg.exe` (L2.0 scaffolding — `winreg`/FFI is a cleanup option).
+/// Uses `reg.exe` (.0 scaffolding — `winreg`/FFI is a cleanup option).
 pub fn set_ini_path(ini_path: &Path) -> Result<()> {
     reg_add_sz(
         &format!(r"HKLM\SYSTEM\CurrentControlSet\Services\{DRIVER_SERVICE}"),

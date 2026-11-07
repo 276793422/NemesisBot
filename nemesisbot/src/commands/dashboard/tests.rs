@@ -83,7 +83,7 @@ async fn health_check_on_refused_port_fails() {
 }
 
 // ===========================================================================
-// S11c（quality-hardening goal 冲刺 S11）：send_internal_command /
+// （quality-hardening goal 冲刺）：send_internal_command /
 // send_internal_command_get_json（121-170）此前零覆盖（头注把它们当结构性
 // 豁免——其实本地 mock 就能测）；check_health 成功分支（72-73）同理。
 // run() 的 start_and_wait（spawn 当前 exe 起真网关）仍是结构性豁免；但
@@ -218,7 +218,7 @@ async fn get_json_failure_is_error() {
 
 // --- run()（不 spawn 网关的两条路径）---
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn run_missing_config_errors_cleanly() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -244,7 +244,7 @@ async fn run_missing_config_errors_cleanly() {
     }
 }
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn run_success_when_mock_gateway_already_running() {
     // 网关"已在跑"：health 200 + internal 200 → run 全链路 Ok，绝不 spawn。
@@ -278,24 +278,24 @@ async fn run_success_when_mock_gateway_already_running() {
 }
 
 // ===========================================================================
-// r9_spawn_fail（R9 补测批零头组，2026-08-27；A4 改版 2026-10-19）：
+// r9_spawn_fail（补测批零头组，； 改版）：
 // start_and_wait 的 spawn-wait 首次真链路覆盖。确定性设计：
 //   - state 文件预置 web_port=1（必然拒绝连接）→ run() 走进 start_and_wait；
 //   - config.json 写 {"model_list":"not-an-array"}：合法 JSON Value 但过不了
 //     Config 反序列化 → 被 spawn 的子网关在绑定任何端口之前响亮退出；
-//   - A4 装配纪律（wait_ready 存活耦合）后：子网关早死立即报
+//   - 装配纪律（wait_ready 存活耦合）后：子网关早死立即报
 //     "Gateway process exited during startup (exit code: N)"——不再傻等
-//     满 30s 只给笼统超时（改版前形态）→ main.rs 打 "Error: ..." + exit(1)。
+//     满 30s 只给笼统超时（改版前形态）→ main.rs 打 "Error:..." + exit(1)。
 // 无残留进程（子网关自毙）、不占任何生产端口。改版后秒级（原 ~32s 慢测），
 // 全程持锁串行。
 // ===========================================================================
 
 // 整 mod Windows 形态（1/1 测试全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r9_spawn_fail {
     use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn start_and_wait_fails_fast_with_exit_code_when_gateway_dies_on_bad_config() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -338,19 +338,19 @@ mod r9_spawn_fail {
 }
 
 // ===========================================================================
-// r10_start_wait_direct（R10 终测补测，2026-08-27；A4 改版 2026-10-19）：
+// r10_start_wait_direct（终测补测，； 改版）：
 // start_and_wait 的进程内直调覆盖。r9_spawn_fail 走子进程链（CLI 子进程里
 // 跑生产代码），但实测该子进程的 error-exit 镜像在插桩测量下不可靠（llvm
 // 计数器丢失，merged lcov 里 79-119 仍 miss）。直调形态让这些行落进测试
 // 二进制自己的镜像（Leg A 语义），完全绕开子进程 flush 不确定性：
 //   - 成功轮询臂：state 文件预置指向本地 mock health 端口 → 首轮 poll 就
 //     check_health Ok → Ok 返回（存活断言从未参与）；
-//   - 早死臂（A4 改版，原 30s 超时臂）：cfg!(test) 下 start_and_wait spawn
+//   - 早死臂（改版，原 30s 超时臂）：cfg!(test) 下 start_and_wait spawn
 //     current_exe + libtest 空过滤器 → 子进程 0 测试秒退；存活耦合发现早死
 //     → 秒级 Err "exited during startup (exit code: 0)"——不再傻等 30s。
 //     （「子进程存活但永不就绪 → Timeout」臂由 wait_ready 单测覆盖。）
 // 两臂都无残留进程、不占端口、零输出。（修复前传 "gateway" 会被 libtest
-// 当过滤器，嵌套重跑 217 个网关测试——BUG #48。）
+// 当过滤器，嵌套重跑 217 个网关测试——。）
 // ===========================================================================
 
 mod r10_start_wait_direct {
@@ -381,7 +381,7 @@ mod r10_start_wait_direct {
         assert_eq!(got, port as i64);
     }
 
-    /// 早死臂（A4 改版，原「state 永不出现 → 30s 超时」）：state 文件所在
+    /// 早死臂（改版，原「state 永不出现 → 30s 超时」）：state 文件所在
     /// 目录不存在 → read_gateway_state 恒 None；stub 子进程 0 测试秒退 →
     /// 存活耦合秒级 Err（带退出码 0 现场），不再耗满 30s 预算。
     #[tokio::test]

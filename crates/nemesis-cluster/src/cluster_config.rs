@@ -42,7 +42,7 @@ pub struct NodeInfo {
     pub category: String,
     #[serde(default)]
     pub tags: Vec<String>,
-    /// 自报职能清单（集群专业职能框架 M2；`family[:spec]` slug，精确匹配
+    /// 自报职能清单（集群专业职能框架；`family[:spec]` slug，精确匹配
     /// 无继承）。经 announce 广播；缺省空 = 未宣告（本节点不参与职能匹配）。
     #[serde(default)]
     pub professions: Vec<String>,
@@ -51,7 +51,7 @@ pub struct NodeInfo {
     /// matcher tier 闸 fail-open。
     #[serde(default)]
     pub tier: Option<String>,
-    /// 环境能力声明（NB-122 批 ③ 数据面 2026-10-16）：节点环境事实能力词
+    /// 环境能力声明（批 ③ 数据面）：节点环境事实能力词
     /// （如 browser/chrome/firefox），set_capabilities 时与 AgentLoop 工具
     /// 名并集进宣告面，作 matcher `required_capabilities` 硬条件的数据源。
     /// 缺省空 = 无环境能力声明。历史注记：`[peers.X]` 静态 capabilities 曾
@@ -59,22 +59,22 @@ pub struct NodeInfo {
     /// `[node]` 自报段，经 set_capabilities 并集进宣告，不再无效。
     #[serde(default)]
     pub capabilities: Vec<String>,
-    /// iroh 漫游身份 hex 静态声明（A1 跨网 P2P 叠加层）。本节点 iroh 身份
+    /// iroh 漫游身份 hex 静态声明（跨网 P2P 叠加层）。本节点 iroh 身份
     /// 的真相源是 `<workspace>/cluster/roaming.key`（`cluster roaming
     /// keygen` 生成）——此声明用于**对账**：与 key 派生不一致 = 配置漂移
     /// warn（身份仍以 key 派生为准，声明只是运营者显式记录的锚）。缺省
     /// `None` = 未声明。
     #[serde(default)]
     pub iroh_id: Option<String>,
-    /// 自报运行时后端形态（P5 第 4 步 ③；如 `process` / `vm`）。**手工
+    /// 自报运行时后端形态（如 `process` / `vm`）。**手工
     /// 声明**——不从 executor.vm.enabled 自动推导（announce 与执行体装配
     /// 解耦，同 tier 先例）；缺省 None = 未宣告（本批只宣告不做 matcher 闸）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
-    /// L13-a（2026-11-03 三期）：本节点 mandate 签名公钥（P-256 SEC1 hex，
+    /// a（三期）：本节点 mandate 签名公钥（P-256 SEC1 hex，
     /// 66/130 字符）。**手工声明**——announce 携带，对端 TOFU 首见钉存进
-    /// trust.toml `[mandate_keys]`（验签消费在 L13-b）。缺省 None = 未宣告
-    /// （announce 不带字段，wire 兼容）。L13-b 落地后真相源变为运行时
+    /// trust.toml `[mandate_keys]`（验签消费在 -b）。缺省 None = 未宣告
+    /// （announce 不带字段，wire 兼容）。-b 落地后真相源变为运行时
     /// leaf key 派生，本声明降级为对账锚（同 iroh_id 与 roaming.key 分工）。
     #[serde(default)]
     pub pubkey: Option<String>,
@@ -138,7 +138,7 @@ pub struct PeerConfig {
     /// 节点档位（role_tier 口径；None = 未宣告）。
     #[serde(default)]
     pub tier: Option<String>,
-    /// 自报运行时后端形态（P5 第 4 步 ③；state.toml 持久化 discovered 条目
+    /// 自报运行时后端形态（state.toml 持久化 discovered 条目
     /// 用——静态身份，不同于 agents 运行时清单，重启后经回读种回注册表）。
     #[serde(default)]
     pub runtime_backend: Option<String>,
@@ -250,7 +250,7 @@ pub fn load_static_config(path: &Path) -> Result<StaticConfig, ConfigError> {
 
 /// Save static config to a TOML file using atomic write.
 ///
-/// **Peer-preserving**（UAT-BUG-3 根修 2026-09-15）：`StaticConfig` 结构上
+/// **Peer-preserving**（UAT-BUG-3 根修）：`StaticConfig` 结构上
 /// 只含 `[node]`，整体序列化会把文件里已有的 `[peers.*]` 表静默抹掉
 /// （真机实证：`node.update_identity` 改一次身份 → pair 写入的静态 peers
 /// 全部消失）。因此对已存在且可解析的文件，解析旧文档后**只替换 `[node]`
@@ -369,7 +369,7 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
 /// - `.` is the dotted-key separator in TOML, must be replaced
 /// - `:` commonly appears in `host:port` and is reserved-style, replaced for safety
 ///
-/// **域已收窄（发现②/B3，2026-09-15）**：写盘路径（`append_peer_to_file_with_name`
+/// **域已收窄（发现②）**：写盘路径（`append_peer_to_file_with_name`
 /// / `remove_peer_from_file`）已改字面 id 键（TOML 引号键保真），本函数只
 /// 保留两处用途：① `upgrade_peer_in_peers_toml` 的旧键同键比对；②
 /// `remove_peer_from_file` 清理旧版代码落盘的有损键残留。新写路径不得再调用。
@@ -377,7 +377,7 @@ pub fn sanitize_peer_key(peer_id: &str) -> String {
     peer_id.replace(['.', ':'], "_")
 }
 
-/// 节点身份字符集闸（BUG-20261101-263 单一真相源）。
+/// 节点身份字符集闸（统一定义）。
 ///
 /// node_id 不只是显示串——它被拼进多个**带分隔符的 wire 复合键**：
 /// - `cluster_rpc:{source_node_id}/{chat_id}`（B 端会话键，`/` 分隔，
@@ -391,7 +391,7 @@ pub fn sanitize_peer_key(peer_id: &str) -> String {
 /// 生成形态（`node-{hostname}-{uuid}`，hostname 转小写 + Windows 计算机名
 /// 字符集）与历史 Go 节点 id 全部落在 `[A-Za-z0-9._-]` 内——闸不误伤；
 /// 含 `:`/`/`/空白/控制字符的 id 只来自手改配置或畸形 announce，按
-/// G14 同族纪律在入册/配对口 loud 拒收。
+/// 同族纪律在入册/配对口 loud 拒收。
 pub fn is_valid_node_identity(id: &str) -> bool {
     let id = id.trim();
     if id.is_empty() || id.len() > 128 {
@@ -432,7 +432,7 @@ pub fn append_peer_to_file(
     append_peer_to_file_with_name(path, peer_id, address, role, category, None, rpc_port)
 }
 
-/// Resolve a static peer entry's RPC port at load time (单一真相源，gateway 与
+/// Resolve a static peer entry's RPC port at load time (统一定义，gateway 与
 /// CLI node 装载器同源消费）。
 ///
 /// 显式 `rpc_port` 字段（pair / 占位升级写盘的探测实测值，>0 且 ≤65535）
@@ -446,7 +446,7 @@ pub fn resolve_peer_rpc_port(peer_entry: &toml::Value, udp_port: u16) -> u16 {
         .unwrap_or_else(|| if udp_port > 0 { udp_port + 10000 } else { 0 })
 }
 
-/// 构造 `[peers.X]` 条目子表（条目形态单一真相源：`append_peer_to_file_with_name`
+/// 构造 `[peers.X]` 条目子表（条目形态统一定义：`append_peer_to_file_with_name`
 /// 与占位升级的**单次原子写**路径共用——两处形态漂移会让静态装载行为分叉）。
 pub(crate) fn build_peer_entry_table(
     address: &str,
@@ -482,10 +482,10 @@ pub(crate) fn build_peer_entry_table(
 /// 权威判定 = 新 entry 实际写了什么：`build_peer_entry_table` 写了的键
 /// （address/name/role/category 恒写；rpc_port 仅 >0 时写）以新值为准，
 /// 新写入跳过的键一律从旧值补。五字段里只有 rpc_port 有条件写——
-/// `if rpc_port > 0`（:438）意味着 0 会**缺键**而非写 0，黑名单式会把
+/// `if rpc_port > 0`（438）意味着 0 会**缺键**而非写 0，黑名单式会把
 /// 手写显式 rpc_port 当权威字段丢掉（非标准 udp/rpc 配对如 9149/29149
 /// 的手写条目经一次 persist 就丢端口，重启后 loader 回落 udp+10000 猜错；
-/// 2026-10-21 六审 #6 子物种）。缺失补齐式同时覆盖扩展字段
+/// 六审 #6 子物种）。缺失补齐式同时覆盖扩展字段
 /// （tags/professions/tier/runtime_backend/priority/enabled/status 及未来
 /// 新增字段）= PeerConfig 加新字段时写入面自动保留，无需同步本函数。
 pub(crate) fn merge_peer_entry_extras(
@@ -507,8 +507,8 @@ pub(crate) fn merge_peer_entry_extras(
 ///
 /// `rpc_port`：pair 探测到的对端真实 RPC 端口（>0 时显式落盘）。此前只写
 /// UDP `address`，装载端按 `udp+10000` 猜 RPC——非约定端口布局（如
-/// udp=19411/rpc=29412）会永久猜错，且 B4 占位升级的地址比对同样含端口
-/// 永不命中（2026-09-15 R1-7 真机实证：占位与真实 ID 双条目并存）。
+/// udp=19411/rpc=29412）会永久猜错，且 占位升级的地址比对同样含端口
+/// 永不命中（真机实证：占位与真实 ID 双条目并存）。
 pub fn append_peer_to_file_with_name(
     path: &Path,
     peer_id: &str,
@@ -521,7 +521,7 @@ pub fn append_peer_to_file_with_name(
     // 写串行锁：peers.toml 与 web 侧 update_peers_node（[node] 段 RMW，持同
     // 把 config_write_lock）是同一文件的两个写者——本函数的读→插→写快照
     // 若不互斥，update 写回时会把本插入的 [peers.X] 冲掉（同类横扫四期，
-    // 2026-10-13）。锁取在本函数而非 save_static_config：后者被 update_*
+    // ）。锁取在本函数而非 save_static_config：后者被 update_*
     // 事务入口在锁内调用，非重入 Mutex 会死锁。调用方不得已持有
     // config_write_lock（嵌套即死锁）。
     let _cfg_serial = nemesis_config::config_write_lock();
@@ -566,7 +566,7 @@ pub fn append_peer_to_file_with_name(
         .expect("peers entry just ensured to be a table");
 
     // Build the new peer subtable
-    // 发现②/B3（2026-09-15）：表键改**字面 peer_id** 写入——sanitize 把
+    // 发现②/：表键改**字面 peer_id** 写入——sanitize 把
     // `.`/`:` 有损替换 `_`，若对端自定义 id 含这两字符，系统写出的表键
     // ≠真实 id（静态装载「表键即 peer_id」→ 永远连不上），系统代写也会
     // 出错。TOML 序列化器对非 bare key 自动加引号（`[peers."peer.a"]`），
@@ -585,7 +585,7 @@ pub fn append_peer_to_file_with_name(
     // 覆盖已有键时补回新 entry 没写的键——rpc_port=0 时不写键（旧显式
     // 端口保留）+ 扩展字段（tags/professions/tier/runtime_backend/
     // priority/enabled/status…）从旧值补齐。operator 手写的端口/职能/档位
-    // 声明不得被 persist 冲掉（2026-10-21 四审 #6：静态条目被 nodes.ping
+    // 声明不得被 persist 冲掉（四审 #6：静态条目被 nodes.ping
     // → merge 路径 persist 覆盖 → 重启后 professions/tier 丢失，职能匹配
     // 不到 + tier 闸 fail-open；六审补 rpc_port 子物种）。
     let mut peer_entry = build_peer_entry_table(address, role, category, name, rpc_port);
@@ -610,7 +610,7 @@ pub fn append_peer_to_file_with_name(
 /// Symmetric counterpart to `append_peer_to_file`, used by `nodes.remove`
 /// (web) and `cluster peers remove` (CLI) to persist node deletion.
 ///
-/// Idempotent: returns `Ok(())` if the file does not exist, has no `peers`
+/// Idempotent: returns `Ok()` if the file does not exist, has no `peers`
 /// table, or the key is not present — caller should not need to check
 /// existence first. Preserves the `[node]` section and any other `[peers.X]`
 /// entries. If the file is corrupt, the deletion is skipped with a warn log
@@ -618,7 +618,7 @@ pub fn append_peer_to_file_with_name(
 pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigError> {
     // 写串行锁：与 append_peer_to_file_with_name / web update_peers_node 同
     // 一把 config_write_lock——删除的读→删→写快照不互斥会冲掉并发的
-    // [node] 改动或新 append 的 peer（同类横扫四期，2026-10-13）。
+    // [node] 改动或新 append 的 peer（同类横扫四期）。
     let _cfg_serial = nemesis_config::config_write_lock();
     // No file → nothing to remove.
     if !path.exists() {
@@ -649,7 +649,7 @@ pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigErr
         None => return Ok(()), // no peers table → nothing to remove
     };
 
-    // 发现②/B3：字面键删除为主；若与旧版 sanitize 键不同且存在，一并
+    // 发现②/：字面键删除为主；若与旧版 sanitize 键不同且存在，一并
     // 清理——那是旧代码给同一 peer 留下的有损键残留（写盘已字面化，
     // 这里只清历史遗留，不留双条目）。
     let key = peer_id.to_string();
@@ -681,7 +681,7 @@ pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigErr
 /// input unchanged if the port can't be parsed or is ≤ 10000 (no convention to
 /// reverse — e.g. a non-standard port or an address without a port).
 ///
-/// 单一真相源：`Cluster::persist_real_peer_to_toml`（升级/merge 写盘）与
+/// 统一定义：`Cluster::persist_real_peer_to_toml`（升级/merge 写盘）与
 /// `pair` 配对写盘共用本函数，保证 RPC↔UDP 换算只此一份。
 pub fn rpc_to_udp_address(rpc_addr: &str) -> String {
     if let Some((host, port_str)) = rpc_addr.rsplit_once(':')
@@ -771,7 +771,7 @@ pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
 // Atomic write helper
 // ---------------------------------------------------------------------------
 
-/// Write data to a file atomically — REL-002（2026-09-23）起委托统一 helper
+/// Write data to a file atomically — 起委托统一 helper
 /// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理 +
 /// unix 0600 创建即挂），本函数只保留签名兼容（peers.toml 家族 5 个调用点）。
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), ConfigError> {

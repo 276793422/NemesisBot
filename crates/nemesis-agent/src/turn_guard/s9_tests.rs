@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：turn_guard.rs 剩余未覆盖行。
+//! 覆盖率批次：turn_guard.rs 剩余未覆盖行。
 //! - 357：canonical_args 非 JSON 回退（whitespace 折叠）。
 //! - 367/371：similarity 的 both-empty → 1.0 / union==0 防御分支。
 //! - 260：文本重复 nudge 的 format! 参数行（tracing 之外，需真实进入分支）。

@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
 
-/// F7：结构化提问工具。两形态（B8）：
+/// 结构化提问工具。两形态：
 /// - **选项形态**（legacy，`options`）：单选 radio / `multi=true` 多选
 ///   checkbox；单选 >6 项前端自动收纳为下拉 select（上限 12）。
 /// - **表单形态**（`fields`）：多个 text 输入框 + select 下拉字段组成的
@@ -25,14 +25,14 @@ impl QuestionTool {
     }
 }
 
-/// F7/J5 共用：提问卡 ID 发号器（question 工具与 doom-loop 审批卡同源，
+///  共用：提问卡 ID 发号器（question 工具与 doom-loop 审批卡同源，
 /// 保证 Dashboard 上 ID 全局唯一）。
 pub(crate) fn next_question_id() -> String {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     format!("q-{}", N.fetch_add(1, std::sync::atomic::Ordering::SeqCst))
 }
 
-/// B8：解析并校验表单字段定义（工具入参 `fields` 数组 → `QuestionField`）。
+/// 解析并校验表单字段定义（工具入参 `fields` 数组 → `QuestionField`）。
 /// 校验：数量 ≤[`QUESTION_MAX_FIELDS`]、元素全为 object、key/label 非空且
 /// key 一次提问内唯一、type ∈ {text, select}、select 的 options 2-6 项非空、
 /// required 缺省 false。
@@ -200,7 +200,7 @@ impl Tool for QuestionTool {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "missing required 'question' field".to_string())?;
 
-        // B8 两形态分流：fields 非空数组 = 表单形态（options/multi 忽略）；
+        // 两形态分流：fields 非空数组 = 表单形态（options/multi 忽略）；
         // 否则 = 选项形态（options 必填）。
         let fields = match v.get("fields") {
             Some(f) if !f.is_null() => parse_question_fields(&v)?,
@@ -299,7 +299,7 @@ impl Tool for QuestionTool {
             nemesis_types::agent::QuestionOutcome::Timeout => {
                 Ok("No answer: user did not answer, proceed with your best judgment.".to_string())
             }
-            // 循环干预阶梯（2026-10-24）：急停触发，broker 把 pending 提问
+            // 循环干预阶梯：急停触发，broker 把 pending 提问
             // 强制了结——按「停止」语义回灌，不鼓励模型继续。
             nemesis_types::agent::QuestionOutcome::Cancelled => {
                 Ok("No answer: emergency stop was triggered while waiting; do not retry this question, stop and report.".to_string())
@@ -309,17 +309,17 @@ impl Tool for QuestionTool {
 }
 
 // ===========================================================================
-// N5: present_files — turn 交付物登记（机会项 N5，2026-10-13）
+// present_files — turn 交付物登记
 // ===========================================================================
 
-/// N5：交付物流水桶类型别名（AgentLoop 与 PresentFilesTool 共享同一 Arc；
+/// 交付物流水桶类型别名（AgentLoop 与 PresentFilesTool 共享同一 Arc；
 /// drain 语义与 `turn_file_changes` 同构——assistant 回复落盘时取走即清）。
 pub type TurnDeliverablesBucket =
     Arc<parking_lot::Mutex<HashMap<String, Vec<crate::chat_log::PresentedFile>>>>;
 
-/// N5（2026-10-13 机会项）：交付物登记工具。agent 认为本 turn 的用户**应该
+/// 交付物登记工具。agent 认为本 turn 的用户**应该
 /// 去看**的产物文件（报告/图/导出物）在此声明——与 write_file「改了什么」
-/// （D3 file_changes）分工：这是「该看什么」的结果面指引。登记项随
+/// （file_changes）分工：这是「该看什么」的结果面指引。登记项随
 /// assistant 最终回复落盘为 chat_log 的 `deliverables` 字段，Dashboard 在
 /// 消息气泡下渲染交付物卡片。纯登记：不复制/不改文件，只做存在性验真
 /// （全部存在才登记——all-or-nothing，诚实报缺失清单）。
@@ -460,7 +460,7 @@ impl Tool for PresentFilesTool {
 }
 
 // ===========================================================================
-// N2: present_plan — plan 模式审批语义（内部专项机会项 N2，2026-10-13）
+// present_plan — plan 模式审批语义（内部专项）
 // ===========================================================================
 
 /// present_plan 审批等待窗口（秒）。计划需要阅读时间，比 question 的 120s
@@ -482,7 +482,7 @@ pub enum PlanPresentVerdict {
     Timeout,
 }
 
-/// N2：present_plan 工具与 run_loop 之间的共享接线。agent_factory 构造，
+/// present_plan 工具与 run_loop 之间的共享接线。agent_factory 构造，
 /// 同一 Arc 双侧注入：工具侧（SharedToolConfig.plan_present）做 mode 翻转 +
 /// verdict 写入；loop 侧（`set_plan_present_handle`）在批次尾按 session_key
 /// 取走本会话的 verdict 决定是否终止本轮。`verdicts` 按 session_key 分键、
@@ -517,7 +517,7 @@ impl PlanPresentHandle {
     }
 }
 
-/// N2：计划提交审批工具。plan 模式下把写好的计划交给用户裁决：
+/// 计划提交审批工具。plan 模式下把写好的计划交给用户裁决：
 /// 批准 → mode 翻到 Build，工具结果告知模型按计划执行（本轮照常继续）；
 /// 驳回/超时 → verdict 槽落 Rejected/Timeout，run_loop 批次尾消费后
 /// **结构化终止本轮**（模型拿不到下一轮——不空转不靠提示词自觉）。
@@ -650,7 +650,7 @@ impl Tool for PlanPresentTool {
                     .insert(context.session_key.clone(), PlanPresentVerdict::Timeout);
                 Ok("⏱ 计划审批超时未获响应：本轮到此结束（仍处 plan 模式）。".to_string())
             }
-            // 循环干预阶梯（2026-10-24）：急停强制了结——与超时同收口
+            // 循环干预阶梯：急停强制了结——与超时同收口
             // （留在 plan 模式、本轮终局），不进 build 不继续执行。
             nemesis_types::agent::QuestionOutcome::Cancelled => {
                 self.handle

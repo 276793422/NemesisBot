@@ -215,4 +215,22 @@ describe('停止按钮（2026-10-31 BUG 修复回归）', () => {
     expect(w.find('.btn-stop').attributes('disabled')).toBeDefined()
     w.unmount()
   })
+
+  it('F2 兜底不越实例：点停止后卸载面板 → 20s 兜底不在死闭包上开火', async () => {
+    // 2026-11-06 审计回归锁（W4 同族漏网）：卸载（路由切走）后收尾帧处理器
+    // 与 busy watch 随实例销毁，残留的兜底 timer 在死闭包上开火时 stopping
+    // 恒 true → 对捕获 sid 盲写全局 busy 表 + 清在飞登记：后端仍在工具
+    // 检查点等待的在跑轮（工具 >20s 常态）被提前显示为空闲。卸载即取消
+    // 兜底，busy 只由会话自己的收尾帧/断连复位清。
+    vi.useFakeTimers()
+    const { w, chatStore } = await mountWithBusyTurn({ cancelled: 1 })
+    await w.find('.btn-stop').trigger('click')
+    await flushPromises()
+    expect(chatStore.isBusy('s1')).toBe(true)
+    w.unmount()
+    // 兜底原到期时刻已过 → 若 timer 未随卸载取消，此处将误清 s1 的 busy。
+    await vi.advanceTimersByTimeAsync(20000)
+    await flushPromises()
+    expect(chatStore.isBusy('s1')).toBe(true)
+  })
 })

@@ -17,7 +17,7 @@
 //!   把围栏变装饰。
 //!
 //! 装配形态对齐生产（工具经 register_shared_tools 装配 = 生产同一装配函数）：
-//! - 项目会话（agent_factory::build_project_agent_loop，B1 2026-10-31）：
+//! - 项目会话（agent_factory::build_project_agent_loop， 2026-10-31）：
 //!   root=项目目录，restrict=true，extra_roots=[agent_home]；
 //! - 集群 worker（build_cluster_agent_loop，ASM-04 2026-09-16）：
 //!   root=主 workspace，restrict=true，extra_roots=[]。

@@ -8,7 +8,7 @@
 // - config.rs 186（detect_clamav_path 命中臂）：需要真实 ClamAV 安装在
 //   标准路径。
 // - manager.rs 87/168/212-214/241：manager.start 需要 clamd 真实就绪
-//   （G3 门还要求真实病毒库 main.cvd），stop 的 daemon 分支同因不可达。
+//   （门还要求真实病毒库 main.cvd），stop 的 daemon 分支同因不可达。
 // - updater.rs 171：自动更新的 5 分钟超时臂需要一次挂起的下载。
 // - ownership.rs 103：需要「占着端口的受保护进程」使
 //   QueryFullProcessImageNameW 失败。

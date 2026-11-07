@@ -1,15 +1,15 @@
-//! M5（2026-10-10 集群无人值守硬化）— remote_approval（worker 侧）测试。
+//! （2026-10-10 集群无人值守硬化）— remote_approval（worker 侧）测试。
 //!
 //! 覆盖：装饰器转发（内层裁决生效 + ask_closed 上行不炸）、内层失败不产生
 //! 上行且 Err 透传、pending 直通、truncate_chars、spawn 上行在裸 Cluster
 //! （无在线 coordinator）静默跳过。跨网络行为（真双节点转发）归 cluster-uat
-//! U 系列（文件锁推迟，见计划 §6.5 诚实边界）。
+//! U 系列（文件锁推迟，见计划 诚实边界）。
 
 use super::*;
 use std::sync::Mutex as StdMutex;
 
 /// 内层 responder 桩：记录 respond 调用；`fail_ids` 命中的请求诚实 Err
-/// （模拟「裁决真相源 = unknown」路径）。
+/// （模拟「裁决权威 = unknown」路径）。
 struct MockResponder {
     calls: StdMutex<Vec<(String, bool, bool)>>,
     fail_ids: Vec<String>,
@@ -108,7 +108,7 @@ async fn spawn_register_with_no_coordinator_is_silent_noop() {
         chat_id: "cluster_rpc:node-a/board:42".to_string(),
     };
     spawn_remote_ask_register(cluster, &notice);
-    // fire-and-forget：任务内部 Ok(()) 静默返回；这里只等调度点跑一遍。
+    // fire-and-forget：任务内部 Ok() 静默返回；这里只等调度点跑一遍。
     tokio::task::yield_now().await;
 }
 

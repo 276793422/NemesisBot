@@ -1,4 +1,4 @@
-//! 运行账本漏斗（G3，2026-10-18 三方复评整改批五）。
+//! 运行账本漏斗（2026-10-18 三方复评）。
 //!
 //! runs/attempts 统一层（`runs.rs`）进生产调度的**单一适配面**：board 派发、
 //! cron 触发、workflow 执行三类调度器经本漏斗记账。集群任务的 runs 行由
@@ -18,7 +18,7 @@
 //!   槽（并行测试互不污染）。
 //! - **诚实边界**：审批跨重启续执行不做（audit-only，文档认可的边界）；
 //!   boot sweep 只圈 cron_job（单发语义，网关死亡 = 该次触发失败）——
-//!   board/cluster/workflow 的在途 run 由 G5 恢复、dispatch sweep、
+//!   board/cluster/workflow 的在途 run 由 恢复、dispatch sweep、
 //!   resume 链等生产收口路径负责，重启不等于死亡。
 
 use std::sync::Arc;

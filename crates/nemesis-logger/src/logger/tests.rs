@@ -186,7 +186,7 @@ fn test_logger_structured_fields() {
 
 #[test]
 fn test_logger_level_filtering() {
-    // BUG-20261102-322：名字承诺 filtering、消息文案承诺「should not appear /
+    // 名字承诺 filtering、消息文案承诺「should not appear /
     // should appear」，此前零验证。enable_file 落盘读回（同文件
     // test_file_logging_multiple_messages 先例）收口双边界。
     let dir = tempfile::tempdir().unwrap();
@@ -272,7 +272,7 @@ fn test_logger_set_hook() {
 }
 
 // ============================================================
-// BUG-20261031-242 红绿证：hook take/put-back 竞态。
+// 红绿证：hook take/put-back 竞态。
 // 旧形态 log() 把钩子 take 出锁外调用、结束后 put 回——钩子 in-flight
 // 期间（1）并发 log 锁内取到 None 丢投递；（2）set_hook(新) 被放回的
 // 旧钩子覆盖。两条测试都用 entered/release 栅栏制造确定性 in-flight
@@ -691,7 +691,7 @@ fn test_logger_all_field_methods() {
 
 #[test]
 fn test_logger_level_filtering_all_levels() {
-    // BUG-20261102-322：阈值矩阵此前零验证。每档阈值 × 5 级消息唯一化落盘，
+    // 阈值矩阵此前零验证。每档阈值 × 5 级消息唯一化落盘，
     // 读回精确核对成员关系（Debug<Info<Warn<Error<Fatal 升序）。
     let dir = tempfile::tempdir().unwrap();
     let path = dir

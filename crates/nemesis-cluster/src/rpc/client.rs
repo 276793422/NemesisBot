@@ -43,11 +43,11 @@ pub enum RpcClientError {
 }
 
 impl RpcClientError {
-    /// 派发失败分类（2026-09-30 F3，看板 ⛔ 评论可读性）：连接/网络面失败
+    /// 派发失败分类（看板 ⛔ 评论可读性）：连接/网络面失败
     /// →「节点不可达」（对端下线/网络断/超时/过载，重试有意义）；对端明确
     /// 拒绝或协议失配 →「节点配置异常」（鉴权失败/版本不兼容，重试无意义，
     /// 要查配置）。序列化失败是我方请求构造问题，也归配置异常（协议不匹配
-    /// 表现一致）。放类型所有者处 = 分类口径单一真相源。
+    /// 表现一致）。放类型所有者处 = 分类口径统一定义。
     pub fn failure_category(&self) -> &'static str {
         match self {
             RpcClientError::Connection(_)
@@ -329,7 +329,7 @@ pub(crate) fn peer_in_same_subnet(
 /// Default RPC timeout: 60 minutes (outermost timeout, matching Go implementation).
 pub const DEFAULT_RPC_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-/// Socket read/write timeout margin（2026-10-17 线程泄漏根修）：blocking
+/// Socket read/write timeout margin（线程泄漏根修）：blocking
 /// 线程内 `Connection::recv()` 的 socket 超时 = 外层 timeout + 此余量。
 /// 对端 accept 后静默（断电/VM 暂停/网络黑洞）时，外层 async timeout 先
 /// 放弃调用，但 blocking 线程会永久卡死在 read_exact——tokio blocking
@@ -350,7 +350,7 @@ pub struct RpcClient {
     auth_token: Mutex<Option<String>>,
     /// Peer resolver for looking up addresses.
     resolver: Option<Arc<dyn PeerResolver>>,
-    /// CD6（2026-09-17）：失败 WARN 限频闸（per-peer 60s 一条）——持续失联
+    /// 失败 WARN 限频闸（per-peer 60s 一条）——持续失联
     /// 期间探针/推送/查询的周期性失败调用此前每次都打一条
     /// `[RpcClient] Call failed`，同一错误刷屏日志（outbox WARN 刷屏的同
     /// 根缺陷）。状态翻转另有显式 WARN，限频只压重复噪声。
@@ -359,12 +359,12 @@ pub struct RpcClient {
     /// 运行期注入一次；`None` = 纯直连语义（一期行为零变化）。RwLock 因
     /// 装配晚于构造（gateway 组装顺序：RpcClient 先建、桥出口后建）。
     bridge_transport: RwLock<Option<Arc<dyn BridgeSend>>>,
-    /// A1 P2：iroh 漫游拨号出口（QUIC 插件化 M3：
-    /// 抽象 trait——生产 [`crate::roaming::plugin_bridge::BridgeDialer`] 经桥
+    /// iroh 漫游拨号出口（QUIC 插件化：
+    /// 抽象 trait——生产 [`crate::roaming:plugin_bridge::BridgeDialer`] 经桥
     /// 打真插件，测试注入 LocalDialer 直连本地 TCP）。宿主在装配漫游身份后
     /// 注入；`None` = 拨到 `iroh:` 地址诚实报错（不黑洞）。
     roaming_dialer: RwLock<Option<Arc<dyn crate::roaming::plugin_bridge::RoamingDialer>>>,
-    /// L13-b（2026-11-03 三期）：mandate 签名器（gateway 装配期注入一次）。
+    /// b（三期）：mandate 签名器（gateway 装配期注入一次）。
     /// `None` = 不签名（sign_enabled=false 或密钥不可用）——出站 payload 与
     /// 旧版逐字节一致（开关即回滚）。RwLock 因装配晚于构造（同 bridge_transport）。
     mandate_signer: RwLock<Option<Arc<crate::roaming::mandate::MandateSigner>>>,
@@ -417,7 +417,7 @@ impl RpcClient {
         self.timeout
     }
 
-    /// CD6（2026-09-17）：对端在线状态只读口（resolver 的 per-peer 探针
+    /// 对端在线状态只读口（resolver 的 per-peer 探针
     /// 状态）。outbox 健康联动用——离线时暂停推送，省必败 RPC 调用与刷屏
     /// 日志。`None` = resolver 未配置或节点未知（调用方建议按可推处理，
     /// 让 fast-fail 诚实暴露）。
@@ -435,7 +435,7 @@ impl RpcClient {
         *self.bridge_transport.write() = Some(bridge);
     }
 
-    /// A1 P2：注入漫游拨号出口（QUIC 插件化 M3）。
+    /// 注入漫游拨号出口（QUIC 插件化）。
     /// 注入后 `iroh:<node_id_hex>` 形态地址走插件 QUIC 叠加层（桥 loopback
     /// 交接）；未注入时拨到 `iroh:` 地址诚实报错。
     pub fn set_roaming_dialer(
@@ -445,7 +445,7 @@ impl RpcClient {
         *self.roaming_dialer.write() = Some(dialer);
     }
 
-    /// L13-b：注入 mandate 签名器（gateway 装配期；重复调用 = 覆盖）。
+    /// b：注入 mandate 签名器（gateway 装配期；重复调用 = 覆盖）。
     pub fn set_mandate_signer(&self, signer: Arc<crate::roaming::mandate::MandateSigner>) {
         *self.mandate_signer.write() = Some(signer);
     }
@@ -460,7 +460,7 @@ impl RpcClient {
 
     // -- High-level API -------------------------------------------------------
 
-    /// L13-b（2026-11-03 三期）：mandate 签名注入 step 0（dispatch 咽喉）。
+    /// b（三期）：mandate 签名注入 step 0（dispatch 咽喉）。
     /// A 端单一咽喉——board 派发 / chat 派发 / cluster_rpc 工具三路出站全部
     /// 汇经 dispatch。仅 `Known(PeerChat)` 签：ping/探针/结果查询/回调不签。
     /// 绑定 task_id 取 `payload["task_id"]`（board/chat 派发两路都显式带）
@@ -526,7 +526,7 @@ impl RpcClient {
         self.dispatch(peer_id, request, timeout, true).await
     }
 
-    /// G2: 发送健康探针 RPC，**不受对端 Online 状态门禁限制**。
+    /// 发送健康探针 RPC，**不受对端 Online 状态门禁限制**。
     ///
     /// [`Self::call_with_timeout`] 会拒绝 Offline 对端（online gate）；而
     /// must-reach 通路恰恰要在对端"看起来离线"时到达它——既确认真故障
@@ -557,7 +557,7 @@ impl RpcClient {
     ) -> Result<RPCResponse, RpcClientError> {
         let start = std::time::Instant::now();
 
-        // 0. L13-b mandate 签名注入（A 端单一咽喉——board 派发/chat 派发/
+        // 0. -b mandate 签名注入（A 端单一咽喉——board 派发/chat 派发/
         // cluster_rpc 工具三路出站全部汇经本方法）。仅 Known(PeerChat)：
         // ping/探针/结果查询/回调不签。绑定 task_id 取 payload["task_id"]
         // （board/chat 派发两路都显式带）回落 request.id；签名器缺席 =
@@ -585,7 +585,7 @@ impl RpcClient {
                 .as_ref()
                 .and_then(|r| r.get_peer_info(peer_id))
                 .ok_or_else(|| {
-                    // R4 自投递防护后全空候选也会走到 None——错误文案同时
+                    // 自投递防护后全空候选也会走到 None——错误文案同时
                     // 覆盖「未在册」与「仅剩自端点候选被拒拨」两种成因，
                     // 派发失败留痕时不误导排障方向。
                     RpcClientError::Connection(format!(
@@ -596,7 +596,7 @@ impl RpcClient {
                 })?;
 
             if require_online && !is_online {
-                // CD6：同对端失败日志限频（60s 一条）——持续失联期间恢复
+                // 同对端失败日志限频（60s 一条）——持续失联期间恢复
                 // 轮询/推送的周期性调用此前每次都打一条，同一错误刷屏。
                 if self.warn_gate.admit(peer_id) {
                     tracing::warn!(peer_id = peer_id, "[RpcClient] Peer is offline",);
@@ -760,7 +760,7 @@ impl RpcClient {
                 );
             }
             Err(e) => {
-                // CD6：同对端失败日志限频（60s 一条）——持续失联期间的探针
+                // 同对端失败日志限频（60s 一条）——持续失联期间的探针
                 // /推送失败周期性刷屏点。状态翻转（Offline/Online）另有
                 // cluster 层显式 WARN，限频只压重复噪声。
                 if self.warn_gate.admit(peer_id) {
@@ -795,10 +795,10 @@ impl RpcClient {
         // carry it. Without this, a single-address peer that WAS reached but
         // failed mid-exchange (e.g. response decrypt failure) reported the
         // same opaque "all connection attempts failed" as an unreachable
-        // peer — the same error-masking class as BUG #9 below, on the
-        // non-Remote branch. (BUG #20, quality-hardening goal 冲刺 S4)
+        // peer — the same error-masking class as below, on the
+        // non-Remote branch. (, quality-hardening goal 冲刺)
         // 无初始值：match 全臂要么早退要么赋值，落到这里必然已持有一条真实错误
-        //（消灭 dead initializer 警告：Option + None 兜底在数据流上不可达）。(BUG #20 收尾)
+        //（消灭 dead initializer 警告：Option + None 兜底在数据流上不可达）。(收尾)
         let mut last_err: String;
 
         // Try best address first
@@ -812,7 +812,7 @@ impl RpcClient {
             // change that outcome, and falling through to the generic
             // "all connection attempts failed" would mask the real error
             // (single-address peers lost their handler errors entirely).
-            // (BUG #9, quality-hardening goal W3b)
+            // (, quality-hardening goal)
             Err(RpcClientError::RemoteError(err)) => {
                 tracing::warn!(
                     addr = best_addr,
@@ -873,7 +873,7 @@ impl RpcClient {
     /// Connect to a single address, send the request, receive the response.
     ///
     /// The synchronous TCP I/O (frame send/recv) is offloaded to a blocking
-    /// thread via `tokio::task::spawn_blocking` so that it does not stall
+    /// thread via `tokio::task:spawn_blocking` so that it does not stall
     /// the tokio runtime (matching Go's goroutine-per-call model).
     async fn try_connect_and_send(
         &self,
@@ -881,7 +881,7 @@ impl RpcClient {
         request: &RPCRequest,
         io_timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
-        // A1 P2：iroh 形态地址 → QUIC 叠加层拨号（前缀分派第一闸）。TCP 路径
+        // iroh 形态地址 → QUIC 叠加层拨号（前缀分派第一闸）。TCP 路径
         // 字节不变。
         if crate::roaming::bridge::is_roaming_address(addr) {
             return self
@@ -895,7 +895,7 @@ impl RpcClient {
             .map_err(|_| RpcClientError::Connection(format!("dial timeout to {}", addr)))?
             .map_err(|e| RpcClientError::Connection(format!("connect to {}: {}", addr, e)))?;
 
-        // Convert to std::net::TcpStream for sync frame I/O
+        // Convert to std::net:TcpStream for sync frame I/O
         let std_stream = stream
             .into_std()
             .map_err(|e| RpcClientError::Connection(format!("stream conversion: {}", e)))?;
@@ -934,10 +934,10 @@ impl RpcClient {
         .map_err(|e| RpcClientError::Connection(format!("blocking task join: {}", e)))?
     }
 
-    /// A1 P2：iroh 叠加层帧交换（`iroh:<node_id_hex>`
-    /// 地址；QUIC 插件化 M3）。
+    /// iroh 叠加层帧交换（`iroh:<node_id_hex>`
+    /// 地址；QUIC 插件化）。
     ///
-    /// 拨号走 [`crate::roaming::plugin_bridge::RoamingDialer`]（生产 BridgeDialer
+    /// 拨号走 [`crate::roaming:plugin_bridge::RoamingDialer`]（生产 BridgeDialer
     /// 经桥打插件——插件 iroh 拨号 + loopback 一次性监听；测试可注入
     /// LocalDialer）。拿到 loopback 端口后 `TcpStream::connect(127.0.0.1:port)`
     /// 帧协议照跑：同一 [`wire_from_request`] 转换、同一 AEAD token 语义
@@ -1167,11 +1167,11 @@ impl Default for RpcClient {
 
 /// Extract the IP portion from an "IP:Port" string.
 fn extract_ip_from_addr(addr: &str) -> Option<IpAddr> {
-    // A1：iroh 形态——钉址形态（`iroh:<hex>@<ip:port>`）取 `@` 后的直连
+    // iroh 形态——钉址形态（`iroh:<hex>@<ip:port>`）取 `@` 后的直连
     // 地址参与同网段仲裁（跨网候选不误抢局域网直连优先级）；纯 node_id
     // 形态无 IP 可比 → None（落 fallback 序）。字面量前缀判断无需
     // feature：地址池只在 feature 编译且身份校验合法时才会出现 iroh
-    // 形态（与 `roaming::bridge::IROH_ADDR_PREFIX` 同源，一致性由
+    // 形态（与 `roaming::bridge:IROH_ADDR_PREFIX` 同源，一致性由
     // tests::test_extract_ip_roaming_pinned 断言钉住）。
     if let Some(rest) = addr.strip_prefix("iroh:") {
         let socket = rest.split_once('@')?.1;

@@ -175,7 +175,7 @@ fn write_logging_config(cfg_path: &std::path::Path, logging: &serde_json::Value)
 
     let dir = cfg_path.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
-    // REL-002：统一原子写入（logging 段在主配置）。
+    // 统一原子写入（logging 段在主配置）。
     nemesis_utils::write_file_atomic(
         &cfg_path.to_string_lossy(),
         serde_json::to_string_pretty(&cfg)

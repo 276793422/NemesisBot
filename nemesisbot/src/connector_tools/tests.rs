@@ -28,7 +28,9 @@ kind = "rest"
 description = "零账号纸面下单 demo"
 
 [connector.http]
-base = "https://quotes.example.com"
+# 必拒回环端口：TCP connect 即刻失败（无监听），断言走 "error" 臂不依赖
+# 外部 DNS 行为——公司解析器对 example.com 通配应答会拖到 30s 超时改判 "unknown"。
+base = "http://127.0.0.1:1"
 
 [[op]]
 id = "quote"
@@ -209,7 +211,7 @@ async fn test_paper_order_happy_path_writes_ledger_and_receipt() {
 
 #[tokio::test]
 async fn test_paper_order_without_price_rejected_by_schema_gate() {
-    // R4：place_order args_schema required 含 price → 缺价在出网前的
+    // place_order args_schema required 含 price → 缺价在出网前的
     // schema 闸被拒，不触达 builtin（quote 引导自查保留给直连路径），
     // 无回执（动作从未发生）、账本零变动。
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -498,7 +500,7 @@ http = { method = "GET", path = "/pwn" }
     );
 }
 
-// ---- 行动代理 P0（PLAN §6.2 凭条 approval_ref 契约）----
+// ---- 行动代理 （PLAN 凭条 approval_ref 契约）----
 // ctx.approval_ref（dispatch 经 execute_tracked 拿到的交互审批引用）必须原样
 // 进凭条；ctx 无引用（直通/规则表/免打扰）= None——凭条不伪造背书。
 
@@ -541,7 +543,7 @@ async fn test_receipt_without_ctx_approval_ref_stays_none() {
     let tool = invoke_tool(ws, &config);
 
     // ctx.approval_ref 缺省 None（直通路径）——凭条不得伪造审批引用。
-    // quote 走真实 HTTP（测试环境必然失败）——顺带覆盖 error 臂：错误凭条同样无引用。
+    // quote 走必拒回环端口（见 MIXED_MANIFEST 注记）——顺带覆盖 error 臂：错误凭条同样无引用。
     let out = tool
         .execute(
             r#"{"connector":"paper-broker","op":"quote","args":{"symbol":"AAPL"}}"#,
@@ -698,7 +700,7 @@ http = { method = "PATCH", path = "/repos/{owner}/{repo}/issues/{index}" }
 /// required 缺失正是发卡分支的触发面——若与装 broker 的用例并行，卡会落进
 /// 对方的 broker（request_credential_card 走 current()），对方 pending 断言
 /// 抓到陌生卡假红；本用例自身则阻塞满 300s 卡超时后回落原错误字节，**照样
-/// pass**——污染只有对方可见。实录（2026-10-20 全量首跑）：
+/// pass**——污染只有对方可见。（全量首跑）：
 /// test_cluster_channel_missing_credential_skips_card 残留 connector/gitea
 /// 卡（本用例发出），隔离复跑双绿定位到跨用例串扰。
 #[cfg(feature = "security")]
@@ -761,9 +763,9 @@ http = { method = "GET", path = "/repos/{owner}/{repo}/issues" }
     );
 }
 
-/// T-CONN-1 ③a 回归锁（2026-10-19 ET 两连红）：无人值守 worker 上下文
+/// T-CONN-1 ③a 回归锁（ET 两连红）：无人值守 worker 上下文
 /// （channel=cluster / cluster-connector 两族）required 凭据缺失**不发卡**，
-/// 立即诚实 error 回流 A 端。broker 在场也不得阻塞——1ef104c7 回归实录：
+/// 立即诚实 error 回流 A 端。broker 在场也不得阻塞——1ef104c7 回归
 /// worker 发卡挂 300s 等不到人，A 端 150s 派发窗口先超时。判臂 = 墙钟：
 /// 正常路径 vault 解析毫秒级；回归臂卡挂满 300s 超时（错误字节才回落
 /// 原路径）——elapsed 断言红得有数字，不靠测试挂死暴露。本地交互（web）
@@ -821,7 +823,7 @@ http = { method = "GET", path = "/ping" }
     )
     .expect("create vault");
 
-    // 装 broker（B4 生产形态：gateway 装配后 current() 在场——发卡分支
+    // 装 broker（生产形态：gateway 装配后 current() 在场——发卡分支
     // 真实可达，而非靠 broker 缺席的快速路径）。
     let broker = std::sync::Arc::new(crate::credential_broker::WebCredentialBroker::new(
         ws.to_path_buf(),
@@ -894,7 +896,7 @@ http = { method = "GET", path = "/ping" }
     unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
 }
 
-// ---- 收官批 A2：Gitea 模板 connector（mock 快速层）----
+// ---- 收官批：Gitea 模板 connector（mock 快速层）----
 
 /// workspace 模板恒合法 + op 面与验收表逐一对齐 + 越界面（危险 op 不声明）。
 /// 模板腐化（改坏 manifest / 悄悄加 op / 减验收 op）在这里红。
@@ -926,7 +928,7 @@ fn test_workspace_template_gitea_manifest_is_valid_and_scoped() {
     assert!(close.confirm_required);
     assert_eq!(close.risk, RiskLevel::High);
     assert_eq!(close.class, OpClass::Write);
-    // create_pull = high + 强授权卡（P3 发布面；验收表行随模板扩面同步）
+    // create_pull = high + 强授权卡（发布面；验收表行随模板扩面同步）
     let create_pull = c.ops.iter().find(|o| o.id == "create_pull").unwrap();
     assert!(create_pull.confirm_required);
     assert_eq!(create_pull.risk, RiskLevel::High);
@@ -940,9 +942,9 @@ fn test_workspace_template_gitea_manifest_is_valid_and_scoped() {
     );
 }
 
-// ---- 收官批 C2：web-ui 模板 connector（浏览器兜底，playwright-mcp）----
+// ---- 收官批：web-ui 模板 connector（浏览器兜底，playwright-mcp）----
 
-/// 示例模板（examples/connectors/，A3 起不随 onboard 提取）恒合法 + **默认停用**
+/// 示例模板（examples/connectors/， 起不随 onboard 提取）恒合法 + **默认停用**
 /// （只声明不默认开）+ op 面对齐 C 段验收表
 /// （读 low/read 直通、写 high/write 强授权卡）+ 全 tool 绑定 playwright-mcp +
 /// 危险 op 不声明（evaluate/run_code_unsafe/file_upload 不进清单）。
@@ -984,7 +986,7 @@ fn test_workspace_template_webui_manifest_is_valid_and_disabled_by_default() {
     }
     // 全部 tool 绑定到 playwright-mcp server（前缀对齐 adapter.rs 的注册
     // 形态 mcp_{server}_{tool}——sanitize 后的 name 单下划线）；无 receipt
-    // 主键（MCP adapter 扁平化文本，凭条走首行 summary——C4 实施期裁定）。
+    // 主键（MCP adapter 扁平化文本，凭条走首行 summary—— 实施期裁定）。
     for op in &c.ops {
         match &op.binding {
             nemesis_connectors::manifest::OpBinding::Tool { tool } => {
@@ -1182,7 +1184,7 @@ async fn test_gitea_template_ops_against_mock_gitea_inner() {
     unsafe { std::env::remove_var("NEMESISBOT_VAULT_PASSPHRASE") };
 }
 
-// ---- 收官批 A2：Gitea 真实链路 e2e（scripts/test-gitea-e2e.sh 拉起真实实例后跑）----
+// ---- 收官批：Gitea 真实链路 e2e（scripts/test-gitea-e2e.sh 拉起真实实例后跑）----
 
 /// 递归收集目录下全部文件（泄露扫描用；只遍历不消费顺序——平台序无影响）。
 #[cfg(feature = "security")]
@@ -1215,7 +1217,7 @@ async fn gitea_invoke(
     tool.execute(&args, &ctx()).await
 }
 
-/// 真实 Gitea 实例上的全链路验收（验收表 §3.2 行 4-9）：模板 manifest →
+/// 真实 Gitea 实例上的全链路验收（验收表 行 4-9）：模板 manifest →
 /// vault PAT 注入 → HTTP 真发 → 真实副作用（评论计数 +1 / state=closed）→
 /// 未声明 op 越界诚实拒 → 凭据轮换立即生效（坏 token 401 / 好 token 恢复）
 /// → 全 workspace 字节级泄露扫描零命中（凭据铁律：vault 密文、回执 digest）。
@@ -1454,12 +1456,12 @@ async fn gitea_real_chain_e2e_inner() {
 }
 
 // ===========================================================================
-// 收官批 C 段：tool 绑定回执语义（C4）+ leniency（绑定工具缺席 = 诚实报错）
+// 收官批 C 段：tool 绑定回执语义+ leniency（绑定工具缺席 = 诚实报错）
 // ===========================================================================
 
-/// C4 分类矩阵：⛔ 家族 = 安全层已裁决（透传不双写）；错误形态文本
-/// （Error:/Tool error:/Exit code:/Plan mode:）= dispatch 未代写凭条 →
-/// error 回执；其余 = 成功。F2 超时特判（2026-10-16 二轮复查）：错误形态
+/// 分类矩阵：⛔ 家族 = 安全层已裁决（透传不双写）；错误形态文本
+/// （Error:/Tool error:/Exit code:/Plan mode）= dispatch 未代写凭条 →
+/// error 回执；其余 = 成功。 超时特判（二轮复查）：错误形态
 /// 且含 "timed out" 且非 `Exit code:` 前缀 = 结果未知（UnknownOutcome，
 /// 保留账目不回吐）——`Exit code:` 是进程跑完的确定性失败，即便输出里
 /// 恰好含 "timed out" 字样（测试二进制超时输出混入）也保持 Failed。
@@ -1496,7 +1498,7 @@ fn test_classify_tool_result_receipt_semantics() {
         classify_tool_result("Plan mode: file modifications are denied."),
         Failed
     );
-    // F2 超时特判：真实超时文本形态（executor.rs/shell.rs）→ UnknownOutcome
+    // 超时特判：真实超时文本形态（executor.rs/shell.rs）→ UnknownOutcome
     assert_eq!(
         classify_tool_result("Tool error: tool exec timed out after 300s"),
         UnknownOutcome
@@ -1505,8 +1507,8 @@ fn test_classify_tool_result_receipt_semantics() {
         classify_tool_result("Tool error: command timed out after 60s"),
         UnknownOutcome
     );
-    // M2 扩面回归锁：exec 工具超时收尸 = `Ok("Command timed out …")`
-    // （loop_tools.rs 单一真相源，**无错误前缀**）——此前落 Done = 假
+    // 扩面回归锁：exec 工具超时收尸 = `Ok("Command timed out …")`
+    // （loop_tools.rs 统一定义，**无错误前缀**）——此前落 Done = 假
     // executed 凭条，script 超时诚实臂的根修。
     assert_eq!(
         classify_tool_result(
@@ -1514,7 +1516,7 @@ fn test_classify_tool_result_receipt_semantics() {
         ),
         UnknownOutcome
     );
-    // F2 误判防线：`Exit code:` 前缀 = 进程跑完退出非零（确定性失败），
+    // 误判防线：`Exit code:` 前缀 = 进程跑完退出非零（确定性失败），
     // 输出含 "timed out" 字样也不误判为 unknown
     assert_eq!(
         classify_tool_result(
@@ -1527,7 +1529,7 @@ fn test_classify_tool_result_receipt_semantics() {
     assert_eq!(classify_tool_result("{\"status\":\"ok\"}"), Done);
 }
 
-/// F4（2026-10-16 二轮复查）：unknown 是最需要推送的结局（结果未知 →
+/// （二轮复查）：unknown 是最需要推送的结局（结果未知 →
 /// 需人核账），必须进推送白名单；读类非资金仍静默只入账本。
 #[test]
 fn test_should_push_covers_unknown_outcome() {
@@ -1556,7 +1558,7 @@ fn test_should_push_covers_unknown_outcome() {
 }
 
 /// tool 绑定 e2e（真 AgentLoop + 注册桩工具）：成功路径走完整 dispatch
-/// 瀑布，executed 回执携带 manifest 声明 receipt_key 抠出的主键（C4：
+/// 瀑布，executed 回执携带 manifest 声明 receipt_key 抠出的主键（
 /// 镜像 run_http）。桩工具模拟 MCP adapter 工具的注册/执行形态——瀑布
 /// 对注册表工具一律同路，MCP 侧真实性由 nemesis-mcp 自己的测试承载。
 #[tokio::test]
@@ -1638,7 +1640,7 @@ tool = "mcp_stub__read_page"
 
 /// leniency e2e（验收 5 第三臂）：绑定工具在注册表缺席时——manifest 合法
 ///（parse 不查注册表），调用 = dispatch 诚实报错 `Error: Unknown tool`，
-/// 且工具侧落 error 回执（C4：错误也是账；此前该族透传无账）。
+/// 且工具侧落 error 回执（错误也是账；此前该族透传无账）。
 #[tokio::test]
 async fn test_tool_binding_unknown_tool_is_honest_error_with_receipt() {
     use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse};
@@ -1714,7 +1716,7 @@ tool = "mcp_absent__browser_click"
 }
 
 // ===========================================================================
-// 收官批 E1：远程执行面（target_node → 集群 RPC → 镜像凭条）
+// 收官批：远程执行面（target_node → 集群 RPC → 镜像凭条）
 // ===========================================================================
 
 /// mock 通道捕获的调用（peer, action, payload）。
@@ -1986,7 +1988,7 @@ async fn test_remote_invoke_worker_error_text_prefix_stripped() {
     tool.set_remote_call_fn(mock_remote_fn(
         Arc::new(std::sync::Mutex::new(Vec::new())),
         |_peer, _action, _payload| {
-            // 对端 error：dispatch 包装形态 "Tool error: ..."（worker handler
+            // 对端 error：dispatch 包装形态 "Tool error:..."（worker handler
             // 恒 Ok 回传，result_text 带 dispatch 前缀）。
             Ok(serde_json::json!({
                 "receipt": worker_receipt_json("error", ""),
@@ -2016,9 +2018,9 @@ async fn test_remote_invoke_worker_error_text_prefix_stripped() {
     assert!(receipts[0].budget_consumed.is_none(), "error 不记额度");
 }
 
-/// 回执 envelope 缺 outcome = 结果未知（R3 决策表第四臂，2026-10-16 回检
+/// 回执 envelope 缺 outcome = 结果未知（决策表第四臂， 回检
 /// 补口）：请求可能已送达并在 B 端执行——不得按 "error" 兜底走 release
-/// 回吐预算（R3 语义旁路）。落 "unknown" 镜像凭条 + 预算占用保留。
+/// 回吐预算（语义旁路）。落 "unknown" 镜像凭条 + 预算占用保留。
 #[tokio::test]
 async fn test_remote_invoke_missing_outcome_retains_budget() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -2073,7 +2075,7 @@ async fn test_remote_invoke_missing_outcome_retains_budget() {
     assert!((qty - 1.0).abs() < 1e-9, "资金类数量保留，实际 {qty}");
 }
 
-/// 对端 dispatch 层拒绝（estop 冻结族，T-CONN-1 ② 单测形态，2026-10-16
+/// 对端 dispatch 层拒绝（estop 冻结族，T-CONN-1 ② 单测形态，
 /// ET 根修）：worker 从未执行、凭条从未落账（receipt=null 诚实不造假），
 /// result_text 带 ⛔ 前缀 = 确定性「未执行」——镜像 outcome=error（决策
 /// 表 release 回吐预算），summary 带 `· ?]` 署名特征 + 拒因入账。与上一
@@ -2124,7 +2126,7 @@ async fn test_remote_invoke_estop_refusal_no_receipt_maps_to_error() {
     );
     assert!(receipts[0].budget_consumed.is_none(), "error 不记额度");
 
-    // 预算回吐：error = 对端确认未执行（R3），rate_used 归 0。
+    // 预算回吐：error = 对端确认未执行，rate_used 归 0。
     assert_eq!(
         tool.budget
             .rate_used("paper-broker", chrono::Utc::now().timestamp_millis()),
@@ -2133,7 +2135,7 @@ async fn test_remote_invoke_estop_refusal_no_receipt_maps_to_error() {
     );
 }
 
-/// F1（2026-10-16 二轮复查）回归：连接建立失败（connection refused）=
+/// （二轮复查）回归：连接建立失败（connection refused）=
 /// 请求**未发出** = 确定性未生效 → `is_connect()` 臂保持 Err → 决策表
 /// Err 臂 release 回吐额度（rate_used 归 0）+ error 凭条。与上一测试
 /// 构成对照：超时/传输中断 = unknown 保留占用，连接拒绝 = error 回吐。
@@ -2196,7 +2198,7 @@ http = { method = "POST", path = "/things" }
 }
 
 // ===========================================================================
-// R4：执行前 args 校验（出网前拒绝 + 零额度 + 零 HTTP + 资金形态强制）
+// 执行前 args 校验（出网前拒绝 + 零额度 + 零 HTTP + 资金形态强制）
 // ===========================================================================
 
 /// enum/required 越界在出网前拒绝：wiremock 零请求、零凭据依赖（闸在
@@ -2260,7 +2262,7 @@ async fn test_invalid_args_rejected_before_outbound_wiremock_zero_requests() {
     );
 }
 
-/// 资金参数形态强制（R4）：finance op 的 qty 必须在场且为有限正数——
+/// 资金参数形态强制：finance op 的 qty 必须在场且为有限正数——
 /// 缺失/null 由 required 闸拒，字符串/零/负数由形态闸拒；全部发生在
 /// 预算 reserve 之前 = 零额度消耗 + 零资金动作 + 零回执。
 #[tokio::test]
@@ -2314,7 +2316,7 @@ async fn test_finance_qty_forms_rejected_before_budget() {
     );
 }
 
-/// R4 单点在远程分支之前：非法参数的远程调用不出线（mock RPC 零捕获）、
+/// 单点在远程分支之前：非法参数的远程调用不出线（mock RPC 零捕获）、
 /// 零额度、零回执——与本地路径同覆盖。
 #[tokio::test]
 async fn test_remote_invoke_invalid_args_never_leaves_master() {
@@ -2353,7 +2355,7 @@ async fn test_remote_invoke_invalid_args_never_leaves_master() {
     );
 }
 
-// ---- E4（收官批 2026-10-15）monitor 语义变化检测 ----
+// ---- （收官-15）monitor 语义变化检测 ----
 // fetch 之后的全链（快照/比对/轮转/摘要分流）收在 monitor_finalize 纯函数，
 // 单测不经 loop 直接驱动；LLM 真调归验收（PLAN §十 10：小模型通道三态）。
 
@@ -2399,7 +2401,7 @@ fn test_monitor_finalize_semantic_off_full_chain() {
         monitor_finalize(ws, "首页", "https://a.example.com/x", false, "内容A").expect("unchanged");
     assert!(matches!(d, MonitorDecision::Unchanged { .. }));
 
-    // 变化 + semantic=false：机械比对（P0 旧行为），快照轮转到新内容。
+    // 变化 + semantic=false：机械比对（旧行为），快照轮转到新内容。
     let d =
         monitor_finalize(ws, "首页", "https://a.example.com/x", false, "内容B").expect("changed");
     match d {
@@ -2502,7 +2504,7 @@ fn test_monitor_slug_no_traversal_and_no_ascii_collision() {
 
 #[tokio::test]
 async fn test_monitor_check_execute_arg_gates_and_no_loop_honest_error() {
-    // 经 execute 全链：缺 url / 缺 name 在 R4 schema 闸（出网前）被拒——
+    // 经 execute 全链：缺 url / 缺 name 在 schema 闸（出网前）被拒——
     // 不触达 builtin、不消耗额度、不落回执（动作从未发生）；带全参但无
     // loop（停机窗口）→ fetch 诚实失败，错误也是账。
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -2576,7 +2578,7 @@ action = "builtin.no_such_action"
 }
 
 // ---------------------------------------------------------------------------
-// R6：GET 剩余 args 合并发送（extra_query 此前收集后从未消费）
+// GET 剩余 args 合并发送（extra_query 此前收集后从未消费）
 // ---------------------------------------------------------------------------
 
 /// merge 纯函数五形态：普通参数在前保序、凭据同名时凭据胜（普通 args 不
@@ -2712,7 +2714,7 @@ http = { method = "GET", path = "/feed?src=manifest" }
     assert_eq!(received.len(), 2, "两笔请求都到齐");
     let search_url = received[0].url.as_str();
     assert!(search_url.contains("limit=5"), "limit 在 URI: {search_url}");
-    // 中文「中」= E4 B8 AD；空格 = +（form 编码）；值内 `&` = %26。
+    // 中文「中」= AD；空格 = +（form 编码）；值内 `&` = %26。
     assert!(
         search_url.contains("q=%E4%B8%AD%E6%96%87+%E7%A9%BA%E6%A0%BC+%26+%E7%AC%A6%E5%8F%B7"),
         "q 值三形态编码完整: {search_url}"
@@ -2729,7 +2731,7 @@ http = { method = "GET", path = "/feed?src=manifest" }
     assert!(feed_url.contains('&'), "追加用 & 连接: {feed_url}");
 }
 
-/// path 占位符 percent-encode（边界补强 2026-10-20）：占位符 = 单 path
+/// path 占位符 percent-encode（边界补强）：占位符 = 单 path
 /// segment 语义——`../` 不得穿越层级、`?`/`#` 不得逃逸 segment、中文按
 /// UTF-8 percent 形态。严格断言放在 wiremock 收到的原始 URL（url crate
 /// 不解码 path，原始字节是唯一真相）；`..` 若未编码会被客户端 remove_dot_
@@ -2810,12 +2812,12 @@ fn test_encode_path_segment_shapes() {
         "已编码值不二次解码"
     );
     assert_eq!(encode_path_segment("a b"), "a%20b");
-    // 中（E4 B8 AD）→ UTF-8 逐字节。
+    // 中（AD）→ UTF-8 逐字节。
     assert_eq!(encode_path_segment("中"), "%E4%B8%AD");
     assert_eq!(encode_path_segment(""), "");
 }
 
-/// find 镜像资源上限（边界补强 2026-10-20）：条数截断（MIRROR_LIST_CAP）
+/// find 镜像资源上限（边界补强）：条数截断（MIRROR_LIST_CAP）
 /// + mirrors_truncated 注记；超限 schema 置 null + args_schema_note。
 #[cfg(feature = "security")]
 #[tokio::test]
@@ -2885,7 +2887,7 @@ async fn test_find_mirror_list_and_schema_caps() {
     assert!(t001["args_schema_note"].is_null());
 }
 
-/// R6 同名冲突端到端：凭据 query（vault 注入 `into = "query:api_key"`）
+/// 同名冲突端到端：凭据 query（vault 注入 `into = "query:api_key"`）
 /// 与 args 同名 `api_key` 同场——wiremock 收到的必须只有 vault 值（普通
 /// args 不得覆盖/伴随凭据出现）。GLOBAL_STATE_LOCK 形态同既有 vault e2e。
 #[cfg(feature = "security")]
@@ -2994,10 +2996,10 @@ http = { method = "GET", path = "/data" }
 }
 
 // ---------------------------------------------------------------------------
-// R7：工具桥上下文透传（ctx.clone 只改审计标签 + depth 透传）
+// 工具桥上下文透传（ctx.clone 只改审计标签 + depth 透传）
 // ---------------------------------------------------------------------------
 
-/// R7 e2e：tool 绑定回灌的 ctx 必须是原 ctx 的 clone（只改审计标签
+/// e2e：tool 绑定回灌的 ctx 必须是原 ctx 的 clone（只改审计标签
 /// channel="connector-binding"）——correlation_id / tool_path_base /
 /// async_callback 原样保留（此前 RequestContext::new 全置 None：档案管线
 /// 任务经 connector 绑定调 write_file，相对 path 静默落工作副本之外）；
@@ -3125,7 +3127,7 @@ tool = "write_file"
         Some(workcopy.as_path()),
         "tool_path_base 跨桥保留"
     );
-    // approval_ref 不透传是 dispatch 既有安全语义（tool_dispatch.rs L781
+    // approval_ref 不透传是 dispatch 既有安全语义（tool_dispatch.rs
     // 刻意覆盖：凭条只信「本次调用真实发生的交互审批」，透传上游引用 =
     // 伪造背书）——桥内调用未触发审批 → spy 收到 None。
     assert!(
@@ -3178,7 +3180,7 @@ tool = "write_file"
 }
 
 // ---------------------------------------------------------------------------
-// M1 信任徽标消费面（2026-10-19）：require_signed 闸 / 审批卡警示 / find 徽标
+// 信任徽标消费面：require_signed 闸 / 审批卡警示 / find 徽标
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -3320,7 +3322,7 @@ async fn test_find_emits_trust_field() {
     );
 }
 
-// ---- M2（2026-10-19）script 绑定 e2e（真 AgentLoop + 真 ExecTool）----
+// ---- script 绑定 e2e（真 AgentLoop + 真 ExecTool）----
 
 /// script 连接器清单（平台感知：慢命令臂 Windows=ping / Unix=sleep）。
 /// `clean` op 的命令故意撞命令守卫黑名单（rm_rf）——deny 臂用。
@@ -3570,7 +3572,7 @@ async fn test_script_binding_config_zero_disables_script_ops() {
     assert!(receipts[0].budget_consumed.is_none(), "拒绝 = 额度回吐");
 }
 
-/// 臂⑤：缺占位符实参（R4）——审批/预算之前响亮拒绝，零凭条零额度。
+/// 臂⑤：缺占位符实参——审批/预算之前响亮拒绝，零凭条零额度。
 #[tokio::test]
 async fn test_script_binding_missing_placeholder_arg_rejected_before_budget() {
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -3649,9 +3651,9 @@ fn test_utf8_tail_char_boundary() {
     assert_eq!(utf8_tail("ab你", 1), "");
 }
 
-// ---- M4b（2026-10-19）：desktop-ui 模板 connector（桌面只读面，window-mcp）----
+// ----：desktop-ui 模板 connector（桌面只读面，window-mcp）----
 
-/// 示例模板（examples/connectors/，A3 起不随 onboard 提取）恒合法 + **默认停用** +
+/// 示例模板（examples/connectors/， 起不随 onboard 提取）恒合法 + **默认停用** +
 /// 只读三 op 全 low/read 无强授权卡 +
 /// 全 tool 绑定 window-mcp + 交互写入/落盘截图不声明（web-ui 同款防线）。
 #[test]
@@ -3718,7 +3720,7 @@ fn test_workspace_template_desktopui_manifest_is_valid_and_disabled_by_default()
 }
 
 // ---------------------------------------------------------------------------
-// B2（2026-10-19 独占接管）：镜像 op 基线投影 / 执行 / 例外 / find 枚举
+// （独占接管）：镜像 op 基线投影 / 执行 / 例外 / find 枚举
 // ---------------------------------------------------------------------------
 
 /// 独占接管 connector 模板（接管 `stub` server；显式 op 一个，其余走镜像）。
@@ -3760,7 +3762,7 @@ fn loop_with_snapshot(
     loop_with_snapshot_hints(entries.as_slice())
 }
 
-/// B3：带 annotations hints 的变体（description 也随参——A4 检索词元测
+/// 带 annotations hints 的变体（description 也随参—— 检索词元测
 /// 需要英文词根描述）。
 fn loop_with_snapshot_hints(
     entries: &[(&str, serde_json::Value, Option<bool>, Option<bool>)],
@@ -3864,7 +3866,7 @@ async fn test_operation_override_mirror_baseline_projection() {
     );
 }
 
-/// B3 四档基线：hints 驱动镜像 op 档位（readOnly 自述=low/read 免卡，
+/// 四档基线：hints 驱动镜像 op 档位（readOnly 自述=low/read 免卡，
 /// destructive 自述=high/write 强制确认卡；未声明维持 medium/read）。
 /// 管线 slug 投影同源：high+write → file_write（plan 模式写闸免费同享）。
 #[cfg(feature = "security")]
@@ -3924,7 +3926,7 @@ async fn test_operation_override_mirror_hint_tiers() {
     assert!(o.force_approval.is_none());
 }
 
-/// A4：镜像描述词元可命中——英文描述词根检索（原生工具 description 是
+/// 镜像描述词元可命中——英文描述词根检索（原生工具 description 是
 /// 独占面最富的检索素材；id 词元命中路径既有测试已覆盖）。
 #[cfg(feature = "security")]
 #[tokio::test]
@@ -3960,8 +3962,8 @@ async fn test_find_matches_mirror_description_tokens() {
     );
 }
 
-/// G1×镜像（2026-10-20 边界补强）：被 `agents.hidden_tools` 隐藏的原生
-/// 工具不进镜像面。G1 在 dispatch 端是绝对闸（任何出处都拒，绑定回灌
+/// ×镜像（边界补强）：被 `agents.hidden_tools` 隐藏的原生
+/// 工具不进镜像面。 在 dispatch 端是绝对闸（任何出处都拒，绑定回灌
 /// 也不例外），镜像若照列就是「find 可列、invoke 必死」的死链家族——
 /// 枚举面（mirrors_of/mirror_pairs_of）与调用面（resolve_mirror_op）经
 /// `AgentLoop::tool_matches_hidden_config` 与 dispatch 闸同源过滤。
@@ -4004,7 +4006,7 @@ async fn test_g1_hidden_tool_excluded_from_mirror_surface() {
         "对照组镜像应在列: {excl}"
     );
 
-    // 实验组（G1 隐藏）：枚举面消失——检索不再经镜像命中该 connector。
+    // 实验组（隐藏）：枚举面消失——检索不再经镜像命中该 connector。
     loop_arc.set_extra_hidden_tools(vec!["mcp_stub__read_page".to_string()]);
     let out = find
         .execute(r#"{"query":"snapshot"}"#, &ctx())
@@ -4071,7 +4073,7 @@ async fn test_execute_mirror_op_runs_native_tool_with_receipt() {
     assert_eq!(r.class, "read");
 }
 
-/// args_schema 预检（R4）对镜像 op 同样生效：缺必填参数 = 出网前诚实拒。
+/// args_schema 预检对镜像 op 同样生效：缺必填参数 = 出网前诚实拒。
 #[cfg(feature = "security")]
 #[tokio::test]
 async fn test_execute_mirror_validates_args_against_snapshot_schema() {

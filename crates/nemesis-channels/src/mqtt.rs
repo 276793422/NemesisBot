@@ -1,4 +1,4 @@
-//! MQTT 通道（P28，Wave 3 能力扩展）：基于 rumqttc 的双向通道。
+//! MQTT 通道（Wave 3）：基于 rumqttc 的双向通道。
 //!
 //! - **入站**：订阅 config 指定的 topic filter 列表（支持 `+`/`#` 通配，默认
 //!   QoS 1），payload（JSON 信封或纯文本）转 `InboundMessage`，具体 topic 作为
@@ -9,7 +9,7 @@
 //!   三者皆缺位 = 诚实报错不乱发。
 //!
 //! 设计要点：
-//! - **QoS 1（AtLeastOnce）为默认**（P28 钦定），0/2 可配，>2 在构造期拒绝；
+//! - **QoS 1（AtLeastOnce）为默认**（钦定），0/2 可配，>2 在构造期拒绝；
 //! - **重连语义**：事件循环 poll 出错只记日志 + 退避重试——rumqttc 的 EventLoop
 //!   在后续 poll 时自动重连（`network=None` 分支），broker 后起不影响常驻进程
 //!   （IoT 场景刚需）；每次收到 ConnAck（含重连成功）都重新订阅——clean_session
@@ -18,7 +18,7 @@
 //!   JSON 信封（`{"from":"nemesisbot","content":...}`），入站侧遇到带该标记的
 //!   信封直接跳过（订阅 filter 覆盖到回包 topic / 双 bot 共享 broker 时不自对话）；
 //! - **凭据纪律**：username/password 只进 config 结构体，绝不硬编码；装配层
-//!   （gateway，B3 先例）可对字段做 vault:/env:/yaml: 引用解析；
+//!   （gateway， 先例）可对字段做 vault:/env:/yaml: 引用解析；
 //! - **凭据为空 = 匿名连接**（LAN broker 常态），不隐式填充。
 //!
 //! 已知边界（诚实声明）：
@@ -39,7 +39,7 @@
 //! - 停止走取消信号 + 任务退出即断 TCP（clean_session 下不追求优雅 DISCONNECT）；
 //! - 真实 broker 端到端已真机验证（2026-09-27：mosquitto 2.0.22 双监听 +
 //!   rustls TLS + 防回环实测 PASS，见
-//!   `docs/REPORT/2026-09-27_四高挂账修复与三通道真机验证报告.md`）；契约
+//!   `四高挂账修复与三通道真机验证报告`）；契约
 //!   测试用 tokio TCP mock 最小 broker（rumqttc 无内建 mock 模式），见
 //!   `mqtt/tests.rs`。
 
@@ -106,7 +106,7 @@ pub struct MqttChannelConfig {
 /// 订阅 topic filter → 回包 topic 映射（topic 映射表条目）。
 #[derive(Debug, Clone, Default)]
 pub struct MqttTopicMapping {
-    /// 订阅的 topic filter（支持 `+`/`#` 通配，MQTT 3.1.1 §4.7 语义）。
+    /// 订阅的 topic filter（支持 `+`/`#` 通配，MQTT 3.1.1 语义）。
     pub topic: String,
     /// 出站回包 topic；空 = 此映射不承接回包（回落学习条目/默认回包）。
     pub reply_topic: String,
@@ -140,7 +140,7 @@ enum ParsedPayload {
     Skip,
 }
 
-/// 入站 payload 解析（单一真相源，事件循环与单测共用）。
+/// 入站 payload 解析（统一定义，事件循环与单测共用）。
 ///
 /// 规则：
 /// 1. 空 payload → [`ParsedPayload::Skip`]；
@@ -190,7 +190,7 @@ fn parse_payload(raw: &[u8]) -> ParsedPayload {
 
 /// MQTT topic filter（订阅侧，可含通配符）与具体 topic 的匹配判定。
 ///
-/// 规则（MQTT 3.1.1 §4.7）：
+/// 规则（MQTT 3.1.1）：
 /// - `+` 匹配恰好一层（不跨层）；
 /// - `#` 匹配剩余全部层级，必须为最后一段；父级 filter `a/#` 也匹配 `a` 本身。
 fn mqtt_topic_matches(filter: &str, topic: &str) -> bool {
@@ -653,7 +653,7 @@ impl Channel for MqttChannel {
             .ok_or_else(|| NemesisError::Channel("mqtt channel not running".to_string()))?;
         // 防回环信封：出站带 from="nemesisbot" 标记，让入站侧的 Skip 兜底真正
         // 生效（订阅 filter 覆盖到回包 topic / 双 bot 共享 broker 时，自己发的
-        // 消息会被自己当纯文本入站 → 自对话放大循环）。2026-09-26 复查修复：
+        // 消息会被自己当纯文本入站 → 自对话放大循环）。 复查修复：
         // 此前出站发裸 content，入站 Skip 分支永不触发。
         let envelope = serde_json::json!({
             "from": "nemesisbot",
@@ -670,8 +670,8 @@ impl Channel for MqttChannel {
             len = msg.content.len(),
             "[MqttChannel] outbound published"
         );
-        // 出站同步镜像（websocket 先例：镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        // 出站同步镜像（websocket 镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（回环防护）。
         self.base.sync_outbound(&msg).await;
         Ok(())
     }

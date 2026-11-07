@@ -1,4 +1,4 @@
-//! L13-b（2026-11-03 改进项三期）：任务 mandate 签名授权——数据形态与
+//! b（2026-11-03）：任务 mandate 签名授权——数据形态与
 //! 密码学内核（纯函数层；wire 接线在 rpc/client（A 端签名注入）与
 //! rpc/peer_chat_handler（B 端前置闸），执行面守卫在 nemesis-agent +
 //! nemesisbot cluster_agent）。
@@ -6,7 +6,7 @@
 //! mandate = A 端（master）对单个出站 peer_chat 任务签发的**授权书**：
 //! `payload["mandate"]` = `{v:1, task_id, tool_allowlist, time_window,
 //! budget, signed_at, sig}`。B 端只信本地钉存钥（trust.toml
-//! `[mandate_keys][source_node_id]`，L13-a 分发面）验签——**信封不含公钥
+//! `[mandate_keys][source_node_id]`，-a 分发面）验签——**信封不含公钥
 //! 槽**（防密钥替换攻击的结构性前提：攻击者改信封公钥无从影响验证）。
 //!
 //! 摘要语义单源声明：规范化字节 = `serde_json::to_vec(&MandateBody)`
@@ -14,7 +14,7 @@
 //! nemesis-verify `v4_content_digest` 对非 PE 内容（raw codec 全文件哈希）
 //! **字节等价**——parity 测试钉住（规格「A 端 v4_content_digest+签名」语义
 //! 单源不漂移）。直依赖 p256+sha2 而非 nemesis-verify（后者 reqwest 重），
-//! 密钥形态与算法栈与 v4 leaf 同口径（拍板「复用 leaf」= 复用形态不是复用
+//! 密钥形态与算法栈与 v4 leaf 同口径（「复用 leaf」= 复用形态不是复用
 //! 密钥文件——节点 mandate 密钥是每节点运行时身份，ceremony 私钥红线不进
 //! workspace）。
 
@@ -33,7 +33,7 @@ use super::trust::{MandateKeyVerdict, mandate_key_state};
 // Wire 形态
 // ---------------------------------------------------------------------------
 
-/// mandate 时间窗（绝对 epoch secs；假设 NTP，与 announce 过期 G3 同一假设）。
+/// mandate 时间窗（绝对 epoch secs；假设 NTP，与 announce 过期 同一假设）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MandateTimeWindow {
     /// 生效下界（unix secs）。
@@ -51,7 +51,7 @@ pub struct MandateBudget {
     pub max_tool_calls: u64,
 }
 
-/// mandate 签名体（规范化字节的单一真相源）。**全部字段必填（无 serde
+/// mandate 签名体（规范化字节的统一定义）。**全部字段必填（无 serde
 /// default）**：缺失字段 = Malformed 拒，不做缺省猜测——这保证 B 端反序列
 /// 化后重新规范化与 A 端签发字节逐位一致（canonical roundtrip 的前提）。
 /// 字段声明序即 wire 序（serde_json struct 保声明序），改序 = 破坏性变更。
@@ -83,7 +83,7 @@ pub struct MandateEnvelope {
 // 摘要与签名原语
 // ---------------------------------------------------------------------------
 
-/// 当前 unix 秒（chrono 假设 NTP，与 announce G3 同一假设）。
+/// 当前 unix 秒（chrono 假设 NTP，与 announce 同一假设）。
 pub fn now_unix() -> u64 {
     chrono::Utc::now().timestamp().max(0) as u64
 }
@@ -156,12 +156,12 @@ pub fn key_fp_hex(pubkey: &[u8]) -> String {
 
 /// 时钟容差：not_before 相对 signed_at 回拨量。B 端时钟落后 A 端时，
 /// `not_before = signed_at` 会让合规 mandate 在 B 端 NotYetValid 假拒
-/// （e2e 实测双机 epoch 差 4s）。与 announce 时钟漂移 G3 预警线（60s）
+/// （e2e 实测双机 epoch 差 4s）。与 announce 时钟漂移 预警线（60s）
 /// 同口径。
 pub const CLOCK_SKEW_TOLERANCE_SECS: u64 = 60;
 
 /// 从授权配置构建默认 mandate body（A 端派发统一授权模板；chat 派发与
-/// board 派发共用，v1 不按任务粒度分化——设计文档 §1 明确不做）。
+/// board 派发共用，v1 不按任务粒度分化——设计文档 明确不做）。
 ///
 /// `tool_allowlist` 空数组 = 不限（None 语义）；显式列名 = 白名单。
 pub fn build_default_mandate(
@@ -199,7 +199,7 @@ pub fn sign_mandate(body: &MandateBody, sk: &SigningKey) -> Result<MandateEnvelo
     })
 }
 
-/// A 端签名器（gateway 装配期构造一次，注入 [`crate::rpc::client::RpcClient::
+/// A 端签名器（gateway 装配期构造一次，注入 [`crate::rpc:client::RpcClient:
 /// set_mandate_signer`]——dispatch 咽喉对每单出站 peer_chat 调 `sign_for_task`）。
 /// 授权模板快照自 config `[mandate]`（重启生效，无热键——与 cluster 其余系统
 /// 参数同口径）。
@@ -269,15 +269,15 @@ pub struct MandatePolicy {
 impl MandatePolicy {
     /// 前置闸裁决（PeerChatHandler::handle 消费；产出执行面守卫投影）。
     ///
-    /// 判定序（设计文档 §5）：
+    /// 判定序（设计文档）：
     /// - mode=Off → 放行不验（回滚开关）；
     /// - mandate 缺失：Verify → 放行（旧行为逐字节保持）/ Require → 拒
     ///   （防剥离攻击）；policy 未装配 = Verify 同语义放行；
     /// - mandate 在场 → [`verify_mandate_full`] 全链（吊销 → 钉存 → 签名
     ///   → 绑定 → 时限），通过 = 投影 enforcement；钉存钥缺席（簿未激活/
-    ///   对端未钉）时 Verify → 放行 + warn（regime 休眠降级，BUG-20261104
+    ///   对端未钉）时 Verify → 放行 + warn（regime 休眠降级，
     ///   全新集群默认形态死锁修复）/ Require → 拒；**簿在场但读失败**
-    ///   （TrustBookUnreadable，BUG-20261104-358 分立）Verify/Require 均
+    ///   （TrustBookUnreadable， 分立）Verify/Require 均
     ///   拒——降级只给 regime 休眠，不给已激活 regime 的坏簿。
     ///
     /// 失败返回 [`MandateViolation`]（Display 即 ACK reason 文案）。
@@ -320,15 +320,15 @@ impl MandatePolicy {
             now,
         ) {
             Ok(body) => body,
-            // verify 降级臂（BUG-20261104 CI UAT T-MRG 实录）：钉存钥缺席
+            // verify 降级臂（CI UAT T-MRG）：钉存钥缺席
             // （簿未激活/对端未钉）= trust regime 对该对端休眠，验签基础
-            // 设施不在场——「在场即验」不可行时按 §3.3 默认形态承诺放行
+            // 设施不在场——「在场即验」不可行时按 默认形态承诺放行
             // （旧行为），管理面激活 + announce 重钉后下单起自动恢复全链
             // 验签。钉存钥**在场但验不过**（TOFU 首见污染/伪造）仍拒——
             // 降级只给「无从验起」，不给「验出问题」。require 保持拒（显
-            // 式 opt-in 严格态，没得验也拒）。全新 4 节点默认配置实录：
+            // 式 opt-in 严格态，没得验也拒）。全新 4 节点默认配置
             // A 必签（sign_enabled 缺省 true）+ B 必验（mode 缺省 verify）
-            // + 钉存永不激活（L13a BookAbsent 纪律）= 全部派发滞留 backlog
+            // + 钉存永不激活（BookAbsent 纪律）= 全部派发滞留 backlog
             //（T-MRG-1/2/3/4/7 五测连红）。
             Err(MandateViolation::NoPinnedKey)
                 if self.mode == super::super::config_loader::MandateMode::Verify =>
@@ -351,7 +351,7 @@ impl MandatePolicy {
 // ---------------------------------------------------------------------------
 
 /// mandate 校验失败分类（四道校验的结构化结果；Display 文案 = ACK error
-/// reason 与审计留痕的单一真相源，前缀「mandate 拒绝:」由调用方拼）。
+/// reason 与审计留痕的统一定义，前缀「mandate 拒绝:」由调用方拼）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MandateViolation {
     /// 形态非法（非对象/缺字段/版本未知/sig 非 128 hex/公钥解不出）。
@@ -508,7 +508,7 @@ pub fn enforcement_from_body(body: &MandateBody) -> nemesis_types::cluster::Mand
 // ---------------------------------------------------------------------------
 
 /// 节点 mandate 密钥文件（`<workspace>/cluster/mandate_key.json`）。每节点
-/// 运行时身份——拍板「复用 leaf」= 复用 v4 密钥形态（P-256 / SEC1
+/// 运行时身份——「复用 leaf」= 复用 v4 密钥形态（P-256 / SEC1
 /// uncompressed 130 hex / 64B r||s / RFC 6979），不是复用 ceremony 签名
 /// 密钥文件（私钥红线：绝不进 workspace/仓库）。
 #[derive(Debug, Clone, Serialize, Deserialize)]

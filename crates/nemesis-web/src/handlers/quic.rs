@@ -1,23 +1,23 @@
-//! QUIC 中继 WSAPI（2026-10-23 与集群解耦；QUIC 插件化 M1 起**代理化**）
-//! —— `quic.relay.*` + `quic.registry.members`。
+//! QUIC 中继 WSAPI（2026-10-23 与集群解耦；QUIC 插件化 起**代理化**）
+//! `quic.relay.*` + `quic.registry.members`。
 //!
-//! **零 Cluster 运行面类型依赖 + 零 iroh 依赖**：config 真相源 =
+//! **零 Cluster 运行面类型依赖 + 零 iroh 依赖**：config 权威 =
 //! `config.quic.json`（`relay` 服务端段 + `client` 客户端段，见
-//! `nemesis_cluster::roaming::quic_config`，纯 serde 解析函数）；运行态 =
+//! `nemesis_cluster::roaming:quic_config`，纯 serde 解析函数）；运行态 =
 //! `AppState.quic_relay` 槽（plugin_roaming C-ABI 句柄，fn 指针 Copy）——
-//! 启停/成员查询经 `spawn_blocking` 调插件（拍板 10），ok:false 展开
+//! 启停/成员查询经 `spawn_blocking` 调插件，ok:false 展开
 //! 与 nemesisbot loader `call_roaming` 同源形态。插件未装载 =
 //! 诚实降级（status 带插件缺席注记、启停/名册报 not loaded）。
 //!
-//! feature：无模块级闸（M4 起 cluster-roaming feature 已删，本模块恒编译
-//! ——命令面恒注册，L1 清单稳定）。`client.roaming_enabled` 观测键读集群
+//! feature：无模块级闸（起 cluster-roaming feature 已删，本模块恒编译
+//! 命令面恒注册， 清单稳定）。`client.roaming_enabled` 观测键读集群
 //! config（纯 config 函数——客户端是否消费 relay_url 由集群 roaming 开关
 //! 决定，展示给用户判断连通形态）。
 //!
-//! BUG-20261025-15：config 投影面（relay 段/客户端三键的解析回显）依赖
+//! config 投影面（relay 段/客户端三键的解析回显）依赖
 //! `nemesis-cluster` 的**纯 serde 解析函数**（optional dep，`cluster`
 //! feature 启用）——模块恒编译但裸 `-p nemesis-web`（无 feature）此前直接
-//! E0433 编译红，违反「不带 feature 只能跑基础测试」约定。修法 = 解析投影
+//! 编译红，违反「不带 feature 只能跑基础测试」约定。修法 = 解析投影
 //! 三点 cfg 门控：cluster 在 = 原行为；cluster 关 = status/save 回显诚实
 //! 降级（available:false + reason / saved:true + note），校验+落盘照常
 //! （纯 JSON RMW 零 cluster 依赖），命令面恒注册不变（voice「未编译诚实
@@ -25,7 +25,7 @@
 
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
-// 解析投影三点的 cfg 门控见模块头注（BUG-20261025-15）：cluster 关时
+// 解析投影三点的 cfg 门控见模块头注：cluster 关时
 // 以下导入与消费函数整体让位给诚实降级形态。
 #[cfg(feature = "cluster")]
 use nemesis_cluster::roaming::config::{RelayTls, resolved_roaming};
@@ -62,7 +62,7 @@ impl ModuleHandler for QuicHandler {
         &[
             // QUIC 自建中继（运行面在 plugin_roaming 插件；插件缺席 = status
             // 诚实降级 available:false，config 保存/开关/名册报 not loaded——
-            // 命令面恒注册，L1 清单稳定，roaming.status 同款先例）
+            // 命令面恒注册， 清单稳定，roaming.status 同款先例）
             "relay.status",
             "relay.config",
             // 实时开关（免重启网关）：config 闸落盘 + 进程内拉起/停掉一体。
@@ -129,7 +129,7 @@ impl QuicHandler {
 
     /// quic.relay.enable / relay.disable：**实时开关**（免重启网关）。config 闸
     /// 落盘（relay_config_save_impl 同源合并语义）+ 插件内拉起/停掉中继
-    /// （roaming_start 幂等 / roaming_stop 与停机链同源单一实现；拍板 10
+    /// （roaming_start 幂等 / roaming_stop 与停机链同源单一实现；
     /// spawn_blocking）。返回与 relay.status 同款载荷——动态启停后
     /// enabled/active 恒同步，requires_restart 自然熄灭。enable 失败
     /// （token 空 fail-closed）Err 上抛且 config 闸保持开——修复后重开开关
@@ -174,10 +174,8 @@ impl QuicHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
-// 插件调用辅助（拍板 10：同步 FFI 内 block_on 插件 runtime——宿主 spawn_blocking；
+// 插件调用辅助（同步 FFI 内 block_on 插件 runtime——宿主 spawn_blocking；
 // ok:false 展开与 nemesisbot roaming_plugin_loader::call_roaming 同源形态）
-// ---------------------------------------------------------------------------
 
 /// 单次插件调用：spawn_blocking + JSON 解析 + ok:false 展开。
 async fn plugin_call(
@@ -234,11 +232,9 @@ async fn plugin_runtime_state(
     }
 }
 
-// ---------------------------------------------------------------------------
 // 自由函数
-// ---------------------------------------------------------------------------
 
-/// QUIC 中继配置路径（config.quic.json；2026-10-23 与集群解耦后的真相源）。
+/// QUIC 中继配置路径（config.quic.json； 与集群解耦后的真相源）。
 pub(crate) fn quic_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_quic_config_path_in_workspace(Path::new(workspace))
 }
@@ -278,7 +274,7 @@ fn relay_settings_payload(
         }
         RelayTls::None => (String::new(), "unused", String::new(), "unused"),
         RelayTls::SelfSigned => {
-            // 插件化 M1 后路径真相源 = relay_info（与插件副本同源对账）。
+            // 插件化 后路径权威 = relay_info（与插件副本同源对账）。
             let cert = relay_info::relay_cert_path(Path::new(workspace));
             let key = relay_info::relay_key_path(Path::new(workspace));
             (
@@ -338,8 +334,8 @@ fn relay_status_payload(
     })))
 }
 
-/// cluster feature 关的诚实降级形态（BUG-20261025-15）：config 解析面缺席
-/// ——enabled/requires_restart/relay/client 投影全部省略，available:false +
+/// cluster feature 关的诚实降级形态：config 解析面缺席
+/// enabled/requires_restart/relay/client 投影全部省略，available:false +
 /// reason 说明，运行态字段原样透传（不伪装）。命令面照常注册。
 #[cfg(not(feature = "cluster"))]
 fn relay_status_payload(
@@ -358,7 +354,7 @@ fn relay_status_payload(
 }
 
 /// 集群 config 路径（roaming_enabled 观测键数据源；纯路径换算——
-/// 路径唯一真相源 = nemesis-path）。
+/// 路径唯一依据 = nemesis-path）。
 #[cfg(feature = "cluster")]
 fn cluster_config_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
@@ -528,13 +524,13 @@ fn relay_config_save_impl(
     }
     let json =
         serde_json::to_string_pretty(&cfg).map_err(|e| format!("failed to serialize: {}", e))?;
-    // 统一原子写入（config.quic.json 含 token，REL-002 同款）。
+    // 统一原子写入（config.quic.json 含 token， 同款）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
         .map_err(|e| format!("failed to write quic config: {}", e))?;
     Ok(Some(save_echo(&path, workspace)))
 }
 
-/// 保存后的回显载荷（BUG-20261025-15 cfg 拆分：cluster 在 = 解析投影回显；
+/// 保存后的回显载荷（cfg 拆分：cluster 在 = 解析投影回显；
 /// cluster 关 = saved/note 双键诚实降级——落盘已成功，投影面缺席不伪装）。
 #[cfg(feature = "cluster")]
 fn save_echo(path: &std::path::Path, workspace: &str) -> serde_json::Value {
@@ -561,9 +557,9 @@ fn save_echo(_path: &std::path::Path, _workspace: &str) -> serde_json::Value {
 
 /// relay_toggle 的实现核心（ctx 解耦——tests 以 handle=None 直接验证
 /// config+载荷契约；真中继拉起/停掉的 roundtrip 归插件侧 e2e +
-/// gateway 装载冒烟，[`crate::handlers::quic::tests`] 只钉 None 臂）。
+/// gateway 装载冒烟，[`crate::handlers:quic::tests`] 只钉 None 臂）。
 ///
-/// ① config 闸先动（单一真相源，config.quic.json relay.enabled）：enable
+/// ① config 闸先动（统一定义，config.quic.json relay.enabled）：enable
 /// 中途失败（token 空 fail-closed）闸保持开——修复后重开开关即重试。
 /// ② 插件内拉起/停掉（幂等；句柄未装载时只落 config 闸——运行态诚实
 /// 呈现 requires_restart）。③ 最新状态回前端。

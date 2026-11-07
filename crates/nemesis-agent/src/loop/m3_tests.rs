@@ -1,8 +1,8 @@
-//! M3（devtool-upgrade 阶段 5）：会话级 diff 查看器（session_file_diff）
+//! （devtool-upgrade）：会话级 diff 查看器（session_file_diff）
 //! 编排测试。
 //!
 //! 双形态（git 影子库 / JSON 快照）基线对比 + 诚实报错（checkpoint 未挂
-//! 载 / 未知路径）。夹具同 E3 stage_two_turns 时序：begin → snapshot 捕
+//! 载 / 未知路径）。夹具同 stage_two_turns 时序：begin → snapshot 捕
 //! pre-edit → 工具改文件 → 推进下 turn。
 
 use super::*;
@@ -169,7 +169,7 @@ async fn m3_diff_errors_without_store_or_unknown_path() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261103-347 红绿：git 形态 + **绝对路径声明**（真实工具入参常态
+/// 红绿：git 形态 + **绝对路径声明**（真实工具入参常态
 /// 形态——preview 存的是 args 逐字串）。修复前声明/查询串原样喂
 /// `tree.get_path` 被 git2 拒（"should be relative, not a windows
 /// prefix"），diff 必报错；修复后树接口走 repo_relative_path 归一。

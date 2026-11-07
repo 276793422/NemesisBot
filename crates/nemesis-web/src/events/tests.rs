@@ -270,7 +270,7 @@ fn test_event_with_nested_object() {
     assert_eq!(event.data["level1"]["level2"]["value"], 42);
 }
 
-// --- Additional events tests ---
+// Additional events tests ---
 
 #[test]
 fn test_event_clone() {
@@ -383,7 +383,7 @@ fn test_event_debug_output() {
     assert!(debug_str.contains("debug-test"));
 }
 
-// --- L2（devtool-upgrade 阶段 6）：seq 盖章 + 环形重放缓冲 ---
+// （devtool-upgrade）：seq 盖章 + 环形重放缓冲 ---
 
 #[test]
 fn l2_publish_stamps_monotonic_seq_per_hub() {
@@ -470,7 +470,7 @@ fn l2_replay_events_are_ordered_and_match_live() {
     );
 }
 
-/// BUG-HUNT R32：重连决议的重启签名——Last-Event-ID 超前于服务端 latest
+/// 重连决议的重启签名——Last-Event-ID 超前于服务端 latest
 /// （网关重启 seq 域重置）→ 游标必须归零重放。修复前 SSE 端点无条件
 /// last_sent = after，live 去重分支 `seq <= last_sent` 把新域 seq 1.. 全部
 /// 吞到追上旧游标为止（实时流假死数小时：审批卡/工具事件/看板推送全灭）。
@@ -518,8 +518,8 @@ fn l2_resolve_reconnect_invariants_unchanged() {
     assert!(replay.is_empty() && !gap);
 }
 
-/// BUG-HUNT R8：并发 publish 的 seq 分配必须在缓冲锁内——锁外分配可致
-/// 环形缓冲乱序（T1 得 5、T2 得 6、T2 先入队 → [.., 6, 5]），违反字段
+/// 并发 publish 的 seq 分配必须在缓冲锁内——锁外分配可致
+/// 环形缓冲乱序（得 5、 得 6、 先入队 → [.., 6, 5]），违反字段
 /// 注释声明的「seq 升序」不变量。8 线程 barrier 对齐后并发发布，回放必须
 /// 严格升序且恰好 1..=N 完整覆盖（总条数 < REPLAY_BUFFER_CAP 免滑窗）。
 #[test]
@@ -548,7 +548,7 @@ fn l2_concurrent_publish_keeps_replay_buffer_in_seq_order() {
     assert!(!gap);
     assert_eq!(events.len(), threads * per_thread, "全部事件必须在窗口内");
     // 严格升序 + 完整覆盖 = seq 序与缓冲序一致（锁外分配的经典违例形态
-    // 是相邻交换对 [.., k+1, k, ..]）。
+    // 是相邻交换对 [.., k+1, k,..]）。
     for (idx, e) in events.iter().enumerate() {
         assert_eq!(e.seq, idx as u64 + 1, "replay 必须严格升序且无洞");
     }
@@ -556,7 +556,7 @@ fn l2_concurrent_publish_keeps_replay_buffer_in_seq_order() {
 
 #[test]
 fn test_subscription_guard_returns_count_on_drop() {
-    // BUG-20261025-14：SSE 端点断连时 axum 直接 drop 流体，手工尾部
+    // SSE 端点断连时 axum 直接 drop 流体，手工尾部
     // unsubscribe 永不执行 → 计数单调泄漏。守卫的 Drop 必须归还计数。
     let hub = EventHub::new();
     {

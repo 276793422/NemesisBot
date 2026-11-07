@@ -1,10 +1,10 @@
-//! connector 远程清单源（D6.2，2026-10-15）。
+//! connector 远程清单源（.2，2026-10-15）。
 //!
 //! 最小生态形态：`add-source`（git clone/拉取到本地缓存）→ `search`
 //! （源内清单扫描）→ `install`（装配漏斗裁剪版：验签 → parse → 落位）。
 //! 源注册表落 `<workspace>/config/connector_sources.json`，克隆缓存落
 //! `<workspace>/cache/connector_sources/<name>/`。不做商店 UI / 评分 /
-//! 自动更新（计划 §六 6.2 拍板）。
+//! 自动更新（计划 §六 6.2）。
 //!
 //! 装配漏斗（对齐 plugin install 语义）：
 //! - 验签失败（篡改/调换/吊销）→ loud 拒装；
@@ -236,7 +236,7 @@ pub struct SourceHit {
     pub trust: ConnectorTrust,
 }
 
-/// 递归收集目录下的 connector.toml（跳 .git；深度上限防异常深树）。
+/// 递归收集目录下的 connector.toml（跳.git；深度上限防异常深树）。
 fn find_manifest_dirs(root: &Path, out: &mut Vec<PathBuf>) {
     const MAX_DEPTH: usize = 8;
     fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
@@ -350,7 +350,7 @@ pub fn search_sources(
     for source in sources {
         for hit in scan_source(workspace, &source)? {
             let Some(c) = &hit.connector else {
-                continue; // 检索面只暴露可解析条目（corrupt 在 scan 全量可见）
+                continue; // 检索面只暴露可解析条目（corrupt 在 scan 全量可）
             };
             let matched = tokens.is_empty()
                 || tokens.iter().any(|t| {

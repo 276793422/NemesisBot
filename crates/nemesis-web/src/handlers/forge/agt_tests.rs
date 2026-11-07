@@ -73,6 +73,7 @@ fn agt_ctx(
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
             session_stats: None,
@@ -91,9 +92,7 @@ async fn run(
     ForgeHandler::new().handle_cmd(cmd, data, ctx).await
 }
 
-// ---------------------------------------------------------------------------
 // Default 转发
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_default_impl_matches_new() {
@@ -101,9 +100,7 @@ fn agt_default_impl_matches_new() {
     let _ = ForgeHandler::new();
 }
 
-// ---------------------------------------------------------------------------
 // config.save：运行时 start / stop 联动
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_config_save_runtime_start_then_stop() {
@@ -148,9 +145,7 @@ async fn agt_config_save_runtime_start_then_stop() {
     assert!(!forge.is_running(), "后台 stop 已生效");
 }
 
-// ---------------------------------------------------------------------------
 // learning.toggle：运行时联动 + 非 object 配置跳过臂
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_learning_toggle_runtime_flag_and_nonobject_config_skip() {
@@ -189,9 +184,7 @@ async fn agt_learning_toggle_runtime_flag_and_nonobject_config_skip() {
     assert_eq!(out["learning_enabled"], false);
 }
 
-// ---------------------------------------------------------------------------
 // experiences.stats：空行 / 非法行 / 全非法
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_experiences_stats_line_variants_and_zero_avg() {
@@ -240,9 +233,7 @@ async fn agt_experiences_stats_line_variants_and_zero_avg() {
     assert_eq!(out["avg_duration_ms"], 0.0);
 }
 
-// ---------------------------------------------------------------------------
 // 深目录读取器：目录型文件兜底 + learning/reflections 深路径
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_forge_tree_readers_dir_fallbacks_and_deep_paths() {

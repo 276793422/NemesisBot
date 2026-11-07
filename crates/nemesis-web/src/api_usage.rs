@@ -2,7 +2,7 @@
 //!
 //! Provides `/api/usage/summary`, `/api/usage/trends`, `/api/usage/logs`,
 //! `/api/usage/pricing`（分层价目表）以及价目表管理端点
-//! （`update` / `custom` / `custom/remove` / `import`，A2 在线更新）。
+//! （`update` / `custom` / `custom/remove` / `import`， 在线更新）。
 
 use crate::api_handlers::AppState;
 use crate::pricing_sync;
@@ -12,9 +12,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Query parameters
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub struct UsageQuery {
@@ -38,7 +36,7 @@ pub struct LogsQuery {
     pub end: Option<i64>,
     pub page: Option<i32>,
     pub page_size: Option<i32>,
-    /// 模型名子串过滤（A3 请求明细 tab）。
+    /// 模型名子串过滤（请求明细 tab）。
     pub model: Option<String>,
     /// 状态码精确过滤（200=成功；前端「失败」= 非矩阵另说，传具体值）。
     pub status: Option<i32>,
@@ -46,9 +44,7 @@ pub struct LogsQuery {
     pub session: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // Handlers
-// ---------------------------------------------------------------------------
 
 /// GET /api/usage/summary
 pub async fn handle_api_usage_summary(
@@ -151,7 +147,7 @@ pub async fn handle_api_usage_logs(
     }
 }
 
-/// RequestLog → JSON（列表行与详情面板共用同一形状，A3 扩展字段全量带出）。
+/// RequestLog → JSON（列表行与详情面板共用同一形状， 扩展字段全量带出）。
 fn request_log_json(l: &nemesis_data::RequestLog) -> serde_json::Value {
     serde_json::json!({
         "id": l.id,
@@ -178,7 +174,7 @@ fn request_log_json(l: &nemesis_data::RequestLog) -> serde_json::Value {
     })
 }
 
-/// GET /api/usage/logs/{id} — 单条明细（A3 详情面板）。
+/// GET /api/usage/logs/{id} — 单条明细（详情面板）。
 pub async fn handle_api_usage_log_detail(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(id): axum::extract::Path<i64>,
@@ -196,9 +192,7 @@ pub async fn handle_api_usage_log_detail(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Pricing — layered view + management (A2, 2026-08-31)
-// ---------------------------------------------------------------------------
+// Pricing — layered view + management
 
 /// Layer of a pricing entry (lookup priority: custom > downloaded > embedded).
 const SRC_EMBEDDED: &str = "embedded";
@@ -216,7 +210,7 @@ fn pricing_entry_json(p: &nemesis_data::ModelPricing, source: &str) -> serde_jso
         "maxInputTokens": p.max_input_tokens,
         "maxOutputTokens": p.max_output_tokens,
         "aliases": p.aliases,
-        // L3 阶梯价：None/空 = 无阶梯（字段省略，前端按单一价渲染）。
+        // 阶梯价：None/空 = 无阶梯（字段省略，前端按单一价渲染）。
         "priceTiers": p.price_tiers.as_ref().filter(|t| !t.is_empty()).map(|tiers| {
             tiers.iter().map(|t| serde_json::json!({
                 "minPromptTokens": t.min_prompt_tokens,

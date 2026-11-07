@@ -1,7 +1,7 @@
-//! 行动代理 P0（2026-10-14）：connector 动态工具对——`connector_find`（注册
+//! 行动代理 （2026-10-14）：connector 动态工具对——`connector_find`（注册
 //! 表发现）+ `connector_invoke`（按 connector.toml 声明执行）。
 //!
-//! 设计要点（PLAN §3.3「不开任何旁路」）：
+//! 设计要点（PLAN 「不开任何旁路」）：
 //! - `connector_find` 静态声明 Internal（LOW），纯读；
 //! - `connector_invoke` **不静态声明**操作类型——per-op 风险经
 //!   [`Tool::operation_override`] 投影给 dispatch（metadata 三键），管线层
@@ -14,10 +14,10 @@
 //!   disabled/unknown；denied_approval 由 dispatch 的 ABAC deny 分支代写——
 //!   审批拒绝发生在 execute 之前，工具自身写不了，工具侧见 ⛔ 前缀即跳过
 //!   不双写）；
-//! - 执行前强制（R4，本地/远程单点覆盖）：args_schema 校验 + 资金参数形态
+//! - 执行前强制（本地/远程单点覆盖）：args_schema 校验 + 资金参数形态
 //!   （finance op 的 qty 必须在场且为有限正数）在出网前拒绝，不消耗额度；
 //! - 预算护栏（限频 + 资金 fail-closed）在 execute 内、dispatch 审批之后
-//!   ——先过人工卡再过限额，两道闸各自留痕；R3 起 reserve/commit/release
+//!   ——先过人工卡再过限额，两道闸各自留痕； 起 reserve/commit/release
 //!   三段原子占用（裁决即记账，收口按 outcome 决策表，RPC 未知结果保留
 //!   账目），workspace 级共享单例（agent/loop 重建不清零）；
 //! - 凭据注入：vault 别名 `connector/<id>/<slot>` 现开现解锁，真值只进
@@ -43,13 +43,13 @@ use nemesis_connectors::registry::{find_connector, find_op, validate_op_args};
 pub use nemesis_connectors::FIND_TOOL_NAME;
 pub use nemesis_connectors::INVOKE_TOOL_NAME;
 
-/// B4 凭据索要卡的等待窗口（秒）：用户需去外部站点取 key（浏览器往返），
+/// 凭据索要卡的等待窗口（秒）：用户需去外部站点取 key（浏览器往返），
 /// 5 分钟宽裕；超时 = 调用方走原错误路径（不是错误）。recovery Auth 臂
 /// 自有同款常量（nemesis-agent 内，跨 crate 不共享）。
 #[cfg(feature = "security")]
 const CREDENTIAL_CARD_TIMEOUT_SECS: u64 = 300;
 
-/// 远程执行通道（E1，收官批 2026-10-15）：与 ClusterWiring 的
+/// 远程执行通道（收官-15）：与 ClusterWiring 的
 /// `cluster_rpc_call_fn` 同形——`(peer, action, payload)` → 异步 JSON 响应。
 /// 复用共享闭包（其 peer_chat 特殊逻辑按 action 过滤，`connector_invoke`
 /// 走干净同步 RPC 路径）；集群未启用 = None = target_node 诚实报错。
@@ -71,11 +71,11 @@ mod tests;
 const HTTP_BODY_CAP: usize = 8 * 1024;
 /// 回执 summary 截断长度（人话摘要，存层不截——工具侧截）。
 const SUMMARY_CAP: usize = 160;
-/// find 单 connector 镜像清单条数上限（边界补强 2026-10-20：大接管面
+/// find 单 connector 镜像清单条数上限（边界补强：大接管面
 /// 全量输出 = 上下文爆炸；截断数以 mirrors_truncated 注记）。
 const MIRROR_LIST_CAP: usize = 64;
 /// find 单条镜像 args_schema 序列化字节上限（超限置 null + 注记；参数
-/// 形态以 invoke 期 R4 校验回灌为准）。
+/// 形态以 invoke 期 校验回灌为准）。
 const MIRROR_SCHEMA_CAP_BYTES: usize = 4 * 1024;
 
 /// connector op 执行失败的统一判别（工具结果文本前缀）：`Tool error: ` 是
@@ -99,7 +99,7 @@ pub(crate) fn error_text_dispatch_rejected(text: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// op_type slug 投影（工具侧单一真相源）
+// op_type slug 投影（工具侧统一定义）
 // ---------------------------------------------------------------------------
 
 /// op 声明（risk × class）→ 管线 op_type slug。
@@ -163,7 +163,7 @@ fn budget_limits(cfg: &nemesis_config::ConnectorsConfig) -> Limits {
     }
 }
 
-/// 资金类 op 的数量参数提取（R4 强制）：`finance_budget=true` 时 `qty`
+/// 资金类 op 的数量参数提取（强制）：`finance_budget=true` 时 `qty`
 /// **必须在场且为有限正数**——缺失/null/字符串/负数/0/非有限值一律拒绝。
 /// 旧形态 `qty 缺失 → None → 跳过资金闸` 是免检旁路（声明了资金类的 op
 /// 却能不带数量过闸），fail-closed 语义不容许。
@@ -246,7 +246,7 @@ fn write_receipt(
     r
 }
 
-/// 凭条 IM 文本卡（固定格式，写类/资金类必推——感知层 §3.5）。
+/// 凭条 IM 文本卡（固定格式，写类/资金类必推——感知层）。
 fn receipt_card(
     r: &Receipt,
     rate_used: u32,
@@ -275,7 +275,7 @@ fn honest_err(msg: impl std::fmt::Display) -> String {
     format!("Tool error: {msg}")
 }
 
-/// path 占位符值 percent-encode（边界补强 2026-10-20）：清单里 `path =
+/// path 占位符值 percent-encode（边界补强）：清单里 `path =
 /// "/orders/{id}"` 的占位符是**单 path segment** 语义，值必须逐字节编码
 /// 后才能嵌入 URL——裸替换会让 `/ ? # %` 逃逸 segment（`../../` 层级
 /// 穿越、`?` 追加 query、`#` 截断 path），绕开清单作者声明的端点形态。
@@ -315,7 +315,7 @@ fn merge_request_headers(
     merged.into_values().collect()
 }
 
-/// GET 剩余 args + 凭据 query 对合并（R6）：普通参数在前、**凭据 query 同名
+/// GET 剩余 args + 凭据 query 对合并：普通参数在前、**凭据 query 同名
 /// 时凭据胜**（与 merge_request_headers 同一裁决——args 不得覆盖凭据）。
 /// 顺序保持（普通参数按 args 出现序在前，凭据对在后），reqwest `.query()`
 /// 按 Vec 序列化为重复 k=v 对并统一 percent-encoding。
@@ -343,7 +343,7 @@ fn merge_query_pairs(
 #[cfg(feature = "security")]
 pub struct ConnectorFindTool {
     workspace: PathBuf,
-    /// B2：loop 快照句柄（镜像 op 枚举用）。缺省 None = 镜像面不出——
+    /// loop 快照句柄（镜像 op 枚举用）。缺省 None = 镜像面不出——
     /// 无 loop 的测试/独立装配形态下独占 connector 只列显式 ops（诚实，
     /// 不假列调不到的镜像）。
     loop_ref: parking_lot::RwLock<Option<Weak<AgentLoop>>>,
@@ -365,16 +365,16 @@ impl ConnectorFindTool {
         *self.loop_ref.write() = Some(loop_weak);
     }
 
-    /// B2+B3：单 connector 的镜像 op 枚举（独占声明为空 / 无 loop = 空表）。
-    /// 基线按 server 自述 annotations hints 定档（B3 四档，registry::
-    /// mirror_baseline）；description 随行（A4 检索词元 + 展示）。
+    /// 单 connector 的镜像 op 枚举（独占声明为空 / 无 loop = 空表）。
+    /// 基线按 server 自述 annotations hints 定档（四档，registry:
+    /// mirror_baseline）；description 随行（检索词元 + 展示）。
     ///
-    /// 资源上限（边界补强 2026-10-20）：接管面可能很大（上百工具 server），
+    /// 资源上限（边界补强）：接管面可能很大（上百工具 server），
     /// 一次 find 全量输出 = agent 上下文爆炸。两道闸：
     /// - 条数 `MIRROR_LIST_CAP`：截断后由调用方注记（mirrors_truncated）；
     /// - 单条 `args_schema` 序列化超 `MIRROR_SCHEMA_CAP_BYTES` 置 null +
     ///   `args_schema_note`（巨型 schema 模型也读不完，参数形态以 invoke
-    ///   期 R4 校验回灌为准）。
+    ///   期 校验回灌为准）。
     fn mirrors_of(&self, c: &ValidatedConnector) -> (Vec<serde_json::Value>, usize) {
         if c.exclusive_mcp.is_empty() {
             return (Vec::new(), 0);
@@ -382,8 +382,8 @@ impl ConnectorFindTool {
         let loop_arc = self.loop_ref.read().clone().and_then(|w| w.upgrade());
         let snapshot = loop_arc.as_ref().map(|l| l.mcp_tool_snapshot());
         let guard = snapshot.as_ref().map(|s| s.read());
-        // G1 隐藏工具滤出镜像清单：config hidden 是绝对闸（任何出处都拒，
-        // dispatch 端 F8 闸先于 B2 出处闸），列出来也调不动——枚举面与
+        // 隐藏工具滤出镜像清单：config hidden 是绝对闸（任何出处都拒，
+        // dispatch 端 闸先于 出处闸），列出来也调不动——枚举面与
         // 执行闸同源过滤，不留「find 列出、invoke 拒绝」的死链。
         let names: Vec<String> = match (&guard, loop_arc.as_ref()) {
             (Some(g), Some(l)) => g
@@ -438,7 +438,7 @@ impl ConnectorFindTool {
         (rows, truncated)
     }
 
-    /// B2+A4：镜像 (id, description) 清单（检索补漏用；独占声明为空 /
+    /// 镜像 (id, description) 清单（检索补漏用；独占声明为空 /
     /// 无 loop = 空表）。描述随行——检索词元可命中描述里的英文词根。
     fn mirror_pairs_of(&self, c: &ValidatedConnector) -> Vec<(String, String)> {
         if c.exclusive_mcp.is_empty() {
@@ -449,7 +449,7 @@ impl ConnectorFindTool {
         };
         let snapshot = loop_arc.mcp_tool_snapshot();
         let guard = snapshot.read();
-        // G1 隐藏工具滤出（绝对闸同源过滤，见 mirrors_of 注记）。
+        // 隐藏工具滤出（绝对闸同源过滤，见 mirrors_of 注记）。
         let names: Vec<String> = guard
             .iter()
             .map(|e| e.name.clone())
@@ -512,7 +512,7 @@ impl Tool for ConnectorFindTool {
             .unwrap_or_default();
         let tokens: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();
         let mut hits = search_connectors(&self.workspace, &query);
-        // B2+A4 检索补漏：search_connectors 只看显式 op / connector 级字段，
+        // 检索补漏：search_connectors 只看显式 op / connector 级字段，
         // token 命中**镜像 id 或镜像描述词根**（英文词根可命中——原生工具
         // description 是独占面最富的检索素材）的独占 connector 会被它
         // 先行过滤掉——按注册表全量补漏，命中镜像 = 也算命中（独占接管面
@@ -551,7 +551,7 @@ impl Tool for ConnectorFindTool {
             .collect();
         let mut connectors: Vec<serde_json::Value> = Vec::with_capacity(hits.len());
         for h in hits.iter_mut() {
-            // B2：镜像 op 并入展示与命中（token 命中镜像工具名**或描述词根**
+            // 镜像 op 并入展示与命中（token 命中镜像工具名**或描述词根**
             // = 该 connector 也算命中——独占接管面按原生根名词/描述可检索）。
             let (mirrors, mirrors_truncated) = self.mirrors_of(&h.connector);
             let mirror_matched: Vec<String> = mirrors
@@ -581,15 +581,15 @@ impl Tool for ConnectorFindTool {
                 "name": h.connector.name,
                 "version": h.connector.version,
                 "description": h.connector.description,
-                // M1：签名徽标随命中透出——模型可感知，自主优先高信任
+                // 签名徽标随命中透出——模型可感知，自主优先高信任
                 // 源（弱信号，不门控）。
                 "trust": h.trust.as_str(),
                 "matched_ops": h.matched_ops,
                 "ops": h.connector.ops.iter().map(op_json).collect::<Vec<_>>(),
-                // B2：镜像 op 追加在显式 ops 之后（独立数组——形态不同，
+                // 镜像 op 追加在显式 ops 之后（独立数组——形态不同，
                 // 基线档位见各字段；consume 方式与 ops 一致）。
                 "mirrors": mirrors,
-                // 资源上限注记（边界补强 2026-10-20）：镜像清单截断数——
+                // 资源上限注记（边界补强）：镜像清单截断数——
                 // 0/缺省 = 未截断；>0 = 还有这么多镜像未列出（按更精确的
                 // query 检索或管理页查看全量）。
                 "mirrors_truncated": mirrors_truncated,
@@ -654,12 +654,12 @@ pub struct ConnectorInvokeTool {
     budget: Arc<BudgetGuard>,
     /// tool 绑定回灌句柄（Arc 定型后注入，同 code_run）。
     loop_ref: parking_lot::RwLock<Option<Weak<AgentLoop>>>,
-    /// action 账本互斥（load→mutate→save 串行化；磁盘是真相源，无内存缓存）。
+    /// action 账本互斥（load→mutate→save 串行化；磁盘为权威依据，无内存缓存）。
     order_lock: parking_lot::Mutex<()>,
     /// 集群 RPC 通道（agent_factory 注入，与 cluster_rpc 工具同源闭包；
     /// 缺省 None = target_node 诚实报错）。
     remote_call_fn: parking_lot::RwLock<Option<RemoteCallFn>>,
-    /// R7：本次调用的父深度（`set_invocation_depth` 注入，0 = 顶层 agent）。
+    /// 本次调用的父深度（`set_invocation_depth` 注入，0 = 顶层 agent）。
     /// tool 绑定回灌时透传给 `handle_tool_call_at_depth`——经 connector
     /// 绑定的 spawn 嵌套限制照常生效（SharedTool AtomicUsize 同模式；
     /// 共享实例 set-then-read 的并发边际误归属与 SpawnTool 同类已接受）。
@@ -675,7 +675,7 @@ impl ConnectorInvokeTool {
             Arc<nemesis_security::pipeline::SecurityPlugin>,
         >,
     ) -> Self {
-        // R3：workspace 级共享预算单例——agent/loop 重建走同一 Arc，
+        // workspace 级共享预算单例——agent/loop 重建走同一 Arc，
         // 滑窗与日累计不清零（per-instance 计数器让重启即重置额度）。
         let budget = shared_budget_guard(&workspace);
         Self {
@@ -705,7 +705,7 @@ impl ConnectorInvokeTool {
         *self.remote_call_fn.write() = Some(f);
     }
 
-    /// 推送条件：写/exec/网络资金类执行面动作（读类静默只入账本——§3.5）。
+    /// 推送条件：写/exec/网络资金类执行面动作（读类静默只入账本）。
     /// unknown（结果未知）是**最**需要推送的结局——恰恰因为它需要人核账
     /// （外部写可能已生效而账目被保留），漏推 = 用户无从发现需人工对账。
     fn should_push(class: OpClass, finance_budget: bool, outcome: &str) -> bool {
@@ -716,12 +716,12 @@ impl ConnectorInvokeTool {
             )
     }
 
-    /// B2（2026-10-19 独占接管）：镜像 op 解析——op_id 不在显式 `[[op]]`
+    /// （独占接管）：镜像 op 解析——op_id 不在显式 `[[op]]`
     /// 清单时，若该 connector 独占的 MCP server 前缀命中此工具且 sidecar
     /// 策略为 default，伪造镜像 [`ValidatedOp`]（基线：risk=medium /
     /// class=read / 无 confirm / 无资金 / binding=Tool 直连原生工具名 /
     /// args_schema = 原生工具的注册参数 schema；基线档位按 server 自述
-    /// annotations hints 四档定（B3，registry::mirror_baseline——readOnly
+    /// annotations hints 四档定（registry::mirror_baseline——readOnly
     /// 自述=low/read 免卡，未声明=medium/read 保守基线，自述非只读或破坏
     /// 性=high/write 强制确认卡）。真实危险度仍由 dispatch 瀑布按**原生
     /// 工具名**的注册声明裁决，镜像侧档位只决定「不比裸奔松」的接管基线。
@@ -730,7 +730,7 @@ impl ConnectorInvokeTool {
         let loop_arc = self.loop_ref.read().clone().and_then(|w| w.upgrade())?;
         let snapshot = loop_arc.mcp_tool_snapshot();
         let guard = snapshot.read();
-        // G1 隐藏工具滤出（绝对闸同源过滤，见 mirrors_of 注记）——隐藏
+        // 隐藏工具滤出（绝对闸同源过滤，见 mirrors_of 注记）——隐藏
         // 工具的镜像 id 在此落 None，走「无 op」诚实报错而非 dispatch 死拒。
         let names: Vec<String> = guard
             .iter()
@@ -766,7 +766,7 @@ impl ConnectorInvokeTool {
 
 #[async_trait::async_trait]
 impl Tool for ConnectorInvokeTool {
-    // R7：dispatch 注入父深度（tool_dispatch.rs set_context 同点），tool
+    // dispatch 注入父深度（tool_dispatch.rs set_context 同点），tool
     // 绑定回灌时透传——经 connector 绑定的工具链 spawn 嵌套限制不重置。
     fn set_invocation_depth(&self, depth: usize) {
         self.invocation_depth
@@ -804,15 +804,15 @@ impl Tool for ConnectorInvokeTool {
 
     /// per-op 风险投影（dispatch 嗅探 → metadata 三键 → 管线裁决）。解析
     /// 不出（连接器/op 不存在或损坏）= None → 静态路径 fail-closed 兜底。
-    /// M1 信任警示（2026-10-19）：HIGH/CRITICAL op 且 connector 未签名 →
+    /// 信任警示：HIGH/CRITICAL op 且 connector 未签名 →
     /// force_approval 追加警示行（审批卡多因展示；语义与 pre-exec 命中同
     /// 家族——非拦截，卡片必须到达人）。
     ///
-    /// B2（2026-10-19）：显式 op 未命中时先试**镜像 op**解析（独占接管
+    /// 显式 op 未命中时先试**镜像 op**解析（独占接管
     /// 基线：凭条照记，档位按 annotations hints 四档定，见
     /// resolve_mirror_op 注记）——否则镜像 id 落 None = 静态
     /// 未知名 fail-closed CRITICAL，每次镜像调用都逼出危急审批卡，接管
-    /// 基线被自身管线击穿（§6.3③ 预判的自堵陷阱）。
+    /// 基线被自身管线击穿（③ 预判的自堵陷阱）。
     fn operation_override(&self, args: &str) -> Option<OperationOverride> {
         let v: serde_json::Value = serde_json::from_str(args).ok()?;
         let connector = v.get("connector")?.as_str()?.trim();
@@ -824,7 +824,7 @@ impl Tool for ConnectorInvokeTool {
         let op_args = v.get("args").cloned().unwrap_or(serde_json::json!({}));
         let (op_type, force_approval, risk, class) = match find_op(&c, op_id) {
             Some(op) => {
-                // M1：unsigned + 高危 op → 警示并入强审批文案（confirm=
+                // unsigned + 高危 op → 警示并入强审批文案（confirm=
                 // required 的理由在前，警示在后；无 confirm 的 HIGH/CRITICAL
                 // 警示单独成卡——未经人看一眼的未签名高危动作不值得自动
                 // 放行）。
@@ -852,7 +852,7 @@ impl Tool for ConnectorInvokeTool {
                     op.class,
                 )
             }
-            // B2 镜像基线（B3 升级：四档化）——基线由镜像 hints 推导：
+            // 镜像基线（升级：四档化）——基线由镜像 hints 推导：
             // 默认 medium+read → registry_read 档（管线按 slug 反查 =
             // MEDIUM；字面语义不承担实际类别，见 resolve_mirror_op 注记）；
             // 自述破坏性/非只读 → high+write+confirm（slug file_write），
@@ -896,8 +896,8 @@ impl Tool for ConnectorInvokeTool {
 }
 
 impl ConnectorInvokeTool {
-    /// execute 的本体（E1，收官批 2026-10-15）：返回值带凭条本体——远程
-    /// 分支（run_remote）与页内撤销（E3 connectors.undo）需要凭条 id /
+    /// execute 的本体（收官-15）：返回值带凭条本体——远程
+    /// 分支（run_remote）与页内撤销（connectors.undo）需要凭条 id /
     /// outcome / 主键做镜像与回读，Tool trait 形态不变（execute 委托）。
     ///
     /// 流程：args 解析（Err 无回执）→ 注册表三态（Disabled→disabled 回执；
@@ -974,7 +974,7 @@ impl ConnectorInvokeTool {
             }
             Err(e) => return (Err(honest_err(e)), None),
         };
-        // B2：显式 op 未命中 → **镜像 op 兜底**（独占接管基线）。镜像 op
+        // 显式 op 未命中 → **镜像 op 兜底**（独占接管基线）。镜像 op
         // 是治理壳伪造的 ValidatedOp（binding=Tool 直连原生工具名，
         // args_schema = 原生注册参数），后续预检/预算/信任闸/回执/分派流程
         // 与显式 op 完全同路——接管不加旁路。
@@ -1014,7 +1014,7 @@ impl ConnectorInvokeTool {
             },
         };
 
-        // R4 执行前强制（单点，本地/远程同覆盖）：args_schema 校验 + 资金
+        // 执行前强制（单点，本地/远程同覆盖）：args_schema 校验 + 资金
         // 参数形态强制——必须在出网（本地 dispatch / 远程 RPC）之前拒绝，
         // 且不消耗任何额度（reserve 之前）。
         // 校验前先做 schema 驱动的 wire 规整（coerce_op_args）：flow 引擎
@@ -1042,7 +1042,7 @@ impl ConnectorInvokeTool {
             }
         };
 
-        // M2：script 绑定占位符实参在出网前校验——声明式命令模板不能半
+        // script 绑定占位符实参在出网前校验——声明式命令模板不能半
         // 展开（白名单在解析期钉死占位符集合，这里钉实参在审批/预算之前
         // 就位；与 args_schema 校验同 family，不消耗额度）。
         if let nemesis_connectors::manifest::OpBinding::Script { placeholders, .. } = &op.binding {
@@ -1058,7 +1058,7 @@ impl ConnectorInvokeTool {
             }
         }
 
-        // M1 信任总闸（connectors.require_signed=true）：unsigned 一律拒执行。
+        // 信任总闸（connectors.require_signed=true）：unsigned 一律拒执行。
         // 单点落在全部形态校验之后、出网（本地 dispatch / 远程 RPC）之前——
         // 本地与远程同覆盖；凭条 outcome=trust_blocked（budget_blocked 家族
         // 语义：拒绝有账，额度未消耗）。require_signed 缺省 false = 只警示
@@ -1093,7 +1093,7 @@ impl ConnectorInvokeTool {
             );
         }
 
-        // 远程分支（E1）：target_node 指定 → master 闸 + 集群派发 +
+        // 远程分支：target_node 指定 → master 闸 + 集群派发 +
         // 镜像凭条（对端还有完整 dispatch 瀑布与本地预算，双闸是刻意的）。
         if let Some(target) = target_node {
             return self
@@ -1102,7 +1102,7 @@ impl ConnectorInvokeTool {
         }
 
         // 预算闸（fail-closed；审批已在 dispatch 过完——先人工后限额）。
-        // R3：reserve 原子占用（裁决即记账），收口按 outcome 决策表：
+        // reserve 原子占用（裁决即记账），收口按 outcome 决策表：
         // DispatchRejected/Failed/Err → release（确定性未出网/本地失败）；
         // Done → commit（既成事实）。
         let limits = budget_limits(&cfg);
@@ -1139,11 +1139,11 @@ impl ConnectorInvokeTool {
 
         // 按绑定分派。⛔ 前缀（dispatch 安全层拒绝族）= denied_approval
         // 回执已由 dispatch 的 ABAC deny 分支代写——工具侧跳过不双写，原文
-        // 透传；错误形态文本（Error:/Tool error:/Exit code:/Plan mode:）
+        // 透传；错误形态文本（Error:/Tool error:/Exit code:/Plan mode）
         // = dispatch 未代写凭条，走 error 回执（错误也是账）。
         let exec = self.dispatch_binding(&c, op, &op_args, context).await;
         match exec {
-            // 安全闸拒绝 = 确定未出网 → 回吐额度（R3 决策表）
+            // 安全闸拒绝 = 确定未出网 → 回吐额度（决策表）
             Ok(InvocationOutcome::DispatchRejected(raw)) => {
                 self.budget.release(&reservation);
                 (Ok(raw), None)
@@ -1215,7 +1215,7 @@ impl ConnectorInvokeTool {
                 summary,
                 result_text,
             }) => {
-                // R3 决策表第四臂（复查补口；F1 扩面：超时或传输中途断开）=
+                // 决策表第四臂（复查补口； 扩面：超时或传输中途断开）=
                 // 结果未知——请求可能已送达并被对端处理（外部写可能已生效）。
                 // 保留账目不回吐（release 会放行额度 = 绕过限额），与
                 // run_remote 的 RPC Err 臂同语义。
@@ -1272,15 +1272,15 @@ impl ConnectorInvokeTool {
         }
     }
 
-    /// 远程执行分支（E1，收官批 2026-10-15）：target_node 指定 → 经集群
+    /// 远程执行分支（收官-15）：target_node 指定 → 经集群
     /// RPC 在对端节点执行（action=`connector_invoke`，对端 worker handler
     /// 走本地 `handle_tool_call` 完整 dispatch 瀑布）。
     ///
     /// 凭据铁律跨节点不变：payload 只含 `connector/op/args/session_key`，
     /// **凭据永不上 RPC 线**——对端用自己的 vault 解锁。master 侧闸照跑：
     /// operation_override 投影在 dispatch 已裁决（审批卡在 master 出），
-    /// budget.reserve 在派发前 fail-closed（E2 聚合记账第二道闸；对端还有
-    /// 自己的一套本地限额）。R3 收口决策表：对端 `executed` → commit；
+    /// budget.reserve 在派发前 fail-closed（聚合记账第二道闸；对端还有
+    /// 自己的一套本地限额）。 收口决策表：对端 `executed` → commit；
     /// 其他 outcome（denied/error/budget_blocked/disabled，对端明确回执）
     /// → release；**RPC 本身 Err（超时/传输错误）→ 保留账目不回吐**——
     /// 结果未知（外部写可能已生效），放行额度 = 绕过限额。镜像凭条
@@ -1309,7 +1309,7 @@ impl ConnectorInvokeTool {
         };
 
         // master 侧预算闸（fail-closed；审批卡在 master dispatch 已出——
-        // 这里是派发前的第二道闸，被拒 = 请求不出线）。R3：reserve 原子
+        // 这里是派发前的第二道闸，被拒 = 请求不出线）。：reserve 原子
         // 占用，收口见下方决策表。
         let cfg = connectors_config(&self.config_path);
         let limits = budget_limits(&cfg);
@@ -1354,7 +1354,7 @@ impl ConnectorInvokeTool {
         let resp = match f(target, INVOKE_TOOL_NAME, payload).await {
             Ok(resp) => resp,
             Err(e) => {
-                // R3：RPC 失败（超时/传输错误）= 结果未知——外部写可能已
+                // RPC 失败（超时/传输错误）= 结果未知——外部写可能已
                 // 生效，**保留账目不回吐**（release 会放行额度 = 绕过限额）。
                 // 凭条词表与本地 UnknownOutcome 臂同源：落 "unknown" 不是
                 // "error"——审计账本必须能区分「对端明确报错（未执行）」与
@@ -1405,11 +1405,11 @@ impl ConnectorInvokeTool {
         // ① result_text 带 ⛔ 前缀 = 对端 dispatch 层明确拒绝（estop/hidden/
         //    Plan/tier 闸——工具从未执行、凭条从未落账，worker 回执面诚实
         //    不造假 = null）。与本地 classify_tool_result 同一裁决标记：
-        //    确定性「未执行」落 "error"（下方决策表 release 回吐预算，R3：
+        //    确定性「未执行」落 "error"（下方决策表 release 回吐预算，
         //    对端确认未执行），不是 unknown。
         // ② 其余形态（执行后凭条读回失败等真未知）= 请求可能已送达并在
         //    B 端执行（外部写可能已生效），不能按 "error" 兜底（error 会
-        //    走 release 回吐预算 = R3 语义旁路）。落 "unknown" 凭条，决策
+        //    走 release 回吐预算 = 语义旁路）。落 "unknown" 凭条，决策
         //    表保留账目（与 RPC Err 臂同语义）。
         let worker_outcome = match worker_receipt.get("outcome") {
             Some(serde_json::Value::String(s)) => s.clone(),
@@ -1435,7 +1435,7 @@ impl ConnectorInvokeTool {
             .unwrap_or("")
             .to_string();
 
-        // E2 聚合记账 + R3 收口决策表：对端明确回执 = 确定性结论——
+        // 聚合记账 + 收口决策表：对端明确回执 = 确定性结论——
         // executed → commit（既成事实）；denied/error/budget_blocked/disabled
         // → release（对端确认未执行，回吐额度）；unknown（envelope 缺
         // outcome，结果未知）→ 保留账目不回吐（同 RPC Err 臂）。（RPC Err
@@ -1621,7 +1621,7 @@ impl ConnectorInvokeTool {
 
         // 占位符展开：{name} ← args[name]；其余参数留给 query/body。
         // 值经 encode_path_segment（占位符 = 单 path segment 语义，
-        // 边界补强 2026-10-20）。
+        // 边界补强）。
         let mut url = format!("{}{}", base.trim_end_matches('/'), path);
         let mut consumed = std::collections::BTreeSet::new();
         for ph in placeholders {
@@ -1669,7 +1669,7 @@ impl ConnectorInvokeTool {
                         if binding.required {
                             // 无人值守 worker 上下文不发卡：远程任务等不到本地
                             // 人，卡挂满 300s 拖死 A 端派发超时（T-CONN-1 ET
-                            // 两连红实录：357ca645 加测试时凭据缺失=立即诚实
+                            // 两连红357ca645 加测试时凭据缺失=立即诚实
                             // error；1ef104c7 接卡后 worker 发卡阻塞）。诚实
                             // error 立即回流 A 端由发起方决策（换节点重派/报
                             // 错收口）——正是该测试钉的契约「凭据不上线 + 缺失
@@ -1679,14 +1679,14 @@ impl ConnectorInvokeTool {
                             // = 远程执行面 RPC handler（gateway/runtime.rs 构造）；
                             // `flow-engine` = flow 模板周期 tick（无人值守导入
                             // 循环——vault 缺凭据同诚实报错，不挂 tick）。
-                            // 与 channel_approval M5-3 的 cluster 判定同族。
+                            // 与 channel_approval 的 cluster 判定同族。
                             if matches!(
                                 context.channel.as_str(),
                                 "cluster" | "cluster-connector" | "flow-engine"
                             ) {
                                 return Err(format!("凭据槽位 `{slot}` 缺失: {e}"));
                             }
-                            // B4 凭据索要卡：发卡阻塞等用户提交（broker 落
+                            // 凭据索要卡：发卡阻塞等用户提交（broker 落
                             // vault 后回 true）→ 原地重解析一次续行。槽空
                             // （headless）/拒绝/超时 = 原错误路径字节不变。
                             // run_http 在 async 上下文——spawn_blocking 包
@@ -1762,7 +1762,7 @@ impl ConnectorInvokeTool {
             }
         }
 
-        // R6：剩余 args（GET）与凭据 query 对合并发送——普通参数在前、
+        // 剩余 args（GET）与凭据 query 对合并发送——普通参数在前、
         // 凭据同名时凭据胜；全部经 reqwest `.query()` percent-encoding，
         // 已有 query 串的 URL 用 `&` 追加（reqwest 追加语义）。
         let merged_query = merge_query_pairs(extra_query, &query_pairs);
@@ -1791,7 +1791,7 @@ impl ConnectorInvokeTool {
             Ok(r) => r,
             Err(e) if e.is_timeout() => {
                 // 客户端超时 = 结果未知（请求可能已送达并被对端处理，外部
-                // 写可能已生效）→ UnknownOutcome 臂保留账目（R3 决策表第四
+                // 写可能已生效）→ UnknownOutcome 臂保留账目（决策表第四
                 // 臂，与 run_remote 的 RPC Err 臂同语义），不当普通失败串。
                 return Ok(InvocationOutcome::UnknownOutcome {
                     summary: "HTTP 客户端超时（结果未知）".to_string(),
@@ -1805,14 +1805,14 @@ impl ConnectorInvokeTool {
                 // 连接建立失败 / 请求构造错误（reqwest 语义：connect=TCP/
                 // TLS 握手期失败，request=发送前构造失败）= 请求**未发出**，
                 // 确定性未生效 → 普通失败串（上层 Failed 臂 release 回吐
-                // 额度，R3 决策表 Failed 臂）。
+                // 额度， 决策表 Failed 臂）。
                 return Err(format!("HTTP 请求失败: {e}"));
             }
             Err(e) => {
                 // 其余传输层失败（body 写入中途断开、连接 reset 等）= 请求
                 // 可能已完整送达并被对端处理——结果未知，同超时语义保留账目
-                // （release 会放行额度 = R3 超买旁路，2026-10-16 二轮复查
-                // F1 补口）。
+                // （release 会放行额度 = 超买旁路， 二轮复查
+                // 补口）。
                 return Ok(InvocationOutcome::UnknownOutcome {
                     summary: "HTTP 传输错误（结果未知）".to_string(),
                     result_text: format!(
@@ -1892,7 +1892,7 @@ impl ConnectorInvokeTool {
             arguments: serde_json::to_string(op_args)
                 .map_err(|e| format!("args 序列化失败: {e}"))?,
         };
-        // R7：clone 原 ctx 只改审计标签（channel→"connector-binding" 供
+        // clone 原 ctx 只改审计标签（channel→"connector-binding" 供
         // 溯源），tool_path_base / correlation_id / async_callback 原样
         // 保留——档案管线任务的工作副本路径基准、RPC 关联 ID、异步回调跨
         // 桥不丢（此前 new() 把四者全置 None）。approval_ref 例外：dispatch
@@ -1919,7 +1919,7 @@ impl ConnectorInvokeTool {
             },
             ToolBindingClass::Done => InvocationOutcome::Done {
                 summary,
-                // C4：receipt 主键镜像 run_http——manifest 声明 receipt_key
+                // receipt 主键镜像 run_http——manifest 声明 receipt_key
                 // 时对结果文本尽力 JSON 顶层字段解析（playwright-mcp 等
                 // 返回 JSON 的 MCP 工具可抠主键；非形态匹配 = None 不强求）。
                 receipt_key: op.receipt_key.clone(),
@@ -1929,10 +1929,10 @@ impl ConnectorInvokeTool {
         })
     }
 
-    /// M2（2026-10-19）script 绑定：声明式命令模板 → exec 同源通路。
+    /// script 绑定：声明式命令模板 → exec 同源通路。
     ///
     /// 展开的命令整体作为 exec 的单参数（command 字段）——占位符白名单
-    /// 在解析期钉死、实参在 R4 出网前已验；执行经 [`Self::run_tool_binding`]
+    /// 在解析期钉死、实参在 出网前已验；执行经 [`Self::run_tool_binding`]
     /// 回灌 `handle_tool_call_at_depth`，命令守卫/安全 8 层/审批/审计照跑
     /// ——script 绑定不是绕过命令守卫的后门。超时/目录/捕获是清单作者
     /// 钉死的声明式语义（不是模型现场决定）：timeout 缺省走 config
@@ -1987,7 +1987,7 @@ impl ConnectorInvokeTool {
         }
     }
 
-    /// action 绑定（内置动作）：纸面账本三动作 + monitor 语义检查（E4）。
+    /// action 绑定（内置动作）：纸面账本三动作 + monitor 语义检查。
     async fn run_action(
         &self,
         c: &ValidatedConnector,
@@ -2009,13 +2009,13 @@ impl ConnectorInvokeTool {
         }
     }
 
-    /// E4（收官批 2026-10-15）monitor 语义变化检测（域 A 收官）：fetch（
+    /// （收官-15）monitor 语义变化检测（域 A 收官）：fetch（
     /// web_fetch 原语经 loop 回灌，完整 dispatch 瀑布照跑）→ 快照 diff →
     /// 变化时 LLM 语义摘要。快照约定 `<workspace>/data/monitor_snapshots/
     /// <name>`（name 经 sanitize 防路径逃逸）；首跑建基线、全等无变化；
     /// `semantic=true`（缺省）摘要走 `agents.small_model` 通道（未配置 =
     /// 主模型 + WARN，见 [`AgentLoop::chore_completion`]），`semantic=false`
-    /// 机械比对（P0 旧行为——agent 自行比对的剧本原语化）。
+    /// 机械比对（旧行为——agent 自行比对的剧本原语化）。
     ///
     /// 诚实边界：变化检测是启发式——比对在截断归一形态上进行（纯布局/
     /// 动态时间戳噪声可能误报）；摘要失败不吞变化事实（变化照常成立，
@@ -2121,7 +2121,7 @@ impl ConnectorInvokeTool {
         })
     }
 
-    /// E4 语义摘要 LLM 调用：small_model 槽位优先 / 未配置回主模型 + WARN
+    /// 语义摘要 LLM 调用：small_model 槽位优先 / 未配置回主模型 + WARN
     /// （都在 [`AgentLoop::chore_completion`] 内）；无 loop（停机窗口）诚实
     /// 失败，摘要位会注明，变化事实不受影响。
     async fn summary_llm(&self, label: &str, prompt: &str) -> Result<String, String> {
@@ -2264,21 +2264,21 @@ fn text_receipt_value(text: &str, key: &Option<String>) -> Option<String> {
     })
 }
 
-/// E4：快照比对/喂模的单侧字符上限（诚实边界：变化检测是启发式——比对在
+/// 快照比对/喂模的单侧字符上限（诚实边界：变化检测是启发式——比对在
 /// 截断形态上进行；同时防超大页面把 token/内存打爆）。
 const MONITOR_SNAPSHOT_MAX_CHARS: usize = 20_000;
 
-/// E4：语义摘要输出 token 预算（杂务短输出；护栏复用 aux 治理面）。
+/// 语义摘要输出 token 预算（杂务短输出；护栏复用 aux 治理面）。
 const MONITOR_SUMMARY_MAX_TOKENS: u32 = 1024;
 
-/// E4：单侧内容截断（比对与喂模同口径——差异只落在截断点之后 = 视为无
+/// 单侧内容截断（比对与喂模同口径——差异只落在截断点之后 = 视为无
 /// 变化，这是「变化检测是启发式」边界的实现形态）。
 fn monitor_clip(s: &str) -> String {
     let trimmed = s.trim();
     trimmed.chars().take(MONITOR_SNAPSHOT_MAX_CHARS).collect()
 }
 
-/// E4：monitor check 的快照/判定决策（fetch 之后、LLM 之前的全部分叉——
+/// monitor check 的快照/判定决策（fetch 之后、LLM 之前的全部分叉——
 /// 纯 fs + 字符串，单测不经 loop 直接驱动）。`ChangedNeedsSummary` 只携带
 /// 组装好的 prompt，LLM 调用留在 action（需要 loop_ref 的杂务通道）。
 #[derive(Debug)]
@@ -2287,17 +2287,17 @@ enum MonitorDecision {
     Baseline { summary: String },
     /// 与上次快照全等。
     Unchanged { summary: String },
-    /// 有变化但摘要被关掉（semantic=false，P0 机械比对旧行为）。
+    /// 有变化但摘要被关掉（semantic=false， 机械比对旧行为）。
     ChangedMechanical { summary: String },
     /// 有变化且需要 LLM 语义摘要（semantic=true 缺省臂）。
     ChangedNeedsSummary { prompt: String },
 }
 
-/// E4：check 的快照机体——读旧快照 → 截断比对 → 轮转写新（写失败诚实报
+/// check 的快照机体——读旧快照 → 截断比对 → 轮转写新（写失败诚实报
 /// 错，不落半可信账）→ 按状态/开关产出决策。快照约定
 /// `<workspace>/data/monitor_snapshots/<name>`（name 经 sanitize 防路径
 /// 逃逸）。
-/// E4：快照文件 slug（sanitize 白名单单一真相源 + 非直通名摘要分离——
+/// 快照文件 slug（sanitize 白名单统一定义 + 非直通名摘要分离——
 /// 非 ASCII 名经白名单摊平后互相碰撞（「首页」「仓库」同为 "__"），追加
 /// 原名摘要 8 位一一对应；ASCII 直通名保持干净文件名）。
 fn monitor_slug(name: &str) -> String {
@@ -2348,7 +2348,7 @@ fn monitor_finalize(
     })
 }
 
-/// E4：语义摘要 prompt（变化检测的喂模构造，纯函数供测试）。
+/// 语义摘要 prompt（变化检测的喂模构造，纯函数供测试）。
 fn build_monitor_diff_prompt(name: &str, url: &str, prev: &str, fresh: &str) -> String {
     format!(
         "你在为一个网页监控任务生成变化摘要。监控项「{name}」（{url}）的内容发生了变化。\n\
@@ -2360,7 +2360,7 @@ fn build_monitor_diff_prompt(name: &str, url: &str, prev: &str, fresh: &str) -> 
     )
 }
 
-/// tool 绑定结果的分类（C4 回执语义，2026-10-15）。
+/// tool 绑定结果的分类（回执语义）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolBindingClass {
     /// dispatch 安全层主动拦截（⛔ 家族：estop/limits/security/guardian/
@@ -2373,7 +2373,7 @@ enum ToolBindingClass {
     /// `Exit code:` 前缀）或 Plan 闸拦截（`Plan mode:` 前缀，此前落 Done
     /// 分支产生假 executed 凭条）。工具侧落 error 回执——错误也是账。
     Failed,
-    /// 绑定工具执行超时（R3 决策表第四臂，2026-10-16 二轮复查补口）：
+    /// 绑定工具执行超时（决策表第四臂， 二轮复查补口）：
     /// 错误形态文本含 "timed out" 且非 `Exit code:` 前缀——工具可能已在
     /// 目标上生效后才被掐断（外部写可能已发生）。**保留账目不回吐**，
     /// unknown 凭条（与 run_http / run_remote 超时臂同语义）。
@@ -2384,16 +2384,16 @@ enum ToolBindingClass {
 
 /// 判定刻度与 dispatch/turn WAL 同源：⛔ 前缀 = 安全层裁决（WAL 同款
 /// ok 判定）；错误形态复用 `turn_guard::tool_result_indicates_error`
-/// （Error:/Tool error:/Exit code: 三前缀，单一真相源）；`Plan mode:` 是
+/// （Error:/Tool error:/Exit code: 三前缀，统一定义）；`Plan mode:` 是
 /// dispatch Plan 闸的拒绝文本（工具成功输出不以它开头）。
 ///
-/// 超时特判（F2，二轮复查）：错误形态 + 含 "timed out" → unknown。只对
+/// 超时特判（二轮复查）：错误形态 + 含 "timed out" → unknown。只对
 /// `Error:`/`Tool error:` 前缀生效——`Exit code:` 前缀是进程**跑完后**
 /// 退出非零（确定性失败），即便输出恰好含 "timed out" 字样（如测试二进
 /// 制的超时失败输出）也是确定性结果，不误判（executor/shell 的真实超时
 /// 文本形态见 executor.rs:81/107、shell.rs:661，均为单行独立错误非进程
 /// 输出混入）。
-/// M2：script 命令模板单遍扫描展开——`{name}`（在白名单内的占位符）替换
+/// script 命令模板单遍扫描展开——`{name}`（在白名单内的占位符）替换
 /// 为 args 实参（字符串原样；其余 JSON 序列化形态），其余字符照抄。单遍
 /// 而非逐名 replace 的原因：实参值不做二次展开（值里含 `{xxx}` 字样保持
 /// 字面——逐名 replace 会把前一个实参值里的占位符字样再展开，注入面）。
@@ -2451,7 +2451,7 @@ fn classify_tool_result(result: &str) -> ToolBindingClass {
     if result.starts_with('⛔') {
         return ToolBindingClass::DispatchRejected;
     }
-    // F2 超时特判扩面（M2 script 绑定实测发现）：exec 工具的超时收尸 =
+    // 超时特判扩面（script 绑定实测发现）：exec 工具的超时收尸 =
     // `Ok("Command timed out …")`（loop_tools.rs `exec_output_passed` 单一
     // 真相源的失败形态之二），**无错误前缀**——走不到下面的错误头分支，
     // 会被误判 Done → 假 executed 凭条。含 "timed out" 即结果未知（命令
@@ -2485,7 +2485,7 @@ enum InvocationOutcome {
         summary: String,
         result_text: String,
     },
-    /// 结果未知（R3 决策表第四臂，2026-10-16 复查补口）：客户端超时——
+    /// 结果未知（决策表第四臂， 复查补口）：客户端超时——
     /// 请求可能已送达并被对端处理（外部写可能已生效）。**保留账目不回吐**
     /// （与 run_remote 的 RPC Err 臂同语义），落 error 回执 + WARN。
     UnknownOutcome {

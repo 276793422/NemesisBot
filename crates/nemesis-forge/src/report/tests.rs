@@ -461,7 +461,7 @@ fn test_format_report_from_report_with_learning_cycle() {
 
 #[test]
 fn test_truncate_cjk_at_char_boundary() {
-    // 中文建议/链名（LLM 反思产物）裸字节截断曾 panic（2026-10-11 横扫
+    // 中文建议/链名（LLM 反思产物）裸字节截断曾 panic（横扫
     // 修复）：截断点必须落在字符边界上。
     let long = "中".repeat(30); // 90 字节 > 20
     let out = truncate(&long, 20);

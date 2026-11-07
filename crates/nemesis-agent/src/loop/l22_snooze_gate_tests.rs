@@ -1,6 +1,6 @@
-// L22（2026-11-03 snooze 排队）：gate_inbound 暂停闸三臂 + 管理动词穿透。
+// （snooze 排队）：gate_inbound 暂停闸三臂 + 管理动词穿透。
 //
-// 拍板「暂停期入站消息=排队（恢复后投递）」的闸面回归锁：
+// 「暂停期入站消息=排队（恢复后投递）」的闸面回归锁：
 // ① 用户消息：排队（.pending 落盘）+ 💤 Immediate 回执 + jsonl system 单行
 //    （不成对——user 行由重放物化）；
 // ② cron tick：静默排队（Coalesced，零 jsonl 落盘零回执）；

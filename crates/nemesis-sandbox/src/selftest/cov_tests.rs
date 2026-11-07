@@ -7,7 +7,7 @@ use super::*;
 
 // probe_outside_write 的写入路径按 pid 派生（进程内全局唯一）——写该路径的
 // 测试必须与 selftest_tests 的占位目录测试串行（拿同一把锁），否则并发窗口
-// 内撞上占位目录 → os error 5 假红（2026-09-27 实证，锁语义见
+// 内撞上占位目录 → os error 5 假红（实证，锁语义见
 // selftest_tests::AGT_SELFTEST_LOCK 文档）。
 use super::selftest_tests::AGT_SELFTEST_LOCK;
 

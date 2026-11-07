@@ -8,9 +8,7 @@
 
 use crate::sse_chat::{ChatStreamRequest, MessageEntry};
 
-// -----------------------------------------------------------------------
 // ChatStreamRequest construction / behavior
-// -----------------------------------------------------------------------
 
 #[test]
 fn request_with_temperature_zero() {
@@ -126,9 +124,7 @@ fn request_full_options() {
     assert_eq!(req.max_tokens, Some(2048));
 }
 
-// -----------------------------------------------------------------------
 // MessageEntry behavior
-// -----------------------------------------------------------------------
 
 #[test]
 fn message_entry_unicode_content() {
@@ -170,9 +166,7 @@ fn message_entry_debug_format() {
     assert!(s.contains("hi"));
 }
 
-// -----------------------------------------------------------------------
 // JSON (de)serialization edge cases
-// -----------------------------------------------------------------------
 
 #[test]
 fn request_with_extra_unknown_field_ignored() {
@@ -233,12 +227,10 @@ fn message_entry_with_empty_role() {
     assert_eq!(m.role, "");
 }
 
-// ---------------------------------------------------------------------------
-// Handler 本体（Phase 3 覆盖率冲刺，2026-08-25）：此前只有请求类型 serde
+// Handler 本体（覆盖率冲刺）：此前只有请求类型 serde
 // 测试，`handle_chat_stream` 的流转换逻辑（chunk/done/error 三态 + 无
 // provider 分支 + 无 [DONE] 兜底）零覆盖。router.oneshot 全进程内测，
 // wiremock 扮演 OpenAI 风格 SSE 后端（nemesis-providers 同款模式）。
-// ---------------------------------------------------------------------------
 
 use crate::api_handlers::AppState;
 use crate::events::EventHub;
@@ -252,7 +244,7 @@ use std::time::Instant;
 use tower::ServiceExt;
 
 /// 复刻 fork_route_tests 的最小 AppState（全 None，除 streaming_provider
-/// 由各测试自行覆盖）。槽类型 = 协议感知 dyn（B 根修 2026-09-17）。
+/// 由各测试自行覆盖）。槽类型 = 协议感知 dyn（B 根修）。
 fn make_state(
     streaming_provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
 ) -> Arc<AppState> {
@@ -294,6 +286,7 @@ fn make_state(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

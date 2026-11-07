@@ -5,7 +5,7 @@
  * 2. 错误 token → .auth-error 报错（不进主界面）
  * 3. 正确 token → 遮罩消失，主界面渲染
  */
-import { expect, test } from '@playwright/test'
+import { expect, test } from './fixtures'
 import { BASE_URL, E2E } from './env'
 
 test('认证闸：无 token 拦截 / 错误 token 报错 / 正确 token 进入', async ({ browser }) => {

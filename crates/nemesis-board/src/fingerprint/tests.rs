@@ -1,7 +1,7 @@
-//! 能力扩展 P34：指纹纯逻辑单测（任务类型分桶 / 三档判定边界 / 稳定加权
+//! 指纹纯逻辑单测（任务类型分桶 / 三档判定边界 / 稳定加权
 //! 排序）+ BoardStore 记账幂等与读取单测。决策表接入的端到端行为（成功率
 //! 影响换节点人选、决策评论带档位）在 nemesisbot `board_review::tests` 的
-//! P34 用例覆盖；双节点真流验收挂账 cluster-uat（主会话跑）。
+//! 用例覆盖；双节点真流验收挂账 cluster-uat（主会话跑）。
 
 use super::{
     FINGERPRINT_MIN_SAMPLES, FingerprintTier, TASK_TYPE_BUCKETS, apply_fingerprint_weights,

@@ -208,7 +208,7 @@ fn unsafe_chars_in_device_id_and_task_id_are_sanitized() {
     observer.set_task_context("task<bad>/name".to_string(), "node\\B:z".to_string());
     observer.dispatch(&make_start_event("trace-bad", "Hello"));
 
-    // device_id should not contain \\ or : — sanitized to _
+    // device_id should not contain \\ or: — sanitized to _
     let bad_device_dir = tmp
         .path()
         .join("logs")
@@ -536,7 +536,7 @@ fn llm_events_without_prior_start_are_dropped() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：Observer trait 接线
+// 补测（quality-hardening goal 冲刺）：Observer trait 接线
 // （name + on_event 转发）、LLMResponse tool_calls 三种 JSON 形态映射
 //（顶层 id/name/arguments、嵌套 function.name/arguments、无名条目跳过）、
 // 失败工具调用（success=false → "Failed" + error 透传）、create_session
@@ -655,15 +655,15 @@ fn failed_tool_call_logs_failed_status_and_error_text() {
 
 // 注：handle_conversation_start 的 create_session Err 分支（源文件 207-212）
 // 不可达 —— RequestLogger::create_session（request_logger.rs:314-343）对
-// 所有内部失败都「Silent failure」返回 Ok(())，Err 只可能来自未来新增的
+// 所有内部失败都「Silent failure」返回 Ok()，Err 只可能来自未来新增的
 // 失败模式。结构性豁免，见批次报告。
 
 // ===========================================================================
-// wave_r9（R9 补测批零头组，2026-08-27）：hostile log 根静默降级 +
+// wave_r9（补测批零头组）：hostile log 根静默降级 +
 // Err 臂不可达性存档。
 //
 // 结构性发现：RequestLogger::create_session（nemesis-agent request_logger.rs
-// 314-345）对每一条 fs 失败都是 warn! + Ok(())（源码注释原文即 "Silent
+// 314-345）对每一条 fs 失败都是 warn! + Ok()（源码注释原文即 "Silent
 // failure"）——因此 observer handle_conversation_start 里
 // `if let Err(e) = logger.create_session()`（本文件 207-213）的 Err 分支是
 // 【不可达的死防御代码】：没有任何 fs 失败能从 create_session 冒出 Err 来。

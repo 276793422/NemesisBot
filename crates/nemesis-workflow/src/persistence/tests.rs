@@ -240,7 +240,7 @@ fn test_new_accepts_str() {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (create_dir_all failure, invalid JSONL line skip)
+// coverage gap closure (create_dir_all failure, invalid JSONL line skip)
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -1,8 +1,8 @@
-//! qcow2 overlay 创建（P5 第 2 步）——per-agent 差分盘的**唯一参数产地**。
+//! qcow2 overlay 创建（第 2 步）——per-agent 差分盘的**唯一参数产地**。
 //!
 //! base 镜像只读共享、每个 agent 实例一个 overlay（`-b backing` 差分）：
 //! 启动零拷贝、丢弃即回收。backing 允许指向另一个 overlay——**快照树的
-//! 预留点**（§5「快照树」恢复路径 = 在此函数之上做多层 backing 链，接口
+//! 预留点**（「快照树」恢复路径 = 在此函数之上做多层 backing 链，接口
 //! 现已留好）。
 //!
 //! 纪律：qemu-img 是外部工具——参数在纯函数 [`create_overlay_args`] 产出

@@ -1,4 +1,4 @@
-//! verify_policy 单测：§1 矩阵逐行钉死（消费版 / 锁定版两种 feature 形态
+//! verify_policy 单测： 矩阵逐行钉死（消费版 / 锁定版两种 feature 形态
 //! 分别编译验证；锚存在性依赖构建环境，断言按 `ROOT_ANCHOR` 实际值分支）。
 
 use super::*;
@@ -103,7 +103,7 @@ fn consumer_form_never_locked() {
 }
 
 // ===========================================================================
-// Coverage 追加（2026-09-24）：as_str / read_config_value / verify_current_exe /
+// Coverage 追加：as_str / read_config_value / verify_current_exe /
 // self_check_and_enforce 的进程内可达路径。
 // read_config_value / self_check 走 resolve_home（NEMESISBOT_HOME env 进程
 // 全局态）→ 持 GLOBAL_STATE_LOCK + EnvHomeGuard 隔离（Windows 形态，同
@@ -130,7 +130,7 @@ fn hex_encode_formats_lowercase() {
 /// 安全配置文件路径辅助：把 config.security.json 写进临时 home 的
 /// workspace/config/ 下（resolve_security_config_path_in_workspace 拼接点）。
 /// 调用方必须已持 GLOBAL_STATE_LOCK 并用 EnvHomeGuard 指向该 home。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn write_security_config(home: &std::path::Path, raw: &str) {
     let path = crate::common::security_config_path(home);
     std::fs::create_dir_all(path.parent().expect("config path has parent")).unwrap();
@@ -138,10 +138,10 @@ fn write_security_config(home: &std::path::Path, raw: &str) {
 }
 
 /// 进入 read_config_value 的隔离环境（锁 + env home），跑完自动恢复。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn with_isolated_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
     // 毒化容忍：别的测试持锁 panic 不许把这里放大成 140 连环假失败
-    // （2026-09-25 全量跑实测一次：单 panic → 本模块 140 处 unwrap 连环炸）。
+    // （全量跑实测一次：单 panic → 本模块 140 处 unwrap 连环炸）。
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -153,7 +153,7 @@ fn with_isolated_home<T>(f: impl FnOnce(&std::path::Path) -> T) -> T {
 }
 
 /// security 配置文件缺席 = 未配置（None），不炸不猜。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn read_config_value_absent_file_is_none() {
     with_isolated_home(|_home| {
@@ -162,7 +162,7 @@ fn read_config_value_absent_file_is_none() {
 }
 
 /// JSON 解析失败：按未配置处理（None + 响亮提示），不 panic。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn read_config_value_invalid_json_is_none() {
     with_isolated_home(|home| {
@@ -172,7 +172,7 @@ fn read_config_value_invalid_json_is_none() {
 }
 
 /// 字符串值原样（trim 后）透传给裁决矩阵。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn read_config_value_string_passthrough_trimmed() {
     with_isolated_home(|home| {
@@ -182,7 +182,7 @@ fn read_config_value_string_passthrough_trimmed() {
 }
 
 /// 空串 = 未配置（None）。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn read_config_value_empty_string_is_none() {
     with_isolated_home(|home| {
@@ -192,7 +192,7 @@ fn read_config_value_empty_string_is_none() {
 }
 
 /// null = 未配置（None）。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn read_config_value_null_is_none() {
     with_isolated_home(|home| {
@@ -202,7 +202,7 @@ fn read_config_value_null_is_none() {
 }
 
 /// 非字符串（数字/对象）= 按未配置处理 + 响亮提示，不做二次裁决。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn read_config_value_non_string_is_none() {
     with_isolated_home(|home| {
@@ -214,7 +214,7 @@ fn read_config_value_non_string_is_none() {
 }
 
 /// 键缺席 = 未配置（None）。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn read_config_value_missing_key_is_none() {
     with_isolated_home(|home| {
@@ -261,7 +261,7 @@ fn verify_current_exe_unsigned_test_binary_is_no_signature() {
 /// ① warn（锚存在 → 真跑自验，未签名测试 exe → 非 Valid，不 exit）；
 /// ② off（跳过验签；快照保持首响——set 失败静默是设计语义）。
 /// 无锚构建形态：warn 降级 off（outcome=None），两形态都不得 exit。
-#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(all(windows, feature = "verify"))] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[test]
 fn self_check_snapshots_first_call_and_never_exits() {
     with_isolated_home(|home| {
@@ -301,8 +301,8 @@ fn anchor_from_env_runtime_arms() {
 }
 
 // ===========================================================================
-// Wave5 round2（2026-09-25）：self_check_and_enforce 的两个 exit(86) 硬拒启
-// 臂——进程级副作用（std::process::exit）无法在本进程内断言，走「测试二进制
+// Wave5：self_check_and_enforce 的两个 exit(86) 硬拒启
+// 臂——进程级副作用（std::process:exit）无法在本进程内断言，走「测试二进制
 // 自孵子进程」标准形态：父测以 --exact 过滤重入自身，子测凭
 // NEMESISBOT_W5_VERIFY_CHILD 环境值进入真执行臂；home 指向临时目录
 //（NEMESISBOT_HOME 优先级 2，绝不触碰真实 ~/.nemesisbot）。
@@ -354,7 +354,7 @@ fn w5_run_verify_child(child_test: &str, arm: &str, security_json: &str) -> i32 
         .expect("子进程应带码退出（exit 86 而非信号）")
 }
 
-/// 拒启路径①：config 非法值 → exit 86（计划 §1 loud 拒绝）。
+/// 拒启路径①：config 非法值 → exit 86（计划 loud 拒绝）。
 #[cfg(feature = "verify")]
 #[test]
 fn w5_self_check_bogus_value_exits_86() {

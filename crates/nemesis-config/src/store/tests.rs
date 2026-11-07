@@ -14,7 +14,7 @@ fn tmp_store() -> (tempfile::TempDir, ConfigStore) {
 }
 
 fn exec_cfg(enabled: bool, sandbox: bool) -> ExecutorSeparationConfig {
-    // P5-2 加了 strict 字段；`..Default::default()` 让本 helper 不随字段
+    // 加了 strict 字段；`..Default::default` 让本 helper 不随字段
     // 增减再碎一次（默认 strict=false = 现状语义）。
     ExecutorSeparationConfig {
         enabled,
@@ -24,14 +24,14 @@ fn exec_cfg(enabled: bool, sandbox: bool) -> ExecutorSeparationConfig {
     }
 }
 
-/// D4（DACL 定向档）：serde 双路径陷阱回归钉——executor 段无 acl 键 /
+/// （DACL 定向档）：serde 双路径陷阱回归钉——executor 段无 acl 键 /
 /// executor 段整个缺失时，两条构造路径都必须收敛到同一组默认值
 /// （max_files=20000 而非 derive 的 0；backend="auto" 而非 derive 的 ""）。
 /// 假红史：hook_flips 真进程测试抓出 max_files=0 → 铺树预算耗尽 →
-/// DACL 档静默降级（2026-09-27，手写 Default 修复）。
+/// DACL 档静默降级（手写 Default 修复）。
 #[test]
 fn executor_acl_defaults_converge_across_serde_and_default_paths() {
-    // 路径 1：结构体级 Default::default()（serde 嵌套补齐 / unwrap_or_default 走这条）。
+    // 路径 1：结构体级 Default::default（serde 嵌套补齐 / unwrap_or_default 走这条）。
     let d = ExecutorSeparationConfig::default();
     assert_eq!(d.backend, "auto", "derive Default 会给空串——选型拒绝值");
     assert_eq!(
@@ -58,7 +58,7 @@ fn executor_acl_defaults_converge_across_serde_and_default_paths() {
     );
 }
 
-/// P3 T4（executor.persistent）：serde 双路径收敛回归钉——executor 段缺
+/// （executor.persistent）：serde 双路径收敛回归钉——executor 段缺
 /// persistent 键 = 全关 + 缺省配额（enabled=false，与升级前 per-call 现状
 /// 字节一致）；显式段缺字段 = 字段级 default 生效。
 #[test]
@@ -152,7 +152,7 @@ fn store_path_returns_backing_file() {
 // effect. This is therefore the ONLY test in the crate that may call
 // set_global — everything the singleton surface needs (set_global / global /
 // load_live / save_live) is verified here in one shot. No other crate test
-// reads global()/load_live()/save_live (grepped), so the lingering global
+// reads global/load_live/save_live (grepped), so the lingering global
 // (pointing at this test's tempdir) cannot poison parallel runs.
 #[test]
 fn global_singleton_set_get_load_live_save_live() {
@@ -168,7 +168,7 @@ fn global_singleton_set_get_load_live_save_live() {
     let store = std::sync::Arc::new(ConfigStore::load(&path).unwrap());
     set_global(store.clone());
 
-    // global() hands back the SAME store (Arc identity), exposing its path.
+    // global hands back the SAME store (Arc identity), exposing its path.
     let g = global().expect("global() Some after set_global");
     assert!(std::sync::Arc::ptr_eq(&g, &store));
     assert_eq!(g.path(), path.as_path());
@@ -189,12 +189,10 @@ fn global_singleton_set_get_load_live_save_live() {
     assert_eq!(reloaded.gateway.port, 12345);
 }
 
-// ---------------------------------------------------------------------------
-// P24（2026-09-25 能力扩展 WS1）：executor.backend 往返与兼容
-// ---------------------------------------------------------------------------
+// executor.backend 往返与兼容
 
 /// typed save round-trip：`executor.backend` 显式值经 store.update 落盘后，
-/// 全新 load 读回不丢（同款回归锁先例：per-model untyped 键 round-trip）。
+/// 全新 load 读回不丢（同款回归锁per-model untyped 键 round-trip）。
 #[test]
 fn executor_backend_roundtrip_preserves_explicit_value() {
     let (dir, store) = tmp_store();
@@ -240,7 +238,7 @@ fn executor_backend_defaults_to_auto_for_legacy_config() {
     );
 }
 
-/// 写串行锁互斥回归钉（2026-10-13 同类横扫）：A 持锁期间 B 必须阻塞，
+/// 写串行锁互斥回归钉（同类横扫）：A 持锁期间 B 必须阻塞，
 /// A 释放后 B 才能进入。防将来有人把 config_write_lock 改成 no-op 或
 /// 每次调用新建锁（那样互斥即失效，RMW 丢更新回归）。
 #[test]

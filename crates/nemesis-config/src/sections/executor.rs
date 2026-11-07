@@ -1,11 +1,9 @@
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
-// ---------------------------------------------------------------------------
+// 机械拆分：本文件内容由 lib.rs 原样搬入（纯代码搬家，行为零变更）。
 
 use super::*;
 
 /// Executor separation + sandbox switch (Layer 1 / Layer 2). See
-/// `docs/PLAN/2026-07-08_executor-separation.md`.
+/// `executor-separation`.
 ///
 /// - `enabled`: Layer 1 — run execution-class tools (exec/file/grep/git/...) in
 ///   a separate child process (per-call spawn). `false` = today's in-process
@@ -21,7 +19,7 @@ use super::*;
 ///   /reload`; already-running box processes keep their old network state until
 ///   restarted (Sandboxie's WFP callout reads a per-process `BlockInternet`
 ///   cache that reload does not refresh).
-/// - `strict`（P5-2 严格模式）: fail-closed 闸门 — `sandbox=true` 被要求但本机
+/// - `strict`（严格模式）: fail-closed 闸门 — `sandbox=true` 被要求但本机
 ///   沙盒后端不可用（Windows=Sandboxie 未就绪；Linux=landlock/bwrap 均不可用；
 ///   裁剪构建=`sandbox` feature 被裁掉）时**拒绝执行高危工具**并明确报错，
 ///   而非默认的 warn + 无盒降级（fail-open）。注意 Partial 强制（后端可用但
@@ -38,7 +36,7 @@ pub struct ExecutorSeparationConfig {
     pub allow_network: bool,
     #[serde(default)]
     pub strict: bool,
-    /// P24（2026-09-25 能力扩展 WS1）：沙盒后端选择（`executor.backend`，
+    /// 沙盒后端选择（`executor.backend`，
     /// 缺省 `"auto"`）。值域：`auto`（默认——Windows 上 Sandboxie 就绪则
     /// sandboxie，否则退 Windows 用户态 ACL 轻量档）/ `sandboxie`（显式钉
     /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回
@@ -47,28 +45,28 @@ pub struct ExecutorSeparationConfig {
     ///
     /// ⚠ 实验性标注：acl 档是**半档隔离**（强制完整性标签 No-Write-Up
     /// 围栏 + DACL 原语），禁不了网、写围栏依赖令牌降级——详见
-    /// `crates/nemesis-sandbox/src/backend.rs` 的 P24 模块文档与诚实边界。
+    /// `crates/nemesis-sandbox/src/backend.rs` 的 模块文档与诚实边界。
     /// 兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
     /// 升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
     #[serde(default = "default_executor_backend")]
     pub backend: String,
-    /// D4（2026-09-27）：DACL 定向档开关组（`executor.acl` 段，缺省全关
+    /// DACL 定向档开关组（`executor.acl` 段，缺省全关
     /// = 现状字节不变）。见 [`ExecutorAclConfig`]。
     #[serde(default)]
     pub acl: ExecutorAclConfig,
-    /// P3 T4：常驻执行体开关组（`executor.persistent` 段，缺省全关 =
+    /// 常驻执行体开关组（`executor.persistent` 段，缺省全关 =
     /// per-call 现状）。见 [`ExecutorPersistentConfig`]。
     #[serde(default)]
     pub persistent: ExecutorPersistentConfig,
-    /// P5（桌面级 VM，2026-10-17）：VM 后端开关组（`executor.vm` 段）。
+    /// （桌面级 VM）：VM 后端开关组（`executor.vm` 段）。
     /// **铁律：`enabled` 默认 false**——关闭态 VM 路径零激活（零 QEMU 进程、
-    /// 零镜像下载、工具走原路径），全链行为字节不变（验收门 G4 专项断言）。
+    /// 零镜像下载、工具走原路径），全链行为字节不变（验收门 专项断言）。
     /// 见 [`ExecutorVmConfig`]。
     #[serde(default)]
     pub vm: ExecutorVmConfig,
 }
 
-/// `executor.persistent` 段：常驻执行体（per-agent 长驻子进程，P3 T4）的
+/// `executor.persistent` 段：常驻执行体（per-agent 长驻子进程）的
 /// 细粒度开关。缺省全关 = per-call 形态字节不变——常驻是增强档不是替换
 /// 闸，不可用（满员/spawn 失败/传输不可恢复）时全量回落 per-call Layer1/2。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,7 +111,7 @@ impl Default for ExecutorPersistentConfig {
 }
 
 /// `executor.acl` 段：DACL 定向档（write-restricted 受限令牌 + workspace
-/// SID GRANT ACE 树，D1-D3 原语）的细粒度开关。
+/// SID GRANT ACE 树，- 原语）的细粒度开关。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutorAclConfig {
     /// DACL 定向档总开关（默认 false = opt-in；开 = executor 子进程经
@@ -132,8 +130,8 @@ pub struct ExecutorAclConfig {
 
 impl Default for ExecutorAclConfig {
     /// 手写而非 derive（serde 双路径陷阱，hook_flips 真进程测试抓出）：
-    /// executor 段**无 acl 键**时 serde 走**结构体级** `Default::default()`
-    /// ——字段级 `#[serde(default = "...")]` 不经过，derive 的 `u32` 默认
+    /// executor 段**无 acl 键**时 serde 走**结构体级** `Default::default`
+    /// 字段级 `#[serde(default = "...")]` 不经过，derive 的 `u32` 默认
     /// 是 0，会让 hook 的铺树预算直接耗尽（写操作全死）。手写让两条构造
     /// 路径收敛到同一组默认值。
     fn default() -> Self {
@@ -145,13 +143,13 @@ impl Default for ExecutorAclConfig {
     }
 }
 
-/// `executor.acl.max_files` 缺省值（设计稿 §3.4：20000）。
+/// `executor.acl.max_files` 缺省值（设计稿：20000）。
 fn default_acl_max_files() -> u32 {
     20_000
 }
 
 /// `executor.backend` 的 serde 缺省值（`"auto"`）。独立函数而非 `String::default`
-/// ——空字符串不是合法选择（选型按未知值诚实拒绝），缺键必须落成 `"auto"`。
+/// 空字符串不是合法选择（选型按未知值诚实拒绝），缺键必须落成 `"auto"`。
 fn default_executor_backend() -> String {
     "auto".to_string()
 }
@@ -159,7 +157,7 @@ fn default_executor_backend() -> String {
 impl Default for ExecutorSeparationConfig {
     /// 手写而非 derive（与 [`ExecutorAclConfig`] 同款 serde 双路径陷阱）：
     /// `backend` 的 derive 默认是空串，而空串不是合法选型值（诚实拒绝）——
-    /// `unwrap_or_default()`（sandbox handler 对缺失 executor 段的补齐路径）
+    /// `unwrap_or_default`（sandbox handler 对缺失 executor 段的补齐路径）
     /// 必须落成 `"auto"` 而不是 `""`。
     fn default() -> Self {
         Self {
@@ -175,11 +173,11 @@ impl Default for ExecutorSeparationConfig {
     }
 }
 
-/// `executor.vm` 段：桌面级 VM 后端（P5，第三类隔离后端——独立内核整机
+/// `executor.vm` 段：桌面级 VM 后端（第三类隔离后端——独立内核整机
 /// 隔离）。缺省 = VM 路径零激活（铁律：总开关默认关，绝不替用户决定）。
 ///
 /// 枚举型字符串（arch/hypervisor/desktop/gc.over_limit）未知值 loud 拒绝
-/// （[`ExecutorVmConfig::validate`]，对齐 `executor.backend` P24 先例）。
+/// （[`ExecutorVmConfig::validate`]，对齐 `executor.backend` 先例）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutorVmConfig {
     /// VM 总开关（默认 false——关闭态零 QEMU 进程、零镜像下载、工具走
@@ -187,7 +185,7 @@ pub struct ExecutorVmConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Guest CPU 架构：`x86_64`（当前唯一产出档）| `aarch64`（接口在位、
-    /// 当前不产出——选了诚实报不支持，恢复路径见实施计划 §5）。
+    /// 当前不产出——选了诚实报不支持，恢复路径见实施计划）。
     #[serde(default = "default_vm_arch")]
     pub arch: String,
     /// 硬件加速：`auto`（探测裁决）| `kvm`（显式钉 Linux KVM）| `whpx`
@@ -196,10 +194,10 @@ pub struct ExecutorVmConfig {
     #[serde(default = "default_vm_hypervisor")]
     pub hypervisor: String,
     /// base 镜像桌面形态：`minimal`（轻量 WM + Chromium，默认）| `full`
-    /// （完整 DE，轮次 3 拍板的可选项）。两变体 base 镜像分开构建。
+    /// （完整 DE 形态的可选项）。两变体 base 镜像分开构建。
     #[serde(default = "default_vm_desktop")]
     pub desktop: String,
-    /// base 镜像来源（轮次 3-3：来源写死在本地配置中，页面可看可选可配
+    /// base 镜像来源（来源写死在本地配置中，页面可看可选可配
     /// 可改）。
     #[serde(default)]
     pub image: VmImageConfig,
@@ -217,11 +215,11 @@ pub struct ExecutorVmConfig {
     /// 侧 agent 已监听——cloud-init/systemd 还在走（微型镜像典型 20-60s，
     /// 缺省 240 给慢盘慢机余量）。就绪前交槽 = 首次 guest 调用 connect
     /// refused → 宿主回落混两套文件视图——引导墙钟必须在交槽前吃掉。
-    /// 缺省 240 = 原 vm_runtime 编译期常量行为字节不变（P5-R4 配置化）。
+    /// 缺省 240 = 原 vm_runtime 编译期常量行为字节不变（配置化）。
     /// 0 拒绝（无预算 = 启动可无限挂起，不是合法形态）。
     #[serde(default = "default_vm_ready_budget_secs")]
     pub ready_budget_secs: u64,
-    /// 显示面（P5-R2 带界面 VM）：`none`（默认，`-display none` 无头形态
+    /// 显示面（带界面 VM）：`none`（默认，`-display none` 无头形态
     /// 字节不变）| `vnc`（QEMU `-vnc 127.0.0.1:<display>` 回环 VNC——端口
     /// 走临时端口段分配、真实 TCP 端口进 registry，QEMU 参数按 display=
     /// port-5900 反向换算；经 plugin-vm 插件中继到 Dashboard）。vnc 态要求
@@ -270,7 +268,7 @@ pub struct VmGcConfig {
     /// 0 = 不设预算。
     #[serde(default = "default_vm_gc_max_disk_gb")]
     pub max_total_disk_gb: u32,
-    /// 超限动作：`warn`（默认，日志横幅可见）| `stop`（拒绝新实例创建，
+    /// 超限动作：`warn`（默认，日志横幅可）| `stop`（拒绝新实例创建，
     /// 既有实例不受影响）。
     #[serde(default = "default_vm_gc_over_limit")]
     pub over_limit: String,
@@ -329,12 +327,12 @@ fn default_vm_gc_over_limit() -> String {
 }
 
 /// Debian generic cloud image（trixie/latest 的 genericcloud 变体——无
-/// 云初始化代理依赖的最小 cloud-init 面）。可自由编辑（轮次 3-3 拍板）。
+/// 云初始化代理依赖的最小 cloud-init 面）。可自由编辑。
 /// 与 build-vm-image.sh（plugins/plugin-vm/，随 plugin-vm 插件包分发）的
 /// DEFAULT_BASE_URL 必须同源：config 缺省
 /// sha256 为空时，脚本只对**自己的默认 URL** 自动走上游 SHA256SUMS→
 /// SHA512SUMS 校验链；两处默认一旦分叉，出盒链路会被脚本按「换源」诚实
-/// 拒绝（缺显式哈希）——B5 全新环境实跑实录。
+/// 拒绝（缺显式哈希）—— 全新环境实跑。
 fn default_vm_image_source() -> String {
     "https://cloud.debian.org/images/cloud/trixie/latest/debian-13-genericcloud-amd64.qcow2"
         .to_string()

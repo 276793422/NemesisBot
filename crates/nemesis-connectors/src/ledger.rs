@@ -1,4 +1,4 @@
-//! 纸面券商账本（域 C，PLAN §4）：模拟资金 + 持仓 + 成交记录。
+//! 纸面券商账本（域 C，PLAN）：模拟资金 + 持仓 + 成交记录。
 //!
 //! 单文件 JSON 存 `<workspace>/data/paper_broker.json`。v1 即时成交（无挂
 //! 单）：`place_order` 按给定价格立即 fill，`cancel` 诚实报错（v1 无可撤订
@@ -102,7 +102,7 @@ pub fn save_ledger(workspace: &Path, ledger: &BrokerLedger) -> Result<(), String
         std::fs::create_dir_all(parent).map_err(|e| format!("创建账本目录失败: {e}"))?;
     }
     let text = serde_json::to_string_pretty(ledger).map_err(|e| format!("序列化账本失败: {e}"))?;
-    // BUG-20261025-51：委托唯一临时名权威 helper——旧固定 `.json.tmp` 并发
+    // 委托唯一临时名权威 helper——旧固定 `.json.tmp` 并发
     // 互踩 + 先 remove 后 rename 的崩溃窗口（两步间断电 = 账本消失）一并根除。
     nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), text.as_bytes(), 0o644)
         .map_err(|e| format!("账本落盘失败: {e}"))
@@ -178,7 +178,7 @@ impl BrokerLedger {
         if qty <= 0.0 || qty.is_nan() {
             return Err(format!("卖出数量必须为正（收到 {qty}）"));
         }
-        // BUG-20261105-022：负价/NaN 价与 buy 同款闸——缺闸时负价卖出
+        // 负价/NaN 价与 buy 同款闸——缺闸时负价卖出
         // proceeds 为负直接扣现金（账本可被工具调用面推成负余额）。
         if price < 0.0 || price.is_nan() {
             return Err(format!("价格非法（收到 {price}）"));

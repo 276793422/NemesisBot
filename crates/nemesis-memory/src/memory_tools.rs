@@ -210,7 +210,7 @@ impl MemoryToolExecutor {
 
         // Semantic / keyword search over general store (includes vector store)
         if memory_type == "all" {
-            // P31 ① 召回记账：agent 主动 memory_search 命中的条目做幂等 touch。
+            // ① 召回记账：agent 主动 memory_search 命中的条目做幂等 touch。
             // 工具层拿不到会话上下文，session_key 以空串 + 每次执行独立 turn
             // token 接线（同一次执行的多个命中共享一个 token = 同轮只计一次）；
             // loop 侧 auto-inject 拿得到会话上下文，未来应切 search_with_recall
@@ -235,7 +235,7 @@ impl MemoryToolExecutor {
                             } else {
                                 String::new()
                             };
-                            // B15（2026-10-18 B 级清零）：召回带日期戳——时效
+                            // 召回带日期戳——时效
                             // 判断（「这条还作数吗」）不再靠运气。episodic 段
                             // 此前已有时间戳，语义段此前是唯一缺口。
                             output.push_str(&format!(
@@ -311,8 +311,8 @@ impl MemoryToolExecutor {
                             } else {
                                 String::new()
                             };
-                            // B15（2026-11-01 L08 复核补齐）：graph 段此前是
-                            // B15 修复后唯一不带日期的检索渲染面——三元组
+                            // （复核补齐）：graph 段此前是
+                            // 修复后唯一不带日期的检索渲染面——三元组
                             // created_at 一直在数据模型上，纯渲染缺口。
                             output.push_str(&format!(
                                 "{}. [{}] {} --[{}]--> {}{}\n",
@@ -492,12 +492,12 @@ impl MemoryToolExecutor {
             return MemoryToolResult::err("action is required");
         }
 
-        // W4（2026-10-25 加固）：delete_by_id 目标
+        // （加固）：delete_by_id 目标
         // 分诊（批准前只读）——general 条目（keyword/向量存储，dreaming 谱系
         // 所在）走「forget + 级联归档派生」路径；否则维持原 episodic
         // delete_by_id。preview 必须在批准前列出将连带归档的派生条目。
         let forget_id = args["id"].as_str().unwrap_or("").to_string();
-        // BUG-20261025-34：`get()` 命中 ≠ 通用记忆条目——`append_episode`
+        // `get()` 命中 ≠ 通用记忆条目——`append_episode`
         // 会把 episodic 记录以同 id 写入向量镜像，`get()` 的向量侧 fallback
         // 能看见它；此前分类只判 `is_some()`，episodic 目标被误送进
         // forget_with_cascade：级联只删向量镜像，episodic 本体（SQLite/文件）
@@ -612,7 +612,7 @@ impl MemoryToolExecutor {
                     );
                 }
 
-                // W4：general 条目 → forget + 级联归档 merge 派生条目（归档
+                // general 条目 → forget + 级联归档 merge 派生条目（归档
                 // 非删除；graph 层不级联——诚实边界见 manager 注释）。
                 if general_target {
                     return match self.manager.forget_with_cascade(&id).await {
@@ -780,7 +780,7 @@ impl MemoryToolExecutor {
                     } else {
                         String::new()
                     };
-                    // B15 同款日期戳（L08 复核补齐，与 search graph 段一致）。
+                    // 同款日期戳（复核补齐，与 search graph 段一致）。
                     output.push_str(&format!(
                         "{}. [{}] {} --[{}]--> {}{}\n",
                         i + 1,
@@ -849,7 +849,7 @@ impl MemoryToolExecutor {
                     triples.len()
                 ));
                 for (i, t) in triples.iter().enumerate() {
-                    // B15 同款日期戳（L08 复核补齐，与 search graph 段一致）。
+                    // 同款日期戳（复核补齐，与 search graph 段一致）。
                     output.push_str(&format!(
                         "{}. [{}] {} --[{}]--> {}\n",
                         i + 1,

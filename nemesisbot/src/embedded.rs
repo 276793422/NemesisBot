@@ -27,7 +27,7 @@ static EMBEDDED_STATIC: Dir = include_dir!("$CARGO_MANIFEST_DIR/../crates/nemesi
 static EMBEDDED_WORKSPACE: Dir = include_dir!("$CARGO_MANIFEST_DIR/workspace");
 
 /// 构建形态清单（system.features WSAPI 数据源）：build.rs 从
-/// scripts/customize/features.toml（feature 清单单一真相源）解析生成，
+/// scripts/customize/features.toml（feature 清单统一定义）解析生成，
 /// `enabled` 按本构建的 CARGO_FEATURE_* env 判定 = 真实编译态。
 /// 清单缺失时 build.rs 落 `[]` 兜底。
 pub const FEATURES_MANIFEST_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/features.json"));
@@ -141,7 +141,7 @@ pub fn resolve_embedded_static_dir() -> Option<String> {
 /// Recursively extract an embedded directory to disk.
 ///
 /// Note: `include_dir`'s `File::path()` returns paths relative to the
-/// **root** embedded directory, not the current subdirectory.  All files
+/// **root** embedded directory, not the current subdirectory. All files
 /// must therefore be joined against the `base` (root output) directory,
 /// and the same `base` is passed through recursive calls to avoid
 /// duplicate path nesting (e.g. `css/css/theme.css`).
@@ -183,7 +183,7 @@ pub fn extract_workspace_templates(target_dir: &std::path::Path) -> std::io::Res
 /// Extract all embedded workspace templates, **always overwriting** existing files.
 ///
 /// Used by `onboard` to ensure template files are restored to their original
-/// state.  Mirrors Go's `copyEmbeddedToTarget()` which always overwrites.
+/// state. Mirrors Go's `copyEmbeddedToTarget()` which always overwrites.
 pub fn extract_workspace_templates_overwrite(target_dir: &std::path::Path) -> std::io::Result<()> {
     extract_dir(&EMBEDDED_WORKSPACE, target_dir)
 }

@@ -132,7 +132,7 @@ async fn corrupt_file_is_quarantined_and_latest_skips_it() {
     let latest = store.latest("e").await.unwrap().unwrap();
     assert_eq!(latest.id, "cp1");
 
-    // The corrupt file should have been moved into .corrupt/.
+    // The corrupt file should have been moved into.corrupt/.
     let corrupt_path = store.exec_dir("e").join(".corrupt").join("cp_bad.json");
     assert!(corrupt_path.exists(), "corrupt file should be quarantined");
     assert!(!bad_path.exists(), "original corrupt file should be gone");
@@ -210,7 +210,7 @@ fn collect_relative_paths(root: &Path, dir: &Path, out: &mut Vec<String>) {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (quarantine paths: load() corrupt, latest() scan
+// coverage gap closure (quarantine paths: load() corrupt, latest() scan
 // corrupt, quarantine-rename-failure fallback)
 // ---------------------------------------------------------------------------
 
@@ -225,7 +225,7 @@ async fn w4a_load_corrupt_file_returns_corrupt_and_quarantines() {
 
     let err = store.load("e", "cp1").await.unwrap_err();
     assert!(matches!(err, StoreError::Corrupt(_)));
-    // The bad file was moved into the .corrupt quarantine dir
+    // The bad file was moved into the.corrupt quarantine dir
     assert!(!cp_path.exists());
     let quarantined = tmp
         .path()
@@ -265,7 +265,7 @@ async fn w4a_quarantine_rename_failure_removes_in_place() {
     store.save(make_checkpoint("e", "cp1", 0)).await.unwrap();
     let cp_path = tmp.path().join("checkpoints").join("e").join("cp1.json");
     std::fs::write(&cp_path, b"garbage").unwrap();
-    // Pre-create .corrupt as a regular FILE so create_dir_all inside
+    // Pre-create.corrupt as a regular FILE so create_dir_all inside
     // quarantine_corrupt fails -> falls back to removing the file in place.
     let corrupt_as_file = tmp.path().join("checkpoints").join("e").join(".corrupt");
     std::fs::write(&corrupt_as_file, b"i am a file").unwrap();

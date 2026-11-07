@@ -1,20 +1,20 @@
 //! Named-pipe transport for sandboxed executor children.
 //!
 //! `Start.exe` does NOT forward the parent's stdio to the boxed child (see
-//! `docs/PLAN/2026-07-09_sandboxie-integration.md` §发现1), so when the
+//! `sandboxie-integration` §发现1), so when the
 //! executor runs sandboxed we switch from stdio to a Windows named pipe: the
 //! gateway creates `\\.\pipe\NemesisBox_<id>`, the child connects, and they
 //! exchange the same newline-delimited JSON protocol as the stdio path.
 //!
-//! L2.1: the pipe works WITHOUT the box too — when the gateway's `start_exe`
+//! .1: the pipe works WITHOUT the box too — when the gateway's `start_exe`
 //! is unset it spawns the child directly (no Start.exe), so the transport can
-//! be validated independently of Sandboxie containment (L2.2 wraps the spawn
+//! be validated independently of Sandboxie containment (.2 wraps the spawn
 //! with Start.exe for the real box).
 //!
 //! Windows-only at runtime. The cross-platform helpers (`pipe_name`,
 //! `unique_pipe_id`) compile everywhere; the server/client fns are `cfg(windows)`.
 //!
-//! (Uses `std::io::Result` rather than `anyhow` — nemesis-agent does not depend
+//! (Uses `std::io:Result` rather than `anyhow` — nemesis-agent does not depend
 //! on anyhow; callers map the io error to their own error type.)
 
 #[cfg(windows)]
@@ -29,16 +29,16 @@ pub fn pipe_name(id: &str) -> String {
 }
 
 /// Build the Win32 pipe path for a per-agent persistent-executor child
-/// (P3 T5): `\\.\pipe\NemesisAgent_<agent_id_sanitized>_<unique>`.
+/// `\\.\pipe\NemesisAgent_<agent_id_sanitized>_<unique>`.
 ///
 /// The `NemesisAgent_` prefix is pinned by tests in both crates against
-/// `nemesis_sandbox::ini::AGENT_BOX_PREFIX` — the ini `OpenPipePath`
+/// `nemesis_sandbox::ini:AGENT_BOX_PREFIX` — the ini `OpenPipePath`
 /// allowlist (`\Device\NamedPipe\NemesisAgent_<id>_*`) must keep matching
 /// this name form or the boxed child can never connect. (nemesis-agent does
 /// not depend on nemesis-sandbox, so the constant is test-pinned, not
 /// imported.)
 ///
-/// BUG-20261104-387：agent_id 段本地消毒（只保留字母数字 `_` `-`，其余替换
+/// agent_id 段本地消毒（只保留字母数字 `_` `-`，其余替换
 /// `_`，与 nemesis-sandbox `ini::sanitize_box_suffix` 同规则——两 crate 互
 /// 不依赖，两侧测试用同一字面量组互钉防漂移）。此前管道名用原始 agent_id
 /// 而 ini 白名单 pattern 用消毒后形态——手工 id 含特殊字符（点/空格/路径
@@ -105,6 +105,6 @@ pub async fn connect_client(name: &str) -> io::Result<NamedPipeClient> {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

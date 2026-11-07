@@ -2,7 +2,7 @@
 //!
 //! 常驻服务形态：插件自持 tokio runtime，QUIC 中继 + rendezvous 注册表 +
 //! 客户端连接面 iroh 端点全跑在插件内；同步 FFI 导出内部 `block_on` 投
-//! runtime（宿主调用侧 `spawn_blocking`——拍板 10）。宿主回调经 init 传入的
+//! runtime（宿主调用侧 `spawn_blocking`——决策 10）。宿主回调经 init 传入的
 //! vtable（日志转发不落盘；workspace 路径自取）。
 //!
 //! 面（v2 = 19 导出全实现）：生命周期 6（中继服务端）+ transport 2（dial/
@@ -69,7 +69,7 @@ fn set_out(s: String) -> *const c_char {
         let mut buf = c.borrow_mut();
         *buf = s;
         // C 字符串 NUL 终止必须显式：String 堆缓冲不保证 NUL 结尾，宿主
-        // CStr::from_ptr 会越界扫进 capacity 残余的陈旧堆字节（冒烟实录：
+        // CStr::from_ptr 会越界扫进 capacity 残余的陈旧堆字节（冒烟案例：
         // JSON 之后跟了日志格式化残骸 → 「返回非 JSON: trailing characters」）。
         buf.push('\0');
         buf.as_ptr() as *const c_char
@@ -80,7 +80,7 @@ fn err_json(err_code: &str, err_msg: &str) -> String {
     serde_json::json!({ "ok": false, "err_code": err_code, "err_msg": err_msg }).to_string()
 }
 
-/// 插件日志出口（vtable 转发回宿主 tracing；插件不落自己的日志文件——拍板 5）。
+/// 插件日志出口（vtable 转发回宿主 tracing；插件不落自己的日志文件——决策 5）。
 pub fn plugin_log(level: i32, tag: &str, msg: &str) {
     if let Some(vt) = HOST.get()
         && let Some(f) = vt.log
@@ -810,7 +810,7 @@ pub unsafe extern "C" fn roaming_trust_list(arg: *const c_char) -> *const c_char
 }
 
 // ---------------------------------------------------------------------------
-// registry（2）—— M2 接线：名册发现循环在插件内跑（拍板 7），成员经
+// registry（2）—— M2 接线：名册发现循环在插件内跑（决策 7），成员经
 // notify_members 推宿主漏斗。
 // ---------------------------------------------------------------------------
 

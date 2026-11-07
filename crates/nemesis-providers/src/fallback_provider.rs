@@ -1,10 +1,10 @@
 //! FallbackProvider with provider chain and auto-retry.
 //!
-//! 装配状态（扩展计划 T2b 接线后更新，取代 2026-09-17「预留未装配」声明）：
+//! 装配状态（扩展计划 接线后更新，取代 2026-09-17「预留未装配」声明）：
 //! 链已进入生产装配——启动路径（nemesisbot `agent_factory::wrap_fallback_chain`）
 //! 与运行期热切路径（nemesis-web models handler `apply_runtime_swap`）共用
 //! [`assemble_fallback_chain`] 单点：active 模型条目的 per-model extra 键
-//! `fallback_to: ["alias-b", ...]` 逐级构造。`fallback_to` 缺失/全不可用 =
+//! `fallback_to: ["alias-b",...]` 逐级构造。`fallback_to` 缺失/全不可用 =
 //! 单模型装配（无本链，行为与单模型配置一致）。429 限流重试仍由
 //! nemesis-agent loop 的独立重试环承担，不经过本链（本链只做跨模型故障转移）。
 
@@ -97,7 +97,7 @@ pub struct FallbackProvider {
     name: String,
 }
 
-/// 一级 fallback 的装配输入（扩展计划 T2b）：config 无关——调用方（启动
+/// 一级 fallback 的装配输入（扩展计划）：config 无关——调用方（启动
 /// 装配 / 运行期热切）把模型条目解析成本类型后交给装配单点。
 pub struct FallbackLevel {
     /// config 里的模型别名（自引用跳过判定 + 日志定位用）。
@@ -113,7 +113,7 @@ pub struct FallbackLevel {
 /// 语义：`alias == primary_model` 的自引用级跳过（链里出现自己只会空转
 /// 冷却）；单级 provider 构造失败 warn 跳过（诚实降级不阻断）；链只有
 /// 主级（级别为空/全不可用）= 原样返回 `primary`（与无 fallback 声明的
-/// 行为字节一致）；否则 [`FallbackProvider`] 包住（J1 冷却/重试语义沿用
+/// 行为字节一致）；否则 [`FallbackProvider`] 包住（冷却/重试语义沿用
 /// 既有实现，不重写）。
 pub fn assemble_fallback_chain(
     primary_model: &str,
@@ -236,7 +236,7 @@ impl FallbackProvider {
 
         for (i, entry) in self.chain.iter().enumerate() {
             let provider_name = entry.provider.name();
-            // BUG-20261031-225：每级恒用本级装配模型名（entry.model），级名
+            // 每级恒用本级装配模型名（entry.model），级名
             // 缺失才退调用方请求名——详见 chat() 内同款注记。
             let effective_model = if entry.model.is_empty() {
                 model
@@ -373,7 +373,7 @@ impl FallbackProvider {
 
         for entry in &self.chain {
             let provider_name = entry.provider.name();
-            // BUG-20261031-225：同 chat() 同款——entry.model 优先。
+            // 同 chat() 同款——entry.model 优先。
             let effective_model = if entry.model.is_empty() {
                 model
             } else {
@@ -423,7 +423,7 @@ impl FallbackProvider {
                 }
                 Err(err) => {
                     let reason = err.reason();
-                    // J1：服务端 Retry-After 优先于公式退避（hint 为 None 时公式生效）。
+                    // 服务端 Retry-After 优先于公式退避（hint 为 None 时公式生效）。
                     self.cooldown
                         .mark_failure(&cooldown_k, reason, err.retry_after_hint());
                     let error_msg = format!("{}", err);
@@ -492,13 +492,13 @@ impl LLMProvider for FallbackProvider {
         for entry in &self.chain {
             let provider_name = entry.provider.name();
 
-            // BUG-20261031-225 根修：每级恒用**本级装配模型名**（entry.model），
+            // 根修：每级恒用**本级装配模型名**（entry.model），
             // 级名缺失才退调用方请求名。旧语义（调用方非空名覆盖所有级）在
             // 生产装配形态下恒错：agent_factory fallback_to 链每级带自己的
             // resolve 模型名，而 ProviderAdapter 对 loop 的调用恒传非空主模
             // 型别名 → 备用 provider 的 api_base 收到主模型名 → 真实上游
             // 400 model not exist（不可重试）→ 跨模型故障转移从未生效过。
-            // mock 测试不模拟 400，错误语义被 W4c 测试钉住未暴露。主级
+            // mock 测试不模拟 400，错误语义被 测试钉住未暴露。主级
             // entry.model == 调用方名（装配契约：primary_model），字节不变。
             let effective_model = if entry.model.is_empty() {
                 model
@@ -529,7 +529,7 @@ impl LLMProvider for FallbackProvider {
                 }
                 Err(err) => {
                     let reason = err.reason();
-                    // J1：同 detailed 路径——Retry-After hint 优先于公式退避。
+                    // 同 detailed 路径——Retry-After hint 优先于公式退避。
                     self.cooldown
                         .mark_failure(&cooldown_k, reason, err.retry_after_hint());
 

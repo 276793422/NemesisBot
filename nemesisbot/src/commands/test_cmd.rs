@@ -7,10 +7,10 @@
 //! - WebSocket server/client communication
 //!
 //! Usage:
-//!   nemesisbot test approval-headless    — automated, no UI
-//!   nemesisbot test approval-ui          — real popup, manual or automation
-//!   nemesisbot test dashboard            — real dashboard window
-//!   nemesisbot test ws                   — WS ping-pong
+//!   nemesisbot test approval-headless — automated, no UI
+//!   nemesisbot test approval-ui — real popup, manual or automation
+//!   nemesisbot test dashboard — real dashboard window
+//!   nemesisbot test ws — WS ping-pong
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -158,7 +158,7 @@ async fn run_approval_headless(expected: &str) -> Result<()> {
     );
 
     // 4. Spawn child process
-    // (BUG #28, quality-hardening goal 冲刺 S11) 原 `?` 直接早退：
+    // (, quality-hardening goal 冲刺) 原 `?` 直接早退：
     // NEMESISBOT_FORCE_HEADLESS 残留在进程 env、ProcessManager（WS server
     // + 后台 monitor）不停——与成功路径（pm.stop + remove_var）不对称。
     // 改为对称清理后再返回错误。

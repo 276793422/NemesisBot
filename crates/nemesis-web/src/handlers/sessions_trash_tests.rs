@@ -1,6 +1,6 @@
 //! 会话回收站（2026-10-30）WSAPI handler 层测试：sessions.delete 默认
-//! 移入回收站（拍板③）+ `hard:true` 旧硬删除语义 / trash_list /
-//! trash_restore（含拍板② 冲突改名恢复）/ trash_purge / trash_purge_all
+//! 移入回收站+ `hard:true` 旧硬删除语义 / trash_list /
+//! trash_restore（含 冲突改名恢复）/ trash_purge / trash_purge_all
 //! 四命令守卫与全链。
 //!
 //! home 单例经 session_bindings::tests 同款 HomeGuard 重定向到 tempdir
@@ -77,6 +77,7 @@ fn make_ctx(home: &Path) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -116,9 +117,7 @@ fn seed(home: &Path, sid: &str, msg: &str) -> String {
     key
 }
 
-// ---------------------------------------------------------------------------
-// delete：默认回收站（拍板③） vs hard=true 旧语义
-// ---------------------------------------------------------------------------
+// delete：默认回收站 vs hard=true 旧语义
 
 #[tokio::test]
 async fn delete_defaults_to_trash_and_list_sees_entry() {
@@ -170,7 +169,7 @@ async fn delete_defaults_to_trash_and_list_sees_entry() {
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
 
-/// 批量删除来源（2026-10-30 浏览器 E2E T4 根修）：`source: "batch"` 写进
+/// 批量删除来源（浏览器 E2E 根修）：`source: "batch"` 写进
 /// trash.json 并在列表投影为「批量删除」徽标；未知值诚实落 single。
 #[tokio::test]
 async fn delete_source_batch_marks_entry_and_unknown_falls_back_single() {
@@ -248,7 +247,7 @@ async fn delete_hard_true_keeps_legacy_semantics() {
         "硬删除不进回收站: {}",
         list["entries"]
     );
-    // 退化 ctx（无 agent_loop）的已知形态（S10b 记录在案，delete 臂注释
+    // 退化 ctx（无 agent_loop）的已知形态（记录在案，delete 臂注释
     // 引用）：store 臂跳过 → jsonl 幸存。生产 gateway 恒有 loop；这里钉
     // 的是「hard 永不进回收站」的 trash 面契约（上方空列表断言）。
     assert!(
@@ -269,9 +268,7 @@ async fn delete_missing_session_id_bails() {
     assert_eq!(err, "missing session_id");
 }
 
-// ---------------------------------------------------------------------------
 // trash 四命令守卫
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn trash_command_guards() {
@@ -287,7 +284,7 @@ async fn trash_command_guards() {
             .unwrap_err();
         assert_eq!(err, "missing entry", "{cmd} 缺参须报 missing entry");
     }
-    // 注入形态名字（/../）在 core 校验闸被拒（handler 不吞错）。
+    // 注入形态名字（/..）在 core 校验闸被拒（handler 不吞错）。
     for cmd in ["trash_restore", "trash_purge"] {
         let err = run(&ctx, cmd, Some(serde_json::json!({"entry": "../escape"})))
             .await
@@ -302,9 +299,7 @@ async fn trash_command_guards() {
     assert_eq!(out["purged"], serde_json::json!(0));
 }
 
-// ---------------------------------------------------------------------------
-// 全链：双删并存 + purge / purge_all / 冲突改名（拍板②）
-// ---------------------------------------------------------------------------
+// 全链：双删并存 + purge / purge_all / 冲突改名
 
 #[tokio::test]
 async fn trash_purge_and_purge_all_through_handler() {
@@ -394,7 +389,7 @@ async fn restore_conflict_rename_flow_through_handler() {
         "冲突不消耗条目"
     );
 
-    // 拍板②：带建议 sid 改名恢复成功，内容是回收站里的旧内容。
+    // 带建议 sid 改名恢复成功，内容是回收站里的旧内容。
     let out = run(
         &ctx,
         "trash_restore",

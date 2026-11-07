@@ -87,7 +87,7 @@ async fn test_bridge_parameters_forwarded() {
     assert_eq!(bridge.parameters(), params);
 }
 
-/// B3：annotations 双 hint 经桥透传（definition.annotations → Tool trait）。
+/// annotations 双 hint 经桥透传（definition.annotations → Tool trait）。
 #[test]
 fn test_bridge_hints_passthrough_from_annotations() {
     let ann = nemesis_mcp::types::McpToolAnnotations {

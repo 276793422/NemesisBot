@@ -353,7 +353,7 @@ fn test_cosine_similarity_f64_accumulation() {
     assert!((s - 0.5).abs() < 1e-9, "45-degree vectors: {s}");
 }
 
-// --- split_message（BUG-20261101-277：出站通道长消息拆分共用件）---
+// --- split_message（出站通道长消息拆分共用件）---
 
 #[test]
 fn test_split_message_short_content_single_chunk() {

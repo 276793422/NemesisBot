@@ -41,7 +41,7 @@ pub const AEC_SAMPLE_RATE: u32 = 16000;
 /// 默认帧大小：16kHz 下 10ms。必须与传给 `AecNew` 的一致。
 pub const DEFAULT_FRAME_SIZE: usize = 160;
 /// 默认 filter_length：16kHz 下 ~512ms 回声尾（8192 采样）。覆盖典型房间
-/// 混响（RT60 ~300-500ms）+ 设备/采集缓冲延迟。可通过配置调大/调小。
+/// 混响（~300-500ms）+ 设备/采集缓冲延迟。可通过配置调大/调小。
 pub const DEFAULT_FILTER_LENGTH: i32 = 8192;
 
 // =============================================================================

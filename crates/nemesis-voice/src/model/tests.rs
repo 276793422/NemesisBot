@@ -1,4 +1,4 @@
-//! Tests for `model`（S12 覆盖率冲刺，2026-08-26）。
+//! Tests for `model`（覆盖率冲刺，2026-08-26）。
 //!
 //! 覆盖面：
 //! - `ensure_*_model` 五个函数的本地命中 / auto_download 关 / 无 source 三分支
@@ -243,7 +243,7 @@ fn ensure_vad_model_auto_download_disabled_bails() {
 
 #[test]
 fn ensure_vad_model_empty_files_source_bails_not_panics() {
-    // BUG-20261029-145：`files = []` 是合法 TOML（serde 不拒），本地命中检查
+    // `files = []` 是合法 TOML（serde 不拒），本地命中检查
     // 被跳过、auto_download 开启时走到下载后的 `source.files[0]` 裸索引 ——
     // 修复前 panic（index out of bounds）。同文件 `model_source_installed`
     // 对空 files 判「未安装」，此处应诚实 bail 而非 panic。
@@ -254,7 +254,7 @@ fn ensure_vad_model_empty_files_source_bails_not_panics() {
     assert!(err.contains("no files"), "{err}");
 }
 
-/// BUG-20261029-148：`files = []` 源在 auto_download 开启时零跑下载后无条件
+/// `files = []` 源在 auto_download 开启时零跑下载后无条件
 /// `Ok(dir)`——Ready 假成功（目录恒空，下游装载必炸且伪装成已就绪）。五个
 /// ensure 兄弟（stt/tts/punct/speaker/stt_stream）统一诚实 bail，判据对齐
 /// `model_source_installed`（空 files = 无法验证 = 未安装）。修复前这些测试
@@ -681,7 +681,7 @@ fn download_model_files_reports_progress_on_download_thread() {
 
 #[test]
 fn download_model_files_survives_tokio_runtime_context() {
-    // BUG-20261029-146：调用线程在 tokio runtime context（block_on 内）时，
+    // 调用线程在 tokio runtime context（block_on 内）时，
     // download_model_files 的 reqwest::blocking Client 在函数返回时 drop，
     // 其内部 runtime 的关闭需要 block → tokio panic（blocking shutdown
     // 「Cannot drop a runtime in a context where blocking is not allowed」）。
@@ -748,7 +748,7 @@ fn get_remote_size_head_error_returns_none() {
 }
 
 // ===========================================================================
-// R6 覆盖率批次（2026-08-27）：ensure_* 下载臂（成功 + `)?` 失败传播）、
+// 覆盖率批次：ensure_* 下载臂（成功 + `)?` 失败传播）、
 // proxy 两臂、>4MB flush 臂、慢体 2s 进度臂（Some/None 两变体）、截断体
 // interrupted 臂、0 字节已存在文件重下。
 // ===========================================================================
@@ -1049,7 +1049,7 @@ fn ensure_speaker_model_download_failure_propagates_err() {
 }
 
 // ---------------------------------------------------------------------------
-// R6：proxy 两臂 / flush 臂 / 慢体进度两变体 / 截断体 / 0 字节重下
+// proxy 两臂 / flush 臂 / 慢体进度两变体 / 截断体 / 0 字节重下
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1306,7 +1306,7 @@ fn download_file_resume_truncated_body_bails_interrupted() {
             .unwrap_err()
         );
         assert!(err.contains("Download interrupted"), "{err}");
-        // 失败后 .part 保留（供续传），target 不落
+        // 失败后.part 保留（供续传），target 不落
         assert!(tmp.path().join("final.onnx.part").exists());
         assert!(!tmp.path().join("final.onnx").exists());
     });
@@ -1343,7 +1343,7 @@ fn download_model_files_zero_byte_existing_file_is_redownloaded() {
 }
 
 // ===========================================================================
-// install-by-name 通路（2026-10-25 模型设置弹窗）：ensure_model_by_name +
+// install-by-name 通路（模型设置弹窗）：ensure_model_by_name +
 // model_source_installed。本地命中场景不需要网络，与 ensure_stt_model
 // 本地命中测试同构。
 // ===========================================================================
@@ -1486,7 +1486,7 @@ fn model_source_installed_false_for_unknown_source_or_empty_files() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-269：sanitize_model_local 路径围栏——模型清单 `local` 来自
+// sanitize_model_local 路径围栏——模型清单 `local` 来自
 // 本地配置 JSON（可被工作区写工具篡改），裸 join = 把远端下载字节写到
 // 任意路径的围栏逃逸链。三消费点（check/download/ensure 返回）同闸。
 // ---------------------------------------------------------------------------

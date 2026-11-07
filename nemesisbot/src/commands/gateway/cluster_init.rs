@@ -1,24 +1,24 @@
 // ---------------------------------------------------------------------------
-// PB-2 集群初始化（计划 §4.2 B2）：Step 9a（计划口径原 2461–3968，~1,500 行
+// PB-2 集群初始化（计划）：Step 9a（计划口径原 2461–3968，~1,500 行
 // 最大自包含块）整体迁入 `init_cluster`——参数表自 12 个上游变量缩到 ctx
-// 单参（B1 重排的动机）。原文自 run() 逐字迁入，仅三处机械改写：fn 体包裹、
+// 单参（重排的动机）。原文自 run() 逐字迁入，仅三处机械改写：fn 体包裹、
 // ctx 依赖项影子重绑、末尾 ClusterWiring 构造。
 //
-// ClusterWiring 字段 = 实测逃逸本块、被下游相位消费的完整集合。计划 B2 表
+// ClusterWiring 字段 = 实测逃逸本块、被下游相位消费的完整集合。计划 表
 // 列十项的差异如实说明：cluster/task_list/work_queue/persister 随
 // cluster_adapter_refs 四元组整体传递（下游仅以元组消费，独立字段会成为
-// dead_code 违 clippy -D）；node_id/node_name 消费不出块（§2.3.2 末注，
+// dead_code 违 clippy -D）；node_id/node_name 消费不出块（末注，
 // ClusterRpcConfig.local_node_id 已携带）。表外机械项按实测下游消费补入：
 // bridge_cluster_slot（PB-3 桥身份装配 + PB-7 桥客户端 spawn）、
 // cluster_should_start（PB-5 first_start/rebuild_pending/board_role）、
 // board_worker_inbox（PB-2 赋值 → PB-5 take）、board_estop_parked +
 // board_selfcheck_registry（PB-5 评审依赖集）。
 //
-// cfg 门纪律（§0-5/C5）：`#[cfg]` 整段摘除形态逐字保留；未启用 cluster 时
+// cfg 门纪律（5）：`#[cfg]` 整段摘除形态逐字保留；未启用 cluster 时
 // 无门 trio 三 None 语义与原 run() pre-block 前向声明逐字节一致。块内不变
-// 量随块内聚：C4 discovery 回调组装期捕获 Handle::current、C2 E3 sweep
-// 顺序（exec 残留清扫先于 outbox sweep_startup）、C9 占位→真身两段
-// peer_chat_callback 注册、E3 传输栈顺序。
+// 量随块内聚： discovery 回调组装期捕获 Handle::current、 sweep
+// 顺序（exec 残留清扫先于 outbox sweep_startup）、 占位→真身两段
+// peer_chat_callback 注册、 传输栈顺序。
 // ---------------------------------------------------------------------------
 
 use std::sync::Arc;
@@ -41,7 +41,7 @@ use super::{sweep_dispatch_timeouts, write_back_board_dispatch};
 #[cfg(feature = "cluster")]
 use crate::common;
 
-/// PB-2 产物 struct（§4.2 B2）。无门 trio 由 SharedResources（PB-4）无门
+/// PB-2 产物 struct。无门 trio 由 SharedResources（PB-4）无门
 /// 消费；cluster 门字段由 PB-3/PB-5/PB-7 消费。未启用 cluster 时整体为
 /// None/缺省——与原 pre-block 前向声明语义一致。
 pub(crate) struct ClusterWiring {
@@ -72,32 +72,32 @@ pub(crate) struct ClusterWiring {
         Arc<nemesis_cluster::ClusterWorkQueue>,
         Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
     )>,
-    /// §2.3.2：PB-5 first_start / rebuild_pending / board_role 消费。
+    /// PB-5 first_start / rebuild_pending / board_role 消费。
     #[cfg(feature = "cluster")]
     pub cluster_should_start: bool,
-    /// 二期批次五：桥身份 sink 注入（PB-3）+ 桥客户端 hello 身份快照（PB-7）。
+    /// 二期：桥身份 sink 注入（PB-3）+ 桥客户端 hello 身份快照（PB-7）。
     #[cfg(feature = "cluster")]
     pub bridge_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>>,
-    /// Swarm M3（G4/G8）：worker 侧讨论事件入站箱（本节点不是 board 权威
+    /// Swarm：worker 侧讨论事件入站箱（本节点不是 board 权威
     /// 时创建；board feature 裁剪下恒 None——adapter 不接讨论通道）。
     #[cfg(feature = "cluster")]
     pub board_worker_inbox: Option<std::sync::Arc<crate::cluster_agent::DiscussionInbox>>,
-    /// A2 停车场 estop 挂起队列（PB-5 评审依赖集消费）。
+    /// 停车场 estop 挂起队列（PB-5 评审依赖集消费）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_estop_parked:
         std::sync::Arc<std::sync::Mutex<Vec<(crate::board_review::ParkedKind, i64)>>>,
-    /// P4/B2b 自检取证路由表（selfcheck 派发不写 issue_dispatch，callback
+    /// 自检取证路由表（selfcheck 派发不写 issue_dispatch，callback
     /// 凭本表识别取证任务并路由到二段验收；评审任务与回调闭包共享）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_selfcheck_registry: crate::board_review::SelfcheckRegistry,
 }
 
-/// Step 9a：集群基础设施装配（计划 §4.2 B2）。Cluster 对象与 adapter refs
+/// Step 9a：集群基础设施装配（计划）。Cluster 对象与 adapter refs
 /// 恒建（动态 start/stop 支持）；网络组件（RPC server/discovery）仅在
 /// master + app config 双开时启动。
 #[cfg_attr(not(feature = "cluster"), allow(unused_variables))]
 pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
-    // ctx 影子重绑（B1 同款）：块内原文引用局部名不变，所有权拓扑不变。
+    // ctx 影子重绑（同款）：块内原文引用局部名不变，所有权拓扑不变。
     // 门控取各名字在本函数内的实际消费门（全部落在 cfg(cluster) 块内），
     // 避免 cluster 裁剪组合的 unused 警告。
     #[cfg(feature = "cluster")]
@@ -121,7 +121,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     #[cfg(all(feature = "forge", feature = "cluster"))]
     let forge_for_web = ctx.forge_for_web.clone();
 
-    // Swarm M3（G4/G8）：worker 侧讨论事件入站箱前向声明（原 run() 项随 B2
+    // Swarm：worker 侧讨论事件入站箱前向声明（原 run() 项随
     // 整体迁入——赋值在本块 nb_bus else 分支、消费在 PB-5；board feature 裁
     // 剪下恒 None——adapter 不接讨论通道。）
     #[cfg(feature = "cluster")]
@@ -140,7 +140,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     #[cfg(feature = "cluster")]
     let cluster_should_start = cluster_master_enabled && cluster_app_cfg.enabled;
 
-    // 二期批次五（goal：桥集群）：cluster 句柄槽——Arc<Cluster> 构建在下方
+    // 二期（goal：桥集群）：cluster 句柄槽——Arc<Cluster> 构建在下方
     // cfg(feature = "cluster") 块内、块后不可见；桥两处装配（hub 侧身份
     // sink 注入 / 设备侧 hello 集群身份快照）都在块外的 relay/web 装配段，
     // 经 OnceLock 槽位回填写取用（同 sweep_cluster_slot 模式）。
@@ -181,19 +181,19 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     )> = None;
     // Always create cluster infrastructure (Cluster object, handlers, adapter refs).
     // Network components are started below only when cluster_should_start is true.
-    // （estop 句柄创建已上移到 cron 装配前——F-U4-5：cron 闭包与评审依赖集
+    // （estop 句柄创建已上移到 cron 装配前——F-：cron 闭包与评审依赖集
     // / SharedResources 共享同一 Arc。）
     // `#[cfg]` 整段摘除（非 cfg_attr+dead_code）：类型位引用
-    // `crate::board_review::`，feature 关闭时必须整体出编译（2026-09-12
-    // CI feature-matrix E0433 根修；消费点均挂同闸）。
+    // `crate::board_review:`，feature 关闭时必须整体出编译（
+    // CI feature-matrix 根修；消费点均挂同闸）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_estop_parked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(
         crate::board_review::ParkedKind,
         i64,
     )>::new()));
-    // P4/B2b 自检取证路由表：selfcheck 派发不写 issue_dispatch，callback
+    // / 自检取证路由表：selfcheck 派发不写 issue_dispatch，callback
     // 凭本表识别取证任务并路由到二段验收（评审任务与回调闭包共享）。
-    // BUG-20261105-012：路由键同步落 board store selfcheck_pending 持久
+    // 路由键同步落 board store selfcheck_pending 持久
     // 表——gateway 重启清零内存表后，worker 取证回调由持久层兜底路由 +
     // sweep 恢复臂/轮询臂收口（此前证据被静默销毁、单据永久卡 in_review）。
     #[cfg(all(feature = "board", feature = "cluster"))]
@@ -221,16 +221,16 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             cluster_app_cfg.broadcast_interval.max(1),
         ));
         cluster.set_node_type("agent");
-        // A1 运行时硬化批：announce 携带本节点构建号（编译期 git 短 hash），
+        // 运行时硬化批：announce 携带本节点构建号（编译期 git 短 hash），
         // 对端注册表透传 → Dashboard 节点面展示，三机换装偏斜一眼可见。
         cluster.set_build_hash(crate::common::VERSION_INFO.git_commit);
 
-        // Swarm M2: 节点发现 → 自动收编进看板频道（first-join 语义：
+        // Swarm: 节点发现 → 自动收编进看板频道（first-join 语义：
         // 成员在 channel_member 全表零行 = 全新节点才自动入；管理员手动
         // 调整过的不被 announce 拉回）。role=worker 且 category 含 qa →
         // #qa，其余 worker → #dev；coordinator / 本节点不入。注册在静态
         // peers 装载之前 —— 启动时静态对端同样收编。
-        // A2 停车场 sweep：cluster 句柄经 OnceLock 回填（回调注册早于
+        // 停车场 sweep：cluster 句柄经 OnceLock 回填（回调注册早于
         // Arc::new(cluster)，同 autopilot 槽位模式）；10s 节流抗 announce
         // 风暴；estop 挂起时不派发（急停冻结一切自动 agent 活动）。
         // None = 从未跑过（Option 防开机窗口 Instant 下溢）。
@@ -250,7 +250,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let sweep_cluster_slot = sweep_cluster_slot.clone();
             let sweep_last = sweep_last.clone();
             let home_for_rebalance = home.clone();
-            // 真机缺陷（2026-09-11 双端双平台复现）：本闭包在 std 线程
+            // 真机缺陷（双端双平台复现）：本闭包在 std 线程
             // discovery-udp-listen 上触发——该线程无 tokio reactor，闭包内
             // 直接 tokio::spawn 会 panic 并炸死监听线程 → announce 接收全哑
             // （节点上线/刷新静默失联，停车场 sweep/看板收编永不触发，且
@@ -261,7 +261,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 // sweep 先于 auto-join 的 self/非 worker 早退：任何非本节点
                 // announce（含身份/tags 变更刷新）都是重试信号；本节点自身
                 // 的 announce 不是（派发匹配器本就排除本机）。
-                // 触发闸（estop 短路 + 10s 节流）抽为 board_review::
+                // 触发闸（estop 短路 + 10s 节流）抽为 board_review:
                 // park_sweep_gate（可测）：estop 挂起 → 拒且不消耗节流窗口。
                 if node_id != self_node_id && sweep_cluster_slot.get().is_some() {
                     let throttle_ok = {
@@ -293,11 +293,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                                         node_id
                                     );
                                 }
-                                // D0b（goal P2）重平衡：announce 节点有空闲 slot
+                                // （goal）重平衡：announce 节点有空闲 slot
                                 // 时，从超载 worker（活跃 = 在途+排队 > cap）偷
                                 // 排队单转派过来——新设备上线即有活接（准入控制
                                 // 留量的承接半环）。board_cfg 每次 announce 现读
-                                // config.json（2026-10-08 根修⑤：此前传 None →
+                                // config.json（根此前传 None →
                                 // cap 恒按缺省 1 判定，worker_max_inflight 配置
                                 // 在重平衡面失效；现读同时让热改即时生效）。读
                                 // 失败按无配置处理（cap 回落 1，与旧行为一致）。
@@ -364,7 +364,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table())
         {
             for (key, val) in peers_table {
-                // 表键即 peer_id（发现②/B3 起写盘为字面 id，TOML 引号键保
+                // 表键即 peer_id（发现②/ 起写盘为字面 id，TOML 引号键保
                 // 真；旧版 sanitize 有损键的存量条目靠运行期占位升级归一）。
                 let peer_id = key.clone();
                 let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
@@ -391,9 +391,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 // RPC port resolution: explicit `rpc_port` field (written by pair /
                 // placeholder upgrade with the *probed* value) wins; fall back to
                 // the udp+10000 convention for legacy/hand-written entries.
-                // A1：iroh 形态地址（`iroh:<hex>[@<ip:port>]`）自带完整寻址，
+                // iroh 形态地址（`iroh:<hex>[@<ip:port>]`）自带完整寻址，
                 // 不过 parse_host_port（拆 host:port 会拆坏 node_id）——原样
-                // 透传；rpc_port 仅作记录占位（G14 闸要求非 0，照常 resolve）。
+                // 透传；rpc_port 仅作记录占位（闸要求非 0，照常 resolve）。
                 let (host, udp_port) = if addr.starts_with("iroh:") {
                     (addr.to_string(), 0)
                 } else {
@@ -401,8 +401,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 };
                 let rpc_port =
                     nemesis_cluster::cluster_config::resolve_peer_rpc_port(val, udp_port);
-                // A1：iroh-only 条目不依赖 rpc_port 寻址（node_id 即地址，
-                // primary 不拼 port）——缺省给非 0 占位过 G14 闸（rpc_port
+                // iroh-only 条目不依赖 rpc_port 寻址（node_id 即地址，
+                // primary 不拼 port）——缺省给非 0 占位过 闸（rpc_port
                 // ==0 视为 unusable 记录会被拒绝入册）。
                 let rpc_port = if addr.starts_with("iroh:") && rpc_port == 0 {
                     1
@@ -473,7 +473,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
 
         // Start RPC server (network operation — only when cluster is fully enabled).
         if cluster_should_start {
-            // P0 vault fail-closed（BUG-20261102-297 扩展）：token 引用解析
+            // vault fail-closed（扩展）：token 引用解析
             // 失败**或**为空 → 拒绝 bind（宁可没有 RPC，不可无认证 RPC）。
             // 节点其余功能照常，日志已带补救指引。
             if cluster.rpc_auth_unavailable() {
@@ -506,7 +506,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     cluster_app_cfg.rpc_port
                 );
 
-                // A1：iroh 漫游叠加层。仅在
+                // iroh 漫游叠加层。仅在
                 // config.cluster.json `roaming.enabled=true`（Dashboard「跨网」
                 // TAB / `cluster roaming enable` CLI 显式 opt-in）时启用；缺
                 // key 自动备料。失败 warn 不炸集群——漫游是叠加层，TCP 主通
@@ -526,10 +526,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             }
         }
 
-        // QUIC 中继服务器随 gateway 进程内启动（QUIC 插件化 M1：运行面在
+        // QUIC 中继服务器随 gateway 进程内启动（QUIC 插件化：运行面在
         // plugin_roaming 插件，宿主只剩闸判定 + 调插件 start——iroh-relay
         // 栈不在本进程）。**独立闸**：唯一依据 = config.quic.json
-        // relay.enabled（2026-10-23 与集群解耦——「中继是 QUIC 的行为」，
+        // relay.enabled（与集群解耦——「中继是 QUIC 的行为」，
         // 集群关了中继照起）。插件已在 assemble 期按「文件在场即加载」装载；
         // relay.enabled=true 而插件缺席/拒载 = 诚实降级 warn，中继不起。
         // token 空 = 插件内 fail-closed 拒启（token_missing 回执）。失败
@@ -568,7 +568,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             cluster_app_cfg.llm_timeout_secs,
         );
         handler.set_timeout(llm_timeout);
-        // P4/E3（看板项目档案 goal）：任务接收钩子——档案管线派发
+        // /（看板项目档案 goal）：任务接收钩子——档案管线派发
         // （payload `_baseline_commit`）解包基线工作副本到
         // `<workspace>/cluster/exec/<task_id>/` 并注入 prompt 工作目录段。
         // 非档案 payload 零改动；不依赖 transfer 栈装配（独立成立）。
@@ -583,7 +583,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         let cluster_work_queue = Arc::new(nemesis_cluster::ClusterWorkQueue::new(64));
         handler.set_cluster_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
-        // BUG-3（2026-10-17）：终态任务防御清扫（60s 周期）。正常路径
+        // BUG-3：终态任务防御清扫（60s 周期）。正常路径
         // complete_task 在所有执行出口移除条目；本清扫兜退化残留（拒绝
         // 回滚遗漏 / 未来路径忘记清理），终态条目见即清、常态零开销。
         {
@@ -604,7 +604,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             handler.set_rpc_client(client);
         }
 
-        // --- L13-b（2026-11-03 三期）：mandate 签名授权装配 ---
+        // --- -b（三期）：mandate 签名授权装配 ---
         // 密钥 load-or-generate（损坏 = Err 拒绝，禁用签名不静默换钥）→
         // A 端签名器注入 RpcClient（dispatch 咽喉逐单签）+ 运行时公钥覆盖
         // announce 槽位；B 端前置闸 MandatePolicy 注入 PeerChatHandler
@@ -661,9 +661,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             info!("[Gateway] mandate B 端 posture=require（缺失 mandate 的旧节点任务将被拒绝）");
         }
 
-        // --- P3/D1-D5（看板项目档案 goal）：分块档案传输栈 ---
-        // 收件 sink（inbox 落地 + D6 manifest 核验 + D4 master 护栏）与发件
-        // outbox（worker 推送循环）。D4 护栏初值读 board.archive.max_transfer_bytes，
+        // --- /-（看板项目档案 goal）：分块档案传输栈 ---
+        // 收件 sink（inbox 落地 + manifest 核验 + master 护栏）与发件
+        // outbox（worker 推送循环）。 护栏初值读 board.archive.max_transfer_bytes，
         // 热刷新循环在 handler 注册段启动。on_landed/on_overlimit 回调 =
         // board_archive_ingest（无处安置诚实留收件箱，不删不弃）。
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -672,9 +672,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
         ) = match rpc_client.clone() {
             Some(rc) => {
-                // M1（2026-10-10 机制加固）注记：本根与锚点主根同源
+                // （机制加固）注记：本根与锚点主根同源
                 //（workspace canonical 布局）。init_cluster 先于
-                // shared_resources 构造（gateway.rs Phase B2），拿不到
+                // shared_resources 构造（gateway.rs Phase），拿不到
                 // workspace_dir()——gateway 恒 canonical（agent_build 显式
                 // 写出），本表达式与 SharedResources::workspace_dir() 字节
                 // 等价；改 workspace 解析语义时必须同改（契约测试
@@ -714,16 +714,16 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     transport,
                     provider,
                 ));
-                // CD6（2026-09-17）：健康联动注入——RpcClient 判 Offline 的
+                // 健康联动注入——RpcClient 判 Offline 的
                 // 对端暂停回传（跳过本轮，不计数不打日志），回 Online 后下
                 // 一 tick 自然恢复。节点未知按可推处理（fast-fail 诚实暴露）。
                 outbox.set_online_check(Box::new({
                     let rc = rc.clone();
                     move |peer| rc.is_peer_online(peer).unwrap_or(true)
                 }));
-                // P4/E2（看板项目档案 goal 合并批）：基线推送器装配——board.rs
+                // /（看板项目档案 goal 合并批）：基线推送器装配——board.rs
                 // 派发链（dispatch_issue_core）消费；复用既有分块传输通路
-                //（begin/chunk/end，AEAD 鉴权）+ 同一 limit 热刷新 cell（D4
+                //（begin/chunk/end，AEAD 鉴权）+ 同一 limit 热刷新 cell（
                 // 护栏基线下发同源）。board store 未装配 = 不装（派发走既有
                 // 无基线路径，push_dispatch_baseline Ok(None)）。
                 if board_store.is_some()
@@ -745,13 +745,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         info!("[Gateway] Board baseline pusher armed (E2)");
                     }
                 }
-                // D4 热生效：30s 周期现读 config.json board.archive 段。
+                // 热生效：30s 周期现读 config.json board.archive 段。
                 {
                     let sink_ref = sink.clone();
                     let cell = limit_cell.clone();
                     let cfg_path = std::path::Path::new(&home).join("config.json");
                     tokio::spawn(async move {
-                        // BUG-2（2026-10-17）：孤儿分块暂存按龄清扫 TTL
+                        // BUG-2：孤儿分块暂存按龄清扫 TTL
                         // （对齐 task_result / outbox 死信 / 续行快照 7 天
                         // 口径）；进行中传输的分块写入持续刷新目录 mtime，
                         // TTL 内不受影响。横扫四轮（2026-11-06）起同一
@@ -797,10 +797,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         ) = (None, None); // sink 只在 @all(board,cluster) 消费；@not 臂占位
 
         // Set result persister for fallback when callback fails.
-        // 2026-09-08 G1 收口：同一份 persister 同时交给 peer_chat_handler
+        // 收口：同一份 persister 同时交给 peer_chat_handler
         // （legacy 路径）与 cluster agent work-queue 路径（经
         // cluster_adapter_refs → ClusterServiceAdapter）。此前 work-queue
-        // 路径（生产唯一路径）不接 persister：回调失败真结果不落盘 → G5
+        // 路径（生产唯一路径）不接 persister：回调失败真结果不落盘 →
         // 恢复轮询只能拿到 running 占位；回调成功占位也不清理。
         let persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister> =
             Arc::new(ClusterResultPersisterAdapter {
@@ -833,11 +833,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // UDP 隔离拓扑的身份传播 fallback——见 Cluster::install_self_weak）
         cluster.install_self_weak();
 
-        // 二期批次五：cluster 句柄回填槽（桥身份 sink 注入 / hello 身份快照
+        // 二期：cluster 句柄回填槽（桥身份 sink 注入 / hello 身份快照
         // 构造，均在块外 relay/web 装配段消费）。
         let _ = bridge_cluster_slot.set(cluster.clone());
 
-        // --- P3（看板项目档案 goal）：档案传输 handler 注册 + 循环启动 ---
+        // --- （看板项目档案 goal）：档案传输 handler 注册 + 循环启动 ---
         // 5 个 handler（begin/chunk/end/overlimit/pull；master 收前四，worker
         // 收 pull——全员同注册按角色自然分流）。启动清扫补崩溃残留（pushing
         // 重置 + cluster_logs 残留补入队）+ 推送循环（15s tick + kick）。
@@ -849,7 +849,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 Some(outbox.clone()),
             ) {
                 Ok(()) => {
-                    // E3 顺序强制：exec 残留清扫必须先于 outbox sweep_startup
+                    // 顺序强制：exec 残留清扫必须先于 outbox sweep_startup
                     // ——后者会对 cluster_logs 残留补纯记录入队，条目一旦先建，
                     // 带变更集的入队就被幂等挡死（模块头注释钦定）。
                     // 启动清扫无活跃任务（进程刚起）→ 恒不跳过。
@@ -865,7 +865,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     }
                     outbox.sweep_startup();
                     outbox.spawn_push_loop();
-                    // BUG-2026-10-15 D：周期残留清扫（30min）。任务进行中的
+                    // BUG- D：周期残留清扫（30min）。任务进行中的
                     // 工作副本不可触碰——按 result_store 的在跑标记跳过，
                     // 只收拾真崩溃残留（重启前已由上方 startup sweep 兜底）。
                     let result_store = cluster.result_store().clone();
@@ -878,7 +878,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 }
                 Err(e) => warn!("[Gateway] Transfer handler registration skipped: {}", e),
             }
-            // D5 兜底拉取 sweep（master 侧；60s 周期）。
+            // 兜底拉取 sweep（master 侧；60s 周期）。
             if let (Some(store), Some(rc)) = (board_store.clone(), rpc_client.clone()) {
                 let transport = std::sync::Arc::new(
                     nemesis_cluster::outbox::RpcTransferTransport::new(rc, node_id.clone()),
@@ -886,9 +886,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 let seen = Arc::new(tokio::sync::Mutex::new(
                     std::collections::HashSet::<String>::new(),
                 ));
-                // M1（2026-10-10 机制加固）注记：本根与锚点主根同源
+                // （机制加固）注记：本根与锚点主根同源
                 //（workspace canonical 布局）。init_cluster 先于
-                // shared_resources 构造（gateway.rs Phase B2），拿不到
+                // shared_resources 构造（gateway.rs Phase），拿不到
                 // workspace_dir()——gateway 恒 canonical（agent_build 显式
                 // 写出），本表达式与 SharedResources::workspace_dir() 字节
                 // 等价；改 workspace 解析语义时必须同改（契约测试
@@ -912,11 +912,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             }
         }
 
-        // W2 P4: 回填 autopilot 集群槽位（on_job 闭包经 OnceLock 取用）。
+        // 回填 autopilot 集群槽位（on_job 闭包经 OnceLock 取用）。
         #[cfg(all(feature = "board", feature = "cluster"))]
         {
             let _ = autopilot_cluster_slot.set(cluster.clone());
-            // A2 停车场 sweep 槽位回填（节点发现闭包经 OnceLock 取用）。
+            // 停车场 sweep 槽位回填（节点发现闭包经 OnceLock 取用）。
             // 启动期 announce 早于回填也不丢：下一个 announce 周期兜底。
             let _ = sweep_cluster_slot.set(cluster.clone());
         }
@@ -924,13 +924,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         // --- Inject cluster task queue into cluster for callback routing ---
         cluster.set_cluster_task_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
-        // --- Swarm M3: nb_bus handler（board 信封协议）---
+        // --- Swarm: nb_bus handler（board 信封协议）---
         // master 与 worker 同名注册 `nb_bus`，按信封 ns/op 路由；本节点是
         // master（coordinator 角色 + board_store 在手）才注册上行 op，否则装
         // worker 侧唤醒通道 + 周期 board.sync 补拉。master 判据必须用集群
         // 角色：board_store 是全员 open 的（每个节点都有本地 board.db 作
         // dashboard 视图），拿它当 master 判据会让 worker 注册错 handler、
-        // 唤醒通道成死代码（2026-09-09 UAT T23 根因）。cluster 未启动时
+        // 唤醒通道成死代码（UAT 根因）。cluster 未启动时
         // 注册失败静默（register_rpc_handler 要求 running——与 peer_chat
         // 同款忽略策略），board.sync 兜底语义不受影响。board feature 裁剪
         // 形态不参与讨论。（dashboard 人工发言桥在下文 board_service 装配
@@ -958,8 +958,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 Ok(()) => info!("[Gateway] Registered nb_bus handler (board envelope protocol)"),
                 Err(e) => warn!("[Gateway] nb_bus handler registration skipped: {}", e),
             }
-            // BUG-2026-10-15 C：档案停摆哨兵（60s 周期，master 侧）。交付
-            // 评论后 15min 变更集仍未合并 → WARN + 单据警示评论（NB-120
+            // BUG- C：档案停摆哨兵（60s 周期，master 侧）。交付
+            // 评论后 15min 变更集仍未合并 → WARN + 单据警示评论（
             // 实证双端「正常」死等 1.5h——停摆必须自己冒头）。
             let stall_store = board_store.clone().expect("board_store checked above");
             tokio::spawn(async move {
@@ -998,7 +998,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             board_worker_inbox = Some(inbox);
         }
 
-        // --- Swarm M3 资产 RPC 兜底通路（2026-09-20，提供方侧）---
+        // --- Swarm 资产 RPC 兜底通路（提供方侧）---
         // asset.meta / asset.chunk：跨网段 HTTP 直连不可达时，消费方经集群
         // RPC 分块拉取（验证链与 web 下载端点同构——表白名单 + HMAC 验签）。
         // 每节点都注册（任何节点都是潜在提供方，worker 产物反走同一条路）；
@@ -1026,7 +1026,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             }
         }
 
-        // --- P6-R2：agent 迁移 commit handler（B 端落地面，全员注册）---
+        // --- -：agent 迁移 commit handler（B 端落地面，全员注册）---
         // 任何节点都是潜在迁移目标（与 asset RPC 同款「每节点都注册」纪律）。
         // 同步闭包（RpcHandlerFn）——B 端主体是文件 rename + vault import +
         // SQLite upsert，全 sync 友好；独立 TaskDb 连接（多连接 WAL 既定
@@ -1075,7 +1075,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         // use peer names, not node_ids). We use the RPC port from the payload
                         // (sent by the remote node's ClusterRpcTool).
                         if cluster_ref.get_peer(&source_node_id).is_none() {
-                            // T26 根修（2026-09-18）：不再以硬编码缺省值（name=id、
+                            // 根修：不再以硬编码缺省值（name=id、
                             // 127.0.0.1、"worker"、"general"、21949 fallback）直接
                             // 登记——RPC 先于 announce 到达时会触发地址匹配占位
                             // 升级，把 operator 配置的 role=coordinator/category/
@@ -1113,18 +1113,18 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             info!("[Gateway] Registered PeerChatHandler (async LLM + callback) for peer_chat");
         }
 
-        // --- H4: 任务恢复 handler（query_task_result / confirm_task_delivery）---
+        // ---: 任务恢复 handler（query_task_result / confirm_task_delivery）---
         // gateway 装配不走 set_rpc_channel（该入口无人触发 →
         // register_peer_chat_handlers 不会执行），这里显式补注册，与
         // peer_chat/callback/task_cancel 并列。缺失时 A 侧
         // poll_stale_pending_tasks（120s 周期）永远收到 "no handler"，
-        // B 重启丢结果后的 stale 恢复链路断裂（2026-09-01 跨机 E2E 实测）。
+        // B 重启丢结果后的 stale 恢复链路断裂（跨机 E2E 实测）。
         cluster.register_task_recovery_handlers();
         info!(
             "[Gateway] Registered task recovery handlers (query_task_result/confirm_task_delivery)"
         );
 
-        // --- W2 P4: task_cancel handler — per-task cancel ---
+        // ---: task_cancel handler — per-task cancel ---
         // 取消指定 peer_chat 任务的执行：排队中的直接出队丢弃，运行中的经
         // running_tokens 广播取消（LLM 迭代间隙/工具派发前检查）。这是与
         // estop 正交的细粒度取消（estop 冻结全部 agent 活动，此处只停一个
@@ -1153,12 +1153,12 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             info!("[Gateway] Registered task_cancel handler (per-task cancel)");
         }
 
-        // --- W2 P4: 派发超时 sweep（board 派发无人回报的兜底）---
+        // ---: 派发超时 sweep（board 派发无人回报的兜底）---
         // 派发超时部分受 per-tick 的 board.dispatch_timeout_secs 闸（=0 关闭）；
         // 扫描间隔 dispatch_sweep_interval_secs（下限 1s）。失败处置
         // （⛔ 评论 + 通知）在 sweep_dispatch_timeouts 内完成，赢
         // fail_dispatch_checked 竞态才动账。
-        // BUG-20261105-012：ticker 无条件装配——自检取证恢复臂
+        // ticker 无条件装配——自检取证恢复臂
         // （sweep_selfcheck_pending）随本 ticker 常开，不随
         // dispatch_timeout_secs=0 短路（恢复是正确性机制，空闲成本 =
         // 每 tick 一条 list_selfcheck_pending SQL）。
@@ -1168,15 +1168,15 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let store_for_sweep = board_store.clone();
             let cluster_for_sweep = cluster.clone();
             let home_for_sweep = home.clone();
-            // M5-2（2026-10-10 机制加固）：清扫失败的 issue 回流验收
+            // （机制加固）：清扫失败的 issue 回流验收
             // 决策链——评审依赖集在此快照（与派发写回回调同一构造）。
-            // AOR 批三 5.2：sweep 策略化后自治链共用同一依赖集
+            // sweep 策略化后自治链共用同一依赖集
             // （estop/换节点加权/审计漏斗全走 BoardReviewDeps）。
             let sweep_moderator = board_moderator_loop.clone();
             let sweep_estop = estop.clone();
             let sweep_estop_parked = board_estop_parked.clone();
             let sweep_selfcheck = board_selfcheck_registry.clone();
-            // P4-d：评审结论→交付账本闭环的审计插件槽（同回调侧
+            // d：评审结论→交付账本闭环的审计插件槽（同回调侧
             // security_slot_for_cb 的惰性 get() 语义）。
             #[cfg(feature = "security")]
             let security_slot_for_sweep = ctx.outbound_dlp_slot.clone();
@@ -1186,12 +1186,12 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     sweep_cfg.dispatch_sweep_interval_secs.max(1),
                 ));
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                // CD6（裁决⑫，2026-09-17）：mtime 缓存——config 文件未
+                // （裁决⑫）：mtime 缓存——config 文件未
                 // 变化不重读，消除派发 sweep 每 20s tick 触发 load_config
-                // 两条 INFO 刷屏；热生效语义保留（R4：改文件 → mtime 变化
-                // → 下个 tick 重新现读）。AOR 批三 5.2：缓存携带
+                // 两条 INFO 刷屏；热生效语义保留（改文件 → mtime 变化
+                // → 下个 tick 重新现读）。：缓存携带
                 // autonomy + max_redispatch（同一次 load_config 取齐，
-                // 三键同步热生效）。AOR 批三 5.3：再带 replan 开关 +
+                // 三键同步热生效）。：再带 replan 开关 +
                 // unknown 阻塞超时（触发点④ 周期体检的两个闸参数）。
                 let mut sweep_cfg_cache: Option<(
                     std::time::SystemTime,
@@ -1206,8 +1206,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     let Some(store) = store_for_sweep.as_ref() else {
                         continue;
                     };
-                    // 超时阈值/自治开关/重派预算每 tick 现读（2026-09-15
-                    // R4 真机实证：config.set 改值后 sweep 仍用启动烘焙值
+                    // 超时阈值/自治开关/重派预算每 tick 现读（
+                    // 真机实证：config.set 改值后 sweep 仍用启动烘焙值
                     // 跑到底——与旗标类键「每次现读」语义对齐；timeout
                     // 0=关（运行期可关）；读取失败沿用启动值兜底不停摆，
                     // autonomy 回落 false（从严）。
@@ -1260,10 +1260,10 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             0,
                         ))
                     };
-                    // AOR 批三 5.2：sweep 策略化——自治链（预算/冻结/换节点
+                    // sweep 策略化——自治链（预算/冻结/换节点
                     // 重派）在 sweep 内闭环，返回列表只剩回落评审链的
                     // issue（assisted 全量 + 自治的无候选/重派失败臂）。
-                    // BUG-20261105-012：自检取证路由持久层兜底（臂 A
+                    // 自检取证路由持久层兜底（臂 A
                     // 二段残留重放 + 臂 B 恢复轮询/超龄收口）——**在
                     // 超时闸之前**：恢复是正确性机制，不随 dispatch
                     // timeout=0（用户关超时 sweep）一起短路。
@@ -1279,7 +1279,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         #[cfg(feature = "security")]
                         security_slot: Some(security_slot_for_sweep.clone()),
                     };
-                    // BUG-20261105-012：自检取证路由持久层兜底（臂 A
+                    // 自检取证路由持久层兜底（臂 A
                     // 二段残留重放 + 臂 B 恢复轮询/超龄收口）。
                     crate::board_review::sweep_selfcheck_pending(&sweep_deps).await;
                     // 派发超时 sweep：0=用户显式关（selfcheck 兜底臂
@@ -1298,7 +1298,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             review_issue_id,
                         );
                     }
-                    // AOR 批三 5.3 触发点④：子树全终态但 FINISH 谓词被未
+                    // 触发点④：子树全终态但 FINISH 谓词被未
                     // 裁决 unknown 阻塞超时 → 起草重规划建议（周期体检
                     // 兜底——终态后无事件可挂；0=关）。
                     if replan_enabled && replan_unknown_timeout > 0 {
@@ -1322,14 +1322,14 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             );
         }
 
-        // --- F-U3-4（2026-09-15 U3 真机）：停车场周期兜底 sweep ticker ---
+        // --- F-（真机）：停车场周期兜底 sweep ticker ---
         // 停车场 sweep 此前只有边沿触发（announce 回调 / 派发落定重估波）。
-        // 真机实证：announce 单向不可达（跨子网 UDP/防火墙不对称；G2 探针
+        // 真机实证：announce 单向不可达（跨子网 UDP/防火墙不对称； 探针
         // 走 RPC 让节点照常 Online——高度迷惑）+ 稳态在线（无 Offline→Online
         // 翻转）+ 无派发落定时，停车场**永不重估**——停车单/reopen 单无限期
-        // 滞留且零反馈（NB-10 实证：reopen 后 10+ 分钟零动静）。补 30s 周期
+        // 滞留且零反馈（实证：reopen 后 10+ 分钟零动静）。补 30s 周期
         // ticker：候选空时近零成本（一条 SQL）；estop 挂起不派发；
-        // notify_park=true 让首次停车落 ⏸ 评论 + 父单 blocked 显形（B4 去重
+        // notify_park=true 让首次停车落 ⏸ 评论 + 父单 blocked 显形（去重
         // 防刷屏）；三路触发源由 PARK_SWEEP_LOCK 串行防双派。ticker 首拍
         // 立即执行——gateway 重启后存量停车单即时获得一次重估。
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -1377,44 +1377,44 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let task_list_for_cb = cluster_task_list.clone();
             let work_queue_for_cb = cluster_work_queue.clone();
             let cluster_for_cb = cluster.clone();
-            // E1 二期 token 回传：worker 回传的 usage 记入 master 用量账本
-            //（session_key=cluster_rpc:{worker}/{task_id}，E1 token 预算闸
+            // 二期 token 回传：worker 回传的 usage 记入 master 用量账本
+            //（session_key=cluster_rpc:{worker}/{task_id}， token 预算闸
             // 按派发行精确聚合）。未装配 DataStore = 记账静默跳过。
             let ds_for_usage_cb = data_store.clone();
-            // P4 交付门：A 端 deliveries 台账（生产 `Cluster::with_workspace`
+            // A 端 deliveries 台账（生产 `Cluster::with_workspace`
             // 路径 Some；`Cluster::new` 测试路径 None = 记账静默跳过）。
             let task_db_for_cb = cluster.task_db();
-            // P4 交付门审计（security 形态）：安全插件槽此刻还空着（
+            // 审计（security 形态）：安全插件槽此刻还空着（
             // init_agent 之后才 set）——只 clone Arc 槽位，回调执行时惰性
             // get()，插件装配前到达的交付只记账不审计（诚实降级）。
             #[cfg(feature = "security")]
             let security_slot_for_cb = ctx.outbound_dlp_slot.clone();
-            // W2 P2 派发写回：board 派发的 task_id 命中 issue_dispatch →
+            // 派发写回：board 派发的 task_id 命中 issue_dispatch →
             // 写回看板。board feature 未编译时占位（拦截整体被 cfg 掉）。
             #[cfg(feature = "board")]
             let board_store_for_cb = board_store.clone();
             // 交付线程超限汇报落资产需要 workspace 根（层 2 HTTP 资产目录）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let workspace_for_cb = home.join("workspace");
-            // Swarm M4 验收 agent 读 config.json 旗标需要 home 根。
+            // Swarm 验收 agent 读 config.json 旗标需要 home 根。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let home_for_cb = home.clone();
-            // M4 评审用主 loop 桥槽——闭包外再 clone 一份（原 Arc 稍后
+            // 评审用主 loop 桥槽——闭包外再 clone 一份（原 Arc 稍后
             // set(agent_loop) 还要用）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let moderator_loop_for_cb = board_moderator_loop.clone();
-            // P1/T1-6：estop 保险丝随评审依赖集进回调闭包（冻结停车用）。
+            // /：estop 保险丝随评审依赖集进回调闭包（冻结停车用）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let estop_for_cb = estop.clone();
             #[cfg(all(feature = "board", feature = "cluster"))]
             let estop_parked_for_cb = board_estop_parked.clone();
-            // P4/B2b：取证路由表随回调闭包（selfcheck 命中判定）。
+            // /：取证路由表随回调闭包（selfcheck 命中判定）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let selfcheck_for_cb = board_selfcheck_registry.clone();
             #[cfg(not(feature = "board"))]
             #[allow(unused_variables)]
             let board_store_for_cb: Option<()> = None;
-            // CD3：恢复交付回调的依赖集——在回调闭包 move 走原值之前克隆
+            // 恢复交付回调的依赖集——在回调闭包 move 走原值之前克隆
             // （同一批依赖，两份闭包各自持有 Arc）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let delivery_store = board_store_for_cb.clone();
@@ -1432,7 +1432,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let delivery_estop_parked = estop_parked_for_cb.clone();
             #[cfg(all(feature = "board", feature = "cluster"))]
             let delivery_selfcheck = selfcheck_for_cb.clone();
-            // P4-d：交付账本闭环的审计插件槽（同族惰性 get() 语义）。
+            // d：交付账本闭环的审计插件槽（同族惰性 get() 语义）。
             #[cfg(all(feature = "board", feature = "cluster", feature = "security"))]
             let delivery_security_slot = security_slot_for_cb.clone();
             let _ = cluster.register_rpc_handler("peer_chat_callback", Box::new(move |payload| {
@@ -1448,7 +1448,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     .get("response")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                // P1（2026-09-11 真机日志分析）：worker 的 error 回调把错误
+                // （真机日志分析）：worker 的 error 回调把错误
                 // 文本放在 `error` 字段、`response` 为空（send_callback 的
                 // 契约），此前本 handler 从不提取 error 字段——所有路由拿到
                 // 空串，错误详情全丢。合并文本：error 非空用 error，否则
@@ -1464,7 +1464,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 };
                 // worker 身份走传输层：RPC server 派发前注入 `_rpc.from`
                 //（server.rs enhancePayload 同款），payload 本体没有
-                // source_node 字段——T37 真机实证空段。优先 _rpc.from，
+                // source_node 字段—— 真机实证空段。优先 _rpc.from，
                 // 显式字段保留为前向兼容 fallback。
                 let source_node = payload
                     .get("_rpc")
@@ -1476,7 +1476,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             .and_then(|v| v.as_str())
                     })
                     .unwrap_or("");
-                // E1 二期：usage 可选字段（serde 兼容——旧 worker 无此字段
+                // 二期：usage 可选字段（serde 兼容——旧 worker 无此字段
                 // 不炸；只认 object 形态）。
                 let usage = payload.get("usage").filter(|v| v.is_object());
                 record_cluster_usage(
@@ -1485,9 +1485,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     task_id,
                     usage,
                 );
-                // P4 交付门：worker 交付分支证据（可选字段，serde 兼容——
+                // worker 交付分支证据（可选字段，serde 兼容——
                 // 旧 worker 无此字段不炸；只认 object 形态）→ deliveries
-                // 台账入账（幂等键 `{task_id}:branch`，G5 恢复轮询重复回调
+                // 台账入账（幂等键 `{task_id}:branch`， 恢复轮询重复回调
                 // = 幂等静默）。Ok(false) 不重复记账，Err warn 不阻断路由。
                 let delivery = payload.get("delivery").filter(|v| v.is_object());
                 #[cfg(feature = "security")]
@@ -1505,7 +1505,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     task_id,
                     delivery,
                 );
-                // P2A（2026-09-12 NB-15）：结构化失败分类（可选字段，旧
+                // P2A：结构化失败分类（可选字段，旧
                 // worker 无此字段不炸；只认字符串形态）。随写回落到 ⛔
                 // 失败评论，验收重派决策据此避免同 worker 同模型盲重派。
                 #[cfg_attr(not(all(feature = "board", feature = "cluster")), allow(unused_variables))]
@@ -1516,7 +1516,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
 
                 info!("[Gateway] peer_chat_callback received: task_id={}, status={}, from={}", task_id, status, source_node);
 
-                // P4/B2b 自检取证拦截（先于一切路由）：命中 SelfcheckRegistry
+                // / 自检取证拦截（先于一切路由）：命中 SelfcheckRegistry
                 // 的 task_id 是取证任务（不写 issue_dispatch——Route 0 的
                 // 写回不适用；不进 Route 2 续行 bus——无续行快照只会告警），
                 // 路由到二段验收。TaskManager 收口（Route 3）照常——取证
@@ -1535,7 +1535,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         "[Gateway] peer_chat_callback selfcheck branch: task_id={}, issue={}",
                         task_id, sc_issue_id
                     );
-                    // BUG-20261105-012：路由落地持久行——status/取证内容
+                    // 路由落地持久行——status/取证内容
                     // 烧入 selfcheck_pending（二段完成前 gateway 崩溃由
                     // sweep 臂 A 重放；重复回调不覆盖已烧入证据）。
                     if let Some(sc_store) = board_store_for_cb.as_ref()
@@ -1577,13 +1577,13 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     return Ok(serde_json::json!({"status": "received", "task_id": task_id}));
                 }
 
-                // Route 0: Board 派发写回（W2 P2）——命中 issue_dispatch 的
+                // Route 0: Board 派发写回——命中 issue_dispatch 的
                 // task_id 直接写回看板（结果评论 + 状态推进），且跳过 Route 2
                 // 的 agent 续行（board 派发无续行快照）；TaskManager 状态更新
                 // （Route 3）照常，board 派发也登记了本地 task。
-                // Swarm M4：推进到 in_review 的写回携带评审触发目标，下方
+                // Swarm：推进到 in_review 的写回携带评审触发目标，下方
                 // spawn 验收 agent。
-                // AOR 批二a ④：worker 回声的派发代际号（可选字段，旧 B 端
+                // a ④：worker 回声的派发代际号（可选字段，旧 B 端
                 // 无此键 = None = 写回闸放行，向后兼容）。
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 let board_writeback = write_back_board_dispatch(
@@ -1602,7 +1602,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 #[cfg(any(not(feature = "board"), not(feature = "cluster")))]
                 let is_board_task = false;
 
-                // Swarm M4 批作业：in_review 自动验收（三态处置 + FAIL 重派
+                // Swarm 批作业：in_review 自动验收（三态处置 + FAIL 重派
                 // 保险丝）。依赖集在此快照——moderator 桥槽/board store/
                 // cluster 均为 Arc，评审任务运行时再解引用。
                 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -1626,15 +1626,15 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     );
                 }
 
-                // R-9 互斥释放波（2026-09-13 T-sched-1 实机缺口）：board 派发
+                // R-9 互斥释放波（T-sched-1 实机缺口）：board 派发
                 // 落定（done/failed 写回）后重估停车场——touch 互斥延后单的
                 // 「下一触发波」此前只有节点事件（上线/刷新），稳态集群中冲突
-                // 派发落定后延后单会永久滞留 backlog（NB-18 实证）。复用
+                // 派发落定后延后单会永久滞留 backlog（实证）。复用
                 // sweep_parked_dispatches 单一重估波：候选=planner 来源或暂缓
-                // 标记。EST-05（2026-09-16 横扫修正）：此前注释谎称「estop/
+                // 标记。EST-05（横扫修正）：此前注释谎称「estop/
                 // 预算闸都在 dispatch_subissue_auto 内重跑」——实际 estop 闸
                 // 现已下沉到 dispatch_issue_core（EST-01/02），准入/touch 互斥
-                // 闸也在其内；**预算闸（E1）只在评审侧判定点**（board_review
+                // 闸也在其内；**预算闸只在评审侧判定点**（board_review
                 // budget_breach），不经本链路。新增触发源按此真实边界补闸。
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 if board_writeback.settled && !estop_for_cb.is_engaged() {
@@ -1669,7 +1669,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             "[Gateway] Callback for child task {} matched ClusterAgent parent task {}, injecting result",
                             task_id, parent_task_id
                         );
-                        // P1：error 回调的文本在 error 字段——注入合并文本，
+                        // error 回调的文本在 error 字段——注入合并文本，
                         // 父任务 LLM 才能看到真实失败原因。
                         if let Err(e) = task_list_for_cb.inject_callback(&parent_task_id, fail_text)
                         {
@@ -1689,9 +1689,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 if !task_id.is_empty() && !is_board_task {
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("status".to_string(), status.to_string());
-                    // 集群续行归属（2026-09-23）：回调 source 是节点 ID——
+                    // 集群续行归属：回调 source 是节点 ID——
                     // 徽章要人读名字，注册表在线时换名；查不到（对端已逐出/
-                    // 老恢复快照）回退原 ID（诚实显示）。G5 恢复发布点在
+                    // 老恢复快照）回退原 ID（诚实显示）。 恢复发布点在
                     // nemesis-cluster 内无注册表句柄，保持 ID 直传。
                     let source_display = cluster_for_cb
                         .get_peer(source_node)
@@ -1699,7 +1699,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         .filter(|n| !n.is_empty())
                         .unwrap_or_else(|| source_node.to_string());
                     metadata.insert("source_node".to_string(), source_display);
-                    // P1：content 与 metadata.error 都用合并文本——B 端 error
+                    // content 与 metadata.error 都用合并文本——B 端 error
                     // 回调的 response 为空，续行 tool 结果须携带真实错误。
                     metadata.insert("error".to_string(), fail_text.to_string());
 
@@ -1735,7 +1735,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 Ok(serde_json::json!({"status": "received", "task_id": task_id}))
             }));
 
-            // CD3（2026-09-17）：恢复交付回调——恢复轮询（poll_stale_pending_tasks）
+            // 恢复交付回调——恢复轮询（poll_stale_pending_tasks）
             // 查回 worker 结果后、confirm 删 worker 副本前触发。路由判断留在
             // 本闭包（cluster 不依赖 board）：
             // - issue_dispatch 反查命中 → write_back_board_dispatch 看板写回
@@ -1747,7 +1747,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             //   兜底（宁留勿丢）。
             // fail_class 对齐 peer_chat_callback 语义：恢复腿查询结果不携带
             // 该字段，传空串（⛔ 评论降级为无分类文案）。代际回声同理缺席
-            //（查询结果 payload 不透传）→ None = 写回闸放行（AOR 批二a ④
+            //（查询结果 payload 不透传）→ None = 写回闸放行（a ④
             // 向后兼容臂；存量行恢复写回不受影响）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             {
@@ -1841,7 +1841,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
 
             // Wire the RPC call function to use cluster.call_with_context_async
             let cluster_weak_for_rpc = Arc::downgrade(&cluster);
-            // CD5：占位续行快照需要 workspace 根（ContinuationStore 单一
+            // 占位续行快照需要 workspace 根（ContinuationStore 单一
             // 真相源路径解析在其内部）。
             let home_for_rpc = home.clone();
             let call_fn = std::sync::Arc::new(
@@ -1867,7 +1867,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                     let t = target.to_string();
                     let a = action.to_string();
                     Box::pin(async move {
-                        // CD5-a（2026-09-17）：A 端预生成 task_id——chat 派发
+                        // a：A 端预生成 task_id——chat 派发
                         // 此前 task_id 由 B 端 ACK 生成，「ACK 已收、正式续行
                         // 快照未落盘」窗口崩溃即无声丢失。预生成后随 payload
                         // 下发（B 端 peer_chat_handler 原样采用外来 id），A 端
@@ -1892,7 +1892,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             None
                         };
 
-                        // CD5-b：派发前落占位续行快照——崩溃后 G5 重建（扫
+                        // b：派发前落占位续行快照——崩溃后 重建（扫
                         // rpc_cache 登记 Pending）+ 恢复轮询至少能诚实收口；
                         // peer_id 随行（恢复时才知道 poll 该问谁）。正式快照
                         // （AgentLoop 存续行快照，同 task_id）会覆盖它。
@@ -1934,7 +1934,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         let bytes = match rpc_result {
                             Ok(b) => b,
                             Err(e) => {
-                                // CD5：确定未送达（对端离线 fast-fail）→ 清理
+                                // 确定未送达（对端离线 fast-fail）→ 清理
                                 // 占位快照（任务在 B 端不存在，凭据无意义）。
                                 // 其余失败（超时等）保留——B 端可能已接单执行，
                                 // 凭据留给重启后的恢复轮询查询（宁留勿丢）。
@@ -1957,7 +1957,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         let ack: serde_json::Value = serde_json::from_slice(&bytes)
                             .map_err(|e| format!("Failed to parse RPC response: {}", e))?;
 
-                        // CD1（2026-09-17）：ACK accepted → 登记 TaskManager
+                        // ACK accepted → 登记 TaskManager
                         // Pending——恢复轮询从此接管查询（worker 死亡/分区后
                         // 安全网诚实收尾，对话不再永久悬挂）。重复登记由
                         // submit 同 id Err 幂等闸吸收。B 端明确拒绝（非

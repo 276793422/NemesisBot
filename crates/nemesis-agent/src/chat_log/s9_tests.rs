@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：chat_log.rs 剩余未覆盖行。
+//! 覆盖率批次：chat_log.rs 剩余未覆盖行。
 //! - 193：write_chat_log_rows 直调（fork round-3 主路径，需非空 rows）。
 //! - 245：copy_chat_log_prefix 直调（已被 supersede，#[allow(dead_code)]，
 //!   但 pub 可测——覆盖归档路径）。

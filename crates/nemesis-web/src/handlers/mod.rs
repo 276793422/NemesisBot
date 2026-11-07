@@ -1,29 +1,29 @@
 //! WebSocket API handlers for all dashboard modules.
 //!
-//! Each module handler implements [`ModuleHandler`](crate::ws_router::ModuleHandler)
+//! Each module handler implements [`ModuleHandler`](crate::ws_router:ModuleHandler)
 //! and is registered via [`register_all`]. Handlers are pure business logic and
 //! transport-agnostic — they read/write configuration files and workspace data.
 
 pub mod agent;
-// M7（devtool-upgrade 阶段 5）：dashboard 审批卡 WSAPI（approval.respond /
+// （devtool-upgrade）：dashboard 审批卡 WSAPI（approval.respond /
 // approval.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
 // handler 诚实报「未装配」。
 pub mod agents;
 pub mod approval;
-// 看板三模块（board.* WSAPI / U-B 本地封存数据面 / Swarm M3 资产下载端点）
+// 看板三模块（board.* WSAPI / U-B 本地封存数据面 / Swarm 资产下载端点）
 // 随 `board` feature 进出——nemesis-board 是 optional 依赖（rusqlite bundled
 // 随它退出 iotsmall 依赖图）。关 = board.* 命令从注册表面消失（诚实体裁）。
 #[cfg(feature = "board")]
 pub mod board;
-// P4-c（2026-10-17）：交付账本 WSAPI（deliveries.list/by_run/get/confirm/
+// c：交付账本 WSAPI（deliveries.list/by_run/get/confirm/
 // reject/patch；bridge 未装配时诚实报错——headless/独立 web 测试形态）。
 pub mod deliveries;
-// U-B（2026-10-12 无人值守）：LLM 端点不可用本地封存——检测/封存/中断档案
+// U-B（无人值守）：LLM 端点不可用本地封存——检测/封存/中断档案
 // 数据面 + WSAPI status/release（恢复探针在 nemesisbot 侧，见
 // nemesisbot/src/board_unavailable.rs）。
 #[cfg(feature = "board")]
 pub mod board_unavailable;
-// Swarm M3（§5.4/D6）：看板资产下载端点（HTTP，非 WSAPI；token 即凭据）。
+// Swarm：看板资产下载端点（HTTP，非 WSAPI；token 即凭据）。
 #[cfg(feature = "board")]
 pub mod board_asset;
 pub mod channels;
@@ -32,12 +32,12 @@ pub mod chat;
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
-// QUIC 中继 WSAPI（2026-10-23 与集群解耦）：quic.relay.*（服务端启停/配置/
+// QUIC 中继 WSAPI（与集群解耦）：quic.relay.*（服务端启停/配置/
 // 状态）+ quic.registry.members（服务端全量名册）。无 feature 闸——命令面
-// 恒注册（L1 清单稳定，voice-capture/roaming 先例），feature 关 = handler
+// 恒注册（清单稳定，voice-capture/roaming 先例），feature 关 = handler
 // 内诚实降级；**零 Cluster 类型依赖**（集群未编译时本模块照常工作）。
 pub mod quic;
-// B12（2026-10-18）：工具事件触发 workflow 自动化（注册表 CRUD + 进程
+// 工具事件触发 workflow 自动化（注册表 CRUD + 进程
 // 缓存 + 事件泵）。随 workflow feature 进出——引擎不在则规则永不触发，
 // 诚实裁剪。
 #[cfg(feature = "workflow")]
@@ -45,18 +45,18 @@ pub mod automations;
 pub mod coding;
 pub mod commands;
 pub mod config;
-// 行动代理 P0（2026-10-14）：connector 数据面（connectors.list /
+// 行动代理：connector 数据面（connectors.list /
 // connectors.receipts.list / paperbroker.ledger，只读——执行入口是 agent
 // 的 connector_invoke 工具，走完整安全管线）。`connectors` feature 门控——
 // nemesis-connectors 是 optional 依赖，被它无条件依赖的 nemesis-security
 // （Ed25519 签名/信任库复用）随之进出。
 #[cfg(feature = "connectors")]
 pub mod connectors;
-// Full Access 编辑器放行开关 WSAPI（2026-09-20 用户裁决）——
+// Full Access 编辑器放行开关 WSAPI（用户裁决）——
 // editor.get/set。security 闸：EditorAccessState 在 nemesis-security。
 #[cfg(feature = "security")]
 pub mod editor;
-// P30（WS14）：canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
+// canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
 pub mod canvas;
 pub mod estop;
 // 紫微系统管理面（ziwei.* WSAPI；ziwei feature 门控，config ziwei.enabled
@@ -73,39 +73,39 @@ pub mod memory;
 pub mod models;
 #[cfg(feature = "ziwei")]
 pub mod ziwei;
-// CD6（2026-09-17）：发件箱死信面 WSAPI（dead_list / dead_replay）。状态全
+// 发件箱死信面 WSAPI（dead_list / dead_replay）。状态全
 // 在磁盘，重放只需 workspace 根；feature 门随 nemesis-cluster 依赖。
 #[cfg(feature = "cluster")]
 pub mod outbox;
 pub mod persona;
 pub mod plugins;
 pub mod profile;
-// W6（2026-09-29）：WASM 插件管理面（`plugins.wasm.*` 命令实现在此，由
+// WASM 插件管理面（`plugins.wasm.*` 命令实现在此，由
 // plugins 模块代理分发；宿主运行时整槽静态注入，槽空诚实报错）。
 #[cfg(feature = "plugins-wasm")]
 pub mod plugins_wasm;
-// L6++ G4（2026-09-08）：项目注册表 WSAPI（projects.list/create/remove/
+// 项目注册表 WSAPI（projects.list/create/remove/
 // rename）+ resolve_session_loop 会话归属解析。无 feature 闸——bridge 槽
 // 未装配时 handler 诚实报「未装配」。
 pub mod projects;
-// B4（2026-10-18 凭据 vault §7）：凭据索要卡 WSAPI（credential.respond /
+// （凭据 vault）：凭据索要卡 WSAPI（credential.respond /
 // credential.pending）。无 feature 闸——responder trait 在 nemesis-types，
 // broker 槽（静态注入）未装配时 handler 诚实报「not wired」。
 pub mod credential;
-// F7（devtool-upgrade 阶段 5）：dashboard 提问卡 WSAPI（question.respond /
+// （devtool-upgrade）：dashboard 提问卡 WSAPI（question.respond /
 // question.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
 // handler 诚实报「未装配」。
 pub mod question;
-// GitHub Release 资产下载管线（skins / WASM 插件开发包 devkit 下载 / L9
+// GitHub Release 资产下载管线（skins / WASM 插件开发包 devkit 下载 /
 // selfupdate check 共用的单一来源）。selfupdate 的 check 是无 feature 消费点
 //（check/status 全平台可用），故模块不再整体门控；zip 解包等重依赖仍留在
 // 各消费方的 feature 闸内。
 pub mod release_fetch;
-// L9 版本自切换通道 WSAPI（selfupdate.check/apply/status）。无 feature 闸
-// ——manager 槽未装配（feature 关/未启动）时 handler 诚实报「未装配」。
+// 版本自切换通道 WSAPI（selfupdate.check/apply/status）。无 feature 闸
+// manager 槽未装配（feature 关/未启动）时 handler 诚实报「未装配」。
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
-// P5 第 4 步：桌面级 VM 管理面（`vm` feature——命令族全走 VmBridge，
+// 第 4 步：桌面级 VM 管理面（`vm` feature——命令族全走 VmBridge，
 // feature 本体零依赖，见 handlers/vm.rs 头注）。
 pub mod selfupdate;
 #[cfg(feature = "vm")]
@@ -119,29 +119,34 @@ pub mod security;
 pub mod sessions;
 #[cfg(feature = "skins")]
 pub mod skins;
-// 签名验证启动自验状态类型（接入计划 §4，2026-09-23）。刻意不门控——
+// 签名验证启动自验状态类型（接入计划）。刻意不门控——
 // 纯数据透传，AppState 字段在默认 feature 下也必须编译；WSAPI 命令本体
 // 在上方的 security handler。
 pub mod signature_status;
 pub mod skills;
 pub mod system;
 pub mod tasks;
-// 角色目录 WSAPI（2026-09-28 角色目录与分档供给）：roles.list——委派卡
+// 角色目录 WSAPI（角色目录与分档供给）：roles.list——委派卡
 // 角色下拉数据源（目录全量 + tier 分档可见性，与 dispatch 闸同源裁决）。
 pub mod roles;
-// 子代理任务注册表 WSAPI（子代理可见性 P1/P2，2026-11-03）：subagents.list/
+// 子代理任务注册表 WSAPI（子代理可见性）：subagents.list/
 // detail/cancel——三形态统一台账读面 + 用户面终止。
 pub mod subagents;
 // 子代理 WSAPI handler 测试（全局注册表纯内存态；断言按唯一 marker 过滤）。
 #[cfg(test)]
 mod subagents_handler_tests;
-// 独立代理配置 WSAPI（2026-10-31 代理设置三项改造）：proxy.get/save——
+// 后台进程实时输出 WSAPI：background.list/output/kill/
+// steer——B4 注册表的观察面投影（AppState 槽注入，与 agent 工具通道同一 Arc）。
+pub mod background;
+#[cfg(test)]
+mod background_handler_tests;
+// 独立代理配置 WSAPI（代理设置三项改造）：proxy.get/save——
 // `config.proxy.json`（env 段 + selfupdate 段）的读写面。无 feature 闸
 // （独立文件不依赖任何子系统）。
 pub mod proxy;
 pub mod tools;
 pub mod upload;
-// Vault（凭据 vault）管理面（S3c，2026-10-09）：vault.list/set/remove/
+// Vault（凭据 vault）管理面：vault.list/set/remove/
 // status。security 闸——VaultStore 在 nemesis-security（vault 模块）。
 // 永不显示值：list/status 只含别名与元数据，secret 只经 set 单向写入。
 #[cfg(feature = "security")]
@@ -151,52 +156,52 @@ pub mod voice;
 #[cfg(feature = "workflow")]
 pub mod workflow;
 
-// Phase 3 覆盖率（2026-08-25）：sessions 各命令缺参 bail 臂。
+// 覆盖率：sessions 各命令缺参 bail 臂。
 // create/rename happy path 不测——chat_log::write_session_meta 走
 // default_path_manager() 进程级 OnceLock 单例 home，会写真实 ~/.nemesisbot。
 #[cfg(test)]
 mod sessions_extra_tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): sessions
+// (, quality-hardening goal 冲刺 web): sessions
 // success arms (list prefix-strip, clear/delete/export) — create/rename
 // happy paths stay excluded per the note above.
 #[cfg(test)]
 mod sessions_s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：mark_delivered / create 的 binding_key
+// AGT 覆盖率批次：mark_delivered / create 的 binding_key
 // get-or-create 全链与 plain 标题臂 / set·remove_binding / rename 带 title
 // happy path（test_home::lock_home() 重定向单例 home）/ rewind_to_message
 // 与 redo 的缺参 bail。
 #[cfg(test)]
 mod sessions_agt_tests;
 
-// L4 会话分享（2026-09-07）：share_create/share_list/share_revoke 三命令
+// 会话分享：share_create/share_list/share_revoke 三命令
 // 的 handler 层测试（存储语义在 crate::share 单元测试里）。
 #[cfg(test)]
 mod sessions_share_tests;
 
-// B11（2026-10-18 snooze）：snooze/unsnooze 两命令守卫与全链 + 到期唤醒
+// （snooze）：snooze/unsnooze 两命令守卫与全链 + 到期唤醒
 // sweeper（home 单例重定向，session_bindings::tests 同款 HomeGuard）。
 #[cfg(test)]
 mod sessions_snooze_tests;
 
-// 会话回收站（2026-10-30）：delete 默认回收站形态 + hard 旧语义 +
+// 会话回收站：delete 默认回收站形态 + hard 旧语义 +
 // trash 四命令守卫与全链（home 单例重定向，production() 寻址动态落 tempdir）。
 #[cfg(test)]
 mod sessions_trash_tests;
 
-// L22（2026-11-03 snooze 排队 + 跨设备移动 + session PR）：import/
+// （snooze 排队 + 跨设备移动 + session PR）：import/
 // changed_files 两动词 + 重放 hook（unsnooze delivered / wake 消费 /
 // 无 hook 滞留保留）+ orphan 兜底四臂 + list pendingCount 投影。
 #[cfg(test)]
 mod sessions_l22_tests;
 
-// L6++ G4（2026-09-08）：projects WSAPI 全命令臂（含未装配诚实报错）+
+// projects WSAPI 全命令臂（含未装配诚实报错）+
 // resolve_session_loop 两分支 + 项目根切换。
 #[cfg(test)]
 mod projects_tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): shared path/file
+// (, quality-hardening goal 冲刺 web): shared path/file
 // utility arms (absolute/traversal rejection, canonicalize fallback, atomic
 // write fallback) + ConfigHandler error arms and CORS stubs.
 #[cfg(test)]
@@ -204,28 +209,28 @@ mod config_s10b_tests;
 #[cfg(test)]
 mod s10b_tests;
 
-// M5 (2026-09-05, devtool-upgrade 阶段 3): 会话级用量 WSAPI——
+// (, devtool-upgrade): 会话级用量 WSAPI——
 // logs.session_usage / backfill_session_usage / chat.context_status。
 #[cfg(test)]
 mod m5_session_usage_tests;
 
-// P2B (2026-09-12, NB-15 根修配套): models.health 工具健康视图——
+// P2B (, 根修配套): models.health 工具健康视图——
 // 阈值建议 / 窗口夹取 / 账本未装配诚实空。
 #[cfg(test)]
 mod models_health_tests;
 
-// BUG-20261104-361 回归钉: models.add 模型 identifier 形态校验（穿越段/
+// 回归钉: models.add 模型 identifier 形态校验（穿越段/
 // 反斜杠/空段 loud 拒，且先于 config 触达）。
 #[cfg(test)]
 mod models_add_validation_tests;
 
-// L1 (2026-09-06, devtool-upgrade 阶段 6): WSAPI 命令注册表——结构不变量 +
-// system.commands dispatch 链路 + docs/INFO/wsapi-commands.md 文档生成 +
+// (, devtool-upgrade): WSAPI 命令注册表——结构不变量 +
+// system.commands dispatch 链路 + wsapi-commands 文档生成 +
 // 安全子集 dispatch 冒烟。
 #[cfg(test)]
 mod l1_tests;
 
-// L2 (2026-09-06, devtool-upgrade 阶段 6): chat.sync 断线补拉 dispatch 测试
+// (, devtool-upgrade): chat.sync 断线补拉 dispatch 测试
 // （record → sync 补拉 → 窗口/gap 语义；不依赖 AgentLoop）。
 #[cfg(test)]
 mod chat_sync_tests;
@@ -233,21 +238,19 @@ mod chat_sync_tests;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-// ---------------------------------------------------------------------------
 // Registration
-// ---------------------------------------------------------------------------
 
-/// L1（devtool-upgrade 阶段 6）：WSAPI 命令注册表快照——`register_all`
+/// （devtool-upgrade）：WSAPI 命令注册表快照——`register_all`
 /// 末尾一次性发布，`system.commands` 与文档生成读取。
 ///
 /// 设计偏差（vs 计划原文「AppState commands_registry 字段」）：AppState
-/// 字面量散布 69 个测试文件 105 处（M7 已核实不可动），新增字段是全库
+/// 字面量散布 69 个测试文件 105 处（已核实不可动），新增字段是全库
 /// 爆破——OnceLock 模块级快照保有同一「单一真相源」性质（register_all
 /// 是唯一写点）且零爆破半径。
 static COMMANDS_REGISTRY: std::sync::OnceLock<Vec<(String, Vec<&'static str>)>> =
     std::sync::OnceLock::new();
 
-/// L1：已发布的命令注册表（module → 命令清单，注册顺序）。`register_all`
+/// 已发布的命令注册表（module → 命令清单，注册顺序）。`register_all`
 /// 尚未跑过时返回空切片（headless 早期诚实空表）。
 pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
     COMMANDS_REGISTRY.get().map(|v| v.as_slice()).unwrap_or(&[])
@@ -257,24 +260,24 @@ pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
-    // 紫微系统（T0.5）：ziwei.* 全量命令清单随 feature 进出。
+    // 紫微系统（.5）：ziwei.* 全量命令清单随 feature 进出。
     #[cfg(feature = "ziwei")]
     {
         router.register(Arc::new(ziwei::ZiweiHandler));
     }
-    // P30（WS14）：canvas 关闭回执。
+    // canvas 关闭回执。
     router.register(Arc::new(canvas::CanvasHandler));
-    // L9：版本自切换通道（check/apply/status；manager 槽未装配诚实报）。
+    // 版本自切换通道（check/apply/status；manager 槽未装配诚实报）。
     router.register(Arc::new(selfupdate::SelfupdateHandler));
-    // M7：审批响应端点（dashboard 审批卡 → WebApprovalManager）。
+    // 审批响应端点（dashboard 审批卡 → WebApprovalManager）。
     router.register(Arc::new(approval::ApprovalHandler));
-    // F7：提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
+    // 提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
     router.register(Arc::new(question::QuestionHandler));
-    // B4：凭据索要卡响应端点（dashboard 凭据卡 → WebCredentialBroker）。
+    // 凭据索要卡响应端点（dashboard 凭据卡 → WebCredentialBroker）。
     router.register(Arc::new(credential::CredentialHandler));
     // 自进化 B 线：用户习惯画像（后门动作 + 开关）。
     router.register(Arc::new(profile::ProfileHandler::new()));
-    // 行动代理 P0：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
+    // 行动代理：connector 数据面（registry 状态 / 凭条流水 / 纸面账本）。
     #[cfg(feature = "connectors")]
     {
         router.register(Arc::new(connectors::ConnectorsHandler));
@@ -299,17 +302,17 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     #[cfg(feature = "security")]
     {
         router.register(Arc::new(security::SecurityHandler::new()));
-        // Full Access 编辑器放行开关（2026-09-20 用户裁决）——槽未装配时
+        // Full Access 编辑器放行开关（用户裁决）——槽未装配时
         // handler 诚实报错，注册本身无副作用。
         router.register(Arc::new(editor::EditorHandler));
-        // S3c（2026-10-09）：凭据 vault 管理面（list/set/remove/status）。
+        // 凭据 vault 管理面（list/set/remove/status）。
         router.register(Arc::new(vault::VaultHandler));
     }
     #[cfg(feature = "sandbox")]
     {
         router.register(Arc::new(sandbox::SandboxHandler::new()));
     }
-    // P5 第 4 步：桌面级 VM 管理面（vm feature 零依赖——探针在 bridge 侧）。
+    // 第 4 步：桌面级 VM 管理面（vm feature 零依赖——探针在 bridge 侧）。
     #[cfg(feature = "vm")]
     {
         router.register(Arc::new(vm::VmHandler));
@@ -319,26 +322,26 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
         router.register(Arc::new(forge::ForgeHandler::new()));
     }
     router.register(Arc::new(tasks::TasksHandler));
-    // P2-1 (2026-08-24 UI entry gap): 「代码开发」页 read-only status commands
+    // (UI entry gap): 「代码开发」页 read-only status commands
     // (LSP PATH probe + tool config sections). lsp_status/lsp_install 随 lsp
     // feature 进出（关 = unknown command 诚实报错）；config（纯 config 读写）恒在。
     router.register(Arc::new(coding::CodingHandler));
-    // P4 (2026-08-24 UI entry gap): 设置页「Hooks」Tab — hooks.json 读写
+    // (UI entry gap): 设置页「Hooks」Tab — hooks.json 读写
     // (hooks.json 方言, nemesis-agent cc_hooks)。No feature gate — cc_hooks 无条件编译。
     router.register(Arc::new(hooks::HooksHandler));
-    // 2026-08-29: 自定义 slash 命令表（快捷提示词发送器）— CommandsView CRUD。
+    // 自定义 slash 命令表（快捷提示词发送器）— CommandsView CRUD。
     // AgentLoop 侧 mtime 热重载同一文件，无需重启。No feature gate。
     router.register(Arc::new(commands::CommandsHandler));
-    // I2 (2026-09-05, devtool-upgrade 阶段 3): 聊天 `@` 文件引用的路径补全
+    // (, devtool-upgrade): 聊天 `@` 文件引用的路径补全
     // 后端（fs.complete_path）。No feature gate — 遍历只读 + 有界（deadline）。
     router.register(Arc::new(fs::FsHandler::new()));
-    // 2026-08-29: 插件状态总览（只读）— PluginsView 数据源。No feature gate
+    // 插件状态总览（只读）— PluginsView 数据源。No feature gate
     // （探测逻辑无条件编译；onnx 能力状态节内含 memory cfg 门控）。
     router.register(Arc::new(plugins::PluginsHandler));
-    // W6（2026-09-29）：WASM 插件管理面命令（`plugins.wasm.*`）同挂在上方
+    // WASM 插件管理面命令（`plugins.wasm.*`）同挂在上方
     // plugins 模块下（实现在 plugins_wasm.rs；无需独立注册——宿主运行时
     // 整槽静态注入，槽空诚实报错）。
-    // W2 P1 (2026-08-31): managed-agent 看板。`board` feature 门控——
+    // managed-agent 看板。`board` feature 门控——
     // nemesis-board 是 optional 依赖；关 = handler 整体不注册（board.*
     // 命令从 system.commands 表面消失）。
     #[cfg(feature = "board")]
@@ -347,7 +350,7 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     {
         router.register(Arc::new(cluster::ClusterHandler::new()));
     }
-    // QUIC 中继独立 WSAPI（2026-10-23 解耦；零 Cluster 类型依赖，恒注册）。
+    // QUIC 中继独立 WSAPI（解耦；零 Cluster 类型依赖，恒注册）。
     router.register(Arc::new(quic::QuicHandler::new()));
     // 独立代理配置（config.proxy.json；恒注册，无 feature 闸）。
     router.register(Arc::new(proxy::ProxyHandler));
@@ -364,37 +367,37 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     {
         router.register(Arc::new(skins::SkinsHandler::new()));
     }
-    // CD6（2026-09-17）：发件箱死信面（列表 + 手动重放）。
+    // 发件箱死信面（列表 + 手动重放）。
     #[cfg(feature = "cluster")]
     router.register(Arc::new(outbox::OutboxHandler));
-    // L6++ G4（2026-09-08）：项目注册表 WSAPI（bridge 未装配时诚实报错）。
+    // 项目注册表 WSAPI（bridge 未装配时诚实报错）。
     router.register(Arc::new(projects::ProjectsHandler));
-    // P2（2026-10-16）：Agent 持久实体 WSAPI（agents.list/get/create/remove；
+    // Agent 持久实体 WSAPI（agents.list/get/create/remove；
     // bridge 未装配时诚实报错——headless/独立 web 测试形态）。
     router.register(Arc::new(agents::AgentsHandler));
-    // P4-c（2026-10-17）：交付账本 WSAPI（deliveries.*；bridge 未装配时诚实
+    // c：交付账本 WSAPI（deliveries.*；bridge 未装配时诚实
     // 报错——headless/独立 web 测试形态）。
     router.register(Arc::new(deliveries::DeliveriesHandler));
-    // 角色目录（2026-09-28 角色目录与分档供给）：roles.list。
+    // 角色目录（角色目录与分档供给）：roles.list。
     router.register(Arc::new(roles::RolesHandler));
-    // 子代理可见性（2026-11-03）：subagents.list/detail/cancel。
+    // 子代理可见性：subagents.list/detail/cancel。
     router.register(Arc::new(subagents::SubagentsHandler));
+    // 后台进程实时输出（2026-11-06 P1）：background.list/output/kill/steer。
+    router.register(Arc::new(background::BackgroundHandler));
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));
-        // B12：automations（automations.list/set/remove；注册表 CRUD +
+        // automations（automations.list/set/remove；注册表 CRUD +
         // 进程缓存刷新——事件泵在 gateway 侧 agent_build 装配）。
         router.register(Arc::new(automations::AutomationsHandler));
     }
 
-    // L1：注册完成后发布命令注册表快照（OnceLock 首写胜出——重复注册
+    // 注册完成后发布命令注册表快照（OnceLock 首写胜出——重复注册
     // 内容一致，静默忽略后续 set 失败）。
     let _ = COMMANDS_REGISTRY.set(router.commands_registry());
 }
 
-// ---------------------------------------------------------------------------
 // Shared utilities
-// ---------------------------------------------------------------------------
 
 /// Mask a sensitive string, showing only the first 4 and last 4 characters.
 pub fn mask_sensitive(value: &str) -> String {
@@ -592,7 +595,7 @@ pub fn resolve_path(workspace: &str, relative: &str) -> Result<PathBuf, String> 
         return Err("path traversal denied".to_string());
     }
 
-    // Canonicalize both paths for accurate comparison (handles .., symlinks, etc.)
+    // Canonicalize both paths for accurate comparison (handles.., symlinks, etc.)
     let canonical_base = base.canonicalize().unwrap_or_else(|_| base.clone());
     let canonical_resolved = match resolved.canonicalize() {
         Ok(p) => p,
@@ -676,10 +679,10 @@ pub fn write_workspace_file(workspace: &str, relative: &str, content: &str) -> R
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("failed to create dir: {}", e))?;
     }
-    // 横向扫（2026-10-19，journal F1 同族收口）：此前 rename 失败会回退
+    // 横向扫（journal 同族收口）：此前 rename 失败会回退
     // 「非原子直写覆盖目标」——fs::write 先截断后写，中途崩溃=半截文件落
     // 盘；且主要失败形态（目标被占用/只读）下直写同样失败，回退救不了场
-    // 景、只留下原子性缺口。统一收口 nemesis-utils 权威原子写（REL-002）：
+    // 景、只留下原子性缺口。统一收口 nemesis-utils 权威原子写：
     // 唯一临时名 + sync_all + 失败清 tmp、原文件不动、错误上抛。0o644 对齐
     // 原 fs::write 默认（0666 & umask）的实际形态。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o644)
@@ -717,9 +720,7 @@ pub fn require_home(ctx: &crate::ws_router::RequestContext) -> Result<&str, Stri
         .ok_or_else(|| "home not configured".to_string())
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "workflow", feature = "security"))]
 mod tests;
@@ -727,26 +728,26 @@ mod tests;
 // Previously-written extra/more coverage modules were never `mod`-declared, so
 // they silently did not compile or run. Wire them in here.
 // （workflow 也在门控集里：测试体引用 nemesis_workflow / handlers::workflow，
-// 只开 cluster 不开 workflow 编译时 E0433——2026-09-02 本地 --features cluster
-// 单独验证时实录；nemesisbot 透传两者恒同开所以从未暴露。）
+// 只开 cluster 不开 workflow 编译时 —— 本地 --features cluster
+// 单独验证时；nemesisbot 透传两者恒同开所以从未暴露。）
 #[cfg(all(test, feature = "cluster", feature = "workflow"))]
 mod cluster_extra_tests;
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_more_tests;
-// P3-web3 (2026-08-25): cluster.rs deep coverage — runtime metrics, real TCP
+// web3: cluster.rs deep coverage — runtime metrics, real TCP
 // ping probes, nodes.refresh full arms, tasks log enrichment, topology real
 // connections, config fallbacks, firewall AddrInUse, persona_generate/apply.
-// H1/H2 (2026-09-05): chat.todo_get 读路径同构性测试。
+// /: chat.todo_get 读路径同构性测试。
 #[cfg(test)]
 mod chat_todo_tests;
-// F1 (2026-09-05): chat.set_mode / chat.get_mode（plan/build 双模式）测试。
+// chat.set_mode / chat.get_mode（plan/build 双模式）测试。
 #[cfg(test)]
 mod chat_mode_tests;
-// 角色目录与客户端委派（2026-09-28）：roles.list + chat.spawn 测试。
+// 角色目录与客户端委派：roles.list + chat.spawn 测试。
 #[cfg(test)]
 mod roles_spawn_tests;
 
-// AGT 覆盖率批次（2026-09-25）：workspace 文件三件套的确定性失败臂
+// AGT 覆盖率批次：workspace 文件三件套的确定性失败臂
 // （read 缺文件 / write 建目录失败）+ 原子写成功回读 + 绝对路径拒绝。
 #[cfg(test)]
 mod agt_tests;
@@ -769,17 +770,17 @@ mod scanner_more_tests;
 mod skills_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod skills_more_tests;
-// WS4 供应链工作流（2026-09-25）：skills.install 漏斗记账/gate 拒绝/
+// 供应链工作流：skills.install 漏斗记账/gate 拒绝/
 // uninstall 联动/verify 漂移检测的 WSAPI 面。
 #[cfg(all(test, feature = "workflow"))]
 mod skills_ws4_tests;
-// N3 学得技能 manifest（2026-10-13 机会项）：learned_list/learned_remove
+// 学得技能 manifest：learned_list/learned_remove
 // 管理面 + manifest 成员资格护栏（registry 技能保护）。
 #[cfg(all(test, feature = "workflow"))]
 mod skills_learned_tests;
 #[cfg(all(test, feature = "voice"))]
 mod voice_extra_tests;
-// 凭据回显脱敏批次（2026-09-25；vault 方案 0.4.7 遗留收尾）：WSAPI 回显面
+// 凭据回显脱敏批次（vault 方案 0.4.7 遗留收尾）：WSAPI 回显面
 // 脱敏 + 保存路径防掩码回写（mcp servers/config、cluster token、channels）。
 #[cfg(test)]
 mod mask_roundtrip_tests;

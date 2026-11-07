@@ -1,4 +1,4 @@
-//! L4 会话分享（2026-09-07）—— sessions 模块 share_create/share_list/
+//! 会话分享（2026-09-07）—— sessions 模块 share_create/share_list/
 //! share_revoke 三命令的 WSAPI handler 测试。
 //!
 //! 存储走 tempdir workspace（crate::share 单元测试已覆盖存储语义），这里
@@ -54,6 +54,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -76,7 +77,7 @@ async fn share_commands_registered_and_bail_on_missing_args() {
     let ctx = make_ctx(&dir);
     let h = SessionsHandler;
 
-    // L1 纪律：注册表必须列全三命令。
+    // 纪律：注册表必须列全三命令。
     let cmds = h.commands();
     for c in ["share_create", "share_list", "share_revoke"] {
         assert!(cmds.contains(&c), "commands() 缺 {c}");

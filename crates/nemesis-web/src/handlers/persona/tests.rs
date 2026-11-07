@@ -330,7 +330,7 @@ fn test_local_management() {
     assert!(handler.cmd_remove(&ws, "default").is_err());
 }
 
-// ---- pure conversion-engine helpers ----
+// pure conversion-engine helpers ----
 
 #[test]
 fn extract_identity_info_parses_name_and_emoji() {
@@ -349,7 +349,7 @@ fn extract_identity_info_defaults_when_missing() {
 
 #[test]
 fn extract_identity_info_strips_trailing_bold_markers() {
-    // BUG-20261028-117：模板形态「- **姓名：Alice**」（值整体带强调标记）
+    // 模板形态「- **姓名：Alice**」（值整体带强调标记）
     // 的尾部 `**` 必须剥掉——trim 链只剥前导星号，残留曾写进 PERSONA.json
     // 展示名（Dashboard 人格名带星号）。全角/半角冒号两臂都要干净。
     let (name, _) = extract_identity_info("- **姓名：Alice**\n");
@@ -490,10 +490,10 @@ fn convert_agent_md_empty_tools_when_no_tools_section() {
 }
 
 // ============================================================
-// Phase 3 覆盖率（2026-08-25）：shop.* 快乐路径离线覆盖。
+// 覆盖率：shop.* 快乐路径离线覆盖。
 // GITHUB_API 是硬编码 const（persona.rs:25，无注入点），但三级缓存
 // （TREE_CACHE / FM_CACHE / CONTENT_CACHE）就是天然注入点——预填缓存后
-// fetch_tree 走 L1 命中臂、fetch_agent_content 走 L3 命中臂，全程无网络。
+// fetch_tree 走 命中臂、fetch_agent_content 走 命中臂，全程无网络。
 // 本文件是 persona 的子模块，可直接访问这些私有 static。
 // ============================================================
 
@@ -543,6 +543,7 @@ fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -559,7 +560,7 @@ fn shop_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
-/// 预填 L1 树缓存 + L2 frontmatter 缓存（browse/search 只依赖这两级）。
+/// 预填 树缓存 + frontmatter 缓存（browse/search 只依赖这两级）。
 fn seed_tree_and_fm() {
     *TREE_CACHE.lock().unwrap() = Some(vec![
         ("engineering/rust-dev.md".to_string(), 100),
@@ -678,7 +679,7 @@ async fn shop_search_offline_via_seeded_caches() {
 async fn shop_preview_offline_via_content_cache() {
     let _shop_guard = SHOP_TEST_LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    // L3 内容缓存命中 → fetch_agent_content 不发网络请求。
+    // 内容缓存命中 → fetch_agent_content 不发网络请求。
     CONTENT_CACHE
         .lock()
         .unwrap()

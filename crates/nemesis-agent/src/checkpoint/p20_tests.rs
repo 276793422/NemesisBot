@@ -1,4 +1,4 @@
-//! P20（2026-09-25 能力扩展 WS7）：turn 收尾封印 + rewind 冲突预检 + 影子库
+//! （2026-09-25）：turn 收尾封印 + rewind 冲突预检 + 影子库
 //! 自愈单测。
 //!
 //! 覆盖：seal_turn 指纹封印与幂等 / conflict_scan 的 last-declared 规则
@@ -205,7 +205,7 @@ async fn p20_begin_fallback_seals_previous_turn() {
 }
 
 // ---------------------------------------------------------------------------
-// conflict_scan：git 全树 diff 补充覆盖（2026-09-26 复查 F6）
+// conflict_scan：git 全树 diff 补充覆盖（复查）
 // ---------------------------------------------------------------------------
 
 /// 最新 begin 之后外部创建的未声明文件（shell 副作用形态）→ 树 diff 补进
@@ -216,11 +216,11 @@ async fn p20_conflict_scan_tree_diff_undeclared_side_effect_unchecked() {
     std::fs::write(root.join("code.txt"), "v1").unwrap();
     let store = CheckpointStore::new(None, root.clone());
 
-    store.begin(1, "t1"); // T1 = {code.txt: v1}
+    store.begin(1, "t1"); // = {code.txt: v1}
     std::fs::write(root.join("code.txt"), "v2").unwrap();
     store.snapshot(&modify("code.txt")).await;
     store.seal_turn(1);
-    store.begin(2, "t2"); // T2 = {code.txt: v2}（最新 begin tree = 参照物）
+    store.begin(2, "t2"); // = {code.txt: v2}（最新 begin tree = 参照物）
     std::fs::write(root.join("side_effect.txt"), "shell noise").unwrap(); // begin 后外部产生
 
     let report = store.conflict_scan(1);
@@ -241,12 +241,12 @@ async fn p20_conflict_scan_tree_diff_agent_span_change_not_unchecked() {
     std::fs::write(root.join("code.txt"), "v1").unwrap();
     let store = CheckpointStore::new(None, root.clone());
 
-    store.begin(1, "t1"); // T1 = {code.txt: v1}
+    store.begin(1, "t1"); // = {code.txt: v1}
     std::fs::write(root.join("code.txt"), "v2").unwrap();
     std::fs::write(root.join("side_effect.txt"), "agent made this").unwrap(); // turn 内副作用
     store.snapshot(&modify("code.txt")).await;
     store.seal_turn(1);
-    store.begin(2, "t2"); // T2 = {code.txt: v2, side_effect.txt}
+    store.begin(2, "t2"); // = {code.txt: v2, side_effect.txt}
 
     let report = store.conflict_scan(1);
     assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);

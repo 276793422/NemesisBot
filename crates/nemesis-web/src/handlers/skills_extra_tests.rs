@@ -14,9 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infra (verbatim copy of helpers in tests.rs)
-// -----------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -52,6 +50,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -101,6 +100,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -128,9 +128,7 @@ fn write_skills_config(workspace: &Path, cfg: &nemesis_config::SkillsFullConfig)
     std::fs::write(workspace.join("config/config.skills.json"), json).unwrap();
 }
 
-// -----------------------------------------------------------------------
 // unknown command + missing workspace
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_unknown_command() {
@@ -164,9 +162,7 @@ async fn test_skills_missing_workspace_source_list() {
     assert!(result.is_err());
 }
 
-// -----------------------------------------------------------------------
 // missing-data / missing-field validation per command
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_detail_missing_data() {
@@ -444,9 +440,7 @@ async fn test_skills_open_dir_missing_field_name() {
     assert_eq!(result.unwrap_err(), "missing field: name");
 }
 
-// -----------------------------------------------------------------------
 // installed (with SKILL.md metadata variants)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_installed_no_skill_md() {
@@ -517,9 +511,7 @@ async fn test_skills_installed_multiple() {
     assert_eq!(skills.len(), 3);
 }
 
-// -----------------------------------------------------------------------
 // detail — happy / non-existent
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_detail_reads_markdown() {
@@ -541,12 +533,10 @@ async fn test_skills_detail_reads_markdown() {
     assert_eq!(result["content"], "# Reader\n\nbody text");
 }
 
-// -----------------------------------------------------------------------
 // open_dir — happy and not-found
 // happy 只测决策纯函数 resolve_skill_dir（spawn 臂不进单测，避免每跑一次
 // 弹一个【文档】窗口：explorer 对「tempdir 已删路径」参数回落打开 Documents）。
 // handle_cmd → open_dir 的分发接线由下方 not_found 等错误路径测试覆盖。
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_skills_resolve_skill_dir_happy() {
@@ -574,9 +564,7 @@ async fn test_skills_open_dir_not_found() {
     assert!(err.contains("ghost-dir"));
 }
 
-// -----------------------------------------------------------------------
 // config.get — fallback (no config file) + persisted file
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_config_get_fallback_default() {
@@ -615,9 +603,7 @@ async fn test_skills_config_get_persisted() {
     assert_eq!(result["search_limit"].as_i64().unwrap(), 123);
 }
 
-// -----------------------------------------------------------------------
 // config.save — invalid JSON shape
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_config_save_invalid() {
@@ -651,9 +637,7 @@ async fn test_skills_config_save_creates_config_dir() {
     assert!(dir.path().join("config/config.skills.json").exists());
 }
 
-// -----------------------------------------------------------------------
 // config.update — selective field updates
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_config_update_enabled() {
@@ -781,9 +765,7 @@ async fn test_skills_config_update_empty_data() {
     assert!(result["updated"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // source.list — defaults + custom sources
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_list_defaults() {
@@ -839,9 +821,7 @@ async fn test_skills_source_list_with_github() {
     assert!(gh["enabled"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // source.add.manual — happy + duplicate
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_add_manual_happy() {
@@ -941,9 +921,7 @@ async fn test_skills_source_add_manual_duplicate() {
     assert!(err.contains("已存在"), "got: {}", err);
 }
 
-// -----------------------------------------------------------------------
 // source.remove — happy + not-found
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_remove_happy() {
@@ -997,9 +975,7 @@ async fn test_skills_source_remove_not_found() {
     assert!(err.contains("不存在"), "got: {}", err);
 }
 
-// -----------------------------------------------------------------------
 // source.toggle — github / clawhub / modelscope / unknown
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_toggle_github() {
@@ -1128,9 +1104,7 @@ async fn test_skills_source_toggle_unknown() {
     assert!(err.contains("不存在"), "got: {}", err);
 }
 
-// -----------------------------------------------------------------------
 // search — empty registries (no network)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_search_no_sources_message() {
@@ -1150,9 +1124,7 @@ async fn test_skills_search_no_sources_message() {
     assert!(result["message"].as_str().is_some());
 }
 
-// -----------------------------------------------------------------------
 // install — already installed (no network)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_install_already_installed() {
@@ -1179,7 +1151,7 @@ async fn test_skills_install_already_installed() {
 #[tokio::test]
 async fn test_skills_install_unknown_registry() {
     // No already-installed dir, force=false, but registry doesn't exist
-    // → should fail with "源 ... 不存在"
+    // → should fail with "源... 不存在"
     let handler = skills::SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
@@ -1194,9 +1166,7 @@ async fn test_skills_install_unknown_registry() {
     assert!(err.contains("不存在"), "got: {}", err);
 }
 
-// -----------------------------------------------------------------------
 // shop_detail / shop_code — unknown registry (no network)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_shop_detail_unknown_registry() {
@@ -1224,9 +1194,7 @@ async fn test_skills_shop_code_unknown_registry() {
     assert!(result.is_err());
 }
 
-// -----------------------------------------------------------------------
 // browse — no sources configured (no network)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_browse_empty_results() {
@@ -1265,9 +1233,7 @@ async fn test_skills_browse_with_params() {
     let _ = handler.handle_cmd("browse", Some(data), &ctx).await;
 }
 
-// -----------------------------------------------------------------------
 // uninstall — error removing non-empty dir edge cases
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_uninstall_removes_subdir_contents() {
@@ -1290,11 +1256,9 @@ async fn test_skills_uninstall_removes_subdir_contents() {
     assert!(!skill_dir.exists());
 }
 
-// -----------------------------------------------------------------------
-// BUG-20261101-295：detail / open_dir 的 name 参数路径安全闸
+// detail / open_dir 的 name 参数路径安全闸
 // （裸拼 skills/<name>：detail 读任意 */SKILL.md；open_dir explorer 打开
 // workspace 外任意目录 + 报错泄露绝对路径 = 存在性 oracle）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_detail_hostile_names_rejected() {

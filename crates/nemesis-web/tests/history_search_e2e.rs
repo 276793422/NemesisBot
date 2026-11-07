@@ -7,7 +7,7 @@
 //! 重定向都来不及。且 nextest 每测试独立进程，进程内 IDX_LOCK /
 //! HOME_RACE_LOCK 全部失效，e2e 与所有 chat_log 追加测试的 append-hook
 //! 并发争抢真实全局 `history_index.db`（BUSY 让 reindex/插入静默失败），
-//! 3×200ms 重试窗口在满载机器上必漏（实录 2026-10-10：本地全量 nextest
+//! 3×200ms 重试窗口在满载机器上必漏（2026-10-10：本地全量 nextest
 //! `test_history_search_finds_appended_message_e2e` 假红，单测必绿；
 //! cargo test 二进制串行掩盖至今）。
 //!
@@ -19,7 +19,7 @@
 //! 计数这类不依赖索引内容的测试仍留在 lib（对竞争不可失败）。
 //!
 //! history-search 关 = FTS 模块整体退出编译（诚实报「未编译」），本 e2e
-//! 无被测物——文件级门随 feature 进出（缺门实录 2026-10-17：crate 本地
+//! 无被测物——文件级门随 feature 进出（缺门 2026-10-17：crate 本地
 //! 无 feature 跑必红，workspace 全量 feature 统一掩盖）。
 #![cfg(feature = "history-search")]
 
@@ -86,7 +86,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_log_dir: None,
         workflow_engine: None,
         // AppState dual-declares these two fields (workflow-gated real /
-        // `Arc<()>` stub — api_handlers.rs)；同 lib 侧 make_ctx 的双臂处理。
+        // `Arc<>` stub — api_handlers.rs)；同 lib 侧 make_ctx 的双臂处理。
         #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(
             nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
@@ -101,6 +101,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

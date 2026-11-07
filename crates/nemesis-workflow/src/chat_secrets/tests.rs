@@ -79,7 +79,7 @@ fn persists_across_reopen() {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (corrupt/empty/unreadable load, in_memory store,
+// coverage gap closure (corrupt/empty/unreadable load, in_memory store,
 // empty-index rejection, create-dir failure, invalid stored hash)
 // ---------------------------------------------------------------------------
 
@@ -88,7 +88,7 @@ fn w4a_open_corrupt_json_poisons_fail_closed() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("secrets.json");
     std::fs::write(&path, b"{ this is not json !!!").unwrap();
-    // Corrupt load: the store poisons (fail-closed, 2026-10-16 hardening).
+    // Corrupt load: the store poisons (fail-closed, hardening).
     let store = ChatSecretStore::open(path.clone());
     assert!(store.is_poisoned());
     // Reads fail closed: state is unknown, so it must look password-
@@ -173,7 +173,7 @@ fn w4a_set_password_create_dir_failure_leaves_memory_untouched() {
         "unexpected error: {}",
         err
     );
-    // Persist-then-swap (2026-10-16 hardening): the in-memory map is only
+    // Persist-then-swap (hardening): the in-memory map is only
     // swapped after a successful write — a failed persist must NOT leave
     // the password visible in memory while disk has nothing.
     assert!(!store.has_password("abc12345"));
@@ -197,7 +197,7 @@ fn w4a_verify_against_invalid_stored_hash_returns_false() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-10-16 hardening: canonical 16-hex keys + legacy 8-hex compat
+// hardening: canonical 16-hex keys + legacy 8-hex compat
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -272,7 +272,7 @@ fn clear_password_accepts_legacy_form() {
 
 // 非 16-hex canonical 形态但字节数恰为 16、字节 8 落在多字节字符中间的
 // 串（web 层 canonical_chat_index 对解析不到的 index 原样透传，客户端
-// 可构造）——四个入口都不得 panic，且按普通键完整工作（2026-10-17 全仓
+// 可构造）——四个入口都不得 panic，且按普通键完整工作（全仓
 // 横扫：legacy_key_of 裸 [..8] 曾在字节 8 非边界时崩；仅边界安全化又会
 // 让 set_password 的孪生清理把刚写入的条目立即删掉=静默 no-op，故闸门
 // 升级为 is_canonical_form（字节长+ASCII），多字节串根本不进 legacy 分支）。

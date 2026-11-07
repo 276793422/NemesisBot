@@ -1,4 +1,4 @@
-//! planner 纯逻辑测试（Swarm M1）：解析容错 / 校验规则 / 环检测 / 提示词。
+//! planner 纯逻辑测试（Swarm）：解析容错 / 校验规则 / 环检测 / 提示词。
 
 use super::*;
 
@@ -29,7 +29,7 @@ fn parse_plan_tolerates_markdown_fence_and_prose() {
     assert_eq!(plan[0].title, "任务A");
 }
 
-/// P4（2026-10-13 编写陷阱防线）拆解管线 sanity：AC 内的 ` # ` 注释锚点
+/// （编写陷阱防线）拆解管线 sanity：AC 内的 ` # ` 注释锚点
 /// 原样透传——planner 产出的 AC 文本逐字落 PlannedSubIssue，不剥离注释
 /// （注释剥离是 anchor 解析层的职责，拆解层不做二次加工）。
 #[test]
@@ -201,7 +201,7 @@ fn retry_prompt_truncates_long_prev_output() {
     assert!(prompt.contains("已截断"));
 }
 
-/// 回归锁（2026-10-11 真机实证）：裸字节切片 `&prev_output[..4000]` 在
+/// 回归锁（真机实证）：裸字节切片 `&prev_output[..4000]` 在
 /// 中文输出上第 4000 字节落在多字节字符内部 → panic → 整个规划 tokio
 /// 任务无声死亡、看板零留痕（用户项目两次「建了不动」的根因）。截断
 /// 必须走 rune 边界安全版。
@@ -245,7 +245,7 @@ fn system_prompt_declares_the_schema_fields() {
     );
 }
 
-/// 验收标准自主可达纪律（2026-10-16 NB-121 三道人工门禁根修）防误删快照：
+/// 验收标准自主可达纪律（三道人工门禁根修）防误删快照：
 /// planner prompt 必须携带「AC 每条须自主 agent 可达成并留证」硬约束 +
 /// 三类禁止形态（人工签字/外部资源/长时实测）+ 等价证据改写指引。
 /// 删段则拆解器再次发明自主链路永远无法闭环的门禁，验收阶段必然弹人工。
@@ -259,9 +259,9 @@ fn system_prompt_declares_ac_autonomous_reachability() {
     }
 }
 
-/// P2（B1）防误删快照：planner prompt 必须携带 `[CHECK]` 锚点指令段
-/// （与 `crate::anchor::ANCHOR_PREFIX` 及 anchor 解析器同步演化——删段
-/// 则 planner 不再产出锚点，P2 双检退化回纯语义）。
+/// 防误删快照：planner prompt 必须携带 `[CHECK]` 锚点指令段
+/// （与 `crate::anchor:ANCHOR_PREFIX` 及 anchor 解析器同步演化——删段
+/// 则 planner 不再产出锚点， 双检退化回纯语义）。
 #[test]
 fn system_prompt_declares_check_anchor_instructions() {
     for marker in ["[CHECK]", "file:", "contains:", "re:", "相对路径"] {
@@ -272,7 +272,7 @@ fn system_prompt_declares_check_anchor_instructions() {
     }
 }
 
-/// §6.1（2026-10-12 exec 锚点激活）防误删快照：exec 锚点产出指令（对可运行
+/// （exec 锚点激活）防误删快照：exec 锚点产出指令（对可运行
 /// 时验证的子任务**应**产出，按交付物技术栈选命令）+ 命令纪律（只读/测试类，
 /// 黑名单拒绝破坏性形态）+ 跨节点安全说明 + 环境依赖缺失诚实跳过语义；
 /// 叠加输入/输出资源声明纪律（[READ]/[TOUCH] 与 depends_on 互相印证）。
@@ -297,7 +297,7 @@ fn system_prompt_declares_exec_gate_and_resource_declarations() {
     }
 }
 
-/// P1 拓扑纪律防误删快照（2026-09-12 双端真机 S2 根修）：planner prompt
+/// 拓扑纪律防误删快照（双端真机 根修）：planner prompt
 /// 必须声明「远端任务禁止 file: 锚点」——删掉这段 planner 会继续给远端
 /// 子任务配 file: 锚点（硬闸会拦，但每次派发都炸成诚实错误，规划面劣化）。
 #[test]
@@ -310,7 +310,7 @@ fn system_prompt_declares_anchor_topology_discipline() {
     }
 }
 
-/// F5（件②）父单锚点下放纪律防误删快照：父任务 AC 含锚点时必须由子任务
+/// （件②）父单锚点下放纪律防误删快照：父任务 AC 含锚点时必须由子任务
 /// 继承——删掉这段 planner 拆解会丢父任务锚点（父单收口评审锚点必败）。
 #[test]
 fn system_prompt_declares_anchor_downgrade_discipline() {
@@ -322,7 +322,7 @@ fn system_prompt_declares_anchor_downgrade_discipline() {
     }
 }
 
-/// P4（2026-10-13 编写陷阱防线）防误删快照：planner prompt 必须携带
+/// （编写陷阱防线）防误删快照：planner prompt 必须携带
 /// ` # ` 注释语法与反例——删掉这段 planner 会继续把描述文本写进 re:
 /// pattern（核验几乎必然失败 → 无谓重派，与 anchor 解析器的显式注释
 /// 切分同步演化）。
@@ -336,7 +336,7 @@ fn system_prompt_declares_anchor_comment_syntax() {
     }
 }
 
-/// 编排者数量优先级防缩编快照（2026-10-09 web-FPS 拆解三连跑偏固化）：
+/// 编排者数量优先级防缩编快照（web-FPS 拆解三连跑偏固化）：
 /// planner 默认数量档（3-7 为佳/宁少勿滥）不得压过父任务显式数量指定——
 /// 真机实证：glm-5.3-flash 对硬性「恰好 8-10 单」的父单三次按默认档缩编
 /// （subs=4/1/5），模型把系统默认当硬约束、冲突时取保守端。删掉优先级
@@ -355,7 +355,7 @@ fn system_prompt_declares_parent_count_precedence() {
     }
 }
 
-/// 压测③/⑦（2026-09-30 三设备）防误删快照：需求保真对照拆解（漏项/外卡
+/// 压测③/⑦（三设备）防误删快照：需求保真对照拆解（漏项/外卡
 /// 双向闸）+ 拆解自检段（输出前逐项核对，锚点下放第 3 次强化）——删段则
 /// 保真度回归无提示词闸（场景 A 漏 2 章/场景 B 7 张外卡的教训固化）。
 #[test]
@@ -374,7 +374,7 @@ fn system_prompt_declares_requirement_fidelity_and_self_check() {
     }
 }
 
-/// 职能框架（M1）同步钉：完整形态 `planner_system_prompt()`（基础契约 +
+/// 职能框架同步钉：完整形态 `planner_system_prompt()`（基础契约 +
 /// 拆解方法论段）必须 (a) 在 schema 里声明 `required_profession` 字段，
 /// (b) 值域清单逐 slug 覆盖 nemesis-prompts 内置目录 CATALOG——prompt 是
 /// 字面文本（const 不能插值），目录增删时本测试红出来强制同步。
@@ -418,7 +418,7 @@ fn planner_prompt_under_soft_budget() {
     );
 }
 
-/// R-10（goal P4）：集群画像注入——有画像时渲染专用段+约束语，无则不渲染。
+/// R-10（goal）：集群画像注入——有画像时渲染专用段+约束语，无则不渲染。
 #[test]
 fn planner_user_prompt_renders_cluster_profile() {
     let profile = "- Alex [role=worker tags=python]\n- Bob [role=worker tags=node]";
@@ -444,7 +444,7 @@ fn test_parse_touch_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// E6 共享文件分析（看板项目档案 goal）：并行写同路径 → 回灌重试
+// 共享文件分析（看板项目档案 goal）：并行写同路径 → 回灌重试
 // ---------------------------------------------------------------------------
 
 /// 两个子任务 [TOUCH] 同一路径且无依赖边 → 校验失败，回灌文本点名双方与路径。
@@ -549,7 +549,7 @@ fn system_prompt_declares_shared_file_discipline() {
 }
 
 // -----------------------------------------------------------------------
-// required_profession（集群专业职能框架 M2，D9 三臂）
+// required_profession（集群专业职能框架， 三臂）
 // -----------------------------------------------------------------------
 
 use crate::planner::{parse_plan, parse_plan_lenient};
@@ -571,7 +571,7 @@ fn profession_format_invalid_rejected_in_strict_parse() {
 }
 
 /// 臂 1 补充：合法 slug（含目录外合法形态）→ 保留派发（匹配端诚实找
-/// 不到；D9 明文不拦用户自定义职能）。
+/// 不到； 明文不拦用户自定义职能）。
 #[test]
 fn profession_legal_but_unknown_slug_preserved() {
     let plan = parse_plan(r#"[{"title":"子甲","required_profession":"dev:cuda"}]"#).unwrap();
@@ -633,7 +633,7 @@ fn lenient_is_superset_of_strict() {
 }
 
 // -----------------------------------------------------------------------
-// required_capabilities（NB-122 批 2026-10-16，环境能力硬闸）
+// required_capabilities（16，环境能力硬闸）
 // -----------------------------------------------------------------------
 
 /// 严格臂：能力词形态非法（含空格/空串/超 64 字符）→ PlanParseError 回灌。
@@ -714,7 +714,7 @@ fn planner_prompt_declares_required_capabilities_contract() {
 }
 
 // -----------------------------------------------------------------------
-// required_backend（P6-R1，2026-10-21，运行时后端硬闸）
+// required_backend（运行时后端硬闸）
 // -----------------------------------------------------------------------
 
 /// 严格臂：值域外（docker/podman/空格形态等）→ PlanParseError 回灌（模型
@@ -778,10 +778,10 @@ fn planner_prompt_declares_required_backend_contract() {
 }
 
 // ---------------------------------------------------------------------------
-// C1/D2（profession-capability-evolution 2026-10-14）：方法论段落内容钉
+// /（profession-capability-evolution）：方法论段落内容钉
 // ---------------------------------------------------------------------------
 
-/// C1：dev 子单禁令→锚点翻译规则必须出现在完整 planner prompt（方法论段）。
+/// dev 子单禁令→锚点翻译规则必须出现在完整 planner prompt（方法论段）。
 /// 同一禁令在开发前置必读、拆解锚点、评审分镜三处同源生效——拆解侧缺文
 /// 本条规则，翻译链就断在第一环。
 #[test]
@@ -804,13 +804,13 @@ fn system_prompt_declares_dev_ban_anchor_translation() {
     );
 }
 
-/// D2：多变体规则（分歧轴三分 + 分歧声明 + 定稿单裁决工件）必须出现在
+/// 多变体规则（分歧轴三分 + 分歧声明 + 定稿单裁决工件）必须出现在
 /// 完整 planner prompt——变体拆解形态是方法论段的编排规则，不在基础
 /// 契约里（基础契约只管 JSON schema）。
 #[test]
 fn system_prompt_declares_variant_and_finalize_rules() {
     let p = super::super::planner_system_prompt();
-    // 三条分歧轴（D7：定向不采样——少任何一条，变体退化为随机文档）。
+    // 三条分歧轴（定向不采样——少任何一条，变体退化为随机文档）。
     for axis in ["最保守解读", "字面最大化解读", "重新框定"] {
         assert!(p.contains(axis), "变体分歧轴缺「{axis}」");
     }

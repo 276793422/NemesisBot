@@ -1,4 +1,4 @@
-//! S9 覆盖率批次（Batch C：loop_tools.rs 工具面剩余未覆盖行）。
+//! 覆盖率批次（Batch C：loop_tools.rs 工具面剩余未覆盖行）。
 //! - 852-886 RunScriptTool：description/parameters/execute（真跑 cmd /C）。
 //! - 2503-2516 SpawnTool：元数据 + set_context + 无 spawn_fn 报错。
 //! - 3153-3312 SkillManageTool：审批未运行拒写 / 危险内容拦截 /
@@ -53,7 +53,7 @@ async fn run_script_tool_executes_cmd_echo() {
 async fn run_script_tool_restrict_blocks_outside_cwd() {
     let ws = tempfile::tempdir().unwrap();
     let t = super::RunScriptTool::new(ws.path().to_str().unwrap(), true);
-    // 越界路径必须用当前平台的真实形态（2026-09-01 远端首跑暴露）：
+    // 越界路径必须用当前平台的真实形态（远端首跑暴露）：
     // `C:/Windows` 在 Linux 不是绝对路径——restrict 检查 join workspace 后
     // 落回 ws 内被放行是正确行为（相对 cwd 语义与 ExecTool 一致），脚本
     // 随后 ENOENT 而非 Access denied。Linux 用真实绝对路径 /etc。
@@ -276,7 +276,7 @@ async fn grep_tool_finds_pattern_in_temp_tree() {
     assert!(err.contains("invalid regex"), "got: {}", err);
 }
 
-/// path=单文件此前是假阴性黑洞（2026-10-15 产品验证实验 #1 回归锁）：
+/// path=单文件此前是假阴性黑洞（产品验证实验 #1 回归锁）：
 /// grep_recursive 对文件先 read_dir → Err 静默吞 → 裸「No matches」且
 /// ok=true（USAGCSV 轮实证：Cargo.toml 连查 5 次烧 6+ 轮）。修复后文件
 /// 路径直接扫；glob 不匹配/不存在/非 UTF-8 一律诚实，绝不裸 No matches。

@@ -370,7 +370,7 @@ fn test_shipped_workflow_templates_parse_and_validate() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261030-211 回归锁：composite（parallel/loop）内禁止 human_review 子节点
+// 回归锁：composite（parallel/loop）内禁止 human_review 子节点
 // ---------------------------------------------------------------------------
 
 fn make_node_with_config(

@@ -83,8 +83,8 @@ fn test_parse_response_simple() {
     assert!(resp.tool_calls.is_empty());
 }
 
-/// BUG-20261104-389 回归锁：畸形上游 cached > prompt_tokens 不得落负
-/// prompt_tokens（委托单一真相源 extract_usage 的 clamp 守卫）。修复前
+/// 回归锁：畸形上游 cached > prompt_tokens 不得落负
+/// prompt_tokens（委托统一定义 extract_usage 的 clamp 守卫）。修复前
 /// 本 lane 自带裸减法归一：10 - 30 = -20 记进账本。同形态正常值
 /// （cached ≤ prompt）逐字节不变——委托不改变合法输入的归一结果。
 #[test]
@@ -481,7 +481,7 @@ fn test_build_request_body_kimi_fixed_temperature() {
     };
     let provider = OpenAICompatProvider::new(config);
 
-    // Kimi K2 should force temperature=1.0
+    // Kimi should force temperature=1.0
     let body = provider.build_request_body(
         &[],
         &[],
@@ -569,7 +569,7 @@ fn test_default_model_and_name_accessors() {
     assert_eq!(provider.name(), "my-provider");
 }
 
-// H4 (U16 half): reasoning_effort wire field
+// (half): reasoning_effort wire field
 #[test]
 fn test_effort_openai_request_includes_field() {
     let provider = OpenAICompatProvider::new(OpenAICompatConfig::default());
@@ -602,7 +602,7 @@ fn test_effort_openai_request_includes_field() {
 use serde_json::json;
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：chat() HTTP 矩阵（wiremock）+ normalize 分支 + serde 默认
+// 补测：chat() HTTP 矩阵（wiremock）+ normalize 分支 + serde 默认
 // ===========================================================================
 
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -697,7 +697,7 @@ async fn test_w4c_oacc_chat_invalid_json_maps_format_error() {
 
 #[tokio::test]
 async fn test_w4c_oacc_chat_dead_port_maps_connect_error() {
-    // 诚实化（2026-10-13）后契约：死端口连接失败不再伪装 Timeout——落
+    // 诚实化后契约：死端口连接失败不再伪装 Timeout——落
     // Unknown + "connect error" 前缀（根因链保留在 message），且
     // is_retriable 仍为 true（瞬态故障，fallback 链照常轮转）。
     let provider = OpenAICompatProvider::new(oacc_config("http://127.0.0.1:1"));
@@ -777,9 +777,9 @@ fn test_w4c_oacc_normalize_model_with_base_variants() {
 }
 
 // ============================================================
-// 字节快照（goal T1/T2 纪律 6）：content 类型多态化
+// 字节快照（goal / 纪律 6）：content 类型多态化
 // （String → MessageContent）前后，纯文本请求体必须逐字节一致
-// ——这是 prompt cache 前缀契约（真相源 §1.5.2）。本测试先于
+// ——这是 prompt cache 前缀契约（真相源）。本测试先于
 // 类型改动写好并锁死当前字节；类型改动后必须原样保持绿。
 // 注：请求体经 serde_json::Value（无 preserve_order → BTreeMap），
 // 键序为字母序——快照锁定的是"当前真实字节"而非声明序。
@@ -854,7 +854,7 @@ fn test_request_body_bytesnapshot_pure_text() {
 }
 
 // ============================================================
-// T2：OpenAI vision 数组适配（goal T2）
+// OpenAI vision 数组适配（goal）
 // ============================================================
 
 #[test]
@@ -922,7 +922,7 @@ fn test_request_body_image_parts_openai_format() {
 
 #[test]
 fn test_request_body_same_image_two_rounds_byte_identical() {
-    // prompt cache 契约（真相源 §1.5.2 前提①②）：同一图片多轮序列化字节一致
+    // prompt cache 契约（真相源 前提①②）：同一图片多轮序列化字节一致
     let config = OpenAICompatConfig {
         name: "test".to_string(),
         base_url: "https://api.openai.com/v1".to_string(),
@@ -941,7 +941,7 @@ fn test_request_body_same_image_two_rounds_byte_identical() {
         detail: None,
     };
 
-    // 第一轮：[user(+img)]
+    // [user(+img)]
     let round1 = vec![Message {
         role: "user".to_string(),
         content: MessageContent::Parts(vec![
@@ -957,7 +957,7 @@ fn test_request_body_same_image_two_rounds_byte_identical() {
         extra: HashMap::new(),
     }];
 
-    // 第二轮：[user(+img), assistant, user] —— 历史前缀含同一张图
+    // [user(+img), assistant, user] —— 历史前缀含同一张图
     let mut round2 = round1.clone();
     round2.push(Message::text("assistant", "图里是猫"));
     round2.push(Message::text("user", "它是什么品种？"));
@@ -970,7 +970,7 @@ fn test_request_body_same_image_two_rounds_byte_identical() {
     // 同一构建器对同一输入字节稳定
     let body1_again = provider.build_request_body(&round1, &[], "gpt-4", &ChatOptions::default());
     assert_eq!(s1, serde_json::to_string(&body1_again).unwrap());
-    // 第二轮的 messages 前缀与第一轮逐字节一致（追加式历史不重写前缀）
+    // 的 messages 前缀与逐字节一致（追加式历史不重写前缀）
     let prefix2 = serde_json::to_string(&body2_full["messages"][0]).unwrap();
     let msg1 = serde_json::to_string(&body1["messages"][0]).unwrap();
     assert_eq!(msg1, prefix2);

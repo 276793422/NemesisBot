@@ -449,7 +449,7 @@ fn test_is_virtual_interface_physical() {
 }
 
 // -----------------------------------------------------------------------
-// P3（2026-09-11 真机日志）：Hyper-V/WSL 虚拟交换机地址过滤
+// （真机日志）：Hyper-V/WSL 虚拟交换机地址过滤
 // -----------------------------------------------------------------------
 
 /// Windows 内部虚拟交换机名（vethernet + WSL/Default Switch/VMware/VirtualBox）
@@ -547,7 +547,7 @@ fn test_get_interface_priority_unknown() {
     assert_eq!(get_interface_priority("random"), 99);
 }
 
-// 发现①/A4（2026-09-15 真机实证）：Windows 友好名此前全落 99 → 排序退化
+// 发现①/（真机实证）：Windows 友好名此前全落 99 → 排序退化
 // 为枚举原序 → primary=addresses[0] 选不可达网段（143 次探针风暴根因）。
 #[test]
 fn test_get_interface_priority_windows_friendly_names() {
@@ -657,17 +657,17 @@ fn test_get_all_local_ips_filtered_same() {
 }
 
 // ============================================================
-// S4 coverage: mixed address-family arm in is_same_subnet (194),
+// coverage: mixed address-family arm in is_same_subnet (194),
 // busy-port continue (385), and port exhaustion errors (388-391,
 // 408-411).
 // ============================================================
 
-/// An IPv6 vs IPv4 pair can never match a V4 mask: the mixed-family
+/// An IPv6 vs IPv4 pair can never match a mask: the mixed-family
 /// arm continues to the next interface (network.rs 184-195).
 #[test]
 fn test_s4_is_same_subnet_mixed_family_never_matches() {
     // Deterministic result (false) regardless of the host's interfaces:
-    // no V4 mask can pair with a V6 address, and the simple /24 fallback
+    // no mask can pair with a address, and the simple /24 fallback
     // also rejects the pair.
     assert!(!is_same_subnet("::1", "127.0.0.1"));
     assert!(!is_same_subnet("127.0.0.1", "::1"));
@@ -694,7 +694,7 @@ fn test_s4_find_available_port_skips_busy_port() {
 /// Holding all 100 scanned ports makes the TCP finder fail with the
 /// exhaustion error (network.rs 388-391).
 ///
-/// 确定性窗口（BUG #51，2026-08-28）：原版用 `:0` 探测起点——Windows 的
+/// 确定性窗口：原版用 `:0` 探测起点——Windows 的
 /// ephemeral 发号区（49152-65535）恰是同二进制里其它并行测试 `:0` 绑定的
 /// 落点：holder 循环跳过的瞬时占用口可能在 finder 运行前被释放 →
 /// Ok(被跳过的口)（r15 workspace 实发 Ok(start+100)；r11 全绿纯靠调度运气）。
@@ -740,7 +740,7 @@ fn hold_full_tcp_window(base: u16, cap: u16) -> (Vec<std::net::TcpListener>, u16
 }
 
 /// Same exhaustion check for the UDP finder (network.rs 408-411).
-/// 确定性窗口同 TCP 版（BUG #51，`：0` 起点在 ephemeral 区有并行 `:0` 竞态；
+/// 确定性窗口同 TCP 版（`：0` 起点在 ephemeral 区有并行 `:0` 竞态；
 /// 区间与 TCP 版错开）。
 #[test]
 fn test_s4_find_available_udp_port_all_busy_errors() {
@@ -781,7 +781,7 @@ fn hold_full_udp_window(base: u16, cap: u16) -> (Vec<std::net::UdpSocket>, u16) 
 }
 
 // ---------------------------------------------------------------------------
-// R1: collect_adapter_link_local（if_addrs Windows APIPA 缺口补齐的纯函数核）
+// collect_adapter_link_local（if_addrs Windows APIPA 缺口补齐的纯函数核）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -835,7 +835,7 @@ fn test_collect_adapter_link_local_dedups() {
     );
 }
 
-/// R1 接口形态：前缀长 → 掩码推导（含钳位）。
+/// 接口形态：前缀长 → 掩码推导（含钳位）。
 #[test]
 fn test_prefix_len_to_v4_mask() {
     assert_eq!(crate::network::prefix_len_to_v4_mask(0), "0.0.0.0");
@@ -851,7 +851,7 @@ fn test_prefix_len_to_v4_mask() {
     );
 }
 
-/// R1 接口形态：link-local (ip, 前缀长) → NetworkInterface（掩码/网络号
+/// 接口形态：link-local (ip, 前缀长) → NetworkInterface（掩码/网络号
 /// 推导 + 虚拟接口跳过 + 非 link-local 跳过 + ip 去重）。Windows 形态
 /// 函数，非 Windows 编译期不存在。
 #[cfg(windows)]

@@ -79,7 +79,7 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// Agent 内部事件（M1a，devtool-upgrade）：工具生命周期事件的跨 crate 传输形态。
+/// Agent 内部事件（devtool-upgrade）：工具生命周期事件的跨 crate 传输形态。
 ///
 /// 由 `nemesis-agent` 的 ToolEventHook 在工具调度前后发布（tokio broadcast），
 /// `nemesis-web` 订阅后路由到 Dashboard WS push + EventHub（SSE 备用）。
@@ -108,7 +108,7 @@ pub enum AgentEvent {
         /// 工具结果预览（≤1KB）。
         result_preview: String,
     },
-    /// Todo 更新事件（M1a 预留 → H1 落地：todowrite 写入成功后发布，
+    /// Todo 更新事件（预留 → 落地：todowrite 写入成功后发布，
     /// 载荷是全量清单——前端收到即可渲染，无需二次拉取）。
     TodoUpdated {
         session_key: String,
@@ -116,7 +116,7 @@ pub enum AgentEvent {
         /// 全量替换后的 todo 清单。
         todos: Vec<TodoItem>,
     },
-    /// plan/build 模式切换事件（F1，devtool-upgrade 阶段 4）。`mode` 取
+    /// plan/build 模式切换事件（devtool-upgrade）。`mode` 取
     /// `AgentMode::as_str`（`"plan"` / `"build"`）。切换入口（/plan /build
     /// slash、WSAPI `chat.set_mode`）在翻转后发布；前端据此刷新徽标。
     ModeChanged {
@@ -124,7 +124,7 @@ pub enum AgentEvent {
         chat_id: String,
         mode: String,
     },
-    /// 中间轮正文（R1，2026-09-21）：LLM 循环里带工具调用的中间轮，其正文
+    /// 中间轮正文：LLM 循环里带工具调用的中间轮，其正文
     /// （模型的过程叙述，如「先查看配置文件再修改」）此前只进 history——
     /// web 前端只见工具卡与最终回复，过程叙述完全不可见。发布后经 web pump
     /// 默认路径走 tool_event 通道（注入 session_id + record_tool 入环），
@@ -140,7 +140,7 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         reasoning: String,
     },
-    /// 审批请求事件（M7，devtool-upgrade 阶段 5）。安全 auditor 命中
+    /// 审批请求事件（devtool-upgrade）。安全 auditor 命中
     /// require_approval 时由 WebApprovalManager 发布；web pump 转 SSE
     /// `approval-requested` 全局广播，前端 ApprovalCard 渲染审批卡。
     /// `request_id` 是 auditor 生成的请求 ID（WSAPI `approval.respond`
@@ -159,14 +159,14 @@ pub enum AgentEvent {
         reason: String,
         /// auditor 侧等待窗口（秒）——前端倒计时与之对齐，超时自动 deny。
         timeout_secs: u64,
-        /// F3:「总是允许」将写入的规则 pattern（exec 类=B5 归约前缀，
+        /// 「总是允许」将写入的规则 pattern（exec 类= 归约前缀，
         /// 其余=完整 target；前端按钮回显确认串）。空串=不适用（如空
         /// target / run_script 无 target 提取）。
         pattern: String,
-        /// 行动代理 P0（2026-10-14）授权卡自解释三字段（感知层 §5）：
+        /// 行动代理 授权卡自解释三字段（感知层）：
         /// why=为什么要人工确认（force/connector 声明原文）；impact=影响
         /// 面（操作会碰什么）；reject_note=拒绝后果。展示层程序化派生
-        /// （web_approval::approval_card_fields 单一真相源），serde default
+        /// （web_approval::approval_card_fields 统一定义），serde default
         /// 兼容旧事件流。
         #[serde(default)]
         why: Option<String>,
@@ -174,8 +174,8 @@ pub enum AgentEvent {
         impact: Option<String>,
         #[serde(default)]
         reject_note: Option<String>,
-        /// L07（2026-11-01）审批卡 diff 预览：将要发生的变化（unified diff
-        /// 或命令现场文本），挂起点生成（args 只在那里可见）。None = 不适用
+        /// 审批卡 diff 预览：将要发生的变化（unified diff
+        /// 或命令现场文本），挂起点生成（args 只在那里可）。None = 不适用
         /// （args 缺失/非白名单形态/读盘失败且无新内容）——卡片无预览区，
         /// 旧事件流零破坏。
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,7 +184,7 @@ pub enum AgentEvent {
         /// 等宽纯文本。随 preview 缺省。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preview_format: Option<String>,
-        /// 并行批审批聚合（BUG-A 第三层，2026-11-05）：同一并行工具批内
+        /// 并行批审批聚合（第三层）：同一并行工具批内
         /// N 个 ask 共享的批号（`batch-{uuid}`，`tool_defs` 批调度生成）。
         /// Some = 前端按批聚卡（一张卡列 N 项 + 全部允许/全部拒绝，
         /// WSAPI `approval.respond_batch` 一次裁决全批）；None = 串行路径
@@ -193,7 +193,7 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         batch_id: Option<String>,
     },
-    /// 审批已裁决事件（F6，devtool-upgrade 阶段 5）。任一前端 respond 成功
+    /// 审批已裁决事件（devtool-upgrade）。任一前端 respond 成功
     /// 或服务端超时自动 deny 后由 WebApprovalManager 发布；web pump 转 SSE
     /// `approval-resolved` 全局广播——所有窗口（桌面 WebView + 外部浏览器）
     /// 据此摘除本地审批卡，竞速败方不再挂到倒计时结束。
@@ -204,10 +204,10 @@ pub enum AgentEvent {
         /// `timeout`（服务端超时自动拒绝）。
         decision: String,
     },
-    /// 结构化提问事件（F7，devtool-upgrade 阶段 5）。agent 的 `question`
+    /// 结构化提问事件（devtool-upgrade）。agent 的 `question`
     /// 工具发起提问时由 WebQuestionBroker 发布；web pump 转 SSE
     /// `question-asked` 全局广播，前端 QuestionCard 渲染选项卡（单选
-    /// radio / 多选 checkbox / 单选超 6 项下拉收纳）或表单（B8：`fields`
+    /// radio / 多选 checkbox / 单选超 6 项下拉收纳）或表单（`fields`
     /// 非空 = 表单形态，多字段一次收集）。`question_id` 由工具侧生成
     /// （进程内自增），WSAPI `question.respond` 用它路由回等待中的
     /// `ask` 调用。
@@ -221,14 +221,14 @@ pub enum AgentEvent {
         options: Vec<String>,
         /// `true` = 用户可多选（checkbox）；`false` = 单选（radio/下拉）。
         multi: bool,
-        /// 表单字段（B8）；空 = 选项形态。前端按字段渲染
+        /// 表单字段；空 = 选项形态。前端按字段渲染
         /// text 输入框 / select 下拉，作答经 `respond` 的 `values` 送回。
         fields: Vec<QuestionField>,
         /// 等待窗口（秒）——前端倒计时与之对齐，超时工具侧收到
         /// Timeout 结局并按最佳判断继续。
         timeout_secs: u64,
     },
-    /// 提问已了结事件（F7，devtool-upgrade 阶段 5）。任一前端 respond
+    /// 提问已了结事件（devtool-upgrade）。任一前端 respond
     /// 成功或等待超时后由 WebQuestionBroker 发布；web pump 转 SSE
     /// `question-resolved` 全局广播——所有窗口据此摘除本地提问卡
     /// （与 approval-resolved 同语义）。
@@ -238,7 +238,7 @@ pub enum AgentEvent {
         /// 了结方式：`answered`（有人作答）/ `timeout`（超时无人答）。
         decision: String,
     },
-    /// 会话物化事件（SB，2026-09-17）。某会话的 jsonl **首行落盘**后发布
+    /// 会话物化事件（SB）。某会话的 jsonl **首行落盘**后发布
     /// （正常轮 user 行 / 集群续行 / workflow_chat 三条物化路径）；web pump
     /// 转 SSE `session.created` + WS push，前端据此 force 刷新会话列表
     /// （修「隐式会话不进侧栏，须手动刷新」）。data.session_id 为裸 sid。
@@ -249,7 +249,7 @@ pub enum AgentEvent {
         /// 完整会话键（web 层判别命名空间用）。
         session_key: String,
     },
-    /// 客户端委派回执落会话事件（2026-11-04 委派 UX）。`client_spawn` 在
+    /// 客户端委派回执落会话事件（委派 UX）。`client_spawn` 在
     /// 委派回复（或失败注记）持久化进父会话 chat_log **之后**发布；web
     /// pump 转 WS push `subagent_reply` 定向父会话房间，前端据此
     /// resyncFromLog 把落盘行刷进视图——委派弹窗 fire-and-forget 化的
@@ -270,7 +270,7 @@ pub enum AgentEvent {
         /// 回复/失败摘录（≤500 字符，toast 展示用；全文在 chat_log）。
         summary: String,
     },
-    /// P30（WS14）Canvas widget 打开事件。agent 终答里检出**全部合法**的
+    /// Canvas widget 打开事件。agent 终答里检出**全部合法**的
     /// ```canvas fenced 块后逐块发布（同一回复多块时 `index` 递增）；web
     /// pump 转 SSE `canvas.open`（内层 data 展平 + session_id 注入），
     /// 前端 CanvasPanel 以 iframe `sandbox="allow-scripts"` + 严格 CSP 的
@@ -393,13 +393,13 @@ impl AgentEvent {
             | AgentEvent::ModeChanged { chat_id, .. }
             | AgentEvent::RoundText { chat_id, .. }
             | AgentEvent::ApprovalRequested { chat_id, .. }
-            // F7: 提问有会话上下文（工具从 RequestContext 取），随事件透传。
+            // 提问有会话上下文（工具从 RequestContext 取），随事件透传。
             | AgentEvent::QuestionAsked { chat_id, .. } => chat_id,
-            // P30：canvas 事件带发起会话的 chat_id。
-            // L10：provider 流事件同样绑定发起会话。
+            // canvas 事件带发起会话的 chat_id。
+            // provider 流事件同样绑定发起会话。
             AgentEvent::CanvasOpen { chat_id, .. }
             | AgentEvent::ProviderStream { chat_id, .. } => chat_id,
-            // N5：交付物登记绑定发起会话。
+            // 交付物登记绑定发起会话。
             AgentEvent::DeliverablesRegistered { chat_id, .. } => chat_id,
             // 审批不属单一会话（auditor 无 session 上下文，同 ApprovalRequested）。
             // 提问了结事件同理只带 id（全局广播）。

@@ -1,4 +1,4 @@
-//! Checkpoint data structures — milestone 1b-A1 step 1.
+//! Checkpoint data structures — milestone 1b step 1.
 //!
 //! These are the durable, serialisable forms of the engine's in-memory state.
 //! Designed to be stable across versions:
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Durable snapshot of a workflow execution at a single point in time.
 ///
-/// One checkpoint is written per node completion (1b-A1 step 6) so the engine
+/// One checkpoint is written per node completion (1b step 6) so the engine
 /// can resume from the most recent consistent state after a crash.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Checkpoint {
@@ -52,7 +52,7 @@ pub struct Checkpoint {
     /// Hash of the workflow definition at save time. Used to detect config
     /// drift between checkpoint and resume.
     ///
-    /// Format: see [`crate::types::Workflow::hash`] — currently a SHA-256 of
+    /// Format: see [`crate::types:Workflow::hash`] — currently a SHA-256 of
     /// the canonical JSON serialisation.
     pub workflow_hash: String,
 }
@@ -87,14 +87,14 @@ impl From<&Checkpoint> for CheckpointMeta {
     }
 }
 
-/// Serialisable form of [`crate::context::WorkflowContext`].
+/// Serialisable form of [`crate::context:WorkflowContext`].
 ///
 /// We use a separate struct instead of serialising `WorkflowContext` directly
 /// because `WorkflowContext` wraps its state in `RwLock`, which doesn't impl
 /// `Serialize`. (Spike 1 verification point 1.)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SerializableContext {
-    /// JSON-typed variables (since 1b-B3).
+    /// JSON-typed variables (since 1b-).
     #[serde(default)]
     pub variables: HashMap<String, serde_json::Value>,
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct SerializableContext {
     pub input: HashMap<String, serde_json::Value>,
 }
 
-/// Serialisable form of [`crate::types::NodeResult`].
+/// Serialisable form of [`crate::types:NodeResult`].
 ///
 /// `state` is a snake_case string (not the enum) so adding new
 /// `ExecutionState` variants doesn't break old snapshots — unknown strings
@@ -125,7 +125,7 @@ pub struct SerializableNodeResult {
 
 /// Convert a serialised state string back to the enum.
 ///
-/// Unknown strings become [`crate::types::ExecutionState::Pending`] (safe
+/// Unknown strings become [`crate::types:ExecutionState::Pending`] (safe
 /// default that lets the resume path inspect the loaded state).
 pub fn parse_state(s: &str) -> crate::types::ExecutionState {
     use crate::types::ExecutionState::*;

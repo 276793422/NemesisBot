@@ -2,7 +2,7 @@
 //! 场景」：本机分析 PE/ELF + 目标机分析 PE/ELF）。
 //!
 //! 与既有测试的分工：pe_dirs_tests 的真 PE 钉只咬 CFG 表解析器（解析器级）；
-//! M4/M5 live 是自编 dummy 契约进程（attach 机制级）。本文件补上缺失的
+//!  live 是自编 dummy 契约进程（attach 机制级）。本文件补上缺失的
 //! 「真实系统二进制 → 完整分析链 → 查询面」端到端场景：
 //!
 //! - 场景 1 `real_pe_file_domain_full_chain`（跨平台）：真实 PE 文件域全链——
@@ -10,7 +10,7 @@
 //!   三节选择）→ 六源种子 → 递归下降 → imports/xref/反查/CRCT 折叠。快照域
 //!   语义纯文件跨主机：同一 PE 字节在 Windows 本机与 Linux 目标机必须产出
 //!   同一摘要（`ZIWEI_REAL_PE_OUT` 落 JSON 对质）。
-//! - 场景 2 `real_elf_honest_dispatch`（跨平台）：真实 ELF 的 P1 诚实分派——
+//! - 场景 2 `real_elf_honest_dispatch`（跨平台）：真实 ELF 的 诚实分派——
 //!   BinHeaders::Elf 变体 + e_machine 归一（容器解析器未实装，分派先到且
 //!   上层 analyze 对该变体显式报错，不炸不静默）。
 //! - 场景 3 `real_pe_live_setup_chain`（Windows-only）：真实系统进程走
@@ -104,7 +104,7 @@ fn real_pe_file_domain_full_chain() {
         "entry 0x{:X} 应在函数集",
         info.entry_rva
     );
-    // 全部函数起点落在 .text 界内（递归下降不出界）
+    // 全部函数起点落在.text 界内（递归下降不出界）
     assert!(
         set.functions
             .iter()
@@ -171,7 +171,7 @@ fn real_pe_file_domain_full_chain() {
     }
 }
 
-// ── 场景 2：真实 ELF 诚实分派（P1 占位行为在真实 ELF 上实测）──
+// ── 场景 2：真实 ELF 诚实分派（占位行为在真实 ELF 上实测）──
 
 #[test]
 fn real_elf_honest_dispatch() {
@@ -180,17 +180,17 @@ fn real_elf_honest_dispatch() {
         return;
     };
     let file = std::fs::read(&path).expect("样本可读");
-    // 真实 ELF：魔数分派到 Elf 变体（P1 占位）——上层 analyze 对该变体
-    // 显式 Err「ELF 容器解析器未启用（P1 批次实装）」，不炸不静默；此处
+    // 真实 ELF：魔数分派到 Elf 变体（占位）——上层 analyze 对该变体
+    // 显式 Err「ELF 容器解析器未启用（批次实装）」，不炸不静默；此处
     // 钉的是分派层契约：真实 ELF 必然落到该诚实报错臂。
     let hdrs = BinHeaders::parse(&file).expect("真实 ELF 应分派成功");
     assert!(
         matches!(hdrs, BinHeaders::Elf),
         "真实 ELF 应分派 Elf 变体（诚实分派先到）"
     );
-    // e_machine 归一：P1 占位 Elf 变体不带字段——arch() 诚实 None（不伪造
+    // e_machine 归一： 占位 Elf 变体不带字段——arch() 诚实 None（不伪造
     // 机器类型；上层 analyze 在 arch 闸即报「machine 0x0000 无法归一」，
-    // ELF 专属报错臂随 P1 字段化实装启用）。真实 ELF 全链今天的行为 =
+    // ELF 专属报错臂随 字段化实装启用）。真实 ELF 全链今天的行为 =
     // 分派成功 + 上层诚实拒绝，不炸不静默。
     assert!(
         hdrs.arch().is_none(),
@@ -231,9 +231,9 @@ fn temp_ws() -> PathBuf {
     d
 }
 
-/// 真实系统进程走 select_target → snapshot → analyze → 查询全链。M4/M5
+/// 真实系统进程走 select_target → snapshot → analyze → 查询全链。/
 /// 证明 attach 机制用的是自编 dummy；本腿证明同一机制在真实二进制上成立：
-/// 缺省用系统 cmd.exe（CFG/ASLR/大 .text）；`ZIWEI_REAL_PE_LIVE` 可指自编
+/// 缺省用系统 cmd.exe（CFG/ASLR/大.text）；`ZIWEI_REAL_PE_LIVE` 可指自编
 /// 新编译样本（`--serve` 保活模式，见 ziwei_sample.rs）。
 #[cfg(windows)]
 #[tokio::test(flavor = "multi_thread")]

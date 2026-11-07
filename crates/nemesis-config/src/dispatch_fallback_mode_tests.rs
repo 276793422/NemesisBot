@@ -1,5 +1,5 @@
 //! `DispatchFallbackMode` 三档 serde 兼容测试（2026-09-29 三档化）：
-//! 旧布尔 false/true 保真（→Off/Full）、字符串档位（大小写不敏感/带空白）、
+//! 旧布尔 false/true 保真（Off/Full）、字符串档位（大小写不敏感/带空白）、
 //! 缺省 = Role、非法值 loud 拒绝、序列化恒小写字符串。
 
 use crate::{BoardFlagConfig, DispatchFallbackMode};

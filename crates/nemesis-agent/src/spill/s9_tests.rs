@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：spill.rs 剩余未覆盖行。
+//! 覆盖率批次：spill.rs 剩余未覆盖行。
 //! - 152-153/155/158：cleanup_expired 会话目录内过期文件 remove 失败
 //!   （Windows readonly 文件 DeleteFile 拒绝；ReFS/Dev Drive 可能不执行
 //!   → 探针先行，不执行则跳过断言）。

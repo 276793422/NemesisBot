@@ -1,6 +1,6 @@
-//! L8（devtool-upgrade 阶段 7）：WS PTY 内嵌终端（dashboard 终端 tab）。
+//! （devtool-upgrade）：WS PTY 内嵌终端（dashboard 终端 tab）。
 //!
-//! **人工通道，与 B4 后台注册表是两回事**：B4（background_registry）是
+//! **人工通道，与 后台注册表是两回事**：（background_registry）是
 //! agent 通道——agent 发起 `background_start`/`output`/`kill`，注册表管
 //! 生命周期；本模块是**人工通道**——dashboard 用户在浏览器里开交互终端
 //! （xterm.js ↔ ConPTY/Unix PTY），不经 agent loop、不进工具注册表、
@@ -16,7 +16,7 @@
 //!
 //! 诚实边界：交互 shell 无法逐命令审批（会话内 keystroke 不可能过安全
 //! 8 层）、`restrict_to_workspace` 约不住 `cd`。信任级 = 「dashboard 登录
-//! 用户」——远程可达性是 K3 `!cmd` 本地 CLI 没有的差异，靠 token 闸 +
+//! 用户」——远程可达性是 `!cmd` 本地 CLI 没有的差异，靠 token 闸 +
 //! 双闸 + 审计补偿。
 //!
 //! **协议**：独立 WS 端点 `/ws/pty?token=`（token 校验镜像主 WS）。
@@ -42,9 +42,7 @@ use crate::api_handlers::AppState;
 const INITIAL_COLS: u16 = 120;
 const INITIAL_ROWS: u16 = 30;
 
-// ---------------------------------------------------------------------------
 // 会话管理器（estop kill + 满员闸的挂点）
-// ---------------------------------------------------------------------------
 
 /// 一条会话的终止句柄（portable-pty `clone_killer()` 的产物，专为跨线程
 /// kill 设计——会话任务自己等子进程退出，管理器只管杀）。
@@ -56,7 +54,7 @@ struct PtySessionHandle {
 ///
 /// 挂在模块级 [`PTY_MANAGER`]（OnceLock，`ensure_manager` 幂等初始化）——
 /// 不进 `AppState`（字面量构造点遍布 69 个测试文件，加字段 = 全库爆破，
-/// 同 L1 commands_registry 先例）。
+/// 同 commands_registry 先例）。
 pub struct PtySessionManager {
     inner: Mutex<HashMap<u64, PtySessionHandle>>,
     next_id: AtomicU64,
@@ -126,7 +124,7 @@ fn manager() -> Option<&'static Arc<PtySessionManager>> {
     PTY_MANAGER.get()
 }
 
-/// 宿主侧急停杀链（BUG-20261031-234）：estop 触发时由 gateway 侧 watcher
+/// 宿主侧急停杀链：estop 触发时由 gateway 侧 watcher
 /// （post_agent.rs，与 vm-display 同款纪律）调用。会话任务的自醒（select
 /// 循环内 estop watch）在 `socket.send().await`（客户端 TCP 背压——网络
 /// 挂起/浏览器休眠是常态）期间不被轮询，stalled client 会话的自醒杀
@@ -138,9 +136,7 @@ pub fn kill_all_for_estop() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // 配置解析 + shell 选择
-// ---------------------------------------------------------------------------
 
 /// 运行闸 + 参数（每次升级连接时 fresh-read config.json，改盘即生效）。
 /// enabled=false（或 config 整个缺席）→ None = 端点 404。
@@ -162,7 +158,7 @@ fn read_terminal_config() -> Option<nemesis_config::TerminalConfig> {
 /// OnceLock first-wins 首装不可拆卸，装上后同 binary 里 models.rs
 /// `load_config` 的全局优先分支（`load_live()` 短路、忽略 home）会把依赖
 /// home 隔离的既有测试（handlers::tests 的 stress_* 家族）整体劫持到测试
-/// 夹具上（stress_100_* 三连红的根因，2026-09-07 根修）。
+/// 夹具上（stress_100_* 三连红的根因， 根修）。
 #[cfg(test)]
 static TEST_TERMINAL_CFG: OnceLock<Option<nemesis_config::TerminalConfig>> = OnceLock::new();
 
@@ -182,9 +178,7 @@ fn resolve_shell(override_shell: Option<&str>) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
 // WS 升级 + 会话泵
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 pub(crate) struct PtyQuery {
@@ -204,7 +198,7 @@ pub(crate) async fn handle_pty_upgrade(
         return (axum::http::StatusCode::NOT_FOUND, "terminal disabled").into_response();
     };
     // token 闸（镜像 websocket_handler 主 WS 语义：未配 token = 放行）。
-    // BUG-20261104-355：恒时比较（F6 纵深防御覆盖缺口，expected 非空下
+    // 恒时比较（纵深防御覆盖缺口，expected 非空下
     // verify_token 语义与 `==` 逐字节等价）。
     if !state.auth_token.is_empty() {
         let token = query.token.unwrap_or_default();
@@ -389,7 +383,7 @@ async fn handle_pty_socket(
                 .send(Message::Text(format!("pty reader failed: {e}").into()))
                 .await;
             // 失败臂不得泄漏子进程：child 已注册但 guard Drop 只摘牌不
-            // kill（BUG-20261029-161）——kill_all 够不到已摘牌句柄，shell
+            // kill——kill_all 够不到已摘牌句柄，shell
             // 会成为孤儿。与正常路径收尾同形：kill + 裸线程 reap。
             let _ = child.kill();
             std::thread::spawn(move || {
@@ -417,7 +411,7 @@ async fn handle_pty_socket(
     // 读泵：PTY master → channel（阻塞 Read 放独立线程）。有界通道（256
     // chunk × 8KB ≈ 2MB 上限）+ blocking_send 提供背压：WS 慢消费时读泵
     // 阻塞 → PTY pipe 满 → shell 输出被 OS 流控；unbounded 形态在 WS 慢/
-    // 挂起时把全部 shell 输出无限堆进宿主内存（BUG-20261029-162）。
+    // 挂起时把全部 shell 输出无限堆进宿主内存。
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -524,9 +518,9 @@ async fn handle_pty_socket(
 
     // 清理：摘牌（guard Drop）+ kill + reap。reap 用裸线程而非 tokio
     // blocking 池：Runtime drop 会等 in-flight blocking task——若 kill 在
-    // 某些平台上未真正终止 ConPTY 子进程（CI windows-2022 镜像实录，
+    // 某些平台上未真正终止 ConPTY 子进程（CI windows-2022 镜像，
     // 本机不复现），wait() 永不返回，测试进程随 runtime drop 一起挂死
-    // （2026-10-10 CI shard1 estop_engage_kills_session 100min+ SLOW 的
+    // （CI estop_engage_kills_session 100min+ SLOW 的
     // 根因；断言本身 10s 有界，挂的是进程退出）。裸线程不阻塞 runtime
     // drop，进程照常退出；wait 结果本就无人消费，纯 reap。
     let _ = child.kill();
@@ -539,7 +533,7 @@ async fn handle_pty_socket(
 #[cfg(all(test, feature = "terminal"))]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-25）：AuditWriter 三臂（workspace 往返 / 审计
+// AGT 覆盖率批次：AuditWriter 三臂（workspace 往返 / 审计
 // 目录创建失败 / 无 workspace）、连接时刻已处急停的 503 升级闸、会话内
 // control 帧（resize / ping→pong / 未知忽略 / WS Pong）与 shell 退出收尾。
 // 结构性豁免见 agt_tests 文件头注。

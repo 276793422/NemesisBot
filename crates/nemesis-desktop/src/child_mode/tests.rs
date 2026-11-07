@@ -400,7 +400,7 @@ fn test_run_window_approval() {
         "/ws".to_string(),
     );
     // Without plugin-ui.dll, expect "not found" error
-    // With plugin-ui.dll, expect Ok(()) or a runtime error from the DLL
+    // With plugin-ui.dll, expect Ok() or a runtime error from the DLL
     match result {
         Ok(()) => {}
         Err(e) => assert!(
@@ -451,7 +451,7 @@ fn test_run_window_dashboard() {
         "/ws".to_string(),
     );
     // Without plugin-ui.dll, expect "not found" error
-    // With plugin-ui.dll, expect Ok(()) or a runtime error from the DLL
+    // With plugin-ui.dll, expect Ok() or a runtime error from the DLL
     match result {
         Ok(()) => {}
         Err(e) => assert!(

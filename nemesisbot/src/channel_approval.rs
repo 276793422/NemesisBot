@@ -1,7 +1,7 @@
-//! K4 (b)（devtool-upgrade 阶段 7）：IM 通道审批卡管理器。
+//! (b)（devtool-upgrade）：IM 通道审批卡管理器。
 //!
-//! 实现 `nemesis_security::auditor::ApprovalManager`：auditor 命中
-//! `require_approval` 时按来源上下文（[`nemesis_security::auditor::ApprovalContext`]，
+//! 实现 `nemesis_security::auditor:ApprovalManager`：auditor 命中
+//! `require_approval` 时按来源上下文（[`nemesis_security::auditor:ApprovalContext`]，
 //! pipeline 从 `ToolInvocation.metadata` 提取——loop 构造 invocation 时填入）
 //! 把审批卡以**普通文本消息**发回发起操作的 IM 对话（telegram/feishu/discord/
 //! ... 全通道通用；TG inline keyboard / 飞书互动卡片等 per-channel 富形态是
@@ -43,7 +43,7 @@ struct ChannelPendingEntry {
     chat_id: String,
     /// 发起人（v1 仅记录，群聊任一成员可批复）。
     sender_id: String,
-    /// P1 审批台账用：全量 request_id（表键 `id` 是短编号/冲突加长编号，
+    /// 审批台账用：全量 request_id（表键 `id` 是短编号/冲突加长编号，
     /// 台账按全量 id 记账、short_id 存表键供 IM 回执重启补裁反查）。
     request_id: String,
     created_at: std::time::Instant,
@@ -54,7 +54,7 @@ struct ChannelPendingEntry {
 pub struct ChannelApprovalManager {
     bus: std::sync::Arc<MessageBus>,
     pending: Mutex<HashMap<String, ChannelPendingEntry>>,
-    /// P1 审批台账（tasks.db approvals 表）。OnceLock 晚绑（web 管理器同
+    /// 审批台账（tasks.db approvals 表）。OnceLock 晚绑（web 管理器同
     /// 款时序）；未注入 = 台账关闭（审批照常，仅丢重启补裁能力）。
     journal:
         std::sync::OnceLock<std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>>,
@@ -69,7 +69,7 @@ impl ChannelApprovalManager {
         }
     }
 
-    /// P1：注入审批台账（幂等失败 = 重复注入，静默忽略，首个胜出）。
+    /// 注入审批台账（幂等失败 = 重复注入，静默忽略，首个胜出）。
     pub fn set_journal(
         &self,
         journal: std::sync::Arc<dyn nemesis_types::approval_journal::ApprovalJournal>,
@@ -83,7 +83,7 @@ impl ChannelApprovalManager {
         self.journal.get()
     }
 
-    /// P1：pending 记账（尽力而为，失败 loud error 不阻断审批主链路）。
+    /// pending 记账（尽力而为，失败 loud error 不阻断审批主链路）。
     fn journal_record_pending(
         &self,
         request_id: &str,
@@ -124,7 +124,7 @@ impl ChannelApprovalManager {
         }
     }
 
-    /// P1：裁决记账。返回「本调用是否赢得裁决状态转移」（R3，2026-10-18
+    /// 裁决记账。返回「本调用是否赢得裁决状态转移」（
     /// 三方复评：决策侧先记账后通知，按此值拦截败方重复送裁决/发通知）。
     /// 无 journal / 台账 Err = true（审批可用性不绑 tasks.db，裁决照常进行，
     /// 审计缺失 loud 留痕）；`Ok(won)` 如实回传。
@@ -151,7 +151,7 @@ impl ChannelApprovalManager {
     /// 订阅 bus inbound（`spawn_watcher` / 竞态回归测试用）。**订阅必须先于
     /// watcher 首次 poll**：`tokio::spawn` 只入队，若订阅发生在任务内，窗口
     /// 期发布的回执对尚不存在的订阅者直接丢弃（broadcast 语义，bus 侧打
-    /// `no inbound receivers` warn）→ ask 等方等满超时被误拒（2026-09-08
+    /// `no inbound receivers` warn）→ ask 等方等满超时被误拒（
     /// 全量实证：channel_card_roundtrip_approve 120s 超时误拒，三次复发根因
     /// 均为此竞态而非负载慢——加宽超时窗口无解）。
     pub fn subscribe_inbound(
@@ -173,7 +173,7 @@ impl ChannelApprovalManager {
             let msg = match rx.recv().await {
                 Ok(msg) => msg,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    // P2-1：接收侧真实丢失计入 bus 指标。丢的可能是审批
+                    // 接收侧真实丢失计入 bus 指标。丢的可能是审批
                     // /deny 回执——watcher 侧只能继续（审批最终由超时
                     // 自动拒绝兜底），但丢失必须可观测。
                     self.bus.record_inbound_lagged(n);
@@ -206,7 +206,7 @@ impl ChannelApprovalManager {
                             msg.sender_id,
                             entry.sender_id
                         );
-                        // R3（2026-10-18 三方复评）：**裁决状态转移以台账条件
+                        // （三方复评）：**裁决状态转移以台账条件
                         // 更新为准——先记账、后送裁决**（Web 管理器同序）。
                         // won=false = 超时分支已抢先记账并通知，此处不再送
                         // 裁决/回执（先到者的通知已摘牌）。记账先行的副作用：
@@ -266,7 +266,7 @@ impl ChannelApprovalManager {
         }
     }
 
-    /// P1 重启补裁（watcher 的 map-miss 兜底）：内存无此编号 → 台账查
+    /// 重启补裁（watcher 的 map-miss 兜底）：内存无此编号 → 台账查
     /// pending。命中且 channel/chat_id 与回执来源一致 → 台账裁决落账
     /// （幂等条件更新先到先得），并诚实告知「原操作已随重启失效，仅记账」；
     /// 不一致维持「不属于本对话」；未命中/已裁决维持原「未找到或已处理」。
@@ -350,8 +350,8 @@ impl ChannelApprovalManager {
         )
     }
 
-    /// estop 联动入口（Batch 2 ③ 残余面收口，2026-11-04）：系统急停时关闭
-    /// 全部在飞 IM 审批卡——web 侧卡片已有 L07 watcher（runtime.rs
+    /// estop 联动入口（残余面收口）：系统急停时关闭
+    /// 全部在飞 IM 审批卡——web 侧卡片已有 watcher（runtime.rs
     /// `resolve_orphans`），本方法是 channel 侧的对称面。语义对齐 web
     /// `resolve_orphans_matching`：先摘后清（drain 语义，与回执 watcher 互斥）
     /// → 台账记 Orphaned（Ok(false) = 回执抢先裁决，跳过 send 不假通知）→
@@ -458,7 +458,7 @@ impl ApprovalManager for ChannelApprovalManager {
         // 编号 + 摘牌：单锁作用域内定编号并挂表。**先挂表、后发卡**——若
         // 先发卡，极快回执会在 watcher 查表时 entry 尚未入表，落「未找到」
         // 分支吞掉裁决，ask 只能等满超时被误拒（测试实证：channel_card_
-        // roundtrip_approve 在全量并行负载下 30s 超时误拒，2026-09-07）。
+        // roundtrip_approve 在全量并行负载下 30s 超时误拒）。
         // entry 就位后再发卡，卡片到达时刻起任何回执都可被正确裁决。
         let mut id_len = 8usize.min(request_id.len()).max(1);
         let (id, rx) = {
@@ -488,7 +488,7 @@ impl ApprovalManager for ChannelApprovalManager {
             (id, rx)
         };
 
-        // P1：审批台账记账（entry 已入表；尽力而为失败 loud error 不阻断）。
+        // 审批台账记账（entry 已入表；尽力而为失败 loud error 不阻断）。
         self.journal_record_pending(
             request_id,
             &id,
@@ -545,7 +545,7 @@ impl ApprovalManager for ChannelApprovalManager {
                     operation,
                     timeout_secs
                 );
-                // R3（2026-10-18 三方复评）：**先记台账**（幂等条件更新），
+                // （三方复评）：**先记台账**（幂等条件更新），
                 // 再按记账结果决定后续——Ok(false) = 回执抢先完成裁决（watcher
                 // 已记账并通知），不能顺着超时路径发假超时通知。
                 let expired_record = self.journal().map(|j| {
@@ -597,8 +597,8 @@ impl ApprovalManager for ChannelApprovalManager {
     }
 }
 
-/// 回执语法解析（单一真相源 = `nemesis_web::remote_approval::parse_approval_reply`
-/// ——M5 起看板评论回源共用同一格式；此处只做 verb 形态适配）。返回 (verb, id)。
+/// 回执语法解析（统一定义 = `nemesis_web::remote_approval:parse_approval_reply`
+/// —— 起看板评论回源共用同一格式；此处只做 verb 形态适配）。返回 (verb, id)。
 fn parse_reply(content: &str) -> Option<(&'static str, &str)> {
     #[cfg(feature = "cluster")]
     {
@@ -620,7 +620,7 @@ fn parse_reply(content: &str) -> Option<(&'static str, &str)> {
     }
 }
 
-/// M5-3（2026-10-10 机制加固）：cluster 通道 ask 的看板可见化通知载荷。
+/// （机制加固）：cluster 通道 ask 的看板可见化通知载荷。
 /// 触发点 = [`CompositeApprovalManager::request_approval_sync_ctx`] 命中
 /// `channel == "cluster"` 的 ask（worker 执行看板任务时的 ABAC 审批）。
 #[derive(Debug, Clone)]
@@ -640,21 +640,21 @@ pub struct BoardAskNotice {
 
 /// 组合审批管理器：按来源上下文分流——web/无上下文 → 默认管理器（现状：
 /// Dashboard 卡片），IM 通道 → [`ChannelApprovalManager`]；cluster 通道 →
-/// 默认管理器 + [`BoardAskNotice`] 通知（M5-3：审批卡落本节点 Dashboard
+/// 默认管理器 + [`BoardAskNotice`] 通知（审批卡落本节点 Dashboard
 /// SSE 可见 + 看板注记，不再无声等超时）。
 ///
-/// 出站投递面判定（2026-11-02 publish 审批卡不可见根修）：flow publish 的
-/// connector invoke 用 `RequestContext::new("flow-engine", ...)`——合成通道
+/// 出站投递面判定（publish 审批卡不可见根修）：flow publish 的
+/// connector invoke 用 `RequestContext::new("flow-engine",...)`——合成通道
 /// 名不在 ChannelManager 的 allowed-channels 白名单里，卡片 `bus.publish_
-/// outbound("flow-engine", ...)` 无投递面 = 静默丢弃，ask 无声等满超时被拒
-/// （journal 实证三卡 broker='channel'，与 M5-3 的 cluster 通道同族问题）。
+/// outbound("flow-engine",...)` 无投递面 = 静默丢弃，ask 无声等满超时被拒
+/// （journal 实证三卡 broker='channel'，与 的 cluster 通道同族问题）。
 /// 装配点注入出站白名单后：**不在册的通道名一律落默认管理器**（Dashboard
 /// 卡，approval.pending/respond 可达），安全语义不旁路；未注入 = 维持旧
 /// 白名单语义（测试形态兼容）。
 pub struct CompositeApprovalManager {
     default: std::sync::Arc<dyn ApprovalManager>,
     channel: std::sync::Arc<ChannelApprovalManager>,
-    /// M5-3：cluster ask 观察者（gateway 装配时安装；None = 只改路由不通知）。
+    /// cluster ask 观察者（gateway 装配时安装；None = 只改路由不通知）。
     board_notifier: std::sync::Mutex<Option<std::sync::Arc<dyn Fn(&BoardAskNotice) + Send + Sync>>>,
     /// 出站投递面名单（ChannelManager allowed-channels 白名单投影；
     /// None = 未注入 = 旧语义）。
@@ -699,7 +699,7 @@ impl CompositeApprovalManager {
         }
     }
 
-    /// M5-3：安装 cluster ask 观察者（gateway 装配调用一次；重复安装覆盖
+    /// 安装 cluster ask 观察者（gateway 装配调用一次；重复安装覆盖
     /// ——同刻只有一个 gateway 装配流程，覆盖无实害）。
     #[cfg_attr(not(feature = "cluster"), allow(dead_code))]
     pub fn set_board_notifier(
@@ -712,7 +712,7 @@ impl CompositeApprovalManager {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(notifier);
     }
 
-    /// M5-3：fire 观察者（通知失败不阻塞审批等待——可见化是旁路不是主路径）。
+    /// fire 观察者（通知失败不阻塞审批等待——可见化是旁路不是主路径）。
     fn notify_board(&self, notice: &BoardAskNotice) {
         if let Ok(guard) = self.board_notifier.lock()
             && let Some(f) = guard.as_ref()
@@ -757,7 +757,7 @@ impl ApprovalManager for CompositeApprovalManager {
         timeout_secs: u64,
         ctx: &ApprovalContext,
     ) -> Result<ApprovalVerdict, String> {
-        // M5-3（2026-10-10 机制加固）：cluster 通道（worker 执行看板任务
+        // （机制加固）：cluster 通道（worker 执行看板任务
         // 的 ABAC ask）此前落通道卡片——"cluster" 通道无出站投递面，卡静默
         // 丢弃、ask 无声等满超时被拒。改走默认管理器（本节点 Dashboard
         // SSE 审批卡，人可当场批复）+ fire 看板注记观察者（master issue
@@ -784,8 +784,8 @@ impl ApprovalManager for CompositeApprovalManager {
         // web 通道 = Dashboard 卡片（默认管理器的领地）；空 channel/chat =
         // 无可寻址对话 → 默认管理器。其余（telegram/feishu/discord/...）
         // → 通道卡片；**不在出站白名单的合成通道名**（flow-engine 等，
-        // 2026-11-02 publish 审批卡不可见根修）→ 默认管理器——卡片发 bus
-        // 无投递面只会静默丢弃、ask 无声等满超时（M5-3 的 cluster 同族）。
+        // publish 审批卡不可见根修）→ 默认管理器——卡片发 bus
+        // 无投递面只会静默丢弃、ask 无声等满超时（的 cluster 同族）。
         if ctx.channel.is_empty()
             || ctx.chat_id.is_empty()
             || ctx.channel == "web"

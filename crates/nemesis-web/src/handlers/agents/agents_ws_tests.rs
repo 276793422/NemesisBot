@@ -1,5 +1,5 @@
-//! `agents.*` WSAPI 用例（P2）：未装配诚实报错 / 各命令臂经 bridge /
-//! L1 `commands()` 清单。进程级 bridge 槽是共享态——全部用例持
+//! `agents.*` WSAPI 用例：未装配诚实报错 / 各命令臂经 bridge /
+//! `commands()` 清单。进程级 bridge 槽是共享态——全部用例持
 //! [`AGENTS_BRIDGE_TEST_LOCK`] 串行（同 PROJECTS_BRIDGE 家族纪律）。
 // 持锁跨 await 是刻意的测试串行化（槽位置换必须覆盖整个 handler await
 // 窗口，否则并行用例互相置换 bridge 假绿）；本进程内无其他同锁取用者，
@@ -58,6 +58,7 @@ fn make_ctx() -> RequestContext {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -143,7 +144,7 @@ impl AgentsBridge for FakeBridge {
         } else {
             runtime_backend.to_string()
         };
-        // P6-R4 D4 预留：principal 薄透传（透传断言见 create_passes_principal）。
+        // 预留：principal 薄透传（透传断言见 create_passes_principal）。
         info.principal = principal.to_string();
         Ok(info)
     }
@@ -267,7 +268,7 @@ async fn get_missing_agent_propagates_bridge_error() {
     set_agents_bridge_for_test(None);
 }
 
-// P6-R2：migrate WSAPI 面（透传 agent_id/target_node，bridge 明细包在
+// migrate WSAPI 面（透传 agent_id/target_node，bridge 明细包在
 // migration 键下）。
 #[tokio::test]
 async fn migrate_passes_params_and_wraps_detail() {
@@ -320,7 +321,7 @@ async fn create_passes_name_and_default_tier() {
     .unwrap()
     .unwrap();
     assert_eq!(out["agent"]["tier"], "big");
-    // principal 缺省 → 空串；显式值薄透传（P6-R4 D4 预留）。
+    // principal 缺省 → 空串；显式值薄透传（预留）。
     let out = call(
         "create",
         Some(serde_json::json!({"name": "w", "principal": "web/user-42"})),
@@ -402,7 +403,7 @@ fn l1_commands_registry_lists_all_agents_commands() {
     );
 }
 
-// -- G1 会话面（agents.send + 会话键形态）-----------------------------------
+// 会话面（agents.send + 会话键形态）-----------------------------------
 
 #[test]
 fn agent_session_key_roundtrip_owner_parse() {
@@ -463,7 +464,7 @@ async fn send_routes_to_bridge_with_derived_session_key() {
     set_agents_bridge_for_test(None);
 }
 
-// -- T9 生命周期面（sleep/wake/slots）--------------------------------------
+// 生命周期面（sleep/wake/slots）--------------------------------------
 
 #[tokio::test]
 async fn sleep_reports_slept_and_note() {

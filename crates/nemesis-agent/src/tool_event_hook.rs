@@ -1,8 +1,8 @@
-//! 工具事件广播 hook（M1a，devtool-upgrade 阶段 1）。
+//! 工具事件广播 hook（devtool-upgrade）。
 //!
 //! 实现 [`ToolHook`] 的 around 包装：进入链前发 [`AgentEvent::ToolStarted`]，
 //! `next()` 返回后发 [`AgentEvent::ToolFinished`]——纯观察者，不改写结果、
-//! 不拦截。事件经 `tokio::sync::broadcast` 通道交给 gateway 侧
+//! 不拦截。事件经 `tokio::sync:broadcast` 通道交给 gateway 侧
 //! `SharedResources.agent_event_tx`，`nemesis-web` 的 pump 订阅后路由到
 //! Dashboard WS push（`{type:"push", cmd:"tool_event"}`）+ EventHub（SSE）。
 //!
@@ -44,7 +44,7 @@ pub(crate) fn truncate_chars(s: &str, cap: usize) -> String {
 }
 
 /// 把工具调度事件发布到 broadcast 通道的观察 hook。
-/// 同时喂 Work 时间线累加器（2026-10-30，与 tx 发射同点同源——落盘真相源
+/// 同时喂 Work 时间线累加器（与 tx 发射同点同源——落盘真相源
 /// 与实时观察面同一发射点，无第二份转换逻辑；recorder 未 begin = 忽略）。
 pub struct ToolEventHook {
     tx: broadcast::Sender<AgentEvent>,
@@ -78,7 +78,7 @@ impl ToolHook for ToolEventHook {
                 + Sync,
         >,
     ) -> String {
-        // 修②⑥（BUG-C 2026-11-04）：call_id 改为消费 dispatch 传入的稳定
+        // call_id 改为消费 dispatch 传入的稳定
         // id（与 turn WAL `call_id_for` 同一派生点）——急停中断时 dispatch
         // 能按同 id 补发 interrupted ToolFinished（此前这里自生成 uuid，与
         // WAL id / 中断补发永不相等，UI 卡片只能悬空）。`None`（测试/非
@@ -106,7 +106,7 @@ impl ToolHook for ToolEventHook {
             args_preview: truncate_chars(&call.arguments, ARGS_PREVIEW_CAP),
         });
 
-        // 修1（BUG-B 2026-11-04）：优先用 dispatch 入口时刻计时（含安全段
+        // 优先用 dispatch 入口时刻计时（含安全段
         // 审批等待），与守卫重放池的 Local.md 时长同源；`None`（测试/非
         // dispatch 调用方）回退自身计时。`next(call)` 消费 call，先取出
         // Copy 的 Instant 再 await。
@@ -115,7 +115,7 @@ impl ToolHook for ToolEventHook {
         let result = next(call).await;
         let duration_ms = dispatch_started.elapsed().as_millis() as u64;
 
-        // R4（2026-10-20）：成败判定换 [`classify_result`] 单一真相源——
+        // 成败判定换 [`classify_result`] 单一权威定义——
         // 按工具类选精确判别器（exec = Exit code: 前缀判据，非零退出不再
         // 被标成功）；拒绝族（⛔/Plan/hidden/安全拦截）= None → ok:false
         // （拒绝不是成功，旧 contains 启发式把 ⛔ ESTOP 拒绝标成了 ok）。

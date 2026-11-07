@@ -277,7 +277,7 @@ fn static_validation(content: &str, kind: &ArtifactKind) -> StaticValidationResu
         all_passed = false;
     }
 
-    // Check 5: Security scan（F-S1 同类扫，2026-10-16 R16）——危险命令 +
+    // Check 5: Security scan（F- 同类扫）——危险命令 +
     // 硬编码密钥拦在晋升闸前。本函数是 forge_evaluate 的 Stage 1，此前纯
     // 结构检查：手工编辑/历史落盘/未设闸时期写入的危险内容可 Draft→Active
     // 晋升为 agent 指令。规则与写盘闸同源（StaticValidator::security_errors）。
@@ -580,7 +580,7 @@ impl ForgeToolExecutor {
             }
         }
 
-        // Sanitize name（2026-10-16 R18 路径穿越修复）：旧实现只
+        // Sanitize name（路径穿越修复）：旧实现只
         // `to_lowercase().replace(' ', "-")`——`../`、`..\`、`C:x` 全部透传，
         // 下游 `forge/skills/{name}`、`scripts/{category}/{name}`、
         // `mcp/{name}` 三处 join 全是可穿越写面（agent 可直接调本工具）。
@@ -627,7 +627,7 @@ impl ForgeToolExecutor {
             _ => unreachable!(), // skill already handled above
         };
 
-        // Security gate (F-S1): block dangerous commands / hardcoded secrets
+        // Security gate (F-): block dangerous commands / hardcoded secrets
         // BEFORE writing script/mcp content to disk.
         let sec_errors = crate::validator::StaticValidator::new().security_errors(&content);
         if !sec_errors.is_empty() {
@@ -640,7 +640,7 @@ impl ForgeToolExecutor {
         let forge_dir = self.forge.workspace().join("forge");
         let artifact_path = match artifact_type.as_str() {
             "script" => {
-                // category 同样是路径段（R18：此前完全未消毒，`../` 可越出
+                // category 同样是路径段（此前完全未消毒，`../` 可越出
                 // scripts/ 目录），同一 slug 规则。
                 let category =
                     crate::forge::slugify_skill_name(args["category"].as_str().unwrap_or("utils"));
@@ -784,7 +784,7 @@ impl ForgeToolExecutor {
                 };
                 // `go run <file>` 和 `uv run <file>` share the same args;
                 // the command itself (see above) carries the difference.
-                // 2026-10-16 复查（FT1）：必须传**绝对路径**——此前传裸文件名，
+                // 复查：必须传**绝对路径**——此前传裸文件名，
                 // MCP server 进程以 gateway 的 CWD 启动，`uv run server.py`
                 // 只有在 CWD 恰好等于 mcp 目录时才能命中；与 execute_build_mcp
                 // 安装臂（同文件下方，绝对路径）口径对齐。
@@ -806,7 +806,7 @@ impl ForgeToolExecutor {
             }
         }
 
-        // R18 诚实化：installer 未注入时 Active MCP 不会落 config.mcp.json。
+        // 诚实化：installer 未注入时 Active MCP 不会落 config.mcp.json。
         // 此前静默——create 报告「成功」而用户等一个不存在的注册。当前
         // init_mcp_installer 无生产接线点（gateway 不构造），该臂是常态
         // 而非异常，必须让调用方（LLM/用户）知道要手动注册。
@@ -881,7 +881,7 @@ impl ForgeToolExecutor {
             return ForgeToolResult::err("content or rollback_version is required");
         }
 
-        // F-S1 安全闸（2026-10-16 R16 同类扫）：agent 可调的更新面在写盘前
+        // F- 安全闸（同类扫）：agent 可调的更新面在写盘前
         // 过 security_errors——content 直写 forge 文件且 Skill 类同步到活
         // workspace/skills/（agent 指令面），比 create 路径更需要闸。回滚
         // 快照同样过闸（快照可能出自未设闸时期的落盘内容）。
@@ -912,8 +912,8 @@ impl ForgeToolExecutor {
 
         // Update skill copy if it's a skill type
         if artifact.kind == ArtifactKind::Skill {
-            // 2026-10-16 复查（FT2）：目录段必须 slug——registry 可能装着
-            // 历史污染名（`../x` 等，R18 的 resolve_artifact_path 只护了
+            // 复查：目录段必须 slug——registry 可能装着
+            // 历史污染名（`../x` 等， 的 resolve_artifact_path 只护了
             // forge/ 主副本），这里拼 workspace/skills/ 同样是名字当路径段。
             // slugify 对合法 kebab 名恒等，对穿越序列消解。
             let skill_slug = crate::forge::slugify_skill_name(&artifact.name);
@@ -951,7 +951,7 @@ impl ForgeToolExecutor {
             {
                 match self.forge.mcp_installer() {
                     Some(installer) => {
-                        // FT1 同类收口（2026-10-16 全文复查）：与 create 臂同
+                        // 同类收口（全文复查）：与 create 臂同
                         // 口径——绝对路径 + 按入口扩展名选 command（main.go →
                         // go，server.py → uv）+ 安装失败诚实 warn。此前传裸
                         // file_name（`uv run server.py` 只有 gateway CWD 恰好
@@ -977,7 +977,7 @@ impl ForgeToolExecutor {
                             );
                         }
                     }
-                    // R18 诚实化：installer 未注入 = 热注册跳过，warn 不静默
+                    // 诚实化：installer 未注入 = 热注册跳过，warn 不静默
                     //（与 create 侧「unavailable」注记同语义）。
                     None => tracing::warn!(
                         "[Forge] MCP '{}' is Active but no installer is wired; auto re-registration skipped",
@@ -1099,7 +1099,7 @@ impl ForgeToolExecutor {
         let stage3 = quality_assessment(&file_content, &artifact.kind);
 
         // Determine new status based on all three stages. Quality gate reads
-        // `config.forge.json` `validation.min_quality_score` (BUG-20261104-391) —
+        // `config.forge.json` `validation.min_quality_score` —
         // the pipeline path (create auto_validate / learning_engine) already
         // consumed the same key; the hardcoded 60 here made the config key
         // half-effective depending on which path evaluated the artifact.
@@ -1287,7 +1287,7 @@ impl ForgeToolExecutor {
                     )
                 };
 
-                // P1 单一真相源对齐（2026-10-16）：注册走 MCPInstaller（标准
+                // 单一真相源对齐：注册走 MCPInstaller（标准
                 // `servers` 形状 + 写串行锁 + 更新保字段）。此前裸写
                 // `mcpServers` map 形状——若文件已是标准 `servers` 数组形态，
                 // 宽容解析只认 `servers` 键，这份注册整段隐形（装了等于没装）。
@@ -1304,7 +1304,7 @@ impl ForgeToolExecutor {
                 }
             }
             "uninstall" => {
-                // Remove MCP from config.mcp.json（同走 MCPInstaller 单一真相源）。
+                // Remove MCP from config.mcp.json（同走 MCPInstaller 统一定义）。
                 let entry_name = format!("forge-{}", artifact.name);
                 let installer = MCPInstaller::new(self.forge.workspace());
 
@@ -1360,7 +1360,7 @@ impl ForgeToolExecutor {
                     // Validate report_path is within reflections directory
                     let reflections_dir = self.forge.workspace().join("forge").join("reflections");
                     let abs_path = PathBuf::from(&report_path);
-                    // 2026-09-01 fail-open 修复：旧逻辑 `if let Ok(canonicalize)`
+                    // fail-open 修复：旧逻辑 `if let Ok(canonicalize)`
                     // 在路径不存在 / 表示差异（8.3 短名）时**整体跳过守卫**，
                     // reflections 目录外的任意路径都能流进 share 上报给集群
                     // 对端。canonicalize_for_compare 无条件解析（不存在路径借
@@ -1483,7 +1483,7 @@ use nemesis_types::forge::ArtifactKind;
 
 /// Resolve the on-disk path for an artifact based on its type and name.
 ///
-/// 2026-10-16 R18：name 在使用点再次 slug——注册表是磁盘态数据，历史
+/// name 在使用点再次 slug——注册表是磁盘态数据，历史
 /// 遗留的中毒名（旧 create 弱消毒时期写入的 `../x` 等）从这里流进
 /// execute_update/evaluate/build_mcp 的读写路径仍可越出 forge 目录。
 /// 合法名（slug 产物）经 slugify 后逐字节不变，零行为差异。
@@ -1518,7 +1518,7 @@ fn resolve_artifact_path(
     }
 }
 
-/// Script 类 artifact 的落盘路径解析（BUG-20261104-371）。
+/// Script 类 artifact 的落盘路径解析。
 ///
 /// create 落 `scripts/{category}/{name}`（category 段未进 Artifact 结构，
 /// 无法精确还原），本函数此前恒返回扁平形态 `scripts/{name}`——update 把

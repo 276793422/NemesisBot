@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：memory.rs 剩余未覆盖行。
+//! 覆盖率批次：memory.rs 剩余未覆盖行。
 //!
 //! - 102/186/216/238：tracing 宏参数表达式行（debug!/info! 的字段在无
 //!   subscriber 时不求值）→ `capture_logs()` 装上 thread-local subscriber。
@@ -47,7 +47,7 @@ fn summarize_without_system_prompt_hits_noop_arm_and_logs() {
 /// MemoryStore::new 的 info! 参数行（195）。
 #[test]
 fn memory_store_new_logs_info_line() {
-    // BUG-20261102-322：名字承诺 logs_info_line——此前只装 sink 丢弃
+    // 名字承诺 logs_info_line——此前只装 sink 丢弃
     // subscriber（参数行求值），零断言。换捕获形态断言级别+文案双边界。
     let (_guard, buf) = capture_logs_to_buf();
     let dir = std::env::temp_dir().join(format!(

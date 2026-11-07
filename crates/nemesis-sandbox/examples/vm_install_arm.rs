@@ -1,4 +1,4 @@
-//! B1 真机臂：宿主统一入口 QEMU 安装链实跑（释放模板→解析矩阵→分派
+//! 真机臂：宿主统一入口 QEMU 安装链实跑（释放模板→解析矩阵→分派
 //! archive/packages 链→落位→探针）。
 //!
 //! 全新环境模拟 = 全部落位/暂存/7z 缓存指向 `target/vm-arm/`（不碰既有
@@ -28,8 +28,8 @@ fn main() {
         println!("[arm] 已清 {base:?}（全新环境模拟）");
     }
     let runtime = base.join("runtime");
-    // workspace config 指向 target/vm-arm/config（--clean 连配置模板一起重放
-    // 释放语义；生产面 = <workspace>/config/）。
+    // workspace config 指向 target/vm-arm/config（clean 连配置模板一起重放
+    // 释放语义；生产面 = <workspace>/config）。
     let ws_config = base.join("config");
     let dirs = QemuInstallDirs {
         install_dir: runtime.join("qemu"),

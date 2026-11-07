@@ -132,7 +132,7 @@ fn test_update_cluster_config_no_file() {
 }
 
 // ---------------------------------------------------------------------------
-// F4（2026-09-23）：read_cluster_token / ensure_cluster_token
+// read_cluster_token / ensure_cluster_token
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1360,7 +1360,7 @@ fn test_base64_encode_matches_standard() {
 }
 
 // =========================================================================
-// run() 端到端分支覆盖（S11 覆盖率冲刺）
+// run() 端到端分支覆盖（覆盖率冲刺）
 //
 // 策略：NEMESISBOT_HOME 指向临时目录（resolve_home 优先级 2），
 // `run(action, false)` 全程只读写临时 home，绝不触碰生产 home。
@@ -1368,7 +1368,7 @@ fn test_base64_encode_matches_standard() {
 // =========================================================================
 
 /// RAII 守卫：设置 NEMESISBOT_HOME 指向临时根，drop 时移除。
-/// home = `{tmp}/.nemesisbot`（resolve_home 会自动拼 .nemesisbot）。
+/// home = `{tmp}/.nemesisbot`（resolve_home 会自动拼.nemesisbot）。
 struct TempHomeEnv {
     _tmp: TempDir,
     home: std::path::PathBuf,
@@ -1697,7 +1697,7 @@ async fn test_run_peers_add_creates_entry() {
 
 #[tokio::test]
 async fn test_run_peers_remove_dash_id_after_add() {
-    // (BUG #26, quality-hardening goal 冲刺 S11) 回归：
+    // (, quality-hardening goal 冲刺) 回归：
     // add 写 `[peers.node-a]`（dash 保留），remove --id node-a 必须能删掉
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
@@ -1735,7 +1735,7 @@ async fn test_run_peers_remove_dash_id_after_add() {
 
 #[tokio::test]
 async fn test_run_peers_remove_by_address_fallback() {
-    // (BUG #26, quality-hardening goal 冲刺 S11) 按 address 兜底删除
+    // (, quality-hardening goal 冲刺) 按 address 兜底删除
     let _guard = crate::GLOBAL_STATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -3404,7 +3404,7 @@ mod wave_c {
 } // mod wave_c
 
 // =========================================================================
-// wave_r10（95% 覆盖率 goal 第七波批次 R10）：子进程级行为测试。
+// wave_r10（95% 覆盖率 goal 第七波批次）：子进程级行为测试。
 //
 // 目标未覆盖行（in-process 直调 run() 吃不掉、必须走真子进程的行）：
 // - run_node 前半主流程：banner / 端口解析 / Cluster 装配 / 静态 peers 导入
@@ -3424,7 +3424,7 @@ mod wave_c {
 // 结构性豁免（本轮不碰）：firewall netsh 全臂；Init 的 TTY 确认分支
 // （is_terminal 在管道下恒 false）；显示循环 tick 变更臂（需真实对端上线）
 // 与 ctrl_c 臂（无信号注入通道）；generate_token 的 RNG 失败兜底。
-// 仅 Windows：resolve_nemesisbot_bin 解析 .exe（与既有子进程测试同门）。
+// 仅 Windows：resolve_nemesisbot_bin 解析.exe（与既有子进程测试同门）。
 // =========================================================================
 #[cfg(windows)]
 mod wave_r10 {
@@ -3452,7 +3452,7 @@ mod wave_r10 {
         }
     }
 
-    /// 系统分配一个可用 (udp, tcp) 端口对（bind :0 探测后立即让位给被测进程）。
+    /// 系统分配一个可用 (udp, tcp) 端口对（bind:0 探测后立即让位给被测进程）。
     fn free_port_pair() -> (u16, u16) {
         loop {
             let udp = UdpSocket::bind("127.0.0.1:0")
@@ -3894,7 +3894,7 @@ mod wave_r10 {
         );
     }
 
-    /// F4（2026-09-23）：init 必须生成并打印 token + 对端同步提示（打印
+    /// init 必须生成并打印 token + 对端同步提示（打印
     /// 契约 + 落盘契约：token = 44 字符 base64(32B)，与 token generate 同规格）。
     #[tokio::test]
     async fn r10_cluster_init_writes_and_prints_token_via_cli() {
@@ -3930,7 +3930,7 @@ mod wave_r10 {
         );
     }
 
-    /// F4（2026-09-23）：enable 遇空 token 自动生成 + 打印（非静默）；
+    /// enable 遇空 token 自动生成 + 打印（非静默）；
     /// 幂等早退路径（已启用）不触碰 token。存量已启用部署不重复跑
     /// enable，因此不会被改配置——这正是把 token 检查放在幂等早退之后
     /// 的原因（见 enable 臂注释）。
@@ -3981,7 +3981,7 @@ mod wave_r10 {
         );
     }
 
-    /// F4 复盘补（2026-09-23）：已启用存量部署 + 空 token → 幂等早退，
+    /// 复盘补：已启用存量部署 + 空 token → 幂等早退，
     /// 不自动生成（防拆散存量集群）但必须 WARN 出声（无鉴权状态可感知）。
     #[cfg(windows)]
     #[tokio::test]
@@ -4019,7 +4019,7 @@ mod wave_r10 {
     }
 } // mod wave_r10
 
-// ── BUG-20261101-270：默认节点名多字节主机名切片 panic ──
+// ──：默认节点名多字节主机名切片 panic ──
 // node_id = "node-{hostname}-{uuid}"，hostname 来自环境变量可含中文
 // （Linux HOSTNAME 支持 UTF-8，每汉字 3 字节）。裸 &s[..16] 在第 16 字节
 // 落入汉字内部时 panic（byte index is not a char boundary）。修复 =
@@ -4060,7 +4060,7 @@ fn default_node_display_name_short_node_id_kept_whole() {
     assert_eq!(default_node_display_name(node_id), format!("Bot {node_id}"));
 }
 
-// ── L16（2026-11-02 三期）：roaming 互信 allowlist 管理面（trust-add /
+// ── （三期）：roaming 互信 allowlist 管理面（trust-add /
 //    trust-list / revoke / unrevoke 四臂）──
 
 /// 测试身份：真实 ed25519 派生（管理面入参走 node_id_from_hex on-curve

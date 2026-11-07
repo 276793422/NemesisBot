@@ -906,7 +906,7 @@ fn log_methods_without_session_are_silent_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// I3 (U9): request/chat-log consistency anchor — M8 补测
+// request/chat-log consistency anchor — 补测
 // ---------------------------------------------------------------------------
 
 /// The invariant: every persisted chat-log role sequence must be a
@@ -941,12 +941,12 @@ fn consistency_missing_role_and_order_violation_fail_with_role_name() {
     assert!(err.contains("'assistant'"), "{err}");
 }
 
-// --- W3a: create_session 失败静默、disabled 的 raw 三方法、truncated args、
+// ---: create_session 失败静默、disabled 的 raw 三方法、truncated args、
 // cached tokens 上报 ---
 
 #[test]
 fn create_session_base_dir_failure_is_silent() {
-    // base_dir 的父路径是一个文件 → create_dir_all 失败 → warn + Ok(())。
+    // base_dir 的父路径是一个文件 → create_dir_all 失败 → warn + Ok。
     let tmp = TempDir::new().unwrap();
     let blocker = tmp.path().join("blocker");
     std::fs::write(&blocker, b"x").unwrap();

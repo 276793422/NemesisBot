@@ -6,7 +6,7 @@
 //! the current user turn. A rewind can then restore the workspace to an earlier
 //! turn — restoring code, or (caller-side) the conversation, or both.
 //!
-//! D2（devtool-upgrade 阶段 5，2026-09-06）：**双后端**。
+//! （devtool-upgrade，2026-09-06）：**双后端**。
 //!
 //! - **git 影子库**（`{workspace}/.git` 存在且为目录时启用）：独立 git-dir
 //!   `{workspace}/logs/checkpoints.git`（bare init + `set_workdir` attach，
@@ -17,11 +17,11 @@
 //!   声明只用于 picker 展示与落盘纪律）。restore =
 //!   `diff_tree_to_tree(target..current)` 分类 → `checkout_tree` 按路径恢复
 //!   加显式删除多余文件——diff 集是真实工作区差异，天然覆盖 shell 产物。
-//!   gc（M6，2026-10-27 整改批次五）：默认关（`checkpoint.gc.enabled`），
+//!   gc（2026-10-27）：默认关（`checkpoint.gc.enabled`），
 //!   开启后重建式清扫影子库自有对象（保留集 = 最近 N turn ∪ N 天 ∪
 //!   undo/redo 栈触达 tree；重建式不碰主仓 `.git/objects`），见
 //!   `checkpoint/gc.rs`。
-//! - **JSON 回落**（D4 约束）：无 `.git`、`.git` 是文件（linked worktree/
+//! - **JSON 回落**（约束）：无 `.git`、`.git` 是文件（linked worktree/
 //!   submodule）、或影子库初始化失败 → 原有 git-free JSON 快照（每个 turn
 //!   一个 JSON 文件，`FileSnap` 存全文）原样保留，行为逐字节不变。
 //!   两形态回归测试齐备。
@@ -49,7 +49,7 @@ use tracing::warn;
 
 use crate::r#loop::{FileChange, FileChangeKind};
 
-// M6（2026-10-27 整改批次五）：checkpoint gc（默认关；重建式影子库清扫 +
+// checkpoint gc（默认关；重建式影子库清扫 +
 // JSON 镜像清扫）。见 checkpoint/gc.rs 模块文档。
 mod gc;
 
@@ -65,7 +65,7 @@ pub struct FileSnap {
     pub content: Option<String>,
 }
 
-/// P20（2026-09-25 能力扩展 WS7）：单路径「变更后指纹」——turn 收尾封印
+/// 单路径「变更后指纹」——turn 收尾封印
 /// （`seal_turn`）时该路径的**现盘**内容 sha256 hex。`hash == None` = 封印
 /// 时刻文件已不在盘上（删除语义）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ pub struct FileFingerprint {
     pub hash: Option<String>,
 }
 
-/// P20：单条冲突——rewind 目标之后声明过该路径的 checkpoint 封印指纹与
+/// 单条冲突——rewind 目标之后声明过该路径的 checkpoint 封印指纹与
 /// 当前盘上内容不一致（文件在 checkpoint 之后被外部修改）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointConflict {
@@ -83,7 +83,7 @@ pub struct CheckpointConflict {
     pub current_hash: String,
 }
 
-/// P20：冲突预检报告。`unchecked_paths` = 最后声明该路径的 turn 尚未封印
+/// 冲突预检报告。`unchecked_paths` = 最后声明该路径的 turn 尚未封印
 /// （trailing turn 进行中 / 崩溃未走到封印点）——诚实跳过不比对，绝不回退
 /// 到更旧的 seal（旧 seal 是更早状态，会把 agent 自己的后续变更误报成
 /// 外部修改）。
@@ -91,7 +91,7 @@ pub struct CheckpointConflict {
 pub struct CheckpointConflictReport {
     pub conflicts: Vec<CheckpointConflict>,
     pub unchecked_paths: Vec<String>,
-    /// R31（2026-10-23 会话回退波及面收窄）：回退区间内**其他会话**声明过
+    /// （会话回退波及面收窄）：回退区间内**其他会话**声明过
     /// 变更的路径。restore 的全树恢复会把它们一并碾掉，但它们不属于本次回
     /// 退的会话意图——与 `conflicts` 同为默认拒绝（force 显式强过）。单列而
     /// 不并入 `conflicts`：它们大概率指纹干净（封印态=现盘态），语义是
@@ -101,14 +101,14 @@ pub struct CheckpointConflictReport {
 
 /// Anchors the pre-edit state of every distinct file touched during one user turn.
 ///
-/// `paths`（D2 新增，serde default 兼容老 JSON）：本 turn 工具声明的变更路径
-/// （preview_all 集合），供 picker/meta 展示。`tree`（D2 新增）：git 模式下
+/// `paths`（新增，serde default 兼容老 JSON）：本 turn 工具声明的变更路径
+/// （preview_all 集合），供 picker/meta 展示。`tree`（新增）：git 模式下
 /// `begin` 时刻的影子库 tree hex；JSON 模式恒 None。
 ///
-/// `after` / `sealed`（P20 新增，serde default 兼容老 JSON）：turn 收尾封印
+/// `after` / `sealed`（新增，serde default 兼容老 JSON）：turn 收尾封印
 /// 的「变更后指纹」集与封印标记——rewind 冲突预检的比对基线。
 ///
-/// `session`（R31 新增，serde default 兼容老 JSON）：begin 该 turn 的会话
+/// `session`（新增，serde default 兼容老 JSON）：begin 该 turn 的会话
 /// 键（`begin_for_session` 穿针）。turn 序号是 loop 全局的
 /// （`turn_counter.fetch_add`），而 `sessions.rewind_to_message` 是会话级
 /// API——无归属字段时全局截断/全树恢复会把并发会话的变更一并碾掉。None =
@@ -141,7 +141,7 @@ pub struct CheckpointMeta {
     pub paths: Vec<String>,
 }
 
-/// M3：某文件在本库的最早基线锚（首个声明过它的 checkpoint 条目）。
+/// 某文件在本库的最早基线锚（首个声明过它的 checkpoint 条目）。
 ///
 /// `tree`：git 形态的影子 tree（内容从 tree 读 blob）；`content`：JSON
 /// 形态的 pre-edit 快照内容。二者互补恒有一个可用（同 Checkpoint 语义）。
@@ -152,7 +152,7 @@ pub struct CheckpointBase {
     pub content: Option<String>,
 }
 
-/// R3（2026-10-24 外评）：恢复动作的结构化报告——成功与失败分明，失败项
+/// （外评）：恢复动作的结构化报告——成功与失败分明，失败项
 /// 带原因。此前 restore 家族只回 `(written, deleted)` 两 vec，写失败/删失败
 /// 被 `is_ok()` 过滤静默吞掉，rewind 侧无从感知、无条件盖「applied」戳并
 /// 摧毁 checkpoint（失败后无法重试）。消费方（rewind 编排）以
@@ -179,7 +179,7 @@ impl RestoreReport {
     }
 }
 
-/// P4（交付门）：一次交付分支捕获的结果——可审分支的寻址面。
+/// 一次交付分支捕获的结果——可审分支的寻址面。
 ///
 /// 影子库本无 commit 流（只有 tree 流）：capture = 写当前工作区 tree →
 /// 以其为根建单个 commit → `refs/heads/nemesis/<branch>` force 指向它。
@@ -201,10 +201,10 @@ pub struct DeliveryBranchCapture {
     /// unified diff（相对 `base_tree`）；超 `PATCH_MAX_BYTES` 截断。
     pub patch: String,
     pub patch_truncated: bool,
-    /// 逐文件变更清单（typed 证据块 ②，2026-10-19）：从 `(base_tree, tree)`
+    /// 逐文件变更清单（typed 证据块 ②）：从 `(base_tree, tree)`
     /// diff 确定性派生（**不依赖 agent 配合**），`sha256` = 交付 tree 中该
     /// blob 内容的摘要——与 commit/tree 同源定格，评审侧可对 patch 重放核
-    /// 验。R5（2026-10-20 复评）：含全部变更类型（add/modify/delete）——
+    /// 验。（复评）：含全部变更类型（add/modify/delete）——
     /// 删除条目 `kind=delete` + `old_sha256`（变更前 blob 摘要），评审闸可
     /// 据此核验「删除确实发生」而非零证据放行。空 = 无变更或派生降级（**恒
     /// 序列化**——空清单与「字段缺席」语义不同：前者是派生事实，后者无法
@@ -215,7 +215,7 @@ pub struct DeliveryBranchCapture {
     pub files_truncated: bool,
 }
 
-/// R5：交付清单条目变更类型（serde 小写序列化 `add`/`modify`/`delete`）。
+/// 交付清单条目变更类型（serde 小写序列化 `add`/`modify`/`delete`）。
 /// rename 在 git delta 层呈现为 delete+add 对，不造第四值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -231,7 +231,7 @@ pub enum DeliveryFileKind {
 pub struct DeliveryFileEntry {
     /// 交付根内的相对路径（forward slash 形态；派生自 git delta）。
     pub path: String,
-    /// 变更类型（R5）。
+    /// 变更类型。
     pub kind: DeliveryFileKind,
     /// 交付 tree 中该 blob 内容的 sha256 hex（64 字符）；delete 条目为空串
     /// 不序列化（无新内容可哈希——变更前内容见 `old_sha256`）。
@@ -251,19 +251,19 @@ pub const FILES_MAX: usize = 500;
 /// payload；完整 patch 由调用方落盘，账本只引用路径）。
 pub const PATCH_MAX_BYTES: usize = 1_000_000;
 
-/// Which persistence backend the store selected at construction (D4：
+/// Which persistence backend the store selected at construction (
 /// 诊断/测试用——`backend()` 返回 "git" 或 "json"）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckpointBackend {
     /// git 影子库（`{workspace}/.git` 存在且为目录）。
     Git,
-    /// JSON 快照回落（无 .git / .git 文件形态 / 影子库初始化失败）。
+    /// JSON 快照回落（无.git /.git 文件形态 / 影子库初始化失败）。
     Json,
 }
 
 struct Inner {
     done: Vec<Checkpoint>,
-    /// R4（2026-10-24 第四次外评）：per-session 进行中 turn 桶，键 = 会话键
+    /// （第四次外评）：per-session 进行中 turn 桶，键 = 会话键
     /// （None = 旧全局语义：`begin()`/`snapshot()` 兼容路径与存量测试）。
     /// 旧单 `Option<Checkpoint>` 槽被后 begin 的并发会话整体收编——前一
     /// 会话的 snapshot 全落进后一会话名下的 checkpoint（跨会话串档，
@@ -273,7 +273,7 @@ struct Inner {
     seen: HashMap<Option<String>, HashSet<String>>,
 }
 
-/// git 影子库后端句柄（BUG-20261031 非驻留化）。
+/// git 影子库后端句柄（非驻留化）。
 ///
 /// **不持有** `git2::Repository`——只存 (影子库路径, 工作区根) 路径对 +
 /// 操作串行锁；每个 git 操作经 [`GitBackend::open`] 临时打开 → 操作 →
@@ -314,8 +314,8 @@ struct GitlinkEntry {
 
 /// checkpoint-git 关：git2（libgit2 ~1.5MB）不编译。空形态**刻意保留**
 /// `git: Option<GitBackend>` 字段形与全部 `self.git` 读点的编译面；
-/// `try_git_backend` 恒 None → JSON 快照回落（D4）自然接管，行为与
-/// 「无 .git」完全一致（逐 turn JSON 文件、rewind/undo 照常）。
+/// `try_git_backend` 恒 None → JSON 快照回落自然接管，行为与
+/// 「无.git」完全一致（逐 turn JSON 文件、rewind/undo 照常）。
 #[cfg(not(feature = "checkpoint-git"))]
 struct GitBackend {}
 
@@ -326,14 +326,14 @@ pub struct CheckpointStore {
     root: PathBuf,
     git: Option<GitBackend>,
     inner: Mutex<Inner>,
-    /// M6：gc 钩子（config 开关 + undo/redo 栈下界查询闭包）。None = 未装
+    /// gc 钩子（config 开关 + undo/redo 栈下界查询闭包）。None = 未装
     /// 配（gc 全路径零触碰）；`cfg.enabled=false` 同样零触碰。默认关。
     gc_hooks: Mutex<Option<crate::checkpoint::gc::GcHooks>>,
-    /// M6：gc 互斥（truncate 触发与周期拍并发时后到者诚实跳过）。
+    /// gc 互斥（truncate 触发与周期拍并发时后到者诚实跳过）。
     gc_running: std::sync::atomic::AtomicBool,
 }
 
-/// R31：scope 判定单一真相源——条目会话归属是否属于「其他会话」。
+/// scope 判定单一权威定义——条目会话归属是否属于「其他会话」。
 /// `rewind_session = None`（不收窄）恒 false；条目归属 None（旧条目/测试直
 /// 构造，不可归属）恒 false——不可归属不惩罚，按同会话处理，单会话与存量
 /// 数据行为逐字节不变。
@@ -344,7 +344,7 @@ fn is_other_session(entry_session: &Option<String>, rewind_session: Option<&str>
     }
 }
 
-/// R31：落盘 turn-N.json 是否属于其他会话（scoped 截断的磁盘镜像判定，
+/// 落盘 turn-N.json 是否属于其他会话（scoped 截断的磁盘镜像判定，
 /// 与内存 retain 同源语义）。解析失败 = 不可归属 = false（按本会话删——
 /// load 本也跳过解析失败文件，留着无法归属的壳没有消费面）。
 fn persisted_checkpoint_belongs_to_other_session(
@@ -367,18 +367,18 @@ impl CheckpointStore {
     /// any checkpoints already persisted under `dir`. `dir = None` disables
     /// persistence (in-memory only for the session).
     ///
-    /// Backend selection (D4)：`{root}/.git` 存在且为**目录** → git 影子库；
-    /// 其余（无 .git / .git 文件 / 初始化失败）→ JSON 回落。模式在构造期
-    /// 固定，运行中新建 .git 不热切换（诚实边界，见模块文档）。
+    /// Backend selection：`{root}/.git` 存在且为**目录** → git 影子库；
+    /// 其余（无.git /.git 文件 / 初始化失败）→ JSON 回落。模式在构造期
+    /// 固定，运行中新建.git 不热切换（诚实边界，见模块文档）。
     pub fn new(dir: Option<PathBuf>, root: PathBuf) -> Self {
         // 默认影子库位置：logs 家族（主 loop 布局，`{root}/logs/checkpoints.git`）。
         let shadow = nemesis_path::logs_dir_in_workspace(&root).join("checkpoints.git");
         Self::build(dir, root, shadow)
     }
 
-    /// L6++（2026-09-08）项目 loop 工厂用：影子库位置显式指定。项目 root =
+    /// 项目 loop 工厂用：影子库位置显式指定。项目 root =
     /// 用户项目目录时，默认派生 `{root}/logs/checkpoints.git` 会把影子库落
-    /// 进用户项目目录（R7 禁止）；override 落主 workspace
+    /// 进用户项目目录（禁止）；override 落主 workspace
     /// `logs/project_checkpoints/{pid}/repo.git`，项目目录零污染。其余行为
     /// 与 `new` 完全一致。
     pub fn new_with_shadow(dir: Option<PathBuf>, root: PathBuf, shadow: PathBuf) -> Self {
@@ -403,7 +403,7 @@ impl CheckpointStore {
         store
     }
 
-    /// D4 诊断口：本 store 实际启用的后端。
+    /// 诊断口：本 store 实际启用的后端。
     pub fn backend(&self) -> CheckpointBackend {
         if self.git.is_some() {
             CheckpointBackend::Git
@@ -419,7 +419,7 @@ impl CheckpointStore {
     #[cfg(feature = "checkpoint-git")]
     fn try_git_backend(root: &Path, shadow: &Path) -> Option<GitBackend> {
         let real_git = root.join(".git");
-        // 只认目录形态的 .git；文件形态（linked worktree / submodule）→ JSON 回落。
+        // 只认目录形态的.git；文件形态（linked worktree / submodule）→ JSON 回落。
         if !real_git.is_dir() {
             return None;
         }
@@ -430,12 +430,12 @@ impl CheckpointStore {
         };
         match result {
             // 一次性 fs 副作用（初始化/自愈/alternates）借这个临时 repo 完成，
-            // 随即 drop——**不驻留**（BUG-20261031：常驻 Repository 会沿
+            // 随即 drop——**不驻留**（常驻 Repository 会沿
             // alternates mmap 目标项目 pack 并持有到 drop）。后续每个操作
             // 经 GitBackend::open 临时打开。
             Ok(repo) => {
                 drop(repo);
-                // P20（2026-09-25 能力扩展）：启动自愈——清扫崩溃残留的
+                // 启动自愈——清扫崩溃残留的
                 // temp 对象 / 半成品锁文件（幂等，无残留 = 0 清扫不吭声）。
                 let healed = Self::heal_shadow_repo(shadow);
                 if healed > 0 {
@@ -457,7 +457,7 @@ impl CheckpointStore {
         }
     }
 
-    /// checkpoint-git 关：恒 None（JSON 快照回落，D4）。
+    /// checkpoint-git 关：恒 None（JSON 快照回落）。
     #[cfg(not(feature = "checkpoint-git"))]
     fn try_git_backend(_root: &Path, _shadow: &Path) -> Option<GitBackend> {
         None
@@ -466,9 +466,9 @@ impl CheckpointStore {
     #[cfg(feature = "checkpoint-git")]
     fn init_shadow(shadow: &Path, root: &Path) -> Result<git2::Repository, String> {
         // 以 bare 形态初始化（gitdir = shadow），再 attach 工作区。不能用
-        // no_dotgit_dir + workdir_path 直接 init——工作区里已有真实 .git 时
+        // no_dotgit_dir + workdir_path 直接 init——工作区里已有真实.git 时
         // libgit2 报 "cannot overwrite gitlink file"。set_workdir 第二参
-        // false = 不往工作区写 .git gitlink（绝不碰用户真实 .git）。
+        // false = 不往工作区写.git gitlink（绝不碰用户真实.git）。
         let mut opts = git2::RepositoryInitOptions::new();
         opts.bare(true).mkpath(true);
         let repo = git2::Repository::init_opts(shadow, &opts).map_err(|e| e.to_string())?;
@@ -519,7 +519,7 @@ impl CheckpointStore {
         std::fs::write(&file, format!("{want}\n"))
     }
 
-    /// P20（2026-09-25 能力扩展）：影子库自愈——清扫上次进程崩溃残留的
+    /// 影子库自愈——清扫上次进程崩溃残留的
     /// temp 对象 / 半成品锁文件（git 对象写入走 tmp→rename 原子替换，残留
     /// 形态 = `tmp_obj_*` / `tmp_pack_*` / 各类 `*.lock`）。幂等：重复启动
     /// 或无残留都安全（返回清扫条数）。只删已知安全形态，绝不触碰
@@ -542,7 +542,7 @@ impl CheckpointStore {
                 let stale = name.starts_with("tmp_obj_")
                     || name.starts_with("tmp_pack_")
                     || name.ends_with(".lock");
-                // BUG-20261025-35 同族：stale 残留（尤其 .lock）清不掉会让
+                // 同族：stale 残留（尤其.lock）清不掉会让
                 // git 操作持续报锁——同样走韧性重试，瞬时句柄不致自愈失效
                 //（装配期一次性清扫，重试窗口无碍）。
                 if stale && nemesis_utils::fsutil::remove_file_retry(&p).is_ok() {
@@ -574,7 +574,7 @@ impl CheckpointStore {
         let real_repo = match git2::Repository::open(root) {
             Ok(repo) => repo,
             Err(e) => {
-                // D2 存量兼容：只存在 `.git` 目录的轻量夹具/半初始化工作区
+                // 存量兼容：只存在 `.git` 目录的轻量夹具/半初始化工作区
                 // 过去仍可由影子库独立快照普通文件。gitlink 是增强元数据，
                 // 真实主仓不可读时不能反向拖垮基础 checkpoint。
                 warn!("[checkpoint] 真实主仓不可读，跳过 gitlink 扫描: {e}");
@@ -616,13 +616,13 @@ impl CheckpointStore {
         })
     }
 
-    /// 工作区现状 → 影子库 tree hex。add_all 默认跳过 .gitignore 命中文件；
-    /// matcher 再跳过运行时属主目录（`is_workspace_ignored` 单一真相源——
+    /// 工作区现状 → 影子库 tree hex。add_all 默认跳过.gitignore 命中文件；
+    /// matcher 再跳过运行时属主目录（`is_workspace_ignored` 单一权威定义——
     /// logs/cluster/board/... 与 fs_watcher 同表）和真实主仓 index 声明的
     /// gitlink 边界。子模块不能递归扫成普通目录：扫描后以 mode 160000 显式
     /// 写回影子 index，记录当前 HEAD（未初始化时记录父仓 index OID）。
     ///
-    /// ⚠️ libgit2 坑（2026-09-06 实测）：**空 pathspec + 回调**组合下，
+    /// ⚠️ libgit2 坑（实测）：**空 pathspec + 回调**组合下，
     /// `git_pathspec__match` 对空 spec 直接 `return true` 但不填
     /// `matched_pathspec`（pathspec.c:209-211）→ 回调收到 NULL → git2-rs
     /// shim `CStr::from_ptr(NULL)` 段错误（STATUS_ACCESS_VIOLATION）。必须传
@@ -688,7 +688,7 @@ impl CheckpointStore {
     }
 
     /// restore（git 模式）核心：diff target..current 分类出要恢复/要删除的
-    /// 路径集，然后 checkout_tree（按路径）+ 逐文件删除。R3：整体性失败
+    /// 路径集，然后 checkout_tree（按路径）+ 逐文件删除。：整体性失败
     /// （tree 写入/解析/diff）与逐文件失败都进 `failures`（整体失败以
     /// path=`"*"` 承载），不再静默返空。
     #[cfg(feature = "checkpoint-git")]
@@ -803,7 +803,7 @@ impl CheckpointStore {
 
         // checkout_tree 一次调用带全部路径（force 覆写本地改动=restore 的本
         // 意；update_index(false) 不动影子 index——下次 add_all 靠 stat 失配
-        // 重哈希，正确性不受影响）。R3：checkout 失败 = 全部待恢复路径记
+        // 重哈希，正确性不受影响）。：checkout 失败 = 全部待恢复路径记
         // failures（一次调用整体失败，无部分成功可言）。
         if !to_checkout.is_empty() {
             let mut cb = git2::build::CheckoutBuilder::new();
@@ -825,14 +825,14 @@ impl CheckpointStore {
         }
 
         // 删除多余文件（target 没有而现状有的——含 shell 产物）。经 safe_path
-        // 语义防逃逸（git 相对路径理论上不含 ..，防御性保留）。R3：删除失败
+        // 语义防逃逸（git 相对路径理论上不含..，防御性保留）。：删除失败
         // 进 failures（NotFound = 快照语义已达成，不计失败）。
         for rel in to_remove {
             if rel.split(['/', '\\']).any(|seg| seg == "..") {
                 continue;
             }
             let abs = root.join(&rel);
-            // M11（2026-10-27 整改批次四）：裸 remove_file 换 fsutil 韧性包装
+            // 裸 remove_file 换 fsutil 韧性包装
             //（Windows AV/索引器瞬时句柄是常态不是异常）。NotFound 语义保留：
             // retry 包装对 NotFound 返 Ok，先探存在性把「快照本就记录不存在
             // = 恢复语义已达成」与「真删了」分开（deleted 只计后者）。
@@ -850,13 +850,13 @@ impl CheckpointStore {
     }
 
     // ------------------------------------------------------------------
-    // P4 交付门：交付分支捕获 / patch 重算 / 列举（git 形态专用）
+    // 交付分支捕获 / patch 重算 / 列举（git 形态专用）
     // 随 checkpoint-git 门整族裁剪——全族直接摸 git2（与上方 try_git_backend
-    // 等逐函数门同纪律；漏门 = minimal-iot/desktop 形态 E0433/E0599 实录）。
+    // 等逐函数门同纪律；漏门 = minimal-iot/desktop 形态）。
     // ------------------------------------------------------------------
 
     /// 交付分支名校验：`[A-Za-z0-9._/-]`、无 `..`、无前导 `-`、≤80 字符。
-    // 纯字符串校验不依赖 git2，但唯一消费方是交付门 git 形态——随门
+    // 纯字符串校验不依赖 git2，但唯一消费方是 git 形态——随门
     // 一起 cfg（避免 checkpoint-git 关时 dead_code 警告）。
     #[cfg(feature = "checkpoint-git")]
     fn validate_branch_name(branch: &str) -> Result<(), String> {
@@ -894,7 +894,7 @@ impl CheckpointStore {
             .to_string())
     }
 
-    /// `(base_tree, tree)` → unified diff + 统计（P4 capture 与 patch 重算
+    /// `(base_tree, tree)` → unified diff + 统计（capture 与 patch 重算
     /// 共用）。base None = canonical 空树（全部文件计新增）。
     #[cfg(feature = "checkpoint-git")]
     fn diff_patch(
@@ -922,7 +922,7 @@ impl CheckpointStore {
         // git2 0.21 无 Diff::format——patch 输出走 print 回调。⚠ line.content()
         // **不含** +/-/空格 前缀字节（context/add/del 三类须手动补 origin 字符，
         // FileHeader/HunkHeader 自带完整换行）——漏补产出的 patch 无法被
-        // Diff::from_buffer 回读（"invalid patch hunk"），P3 发布链实证。
+        // Diff::from_buffer 回读（"invalid patch hunk"）， 发布链实证。
         diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
             match line.origin() {
                 '+' | '-' | ' ' => buf.push(line.origin() as u8),
@@ -948,7 +948,7 @@ impl CheckpointStore {
 
     /// 逐文件变更清单派生（typed 证据块 ②）：同一 `(base, tree)` diff 的
     /// delta 枚举——新增/修改取 `new_file` 的 blob 内容 sha256；修改/删除
-    /// 附 `old_file` 摘要（R5：删除条目 `old_sha256` 承载证据，不再整类
+    /// 附 `old_file` 摘要（删除条目 `old_sha256` 承载证据，不再整类
     /// 跳过——删除也是交付事实）。rename 在 delta 层呈 delete+add 对，
     /// typechange 按 modify 记（同路径内容形态变更）。超 [`FILES_MAX`]
     /// 截断（诚实注记位）。与 [`Self::diff_patch`] 分开各跑一次 diff
@@ -1041,7 +1041,7 @@ impl CheckpointStore {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    /// P4 交付门：把当前工作区捕获为**可审交付分支**（git 形态专用）。
+    /// 把当前工作区捕获为**可审交付分支**（git 形态专用）。
     ///
     /// - `base_tree`：diff 基线（通常传任务开始时的影子 tree——
     ///   `checkpoint_store().current_tree_hex()` 在 usage_before 旁记的
@@ -1050,7 +1050,7 @@ impl CheckpointStore {
     ///   `refs/heads/nemesis/<branch>`。同名重捕获 force 覆盖（调用方
     ///   用唯一名，重放场景覆盖同 id 的旧捕获是安全语义）。
     /// - JSON 形态（工作区无真实 `.git`）诚实 Err——可审分支只有在有
-    ///   真实 .git 可合入时才有行动意义，不为无 .git 工作区造 standalone
+    ///   真实.git 可合入时才有行动意义，不为无.git 工作区造 standalone
     ///   影子（构造期后端选型契约不变）。
     #[cfg(feature = "checkpoint-git")]
     pub fn capture_delivery_branch(
@@ -1134,7 +1134,7 @@ impl CheckpointStore {
         })
     }
 
-    /// P4 交付门：从交付分支重算 patch（不重写工作区——审计/补拉查看面）。
+    /// 从交付分支重算 patch（不重写工作区——审计/补拉查看面）。
     /// 返回 `(patch, truncated)`；分支不存在 = Err。
     #[cfg(feature = "checkpoint-git")]
     pub fn delivery_branch_patch(
@@ -1165,7 +1165,7 @@ impl CheckpointStore {
         Ok((patch, truncated))
     }
 
-    /// P4 交付门：列举全部交付分支（`refs/heads/nemesis/*` 短名，字典序）。
+    /// 列举全部交付分支（`refs/heads/nemesis/*` 短名，字典序）。
     #[cfg(feature = "checkpoint-git")]
     pub fn delivery_branch_refs(&self) -> Result<Vec<String>, String> {
         let gb = self
@@ -1204,7 +1204,7 @@ impl CheckpointStore {
             if let Ok(cp) = serde_json::from_slice::<Checkpoint>(&bytes) {
                 guard.done.push(cp);
             } else {
-                // BUG-20261025-43：损坏镜像不再静默吞——诚实留痕（崩溃撕裂/
+                // 损坏镜像不再静默吞——诚实留痕（崩溃撕裂/
                 // 外部损坏的第一个可见信号），与 auth.json / 分享注册表同族
                 // 口径；该 turn 的回退条目/封印指纹丢失由此可查。
                 warn!(
@@ -1226,7 +1226,7 @@ impl CheckpointStore {
         self.begin_for_session(turn, prompt, None);
     }
 
-    /// R31：带会话归属的 begin。`session_key` 落进 checkpoint 条目，会话级
+    /// 带会话归属的 begin。`session_key` 落进 checkpoint 条目，会话级
     /// 回退（`truncate_from_scoped` / `conflict_scan_scoped`）据此把波及面
     /// 收窄到本会话的 turn。`begin`（无会话）委托 None——旧全局语义，测试
     /// 与兼容路径沿用。
@@ -1236,10 +1236,10 @@ impl CheckpointStore {
         prompt: impl Into<String>,
         session_key: Option<&str>,
     ) {
-        // R4：桶键——本会话的进行中 turn 归属（None = 旧全局语义）。
+        // 桶键——本会话的进行中 turn 归属（None = 旧全局语义）。
         let bucket: Option<String> = session_key.map(str::to_string);
 
-        // P20 兜底封印：**本会话**上一 turn 若因崩溃未走到 process_admitted
+        // 兜底封印：**本会话**上一 turn 若因崩溃未走到 process_admitted
         // 的收尾封印点，在开启新 turn 前补封（幂等——已封印的 turn 直接跳
         // 过）。只补封本会话桶：其他会话的进行中 turn 由其自身收尾/下次
         // begin 兜底，提前代封会把别人 turn 中途的盘面钉成 after 指纹
@@ -1267,7 +1267,7 @@ impl CheckpointStore {
                         warn!(
                             "[checkpoint] turn {turn} 影子 tree 写入失败（本 turn 不可 git 回滚）: {e}"
                         );
-                        // M2：写入失败面可观测——影子 tree 失败 = 该 turn 的
+                        // 写入失败面可观测——影子 tree 失败 = 该 turn 的
                         // git 回滚能力丢失，用户需要知道。
                         nemesis_utils::degraded::report(
                             "checkpoint_tree",
@@ -1295,7 +1295,7 @@ impl CheckpointStore {
         };
 
         let mut guard = self.inner.lock();
-        // R4：只 finalize 本会话桶的上一个 cur（其他会话的进行中 turn 原位
+        // 只 finalize 本会话桶的上一个 cur（其他会话的进行中 turn 原位
         // 不动——旧单槽会被整体收编成跨会话串档）。
         let prev = guard.cur.remove(&bucket);
         if let Some(prev) = &prev {
@@ -1328,7 +1328,7 @@ impl CheckpointStore {
         self.snapshot_for_session(change, None).await;
     }
 
-    /// R4：会话归属版 snapshot——写入落进**本会话**的进行中 turn 桶。
+    /// 会话归属版 snapshot——写入落进**本会话**的进行中 turn 桶。
     /// `session_key = None` = 旧全局语义（`begin()` 兼容路径、存量测试）。
     /// 生产调用点（tool_dispatch preview 阶段）传 `Some(&ctx.session_key)`，
     /// 与 `admission.rs` 的 `begin_for_session` 同键——并发会话各归各位。
@@ -1374,7 +1374,7 @@ impl CheckpointStore {
     }
 
     // ------------------------------------------------------------------
-    // P20（2026-09-25 能力扩展 WS7）：turn 收尾封印 + rewind 冲突预检
+    // turn 收尾封印 + rewind 冲突预检
     // ------------------------------------------------------------------
 
     /// turn 收尾封印——对本 turn 声明过的每个变更路径读**现盘**内容
@@ -1387,7 +1387,7 @@ impl CheckpointStore {
     /// 不是强一致锁。调用点：process_admitted 收尾（admission.rs）+ begin
     /// 顶部崩溃兜底。
     pub fn seal_turn(&self, turn: usize) {
-        // 段一：定位 checkpoint + 收集待封印路径（幂等检查）。R4：turn 序号
+        // 段一：定位 checkpoint + 收集待封印路径（幂等检查）。：turn 序号
         // loop 全局唯一——done 优先，其次遍历所有会话的 cur 桶。
         let (paths, cur_bucket) = {
             let guard = self.inner.lock();
@@ -1416,7 +1416,7 @@ impl CheckpointStore {
             .collect();
 
         // 段三：锁内回填 + 落盘（重写 turn-N.json，崩溃后重载仍带指纹）。
-        // 落盘纪律保留（2026-08-30「空 turn 不留壳」）：无声明路径且本就没
+        // 落盘纪律保留（「空 turn 不留壳」）：无声明路径且本就没
         // 落过盘的空 turn 只改内存态（sealed 标记），不凭封印凭空造出
         // turn-N.json——无指纹可失，冲突预检也不需要它。
         let (snap, should_persist) = {
@@ -1443,8 +1443,8 @@ impl CheckpointStore {
         }
     }
 
-    /// R4：checkpoint 的声明路径集（paths 空时回退 files 的路径——老 JSON
-    /// 无 paths 字段）。seal/conflict/list 多处共用，单一真相源。
+    /// checkpoint 的声明路径集（paths 空时回退 files 的路径——老 JSON
+    /// 无 paths 字段）。seal/conflict/list 多处共用，统一定义。
     fn declared_paths(cp: &Checkpoint) -> Vec<String> {
         if cp.paths.is_empty() {
             cp.files.iter().map(|f| f.path.clone()).collect()
@@ -1453,7 +1453,7 @@ impl CheckpointStore {
         }
     }
 
-    /// P20：路径的现盘内容 sha256 hex（safe_path 语义解析，拒 `..` 逃逸）。
+    /// 路径的现盘内容 sha256 hex（safe_path 语义解析，拒 `..` 逃逸）。
     /// 文件不存在 / 读取失败 → None（=「封印时刻不在盘上」语义，与指纹
     /// None 对齐比较）。
     fn hash_on_disk(&self, path: &str) -> Option<String> {
@@ -1464,7 +1464,7 @@ impl CheckpointStore {
         Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
     }
 
-    /// P20：rewind 冲突预检——每路径只认「turn >= from_turn 里**最后声明
+    /// rewind 冲突预检——每路径只认「turn >= from_turn 里**最后声明
     /// 它**的 checkpoint」的封印指纹与现盘内容比对（防假阳性：更旧的 seal
     /// 是更早状态，会把 agent 自己的后续变更误报成外部修改）。最后声明
     /// turn 未封印（trailing turn 进行中）→ unchecked 诚实跳过。
@@ -1473,7 +1473,7 @@ impl CheckpointStore {
     /// 现已不在」——外部删除也算修改，force 可过）；一致 / 封印即不在盘
     /// （None vs None）= 干净。
     ///
-    /// git 形态补充覆盖（2026-09-26 复查 F6）：restore_code 实际做
+    /// git 形态补充覆盖（复查）：restore_code 实际做
     /// target..现状**全树 diff**——shell 副作用等未声明文件同样被恢复/删
     /// 除，预检若只看声明路径就对这部分失明。增量判定（与声明路径同语义
     /// 粒度，参照物 = 最新 begin tree）：候选路径在 target 与 reference 间
@@ -1485,7 +1485,7 @@ impl CheckpointStore {
         self.conflict_scan_scoped(from_turn, None)
     }
 
-    /// R31：会话收窄版冲突预检。`rewind_session = Some(回退发起会话)` 时，
+    /// 会话收窄版冲突预检。`rewind_session = Some(回退发起会话)` 时，
     /// 回退区间内**其他会话**（条目归属 ≠ 发起会话）声明过变更的路径进
     /// `other_session_paths`（默认拒绝，force 显式强过）——它们会被 restore
     /// 的全树恢复碾掉但不属于本次回退意图。None = 不收窄（旧全局语义）。
@@ -1502,14 +1502,14 @@ impl CheckpointStore {
         // 锁内收集 (path, sealed, sealed_hash) 快照，放锁后读盘比对
         // （锁纪律：不带着 inner 锁做文件 IO）。
         let mut last_declared: Vec<(String, bool, Option<String>)> = Vec::new();
-        // R31：其他会话声明的路径（保序去重）。
+        // 其他会话声明的路径（保序去重）。
         let mut other_paths: Vec<String> = Vec::new();
         // restore 同款守卫：from_turn 后无 checkpoint → no-op（锁内一次性赋值）。
         let has_post;
         {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-            // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+            // cur 桶化——所有会话的进行中 turn 都参与全量收集。
             all.extend(guard.cur.values());
             all.sort_by_key(|c| c.turn);
             has_post = all.iter().any(|c| c.turn >= from_turn);
@@ -1519,7 +1519,7 @@ impl CheckpointStore {
                 } else {
                     c.paths.clone()
                 };
-                // R31：其他会话的 turn——单列进 other_session_paths，不进
+                // 其他会话的 turn——单列进 other_session_paths，不进
                 // last_declared（不重复出现在 unchecked/git-form 补充里）。
                 if is_other_session(&c.session, rewind_session) {
                     for p in paths {
@@ -1571,8 +1571,8 @@ impl CheckpointStore {
         }
         // git 形态：全树 diff 的未声明路径补进 unchecked（见 fn 文档）。排
         // 除集 = 声明路径 ∪ 已报冲突路径（后者已有精确封印判定，不得再以
-        // unchecked 身份重复出现）∪ R31 其他会话路径（已单列波及面）；补进
-        // 时对既有 unchecked 去重。BUG-20261103-347：tree delta 路径是
+        // unchecked 身份重复出现）∪ 其他会话路径（已单列波及面）；补进
+        // 时对既有 unchecked 去重。：tree delta 路径是
         // repo 相对形态，排除集元素必须过 repo_relative_path 归一（声明串
         // 常态是绝对路径，原样 contains 恒 miss → 声明过的路径全量漏进
         // unchecked 假警告）；归一 None（界外/不可定）= 不会出现在 tree
@@ -1619,7 +1619,7 @@ impl CheckpointStore {
         report
     }
 
-    /// F6：target..现状 全树 diff 中「偏离发生在最新 begin 之后」的未声明
+    /// target..现状 全树 diff 中「偏离发生在最新 begin 之后」的未声明
     /// 路径集。参照判定：路径在 target 与 reference（最新 begin tree）里
     /// 状态一致 = 偏离在 begin 后产生（trailing/外部，不可区分）；已偏离
     /// = 回退区间内变更（agent 本意）。任何失败 = 空集（预检降级，不误
@@ -1686,7 +1686,7 @@ impl CheckpointStore {
     }
 
     /// Restore the workspace to its state at the start of turn `from_turn`.
-    /// Returns a [`RestoreReport`]（R3：成功/失败分明，失败项带原因——此前
+    /// Returns a [`RestoreReport`]（成功/失败分明，失败项带原因——此前
     /// (written, deleted) 两 vec 把失败静默吞掉，rewind 侧无条件盖
     /// 「applied」戳并摧毁 checkpoint，失败后无法重试）。
     ///
@@ -1695,11 +1695,11 @@ impl CheckpointStore {
     /// 文件）。工作区外的 hybrid 内容快照（files 里 content Some 的）在 tree
     /// 恢复后按 JSON 语义补写。
     pub async fn restore_code(&self, from_turn: usize) -> RestoreReport {
-        // ---- 第一段：inner 锁内定 target tree + hybrid 集合，随即放锁 ----
+        // ----：inner 锁内定 target tree + hybrid 集合，随即放锁 ----
         let (target_hex, hybrid) = {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-            // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+            // cur 桶化——所有会话的进行中 turn 都参与全量收集。
             all.extend(guard.cur.values());
             all.sort_by_key(|c| c.turn);
 
@@ -1744,13 +1744,13 @@ impl CheckpointStore {
             return self.hybrid_restore(hybrid).await;
         };
 
-        // ---- 第二段：repo 锁内做 tree diff + checkout，随即放锁 ----
+        // ----：repo 锁内做 tree diff + checkout，随即放锁 ----
         #[cfg(feature = "checkpoint-git")]
         let mut result = match self.git.as_ref() {
             Some(gb) => match gb.open() {
                 Ok(mut repo) => Self::git_restore(&self.root, &mut repo, &target_hex),
                 Err(e) => {
-                    // 跨模式（会话曾以 git 模式记录，现 .git 消失回落 JSON）：tree
+                    // 跨模式（会话曾以 git 模式记录，现.git 消失回落 JSON）：tree
                     // 段跳过，工作区内的恢复是诚实 no-op（绝无误删）。
                     warn!(
                         "[checkpoint] 目标 tree {target_hex} 存在但影子库不可用，跳过工作区内恢复: {e}"
@@ -1774,14 +1774,14 @@ impl CheckpointStore {
             RestoreReport::default()
         };
 
-        // ---- 第三段：hybrid 工作区外内容恢复 ----
+        // ----：hybrid 工作区外内容恢复 ----
         let hw = self.hybrid_restore(hybrid).await;
         result.merge(hw);
         result
     }
 
     /// JSON 语义的内容恢复（git 模式下仅工作区外路径走这里）。
-    /// R3：失败项进 `failures`（带原因），不再 `is_ok()` 静默吞。
+    /// 失败项进 `failures`（带原因），不再 `is_ok()` 静默吞。
     async fn hybrid_restore(&self, hybrid: Vec<(String, Option<String>)>) -> RestoreReport {
         let mut report = RestoreReport::default();
         for (path, content) in hybrid {
@@ -1790,7 +1790,7 @@ impl CheckpointStore {
             };
             match content {
                 None => {
-                    // M11（2026-10-27 整改批次四）：async 删除臂换 spawn_blocking +
+                    // async 删除臂换 spawn_blocking +
                     // fsutil 韧性包装（同步退避重试不堵 runtime；NotFound 语义
                     // 保留——retry 包装对 NotFound 返 Ok，先探存在性分开
                     // 「快照本就记录不存在」与「真删了」）。
@@ -1824,7 +1824,7 @@ impl CheckpointStore {
     pub fn list_meta(&self) -> Vec<CheckpointMeta> {
         let guard = self.inner.lock();
         let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-        // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+        // cur 桶化——所有会话的进行中 turn 都参与全量收集。
         all.extend(guard.cur.values());
         all.sort_by_key(|c| c.turn);
         all.into_iter()
@@ -1853,7 +1853,7 @@ impl CheckpointStore {
         self.truncate_from_scoped(from_turn, None);
     }
 
-    /// R31：会话收窄版截断——只清「本会话」的 turn ≥ from_turn 条目（含落
+    /// 会话收窄版截断——只清「本会话」的 turn ≥ from_turn 条目（含落
     /// 盘 turn-N.json）。turn 序号是 loop 全局的，而 `sessions.rewind_to_message`
     /// 是会话级 API：无收窄的全局截断会把并发会话的回退历史整段清掉，永久
     /// 摧毁其 rewind/redo 能力。`rewind_session = None` = 不收窄（旧全局语义，
@@ -1865,7 +1865,7 @@ impl CheckpointStore {
         {
             let mut guard = self.inner.lock();
             // 保留：旧 turn（< from_turn）∪ 其他会话条目；清：本会话 turn ≥
-            // from_turn。R4：cur 桶化——逐桶同判定，只清「本会话」的进行中
+            // from_turn。：cur 桶化——逐桶同判定，只清「本会话」的进行中
             // 桶（其他会话的 cur 连同其去重集原位不动）。
             guard
                 .done
@@ -1895,7 +1895,7 @@ impl CheckpointStore {
                     && t >= from_turn
                     && !persisted_checkpoint_belongs_to_other_session(&ent.path(), rewind_session)
                 {
-                    // BUG-20261025-35：裸单发 remove + `let _` 吞错——Windows
+                    // 裸单发 remove + `let _` 吞错——Windows
                     // 上刚落盘的 turn 镜像被 Defender/索引器瞬时持句是常态
                     // （fsutil 模块头注记的 CI 实证教训），删除静默失败后
                     // `load()` 重启回载会把**已回退的 turn 复活**进索引：
@@ -1912,27 +1912,27 @@ impl CheckpointStore {
                 }
             }
         }
-        // M6（2026-10-27 整改批次五）：truncate 后触发 gc。未装配/未启用
+        // truncate 后触发 gc。未装配/未启用
         // （默认态）= gc_now 首行诚实跳过，零触碰；启用时同步执行（git 重
         // 建典型毫秒级增量拷贝，且 rewind 本身是低频显式维护操作），失败
         // 零破坏、不影响 rewind 返回值。
         self.gc_now();
     }
 
-    /// E3：当前最新影子 tree（done+cur 按 turn 排序，最后一个带 tree 的）。
+    /// 当前最新影子 tree（done+cur 按 turn 排序，最后一个带 tree 的）。
     /// 消息级回退在截断 checkpoint 索引**前**记录 redo 前向恢复目标用。
     pub fn latest_tree_hex(&self) -> Option<String> {
         self.tree_hex_at_or_before(usize::MAX)
     }
 
-    /// E3：`turn < from_turn` 里最后一个带 tree 的 checkpoint 的影子 tree。
+    /// `turn < from_turn` 里最后一个带 tree 的 checkpoint 的影子 tree。
     /// 即 `truncate_from(from_turn)` 之后索引里剩下的最新 tree——redo 的
     /// 陈旧性守卫基线（期间任何新 turn 都会改变它）。
     pub fn tree_hex_before(&self, from_turn: usize) -> Option<String> {
         self.tree_hex_at_or_before(from_turn.saturating_sub(1))
     }
 
-    /// E3 redo：rewind 时刻的**实时**影子 tree。与 `latest_tree_hex` 的差
+    /// redo：rewind 时刻的**实时**影子 tree。与 `latest_tree_hex` 的差
     /// 别：begin 树是各 turn 开始时写的——最后一个 turn 的变更（含 shell
     /// 副作用）不在任何 begin 树里，redo 的前向恢复目标必须是 rewind 时刻
     /// 的实况，否则 redo 后文件停在「最后 turn 开始前」，与已回填的对话行
@@ -1962,7 +1962,7 @@ impl CheckpointStore {
     fn tree_hex_at_or_before(&self, bound: usize) -> Option<String> {
         let guard = self.inner.lock();
         let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-        // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+        // cur 桶化——所有会话的进行中 turn 都参与全量收集。
         all.extend(guard.cur.values());
         all.sort_by_key(|c| c.turn);
         all.into_iter()
@@ -1971,7 +1971,7 @@ impl CheckpointStore {
             .next_back()
     }
 
-    /// E3：把工作区文件恢复到**指定影子 tree**（绕过 JSON 索引——
+    /// 把工作区文件恢复到**指定影子 tree**（绕过 JSON 索引——
     /// `truncate_from` 可能已把对应 turn 从索引清掉，但影子库对象 v1 不
     /// gc，tree 仍然有效）。仅 git 形态；JSON 形态诚实报错（无 tree 可
     /// 言）。只覆盖工作区内（tree 覆盖范围）；工作区外的 hybrid 内容快照
@@ -1992,7 +1992,7 @@ impl CheckpointStore {
         Err("影子库未编译（checkpoint-git 关），无法按 tree 恢复文件".to_string())
     }
 
-    /// M4（2026-10-27 整改）：以指定基线 tree 为参照的盘面漂移扫描（redo
+    /// 以指定基线 tree 为参照的盘面漂移扫描（redo
     /// 冲突预检）。undo→redo 窗口内的**外部改动**（IDE 手改等）不产生新
     /// checkpoint turn——行数/行身份/tree 基线三守卫全盲（守卫 2 只看索引
     /// 最新 tree，而 undo 已把目标区间从索引截掉）；本扫描 diff 基线 tree
@@ -2038,7 +2038,7 @@ impl CheckpointStore {
         None
     }
 
-    /// M3：工作区根（`session_file_diff` 读现盘文件用——checkpoint 的
+    /// 工作区根（`session_file_diff` 读现盘文件用——checkpoint 的
     /// root 即 AgentLoop 装配时的工作区根）。
     pub fn root(&self) -> &std::path::Path {
         &self.root
@@ -2065,7 +2065,7 @@ impl CheckpointStore {
         b.len() >= 2 && b[1] == b':' && b[0].is_ascii_alphabetic()
     }
 
-    /// 树接口路径归一（BUG-20261103-347 单一入口，M3 会话 diff / F6 预检
+    /// 树接口路径归一（单一入口， 会话 diff / 预检
     /// 排除集共用）：任意调用方/声明形态 → 影子库 repo 相对路径（正斜杠）。
     /// 影子 tree 条目是 `add_all` 工作区扫描产物（repo 相对），而声明侧存
     /// 工具入参逐字串（常态绝对路径）——不归一直接喂树接口必错位。工作区
@@ -2110,20 +2110,20 @@ impl CheckpointStore {
         }
     }
 
-    /// M3：某文件的最早基线锚——索引里（done 按 turn 序 + cur）第一个
+    /// 某文件的最早基线锚——索引里（done 按 turn 序 + cur）第一个
     /// 声明过该文件的条目（`paths` 命中或 `files` 含该路径；后者兼容
-    /// D2 之前没有 `paths` 字段的老 JSON 条目）。
+    /// 之前没有 `paths` 字段的老 JSON 条目）。
     ///
     /// 诚实边界：索引是 store 全局的（跨会话共享）——多会话共改同一文件
     /// 时基线可能取自更早会话的 turn（消费方 session_file_diff 以此为
     /// 「最早已知 pre-edit 态」语义）。
     pub fn base_for_path(&self, path: &str) -> Option<CheckpointBase> {
-        // BUG-20261103-347：声明侧存工具入参逐字串（常态绝对路径），查询
+        // 声明侧存工具入参逐字串（常态绝对路径），查询
         // 侧形态任意——双侧 comparable 归一后再匹配，形态差异不再漏命中。
         let target = self.comparable_path_form(path);
         let guard = self.inner.lock();
         let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
-        // R4：cur 桶化——所有会话的进行中 turn 都参与全量收集。
+        // cur 桶化——所有会话的进行中 turn 都参与全量收集。
         all.extend(guard.cur.values());
         all.sort_by_key(|c| c.turn);
         all.into_iter()
@@ -2146,7 +2146,7 @@ impl CheckpointStore {
             })
     }
 
-    /// M3：从影子 tree 读单文件内容（git 形态专用）。文件不在 tree 里 →
+    /// 从影子 tree 读单文件内容（git 形态专用）。文件不在 tree 里 →
     /// `Ok(None)`（基线时刻尚不存在=新增文件语义）；真实 git 错误 → Err。
     #[cfg(feature = "checkpoint-git")]
     pub fn read_file_from_tree(
@@ -2195,13 +2195,13 @@ impl CheckpointStore {
             return;
         }
         let path = dir.join(format!("turn-{}.json", cp.turn));
-        // BUG-20261025-43：改原子写。此前裸 std::fs::write 直写目标——崩溃/
+        // 改原子写。此前裸 std::fs:write 直写目标——崩溃/
         // 断电落在写中 → 半截 JSON，且 turn-N.json 每 turn 被 snapshot/seal
         // 多次覆写，撕裂毁掉的是先前已落盘的好镜像。重启后 load 解析失败
         // 静默跳过 → rewind 选择器丢条目、tree 基线/封印指纹消失（冲突预检
         // 对该 turn 致盲）、redo 陈旧性守卫基线漂移。同 crate 的
-        // loop_continuation R14 同族先例；write_file_atomic 的临时名
-        // `.tmp-*` 无 .json 扩展名，load/truncate 的 turn-*.json 扫描天然
+        // loop_continuation 同族先例；write_file_atomic 的临时名
+        // `.tmp-*` 无.json 扩展名，load/truncate 的 turn-*.json 扫描天然
         // 无视崩溃残留。
         if let Err(e) = nemesis_utils::write_file_atomic(&path.to_string_lossy(), &bytes, 0o600) {
             warn!(
@@ -2215,7 +2215,7 @@ impl CheckpointStore {
     /// Resolve `p` against the workspace root, rejecting `..` traversal
     /// escapes.
     ///
-    /// SAN-10 复核结论（2026-09-16）：**刻意不做工作区边界校验**。D2 hybrid
+    /// SAN-10 复核结论：**刻意不做工作区边界校验**。 hybrid
     /// 是已验收的既定设计（`git_mode_hybrid_restores_out_of_workspace_paths`）：
     /// `restrict=false` 部署下声明式工具合法写工作区外文件，undo 必须能回滚
     /// 它们（否则 rewind 诚实性破产）。快照路径只能经 live 安全审批过的工具
@@ -2238,25 +2238,25 @@ impl CheckpointStore {
 #[cfg(test)]
 mod tests;
 
-// BUG-20261025-43（BUG-HUNT R120）：persist 原子写 + load 损坏镜像 loud 留痕
-// 回归锁（R14 同族先例形态）。
+// persist 原子写 + load 损坏镜像 loud 留痕
+// 回归锁（同族先例形态）。
 #[cfg(test)]
 mod r43_tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 
-// D2 (devtool-upgrade 阶段 5): git 影子库双形态回归（D4 验收）。
+// (devtool-upgrade): git 影子库双形态回归（验收）。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod d2_tests;
 
-// E3 (devtool-upgrade 阶段 5): tree 查询 + restore_to_tree（消息级回退
+// (devtool-upgrade): tree 查询 + restore_to_tree（消息级回退
 // redo 的文件原语）测试。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod e3_tests;
 
-// M3 (devtool-upgrade 阶段 5): base_for_path + read_file_from_tree（会话级
+// (devtool-upgrade): base_for_path + read_file_from_tree（会话级
 // diff 查看器的基线原语）测试。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod m3_tests;
@@ -2267,23 +2267,23 @@ mod m3_tests;
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod cov_tests;
 
-// P20 (2026-09-25 能力扩展 WS7): turn 收尾封印（after 指纹）+ 冲突预检
+// turn 收尾封印（after 指纹）+ 冲突预检
 // （last-declared 规则）+ 影子库自愈（幂等清扫）测试。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod p20_tests;
 
-// P4 (2026-10-17 交付门): 交付分支捕获 / patch 重算 / 列举 + 分支名校验
+// 交付分支捕获 / patch 重算 / 列举 + 分支名校验
 // 测试。
 #[cfg(all(test, feature = "checkpoint-git"))]
 mod p4_tests;
 
-// M6（2026-10-27 整改批次五）：checkpoint gc 回归（保留集纯函数 / JSON 形态
+// checkpoint gc 回归（保留集纯函数 / JSON 形态
 // 清扫 / git 重建式 gc + extras + 交付 refs 存活 + 零触碰；git 臂在文件内
 // 自挂 feature 守卫）。
 #[cfg(test)]
 mod gc_tests;
 
-// BUG-20261031：影子库常驻 git2::Repository 持有扫描目标项目 pack 句柄
+// 影子库常驻 git2::Repository 持有扫描目标项目 pack 句柄
 // （Windows mmap 锁 → 项目无法删除）复现/回归锁（Windows-only 语义在
 // 文件内自挂 cfg(windows)）。
 #[cfg(all(test, windows, feature = "checkpoint-git"))]

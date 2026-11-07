@@ -1,4 +1,4 @@
-//! P2/P3（能力扩展 WS3，2026-09-25）：诊断回灌触发臂扩展 + 会话级跨文件
+//! （2026-09-25）：诊断回灌触发臂扩展 + 会话级跨文件
 //! 聚合 + stale 过滤（版本感知竞速）测试。
 //!
 //! fake gopls / PATH 辅助复用 [`super::diagnostics_feedback_tests`]（PATH
@@ -16,7 +16,7 @@ use super::diagnostics_feedback_tests::{cfg_enabled, plant_fake_gopls};
 use nemesis_config::DiagnosticsLoopConfig;
 
 // ---------------------------------------------------------------------------
-// P2：触发臂扩展（edit_file（含 action=append，2026-11-06 append_file 并入
+// 触发臂扩展（edit_file（含 action=append，2026-11-06 append_file 并入
 // 后由 edit_file 条目承载）/ multiedit）
 // ---------------------------------------------------------------------------
 
@@ -89,7 +89,7 @@ async fn multiedit_triggers_feedback() {
 }
 
 // ---------------------------------------------------------------------------
-// P2：路径提取（纯函数，确定性）
+// 路径提取（纯函数，确定性）
 // ---------------------------------------------------------------------------
 
 /// 单文件工具取顶层 `path`。
@@ -144,7 +144,7 @@ fn extract_paths_missing_path_returns_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// P3：跨文件聚合 + stale 过滤
+// 跨文件聚合 + stale 过滤
 // ---------------------------------------------------------------------------
 
 /// 会话内先写过 B（采集周期登记锚点），再写 A：A 的回灌聚合出 B 的错误
@@ -314,7 +314,7 @@ async fn clean_edit_still_records_anchor() {
 }
 
 // ---------------------------------------------------------------------------
-// P3：DiagnosticsTouchRegistry 纯逻辑（会话隔离 / cap / upsert 移尾）
+// DiagnosticsTouchRegistry 纯逻辑（会话隔离 / cap / upsert 移尾）
 // ---------------------------------------------------------------------------
 
 fn anchor(name: &str, offset_ms: u64) -> (PathBuf, std::time::SystemTime) {

@@ -125,7 +125,7 @@ impl ExternalChannel {
 
         tokio::spawn(async move {
             // 通道 EXE 多为 console 程序；gateway 托盘/无控制台运行（release
-            // windows 子系统，2026-09-21）时压掉弹窗（stdout/stderr 走管道）。
+            // windows 子系统）时压掉弹窗（stdout/stderr 走管道）。
             let mut cmd = Command::new(&input_exe);
             cmd.stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());

@@ -31,7 +31,7 @@ fn alternating_loop_different_errors_dont_accumulate() {
         g.record_tool_outcome("exec", Some("Error: error[E0425]: b"))
             .is_none()
     );
-    // E0432 seen again → its own count is 2 (not 3), still no nudge.
+    // seen again → its own count is 2 (not 3), still no nudge.
     assert!(
         g.record_tool_outcome("exec", Some("Error: error[E0432]: a"))
             .is_none()
@@ -47,7 +47,7 @@ fn successes_never_nudge() {
 }
 
 /// ⑥ Escalation: up to 23 cumulative identical failures there's only a
-/// nudge (intervention ladder L0-L3); at 24 the hard-stop fires (terminal
+/// nudge (intervention ladder -); at 24 the hard-stop fires (terminal
 /// card via check_escalation).
 #[test]
 fn alternating_loop_escalates_after_hard_stop_threshold() {
@@ -82,7 +82,7 @@ fn escalation_survives_intervening_successes() {
     assert!(g.escalation_check().is_some());
 }
 
-/// J5: escalating_signature exposes the hard-stopped (sig, count); both
+/// escalating_signature exposes the hard-stopped (sig, count); both
 /// escalation_check and escalation_message derive from the same text, and
 /// clear_signature removes exactly one signature (the terminal-card approve
 /// path) while leaving other stuck loops' cumulative evidence intact.
@@ -124,9 +124,9 @@ fn escalating_signature_and_clear_signature() {
     assert!(g.escalation_check().is_none());
 }
 
-/// 循环干预阶梯（2026-10-24）：阶梯级别是累计次数的纯函数——3-5 次=L0
-/// （原文案逐字节保留）、6-11=L1（换方法）、12-17=L2（换路径/分解）、
-/// 18-23=L3（绕过+记录缺口）。边界值逐一钉死（含换级首拍）。
+/// 循环干预阶梯：阶梯级别是累计次数的纯函数——3-5 次=
+/// （原文案逐字节保留）、6-11=（换方法）、12-17=（换路径/分解）、
+/// 18-23=（绕过+记录缺口）。边界值逐一钉死（含换级首拍）。
 /// 隔次插入其他工具的成功破开 ④ 连败链（storm nudge 优先级更高会盖掉
 /// 阶梯文案），让 ⑥ 累计计数的阶梯文案显形——与真实 edit(ok)→build(fail)
 /// 交替形态同构。
@@ -143,7 +143,7 @@ fn alternating_nudge_ladder_levels_are_pure_function_of_count() {
             .expect("nudge fires from 3")
     };
 
-    // L0（3-5）：原文案（byte-identical 契约，锚定原 nudge 的关键短语）。
+    // （3-5）：原文案（byte-identical 契约，锚定原 nudge 的关键短语）。
     for count in [3u32, 4, 5] {
         let nudge = nudge_at(count);
         assert!(
@@ -155,7 +155,7 @@ fn alternating_nudge_ladder_levels_are_pure_function_of_count() {
             "L0 carries the count (count={count}): {nudge}"
         );
     }
-    // L1（6-11）：换方法。
+    // （6-11）：换方法。
     for count in [6u32, 11] {
         let nudge = nudge_at(count);
         assert!(
@@ -163,7 +163,7 @@ fn alternating_nudge_ladder_levels_are_pure_function_of_count() {
             "L1 = switch method (count={count}): {nudge}"
         );
     }
-    // L2（12-17）：换路径/分解。
+    // （12-17）：换路径/分解。
     for count in [12u32, 17] {
         let nudge = nudge_at(count);
         assert!(
@@ -171,7 +171,7 @@ fn alternating_nudge_ladder_levels_are_pure_function_of_count() {
             "L2 = switch path / decompose (count={count}): {nudge}"
         );
     }
-    // L3（18-23）：绕过 + 记录缺口。
+    // （18-23）：绕过 + 记录缺口。
     for count in [18u32, 23] {
         let nudge = nudge_at(count);
         assert!(
@@ -320,7 +320,7 @@ fn repeat_success_nudges_on_identical_writes() {
     }
 }
 
-/// E5（2026-10-15 收尾保障）：写类成功置位 `had_writes`（预算暂停探针
+/// 写类成功置位 `had_writes`（预算暂停探针
 /// 触发闸）；读类不置位；新 guard 初始 false。
 #[test]
 fn had_writes_tracks_write_like_successes_only() {
@@ -446,7 +446,7 @@ fn test_read_side_counts_independent_of_write_side() {
     assert!(g.record_read_success("edit_file", args).is_none());
 }
 
-/// P2A（2026-09-12）：escalation 文案必须以稳定前缀 [`ESCALATION_MARKER`]
+/// P2A：escalation 文案必须以稳定前缀 [`ESCALATION_MARKER`]
 /// 开头——集群 worker 侧按此前缀识别「升级停轮」交付并按失败上报
 /// （fail_class=escalation），跨 crate 识别依赖此前缀不被改写。
 #[test]
@@ -460,7 +460,7 @@ fn test_escalation_message_carries_stable_marker_prefix() {
     assert!(msg.contains("6"));
 }
 
-/// T1（扩展计划 D3）：带收据的成功 = 正常路径（无 nudge、收据入环、
+/// （扩展计划）：带收据的成功 = 正常路径（无 nudge、收据入环、
 /// escalation 不触发）。
 #[test]
 fn verified_success_is_normal() {
@@ -475,7 +475,7 @@ fn verified_success_is_normal() {
     assert_eq!(g.receipt_count(), ALTERNATING_LOOP_HARD_STOP as usize);
 }
 
-/// T1：无收据的"成功"（谎报/绕过执行点注入）= 合成失败签名——每次
+/// 无收据的"成功"（谎报/绕过执行点注入）= 合成失败签名——每次
 /// 返回 nudge，累计到硬停阈值触发 escalation。
 #[test]
 fn unverified_success_synthesizes_failure_and_escalates() {
@@ -496,7 +496,7 @@ fn unverified_success_synthesizes_failure_and_escalates() {
     assert!(sig.contains(RECEIPT_MISSING_MARKER));
 }
 
-/// T1：收据环 cap 32 FIFO 驱逐——入 37 张只留最新 32 张。
+/// 收据环 cap 32 FIFO 驱逐——入 37 张只留最新 32 张。
 #[test]
 fn receipt_ring_cap_evicts_oldest() {
     let mut g = TurnGuard::new();
@@ -510,7 +510,7 @@ fn receipt_ring_cap_evicts_oldest() {
     assert_eq!(g.receipt_count(), RECEIPT_RING_CAP);
 }
 
-/// T1：失败结果照旧入账（收据存在不影响失败语义），混合路径不串扰。
+/// 失败结果照旧入账（收据存在不影响失败语义），混合路径不串扰。
 #[test]
 fn verified_failure_uses_existing_semantics() {
     let mut g = TurnGuard::new();
@@ -540,7 +540,7 @@ fn text_repetition_third_consecutive_still_nudges() {
     assert!(g.check_text_repetition(base).is_none());
     let a2 = "我已经检查了文件，发现问题是依赖配置不对，需要修改 Cargo.toml 哦。";
     assert!(g.check_text_repetition(a2).is_some());
-    // 第三轮仍近似 → repeat_text_count >= 1 的升级文案臂。
+    // 仍近似 → repeat_text_count >= 1 的升级文案臂。
     let a3 = "我已经检查了文件，发现问题是依赖配置不对，需要修改 Cargo.toml 呀。";
     assert!(g.check_text_repetition(a3).is_some());
 }
@@ -552,7 +552,7 @@ fn similarity_short_strings_have_empty_shingle_sets() {
 }
 
 // ---------------------------------------------------------------------------
-// A2（2026-10-21 引入）：guard_events 计数——本轮守卫事件
+// （引入）：guard_events 计数——本轮守卫事件
 // 总数（`finalize_turn` 落账用）。判定未触发不计数；六类触发点各自 +1。
 // ---------------------------------------------------------------------------
 

@@ -367,7 +367,7 @@ fn test_node_executor_registry_new_with_composite() {
 fn test_registry_concurrent_access() {
     // Verify that the RwLock-backed registry is safe under concurrent
     // read/write access from multiple threads. Regression guard for the
-    // unsafe removal refactor (1a-A3).
+    // unsafe removal refactor (1a-).
     use std::sync::Arc;
     use std::thread;
 
@@ -541,7 +541,7 @@ async fn test_loop_stub_default_iterations() {
 
 #[tokio::test]
 async fn test_tool_node_executor_default_fails_loudly() {
-    // (BUG S12b-1) 裸引擎占位执行器不再伪造成功：无任何配置时也要显式
+    // (BUG -1) 裸引擎占位执行器不再伪造成功：无任何配置时也要显式
     // Failed + 指明「未配置工具执行器」，错误里带节点 id 与 unknown 工具名。
     let exec = ToolNodeExecutor;
     let node = make_node("n1", "tool", HashMap::new());
@@ -562,7 +562,7 @@ async fn test_tool_node_executor_default_fails_loudly() {
 
 #[tokio::test]
 async fn test_tool_node_executor_names_configured_tool() {
-    // (BUG S12b-1) 错误消息引用配置的工具名；"name" 字段优先于遗留 "tool"
+    // (BUG -1) 错误消息引用配置的工具名；"name" 字段优先于遗留 "tool"
     // （与 RealToolNodeExecutor 同一解析顺序）。
     let exec = ToolNodeExecutor;
     let mut config = HashMap::new();
@@ -978,7 +978,7 @@ async fn test_transform_output_type_xml_unwraps_bare_string() {
 
 #[tokio::test]
 async fn test_transform_output_type_json_keeps_object_shape() {
-    // output_type=json is a no-op — leaves the {text: ...} envelope in
+    // output_type=json is a no-op — leaves the {text:...} envelope in
     // place. Same as not setting output_type at all.
     let exec = TransformNodeExecutor;
     let mut config = HashMap::new();
@@ -1060,7 +1060,7 @@ async fn test_delay_node_with_seconds() {
         .await
         .unwrap();
     assert_eq!(result.state, ExecutionState::Completed);
-    // Field is named `delayed_seconds` (was `delayed_ms` before BUG #2 fix).
+    // Field is named `delayed_seconds` (was `delayed_ms` before fix).
     // Value is f64 since the executor now supports fractional seconds.
     assert_eq!(result.output["delayed_seconds"].as_f64().unwrap(), 0.0);
 }
@@ -1532,7 +1532,7 @@ fn test_evaluate_condition_truthy_values() {
     assert!(!evaluate_condition("object_empty", &ctx));
 }
 
-/// 缺陷 14 回归（2026-09-23）：前导 `!` 取反。LLM 生成器表达否定分支的
+/// 缺陷 14 回归：前导 `!` 取反。LLM 生成器表达否定分支的
 /// 自然写法 `!{{check.passed}}` 在旧实现里四步全不匹配落到「非空即真」，
 /// "!true" 恒为真——否定分支无条件放行。
 #[test]
@@ -1687,7 +1687,7 @@ async fn test_new_with_engine_registry() {
 }
 
 // ---------------------------------------------------------------------------
-// RealLLMNodeExecutor (1a-D1)
+// RealLLMNodeExecutor (1a-)
 // ---------------------------------------------------------------------------
 
 use async_trait::async_trait;
@@ -1957,7 +1957,7 @@ async fn test_real_llm_executor_prepends_system_prompt() {
 #[tokio::test]
 async fn test_real_llm_executor_can_be_registered_as_llm_node() {
     // Verifies the real executor can override the default mock via
-    // NodeExecutorRegistry::register("llm", ...).
+    // NodeExecutorRegistry::register("llm",...).
     let provider = Arc::new(StubProvider::success("stub", "stub-model", "real-response"));
     let registry = NodeExecutorRegistry::new();
     registry.register(
@@ -2134,7 +2134,7 @@ async fn test_script_node_delegates_to_run_script_tool() {
         .captured_args()
         .expect("run_script should have been called via the registry");
     // (2) …with the language-resolved interpreter/flag + the script body.
-    // 2026-09-02 起 interpreter 经 resolve_posix_shell_path 二次解析（Windows
+    // 起 interpreter 经 resolve_posix_shell_path 二次解析（Windows
     // 上裸 "bash" 经 PATH 恒命中 System32 的 WSL launcher 空壳），断言对齐
     // 单一真相源而非钉住平台相关字面量。
     assert_eq!(
@@ -2293,7 +2293,7 @@ async fn test_real_tool_executor_accepts_legacy_tool_key() {
 #[tokio::test]
 async fn test_real_tool_executor_can_be_registered_as_tool_node() {
     // Verifies the real executor can override the default mock via
-    // NodeExecutorRegistry::register("tool", ...).
+    // NodeExecutorRegistry::register("tool",...).
     let registry = Arc::new(ToolRegistry::new());
     let stub = Arc::new(StubTool::success("ping", "pong"));
     registry.register(stub as Arc<dyn Tool>);
@@ -2335,7 +2335,7 @@ async fn test_real_tool_executor_defaults_args_to_null() {
 }
 
 // ---------------------------------------------------------------------------
-// QuestionClassifierNodeExecutor tests (1b-D3)
+// QuestionClassifierNodeExecutor tests (1b-)
 // ---------------------------------------------------------------------------
 
 fn classifier_config(
@@ -2610,7 +2610,7 @@ fn parse_classifier_output_returns_none_for_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// ParameterExtractorNodeExecutor tests (1b-D4)
+// ParameterExtractorNodeExecutor tests (1b-)
 // ---------------------------------------------------------------------------
 
 /// Build a parameter_extractor config from a text + a list of
@@ -3043,7 +3043,7 @@ fn parse_json_object_rejects_non_object() {
 }
 
 // ---------------------------------------------------------------------------
-// AgentNodeExecutor tests (1b-D2)
+// AgentNodeExecutor tests (1b-)
 // ---------------------------------------------------------------------------
 
 /// Records each `run_direct` invocation so tests can assert against them.
@@ -3286,10 +3286,10 @@ async fn test_agent_node_resolves_template_in_prompt() {
 }
 
 // ===========================================================================
-// Regression tests for audit-2026-06-26 bug fixes
+// Regression tests for audit bug fixes
 // ===========================================================================
 
-/// BUG #2: Delay executor must use seconds (not millis) for the `seconds`
+/// Delay executor must use seconds (not millis) for the `seconds`
 /// field — the form label is "等待秒数" and the previous `from_millis(secs)`
 /// made `seconds=2` wait only 2ms.
 #[tokio::test]
@@ -3310,7 +3310,7 @@ async fn test_delay_uses_seconds_unit_for_output_field() {
     assert!(result.output.get("delayed_ms").is_none());
 }
 
-/// BUG #4: Script executor must route "bat" / "cmd" languages to cmd.exe,
+/// Script executor must route "bat" / "cmd" languages to cmd.exe,
 /// not fall through to bash. Verified at the pure helper level so the test
 /// doesn't need to actually spawn cmd.exe.
 #[test]
@@ -3325,7 +3325,7 @@ fn test_script_interpreter_for_bat_language() {
     assert_eq!(interpreter2, "cmd");
 }
 
-/// BUG #5: HumanReview executor must resolve `{{var}}` in the `message`
+/// HumanReview executor must resolve `{{var}}` in the `message`
 /// field so reviewers see actual content (placeholder shows
 /// `请审核是否发送给客户：{{draft}}`).
 #[tokio::test]
@@ -3347,7 +3347,7 @@ async fn test_human_review_resolves_template_in_message() {
     );
 }
 
-/// BUG #7: RealLLMNodeExecutor must resolve `{{var}}` in system_prompt
+/// RealLLMNodeExecutor must resolve `{{var}}` in system_prompt
 /// (form provides a variable picker on the system_prompt field).
 #[tokio::test]
 async fn test_real_llm_executor_resolves_system_prompt_template() {
@@ -3372,7 +3372,7 @@ async fn test_real_llm_executor_resolves_system_prompt_template() {
     assert_eq!(messages[0].content, "You are talking to Alice");
 }
 
-/// BUG #6: SubWorkflowNodeExecutor must resolve `{{var}}` inside string
+/// SubWorkflowNodeExecutor must resolve `{{var}}` inside string
 /// values of the `input` config map (form placeholder is `{{user_input}}`).
 /// Older code did exact-key lookup so `{{user_input}}` never matched.
 #[tokio::test]
@@ -3437,7 +3437,7 @@ async fn test_sub_workflow_resolves_template_in_input_values() {
     );
 }
 
-/// BUG #8: AgentNodeExecutor must pass the optional `model` config field
+/// AgentNodeExecutor must pass the optional `model` config field
 /// through to the runner. Previously the form collected it but the trait
 /// signature didn't accept it.
 #[tokio::test]
@@ -3459,7 +3459,7 @@ async fn test_agent_node_passes_model_to_runner() {
     assert_eq!(captured.model.as_deref(), Some("zhipu/glm-4.7"));
 }
 
-/// BUG #8 corollary: empty model field should pass None (not Some("")).
+/// corollary: empty model field should pass None (not Some("")).
 #[tokio::test]
 async fn test_agent_node_omits_empty_model() {
     let runner = Arc::new(StubAgentRunner::success("ok", &[]));
@@ -3477,7 +3477,7 @@ async fn test_agent_node_omits_empty_model() {
     assert!(captured.model.is_none());
 }
 
-/// BUG #3: Loop executor must publish `{{i}}` so condition expressions like
+/// Loop executor must publish `{{i}}` so condition expressions like
 /// `{{i}} < 3` actually iterate the right number of times. Previously only
 /// `loop_index` was inserted, so `{{i}} < 3` never resolved and the loop
 /// bailed out after iter 0.
@@ -3510,7 +3510,7 @@ async fn test_loop_resolves_i_template_in_condition() {
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 3);
 }
 
-/// BUG #3 (stub path): same regression check for LoopNodeStub, since both
+/// (stub path): same regression check for LoopNodeStub, since both
 /// executors must honour the form contract.
 #[tokio::test]
 async fn test_loop_stub_resolves_i_template_in_condition() {
@@ -3533,7 +3533,7 @@ async fn test_loop_stub_resolves_i_template_in_condition() {
     assert_eq!(result.output["iterations"].as_u64().unwrap(), 2);
 }
 
-/// BUG #1: `WorkflowEngine::new_integrated` (the gateway's entry point)
+/// `WorkflowEngine::new_integrated` (the gateway's entry point)
 /// must register REAL parallel/loop executors that dispatch children
 /// through the registry. The previous wiring left the stubs in place,
 /// causing child nodes of type llm/tool/agent/etc to be silently skipped
@@ -3612,7 +3612,7 @@ async fn test_new_integrated_wires_real_parallel_executor() {
     assert!(branch_out["marker_ran"].as_bool().unwrap());
 }
 
-/// BUG #1 corollary: same wiring check for loop.
+/// corollary: same wiring check for loop.
 #[tokio::test]
 async fn test_new_integrated_wires_real_loop_executor() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -3676,8 +3676,8 @@ async fn test_new_integrated_wires_real_loop_executor() {
     assert_eq!(marker_calls.load(Ordering::SeqCst), 2);
 }
 
-/// BUG #10: QuestionClassifier system_prompt must resolve `{{var}}` so user
-/// overrides can reference context (same pattern as BUG #7 — the executor
+/// QuestionClassifier system_prompt must resolve `{{var}}` so user
+/// overrides can reference context (same pattern as — the executor
 /// previously read system_prompt but skipped `resolve_prompt_template`).
 #[tokio::test]
 async fn test_question_classifier_resolves_template_in_system_prompt() {
@@ -3700,8 +3700,8 @@ async fn test_question_classifier_resolves_template_in_system_prompt() {
     assert_eq!(captured[0].content, "Classify for tenant acme-corp");
 }
 
-/// BUG #11: ParameterExtractor system_prompt must resolve `{{var}}` so user
-/// overrides can reference context (same pattern as BUG #7).
+/// ParameterExtractor system_prompt must resolve `{{var}}` so user
+/// overrides can reference context (same pattern as).
 #[tokio::test]
 async fn test_parameter_extractor_resolves_template_in_system_prompt() {
     let provider = Arc::new(StubProvider::success(
@@ -3727,7 +3727,7 @@ async fn test_parameter_extractor_resolves_template_in_system_prompt() {
     assert_eq!(captured[0].content, "Extract for locale en-US");
 }
 
-/// BUG #12: HTTP executor must apply a timeout so a hung URL doesn't block
+/// HTTP executor must apply a timeout so a hung URL doesn't block
 /// the workflow forever. We hit a non-routable TEST-NET-1 address that
 /// won't respond, then check the executor returns within roughly the
 /// configured `timeout_secs` (not the OS default ~75s). The return value
@@ -3757,7 +3757,7 @@ async fn test_http_executor_accepts_timeout_secs_config() {
     );
 }
 
-/// BUG #13: On Windows, "powershell" / "pwsh" config MUST map to
+/// On Windows, "powershell" / "pwsh" config MUST map to
 /// `powershell.exe` (always pre-installed) rather than `pwsh.exe` (PowerShell
 /// Core, requires separate download). Non-Windows keeps `pwsh` since that's
 /// the only way to get PowerShell there.
@@ -4365,7 +4365,7 @@ async fn test_loop_counter_mode_still_works() {
 }
 
 // ---------------------------------------------------------------------------
-// U10 统一执行世界：script 节点车道路由（world 工具车道 / per-node
+// 统一执行世界：script 节点车道路由（world 工具车道 / per-node
 // sandbox:false Spawn 车道 / DirectWorld 无工具车道回退裸 spawn）
 // ---------------------------------------------------------------------------
 
@@ -4574,7 +4574,7 @@ async fn u10_script_world_tool_lane_error_surfaces() {
 }
 
 // ---------------------------------------------------------------------------
-// W4a coverage gap closure (accessors, template/items/json_path arms, loop
+// coverage gap closure (accessors, template/items/json_path arms, loop
 // item_var + failed-child fallback, HTTP success vs local server, script
 // interpreter failure, tool-result error arm, classifier/extractor explicit
 // model+temperature, parse_json_object/normalize/validate/type_name helpers,
@@ -5112,7 +5112,7 @@ fn w4a_parse_json_object_all_recovery_arms() {
     // direct plain object
     let v = parse_json_object(r#"{ "a": 1 }"#).unwrap();
     assert_eq!(v, serde_json::json!({"a": 1}));
-    // fenced (```json ... ```)
+    // fenced (```json... ```)
     let v = parse_json_object("```json\n{\"a\": 2}\n```").unwrap();
     assert_eq!(v, serde_json::json!({"a": 2}));
     // prose-wrapped: outermost {...} extraction
@@ -5249,10 +5249,10 @@ fn w4a_is_truthy_str_arms() {
 }
 
 // ---------------------------------------------------------------------------
-// 诚实失败契约与凭据引用（2026-09-23 计划 A1/A2/A3/B）回归测试
+// 诚实失败契约与凭据引用（计划 ///B）回归测试
 // ---------------------------------------------------------------------------
 
-/// 可配状态码的一次性 HTTP 服务器（A2 用）：返回 `status` 与 `body`。
+/// 可配状态码的一次性 HTTP 服务器（用）：返回 `status` 与 `body`。
 fn wf_status_http_server(
     status: u16,
     reason: &'static str,
@@ -5308,7 +5308,7 @@ fn wf_capture_http_server(conns: usize) -> (u16, std::sync::Arc<std::sync::Mutex
     (port, captured)
 }
 
-// ---- A1：llm 空文本三态 ----
+// ----：llm 空文本三态 ----
 
 #[tokio::test]
 async fn a1_llm_empty_text_with_length_fails_naming_budget() {
@@ -5373,7 +5373,7 @@ async fn a1_llm_truncated_but_nonempty_text_stays_completed() {
     assert_eq!(result.output["text"], "partial answer");
 }
 
-// ---- A3：agent 空响应 ----
+// ----：agent 空响应 ----
 
 #[tokio::test]
 async fn a3_agent_empty_response_fails() {
@@ -5391,7 +5391,7 @@ async fn a3_agent_empty_response_fails() {
     assert!(err.contains("空响应") && err.contains("agent_id"), "{err}");
 }
 
-// ---- A2：http ≥400 默认 Failed ----
+// ----：http ≥400 默认 Failed ----
 
 #[tokio::test]
 async fn a2_http_404_fails_by_default_and_keeps_output() {
@@ -5581,7 +5581,7 @@ async fn b_data_flow_values_are_not_reinterpreted_as_credentials() {
 
 #[tokio::test]
 async fn bug88_http_node_response_body_capped_at_1mb() {
-    // BUG-20261025-88：http 节点注释声称响应体限 1MB，旧实现
+    // http 节点注释声称响应体限 1MB，旧实现
     // `resp.bytes()` 实际全量缓冲（URL 支持 {{var}} 从不可信输入解析，
     // 指向大端点 = 内存耗尽面，且整包进 output 落 checkpoint/日志）。
     // 服务器发 2MB；断言：读取停在 1MB + truncated 诚实标记。
@@ -5637,7 +5637,7 @@ async fn bug88_http_node_response_body_capped_at_1mb() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261030-211 回归锁：composite 子节点返回 Waiting/Cancelled 必须诚实
+// 回归锁：composite 子节点返回 Waiting/Cancelled 必须诚实
 // 失败，不得当成功吞掉（缺陷 9 不变量：审批落地前下游不得抢跑）
 // ---------------------------------------------------------------------------
 
@@ -5779,7 +5779,7 @@ async fn test_parallel_completed_child_still_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261102-324：workflow http 节点 SSRF 闸 + 手动重定向循环
+// workflow http 节点 SSRF 闸 + 手动重定向循环
 // ---------------------------------------------------------------------------
 
 /// 闸槽是全局静态（gateway 注入形态）——写槽用例互斥，且与既有的
@@ -5965,7 +5965,7 @@ async fn bug324_http_node_302_converts_post_to_get() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261103-352：重定向跨源判定（剥敏感头开关）漏 scheme 维度
+// 重定向跨源判定（剥敏感头开关）漏 scheme 维度
 // ---------------------------------------------------------------------------
 
 /// bug352 变体 mock：记录每个连接的完整请求头（剥头断言要看 Authorization

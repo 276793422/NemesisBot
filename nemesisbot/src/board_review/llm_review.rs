@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 board_review.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
 
-/// B2a 模式选择（纯函数；单测钉死）：仅当配置轮数 >1（或 **0=不限**）才开
+/// 模式选择（纯函数；单测钉死）：仅当配置轮数 >1（或 **0=不限**）才开
 /// 执行型取证。最近派发 worker 是本机节点 → `ReadOnly`（全只读白名单）；
 /// 远端 worker → `EvidenceOnly`（档案围栏工具单件——工件虽在远端执行，
 /// 交付档案已合并到本机，可取证）；无派发历史（人工转入 in_review 的手工
@@ -12,8 +12,8 @@ use super::*;
 /// `max_turns=1` 恒为 `NoTools`（与历史行为字节等价）。
 ///
 /// `cfg_max_turns=0` = 不限取证轮数（对齐 max_tool_iterations /
-/// llm_timeout_secs 的 0=不限惯例；2026-10-09 web-FPS C1 评审预算耗尽事故
-/// 根修②）：映射 `u32::MAX` 哨兵——`DetachedOpts.max_turns` 的
+/// llm_timeout_secs 的 0=不限惯例； web-FPS 评审预算耗尽事故
+/// 根）：映射 `u32::MAX` 哨兵——`DetachedOpts.max_turns` 的
 /// 0 语义是「回落主配置默认」而非不限（`loop/turn.rs`），不能直传。不限档
 /// 下 agent 层守卫照常生效（turn_guard doom-loop 检测 / estop / 取消），
 /// 摘掉的只是人为轮数顶棚。
@@ -34,9 +34,9 @@ pub(crate) fn pick_review_tool_mode(
     }
 }
 
-/// PR4（2026-10-10 机制加固）：评审预算感知注入块——告知评审员可用取证
-/// 轮数，预算内证据仍不足只能 UNSURE（转人工），严禁猜 PASS。C1 事故
-/// （2026-10-09：评审 2 轮预算耗尽无结论 → 合格交付被反复重派）的提示词
+/// （机制加固）：评审预算感知注入块——告知评审员可用取证
+/// 轮数，预算内证据仍不足只能 UNSURE（转人工），严禁猜 PASS。 事故
+/// （评审 2 轮预算耗尽无结论 → 合格交付被反复重派）的提示词
 /// 臂：评审员不知道自己有几轮，烧完预算被强停时连「证据不足」的结论都
 /// 没来得及出；知道预算才会边取证边收敛。
 pub(crate) fn render_review_budget_block(tool_mode: ReviewToolMode) -> String {
@@ -53,10 +53,10 @@ pub(crate) fn render_review_budget_block(tool_mode: ReviewToolMode) -> String {
     }
 }
 
-/// 未附内容文件的注记（纯函数，单测钉死；两臂分流 2026-10-15
+/// 未附内容文件的注记（纯函数，单测钉死；两臂分流
 /// evidence-on-demand）。有工具时指路 `board_evidence_read`（快路径没覆盖
 /// 到的内容由评审员自取——正确性通路），NoTools 保持历史文本（测试
-/// ：4188 钉「未附内容」子串）。
+/// 4188 钉「未附内容」子串）。
 pub(crate) fn render_unattached_note(unattached: usize, tool_available: bool) -> String {
     if tool_available {
         format!(
@@ -71,16 +71,16 @@ pub(crate) fn render_unattached_note(unattached: usize, tool_available: bool) ->
 
 /// 裸提示词 detached 评审调用：首跑 + `parse_review` 失败回灌重试 ≤2 次
 /// （共 3 轮）。成功返回解析输出；3 轮全败返回末次错误。`mode` 控制
-/// B2a 工具面（NoTools = 历史行为字节等价）。
+/// 工具面（NoTools = 历史行为字节等价）。
 ///
-/// 发现 D（2026-09-11 措辞精度）：LLM **调用**失败（网络/超时/上游错误）经
+/// 发现 D（措辞精度）：LLM **调用**失败（网络/超时/上游错误）经
 /// `run_detached` 的 Err 在首轮立即返回——不消耗解析重试轮，与本函数内
 /// **解析**失败的「连续 3 轮」是两类故障。返回值文本分别带前缀区分，
 /// 下游评论不再把调用失败误报成「连续 3 次无法解析」。
 ///
-/// 防污染（压测①b，2026-09-30）：`raw` 是 agent 引擎的系统终态文本
+/// 防污染（压测①b）：`raw` 是 agent 引擎的系统终态文本
 /// （急停/取消/轮次预算暂停）时不重试——系统文本解析必败，回灌只会让
-/// 下一轮模型围绕「上一轮为何暂停」作答（NB-54 实证：理由=「上一轮输出
+/// 下一轮模型围绕「上一轮为何暂停」作答（实证：理由=「上一轮输出
 /// 为定时任务预算暂停的系统提示文本」→ UNSURE 转人工，污染评审记录）。
 /// 直接 Err 诚实转人工，不烧重试轮。
 pub(super) async fn run_review_llm(
@@ -88,7 +88,7 @@ pub(super) async fn run_review_llm(
     prompt: &mut String,
     mode: ReviewToolMode,
     tier: nemesis_prompts::board::ReviewTier,
-    // B3/C2（profession-capability-evolution 2026-10-14）：评审分镜 + 服务
+    // /（profession-capability-evolution）：评审分镜 + 服务
     // 端预取的禁令节引用（只进 constraint 镜；None = 历史行为字节等价）。
     lens: Option<&'static nemesis_prompts::board::ReviewLens>,
     lens_reference: Option<&str>,
@@ -97,7 +97,7 @@ pub(super) async fn run_review_llm(
 ) -> Result<nemesis_board::ReviewOutput, String> {
     // 评审分层（gap ②）：Thorough = 历史 REVIEW_SYSTEM_PROMPT 字节一致；
     // Fast = 精简档（保留注入防线与三态 JSON 契约，关取证/经验）。
-    // B3：带分镜走 with_lens（无分镜时 String 与原文同字节；借用进
+    // 带分镜走 with_lens（无分镜时 String 与原文同字节；借用进
     // DetachedOpts——无分镜路径经 with_lens 也返回 String，行为不变）。
     let system_prompt =
         nemesis_prompts::board::render_review_system_prompt_with_lens(tier, lens, lens_reference);
@@ -119,7 +119,7 @@ pub(super) async fn run_review_llm(
                 label: Some("board-review"),
                 ..Default::default()
             },
-            // evidence-on-demand（2026-10-15）：远端 worker 评审的取证面 =
+            // evidence-on-demand：远端 worker 评审的取证面 =
             // 档案围栏工具单件。工具未注册（store 缺席等装配残缺态）时白名
             // 单过滤为零供给——诚实退化为多轮纯文本，不会放大工具面。
             ReviewToolMode::EvidenceOnly { max_turns } => nemesis_agent::r#loop::DetachedOpts {
@@ -176,7 +176,7 @@ pub(super) async fn run_review_llm(
 /// 内容不可能逐字命中；「已取消」引擎产出恒为整串，用整串比对避免理由段
 /// 偶含同词的误伤。
 ///
-/// M4-A（2026-10-10）起对交付写入路径开放（pub(crate)）：
+/// A起对交付写入路径开放（pub(crate)）：
 /// `write_back_board_dispatch`（board_dispatch.rs）在落库终态判定前用本
 /// 谓词守卫——系统暂停/取消文本不是 worker 汇报，不得当交付收货。
 pub(crate) fn is_system_terminal_text(raw: &str) -> bool {
@@ -192,30 +192,30 @@ pub(crate) fn is_system_terminal_text(raw: &str) -> bool {
     MARKERS.iter().any(|m| raw.contains(m))
 }
 
-/// 多检查员面板并发上限（P5/B3：N 路评审同时最多 4 路在飞，多余排队）。
+/// 多检查员面板并发上限（/：N 路评审同时最多 4 路在飞，多余排队）。
 pub(super) const PANEL_CONCURRENCY: usize = 4;
 /// 检查员路数收敛上限（配置面同步 clamp；防手滑写 5000 路烧穿 LLM 配额）。
 pub(crate) const MAX_REVIEW_CHECKERS: u32 = 5;
-/// L19 手法3：检查员面板 retained input 字节上限（prompt 总账）。8 MiB
+/// 手法3：检查员面板 retained input 字节上限（prompt 总账）。8 MiB
 /// 刻意宽于任何现实评审 prompt，只有病态大包才被诚实拒绝。
 pub(super) const PANEL_MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
-/// B3 多检查员面板评审：`checkers > 1` 时并行发出 N 路独立 `run_review_llm`
+/// 多检查员面板评审：`checkers > 1` 时并行发出 N 路独立 `run_review_llm`
 /// （每路独立 prompt 副本 + 编号后缀去相关，WorkPool 限并发（permits =
-/// [`PANEL_CONCURRENCY`]，L19 spawn 形态），join 保序），`aggregate_verdicts`
+/// [`PANEL_CONCURRENCY`]， spawn 形态），join 保序），`aggregate_verdicts`
 /// 多数票聚合。`checkers = 1`（默认）直接单路调用，与历史行为字节等价。
 /// 全路解析失败 → 返回末路错误（与单路 3 轮全败语义一致）。
 ///
-/// B3/C2（profession-capability-evolution 2026-10-14）：单路 = B3 职能分镜
-/// （`profession_lens`，按 issue.required_profession 选）；多路 = C2 异构
+/// （profession-capability-evolution）：单路 = 职能分镜
+/// （`profession_lens`，按 issue.required_profession 选）；多路 = 异构
 /// 三镜按 index 轮换（`checker_lens_for_index`，不再 N 个同质评委，「第
 /// N 号检查员」编号去相关保留）——预取的禁令节引用只注入 constraint 镜
-/// （[`nemesis_prompts::board::CONSTRAINT_LENS_ID`]）。
+/// （[`nemesis_prompts::board:CONSTRAINT_LENS_ID`]）。
 ///
-/// L19 手法3（改进项三期 2026-11-03）：双上限背压——pending 上限 =
+/// 手法3：双上限背压——pending 上限 =
 /// [`MAX_REVIEW_CHECKERS`]（clamp 后全批可提交）、retained input 字节上限 =
 /// [`PANEL_MAX_INPUT_BYTES`]。超限 = 类型化 overloaded **全批诚实拒绝**
-/// （已提交任务取消释放，不部分执行——与 U5 并行批同款批级原子性）。
+/// （已提交任务取消释放，不部分执行——与 并行批同款批级原子性）。
 pub(super) async fn run_review_panel(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     base_prompt: &str,
@@ -305,12 +305,12 @@ pub(super) async fn run_review_panel(
 /// 多数票聚合（纯函数，穷举可测）：多数 PASS → Pass；多数 FAIL → Fail；
 /// 其余（平票/全 Unsure）→ Unsure（转人工，fail-safe 不偏向自动收货）。
 /// reasons 首条注入投票注记（含无效路注记），其余按路合并去重保序；gap
-/// 取首个非空；criteria 取首个非空、unknowns 按序去重合并（批一c §③）；
+/// 取首个非空；criteria 取首个非空、unknowns 按序去重合并（c §③）；
 /// experience 取首个非空；need_evidence/evidence_request 仅在
 /// 聚合结论为 Unsure 时保留——多数已定案的结论不被个别证据请求改写
-/// （B2b 挂起只服务"评不了"，不推翻"评得了"）。
-/// AOR 批一c §③ unknowns 落盘（评审存疑事项 → issue 系统评论的
-/// `unknown: <事项>` 结构化标记行；批二b ⑥ FINISH 谓词消费此标记，
+/// （挂起只服务"评不了"，不推翻"评得了"）。
+/// c §③ unknowns 落盘（评审存疑事项 → issue 系统评论的
+/// `unknown: <事项>` 结构化标记行；b ⑥ FINISH 谓词消费此标记，
 /// 人工评论回应即裁决）。去重：历史轮已落的 `unknown: <同文>` 行不
 /// 重复落，本轮有新增盲区才落一条聚合评论。失败只 warn 不炸评审
 /// （评论是可观测面，非语义闸）。
@@ -402,10 +402,10 @@ pub(super) fn aggregate_verdicts(
         .unwrap_or("")
         .to_string();
     let experience = outputs.iter().find_map(|o| o.experience.clone());
-    // AOR 批一c §③ 聚合语义：criteria 取首个非空（条目文本难以逐字对齐，
+    // c §③ 聚合语义：criteria 取首个非空（条目文本难以逐字对齐，
     // 按条目多数决脆弱——取最完整的一份比逐条投票稳健）；unknowns 按序
     // 去重合并（保守收集全部检查员的盲区）。聚合 verdict==Pass 但 criteria
-    // 带 FAIL 条（少数意见）不在此强制改判——渲染层照实列条目（parse_review
+    // 带 FAIL 条（少数意）不在此强制改判——渲染层照实列条目（parse_review
     // 的互斥校验只管单路 LLM 输出，聚合是系统合成）。
     let criteria = outputs
         .iter()
@@ -451,12 +451,12 @@ pub(super) fn aggregate_verdicts(
     }
 }
 
-/// F3 项目收口验收标准聚合（纯函数）：项目级 AC 排首段（【项目级】标注），
+/// 项目收口验收标准聚合（纯函数）：项目级 AC 排首段（【项目级】标注），
 /// 各顶层父单非空 AC 依序拼接（【父单号】标注），段间 `---` 分隔。空白段
 /// 跳过（无 AC 的项目/父单不产生空段）。
-/// 【label】必须独立成行（2026-09-12 根修）：旧实现拼进 AC 首行
+/// 【label】必须独立成行（根修）：旧实现拼进 AC 首行
 /// （`【项目级】[CHECK] …`），首行不再以 `[CHECK]` 顶格 → 每段第一条
-/// 锚点被 parse_anchors 静默吞掉回落语义项（双端真机 S2 实证：项目级
+/// 锚点被 parse_anchors 静默吞掉回落语义项（双端真机 实证：项目级
 /// AC 的 re:index.html 锚点从未参与客观核验；单行 AC 项目整个锚点面
 /// 失效）。
 pub(super) fn join_project_review_ac(
@@ -487,7 +487,7 @@ pub(super) fn join_project_review_ac(
 
 /// 从 home 读 board 段旗标（auto_review/auto_accept/max_redispatch）。
 /// 配置读失败 → Err（评审诚实放弃，fail-closed 到人工验收——不拿默认值
-/// 顶替用户配置）。P5 冲突漏斗（conflict_auto_resolve）同源消费。
+/// 顶替用户配置）。 冲突漏斗（conflict_auto_resolve）同源消费。
 pub(crate) fn load_board_flags(
     home: &std::path::Path,
 ) -> Result<nemesis_config::BoardFlagConfig, String> {
@@ -509,10 +509,10 @@ pub(super) fn render_reasons(reasons: &[String]) -> String {
     s
 }
 
-/// gap 与 reasons 的内容重叠守卫（2026-09-12 根修，横扫三处转人工/收口
+/// gap 与 reasons 的内容重叠守卫（根修，横扫三处转人工/收口
 /// 评论拼装）：锚点短路 FAIL 路径上 `output.gap` 与 `output.reasons` 同源
 /// 同构（reasons 每条 = "锚点失败: …"，gap = render_anchor_failures 明细
-/// 渲染），两处都拼进评论就是同一条失败锚点重复出现两遍（双端真机 S2
+/// 渲染），两处都拼进评论就是同一条失败锚点重复出现两遍（双端真机
 /// 实证：项目收口转人工评论每条失败锚点列出两次）。gap 非空只拼 gap；
 /// gap 空（LLM FAIL 未填差距原文的诚实降级）reasons 仍是唯一理由来源，
 /// 照常渲染。

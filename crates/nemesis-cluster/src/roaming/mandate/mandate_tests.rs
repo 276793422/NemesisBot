@@ -1,4 +1,4 @@
-//! L13-b mandate 模块测试（数据形态/签验全链/四拒路径/密钥面/前置闸）。
+//! b mandate 模块测试（数据形态/签验全链/四拒路径/密钥面/前置闸）。
 
 use std::path::PathBuf;
 
@@ -436,11 +436,11 @@ fn policy_require_missing_mandate_rejected() {
 
 #[test]
 fn policy_verify_unactivated_book_degrades_to_allow() {
-    // BUG-20261104 CI UAT T-MRG 实录（BUG-20261104 五测连红 T-MRG-1/2/3/4/7）：
+    // CI UAT T-MRG （五测连红 T-MRG-1/2/3/4/7）：
     // 全新集群默认形态（sign_enabled=true + mode=verify）下 trust.toml 从未
-    // 激活（L13a BookAbsent 纪律——announce 不建簿，激活唯一路径 = 管理面），
+    // 激活（BookAbsent 纪律——announce 不建簿，激活唯一路径 = 管理面），
     // mandate 在场必拒 → 全部派发滞留 backlog。verify 降级臂：钉存钥缺席 =
-    // regime 休眠 → 放行旧行为（§3.3 默认形态承诺）；钉存钥在场但验不过
+    // regime 休眠 → 放行旧行为（默认形态承诺）；钉存钥在场但验不过
     // （TOFU 污染/伪造）仍拒——见 policy_unpinned_node_rejected_when_mandate_present。
     let ws = temp_workspace("policy-verify-no-book");
     let kf = make_key_file("pvnb");
@@ -472,7 +472,7 @@ fn policy_require_unactivated_book_still_rejected() {
     cleanup(&ws);
 }
 
-/// BUG-20261104-358：簿在场但读失败 = TrustBookUnreadable，Verify/Require
+/// 簿在场但读失败 = TrustBookUnreadable，Verify/Require
 /// 均拒不降级——降级只给「簿缺席（regime 休眠）」，不给「已激活 regime
 /// 的坏簿」（坏簿静默放行 = 管理员激活的验签面被无声降级；announce 闸
 /// 同方向 fail-closed）。旧实现坏簿归 Absent，降级臂上线后即 fail-open。
@@ -610,7 +610,7 @@ fn app_config_roundtrip_preserves_mandate_section() {
 
 #[test]
 fn digest_parity_with_v4_content_digest() {
-    // L13-b 规格「A 端 v4_content_digest+签名」语义单源不漂移：mandate
+    // b 规格「A 端 v4_content_digest+签名」语义单源不漂移：mandate
     // 摘要与 v4 非 PE（raw codec 全文件哈希）内容摘要**字节等价**。
     let canonical = canonical_bytes(&default_body("t-1", 12345)).unwrap();
     assert_eq!(

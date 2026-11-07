@@ -1,4 +1,4 @@
-//! VM 冒烟示例（P5 第 2 步真机验证载体）：KVM/WHPX 宿主上跑最小真实闭环
+//! VM 冒烟示例（第 2 步真机验证载体）：KVM/WHPX 宿主上跑最小真实闭环
 //! ——probe → overlay → start → guest agent 首帧鉴权 → exec 回环 → 隔离
 //! 断言 → kill 探针 → stop 收敛。
 //!
@@ -101,8 +101,8 @@ async fn main() {
     });
     let overlay_path = run_dir.join("smoke-overlay.qcow2");
     let _ = std::fs::remove_file(&overlay_path);
-    // qemu-img 与 qemu-system 同目录（--qemu-dir 给了就一起用；缺省走 PATH）。
-    // Windows 产物带 .exe 后缀——解析形态与 assembly::resolve_qemu_binary 同源。
+    // qemu-img 与 qemu-system 同目录（qemu-dir 给了就一起用；缺省走 PATH）。
+    // Windows 产物带.exe 后缀——解析形态与 assembly::resolve_qemu_binary 同源。
     let qemu_img = match &args.qemu_dir {
         Some(dir) => {
             #[cfg(target_os = "windows")]

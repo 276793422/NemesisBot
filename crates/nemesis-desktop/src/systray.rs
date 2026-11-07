@@ -240,7 +240,7 @@ impl SystemTray {
 // Platform tray implementation
 // ---------------------------------------------------------------------------
 
-// P3-4a（复评修正）：`enable/disable_cluster_menu_items` 运行时切换 API 已
+// （复评修正）：`enable/disable_cluster_menu_items` 运行时切换 API 已
 // 整体删除。理由：全仓零生产调用者（Windows/macOS 实现体 + Linux 空桩都
 // 是死代码）；配套的 plugin-ui `plugin_tray_set_menu_enabled` C ABI 也是空
 // 桩（tray-gtk-migration-impl 已记录「当前没有调用者」）。诚实原则 = 不暴
@@ -594,7 +594,7 @@ pub struct PlatformTray {
     /// Gateway tokio runtime handle. Menu callbacks run on the tray thread
     /// (no tokio context); service callbacks internally `tokio::spawn`
     /// (agent-factory daily cleanups, cluster tasks) which panics without
-    /// one and takes the whole tray down (2026-09-22 tray-death root cause).
+    /// one and takes the whole tray down (tray-death root cause).
     /// When set, every callback is dispatched inside `Handle::block_on`.
     rt: Option<tokio::runtime::Handle>,
 }
@@ -765,7 +765,7 @@ impl PlatformTray {
             #[cfg(target_os = "linux")]
             {
                 let mut builder = EventLoop::<TrayUserEvent>::with_user_event();
-                // Both X11 and Wayland traits provide with_any_thread, but they
+                // Both and Wayland traits provide with_any_thread, but they
                 // set the same internal flag. Use fully-qualified call to disambiguate.
                 EventLoopBuilderExtWayland::with_any_thread(&mut builder, true);
                 builder.build()

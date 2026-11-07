@@ -238,7 +238,7 @@ fn test_token_trim() {
 }
 
 // ===========================================================================
-// run() 全臂（S11c，quality-hardening goal 冲刺 S11）—— env home 隔离 +
+// run() 全臂（quality-hardening goal 冲刺）—— env home 隔离 +
 // GLOBAL_STATE_LOCK 串行。Login openai 的真 OAuth（auth.rs:49-75）结构性
 // 豁免（真网络/浏览器流）；anthropic 走 paste-token 分支，stdin 是管道 EOF
 // → 空输入 → 取消路径（确定性）。
@@ -440,14 +440,14 @@ mod run_arm {
 }
 
 // ===========================================================================
-// r9_zero（R9 补测批零头组，2026-08-27）：openai 真链路 login 子进程双臂。
+// r9_zero（补测批零头组）：openai 真链路 login 子进程双臂。
 // 此前豁免理由是「真网络/浏览器流」；两个确定性夹具拆除该豁免：
 //   ① 回调端口预占 trick —— oauth.rs 的 login_browser 在打开任何浏览器之前
 //     （oauth.rs:57 open_browser_impl）先 bind 127.0.0.1:1455（oauth.rs:53），
 //     我们抢先把 1455 占死 → bind 必败 → 立即 Err 走 paste-token 回落，
 //     浏览器从头到尾不会被拉起，零外部副作用。
 //   ② issuer 接缝 + 死端点 —— NEMESISBOT_OAUTH_ISSUER 指 127.0.0.1:9（discard，
-//     本机必拒），device-code 流第一步 POST {issuer}/api/accounts/deviceauth/
+//     本机必拒），device-code 流 POST {issuer}/api/accounts/deviceauth/
 //     usercode 立即连接拒绝 → 同样回落；stdin 只喂 "\n" → 空 token 取消臂。
 // ===========================================================================
 
@@ -584,7 +584,7 @@ mod r9_zero {
             return;
         };
 
-        // issuer 接缝指向本机 discard 端口 9：device-code 第一步 HTTP 请求立即
+        // issuer 接缝指向本机 discard 端口 9：device-code HTTP 请求立即
         // 连接拒绝（零外网）。这同时实证了接缝本身生效——若接缝失效会去打真
         // auth.openai.com（网络依赖，无法作为断言）。
         let _issuer = EnvVarSet::set("NEMESISBOT_OAUTH_ISSUER", "http://127.0.0.1:9");
@@ -611,7 +611,7 @@ mod r9_zero {
 }
 
 // ===========================================================================
-// r10（覆盖率 goal R10 批，2026-08-27）：login_device_code 成功段点亮。
+// r10（覆盖率 goal 批）：login_device_code 成功段点亮。
 //
 // auth.rs:78-84 的 Ok 臂此前从未被走到：r9_zero 只覆盖了「device-code 死端点
 // → 回落 paste-token → 取消」的失败一半。本测用生产已有的 NEMESISBOT_
@@ -624,7 +624,7 @@ mod r9_zero {
 //   ② POST {issuer}/api/accounts/deviceauth/token
 //        → {"authorization_code","code_verifier"}（poll 层拿的是 code）
 //   ③ POST {issuer}/oauth/token → {"access_token":...}（空 access_token 被拒）
-// 链路终点 = store.save + 双 println + return Ok(())——auth.rs 成功臂全行点亮。
+// 链路终点 = store.save + 双 println + return Ok()——auth.rs 成功臂全行点亮。
 //
 // 进程内直调 run()；持 crate::GLOBAL_STATE_LOCK 改 NEMESISBOT_HOME /
 // NEMESISBOT_OAUTH_ISSUER 并摘掉代理变量（reqwest 默认读环境代理，不摘会
@@ -857,13 +857,13 @@ mod r10_device_code_flow {
 }
 
 // ===========================================================================
-// wave5 round2 batch-2（2026-09-25）：auth run() 的 paste-token EOF 弃权臂
+// wave5 batch-2：auth run() 的 paste-token EOF 弃权臂
 //（非 openai provider 跳过 OAuth → 提示输入 → cargo test stdin 管道 EOF →
 // 空输入 → Login cancelled）与 Status 的完整凭据明细臂（account_id +
 // expires_at 两行注记）。
 // ===========================================================================
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod w5b2 {
     use super::super::{AuthAction, run};
     use crate::tests::EnvHomeGuard;
@@ -926,7 +926,7 @@ mod w5b2 {
 }
 
 // ===========================================================================
-// BUG-20261028-104c 红证：Expires 打的是 DateTime<Local> 本地墙钟却硬标
+// c 红证：Expires 打的是 DateTime<Local> 本地墙钟却硬标
 // "UTC"——UTC+8 用户看到比真实过期时刻晚 8 小时的错误信息。
 // 不变量：显示值必须是该时刻的 UTC 墙钟（锚定绝对时刻断言，时区无关）。
 // ===========================================================================
@@ -934,7 +934,7 @@ mod w5b2 {
 fn expiry_display_is_utc_wall_clock_not_local() {
     use super::format_expiry_utc;
     use chrono::TimeZone as _;
-    // 绝对时刻 2026-01-01T00:00:00Z，任何时区下显示都必须是 00:00
+    // 绝对时刻 -01T00:00:00Z，任何时区下显示都必须是 00:00
     let t: chrono::DateTime<chrono::Local> = chrono::Utc
         .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
         .unwrap()

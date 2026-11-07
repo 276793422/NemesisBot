@@ -1,4 +1,4 @@
-//! Catalog module tests (U16 sixth batch) — fixture-based, no network.
+//! Catalog module tests (sixth batch) — fixture-based, no network.
 
 // 刻意设计：本文件测试用进程级串行锁（GLOBAL_STATE_LOCK 等 env/资源互斥锁）
 // 保护环境操作，guard 必须跨 async 测试体的 await 持有；#[tokio::test] 每个
@@ -154,7 +154,7 @@ fn test_parse_models_json_mirror_shape() {
 
 #[test]
 fn test_parse_any_zero_entry_shapes_are_misses() {
-    // Live-observed regression (2026-08-23): the mirror body (models.json
+    // Live-observed regression: the mirror body (models.json
     // shape) also parses as a top-level OBJECT, so lenient parse_api_json
     // returned Ok(vec![]) and shadowed the mirror parser → 0 models cached.
     // Now: wrong-shape objects are Err from parse_api_json, and parse_any
@@ -221,7 +221,7 @@ fn test_by_family_groups_and_none_bucket() {
 }
 
 // =========================================================================
-// S11b 覆盖率冲刺：parser 边界 + 缓存读写 + catalog_from/by_family/lookup
+// 覆盖率冲刺：parser 边界 + 缓存读写 + catalog_from/by_family/lookup
 // （fetch_http* 属真网络豁免，不在此测。）
 // =========================================================================
 
@@ -399,7 +399,7 @@ fn test_s11b_catalog_from_by_family_and_lookup() {
 }
 
 // ===========================================================================
-// wave_a（R7 中批补盲，2026-08-27）：save_cache 的 mkdir 失败冒泡臂
+// wave_a（中批补盲）：save_cache 的 mkdir 失败冒泡臂
 // （catalog.rs 205-206 —— config_dir 本身是普通文件时 create_dir_all 必败，
 // Err 里带 mkdir 前缀）。fetch_http_blocking / fetch_http 的网络臂（230-258）
 // 不打真网（网络劣化批次已有教训）→ 豁免池。
@@ -415,7 +415,7 @@ fn test_wave_a_save_cache_mkdir_failure_bubbles_with_prefix() {
 }
 
 // ===========================================================================
-// r9_fetch_seams（R9 补测批零头组，2026-08-27）：fetch_http_blocking 的网络
+// r9_fetch_seams（补测批零头组）：fetch_http_blocking 的网络
 // 错误臂改走测试接缝 —— NEMESISBOT_CATALOG_API_URL 把主端点指到本进程内的
 // 一次性 TcpListener mock；镜像端点恒为 https，用「死代理
 // HTTPS_PROXY=http://127.0.0.1:1」瞬间杀死（reqwest 按 scheme 匹配代理：
@@ -428,7 +428,7 @@ fn test_wave_a_save_cache_mkdir_failure_bubbles_with_prefix() {
 // ===========================================================================
 
 // 整 mod Windows 形态（3/3 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r9_fetch_seams {
     use super::*;
 
@@ -503,7 +503,7 @@ mod r9_fetch_seams {
 
     const DEAD_PROXY: &str = "http://127.0.0.1:1";
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn seam_success_parses_api_json_entries() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -527,7 +527,7 @@ mod r9_fetch_seams {
         assert_eq!(entries[0].family.as_deref(), Some("fam-a"));
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn seam_bad_body_falls_back_to_mirror_and_reports_all_failed() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -552,7 +552,7 @@ mod r9_fetch_seams {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn seam_http_500_also_falls_back_and_fails_loudly() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -582,7 +582,7 @@ mod r9_fetch_seams {
 // ===========================================================================
 
 // 整 mod Windows 形态（2/2 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r9_offline_cli {
     use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
@@ -651,7 +651,7 @@ mod r9_offline_cli {
         ws
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn offline_with_seed_cache_keeps_cache_and_exits_zero() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -660,7 +660,7 @@ mod r9_offline_cli {
         let _kill = ProxyKill::arm();
         let ws = fresh_ws_with_empty_config();
         // 种一版本地缓存（serde 版本化格式）。种子写在 **legacy 位置**（home
-        // 根）——2026-08-28 布局迁移后 load_cache 首读会把它 rename 进
+        // 根）—— 布局迁移后 load_cache 首读会把它 rename 进
         // workspace/data，本测试同时就是迁移行为的端到端实证。
         let legacy = nemesis_path::legacy_models_catalog_cache_path(&ws.home());
         let cache = serde_json::json!({
@@ -691,7 +691,7 @@ mod r9_offline_cli {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn offline_without_cache_bails_nonzero() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -719,12 +719,12 @@ mod r9_offline_cli {
 // 关连接；hyper 在读体阶段得到 incomplete message 必返 Err（若 reqwest 反常
 // 地把截断体当 Ok 交回，parse_any 对这个未闭合 JSON 也必败——两种情形最终
 // 都走「回落镜像→死代理→all endpoints failed」，断言不至于假绿；body-read
-// 臂本身由行执行覆盖，其字符串会被随后镜像端点的错误覆写，不对外可见）。
+// 臂本身由行执行覆盖，其字符串会被随后镜像端点的错误覆写，不对外可）。
 // env 快照恢复手抄 r9_fetch_seams::EnvRestore 的模式（该类型模块私有）。
 // ===========================================================================
 #[cfg(test)]
 mod r10_body_read {
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn r10_truncated_200_body_hits_body_read_err_arm() {
         let _guard = crate::GLOBAL_STATE_LOCK

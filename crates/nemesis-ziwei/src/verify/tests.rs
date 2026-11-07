@@ -1,4 +1,4 @@
-//! verify 门面单测（T5.1 纯逻辑面；PE 依赖的降级/找回链路在 m5_live 实弹）。
+//! verify 门面单测（.1 纯逻辑面；PE 依赖的降级/找回链路在 m5_live 实弹）。
 
 use super::{pre_attach_guard, sha256_hex, verify_profile, write_once_report};
 use crate::profile::{

@@ -241,7 +241,7 @@ fn test_init_cluster_log_panics_on_double_init() {
 }
 
 // ============================================================
-// S4 coverage: open-failure warn arm (cluster_log.rs 84-92) and
+// coverage: open-failure warn arm (cluster_log.rs 84-92) and
 // the init info! field line (cluster_log.rs 122-125).
 // ============================================================
 
@@ -312,7 +312,7 @@ fn test_s4_init_cluster_log_logs_dir_field() {
     let _ = fs::remove_dir_all(log_dir);
 }
 
-/// 集群完备性加固 2026-09-11：write_entry 收到非 object fields 不 panic——
+/// 集群完备性加固：write_entry 收到非 object fields 不 panic——
 /// 包一层 {"payload": fields} 落盘（旧实现 expect("fields must be a JSON
 /// object") 会把生产进程打崩；日志写入是观测面，不能因调用方类型错误炸）。
 #[test]
@@ -355,7 +355,7 @@ fn test_write_entry_non_object_fields_wrapped_not_panic() {
 }
 
 // ---------------------------------------------------------------------------
-// audit_action_name（2026-10-18 审计 action 形态统一）
+// audit_action_name（审计 action 形态统一）
 // ---------------------------------------------------------------------------
 
 // Known 枚举 wire 形态是 PascalCase——审计面渲染成小写，检索单一形态即可

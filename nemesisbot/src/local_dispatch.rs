@@ -8,11 +8,11 @@
 //! 触发/超时/总线关闭 = 诚实 FAILED 写回，不静默吞。
 //!
 //! 项目解析（执行根裁决）：issue.project_id → board 项目 directory →
-//! L6++ registry canonical 匹配 → `bind_session`（执行根 = 项目目录）；
+//! registry canonical 匹配 → `bind_session`（执行根 = 项目目录）；
 //! 无匹配 = 主 loop 回落 + WARN（执行根 = 主 workspace）——回落是诚实
 //! 降级，不猜不静默换臂。
 //!
-//! 交付捕获（BUG 2026-11-05 根修）：绑定成功臂发车前钉项目目录 HEAD 为
+//! 交付捕获（根修）：绑定成功臂发车前钉项目目录 HEAD 为
 //! 交付基线，completed 收口时从项目目录就地 diff（复用 exec 捕获内核）+
 //! 落账 deliveries 表 `{task_id}:branch`（集群回调链同款 record + 审计
 //! shim）——publish 步的查账键此前对 `local-` 任务恒空（唯一落账方是集群
@@ -50,7 +50,7 @@ pub(crate) struct GatewayLocalExecutor {
     /// estop 冻结停车的 (种类, issue_id) 队列（与评审闭包共享同一份）。
     estop_parked: Arc<std::sync::Mutex<Vec<(crate::board_review::ParkedKind, i64)>>>,
     selfcheck: crate::board_review::SelfcheckRegistry,
-    /// 交付账本连接（BUG 2026-11-05 根修）：completed 收口捕获落账
+    /// 交付账本连接（根修）：completed 收口捕获落账
     /// `{task_id}:branch`（publish 查账键）。打不开 = 捕获缺席可观测，
     /// 不炸装配。
     task_db: Option<Arc<nemesis_taskstore::TaskDb>>,
@@ -61,7 +61,7 @@ pub(crate) struct GatewayLocalExecutor {
 
 /// 交付基线（submit 发车前钉住，带进等待任务）：基线 commit 是 diff
 /// 基准（agent 合法 commit 移动 HEAD，HEAD 当基线 = diff 恒空失真，
-/// delivery_gate T1 同族）；repo_dir 是捕获对象（执行根 = 项目目录）。
+/// delivery_gate 同族）；repo_dir 是捕获对象（执行根 = 项目目录）。
 #[derive(Clone)]
 struct DeliveryBaseline {
     repo_dir: PathBuf,
@@ -103,7 +103,7 @@ impl GatewayLocalExecutor {
         }
     }
 
-    /// issue.project_id → board 项目 directory → L6++ registry canonical
+    /// issue.project_id → board 项目 directory → registry canonical
     /// 匹配。Ok(Some((id, name, dir))) = 可绑定（dir = 项目目录，交付
     /// 捕获对象）；Ok(None) = 无对应项目（回落主 loop）；Err = 解析 IO
     /// 失败（同样回落，但留 WARN 细节）。
@@ -135,7 +135,7 @@ impl GatewayLocalExecutor {
         Ok(entry.map(|e| (e.id, e.name, target)))
     }
 
-    /// 交付捕获 + 落账（BUG 2026-11-05 根修：镜像集群回调记账语义——本地的
+    /// 交付捕获 + 落账（根修：镜像集群回调记账语义——本地的
     /// 「回调」对应物就是 completed 写回）。基线透传 → exec 捕获内核就地
     /// diff（patch 留底 + wire 组装与集群同一函数）→ deliveries 表
     /// `{task_id}:branch`（publish 查账键）。无基线（绑定回落主 loop /
@@ -171,7 +171,7 @@ impl GatewayLocalExecutor {
     }
 
     /// 写回 + 评审触发 + R-9 重估波（镜像 cluster_init.rs 回调 Route 0）。
-    /// `generation` = 派发代际号回声（AOR 批二a ④ 写回闸拒绝旧代迟到回调）。
+    /// `generation` = 派发代际号回声（a ④ 写回闸拒绝旧代迟到回调）。
     fn finish(
         &self,
         task_id: &str,
@@ -372,7 +372,7 @@ impl LocalDispatchExecutor for GatewayLocalExecutor {
 
 /// 按 session_key 捕获最终回复（首条匹配且非回执即返回）。receipt=true
 /// 的出站是系统回执（busy 排队 ⏳ / slash 确认 / 压缩·限流进度等，生产者
-/// 打标单一真相源）——NB-1 实录：queue-ack 被当终局回复 → 57ms 空交付
+/// 打标统一定义）—— queue-ack 被当终局回复 → 57ms 空交付
 /// completed，真回复随后无人认领成孤儿。跳过回执继续等真回复。Lagged
 /// 继续等（丢帧只影响中间流量——最终回复是最后一条，等下一条匹配即可）；
 /// Closed = 网关停机。
@@ -422,9 +422,9 @@ fn local_dispatch_timeout_secs() -> u64 {
 
 /// 发车前钉交付基线（项目目录 HEAD commit，纯读——用户项目目录零副作用；
 /// exec 的 `.git/nemesis_baseline` 持久锚是 bot 自有副本语义，不搬过来）。
-/// 非 git 目录 / 文件形态 .git（worktree 链接）/ 空仓（无 HEAD commit）=
+/// 非 git 目录 / 文件形态.git（worktree 链接）/ 空仓（无 HEAD commit）=
 /// None + WARN（交付捕获缺席可观测，不阻断发车；镜像 ensure_exec_repo
-/// 对文件形态 .git 的裁决）。
+/// 对文件形态.git 的裁决）。
 fn pin_local_baseline(project_dir: &std::path::Path, task_id: &str) -> Option<DeliveryBaseline> {
     let dot_git = project_dir.join(".git");
     if !dot_git.is_dir() {
@@ -461,9 +461,9 @@ fn pin_local_baseline(project_dir: &std::path::Path, task_id: &str) -> Option<De
 
 /// 本地交付捕获 + 落账（capture → record 两步合一，`pub(crate)` 供回归锁
 /// 直测）。基线透传锚定（submit 发车前钉住的 HEAD——agent 合法 commit
-/// 移动 HEAD 后 HEAD 当基线会失真，delivery_gate T1 同族）→ exec 捕获
-/// 内核 [`crate::delivery_gate::capture_task_delivery_exec`]（就地 diff +
-/// patch 留底 + wire 组装单一真相源；本地无 checks 捕获接线，诚实缺席）
+/// 移动 HEAD 后 HEAD 当基线会失真，delivery_gate 同族）→ exec 捕获
+/// 内核 [`crate::delivery_gate:capture_task_delivery_exec`]（就地 diff +
+/// patch 留底 + wire 组装单一权威定义；本地无 checks 捕获接线，诚实缺席）
 /// → 落账走集群回调链同款 record（deliveries 表 `{task_id}:branch` =
 /// publish 查账键）+ 审计 shim 同源。true = 已入账（含 capture 后落库；
 /// capture 缺席 = false + WARN）。

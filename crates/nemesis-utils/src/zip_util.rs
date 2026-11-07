@@ -61,7 +61,7 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
             ));
         }
 
-        // 词法闸（单一真相源 [`is_unsafe_rel_path`]）：不依赖文件系统状态。
+        // 词法闸（统一定义 [`is_unsafe_rel_path`]）：不依赖文件系统状态。
         // 上方 canonicalize 型检查在父目录不存在时被静默跳过，而新装目录的
         // 常态恰是父目录缺席——`..`/盘符穿越必须由词法闸兜死。
         if is_unsafe_rel_path(&entry_name) {
@@ -108,7 +108,7 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 有界读入内存（BUG 2026-10-29 横扫角度 B：zip 条目解压无界入内存的
+/// 有界读入内存（横扫角度 B：zip 条目解压无界入内存的
 /// 单一真相源修复）。
 ///
 /// 不信任 zip/tar 条目头声明的 size 做预分配（撒谎 size = 上限外预分配，
@@ -137,7 +137,7 @@ pub fn read_entry_capped<R: std::io::Read>(reader: &mut R, cap: usize) -> Result
     }
 }
 
-/// 词法级相对路径安全闸（zip-slip / 归档穿越判定的单一真相源）。
+/// 词法级相对路径安全闸（zip-slip / 归档穿越判定的统一定义）。
 ///
 /// canonicalize 型检查（父目录规范化后 `starts_with` 目标目录）在**父目录
 /// 尚不存在**时会被静默跳过——而新装目录的常态恰是父目录缺席，穿越路径
@@ -299,7 +299,7 @@ pub fn is_path_within_dir(path: &Path, base_dir: &Path) -> bool {
             let path_str = normalize_path_str(&path_abs);
             let base_str = normalize_path_str(&base_abs);
 
-            // BUG-20261025-82：normalize_path_str 已给 base 补尾分隔符——前缀
+            // normalize_path_str 已给 base 补尾分隔符——前缀
             // 匹配天然排除 `/tmp/base-other` 部分名碰撞，嵌套路径（rest =
             // "sub/f.txt/" 形态）也必须判内。旧 rest 判定（空或以分隔符开头）
             // 在尾分隔符归一后对一切嵌套形态恒 false，回退分支退化为「仅精确

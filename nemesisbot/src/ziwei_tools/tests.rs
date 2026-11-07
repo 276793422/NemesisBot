@@ -66,7 +66,7 @@ fn tool_projection_min_tier_and_readonly() {
 
 #[test]
 fn unwired_primitives_rejected_without_session() {
-    // call_fn/hook_capture 已 M4 实装；无 manager 时仍先报「未装配」（诚实拒绝面不变）。
+    // call_fn/hook_capture 已 实装；无 manager 时仍先报「未装配」（诚实拒绝面不变）。
     let t = ZiweiDynamicTool {
         profile_id: "p".into(),
         profile_name: "n".into(),
@@ -110,7 +110,7 @@ fn unwired_primitives_rejected_without_session() {
     );
 }
 
-/// M2 实弹：动态工具经 agent Tool trait 调用真实会话（#[ignore]——
+/// 实弹：动态工具经 agent Tool trait 调用真实会话（#[ignore]——
 /// `cargo test -p nemesisbot --features ziwei ziwei_tools -- --ignored`
 /// 显式触发；依赖 payload 内嵌 + dummy-monitor 现场构建）。
 #[cfg(windows)]
@@ -269,7 +269,7 @@ async fn live_dynamic_tool_invoke() {
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&ws);
 }
 
-// ── ziwei_bridge 元工具（T3.8）─────────────────────────────────────────
+// ── ziwei_bridge 元工具（.8）─────────────────────────────────────────
 
 #[test]
 fn bridge_approval_gate_mapping() {
@@ -286,7 +286,7 @@ fn bridge_approval_gate_mapping() {
         "define_struct",
         "define_tool",
         "diff_window",
-        // 查询面 10 action（B1）：只读、无审批
+        // 查询面 10 action：只读、无审批
         "disasm",
         "xref_to",
         "xref_from",

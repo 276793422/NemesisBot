@@ -373,7 +373,7 @@ fn test_stop_terminates_all_children() {
 }
 
 // ============================================================
-// Phase 4: Additional coverage for 93%+ target
+// Additional coverage for 93%+ target
 // ============================================================
 
 #[test]
@@ -1171,7 +1171,7 @@ async fn test_monitor_loop_cleans_dead_children_and_stops() {
     }
     assert_eq!(mgr.active_count(), 1);
 
-    // tokio::time::interval fires its first tick immediately, so one yield
+    // tokio::time:interval fires its first tick immediately, so one yield
     // is enough for the monitor to sweep the dead child.
     tokio::time::sleep(Duration::from_millis(10)).await;
     assert_eq!(mgr.active_count(), 0, "monitor did not clean dead child");
@@ -1195,7 +1195,7 @@ async fn test_start_stop_with_subscriber_covers_lazy_log_args() {
         fn new_span(&self, _attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
             tracing::span::Id::from_u64(1)
         }
-        // tracing_core 无默认实现的必需方法（E0046）；no-op 即可——info! 的惰性
+        // tracing_core 无默认实现的必需方法；no-op 即可——info! 的惰性
         // 参数求值发生在 Event 构造时，与 event() 的实现体无关。
         fn record(&self, _span: &tracing::Id, _values: &tracing::span::Record<'_>) {}
         fn record_follows_from(&self, _span: &tracing::Id, _follows: &tracing::Id) {}
@@ -1599,7 +1599,7 @@ mod scripted_spawn_tests {
 }
 
 // ============================================================
-// BUG-20261025-71（死子检测死代码）回归锁：
+// （死子检测死代码）回归锁：
 // `exited` 旗标只被 try_wait/terminate/wait 路径置位——自行崩溃退出的
 // 子进程旗标恒 false，修复前 monitor_loop / cleanup_stale 的
 // is_process_alive 过滤永远判「活」，清扫是死代码。
@@ -1657,8 +1657,8 @@ async fn test_monitor_loop_sweeps_self_exited_child() {
 
     // start() spawns the monitor loop whose first tick fires immediately;
     // the sweep must sample try_wait, see the dead child, and remove it.
-    // Yield with tokio::time::sleep — #[tokio::test] 默认 current_thread
-    // runtime，std::thread::sleep 会饿死 monitor 任务（调度让路是前提）。
+    // Yield with tokio::time:sleep — #[tokio::test] 默认 current_thread
+    // runtime，std::thread:sleep 会饿死 monitor 任务（调度让路是前提）。
     mgr.start().await.unwrap();
 
     let mut swept = false;

@@ -184,7 +184,7 @@ pub async fn test_cli_skills_search(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
     // skills search 网络逃生舱判定（与下方 limit_flag 臂同源原则）：CLI 非零
     // 退出 + stdout 全空 + stderr 无 clap 参数错 = clawhub registry 网络不可达
     // （环境限制），而非被测 search 面的行为回归。2026-11-05 ET 41949420959
-    // mrg-b2 实录：runner 对 clawhub 瞬断（本机同刻 200 正常），CLI 非零退出
+    // mrg-b2 案例：runner 对 clawhub 瞬断（本机同刻 200 正常），CLI 非零退出
     // 且 stdout 全空，search_started/results 两臂无逃生舱误红——补齐同款
     // 环境失败放行，不冤枉 CLI 本身。
     let search_offline = |o: &CliOutput| {

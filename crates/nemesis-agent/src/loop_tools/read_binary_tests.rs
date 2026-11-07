@@ -1,4 +1,4 @@
-//! A8 (2026-09-04 devtool-upgrade): read_file 二进制/PDF 分支——非 UTF-8
+//! (2026-09-04 devtool-upgrade): read_file 二进制/PDF 分支——非 UTF-8
 //! 文件按 magic byte 分类诚实摘要（图片提示 vision 附加正道 / PDF 说明 /
 //! 其他报字节数），文本路径行为不变（计划验收：png/pdf/exe/文本四类）。
 

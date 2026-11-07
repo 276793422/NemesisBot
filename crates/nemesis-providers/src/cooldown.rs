@@ -26,7 +26,7 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> std::time::Instant;
 }
 
-/// Real clock using `std::time::Instant::now()`.
+/// Real clock using `std::time:Instant::now()`.
 pub struct RealClock;
 
 impl Clock for RealClock {
@@ -65,7 +65,7 @@ impl CooldownTracker {
     /// Record a failure for a provider and set appropriate cooldown.
     /// Resets error counts if last failure was more than `failure_window` ago.
     ///
-    /// J1：`retry_after_hint` 是服务端 `Retry-After` 头的权威退避（来自
+    /// `retry_after_hint` 是服务端 `Retry-After` 头的权威退避（来自
     /// `FailoverError::retry_after_hint()`）——非 Billing 路径优先于
     /// [`calculate_standard_cooldown`] 公式，cap 1h（防异常超大值把 provider
     /// 钉死过久）；Billing 有独立量级（5h 起），hint 不适用。None = 走公式。
@@ -196,7 +196,7 @@ impl Default for CooldownTracker {
 /// Calculate standard exponential backoff.
 /// Formula: min(1h, 1min * 5^min(n-1, 3))
 ///
-/// 1 error  -> 1 min
+/// 1 error -> 1 min
 /// 2 errors -> 5 min
 /// 3 errors -> 25 min
 /// 4+ errors -> 1 hour (cap)
@@ -210,7 +210,7 @@ pub fn calculate_standard_cooldown(error_count: usize) -> Duration {
 /// Calculate billing-specific exponential backoff.
 /// Formula: min(24h, 5h * 2^min(n-1, 10))
 ///
-/// 1 error  -> 5 hours
+/// 1 error -> 5 hours
 /// 2 errors -> 10 hours
 /// 3 errors -> 20 hours
 /// 4+ errors -> 24 hours (cap)

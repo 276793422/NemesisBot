@@ -701,7 +701,7 @@ fn test_mcp_adapter_no_server_info() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：create_tools_from_client_named + ArcClientAdapter
+// 补测：create_tools_from_client_named + ArcClientAdapter
 // execute 分支（error/client-error/timeout/image/resource/非对象 args）+
 // sanitize_schema 边界（非对象输入 / 嵌套 properties type 数组展平）
 // ===========================================================================
@@ -1022,14 +1022,14 @@ fn test_w4c_sanitize_schema_keeps_existing_additional_properties() {
 }
 
 // ===========================================================================
-// S1 补测（2026-08-26）：execute() 内容类型 `_` 未知回退臂
+// 补测：execute() 内容类型 `_` 未知回退臂
 // ===========================================================================
 
 #[tokio::test]
 async fn test_s1_adapter_execute_unknown_content_type_falls_back_to_raw_text() {
     let mock = MockClient::new("test", vec![]);
     mock.with_call_result(ToolCallResult {
-        // BUG-20261104-380 起 audio 有专属臂（规范 data/mimeType 消费），
+        // 起 audio 有专属臂（规范 data/mimeType 消费），
         // 未知回退臂语义改用真未知类型保留原测试意图。
         content: vec![ToolContent {
             content_type: "custom_binary".to_string(),
@@ -1053,7 +1053,7 @@ async fn test_s1_adapter_execute_unknown_content_type_falls_back_to_raw_text() {
     assert_eq!(result.content, "raw-audio-marker");
 }
 
-// --- BUG-20261104-380：规范形态 image/audio/resource content 消费 ----------
+// ---：规范形态 image/audio/resource content 消费 ----------
 
 /// 规范 image content（base64 在 `data` 字段）→ 诚实元信息注记，
 /// 不再依赖规范不存在的 `text` 字段（修复前恒产空占位 `[Image: ]`）。
@@ -1235,7 +1235,7 @@ async fn test_b380_spec_shape_resource_blob_content_yields_honest_note() {
     );
 }
 
-// --- 第十四轮缺陷 17：sanitize 前缀碰撞检测（单一真相源 helper）-------
+// --- 缺陷 17：sanitize 前缀碰撞检测（统一定义 helper）-------
 
 #[test]
 fn r17_colliding_names_share_prefix_group() {
@@ -1276,7 +1276,7 @@ fn r17_helper_matches_find_new_servers_prefix_shape() {
     assert!(registered.contains(&prefix));
 }
 
-// --- BUG-20261025-47：sanitize_schema 全深度递归 + items 回归锁 -------
+// ---：sanitize_schema 全深度递归 + items 回归锁 -------
 // 旧实现只展开两层 properties 且完全不碰 items——4 层深嵌套或数组项的
 // type 数组原样透传给 provider（部分 provider 拒绝数组形态 type）。
 
@@ -1346,7 +1346,7 @@ fn r47_sanitize_schema_flattens_deep_nesting_and_items() {
     assert_eq!(props["tuple"]["items"][1]["type"], "boolean");
 }
 
-// --- BUG-20261030-212：flatten_type 复合关键字收编回归锁 ----------------
+// ---：flatten_type 复合关键字收编回归锁 ----------------
 // BUG-47 只收编了 properties/items——anyOf/oneOf/allOf 分支、对象形态
 // additionalProperties、$defs/definitions、patternProperties/prefixItems
 // 里的数组形态 type 原样透传给 provider（部分 provider 拒绝数组形态 type）。

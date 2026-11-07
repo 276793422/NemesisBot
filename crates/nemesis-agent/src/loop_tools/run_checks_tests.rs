@@ -1,4 +1,4 @@
-//! C8（2026-09-06 devtool-upgrade 阶段 4）：run_checks 构建/测试运行器测试。
+//! （2026-09-06 devtool-upgrade）：run_checks 构建/测试运行器测试。
 //!
 //! 纯函数层（生态探测 / 命令映射 / 统计解析 / 失败聚焦）+ 真实 cargo
 //! fixture 端到端（无依赖 crate → 离线安全）：成功 build 聚焦回灌 + 故意

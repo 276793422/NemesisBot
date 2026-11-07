@@ -1,5 +1,5 @@
-//! Swarm M3（§5.4/G9）：`board_asset` 工具——cluster agent 的资产拉取 /
-//! 发布执行者。G9 判据「worker HTTP 拉取 → sha256 校验 → 本地文件可用」
+//! Swarm：`board_asset` 工具——cluster agent 的资产拉取 /
+//! 发布执行者。 判据「worker HTTP 拉取 → sha256 校验 → 本地文件可用」
 //! 与其反向对称（worker 产物登记 + 签发引用束回贴线程）都落在这里。
 //!
 //! 自包含设计：只需 workspace 路径（集群句柄可选注入，见下）。fetch 是
@@ -12,7 +12,7 @@
 //! filesystem 工具且 gateway 就在本地，主 agent 同理不装）。
 //!
 //! SSRF 闸：集群互拉本来就是内网地址，默认 `block_private_ips` 会把
-//! G9 场景全拦——这里定制宽松 config（放行内网/回环），**云 metadata
+//! 场景全拦——这里定制宽松 config（放行内网/回环），**云 metadata
 //! 端点照拦**（169.254.169.254 与集群网段无关，没有放行理由）。
 //! security feature 关掉的裁剪构建没有 guard，跳过校验（该构建本就无
 //! 安全管线，语义一致）。
@@ -78,7 +78,7 @@ impl BoardAssetTool {
         nemesis_path::resolve_board_assets_dir_in_workspace(&self.workspace)
     }
 
-    /// B8（2026-10-13）：本地资产缓存体检——对 assets 目录逐文件重算
+    /// 本地资产缓存体检——对 assets 目录逐文件重算
     /// sha256 与登记表比对，漂移（磁盘损坏 / 手工改动 / 落定链中断）的
     /// 实体改名 `<ref>.corrupt` 隔离（不删——留证据；同 ref 再 fetch 会
     /// 覆盖重建），返回 (已核验数, 隔离数)。语义边界：`.part`/`.corrupt`
@@ -202,7 +202,7 @@ impl BoardAssetTool {
     }
 }
 
-/// 解析后的工具参数（execute 内部第一步；独立成纯函数便于单测）。
+/// 解析后的工具参数（execute 内部；独立成纯函数便于单测）。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum AssetArgs {
     /// 拉取：四字段逐字来自 dispatch prompt / 评论里的引用束 JSON。
@@ -353,7 +353,7 @@ impl BoardAssetTool {
     /// 分块兜底 → sha256 校验 → 原子改名落定。任何失败都清掉 part 文件，
     /// 不留半截内容。
     /// 取资产（HTTP 直连 → 连接级失败走集群 RPC 分块兜底）。
-    /// crate 内第二消费点：board_review_assets（M5 验收链取图，非工具路径
+    /// crate 内第二消费点：board_review_assets（验收链取图，非工具路径
     /// ——评审代码程序化调用，与 agent 工具共用同一取回/校验实现）。
     pub(crate) async fn do_fetch(
         &self,
@@ -377,12 +377,12 @@ impl BoardAssetTool {
 
         let dest = self.assets_dir().join(format!("{asset_ref}.part"));
         let pool = nemesis_http_pool::pool::shared_pool();
-        // D10-1：HTTP 腿有界下载（Content-Length 预检 + 流式硬上限）——
+        // HTTP 腿有界下载（Content-Length 预检 + 流式硬上限）——
         // 曾 resp.bytes() 无界缓冲，恶意/失控远端可把任意大响应灌进内存。
         // RPC 兜底腿自带 MAX_RPC_FETCH_BYTES 闸，两腿都有界。
-        // BUG-HUNT R36：走 strict（不跟随重定向）——上方 SSRF 闸只查本条
+        // 走 strict（不跟随重定向）——上方 SSRF 闸只查本条
         // 显式 URL，reqwest 默认策略自动跟随 ≤10 跳会把恶意 peer 的
-        // `302 → metadata/内网端点` 变成第二跳请求，整条绕闸（J2a 同类）。
+        // `302 → metadata/内网端点` 变成第二跳请求，整条绕闸（同类）。
         // 资产 URL 是 peer 直连地址，重定向无合法用途；对端不可达走下方
         // 连接级错误 → RPC 兜底，语义不受影响。
         match pool

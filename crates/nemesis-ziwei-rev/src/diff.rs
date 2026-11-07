@@ -1,4 +1,4 @@
-//! diff —— 行为页 diff（T3.5；T4.4 hook 计数增强复用）。
+//! diff —— 行为页 diff（.5；.4 hook 计数增强复用）。
 //!
 //! 输入 = 前后两次同布局读取（等长），按页（默认 0x1000）比较，产出
 //! 变化页 + 页内变化区段。数据区（.data）变化页是 DataArea 候选的
@@ -41,7 +41,7 @@ pub fn page_diff(before: &[u8], after: &[u8], base_rva: u32, page: u32) -> Vec<D
         }
         if changed > 0 {
             pages.push(DiffPage {
-                // saturating 防 u32 加法溢出（BUG-20261029-154 同族）
+                // saturating 防 u32 加法溢出（同族）
                 rva: base_rva.saturating_add(i as u32),
                 ranges,
                 bytes_changed: changed,

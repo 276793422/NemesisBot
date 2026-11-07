@@ -1,4 +1,4 @@
-//! 批次四（2026-09-19）：节点显示名测试。
+//! （2026-09-19）：节点显示名测试。
 //!
 //! 覆盖 goal 测试面：解析链优先级、COMPUTERNAME 注入（经纯函数参数
 //! 注入——env 是进程全局且 Rust 2024 `set_var` 是 unsafe，并行测试不能
@@ -105,7 +105,7 @@ fn announce(cluster: &Cluster, node_id: &str, name: &str) -> bool {
 
 #[test]
 fn name_suffix_uses_last_segment_head() {
-    // 生产 id 形态：末段 = uuid → 后缀有区分度（真机彩排 2026-09-19：
+    // 生产 id 形态：末段 = uuid → 后缀有区分度（真机彩排：
     // 「前 4 位」恒为 "node-" 使双方收敛出相同名字，故取末段前 4）。
     assert_eq!(
         name_suffix_from_node_id("node-yangjian-6280d9dd-231a"),
@@ -172,7 +172,7 @@ fn collision_ignored_for_empty_announced_name() {
 
 #[test]
 fn collision_two_sides_converge_to_distinct_names() {
-    // 真机彩排回归（2026-09-19）：生产 id 形如 node-{host}-{uuid}，「前
+    // 真机彩排回归：生产 id 形如 node-{host}-{uuid}，「前
     // 4 位」恒 "node" → 双方各自加缀后仍同名。末段前 4 后必须不同。
     let a = Cluster::new(ClusterConfig {
         node_id: "node-yangjian-6280d9dd-231a-49c7".into(),

@@ -1,4 +1,4 @@
-//! P32（能力扩展 Wave3）：prompt cache warmer（cache-warmer）。
+//! （Wave3）：prompt cache warmer（cache-warmer）。
 //!
 //! 语义：会话 idle 且 prompt cache TTL 将过期（idle 时长 ≥ 模型 cache TTL
 //! 的 [`WARM_TRIGGER_RATIO`]）→ 用上一轮请求的**字节级快照**重放一次
@@ -41,7 +41,7 @@ use super::*;
 /// warm 触发阈值：idle 时长 ≥ 模型 cache TTL × 0.9 即触发重放。
 pub(crate) const WARM_TRIGGER_RATIO: f64 = 0.9;
 
-/// warm 扫描周期（秒）。轻量 tokio interval，不挂 cron（P31 域）。
+/// warm 扫描周期（秒）。轻量 tokio interval，不挂 cron（域）。
 pub(crate) const WARM_SCAN_INTERVAL_SECS: u64 = 60;
 
 /// 单次 warm 重放的调用超时（秒）。`max_tokens=1` 的重放只有 prefill
@@ -52,7 +52,7 @@ pub(crate) const WARM_CALL_TIMEOUT_SECS: u64 = 120;
 /// 超限淘汰 anchor 最旧的会话）。
 pub(crate) const MAX_WARM_CANDIDATES: usize = 8;
 
-/// P32：warm 重放候选——某会话最近一次成功 LLM 请求的字节级快照。
+/// warm 重放候选——某会话最近一次成功 LLM 请求的字节级快照。
 ///
 /// 由 `run_loop` 在每次成功 LLM 轮后写入（后写覆盖 → 天然收敛到「最后一
 /// 轮请求」），warm 重放时原样重发（`max_tokens` 除外）。
@@ -138,7 +138,7 @@ pub(crate) fn parse_cache_warmer_config(
 impl AgentLoop {
     /// 新鲜读 config.json（同 `config_watch` 各 current_* 模式；standalone
     /// 无 config_path → `None`）。`pub(crate)`：provider_stream sink 构造
-    /// （L10）同源复用，不另抄第二份读文件逻辑。
+    /// 同源复用，不另抄第二份读文件逻辑。
     pub(crate) fn read_config_json(&self) -> Option<serde_json::Value> {
         let path = self.config_path.read().clone()?;
         std::fs::read_to_string(&path)
@@ -146,7 +146,7 @@ impl AgentLoop {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
     }
 
-    /// `agents.cache_warmer` 新鲜读（config.json 唯一真相源；无 config /
+    /// `agents.cache_warmer` 新鲜读（config.json 唯一依据；无 config /
     /// 段缺失 → 默认关——零副作用）。
     pub(crate) fn current_cache_warmer_config(&self) -> nemesis_config::CacheWarmerConfig {
         self.read_config_json()
@@ -318,9 +318,9 @@ impl AgentLoop {
             max_tokens: Some(1),
             ..Default::default()
         };
-        // L10 观测面（2026-10-13）：warm 生命周期升 info!——Logs Dashboard
+        // 观测面：warm 生命周期升 info!——Logs Dashboard
         // 「llm」源可见（warm 花的是真金白银的 API 调用，开销必须可观测；
-        // 此前全程 debug! 只有开 trace 才看得见）。start 带估算成本口径。
+        // 此前全程 debug! 只有开 trace 才看得）。start 带估算成本口径。
         let started_at = std::time::Instant::now();
         info!(
             "[cache-warmer] {} warm start (model={}, est_cost={:?} USD, limit={} USD)",

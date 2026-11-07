@@ -1,4 +1,4 @@
-//! T2（内部专项总计划 L1 codemode，2026-10-13）— `code_run` 脚本工具。
+//! （codemode，2026-10-13）— `code_run` 脚本工具。
 //!
 //! 给模型一个 QuickJS（rquickjs）沙箱，在**单次工具调用**里跑一段 JS：
 //! 脚本内通过 `tool(name, argsJson)` 调用任意已注册工具，编排读-改-写等
@@ -19,7 +19,7 @@
 //!   #2 同模型）。
 //!
 //! 执行模型：rquickjs 非 parallel 形态的 Runtime/Context 不是 Send，整个
-//! JS 生命周期封闭在 `tokio::task::spawn_blocking` 线程内；宿主函数同步
+//! JS 生命周期封闭在 `tokio::task:spawn_blocking` 线程内；宿主函数同步
 //! 返回 → `Handle::block_on` 桥进异步 dispatch（阻塞线程不占 runtime
 //! worker；要求 multi-thread runtime——current_thread 下 block_on 于
 //! blocking 线程无法驱动定时器/IO，会挂死）。
@@ -27,7 +27,7 @@
 // 注意：运行期类型导入全部住在 `mod imp` 内（codemode feature 关时该模块
 // 整体编译期消失）——放顶层会在非 codemode feature 组合下全部变 unused 警告。
 
-/// 工具名（模型可见）。
+/// 工具名（模型可）。
 pub const CODE_RUN_TOOL_NAME: &str = "code_run";
 
 /// 脚本返回值的输出上限（字节）。超限截断并附诚实注记——模型侧上下文
@@ -48,16 +48,16 @@ mod imp {
 
     use super::*;
 
-    /// console 聚合行数上限（A2 残余，2026-10-18）。超限丢弃后续行并附
+    /// console 聚合行数上限（残余）。超限丢弃后续行并附
     /// 诚实注记——脚本里 console.log 一百万行同样是被共享上下文的事故。
     pub(crate) const MAX_CONSOLE_LINES: usize = 200;
 
-    /// 单行字节上限（BUG-20261029-158）：行数闸只数行不数字节——单行可在
+    /// 单行字节上限：行数闸只数行不数字节——单行可在
     /// JS 堆内长到内存上限量级，`to_string()` 拷进宿主 Rust 堆时无预算可依
     /// （JS 堆闸管不到宿主侧拷贝）。超限截断 + 行内诚实标记。
     pub(crate) const MAX_CONSOLE_LINE_BYTES: usize = 8 * 1024;
 
-    /// console 聚合总字节上限（BUG-20261029-158）：宿主侧缓冲的持久内存
+    /// console 聚合总字节上限：宿主侧缓冲的持久内存
     /// 预算（200 行 × 8KB 单行闸理论上限 1.6MB 仍偏宽）。总闸先于行数闸
     /// 之前触发丢弃 + 总注记；32KB < 输出上限 64KB 保证注记可观测。
     pub(crate) const MAX_CONSOLE_TOTAL_BYTES: usize = 32 * 1024;
@@ -163,7 +163,7 @@ mod imp {
                     // 会被当作两个不相关匿名生命周期而撞 invariance）。
                     rquickjs::function::Func::from(move |ctx, args| -> rquickjs::Result<()> {
                         // 饱和早退：缓冲顶格后不再 join（大字符串不物化），
-                        // 只记截断标志（BUG-20261029-158 宿主内存放大修复）。
+                        // 只记截断标志（宿主内存放大修复）。
                         if ConsoleBuf::saturated(&buf) {
                             ConsoleBuf::mark_truncated(&buf);
                             return Ok(());
@@ -197,7 +197,7 @@ mod imp {
                 loop_ref: parking_lot::RwLock::new(None),
                 // 0 = 不限时（诚实语义：配置者显式选了不限）。运行形态是
                 // Option<Instant> deadline（run_script）：`Duration::MAX` 与
-                // `Instant` 相加必溢出 panic（BUG-20261029-157）——checked_add
+                // `Instant` 相加必溢出 panic——checked_add
                 // 返回 None 即「无 deadline」，interrupt handler 轮询永假。
                 timeout: if timeout_secs == 0 {
                     Duration::MAX
@@ -206,7 +206,7 @@ mod imp {
                 },
                 // saturating：u64 MB → 字节乘 2^20 的极端配置（手滑多打了
                 // 几位）回绕会让内存闸静默失效，钳到 u64::MAX = 诚实不设上限
-                // （BUG-20261029-157 同族算术）。
+                // （同族算术）。
                 memory_limit_bytes: (memory_limit_mb.max(1).saturating_mul(1024 * 1024)) as usize,
             }
         }
@@ -222,7 +222,7 @@ mod imp {
     impl Tool for CodeRunTool {
         fn description(&self) -> String {
             // 不限时配置诚实显示（Duration::MAX.as_secs() 的 20 位数字对模型
-            // 是噪音；BUG-20261029-157 随手修复）。
+            // 是噪音； 随手修复）。
             let budget = if self.timeout == Duration::MAX {
                 "unlimited".to_string()
             } else {
@@ -265,7 +265,7 @@ cannot call code_run itself.",
         }
 
         fn min_tier(&self) -> Option<&str> {
-            // T2 spec：默认 big tier 供给（供给+分发双闸；mini/normal 看不到
+            // spec：默认 big tier 供给（供给+分发双闸；mini/normal 看不到
             // 也调不动——绕白名单秩比较，见 build_tool_defs / dispatch 闸）。
             Some("big")
         }
@@ -314,7 +314,7 @@ cannot call code_run itself.",
             rquickjs::Runtime::new().map_err(|e| format!("QuickJS runtime init failed: {e}"))?;
         rt.set_memory_limit(memory_limit);
         rt.set_max_stack_size(1024 * 1024);
-        // BUG-20261029-157：`Instant::now() + Duration::MAX`（timeout_secs=0
+        // `Instant::now() + Duration::MAX`（timeout_secs=0
         // 的「不限时」语义）必溢出 panic（Add for Instant = checked_add
         // .expect）。checked_add 的 None 恰好就是「deadline 无法表示」——
         // 即不限时：interrupt handler 轮询永假，invoke_tool 不包 timeout。
@@ -336,7 +336,7 @@ cannot call code_run itself.",
             // 返回——catch 永不触发（首轮实测 6 败的根因）；Err(Error)
             // 返回值才把 pending 异常拉起来。
             let globals = ctx.globals();
-            // console 聚合（A2 残余）：log/info/warn/error 进行缓冲，脚本
+            // console 聚合（残余）：log/info/warn/error 进行缓冲，脚本
             // 结束后附进输出摘要（限行）——调试信息不必再为看中间值多烧
             // LLM 轮次。
             let console_buf = ConsoleBuf::new();
@@ -452,7 +452,7 @@ routinely exhaust it)"
 
     /// dispatch 结果 → 脚本侧 Ok/Err。拒绝两种形态都按异常透传：
     /// - 标准错误三前缀（`Error:` / `Tool error:` / `Exit code:`，见
-    ///   [`crate::turn_guard::tool_result_indicates_error`]）；
+    ///   [`crate::turn_guard:tool_result_indicates_error`]）；
     /// - `⛔` 硬拒家族（ESTOP / SECURITY BLOCKED / HOOK BLOCKED / GUARDIAN /
     ///   RATE LIMIT——dispatch 以「成功结果 + 指令文案」形态回传硬拒，见
     ///   handle_tool_call_at_depth 各闸返回值；对脚本它们是异常：可

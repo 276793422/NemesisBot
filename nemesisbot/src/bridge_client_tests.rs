@@ -1,4 +1,4 @@
-//! 反向桥客户端测试（goal：节点显示名 + 反向桥与多设备汇聚，一期批次二）。
+//! 反向桥客户端测试（goal：节点显示名 + 反向桥与多设备汇聚，一期）。
 //!
 //! 独立测试文件（项目纪律：生产文件禁内联测试）。两类：
 //! - 纯函数：bridge_endpoint 归一 / check_access 比对 / next_backoff 步进 /
@@ -238,7 +238,7 @@ fn test_next_backoff_ladder() {
 #[test]
 fn test_hostname_node_id_shape() {
     let id = hostname_node_id();
-    // 形态断言（不依赖具体主机名）：bridge- 前缀 + 全小写
+    // 形态断言（不依赖具体主机名）：bridge 前缀 + 全小写
     assert!(id.starts_with("bridge-"), "node_id={id}");
     assert_eq!(id, id.to_lowercase(), "node_id 必须全小写（URL 路径友好）");
 }
@@ -248,7 +248,7 @@ fn test_hostname_node_id_shape() {
 // ---------------------------------------------------------------------------
 
 /// 本机 TCP echo 服务：模拟真实 web server 的请求完整性语义——按
-/// content-length 读满请求（**不依赖**写半 EOF；2026-09-19 修复后设备
+/// content-length 读满请求（**不依赖**写半 EOF； 修复后设备
 /// 侧不再 shutdown 写半）→ 回 echo 响应 → 主动关连接（客户端读泵读到
 /// EOF → 空 fin 帧，覆盖 EOF 约定路径）。
 async fn spawn_echo_server() -> u16 {
@@ -428,7 +428,7 @@ async fn test_conn_pump_roundtrip() {
 }
 
 /// keep-alive 形态本机服务：读满 content-length 后**先探测写半未 shutdown**
-/// （修复点回归：shutdown 会让 hyper 在处理前断连——2026-09-19 真机彩排）
+/// （修复点回归：shutdown 会让 hyper 在处理前断连—— 真机彩排）
 /// → 回响应 → **保持连接不关**（模拟真实 web server keep-alive）。
 async fn spawn_keepalive_server() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -497,7 +497,7 @@ async fn test_fin_true_does_not_shutdown_write_half() {
     let _ser = BRIDGE_IT_SER.lock();
     drain_kick_permit().await;
 
-    // 2026-09-19 修复回归：fin=true 请求收口**不得**半关闭写半——真实
+    // 修复回归：fin=true 请求收口**不得**半关闭写半——真实
     // hyper 服务端在写半 EOF 时于处理请求前断连（零字节响应）。keep-alive
     // 形态：本机回响应后不关连接 → 客户端不得误发 EOF（空 fin）帧。
     let web_port = spawn_keepalive_server().await;
@@ -608,10 +608,10 @@ async fn spawn_mock_relay_on_same_port(
 }
 
 /// 同口重绑（有界退避重试）：全量并行下重绑会撞旧 listener/accepted 流的
-/// 短暂残留窗口（WSAEADDRINUSE；实录：test_welcome_rejected_then_retry /
+/// 短暂残留窗口（WSAEADDRINUSE；test_welcome_rejected_then_retry /
 /// test_kick_reconnect_skips_backoff_wait 全量跑 rebind 假红、单测复跑恒
 /// 绿）——有界退避重试代替一步 expect。客户端退避重连循环会等到监听者
-/// 出现，延迟不破坏用例语义。单一真相源：同口重绑一律走这里。
+/// 出现，延迟不破坏用例语义。统一定义：同口重绑一律走这里。
 async fn bind_with_retry(port: u16) -> tokio::net::TcpListener {
     let mut bound = None;
     let mut last_err = None;
@@ -935,7 +935,7 @@ async fn test_minimal_ws_exchange() {
 // kick_reconnect 两臂（会话内踢断 + 退避等待跳过）、连失败退避重试、
 // bridge_rpc 装配形态（cluster feature：attach/downstream/member_sync/
 // detach 全链 + 非空 hub_node_id welcome 臂）。
-// 全部走 127.0.0.1:0 临时端口；web_port 用死端口（ dial 失败即诚实回执）。
+// 全部走 127.0.0.1:0 临时端口；web_port 用死端口（dial 失败即诚实回执）。
 // ===========================================================================
 
 /// 拿一个已释放的端口（dial 必失败 / relay 占位用）。
@@ -1618,7 +1618,7 @@ async fn test_bridge_rpc_downstream_and_member_sync_via_hub() {
 }
 
 // ---------------------------------------------------------------------------
-// wave5 round2（2026-09-25）：生产入口三臂——LoopTiming::default() 常量表、
+// wave5：生产入口三臂——LoopTiming::default() 常量表、
 // spawn() 组装句柄、run_loop 对不可解析 relay_url 的启动即返（桥客户端未
 // 启动 error 臂）与连接失败首臂（Disconnected 状态上报 + 退避）。
 // ---------------------------------------------------------------------------

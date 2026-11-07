@@ -16,7 +16,7 @@
 //! 生效时机（两段不同）：
 //! - env 段：gateway 启动早期 `set_var` 注入进程环境（**重启生效**）——
 //!   必须先于一切 reqwest client 构建；[`env_vars_to_apply`] 是注入清单的
-//!   纯函数单一真相源。
+//!   纯函数统一定义。
 //! - selfupdate 段：更新下载/检查链路**调用时读盘**（下载是逐次操作，
 //!   **保存即对下次生效**，免重启）——[`load_selfupdate_proxy`] 是唯一读点。
 
@@ -54,7 +54,7 @@ pub struct ProxyFileConfig {
     pub selfupdate: SelfupdateProxyConfig,
 }
 
-/// 配置文件路径：`<config_dir>/config.proxy.json`（单一真相源）。
+/// 配置文件路径：`<config_dir>/config.proxy.json`。
 pub fn proxy_config_path(config_dir: &Path) -> PathBuf {
     config_dir.join("config.proxy.json")
 }
@@ -124,8 +124,8 @@ pub fn load_selfupdate_proxy(config_dir: &Path) -> Option<String> {
 
 /// 保存 env 段（read-modify-write：只动 env 段，selfupdate 段原样保留；
 /// 文件不存在 = 首次创建——唯一合法的落盘时机）。写入前逐键校验。
-/// BUG-20261103-333：锁取在函数首行覆盖**整段 RMW**（读底 + 落盘）——
-/// 旧形态锁只在 write() 内取，读底段裸奔，并发两个保存（proxy.save 每请求
+/// 锁取在函数首行覆盖**整段 RMW**（读底 + 落盘）——
+/// 旧形态锁只在 write 内取，读底段裸奔，并发两个保存（proxy.save 每请求
 /// 独立 spawn）交错时后写者以自己读的旧底整体覆盖先写者（丢失更新）。
 pub fn save_env(config_dir: &Path, env: &EnvProxyConfig) -> Result<PathBuf, String> {
     validate_env(env)?;
@@ -136,7 +136,7 @@ pub fn save_env(config_dir: &Path, env: &EnvProxyConfig) -> Result<PathBuf, Stri
 }
 
 /// 保存 selfupdate 段（read-modify-write：只动 selfupdate 段，env 段原样
-/// 保留）。写入前校验。锁纪律同 save_env（BUG-20261103-333）。
+/// 保留）。写入前校验。锁纪律同 save_env。
 pub fn save_selfupdate(config_dir: &Path, proxy: &str) -> Result<PathBuf, String> {
     validate_proxy_value(proxy, false)?;
     let _serial = crate::config_write_lock();
@@ -168,7 +168,7 @@ fn read_for_write(config_dir: &Path) -> ProxyFileConfig {
     }
 }
 
-/// 落盘（调用方必须已持 config_write_lock——BUG-20261103-333 起 RMW 全程
+/// 落盘（调用方必须已持 config_write_lock—— 起 RMW 全程
 /// 罩锁，本函数只负责创建目录 + 序列化 + 原子写，不再自行取锁）。
 fn write_locked(config_dir: &Path, file: &ProxyFileConfig) -> Result<PathBuf, String> {
     let path = proxy_config_path(config_dir);

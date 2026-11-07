@@ -29,7 +29,7 @@ use std::time::Instant;
 
 static SLOT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// L1 注册表契约：module 名 + commands() 六命令单一真相源。
+/// 注册表契约：module 名 + commands() 六命令统一定义。
 #[test]
 fn commands_registry_shape() {
     use crate::ws_router::ModuleHandler as _;
@@ -113,6 +113,7 @@ fn make_state(home: &std::path::Path, auth_token: &str) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         cron: None,
         board: None,
@@ -134,7 +135,7 @@ fn make_ctx(home: &std::path::Path) -> RequestContext {
     }
 }
 
-/// 写一个 theme 形态 .nbskin（manifest + CSS 载荷），可指定 manifest.id
+/// 写一个 theme 形态.nbskin（manifest + CSS 载荷），可指定 manifest.id
 ///（id_mismatch 注记用）。
 fn write_theme_skin(dir: &std::path::Path, file_stem: &str, manifest_id: &str) {
     let path = dir.join(format!("{file_stem}.nbskin"));
@@ -154,7 +155,7 @@ fn write_theme_skin(dir: &std::path::Path, file_stem: &str, manifest_id: &str) {
     zip.finish().unwrap();
 }
 
-/// 写一个双无载荷的 .nbskin（manifest 无 entry 也无 structure——v2 双
+/// 写一个双无载荷的.nbskin（manifest 无 entry 也无 structure——v2 双
 /// 载荷闸下「无任何可服务载荷」，set_active 拒绝；形态类型学不作裁决依据）。
 fn write_app_skin(dir: &std::path::Path, file_stem: &str) {
     let path = dir.join(format!("{file_stem}.nbskin"));
@@ -227,7 +228,7 @@ fn list_reports_entries_broken_and_dir_state() {
     write_theme_skin(&skins, "alpha", "alpha");
     // broken：写垃圾字节（非 ZIP）
     std::fs::write(skins.join("broken.nbskin"), b"not a zip at all").unwrap();
-    // 非 .nbskin 文件不进注册表
+    // 非.nbskin 文件不进注册表
     std::fs::write(skins.join("readme.txt"), b"hi").unwrap();
 
     let active = Arc::new(parking_lot::RwLock::new("default".to_string()));
@@ -621,7 +622,7 @@ fn hot_flip_lock_reflected_in_router() {
     });
 }
 
-// ===== P2 渠道（2026-09-27）：install 参数面 + /api/skins/import 契约 =====
+// ===== 渠道：install 参数面 + /api/skins/import 契约 =====
 
 /// `skins.install` 参数校验（不触网的部分）：缺 url/source / 未知 source /
 /// 非 https URL 直拒。完整下载管线（SSRF 闸/重定向/解包）依赖网络与环境，
@@ -755,9 +756,9 @@ async fn import_endpoint_contract() {
     assert_eq!(out["overwritten"], json!(true));
 }
 
-// ===== P2a 脚本载荷：三载荷闸 + script_consent 审计 =====
+// ===== 脚本载荷：三载荷闸 + script_consent 审计 =====
 
-/// 写一个 script-only 包（P2a：无 entry 也无 structure，只有 script——
+/// 写一个 script-only 包（无 entry 也无 structure，只有 script——
 /// 三载荷闸下可激活，前端 CSS 走原生基线 + 脚本授权后注入）。
 fn write_script_only_skin(dir: &std::path::Path, file_stem: &str) {
     let path = dir.join(format!("{file_stem}.nbskin"));

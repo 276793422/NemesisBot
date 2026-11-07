@@ -1,11 +1,11 @@
-//! runtime —— M4 运行期调用统一实现（call_fn / hook_capture）：agent 子
+//! runtime —— 运行期调用统一实现（call_fn / hook_capture）：agent 子
 //! 工具桥（nemesisbot `ziwei_tools`）与 WSAPI `ziwei.invoke` / `ziwei.resolve`
-//! 同源消费——单一真相源，两入口语义恒一致。
+//! 同源消费——统一定义，两入口语义恒一致。
 //!
-//! 入参纪律（T4.1）：call_fn 只收整数位置参数 ≤4（浮点/字符串/结构指针
+//! 入参纪律（.1）：call_fn 只收整数位置参数 ≤4（浮点/字符串/结构指针
 //! loud 拒绝；负数按补码转 u64——指针宽度语义）；hook_capture 全锚幂等
-//! 订阅 + 拉取解码回流 + `output.dest` 报表渲染（T4.5）；链长超限运行期
-//! 防御再拦（T4.6）。
+//! 订阅 + 拉取解码回流 + `output.dest` 报表渲染（.5）；链长超限运行期
+//! 防御再拦（.6）。
 
 // 以下三项仅 Windows 运行期（call_fn/hook_capture 经会话管道）消费；
 // 非 Windows 存根编译不触及，cfg 门控防 Linux 侧 unused import 撞 -D warnings。
@@ -64,7 +64,7 @@ fn load_fn_def(
     Ok((profile, fdef))
 }
 
-/// call_fn 统一执行（T4.1）：语义名 → 地址（空表自动 resolve）→ conv 取
+/// call_fn 统一执行（.1）：语义名 → 地址（空表自动 resolve）→ conv 取
 /// profile FunctionDef → 整数参 → 会话 call_fn_addr（Busy/看门狗预算在会话层）。
 /// `timeout_ms` 由调用方从 ToolAction 取（缺省 5000，上限 60000）。
 #[cfg(windows)]
@@ -100,7 +100,7 @@ pub async fn invoke_call_fn(
     Ok(obj)
 }
 
-/// hook_capture 统一执行（T4.3/T4.5/T4.6）：全锚幂等订阅（函数 + 链步骤）
+/// hook_capture 统一执行（.3/.5/.6）：全锚幂等订阅（函数 + 链步骤）
 /// → 拉取解码回流 → `output.dest` 报表渲染（输出对象含 tool 无关面——
 /// 工具身份字段由调用方补）。
 #[cfg(windows)]
@@ -116,7 +116,7 @@ pub async fn invoke_hook_capture(
         format!("会话未附加（profile {profile_id}）：先经 ziwei.attach 附加目标进程")
     })?;
     let (_profile, fdef) = load_fn_def(workspace, profile_id, semantic)?;
-    // T4.6 运行期防御再拦（profile validate 已强制，此处兜底）
+    // .6 运行期防御再拦（profile validate 已强制，此处兜底）
     let chain_len = fdef.capture.as_ref().map(|c| c.chain.len()).unwrap_or(0);
     if chain_len > CHAIN_CAP {
         return Err(format!("捕获链长 {chain_len} 超上限（{CHAIN_CAP}）"));
@@ -151,7 +151,7 @@ pub async fn invoke_hook_capture(
         "dropped": pull["dropped"].clone(),
         "events": pull["events"].clone(),
     });
-    // T4.5：output.dest 渲染（workspace/reports/<dest>；jsonl 形态）
+    // .5：output.dest 渲染（workspace/reports/<dest>；jsonl 形态）
     if let Some(dest) = output_dest {
         let records = manager
             .capture()

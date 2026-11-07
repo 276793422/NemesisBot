@@ -94,7 +94,7 @@ pub struct Pipeline {
     /// A 线行为回归执行器（Skill artifact 带 tests 段时调用）。
     /// 未注入 + 带 tests = Stage 2 fail-closed（诚实报错，不静默跳过）。
     skill_test_runner: parking_lot::RwLock<Option<Arc<dyn crate::skill_tests::SkillTestRunner>>>,
-    /// Stage 2 judge 层专用 caller（杂务模型回落链注入点，2026-10-14 三轮
+    /// Stage 2 judge 层专用 caller（杂务模型回落链注入点， 三轮
     /// 复查对齐三入口口径）：None = 回落 `llm_caller`（主模型，测试注入
     /// 旧形态）。Stage 3 质量评估不受此槽影响（维持主模型语义）。
     judge_caller: parking_lot::RwLock<Option<Arc<dyn crate::reflector_llm::LLMCaller>>>,
@@ -117,7 +117,7 @@ impl Pipeline {
         *self.llm_caller.write() = Some(caller);
     }
 
-    /// Set the skill behavior-test runner (A 线回归闸，2026-10-14)。
+    /// Set the skill behavior-test runner (A 线回归闸，)。
     pub fn set_skill_test_runner(&self, runner: Arc<dyn crate::skill_tests::SkillTestRunner>) {
         *self.skill_test_runner.write() = Some(runner);
     }
@@ -341,10 +341,10 @@ impl Pipeline {
             errors.push("Content contains potential secret/key".into());
         }
 
-        // 危险命令检查（F-S1 同类扫，2026-10-16 R16）：本函数是 learning_engine
+        // 危险命令检查（F- 同类扫）：本函数是 learning_engine
         // refine 循环的唯一静态闸，此前只有密钥子串检查——含 `rm -rf /` /
         // `curl|bash` 的 LLM 产物能通过校验并部署为 agent 指令。规则与
-        // StaticValidator 同源（dangerous_command_errors 单一真相源）；密钥
+        // StaticValidator 同源（dangerous_command_errors 统一定义）；密钥
         // 正则面不重复接入（上方子串检查更宽，两套都报会重复计错）。
         for e in crate::validator::StaticValidator::new().dangerous_command_errors(content) {
             errors.push(e);
@@ -441,8 +441,8 @@ impl Pipeline {
                 let user_prompt =
                     crate::reflector_llm::quality_review_prompt(kind_str, name, None, content);
 
-                // 预算统一走 forge 侧常量（2026-09-28 从 2000 拉齐 8192：
-                // 单一真相源，对非 anthropic lane thinking 不受控留余量）。
+                // 预算统一走 forge 侧常量（从 2000 拉齐 8192：
+                // 统一定义，对非 anthropic lane thinking 不受控留余量）。
                 match caller
                     .chat(
                         system_prompt,

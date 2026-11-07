@@ -1,7 +1,7 @@
-//! P4-d（2026-10-17）— 评审结论 → 交付账本闭环（持久 Agent 实体 P4-d）。
+//! d（2026-10-17）— 评审结论 → 交付账本闭环（持久 Agent 实体 -d）。
 //!
-//! PLAN P4「全自动链推广」的账本半边：board 链每条评审决策经
-//! [`crate::board_review::record_auto_decide`] 单一漏斗同步落 deliveries
+//! PLAN 「全自动链推广」的账本半边：board 链每条评审决策经
+//! [`crate::board_review:record_auto_decide`] 单一漏斗同步落 deliveries
 //! 表 `review` 行（证据链一处可查：`deliveries.list` / `deliveries.by_run`）；
 //! 子单决策同时驱动分支交付闭环——
 //! - `auto_accept` → confirm：交付被接受；
@@ -233,7 +233,7 @@ pub(crate) fn dossier_delivery(
     }
 }
 
-/// coding_delivery 整包行（P2 外循环，2026-10-25）：评审定案后把整包证据
+/// coding_delivery 整包行（外循环）：评审定案后把整包证据
 /// 索引 + 终态结论入 deliveries 表（kind="coding_delivery"）。patch 全文
 /// 不重复入库（branch 行/盘上留底已有）——整包行带**证据索引**（branch_key
 /// /patch_path/commit/tree/base_tree/repo_base_sha/checks_count）+ 终态

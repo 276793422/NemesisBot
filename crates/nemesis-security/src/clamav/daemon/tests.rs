@@ -229,7 +229,7 @@ async fn test_daemon_process_initially_none() {
 }
 
 // ============================================================
-// Fake clamd / fake executable tests (2026-08-25 coverage push)
+// Fake clamd / fake executable tests (coverage push)
 // ============================================================
 // 真 clamd 启停算结构性；这里用两个替身把 spawn+readiness+stop 全链路拉通：
 // - 假 clamd.exe = C:\Windows\System32\where.exe 的副本（合法 PE、立即退出，

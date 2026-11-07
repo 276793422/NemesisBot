@@ -1,4 +1,4 @@
-//! 测试共享工具（S9 覆盖率批次引入，模式抄自 nemesis-sandbox/src/test_util.rs）。
+//! 测试共享工具（覆盖率批次引入，模式抄自 nemesis-sandbox/src/test_util.rs）。
 //!
 //! `capture_logs`：装一个 thread-local tracing subscriber（sink 丢弃），
 //! 让 `tracing::info!/warn!/debug!` 的参数表达式行被真实求值——无 subscriber
@@ -19,7 +19,7 @@ pub(crate) fn capture_logs() -> tracing::subscriber::DefaultGuard {
 }
 
 /// [`capture_logs`] 的捕获形态：输出进共享缓冲而非丢弃，供断言日志级别
-/// 与文案（BUG-20261102-322：测试名承诺「warns_loudly / logged」就必须真
+/// 与文案（测试名承诺「warns_loudly / logged」就必须真
 /// 断言，不得只求值）。返回 (guard, 缓冲句柄)；guard 持有至测试结束。
 pub(crate) fn capture_logs_to_buf() -> (
     tracing::subscriber::DefaultGuard,
@@ -50,8 +50,8 @@ pub(crate) fn capture_logs_to_buf() -> (
 ///
 /// 为什么需要：println!/eprintln! 的输出被 libtest 捕获进 per-test 缓冲，
 /// panic 详情也统一在末尾 summary 的 failures 区输出——**测试挂死导致整轮
-/// 被 cancel 时，这些全部丢失**（2026-09-02 extended-tests Linux nightly
-/// 首跑实录：2 个 FAILED 的 panic 现场随 2h 挂死一起蒸发）。捕获是 TLS 挂钩
+/// 被 cancel 时，这些全部丢失**（extended-tests Linux nightly
+/// 首跑2 个 FAILED 的 panic 现场随 2h 挂死一起蒸发）。捕获是 TLS 挂钩
 /// 只拦 std 的 stdout()/stderr() 句柄；Linux 上重新 open /proc/self/fd/2
 /// 拿到的是裸 fd 2，写下去直达 job 日志。非 Linux 直接 eprintln!（本地
 /// 调试场景，挂死时终端本身就在看）。

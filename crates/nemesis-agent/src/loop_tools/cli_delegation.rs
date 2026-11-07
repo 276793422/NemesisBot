@@ -1,12 +1,12 @@
-//! T5 (U13 / A7+A9): shared CLI-delegation execution layer.
+//! (/ +): shared CLI-delegation execution layer.
 //!
-//! H7's ClaudeCodeTool and I4's CodexTool grew ~150 lines of byte-identical
-//! spawn/timeout/tree-kill/CREATE_NO_WINDOW/structured-error plumbing (the A9
+//! 's ClaudeCodeTool and 's CodexTool grew ~150 lines of byte-identical
+//! spawn/timeout/tree-kill/CREATE_NO_WINDOW/structured-error plumbing (the
 //! duplication debt). This module is the single home for that logic; the two
 //! tools shrink to "argument construction + config" shells around
 //! [`run_cli_delegation`].
 //!
-//! T5 also adds the FIXED (non-interactive) permission tiers the original U13
+//! also adds the FIXED (non-interactive) permission tiers the original
 //! item required — config-driven, NEVER model-selectable (absent from the
 //! tool schema on purpose):
 //! - claude: `agents.claude_code_tool.permission_mode` → `--permission-mode`
@@ -39,10 +39,10 @@ pub struct CliDelegationSpec<'a> {
 
 /// Unified CLI delegation runner: spawn → collect output → timeout with
 /// process-tree kill → structured errors. Extracted verbatim from the two
-/// per-tool copies (A9).
+/// per-tool copies.
 pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, String> {
     let mut cmd = Command::new(spec.cli);
-    // Timeout safety: if tokio::time::timeout drops the output() future
+    // Timeout safety: if tokio::time:timeout drops the output() future
     // at the deadline, the spawned child must die with it — without
     // kill_on_drop the CLI process would outlive the tool call as an
     // orphan (second-pass review fix).
@@ -58,7 +58,7 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
 
-    // L27 env 窄版闸（T4 家族闸纪律，BUG-20261029-178：spawn 点必须显式
+    // env 窄版闸（家族闸纪律，spawn 点必须显式
     // 接闸）：第三方 CLI 子进程不继承 bot 内部命名空间变量
     // （NEMESISBOT_VAULT_PASSPHRASE 等）。刻意窄剥——关键词黑名单不适用
     // （第三方 CLI 自身 auth 依赖的 env key 必须保留，全剥砍登录态）。
@@ -152,7 +152,7 @@ pub fn delegation_cwd(session_key: &str) -> PathBuf {
 /// Locate a CLI on PATH: `where <name>` (Windows) / `which <name>`.
 /// Returns the resolved path, or None when not installed.
 ///
-/// Windows nuance (V4 真机揭的 bug，2026-08-23）：npm 风格安装会在 PATH 上
+/// Windows nuance (真机揭的 bug）：npm 风格安装会在 PATH 上
 /// 同时落一个**无扩展名的 POSIX sh shim** 和一个 `.cmd` 包装（`where claude`
 /// 先吐 shim）。`Command::new(<无扩展名>)` 在 Windows 上必失败（os error 193
 /// "不是有效的 Win32 应用程序"）——所以这里不能盲取第一行，要优先挑带
@@ -207,13 +207,13 @@ fn pick_windows_exec_candidate(lines: &[&str]) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// T5 fixed permission tiers (config-driven, NOT model-selectable)
+// fixed permission tiers (config-driven, NOT model-selectable)
 // ---------------------------------------------------------------------------
 
 /// Valid claude `--permission-mode` values — the CLI's own camelCase set
 /// (verified against claude CLI 2.1.240 `--help`: acceptEdits / auto /
-/// bypassPermissions / manual / dontAsk / plan). V4 真机揭的第二个 bug
-/// (2026-08-23)：T5 原来硬编码 snake_case（default/accept_edits/...），
+/// bypassPermissions / manual / dontAsk / plan). 真机揭的第二个 bug
+/// 原来硬编码 snake_case（default/accept_edits/...），
 /// 真实 CLI 直接拒收 `accept_edits`（exit 2 "invalid choice"），委派从未
 /// 在真机上跑通过——mock 测试钉的是错误假设。Default `acceptEdits` —
 /// the non-interactive-safe tier.
@@ -227,7 +227,7 @@ pub const CC_PERMISSION_MODES: [&str; 6] = [
 ];
 pub const CC_PERMISSION_MODE_DEFAULT: &str = "acceptEdits";
 
-/// Legacy snake_case aliases (T5 era config values / old docs). The feature
+/// Legacy snake_case aliases (era config values / old docs). The feature
 /// never worked end-to-end with these (the CLI rejects them), but configs in
 /// the wild may carry them — map instead of silently degrading to default.
 const CC_PERMISSION_MODE_LEGACY_ALIASES: [(&str, &str); 4] = [

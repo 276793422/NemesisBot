@@ -1,10 +1,10 @@
-//! S9 覆盖率批次：executor_pipe.rs 剩余未覆盖行。
+//! 覆盖率批次：executor_pipe.rs 剩余未覆盖行。
 //! - 63-66/68：connect_client 的 Err 重试臂 + 截止到点返回 + 重试 sleep。
 //!   连接一个必然不存在的管道名 → ERROR_FILE_NOT_FOUND → 每轮 sleep 20ms
 //!   直到 10s deadline 返回 Err。
 //!
 //! ⚠️ 测试硬成本 ~10s（deadline 写死 10s；tokio start_paused 用不了——
-//! std::time::Instant 是真实时钟，暂停时间会死循环）。只此一个。
+//! std::time:Instant 是真实时钟，暂停时间会死循环）。只此一个。
 
 #[cfg(windows)]
 #[tokio::test]

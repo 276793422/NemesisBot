@@ -1,4 +1,4 @@
-//! Swarm M3 统一信封（impl-plan §5.1，D5 裁决）。
+//! Swarm 统一信封（impl-plan， 裁决）。
 //!
 //! 所有集群 RPC 业务 payload 统一形状（与 WSAPI `{module, cmd, reqId, data}`
 //! 同构）：`{v, ns, op, corr_id, ok, error, body}`。RPC 层只注册一个

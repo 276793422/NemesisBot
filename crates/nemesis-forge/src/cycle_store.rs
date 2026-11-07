@@ -82,9 +82,9 @@ impl CycleStore {
 
         let since_date_str = since.map(|s| s.format("%Y%m%d").to_string());
 
-        // 2026-10-16 P5：月份目录与文件枚举先排序再消费（NTFS 字典序 vs
+        // 月份目录与文件枚举先排序再消费（NTFS 字典序 vs
         // ext4 哈希序，read_dir 顺序是平台实现细节）。不排序时返回序列
-        // 跨平台不稳定——下游 load_latest_cycle 已自排序（F-M10），但
+        // 跨平台不稳定——下游 load_latest_cycle 已自排序（F），但
         // learning_engine 聚合与 CLI 列表直接消费本序列。
         let mut month_names: Vec<String> = Vec::new();
         let mut month_entries = tokio::fs::read_dir(&self.base_dir).await?;
@@ -141,8 +141,8 @@ impl CycleStore {
     /// Get the latest cycle record across all files.
     pub async fn load_latest_cycle(&self) -> std::io::Result<Option<LearningCycle>> {
         let mut cycles = self.read_cycles(None).await?;
-        // read_dir order is unspecified — sort by started_at so .last() is the
-        // genuinely newest cycle (F-M10: the old code returned an arbitrary one).
+        // read_dir order is unspecified — sort by started_at so.last() is the
+        // genuinely newest cycle (F-: the old code returned an arbitrary one).
         cycles.sort_by(|a, b| a.started_at.cmp(&b.started_at));
         Ok(cycles.into_iter().last())
     }

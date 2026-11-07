@@ -1,4 +1,4 @@
-//! ProjectLoopManager / 路由纯函数测试（L6++ G2，2026-09-08）。
+//! ProjectLoopManager / 路由纯函数测试（2026-09-08）。
 //!
 //! 覆盖：route_decision 三值穷举（system 全拒 / 按归属 / 无归属放行）、
 //! session_key_from_stem 与 web 扫描端镜像、spawn-stop 生命周期（幂等 +
@@ -66,7 +66,7 @@ fn msg(channel: &str, session_key: &str) -> InboundMessage {
 }
 
 // ---------------------------------------------------------------------------
-// route_decision 纯函数（G2 门：system 全拒 / web 按归属 / 无归属放行）
+// route_decision 纯函数（门：system 全拒 / web 按归属 / 无归属放行）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -110,7 +110,7 @@ fn route_decision_by_ownership() {
 
 #[test]
 fn route_decision_history_requests_exempt_from_project_routing() {
-    // history 只读查询豁免（BUG 2026-09-23）：数据全在主 workspace，
+    // history 只读查询豁免：数据全在主 workspace，
     // 与项目 loop 存亡/忙闲无关——带项目归属也必须回主 loop。
     let mut bound = msg("web", "agent:main:session:projh1");
     bound.content = r#"{"request_id":"rq-1","limit":20}"#.to_string();
@@ -216,7 +216,7 @@ async fn manager_spawn_stop_lifecycle() {
     assert!(!mgr.stop_project("p_life0001"));
 }
 
-// BUG-20261025-33：drain 面快照与在跑 loop 一一对应，且经快照可置位
+// drain 面快照与在跑 loop 一一对应，且经快照可置位
 // draining 闸——gateway teardown 对项目 loop 的统一入口闸取数路径
 // （此前 teardown stop_all 直接 abort 项目会话在途 turn）。
 #[tokio::test]
@@ -362,7 +362,7 @@ async fn manager_start_all_and_owner_index() {
 }
 
 // ---------------------------------------------------------------------------
-// bind / forget 全路径（G4）：sidecar 经 chat_log 全局单例写读——必须先
+// bind / forget 全路径：sidecar 经 chat_log 全局单例写读——必须先
 // 拿 GLOBAL_STATE_LOCK 并把单例 home 重定向到沙箱（crate::tests 纪律；
 // Windows-form helper，Linux nightly 不编译此用例）。
 // ---------------------------------------------------------------------------
@@ -441,7 +441,7 @@ async fn bind_and_forget_session_roundtrip_with_sidecar() {
     assert!(!mgr.forget_session(key), "二次 forget 必须 false");
 }
 
-/// remove 后归属保留契约（2026-10-24 数据契约审计钉死；曾与 CLAUDE.md
+/// remove 后归属保留契约（数据契约审计钉死；曾与 CLAUDE.md
 /// 旧表述「owner_of 回 None」相悖——旧表述错误）：remove 只摘 registry
 /// 条目 + stop loop，**索引与 sidecar 的 project 字段刻意保留**——前端
 /// 「已移除」灰组派生（session.projectId 不在 projects 列表）与同名再
@@ -503,7 +503,7 @@ async fn remove_project_retains_session_binding_contract() {
     );
 }
 
-/// remove 联动清理 agents 镜像记录（2026-10-31 真机 E2E 发现的孤儿投影）：
+/// remove 联动清理 agents 镜像记录（真机 E2E 发现的孤儿投影）：
 /// registry 摘除后 kind=project 镜像必须同步摘除——否则 agents.list 出现
 /// 指向已删项目的幽灵记录，盘上 home 成无主目录。会话绑定刻意保留（上一
 /// 契约），两层语义互不越界。
@@ -569,7 +569,7 @@ async fn remove_project_cleans_agent_mirror_record() {
 }
 
 // ---------------------------------------------------------------------------
-// reload_providers（BUG 2026-09-21）：模型热切联动到在跑项目 loop
+// reload_providers：模型热切联动到在跑项目 loop
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -656,7 +656,7 @@ async fn reload_providers_swaps_running_project_loop_model() {
 }
 
 // ---------------------------------------------------------------------------
-// wave_a（2026-09-25）：route_one 转发/不可用回路、bridge_should_skip、
+// wave_a：route_one 转发/不可用回路、bridge_should_skip、
 // display_label 三级回落、max_projects 读取链、ProjectsBridge list/rename/
 // remove 薄委托。
 // ---------------------------------------------------------------------------
@@ -906,7 +906,7 @@ mod wave_a {
 }
 
 // ---------------------------------------------------------------------------
-// wave5 round2（2026-09-25）：ProjectsBridge trait 全委托矩阵（create 发车
+// wave5：ProjectsBridge trait 全委托矩阵（create 发车
 // 真跑 run_bus_arc / reload_provider_all 成功形态 swapped>0 / bind·forget·
 // owner_of 单例 home 形态）、reload_providers config 坏档臂、
 // max_projects Err 回退臂、start_all 目录消失 warn-skip 臂、归属索引重建
@@ -1108,7 +1108,7 @@ mod w5r2 {
 }
 
 // ---------------------------------------------------------------------------
-// N7（2026-10-13）：set_trust——注册表 RMW + 在跑 loop 热更新（下一轮
+// set_trust——注册表 RMW + 在跑 loop 热更新（下一轮
 // build_messages 生效；策略读盘上 config）。
 // ---------------------------------------------------------------------------
 
@@ -1173,7 +1173,7 @@ async fn bridge_set_trust_persists_and_hot_applies_to_live_loop() {
 }
 
 // ---------------------------------------------------------------------------
-// B9 冲突裁决卡纯函数（feature=vm；真值表钉死「不猜」纪律）
+// 冲突裁决卡纯函数（feature=vm；真值表钉死「不猜」纪律）
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "vm")]

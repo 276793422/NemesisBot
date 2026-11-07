@@ -1,4 +1,4 @@
-//! disk 模块测试（M2 批次一）：evaluate 纯函数全臂 + volume_free_bytes
+//! disk 模块测试：evaluate 纯函数全臂 + volume_free_bytes
 //! 真实卷冒烟（查询自身工作目录所在卷，只验成功与量级合理性）。
 
 use super::*;

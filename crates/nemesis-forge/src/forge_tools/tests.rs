@@ -1593,7 +1593,7 @@ fn test_increment_version_non_numeric() {
     assert_eq!(increment_version("1.abc"), "1.abc.1");
 }
 
-// ==================== BUG-20261104-371 回归锁 ====================
+// ==================== 回归锁 ====================
 //
 // script 类 artifact 三形态路径失配：create 落 scripts/{category}/{name}，
 // resolve_artifact_path（Script 臂）此前恒返回扁平形态 scripts/{name}——
@@ -1945,7 +1945,7 @@ fn test_compute_quality_score_medium_content() {
 }
 
 // =========================================================================
-// S8 coverage batch (quality-hardening goal 冲刺 S8)
+// coverage batch (quality-hardening goal 冲刺)
 // =========================================================================
 
 /// MCP server content that passes Stage-1 static checks, all five Stage-2
@@ -2268,7 +2268,7 @@ async fn test_s8_create_mcp_active_registers_python() {
         std::fs::read_to_string(dir.path().join("config").join("config.mcp.json")).unwrap();
     assert!(mcp_json.contains("regmcp"), "config: {}", mcp_json);
     assert!(mcp_json.contains("uv"), "config: {}", mcp_json);
-    // FT1 回归钉（2026-10-16）：注册的入口必须是**绝对路径**——此前传裸
+    // 回归钉：注册的入口必须是**绝对路径**——此前传裸
     // 文件名 server.py，MCP server 进程以 gateway 的 CWD 启动时找不到文件
     // （与 execute_build_mcp install 臂的绝对路径口径对齐）。
     let cfg: nemesis_config::McpConfig = serde_json::from_str(&mcp_json).unwrap();
@@ -2284,7 +2284,7 @@ async fn test_s8_create_mcp_active_registers_python() {
     );
 }
 
-/// FT1-c 回归钉（2026-10-16 全文复查）：forge_update 的 MCP 重注册臂与
+/// c 回归钉（全文复查）：forge_update 的 MCP 重注册臂与
 /// create 臂同口径——绝对路径入口 + 按入口扩展名选 command + 失败不静默。
 /// 此前传裸 file_name（`uv run server.py` 依赖 gateway CWD 碰巧等于 mcp
 /// 目录才命中）且 `let _ =` 吞掉安装失败。回归钉咬合：把 update 臂改回
@@ -2655,7 +2655,7 @@ async fn test_s8_evaluate_observing_status() {
     );
 }
 
-/// BUG-20261104-391 回归锁：forge_evaluate 的质量闸必须消费
+/// 回归锁：forge_evaluate 的质量闸必须消费
 /// config.forge.json `validation.min_quality_score`（此前硬编码 60，该键只在
 /// pipeline 路径生效）。同一份内容（forge_tools 侧评分 67：完整度 25 + 错误
 /// 处理 17 + 文档 20 + 代码质量 5）差分两分支——默认阈值 60 → Active；阈值
@@ -3022,7 +3022,7 @@ async fn test_s8_build_mcp_uninstall_variants() {
     );
 
     // Config without servers (top-level-only shape): tolerant parse yields
-    // an empty table → honest "already uninstalled" (P1 起两形态统一话术).
+    // an empty table → honest "already uninstalled" (起两形态统一话术).
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::write(&config_path, r#"{"foo": 1}"#).unwrap();
     let r2 = executor.execute("forge_build_mcp", &args).await;
@@ -3414,7 +3414,7 @@ async fn test_s8_share_no_reflections_dir() {
 /// does not exist: the containment check is unconditional —
 /// canonicalize_for_compare resolves the nonexistent reflections dir via its
 /// longest existing ancestor, so the outside path is rejected (fail-closed;
-/// 2026-09-01 tightening — the old skip-when-uncanonicalizable behavior let
+/// tightening — the old skip-when-uncanonicalizable behavior let
 /// the path through).
 #[tokio::test]
 async fn test_s8_share_external_path_no_reflections_dir() {
@@ -3480,7 +3480,7 @@ async fn test_s8_share_nonexistent_report_path() {
 /// forge_share with a NONEXISTENT report_path OUTSIDE the reflections
 /// directory: the old fail-open path (canonicalize of the path itself fails
 /// → containment check skipped entirely) would have shared it to cluster
-/// peers. Regression for the 2026-09-01 fail-open fix: the unconditional
+/// peers. Regression for the fail-open fix: the unconditional
 /// guard resolves the path via its longest existing ancestor and rejects.
 #[tokio::test]
 async fn test_s8_share_nonexistent_external_path_rejected() {
@@ -3513,10 +3513,10 @@ async fn test_s8_share_nonexistent_external_path_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// F-S1 安全闸（2026-10-16 R16 同类扫）：update 写盘面 + evaluate 晋升面
+// F- 安全闸（同类扫）：update 写盘面 + evaluate 晋升面
 // ---------------------------------------------------------------------------
 
-/// F-S1 闸（R16 同类扫）：forge_update 在写盘前过 security_errors——危险
+/// F- 闸（同类扫）：forge_update 在写盘前过 security_errors——危险
 /// 内容（curl|bash）拒绝、文件保持原内容。回归钉咬合：摘掉 execute_update
 /// 的闸，本测试必红（危险内容写盘并 bump 版本）。
 #[tokio::test]
@@ -3576,7 +3576,7 @@ async fn test_execute_update_security_gate_rejects_dangerous_content() {
     assert!(!on_disk.contains("curl"), "被拒内容不得落盘: {on_disk}");
 }
 
-/// F-S1 闸（R16 同类扫）：forge_evaluate Stage 1 含安全扫描——手工编辑
+/// F- 闸（同类扫）：forge_evaluate Stage 1 含安全扫描——手工编辑
 /// （绕过工具面直接写文件）落入的危险内容不得 Draft→Active 晋升。
 /// 回归钉咬合：摘掉 static_validation 的 Security scan 检查项，本测试必红
 /// （结构检查全过 → 晋升 Active）。
@@ -3614,7 +3614,7 @@ async fn test_execute_evaluate_security_scan_blocks_promotion() {
         .join("SKILL.md");
     // 危险内容必须同时过 stage1 结构检查、stage2 功能检查（frontmatter
     // name+description / 非空 body / Markdown 结构）与 quality_assessment
-    // ≥60——否则摘闸后仍停留 Draft，断言空转，回归钉咬不住（R16 实证：
+    // ≥60——否则摘闸后仍停留 Draft，断言空转，回归钉咬不住（实证：
     // 初版薄内容 quality≈11、缺 description，摘闸后照样 Draft 假绿）。
     std::fs::write(
         &artifact_path,
@@ -3642,8 +3642,8 @@ async fn test_execute_evaluate_security_scan_blocks_promotion() {
     );
 }
 
-/// FT2 回归钉（2026-10-16）：forge_update 的 workspace/skills 副本目录段
-/// 必须 slug——registry 历史污染名（`../poison`，R18 的 resolve_artifact_path
+/// 回归钉：forge_update 的 workspace/skills 副本目录段
+/// 必须 slug——registry 历史污染名（`../poison`， 的 resolve_artifact_path
 /// 只护了 forge/ 主副本）此前会把副本写到 `skills/../poison-forge` =
 /// workspace 根，越出 skills/ 边界。
 #[tokio::test]
@@ -3700,7 +3700,7 @@ async fn test_s8_update_skill_copy_slug_is_boundaried() {
     );
 }
 
-/// R18-b 回归钉（2026-10-16 diff 复查）：resolve_artifact_path 的空 slug
+/// b 回归钉（diff 复查）：resolve_artifact_path 的空 slug
 /// 分支不得回落原始名——`../..` 这类纯符号穿越序列 slugify 后为空串，回落
 /// 原名等于把穿越序列原样交还给 join（update 写面越出 workspace）。现契约：
 /// 空 slug 用受控占位段 `_unnamed_`，主副本写面关在 forge/skills 内。
@@ -3755,7 +3755,7 @@ async fn test_execute_update_pure_symbol_traversal_name_stays_contained() {
         "空 slug 中毒名必须落在受控占位目录（forge/skills/_unnamed_），result: {}",
         result.content
     );
-    // 逃逸点：未修复时 forge/skills/../.. 解析到 workspace 根（越出 forge/）。
+    // 逃逸点：未修复时 forge/skills/../.. 解析到 workspace 根（越出 forge）。
     assert!(
         !dir.path().join("SKILL.md").exists(),
         "穿越序列不得把主副本写出 forge/ 边界（workspace 根被污染）"

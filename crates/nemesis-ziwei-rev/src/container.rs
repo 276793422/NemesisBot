@@ -1,12 +1,12 @@
-//! container —— 容器抽象（P0）。
+//! container —— 容器抽象。
 //!
-//! S1 魔数分派：MZ → PE、`\x7fELF` → ELF（声明在册，解析器 P1 批次实装，
-//! 现阶段诚实报错）。S2/S4 形态注记：镜像装载（ImageMap）与种子装配在本
-//! 批保持 PE 专名直用——容器统一抽象（trait 或双变体 enum）等 P1 有了
+//! 魔数分派：MZ → PE、`\x7fELF` → ELF（声明在册，解析器 批次实装，
+//! 现阶段诚实报错）。/ 形态注记：镜像装载（ImageMap）与种子装配在本
+//! 批保持 PE 专名直用——容器统一抽象（trait 或双变体 enum）等 有了
 //! ElfMap 真实第二个变体再定形态，避免单变体 enum 的纯猜测抽象；
 //! `BinHeaders::parse` 就是那道接缝：ELF 到来时同一入口诚实分派。
 //!
-//! S4 种子供给器：`pe_seed_contribs` 把 analyze 的种子装配（入口/导出/
+//! 种子供给器：`pe_seed_contribs` 把 analyze 的种子装配（入口/导出/
 //! pdata/CFG/TLS/nopsled）收进容器侧，analyze 只做汇总（界内过滤在供给器
 //! 内完成）。全部来源可选——缺席来源诚实缺席，字节启发式（nopsled）兜底。
 
@@ -17,7 +17,7 @@ use crate::pe::{self, ImageMap, PeInfo};
 /// 容器头解析产物（魔数分派）。
 pub enum BinHeaders {
     Pe(PeInfo),
-    /// ELF 魔数已识别（\x7fELF）；字段化解析 P1 批次实装。
+    /// ELF 魔数已识别（\x7fELF）；字段化解析 批次实装。
     Elf,
 }
 
@@ -39,7 +39,7 @@ impl BinHeaders {
     pub fn arch(&self) -> Option<Arch> {
         match self {
             BinHeaders::Pe(pe) => Arch::from_machine(pe.machine),
-            BinHeaders::Elf => None, // P1：Arch::from_elf_machine(e_machine)
+            BinHeaders::Elf => None, // Arch::from_elf_machine(e_machine)
         }
     }
 
@@ -61,7 +61,7 @@ pub struct SeedContrib {
 
 /// PE 容器种子装配供给器（磁盘文件形态：导出/延迟导入无关的表全部解析自
 /// exe 文件）。六来源全部可选：目录缺席 → 空贡献；nopsled 字节启发式恒在
-/// 兜底（x86 无 .pdata / 无 CFG 表的裸二进制也有种子可下）。
+/// 兜底（x86 无.pdata / 无 CFG 表的裸二进制也有种子可下）。
 pub fn pe_seed_contribs(img: &ImageMap, exe_file: &[u8]) -> Vec<SeedContrib> {
     // .text 界（首可执行节）；界外种子丢弃——递归下降活动窗口只在界内。
     let bounds = pe_text_bounds(img);
@@ -98,7 +98,7 @@ pub fn pe_seed_contribs(img: &ImageMap, exe_file: &[u8]) -> Vec<SeedContrib> {
             });
         }
     }
-    // CFG 合法间接调用目标表（B2：函数发现单一最大增强）
+    // CFG 合法间接调用目标表（函数发现单一最大增强）
     if let Some(list) = pe::parse_cfg_function_table(exe_file, &img.pe) {
         let rvas: Vec<u32> = list.into_iter().filter(|r| inb(*r)).collect();
         if !rvas.is_empty() {
@@ -108,7 +108,7 @@ pub fn pe_seed_contribs(img: &ImageMap, exe_file: &[u8]) -> Vec<SeedContrib> {
             });
         }
     }
-    // TLS 回调（B2：隐藏入口种子）
+    // TLS 回调（隐藏入口种子）
     if let Some(list) = pe::parse_tls_callbacks(exe_file, &img.pe) {
         let rvas: Vec<u32> = list.into_iter().filter(|r| inb(*r)).collect();
         if !rvas.is_empty() {
@@ -132,7 +132,7 @@ pub fn pe_seed_contribs(img: &ImageMap, exe_file: &[u8]) -> Vec<SeedContrib> {
     out
 }
 
-/// 首可执行节界（analyze 原 .text 定位逻辑收编；无可执行节 = None）。
+/// 首可执行节界（analyze 原.text 定位逻辑收编；无可执行节 = None）。
 pub fn pe_text_bounds(img: &ImageMap) -> Option<(u32, u32)> {
     img.pe
         .sections

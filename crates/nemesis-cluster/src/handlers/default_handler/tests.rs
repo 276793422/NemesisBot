@@ -322,7 +322,7 @@ fn test_ping_response_node_id() {
 }
 
 // ============================================================
-// S4 coverage: peer_chat_callback parse-Ok + validate-Err arm.
+// coverage: peer_chat_callback parse-Ok + validate-Err arm.
 // ============================================================
 
 /// A well-formed callback payload with an empty task_id parses but fails

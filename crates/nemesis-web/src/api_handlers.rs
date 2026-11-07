@@ -31,9 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
 // Shared application state
-// ---------------------------------------------------------------------------
 
 /// Application state shared with all handlers.
 #[derive(Clone)]
@@ -65,7 +63,7 @@ pub struct AppState {
     /// Streaming LLM provider for SSE chat endpoint + persona generation
     /// (optional — set via set_streaming_provider).
     ///
-    /// 协议感知槽（B 根修 2026-09-17）：此前类型钉死 Arc<HttpProvider>（只讲
+    /// 协议感知槽（B 根修）：此前类型钉死 Arc<HttpProvider>（只讲
     /// OpenAI wire），gateway 只能装配裸 HttpProvider——主模型切 anthropic
     /// 协议后 persona 生成与 /api/chat/stream 整条 lane 断粮。改 dyn
     /// LLMProvider 后 gateway 经 factory 装配（同一 resolution + protocol）。
@@ -95,16 +93,16 @@ pub struct AppState {
     pub cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
     #[cfg(not(feature = "cluster"))]
     pub cluster: Option<()>,
-    /// QUIC 中继运行面句柄（QUIC 插件化 M1：运行面在 plugin_roaming C-ABI
+    /// QUIC 中继运行面句柄（QUIC 插件化：运行面在 plugin_roaming C-ABI
     /// 插件——宿主 nemesisbot 装载后注入；fn 指针 Copy，直接持值不 Arc）。
     /// None = 插件未装载（诚实降级：启停/成员查询报 not loaded）。
-    /// M4 起恒编译（cluster-roaming feature 已删）。
+    /// 恒编译（cluster-roaming feature 已删）。
     pub quic_relay: Option<nemesis_plugin::roaming::RoamingPluginHandle>,
     /// Cluster lifecycle service for start/stop control.
     pub cluster_service: Option<Arc<dyn nemesis_services::bot_service::LifecycleService>>,
     /// Cluster log directory for JSONL log reader.
     pub cluster_log_dir: Option<String>,
-    /// Workflow engine for /api/workflow/* endpoints (milestone 1a-E3/E4).
+    /// Workflow engine for /api/workflow/* endpoints (milestone 1a-/).
     #[cfg(feature = "workflow")]
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
     #[cfg(not(feature = "workflow"))]
@@ -118,7 +116,7 @@ pub struct AppState {
     #[cfg(not(feature = "workflow"))]
     #[allow(dead_code)]
     pub chat_secret_store: Arc<()>,
-    /// Per-IP rate limiter for webhook endpoints (1c-E5). Keyed by client
+    /// Per-IP rate limiter for webhook endpoints (1c-). Keyed by client
     /// IP; tracks request timestamps inside a sliding 1-minute window.
     #[cfg(feature = "workflow")]
     pub webhook_rate_limiter: Arc<crate::handlers::workflow::WebhookRateLimiter>,
@@ -130,30 +128,33 @@ pub struct AppState {
     /// 全局急停状态。/api/internal 的 estop_* 命令直接操作它（无需 mpsc 往返，
     /// status 能即时返回）。EstopState 是线程安全 Arc<AtomicBool+watch>。
     pub estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// Gateway 级后台进程注册表（background.* WSAPI 投影面；gateway 注入。
+    /// None = 未注入（headless/relay/测试装配）→ handler 诚实报错）。
+    pub background_registry: Option<Arc<nemesis_agent::BackgroundProcessRegistry>>,
     /// Runtime cron service. Lets `tasks.cron.*` handlers call the live
     /// scheduler (add/list/update/delete/toggle/run) instead of raw file I/O.
     /// nemesis-cron is an unconditional dependency, so no cfg gate.
     pub cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
-    /// Managed-agent board service (W2 P1). `board` feature 门控（nemesis-board
+    /// Managed-agent board service. `board` feature 门控（nemesis-board
     /// 是本 crate 的 optional 依赖）；gateway 注入 `Some` only when the
     /// `board` feature is enabled and the store opened successfully. Carries
     /// the node role (goal 硬约束①：复用 NodeRole) — worker 节点 board 只读。
-    /// `Option<()>` 占位形态让 `board: None` 初始化器在关态照常编译。
+    /// `Option<>` 占位形态让 `board: None` 初始化器在关态照常编译。
     #[cfg(feature = "board")]
     pub board: Option<nemesis_board::BoardService>,
     #[cfg(not(feature = "board"))]
     #[allow(dead_code)]
     pub board: Option<()>,
-    /// 签名验证启动自验状态（接入计划 §4，2026-09-23）。gateway 启动时从
+    /// 签名验证启动自验状态（接入计划）。gateway 启动时从
     /// verify_policy 快照映射注入；None = 未注入（`--relay` 纯中继 / 测试
     /// 装配），`security.signature_verify_status` 回 `injected: false`。
     pub signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
-    /// WS4 技能装前审批门（P13）。gateway 注入 WebApprovalManager 适配器
+    /// 技能装前审批门。gateway 注入 WebApprovalManager 适配器
     /// （复用 dashboard 审批卡基建）；None = 无审批面（`skills.install` 按
     /// AlwaysAllow 语义直装——headless/测试装配），`install_approval` 的
     /// 消费点在 gateway 注入侧。
     pub skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
-    /// L14（2026-11-01）：会话执行统计读侧（flush 未落盘增量 + 读持久层
+    /// 会话执行统计读侧（flush 未落盘增量 + 读持久层
     /// 总数）。gateway 注入 nemesisbot 聚合器；None = 未装配（`sessions.stats`
     /// 诚实返回 unavailable）。
     pub session_stats: Option<Arc<dyn nemesis_agent::SessionStatsReader>>,
@@ -166,9 +167,7 @@ impl AppState {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API status
-// ---------------------------------------------------------------------------
 
 /// `GET /api/status` — returns system status as JSON.
 ///
@@ -221,9 +220,7 @@ pub async fn handle_api_status(State(state): State<Arc<AppState>>) -> Json<serde
     Json(response)
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API logs
-// ---------------------------------------------------------------------------
 
 /// Query parameters for the logs API.
 #[derive(Debug, Deserialize)]
@@ -269,9 +266,7 @@ pub async fn handle_api_logs(
     })))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API scanner status
-// ---------------------------------------------------------------------------
 
 /// `GET /api/scanner/status` — returns scanner engine status.
 pub async fn handle_api_scanner_status(
@@ -290,9 +285,7 @@ pub async fn handle_api_scanner_status(
     Ok(Json(load_scanner_status(&workspace)))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API config
-// ---------------------------------------------------------------------------
 
 /// `GET /api/config` — returns sanitized configuration.
 pub async fn handle_api_config(
@@ -338,9 +331,7 @@ pub async fn handle_api_config(
     Ok(Json(raw))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API version
-// ---------------------------------------------------------------------------
 
 /// `GET /api/version` — returns version and build information.
 pub async fn handle_api_version(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -352,9 +343,7 @@ pub async fn handle_api_version(State(state): State<Arc<AppState>>) -> Json<serd
     }))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API models
-// ---------------------------------------------------------------------------
 
 /// `GET /api/models` — returns the list of configured LLM models from config.
 pub async fn handle_api_models(
@@ -434,9 +423,7 @@ pub async fn handle_api_models(
     })))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API sessions
-// ---------------------------------------------------------------------------
 
 /// `GET /api/sessions` — returns information about active WebSocket sessions.
 pub async fn handle_api_sessions(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -451,9 +438,7 @@ pub async fn handle_api_sessions(State(state): State<Arc<AppState>>) -> Json<ser
     }))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API events (recent event hub events)
-// ---------------------------------------------------------------------------
 
 /// `GET /api/events` — returns recent events from the event hub (snapshot).
 pub async fn handle_api_events(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -464,9 +449,7 @@ pub async fn handle_api_events(State(state): State<Arc<AppState>>) -> Json<serde
     }))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API readme
-// ---------------------------------------------------------------------------
 
 /// Embedded README.md content.
 static EMBEDDED_README: &str = include_str!("../../../README.md");
@@ -478,9 +461,7 @@ pub async fn handle_api_readme() -> Json<serde_json::Value> {
     }))
 }
 
-// ---------------------------------------------------------------------------
 // Handler: API license
-// ---------------------------------------------------------------------------
 
 /// Embedded LICENSE content.
 static EMBEDDED_LICENSE: &str = include_str!("../../../LICENSE");
@@ -492,9 +473,7 @@ pub async fn handle_api_license() -> Json<serde_json::Value> {
     }))
 }
 
-// ---------------------------------------------------------------------------
-// Handler: SDK downloads (P2-2, 2026-08-24 UI entry gap)
-// ---------------------------------------------------------------------------
+// Handler: SDK downloads (, UI entry gap)
 
 /// Serve an embedded SDK zip artifact with download headers. Same open-GET
 /// policy as /api/system/readme|license (static public artifacts, no
@@ -528,7 +507,7 @@ pub async fn handle_sdk_export() -> axum::response::Response {
 }
 
 /// `GET /api/sdk/pip` — sdist-layout zip (single `nemesisbot-<version>/`
-/// top-level dir) installable via `pip install ./<file>.zip`.
+/// top-level dir) installable via `pip install./<file>.zip`.
 pub async fn handle_sdk_pip() -> axum::response::Response {
     sdk_zip_response(
         crate::sdk_embed::SDK_SDIST_ZIP,
@@ -536,9 +515,7 @@ pub async fn handle_sdk_pip() -> axum::response::Response {
     )
 }
 
-// ---------------------------------------------------------------------------
 // Internal helpers
-// ---------------------------------------------------------------------------
 
 /// Load scanner status from the workspace config directory.
 fn load_scanner_status(workspace: &str) -> serde_json::Value {
@@ -637,7 +614,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             // New JSONL daily rotation: files are `nemesisbot.YYYY-MM-DD` (no `.log` extension
             // because tracing-appender 0.2 doesn't support suffixes). Match strictly by date
             // pattern to avoid hitting any legacy unrotated `nemesisbot.log`.
-            // 2026-08-30 统一收编：滚动日志移入 logs/gateway/ 子目录；
+            // 统一收编：滚动日志移入 logs/gateway/ 子目录；
             // logs 根的旧文件为历史归档，不再被本 glob 匹配。
             let logs_dir = nemesis_path::logs_dir_in_workspace(std::path::Path::new(workspace))
                 .join("gateway");
@@ -660,7 +637,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             }
         }
         "llm" => {
-            // Phase B1-3: 将来由 nemesis-providers 写 logs/llm/ 流式摘要（避免污染 request_logs 的 Markdown 目录）。
+            // Phase: 将来由 nemesis-providers 写 logs/llm/ 流式摘要（避免污染 request_logs 的 Markdown 目录）。
             // 在那之前 fallback 到 request_logs 最新目录，返回其 00.request.md（首条 user 消息）。
             let dir = nemesis_path::resolve_request_logs_dir_in_workspace(std::path::Path::new(
                 workspace,
@@ -668,7 +645,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             find_latest_request_summary(&dir)
         }
         "security" => {
-            // Phase B1-1: audit.jsonl 是固定文件名（不是 glob），路径在 logs/security_logs/
+            // Phase: audit.jsonl 是固定文件名（不是 glob），路径在 logs/security_logs/
             let audit_file =
                 nemesis_path::resolve_audit_log_dir_in_workspace(std::path::Path::new(workspace))
                     .join("audit.jsonl");
@@ -679,7 +656,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
             }
         }
         "cluster" => {
-            // Phase B1-2: cluster_logs/ 下既有平面 cluster_YYYY-MM-DD.log（流式事件），
+            // Phase: cluster_logs/ 下既有平面 cluster_YYYY-MM-DD.log（流式事件），
             // 也有 {device}/{ts}_{task}/ 子目录（LLM 详情）。这里只取平面日志文件。
             let cluster_dir = nemesis_path::resolve_cluster_logs_dir_in_workspace(
                 std::path::Path::new(workspace),
@@ -708,7 +685,7 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
 /// Find the most recently modified `.md` file inside the latest `request_logs` subdirectory.
 ///
 /// Each LLM call is stored as `{ts}_{NNN}/` containing multiple Markdown files
-/// (00.request.md, 01.AI.Request.md, 02.AI.Response.md, NN.Local.md, ...).
+/// (00.request.md, 01.AI.Request.md, 02.AI.Response.md, NN.Local.md,...).
 /// Here we pick the latest subdir by mtime, then the latest `.md` inside it.
 fn find_latest_request_summary(dir: &std::path::Path) -> Option<String> {
     let entries = std::fs::read_dir(dir).ok()?;
@@ -855,9 +832,9 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
                 serde_json::Value::String(s) if !s.is_empty() => {
                     *value = serde_json::Value::String(mask_secret(s));
                 }
-                // F2（2026-09-22 审计修复）：敏感键下的对象**和数组**都要递归
-                // ——config 的 `model_list[]` 每项带 `api_key`，此前数组落
-                // `_ => {}` 从未被访问，明文原样返回（F2）。
+                // （审计修复）：敏感键下的对象**和数组**都要递归
+                // config 的 `model_list[]` 每项带 `api_key`，此前数组落
+                // `_ => {}` 从未被访问，明文原样返回。
                 // 复核补严（同日）：数组里的**字符串元素**直接掩码（如
                 // `api_keys: ["sk-…"]`），对象/数组元素继续按键递归。
                 serde_json::Value::Array(arr) => {
@@ -881,7 +858,7 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
     }
 }
 
-/// F2（2026-09-22 审计修复）：递归脱敏任意 JSON 值——对象进 `sanitize_map`，
+/// （审计修复）：递归脱敏任意 JSON 值——对象进 `sanitize_map`，
 /// 数组逐元素下钻。此前只下钻 `Value::Object`，数组内的对象（如
 /// `model_list[]` 条目的 `api_key`）永远不可达，明文泄露。
 fn sanitize_value(value: &mut serde_json::Value) {
@@ -896,15 +873,13 @@ fn sanitize_value(value: &mut serde_json::Value) {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Utility: verify auth token
-// ---------------------------------------------------------------------------
 
 /// Verify auth token from query or header.
 ///
-/// 实现已下沉 nemesis-utils 单一真相源（BUG-20261104-368：nemesis-channels
-/// websocket 升级闸需跨 crate 消费同一恒时比较；F6 XOR 折叠形态不变）。
-/// 此处 re-export 保持 `crate::api_handlers::verify_token` 路径兼容。
+/// 实现已下沉 nemesis-utils 单一真相源（nemesis-channels
+/// websocket 升级闸需跨 crate 消费同一恒时比较； XOR 折叠形态不变）。
+/// 此处 re-export 保持 `crate::api_handlers:verify_token` 路径兼容。
 pub use nemesis_utils::verify::verify_token;
 
 /// Write a JSON response body from a serializable value.
@@ -913,11 +888,9 @@ pub fn write_json_response<T: serde::Serialize>(value: &T) -> Vec<u8> {
     serde_json::to_vec(value).unwrap_or_default()
 }
 
-// ---------------------------------------------------------------------------
 // Handler: /api/internal (undocumented control endpoint)
-// ---------------------------------------------------------------------------
 
-/// B9-3 VM 同步内连（`vm` feature 开 = 转发 vm bridge；feature 关 = 诚实
+/// VM 同步内连（`vm` feature 开 = 转发 vm bridge；feature 关 = 诚实
 /// 报错不假装成功）。与 handler 的 cfg 闸解耦——调用臂无 cfg、feature 差
 /// 异收拢在这一个函数里。
 #[allow(unused_variables)]
@@ -946,7 +919,7 @@ async fn vm_sync_internal(cmd: &str, project: &str) -> Result<serde_json::Value,
 ///
 /// Requires `X-Auth-Token` header matching `web.auth_token`.
 /// Body: `{ "cmd": "open_dashboard" }` or `{ "cmd": "shutdown" }`
-/// (BUG #31, quality-hardening goal 冲刺 S11e: `shutdown` = graceful-stop
+/// (, quality-hardening goal 冲刺: `shutdown` = graceful-stop
 /// request from the CLI; open_dashboard's InternalCommand path is shared).
 pub async fn handle_api_internal(
     headers: axum::http::HeaderMap,
@@ -994,7 +967,7 @@ pub async fn handle_api_internal(
                 "engaged": estop.is_engaged(),
             })));
         }
-        // B9-3 项目工作副本同步（CLI `vm commit` / `vm resync` / `vm sync-status`
+        // 项目工作副本同步（CLI `vm commit` / `vm resync` / `vm sync-status`
         // 转发面）：VM 实例常驻 gateway 进程，CLI 进程不持有 supervisor——
         // 与 estop 同款直连（不经 internal_cmd_tx 的 fire-and-forget——同步
         // 是请求-响应形态，结果必须带回）。恒 HTTP 200 `{status: ok|error,
@@ -1014,11 +987,11 @@ pub async fn handle_api_internal(
                 Err(error) => serde_json::json!({ "status": "error", "error": error }),
             }));
         }
-        // Ziwei（紫微系统 M1/M2）：CLI `ziwei attach/detach/status/invoke`
+        // Ziwei（紫微系统）：CLI `ziwei attach/detach/status/invoke`
         // 转发面——会话管理器常驻 gateway 进程（管道 server 生命周期与一次性
         // CLI 进程解耦），与 estop/vm_sync 同款直连（不经 fire-and-forget
-        // ——attach 是请求-响应形态，注入+握手结果必须带回）。恒 HTTP 200
-        // `{status: ok|error, ...}`，业务失败不是传输错误。
+        // attach 是请求-响应形态，注入+握手结果必须带回）。恒 HTTP 200
+        // `{status: ok|error,...}`，业务失败不是传输错误。
         #[cfg(feature = "ziwei")]
         "ziwei_attach" | "ziwei_detach" | "ziwei_status" | "ziwei_invoke" | "ziwei_setup" => {
             let Some(manager) = nemesis_ziwei::session::global() else {
@@ -1028,7 +1001,7 @@ pub async fn handle_api_internal(
                 })));
             };
             // 四命令都在此终结——直接 return 内层 match 的结果（外层 match
-            // 其余臂以 return 收尾，臂值恒 ()）。
+            // 其余臂以 return 收尾，臂值恒）。
             return match cmd {
                 "ziwei_status" => Ok(Json(serde_json::json!({
                     "status": "ok",
@@ -1050,7 +1023,7 @@ pub async fn handle_api_internal(
                         Err(msg) => serde_json::json!({ "status": "error", "error": msg }),
                     }))
                 }
-                // M2：CLI invoke → 一次性 poll 快照（与 WSAPI ziwei.invoke /
+                // CLI invoke → 一次性 poll 快照（与 WSAPI ziwei.invoke /
                 // agent 子工具同源语义）。
                 "ziwei_invoke" => {
                     let id = body
@@ -1080,7 +1053,7 @@ pub async fn handle_api_internal(
                         Err(e) => serde_json::json!({ "status": "error", "error": e }),
                     }))
                 }
-                // M3：CLI `ziwei setup <step>` 转发面（SetupManager 全局槽
+                // CLI `ziwei setup <step>` 转发面（SetupManager 全局槽
                 // 惰性自建；向导状态在常驻 gateway 进程里——CLI 进程一次性，
                 // 状态必须放这里）。恒 `{status: ok|error, result|error}`。
                 "ziwei_setup" => {
@@ -1164,8 +1137,8 @@ pub async fn handle_api_internal(
                             ));
                         }
                     };
-                    // M2：attach + 按需 poll 调度一站式（结构地址显式注入面
-                    // 留给 WSAPI/测试；CLI 附加面 M3 前不带地址 = poll 工具
+                    // attach + 按需 poll 调度一站式（结构地址显式注入面
+                    // 留给 WSAPI/测试；CLI 附加面 前不带地址 = poll 工具
                     // 诚实停用，读写面照常）。
                     let struct_addrs: std::collections::HashMap<String, u64> = body
                         .get("struct_addrs")
@@ -1222,7 +1195,7 @@ pub async fn handle_api_internal(
                     )
                 })?;
         }
-        // (BUG #31, quality-hardening goal 冲刺 S11e) `nemesisbot shutdown`
+        // (, quality-hardening goal 冲刺) `nemesisbot shutdown`
         // 的 HTTP 臂：此前打 `/api/shutdown`（从未注册，必 404 = 死臂）。
         // 现在落到既有 mpsc 通道 → gateway 接收环走 Ctrl+C 同源的优雅停机。
         "shutdown" => {
@@ -1235,8 +1208,8 @@ pub async fn handle_api_internal(
                     )
                 })?;
         }
-        // L9 selfupdate：CLI apply 触发（九步编排全在 gateway 侧；受理即回，
-        // v4 验签是安全闸，执行进度经 selfupdate-progress SSE / tracing / 审计链可见）。
+        // selfupdate：CLI apply 触发（九步编排全在 gateway 侧；受理即回，
+        // v4 验签是安全闸，执行进度经 selfupdate-progress SSE / tracing / 审计链可）。
         "selfupdate_apply" => {
             let allow_downgrade = body
                 .get("allow_downgrade")
@@ -1273,10 +1246,8 @@ pub fn write_json_error(message: &str, _code: u16) -> Vec<u8> {
     serde_json::to_vec(&body).unwrap_or_default()
 }
 
-// ---------------------------------------------------------------------------
 // Handlers: /api/chat/sessions/{id}/turns + /fork
-// (P3-1, 2026-08-24 UI entry gap — session fork dialog backing)
-// ---------------------------------------------------------------------------
+// (, UI entry gap — session fork dialog backing)
 
 /// Map a dashboard session id to the store session key (same mapping as the
 /// sessions WSAPI handler: `agent:main:session:{sanitized}`).
@@ -1297,12 +1268,12 @@ fn chat_session_id(key: &str) -> String {
 
 /// Resolve the store the fork WRITE path materializes the new session into
 /// (round 3: the turns endpoint reads jsonl directly and no longer needs a
-/// store; only `POST .../fork` comes through here):
+/// store; only `POST.../fork` comes through here):
 /// 1. the LIVE agent's store when the agent is running (authoritative — it
 ///    holds the in-memory map the running gateway appends to), else
 /// 2. a fresh store over `<home>/workspace/sessions` (agent stopped).
 ///    `new_with_storage` loads existing session files at construction and
-///    `get_or_create` falls back to disk on an in-memory miss (Z1), so fork
+///    `get_or_create` falls back to disk on an in-memory miss, so fork
 ///    files created by other processes are visible — and a fork made against
 ///    this fallback store survives a running gateway that later re-reads the
 ///    same directory instead of overwriting it.
@@ -1343,7 +1314,7 @@ fn first_line_trunc(s: &str, max: usize) -> String {
 /// `GET /api/chat/sessions/{id}/turns` — turn-boundary table for the fork
 /// dialog. Same counting as the CLI `session show`: a turn is one complete
 /// user→…→assistant exchange over the **chat_log rows** (round-3 fix,
-/// 2026-08-25: jsonl is the single source of truth for turn semantics —
+/// jsonl is the single source of truth for turn semantics —
 /// the Dashboard renders these rows and the fork cut lands on them; the
 /// SessionStore copy is a lossy cache that compaction folds, tool
 /// intermediates pollute and the 7-day TTL deletes, so it must never
@@ -1371,11 +1342,11 @@ pub async fn handle_api_chat_session_turns(
         ));
     }
 
-    // ROUND-3: read the chat_log rows — the same source `fork_session`
+    // read the chat_log rows — the same source `fork_session`
     // cuts on and the Dashboard renders. Counting on any other store would
     // re-create the coordinate-mismatch bug this round fixed.
     let key = chat_session_key(&session_id);
-    // BUG-20261102-302：整会话全量读（usize::MAX）同步阻塞 IO 直跑 tokio
+    // 整会话全量读（usize::MAX）同步阻塞 IO 直跑 tokio
     // worker，spawn_blocking 移出（read_chat_log_async 同款纪律）。
     let (rows, total, _, _) = {
         let key = key.clone();
@@ -1469,7 +1440,7 @@ pub async fn handle_api_chat_session_turns(
 
 /// `POST /api/chat/sessions/{id}/fork` — fork at a turn boundary.
 /// Body: `{ "at_turn": 2, "title": "新分支" }` (both optional; omitted
-/// `at_turn` = fork at head / whole history). Delegates to the Z1
+/// `at_turn` = fork at head / whole history). Delegates to the
 /// `fork_session` (SessionStore + chat_log copy + boundary events) — the UI
 /// must NOT reimplement the copy semantics.
 ///
@@ -1499,12 +1470,12 @@ pub async fn handle_api_chat_session_fork(
         .get("title")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    // WS9/P17：分叉缘由（可选）——落新会话 sidecar meta 的 fork_reason。
+    // /：分叉缘由（可选）——落新会话 sidecar meta 的 fork_reason。
     let reason = body
         .get("reason")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
-    // 「完全独立会话」（2026-10-20，可选，默认 false）：勾选后跳过血缘
+    // 「完全独立会话」（可选，默认 false）：勾选后跳过血缘
     // 写入——parent/fork_reason/分支摘要都不落新会话 meta，生来无父分支
     // （UI 谱系视图视为平级独立会话）。boundary 审计事件照常（fork 内部）。
     let independent = body
@@ -1519,7 +1490,7 @@ pub async fn handle_api_chat_session_fork(
     // existence = a non-empty chat_log jsonl (the fork's truth source);
     // the store json may legitimately be gone (7-day TTL) — that must NOT
     // make a live session unforkable.
-    // BUG-20261102-302：read_chat_log 即使 limit=1 也要全文件逐行扫描才
+    // read_chat_log 即使 limit=1 也要全文件逐行扫描才
     // 能报 total（单遍读完整个 jsonl），同步阻塞 IO 直跑 tokio worker，
     // spawn_blocking 移出。
     let (_, log_total, _, _) = {
@@ -1542,7 +1513,7 @@ pub async fn handle_api_chat_session_fork(
         ));
     }
 
-    // BUG-20261102-302：fork 本体 = 整会话全量读 + 行拷贝落盘（全 jsonl
+    // fork 本体 = 整会话全量读 + 行拷贝落盘（全 jsonl
     // 体量 IO），同步直跑 tokio worker——spawn_blocking 移出（precheck 同
     // 款纪律；「一次性管理操作非热路径」不改变占住 worker 的机制）。
     let info = tokio::task::spawn_blocking(move || {
@@ -1566,15 +1537,15 @@ pub async fn handle_api_chat_session_fork(
     if let Some(t) = title {
         nemesis_agent::chat_log::write_session_meta(&info.new_key, &t);
     }
-    // WS9/P17：分叉缘由落盘（请求缺省/空白不写——谱系视图回退显示通用
+    // /：分叉缘由落盘（请求缺省/空白不写——谱系视图回退显示通用
     // 「fork」；write_session_fork_reason 内部同样 trim+空跳过）。完全
     // 独立形态不写（无血缘即无分叉缘由）。
     if !independent && let Some(r) = reason.as_deref() {
         nemesis_agent::chat_log::write_session_fork_reason(&info.new_key, r);
     }
-    // WS9/P18：遗弃后缀 ≥3 轮 → 后台生成分支摘要写入**新会话** meta（新
+    // /：遗弃后缀 ≥3 轮 → 后台生成分支摘要写入**新会话** meta（新
     // 分支首轮 build_messages 注入 Branch Context 节）。遗弃行直取 ForkInfo
-    // 的 fork 时刻快照（F4 修复：此前重读源日志，活会话在 fork 与重读之
+    // 的 fork 时刻快照（修复：此前重读源日志，活会话在 fork 与重读之
     // 间落盘的新行会混进摘要；也不再二次全量读）。主 loop 未运行或
     // small_model 未配置 = prepare 诚实跳过，绝不阻塞 fork 本体。项目
     // 会话也走主 loop 的 small_model 槽位（该槽位读同一份 config/模型
@@ -1609,9 +1580,7 @@ pub async fn handle_api_chat_session_fork(
     })))
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
@@ -1619,20 +1588,20 @@ mod tests;
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
 
-// P2-2 (2026-08-24 UI entry gap): SDK download-route tests are stateless
+// (UI entry gap): SDK download-route tests are stateless
 // (handlers take no State), so they run under every feature combo —
 // deliberately NOT behind the workflow gate above.
 #[cfg(test)]
 mod sdk_route_tests;
 
-// P3-1 (2026-08-24 UI entry gap): session-fork route tests. The handlers
+// (UI entry gap): session-fork route tests. The handlers
 // depend only on nemesis-agent (non-optional), so like sdk_route_tests these
 // run under every feature combo (make_state cfg-branches the two
 // workflow-typed AppState fields).
 #[cfg(test)]
 mod fork_route_tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): pure helpers
+// (, quality-hardening goal 冲刺 web): pure helpers
 // (request-summary walk, daily-log matcher, log tail reader, sanitize_map,
 // first_line_trunc, resolve_fork_store) + api_key masking arms + turns
 // leading-row arm + fork title arm. No feature gate needed (same shape as
@@ -1640,7 +1609,7 @@ mod fork_route_tests;
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-25）：find_latest 顶层非目录 continue 臂、
+// AGT 覆盖率批次：find_latest 顶层非目录 continue 臂、
 // read_log_entries 非法 UTF-8 读失败兜底、/api/internal shutdown 通道发送
 // 失败 500、resolve_fork_store 活 agent 店分支、fork 对「零 user 轮次」
 // 日志的 500 诚实上抛。豁免（收括号 lcov 伪零 + seek 防御臂）见 agt_tests

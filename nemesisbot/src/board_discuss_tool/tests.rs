@@ -34,7 +34,7 @@ fn test_parse_args_ok_and_defaults() {
 
 #[test]
 fn test_parse_args_read_mode() {
-    // D2 读取臂：content 键缺席（或 null）= 读线程。
+    // 读取臂：content 键缺席（或 null）= 读线程。
     let r =
         parse_discuss_args(r#"{"thread_kind": "issue", "thread_id": 7}"#).expect("无 content = 读");
     match r {
@@ -87,7 +87,7 @@ fn test_parse_args_read_mode() {
 fn test_format_comment_list() {
     // 入参 = nb_bus 完整信封响应（EnvelopeResponse 形 `{"ok","body":{..}}`），
     // messages 在 /body/messages——与 POST 臂 /body/seq、master 侧 sync 测试
-    // body.body.messages 同口径（run4 实录：顶层形状是镜像 bug 的假形状）。
+    // body.body.messages 同口径（run4 顶层形状是镜像 bug 的假形状）。
     let envelope =
         |inner: serde_json::Value| serde_json::json!({"ok": true, "error": null, "body": inner});
 
@@ -111,7 +111,7 @@ fn test_format_comment_list() {
     }));
     let out = format_comment_list("issue", 7, &body);
     assert!(out.contains("Thread issue:7 (2 messages)"), "{out}");
-    // 身份透传（2026-10-23）：agent 节点渲染带 (agent node) 标注。
+    // 身份透传：agent 节点渲染带 (agent node) 标注。
     assert!(
         out.contains("[#1] node-c (agent node): 变体 A 可实现性风险：依赖 X"),
         "{out}"
@@ -140,7 +140,7 @@ fn test_format_comment_list() {
 
 #[test]
 fn test_parse_args_semantic_rejections() {
-    // 词表外 thread_kind → Err；"Issue" 大小写宽容归一为合法（→ issue）。
+    // 词表外 thread_kind → Err；"Issue" 大小写宽容归一为合法（issue）。
     assert!(
         parse_discuss_args(r#"{"thread_kind": "file", "thread_id": 1, "content": "x"}"#)
             .unwrap_err()
@@ -211,7 +211,7 @@ fn test_tool_meta() {
     }));
     let tool = BoardDiscussTool::new(cluster);
     let params = tool.parameters();
-    // D2 读取臂：content 从 required 退出（缺席 = 读线程）。
+    // 读取臂：content 从 required 退出（缺席 = 读线程）。
     assert_eq!(
         params["required"],
         serde_json::json!(["thread_kind", "thread_id"])

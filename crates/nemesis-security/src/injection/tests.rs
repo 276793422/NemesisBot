@@ -411,7 +411,7 @@ fn test_ldap_injection_detection() {
     let detector = Detector::new(InjectionConfig::default());
     let args = serde_json::json!({"content": ") (| (| ))"});
     let result = detector.analyze_tool_input("write_file", &args);
-    // BUG-20261102-322：名字承诺 detection——LDAP filter 模式 `\)\s*\(\s*\|\s*\(`
+    // 名字承诺 detection——LDAP filter 模式 `\)\s*\(\s*\|\s*\(`
     // 必须命中此载荷（此前 `let _ = result;` 零断言，模式表回归测试照绿）。
     assert!(
         result.score > 0.1,
@@ -427,7 +427,7 @@ fn test_extract_all_text_nested() {
         "content": "hello world",
         "nested": {"key": "value"}
     });
-    // BUG-20261102-322：名字承诺 nested 提取——递归必须下钻对象值
+    // 名字承诺 nested 提取——递归必须下钻对象值
     // （此前 `let _ = result;` 零断言）。
     let text = super::extract_all_text(&args);
     assert!(
@@ -484,7 +484,7 @@ fn test_xxe_detection() {
     let detector = Detector::new(InjectionConfig::default());
     let args = serde_json::json!({"content": "<!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\"> ]>"});
     let result = detector.analyze_tool_input("write_file", &args);
-    // BUG-20261102-322：`<!entity\s+` 模式（0.88）必须命中 DOCTYPE/ENTITY
+    // `<!entity\s+` 模式（0.88）必须命中 DOCTYPE/ENTITY
     // 载荷——此前 `let _ = result;` 零断言。
     assert!(
         result.score > 0.1,
@@ -498,7 +498,7 @@ fn test_format_string_detection() {
     let detector = Detector::new(InjectionConfig::default());
     let args = serde_json::json!({"content": "%s%s%s%s%s"});
     let result = detector.analyze_tool_input("write_file", &args);
-    // BUG-20261102-322：format string 模式（0.82）必须命中——此前零断言。
+    // format string 模式（0.82）必须命中——此前零断言。
     assert!(
         result.score > 0.1,
         "format string exploit pattern should be detected, score was {}",
@@ -507,7 +507,7 @@ fn test_format_string_detection() {
 }
 
 // ============================================================
-// S3 batch 2: level arms / custom-pattern arms / too-long arm
+// batch 2: level arms / custom-pattern arms / too-long arm
 // ============================================================
 
 /// 62 种内置模式的触发语大杂烩（jailbreak / 角色逃逸 / 编码 / XSS / SQL /

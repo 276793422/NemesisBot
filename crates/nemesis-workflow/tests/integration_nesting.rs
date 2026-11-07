@@ -1,4 +1,4 @@
-//! G3 嵌套调用测试 — sub_workflow 嵌套 + execution_id 隔离
+//! 嵌套调用测试 — sub_workflow 嵌套 + execution_id 隔离
 //!
 //! 这些测试验证 milestone 1b 的嵌套调用支持：
 //! - sub_workflow 节点能触发子工作流执行
@@ -496,7 +496,7 @@ async fn agent_tool_trigger_recursion_depth_round_trips() {
 }
 
 // ---------------------------------------------------------------------------
-// Section 5: resume-side review routing (BUG-20261102-NN regressions)
+// Section 5: resume-side review routing (-NN regressions)
 //
 // 运行期 Waiting 传播是既有设计（Section 1 钉住）；本节钉 resume 侧语义：
 // 父执行的 sub_workflow 节点 Waiting（子执行停在自己的 human_review）时，

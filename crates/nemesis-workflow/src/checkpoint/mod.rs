@@ -1,6 +1,6 @@
 //! Checkpoint module — durable snapshots of in-flight workflow executions.
 //!
-//! Built in milestone 1b-A1. Stores enough state to resume an execution
+//! Built in milestone 1b-. Stores enough state to resume an execution
 //! after gateway restart or human-review pause.
 //!
 //! Layout:

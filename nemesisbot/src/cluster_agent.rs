@@ -4,8 +4,8 @@
 //! Supports new tasks (run_with_trace) and resumed tasks (resume_execution
 //! after async callback). Detects __ASYNC__ results for multi-hop chain calls.
 //!
-//! Swarm M3（G4 worker 被动响应）：第三 select 臂消费看板讨论唤醒事件
-//! （[`nemesis_types::cluster::DiscussionEvent`]）——任务间隙跑一轮轻量
+//! Swarm （worker 被动响应）：第三 select 臂消费看板讨论唤醒事件
+//! （[`nemesis_types::cluster:DiscussionEvent`]）——任务间隙跑一轮轻量
 //! agent，[SILENT] 判定沉默，非静默回帖 master。讨论是分钟级不是秒级，
 //! 忙碌时排队天然成立（诚实定位「任务间隙参与讨论」）。
 
@@ -103,7 +103,7 @@ impl DiscussionInbox {
 /// - `config` parameter: 稳定前缀模板——system_prompt 由 agent_factory 装配
 ///   （IDENTITY/SOUL/EXPERTISE/worker 契约/Workspace 行，跨任务字节不变）；
 ///   每个任务经 [`task_system_prompt`] 在其上追加任务职能后缀
-///   （集群专业职能框架 M3）后构造 per-task `AgentInstance`。
+///   （集群专业职能框架）后构造 per-task `AgentInstance`。
 #[allow(clippy::too_many_arguments)]
 pub async fn cluster_agent_loop(
     agent_loop: Arc<AgentLoop>,
@@ -112,11 +112,11 @@ pub async fn cluster_agent_loop(
     task_list: Arc<ClusterTaskList>,
     rpc_client: Option<Arc<RpcClient>>,
     cluster_observer: Option<Arc<ClusterRequestLoggerObserver>>,
-    // G1 收口（2026-09-08）：回调失败 → persister.set_result 落盘真实结果
+    // 收口：回调失败 → persister.set_result 落盘真实结果
     // （A 端恢复轮询可查）；回调成功 → persister.delete 清理占位。生产装配
     // 恒为 Some（gateway 传入与 peer_chat_handler 同一份 adapter）。
     result_persister: Option<Arc<dyn TaskResultPersister>>,
-    // Swarm M3（G4）：看板讨论唤醒通道。None = 本节点不参与讨论（master
+    // Swarm：看板讨论唤醒通道。None = 本节点不参与讨论（master
     // 本尊走主持人裁决 / board 裁剪 / cluster 未启用）。通道关闭（stop/start
     // 周期）时置 None 禁用本臂，防 recv() 返回 None 的自旋。
     mut discussion_rx: Option<tokio::sync::mpsc::UnboundedReceiver<DiscussionEvent>>,
@@ -168,7 +168,7 @@ pub async fn cluster_agent_loop(
                 continue;
             }
         };
-        // 出队执行原子化（BUG-20261029-140）：旧序列 get_task → 内存检查
+        // 出队执行原子化：旧序列 get_task → 内存检查
         // Cancelled → update_status(Running) 三步分离，task_cancel 落在检查
         // 与转移之间时终态被覆盖成 Running（A 端已收 QueuedCancelled 承诺，
         // 任务却照常执行到底）。begin_execution 在单个 get_mut 临界区内完成
@@ -208,7 +208,7 @@ pub async fn cluster_agent_loop(
             "[ClusterAgent] Processing task"
         );
 
-        // D0b（goal P2）：出队开跑上报——master 把 dispatch 标 running
+        // （goal）：出队开跑上报——master 把 dispatch 标 running
         // （queued vs executing 分界；重平衡只挪 queued 单）。fire-and-forget：
         // 失败只 debug（master 保守方向=不挪已标记的单，安全侧）。
         notify_task_started(rpc_client.as_deref(), &task, &self_node_id).await;
@@ -282,11 +282,11 @@ pub async fn cluster_agent_loop(
 }
 
 /// Execute a new task using run_with_trace().
-/// D0b（goal P2）：出队开跑上报（nb_bus ns="task" op="started"，目标=
+/// （goal）：出队开跑上报（nb_bus ns="task" op="started"，目标=
 /// 任务来源 master）。master 据此把 dispatch 标 running——重平衡只挪
 /// queued 单。fire-and-forget：RPC 失败只 debug（重平衡保守方向=不挪）。
 ///
-/// claim 竞速重试（T43 实证）：master 的派发行在 submit ACK 之后才落库
+/// claim 竞速重试（实证）：master 的派发行在 submit ACK 之后才落库
 /// （board.rs try_claim_dispatch 在 submit_peer_chat 之后），空闲 worker
 /// 取即跑，started 上报可跑赢插行 → master 回 UNAVAILABLE。此时任务正在
 /// 执行，退避 500ms 重报（上限 2 次重试；正常首试即中，最坏 +1s）；其余
@@ -341,9 +341,9 @@ fn started_reply_retryable(resp: &nemesis_cluster::rpc_types::RPCResponse) -> bo
     }) == Some(true)
 }
 
-/// P8（集群无人值守硬化 A2）：会话 token 预算拒接判定（D3 重派入口）。
+/// （集群无人值守硬化）：会话 token 预算拒接判定（重派入口）。
 /// `agents.defaults.session_token_budget`（0 = 关，默认）读法经 loop 侧
-/// `current_session_token_budget`（config.json 单一真相源 fresh-read）；
+/// `current_session_token_budget`（config.json 统一定义 fresh-read）；
 /// 用量取 `aggregate_session_usage` absolute（口径 = 完整输入（prompt +
 /// cache_creation + cache_read）+ output，与 loop 侧累计器同账本同公式）。
 /// `None` = 关/无账/未超限（放行）。
@@ -378,10 +378,10 @@ async fn execute_new_task(
     let content_preview = truncate_str(&task.content, 200);
     nemesis_cluster::logger::log_task("exec_start", &task.task_id, &content_preview);
     let context = build_context(agent_loop, task);
-    // 交付捕获前置：档案任务在 exec 副本内定格 git 基线（BUG 2026-11-01
+    // 交付捕获前置：档案任务在 exec 副本内定格 git 基线（
     // 根修——副本是裸文件树，无基线则成功交付的捕获恒缺席）。基线 SHA
     // 接住透传给交付捕获——重入靠持久化锚点取回真基线，HEAD 会被 worker
-    // 合法提交移动（BUG C 后半，T1 实证）。失败 warn 后任务照常（交付
+    // 合法提交移动（BUG C 后半， 实证）。失败 warn 后任务照常（交付
     // 证据缺席可观测，不阻断主链路）。
     let mut exec_baseline_sha: Option<String> = None;
     if let Some(dir) = context.tool_path_base.as_ref() {
@@ -396,10 +396,10 @@ async fn execute_new_task(
     }
     let trace_id = format!("cluster-{}", &task.task_id);
     // Per-task AgentInstance：稳定前缀（装配期 system_prompt）+ 任务职能
-    // 后缀（M3）。职能文本从不跨 RPC——slug 随任务走，契约本节点本地渲染。
+    // 后缀。职能文本从不跨 RPC——slug 随任务走，契约本节点本地渲染。
     let instance = AgentInstance::new(task_system_prompt(config, agent_loop, task));
 
-    // P8（集群无人值守硬化 A2）：会话 token 预算入口拒接（NB-17 根因的正解
+    // （集群无人值守硬化）：会话 token 预算入口拒接（根因的正解
     // 位——不进 loop 就不烧）。重派收敛到同一会话且带全量旧历史重入，预算
     // 耗尽后放进来每轮 prefill 都是纯消耗；此处早退 error 回调（classify
     // 识别 token_budget）→ master board_review 转人工不自动重派。
@@ -427,7 +427,7 @@ async fn execute_new_task(
         return Ok(());
     }
 
-    // L13-b：mandate 执行面守卫装配（B 端前置闸验签产物随任务投影；任务无
+    // b：mandate 执行面守卫装配（B 端前置闸验签产物随任务投影；任务无
     // mandate = 不装配 = 旧行为）。set/take 对称——run 结束摘除，违规记录
     // 随回调 response 追加块交回 master。
     if let Some(mandate) = task.mandate.as_ref() {
@@ -449,7 +449,7 @@ async fn execute_new_task(
     }
 
     let token = tokio_util::sync::CancellationToken::new();
-    // W2 P4 per-task cancel：执行窗口内注册令牌，cancel_task 下行命中 Running
+    // per-task cancel：执行窗口内注册令牌，cancel_task 下行命中 Running
     // 时 token.cancel() 打断 LLM 循环；run 结束必须注销（防 DashMap 泄漏）。
     task_list.register_cancel_token(&task.task_id, token.clone());
     if let Some(obs) = cluster_observer {
@@ -462,12 +462,12 @@ async fn execute_new_task(
             &task.content,
         );
     }
-    // E1 二期：执行前快照 session 用量（成功回调时取差值 = 本任务消耗）。
+    // 二期：执行前快照 session 用量（成功回调时取差值 = 本任务消耗）。
     let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
-    // P4 交付门：执行前快照基线 tree（git 形态才有；成功收口时按此 diff
+    // 执行前快照基线 tree（git 形态才有；成功收口时按此 diff
     // ——先执行后快照会把任务自己的改动算进基线，diff 恒空证据失真）。
     let delivery_base = delivery_base_tree(agent_loop);
-    // ②typed checks 块：任务窗口检查捕获开槽（`checks_capture` 模块文档是
+    // typed checks 块：任务窗口检查捕获开槽（`checks_capture` 模块文档是
     // 语义真相源）。证据窗口与交付 diff 窗口一致 = 本轮 run；async 首跳的
     // 记录随窗口丢弃，与 delivery_base 续行重照基线同语义（最终交付证据
     // = 最后一轮）。
@@ -484,10 +484,10 @@ async fn execute_new_task(
             &[],
         )
         .await;
-    // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用
+    // typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用
     // 这一份记录；只有 success 臂的交付捕获真正消费，其余臂诚实丢弃）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
-    // L13-b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加进
+    // b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加进
     // response。cancel 臂不带——控制面回执不是工作交付；async 臂不带——
     // 任务未终局，续行腿重新装配守卫时重新计数）。
     let mandate_guard = agent_loop.take_mandate_guard();
@@ -506,7 +506,7 @@ async fn execute_new_task(
         obs.clear_task_context();
     }
 
-    // 取消检查（W2 P4）：cancel_task 在执行窗口命中 → 中断后不走正常完成/
+    // 取消检查：cancel_task 在执行窗口命中 → 中断后不走正常完成/
     // async 路径，发 error 回调（"cancelled"）回收任务。A 侧 dispatch 已终态，
     // 其写回会按 state != dispatched 幂等跳过。
     if token.is_cancelled() {
@@ -553,7 +553,7 @@ async fn execute_new_task(
 
         // NB-CODE-008：磁盘恢复面静默失效必须可观测——内存态已就绪、任务继续
         // 异步挂起，但崩溃后该任务无法恢复。
-        // E1 二期多跳账（2026-10-17 根修）：async 挂起前已消耗的首跳用量随
+        // 二期多跳账（根修）：async 挂起前已消耗的首跳用量随
         // usage_before 局部变量一起丢失——暂存进任务记录，resume 完成时
         // 合并上报（否则多跳任务的 A 端记账只含末跳差值）。
         let first_leg = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
@@ -574,7 +574,7 @@ async fn execute_new_task(
     }
 
     let mut result = extract_final_message(&events);
-    // P1 同族（2026-09-25）：turn_guard 退化三判 GiveUp 的兜底告知不是工作
+    // 同族：turn_guard 退化三判 GiveUp 的兜底告知不是工作
     // 交付——置空后走下方 (None, true) 空交付改判臂（error「worker 返回空
     // 结果…」），否则放弃告知会被当 success 交付给 A 端（同 P2A 升级硬停
     // 的改判理由）。文案对齐见 DEGENERATE_GIVEUP_NOTICE。
@@ -586,11 +586,11 @@ async fn execute_new_task(
     // resume_task when the callback comes back and the task actually completes.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
     let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
-    // P1（2026-09-11 真机日志分析）：失败终止的 turn（校验预算耗尽 / LLM 重试
+    // （真机日志分析）：失败终止的 turn（校验预算耗尽 / LLM 重试
     // 耗尽 / 升级硬停，末事件为 Error）必须发 error 回调，不得包装成 success
     // ——此前 7/7 真机样本都是空交付 success，A 端重派链拿不到失败信号。
     // 成功终止但最终文本为空同样按 error 上报（无内容可交付）。
-    // P2A（2026-09-12）：turn_guard 升级硬停以 Done 终止（P1 语义——文案带
+    // P2A：turn_guard 升级硬停以 Done 终止（语义——文案带
     // 「已完成的工作已保存」），但交付内容只是停止告知，不是工作交付——按
     // error 上报（classify 为 escalation），A 端据此转人工而非把停止告知当
     // 交付评审后盲重派（同节点重放同一任务大概率复现同一循环）。
@@ -608,7 +608,7 @@ async fn execute_new_task(
             (None, false) => (String::new(), "success"),
         }
     };
-    // L13-b：违规记录块追加（success/error 都带——master 评审/审计可见；
+    // b：违规记录块追加（success/error 都带——master 评审/审计可见；
     // classify 按 Error 事件文本**前缀**识别 fail_class，尾部追加不影响）。
     if let Some(g) = mandate_guard.as_ref()
         && let Some(report) = g.violation_report()
@@ -622,10 +622,10 @@ async fn execute_new_task(
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
-    // P4 交付门：成功交付才捕获分支（error/取消没有交付物可捕获）。
-    // 失败 = None（交付门是增强证据面，绝不阻断回调主链路）。
+    // 成功交付才捕获分支（error/取消没有交付物可捕获）。
+    // 失败 = None（是增强证据面，绝不阻断回调主链路）。
     let delivery = if status.1 == "success" {
-        // 交付捕获路由（BUG 2026-11-01 根修）：档案任务（tool_path_base =
+        // 交付捕获路由（根修）：档案任务（tool_path_base =
         // exec 副本）从副本就地 diff——主 workspace 影子库 JSON 形态捕获恒
         // 缺席，改动与捕获对象错位；非 exec 任务走原主路径不变。
         match (context.tool_path_base.as_ref(), agent_loop.workspace_root()) {
@@ -638,7 +638,7 @@ async fn execute_new_task(
                 exec_baseline_sha.as_deref(),
             ),
             _ => {
-                // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
+                // 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
                 // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
                 let checks_head_tree = delivery_base_tree(agent_loop);
                 capture_task_delivery(
@@ -689,7 +689,7 @@ async fn resume_task(
 ) -> Result<(), String> {
     nemesis_cluster::logger::log_task("exec_resume", &task.task_id, "");
     // Per-task AgentInstance：与 execute_new_task 同源渲染（稳定前缀 + 任务
-    // 职能后缀）——续行恢复不丢职能身份（M3：ClusterTask 带着职能字段走）。
+    // 职能后缀）——续行恢复不丢职能身份（ClusterTask 带着职能字段走）。
     let instance = AgentInstance::new(task_system_prompt(config, agent_loop, task));
 
     // Restore conversation history.
@@ -716,7 +716,7 @@ async fn resume_task(
         .ok_or("No callback_result")?;
     instance.replace_tool_result(tool_call_id, callback_result);
 
-    // L13-b：mandate 守卫续行腿重新装配（授权面不变；token 基线/调用计数
+    // b：mandate 守卫续行腿重新装配（授权面不变；token 基线/调用计数
     // 按本腿重新快照——多跳任务的每腿预算口径是「本腿 delta」，终局时限
     // expires_at 仍全局约束）。
     if let Some(mandate) = task.mandate.as_ref() {
@@ -726,7 +726,7 @@ async fn resume_task(
     let context = build_context(agent_loop, task);
     // 交付捕获前置：档案任务 exec 副本基线就绪（续行/重派重入 = 优先读
     // 持久化锚点取回定格基线，幂等；HEAD 已可能被 worker 合法提交移动——
-    // BUG 2026-11-01 C 后半）。基线 SHA 接住透传给交付捕获。失败 warn 后
+    // C 后半）。基线 SHA 接住透传给交付捕获。失败 warn 后
     // 任务照常（交付证据缺席可观测，不阻断主链路）。
     let mut exec_baseline_sha: Option<String> = None;
     if let Some(dir) = context.tool_path_base.as_ref() {
@@ -741,7 +741,7 @@ async fn resume_task(
     }
     let trace_id = format!("cluster-resume-{}", &task.task_id);
 
-    // W2 P4 per-task cancel：resume 路径同样注册令牌（token 透传给
+    // per-task cancel：resume 路径同样注册令牌（token 透传给
     // resume_execution_with_token，cancel_task 可中断续行中的 LLM 循环）。
     let token = tokio_util::sync::CancellationToken::new();
     task_list.register_cancel_token(&task.task_id, token.clone());
@@ -755,23 +755,23 @@ async fn resume_task(
             "(resume)",
         );
     }
-    // E1 二期：续行前快照（差值 = 本续行轮消耗）。旧注释「原任务用量已在
+    // 二期：续行前快照（差值 = 本续行轮消耗）。旧注释「原任务用量已在
     // execute_new_task 成功回调时报过」是假的——async 挂起路径没有成功回调，
-    // 首跳用量自 2026-10-17 起由 async_usage_stash 随任务记录暂存，最终
+    // 首跳用量自 起由 async_usage_stash 随任务记录暂存，最终
     // 回调时合并上报（此前多跳任务的首跳消耗从未回传 A 端）。
     let carried_usage = task.async_usage_stash.clone();
     let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
-    // P4 交付门：续行同样先记基线（本续行轮的改动才是本轮交付）。
+    // 续行同样先记基线（本续行轮的改动才是本轮交付）。
     let delivery_base = delivery_base_tree(agent_loop);
-    // ②typed checks 块：续行窗口同 execute_new_task（开槽→run→摘槽，
+    // typed checks 块：续行窗口同 execute_new_task（开槽→run→摘槽，
     // 证据窗口与本轮交付 diff 窗口一致）。
     agent_loop.begin_checks_capture(&task.source.session_key);
     let events = agent_loop
         .resume_execution_with_token(&instance, &context, &trace_id, &token)
         .await;
-    // ②typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用）。
+    // typed checks：窗口关闭必摘槽（cancel/async/error/success 各臂共用）。
     let checks = agent_loop.take_checks_capture(&task.source.session_key);
-    // L13-b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加）。
+    // b：mandate 守卫摘槽（同窗对称；违规记录在最终回调臂追加）。
     let mandate_guard = agent_loop.take_mandate_guard();
     task_list.unregister_cancel_token(&task.task_id);
     if let Some(obs) = cluster_observer {
@@ -788,7 +788,7 @@ async fn resume_task(
         obs.clear_task_context();
     }
 
-    // 取消检查（W2 P4）：续行被中断 → error 回调回收，不走 async/完成路径。
+    // 取消检查：续行被中断 → error 回调回收，不走 async/完成路径。
     if token.is_cancelled() {
         tracing::info!(
             task_id = %task.task_id,
@@ -855,7 +855,7 @@ async fn resume_task(
     }
 
     let mut result = extract_final_message(&events);
-    // P1 同族（2026-09-25）：续行轮同样把 turn_guard GiveUp 兜底告知按空交付
+    // 同族：续行轮同样把 turn_guard GiveUp 兜底告知按空交付
     // 处理（与 execute_new_task 同一段注释，此处走「续行正常结束」文案臂）。
     if result.trim() == DEGENERATE_GIVEUP_NOTICE {
         result.clear();
@@ -864,10 +864,10 @@ async fn resume_task(
     // the resumed turn's tool result / final response are all in the instance
     // history already, so no separate content args are needed.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
-    // E1 二期多跳账：本续行轮差值 + async 暂存的此前各跳累计 = 全程用量。
+    // 二期多跳账：本续行轮差值 + async 暂存的此前各跳累计 = 全程用量。
     let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before)
         .map(|leg| task_usage_merge(carried_usage.as_ref(), &leg));
-    // P1：续行轮同样按终态判定（与 execute_new_task 同一映射，见其注释）。
+    // 续行轮同样按终态判定（与 execute_new_task 同一映射，见其注释）。
     // P2A：升级硬停（Done 终止 + 稳定前缀交付文本）同样改判 error——
     // 停止告知不是工作交付（详见 execute_new_task 同段注释）。
     let error_text = terminal_error(&events);
@@ -884,7 +884,7 @@ async fn resume_task(
             (None, false) => (String::new(), "success"),
         }
     };
-    // L13-b：违规记录块追加（同 execute_new_task；续行腿的记录在此追加——
+    // b：违规记录块追加（同 execute_new_task；续行腿的记录在此追加——
     // 首跳 async 臂的记录诚实丢弃，见 execute_new_task 摘槽注释）。
     if let Some(g) = mandate_guard.as_ref()
         && let Some(report) = g.violation_report()
@@ -898,10 +898,10 @@ async fn resume_task(
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
     }
-    // P4 交付门：同 execute_new_task——成功才捕获（diff 基线 = 本轮续行前
+    // 同 execute_new_task——成功才捕获（diff 基线 = 本轮续行前
     // 快照）；失败 = None 不阻断回调主链路。
     let delivery = if status.1 == "success" {
-        // 交付捕获路由（BUG 2026-11-01 根修）：档案任务（tool_path_base =
+        // 交付捕获路由（根修）：档案任务（tool_path_base =
         // exec 副本）从副本就地 diff——主 workspace 影子库 JSON 形态捕获恒
         // 缺席，改动与捕获对象错位；非 exec 任务走原主路径不变。
         match (context.tool_path_base.as_ref(), agent_loop.workspace_root()) {
@@ -914,7 +914,7 @@ async fn resume_task(
                 exec_baseline_sha.as_deref(),
             ),
             _ => {
-                // P2 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
+                // 版本绑定：checks 窗口关闭时刻的实时影子 tree（与 capture 时刻
                 // 的 tree 独立派生，评审门交叉对账「检查就在交付那棵树上跑的」）。
                 let checks_head_tree = delivery_base_tree(agent_loop);
                 capture_task_delivery(
@@ -953,7 +953,7 @@ async fn resume_task(
 }
 
 // ---------------------------------------------------------------------------
-// 职能渲染（集群专业职能框架 M3：per-task system prompt = 稳定前缀 + 职能后缀）
+// 职能渲染（集群专业职能框架：per-task system prompt = 稳定前缀 + 职能后缀）
 // ---------------------------------------------------------------------------
 
 /// 本节点宣告的职能清单（peers.toml `[node].professions`，身份编辑热改写；
@@ -967,7 +967,7 @@ fn self_declared_professions(agent_loop: &AgentLoop) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// B2（profession-capability-evolution 2026-10-14）：讨论唤醒轮的工具围栏
+/// （profession-capability-evolution）：讨论唤醒轮的工具围栏
 /// 收窄。DiscussionEvent 无职能字段——讨论轮不是单一职能任务，按**本节点
 /// 宣告职能的契约围栏交集**收窄（D 裁决）：讨论是节点以自己的专业身份参
 /// 与，能力面 = 宣告职能围栏的公共部分。
@@ -1012,10 +1012,10 @@ fn discussion_tool_fence(agent_loop: &AgentLoop) -> Option<Vec<String>> {
 /// 扩展兜底（`<workspace>/cluster/professions/<family>/<spec>.md` 单文件，
 /// 正文即契约+方法论）。内置命中时用户同名档案 WARN 忽略（内置赢）。
 ///
-/// 安全闸：slug 先过 `validate_slug`（`^[a-z0-9_-]+(:[a-z0-9_-]+)?$`），
+/// 安全闸：slug 先过 `validate_slug`（`^[a-z0-9_-]+([a-z0-9_-]+)?$`），
 /// 非法（含 `..`/路径分隔符）一律落未知臂——绝不拼路径。
 ///
-/// 优先级（A1 翻转，2026-10-14 D5）：**用户同名档案赢过内置**——提示词
+/// 优先级（翻转）：**用户同名档案赢过内置**——提示词
 /// 可编辑、部署后可热改（改完下个任务生效，与用户自定义职能同链路）。
 /// 路径约定：`cluster/professions/<family>/<spec>.md`；裸 family（无
 /// spec 段）用 family 名作文件名（如 `product` → `product/product.md`）。
@@ -1079,15 +1079,15 @@ fn load_profession_assets(
 }
 
 /// per-task system prompt：稳定前缀（`config.system_prompt`，装配期字节
-/// 不变）+ 任务职能后缀（M3）。无职能子单原样克隆 config（现状兼容，
+/// 不变）+ 任务职能后缀。无职能子单原样克隆 config（现状兼容，
 /// 零成本路径）。
 ///
 /// 渲染臂（诚实注记三臂，见 professions::render）：内置/用户契约 → 契约
 /// 正文（未宣告节点加 fallback 注记）；未知 slug → 契约缺席 + 通用纪律，
 /// 绝不空串。
 ///
-/// B2（profession-capability-evolution 2026-10-14）：职能工具围栏装配——
-/// 契约文本内的 ` ```nemesis-tool-fence ` 块（D3：能力边界跟职能文本放一
+/// （profession-capability-evolution）：职能工具围栏装配——
+/// 契约文本内的 ` ```nemesis-tool-fence ` 块（能力边界跟职能文本放一
 /// 处，用户自定义档案天然同款）解析为该任务的实例级工具白名单，写进
 /// [`AgentConfig::tools`]（非空 = 供给/派发双闸的权威判据）。纪律：
 /// **先 parse（原文）后 strip（渲染用）**——围栏块是装配元数据不是提示词，
@@ -1121,7 +1121,7 @@ fn task_system_prompt(
         declared,
         "[ClusterAgent] Rendering profession suffix"
     );
-    // B2：围栏先解析（原文），渲染用剥除后的正文（yaml 永不进 prompt）。
+    // 围栏先解析（原文），渲染用剥除后的正文（yaml 永不进 prompt）。
     let fence_tools = contract
         .as_deref()
         .and_then(nemesis_prompts::professions::fence::parse_tool_fence);
@@ -1141,7 +1141,7 @@ fn task_system_prompt(
         Some(prefix) if !prefix.trim().is_empty() => format!("{prefix}\n\n---\n\n{suffix}"),
         _ => suffix,
     });
-    // B2：围栏写入（fresh-read 开关；白名单是闸的权威判据，职能标注只管
+    // 围栏写入（fresh-read 开关；白名单是闸的权威判据，职能标注只管
     // 拒绝文案）。显式全禁（Some(空)）→ question 哨兵形态，见 fn 纪律注。
     if let Some(allowed) = fence_tools
         && agent_loop.current_profession_tool_fence()
@@ -1175,11 +1175,11 @@ fn truncate_str(s: &str, max_len: usize) -> String {
     }
 }
 
-/// F-U3-2（U3 实证）路径基准判定：档案管线任务（工作副本有基线 sidecar）
+/// F-（实证）路径基准判定：档案管线任务（工作副本有基线 sidecar）
 /// → Some(exec_dir)，否则 None。`build_context`（dispatch 层文件工具/执行
 /// cwd 的相对路径基准）与 `deliver_files_back`（交付回传相对路径解析）
 /// 共用——两处口径必须一致，否则 worker 按 tool_path_base 写对的相对
-/// 路径，回传时却按进程 cwd 读不到（2026-10-17 根修：交付回传面此前
+/// 路径，回传时却按进程 cwd 读不到（根修：交付回传面此前
 /// 对相对路径形同虚设）。
 fn cluster_task_path_base(
     agent_loop: &AgentLoop,
@@ -1208,7 +1208,7 @@ fn build_context(
         &task.source.node_id,
         &task.source.session_key,
     );
-    // F-U3-2（UAT U3 实证）：档案管线任务（工作副本有基线 sidecar）→ dispatch
+    // F-（UAT 实证）：档案管线任务（工作副本有基线 sidecar）→ dispatch
     // 层文件工具/执行 cwd 的相对路径基准 = 工作副本目录。worker 误用相对路径
     // 不再静默落到工作副本之外（变更集只扫 exec 目录——落外面=成果丢失）。
     // 非档案任务（无 sidecar）与普通会话一样 base 为空，零行为变化。
@@ -1395,7 +1395,7 @@ fn extract_final_message(events: &[AgentEvent]) -> String {
         .unwrap_or_default()
 }
 
-/// P1（2026-09-11 真机日志分析）：turn 终止原因 → 回调 status 映射。
+/// （真机日志分析）：turn 终止原因 → 回调 status 映射。
 ///
 /// 若事件流以 `Error` 终止（校验预算耗尽 / LLM 重试耗尽 / 升级硬停等
 /// force_stop 路径），返回该错误文本——这类 turn 是失败终止，不能包装成
@@ -1419,11 +1419,11 @@ fn count_llm_rounds(events: &[AgentEvent]) -> usize {
 
 /// Send a callback for a completed task.
 ///
-/// G1 收口（2026-09-08）：走 [`send_callback_or_persist`] 单一真相源 ——
+/// 收口：走 [`send_callback_or_persist`] 统一定义 ——
 /// 回调成功 → `persister.delete(task_id)` 清理 set_running 占位；回调失败
 /// （对端宕机等）→ `persister.set_result` 落盘真实结果，A 端重启后的恢复
 /// 轮询（query_task_result）才能查到。此前直连裸 send_callback，真实结果
-/// 从不落盘 → G5 恢复链在生产 work-queue 路径下失效（真机 R1a 发现）。
+/// 从不落盘 → 恢复链在生产 work-queue 路径下失效（真机 发现）。
 async fn send_task_callback(
     rpc_client: Option<&RpcClient>,
     result_persister: Option<&dyn TaskResultPersister>,
@@ -1436,7 +1436,7 @@ async fn send_task_callback(
     delivery: Option<serde_json::Value>,
     path_base: Option<&std::path::Path>,
 ) {
-    // P2A（2026-09-12 NB-15）：终结失败分类随 error 回调上行（success =
+    // P2A：终结失败分类随 error 回调上行（success =
     // None，字段不落），A 端验收重派决策据此避免同 worker 同模型盲重派。
     let fail_class = classify_terminal_failure(status, response, error);
     tracing::info!(
@@ -1465,7 +1465,7 @@ async fn send_task_callback(
     )
     .await;
 
-    // G（goal P3）：成功交付 → 解析交付文本中的文件路径回传 master
+    // G（goal）：成功交付 → 解析交付文本中的文件路径回传 master
     // （失败/取消不回传；解析/读取失败诚实降级——交付评论内联源码兜底）。
     // 相对路径按 path_base（= dispatch 层 tool_path_base 同源）解析，
     // 绝对路径原样。
@@ -1474,7 +1474,7 @@ async fn send_task_callback(
     }
 }
 
-/// G（goal P3）交付文件回传：解析交付文本反引号里的路径（五段式「改动
+/// G（goal）交付文件回传：解析交付文本反引号里的路径（五段式「改动
 /// 文件路径」清单），逐个（≤20 个、单文件 ≤8MB、需存在）base64 后经
 /// nb_bus ns="task" op="delivery.files" 推给 master 落资产。fire-and-forget：
 /// 失败只 debug（master 侧溯源线索=交付评论里的内联源码与路径）。
@@ -1563,38 +1563,38 @@ async fn deliver_files_back(
     }
 }
 
-/// P2A（2026-09-12 双端真机 NB-15 根修）：终结失败分类——error 回调负载
+/// P2A（双端真机 根修）：终结失败分类——error 回调负载
 /// 携带结构化 `fail_class`，A 端验收重派决策据此避免同 worker 同模型盲目
-/// 重派（能力类失败重派同节点大概率原样复现：NB-15 校验预算耗尽连烧两轮
-/// 重派预算）。分类真相源 = 各终结路径的稳定文本前缀（loop.rs 生成侧与此
+/// 重派（能力类失败重派同节点大概率原样复现： 校验预算耗尽连烧两轮
+/// 重派预算）。分类权威 = 各终结路径的稳定文本前缀（loop.rs 生成侧与此
 /// 处消费侧同步演化，tests 钉死契约）：
 /// - `validation_budget`：工具参数校验连续失败（loop.rs 校验预算耗尽停轮）
 /// - `escalation`：turn_guard 升级硬停（稳定前缀
-///   [`nemesis_agent::turn_guard::ESCALATION_MARKER`]）
+///   [`nemesis_agent::turn_guard:ESCALATION_MARKER`]）
 /// - `llm_timeout` / `llm_failure`：LLM 调用终结失败（transient 重试耗尽 /
 ///   非瞬态错误），超时形态单列（撞墙检测的跨端可观测面；尽力匹配——
 ///   provider 错误文案不受本侧控制）
-/// - `llm_rate_limit`（2026-09-17 BUG 文档裁决⑤）：上游 429 限流重试耗尽
+/// - `llm_rate_limit`：上游 429 限流重试耗尽
 ///   （loop.rs 重试环终局文案含「rate limited」），评审重派决策据此避免
 ///   同 worker 同模型盲重派
 /// - `empty_result`：turn 正常结束但无交付文本
-/// - `token_budget`（P8 集群无人值守硬化 A2）：会话 token 预算耗尽——
+/// - `token_budget`（集群无人值守硬化）：会话 token 预算耗尽——
 ///   loop 硬停与入口拒接两类文案同前缀
-///   [`nemesis_agent::token_budget::SESSION_TOKEN_BUDGET_MARKER`]；master
+///   [`nemesis_agent::token_budget:SESSION_TOKEN_BUDGET_MARKER`]；master
 ///   board_review 识别后转人工不重派
-/// - `mandate_violation`（L13-b，2026-11-03 三期）：mandate 执行面守卫
+/// - `mandate_violation`（b， 三期）：mandate 执行面守卫
 ///   终局（时限/token 预算/调用次数超限，稳定前缀
-///   [`nemesis_agent::mandate_guard::MANDATE_VIOLATION_MARKER`]）——授权
-///   状态不变时重放大概率复现，board_review 按能力类失败处理；②批一b 起
+///   [`nemesis_agent::mandate_guard:MANDATE_VIOLATION_MARKER`]）——授权
+///   状态不变时重放大概率复现，board_review 按能力类失败处理；②b 起
 ///   worker 自报 `失败类别：权限不足` 亦归此类（授权面语义，换节点或转人工）
-/// - `environmental`（② fail_class 扩展，AOR 批一b）：执行环境缺失——
+/// - `environmental`（② fail_class 扩展，b）：执行环境缺失——
 ///   worker 自报 `失败类别：环境缺失`（六词失败纪律解析桥）或 exec 兜底
 ///   文本命中窄环境特征（permission denied / command not found /
 ///   connection refused 等）。换节点重试有意义（不同节点环境不同）
-/// - `resource_conflict`（② 批一b）：worker 自报 `失败类别：资源冲突`
+/// - `resource_conflict`（② b）：worker 自报 `失败类别：资源冲突`
 ///   ——[TOUCH] 声明外的并发资源竞争；换节点或错峰重派有意义
-/// - `unknown_side_effect`（② 批一b）：副作用后果不明——当前无 B 端自动
-///   生产者（worker 六词无对应项，留待人工标记/阶段三 Replanner 面），
+/// - `unknown_side_effect`（② b）：副作用后果不明——当前无 B 端自动
+///   生产者（worker 六词无对应项，留待人工标记/ Replanner 面），
 ///   A 端 KNOWN 白名单 + 冻结策略映射已备（识别即冻结不自动重派）
 /// - `exec_failed`：其它失败（兜底；环境特征不命中仍落此类）。success 回
 ///   调返回 None（不落字段）。
@@ -1606,7 +1606,7 @@ fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Optio
         return None;
     }
     let text = if error.is_empty() { response } else { error };
-    // 六词失败纪律桥（批一a worker 契约 + 批一b 解析）：worker 失败上报
+    // 六词失败纪律桥（a worker 契约 + b 解析）：worker 失败上报
     // 第一行自报类别 → fail_class。词→类映射与 board_review 的重派策略
     // 对齐（环境缺失/资源冲突→环境类换节点、参数问题→escalation 改写
     // 任务、超时→transient 加时长、权限不足→授权面）。类别词后可跟一句
@@ -1647,7 +1647,7 @@ fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Optio
             Some("llm_failure")
         }
     } else {
-        // exec 兜底细分（② 批一b）：窄环境特征命中 → environmental（换
+        // exec 兜底细分（② b）：窄环境特征命中 → environmental（换
         // 节点重试有意义）；不命中仍按 exec_failed（能力类保守）。「not
         // found」太宽不收（任务级缺文件 ≠ 环境缺失），只收强环境信号。
         let lower = text.to_ascii_lowercase();
@@ -1669,7 +1669,7 @@ fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Optio
     }
 }
 
-/// 本轮 token 用量提取（E1 二期）：run 前后各取一次 session 聚合，差值 =
+/// 本轮 token 用量提取（二期）：run 前后各取一次 session 聚合，差值 =
 /// 本任务消耗（饱和减法防下溢——并发清扫/rollup 可能削行）。设计裁决：
 /// AgentEvent 事件流目前不携带 usage，走 goal 钦定的 fallback 查
 /// data_store（两次聚合查询代价可忽略）；未装配 data_store = None。
@@ -1699,7 +1699,7 @@ fn task_usage_delta(
     })
 }
 
-/// 多跳用量合并（2026-10-17 异步多跳根修）：async 暂存的此前各跳累计 +
+/// 多跳用量合并（异步多跳根修）：async 暂存的此前各跳累计 +
 /// 本轮差值，逐字段饱和加法。`carried` 缺失/字段缺失按 0 处理（旧任务
 /// 记录无 stash、旧 delta 形态缺字段都兼容）。
 fn task_usage_merge(
@@ -1759,7 +1759,7 @@ async fn handle_task_error(
 }
 
 // ---------------------------------------------------------------------------
-// Board discussion（Swarm M3 G4：worker 被动响应）
+// Board discussion（Swarm：worker 被动响应）
 // ---------------------------------------------------------------------------
 
 /// 消费一条讨论唤醒事件：线程上下文 + 节点身份 + 唤醒原因 → 轻量
@@ -1788,7 +1788,7 @@ async fn handle_discussion(
     // Per-round AgentInstance：与 work queue 任务同款（吃集群身份 system
     // prompt）。会话不落 SessionStore——讨论状态真相源在 master 台账，每轮
     // 上下文由 wake 包随带（幂等重放安全：同 seq 不重复入队）。
-    // B2 工具围栏（profession-capability-evolution 2026-10-14）：讨论轮按
+    // 工具围栏（profession-capability-evolution）：讨论轮按
     // 本节点宣告职能的契约围栏交集收窄工具面（D 裁决）。tool_fence_
     // profession 留 None——派发拒绝文案走无职能的通用措辞（讨论无单一职
     // 能来源）。
@@ -1802,7 +1802,7 @@ async fn handle_discussion(
     let trace_id = format!("board-disc-{}-{}", event.thread_id, event.seq);
     let context = RequestContext::new("board", &session_key, &event.from_node, &session_key);
     let token = tokio_util::sync::CancellationToken::new();
-    // Swarm G13：讨论轮同样落 cluster_logs 4 件套。讨论没有 cluster task，
+    // Swarm：讨论轮同样落 cluster_logs 4 件套。讨论没有 cluster task，
     // 观察者需要合成 task 上下文才能构造路径（目录按唤醒来源节点归组，
     // task_id 带线程与 seq 可检索）；并补 start/end——run_with_trace 只发
     // LlmRequest/LlmResponse，缺 start 则全部事件被静默丢弃（与 worker
@@ -1862,7 +1862,7 @@ async fn handle_discussion(
     post_discussion_reply(rpc_client, self_node_id, event, trimmed).await;
 }
 
-/// 发送者身份标签：board 开 = [`crate::board_bus::actor_label`] 权威实现；
+/// 发送者身份标签：board 开 = [`crate::board_bus:actor_label`] 权威实现；
 /// 关 = 裸 id 降级（board_bus 模块随 all(board, cluster) 闸不编译，而讨论
 /// 子系统在 board 关时本就不装配——此臂只为 cluster-only 裁剪形态编译完整）。
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -1877,7 +1877,7 @@ fn actor_label(kind: &str, id: &str) -> String {
 
 /// 组装讨论 prompt：线程历史 + 唤醒原因 + 回复预算 + 发言/沉默二选一指令。
 /// 发送者身份经 [`actor_label`] 渲染（admin=human user /
-/// agent=agent node——2026-10-23 身份透传：LLM 由此知道说话的是人还是节点，
+/// agent=agent node—— 身份透传：LLM 由此知道说话的是人还是节点，
 /// 不再对着人类只能 @ 自己）。
 fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> String {
     let thread_key = format!("{}:{}", event.thread_kind, event.thread_id);
@@ -1921,7 +1921,7 @@ fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> Strin
 
 /// 组装 board.comment.post 上行信封（worker 发言 = master 侧上行 handler
 /// 的幂等键 + 额度三闸 + 落库）。board_discuss 工具与被动响应共用
-/// （单一真相源——kind_tag 映射 / 幂等键形状只此一份）。
+/// （统一定义——kind_tag 映射 / 幂等键形状只此一份）。
 pub(crate) fn build_comment_post_envelope(
     self_node_id: &str,
     event: &DiscussionEvent,
@@ -1953,7 +1953,7 @@ pub(crate) fn build_comment_post_envelope(
     .to_json()
 }
 
-/// D2 读取臂：`board.comment.list` 上行信封（线程纯读——无幂等键、无
+/// 读取臂：`board.comment.list` 上行信封（线程纯读——无幂等键、无
 /// 额度记账；limit 缺省由 master 侧收敛）。唯一消费点 board_discuss_tool
 /// 在 board+cluster 门内——随门裁剪（board 关时常量留场 = dead_code，
 /// 同 STALL_MARKER 家族先例）。
@@ -1980,7 +1980,7 @@ pub(crate) fn build_comment_list_envelope(
 
 /// 找在线 coordinator（≠本节点）。master 地址每次现查——节点表鲜活，
 /// 重选主 / 离线切换不需要重启调用方。board_discuss 与 board_claim 两
-/// 工具同源（单一真相源）。
+/// 工具同源。
 #[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) fn find_online_coordinator(
     cluster: &nemesis_cluster::cluster::Cluster,
@@ -2046,7 +2046,7 @@ async fn post_discussion_reply(
 }
 
 /// nb_bus 单次 RPC 往返（信封 payload 进、信封响应 JSON 出）。
-/// 被动回帖与 board_discuss 工具共用（单一真相源——action 名 / 幂等不做 /
+/// 被动回帖与 board_discuss 工具共用（统一定义——action 名 / 幂等不做 /
 /// result 解空只此一份）。
 pub(crate) async fn send_nb_bus(
     rpc: &RpcClient,
@@ -2069,7 +2069,7 @@ pub(crate) async fn send_nb_bus(
 }
 
 // ---------------------------------------------------------------------------
-// M5-3（2026-10-10 机制加固）：cluster ask 看板可见化——审批等待不再无声
+// （机制加固）：cluster ask 看板可见化——审批等待不再无声
 // ---------------------------------------------------------------------------
 
 /// 从审批 ask 的 chat_id 提取看板单号。worker 侧 cluster 会话键形态
@@ -2085,7 +2085,7 @@ pub(crate) fn issue_number_from_cluster_chat_id(chat_id: &str) -> Option<i64> {
     n.parse::<i64>().ok().filter(|v| *v > 0)
 }
 
-/// M5-3 主入口：cluster ask 触发时向 master 权威看板 issue 线程投递系统
+/// 主入口：cluster ask 触发时向 master 权威看板 issue 线程投递系统
 /// 注记（审批等待可见化半步）。非看板会话静默跳过；投递单次尝试，失败
 /// WARN 不重试（同 `post_discussion_reply` 语义——审批等待不依赖注记到达）。
 /// 同步入口（Composite 观察者在审批等待的同步上下文里触发）：有 tokio

@@ -1,4 +1,4 @@
-//! M5（2026-10-10 集群无人值守硬化）— 跨节点批复桥（worker 侧）。
+//! （2026-10-10 集群无人值守硬化）— 跨节点批复桥（worker 侧）。
 //!
 //! worker 执行看板任务时的 ABAC ask（auditor require_approval）卡在 worker
 //! 本地 Dashboard；本模块把 ask 上行登记到 master（nb_bus ns="approval"
@@ -151,7 +151,7 @@ impl ApprovalResponder for RemoteNotifyResponder {
         note: Option<String>,
     ) -> Result<bool, String> {
         // 先裁决后上行：裁决失败（unknown/已处理）不产生摘除信号——
-        // worker 本地 pending 才是真相源。
+        // worker 本地 pending 才为权威依据。
         let delivered = self
             .inner
             .respond(request_id, approved, always, note.clone())?;
@@ -164,9 +164,9 @@ impl ApprovalResponder for RemoteNotifyResponder {
         self.inner.pending()
     }
 
-    // L07（2026-11-01）孤儿卡清理透传：项目会话经装饰器装配 responder，
+    // 孤儿卡清理透传：项目会话经装饰器装配 responder，
     // 不透传 = 项目会话的未决审批卡清不掉。终局裁决仍在 inner（本地
-    // pending 是真相源），装饰器只旁路上行，与本文件 respond 同姿态。
+    // pending 为权威依据），装饰器只旁路上行，与本文件 respond 同姿态。
     fn resolve_orphans(&self, reason: &str) -> usize {
         self.inner.resolve_orphans(reason)
     }

@@ -1,11 +1,11 @@
-//! `nemesisbot selfupdate` — L9 版本自切换通道 CLI。
+//! `nemesisbot selfupdate` — 版本自切换通道 CLI。
 //!
 //! 三臂：
-//! - `check`  ：直接查 Release 最新产物 vs 本进程 commit 身份（不需要 gateway
+//! - `check`：直接查 Release 最新产物 vs 本进程 commit 身份（不需要 gateway
 //!   在跑——版本身份 = git commit，编译期注入）。
-//! - `status` ：本进程身份 + workspace journal 现场 + 本地待装包（不需要
+//! - `status`：本进程身份 + workspace journal 现场 + 本地待装包（不需要
 //!   gateway）。
-//! - `apply`  ：触发**正在跑的 gateway** 走两段式 apply（POST /api/internal
+//! - `apply`：触发**正在跑的 gateway** 走两段式 apply（POST /api/internal
 //!   `selfupdate_apply`）——待装包就位/v4 验签/staging/受控重启全在 gateway
 //!   侧同源执行（无待装包自动先下载），CLI 只受理；成功后 gateway 自行走
 //!   优雅停机，新版本进程已在等它退场。`--allow-downgrade` 放行回退（默认拒）。

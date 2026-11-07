@@ -19,7 +19,7 @@ fn pid_listening_on_returns_none_for_free_port() {
 }
 
 // ============================================================
-// clamd_is_ours / paths_match / process_exe_path arms (2026-08-25)
+// clamd_is_ours / paths_match / process_exe_path arms
 // ============================================================
 
 #[test]

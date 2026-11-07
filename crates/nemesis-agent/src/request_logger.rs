@@ -235,7 +235,7 @@ impl RequestLogger {
     }
 
     /// Create a logger whose session directory carries a fixed prefix
-    /// （压缩杂务隔离，2026-11-03 BUG-3：sender_id="summarizer" 的事件改落
+    /// （压缩杂务隔离， BUG-3：sender_id="summarizer" 的事件改落
     /// `aux_` 前缀目录，不再伪装成普通对话）。base_dir 派生同 [`Self::new`]
     /// （resolve_log_path）；目录名 = `{prefix}_{微秒时间戳}`——微秒后缀防
     /// 同秒碰撞（multipart 连发三次摘要调用是常态）。
@@ -302,7 +302,7 @@ impl RequestLogger {
     /// Sanitize a string for use as a filename component.
     ///
     /// SAN-04/SAN-05：薄包装委托仓内单一真相源白名单消毒。原黑名单实现
-    /// （`/ \ : * ? " < > | \0` → `_`）对 `..` 不设防——远端 device_id 为
+    /// （`/ \: * ? " < > | \0` → `_`）对 `..` 不设防——远端 device_id 为
     /// `..` 时 `base_dir.join("..")` 逃一级目录。白名单对运行时 id 族
     /// （node id / task id，alnum+-_）映射一致，另加 80 字符上限。
     /// Used by cluster logger to handle potentially untrusted task_id values
@@ -821,7 +821,7 @@ fn rand_u16() -> u16 {
 mod tests;
 
 // ---------------------------------------------------------------------------
-// I3 (U9): request/chat-log consistency anchor (lightweight)
+// request/chat-log consistency anchor (lightweight)
 // ---------------------------------------------------------------------------
 
 /// Message-role sequence extracted from one side of the comparison.
@@ -838,8 +838,8 @@ pub struct RoleSequence {
 /// comes with complete session event sourcing). Returns a warning string
 /// on mismatch (caller logs it; this NEVER fails the request path).
 ///
-/// STATUS (full review L6): audit tooling — consumed by tests today; the
-/// production wiring point is the future replay/audit console (U9's
+/// STATUS (full review): audit tooling — consumed by tests today; the
+/// production wiring point is the future replay/audit console ('s
 /// follow-up). Exported deliberately for that consumer.
 pub fn check_request_log_consistency(
     request_roles: &[&str],
@@ -872,6 +872,6 @@ pub fn check_request_log_consistency(
     Ok(())
 }
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

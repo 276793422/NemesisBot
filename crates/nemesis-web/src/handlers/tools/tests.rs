@@ -1,4 +1,4 @@
-//! Tools handler 补测（Phase 3 覆盖率，2026-08-25）。
+//! Tools handler 补测（覆盖率，2026-08-25）。
 //!
 //! `tools.list` 的「agent not running」bail 臂已有覆盖；缺的是真 AgentLoop
 //! 下的 map 体（name/description/parameters 三字段组装）。用一个假 Tool
@@ -100,6 +100,7 @@ fn make_ctx(al: AgentLoop, dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

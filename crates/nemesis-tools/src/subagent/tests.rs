@@ -543,7 +543,7 @@ async fn test_subagent_tool_execute_with_non_object_args() {
 }
 
 // ============================================================
-// W4a coverage gap closure (spawn()'s background lanes: the
+// coverage gap closure (spawn()'s background lanes: the
 // spawned async block only runs when a tokio runtime handle is
 // available — plain #[test] callers skip it entirely)
 // ============================================================
@@ -620,7 +620,7 @@ async fn w4a_spawn_in_runtime_with_llm_runs_tool_loop_and_callbacks() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): spawn() info! field arm (has_llm)
+// coverage: spawn() info! field arm (has_llm)
 // ===========================================================================
 
 fn s2_enable_tracing() {

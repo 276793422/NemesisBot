@@ -1,8 +1,8 @@
 //! Cluster handler — runtime status, nodes, tasks, topology, snapshots, config.
 //!
-//! Phase 2: 8 new backend commands + pagination + config validation.
-//! Phase 3: Placeholder data filled from cluster log reader.
-//! Phase 4: SSE bridge is wired in gateway.rs via `set_cluster_log_hook`.
+//! 8 new backend commands + pagination + config validation.
+//! Placeholder data filled from cluster log reader.
+//! SSE bridge is wired in gateway.rs via `set_cluster_log_hook`.
 
 use super::cluster_persona_gen;
 use crate::handlers::{require_home, require_workspace};
@@ -106,22 +106,22 @@ impl ModuleHandler for ClusterHandler {
             "firewall.check",
             "firewall.add_rules",
             "diagnostics.run",
-            // iroh 跨网漫游（M4 起 cluster-roaming feature 已删，恒编译——命令面
-            // 恒注册，L1 清单稳定，voice-capture 先例）
+            // iroh 跨网漫游（起 cluster-roaming feature 已删，恒编译——命令面
+            // 恒注册， 清单稳定，voice-capture 先例）
             "roaming.status",
             "roaming.enable",
             "roaming.disable",
-            // L16 互信 allowlist 管理面（宿主 TrustBook 文件直操作，零插件依赖）
+            // 互信 allowlist 管理面（宿主 TrustBook 文件直操作，零插件依赖）
             "roaming.trust.list",
             "roaming.trust.add",
             "roaming.trust.revoke",
             "roaming.trust.unrevoke",
-            // L13-a mandate 公钥钉存管理面（同簿异段；验签消费在 L13-b）
+            // a mandate 公钥钉存管理面（同簿异段；验签消费在 -b）
             "roaming.mandate.list",
             "roaming.mandate.pin",
             "roaming.mandate.revoke",
             "roaming.mandate.unrevoke",
-            // QUIC 自建中继管理面已迁 handlers/quic.rs（2026-10-23 与集群
+            // QUIC 自建中继管理面已迁 handlers/quic.rs（与集群
             // 解耦：quic.relay.* / quic.registry.members）
         ]
     }
@@ -152,8 +152,8 @@ impl ModuleHandler for ClusterHandler {
                 let data = data.ok_or("missing data")?;
                 self.nodes_add(&data, ctx)
             }
-            // cluster.pair（发现②/B5）：与 CLI `cluster pair` 同一后端
-            // （nemesis_cluster::pair::pair_with_peer）——系统代写 + 回读断言。
+            // cluster.pair（发现②）：与 CLI `cluster pair` 同一后端
+            // （nemesis_cluster::pair:pair_with_peer）——系统代写 + 回读断言。
             "pair" => {
                 let data = data.ok_or("missing data")?;
                 self.pair(&data, ctx).await
@@ -243,7 +243,7 @@ impl ModuleHandler for ClusterHandler {
             "roaming.status" => self.roaming_status(ctx).await,
             "roaming.enable" => self.roaming_enable(ctx).await,
             "roaming.disable" => self.roaming_disable(ctx).await,
-            // L16 互信 allowlist 管理面（与 CLI roaming trust-add/revoke 同源）
+            // 互信 allowlist 管理面（与 CLI roaming trust-add/revoke 同源）
             "roaming.trust.list" => self.roaming_trust_list(ctx).await,
             "roaming.trust.add" => {
                 let data = data.ok_or("missing data")?;
@@ -258,7 +258,7 @@ impl ModuleHandler for ClusterHandler {
                 self.roaming_trust_mutate(&data, ctx, TrustOp::Unrevoke)
                     .await
             }
-            // L13-a mandate 公钥钉存管理面（与 CLI roaming mandate-* 同源）
+            // a mandate 公钥钉存管理面（与 CLI roaming mandate-* 同源）
             "roaming.mandate.list" => self.roaming_mandate_list(ctx).await,
             "roaming.mandate.pin" => {
                 let data = data.ok_or("missing data")?;
@@ -272,16 +272,14 @@ impl ModuleHandler for ClusterHandler {
                 let data = data.ok_or("missing data")?;
                 self.roaming_mandate_unrevoke(&data, ctx).await
             }
-            // QUIC 自建中继管理面已迁 handlers/quic.rs（2026-10-23 与集群
+            // QUIC 自建中继管理面已迁 handlers/quic.rs（与集群
             // 解耦：quic.relay.* / quic.registry.members；零 Cluster 类型依赖）
             _ => Err(format!("unknown command: cluster.{}", cmd)),
         }
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helpers
-// ---------------------------------------------------------------------------
 
 /// Get the Cluster instance from AppState, or return error if not injected.
 fn require_cluster(ctx: &RequestContext) -> Result<Arc<Cluster>, String> {
@@ -331,15 +329,15 @@ fn format_duration(d: std::time::Duration) -> String {
 }
 
 fn cluster_config_path(workspace: &str) -> PathBuf {
-    // 路径唯一真相源 = nemesis-path（peers.toml 跨 crate 读写三方共用）。
+    // 路径唯一依据 = nemesis-path（peers.toml 跨 crate 读写三方共用）。
     nemesis_path::resolve_cluster_config_path_in_workspace(Path::new(workspace))
 }
 
-// --- iroh 跨网漫游开关面（自由函数，cfg 双形态） ---
+// iroh 跨网漫游开关面（自由函数，cfg 双形态） ---
 
 /// 漫游 config 键 RMW 单一入口：`roaming.enabled` 写 bool（咽喉锁 + 原子写，
 /// 形态与 [`update_cluster_config_enabled`] 同源）。**段内 RMW 保留兄弟键**
-///（2026-10-23 解耦后段内兄弟键只剩无害遗留——QUIC 键真相源已迁
+///（解耦后段内兄弟键只剩无害遗留——QUIC 键真相源已迁
 /// config.quic.json，首读迁移只拷贝不删除）。
 fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), String> {
     let _cfg_serial = nemesis_config::config_write_lock();
@@ -380,12 +378,12 @@ fn update_cluster_config_roaming(workspace: &str, enabled: bool) -> Result<(), S
 /// 装配在 gateway 启动路径被三道闸前置（`gateway/cluster_init.rs`）：
 /// config.json `cluster.enabled` × config.cluster.json 顶层 `enabled`（合成
 /// `cluster_should_start`）+ RPC token 认证不可用（引用解析失败**或**为空，
-/// BUG-20261102-297 起统一裁决；fail-closed 分支整个跳过 RPC/discovery
+/// 统一裁决；fail-closed 分支整个跳过 RPC/discovery
 /// 装配）。只开叠加层开关（roaming.enabled）而集群
 /// 本体闸未开时，**重启永远不生效**——payload 带闸链原值，前端据此区分
 /// 「待重启」与「集群未启用」，否则徽标恒说「重启网关」误导用户无限重启
-/// （2026-10-22 用户实录）。QUIC 中继面（quic.relay.*）不消费此闸——
-/// 2026-10-23 与集群解耦后中继装配独立于集群闸链。
+/// （用户）。QUIC 中继面（quic.relay.*）不消费此闸——
+/// 与集群解耦后中继装配独立于集群闸链。
 fn cluster_gate_payload(
     home: Option<&str>,
     workspace: &str,
@@ -425,7 +423,7 @@ fn inject_cluster_gate(
     ctx: &RequestContext,
     workspace: &str,
 ) {
-    // BUG-20261102-297：闸链快照读统一裁决（引用解析失败**或**token 为空
+    // 闸链快照读统一裁决（引用解析失败**或**token 为空
     // 都算 token 异常）——RPC fail-closed 时前端徽标必须按 token 定性，
     // 不能误报「待重启生效」。
     let token_broken = ctx
@@ -442,11 +440,11 @@ fn inject_cluster_gate(
     }
 }
 
-/// cluster.roaming.status 载荷。enabled=config 闸（单一真相源
+/// cluster.roaming.status 载荷。enabled=config 闸（统一定义
 /// `Cluster::roaming_enabled_in_config`）；active=运行态（roaming 层在跑）；
 /// requires_restart = 两者不一致（用户改了开关还没重启网关）。
-/// `rendezvous` = 名册同步状态（已序列化；Null = 循环未挂——N0 形态/未启用）。
-/// QUIC 插件化 M2：node_id 走桥（派生在插件内；桥缺席/失败 = null——
+/// `rendezvous` = 名册同步状态（已序列化；Null = 循环未挂—— 形态/未启用）。
+/// QUIC 插件化：node_id 走桥（派生在插件内；桥缺席/失败 = null——
 /// 观测面偏差见 PLAN 注记）。
 async fn roaming_status_payload(
     workspace: &str,
@@ -492,7 +490,7 @@ async fn roaming_status_payload(
 }
 
 /// cluster.roaming.enable/disable 实现。enable 时缺 key 顺手生成（备料，
-/// QUIC 插件化 M2：走桥 identity_ensure——身份面在插件内；桥缺席 =
+/// QUIC 插件化：走桥 identity_ensure——身份面在插件内；桥缺席 =
 /// 闸照写 + 诚实注记（gateway 启动时同款 warn 降级），Failed = Err），
 /// 返回身份 hex 供 UI 展示；disable 只写闸。
 async fn roaming_set_enabled_impl(
@@ -531,11 +529,9 @@ fn peers_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_cluster_peers_path_in_workspace(Path::new(workspace))
 }
 
-// ---------------------------------------------------------------------------
-// L16（2026-11-02 三期）：iroh 互信 allowlist 管理面（roaming.trust.*）
-// ---------------------------------------------------------------------------
+// （三期）：iroh 互信 allowlist 管理面（roaming.trust.*）
 
-/// L16 管理面三操作（TrustOp → TrustBook 方法 + 响应键）。
+/// 管理面三操作（TrustOp → TrustBook 方法 + 响应键）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrustOp {
     Add,
@@ -564,7 +560,7 @@ fn roaming_trust_payload(workspace: &Path) -> Result<serde_json::Value, String> 
     }
 }
 
-/// L16 管理面共享变更臂：hex 校验归一（64 hex + on-curve loud 拒——管理面
+/// 管理面共享变更臂：hex 校验归一（64 hex + on-curve loud 拒——管理面
 /// 入簿条目影响插件 accept 闸，垃圾条目 = 无声死区）→ load-or-new → op →
 /// 原子落盘（TrustBook::save）→ 返回变更后快照。首次写入即建文件 = regime
 /// 激活唯一路径（与 CLI trust-add/revoke 同源宿主 TrustBook 直操作，零插件
@@ -606,9 +602,7 @@ fn roaming_trust_mutate_impl(
     Ok(Some(serde_json::Value::Object(out)))
 }
 
-// ---------------------------------------------------------------------------
-// L13-a（2026-11-03 三期）：mandate 公钥钉存管理面（roaming.mandate.*）
-// ---------------------------------------------------------------------------
+// a（三期）：mandate 公钥钉存管理面（roaming.mandate.*）
 
 /// mandate 公钥簿快照载荷（enabled + mandate_keys/mandate_revoked 全量 +
 /// 每节点验签态）。
@@ -722,7 +716,7 @@ enum MandateOp {
 
 /// peers.toml [node] 段 RMW 事务唯一入口——写串行锁在函数内取得，罩
 /// 「load（缺失从默认节点起）→ 闭包改 → 写回」全程；闭包返回 Err 不落盘
-///（abort 语义）。调用方结构上不可能忘锁（2026-10-13 闭包事务收口）。
+///（abort 语义）。调用方结构上不可能忘锁（闭包事务收口）。
 /// 纪律：闭包内不得再调任何 update_* / [`nemesis_config::config_write_lock`]
 ///（Mutex 非重入，嵌套即死锁）。
 /// pub(crate)：persona.rs 的 shop.hire（集群聘用）复用同一事务入口。
@@ -750,9 +744,7 @@ pub(crate) fn update_peers_node<T>(
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
 // Runtime data commands
-// ---------------------------------------------------------------------------
 
 impl ClusterHandler {
     fn runtime_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
@@ -842,7 +834,7 @@ impl ClusterHandler {
             let health_score =
                 ((online_rate * 40.0 + success_rate * 40.0 + activity * 20.0) as i32).clamp(0, 100);
 
-            // Phase 3: Fill recent_events from log reader
+            // Fill recent_events from log reader
             let recent_events = match require_log_dir(ctx) {
                 Ok(log_dir) => {
                     let events = cluster_log_reader::read_recent_events(Path::new(&log_dir), 20);
@@ -851,7 +843,7 @@ impl ClusterHandler {
                 Err(_) => serde_json::json!([]),
             };
 
-            // L13-b（2026-11-03 三期）：mandate 签名授权状态（A 端签名器 +
+            // b（三期）：mandate 签名授权状态（A 端签名器 +
             // B 端 posture）。signer = null 表示未装配（密钥不可用或
             // sign_enabled=false——出站不签名，对端 verify 对缺失放行）。
             let mandate_state = {
@@ -881,10 +873,10 @@ impl ClusterHandler {
                 "success_rate": success_rate,
                 "avg_duration": avg_duration,
                 "recent_events": recent_events,
-                // L2（2026-09-27）：token 失配丢弃账本（异 token 来源互不发现是
+                // token 失配丢弃账本（异 token 来源互不发现是
                 // 预期安全行为，诊断按需查询；null = discovery 未启动）。
                 "discovery_drops": cluster.discovery_decrypt_drops(),
-                // L13-b：mandate 授权状态。
+                // b：mandate 授权状态。
                 "mandate": mandate_state,
             })));
         }
@@ -956,7 +948,7 @@ impl ClusterHandler {
         })))
     }
 
-    // -- Phase 2: runtime.start / runtime.stop --------------------------------
+    // runtime.start / runtime.stop --------------------------------
 
     fn runtime_start(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         // Persist enabled=true to config.cluster.json before starting runtime
@@ -986,20 +978,20 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({ "stopped": true })))
     }
 
-    // -- Node commands --------------------------------------------------------
+    // Node commands --------------------------------------------------------
 
     async fn nodes_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
         let nodes = cluster.list_nodes();
         let local_node_id = cluster.node_id();
 
-        // Phase 3: Get per-node stats from log reader
+        // Get per-node stats from log reader
         let node_stats_map = match require_log_dir(ctx) {
             Ok(log_dir) => cluster_log_reader::aggregate_node_stats(Path::new(&log_dir)),
             Err(_) => std::collections::HashMap::new(),
         };
 
-        // 漫游拨号路径观测批量预查（QUIC 插件化 M3：观测槽在插件，一次 FFI
+        // 漫游拨号路径观测批量预查（QUIC 插件化：观测槽在插件，一次 FFI
         // 往返取全量快照；逐节点经 roaming_hex_of 映射，非漫游节点 = null）。
         let dial_paths = cluster.roaming_dial_paths().await;
 
@@ -1009,7 +1001,7 @@ impl ClusterHandler {
                 let role = role_display(n.base.role);
                 let uptime = format_duration(n.get_uptime());
 
-                // Phase 3: Fill taskCount and successRate from log reader
+                // Fill taskCount and successRate from log reader
                 let stats = node_stats_map.get(&n.base.id);
                 let task_count = stats.map(|s| s.task_count);
                 let success_rate = stats.map(|s| s.success_rate);
@@ -1055,11 +1047,11 @@ impl ClusterHandler {
             .get_node_info(node_id)
             .ok_or_else(|| format!("node not found: {}", node_id))?;
 
-        // 帧级连通性探针（G2 同款 `Custom("ping")`）：走集群传输层，对
+        // 帧级连通性探针（同款 `Custom("ping")`）：走集群传输层，对
         // 漫游地址（iroh:<id>@<relay>）与普通 tcp: 地址同等有效。此前这里
         // 是裸 `TcpStream::connect(node.base.address)`——漫游节点把整个
         // iroh URI 当主机名喂 getaddrinfo，恒报 DNS 查找失败（QUIC UAT
-        // 2026-10-24 实录：Windows os error 11003 / Linux EAI_NONAME），
+        // Windows os error 11003 / Linux EAI_NONAME），
         // 且 user-initiated 失败还会把实际在线的对端打成 Offline。
         let start = std::time::Instant::now();
         if cluster.probe_peer(node_id).await {
@@ -1090,7 +1082,7 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({ "removed": ok })))
     }
 
-    /// Phase 2: Add a peer node by writing to peers.toml.
+    /// Add a peer node by writing to peers.toml.
     fn nodes_add(
         &self,
         data: &serde_json::Value,
@@ -1155,10 +1147,10 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({ "added": true })))
     }
 
-    /// cluster.pair（发现②/B5，2026-09-15）：地址配对——系统代写 peers.toml。
+    /// cluster.pair（发现②）：地址配对——系统代写 peers.toml。
     ///
     /// 与 CLI `nemesisbot cluster pair` 共用同一后端
-    /// [`nemesis_cluster::pair::pair_with_peer`]（四步：双形态探测 → 拉真实
+    /// [`nemesis_cluster::pair:pair_with_peer`]（四步：双形态探测 → 拉真实
     /// ID → 写盘（字面键）→ 写后回读断言）。成功后若集群运行中，顺手把
     /// 节点以 Online 注册进 registry（探测刚往返成功，在线状态是实测值），
     /// Dashboard 节点列表即时可见。
@@ -1230,7 +1222,7 @@ impl ClusterHandler {
         })))
     }
 
-    /// Phase 3: Actively fetch real node info from a peer via RPC `get_info`,
+    /// Actively fetch real node info from a peer via RPC `get_info`,
     /// then merge it into the registry and peers.toml. Used to upgrade a
     /// placeholder peer_id (e.g. user-supplied name or address) to the remote's
     /// real node ID.
@@ -1307,7 +1299,7 @@ impl ClusterHandler {
                     .collect()
             })
             .unwrap_or_default();
-        // BUG-20261101-266：远端自报端口先在 u64 域验域再 cast（firewall_add_rules
+        // 远端自报端口先在 u64 域验域再 cast（firewall_add_rules
         // 同款习语）——裸 `as u16` 会把 65537 回绕成 1、70000 回绕成 4464，恰好
         // 穿过下方 `rpc_port > 0` 闸，错端口随 merge 落盘 peers.toml。非法值
         // 归 0 = 未上报哨兵，回落裸地址。
@@ -1326,7 +1318,7 @@ impl ClusterHandler {
                     .collect()
             })
             .unwrap_or_default();
-        // A1：自报 tags 进注册表（看板派发匹配器的标签数据源）。
+        // 自报 tags 进注册表（看板派发匹配器的标签数据源）。
         let tags: Vec<String> = resp["tags"]
             .as_array()
             .map(|arr| {
@@ -1336,7 +1328,7 @@ impl ClusterHandler {
             })
             .unwrap_or_default();
         let node_type = resp["node_type"].as_str().unwrap_or("").to_string();
-        // 职能框架 M2：自报 professions/tier 进注册表（旧节点 get_info 无
+        // 职能框架：自报 professions/tier 进注册表（旧节点 get_info 无
         // 这两个键 → 空列表/None = 未宣告，与 announce 缺字段同语义）。
         let professions: Vec<String> = resp["professions"]
             .as_array()
@@ -1347,7 +1339,7 @@ impl ClusterHandler {
             })
             .unwrap_or_default();
         let tier = resp["tier"].as_str().map(String::from);
-        // P2：自报 agent 清单（旧节点 get_info 无此键 → 空 = 未宣告）。
+        // 自报 agent 清单（旧节点 get_info 无此键 → 空 = 未宣告）。
         let agents: Vec<nemesis_cluster::types::AgentAnnouncement> = resp["agents"]
             .as_array()
             .map(|arr| {
@@ -1356,7 +1348,7 @@ impl ClusterHandler {
                     .collect()
             })
             .unwrap_or_default();
-        // P5 第 4 步 ③：自报运行时后端形态（旧节点 get_info 无此键 →
+        // 自报运行时后端形态（旧节点 get_info 无此键 →
         // None = 未宣告）。
         let runtime_backend = resp["runtime_backend"].as_str().map(String::from);
 
@@ -1374,7 +1366,7 @@ impl ClusterHandler {
             address: primary_address,
             // get_info 实测 RPC 端口，随 merge 落盘 peers.toml（显式字段）。
             rpc_port,
-            // 发现①/A3：nodes_refresh 重建 RealNodeInfo 同样保全全量地址，
+            // 发现①/：nodes_refresh 重建 RealNodeInfo 同样保全全量地址，
             // 否则 RPC merge 后 get_peer_info 又回落单地址、select_best_address
             // 被短路——多网卡选址链在 refresh 路径再次断裂。
             addresses,
@@ -1411,7 +1403,7 @@ impl ClusterHandler {
         })))
     }
 
-    /// Phase 2: Get node detail enriched with log stats.
+    /// Get node detail enriched with log stats.
     fn nodes_detail(
         &self,
         node_id: &str,
@@ -1494,7 +1486,7 @@ impl ClusterHandler {
             cluster.set_tags(tag_list.clone());
             updated["tags"] = serde_json::json!(tag_list);
         }
-        // 职能框架 M6：professions（slug 数组，规范化 + loud 校验——写进去
+        // 职能框架：professions（slug 数组，规范化 + loud 校验——写进去
         // = 派发匹配数据源，非法 slug 永不命中）+ tier（mini/normal/big，
         // null = 清除回落 auto 推断）。运行时热改写（下一 announce 拍生效）
         // + peers.toml [node] 段持久化（重启保真）。
@@ -1531,7 +1523,7 @@ impl ClusterHandler {
             updated["tier"] = serde_json::json!(parsed);
             tier_parsed = Some(parsed);
         }
-        // P6-R1：runtime_backend 宣告编辑（process|vm；null/空 = 清除未宣告
+        // runtime_backend 宣告编辑（process|vm；null/空 = 清除未宣告
         // 状态）。与 tier 同款：运行时热改写（下一 announce 拍生效）+
         // peers.toml [node] 段持久化。值域单一真相源与 matcher 硬条件 6
         // 对齐（非空需求要求节点精确宣告同值，未宣告 fail-closed 排除）。
@@ -1555,7 +1547,7 @@ impl ClusterHandler {
         // Persist to peers.toml [node] section
         if let Ok(workspace) = require_workspace(ctx) {
             // 锁在 update_peers_node 内：读→改 [node] 段→写回与 persona_apply
-            // 落盘（persist_peers_identity 同一事务入口）互斥（2026-10-13 收口）。
+            // 落盘（persist_peers_identity 同一事务入口）互斥（收口）。
             update_peers_node(workspace, |node| {
                 if let Some(name) = data.get("name").and_then(|v| v.as_str()) {
                     node.name = name.trim().to_string();
@@ -1600,7 +1592,7 @@ impl ClusterHandler {
         Ok(Some(updated))
     }
 
-    // -- Task commands --------------------------------------------------------
+    // Task commands --------------------------------------------------------
 
     fn tasks_list(
         &self,
@@ -1649,7 +1641,7 @@ impl ClusterHandler {
             }
         }
 
-        // Phase 3: Batch-enrich all tasks with log reader data
+        // Batch-enrich all tasks with log reader data
         let task_summaries = match require_log_dir(ctx) {
             Ok(log_dir) => {
                 let all_task_ids: Vec<String> = filtered.iter().map(|t| t.id.clone()).collect();
@@ -1687,7 +1679,7 @@ impl ClusterHandler {
                     t.payload.to_string()
                 };
 
-                // Phase 3: Fill rounds, toolCalls, toolChain from log reader
+                // Fill rounds, toolCalls, toolChain from log reader
                 let summary = task_summaries.get(&t.id);
                 let rounds = summary.map(|s| s.rounds);
                 let tool_calls = summary.map(|s| s.tool_calls);
@@ -1712,7 +1704,7 @@ impl ClusterHandler {
             })
             .collect();
 
-        // Phase 2: Apply pagination
+        // Apply pagination
         let offset_val = offset.unwrap_or(0);
         let limit_val = limit.unwrap_or(result.len());
         let paginated: Vec<&serde_json::Value> =
@@ -1742,7 +1734,7 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({ "cancelled": ok })))
     }
 
-    /// Phase 2: Get task detail enriched with execution summary.
+    /// Get task detail enriched with execution summary.
     fn tasks_detail(
         &self,
         task_id: &str,
@@ -1789,14 +1781,14 @@ impl ClusterHandler {
         })))
     }
 
-    /// Phase 2: Submit a new task or peer_chat.
+    /// Submit a new task or peer_chat.
     async fn tasks_submit(
         &self,
         data: &serde_json::Value,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // EST-04（2026-09-16 横扫加固）：estop 生效中诚实拒绝新任务提交
-        // ——Dashboard 任务面板不是急停旁路。
+        // EST-04（横扫加固）：estop 生效中诚实拒绝新任务提交
+        // Dashboard 任务面板不是急停旁路。
         if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
             return Err(
                 "⛔ 急停（estop）生效中，任务提交已冻结：`estop --release` 释放后恢复".to_string(),
@@ -1873,7 +1865,7 @@ impl ClusterHandler {
                     .await
                 {
                     Ok(resp) => {
-                        // BUG-1（2026-10-17）：B 端拒单（工作队列满）=
+                        // BUG-1：B 端拒单（工作队列满）=
                         // 任务从未开始——A 端任务立即置失败，任务列表
                         // 即时可见，不等 stale 安全网（24h+）。
                         if nemesis_cluster::rpc::peer_chat_handler::peer_chat_ack_rejected(
@@ -1883,7 +1875,7 @@ impl ClusterHandler {
                                 task_id = %task_id_for_ack,
                                 "[Cluster] peer_chat rejected by worker (work queue full)"
                             );
-                            // L13-b：ACK error 字段（mandate 拒绝原因等）优先透传。
+                            // b：ACK error 字段（mandate 拒绝原因等）优先透传。
                             let reason = resp
                                 .result
                                 .as_ref()
@@ -1919,7 +1911,7 @@ impl ClusterHandler {
         })))
     }
 
-    // -- Topology -------------------------------------------------------------
+    // Topology -------------------------------------------------------------
 
     fn topology(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let cluster = require_cluster(ctx)?;
@@ -1938,7 +1930,7 @@ impl ClusterHandler {
             })
             .collect();
 
-        // Phase 3: Replace full-mesh with real RPC connections from log reader
+        // Replace full-mesh with real RPC connections from log reader
         let connections: Vec<serde_json::Value> = match require_log_dir(ctx) {
             Ok(log_dir) => {
                 let rpc_conns = cluster_log_reader::read_rpc_connections(Path::new(&log_dir));
@@ -1975,7 +1967,7 @@ impl ClusterHandler {
             }
         };
 
-        // Phase 3: Fill traces from log reader
+        // Fill traces from log reader
         let traces = match require_log_dir(ctx) {
             Ok(log_dir) => {
                 let t = cluster_log_reader::reconstruct_traces(Path::new(&log_dir));
@@ -1991,14 +1983,14 @@ impl ClusterHandler {
         })))
     }
 
-    /// Phase 2: Get RPC traces.
+    /// Get RPC traces.
     fn traces(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let log_dir = require_log_dir(ctx)?;
         let traces = cluster_log_reader::reconstruct_traces(Path::new(&log_dir));
         Ok(Some(serde_json::json!({ "traces": traces })))
     }
 
-    /// Phase 2: Get recent events for the ActivityFeed.
+    /// Get recent events for the ActivityFeed.
     fn events_recent(
         &self,
         data: Option<&serde_json::Value>,
@@ -2056,7 +2048,7 @@ impl ClusterHandler {
             }
         }
 
-        // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
+        // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
         // 哈希序），快照列表直回前端 → 顺序跨平台不稳定。按名称显式排序钉死。
         snapshots.sort_by(|a, b| {
             a["name"]
@@ -2085,9 +2077,7 @@ impl ClusterHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Config file operations (no Cluster needed)
-// ---------------------------------------------------------------------------
 
 impl ClusterHandler {
     fn legacy_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
@@ -2099,7 +2089,7 @@ impl ClusterHandler {
         let workspace = require_workspace(ctx)?;
         let path = cluster_config_path(workspace);
         // token（UDP 发现层凭据）不回显明文——读入即脱敏（凭据回显脱敏批次，
-        // 2026-09-25；vault 方案 0.4.7 遗留），计算字段随后叠加不受影响。
+        // vault 方案 0.4.7 遗留），计算字段随后叠加不受影响。
         let masked: serde_json::Value = if path.exists() {
             let content = nemesis_utils::fsutil::read_config_string(&path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
@@ -2180,7 +2170,7 @@ impl ClusterHandler {
         // 端口校验：真流量形状 = 顶层扁平 `port`/`rpc_port`（ClusterSettings
         // saveConfig 同款，AppConfig 同名 u16 字段解析）。此前这里校验的
         // 是嵌套 `{"cluster":{"discovery_port"}}`——无任何生产调用方发送
-        // 该形状，校验对真流量恒不生效（BUG-20261031-251）：非法端口带
+        // 该形状，校验对真流量恒不生效：非法端口带
         // 成功 toast 落盘 → AppConfig 解析失败 → lenient 回落 default
         // （enabled=false）→ 集群整体静默禁用。present-but-invalid（负数/
         // 非整数/0/超 u16）loud 拒绝；缺席跳过（部分保存兼容）。
@@ -2209,7 +2199,7 @@ impl ClusterHandler {
         // get 响应是脱敏形态：UI 回存时掩码值还原为存量原值（无原值 loud
         // 拒绝），绝不把掩码当真值写进 config.cluster.json。
         // 锁在 update_json_file 内：掩码还原要读存量文件（读→合并→整写 =
-        // RMW），与 update_cluster_config_enabled 等写臂互斥（2026-10-13 收口）。
+        // RMW），与 update_cluster_config_enabled 等写臂互斥（收口）。
         let mut data = data.clone();
         super::config::update_json_file(&path, |existing| {
             crate::handlers::restore_masked_named_fields(&mut data, existing)?;
@@ -2238,7 +2228,7 @@ impl ClusterHandler {
             return Err("config.json not found".to_string());
         }
         // 锁在 update_raw_config 内：读→改 cluster.enabled→原子写回 = RMW
-        //（2026-10-13 收口；落盘后 store.reload 对账由写半边承担）。
+        //（收口；落盘后 store.reload 对账由写半边承担）。
         super::config::update_raw_config(home, |main_cfg| {
             // Ensure cluster object exists
             if main_cfg.get("cluster").is_none() {
@@ -2259,7 +2249,7 @@ impl ClusterHandler {
     /// Update the `enabled` field in config.cluster.json.
     fn update_cluster_config_enabled(workspace: &str, enabled: bool) -> Result<(), String> {
         // 咽喉点取锁：enable/disable 两臂都以 best-effort 调本函数，均未持锁，
-        // 在此罩住「读→插 enabled→写回」整段（同类横扫 2026-10-13）。
+        // 在此罩住「读→插 enabled→写回」整段（同类横扫）。
         let _cfg_serial = nemesis_config::config_write_lock();
         let path = cluster_config_path(workspace);
         let mut cfg: serde_json::Value = if path.exists() {
@@ -2283,23 +2273,21 @@ impl ClusterHandler {
         }
         let json = serde_json::to_string_pretty(&cfg)
             .map_err(|e| format!("failed to serialize: {}", e))?;
-        // REL-002：统一原子写入（config.cluster.json 含 token）。
+        // 统一原子写入（config.cluster.json 含 token）。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write cluster config: {}", e))?;
         Ok(())
     }
 
-    // ------------------------------------------------------------------
-    // iroh 跨网漫游开关面（M4 起恒编译：cluster-roaming feature 已删）
-    // ------------------------------------------------------------------
+    // iroh 跨网漫游开关面（起恒编译：cluster-roaming feature 已删）
 
     /// cluster.roaming.status：config 闸 + key 在场 + 身份 + 信任簿 + 运行态
     /// + rendezvous 名册同步状态（Null = 循环未挂）。
     ///
-    /// 管理面恒编译（M4 起 feature 已删）——available 恒 true；插件缺席
+    /// 管理面恒编译（起 feature 已删）——available 恒 true；插件缺席
     /// 表现为 node_id:null + identity_note（前端按未装配渲染诚实注记）。
-    /// QUIC 插件化 M2：身份派生走桥（插件内）——异步化。
-    /// Phase 2 观测性：rendezvous 段 = 宿主成功快照 × 插件运行态 merge
+    /// QUIC 插件化：身份派生走桥（插件内）——异步化。
+    /// 观测性：rendezvous 段 = 宿主成功快照 × 插件运行态 merge
     /// （[`plugin_bridge::effective_rendezvous_state`]）——失败态（连败
     /// streak/last_error/失败时刻）从插件出（此前只进日志，前端失败徽标
     /// 是死分支）；桥缺席/失败/旧插件无段 = 宿主快照原样（旧行为）。
@@ -2331,7 +2319,7 @@ impl ClusterHandler {
             rendezvous,
         )
         .await?;
-        // 闸链快照注入（QUIC 插件化 M4：恒编译——插件缺席时 inject 本身
+        // 闸链快照注入（QUIC 插件化：恒编译——插件缺席时 inject 本身
         // 诚实降级，取代旧 cluster-roaming cfg 裁剪形态）。
         inject_cluster_gate(&mut payload, ctx, &workspace);
         Ok(payload)
@@ -2339,7 +2327,7 @@ impl ClusterHandler {
 
     /// cluster.roaming.enable / roaming.disable：写 config `roaming.enabled`，
     /// enable 时缺 key 顺手生成（备料语义与 setup_roaming 同源）。重启网关生效。
-    /// QUIC 插件化 M2：身份面走桥——异步化。
+    /// QUIC 插件化：身份面走桥——异步化。
     async fn roaming_set_enabled(
         &self,
         ctx: &RequestContext,
@@ -2363,9 +2351,7 @@ impl ClusterHandler {
         self.roaming_set_enabled(ctx, false).await
     }
 
-    // ------------------------------------------------------------------
-    // L16（2026-11-02 三期）：iroh 互信 allowlist 管理面（roaming.trust.*）
-    // ------------------------------------------------------------------
+    // （三期）：iroh 互信 allowlist 管理面（roaming.trust.*）
 
     /// `roaming.trust.list`：信任簿快照（regime 状态 + 全量 hex）。
     async fn roaming_trust_list(
@@ -2391,9 +2377,7 @@ impl ClusterHandler {
         roaming_trust_mutate_impl(&workspace, node_id, op)
     }
 
-    // ------------------------------------------------------------------
-    // L13-a（2026-11-03 三期）：mandate 公钥钉存管理面（roaming.mandate.*）
-    // ------------------------------------------------------------------
+    // a（三期）：mandate 公钥钉存管理面（roaming.mandate.*）
 
     /// `roaming.mandate.list`：mandate 公钥簿快照。
     async fn roaming_mandate_list(
@@ -2449,10 +2433,8 @@ impl ClusterHandler {
         roaming_mandate_mutate_impl(&workspace, node_id, None, MandateOp::Unrevoke)
     }
 
-    // ------------------------------------------------------------------
-    // QUIC 自建中继管理面已迁 handlers/quic.rs（2026-10-23 与集群解耦：
+    // QUIC 自建中继管理面已迁 handlers/quic.rs（与集群解耦：
     // quic.relay.* / quic.registry.members；零 Cluster 类型依赖）
-    // ------------------------------------------------------------------
 
     fn peers(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
@@ -2512,14 +2494,14 @@ impl ClusterHandler {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        // REL-002：统一原子写入（节点身份关键文件）
+        // 统一原子写入（节点身份关键文件）
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write {}: {e}", file))?;
         tracing::info!(file = %file, "[Cluster] Persona file saved");
         Ok(Some(serde_json::json!({"saved": true, "file": file})))
     }
 
-    // -- Persona generation (JD / resume -> cluster node persona) -----------
+    // Persona generation (JD / resume -> cluster node persona) -----------
 
     /// Generate a persona package from pasted JD/resume text via the LLM.
     /// Side-effect free; returns the package for dashboard preview/edit.
@@ -2583,6 +2565,17 @@ impl ClusterHandler {
         Self::write_cluster_file(workspace, "SOUL.md", &pkg.soul_md)?;
         if !pkg.expertise_md.trim().is_empty() {
             Self::write_cluster_file(workspace, "EXPERTISE.md", &pkg.expertise_md)?;
+        } else {
+            // BUG-20261106-031：生成人格 apply 是三件套整体替换语义——本次无
+            // 知识库时清掉上一份人格的 EXPERTISE 残留，否则 B 端装配链路
+            // （agent_factory D4「有则注入」无条件）会把旧知识库混进新身份的
+            // prompt（前端无 EXPERTISE 编辑/删除入口，残留无从发现）。hire
+            // 链路的「EXPERTISE 保守不动（决策 2）」是商店聘用语义（商店人格
+            // 无 EXPERTISE 概念），与本入口不同族。
+            let stale = crate::handlers::resolve_path(workspace, "cluster/EXPERTISE.md")?;
+            if stale.exists() {
+                nemesis_utils::fsutil::remove_file_resilient(&stale);
+            }
         }
 
         // 2) Update node identity — runtime (immediate) + peers.toml [node] (persist).
@@ -2648,7 +2641,7 @@ impl ClusterHandler {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        // REL-002：统一原子写入（节点身份关键文件）
+        // 统一原子写入（节点身份关键文件）
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("写入 cluster/{file} 失败: {e}"))?;
         Ok(())
@@ -2670,9 +2663,7 @@ impl ClusterHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Formatting helpers
-// ---------------------------------------------------------------------------
 
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -2722,9 +2713,7 @@ fn format_ago(d: std::time::Duration) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Firewall diagnostics
-// ---------------------------------------------------------------------------
 
 impl ClusterHandler {
     /// Check network readiness for cluster discovery and RPC.
@@ -2790,7 +2779,7 @@ impl ClusterHandler {
         let (default_udp, default_tcp) = Self::read_cluster_ports(ctx);
         // 端口校验在 u64 域先做再 cast（config_save 同款习语）：先 `as u16`
         // 会把 65537 回绕成 1、70000 回绕成 4464，恰好绕过 `== 0` 闸——
-        // 文案承诺 1-65535 但实现只拦 wrap-to-zero（BUG-20261031-256）。
+        // 文案承诺 1-65535 但实现只拦 wrap-to-zero。
         // 在场但非 u64（负数/小数/字符串）= 拒绝而非静默回落默认端口。
         let parse_port = |key: &str, default: u16| -> Result<u64, String> {
             match data.get(key) {
@@ -2843,9 +2832,7 @@ impl ClusterHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Individual test functions
-// ---------------------------------------------------------------------------
 
 fn test_udp_bind(port: u16) -> serde_json::Value {
     match std::net::UdpSocket::bind(format!("0.0.0.0:{}", port)) {
@@ -2995,11 +2982,9 @@ fn test_tcp_bind(port: u16) -> serde_json::Value {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Platform-specific firewall check
-// ---------------------------------------------------------------------------
 
-/// 黑窗根修（2026-10-19）：netsh 是 console 程序，gateway（release windows
+/// 黑窗根修：netsh 是 console 程序，gateway（release windows
 /// 子系统，无 console）下默认 flags 每次防火墙探测/加规则闪黑窗。本文件
 /// 全部 netsh spawn 走此构造器，单点收口。
 #[cfg(target_os = "windows")]
@@ -3197,9 +3182,7 @@ fn check_platform_firewall(_udp_port: u16, _tcp_port: u16) -> serde_json::Value 
     })
 }
 
-// ---------------------------------------------------------------------------
 // Platform-specific firewall rule addition
-// ---------------------------------------------------------------------------
 
 /// Windows: UAC elevation via ShellExecuteW with "runas" verb.
 /// Fire-and-forget — returns immediately after triggering the UAC prompt.
@@ -3486,7 +3469,7 @@ fn add_platform_firewall_rules(
 #[cfg(test)]
 mod tests;
 
-// AGT 覆盖率批次（2026-09-24）：接口面 / persist_peers_identity 全新臂 /
+// AGT 覆盖率批次：接口面 / persist_peers_identity 全新臂 /
 // estop 冻结门 / firewall 结构与端口校验 / config.save 目录占位失败 /
 // tasks.list 空聚合与 duration Null / tasks.detail 终态标签 / pair 拒连快败。
 #[cfg(test)]

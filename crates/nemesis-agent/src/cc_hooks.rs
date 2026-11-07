@@ -1,23 +1,23 @@
-//! hooks.json 方言层（K2 — U14 第七批）。
+//! hooks.json 方言层（—）。
 //!
-//! 把 `hooks.json` 方言格式桥到 K1a/K1b/K2 的钩子体系上：解析方言配置 →
+//! 把 `hooks.json` 方言格式桥到 // 的钩子体系上：解析方言配置 →
 //! 按事件生成子进程脚本调用（stdin JSON / env / 退出码拦放行）→ 把退出码
 //! 翻译回 [`crate::hooks`] 的决策类型。
 //!
-//! # 事件映射（goal 第七批 K2 表）
+//! # 事件映射（goal 表）
 //!
 //! | 事件 | 我们的钩点 | 方言语义 |
 //! |---|---|---|
 //! | `SessionStart` | [`LifecycleHook::on_user_prompt`]（桥内部：该 session 首条 prompt 时先跑） | 观察型（exit 2 不拦——SessionStart 无阻断语义） |
 //! | `UserPromptSubmit` | [`LifecycleHook::on_user_prompt`]（在消息进 history 之前） | exit 2 → 拦下 prompt（模型永远看不到）；exit 0 → 观察（stdout 只记日志，**不**注入上下文——诚实边界，见下） |
-//! | `PreToolUse` | [`ToolHook::pre_tool_use`]（K1a，security 固定闸之后） | exit 2 / JSON `{"decision":"block"}` → Block（stderr 作 reason 回灌模型） |
-//! | `PostToolUse` | [`ToolHook::post_tool_use`]（K1a，Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（反馈给模型；不撤销已执行的操作） |
+//! | `PreToolUse` | [`ToolHook::pre_tool_use`]（security 固定闸之后） | exit 2 / JSON `{"decision":"block"}` → Block（stderr 作 reason 回灌模型） |
+//! | `PostToolUse` | [`ToolHook::post_tool_use`]（Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（反馈给模型；不撤销已执行的操作） |
 //! | `Stop` | [`LifecycleHook::on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`MAX_TURN_END_CONTINUES` 封顶 fail-open）；`stop_hook_active` 标志随第二次起置 true |
 //! | `SubagentStart` | [`CcHookBridge::dispatch_subagent_start`]（spawn 闭包内、`run_detached` 前——**仅本地 spawn 的子代理**；内部 LLM 委托如评审/冲突解决不发） | exit 2 / JSON block → **拒绝 spawn**（SpawnFn 返 Err，子代理不启动） |
 //! | `SubagentStop` | [`CcHookBridge::dispatch_subagent_stop`]（spawn 闭包内、detached 轮次返回/后台任务完成处） | 观察型（任务已跑完，exit 2 无阻断语义——响亮 warn 记录） |
 //! | `Notification` | [`CcHookBridge::dispatch_notification`]（审批/提问边界 fire-and-forget）+ [`ObservingQuestionAsker`]（loop 提问端装饰）+ `ObservingApprovalManager`（security 审批 manager 装饰） | **纯观察型**（exit 2 无任何阻断语义——通知已发出，outcome 由真实装配端决定）；覆盖面诚实边界见两包装器文档 |
 //!
-//! LLM 调用级（K1b）无对应方言事件——hooks.json 没有 per-LLM-call hook，不造。
+//! LLM 调用级无对应方言事件——hooks.json 没有 per-LLM-call hook，不造。
 //!
 //! # 脚本执行协议
 //!
@@ -38,7 +38,7 @@
 //! `Read`/`Grep`）。我们一侧：matcher 对 **方言别名或原始名** 任一命中即触发；
 //! stdin 的 `tool_name` 优先发方言别名；`tool_input` 在原 args 之上补
 //! `file_path`/`content`/`command` 等方言字段名别名（真 lint-on-edit 脚本
-//! 读 `jq .tool_input.file_path`，没这层别名永远拿不到值）。映射表见
+//! 读 `jq.tool_input.file_path`，没这层别名永远拿不到值）。映射表见
 //! [`cc_tool_alias`]。
 //!
 //! # 诚实边界（没做的）
@@ -160,7 +160,7 @@ pub struct CcEvents {
     pre_tool_use: Vec<CcHookGroup>,
     #[serde(default)]
     post_tool_use: Vec<CcHookGroup>,
-    /// 工具执行失败后（2026-08-29 三段化扩展）。观察型：stderr 只记日志。
+    /// 工具执行失败后（三段化扩展）。观察型：stderr 只记日志。
     #[serde(default)]
     post_tool_use_failure: Vec<CcHookGroup>,
     #[serde(default)]
@@ -172,20 +172,20 @@ pub struct CcEvents {
     /// 会话结束（TTL 过期清理 / 显式删除）。观察型（会话已结束，无阻断）。
     #[serde(default)]
     session_end: Vec<CcHookGroup>,
-    /// 压缩前后（2026-08-29 扩展）。观察型：exit 2 不阻止压缩（稳定性机制）。
+    /// 压缩前后（扩展）。观察型：exit 2 不阻止压缩（稳定性机制）。
     #[serde(default)]
     pre_compact: Vec<CcHookGroup>,
     #[serde(default)]
     post_compact: Vec<CcHookGroup>,
-    /// 子代理开始（2026-09-24 三合一收口件2）。exit 2 / JSON block = 拒绝
+    /// 子代理开始。exit 2 / JSON block = 拒绝
     /// spawn。仅挂本地 spawn 闭包（内部 LLM 委托不发，见模块头表）。
     #[serde(default)]
     subagent_start: Vec<CcHookGroup>,
-    /// 子代理结束（2026-09-24 三合一收口件2）。观察型：任务已跑完，exit 2
+    /// 子代理结束。观察型：任务已跑完，exit 2
     /// 无阻断语义。
     #[serde(default)]
     subagent_stop: Vec<CcHookGroup>,
-    /// 审批/提问观察通知（2026-09-24 三合一收口件3）。纯观察型：边界处
+    /// 审批/提问观察通知。纯观察型：边界处
     /// fire-and-forget，exit 2 无任何语义。层：loop 提问端（问题流）/
     /// auditor 审批 manager（security 三入口 + 管道 RequireApproval）。
     #[serde(default)]
@@ -202,7 +202,7 @@ impl CcEvents {
     }
 
     /// Per-event script counts（hooks.json 的 PascalCase 事件名）。诊断/用
-    /// UI 用（P4 Hooks Tab 的 summary）——字段私有，外部 crate 走这里。
+    /// UI 用（Hooks Tab 的 summary）——字段私有，外部 crate 走这里。
     /// 顺序：PreToolUse, PostToolUse, PostToolUseFailure, SessionStart,
     /// UserPromptSubmit, Stop, SessionEnd, PreCompact, PostCompact,
     /// SubagentStart, SubagentStop, Notification。
@@ -236,7 +236,7 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
     let mut events: CcEvents = serde_json::from_value(events_value.clone())
         .map_err(|e| format!("unsupported hooks.json format: {e}"))?;
     // 只认 type=="command"（方言唯一类型）；未知的跳过并统计。
-    // 必须覆盖全部 12 个事件组（BUG-20261102-314：漏组 = type 写错的条目
+    // 必须覆盖全部 12 个事件组（漏组 = type 写错的条目
     // 在该组照跑 command，「只认 command」契约失效）。
     let mut skipped = 0usize;
     for groups in [
@@ -271,7 +271,7 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
 // ---------------------------------------------------------------------------
 
 /// 我们的工具名 → 方言工具名。方言脚本 matcher / payload 里用的是右边。
-/// 覆盖方言生态高频工具（BUG-20261102-313：缺别名 = 方言 matcher 对该工具
+/// 覆盖方言生态高频工具（缺别名 = 方言 matcher 对该工具
 /// 静默不命中，PreToolUse 审计面漏触发）。
 pub fn cc_tool_alias(raw: &str) -> Option<&'static str> {
     Some(match raw {
@@ -288,7 +288,7 @@ pub fn cc_tool_alias(raw: &str) -> Option<&'static str> {
 }
 
 /// 在原始 args JSON 上补方言字段名别名（`file_path` 等），让
-/// `jq .tool_input.file_path` 型真脚本直接可用。原字段全保留。
+/// `jq.tool_input.file_path` 型真脚本直接可用。原字段全保留。
 fn enrich_tool_input(arguments: &str) -> Value {
     let mut input: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
     if !input.is_object() {
@@ -342,7 +342,7 @@ pub fn pre_tool_use_payload(call: &HookToolCall, cwd: &Path) -> String {
     )
 }
 
-/// SubagentStart/Stop 事件的发起方信息（2026-09-24 三合一收口件2）。由
+/// SubagentStart/Stop 事件的发起方信息。由
 /// spawn 闭包（`agent_factory.rs`）填写——桥侧只透传进 payload，不解释。
 #[derive(Debug, Clone)]
 pub struct SubagentInfo {
@@ -351,11 +351,11 @@ pub struct SubagentInfo {
     /// 子代理任务描述。payload 里**截断**到 [`SUBAGENT_TASK_TRUNCATE`] 字符
     /// （char 边界安全）——任务文本可能整段 prompt，stdin 不该无限膨胀。
     pub task: String,
-    /// 子代理嵌套深度（G2：父深度 + 1）。
+    /// 子代理嵌套深度（父深度 + 1）。
     pub depth: usize,
-    /// 是否后台路径（G4）。
+    /// 是否后台路径。
     pub background: bool,
-    /// 工具档位（G1：readonly/full/...）。
+    /// 工具档位（readonly/full/...）。
     pub tools_profile: String,
     /// 挂载的 loop 类别：`"main"` | `"project"`（集群不挂钩子，无第三态）。
     pub loop_kind: &'static str,
@@ -446,7 +446,7 @@ pub async fn run_hook_script(
         // raw_arg：命令串**原样**进命令行。默认的 argv 转义会把内嵌引号
         // 变成 `\"`（MSVCRT 规则），而 cmd 不认 `\"`——用户脚本里带引号的
         // 路径（`python "C:\my lint\check.py"`）会被打挂。raw_arg 让 cmd
-        // 按自己的原生语法解析，与真 shell 收到的一致。（实测教训：echo
+        // 按自己的原生语法解析，与真 shell 收到的一致。（实测echo
         // JSON 的退出码测试揭出此 bug。）
         #[cfg(windows)]
         c.raw_arg(command);
@@ -480,7 +480,7 @@ pub async fn run_hook_script(
             };
         }
     };
-    // stdin 写入放独立任务（BUG-20261102-312）：payload 大于 pipe buffer
+    // stdin 写入放独立任务：payload 大于 pipe buffer
     // （PostToolUse 的 tool_response 可达数 MB）且脚本不读 stdin 时，inline
     // write_all 会阻塞到脚本退出——timeout 只包下面的 wait，管不到这里，
     // 等于超时保护整段失效（agent loop 挂死面）。独立任务写：写完 drop 关
@@ -567,7 +567,7 @@ impl ScriptOutcome {
 /// hooks.json 方言 → 钩子体系桥。实现 [`ToolHook`]（PreToolUse/PostToolUse）与
 /// [`LifecycleHook`]（SessionStart/UserPromptSubmit/Stop）。
 ///
-/// **热更（2026-09-24，hooks 三合一收口件1）**：盘上加载的桥（经
+/// **热更（hooks）**：盘上加载的桥（经
 /// [`Self::load_from_dir`]）在每次分发入口惰性检查 hooks.json 的内容，
 /// 变化即重新解析并原子换装——保存即下条消息生效，无需重启 Agent。语义：
 /// 解析失败保留旧配置（fail-open 保旧，坏文件不炸会话）；文件清空/消失 =
@@ -582,11 +582,11 @@ pub struct CcHookBridge {
     /// 上次记账的盘上原始文本（read_config_string 同源剥 BOM；None = 缺失）。
     /// 与文件现状比较决定是否重载；**解析失败也记录**——同一版坏文件只 warn
     /// 一次，用户改好文件（内容再变）后自然重试。内容比对不赌 mtime
-    /// （BUG-20261104-359 同族收编：Windows 毫秒级粒度下同刻改写漏检 =
+    /// （同族收编：Windows 毫秒级粒度下同刻改写漏检 =
     /// 换装静默滞留旧版）。
     seen_raw: Mutex<Option<String>>,
     project_dir: PathBuf,
-    /// SessionStart 只跑一次的判重（session_key → 已见）。
+    /// SessionStart 只跑一次的判重（session_key → 已）。
     seen_sessions: Mutex<HashSet<String>>,
     /// 每 session 的 Stop 连续阻断计数（`stop_hook_active` 来源；正常
     /// Stop 时清除）。真正的轮次封顶在 loop 侧（MAX_TURN_END_CONTINUES）。
@@ -664,14 +664,14 @@ impl CcHookBridge {
     /// - 文件消失（NotFound）→ 视同用户清空：换装为空 = 事实注销，与
     ///   启动态「没有 hooks.json = 没配」同一语义。
     /// - 瞬时读失败（编辑器/杀软锁，非 NotFound）→ 保留现状不记账，下轮
-    ///   重试（与「消失」分立——读不到 ≠ 不存在；BUG-20261104-358 同款
+    ///   重试（与「消失」分立——读不到 ≠ 不存在； 同款
     ///   教训。旧实现 metadata 一并 Err 混同两态，此处顺手分立）。
     fn current_events(&self) -> CcEvents {
         let Some(path) = self.hooks_path.clone() else {
             return self.events.read().unwrap().clone();
         };
-        // 内容比对不赌钟（BUG-20261104-359 同族收编）：mtime 等值判定在
-        // Windows 毫秒级粒度（346d3dc2 同 tick 同 nanos CI 实录）下漏检
+        // 内容比对不赌钟（同族收编）：mtime 等值判定在
+        // Windows 毫秒级粒度（346d3dc2 同 tick 同 nanos CI）下漏检
         // 同刻改写——hooks.json 换装静默滞留旧版。
         let text = match nemesis_utils::fsutil::read_config_string(&path) {
             Ok(t) => Some(t),
@@ -751,7 +751,7 @@ impl CcHookBridge {
         out
     }
 
-    /// 当前 session 的 stop_hook_active（测试用 pub(crate) 可见）。
+    /// 当前 session 的 stop_hook_active（测试用 pub(crate) 可）。
     // 仅 cc_hooks/tests.rs 调用（断言二次 Stop 的 stop_hook_active 标志），
     // 非测试构建无调用方 → allow 消警（生产链路走 `end.stop_hook_active`
     // 直读结构体，见下方 dispatch 处，不经此访问器）。
@@ -766,7 +766,7 @@ impl CcHookBridge {
             > 0
     }
 
-    /// 方言 `SubagentStart`（2026-09-24 三合一收口件2）：spawn 闭包内、
+    /// 方言 `SubagentStart`：spawn 闭包内、
     /// `run_detached` 前调。exit 2 / JSON block → **Err（拒绝 spawn）**——
     /// 阻断文案即拒绝原因，由调用方作为 SpawnFn 的 Err 上抛。无子代理钩子
     /// 配置时零开销直通。
@@ -812,7 +812,7 @@ impl CcHookBridge {
         }
     }
 
-    /// 方言 `Notification`（2026-09-24 三合一收口件3）：审批/提问边界观察
+    /// 方言 `Notification`：审批/提问边界观察
     /// 事件。**纯观察型**——exit 2 / JSON block 一律只 debug 记录，无任何
     /// 阻断语义（通知发出时审批/提问还没开始，outcome 尚不存在）。空配置
     /// 零开销直通。同步入口见 [`spawn_notification`]。
@@ -959,7 +959,7 @@ impl ToolHook for CcHookBridge {
         }
     }
 
-    /// 方言 `PostToolUseFailure`（2026-08-29 三段化扩展）：工具执行失败后触发。
+    /// 方言 `PostToolUseFailure`（三段化扩展）：工具执行失败后触发。
     /// 观察型——stderr 只记日志（失败已发生，无撤销/改写语义）。
     async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
         let events = self.current_events();
@@ -1109,7 +1109,7 @@ impl CcHookBridge {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
 
@@ -1119,10 +1119,10 @@ mod s9_tests;
 mod cov_tests;
 
 // ---------------------------------------------------------------------------
-// 观察包装器（2026-09-24 三合一收口件3）：审批/提问边界 → Notification
+// 观察包装器：审批/提问边界 → Notification
 // ---------------------------------------------------------------------------
 
-/// loop 提问端观察装饰（件3 层1）：J5 doom-loop 审批卡与 F7 结构化提问都
+/// loop 提问端观察装饰（件3 层1）： doom-loop 审批卡与 结构化提问都
 /// 经 `AgentLoop::question_asker()` 槽（wiring.rs 的 setter 处包装）。ask
 /// 发起前发 `Notification`（kind=question, layer=loop），然后**无条件原样
 /// 委托**——装饰器改不了 outcome（红线靠类型不靠纪律）。
@@ -1172,9 +1172,9 @@ impl nemesis_types::agent::QuestionAsker for ObservingQuestionAsker {
 /// （通知先行于审批窗口，窗口本身就是秒级）。
 ///
 /// 覆盖面诚实边界（实施时逐点核对 auditor.rs）：auditor 的 manager 槽有
-/// **四个**调用点——guardian_failure 二审（:381）/ rate-limit 升级审批
-/// （:512）/ guardian verdict 二审（:630）/ 管道 RequireApproval 交互审批
-/// （:904）——包装槽即全覆盖。**不覆盖**：skill_manage 写审批与 memory 写
+/// **四个**调用点——guardian_failure 二审（381）/ rate-limit 升级审批
+/// （512）/ guardian verdict 二审（630）/ 管道 RequireApproval 交互审批
+/// （904）——包装槽即全覆盖。**不覆盖**：skill_manage 写审批与 memory 写
 /// 门（gateway 直接持有裸 manager Arc，不经 auditor 槽）。不宣称全覆盖。
 #[cfg(feature = "security")]
 pub struct ObservingApprovalManager {

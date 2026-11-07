@@ -1,6 +1,6 @@
-//! Tests for `crate::cc_hooks` (K2 — U14 seventh batch, hooks.json 方言层).
+//! Tests for `crate::cc_hooks` (— seventh batch, hooks.json 方言层).
 //!
-//! Acceptance mapping (goal §二 第七批 K2 / U14 原验收):
+//! Acceptance mapping (goal §二 / 原验收):
 //! - **现有方言 hook 脚本在我方会话真实触发** → 脚本级测试全部走**真子进程**
 //!   （Windows `cmd /C` / 其他 `sh -c`，与桥的执行协议完全一致）：
 //!   `pre_tool_use_exit_2_blocks_with_stderr`（lint-on-edit 形态：读
@@ -9,7 +9,7 @@
 //! - **退出码拦停语义正确** → 2=拦（stderr 作 reason）、0=放行、JSON
 //!   decision=block=拦、超时/其他=非阻断放行，逐条钉住。
 //! - 方言别名：matcher 对方言名（Edit/Bash/...）与原始名都命中；
-//!   stdin payload 带 `tool_input.file_path`（真 `jq .tool_input.file_path`
+//!   stdin payload 带 `tool_input.file_path`（真 `jq.tool_input.file_path`
 //!   脚本的依赖）。
 
 use std::sync::Arc;
@@ -576,7 +576,7 @@ fn first_done(events: &[crate::types::AgentEvent]) -> String {
         .unwrap_or_default()
 }
 
-/// 验收（U14 原文「现有 hook 脚本在我方会话真实触发」）：**真·方言形态**
+/// 验收（原文「现有 hook 脚本在我方会话真实触发」）：**真·方言形态**
 /// lint-on-edit 脚本——磁盘上的 python 脚本文件 + hooks.json 按路径引用 +
 /// 脚本自己读 stdin JSON、取 `tool_input.file_path`（依赖我们的别名增补）、
 /// 对受保护文件 exit 2 + stderr。放行文件 exit 0。与现有生态脚本同形，
@@ -768,7 +768,7 @@ impl LlmProvider for NoopProvider2 {
 }
 
 // ---------------------------------------------------------------------------
-// W3a: 分支补漏（enrich 边角 / payload 合并 / 纯函数回落 / load_from_dir /
+// 分支补漏（enrich 边角 / payload 合并 / 纯函数回落 / load_from_dir /
 // trait name / payload_json_event）
 // ---------------------------------------------------------------------------
 
@@ -968,7 +968,7 @@ fn stop_hook_active_for_accessor() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-08-29 三段化扩展事件：PostToolUseFailure / SessionEnd / PreCompact /
+// 三段化扩展事件：PostToolUseFailure / SessionEnd / PreCompact /
 // PostCompact —— 真子进程执行 + 观察型语义（exit 2/其他都不阻断）。
 // ---------------------------------------------------------------------------
 
@@ -1121,8 +1121,8 @@ fn migrate_is_noop_without_legacy_or_with_existing_target() {
 }
 
 // ---------------------------------------------------------------------------
-// 热更五态（2026-09-24 hooks 三合一收口件1）：盘上桥分发入口惰性内容检查
-// （BUG-20261104-359：mtime 等值判定收编为内容比对——测试不再 sleep 强推
+// 热更五态（hooks）：盘上桥分发入口惰性内容检查
+// （mtime 等值判定收编为内容比对——测试不再 sleep 强推
 // mtime 赌粒度，同刻改写由钉 mtime 回归测试确定性覆盖）
 // ---------------------------------------------------------------------------
 
@@ -1197,7 +1197,7 @@ async fn hot_reload_five_states() {
     let _ = std::fs::remove_dir_all(&proj);
 }
 
-/// BUG-20261104-359 回归钉：同刻改写（mtime 不变）必须换装。写 v1 装桥 →
+/// 回归钉：同刻改写（mtime 不变）必须换装。写 v1 装桥 →
 /// 写 v2 → 把 mtime 钉回 v1 的旧值（复现 Windows 毫秒级粒度同 tick 形态）
 /// → 分发入口必须读到 v2。旧 mtime 闸在此必漏检。
 #[tokio::test]
@@ -1316,7 +1316,7 @@ async fn hot_reload_preserves_companion_state() {
 }
 
 // ---------------------------------------------------------------------------
-// SubagentStart/Stop（2026-09-24 三合一收口件2）
+// SubagentStart/Stop
 // ---------------------------------------------------------------------------
 
 fn subagent_info() -> super::SubagentInfo {
@@ -1654,10 +1654,10 @@ async fn observing_approval_manager_notifies_then_delegates() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261102-312 / 313 / 314 回归锁（R404 cc_hooks 审计）
+// / 313 / 314 回归锁（cc_hooks 审计）
 // ---------------------------------------------------------------------------
 
-/// BUG-20261102-312：stdin 写入必须在超时保护内。旧实现在 timeout 包裹的
+/// stdin 写入必须在超时保护内。旧实现在 timeout 包裹的
 /// wait 之前 inline `write_all`——payload 超 pipe buffer（PostToolUse 的
 /// tool_response 可达数 MB）且脚本不读 stdin 不退出时，write_all 永久阻塞，
 /// timeout 永远不生效 → agent loop 挂死。回归形态：大 payload + 长跑脚本
@@ -1680,7 +1680,7 @@ async fn run_hook_script_stdin_write_is_under_timeout() {
     );
 }
 
-/// BUG-20261102-313：alias 表必须覆盖方言生态脚本引用的高频工具——
+/// alias 表必须覆盖方言生态脚本引用的高频工具——
 /// multiedit→MultiEdit / spawn→Task / web_fetch→WebFetch。缺别名时
 /// 方言 matcher（如 lint 拦截脚本的 "MultiEdit|Edit"）对这些工具静默
 /// 不命中 = PreToolUse 审计面静默失效。
@@ -1699,7 +1699,7 @@ fn alias_table_covers_dialect_write_subagent_web_tools() {
     assert!(mk("WebFetch").matches("web_fetch"));
 }
 
-/// BUG-20261102-314：非 command 类型过滤必须覆盖全部 12 个事件组——
+/// 非 command 类型过滤必须覆盖全部 12 个事件组——
 /// 旧实现只遍历 8 组，PostToolUseFailure/SessionEnd/PreCompact/PostCompact
 /// 里 type 写错的条目照跑 command（「只认 command 类型」契约漏 4 组）。
 #[test]

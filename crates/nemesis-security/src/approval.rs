@@ -271,7 +271,7 @@ impl ApprovalManager {
 
     /// Approve a pending request.
     ///
-    /// Returns `Ok(())` if the request existed and was pending.
+    /// Returns `Ok()` if the request existed and was pending.
     /// Returns `Err` with a description if not found or not pending.
     pub fn approve(&self, request_id: &str) -> Result<(), String> {
         let mut map = self.requests.write();

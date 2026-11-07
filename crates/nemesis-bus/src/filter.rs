@@ -17,7 +17,7 @@
 //! 2. 功能方实现 [`Filter`]，在装配期 `attach` 进链；
 //! 3. 挂载点在扇出前调用 `run(&msg)`，按决策继续/终止。
 //!
-//! 首个使用者：web 入站桥的 `history` 过滤器（BUG 2026-09-23 项目会话
+//! 首个使用者：web 入站桥的 `history` 过滤器（项目会话
 //! 历史加载修复）；`project-route`（ProjectLoopManager）是预留的未来
 //! 迁移位。
 
@@ -99,7 +99,7 @@ impl<T: Send + Sync + 'static> FilterChain<T> {
                     tracing::trace!(filter = f.name(), "[FilterChain] pass");
                 }
                 FilterDecision::Intercepted => {
-                    // BUG-20261102-321：可观测性契约分级兑现——Intercepted=
+                    // 可观测性契约分级兑现——Intercepted=
                     // info（过滤器有意消费的正常业务路径）；Rejected=warn
                     // （链终止拒绝、挂载点回错的异常路径）。实现此前自诞生
                     // 起两分支都 info，docstring 承诺的 warn 未兑现，

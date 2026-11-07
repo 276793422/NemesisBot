@@ -273,7 +273,7 @@ fn test_validate_messages_second_message_missing_content() {
 }
 
 // ============================================================
-// S4 coverage: field lines under a subscriber + the empty-array
+// coverage: field lines under a subscriber + the empty-array
 // validate arm.
 // ============================================================
 

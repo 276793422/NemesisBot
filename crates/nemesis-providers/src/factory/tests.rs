@@ -439,7 +439,7 @@ fn test_provider_selection_debug_format() {
     assert!(debug.contains("claude-3"));
 }
 
-// --- 回归锁（2026-09-11 生产实证）：裸模型名不再默认路由 Codex ---
+// --- 回归锁（生产实证）：裸模型名不再默认路由 Codex ---
 //
 // dashboard 曾把裸 model 字段直接当 llm_ref 传入 factory；factory 又把无前缀
 // 名默认成 provider=openai → CodexProvider（POST {base}/responses + 模型重映射
@@ -486,7 +486,7 @@ fn test_resolve_openai_prefixed_still_codex() {
     assert_eq!(sel.provider_type, ProviderType::Codex);
 }
 
-// --- LLM 协议选择器（2026-09-11）：显式 protocol 钉死 wire 协议，显式 > 推断 ---
+// --- LLM 协议选择器：显式 protocol 钉死 wire 协议，显式 > 推断 ---
 
 #[test]
 fn test_explicit_protocol_anthropic_overrides_openai_prefix() {
@@ -508,7 +508,7 @@ fn test_explicit_protocol_anthropic_overrides_openai_prefix() {
 
 #[test]
 fn test_explicit_protocol_openai_is_chat_completions_not_codex() {
-    // 拍板语义（2026-09-11）：显式 openai = chat/completions（业界通行），
+    // 既定语义：显式 openai = chat/completions（业界通行），
     // 与旧前缀 openai/→Codex 的分歧是刻意的。
     let cfg = FactoryConfig {
         proxy: String::new(),
@@ -569,7 +569,7 @@ fn test_explicit_protocol_unknown_errors_loud() {
     assert!(err.contains("anthropic | openai | responses"));
 }
 
-/// 集群专业职能框架 M4 守卫④：图像协议条目不能构造对话 Provider——
+/// 集群专业职能框架 守卫④：图像协议条目不能构造对话 Provider——
 /// chat 形状完全不符（无流式无工具调用），构造路径 loud 拒绝。
 #[test]
 fn test_explicit_protocol_images_openai_rejected_as_chat_model() {
@@ -611,7 +611,7 @@ fn test_explicit_protocol_case_insensitive() {
     assert_eq!(sel.provider_type, ProviderType::Anthropic);
 }
 
-// --- P3A 超时对齐（2026-09-12）：per-model timeout 透传链 ---
+// --- P3A 超时对齐：per-model timeout 透传链 ---
 
 #[test]
 fn test_timeout_passthrough_to_selection() {

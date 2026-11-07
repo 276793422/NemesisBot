@@ -1,4 +1,4 @@
-//! M1a（2026-09-05）：`pump_agent_events` 单元测试。
+//! （2026-09-05）：`pump_agent_events` 单元测试。
 //!
 //! 路由语义：`web:` 前缀 chat_id → 该 session 的 SendQueue 收到
 //! `{type:"push", cmd:"tool_event"}` 帧；所有事件（含非 web）都进 EventHub。
@@ -15,7 +15,7 @@ use nemesis_types::agent::AgentEvent;
 
 /// 挂一个测试 SendQueue 到 session（真实 WS sink 的测试替身）。返回 lo
 /// 通道接收端：带 session_key 的 tool_event 帧已落环（带 seq）→ 走可丢
-/// 通道（BUG 2026-09-22 慢客户端洪泛修复后的路由语义）。
+/// 通道（BUG 慢客户端洪泛修复后的路由语义）。
 fn attach_fake_queue(manager: &SessionManager, session_id: &str) -> mpsc::Receiver<Vec<u8>> {
     let (queue, _hi_rx, lo_rx, _done_tx) = SendQueue::test_channels(16);
     manager.set_send_queue(session_id, Arc::new(queue));
@@ -137,11 +137,9 @@ async fn closed_channel_exits_pump() {
     assert!(result.is_ok(), "pump should exit after channel close");
 }
 
-// -------------------------------------------------------------------------
-// BUG 2026-09-22（慢客户端洪泛）：可丢通道满队不得阻塞事件泵。旧实现
-// tool_event 走 broadcast().await（满队列背压）——单个不消费的客户端把
+// BUG （慢客户端洪泛）：可丢通道满队不得阻塞事件泵。旧实现
+// tool_event 走 broadcast.await（满队列背压）——单个不消费的客户端把
 // 泵卡死，全部会话的实时推送连坐停摆。修复后满即丢 + dropped 计数。
-// -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn pump_not_stalled_by_full_droppable_queue() {
@@ -192,11 +190,9 @@ async fn pump_not_stalled_by_full_droppable_queue() {
     );
 }
 
-// -------------------------------------------------------------------------
-// BUG-B（2026-09-20）：四个审批/提问事件的 SSE 载荷必须展平为内层 data
+// 四个审批/提问事件的 SSE 载荷必须展平为内层 data
 // （前端 useApprovals/useQuestions 直接读平铺字段，曾收到 adjacently
 // tagged 整体 `{kind,data}` 静默丢弃 → 弹窗「刷新才见」）。
-// -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn approval_requested_sse_payload_flattened() {
@@ -325,11 +321,9 @@ async fn question_asked_sse_payload_flattened() {
     pump.abort();
 }
 
-// -------------------------------------------------------------------------
-// BUG-A（2026-09-20）：tool_event push 帧内层注入 `session_id`（会话 id，
+// tool_event push 帧内层注入 `session_id`（会话 id，
 // session_key 末段）——前端按 currentId 精确过滤（chat_id 是连接级 id，
 // 恒不等曾致全部实时帧被丢弃）。
-// -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn tool_event_frame_injects_session_id_from_session_key() {
@@ -344,7 +338,7 @@ async fn tool_event_frame_injects_session_id_from_session_key() {
     let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
 
     // 生产形态：session_key = `agent:main:session:{前端会话id}`，chat_id =
-    // `web:{连接id}`（两域不同——正是 BUG-A 的错配源头）。
+    // `web:{连接id}`（两域不同——正是 的错配源头）。
     tx.send(AgentEvent::TodoUpdated {
         session_key: format!("agent:main:session:{}", session.id),
         chat_id: format!("web:{}", session.id),
@@ -418,10 +412,8 @@ async fn question_resolved_sse_payload_flattened() {
     pump.abort();
 }
 
-// -------------------------------------------------------------------------
-// P30（WS14）：CanvasOpen → SSE `canvas.open`（内层 data 展平 + session_id
+// CanvasOpen → SSE `canvas.open`（内层 data 展平 + session_id
 // 注入）；不走 tool_event 通道、不发 WS push（HTML 载荷大，面板状态在前端）。
-// -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn canvas_open_sse_payload_flattened_and_no_ws_push() {
@@ -478,11 +470,9 @@ async fn canvas_open_sse_payload_flattened_and_no_ws_push() {
     pump.abort();
 }
 
-// -------------------------------------------------------------------------
-// N5（2026-10-13 机会项）：DeliverablesRegistered → SSE `deliverables` +
+// DeliverablesRegistered → SSE `deliverables` +
 // WS push `deliverables`（必达通道——不入 chat_event_log 环，无 seq，
 // 历史恢复走 chat_log 权威源；tool_event 通道不得被污染）。
-// -------------------------------------------------------------------------
 
 #[tokio::test]
 async fn deliverables_event_sse_and_ws_push() {
@@ -557,7 +547,7 @@ async fn deliverables_event_sse_and_ws_push() {
     );
 
     // 专支短路：tool_event 通道不得收到该事件（hub drain 只见 deliverables
-    // ——无 kind 包装断言顺带钉死展平形状）。
+    // 无 kind 包装断言顺带钉死展平形状）。
     assert!(
         ev.data.get("kind").is_none(),
         "payload must be flattened: {}",
@@ -605,11 +595,9 @@ async fn deliverables_event_non_web_chat_id_sse_only() {
     pump.abort();
 }
 
-// ---------------------------------------------------------------------------
-// 子代理可见性（D3，2026-11-03）：chat_id = 注册表 id（`subagent:{uuid}`
+// 子代理可见性：chat_id = 注册表 id（`subagent:{uuid}`
 // 形态）的事件 → 查注册表取 parent_chat_id 投进父会话房间 + payload 补
 // subagent_id；注册表 miss 维持「只进 hub」旧行为（上一测试覆盖）。
-// ---------------------------------------------------------------------------
 
 fn unique_subagent_id(tag: &str) -> String {
     let nanos = std::time::SystemTime::now()

@@ -94,7 +94,7 @@ async fn explicit_id_serves_and_missing_is_404() {
     write_skin(tmp.path(), "alpha", Some("skin/x.css"), None);
     let a = app(Some(tmp.path().to_str().unwrap()), "alpha");
 
-    // 带 .css 后缀（段值整体 = "alpha.css"，handler 剥后缀）
+    // 带.css 后缀（段值整体 = "alpha.css"，handler 剥后缀）
     let ok = a
         .clone()
         .oneshot(
@@ -134,7 +134,7 @@ async fn explicit_id_serves_and_missing_is_404() {
 }
 
 #[tokio::test]
-async fn default_active_id_is_404() {
+async fn default_active_id_serves_empty_css() {
     let tmp = tempdir();
     write_skin(tmp.path(), "openlikebuddy", Some("skin/x.css"), None);
     let res = app(Some(tmp.path().to_str().unwrap()), "default")
@@ -146,7 +146,15 @@ async fn default_active_id_is_404() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), 404);
+    // 默认态（"default"/空）= 200 空 body：默认安装每次页面加载都拉本
+    // 端点，404 会在浏览器 console 记资源加载错误（纯噪音）；前端
+    // empty→回落内置的语义不变。坏部署（id 指向缺失包）仍 404。
+    assert_eq!(res.status(), 200);
+    assert!(res.headers().get("x-skin-id").is_none());
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(bytes.is_empty());
 }
 
 #[tokio::test]
@@ -200,7 +208,7 @@ async fn app_form_routes_are_gone() {
     }
 }
 
-// --- structure 载荷（v2 结构引擎数据面）---
+// structure 载荷（v2 结构引擎数据面）---
 
 #[tokio::test]
 async fn active_structure_serves_manifest_structure() {
@@ -337,9 +345,9 @@ fn manifest_structure_defaults_to_none() {
     assert!(m.script.is_none());
 }
 
-// --- 脚本载荷（P2a 数据面；裁决序 ① 404 无脚本 → ② 403 闸关 → ③ 200）---
+// 脚本载荷（数据面；裁决序 ① 404 无脚本 → ② 403 闸关 → ③ 200）---
 
-/// 内存构建 script 形态 .nbskin（theme 载荷 + 可选 script 载荷）。
+/// 内存构建 script 形态.nbskin（theme 载荷 + 可选 script 载荷）。
 fn write_script_skin(dir: &std::path::Path, id: &str, script: Option<&str>) {
     use std::io::Write;
     let path = dir.join(format!("{id}.nbskin"));
@@ -493,7 +501,7 @@ async fn script_explicit_id_gated_and_fail_closed() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    // 穿越路径（manifest.script 带 ..）→ load 拒绝 → 404
+    // 穿越路径（manifest.script 带..）→ load 拒绝 → 404
     let res = a
         .clone()
         .oneshot(
@@ -548,17 +556,17 @@ fn scan_skins_has_script_flag_follows_manifest() {
     assert_eq!(scripty.manifest.script.as_deref(), Some("skin/main.js"));
 }
 
-// --- helpers ---
+// helpers ---
 
 fn tempdir() -> tempfile::TempDir {
     tempfile::tempdir().expect("tempdir")
 }
 
-// ===== P2 渠道安装 + P3 吊销第五态 + CSS url() 消毒（2026-09-27）=====
+// ===== 渠道安装 + 吊销第五态 + CSS url() 消毒=====
 
 /// 锚 env 串行锁：`NEMESIS_ROOT_ANCHOR` 是进程全局，hooks 测试（本文件）
 /// 与 handlers 测试（`handlers/skins/tests.rs`）经
-/// `crate::skins::tests::ANCHOR_ENV_LOCK` 共用同一把——锚在场的断言窗口
+/// `crate::skins:tests::ANCHOR_ENV_LOCK` 共用同一把——锚在场的断言窗口
 /// 内禁止其它测试并发读锚（resolve_anchors 在 install/scan 内部读 env）。
 pub(crate) static ANCHOR_ENV_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
@@ -597,7 +605,7 @@ pub(crate) fn hex32(bytes: &[u8; 32]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// 内存构建 theme 形态 .nbskin 原始字节（未签；handlers 测试复用）。
+/// 内存构建 theme 形态.nbskin 原始字节（未签；handlers 测试复用）。
 pub(crate) fn theme_zip_bytes(id: &str) -> Vec<u8> {
     use std::io::Write;
     let buf = std::io::Cursor::new(Vec::new());
@@ -647,7 +655,7 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
-// --- P2 install_bytes ---
+// install_bytes ---
 
 /// 物理闸：非 ZIP / 超限 / manifest.id 缺失或非法 → 拒收且零落盘。
 #[test]
@@ -749,7 +757,7 @@ fn install_bytes_anchor_present_all_states_land() {
 
     // 🔴 Tampered → Invalid + 原文，且照常落盘。篡改点选 CSS 内容区
     //（"teal" 标记内翻一位）：ZIP 结构完好过物理闸，摘要失配出 Tampered
-    //——魔数/目录级破坏会在物理闸被拒（那是「不是皮肤包」，非信任结论）。
+    //魔数/目录级破坏会在物理闸被拒（那是「不是皮肤包」，非信任结论）。
     let mut tampered = chain.sign(&theme_zip_bytes("bad"), now, "bad-pub");
     let marker = tampered
         .windows(4)
@@ -770,7 +778,7 @@ fn install_bytes_anchor_present_all_states_land() {
     assert_eq!(entries.len(), 3, "三态全部进目录注册表");
 }
 
-// --- P3 吊销第五态 ---
+// 吊销第五态 ---
 
 /// 快照命中 → 🚫 Revoked；FileHash 维 = 单文件吊销（同钥的 donor 不受
 /// 牵连），key_fp 维 = 钥级双杀；删快照 → 回四态；管理面
@@ -962,7 +970,7 @@ fn crl_snapshot_without_verified_donor_is_inert() {
     );
 }
 
-// --- CSS url() 外链消毒 ---
+// CSS url() 外链消毒 ---
 
 /// 外链（https/http/协议相对，含引号形态与大小写）→ about:blank；栅格
 /// data: 放行、SVG data: 拦；相对路径放行；畸形未闭合原样照抄。
@@ -1018,9 +1026,9 @@ fn sanitize_css_urls_neuters_external_and_keeps_safe() {
     assert_eq!(sanitize_css_urls("html{--x:1}"), "html{--x:1}");
 }
 
-/// 2026-09-28 加固 corpus：`@import` 字符串形态 + CSS 转义两大绕过族。
+/// 加固 corpus：`@import` 字符串形态 + CSS 转义两大绕过族。
 /// `@import "https://…"` 不含 `url(` 子串、`\75rl(` 解码后才是 url(——
-/// 字面扫描均漏（BUG 2026-09-28），解码后扫描 + import 串处理补齐。
+/// 字面扫描均漏（BUG），解码后扫描 + import 串处理补齐。
 #[test]
 fn sanitize_css_urls_import_and_escape_bypasses_neutered() {
     // @import 字符串形态（单/双引号、大小写、协议相对）
@@ -1040,7 +1048,7 @@ fn sanitize_css_urls_import_and_escape_bypasses_neutered() {
         sanitize_css_urls(r#"@import "//evil.com/x.css";"#),
         r#"@import "about:blank";"#
     );
-    // @import 合法本地目标放行；url( 形态由 url( 分支处理
+    // @import 合法本地目标放行；url(形态由 url(分支处理
     assert!(sanitize_css_urls(r#"@import "skin/base.css";"#).contains("skin/base.css"));
     assert_eq!(
         sanitize_css_urls("@import url(https://evil.com/x.css);"),
@@ -1049,12 +1057,12 @@ fn sanitize_css_urls_import_and_escape_bypasses_neutered() {
     // @importer 等普通标识符不误命中
     assert_eq!(sanitize_css_urls("a{--x:@importer}"), "a{--x:@importer}");
 
-    // CSS 转义 function 名：\75rl( 解码后 = url( → 拦
+    // CSS 转义 function 名：\75rl(解码后 = url(→ 拦
     assert_eq!(
         sanitize_css_urls(r"a{background:\75rl(http://evil.com/x.png)}"),
         "a{background:url(about:blank)}"
     );
-    // 转义带空白终结符：u\72 l( → url(
+    // 转义带空白终结符：u\72 l(→ url(
     assert_eq!(
         sanitize_css_urls(r"a{background:u\72 l(http://evil.com/x.png)}"),
         "a{background:url(about:blank)}"
@@ -1065,7 +1073,7 @@ fn sanitize_css_urls_import_and_escape_bypasses_neutered() {
         "a{background:url(about:blank)}"
     );
 
-    // 双重解码走私防线：\5c 75rl( 解码一轮 = \75rl(（非 url(，不拦），
+    // 双重解码走私防线：\5c 75rl(解码一轮 = \75rl(（非 url(，不拦），
     // 但输出必须把字面 \ 再转义成 \\，浏览器对输出解码后仍非 url(
     assert_eq!(
         sanitize_css_urls(r"a{background:\5c 75rl(http://evil.com/x.png)}"),

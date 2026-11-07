@@ -1,4 +1,4 @@
-//! P5-R2 ③（网关守门面，VNC 无知 shim）：`/ws/vm-display` WS 端点。
+//! ③（网关守门面，VNC 无知 shim）：`/ws/vm-display` WS 端点。
 //!
 //! **本模块对 VNC/RFB 无知**：它是 dashboard 浏览器与 plugin-vm 插件之间的
 //! 帧中继——不解析 RFB、不碰 QEMU、不持有 VM 状态。字节面 =
@@ -8,7 +8,7 @@
 //! 可选显示面不进主二进制——noVNC 前端动态 import、plugin-vm 独立 cdylib、
 //! 本模块 feature 门控三线一致）。
 //!
-//! **安全模型（与 L8 PTY 同款信任级 = dashboard 登录用户）**：
+//! **安全模型（与 PTY 同款信任级 = dashboard 登录用户）**：
 //! 1. `vm-display` cargo feature（编译闸，IoT 裁剪可关）；
 //! 2. `config.json` `executor.vm.display` 运行闸：非 `"vnc"` → 404（端点
 //!    关闭不暴露探测面，PTY enabled=false 同款）；
@@ -21,7 +21,7 @@
 //! 6. 并发上限：[`MAX_DISPLAY_SESSIONS`]（PTY max_sessions 模式的定数版）；
 //! 7. **readonly 是插件侧 per-session 语义**：mode=ro 时插件丢弃 RFB
 //!    client→server 写类消息（KeyEvent/PointerEvent/ClientCutText）。QEMU
-//!    层的 `-vnc ...,readonly` 不用（会锁死所有 viewer 且改档要重启 VM）。
+//!    层的 `-vnc...,readonly` 不用（会锁死所有 viewer 且改档要重启 VM）。
 //!
 //! **与插件的线协议**（网关是唯一 WS 演讲者）：网关作为 TCP 客户端连插件
 //! 回环监听（[`VmDisplayEndpoint::listen_port`]，插件 init 时经 vtable 上报
@@ -43,7 +43,7 @@ use serde::Deserialize;
 use crate::api_handlers::AppState;
 
 /// 并发显示会话上限（PTY max_sessions 模式的定数版：显示通道是单人观察面
-/// ——dashboard 用户盯一块屏，4 路已覆盖「多 agent 并行 + 对比观察」；
+/// dashboard 用户盯一块屏，4 路已覆盖「多 agent 并行 + 对比观察」；
 /// 不新增 config 键，真需求出现再配置化）。
 const MAX_DISPLAY_SESSIONS: usize = 4;
 
@@ -54,9 +54,7 @@ const MAX_DISPLAY_SESSIONS: usize = 4;
 const MAX_UPSTREAM_FRAME: usize = 1024 * 1024;
 const MAX_DOWNSTREAM_FRAME: usize = 16 * 1024 * 1024;
 
-// ---------------------------------------------------------------------------
 // 插件端点槽 + 会话管理器（模块级 OnceLock，PTY 同款——不进 AppState）
-// ---------------------------------------------------------------------------
 
 /// plugin-vm 握手产物（宿主 loader 填 [`set_endpoint`]）。
 #[derive(Debug, Clone)]
@@ -151,9 +149,7 @@ pub fn disconnect_all_for_estop() {
     manager().kill_all();
 }
 
-// ---------------------------------------------------------------------------
 // 配置闸（fresh-read，改盘即生效）
-// ---------------------------------------------------------------------------
 
 /// 运行闸：`executor.vm.display == "vnc"` 才开端点；否则 None = 404。
 fn read_display_config() -> Option<nemesis_config::ExecutorVmConfig> {
@@ -161,9 +157,7 @@ fn read_display_config() -> Option<nemesis_config::ExecutorVmConfig> {
     (cfg.display == "vnc").then_some(cfg)
 }
 
-// ---------------------------------------------------------------------------
 // WS 升级 + 帧中继
-// ---------------------------------------------------------------------------
 
 #[derive(Deserialize)]
 pub(crate) struct VmDisplayQuery {
@@ -187,7 +181,7 @@ pub(crate) async fn handle_vm_display_upgrade(
         return (axum::http::StatusCode::NOT_FOUND, "vm display disabled").into_response();
     }
     // token 闸（镜像主 WS 语义：未配 token = 放行）。
-    // BUG-20261104-355：恒时比较（F6 纵深防御覆盖缺口，expected 非空下
+    // 恒时比较（纵深防御覆盖缺口，expected 非空下
     // verify_token 语义与 `==` 逐字节等价）。
     if !state.auth_token.is_empty() {
         let token = query.token.unwrap_or_default();

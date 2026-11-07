@@ -294,6 +294,139 @@ fn gate_and_write_boundary_resolves_relative_paths_against_root() {
 }
 
 // ---------------------------------------------------------------------------
+// K4b 审批路由键回归锁：rename 合成 write_file 的 invocation metadata 必须
+// 带与 dispatch 主路径（tool_dispatch.rs 构造点）同源的三个审批路由键。
+// 此前 gate_and_write 的 metadata 是空 HashMap——配置了 ask 审批策略时，
+// 管线层 3 提取出的 ApprovalContext 三键全空：IM 发起的审批卡落 Dashboard
+// 不回源对话（ChannelApprovalManager 按 chat_id 寻址，空 = 落默认管理器）、
+// 重启补裁 respond_stale 丢 session_key 无法回灌原会话。同函数内 guardian
+// 二审的 ApprovalContext 是单独填的（channel/chat_id/session_key 齐全），
+// auditor 侧漏填属遗漏非设计。
+// ---------------------------------------------------------------------------
+
+/// 数据管线缺陷（键集随行）无行为红形态：回归锁 = 构造点纯函数 +
+/// 键集断言，gate_and_write 经该函数构造 invocation（单一构造点）。
+#[cfg(feature = "security")]
+#[test]
+fn rename_write_invocation_carries_approval_routing_keys() {
+    let ctx = cov_ctx();
+    let m = approval_routing_metadata(&ctx);
+    assert_eq!(
+        m.get("approval_chat_id").map(String::as_str),
+        Some("chat-1"),
+        "审批卡必须能按发起对话寻址: {m:?}"
+    );
+    assert_eq!(
+        m.get("approval_sender_id").map(String::as_str),
+        Some("covuser"),
+        "审批发起人必须随行: {m:?}"
+    );
+    assert_eq!(
+        m.get("approval_session_key").map(String::as_str),
+        Some("agent:main:session:covlsp"),
+        "重启补裁必须能回灌原会话: {m:?}"
+    );
+}
+
+/// 端到端接线验证：ask 策略 + 注入式 recording 审批管理器。gate_and_write
+/// 走真实管线（write_file 默认动作 ask → 层 3 RequireApproval →
+/// request_approval_sync_ctx），recording 臂捕获**到达审批管理器的**
+/// ApprovalContext，断言 K4b 三键随行。 wiring 级红绿：回退 gate_and_write
+/// 的 metadata 接线（空 HashMap）即红——ctx 的 chat_id/sender_id/
+/// session_key 全空（channel 恒有值，来自 invocation.source，不随本缺陷）。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_and_write_routes_approval_context_end_to_end() {
+    use nemesis_security::auditor::{ApprovalContext, ApprovalManager, ApprovalVerdict};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingManager {
+        last_ctx: Mutex<Option<ApprovalContext>>,
+    }
+    impl ApprovalManager for RecordingManager {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            Err("ctx-less path must not be taken (pipeline always passes Some)".to_string())
+        }
+        fn request_approval_sync_ctx(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+            ctx: &ApprovalContext,
+        ) -> Result<ApprovalVerdict, String> {
+            *self.last_ctx.lock().unwrap() = Some(ctx.clone());
+            Ok(ApprovalVerdict::approved())
+        }
+    }
+
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "ask".to_string(),
+        ..Default::default()
+    });
+    let recording = std::sync::Arc::new(RecordingManager::default());
+    plugin.auditor().set_approval_manager(recording.clone());
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("a.rs");
+    let files = vec![AppliedFileEdit {
+        path: target.to_string_lossy().into_owned(),
+        new_text: "fn renamed() {}\n".to_string(),
+        edit_count: 1,
+    }];
+
+    // ask 判定经注入的 recording 管理器批准 → 正常落盘（审批闭环本身不因
+    // 本修复改变行为，只有路由键随行与否之差）。
+    let (written, rejected) = gate_and_write(&files, Some(&plugin), None, &cov_ctx())
+        .await
+        .expect("recorded approval must allow the write");
+    assert!(rejected.is_empty());
+    assert_eq!(written.len(), 1);
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "fn renamed() {}\n"
+    );
+
+    let ctx = recording
+        .last_ctx
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("ctx-less approval path must not be taken");
+    assert_eq!(
+        ctx.channel, "web",
+        "channel 来自 invocation.source: {ctx:?}"
+    );
+    assert_eq!(ctx.chat_id, "chat-1", "审批卡寻址键必须随行: {ctx:?}");
+    assert_eq!(ctx.sender_id, "covuser", "审批发起人必须随行: {ctx:?}");
+    assert_eq!(
+        ctx.session_key, "agent:main:session:covlsp",
+        "重启补裁回灌键必须随行: {ctx:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // BUG-20261025-37 回归锁：guardian 语义二审接入合成写闸（与 dispatch
 // 同源 guardian_gate）。此前 guardian 只活在 dispatch 内联块，rename
 // 合成闸只跑 8 层规则管线——guardian_mode=high 下同内容直写会被送审、

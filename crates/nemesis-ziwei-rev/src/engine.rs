@@ -10,7 +10,7 @@ pub struct EngineInfo {
     pub note: String,
 }
 
-/// M3 起：iced-x86 decoder 常驻（纯分析库，无运行时依赖探测）。
+/// 起：iced-x86 decoder 常驻（纯分析库，无运行时依赖探测）。
 pub fn engine_info() -> EngineInfo {
     EngineInfo {
         available: true,

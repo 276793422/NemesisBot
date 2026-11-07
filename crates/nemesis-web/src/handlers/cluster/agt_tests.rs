@@ -12,7 +12,7 @@
 //! - config.save 在 config 目录被文件占位时的 create_dir 失败臂
 //! - tasks.list 空任务 + 有 log_dir 的空聚合臂；duration 解析失败 Null 臂；
 //!   tasks.detail 的 Completed / Failed / Cancelled 标签映射
-//! - pair 对拒连地址快速失败（ refused 即返，无 8s 探测窗口）
+//! - pair 对拒连地址快速失败（refused 即返，无 8s 探测窗口）
 //!
 //! 结构性豁免（见报告）：spawn_elevated / add_platform_firewall_rules（UAC +
 //! 系统防火墙写操作）、nodes_ping 5s 超时臂（黑洞地址时序依赖）、
@@ -74,6 +74,7 @@ fn agt_make_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -112,9 +113,7 @@ fn agt_task(id: &str, status: TaskStatus, created: &str, completed: Option<&str>
     }
 }
 
-// -----------------------------------------------------------------------
 // 模块接口面 + 纯 helper
-// -----------------------------------------------------------------------
 
 #[test]
 fn agt_cluster_module_surface_and_command_table() {
@@ -166,9 +165,7 @@ fn agt_persist_peers_identity_fresh_workspace() {
     assert_eq!(cfg.node.tags, vec!["rust".to_string(), "edge".to_string()]);
 }
 
-// -----------------------------------------------------------------------
 // tasks.submit 急停冻结门
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_tasks_submit_frozen_under_estop() {
@@ -189,9 +186,7 @@ async fn agt_tasks_submit_frozen_under_estop() {
     assert!(err.contains("急停"), "err: {err}");
 }
 
-// -----------------------------------------------------------------------
 // firewall.add_rules 非法端口 / firewall.check 结构投影
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_firewall_add_rules_rejects_invalid_ports_before_netsh() {
@@ -203,7 +198,7 @@ async fn agt_firewall_add_rules_rejects_invalid_ports_before_netsh() {
         serde_json::json!({ "udp_port": 0 }),
         serde_json::json!({ "udp_port": 11949, "tcp_port": 0 }),
         // wrap 值：旧实现先 `as u16` 后 `== 0`——65537 回绕成 1、70000 回绕成
-        // 4464，恰好绕闸直通 netsh 加错端口规则（BUG-20261031-256 回归锁）。
+        // 4464，恰好绕闸直通 netsh 加错端口规则（回归锁）。
         serde_json::json!({ "udp_port": 65537 }),
         serde_json::json!({ "udp_port": 11949, "tcp_port": 70000 }),
         serde_json::json!({ "udp_port": 65536 }),
@@ -274,9 +269,7 @@ async fn agt_firewall_check_reports_structure_from_config_ports() {
     assert_eq!(out2["tcp_port"], 21949);
 }
 
-// -----------------------------------------------------------------------
 // config.save：config 目录被文件占位 → create_dir 失败
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_config_save_fails_when_config_dir_is_file() {
@@ -294,9 +287,7 @@ async fn agt_config_save_fails_when_config_dir_is_file() {
     assert!(err.contains("failed to create config dir"), "err: {err}");
 }
 
-// -----------------------------------------------------------------------
 // tasks.list / tasks.detail：空聚合 / 终态标签 / duration Null
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_tasks_list_empty_with_log_dir_takes_empty_summaries_arm() {
@@ -414,9 +405,7 @@ async fn agt_tasks_detail_terminal_labels_and_list_duration_null() {
     assert!(row["duration"].is_null(), "row: {row}");
 }
 
-// -----------------------------------------------------------------------
 // pair：拒连地址快速失败（probe → ECONNREFUSED 即 Err，不进 8s 超时窗）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_pair_rejects_refused_address() {

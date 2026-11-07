@@ -133,7 +133,7 @@ fn test_write_failure_on_file_workspace_path() {
 }
 
 // ---------------------------------------------------------------------------
-// 归档生命周期（决策可见性批 2026-10-15）：恢复类动作成功后 archive_handoff
+// 归档生命周期（决策可见性-15）：恢复类动作成功后 archive_handoff
 // 把活跃档案移入 archive/ ——「在等人」集合清空、追溯保留。
 // ---------------------------------------------------------------------------
 
@@ -210,7 +210,7 @@ fn test_stop_kind_label_covers_catalog_and_falls_back() {
     assert_eq!(stop_kind_label("whatever_new"), "停车待处理");
 }
 
-/// BUG-20261029-170 红证+回归锁：`stop_kind_label` 词表必须覆盖**生产写入
+/// 红证+回归锁：`stop_kind_label` 词表必须覆盖**生产写入
 /// 面**的全部 stop_kind 值——board_review.rs EscalateHuman 臂的 `unsure` /
 /// `redispatch_budget`（verdict 诚实分型，注释明示刻意区别于 unsure_streak /
 /// budget）与必需检查契约闸的 `required_checks` 此前词表缺席，三类高频
@@ -236,7 +236,7 @@ fn test_stop_kind_label_covers_production_kinds() {
         // EscalateHuman 臂 verdict 分型（board_review.rs 停车漏斗）：
         ("unsure", "单轮评审不确定"),
         ("redispatch_budget", "重派预算耗尽"),
-        // 必需检查契约闸（2026-10-22 拍板项 B）：
+        // 必需检查契约闸（既定项 B）：
         ("required_checks", "必需检查未满足"),
     ];
     for (kind, label) in PRODUCTION_KINDS {

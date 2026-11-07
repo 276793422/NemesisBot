@@ -3,12 +3,12 @@
 //! 消费方 nemesis-forge 保留解析逻辑（`parse_insights`/`extract_json`）与
 //! 数据驱动的统计 prompt 组装（`build_analysis_prompt`/`build_full_analysis_prompt`
 //! 插值 `ExperienceStats`/`ReflectionStats` 等 forge 本地类型，属引擎件
-//! 留在 forge）；本模块收敛**纯文本**的评审提示单一真相源。
+//! 留在 forge）；本模块收敛**纯文本**的评审提示统一定义。
 //!
 //! JSON 键与权重是解析契约（消费端按 `correctness`/`quality`/`security`/
 //! `reusability` 取数加权），任何一侧都不得单方面改动。
 
-/// Forge 产物质量评审 user prompt 构造（LLM-as-Judge 单一真相源）：
+/// Forge 产物质量评审 user prompt 构造（LLM-as-Judge 统一定义）：
 /// evaluator / validator / pipeline 三个调用点共用同一份中文计分卡与 JSON
 /// schema（`version` 传 `None` 时省略版本行，兼容不带版本号的调用面）。
 pub fn quality_review_prompt(

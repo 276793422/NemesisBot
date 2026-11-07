@@ -3,7 +3,7 @@
 //! 链路：config.mcp.json → McpManager::load_config → StdioTransport spawn
 //! → initialize 握手 → tools/list 发现 → tools/call 执行。
 //! 测试服务器：`test-tools/mcp/server`（echo/add/reverse/get_time/hello/config）。
-//! 构建：`cd test-tools/mcp/server && go build -o mcp-test-server.exe .`
+//! 构建：`cd test-tools/mcp/server && go build -o mcp-test-server.exe.`
 
 use nemesis_mcp::manager::McpManager;
 
@@ -132,7 +132,7 @@ async fn echo_call_surfaces_server_error_text_on_bad_params() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-08-30：HTTP transport 分派（desktop-pet2 的 8808/mcp 是 Streamable
+// HTTP transport 分派（desktop-pet2 的 8808/mcp 是 Streamable
 // HTTP 端点——discover 按 transport_type 走 HttpTransport，不再误当 stdio）
 // ---------------------------------------------------------------------------
 

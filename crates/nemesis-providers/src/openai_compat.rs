@@ -161,12 +161,12 @@ impl OpenAICompatProvider {
             body["stop"] = serde_json::json!(stop);
         }
 
-        // H4 (U16 half): reasoning effort — OpenAI-compatible wire field.
+        // (half): reasoning effort — OpenAI-compatible wire field.
         // We send the field whenever a tier is set; models/gateways that do
         // not support it decide on their side (per goal: no client-side
         // model gating).
         //
-        // "off" 过滤（aux 杂务三层治理 2026-09-28）：`Some("off")` 是
+        // "off" 过滤（aux 杂务三层治理）：`Some("off")` 是
         // anthropic lane 的显式禁思考 wire 标记（thinking:{type:"disabled"}）；
         // 本 lane 无禁思考 wire 字段，且 "off" 不是 OpenAI 合法枚举值——严格
         // 端点会 400。此处不透传，由预算护栏 + 重试兜底（本 lane 的服务端
@@ -201,7 +201,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         .unwrap_or("stop")
         .to_string();
 
-    // usage 归一委托单一真相源（BUG-20261104-389）：此前这里自带第三份
+    // usage 归一委托统一定义：此前这里自带第三份
     // 缓存子集剥出归一（DeepSeek hit / OpenAI cached 两源 or 链），且缺
     // `.clamp(0, prompt_raw.max(0))` 守卫——畸形上游 cached > prompt_tokens
     // 时落**负 prompt_tokens** 记账（usage 面板/审计/board token 预算保险
@@ -253,7 +253,7 @@ fn parse_response(data: &serde_json::Value) -> LLMResponse {
         })
         .unwrap_or_default();
 
-    // Extract reasoning_content from thinking-mode models (DeepSeek R1, GLM, etc.)
+    // Extract reasoning_content from thinking-mode models (DeepSeek, GLM, etc.)
     let reasoning_content = choices
         .and_then(|c| c.first())
         .and_then(|c| c.get("message"))
@@ -314,7 +314,7 @@ impl LLMProvider for OpenAICompatProvider {
             .json(&body)
             .send()
             .await
-            // 诚实化（2026-10-13）：真超时→Timeout；DNS/连接拒绝等传输
+            // 诚实化：真超时→Timeout；DNS/连接拒绝等传输
             // 错误→Unknown + "connect error: <根因链>"（全 lane 口径统一）。
             .map_err(|e| crate::failover::transport_error(&self.config.name, model, &e))?;
 
@@ -333,7 +333,7 @@ impl LLMProvider for OpenAICompatProvider {
             ));
         }
 
-        // body 读取与 JSON 解析拆分（BUG-20261029-153）：resp.json() 一步把
+        // body 读取与 JSON 解析拆分：resp.json() 一步把
         // 传输失败与解析失败混归 Format——body 中途断连伪装格式错误（不可
         // 重试），fallback 链直接终止不轮转。现传输失败→transport_error
         // （可重试，与 send 路径同判）；解析失败→Format 带 body 摘要

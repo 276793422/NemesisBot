@@ -426,7 +426,7 @@ fn match_message_empty_config_matches_everything() {
 }
 
 // =========================================================================
-// W4a coverage batch — triggers.rs gap closure
+// coverage batch — triggers.rs gap closure
 // =========================================================================
 
 /// CronTimezone::label (triggers.rs ~59-64).
@@ -629,7 +629,7 @@ fn w4a_match_glob_middle_part_missing() {
     assert!(!match_glob("a*b*c", "bXXbXXc"));
 }
 
-/// BUG-20261028-120: leading/trailing literal parts must not overlap —
+/// leading/trailing literal parts must not overlap —
 /// "a*a" cannot match "a" (the same character cannot serve as both the
 /// required start and the required end). Old implementation only checked
 /// starts_with/ends_with and passed short strings as false positives.
@@ -643,7 +643,7 @@ fn bug_120_match_glob_leading_trailing_overlap_rejected() {
     assert!(match_glob("a*a", "aa"));
 }
 
-/// BUG-20261028-120 companion: legal overlaps must keep matching.
+/// companion: legal overlaps must keep matching.
 /// Empty first/last parts ("*x*") never overlap; a middle segment may
 /// share characters with the anchors ("aba" = "a"+"b"+"a" for "a*b*a").
 #[test]
@@ -657,10 +657,39 @@ fn bug_120_match_glob_legal_overlaps_still_match() {
     assert!(match_glob("*bar", "bar"));
 }
 
-/// BUG-20261028-120: byte-length guard aligns with the byte-offset middle
+/// byte-length guard aligns with the byte-offset middle
 /// scan — multibyte anchors cannot overlap either.
 #[test]
 fn bug_120_match_glob_multibyte_anchor_overlap_rejected() {
     assert!(!match_glob("é*é", "é"));
     assert!(match_glob("é*é", "éé"));
+}
+
+/// BUG-20261107-002: middle segments must fit between the anchored prefix
+/// and suffix — a greedy middle hit may not eat into the suffix's anchor
+/// territory. The BUG-20261028-120 length precheck only counts first+last
+/// bytes, so a middle segment slipping into the suffix passed as a false
+/// positive ("a*bc*c" needs min length 4 but matched "abc" of length 3).
+/// Red-proof before fix: `match_glob("a*bc*c", "abc")` returned true.
+#[test]
+fn bug_002_match_glob_middle_eats_suffix_anchor_rejected() {
+    assert!(!match_glob("a*bc*c", "abc"));
+    assert!(!match_glob("a*ba*a", "aba"));
+    // Multibyte: middle overlapping the suffix in the byte domain is
+    // rejected the same way.
+    assert!(!match_glob("a*éé*é", "aéé"));
+}
+
+/// BUG-20261107-002 companion: legal fits must keep matching — the shortest
+/// valid arrangement (middle flush against the anchors) still matches, and
+/// region-bounded greedy stays complete (an early middle occurrence never
+/// starves a later one; the anchored prefix/suffix stay respected).
+#[test]
+fn bug_002_match_glob_legal_middle_fits_still_match() {
+    assert!(match_glob("a*bc*c", "abcc"));
+    assert!(match_glob("a*éé*é", "aééé"));
+    assert!(match_glob("*ab*c", "abc"));
+    assert!(!match_glob("*ab*c", "ac"));
+    assert!(match_glob("a*b*a", "aba"));
+    assert!(match_glob("a*b*c", "aXXbXXc"));
 }

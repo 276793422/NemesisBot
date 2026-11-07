@@ -1,4 +1,4 @@
-//! R4 覆盖率（2026-08-27）：episodic 富集两段 + 审计链 prev_hash mismatch。
+//! 覆盖率（2026-08-27）：episodic 富集两段 + 审计链 prev_hash mismatch。
 //!
 //! - `session_list` 的 episodic metadata 富集（model / triggerCluster）
 //! - `session_detail` 的 episodic tags 富集（triggerCluster / toolCalls）
@@ -61,6 +61,7 @@ fn make_ctx_with_memory(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -335,6 +336,7 @@ async fn chain_list_prev_hash_break_reports_prev_mismatch() {
             webhook_rate_limiter: Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            background_registry: None,
             signature_verify: None,
             skills_install_gate: None,
             session_stats: None,

@@ -34,7 +34,7 @@ fn test_parse_host_port_no_port() {
 }
 
 // -------------------------------------------------------------------------
-// P2: GatewayMemoryGate (memory approval bridge) — mock ApprovalManager tests
+// GatewayMemoryGate (memory approval bridge) — mock ApprovalManager tests
 // Covers the three boundary cases: user approves, user denies, popup
 // times out / errors (must be treated as deny — never let a memory write
 // through silently on failure).
@@ -104,7 +104,7 @@ async fn memory_gate_denies_on_timeout_or_error() {
     assert!(!g.approve_forget("y").await);
 }
 
-// 槽版闸（from_slot，2026-10-31 项目 loop boot 时序修复）：空槽 fail-closed
+// 槽版闸（from_slot， 项目 loop boot 时序修复）：空槽 fail-closed
 // deny，绝不静默放行。
 #[cfg(all(feature = "memory", feature = "security"))]
 #[tokio::test]
@@ -400,7 +400,7 @@ fn test_load_security_rules_missing_file() {
     );
 }
 
-/// F3 缺失自愈（2026-09-30）：配置不存在 → 按平台模板落盘且内容合法；
+/// 缺失自愈：配置不存在 → 按平台模板落盘且内容合法；
 /// 已存在（用户改过）→ 绝不覆盖。
 #[test]
 fn test_ensure_security_config_self_heals_and_never_overwrites() {
@@ -488,7 +488,7 @@ fn test_load_security_rules_invalid_json() {
     // Should not panic
 }
 
-/// 无上下文 LLM 命令审计（2026-09-16）：`guardian_mode` 裸 JSON 键经
+/// 无上下文 LLM 命令审计：`guardian_mode` 裸 JSON 键经
 /// load_security_rules 注入 plugin——键存在才注入（缺键 = 空 = off），
 /// 大小写归一；装配点（set_judge 闸）与消费点同读这一份。
 #[test]
@@ -517,7 +517,7 @@ fn test_load_security_rules_injects_guardian_mode() {
 }
 
 // -------------------------------------------------------------------------
-// F-U4-7（2026-09-15 真机事故）：出厂模板 `directory_rules` 死键（装配层
+// F-（真机事故）：出厂模板 `directory_rules` 死键（装配层
 // 只读 `dir_rules`，失配即整段静默失明）+ 目录删除无 catch-all + exec 递归
 // 删 deny 覆盖窄 —— 三者叠加 default_action=allow，worker agent 把自身
 // home rm 穿。以下测试钉死三层修复。
@@ -575,7 +575,7 @@ fn test_security_templates_dir_rules_key_and_catchall() {
 
 /// exec 规则必须覆盖递归删除变体：`rm -rf <path>` / `rm -r <path>` /
 /// `rm -fr <path>` 在 windows/linux/darwin 模板下必须命中 deny 规则
-/// （F-U4-7：旧模板只 deny `rm -rf /*` 字面前缀，`rm -r` 直落 allow）。
+/// （F-：旧模板只 deny `rm -rf /*` 字面前缀，`rm -r` 直落 allow）。
 #[test]
 fn test_security_templates_exec_recursive_rm_covered() {
     let cases: &[(&str, &str, &str)] = &[
@@ -636,7 +636,7 @@ fn test_security_templates_exec_recursive_rm_covered() {
     }
 }
 
-/// 第二批（2026-09-16）模板契约：D1/D2 策略键 + 分节规则结构 + other
+/// 模板契约：/ 策略键 + 分节规则结构 + other
 /// 平台 file delete catch-all。
 #[test]
 fn test_security_templates_batch2_policy_keys_and_section_layout() {
@@ -681,7 +681,7 @@ fn test_security_templates_batch2_policy_keys_and_section_layout() {
     for (plat, raw) in cases {
         let cfg: serde_json::Value = serde_json::from_str(raw).unwrap();
 
-        // D1/D2 策略键存在且值合法（四平台模板必须有明确出厂姿态）。
+        // / 策略键存在且值合法（四平台模板必须有明确出厂姿态）。
         let d1 = cfg["exec_unknown_policy"]
             .as_str()
             .unwrap_or_else(|| panic!("{plat}: exec_unknown_policy key must exist (D1 出厂开关)"));
@@ -696,7 +696,7 @@ fn test_security_templates_batch2_policy_keys_and_section_layout() {
             ["allow", "ask", "deny"].contains(&d2),
             "{plat}: guardian_failure_policy={d2} must be allow|ask|deny"
         );
-        // 无上下文 LLM 命令审计（2026-09-16 用户拍板默认 off）：出厂模板
+        // 无上下文 LLM 命令审计（默认 off）：出厂模板
         // 必须显式带 guardian_mode=off（可见的文档化默认）。
         let gm = cfg["guardian_mode"]
             .as_str()
@@ -751,7 +751,7 @@ fn test_security_templates_batch2_policy_keys_and_section_layout() {
     );
 }
 
-/// 历史键名 `directory_rules` 必须按 `dir_rules` 别名生效（F-U4-7 兼容
+/// 历史键名 `directory_rules` 必须按 `dir_rules` 别名生效（F- 兼容
 /// 臂：存量部署的旧模板不因改名而整段失效）。
 #[test]
 fn test_load_security_rules_directory_rules_legacy_alias() {
@@ -796,7 +796,7 @@ fn test_load_security_rules_directory_rules_legacy_alias() {
 }
 
 // -------------------------------------------------------------------------
-// apply_security_layer_switches tests（layer 开关构造期生效——V3 真机揭的
+// apply_security_layer_switches tests（layer 开关构造期生效—— 真机揭的
 // 死键 bug 的回归测试）
 // -------------------------------------------------------------------------
 
@@ -834,7 +834,7 @@ fn test_apply_security_layer_switches_absent_keys_keep_defaults() {
 
 #[test]
 fn test_apply_security_layer_switches_ssrf_allowed_hosts() {
-    // 白名单接线（2026-10-14 connector e2e 实需）：allowed_hosts 是放行
+    // 白名单接线（connector e2e 实需）：allowed_hosts 是放行
     // 内网端点的正道（层关 = guard None = connector fail-closed 全拒）。
     let json = serde_json::json!({
         "layers": {
@@ -869,7 +869,7 @@ fn test_apply_security_layer_switches_no_layers_section() {
 
 #[test]
 fn test_apply_security_layer_switches_partial_override() {
-    // 只关 ssrf，其余默认开（V3 e2e 的实际形状）
+    // 只关 ssrf，其余默认开（e2e 的实际形状）
     let json = serde_json::json!({"layers": {"ssrf": {"enabled": false}}});
     let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
     crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
@@ -879,7 +879,7 @@ fn test_apply_security_layer_switches_partial_override() {
     assert!(cfg.credential_enabled);
 }
 
-// CFG-06（2026-09-16 死键接线）：注入阈值 layers.injection.extra.threshold
+// CFG-06（死键接线）：注入阈值 layers.injection.extra.threshold
 // 此前构造期从未读取（恒 Default 0.7），只在 reload 里读后丢弃。
 #[test]
 fn test_apply_security_layer_switches_injection_threshold_wired() {
@@ -908,7 +908,7 @@ fn test_apply_security_layer_switches_injection_threshold_out_of_range_rejected(
 
 #[test]
 fn test_count_enabled_channels_none() {
-    // BUG-20261028-109 后 WebChannelConfig::default().enabled=true（与字段级
+    // 后 WebChannelConfig::default().enabled=true（与字段级
     // default_true 收敛）——「无启用通道」场景须显式关掉 web 才成立。
     let mut config = nemesis_config::Config::default();
     config.channels.web.enabled = false;
@@ -1066,7 +1066,7 @@ fn test_parse_host_port_multiple_colons() {
 
 #[test]
 fn test_count_enabled_channels_zero() {
-    // BUG-20261028-109 后 WebChannelConfig::default().enabled=true（与字段级
+    // 后 WebChannelConfig::default().enabled=true（与字段级
     // default_true 收敛）——「全零」场景须显式关掉 web 才成立。
     let mut config = nemesis_config::Config::default();
     config.channels.web.enabled = false;
@@ -1198,7 +1198,7 @@ fn test_load_scanner_full_config_nonexistent() {
 #[test]
 fn test_print_agent_startup_info_no_panic() {
     let tmp = tempfile::TempDir::new().unwrap();
-    // 真实 default 数 + 若干 extended——硬编码 10 曾在 26154f0（阶段 5）
+    // 真实 default 数 + 若干 extended——硬编码 10 曾在 26154f0
     // 加第 11 个 default 工具后 usize 下溢 panic（显示路径减法已根修为
     // saturating_sub；这里改从真相源推导，不再随 default 增长腐烂）。
     let default_count = nemesis_agent::register_default_tools().len();
@@ -1306,7 +1306,7 @@ fn test_cluster_result_persister_save_format() {
 
 #[test]
 fn test_peer_toml_key_sanitization() {
-    // 单一真相源：nemesis_cluster::cluster_config::sanitize_peer_key
+    // 统一定义：nemesis_cluster::cluster_config:sanitize_peer_key
     // （域已收窄：只替换 `.`/`:`；写盘路径已字面键化，此函数只用于
     // 旧键比对与历史残留清理）。
     assert_eq!(
@@ -1322,7 +1322,7 @@ fn test_peer_toml_key_sanitization() {
 
 #[test]
 fn test_peer_rpc_port_derivation() {
-    // 单一真相源：resolve_peer_rpc_port（显式字段优先 → udp+10000 约定兜底）。
+    // 统一定义：resolve_peer_rpc_port（显式字段优先 → udp+10000 约定兜底）。
     // 无字段条目 = 纯约定推导；带显式字段 = 实测值直通（非约定布局）。
     let convention = toml::Value::Table(
         [("address".to_string(), toml::Value::from("10.0.0.5:11949"))]
@@ -1397,8 +1397,8 @@ fn test_web_host_resolution_custom() {
 // -------------------------------------------------------------------------
 // Heartbeat interval calculation tests
 // -------------------------------------------------------------------------
-// （2026-10-26 BUG-64 拆除：此处原有三则测试把 gateway 本地手搓的
-// `interval>0 ? ×60 : 300` 映射公式原样内联再断言其输出——测的是公式
+// （BUG-64 拆除：此处原有三则测试把 gateway 本地手搓的
+// `interval>0 ? ×60: 300` 映射公式原样内联再断言其输出——测的是公式
 // 副本而非任何生产代码，且钉死的 0→300s 正是 BUG-64 定性的错误语义。
 // 间隔契约的回归锁现居 nemesis-heartbeat
 // tests.rs::test_config_new_clamps_interval，生产唯一入口 = 构造器。）
@@ -1435,8 +1435,8 @@ fn test_security_disabled_check() {
 // LLM timeout configuration logic
 // -------------------------------------------------------------------------
 
-// 2026-09-11 集群完备性加固：llm_timeout 语义以文档为准（0=不限），
-// gateway 内联 0→24h 回退臂删除，单一真相源 =
+// 集群完备性加固：llm_timeout 语义以文档为准（0=不限），
+// gateway 内联 0→24h 回退臂删除，单一权威 =
 // peer_chat_handler::llm_timeout_from_config_secs。旧「24h 回退」断言按新
 // 语义改写属预期。
 
@@ -1521,7 +1521,7 @@ fn test_forge_provider_bridge_construction() {
 }
 
 // -------------------------------------------------------------------------
-// ClusterForgeBridgeAdapter tests（P2-3 诚实语义：未实现 = 明确 Err，
+// ClusterForgeBridgeAdapter tests（诚实语义：未实现 = 明确 Err，
 // is_cluster_enabled=false——不伪装成「启用但无数据」）
 // -------------------------------------------------------------------------
 
@@ -1598,7 +1598,7 @@ fn test_run_bus_arc_signature_exists() {
 
 #[test]
 fn test_enabled_channels_construction_logic() {
-    // Simulate the logic used in C1 wiring to build enabled_channels list
+    // Simulate the logic used in wiring to build enabled_channels list
     use nemesis_config::ChannelsConfig;
     let cfg = ChannelsConfig::default();
 
@@ -1634,7 +1634,7 @@ fn test_enabled_channels_construction_logic() {
         channels.push("onebot");
     }
 
-    // BUG-20261028-109 后 web 默认启用（default_true 收敛），default 通道表
+    // 后 web 默认启用（default_true 收敛），default 通道表
     // 恰为 ["web"]；其余通道仍默认关。
     assert_eq!(
         channels,
@@ -2170,7 +2170,7 @@ fn test_provider_adapter_model_fallback_nonempty() {
 
 // -------------------------------------------------------------------------
 // DirectLlmChannel construction tests
-// （P2-3：引用不存在类型 DirectLlmChannel 的 #[ignore] 占位测试已删除——
+// （引用不存在类型 DirectLlmChannel 的 #[ignore] 占位测试已删除——
 // 空占位只会稀释测试统计，不代表任何被验证的行为。）
 // -------------------------------------------------------------------------
 
@@ -2667,25 +2667,25 @@ fn test_web_server_url_custom_host() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：全装配冒烟 + 剩余 helper。
+// 补测（quality-hardening goal 冲刺）：全装配冒烟 + 剩余 helper。
 // =========================================================================
 
 /// 隔离 home 环境（与 channel/cluster/eval 测试同款模式）。
 /// env set_var 是进程级操作 → 持 crate::GLOBAL_STATE_LOCK 串行。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 struct TempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 impl Drop for TempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn temp_home_env() -> TempHomeEnv {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -2714,7 +2714,7 @@ fn temp_home_env() -> TempHomeEnv {
 // 持有而留 %TEMP% 残留（无害，进程退出即失效）。
 // -------------------------------------------------------------------------
 
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_assembly_starts_and_binds_web_and_health() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -2729,9 +2729,9 @@ async fn full_assembly_starts_and_binds_web_and_health() {
     cfg["channels"]["web"]["port"] = serde_json::json!(0);
     cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
     cfg["gateway"]["port"] = serde_json::json!(0);
-    // F-B10（2026-09-25）：heartbeat 首拍固定在 start() 后 1s（与 interval
+    // F-：heartbeat 首拍固定在 start() 后 1s（与 interval
     // 无关）。插桩跑拖慢后 1s 拍与 runtime 关停窗口重叠 → tokio
-    // entry.rs:602 关停断言 panic（毒化源，见 findings F-B10）。测试域关掉。
+    // entry.rs:602 关停断言 panic（毒化源，见 findings F）。测试域关掉。
     cfg["heartbeat"]["enabled"] = serde_json::json!(false);
     cfg["agents"]["defaults"]["llm"] = serde_json::json!("mini-model");
     // workspace 指到临时 home（默认 ~ 展开指向真实用户目录，必须改写）。
@@ -2996,7 +2996,7 @@ mod migrate_legacy_workflow_tests {
         assert!(exec_dir.read_dir().unwrap().next().is_none());
     }
 
-    /// R10 终测补测：rename 失败 warn 臂 + 循环 continue 臂。
+    /// 终测补测：rename 失败 warn 臂 + 循环 continue 臂。
     /// - jsonl rename 失败：目的地同名**目录**挡道（file→occupied-dir 的
     ///   rename 在 Windows/Unix 都是 Err）→ 走 warn! 分支，源文件保留；
     /// - checkpoint 子目录 rename 失败：目的地同名**文件**挡道 → warn! 分支；
@@ -3399,7 +3399,7 @@ mod wave_b {
             .expect("成功态写库应通过");
         let ok = store.get("task-ok").expect("成功结果应已入库");
         assert!(ok.success);
-        // G5 键归一（2026-09-01）：persister 写 "response"（query_task_result
+        // 键归一：persister 写 "response"（query_task_result
         // handler 读该键；旧键 "content" 曾致恢复轮询拿到空回复）。
         assert_eq!(ok.result["response"], "最终回复正文");
         assert_eq!(ok.result["from"], "node-wave-b");
@@ -3412,7 +3412,7 @@ mod wave_b {
         assert!(!failed.success);
         assert_eq!(failed.result["error"], "远端炸了");
 
-        // delete 真删（内存+盘）。G1 收口（2026-09-08）：回调成功 = 结果已
+        // delete 真删（内存+盘）。 收口：回调成功 = 结果已
         // 送达 A（TaskManager 经 peer_chat_callback 拿到），占位/结果应清掉；
         // 旧实现 no-op（注释谎称 "由 TaskResultStore 自己清"，但回调成功路径
         // 从不发 confirm）→ 占位文件堆到 7 天 TTL。回调失败才靠 set_result
@@ -3518,7 +3518,7 @@ mod wave_b {
         );
     }
 
-    /// Windows 专属：用 std::os::windows::fs::OpenOptionsExt::share_mode 打开
+    /// Windows 专属：用 std::os:windows::fs:OpenOptionsExt::share_mode 打开
     /// 句柄并剥掉 FILE_SHARE_DELETE → 目标文件的 fs::rename 报
     /// ERROR_SHARING_VIOLATION，确定性走进 rename 失败告警分支。
     #[cfg(all(windows, feature = "workflow"))]
@@ -3567,7 +3567,7 @@ mod wave_b {
 } // mod wave_b
 
 // =========================================================================
-// R9 gateway 活动场景补测（llvm-cov miss 区段回填 · 子进程级真启动）
+// gateway 活动场景补测（llvm-cov miss 区段回填 · 子进程级真启动）
 //
 // 覆盖目标区间（nemesisbot/src/commands/gateway.rs）：
 //   - 1017-1034 缺配置文件两段 eprintln + exit(1)（真实子进程退码断言）
@@ -3578,8 +3578,8 @@ mod wave_b {
 //   - 2454-2460 security.enabled=true 但 config.security.json 缺失的 sec_json=None 臂
 //     （+ 同块尾部 scanner 配置缺失 info 臂）
 //   - 2540-2545 Security plugin disabled by configuration 显式禁用臂
-//   - 2568-2572 logging.llm 非空 log_dir else 臂（空字符串回退臂已由 S11d 覆盖）
-//   - devices.enabled=true 的 DeviceService 装配+注入臂（BUG-20261028-126 后 start 归 BotService.start_services）
+//   - 2568-2572 logging.llm 非空 log_dir else 臂（空字符串回退臂已由 覆盖）
+//   - devices.enabled=true 的 DeviceService 装配+注入臂（后 start 归 BotService.start_services）
 //   - 1182-1280 workflow 装配块的活动分支：defs 加载 Ok(n>0) info / cron 触发器
 //     注册计数>0 info / checkpoint 恢复 Ok(n>0) info / executor world Some 接线 /
 //     legacy 目录迁移在真实启动路径上执行
@@ -3593,9 +3593,9 @@ mod wave_b {
 //     piped 且不排空，INFO 级日志长时间写入会触发管道回压把子进程卡死。
 //     本模块自带 R9GatewayProc（双流继承 + Drop 兜底强杀 + 优雅停机等退）。
 //   - 优雅停机走 test_harness::graceful_shutdown_gateway（/api/internal +
-//     X-Auth-Token），保证覆盖插桩二进制走正常 atexit 落 .profraw。
+//     X-Auth-Token），保证覆盖插桩二进制走正常 atexit 落.profraw。
 //   - 端口冲突场景无法优雅停机（web server 死了 /api/internal 就不可达），
-//     采用 S11d 的结构豁免先例：in-process 独立线程跑 run()，测试进程正常
+//     采用 的结构豁免in-process 独立线程跑 run()，测试进程正常
 //     退出时统一落盘覆盖率，线程挂起在 wait_for_shutdown 随进程销毁。
 // =========================================================================
 
@@ -3606,7 +3606,7 @@ mod r9_gateway_boot_scenarios {
     // 子进程托管（双流继承版，规避 ManagedProcess 的 stdout 回压隐患）
     // ---------------------------------------------------------------------
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     struct R9GatewayProc {
         child: Option<tokio::process::Child>,
         #[allow(dead_code)]
@@ -3614,8 +3614,8 @@ mod r9_gateway_boot_scenarios {
     }
 
     /// 子网关的 LLVM_PROFILE_FILE 注入。曾因 test-harness 对应 helper 私有而
-    /// 整段复刻（漂移风险），现直接委托公开的单一真相源实现。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    /// 整段复刻（漂移风险），现直接委托公开的统一定义实现。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r9_coverage_profile(slug: &str) -> Option<String> {
         test_harness::coverage_profile_file(slug)
     }
@@ -3623,7 +3623,7 @@ mod r9_gateway_boot_scenarios {
     /// 先 bind 再放手，取一个「此刻空闲」的高位端口（line webhook / 冲突占位用）。
     /// 有固有 TOCTOU 窗口；对 line 场景即使被抢也只是通道内部 bind warn，
     /// 不影响网关就绪与断言。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r9_probe_free_tcp_port() -> u16 {
         std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("probe ephemeral port")
@@ -3632,7 +3632,7 @@ mod r9_gateway_boot_scenarios {
             .port()
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl R9GatewayProc {
         fn spawn(name: &'static str, program: &std::path::Path, cwd: &std::path::Path) -> Self {
             let mut cmd = tokio::process::Command::new(program);
@@ -3651,7 +3651,7 @@ mod r9_gateway_boot_scenarios {
             }
         }
 
-        /// 优雅停机后等子进程自然退出（让插桩二进制走 atexit 落 .profraw）。
+        /// 优雅停机后等子进程自然退出（让插桩二进制走 atexit 落.profraw）。
         async fn wait_exit(&mut self, timeout: std::time::Duration) {
             let Some(child) = self.child.as_mut() else {
                 panic!("{} already stopped", self.name);
@@ -3678,7 +3678,7 @@ mod r9_gateway_boot_scenarios {
         }
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     impl Drop for R9GatewayProc {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
@@ -3689,11 +3689,11 @@ mod r9_gateway_boot_scenarios {
 
     /// 共享基座配置：编译期默认值改写网络面（全 0 → OS 分配、host 收敛到
     /// 127.0.0.1）、workspace 指向临时 home、模型条目指向死端点（启动期无 LLM
-    /// 流量，死端点即安全）。与 S11d full_assembly 同款骨架。
+    /// 流量，死端点即安全）。与 full_assembly 同款骨架。
     ///
     /// 注意保持与既有测试的差异面最小：security/devices/memory/logging 等
     /// 开关一律留给各场景自己翻转，基座不动。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r9_base_config(home: &std::path::Path) -> serde_json::Value {
         let mut cfg: serde_json::Value =
             serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
@@ -3716,7 +3716,7 @@ mod r9_gateway_boot_scenarios {
 
     /// 启动网关子进程直到 state 文件出现非零 web_port（bind 后才写），留出
     /// 尾巴时间，然后优雅停机并等自然退出；返回最终 state JSON 供断言。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     async fn r9_spawn_until_ready_then_graceful_stop(
         name: &'static str,
         ws: &test_harness::TestWorkspace,
@@ -3785,11 +3785,11 @@ mod r9_gateway_boot_scenarios {
     }
 
     // ---------------------------------------------------------------------
-    // 场景 A：缺 config.json → seed auto-init 后继续装配（2026-09-17 双击
+    // 场景 A：缺 config.json → seed auto-init 后继续装配（双击
     // 直启新语义，gateway.rs Step 2；旧行为「两段 eprintln + exit(1)」已废弃）
     // ---------------------------------------------------------------------
 
-    /// 真实子进程断言：cwd 下没有 `.nemesisbot`（--local 解析到的 home），
+    /// 真实子进程断言：cwd 下没有 `.nemesisbot`（local 解析到的 home），
     /// gateway 不再硬退，而是自动 seed（onboard_default Seed 模式：一切
     /// only-if-absent）后继续装配到 web 就绪，干净优雅关停。
     ///
@@ -3799,11 +3799,11 @@ mod r9_gateway_boot_scenarios {
     /// 端口（bind conflict walk 有专项覆盖），helper 读的是 state 实际值。
     /// 预置 cluster 关停子配置（Seed only-if-absent：已存在不覆盖）防
     /// seed 后拉起 UDP/RPC 网络（与 quiet_flips 场景同款）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_missing_config_seeds_and_boots_to_ready() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
-        // 故意不创建 .nemesisbot/config.json：必然缺失 → seed auto-init。
+        // 故意不创建.nemesisbot/config.json：必然缺失 → seed auto-init。
         let ws_config_dir = ws.home().join("workspace").join("config");
         std::fs::create_dir_all(&ws_config_dir).unwrap();
         std::fs::write(
@@ -3836,10 +3836,10 @@ mod r9_gateway_boot_scenarios {
     ///
     /// 点亮：2540-2545 禁用臂、1597-1600 缺席 info 臂、2188-2191 dev-mode 臂、
     /// 2568-2572 非空 log_dir 臂（_=>Full 由默认 summary 已命中，仍显式给值
-    /// 保持意图）、devices.enabled=true 装配+注入臂（BUG-20261028-126 后 start 归 BotService.start_services）、1843 的 0=不限臂
-    /// （2026-09-11 前是 24h 回退臂，语义已改写为文档口径 0=不限）。
+    /// 保持意图）、devices.enabled=true 装配+注入臂（后 start 归 BotService.start_services）、1843 的 0=不限臂
+    /// （前是 24h 回退臂，语义已改写为文档口径 0=不限）。
     /// 这些分支只能靠日志文本观测，测试断言收敛到「按期就绪 + 干净退出」。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_quiet_flips_boot_reaches_ready_and_exits_cleanly() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3884,7 +3884,7 @@ mod r9_gateway_boot_scenarios {
     /// 点亮：1586-1595 skills 坏 JSON warn 臂、2201-2207 CORS 坏 JSON warn 臂、
     /// 2454-2460 sec_json=None 臂 + 插件照常构造、scanner 配置缺失 info 臂。
     /// 断言核心：坏文件绝不阻断启动。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_bad_json_seeds_keep_boot_alive() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3917,7 +3917,7 @@ mod r9_gateway_boot_scenarios {
     /// 注意：telegram/discord/feishu/slack/whatsapp/dingtalk/qq/onebot 在默认
     /// 构建里未编译（channels-* feature 默认只开 web/webhook/rpc），它们的
     /// 开关只点亮 gateway 侧 push 行和 enabled_channels 计数，不会拉起网络。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_channel_ladder_boot_constructs_all_init_configs() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3944,7 +3944,7 @@ mod r9_gateway_boot_scenarios {
             cfg["channels"][name]["enabled"] = serde_json::json!(true);
         }
 
-        // websocket：wave_b/S11d 同款安全参数（127.0.0.1:0 → Some 构造臂 2326-2333）。
+        // websocket：wave_b/ 同款安全参数（127.0.0.1:0 → Some 构造臂 2326-2333）。
         cfg["channels"]["websocket"]["host"] = serde_json::json!("127.0.0.1");
         cfg["channels"]["websocket"]["port"] = serde_json::json!(0);
         cfg["channels"]["websocket"]["sync_to"] = serde_json::json!(["web"]);
@@ -3982,7 +3982,7 @@ mod r9_gateway_boot_scenarios {
     ///     真实启动路径上的旧布局迁移（含 partial 清理告警）。
     ///   - executor.enabled=true + sandbox=false → build_workflow_world Some(world)
     ///     接线臂（Layer-1 stdio 世界不需要 Sandboxie 就绪）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[cfg(feature = "workflow")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_workflow_defs_cron_checkpoint_restore_live() {
@@ -4136,24 +4136,24 @@ variables: {}
     // 场景 G：web bind 冲突 → error!/fallback warn + state 回落写配置端口
     // ---------------------------------------------------------------------
 
-    /// in-process 版（S11d 结构豁免先例）：测试先占住 web 目标端口，网关线程
-    /// 里 bind 走查（`bind_with_port_walk`，2026-08-30 语义：带外线性向上）
+    /// in-process 版（结构豁免先例）：测试先占住 web 目标端口，网关线程
+    /// 里 bind 走查（`bind_with_port_walk`， 语义：带外线性向上）
     /// 落到某个空闲邻端口成功 serve → bound_tx Ok(walked) → state 写走查后
     /// 端口。确定性边界：「busy 全程被我持有且取带外端口」保证落点必在
-    /// busy 之上；具体步数取决于环境端口占用，不可断言——2026-09-02 CI
+    /// busy 之上；具体步数取决于环境端口占用，不可断言—— CI
     /// vs2026 镜像 busy+1/+2 被占 → 实落 busy+3（35b092e 同族第二发：钉死
     /// 步数的断言在拥挤镜像上必假红，生产行为本身正确）。步数语义的真相源
     /// 在 nemesis-web `port_walk_sequence` 纯函数 + r4_tests。
     ///
-    /// 2026-08-31 重写：旧「bind 冲突 → 回落写配置端口」前提在 35b092e 给
+    /// 重写：旧「bind 冲突 → 回落写配置端口」前提在 35b092e 给
     /// bind 加 +1×20 重试、随后 port-walk 精化为带内回绕后失效（同族前提
     /// 修正见 crates/nemesis-web/src/server/r4_tests.rs 顶部注释）。
     ///
     /// 为什么不能优雅停机：/api/internal 挂在 web server 上，POST 不可达；
     /// 强杀子进程会丢 profraw——所以与本模块其余子进程用例不同，这里走
-    /// 进程内线程，测试进程自身干净退出时统一落盘覆盖率（同 S11d 注释里的
+    /// 进程内线程，测试进程自身干净退出时统一落盘覆盖率（同 注释里的
     /// 「线程随测试进程退出销毁」豁免条款）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_web_bind_conflict_walks_to_neighbor_port_in_state() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -4230,13 +4230,13 @@ variables: {}
 
         // busy_holder 保活到断言结束（放在末尾抑制 unused 警告的真实用途注解）。
         drop(busy_holder);
-        // 网关线程按 S11d 豁免条款挂起在 wait_for_shutdown，随测试进程销毁。
+        // 网关线程按 豁免条款挂起在 wait_for_shutdown，随测试进程销毁。
     }
 
     // =====================================================================
-    // R10 确定性批（2026-08-27 MERGED miss 快照 A 类收口的 r10 波次）
+    // 确定性批（MERGED miss 快照 A 类收口的 r10 波次）
     //
-    // 分工：R9 各场景管「正常翻转启动面」；R10 批管「敌意文件系统种子 +
+    // 分工： 各场景管「正常翻转启动面」； 批管「敌意文件系统种子 +
     // 配置角落分支 + 直调孪生补保险」。全部子进程形态（敌意种子只是普通
     // 文件/目录，不需要进程内装配，也不需要 GLOBAL_STATE_LOCK），复用本模
     // 块既有的 R9GatewayProc / 探测端口 / 优雅停机骨架。
@@ -4244,7 +4244,7 @@ variables: {}
 
     /// 固定端口就绪等待器。state 文件被敌意化的场景里 gateway.json 不再是
     /// 可靠就绪信号，改用「配置端口可 TCP 连通」作 bind 完成证据。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     async fn r10_wait_tcp_ready(port: u16, what: &str) {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
@@ -4263,8 +4263,8 @@ variables: {}
     }
 
     /// 通用轮询等待器（与 r9_live_tests 的 wait_until 同构；两文件互为独立
-    /// 测试模块无法互相导入，就地复制保持各文件的单一真相源自足）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    /// 测试模块无法互相导入，就地复制保持各文件的统一定义自足）。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     async fn r10_wait_until(timeout_secs: u64, what: &str, mut cond: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         while !cond() {
@@ -4278,8 +4278,8 @@ variables: {}
 
     /// 组装一条预种子过期 "at" 任务（schema 逐字段复刻 nemesis-cron 序列化
     /// 形态；session_key/max_rounds 由调用方对返回值就地改写以驱动 Opt2 分支
-    /// 与 T3 元数据插入）。
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    /// 与 元数据插入）。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_seed_at_job(id: &str, name: &str, message: &str, due_ms: i64) -> serde_json::Value {
         serde_json::json!({
             "id": id,
@@ -4315,7 +4315,7 @@ variables: {}
         })
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_seed_cron_store(home: &std::path::Path, jobs: Vec<serde_json::Value>) {
         let store = serde_json::json!({ "version": 1, "jobs": jobs });
         let dir = home.join("workspace").join("cron");
@@ -4327,7 +4327,7 @@ variables: {}
         .expect("write cron store");
     }
 
-    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
     fn r10_cron_last_status(home: &std::path::Path, id: &str) -> Option<String> {
         let txt =
             std::fs::read_to_string(home.join("workspace").join("cron").join("jobs.json")).ok()?;
@@ -4415,7 +4415,7 @@ variables: {}
     /// 场景 B：{home}/workspace/state 是一个**普通文件**——create_dir_all
     /// 报错 → warn 臂；随后向 <file>/gateway.json 写 state 也报错 → 第二个
     /// warn 臂。断言核心：启动不被阻断，web 真实 bind 固定探测端口。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_state_dir_as_regular_file_boot_warns_but_binds_web() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -4449,7 +4449,7 @@ variables: {}
 
     /// 场景 C：state 目录正常、gateway.json 本身是**目录**——首次 fs::write
     /// 命中 1104-1105 warn（else 臂反向：info@1107 不触发）。其余与场景 B 相同。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_state_gateway_json_as_directory_boot_survives_first_write_warn() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -4497,12 +4497,12 @@ variables: {}
     //   - workspace/data/nemesisbot_data.db 写入垃圾字节 → SCHEMA_V1 立即炸
     //     → DataStore::open Err → warn 臂（2618-2626）
     //   - 预种子过期 cron 任务 session_key="agent:r10umb"（非空 → Opt2 router
-    //     分支 1365-1372）+ max_rounds=3（T3 元数据插入 1389-1391）；模型死端
+    //     分支 1365-1372）+ max_rounds=3（元数据插入 1389-1391）；模型死端
     //     点即可：on_job 只发布到总线即记 ok，不依赖 LLM 成败
     // 断言：state 文件 web_host=="127.0.0.1"（归一化铁证）+ cron last_status
-    // =="ok"。state 文件在本场景完好，复用 R9 的标准就绪等待器。
+    // =="ok"。state 文件在本场景完好，复用 的标准就绪等待器。
     // ---------------------------------------------------------------------
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_hostile_fs_and_config_seeds_boot_reaches_web_with_normalized_host() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -4570,7 +4570,7 @@ variables: {}
         )
         .unwrap();
 
-        // cron：Opt2 分支（session_key 非空）+ max_rounds=3 元数据（T3）。
+        // cron：Opt2 分支（session_key 非空）+ max_rounds=3 元数据。
         let mut job = r10_seed_at_job(
             "r10umbcron",
             "opt2-router-driver",
@@ -4586,9 +4586,9 @@ variables: {}
         job["payload"]["max_rounds"] = serde_json::json!(3);
         r10_seed_cron_store(&home, vec![job]);
 
-        // W3 闸（f44c4a0f）：session_key 非空的 job 触发期查父会话磁盘存在
+        // 闸（f44c4a0f）：session_key 非空的 job 触发期查父会话磁盘存在
         // 性（sessions json ∨ session_logs jsonl 任一），双臂全 miss = 已删
-        // 除 → 自动暂停不发布。本场景驱动的是 Opt2 路由分支 + T3 元数据，
+        // 除 → 自动暂停不发布。本场景驱动的是 Opt2 路由分支 + 元数据，
         // 不是闸本身（闸有 w3_session_gate_tests 专项）——种子父会话文件让
         // 闸放行（存在性只看文件名，空对象即可；消毒名与写入方同源）。
         let sess_json = crate::common::sessions_dir(&home).join(format!(
@@ -4621,7 +4621,7 @@ variables: {}
 }
 
 /// 毫秒时间戳（cron 种子的过期时刻锚点；模块级自由函数避免在每个测试里重复）。
-#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, sweep)
 fn chrono_millis_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4630,7 +4630,7 @@ fn chrono_millis_now() -> i64 {
 }
 
 // -------------------------------------------------------------------------
-// W2 P2 board 派发写回（write_back_board_dispatch）
+// board 派发写回（write_back_board_dispatch）
 // -------------------------------------------------------------------------
 
 /// 建一个已派发（in_progress + issue_dispatch 登记）的 board store。
@@ -4709,7 +4709,7 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// AOR 批二a ④：代际写回闸——旧代迟到回调（echo 与当前行代际不一致）
+/// a ④：代际写回闸——旧代迟到回调（echo 与当前行代际不一致）
 /// 拒绝覆盖：不落终态、不收账、不评论 worker 结果、不触发评审，仅系统
 /// 评论留痕。回声缺席（None，旧 B 端兼容）放行——由上方 success 测试
 /// （第 7 参 None 直达正常路径）覆盖。
@@ -4832,7 +4832,7 @@ fn test_writeback_error_moves_to_in_review_for_decision_chain() {
     );
     assert!(board_writeback.is_board_task);
 
-    // 失败单同样转 in_review 并携带评审触发目标（2026-09-11 双端真机 S2：
+    // 失败单同样转 in_review 并携带评审触发目标（双端真机：
     // 旧实现留 in_progress 不触发 review → max_redispatch 预算耗不出去、
     // 单据卡死无人接手；失败评论（⛔ Comment）正是 review_issue 降级路径
     // 的输入，锚点 FAIL 短路后走同一重派/转人工漏斗）。
@@ -4976,7 +4976,7 @@ fn test_writeback_structured_report_becomes_delivery_comment() {
     );
     assert!(board_writeback.is_board_task);
 
-    // 交付线程首评：ctype=Delivery + 内容原样（M4 验收 agent 同源解析，
+    // 交付线程首评：ctype=Delivery + 内容原样（验收 agent 同源解析，
     // 不加 ✅ 前缀破坏格式）。
     let issue = store.get_issue_by_number("NB-1").unwrap();
     assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
@@ -5059,7 +5059,7 @@ fn test_writeback_oversized_report_overflows_to_asset() {
 }
 
 // -------------------------------------------------------------------------
-// G9（2026-09-09）：web host 绑定/展示分离 + 资产基址广告诚实化
+// web host 绑定/展示分离 + 资产基址广告诚实化
 // -------------------------------------------------------------------------
 
 #[test]
@@ -5086,7 +5086,7 @@ fn test_web_hosts_default_config_cluster_off_stays_loopback() {
 
 #[test]
 fn test_web_hosts_relay_mode_binds_all() {
-    // `--relay` 纯中继服务端（2026-09-19 VPS 真机验收）：必然要被远端访问
+    // `--relay` 纯中继服务端（VPS 真机验收）：必然要被远端访问
     // （桥接入 + 状态页 + /d/ 转发），bind_all=true 语义——0.0.0.0/空 host
     // 如实绑定所有网卡，不得静默回环（回归：run_relay 曾传 false）。
     let (bind, _) = web_bind_and_display_hosts("0.0.0.0", true);
@@ -5134,7 +5134,7 @@ fn test_advertise_host_unspecified_bind_gets_lan_ip() {
 
 #[test]
 fn test_advertise_host_loopback_bind_is_honest() {
-    // G9 病灶回归锁：回环绑定必须如实广告 127.0.0.1——绝不再谎报
+    // 病灶回归锁：回环绑定必须如实广告 127.0.0.1——绝不再谎报
     // LAN IP（旧逻辑回环绑定也替换成 LAN IP = 承诺不可达 URL）。
     assert_eq!(
         advertise_host_for(
@@ -5214,7 +5214,7 @@ fn test_select_advertised_lan_ip_ignores_self_lookalike_hosts() {
 }
 
 // -------------------------------------------------------------------------
-// E1 二期 token 回传：record_cluster_usage 记账（全自动流转 P5）
+// 二期 token 回传：record_cluster_usage 记账（全自动流转）
 // -------------------------------------------------------------------------
 
 fn e1_temp_ds(name: &str) -> (std::sync::Arc<nemesis_data::DataStore>, std::path::PathBuf) {
@@ -5296,7 +5296,7 @@ fn test_record_cluster_usage_serde_compat_and_session_key() {
 }
 
 // ---------------------------------------------------------------------------
-// P2A（2026-09-12 NB-15）：fail_class 随 error 写回落 ⛔ 评论（结构化标记行）
+// P2A：fail_class 随 error 写回落 ⛔ 评论（结构化标记行）
 // ---------------------------------------------------------------------------
 
 #[cfg(all(feature = "board", feature = "cluster"))]
@@ -5373,9 +5373,9 @@ fn test_writeback_error_without_fail_class_omits_marker() {
 }
 
 // -------------------------------------------------------------------------
-// CFG-10（2026-09-16）：schema 对账三件套。死键 / 键名失配 / 模板漂移此前
-// 全靠人眼（F2/F3/F4/F7、CFG-01、CFG-03 都是无机械检测漏网的），以下测试
-// 把对账固化进 CI。③typed roundtrip 字节保持见 nemesis-config
+// CFG-10：schema 对账三件套。死键 / 键名失配 / 模板漂移此前
+// 全靠人眼（///、CFG-01、CFG-03 都是无机械检测漏网的），以下测试
+// 把对账固化进 CI。typed roundtrip 字节保持见 nemesis-config
 // tests.rs::cfg10_security_config_typed_roundtrip_byte_preserving。
 // -------------------------------------------------------------------------
 
@@ -5475,9 +5475,9 @@ fn cfg10_four_platform_security_templates_isomorphic() {
 /// 顶层键必须被 `SecurityConfig` typed 承载、`layers.dlp` 子键必须被
 /// `DLPLayerConfig` 承载（否则 Dashboard 安全设置页一次保存就把该键
 /// 抹掉——CFG-01 / audit_chain_enabled 同族删键 bug 的机械防线）。
-/// 形态说明（复核 2026-09-16，A-F4 联动）：round-trip 就是 Dashboard 保存
+/// 形态说明（复核，A- 联动）：round-trip 就是 Dashboard 保存
 /// 的真实路径，比「⊆ Default 序列化键集」更贴切——skip-if-empty 字段
-/// （exec_unknown_policy / guardian_failure_policy，A-F4 语义：空串=未
+/// （exec_unknown_policy / guardian_failure_policy，A- 语义：空串=未
 /// 设置不物化）在 Default 序列化里缺席是刻意设计；模板值非空则必须
 /// 原样存活，空串值允许消失（= 未设置）。
 #[test]
@@ -6133,7 +6133,7 @@ async fn init_post_agent_coordinator_shape_installs_board_hooks() {
 /// start_check()=Some 才执行）。持 GLOBAL_STATE_LOCK + EnvHomeGuard 隔离；
 /// 已被别的测试置过就跳过（OnceLock set-once 语义，内容不影响本批断言）。
 #[cfg(all(
-    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -6162,7 +6162,7 @@ fn prime_verify_start_snapshot() {
 /// 反复投 Shutdown 驱动 Step 23 返回 + Step 24 善后。返回 fixture + 安全
 /// 插件供调用方追加断言。
 #[cfg(all(
-    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -6309,7 +6309,7 @@ async fn run_runtime_pipeline(
 /// 默认形态（guardian off）：跑通 18–24 全链；guardian 不装配（other 臂），
 /// CRITICAL 工具也不进 LLM 审（judge 缺席的双保险语义）。
 #[cfg(all(
-    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -6334,7 +6334,7 @@ async fn run_runtime_full_cycle_guardian_off_covers_steps_18_to_24() {
 /// critical 形态：guardian judge 装配走「small_model 无法解析 → 回落主模型」
 /// 臂；装配后 CRITICAL 工具进 LLM 审、LOW 工具不进（单一决策点语义）。
 #[cfg(all(
-    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -6368,7 +6368,7 @@ async fn run_runtime_guardian_critical_falls_back_to_main_model() {
 }
 
 // -------------------------------------------------------------------------
-// W5-R2 cluster_init 闭包实体覆盖批：disabled 形态下 handler 注册同样完成
+// cluster_init 闭包实体覆盖批：disabled 形态下 handler 注册同样完成
 // （仅 TCP bind 被 cluster_should_start 闸住），经
 // RpcServer::handle_wire_message（与 TCP 完全相同的 handler 链 + _rpc 元数据
 // 注入）直接驱动 peer_chat / peer_chat_callback / task_cancel 闭包本体。
@@ -6877,7 +6877,7 @@ async fn ci2_peer_chat_callback_routes_all_branches() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 }
 
-/// 节点发现回调：sweep 分支（槽位就绪 + 节流放行 → spawn 重估 + D0b 重平衡）
+/// 节点发现回调：sweep 分支（槽位就绪 + 节流放行 → spawn 重估 + 重平衡）
 /// + auto-join（qa→#qa / 其它→#dev / 已见成员不撤 / 本节点与 coordinator 早退）。
 #[cfg(all(
     feature = "board",
@@ -6969,7 +6969,7 @@ async fn ci2_discovery_callback_sweeps_and_auto_joins_channels() {
         "unknown",
     );
 
-    // 让回调里 spawn 的停车场重估 + D0b 重平衡任务跑完（空看板 → 近零成本）。
+    // 让回调里 spawn 的停车场重估 + 重平衡任务跑完（空看板 → 近零成本）。
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     let qa_member = nemesis_board::Actor::agent("qa-node-1");
@@ -6990,7 +6990,7 @@ async fn ci2_discovery_callback_sweeps_and_auto_joins_channels() {
 }
 
 /// 三个周期 ticker 的首拍实体：派发超时 sweep（超时阈值现读 + mtime 缓存 +
-/// 实扫）、D4 限额热刷新（config board 段现读 → cell/sink 更新）、停车场
+/// 实扫）、 限额热刷新（config board 段现读 → cell/sink 更新）、停车场
 /// sweep（estop 挂起 continue / store 缺席 continue）。
 #[cfg(all(
     feature = "board",
@@ -7011,7 +7011,7 @@ async fn ci2_board_tickers_first_tick_paths() {
     let wiring = init_cluster(&f.ctx).await.expect("init ok #1");
     let _ = wiring;
     // 首 tick 立即执行：停车场（estop continue）+ 派发 sweep（现读 3600 + 实扫
-    // 空看板）+ D4（board 段在场 → cell/sink 更新）。
+    // 空看板）+ （board 段在场 → cell/sink 更新）。
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // 第二形态：estop 释放 + store 缺席 → 停车场首拍走 store None continue；
@@ -7086,7 +7086,7 @@ async fn ci2_vault_reference_broken_fails_closed() {
     );
 }
 
-/// BUG-20261102-297：空 token 同款 fail-closed——init_cluster 装配后
+/// 空 token 同款 fail-closed——init_cluster 装配后
 /// rpc_auth_unavailable 统一裁决为 true，RPC 绑定点拒绝 bind（宁可没有
 /// RPC，不可无认证 RPC）。
 #[cfg(all(
@@ -7126,8 +7126,8 @@ async fn ci2_empty_token_fails_closed() {
 }
 
 /// call_fn 自环（registry peer 指向自身 RPC server 的真实 TCP 回环）：
-/// ACK accepted → CD1 TaskManager 登记（成功 + 同 id 幂等 Err 两臂）；
-/// ACK 拒绝 → 占位续行快照清理；非 peer_chat action → 不做 CD5 预生成。
+/// ACK accepted → TaskManager 登记（成功 + 同 id 幂等 Err 两臂）；
+/// ACK 拒绝 → 占位续行快照清理；非 peer_chat action → 不做 预生成。
 #[cfg(all(
     feature = "board",
     feature = "cluster",
@@ -7166,7 +7166,7 @@ async fn ci2_call_fn_self_loopback_ack_and_cd1_registration() {
         "unknown",
     );
 
-    // ① 成功 ACK → CD1 登记 Pending（首次 submit OK 臂）。
+    // ① 成功 ACK → 登记 Pending（首次 submit OK 臂）。
     let ack = call_fn(
         "loop-peer",
         "peer_chat",
@@ -7192,7 +7192,7 @@ async fn ci2_call_fn_self_loopback_ack_and_cd1_registration() {
     assert_eq!(tm_task.status, nemesis_types::cluster::TaskStatus::Pending);
     assert_eq!(tm_task.peer_id, "loop-peer");
 
-    // ② 调用方自带同一 task_id 再派 → CD1 重复登记（幂等 Err 臂）。
+    // ② 调用方自带同一 task_id 再派 → 重复登记（幂等 Err 臂）。
     let ack2 = call_fn(
         "loop-peer",
         "peer_chat",
@@ -7232,11 +7232,11 @@ async fn ci2_call_fn_self_loopback_ack_and_cd1_registration() {
     let r = call_fn("loop-peer", "no_such_action", serde_json::json!({})).await;
     assert!(r.is_err(), "unknown action must surface error");
 
-    // CD1 登记过的任务仍在册（不会被 ④ 影响）。
+    // 登记过的任务仍在册（不会被 ④ 影响）。
     assert!(cluster.task_manager().get_task(&ack_task).is_some());
 }
 
-/// 恢复交付回调（CD3）：经自环 query_task_result 查回 done 结果 → TaskManager
+/// 恢复交付回调：经自环 query_task_result 查回 done 结果 → TaskManager
 /// 收口 + bus 续行帧 + 交付回调（chat 任务短路 true；board 任务写回 + 评审
 /// spawn + settled）→ confirm 删 worker 副本。
 #[cfg(all(
@@ -7336,7 +7336,7 @@ async fn ci2_recovered_delivery_callback_routes_chat_and_board() {
             .any(|t| t.id == "rec-chat-1" || t.id == "rec-board-1"),
         "recovered tasks must leave pending set"
     );
-    // bus 续行帧（done 分支 G5 唤醒）。
+    // bus 续行帧（done 分支 唤醒）。
     let mut saw_continuation = 0;
     while let Ok(msg) = bus_rx.try_recv() {
         if msg.sender_id.starts_with("cluster_continuation:rec-") {
@@ -7362,9 +7362,9 @@ async fn ci2_recovered_delivery_callback_routes_chat_and_board() {
 }
 
 // -------------------------------------------------------------------------
-// Wave5 round2 batch2a: post_agent.rs 深水区 —— workflow 触发驱动循环体
+// Wave5 batch2a: post_agent.rs 深水区 —— workflow 触发驱动循环体
 // （855-1001）/ usage watcher + retention sweep（data_store 门）/ board
-// watcher 发布体 / enabled 形态 first_start + CD4 在途派发重建（358-378、
+// watcher 发布体 / enabled 形态 first_start + 在途派发重建（358-378、
 // 566-569）/ 资产 secret 损坏 fail-safe（604）。
 // -------------------------------------------------------------------------
 
@@ -7513,8 +7513,8 @@ async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
     // retention sweep / usage watcher 已在 sleep 期间跑过首轮——无 panic 即过。
 }
 
-/// enabled 形态 init_post_agent：first_start Ok 路径（恢复 + G5 重建 +
-/// CD4 看板在途派发重建）。预置一条在途 dispatch（worker = 静态 peer，
+/// enabled 形态 init_post_agent：first_start Ok 路径（恢复 + 重建 +
+/// 看板在途派发重建）。预置一条在途 dispatch（worker = 静态 peer，
 /// registry 可解析、时间新鲜），断言 init 后 task_manager 里出现重建的
 /// Pending 任务；board_role 走 cluster 分支（cluster_should_start=true），
 /// 资产 secret Ok 臂正常落盘。
@@ -7572,7 +7572,7 @@ async fn pa2_enabled_cluster_rebuilds_pending_from_board_dispatches() {
         .await
         .expect("init_post_agent ok (first_start Ok path)");
 
-    // CD4：在途派发重建为 TaskManager Pending 任务。
+    // 在途派发重建为 TaskManager Pending 任务。
     let adapter = wiring.cluster_adapter.as_ref().expect("adapter");
     let pending = adapter.cluster().task_manager().list_pending_tasks();
     assert!(
@@ -7617,7 +7617,7 @@ async fn pa2_corrupt_asset_secret_disables_asset_serving_but_init_survives() {
 }
 
 // -------------------------------------------------------------------------
-// Wave5 round2 batch2c: runtime.rs guardian 装配矩阵（296-378）——
+// Wave5 batch2c: runtime.rs guardian 装配矩阵（296-378）——
 // small_model 可解析 → provider Ok 臂；可解析但 protocol 未知 → create Err
 // 回落臂；small_model 未配置 → None 臂（info + 主模型回落）。
 // -------------------------------------------------------------------------
@@ -7625,7 +7625,7 @@ async fn pa2_corrupt_asset_secret_disables_asset_serving_but_init_survives() {
 /// critical + small_model 可解析且 provider 构造成功（openai 协议推断 →
 /// HttpCompat）：judge 用 small model 通道装配。
 #[cfg(all(
-    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -7654,7 +7654,7 @@ async fn run_runtime_guardian_critical_small_model_provider_ok_arm() {
 /// critical + small_model 可解析但 protocol 未知 → create_provider Err →
 /// 回落主模型（warn 臂 + 主模型三元组）。
 #[cfg(all(
-    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -7683,7 +7683,7 @@ async fn run_runtime_guardian_critical_small_model_provider_create_err_arm() {
 /// high + small_model 未配置 → None 臂（info 提示 + 主模型三元组）。
 /// 高危形态裁决走破坏形态预筛：CRITICAL/HIGH 工具 + 破坏词表命中才进审。
 #[cfg(all(
-    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, 2026-09-02 convention)
+    windows, // Windows-form (EnvHomeGuard + GLOBAL_STATE_LOCK; Linux nightly: excluded, convention)
     feature = "board",
     feature = "cluster",
     feature = "forge",
@@ -7714,7 +7714,7 @@ async fn run_runtime_guardian_high_without_small_model_none_arm() {
 }
 
 // ===========================================================================
-// wave5 round2（2026-09-25）：relay 纯中继两臂（空 token fail-closed /
+// wave5：relay 纯中继两臂（空 token fail-closed /
 // port 0 全链路真装配即起即弃）、security_setup 深水键（DLP 尾键 / 审计链
 // 目录自建失败臂 / 审批超时 0 值守卫与合法值 / log_all_operations / typed
 // limits 合法与非法两臂 / 审计文件禁用 info / scanner 在场缺席两形态 /
@@ -7929,7 +7929,7 @@ mod w5bdisp {
     /// 档案管线派发（基线行在场）+ 交付成功 → merge WaitingChangeset →
     /// 「📦 变更集在途」系统评论，且不转 in_review。
     ///
-    /// 📦 评论断言已放宽（F-B8，2026-09-25 全量跑实录）：merge_and_maybe_review
+    /// 📦 评论断言已放宽（F-， 全量跑）：merge_and_maybe_review
     /// 读进程级 MERGE_DEPS OnceLock，gateway 装配（post_agent.rs:168）在任何
     /// 引导类测试先跑时会装上「异店」deps——异店 get_dispatch_baseline(本
     /// task) 落空 → NotArchivePipeline → 静默 `_ => {}`，📦 不落。全量并行
@@ -8150,7 +8150,7 @@ mod w5bdisp {
 }
 
 // -------------------------------------------------------------------------
-// roster_state tests（P3 T8：announce 清单 state 判定，纯函数钉死）
+// roster_state tests（announce 清单 state 判定，纯函数钉死）
 // -------------------------------------------------------------------------
 
 #[test]
@@ -8191,7 +8191,7 @@ fn test_roster_state_other_agent_alive_does_not_leak() {
 }
 
 // -------------------------------------------------------------------------
-// migrate_legacy_max_tool_iterations（2026-10-19 旧模板值迁移）
+// migrate_legacy_max_tool_iterations（旧模板值迁移）
 // -------------------------------------------------------------------------
 
 #[test]
@@ -8257,7 +8257,7 @@ fn test_migrate_legacy_max_tool_iterations_absent_file_is_noop() {
 
 #[test]
 fn test_migrate_legacy_max_tool_iterations_write_is_atomic() {
-    // BUG-20261031-257：迁移改写主 config.json 走 REL-002 统一原子写入
+    // 迁移改写主 config.json 走 统一原子写入
     //（截断的主 config 是集群禁用级杀伤面，BUG-251 同源）——证据 = 无
     // .tmp-* 残留 + 改写后文件完整可解析。
     let dir = tempfile::tempdir().unwrap();

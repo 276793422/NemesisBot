@@ -127,7 +127,7 @@ fn test_should_run_node_expression_inequality() {
     assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
-/// 缺陷 8 回归（2026-09-23 E2E 实测）：带模板的条件边表达式
+/// 缺陷 8 回归（E2E 实测）：带模板的条件边表达式
 /// `{{fetch.status_code}} == 200` 曾因「resolve 后非空即真」恒放行，
 /// 双分支全跑。钉死：模板在条件表达式中必须真实参与比较。
 #[test]
@@ -190,7 +190,7 @@ fn test_should_run_node_template_numeric_comparison() {
     assert!(eval_edge_conditions("degrade", &cond_edges, &wf_ctx).unwrap());
 }
 
-/// 缺陷 15 回归（2026-09-23 E 级复核实测）：条件边引用不存在的字段
+/// 缺陷 15 回归（E 级复核实测）：条件边引用不存在的字段
 /// （生成器把 condition 输出幻觉成 `passed`，实际是 `condition_result`），
 /// 旧路径占位符原样残留落「非空即真」——正向恒放行、取反恒拦截，路由
 /// 与数据脱钩。钉死：必须 Err 且错误点名节点与条件原文；正确字段照常路由。
@@ -627,7 +627,7 @@ fn test_build_executor_context_includes_input_fields() {
     );
 }
 
-/// 缺陷 13 回归（2026-09-23）：对象型 input 条目必须按 `key.field` 平铺一层
+/// 缺陷 13 回归：对象型 input 条目必须按 `key.field` 平铺一层
 /// （与 node_results 约定一致），否则 webhook 契约的 `{{payload.value}}` 在
 /// 平铺字符串替换的模板解析下恒为空串原样残留。
 #[test]
@@ -733,7 +733,7 @@ fn test_topological_sort_chain_of_5() {
 }
 
 // ---------------------------------------------------------------------------
-// Cancellation tests (1a-A2)
+// Cancellation tests (1a-)
 // ---------------------------------------------------------------------------
 
 /// Executor that sleeps for a configured duration unless cancelled.
@@ -855,7 +855,7 @@ async fn test_schedule_completes_without_cancel() {
 }
 
 // ---------------------------------------------------------------------------
-// schedule_resume tests (1b-A1 step 4)
+// schedule_resume tests (1b step 4)
 // ---------------------------------------------------------------------------
 
 /// Test executor that records every invocation in a shared vector so tests
@@ -1119,7 +1119,7 @@ async fn schedule_resume_skip_set_independent_of_conditional_edges() {
 
 /// 已 Waiting 的节点在 resume 路径是**暂停屏障**，不是「待运行」——重跑会
 /// 重新执行其副作用（sub_workflow 执行器每次 execute 都 spawn 新子执行：
-/// 旧子执行孤儿化、路由锚被换新；BUG-20261103-349）。且本层全被跳过时
+/// 旧子执行孤儿化、路由锚被换新）。且本层全被跳过时
 /// 不得落空 `continue` 进下游层——「审批未落地下游不抢跑」（缺陷 9）对
 /// skip 集之外的暂停屏障同样成立。
 #[tokio::test]
@@ -1229,7 +1229,7 @@ async fn schedule_resume_preserved_waiting_is_pause_barrier() {
 }
 
 // =========================================================================
-// W4a coverage batch — scheduler.rs gap closure
+// coverage batch — scheduler.rs gap closure
 // =========================================================================
 
 /// Edge pointing at a node that isn't in the definition: the unknown target
@@ -1590,7 +1590,7 @@ async fn w4a_schedule_node_timeout_fails_node() {
     );
 }
 
-/// BUG-20261025-86：`timeout: "0"` = 不限，节点正常跑完；不是
+/// `timeout: "0"` = 不限，节点正常跑完；不是
 /// `timeout(Duration::ZERO)` 在首个 await 点即 Elapsed（"timed out after
 /// 0s" → 退避重试烧完 → 工作流 Failed）。旧实现下本测试毫秒级 FAILED
 /// （schedule 返回 Err），修复后 ~300ms 绿。项目全局约定 0=关/不限
@@ -1729,7 +1729,7 @@ async fn w4a_schedule_object_output_propagates_fields() {
 }
 
 // ===========================================================================
-// S12b batch（quality-hardening goal 冲刺）：per-node timeout 的 select!
+// batch（quality-hardening goal 冲刺）：per-node timeout 的 select!
 // 成功臂（scheduler.rs ~346-352）+ 节点任务 panic 的收集臂（~427-431）。
 // 注：`(id, None, None)` 且外层 token 未取消的组合在单 token 设计下会被
 // collect 阶段的 biased cancel 臂先行短路，属防御性死臂（见冲刺报告）。

@@ -1,6 +1,6 @@
-//! `nemesisbot vault` —— 凭据 vault CLI（P0 安全升级）。
+//! `nemesisbot vault` —— 凭据 vault CLI（安全升级）。
 //!
-//! 与 `nemesisbot credentials`（模型 API key 的 yaml 引用存储，U15）和
+//! 与 `nemesisbot credentials`（模型 API key 的 yaml 引用存储）和
 //! `nemesisbot auth`（OAuth 凭据存储）语义不同：vault 是**通用加密秘密存储**
 //! （`workspace/config/vault.enc`，AES-256-GCM + DPAPI/Argon2id）。
 //!
@@ -34,11 +34,11 @@ pub enum VaultAction {
     List,
     /// 删除一个别名（需确认）。
     Remove { alias: String },
-    /// 迁移模型 API key 到 vault（P0 B2）：config.json 明文 key 与
+    /// 迁移模型 API key 到 vault：config.json 明文 key 与
     /// credentials.yaml 条目 → vault 别名，配置回写 `vault:<alias>`。
     /// 幂等——已迁移的条目跳过；同值复用别名，异值加后缀不覆盖。
     Migrate,
-    /// 绑定别名域白名单（L26②）：允许 alias 在 tool 的 slot 槽位免卡使用
+    /// 绑定别名域白名单（②）：允许 alias 在 tool 的 slot 槽位免卡使用
     /// （dispatch 凭据闸 v2：域内直过/出域审计拒绝）。写
     /// `<workspace>/config/config.vault.json`（明文策略面，不触 vault.enc）。
     /// 幂等——完全相同的 (tool, slot) 重复绑定不追加。
@@ -53,7 +53,7 @@ pub enum VaultAction {
         #[arg(long)]
         slot: String,
     },
-    /// 解除绑定（L26②）。`--tool` 缺省 = 删该别名全部绑定；
+    /// 解除绑定（②）。`--tool` 缺省 = 删该别名全部绑定；
     /// `--slot` 缺省 = 删该工具下全部槽位绑定。
     Unbind {
         alias: String,
@@ -62,7 +62,7 @@ pub enum VaultAction {
         #[arg(long)]
         slot: Option<String>,
     },
-    /// 列出全部域绑定（明文策略面，L26②）。
+    /// 列出全部域绑定（明文策略面，②）。
     Bindings,
 }
 
@@ -81,7 +81,7 @@ fn passphrase_for_mode(mode: VaultMode) -> Result<Option<String>> {
     }
 }
 
-/// prompt 口令非空验收（BUG-20261028-101）：运行时解锁面
+/// prompt 口令非空验收：运行时解锁面
 /// （`vault_runtime::open_unlocked`）把空 `NEMESISBOT_VAULT_PASSPHRASE`
 /// 视作未设置——prompt 直接回车创建的空口令 vault 会在 gateway/run 等全部
 /// 运行时消费面永久锁死（只有 CLI 手动 unlock 可开）。仅空白（非空）口令
@@ -172,7 +172,7 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
         VaultAction::List => {
             // List 永不见值：元数据明文可读、未解锁也能列（vault.rs 设计要点）。
             // 此前走 open_or_create 强制解锁——忘口令的用户连别名清单都列不出
-            // （BUG-20261028-101）。缺失 vault 保留创建语义
+            // 。缺失 vault 保留创建语义
             // （run_arms::list_on_missing_vault_creates_it_and_reports_empty）。
             let store = if vault_path.exists() {
                 VaultStore::open(&vault_path)
@@ -363,7 +363,7 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
     Ok(())
 }
 
-/// L26② 绑定配置路径：`<workspace>/config/config.vault.json`
+/// ② 绑定配置路径：`<workspace>/config/config.vault.json`
 /// （`workspace_config_dir` 单一定义；与 gate 侧 config_path.parent()
 /// 推导同点）。
 fn vault_domain_config_path(home: &std::path::Path) -> Result<std::path::PathBuf> {
@@ -393,10 +393,10 @@ fn save_domain_config(
         .map_err(|e| anyhow::anyhow!("写绑定配置失败（{}）: {e}", path.display()))
 }
 
-/// P0 B2（2026-09-22 计划 §2.4）：模型 key 迁移——CLI 壳。
+/// （计划）：模型 key 迁移——CLI 壳。
 ///
-/// 迁移核心已下沉 `nemesis_security::vault::migrate_model_keys_to_vault`
-/// （raw Value 单一真相源，2026-10-27 与 WSAPI `models.migrate_keys` 共用）；
+/// 迁移核心已下沉 `nemesis_security::vault:migrate_model_keys_to_vault`
+/// （raw Value 统一定义， 与 WSAPI `models.migrate_keys` 共用）；
 /// 本壳只负责定位文件、装配 creds、按顺序不变量落盘：
 ///
 /// 持久化顺序不变量：**vault 落盘先于 config 回写**——迁移的本质是

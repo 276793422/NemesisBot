@@ -81,16 +81,16 @@ pub fn plugins_native_config_path(config_dir: &Path) -> std::path::PathBuf {
     config_dir.join("config.plugin.native.json")
 }
 
-/// 旧版开关文件路径（2026-10-22 前的 `plugins_native.json`，仅迁移用）。
+/// 旧版开关文件路径（前的 `plugins_native.json`，仅迁移用）。
 const LEGACY_FILE_NAME: &str = "plugins_native.json";
 
 /// 惰性迁移：新版文件缺席且旧版在场 → 旧内容原样落到新版文件名，删除旧
 /// 文件。失败不阻塞读路径（WARN + 留守旧位，下次再试）。
 ///
-/// **调用方必须已持 `config_write_lock`**（BUG-20261104-370：读路径
+/// **调用方必须已持 `config_write_lock`**（读路径
 /// `load_enabled` 的迁移调用曾零锁——rename 会把并发 `set_enabled` 刚落盘
 /// 的开关文件整个替换成旧内容（Windows/Unix rename 皆覆盖已存在目标），
-/// 用户切换静默回退；同族先例 BUG-20261103-333 在 plugin_wasm
+/// 用户切换静默回退；同族先例 在 plugin_wasm
 /// load_switches 修过同构位点）。写侧（`set_enabled`）自带罩锁；重复调用
 /// 靠「新版在场即短路」幂等。
 fn migrate_legacy_file(path: &Path) {
@@ -104,7 +104,7 @@ fn migrate_legacy_file(path: &Path) {
         let _ = std::fs::remove_file(&legacy);
         return;
     }
-    // 同目录 rename = 原子迁移（BUG-20261025-45：旧「读+写+删」中段崩溃
+    // 同目录 rename = 原子迁移（旧「读+写+删」中段崩溃
     // 新旧两份全丢；rename 失败源文件原位留守，下次读重试）。
     match std::fs::rename(&legacy, path) {
         Ok(()) => tracing::info!(
@@ -141,7 +141,7 @@ fn default_true() -> bool {
 /// 放行（开关文件损坏不应肢解产品功能——损坏本身由写入方负责，读侧诚实
 /// 放行并让日志可见性留给调用方）。首次调用完成旧文件名惰性迁移。
 ///
-/// BUG-20261104-370：本函数**非纯读**（首读可能触发迁移 rename 落盘），
+/// 本函数**非纯读**（首读可能触发迁移 rename 落盘），
 /// 全程罩 `config_write_lock`——不入「读路径不入锁」豁免（与 plugin_wasm
 /// `load_switches` 同款纪律；本函数在 gateway 是热路径：wasm 运行期总闸
 /// 每 guest 命令/面板帧经 `runtime_enabled` 到此，迁移窗口内与 Dashboard
@@ -164,7 +164,7 @@ pub fn load_enabled(config_dir: &Path, id: NativePluginId) -> bool {
 }
 
 /// 写开关（读-改-写整文件；文件不存在 = 只写目标键。保留其他插件条目）。
-/// 原子落盘（`write_file_atomic`，BUG-20261025-45：直写撕裂会让下次 RMW
+/// 原子落盘（`write_file_atomic`，直写撕裂会让下次 RMW
 /// 以空底重建、静默抹掉全部兄弟插件条目）；罩 config 家族写串行锁
 /// （与 config 写臂族互斥，同 approval_rules 惯例）。
 pub fn set_enabled(config_dir: &Path, id: NativePluginId, enabled: bool) -> Result<(), String> {

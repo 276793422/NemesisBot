@@ -111,7 +111,7 @@ pub struct NetworkInterface {
 /// consumers of this list (broadcast-address enumeration in `listener.rs`,
 /// subnet matching in `is_same_subnet`) must still see those interfaces or
 /// discovery structurally cannot work on such networks. See
-/// `docs/REPORT/2026-09-01_link-local-discovery-fix.md`.
+/// `link-local-discovery-fix`.
 pub fn get_local_network_interfaces() -> Vec<NetworkInterface> {
     let mut result = get_local_network_interfaces_impl();
     supplement_apipa_interfaces(&mut result);
@@ -277,7 +277,7 @@ struct CandidateIp {
 /// 4. Sorts by interface priority (Ethernet > WiFi > Other), link-local last.
 /// 5. Falls back to the UDP-connect trick if interface enumeration fails.
 /// 6. Windows: if-addrs misses APIPA (169.254/16) addresses entirely
-///    (`ipconfig` shows them, enumeration doesn't — 2026-10-12 acceptance
+///    (`ipconfig` shows them, enumeration doesn't — acceptance
 ///    verified), so `GetAdaptersAddresses` supplements them at the tail.
 ///    On direct-cable / ICS topologies link-local is the *only* interconnect.
 pub fn get_all_local_ips() -> Vec<String> {
@@ -320,7 +320,7 @@ fn enumerate_filtered_ips() -> Option<Vec<String>> {
                 continue;
             }
 
-            // P3：vethernet 命名 + 172.16.0.0/12 NAT 段 = Hyper-V/WSL
+            // vethernet 命名 + 172.16.0.0/12 NAT 段 = Hyper-V/WSL
             // 内部交换机（Windows 外部 vSwitch 挂真网卡时地址是真实
             // 网段，不受影响）。
             if is_vethernet_nat_addr(&iface.name, v4) {
@@ -362,7 +362,7 @@ fn fallback_local_ip() -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// R1: Windows APIPA (169.254/16) supplement
+// Windows APIPA (169.254/16) supplement
 // ---------------------------------------------------------------------------
 
 /// Supplement link-local (169.254/16) addresses that `if_addrs` missed on
@@ -404,7 +404,7 @@ fn supplement_apipa_interfaces(result: &mut Vec<NetworkInterface>) {
     }
 }
 
-/// R1 纯函数核（接口形态）：把单个 adapter 的 (IPv4, 前缀长) 列表里该入
+/// 纯函数核（接口形态）：把单个 adapter 的 (IPv4, 前缀长) 列表里该入
 /// 表的 link-local 项转成 NetworkInterface（掩码由前缀长推导）追加——
 /// 跳过虚拟接口，按 ip 去重。FFI 侧逐 adapter 委托本函数。
 #[cfg(target_os = "windows")]
@@ -446,13 +446,13 @@ fn collect_adapter_link_local_ifaces(
     }
 }
 
-/// R1 纯函数核：从单个 adapter 的（名称, IPv4 列表）里挑出该入池的
+/// 纯函数核：从单个 adapter 的（名称, IPv4 列表）里挑出该入池的
 /// link-local 候选——跳过虚拟接口与回环，去重追加。FFI 侧把
 /// GetAdaptersAddresses 的链表拉平成这个形状后委托本函数，单测用合成
 /// adapter 数据钉死行为（实机断言归真机腿）。
 /// allow(dead_code)：唯一生产调用方在 `#[cfg(windows)]` 的
 /// windows_apipa_ips 里，非 Windows lib 目标下仅测试可见——不加门控会让
-/// Linux clippy -D warnings 门禁红（先例：本文件 prefix_len_to_mask）。
+/// Linux clippy -D warnings 门禁红（本文件 prefix_len_to_mask）。
 #[allow(dead_code)]
 fn collect_adapter_link_local(name: &str, ips: &[Ipv4Addr], out: &mut Vec<String>) {
     if is_virtual_interface(name) {
@@ -638,7 +638,7 @@ pub fn is_virtual_interface(name: &str) -> bool {
         "anpi",
         "ipsec",
         "loopback",
-        // P3（2026-09-11 真机日志）：Windows Hyper-V/WSL 内部虚拟交换机——
+        // （真机日志）：Windows Hyper-V/WSL 内部虚拟交换机——
         // "vEthernet (WSL (Hyper-V firewall))"、"vEthernet (Default Switch)" 等。
         // 这些地址（172.16-31.x NAT 段）对宿主机外不可达，进 announce 只会让
         // 对端白等 dial timeout。真实网卡绑外部 vSwitch 的地址是真实网段，
@@ -672,7 +672,7 @@ pub fn is_virtual_interface(name: &str) -> bool {
     false
 }
 
-/// P3（2026-09-11 真机日志）：vethernet 命名的接口持有 172.16.0.0/12 地址
+/// （真机日志）：vethernet 命名的接口持有 172.16.0.0/12 地址
 /// ⇒ Hyper-V/WSL 内部 NAT 交换机，宿主机外不可达。
 ///
 /// 刻意不做全量 "vethernet" 名字过滤——Windows 外部 vSwitch 绑在物理网卡上
@@ -689,7 +689,7 @@ pub fn is_vethernet_nat_addr(name: &str, ip: Ipv4Addr) -> bool {
 
 /// Get the priority score for an interface name (lower = higher priority).
 ///
-/// 发现①/A4（2026-09-15 真机实证）：Linux 命名（eth*/wlan*）之外补 Windows
+/// 发现①/（真机实证）：Linux 命名（eth*/wlan*）之外补 Windows
 /// 友好名（"Wi-Fi"/"Ethernet"/"本地连接"）——此前 Windows 网卡全部落 99，
 /// 排序退化为枚举原序，primary=addresses[0] 纯属运气（多网卡下常选中
 /// worker 不可达的网段，143 次探针风暴的发送侧根因）。
@@ -733,7 +733,7 @@ pub fn get_interface_priority(name: &str) -> u32 {
 // ---------------------------------------------------------------------------
 
 /// Find an available port starting from the given port.
-/// Tries port, port+1, port+2, ... up to 100 attempts.
+/// Tries port, port+1, port+2,... up to 100 attempts.
 pub fn find_available_port(start_port: u16) -> Result<u16, String> {
     for offset in 0..100u16 {
         let port = start_port.saturating_add(offset);

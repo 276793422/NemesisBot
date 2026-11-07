@@ -1,11 +1,11 @@
 //! tool_dispatch.rs 安全管线后续层覆盖（Wave6B）：limits 超限审批直通车
 //! 三分支（批准放行 / 用户拒绝 / 无通道 fail-closed）+ guardian 语义二审
-//! 的升级与故障姿态矩阵（flagged×审批三分支 / judge Err × failure_policy
+//! 的升级与故障姿态矩阵（flagged×审分支 / judge Err × failure_policy
 //! allow·ask·deny）。judge allow / mode-off / flagged 无通道三臂已由
 //! loop/tests.rs 的 guardian e2e 钉死，本文件不重复。
 //!
 //! fixture 自带（兄弟测试模块不能互相 import）。安全层涉及
-//! `tokio::task::block_in_place`，一律 `multi_thread` flavor。
+//! `tokio::task:block_in_place`，一律 `multi_thread` flavor。
 
 #![cfg(feature = "security")]
 
@@ -242,7 +242,7 @@ enum ApproveBehavior {
     Approve,
     Reject,
     Fail,
-    /// 修1（BUG-B 2026-11-04 交叉态回归锁）：批准前先阻塞指定毫秒——
+    /// （交叉态回归锁）：批准前先阻塞指定毫秒——
     /// 模拟人工裁决延迟（真实 WebApprovalManager 最长 300s，这里用短
     /// sleep 保持测试时长可控）。同步阻塞对齐真实 asker 的同步语义。
     SlowApproveMs(u64),
@@ -366,7 +366,7 @@ async fn guardian_flagged_user_approved_executes() {
     assert_eq!(out, "executed_ok", "用户批准后必须放行执行（不拦）: {out}");
 }
 
-/// 修1（BUG-B 2026-11-04 交叉态回归锁）：审批等待必须计入 ToolFinished
+/// （交叉态回归锁）：审批等待必须计入 ToolFinished
 /// duration——dispatch 入口先取 `dispatch_started`，guardian 升级到人工审批
 /// 阻塞 N ms 后才执行工具体；ToolEventHook 发出的 ToolFinished.duration_ms
 /// 由 dispatch_started 起算，因此必须 ≥ 审批等待时长（此前 UI 显示 0ms 的
@@ -556,7 +556,7 @@ async fn guardian_failure_policy_deny_denies() {
 }
 
 /// judge Err + failure_policy=未知非空值 → 从严按 deny 处理（other 臂，
-/// 复核 2026-09-16 的 fail-closed 加固语义）。
+/// 复核 的 fail-closed 加固语义）。
 #[cfg(feature = "security")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn guardian_failure_policy_unknown_value_treated_as_deny() {
@@ -578,7 +578,7 @@ async fn guardian_failure_policy_unknown_value_treated_as_deny() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261102-296：mcp_discover 分类失真投影的 dispatch 端到端
+// mcp_discover 分类失真投影的 dispatch 端到端
 // ---------------------------------------------------------------------------
 
 /// 真实 dispatch 链路（嗅探 operation_override → metadata override_op_type
@@ -632,7 +632,7 @@ async fn mcp_discover_stdio_command_hits_process_deny_rule_e2e() {
     );
 
     // url 臂（无 command）→ 无投影 → 静态 NetworkRequest 档 → process 规则
-    // 不适用（SSRF 已在本 fixture 关闭；回环 :1 连接秒拒，无外网依赖）。
+    // 不适用（SSRF 已在本 fixture 关闭；回环:1 连接秒拒，无外网依赖）。
     let out = agent_loop
         .handle_tool_call(
             &sec_call("mcp_discover", r#"{"url": "http://127.0.0.1:1/mcp"}"#),

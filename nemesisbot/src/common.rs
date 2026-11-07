@@ -27,9 +27,14 @@ pub fn ensure_exe_in_path() -> bool {
         Err(_) => exe_dir,
     };
 
-    let path_var = match std::env::var("PATH") {
-        Ok(v) => v,
-        Err(_) => {
+    // var_os 而非 var：PATH 存在但含非 UTF-8 字节（Unix 合法；Windows 为
+    // 未配对代理对经 WTF-8）时 var() 报 NotUnicode——若与 NotPresent 同臂
+    // 处理，下面会把整条用户 PATH 清成只剩 exe 目录（工具解析面静默塌缩，
+    // 且与本分支注释「No PATH at all」的前提矛盾）。var_os + lossy：存在
+    // 的 PATH 永不进此臂；病态字节降级为 U+FFFD 只损失该条目自身。
+    let path_var = match std::env::var_os("PATH") {
+        Some(v) => v.to_string_lossy().into_owned(),
+        None => {
             // No PATH at all — just set it
             // SAFETY: This runs during gateway startup, single-threaded init phase.
             // No other threads are reading or writing the PATH environment variable.
@@ -68,8 +73,8 @@ pub fn ensure_exe_in_path() -> bool {
 
 /// Resolve the NemesisBot home directory.
 ///
-/// BUG-20261102-316 收敛：非 `--local` 分支委托
-/// [`nemesis_path::resolve_home_dir`]（单一真相源）——此前此处是一份平行
+/// 收敛：非 `--local` 分支委托
+/// [`nemesis_path::resolve_home_dir`]——此前此处是一份平行
 /// 实现，与 crate 侧三处分叉：env 值不展开 `~/`（`NEMESISBOT_HOME=~` 按
 /// 字面量落 cwd 下 `~` 目录）、`{exe_dir,cwd}/.nemesisbot` 用 `exists()`
 /// 判定（文件占位也误认 home），doc 优先级序还与代码写反。crate 侧版本
@@ -128,7 +133,7 @@ pub fn cluster_config_path(home: &Path) -> PathBuf {
 }
 
 /// Get the QUIC relay config file path（config.quic.json——QUIC 自身全部配置，
-/// 2026-10-23 与集群解耦）。
+/// 与集群解耦）。
 pub fn quic_config_path(home: &Path) -> PathBuf {
     // 委托 nemesis-path 唯一拼接点（与 cluster_config_path 同款纪律）。
     nemesis_path::resolve_quic_config_path_in_workspace(&workspace_path(home))
@@ -154,7 +159,7 @@ pub fn forge_config_path(home: &Path) -> PathBuf {
 
 /// Get the CORS config file path.
 ///
-/// 2026-08-29 收编：落位 `<workspace>/config/cors.json`（nemesis-path 真相源）。
+/// 收编：落位 `<workspace>/config/cors.json`（nemesis-path 真相源）。
 /// 一次性迁移 legacy `<home>/config/cors.json`（copy-once：新位已存在则不动，
 /// legacy 保留——与 hooks.json 迁移同款先例）。
 pub fn cors_config_path(home: &Path) -> PathBuf {
@@ -342,7 +347,7 @@ pub fn print_help() {
 /// a panic inside a `tokio::spawn` task only kills that task (the process
 /// keeps running), so the crash would otherwise be invisible in the
 /// persistent logs. Real precedent: an axum router build panic in the web
-/// task left only a stderr trace (docs/INFO/2026-09-30_test-case-library.md).
+/// task left only a stderr trace (test-case-library).
 ///
 /// The previous hook is preserved and invoked after the tracing record, so
 /// stderr behaviour is unchanged. Idempotent via `OnceLock` — both logger
@@ -384,7 +389,7 @@ fn install_panic_hook() {
 
 /// Initialize a default console logger for simple CLI commands.
 ///
-/// Uses `std::sync::OnceLock` to ensure the subscriber is only installed once.
+/// Uses `std::sync:OnceLock` to ensure the subscriber is only installed once.
 /// Commands like gateway/agent/daemon call `init_logger_from_config()` instead,
 /// which reads the logging section from config.json. This function is for all
 /// other commands (status, model, cron, etc.) that just need basic console output.
@@ -407,6 +412,98 @@ pub const LOG_DEBUG: u32 = 1;
 pub const LOG_QUIET: u32 = 2;
 pub const LOG_NO_CONSOLE: u32 = 4;
 
+/// `logging.general` 段的解析结果（BUG-20261107-007：解析提为纯函数——
+/// 装配侧与测试共用同一真相源。此前写侧（log.rs）与读侧（init 装配）各自
+/// 维护键表/值表：`enabled` 键写而不读（`log general disable` 宣称生效
+/// 实际无效）；`FATAL` 写侧接受、读侧不识（静默落 INFO，宽松方向）。
+#[derive(Debug, PartialEq)]
+pub(crate) struct GeneralLoggingSettings {
+    /// 总开关（`enabled` 键；缺省 true。false = 不装配任何日志层，
+    /// 与 `--quiet` 同款早退语义）。
+    pub enabled: bool,
+    pub enable_console: bool,
+    pub level: tracing::Level,
+    /// 文件路径（已解析：相对路径锚定 home/workspace）。None = 不装文件层。
+    pub file: Option<String>,
+}
+
+impl Default for GeneralLoggingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            enable_console: true,
+            level: tracing::Level::INFO,
+            file: None,
+        }
+    }
+}
+
+/// 日志级别字符串 → tracing 级别（lenient：未识别落 INFO）。
+///
+/// `FATAL` 映射 ERROR：tracing 无 FATAL 级，而 CLI（`log general level`）
+/// 接受 FATAL 写盘——此前读侧映射表不识该值，静默落 INFO（比 ERROR 宽松
+/// 两级，与用户「只要致命错」意图完全相反）。ERROR 是 tracing 可表达的
+/// 最严档。
+pub(crate) fn resolve_general_level(s: &str) -> tracing::Level {
+    match s.to_uppercase().as_str() {
+        "DEBUG" | "TRACE" => tracing::Level::DEBUG,
+        "INFO" => tracing::Level::INFO,
+        "WARN" | "WARNING" => tracing::Level::WARN,
+        "ERROR" | "FATAL" => tracing::Level::ERROR,
+        _ => tracing::Level::INFO,
+    }
+}
+
+/// 解析 config 的 `logging.general` 段成 [`GeneralLoggingSettings`]。
+///
+/// 文件不存在 / 读取失败 / JSON 损坏 / `logging.general` 缺席时整体保持
+/// 缺省（与既有 if-let 链语义一致）；单键类型不符时该键跳过（as_bool/
+/// as_str 失败 = 保留缺省值）。纯解析：不装 subscriber、不碰全局状态。
+pub(crate) fn parse_general_logging(config_path: &Path) -> GeneralLoggingSettings {
+    let mut settings = GeneralLoggingSettings::default();
+    if !config_path.exists() {
+        return settings;
+    }
+    let Ok(data) = nemesis_utils::fsutil::read_config_string(config_path) else {
+        return settings;
+    };
+    let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) else {
+        return settings;
+    };
+    let Some(logging) = cfg.get("logging").and_then(|v| v.get("general")) else {
+        return settings;
+    };
+
+    if let Some(enabled) = logging.get("enabled").and_then(|v| v.as_bool()) {
+        settings.enabled = enabled;
+    }
+    if let Some(console) = logging.get("enable_console").and_then(|v| v.as_bool()) {
+        settings.enable_console = console;
+    }
+    if let Some(lvl) = logging.get("level").and_then(|v| v.as_str()) {
+        settings.level = resolve_general_level(lvl);
+    }
+    // File path — resolve relative paths against the workspace directory
+    // (config_path's parent is the home dir; workspace is home/workspace).
+    // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
+    if let Some(fp) = logging.get("file").and_then(|v| v.as_str())
+        && !fp.is_empty()
+    {
+        let p = std::path::Path::new(fp);
+        let resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("workspace")
+                .join(p)
+        };
+        settings.file = Some(resolved.to_string_lossy().into_owned());
+    }
+    settings
+}
+
 /// Initialize the logger based on configuration and CLI overrides.
 ///
 /// Reads log configuration from the main config file, then applies
@@ -422,49 +519,10 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
     // stderr behaviour when no subscriber is present.
     install_panic_hook();
 
-    let mut level = tracing::Level::INFO;
-    let mut enable_console = true;
-    let mut file_path: Option<String> = None;
-
-    // Read from config file if it exists
-    if config_path.exists()
-        && let Ok(data) = nemesis_utils::fsutil::read_config_string(config_path)
-        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-        && let Some(logging) = cfg.get("logging").and_then(|v| v.get("general"))
-    {
-        // Console switch
-        if let Some(console) = logging.get("enable_console").and_then(|v| v.as_bool()) {
-            enable_console = console;
-        }
-        // Log level
-        if let Some(lvl) = logging.get("level").and_then(|v| v.as_str()) {
-            level = match lvl.to_uppercase().as_str() {
-                "DEBUG" | "TRACE" => tracing::Level::DEBUG,
-                "INFO" => tracing::Level::INFO,
-                "WARN" | "WARNING" => tracing::Level::WARN,
-                "ERROR" => tracing::Level::ERROR,
-                _ => tracing::Level::INFO,
-            };
-        }
-        // File path — resolve relative paths against the workspace directory
-        // (config_path's parent is the home dir; workspace is home/workspace).
-        // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
-        if let Some(fp) = logging.get("file").and_then(|v| v.as_str())
-            && !fp.is_empty()
-        {
-            let p = std::path::Path::new(fp);
-            let resolved = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                config_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join("workspace")
-                    .join(p)
-            };
-            file_path = Some(resolved.to_string_lossy().into_owned());
-        }
-    }
+    let settings = parse_general_logging(config_path);
+    let mut level = settings.level;
+    let mut enable_console = settings.enable_console;
+    let file_path = settings.file.clone();
 
     // Check CLI argument overrides
     let mut override_flags: u32 = 0;
@@ -488,8 +546,10 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
     }
 
     // Apply configuration
-    if override_flags & LOG_QUIET != 0 {
-        // Quiet mode: use no-op subscriber
+    if override_flags & LOG_QUIET != 0 || !settings.enabled {
+        // Quiet mode（CLI --quiet 显式，或 config general.enabled=false——
+        // BUG-20261107-007：此前该键写而不读，`log general disable` 宣称
+        // 生效实际无效）: use no-op subscriber
         return override_flags;
     }
 
@@ -533,7 +593,7 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
             .and_then(|s| s.to_str())
             .unwrap_or("nemesisbot");
 
-        // (BUG #30, quality-hardening goal 冲刺 S11) 根因：tracing-appender
+        // (, quality-hardening goal 冲刺) 根因：tracing-appender
         // 0.2.5 的 RollingFileAppender::new 内部对日志目录创建失败直接
         // .expect panic（rolling.rs:156）——原先 create_dir_all 失败只 warn
         // 想继续，随后却无条件构造 appender，进程照样 panic（warn-and-
@@ -597,9 +657,9 @@ fn max_level_filter(level: tracing::Level) -> tracing_subscriber::filter::LevelF
 // =========================================================================
 // Interactive mode
 // =========================================================================
-// [2026-08-27 R9 死码处置·已删除] run_interactive_mode（原 554-593 行）：
+// [ 死码处置·已删除] run_interactive_mode（原 554-593 行）：
 // 全仓库零生产调用方（#[allow(dead_code)] 工具函数，grep 实证仅自身定义），
-// 且 stdin 循环在进程内测试无法注入。按用户 2026-08-27 裁决删除——
+// 且 stdin 循环在进程内测试无法注入。按用户 裁决删除——
 // 恢复方式：git 历史本提交前的版本。
 
 // =========================================================================
@@ -643,7 +703,7 @@ pub fn should_skip_heartbeat_for_bootstrap(workspace: &Path) -> bool {
 mod tests;
 
 // =========================================================================
-// 双击直启（2026-09-17）：无窗重生
+// 双击直启：无窗重生
 // =========================================================================
 
 /// env 标记：本进程是无窗重生出来的子进程（Windows 双击检测后
@@ -724,7 +784,7 @@ pub fn try_respawn_detached() -> bool {
     false
 }
 
-/// P0 vault（B3，2026-09-22 计划）：秘密字段引用解析统一 helper。
+/// vault（计划）：秘密字段引用解析统一 helper。
 ///
 /// vault:/env:/yaml: 前缀经 nemesis-config 全局解析器现查（vault 解析器
 /// 由 vault_runtime 在启动路径注入）；字面量原样返回。解析失败 error!
@@ -791,7 +851,7 @@ pub fn is_bootstrap_web_credential(raw: &str) -> bool {
 
 /// SEC-001：绑定 host 是否只落回环。返回 `None` = 无法判定（主机名解析
 /// 失败或零结果）——调用方放行：绑不上的地址不构成暴露面，让既有 bind
-/// 流程自然报错。`0.0.0.0` / `::`（unspecified，绑所有网卡）按非回环处理。
+/// 流程自然报错。`0.0.0.0` / `:`（unspecified，绑所有网卡）按非回环处理。
 pub fn bind_host_is_loopback(host: &str) -> Option<bool> {
     use std::net::ToSocketAddrs;
     let h = host.trim();
@@ -823,7 +883,7 @@ pub fn bind_host_is_loopback(host: &str) -> Option<bool> {
 ///
 /// `field`：报错里如实指认来源配置键（如 `channels.web.auth_token` /
 /// `channels.websocket.auth_token`）——两个闸共用本函数，文案不得硬编码
-/// 通道名误导排障（真机验证 2026-09-23：websocket 闸触发时旧文案错指 web）。
+/// 通道名误导排障（真机验证：websocket 闸触发时旧文案错指 web）。
 pub fn ensure_control_plane_credential(
     bind_host: &str,
     raw_auth_token: &str,

@@ -7,7 +7,7 @@
 //! - 递归深度限制(MAX_RECURSION=3)
 //!
 //! 注意:本 Spike 验证**数据模型支持嵌套**,不验证实际执行流程
-//! (实际执行流程属于 F1-F2 实施范围)
+//! (实际执行流程属于 - 实施范围)
 //!
 //! 运行:`cargo test -p nemesis-workflow --test spike3_nesting -- --nocapture`
 
@@ -454,7 +454,7 @@ fn test_nested_waiting_data_model() {
     println!("\n========== Spike 3 验证点 4: 嵌套 Waiting 场景数据模型 ==========\n");
 
     // 场景:外层 workflow A 在 agent_node 等待,内层 workflow B 在 human_review 等待
-    // 阶段 1 是否支持自动级联 resume?
+    // 是否支持自动级联 resume?
 
     let store = InMemoryCheckpointStore::new();
 
@@ -513,7 +513,7 @@ fn test_nested_waiting_data_model() {
     assert_eq!(innermost_waiting, "exec-B");
 
     // resume 内层后,外层是否自动续行?
-    // 阶段 1 决策:**不自动级联**
+    // 决策:**不自动级联**
     println!("\n→ 阶段 1 决策:");
     println!("  - resume(exec-B, review_result) 只恢复 exec-B");
     println!("  - exec-B 完成后,**不自动**级联恢复 exec-A");
@@ -521,7 +521,7 @@ fn test_nested_waiting_data_model() {
     println!("  - 文档明确,UI(阶段 3)可加'级联 resume'按钮");
 
     // 验证:parent_execution_id 字段足够支持未来"级联 resume"功能
-    // 即使阶段 1 不实现,数据模型已支持
+    // 即使 不实现,数据模型已支持
     let parent_of_b = store.latest("exec-B").unwrap().parent_execution_id;
     assert_eq!(parent_of_b, Some("exec-A".to_string()));
     println!("\n✓ parent_execution_id 字段足够支持未来级联 resume,数据模型正确");

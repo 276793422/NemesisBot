@@ -1,4 +1,4 @@
-//! Capability probe (small-model-tool-robustness plan, Phase 4b).
+//! Capability probe (small-model-tool-robustness plan, b).
 //!
 //! Sends a fixed battery of 7 short tool-use prompts to a model and scores the
 //! responses on three axes — format (did it use the `tool_calls` channel?),
@@ -6,7 +6,7 @@
 //! The aggregate scores map to a [`ModelTier`], giving a direct measurement of
 //! tool-calling ability that complements the name/size heuristic.
 //!
-//! T10（多模态 goal，D9）：第 8 题为**视觉探针**——发一条带 1×1 PNG 的最小
+//! （多模态 goal）：第 8 题为**视觉探针**——发一条带 1×1 PNG 的最小
 //! 请求，不报错 = 模型接受图像输入，结果独立写入 `vision_probe`（不参与
 //! tier 打分）。
 //!
@@ -45,7 +45,7 @@ pub struct ProbeReport {
     pub schema_score: f64,
     pub tier: ModelTier,
     pub per_task: Vec<(String, ProbeScore)>,
-    /// T10（多模态 D9）：第 8 题视觉探针结果。`Some(true)` = 带图请求成功；
+    /// （多模态）：第 8 题视觉探针结果。`Some(true)` = 带图请求成功；
     /// `Some(false)` = 模型拒绝带图请求（非传输类错误）；`None` = 未定
     /// （传输类失败——网络/服务问题不说明模型不支持视觉，不给模型钉
     /// "不支持"）。`Some(_)` 由 CLI 写入 config 的 `vision_probe` 键。
@@ -245,7 +245,7 @@ pub async fn run(provider: &dyn LlmProvider, model: &str) -> Result<ProbeReport,
     let schema_score = sch_sum / n;
     let tier = tier_from_scores(format_score, selection_score, schema_score);
 
-    // T10（多模态 D9）：第 8 题——视觉探针（在工具电池全部跑通后执行；工具
+    // （多模态）：第 8 题——视觉探针（在工具电池全部跑通后执行；工具
     // 任务失败会提前返回 Err，探针不跑）。
     let vision_probe = run_vision_probe(provider, model).await;
 
@@ -259,14 +259,14 @@ pub async fn run(provider: &dyn LlmProvider, model: &str) -> Result<ProbeReport,
     })
 }
 
-/// T10（多模态 D9）：视觉探针载荷——1×1 透明 PNG（70 字节，业界通用最小
+/// （多模态）：视觉探针载荷——1×1 透明 PNG（70 字节，业界通用最小
 /// 合法 PNG）的 base64。以 base64 常量内联避免手抄十六进制出错；载荷合法性
 /// 有单测钉死（签名 + chunk CRC + IDAT 可解压）。
 const VISION_PROBE_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
 /// 传输类错误标记——这类失败不说明模型不支持视觉（网络/服务问题），探针
 /// 结果记为未定（`None`），不写 config。
-/// F-G（2026-09-04 四轮盲审）：补 FailoverError 的 Display 形态——限流渲染
+/// F-G（四轮盲审）：补 FailoverError 的 Display 形态——限流渲染
 /// 为 "rate limited by provider p/m"、过载渲染为 "provider p is overloaded"
 /// （都不含原始数字码，旧表只匹配 "502"/"503" 数字漏接）→ 瞬态 429/5xx
 /// 会被误判 `Some(false)` **永久钉死** vision_probe（探针 > 名字识别的解析
@@ -289,13 +289,13 @@ const VISION_PROBE_TRANSPORT_MARKERS: &[&str] = &[
     "rate limit",
     "overloaded",
     "429",
-    // 2026-09-24：500 走 Unknown Display（"status 500: …"），限流/过载
+    // 500 走 Unknown Display（"status 500: …"），限流/过载
     // Display 都不含它——瞬态 500 误判 Some(false) 同样会钉死探针
     // （与 loop 侧 recovery.rs transient 词表同口径，锚定格式防数字误匹配）。
     "status 500",
 ];
 
-/// T10（多模态 D9）：第 8 题视觉探针——发一条带 1×1 PNG 的最小 user 请求
+/// （多模态）：第 8 题视觉探针——发一条带 1×1 PNG 的最小 user 请求
 /// （无工具），请求不报错 = 模型接受图像输入。传输类失败 → `None`（未定）；
 /// 其余错误（典型为 provider 4xx 拒绝图像字段）→ `Some(false)`。
 /// **只由 CLI `model probe` 调用**，绝不在对话中自动运行。

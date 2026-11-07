@@ -24,7 +24,7 @@ use crate::{DRIVER_SERVICE, SandboxPaths, USERMODE_SERVICE, download, extract, i
 /// or unparseable — matching the pre-switch behavior, so a fresh install stays
 /// offline until the user explicitly enables it from the UI.
 fn read_allow_network(paths: &SandboxPaths) -> bool {
-    // 同一语义的用户态侧消费见 backend::read_executor_allow_network（U11）。
+    // 同一语义的用户态侧消费见 backend::read_executor_allow_network。
     crate::backend::read_executor_allow_network(&paths.home)
 }
 

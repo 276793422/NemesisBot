@@ -96,7 +96,7 @@ fn probe_tasks_has_seven_including_cluster() {
     assert!(tasks.iter().any(|t| t.expected_tool == "cluster_rpc"));
 }
 
-// --- T10（多模态 D9）：第 8 题视觉探针 ---
+// --- （多模态）：第 8 题视觉探针 ---
 
 /// 视觉探针载荷必须是合法 PNG：签名 + chunk 结构/CRC 全对 + IHDR 1×1 + IDAT
 /// 存在（防手抄/替换出错——探针请求真的发这张图；zlib 解压正确性由外部
@@ -188,7 +188,7 @@ fn probe_tool_defs_dedupes() {
     assert!(names.contains(&"cluster_rpc"));
 }
 
-// --- W3a: run() 电池测试（mock provider 按 prompt 分发）---
+// ---: run() 电池测试（mock provider 按 prompt 分发）---
 
 use crate::types::{ChatOptions, ToolDefinition};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -221,7 +221,7 @@ fn empty_resp() -> LlmResponse {
     }
 }
 
-/// 按 user prompt 找到当前任务，再按 mode 生成响应。带图消息（T10 第 8 题
+/// 按 user prompt 找到当前任务，再按 mode 生成响应。带图消息（第 8 题
 /// 视觉探针）优先于电池 prompt 匹配——视觉请求没有工具上下文，走独立分支。
 struct MockProbeProvider {
     mode: &'static str, // "perfect" | "normal" | "mini" | "fail" | "vision_reject" | "vision_transport"
@@ -241,7 +241,7 @@ impl crate::r#loop::LlmProvider for MockProbeProvider {
         if self.mode == "fail" {
             return Err("provider down".to_string());
         }
-        // T10：视觉探针请求（带图、无工具）——结果只取决于 mode。
+        // 视觉探针请求（带图、无工具）——结果只取决于 mode。
         if messages.iter().any(|m| !m.images.is_empty()) {
             return match self.mode {
                 "vision_transport" => Err("error sending request: connection refused".to_string()),
@@ -330,7 +330,7 @@ async fn run_all_perfect_maps_to_big() {
         8,
         "7 tool tasks + 1 vision probe"
     );
-    // T10 第 8 题：带图请求成功 → Some(true)。
+    // 第 8 题：带图请求成功 → Some(true)。
     assert_eq!(report.vision_probe, Some(true));
 }
 
@@ -398,7 +398,7 @@ async fn run_provider_error_propagates_with_task_name() {
     assert_eq!(p.calls.load(Ordering::SeqCst), 1, "fails on first task");
 }
 
-// --- F-G（2026-09-04 四轮盲审）：瞬态错误的 FailoverError Display 形态
+// --- F-G（四轮盲审）：瞬态错误的 FailoverError Display 形态
 // 必须命中传输标记表（误判 Some(false) 会永久钉死 vision_probe）---
 
 #[test]
@@ -412,7 +412,7 @@ fn fg_failover_error_display_forms_are_transport_markers() {
         overloaded.as_str(),
         "HTTP 429 too many requests",
         // 500 走 Unknown Display（failover.rs from_status 落表形态）——
-        // 2026-09-24 安卓端 glm-5.3-flash 间歇 500 实证。
+        // 安卓端 glm-5.3-flash 间歇 500 实证。
         "unknown error from provider anthropic: status 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\"}}",
     ] {
         let lower = err.to_lowercase();

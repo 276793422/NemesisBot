@@ -1,17 +1,17 @@
-//! BUG-20261025-43（BUG-HUNT R120）：persist 原子写 + load 损坏镜像 loud 留痕
+//! persist 原子写 + load 损坏镜像 loud 留痕
 //! 回归锁。
 //!
-//! 修复前 `persist` 用裸 `std::fs::write` 直写目标——崩溃/断电落在写中 →
+//! 修复前 `persist` 用裸 `std::fs:write` 直写目标——崩溃/断电落在写中 →
 //! 半截 JSON（turn-N.json 每 turn 被 snapshot/seal 多次覆写，撕裂毁掉的是
 //! 先前已落盘的好镜像），重启后 load 解析失败被静默跳过 → rewind 选择器丢
 //! 条目、tree 基线/封印指纹消失（冲突预检对该 turn 致盲）、redo 陈旧性守卫
 //! 基线漂移。修复后走 `nemesis_utils::write_file_atomic`（唯一临时名 +
 //! sync_all 先于 rename + 失败清理），load 解析失败 warn 留痕。
 //!
-//! 进程内无法真实注入「写中崩溃」（loop_continuation R14 同族先例的诚实
+//! 进程内无法真实注入「写中崩溃」（loop_continuation 同族先例的诚实
 //! 边界），本批锁可观察行为：
 //! ① persist→重载往返保真 + seal 覆写取最新 + 全程零 `.tmp-` 残留；
-//! ② 崩溃残留的 `.tmp-*`（无 .json 扩展名）不被 load 当 checkpoint、不被
+//! ② 崩溃残留的 `.tmp-*`（无.json 扩展名）不被 load 当 checkpoint、不被
 //!    truncate_from_scoped 的 turn-*.json 扫描误删——原子写引入临时文件后
 //!    的新不变量；
 //! ③ 旧形态撕裂产物（半截 turn-N.json）被 load 跳过后，同 turn 再次
@@ -85,7 +85,7 @@ async fn persist_roundtrip_seal_overwrite_and_no_tmp_residue() {
     );
 }
 
-/// 崩溃残留的 `.tmp-*` 文件（无 .json 扩展名）不得被 load 当 checkpoint，
+/// 崩溃残留的 `.tmp-*` 文件（无.json 扩展名）不得被 load 当 checkpoint，
 /// 也不得被 truncate_from_scoped 的 turn-*.json 磁盘扫描误删/误判——
 /// 原子写引入临时文件形态后，镜像扫描必须天然无视它们。
 #[tokio::test]
@@ -104,7 +104,7 @@ async fn crash_tmp_residue_ignored_by_load_and_truncate() {
         "崩溃残留 .tmp-* 不得进 checkpoint 索引"
     );
 
-    // 全局截断的磁盘镜像扫描也不得碰 .tmp-*（残留归原子写自己的失败清理）。
+    // 全局截断的磁盘镜像扫描也不得碰.tmp-*（残留归原子写自己的失败清理）。
     store.truncate_from(0);
     assert!(
         tmp.exists(),

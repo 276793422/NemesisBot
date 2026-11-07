@@ -120,12 +120,12 @@ fn test_get_map_nested() {
 
 #[test]
 fn test_rewrite_workspace_path_edge_cases() {
-    // Path with .openclaw at end
+    // Path with.openclaw at end
     assert_eq!(
         rewrite_workspace_path("/home/.openclaw"),
         "/home/.nemesisbot"
     );
-    // Path with .openclaw in middle - also gets rewritten since it contains .openclaw
+    // Path with.openclaw in middle - also gets rewritten since it contains.openclaw
     assert_eq!(
         rewrite_workspace_path("/home/.openclaw_backup/workspace"),
         "/home/.nemesisbot_backup/workspace"

@@ -468,11 +468,11 @@ fn test_validate_url_metadata_endpoint() {
 
 #[test]
 fn test_validate_url_ipv6_localhost() {
-    // url crate returns host as "::1" (without brackets) for IPv6
-    // The validator checks for "[::1]" (with brackets), so IPv6 localhost
+    // url crate returns host as ":1" (without brackets) for IPv6
+    // The validator checks for "[:1]" (with brackets), so IPv6 localhost
     // is NOT caught by the current blocking list. This test documents that behavior.
     let result = validate_url("http://[::1]/admin");
-    // With the current implementation, "::1" != "[::1]", so it passes validation
+    // With the current implementation, ":1" != "[:1]", so it passes validation
     assert!(result.is_ok());
 }
 
@@ -682,7 +682,7 @@ fn test_urlencoding_tilde() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): validate_url fall-through to Ok (no host, and a
+// coverage: validate_url fall-through to Ok (no host, and a
 // public host that passes every SSRF check)
 // ===========================================================================
 

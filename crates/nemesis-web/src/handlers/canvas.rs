@@ -1,4 +1,4 @@
-//! P30（WS14）Canvas handler — `canvas.close`。
+//! Canvas handler — `canvas.close`。
 //!
 //! v1 形态：canvas 的打开是 agent → 前端的**单向推送**（agent 终答检出合法
 //! ```canvas 块 → `AgentEvent::CanvasOpen` → web pump 转 SSE `canvas.open`），

@@ -1,4 +1,4 @@
-//! 项目档案里程碑写入（看板项目档案 goal P2/C）。
+//! 项目档案里程碑写入（看板项目档案 goal /C）。
 //!
 //! 五个里程碑（拆解/派发/交付/评审/状态）由**代码触发**（挂接点在
 //! nemesis-web `confirm_plan` / `dispatch_issue_core`、nemesisbot
@@ -9,7 +9,7 @@
 //!   留痕（`archive_write_failed` 活动），调用方不受影响；存量项目
 //!   （无 directory）静默跳过（debug 日志，不回填，goal §一 Out）；
 //! - 所有时间戳 = master 本机时间（接收/发生时刻，chrono::Local）；
-//!   worker 原生时间戳只在 P3 回传的原始记录里保留，排序键一律
+//!   worker 原生时间戳只在 回传的原始记录里保留，排序键一律
 //!   master 时间（Bob 时钟慢 7h 教训）。
 
 use std::path::{Path, PathBuf};
@@ -113,7 +113,7 @@ pub fn write_plan_milestone(store: &BoardStore, parent: &Issue, subs: &[PlannedS
         if !sub.required_profession.trim().is_empty() {
             body.push_str(&format!("- 执行职能：{}\n", sub.required_profession.trim()));
         }
-        // 环境能力硬条件（NB-122 批）：档案留痕——停车归因需要看到拆解时
+        // 环境能力硬条件（批）：档案留痕——停车归因需要看到拆解时
         // 写了什么能力条件。
         if !sub.required_capabilities.is_empty() {
             body.push_str(&format!(
@@ -161,7 +161,7 @@ pub fn write_plan_milestone(store: &BoardStore, parent: &Issue, subs: &[PlannedS
 // ---------------------------------------------------------------------------
 
 /// 派发落定后写 `records/NB-xx/dispatch.md`（挂接点：`dispatch_issue_core`）。
-/// `baseline_marker` 自 P4 起填充（基线 commit），P2 恒 None——字段占位。
+/// `baseline_marker` 自 起填充（基线 commit）， 恒 None——字段占位。
 pub fn write_dispatch_milestone(
     store: &BoardStore,
     issue: &Issue,

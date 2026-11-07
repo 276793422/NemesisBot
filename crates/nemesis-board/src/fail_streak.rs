@@ -1,4 +1,4 @@
-//! M3（2026-10-10 机制加固）/ §6.4（2026-10-12 加固）：同因失败签名熔断账本。
+//! （2026-10-10 机制加固）/ （2026-10-12 加固）：同因失败签名熔断账本。
 //!
 //! unlimited_mode 放大的是「重派次数不设限」，不是「无收敛重派授权」：
 //! 同一失败签名（`{verdict}|{排序失败锚点 raw 集合}`；无失败锚点 =
@@ -7,7 +7,7 @@
 //! 重计（worker 换了病就不算旧账）；非重派终态（自动收货/待人工/转人工）
 //! 与 estop 停车清账（世界被外力改变，旧计数作废）。
 //!
-//! §6.4A 签名带 verdict 维度：锚点全过/无锚点时 FAIL 与 UNSURE 不再坍缩成
+//! A 签名带 verdict 维度：锚点全过/无锚点时 FAIL 与 UNSURE 不再坍缩成
 //! 同一签名（「缺浏览器证据」「守卫拦截」「已补证据仍不确定」本就是不同
 //! 因，verdict 是评审产出的最权威因分类；FAIL=有差距可修 vs
 //! UNSURE=无证据可判，处置路径本就不同）。存量账本走既有「签名翻转清零」
@@ -17,7 +17,7 @@
 //! 原子写落盘——半截文件 = 熔断计数静默丢失）。
 //! 文件缺失/损坏 = 诚实从空账本起（损坏 WARN 留痕），不为记账阻塞决策链。
 //!
-//! 本模块住在 nemesis-board（§6.4D）：评审链（nemesisbot board_review）与
+//! 本模块住在 nemesis-board（D）：评审链（nemesisbot board_review）与
 //! WSAPI 手动重派清账（nemesis-web issue_dispatch）两个消费方共用同一
 //! JSON 文件，跨 crate 公开避免 nemesisbot 内部模块被 web 层反向依赖。
 
@@ -31,7 +31,7 @@ use crate::review::ReviewVerdict;
 pub const FAIL_STREAK_THRESHOLD: u32 = 3;
 
 /// UNSURE 恒定签名：锚点 FAIL 已短路成 FAIL verdict，UNSURE 只在锚点全过
-/// 或无锚点时出现 → 失败锚点集恒空（§6.4B 独立收敛闸的判定键）。
+/// 或无锚点时出现 → 失败锚点集恒空（B 独立收敛闸的判定键）。
 pub const UNSURE_SIGNATURE: &str = "unsure|no-anchors";
 
 /// 单 issue 的在账条目。
@@ -63,13 +63,13 @@ pub struct FailStreakLedger {
     inner: LedgerFile,
 }
 
-/// 进程级 IO 互斥（D10-3）：账本生命周期是 per-review 的 load→mutate→save，
+/// 进程级 IO 互斥：账本生命周期是 per-review 的 load→mutate→save，
 /// 同批多单并行评审各持快照曾 last-writer-wins 互踩（丢计数=熔断保险丝
 /// 迟到，恰是保险丝最不该犯的错）。所有读-改-写在锁内先以磁盘最新为底
 /// reload 再改再存——实例快照仅作磁盘缺失/损坏时的兜底。
 static LEDGER_IO_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 失败签名（M3 + §6.4A）：`{verdict 小写}|{排序失败锚点 raw 集合 join}`；
+/// 失败签名（+ A）：`{verdict 小写}|{排序失败锚点 raw 集合 join}`；
 /// 无失败锚点（锚点全过/无锚点）= `{verdict 小写}|no-anchors`。
 pub fn failure_signature(anchor_results: &[AnchorResult], verdict: &ReviewVerdict) -> String {
     let mut failed: Vec<&str> = anchor_results
@@ -86,11 +86,11 @@ pub fn failure_signature(anchor_results: &[AnchorResult], verdict: &ReviewVerdic
     format!("{}|{}", verdict.as_str().to_ascii_lowercase(), anchor_part)
 }
 
-/// §6.4B UNSURE 独立收敛闸判定（纯函数）：verdict 为 UNSURE 且阈值 > 0 且
+/// B UNSURE 独立收敛闸判定（纯函数）：verdict 为 UNSURE 且阈值 > 0 且
 /// 记账后连续次数已达阈值 → 转人工（给一次 worker 自愈机会，超出即认定
-/// 「只有人能解」，NB-8 第 4 轮实证）。`max_unsure = 0` = 不限（完全旧行
-/// 为）；FAIL 轮不受此闸（M3 熔断管辖）；`Tripped` 结局由 M3 熔断先行处理
-/// （调用方先查 Tripped 再查本闸——默认阈值 2 < M3 阈值 3，UNSURE 场景
+/// 「只有人能解」， 第 4 轮实证）。`max_unsure = 0` = 不限（完全旧行
+/// 为）；FAIL 轮不受此闸（熔断管辖）；`Tripped` 结局由 熔断先行处理
+/// （调用方先查 Tripped 再查本闸——默认阈值 2 < 阈值 3，UNSURE 场景
 /// 本闸先停）。
 pub fn unsure_gate_trips(
     verdict: &ReviewVerdict,
@@ -116,7 +116,7 @@ impl FailStreakLedger {
     /// 以磁盘最新内容重载 inner（锁内调用；磁盘缺失回落当前快照）。
     /// 文件缺失 = 正常首跑静默；解析失败/读取失败 = WARN 留痕后回落
     /// （模块头承诺的诚实留痕——半截文件的后果是熔断计数静默丢失、
-    /// 保险丝失效零痕迹，BUG-20261104-364）。
+    /// 保险丝失效零痕迹）。
     fn reload(self) -> Self {
         let inner = match std::fs::read_to_string(&self.path) {
             Ok(s) => match serde_json::from_str::<LedgerFile>(&s) {
@@ -154,7 +154,7 @@ impl FailStreakLedger {
                 count: 0,
             });
         if entry.signature != signature {
-            // 签名翻转：worker 换了失败形态（含 §6.4A 旧格式存量条目遇新
+            // 签名翻转：worker 换了失败形态（含 A 旧格式存量条目遇新
             // 格式签名），旧账清零重计。
             entry.signature = signature.to_string();
             entry.count = 0;

@@ -1,7 +1,7 @@
-//! CMD 族攻击矩阵（2026-09-16 第二批·灾难复发批验收）。
+//! CMD 族攻击矩阵（2026-09-16 ·灾难复发批验收）。
 //!
 //! 装载 `nemesisbot/config/config.security.<平台>.json` **真实出货模板**，
-//! 按 gateway 同款方式构造 `SecurityAuditor`（分节规则 + D1 策略 +
+//! 按 gateway 同款方式构造 `SecurityAuditor`（分节规则 + 策略 +
 //! 自杀形态保护路径），对敌意/良性命令全集断言 ABAC（Layer 3）判定。
 //! Guard（Layer 2）层形态在 `src/command/tests.rs` 单独覆盖。
 //!
@@ -51,7 +51,7 @@ fn op_for(section: &str, op: &str) -> Option<OperationType> {
     }
 }
 
-/// 按 gateway security_setup 同款方式从模板构造 auditor（分节规则 + D1 +
+/// 按 gateway security_setup 同款方式从模板构造 auditor（分节规则 + +
 /// 保护路径）。
 fn auditor_from_template(cfg: &serde_json::Value, protected: &[&str]) -> SecurityAuditor {
     let auditor = SecurityAuditor::new(AuditorConfig {
@@ -182,7 +182,7 @@ fn windows_wrapped_hostile_inner_payload_denied() {
 
 #[test]
 fn windows_ask_surface_is_honest() {
-    // 分层注记（复核 2026-09-16，A-F6）：本文件只测裸 ABAC 层（Layer 3），
+    // 分层注记（复核，A）：本文件只测裸 ABAC 层（Layer 3），
     // 不含 Layer 2 Guard blocklist。其中 `set-executionpolicy remotesigned`、
     // `clear-content d:/log.txt` 在真实 8 层管线里会先被 Layer 2 命令守卫
     // 硬拦（command.rs blocklist 的 set_executionpolicy / clear_content），

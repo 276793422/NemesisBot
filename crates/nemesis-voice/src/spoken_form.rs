@@ -1,7 +1,7 @@
 //! Spoken form — deterministic markdown→speech cleaner (pure functions, cross-platform).
 //!
-//! 语音 realtime P1（W4 L1）：LLM 回复含大量无法转音频的内容（markdown/代码/
-//! URL/表格），逐形态确定性清洗成口语文本，TTS 念的是人话。工作于 W2 接力流
+//! 语音 realtime：LLM 回复含大量无法转音频的内容（markdown/代码/
+//! URL/表格），逐形态确定性清洗成口语文本，TTS 念的是人话。工作于 接力流
 //! 的每个 piece（结构级）与句内（行内级）。清洗话术文案对齐计划 §七-6：
 //! 「代码已显示在屏幕上」「详细回复已放在屏幕上」「其余内容看屏幕」。
 

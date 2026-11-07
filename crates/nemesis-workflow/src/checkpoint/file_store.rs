@@ -1,4 +1,4 @@
-//! `FileCheckpointStore` — milestone 1b-A1 step 3.
+//! `FileCheckpointStore` — milestone 1b step 3.
 //!
 //! Directory layout (per CLAUDE.md plan):
 //!   `{root}/checkpoints/{execution_id}/{checkpoint_id}.json`
@@ -164,7 +164,7 @@ impl CheckpointStore for FileCheckpointStore {
         for entry in entries {
             let entry = entry?;
             let path = entry.path();
-            // Skip the .corrupt subdir and anything without .json extension.
+            // Skip the.corrupt subdir and anything without.json extension.
             if path.is_dir() {
                 continue;
             }
@@ -270,7 +270,7 @@ impl CheckpointStore for FileCheckpointStore {
             if !path.is_dir() {
                 continue;
             }
-            // Skip hidden dirs like .corrupt (which live *under* execution dirs
+            // Skip hidden dirs like.corrupt (which live *under* execution dirs
             // anyway, but defend against future layout changes).
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {

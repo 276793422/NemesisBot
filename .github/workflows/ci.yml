@@ -292,6 +292,20 @@ jobs:
       # 随 VM 蒸发，下一轮继续半冷）。收 30 = 楔死时 VM 尚有余力执行软着陆
       # 树杀 + 存缓存（cache-on-failure），下一轮吃暖缓存快路径。30 仍给
       # 半冷构建 ~2 倍裕量，不误杀合法慢跑。
+      # 紫微载荷 DLL 现场编译（2026-11-06）：本 job 产出 exe 供 shard live 测试
+      # spawn 与 artifact 分发——空内嵌 exe 的 ziwei attach 即诚实残废。DLL 须
+      # 先于编译落位 bin/（build.rs 编译期快照），与 rust-test 同款步骤。
+      - name: Build ziwei payload DLL (on-site, dual-arch)
+        shell: bash
+        run: |
+          rustup target add i686-pc-windows-msvc
+          cd plugins/ziwei-agent-dll
+          cargo build --release --target x86_64-pc-windows-msvc
+          cargo build --release --target i686-pc-windows-msvc
+          mkdir -p bin
+          cp target/x86_64-pc-windows-msvc/release/ziwei_agent_dll.dll bin/ziwei_agent_x64.dll
+          cp target/i686-pc-windows-msvc/release/ziwei_agent_dll.dll bin/ziwei_agent_x86.dll
+
       - name: Build nemesisbot bin (watchdog)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag binjob -MaxMinutes 30 -BuildCommand "cargo build -p nemesisbot"
@@ -497,6 +511,23 @@ jobs:
       # nextest 不跑 doctests（本仓库无实质 doctest 断言，无覆盖损失）。
       # 构建拆两段（2026-10-09 第六轮，见 env 块注释）：库段编 workspace 其余
       # 全部（顺带 integration-test 等工具 bin），bin 段只链最终 exe。
+      # 紫微载荷 DLL 现场编译（2026-11-06，cdb3641e 首次 CI 曝光修复）：payload
+      # 双架构 DLL 已退出版本库（bin/ gitignore，防构建字节漂移卷进历史），
+      # nemesis-ziwei build.rs 按盘上 bin/*.dll 决定编译期内嵌——CI 全新
+      # checkout 无此文件 = 空内嵌 = ziwei live 测试诚实红「未内嵌且磁盘缺席」
+      # （42131746488 shard1/10 实录）。依赖为零的 cdylib 秒级构建，须在
+      # Build workspace libs 前落位 bin/（build.rs 编译期快照窗口）。
+      - name: Build ziwei payload DLL (on-site, dual-arch)
+        shell: bash
+        run: |
+          rustup target add i686-pc-windows-msvc
+          cd plugins/ziwei-agent-dll
+          cargo build --release --target x86_64-pc-windows-msvc
+          cargo build --release --target i686-pc-windows-msvc
+          mkdir -p bin
+          cp target/x86_64-pc-windows-msvc/release/ziwei_agent_dll.dll bin/ziwei_agent_x64.dll
+          cp target/i686-pc-windows-msvc/release/ziwei_agent_dll.dll bin/ziwei_agent_x86.dll
+
       - name: Build workspace libs (watchdog)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File "$env:GITHUB_WORKSPACE\.github\scripts\build-with-watchdog.ps1" -Tag cibuild1 -MaxMinutes 60 -BuildCommand "cargo build --workspace --exclude nemesisbot"

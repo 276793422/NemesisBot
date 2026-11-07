@@ -1,12 +1,12 @@
-//! W1（2026-10-25 加固）压缩注记域测试 + 压缩点解析窗口来源各臂。
+//! （2026-10-25 加固）压缩注记域测试 + 压缩点解析窗口来源各臂。
 //!
-//! - W1：注记限频（纯函数 + emit 集成）、注记文本
+//! -注记限频（纯函数 + emit 集成）、注记文本
 //!   要素、summarize 触发落 role="system" jsonl 行、StuckResume 档仲裁、
 //!   hook 标签二值；
 //! - 窗口来源各臂：`resolve_compact_trigger` 的 window/source/
 //!   window_source/clamped_from 各形态（config/catalog/user/fallback）。
-//!   2026-11-05 用户拍板：三级链全 miss 时按 fallback 窗口（128k）照常
-//!   自动压缩——旧 W2「窗口未知整条停用」形态废除，fallback 照跑回归锁
+//!   2026-11-05：三级链全 miss 时按 fallback 窗口（128k）照常
+//!   自动压缩——旧 「窗口未知整条停用」形态废除，fallback 照跑回归锁
 //!   在本文件（fallback_window_still_auto_summarizes）。
 //!
 //! 独立测试文件（生产文件只保留声明行，仓库纪律）。`test_config`/`turn`
@@ -114,7 +114,7 @@ fn system_rows(key: &str) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
-// W1 纯函数
+// 纯函数
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -195,7 +195,7 @@ fn compact_state_defaults_for_new_note_fields() {
 
 #[test]
 fn trigger_fallback_window_compact_point() {
-    // 三级链双 miss → fallback 窗口 + 窗口×75%（2026-11-05：fallback 照常
+    // 三级链双 miss → fallback 窗口 + 窗口×75%（fallback 照常
     // 压缩，旧 auto_suppressed 停用形态废除）。agent 运行期形态：实例兜底
     // 标签。
     let trig = resolve_compact_trigger(None, "obscure/local-7b", None, (100, "instance"));
@@ -279,11 +279,11 @@ fn trigger_catalog_window() {
 }
 
 // ---------------------------------------------------------------------------
-// fallback 照跑回归锁（2026-11-05 用户拍板）
+// fallback 照跑回归锁
 // ---------------------------------------------------------------------------
 
 /// 三级链全 miss（只配 keep 不配窗口 + 显式小实例窗口）时自动压缩照常跑
-/// ——不再有「窗口未知整条停用」形态（旧 W2 废除后的行为锁）。
+/// ——不再有「窗口未知整条停用」形态（旧 废除后的行为锁）。
 #[tokio::test]
 async fn fallback_window_still_auto_summarizes() {
     let key = unique_key("fallback-compacts");
@@ -323,7 +323,7 @@ async fn fallback_window_still_auto_summarizes() {
 }
 
 // ---------------------------------------------------------------------------
-// W1 集成：summarize 触发落注记（soft + summarize 双档）
+// 集成：summarize 触发落注记（soft + summarize 双档）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -373,7 +373,7 @@ async fn auto_summarize_emits_soft_and_summarize_notes() {
     let _ = std::fs::remove_file(&cfg_path);
 }
 
-/// ⑩ stuck 闩停用态聊天注记（2026-11-03 可见性修复）回归锁：空摘要
+/// ⑩ stuck 闩停用态聊天注记（可见性修复）回归锁：空摘要
 /// （thinking 烧穿形态，provider 恒回空正文）连续 COMPACT_STUCK_LIMIT 次
 /// 触发失效轴置位 → 聊天流落一条「[自动压缩已暂停]」system 注记（此前
 /// 只落 warn 日志——用户侧「98% 永不压缩」零解释）；false→true 转变沿
@@ -396,7 +396,7 @@ async fn stuck_pause_emits_one_shot_chat_note() {
     agent_loop.set_config_path(cfg_path.clone());
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100); // 阈值 75
-    // 2026-11-05 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
+    // 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
     // ≤125 字符；125+前缀会超限整段被判「无事可做」烧不到计数）。stuck
     // 场景走真失败形态 = 有效尺寸轮 + provider 恒回空正文。
     for i in 0..6 {
@@ -404,7 +404,7 @@ async fn stuck_pause_emits_one_shot_chat_note() {
         instance.add_assistant_message(&format!("reply {i} {}", "x".repeat(95)), Vec::new(), None);
     }
 
-    // 三轮：round1 记账 last；round2/round3 失效轴连续计数到
+    // 三轮： 记账 last；/ 失效轴连续计数到
     // COMPACT_STUCK_LIMIT(2) → stuck 置位 + 注记。
     for _ in 0..3 {
         agent_loop
@@ -426,7 +426,7 @@ async fn stuck_pause_emits_one_shot_chat_note() {
         .expect("stuck 注记在文");
     assert!(hit.contains("连续 2 次"), "{}", hit);
 
-    // 第四轮：闩保持（paused_stuck 提前返回），转变沿一次性不重复注记。
+    // 闩保持（paused_stuck 提前返回），转变沿一次性不重复注记。
     agent_loop
         .maybe_update_summary(&instance, &key, "web", "c")
         .await;
@@ -477,7 +477,7 @@ fn session_status_reports_window_fields() {
     let agent_loop = AgentLoop::new(Box::new(OnceProvider { reply: "S".into() }), test_config());
     let v = agent_loop.session_context_status("test:w1w2:status-standalone");
     assert_eq!(v["window_source"], "instance");
-    // token 实报化观测分量在场（2026-11-05）：无 usage lane 回落纯估算。
+    // token 实报化观测分量在场：无 usage lane 回落纯估算。
     assert_eq!(v["provider_reported_tokens"], 0);
     assert!(v["estimated_tokens"].is_u64());
     assert_eq!(v["used_tokens"], v["estimated_tokens"]);

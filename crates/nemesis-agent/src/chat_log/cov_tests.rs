@@ -6,7 +6,7 @@ use crate::r#loop::FileChangeKind;
 
 /// 本文件的会话键前缀（唯一 + 测试后清理，遵循既有 tests.rs 惯例）。
 ///
-/// 进程级唯一后缀（2026-09-28 脆性修复）：静态前缀跨运行复用同一路径，
+/// 进程级唯一后缀（脆性修复）：静态前缀跨运行复用同一路径，
 /// 上轮失败残留目录若处于 Windows「删除挂起」态，下轮夹具 create_dir_all
 /// 撞 os error 183 → panic → 清理不执行 → 残留自我延续。pid + 启动纳秒
 /// 后缀保证跨运行路径永不复用（同运行内 tag 互异性不变）。
@@ -362,7 +362,7 @@ async fn read_chat_log_async_returns_rows() {
 // migrate_nested_session_logs 的平化迁移测试已迁出到独立二进制
 // `tests/chat_log_migrate_flatten.rs`——lib 二进制的 singleton home 被
 // 启动竞速钉在真实 ~/.nemesisbot，并发跑套件时自身残留物会让「目标已
-// 存在」跳过臂抢在移动断言前触发（2026-09-25 实测闪失）。隔离手法与
+// 存在」跳过臂抢在移动断言前触发（实测闪失）。隔离手法与
 // 理由见该文件头注释；勿迁回。
 
 /// first_user_message：坏行 / 非 user / 空 user 逐个跳过，trim 后截断。

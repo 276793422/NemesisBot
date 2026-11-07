@@ -38,7 +38,7 @@ pub struct WorkspaceMigrator {
 }
 
 /// Files that can be migrated.
-/// （BUG-20261028-103：补 IDENTITY.md——人格三件套之首，bot 读人格的唯一根
+/// （补 IDENTITY.md——人格三件套之首，bot 读人格的唯一根
 /// 是 workspace 根，crate 链迁移清单漏掉它=迁移不完整。）
 const MIGRATEABLE_FILES: &[&str] = &[
     "AGENT.md",
@@ -225,7 +225,7 @@ fn plan_dir_copy(
         let file_name = path.file_name().unwrap_or_default();
         let dst_path = dst_dir.join(file_name);
 
-        // BUG-20261103-343：目录符号链接跳过。file_type() 不穿越链接——
+        // 目录符号链接跳过。file_type() 不穿越链接——
         // 旧代码 path.is_dir() 跟随链接，链接环（loop → 父目录自身）=
         // 病态重复递归：每层以「loop\loop\...」假路径重复产出动作/拷贝，
         // 直到 OS 路径长度上限（Windows ~260 / Linux PATH_MAX）才收敛。

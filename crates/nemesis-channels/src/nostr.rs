@@ -1,4 +1,4 @@
-//! nostr 通道（P27，Wave 3 能力扩展）：NIP-04 加密 DM over NIP-01 relay WebSocket。
+//! nostr 通道（Wave 3）：NIP-04 加密 DM over NIP-01 relay WebSocket。
 //!
 //! # 协议面（手写实现，不引 nostr-sdk）
 //!
@@ -13,8 +13,8 @@
 //!
 //! # 依赖评估结论（nostr-sdk vs 手写，2026-09-26）
 //!
-//! `nostr-sdk 0.45.4` 闭包核心新增：`nostr`（→ C 绑定的 secp256k1 0.30 +
-//! bitcoin_hashes + bech32）、`async-wsocket`（→ **tokio-tungstenite 0.28**，
+//! `nostr-sdk 0.45.4` 闭包核心新增：`nostr`（C 绑定的 secp256k1 0.30 +
+//! bitcoin_hashes + bech32）、`async-wsocket`（**tokio-tungstenite 0.28**，
 //! 与工作区钉死的 0.26 双版本并存）、**rand 0.10**（工作区 0.8 双版本）、
 //! default features 拉进 **ring** TLS 栈，外加 negentropy / nostr-gossip / lru /
 //! async-utility / universal-time 等与本场景无关的子系统。为一个 kind-4 DM
@@ -29,7 +29,7 @@
 //! `NostrConfig::private_key` 约定收**装配点已解析的** 64-hex 私钥：config.json
 //! 里该字段只写 `vault:` / `env:` / `yaml:` 引用（与 line.channel_access_token、
 //! web.auth_token 同一机制），gateway 装配点用
-//! `nemesisbot::common::resolve_secret_or_empty` 解析后传入。本模块对带未解析
+//! `nemesisbot::common:resolve_secret_or_empty` 解析后传入。本模块对带未解析
 //! 引用前缀的值**响亮拒绝**（绝不把引用字符串当密钥用）。nsec/npub bech32
 //! 解码 v1 不支持（挂账）。
 //!
@@ -727,8 +727,8 @@ impl Channel for NostrChannel {
         let frame = build_event_frame(&event);
         self.publish_frame(&frame)?;
         self.base.record_sent();
-        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        // 出站同步镜像（mqtt/websocket 镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（回环防护）。
         self.base.sync_outbound(&msg).await;
         debug!(recipient = %msg.chat_id, event_id = %event.id, "[NostrChannel] DM 已发布");
         Ok(())

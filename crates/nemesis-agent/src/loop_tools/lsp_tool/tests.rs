@@ -1,4 +1,4 @@
-//! Tests for the `lsp` agent tool (L1 / U19). Registration semantics are
+//! Tests for the `lsp` agent tool. Registration semantics are
 //! tested purely via `registration_plan` (acceptance ②); execute-side
 //! validation errors are exercised without spawning any server (they fire
 //! before the spawn path in `LspManager::query`).
@@ -54,7 +54,7 @@ fn schema_documents_all_ops_with_new_name() {
             "schema must document {field}"
         );
     }
-    // C7：new_name 是 rename 专用可选参数（不在 required——其余 op 不用）。
+    // new_name 是 rename 专用可选参数（不在 required——其余 op 不用）。
     assert!(
         p["properties"]["new_name"].is_object(),
         "schema must document new_name: {p}"
@@ -80,7 +80,7 @@ fn schema_documents_all_ops_with_new_name() {
     // 0-based convention must be stated — models default to 1-based.
     assert!(p.to_string().contains("0-based"));
     assert!(t.description().contains("语义"));
-    // C7：描述必须如实暴露 rename 的安全语义（不再是纯只读工具）。
+    // 描述必须如实暴露 rename 的安全语义（不再是纯只读工具）。
     assert!(t.description().contains("rename"));
     assert!(t.description().contains("安全审批"));
 }
@@ -110,7 +110,7 @@ async fn execute_rejects_unknown_op_listing_valid() {
     }
 }
 
-/// C7：rename 缺 new_name 在任何服务器交互之前被点名（new_name 提取先于
+/// rename 缺 new_name 在任何服务器交互之前被点名（new_name 提取先于
 /// manager 前置检查）。
 #[tokio::test]
 async fn execute_rename_without_new_name_errors() {
@@ -230,7 +230,7 @@ async fn execute_rejects_position_overflow() {
 }
 
 // ---------------------------------------------------------------------------
-// C5 (2026-09-04 devtool-upgrade 阶段 1): 外部 manager 单例接线
+// (devtool-upgrade): 外部 manager 单例接线
 // ---------------------------------------------------------------------------
 
 /// with_manager 必须持外部传入的同一个 Arc（gateway shutdown_all 才能收尸
@@ -245,7 +245,7 @@ fn with_manager_shares_the_singleton() {
     );
 }
 
-/// 默认构造（兜底路径）自建 manager——与 C5 前行为一致，不碰全局状态。
+/// 默认构造（兜底路径）自建 manager——与 前行为一致，不碰全局状态。
 #[test]
 fn new_builds_its_own_manager() {
     let t = LspTool::new(None, None);
@@ -285,7 +285,7 @@ fn shared_tool_config_default_has_no_manager() {
 }
 
 // ---------------------------------------------------------------------------
-// C7 (2026-09-06 devtool-upgrade 阶段 6): rename 两阶段安全闸（gate_and_write）
+// (devtool-upgrade): rename 两阶段安全闸（gate_and_write）
 // ---------------------------------------------------------------------------
 
 /// 两文件 fixture：gate_and_write 的输入 + 磁盘断言用旧内容。

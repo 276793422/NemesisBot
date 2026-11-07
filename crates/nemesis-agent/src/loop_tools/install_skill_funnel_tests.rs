@@ -1,17 +1,17 @@
-//! BUG-20261101-295：`install_skill` 工具 WS4 漏斗接线回归。
+//! `install_skill` 工具 漏斗接线回归。
 //!
-//! 旧形态裸 `RegistryManager::install` 直落 skills/，绕过验签(P11)/安全
-//! 扫描(P15)/审批门(P13)/lockfile 记账(P14)/staging 全漏斗——web/CLI 同
+//! 旧形态裸 `RegistryManager::install` 直落 skills/，绕过验签/安全
+//! 扫描/审批门/lockfile 记账/staging 全漏斗——web/CLI 同
 //! 操作均走 `SkillInstaller`，工具面是唯一旁路。本文件钉住：
 //! - 漏斗路径生效（lockfile/origin 记账 = 走过漏斗的凭证）；
-//! - P13 审批门经共享槽生效（含「建工具后晚填槽」的 gateway 时序）；
+//! - 审批门经共享槽生效（含「建工具后晚填槽」的 gateway 时序）；
 //! - slug 闸与 exists/force 语义保持。
 
 use super::*;
 use nemesis_skills::install_gate::{AlwaysDenyGate, InstallDecision, InstallPlan};
 use tempfile::TempDir;
 
-/// 捕获审批门收到的 plan.source（验证门真被咨询 + 晚填槽可见）。
+/// 捕获审批门收到的 plan.source（验证门真被咨询 + 晚填槽可）。
 struct RecordingGate {
     seen: std::sync::Mutex<Vec<String>>,
     decision: bool,
@@ -104,7 +104,7 @@ async fn hostile_slug_rejected_before_fs() {
     assert!(!skills.exists(), "no fs side effects for hostile slugs");
 }
 
-/// P13 审批门拒绝臂：槽内有门时安装被拒，skills/ 与 lockfile 零残留。
+/// 审批门拒绝臂：槽内有门时安装被拒，skills/ 与 lockfile 零残留。
 #[tokio::test]
 async fn gate_deny_blocks_install_and_leaves_no_trace() {
     let (_dir, ws) = temp_ws();

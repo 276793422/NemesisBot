@@ -1,6 +1,6 @@
 //! Error classification for failover decisions.
 //!
-//! T2a 下沉（扩展计划 D4-2a）：模式表与纯分类逻辑单点在
+//! 下沉（扩展计划）：模式表与纯分类逻辑单点在
 //! [`nemesis_utils::llm_error_class`]（agent loop 生产代码同源消费——本 crate
 //! 对 nemesis-agent 只有 dev-dependency，分类逻辑若留在这里，loop 只能继续
 //! 用自己的词表）。本模块只保留 FailoverError 富化（provider/model/status
@@ -26,7 +26,7 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
         LlmErrorClass::RateLimit => FailoverError::RateLimit {
             provider: provider.to_string(),
             model: model.to_string(),
-            // J1：此处 status 是从错误消息文本里抠出来的，拿不到响应头 → retry_after
+            // 此处 status 是从错误消息文本里抠出来的，拿不到响应头 → retry_after
             // 维持 None（能拿到 header 的 HTTP 路径已由 retry_after_from_headers 填充）。
             retry_after: None,
         },

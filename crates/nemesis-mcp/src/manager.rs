@@ -23,11 +23,11 @@ use crate::types::{McpTool, Resource, ServerConfig, ServerInfo};
 ///
 /// Reads/writes `config.mcp.json`, discovers tools from MCP servers,
 /// and supports automatic hot-reload via file content comparison
-/// （内容比对不赌钟，BUG-20261104-359 同族收编：mtime 等值判定在 Windows
+/// （内容比对不赌钟， 同族收编：mtime 等值判定在 Windows
 /// 毫秒级粒度下漏检同刻改写，Dashboard `save_mcp_config` 直写落盘与热更
 /// 检查撞同刻 → 配置静默永久陈旧）。
 ///
-/// 2026-08-31 单一真相源收敛：私有 `McpFileConfig`（与 nemesis-config 的
+/// 单一真相源收敛：私有 `McpFileConfig`（与 nemesis-config 的
 /// `McpConfig` 字段分叉的同族重复定义）已删除，配置层直接复用
 /// [`McpConfig`]——与 Dashboard/CLI 解析同一类型，宽容反序列化统一生效。
 pub struct McpManager {
@@ -35,7 +35,7 @@ pub struct McpManager {
     config: McpConfig,
     /// 上次记账的盘上文本（read_config_string 同源剥 BOM；None = 缺失/不可读）。
     last_content: Option<String>,
-    /// G2（2026-10-18 批四）：per-agent 浏览器 profile 显式覆盖（gateway
+    /// per-agent 浏览器 profile 显式覆盖（gateway
     /// agent loop 装配时注入；None = 连接时回落进程 env——执行体子进程
     /// 上下文/共享形态零变化）。`discover_tools` 是单一消费点（启动全量
     /// 挂载与热重载补挂都经它，manager 实例贯穿两者）。
@@ -60,13 +60,13 @@ impl McpManager {
         mgr
     }
 
-    /// G2：设置 per-agent 浏览器 profile（须在 `discover_tools` 之前调用；
+    /// 设置 per-agent 浏览器 profile（须在 `discover_tools` 之前调用；
     /// None = 清除回落 env 语义）。
     pub fn set_browser_profile(&mut self, profile: Option<String>) {
         self.browser_profile = profile;
     }
 
-    /// G2：当前生效的 per-agent 浏览器 profile（可观测面）。
+    /// 当前生效的 per-agent 浏览器 profile（可观测面）。
     pub fn browser_profile(&self) -> Option<&str> {
         self.browser_profile.as_deref()
     }
@@ -75,7 +75,7 @@ impl McpManager {
     // Config I/O
     // -----------------------------------------------------------------------
 
-    /// Load config from disk. Returns Ok(()) even if the file doesn't exist.
+    /// Load config from disk. Returns Ok() even if the file doesn't exist.
     pub fn load_config(&mut self) -> Result<(), String> {
         if !self.config_path.exists() {
             return Ok(());
@@ -84,7 +84,7 @@ impl McpManager {
             .map_err(|e| format!("Failed to read MCP config: {}", e))?;
         self.config = serde_json::from_str(&data)
             .map_err(|e| format!("Failed to parse MCP config: {}", e))?;
-        // 第十四轮缺陷 17：sanitize 前缀碰撞可观测（加载面单一 warn 点，
+        // 缺陷 17：sanitize 前缀碰撞可观测（加载面单一 warn 点，
         // 启动 + 热重载都经此处）。挂载语义：热重载只挂首个（其余被
         // find_new_servers 静默过滤），启动全量挂载但工具键后到者覆盖。
         for (prefix, names) in crate::adapter::sanitize_prefix_collisions(
@@ -102,10 +102,10 @@ impl McpManager {
 
     /// Save current config to disk.
     ///
-    /// 2026-10-25 BUG-20261025-47：写路径收编到 `nemesis_config::save_mcp_config`
+    /// 写路径收编到 `nemesis_config::save_mcp_config`
     /// （write_file_atomic 原子写，与 Dashboard/CLI 写同一实现）；此前本地手搓
     /// tmp+rename 无 sync/cleanup，与同文件 web 写路径漂移（同族 BUG-45 形态）。
-    /// 错误保留 "Failed to write MCP config" 前缀（S1 Windows 钉住依赖）。
+    /// 错误保留 "Failed to write MCP config" 前缀（Windows 钉住依赖）。
     pub fn save_config(&self) -> Result<(), String> {
         nemesis_config::save_mcp_config(&self.config_path, &self.config)
             .map_err(|e| format!("Failed to write MCP config: {}", e))
@@ -144,7 +144,7 @@ impl McpManager {
         // 写串行锁：config.mcp.json 的生产写者（web handlers::mcp 的
         // update_mcp_config）持同把 config_write_lock——本 CRUD 虽当前无
         // 生产接线（横扫六期记档的死码地雷），锁取在函数内使任何未来
-        // 接线者结构性安全（横扫六期，2026-10-13）。
+        // 接线者结构性安全（横扫六期）。
         let _cfg_serial = nemesis_config::config_write_lock();
         if self.config.servers.iter().any(|s| s.name == config.name) {
             return Err(format!("Server '{}' already exists", config.name));
@@ -158,7 +158,7 @@ impl McpManager {
 
     /// Remove a server by name. Returns true if a server was removed.
     pub fn remove_server(&mut self, name: &str) -> Result<bool, String> {
-        // 同 add_server：与 web 写家族同锁（横扫六期，2026-10-13）。
+        // 同 add_server：与 web 写家族同锁（横扫六期）。
         let _cfg_serial = nemesis_config::config_write_lock();
         let before = self.config.servers.len();
         self.config.servers.retain(|s| s.name != name);
@@ -219,10 +219,10 @@ impl McpManager {
     ) -> Result<Vec<Box<dyn Tool>>, String> {
         // 按 transport_type 分派：stdio（默认）| http（Streamable HTTP）。
         // HTTP 型 MCP 服务器（如 desktop-pet2 的 8808/mcp 端点）不再需要
-        // stdio bridge 脚本——直接注册（2026-08-30）。
-        // 2026-10-15 收敛：分派逻辑上移到 McpClient::from_server_config
-        // （单一真相源），与 CLI `mcp test/tools/...` 连接路径共用。
-        // G2：per-agent 浏览器 profile 随此处注入（opt-in 闸在 transport
+        // stdio bridge 脚本——直接注册。
+        // 收敛：分派逻辑上移到 McpClient::from_server_config
+        // ，与 CLI `mcp test/tools/...` 连接路径共用。
+        // per-agent 浏览器 profile 随此处注入（opt-in 闸在 transport
         // 侧按 server 配置执行——未 opt-in 的 server 目录在场也不注入）。
         let mut client: Box<dyn Client> = match McpClient::from_server_config_with_profile(
             server,
@@ -298,14 +298,14 @@ fn one_shot_budget(timeout_secs: u64) -> std::time::Duration {
 
 /// one-shot 探测的内层逐请求超时 = 外层预算 + 1s 让位宽限（超时阶梯纪律：
 /// 内层必须大于外层——外层确定性先到并报 `timed out after Ns`；内层只兜
-/// 住传输层读挂死）。BUG-20261103-336：此前两处 one-shot 走裸
+/// 住传输层读挂死）。：此前两处 one-shot 走裸
 /// `McpClient::new()`，内层硬编码 30s——调用方（mcp_discover 工具 /
 /// CLI `mcp discover`）传 timeout>30 想放宽预算时被内层静默截断（外层
 /// 形同虚设，报错形态是内层 `-3 request timed out` 而非外层
 /// `timed out after Ns`；红证：31s 慢 server + --timeout 35 → 32s 失败
-/// 于内层）。2026-10-15 第十二轮只修了 `from_server_config` 注册路径，
+/// 于内层）。 只修了 `from_server_config` 注册路径，
 /// one-shot 探测路径同族漏配（当时「裸 new() 无外层配对」的归类对本
-/// 函数不成立——它有 `tokio::time::timeout` 外层包裹）。
+/// 函数不成立——它有 `tokio::time:timeout` 外层包裹）。
 fn one_shot_request_timeout_ms(timeout_secs: u64) -> u64 {
     one_shot_budget(timeout_secs).as_millis() as u64 + 1_000
 }
@@ -405,7 +405,7 @@ pub async fn discover_server_metadata_http(
 
 /// One-shot HTTP discovery with configured header lines（"KEY: VALUE"，
 /// 值可含 vault:/env:/yaml: 引用——带认证探测与运行时头消费化同源，
-/// 消除「探测能通、安装后 401」的断层；2026-10-15 W1）。
+/// 消除「探测能通、安装后 401」的断层）。
 pub async fn discover_server_metadata_http_with_headers(
     url: &str,
     header_lines: Vec<String>,

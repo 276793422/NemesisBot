@@ -1,8 +1,8 @@
-// P3-1 (2026-08-24 UI entry gap): HTTP-level tests for the session-fork
+// (UI entry gap): HTTP-level tests for the session-fork
 // dialog endpoints (`GET /api/chat/sessions/{id}/turns`,
 // `POST /api/chat/sessions/{id}/fork`).
 //
-// ROUND-3 CONTRACT (2026-08-25 fork 第三轮): the chat_log jsonl is the
+// CONTRACT (fork): the chat_log jsonl is the
 // single source of truth for turn semantics — the turns table counts jsonl
 // rows and the fork copies them verbatim; the SessionStore side is derived
 // from the same rows. The fixtures deliberately seed a DIVERGENT, polluted
@@ -60,7 +60,7 @@ fn make_state(dir: &tempfile::TempDir, auth_token: &str) -> Arc<AppState> {
         cluster_log_dir: None,
         workflow_engine: None,
         // AppState dual-declares these two fields (workflow-gated real /
-        // `Arc<()>` stub — api_handlers.rs); build per-combo so this module
+        // `Arc<>` stub — api_handlers.rs); build per-combo so this module
         // compiles without the workflow feature too.
         #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(
@@ -74,6 +74,7 @@ fn make_state(dir: &tempfile::TempDir, auth_token: &str) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -191,7 +192,7 @@ async fn test_turns_table_counts_jsonl_not_the_divergent_store() {
 
     assert_eq!(v["session_id"], sid);
     assert_eq!(v["total_turns"], 3);
-    // ROUND 3: total/kept/turn_messages are JSONL ROW counts (jsonl never
+    // total/kept/turn_messages are JSONL ROW counts (jsonl never
     // contains the system prompt or tool rows — 6 rows, 2 per turn). The
     // divergent store's 6 messages (incl. system/tool/empty) must not show
     // up anywhere in these numbers.
@@ -328,7 +329,7 @@ async fn test_fork_copies_jsonl_verbatim_and_mirrors_store() {
         "session_id must map back onto new_key"
     );
 
-    // ROUND 3: the new chat_log is a VERBATIM copy of the source jsonl's
+    // the new chat_log is a VERBATIM copy of the source jsonl's
     // first 4 rows — content, timestamps AND the model badge preserved;
     // none of the divergent store's august content may appear.
     assert_eq!(v["chat_log_lines"].as_u64().unwrap(), 4);
@@ -431,7 +432,7 @@ async fn test_fork_routes_registered_in_full_router() {
         .body(axum::body::Body::empty())
         .unwrap();
     let resp = oneshot(app, req).await;
-    // ROUND 3: the turns endpoint reads jsonl directly and no longer needs
+    // the turns endpoint reads jsonl directly and no longer needs
     // a store/home, so a home-less full router now answers 404 (no jsonl
     // for a nanos-unique sid) — still proof OUR handler produced the
     // response (a missing route would fall through to the SPA fallback

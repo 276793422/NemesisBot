@@ -27,9 +27,7 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::RequestContext;
 
-// ---------------------------------------------------------------------------
 // Test infra (small enough to be self-contained)
-// ---------------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -65,6 +63,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -91,9 +90,7 @@ fn write_skills_config(workspace: &Path, cfg: &nemesis_config::SkillsFullConfig)
     std::fs::write(workspace.join("config/config.skills.json"), json).unwrap();
 }
 
-// ---------------------------------------------------------------------------
 // installed — mixed entries (dir + stray file)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_installed_skips_files() {
@@ -162,9 +159,7 @@ async fn test_skills_installed_empty_dir() {
     assert!(skills.is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // detail — nonexistent skill
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_detail_nonexistent_errors() {
@@ -183,7 +178,7 @@ async fn test_skills_detail_nonexistent_errors() {
 #[tokio::test]
 async fn test_skills_detail_path_traversal_name() {
     // A skill name like "../escape" must be rejected by the slug gate
-    // (BUG-20261101-295: validation moved ahead of read_workspace_file —
+    // (validation moved ahead of read_workspace_file —
     // the slug validator fires before resolve_path's traversal check).
     let handler = SkillsHandler::new();
     let dir = tempfile::tempdir().unwrap();
@@ -215,9 +210,7 @@ async fn test_skills_detail_name_type_mismatch() {
     assert_eq!(result.unwrap_err(), "missing field: name");
 }
 
-// ---------------------------------------------------------------------------
 // uninstall — nonexistent skill / path traversal
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_uninstall_nonexistent_errors() {
@@ -245,9 +238,7 @@ async fn test_skills_uninstall_path_traversal() {
     assert!(err.contains("path traversal denied"), "got: {}", err);
 }
 
-// ---------------------------------------------------------------------------
 // config.get — corrupt config file
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_config_get_invalid_json_errors() {
@@ -292,9 +283,7 @@ async fn test_skills_source_list_invalid_json_errors() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
 // config.save — round-trip
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_config_save_round_trip_full() {
@@ -341,9 +330,7 @@ async fn test_skills_config_save_round_trip_full() {
     let _ = ws; // suppress unused warning
 }
 
-// ---------------------------------------------------------------------------
 // source.add.manual — multiple additions
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_add_manual_multiple() {
@@ -377,9 +364,7 @@ async fn test_skills_source_add_manual_multiple() {
     assert_eq!(gh_count, 3);
 }
 
-// ---------------------------------------------------------------------------
 // source.remove — remove one of many
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_remove_one_of_many() {
@@ -431,9 +416,7 @@ async fn test_skills_source_remove_one_of_many() {
     assert_eq!(gh_names, vec!["a", "c"]);
 }
 
-// ---------------------------------------------------------------------------
 // source.toggle — clawhub disabled then re-enabled
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_toggle_clawhub_then_persist() {
@@ -466,9 +449,7 @@ async fn test_skills_source_toggle_clawhub_then_persist() {
     assert!(!ch["enabled"].as_bool().unwrap());
 }
 
-// ---------------------------------------------------------------------------
 // search — with installed-slugs (subset match)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_search_no_sources_with_installed_dir() {
@@ -490,9 +471,7 @@ async fn test_skills_search_no_sources_with_installed_dir() {
     assert!(r["message"].as_str().is_some());
 }
 
-// ---------------------------------------------------------------------------
 // browse — sort variants
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_browse_sort_downloads() {
@@ -544,9 +523,7 @@ async fn test_skills_browse_custom_registry() {
     let _ = handler.handle_cmd("browse", Some(data), &ctx).await;
 }
 
-// ---------------------------------------------------------------------------
 // install — invalid slug/registry type
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_install_registry_type_mismatch() {
@@ -595,9 +572,7 @@ async fn test_skills_install_force_with_unknown_registry() {
     assert!(err.contains("不存在"), "got: {}", err);
 }
 
-// ---------------------------------------------------------------------------
 // shop_detail / shop_code — type mismatches
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_shop_detail_registry_type_mismatch() {
@@ -641,9 +616,7 @@ async fn test_skills_shop_code_missing_field_slug() {
     assert_eq!(err, "missing field: slug");
 }
 
-// ---------------------------------------------------------------------------
 // config.update — partial updates (each field independently)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_config_update_search_cache_only_enabled() {
@@ -774,9 +747,7 @@ async fn test_skills_config_update_wrong_types_ignored() {
     assert!(r["enabled"].as_bool().unwrap());
 }
 
-// ---------------------------------------------------------------------------
 // config.save — invalid types
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_config_save_wrong_enabled_type() {
@@ -805,9 +776,7 @@ async fn test_skills_config_save_null_value() {
     assert!(err.contains("invalid skills config"));
 }
 
-// ---------------------------------------------------------------------------
 // source.list — multiple github + ordering
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_list_github_fields() {
@@ -847,9 +816,7 @@ async fn test_skills_source_list_github_fields() {
     assert_eq!(gh["skill_path_pattern"], "skills.json");
 }
 
-// ---------------------------------------------------------------------------
 // source.add — bad URL formats (parse error before network)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_source_add_unparseable_url() {
@@ -883,9 +850,7 @@ async fn test_skills_source_add_url_with_only_owner() {
     assert!(err.contains("无法解析 URL"), "got: {}", err);
 }
 
-// ---------------------------------------------------------------------------
 // open_dir — nonexistent skill
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_skills_open_dir_nonexistent_errors() {
@@ -901,9 +866,7 @@ async fn test_skills_open_dir_nonexistent_errors() {
     assert!(err.contains("directory not found"), "got: {}", err);
 }
 
-// ---------------------------------------------------------------------------
 // Module name
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_skills_module_name() {

@@ -23,7 +23,7 @@ fn oauth_openai_config_or_override() -> nemesis_auth::OAuthProviderConfig {
 }
 
 /// 过期时间显示：`Expires: %Y-%m-%d %H:%M UTC`。时间值是 DateTime<Local>，
-/// 必须换算成 UTC 墙钟再配 "UTC" 字样（BUG-20261028-104c：直接 .format
+/// 必须换算成 UTC 墙钟再配 "UTC" 字样（c：直接.format
 /// 会把本地时间误标成 UTC，UTC+8 用户看到晚 8 小时的错误信息）。
 fn format_expiry_utc(expires: chrono::DateTime<chrono::Local>) -> String {
     expires

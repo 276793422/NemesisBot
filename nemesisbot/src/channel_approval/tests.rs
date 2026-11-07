@@ -1,4 +1,4 @@
-// K4 (b)：IM 通道审批卡测试。
+// (b)：IM 通道审批卡测试。
 //
 // 覆盖面：
 // ① 回执语法 `parse_reply`——approve/deny 双动词、非回执消息不匹配、
@@ -56,7 +56,7 @@ fn render_card_contains_all_fields() {
     assert!(card.contains("操作: file_write"));
     assert!(card.contains("目标: /etc/hosts"));
     assert!(card.contains("风险: HIGH"));
-    // 自解释三字段（感知层 §5）：why 用 reason 原文、impact 按 op 推导、
+    // 自解释三字段（感知层）：why 用 reason 原文、impact 按 op 推导、
     // reject_note 固定口径——与 web_approval::approval_card_fields 同源。
     assert!(card.contains("为什么: policy: outside workspace"));
     assert!(card.contains("影响: 将写入/修改文件系统：/etc/hosts"));
@@ -128,7 +128,7 @@ fn composite_routes_web_and_empty_to_default() {
     assert_eq!(mock.calls.load(std::sync::atomic::Ordering::SeqCst), 3);
 }
 
-/// M5-3（2026-10-10 机制加固）：cluster 通道 ask → 默认管理器（本节点
+/// （机制加固）：cluster 通道 ask → 默认管理器（本节点
 /// Dashboard 卡）+ 看板注记观察者触发，**不走通道卡片**（"cluster" 通道
 /// 无出站投递面，旧路径卡静默丢弃、ask 无声等满超时）。
 #[test]
@@ -175,10 +175,10 @@ fn composite_routes_cluster_to_default_and_fires_board_notifier() {
     assert_eq!(mock.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
 }
 
-/// 2026-11-02 publish 审批卡不可见根修：flow publish 的 connector invoke
+/// publish 审批卡不可见根修：flow publish 的 connector invoke
 /// 用合成通道名 `flow-engine`（不在 ChannelManager allowed 白名单），旧
 /// 路由把卡片发往无投递面的通道 = 静默丢弃、ask 无声等满超时（journal
-/// 实证三卡 broker='channel'，M5-3 cluster 同族）。注入出站白名单后：
+/// 实证三卡 broker='channel'， cluster 同族）。注入出站白名单后：
 /// 合成通道名 → 默认管理器（Dashboard 卡，approval.respond 可达）；在册
 /// IM 通道照旧走通道卡片。未注入 = 维持旧语义（既有测试覆盖）。
 #[test]
@@ -249,8 +249,8 @@ fn inbound(channel: &str, chat: &str, content: &str) -> InboundMessage {
 
 /// 轮询出站广播直到拿到下一条（测试用，30s 兜底超时）。
 /// 30s 而非 5s：全量 nemesisbot 并行测试（630s 级满载）抢 CPU 时，
-/// watcher spawn → inbound 路由 → outbound 广播链路实测会超 5s（2026-09-07
-/// flake 加到 5s 后 2026-09-08 全量仍命中一次，watcher_rejects_cross_chat_reply
+/// watcher spawn → inbound 路由 → outbound 广播链路实测会超 5s（
+/// flake 加到 5s 后 全量仍命中一次，watcher_rejects_cross_chat_reply
 /// panic 在本函数窗口）；隔离复跑 6/6 绿确认为负载时序非逻辑回归。
 async fn next_outbound(
     rx: &mut tokio::sync::broadcast::Receiver<OutboundMessage>,
@@ -285,7 +285,7 @@ async fn channel_card_roundtrip_approve() {
                 "HIGH",
                 "test reason",
                 // 120s 而非 30s：全量并行满载下 std::thread 调度 + watcher
-                // 轮询可能慢于 30s（2026-09-08 全量 flake，ask 超时自动拒绝
+                // 轮询可能慢于 30s（全量 flake，ask 超时自动拒绝
                 // 打穿 approved 断言）；本测试断言批复回传路径，不是超时
                 // 拒绝，放宽只影响失败时的等待时长。
                 120,
@@ -365,7 +365,7 @@ async fn watcher_rejects_cross_chat_reply() {
                 "/tmp/x",
                 "HIGH",
                 "test",
-                // 120s 而非 30s：与 roundtrip 同理（2026-09-08 全量满载下
+                // 120s 而非 30s：与 roundtrip 同理（全量满载下
                 // 5s 出站窗口 flake 后全家族统一加宽）；本测试断言 /deny
                 // 裁决路径，不是超时拒绝，放宽只影响失败时的等待时长。
                 120,
@@ -395,7 +395,7 @@ async fn watcher_rejects_cross_chat_reply() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑥ 订阅先于 spawn 的竞态回归（2026-09-08 全量三次复发根修）
+// ⑥ 订阅先于 spawn 的竞态回归（全量三次复发根修）
 // ---------------------------------------------------------------------------
 
 // 回执在 watcher 首次 poll 前发布必须仍被处理。旧实现订阅在任务内进行：
@@ -450,7 +450,7 @@ async fn approve_published_before_watcher_first_poll_is_delivered() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑦ Lagged 容错（2026-09-22 审查 REL-001）
+// ⑦ Lagged 容错（审查）
 // ---------------------------------------------------------------------------
 
 // 旧实现 `while let Ok(msg) = rx.recv().await` 把 `Lagged` 当通道终结：缓冲
@@ -742,7 +742,7 @@ async fn request_inside_runtime_uses_block_in_place_and_resolves() {
 }
 
 // ===========================================================================
-// wave5 round2 batch-2（2026-09-25）：watcher 对非裁决消息（噪声）的静默
+// wave5 batch-2：watcher 对非裁决消息（噪声）的静默
 // 跳过臂——publish 一条无 /approve //deny 前缀的普通入站消息，watcher 不得
 // 产出任何出站、不得摘任何牌。
 // ===========================================================================
@@ -766,7 +766,7 @@ mod w5b2 {
 }
 
 // ===========================================================================
-// P1 统一任务层：审批台账（tasks.db approvals 表）——重启补裁
+// 统一任务层：审批台账（tasks.db approvals 表）——重启补裁
 // ===========================================================================
 
 mod journal {
@@ -835,7 +835,7 @@ mod journal {
         );
     }
 
-    /// R3（2026-10-18 三方复评）：`journal_record_decision` 契约——首次裁决
+    /// （三方复评）：`journal_record_decision` 契约——首次裁决
     /// 赢得状态转移（true），撞上已记账裁决（如超时先落 EXPIRED）返回
     /// false。调用方（watcher 决策臂/超时臂）按 false 拦截败方送裁决与
     /// 通知；台账终态不被败方覆盖。

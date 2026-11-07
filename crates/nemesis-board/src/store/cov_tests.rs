@@ -577,7 +577,7 @@ fn new_asset_shape() {
 }
 
 // ===========================================================================
-// Wave4 覆盖批次（2026-09-25）：set_asset_signing/asset_signing 注入面、
+// Wave4 覆盖批次：set_asset_signing/asset_signing 注入面、
 // last_system_comment、list_dispatch_park_candidates、get_meta。
 // ===========================================================================
 
@@ -720,7 +720,7 @@ fn get_meta_roundtrip_and_missing_key() {
 // → 精确命中调用点 `?` 传播臂）+ 原始 conn 数据手术（列型污染 / 表删除）。
 // ===========================================================================
 
-/// 裸连执行 DDL（建/删 trigger；conn 字段对子模块可见）。
+/// 裸连执行 DDL（建/删 trigger；conn 字段对子模块可）。
 fn w6_exec(store: &BoardStore, ddl: &str) {
     store.conn.lock().unwrap().execute_batch(ddl).unwrap();
 }
@@ -797,7 +797,7 @@ fn w6_transition_notify_failure() {
     );
 }
 
-/// reopen_issue 的 system 评论写失败 → 整体回滚（BUG-20261105-002 回归锁）。
+/// reopen_issue 的 system 评论写失败 → 整体回滚（回归锁）。
 #[test]
 fn w6_reopen_comment_failure() {
     let store = temp_store("w6-ro-a");
@@ -818,7 +818,7 @@ fn w6_reopen_comment_failure() {
         err.contains("cov-boom-reopen"),
         "错误必须来自 reopen 内部的评论插入：{err}"
     );
-    // 原子性（BUG-20261105-002 根修前：转移独立 commit 先行、只有第二段
+    // 原子性（根修前：转移独立 commit 先行、只有
     // 回滚 → 状态已是 backlog 而审计评论缺失；根修后单事务，任一步失败
     // 整体回滚 → 状态必须还在 cancelled）。
     assert_eq!(
@@ -829,8 +829,8 @@ fn w6_reopen_comment_failure() {
 }
 
 /// hidden 取消单 reopen 的 system 评论写失败 → 单事务整体回滚，状态留在
-/// cancelled 且 hidden 保持置位（BUG-20261105-002 的僵尸形态精确回归锁：
-/// 根修前第二段事务失败会留下 hidden=1 的 backlog 单——列表恒排除、
+/// cancelled 且 hidden 保持置位（的僵尸形态精确回归锁：
+/// 根修前事务失败会留下 hidden=1 的 backlog 单——列表恒排除、
 /// reopen 前置只认 cancelled，无任何 API 可恢复的永久僵尸）。
 #[test]
 fn w6_reopen_hidden_issue_comment_failure_full_rollback() {
@@ -864,7 +864,7 @@ fn w6_reopen_hidden_issue_comment_failure_full_rollback() {
     );
 }
 
-/// 父单已取消时子单不可单独 reopen（617-623，F-U4-3）。
+/// 父单已取消时子单不可单独 reopen（617-623，F）。
 #[test]
 fn w6_reopen_child_of_cancelled_parent_rejected() {
     let store = temp_store("w6-ro-b");

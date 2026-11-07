@@ -1,4 +1,4 @@
-//! B11（2026-10-18 snooze）：SessionMeta 暂停标记三函数测试——write 幂等
+//! （2026-10-18 snooze）：SessionMeta 暂停标记三函数测试——write 幂等
 //! upsert / clear 摘除返回原值 / snoozed_sessions 扫描过滤。只允许本文件
 //! 写 snooze 标记（断言按 stem 过滤，与其他并行测试的 meta 读写互不干扰；
 //! META_LOCK 保护 RMW 原子性），unique key + delete 清理（本目录测试惯例

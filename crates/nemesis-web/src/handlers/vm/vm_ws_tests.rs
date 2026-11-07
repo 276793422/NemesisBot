@@ -1,6 +1,6 @@
-//! `vm.*` WSAPI 用例（P5 第 4 步）：未装配诚实报错 / 各命令臂经 bridge /
-//! config.set 缺参拒绝 / L1 `commands()` 清单。进程级 bridge 槽是共享态
-//! ——全部用例持 [`VM_BRIDGE_TEST_LOCK`] 串行（AGENTS_BRIDGE 家族纪律）。
+//! `vm.*` WSAPI 用例（第 4 步）：未装配诚实报错 / 各命令臂经 bridge /
+//! config.set 缺参拒绝 / `commands()` 清单。进程级 bridge 槽是共享态
+//! 全部用例持 [`VM_BRIDGE_TEST_LOCK`] 串行（AGENTS_BRIDGE 家族纪律）。
 // 持锁跨 await 是刻意的测试串行化（槽位置换必须覆盖整个 handler await
 // 窗口，否则并行用例互相置换 bridge 假绿）；agents_ws_tests 同款豁免。
 #![allow(clippy::await_holding_lock)]
@@ -57,6 +57,7 @@ fn make_ctx() -> RequestContext {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -77,7 +78,7 @@ fn make_ctx() -> RequestContext {
 /// nemesisbot（依赖方向不许反向）。
 struct FakeBridge {
     calls: Mutex<Vec<String>>,
-    /// B8c：try.exec 收到的 timeout 透传值（None=缺省臂）。
+    /// try.exec 收到的 timeout 透传值（None=缺省臂）。
     try_exec_timeouts: Mutex<Vec<Option<u64>>>,
 }
 
@@ -239,7 +240,7 @@ async fn all_commands_route_through_bridge() {
 
         // 每条命令真的到了 bridge（配置臂以外全部录制在案）。守卫收进
         // 块作用域——闭包尾活守卫 + 后续 display 探针再触 bridge 的
-        // note() 会同线程自死锁（std Mutex 非重入，2026-10-21 实录）。
+        // note() 会同线程自死锁（std Mutex 非重入）。
         {
             let calls = _b.calls.lock().unwrap();
             for expected in [
@@ -268,7 +269,7 @@ async fn all_commands_route_through_bridge() {
             }
         }
 
-        // P5-R2⑥ 显示探针：组合命令（走 config_get，无专用 bridge 方法，
+        // ⑥ 显示探针：组合命令（走 config_get，无专用 bridge 方法，
         // 故不在上方录制清单）——返回面 = compiled/config 现值/endpoint 三段。
         let disp = h
             .handle_cmd("display.status", None, &ctx)
@@ -346,9 +347,7 @@ async fn instance_ops_require_agent_id() {
     .await;
 }
 
-// ---------------------------------------------------------------------------
-// B6 快速试玩族
-// ---------------------------------------------------------------------------
+// 快速试玩族
 
 /// estop 触发态 ctx（make_ctx 基础上挂 engaged 的 EstopState——与 estop
 /// WSAPI / 托盘 / CLI 四入口同源状态）。
@@ -455,7 +454,7 @@ async fn try_exec_input_validation() {
             .unwrap_err();
         assert!(err.contains("过长"), "{err}");
 
-        // B8c：timeout 透传——缺省 None / 显式值透传 / 超上限钳 600。
+        // timeout 透传——缺省 None / 显式值透传 / 超上限钳 600。
         h.handle_cmd(
             "try.exec",
             Some(serde_json::json!({ "command": "uname -a" })),
@@ -494,9 +493,7 @@ async fn try_exec_input_validation() {
     .await;
 }
 
-// ---------------------------------------------------------------------------
-// B9-3 项目工作副本同步族
-// ---------------------------------------------------------------------------
+// 项目工作副本同步族
 
 #[tokio::test]
 async fn sync_commands_route_project_through_bridge() {

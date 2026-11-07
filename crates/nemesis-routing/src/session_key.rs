@@ -25,7 +25,7 @@ pub enum DMScope {
 
 impl DMScope {
     /// Parse a DM scope from its string representation.
-    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str:FromStr (no Err semantics)
     pub fn from_str(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
             "per-peer" => DMScope::PerPeer,

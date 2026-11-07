@@ -746,7 +746,7 @@ async fn test_download_file_with_opts_truncated_body_returns_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// S1 coverage batch (2026-08-26): download_file_with_opts error arms
+// coverage batch: download_file_with_opts error arms
 // (non-200 lazy `status` field at 204, media-dir mkdir failure at 221-222,
 // write failure at 230-231). The tracing field arguments only evaluate under
 // an enabled subscriber, hence the thread-local sink subscriber.
@@ -817,8 +817,8 @@ async fn test_s1_download_with_opts_mkdir_failure() {
     unsafe {
         std::env::set_var("TMP", tmp.path());
         std::env::set_var("TEMP", tmp.path());
-        // std::env::temp_dir() 在 Unix 读 TMPDIR（Windows 读 TMP/TEMP）——
-        // 只重定向 TMP/TEMP 在 Linux 拦不住 create_dir_all（2026-09-01 远端
+        // std::env:temp_dir() 在 Unix 读 TMPDIR（Windows 读 TMP/TEMP）——
+        // 只重定向 TMP/TEMP 在 Linux 拦不住 create_dir_all（远端
         // 首跑暴露：下载成功返回真实路径，期望 ""）。
         std::env::set_var("TMPDIR", tmp.path());
     }

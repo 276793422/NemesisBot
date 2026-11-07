@@ -1,4 +1,4 @@
-//! M6（2026-10-27 整改批次五）：checkpoint gc —— 影子库/JSON 快照保留集
+//! （2026-10-27）：checkpoint gc —— 影子库/JSON 快照保留集
 //! 清扫。
 //!
 //! **默认关**（`config.json` `checkpoint.gc.enabled=false`；删错 = 回退网
@@ -159,7 +159,7 @@ pub(crate) fn compute_retention(
 }
 
 impl CheckpointStore {
-    /// M6：装配 gc（config 开关 + undo/redo 栈下界闭包）。未装配 = gc 全
+    /// 装配 gc（config 开关 + undo/redo 栈下界闭包）。未装配 = gc 全
     /// 路径零触碰。主 loop / 项目 loop 各自装配。**集群闸（BUG-95）**：
     /// cluster agent 的 checkpoint store 与主 store 是独立实例**共享同一影
     /// 子库目录**——GitBackend 的 op_lock 是实例级的，本 store 换名窗口
@@ -358,12 +358,12 @@ impl CheckpointStore {
             .git
             .as_ref()
             .ok_or_else(|| "影子库未启用".to_string())?;
-        // 影子库路径直接读字段（BUG-20261031 非驻留化后无常驻句柄可查）。
+        // 影子库路径直接读字段（非驻留化后无常驻句柄可查）。
         let shadow = gb.shadow.clone();
         let root = self.root.clone();
         let open_flags = git2::RepositoryOpenFlags::NO_SEARCH;
 
-        // BUG-96（2026-10-28 二次复查）：残留 `.gc-old` 处置——上轮收尾删除
+        // BUG-96（二次复查）：残留 `.gc-old` 处置——上轮收尾删除
         // 重试耗尽的遗留（Windows AV/索引器瞬时句柄）。不清则本轮换名
         // rename#1 目标非空必败（Windows 不替换非空目录），而清它的唯一
         // 路径在换名成功之后——永远执行不到，gc 永久卡死（重启不自愈）。
@@ -638,7 +638,7 @@ impl CheckpointStore {
 }
 
 /// 目录体积快算（gc 报告素材；读不到 = 0）。符号链接/junction 一律
-/// 跳过（symlink_metadata 判定，BUG-20261029-139 与 collect_relative_files
+/// 跳过（symlink_metadata 判定， 与 collect_relative_files
 /// 同族）——跟随版会把链接当目录入栈：外指链接把目标树字节计入体积
 /// （虚报），自指链接无限入栈死循环挂死 gc 任务。git objects 树正常无
 /// 链接，跳过零行为变化。消费点只在 checkpoint-git 重建式清扫。

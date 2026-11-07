@@ -4,8 +4,8 @@
 //! `AgentLoop` 经 `set_estop` 绑到它。触发后，agent 循环在每轮顶部 break、
 //! 并在工具分发前拒绝调用。
 //!
-//! 线程安全：`AtomicBool`（廉价检查）+ `tokio::sync::watch`（异步订阅者，
-//! 供未来 Phase 2「中途打断 LLM 调用」的 select arm 使用）。
+//! 线程安全：`AtomicBool`（廉价检查）+ `tokio::sync:watch`（异步订阅者，
+//! 供未来 「中途打断 LLM 调用」的 select arm 使用）。
 //!
 //! 设计要点：状态本体**不**挂在 `AgentLoop` 上（AgentLoop 每次 start/stop
 //! 都重建），而是挂在 `SharedResources`（跨重启存活）。`AgentLoop` 只持有一

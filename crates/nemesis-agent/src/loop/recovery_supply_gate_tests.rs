@@ -1,17 +1,17 @@
-// 恢复环 tool_defs 供给闸回归锁（BUG-20261102-306）。
+// 恢复环 tool_defs 供给闸回归锁。
 //
 // 契约：context 压缩环（4a）/ 429 限流环（4b）/ transient 退避环（4c）的
 // 重试请求，其 tool_defs 必须与主调用同源（`effective_tool_defs`）——
 // tier 白名单 / `agents.hidden_tools` / plan 白名单 / connector 总闸 /
 // mcp lazy 等供给闸在恢复重试上同样生效。此前四处重建走
 // `rebuild_full_tool_defs`（全量注册表无闸），重试请求把被隐藏/白名单外
-// 工具全部发给 LLM：F8/B4/W7「供给+dispatch 双闸」设计的供给半边在恢复
-// 轮整体失效，且过滤激活场景 prompt cache 前缀断裂（2026-10-21 自查 #6
+// 工具全部发给 LLM：//「供给+dispatch 双闸」设计的供给半边在恢复
+// 轮整体失效，且过滤激活场景 prompt cache 前缀断裂（自查 #6
 // 修排序的动机本体——排序一致但内容不一致时前缀照样断）。
 //
 // 断言面：hidden 闸激活（`echo_*` 隐藏、`keep_tool` 保留）下，重试调用
 // 收到的工具名单必须 == `build_tool_defs()` 名单（内容+序完全一致）。
-// B4 凭据卡重试（第 4 处）与三环同函数同改法，broker/reloader 未装配时
+// 凭据卡重试（第 4 处）与三环同函数同改法，broker/reloader 未装配时
 // 提前回落无法直调，靠同构覆盖。
 //
 // 自带迷你 Mock（兄弟模块私有类型不共享，同 f8/l2 形态）。

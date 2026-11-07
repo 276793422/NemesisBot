@@ -14,11 +14,11 @@ pub const EVENT_CLUSTER_EVENT: &str = "cluster-event";
 pub const EVENT_HEARTBEAT: &str = "heartbeat";
 /// Chat streaming delta — published for each streamed LLM token chunk.
 pub const EVENT_CHAT_STREAM: &str = "chat-stream";
-/// 自更新下载进度（L9 两段式：易逝观测——`publish_ephemeral` 只投在线
+/// 自更新下载进度（两段式：易逝观测——`publish_ephemeral` 只投在线
 /// 订阅者，不进环形缓冲/不参与断线补拉——回放旧进度值无意义）。
 pub const EVENT_SELFUPDATE_PROGRESS: &str = "selfupdate-progress";
 
-/// L2（devtool-upgrade 阶段 6）：断线补拉环形缓冲容量。1000 条事件窗口
+/// （devtool-upgrade）：断线补拉环形缓冲容量。1000 条事件窗口
 ///（status 每 5s 一条 ≈ 83 分钟回放窗口）；滑出窗口的 seq 不可补——
 /// SSE 端点据此发 `resync` 提示事件，前端全量刷新兜底。
 pub const REPLAY_BUFFER_CAP: usize = 1000;
@@ -26,7 +26,7 @@ pub const REPLAY_BUFFER_CAP: usize = 1000;
 /// A server-sent event.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Event {
-    /// L2：单调递增序号（1 起）。断线补拉游标——SSE 每帧 `id:` 字段、
+    /// 单调递增序号（1 起）。断线补拉游标——SSE 每帧 `id:` 字段、
     /// 浏览器重连自动回传 `Last-Event-ID`，服务端按 seq>last 从环形缓冲
     /// 重放。WS chat 推送帧的 `data.seq` 同源不同流（会话事件独立环形，
     /// 见 chat_event_log）。
@@ -35,7 +35,7 @@ pub struct Event {
     pub data: serde_json::Value,
 }
 
-/// BUG-20261025-14：订阅计数 RAII 守卫。`subscribe()` 手工 +1、`unsubscribe()`
+/// 订阅计数 RAII 守卫。`subscribe()` 手工 +1、`unsubscribe()`
 /// 手工 -1 的配对只覆盖「流自然跑完」路径——SSE 端点的流体被客户端断连时
 /// axum 直接 drop 生成器（不是跑完循环），尾部归还永不执行，计数单调泄漏：
 /// board/usage 两个空闲跳过 watcher 以 `subscriber_count == 0` 做闸，泄漏后
@@ -56,7 +56,7 @@ pub struct EventHub {
     sender: broadcast::Sender<Event>,
     subscriber_count: Arc<AtomicUsize>,
     next_seq: AtomicU64,
-    /// L2：最近 REPLAY_BUFFER_CAP 条事件（seq 升序）——断线补拉唯一数据源。
+    /// 最近 REPLAY_BUFFER_CAP 条事件（seq 升序）——断线补拉唯一数据源。
     replay_buf: parking_lot::RwLock<VecDeque<Arc<Event>>>,
 }
 
@@ -93,12 +93,12 @@ impl EventHub {
 
     /// Publish an event to all subscribers.
     ///
-    /// L2：发布即盖章单调 seq 并进环形缓冲（无订阅者也落——补拉依赖缓冲
+    /// 发布即盖章单调 seq 并进环形缓冲（无订阅者也落——补拉依赖缓冲
     /// 而非 broadcast 通道；broadcast 256 槽只服务在线订阅者）。
     pub fn publish(&self, event_type: &str, data: serde_json::Value) {
-        // BUG-HUNT R8：seq 分配/入队/在线投递必须同一把缓冲写锁串行。原实现
-        // fetch_add 在锁外——并发发布可交叠成「T1 得 seq=5、T2 得 seq=6、
-        // T2 先抢锁入队」，环形缓冲变 [.., 6, 5]，违反下方字段注释声明的
+        // seq 分配/入队/在线投递必须同一把缓冲写锁串行。原实现
+        // fetch_add 在锁外——并发发布可交叠成「 得 seq=5、 得 seq=6、
+        // 先抢锁入队」，环形缓冲变 [.., 6, 5]，违反下方字段注释声明的
         // 「seq 升序」不变量：replay_after 按乱序回放、front() 的 gap 判定
         // 失真、SSE id 倒退（浏览器 Last-Event-ID 回退 → 重连重复投递）。
         // chat_event_log::insert_event 同形态早已表锁内分配，此处对齐。
@@ -123,7 +123,7 @@ impl EventHub {
         }
     }
 
-    /// L10（2026-10-13 内部专项 T3）：易逝事件——只投递在线订阅者（SSE
+    /// （内部专项）：易逝事件——只投递在线订阅者（SSE
     /// live / WS push），**不盖章 seq、不进补拉环形缓冲**。约定 `seq: 0`
     /// 为 ephemeral 标记：SSE 端点据此不发 `id:`、不推进重放游标、重放
     /// 逻辑天然跳过；断线窗口内的事件不可补 = 设计语义（provider 流式
@@ -144,7 +144,7 @@ impl EventHub {
         self.next_seq.load(Ordering::SeqCst)
     }
 
-    /// L2 断线补拉：返回 seq > `after` 的事件（时间序）。
+    /// 断线补拉：返回 seq > `after` 的事件（时间序）。
     ///
     /// `gap=true` 表示 `(after, latest]` 里有事件已滑出环形缓冲（或 `after`
     /// 超前于服务端——网关重启 seq 重置），调用方应发 `resync` 提示让前端
@@ -167,7 +167,7 @@ impl EventHub {
         self.subscriber_count.load(Ordering::SeqCst)
     }
 
-    /// L2 重连游标决议（2026-10-23 R32）：把「Last-Event-ID → (live 去重
+    /// 重连游标决议：把「Last-Event-ID → (live 去重
     /// 游标, 重放集, gap)」收口成纯函数，SSE 端点与测试共用。
     ///
     /// **重启签名**：`after` 超前于服务端 `latest_seq`（seq 进程内只增，唯一

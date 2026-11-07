@@ -1,6 +1,6 @@
-//! A1 — TrustBook：iroh 节点本地信任名单（P3）。
+//! — TrustBook：iroh 节点本地信任名单。
 //!
-//! 信任三层语义（拍板项，PLAN 2026-10-18）：
+//! 信任三层语义（决策项，PLAN 2026-10-18）：
 //! 1. iroh NodeId = 传输身份（连接到谁——公钥即地址，冒名连不上）；
 //! 2. 集群 AEAD token = 应用授权（连上后能不能说话）；
 //! 3. TrustBook = 本地 allowlist（**可选**第三层）——文件存在即启用：
@@ -29,11 +29,11 @@ pub struct TrustBookData {
     /// 吊销名单（一票否决，优先于 trusted；留痕不删——吊销历史可审计）。
     #[serde(default)]
     pub revoked: Vec<String>,
-    /// L13-a（2026-11-03 三期）：mandate 签名公钥钉存段——cluster node_id
+    /// a（三期）：mandate 签名公钥钉存段——cluster node_id
     /// → P-256 公钥 hex（SEC1 uncompressed 130 / compressed 66，小写）。
     /// 键是 cluster node_id（mandate 校验在 RPC 层按 `rpc_meta.from` 裁决，
     /// 与分发钉存键必须同族）。BTreeMap = 序列化确定序（人工可读可 diff）。
-    /// `#[serde(default)]`：L16-only 存量簿缺段加载为空，零迁移。
+    /// `#[serde(default)]`：-only 存量簿缺段加载为空，零迁移。
     #[serde(default)]
     pub mandate_keys: BTreeMap<String, String>,
     /// mandate 吊销留痕（node_id；优先于 mandate_keys——同 revoked 一票
@@ -58,7 +58,7 @@ impl TrustBook {
             return Ok(None);
         }
         // fsutil 剥 BOM 单一真相源（trust.toml 是手工管理面文件，与
-        // peers.toml 同暴露级；BUG-20261031-260 横扫漏网补齐——记事本
+        // peers.toml 同暴露级； 横扫漏网补齐——记事本
         // UTF-8-BOM 形态不再构成坏簿 fail-closed 的意外来源）。
         let text = nemesis_utils::fsutil::read_config_string(&path)
             .map_err(|e| format!("读取 {} 失败: {e}", path.display()))?;
@@ -134,7 +134,7 @@ impl TrustBook {
     }
 
     /// 落盘（父目录自动创建；TOML 序列化；原子替换写——TOFU 钉存提升了写频，
-    /// 直写 `std::fs::write` 的撕裂面消除，L16）。
+    /// 直写 `std::fs:write` 的撕裂面消除）。
     pub fn save(&self, workspace: &Path) -> Result<(), String> {
         let path = trust_book_path(workspace);
         if let Some(parent) = path.parent() {
@@ -154,13 +154,13 @@ pub(crate) fn normalize_id(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// L13-a（2026-11-03 改进项三期）：mandate 签名公钥钉存面。
+// a：mandate 签名公钥钉存面。
 //
-// 设计文档：`2026-11-03_L13a节点间公钥分发设计文档`。两个信任维度同一张簿：
-// L16 段（iroh NodeId，连接层 allowlist）/ L13-a 段（cluster node_id →
+// 设计文档：`-03_L13a节点间公钥分发设计文档`。两个信任维度同一张簿：
+// 段（iroh NodeId，连接层 allowlist）/ -a 段（cluster node_id →
 // P-256 公钥，授权层 pin）。TOFU_PIN_LOCK 与 iroh 钉存共用——同一文件的
 // load-modify-save 并发互相覆盖整簿。on-curve 校验刻意不做（本 crate 不
-// 依赖 nemesis-verify；错钥在 L13-b 验签时自然 loud 失败——分发面只管形态）。
+// 依赖 nemesis-verify；错钥在 -b 验签时自然 loud 失败——分发面只管形态）。
 // ---------------------------------------------------------------------------
 
 /// mandate 公钥形态校验 + 归一（trim/小写）。合法 = 66 hex（`02`/`03` 头，
@@ -176,7 +176,7 @@ pub fn normalize_mandate_pubkey(s: &str) -> Option<String> {
     if ok { Some(v) } else { None }
 }
 
-/// mandate 钉存状态四态（L13-b 验签消费点：Revoked 拒 / Pinned 验签 /
+/// mandate 钉存状态四态（b 验签消费点：Revoked 拒 / Pinned 验签 /
 /// Absent 维持现行行为——mandate 缺失兼容旧节点 / BookUnreadable 拒——
 /// 簿在场但读失败 = regime 已激活而验签基础设施失效，与「簿缺席（regime
 /// 休眠）」语义分立，消费侧不得并入 Absent 做降级放行）。
@@ -184,7 +184,7 @@ pub fn normalize_mandate_pubkey(s: &str) -> Option<String> {
 pub enum MandateKeyVerdict {
     /// 已钉存（值为归一小写 hex）。
     Pinned(String),
-    /// 已吊销（一票否决，优先于 keys——同 L16 revoked 纪律）。
+    /// 已吊销（一票否决，优先于 keys——同 revoked 纪律）。
     Revoked,
     /// 无钉存（该节点未分发过 mandate 公钥）。
     Absent,
@@ -205,7 +205,7 @@ pub enum MandatePinOutcome {
     Conflict { existing: String },
     /// 节点 mandate 已吊销——吊销态 TOFU 不更新 pin。
     Distrusted,
-    /// 簿缺席（regime 未激活）——不建文件不钉存（L16 纪律镜像：announce
+    /// 簿缺席（regime 未激活）——不建文件不钉存（纪律镜像：announce
     /// 抵达绝不激活 trust.toml）。
     BookAbsent,
 }
@@ -224,7 +224,7 @@ impl MandatePinOutcome {
 ///
 /// TOFU_PIN_LOCK 锁内 load-check-write（与 iroh TOFU 同款防并发覆盖整簿）。
 /// 读失败返回 `Err`——调用方 warn 后照常入册（分发失败不伤发现链，下次
-/// announce 自愈重钉，同 L16「钉存写盘失败仍 Adopt」纪律）。
+/// announce 自愈重钉，同 「钉存写盘失败仍 Adopt」纪律）。
 pub fn mandate_tofu_pin(
     workspace: &Path,
     node_id: &str,
@@ -298,7 +298,7 @@ fn mandate_pin_locked(
     }
 }
 
-/// mandate 钉存状态查询（L13-b 验签消费点）。簿缺席 = Absent（regime
+/// mandate 钉存状态查询（b 验签消费点）。簿缺席 = Absent（regime
 /// 未激活，verify 侧可降级）；**读失败 = BookUnreadable**（regime 已激活
 /// 而簿坏，验签侧 fail-closed——不可与 Absent 合并，否则管理员激活的
 /// regime 会被一次坏盘/手改无声降级为放行态）。
@@ -328,7 +328,7 @@ fn mandate_state_locked(book: &TrustBook, node_id: &str) -> MandateKeyVerdict {
     }
 }
 
-/// mandate 吊销（幂等；keys 保留留痕——吊销历史可审计，L16 revoked 纪律）。
+/// mandate 吊销（幂等；keys 保留留痕——吊销历史可审计， revoked 纪律）。
 /// 簇簿缺席 = Err（吊销不激活簿——对一个不存在的信任域吊销是操作错误）。
 pub fn mandate_revoke(workspace: &Path, node_id: &str) -> Result<(), String> {
     let _serial = TOFU_PIN_LOCK.lock();
@@ -366,7 +366,7 @@ pub fn mandate_unrevoke(workspace: &Path, node_id: &str) -> Result<(), String> {
 }
 
 // ---------------------------------------------------------------------------
-// L16（2026-11-02 改进项三期）：announce 采信闸 + dial 吊销 veto。
+// announce 采信闸 + dial 吊销 veto。
 //
 // regime 激活模型：trust.toml 不存在 = 闸未启用（announce 全采信 / dial 无
 // veto——零配置兼容现行发现链，字节级现状）；文件存在 = regime 激活（见下）。
@@ -388,7 +388,7 @@ pub enum AnnounceVerdict {
     Veto(&'static str),
 }
 
-/// announce 采信闸（L16③ 互信才采信 announce 身份宣告）。
+/// announce 采信闸（③ 互信才采信 announce 身份宣告）。
 ///
 /// 判定序：簿缺席 → Adopt（regime 未激活，不建文件不钉存）；读失败 →
 /// Veto（fail-closed，与插件 accept 闸同方向——激活态下吊销语义保守）；
@@ -465,7 +465,7 @@ pub fn announce_gate(workspace: &Path, iroh_hex: &str) -> AnnounceVerdict {
     }
 }
 
-/// dial 吊销 veto（L16② 吊销后拒连的出站臂）。只防 revoked：unknown 放行
+/// dial 吊销 veto（② 吊销后拒连的出站臂）。只防 revoked：unknown 放行
 /// （对端 accept 闸是守门人；出站 veto 的目标 = 不主动撞已被本节点吊销的
 /// 节点）。簿缺席 = 未启用 false；**读失败 fail-open**（方向性刻意：announce/
 /// accept 拒绝=收紧，dial 拒绝=本节点出站能力损失——坏簿不瘫痪出站漫游）。

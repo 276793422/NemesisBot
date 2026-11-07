@@ -1,8 +1,8 @@
 //! Sandbox command — manage the Sandboxie driver + service install.
 //!
-//! L2.0 scope: `install` / `uninstall` / `status`. Does NOT touch the executor
-//! yet (that's L2.1+: named-pipe transport + Start.exe spawn). See
-//! `docs/PLAN/2026-07-09_sandboxie-integration.md`.
+//! .0 scope: `install` / `uninstall` / `status`. Does NOT touch the executor
+//! yet (that's.1+: named-pipe transport + Start.exe spawn). See
+//! `sandboxie-integration`.
 //!
 //! Install/uninstall need admin (KmdUtil opens SC_MANAGER_CREATE_SERVICE). The
 //! non-elevated flow re-launches self elevated via ShellExecuteW("runas") with
@@ -35,7 +35,7 @@ pub enum SandboxCommand {
     Status,
     /// List pending workspace files in the box (written by the sandboxed executor,
     /// not yet committed to real disk). Default box = NemesisBox;
-    /// --box-name NemesisAgent_<id> inspects a per-agent persistent box (P3 ②).
+    /// --box-name NemesisAgent_<id> inspects a per-agent persistent box (②).
     Pending {
         /// Inspect this box instead of the default NemesisBox.
         #[arg(long)]
@@ -64,7 +64,7 @@ pub enum SandboxCommand {
     /// the engine (driver + SbieSvc) keeps running and other boxes are
     /// untouched. Use when an eval / executor run goes rogue.
     /// No args = all NemesisEvalBox_* boxes (eval leftovers) + all
-    /// NemesisAgent_* boxes (per-agent persistent boxes, P3 ②);
+    /// NemesisAgent_* boxes (per-agent persistent boxes, ②);
     /// --box-name NAME for a specific box (e.g. NemesisBox, the executor box).
     Kill {
         /// Kill this specific box instead of all eval + agent boxes.
@@ -87,7 +87,7 @@ pub enum SandboxCommand {
         home: Option<String>,
     },
     /// Internal-only (hidden): one-shot userland-sandbox self-test child
-    /// (G7 D2). Spawned by the gateway's `sandbox.self_test` WSAPI command —
+    /// . Spawned by the gateway's `sandbox.self_test` WSAPI command —
     /// either wrapped by a WrapCommand backend (bwrap/Seatbelt, env
     /// `NEMESISBOT_SELFTEST_BOXED=1`) or applying a SelfApply backend itself
     /// (landlock, env `NEMESISBOT_SELFTEST_ENGAGE=1`). Runs the probes and
@@ -124,7 +124,7 @@ pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// G7 (D2)：用户态沙盒自检子进程（隐藏子命令，gateway `sandbox.self_test` 专用）
+// 用户态沙盒自检子进程（隐藏子命令，gateway `sandbox.self_test` 专用）
 // ---------------------------------------------------------------------------
 
 /// One-shot probe child. Env contract (all set by the parent):
@@ -198,7 +198,7 @@ fn selftest_child() -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// pending / commit / clear — manual workspace-commit (L2.3)
+// pending / commit / clear — manual workspace-commit (.3)
 // ---------------------------------------------------------------------------
 
 /// %USERPROFILE% — the box's `user/<marker>/` subtree maps here.
@@ -224,7 +224,7 @@ fn format_size(n: u64) -> String {
     }
 }
 
-/// pending/commit 的盒作用域（P3 ②：agent 盒的提交作用域 = agent home，
+/// pending/commit 的盒作用域（②：agent 盒的提交作用域 = agent home，
 /// 非主工作区——盒内 %USERPROFILE% 被重定向到 agent home，`user/<marker>/
 /// <rest>` 镜像映射回 agent home/<rest>；工作区围栏 backstop 随之收窄到
 /// agent home 子树，主工作区其余部分永不出现在提交清单）。
@@ -395,10 +395,10 @@ fn clear(paths: &nemesis_sandbox::SandboxPaths, local: bool, force: bool) -> Res
 /// Force-terminate every process inside the box(es) and discard box contents.
 /// The engine (driver + SbieSvc) keeps running; other boxes untouched.
 /// No arg = all NemesisEvalBox_* + NemesisAgent_* sections (eval leftovers +
-/// per-agent persistent boxes, P3 ②).
+/// per-agent persistent boxes, ②).
 ///
 /// Call pattern is deliberately the one VERIFIED in eval.rs's clean_box since
-/// 2026-08-16 (delete_sandbox_silent + null stdio + box-root-exists guard —
+/// (delete_sandbox_silent + null stdio + box-root-exists guard —
 /// a missing root makes Start.exe pop a "Code 3" dialog). terminate_all runs
 /// first so processes die even if the content delete later fails.
 fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Result<()> {
@@ -439,7 +439,7 @@ fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Resu
         }
         None => {
             // All nemesis-managed boxes: eval leftovers (NemesisEvalBox_*) +
-            // per-agent persistent boxes (NemesisAgent_*, P3 ②).
+            // per-agent persistent boxes (NemesisAgent_*, ②).
             ini_sections
                 .iter()
                 .filter(|s| {
@@ -458,7 +458,7 @@ fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Resu
     }
 
     for b in &boxes {
-        // Box-root existence check（eval clean_box 同款守卫，2026-08-16 实证）：
+        // Box-root existence check（eval clean_box 同款守卫， 实证）：
         // 对 FileRootPath 已不存在的死段调 Start.exe 会挂死/弹 Code 3 对话框。
         // 死段（历史残留）没有活进程可杀——直接跳过 Start.exe，留给 eval 的
         // ini restore / strip 清理。
@@ -478,7 +478,7 @@ fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Resu
         println!(
             "[sandbox] killing box {b}: /terminate + delete_sandbox_silent (engine stays up)..."
         );
-        // 命令语法（官方 StartCommandLine 文档，2026-08-19 查证）：
+        // 命令语法（官方 StartCommandLine 文档， 查证）：
         // - 停盒内进程是【开关形式】"/terminate"——裸写 "terminate_all" 会被
         //   Start.exe 当成要启动的程序名 → "找不到指定程序"弹窗串（实錯：
         //   20 个盒 × 1 弹窗，用户屏幕实报）。
@@ -533,7 +533,7 @@ fn box_file_root(ini_path: &std::path::Path, section: &str) -> Option<std::path:
 /// 内完成（true=正常结束，false=超时已树杀）。超时树杀（taskkill /T 连孙
 /// 进程）+ WARN——一个坏盒不能卡死整轮 kill。
 ///
-/// 命令语法注意（官方 StartCommandLine 文档，2026-08-19 查证）：
+/// 命令语法注意（官方 StartCommandLine 文档， 查证）：
 /// - 开关类（/terminate /reload /listpids）带斜杠；裸写会被当【要启动的
 ///   程序名】→ "找不到指定程序"弹窗串（实测翻车根源）
 /// - 位置命令类（delete_sandbox_silent 等）不带斜杠
@@ -548,7 +548,7 @@ fn run_startexe_timeout(
     timeout: std::time::Duration,
 ) -> bool {
     let mut child = match {
-        // 黑窗根修（2026-10-19）：统一压 CREATE_NO_WINDOW（仓库纪律：生产
+        // 黑窗根修：统一压 CREATE_NO_WINDOW（仓库纪律：生产
         // 路径 spawn 一律）。Start.exe 自身 GUI 子系统不受影响；eval/网关侧
         // 调用（无 console 进程）下彻底杜绝子进程链的 console 分配。
         #[cfg(target_os = "windows")]
@@ -588,7 +588,7 @@ fn run_startexe_timeout(
             Ok(None) => {
                 if std::time::Instant::now() >= deadline {
                     // 树杀：Start.exe 可能有孙进程，kill() 只杀直接子。
-                    // 黑窗根修（2026-10-19）：taskkill 是 console 程序，压窗。
+                    // 黑窗根修：taskkill 是 console 程序，压窗。
                     let mut tk = std::process::Command::new("taskkill");
                     tk.args(["/PID", &child.id().to_string(), "/T", "/F"])
                         .stdout(std::process::Stdio::null())
@@ -988,7 +988,7 @@ fn status(paths: &nemesis_sandbox::SandboxPaths, home: &std::path::Path) -> Resu
     );
     println!("  sandbox ready:     {ready}");
 
-    // D4 状态面（DACL 定向档，2026-09-27）：config executor.acl 读数 +
+    // 状态面（DACL 定向档）：config executor.acl 读数 +
     // 可用性探针 + workspace SID + standing 根 ACE 只读观测（**零副作用**
     // ——状态查询不打标；根达标 = 至少完整铺过一次，非全树计数）。CLI 进程
     // 不装配 executor 通道，这里只是配置面 + 探针的诚实呈现。

@@ -97,7 +97,7 @@ fn get_plugin_data_dir_null_inputs_return_negative() {
     assert!(n < 0);
 }
 
-/// BUG-20261031-243：漏斗 helper 必须对 null src 诚实返回 -1，绝不解引用。
+/// 漏斗 helper 必须对 null src 诚实返回 -1，绝不解引用。
 /// 旧代码 libc_strlen 的 null→0 守卫把 0 长度放行到 copy_nonoverlapping(
 /// null, buf, 1)——从空指针读 1 字节 = UB（Windows 实测 ACCESS_VIOLATION
 /// 崩测试进程，即本测试在旧代码下的红证形态）。OnceLock 未 set 时
@@ -235,7 +235,7 @@ fn spawn_one_shot_http_server(body: &'static str) -> u16 {
     port
 }
 
-/// 挑一个保证无监听的回环端口（bind :0 后立刻 drop → 后续连接必被拒绝）。
+/// 挑一个保证无监听的回环端口（bind:0 后立刻 drop → 后续连接必被拒绝）。
 fn dead_loopback_port() -> u16 {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let p = l.local_addr().unwrap().port();
@@ -303,7 +303,7 @@ fn download_file_local_http_success_writes_dest() {
 
 #[test]
 fn s12b_libc_strlen_null_pointer_returns_zero() {
-    // S12b batch（quality-hardening goal 冲刺）：libc_strlen 的 null 防御臂此前
+    // batch（quality-hardening goal 冲刺）：libc_strlen 的 null 防御臂此前
     // 从未单独触达。注意只能直接调 strlen 本身——经 write_cstr_to_buf 传 null
     // 会在后续 copy_nonoverlapping 解引用 null（这正是该臂只守 strlen 的原因）。
     unsafe {

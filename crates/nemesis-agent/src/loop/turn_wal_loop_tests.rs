@@ -1,4 +1,4 @@
-// L8（2026-10-13 内部专项 T3）：turn WAL 循环级测试——dispatch 三态落盘
+// （内部专项）：turn WAL 循环级测试——dispatch 三态落盘
 // （admitted/started/finished + ok 布尔）、开关关闭零落盘、总线级断头续轮
 // （恢复消息进 LLM + 回复出站 + 非 agent 键诚实跳过）。WAL 文件级生命周期
 // （TTL 清扫/轮转/坏行/幂等）归 turn_wal/tests.rs，本文件不重复。

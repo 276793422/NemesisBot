@@ -1,4 +1,4 @@
-//! W7 对抗套件（A2 全案例 + A9 observer 对抗）。
+//! 对抗套件（全案例 + observer 对抗）。
 //!
 //! 方法论：fixtures = 真实 cdylib 组件 crate
 //! （`plugins/wasm/{translate,activity-log}`），产物缺席时在测试内
@@ -220,7 +220,7 @@ mod uninstall_guard {
 }
 
 // ---------------------------------------------------------------------------
-// A2 案例集
+// 案例集
 // ---------------------------------------------------------------------------
 
 /// 内存炸弹被 ResourceLimiter 拦截：guest 分配失败 → trap（非 Timeout、
@@ -349,7 +349,7 @@ async fn secret_semantics_resolved_notfound_denied() {
 }
 
 // ---------------------------------------------------------------------------
-// A9 observer 对抗
+// observer 对抗
 // ---------------------------------------------------------------------------
 
 /// 安装 activity-log（trap marker 行为见其源码头注）。
@@ -361,7 +361,7 @@ async fn install_observer(mgr: &Arc<PluginManager>, wasm: &Path) {
         .install(&src, true)
         .await
         .expect("install observer");
-    // 测试语义 =「用户已开开关」（2026-10-22：安装 ≠ 加载）。
+    // 测试语义 =「用户已开开关」（安装 ≠ 加载）。
     installer
         .set_enabled("activity-log", true)
         .await

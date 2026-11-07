@@ -1,14 +1,14 @@
-//! `history` CLI 测试（S11c，quality-hardening goal 冲刺 S11）。
+//! `history` CLI 测试（quality-hardening goal 冲刺）。
 //!
 //! **结构性豁免声明（run() 全部 32 个 MISS 行）**：run() 的 Search/Reindex
-//! 两个分支都调用 `nemesis_agent::history_search::{reindex_session_logs,
+//! 两个分支都调用 `nemesis_agent::history_search:{reindex_session_logs,
 //! search, index_db_path}`，后者经进程级 `default_path_manager()` 单例
 //! （`crates/nemesis-path/src/paths.rs:19` OnceLock，`home_dir` 私有无
 //! setter；见 `history_search.rs:55-56/160-161`）解析 sessions_log 目录并
 //! **写** FTS 索引库。测试二进制中该单例 home 取决于首个触碰它的测试
 //! （本 crate session/status 等测试在无 env 竞态下会把它烤成 ~/.nemesisbot），
 //! 在单测里调 run() 会向真实 ~/.nemesisbot 落索引文件——违反"绝不触碰
-//! ~/.nemesisbot"的硬纪律，故整体豁免（L2 集成测试用真进程覆盖）。
+//! ~/.nemesisbot"的硬纪律，故整体豁免（集成测试用真进程覆盖）。
 //!
 //! 这里钉的是可离线确定的部分：CLI 参数面（clap 派生的 limit 默认值 20、
 //! HistoryAction 枚举形态），防止未来改坏命令入口。
@@ -77,16 +77,16 @@ fn cli_reindex_takes_no_positional_args() {
 }
 
 // ===========================================================================
-// R7（coverage-95 goal，2026-08-27）：run() 两分支——经 singleton 重定向。
+// （coverage-95 goal）：run() 两分支——经 singleton 重定向。
 // 文件头注的「结构性豁免」判断被 nemesis-path 新增的 set_home_dir() 运行时
-// 缝推翻：crate::tests::singleton_test_home() 把 FTS 索引库和 jsonl 扫描
+// 缝推翻：crate::tests:singleton_test_home() 把 FTS 索引库和 jsonl 扫描
 // 全部圈进测试沙箱 home，reindex/search 可安全直跑。
 // 注意：reindex 扫描沙箱 home 下全部 jsonl（session 测试的 fixture 也在
 // 其中）——search 断言用本 mod 独有关键词，避免跨测试撞命中。
 // ===========================================================================
 
 // 整 mod Windows 形态（3/3 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r7_run_via_singleton_redirect {
     use super::*;
     use crate::tests::{EnvHomeGuard, singleton_test_home};
@@ -105,7 +105,7 @@ mod r7_run_via_singleton_redirect {
         std::fs::write(&path, body + "\n").unwrap();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn run_reindex_reports_file_count_in_sandbox() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -125,7 +125,7 @@ mod r7_run_via_singleton_redirect {
             .expect("reindex in sandbox home ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn run_search_finds_seeded_unique_keyword() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -152,7 +152,7 @@ mod r7_run_via_singleton_redirect {
         .expect("search ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn run_search_no_match_prints_empty_message() {
         let _g = crate::GLOBAL_STATE_LOCK

@@ -324,7 +324,7 @@ fn test_timeline_md_shares_aggregation_source() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// T8 读侧（2026-10-17 三轮审计）：收件箱补收按落地侧同源消毒名探测——
+/// 读侧（三轮审计）：收件箱补收按落地侧同源消毒名探测——
 /// 异形 task_id（含 `..`）不得逃出导出树，消毒名目录正常补收、落位核对
 /// 不再误报未落地。
 #[test]
@@ -367,7 +367,7 @@ fn test_inbox_unplaced_hostile_task_id_sanitized() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// usage.csv 字段消毒（BUG-20261024-06）：worker_id 是用户自设自由文本
+/// usage.csv 字段消毒：worker_id 是用户自设自由文本
 /// （cluster init --name / node.update_identity，无字符集校验），含逗号/
 /// 引号的名字此前裸拼错位移列。现在走 nemesis_utils 单一真相源消毒
 /// （RFC 4180 引号包裹 + 内部引号翻倍）；普通名字逐字节直通由
@@ -401,7 +401,7 @@ fn test_usage_csv_escapes_hostile_worker_id() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-/// BUG-20261103-343：dossier 导出的目录递归必须跳过目录符号链接——
+/// dossier 导出的目录递归必须跳过目录符号链接——
 /// 链接环（junction/symlink 指回父目录自身）在旧实现（`p.is_dir()`
 /// 跟随链接）下整子树以「loop\loop\...」假路径重复拷贝几十层，直到
 /// OS 路径长度上限才收敛（导出目录被垃圾嵌套拷贝污染）。

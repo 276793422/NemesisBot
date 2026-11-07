@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 // set_enabled/set_config/remove 走 config_write_lock（进程级串行锁）；
-// BUG-20261103-333 起读路径迁移写（load_switches/switch）同样全程罩锁
+// 读路径迁移写（load_switches/switch）同样全程罩锁
 // （迁移是 RMW+删旧文件，零锁时与开关写互相以旧底覆盖、迁移数据不可恢复）；
-// 写侧走 write_file_atomic 唯一临时名（BUG-20261025-45 同毫秒撞名已消除）。
+// 写侧走 write_file_atomic 唯一临时名（同毫秒撞名已消除）。
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn temp_config_dir(tag: &str) -> PathBuf {
@@ -161,14 +161,14 @@ fn legacy_dir_noise_handled() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ==================== BUG-20261025-45（BUG-HUNT R123）回归锁 ====================
+// ==================== 回归锁 ====================
 //
 // write_switch_file 曾是手搓 tmp+rename：tmp 名只到毫秒精度（读路径迁移写
 // 不罩锁，同毫秒并发可撞名），且无 sync_all（崩溃/断电撕裂目标文件——读侧
 // fail-closed 全禁 + 下次写以空底重建）。修复 = 走 write_file_atomic（唯一
 // 临时名 + fsync 先于 rename + 失败清理）。进程内无法真实注入写中崩溃
 // （BUG-43/44 同族诚实边界），本批锁可观察不变量：兄弟条目跨写保留、
-// 文件字节形态（尾随换行）不变、写路径与迁移路径盘上零 .tmp 残留。
+// 文件字节形态（尾随换行）不变、写路径与迁移路径盘上零.tmp 残留。
 
 #[test]
 fn r45_writes_preserve_siblings_trailing_newline_and_no_tmp_residue() {
@@ -199,7 +199,7 @@ fn r45_migration_write_via_read_path_leaves_no_residue() {
     let dir = temp_config_dir("r45_migrate");
     let _g = SERIAL.lock().unwrap();
     legacy_instance(&dir, "old-plugin", r#"{"k":"v"}"#);
-    // 首读触发迁移写（不罩锁的路径）——迁移条目落盘 + 零 .tmp 残留
+    // 首读触发迁移写（不罩锁的路径）——迁移条目落盘 + 零.tmp 残留
     let sw = switch(&dir, "old-plugin");
     assert!(!sw.enabled);
     assert_eq!(sw.config.get("k"), Some(&serde_json::json!("v")));
@@ -217,7 +217,7 @@ fn assert_no_tmp_residue(dir: &Path) {
     assert!(residue.is_empty(), "写侧不得留下 .tmp 残留：{residue:?}");
 }
 
-// ==================== 运行期总闸 runtime_enabled（2026-11-01 BUG 修复） ====================
+// ==================== 运行期总闸 runtime_enabled（BUG 修复） ====================
 //
 // 真相源两件：① `<home>/config.json` plugins.wasm.enabled（缺省 true）；
 // ② `<workspace>/config/config.plugin.native.json` plugin_wasm.enabled
@@ -320,7 +320,7 @@ fn runtime_gate_malformed_master_falls_to_shell_switch() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-/// BUG-20261103-334：记事本（带 BOM UTF-8）保存的 config.json——主装载器
+/// 记事本（带 BOM UTF-8）保存的 config.json——主装载器
 /// 剥 BOM 照常解析，总闸读必须同口径（旧形态裸 read_to_string：BOM →
 /// parse 失败 → 该源按缺省 true 跳过 → 用户 `plugins.wasm.enabled=false`
 /// 被静默忽略、WASM 子系统照常运行）。
@@ -340,9 +340,9 @@ fn runtime_gate_bom_config_json_still_honors_master_switch() {
     let _ = std::fs::remove_dir_all(&home);
 }
 
-// ==================== 面板 LLM 总闸 panel_llm（2026-11-01 决策 C） ====================
+// ==================== 面板 LLM 总闸 panel_llm（决策 C） ====================
 //
-// 真相源 = `<workspace>/config/config.plugin.wasm.json` 顶层 `panel_llm.enabled`
+// 权威 = `<workspace>/config/config.plugin.wasm.json` 顶层 `panel_llm.enabled`
 // （缺省 false）。与 per-slug 开关同文件同锁；false 时键整体省略（既有文件
 // 消费者零感知）；热语义 = 每次 build_frame 现读（无缓存）。
 
@@ -404,12 +404,12 @@ fn panel_llm_key_shape_stable_for_existing_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ==================== BUG-20261103-333 回归锁 ====================
+// ==================== 回归锁 ====================
 //
 // load_switches/switch 读路径的迁移写（读旧实例文件→并入→整体写主文件→删旧
 // 文件）不罩 config_write_lock——与 set_enabled/set_config/remove（全程罩锁
 // 的 RMW）并发时互相以旧底覆盖：开关写丢 = 用户切换静默回退；迁移写丢更重
-// ——旧实例文件已删，迁移数据不可恢复。对照组 plugins_native 的迁移是
+// 旧实例文件已删，迁移数据不可恢复。对照组 plugins_native 的迁移是
 // rename 原子形态天然免疫。修复 = 迁移写路径全程罩锁。并发触发迁移与开关
 // 写，断言两边效果并存（多轮重建现场提高交错命中率）。
 

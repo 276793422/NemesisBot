@@ -1,6 +1,6 @@
-//! 检查类工具调用的交付证据捕获（诚实边界收口 ②，2026-10-19）。
+//! 检查类工具调用的交付证据捕获（②，2026-10-19）。
 //!
-//! F5 证据闸只能证「交付点存在」；typed `checks` 块补「检查真跑过、过了没
+//! 证据闸只能证「交付点存在」；typed `checks` 块补「检查真跑过、过了没
 //! 有」的客观记录。捕获 = **管线侧确定性记账**（不是 agent 自述）：
 //! `AgentLoop` 的工具分发漏斗（`handle_tool_call_at_depth`）在检查类工具
 //! 真实执行后，把「完整命令 + 成败 + 结果摘要」记进会话键对应的槽；集群
@@ -18,9 +18,9 @@
 //! - **被闸拒绝的调用不入账**（急停/hidden/allow/min-tier/计划模式/限额
 //!   拒绝/安全拦截）——记进去会谎称「检查跑了且失败」；只有真实执行过的
 //!   调用才进证据（[`classify_result`] 单点分类）。
-//! - `ok` 按工具类选**精确判别器**（R4 修复，2026-10-20）：`exec` = 结果
+//! - `ok` 按工具类选**精确判别器**（修复，2026-10-20）：`exec` = 结果
 //!   前缀判据（`Exit code:`/`Command timed out` = 失败，与
-//!   `exec_output_passed` 单一真相源）；`run_checks` = 阶段状态行判据
+//!   `exec_output_passed` 统一定义）；`run_checks` = 阶段状态行判据
 //!   （行首 `✗ `/`⏱ ` = 有失败阶段）；其余检查类工具无结构化退码才落
 //!   `Tool error:` 前缀兜底。旧「结果不含 `Tool error:` 即成功」的
 //!   contains 启发式已废——非零退出（`Exit code: 7` 形态）被记成成功、
@@ -36,7 +36,7 @@ use std::sync::Arc;
 
 use parking_lot::{Mutex, RwLock};
 
-/// 检查类工具名单（捕获过滤单一真相源）。`exec` = 自由命令；`run_checks`
+/// 检查类工具名单（捕获过滤统一定义）。`exec` = 自由命令；`run_checks`
 /// = 固定命令表（scope/filter 渲染）。`exec_async` 不在名单（见模块头诚实
 /// 边界）。
 pub const CHECKS_CLASS_TOOLS: [&str; 2] = ["exec", "run_checks"];
@@ -101,7 +101,7 @@ pub fn extract_cmd(tool: &str, arguments: &str) -> Option<String> {
 
 /// run_checks 成败判据：回复的阶段状态行行首 `✗ `（exit 非零 / spawn
 /// 失败）或 `⏱ `（超时）任一在场 = 有失败阶段。只认**行首**——聚焦摘录
-/// 区缩进回显的 stdout 内容（`  ` 前缀）不会误判。判定器与 RunChecksTool
+/// 区缩进回显的 stdout 内容（` ` 前缀）不会误判。判定器与 RunChecksTool
 /// 的状态行形态（`▶ `/`✗ `/`⏱ `）单点对齐。
 pub(crate) fn run_checks_passed(result: &str) -> bool {
     !result
@@ -110,7 +110,7 @@ pub(crate) fn run_checks_passed(result: &str) -> bool {
 }
 
 /// 按工具类选成败判别器（前置条件：拒绝族已排除、`Tool error:` 前缀已
-/// 判负）。`exec` = [`crate::loop_tools::exec_output_passed`]（前缀精确
+/// 判负）。`exec` = [`crate::loop_tools:exec_output_passed`]（前缀精确
 /// 判据，单一真相源直用）；`run_checks` = [`run_checks_passed`]；其余
 /// 工具无结构化退码，默认成功。
 pub(crate) fn classify_by_tool(tool: &str, result: &str) -> bool {
@@ -124,13 +124,13 @@ pub(crate) fn classify_by_tool(tool: &str, result: &str) -> bool {
 /// 结果分类（拒绝/执行单点判定）：`Some(ok)` = 工具真实执行过（ok 按工具
 /// 类选精确判别器）；`None` = 被闸拒绝未执行（不入账）。
 ///
-/// 拒绝文案族（tool_dispatch.rs 各闸的稳定形态，2026-10-19 逐点核对）：
+/// 拒绝文案族（tool_dispatch.rs 各闸的稳定形态， 逐点核对）：
 /// `⛔` 前缀族（ESTOP / RATE LIMIT 拒绝）、`Plan mode:` 写闸、
-/// `Error: Tool '<名>' ...`（hidden / allow / min-tier 三闸同前缀——工具
-/// 执行结果不会长这样，工具失败是 `Tool error: ...`）、`SECURITY BLOCKED`
+/// `Error: Tool '<名>'...`（hidden / allow / min-tier 三闸同前缀——工具
+/// 执行结果不会长这样，工具失败是 `Tool error:...`）、`SECURITY BLOCKED`
 /// （安全层/guardian 拦截，contained 形态）。
 ///
-/// R4（2026-10-20）：`Tool error:` 从 contains 改 **starts_with**——工具
+/// `Tool error:` 从 contains 改 **starts_with**——工具
 /// 返回 Err 时 dispatch 层恒以该前缀开头（执行过但失败的形态），而成功
 /// 输出**中途**出现该字样（如测试断言里引用错误文案）不应误判失败。
 pub fn classify_result(tool: &str, result: &str) -> Option<bool> {

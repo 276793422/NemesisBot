@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): AgentHandler arms with a
+//! (quality-hardening goal 冲刺, web): AgentHandler arms with a
 //! REAL AgentLoop attached (existing tests only cover the None/stub paths) —
 //! cancel Some-loop, checkpoints Some-loop, rewind with a live loop but no
 //! checkpoint store, and the missing/mistyped `turn` guards.
@@ -83,6 +83,7 @@ fn make_ctx_with_optional_loop(al: Option<Arc<AgentLoop>>) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -139,15 +140,21 @@ async fn rewind_with_live_loop_but_no_checkpoint_store_errors() {
     assert_eq!(err, "turn is required");
 
     // Live loop without a checkpoint store → rewind propagates the error.
+    // （session_id 必填化后显式带参走 resolve_session_loop → 主槽 loop，
+    // 被测路径不变。）
     let err = handler
-        .handle_cmd("rewind", Some(serde_json::json!({ "turn": 3 })), &ctx)
+        .handle_cmd(
+            "rewind",
+            Some(serde_json::json!({ "turn": 3, "session_id": "s10b-rw" })),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("checkpoint store not attached"), "{err}");
 }
 
 // ============================================================
-// U7 dashboard visibility (G1): agent.inbox_status handler。
+// dashboard visibility: agent.inbox_status handler。
 // ============================================================
 
 #[tokio::test]

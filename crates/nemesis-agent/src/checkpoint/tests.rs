@@ -202,10 +202,10 @@ async fn empty_path_snapshot_is_ignored() {
     );
 }
 
-// ----- W3a branch coverage -----
+// ----- branch coverage -----
 
 /// load(): non-`.json` entries are skipped (line 90); a `.json`-named
-/// DIRECTORY makes std::fs::read fail → skipped (line 93); both must not break
+/// DIRECTORY makes std::fs:read fail → skipped (line 93); both must not break
 /// loading of the valid file.
 #[tokio::test]
 async fn load_skips_non_json_and_unreadable_entries() {
@@ -308,7 +308,7 @@ async fn restore_recreates_parent_directories() {
     let store = CheckpointStore::new(None, root.clone());
 
     store.begin(0, "nested");
-    // The snapshot helper writes via tokio::fs::write, which needs the parent
+    // The snapshot helper writes via tokio::fs:write, which needs the parent
     // to exist — create it explicitly (restore() is the code under test for
     // parent recreation, not snapshot()).
     tokio::fs::create_dir_all(root.join("sub").join("dir"))
@@ -383,7 +383,7 @@ async fn persist_with_broken_dir_is_silent_noop() {
 }
 
 // ---------------------------------------------------------------------------
-// 2026-08-30：空 turn 不落盘（begin 只开内存 turn，首个文件快照才持久化）
+// 空 turn 不落盘（begin 只开内存 turn，首个文件快照才持久化）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -415,7 +415,7 @@ async fn empty_turn_does_not_create_file() {
     );
 }
 
-/// SAN-10 复核（2026-09-16）：工作区外声明路径**照常恢复**——这是 D2 hybrid
+/// SAN-10 复核：工作区外声明路径**照常恢复**——这是 hybrid
 /// 的既定契约（restrict=false 部署下声明式工具合法写工作区外文件，undo 必须
 /// 能回滚；见 safe_path 文档注释与 d2_tests::git_mode_hybrid_restores_out_of_
 /// workspace_paths）。此处钉 JSON 形态下的同款契约防未来误加边界；`..` 相对
@@ -449,7 +449,7 @@ async fn out_of_workspace_declared_path_is_restored_d2_hybrid() {
     assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside-orig");
 }
 
-// —— R4（2026-10-24 第四次外评）：并发会话 snapshot 归属桶化 ——
+// —— （第四次外评）：并发会话 snapshot 归属桶化 ——
 //
 // 旧实现 Inner.cur 是单槽：A begin(1) → B begin(2) 之后，A 的工具写入
 // snapshot 落进 B 名下的 cur——跨会话串档（A 的文件被记到 B 的 checkpoint，

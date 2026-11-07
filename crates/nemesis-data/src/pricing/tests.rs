@@ -15,7 +15,7 @@ fn approx(a: f64, b: f64) -> bool {
 #[test]
 fn embedded_table_loads_and_is_sane() {
     let table = PricingTable::embedded();
-    // 全量精简表：过滤后 ~2800 条（快照 2026-09-07）。阈值钉在下限防
+    // 全量精简表：过滤后 ~2800 条（快照）。阈值钉在下限防
     // 快照意外缩水，不钉精确数（上游增减条目是常态）。
     assert!(
         table.entries().len() >= 1000,
@@ -207,7 +207,7 @@ fn embedded_aliases_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// 负 token 钳 0 回归锁（BUG-20261024-09，R80）：账本不变量「上游报数异常
+// 负 token 钳 0 回归锁：账本不变量「上游报数异常
 // ——provider 响应的负 token 数——不得产生负成本」。修复前
 // cost_from_pricing / cost_breakdown_from_pricing 只钳 plain_input，
 // output/cache_creation/cache_read 三列负值原样乘入（provider 抽取层

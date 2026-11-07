@@ -1,9 +1,9 @@
-//! G2 集成测试矩阵 — 节点类型 × 触发方式 × Checkpoint 场景
+//! 集成测试矩阵 — 节点类型 × 触发方式 × Checkpoint 场景
 //!
 //! 覆盖核心组合，验证端到端的工作流执行。每个测试都用 WorkflowEngine 的
 //! 公开 API，模拟真实使用方式（gateway / agent 调用引擎的路径）。
 //!
-//! 测试矩阵参考 docs/REPORT/2026-06-25_workflow-integration-phase-1.md 第 6 节。
+//! 测试矩阵参考 workflow-integration-phase-1 第 6 节。
 //!
 //! 运行：`cargo test -p nemesis-workflow --test integration_matrix`
 
@@ -299,7 +299,7 @@ async fn delay_node_completes() {
 
 #[tokio::test]
 async fn multi_node_dag_executes_in_topological_order() {
-    // A → B → C  +  A → C  (diamond + shortcut)
+    // A → B → C + A → C (diamond + shortcut)
     let engine = build_engine("ignored", None);
     let wf = workflow_with_nodes(
         "dag_basic",
@@ -466,7 +466,7 @@ async fn cron_trigger_tagged_on_execution() {
 }
 
 // ---------------------------------------------------------------------------
-// Section 3: New node types (D2/D3/D4)
+// Section 3: New node types (//)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -581,7 +581,7 @@ async fn agent_node_runs_via_registered_runner() {
 
 #[tokio::test]
 async fn human_review_pauses_until_resume_with_approved() {
-    // A → review → B  (review pauses workflow; resume completes it).
+    // A → review → B (review pauses workflow; resume completes it).
     // Note: the current scheduler runs all topological levels in one pass;
     // it doesn't short-circuit on Waiting. So `b` may already have run
     // before we observe Waiting state — that's OK. What we're verifying

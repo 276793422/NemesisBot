@@ -2,7 +2,7 @@
 //!
 //! 拦截 `request_type="history"` 的入站消息，**就地**读主 workspace 的
 //! chat_log 并经 bus 出站应答——消息不再进入 bus 扇出，与任何 agent
-//! loop 的存亡/忙闲彻底解耦（BUG 2026-09-23 项目会话历史加载修复）：
+//! loop 的存亡/忙闲彻底解耦（项目会话历史加载修复）：
 //!
 //! - 场景 A（项目目录缺失）：项目 loop 从未启动，历史照样可读——数据
 //!   本就全在主 workspace `logs/session_logs/`，项目归属不再能把只读
@@ -51,7 +51,7 @@ impl HistoryFilter {
             }
         };
 
-        // HD（2026-09-17）：session_id 原样回显——前端按归属丢弃迟到响应。
+        // HD：session_id 原样回显——前端按归属丢弃迟到响应。
         let req_session_id = msg
             .metadata
             .get("session_id")
@@ -75,7 +75,7 @@ impl HistoryFilter {
             msg.session_key.clone()
         };
 
-        // 读历史（_async：阻塞读移出 tokio worker，BUG 2026-09-22）。
+        // 读历史（_async：阻塞读移出 tokio worker，BUG）。
         let (page, total_count, has_more, oldest_index) =
             nemesis_agent::chat_log::read_chat_log_async(
                 &session_key,
@@ -84,7 +84,7 @@ impl HistoryFilter {
             )
             .await;
 
-        // A1（2026-09-22）：历史读取**之后**采样环尾 seq（与 loop 内路径
+        // 历史读取**之后**采样环尾 seq（与 loop 内路径
         // 同序——剔除推断的前提是 assistant 入环点在 chat_log 落盘之后）。
         let last_seq = crate::chat_event_log::latest_seq(&session_key);
 

@@ -1,8 +1,8 @@
-//! plugins_wasm handler 单元测试（W6；独立测试文件——生产文件零内联测试）。
+//! plugins_wasm handler 单元测试（独立测试文件——生产文件零内联测试）。
 //!
 //! 覆盖：槽空诚实报错 / list 空+lockfile 交叉 / 未注册 slug 的诚实错误 /
-//! config.get 脱敏（x-secret 值不回传）/ flow:// 绑定路由（P3）。真实 wasm
-//! 组件的装配链路归 cluster 级 fixtures（W7 对抗套件），此处只打宿主面契约。
+//! config.get 脱敏（x-secret 值不回传）/ flow:// 绑定路由。真实 wasm
+//! 组件的装配链路归 cluster 级 fixtures（对抗套件），此处只打宿主面契约。
 
 use super::*;
 use nemesis_plugins_wasm::registry::PluginManager;
@@ -99,7 +99,7 @@ fn set_installer_enables_list() {
     assert_eq!(out["plugins"].as_array().map(|a| a.len()), Some(0));
 }
 
-// ==================== 运行期总闸（2026-11-01 BUG 修复） ====================
+// ==================== 运行期总闸（BUG 修复） ====================
 //
 // 用户现场：宿主壳开关（config.plugin.native.json plugin_wasm.enabled）
 // 翻关后框架已不在（下次启动不再装配），但运行中的 gateway 服务面照常
@@ -167,7 +167,7 @@ fn config_get_masks_x_secret_values() {
     let (_dir, inst) = temp_installer();
     set_installer(inst);
     // 无注册插件时 config.get 诚实拒绝；脱敏逻辑的正确性由「已注册插件的
-    // 端到端用例」（W7 fixtures）覆盖——此处钉死脱敏常量本身（值替换为
+    // 端到端用例」（fixtures）覆盖——此处钉死脱敏常量本身（值替换为
     // ******，不回传原文）防回归。
     assert!(cmd_config_get("nope").is_err());
 }
@@ -214,7 +214,7 @@ fn list_reports_switch_and_payload_without_registry() {
     assert_eq!(rows[0]["trust"], "unknown", "无 lockfile 记录 = 手工拷入");
     assert_eq!(rows[0]["enabled"], true, "开关记录位照读");
     assert_eq!(rows[0]["loaded"], false, "注册表缺席 = 未加载");
-    // 接管声明照读（2026-10-23 工具接管层）：前端徽标数据源——声明 =
+    // 接管声明照读（工具接管层）：前端徽标数据源——声明 =
     // 安装审批卡 + 列表徽标双留痕的投影半边。
     assert_eq!(
         rows[0]["takes_over"],
@@ -250,7 +250,7 @@ fn list_lockfile_only_row_for_missing_payload() {
 
 #[test]
 fn source_dir_validation_rejects_bad_shapes() {
-    // 2026-09-30 复查 #10：WSAPI 层 source_dir 闸（CLI 保持宽容）。
+    // 复查 #10：WSAPI 层 source_dir 闸（CLI 保持宽容）。
     assert!(validate_source_dir("").is_err(), "空串拒绝");
     assert!(validate_source_dir("   ").is_err(), "纯空白拒绝");
     assert!(
@@ -278,7 +278,7 @@ fn source_dir_validation_rejects_bad_shapes() {
 
 #[test]
 fn install_sync_event_decision_table() {
-    // 2026-09-30 复查 #4：恒发事件的方向决策表——只有 tool+meta+启用
+    // 复查 #4：恒发事件的方向决策表——只有 tool+meta+启用
     // 才 add=true；kind 翻转（tool→observer）/缺 meta/禁用升级一律
     // add=false（前缀摘除，清掉 loop 里的旧版工具）。
     let tool = Some(("plugin.t.a", "read"));
@@ -301,7 +301,7 @@ fn install_sync_event_decision_table() {
     assert!(off.tool_name.is_empty());
 }
 
-/// flow:// 绑定路由契约（P3，单用例串行覆盖全序——FLOW_ENGINE_BRIDGE 是
+/// flow:// 绑定路由契约（单用例串行覆盖全序——FLOW_ENGINE_BRIDGE 是
 /// 全局槽，多用例并行会互踩状态）。flow:// 分支在 require_installer 之前
 /// 返回，故无需装配 installer；形态错误断言先于桥检查，与桥态无关。
 #[tokio::test]
@@ -362,7 +362,7 @@ async fn flow_binding_routing_contract() {
     assert_eq!(out["got_instance"], "I-1");
 }
 
-// ==================== 面板 LLM 总闸（2026-11-01 决策 C） ====================
+// ==================== 面板 LLM 总闸（决策 C） ====================
 
 /// 纯声明式面板 manifest fixture（无 wasm 载荷——panel 免 sha 闸），
 /// `with_llm` 控制 `[permissions] x-llm` 段有无。

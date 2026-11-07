@@ -1,8 +1,8 @@
-//! A1 — 集群帧协议组件（QUIC 插件化 M3 后宿主侧仅存的桥件）。
+//! — 集群帧协议组件（QUIC 插件化 后宿主侧仅存的桥件）。
 //!
 //! 现有 TCP 路径的帧协议组件（`transport::frame`：4B 长度前缀 + AEAD）与
 //! 底层 IO 解耦——`AsyncFrameReader<R>`/`write_frame_async<W>` 泛型于
-//! `AsyncRead`/`AsyncWrite`。QUIC 插件化 M3：iroh bi-stream 本体已随端点
+//! `AsyncRead`/`AsyncWrite`。QUIC 插件化：iroh bi-stream 本体已随端点
 //! 迁入 plugin_roaming（`IrohBiStream` 组合器与地址解析一并退役），宿主侧
 //! 帧收发载体换 loopback TCP（`TcpStream` 直实现两 trait）——[`RoamingConn`]
 //! 原样复用：同一套帧字节格式 + 同一套 AEAD token 语义，LAN TCP 与跨网

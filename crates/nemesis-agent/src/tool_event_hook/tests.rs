@@ -1,4 +1,4 @@
-//! ToolEventHook 单元测试（M1a）。
+//! ToolEventHook 单元测试。
 
 use std::sync::Arc;
 

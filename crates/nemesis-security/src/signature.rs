@@ -5,7 +5,7 @@
 //!
 //! Signature format:
 //!   - Single file: SHA-256(file content) -> Ed25519 sign
-//!   - Directory:   sorted file paths, each SHA-256 concatenated -> SHA-256 of concatenation -> Ed25519 sign
+//!   - Directory: sorted file paths, each SHA-256 concatenated -> SHA-256 of concatenation -> Ed25519 sign
 //!
 //! A skill directory stores its signature in a `.signature` file at the skill root.
 
@@ -225,7 +225,7 @@ impl TrustStore {
         {
             entry.level = TrustLevel::Revoked;
             drop(keys);
-            // 信任库持久化失败不能静默吞掉（BUG-20261025-38：此前 `let _`
+            // 信任库持久化失败不能静默吞掉（此前 `let _`
             // 吞掉，与 add/remove 的 loud 不变量不一致）——重启后吊销失效=
             // 已撤密钥复信，安全语义反向恶化。
             if let Err(e) = self.save() {
@@ -280,7 +280,7 @@ impl TrustStore {
 
     /// 信任决策前的磁盘真相重读（跨进程信任写入的可见性）。
     ///
-    /// 信任库文件是单一真相源：CLI（独立进程）的 trust/revoke/remove 只写盘，
+    /// 信任库文件是统一定义：CLI（独立进程）的 trust/revoke/remove 只写盘，
     /// 常驻进程若只在构造期 load 一次就会拿陈旧缓存做信任判定——新增信任
     /// 不可见（先信后装的热信任流断链），吊销不可见（已撤密钥仍按 trusted
     /// 放行，安全语义反向恶化）。load 是 merge 语义（按 public_key 覆盖），
@@ -310,7 +310,7 @@ impl TrustStore {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
-        // REL-002：统一原子写入（信任库撕裂 = 签名信任面损坏；唯一临时名 +
+        // 统一原子写入（信任库撕裂 = 签名信任面损坏；唯一临时名 +
         // sync_all + 失败清理由 helper 承担，替换此前的固定 `.tmp` 自制实现）
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write trust store: {e}"))?;
@@ -345,7 +345,7 @@ impl TrustStore {
             // hex（KeyPair.public_key / verify_skill 的 public_key_hex，64 字符）。
             // 原实现只用 base64 的 import_public_key：64 个 hex 字符恰好是
             // 合法 base64（解码 48 字节）→ 校验必失败 → 持久化的 hex key 在
-            // 重载时被全部静默跳过（trust store 重启即清空，2026-08-25 测试
+            // 重载时被全部静默跳过（trust store 重启即清空， 测试
             // 首触即抓）。
             let b64_ok = import_public_key(&k.public_key).is_ok();
             let hex_ok = match hex_decode_32(&k.public_key) {
@@ -550,7 +550,7 @@ impl Verifier {
             return r;
         }
 
-        // Read the .signature file.
+        // Read the.signature file.
         let sig_path = skill_path.join(SIGNATURE_FILE_NAME);
         let sig_data = match std::fs::read_to_string(&sig_path) {
             Ok(d) => d,
@@ -654,7 +654,7 @@ impl Verifier {
             };
         }
 
-        // Compute the aggregate hash of all files in the directory (excluding .signature).
+        // Compute the aggregate hash of all files in the directory (excluding.signature).
         let (aggregate_hash, file_count) = match compute_directory_hash(skill_path) {
             Ok(r) => r,
             Err(e) => {
@@ -989,7 +989,7 @@ fn compute_directory_hash(dir_path: &Path) -> Result<([u8; 32], usize), String> 
             // Skip the signature file at the root level.
             if !e.file_type().is_dir() && e.file_name() == SIGNATURE_FILE_NAME {
                 let rel = e.path().strip_prefix(dir_path).unwrap_or(e.path());
-                // Only skip the root-level .signature
+                // Only skip the root-level.signature
                 rel.parent().is_some_and(|p| !p.as_os_str().is_empty())
             } else {
                 true
@@ -1001,7 +1001,7 @@ fn compute_directory_hash(dir_path: &Path) -> Result<([u8; 32], usize), String> 
         if entry.file_type().is_dir() {
             continue;
         }
-        // Skip the .signature file.
+        // Skip the.signature file.
         if entry.file_name() == SIGNATURE_FILE_NAME {
             // Check if it's at the root level of the skill dir.
             let rel = entry.path().strip_prefix(dir_path).unwrap_or(entry.path());
@@ -1123,7 +1123,7 @@ impl SignatureVerifier {
             return false;
         }
 
-        // Step 2: Ed25519 verification (BUG-20261025-28：哈希 fallback 已删——
+        // Step 2: Ed25519 verification (哈希 fallback 已删——
         // sha256(content||pubkey) 任何人可算，公钥是公开信息，留着它等于
         // 任何持受信公钥字符串的攻击者都能对任意内容伪造"签名"）。
         verify_signature_ed25519(content.as_bytes(), signature, public_key)
@@ -1133,7 +1133,7 @@ impl SignatureVerifier {
     ///
     /// 字节串变体（skills 目录签名用——文件原始字节不保证 UTF-8）；判定
     /// 顺序与 [`Self::verify_signature`] 一致：信任检查 → Ed25519
-    /// （BUG-20261025-28：哈希 fallback 已删，理由同上）。
+    /// （哈希 fallback 已删，理由同上）。
     pub fn verify_signature_bytes(
         &self,
         content: &[u8],

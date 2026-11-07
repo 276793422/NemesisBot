@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// Checks for local mode first (`.nemesisbot/config.json` in the current directory),
 /// then falls back to the user's home directory (`~/.nemesisbot/config.json`).
 pub fn get_config_path() -> PathBuf {
-    // Check local mode: .nemesisbot in current directory
+    // Check local mode:.nemesisbot in current directory
     let local_path = PathBuf::from(".nemesisbot").join("config.json");
     if local_path.parent().is_some_and(|p| p.exists()) {
         return local_path;

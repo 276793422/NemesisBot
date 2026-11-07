@@ -1,16 +1,16 @@
-//! Factory wiring tests (2026-08-24 arch review, U-list D1/D2).
+//! Factory wiring tests (2026-08-24 arch review, U-list /).
 //!
-//! D1 — `build_cluster_agent_loop` resolves the startup capability tier from
+//! — `build_cluster_agent_loop` resolves the startup capability tier from
 //!      config.json exactly like `build_agent_loop`: a mini-tier active model
 //!      must yield the mini tier on the cluster loop (previously the loop
 //!      always ran the AgentLoop::new default = Big = full 42-tool set even
 //!      for small models; tier filtering reads `self.tier` at tool-def build
 //!      time, so a correct tier is the whole guarantee).
-//! D2 — the cluster loop gets a spill root (`<home>/logs/spill`) so oversized
+//! — the cluster loop gets a spill root (`<home>/logs/spill`) so oversized
 //!      tool results spill whole to disk instead of degrading to the prune
 //!      profile. It shares the main agent's root; the daily cleanup task is
 //!      only spawned by the main factory (asserted by wiring, not here).
-//! D3 — comment-only (no behavior change); not asserted.
+//! — comment-only (no behavior change); not asserted.
 
 // The cluster factory is feature-gated; mirror the gate so the module is
 // empty in trimmed builds (--no-default-features must compile clean).
@@ -73,7 +73,7 @@ async fn cluster_agent_resolves_tier_and_spill_root_from_config() {
             "build_cluster_agent_loop must succeed with a mini-tier config (provider construction is offline: HttpCompat + dummy key)",
         );
 
-    // D1: startup tier comes from config.json (was: always the Big default).
+    // startup tier comes from config.json (was: always the Big default).
     assert!(
         matches!(
             agent_loop.tier(),
@@ -86,16 +86,16 @@ async fn cluster_agent_resolves_tier_and_spill_root_from_config() {
     // tool-def build time inside the loop, reading the tier asserted above).
     assert!(agent_loop.tool_count() > 0);
 
-    // D2: spill root wired to U4 设计位 workspace/logs/spill（2026-08-31 迁移）。
+    // spill root wired to 设计位 workspace/logs/spill（迁移）。
     assert_eq!(
         agent_loop.spill_root_path(),
         Some(home.join("workspace").join("logs").join("spill"))
     );
 }
 
-/// E1 二期（全自动流转 P5）回归：cluster agent loop 必须接上用量账本。
+/// 二期（全自动流转）回归：cluster agent loop 必须接上用量账本。
 ///
-/// T37① 真机抓到的产品 bug：`build_cluster_agent_loop` 漏了
+/// ① 真机抓到的产品 bug：`build_cluster_agent_loop` 漏了
 /// `set_data_store`——B 端 LLM 调用不落 request_logs → 任务收尾
 /// `extract_task_usage` 聚合恒零 → 回调 usage=None → master 诚实跳过
 /// 记账，token 回传整链静默失效。修复后与 build_agent_loop 同源接线。
@@ -157,10 +157,10 @@ async fn cluster_agent_loop_wires_usage_ledger_from_shared() {
     assert!(loop_no_ds.data_store().is_none());
 }
 
-/// F-U3-2 接线回归（UAT U3 round-2 实证，T37① 同型）：`build_cluster_agent_loop`
+/// F- 接线回归（UAT round-2 实证，① 同型）：`build_cluster_agent_loop`
 /// 必须接上 `set_workspace_root`——缺了它 `cluster_agent::build_context` 的
 /// tool_path_base 注入条件恒 None，档案管线任务的相对路径重写静默失效
-/// （worker 文件落 workspace 根，变更集丢失，整条 E3 交付链空转）。
+/// （worker 文件落 workspace 根，变更集丢失，整条 交付链空转）。
 #[tokio::test]
 async fn cluster_agent_loop_wires_workspace_root_from_shared() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -220,9 +220,9 @@ fn cluster_prompt_joins_identity_and_soul_with_separator() {
     std::fs::write(dir.join("SOUL.md"), "核心原则").unwrap();
 
     let prompt = load_cluster_system_prompt(tmp.path(), true).expect("两文件齐 → Some");
-    // FT（2026-09-17）：人格段之后固定追加稳定段（M3：worker 契约 + Workspace
+    // FT：人格段之后固定追加稳定段（worker 契约 + Workspace
     // 尾行；绝对路径随 tempfile 落点不定 → 前缀/收尾断言，不整串比对）。
-    // 顺序（D4/D5 稳定前缀）：IDENTITY → SOUL → worker 契约 → Workspace。
+    // 顺序（/ 稳定前缀）：IDENTITY → SOUL → worker 契约 → Workspace。
     assert!(
         prompt.starts_with("我是集群节点\n\n---\n\n核心原则\n\n---\n\n# 集群工作契约"),
         "{prompt}"
@@ -243,7 +243,7 @@ fn cluster_prompt_worker_discipline_gate() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("IDENTITY.md"), "id-only").unwrap();
 
-    // D5 闸：worker_discipline=false → 契约段缺席（回退纯人格提示词）。
+    // 闸：worker_discipline=false → 契约段缺席（回退纯人格提示词）。
     let off = load_cluster_system_prompt(tmp.path(), false).expect("身份文件在 → Some");
     assert!(!off.contains("集群工作契约"), "{off}");
 
@@ -252,7 +252,7 @@ fn cluster_prompt_worker_discipline_gate() {
     assert!(on.contains("# 集群工作契约（行为纪律段）"), "{on}");
     assert!(on.contains("数据非指令"), "{on}");
 
-    // 无身份文件 + 契约开 → 契约单独成前缀（D5 缺省 on 时不再裸跑）。
+    // 无身份文件 + 契约开 → 契约单独成前缀（缺省 on 时不再裸跑）。
     let tmp3 = tempfile::TempDir::new().unwrap();
     let bare = load_cluster_system_prompt(tmp3.path(), true).expect("契约兜底 → Some");
     assert!(bare.starts_with("# 集群工作契约"), "{bare}");
@@ -260,7 +260,7 @@ fn cluster_prompt_worker_discipline_gate() {
 
 #[test]
 fn cluster_prompt_expertise_loaded_when_present() {
-    // D4 断线修复：EXPERTISE.md 有则注入（无条件），位次 SOUL 之后、契约之前。
+    // 断线修复：EXPERTISE.md 有则注入（无条件），位次 SOUL 之后、契约之前。
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = cluster_dir(tmp.path());
     std::fs::create_dir_all(&dir).unwrap();
@@ -306,12 +306,12 @@ fn cluster_prompt_skips_blank_files_and_single_file_works() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：主工厂 build_agent_loop 全链
+// 补测（quality-hardening goal 冲刺）：主工厂 build_agent_loop 全链
 // + build_shared_tool_config / register_tools_and_mcp / once-guard 清理任务 /
 // attach_semantic_embedder。
 // =========================================================================
 
-/// 写一份带模型条目的 config.json（D1 同款形态，字段可覆盖）。
+/// 写一份带模型条目的 config.json（同款形态，字段可覆盖）。
 fn write_model_config(home: &std::path::Path, extra: serde_json::Value) {
     let mut cfg = serde_json::json!({
         "agents": { "defaults": { "llm": "mini-model", "max_tool_iterations": 5 } },
@@ -358,14 +358,14 @@ fn write_model_config(home: &std::path::Path, extra: serde_json::Value) {
 
 fn make_shared(home: &std::path::Path) -> Arc<SharedResources> {
     let (outbound_tx, _rx) = tokio::sync::mpsc::channel(16);
-    // 真相源对齐（2026-08-27 WaveC 缺口修复）：生产 gateway 启动先
+    // 真相源对齐（WaveC 缺口修复）：生产 gateway 启动先
     // `ConfigStore::load(config_path)` 再把句柄交给工厂（gateway.rs 同款顺序），
     // 而 build_agent_loop 的 executor 通道装配读的是 shared.config_store.handle()
     // 运行时缓存，不是磁盘 config.json。此前夹具把 executor 段只写进磁盘、store
     // 却留在 Config::default() → build_executor_channel 恒返回 None → Layer 1
     // MOVE 工具替换循环从未被真实命中（假绿）。这里按 gateway 顺序把磁盘配置
     // 装进 store；load 失败（config.json 缺失/坏 JSON 时 load_config 有内嵌默认
-    // 回落，Err 极罕见）退回默认 store，与旧夹具行为一致。
+    // 回落，Err 极罕）退回默认 store，与旧夹具行为一致。
     // 每次调用独立建 store、不碰 set_global 单例 —— 测试间零共享状态。
     let config_store = match nemesis_config::ConfigStore::load(&home.join("config.json")) {
         Ok(store) => Arc::new(store),
@@ -394,13 +394,13 @@ async fn build_agent_loop_full_chain_from_disk_config() {
 
     let loop1 = build_agent_loop(&make_shared(&home))
         .expect("build_agent_loop must succeed offline (provider construction only)");
-    // D1 断言组复用于主工厂：tier 从 config.json 解析、工具已注册、spill 根挂上。
+    // 断言组复用于主工厂：tier 从 config.json 解析、工具已注册、spill 根挂上。
     assert!(matches!(
         loop1.tier(),
         nemesis_types::capability::ModelTier::Mini
     ));
     assert!(loop1.tool_count() > 0);
-    // 2026-08-31 spill 根迁回 workspace（U4 设计指定位置）。
+    // spill 根迁回 workspace（设计指定位置）。
     assert_eq!(
         loop1.spill_root_path(),
         Some(home.join("workspace").join("logs").join("spill"))
@@ -414,7 +414,7 @@ async fn build_agent_loop_full_chain_from_disk_config() {
 }
 
 // =========================================================================
-// BUG-95（2026-10-27 回头检查）：主/集群 checkpoint store 共享影子库，
+// BUG-95（回头检查）：主/集群 checkpoint store 共享影子库，
 // 双写入者下 gc 有换名竞态 + 保留集盲区 → factory 集群闸（config.cluster.enabled
 // 时不装配 gc）。两测一正一反钉住闸的两臂。
 // =========================================================================
@@ -464,7 +464,7 @@ async fn build_agent_loop_gc_armed_without_cluster() {
 }
 
 // =========================================================================
-// codemode 装配期注册回归（2026-10-25 默认开拍板）：
+// codemode 装配期注册回归（默认开）：
 // - 默认 config（缺 codemode 键）装配后 code_run 已注册（serde default true）；
 // - 显式 agents.codemode.enabled=false 装配后不注册（装配闸尊重 config）。
 // 运行期热生效（开关切换的注册表增删）由 nemesis-agent config_watch 三测试钉住，
@@ -507,7 +507,7 @@ async fn build_agent_loop_degrades_when_config_missing() {
     let tmp = tempfile::TempDir::new().unwrap();
     // 不写 config.json → load_config 走默认回落（zhipu 默认模型无 key）→
     // resolve 失败 → 无 LLM 降级装配（NullProvider，Ok 不 Err）——双击直启
-    // 语义（2026-09-17）：启动不再强制配好 LLM；对话打到 NullProvider 得到
+    // 语义：启动不再强制配好 LLM；对话打到 NullProvider 得到
     // 诚实「未配置模型」报错，Dashboard 配好并设默认后热切恢复。
     let built = build_agent_loop(&make_shared(tmp.path()))
         .expect("missing config.json must degrade to NullProvider assembly");
@@ -638,7 +638,7 @@ fn attach_semantic_embedder_none_and_with_memory_both_no_panic() {
 }
 
 // ===========================================================================
-// R10 补测批（coverage-95 goal）：tracing 懒求值族 + 种子文件族。
+// 补测批（coverage-95 goal）：tracing 懒求值族 + 种子文件族。
 //
 // 背景：tracing 宏的参数表达式只在 subscriber 存在且级别启用时才求值 ——
 // 本文件既有测试从不装 logger，factory 内所有 info!(字段=..) 的参数在
@@ -694,7 +694,7 @@ mod r10 {
     /// rpc_cache 快照（后者清扫是否真的跑取决于 once-guard 抽签）。
     fn seed_aged_main_files(home: &std::path::Path) {
         // spill：<workspace>/logs/spill/<sess>/<file>（cleanup_expired 只扫两层；
-        // 2026-08-31 迁回 workspace，U4 设计位）。
+        // 迁回 workspace， 设计位）。
         let spill_file = home
             .join("workspace")
             .join("logs")
@@ -755,7 +755,7 @@ mod r10 {
         backdate(&spill_file, 10 * DAY);
     }
 
-    /// hooks.json（K2/U14）：`{"hooks":{...}}` 包装形态 + 一条合法
+    /// hooks.json：`{"hooks":{...}}` 包装形态 + 一条合法
     /// command 脚本 → load_from_dir 出 Some → bridge.register 命中。
     fn seed_hooks_json(home: &std::path::Path) {
         let cfg_dir = home.join("config");
@@ -775,7 +775,7 @@ mod r10 {
         .unwrap();
     }
 
-    /// P3.1 auto-inject 开关种子：config.enhanced_memory.json（memory
+    /// .1 auto-inject 开关种子：config.enhanced_memory.json（memory
     /// feature 关闭时该文件只是没人读的多余文件，无害）。
     fn seed_auto_inject(home: &std::path::Path) {
         let ws_cfg = home.join("workspace").join("config");
@@ -884,7 +884,7 @@ mod r10 {
         }
 
         // SharedResources 不是 Clone（Arc 堆栈 + vtable 字段），按字段从
-        // make_shared 摊平，再补集群 RPC 两项 —— 与现有 D1 测试的字段面一致。
+        // make_shared 摊平，再补集群 RPC 两项 —— 与现有 测试的字段面一致。
         let base = make_shared(&home);
         let shared = Arc::new(SharedResources {
             home: base.home.clone(),
@@ -934,7 +934,7 @@ mod r10 {
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     }
 
-    /// exec_world P5-2 家族（A 批残留）：executor.enabled+sandbox=true 但本机
+    /// exec_world 家族（A 批残留）：executor.enabled+sandbox=true 但本机
     /// 没有 Sandboxie 引擎（target 测试 home 下无 Start.exe、SbieSvc 未跑）
     /// → 走完整探针序列（sandbox/strict live-probe 闭包 + service_state +
     /// will_attach 判定）后落 degraded warn 臂（strict=ON 版文案），最后仍
@@ -966,7 +966,7 @@ mod r10 {
 }
 
 // ===========================================================================
-// ASM-08 装配矩阵（2026-09-16 横扫存量加固）：三 builder 关键件接线 + 断言
+// ASM-08 装配矩阵（横扫存量加固）：三 builder 关键件接线 + 断言
 // helper 触发路径。
 //
 // 双层防线：
@@ -1034,7 +1034,7 @@ async fn asm08_cluster_loop_critical_wiring_matrix() {
     write_mini_model_config(&home);
 
     // security_plugin = Some（gateway 生产形态，ASM-01）：security feature
-    // 裁剪时字段退化为 Option<()>，Some(()) 同样走 None 分支语义。
+    // 裁剪时字段退化为 Option<>，Some() 同样走 None 分支语义。
     #[cfg(feature = "security")]
     let plugin = crate::security_setup::build_security_plugin(&home, true)
         .await
@@ -1111,7 +1111,7 @@ async fn asm08_assert_helper_flags_shared_plugin_missing_on_loop() {
 }
 
 // =========================================================================
-// 件2（2026-09-24 三合一收口）：spawn 闭包 SubagentStart/SubagentStop 触发点。
+// 件2：spawn 闭包 SubagentStart/SubagentStop 触发点。
 //
 // 不发事件面（诚实边界，代码注记为准）：board_review / conflict_resolver /
 // web board 的 run_detached 是内部 LLM 委托，不挂 spawn 闭包，天然不发。
@@ -1272,7 +1272,7 @@ async fn project_spawn_closure_refuses_on_start_exit_2() {
     assert!(err.contains("refused-by-hook"), "err={err}");
 }
 
-/// 件3 层2（2026-09-24）：延迟接线——真实 manager **后**挂（复刻 gateway 在
+/// 件3 层2：延迟接线——真实 manager **后**挂（复刻 gateway 在
 /// loop 构建之后才 set 的时序），观察任务轮询到即包 wrapper；之后从 auditor
 /// 槽取到的 manager 已是 wrapper（委托 verdict 通过 + Notification 脚本
 /// 真实执行）。Arc::ptr_eq 判「槽位已不是裸 stub」即包装完成。
@@ -1367,7 +1367,7 @@ async fn approval_observer_wraps_manager_that_appears_later() {
 }
 
 // ===========================================================================
-// Coverage 追加（2026-09-24）：装配旋钮臂——discipline 总开关 / small_model
+// Coverage 追加：装配旋钮臂——discipline 总开关 / small_model
 // 通道 / spill retention 启动清扫 / agent_event_tx 观察钩 / pricing store
 // 打开失败降级 / cluster_rpc + peers_fn 注册（集群 loop）。
 // ===========================================================================
@@ -1531,7 +1531,7 @@ async fn cluster_factory_wires_discipline_event_tx_rpc_and_peers() {
 
 // ===========================================================================
 // wave4 追加（coverage）：项目 loop 工厂 build_project_agent_loop 全家桶。
-// 此前 tests 只钉了主工厂/集群工厂；项目工厂（L6++ M2，~350 行）零覆盖。
+// 此前 tests 只钉了主工厂/集群工厂；项目工厂（~350 行）零覆盖。
 // 与主工厂同源手法：tempdir home + 迷你模型 config，全部离线（provider
 // 构造不出网），断言走 Ok/Err 面 + 公开 getter（tool_count/tier/
 // workspace_root/session_store）。
@@ -1551,7 +1551,7 @@ fn project_entry(dir: &std::path::Path) -> ProjectEntry {
 }
 
 /// checkpoint 影子库目录派生：{main_ws}/logs/project_checkpoints/{pid}
-/// （resolve_checkpoints_dir 的兄弟目录，R7 不污染用户项目目录）。
+/// （resolve_checkpoints_dir 的兄弟目录， 不污染用户项目目录）。
 #[test]
 fn project_checkpoint_dir_derives_logs_sibling() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1689,8 +1689,8 @@ async fn project_factory_small_model_unresolvable_degrades_quietly() {
 }
 
 // -------------------------------------------------------------------------
-// Wave5 round2 batch3: agent_factory 深水区 —— 项目 spawn 闭包矩阵
-// （未知档位 / background 诚实拒绝 / 前台全链）、G4 后台路径 bus 回灌
+// Wave5 batch3: agent_factory 深水区 —— 项目 spawn 闭包矩阵
+// （未知档位 / background 诚实拒绝 / 前台全链）、 后台路径 bus 回灌
 // （error 完成 + cancelled 升级失败）、集群工厂降级臂（模型解析失败 /
 // provider 构造失败 warn / approval_slot 缺席 warn）。
 // -------------------------------------------------------------------------
@@ -1714,8 +1714,8 @@ fn project_spawn_fixture(
 }
 
 /// 项目 spawn 闭包矩阵①：未知档位诚实 Err（防御纵深臂，先于 Start 钩子）；
-/// ②background=true 走 D7 后台路径返回 marker（2026-11-03 解锁——spec loop
-/// continuation manager 已接线，后台子代理在本 loop 闭合，不再 R1 拒绝）。
+/// ②background=true 走 后台路径返回 marker（解锁——spec loop
+/// continuation manager 已接线，后台子代理在本 loop 闭合，不再 拒绝）。
 #[tokio::test]
 async fn project_spawn_closure_rejects_unknown_profile_and_background() {
     let doc = serde_json::json!({ "hooks": {} }).to_string();
@@ -1791,7 +1791,7 @@ fn bg_spawn_fixture(
     (loop_arc, slot, bus)
 }
 
-/// G4 后台路径完成回灌①：后台任务跑完（stub LLM 失败）→ bus 出现
+/// 后台路径完成回灌①：后台任务跑完（stub LLM 失败）→ bus 出现
 /// `subagent_continuation:{task_id}` system 消息，metadata.status=error。
 #[tokio::test]
 async fn background_spawn_publishes_error_continuation_to_bus() {
@@ -1829,7 +1829,7 @@ async fn background_spawn_publishes_error_continuation_to_bus() {
     );
 }
 
-/// G4 后台路径完成回灌②：spawn 后 loop 已亡（drop 强引用）→ upgrade 失败
+/// 后台路径完成回灌②：spawn 后 loop 已亡（drop 强引用）→ upgrade 失败
 /// 「cancelled」形态，metadata.error 带 loop-is-gone 文案（回灌照发——恢复端
 /// 诚实知道任务没跑成）。
 #[tokio::test]
@@ -1944,13 +1944,13 @@ async fn cluster_factory_provider_create_warn_and_approval_gate_wired() {
         build_cluster_agent_loop(&shared, cluster).expect("bogus protocol → NullProvider 降级装配");
 }
 
-/// M1（2026-10-10 机制加固）锚点根单一真相源契约：同一部署形态下
+/// （机制加固）锚点根单一真相源契约：同一部署形态下
 /// 锚点主根（resolve_anchor_root）== SharedResources 解析根（装配点
 /// post_agent.rs 的填充来源）== canonical 布局（nemesis_path::workspace_dir，
 /// PathManager / cluster_init 合并收件箱同源）== 合并收件箱父目录，
-/// 四者字节一致。显式覆盖形态（K1 headless --workspace）下 workspace_dir()
+/// 四者字节一致。显式覆盖形态（headless --workspace）下 workspace_dir()
 /// 跟随覆盖——这正是「禁止各消费点从 home 手拼」的根据：手拼根在覆盖
-/// 形态下与真实工作区脱钩（A10 假红的结构性根源）。
+/// 形态下与真实工作区脱钩（假红的结构性根源）。
 #[test]
 fn anchor_root_contract_single_source() {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -2001,7 +2001,7 @@ fn anchor_root_contract_single_source() {
     );
 
     // ④ 显式覆盖形态：workspace_dir() 跟随覆盖——canonical 手拼不跟随，
-    //    这就是 M1 禁手拼的根据。
+    //    这就是 禁手拼的根据。
     let overridden = SharedResources {
         home: home.clone(),
         workspace: tmp.path().join("custom-ws"),

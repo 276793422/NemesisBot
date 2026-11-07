@@ -4,15 +4,15 @@
 //!
 //! ## What it solves
 //!
-//! Before this module existed, [`crate::triggers::TriggerManager::match_event`]
+//! Before this module existed, [`crate::triggers:TriggerManager::match_event`]
 //! was dead code: nothing in the codebase called it, so `event` triggers never
 //! fired. This module provides the missing producer side:
 //!
 //! 1. Business code calls [`EventDispatcher::publish`] when something
 //!    interesting happens (workflow completes, forge produces a pattern, etc.).
 //! 2. The gateway spawns a subscriber that turns each event into a
-//!    [`crate::triggers::TriggerManager::match_event`] lookup, then calls
-//!    [`crate::engine::WorkflowEngine::start_async`] for each hit.
+//!    [`crate::triggers:TriggerManager::match_event`] lookup, then calls
+//!    [`crate::engine:WorkflowEngine::start_async`] for each hit.
 //!
 //! ## Why a separate bus instead of reusing the inbound message bus
 //!
@@ -22,7 +22,7 @@
 //!
 //! ## Naming
 //!
-//! Note: this is *not* [`crate::events::WorkflowEvent`] (the engine's
+//! Note: this is *not* [`crate::events:WorkflowEvent`] (the engine's
 //! lifecycle observer enum). The two types serve different purposes:
 //! - lifecycle `WorkflowEvent` = "engine state changed" → observers
 //!   (logs, metrics)
@@ -31,7 +31,7 @@
 //!
 //! ## Channel choice
 //!
-//! `tokio::sync::broadcast` because (a) we already use it for the inbound bus,
+//! `tokio::sync:broadcast` because (a) we already use it for the inbound bus,
 //! (b) it's fan-out so multiple subscribers can observe events (the workflow
 //! trigger subscriber + future observers like audit log), and (c) lagged
 //! receivers get a clear error they can recover from.
@@ -42,9 +42,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
-/// BUG-20261104-383：事件触发链保留键。workflow.completed/failed/cancelled
+/// 事件触发链保留键。workflow.completed/failed/cancelled
 /// 事件的 `data` 携带本键（JSON 字符串数组 = 产出本事件的触发链上的
-/// workflow 名序列，含当前这个）；[`crate::engine::WorkflowEngine::workflows_matching_event`]
+/// workflow 名序列，含当前这个）；[`crate::engine:WorkflowEngine::workflows_matching_event`]
 /// 拒绝把链上已出现的 workflow 再次触发——否则「A 监听 workflow.completed」
 /// 完成即匹配自己，每次完成 spawn 新执行再完成再发布，无限风暴；A→B→A
 /// 互触发环同理。链经 `TriggerSource::Event.data` 逐代透传（gateway 订阅者
@@ -61,7 +61,7 @@ pub struct TriggerEvent {
     /// `workflow.completed`, `user.login`, `forge.pattern_created`.
     pub event_type: String,
     /// Arbitrary key/value payload. Trigger configs match these with glob
-    /// patterns (see [`crate::triggers::TriggerManager::match_event`]).
+    /// patterns (see [`crate::triggers:TriggerManager::match_event`]).
     #[serde(default)]
     pub data: HashMap<String, serde_json::Value>,
     /// When the event was produced (server clock). Useful for ordering and

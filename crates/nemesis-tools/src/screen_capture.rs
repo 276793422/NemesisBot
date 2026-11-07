@@ -89,7 +89,7 @@ impl ScreenCaptureTool {
         *timeout = d;
     }
 
-    /// Determine the .NET ImageFormat enum name for the given format string.
+    /// Determine the.NET ImageFormat enum name for the given format string.
     fn image_format_enum(format: &str) -> &'static str {
         match format.to_lowercase().as_str() {
             "jpg" | "jpeg" => "Jpeg",

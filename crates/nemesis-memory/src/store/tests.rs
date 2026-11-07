@@ -444,7 +444,7 @@ fn test_local_store_default() {
     assert!(store.entries.read().is_empty());
 }
 
-// ---- MemoryStore 契约套件（S6）：LocalStore 端挂接 ----
+// ---- MemoryStore 契约套件：LocalStore 端挂接 ----
 // 契约驱动本体在 crate::contract_tests（双后端共享），此处只做实例化。
 // 每个契约用独立 store 实例，杜绝用例间状态串扰。
 

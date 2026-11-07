@@ -1,4 +1,4 @@
-//! P32（能力扩展 Wave3）cache-warmer 域测试。
+//! （Wave3）cache-warmer 域测试。
 //!
 //! - TTL 解析：只认模型条目显式 `cache_ttl_secs`（5min=300 / 1h=3600 两档
 //!   都由此表达），未知 / 非法 / 缺失 → None（不 warm，诚实降级）；

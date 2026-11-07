@@ -38,7 +38,7 @@ fn test_init_db_creates_file_and_tables() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// v19（G4 交付证据契约，2026-10-18 批六）：旧库迁移后 `requires_evidence`
+/// v19（交付证据契约）：旧库迁移后 `requires_evidence`
 /// 列在场且存量行默认 0（新列 NOT NULL DEFAULT 0，旧行不误判为要求证据）。
 #[test]
 fn test_migration_v1_to_latest_adds_requires_evidence_default_zero() {
@@ -398,7 +398,7 @@ fn unique_dir(name: &str) -> std::path::PathBuf {
     dir
 }
 
-/// v17（职能框架 M2）：v16 旧库迁移补 `issue.required_profession` 列；
+/// v17（职能框架）：v16 旧库迁移补 `issue.required_profession` 列；
 /// 存量行 NULL（= 不限职能），新列可写可读（迁移 round-trip）。
 #[test]
 fn test_migration_v16_to_v17_adds_required_profession() {
@@ -468,7 +468,7 @@ fn test_migration_v16_to_v17_adds_required_profession() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// v18（NB-122 批 2026-10-16）：v17 旧库迁移补 `issue.required_capabilities`
+/// v18（16）：v17 旧库迁移补 `issue.required_capabilities`
 /// 列；存量行 NULL（= 无能力需求），新列可写可读（迁移 round-trip）。
 #[test]
 fn test_migration_v17_to_v18_adds_required_capabilities() {
@@ -539,7 +539,7 @@ fn test_migration_v17_to_v18_adds_required_capabilities() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// -------------------------------------------------- B10（2026-10-18 存储韧性）
+// -------------------------------------------------- （存储韧性）
 
 #[test]
 fn b10_init_db_rejects_foreign_file_loudly() {
@@ -585,7 +585,7 @@ fn b10_init_db_rejects_newer_schema_version() {
 #[test]
 fn b10_migration_from_v1_keeps_backup() {
     // 手法③：模拟旧版库（fresh v1 + 存量数据 + user_version=1）→ init_db
-    // 走全迁移链升到当前版，迁移前 .bak.1 在场且持旧版快照（存量单可查）。
+    // 走全迁移链升到当前版，迁移前.bak.1 在场且持旧版快照（存量单可查）。
     let dir = unique_dir("b10-migrate-bak");
     let path = dir.join("board.db");
     std::fs::create_dir_all(&dir).unwrap();
@@ -623,7 +623,7 @@ fn b10_migration_from_v1_keeps_backup() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// R221 BUG-166：迁移步原子性——步内语句半途失败必须整体回滚且版本戳
+/// BUG-166：迁移步原子性——步内语句半途失败必须整体回滚且版本戳
 /// 不落（崩溃/磁盘满中段失败后，下轮启动从干净态重试本步，而不是带着
 /// 半套对象撞 "duplicate column name"/"table already exists" 永久毒化）；
 /// 成功步库对象与版本戳原子同步落（中段崩溃后下轮从断点续跑，不从 v1

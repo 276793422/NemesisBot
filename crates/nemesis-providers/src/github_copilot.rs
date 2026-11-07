@@ -57,7 +57,7 @@ impl GitHubCopilotProvider {
     }
 
     /// Serialize messages to a prompt string for Copilot.
-    /// 图像部分按 D7 降级为文字占位（该通道不支持视觉输入，诚实注明不静默）。
+    /// 图像部分按 降级为文字占位（该通道不支持视觉输入，诚实注明不静默）。
     fn messages_to_prompt(&self, messages: &[Message]) -> String {
         let prompt_messages: Vec<serde_json::Value> = messages
             .iter()
@@ -101,7 +101,7 @@ impl LLMProvider for GitHubCopilotProvider {
             .json(&body)
             .send()
             .await
-            // 诚实化（2026-10-13）：真超时→Timeout；连接失败等→Unknown +
+            // 诚实化：真超时→Timeout；连接失败等→Unknown +
             // "connect error" 前缀（与全 lane 口径一致，错误链不再丢弃）。
             .map_err(|e| {
                 crate::failover::transport_error("github-copilot", &self.config.default_model, &e)
@@ -121,7 +121,7 @@ impl LLMProvider for GitHubCopilotProvider {
             ));
         }
 
-        // body 读传输失败诚实上抛（BUG-20261029-153 同族）：unwrap_or_default
+        // body 读传输失败诚实上抛（同族）：unwrap_or_default
         // 会把断连伪装成「空内容 + 成功」假成功（finish_reason=stop、零报错）
         // ——比伪装 Format 更糟，agent 拿到空回复无从重试。
         let content: String = resp.text().await.map_err(|e| {

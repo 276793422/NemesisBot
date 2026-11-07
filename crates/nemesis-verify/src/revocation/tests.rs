@@ -53,7 +53,7 @@ fn revoke_hit_key_fp() {
 
 #[test]
 fn revoke_hit_file_hash() {
-    // S4-4：四维度查序 KeyFp→SigHash→FileHash→Publisher 的 FileHash 臂
+    // 四维度查序 KeyFp→SigHash→FileHash→Publisher 的 FileHash 臂
     // （此前 FileHash 只有「不命中」旁证，无命中样本）
     let _g = TEST_LOCK.lock().unwrap();
     let (sk, vk) = keypair(4);
@@ -102,7 +102,7 @@ fn no_url_returns_unknown() {
     }
 }
 
-/// BUG-20261029-147：tokio runtime 上下文内查吊销不得 panic。修复前
+/// tokio runtime 上下文内查吊销不得 panic。修复前
 /// fetch_crl 的 `reqwest::blocking` Client 在 block_on 线程上 drop，其内部
 /// runtime 关闭被 tokio 拒绝（「Cannot drop a runtime in a context where
 /// blocking is not allowed」）——skins.list/detail WSAPI（async handler 直调
@@ -128,7 +128,7 @@ fn check_revocation_survives_tokio_runtime_context() {
     clear_revocation_env();
 }
 
-/// BUG-20261029-147 同函数族：ocsp_check_single 的 `Client::new()` + POST
+/// 同函数族：ocsp_check_single 的 `Client::new()` + POST
 /// 同在独立线程执行（修复前同型 panic——blocking Client drop 于 tokio 上下文）。
 /// dead URL → send 失败 → None（不可达语义），绝不 panic。
 #[test]
@@ -150,7 +150,7 @@ fn ocsp_check_single_survives_tokio_runtime_context() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：
+// 覆盖率批次（quality-hardening goal）：
 // 本地 std TCP 假 HTTP 服务器驱动 fetch_crl / get_crl 全部缓存与联网臂、
 // strict_offline env 解析、OCSP 单条查询全臂、publisher 维度、以及
 // verify_bytes 的 Revoked / strict-Unknown / soft-fail-Unknown 集成路径。
@@ -400,7 +400,7 @@ fn ocsp_check_single_all_arms() {
 }
 
 // ----- verify_bytes 集成（Revoked / strict-Unknown 拒 / soft-fail 放行）
-// S4-1 起 verify_bytes 走 v4 Authenticode 管线：夹具 = V4Harness（真三级链 +
+// 起 verify_bytes 走 v4 Authenticode 管线：夹具 = V4Harness（真三级链 +
 // CMS + raw 载体）；CRL 由 harness 根私钥签（check_revocation 用链根证书公钥验）。
 
 #[test]
@@ -443,7 +443,7 @@ fn verify_bytes_revoked_via_crl() {
 
 #[test]
 fn verify_bytes_revoked_via_file_hash() {
-    // S4-4：FileHash 维度走完整 v4 管线——verify_bytes 传给 check_revocation 的
+    // FileHash 维度走完整 v4 管线——verify_bytes 传给 check_revocation 的
     // content_hash = CMS 内嵌 content_digest（raw 载体 = SHA-256(内容)），
     // 本测钉住该接线值端到端正确（防接成「文件 SHA」之类的错值静默漏报）。
     let _g = TEST_LOCK.lock().unwrap();
@@ -551,10 +551,10 @@ fn verify_bytes_strict_ocsp_fallback_revoked() {
     clear_revocation_env();
 }
 
-// ===== BUG-20261029-190：CRL valid_until 客户端零强制（半接线安全字段）=====
-// 设计契约（docs/REPORT/2026-07-18_signature-revocation-cloud.md）：
-// L326「缓存带 valid_until；窗口内信任，过期必须重新拉取」、
-// L335「云端不可达 → 本地缓存 fallback（valid_until 内信任）」。
+// =====：CRL valid_until 客户端零强制（半接线安全字段）=====
+// 设计契约（signature-revocation-cloud）：
+// 「缓存带 valid_until；窗口内信任，过期必须重新拉取」、
+// 「云端不可达 → 本地缓存 fallback（valid_until 内信任）」。
 // 签名只证明数据出自根，不证明数据未过时——CRL 走 plain HTTP GET，
 // MITM 可无限重放旧签名 CRL 冻结吊销状态（已吊销 key 永查不到）。
 
@@ -612,7 +612,7 @@ fn bug190_stale_fallback_respects_valid_until() {
     clear_revocation_env();
 }
 
-// ===== 本地 CRL 快照四件套（皮肤管理面 P3：revocation_meta / crl_match_meta /
+// ===== 本地 CRL 快照四件套（皮肤管理面：revocation_meta / crl_match_meta /
 // root_pubkey_from_anchored / load_crl_snapshot）=====
 
 use crate::fixtures::{V4Harness, now_secs as fx_now};

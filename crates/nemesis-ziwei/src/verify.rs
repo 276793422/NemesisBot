@@ -1,12 +1,12 @@
-//! verify —— 附加验证链（T5.1）+ 失效通知（T5.2）+ 授权找回（T5.3）门面。
+//! verify —— 附加验证链（.1）+ 失效通知（.2）+ 授权找回（.3）门面。
 //!
-//! 链序（总控 §6.4）：hash → version_resource（证据）→ 锚投票 → 状态机。
+//! 链序（总控）：hash → version_resource（证据）→ 锚投票 → 状态机。
 //! 裁决语义：hash 一致 → Active；不一致 → 逐锚重扫（盘上 exe 文件镜像）
 //! 投票，过阈值 → ActiveDegraded（降级注记一次性），不过 → Stale（进找回
 //! 流程）。version_resource 差异只进报告证据，不单独改判——锚投票是最终
 //! 裁决依据（锚在即语义在）。
 //!
-//! 找回（T5.3）：`recover_start` 逐锚重扫 +（可选）LLM 语义比对 → 《找回
+//! 找回（.3）：`recover_start` 逐锚重扫 +（可选）LLM 语义比对 → 《找回
 //! 报告》；`recover_confirm` 用户逐条确认 → 全接受 = 新指纹入库 + Active，
 //! 有拒绝 = 保持 Stale（拒绝项诚实不猜）。
 
@@ -105,7 +105,7 @@ pub struct VerifyOutcome {
     pub report_path: Option<PathBuf>,
 }
 
-/// attach 前置守卫（T5.1 状态机闸）：非 Active 一律拒绝注入。
+/// attach 前置守卫（.1 状态机闸）：非 Active 一律拒绝注入。
 pub fn pre_attach_guard(profile: &Profile) -> Result<(), String> {
     match profile.status {
         ProfileStatus::Active => Ok(()),
@@ -132,7 +132,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-/// 验证链主入口（T5.1）。`exe_path` = 目标当前盘上 exe；裁决 + 状态机 +
+/// 验证链主入口（.1）。`exe_path` = 目标当前盘上 exe；裁决 + 状态机 +
 /// 一次性报告/通知一次完成；profile 更新由调用方持久化（返回值带回）。
 pub fn verify_profile(
     store: &ProfileStore,
@@ -350,7 +350,7 @@ pub fn verify_profile(
     })
 }
 
-/// 找回启动（T5.3 前半）：逐锚重扫 +（可选）LLM 语义比对 → 《找回报告》。
+/// 找回启动（.3 前半）：逐锚重扫 +（可选）LLM 语义比对 → 《找回报告》。
 pub fn recover_start(
     store: &ProfileStore,
     workspace: &Path,
@@ -412,7 +412,7 @@ pub fn recover_start(
     }))
 }
 
-/// 找回确认（T5.3 后半）：用户逐条确认 → 全接受 = 新指纹入库 + Active；
+/// 找回确认（.3 后半）：用户逐条确认 → 全接受 = 新指纹入库 + Active；
 /// 有拒绝 = 保持 Stale。byte_pattern 锚按新镜像命中位置重生载荷（总控：
 /// 重新生成锚）；语义型锚（imm/str/import）载荷即语义常量，原样保留。
 pub fn recover_confirm(
@@ -477,7 +477,7 @@ pub fn recover_confirm(
                 // 按锚自身下标取重扫结果（per_anchor[].index = 输入锚集下标）。
                 // 只按 function 过滤会同函数多 byte_pattern 锚时永远拿到第一
                 // 个命中锚的 RVA——第二个锚的 pattern 被错写成第一个锚命中
-                // 位置的载荷（BUG-20261028-98①）。
+                // 位置的载荷（①）。
                 let Some(found) = verdict.per_anchor.iter().find(|r| r.index == ai && r.hit) else {
                     continue;
                 };
@@ -485,7 +485,7 @@ pub fn recover_confirm(
                 // 载荷字节数与 rev::parse_pattern 同源：去空白后 hex 字符数/2
                 // （空格 "AA BB" 与连续 "AABB" 双形态统一；split_whitespace
                 // 计数对连续形态恒 1，重生 pattern 被截断成单字节
-                // ——BUG-20261028-98②）。
+                // ——②）。
                 let old_len = a
                     .pattern
                     .as_deref()
@@ -612,7 +612,7 @@ fn write_once_report(
     Ok((path, true))
 }
 
-/// stale 通知落盘（T5.2 出站通道面）：logs/ziwei/notify.jsonl 追加一行。
+/// stale 通知落盘（.2 出站通道面）：logs/ziwei/notify.jsonl 追加一行。
 fn emit_stale_notice(workspace: &Path, profile: &Profile, hash_actual: &str) -> Result<(), String> {
     let dir = workspace.join("logs").join("ziwei");
     std::fs::create_dir_all(&dir).map_err(|e| format!("通知目录创建失败：{e}"))?;
@@ -761,7 +761,7 @@ fn extract_version_resource_win(exe_path: &Path) -> Option<BTreeMap<String, Stri
                 && s_len > 0
             {
                 // Win32 契约：VerQueryValueW 的 pulLen 是**字节**数
-                // （BUG-20261029-155：此前直接当 u16 元素数用——from_raw_parts
+                // （此前直接当 u16 元素数用——from_raw_parts
                 // 读 2× 字节数，堆越界读正式 UB；平时靠 NUL 提前截断掩盖）。
                 let w = std::slice::from_raw_parts(s_ptr as *const u16, s_len as usize / 2);
                 let end = w.iter().position(|&c| c == 0).unwrap_or(w.len());

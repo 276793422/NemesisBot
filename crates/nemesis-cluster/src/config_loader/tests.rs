@@ -40,10 +40,10 @@ fn test_app_config_default() {
     assert_eq!(config.port, 11949);
     assert_eq!(config.rpc_port, 21949);
     assert_eq!(config.broadcast_interval, 30);
-    // G2: 主动健康探针默认 60s 间隔、3 次失败判离线。
+    // 主动健康探针默认 60s 间隔、3 次失败判离线。
     assert_eq!(config.health_check_interval_secs, 60);
     assert_eq!(config.health_check_failure_threshold, 3);
-    // G3: announce 过期阈值默认与协议常量一致。
+    // announce 过期阈值默认与协议常量一致。
     assert_eq!(
         config.announce_expiry_secs,
         crate::discovery::DEFAULT_EXPIRY_THRESHOLD_SECS
@@ -81,7 +81,7 @@ fn test_app_config_roundtrip() {
     // CFG-09：save 全量覆盖写不得抹掉 token（此前 typed 无此字段，
     // 一次 save 即把用户鉴权 token 静默清空）。
     assert_eq!(loaded.token, "cfg09-secret");
-    // 批次四：node_name 同族防删键——typed round-trip 保真。
+    // node_name 同族防删键——typed round-trip 保真。
     assert_eq!(loaded.node_name, "batch4-name");
 }
 
@@ -187,7 +187,7 @@ fn test_app_config_deserialization_defaults() {
     assert!(config.token.is_empty());
 }
 
-/// CFG-09（2026-09-16）：token 的生产读取方（`Cluster::load_rpc_auth_token` /
+/// CFG-09：token 的生产读取方（`Cluster::load_rpc_auth_token` /
 /// discovery）是裸 JSON 读，不走 typed。此测试钉「裸写的 config.cluster.json
 /// 带 token → typed load 拿得到 → save 回去不丢」的契约——save_app_config
 /// 此前会整行抹掉裸写的 token。
@@ -250,7 +250,7 @@ fn test_cluster_config_serialization() {
 }
 
 // ============================================================
-// S4 coverage: nested-parent save, unreadable app config,
+// coverage: nested-parent save, unreadable app config,
 // config dir creation on save.
 // ============================================================
 
@@ -295,7 +295,7 @@ fn test_s4_save_app_config_creates_config_dir() {
 }
 
 // ---------------------------------------------------------------------
-// 集群完备性加固 2026-09-11：坏 JSON 解析失败留 WARN 且按默认配置启动
+// 集群完备性加固：坏 JSON 解析失败留 WARN 且按默认配置启动
 // （旧实现 unwrap_or_default 双双静默——「配置写了却不生效」无日志可查）。
 // ---------------------------------------------------------------------
 
@@ -335,7 +335,7 @@ fn test_load_app_config_valid_json_round_trips() {
 
 #[test]
 fn worker_discipline_defaults_on_and_roundtrips() {
-    // D5：缺键 = 缺省 on（serde default）。
+    // 缺键 = 缺省 on（serde default）。
     let cfg: AppConfig = serde_json::from_str("{}").unwrap();
     assert!(cfg.worker_discipline);
     // 显式 off 保真 round-trip（typed 保存不抹键）。

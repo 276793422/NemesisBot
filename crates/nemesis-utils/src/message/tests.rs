@@ -401,7 +401,7 @@ fn test_find_last_space_window_larger_than_string() {
 fn test_split_message_all_whitespace() {
     let result = split_message("   ", 100);
     // After trim, it should be empty
-    // Actually, "   ".is_empty() is false so it enters the loop
+    // Actually, " ".is_empty() is false so it enters the loop
     // then gets trimmed after split
     assert!(!result.is_empty());
 }
@@ -587,7 +587,7 @@ fn test_split_message_splits_before_code_block_at_newline() {
 /// 围栏前无换行但有空格 → 在空格处切开（109-111 臂）。
 /// 构造："AAAA BBBB CCCC" + "```\n" + 200 a。首轮断点 17，17 ≤ 37 →
 /// [..14] 无换行、空格在 9 → msg_end=9 → 首 chunk "AAAA BBBB"。
-/// 第二轮 "CCCC```" 走 114-125 臂（unclosed_idx=4 ≤ 20）。
+/// "CCCC```" 走 114-125 臂（unclosed_idx=4 ≤ 20）。
 #[test]
 fn test_split_message_splits_before_code_block_at_space() {
     let content = format!("AAAA BBBB CCCC```\n{}", "a".repeat(200));
@@ -621,7 +621,7 @@ fn test_split_message_reopens_fence_when_unclosed_idx_small() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-3 回归：CJK/多字节字符边界 panic（2026-09-26 修复）
+// BUG-3 回归：CJK/多字节字符边界 panic（修复）
 // 根因两类：① effective_limit/inner_limit/max_len-5 等算术字节上限直接切片；
 // ② find_last_unclosed_code_block/find_next_closing_code_block 用 char 索引
 //    当字节偏移返回（纯 ASCII 下巧合相等）。以下用例在修复前全部 panic。
@@ -677,7 +677,7 @@ fn test_split_message_cjk_with_unclosed_code_block_no_panic() {
 #[test]
 fn test_format_message_cjk_no_panic_byte_boundary() {
     // 修复前：content[..5] panic（"字"占 3 字节）。尾注数字曾断言 30——
-    // 那是字节数当 chars 报的旧 bug 形态（BUG-20261025-73），10 个字符
+    // 那是字节数当 chars 报的旧 bug 形态，10 个字符
     // 必须真报 10。
     let text = "字".repeat(10);
     let result = format_message(&text, 5);

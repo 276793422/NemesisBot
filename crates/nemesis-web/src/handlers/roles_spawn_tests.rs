@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
 // Harness（与 chat_mode_tests 同款）
-// ---------------------------------------------------------------------------
 
 struct NoopProvider;
 
@@ -88,6 +86,7 @@ fn make_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -180,9 +179,7 @@ fn recording_spawn(
     )
 }
 
-// ---------------------------------------------------------------------------
 // roles.list
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn list_requires_agent_loop() {
@@ -239,9 +236,7 @@ async fn list_returns_full_catalog_with_visibility_fields() {
     assert!(roles.iter().all(|r| !r["hidden"].as_bool().unwrap()));
 }
 
-// ---------------------------------------------------------------------------
 // chat.spawn 参数校验
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn spawn_requires_agent_loop() {
@@ -322,15 +317,13 @@ async fn spawn_rejects_unknown_role() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // chat.spawn 槽接线
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn spawn_reports_missing_slot_honestly() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir, Some(role_agent_loop()));
-    // 角色 qa 合法（mini 档，big 下可见），但槽未注入 → 诚实报错不假成功。
+    // 角色 qa 合法（mini 档，big 下可），但槽未注入 → 诚实报错不假成功。
     let err = ChatHandler
         .handle_cmd(
             "spawn",
@@ -384,7 +377,7 @@ async fn spawn_happy_path_invokes_slot_fn_with_client_identity() {
     assert_eq!(task, "跑一遍单元测试");
     assert_eq!(model, "", "model 空 = detached 沿用主模型");
     assert_eq!(channel, "web");
-    // 父会话标识随行（BUG 修复 2026-11-04 + 路由修正同日）：chat_id 用发起
+    // 父会话标识随行（BUG 修复 + 路由修正同日）：chat_id 用发起
     // 连接级房间 id（`web:{连接id}`，即 ctx.chat_id 原样透传——SessionManager
     // send_queue 的键；事件泵剥前缀查房间表投递，deliverables/tool_event
     // 同款语义。会话级 id 查不到房间 = 帧静默丢弃）。回复本身仍走 spawn

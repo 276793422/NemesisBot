@@ -1,4 +1,4 @@
-//! T5（扩展计划 D2b）：出站 DLP 脱敏闸单测。
+//! （扩展计划）：出站 DLP 脱敏闸单测。
 //!
 //! 被测 = `apply_outbound_dlp`（agent outbound → bus 桥内逐消息判定，
 //! agent 产出的唯一漏斗）。装配顺序语义：Step 9 桥先于 Step 9b 安全装配

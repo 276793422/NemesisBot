@@ -492,8 +492,8 @@ fn recorded_request_debug() {
 }
 
 // ===========================================================================
-// S1 补测（2026-08-26）：MockTransport::name() trait 方法 + SharedMockTransport
-// ::take_requests 排空路径
+// 补测：MockTransport::name() trait 方法 + SharedMockTransport
+// :take_requests 排空路径
 // ===========================================================================
 
 #[test]
@@ -505,7 +505,7 @@ fn s1_mock_transport_name_returns_mock() {
 #[tokio::test]
 async fn s1_shared_mock_transport_take_requests_drains_empty() {
     // 未发送任何请求时 take_requests() 必须返回（并排空）空 vec。
-    // （2026-10-15 第十二轮起 SharedMockTransport 有了 Transport 实现，
+    // （起 SharedMockTransport 有了 Transport 实现，
     // 请求既可经内层 MockTransport 也可经 trait 入口记录——本测试两头都不
     // 发送，断言面不变。）
     let t = SharedMockTransport::new();

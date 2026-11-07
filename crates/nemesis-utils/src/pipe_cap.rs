@@ -1,4 +1,4 @@
-//! 有界管道排干（BUG 2026-10-29 横扫角度 B：子进程输出无界入内存）。
+//! 有界管道排干（横扫角度 B：子进程输出无界入内存）。
 //!
 //! 「agent 执行命令 → 收集 stdout/stderr」路径的排干函数原为裸
 //! `read_to_end` 全量入内存，显示层截断发生在读取完成之后——子进程输出
@@ -6,14 +6,14 @@
 //! 进 OOM（shell.rs / middleware.rs / loop_tools.rs / guest tools /
 //! lsp install / exec_workspace / vm_bridge 七处同族，详见 BUG 文档）。
 //!
-//! 本模块是修复后的单一真相源：捕获上限对齐 `nemesis-board/src/anchor.rs`
-//! D10-4 先例（`PIPE_CAPTURE_CAP_BYTES` = 1 MiB），**丢头保尾**有界读循环
+//! 本模块是修复后的统一定义：捕获上限对齐 `nemesis-board/src/anchor.rs`
+//! 先例（`PIPE_CAPTURE_CAP_BYTES` = 1 MiB），**丢头保尾**有界读循环
 //! ——读取不停、子进程不被背压卡死（不会把大输出的正常命令变成假超时），
 //! 超限在结果头部加诚实截断标记。
 
 use std::collections::VecDeque;
 
-/// 单管道捕获上限（对齐 anchor.rs D10-4 同名常量语义）。
+/// 单管道捕获上限（对齐 anchor.rs 同名常量语义）。
 pub const PIPE_CAPTURE_CAP_BYTES: usize = 1 << 20;
 
 const CHUNK: usize = 8192;

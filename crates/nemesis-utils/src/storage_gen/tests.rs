@@ -1,6 +1,6 @@
-//! L15 存储世代化迁移链骨架测试（四条铁律逐条钉子 + 中断恢复用例）。
+//! 存储世代化迁移链骨架测试（四条铁律逐条钉子 + 中断恢复用例）。
 //!
-//! 设计文档：`docs/PLAN/2026-11-03_存储世代化迁移链_设计文档.md` §6。
+//! 设计文档：`存储世代化迁移链_设计文档` 。
 //! 临时目录 = 系统临时目录 + nanos 唯一名，测试尾韧性清理。
 
 use super::*;
@@ -266,7 +266,7 @@ fn published_generation_resumes_chain_untouched() {
 fn missing_step_reports_honestly() {
     let t = TempDir::new("missing_step");
     write_gen(t.path(), "session", 1, &[json!({"i": 1})]);
-    // 链只有第二步（缺 v1→v2）。
+    // 链只有（缺 v1→v2）。
     let broken: Vec<Box<dyn MigrationStep>> = vec![Box::new(AddFieldStep(2, 3))];
     let err = migrate_to_latest(t.path(), "session", &broken, 3, false).unwrap_err();
     assert!(

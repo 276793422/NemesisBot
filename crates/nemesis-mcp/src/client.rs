@@ -44,9 +44,9 @@ pub enum ClientError {
     #[error("MCP list pagination aborted: {0}")]
     PaginationAborted(String),
 
-    /// 服务器响应形状非法（第十五轮缺陷 19）：此前 list/call/get 的结果
+    /// 服务器响应形状非法（缺陷 19）：此前 list/call/get 的结果
     /// 反序列化失败一律 `unwrap_or_default()` 静默吞——空工具表/空输出
-    /// 比失败更难排查（J3 分页注释同款纪律），现响亮报错。
+    /// 比失败更难排查（分页注释同款纪律），现响亮报错。
     #[error("MCP server response parse error: {0}")]
     ResponseParse(String),
 }
@@ -54,7 +54,7 @@ pub enum ClientError {
 /// Result alias for client operations.
 pub type ClientResult<T> = Result<T, ClientError>;
 
-/// J3 (devtool-upgrade 阶段 4)：单次 list 允许的最大翻页数——防御失控
+/// (devtool-upgrade)：单次 list 允许的最大翻页数——防御失控
 /// 服务器（cursor 永不终止）。正常分页远用不满 32 页。
 const MAX_LIST_PAGES: usize = 32;
 
@@ -131,7 +131,7 @@ pub struct McpClient {
     capabilities: Option<ServerCapabilities>,
     /// Protocol version negotiated during initialization.
     protocol_version: Option<String>,
-    /// Per-request inner transport timeout (ms)（2026-10-15 第十二轮复查）：
+    /// Per-request inner transport timeout (ms)（复查）：
     /// 此前硬编码 30s，config `timeout` > 30 会被内层静默截断——adapter 的
     /// 外层超时放宽形同虚设，且外层报错文案（timed out after 120s）与实际
     /// 死因（内层 30s）不符。构造时从 `from_server_config` 的 config 取值
@@ -189,24 +189,24 @@ impl McpClient {
 
     /// Create a client from a server config, dispatching on `transport_type`.
     ///
-    /// config→transport 分派的单一真相源（McpManager::discover_tools 与 CLI
+    /// config→transport 分派的统一定义（McpManager::discover_tools 与 CLI
     /// `mcp test/tools/resources/prompts` 共用）：
     /// - `"http"` / `"streamable_http"` / `"streamable-http"`（大小写敏感）→
-    ///   [`HttpTransport`](crate::http_transport::HttpTransport)（headers
+    ///   [`HttpTransport`](crate::http_transport:HttpTransport)（headers
     ///   "KEY: VALUE" 行消费化，值支持 vault:/env:/yaml: 引用现查）；
-    /// - 手写条目兼容（2026-10-15 第六轮复查修复）：`transport_type` 缺省
+    /// - 手写条目兼容（复查修复）：`transport_type` 缺省
     ///   且无 `command` 且有 `url` → 按 HTTP 意图处理——stdio 无 url 语义，
     ///   此前这类条目掉进 stdio 臂空 command 必败，而 CLI 诊断面
     ///   （`server_entry_is_http`）按 HTTP 报告，诊断与行为分裂；
     /// - 其他 → `StdioTransport`，且 `command` 空而 `url` 非空时以 `url`
-    ///   充当命令（2026-10-15 第八轮复查修复）：Dashboard MCP 管理页的
+    ///   充当命令（复查修复）：Dashboard MCP 管理页的
     ///   stdio 约定是命令存 `url` 字段（前端 payload 不发 `command`，
     ///   web `server_add` 也硬编码 `command` 为空）——运行期只读
     ///   `command`，无此回落则 Dashboard 新建的 stdio 条目 spawn 空
     ///   命令必败。存量盘上条目一并痊愈。
     ///
     /// 未知 `transport_type`（非空且不在 stdio/http 已知集，如 Dashboard
-    /// 曾可写的 `"sse"`）loud 拒绝（2026-10-15 第九轮复查修复）：静默掉
+    /// 曾可写的 `"sse"`）loud 拒绝（复查修复）：静默掉
     /// stdio 臂会把 url 当程序名 spawn，报出与实际问题无关的错误；与
     /// protocol/stream 归一「未知值 loud 拒绝」的项目惯例对齐。空串不拒
     /// （手写条目兼容形态）。
@@ -214,7 +214,7 @@ impl McpClient {
         Self::from_server_config_with_profile(config, None)
     }
 
-    /// G2（2026-10-18 批四）：带显式 per-agent 浏览器 profile 的构造
+    /// 带显式 per-agent 浏览器 profile 的构造
     /// （gateway agent loop 装配注入；None = env 回落语义不变）。分派规则
     /// 与 [`Self::from_server_config`] 完全同源（本函数是本体，后者是
     /// None 委托）。
@@ -410,7 +410,7 @@ impl McpClient {
         Ok(serde_json::from_str(raw)?)
     }
 
-    /// J3 (devtool-upgrade 阶段 4)：分页列表通用内核。
+    /// (devtool-upgrade)：分页列表通用内核。
     ///
     /// 逐页发送 `{method, {"cursor": cur}}`，拼贴 `items_key` 字段直到响应
     /// 缺 `nextCursor`。旧实现只发一页（params=None）且只读首页——实现
@@ -436,9 +436,9 @@ impl McpClient {
             }
             let result = resp.result.unwrap_or(serde_json::Value::Null);
             if let Some(batch) = result.get(items_key) {
-                // 第十五轮缺陷 19：批量形状非法（如工具条目缺 name /
+                // 缺陷 19：批量形状非法（如工具条目缺 name /
                 // inputSchema）此前整批静默清空 → 上层把「解析失败」误当
-                // 「服务器就这些工具」。响亮报错，与 J3 分页防失控同纪律。
+                // 「服务器就这些工具」。响亮报错，与 分页防失控同纪律。
                 let parsed: Vec<T> = serde_json::from_value(batch.clone()).map_err(|e| {
                     ClientError::ResponseParse(format!(
                         "{method}: '{items_key}' batch parse failed: {e}"
@@ -503,7 +503,7 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        // 第十五轮缺陷 19：结果形状非法此前静默成空成功（content 空 +
+        // 缺陷 19：结果形状非法此前静默成空成功（content 空 +
         // is_error=false），LLM 拿到空工具输出无从排查。响亮报错。
         let result: ToolCallResult = match resp.result {
             Some(v) => serde_json::from_value(v).map_err(|e| {
@@ -535,7 +535,7 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        // BUG-20261025-31（缺陷 19 同类漏配）：结果此前静默
+        // （缺陷 19 同类漏配）：结果此前静默
         // unwrap_or_default()——contents 缺失/空数组/条目非对象一律变成
         // uri 空 + text None 的空成功，调用方无从分辨「读到了空」与「响应
         // 形状非法」。对齐 tools/call / prompts/get：形状非法响亮报错
@@ -586,7 +586,7 @@ impl Client for McpClient {
             return Err(ClientError::Server(err.clone()));
         }
 
-        // 第十五轮缺陷 19：同 tools/call——形状非法响亮报错不静默。
+        // 缺陷 19：同 tools/call——形状非法响亮报错不静默。
         let result: PromptResult = match resp.result {
             Some(v) => serde_json::from_value(v).map_err(|e| {
                 ClientError::ResponseParse(format!("prompts/get result parse failed: {e}"))

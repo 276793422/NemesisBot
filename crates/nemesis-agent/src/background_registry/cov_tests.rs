@@ -69,7 +69,7 @@ fn process_alive(pid: u64) -> bool {
 }
 
 /// Drop 路径：注册表销毁时给存活任务置 kill 旗标（监督任务收尸），
-/// 不 panic、不泄漏卡死。BUG-20261102-322：名字承诺 raises_kill_flags
+/// 不 panic、不泄漏卡死。：名字承诺 raises_kill_flags
 /// 但此前零断言——置旗标/收尸逻辑回归时测试照绿，Linux 上还会留孤儿
 /// 无限 ping。补行为断言：drop 后子进程必须在 deadline 内被终止。
 #[tokio::test]
@@ -83,7 +83,7 @@ async fn registry_drop_raises_kill_flags_for_running_jobs() {
     assert_eq!(started["running"], serde_json::json!(true));
 
     drop(reg);
-    // BUG-20261102-322：死亡行为断言（deadline 轮询，不固定睡眠）——置旗标
+    // 死亡行为断言（deadline 轮询，不固定睡眠）——置旗标
     // 或监督收尸回归时此处红；Linux 上 ping 无限跑，回归还会留孤儿进程。
     let pid = started["pid"].as_u64().expect("pid");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -113,7 +113,7 @@ async fn output_reports_head_dropped_note() {
 
     // 等 pump 排干 + 进程退出：**有界轮询**而非固定睡眠——固定 400ms 在
     // 全量并行负载下会读早（spawn/pump 未完成 → dropped_bytes=0 → 假红，
-    // 2026-09-28 全量跑实证一次；CLAUDE.md 记载的本模块计时敏感域同族）。
+    // 全量跑实证一次；CLAUDE.md 记载的本模块计时敏感域同族）。
     // 轮询退出条件是**双条件**：头丢注记已挂 **且** 进程已退出（终态平铺）。
     // 只等 dropped_bytes 会在 pump 排干早于 reap 时提前跳出 → running 假
     // true（同日二轮实证）；output(offset=0) 是钳制读，幂等可重入；上限

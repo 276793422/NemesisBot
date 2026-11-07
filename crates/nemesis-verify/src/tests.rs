@@ -78,7 +78,7 @@ fn verify_rejects_wrong_key() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：hex_decode_64 错误臂
+// 覆盖率批次（quality-hardening goal）：hex_decode_64 错误臂
 // （签名 hex 长度错 / 非法字符）经 verify_response 透出。
 // ---------------------------------------------------------------------------
 
@@ -132,7 +132,7 @@ fn hex_decode_64_accepts_uppercase_and_trims() {
 }
 
 // ---------------------------------------------------------------------------
-// S4-2：根锚注入三臂（resolve_root_anchors 纯函数 + fail-closed 语义）。
+// 根锚注入三臂（resolve_root_anchors 纯函数 + fail-closed 语义）。
 // 纯函数不触 env，无需 GLOBAL_STATE_LOCK。
 // ---------------------------------------------------------------------------
 
@@ -154,7 +154,7 @@ fn root_anchor_resolution_three_arms() {
     // ② env fallback：builtin 缺席 + runtime 合法 → 用 runtime
     assert_eq!(resolve_root_anchors(None, Some(&anchor)), vec![fp]);
 
-    // ③ 双臂皆缺 → 空集（D7 默认不可信状态）
+    // ③ 双臂皆缺 → 空集（默认不可信状态）
     assert_eq!(resolve_root_anchors(None, None), Vec::<[u8; 32]>::new());
 
     // ④ fail-closed：builtin 存在但非法 → 空集，**不回落 runtime**（防 env 顶替信任根）

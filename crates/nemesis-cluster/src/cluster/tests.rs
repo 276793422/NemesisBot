@@ -1,7 +1,7 @@
 use super::*;
 use nemesis_types::cluster::TaskStatus;
 
-/// REL-002 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
+/// 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
 /// 阻塞临时文件」的注入面不复存在（正是升级目标之一），改用平台确定的
 /// 「替换失败」注入——
 /// - unix：父目录置只读 → 临时文件创建失败（EACCES）
@@ -77,12 +77,12 @@ fn assert_no_tmp_leftovers(dir: &std::path::Path, what: &str) {
     assert!(leftovers.is_empty(), "{what}: {leftovers:?}");
 }
 
-/// G4/G5: poll_stale_pending_tasks 第 4 参 —— 默认 24h 安全网。
+/// : poll_stale_pending_tasks 第 4 参 —— 默认 24h 安全网。
 fn poll_defaults() -> chrono::Duration {
     chrono::Duration::hours(24)
 }
 
-// G5+P1（T19 根修）：bus / delivery_cb 改收句柄（分支内取用时现读）后的
+// （根修）：bus / delivery_cb 改收句柄（分支内取用时现读）后的
 // 测试助手。空句柄 = 「未注入总线 / 未注册回调」；包装句柄供注入场景。
 
 fn poll_no_bus() -> Arc<Mutex<Option<Arc<dyn MessageBus>>>> {
@@ -104,7 +104,7 @@ fn make_config() -> ClusterConfig {
         node_id: "local-node-001".into(),
         bind_address: "127.0.0.1:9000".into(),
         peers: vec!["127.0.0.1:9001".into()],
-        // 批次四：显式名（config.cluster.json node_name 路径）——构造期
+        // 显式名（config.cluster.json node_name 路径）——构造期
         // 确定化显示名，测试断言不依赖测试机 COMPUTERNAME（跨平台稳定）。
         node_name: "local-node".into(),
     }
@@ -219,7 +219,7 @@ fn test_handle_discovered_node() {
     assert_eq!(node.capabilities.len(), 2);
 }
 
-// 回归（2026-09-09 双机 G8）：handle_discovered_node 曾把 role 硬编码 Worker，
+// 回归（双机）：handle_discovered_node 曾把 role 硬编码 Worker，
 // announce 携带的对端自报 role 被丢弃 → 纯 UDP 发现拓扑下 board.sync 的
 // coordinator 判定永远失败（「no online coordinator known yet」补拉死循环）。
 #[test]
@@ -280,7 +280,7 @@ fn test_handle_discovered_node_preserves_announced_role() {
     assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Worker);
 }
 
-// 回归（2026-09-11 停车场复活 A1）：handle_discovered_node 曾把 announce
+// 回归（停车场复活）：handle_discovered_node 曾把 announce
 // 携带的 tags 整体丢弃（_tags 弃参、ExtendedNodeInfo 无字段）→ 看板派发
 // 匹配器只剩 category 一个粒度，required_tags 天然不可满足 → 全部停车。
 #[test]
@@ -483,7 +483,7 @@ impl MessageBus for MockBus {
     fn publish_inbound(&self, msg: BusInboundMessage) {
         self.messages.lock().push(msg);
     }
-    // T19 二层根修：Mock 恒「就位」（不模拟订阅时序，等待逻辑归 publish 侧）。
+    // 二层根修：Mock 恒「就位」（不模拟订阅时序，等待逻辑归 publish 侧）。
     fn inbound_receiver_count(&self) -> usize {
         1
     }
@@ -513,7 +513,7 @@ fn test_handle_task_complete_with_bus() {
     assert!(msgs[0].sender_id.starts_with("cluster_continuation:"));
 }
 
-// -- CD2（2026-09-17）：安全网超时分支必须发 bus 唤醒 agent ------------------
+// --：安全网超时分支必须发 bus 唤醒 agent ------------------
 //
 // 根因：安全网分支此前只 complete_callback（标 Failed）不 publish，等回复
 // 的 agent 永远不知道——与 done / not_found 分支（都发 bus）不一致。
@@ -984,7 +984,7 @@ fn test_string_value_with_float() {
 fn test_accessors() {
     let cluster = Cluster::new(make_config());
     assert_eq!(cluster.node_id(), "local-node-001");
-    // 批次四：make_config 带显式 node_name="local-node"——走 config 覆盖
+    // make_config 带显式 node_name="local-node"——走 config 覆盖
     // 路径，断言不依赖测试机 COMPUTERNAME（跨平台稳定）。
     assert_eq!(cluster.node_name(), "local-node");
     assert_eq!(cluster.address(), "127.0.0.1:9000");
@@ -1160,7 +1160,7 @@ fn test_submit_peer_chat() {
 
 #[test]
 fn test_register_task_recovery_handlers_gateway_mode() {
-    // 回归钉（2026-09-01 跨机 E2E 发现）：gateway 模式不走 set_rpc_channel
+    // 回归钉（跨机 E2E 发现）：gateway 模式不走 set_rpc_channel
     // （无人调用 → register_peer_chat_handlers 不执行），gateway 又只自行
     // 注册 peer_chat / peer_chat_callback / task_cancel——query_task_result
     // / confirm_task_delivery 缺失使 A 侧 poll_stale_pending_tasks 永远
@@ -1861,7 +1861,7 @@ fn test_get_rpc_channel_initially_none() {
 }
 
 // 注：test_config_returns_default 已随 config() 死 API 一并删除
-// （LOW-19，2026-10-17 四轮审计）。
+// （LOW-19， 四轮审计）。
 
 #[test]
 fn test_handle_discovered_node_with_multiple_addresses() {
@@ -2195,7 +2195,7 @@ async fn test_poll_stale_pending_tasks_young_task_skipped() {
     assert_eq!(pending.len(), 1);
 }
 
-/// P6b（2026-09-11 日志）：include_young=true（恢复 loop 首 tick）绕过
+/// （日志）：include_young=true（恢复 loop 首 tick）绕过
 /// 2 分钟年龄闸——重启后立即对年轻任务发起恢复查询。
 #[tokio::test]
 async fn test_poll_stale_pending_tasks_include_young_queries_young_task() {
@@ -2373,12 +2373,12 @@ async fn test_poll_stale_pending_tasks_stale_with_done_response() {
     assert_eq!(t.status, TaskStatus::Completed);
 }
 
-// -- CD3（2026-09-17）：恢复交付回调 = confirm 前置闸 ------------------------
+// --：恢复交付回调 = confirm 前置闸 ------------------------
 //
 // done 分支：交付回调返回 true（或未注册）才向 worker 发 confirm 删除其
 // 本地副本；false 跳过 confirm（宁留勿丢，副本走 worker 端 TTL 兜底）。
 
-/// CD3 测试共用：构造一个 >2min 的 Pending 任务 + 返回 done 响应的 call_fn，
+/// 测试共用：构造一个 >2min 的 Pending 任务 + 返回 done 响应的 call_fn，
 /// call_fn 同时记录 confirm_task_delivery 调用次数。
 fn cd3_done_fixture(
     task_id: &'static str,
@@ -2525,7 +2525,7 @@ async fn test_poll_recovered_delivery_cb_none_keeps_legacy_confirm() {
     );
 }
 
-// -- N3c（2026-10-12）：not_found 分支走交付回调 ------------------------------
+// --：not_found 分支走交付回调 ------------------------------
 //
 // worker 重启丢内存任务表 → query_task_result 应答 not_found = 确定性判死
 // 信号。board 派发任务的交付回调（write_back FAILED + in_review + spawn
@@ -2985,7 +2985,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         rpc_port: cluster.rpc_port,
     };
 
-    // 零候选 → None（闭环批 2026-10-13：Some(空池) 会让拨号方对 "" 空拨
+    // 零候选 → None（闭环-13：Some(空池) 会让拨号方对 "" 空拨
     // 一次、错误文案误导为连接问题；registry 在册但地址全缺 = 诚实不可解析）。
     assert!(
         resolver.get_peer_info("empty-addr").is_none(),
@@ -3398,14 +3398,14 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         rpc_port: cluster.rpc_port,
     };
 
-    // 零候选 → None（闭环批 2026-10-13）：在册但地址全缺的 peer 对拨号方
+    // 零候选 → None（闭环-13）：在册但地址全缺的 peer 对拨号方
     // 是诚实不可解析，不再回 Some(空池, DEFAULT_RPC_PORT) 让其对 "" 空拨。
     assert!(resolver.get_peer_info("empty-addr").is_none());
 }
 
-// G14 同族（2026-10-13 本机实录）：announce/探针身份载荷 addresses 为空时，
+// 同族（本机）：announce/探针身份载荷 addresses 为空时，
 // 已知节点（静态 peer）的可用地址不得被空记录覆盖——曾致静态 127.0.0.1:<rpc>
-// 被抹成 ""，后续 peer_chat 全部 `connect to : invalid socket address`。
+// 被抹成 ""，后续 peer_chat 全部 `connect to: invalid socket address`。
 // 身份字段（tier/professions/capabilities 等）照常合并（探针身份回传的
 // purpose 不受损）。
 #[test]
@@ -3437,8 +3437,8 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
     let changed = cluster.handle_discovered_node_ex(
         "static-peer",
         "static-peer",
-        Vec::new(), // 空地址载荷（本机实录形态）
-        50591,      // rpc_port 合法（G14 只挡 0，本闸挡空地址这扇门）
+        Vec::new(), // 空地址载荷（本机实测形态）
+        50591,      // rpc_port 合法（只挡 0，本闸挡空地址这扇门）
         "worker",
         "development",
         Vec::new(),
@@ -3471,7 +3471,7 @@ fn test_discovered_node_empty_addresses_known_peer_identity_merge_preserves_addr
     assert_eq!(node.status, NodeStatus::Online);
 }
 
-// 自建中继形态（QUIC 中继 2026-10-21）：announce 载荷携带
+// 自建中继形态（QUIC 中继）：announce 载荷携带
 // `iroh:<hex>@<relay_url>` 完整拨号地址（Minimal 基座零发现层，裸 node_id
 // 无解析路径）。接收侧两纪律：
 // ① iroh 形态独占地址时 primary 原样收录——**不得按 TCP 口径拼 `:rpc_port`**
@@ -3558,9 +3558,9 @@ fn test_discovered_node_relay_qualified_overlay_address_pooling() {
     );
 }
 
-// rendezvous 名册合并（QUIC 中继自动发现 2026-10-22）：成员经
+// rendezvous 名册合并（QUIC 中继自动发现）：成员经
 // handle_discovered_node_ex 单一漏斗入册——via-relay 哨兵 tag 追加不替换、
-// `iroh:<hex>@<relay>` 完整地址作 primary（iroh 形态禁拼 :rpc_port）、裸
+// `iroh:<hex>@<relay>` 完整地址作 primary（iroh 形态禁拼:rpc_port）、裸
 // `iroh:<hex>` 身份候选入池；自己按 iroh_id 过滤。身份用真实 iroh keypair
 // （valid_iroh_id 走 25519 公钥校验，任意 hex 会被静默丢弃）。
 #[test]
@@ -3661,7 +3661,7 @@ fn test_rendezvous_merge_steady_state_no_churn() {
 
 /// `roaming_hex_of`：注册表节点地址抠 `iroh:<hex>`（裸形态 / 带 relay 后缀
 /// 形态都剥出，小写归一）；纯 LAN 节点 / 未注册节点 None。无 feature 门
-/// （纯字符串语义——QUIC 插件化 M3 后端点观测在插件，节点→hex 映射归宿主）。
+/// （纯字符串语义——QUIC 插件化 后端点观测在插件，节点→hex 映射归宿主）。
 #[test]
 fn roaming_hex_of_extracts_iroh_hex_and_normalizes() {
     let cluster = Cluster::new(make_config());
@@ -3713,7 +3713,7 @@ async fn roaming_dial_paths_without_plugin_is_empty() {
     );
 }
 
-// QUIC 插件化 M3：端点观测槽真通路测试（bind_direct 双端点 loopback 互连
+// QUIC 插件化：端点观测槽真通路测试（bind_direct 双端点 loopback 互连
 // → 观察任务写槽 → 查询面读 direct）已随端点本体迁入 plugin_roaming
 // （插件侧 endpoint/dial path 测试覆盖）；宿主侧查询面语义由上方
 // roaming_hex_of / roaming_dial_paths 两测钉死。
@@ -3751,8 +3751,8 @@ fn test_discovered_node_empty_addresses_unknown_peer_still_registered_bridge_sem
     assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Worker);
 }
 
-/// BUG-20261101-263：身份字符集闸——畸形 announce（id 含 `:`/`/`）在入册口
-/// loud 拒收（G14 同族），零注册。坏 id 会切坏下游复合键协议（session_key
+/// 身份字符集闸——畸形 announce（id 含 `:`/`/`）在入册口
+/// loud 拒收（同族），零注册。坏 id 会切坏下游复合键协议（session_key
 /// 的 `/` 分隔、`__ASYNC__` marker 的 `:` 分隔、连接池键）。
 #[test]
 fn test_discovered_node_malformed_id_charset_gate_rejected() {
@@ -3917,7 +3917,7 @@ fn test_cluster_with_callback() {
 fn test_cluster_accessors() {
     let cluster = Cluster::new(make_config());
     assert_eq!(cluster.node_id(), "local-node-001");
-    // 批次四：make_config 显式名回显（同 test_accessors）。
+    // make_config 显式名回显（同 test_accessors）。
     assert_eq!(cluster.node_name(), "local-node");
     assert_eq!(cluster.address(), "127.0.0.1:9000");
     assert_eq!(cluster.role(), "worker");
@@ -4927,7 +4927,7 @@ fn test_parse_host_port_no_colon_returns_default_port() {
 #[test]
 fn test_set_node_name() {
     let cluster = Cluster::new(make_config());
-    // 批次四：make_config 显式名回显（config.cluster.json node_name 路径）。
+    // make_config 显式名回显（config.cluster.json node_name 路径）。
     assert_eq!(cluster.node_name(), "local-node");
 
     cluster.set_node_name("CustomNode");
@@ -4959,7 +4959,7 @@ fn test_rpc_client_arc_before_and_after_start() {
     cluster.stop();
 }
 
-// -- Phase 1: generate_node_id format + with_workspace persistence --
+// --: generate_node_id format + with_workspace persistence --
 
 #[test]
 fn test_with_workspace_persists_runtime_id_to_peers_toml() {
@@ -5027,7 +5027,7 @@ fn test_with_workspace_respects_user_set_id() {
     assert!(!content.contains("node-")); // no auto-generated id
 }
 
-// -- Phase 3 tests: merge_real_node_info --
+// -- tests: merge_real_node_info --
 
 fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
     RealNodeInfo {
@@ -5120,8 +5120,8 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
 
 #[test]
 fn test_merge_real_node_info_keeps_static_peer_address() {
-    // 真机三节点实证（2026-09-15）：静态 peer 的地址被对端自报 primary 覆盖
-    // 后，多网段环境下本地按不可达地址拨号 → G2 探针失败 → Offline →
+    // 真机三节点实证：静态 peer 的地址被对端自报 primary 覆盖
+    // 后，多网段环境下本地按不可达地址拨号 → 探针失败 → Offline →
     // online 门禁拒 transfer（worker→master 全链死锁）。静态语义=用户显式
     // 配置优先：地址不被 merge 覆盖，其余字段照常刷新。
     let dir = tempfile::tempdir().unwrap();
@@ -5174,11 +5174,11 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
 
 #[test]
 fn test_merge_real_node_info_static_pin_survives_peers_toml_persist() {
-    // 洞 #5 盘面臂回归锁（2026-10-21 横扫姊妹洞）：内存保护（上方
+    // 洞 #5 盘面臂回归锁（横扫姊妹洞）：内存保护（上方
     // keeps_static_peer_address）保住 base.address，但 persist 路径用的是
     // 入参 info.address——append 路径对已存在键=有意覆盖，nodes.ping 一
     // 次，peers.toml 手写的 pin 地址就被 announce 自报 primary 冲掉，重
-    // 启后 R2 静态语义丢失（内存 pin 只活到下次重启）。盘面与内存同纪律。
+    // 启后 静态语义丢失（内存 pin 只活到下次重启）。盘面与内存同纪律。
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();
     let config = make_config();
@@ -5229,7 +5229,7 @@ fn test_merge_real_node_info_static_pin_survives_peers_toml_persist() {
 
 #[test]
 fn test_merge_real_node_info_static_peer_extras_survive_persist() {
-    // 四审 #6b 端到端（2026-10-21）：静态条目盘上带 professions/tier 手写
+    // 四审 #6b 端到端：静态条目盘上带 professions/tier 手写
     // 声明（U 系列职能静态声明的真实形态）→ merge（nodes.ping 路径）→
     // 盘上扩展字段原样。#5 修复保 address，本测试钉扩展字段——append
     // 覆盖路径保留非五字段（merge_peer_entry_extras）。
@@ -5301,7 +5301,7 @@ fn test_merge_real_node_info_static_peer_extras_survive_persist() {
 
 #[test]
 fn test_upgrade_peer_in_peers_toml_carries_extras_to_real_key() {
-    // 四审 #6 同族（2026-10-21）：占位升级字段搬运——占位条目（静态 peers
+    // 四审 #6 同族：占位升级字段搬运——占位条目（静态 peers
     // 手写）的 professions/tier 随键迁移到真实 id 键，不因升级丢失。
     let dir = tempfile::tempdir().unwrap();
     let cluster_dir = dir.path().join("cluster");
@@ -5466,7 +5466,7 @@ fn test_merge_real_node_info_persists_to_peers_toml() {
     assert!(content.contains("10.0.0.7:9000"));
 }
 
-// -- 发现①/A6 回归：全量地址数组保全（2026-09-15 真机三节点） --
+// -- 发现①/ 回归：全量地址数组保全（真机三节点） --
 
 #[test]
 fn test_merge_real_node_info_preserves_full_address_array() {
@@ -5520,7 +5520,7 @@ fn test_merge_real_node_info_empty_array_keeps_existing_addresses() {
 
 #[test]
 fn test_merge_placeholder_upgrade_matches_secondary_address() {
-    // 发现②/B4：占位条目配的地址可能是对端非 primary 网卡——merge 的
+    // 发现②/：占位条目配的地址可能是对端非 primary 网卡——merge 的
     // 地址匹配必须对自报全量数组逐个比对（真机实证：placeholder 配
     // 192.168.137.x 而自报 primary=10.103.x → 旧逻辑永不归一、双条目并存）。
     let dir = tempfile::tempdir().unwrap();
@@ -5563,7 +5563,7 @@ fn test_merge_placeholder_upgrade_matches_secondary_address() {
 
 #[test]
 fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
-    // B4 的 UDP 路径：announce 全量数组逐个比对（不再只 primary）。
+    // 的 UDP 路径：announce 全量数组逐个比对（不再只 primary）。
     let dir = tempfile::tempdir().unwrap();
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
 
@@ -5613,11 +5613,11 @@ fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
 
 #[test]
 fn test_handle_discovered_node_never_consumes_local_self_entry_as_placeholder() {
-    // 2026-10-21 同机双节点实测回归锁：对端自报地址与本机地址相同
+    // 同机双节点实测回归锁：对端自报地址与本机地址相同
     // （同机多实例同 rpc_port / NAT 共出口 IP+端口）时，占位升级的地
     // 址比对臂曾把 registry 本机自条目当 stale 占位吞掉——自条目被
     // 删、peers.toml [peers.{对端}] 被写成本机 name + UDP 派生端口、
-    // 对端单播打回本机 socket（发现自环，G2 探针只能走 overlay）。
+    // 对端单播打回本机 socket（发现自环， 探针只能走 overlay）。
     let dir = tempfile::tempdir().unwrap();
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
 
@@ -5712,7 +5712,7 @@ fn test_merge_real_node_info_never_consumes_local_self_entry_as_placeholder() {
 
 #[test]
 fn test_announce_address_arm_never_consumes_real_remote_entry() {
-    // 2026-10-21 复查姊妹洞回归锁：同机同 rpc_port / 共享 NAT 出口拓扑
+    // 复查姊妹洞回归锁：同机同 rpc_port / 共享 NAT 出口拓扑
     // 下两个真实远端节点地址相同。地址比对臂曾吞「任意 id≠announce-id
     // 条目」——见证节点视角里两个真实条目反复互吞（flapping）、
     // peers.toml 反复改写。收窄后地址臂只消费真占位（静态 / id==name /
@@ -5825,7 +5825,7 @@ fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
     assert!(content.contains("[node]"));
 }
 
-// -- Phase 4 test: handle_discovered_node triggers placeholder upgrade --
+// -- test: handle_discovered_node triggers placeholder upgrade --
 
 #[test]
 fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
@@ -5979,7 +5979,7 @@ fn test_set_peer_status_no_op_for_unknown_peer() {
     assert!(cluster.get_peer("ghost").is_none());
 }
 
-// -- addr_eq helper tests (Phase 4) --
+// -- addr_eq helper tests --
 
 #[test]
 fn test_addr_eq_basic_equality() {
@@ -6099,13 +6099,13 @@ fn test_handle_discovered_node_does_not_collapse_same_host_different_port() {
 }
 
 // ============================================================
-// W3b coverage batch: with_workspace empty-id, display-address
+// coverage batch: with_workspace empty-id, display-address
 // resolution, auth-token loading, discovery lifecycle, loops,
 // peers.toml error branches, real-RPC-client call/poll paths,
 // callback routing, setters sweep, resolver fallback edges
 // ============================================================
 
-/// Mock RPC channel used by W3b tests (set_rpc_channel wiring).
+/// Mock RPC channel used by tests (set_rpc_channel wiring).
 struct MockRpcChannelW3b;
 impl std::fmt::Debug for MockRpcChannelW3b {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -6259,7 +6259,7 @@ fn test_load_rpc_auth_token_invalid_json_is_tolerated() {
     cluster.stop();
 }
 
-/// 空 token：BUG-20261102-297 起 fail-closed——置位 rpc_token_missing、
+/// 空 token： 起 fail-closed——置位 rpc_token_missing、
 /// rpc_auth_unavailable 统一裁决为 true（节点本体照常运行，只有 RPC/
 /// discovery 拒绝启动；绑定点消费统一裁决）。
 #[test]
@@ -6641,7 +6641,7 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
     );
 }
 
-// BUG-20261103-334 横向排查定性钉（非缺陷修复）：记事本（带 BOM UTF-8）
+// 横向排查定性钉（非缺陷修复）：记事本（带 BOM UTF-8）
 // 手工维护的 peers.toml 走 upgrade 时照常解析并原位升级（占位条目被摘除、
 // 真实条目并入、[node] 段保留）。实测 toml crate parse 容忍前导 BOM——
 // 本测试把该容忍行为钉死：若未来 crate 升级翻转，此处先行红出来（届时
@@ -6702,7 +6702,7 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
         "[node]\nid = \"local-node-001\"\n\n[peers.Node-A]\naddress = \"10.0.0.1:9000\"\n",
     )
     .unwrap();
-    // REL-002：旧注入（预建 peers.toml.tmp 目录阻塞固定临时名）随唯一临时名
+    // 旧注入（预建 peers.toml.tmp 目录阻塞固定临时名）随唯一临时名
     // 升级失效——改用平台确定的写失败注入（见 block_atomic_replace）。
     // root 语境注入失效（探针 None）→ 诚实跳过。
     let Some(_guard) = block_atomic_replace(&cluster_dir.join("peers.toml")) else {
@@ -7328,7 +7328,7 @@ fn test_cluster_peer_resolver_fallback_by_name_with_empty_address() {
     let cluster = Cluster::new(make_config());
     cluster.start();
     // Peer matched by NAME with an empty primary address and no address list
-    // → 零候选 → None（闭环批 2026-10-13：名字命中救不了「无任何可拨地址」，
+    // → 零候选 → None（闭环-13：名字命中救不了「无任何可拨地址」，
     // Some(空池) 的 "" 空拨已废）。
     let mut peer = make_w3b_node("x1", "MyNode", "", NodeStatus::Online);
     peer.addresses = vec![];
@@ -7359,14 +7359,14 @@ fn test_write_atomic_success_and_failures() {
     assert!(write_atomic(&dest3, b"y").is_err());
     assert_no_tmp_leftovers(dir.path(), "tmp cleaned after rename failure");
 
-    // REL-002 注：旧实现固定临时名 `.toml.tmp`，可用预建同名目录注入失败；
+    // 注：旧实现固定临时名 `.toml.tmp`，可用预建同名目录注入失败；
     // 唯一临时名升级后该注入面不复存在，替换失败路径由
     // test_upgrade_peer_in_peers_toml_write_error_after_removal 的平台
     // 注入 + nemesis-utils helper 专属单测（只读目录/并发交错）覆盖。
 }
 
 // ============================================================
-// S4 coverage batch: auth-token wiring, sync-loop save error,
+// coverage batch: auth-token wiring, sync-loop save error,
 // discovery success fields, placeholder-upgrade arms,
 // upgrade_peer_in_peers_toml branches, handler registration
 // fail-fast, forge empty filename, callback fall-through,
@@ -7375,7 +7375,7 @@ fn test_write_atomic_success_and_failures() {
 // ============================================================
 
 /// No-op tracing subscriber that enables every event so that
-/// tracing-macro field expressions (`timeout_secs = ...` etc.)
+/// tracing-macro field expressions (`timeout_secs =...` etc.)
 /// are evaluated and counted as covered. Installed once per
 /// process; a second install attempt fails harmlessly.
 struct S4AllEventsSubscriber;
@@ -7986,8 +7986,8 @@ async fn test_sync_call_missing_result_field_returns_empty() {
     // the direct fallback yields result: None.
     //
     // 曾经的 one-shot 形态（只 accept 一次、回完即 drop listener）是 flaky
-    // 根因（2026-09-03）：G2 健康探针循环随 cluster.start() 启动，
-    // tokio::time::interval 首 tick 立即到期；若 probe task 首次 poll 晚于
+    // 根因： 健康探针循环随 cluster.start() 启动，
+    // tokio::time:interval 首 tick 立即到期；若 probe task 首次 poll 晚于
     // register_node，探针与本测试的主调用会并发争抢这唯一一次 accept——
     // 探针抢到则主连接还挂在 backlog 里，listener 一 drop 被 Windows RST
     // （os error 10054），全量并行下约 10% 概率红。改为循环 accept + 每
@@ -8063,7 +8063,7 @@ fn test_cluster_peer_resolver_fallback_host_from_primary_address() {
     cluster.stop();
 }
 
-// ---- G4: 超时阶梯不变量（2026-09-01 集群韧性 goal）----
+// ----: 超时阶梯不变量（集群韧性 goal）----
 //
 // 正确阶梯（每层都必须大于下一层，否则外层先死、内层超时形同虚设）：
 //   provider 单请求 600s（nemesis-providers openai_compat default_timeout）
@@ -8114,7 +8114,7 @@ fn test_timeout_ladder_ordering() {
     );
 }
 
-// ---- G5: query_task_result handler 语义（2026-09-01 集群韧性 goal）----
+// ----: query_task_result handler 语义（集群韧性 goal）----
 
 /// running 占位条目必须上报 running（修复前误报 done+空回复，A 会过早完成任务）。
 #[test]
@@ -8191,7 +8191,7 @@ fn test_query_task_result_error_and_not_found() {
     );
 }
 
-/// Swarm M2: on_node_discovered 回调 —— 非黑名单发现事件触发，
+/// Swarm: on_node_discovered 回调 —— 非黑名单发现事件触发，
 /// 携带 (node_id, role, category)；黑名单节点不触发。
 #[test]
 fn test_on_node_discovered_callback_fires() {
@@ -8267,7 +8267,7 @@ fn test_on_node_discovered_callback_skips_blacklisted() {
     );
 }
 
-// 回归（2026-09-09 双机 G14）：rpc_port=0 的 announce（异版本/畸形）不得
+// 回归（双机）：rpc_port=0 的 announce（异版本/畸形）不得
 // 产生不可达记录（曾实证 state.toml 存下 ip:0 + rpc_port=0 的 unusable 条目）。
 // 未知节点不登记；已知节点（静态 peers 条目）不被 0 覆盖。
 #[test]
@@ -8323,7 +8323,7 @@ fn test_handle_discovered_node_skips_zero_rpc_port() {
 }
 
 // ------------------------------------------------------------------
-// state.toml 回读（集群完备性加固 2026-09-11）：restore_discovered_from_state
+// state.toml 回读（集群完备性加固）：restore_discovered_from_state
 // 把磁盘 discovered 历史以 Offline 种回注册表（write-only 假持久化根修）。
 // ------------------------------------------------------------------
 
@@ -8435,9 +8435,9 @@ fn restore_skips_self_banned_existing_and_unusable() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// T13 根修（2026-09-12）：state.toml 的占位名条目（id="Node-A"）与注册表
+/// 根修：state.toml 的占位名条目（id="Node-A"）与注册表
 /// 里同地址的运行时 id 静态条目是**同一物理节点**，回读不得再种一份——
-/// 否则 RpcClient 直接键命中离线影子，拒绝拨号同地址在线条目（UAT T13
+/// 否则 RpcClient 直接键命中离线影子，拒绝拨号同地址在线条目（UAT
 /// 实证：D 重启后 D→A duration_ms=0 全灭）。
 #[test]
 fn restore_skips_address_shadow_of_existing_entry() {
@@ -8533,8 +8533,8 @@ fn restore_skips_name_shadow_of_existing_entry() {
 }
 
 // ------------------------------------------------------------------
-// G2 探针降频（集群完备性加固 2026-09-11）：should_probe_peer 纯函数
-// + spawn 链路测试。2026-10-21 启动冲刺：Offline 前 12 tick 全探（纯中继/
+// 探针降频（集群完备性加固）：should_probe_peer 纯函数
+// + spawn 链路测试。 启动冲刺：Offline 前 12 tick 全探（纯中继/
 // UDP 静默拓扑首次上线不能等 5 个 interval；窗口 12 = 60s 默认间隔下覆盖
 // 12 分钟人尺度启动偏差），之后恢复 1/5 降频。
 // ------------------------------------------------------------------
@@ -8631,7 +8631,7 @@ async fn health_probe_loop_sprint_then_fifth_tick() {
 }
 
 // ---------------------------------------------------------------------
-// QUIC 中继钉址形态的拨号候选解析回归（2026-10-21 实测抓到的真 bug）：
+// QUIC 中继钉址形态的拨号候选解析回归（实测抓到的真 bug）：
 // iroh 形态 base.address 是原子（node_id+可选 relay_url），按冒号拆 host
 // 曾拆出 `iroh:<hex>@http://127.0.0.1` 截断垃圾候选混进拨号池（junk 白撞
 // 一次拨号 + 失败链 last error 用垃圾地址误导排障，relay 端口还被错当
@@ -8658,7 +8658,7 @@ fn resolve_dial_candidates_iroh_pinned_base_address_atomic() {
         status: NodeStatus::Offline,
         capabilities: vec![],
         tags: vec![],
-        // 静态 iroh 条目装载形态：loader 给的池里就只有这一条（G14 闸
+        // 静态 iroh 条目装载形态：loader 给的池里就只有这一条（闸
         // 占位不进池——iroh 分支 udp_port=0 不产 TCP 候选）。
         addresses: vec![full.clone()],
         professions: Vec::new(),
@@ -8696,7 +8696,7 @@ fn resolve_dial_candidates_iroh_pinned_base_address_atomic() {
 }
 
 // ---------------------------------------------------------------------
-// 复活也是「节点发现」（T1 真机缺陷修复回归）：广播被隔离的拓扑里
+// 复活也是「节点发现」（真机缺陷修复回归）：广播被隔离的拓扑里
 // announce 永远不来，Offline→Online 探针翻转是唯一上线信号——
 // on_node_discovered（停车场 sweep / 看板收编）必须同样触发。
 // ---------------------------------------------------------------------
@@ -8766,7 +8766,7 @@ fn mark_peer_healthy_unknown_node_is_noop() {
     assert!(fired.lock().is_empty(), "未知节点不得触发回调");
 }
 
-/// canonical_peer_id（T37 双身份失配第三处落点回归，2026-09-13）：
+/// canonical_peer_id（双身份失配第三处落点回归）：
 /// peer 名 / 节点 id 两种形态都归一化为注册表权威 `base.id`；
 /// 未知 target 返回 None（调用方保留原值交 RPC resolver 兜底）。
 #[test]
@@ -8807,7 +8807,7 @@ fn canonical_peer_id_resolves_name_and_id() {
     assert_eq!(cluster.canonical_peer_id("ghost"), None);
 }
 
-// F1（2026-09-30 派发目标校验前置）：大小写失配回落——人读名手工输入
+// （派发目标校验前置）：大小写失配回落——人读名手工输入
 // 大小写异是常态，文档承诺「大小写不敏感」。
 #[test]
 fn canonical_peer_id_case_insensitive_fallback() {
@@ -8851,7 +8851,7 @@ fn canonical_peer_id_case_insensitive_fallback() {
     assert_eq!(cluster.canonical_peer_id("ALEX2"), None);
 }
 
-// -- peer_udp_endpoints（U1-5 根修 2026-09-15：异端口拓扑定向单播）--
+// -- peer_udp_endpoints（根修：异端口拓扑定向单播）--
 
 #[test]
 fn test_peer_udp_endpoints_reads_peers_toml() {
@@ -8897,7 +8897,7 @@ rpc_port = 29422
 }
 
 // ---------------------------------------------------------------------------
-// register_rpc_peer（T26 根修回归：RPC 学到未知对端时继承占位身份，
+// register_rpc_peer（根修回归：RPC 学到未知对端时继承占位身份，
 // 不再以硬编码 worker/general/127.0.0.1 覆盖 operator 配置）
 // ---------------------------------------------------------------------------
 
@@ -8924,7 +8924,7 @@ fn test_register_rpc_peer_inherits_placeholder_identity_with_hint() {
     let dir = tempfile::tempdir().unwrap();
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
 
-    // 占位 Node-A：operator 配置 coordinator/development（T26 实况形态，
+    // 占位 Node-A：operator 配置 coordinator/development（实况形态，
     // base.address 被静态 loader 转成 rpc 形态 127.0.0.1:21949）。
     load_placeholder(&cluster, "Node-A", 21949, "coordinator", "development");
 
@@ -8935,7 +8935,7 @@ fn test_register_rpc_peer_inherits_placeholder_identity_with_hint() {
     let info = cluster
         .get_peer("node-yangjian-real-a")
         .expect("registered");
-    // T26 死因断言：role 必须继承占位的 coordinator，而非硬编码 worker。
+    // 死因断言：role 必须继承占位的 coordinator，而非硬编码 worker。
     assert_eq!(
         info.base.role,
         nemesis_types::cluster::NodeRole::Coordinator
@@ -9035,12 +9035,12 @@ fn test_register_rpc_peer_no_placeholder_conservative_fallback() {
     assert!(changed);
     assert!(cluster.get_peer("node-yangjian-real-a").is_some());
 
-    // 无占位 + hint=0（G14：不可达条目不如不登记）。
+    // 无占位 + hint=0（不可达条目不如不登记）。
     assert!(!cluster.register_rpc_peer("node-yangjian-real-b", 0));
     assert!(cluster.get_peer("node-yangjian-real-b").is_none());
 }
 
-// -- P0 vault fail-closed（2026-09-21 复审修复）：token 引用解析失败 →
+// -- vault fail-closed（复审修复）：token 引用解析失败 →
 // RPC 拒绝无认证运行、discovery 拒绝无加密运行 ------------------------------
 
 /// 安装一个必然失败的解析器（保证确定性，不依赖进程内是否有别的解析器）。
@@ -9080,7 +9080,7 @@ fn test_load_rpc_auth_token_broken_reference_sets_fail_closed_flag() {
     nemesis_config::clear_global_vault_resolver();
 }
 
-/// 空字面量 token：BUG-20261102-297 起置位 rpc_token_missing（与坏引用
+/// 空字面量 token： 起置位 rpc_token_missing（与坏引用
 /// 同款 fail-closed），但 broken 旗标不置位——两因可区分，统一裁决收敛
 /// 于 rpc_auth_unavailable。
 #[test]
@@ -9154,8 +9154,8 @@ fn test_start_discovery_broken_reference_fails_closed() {
     nemesis_config::clear_global_vault_resolver();
 }
 
-/// BUG-20261102-297：空 token 的 start_discovery 同款 fail-closed（不存
-/// discovery 服务、running 标志不置位）——推翻 L3「空 token = 明文广播
+/// 空 token 的 start_discovery 同款 fail-closed（不存
+/// discovery 服务、running 标志不置位）——推翻 「空 token = 明文广播
 /// 运行」兼容臂：RPC 已拒绝启动，明文 announce 继续跑只会把一个无法
 /// 接受 peer_chat 的节点广播出去，且伪造面与坏引用一致。
 #[test]
@@ -9187,7 +9187,7 @@ fn test_start_discovery_empty_token_fails_closed() {
 }
 
 // -------------------------------------------------------------------------
-// resolve_auto_node_name：CJK node_id 显示名截断（2026-10-11 横扫修复）
+// resolve_auto_node_name：CJK node_id 显示名截断（横扫修复）
 // -------------------------------------------------------------------------
 
 /// 裸 `&node_id[..8.min(len)]` 在中文 node_id（中文主机名等）上会 panic。
@@ -9200,13 +9200,13 @@ fn auto_node_name_cjk_node_id_truncates_at_char_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// 探针身份回传（TCP fallback，2026-10-10）：UDP 静默拓扑里身份传播唯一
+// 探针身份回传（TCP fallback）：UDP 静默拓扑里身份传播唯一
 // 可靠通道——ping 响应携带自报 announce，探针成功方 apply 入册。
 // ---------------------------------------------------------------------------
 
 /// ping 响应携带自报身份（announce additive 字段）：TCP 探针身份回传的
 /// B 端半边。响应字段集与 UDP announce 同构（build_announce_from_callbacks
-/// 单一真相源），且身份热改（set_professions/set_tier）后下一次 ping 即
+/// 统一定义），且身份热改（set_professions/set_tier）后下一次 ping 即
 /// 反映——活读而非构造期快照。
 #[test]
 fn test_ping_response_carries_live_announce_identity() {
@@ -9270,7 +9270,7 @@ fn test_ping_without_self_weak_is_bare_pong() {
 ///
 /// 隔离必须用 with_workspace + tempdir：apply 命中变更会 sync_to_disk，
 /// 裸构造（空工作区）落到 CWD=包根的 cluster/state.toml——后续测试的
-/// start() 回读它就把本测试的 fixture 当幽灵节点种回注册表（实录：
+/// start() 回读它就把本测试的 fixture 当幽灵节点种回注册表（
 /// 五个生命周期计数测试连坐 +1 节点）。
 #[test]
 fn test_apply_probe_announce_lands_identity_in_registry() {
@@ -9337,10 +9337,10 @@ fn test_apply_probe_announce_lands_identity_in_registry() {
 }
 
 // ===========================================================================
-// Win↔Win 集群地址缺陷链回归锁（R2 pin 合并 / R3 拨号兜底 / R4 自投递防护 /
-// R5 源地址收割）。计划：docs/PLAN/2026-10-13_four-observation-bugs-fix-plan.md P1。
+// Win↔Win 集群地址缺陷链回归锁（pin 合并 / 拨号兜底 / 自投递防护 /
+// 源地址收割）。计划：four-observation-bugs-fix-plan 。
 // 合成 IP 一律走 TEST-NET-3（203.0.113.0/24，永不分配给真实主机），杜绝
-// R4 过滤器对测试机真实网卡的意外命中。
+// 过滤器对测试机真实网卡的意外命中。
 // ===========================================================================
 
 /// 构造注册表条目（默认 base.address = host:21949）。
@@ -9372,7 +9372,7 @@ fn make_addr_chain_peer(
     }
 }
 
-/// R2：announce 刷新不逐出静态 peers.toml pin（地址池并入 + base.address 保 pin）。
+/// announce 刷新不逐出静态 peers.toml pin（地址池并入 + base.address 保 pin）。
 #[test]
 fn test_announce_refresh_preserves_static_pin_addresses() {
     let cluster = Cluster::new(make_config());
@@ -9452,7 +9452,7 @@ fn test_announce_refresh_preserves_static_pin_addresses() {
     );
 }
 
-/// R2 对照：非静态对端保持旧行为——自报数组整组替换（发现①语义不变）。
+/// 对照：非静态对端保持旧行为——自报数组整组替换（发现①语义不变）。
 #[test]
 fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
     let cluster = Cluster::new(make_config());
@@ -9492,7 +9492,7 @@ fn test_announce_refresh_replaces_addresses_for_dynamic_peer() {
     assert!(info.base.address.starts_with("203.0.113.61:"));
 }
 
-/// R2：merge_real_node_info（TCP 探针/get_info 身份回传路径）对静态对端
+/// merge_real_node_info（TCP 探针/get_info 身份回传路径）对静态对端
 /// 候选池走合并而非整组替换。
 #[test]
 fn test_merge_real_node_info_merges_addresses_for_static_peer() {
@@ -9538,7 +9538,7 @@ fn test_merge_real_node_info_merges_addresses_for_static_peer() {
     assert!(info.base.address.starts_with("203.0.113.70:"));
 }
 
-/// R3：池非空时 base.address host 仍追加池尾参与拨号（静态 pin 被 announce
+/// 池非空时 base.address host 仍追加池尾参与拨号（静态 pin 被 announce
 /// 挤出主序后依旧可达——兜底语义）。
 #[test]
 fn test_get_peer_info_appends_base_address_host_to_nonempty_pool() {
@@ -9567,7 +9567,7 @@ fn test_get_peer_info_appends_base_address_host_to_nonempty_pool() {
     assert!(online);
 }
 
-/// R4 纯函数矩阵：端口不匹配不误杀 / 回环+同端口命中 / 本机 IP+同端口命中。
+/// 纯函数矩阵：端口不匹配不误杀 / 回环+同端口命中 / 本机 IP+同端口命中。
 #[test]
 fn test_is_self_endpoint_matrix() {
     let own = vec!["10.103.0.5".to_string(), "192.168.137.1".to_string()];
@@ -9584,7 +9584,7 @@ fn test_is_self_endpoint_matrix() {
     assert!(!is_self_endpoint("other-host", 21949, 21949, &own));
 }
 
-/// R4：同机双节点（同 IP 不同端口）互不误杀——对端候选含本机 IP 但端口
+/// 同机双节点（同 IP 不同端口）互不误杀——对端候选含本机 IP 但端口
 /// 不同 = 合法同机对端，必须原样保留。
 #[test]
 fn test_same_host_different_port_peer_not_filtered() {
@@ -9610,7 +9610,7 @@ fn test_same_host_different_port_peer_not_filtered() {
     assert_eq!(port, 31949);
 }
 
-/// R4：对端候选池被本节点历史地址污染（同端口布局）→ 自端点候选剔除；
+/// 对端候选池被本节点历史地址污染（同端口布局）→ 自端点候选剔除；
 /// 全池自碰撞 → None（诚实失败，拒拨自己）。
 #[test]
 fn test_self_endpoint_pollution_filtered_and_full_collision_none() {
@@ -9647,7 +9647,7 @@ fn test_self_endpoint_pollution_filtered_and_full_collision_none() {
     );
 }
 
-/// R4 豁免面（T47 R3 回归锁）：条目 id 与本节点 id 全等 = 显式自投递，
+/// 豁免面（回归锁）：条目 id 与本节点 id 全等 = 显式自投递，
 /// 端点自碰撞是预期而非池污染——候选原样放行（Some），不落 None。
 /// 防护只拦「别人的单子误投给自己」（id 不等但候选全撞本地端点）；
 /// 发给自己的单子由自己执行，作者=执行者，无身份漂移。
@@ -9677,7 +9677,7 @@ fn test_self_entry_dial_exempt_keeps_candidates() {
     assert_eq!(port, cluster.rpc_port);
 }
 
-/// R5：announce UDP 源地址作为最低优先级候选入池；与载荷地址去重。
+/// announce UDP 源地址作为最低优先级候选入池；与载荷地址去重。
 #[test]
 fn test_announce_source_addr_appended_lowest_priority() {
     let cluster = Cluster::new(make_config());
@@ -9702,7 +9702,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
     );
     assert!(changed);
     let info = cluster.registry.get("src-1").unwrap();
-    // 载荷在前、源地址末位（载荷 > 源地址；R2 pin 若在则居中）
+    // 载荷在前、源地址末位（载荷 > 源地址； pin 若在则居中）
     assert_eq!(
         info.addresses,
         vec!["203.0.113.95".to_string(), "203.0.113.99".to_string()]
@@ -9732,7 +9732,7 @@ fn test_announce_source_addr_appended_lowest_priority() {
     assert_eq!(info.addresses, vec!["203.0.113.96".to_string()]);
 }
 
-/// 低-4（闭环批 2026-10-13 补全）：池空 + base.host 自碰撞、连候选都没有
+/// 低-4（闭环-13 补全）：池空 + base.host 自碰撞、连候选都没有
 /// ——两种形态此前返回 Some 空池（客户端拿 "" 拨号一次才失败，错误文案
 /// 误导为连接问题），统一 None 诚实失败。
 #[test]
@@ -9769,7 +9769,7 @@ fn test_resolver_empty_pool_self_host_and_no_candidates_none() {
     );
 }
 
-/// R5 池序综合：静态 pin → 载荷 → 源地址（三来源同场时顺序钉死）。
+/// 池序综合：静态 pin → 载荷 → 源地址（三来源同场时顺序钉死）。
 /// pin 前置（多角度审计批中-2）：拨号预算 = best + 3 fallback，载荷 ≥4 个
 /// 且无一同网段时 pin 排尾永远轮不到；「用户显式配置优先」要求 pin 排头。
 #[test]
@@ -9819,9 +9819,9 @@ fn test_pool_order_pin_then_payload_then_source() {
     );
 }
 
-// -- P2 agent 清单宣告（AgentAnnouncement，2026-10-16）--
+// -- agent 清单宣告（AgentAnnouncement）--
 
-/// roster provider → ping announce 子对象活读（professions M2 同形）。
+/// roster provider → ping announce 子对象活读（professions 同形）。
 /// provider 热改（模拟运行期建删 agent）→ 下一次 ping 反映，无需重启。
 #[test]
 fn test_agent_roster_stamped_into_ping_announce() {
@@ -10030,7 +10030,7 @@ fn test_discovered_node_roster_lands_and_change_detection() {
     assert_eq!(node.agents, roster_b);
 }
 
-/// P5 第 4 步 ③：runtime_backend 随 announce 落册；同值重复宣告冗余收敛
+/// runtime_backend 随 announce 落册；同值重复宣告冗余收敛
 /// （content_eq，不刷盘）；旧节点（wire 无字段）= None 未宣告照常互通
 /// （serde default 回归）；静态身份持久化 state.toml 并经启动回读种回
 /// 注册表（与 agents 相反——runtime_backend 是静态身份，同 tier 先例）。
@@ -10058,7 +10058,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Some("vm".into()),
         None, // mandate 公钥：未宣告
         None,
-        "", // build：未宣告（P5 期测试补齐 A1 参数）
+        "", // build：未宣告（期测试补齐 参数）
     );
     assert!(changed, "首次入册必 changed");
     let node = cluster.registry.get("vm-peer").expect("入册");
@@ -10082,7 +10082,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         Some("vm".into()),
         None, // mandate 公钥：未宣告
         None,
-        "", // build：未宣告（P5 期测试补齐 A1 参数）
+        "", // build：未宣告（期测试补齐 参数）
     );
     assert!(!changed2, "同值重复宣告不得算内容变化");
 
@@ -10104,7 +10104,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
         None,
         None, // mandate 公钥：未宣告
         None,
-        "", // build：未宣告（P5 期测试补齐 A1 参数）
+        "", // build：未宣告（期测试补齐 参数）
     );
     assert!(changed3, "旧节点入册必 changed");
     let old = cluster.registry.get("old-peer").expect("入册");
@@ -10131,7 +10131,7 @@ fn test_runtime_backend_announce_lands_and_persists() {
     cluster.stop();
 }
 
-/// G14 空地址已知节点身份合并：agents 与 tier/professions 同族——地址
+/// 空地址已知节点身份合并：agents 与 tier/professions 同族——地址
 /// 保留原值的同时清单照常合并（探针回传身份不因空地址丢失）。
 #[test]
 fn test_empty_addresses_known_peer_roster_merge_preserves_address() {
@@ -10258,7 +10258,7 @@ fn test_merge_real_node_info_merges_agent_roster() {
     assert_eq!(node.tier.as_deref(), Some("big"));
     assert_eq!(node.base.name, "merge-peer-renamed");
 }
-/// NB-122 批 ③ 数据面（2026-10-16）：`set_capabilities` 与 peers.toml
+/// 批 ③ 数据面：`set_capabilities` 与 peers.toml
 /// `[node].capabilities` 自报段取**并集**——环境能力词（browser 等）与
 /// 工具名同进宣告面，作 matcher required_capabilities 硬条件数据源；
 /// 重叠词去重；静态段在前顺序稳定（重调幂等）。
@@ -10302,10 +10302,10 @@ fn test_set_capabilities_unions_static_identity_caps() {
 }
 
 // -----------------------------------------------------------------------
-// A1 P3: iroh 漫游身份入池
+// iroh 漫游身份入池
 // -----------------------------------------------------------------------
 
-/// A1 P3：announce 携带合法 iroh_id → `iroh:<hex>` 拼接后作拨号候选
+/// announce 携带合法 iroh_id → `iroh:<hex>` 拼接后作拨号候选
 /// 池尾追加（pin > 载荷 > 源地址 > iroh，不抢直连优先级）；重复 announce
 /// 不重复入池。feature 关闭时 valid_iroh_id 恒 None → 不入池（诚实裁剪）。
 #[test]
@@ -10334,7 +10334,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-        "",   // build：未宣告（P5 期测试补齐 A1 参数）
+        "",   // build：未宣告（期测试补齐 参数）
     );
 
     let node = cluster.get_node_info("iroh-node-1").expect("node stored");
@@ -10373,7 +10373,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-        "",   // build：未宣告（P5 期测试补齐 A1 参数）
+        "",   // build：未宣告（期测试补齐 参数）
     );
     let node = cluster.get_node_info("iroh-node-1").unwrap();
     assert_eq!(
@@ -10387,7 +10387,7 @@ fn test_handle_discovered_node_iroh_id_pools() {
     );
 }
 
-/// A1 P3：非法 iroh_id（长度不足 / 非 hex / 空白）被校验丢弃，不入池。
+/// 非法 iroh_id（长度不足 / 非 hex / 空白）被校验丢弃，不入池。
 #[test]
 fn test_handle_discovered_node_iroh_id_invalid_rejected() {
     let cluster = Cluster::new(make_config());
@@ -10412,7 +10412,7 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
             None, // 自报运行时后端形态：未宣告
             None, // mandate 公钥：未宣告
             None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-            "",   // build：未宣告（P5 期测试补齐 A1 参数）
+            "",   // build：未宣告（期测试补齐 参数）
         );
     }
     let node = cluster.get_node_info("iroh-bad").expect("node stored");
@@ -10423,7 +10423,7 @@ fn test_handle_discovered_node_iroh_id_invalid_rejected() {
     );
 }
 
-/// A1 P3：iroh 形态地址（静态 pin 场景）作 announce 载荷首地址时，
+/// iroh 形态地址（静态 pin 场景）作 announce 载荷首地址时，
 /// primary 不拼 rpc_port（拼了会造出 `iroh:<hex>:<port>` 非法地址）。
 #[test]
 fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
@@ -10449,7 +10449,7 @@ fn test_handle_discovered_node_roaming_primary_no_port_suffix() {
         None, // 自报运行时后端形态：未宣告
         None, // mandate 公钥：未宣告
         None, // UDP 隔离拓扑：无 source_addr（源地址收割语义外场景）
-        "",   // build：未宣告（P5 期测试补齐 A1 参数）
+        "",   // build：未宣告（期测试补齐 参数）
     );
 
     let node = cluster.get_node_info("iroh-node-2").expect("node stored");
@@ -10492,11 +10492,11 @@ fn test_roaming_enabled_in_config_gate() {
 
 // 漫游开关打开但 key 缺席：`load_or_create` 幂等自动生成（首次 created=true
 // 落盘，二次加载 created=false 且身份一致）——setup_roaming 的自动备料分支。
-// QUIC 插件化 M3：identity_ensure 全语义（含 created 报告与幂等）已随
+// QUIC 插件化：identity_ensure 全语义（含 created 报告与幂等）已随
 // 身份读写迁入 plugin_roaming（插件 identity_tests 钉死），宿主测试删除。
 
 // ===========================================================================
-// A1 运行时硬化批（2026-10-19）：构建号 wire 传播回归锁。
+// 运行时硬化批：构建号 wire 传播回归锁。
 // announce build 字段经 ex 漏斗入册（新条目 / 既有条目 merge / 空地址身份
 // 合并三分支全覆盖），Dashboard 节点面据此展示三机换装偏斜。
 // ===========================================================================
@@ -10521,7 +10521,7 @@ fn test_announce_build_propagates_to_registry_new_entry() {
         None,
         None,
         None, // mandate 公钥：未宣告
-        None, // runtime_backend：未宣告（合并补齐 P5 参数位）
+        None, // runtime_backend：未宣告（合并补齐 参数位）
         "6f96d056",
     );
     assert!(changed, "new entry must register");
@@ -10550,7 +10550,7 @@ fn test_announce_build_refreshes_existing_entry() {
         None,
         None,
         None, // mandate 公钥：未宣告
-        None, // runtime_backend：未宣告（合并补齐 P5 参数位）
+        None, // runtime_backend：未宣告（合并补齐 参数位）
         "aaaa1111",
     );
     // 第二拍：同节点换装（build 变化），地址/身份不变。
@@ -10570,7 +10570,7 @@ fn test_announce_build_refreshes_existing_entry() {
         None,
         None,
         None, // mandate 公钥：未宣告
-        None, // runtime_backend：未宣告（合并补齐 P5 参数位）
+        None, // runtime_backend：未宣告（合并补齐 参数位）
         "bbbb2222",
     );
     let node = cluster.registry.get("build-peer").expect("registered");
@@ -10621,7 +10621,7 @@ fn test_set_build_hash_reflects_local_registry_entry() {
 }
 
 // -------------------------------------------------------------------------
-// BUG-20261030-209 回归锁：cluster.start() 必须接线 TaskManager 后台清理
+// 回归锁：cluster.start() 必须接线 TaskManager 后台清理
 // 循环。此前生产从未调用 task_manager.start()（旧 &mut self 签名无法经
 // Arc<TaskManager> 调用），2h 终态清理与 pending/running 安全网兜底双双
 // 失效——终态任务（含完整 payload+result）在 tasks.db 无限累积。
@@ -10668,7 +10668,7 @@ async fn test_bug209_start_wires_task_manager_cleanup_loop() {
     );
 }
 
-/// BUG-20261101-264：interval 错过 tick 语义钉子——修复在 13 处外部轮询
+/// interval 错过 tick 语义钉子——修复在 13 处外部轮询
 /// loop 上把默认 Burst 改成 Delay（挂起恢复后 Burst 对每个错过的 tick 立即
 /// 补发 = 洪泛对端；Delay 从当前时刻重排）。本测试钉死修复所依赖的 tokio
 /// 语义，防「tokio 默认行为变更」或「修复被重构掉」静默回退。
@@ -10704,7 +10704,7 @@ async fn interval_missed_tick_delay_reanchors_after_gap() {
     );
 }
 
-// --- BUG-20261101-282：peers.toml 损坏身份漂移必须可观测 -------------------
+// ---：peers.toml 损坏身份漂移必须可观测 -------------------
 // `.ok()` 吞掉 load_static_config 的解析失败后，node_id 走新生成，
 // ensure_node_id 对不可解析文件整体序列化覆盖——身份静默漂移 +
 // [peers.*] 静态表丢失且零日志。修复 = 损坏 loud WARN（NotFound 首次
@@ -10785,7 +10785,7 @@ id = broken ===",
 }
 
 // ---------------------------------------------------------------------------
-// L16（2026-11-02 三期）：iroh 互信 announce 采信闸接线（handle_discovered_
+// （三期）：iroh 互信 announce 采信闸接线（handle_discovered_
 // node_ex 单一漏斗）。身份用 random_valid_iroh_hex 真实派生（valid_iroh_id
 // on-curve 校验拒绝任意 hex）。
 // ---------------------------------------------------------------------------
@@ -10979,8 +10979,8 @@ fn l16_announce_without_iroh_skips_gate() {
 }
 
 // ---------------------------------------------------------------------------
-// L13-a（2026-11-03 三期）：mandate 公钥分发面集成（TOFU 钉存三态 +
-// L16 veto 短路）
+// a（三期）：mandate 公钥分发面集成（TOFU 钉存三态 +
+// veto 短路）
 // ---------------------------------------------------------------------------
 
 /// 合法 uncompressed 130 hex 测试钥（04 头 + tag + 126 hex）。
@@ -11037,7 +11037,7 @@ fn l13a_announce_pubkey_pins_into_active_book() {
 }
 
 /// 簿缺席（regime 未激活）+ announce 携公钥 → 不建文件不钉存，入册照常
-/// （announce 抵达绝不激活 trust.toml，L16 纪律镜像）。
+/// （announce 抵达绝不激活 trust.toml， 纪律镜像）。
 #[test]
 fn l13a_announce_pubkey_book_absent_no_touch() {
     let dir = tempfile::tempdir().unwrap();
@@ -11112,7 +11112,7 @@ fn l13a_announce_pubkey_conflict_keeps_first_and_registers() {
     );
 }
 
-/// L16 revoked veto 短路在 mandate hook 之前：节点 iroh 身份被吊销时整条
+/// revoked veto 短路在 mandate hook 之前：节点 iroh 身份被吊销时整条
 /// 不采信（return false 提前），mandate 公钥不钉存。
 #[test]
 fn l13a_revoked_iroh_veto_skips_mandate_pin() {

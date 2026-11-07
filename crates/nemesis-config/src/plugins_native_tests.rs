@@ -131,15 +131,15 @@ fn legacy_file_discarded_when_new_name_present() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ==================== BUG-20261025-45（BUG-HUNT R123）回归锁 ====================
+// ==================== 回归锁 ====================
 //
-// set_enabled 曾是裸 std::fs::write 直写目标（崩溃撕裂整文件 → 读侧
+// set_enabled 曾是裸 std::fs:write 直写目标（崩溃撕裂整文件 → 读侧
 // fail-open 短期放行，但下次 set_enabled 的 RMW 从撕裂内容解析失败落到
 // 空 SwitchFile，静默抹掉全部兄弟插件条目）；legacy 迁移曾是「读+写+删」
 // 非原子（中段崩溃新旧两份全丢）。修复 = 写侧走 write_file_atomic、
 // 迁移改同目录 rename。进程内无法真实注入写中崩溃（BUG-43/44 同族诚实
 // 边界），本批锁可观察不变量：兄弟条目跨写保留、迁移字节保真 + 旧名
-// 消失、写路径盘上零 .tmp 残留。
+// 消失、写路径盘上零.tmp 残留。
 
 #[test]
 fn r45_repeated_writes_preserve_siblings_and_leave_no_tmp_residue() {
@@ -188,11 +188,11 @@ fn assert_no_tmp_residue(dir: &std::path::Path) {
     assert!(residue.is_empty(), "写侧不得留下 .tmp 残留：{residue:?}");
 }
 
-// ==================== BUG-20261104-370 回归锁 ====================
+// ==================== 回归锁 ====================
 //
 // load_enabled 的读路径迁移 rename 曾零锁——迁移窗口内与 set_enabled 并发，
 // rename 覆盖刚落盘的开关文件（用户切换静默回退）。修复 = 读路径全程罩
-// config_write_lock（BUG-20261103-333 在 plugin_wasm::load_switches 修过的
+// config_write_lock（在 plugin_wasm::load_switches 修过的
 // 同族位点，native 模块漏改）。本钉证明 load_enabled 已进 config 写锁家族：
 // 持锁期间调用必须阻塞（若锁被改成 no-op 或读路径退出锁家族，此钉红）。
 

@@ -10,15 +10,15 @@
 //! | s2 | 排队消息零落盘，切会话即丢 | Queue 模式（缺省）同会话连发：排队回执即时、两条 turn 顺序完成、历史恰 4 行按序（回执不入史） |
 //! | s3 | Reject 忙弹回零留痕 | reject 覆盖下第二条消息即时收到 BUSY 弹回，历史里有成对 user 行 + 弹回行（D-2 诚实留痕） |
 //! | s4 | 并发上限（D-4）真机形态 | max_concurrent_turns=1 时 B 的 turn 排许可、A 后顺序完成，零丢失 |
-//! | s5 | 绑定真相源在 localStorage：换机器/F5 漂移复制 | WSAPI 驱动绑定注册表全生命周期（get-or-create 幂等 / set_binding 让键 / remove_binding 幂等 / delete 级联）+ **gateway 重启后绑定依旧**（服务端真相源） |
+//! | s5 | 绑定真相源在 localStorage：换机器/ 漂移复制 | WSAPI 驱动绑定注册表全生命周期（get-or-create 幂等 / set_binding 让键 / remove_binding 幂等 / delete 级联）+ **gateway 重启后绑定依旧**（服务端真相源） |
 //!
-//! 与 R9 live 组的差异：R9 因「tokio-tungstenite 只在 test-harness 内部可用」
+//! 与 live 组的差异： 因「tokio-tungstenite 只在 test-harness 内部可用」
 //! 而用预种子 cron 驱动入站；本批 test-harness 已补持久 WS 驱动原语
 //! （ws_send_json/ws_recv_matching/chat_receive_match）与 MockAiReply::Delay
-//! （可控延时 LLM 应答），故直接走前端同款 WS 链路（chat.send → P8 回声 →
+//! （可控延时 LLM 应答），故直接走前端同款 WS 链路（chat.send → 回声 →
 //! gate → turn → assistant receive 帧），更贴近真实用户路径。
 //!
-//! 纪律：与 R9 组共用 `live_gate()` 互斥闸（同一时刻至多一个真 gateway 编排）；
+//! 纪律：与 组共用 `live_gate()` 互斥闸（同一时刻至多一个真 gateway 编排）；
 //! home 隔离走 `--local` + tempdir cwd（r9_live_tests 先例，绝不碰真实 home）；
 //! web 端口 0（OS 分配）；不占生产禁区端口。
 
@@ -58,7 +58,7 @@ struct ScenarioGateway {
 impl ScenarioGateway {
     /// 起一个带脚本 mock 的真 gateway，阻塞到 web bind 就绪。
     ///
-    /// `cfg_tweak` 在 install 前改写配置（S3 的 reject 模式 / S4 的并发上限）。
+    /// `cfg_tweak` 在 install 前改写配置（的 reject 模式 / 的并发上限）。
     async fn start(
         name: &'static str,
         script: Vec<MockAiReply>,
@@ -241,7 +241,7 @@ async fn fetch_history(stream: &mut WsStream, sid: &str) -> Vec<(String, String)
         .as_array()
         .unwrap_or_else(|| panic!("history [{sid}] missing messages array: {frame}"))
         .iter()
-        // W2（2026-10-25）：未知窗口模型的首 turn 会落一条「压缩已停用」system
+        // 未知窗口模型的首 turn 会落一条「压缩已停用」system
         // 注记进 chat_log（产品行为，agent crate 有专项单测）。本组测试只断言
         // user/assistant 消息流，system 注记行在此过滤掉。
         .filter(|m| m["role"].as_str() != Some("system"))
@@ -532,7 +532,7 @@ async fn s4_turn_limit_caps_concurrency_without_loss() {
 }
 
 // ---------------------------------------------------------------------------
-// s5 —— 绑定注册表全生命周期（原 BUG：真相源在 localStorage，换机器/F5
+// s5 —— 绑定注册表全生命周期（原 BUG：真相源在 localStorage，换机器/
 //       漂移复制出成批空会话；保存工作流后仍绑【新建工作流】）
 // ---------------------------------------------------------------------------
 

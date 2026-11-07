@@ -18,7 +18,7 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
-/// 单块原始文本字符预算（BUG-20261101-277）：Telegram Bot API 硬限 4096，
+/// 单块原始文本字符预算：Telegram Bot API 硬限 4096，
 /// 预算留 ~600 给 markdown→HTML 的转义/标签膨胀；纯文本回退落在原始块
 /// 上恒 < 4096。
 const TELEGRAM_SPLIT_BUDGET: usize = 3500;
@@ -244,7 +244,7 @@ impl TelegramChannel {
             ));
         }
 
-        // BUG-20261031-261：超时值收敛到 base::outbound_http_builder 单一真相源。
+        // 超时值收敛到 base::outbound_http_builder 统一定义。
         let mut client_builder = crate::base::outbound_http_builder();
 
         // Apply proxy if configured
@@ -561,8 +561,8 @@ impl TelegramChannel {
             content.push_str(caption);
         }
 
-        // Photo — T7（多模态）：getFile → 下载落盘 uploads → **本地路径引用**
-        // 进 T5 统一 attach（安全闸 → 历史引用 → build_messages 水合）。
+        // Photo — （多模态）：getFile → 下载落盘 uploads → **本地路径引用**
+        // 进 统一 attach（安全闸 → 历史引用 → build_messages 水合）。
         // 下载失败诚实降级为 "[Photo received]" 文案（不产出无法水合的引用）。
         if let Some(ref photos) = msg.photo {
             if !photos.is_empty() {
@@ -653,7 +653,7 @@ impl TelegramChannel {
             content = "[empty message]".to_string();
         }
 
-        // BUG-20261101-280：preview 截断必须按字符——`&content[..50]` 字节
+        // preview 截断必须按字符——`&content[..50]` 字节
         // 直切在多字节字符中间 panic（debug 日志开启 + 中文消息即触发：
         // 50 字节落在 16~17 个汉字的中间是常态不是边缘）。
         let preview = message_preview(&content);
@@ -735,8 +735,8 @@ impl TelegramChannel {
         Some(format!("{api_url_base}/file/{file_path}"))
     }
 
-    /// T7（多模态，goal 2026-09-03）：把 Telegram photo **下载落盘**成本地
-    /// 文件，返回路径形态的 `MediaAttachment`（供 T5 统一 attach 走安全闸 +
+    /// （多模态，goal）：把 Telegram photo **下载落盘**成本地
+    /// 文件，返回路径形态的 `MediaAttachment`（供 统一 attach 走安全闸 +
     /// 历史路径引用；Telegram 的下载 URL 需要 bot token，直接给 agent 引用
     /// 是无法水合的死链——必须本地方案）。
     ///
@@ -744,7 +744,7 @@ impl TelegramChannel {
     /// `uploads_dir/tg_{file_id sanitized}_{millis}.{ext}`（ext 抠自
     /// file_path，白名单字母数字且 ≤5 位，缺省 jpg）。任一步失败返回
     /// `None`，调用方降级为 "[Photo received]" 文案。写后即关 fd
-    /// （`std::fs::write`），返回前数据已落盘（纪律 4）。
+    /// （`std::fs:write`），返回前数据已落盘（纪律 4）。
     async fn fetch_photo_attachment(
         http: Option<&reqwest::Client>,
         api_url_base: Option<&str>,
@@ -821,7 +821,7 @@ impl TelegramChannel {
         })
     }
 
-    /// Download the voice file to `local_path` (BUG-20261101-267).
+    /// Download the voice file to `local_path`.
     ///
     /// 状态码前置闸：非 2xx 诚实上抛 `HTTP <status>`，不把错误体落盘。
     async fn download_voice_file(
@@ -903,7 +903,7 @@ impl TelegramChannel {
         let _ = std::fs::create_dir_all(&temp_dir);
         let local_path = temp_dir.join(format!("{}.ogg", file_id));
 
-        // BUG-20261101-267：下载先查状态码——此前 404/500 的 HTML/JSON
+        // 下载先查状态码——此前 404/500 的 HTML/JSON
         // 错误体被当语音 OGG 落盘送转写，日志只见「transcription failed」，
         // 真实 HTTP 错误被掩盖（signal/image_attach 同款闸此处漏配）。
         if let Err(e) = Self::download_voice_file(http, &download_url, &local_path).await {
@@ -1161,7 +1161,7 @@ impl TelegramChannel {
 // ---------------------------------------------------------------------------
 
 /// 入站消息 debug 预览截断（按字符；字节直切在多字节字符中间 panic，
-/// BUG-20261101-280——中文消息 50 字节落在 16~17 个汉字中间是常态）。
+/// —中文消息 50 字节落在 16~17 个汉字中间是常态）。
 fn message_preview(content: &str) -> String {
     content.chars().take(50).collect()
 }
@@ -1376,7 +1376,7 @@ impl Channel for TelegramChannel {
         self.stop_thinking_animation(&msg.chat_id);
 
         // Telegram Bot API sendMessage/editMessageText 硬限 4096 字符——超长
-        // 回复 HTML 与纯文本两次尝试全 400，整条投递失败（BUG-20261101-277）。
+        // 回复 HTML 与纯文本两次尝试全 400，整条投递失败。
         // 预算 3500 留 HTML 转义/标签膨胀余量；即便病理转义内容把 HTML 版
         // 顶过 4096，纯文本回退落在原始块（≤3500 < 4096）上恒可达。
         let raw_chunks = nemesis_types::utils::split_message(&msg.content, TELEGRAM_SPLIT_BUDGET);

@@ -1,4 +1,4 @@
-// L5（2026-10-12 内部专项 T0）：续行回灌路径的输出凭据复扫测试。
+// （内部专项）：续行回灌路径的输出凭据复扫测试。
 //
 // 工具输出回灌有三条路：①直接回灌（tool_dispatch 主线，output_rescan_tests
 // 已覆盖）；②cluster 续行追加；③子代理后台返回（`subagent_continuation:`

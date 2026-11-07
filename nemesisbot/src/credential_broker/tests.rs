@@ -1,4 +1,4 @@
-//! B4 — WebCredentialBroker 测试。
+//! — WebCredentialBroker 测试。
 //!
 //! 覆盖四条协议纪律：值不进事件载荷 / Stored 全链（respond→vault→重解析）/
 //! 超时→Denied 且出册（迟到 respond 诚实 Err）/ 落库失败放回 pending。
@@ -12,7 +12,7 @@
 //! 默认模式创建（argon2id 带测试口令，dpapi 无口令）。
 //! 锁必须与 connector_tools / vault_runtime / commands::vault 的 env 触及
 //! 测试群同源——env 口令是进程级单例，文件级私有锁互斥不了同进程并行
-//! 用例（Linux ET 实录：两把锁并行 set_var 互相覆盖口令 → DEK 解包认证
+//! 用例（Linux ET 两把锁并行 set_var 互相覆盖口令 → DEK 解包认证
 //! 失败假红）。
 
 use super::*;
@@ -234,7 +234,7 @@ fn convenience_entry_false_when_broker_absent() {
 }
 
 // ---------------------------------------------------------------------------
-// L06 复核点③（2026-11-01）：estop 收口——close_all 两臂
+// 复核点③：estop 收口——close_all 两臂
 // （等待方在场 = 等待方广播；等待方已亡 = 清理侧补广播；每卡恰一次）
 // + 清理绝不落 vault + 清理后 respond 诚实 Err。
 // ---------------------------------------------------------------------------
@@ -329,7 +329,7 @@ fn estop_close_all_on_empty_pending_is_zero() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261104-377：respond 落库失败决策臂——等待方已亡 = 丢弃不重插
+// respond 落库失败决策臂——等待方已亡 = 丢弃不重插
 // （estop 窗：close_all 已 drain / 等待方 future 已放弃时，盲目重插 =
 // 悬空卡，永无人收口、Resolved 广播永不发生）
 // ---------------------------------------------------------------------------
@@ -373,7 +373,7 @@ fn persist_failure_with_dead_waiter_discards_not_reinserts() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261104-377 grace 窗回归锁：等待方超时放弃**之后**落地的 respond
+// grace 窗回归锁：等待方超时放弃**之后**落地的 respond
 // 失败重插必须被决策臂丢弃。真实 grace 鬼影交错 = raced-check 落在
 // respond 的 remove→重插缝隙（微秒窗，黑盒不可确定性复现）——此处白盒
 // 确定性构造同一终态：真实等待方超时退出（guard 翻旗）→ 手动把持有

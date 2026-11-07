@@ -297,7 +297,7 @@ async fn test_delete_alias() {
 
 #[tokio::test]
 async fn test_forget_removes_vector_mirror() {
-    // BUG-2 回归锁（2026-10-14）：forget/delete 此前只删 keyword store，
+    // BUG-2 回归锁：forget/delete 此前只删 keyword store，
     // 向量镜像残留 → get 落 keyword→vector fallback 仍召回已「遗忘」条目。
     // 桩 embed（恒值向量，相似度恒 1.0）免 ONNX 插件依赖，非忽略可跑。
     let dir = tempfile::tempdir().unwrap();
@@ -344,10 +344,10 @@ async fn test_forget_removes_vector_mirror() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_init_vector_store() {
@@ -419,10 +419,10 @@ async fn test_new_with_jsonl_persistence() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_vector_store_adapter_stores_and_queries() {
@@ -467,10 +467,10 @@ async fn test_vector_store_adapter_stores_and_queries() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_vector_store_adapter_query_fallback() {
@@ -776,10 +776,10 @@ async fn test_list_disabled_returns_empty() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_append_episode_writes_to_vector_store() {
@@ -824,10 +824,10 @@ async fn test_append_episode_writes_to_vector_store() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_init_vector_store_with_custom_config() {
@@ -989,10 +989,10 @@ async fn test_store_method_delegates_to_store_entry() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_store_and_get_via_vector_store() {
@@ -1028,10 +1028,10 @@ async fn test_store_and_get_via_vector_store() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_get_falls_back_to_vector_store() {
@@ -1069,10 +1069,10 @@ async fn test_get_falls_back_to_vector_store() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_search_with_vector_store_and_type_filter() {
@@ -1119,10 +1119,10 @@ async fn test_search_with_vector_store_and_type_filter() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_search_vector_store_falls_back_to_keyword() {
@@ -1153,10 +1153,10 @@ async fn test_search_vector_store_falls_back_to_keyword() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn test_store_to_vector_adapter_path() {
@@ -1629,7 +1629,7 @@ fn test_with_config_dir_enabled_no_plugin() {
 }
 
 // ============================================================
-// Phase 1: UT — EmbeddingConfig JSON parsing (4 tests)
+// UT — EmbeddingConfig JSON parsing (4 tests)
 // ============================================================
 
 #[test]
@@ -1662,7 +1662,7 @@ fn test_embedding_config_disabled() {
 }
 
 // ============================================================
-// Phase 1: UT — with_config_dir flow (8 tests)
+// UT — with_config_dir flow (8 tests)
 // ============================================================
 
 #[test]
@@ -1756,7 +1756,7 @@ fn test_with_config_dir_storage_path_not_created_without_plugin() {
 }
 
 // ============================================================
-// Phase 1: UT — Vector Store adapter pattern
+// UT — Vector Store adapter pattern
 // (requires real ONNX plugin — see tests/memory_e2e.rs)
 // ============================================================
 
@@ -1773,7 +1773,7 @@ fn test_vector_adapter_requires_plugin() {
     );
 }
 
-// ---- S5 coverage: set_vector_enabled runtime toggle log arms ----
+// ---- coverage: set_vector_enabled runtime toggle log arms ----
 
 #[test]
 fn set_vector_enabled_toggles_runtime_flag() {
@@ -1788,7 +1788,7 @@ fn set_vector_enabled_toggles_runtime_flag() {
     assert!(!mgr.is_vector_enabled(), "disable must flip the flag back");
 }
 
-// ---- R1 coverage: init_vector_store_from_config arms + close() blocking drop ----
+// ---- coverage: init_vector_store_from_config arms + close() blocking drop ----
 
 /// Fresh manager without a detected plugin: `init_vector_store_from_config`
 /// must surface the "not found" error instead of panicking.
@@ -1808,7 +1808,7 @@ fn init_vector_store_from_config_errors_when_plugin_missing() {
 }
 
 /// Explicit store config whose persist file lives inside the test's tmpdir
-/// (never a cwd-relative default path — BUG #34 hygiene).
+/// (never a cwd-relative default path — hygiene).
 fn scoped_store_config(dir: &std::path::Path) -> crate::vector::StoreConfig {
     crate::vector::StoreConfig {
         storage_path: dir
@@ -1878,7 +1878,7 @@ async fn close_drops_live_vector_store_on_blocking_thread() {
         .expect("second close must take the empty-vector-store arm");
 }
 
-// ---- R1 coverage: live vector store drives the adapter paths ----
+// ---- coverage: live vector store drives the adapter paths ----
 
 #[tokio::test]
 async fn live_store_drives_search_store_forget_vector_paths() {
@@ -1931,7 +1931,7 @@ async fn live_store_drives_search_store_forget_vector_paths() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：search_auto_inject 向量路径（零既有测试）、
+// AGT 覆盖率批次：search_auto_inject 向量路径（零既有测试）、
 // search 向量路径条目映射（含 type 过滤）、init_vector_store_from_config 无
 // 插件诚实报错、store_entry 的向量后端失败吞噬臂。全部走 ngram/注入 embed，
 // 不依赖 plugin_onnx.dll。

@@ -1,12 +1,5 @@
 use super::*;
 
-/// degraded 注册表按 kind 覆盖 detail（「最新现场」语义，degraded.rs 12-14 行）。
-/// 本模块触发 kind="chat_log" 失败登记的用例，若 report→snapshot 窗口与他方
-/// 报告交叠，自己的 tag 会被他方 detail 覆盖（2026-11-06 coverage job 连续
-/// 两次实录：opfail tag 蒸发 → 回归锁假红）。模块级互斥把登记敏感用例的
-/// 报告窗口串行化——只护登记窗口本身，不碰其余用例的并行度。
-static DEGRADED_REPORT_SER: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[test]
 fn test_safe_key_conversion() {
     let path = log_path("agent:main:main");
@@ -104,6 +97,39 @@ fn test_delete_chat_log_removes_meta_but_clear_keeps_it() {
     assert!(crate::chat_log::read_session_meta(&key).is_none());
     let (rows2, _, _, _) = crate::chat_log::read_chat_log(&key, 10, None);
     assert_eq!(rows2.len(), 0);
+}
+
+// BUG-20261106-038: occupation predicate for CREATE paths (fork
+// `unique_key` / import 预检) — a meta-only residue occupies the key
+// (upsert-style meta writes preserve stale allow_all/branch_summary/title);
+// a boundary-only sidecar does NOT (audit-only, same exclusion as
+// trash_restore's conflict check).
+#[test]
+fn test_session_occupied_meta_only_counts_boundary_does_not() {
+    let key = format!(
+        "test:occupied:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key); // clean slate
+    assert!(!session_occupied(&key));
+
+    // Boundary sidecar alone: audit-only, NOT occupation.
+    append_boundary_event(&key, "turn_end", "audit row");
+    assert!(boundary_path(&key).exists());
+    assert!(!session_occupied(&key), "boundary sidecar must not occupy");
+
+    // Meta alone (trash half-failure shape): occupies.
+    write_session_meta(&key, "stale title");
+    assert!(session_occupied(&key), "meta-only residue must occupy");
+
+    // jsonl: occupies (baseline behavior unchanged).
+    append_chat_log(&key, "user", "row");
+    assert!(session_occupied(&key));
+
+    delete_chat_log(&key);
 }
 
 // --- W3a: error arms, cron/model markers, fork helpers, boundary sidecar ---
@@ -278,11 +304,7 @@ fn test_directory_at_log_path_is_tolerated() {
     watchdog.step(1); // path resolved
     std::fs::create_dir_all(&path).unwrap();
     watchdog.step(2); // dir created
-    let _ser = DEGRADED_REPORT_SER
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     append_chat_log(&key, "user", "blocked"); // warn + report(chat_log) + return
-    drop(_ser);
     watchdog.step(3); // append returned
     let (rows, total, _, _) = read_chat_log(&key, 10, None);
     watchdog.step(4); // read returned
@@ -450,11 +472,7 @@ fn test_clear_chat_log_truncates_both_files() {
     let key2 = uniq_key("clearblocked");
     let lp = log_path(&key2);
     std::fs::create_dir_all(&lp).unwrap();
-    let _ser = DEGRADED_REPORT_SER
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     clear_chat_log(&key2).expect_err("dir squatter = 诚实 Err（BUG-20261030-205）"); // warn + report(chat_log) + Err
-    drop(_ser);
     std::fs::remove_dir(&lp).unwrap();
 }
 
@@ -1062,12 +1080,25 @@ fn flattened_name_matches_new_sanitized_mapping() {
     );
 }
 
-/// BUG-20261030-205 回归锁：fork 复制（write_chat_log_rows）open 失败
-/// 不再无痕——返回 0 + M2 降级登记表有条目（健康面可见）。目录占位点
-/// 位 = 跨平台确定性 open 失败注入（Windows open 目录失败；Unix
-/// O_WRONLY|O_APPEND 对目录 EISDIR）。
+/// BUG-20261030-205 regression lock (contract updated 2026-11-06 after
+/// BUG-20261106-003 exclusive-create rework): with create_new, a pre-existing
+/// path lands on the **AlreadyExists benign-loser arm** — silent 0 rows by
+/// design (losing a concurrent fork race is expected; reporting it would
+/// flood the health surface). Injection = FILE squat (deterministic
+/// AlreadyExists both platforms); a DIR squat does NOT transfer: Windows
+/// create_new on a directory = ACCESS_DENIED(5) → PermissionDenied → generic
+/// reported arm (2026-11-06 local evidence), Unix = EEXIST → silent. Real IO
+/// failures still warn + degraded-report via the generic arm (mirrors
+/// write_chat_entry's reporting).
+/// Pins three things: (1) squat -> tolerant wrapper returns 0; (2) loser is
+/// SILENT — registry must NOT contain this test's unique tag (unique key, no
+/// parallel ambiguity; failure message prints current entries for direct
+/// evidence); (3) the key-targeted hook (arm_test_fail_open, the official
+/// injection mechanism post-003) is consumed once -> 0, then a fresh write
+/// succeeds. Fork rollback atomicity is pinned separately by session_fork's
+/// test_fork_jsonl_write_failure_fails_loudly_and_atomic.
 #[test]
-fn test_write_chat_log_rows_open_failure_reports_degraded() {
+fn test_write_chat_log_rows_squat_silent_loser_and_hook() {
     // 并行唯一性不能只靠时钟（Windows tick ~15.6ms）：追加进程内原子序号。
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let tag = format!(
@@ -1083,28 +1114,41 @@ fn test_write_chat_log_rows_open_failure_reports_degraded() {
     if let Some(parent) = lp.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
-    std::fs::create_dir_all(&lp).unwrap();
+    // 文件占位（非目录）：create_new 对「已存在路径」两平台同判
+    // AlreadyExists（Windows ERROR_FILE_EXISTS / Unix EEXIST）→ 静默败北臂。
+    std::fs::write(&lp, b"").unwrap();
 
     let rows = vec![serde_json::json!({
         "role": "user",
         "content": "x",
         "timestamp": "2026-10-30T00:00:00+08:00"
     })];
-    // 报告窗口互斥（见文件顶 DEGRADED_REPORT_SER 注）：write 的 open 失败
-    // 登记与 snapshot 断言之间不许他方 chat_log 报告插入覆盖 tag。
-    let _ser = DEGRADED_REPORT_SER
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    assert_eq!(write_chat_log_rows(&key, &rows), 0, "open 失败 = 0 行");
-    // 降级登记表有痕（详情带本测试独有 tag 路径段，避开并行测试噪声）。
+    // ① 占位（排他创建下 = AlreadyExists 败北）→ 宽容包装 0 行。
+    assert_eq!(write_chat_log_rows(&key, &rows), 0, "败北 = 0 行");
+    // ② 败北静默：注册表不得出现本测试独有 tag（独有 key 路径段，无并行
+    // 歧义）；若静默契约被破坏（误报降级），tag 立即现身被抓住，失败消息
+    // 附当前条目直读现场。
+    let chat: Vec<String> = nemesis_utils::degraded::snapshot()
+        .iter()
+        .filter(|d| d.kind == "chat_log")
+        .map(|d| d.detail.clone())
+        .collect();
     assert!(
-        nemesis_utils::degraded::snapshot()
-            .iter()
-            .any(|d| d.kind == "chat_log" && d.detail.contains(&tag)),
-        "fork copy open 失败必须进降级登记表"
+        !chat.iter().any(|d| d.contains(&tag)),
+        "AlreadyExists 败北臂必须静默，不得报降级（当前 chat_log 条目：{chat:?}）"
     );
-    drop(_ser);
-    std::fs::remove_dir(&lp).unwrap();
+    std::fs::remove_file(&lp).unwrap();
+
+    // ③ 官方注入钩子：消费一次 → 0；摘除后再写即成功（真实文件创建）。
+    let key2 = format!("test:forkcopy-hook:{tag}");
+    arm_test_fail_open(&key2);
+    assert_eq!(write_chat_log_rows(&key2, &rows), 0, "注入钩子 = 0 行");
+    assert_eq!(
+        write_chat_log_rows(&key2, &rows),
+        1,
+        "钩子消费一次即摘除，再写应成功"
+    );
+    delete_chat_log(&key2);
 }
 
 // ---------------------------------------------------------------------------

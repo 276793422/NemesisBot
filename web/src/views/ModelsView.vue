@@ -114,7 +114,7 @@ async function testModel(name: string, quiet = false) {
   }
 }
 
-/** ⑤ 一键测试全部：并发 3 的 worker 池（已拍板，防中继限流），完成即染点；可中途取消。 */
+/** ⑤ 一键测试全部：并发 3 的 worker 池（已决策，防中继限流），完成即染点；可中途取消。 */
 const testProgress = ref<{ done: number; total: number } | null>(null)
 const testAllRunning = ref(false)
 let testAllCancel = false

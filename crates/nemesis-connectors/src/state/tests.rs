@@ -1,4 +1,4 @@
-// B2（2026-10-19 独占接管）+ A3-a（治理补全 P2 启停移 sidecar）测试。
+// （独占接管）+ -a（治理补全 启停移 sidecar）测试。
 //
 // 覆盖面：三态写读往返；exempt 优先于 blocked（同名双录 = 豁免胜）；
 // default = 从两表移除；三字段全空删文件不留空壳（enabled 有值必须
@@ -166,7 +166,7 @@ fn tool_policy_cleanup_preserves_enabled_bit() {
     assert_eq!(tool_policy(&state, "mcp_s__t9"), ToolPolicy::Blocked);
 }
 
-/// 撤销防重标记（边界补强 2026-10-20）：mark → is roundtrip；无标记 =
+/// 撤销防重标记（边界补强）：mark → is roundtrip；无标记 =
 /// false；形态异常的凭条 id 不落盘也不误报。
 #[test]
 fn undone_marker_roundtrip_and_shape_guard() {
@@ -183,7 +183,7 @@ fn undone_marker_roundtrip_and_shape_guard() {
     assert_eq!(v["undo_receipt_id"], "RCPT-1-0002");
     assert!(v["marked_at_ms"].is_i64());
 
-    // 形态异常（路径分隔符 / .. / 超长 / 空串）：不落盘、不误报、不 panic。
+    // 形态异常（路径分隔符 /.. / 超长 / 空串）：不落盘、不误报、不 panic。
     for bad in ["../escape", "a/b", "..", ".", "", &"x".repeat(129)] {
         mark_undone(ws, bad, None);
         assert!(!is_undone(ws, bad), "异常形态不落盘: {bad:?}");

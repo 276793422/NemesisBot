@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): workflow_chat history
+//! (quality-hardening goal 冲刺, web): workflow_chat history
 //! arms + send unknown-index arm not reached by `workflow_chat_extra_tests`
 //! (which covers the invalid-data / no-engine / human-review cases):
 //!
@@ -62,6 +62,7 @@ fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

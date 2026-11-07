@@ -1,4 +1,4 @@
-//! `sid.rs`（DACL 定向档 D1）单测。
+//! `sid.rs`（DACL 定向档）单测。
 //!
 //! 全平台跑纯函数面；Windows 专属的 canonicalize 大小写收敛与
 //! `ConvertStringSidToSidW` 解析往返逐个挂 `#[cfg(windows)]`（仓库 Windows
@@ -53,7 +53,7 @@ fn trailing_slash_converges() {
 }
 
 /// normalize_canonical 纯函数：verbatim 前缀剥离 + lowercase 的字节级约定
-/// （D1 派生规则的 hash 输入形态）。
+/// （派生规则的 hash 输入形态）。
 #[test]
 fn normalize_strips_verbatim_and_lowercases() {
     assert_eq!(
@@ -92,7 +92,7 @@ fn digest_be32_byte_order() {
 // ---------------------------------------------------------------------------
 
 /// Windows 大小写不敏感：`C:\WS` 与 `c:\ws` canonicalize 后收敛 → 同一 SID
-/// （设计文档 §3.1「lowercase 必须」的实证钉）。
+/// （设计文档 「lowercase 必须」的实证钉）。
 #[cfg(windows)]
 #[test]
 fn case_insensitive_paths_converge_on_windows() {
@@ -127,8 +127,8 @@ fn canonicalize_produces_verbatim_and_derive_handles_it() {
     assert_eq!(a, b, "verbatim 与普通形态输入应派生同一 SID");
 }
 
-/// 解析往返：派生出的 SID 字符串必须被 `ConvertStringSidToSidW` 接受（D2
-/// 打 ACE / D3 组 restricting SIDs 都走这一步），且结构为 revision=1、
+/// 解析往返：派生出的 SID 字符串必须被 `ConvertStringSidToSidW` 接受（
+/// 打 ACE / 组 restricting SIDs 都走这一步），且结构为 revision=1、
 /// identifier authority=5、4 个 subauthority、首节 = 21（`S-1-5-21` 形态）。
 #[cfg(windows)]
 #[test]
@@ -151,7 +151,7 @@ fn derived_sid_parses_via_convert_string_sid_to_sidw() {
                 GetLastError()
             );
         }
-        // 结构断言（ LocalFree 前完成）。
+        // 结构断言（LocalFree 前完成）。
         let count = *GetSidSubAuthorityCount(sid) as usize;
         assert_eq!(count, 4, "S-1-5-21-a-b-c 应有 4 个 subauthority: {sid_str}");
         assert_eq!(

@@ -781,7 +781,7 @@ async fn test_sleep_with_cancel_sleep_completes_fast() {
 // or connection errors, with linear backoff (1s, 2s between tries).
 // These tests stand up a real MockServer and exercise the function
 // end-to-end against the reqwest client.
-// 本段随 do_request_with_retry_reqwest 挂 http feature 门控（BUG 2026-10-30）：
+// 本段随 do_request_with_retry_reqwest 挂 http feature 门控：
 // 无 feature 时整段 cfg 掉（reqwest 走 dev-deps 仍可编译，函数本身缺席）。
 // ============================================================
 

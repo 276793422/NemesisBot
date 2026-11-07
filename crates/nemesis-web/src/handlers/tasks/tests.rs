@@ -1,4 +1,4 @@
-//! Tests for the tasks handler — P1-2 (2026-08-24 UI entry gap) three-state
+//! Tests for the tasks handler — (2026-08-24 UI entry gap) three-state
 //! `max_rounds` parsing. Declared from `tasks.rs` so the private
 //! `parse_max_rounds_patch` is reachable without constructing an AppState
 //! (same pattern as `models/tests.rs`). The service-level three-state patch
@@ -89,7 +89,7 @@ fn max_rounds_flatten_gives_add_semantics() {
 }
 
 // ============================================================
-// Phase 3 覆盖率补测（2026-08-25）：cron.toggle / cron.run /
+// 覆盖率补测：cron.toggle / cron.run /
 // cron.preview / cron.update 的 schedule 校验臂 / job_to_view 的
 // 空 expr 臂。全部经真实 CronService（store 落 tempdir）走
 // handle_cmd，钉 WSAPI 契约。
@@ -145,6 +145,7 @@ async fn make_ctx_with_cron(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -215,7 +216,7 @@ async fn cron_run_executes_without_handler_and_reports_not_found() {
     let id = add_job(&ctx, "runner").await;
 
     // 无 on_job handler（gateway 未装配）→ execute_job_detached 记 "executed"
-    // 后 Ok。BUG-20261105-033：run 立即返回（执行在独立线程），list 断言
+    // 后 Ok。：run 立即返回（执行在独立线程），list 断言
     // 需轮询等线程收口（旧同步形态返回即已落定，直读会竞态假红）。
     let out = h
         .handle_cmd("cron.run", Some(serde_json::json!({ "id": id })), &ctx)
@@ -331,7 +332,7 @@ async fn cron_list_view_of_exprless_job_has_empty_description() {
 
     // 直接经 service 塞一个无 expr 的 job（kind="at"）——cron.add 路径
     // 永远带 expr，空 expr 视图臂只有这种历史/服务侧数据能触发。
-    // （BUG-20261024-11 后创建漏斗拒绝死排程，at 必须保持未来时刻。）
+    // （后创建漏斗拒绝死排程，at 必须保持未来时刻。）
     let svc = ctx.state.cron.as_ref().unwrap();
     svc.lock()
         .unwrap()
@@ -367,7 +368,7 @@ async fn cron_list_view_of_exprless_job_has_empty_description() {
 }
 
 // ============================================================
-// 保留命名空间用户面变更闸（BUG-20261101-293）：board-ap:/memory-dreaming:
+// 保留命名空间用户面变更闸：board-ap:/memory-dreaming:
 // 系统作业的挂载真相源在 autopilot 规则与 memory.dreaming 配置，gateway
 // 运行中经任务页 delete/toggle/update 会静默破坏挂载（下次启动同步才自愈，
 // 期间规则侧「已挂载」状态说谎）。内部作业经 add_job_internal 注入

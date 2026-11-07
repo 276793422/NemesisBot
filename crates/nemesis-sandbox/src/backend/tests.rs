@@ -153,8 +153,8 @@ fn trait_default_methods_reject_unsupported_forms() {
     assert!(err.contains("dummy"), "err names backend: {err}");
 }
 
-/// Windows 设计契约：不注册任何用户态后端（Sandboxie 承担，U11「Windows 不动」）。
-/// P1 后 detect_backend 带 allow_network 入参；Windows 两态都 None（选型决策
+/// Windows 设计契约：不注册任何用户态后端（Sandboxie 承担，「Windows 不动」）。
+/// 后 detect_backend 带 allow_network 入参；Windows 两态都 None（选型决策
 /// 表的全平台断言在 selection_tests.rs）。
 #[cfg(target_os = "windows")]
 #[test]
@@ -164,7 +164,7 @@ fn detect_backend_none_on_windows() {
 }
 
 // ---------------------------------------------------------------------------
-// P5：read_executor_strict / probe_userland_backends
+// read_executor_strict / probe_userland_backends
 // ---------------------------------------------------------------------------
 
 fn write_home_config(dir: &std::path::Path, body: &str) {
@@ -190,7 +190,7 @@ fn read_executor_strict_defaults_false_and_reads_true() {
     assert!(!read_executor_strict(dir.path()));
 }
 
-/// 逐后端探测：P24 起 Windows 列 acl 档（feature 裁掉时如实 Unavailable，
+/// 逐后端探测： 起 Windows 列 acl 档（feature 裁掉时如实 Unavailable，
 /// 条目仍在）；Linux/macOS 至少列出本平台后端且名字唯一。结构断言不依赖
 /// 机器能力（缺 bwrap 的内核也合法返回 Unavailable）。
 #[test]
@@ -220,7 +220,7 @@ fn probe_userland_backends_shape_per_platform() {
 }
 
 // ---------------------------------------------------------------------------
-// P24：read_executor_backend（executor.backend 原始 JSON 读取器）
+// read_executor_backend（executor.backend 原始 JSON 读取器）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -310,7 +310,7 @@ mod linux_live {
         }
     }
 
-    /// B7 核心验收：landlock 装上后写工作区外拒 / 写内放行。
+    /// 核心验收：landlock 装上后写工作区外拒 / 写内放行。
     ///
     /// landlock 自装不可逆且只约束**本进程树**，不能在测试进程里直接装
     /// （会污染同进程的其他测试）——用 self-exec 子进程模式：spawn 自身
@@ -334,7 +334,7 @@ mod linux_live {
         let output = run_with_timeout(
             Command::new(&exe)
                 // 子串过滤（不带 --exact：libtest 的 --exact 要求完整路径
-                // `backend::tests::linux_live::landlock_child_apply`，短名会
+                // `backend::tests:linux_live::landlock_child_apply`，短名会
                 // 滤成 0 个测试）。该子串在本二进制内唯一。
                 .args(["landlock_child_apply", "--nocapture", "--test-threads=1"])
                 .env("NEMESIS_TEST_LL_INSIDE", &inside)
@@ -424,7 +424,7 @@ mod linux_live {
     /// bwrap 真·能力探针：`availability()` 只查二进制在不在；Ubuntu 24.04
     /// 的 AppArmor 无特权 userns 限制（apparmor_restrict_unprivileged_userns）
     /// 会让 bwrap 起 --unshare-net 沙盒时死在 loopback 配置（`Failed
-    /// RTM_NEWADDR: Operation not permitted`，2026-09-02 CI runner 实录）——
+    /// RTM_NEWADDR: Operation not permitted`， CI runner）——
     /// 二进制在但沙盒起不来。跑 bwrap 真沙盒测试前先起一个最小沙盒确认
     /// 能力，起不来就 SKIP（无限制宿主=真机环境照常真跑）。
     fn bwrap_sandbox_capable(backend: &crate::backend::bwrap_impl::BwrapBackend) -> bool {
@@ -508,7 +508,7 @@ mod linux_live {
         }
         // 能力探针必须挡在本测试之前：bwrap 起不来时沙盒命令整体失败，
         // 本测试的负断言（probe 不成功）会被启动失败【假满足】——无限制
-        // 宿主上才是真测，起不来的宿主上诚实 SKIP（2026-09-02 CI 实录）。
+        // 宿主上才是真测，起不来的宿主上诚实 SKIP（CI）。
         if !bwrap_sandbox_capable(&backend) {
             eprintln!(
                 "SKIP: bwrap sandbox cannot start on this host (Ubuntu 24.04 \

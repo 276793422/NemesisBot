@@ -144,8 +144,8 @@ fn is_discipline_path_matches_component_anywhere() {
 }
 
 /// Windows 形态路径（反斜杠分隔符）。Linux 上反斜杠是文件名普通字符，
-/// 不匹配才是正确平台行为——按 2026-09-02 标记约定挂 #[cfg(windows)]
-/// （Linux 编译期消失，nightly 不红；2026-09-24 run 35982550210 实证）。
+/// 不匹配才是正确平台行为——按 标记约定挂 #[cfg(windows)]
+/// （Linux 编译期消失，nightly 不红； run 35982550210 实证）。
 #[cfg(windows)]
 #[test]
 fn is_discipline_path_matches_windows_backslash_form() {
@@ -270,8 +270,71 @@ async fn falsification_fail_budget_exhaustion_escalates() {
         let rec = falsification_record(&ws, run);
         assert_eq!(rec["passed"], false, "run={run}");
     }
-    // 预算耗尽（D4）：停车升级不静默——Stop（warn 已发，产物留盘供评审注记）。
+    // 预算耗尽：停车升级不静默——Stop（warn 已发，产物留盘供评审注记）。
     assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
+}
+
+/// BUG-20261106-042 回归：证伪命令触发安全规则层（rm -rf 命中命令守卫）→
+/// Continue 反馈 ⛔ SECURITY BLOCKED、**命令未执行**（tripwire 文件不存在）、
+/// 记录仍落盘（passed=false，审计 trail 完整）。
+/// multi_thread flavor 同型防御：放行臂进扫描层必经 block_in_place（仅
+/// multi-thread runtime 合法），本测试现走 deny 短路幸免——扫描顺序一变
+/// 即同病，两臂一起挂 flavor 前移防线。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn falsification_security_blocked_never_executes() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    let ws = tempdir();
+    // 触发命令守卫的内容（rm -rf 命中 rm_rf 规则）+ 若真执行会先留下
+    // tripwire 的前半段（echo 重定向）——拦截失效时此文件必出现。
+    write_declaration(&ws, "echo pwned> discipline_tripwire.txt & rm -rf /");
+    let mut scfg = SecurityPluginConfig::default();
+    // default_action 改 allow：隔离出命令守卫行为（default deny + 零规则
+    // 会让一切分类操作被 ABAC 默认动作拦——那是 tool_adapter 测试的臂）。
+    scfg.default_action = "allow".to_string();
+    let plugin = Arc::new(SecurityPlugin::new(scfg));
+    let f = DisciplineFalsificationHook::new_with_security(state(&ws), Some(plugin));
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("SECURITY BLOCKED"), "feedback={feedback}");
+            assert!(feedback.contains("命令未执行"), "feedback={feedback}");
+        }
+        other => panic!("expected continue, got {other:?}"),
+    }
+    assert!(
+        !ws.join("discipline_tripwire.txt").exists(),
+        "被拦命令不得执行（tripwire 文件不得存在）"
+    );
+    // 记录仍落盘（拦截也进审计 trail）：passed=false。
+    assert_eq!(falsification_record(&ws, 1)["passed"], false);
+}
+
+/// BUG-20261106-042 回归：良性证伪命令在规则层放行后照常执行——通过路径
+/// 不受新闸影响（放行不误伤）。
+/// multi_thread flavor（本测试即修复本体）：放行臂进扫描层走 block_in_place
+/// （pipeline.rs，仅 multi-thread runtime 合法），#[tokio::test] 默认
+/// current_thread 必 panic「can call blocking only when running on the
+/// multi-threaded runtime」——2026-11-07 coverage 42261243237 首战实录
+/// （0fb7271c 新测试，3567 过 1 失败，CI 唯一红点）。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn falsification_security_allows_benign_passthrough() {
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    let ws = tempdir();
+    write_declaration(&ws, pass_cmd());
+    let mut scfg = SecurityPluginConfig::default();
+    scfg.default_action = "allow".to_string();
+    let plugin = Arc::new(SecurityPlugin::new(scfg));
+    let f = DisciplineFalsificationHook::new_with_security(state(&ws), Some(plugin));
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪通过"), "feedback={feedback}");
+        }
+        other => panic!("expected continue, got {other:?}"),
+    }
+    assert_eq!(falsification_record(&ws, 1)["passed"], true);
 }
 
 /// 复核修复回归：**超时也是失败形态**——ExecTool 超时收尸返回
@@ -282,9 +345,9 @@ fn exec_output_passed_treats_timeout_and_nonzero_as_failure() {
     // 成功形态：裸 stdout / 无输出。
     assert!(exec_output_passed("(no output)"));
     assert!(exec_output_passed("test result: ok. 1 passed"));
-    // 失败形态①：非零退出（B2 格式）。
+    // 失败形态①：非零退出（格式）。
     assert!(!exec_output_passed("Exit code: 2\nstdout: \nstderr: "));
-    // 失败形态②：超时收尸（B2 格式）——本回归的修复点。
+    // 失败形态②：超时收尸（格式）——本回归的修复点。
     assert!(!exec_output_passed(
         "Command timed out after 120 seconds. Partial output:\n(none)"
     ));
@@ -336,7 +399,7 @@ async fn falsification_noop_without_participation_or_declaration() {
     );
 }
 
-/// 复核修复回归：重新参与即证伪进度归零——同会话第二轮纪律任务不被
+/// 复核修复回归：重新参与即证伪进度归零——同会话纪律任务不被
 /// 上轮 `last_passed` 残留静默跳过（marker prompt = 新任务起点）。
 #[tokio::test]
 async fn marker_reentry_resets_progress_so_next_task_falsifies_again() {
@@ -349,7 +412,7 @@ async fn marker_reentry_resets_progress_so_next_task_falsifies_again() {
         chat_id: "1".to_string(),
         prompt: text.to_string(),
     };
-    // 第一轮：marker 参与 → 通过 → 下轮安静放行（last_passed）。
+    // marker 参与 → 通过 → 下轮安静放行（last_passed）。
     write_declaration(&ws, pass_cmd());
     f.on_user_prompt(&marker_prompt("[discipline:bugfix] fix a"))
         .await;
@@ -360,7 +423,7 @@ async fn marker_reentry_resets_progress_so_next_task_falsifies_again() {
         other => panic!("round 1: expected continue, got {other:?}"),
     }
     assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
-    // 第二轮：新 marker prompt（新任务）→ 进度归零 → 证伪重跑且重新从
+    // 新 marker prompt（新任务）→ 进度归零 → 证伪重跑且重新从
     // run 1 计（falsification-1.json 被覆写），修复前此处被 last_passed
     // 残留静默放行。
     f.on_user_prompt(&marker_prompt("[discipline:bugfix] fix b"))

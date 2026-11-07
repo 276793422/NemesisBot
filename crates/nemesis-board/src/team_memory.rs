@@ -1,17 +1,17 @@
-//! Swarm M4.5 §6.5：团队经验检索与渲染纯逻辑层。
+//! Swarm.5：团队经验检索与渲染纯逻辑层。
 //!
 //! 职责边界：本模块**不含任何 IO 与 LLM 调用**——从 [`crate::BoardStore`]
 //! 拿到的条目列表如何按任务文本/标签匹配、如何渲染成派发提示词段落或
 //! planner 注入字符串，都是纯函数（单测零依赖）；查库时机、`use_count`
 //! 计数与注入调用在装配层（board handler / board_review）完成。
 //!
-//! MVP 检索语义（impl-plan §6.5.2，D8 裁决不上向量）：scope 关键词与
+//! MVP 检索语义（impl-plan， 裁决不上向量）：scope 关键词与
 //! 任务文本做大小写不敏感子串匹配，或与 required_tags 精确匹配；排除
 //! deprecated 条目；按 use_count 降序取 top-N。
 
 use crate::models::{TeamMemoryEntry, team_memory_category};
 
-/// 派发/planner 注入的最大条数（§6.5.2：top-5，防提示词膨胀）。
+/// 派发/planner 注入的最大条数（top-5，防提示词膨胀）。
 pub const MAX_MATCHED_EXPERIENCES: usize = 5;
 
 /// 从条目列表里匹配出与本任务相关的经验（注入端唯一入口）。
@@ -45,7 +45,7 @@ pub fn match_experiences<'a>(
     hits
 }
 
-/// 渲染派发提示词的经验注入段（§6.5.2「# 团队过往经验」）。
+/// 渲染派发提示词的经验注入段（「# 团队过往经验」）。
 ///
 /// 空匹配返回 `None`——调用方不往 worker 提示词里塞空段（保持与无经验
 /// 时的提示词字节一致，prompt cache 友好）。

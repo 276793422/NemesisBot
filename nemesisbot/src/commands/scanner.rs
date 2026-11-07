@@ -128,7 +128,7 @@ fn save_scanner_config(path: &std::path::Path, cfg: &ScannerFullConfig) -> Resul
         std::fs::create_dir_all(parent)?;
     }
     let data = serde_json::to_string_pretty(cfg)?;
-    // REL-002：统一原子写入（config.scanner.json）。
+    // 统一原子写入（config.scanner.json）。
     nemesis_utils::write_file_atomic(&path.to_string_lossy(), data.as_bytes(), 0o600)
         .map_err(anyhow::Error::msg)?;
     Ok(())
@@ -687,14 +687,14 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
 /// Download an engine from a URL and extract it.
 /// Returns the path to the directory containing the extracted files.
 ///
-/// (BUG #27, quality-hardening goal 冲刺 S11) 这里必须用【异步】reqwest
+/// (, quality-hardening goal 冲刺) 这里必须用【异步】reqwest
 /// Client：本函数唯一调用方 cmd_clamav_install_inner 是 async fn，在
-/// run_command 的 tokio runtime 上下文里执行。reqwest::blocking::Client
+/// run_command 的 tokio runtime 上下文里执行。reqwest::blocking:Client
 /// 内部持有一个嵌套 runtime，其 drop 会走 tokio blocking-pool shutdown 的
 /// wait() → try_enter_blocking_region() 在 Entered 上下文返回 None →
 /// panic "Cannot drop a runtime in a context where blocking is not allowed"
 /// （已在同拓扑探针测试中实证：multi_thread rt + block_on + blocking client
-/// drop → 必 panic）。旧实现 `scanner clamav install --url ...` 会在下载
+/// drop → 必 panic）。旧实现 `scanner clamav install --url...` 会在下载
 /// 完成后崩溃。改成异步 client 后无嵌套 runtime，drop 安全。
 async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<String> {
     let file_name = url.split('/').next_back().unwrap_or("engine.zip");
@@ -752,7 +752,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
                         target_dir.display()
                     );
                     // PS 5.1 对坏 zip 的 quirk：异常进 error 流但进程 rc=0
-                    // （2026-09-02 前手工实证；vs2026 CI 镜像起已改非零退出）
+                    // （前手工实证；vs2026 CI 镜像起已改非零退出）
                     // → 退出码不可信，以「目标目录真被解压出内容」为成功判据
                     //（归档本身也落在 target_dir 里，必须排除）：
                     // 静默失败时保留归档走失败分支（用户才有手工解压的退路），
@@ -1122,7 +1122,7 @@ async fn cmd_clamav_install_inner(
     Ok(())
 }
 
-/// Update ClamAV virus database using freshclam (real implementation, fixes P0 BUG).
+/// Update ClamAV virus database using freshclam (real implementation, fixes BUG).
 async fn cmd_clamav_update(security_cfg: &std::path::Path) -> Result<()> {
     let cfg = load_scanner_config(security_cfg)?;
 

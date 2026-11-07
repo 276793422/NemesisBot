@@ -1,4 +1,4 @@
-// L10-量测（改进项三期 2026-11-02）：tool defs 字节量测埋点测试。
+// 量测：tool defs 字节量测埋点测试。
 //
 // 覆盖面：
 // ① 单一真相源一致性——`tool_defs_metrics` 的 tools 计数与 bytes 都从
@@ -7,7 +7,7 @@
 // ② 闸联动——`agents.hidden_tools` 隐藏工具后 metrics 同步收缩（量测走
 //    全闸链，不是独立旁路——隐藏后 bytes 严格缩小）；
 // ③ 口径钉子——bytes 恒等于 openai ToolDefinition 形态 JSON 字节
-//    （L10-建设惰性 schema 前后对比基线的口径稳定性回归锁）。
+//    （建设惰性 schema 前后对比基线的口径稳定性回归锁）。
 //
 // 自带迷你 Mock（兄弟模块私有类型不共享，同 b4_b2_gate_tests 形状）。
 
@@ -64,7 +64,7 @@ fn metrics_loop() -> AgentLoop {
 }
 
 /// ① 空注册面 = 0 工具、字节为空 JSON 数组 2 字节；注册后计数与字节同步
-/// 增长，且 bytes 严格等于 build_tool_defs 序列化字节（单一真相源）。
+/// 增长，且 bytes 严格等于 build_tool_defs 序列化字节。
 #[test]
 fn tool_defs_metrics_tracks_registry_and_serialization() {
     let mut agent_loop = metrics_loop();
@@ -121,7 +121,7 @@ fn tool_defs_metrics_reflects_hidden_tools_gate() {
     );
 }
 
-/// ④ L10-建设：惰性 schema 供给联动量测——同注册面同档位（normal，带
+/// ④ -建设：惰性 schema 供给联动量测——同注册面同档位（normal，带
 /// config 前后翻 `agents.lazy_tool_schema`），lazy on 字节严格小于 lazy
 /// off（参数折叠生效）；lazy off 时量测与既有基线口径零变化（回归锁）。
 /// 量测走全闸链（tier 白名单 + 折叠都在 build_tool_defs 内），数字随

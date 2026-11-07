@@ -70,7 +70,7 @@ fn detect_openclaw_home(override_path: &Option<String>) -> Option<PathBuf> {
     None
 }
 
-/// Backup a file by copying to .bak
+/// Backup a file by copying to.bak
 fn backup_file(path: &Path) -> Result<()> {
     if path.exists() {
         let bak = path.with_extension(
@@ -85,7 +85,7 @@ fn backup_file(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// persona 三件套源定位（BUG-20261028-103）。
+/// persona 三件套源定位。
 ///
 /// OpenClaw 的真实布局把人格文件写在 **workspace 根**（上游 agent-create.ts
 /// 用 `workspaceRoot.write(DEFAULT_IDENTITY_FILENAME)`）；旧实现读 home 根，
@@ -102,12 +102,12 @@ fn resolve_persona_src(openclaw_home: &Path, name: &str) -> Option<PathBuf> {
 
 /// Write the converted config to `cfg_path`.
 ///
-/// BUG-20261025-66：既有 config 不再被整体覆盖——先读现有配置，经
+/// 既有 config 不再被整体覆盖——先读现有配置，经
 /// `nemesis_migrate::merge_config` 按「现有优先」合并（模型按 model_name
 /// 去重保留现有、已启用通道不动、禁用通道由迁移值回填），再落盘合并
 /// 结果。旧形态把转换结果直接写盘，用户迁移前配好的模型/密钥/通道全部
-/// 丢失（只剩 .bak 可手工捞回）——「Try merge」注释是空 stub。
-/// BUG-20261025-67：落盘统一走 `write_file_atomic`（唯一临时名 + rename），
+/// 丢失（只剩.bak 可手工捞回）——「Try merge」注释是空 stub。
+/// 落盘统一走 `write_file_atomic`（唯一临时名 + rename），
 /// 半路崩溃不再留半截 config.json。
 /// 返回 `Ok(true)` = 与既有配置合并过；`Ok(false)` = 全新写入（或既有文件
 /// 不是合法 JSON，警告后由迁移值覆盖，.bak 已兜底）。
@@ -121,7 +121,7 @@ fn write_migrated_config(cfg_path: &Path, incoming: &serde_json::Value) -> Resul
             })?;
         match serde_json::from_str::<serde_json::Value>(&existing_content) {
             Ok(mut existing) => {
-                // BUG-20261025-69：merge_config 契约是「只并入既有结构，不补建
+                // merge_config 契约是「只并入既有结构，不补建
                 // 缺失键」（crate 覆盖测试钉死）。最小化既有配置（无 model_list
                 // 键/键为 null）会让全部迁移模型静默丢失——迁移承诺是「模型跟着
                 // 迁移走」，这层是调用方策略：合并前把 incoming 的模型预填进
@@ -201,7 +201,7 @@ fn confirm(prompt: &str) -> bool {
 
 /// Check if stdin is not a terminal (non-interactive mode).
 ///
-/// BUG-20261025-68：旧实现用 `PROMPT`/`TERM` 环境变量猜测 tty——PowerShell
+/// 旧实现用 `PROMPT`/`TERM` 环境变量猜测 tty——PowerShell
 /// 交互态两个变量都没有（PROMPT 是 CMD 的环境变量/PS 里是函数，TERM 通常
 /// 不设），恒判「非交互」→ confirm 自动拒，交互用户被迫 --force；而管道
 /// 运行若继承了父 shell 的 TERM 又被误判「交互」。改用 std 的 stdin 真探测。
@@ -245,7 +245,7 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
 
     let mut config = serde_json::json!({
         "version": "1.0",
-        // BUG-20261101-291：默认模型写 agents.defaults.llm（装配唯一真相源，
+        // 默认模型写 agents.defaults.llm（装配唯一依据，
         // 与 crate 主路径 convert_config 同源）——旧版写顶层 default_model
         // 死键，装配层（get_effective_llm）不读，迁移后模型配置断裂。
         "agents": {"defaults": {"llm": "zhipu/glm-4.7-flash"}},
@@ -302,7 +302,7 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                     .trim_matches('"')
                     .trim_matches('\'');
                 if !model_name.is_empty() {
-                    // BUG-20261103-340：条目字段对齐 ModelConfig schema——旧
+                    // 条目字段对齐 ModelConfig schema——旧
                     // "key" 是 schema 外死键（权威字段 api_key，serde default
                     // 缺省即空），死键只污染用户 config 的 extra 面。
                     model_list.push(serde_json::json!({ "model": model_name }));
@@ -363,7 +363,7 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
     let workspace_src = openclaw_home.join("workspace");
     let prompts_src = openclaw_home.join("prompts");
     let skills_src = openclaw_home.join("skills");
-    // BUG-20261028-103：persona 三件套源定位（workspace 根优先/home 根回落）；
+    // persona 三件套源定位（workspace 根优先/home 根回落）；
     // 落点同样改 workspace 根——bot 读人格的唯一根是 workspace 根
     // （context.rs load_bootstrap_files → read_workspace_file =
     // workspace.join(filename)；persona activate 同根），旧落点 nemesis_home
@@ -377,7 +377,7 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
     .filter_map(|(label, name)| resolve_persona_src(&openclaw_home, name).map(|src| (*label, src)))
     .collect();
 
-    // BUG-20261103-340：门清单与 fallback 消费清单同源——convert_config_fallback
+    // 门清单与 fallback 消费清单同源——convert_config_fallback
     // 消费 config.yaml/config.yml/openclaw.yaml/openclaw.yml + models.yaml，
     // 旧门清单漏 openclaw.yml 与 models.yaml，纯该形态安装的配置被静默跳过
     // （[Config] 不进计划、fallback 对应分支永远走不到）。
@@ -558,9 +558,9 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
         }
 
         // Individual files (IDENTITY.md, SOUL.md, USER.md)——落 workspace 根
-        // （BUG-20261028-103）。备份后覆盖（对齐 config 臂纪律）：迁移本意
+        // 。备份后覆盖（对齐 config 臂纪律）：迁移本意
         // 就是用真实人格替换 onboard 模板占位，无 refresh 闸不是遗漏而是
-        // 刻意——加闸会让重跑迁移永远保留占位模板；旧值由 .bak 兜底。
+        // 刻意——加闸会让重跑迁移永远保留占位模板；旧值由.bak 兜底。
         for (_label, src) in &persona_sources {
             let dst = ws_dst.join(src.file_name().unwrap());
             backup_file(&dst)?;

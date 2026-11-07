@@ -1,6 +1,6 @@
-//! L9 版本自切换通道工具面：`selfupdate_check` / `selfupdate_apply`。
+//! 版本自切换通道工具面：`selfupdate_check` / `selfupdate_apply`。
 //!
-//! 职责（设计文档 docs/INFO/2026-10-12_LLM自更新通道设计方案.md §四 工具面；
+//! 职责（设计文档 LLM自更新通道设计方案 §四 工具面；
 //! 2026-10-21 两段式改版——审批卡退役）：
 //! - `selfupdate_check`：只读查询最新 Release vs 本进程 commit 身份——LLM 可
 //!   自主调用（NetworkRequest 档，与 web_fetch 同源管线，默认无审批摩擦）；
@@ -13,15 +13,15 @@
 //! - check 声明 `NetworkRequest`、apply 声明 `SystemInstall`（诚实分类——
 //!   装/切二进制 + 受控重启网关；不声明会走未知名 fail-closed，行为等价但
 //!   每调一次 warn 一次，显式声明去噪 + 分类明示，codemode 同款理由）；
-//! - apply 经 manager 槽（`handlers::selfupdate::manager()`，gateway 装配点
+//! - apply 经 manager 槽（`handlers::selfupdate:manager()`，gateway 装配点
 //!   注入）——None = 未装配诚实报错；estop/journal/验签全在编排内
-//!   重跑，工具层不复制判据（单一真相源）；
-//! - 主 loop 独占：项目 loop（L6++）不该重启整个 gateway 杀掉兄弟项目；
+//!   重跑，工具层不复制判据；
+//! - 主 loop 独占：项目 loop不该重启整个 gateway 杀掉兄弟项目；
 //!   集群 B 端 worker 是任务执行器，不参与版本治理。
 //!
 //! 注册面：`agent_factory.rs::build_agent_loop`（主 loop 专属，codemode 块
 //! 同位）；编译闸 = `selfupdate` feature。tier 供给面走白名单天然闸
-//! （mini/normal 白名单不含本工具，仅 big 全量可见）。
+//! （mini/normal 白名单不含本工具，仅 big 全量可）。
 
 use nemesis_agent::context::RequestContext;
 

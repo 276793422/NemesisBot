@@ -527,7 +527,7 @@ fn test_compute_broadcast_class_c() {
 }
 
 // ============================================================
-// S4 coverage: handler-absent receive path, empty name/category
+// coverage: handler-absent receive path, empty name/category
 // node-info fallbacks
 // ============================================================
 
@@ -587,7 +587,7 @@ fn test_message_to_node_info_empty_name_and_category_fallbacks() {
     assert_eq!(info.base.address, "10.0.0.3:9000");
 }
 
-// -- send_unicast（U1-5 根修 2026-09-15：异端口拓扑定向单播载体）--
+// -- send_unicast（根修：异端口拓扑定向单播载体）--
 
 #[test]
 fn test_send_unicast_delivers_plaintext_message() {
@@ -626,9 +626,9 @@ fn test_send_unicast_encrypted_roundtrip() {
     assert_eq!(parsed.node_id, "enc-node");
 }
 
-// -- Windows WSAECONNRESET 韧性（T40 UAT 实证回归锁，2026-09-30）--
+// -- Windows WSAECONNRESET 韧性（UAT 实证回归锁）--
 
-// Windows 形态测试标记约定（2026-09-02）：ICMP 回压→recv_from 报 ConnectionReset
+// Windows 形态测试标记约定：ICMP 回压→recv_from 报 ConnectionReset
 // 是 Windows UDP 特有行为（Unix 非连接 socket 不上报 ICMP 错误，该测试在 Linux
 // 上编译期消失）。
 //
@@ -684,7 +684,7 @@ fn test_udp_listener_survives_connreset_after_send_to_closed_port() {
 }
 
 /// 空 name 走 `node-<id 前 8 字节>` 显示名路径；中文 node_id 裸字节截断
-/// 曾 panic（2026-10-11 横扫修复）——wire 数据可能是多字节文本。
+/// 曾 panic（横扫修复）——wire 数据可能是多字节文本。
 #[test]
 fn message_to_node_info_cjk_node_id_display_does_not_panic() {
     let mut msg = make_announce("中中中中中中中中", &["10.0.0.9"], 9001);

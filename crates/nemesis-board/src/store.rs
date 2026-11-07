@@ -25,32 +25,32 @@ use crate::models::{
 /// Thread-safe SQLite board store.
 pub struct BoardStore {
     conn: Mutex<Connection>,
-    /// Swarm M3（§5.4）：dispatch 签发上下文槽（gateway 装配时 set 一次；
+    /// Swarm：dispatch 签发上下文槽（gateway 装配时 set 一次；
     /// 所有 dispatch 函数已持有 store，资产段渲染零参数蔓延）。None =
     /// 本节点未配资产签发——派发 prompt 不带「## 任务资产」段。
     asset_signing: std::sync::OnceLock<crate::asset_token::AssetSignContext>,
 }
 
-/// 送达失败标记（F2，2026-10-13）——评论即账本的单一真相源：RPC 送达
-/// 失败路径写 `⛔ 派发失败：[类别] ...` 系统评论，sweep 候选查询按本
+/// 送达失败标记——评论即账本，以此为准：RPC 送达
+/// 失败路径写 `⛔ 派发失败：[类别]...` 系统评论，sweep 候选查询按本
 /// 前缀识别（`instr(content, ?) = 1` = 前缀匹配）。写入侧（nemesis-web
 /// issue_dispatch）与查询侧共用本常量，字面量漂移 = 重试静默失效。
 pub const SEND_FAILURE_MARK: &str = "⛔ 派发失败";
 
-/// 自动派发暂缓标记（闭环批 2026-10-13 从 nemesis-web 上移）：停车判定
-/// （`list_dispatch_park_candidates`）与 sweep 落评论去重共用单一真相源，
+/// 自动派发暂缓标记（闭环-13 从 nemesis-web 上移）：停车判定
+/// （`list_dispatch_park_candidates`）与 sweep 落评论去重共用同一定义，
 /// 消灭跨 crate 字面量漂移面。SQL 侧经参数绑定消费（同文件 dispatch_state
 /// 常量同款惯例）。
 pub const PARK_NOTICE_MARK: &str = "自动派发暂缓";
 
-/// 停摆哨兵标记（决策可见性批 2026-10-15 从 nemesisbot board_dispatch 上移）：
+/// 停摆哨兵标记（决策可见性-15 从 nemesisbot board_dispatch 上移）：
 /// 哨兵对「交付已收、执行档案迟迟未落地」的 in_progress 单写
 /// `{STALL_MARKER}：...` 系统评论；issue.list 的 attention 弱信号投影按本
 /// 前缀识别（写入侧 nemesisbot 与读取侧 nemesis-web 同源消费，字面量漂移
 /// = 停滞徽标静默失效）。
 pub const STALL_MARKER: &str = "⚠ 执行档案迟迟未落地";
 
-/// 送达失败重试退避阶梯（F2）：第 n 次失败后等 `min(1800, 60 * 2^(n-1))`
+/// 送达失败重试退避阶梯：第 n 次失败后等 `min(1800, 60 * 2^(n-1))`
 /// 秒再重试——1m→2m→4m→8m→16m→30m 封顶。0 次失败 = 0（尚未失败立即可试）。
 /// 纯函数单测钉死；调用方（sweep）拿 DB 派生的失败次数喂入。
 pub fn send_failure_backoff_secs(attempts: u32) -> u64 {
@@ -65,7 +65,7 @@ pub fn send_failure_backoff_secs(attempts: u32) -> u64 {
     }
 }
 
-/// 后代可达的展开形态（SAN-08 单一真相源，2026-09-16 横扫加固）：一个
+/// 后代可达的展开形态（SAN-08 统一定义，横扫加固）：一个
 /// BFS 引擎（`BoardStore::descendants`）、两种命名边集。此前三处手搓遍历
 /// 各用一种边集（级联 BFS = 依赖∪父子、`sync_parent_status`/收口缺口闸 =
 /// 单层 children）——单层盲区让 done 子单之下的 cancelled 孙单对上层不可
@@ -85,7 +85,7 @@ pub enum DescendantEdges {
 impl BoardStore {
     /// Open (or create) the board database at `db_path`.
     ///
-    /// `prefix` 是 issue 编号前缀（如 `NB` → `NB-1`）；仅首次建库时生效
+    /// `prefix` 是 issue 编号前缀（如 `NB` → ``）；仅首次建库时生效
     /// （之后以 `board_meta.number_prefix` 为准，改前缀需显式迁移）。
     pub fn open(db_path: &Path, prefix: &str) -> Result<Self, String> {
         let conn = db::init_db(db_path)?;
@@ -133,10 +133,10 @@ impl BoardStore {
         {
             return Err(format!("assignee {} requires assignee_id", at));
         }
-        // 验收标准自动生成（2026-10-17 NB-125 根修，用户裁决：验收标准本
+        // 验收标准自动生成（根修，用户裁决：验收标准本
         // 身就应该自动生成——「我说了有 BUG，验收标准就是 BUG 被解决」）。
         // 未填 AC → 按标题/背景推导判定基准（BUG 形态=问题被修复并验证）。
-        // 单一真相源在 store：WSAPI/CLI/autopilot 全创建路径生效；planner
+        // 权威定义在 store：WSAPI/CLI/autopilot 全创建路径生效；planner
         // 子单自带 AC 不触发。空字符串/全空白视同未填。
         let ac_blank = new
             .acceptance_criteria
@@ -150,13 +150,13 @@ impl BoardStore {
                 new.description.trim(),
             );
         }
-        // 交付证据契约（G4，2026-10-18 批六）：AC 含 file: 类锚点 →
+        // 交付证据契约：AC 含 file: 类锚点 →
         // requires_evidence 自动置位。file: 锚点核的是真实文件产物，验收
-        // PASS 必须有交付记录背书（评审门在 board_review）。单一真相源在
+        // PASS 必须有交付记录背书（评审门在 board_review）。权威定义在
         // store（WSAPI/CLI/autopilot/planner 全创建路径生效）；谓词走
-        // `has_file_anchor`（拓扑分类单一真相源，勿内联解析）。自动生成
+        // `has_file_anchor`（拓扑分类统一定义，勿内联解析）。自动生成
         // AC 无锚点 → 不置位（语义正确：自动判定基准无文件产物）。
-        // F5（二轮复评 2026-10-18）：checkpoint-git 关 = 执行体无交付管线
+        // （二轮复评）：checkpoint-git 关 = 执行体无交付管线
         // （回调 payload 恒无 delivery 结构，评审门对这类单恒 FAIL——诚实
         // 但过狠）→ 建单自动置位跳过。全局 `require_delivery_evidence`
         // 开关不受此影响（显式加码照常 FAIL，gap 注明执行体未编译交付管线）。
@@ -197,17 +197,17 @@ impl BoardStore {
 
         let now = Self::now();
         let status = IssueStatus::Backlog.as_str();
-        // 引用完整性（2026-10-17 系统性检查）：parent_issue_id / project_id
+        // 引用完整性（系统性检查）：parent_issue_id / project_id
         // 两列无 REFERENCES 约束（schema 仅依赖表带 FK），建单时不校验 =
         // 悬空引用直接落库（下游父链遍历/项目归组/档案导出全会踩空）。
         validate_issue_refs_on(&tx, new.parent_issue_id, new.project_id, None)?;
-        // Swarm M1：required_tags 落 JSON TEXT（空 = NULL，行上少一坨 "[]"）。
+        // Swarm：required_tags 落 JSON TEXT（空 = NULL，行上少一坨 "[]"）。
         let required_tags_json = if new.required_tags.is_empty() {
             None
         } else {
             Some(serde_json::to_string(&new.required_tags).map_err(|e| e.to_string())?)
         };
-        // 环境能力硬条件（NB-122 批）：同 required_tags 的 JSON TEXT 形态。
+        // 环境能力硬条件（批）：同 required_tags 的 JSON TEXT 形态。
         let required_capabilities_json = if new.required_capabilities.is_empty() {
             None
         } else {
@@ -308,7 +308,7 @@ impl BoardStore {
         .ok_or_else(|| format!("issue {id} not found"))
     }
 
-    /// 按编号取（如 `NB-42`）；不存在报错。
+    /// 按编号取（如 ``）；不存在报错。
     pub fn get_issue_by_number(&self, number: &str) -> Result<Issue, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
@@ -322,7 +322,7 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 依赖表（Swarm M1：批内拆解依赖边；补派触发器的双向查询）
+    // 依赖表（Swarm：批内拆解依赖边；补派触发器的双向查询）
     // -----------------------------------------------------------------------
 
     /// 整体替换 issue 的依赖边（planner 落库路径；空切片 = 清空）。
@@ -428,7 +428,7 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
-    /// 后代集合 BFS（SAN-08/06，2026-09-16 横扫加固）：`root_ids` 的全部
+    /// 后代集合 BFS（SAN-08/06， 横扫加固）：`root_ids` 的全部
     /// 可达后代（**不含 root 自身**），BFS 序，visited 防环（依赖图理论
     /// 无环，手工建单可造环——防御性截断）。**所有可达节点都返回**（含
     /// 终态单）——「穿过终态单继续下探」正是 SAN-06 需要的能力（done 子单
@@ -496,7 +496,7 @@ impl BoardStore {
         }
         let q = filter.query.as_deref().unwrap_or("").trim().to_string();
         if !q.is_empty() {
-            // R221（BUG-163）：搜索词按字面匹配——`%`/`_` 是 SQL LIKE
+            // （BUG-163）：搜索词按字面匹配——`%`/`_` 是 SQL LIKE
             // 通配符，不转义会把 `parse_json` 搜成 `parseXjson`、`a%b`
             // 搜成 `ab`（用户面语义错配）。
             sql.push_str(&format!(
@@ -505,7 +505,7 @@ impl BoardStore {
             ));
             args.push(Box::new(format!("%{}%", escape_like(&q))));
         }
-        // P1/A2+A2b 用户面默认排除三旗标（Default false = 全量，既有内部
+        // / 用户面默认排除三旗标（Default false = 全量，既有内部
         // 调用行为不变；WSAPI issue.list 按入参映射，见 handlers/board.rs
         // build_filter）。
         if filter.exclude_cancelled {
@@ -532,7 +532,7 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
-    /// 批量给已取消单打 hidden 标记（P1/A2b 列表页「清理」出口）。
+    /// 批量给已取消单打 hidden 标记（/ 列表页「清理」出口）。
     /// hidden 语义只属于取消单清理：非 cancelled 单**报错**（不静默跳过
     /// ——批量调用的调用方需要知道哪个 id 不合法）；幂等（已 hidden 的
     /// 取消单原样计入）。每单写一条 `issue_bulk_archive` 活动审计。
@@ -681,7 +681,7 @@ impl BoardStore {
         self.get_issue(id)
     }
 
-    /// 状态机转移（§1.1）：非法转移拒绝；合法转移写 `status_change` 评论 +
+    /// 状态机转移：非法转移拒绝；合法转移写 `status_change` 评论 +
     /// activity_log。终态不可转出。
     pub fn transition_issue(
         &self,
@@ -712,7 +712,7 @@ impl BoardStore {
     /// 共用）：校验 + UPDATE + status_change 评论 + NB-CODE-012 审计 +
     /// activity + 指派对象通知，全部在调用方事务内执行、**不 commit**——
     /// 提交时机归调用方，让「状态转移 + 附加动作」可以放进同一事务原子
-    /// 生效（BUG-20261105-002 根修：此前 reopen 的转移先独立 commit，后续
+    /// 生效（根修：此前 reopen 的转移先独立 commit，后续
     /// hidden 解除失败会留下 hidden=1 的 backlog 单且无任何 API 可恢复）。
     fn transition_issue_in_tx(
         tx: &Connection,
@@ -766,7 +766,7 @@ impl BoardStore {
             ),
             now,
         )?;
-        // 站内通知（W2 P3）：指派对象（非操作者本人）收到状态变化——状态在
+        // 站内通知：指派对象（非操作者本人）收到状态变化——状态在
         // 看板列可见，订阅者不推（避免 worker 回报写回时对创建者双份轰炸：
         // 评论通知已覆盖）。
         if let (Some(at), Some(aid)) = (&old.assignee, &old.assignee_id) {
@@ -788,7 +788,7 @@ impl BoardStore {
         Ok(())
     }
 
-    /// 派发送达失败回退（F2，2026-09-30）：任务从未开始（RPC 送达失败），
+    /// 派发送达失败回退：任务从未开始（RPC 送达失败），
     /// 把派发推进出的 in_progress 回退到派发前状态，并把派发回填的指派
     /// 恢复为派发前的值——字段与事实重新对齐（⛔ 派发失败评论已由调用方
     /// 落，本方法补状态/指派/审计三件）。
@@ -797,7 +797,7 @@ impl BoardStore {
     /// 的通用放行会稀释状态机语义（人工 issue.status 不应能把在跑任务拉
     /// 回待办）；此处守卫「当前必须仍是 in_progress 且派发前不是」——
     /// 人工同刻挪过状态就让位（返回 Ok(false) 不报错，竞态让位语义）。
-    /// **在途派发守卫**（多角度审计批 2026-10-13）：本单已有新派发在途
+    /// **在途派发守卫**（多角度审计-13）：本单已有新派发在途
     /// （dispatched/running——并发触发源在 finish_dispatch(failed) 与本
     /// 回退之间抢到 claim）同样让位——把状态回退会谎报在跑任务的状态位，
     /// 停车场 sweep 还可能把回退出的单再派一遍。
@@ -856,14 +856,14 @@ impl BoardStore {
         Ok(true)
     }
 
-    /// reopen（发现④ 2026-09-15）：`cancelled → backlog`，取消单回到待办，
+    /// reopen（发现④）：`cancelled → backlog`，取消单回到待办，
     /// 中断恢复从此有产品路径（此前只能 SQL 手术）。非 cancelled 来源
     /// **loud 拒绝**（done 的重开是另一语义，本轮不做）；已 hidden 的取消单
     /// reopen 时解除 hidden（hidden 只属于取消单清理语义，单子已复活就
-    /// 必须重新可见）；追加系统审计评论（谁/何时/从何状态）。WSAPI
+    /// 必须重新可）；追加系统审计评论（谁/何时/从何状态）。WSAPI
     /// `issue.reopen` 与 CLI `issue reopen` 共用本单一后端。
     ///
-    /// **单事务原子**（BUG-20261105-002 根修）：状态转移、hidden 解除、
+    /// **单事务原子**（根修）：状态转移、hidden 解除、
     /// reopen 审计评论同事务提交——此前转移先独立 commit、附加动作在第二个
     /// 事务里，后者失败会留下 hidden=1 的 backlog 单（列表恒排除 hidden、
     /// reopen 前置只认 cancelled），无任何 API 可恢复的永久僵尸。父单/上游
@@ -887,7 +887,7 @@ impl BoardStore {
                 old.number, old.status
             ));
         }
-        // 父单存活校验（F-U4-3）：父单已取消的子单不可单独复活——任务线
+        // 父单存活校验（F）：父单已取消的子单不可单独复活——任务线
         // 还死着，复活出来的子单会被派发父单存活闸拦成永久 backlog 僵尸。
         // 正确顺序：先 reopen 父单，再逐单复活子单。
         if let Some(pid) = old.parent_issue_id {
@@ -907,7 +907,7 @@ impl BoardStore {
                 ));
             }
         }
-        // 依赖上游存活校验（SAN-07，2026-09-16 横扫加固）：上游依赖仍是
+        // 依赖上游存活校验（SAN-07， 横扫加固）：上游依赖仍是
         // cancelled 的单不可单独复活——依赖闸（dispatch_subissue_auto_with_config）
         // 只认上游 done，复活出来的单永远等不到发车，是隐藏更深的 backlog
         // 僵尸。正确顺序：先恢复全部上游，再 reopen 本单。
@@ -1022,7 +1022,7 @@ impl BoardStore {
         if let (Some(at), Some(aid)) = (&assignee, &assignee_id) {
             let new_assignee = Actor::new(at.as_str(), aid);
             insert_subscriber(&tx, id, &new_assignee, "assignee")?;
-            // 站内通知（W2 P3）：指派真的变了且不是自己指自己 → 通知被指派人。
+            // 站内通知：指派真的变了且不是自己指自己 → 通知被指派人。
             let changed = old.assignee != assignee || old.assignee_id != assignee_id;
             if changed && new_assignee != *actor {
                 insert_notification(
@@ -1043,7 +1043,7 @@ impl BoardStore {
         self.get_issue(id)
     }
 
-    /// 认领制原子置位（2026-10-22 集群任务认领机制）：worker 自主接单的
+    /// 认领制原子置位（集群任务认领机制）：worker 自主接单的
     /// 存储侧。与 [`Self::assign_issue`] 的唯一差异是 UPDATE 带
     /// `assignee_id IS NULL` 守卫——先到先得，双 worker 并发认领在 SQLite
     /// 单写者 + 事务下必有一败（changes()==0 → 读当前指派诚实拒绝）。
@@ -1117,7 +1117,7 @@ impl BoardStore {
         self.get_issue(id)
     }
 
-    /// 认领资格闸（browse 过滤 + claim 复检共用的单一真相源）：Ok = 可领
+    /// 认领资格闸（browse 过滤 + claim 复检共用的统一定义）：Ok = 可领
     /// （返回 issue 快照），Err = 诚实拒绝原因。与派发闸同口径：状态限
     /// Backlog/Todo（派发前态）、未指派、叶子单（父单/容器单不可领）、
     /// 无在途派发、依赖全 Done（防认领绕过拆解依赖序）。职能/tier 硬闸
@@ -1184,7 +1184,7 @@ impl BoardStore {
         Ok(changed > 0)
     }
 
-    /// 看板拖拽（W2 P3）：原子地完成「状态转移 + 列内排序」——同列重排只改
+    /// 看板拖拽：原子地完成「状态转移 + 列内排序」——同列重排只改
     /// position（不触发状态机，写 reordered 活动）；跨列拖动走状态机校验并写
     /// status_change 评论 + 指派对象通知（与 [`Self::transition_issue`] 同套
     /// 审计/通知语义，只是把两次写合并进一个事务）。
@@ -1340,7 +1340,7 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
-    /// 送达失败重试候选（F2，2026-10-13；复检批扩 in_review + 多角度审计
+    /// 送达失败重试候选（复检批扩 in_review + 多角度审计
     /// 批补账本闸）：待派态（backlog/todo）或 **in_review** 且**最后一条
     /// system 评论是送达失败标记**且**最新一条派发行 state=failed** 的单。
     /// 返回 `(issue_id, 失败次数, 末次失败 unix_secs, 状态)`——失败次数 =
@@ -1349,9 +1349,9 @@ impl BoardStore {
     /// in_review → 重派语义：原节点在线优先，离线换榜首在线候选）。
     /// **in_review 必须在池**（复检批缺口根修）：评审 FAIL→自动重派直接走
     /// `dispatch_issue_core`（in_review 合法派发态），送达失败回滚回
-    /// in_review——只捞 backlog/todo 会漏掉 NB-24 原始事故形态（验收实机
+    /// in_review——只捞 backlog/todo 会漏掉 原始事故形态（验收实机
     /// in_review 滞留 16 分钟待人工）。
-    /// **账本闸**（多角度审计批，2026-10-13）：成功交付只写 Delivery/Comment
+    /// **账本闸**（多角度审计批）：成功交付只写 Delivery/Comment
     /// 评论 + status_changed 审计活动，**不写 system 评论**——只看评论的话，
     /// 旧 ⛔ 标记仍是最后一条 system 评论，交付后 in_review 立即重新入池，
     /// 评审进行中就被重派（乒乓循环）。派发行账本是送达失败的权威事实源：
@@ -1359,7 +1359,7 @@ impl BoardStore {
     /// failed 尾行，自然出池；再次送达失败 finish_dispatch(failed) 重新
     /// 入池。全部事实派生自 DB：gateway 重启不丢退避进度，不新增存储。
     /// `🛑` 转人工评论落盘后，「最后一条」不再是送达失败标记 → 出池。
-    /// **标记时序闸**（闭环批 2026-10-13）：⛔ 必须**不早于**最新派发行
+    /// **标记时序闸**（闭环-13）：⛔ 必须**不早于**最新派发行
     /// completed_at——标记必须属于最近一次派发尝试。第三种 failed 终态：
     /// worker 汇报失败 / 交付守卫拦截 / 评审转人工（EscalateHuman）都只写
     /// **Comment 型**评论 + finish_dispatch(failed)，无任何 system 评论落盘
@@ -1447,8 +1447,8 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
-    /// 追加一条活动（P5/E2：`auto_decide` 决策审计等外部写入点共用单一
-    /// 真相源；失败语义由调用方决定——审计是增值动作，一般只 warn）。
+    /// 追加一条活动（`auto_decide` 决策审计等外部写入点共用同一定义；
+    /// 失败语义由调用方决定——审计是增值动作，一般只 warn）。
     pub fn add_activity(
         &self,
         issue_id: i64,
@@ -1460,7 +1460,7 @@ impl BoardStore {
         insert_activity(&conn, issue_id, actor, action, details, Self::now())
     }
 
-    /// 最近一条 `auto_decide` 活动（打回/循环升级防抖判定用，2026-10-16）。
+    /// 最近一条 `auto_decide` 活动（打回/循环升级防抖判定用）。
     /// 返回 (activity 行 id, details JSON 里的 decision 词)。决策词缺席或
     /// details 非 JSON = 空串。无任何 auto_decide = None。
     pub fn latest_auto_decide(&self, issue_id: i64) -> Result<Option<(i64, String)>, String> {
@@ -1507,7 +1507,7 @@ impl BoardStore {
         Ok(n > 0)
     }
 
-    /// 返工轮数预算重置纪元（打回重开，2026-10-16 用户裁决）：`review.
+    /// 返工轮数预算重置纪元（打回重开， 用户裁决）：`review.
     /// retrigger` 打回升级停车单时写入 board_meta，`try_parent_remediation`
     /// 计轮只数纪元后的「返工：」子单——人工重新决策 = 自动验收重新开始。
     /// 无纪元键 = 0（计全部历史，旧行为）。
@@ -1520,9 +1520,9 @@ impl BoardStore {
             .unwrap_or(0)
     }
 
-    /// 最近活动流（P5/E2 决策视图数据源）：按 id 降序（插入序，不受同秒
+    /// 最近活动流（/ 决策视图数据源）：按 id 降序（插入序，不受同秒
     /// 时间戳打平影响），可选按 action 过滤，JOIN issue 补编号/标题。
-    /// 决策流最近活动（UAT U6 F-U6-1 面板查询面：默认从最新起）。
+    /// 决策流最近活动（UAT F- 面板查询面：默认从最新起）。
     pub fn list_recent_activity(
         &self,
         limit: u32,
@@ -1533,7 +1533,7 @@ impl BoardStore {
 
     /// 决策流最近活动（带 offset 翻页：`ORDER BY id DESC LIMIT ? OFFSET ?`）。
     /// 刷屏类记录（如滞留档案重复入账）会把最新决策挤出 limit 窗口——
-    /// 无 offset 时面板在最坏情况下永远翻不到新记录（U6 实测）。
+    /// 无 offset 时面板在最坏情况下永远翻不到新记录（实测）。
     pub fn list_recent_activity_paged(
         &self,
         limit: u32,
@@ -1566,7 +1566,7 @@ impl BoardStore {
     /// 历史记录（`audit_rollback:` / `done_rollback:` 标记行），JOIN 单据
     /// 补编号/标题；audit_rollback 进一步回查原 `auto_decide` 决策详情。
     /// 产出是**历史事实数据**——调用方渲染进评审提示词时必须带数据非指令
-    /// 护栏（`nemesis_prompts::board::render_precedents_block`）。
+    /// 护栏（`nemesis_prompts::board:render_precedents_block`）。
     pub fn list_rollback_precedents(
         &self,
         limit: u32,
@@ -1637,7 +1637,7 @@ impl BoardStore {
         Ok(out)
     }
 
-    /// 审计回滚（P5/E2 方案②）：把一条 `auto_decide` 决策对应的单据从
+    /// 审计回滚（/ 方案②）：把一条 `auto_decide` 决策对应的单据从
     /// done 退回 in_review，绕过状态机（done 是终态——回滚是人工纠错
     /// 特权，不进 can_transition 词表），同时落 System 评论 + status_change
     /// 活动留痕。只对当前处于 done 的单据生效——再回滚（已在 in_review）
@@ -1709,7 +1709,7 @@ impl BoardStore {
         Ok(issue)
     }
 
-    /// 终态回滚（看板项目档案 goal P3/D4 修复）：把处于 done 的单据退回
+    /// 终态回滚（看板项目档案 goal / 修复）：把处于 done 的单据退回
     /// in_review。done 是状态机终态（[Self::rollback_decision] 同款裁决：
     /// 回滚是人工/护栏纠错特权，不进 can_transition 词表），故走 bypass
     /// 直改 + System 评论 + status_change 审计留痕。仅当前 done 生效——
@@ -1800,9 +1800,9 @@ impl BoardStore {
     // 项目
     // -----------------------------------------------------------------------
 
-    /// `directory`（v12 列，看板项目档案 goal P2/B1）：项目档案目录绝对路径，
+    /// `directory`（v12 列，看板项目档案 goal）：项目档案目录绝对路径，
     /// None = 不绑定（存量形态）。**绑定不可变**——解析/安全化/重叠拒绝在
-    /// `crate::archive::resolve_project_directory`（调用方先把目录落到磁盘
+    /// `crate::archive:resolve_project_directory`（调用方先把目录落到磁盘
     /// 再传入），store 只存字符串真相；此后无任何写入口（ProjectPatch 不含
     /// 本字段，改名不改目录）。
     pub fn create_project(
@@ -1852,7 +1852,7 @@ impl BoardStore {
     }
 
     /// 字段级部分更新项目（None = 不改；改名撞 UNIQUE 约束时报错透传）。
-    /// 归档走 `status = "archived"`（软删除——列表仍可见）。
+    /// 归档走 `status = "archived"`（软删除——列表仍可）。
     pub fn update_project(&self, id: i64, patch: &ProjectPatch) -> Result<Project, String> {
         if let Some(n) = &patch.name
             && n.trim().is_empty()
@@ -1871,9 +1871,9 @@ impl BoardStore {
             .ok_or_else(|| format!("project {id} not found"))?;
         let name = patch.name.clone().unwrap_or(old.name);
         let description = patch.description.clone().unwrap_or(old.description);
-        // F2 状态机收口：带 status 的 patch 必须是合法词表值 + 合法转移
+        // 状态机收口：带 status 的 patch 必须是合法词表值 + 合法转移
         // （old → new）。未知值/非法转移在这里 loud 拒绝——所有 project 状态
-        // 写入（WSAPI / F3 自动回退）都过这一道，读侧才有宽容的资格。
+        // 写入（WSAPI / 自动回退）都过这一道，读侧才有宽容的资格。
         let status = match &patch.status {
             Some(raw) => {
                 let new = crate::models::ProjectStatus::from_str(raw).ok_or_else(|| {
@@ -1913,7 +1913,7 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 冲突冻结 + 待补合并队列（看板项目档案 goal P5/F2+F3；系统管理字段，
+    // 冲突冻结 + 待补合并队列（看板项目档案 goal /；系统管理字段，
     // 刻意不走 ProjectPatch——无人工任意改写入口，全部经这里）
     // -----------------------------------------------------------------------
 
@@ -2004,7 +2004,7 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 附件（P1：仅元数据）
+    // 附件（仅元数据）
     // -----------------------------------------------------------------------
 
     pub fn add_attachment(
@@ -2073,7 +2073,7 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 通知 / 收件箱（W2 P3；经 21 通道的站外投递留 P4）
+    // 通知 / 收件箱（经 21 通道的站外投递留）
     // -----------------------------------------------------------------------
 
     /// 发一条站内通知（事件钩子之外的显式入口——store 内部的
@@ -2083,7 +2083,7 @@ impl BoardStore {
         insert_notification(&conn, &n, Self::now())
     }
 
-    /// 派发事件显式通知（W2 P4 超时 sweep / 离线判定用；kind 取
+    /// 派发事件显式通知（超时 sweep / 离线判定用；kind 取
     /// [`notification_kind`]，如 `DISPATCH_FAILED`）：收件人 = 创建者 ∪
     /// 指派 ∪ 订阅者（去重）。与 add_comment 的评论通知（订阅者 ∪ 指派 −
     /// 作者）不同——失败要保证创建者一定收到（创建者可能未订阅）。
@@ -2126,7 +2126,7 @@ impl BoardStore {
 
     /// 收件箱列表（created_at 降序）。`recipient_id = None` → 该类型的全部
     /// 收件人（dashboard 单管理员收件箱语义：admin 通知全员可见；
-    /// agent 收件人按节点 id 精确过滤，供 P4 通道投递用）。
+    /// agent 收件人按节点 id 精确过滤，供 通道投递用）。
     pub fn list_notifications(
         &self,
         recipient_type: &str,
@@ -2223,16 +2223,16 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 派发（W2 P2：issue ↔ peer_chat task 绑定与写回）
+    // 派发（issue ↔ peer_chat task 绑定与写回）
     // -----------------------------------------------------------------------
 
-    /// 登记派发（**原子占用闸**，2026-09-15 R5-BUG-2 根修）：同一 conn
+    /// 登记派发（**原子占用闸**， -BUG-2 根修）：同一 conn
     /// 持锁内完成「在途检查 + INSERT」——单写者 Mutex 串行化下，检查与
     /// 写入之间不可能插入其他派发，多触发源并发（依赖闸补派 × 停车场
-    /// sweep 同刻触发，真机实证 NB-18 双行 dispatched）不再能双双过闸。
+    /// sweep 同刻触发，真机实证 双行 dispatched）不再能双双过闸。
     /// 返回 `Ok(None)` = 该 issue 已有在途派发（`dispatched`/`running`），
     /// 本行未写入——调用方诚实弃派并清理本地 task。`Ok(Some(generation))`
-    /// = 占用成功，generation 是本次派发的代际号（AOR 批二a ④：同一
+    /// = 占用成功，generation 是本次派发的代际号（a ④：同一
     /// 临界区内按既有行数计算，首派 0、第 N 次重派 N-1——计算与写入
     /// 同锁，并发交错不可能算错）。旧实现检查与 INSERT 分离，竞态交错
     /// 留下永不完结的 `dispatched` 幽灵行 → worker inflight 永久占满 →
@@ -2247,7 +2247,7 @@ impl BoardStore {
         actor: &Actor,
     ) -> Result<Option<i64>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // D0b（goal P2）：running（已开跑）同样算在途——防同单重复派发。
+        // （goal）：running（已开跑）同样算在途——防同单重复派发。
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM issue_dispatch WHERE issue_id = ?1 AND state IN (?2, ?3)",
@@ -2301,8 +2301,8 @@ impl BoardStore {
     pub fn list_dispatches(&self, issue_id: i64) -> Result<Vec<DispatchRecord>, String> {
         // 排序 = rowid（插入序）：`dispatched_at` 是秒级时间戳，同一秒内的
         // 多次派发（快速 FAIL→重派链一秒走完多轮）会打平，旧实现以随机
-        // UUID（task_id ASC）决胜导致"最新派发"读错——D3 连续同节点判定
-        // 与回调路由都吃这个序（cluster-uat T34 实测抓到）。
+        // UUID（task_id ASC）决胜导致"最新派发"读错—— 连续同节点判定
+        // 与回调路由都吃这个序（cluster-uat 实测抓到）。
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -2317,13 +2317,13 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
-    /// A1（2026-10-21 引入）：全仓最近完结派发的耗时样本
+    /// （引入）：全仓最近完结派发的耗时样本
     /// （`node_perf` 估计器数据源）。只取 `completed_at` 已落且晚于
     /// `dispatched_at` 的行（时长为正才有预测意义；0/负 = 数据异常，
     /// 排除而非污染中位数）。类别键 = issue 的 `required_profession`
-    /// （trim+小写；空 → `"_"`，与 [`crate::node_perf::normalize_category`]
+    /// （trim+小写；空 → `"_"`，与 [`crate::node_perf:normalize_category`]
     /// 同口径）。按 rowid 降序 = 最新优先，`limit` 由调用方给
-    /// （建议 [`crate::node_perf::WORKER_SAMPLE_CAP`] × 候选节点数）。
+    /// （建议 [`crate::node_perf:WORKER_SAMPLE_CAP`] × 候选节点数）。
     pub fn recent_completed_dispatch_durations(
         &self,
         limit: i64,
@@ -2358,7 +2358,7 @@ impl BoardStore {
     /// issue 是否有未完结（`dispatched`）派发（防重复派发）。
     pub fn has_active_dispatch(&self, issue_id: i64) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // D0b（goal P2）：running（已开跑）同样算在途——防同单重复派发。
+        // （goal）：running（已开跑）同样算在途——防同单重复派发。
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM issue_dispatch WHERE issue_id = ?1 AND state IN (?2, ?3)",
@@ -2373,7 +2373,7 @@ impl BoardStore {
         Ok(n > 0)
     }
 
-    /// 按目标 worker 统计未完结（`dispatched`）派发数（Swarm M1 匹配器
+    /// 按目标 worker 统计未完结（`dispatched`）派发数（Swarm 匹配器
     /// 负载输入：同分节点选更闲者）。无派发的 worker 不在返回表里（调用方
     /// 按 0 处理）。
     pub fn count_active_dispatch_by_worker(
@@ -2401,7 +2401,7 @@ impl BoardStore {
     }
 
     // -------------------------------------------------------------------
-    // worker × 任务类型指纹记账（能力扩展 P34；纯逻辑在 fingerprint.rs）
+    // worker × 任务类型指纹记账（纯逻辑在 fingerprint.rs）
     // -------------------------------------------------------------------
 
     /// 记一次 (worker, task_type) 成败（评审定案唯一调用点；PASS=成功 /
@@ -2494,8 +2494,8 @@ impl BoardStore {
         .map_err(|e| e.to_string())
     }
 
-    /// 终结派发：`done` / `failed`（P4 扩展 cancelled/timeout）。
-    /// `dispatched` / `running` 态可终结（D0b：已开跑的单回报同样要能落账
+    /// 终结派发：`done` / `failed`（扩展 cancelled/timeout）。
+    /// `dispatched` / `running` 态可终结（已开跑的单回报同样要能落账
     /// ——只认 dispatched 会让 running 回调写回假跳过、issue 卡死
     /// in_progress）——返回 `Ok(true)` 表示本次调用完成了终结
     /// （幂等：重复回调拿到 `Ok(false)`，写回方据此跳过重复评论/转移）。
@@ -2506,7 +2506,7 @@ impl BoardStore {
             ));
         }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // D0b（goal P2）：running（已开跑）的单同样要能终结——
+        // （goal）：running（已开跑）的单同样要能终结——
         // 准入/RUNNING 信号落地后，写回终结需同时命中 dispatched 与 running。
         let n = conn
             .execute(
@@ -2525,7 +2525,7 @@ impl BoardStore {
         Ok(n > 0)
     }
 
-    /// 记录派发基线（P4/E8：基线推送成功后写；task_id → master 下发的
+    /// 记录派发基线（/：基线推送成功后写；task_id → master 下发的
     /// 档案仓库 HEAD commit hex）。worker 回传变更集时按 base_commit 对照
     /// 本表裁决归属——无基线行的派发未参与档案管线，到达的变更集不合入。
     /// 幂等 upsert（同 task_id 重派理论不会发生，防御性覆盖）。
@@ -2557,11 +2557,11 @@ impl BoardStore {
         .map_err(|e| e.to_string())
     }
 
-    /// issue 当前活跃（`dispatched`）派发记录（P4 cancel 入口：拿到 task_id
+    /// issue 当前活跃（`dispatched`）派发记录（cancel 入口：拿到 task_id
     /// 才能下行 cancel，同时确认该 issue 确有在途派发；多条取最新）。
     pub fn get_active_dispatch(&self, issue_id: i64) -> Result<Option<DispatchRecord>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // D0b（goal P2）：running（已开跑）同样算在途。
+        // （goal）：running（已开跑）同样算在途。
         conn.query_row(
             "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at, generation
              FROM issue_dispatch WHERE issue_id = ?1 AND state IN (?2, ?3)
@@ -2577,9 +2577,9 @@ impl BoardStore {
         .map_err(|e| e.to_string())
     }
 
-    /// 全部在途派发（P4 超时 sweep 扫描用；时间升序——最老的先处理）。
-    /// D0b（goal P2）：running（已开跑）同样在途——worker 中途失联的
-    /// running 单必须仍能被超时 sweep 兜底终结，否则永久卡死（NB-12 型）。
+    /// 全部在途派发（超时 sweep 扫描用；时间升序——最老的先处理）。
+    /// （goal）：running（已开跑）同样在途——worker 中途失联的
+    /// running 单必须仍能被超时 sweep 兜底终结，否则永久卡死（型）。
     pub fn list_active_dispatches(&self) -> Result<Vec<DispatchRecord>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -2598,7 +2598,7 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
-    /// D0b（goal P2）：worker 出队开跑上报 → dispatched → running。
+    /// （goal）：worker 出队开跑上报 → dispatched → running。
     /// 只允许 dispatched → running（重复上报/已终态诚实返回 false）。
     /// 返回是否发生了转移。
     pub fn mark_dispatch_running(&self, task_id: &str, worker_id: &str) -> Result<bool, String> {
@@ -2619,7 +2619,7 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 自检取证路由持久层（表 `selfcheck_pending`；BUG-20261105-012）
+    // 自检取证路由持久层（表 `selfcheck_pending`）
     //
     // selfcheck 派发刻意不写 issue_dispatch（Route 0 会当交付写回），路由键
     // 以本表持久化：gateway 重启后内存注册表清零，worker 取证回调凭本表兜
@@ -2731,7 +2731,7 @@ impl BoardStore {
         Ok(n > 0)
     }
 
-    /// E（goal P2/P5）：授予标签台账（board_meta `granted_tags`，JSON
+    /// E（goal）：授予标签台账（board_meta `granted_tags`，JSON
     /// `{node_id: [tags]}`）。合并授予：节点已拥有（自报或已授予）的不重复。
     /// 返回实际新授予的标签。兜底派发场景：master 把 relaxed 掉的缺失标签
     /// 授予节点——同类后续任务正常匹配，降级路径越走越少。
@@ -2741,7 +2741,7 @@ impl BoardStore {
         tags: &[String],
     ) -> Result<Vec<String>, String> {
         const KEY: &str = "granted_tags";
-        // 单临界区 RMW（D10-2）：曾拆成 get_meta/set_meta 两次独立加锁——
+        // 单临界区 RMW：曾拆成 get_meta/set_meta 两次独立加锁——
         // 落定波与 sweep 波并发授予同一节点时后写者覆盖前写者，丢一次授予
         //（下次授予自愈，但该次匹配滑进松弛阶梯 + 一条误导性降级评论）。
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -2821,7 +2821,7 @@ impl BoardStore {
         Ok(())
     }
 
-    /// D0b 重平衡候选：其他 worker 上「已派未开跑」的单（queued-only）。
+    /// 重平衡候选：其他 worker 上「已派未开跑」的单（queued-only）。
     pub fn list_queued_dispatches_excluding(
         &self,
         exclude_worker: &str,
@@ -2848,10 +2848,10 @@ impl BoardStore {
         Ok(out)
     }
 
-    /// 管理端取消派发（P4 per-task cancel 的 A 侧落账）：state → cancelled +
+    /// 管理端取消派发（per-task cancel 的 A 侧落账）：state → cancelled +
     /// `dispatch_cancelled` 活动（同事务）。`dispatched` / `running` 态可取消
-    /// ——running 是 D0b 的「已开跑」态，worker 侧 token cancel 支持打断
-    /// 执行中的任务（W2 P4），A 侧必须放行（否则用户无法取消在途单，
+    /// ——running 是 的「已开跑」态，worker 侧 token cancel 支持打断
+    /// 执行中的任务，A 侧必须放行（否则用户无法取消在途单，
     /// 误报「派发已终结」）；取消后迟到的回调被写回终态守卫幂等丢弃。
     /// 返回 `Ok(Some(record))` 表示本次调用赢得竞态（调用方据此才下行
     /// task_cancel RPC）；`Ok(None)` = 已终结（写回回调 / 超时 sweep 先到），
@@ -2901,7 +2901,7 @@ impl BoardStore {
         self.get_dispatch(task_id)
     }
 
-    /// 超时兜底终结（P4 sweep）：state → failed + `dispatch_timeout` 活动。
+    /// 超时兜底终结（sweep）：state → failed + `dispatch_timeout` 活动。
     /// `WHERE state IN ('dispatched','running')` 守卫与写回回调竞态——
     /// `Ok(Some(record))` = 本次调用赢得竞态（调用方负责 ⛔ System 评论 +
     /// dispatch_failed 通知）；`Ok(None)` = 回调已先终结，跳过。
@@ -2913,12 +2913,12 @@ impl BoardStore {
         self.fail_dispatch_inner(task_id, details, None)
     }
 
-    /// 竞态闸代际扩展（AOR 批三 5.2 双闸）：与 [`Self::fail_dispatch`] 同形
+    /// 竞态闸代际扩展（双闸）：与 [`Self::fail_dispatch`] 同形
     /// （state IN dispatched/running 守卫 + dispatch_timeout 活动），再加
     /// `generation = expected_generation` 等值校验——sweep 的失败判定基于
-    /// 列表快照，若终态写之间记录代际已变（同 conn 锁内可见），视为竞态输
+    /// 列表快照，若终态写之间记录代际已变（同 conn 锁内可），视为竞态输
     /// （`Ok(None)`），不落终态。与写回闸（write_back 的 echo 代际校验，
-    /// 批二a）形态对称。
+    /// a）形态对称。
     pub fn fail_dispatch_checked(
         &self,
         task_id: &str,
@@ -2928,7 +2928,7 @@ impl BoardStore {
         self.fail_dispatch_inner(task_id, details, Some(expected_generation))
     }
 
-    /// 单一真相源：`expected_generation = Some(g)` 时 WHERE 追加代际等值。
+    /// 代际口径统一：`expected_generation = Some(g)` 时 WHERE 追加代际等值。
     fn fail_dispatch_inner(
         &self,
         task_id: &str,
@@ -2993,7 +2993,7 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 自动化（W2 P4：autopilot 规则 CRUD + run 簿记）
+    // 自动化（autopilot 规则 CRUD + run 簿记）
     // -----------------------------------------------------------------------
 
     /// 建自动化规则。cron/title/name 非空校验在此；cron 表达式本身的合法性
@@ -3097,12 +3097,12 @@ impl BoardStore {
         let target = patch.target.clone().unwrap_or(old.target);
         let enabled = patch.enabled.unwrap_or(old.enabled);
         let auto_plan = patch.auto_plan.unwrap_or(old.auto_plan);
-        // F-U5-1：Some(v) 直接覆盖（`Some("")` = 清空 = 不填语义）；None = 保持原值。
+        // F-：Some(v) 直接覆盖（`Some("")` = 清空 = 不填语义）；None = 保持原值。
         let acceptance_criteria = patch
             .acceptance_criteria
             .clone()
             .unwrap_or(old.acceptance_criteria.clone().unwrap_or_default());
-        // L23：父会话绑定，语义同 acceptance_criteria（`Some("")` = 清空）。
+        // 父会话绑定，语义同 acceptance_criteria（`Some("")` = 清空）。
         let session_key = patch
             .session_key
             .clone()
@@ -3199,7 +3199,7 @@ impl BoardStore {
 
     /// run 历史（只按 origin_type，不钉 origin_id）：flow 模板 on_transition
     /// 回写订阅的数据源——按模板 origin_type 拉「来源单」全量（时间降序截断），
-    /// 逐单比对回写状态文件决定是否补发。外循环域剥离批 C-2（2026-11-02）。
+    /// 逐单比对回写状态文件决定是否补发。外循环域剥离批 C-2。
     pub fn list_issues_by_origin_type(
         &self,
         origin_type: &str,
@@ -3221,7 +3221,7 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 统计（看板列计数 / P1 验收）
+    // 统计（看板列计数 / 验收）
     // -----------------------------------------------------------------------
 
     /// 按状态计数的 issue 数（看板列头徽标）。
@@ -3248,13 +3248,13 @@ impl BoardStore {
     }
 
     // -----------------------------------------------------------------------
-    // 讨论频道 + 任务资产（Swarm M2；impl-plan §4.1/§4.2）
+    // 讨论频道 + 任务资产（Swarm；impl-plan）
     // -----------------------------------------------------------------------
 
     /// master 启动装配时 ensure 四个默认频道（`#dev` / `#qa` / `#general` /
-    /// `#team`），`INSERT OR IGNORE` 幂等（§4.2.1）。
+    /// `#team`），`INSERT OR IGNORE` 幂等。
     pub fn ensure_default_channels(&self) -> Result<(), String> {
-        // #team（2026-10-22 认领机制 Q4）：团队频道，认领播报落点。第四个
+        // #team（认领机制）：团队频道，认领播报落点。第四个
         // 默认频道——INSERT OR IGNORE 幂等，老部署下次启动自动补种零迁移。
         for name in ["#dev", "#qa", "#general", "#team"] {
             self.conn
@@ -3357,7 +3357,7 @@ impl BoardStore {
         Ok(())
     }
 
-    /// 成员离频道（幂等；成员下线**不**调这个——回来还在，见 §4.2.1）。
+    /// 成员离频道（幂等；成员下线**不**调这个——回来还在）。
     pub fn leave_channel(&self, channel_id: i64, member: &Actor) -> Result<(), String> {
         self.conn
             .lock()
@@ -3388,8 +3388,8 @@ impl BoardStore {
         Ok(n > 0)
     }
 
-    /// 上行发言统一落库入口（M3 `board.comment.post` 的存储侧；impl-plan
-    /// §5.2① + G12 幂等）。单次持锁完成三步，对其他 store 调用方原子：
+    /// 上行发言统一落库入口（`board.comment.post` 的存储侧；impl-plan
+    /// ① + 幂等）。单次持锁完成三步，对其他 store 调用方原子：
     /// ① `msg_dedup` 认领（同 `(origin_node, client_msg_id)` 重复 → 直接
     /// 返回首响，不重复落库）；② 落库（issue 评论走 [`add_comment_on`]
     /// 全副作用 / 频道消息走 [`append_channel_message_on`]）；③ `seq_ledger`
@@ -3513,7 +3513,7 @@ impl BoardStore {
         }
     }
 
-    /// 幂等预检（M3 上行 handler 用）：`(origin_node, client_msg_id)` 已
+    /// 幂等预检（上行 handler 用）：`(origin_node, client_msg_id)` 已
     /// 认领过则返回缓存首响（None = 全新请求）。预检在额度扣账**之前**——
     /// 重复请求（网络重传）不消耗讨论额度。
     pub fn check_duplicate(
@@ -3598,7 +3598,7 @@ impl BoardStore {
         Ok(n)
     }
 
-    /// 频道成员列表（裁决器路由查这张表，§4.2.1）。
+    /// 频道成员列表（裁决器路由查这张表）。
     pub fn list_channel_members(&self, channel_id: i64) -> Result<Vec<ChannelMember>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
@@ -3645,7 +3645,7 @@ impl BoardStore {
         append_channel_message_on(&conn, &new)
     }
 
-    /// 增量拉取频道消息：`after_id` 游标语义（补拉与前端翻页同源，§4.1），
+    /// 增量拉取频道消息：`after_id` 游标语义（补拉与前端翻页同源），
     /// id 升序，`limit` 上限。
     pub fn list_channel_messages(
         &self,
@@ -3679,7 +3679,7 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
-    /// 保留策略清扫（§4.2.2）：删除 `retention_days` 天前的频道消息，
+    /// 保留策略清扫：删除 `retention_days` 天前的频道消息，
     /// 返回删除行数；`retention_days <= 0` = 永久保留，直接返回 0。
     /// master 启动 + 每日备份 cron 顺带调用。
     pub fn sweep_channel_messages(&self, retention_days: i64) -> Result<u64, String> {
@@ -3736,7 +3736,7 @@ impl BoardStore {
         })
     }
 
-    /// 按引用查资产（M3 下载端点前的 token 校验数据源）。
+    /// 按引用查资产（下载端点前的 token 校验数据源）。
     pub fn lookup_asset(&self, ref_name: &str) -> Result<Option<BoardAsset>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         conn.query_row(
@@ -3777,7 +3777,7 @@ impl BoardStore {
 
     /// issue 删除时解绑其名下资产：删 `origin_issue` 命中的行，返回因此
     /// **彻底失去引用**的 ref 列表（引用计数语义——多 issue 引用同一 ref
-    /// 时最后一个解绑才删盘，§4.2.2）。调用方负责 unlink 返回的实体文件。
+    /// 时最后一个解绑才删盘）。调用方负责 unlink 返回的实体文件。
     pub fn unbind_assets_for_issue(&self, issue_id: i64) -> Result<Vec<String>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let released: Vec<String> = {
@@ -3812,7 +3812,7 @@ impl BoardStore {
     }
 
     // -------------------------------------------------------------------
-    // 团队经验 team_memory（swarm M4.5 §6.5）
+    // 团队经验 team_memory（swarm.5）
     // -------------------------------------------------------------------
 
     /// 新增经验条目（验收蒸馏唯一写闸的第二道去噪闸）：scope 归一化后与
@@ -3884,7 +3884,7 @@ impl BoardStore {
         );
         let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         if let Some(s) = scope {
-            // R221（BUG-165）：改参数绑定——旧实现字符串拼 SQL + 手工 `''`
+            // （BUG-165）：改参数绑定——旧实现字符串拼 SQL + 手工 `''`
             // 转义（SQLite 字面量语境虽完整，但与本文件全参数绑定惯例漂移，
             // 是全 store 唯一的拼接面）。
             sql.push_str(&format!(" AND scope = ?{}", args.len() + 1));
@@ -3905,7 +3905,7 @@ impl BoardStore {
 
     /// 关键词检索（scope/content/source LIKE，大小写不敏感；管理 WSAPI 用）。
     pub fn search_team_memory(&self, query: &str) -> Result<Vec<TeamMemoryEntry>, String> {
-        // R221（BUG-164）：与 list_issues 同源转义——旧实现 `%` 直接剥除
+        // （BUG-164）：与 list_issues 同源转义——旧实现 `%` 直接剥除
         // （含 `%` 的字面条目搜不到、`100%` 退化为 `100` 把 `100x` 也误
         // 命中），`_` 完全未处理（按单字符通配符解释）。
         let needle = format!("%{}%", escape_like(query.trim().to_lowercase().as_str()));
@@ -3943,7 +3943,7 @@ impl BoardStore {
         Ok(())
     }
 
-    /// 软删/恢复 deprecated 标记（§6.5.4 修正语义：旧经验与实际冲突 →
+    /// 软删/恢复 deprecated 标记（修正语义：旧经验与实际冲突 →
     /// 标记不覆盖；恢复 = 误标回滚）。
     pub fn set_team_memory_deprecated(&self, id: i64, deprecated: bool) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -4031,7 +4031,7 @@ fn apply_set_opt<T: PartialEq + Clone>(
     }
 }
 
-/// parent_issue_id / project_id 引用完整性校验（2026-10-17 系统性检查：
+/// parent_issue_id / project_id 引用完整性校验（系统性检查：
 /// issue 表这两列无 REFERENCES 约束，靠这里显式把关）。规则：
 /// - project 存在；
 /// - parent issue 存在；`self_id = Some(id)` 时禁自引用；并沿 parent 链
@@ -4094,7 +4094,7 @@ fn validate_issue_refs_on(
 
 /// 发频道消息的内核（不加锁）：空白内容拒绝 + 空 mtype 归一为 text +
 /// 插入。[`BoardStore::append_channel_message`] 与 `post_discussion_envelope`
-/// 共用——单一真相源。
+/// 共用——统一定义。
 fn append_channel_message_on(
     conn: &Connection,
     new: &NewChannelMessage,
@@ -4137,7 +4137,7 @@ fn append_channel_message_on(
 /// 落一条 issue 评论的完整副作用（不加锁内核）：FK 校验 + 评论行 +
 /// 订阅 + activity + 站内通知（订阅者 ∪ 指派 − 作者；@提及优先）。
 /// [`BoardStore::add_comment`] 与 `post_discussion_envelope` 共用——
-/// 单一真相源，后者靠外层持同一把锁保证原子。
+/// 统一定义，后者靠外层持同一把锁保证原子。
 fn add_comment_on(conn: &Connection, new: &NewComment) -> Result<Comment, String> {
     // FK 校验 + 顺带取通知标题需要的编号/标题/指派（一次查询）。
     let (number, title, at, aid): (String, String, Option<String>, Option<String>) = conn
@@ -4165,7 +4165,7 @@ fn add_comment_on(conn: &Connection, new: &NewComment) -> Result<Comment, String
     insert_subscriber(conn, new.issue_id, &new.author, "commented")?;
     insert_activity(conn, new.issue_id, &new.author, "commented", None, now)?;
 
-    // 站内通知（W2 P3）：收件人 = 订阅者 ∪ 指派 − 作者；@提及优先于
+    // 站内通知：收件人 = 订阅者 ∪ 指派 − 作者；@提及优先于
     // 普通评论通知（同一人只收一条）。
     if new.ctype == CommentType::Comment {
         let mut recipients = self_subscribers(conn, new.issue_id)?;
@@ -4255,7 +4255,7 @@ fn insert_activity(
     Ok(())
 }
 
-/// 派发代际号计算（AOR 批二a ④）：该 issue 当前全部派发行数（含历史
+/// 派发代际号计算（a ④）：该 issue 当前全部派发行数（含历史
 /// 终态行）——首派 0、第 N 次重派 N-1。调用方须已持 conn 锁（与写入
 /// 同临界区，防并发交错算错代际）。终态历史行计入：重派语义是「轮次
 /// 序号」，不是「在途序号」。
@@ -4393,7 +4393,7 @@ fn row_to_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<BoardAsset> {
     })
 }
 
-/// team_memory 行映射（M4.5 §6.5.1；SELECT 列序必须与本函数一一对应）。
+/// team_memory 行映射（.5；SELECT 列序必须与本函数一一对应）。
 fn row_to_team_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamMemoryEntry> {
     let deprecated: i64 = row.get(7)?;
     Ok(TeamMemoryEntry {
@@ -4412,10 +4412,10 @@ fn row_to_team_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamMemoryEnt
 fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
     let enabled: i64 = row.get("enabled")?;
     let auto_plan: i64 = row.get("auto_plan")?;
-    // F-U5-1：列 NOT NULL DEFAULT ''——空串归一为 None（「没填」统一语义，
+    // F-：列 NOT NULL DEFAULT ''——空串归一为 None（「没填」统一语义，
     // 与 issue.acceptance_criteria 的 Option 用法对齐）。
     let acceptance_criteria: String = row.get("acceptance_criteria")?;
-    // L23：父会话绑定列，同款空串归一 None。
+    // 父会话绑定列，同款空串归一 None。
     let session_key: String = row.get("session_key")?;
     Ok(Autopilot {
         id: row.get("id")?,
@@ -4454,8 +4454,8 @@ fn row_to_notification(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notification
     })
 }
 
-/// LIKE 通配符转义已提升为 crate 间单一真相源 `nemesis_utils::sanitize::escape_like`
-/// （R221/BUG-163 口径；usage_store request_logs 过滤同源消费）——本 crate 原地委托，语义不变。
+/// LIKE 通配符转义已提升为 crate 间统一定义 `nemesis_utils::sanitize::escape_like`
+/// （/BUG-163 口径；usage_store request_logs 过滤同源消费）——本 crate 原地委托，语义不变。
 fn escape_like(needle: &str) -> String {
     nemesis_utils::sanitize::escape_like(needle)
 }
@@ -4466,12 +4466,12 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
     let assignee_type: Option<String> = row.get("assignee_type")?;
     let origin_type: Option<String> = row.get("origin_type")?;
     let origin_id: Option<String> = row.get("origin_id")?;
-    // Swarm M1：required_tags JSON TEXT → Vec（坏 JSON/NULL 宽容为空）。
+    // Swarm：required_tags JSON TEXT → Vec（坏 JSON/NULL 宽容为空）。
     let required_tags_json: Option<String> = row.get("required_tags")?;
     let required_tags = required_tags_json
         .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
         .unwrap_or_default();
-    // 环境能力硬条件（NB-122 批）：同 required_tags 的宽容解析。
+    // 环境能力硬条件（批）：同 required_tags 的宽容解析。
     let required_capabilities_json: Option<String> = row.get("required_capabilities")?;
     let required_capabilities = required_capabilities_json
         .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
@@ -4557,7 +4557,7 @@ fn row_to_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityLog> {
     })
 }
 
-/// 存量 status 宽容归一（F2 状态机兼容面）：词表内的值原样放行；词表外
+/// 存量 status 宽容归一（状态机兼容面）：词表内的值原样放行；词表外
 /// （手工改库 / 更早版本的脏数据）回落 `active` 并 WARN 一次——读取不炸，
 /// 但异常数据在日志里可见。一次性告警足够：这是脏数据信号，不是逐行噪音。
 fn coerce_project_status(raw: String) -> String {

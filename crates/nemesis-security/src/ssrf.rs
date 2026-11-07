@@ -252,7 +252,7 @@ impl Guard {
     /// Resolve DNS for the URL's host, validate all resulting IPs, and RETURN
     /// them so the caller can pin the connection to validated addresses.
     ///
-    /// Why the caller needs the IPs (2026-09-04 四轮盲审 S2): a plain
+    /// Why the caller needs the IPs (四轮盲审): a plain
     /// validate-then-fetch flow performs two independent DNS resolutions —
     /// the guard's and the HTTP client's. A rebinding domain (attacker
     /// controlled DNS, TTL 0) can answer the first lookup with a public IP
@@ -403,8 +403,8 @@ impl Guard {
     /// Check a single `IpAddr` against all blocking rules.
     ///
     /// 全部 IP 分类路径（直查 / DNS 解析结果 / URL 字面量）的唯一漏斗；
-    /// 判定前先做 IPv4-mapped IPv6 归一（BUG-20261029-186：映射形态在
-    /// 双栈 socket 上按内嵌 IPv4 连接，不归一则 V4 危险段全部漏放）。
+    /// 判定前先做 IPv4-mapped IPv6 归一（映射形态在
+    /// 双栈 socket 上按内嵌 IPv4 连接，不归一则 危险段全部漏放）。
     fn check_ip_locked(
         &self,
         guard: &parking_lot::RwLockReadGuard<'_, Inner>,

@@ -1,9 +1,9 @@
 //! 自定义 slash 命令改写：`rewrite_custom_command` 的决策表测试——
 //! 展开/占位替换/无占位追加/内置跳过/未命中不动/非 slash 不动，以及
-//! K3（devtool-upgrade 阶段 4）新增的 `` !`cmd` `` 注入与技能回落，
+//! （devtool-upgrade）新增的 `` !`cmd` `` 注入与技能回落，
 //! 与五差距补齐（2026-09-28）新增的内置深度模板层（四段解析链第 3 段）。
 //! 命令表写进临时目录的 `config.commands.json`，经 `set_commands_path` 走
-//! 与生产一致的加载路径。K3 起 rewrite 是 async（模板注入要跑命令）。
+//! 与生产一致的加载路径。 起 rewrite 是 async（模板注入要跑命令）。
 
 use super::*;
 use crate::types::AgentConfig;
@@ -149,7 +149,7 @@ async fn unknown_name_and_non_slash_untouched() {
 }
 
 // ---------------------------------------------------------------------------
-// K3：`` !`cmd` `` 注入
+// `` !`cmd` `` 注入
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -216,7 +216,7 @@ fn substitute_replaces_via_resolver_and_keeps_edge_tokens() {
 #[test]
 fn injection_output_cap_is_char_boundary_safe() {
     // 多字节字符打满上限再截——byte 切片会 panic（str-slice 教训），
-    // 字符截断必须干净落在边界上。SHELL_INJECTION_OUTPUT_CAP 经 super::* 导入。
+    // 字符截断必须干净落在边界上。SHELL_INJECTION_OUTPUT_CAP 经 super:* 导入。
     let cap = SHELL_INJECTION_OUTPUT_CAP;
     let s = "中".repeat(cap + 10);
     let capped = cap_injection_output(&s);
@@ -238,7 +238,7 @@ fn tail_line_takes_last_nonempty_line_capped() {
 }
 
 // ---------------------------------------------------------------------------
-// K3：技能回落
+// 技能回落
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -297,7 +297,7 @@ async fn skill_fallback_without_commands_table() {
 
 #[test]
 fn builtin_list_matches_shared_truth_source() {
-    // K3：loop 内置清单转发自 nemesis-types 单一真相源。
+    // loop 内置清单转发自 nemesis-types 统一定义。
     assert_eq!(
         AgentLoop::BUILTIN_SLASH_COMMANDS,
         nemesis_types::constants::BUILTIN_SLASH_COMMANDS

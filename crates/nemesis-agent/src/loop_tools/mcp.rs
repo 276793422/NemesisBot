@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 loop_tools.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -97,7 +97,7 @@ impl Tool for McpDiscoverTool {
         }
     }
 
-    /// BUG-20261102-296：stdio 臂（`command` 参数）是 LLM 可控的任意进程
+    /// stdio 臂（`command` 参数）是 LLM 可控的任意进程
     /// spawn（`discover_server_metadata` → `StdioTransport` → 直接
     /// `Command::spawn`）——效果面与 exec 同级，静态 NetworkRequest
     /// （MEDIUM）档让 exec 族全部闸失配：默认配置的 `process_rules.exec`
@@ -178,7 +178,7 @@ impl Tool for CliReferenceTool {
     }
 }
 
-/// U20 (sixth batch): cross-session full-text search over chat history
+/// (sixth batch): cross-session full-text search over chat history
 /// (session_logs). Lazy-indexes on first use (FTS5), falls back to a linear
 /// scan if the index DB is unavailable. Read-only.
 /// history-search 关：工具整体不编译（FTS 索引随 rusqlite 进出，供给闸）。
@@ -776,7 +776,7 @@ impl Tool for McpListTool {
         if tools.is_empty() {
             return Ok("No MCP tools are currently registered.".to_string());
         }
-        // W7：按名查询单工具完整 schema（惰性供给的 schema 查询面）。无名 =
+        // 按名查询单工具完整 schema（惰性供给的 schema 查询面）。无名 =
         // 全量列表（输出格式与历史版本逐字节一致，保 prompt cache 兼容）。
         let want: Option<String> = serde_json::from_str::<serde_json::Value>(args)
             .ok()
@@ -830,7 +830,7 @@ Call it with `mcp_call` {{\"tool\": \"{}\", \"args\": {{...}}}}.",
     }
 }
 
-/// W7（2026-10-25 加固）：MCP 惰性供给 meta 工具。`mcp_*` 长尾工具
+/// （加固）：MCP 惰性供给 meta 工具。`mcp_*` 长尾工具
 /// schema 不随轮上行时，模型经本工具两步调用：`mcp_list`（可按名查
 /// schema）→ `mcp_call {tool, args}`。
 ///
@@ -869,7 +869,7 @@ impl Tool for McpCallTool {
     }
 }
 
-/// L10-建设（改进项三期 2026-11-02）：惰性 schema 供给的取回工具——
+/// 建设：惰性 schema 供给的取回工具——
 /// 两级化供给下工具 defs 只带 name+description（参数折叠为占位），模型
 /// 按需以 `{"name": "<tool>"}` 取回完整 schema（取回过的名字进 per-session
 /// 解锁账，后续轮次以「已解锁 schema 注记」持续携带）。

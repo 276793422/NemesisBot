@@ -47,7 +47,7 @@ pub(crate) struct DetachedModelSwap {
 pub struct AgentInstance {
     /// Unique instance identifier.
     id: u64,
-    /// Detached 模型覆盖（BUG 2026-10-08 `board.plan.model` dead-key 修复）。
+    /// Detached 模型覆盖（BUG `board.plan.model` dead-key 修复）。
     /// `run_detached_events` 从 `DetachedOpts.model_swap` 注入；本回合的
     /// provider/model 读取点（`effective_model` / `call_llm_with_recovery` /
     /// chat_opts per-model 键）经本字段消费。instance 级而非 loop 级——与
@@ -86,29 +86,29 @@ pub struct AgentInstance {
     /// Provider metadata (name, masked API key, base URL) for logging.
     /// Mirrors Go's AgentInstance.ProviderMeta.
     provider_meta: Mutex<Option<serde_json::Value>>,
-    /// G0 (devtool-upgrade 阶段 3)：子代理工具白名单（`run_detached` 派生的
+    /// (devtool-upgrade)：子代理工具白名单（`run_detached` 派生的
     /// instance 设置；`effective_tool_defs` 在 tier 过滤后按它收窄供给）。
     /// None = 非子代理或全量供给。instance 级而非 loop 级——并发子代理互不
     /// 串扰（loop 级全局槽会被并行 detached 回合互踩）。
     detached_allowed_tools: Mutex<Option<Vec<String>>>,
-    /// Swarm M1（裸提示词模式）：零工具供给开关。`run_detached` 派生时由
+    /// Swarm （裸提示词模式）：零工具供给开关。`run_detached` 派生时由
     /// `DetachedOpts.no_tools` 设置；`effective_tool_defs` 见它立即返回空
     /// 供给（纯文本单轮调用，board planner / 验收 / 主持人等结构化子系统
     /// 用——不向模型暴露任何工具定义）。instance 级与白名单同理由：并发
     /// detached 回合互不串扰。
     detached_no_tools: Mutex<bool>,
-    /// G2 (devtool-upgrade 阶段 3)：本 instance 的子代理嵌套深度
+    /// (devtool-upgrade)：本 instance 的子代理嵌套深度
     /// （0 = 顶层 agent，N = 第 N 层子代理）。`run_detached` 派生时设置；
     /// 工具分发（`handle_tool_call_at_depth`）读它喂给 depth-aware 工具
     /// （spawn 由此执行 `agents.subagent.max_depth` 深度限制）。原子量即可
     /// ——单写者（派生时一次 set）、分发路径只读。
     detached_depth: std::sync::atomic::AtomicUsize,
-    /// I3 (devtool-upgrade 阶段 3)：本会话已认领的子目录（canonical 形态，
+    /// (devtool-upgrade)：本会话已认领的子目录（canonical 形态，
     /// 含无指令文件而未入队的目录不在此列——只有确实注入过指令的目录才认
     /// 领）。会话生命周期去重：同一子目录的指令至多注入一次。
     instruction_claims: Mutex<Vec<PathBuf>>,
-    /// I3：已发现待注入的指令条目 (path, content)。build_messages 每轮
-    /// drain 一次性注入（I1 external_changes 同通道形态），drain 后为空
+    /// 已发现待注入的指令条目 (path, content)。build_messages 每轮
+    /// drain 一次性注入（external_changes 同通道形态），drain 后为空
     /// ⇒ 合并消息字节回稳。
     pending_instructions: Mutex<Vec<(PathBuf, String)>>,
 }
@@ -125,7 +125,7 @@ impl AgentInstance {
             state: Mutex::new(AgentState::Idle),
             metadata: Mutex::new(serde_json::Value::Null),
             summary_cache: Mutex::new(None),
-            // N1 (devtool-upgrade 阶段 1)：默认窗口与三级解析链的 L3 兜底
+            // (devtool-upgrade)：默认窗口与三级解析链的 兜底
             // 同源——历史 32000 对 128k+ 模型触发压缩过早（编码失忆）。
             context_window: crate::r#loop::FALLBACK_CONTEXT_WINDOW,
             workspace: PathBuf::new(),
@@ -235,7 +235,7 @@ impl AgentInstance {
         self.push_turn(turn);
     }
 
-    /// T5（多模态）：带图片路径引用的 user 消息变体（`add_user_message`
+    /// （多模态）：带图片路径引用的 user 消息变体（`add_user_message`
     /// 签名不动；引用进 `ConversationTurn.image_refs`，build_messages 每轮
     /// 水合重读）。
     pub fn add_user_message_with_images(&self, content: &str, image_refs: &[String]) {
@@ -290,7 +290,7 @@ impl AgentInstance {
         self.push_turn(turn);
     }
 
-    /// X1 (U3 projection prune): add a tool result keeping the ORIGINAL
+    /// (projection prune): add a tool result keeping the ORIGINAL
     /// content in history, with the bounded model-facing projection carried
     /// alongside instead of replacing the content.
     ///
@@ -594,7 +594,7 @@ impl AgentInstance {
     }
 
     // -----------------------------------------------------------------------
-    // DetachedAllowedTools (G0, devtool-upgrade 阶段 3)
+    // DetachedAllowedTools (, devtool-upgrade)
     // -----------------------------------------------------------------------
 
     /// 子代理工具白名单快照（`None` = 非子代理 / 全量供给）。由
@@ -609,7 +609,7 @@ impl AgentInstance {
     }
 
     // -----------------------------------------------------------------------
-    // Detached bare mode (Swarm M1, 裸提示词模式)
+    // Detached bare mode (Swarm, 裸提示词模式)
     // -----------------------------------------------------------------------
 
     /// 零工具供给开关。`effective_tool_defs` 见它立即返回空供给——模型
@@ -624,7 +624,7 @@ impl AgentInstance {
     }
 
     // -----------------------------------------------------------------------
-    // DetachedDepth (G2, devtool-upgrade 阶段 3)
+    // DetachedDepth (, devtool-upgrade)
     // -----------------------------------------------------------------------
 
     /// 本 instance 的子代理嵌套深度（0 = 顶层 agent）。`run_detached`
@@ -641,7 +641,7 @@ impl AgentInstance {
     }
 
     // -----------------------------------------------------------------------
-    // Detached model override（BUG 2026-10-08 `board.plan.model` dead-key）
+    // Detached model override（BUG `board.plan.model` dead-key）
     // -----------------------------------------------------------------------
 
     /// 本回合 detached 模型覆盖名（None = 用 loop 主模型）。
@@ -674,7 +674,7 @@ impl AgentInstance {
     }
 
     // -----------------------------------------------------------------------
-    // Lazy sub-directory instructions (I3, devtool-upgrade 阶段 3)
+    // Lazy sub-directory instructions (, devtool-upgrade)
     // -----------------------------------------------------------------------
 
     /// 认领一个子目录（canonical 形态）。只有确实发现并排队了指令文件的
@@ -745,6 +745,6 @@ impl AgentInstance {
 #[cfg(test)]
 mod tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
+// 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

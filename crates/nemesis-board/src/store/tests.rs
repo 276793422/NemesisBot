@@ -37,7 +37,7 @@ fn cleanup(dir: &PathBuf) {
 }
 
 // ---------------------------------------------------------------------------
-// AC 自动生成（NB-125 根修，2026-10-17 用户裁决：验收标准就应该自动生成）
+// AC 自动生成（根修， 用户裁决：验收标准就应该自动生成）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -112,11 +112,11 @@ fn create_issue_treats_blank_ac_as_missing() {
 }
 
 // ---------------------------------------------------------------------------
-// G4 交付证据契约（2026-10-18 批六）：AC 含 file: 类锚点 → requires_evidence
-// 建单自动置位（谓词 = has_file_anchor 单一真相源；评审门消费面在
+// 交付证据契约：AC 含 file: 类锚点 → requires_evidence
+// 建单自动置位（谓词 = has_file_anchor 单一权威定义；评审门消费面在
 // board_review）。content-regex/exec 锚点与无锚点不置位（re: 锚点核的是
 // 交付文本非文件产物，exec: 由锚点执行闸自行保证）。
-// F5：checkpoint-git 关（纯 cfg 旗标，nemesisbot 穿透）时自动置位跳过——
+// checkpoint-git 关（纯 cfg 旗标，nemesisbot 穿透）时自动置位跳过——
 // 置位断言测试随门编译（crate 单测不带 feature = 跳过；workspace 全量
 // feature 统一后照常跑到）。
 // ---------------------------------------------------------------------------
@@ -437,7 +437,7 @@ fn test_self_transition_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// reopen（发现④ 2026-09-15）：cancelled 唯一终态出口
+// reopen（发现④）：cancelled 唯一终态出口
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -525,7 +525,7 @@ fn test_reopen_missing_issue_errors() {
     cleanup(&dir);
 }
 
-// F2（2026-09-30）：派发送达失败状态回退（rollback_dispatch_failure）。
+// 派发送达失败状态回退（rollback_dispatch_failure）。
 #[test]
 fn test_rollback_dispatch_failure_restores_prev_state() {
     let (store, dir) = temp_store("rollback-dispatch");
@@ -862,7 +862,7 @@ fn test_reopen_preserves_data() {
             .unwrap();
         a
     };
-    // 重开：编号 counter 延续（下一个是 NB-2），状态保留。
+    // 重开：编号 counter 延续（下一个是），状态保留。
     let store2 = BoardStore::open(&db, "NB").unwrap();
     assert_eq!(
         store2.get_issue(a.id).unwrap().status,
@@ -873,7 +873,7 @@ fn test_reopen_preserves_data() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// -- 派发（W2 P2：issue_dispatch 表 CRUD + 幂等终结）--
+// -- 派发（issue_dispatch 表 CRUD + 幂等终结）--
 
 use crate::models::dispatch_state;
 
@@ -937,7 +937,7 @@ fn test_dispatch_crud_lifecycle() {
     // 非法终态拒绝。
     assert!(store.finish_dispatch("task-1", "cancelled").is_err());
 
-    // 原子占用闸（R5-BUG-2）：同 issue 已有在途派发 → 二次 claim 返回
+    // 原子占用闸（BUG-2）：同 issue 已有在途派发 → 二次 claim 返回
     // Ok(None)（不写行、不报错）——多触发源并发派发的统一拒绝语义。
     // （上一节已把 task-1/task-2 都终结，这里先重新 seed 一行 active。）
     store
@@ -950,7 +950,7 @@ fn test_dispatch_crud_lifecycle() {
             .is_none()
     );
     assert!(store.get_dispatch("task-1b").unwrap().is_none());
-    // 无在途 → claim 放行（AOR 批二a：代际号 = 既有行数；本 issue 此前
+    // 无在途 → claim 放行（a：代际号 = 既有行数；本 issue 此前
     // task-1/task-2/task-1c 三行 → 本次为第 4 行，generation = 3）。
     store
         .finish_dispatch("task-1c", dispatch_state::FAILED)
@@ -969,9 +969,9 @@ fn test_dispatch_crud_lifecycle() {
 
 #[test]
 fn test_dispatch_generation_v22_legacy_db_upgrades_existing_rows_to_zero() {
-    // v23 迁移回归（AOR 批二a ④）：真实 v23 库手工降级成 v22 形态
+    // v23 迁移回归（a ④）：真实 v23 库手工降级成 v22 形态
     // （issue_dispatch 去 generation 列 + user_version 回拨 22）→ 重开
-    // 触发 ALTER ... ADD COLUMN generation DEFAULT 0 → 存量行代际读 0
+    // 触发 ALTER... ADD COLUMN generation DEFAULT 0 → 存量行代际读 0
     // （首派语义，旧行为兼容）；此后新派发照常按行数计数（存量行占一代）。
     let dir =
         std::env::temp_dir().join(format!("nb-board-v23-gen-migration-{}", std::process::id()));
@@ -1139,7 +1139,7 @@ fn test_dispatch_scoped_to_issue() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// -- 看板拖拽（W2 P3：issue.move 原子「状态 + 排序」）--
+// -- 看板拖拽（issue.move 原子「状态 + 排序」）--
 
 #[test]
 fn test_move_issue_cross_column_reorder_and_illegal() {
@@ -1206,7 +1206,7 @@ fn test_move_issue_cross_column_reorder_and_illegal() {
     cleanup(&dir);
 }
 
-// -- 通知 / 收件箱（W2 P3）--
+// -- 通知 / 收件箱--
 
 #[test]
 fn test_notification_assigned_and_status_changed_to_assignee() {
@@ -1397,7 +1397,7 @@ fn test_notification_comment_and_mention_precedence() {
 fn test_notification_inbox_read_flow_and_admin_wildcard() {
     let (store, dir) = temp_store("notify-inbox");
     let a = store.create_issue(new_issue("收件箱")).unwrap();
-    // 两位 admin 收件人（admin wildcard：recipient_id=None 全可见）。
+    // 两位 admin 收件人（admin wildcard：recipient_id=None 全可）。
     for (kind, id) in [("admin", "alice"), ("admin", "bob")] {
         store
             .notify(NewNotification {
@@ -1466,7 +1466,7 @@ fn test_notification_inbox_read_flow_and_admin_wildcard() {
     cleanup(&dir);
 }
 
-// -- 项目更新 / 附件读取（W2 P3）--
+// -- 项目更新 / 附件读取--
 
 #[test]
 fn test_update_project_patch() {
@@ -1548,7 +1548,7 @@ fn test_get_attachment_by_id() {
 }
 
 // ---------------------------------------------------------------------------
-// P4：派发取消 / 超时兜底（cancel_dispatch / fail_dispatch / 在途列表）
+// 派发取消 / 超时兜底（cancel_dispatch / fail_dispatch / 在途列表）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1666,7 +1666,7 @@ fn test_fail_dispatch_timeout_race_and_activity() {
     cleanup(&dir);
 }
 
-/// AOR 批三 5.2：`fail_dispatch_checked` 代际闸——generation 等值才允许
+/// `fail_dispatch_checked` 代际闸——generation 等值才允许
 /// 失败落定（sweep 持有的 record 快照与库里行同代才算竞态赢家；代际不匹配
 /// = Ok(None) 且行原样不动）。generation = 该 issue 派发行数（插入序，0 起）。
 #[test]
@@ -1769,7 +1769,7 @@ fn test_list_active_dispatches_across_issues() {
 }
 
 // ---------------------------------------------------------------------------
-// D0b：running（已开跑）派发的在途语义（2026-09-13 NB-12/13/15 实机回归
+// running（已开跑）派发的在途语义（/13/15 实机回归
 // ——超时 sweep / 取消 / 写回终结必须覆盖 running，否则卡死永久化）
 // ---------------------------------------------------------------------------
 
@@ -1821,7 +1821,7 @@ fn test_running_dispatch_cancellable_then_late_callback_dropped() {
         .unwrap();
     store.mark_dispatch_running("task-r2", "node-b").unwrap();
 
-    // 用户取消执行中的单：赢得竞态 → cancelled（D0b 前误报「派发已终结」）。
+    // 用户取消执行中的单：赢得竞态 → cancelled（前误报「派发已终结」）。
     let rec = store
         .cancel_dispatch("task-r2", &admin())
         .unwrap()
@@ -1850,7 +1850,7 @@ fn test_running_dispatch_callback_writes_back() {
         .insert_dispatch("task-r3", issue.id, "node-b", &admin())
         .unwrap();
     store.mark_dispatch_running("task-r3", "node-b").unwrap();
-    // 正常回报：running → done 可终结（NB-12「already terminal (running),
+    // 正常回报：running → done 可终结（「already terminal (running),
     // skip」事故的直接回归锁）。
     assert!(
         store
@@ -1864,7 +1864,7 @@ fn test_running_dispatch_callback_writes_back() {
 }
 
 // ---------------------------------------------------------------------------
-// P4：autopilot 规则 CRUD + run 簿记
+// autopilot 规则 CRUD + run 簿记
 // ---------------------------------------------------------------------------
 
 fn new_ap(name: &str) -> NewAutopilot {
@@ -2039,7 +2039,7 @@ fn test_notify_dispatch_event_recipients_dedup() {
 }
 
 // ---------------------------------------------------------------------------
-// Swarm M1：planner 拆解支撑（required 列 + 依赖表 + 子单列表）
+// Swarm：planner 拆解支撑（required 列 + 依赖表 + 子单列表）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2179,7 +2179,7 @@ fn test_list_children_returns_creation_order() {
 }
 
 // ---------------------------------------------------------------------------
-// 讨论频道 + 任务资产（Swarm M2）
+// 讨论频道 + 任务资产（Swarm）
 // ---------------------------------------------------------------------------
 
 use crate::models::{NewChannel, NewChannelMessage, channel_message_type};
@@ -2273,7 +2273,7 @@ fn test_channel_membership_join_leave_list() {
     cleanup(&dir);
 }
 
-/// Swarm M2：first-join 判据 —— 成员跨全表零行才算全新节点。
+/// Swarm：first-join 判据 —— 成员跨全表零行才算全新节点。
 #[test]
 fn test_has_any_channel_membership_first_join_predicate() {
     let (store, dir) = temp_store("first-join");
@@ -2529,10 +2529,10 @@ fn test_asset_unbind_uses_reference_counting() {
 }
 
 // ---------------------------------------------------------------------------
-// M3 信封落库（幂等 + seq 台账 + 补拉）
+// 信封落库（幂等 + seq 台账 + 补拉）
 // ---------------------------------------------------------------------------
 
-/// G12：同 (origin_node, client_msg_id) 重发返回首响，不重复落库；
+/// 同 (origin_node, client_msg_id) 重发返回首响，不重复落库；
 /// issue 评论与频道消息两路都走一遍。
 #[test]
 fn test_post_discussion_envelope_idempotent_both_targets() {
@@ -2661,7 +2661,7 @@ fn test_post_discussion_envelope_idempotent_both_targets() {
     cleanup(&dir);
 }
 
-/// seq 台账：单调递增 + board.sync 增量补拉（G8 的存储侧）。
+/// seq 台账：单调递增 + board.sync 增量补拉（的存储侧）。
 #[test]
 fn test_seq_ledger_and_list_messages_since() {
     let (store, dir) = temp_store("seq-ledger");
@@ -2741,7 +2741,7 @@ fn test_seq_ledger_and_list_messages_since() {
 }
 
 // ---------------------------------------------------------------------------
-// team_memory（M4.5 集体记忆 §6.5：蒸馏写闸 + 检索源）
+// team_memory（.5 集体记忆：蒸馏写闸 + 检索源）
 // ---------------------------------------------------------------------------
 
 use crate::models::NewTeamMemory;
@@ -2885,7 +2885,7 @@ fn test_team_memory_migration_preserves_existing_data() {
 }
 
 // ---------------------------------------------------------------------------
-// 全自动流转 P3：auto_plan serde 兼容 + project.status 宽容读取
+// 全自动流转：auto_plan serde 兼容 + project.status 宽容读取
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2911,7 +2911,7 @@ fn test_autopilot_serde_roundtrip_auto_plan_default() {
 
 #[test]
 fn test_autopilot_acceptance_criteria_roundtrip() {
-    // F-U5-1：验收标准字段 create/update 全链 round-trip + 空串归一 None。
+    // F-：验收标准字段 create/update 全链 round-trip + 空串归一 None。
     let (store, _dir) = temp_store("autopilot-acceptance");
 
     // create 带 → Some；不填（None）→ 读回 None（DB 存 ''）。
@@ -2970,7 +2970,7 @@ fn test_autopilot_acceptance_criteria_roundtrip() {
 
 #[test]
 fn test_autopilot_session_key_roundtrip() {
-    // L23（三期 2026-11-03）：父会话绑定字段 create/update 全链
+    // （三期）：父会话绑定字段 create/update 全链
     // round-trip + 空串归一 None + 存量 JSON 缺键反序列化 None。
     let (store, dir) = temp_store("autopilot-session-key");
 
@@ -3077,11 +3077,11 @@ fn test_project_status_lenient_read_unknown_value() {
     cleanup(&dir);
 }
 
-// -- 回归（全自动流转 P4 UAT 抓真 bug 后钉死）--
+// -- 回归（全自动流转 UAT 抓真 bug 后钉死）--
 
 /// 同秒派发乱序回归：`dispatched_at` 秒级精度下，同一秒内连续 insert 的
 /// 多条派发必须按插入序读回（rowid 序），"最新派发"不得被随机 UUID 决胜
-/// 打乱——D3 连续同节点判定与回调路由都吃这个序（cluster-uat T34 实测）。
+/// 打乱—— 连续同节点判定与回调路由都吃这个序（cluster-uat 实测）。
 #[test]
 fn test_dispatch_list_order_is_insertion_order_within_same_second() {
     let (store, dir) = temp_store("dispatch-order");
@@ -3146,7 +3146,7 @@ fn test_project_acceptance_criteria_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// -- E2 决策流审计（全自动流转 P5）--
+// -- 决策流审计（全自动流转）--
 
 /// list_recent_activity：JOIN 补齐单号/标题、按 id 倒序、limit 截断、
 /// action 过滤只留 auto_decide 词表。
@@ -3213,7 +3213,7 @@ fn test_audit_list_recent_activity_filter_and_limit() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// list_recent_activity_paged：offset 翻页（F-U6-1 刷屏挤占窗口时仍可翻到
+/// list_recent_activity_paged：offset 翻页（F- 刷屏挤占窗口时仍可翻到
 /// 最新——ORDER BY id DESC LIMIT ? OFFSET ?）。
 #[test]
 fn test_audit_list_recent_activity_paged_offset() {
@@ -3338,7 +3338,7 @@ fn test_audit_rollback_done_to_in_review_and_reentry_rejected() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// rollback_done_to_in_review（P3/D4 修复）：done 单 bypass 回滚到
+/// rollback_done_to_in_review（/ 修复）：done 单 bypass 回滚到
 /// in_review + 系统评论 + status_changed 审计；非 done 幂等返回
 /// Ok(false)（T-XFER-5 首轮实机实证：普通 transition_issue 对
 /// done→in_review loud 拒绝，回滚静默失败、单据假性收货）。
@@ -3391,10 +3391,10 @@ fn test_done_rollback_bypass_to_in_review() {
 }
 
 // ---------------------------------------------------------------------------
-// P1/A2 + A2b（看板项目档案 goal）：IssueFilter 排除旗标 + 取消单清理
+// / + （看板项目档案 goal）：IssueFilter 排除旗标 + 取消单清理
 // ---------------------------------------------------------------------------
 
-/// 三个排除旗标逐个生效 + 组合（Default=false：内部调用方全量可见）。
+/// 三个排除旗标逐个生效 + 组合（Default=false：内部调用方全量可）。
 #[test]
 fn test_issue_filter_exclusion_flags() {
     let (store, dir) = temp_store("filter-exclusion");
@@ -3410,7 +3410,7 @@ fn test_issue_filter_exclusion_flags() {
         .transition_issue(c, IssueStatus::Cancelled, &admin())
         .unwrap();
     store.bulk_archive_cancelled(&[c], &admin()).unwrap();
-    // 归档项目（A2）。
+    // 归档项目。
     store
         .update_project(
             proj.id,
@@ -3552,7 +3552,7 @@ fn test_bulk_archive_cancelled() {
     cleanup(&dir);
 }
 
-// -- 项目档案目录（看板项目档案 goal P2/B1）--
+// -- 项目档案目录（看板项目档案 goal）--
 
 #[test]
 fn test_project_directory_bind_and_readback() {
@@ -3599,7 +3599,7 @@ fn test_project_directory_bind_and_readback() {
 }
 
 // ---------------------------------------------------------------------------
-// P5/F2+F3：冲突冻结 + 待补合并队列
+// /：冲突冻结 + 待补合并队列
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3621,7 +3621,7 @@ fn test_conflict_freeze_roundtrip_and_default_off() {
 
 #[test]
 fn test_unfreeze_preserves_pending_merges() {
-    // F4 关键语义：解除冻结**不清** pending_merges——队列由补合并逐条
+    // 关键语义：解除冻结**不清** pending_merges——队列由补合并逐条
     // pop 消费；提前清空会让冻结期交付静默丢失。
     let (store, dir) = temp_store("unfreeze-keeps-queue");
     let p = store
@@ -3675,7 +3675,7 @@ fn test_pending_merge_append_pop_fifo() {
 }
 
 // ---------------------------------------------------------------------------
-// SAN-06/07/08（2026-09-16 横扫加固）：后代闭包 / reopen 依赖闸
+// SAN-06/07/08（横扫加固）：后代闭包 / reopen 依赖闸
 // ---------------------------------------------------------------------------
 
 /// 三层链 P→A→B（父子边）。Subtree 闭包返回全部后代；中间层置 done 后
@@ -3784,7 +3784,7 @@ fn test_reopen_rejected_while_upstream_cancelled() {
 }
 
 // ---------------------------------------------------------------------------
-// 集群专业职能框架（M2）：required_profession 落库 round-trip
+// 集群专业职能框架：required_profession 落库 round-trip
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3812,7 +3812,7 @@ fn test_required_profession_roundtrip_and_blank_to_none() {
 }
 
 // ---------------------------------------------------------------------------
-// 环境能力硬条件（NB-122 批 2026-10-16）：required_capabilities 落库 round-trip
+// 环境能力硬条件（16）：required_capabilities 落库 round-trip
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -3840,7 +3840,7 @@ fn test_required_capabilities_roundtrip_and_empty_to_null() {
 }
 
 // ---------------------------------------------------------------------------
-// F2（2026-10-13）：送达失败自动重试——退避阶梯 + 候选查询（评论即账本）
+// 送达失败自动重试——退避阶梯 + 候选查询（评论即账本）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4040,7 +4040,7 @@ fn test_send_failure_worker_error_shape_stays_out_of_pool() {
     let (store, dir) = temp_store("send-failure-worker-error");
     let actor = crate::assignment::Actor::system("board");
 
-    // 闭环批根修锁（2026-10-13）：worker 汇报失败 / 交付守卫拦截只写
+    // 闭环批根修锁：worker 汇报失败 / 交付守卫拦截只写
     // **Comment 型**评论 + finish_dispatch(failed)，无 system 评论落盘——
     // 此前旧 ⛔ 滞留 last-system 位且计数冻结，标记时序闸（⛔ 必须 ≥ 最新
     // 派发行 completed_at）把这种「第三种 failed 终态」请出池：无时序闸时
@@ -4129,7 +4129,7 @@ fn test_send_failure_success_delivery_exits_pool() {
     let (store, dir) = temp_store("send-failure-success-exit");
     let actor = crate::assignment::Actor::system("board");
 
-    // 多角度审计批根修锁（2026-10-13）：成功交付只写 Delivery 评论 + 派发行
+    // 多角度审计批根修锁：成功交付只写 Delivery 评论 + 派发行
     // done，**不写 system 评论**——无账本闸时旧 ⛔ 仍是最后一条 system 评论，
     // 交付后 in_review 立即重新入池（评审进行中被重派的乒乓循环）。重派成功
     // 后账本尾行顶掉 failed → 必须出池。
@@ -4205,7 +4205,7 @@ fn test_rollback_dispatch_failure_yields_to_active_dispatch() {
     let (store, dir) = temp_store("rollback-active-dispatch-guard");
     let actor = crate::assignment::Actor::system("board");
 
-    // 多角度审计批根修锁（2026-10-13）：finish_dispatch(failed) 与回退之间
+    // 多角度审计批根修锁：finish_dispatch(failed) 与回退之间
     // 有并发触发源抢到新 claim（dispatched 行在途）→ 回退必须让位
     //（Ok(false)），状态不动——把在跑任务回退会谎报状态位。
     let issue = store.create_issue(new_issue("竞态接管单")).unwrap();
@@ -4277,7 +4277,7 @@ fn test_send_failure_in_review_pool() {
     let actor = crate::assignment::Actor::system("board");
 
     // 复检批根修形态：评审 FAIL → 自动重派（dispatch_issue_core 收 in_review）
-    // → 送达失败回滚回 in_review + ⛔ → 必须在重试池（NB-24 原始事故形状，
+    // → 送达失败回滚回 in_review + ⛔ → 必须在重试池（原始事故形状，
     // 旧查询 status IN ('backlog','todo') 漏掉 → in_review 滞留待人工）。
     // 状态回流走真实 rollback_dispatch_failure（生产路径）。
     let hit = store.create_issue(new_issue("评审重派送达失败单")).unwrap();
@@ -4381,7 +4381,7 @@ fn test_send_failure_in_review_pool() {
 }
 
 // ---------------------------------------------------------------------------
-// 授予标签台账（E / D10-2）
+// 授予标签台账（E）
 // ---------------------------------------------------------------------------
 
 /// grant_tags_to_node 确定性语义：合并去重（大小写不敏感）+ trim + 空 tag
@@ -4422,7 +4422,7 @@ fn grant_tags_dedup_and_trim_semantics() {
     cleanup(&dir);
 }
 
-/// D10-2 单临界区回归（并发压力钉）：grant 曾拆成 get_meta/set_meta 两次
+/// 单临界区回归（并发压力钉）：grant 曾拆成 get_meta/set_meta 两次
 /// 独立加锁——落定波与 sweep 波并发授予同一节点时后写者覆盖前写者，丢一
 /// 次授予（下次授予自愈，但该次匹配滑进松弛阶梯 + 一条误导性降级评论）。
 /// 现为 conn 锁内 RMW 单临界区。压力形态：8 线程 barrier 齐发，各向同一
@@ -4534,7 +4534,7 @@ fn test_skip_review_done_leaves_audit_comment() {
 }
 
 // ---------------------------------------------------------------------------
-// parent_issue_id / project_id 引用完整性（2026-10-17 系统性检查：两列无
+// parent_issue_id / project_id 引用完整性（系统性检查：两列无
 // REFERENCES 约束，create_issue / update_issue 显式校验把关）
 // ---------------------------------------------------------------------------
 
@@ -4680,7 +4680,7 @@ fn update_issue_untouched_ref_columns_skip_validation() {
 }
 
 // ---------------------------------------------------------------------------
-// 认领制（2026-10-22 集群任务认领机制）：claim_issue 原子置位 + claimable_check
+// 认领制（集群任务认领机制）：claim_issue 原子置位 + claimable_check
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -4934,10 +4934,10 @@ fn ensure_default_channels_includes_team() {
 }
 
 // ---------------------------------------------------------------------------
-// R221（2026-10-29 存储层查询语义审计）：LIKE 通配符字面化
+// （存储层查询语义审计）：LIKE 通配符字面化
 // ---------------------------------------------------------------------------
 
-/// R221 BUG-163：list_issues 搜索词含 %/_ 时按 LIKE 通配符解释——
+/// BUG-163：list_issues 搜索词含 %/_ 时按 LIKE 通配符解释——
 /// `parse_json` 误命中 `parseXjson`（`_` = 任意单字符）、`a%b` 误命中
 /// `ab`（`%` = 任意串）。修复后搜索词字面匹配（ESCAPE 转义）。
 #[test]
@@ -4972,7 +4972,7 @@ fn list_issues_search_treats_like_wildcards_literally() {
     cleanup(&dir);
 }
 
-/// R221 BUG-164：search_team_memory 转义不全——`%` 直接剥除（含 `%` 的
+/// BUG-164：search_team_memory 转义不全——`%` 直接剥除（含 `%` 的
 /// 字面条目搜不到，`100%` 退化为 `100` 把 `100x done` 也误命中），`_`
 /// 完全未处理（仍按单字符通配符解释）。修复后与 list_issues 同源
 /// escape_like + ESCAPE 子句。
@@ -5006,7 +5006,7 @@ fn search_team_memory_escapes_like_wildcards() {
 }
 
 // ---------------------------------------------------------------------------
-// 自检取证路由持久层（表 selfcheck_pending；BUG-20261105-012）
+// 自检取证路由持久层（表 selfcheck_pending）
 // ---------------------------------------------------------------------------
 
 /// 状态机全流程：register（未路由）→ 兜底路由可见 → mark_routed 烧入 →

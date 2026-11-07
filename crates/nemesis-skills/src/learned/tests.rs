@@ -1,4 +1,4 @@
-//! N3 learned manifest 单元测试。
+//! learned manifest 单元测试。
 //!
 //! 覆盖：load 缺失/损坏(.bak 备份)/正常、save 往返 + BTreeMap 顺序稳定、
 //! upsert 新建/覆盖保留 created_at、remove 存在/不存在、便捷函数
@@ -113,7 +113,7 @@ fn record_then_remove_learned_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// 写并发串行化（2026-10-13 同类横扫补钉）：record/remove 都是 load→改→save
+// 写并发串行化（同类横扫补钉）：record/remove 都是 load→改→save
 // 的 RMW，agent 工具路径（跨会话并发 turn）与 WSAPI 管理面可并发到达。
 // 无锁时后写者以自己的快照整体覆盖先写者的更新（save 原子救不了丢更新）。
 // MANIFEST_WRITE_LOCK 串行化后，任意交错下两笔更新都必须同时落盘。

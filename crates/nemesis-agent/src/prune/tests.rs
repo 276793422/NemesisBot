@@ -1,4 +1,4 @@
-//! Tests for model-free tool-result pruning (U3).
+//! Tests for model-free tool-result pruning.
 
 use super::*;
 
@@ -54,12 +54,12 @@ fn test_prune_marker_names_tool_and_gives_recovery_hint() {
 }
 
 // ---------------------------------------------------------------------------
-// B3 (devtool-upgrade 阶段 3): sub-agent hint switches on registry capability.
+// (devtool-upgrade): sub-agent hint switches on registry capability.
 // 验收：有/无 spawn 两种文案断言。
 // ---------------------------------------------------------------------------
 
 /// Without the hint (no spawn tool in registry): marker text is byte-stable
-/// with the pre-B3 form — no spawn wording anywhere.
+/// with the pre form — no spawn wording anywhere.
 #[test]
 fn test_prune_without_hint_no_spawn_wording() {
     let s = "a".repeat(MAX_TOOL_RESULT_INLINE_CHARS + 1);

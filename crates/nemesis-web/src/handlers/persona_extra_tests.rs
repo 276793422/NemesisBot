@@ -20,9 +20,7 @@ use std::time::Instant;
 
 use nemesis_services::bot_service::{AgentLoopService, LifecycleService};
 
-// ---------------------------------------------------------------------------
 // Mock agent service — start/stop return Ok
-// ---------------------------------------------------------------------------
 
 struct MockAgentService;
 
@@ -39,9 +37,7 @@ impl LifecycleService for MockAgentService {
 }
 impl AgentLoopService for MockAgentService {}
 
-// ---------------------------------------------------------------------------
 // Test infra helpers (mirror tests.rs)
-// ---------------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -89,6 +85,7 @@ fn make_ctx_inner(ws: &str, agent: Option<Arc<dyn AgentLoopService>>) -> Request
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -138,6 +135,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -207,9 +205,7 @@ fn set_active(workspace: &Path, name: &str) {
     .unwrap();
 }
 
-// ---------------------------------------------------------------------------
 // module name
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_module_name() {
@@ -217,9 +213,7 @@ fn test_module_name() {
     assert_eq!(h.module_name(), "persona");
 }
 
-// ---------------------------------------------------------------------------
 // current
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_current_initial_migration() {
@@ -248,9 +242,7 @@ async fn test_current_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // list
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_list_single_default() {
@@ -303,9 +295,7 @@ async fn test_list_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // file.get
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_file_get_returns_content() {
@@ -343,7 +333,7 @@ async fn test_file_get_missing_returns_empty() {
     }
     let ctx = make_ctx(&dir);
     let h = PersonaHandler::new();
-    // 白名单外的文件名一律 loud 拒绝（BUG-20261101-294 file 白名单闸）；
+    // 白名单外的文件名一律 loud 拒绝（file 白名单闸）；
     // 「缺失 → 空内容」语义收敛到白名单内但不存在的文件上验证。
     let data = serde_json::json!({ "name": "default", "file": "NONEXISTENT.md" });
     let err = h
@@ -410,7 +400,7 @@ async fn test_file_get_path_traversal() {
         .handle_cmd("file.get", Some(data), &ctx)
         .await
         .unwrap_err();
-    // BUG-20261101-294：白名单闸先于 resolve_path（敌意文件名在触碰
+    // 白名单闸先于 resolve_path（敌意文件名在触碰
     // 文件系统之前拒绝，比旧的「.. 启发式 canonicalize 拒绝」更早更强）。
     assert!(err.contains("不是可编辑的人格文件"), "got: {}", err);
 }
@@ -427,9 +417,7 @@ async fn test_file_get_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // file.save
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_file_save_writes_and_reads_back() {
@@ -496,8 +484,8 @@ async fn test_file_save_path_traversal() {
         .handle_cmd("file.save", Some(data), &ctx)
         .await
         .unwrap_err();
-    // BUG-20261101-294：name 闸（slug 验证器）先于 resolve_path——旧路径下
-    // 该用例靠「目标不存在 + 相对路径含 ..」的 canonicalize 启发式兜住；
+    // name 闸（slug 验证器）先于 resolve_path——旧路径下
+    // 该用例靠「目标不存在 + 相对路径含..」的 canonicalize 启发式兜住；
     // 目标存在时 resolve_path 实际放行（personas/../ = workspace 根），
     // 等于越权写根文件。现在 name='..' 在触碰文件系统之前 loud 拒绝。
     assert!(err.contains("invalid"), "got: {}", err);
@@ -519,9 +507,7 @@ async fn test_file_save_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // remove
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_remove_persona() {
@@ -599,9 +585,7 @@ async fn test_remove_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // activate / restore (require agent_service)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_activate_switches_persona() {
@@ -790,9 +774,7 @@ async fn test_restore_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // shop.refresh (no network)
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_shop_refresh_no_network() {
@@ -817,9 +799,7 @@ async fn test_shop_refresh_missing_workspace() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
 // shop.preview/download without network still validate inputs
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_shop_preview_missing_data() {
@@ -865,9 +845,7 @@ async fn test_shop_download_missing_field_id() {
     assert_eq!(err, "missing field: id");
 }
 
-// ---------------------------------------------------------------------------
 // unknown command
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_unknown_command() {
@@ -886,9 +864,7 @@ async fn test_unknown_command_missing_workspace_still_workspace_first() {
     assert!(err.contains("workspace not configured"));
 }
 
-// ---------------------------------------------------------------------------
-// BUG-20261101-294 — persona 面用户可控 name/id/file 参数校验闸
-// ---------------------------------------------------------------------------
+// persona 面用户可控 name/id/file 参数校验闸
 
 /// 计数 mock：restart = stop + start 各 +1，用于 remove-active 重启断言。
 struct CountingAgentService(std::sync::atomic::AtomicUsize);

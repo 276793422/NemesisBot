@@ -263,7 +263,7 @@ fn begin_create_failure_when_staging_root_is_file() {
     assert!(reply.error.unwrap().contains("创建 staging 失败"));
 }
 
-/// end 幂等重放：成功落地后再 end → .done 回执重放（防 sender 死锁）；
+/// end 幂等重放：成功落地后再 end →.done 回执重放（防 sender 死锁）；
 /// 无 staging 且无回执 → 诚实 Err。
 #[test]
 fn end_replay_and_missing_staging_faces() {
@@ -278,7 +278,7 @@ fn end_replay_and_missing_staging_faces() {
     let end1 = sink.end(&begin.transfer_id).unwrap();
     assert_eq!(end1.status, "ok");
 
-    // staging 已清 → 重放 .done 回执，结果一致。
+    // staging 已清 → 重放.done 回执，结果一致。
     let end2 = sink.end(&begin.transfer_id).unwrap();
     assert_eq!(end2.status, "ok");
     assert_eq!(end2.file_count, end1.file_count);

@@ -1,18 +1,18 @@
-//! 紫微动态工具桥（T2.2）：profile.tools[] → AgentLoop 工具注册表。
+//! 紫微动态工具桥（.2）：profile.tools[] → AgentLoop 工具注册表。
 //!
-//! 依赖方向（决议 8①）：nemesis-ziwei 不依赖 nemesis-agent——桥在本
-//! crate，会话管理器经 `nemesis_ziwei::session::global()` 取（未装配 =
+//! 依赖方向：nemesis-ziwei 不依赖 nemesis-agent——桥在本
+//! crate，会话管理器经 `nemesis_ziwei::session:global()` 取（未装配 =
 //! 诚实报错）。注册时机：gateway 装配 / agent 重建（factory 单点，每次
 //! 重建幂等重跑）；新增 profile 后经 WSAPI `ziwei.refresh` 重注册。
 //!
-//! 安全投影（总控 §8）：子工具 `min_tier = Some("normal")`（供给+分发
-//! 双闸，mini 档不可见）；`operation_override` 投 `ziwei` 操作类型
+//! 安全投影（总控）：子工具 `min_tier = Some("normal")`（供给+分发
+//! 双闸，mini 档不可）；`operation_override` 投 `ziwei` 操作类型
 //! （OperationType::Ziwei = CRITICAL 档，8 层管线照跑）；`run_policy
 //! = confirm` 投强审批卡（跳过「总是允许」规则表）。
 //!
-//! M2 范围：`poll_report` 工具实装（一次性快照读）；M4 起 `call_fn` /
-//! `hook_capture` 实装——call_fn 整数参校验（T4.1）+ 看门狗超时；hook_capture
-//! 全锚幂等订阅（T4.3/T4.6）+ 拉取解码回流 + output.dest 报表渲染（T4.5）。
+//! 范围：`poll_report` 工具实装（一次性快照读）； 起 `call_fn` /
+//! `hook_capture` 实装——call_fn 整数参校验（.1）+ 看门狗超时；hook_capture
+//! 全锚幂等订阅（.3/.6）+ 拉取解码回流 + output.dest 报表渲染（.5）。
 
 use std::sync::Arc;
 
@@ -85,7 +85,7 @@ impl ZiweiDynamicTool {
             .ok_or_else(|| nemesis_ziwei::session::SESSION_MANAGER_NOT_ASSEMBLED_MSG.to_string())
     }
 
-    /// call_fn 执行体（T4.1）：统一实现下沉 runtime（与 WSAPI invoke 同源），
+    /// call_fn 执行体（.1）：统一实现下沉 runtime（与 WSAPI invoke 同源），
     /// 这里只做 addr 模板解析 + 入参 JSON + 工具身份装饰。
     #[cfg(windows)]
     async fn exec_call_fn(
@@ -117,7 +117,7 @@ impl ZiweiDynamicTool {
         Ok(serde_json::to_string(&obj).unwrap_or_default())
     }
 
-    /// hook_capture 执行体（T4.3/T4.5/T4.6）：统一实现下沉 runtime（与
+    /// hook_capture 执行体（.3/.5/.6）：统一实现下沉 runtime（与
     /// WSAPI invoke 同源），这里只做 addr 模板解析 + 工具身份装饰。
     #[cfg(windows)]
     async fn exec_hook_capture(&self, manager: &Arc<SessionManager>) -> Result<String, String> {
@@ -250,18 +250,18 @@ impl Tool for ZiweiDynamicTool {
         }
     }
 
-    /// 子工具最低调用档：normal（总控 §8——ziwei 工具不给 mini 档）。
+    /// 子工具最低调用档：normal（总控 ——ziwei 工具不给 mini 档）。
     fn min_tier(&self) -> Option<&str> {
         Some("normal")
     }
 
     fn is_read_only(&self) -> bool {
         // poll_report 一次性快照读 = 纯读（可进并行池）；call_fn/hook_capture
-        // 是写面（M4 实装时仍 false）。
+        // 是写面（实装时仍 false）。
         self.tool.action.primitive == Primitive::PollReport
     }
 
-    /// 安全投影（W5 模式）：ziwei 操作类型 + confirm 强审批。
+    /// 安全投影（模式）：ziwei 操作类型 + confirm 强审批。
     fn operation_override(&self, _args: &str) -> Option<OperationOverride> {
         let force_approval = match self.tool.run_policy {
             RunPolicy::Confirm => Some(format!(
@@ -289,7 +289,7 @@ pub fn register_profile_tools(agent_loop: &Arc<AgentLoop>, workspace: &std::path
     };
     let mut count = 0usize;
     for entry in &profiles {
-        // T2.2 注销语义：只有 active 入库注册——stale/revoked 在 refresh 的
+        // .2 注销语义：只有 active 入库注册——stale/revoked 在 refresh 的
         // remove-first 前置下自然注销（不重注册）。
         if entry.status != "active" {
             continue;
@@ -312,7 +312,7 @@ pub fn register_profile_tools(agent_loop: &Arc<AgentLoop>, workspace: &std::path
                 tool: tool.clone(),
             });
             let final_name = agent_loop.register_plugin_tool(name.clone(), dyn_tool);
-            // 安全管线 declare（W5 配套）：ziwei 操作类型（CRITICAL 档）。
+            // 安全管线 declare（配套）：ziwei 操作类型（CRITICAL 档）。
             #[cfg(feature = "security")]
             nemesis_security::types::declare_tool_operation(
                 &final_name,
@@ -346,7 +346,7 @@ pub fn remove_profile_tools(agent_loop: &Arc<AgentLoop>) -> usize {
     removed
 }
 
-// ── ziwei_bridge 配置期向导元工具（T3.8）────────────────────────────────
+// ── ziwei_bridge 配置期向导元工具（.8）────────────────────────────────
 
 /// 配置期向导元工具名（唯一、常驻注册）。
 pub const BRIDGE_TOOL_NAME: &str = "ziwei_bridge";
@@ -449,7 +449,7 @@ impl Tool for ZiweiBridgeTool {
                 obj
             }
             "abort" => mgr.abort(ws).await?,
-            // ── 查询面（B1）：只读、无审批、有界返回；地址十六进制 0x 可选 ──
+            // ── 查询面：只读、无审批、有界返回；地址十六进制 0x 可选 ──
             "disasm" => {
                 let rva = parse_rva_param(rva_arg(&params)?)?;
                 let max_insns = params

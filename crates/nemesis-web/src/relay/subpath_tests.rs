@@ -1,9 +1,9 @@
-//! 桥子路径支持测试（goal：反向桥与多设备汇聚，一期批次二）。
+//! 桥子路径支持测试（goal：反向桥与多设备汇聚，一期）。
 //!
 //! 覆盖 goal 测试面锚点：「子路径：HTML 资源引用/WS/路由在 `/d/<node_id>/`
 //! 前缀下正确落到目标设备（base 注入生效）；本地直连（无前缀）零回归」。
 //!
-//! 测试形态：`WebServer::build_router` + `tower::ServiceExt::oneshot` 直发
+//! 测试形态：`WebServer::build_router` + `tower::ServiceExt:oneshot` 直发
 //! 请求（不 bind 端口），断言路由命中 / 前缀剥离 / base 注入三类语义。
 
 use super::subpath::{BridgeSubpathService, inject_base_tag, strip_self_prefix};
@@ -77,9 +77,7 @@ async fn send(router: axum::Router, uri: &str) -> (StatusCode, String) {
     (status, String::from_utf8_lossy(&body).to_string())
 }
 
-// ---------------------------------------------------------------------------
 // 直连（无前缀）零回归
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn direct_request_hits_router_unchanged() {
@@ -107,7 +105,7 @@ async fn direct_html_gets_root_base() {
 /// 直连 `/chat/`（带尾斜杠的子路径入口）：相对构建产物 `./assets/...`
 /// 按 base 解析——不注入 base 会解析成 `/chat/assets`（404），注入
 /// `<base href="/">` 后解析回 `/assets`。这是「直连也统一注入」的
-/// 正确性依据（goal 批次二）。
+/// 正确性依据（goal）。
 #[tokio::test]
 async fn direct_subpath_entry_html_gets_root_base() {
     let router = build_router_with_identity(Some("node-a"));
@@ -121,7 +119,7 @@ async fn direct_subpath_entry_html_gets_root_base() {
 
 #[tokio::test]
 async fn no_identity_still_injects_root_base_for_direct() {
-    // --relay 形态（无身份）：直连 HTML 仍注入根 base（相对构建正确性），
+    // relay 形态（无身份）：直连 HTML 仍注入根 base（相对构建正确性），
     // 但前缀剥离永不命中。
     let router = build_router_with_identity(None);
     let (status, body) = send(router, "/").await;
@@ -129,9 +127,7 @@ async fn no_identity_still_injects_root_base_for_direct() {
     assert!(body.contains(r#"<base href="/">"#));
 }
 
-// ---------------------------------------------------------------------------
 // 剥前缀（/d/<自身 node_id>/...）
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn self_prefix_stripped_router_hits_target() {
@@ -193,9 +189,7 @@ async fn self_prefix_deep_path_precise() {
     assert!(!body.contains("<base"), "404 非 HTML 不注入");
 }
 
-// ---------------------------------------------------------------------------
 // 他人前缀（内置中继的转发请求）不剥不注入
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn foreign_prefix_passthrough_no_injection() {
@@ -220,9 +214,7 @@ async fn empty_first_segment_not_stripped() {
     assert!(!body.contains("<base"), "/d/ 开头未剥前缀不注入");
 }
 
-// ---------------------------------------------------------------------------
 // JSON / 非 HTML 响应不注入
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn json_response_not_injected_under_self_prefix() {
@@ -232,9 +224,7 @@ async fn json_response_not_injected_under_self_prefix() {
     assert!(!body.contains("<base"), "JSON 响应不注入，实际: {body}");
 }
 
-// ---------------------------------------------------------------------------
 // 纯函数：rewrite_path_and_query / inject_base_tag
-// ---------------------------------------------------------------------------
 
 #[test]
 fn strip_self_prefix_keeps_query() {
@@ -272,7 +262,7 @@ fn strip_self_prefix_direct_returns_root() {
 
 #[test]
 fn strip_self_prefix_no_identity_direct_only() {
-    // 无身份（--relay）：/d/ 形态一律透传；直连仍注入根 base。
+    // 无身份（relay）：/d/ 形态一律透传；直连仍注入根 base。
     let mut uri: axum::http::Uri = "/d/x/y".parse().expect("uri");
     assert!(strip_self_prefix(&None, &mut uri).is_none());
     let mut uri2: axum::http::Uri = "/".parse().expect("uri");
@@ -314,9 +304,7 @@ fn inject_base_tag_skips_existing_base() {
     assert!(inject_base_tag(html, "/").is_none(), "已有 base 不重复注入");
 }
 
-// ---------------------------------------------------------------------------
 // WS 升级路径：`/d/<id>/ws` 剥成 `/ws` 后升级链路完整
-// ---------------------------------------------------------------------------
 
 /// 剥前缀后升级请求命中 handle_websocket_upgrade。oneshot 上下文无真实
 /// hyper 连接，axum WebSocketUpgrade 的诚实拒绝是 **426 Upgrade Required**

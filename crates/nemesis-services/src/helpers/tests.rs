@@ -98,7 +98,7 @@ fn test_should_skip_heartbeat_nested_dir() {
 
 #[test]
 fn test_get_config_path_with_local_dir() {
-    // Create a temporary local .nemesisbot dir
+    // Create a temporary local.nemesisbot dir
     let dir = tempfile::tempdir().unwrap();
     let local_nem = dir.path().join(".nemesisbot");
     fs::create_dir_all(&local_nem).unwrap();
@@ -123,10 +123,10 @@ fn test_dirs_home_dir_returns_valid() {
 
 #[test]
 fn test_get_config_path_no_local_dir() {
-    // When there is no .nemesisbot in CWD, should fall back to home dir
+    // When there is no.nemesisbot in CWD, should fall back to home dir
     let path = get_config_path();
     assert!(path.to_string_lossy().ends_with("config.json"));
-    // Should not be the local path (unless CWD actually has .nemesisbot)
+    // Should not be the local path (unless CWD actually has.nemesisbot)
     // Just verify it returns a valid path
     assert!(!path.to_string_lossy().is_empty());
 }
@@ -153,7 +153,7 @@ fn test_home_module_home_dir() {
 
 #[test]
 fn test_get_config_path_local_dir_takes_priority() {
-    // The function checks for .nemesisbot in CWD first.
+    // The function checks for.nemesisbot in CWD first.
     // We cannot change CWD in a test, but we can verify the function
     // returns either a local or home-based path
     let path = get_config_path();
@@ -213,12 +213,12 @@ fn test_get_config_path_no_home_fallback_child() {
 
         let exe = std::env::current_exe().unwrap();
         // 子进程过滤名用裸函数名子串（非 --exact）：libtest 可见测试名不带
-        // crate 前缀，而 module_path!() 含 crate 名（nemesis_services::…），
-        // --exact 永不匹配（2026-08-25 migrate 同款真跑抓到，横扫一并修）。
+        // crate 前缀，而 module_path! 含 crate 名（nemesis_services:…），
+        // --exact 永不匹配（migrate 同款真跑抓到，横扫一并修）。
         let filter = "test_get_config_path_no_home_fallback_child";
         let outcome_dir = tempfile::tempdir().unwrap();
         let outcome_path = outcome_dir.path().join("outcome.txt");
-        // 子进程 CWD 设为空临时目录（无 .nemesisbot）+ 清 HOME/USERPROFILE
+        // 子进程 CWD 设为空临时目录（无.nemesisbot）+ 清 HOME/USERPROFILE
         let child_cwd = tempfile::tempdir().unwrap();
 
         let status = std::process::Command::new(&exe)
@@ -239,7 +239,7 @@ fn test_get_config_path_no_home_fallback_child() {
         assert!(text.contains("dirs_home=none"), "{}", text);
         assert!(text.contains("config=LOCAL"), "{}", text);
     } else {
-        // ---- 子角色：无 HOME/USERPROFILE + CWD 无 .nemesisbot ----
+        // ---- 子角色：无 HOME/USERPROFILE + CWD 无.nemesisbot ----
         let dh = dirs_home_dir();
         let p = get_config_path();
         let payload = format!(

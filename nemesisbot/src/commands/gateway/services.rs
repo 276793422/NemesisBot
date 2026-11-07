@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// PB-6 服务族（计划 §4.2 B6）：Step 11–17（HealthServer 构建 + Heartbeat
+// PB-6 服务族（计划）：Step 11–17（HealthServer 构建 + Heartbeat
 // Service 装配 + 设备监控 + ServiceManager/基础服务 + board autopilot 启动
 // 同步 + cron 装配/调度器 + Agent 启动信息 + WebServer 启动/real_port 等待/
 // 资产基址落槽与 30s 自愈 + 网关状态落盘 + 反向桥客户端 spawn）整体迁入
@@ -7,7 +7,7 @@
 // ctx 依赖影子重绑、cluster 三件入参解包、末尾 ServicesWiring 构造。
 //
 // 签名取 web_server 按可变值（Step 16 set_internal_cmd_tx 需 &mut，Step 17
-// `tokio::spawn(async move { ... })` 将其移入 web 任务，调用方此后仅持
+// `tokio::spawn(async move {... })` 将其移入 web 任务，调用方此后仅持
 // web_handle 句柄）；web_bind_host/web_port/bridge_client_launch/
 // initial_tool_count 按值（调用方下游零消费，实测）；agent_adapter/
 // web_display_host 取克隆（调用方 Step 18/19/24 仍消费原对象；agent_loop
@@ -39,7 +39,7 @@ use super::{advertise_host_for, select_lan_ip_for_advertisement};
 use crate::adapters;
 use crate::common;
 
-/// PB-6 cluster 三件入参打包（§4.2 B6）：无门结构体 + @cluster 门控字段，
+/// PB-6 cluster 三件入参打包：无门结构体 + @cluster 门控字段，
 /// @not(cluster) 下为空结构体（三件消费在 init_services 体内均处 cluster
 /// 门内，含 @not 回退臂）。
 pub(crate) struct ClusterHandoff {
@@ -53,7 +53,7 @@ pub(crate) struct ClusterHandoff {
     pub cluster_arc_ref: Option<Arc<nemesis_cluster::cluster::Cluster>>,
 }
 
-/// PB-6 产物 struct（§4.2 B6）。
+/// PB-6 产物 struct。
 pub(crate) struct ServicesWiring {
     #[cfg(feature = "health")]
     pub health_server: Arc<nemesis_health::server::HealthServer>,
@@ -63,7 +63,7 @@ pub(crate) struct ServicesWiring {
     pub internal_cmd_rx: tokio::sync::mpsc::Receiver<nemesis_web::internal::InternalCommand>,
 }
 
-/// Step 11–17 服务族装配（计划 §4.2 B6）。
+/// Step 11–17 服务族装配（计划）。
 #[cfg_attr(not(feature = "cluster"), allow(unused_variables))]
 pub(crate) async fn init_services(
     ctx: &GatewayCtx,
@@ -76,7 +76,7 @@ pub(crate) async fn init_services(
     initial_tool_count: usize,
     cluster_handoff: ClusterHandoff,
 ) -> Result<ServicesWiring> {
-    // ctx 影子重绑（B1 同款）：门控取各名字在本函数内的实际消费门。
+    // ctx 影子重绑（同款）：门控取各名字在本函数内的实际消费门。
     let home = ctx.home.clone();
     let config_path = ctx.config_path.clone();
     let cfg = ctx.cfg.clone();
@@ -114,10 +114,10 @@ pub(crate) async fn init_services(
     // Step 12: Create HeartbeatService
     #[cfg(feature = "heartbeat")]
     let heartbeat_service = {
-        // BUG-20261025-64：间隔解析此前本地手搓（0→300s、1–4 分钟直通），
+        // 间隔解析此前本地手搓（0→300s、1–4 分钟直通），
         // 绕过 `HeartbeatConfig::new` 的契约口径（0→缺省 30min、<5min 钳
         // 5min 下限）——同一语义三处分裂（本处字面量 / crate 契约 /
-        // config serde 缺省 30）。收编构造器单一真相源；负值按 0 处理
+        // config serde 缺省 30）。收编构造器单一权威定义；负值按 0 处理
         // （= 缺省 30 分钟，与 serde 缺省一致）。
         let heartbeat_config = nemesis_heartbeat::service::HeartbeatConfig::new(
             cfg.heartbeat.interval.max(0) as u64,
@@ -134,7 +134,7 @@ pub(crate) async fn init_services(
         cfg.heartbeat.enabled
     );
 
-    // C2: Wire HeartbeatService — bus + handler + skip file.
+    // Wire HeartbeatService — bus + handler + skip file.
     // Mirrors Go's bot_service.go:403-406:
     //   heartbeatSvc.SetBus(msgBus)
     //   heartbeatSvc.SetHandler(createHeartbeatHandler(agentLoop))
@@ -256,7 +256,7 @@ pub(crate) async fn init_services(
             heartbeat_service.set_skip_file(skip_file.to_string_lossy().to_string());
         }
 
-        // BUG-20261025-65：HealthServer::record_beat 此前生产零调用（/ready
+        // HealthServer::record_beat 此前生产零调用（/ready
         // 的 beat_count 恒 0，doc 声称「called by heartbeat service」但两服
         // 务无任何连接）。经 HeartbeatService 的 on_beat 回调在计数自增同点
         // 接线；health feature 关时诚实不装配。
@@ -269,10 +269,10 @@ pub(crate) async fn init_services(
         info!("[Gateway] Heartbeat service wired (bus + handler + skip_file)");
     }
 
-    // M1: Create and wire DeviceService.
+    // Create and wire DeviceService.
     // Mirrors Go's bot_service.go:409-413: devices.NewService(Config{Enabled, MonitorUSB}).
     //
-    // BUG-20261028-126（Layer B+C）修复：
+    // （Layer B+C）修复：
     // - Layer B：set_state_manager 此前生产零调用——事件通知要查 last
     //   channel，没接 state 就永远短路。现接 AgentLastChannelProvider，
     //   经 agent loop getter 实时取同一 WorkspaceStateManager 实例。
@@ -347,7 +347,7 @@ pub(crate) async fn init_services(
                 heartbeat_service.clone(),
             )));
         }
-        // BUG-20261028-126 Layer C：devices 归 BotService 长寿命持有，
+        // Layer C：devices 归 BotService 长寿命持有，
         // start_services()/stop() 统一管起停（镜像 heartbeat 注入先例）。
         #[cfg(feature = "devices")]
         if let Some(ref ds) = device_service {
@@ -365,7 +365,7 @@ pub(crate) async fn init_services(
         .start_basic_services()
         .map_err(|e| anyhow::anyhow!("Error starting basic services: {}", e))?;
 
-    // W2 P4: board autopilot 启动同步——store 为真相源，删孤儿/补登记/跟随
+    // board autopilot 启动同步——store 为真相源，删孤儿/补登记/跟随
     // （必须在 cron.start 之前完成，防同步窗口内 job 已开始调度）。
     #[cfg(feature = "board")]
     if let Some(store) = board_store.as_ref() {
@@ -378,7 +378,7 @@ pub(crate) async fn init_services(
         }
     }
 
-    // P31: 记忆 dreaming sweep 的启动同步——config.json `memory.dreaming` 节
+    // 记忆 dreaming sweep 的启动同步——config.json `memory.dreaming` 节
     // 为真相源（补登记/patch 跟随/关闭删 job，幂等；同样必须在 cron.start 之前）。
     #[cfg(feature = "memory")]
     {
@@ -406,18 +406,18 @@ pub(crate) async fn init_services(
         }
     }
     start_cron_scheduler(&cron_service).await;
-    // H1 (U12) armed gate：这里只 start 不 arm——arm() 被移到 Step 17 之后
-    // （agent 已订阅 + web 已 bind）。此前 arm 挂在本处是 BUG #49（2026-08-28）
+    // armed gate：这里只 start 不 arm——arm() 被移到 Step 17 之后
+    // （agent 已订阅 + web 已 bind）。此前 arm 挂在本处是
     // 的根因：boot 顺序是 arm(Step14) → web bind/state 写盘(Step17) →
     // agent_adapter.start() 才订阅 bus inbound(旧 Step18)，中间没有任何
     // 订阅者。overdue 的持久化 job 在 arm 后第一个 1s tick 即 fire，消息
     // publish 进 tokio broadcast 时零订阅者 = 静默丢弃（cron fire-and-forget
     // 照记 last_status=ok，agent 的 LLM 一次不发）。空载时间隙 <1s 订阅赢，
     // 负载下间隙拉开 >1s 必丢——测试全部通过/失败随负载轮换的根源。
-    // tick 调度器在 disarm 状态下空转（见 service.rs H1 gate），晚 arm 无
+    // tick 调度器在 disarm 状态下空转（见 service.rs gate），晚 arm 无
     // 副作用，只是把 fire 时机推迟到"订阅者就位"之后。
 
-    // Step 14b: Start AgentLoop's bus processing（原 Step 18 上移，BUG #49）
+    // Step 14b: Start AgentLoop's bus processing（原 Step 18 上移）
     // 订阅必须在所有 inbound 生产者上线之前完成：
     //   - web server（Step 17 起 accept WS 消息 → bus.publish_inbound）；
     //   - cron.arm()（下移到 Step 17 之后，armed 后第一个 tick 即 fire）。
@@ -431,7 +431,7 @@ pub(crate) async fn init_services(
     // Step 15: Print agent startup info
     print_agent_startup_info(&home, initial_tool_count);
 
-    // L3: Bridge logger → SSE EventHub for real-time log streaming to Dashboard.
+    // Bridge logger → SSE EventHub for real-time log streaming to Dashboard.
     // Mirrors Go's bot_service.go:674-688: logger.SetLogHook() → eventHub.
     //
     // Two paths:
@@ -473,7 +473,7 @@ pub(crate) async fn init_services(
         info!("[Gateway] Logger → SSE EventHub bridge connected");
     }
 
-    // M2（2026-10-27 整改批次一）：磁盘水位 watchdog + 降级写入面泵。
+    // 磁盘水位 watchdog + 降级写入面泵。
     // - watchdog：周期查 workspace 所在卷剩余空间，升档（Ok→Warn/Critical）
     //   即 SSE `system-alert` + WARN 日志，降档（腾出空间）发恢复事件；
     //   /ready 挂 disk_watermark 检查项（critical=不就绪）。config
@@ -615,7 +615,7 @@ pub(crate) async fn init_services(
     //let dispatch_bus = bus.clone();
     //let dispatch_session_mgr = web_server.session_manager().clone();
     //let dispatch_handle = tokio::spawn(async move {
-    //    nemesis_web::server::dispatch_outbound(dispatch_bus, dispatch_session_mgr).await;
+    //    nemesis_web::server:dispatch_outbound(dispatch_bus, dispatch_session_mgr).await;
     //});
     //info!("[Gateway] Outbound dispatch started");
 
@@ -653,10 +653,10 @@ pub(crate) async fn init_services(
     let real_port: i64 = match bound_rx.await {
         Ok(addr) => {
             info!("[Gateway] Web server bound to {}", addr);
-            // Swarm M3（§5.4）：对外资产基址落槽。G9（2026-09-09 结构修复）：
+            // Swarm：对外资产基址落槽。（结构修复）：
             // ① 只在 socket 真实监听所有网卡（unspecified 绑定）时广告 LAN
             //   IP；回环绑定如实广告 127.0.0.1——回环绑定 + 广告 LAN IP =
-            //   承诺不可达 URL（G9 病灶）。
+            //   承诺不可达 URL（病灶）。
             // ② LAN IP 的选择走集群注册表网段匹配（select_advertised_lan_ip
             //   ，static peers 此时已入表），并挂 30s 自愈任务——UDP 发现的
             //   peer 稍后入表、多重网卡/DHCP 换 IP 都自动跟随，bundle 重签
@@ -691,7 +691,7 @@ pub(crate) async fn init_services(
                     warn!("[Gateway] asset node id persist failed: {}", e);
                 }
 
-                // B8（2026-10-13）：本地资产缓存体检（后台，不阻塞 bind 报告
+                // 本地资产缓存体检（后台，不阻塞 bind 报告
                 // ——大资产逐个重算 sha256 可能秒级以上）。磁盘漂移的实体
                 // 隔离为 `<ref>.corrupt`，防坏实体经 HTTP 分发给拉取方（拉
                 // 取侧本有 sha256 闸，这里是源头侧的同源防线）。DB 缺席 =
@@ -729,7 +729,7 @@ pub(crate) async fn init_services(
                     }
                 });
 
-                // G9 自愈：每 30s 按最新注册表重算对外基址，变化才更新槽与
+                // 自愈：每 30s 按最新注册表重算对外基址，变化才更新槽与
                 // 落盘（UDP 发现的 peer 入表 / 本机 IP 变化后 bundle 广告
                 // 自动修正）。槽是可更新句柄（AdvertisedUrl），刷新无碍
                 // dispatch 签发链。
@@ -783,7 +783,7 @@ pub(crate) async fn init_services(
             // oneshot 发送端被 drop = web 任务在报告绑定地址前就退出（典型：
             // build_router panic——panic 只落 stderr，error! 臂都到不了）。
             // 此时 web 完全不可用，绝不是"退回 config 端口还能服务"，
-            // 必须 error 级别如实告警（2026-08-31 A3 路由 panic 事故教训）。
+            // 必须 error 级别如实告警（路由 panic 事故教训）。
             error!(
                 "[Gateway] Web server task exited without reporting a bound address; \
                  web UI/API are NOT serving (check stderr for a task panic)"
@@ -808,12 +808,12 @@ pub(crate) async fn init_services(
         }
     }
 
-    // 反向桥客户端 spawn（goal 批次二）：web server real_port 已确定——
+    // 反向桥客户端 spawn（goal）：web server real_port 已确定——
     // conn 泵 dial 127.0.0.1:<real_port>。旁路任务（内部自重连、全部失败
     // 路径只打日志），spawn 即不管，不影响主流程。`--relay` 纯中继不经过
     // 此路径（run_relay 独立启动，无客户端语义）。
     if let Some(client) = bridge_client_launch {
-        // 二期批次五（设备侧）：hello 携带本机集群身份（hub 据此把本机
+        // 二期（设备侧）：hello 携带本机集群身份（hub 据此把本机
         // 注册进 registry 同权组网）。cluster rpc_port==0（RPC server 未
         // 启动）= None——纯隧道设备语义；feature 关同。
         #[cfg(feature = "cluster")]
@@ -837,7 +837,7 @@ pub(crate) async fn init_services(
         });
         #[cfg(not(feature = "cluster"))]
         let bridge_cluster_identity: Option<nemesis_web::relay::BridgeClusterIdentity> = None;
-        // 二期批次六（设备侧）：桥 RPC 枢纽——RpcClient 桥出口（经桥上行发
+        // 二期（设备侧）：桥 RPC 枢纽——RpcClient 桥出口（经桥上行发
         // 请求给 hub）+ 下行 cluster_rpc 分流（response 唤醒 pending / request
         // 喂本地 RPC 链）。与身份快照同闸（rpc_port==0 = 无本地 RPC server，
         // 桥 RPC 无意义）；bridge.client 未启用时 uplink 恒空 = bridge_online
@@ -852,7 +852,7 @@ pub(crate) async fn init_services(
             let dev = std::sync::Arc::new(crate::bridge_rpc::DeviceBridgeRpc::new(
                 rpc_server,
                 c.node_id().to_string(),
-                // 三期批次八：member_sync 成员合并进本地 registry（桥成员
+                // 三期：member_sync 成员合并进本地 registry（桥成员
                 // 表的 registry 面）。
                 Some(c.clone()),
             ));

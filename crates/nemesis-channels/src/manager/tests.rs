@@ -114,7 +114,7 @@ async fn test_start_stop_all() {
 }
 
 /// send 首次调用阻塞在闸上的 stub：确定性制造「loop 占用在慢通道 send、
-/// 队列有积压」的停机丢失形态（BUG-20261104-360 回归钉）。后续 send
+/// 队列有积压」的停机丢失形态（回归钉）。后续 send
 /// 直接通过（一次性闸），冲刷路径不被二次阻塞。
 struct GatedChannel {
     name: String,
@@ -159,7 +159,7 @@ impl Channel for GatedChannel {
     }
 }
 
-/// BUG-20261104-360 回归钉：stop_all 置旗标时队列积压必须 bounded 冲刷，
+/// 回归钉：stop_all 置旗标时队列积压必须 bounded 冲刷，
 /// 不得随 rx drop 静默蒸发。旧形态此测试 sent == ["m1"]（m2/m3 随队列丢弃）。
 #[tokio::test]
 async fn test_stop_all_flushes_queued_backlog() {
@@ -1801,7 +1801,7 @@ async fn test_setup_sync_targets_replaces() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：init_channels 全通道块（default + feature-gated，两臂：
+// 补测：init_channels 全通道块（default + feature-gated，两臂：
 // 有效配置注册成功 / 无效配置 Err 跳过）、dispatch loop shutdown-flag break、
 // stop_all 错误续行、setup_sync_targets add 错误跳过
 // ===========================================================================
@@ -2084,7 +2084,7 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             client_secret: String::new(),
             allow_from: vec![],
         }),
-        // P25 wecom：全空配置 → new() Err 臂（webhook_url 与 encoding_aes_key 均缺）
+        // wecom：全空配置 → new() Err 臂（webhook_url 与 encoding_aes_key 均缺）
         #[cfg(feature = "wecom")]
         wecom: Some(crate::wecom::WeComConfig::default()),
         #[cfg(feature = "wechat")]
@@ -2127,7 +2127,7 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             poll_interval: 0,
             allow_from: vec![],
         }),
-        // P27 nostr：空 relays + 空私钥 → Err 臂（记日志、不注册）。
+        // nostr：空 relays + 空私钥 → Err 臂（记日志、不注册）。
         #[cfg(feature = "nostr")]
         nostr: Some(crate::nostr::NostrConfig {
             relays: vec![],
@@ -2170,7 +2170,7 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
         #[cfg(feature = "websocket")]
         websocket: Some(crate::websocket::WebSocketChannelConfig::default()),
         web_server_ops: None,
-        // P28 mqtt：default() 的 broker_host 为空 → Err 臂（记日志不注册，计数不变）
+        // mqtt：default() 的 broker_host 为空 → Err 臂（记日志不注册，计数不变）
         #[cfg(feature = "mqtt")]
         mqtt: Some(crate::mqtt::MqttChannelConfig::default()),
     };
@@ -2205,7 +2205,7 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
 #[tokio::test]
 async fn test_w4c_dispatch_loop_breaks_after_shutdown_flag() {
     // stop_all() 置 shutdown 标志后：队列积压先 bounded 冲刷补发
-    // （BUG-20261104-360），冲刷毕循环退出——其后到达的消息不再派发
+    // 冲刷毕循环退出——其后到达的消息不再派发
     // （sender 克隆存活也不处理，原 W4C 不变量保留）。
     let mgr = std::sync::Arc::new(ChannelManager::new());
     let stub = std::sync::Arc::new(StubChannel::new("stub"));
@@ -2366,7 +2366,7 @@ async fn test_w4c_setup_sync_targets_add_error_is_skipped() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): dispatch loop content_len tracing field +
+// coverage: dispatch loop content_len tracing field +
 // init_channels web_server_ops set_server arm
 // ===========================================================================
 

@@ -1,7 +1,7 @@
 //! 文件系统韧性小工具（全仓共享；原 nemesis-cluster::fsutil 提升，见该 crate 的 re-export）。
 //!
 //! Windows 上刚写完的文件常被 Defender 实时扫描 / 索引服务短暂持有句柄，
-//! `std::fs::remove_dir_all` 会瞬时失败（os error 5 Access denied /
+//! `std::fs:remove_dir_all` 会瞬时失败（os error 5 Access denied /
 //! 32 Sharing violation / 145 Directory not empty）——单发必胜的假设在
 //! CI runner 上实证不成立（cluster-uat T-MRG-1：变更集/工作副本清扫
 //! 失败被 `let _` 静默吞掉，残留目录直接打红验收断言）。
@@ -128,7 +128,7 @@ pub fn remove_file_retry(file: impl AsRef<Path>) -> std::io::Result<()> {
 /// 清理类变体：语义与目录版 [`remove_dir_all_resilient`] 对称——窗口内
 /// 中间失败只落 `debug!`，彻底失败 `warn!` 留痕；不向上传播错误。
 /// 「删除旧文件/临时文件失败 = 残留垃圾」的调用点用本变体替代裸
-/// `let _ = std::fs::remove_file`（瞬时句柄场景单发必胜假设不成立）。
+/// `let _ = std::fs:remove_file`（瞬时句柄场景单发必胜假设不成立）。
 pub fn remove_file_resilient(file: impl AsRef<Path>) -> bool {
     let file = file.as_ref();
     match remove_file_retry(file) {
@@ -164,7 +164,7 @@ pub async fn remove_dir_all_retry_async(dir: impl AsRef<Path>) -> std::io::Resul
 /// 维护的 `[peers.X]` 静态表整个冲掉。所有「用户可手工编辑的 JSON/TOML
 /// 配置」读取点一律走本函数，不走裸 `read_to_string`。非 BOM 文件字节
 /// 不变（`strip_prefix` 不命中时原 String 原样返回，零拷贝）。skills 域
-/// 远程响应同款处理先例：`nemesis-skills/src/modelscope_registry.rs`。
+/// 远程响应同款处理`nemesis-skills/src/modelscope_registry.rs`。
 pub fn read_config_string(path: impl AsRef<Path>) -> std::io::Result<String> {
     let content = std::fs::read_to_string(path)?;
     Ok(content

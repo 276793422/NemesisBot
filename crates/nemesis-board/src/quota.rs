@@ -1,6 +1,6 @@
-//! Swarm M3：讨论额度记账（master 侧，内存台账）。
+//! Swarm：讨论额度记账（master 侧，内存台账）。
 //!
-//! 三闸（impl-plan §9.5 + 风险表「agent 讨论死循环」四闸之额度闸）：
+//! 三闸（impl-plan + 风险表「agent 讨论死循环」四闸之额度闸）：
 //! - **线程额度** `max_agent_turns_per_thread`：每线程 agent 发言上限
 //!   （默认 8，0=不限）；剩余额度随 wake.post 下发（`max_turns_left`），
 //!   扣完裁决器不再投递只推人——护栏握在 master 手里。
@@ -58,7 +58,7 @@ impl QuotaDenied {
         }
     }
 
-    /// 信封 error code（`nemesis_cluster::envelope::error_code` 词表子集，
+    /// 信封 error code（`nemesis_cluster::envelope:error_code` 词表子集，
     /// 字符串复制避免 board→cluster 依赖）。
     pub fn error_code(&self) -> &'static str {
         match self {

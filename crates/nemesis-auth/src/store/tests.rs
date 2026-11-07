@@ -78,7 +78,7 @@ fn test_new_with_corrupted_json() {
     let path = dir.path().join("auth.json");
     std::fs::write(&path, "{invalid json!!!}").unwrap();
     let path_str = path.to_string_lossy().to_string();
-    // Load 失败时构造继续但 loud 警告（BUG-20261025-39：不再静默丢弃错误），
+    // Load 失败时构造继续但 loud 警告（不再静默丢弃错误），
     // 见 test_corrupted_store_load_warns_loudly；此处钉行为面=按空存储继续。
     let store = AuthStore::new(&path_str);
     assert!(store.list_providers().is_empty());
@@ -188,7 +188,7 @@ fn test_list_providers_empty() {
 }
 
 // ===========================================================================
-// BUG-20261028-104d 红证：list_providers 消费 HashMap 迭代序——auth status
+// d 红证：list_providers 消费 HashMap 迭代序——auth status
 // 输出顺序逐次漂移。用户可见清单必须确定性（排序）。
 // ===========================================================================
 #[test]
@@ -390,7 +390,7 @@ fn test_save_fails_when_parent_directory_cannot_be_created() {
 
 /// 空路径的 `Path::parent()` 返回 None → write_file_atomic 回落 "." 父目录
 /// （mkdir 成功、临时文件建在 cwd），rename 到空路径确定性失败。
-/// 错误链：外层 "write:" + "atomic write ...: rename: ..."。
+/// 错误链：外层 "write:" + "atomic write...: rename:..."。
 #[test]
 fn test_save_empty_path_skips_parent_creation_then_write_fails() {
     let store = AuthStore::new("");
@@ -401,11 +401,11 @@ fn test_save_empty_path_skips_parent_creation_then_write_fails() {
     assert!(err.contains("rename"), "{err}");
 }
 
-// ===== BUG-20261025-39 回归锁：auth.json 落盘原子写 + 0o600 + 损坏加载 loud =====
+// ===== 回归锁：auth.json 落盘原子写 + 0o600 + 损坏加载 loud =====
 
 use std::sync::{Arc, Mutex};
 
-/// BUG-20261025-39：auth.json 存 OAuth bearer token，落盘必须 0o600
+/// auth.json 存 OAuth bearer token，落盘必须 0o600
 /// （unix；Windows ACL 为诚实边界，测试编译期排除）。
 #[cfg(unix)]
 #[test]
@@ -424,9 +424,9 @@ fn test_saved_file_permissions_0600() {
     );
 }
 
-/// 日志捕获 sink（同 BUG-20261025-38 harness 形态）。DefaultGuard 必须由
+/// 日志捕获 sink（同 harness 形态）。DefaultGuard 必须由
 /// 测试体持有——关在 setup 内会随 setup 返回卸载 thread-local subscriber，
-/// 之后的 emit 全部丢失（R113 实录教训）。
+/// 之后的 emit 全部丢失（实测教训）。
 fn warn_capture_setup() -> (Arc<Mutex<String>>, tracing::subscriber::DefaultGuard) {
     let buf = Arc::new(Mutex::new(String::new()));
     let sink = LogSink39(buf.clone());
@@ -451,7 +451,7 @@ impl std::io::Write for LogSink39 {
     }
 }
 
-/// BUG-20261025-39：构造期加载失败必须 loud 警告（此前 `let _ = store.load()`
+/// 构造期加载失败必须 loud 警告（此前 `let _ = store.load()`
 /// 静默——盘上文件损坏时用户只看到空 store，下次 save 覆盖即全量 token 丢失）。
 #[test]
 fn test_corrupted_store_load_warns_loudly() {

@@ -1,12 +1,12 @@
 //! LiteLLM 价目表过滤/合并（纯函数模块，**无 crate 内部依赖**）。
 //!
-//! 同一份代码两个消费者（单一真相源，改一处两边生效）：
+//! 同一份代码两个消费者（统一定义，改一处两边生效）：
 //! - [`crate::pricing_lite`]（lib 内）：复用 [`LiteLLMEntry`] 反序列化 +
 //!   URL 常量；
 //! - `build.rs`（编译脚本，`#[path]` include）：下载 → [`filter_litellm_table`]
 //!   → [`merge_extras`] → 写 `$OUT_DIR/model_prices_embedded.json`。
 //!
-//! 因此本文件**禁止**出现 `crate::` 路径或对本 crate 其他模块的任何依赖
+//! 因此本文件**禁止**出现 `crate:` 路径或对本 crate 其他模块的任何依赖
 //! ——build.rs 的模块树里没有它们。
 //!
 //! 内嵌表格式 = LiteLLM 原始形状（`model_name → entry` 的扁平 map，

@@ -1,4 +1,4 @@
-//! WS9/P18：分支摘要（branch summary）——fork/rewind 把会话后缀遗弃时，
+//! ：分支摘要（branch summary）——fork/rewind 把会话后缀遗弃时，
 //! 用小模型通道（`agents.small_model`，杂务槽位）对**被遗弃部分**生成一份
 //! 结构化前情提要，落盘到新会话 sidecar meta（`branch_summary` 字段），
 //! 新会话首轮 build_messages 注入为临时 system 节（`# Branch Context`），
@@ -8,7 +8,7 @@
 //! - **复用六节 schema**（Goal / Constraints / Progress / Decisions / Files
 //!   / Next Steps）与 [`super::parse_structured_summary`] 解析——schema
 //!   单一真相源在 compact 域，这里只消费不复制；
-//! - **只走 small_model 槽位**（与 E7 标题生成同通道）：未配置 = 诚实跳过
+//! - **只走 small_model 槽位**（与 标题生成同通道）：未配置 = 诚实跳过
 //!   （INFO 日志 + 不落盘），**绝不回退主模型**——分支摘要属杂务，不该
 //!   消耗大模型预算，也不该因摘要失败阻塞 fork/rewind 本体；
 //! - **阈值闸**：遗弃 <3 个完整 user 轮不生成（没什么可摘要的）；
@@ -37,7 +37,7 @@ pub const BRANCH_SUMMARY_TRANSCRIPT_MAX_CHARS: usize = 12000;
 /// 整个转写预算。
 const TRANSCRIPT_ROW_MAX_CHARS: usize = 600;
 
-/// P18 第一段（同步、调用方帧内）：从 `&AgentLoop` 提取 small_model 槽位
+/// （同步、调用方帧内）：从 `&AgentLoop` 提取 small_model 槽位
 /// 并把遗弃行编成 prompt。返回 `None` 的三种诚实情形：
 /// - 遗弃轮数 < [`BRANCH_SUMMARY_MIN_TURNS`]（不值得摘要）；
 /// - `agents.small_model` 未配置（杂务槽位缺席，**不回退主模型**）；
@@ -45,7 +45,7 @@ const TRANSCRIPT_ROW_MAX_CHARS: usize = 600;
 ///
 /// `dropped_rows` = 被遗弃的 chat_log jsonl 行（fork: `rows[cut..]`；
 /// rewind: 截断前 `removed`），`dropped_turns` = 其中的完整 user 轮数。
-/// `pub`：nemesis-web 的 fork 端点复用同一入口（P18 单一生成通道）。
+/// `pub`：nemesis-web 的 fork 端点复用同一入口（单一生成通道）。
 pub fn prepare_branch_summary(
     run_loop: &AgentLoop,
     session_key: &str,
@@ -69,10 +69,10 @@ pub fn prepare_branch_summary(
     )
 }
 
-/// F5（2026-09-27）：CLI 形态的摘要 prepared 构造——调用方**自带**
+/// CLI 形态的摘要 prepared 构造——调用方**自带**
 /// small_model 槽位（provider+model），无 AgentLoop 依赖。CLI `session
 /// fork` 用它与 WSAPI fork 对齐（同一生成通道：阈值/转写/空行三闸与
-/// prompt 构造都在本函数，单一真相源；`prepare_branch_summary` 只是
+/// prompt 构造都在本函数，单一权威定义；`prepare_branch_summary` 只是
 /// AgentLoop 槽位提取 + 委托本函数）。
 pub fn prepare_branch_summary_with(
     provider: std::sync::Arc<dyn LlmProvider>,
@@ -99,7 +99,7 @@ pub fn prepare_branch_summary_with(
     })
 }
 
-/// P18 第二段（异步、`'static`）：执 prepared 请求，解析/截断后返回摘要
+/// （异步、`'static`）：执 prepared 请求，解析/截断后返回摘要
 /// 文本。LLM 失败 / 空回复 = `None`（调用方诚实跳过，绝不阻塞主流程）。
 /// 字段私有——调用方只经 [`prepare_branch_summary`] 构造 + `run`/
 /// `spawn_write` 消费（两段式契约防半初始化外泄）。
@@ -116,7 +116,7 @@ pub struct PreparedBranchSummary {
 impl PreparedBranchSummary {
     pub async fn run(self) -> Option<String> {
         // 杂务旁路护栏（重试版）：aux 预算 + 显式禁思考 + 墙钟超时 + 空输出
-        // 单次重试——与 E7 标题/compact 摘要同一治理面（此前本调用点是裸调
+        // 单次重试——与 标题/compact 摘要同一治理面（此前本调用点是裸调
         // provider.chat 的漏网之鱼）。失败/超时/空输出 → None（调用方诚实
         // 跳过，绝不阻塞主流程）。S8：成功路径落 aux 账本行
         // （`aux_kind="branch_summary"`，session_key 如实携带）。
@@ -165,7 +165,7 @@ impl PreparedBranchSummary {
         if text.is_empty() {
             return None;
         }
-        // 六节 schema 解析（compact 域单一真相源）；解析失败回退自由文本
+        // 六节 schema 解析（compact 域统一定义）；解析失败回退自由文本
         // 原样使用——解析失败绝不允许丢摘要。
         let summary = super::parse_structured_summary(&text).unwrap_or(text);
         let summary = summary.trim();

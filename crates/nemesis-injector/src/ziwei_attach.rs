@@ -1,21 +1,21 @@
-//! ziwei_attach —— 紫微系统运行态注入（T1.1）。
+//! ziwei_attach —— 紫微系统运行态注入（.1）。
 //!
 //! 对**已运行**进程注入 ziwei payload DLL：OpenProcess → VirtualAllocEx(参数块+stub)
 //! → CreateRemoteThread(stub)。stub 在目标进程内 LoadLibraryW(dll) →
 //! GetProcAddress("ZiWeiInit") → ZiWeiInit(参数块)；两处 call 都带 NULL 守卫
-//! （BUG-20261103-342：load 失败退码 4 / GPA 失败退码 5，不再 call NULL 崩目标）。
+//! （load 失败退码 4 / GPA 失败退码 5，不再 call NULL 崩目标）。
 //!
 //! 与 EP 劫持（[`launch_and_inject`]，挂起启动场景）并列的另一条入口；
 //! 两者共享本 crate 的错误风格与 windows-sys 依赖面。
 //!
 //! 参数块/stub 与 payload（plugins/ziwei-agent-dll）**逐字节同源**：
-//! [`ZiweiParamBlock`] 是同一 repr(C) 结构体的双写拷贝，stub 的 .byte 序列
+//! [`ZiweiParamBlock`] 是同一 repr(C) 结构体的双写拷贝，stub 的.byte 序列
 //! 与 payload 导出名 `ZiWeiInit` 双边约定——改动必须双写同步。
 //!
 //! 双架构：目标 wow64 → x86 DLL（x86 stub，stdcall 由被调方清栈）；
 //! 否则 x64 DLL（x64 stub，单调用约定）。注入器自身编译为 x64，可注 x86。
 //!
-//! 错误面诚实分类（总控 §9.2）：OpenProcess 5=拒绝访问（自保护/权限不足）、
+//! 错误面诚实分类（总控）：OpenProcess 5=拒绝访问（自保护/权限不足）、
 //! 87=PID 无效；PE machine 与目标 wow64 态不匹配 = 架构错；远线程超时 = 15s
 //! 无退出（可能被安全软件挂起）。
 
@@ -131,7 +131,7 @@ pub struct ZiweiAttachOutcome {
 // ---------------------------------------------------------------------------
 // x64 stub（98 字节）：LoadLibraryW(dll_path) → GetProcAddress(hmod,"ZiWeiInit")
 // → ZiWeiInit(param)；返回值=线程退出码。
-// BUG-20261103-342：每次 call 后 test/jz NULL 守卫——LoadLibraryW 失败退码 4
+// 每次 call 后 test/jz NULL 守卫——LoadLibraryW 失败退码 4
 // （load_fail@0x4E）、GetProcAddress 失败退码 5（gpa_fail@0x58），不再
 // call NULL 把目标进程打成 0xC0000005。
 // ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ const X64_OFF_PARAM: usize = 0x3F;
 // ⚠ GetProcAddress(HMODULE, LPCSTR) 参数右到左压栈：name 先压（深）、hmod 后压
 // （浅，[esp+4]）——顺序颠倒时 GPA 拿参数块地址当模块句柄（非 MZ）恒返
 // NULL+126（实证：x86 WOW64 attach 假失败 0xC0000005 的根因）。
-// BUG-20261103-342：call 后 test/jz NULL 守卫——load 失败退码 4
+// call 后 test/jz NULL 守卫——load 失败退码 4
 // （load_fail@0x29）、GPA 失败退码 5（gpa_fail@0x2F）；守卫路径栈平衡
 // （stdcall 被调方已清栈）。
 // ---------------------------------------------------------------------------

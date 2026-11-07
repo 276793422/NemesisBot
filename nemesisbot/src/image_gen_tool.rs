@@ -1,12 +1,12 @@
-//! 集群专业职能框架 M4：`generate_image` 工具——images-openai lane 的唯一
+//! 集群专业职能框架：`generate_image` 工具——images-openai lane 的唯一
 //! agent 消费点。
 //!
-//! 职责：把 [`nemesis_providers::images::generate_image`] 的 b64 结果落盘到
+//! 职责：把 [`nemesis_providers::images:generate_image`] 的 b64 结果落盘到
 //! 工作区 `images/` 目录，返回**路径 + 元数据**（不回传字节——LLM 上下文
-//! 塞不进图像字节；M5 验收侧经资产通道按路径取用）。
+//! 塞不进图像字节； 验收侧经资产通道按路径取用）。
 //!
 //! 安全形态：
-//! - 端点固定（装配期 [`super::agent_factory::resolve_image_model`] 解析自
+//! - 端点固定（装配期 [`super::agent_factory:resolve_image_model`] 解析自
 //!   config，不接受 URL 入参）——SSRF 面为零；
 //! - 输出路径只接受相对文件名/相对子路径，`..` / 绝对路径 / 盘符 / 冒号
 //!   一律拒绝——写入被构造性钉死在 output_dir 内（不依赖运行期围栏）；
@@ -82,7 +82,7 @@ impl GenerateImageTool {
                     // ——生成物命名不值得冒险。全段 CON/PRN/AUX/NUL +
                     // COM1-9/LPT1-9（微软命名规范明文含「紧跟扩展名的形态」
                     // ——如 COM5.png），与 connectors/skills 同类清单对齐
-                    // （BUG-20261028-99：首版只列 com1/lpt1，漏 16 个）。
+                    // （首版只列 com1/lpt1，漏 16 个）。
                     if [
                         "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5",
                         "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5",
@@ -218,7 +218,7 @@ impl nemesis_agent::r#loop::Tool for GenerateImageTool {
 
         let (out_path, n_bytes) = self.run(prompt, size, rel).await?;
 
-        // 用量日志（D15：不接计价——图像端点计价口径与 LLM 价目表不同源，
+        // 用量日志（不接计价——图像端点计价口径与 LLM 价目表不同源，
         // 只记次数 + 模型 + 字节数，供日志侧聚合）。
         tracing::info!(
             tool = "generate_image",
@@ -229,7 +229,7 @@ impl nemesis_agent::r#loop::Tool for GenerateImageTool {
         );
 
         // 结果只回路径 + 元数据，不回传字节（LLM 上下文承载不了图像字节；
-        // 多模态验收走 M5 资产通道按路径读）。
+        // 多模态验收走 资产通道按路径读）。
         let meta = serde_json::json!({
             "path": out_path.to_string_lossy(),
             "bytes": n_bytes,

@@ -1,4 +1,4 @@
-//! WS4 供应链安装门端到端测试（P11-P16）。
+//! 供应链安装门端到端测试。
 //!
 //! 用 wiremock 模拟 GitHub commits/trees/raw 三个端点，走 `SkillInstaller`
 //! 真实漏斗：pin 解析 → staging 下载 → 验签 → 安全扫描 → 版本龄 → 审批门 →
@@ -123,7 +123,7 @@ fn test_parse_github_ref_rejects_bad_shapes() {
 }
 
 // ---------------------------------------------------------------------------
-// P12 pin + P14 lockfile 记账
+// pin + lockfile 记账
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -152,7 +152,7 @@ async fn test_install_github_pins_commit_records_lockfile_and_origin() {
     // staging 清空。
     assert!(!tmp.path().join(".skill-staging/demo-skill").exists());
 
-    // P14 lockfile：commit pin + 逐文件 sha256 记账。
+    // lockfile：commit pin + 逐文件 sha256 记账。
     let lock = SkillsLockfile::load(tmp.path());
     let entry = lock.get("demo-skill").expect("lockfile entry recorded");
     assert_eq!(entry.commit, SHA);
@@ -201,7 +201,7 @@ async fn test_install_github_explicit_ref_uses_given_ref() {
 }
 
 // ---------------------------------------------------------------------------
-// P13 审批门
+// 审批门
 // ---------------------------------------------------------------------------
 
 /// 记录收到的 plan 并拒绝的自定义 gate。
@@ -286,7 +286,7 @@ async fn test_install_github_always_allow_gate_installs() {
 }
 
 // ---------------------------------------------------------------------------
-// P11 验签
+// 验签
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -326,7 +326,7 @@ async fn test_install_github_signed_skill_trusted_state() {
 
     let server = MockServer::start().await;
 
-    // 1) 先在别处组装同样内容的目录并签名，取 .signature 清单。
+    // 1) 先在别处组装同样内容的目录并签名，取.signature 清单。
     // （私钥文件必须放签名目录之外——非点开头文件会被算进 manifest。）
     let kp = generate_key_pair().unwrap();
     let key_dir = tempfile::tempdir().unwrap();
@@ -347,7 +347,7 @@ async fn test_install_github_signed_skill_trusted_state() {
     let trust_path = trust_dir.path().join("skill_trust.json");
     SignatureVerifier::with_persistence(&trust_path).add_trusted_key(&kp.public_key, "acme");
 
-    // 3) mock 服务端同时提供 SKILL.md 与 .signature。
+    // 3) mock 服务端同时提供 SKILL.md 与.signature。
     mount_github(
         &server,
         "acme/signed",
@@ -373,7 +373,7 @@ async fn test_install_github_signed_skill_trusted_state() {
 }
 
 // ---------------------------------------------------------------------------
-// P16 版本龄
+// 版本龄
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -569,7 +569,7 @@ async fn test_registry_install_records_lockfile_and_respects_gate() {
 }
 
 // ---------------------------------------------------------------------------
-// P14 漂移检测（installer 面）
+// 漂移检测（installer 面）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -606,7 +606,7 @@ async fn test_verify_drift_reports_modification() {
     assert!(all.iter().any(|r| r.slug == "drift" && !r.clean));
 }
 
-// 卸载路径安全：slug 只能是单一目录名（2026-09-25 WSAPI 接线时加固——
+// 卸载路径安全：slug 只能是单一目录名（WSAPI 接线时加固——
 // 旧 web handler 有 resolve_path 围栏，installer 路径必须同强度）。
 #[tokio::test]
 async fn uninstall_rejects_path_traversal() {

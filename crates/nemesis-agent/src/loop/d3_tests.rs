@@ -1,12 +1,12 @@
-//! D3（devtool-upgrade 阶段 5）：消息↔文件变更映射的 agent 侧测试。
+//! （devtool-upgrade）：消息↔文件变更映射的 agent 侧测试。
 //!
 //! - **dispatch 瀑布收集**：注册带 `preview` 的工具真实走
 //!   `handle_tool_call`，变更按 session_key 分桶落入
 //!   `turn_file_changes`；**不挂 checkpoint store 也收集**（消息↔文件
-//!   变更映射不依赖安全网开关——D2 依赖解耦的验收点）。
+//!   变更映射不依赖安全网开关—— 依赖解耦的验收点）。
 //! - **drain 语义**：`drain_turn_file_changes` 取走即清（第二次 drain 为
 //!   空）+ 去重走 `chat_log::dedup_file_changes`（kind 取最后声明）。
-//! - checkpoint 快照侧不受重构影响（挂载时照常 snapshot——A7 语义不回归）。
+//! - checkpoint 快照侧不受重构影响（挂载时照常 snapshot—— 语义不回归）。
 
 use super::*;
 
@@ -76,7 +76,7 @@ fn d3_tc(name: &str) -> ToolCallInfo {
 }
 
 /// dispatch 真实走瀑布：变更入桶（session_key 分桶）；不挂 checkpoint 也
-/// 收集；挂了 checkpoint 时快照语义不回归（不炸即可——快照本体归 D2 测）。
+/// 收集；挂了 checkpoint 时快照语义不回归（不炸即可——快照本体归 测）。
 #[tokio::test]
 async fn d3_dispatch_collects_without_checkpoint_store() {
     let mut al = AgentLoop::new(Box::new(D3NoopProvider), d3_config());

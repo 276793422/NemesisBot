@@ -1,4 +1,4 @@
-//! [`BoardAutonomy`] 自治模式总开关测试（AOR 批三 5.1）：serde 缺省 /
+//! [`BoardAutonomy`] 自治模式总开关测试：serde 缺省 /
 //! 大小写不敏感 / 非法值 loud 拒绝 / 序列化恒小写 / 矛盾态（autonomous 且
 //! unlimited=false）加载期诚实降级为 assisted。
 

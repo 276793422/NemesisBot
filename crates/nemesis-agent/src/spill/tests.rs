@@ -1,4 +1,4 @@
-//! Tests for tool-result spill (U4).
+//! Tests for tool-result spill.
 
 use super::*;
 use crate::prune::SUBAGENT_HINT_SUFFIX;
@@ -171,7 +171,7 @@ fn test_sanitize_segment() {
 }
 
 // ---------------------------------------------------------------------------
-// U4 retention cleanup (startup scan + daily task call this)
+// retention cleanup (startup scan + daily task call this)
 // ---------------------------------------------------------------------------
 
 /// Create a spill file and set its mtime to `age_secs` ago (std-only:
@@ -246,7 +246,7 @@ fn test_cleanup_removes_root_when_fully_empty() {
 }
 
 // ---------------------------------------------------------------------------
-// Additional branch coverage (W3a)
+// Additional branch coverage
 // ---------------------------------------------------------------------------
 
 /// `File::create` failure: a DIRECTORY pre-created exactly where the spill
@@ -271,7 +271,7 @@ fn test_spill_file_create_blocked_by_directory_at_path() {
 }
 
 // ---------------------------------------------------------------------------
-// B3 (devtool-upgrade 阶段 3): sub-agent hint in the spill locator.
+// (devtool-upgrade): sub-agent hint in the spill locator.
 // 验收：有/无 spawn 两种文案断言。
 // ---------------------------------------------------------------------------
 
@@ -308,7 +308,7 @@ fn test_spill_locator_with_subagent_hint() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Unhinted locator (no spawn tool): byte-stable with the pre-B3 form — no
+/// Unhinted locator (no spawn tool): byte-stable with the pre form — no
 /// sub-agent wording.
 #[test]
 fn test_spill_locator_without_hint_no_subagent_wording() {
@@ -417,7 +417,7 @@ fn test_cleanup_stray_files_under_root_swept_by_same_rule() {
 }
 
 // ---------------------------------------------------------------------------
-// G3: status() — Dashboard spill 卡的只读聚合
+// status() — Dashboard spill 卡的只读聚合
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -517,7 +517,7 @@ fn retention_sweep_warns_and_continues_on_locked_files() {
     drop(hold2);
 }
 
-// ── BUG-20261101-271：retention_days 巨值乘算溢出 ──
+// ──：retention_days 巨值乘算溢出 ──
 // typed config 字段 spill_retention_days 是无上限 i64，as u64 后 `days *
 // 86400` 溢出（debug panic / release 回绕小值 → cutoff 变「现在」 → 新鲜
 // spill 文件被误判过期全删）。修复 = saturating_mul 封顶 = 巨值语义正确落

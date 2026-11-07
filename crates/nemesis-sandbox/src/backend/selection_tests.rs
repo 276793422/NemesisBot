@@ -1,4 +1,4 @@
-//! P1（2026-09-25 能力扩展 WS1）Linux 沙箱网络选型决策表测试。
+//! （2026-09-25）Linux 沙箱网络选型决策表测试。
 //!
 //! [`super::select_linux_backend`] 是纯函数（平台 × 网络要求 × 可用后端 →
 //! 选择），在**所有平台**编译执行——Windows/macOS 开发机也能钉死 Linux 选型
@@ -32,8 +32,8 @@ fn allow_network_prefers_landlock_when_both_available() {
     );
 }
 
-/// 行②（P1 要修的洞）：landlock ✅ + bwrap ✅ + 要求禁网 → **bwrap**
-/// （--unshare-net 是唯一真禁网面；旧链恒 landlock 优先 = 形同不禁网）。
+/// 行②（要修的洞）：landlock ✅ + bwrap ✅ + 要求禁网 → **bwrap**
+/// （unshare-net 是唯一真禁网面；旧链恒 landlock 优先 = 形同不禁网）。
 #[test]
 fn deny_network_selects_bwrap_when_available() {
     assert_eq!(
@@ -97,10 +97,10 @@ fn partial_availability_counts_as_available() {
 }
 
 // ---------------------------------------------------------------------------
-// 平台路径不受影响（P1 验收：非 Linux 路径行为不变）
+// 平台路径不受影响（验收：非 Linux 路径行为不变）
 // ---------------------------------------------------------------------------
 
-/// Windows：恒 None（Sandboxie 承担，U11 设计契约）——入参两态都 None。
+/// Windows：恒 None（Sandboxie 承担， 设计契约）——入参两态都 None。
 #[cfg(target_os = "windows")]
 #[test]
 fn detect_backend_none_on_windows_both_network_modes() {
@@ -110,7 +110,7 @@ fn detect_backend_none_on_windows_both_network_modes() {
 
 /// macOS：Seatbelt 恒被选中（可用时）——其 profile 本身按 allow_network 生成
 /// `(deny network*)`，禁网是真强制、无需换挡。可用性随机器变，只断言
-/// 「选择不因 allow_network 翻转」这一 P1 不变量。
+/// 「选择不因 allow_network 翻转」这一 不变量。
 #[cfg(target_os = "macos")]
 #[test]
 fn detect_backend_seatbelt_unaffected_by_network_mode() {
@@ -120,7 +120,7 @@ fn detect_backend_seatbelt_unaffected_by_network_mode() {
 }
 
 // ---------------------------------------------------------------------------
-// P24（2026-09-25）：Windows 用户态轻量档选型决策表（executor.backend）
+// Windows 用户态轻量档选型决策表（executor.backend）
 // ---------------------------------------------------------------------------
 
 fn acl_full() -> Availability {
@@ -144,7 +144,7 @@ fn windows_auto_prefers_sandboxie_when_ready() {
     );
 }
 
-/// auto + 盒缺位 → None（**不回落 ACL**——P24 契约：auto 回落实验档会让
+/// auto + 盒缺位 → None（**不回落 ACL**—— 契约：auto 回落实验档会让
 /// 既有 executor 子进程的「无盒 warn」静默变成「真实装围栏」、strict 语义
 /// 被改写；显式钉 acl 才启用。此前本用例断言回落，已随契约对齐翻转）。
 #[test]

@@ -248,7 +248,7 @@ fn test_handle_ping_empty() {
     assert_eq!(result, Some("PONG ".to_string()));
 }
 
-// ---- BUG-20261031-247：收件黑洞（读循环无 PRIVMSG 分支，通道从未接线总线） ----
+// ----：收件黑洞（读循环无 PRIVMSG 分支，通道从未接线总线） ----
 
 /// 起一个只推行的假 IRC 服务器（单连接）：accept 后先发 RPL_WELCOME greeting
 /// （触发客户端 JOIN），再把 script 行一次写尽（客户端读循环按行处理，无
@@ -389,7 +389,7 @@ async fn test_privmsg_blocked_by_allow_list() {
     ch.stop().await.unwrap();
 }
 
-// ---- BUG-20261102-299：出站死路（连接任务从不装载共享写槽，send 恒报 not connected） ----
+// ----：出站死路（连接任务从不装载共享写槽，send 恒报 not connected） ----
 
 /// 起一个「读注册 → 回 001 → 持续收命令」的假 IRC 服务器，收工时把见过的
 /// 全部客户端命令行回传（断言顺序不敏感：注册/JOIN/PRIVMSG 任意交错都算过）。
@@ -492,7 +492,7 @@ async fn test_bug299_send_delivers_privmsg_over_real_connection() {
     ch.stop().await.unwrap();
 }
 
-// ---- BUG-20261102-300：停摆对端写必须有界（串行派发管线冻结面） ----
+// ----：停摆对端写必须有界（串行派发管线冻结面） ----
 
 /// 永不完成的 writer（poll_write 恒 Pending）——停摆对端的确定性替身。
 /// Windows loopback TCP 的缓冲自调连显式 SO_SNDBUF/SO_RCVBUF 收窄都不认

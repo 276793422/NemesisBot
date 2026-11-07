@@ -1,9 +1,9 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): sandbox handler coverage
+//! (quality-hardening goal 冲刺, web): sandbox handler coverage
 //! for the box-FS selection paths and remaining field arms — all offline,
 //! against a FAKE box tree (no Sandboxie, no UAC, no downloads):
 //!
 //! - `set_executor_config` (start/stop config flip helper — direct call; the
-//!   `start`/`stop` commands that reach it are VE3-exempt real-engine paths),
+//!   `start`/`stop` commands that reach it are -exempt real-engine paths),
 //! - `parse_selection` defaults + non-string filtering,
 //! - `select_box_files` case-insensitive needle filter (187-196),
 //! - `pending` / `commit` / `delete` against a fake box tree under
@@ -61,6 +61,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

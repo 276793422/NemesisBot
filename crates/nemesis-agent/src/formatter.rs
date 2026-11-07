@@ -1,20 +1,20 @@
-//! A6（2026-09-06 devtool-upgrade 阶段 5）：format-on-save 格式化钩子。
+//! （2026-09-06 devtool-upgrade）：format-on-save 格式化钩子。
 //!
 //! `write_file` / `edit_file` 成功后按文件扩展名选格式化工具（声明式表，
 //! 常用格式化器子集），spawn 带 3s 超时；成功且文件实际变化时重读 diff
-//! （复用 A2 [`crate::loop_tools::edit_hint::unified_diff`]），把
+//! （复用 [`crate::loop_tools:edit_hint::unified_diff`]），把
 //! `[format] reformatted by {tool}` + diff 追加到工具结果尾部——模型同轮
 //! 看到格式化后的真实形态。全部失败/未命中路径**静默原样返回**（开关关 /
 //! 非文本文件 / 无匹配格式化器 / spawn 失败 / 超时 / 内容未变）——格式化
 //! 永不拖垮工具调用。
 //!
-//! 调用点在 loop.rs 工具瀑布（K1a）内部、`run_post_hooks`（cc_hooks
+//! 调用点在 loop.rs 工具瀑布内部、`run_post_hooks`（cc_hooks
 //! PostToolUse 等）**之前**——用户自定义 hook 看到的是格式化后的文件
-//! （计划明文的正交语义）；外层 C3 诊断带在瀑布之后，因此诊断同样作用于
+//! （计划明文的正交语义）；外层 诊断带在瀑布之后，因此诊断同样作用于
 //! 格式化后的文件（先 format 后 diagnostics 的次序）。
 //!
 //! 信任边界（诚实声明）：spawn 的格式化工具来自 PATH 或用户 config 覆盖表
-//! ——用户本机终端同级信任（同 K3 `!`cmd`` 注入），**不过** 9 层安全管线
+//! ——用户本机终端同级信任（同 `!`cmd`` 注入），**不过** 9 层安全管线
 //! （管线管的是 LLM 工具调用；格式化是已批准 write/edit 的 config 门控后
 //! 处理，与 LSP 服务器 spawn 同级）。`executor.enabled=true` 时诚实停用：
 //! write/edit 落在子进程（Layer 2 甚至在 Sandboxie 盒内），gateway 侧后
@@ -76,7 +76,7 @@ fn annotate_reformat(result: &str, tool: &str, path: &str, old: &str, new: &str)
 }
 
 /// 从 config.json 原样读 `agents.defaults.format_on_save`（config_path 每次
-/// 新鲜读，同 C3 `current_diagnostics_loop` 模式——运行中可翻转开关）。
+/// 新鲜读，同 `current_diagnostics_loop` 模式——运行中可翻转开关）。
 /// 缺段 / standalone / 坏 JSON → 全默认（enabled=false）。
 fn resolve_config(config_path: Option<&Path>) -> (FormatOnSaveConfig, bool) {
     let Some(p) = config_path else {
@@ -158,7 +158,7 @@ async fn format_file(spec: &FormatterSpec, path: &str, timeout: Duration) -> boo
         // 超时分支 drop Child 时兜底 kill（不留孤儿格式化进程）。
         .kill_on_drop(true);
     // 格式化工具（prettier/black 等）是 console 程序；gateway 托盘/无控制台
-    // 运行（release windows 子系统，2026-09-21）时压掉弹窗（输出本就走 null）。
+    // 运行（release windows 子系统）时压掉弹窗（输出本就走 null）。
     #[cfg(target_os = "windows")]
     cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     match tokio::time::timeout(timeout, cmd.output()).await {

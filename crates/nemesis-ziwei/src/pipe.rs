@@ -1,9 +1,9 @@
-//! pipe —— bot 侧具名管道 SERVER + 帧协议客户端（T1.2/T1.5）。
+//! pipe —— bot 侧具名管道 SERVER + 帧协议客户端（.2/.5）。
 //!
 //! 职责反转（决议：bot 是 server，payload 是 client）——bot 无法预知目标内
 //! LoadLibrary 时机，server 侧被动等连接 + 首帧握手最稳。
 //!
-//! 安全面（总控 §7）：
+//! 安全面（总控）：
 //! - **PID 验证**：`GetNamedPipeClientProcessId` == 目标 PID（防外来进程抢连——
 //!   管道名含 pid+随机段，但本机任何进程都能试探打开，PID 闸是硬校验）；
 //! - **令牌**：注入参数块带一次性 32 hex 令牌，握手首帧回带，不匹配即断；
@@ -42,15 +42,15 @@ pub struct Handshake {
 pub struct PipeLink {
     stream: tokio::net::windows::named_pipe::NamedPipeServer,
     pub handshake: Handshake,
-    /// R5（2026-10-24 第四次外评）：请求-应答交换窗标志。会话层用外部
-    /// `tokio::time::timeout` 包裹每条命令——取消落在 roundtrip 内部任意
+    /// （第四次外评）：请求-应答交换窗标志。会话层用外部
+    /// `tokio::time:timeout` 包裹每条命令——取消落在 roundtrip 内部任意
     /// await 点时，「关窗」行不会执行，标志滞留 true = 迟到应答与新请求
     /// 的应答无法区分（帧协议无请求 ID），后续 roundtrip 诚实拒绝
     /// （[`PipeError::LinkUnreliable`]），绝不把上一请求的应答张冠李戴。
     exchange_inflight: bool,
 }
 
-/// 建管道 server（第一步——必须在注入**之前**落定：payload 连回重试窗口
+/// 建管道 server（必须在注入**之前**落定：payload 连回重试窗口
 /// 只有 10s，注入起线程后 server 才建会撞窗口尾部）。
 pub fn create_server(
     pipe_name: &str,
@@ -171,8 +171,8 @@ impl PipeLink {
 
     /// 请求-响应往返（JSON 文本帧；单请求串行——payload 命令循环也是串行）。
     ///
-    /// R5 交换窗纪律：本方法被外部超时取消（会话层把每条命令包在
-    /// `tokio::time::timeout` 里）时，写请求与读应答之间的任意 await 点都
+    /// 交换窗纪律：本方法被外部超时取消（会话层把每条命令包在
+    /// `tokio::time:timeout` 里）时，写请求与读应答之间的任意 await 点都
     /// 可能是取消点——此后迟到应答滞留管道缓冲，与本链路后续请求的应答
     /// 无法区分（帧协议无请求 ID）。取消路径不走「关窗」行，标志滞留 =
     /// 后续 roundtrip 恒 [`PipeError::LinkUnreliable`]（结果未知，重建会话，
@@ -206,7 +206,7 @@ pub async fn read_mem(link: &mut PipeLink, addr: u64, len: u32) -> Result<Vec<u8
 }
 
 // ---------------------------------------------------------------------------
-// M4：call_fn / hook 订阅退订 / 事件拉取（命令循环仍严格请求-响应配对）
+// call_fn / hook 订阅退订 / 事件拉取（命令循环仍严格请求-响应配对）
 // ---------------------------------------------------------------------------
 
 /// call_fn 约定值（payload CONV_* 同源；定义在平台中立 dispatch——re-export）。
@@ -287,7 +287,7 @@ fn verify_client_pid(
 }
 
 // ---------------------------------------------------------------------------
-// R5 回归锁（2026-10-24 第四次外评）：外部超时取消交换后的应答冒领。
+// 回归锁（第四次外评）：外部超时取消交换后的应答冒领。
 // Windows 形态测试（具名管道）——#[path] 挂独立文件，非 Windows 编译期消失。
 // ---------------------------------------------------------------------------
 #[cfg(all(test, windows))]

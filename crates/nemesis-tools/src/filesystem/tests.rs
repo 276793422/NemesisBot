@@ -109,7 +109,7 @@ async fn test_file_exists() {
     assert!(result.for_llm.contains("true"));
 }
 
-// ListDir/FileExists 工作区边界回归锁（2026-10-20 潜在债收口）：两工具此前
+// ListDir/FileExists 工作区边界回归锁（潜在债收口）：两工具此前
 // 收了 restrict 参数但不校验、绝对路径直通（全仓生产零注册，纯潜在债）。
 #[tokio::test]
 async fn test_list_dir_tool_restricted() {
@@ -915,10 +915,10 @@ async fn test_delete_file_tool_restricted_within_workspace() {
 #[test]
 fn test_canonicalize_for_compare_current_dir_strips_verbatim() {
     // 替换旧局部 helper（resolve_existing_ancestor / normalize_for_comparison）
-    // 的 4 个单测——helper 已收敛到 nemesis-path 单一真相源，其内部分支由该
+    // 的 4 个单测——helper 已收敛到 nemesis-path 统一定义，其内部分支由该
     // crate 自己的测试覆盖。此处只锚消费方关心的行为：cwd 归一化为绝对路径；
     // Windows canonicalize 的 \\?\ verbatim 前缀必须被剥掉（否则 workspace
-    // 前缀比较永远失配，CI RUNNER~1 家族，2026-09-01）。
+    // 前缀比较永远失配，CI RUNNER~1 家族）。
     let resolved = canonicalize_for_compare(Path::new("."));
     assert!(resolved.is_absolute());
 
@@ -1029,7 +1029,7 @@ async fn test_delete_file_nonexistent() {
         .execute(&serde_json::json!({"path": dir.path().join("nonexistent.txt").to_string_lossy()}))
         .await;
     assert!(result.is_error);
-    // BUG-20261031-238 修复后：操作面「删不存在文件」由前置存在性检查
+    // 修复后：操作面「删不存在文件」由前置存在性检查
     // 诚实报 not found（retry 变体把 NotFound 吞成成功，不能放它报成功）。
     assert!(
         result.for_llm.contains("not found"),
@@ -1104,7 +1104,7 @@ async fn test_delete_dir_tool_nonexistent_path() {
 }
 
 // ============================================================
-// W4a coverage gap closure (parameters() schemas, private
+// coverage gap closure (parameters() schemas, private
 // resolve_existing_ancestor branches, restrict/validate arms,
 // delete_dir metadata branches)
 // ============================================================
@@ -1157,7 +1157,7 @@ fn w4a_tool_parameters_schemas_all_tools() {
 
 #[tokio::test]
 async fn w4a_restrict_tolerates_uncanonicalized_workspace_form() {
-    // 8.3 短名失配回归（Windows CI RUNNER~1 家族，2026-09-01）：CI runner 的
+    // 8.3 短名失配回归（Windows CI RUNNER~1 家族）：CI runner 的
     // TEMP 在 C:\Users\RUNNER~1\...，workspace 以非 canonical 形式传入时，
     // 旧实现只对 target 侧 resolve（canonicalize 出真实形态），workspace 侧
     // 用原始串比较 → 恒不相等 → workspace 内读全部误拒 "outside workspace"。
@@ -1328,7 +1328,7 @@ async fn w4a_delete_dir_success_is_silent() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): DeleteFileTool relative-path validate arm.
+// coverage: DeleteFileTool relative-path validate arm.
 //
 // resolve_existing_ancestor canonicalize-failure arms (lines 16/35) are
 // STRUCTURAL on Windows: an empirical rustc probe showed std reports
@@ -1351,7 +1351,7 @@ fn s2_delete_file_validate_path_relative_joins_workspace() {
 
 #[tokio::test]
 async fn spill_locator_readable_under_workspace_restriction() {
-    // U4 spill×restrict 契约（2026-08-31 迁移配套）：spill 根已迁回
+    // spill×restrict 契约（迁移配套）：spill 根已迁回
     // <workspace>/logs/spill（nemesis-path 唯一拼接点）。restrict=true 的
     // read_file 必须能回读落在该根下的定位器全文——否则超大工具结果一旦
     // 外溢，agent 就永远拿不到完整内容。
@@ -1377,7 +1377,7 @@ async fn spill_locator_readable_under_workspace_restriction() {
 }
 
 // -------------------------------------------------------------------------
-// BUG-20261031-238：delete_dir/delete_file 裸单发删除 vs Windows 瞬时句柄。
+// delete_dir/delete_file 裸单发删除 vs Windows 瞬时句柄。
 // Defender 实时扫描 / 索引服务会短暂持有刚写完文件的句柄，单发
 // remove_dir_all/remove_file 在窗口内必失败（os error 5/32）——全仓韧性
 // 纪律（nemesis_utils::fsutil）要求操作面删除走退避重试。测试用受控句柄

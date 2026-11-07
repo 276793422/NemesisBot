@@ -3,7 +3,7 @@
 //! Mirrors the Go `context.go` with variable storage, node results, and template
 //! resolution ({{variable}}, {{node_id.field}}, {{input.key}}).
 //!
-//! Variables are stored as `serde_json::Value` (since milestone 1b-B3) so
+//! Variables are stored as `serde_json::Value` (since milestone 1b-) so
 //! workflows can carry arbitrary JSON structures between nodes. String
 //! variables stay fully compatible with the old `HashMap<String, String>`
 //! persistence format - serde transparently converts `Value::String` to/from
@@ -22,7 +22,7 @@ use crate::types::NodeResult;
 /// Thread-safe via interior `RwLock`.
 #[derive(Debug)]
 pub struct WorkflowContext {
-    /// Workflow variables. Stored as JSON values since 1b-B3 so nodes can
+    /// Workflow variables. Stored as JSON values since 1b so nodes can
     /// carry arrays, objects, numbers, etc. between stages.
     variables: RwLock<HashMap<String, serde_json::Value>>,
     /// Node execution results.
@@ -112,7 +112,7 @@ impl WorkflowContext {
 
     /// Return a copy of the workflow input map.
     ///
-    /// Used by the Checkpointer (1b-A1) when snapshotting context: input is
+    /// Used by the Checkpointer (1b-) when snapshotting context: input is
     /// private to the context but the snapshot needs a serialisable copy.
     pub fn get_all_input(&self) -> HashMap<String, serde_json::Value> {
         self.input.clone()
@@ -156,7 +156,7 @@ impl WorkflowContext {
                 return caps[0].to_string(); // unresolved
             }
 
-            // Try plain variable (JSON-typed since 1b-B3).
+            // Try plain variable (JSON-typed since 1b-).
             if let Some(val) = self.get_var(key) {
                 return value_to_string(&val);
             }
@@ -180,7 +180,7 @@ impl WorkflowContext {
 /// Convert a JSON value to a display string for template rendering.
 ///
 /// - Strings → raw value (no quotes), matching Go's behaviour and old tests.
-/// - `null`  → empty string.
+/// - `null` → empty string.
 /// - Objects / arrays / numbers / bools → compact JSON encoding.
 fn value_to_string(v: &serde_json::Value) -> String {
     match v {

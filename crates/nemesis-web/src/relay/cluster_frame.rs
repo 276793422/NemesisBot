@@ -1,8 +1,8 @@
-//! 二期（桥集群）：上行 `cluster_rpc` 帧出口槽（批次六）。
+//! 二期（桥集群）：上行 `cluster_rpc` 帧出口槽。
 //!
 //! 职责：relay 收到设备的上行 [`BridgeFrame::ClusterRpc`] 帧后，交由宿主
 //! 注入的 [`ClusterFrameSink`] 处理——hub 形态下喂本地 RPC handler 链
-//! （[`crate::...`] 由宿主决定），响应 payload 返回后由 relay 封帧回上行。
+//! （[`crate:...`] 由宿主决定），响应 payload 返回后由 relay 封帧回上行。
 //!
 //! **relay 零集群依赖边界不动**：本模块只有无类型 trait + 槽位（与
 //! `identity.rs` 同款装配模式），不 import nemesis-cluster；帧内的

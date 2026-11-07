@@ -23,9 +23,7 @@ fn server_frame(opcode: u8, fin: bool, payload: &[u8]) -> Vec<u8> {
     f
 }
 
-// ---------------------------------------------------------------------------
 // encode：Binary 臂 + 扩展 16 位长度编码
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_encode_binary_small_and_extended16() {
@@ -49,9 +47,7 @@ fn agt_encode_binary_small_and_extended16() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // parse：扩展长度截断 / 64 位截断 / FIN=0 占位
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_parse_extended16_truncated_and_full() {
@@ -78,7 +74,7 @@ fn agt_parse_len127_truncated_returns_none() {
 
 #[test]
 fn agt_parse_extreme_len64_rejected_without_overflow() {
-    // R5-1 回归锁：8 字节长度来自线上字节，裸 `pos + len` 对极端值在
+    // 回归锁：8 字节长度来自线上字节，裸 `pos + len` 对极端值在
     // debug 算术溢出 panic、release 回绕骗过长度检查。两种极端都必须
     // 诚实 None：
     // - 近 u64::MAX：checked_add 溢出臂（64-bit 上加法即溢出）；
@@ -109,9 +105,7 @@ fn agt_parse_fin0_fragment_yields_placeholder_text() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // parse：opcode 变体兜底
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_parse_text_invalid_utf8_falls_back_to_empty_binary() {

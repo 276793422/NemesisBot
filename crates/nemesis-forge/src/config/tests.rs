@@ -183,7 +183,7 @@ fn test_trace_config_defaults() {
     let config = ForgeConfig::default();
     assert!(config.trace.enabled);
     assert_eq!(config.trace.max_trace_age_days, 30);
-    // 2026-10-23 验证轮四接线：护栏默认关（0=不限）。
+    // 验证轮四接线：护栏默认关（0=不限）。
     assert_eq!(config.trace.min_traces_for_analysis, 0);
 }
 
@@ -261,11 +261,11 @@ fn test_reflection_config_serialization() {
     assert_eq!(back.interval_secs, 3600);
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[test]
 fn test_s8_collection_config_missing_fields_use_defaults() {
-    // Every CollectionConfig field uses serde(default = ...) — a JSON object
+    // Every CollectionConfig field uses serde(default =...) — a JSON object
     // without any of them must resolve to the documented defaults.
     let cfg: CollectionConfig = serde_json::from_str("{}").unwrap();
     assert_eq!(cfg.max_experiences, 10_000);
@@ -275,7 +275,7 @@ fn test_s8_collection_config_missing_fields_use_defaults() {
 #[test]
 fn test_s8_collection_config_unknown_keys_are_ignored() {
     // Retired keys (enabled/buffer_size/flush_interval_secs/
-    // max_experiences_per_day/interval_secs, removed 2026-10-22) in existing
+    // max_experiences_per_day/interval_secs, removed) in existing
     // on-disk configs must not break parsing — serde ignores unknown fields.
     let cfg: CollectionConfig = serde_json::from_str(
         r#"{"enabled": false, "buffer_size": 1, "flush_interval_secs": 99, "max_experiences_per_day": 7, "interval_secs": 300}"#,

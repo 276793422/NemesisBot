@@ -684,7 +684,7 @@ async fn test_install_from_registry_success_v2() {
         .install_from_registry("stub", "new-skill-v2", "1.0")
         .await;
     assert!(result.is_ok());
-    // install_from_registry returns Result<()>
+    // install_from_registry returns Result<>
     // Note: StubRegistryProvider doesn't create actual files,
     // so origin tracking may or may not be readable depending on implementation
 }
@@ -1161,7 +1161,7 @@ fn test_uninstall_removes_all_files() {
 }
 
 // ============================================================
-// BUG-HUNT R35：install() 的 staging 清理（remove_dir_all）拿原始 slug
+// install() 的 staging 清理（remove_dir_all）拿原始 slug
 // 拼接——slug 校验必须发生在删除之前，否则 `../../victim` 会在 registry
 // 侧校验拒绝之前就把 workspace 外的目录先行删除（CLI `skills install
 // github/../../victim` 与 WSAPI skills.install 同达）。
@@ -1170,7 +1170,7 @@ fn test_uninstall_removes_all_files() {
 #[tokio::test]
 async fn test_install_rejects_traversal_slug_before_staging_delete() {
     let temp = tempfile::tempdir().unwrap();
-    // 哨兵目录：从 .skill-staging 上溯两级（`../../victim`）恰落到 temp 根。
+    // 哨兵目录：从.skill-staging 上溯两级（`../../victim`）恰落到 temp 根。
     let victim = temp.path().join("victim");
     std::fs::create_dir_all(victim.join("precious")).unwrap();
     std::fs::write(victim.join("precious").join("data.txt"), "keep").unwrap();
@@ -1227,7 +1227,7 @@ async fn test_install_clean_slug_passes_entry_validation() {
 }
 
 // ---------------------------------------------------------------------------
-// R2（2026-10-24 复核）：并发安装共享 staging 串台——事务隔离 + digest 复核 +
+// （复核）：并发安装共享 staging 串台——事务隔离 + digest 复核 +
 // 落位互斥的回归锁。旧形态：A/B 同 slug 并发安装共享 `.skill-staging/<slug>`，
 // approve-A 后 rename 落位的是 B 后写的内容（approve-A 装-B）。
 // ---------------------------------------------------------------------------
@@ -1311,7 +1311,7 @@ fn r2_make_installer(
     (std::sync::Arc::new(installer), gate)
 }
 
-/// R2 回归锁①：approve-A / deny-B 并发同 slug 安装——落位的必须是 A 的
+/// 回归锁①：approve-A / deny-B 并发同 slug 安装——落位的必须是 A 的
 /// 内容（A 审批的载荷），B 诚实报错；两事务 staging 各自清理，互不串台。
 /// 旧形态此断言红（落位 = B 内容）。
 #[tokio::test]
@@ -1374,7 +1374,7 @@ async fn r2_concurrent_install_approves_a_installs_a_not_b() {
     }
 }
 
-/// R2 回归锁②：审批裁决瞬间 staging 内容被换 = digest 复核 abort，
+/// 回归锁②：审批裁决瞬间 staging 内容被换 = digest 复核 abort，
 /// 内容不落 skills/（审批的对象是字节，不是 slug 名义）。
 #[tokio::test]
 async fn r2_staging_tamper_after_approval_aborts() {
@@ -1441,11 +1441,11 @@ async fn r2_staging_tamper_after_approval_aborts() {
 }
 
 // ============================================================
-// BUG-HUNT R163：安装漏斗三条纪律缺口的红证测试
+// 安装漏斗三条纪律缺口的红证测试
 // ============================================================
 
-/// BUG-20261025-90：plan_github_install 的 slug 必须过 validate_skill_identifier
-/// （R35 单一真相源漏接 GitHub 臂）——Windows 保留名（con/aux/nul…）与尾点
+/// plan_github_install 的 slug 必须过 validate_skill_identifier
+/// （统一定义漏接 GitHub 臂）——Windows 保留名（con/aux/nul…）与尾点
 /// repo 名是 GitHub 合法名，直通 skills/ 路径拼装会在 Windows 上产出保留名
 /// 目录/尾点截断漂移。校验在任何网络语句之前。
 #[tokio::test]
@@ -1485,7 +1485,7 @@ async fn test_plan_github_install_rejects_windows_reserved_slug() {
     }
 }
 
-/// BUG-20261025-91：registry 路径 age-policy block 拒绝时必须清 staging
+/// registry 路径 age-policy block 拒绝时必须清 staging
 /// （漏斗纪律「拒绝时先清 staging 再上抛」——同函数其余拒绝臂全清，
 /// 唯 age 臂裸 `?` 泄漏，被拒内容残留盘上直到 24h 清扫）。
 #[tokio::test]
@@ -1583,7 +1583,7 @@ async fn test_install_age_block_cleans_staging() {
     assert_eq!(leaked, 0, "blocked install must not leave staging residue");
 }
 
-/// BUG-20261025-92：registry 路径落位临界区必须复检目标目录存在性
+/// registry 路径落位临界区必须复检目标目录存在性
 /// ——注释声称「exists 检查→rename→记账在 INSTALL_COMMIT_LOCK 下原子」，
 /// 实际检查在下载 + 审批等待之前；并发同名安装在等待窗口内落位时，
 /// 第二次 install 应诚实报 already exists，而不是裸 rename IO 错误
@@ -1702,7 +1702,7 @@ async fn test_install_duplicate_target_detected_at_commit() {
     assert_eq!(winner, "# installed by the other winner\n");
 }
 
-// BUG-20261028-118 回归锁：回滚备份恢复式清扫——遗孤（skills/<slug> 缺失）
+// 回归锁：回滚备份恢复式清扫——遗孤（skills/<slug> 缺失）
 // 先恢复原位；过期备份（原位已在）直接删；skill 本体永不被动。
 #[test]
 fn r118_rollback_recover_restores_orphans_and_drops_stale() {
@@ -1745,7 +1745,7 @@ fn r118_rollback_recover_restores_orphans_and_drops_stale() {
     assert!(installer.recover_stale_rollbacks().is_empty());
 }
 
-// F4（2026-11-02 复评）回归锁：恢复式清扫跳过在册 in-flight 备份——
+// （复评）回归锁：恢复式清扫跳过在册 in-flight 备份——
 // 本进程正在更新的活备份不得被并发安装的清扫误判遗孤搬回原位；注销后
 // （守卫 Drop 统一出口）真遗孤语义照常。登记表键 = 备份完整路径，不同
 // workspace 的同 slug 备份互不误伤。
@@ -1784,7 +1784,7 @@ fn r_f4_recover_skips_registered_inflight_backup() {
     );
 }
 
-// BUG-20261029-150 回归锁：含点 slug（validate_skill_identifier 允许）的回滚
+// 回归锁：含点 slug（validate_skill_identifier 允许）的回滚
 // 备份——解析必须按**最后一个** ".old-" 分隔，而非 split('.') 首段切分。
 #[test]
 fn r150_dotted_slug_backup_parses_last_old_marker() {
@@ -1839,7 +1839,7 @@ fn r150_dotted_slug_backup_parses_last_old_marker() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261104-372（R508）：SKILL.md 存在但非 UTF-8 → install 的 P15 安全检查
+// SKILL.md 存在但非 UTF-8 → install 的 安全检查
 // 曾被 `let Ok(content)` 静默短路成默认满分放行。回归锁：读失败必须 fail
 // loud（Io 错误 + staging 清理 + 零落位），与 plan_github_install 的 map_err
 // 同口径。

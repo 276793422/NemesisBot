@@ -1,4 +1,4 @@
-//! P5（能力扩展 WS2 compaction）：`agents.defaults.compact_keep_recent_tokens`
+//! （compaction）：`agents.defaults.compact_keep_recent_tokens`
 //! 配置面测试。
 //!
 //! - serde 缺省：缺键 = 20000（对齐业界通行 keepRecentTokens）；

@@ -1,15 +1,15 @@
-//! R9 补测批 — gateway 活动场景组（live scenarios）。
+//! 补测批 — gateway 活动场景组（live scenarios）。
 //!
 //! 目标区间（gateway.rs 高价值 miss 区段，全部要求长时间运行的 gateway 子进程）：
 //!
-//! | # | 区间                              | 覆盖手法 |
+//! | # | 区间 | 覆盖手法 |
 //! |---|-----------------------------------|----------|
-//! | 1 | cron on_job 双分支 (1348-1397)     | 预种子 jobs.json（过期 "at" 任务）→ gateway arm 后秒级触发；分支 A 发 InboundMessage（经 LLM 落 request_log），分支 B 空消息直接 Ok("No message to deliver")（落 store 历史）|
-//! | 2 | cluster 双节点 peer_chat 全链      | A/B 两 gateway 子进程（独立 temp home、完全独立端口组），共享 AEAD token，互为静态 peers；A 由预种子 cron 驱动（无 WS）发 cluster_rpc → B 的 MockAi 回 canned 文本 → callback 三路由的 Route2(bus cluster_continuation)+Route3(TaskManager complete) 完成 A 侧续行 |
-//! | 3 | cluster_rpc 工具选型 (2099-2126)   | 同上：A 模型脚本第一条即 ToolCall(cluster_rpc)，peers_fn 注入 + call_fn 异步 ack 全链路真跑（本测试与 #2 合并在同一场景）|
-//! | 4 | heartbeat 多臂 (3146-3252)         | 实例 a：BOOTSTRAP.md 在 → 零 LLM 命中；实例 b：HEARTBEAT.md 有任务行 + interval=5min（BUG-64 收编后 gateway 走 HeartbeatConfig::new，<5min 钳到下限）→ 第一拍(+1s)喂 passthrough 文本、第二拍(≈+301s，interval_at 节奏)喂 "  HEARTBEAT_OK\n"（trim 归一命中）|
-//! | 5 | workflow message/event 触发驱动    | definitions/ 放两条 YAML：wf-r9-msg(message 触发, transform 节点零依赖) + wf-r9-event(event 触发, 匹配 workflow.completed 且 workflow_name==wf-r9-msg 防自递归)；由同一条 cron InboundMessage 广播级联点亮 2908-3078 两个订阅任务；断言 workspace/workflow/executions/*.jsonl |
-//! | 6 | approval ask 规则链 (196-274)      | config.security.json file_rules.write=[{pattern:"*",action:"ask"}] + MockAi 首条 write_file 工具调用 → WebApprovalManager 审批卡无人应答 → approval_timeout_secs=300s 到点自动 deny（M7 起 plugin-ui 早拒臂已死，2026-09-08 更名对齐）；工具结果回灌后第二轮出终文本 |
+//! | 1 | cron on_job 双分支 (1348-1397) | 预种子 jobs.json（过期 "at" 任务）→ gateway arm 后秒级触发；分支 A 发 InboundMessage（经 LLM 落 request_log），分支 B 空消息直接 Ok("No message to deliver")（落 store 历史）|
+//! | 2 | cluster 双节点 peer_chat 全链 | A/B 两 gateway 子进程（独立 temp home、完全独立端口组），共享 AEAD token，互为静态 peers；A 由预种子 cron 驱动（无 WS）发 cluster_rpc → B 的 MockAi 回 canned 文本 → callback 三路由的 Route2(bus cluster_continuation)+Route3(TaskManager complete) 完成 A 侧续行 |
+//! | 3 | cluster_rpc 工具选型 (2099-2126) | 同上：A 模型脚本第一条即 ToolCall(cluster_rpc)，peers_fn 注入 + call_fn 异步 ack 全链路真跑（本测试与 #2 合并在同一场景）|
+//! | 4 | heartbeat 多臂 (3146-3252) | 实例 a：BOOTSTRAP.md 在 → 零 LLM 命中；实例 b：HEARTBEAT.md 有任务行 + interval=5min（BUG-64 收编后 gateway 走 HeartbeatConfig::new，<5min 钳到下限）→ 第一拍(+1s)喂 passthrough 文本、第二拍(≈+301s，interval_at 节奏)喂 " HEARTBEAT_OK\n"（trim 归一命中）|
+//! | 5 | workflow message/event 触发驱动 | definitions/ 放两条 YAML：wf-r9-msg(message 触发, transform 节点零依赖) + wf-r9-event(event 触发, 匹配 workflow.completed 且 workflow_name==wf-r9-msg 防自递归)；由同一条 cron InboundMessage 广播级联点亮 2908-3078 两个订阅任务；断言 workspace/workflow/executions/*.jsonl |
+//! | 6 | approval ask 规则链 (196-274) | config.security.json file_rules.write=[{pattern:"*",action:"ask"}] + MockAi 首条 write_file 工具调用 → WebApprovalManager 审批卡无人应答 → approval_timeout_secs=300s 到点自动 deny（起 plugin-ui 早拒臂已死，2026-09-08 更名对齐）；工具结果回灌后出终文本 |
 //! | 7 | open_dashboard / shutdown 内部命令 | POST /api/internal {"cmd":"open_dashboard"} 拿 {"status":"ok"} ack。fixture 显式停用 plugin_ui（config.plugin.native.json）→ gateway 走 DisabledBySwitch 生产分支，确定性无窗口——注意 dll 缺席时 Allow 臂反而会 fallback 开浏览器（display.rs），守卫靠开关不靠 dll 检测；随后每实例的优雅停机本身走 Shutdown 臂 (3601-3608) |
 //!
 //! 无 WS 说明：nemesisbot dev-deps 只有 tempfile + test-harness（tokio-tungstenite
@@ -68,16 +68,16 @@ static CLAIMED_CLUSTER_PORTS: StdMutex<Vec<u16>> = StdMutex::new(Vec::new());
 
 /// live gateway 测试互斥闸：本文件 11 个测试都起真 gateway 子进程（全装配：
 /// web+cluster+discovery+agent+security+MockAi），全量并行矩阵下 11 个编排
-/// 同时抢 CPU 曾把 150s 等待预算吃光致 flaky（2026-09-03：本机 24 核全量
+/// 同时抢 CPU 曾把 150s 等待预算吃光致 flaky（本机 24 核全量
 /// 红、单独串行复跑 13.84s PASS）。互斥后同一时刻至多一个 live 编排在跑，
 /// 争抢源被结构性消除；其他 crate 的普通单测不受影响照常并行。
-/// 用 tokio::sync::Mutex：guard 须横跨整个 live 编排的 .await 持有——std
-/// Mutex 的 guard 跨 await 触发 clippy::await_holding_lock（-D warnings 门禁），
+/// 用 tokio::sync:Mutex：guard 须横跨整个 live 编排的.await 持有——std
+/// Mutex 的 guard 跨 await 触发 clippy::await_holding_lock（D warnings 门禁），
 /// tokio Mutex 无毒化语义（某次 live 测试 panic 不连坐后续测试），FIFO 公平。
 static LIVE_GATEWAY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 场景级真机测试（scenario_tests）与 R9 live 组共用同一把互斥闸——
-/// 两组编排都起真 gateway 子进程，同一时刻至多一个在跑（2026-09-03 flaky 教训）。
+/// 场景级真机测试（scenario_tests）与 live 组共用同一把互斥闸——
+/// 两组编排都起真 gateway 子进程，同一时刻至多一个在跑（flaky 教训）。
 pub(crate) async fn live_gate() -> tokio::sync::MutexGuard<'static, ()> {
     LIVE_GATEWAY_LOCK.lock().await
 }
@@ -195,7 +195,7 @@ pub(crate) fn live_gateway_config(
     }]);
     cfg["heartbeat"]["enabled"] = json!(heartbeat_on);
     // 分钟；仅 heartbeat_on 时生效。BUG-64 收编后 gateway 走 HeartbeatConfig::new
-    // 单一真相源：<5 分钟被钳到 5 分钟下限（首拍 +1s 不受影响，后续拍 300s 节奏）。
+    // 统一定义：<5 分钟被钳到 5 分钟下限（首拍 +1s 不受影响，后续拍 300s 节奏）。
     cfg["heartbeat"]["interval"] = json!(5);
     cfg["security"]["enabled"] = json!(security_on);
     cfg["cluster"]["enabled"] = json!(cluster_master_on);
@@ -330,7 +330,7 @@ async fn wait_until(timeout_secs: u64, what: &str, mut cond: impl FnMut() -> boo
 
 /// wait_until 的带诊断变体：超时 panic 时**现场**收集证据（此刻 temp home
 /// 尚在 Drop 清理之前），把「多进程编排卡在哪一跳」直接写进失败输出，
-/// 替代事后盲猜（2026-08-27 workspace 两次 live 编排超时无证据可用之教训）。
+/// 替代事后盲猜（workspace 两次 live 编排超时无证据可用之教训）。
 async fn wait_until_diag(
     timeout_secs: u64,
     what: &str,
@@ -481,7 +481,7 @@ async fn graceful_teardown(mut gw: ManagedProcess, web_port: u16, token: &str, l
 ///
 /// 断言锚点：workspace/cron/jobs.json（last_status/history/enabled=false 收尾态）
 /// + workspace/logs/request_logs 树内标记扫描 + MockAi 命中计数。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_cron_on_job_both_branches_fire_and_mark_store() {
     let _live = live_gate().await;
@@ -644,7 +644,7 @@ fn install_cluster_app_config(home: &Path, udp: u16, rpc: u16, token: &str) {
 ///    PEER_MESSAGE（B 的 PeerChatHandler 真跑了 LLM）、两侧 store/cron ok；
 /// 4. open_dashboard 臂（POST /api/internal，dll 缺席守卫下无窗口风险）拿 ack；
 /// 5. 双节点各自走 shutdown 内部命令臂优雅停机（3601-3608）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
     let _live = live_gate().await;
@@ -755,7 +755,7 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
         tree_contains(&logs_b, &peer_msg)
     })
     .await;
-    // hits 断言必须走 wait_until（2026-10-28 CI shard1 实录假红）：round-trip
+    // hits 断言必须走 wait_until（CI 实测假红）：round-trip
     // marker 的出现（admission 路由日志行含原文）先于 A 续行 LLM 调用（此
     // 刻 permits=0 排队中，前一轮未释放）；B 侧 peer_msg 日志同理先于 B 的
     // LLM 请求。本机毫秒级延迟不可见，CI 满载（10 分片并行）下秒级必踩。
@@ -827,7 +827,7 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
 ///
 /// 断言锚点：workspace/workflow/executions/{name}_{execution_id}.jsonl 存在且含
 /// 各自节点输出文本。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
     let _live = live_gate().await;
@@ -967,7 +967,7 @@ async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
 ///
 /// 断言：boot 完成后观察 20s（第一拍固定 +1s，若未跳过必然有命中），mock 命中
 /// 必须为 0。诚实边界：只实证第一拍的跳过决策；后续 60s 节拍不再等待（预算纪律）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_heartbeat_bootstrap_skip_makes_zero_llm_calls() {
     let _live = live_gate().await;
@@ -1014,13 +1014,13 @@ async fn r9_live_heartbeat_bootstrap_skip_makes_zero_llm_calls() {
 /// - 第 1 拍（+1s）：任意文本 → `trim() != "HEARTBEAT_OK"` passthrough 臂执行
 ///   （for_llm=原文；silent=true 落 Return SilentResult，无 disk 痕迹属预期，
 ///   以 LLM 信封里的响应原文作为「这一拍真的发生了且内容原样」的证据）；
-/// - 第 2 拍（~61s）：缩进+换行包裹的 "  HEARTBEAT_OK\n" → `response.trim() ==
+/// - 第 2 拍（~61s）：缩进+换行包裹的 " HEARTBEAT_OK\n" → `response.trim() ==
 ///   "HEARTBEAT_OK"` 归一命中臂执行（同样 silent，证据=信封响应原文）。
 ///
 /// 两臂覆盖度的如实说明：silent 结果不落盘是生产行为；llvm-cov 行命中来自代码
 /// 真跑（不同内容 ⇒ else/if 两个臂都被求值），测试断言锚定的是信封层面的输入/
 /// 输出证据，而不是推测 silent 分支内部状态。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_heartbeat_two_ticks_passthrough_then_heartbeat_ok_match() {
     let _live = live_gate().await;
@@ -1086,25 +1086,25 @@ async fn r9_live_heartbeat_two_ticks_passthrough_then_heartbeat_ok_match() {
 // #6 approval ask 规则链（194-274 + load_security_rules 371-506）
 // ===========================================================================
 
-/// 预种子 cron 驱动一轮 agent：第一轮 LLM 脚本发出 write_file 工具调用，命中
+/// 预种子 cron 驱动一轮 agent： LLM 脚本发出 write_file 工具调用，命中
 /// config.security.json 的 file_rules.write[{pattern:"*",action:"ask"}] →
-/// auditor RequireApproval → WebApprovalManager（M7 Dashboard 审批卡）：
+/// auditor RequireApproval → WebApprovalManager（Dashboard 审批卡）：
 /// - file_rules write=[{pattern:"*",action:"ask"}] → write_file 工具调用触发
 ///   auditor ask → CompositeApprovalManager 分流 web 上下文 → WebApprovalManager
 ///   广播审批卡并阻塞等 respond。
 /// - headless 测试无 Dashboard → 无人 respond → `approval_timeout_secs`（auditor
 ///   默认 300s，auditor.rs AuditorConfig::default）到点自动 deny → 工具结果以
-///   失败回灌 → 第二轮 LLM 出终文本。
+///   失败回灌 → LLM 出终文本。
 /// - 判别关键：若管道错放行了，write_file 会真的在工作区创建文件 —— 因此
-///   「目标文件不存在」+「第二轮发生」二者共同锁定走的是 deny 分支。
+///   「目标文件不存在」+「发生」二者共同锁定走的是 deny 分支。
 ///
-/// 历史（2026-09-08 根因定责）：本测试原名 `…_via_plugin_ui_early_exit`，钉的是
-/// plugin-ui 弹窗适配器的「dll 缺席即早拒」臂；M7（devtool-upgrade 3936aa8）把
+/// 历史（根因定责）：本测试原名 `…_via_plugin_ui_early_exit`，钉的是
+/// plugin-ui 弹窗适配器的「dll 缺席即早拒」臂；（devtool-upgrade 3936aa8）把
 /// auditor 的 ApprovalManager 同构替换为 WebApprovalManager/组合管理器后该臂
 /// 已死（ApprovalPopupAdapter 仅存留为恢复方案），deny 时效从「即时早拒」变为
-/// 「300s 审批超时」——原 240s 窗口在结构上不可能观测到第二轮（DIAG 证据：
+/// 「300s 审批超时」——原 240s 窗口在结构上不可能观测到（DIAG 证据：
 /// mock.hits=1 卡在 write_file ask 等待）。更名 + 窗口 240→420s 对齐现架构。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_approval_ask_rule_denies_via_web_approval_timeout() {
     let _live = live_gate().await;
@@ -1178,10 +1178,10 @@ async fn r9_live_approval_ask_rule_denies_via_web_approval_timeout() {
     let web_port = wait_for_web_port(&home).await;
     tokio::time::sleep(Duration::from_secs(5)).await;
 
-    // 第二轮发生（deny 工具结果回灌后的续轮）。
+    // 发生（deny 工具结果回灌后的续轮）。
     let logs = home.join("workspace").join("logs");
     // 420s：deny 来自 approval_timeout_secs=300 的审批超时（结构定值，
-    // 见函数头注释的根因记录），第二轮在其后秒级完成；420s 留足 boot +
+    // 见函数头注释的根因记录），在其后秒级完成；420s 留足 boot +
     // 终轮余量。
     wait_until_diag(
         420,
@@ -1213,7 +1213,7 @@ async fn r9_live_approval_ask_rule_denies_via_web_approval_timeout() {
 }
 
 // ===========================================================================
-// R10 live 批（2026-08-27 MERGED miss 快照 A 类收口 · 需要真实网关/双节点/
+// live 批（MERGED miss 快照 A 类收口 · 需要真实网关/双节点/
 // 心跳节拍的剩余 miss）。复用本文件既有的探测/安装/spawn/wait/teardown 助手；
 // 不触碰上方任何既有测试与其 wait_until 超时值。
 // ===========================================================================
@@ -1431,7 +1431,7 @@ fn r10_wsapi_agent_stop(web_port: u16, token: &str, req_id: &str) -> Result<(), 
 /// gateway.rs:1822-1827 的 error! 臂（非致命），网关继续装配到就绪。
 /// 断言收敛为「照常就绪 + 照常优雅停机」——error!/info 双臂按执行顺序必然
 /// 都被走过；端口全程由测试进程持有（wildcard 尽力 + specific 兜底双占位）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_cluster_rpc_port_busy_bind_error_stays_nonfatal() {
     let _live = live_gate().await;
@@ -1471,26 +1471,26 @@ async fn r10_live_cluster_rpc_port_busy_bind_error_stays_nonfatal() {
 
 /// 双节点回调路由 + 伪造 error 回调：
 ///
-/// Phase 1（真实 round trip）：B 的 mock 脚本为空 → peer_chat 处理期 LLM 必 500。
+/// （真实 round trip）：B 的 mock 脚本为空 → peer_chat 处理期 LLM 必 500。
 /// 实测行为（与初版假设不同，已按实况修正）：B 端 work 队列里 loop 内部把 LLM
 /// 失败**优雅降级**（loop.rs:4082 warn）后仍回 status=success 回调（cluster_agent
 /// 只在 execute/resume 硬 Err 才发 "error"），A 端照样走完整回调链：gateway.rs
 /// 1983 收到 → Route2 metadata{status,source_node} → bus 发布 cluster_continuation
-/// → 续行轮消费脚本条目产出终文本信封落盘。另注意：异步 cluster_rpc 后第一轮的
+/// → 续行轮消费脚本条目产出终文本信封落盘。另注意：异步 cluster_rpc 后的
 /// assistant 回复由 loop.rs:4756 固定话术「已经联系 X 了，稍等~」顶替，不消耗脚本，
 /// 故 A 脚本只需 [ToolCall, Text(final)] 两格。
 /// 断言锚点：B 真的被打过 LLM（hits≥1）＋ A 终文本落盘 ＋ driver cron ok。
 ///
-/// Phase 2（error 路线）：仓库内不存在能产出 status="error" 回调的可注入生产路径
+/// （error 路线）：仓库内不存在能产出 status="error" 回调的可注入生产路径
 /// （唯一产源 cluster_agent::handle_task_error 只挂在 execute/resume 的 serde/
 /// extract 硬 Err 上），故测试以**合法传输层身份**伪造：用共享 token 派生 AEAD 密钥
-/// （nemesis_cluster::transport::frame::derive_key + encrypt_frame 全公开 API），
+/// （nemesis_cluster::transport:frame::derive_key + encrypt_frame 全公开 API），
 /// 直连 A 的 RPC 口送一条 action=peer_chat_callback、status="error"、task_id=
 /// dashboard 任务 T 的 WireMessage——模拟一个行为异常的对端节点。断言锚点：
 /// tasks.submit 先建 pending 任务 T（目标指向不存在的 peer，永不收到真回调），
 /// 伪造回调后 tasks.list 里 T 变 **failed**（Route3 fail_task 臂 2034-2035）；
 /// 同载荷也吃过 Route2 的 error 键插入（2008-2010）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
     let _live = live_gate().await;
@@ -1521,8 +1521,8 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
         false,
     );
     // B 的降级必须快：500 被归类 Overloaded 进限流重试环（默认 10 档共 885s），
-    // 会把「B 端 LLM 失败 → 错误回调」拖出 A 的 150s 续行窗（2026-10-26 CI
-    // 实录：B 卡 retry 6/10 in 90s，A wait_until(150) 超时 panic）。重试 0 =
+    // 会把「B 端 LLM 失败 → 错误回调」拖出 A 的 150s 续行窗（CI
+    // B 卡 retry 6/10 in 90s，A wait_until(150) 超时 panic）。重试 0 =
     // 首败即硬失败 → handle_task_error 错误回调秒级到达，续行链确定性走通；
     // 测试意图（降级触发续行）不变，只压掉阶梯延迟。
     cfg_b["agents"]["defaults"]["rate_limit_retries"] = json!(0);
@@ -1611,7 +1611,7 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
     })
     .await;
 
-    // —— Phase 2：伪造 status="error" 回调 ——
+    // ——：伪造 status="error" 回调 ——
     // 经 WSAPI 建 dashboard 任务 T（目标指向不存在的 peer → 永无真回调干扰），
     // 再以共享 token 派生 AES-GCM 密钥直连 A 的 RPC 口送 error 载荷。
     let submit = r10_wsapi_request(
@@ -1708,7 +1708,7 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
 /// 因此「A 收到 B 的 canned 回复」同时证明：注册分支真跑 + 回调寻址成功。
 /// （RpcMeta{from:Some} 主臂与 fallback None 臂由同一段提取代码产出的
 /// source_node_id 决定，非空在先，两臂结构上是同一出口。）⭐
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
     let _live = live_gate().await;
@@ -1754,7 +1754,7 @@ async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
             name: "cluster_rpc".to_string(),
             arguments: json!({"target": "R10LAGB", "message": peer_msg}).to_string(),
         },
-        // 异步 cluster_rpc 后第一轮回复被 loop.rs:4756 固定话术顶替、不消耗脚本，
+        // 异步 cluster_rpc 后回复被 loop.rs:4756 固定话术顶替、不消耗脚本，
         // 续行轮才消费这一格——与 dual-node 绿测同构，只留两格。
         MockAiReply::Text("R10-LAG-FINAL-DONE".to_string()),
     ])
@@ -1826,7 +1826,7 @@ async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
 /// 就绪后同时写 HEARTBEAT.md（任务行）+ BOOTSTRAP.md → 下一拍起 handler 进入
 /// 「bootstrap 存在早退 HEARTBEAT_OK」臂（gateway.rs:3195-3204），依旧零 LLM。
 /// 观察 ≥80s 保证至少一拍落在写文件之后；mock 空脚本下任何命中都会响亮失败。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
     let _live = live_gate().await;
@@ -1880,7 +1880,7 @@ async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
 /// heartbeat 变体 d：WSAPI agent.stop 之后再来的拍进「agent 不在」臂。
 /// HEARTBEAT.md 启动即在（bootstrap 缺席）→ 第 1 拍在 agent 存活期正常消耗
 /// 脚本（节奏 = heartbeat 服务起点 +1s 首拍、此后每 interval 一拍，interval_at
-/// 根修 2026-10-24；BUG-64 收编后间隔钳制下限 5 分钟 → 后续拍 ≈+301s）——
+/// 根修；BUG-64 收编后间隔钳制下限 5 分钟 → 后续拍 ≈+301s）——
 /// 等第 1 拍真实落地后经手搓 WS 客户端发 {"module":"agent","cmd":"stop"} 停掉
 /// AgentLoop → 下一个间隔拍命中 adapter.current()==None 早退臂
 /// （gateway.rs:3207-3218），不再耗任何 LLM。断言：恰好 1 次命中、脚本余量 0。
@@ -1888,7 +1888,7 @@ async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
 /// +1s 附近）——那连击正是停机 panic 根源，已修；「等两拍再停」次序消掉旧
 /// 60s 节奏下的固有竞态（第三拍抢在 stop 前 → hits==3 误报）。5 分钟节奏下
 /// stop 与下一拍的间隔天然 ~290s，单拍即可停（无需两拍保险），测试墙钟减半。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_heartbeat_agent_none_after_wsapi_stop_sends_zero_llm() {
     let _live = live_gate().await;

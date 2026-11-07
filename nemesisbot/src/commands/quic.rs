@@ -1,4 +1,4 @@
-//! QUIC CLI（M4 起恒编译：cluster-roaming/quic-relay feature 已删，代理层
+//! QUIC CLI（起恒编译：cluster-roaming/quic-relay feature 已删，代理层
 //! 恒在；2026-10-23 与集群解耦：QUIC 自身配置/身份/状态是 QUIC 层资产，
 //! 不寄居集群命令族）。
 //!
@@ -18,11 +18,11 @@
 //!（cluster.json roaming 段）一次性迁移（[`ensure_quic_config`]，幂等）。
 //! 插件缺席 = 诚实报错（CLI 是显式意志，没有降级可言）。
 //!
-//! BUG-20261025-20：「恒编译」撞上 cluster 本身可裁——本模块引用的
+//! 「恒编译」撞上 cluster 本身可裁——本模块引用的
 //! `nemesis_cluster` 依赖是 optional（随 cluster feature），minimal-IoT 等
-//! 关 cluster 的裁剪组合此前直接 E0433 编译红。修法 = 解析/桥接面整体
+//! 关 cluster 的裁剪组合此前直接 编译红。修法 = 解析/桥接面整体
 //! cfg 门控（voice「未编译诚实报」同款惯例）：命令面（clap 枚举）恒注册、
-//! L1 清单稳定；cluster 关 = 三个动作执行面诚实报「未编译」。
+//! 清单稳定；cluster 关 = 三个动作执行面诚实报「未编译」。
 
 use std::path::Path;
 
@@ -78,10 +78,10 @@ fn resolved(home: &Path) -> (QuicConfig, std::path::PathBuf) {
     (resolved_quic(&quic_path), quic_path)
 }
 
-/// `quic keygen`：生成本机 iroh 漫游身份（2026-10-23 自 `cluster roaming
+/// `quic keygen`：生成本机 iroh 漫游身份（自 `cluster roaming
 /// keygen` 挪来——身份是 QUIC 层资产不是集群资产；**物理路径不变**
 /// workspace/cluster/roaming.key，对端 peers.toml 静态条目零影响）。
-/// QUIC 插件化 M2：身份面（seed→node_id 派生是 ed25519 运算）在
+/// QUIC 插件化：身份面（seed→node_id 派生是 ed25519 运算）在
 /// plugin_roaming——CLI 先装载插件（幂等）再走桥；插件缺席 = 诚实报错
 /// （CLI 是显式意志，没有降级可言）。
 #[cfg(feature = "cluster")]
@@ -158,7 +158,7 @@ async fn run_keygen(home: &Path, force: bool) -> Result<(), String> {
 ///
 /// 两个 CLI 入口同源共用（单一实现）：`nemesisbot quic relay`（分类管理入口）
 /// 与 `nemesisbot gateway --quic-relay`（统一入口，与桥中继 `--relay` 旗标
-/// 先例同形态——经 GatewayCtx::assemble 早退调进本函数）。QUIC 插件化 M1：
+/// 先例同形态——经 GatewayCtx::assemble 早退调进本函数）。QUIC 插件化：
 /// iroh-relay 服务器栈不在本进程——插件内自持 tokio runtime 承载 HTTP/QUIC
 /// 监听与成员注册表；宿主经 C-ABI 调 start/stop（同步 FFI 内投插件自持
 /// runtime，宿主侧 loader 走 spawn_blocking）。与桥中继 `run_relay` 同款
@@ -298,7 +298,7 @@ async fn show_status(home: &Path) -> Result<(), String> {
     );
     // 本机 iroh 身份（组网接线关键项：对端 peers.toml 静态条目的
     // `iroh:<hex>@<relay_url>` 要写这个 hex——gateway 启动日志同值，
-    // [node].iroh_id 声明可对账）。QUIC 插件化 M2：身份派生（seed→node_id
+    // [node].iroh_id 声明可对账）。QUIC 插件化：身份派生（seed→node_id
     // 是 ed25519 运算）在插件内——装载走桥读；缺席/失败 = 诚实注记
     // （状态面不因身份读不到而失败，配置段照常展示）。
     match crate::roaming_plugin_loader::load_roaming_plugin(
@@ -376,7 +376,7 @@ async fn show_status(home: &Path) -> Result<(), String> {
 }
 
 /// 服务端证书/对外 URL 段：完整证书状态 + 对外 URL。路径/URL 计算是纯函数
-///（[`nemesis_cluster::roaming::relay_info`]），不触插件——状态面零副作用、
+///（[`nemesis_cluster::roaming:relay_info`]），不触插件——状态面零副作用、
 /// 不装载插件。
 #[cfg(feature = "cluster")]
 fn relay_server_status_lines(

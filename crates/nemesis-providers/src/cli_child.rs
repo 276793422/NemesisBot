@@ -1,6 +1,6 @@
 //! CLI 型 provider 的子进程公共件：spawn → stdin 写入 → EOF → 收集输出。
 //!
-//! 2026-09-23 BUG 修复（docs/BUG/2026-09-03_cli-delegation-prompt-never-written-to-stdin.md）：
+//! 2026-09-23 BUG 修复（cli-delegation-prompt-never-written-to-stdin）：
 //! 此前 claude/codex 两个 CLI provider 用 `.output()` 一步到位——stdin 只
 //! `Stdio::piped()` 却**从不写入**（prompt 构建后 `let _prompt = …` 死绑定
 //! 丢弃），而命令行又传了 `-`（从 stdin 读 prompt）→ 子进程永远等不到

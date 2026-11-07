@@ -1,4 +1,4 @@
-//! board_issue_tool 单测（全自动流转 P3）：args parse 纯函数穷举 + tier 闸
+//! board_issue_tool 单测（全自动流转）：args parse 纯函数穷举 + tier 闸
 //! 拒 Mini + moderator 槽空诚实报错。
 
 use super::*;

@@ -1,5 +1,5 @@
 //! Tests: spin up a local mock "real endpoint" (axum), start the proxy
-//! pointing at it, and verify pass-through + auth substitution + the A3
+//! pointing at it, and verify pass-through + auth substitution + the
 //! per-launch token gate.
 
 use axum::Router;
@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 
-/// 测试用的每启动 fake key（A3 闸比对基准）。
+/// 测试用的每启动 fake key（闸比对基准）。
 const FAKE: &str = "eval-fake-key-test";
 
 #[tokio::test]
@@ -61,7 +61,7 @@ async fn proxy_forwards_and_swaps_auth() {
     handle.shutdown().await;
 }
 
-// ==================== A3 每启动令牌闸 ====================
+// ==================== 每启动令牌闸 ====================
 
 #[tokio::test]
 async fn wrong_or_missing_token_is_401_without_upstream_contact() {
@@ -227,7 +227,7 @@ async fn proxy_streaming_body_passthrough() {
 // 182（x-api-key 分支携带【裸】真 key）。全部走本地回环，无外网依赖。
 
 #[tokio::test]
-async fn api_base_points_at_local_proxy_v1() {
+async fn api_base_returns_bare_local_root() {
     // start() 是纯被动代理，构造时不连上游；上游地址给个不可达值也无妨
     let handle = crate::start(
         "http://127.0.0.1:1".to_string(),
@@ -239,15 +239,53 @@ async fn api_base_points_at_local_proxy_v1() {
     assert!(handle.port > 0, "proxy should listen on a real port");
     assert_eq!(
         handle.api_base(),
-        format!("http://127.0.0.1:{}/v1", handle.port),
-        "api_base must point back at the local proxy /v1"
+        format!("http://127.0.0.1:{}", handle.port),
+        "api_base must be the bare proxy root (callers mirror the real base's path onto it)"
     );
+    handle.shutdown().await;
+}
+
+/// BUG-20261106-027 合成锁：真实 base 带 path（Zhipu 预设 `/api/paas/v4`
+/// 形态）时，「盒内 base = api_base() + 真实 base path」发出的请求必须
+/// 原样落进「origin + path + lane 后缀」——镜像组合的端到端不变量。
+#[tokio::test]
+async fn pathful_real_base_mirror_composition() {
+    let upstream = Router::new().route(
+        "/api/paas/v4/chat/completions",
+        post(|| async { "ZHIPU_PATH_OK" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let upstream_port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, upstream).await;
+    });
+
+    // eval.rs 组合：proxy real_base = origin（无 path）。
+    let handle = crate::start(
+        format!("http://127.0.0.1:{upstream_port}"),
+        "k".to_string(),
+        FAKE.to_string(),
+    )
+    .await
+    .unwrap();
+    // 盒内 base = 代理根 + 真实 base 的 path；盒内 lane 拼 /chat/completions。
+    let box_base = format!("{}/api/paas/v4", handle.api_base());
+    let resp = reqwest::Client::new()
+        .post(format!("{box_base}/chat/completions"))
+        .header("authorization", format!("Bearer {FAKE}"))
+        .body("")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.text().await.unwrap(), "ZHIPU_PATH_OK");
+
     handle.shutdown().await;
 }
 
 #[tokio::test]
 async fn unreachable_upstream_returns_bad_gateway() {
-    // 挑一个保证无监听的回环端口：bind :0 后立刻 drop → 转发必被拒绝（确定性失败）
+    // 挑一个保证无监听的回环端口：bind:0 后立刻 drop → 转发必被拒绝（确定性失败）
     let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_port = dead.local_addr().unwrap().port();
     drop(dead);

@@ -4,9 +4,9 @@
 // external tools, assess_and_report happy paths, exit_if_risk_flagged(false).
 //
 // Safety notes:
-// - `sbieini` / `start_exe` are FAKE .cmd batch files (exit /b 0|3) — nothing
+// - `sbieini` / `start_exe` are FAKE.cmd batch files (exit /b 0|3) — nothing
 //   touches a real Sandboxie.ini or service.
-// - run_phases receives the monitor-DLL path from the caller (R1 2026-10-22:
+// - run_phases receives the monitor-DLL path from the caller (
 //   resolved + signature-gated in run_eval, passed through). This test feeds
 //   fake (nonexistent) SbieCtrl.exe / monitor DLL / agent exe, so the 6j
 //   `launch_and_inject_with_env` call fails at spawn/read time — no real DLL
@@ -19,8 +19,8 @@ fn tmp() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
-/// Fake external tool: a .cmd batch that exits with the given code.
-/// std::process::Command runs .cmd files via cmd.exe /c on Windows.
+/// Fake external tool: a.cmd batch that exits with the given code.
+/// std::process:Command runs.cmd files via cmd.exe /c on Windows.
 fn fake_tool(dir: &std::path::Path, name: &str, exit_code: u8) -> std::path::PathBuf {
     let p = dir.join(format!("{name}.cmd"));
     std::fs::write(&p, format!("@echo off\r\nexit /b {exit_code}\r\n")).unwrap();
@@ -139,46 +139,29 @@ fn exit_if_risk_flagged_noop_when_flag_clear() {
 }
 
 // ---------------------------------------------------------------------------
-// box_api_base — lane 分派：HttpCompat 保留 /v1，Anthropic/Codex 剥 /v1，
-// 解析失败兜底 HttpCompat 形态。
+// box_api_base — 路径镜像（BUG-20261106-027）：盒内 base = 代理根 + 真实
+// base 的 path，代理 verbatim 转发 → 相对路径逐字节一致（lane 无关）。
 // ---------------------------------------------------------------------------
 
 #[test]
-fn box_api_base_http_compat_keeps_v1() {
-    // 显式 openai 协议（API key 缺省但显式协议路径不看 key）。
+fn box_api_base_mirrors_path_verbatim() {
+    // /v1 形态（OpenAI/DeepSeek 类预设）。
     assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "any/model", "openai"),
+        box_api_base("http://127.0.0.1:9", "/v1"),
         "http://127.0.0.1:9/v1"
     );
-}
-
-#[test]
-fn box_api_base_anthropic_and_codex_trim_v1() {
-    // 前缀 anthropic（protocol 空）→ Anthropic lane → 剥 /v1。
+    // 非 /v1 形态（Zhipu /api/paas/v4、Gemini /v1beta）——旧 lane 感知形态
+    // 在这两类全部 404。
     assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "anthropic/claude-3", ""),
-        "http://127.0.0.1:9"
+        box_api_base("http://127.0.0.1:9", "/api/paas/v4"),
+        "http://127.0.0.1:9/api/paas/v4"
     );
-    // 显式 protocol 覆盖 provider 前缀：responses → Codex → 剥 /v1。
     assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "zhipu/glm", "responses"),
-        "http://127.0.0.1:9"
+        box_api_base("http://127.0.0.1:9", "/v1beta"),
+        "http://127.0.0.1:9/v1beta"
     );
-    // 无 /v1 后缀时剥除是 no-op。
-    assert_eq!(
-        box_api_base("http://127.0.0.1:9", "anthropic/claude-3", ""),
-        "http://127.0.0.1:9"
-    );
-}
-
-#[test]
-fn box_api_base_resolve_failure_falls_back_to_httpcompat_shape() {
-    // 裸名 + 默认协议 + 空 key → resolve 报 no-API-key 错 → 兜底 HttpCompat
-    // 形态（base 原样返回，不剥 /v1）。
-    assert_eq!(
-        box_api_base("http://127.0.0.1:9/v1", "glm-5.3-flash", ""),
-        "http://127.0.0.1:9/v1"
-    );
+    // 无 path：盒内 base = 裸代理根。
+    assert_eq!(box_api_base("http://127.0.0.1:9", ""), "http://127.0.0.1:9");
 }
 
 // ---------------------------------------------------------------------------
@@ -258,8 +241,8 @@ fn sbieini_set_nonzero_exit_bails() {
 
 #[test]
 fn sbieini_set_missing_tool_bails_with_context() {
-    // 注意：缺失的 .cmd 在 Windows 上经 cmd.exe /c 代跑会以 exit code 1 落到
-    // 非零退出分支；要覆盖 with_context 的 spawn 失败臂必须用缺失的 .exe。
+    // 注意：缺失的.cmd 在 Windows 上经 cmd.exe /c 代跑会以 exit code 1 落到
+    // 非零退出分支；要覆盖 with_context 的 spawn 失败臂必须用缺失的.exe。
     let ghost = std::env::temp_dir().join(format!("no_such_sbieini_{}.exe", std::process::id()));
     let err = sbieini_set(&ghost, "S", "K", "V").expect_err("缺工具 → Err");
     assert!(
@@ -299,7 +282,7 @@ fn clean_box_runs_delete_sandbox_when_root_exists() {
 // ---------------------------------------------------------------------------
 // run_phases — 头段（config 写入 / trace 开关 / clean_box / agent 伪 spawn），
 // 假路径下于 6j launch_and_inject_with_env 处失败（spawn/读 DLL 即败，无真
-// 注入）。monitor DLL 缺失的 bail 语义已在 run_eval 闸段（R1 后 run_phases
+// 注入）。monitor DLL 缺失的 bail 语义已在 run_eval 闸段（后 run_phases
 // 只消费调用方传入的路径，不再自查）。launch 成功后的注入段永不触达。
 // ---------------------------------------------------------------------------
 

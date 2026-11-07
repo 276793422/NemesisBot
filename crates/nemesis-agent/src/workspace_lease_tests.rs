@@ -1,9 +1,9 @@
-//! WS9/P22：会话租约测试（独立测试文件——禁内联测试仓库门禁）。
+//! ：会话租约测试（独立测试文件——禁内联测试仓库门禁）。
 //!
 //! 覆盖：同工作区双持有者争用（宽限超时诚实拒绝，文案含持有者名）、
 //! 释放后可再获取 + sidecar 生命周期、probe 输出形态（含陈旧记录注记）、
-//! **真·跨进程死进程释放**（重调自身测试二进制：子进程 `std::process::exit`
-//! 跳过 Drop，锁只由 OS 在进程死亡时释放——正是 P22 的核心承诺）、
+//! **真·跨进程死进程释放**（重调自身测试二进制：子进程 `std::process:exit`
+//! 跳过 Drop，锁只由 OS 在进程死亡时释放——正是 的核心承诺）、
 //! register_shared_tools 包装接线（占锁时写类工具被拒；开关关 = 裸工具
 //! 直跑）。
 
@@ -40,7 +40,7 @@ fn test_ctx() -> RequestContext {
     }
 }
 
-/// P22：同工作区双持有者——B 在 A 持有期间按宽限排队，超时诚实拒绝
+/// 同工作区双持有者——B 在 A 持有期间按宽限排队，超时诚实拒绝
 /// （错误文本含 A 的持有者名）；A 释放后 B 立即可获取。
 #[tokio::test]
 async fn lease_blocks_second_acquire_until_grace_timeout() {
@@ -83,7 +83,7 @@ async fn lease_blocks_second_acquire_until_grace_timeout() {
     drop(acq_b);
 }
 
-/// P22：probe 输出形态——无 workspace=unsupported；持有期 held+holder；
+/// probe 输出形态——无 workspace=unsupported；持有期 held+holder；
 /// 释放后 free（sidecar 已清，无陈旧注记）。
 #[tokio::test]
 async fn probe_reports_hold_state_and_stale_sidecar() {
@@ -98,7 +98,7 @@ async fn probe_reports_hold_state_and_stale_sidecar() {
     let p = WorkspaceLease::probe(Some(&ws));
     assert_eq!(p["supported"], true);
     assert_eq!(p["held"], false, "无人持锁");
-    // F7（2026-09-26 复查）：探针无副作用——首次探测不得创建锁载体文件。
+    // （复查）：探针无副作用——首次探测不得创建锁载体文件。
     assert!(
         !dir.path()
             .join("logs")
@@ -131,7 +131,7 @@ async fn probe_reports_hold_state_and_stale_sidecar() {
 }
 
 /// 子进程辅助（父测试用当前测试二进制重调 + `--exact` 过滤到本用例）：
-/// 获取租约 → 写就绪文件 → `std::process::exit(0)`。exit 不跑 Drop——
+/// 获取租约 → 写就绪文件 → `std::process:exit(0)`。exit 不跑 Drop——
 /// 锁只能由 OS 在进程死亡时释放（本用例作为常规测试跑时环境变量缺席，
 /// 直接空转通过）。
 #[tokio::test]
@@ -142,12 +142,12 @@ async fn ws9_lease_child_holder() {
     let lease = Arc::new(WorkspaceLease::new(Path::new(&ws), "dead-child"));
     let _acq = lease.acquire().await.expect("child acquire");
     std::fs::write(Path::new(&ws).join("child_ready"), "1").expect("write ready");
-    // 不 drop `_acq`：std::process::exit 直接终结进程（析构不跑）。
+    // 不 drop `_acq`：std::process:exit 直接终结进程（析构不跑）。
     std::process::exit(0);
 }
 
-/// P22 核心：死进程的文件锁由 OS 自动释放——子进程持锁后
-/// `std::process::exit(0)`（跳过 Drop），父进程观察到锁已释放、sidecar
+/// 核心：死进程的文件锁由 OS 自动释放——子进程持锁后
+/// `std::process:exit(0)`（跳过 Drop），父进程观察到锁已释放、sidecar
 /// 残留（probe 诚实标注「陈旧」）、随后可立即获取。
 #[tokio::test]
 async fn lease_dead_process_releases_os_lock() {
@@ -168,7 +168,7 @@ async fn lease_dead_process_releases_os_lock() {
         "child 未走到就绪标记"
     );
 
-    // 死进程的锁被 OS 释放（短暂轮询等内核释放可见）。
+    // 死进程的锁被 OS 释放（短暂轮询等内核释放可）。
     assert!(
         wait_until(
             || WorkspaceLease::probe(Some(&ws))["held"].as_bool() == Some(false),
@@ -197,7 +197,7 @@ async fn lease_dead_process_releases_os_lock() {
     drop(acq);
 }
 
-/// P22：register_shared_tools 接线——workspace_lease 配置后，写类工具被
+/// register_shared_tools 接线——workspace_lease 配置后，写类工具被
 /// LeaseGuardTool 包装：他人持锁时 execute 诚实拒绝（工作区正被 …），
 /// 文件不落盘。
 #[tokio::test]
@@ -250,7 +250,7 @@ async fn register_shared_tools_wraps_write_tools_and_enforces() {
     );
 }
 
-/// P22：开关关（`workspace_lease: None`，即 `agents.lease_enabled=false`
+/// 开关关（`workspace_lease: None`，即 `agents.lease_enabled=false`
 /// 的装配形态）= 裸工具直跑，写照常落盘；config 显式默认值为 true。
 #[tokio::test]
 async fn lease_disabled_passthrough_unwrapped() {
@@ -280,7 +280,7 @@ async fn lease_disabled_passthrough_unwrapped() {
     assert!(std::path::Path::new(&target).exists(), "文件应落盘");
 }
 
-/// F6（2026-09-27）：sidecar 清理按 per-acquire 唯一 id 比对——同 holder
+/// sidecar 清理按 per-acquire 唯一 id 比对——同 holder
 /// 名的**他人**记录不得被本次释放误删，旧格式（无 acq_id）同样不删。
 /// 竞态窗口用改写 sidecar 确定性模拟（A 落 guard 后、清理执行前 B 已写
 /// 自己那份的中间态），不靠真竞速。

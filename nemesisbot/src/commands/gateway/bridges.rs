@@ -17,7 +17,7 @@ use tracing::{info, warn};
 
 /// Check if plugin-ui library exists in the `plugins/` directory next to the executable.
 ///
-/// M7（devtool-upgrade 阶段 5）：审批弹窗被 WebApprovalManager（Dashboard 审批卡）
+/// （devtool-upgrade）：审批弹窗被 WebApprovalManager（Dashboard 审批卡）
 /// 同构替换，本函数仅剩 ApprovalPopupAdapter（同样停用）消费——非测试构建下
 /// dead。恢复弹窗：gateway 装配块里把 `web_mgr` 换回
 /// `Arc::new(ApprovalPopupAdapter::new(process_manager.clone()))` 即可。
@@ -27,14 +27,14 @@ pub(crate) fn plugin_ui_library_exists() -> bool {
     nemesis_utils::find_plugin_library("plugin_ui").is_some()
 }
 
-/// Adapter bridging the agent's memory write/forget gate (P2) to the interactive
+/// Adapter bridging the agent's memory write/forget gate to the interactive
 /// approval popup. When attached, agent `memory_store`/`memory_forget` calls pop
 /// up an approval dialog; approval is never bypassed by YOLO/auto. Denies on
 /// timeout/error so a memory write never silently succeeds unapproved.
 ///
-/// F6（二轮复评 2026-10-18）：实现体只依赖 `Arc<dyn ApprovalManager>`（security）
+/// （二轮复评）：实现体只依赖 `Arc<dyn ApprovalManager>`（security）
 /// 与 memory trait，零 desktop 依赖——cfg 门从 desktop+memory+security 收窄为
-/// memory+security（memory+security 无 desktop 的裁剪组合此前 E0433 编译失败）。
+/// memory+security（memory+security 无 desktop 的裁剪组合此前 编译失败）。
 /// memory-without-security 组合无审批闸（本结构体不编译；调用点另有 security
 /// 外层闸），见 scripts/customize/features.toml memory 条目注记。
 #[cfg(all(feature = "memory", feature = "security"))]
@@ -44,8 +44,8 @@ pub(crate) struct GatewayMemoryGate {
 
 /// 审批 manager 来源：装配期已持有时用 `Direct`（主/集群 loop——它们的构建
 /// 点在 runtime 审批装配之后或按任务惰性构建）；构建点先于填槽时用 `Slot`
-/// （boot 期项目 loop——2026-10-31 真机实测：`ProjectLoops starting` 07:10:58.499
-/// 早于 `Approval manager wired` .669 约 170ms，构建期急读必空 = 闸静默缺席）。
+/// （boot 期项目 loop—— 真机实测：`ProjectLoops starting` 07:10:58.499
+/// 早于 `Approval manager wired`.669 约 170ms，构建期急读必空 = 闸静默缺席）。
 #[cfg(all(feature = "memory", feature = "security"))]
 enum GatewayApprovalSource {
     Direct(Arc<dyn nemesis_security::auditor::ApprovalManager>),
@@ -76,7 +76,7 @@ impl GatewayMemoryGate {
     /// Runs the blocking `request_approval_sync` on a spawn_blocking thread (it
     /// spawns a popup child process and waits for the user).
     ///
-    /// §2 免打扰（无人值守计划 Part 2）：开关开 = 无人值守下 memory 写/删
+    /// 免打扰（Part 2）：开关开 = 无人值守下 memory 写/删
     /// 卡 30s 即 deny 的真实卡点消除——直接放行（memory 非安装类，走「所有
     /// 审批 ask 自动批准」语义；审计留痕在 approve 时 INFO 一条）。
     async fn request(&self, operation: &str, preview: &str) -> bool {
@@ -178,7 +178,7 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
             temperature: Some(0.0),
             // 结论本身是极小 JSON，但思考型模型（GLM 系默认开思考）的思考
             // token 与正文共享 max_tokens 预算——256 全被思考烧掉后正文为空，
-            // parse_verdict 报「no opening brace」（2026-09-28 真模型验证实证）。
+            // parse_verdict 报「no opening brace」（真模型验证实证）。
             // 与 bypass_llm::AUX_SUMMARY_MAX_TOKENS 2048→8192 同类修复：给足
             // 思考余量，非思考模型不受影响（结论仍按宪法要求保持极小）。
             max_tokens: Some(4096),
@@ -202,8 +202,8 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
 /// `request_approval_sync()` which spawns an approval popup child process
 /// via ProcessManager and blocks until the user responds.
 ///
-/// **M7（devtool-upgrade 阶段 5）已停用**：审批交互同构替换为
-/// `crate::web_approval::WebApprovalManager`（Dashboard 审批卡，SSE +
+/// **（devtool-upgrade）已停用**：审批交互同构替换为
+/// `crate::web_approval:WebApprovalManager`（Dashboard 审批卡，SSE +
 /// WSAPI approval.respond），全平台可用。恢复方法：gateway 装配块（"Wire up
 /// ApprovalManager" 注释处）把 web_mgr 换回
 /// `Arc::new(ApprovalPopupAdapter::new(process_manager.clone()))`；本结构体
@@ -331,7 +331,7 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
 
 /// Bridge adapter connecting Cluster to Forge's ClusterForgeBridge trait.
 ///
-/// **P2-3 诚实形态**：集群侧 reflection 分享/拉取的 RPC 通路至今未实现
+/// ** 诚实形态**：集群侧 reflection 分享/拉取的 RPC 通路至今未实现
 /// ——此前本 adapter 把「未实现」伪装成「启用但无数据」：`share_reflection`
 /// 返回 `Ok(0)`（0 个对端）、远端查询返回空数组、`is_cluster_enabled()` 恒
 /// `true`。上层据此把静默失败当成功（forge.rs share 循环连 warn 都不打），
@@ -399,10 +399,10 @@ impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
 pub(crate) struct ClusterResultPersisterAdapter {
     pub(crate) result_store: Arc<nemesis_cluster::task_result_store::TaskResultStore>,
     pub(crate) node_id: String,
-    /// P3/D2（看板项目档案 goal）：执行档案发件箱。board feature 形态才
+    /// 执行档案发件箱（看板项目档案 goal）。board feature 形态才
     /// 装配；None = 终态钩子 no-op（on_task_terminal 默认实现兜底）。
     pub(crate) outbox: Option<Arc<nemesis_cluster::outbox::TransferOutbox>>,
-    /// P4/E3 worker 侧档案工作副本根（`<workspace>`；变更集组装定位 exec
+    /// worker 侧档案工作副本根（`<workspace>`；变更集组装定位 exec
     /// 目录用）。outbox 未装配时永不消费。
     pub(crate) workspace: Option<std::path::PathBuf>,
 }
@@ -434,7 +434,7 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
         if status == "error" {
             self.result_store.store_failure(task_id, "peer_chat", error);
         } else {
-            // G5 键归一（2026-09-01）：恢复轮询的 query_task_result handler
+            // 键归一：恢复轮询的 query_task_result handler
             // 读 "response"（与 peer_chat_callback 信封同键）；旧值 "content"
             // 曾导致查询恢复拿到空回复。
             self.result_store.store_success(
@@ -450,16 +450,16 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
     }
 
     fn delete(&self, task_id: &str) -> Result<(), String> {
-        // 2026-09-08 修复：旧实现是 no-op（注释谎称 "TaskResultStore doesn't
+        // 修复：旧实现是 no-op（注释谎称 "TaskResultStore doesn't
         // have a delete method"——remove() 明明存在）。后果：回调成功后
         // set_running 占位文件永留 rpc_cache/results/，7 天 TTL 才清扫。
         self.result_store.remove(task_id);
         Ok(())
     }
 
-    /// P3/D2 任务终态钩子：执行档案入发件箱（回调成功与否无关——档案
+    /// 任务终态钩子：执行档案入发件箱（回调成功与否无关——档案
     /// 推送不依赖 A 端是否收到本轮结果；source 为空时 enqueue 诚实拒绝）。
-    /// P4/E3：档案工作副本在场 = 先全树 diff 组装变更集随行入队（保序：
+    /// 档案工作副本在场 = 先全树 diff 组装变更集随行入队（保序：
     /// 合并不可能抢在交付前）；入队失败保留现场（启动清扫重试）。
     fn on_task_terminal(&self, task_id: &str, source_node_id: &str) {
         let Some(ob) = &self.outbox else { return };
@@ -503,7 +503,7 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
             media: vec![],
             session_key: String::new(),
             correlation_id: String::new(),
-            // G5: 透传结构化元数据（cluster_continuation 的 status /
+            // 透传结构化元数据（cluster_continuation 的 status /
             // source_node / error）——AgentLoop 续行拦截依赖这些字段。
             metadata: msg.metadata,
             voice_playback: None,
@@ -511,7 +511,7 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
         self.bus.publish_inbound(inbound);
     }
 
-    // T19 二层根修：透传真实总线的入站订阅者计数（publish 前就绪探测）。
+    // 二层根修：透传真实总线的入站订阅者计数（publish 前就绪探测）。
     fn inbound_receiver_count(&self) -> usize {
         self.bus.inbound_receiver_count()
     }
@@ -561,7 +561,7 @@ impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
         let _ = max_turns;
         // Same applies to model: AgentLoop currently uses its configured
         // default. Log when a override is requested but cannot be honored so
-        // the silent-drop pattern from BUG #8 (form collecting model that
+        // the silent-drop pattern from (form collecting model that
         // backend ignored) stays visible.
         if let Some(m) = model {
             tracing::warn!(

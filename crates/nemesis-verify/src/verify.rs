@@ -1,32 +1,33 @@
-//! 验证流程（S4-1：v4 Authenticode 管线）。
+//! 验证流程（v4 Authenticode 管线）。
 //!
-//! 管线序（goal S4-1）：主签名定位（PE 证书表首条目 / ELF+raw v4 footer 载体）
+//! 管线序（goal）：主签名定位（PE 证书表首条目 / ELF+raw v4 footer 载体）
 //! → CMS 解析 → 链到编译期根锚 + EKU → digest 比对 → 签名 → 吊销。
 //!
 //! # 九态 VerifyOutcome 映射
 //! - 结构坏（DER / 证书表 / 载体契约 / sid 引用证书缺席）→ [`VerifyOutcome::Malformed`]
-//! - 非支持版本/算法（SignedData version ≠ V1、非 SHA-256、非 ECDSA 套件）→
+//! - 非支持版本/算法（SignedData version ≠、非 SHA-256、非 ECDSA 套件）→
 //!   [`VerifyOutcome::UnsupportedVersion`]
-//! - 链断 / 根指纹不匹配 / 缺 codeSigning EKU → [`VerifyOutcome::Untrusted`]
+//! - 链断 / 签发者无 CA 资格 / pathLen 超限 / 根指纹不匹配 / 缺 codeSigning
+//!   EKU → [`VerifyOutcome::Untrusted`]
 //! - 摘要差（重算 vs SignedData messageDigest）→ [`VerifyOutcome::Tampered`]
 //! - 签名自洽验签失败 → [`VerifyOutcome::SignatureInvalid`]
 //! - 有效期过（链内任一证书）→ [`VerifyOutcome::Expired`]
 //! - 吊销四维命中 → [`VerifyOutcome::Revoked`]
 //! - 无主签名 → [`VerifyOutcome::NoSignature`]；全过 → [`VerifyOutcome::Valid`]
 //!
-//! # 信任语义（S4-2 口径，D7）
+//! # 信任语义（口径）
 //! 链终止条件 = 自签根证书 SHA-256 指纹 ∈ `root_anchor_fps`。默认态空锚集 →
 //! Untrusted（= Windows CERT_E_UNTRUSTEDROOT 语义）；opt-in 信任 = 用户显式
-//! 安装自签根（S0-5 实测：发行锚不可作信任锚）。
+//! 安装自签根（实测：发行锚不可作信任锚）。
 //!
 //! # 范围（诚实边界）
 //! 只验证**主签名**（PE = 证书表首条目；载体 = footer CMS 本体）。嵌套签名
-//! （SPC_NESTED_SIGNATURE，S3-3）展开枚举归 view/后续策略，不影响主签名验证。
+//! （SPC_NESTED_SIGNATURE）展开枚举归 view/后续策略，不影响主签名验证。
 //!
-//! # 破坏性（S4-1）
+//! # 破坏性
 //! v3 NMBSIG envelope 不再被 [`verify_bytes`] 消费（v3 签名文件 → NoSignature）。
-//! 签发单一入口 = [`sign_content_v4`]（S5-1）；v3 签名器 [`sign_content` 已删除，
-//! S5-3 随最后一个生产消费方（verify-loader sign）迁移] 与 envelope v3 代码块
+//! 签发单一入口 = [`sign_content_v4`]；v3 签名器 [`sign_content` 已删除，
+//! 随最后一个生产消费方（verify-loader sign）迁移] 与 envelope v3 代码块
 //! 一并退役——v3 形态只剩测试里的 footer 字节字面量（破坏性钉死用，故意的）。
 
 use crate::cert::{self, Certificate};
@@ -67,7 +68,7 @@ pub enum VerifyOutcome {
     },
     /// 过期（链内任一证书不在当前时间有效）。
     Expired(String),
-    /// 结构合法但本实现不支持的版本/算法（SignedData version ≠ V1、非 SHA-256、
+    /// 结构合法但本实现不支持的版本/算法（SignedData version ≠、非 SHA-256、
     /// 非 ECDSA 套件）。
     UnsupportedVersion(String),
     /// 结构无法解析（DER / 证书表 / 载体 / sid 引用证书缺席）。
@@ -79,7 +80,7 @@ pub enum VerifyOutcome {
 /// 必须同源消费——verify_bytes 吊销比对传的是 CMS 内嵌 `content_digest`，
 /// 记账侧存别的口径（如 codec 文件哈希）会让 FileHash 吊销永远查不中。
 ///
-/// - PE → [`crate::pe::authenticode_digest`]（排除 CheckSum 字段与证书表区，
+/// - PE → [`crate::pe:authenticode_digest`]（排除 CheckSum 字段与证书表区，
 ///   无 L 上界 overlay 全含）
 /// - ELF/raw → codec `content_hash`（ELF 保护域 [0,L)、raw 全文件）
 pub fn v4_content_digest(content: &[u8]) -> Result<[u8; 32]> {
@@ -93,7 +94,7 @@ pub fn v4_content_digest(content: &[u8]) -> Result<[u8; 32]> {
     }
 }
 
-/// v4 Authenticode 签名装配单一入口（S5-1）：按载体形态自动分派，与
+/// v4 Authenticode 签名装配单一入口：按载体形态自动分派，与
 /// [`verify_bytes`] 的主签名定位同源。
 ///
 /// - PE → CMS（messageDigest = [`v4_content_digest`]）+ Certificate Table 追加
@@ -120,11 +121,11 @@ pub fn sign_content_v4(
     }
 }
 
-// ===== S4-1：v4 Authenticode 验证管线 =====
+// =====：v4 Authenticode 验证管线 =====
 
 /// 主签名来源（决定 digest 重算口径）。
 enum PrimarySource {
-    /// PE：证书表首条目（Windows primary），digest = [`crate::pe::authenticode_digest`]。
+    /// PE：证书表首条目（Windows primary），digest = [`crate::pe:authenticode_digest`]。
     CertificateTable { cms_der: Vec<u8> },
     /// ELF/raw：v4 footer 载体，digest = 载体 content_hash（extract 已交叉核 L 契约）。
     Carrier {
@@ -189,9 +190,9 @@ pub(crate) fn signer_matches(cert: &Certificate, ps: &envelope::ParsedSignature)
     }
 }
 
-/// 证书集 → 有序链 `[signer, issuing, ..., root]`。
+/// 证书集 → 有序链 `[signer, issuing,..., root]`。
 ///
-/// 证书集是 SetOfVec（按编码字节序，**非链序**，S3-3 实证），须按 AKI→SKI
+/// 证书集是 SetOfVec（按编码字节序，**非链序**， 实证），须按 AKI→SKI
 /// 逐级上溯排序。终止 = 当前证书自签。诚实失败（None → Untrusted）：
 /// AKI 找不到对应 SKI 的父证书（链断）/ 环 / 非自签却无 AKI 可循。
 /// pub(crate)：view 展示排序同源复用（纯结构排序，链断时 view 降级原序展示）。
@@ -219,7 +220,7 @@ pub(crate) fn order_chain_from(
 /// 验证 `bytes`（完整文件，主签名）。
 ///
 /// `root_anchor_fps`：验证端信任锚集合（自签根证书 SHA-256 指纹；编译期固化 +
-/// 运行时 fallback 的注入装配归 S4-2/c_abi）。空集 = 默认不可信状态（D7）。
+/// 运行时 fallback 的注入装配归 /c_abi）。空集 = 默认不可信状态。
 /// `now`：当前时间（Unix epoch 秒），用于证书有效期校验。
 pub fn verify_bytes(bytes: &[u8], root_anchor_fps: &[[u8; 32]], now: u64) -> VerifyOutcome {
     // ① 主签名定位
@@ -264,7 +265,7 @@ pub fn verify_bytes(bytes: &[u8], root_anchor_fps: &[[u8; 32]], now: u64) -> Ver
         Err(_) => return VerifyOutcome::Untrusted,
     }
     if !root_anchor_fps.contains(&root_fp) {
-        return VerifyOutcome::Untrusted; // 链没到编译期根锚（D7 默认态）
+        return VerifyOutcome::Untrusted; // 链没到编译期根锚（默认态）
     }
 
     // ④ digest 比对（摘要差 → Tampered；PE 无 L 上界 overlay 全含，载体域 = codec 裁决）
@@ -279,7 +280,7 @@ pub fn verify_bytes(bytes: &[u8], root_anchor_fps: &[[u8; 32]], now: u64) -> Ver
         return VerifyOutcome::Tampered("content digest mismatch".into());
     }
 
-    // ⑤ 签名验签：消息 = signedAttrs SET OF DER（RFC 5652 §5.4），密钥 = 签名者证书 SPKI
+    // ⑤ 签名验签：消息 = signedAttrs SET OF DER（RFC 5652），密钥 = 签名者证书 SPKI
     let signer_vk = match signer.subject_public_key() {
         Ok(vk) => vk,
         Err(e) => return VerifyOutcome::Malformed(format!("签名者公钥: {e}")),

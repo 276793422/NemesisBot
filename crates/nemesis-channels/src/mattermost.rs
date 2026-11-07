@@ -1,4 +1,4 @@
-//! Mattermost 通道（P26，Wave 3 能力扩展）：REST + WebSocket 双通路直连。
+//! Mattermost 通道（Wave 3）：REST + WebSocket 双通路直连。
 //!
 //! - **入站**：WebSocket 网关 `{base}/api/v4/websocket`（连接后首帧发
 //!   `authentication_challenge` 鉴权，bot token 模式，无需 OAuth/app token），
@@ -327,7 +327,7 @@ impl MattermostChannel {
                 // 会话持续超过阈值 = 鉴权通过且健康运行后正常断开 → 重置退避
                 // 快速重连；短命会话（连接成功但鉴权 FAIL 即返）保持指数退避——
                 // 否则 token 失效时「连接成功即复位」会形成 1 次/秒的永久重试
-                // 循环，MAX_BACKOFF 永远不生效（2026-09-26 复查修复）。
+                // 循环，MAX_BACKOFF 永远不生效（复查修复）。
                 if session_started.elapsed() > std::time::Duration::from_secs(60) {
                     backoff = INITIAL_BACKOFF;
                 }
@@ -652,7 +652,7 @@ impl Channel for MattermostChannel {
 
         // 先置位再 spawn：tokio 多线程 runtime 下 spawn 的任务可能先于父任务
         // 之后的写执行——循环首行 `if !*running.read() { break; }` 会看到 false
-        // 直接永久退出（2026-09-26 复查修复的启动竞态，slack 存量同款未动）。
+        // 直接永久退出（复查修复的启动竞态，slack 存量同款未动）。
         *self.running.write() = true;
         self.base.set_running(true);
 
@@ -692,8 +692,8 @@ impl Channel for MattermostChannel {
         // 出站格式映射：bot 内部 markdown → Mattermost markdown
         let content = Self::to_mattermost_markdown(&msg.content);
         self.post_message(channel_id, &content, root_id).await?;
-        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）；
-        // sync 镜像来的消息不再二次扩散（BUG-20261025-57 回环防护）。
+        // 出站同步镜像（mqtt/websocket 镜像到 web 等同步目标）；
+        // sync 镜像来的消息不再二次扩散（回环防护）。
         self.base.sync_outbound(&msg).await;
         Ok(())
     }

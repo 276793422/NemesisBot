@@ -18,7 +18,7 @@ pub struct SttEngine {
     /// offline recognizer 无线程安全承诺（沉默 → 按非线程安全对待），而
     /// channel_bridge 的 `VoiceTranscriber: Send + Sync` 契约允许并发
     /// `transcribe`（&self 共享）——按处置规则加锁，宁慢不炸。
-    /// 依据：`docs/INFO/2026-10-15_voice-ffi-safety-audit.md` C-1。
+    /// 依据：`voice-ffi-safety-audit` C-1。
     lock: Mutex<()>,
     recognizer: *const sherpa::SherpaOnnxOfflineRecognizer,
     /// 语言补救策略 + fallback 识别器。模型未声明补救、或总开关关闭时为 `None`。

@@ -10,7 +10,7 @@ use crate::types::{ChatOptions, Message};
 
 fn wrapper() -> Arc<dyn LLMProvider> {
     // captured 用 CodexProvider（default_model/name 有确定值；NullProvider
-    // 的 default_model 是空串，不适合断言委派）。base_url 钉死端口（:1 无监
+    // 的 default_model 是空串，不适合断言委派）。base_url 钉死端口（1 无监
     // 听）→ 连接拒绝映射 Unknown + "connect error" 前缀，chat 断言确定性成
     // 立；空 base_url 会打真实端点（401 Auth），测试结果随远端漂移。
     let captured = crate::codex::CodexProvider::new(crate::codex::CodexConfig {

@@ -1,4 +1,4 @@
-//! TrustBook 测试（QUIC 插件化 M3 自 endpoint/tests.rs 迁入——裁决语义
+//! TrustBook 测试（QUIC 插件化 自 endpoint/tests.rs 迁入——裁决语义
 //! 已随 accept 闸搬 plugin_roaming，数据形态/裁决纯函数仍归宿主）。
 
 use super::{TrustBook, TrustBookData};
@@ -63,7 +63,7 @@ fn trust_book_absent_means_not_enabled() {
 }
 
 // ---------------------------------------------------------------------------
-// L16（2026-11-02 三期）：announce 采信闸 + dial 吊销 veto
+// （三期）：announce 采信闸 + dial 吊销 veto
 // ---------------------------------------------------------------------------
 
 use super::{AnnounceVerdict, announce_gate, dial_vetoed};
@@ -189,7 +189,7 @@ fn dial_veto_corrupt_book_fails_open() {
 }
 
 // ---------------------------------------------------------------------------
-// L13-a（2026-11-03 三期）：mandate 公钥钉存面
+// a（三期）：mandate 公钥钉存面
 // ---------------------------------------------------------------------------
 
 use super::{
@@ -270,7 +270,7 @@ fn mandate_tofu_pins_first_sighting() {
 #[test]
 fn mandate_tofu_pins_into_active_book() {
     let tmp = tempfile::tempdir().expect("tempdir");
-    // 激活簿（L16 管理面先例：显式写簿）。
+    // 激活簿（管理面显式写簿）。
     let mut book = TrustBook::from_data(TrustBookData::default());
     book.trust(&"aa".repeat(32));
     book.save(tmp.path()).expect("save");
@@ -393,7 +393,7 @@ fn mandate_legacy_book_without_sections_loads_empty() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let path = super::trust_book_path(tmp.path());
     std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir");
-    // L16-only 存量簿（无 mandate 段）。
+    // only 存量簿（无 mandate 段）。
     std::fs::write(&path, "trusted = [\"aabb\"]\nrevoked = []\n").expect("write");
     let book = TrustBook::load(tmp.path()).expect("load").expect("some");
     assert!(book.data().mandate_keys.is_empty(), "缺段 = 空 map 零迁移");
@@ -404,7 +404,7 @@ fn mandate_legacy_book_without_sections_loads_empty() {
     );
 }
 
-/// BUG-20261104-358：簿在场但读失败 = BookUnreadable（与 Absent 分立——
+/// 簿在场但读失败 = BookUnreadable（与 Absent 分立——
 /// 旧实现把 Err 归入 Absent，verify 降级臂上线后坏簿 = 已激活 regime 被
 /// 无声降级为放行态）。
 #[test]
@@ -426,7 +426,7 @@ fn mandate_corrupt_book_verdict_is_book_unreadable() {
     );
 }
 
-/// BUG-20261031-260 横向补齐：trust.toml 带 UTF-8 BOM（记事本形态）不再
+/// 横向补齐：trust.toml 带 UTF-8 BOM（记事本形态）不再
 /// 构成坏簿——剥 BOM 后正常解析（合法内容照常钉存生效）。
 #[test]
 fn mandate_bom_book_loads_normally() {

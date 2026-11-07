@@ -42,7 +42,7 @@ pub enum ForgeAction {
         #[arg(long)]
         all: bool,
     },
-    /// Learning management (Phase 6)
+    /// Learning management
     Learning {
         #[command(subcommand)]
         action: Option<LearningAction>,
@@ -98,7 +98,7 @@ pub enum LearningAction {
 // Forge config helpers
 // ---------------------------------------------------------------------------
 
-// ── 死代码恢复区（2026-09-16 用户指令：代码不得随便删，注释保留待讨论）
+// ── 死代码恢复区（用户指令：代码不得随便删，注释保留待讨论）
 // ────────────────────────────────────────────────────────────────────────
 // CFG-04 曾删以下三个 CLI-local helper（写死 `<forge>/forge.json` 且键名
 // 与 runtime schema 不匹配，gateway 从不读取，属假姿态；现役实现 = 下方
@@ -130,11 +130,11 @@ pub enum LearningAction {
 // }
 //
 // /// Load forge config from forge.json.
-// fn load_forge_config(forge_dir: &std::path::Path) -> serde_json::Value {
+// fn load_forge_config(forge_dir: &std::path:Path) -> serde_json::Value {
 //     let config_path = forge_dir.join("forge.json");
 //     if config_path.exists()
-//         && let Ok(data) = std::fs::read_to_string(&config_path)
-//         && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+//         && let Ok(data) = std::fs:read_to_string(&config_path)
+//         && let Ok(cfg) = serde_json::from_str:<serde_json::Value>(&data)
 //     {
 //         return cfg;
 //     }
@@ -142,14 +142,14 @@ pub enum LearningAction {
 // }
 //
 // /// Save forge config to forge.json.
-// fn save_forge_config(forge_dir: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
-//     let _ = std::fs::create_dir_all(forge_dir);
+// fn save_forge_config(forge_dir: &std::path:Path, cfg: &serde_json::Value) -> Result<> {
+//     let _ = std::fs:create_dir_all(forge_dir);
 //     let config_path = forge_dir.join("forge.json");
 //     std::fs::write(
 //         &config_path,
 //         serde_json::to_string_pretty(cfg).unwrap_or_default(),
 //     )?;
-//     Ok(())
+//     Ok()
 // }
 // ── 死代码恢复区结束 ────────────────────────────────────────────────────
 
@@ -294,7 +294,7 @@ fn cmd_status(
     Ok(())
 }
 
-/// 主 config.json 改写统一走 REL-002 原子写入。旧形态是裸 `fs::write` +
+/// 主 config.json 改写统一走 原子写入。旧形态是裸 `fs::write` +
 /// `to_string_pretty(&cfg).unwrap_or_default()`——序列化失败会被翻译成
 /// 「写空串清空整个 config」，半截写则是截断 config（集群禁用级杀伤面，
 /// BUG-251 同源）。Value 序列化实际不会失败，但失败路径不该是清空。
@@ -439,7 +439,7 @@ fn cmd_reflect(
     let auto_skill = auto_skill_flag || forge_cfg.artifacts.auto_skill;
     let exp_limit = forge_cfg.collection.max_experiences.max(1);
     let mut forge = nemesis_forge::forge::Forge::new(forge_cfg, workspace.clone());
-    // F-D3 同款：注册表先从盘回载再消费——Registry::new 是空内存注册表，
+    // F- 同款：注册表先从盘回载再消费——Registry::new 是空内存注册表，
     // 不回载则 find_by_name 去重失效、add 会往 registry.json 追加同 id
     // 重复条目（CLI 每次新起进程必踩；gateway 路径 ctx.rs 启动即 load）。
     let _ = tokio::task::block_in_place(|| {
@@ -449,7 +449,7 @@ fn cmd_reflect(
     // Initialize a real Reflector with the reflections directory
     let reflect_dir = forge_dir.join("reflections");
     let reflector = nemesis_forge::reflector::Reflector::with_reflections_dir(reflect_dir.clone());
-    // LLM 语义分析接线（2026-10-15 W2 重放通道）：ChainJudgeCaller 每次调用
+    // LLM 语义分析接线（重放通道）：ChainJudgeCaller 每次调用
     // 现场解析杂务链（judge_model → small_model → 主模型），CLI 无网关也能
     // 跑反思——此前 CLI 路径只出统计报表，LLM 洞察只在网关 6h 循环里发生。
     if use_llm {
@@ -460,7 +460,7 @@ fn cmd_reflect(
     }
     forge.init_reflector(reflector);
 
-    // Read RAW experiences from the experience store（2026-10-15 W2：改读
+    // Read RAW experiences from the experience store（改读
     // 原始经验并保留输入/输出摘要——聚合路径把摘要清空，LLM 蒸馏拿到的
     // 只是频次骨架，程序性知识无从谈起；时序摘要本身就是蒸馏的原材料）。
     let store = nemesis_forge::experience_store::ExperienceStore::from_forge_dir(forge_dir);
@@ -518,7 +518,7 @@ fn cmd_reflect(
         }
     }
 
-    // auto_skill 蒸馏（2026-10-15 W2 生成面，重放通道）：config.forge.json
+    // auto_skill 蒸馏（生成面，重放通道）：config.forge.json
     // 的 artifacts.auto_skill=true 时对经验做程序性知识蒸馏，draft 落
     // <forge>/skills/<slug>/SKILL.md（不自动启用）。
     if auto_skill {
@@ -895,7 +895,7 @@ fn cmd_learning_disable(forge_dir: &std::path::Path) -> Result<()> {
 }
 
 /// 学习周期读取（真相源 CycleStore 月目录 JSONL；按 started_at 升序——
-/// read_dir 顺序是平台实现细节，R18）。独立成函数供测试断言排序/计数，
+/// read_dir 顺序是平台实现细节）。独立成函数供测试断言排序/计数，
 /// 旧实现读的 learning/learning_cycles.jsonl 无生产写入方（幻影路径）。
 fn learning_history_cycles(
     forge_dir: &std::path::Path,
@@ -1011,7 +1011,7 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
             }
         }
         ForgeAction::Optimize { name, op, param } => {
-            // name 围栏（R18）：`forge test` 同款穿越/盘符面，单一真相源。
+            // name 围栏：`forge test` 同款穿越/盘符面，统一定义。
             nemesis_forge::forge::valid_skill_dir_name(&name).map_err(anyhow::Error::msg)?;
             let workspace = common::workspace_path(&home);
             let skill_md = workspace.join("skills").join(&name).join("SKILL.md");
@@ -1107,7 +1107,7 @@ fn block_on_async<F: std::future::Future>(fut: F) -> F::Output {
 mod tests;
 
 // ---------------------------------------------------------------------------
-// A 线行为回归（forge test，2026-10-14）
+// A 线行为回归（forge test）
 // ---------------------------------------------------------------------------
 
 /// `forge test <name>`：对 workspace/skills/<name> 执行 frontmatter `tests`
@@ -1117,7 +1117,7 @@ mod tests;
 async fn cmd_test(home: &std::path::Path, name: &str, test_filter: Option<&str>) -> Result<()> {
     use nemesis_forge::skill_tests as st;
 
-    // name 围栏（R18）：与 web forge_test_cmd 同一单一真相源——`../x`
+    // name 围栏：与 web forge_test_cmd 同一单一权威定义——`../x`
     // 穿越读面 + `C:evil` 盘符相对形态（join 整段换基座）。
     nemesis_forge::forge::valid_skill_dir_name(name).map_err(anyhow::Error::msg)?;
 

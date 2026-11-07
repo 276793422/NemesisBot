@@ -1,4 +1,4 @@
-//! Tests for the embedded SDK artifacts (P2-2).
+//! Tests for the embedded SDK artifacts.
 //!
 //! Structural round-trip via `zip` (dev-dep): open the embedded bytes as a
 //! real archive and assert content shape — this is what guarantees a user's

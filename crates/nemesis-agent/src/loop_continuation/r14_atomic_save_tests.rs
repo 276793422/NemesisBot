@@ -1,9 +1,9 @@
-//! BUG-HUNT R14：ContinuationStore::save 原子写回归锁。
+//! ContinuationStore::save 原子写回归锁。
 //!
-//! 修复前 `save` 用裸 `std::fs::write` 直写目标——崩溃/断电落在写中 → 半截
-//! JSON 快照，重启后 load 解析失败被 warn 跳过，续行与 G5 pending 重建静默
+//! 修复前 `save` 用裸 `std::fs:write` 直写目标——崩溃/断电落在写中 → 半截
+//! JSON 快照，重启后 load 解析失败被 warn 跳过，续行与 pending 重建静默
 //! 丢失。修复后走 `nemesis_utils::write_file_atomic`（同目录 cluster 侧
-//! twin store 的 REL-002 形态：唯一临时名 + sync_all 先于 rename + 失败清理）。
+//! twin store 的 形态：唯一临时名 + sync_all 先于 rename + 失败清理）。
 //!
 //! 进程内无法真实注入「写中崩溃」，本批锁三件可观察行为：
 //! ① save→load 往返保真 + 覆盖写取最新；② save 成功后目录零 `.tmp-` 残留
@@ -61,7 +61,7 @@ fn atomic_save_roundtrip_overwrite_and_no_residue() {
     assert_no_tmp_residue(&dir.join("cluster").join("rpc_cache"), "after saves");
 }
 
-/// 崩溃残留的 `.tmp-*` 文件（无 .json 扩展名）不得被 list_pending 当作
+/// 崩溃残留的 `.tmp-*` 文件（无.json 扩展名）不得被 list_pending 当作
 /// pending 任务——原子写引入临时文件后，恢复扫描必须天然无视它们。
 #[test]
 fn crash_tmp_residue_not_listed_as_pending() {

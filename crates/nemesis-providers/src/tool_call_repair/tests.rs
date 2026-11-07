@@ -2,7 +2,7 @@ use super::*;
 
 // ｜｜DSML｜｜ — the full deepseek DSML tag prefix
 // (U+FF5C × 2 + "DSML" + U+FF5C × 2). Tests build content with this so the
-// <{d}invoke ...> form yields the real <｜｜DSML｜｜invoke ...> shape.
+// <{d}invoke...> form yields the real <｜｜DSML｜｜invoke...> shape.
 const D: &str = "\u{ff5c}\u{ff5c}DSML\u{ff5c}\u{ff5c}";
 
 #[test]
@@ -147,7 +147,7 @@ fn test_json_with_function_wrapper() {
     let calls = repair_tool_calls(content);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].function.as_ref().unwrap().name, "write_file");
-    // BUG-20261105-006：嵌套形态 arguments 必须恢复（曾静默丢成 "{}"）。
+    // 嵌套形态 arguments 必须恢复（曾静默丢成 "{}"）。
     let args: serde_json::Value =
         serde_json::from_str(&calls[0].function.as_ref().unwrap().arguments).unwrap();
     assert_eq!(args["path"], "x");
@@ -240,7 +240,7 @@ fn test_call_type_always_function() {
     assert_eq!(calls[0].call_type.as_ref().unwrap(), "function");
 }
 
-// ---- BUG-20261025-16：白名单过滤（repair_tool_calls_in_whitelist）----
+// ----：白名单过滤（repair_tool_calls_in_whitelist）----
 // 不变量：恢复出的调用必须可执行——名字 ∈ 本请求提供的工具白名单。
 
 fn whitelist_defs(names: &[&str]) -> Vec<ToolDefinition> {
@@ -325,7 +325,7 @@ fn test_xml_invoke_phantom_name_filtered() {
     assert!(calls.is_empty());
 }
 
-// ---- BUG-20261105-006：嵌套 function.arguments 丢失 ----
+// ----：嵌套 function.arguments 丢失 ----
 // 不变量：json_value_to_call 的 arguments 与 name 同构双源（顶层优先，
 // function.arguments 回落）——嵌套 OpenAI wire 形态恢复出的调用必须带
 // 完整参数，不得静默丢成 "{}"（那是对白名单内调用的主动误修复）。

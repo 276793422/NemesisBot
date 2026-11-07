@@ -1,10 +1,10 @@
-//! delegate_registry 测试（A3，2026-10-18）。
+//! delegate_registry 测试（2026-10-18）。
 //!
 //! 分层：
 //! - 协议 adapter 纯函数面：canned-line 单测（无 IO、无锁、无平台差异）；
 //! - 真子进程用例：fake CLI（Windows=批处理跑 `more` / Unix=`cat` 脚本——
 //!   都忽略协议参数、stdin 回显 stdout、EOF 退出），模块级 TEST_LOCK 串行
-//!   （B4 纪律：并行 spawn/树杀放大进程操作延迟会撞破等待窗口造成假红）；
+//!   （纪律：并行 spawn/树杀放大进程操作延迟会撞破等待窗口造成假红）；
 //! - vault env 白名单：走 nemesis-config 全局解析器槽位（生产同源注入
 //!   点），set/clear 复位纪律，不做真实 vault 文件 IO。
 //!
@@ -24,7 +24,7 @@ use super::{
 use crate::background_registry::{DEFAULT_MAX_OUTPUT_BYTES, OutputBuffer};
 use crate::r#loop::Tool;
 
-/// 真子进程用例串行锁（B4 纪律）。
+/// 真子进程用例串行锁（纪律）。
 static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---------------------------------------------------------------------------
@@ -537,10 +537,10 @@ async fn all_running_at_capacity_rejects_honestly() {
 }
 
 // ---------------------------------------------------------------------------
-// F7（二轮复评 2026-10-18）：启动在途纳入急停与容量
+// （二轮复评）：启动在途纳入急停与容量
 // ---------------------------------------------------------------------------
 
-/// 等 pid 对应进程消失（F7 取证面：失败路径必须真的杀掉子进程，不许孤儿）。
+/// 等 pid 对应进程消失（取证面：失败路径必须真的杀掉子进程，不许孤儿）。
 #[cfg(windows)]
 async fn wait_pid_gone(pid: u32) -> bool {
     for _ in 0..50 {
@@ -738,7 +738,7 @@ async fn concurrent_starts_capacity_counts_inflight() {
     }
 }
 
-// R6 回归锁（原 review 探针反转，2026-10-20）：容量闸 = 「检查+占位」——
+// 回归锁（原 review 探针反转）：容量闸 = 「检查+占位」——
 // 许可在 entries 锁内取得（并发准入串行化），MAX+1 个同步并发 start 只有
 // MAX 个能越过闸（第 MAX+1 个在闸上即被拒，到不了 admission barrier），
 // 座位三段口径 entries+starting+permits 全程 ≤ MAX_DELEGATES。
@@ -819,11 +819,11 @@ async fn admission_permit_caps_concurrent_starts_at_limit() {
 }
 
 // ---------------------------------------------------------------------------
-// F8：permission_mode 配置缺省贯通（args 缺省 → 配置值；显式 args 恒优先）
+// permission_mode 配置缺省贯通（args 缺省 → 配置值；显式 args 恒优先）
 // ---------------------------------------------------------------------------
 
 /// 回显自身 argv 的假 claude CLI：把 build_args 形态直接落到 stdout，
-/// 让 permission_mode 贯通可观测（`ARGS=-p ... --permission-mode X`）。
+/// 让 permission_mode 贯通可观测（`ARGS=-p... --permission-mode X`）。
 fn make_echo_args_cli(dir: &std::path::Path) -> String {
     #[cfg(windows)]
     {
@@ -1139,7 +1139,7 @@ fn tool_schemas_expose_expected_parameters() {
     assert!(stop.description().contains("tree-kills"));
 }
 
-/// A2 sleeper CLI：忽略 stdin EOF（模拟轮次中的 delegate——不读 stdin，
+/// sleeper CLI：忽略 stdin EOF（模拟轮次中的 delegate——不读 stdin，
 /// EOF 优雅语义对它无效，必须走 kill 旗标阶梯）。
 fn make_fake_sleeper_cli(dir: &std::path::Path) -> String {
     #[cfg(windows)]
@@ -1158,7 +1158,7 @@ fn make_fake_sleeper_cli(dir: &std::path::Path) -> String {
     }
 }
 
-/// A2：空闲 delegate（echo CLI，无待处理输入）stop → stdin EOF 优雅窗内
+/// 空闲 delegate（echo CLI，无待处理输入）stop → stdin EOF 优雅窗内
 /// 自退 → 不置 kill 旗标，exit.killed 诚实保持 false。
 #[tokio::test]
 async fn stop_idle_delegate_exits_gracefully_without_kill_flag() {
@@ -1193,7 +1193,7 @@ async fn stop_idle_delegate_exits_gracefully_without_kill_flag() {
     );
 }
 
-/// A2：EOF-忽略 delegate（模拟轮次中）stop → 优雅窗超窗 → kill 旗标 →
+/// EOF-忽略 delegate（模拟轮次中）stop → 优雅窗超窗 → kill 旗标 →
 /// supervise 停止阶梯收尸，killed=true 且 STOP_WAIT 窗内拿到终态。
 #[tokio::test]
 async fn stop_eof_ignoring_delegate_escalates_to_kill() {
@@ -1229,7 +1229,7 @@ async fn stop_eof_ignoring_delegate_escalates_to_kill() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-HUNT R15：truncate_diag 多字节安全（&s[..400] 非字符边界 panic）
+// truncate_diag 多字节安全（&s[..400] 非字符边界 panic）
 // ---------------------------------------------------------------------------
 
 /// 中文诊断串第 400 字节落在多字节字符中间——修复前 `&s[..400]` 直接 panic。
@@ -1257,7 +1257,7 @@ fn truncate_diag_multibyte_safe_at_400() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261103-341：rpc_round 增量扫描劈行丢失
+// rpc_round 增量扫描劈行丢失
 // ---------------------------------------------------------------------------
 
 /// 红证：JSON-RPC 响应行跨两次 50ms 轮询到达（spawn_pump 8KB read() 部分

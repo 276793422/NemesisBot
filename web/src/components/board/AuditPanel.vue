@@ -31,7 +31,7 @@ interface AuditRow {
 
 // 决策词 → 人话标签（与 board_review.rs 处置臂 + A1 auto_confirm 对齐；
 // P5 冲突漏斗 4 词：conflict 停车 / conflict_auto_resolve 硬解 / 重派 / 换人）。
-// BUG-20261029-172 回填 3 词（生产在写、词表缺席——缺陷闸 2026-10-22 拍板
+// BUG-20261029-172 回填 3 词（生产在写、词表缺席——缺陷闸 2026-10-22 决策
 // 契约闸父/项目两级 + 父单自动修复臂，此前落英文原词兜底语义丢失）。
 const DECISION_LABEL: Record<string, string> = {
   auto_accept: '验收 PASS · 自动收货',

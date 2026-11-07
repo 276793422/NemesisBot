@@ -1,7 +1,7 @@
 use super::*;
 
 // ---- StaticValidator tests ----
-// (QualityEvaluator tests removed 2026-10-22 with the legacy dead-code type;
+// (QualityEvaluator tests removed with the legacy dead-code type;
 // Stage 3 quality coverage lives in pipeline/reflector_llm tests.)
 
 #[test]

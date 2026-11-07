@@ -190,7 +190,7 @@ impl DlpEngine {
             };
         }
 
-        // M15: Truncate oversized content instead of skipping.
+        // Truncate oversized content instead of skipping.
         // floor_char_boundary avoids slicing mid-codepoint (which panics on
         // multibyte text like Chinese) — same approach as scan_tool_output.
         let scan_text: std::borrow::Cow<str> =
@@ -258,13 +258,13 @@ impl DlpEngine {
             }
         }
 
-        // M16: Deduplicate by (rule_name, start_position) — same pattern at
+        // Deduplicate by (rule_name, start_position) — same pattern at
         // different positions produces separate entries.
         let mut seen = std::collections::HashSet::new();
         matches.retain(|m| seen.insert((m.rule_name.clone(), m.start_position)));
 
         // Aggregate count per (rule_name, start_position) is 1 by construction,
-        // but we may have multiple positions for the same rule.  Sum total.
+        // but we may have multiple positions for the same rule. Sum total.
         let has_matches = !matches.is_empty();
         // should_block: any match whose effective action is "block"
         // (i.e. High/Medium-confidence under the default policy). Low-confidence

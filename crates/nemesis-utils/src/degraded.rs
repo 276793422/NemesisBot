@@ -1,4 +1,4 @@
-//! 降级写信号注册表（M2，2026-10-27 整改批次一）。
+//! 降级写信号注册表（2026-10-27）。
 //!
 //! 关键持久化写失败（chat_log / checkpoint 影子 tree / turn WAL）不再只进
 //! 日志文件：失败源在此登记，gateway 侧水泵轮询 [`take_pending`] 后经
@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// 同一失败源的告警去抖窗口（计划 §1.2：10 分钟）。
+/// 同一失败源的告警去抖窗口（计划：10 分钟）。
 const ALERT_DEBOUNCE: Duration = Duration::from_secs(600);
 
 /// 一条降级写记录（`/ready` 快照与 SSE 载荷共用形态）。

@@ -37,7 +37,7 @@ pub struct HeartbeatResult {
 pub type HeartbeatHandler =
     Box<dyn Fn(String, String, String) -> Option<HeartbeatResult> + Send + Sync>;
 
-/// Internal shared form of [`HeartbeatHandler`]. BUG #17: `start()` clones
+/// Internal shared form of [`HeartbeatHandler`].: `start()` clones
 /// this into the spawned task instead of `take()`ing it, so a stop()+start()
 /// cycle keeps the handler (previously the restart silently dropped it and
 /// every tick after logged "handler not configured").
@@ -76,9 +76,9 @@ impl Default for HeartbeatConfig {
         Self {
             // 与 new(0,..) 契约（0→缺省 30 分钟）、serde config 层缺省 30、
             // 下方 default_interval_minutes 字段同一口径。旧值 30 秒是
-            // BUG-20261025-64「同一语义多处分裂」收编时漏网的第四处
+            // 「同一语义多处分裂」收编时漏网的第四处
             // （当时收了 gateway 字面量/crate 契约/serde 缺省三处）——
-            // 任何 ..Default::default() 采纳者会拿到 60× 频率的 LLM 锤。
+            // 任何..Default::default() 采纳者会拿到 60× 频率的 LLM 锤。
             interval: Duration::from_secs(30 * 60),
             enabled: true,
             workspace: None,
@@ -109,7 +109,7 @@ impl HeartbeatConfig {
     }
 }
 
-/// 心跳结果**不投递**的通道集合（BUG-20261025-46 更名自 INTERNAL_CHANNELS
+/// 心跳结果**不投递**的通道集合（更名自 INTERNAL_CHANNELS
 /// 以绝误统一）：与 `nemesis_types::INTERNAL_CHANNELS`（cli/system/subagent
 /// = 非用户面基础设施通道）是**刻意不同**的语义——rpc/cluster 是合法出站
 /// 目标（不能进全局内部集合），cli 是用户面（心跳结果可以回 CLI），故本
@@ -123,12 +123,12 @@ pub struct HeartbeatService {
     last_beat: Arc<Mutex<chrono::DateTime<Local>>>,
     beat_count: Arc<AtomicU64>,
     handle: Mutex<Option<JoinHandle<()>>>,
-    /// 停机令牌（2026-10-24 tokio 停机 panic 根修）：`stop()` 时 cancel，
+    /// 停机令牌（tokio 停机 panic 根修）：`stop()` 时 cancel，
     /// tick 循环与首拍 sleep 经 `select!` 立即退出——不依赖 abort 的取消
     /// 时序。仅靠 abort 的实测问题：gateway 停机流程完成后 runtime
     /// shutdown 会唤醒存活任务做最后 poll，poll 里注册新 timer 撞
     /// "A Tokio 1.x context was found, but it is being shutdown" panic
-    /// （r9 gateway boot 测试实录）。Mutex 包装：start/stop 周期需要在
+    /// （r9 gateway boot 测试）。Mutex 包装：start/stop 周期需要在
     /// stop 时重置为新 token（cancelled 的 token 无法复用）。
     stop_token: Mutex<tokio_util::sync::CancellationToken>,
     handler: Mutex<Option<SharedHeartbeatHandler>>,
@@ -136,7 +136,7 @@ pub struct HeartbeatService {
     message_bus: Mutex<Option<Arc<dyn MessageBus>>>,
     state_manager: Mutex<Option<Arc<dyn StateManager>>>,
     /// 每次有效 tick（通过 skip 检查、beat 计数自增处）触发的回调。
-    /// BUG-20261025-65：供 gateway 接线 `HealthServer::record_beat`——
+    /// 供 gateway 接线 `HealthServer::record_beat`——
     /// 此前该回调面不存在，`/ready` 的 beat_count 恒 0（生产零调用）。
     on_beat: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -205,7 +205,7 @@ impl HeartbeatService {
     /// Start the heartbeat service.
     ///
     /// Mirrors Go's `runLoop()`:
-    /// - First heartbeat fires after 1 second (`time.AfterFunc(time.Second, ...)`)
+    /// - First heartbeat fires after 1 second (`time.AfterFunc(time.Second,...)`)
     /// - Subsequent heartbeats fire on the configured interval
     /// - Each tick calls the full `executeHeartbeat()` flow:
     ///   build prompt → get last channel → call handler → dispatch result
@@ -221,7 +221,7 @@ impl HeartbeatService {
         let beat_count = self.beat_count.clone();
         let skip_file = self.skip_file.clone();
 
-        // Clone the shared handler into the task (BUG #17: was a `take()`,
+        // Clone the shared handler into the task (was a `take()`,
         // which dropped the handler on any stop+start restart).
         let handler = self.handler.lock().clone();
 
@@ -268,18 +268,18 @@ impl HeartbeatService {
                 // block_in_place+block_on 的 LLM 调用（全程 debug 级日志，
                 // INFO 面零痕迹）；测试/快速重启场景下这记在飞调用撞进
                 // runtime 停机窗口，阻塞池线程上的嵌套 poll 逃不过
-                // cancel/abort，TimerEntry 注册 timer = 停机 panic（实录
-                // 2026-10-24 r9 家族 4 场景各 1 panic）。Go 原版
+                // cancel/abort，TimerEntry 注册 timer = 停机 panic（
+                // r9 家族 4 场景各 1 panic）。Go 原版
                 // AfterFunc(1s)+ticker 即「首拍 1s，此后每 interval 一拍」，
                 // interval_at 恢复同一节奏。
                 let mut ticker =
                     tokio::time::interval_at(tokio::time::Instant::now() + interval, interval);
-                // BUG-20261102-301：默认 Burst 在 handler 执行墙钟超过 interval
+                // 默认 Burst 在 handler 执行墙钟超过 interval
                 // 后把错过的 tick 逐个补发——本循环的 tick 消费者是完整 agent
                 // loop（gateway 侧 block_in_place+block_on 跑 LLM+工具轮次），
                 // 每次补拍 = 一次完整心跳执行（LLM 成本 + HEARTBEAT.md 任务
                 // 重复副作用）。Delay = 错过即从当前时刻重排（transport/
-                // conn.rs 心跳先例，BUG-20261101-264 同族）。
+                // conn.rs 心跳先例， 同族）。
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     // 臂序铁律：cancelled 第一。select! 按书写顺序 poll——
@@ -327,7 +327,7 @@ impl HeartbeatService {
     /// Stop the heartbeat service.
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
-        // 停机令牌优先（2026-10-24 根修）：先 cancel 让任务在 select 点
+        // 停机令牌优先（根修）：先 cancel 让任务在 select 点
         // 自然退出，再 abort 兜底——纯 abort 与 runtime shutdown 竞态时
         // 任务仍可能被 shutdown 唤醒 poll 一次，注册 timer 即 panic。
         self.stop_token.lock().cancel();
@@ -430,7 +430,7 @@ impl HeartbeatService {
     ///
     /// Returns true if all lines are empty (after trimming) or start with '#'.
     pub fn is_heartbeat_file_empty(&self, data: &[u8]) -> bool {
-        // BUG-20261105-030：剥 UTF-8 BOM（不在 is_whitespace 内，trim 不剥），
+        // 剥 UTF-8 BOM（不在 is_whitespace 内，trim 不剥），
         // 否则 BOM 开头的注释-only 文件被误判为有实质内容。
         let content = String::from_utf8_lossy(data);
         let content = content.trim_start_matches('\u{feff}');
@@ -734,14 +734,14 @@ fn execute_heartbeat_tick(
     let count = beat_count.fetch_add(1, Ordering::SeqCst) + 1;
     *last_beat.lock() = Local::now();
     tracing::debug!("[Heartbeat] Heartbeat tick #{}", count);
-    // BUG-20261025-65：与内部计数同点触发外部回调（gateway 接线
+    // 与内部计数同点触发外部回调（gateway 接线
     // HealthServer::record_beat）；无回调时零开销 no-op。
     if let Some(on_beat) = on_beat {
         on_beat();
     }
 
     // Step 4: Call handler.
-    // BUG-20261028-113 panic 隔离：handler 是外部闭包（gateway 侧
+    // panic 隔离：handler 是外部闭包（gateway 侧
     // block_in_place+block_on 跑完整 agent loop），一次 panic 若沿调用栈
     // 杀死本常驻 tick 任务，心跳服务静默永久停摆（running 残留 true、
     // handle 无人 await、panic 零日志面——Go 原版 panic 至少 loud 崩进程，
@@ -851,9 +851,9 @@ fn build_prompt_from_workspace(workspace: &Option<String>) -> String {
 ///
 /// 生产 tick 路径（`execute_heartbeat_tick` → `build_prompt_from_workspace`）
 /// 消费。UTF-8 BOM 必须剥离（不在 `is_whitespace` 内，`trim` 不剥）：BOM
-/// 开头的注释-only 文件第一行是 `\u{feff}# ...`，不以 `#` 开头会被误判为
-/// 有实质内容 → 每拍空跑完整 agent loop（BUG-20261105-030；同族先例：
-/// nemesis-utils `fsutil::read_config_string` BOM 剥离）。
+/// 开头的注释-only 文件第一行是 `\u{feff}#...`，不以 `#` 开头会被误判为
+/// 有实质内容 → 每拍空跑完整 agent loop（同族
+/// nemesis-utils `fsutil:read_config_string` BOM 剥离）。
 fn is_heartbeat_file_empty_static(data: &[u8]) -> bool {
     let content = String::from_utf8_lossy(data);
     let content = content.trim_start_matches('\u{feff}');

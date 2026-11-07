@@ -37,7 +37,7 @@ const CANONICAL_INDEX_LEN: usize = 16;
 
 /// True when `index` is the genuine canonical 16-hex form.
 ///
-/// 门必须是「字节长 == 16 **且全 ASCII**」（2026-10-17 全仓横扫）：web 层
+/// 门必须是「字节长 == 16 **且全 ASCII**」（全仓横扫）：web 层
 /// `canonical_chat_index` 对解析不到的 index 原样透传，客户端可构造 16
 /// 字节但字节 8 落在多字节字符中间的串——只查字节长会让 legacy 孪生分支
 /// 对这种串做字节切片（panic 面），或以输入自身为「孪生」把 set 刚写入
@@ -294,9 +294,9 @@ fn persist_candidate_locked(
 }
 
 /// The legacy 32-bit key that a canonical 16-hex index was written under
-/// before the 2026-10-16 hardening (first 8 hex chars of the same digest).
+/// before the hardening (first 8 hex chars of the same digest).
 ///
-/// 边界安全（2026-10-17 全仓横扫，双保险后手）：调用方闸门已升级为
+/// 边界安全（全仓横扫，双保险后手）：调用方闸门已升级为
 /// [`is_canonical_form`]（字节长 + ASCII），多字节串不再进 legacy 分支；
 /// 此处 `get(..8).unwrap_or(canonical)` 兜底防御未来调用点绕过闸门——
 /// 退化语义是以输入自身作 legacy 键探测（调用点此前已用该键探测过，

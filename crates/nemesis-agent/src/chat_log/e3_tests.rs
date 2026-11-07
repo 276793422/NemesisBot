@@ -1,4 +1,4 @@
-//! E3（devtool-upgrade 阶段 5）：消息级回退的 chat_log 侧测试。
+//! （devtool-upgrade）：消息级回退的 chat_log 侧测试。
 //!
 //! - `checkpoint_turn` 字段：`ChatLogMeta` 携带时写入（user 行的行→turn
 //!   定位锚），`None` 不写（旧行宽容读契约不变）。
@@ -111,7 +111,7 @@ fn test_e3_truncate_empty_keeps_file() {
     delete_chat_log(&key);
 }
 
-/// BUG-20261025-19 回归锁：`steer` 标记写入（ChatLogMeta.steer=true →
+/// 回归锁：`steer` 标记写入（ChatLogMeta.steer=true →
 /// 行带 `"steer": true`；false 不写）+ 轮边界判定谓词 is_user_turn_
 /// boundary——带标记的 user 行不是轮首；无标记行（含 `[steer] ` 内容
 /// 前缀的——内容前缀不是契约，存储字段才是）一律按轮边界处理。

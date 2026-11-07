@@ -1,4 +1,4 @@
-//! Tests for the Codex delegation tool (I4 / U13 other half; T5 sandbox tier
+//! Tests for the Codex delegation tool (/ other half; sandbox tier
 //! + shared-layer refactor).
 
 use super::*;
@@ -27,7 +27,7 @@ fn test_codex_tool_schema() {
     assert!(t.description().contains("Codex"));
 }
 
-/// T5: the sandbox tier is a FIXED config tier — it must NOT appear in the
+/// the sandbox tier is a FIXED config tier — it must NOT appear in the
 /// model-facing schema.
 #[test]
 fn test_codex_sandbox_not_in_schema() {
@@ -39,7 +39,7 @@ fn test_codex_sandbox_not_in_schema() {
     );
 }
 
-/// T5: tier normalization — None → default read_only; explicit values pass
+/// tier normalization — None → default read_only; explicit values pass
 /// through; unknown → default.
 #[test]
 fn test_codex_sandbox_normalization() {
@@ -70,7 +70,7 @@ async fn test_codex_missing_prompt_fails() {
 
 /// Timeout path: a sleeping fake CLI produces a STRUCTURED error (never a
 /// panic, never a hang) — exercises the shared run_cli_delegation timeout
-/// arm, same method as the H7 claude_code test.
+/// arm, same method as the claude_code test.
 #[tokio::test]
 async fn test_codex_tool_timeout_structured_error() {
     let dir = tempfile::tempdir().unwrap();
@@ -103,7 +103,7 @@ async fn test_codex_tool_timeout_structured_error() {
     assert!(text.contains("timed out"), "timeout named: {text}");
 }
 
-/// T5: the spawned CLI actually receives the kebab-case `--sandbox <tier>`
+/// the spawned CLI actually receives the kebab-case `--sandbox <tier>`
 /// and the implied `--ask-for-approval never` — default read_only, and an
 /// explicitly configured tier.
 #[tokio::test]

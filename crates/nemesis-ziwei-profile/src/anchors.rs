@@ -1,4 +1,4 @@
-//! 锚集（anchors.json）与失效判定（总控 §6.3/§6.4）。
+//! 锚集（anchors.json）与失效判定（总控）。
 //!
 //! 标注确认函数时**必须同时**生成锚（事后补不了）；附加时锚逐条重扫，
 //! 投票过阈值 → active；hash 一致直接 active；hash 不一致且票不过 → stale
@@ -38,7 +38,7 @@ pub struct Anchor {
     pub note: Option<String>,
 }
 
-/// 锚类型（§6.3 五种；抗更新性见该表）。
+/// 锚类型（五种；抗更新性见该表）。
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AnchorType {
@@ -59,7 +59,7 @@ pub struct AnchorSet {
     pub anchors: Vec<Anchor>,
 }
 
-/// 单锚重扫结果（由 rev 引擎填写；M5 找回流程消费）。
+/// 单锚重扫结果（由 rev 引擎填写； 找回流程消费）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnchorScanResult {
     pub function: String,
@@ -70,7 +70,7 @@ pub struct AnchorScanResult {
     pub hits: u32,
 }
 
-/// 附加验证裁决（§6.4 验证链）。
+/// 附加验证裁决（验证链）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachVerdict {
     /// hash 一致 → 直接 active。

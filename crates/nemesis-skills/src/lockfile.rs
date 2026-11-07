@@ -1,4 +1,4 @@
-//! 技能 lockfile（P14）：`<workspace>/skills.lock.json` 逐文件哈希记账。
+//! 技能 lockfile：`<workspace>/skills.lock.json` 逐文件哈希记账。
 //!
 //! 每技能记录 `{slug, source, commit, files: {path: sha256}, installed_at,
 //! verified_state}`；装/卸/更新三路维护；`verify_drift` 做漂移检测
@@ -30,7 +30,7 @@ pub struct LockedSkill {
     pub files: BTreeMap<String, String>,
     /// 安装时间（unix 秒）。
     pub installed_at: i64,
-    /// 信任四态（`trust::TrustState::as_str()`）。
+    /// 信任四态（`trust::TrustState:as_str()`）。
     pub verified_state: String,
 }
 
@@ -59,8 +59,8 @@ impl SkillsLockfile {
 
     /// 从 workspace 读取；文件缺失/损坏按空表处理（损坏时 warn，不炸安装流）。
     ///
-    /// 损坏时先把原文件备份为 `skills.lock.json.bak` 再降级（M4，2026-09-27）：
-    /// 后续 `save()` 会整写覆盖，不备份就丢了排查证据（固定 .bak 名，幂等
+    /// 损坏时先把原文件备份为 `skills.lock.json.bak` 再降级：
+    /// 后续 `save()` 会整写覆盖，不备份就丢了排查证据（固定.bak 名，幂等
     /// 覆盖——两次损坏之间夹着的正常保存本就会重写原件，保留最新损坏现场即可）。
     pub fn load(workspace: &Path) -> Self {
         let path = Self::path_for(workspace);
@@ -134,7 +134,7 @@ impl SkillsLockfile {
             let entry = entry.map_err(NemesisError::Io)?;
             let path = entry.path();
 
-            // 跳过隐藏文件与 .signature/.skill-origin.json（点开头统一跳过）。
+            // 跳过隐藏文件与.signature/.skill-origin.json（点开头统一跳过）。
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
                 continue;

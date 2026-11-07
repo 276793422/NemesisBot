@@ -23,7 +23,7 @@
 //! API 诚实显示）。
 //!
 //! 共享逻辑（过滤/合并/URL 表）在 `src/pricing_filter.rs`，`#[path]`
-//! include 进本脚本——与 lib 单一真相源。
+//! include 进本脚本——与 lib 统一定义。
 
 #[path = "src/pricing_filter.rs"]
 mod pricing_filter;

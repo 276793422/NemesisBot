@@ -247,7 +247,7 @@ fn test_find_model_by_name() {
     assert_eq!(found_by_model.model_name, "primary");
 }
 
-/// 声明式模型角色守卫④（2026-10-13 N6）：装配点专用——conversation/缺省
+/// 声明式模型角色守卫④：装配点专用——conversation/缺省
 /// 放行，utility/classifier loud 报错，未命中条目不在此重复报错（resolution
 /// 失败由调用方既有降级处理）。
 #[test]
@@ -305,7 +305,7 @@ fn test_ensure_conversation_role() {
     assert!(ensure_conversation_role(&cfg, "no-such-model").is_ok());
 }
 
-/// ModelConfig.role 字段（N6）：typed 反序列化缺省 = 空串（老条目零迁移）；
+/// ModelConfig.role 字段：typed 反序列化缺省 = 空串（老条目零迁移）；
 /// 显式值 round-trip 保留；空串不序列化（typed 保存字节零变化）。
 #[test]
 fn test_model_config_role_serde_default_and_roundtrip() {
@@ -329,7 +329,7 @@ fn test_model_config_role_serde_default_and_roundtrip() {
     assert_eq!(back2["role"], "utility", "typed round-trip 保留 role");
 }
 
-// ---- Additional coverage tests for 95%+ ----
+// Additional coverage tests for 95%+ ----
 
 #[test]
 fn test_infer_provider_all_known() {
@@ -631,9 +631,7 @@ fn test_resolve_model_resolution_default() {
     assert!(res.fallbacks.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// H2 (U15): api_key credential references (env: prefix)
-// ---------------------------------------------------------------------------
+// api_key credential references (env: prefix)
 
 /// Unique var names per test run (env-test race discipline: crate-root
 /// GLOBAL_STATE_LOCK + a name unique to this test so parallel suites that
@@ -757,7 +755,7 @@ fn test_resolve_and_find_by_model_field_arm() {
     assert_eq!(found.model_name, "alias-only");
 }
 
-// ---- P3A 超时对齐（2026-09-12）：per-model timeout_secs 提取 ----
+// P3A 超时对齐：per-model timeout_secs 提取 ----
 
 #[test]
 fn test_resolve_timeout_secs_extra_key() {
@@ -833,7 +831,7 @@ fn test_resolve_timeout_non_numeric_ignored() {
 }
 
 // ============================================================================
-// Provider preset table integrity（P9 预设表完整性，能力扩展 WS5）
+// Provider preset table integrity（预设表完整性）
 // ============================================================================
 
 /// 轻量 URL 校验（测试内联，避免引入 url crate）：`http(s)://authority[path]`。
@@ -1001,9 +999,7 @@ fn test_preset_ids_helper_sorted_unique_and_complete() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// stream 键提取（2026-10-13 per-model 流式开关）
-// ---------------------------------------------------------------------------
+// stream 键提取（per-model 流式开关）
 
 #[test]
 fn test_extract_stream_mode_value_matrix() {
@@ -1077,10 +1073,8 @@ fn test_resolve_model_config_stream_mode_passthrough() {
     assert_eq!(resolve_model_config(&cfg, "plain").unwrap().stream_mode, "");
 }
 
-// ---------------------------------------------------------------------------
-// cache_breakpoints 提取（B13，2026-10-18 B 级清零）：真值语义与 stream
+// cache_breakpoints 提取：真值语义与 stream
 // 键同源（normalize_stream_value），缺省/未知值 = 关。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn test_extract_cache_breakpoints_value_matrix() {
@@ -1143,9 +1137,7 @@ fn test_resolve_model_config_cache_breakpoints_passthrough() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// BUG-b 根修回归（2026-10-13）：model 字段比对不再有 '/' 门控
-// ---------------------------------------------------------------------------
+// BUG-b 根修回归：model 字段比对不再有 '/' 门控
 
 #[test]
 fn test_resolve_model_config_prefixless_model_field_matches() {

@@ -1,4 +1,4 @@
-//! G3 运行账本接线（workflow_run）：run_async 开账/终态收口 + Waiting
+//! 运行账本接线（workflow_run）：run_async 开账/终态收口 + Waiting
 //! 保持开账、resume 凭确定性 id 收口。全局槽由本文件唯一测试安装（进程
 //! 内其他并行测试的 run 也会写进该账，但断言按 execution id 圈定，互不
 //! 干扰）；漏斗核心语义的详测在 nemesis-taskstore/tests/store_tests.rs。

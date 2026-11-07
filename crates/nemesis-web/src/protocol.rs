@@ -14,7 +14,7 @@ pub struct ProtocolMessage {
     pub module: String,
     pub cmd: String,
 
-    // ---- Extended fields (all Option, backward compatible) ----
+    // Extended fields (all Option, backward compatible) ----
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "reqId")]
     pub req_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

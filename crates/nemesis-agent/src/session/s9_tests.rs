@@ -1,4 +1,4 @@
-//! S9 覆盖率批次：session.rs 剩余未覆盖行。
+//! 覆盖率批次：session.rs 剩余未覆盖行。
 //! - 445：自愈重建 info! 的 replayed 字段行（store json 缺 + chat_log 有
 //!   → get_or_create 触发 rebuild，需 subscriber）。
 //! - 545/547：add_message 的 capture 分支收尾（CaptureSink::global 初始化
@@ -60,7 +60,7 @@ fn self_heal_rebuild_logs_replayed_fields() {
 }
 
 /// （曾有一个 add_message capture 分支测试在此调用 CaptureSink::init，
-/// 2026-08-26 删除：CaptureSink::GLOBAL 是进程级 OnceLock，session/tests.rs
+/// 删除：CaptureSink::GLOBAL 是进程级 OnceLock，session/tests.rs
 /// 的 test_capture_records_session_writes_when_enabled 自称「本测试二进制
 /// 唯一 init 调用者」并断言其临时目录下的落盘文件；两个 init 竞争会让
 /// 先跑的一方把全局指到已 drop 的 tempdir → 对方 read_dir NotFound。

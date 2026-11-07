@@ -1,4 +1,4 @@
-//! `crate::exec_world` 测试（U10 统一执行世界）。
+//! `crate::exec_world` 测试（统一执行世界）。
 //!
 //! 覆盖：path_within_roots 语义（component 前缀/`..` 逃逸/不存在路径）、
 //! check_writable 默认实现、env 清洗、DirectWorld 两车道（Spawn 受守卫
@@ -40,7 +40,7 @@ fn within_roots_dotdot_escape_rejected() {
     let escape = root.join("sub").join("..").join("..").join("outside.txt");
     // root 的父目录在 root 之外 → 拒
     assert!(!path_within_roots(&escape, std::slice::from_ref(&root)));
-    // 合法留在根内的 ..
+    // 合法留在根内的..
     let inside = root.join("sub").join("..").join("inside.txt");
     assert!(path_within_roots(&inside, &[root]));
 }
@@ -66,7 +66,7 @@ fn within_roots_exact_root_itself() {
 #[cfg(target_os = "windows")]
 #[test]
 fn within_roots_representation_mismatch_short_name_ancestor() {
-    // 回归（2026-09-01 CI 首次暴露）：path 不存在时旧实现纯词法回退，
+    // 回归（CI 首次暴露）：path 不存在时旧实现纯词法回退，
     // 保留输入的原始表示；存在的 root 被 canonicalize 成卷上真实表示
     // （8.3 短名 → 长名、大小写归一）。CI runner 的 TEMP 在
     // `C:\Users\RUNNER~1\...`（用户名 runneradmin 短名化），本地短用户名
@@ -145,7 +145,7 @@ fn sanitize_env_strips_executor_internals_and_applies_overrides() {
     assert_eq!(out.get("MY_FLAG").map(String::as_str), Some("1"));
 }
 
-/// BUG-20261104-388：运输层 env 表完整性——全部 12 个 spawn 侧注入的
+/// 运输层 env 表完整性——全部 12 个 spawn 侧注入的
 /// executor/eval 角色标记键必须在表内（漏键 = workflow 直 spawn 车道成为
 /// CLI 嵌套劫持的传播面）。表键逐字面量钉死：新增运输层 env 不入表这条
 /// 测试红出来兜底；`NEMESISBOT_HOME` 等用户配置语义键**必须不在**表内
@@ -312,11 +312,11 @@ fn spawn_semantics_display() {
 }
 
 // ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：trait 默认
+// 覆盖率批次（quality-hardening goal）：trait 默认
 // supports_tool_calls、DirectWorld::name/spawn_semantics、cwd 合法 spawn、
 // stdin 注写。（strip_verbatim / normalize_lexical 的直接覆盖随
 // canonicalize_for_compare 收敛迁到 nemesis-path/src/paths/tests.rs，
-// 2026-09-01 8.3 短名统一修复。）
+// 8.3 短名统一修复。）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -391,7 +391,7 @@ async fn spawn_with_valid_cwd_and_stdin_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// R5 覆盖率批次（2026-08-27）：SpawnOp.stdin 管道臂——子进程真实读入
+// 覆盖率批次：SpawnOp.stdin 管道臂——子进程真实读入
 // stdin（findstr/grep 过滤），钉住 write_all + shutdown 路径。
 // ---------------------------------------------------------------------------
 
@@ -436,13 +436,13 @@ async fn spawn_pipes_stdin_to_child() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261103-337 同族回归锁：超管道缓冲的 stdin 载荷 + 不读 stdin 的
+// 同族回归锁：超管道缓冲的 stdin 载荷 + 不读 stdin 的
 // 子进程——stdin 写不得绕过超时保护。修复前 inline write_all 先阻塞
 // （64MB >> 任何管道/内核缓冲；Windows 实测 1MB 会被内核缓冲吃掉写不
 // 阻塞——红证载荷必须远超缓冲），子进程 ~5s 内不消费 stdin 也不退出，
 // timeout 只包 wait_with_output 管不到写侧 → 整段卡到子进程自然退出且
 // timed_out=false（写侧断管错误后 wait 正常返回，超时形态丢失）。修复后
-// （BUG-20261102-312 同款：stdin 写放独立任务）timeout 按预算 ~2s 返回
+// （同款：stdin 写放独立任务）timeout 按预算 ~2s 返回
 // timed_out=true。
 // ---------------------------------------------------------------------------
 

@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
+// 机械拆分：本文件内容由 nodes.rs 原样搬入（纯代码搬家，行为零变更）。
 // ---------------------------------------------------------------------------
 
 use super::*;
@@ -138,7 +138,7 @@ impl NodeExecutor for ParallelNodeExecutor {
                         result.state,
                         ExecutionState::Waiting | ExecutionState::Cancelled
                     ) {
-                        // 运行期兜底（BUG-20261030-211）：暂停类子状态不得被
+                        // 运行期兜底：暂停类子状态不得被
                         // 当成功吞掉。注册期 validate 已拒绝 human_review 复合
                         // 子节点；此臂防程序化构造（绕过 validate 的直接
                         // schedule 路径）与子工作流停在审批的 sub_workflow
@@ -553,7 +553,7 @@ impl NodeExecutor for HumanReviewNodeExecutor {
 }
 
 // ---------------------------------------------------------------------------
-// Question Classifier Node (1b-D3)
+// Question Classifier Node (1b-)
 // ---------------------------------------------------------------------------
 /// Evaluate a condition string against the context.
 ///
@@ -576,11 +576,11 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     // literal expression like `5 > 3` or `hello == hello`.
     // 注意：条件边是表达式不是数据通道，不走 `resolve_runtime_string` 的
     // 凭据引用识别（`env:` 开头的条件表达式无意义；且本函数无节点语境，
-    // 解析失败无处落 Failed——2026-09-23 计划类 B 范围裁定）。
+    // 解析失败无处落 Failed—— 计划类 B 范围裁定）。
     let resolved = resolve_prompt_template(condition, context);
     let resolved = resolved.trim();
 
-    // Step 1.5: Negation prefix（缺陷 14 修复，2026-09-23）。`!{{flag}}` 是
+    // Step 1.5: Negation prefix（缺陷 14 修复）。`!{{flag}}` 是
     // LLM 生成器表达否定分支的自然写法（能力表已同步收录该语法）；模板解析
     // 后字面以 `!` 开头 → 对剩余表达式取反。旧实现四步全不匹配落到 Step 4
     // 「非空即真」，"!true" 恒为真——否定分支无条件放行（静默错，违反诚实
@@ -592,7 +592,7 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     // Step 2: Literal booleans (also covers cases where {{var}} resolved to
     // a boolean JSON value, which `resolve_prompt_template` stringifies as
     // "true"/"false"). "yes"/"no"/"1"/"0" 是边条件与人工配置的常见布尔拼写，
-    // 统一在此收敛（单一真相源；原 should_run_node 私有表已随缺陷 8 修复并入）。
+    // 统一在此收敛（统一定义；原 should_run_node 私有表已随缺陷 8 修复并入）。
     match resolved.to_lowercase().as_str() {
         "true" | "yes" | "1" => return true,
         "false" | "no" | "0" => return false,

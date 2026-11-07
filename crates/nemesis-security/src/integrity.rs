@@ -76,7 +76,7 @@ pub struct AuditChain {
     total_events: std::sync::atomic::AtomicU64,
     /// Whether the chain has been closed.
     closed: std::sync::atomic::AtomicBool,
-    /// append 全程串行锁（横扫九期补网，2026-10-14）：链不变量是
+    /// append 全程串行锁（横扫九期补网）：链不变量是
     /// 「行 i.prev == 行 i-1.hash」——last_hash 的读与写原是两次独立取锁，
     /// 中间算 hash 的窗口无锁，并发 append 各读到同一 prev ⇒ 链分叉
     /// （verify 的 prev_hash != 前一行 hash 必 FAIL）。本锁罩「读 prev →
@@ -177,7 +177,7 @@ impl AuditChain {
             hash_version: 1,
         };
 
-        // 盘先行（BUG 2026-10-29 横扫角度 A）：磁盘是审计链的真相源——只有
+        // 盘先行（横扫角度 A）：磁盘是审计链的权威定义——只有
         // 行真正落盘才推进内存链状态（last_hash/计数器）并返回 Ok。旧的
         // 「先推进内存、落盘 let _ = 吞错、恒返回 Ok」在磁盘写失败时内存与
         // 盘脱节：verify 按盘上行链式校验从此必 FAIL，事发时刻零可见。
@@ -272,7 +272,7 @@ impl AuditChain {
         }
     }
 
-    /// Canonical per-event hash computation（单一真相源：append 与 verify
+    /// Canonical per-event hash computation（统一定义：append 与 verify
     /// 及 Dashboard 诊断同源）。按事件自带 `hash_version` 选公式——0=旧
     /// 七字段公式（存量链）；1=追加 source+reason；未知版本按旧公式算但
     /// `verify_chain`/消费方必须先做版本守卫（fail-closed）。

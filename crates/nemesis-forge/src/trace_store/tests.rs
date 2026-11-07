@@ -324,7 +324,7 @@ async fn test_append_creates_nested_parent_dirs() {
     assert_eq!(events[0].event_type, "nested");
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[tokio::test]
 async fn test_s8_append_empty_path_takes_no_parent_branch() {
@@ -336,12 +336,12 @@ async fn test_s8_append_empty_path_takes_no_parent_branch() {
     assert!(result.is_err());
 }
 
-/// BUG-20261029-187 配套：cleanup 重写后文件内容必须恰好是保留事件
+/// 配套：cleanup 重写后文件内容必须恰好是保留事件
 /// （JSONL 契约：每行合法 JSON 且以 \n 收尾，append 侧可继续追加），
 /// 且不留原子写临时残渣。注：旧实现（write+truncate 原地重写）在成功
 /// 路径上产出相同内容——本测试钉行为不回归；崩溃/并发丢失窗口的消除
-/// 由修复构造性保证（唯一临时名 + rename，与 experience_store F-D2 /
-/// registry F-D4 同族），单测无法注入 crash 验证。
+/// 由修复构造性保证（唯一临时名 + rename，与 experience_store F- /
+/// registry F- 同族），单测无法注入 crash 验证。
 #[tokio::test]
 async fn test_cleanup_rewrite_content_and_no_tmp_residue() {
     let dir = tempfile::tempdir().unwrap();
@@ -371,7 +371,7 @@ async fn test_cleanup_rewrite_content_and_no_tmp_residue() {
     assert_eq!(parsed.event_type, "fresh_event");
     assert!(content.ends_with('\n'), "JSONL lines must end with newline");
 
-    // 原子写临时文件不残留（write_file_atomic 的 .tmp-<pid>-<seq>- 形态）
+    // 原子写临时文件不残留（write_file_atomic 的.tmp-<pid>-<seq>- 形态）
     let leftovers: Vec<String> = std::fs::read_dir(dir.path())
         .unwrap()
         .filter_map(|e| e.ok())

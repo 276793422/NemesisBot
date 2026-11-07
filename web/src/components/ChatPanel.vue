@@ -35,7 +35,7 @@ import DelegateDialog from './DelegateDialog.vue'
 // 共用），取代旧 ToolCallCard 卡片组 + roundTexts 折叠条。
 import WorkTimelineBlock from './chat/WorkTimelineBlock.vue'
 // 子代理可见性（2026-11-03）：当前会话派生的子代理/委派任务摘要抽屉
-// （零行隐藏；详情深链 /subagents?focus=<id>）。
+// （零行隐藏；详情深链 /executors?tab=subagents&focus=<id>）。
 import SubagentDrawer from './chat/SubagentDrawer.vue'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
@@ -1222,7 +1222,9 @@ function onWatchdog() {
 // ---------------------------------------------------------------------------
 // M6（devtool-upgrade 阶段 7）：消息级回退——E3 rewind/redo 的首个前端入口。
 // message_index = 后端 chat_log jsonl 行号（ChatMessage.rowIndex：历史批次
-// 连续推导 + live 递增；error/system 是纯前端渲染不占行）。回退是前缀截断
+// 连续推导 + live 递增；客户端渲染的 error/system 不占行——后端落盘的
+// system 行（排队回执/compact 注记）占行，已在行号锚推导计入，
+// BUG-20261106-037）。回退是前缀截断
 // （保留目标之前、其后全部移除——undo 栈可 redo）。前端回退按钮组统一走
 // mode "before"（2026-10-20 横向扫描统一）：目标 = 本轮提问行
 // （planRegenerate 结构回溯，对 steer 插话/system 行稳健——旧「撤销此问
@@ -2093,12 +2095,17 @@ function sendMessage() {
   const routed = applySendMode(content)
   if (!routed && media.length === 0) return
 
+  // 发送前快照 streaming 态：sendValidated 在已有会话路径上无 await 挡在
+  // setBusy(true) 之前（同步前缀），下方 toast 链若读实时 streaming 会把
+  // 每次普通发送误报成「已排队」（2026-11-07 e2e 全量实录：幽灵排队 toast
+  // 撞上 processes-visual 的 toast 断言 + 污染视觉截图）。
+  const wasStreaming = streaming.value
   sendValidated(routed, media)
   if (busySteerUpgrade) {
     toast.info('忙碌中：【立即】已插队注入当前轮（不想打断请选 ⏭排队）')
-  } else if (streaming.value && sendMode.value === 'steer') {
+  } else if (wasStreaming && sendMode.value === 'steer') {
     toast.info('已发送插队（! 前缀），将注入当前轮的下一步')
-  } else if (streaming.value) {
+  } else if (wasStreaming) {
     // 显式排队，或 queue 模式下「立即」的降级路由（BUG-1 主场景：
     // 此前这里静默——按钮高亮【立即】、实际排队，用户零反馈）。
     toast.info('已排队，当前轮结束后自动执行')
@@ -2108,6 +2115,14 @@ function sendMessage() {
 /** 输入校验通过后的实际发送（sendMessage 的 async 续体；2026-09-26 起
  *  无会话锚时先建会话——见 sendValidated 内注释）。 */
 async function sendValidated(content: string, media: { id: string }[]) {
+  // 侧栏「新建对话」→ 秒发竞速修复（2026-11-07 FF chat e2e 全量实录）：
+  // sessionStore.create 的 sessions.create 是网络往返，往返期间 effectiveSid
+  // 仍指旧会话——此刻读锚发送会把消息+回复绑到旧会话（快速真实用户同样可
+  // 触发）。先等在途 create 落定再回显读锚；落定且切换目标=新建会话时，
+  // 切换 watch 已跑 reset（目标零消息不重拉——见会话切换 watch），回显后
+  // 补行号锚（与 justCreated 跳过分支同语义）。
+  const settledCreates = await sessionStore.settlePendingCreates()
+  const switchedToFresh = settledCreates.includes(effectiveSid.value)
   // 先本地回显用户消息（即时反馈），再做会话锚定——顺序不可倒：watch 是
   // flush:'pre' 微任务，create() 内 switchTo 排队的 watcher 触发早于本
   // 函数 await 续体，此刻回显若未发生，切换链会先把视图 reset 掉。
@@ -2118,6 +2133,7 @@ async function sendValidated(content: string, media: { id: string }[]) {
     timestamp: new Date().toISOString(),
     imageCount: media.length || undefined,
   })
+  if (switchedToFresh) chatStore.anchorFreshSession()
 
   // 皮肤 launcher / 首用未选中态发送（2026-09-26 用户实测 BUG 根修）：
   // 此前 chat.send 不带 session_id → 后端自动落连接级会话 → 回复帧的
@@ -2684,6 +2700,9 @@ const unwatchSession = watch(
       return
     }
     // HD：换会话 → 作废全部在飞历史请求（旧会话响应迟到时被围栏丢弃）。
+    // 草稿随会话走（2026-11-07）：旧会话草稿入表、新会话草稿出表——reset()
+    // 不再碰 input（后台全量重建路径共用该入口，不得抹用户草稿）。
+    chatStore.carryInput(oldId, newId)
     inFlightHistory.clear()
     // 分支旗标一并作废（组件实例级残留）：所属请求已被上面 clear 作废，
     // 不清则新会话首个历史响应会被 resync/watchdog 分支误消费——包括
@@ -2698,7 +2717,19 @@ const unwatchSession = watch(
     lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
     resetActivityLag() // 旧会话的 activity 残留状态（lag 游标/重试链/在途 timer）不带到新会话
     if (newId && wsStatus.value === 'connected') {
-      loadHistory()
+      // 2026-11-07 侧栏新建→秒发竞速修复之二（FF chat e2e 全量实录）：已知
+      // 零消息会话（乐观行恒 0；服务端 list 计数=jsonl 行数，0 即服务端必空）
+      // 跳过 loadHistory——空拉唯一可能的「产出」是空响应回填，抹掉切换竞速
+      // 窗口内的本地回显（发送链 settle 续体的 echo 晚于本 watch 的 reset）。
+      // 与 justCreated 跳过分支同款建行号锚（reset 已把锚置 null，不补则
+      // 首轮回显/live 行不编号，回退按钮组首轮恒不渲染）。计数未知/非零
+      // 维持既有重拉。
+      const targetRow = sessionStore.sessions.find((s) => s.id === newId)
+      if (targetRow?.messageCount === 0) {
+        chatStore.anchorFreshSession()
+      } else {
+        loadHistory()
+      }
     }
     syncInboxMode()
     syncAgentMode()
@@ -2722,8 +2753,10 @@ onMounted(() => {
 
   // Non-default module (e.g., workflow_chat) must NOT share conversation
   // state with a prior chat session in the same tab — reset before binding.
+  // input 也不共享（reset 已不碰 input，模块边界显式清）。
   const activeModule = props.module ?? 'chat'
   if (activeModule !== 'chat') {
+    chatStore.clearInput()
     chatStore.reset()
   }
 
@@ -2812,6 +2845,14 @@ onUnmounted(() => {
     clearTimeout(atDebounce)
     atDebounce = null
   }
+  // F2 兜底 timer 同族清理（W4 纪律，2026-11-06 审计）：stopGeneration 的
+  // 20s 强制复位兜底若跨卸载存活，会在死闭包上开火——stopping 在旧闭包里
+  // 恒 true（其清除者收尾帧处理与 busy watch 都随实例销毁），于是对捕获
+  // sid 盲写全局 busy 表 + 清在飞登记：后端仍在工具检查点等待的在跑轮
+  // （工具 >20s 是常态）被提前显示为空闲，同会话 20s 窗口内新发 turn 的
+  // 占用态也被误杀。busy 的收尾归各会话自己的收尾帧/断连复位，卸载后
+  // 代清越俎代庖；clearStopping 同步摘过渡态 + 取消 timer。
+  clearStopping()
   unwatchStatus()
   unwatchSession()
   unwatchStreaming()
@@ -2987,16 +3028,13 @@ onUnmounted(() => {
             </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>
           </div>
-          <!-- 子代理可见性 D1c：当前会话派生任务摘要抽屉（零行隐藏，
-               详情深链 /subagents?focus=<id>）。 -->
-          <SubagentDrawer :session-sid="effectiveSid || ''" />
         </div>
       </div>
     </div>
 
     <!-- Toolbar（launcher 启动器模式不渲染——首屏只留品牌 + 输入盒；
          归模板管而非皮肤 CSS display:none：scoped display:flex 与 :where 基线
-         同特异性且后加载会赢回，2026-09-26 实录） -->
+         同特异性且后加载会赢回，2026-09-26 案例） -->
     <div v-if="!toolbarCollapsed && !launcherMode" class="voice-toolbar">
       <button
         v-if="isDefaultChat"
@@ -3167,6 +3205,11 @@ onUnmounted(() => {
     <div v-if="showSteerHint" class="steer-hint">
       ⚡ 将以插队（steer）模式发送，立即送达当前轮
     </div>
+
+    <!-- 子代理活动胶囊（2026-11-06 胶囊化改造，D1c 挂载点从 turn 级瞬态块
+         迁至 composer strip lane——live 容器只放 live 数据，终态行归消息流
+         WorkTimelineBlock；后台 spawn 在轮次结束后仍持续可见）。 -->
+    <SubagentDrawer :session-sid="effectiveSid || ''" />
 
     <!-- M5: 会话级 context/cost 常驻条（与压缩压力同口径；turn 完成即刷 + 30s 兜底） -->
     <div v-if="isDefaultChat && ctxPct !== null" class="usage-strip">

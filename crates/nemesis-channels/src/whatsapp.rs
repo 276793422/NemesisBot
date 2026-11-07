@@ -196,7 +196,7 @@ impl WhatsAppChannel {
             let mut cancel_rx = cancel_rx;
             let url = format!("{base_url}/receive");
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-            // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的 tick 逐个补发
+            // 默认 Burst 在挂起恢复后把错过的 tick 逐个补发
             // ——bridge 被密集轮询（重建的 backoff interval 同）。Delay 从当前
             // 时刻重排。
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

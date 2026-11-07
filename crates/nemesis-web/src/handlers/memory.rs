@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 
 pub struct MemoryHandler;
 
-/// team_memory 命令的 store 取用（M4.5：team_memory 表在 master board.db，
+/// team_memory 命令的 store 取用（.5：team_memory 表在 master board.db，
 /// 由 gateway 装配注入；board 服务缺席时诚实报错）。board 关 = 随 nemesis-board
 /// 整体退出编译，team.* 四臂走未编译诚实分支。
 #[cfg(feature = "board")]
@@ -78,7 +78,7 @@ impl ModuleHandler for MemoryHandler {
         let config_dir = nemesis_path::workspace_config_dir(Path::new(workspace));
 
         match cmd {
-            // --- Document memory (original) ---
+            // Document memory (original) ---
             "status" => self.status(workspace, home),
             "documents" => self.documents(workspace),
             "document.get" => {
@@ -93,18 +93,18 @@ impl ModuleHandler for MemoryHandler {
                 self.document_save(workspace, &path, &content)
             }
 
-            // --- Enhanced memory: environment ---
+            // Enhanced memory: environment ---
             "env.check" => self.env_check(&config_dir, home),
             "env.setup" => self.env_setup(&config_dir, home, ctx).await,
 
-            // --- Enhanced memory: configuration ---
+            // Enhanced memory: configuration ---
             "config.get" => self.config_get(&config_dir, home),
             "config.set" => {
                 let data = data.ok_or("missing data")?;
                 self.config_set(&config_dir, home, &data, ctx)
             }
 
-            // --- Enhanced memory: statistics & entries ---
+            // Enhanced memory: statistics & entries ---
             "stats" => self.stats(&config_dir, workspace),
             // 分页：缺省 offset=0 / limit=100（旧调用方零改动兼容）。
             "entries.list" => {
@@ -150,14 +150,14 @@ impl ModuleHandler for MemoryHandler {
                 self.entries_update(workspace, &id, &content, ctx).await
             }
 
-            // --- Enhanced memory: model management ---
+            // Enhanced memory: model management ---
             "model.install" => {
                 let data = data.ok_or("missing data")?;
                 let tier = crate::handlers::get_str(&data, "tier")?;
                 self.model_install(&config_dir, &tier, ctx).await
             }
 
-            // --- Swarm M4.5：团队经验（team_memory 表，master board.db）---
+            // Swarm.5：团队经验（team_memory 表，master board.db）---
             // board 关 = team_memory 存储随 nemesis-board 退出编译，四臂诚实报未编译。
             "team.list" => {
                 #[cfg(feature = "board")]
@@ -236,7 +236,7 @@ impl ModuleHandler for MemoryHandler {
                 }
             }
 
-            // --- Legacy (kept for compatibility) ---
+            // Legacy (kept for compatibility) ---
             "vector.status" => self.vector_status(workspace),
             "vector.search" => {
                 let data = data.ok_or("missing data")?;
@@ -249,9 +249,7 @@ impl ModuleHandler for MemoryHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Helper functions
-// ---------------------------------------------------------------------------
 
 /// Auto-detect plugin library path next to the current executable.
 fn detect_plugin_path() -> Option<String> {
@@ -348,7 +346,7 @@ fn set_main_switch_inner(home: &str, enabled: bool) -> Result<(), String> {
     }
     let updated = serde_json::to_string_pretty(&cfg)
         .map_err(|e| format!("failed to serialize config: {}", e))?;
-    // REL-002：统一原子写入（config.json 含 API key）。
+    // 统一原子写入（config.json 含 API key）。
     nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), updated.as_bytes(), 0o600)
         .map_err(|e| format!("failed to write config: {}", e))?;
     Ok(())
@@ -366,9 +364,7 @@ fn jsonl_write_lock() -> &'static std::sync::Mutex<()> {
     INSTANCE.get_or_init(|| std::sync::Mutex::new(()))
 }
 
-// ---------------------------------------------------------------------------
 // Document memory (original commands)
-// ---------------------------------------------------------------------------
 
 impl MemoryHandler {
     fn status(&self, workspace: &str, home: &str) -> Result<Option<serde_json::Value>, String> {
@@ -445,9 +441,7 @@ impl MemoryHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Enhanced memory: environment
-// ---------------------------------------------------------------------------
 
 impl MemoryHandler {
     fn env_check(
@@ -640,9 +634,7 @@ impl MemoryHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Enhanced memory: configuration
-// ---------------------------------------------------------------------------
 
 impl MemoryHandler {
     fn config_get(
@@ -668,7 +660,7 @@ impl MemoryHandler {
             "active_tier": active_tier,
             "similarity_threshold": 0.7,
             "max_results": 10,
-            // P1-1 (2026-08-24 UI entry gap): auto-inject flags for the
+            // (UI entry gap): auto-inject flags for the
             // "自动记忆注入" card. Read by agent_factory at AgentLoop build
             // time — changes take effect after the Agent restarts.
             "auto_inject": emb_cfg.auto_inject,
@@ -684,12 +676,12 @@ impl MemoryHandler {
         data: &serde_json::Value,
         ctx: &crate::ws_router::RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        // 2026-08-24 re-review: every switch key below validates loudly
+        // re-review: every switch key below validates loudly
         // (present-but-mistyped → Err, absent/null → unchanged) instead of
         // silently ignoring wrong types — sandbox `set_config` convention.
         // 写串行锁：本臂对 config.json（set_main_switch_inner）与
         // config.enhanced_memory.json（下方多组 load→改→save）都是 RMW，
-        // 锁罩全臂防并发写臂丢更新（同类横扫 2026-10-13）。
+        // 锁罩全臂防并发写臂丢更新（同类横扫）。
         let _cfg_serial = nemesis_config::config_write_lock();
         // Main switch
         if let Some(enabled) = get_opt_bool_loud(data, "main_enabled")? {
@@ -757,7 +749,7 @@ impl MemoryHandler {
             nemesis_memory::vector::embedding_config::save_embedding_config(&emb_cfg, config_dir);
         }
 
-        // P1-1 (2026-08-24 UI entry gap): auto-inject flags. Persisted into
+        // (UI entry gap): auto-inject flags. Persisted into
         // config.enhanced_memory.json (same EmbeddingConfig the factory
         // reads). NOT runtime-hot: agent_factory reads them once at
         // AgentLoop build time (set_memory_inject), so the UI card tells the
@@ -792,9 +784,7 @@ impl MemoryHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Enhanced memory: statistics & entries
-// ---------------------------------------------------------------------------
 
 impl MemoryHandler {
     fn stats(
@@ -1180,9 +1170,7 @@ impl MemoryHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Enhanced memory: model management
-// ---------------------------------------------------------------------------
 
 impl MemoryHandler {
     async fn model_install(
@@ -1284,9 +1272,7 @@ impl MemoryHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // File system utilities
-// ---------------------------------------------------------------------------
 
 /// Recursively collect files under a directory.
 fn collect_files(
@@ -1299,7 +1285,7 @@ fn collect_files(
         return Ok(());
     }
     let read_dir = std::fs::read_dir(&dir).map_err(|e| format!("failed to read dir: {}", e))?;
-    // BUG-20261101-279：read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
+    // read_dir 顺序是平台实现细节（NTFS 字典序 vs ext4
     // 哈希序）——文件浏览器列表直回前端，逐层显式排序钉死遍历序（DFS +
     // 层内字典序 = 输出全局确定）。
     let mut entries: Vec<_> = read_dir
@@ -1416,12 +1402,12 @@ fn count_episodic(dir: &std::path::Path) -> (usize, usize) {
 #[cfg(all(test, feature = "memory"))]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): manager-dependent
+// (, quality-hardening goal 冲刺 web): manager-dependent
 // arms + offline model-install success + helper edge cases.
 #[cfg(all(test, feature = "memory"))]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-24）：team_memory 命令组（board 注入）、
+// AGT 覆盖率批次：team_memory 命令组（board 注入）、
 // legacy 向量库一次性迁移拷贝、entries.get/delete 的 store 缺失与空行臂、
 // test-fixture 嵌入注入的语义 search/get/delete 全链。结构性豁免见
 // agt_tests 文件头注。board 关 = team_memory 组随 nemesis-board 退出编译，

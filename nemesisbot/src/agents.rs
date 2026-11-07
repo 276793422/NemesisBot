@@ -1,10 +1,10 @@
-//! Agent 持久实体管理器（P2）。
+//! Agent 持久实体管理器。
 //!
-//! 记录真相源 = tasks.db `agents` 表（[`nemesis_taskstore::SqliteAgentsStore`]）；
-//! home/记忆目录物理布局单一真相源 = `nemesis-path`（`resolve_agent_*`）。
+//! 记录以 tasks.db `agents` 表为准（[`nemesis_taskstore::SqliteAgentsStore`]）；
+//! home/记忆目录物理布局权威定义 = `nemesis-path`（`resolve_agent_*`）。
 //! 本模块只做编排纪律：
 //!
-//! - **两阶段创建**（D6 复合操作纪律）：记录先落 `provisioning` → home
+//! - **两阶段创建**（复合操作纪律）：记录先落 `provisioning` → home
 //!   物化（`create_dir_all` 幂等可重跑）→ 条件转移到 `active`。任何一步
 //!   中断都不产生假 active 记录。
 //! - **启动 sweep**：卡在 `provisioning` 的半创建记录在 gateway 启动时
@@ -12,7 +12,7 @@
 //!   人工可删可重建）。
 //! - **main 幂等 seed**：对话组默认 agent 在启动时按 kind=main 查找，
 //!   缺失才创建（身份投影跨重启稳定，绝不每次 boot 生成新 id）。
-//! - **项目 agent 镜像**：projects.json 是路径真相源（L6++ 语义不变），
+//! - **项目 agent 镜像**：projects.json 是路径权威（语义不变），
 //!   agents 表按项目镜像运行时实体（boot 时同步；`kind=project` 的
 //!   exec_root=项目目录）。
 //!
@@ -25,35 +25,35 @@ mod tests;
 
 mod bridge;
 
-/// P3 T4：常驻执行体监督器（per-agent 长驻子进程 + 隔离 + 幂等）。
+/// 常驻执行体监督器（per-agent 长驻子进程 + 隔离 + 幂等）。
 pub mod runtime;
 
-/// G1（2026-10-18 三方复评整改批三）：自建 agent 常驻 LLM loop 生命周期
-/// 管理器（`agents.send` WSAPI 的解析/构建/投递面；R4 remove 联动）。
+/// （三方复评）：自建 agent 常驻 LLM loop 生命周期
+/// 管理器（`agents.send` WSAPI 的解析/构建/投递面； remove 联动）。
 pub mod loop_manager;
 
-/// P5 第 3 步：VM 持久实体监督器（`vm` feature 闸——收窄/IoT 形态整模块
+/// 第 3 步：VM 持久实体监督器（`vm` feature 闸——收窄/IoT 形态整模块
 /// 不进二进制，`nemesis-sandbox/vm` 子模块同闸）。
 #[cfg(feature = "vm")]
 pub mod vm_runtime;
 
-/// P6-R2：agent 跨节点迁移（`cluster` feature 闸——编排/传输/B 端落地
+/// agent 跨节点迁移（`cluster` feature 闸——编排/传输/B 端落地
 /// 面全在此；裁剪形态不可迁移，WSAPI 臂诚实报错）。
 #[cfg(feature = "cluster")]
 pub mod migrate;
 
-/// P5 第 4 步：`vm.*` WSAPI 桥（web 侧 [`nemesis_web::handlers::vm::VmBridge`]
+/// 第 4 步：`vm.*` WSAPI 桥（web 侧 [`nemesis_web::handlers:vm::VmBridge`]
 /// trait 的 [`VmSupervisor`](vm_runtime::VmSupervisor) 实现——投影与转发，
-/// gateway 装配期装槽）。B3 起 pub(crate)：CLI `vm build-image` 前台臂
-/// 复用其输入裁决与任务槽判定（单一真相源，不另写一份预检）。
+/// gateway 装配期装槽）。 起 pub(crate)：CLI `vm build-image` 前台臂
+/// 复用其输入裁决与任务槽判定（同源复用，不另写一份预检）。
 #[cfg(feature = "vm")]
 pub(crate) mod vm_bridge;
 
-/// B7 伴生测试（vm_bridge.rs 的 WSL 自动路由纯函数；零内联纪律）。
+/// 伴生测试（vm_bridge.rs 的 WSL 自动路由纯函数；零内联纪律）。
 #[cfg(all(test, feature = "vm"))]
 mod vm_bridge_tests;
 
-/// B9-3 伴生测试（vm_bridge.rs 的同步目标解析；零内联纪律）。
+/// 伴生测试（vm_bridge.rs 的同步目标解析；零内联纪律）。
 #[cfg(all(test, feature = "vm"))]
 mod vm_bridge_sync_tests;
 
@@ -71,14 +71,14 @@ use nemesis_taskstore::{AgentRecord, SqliteAgentsStore, TaskDb};
 pub struct CreateAgentParams {
     pub name: String,
     pub tier: String,
-    /// P5 第 4 步：运行时后端档位（`process|vm`；空串同 process）。值域
-    /// 校验单一真相源 `nemesis_taskstore::agents::runtime_backend::validate`
+    /// 第 4 步：运行时后端档位（`process|vm`；空串同 process）。值域
+    /// 校验权威定义 `nemesis_taskstore::agents::runtime_backend::validate`
     /// ——create 落库前过，非法值 loud 拒绝。
     pub runtime_backend: String,
     pub tool_policy: serde_json::Value,
     pub persona_refs: serde_json::Value,
     pub credential_refs: serde_json::Value,
-    /// P6-R4（D4 预留）：主体标识（空 = 未绑定）。只落库不消费——多租户
+    /// （预留）：主体标识（空 = 未绑定）。只落库不消费——多租户
     /// 闸不做；迁移 `rewrite_record_for_target` 不触碰本字段（全记录
     /// serialize 过 RPC，B 端 upsert 原值保全）。
     pub principal: String,
@@ -91,36 +91,36 @@ pub struct SweepReport {
     pub activated: Vec<String>,
     /// provisioning → failed（物化失败，WARN 留痕）。
     pub failed: Vec<String>,
-    /// P6-R2：migrating + 墓碑在场（commit ACK 已达）→ 删记录收敛。
+    /// migrating + 墓碑在场（commit ACK 已达）→ 删记录收敛。
     pub migrated_removed: Vec<String>,
-    /// P6-R2：migrating + 无墓碑（commit 未达）→ 回滚 active 照常服务。
+    /// migrating + 无墓碑（commit 未达）→ 回滚 active 照常服务。
     pub reactivated: Vec<String>,
-    /// R7（2026-10-24 复核）：migrating + 意图日志在场、无墓碑（commit 已
+    /// （复核）：migrating + 意图日志在场、无墓碑（commit 已
     /// 发出，B 端可能已激活）→ 冻结转人工（自动回滚 = 同 uuid 双活风险）。
     pub frozen_migrating: Vec<String>,
 }
 
-/// Agent 记录管理器（clone 廉价；与任务真相源共享同一 `Arc<TaskDb>`）。
+/// Agent 记录管理器（clone 廉价；与任务库共享同一 `Arc<TaskDb>`）。
 #[derive(Clone)]
 pub struct AgentManager {
     store: SqliteAgentsStore,
     workspace: PathBuf,
-    /// 常驻执行体监督器（T9 生命周期接线；gateway post_agent 装配——
+    /// 常驻执行体监督器（生命周期接线；gateway post_agent 装配——
     /// supervisor 构造晚于 manager，经 [`Self::set_runtime`] 后补注入。
     /// `None` = 未装配（headless/测试形态），生命周期面诚实不可用）。
     runtime: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<crate::agents::runtime::AgentRuntimeSupervisor>>>,
     >,
-    /// G1：自建 agent 常驻 LLM loop 管理器（同 runtime 后补注入形态；
-    /// `remove` 联动停机摘 loop——R4 协调点）。
+    /// 自建 agent 常驻 LLM loop 管理器（同 runtime 后补注入形态；
+    /// `remove` 联动停机摘 loop—— 协调点）。
     loop_manager: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<crate::agents::loop_manager::AgentLoopManager>>>,
     >,
-    /// P5 第 4 步：VM 常驻后端槽（feature 无关投影 [`VmBackend`]——`vm`
+    /// 第 4 步：VM 常驻后端槽（feature 无关投影 [`VmBackend`]——`vm`
     /// feature 关闭时恒 None，档位路由与管理面诚实降级，off-state 字节
     /// 不变）。gateway post_agent 装配（同 set_runtime 的晚注入纪律）。
     vm: std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<dyn VmBackend>>>>,
-    /// B9-1：VM 具体型监督器槽——vm_sync 同步引擎的 `internal_call`（内部
+    /// VM 具体型监督器槽——vm_sync 同步引擎的 `internal_call`（内部
     /// 方法通道）需要具体型 [`vm_runtime::VmSupervisor`]；`vm` trait 槽是
     /// feature 无关投影，不携带内部方法。与 `vm` 槽并存（post_agent 同一
     /// 装配点装同一 Arc 的两投影）。
@@ -128,7 +128,7 @@ pub struct AgentManager {
     vm_supervisor: std::sync::Arc<
         std::sync::RwLock<Option<std::sync::Arc<crate::agents::vm_runtime::VmSupervisor>>>,
     >,
-    /// P6-R2：迁移传输层槽（cluster feature 闸；gateway post_agent 在
+    /// 迁移传输层槽（cluster feature 闸；gateway post_agent 在
     /// cluster Arc 就绪后注入——与 set_runtime 同款晚注入纪律）。
     #[cfg(feature = "cluster")]
     migrate_transport:
@@ -136,7 +136,7 @@ pub struct AgentManager {
 }
 
 // ---------------------------------------------------------------------------
-// P5 第 4 步：VM 常驻后端面（feature 无关投影）
+// 第 4 步：VM 常驻后端面（feature 无关投影）
 // ---------------------------------------------------------------------------
 
 /// VM 常驻后端的生命周期 + 执行面投影。trait 常在（不挂 feature）——
@@ -145,8 +145,8 @@ pub struct AgentManager {
 /// 回落 per-call（与「开关关」同语义），管理面诚实报「未装配」。实现 =
 /// [`vm_runtime::VmSupervisor`](vm_runtime::VmSupervisor)（cfg vm）。
 ///
-/// supertrait [`PersistentExecutor`](nemesis_agent::remote_executor_tool::PersistentExecutor)
-/// 保证路由面与进程档走同一 trait 面（P5 验收门「同一 RuntimeBackend 接口」
+/// supertrait [`PersistentExecutor`](nemesis_agent::remote_executor_tool:PersistentExecutor)
+/// 保证路由面与进程档走同一 trait 面（验收门「同一 RuntimeBackend 接口」
 /// 的编译期形态）。
 #[async_trait::async_trait]
 pub trait VmBackend: nemesis_agent::remote_executor_tool::PersistentExecutor {
@@ -163,11 +163,11 @@ pub trait VmBackend: nemesis_agent::remote_executor_tool::PersistentExecutor {
     /// 与进程档「睡着的槽已离开 map」同语义）。
     fn running_agents(&self) -> Vec<String>;
 
-    /// R2（2026-10-20 复评）+ F2（2026-10-21 三轮复评）：删除联动逐出，
+    /// （复评）+ （三轮复评）：删除联动逐出，
     /// **两段式**（prepare / commit / abort）。`AgentManager::remove` **无条件**
     /// 调 prepare（不读 runtime_backend——切过档的旧 VM 实例一并收敛）：
-    /// 进临时拒绝态（新启动被拒）+ 运行实例冷停出 map，**可逆**；真相源
-    /// （DB）删除成功后 commit（临时态转永久墓碑），失败则 abort（临时态
+    /// 进临时拒绝态（新启动被拒）+ 运行实例冷停出 map，**可逆**；DB
+    /// 删除成功后 commit（临时态转永久墓碑），失败则 abort（临时态
     /// 解除，记录仍在册 = 身份可再唤醒）。commit/abort 同步不可失败；三者
     /// **均无默认实现**——默认 Ok/空操作会把未来实现者的漏接静默成老 bug。
     async fn evict_agent_prepare(&self, agent_id: &str) -> Result<(), String>;
@@ -215,7 +215,7 @@ impl AgentManager {
         }
     }
 
-    /// T9：常驻监督器后补注入（supervisor 构造晚于 manager——gateway
+    /// 常驻监督器后补注入（supervisor 构造晚于 manager——gateway
     /// post_agent 在两件都在场时接线；幂等覆盖）。
     pub fn set_runtime(&self, rt: std::sync::Arc<crate::agents::runtime::AgentRuntimeSupervisor>) {
         *self.runtime.write().expect("agent manager runtime lock") = Some(rt);
@@ -231,7 +231,7 @@ impl AgentManager {
             .clone()
     }
 
-    /// G1：自建 agent 常驻 loop 管理器后补注入（同 runtime 形态——loop
+    /// 自建 agent 常驻 loop 管理器后补注入（同 runtime 形态——loop
     /// manager 需要 main loop 的 session_store，构造晚于 manager；幂等覆盖）。
     pub fn set_loop_manager(
         &self,
@@ -251,7 +251,7 @@ impl AgentManager {
             .clone()
     }
 
-    /// P5 第 4 步：VM 后端后补注入（supervisor 构造晚于 manager——gateway
+    /// 第 4 步：VM 后端后补注入（supervisor 构造晚于 manager——gateway
     /// post_agent 在两件都在场时接线；幂等覆盖）。唯一调用方在
     /// `#[cfg(feature = "vm")]` 装配块内——vm 关态 dead，allow 门随 feature。
     #[cfg_attr(not(feature = "vm"), allow(dead_code))]
@@ -264,7 +264,7 @@ impl AgentManager {
         self.vm.read().expect("agent manager vm lock").clone()
     }
 
-    /// B9-1：VM 具体型监督器注入（与 set_vm_backend 同一装配点、同一 Arc
+    /// VM 具体型监督器注入（与 set_vm_backend 同一装配点、同一 Arc
     /// 的两投影；幂等覆盖）。
     #[cfg(feature = "vm")]
     pub fn set_vm_supervisor(&self, sup: std::sync::Arc<crate::agents::vm_runtime::VmSupervisor>) {
@@ -283,7 +283,7 @@ impl AgentManager {
             .clone()
     }
 
-    /// P6-R2：迁移传输层注入（cluster Arc 就绪后；幂等覆盖）。
+    /// 迁移传输层注入（cluster Arc 就绪后；幂等覆盖）。
     #[cfg(feature = "cluster")]
     pub fn set_migrate_transport(&self, t: std::sync::Arc<dyn migrate::MigrateTransport>) {
         *self
@@ -301,9 +301,9 @@ impl AgentManager {
             .clone()
     }
 
-    /// P6-R2：迁移一个 selfbuilt agent 到目标节点。cluster 裁剪形态恒
+    /// 迁移一个 selfbuilt agent 到目标节点。cluster 裁剪形态恒
     /// 不可用（诚实报错）；启用形态全权委托
-    /// [`migrate::migrate_agent`](crate::agents::migrate::migrate_agent)
+    /// [`migrate::migrate_agent`](crate::agents:migrate::migrate_agent)
     /// 的 12 步编排（validate/转移/回滚/墓碑语义见该模块头）。
     #[cfg(feature = "cluster")]
     pub async fn migrate_agent(
@@ -314,7 +314,7 @@ impl AgentManager {
         migrate::migrate_agent(self, agent_id, target_node).await
     }
 
-    /// P6-R2（cluster 裁剪形态）：迁移不可用。
+    /// （cluster 裁剪形态）：迁移不可用。
     #[cfg(not(feature = "cluster"))]
     pub async fn migrate_agent(
         &self,
@@ -325,7 +325,7 @@ impl AgentManager {
         Err("agent 迁移不可用：cluster feature 未编译".to_string())
     }
 
-    /// B9-1：按项目 ID 查项目 agent 记录（kind=project 且 project_id 匹配；
+    /// 按项目 ID 查项目 agent 记录（kind=project 且 project_id 匹配；
     /// status 不筛——provisioning/failed 形态下 ensure_running 会诚实失败，
     /// 拦截消息比静默放行诚实）。存储读取失败 = warn + None（消息路由热
     /// 路径不因账本故障整体停车，但留痕）。
@@ -344,7 +344,7 @@ impl AgentManager {
     }
 
     /// 两阶段创建（自建 agent）：`provisioning` 落库 → home 物化（幂等）→
-    /// `active`。exec_root=自己 home（隔离根语义：跨 agent home 互不可见）。
+    /// `active`。exec_root=自己 home（隔离根语义：跨 agent home 互不可）。
     /// 物化失败 = 记录留在 `provisioning`（启动 sweep 会重试收敛），错误
     /// 上抛给调用方（诚实失败，不留假成功）。
     pub fn create_agent(&self, p: CreateAgentParams) -> Result<AgentRecord, String> {
@@ -357,7 +357,7 @@ impl AgentManager {
         // 凭据引用面创建期封死（vault:agent/<self_id>/<name> 约定，跨
         // agent 引用拒绝）——先验后落库，失败不留半创建。
         validate_credential_refs(&agent_id, &p.credential_refs)?;
-        // 档位值域同点封死（P5 第 4 步；空串同 process——旧调用方零迁移）。
+        // 档位值域同点封死（第 4 步；空串同 process——旧调用方零迁移）。
         let runtime_backend =
             nemesis_taskstore::agents::runtime_backend::validate(&p.runtime_backend)?.to_string();
         let home = resolve_agent_home_in_workspace(&self.workspace, &agent_id);
@@ -371,13 +371,13 @@ impl AgentManager {
         // selfbuilt 独占 `agents/<id>` 记忆域。
         record.memory_namespace = format!("agents/{agent_id}");
         record.credential_refs = p.credential_refs;
-        // P6-R4（D4 预留）：主体标识落库（只立字段，无消费方）。
+        // （预留）：主体标识落库（只立字段，无消费方）。
         record.principal = p.principal;
 
-        // 第一阶段：记录先落库（provisioning）——后续任何失败都留有
+        // 段：记录先落库（provisioning）——后续任何失败都留有
         // 可收敛的痕迹，不产生「目录在、记录无」的孤儿。
         self.store.upsert(&record)?;
-        // 第二阶段：home 物化（幂等）+ 条件转移。转移失败（并发抢先）
+        // 段：home 物化（幂等）+ 条件转移。转移失败（并发抢先）
         // 不算错误——记录已 active 即达目的。
         materialize_home(&self.workspace, &agent_id)?;
         self.store.transition_status(
@@ -390,7 +390,7 @@ impl AgentManager {
             .ok_or_else(|| format!("agent {agent_id} 刚创建即读失（存储不一致）"))
     }
 
-    /// P5 第 4 步：运行时后端切档（G4 ⑦「上层无感」的写入口）。真相源 =
+    /// 第 4 步：运行时后端切档（⑦「上层无感」的写入口）。权威 =
     /// tasks.db 记录字段；工具调用侧路由执行器每调用现读——切档即时生效，
     /// 无需重启 loop 或迁移会话（对话/记忆/交付语义不变）。原档常驻实例
     /// 如需释放，走 sleep（跨档生命周期互不自动接管——切档是偏好变更，
@@ -488,7 +488,7 @@ impl AgentManager {
     /// 项目镜像记录定向清理（projects.remove 联动）：按 project_id 摘
     /// kind=project 记录，返回摘除条数。镜像记录是注册表条目的投影——
     /// 条目摘除后投影若留着，agents.list 会出现指向已删项目的幽灵记录，
-    /// 盘上 home 也成了无人认领的孤儿（B2 home 收编后镜像带 home_path，
+    /// 盘上 home 也成了无人认领的孤儿（home 收编后镜像带 home_path，
     /// 孤儿有物理目录）。home 目录按 [`Self::remove`] 同语义**保留在盘**
     /// （解除注册 ≠ 删文件）。boot 期刻意**不做**全量对账：registry 是
     /// lenient 读（损坏=空列表），以空集对账会误删全部镜像（脚枪不造；
@@ -507,7 +507,7 @@ impl AgentManager {
     }
 
     /// 启动 sweep：收敛卡在 `provisioning` 的半创建记录。重物化成功 →
-    /// `active`；失败 → `failed` 终态（调用方 WARN 留痕）。P6-R2 起同批
+    /// `active`；失败 → `failed` 终态（调用方 WARN 留痕）。- 起同批
     /// 收敛 `migrating` 残留（cluster 启用形态）：墓碑在场 = 迁移成功
     /// 终局删记录；缺席 = commit 未达回滚 active。
     pub fn sweep(&self) -> Result<SweepReport, String> {
@@ -547,7 +547,7 @@ impl AgentManager {
                 }
             }
         }
-        // P6-R2：migrating 残留收敛（cluster 裁剪形态无迁移态，恒空跳过）。
+        // migrating 残留收敛（cluster 裁剪形态无迁移态，恒空跳过）。
         #[cfg(feature = "cluster")]
         migrate::sweep_migrating(&self.store, &self.workspace, &mut report)?;
         Ok(report)
@@ -555,38 +555,38 @@ impl AgentManager {
 
     /// 删除记录。main 是对话组身份投影不可删（项目/自建可删；物理 home
     /// 目录保留——删除是解除实体注册，不做文件清除，与 projects 同语义）。
-    /// R4（2026-10-18 三方复评）：删除联动常驻执行体停机（尽力而为——监督
+    /// （三方复评）：删除联动常驻执行体停机（尽力而为——监督
     /// 器未装配时跳过）+ 看护循环经 registration_check 不再为已删 agent 重
-    /// 拉；evict 拿槽锁等在途调用收尾，删除不与 execute 并发脱管。G1：同批
+    /// 拉；evict 拿槽锁等在途调用收尾，删除不与 execute 并发脱管。：同批
     /// 联动停机自建 agent 的常驻 LLM loop（记录删了 loop 不留——此后
     /// `agents.send` 走「agent 不存在」诚实报错）。
     ///
-    /// 顺序契约（2026-10-18 六批复查）：**真相源先删、loop 后停**（projects
+    /// 顺序契约（六批复查）：**store 先删、loop 后停**（projects
     /// `remove` 同序）——记录在册时先摘 loop，`lm.remove` 与 `store.remove`
     /// 之间并发抵达的 `agents.send`/`loop_for_agent` 会经 `resolve_or_build`
     /// 查到仍在册的记录把 loop 重建出来（孤儿 loop 存活到重启）；先删记录
     /// 则并发解析立即「agent 不存在」诚实报错，随后 `lm.remove` 收尾停既有
     /// loop。「构建在途」（early get 后、insert 前）的交错由 loop_manager
-    /// insert 前的真相源复查封死（`resolve_or_build` 同日注）。store 删除
+    /// insert 前的 store 复查封死（`resolve_or_build` 同日注）。store 删除
     /// 失败 = 整个删除失败原样上抛（`lm` 未动，状态一致；runtime evict 已
     /// 发生但子进程按需重建，无泄漏）。
     ///
-    /// F3（二轮复评 2026-10-18）：runtime 侧**两段式编排**——`evict_begin`
+    /// （二轮复评）：runtime 侧**两段式编排**——`evict_begin`
     /// （置删除在途旗标 + 排空旧槽）先行，旗标覆盖「旧槽已摘、排空等待中」
     /// 与「排空完成、记录未删」两个窗口（期间 `get_or_spawn` 锁内复核拒新，
     /// 删除等待期造不出替代槽）；`store.remove`/`lm.remove` 完成后
     /// `evict_end` 清旗标。store.remove 失败也要清旗标（不得把失败删除泄漏
     /// 成永久拒绝），故不用 `?` 中途返回。
     ///
-    /// R2（2026-10-20 复评）：删除联动 VM 后端收敛——`evict_begin` 之前
+    /// （复评）：删除联动 VM 后端收敛——`evict_begin` 之前
     /// **无条件**走 VM 逐出（不读 runtime_backend：切过档的旧 VM 实例一并
-    /// 收敛）。F2（2026-10-21 三轮复评）改**两段式**：prepare（临时拒绝态
+    /// 收敛）。（三轮复评）改**两段式**：prepare（临时拒绝态
     /// 加冷停出槽，可逆）先行；`store.remove` 成功 → commit（永久墓碑）；
     /// 失败 → abort（临时态解除，记录仍在册 = 身份可再唤醒，已冷停实例走
     /// 正常冷启恢复）。旧单段式的事故面（探针实证）：墓碑先于 DB 删除永久
     /// 生效，DB 失败后「记录在册但身份永久不可唤醒」直到 supervisor 重启。
     /// 显式**不采用**「先删库后停机」换序——那会重新产生已删身份的脱管
-    /// 运行实例（R2 整改的原始动机）。
+    /// 运行实例（此前拆分的原始动机）。
     pub async fn remove(&self, agent_id: &str) -> Result<(), String> {
         if let Some(record) = self.store.get(agent_id)?
             && record.kind == agent_kind::MAIN
@@ -642,7 +642,7 @@ impl AgentManager {
     }
 }
 
-/// home 物化路径字符串（nemesis-path 单一真相源派生）。
+/// home 物化路径字符串（nemesis-path 权威定义派生）。
 fn home_path_str(workspace: &Path, agent_id: &str) -> String {
     resolve_agent_home_in_workspace(workspace, agent_id)
         .to_string_lossy()
@@ -674,7 +674,7 @@ fn validate_exec_root(path: &Path) -> Result<PathBuf, String> {
 }
 
 // ---------------------------------------------------------------------------
-// 凭据 vault 别名（P2：`vault:agent/<id>/<name>`，plugin 别名先例
+// 凭据 vault 别名（`vault:agent/<id>/<name>`，plugin 别名先例
 // `vault:plugin/<slug>/<name>` 同构）
 // ---------------------------------------------------------------------------
 
@@ -682,7 +682,7 @@ fn validate_exec_root(path: &Path) -> Result<PathBuf, String> {
 /// 凭据本体只存 vault（AES-256-GCM），agents 表的 credential_refs 只存
 /// 引用——web 面投影只出条数不出内容（bridge.rs 同纪律）。
 ///
-/// `#[allow(dead_code)]`：P5 消费面（agent 实体持久化/重启链的凭据装配），
+/// `#[allow(dead_code)]`： 消费面（agent 实体持久化/重启链的凭据装配），
 /// 当前无生产调用方；格式由 tests.rs `credential_alias_format` 钉住。
 #[allow(dead_code)]
 pub fn credential_alias(agent_id: &str, name: &str) -> String {
@@ -721,8 +721,8 @@ pub fn validate_credential_refs(agent_id: &str, refs: &serde_json::Value) -> Res
 /// （安全子系统）里——security 裁剪形态无 vault 可解析，本函数随之编译期
 /// 消失。
 ///
-/// `#[allow(dead_code)]`：P5 消费面（常驻执行体 env 凭据装配，注入契约
-/// 随 P5/P6 讨论定形）；当前无生产调用方，全链路行为由 tests.rs
+/// `#[allow(dead_code)]`： 消费面（常驻执行体 env 凭据装配，注入契约
+/// 随 / 讨论定形）；当前无生产调用方，全链路行为由 tests.rs
 /// `resolve_agent_credential_roundtrip` 钉住（真 vault 落盘 → 解析出真值）。
 #[cfg(feature = "security")]
 #[allow(dead_code)]

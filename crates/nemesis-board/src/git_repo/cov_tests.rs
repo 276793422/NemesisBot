@@ -188,7 +188,7 @@ fn commit_resolution_on_repo_without_head() {
 }
 
 // ===========================================================================
-// Wave4 覆盖批次（2026-09-25）：head_commit_hex / export 空仓库 /
+// Wave4 覆盖批次：head_commit_hex / export 空仓库 /
 // commit_changed_files 三臂 / commit_blob_text 二进制臂 / modify-delete
 // 冲突 (Some,None) 臂 / 删除不在基线树的 Err 臂。
 // ===========================================================================

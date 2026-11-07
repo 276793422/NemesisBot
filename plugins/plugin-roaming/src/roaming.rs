@@ -24,7 +24,7 @@
 //! # 线程纪律
 //!
 //! 所有导出函数（除 `roaming_abi_version`/`roaming_shutdown`）内部投插件自持 runtime
-//! 阻塞等结果——宿主调用侧必须 `spawn_blocking`，不卡 async executor 线程（拍板 10）。
+//! 阻塞等结果——宿主调用侧必须 `spawn_blocking`，不卡 async executor 线程（决策 10）。
 //!
 //! # 返回 JSON 约定
 //!
@@ -56,7 +56,7 @@ pub const ROAMING_LOG_INFO: i32 = 2;
 pub const ROAMING_LOG_WARN: i32 = 3;
 pub const ROAMING_LOG_ERROR: i32 = 4;
 
-/// 日志回调：插件日志转发回宿主 tracing（拍板 5：转发不落盘，插件不落自己的日志文件）。
+/// 日志回调：插件日志转发回宿主 tracing（决策 5：转发不落盘，插件不落自己的日志文件）。
 /// tag 为短标签（如 "relay" / "rendezvous"），宿主负责并入消息体。
 pub type RoamingLogFn = extern "C" fn(level: i32, tag: *const c_char, msg: *const c_char);
 
@@ -190,7 +190,7 @@ pub type RoamingEndpointStartFn = unsafe extern "C" fn(config: *const c_char) ->
 ///
 /// 纯 fn 指针载体——nemesis-plugin 契约 crate 零依赖（不引 libloading）；
 /// Library 由 loader `Box::leak`（进程生命周期），fn 指针因此恒有效。
-/// 所有方法为阻塞调用，宿主侧必须 `spawn_blocking`（拍板 10）。
+/// 所有方法为阻塞调用，宿主侧必须 `spawn_blocking`（决策 10）。
 #[derive(Clone, Copy)]
 pub struct RoamingPluginHandle {
     pub init: RoamingInitFn,

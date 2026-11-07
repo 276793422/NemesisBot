@@ -1,7 +1,7 @@
-//! A4（2026-09-04 devtool-upgrade 阶段 2）：edit_file 模糊替换级联。
+//! （2026-09-04 devtool-upgrade）：edit_file 模糊替换级联。
 //!
 //! 多级模糊替换级联（exact 之外的实用子集）：exact 级由
-//! `EditFileTool` 自身承担（字节精确 + A1 提示），本模块承接 exact 未命中
+//! `EditFileTool` 自身承担（字节精确 + 提示），本模块承接 exact 未命中
 //! 且 `!replace_all` 时的五级模糊匹配，每级**唯一命中才接受**：
 //!
 //! 1. `line-trimmed`：逐行 trim 后整块相等（行数必须一致）；替换时保留
@@ -25,7 +25,7 @@
 //! line-trimmed 先接住；它只在 line-trimmed 候选被跨度保护拒绝后有机会
 //! 生效（原设计同样如此——保留该级是完整性与替换质量的冗余）。
 //! `replace_all=true` 不进级联：模糊命中位置的内容各不相同，"全部替换"
-//! 语义无法推广；此时 exact 未命中直接走 A1 提示。
+//! 语义无法推广；此时 exact 未命中直接走 提示。
 //!
 //! 换行风格：行 span 替换沿用该 span 首行的终止符（CRLF 文件整体保持
 //! CRLF）；new_text 若带与文件不同的换行风格，verbatim 级会按模型字节
@@ -46,7 +46,7 @@ pub(crate) enum CascadeError {
     /// 某级多命中——直接报错（消息已含级名与 1-based 行号），不再尝试
     /// 后续级。调用方原样回给模型。
     Ambiguous(String),
-    /// 全部级 0 命中（或候选全被跨度保护拒绝）——调用方回退 A1 提示。
+    /// 全部级 0 命中（或候选全被跨度保护拒绝）——调用方回退 提示。
     NoMatch { span_note: Option<String> },
 }
 
@@ -214,7 +214,7 @@ fn splice_span(
 /// 全部候选超限 → `Disproportionate`；无候选 → `NoCandidate`；唯一 →
 /// `build(候选下标)` 构造替换结果——下标指向传入的 `cands`（各 level 闭包
 /// 自持与 `cands` 位置一一对应的候选数据自行解构）。**契约禁止把起始行号
-/// 当下标用**（2026-10-25 实机 panic：唯一候选起始行 23、`cands.len()==1`
+/// 当下标用**（实机 panic：唯一候选起始行 23、`cands.len()==1`
 /// → `cands[23]` 越界）；多候选 → `Err(歧义消息)`。
 fn accept_unique_spans(
     level: &'static str,

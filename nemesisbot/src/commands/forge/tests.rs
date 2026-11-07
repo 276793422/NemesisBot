@@ -1,6 +1,6 @@
 use super::*;
 
-// ── 死代码恢复区（2026-09-16 用户指令：代码不得随便删，注释保留待讨论）
+// ── 死代码恢复区（用户指令：代码不得随便删，注释保留待讨论）
 // CFG-04 曾删以下 14 个 CLI-local 死 helper（default_forge_config /
 // load_forge_config / save_forge_config，写死 <forge>/forge.json 假姿态）
 // 的测试。helper 本体在 forge.rs 注释恢复区。待用户裁决。
@@ -25,7 +25,7 @@ use super::*;
 //
 // #[test]
 // fn test_load_forge_config_missing() {
-//     let tmp = tempfile::TempDir::new().unwrap();
+//     let tmp = tempfile::TempDir:new().unwrap();
 //     let cfg = load_forge_config(tmp.path());
 //     assert_eq!(
 //         cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
@@ -35,12 +35,12 @@ use super::*;
 //
 // #[test]
 // fn test_save_and_load_forge_config() {
-//     let tmp = tempfile::TempDir::new().unwrap();
+//     let tmp = tempfile::TempDir:new().unwrap();
 //     let mut cfg = default_forge_config();
 //     if let Some(obj) = cfg.as_object_mut() {
 //         obj.insert(
 //             "learning_enabled".to_string(),
-//             serde_json::Value::Bool(true),
+//             serde_json::Value:Bool(true),
 //         );
 //     }
 //     save_forge_config(tmp.path(), &cfg).unwrap();
@@ -169,9 +169,9 @@ use super::*;
 //
 // #[test]
 // fn test_load_forge_config_invalid_json() {
-//     let tmp = tempfile::TempDir::new().unwrap();
+//     let tmp = tempfile::TempDir:new().unwrap();
 //     let forge_dir = tmp.path().join("forge");
-//     std::fs::create_dir_all(&forge_dir).unwrap();
+//     std::fs:create_dir_all(&forge_dir).unwrap();
 //     // Write invalid JSON
 //     std::fs::write(forge_dir.join("forge.json"), "not valid json {{{").unwrap();
 //     let cfg = load_forge_config(&forge_dir);
@@ -188,7 +188,7 @@ use super::*;
 //
 // #[test]
 // fn test_save_forge_config_creates_directory() {
-//     let tmp = tempfile::TempDir::new().unwrap();
+//     let tmp = tempfile::TempDir:new().unwrap();
 //     let new_dir = tmp.path().join("new_forge_dir");
 //     assert!(!new_dir.exists());
 //     save_forge_config(&new_dir, &default_forge_config()).unwrap();
@@ -198,14 +198,14 @@ use super::*;
 //
 // #[test]
 // fn test_save_forge_config_overwrites() {
-//     let tmp = tempfile::TempDir::new().unwrap();
+//     let tmp = tempfile::TempDir:new().unwrap();
 //     save_forge_config(tmp.path(), &default_forge_config()).unwrap();
 //
 //     let mut custom = default_forge_config();
 //     if let Some(obj) = custom.as_object_mut() {
 //         obj.insert(
 //             "collect_interval_sec".to_string(),
-//             serde_json::Value::Number(600.into()),
+//             serde_json::Value:Number(600.into()),
 //         );
 //     }
 //     save_forge_config(tmp.path(), &custom).unwrap();
@@ -220,7 +220,7 @@ use super::*;
 
 #[test]
 fn test_runtime_forge_config_path_derives_workspace_config() {
-    // CFG-04：CLI 与 gateway 同一真相源——<workspace>/config/config.forge.json。
+    // CFG-04：CLI 与 gateway 同一权威定义——<workspace>/config/config.forge.json。
     let tmp = tempfile::TempDir::new().unwrap();
     let forge_dir = tmp.path().join("workspace").join("forge");
     let path = runtime_forge_config_path(&forge_dir);
@@ -255,7 +255,7 @@ fn test_load_registry_with_data() {
 }
 
 // -------------------------------------------------------------------------
-// CFG-04（2026-09-16）：CLI 旧 default_forge_config / load_forge_config /
+// CFG-04：CLI 旧 default_forge_config / load_forge_config /
 // save_forge_config（raw Value 写死 <forge>/forge.json，gateway 从不读取）
 // 已删除，改用 nemesis_forge::config 的 typed load/save。typed 默认值、
 // 解析失败回退、嵌套目录创建由 crates/nemesis-forge/src/config/tests.rs
@@ -463,7 +463,7 @@ fn test_cmd_learning_status_custom_config() {
     let tmp = tempfile::TempDir::new().unwrap();
     let forge_dir = tmp.path().join("workspace").join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
-    // CFG-04：typed 真相源——自定义 learning.enabled 写 config.forge.json。
+    // CFG-04：typed 权威定义——自定义 learning.enabled 写 config.forge.json。
     let mut cfg = nemesis_forge::config::ForgeConfig::default();
     cfg.learning.enabled = true;
     nemesis_forge::config::save_forge_config(&runtime_forge_config_path(&forge_dir), &cfg).unwrap();
@@ -642,7 +642,7 @@ fn test_cmd_learning_history_with_entries() {
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
     // 播种顺序故意乱序（02 文件先写、01 文件后写）——真相源读取必须
-    // 按 started_at 升序返回（R18：幻影路径根修 + 排序纪律）。
+    // 按 started_at 升序返回（幻影路径根修 + 排序纪律）。
     seed_cycle(&forge_dir, "2026-01-02T00:00:00Z", 8, 6);
     seed_cycle(&forge_dir, "2026-01-01T00:00:00Z", 5, 3);
 
@@ -883,7 +883,7 @@ fn test_forge_config_round_trip_preserves_custom_values() {
 }
 
 // ===========================================================================
-// R7（coverage-95 goal，2026-08-27）：cmd_* 命令体 + run() dispatch 全链路。
+// （coverage-95 goal）：cmd_* 命令体 + run() dispatch 全链路。
 // 全部经 env home（NEMESISBOT_HOME → tempdir）走 run()，覆盖 dispatch
 // （909-935）与各命令的成功/错误臂；cmd_reflect/cmd_export 内部用
 // block_in_place，必须显式 multi_thread flavor（plain #[tokio::test] 是
@@ -892,7 +892,7 @@ fn test_forge_config_round_trip_preserves_custom_values() {
 // ===========================================================================
 
 // 整 mod Windows 形态（10/10 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r7_cmd_paths {
     use super::*;
 
@@ -925,7 +925,7 @@ mod r7_cmd_paths {
     }
 
     fn seed_experiences(forge_dir: &std::path::Path) {
-        // 2026-10-15 W2 起 cmd_reflect 读 canonical flat store（
+        // 起 cmd_reflect 读 canonical flat store（
         // experiences/experiences.jsonl，与 Collector 持久化/网关反思循环
         // 同源）；旧聚合月度文件不再是 CLI 反思输入。
         let rows = [
@@ -988,7 +988,7 @@ mod r7_cmd_paths {
         .unwrap();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_status_without_config_prints_disabled() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1004,7 +1004,7 @@ mod r7_cmd_paths {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_status_enabled_with_registry_prints_type_counts() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1028,7 +1028,7 @@ mod r7_cmd_paths {
         r.expect("status with registry ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_enable_creates_dirs_and_config_then_disable_flips_flag() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1070,7 +1070,7 @@ mod r7_cmd_paths {
         clear_env();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_enable_on_existing_forge_object_preserves_fields() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1098,7 +1098,7 @@ mod r7_cmd_paths {
         clear_env();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_guard_arms_disabled_and_uninitialized_and_empty() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1129,7 +1129,7 @@ mod r7_cmd_paths {
         r3.expect("reflect empty-experiences returns Ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_full_path_produces_report() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1154,13 +1154,13 @@ mod r7_cmd_paths {
         );
     }
 
-    /// W2 回归锁（2026-10-15 自查修复）：cmd_reflect 消费注册表前必须先从盘
+    /// 回归锁（自查修复）：cmd_reflect 消费注册表前必须先从盘
     /// 回载——Registry::new 是空内存注册表，不回载则 find_by_name 去重失效、
     /// registry.add 会往 registry.json **追加同 id 重复条目**（CLI 每次新起
     /// 进程必踩；gateway 路径 ctx.rs 启动即 load 无此问题）。本用例：预置同名
     /// Skill 草稿 + mock LLM 返回同名蒸馏产物 → 断言注册表不出现第二条、
     /// 既有 SKILL.md 哨兵不被覆盖（修复前双红：2 条同 id + 哨兵被蒸馏稿覆盖）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_auto_skill_dedup_uses_registry_loaded_from_disk() {
         // mock LLM（openai 协议 chat/completions）：所有 POST 都回同一条
@@ -1301,7 +1301,7 @@ mod r7_cmd_paths {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_list_registry_filter_and_fallback_scan_arms() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1358,7 +1358,7 @@ mod r7_cmd_paths {
         r5.expect("list fallback scan single missing dir ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_evaluate_found_and_not_found() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1374,7 +1374,7 @@ mod r7_cmd_paths {
         missing.expect("evaluate not-found still Ok (prints message)");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_export_guard_and_specific_artifact() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1441,7 +1441,7 @@ mod r7_cmd_paths {
         r4.expect("export specific artifact ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn run_learning_lifecycle_and_history() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1488,7 +1488,7 @@ mod r7_cmd_paths {
         .expect("learning history (no file) ok");
 
         // 播种 cycles（真相源月目录形态；含合法行 + 追加坏行 + 空行）→
-        // 读取解析打印臂（R18：幻影 learning_cycles.jsonl 路径退役）。
+        // 读取解析打印臂（幻影 learning_cycles.jsonl 路径退役）。
         seed_cycle(&forge_dir, "2026-08-27T01:00:00+08:00", 2, 1);
         {
             use std::io::Write as _;
@@ -1530,7 +1530,7 @@ mod r7_cmd_paths {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_auto_skill_flag_overrides_config_off() {
-        // R10：--auto-skill flag 是当次意志——config.forge.json 的
+        // --auto-skill flag 是当次意志——config.forge.json 的
         // artifacts.auto_skill 缺省（false）时 flag=true 仍必须跑蒸馏
         // （交付报告口径：forge reflect --auto-skill）。
         let server = wiremock::MockServer::start().await;
@@ -1616,7 +1616,7 @@ mod r7_cmd_paths {
 }
 
 // ===========================================================================
-// wave_b（coverage 补测，2026-08-27）：miss 行清零补洞。与 r7_cmd_paths 平级，
+// wave_b（coverage 补测）：miss 行清零补洞。与 r7_cmd_paths 平级，
 // 看不到其私有 helper，下列 env/config/registry 工具为本模块复制版（语义一致
 // 并加 prev-value 恢复）。涉及 cmd_reflect/cmd_export（内部 block_in_place）
 // 的用例一律 multi_thread flavor，理由见上方 r7 头注释（current_thread 直接
@@ -1630,10 +1630,10 @@ mod r7_cmd_paths {
 //    forge 对象臂）→ wave_b_disable_inserts_forge_key_when_missing；
 //  - 384-386 experiences 子目录缺席 => exp_count=0 早退提示 →
 //    wave_b_reflect_without_experiences_subdir_returns_hint；
-//  - 434-437 read_aggregated Err 臂——W2（2026-10-15）该路径退役（cmd_reflect
+//  - 434-437 read_aggregated Err 臂——该路径退役（cmd_reflect
 //    只读 flat store）；对应用例已改钉现行为
 //    wave_b_reflect_monthly_layout_junk_does_not_block_flat_store；
-//  - 440-443 Ok 但空聚合早退臂——月目录存在且无任何 .jsonl →
+//  - 440-443 Ok 但空聚合早退臂——月目录存在且无任何.jsonl →
 //    wave_b_reflect_empty_aggregation_stops_early；
 //  - 459-461 write_report Err 警告臂——把 reflections 预建成普通【文件】逼
 //    create_dir_all 失败（Reflector 继续打印统计，仅告警）→
@@ -1673,7 +1673,7 @@ mod r7_cmd_paths {
 // ===========================================================================
 
 // 整 mod Windows 形态（12/12 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod wave_b {
     use super::*;
 
@@ -1726,7 +1726,7 @@ mod wave_b {
     /// 当前月的 experiences/<yyyymm>/wb.jsonl 播种（时间取运行时刻，
     /// 不依赖固定日期，避免跨月漂移失效）。
     fn wb_seed_experience_rows(forge_dir: &std::path::Path, rows: &[serde_json::Value]) {
-        // W2 起 CLI 反思读 canonical flat store（experiences/experiences.jsonl）。
+        // 起 CLI 反思读 canonical flat store（experiences/experiences.jsonl）。
         let dir = forge_dir.join("experiences");
         std::fs::create_dir_all(&dir).unwrap();
         let body: String = rows
@@ -1772,7 +1772,7 @@ mod wave_b {
         .unwrap();
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_learning_enable_fails_when_config_unwritable() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1792,7 +1792,7 @@ mod wave_b {
         assert!(!err.to_string().is_empty());
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_disable_inserts_forge_key_when_missing() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1818,7 +1818,7 @@ mod wave_b {
         assert_eq!(cfg["default_model"], "m", "存量 sibling 字段必须保留");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_without_experiences_subdir_returns_hint() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1833,7 +1833,7 @@ mod wave_b {
             .expect("reflect without experiences ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_monthly_layout_junk_does_not_block_flat_store() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1841,7 +1841,7 @@ mod wave_b {
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
-        // W2（2026-10-15）起 cmd_reflect 只读 canonical flat store
+        // 起 cmd_reflect 只读 canonical flat store
         //（experiences/experiences.jsonl，store.read_recent），月度聚合布局
         // 不再是输入——旧 read_aggregated 路径已退役。旧版此用例钉「月目录
         // 下 jsonl 名为目录 → read_aggregated Err 提示臂」；该路径删除后
@@ -1869,7 +1869,7 @@ mod wave_b {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_empty_raw_store_stops_early() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1886,7 +1886,7 @@ mod wave_b {
             .expect("empty raw store early-return ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_reports_low_success_patterns() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1919,7 +1919,7 @@ mod wave_b {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_warns_when_report_target_is_a_file() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1936,7 +1936,7 @@ mod wave_b {
             .expect("report failure must degrade to warning");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_export_draft_only_hints_all_flag() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -1966,7 +1966,7 @@ mod wave_b {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_export_active_artifacts_report_count() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -2006,7 +2006,7 @@ mod wave_b {
         );
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_learning_status_defaults_when_config_empty() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -2029,7 +2029,7 @@ mod wave_b {
         .expect("status with empty config ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_history_blank_cycles_file_prints_no_history() {
         let _g = crate::GLOBAL_STATE_LOCK
@@ -2037,7 +2037,7 @@ mod wave_b {
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         // cycles 文件存在但内容全是空白行 → 读取面过滤后为空 →
-        // “No learning history found.” 臂（R18：真相源月目录形态）。
+        // “No learning history found.” 臂（真相源月目录形态）。
         let path = g
             .forge_dir()
             .join("learning")
@@ -2054,14 +2054,14 @@ mod wave_b {
         .expect("blank cycles history ok");
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[test]
     fn wave_b_history_non_month_junk_tolerated() {
         let _g = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
-        // 读取面容错语义钉死（R18 重写）：learning/ 下的旧幻影路径目录
+        // 读取面容错语义钉死（重写）：learning/ 下的旧幻影路径目录
         //（learning_cycles.jsonl/，非月目录形态）与非 jsonl 文件都不阻塞
         // 读取——合法月目录 cycles 照常返回，函数 Ok 不报错。
         std::fs::create_dir_all(g.forge_dir().join("learning").join("learning_cycles.jsonl"))
@@ -2144,9 +2144,9 @@ fn r10_fresh_enable_writes_default_config_empty_registry_then_disable_roundtrip(
 }
 
 // -------------------------------------------------------------------------
-// BUG-20261031-257：forge enable/disable 改写主 config.json 必须走 REL-002
+// forge enable/disable 改写主 config.json 必须走
 // 原子写入——旧形态裸 fs::write + to_string_pretty().unwrap_or_default()
-//（序列化失败被翻译成「写空串清空整个 config」）。原子写证据 = 无 .tmp-*
+//（序列化失败被翻译成「写空串清空整个 config」）。原子写证据 = 无.tmp-*
 // 残留 + 文件全程可解析；helper 失败路径 = 诚实报错（rename 标签）非静默。
 // -------------------------------------------------------------------------
 
@@ -2194,7 +2194,7 @@ fn enable_disable_config_write_is_atomic_and_lossless() {
 }
 
 // -------------------------------------------------------------------------
-// R18 围栏接线钉：cmd_test / Optimize 的 name 必须过 valid_skill_dir_name
+// 围栏接线钉：cmd_test / Optimize 的 name 必须过 valid_skill_dir_name
 //（穿越 + 盘符相对形态在触碰文件系统前 loud 拒绝）。
 // -------------------------------------------------------------------------
 

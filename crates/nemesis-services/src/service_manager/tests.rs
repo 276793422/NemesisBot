@@ -121,7 +121,7 @@ async fn test_wait_for_services_with_zero_count() {
 
 #[tokio::test]
 async fn s12b_wait_for_services_returns_true_when_count_reaches_zero_in_time() {
-    // S12b batch（quality-hardening goal 冲刺）：`rx.changed()` 成功臂此前只有
+    // batch（quality-hardening goal 冲刺）：`rx.changed()` 成功臂此前只有
     // timeout/zero-count 两个测试——先 start_basic_services 抬高计数，再在后台
     // shutdown 把它清零，wait_for_services 应通过 watch 通道的 changed 返回 true。
     let mgr = std::sync::Arc::new(ServiceManager::new());
@@ -246,10 +246,10 @@ fn test_get_bot_components_empty() {
 
 #[test]
 fn test_restart_bot_fails_when_config_unloadable() {
-    // 原名 test_restart_bot_when_not_running（2026-09-23 根因重钉）：restart()
+    // 原名 test_restart_bot_when_not_running（根因重钉）：restart()
     // 契约 = 停（如在跑）+ start()，**冷启动合法**——原断言「未启动则失败」
     // 与实现不符，历史全绿纯靠环境巧合（解析到的 config_path 恒加载失败）。
-    // 2026-09-23 15:39 用户真 home 出现带 key 的有效模型后，get_config_path()
+    // 15:39 用户真 home 出现带 key 的有效模型后，get_config_path()
     // 的回落臂命中真实有效配置 → load/validate 全过 → start 成功 → Ok 假红；
     // 且原实现会把用户真实配置在测试进程里真的拉起（违反测试不碰默认 home
     // 纪律）。修复：with_config 注入不存在路径，钉住真实契约「config 不可
@@ -570,7 +570,7 @@ fn test_full_lifecycle_basic_start_shutdown() {
 //
 // 结构性不可达（不试图覆盖，仅记录证据）：
 // - 383-385 / 408-410 / 448-450 / 481-483：四个 wait_* 函数里
-//   tokio::signal::ctrl_c() 的 arm——测试进程无法向自身注入 SIGINT/SIGTERM，
+//   tokio::signal:ctrl_c() 的 arm——测试进程无法向自身注入 SIGINT/SIGTERM，
 //   只能走 broadcast / desktop watch / oneshot / timeout 其余 arm。
 // ============================================================
 

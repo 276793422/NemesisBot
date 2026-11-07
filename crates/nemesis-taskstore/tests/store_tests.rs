@@ -326,7 +326,7 @@ fn delivery_idempotency_and_confirm() {
     assert!(db.delivery_by_key("ghost").expect("read").is_none());
 }
 
-// --- 交付账本（P4 交付门：拒绝语义 + 查询面 + v3 迁移） ---
+// --- 交付账本（拒绝语义 + 查询面 + v3 迁移） ---
 
 #[test]
 fn delivery_reject_semantics() {
@@ -368,7 +368,7 @@ fn delivery_reject_semantics() {
     assert!(!db.reject_delivery("ghost", "x").expect("ghost"));
 }
 
-// 回归锁（2026-10-25）：confirm_delivery 旧 WHERE（status != 'confirmed'）
+// 回归锁：confirm_delivery 旧 WHERE（status != 'confirmed'）
 // 会把已拒绝交付翻成 confirmed——rejected 终态被确认盖掉。修复后确认撞
 // 拒绝 = Ok(false)，记录原样保持 rejected。
 #[test]
@@ -415,7 +415,7 @@ fn delivery_confirm_after_reject_is_noop() {
     );
 }
 
-// --- P3 外循环（2026-10-25）：published 终态 ---
+// --- 外循环：published 终态 ---
 
 #[test]
 fn delivery_publish_semantics() {
@@ -498,7 +498,7 @@ fn delivery_publish_semantics() {
     assert!(!db.mark_delivery_published("ghost").expect("ghost"));
 }
 
-/// G4（2026-10-18 批六）：payload 浅合并——patch 顶层键逐一覆盖、既有键
+/// payload 浅合并——patch 顶层键逐一覆盖、既有键
 /// 保留；返回合并后全文；幂等键不存在 = Err（注记必须落在真实交付上）。
 #[test]
 fn delivery_merge_payload_shallow_merge_and_missing_key_errs() {
@@ -793,7 +793,7 @@ fn notify_outbox_enqueue_due_and_remove() {
 
 #[test]
 fn notify_backoff_curve_matches_cd6() {
-    // CD6 同款曲线：15, 30, 60, 120, 240, 480, 600, 600...（600s 封顶）。
+    // 同款曲线：15, 30, 60, 120, 240, 480, 600, 600...（600s 封顶）。
     let expected = [15u64, 30, 60, 120, 240, 480, 600, 600, 600];
     for (i, exp) in expected.iter().enumerate() {
         assert_eq!(
@@ -872,7 +872,7 @@ fn run_state_machine_and_attempts() {
     assert_eq!(db.get_run(&run_id).expect("get").status, "pending");
 
     db.set_run_status(&run_id, "running").expect("running");
-    // attempt 生命周期（R5：先尝试后收口——终态 run 拒绝新尝试）。
+    // attempt 生命周期（先尝试后收口——终态 run 拒绝新尝试）。
     let a1 = db.begin_attempt(&run_id, "node-a").expect("attempt 1");
     let a2 = db
         .begin_attempt(&run_id, "node-b")
@@ -913,12 +913,12 @@ fn run_state_machine_and_attempts() {
     );
     assert!(db.get_run(&run_id).expect("get").completed_at.is_some());
 
-    // R5：终态 run 拒绝新尝试。
+    // 终态 run 拒绝新尝试。
     assert!(
         db.begin_attempt(&run_id, "node-c").is_err(),
         "terminal run must refuse new attempt"
     );
-    // R5：收口只能终态——pending/running 畅通是与注释矛盾的旧缺陷。
+    // 收口只能终态——pending/running 畅通是与注释矛盾的旧缺陷。
     let run2 = db
         .create_run(&nemesis_taskstore::NewRun {
             kind: "agent_run".into(),
@@ -941,7 +941,7 @@ fn run_state_machine_and_attempts() {
     assert_eq!(db.attempts_of(&run2).expect("attempts")[0].status, "failed");
 }
 
-/// R5：多连接竞争收口同一 run——单语句 CAS 保证只许一个终态胜，
+/// 多连接竞争收口同一 run——单语句 CAS 保证只许一个终态胜，
 /// 败方 Err；不同终态不可互相覆盖；同值并发幂等。
 #[test]
 fn run_status_cas_only_one_terminal_wins_across_connections() {
@@ -1017,7 +1017,7 @@ fn wal_allows_reader_while_writer_active() {
     assert!(journal.pending_entries().is_empty());
 }
 
-// --- agents 表（P2：Agent 持久实体） ---
+// --- agents 表（Agent 持久实体） ---
 
 use nemesis_taskstore::agents::{kind as agent_kind, status as agent_status};
 use nemesis_taskstore::{AgentRecord, SqliteAgentsStore};
@@ -1035,7 +1035,7 @@ fn agent_two_phase_create_and_persistence() {
     let db = TaskDb::open(&path).expect("open");
     let store = SqliteAgentsStore::from_db(db);
 
-    // 阶段一：provisioning 落库（记忆命名空间自动派生）。
+    // provisioning 落库（记忆命名空间自动派生）。
     let rec = sample_agent("a-1", "builder", agent_kind::SELFBUILT);
     assert_eq!(rec.status, agent_status::PROVISIONING);
     assert_eq!(rec.memory_namespace, "agents/a-1");
@@ -1045,7 +1045,7 @@ fn agent_two_phase_create_and_persistence() {
     let got = store.get("a-1").expect("get").expect("exists");
     assert_eq!(got.status, agent_status::PROVISIONING);
 
-    // 阶段二：home 物化完成后转 active——条件转移恰好生效一次。
+    // home 物化完成后转 active——条件转移恰好生效一次。
     assert!(
         store
             .transition_status("a-1", agent_status::PROVISIONING, agent_status::ACTIVE)
@@ -1187,7 +1187,7 @@ fn agent_remove_and_list_order_stable() {
     assert_eq!(store.list_all().expect("list").len(), 2);
 }
 
-// --- G3 运行账本漏斗（ledger）---
+// --- 运行账本漏斗（ledger）---
 
 use nemesis_taskstore::NewRun;
 use nemesis_taskstore::ledger;
@@ -1427,7 +1427,7 @@ fn ledger_global_install_and_wrappers() {
     );
 }
 
-// --- BUG-20261025-48 回归锁：义务终态必须清重试箱 ---------------------
+// --- 回归锁：义务终态必须清重试箱 ---------------------
 // reject/confirm 终止通知义务时，只置 deliveries.notify_next_retry_at=NULL
 // 不清 notify_outbox 行——sweep 调度以箱内 next_retry_at 为准，残留行会让
 // 已拒绝/已确认的交付仍被重投（拒绝语义被投递回泼）。
@@ -1497,7 +1497,7 @@ fn r48_reject_and_confirm_clear_retry_outbox() {
     );
 }
 
-// --- BUG-20261025-48 回归锁：merge RMW 事务钉 IMMEDIATE ----------------
+// --- 回归锁：merge RMW 事务钉 IMMEDIATE ----------------
 // unchecked_transaction 继承连接默认事务行为。DEFERRED 下 BEGIN 不拿锁，
 // 错误 surfaced 在 UPDATE（"merge delivery failed"）；IMMEDIATE 下 BEGIN
 // 即拿写锁，被并发写手挡住时错误 surfaced 在 begin（"merge delivery

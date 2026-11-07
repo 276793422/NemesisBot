@@ -10,7 +10,7 @@ fn test_short_id() {
     assert_eq!(short_id("short"), "short");
 }
 
-/// 中文 id 裸字节截断曾 panic（2026-10-11 横扫修复）：8 字节预算回退到
+/// 中文 id 裸字节截断曾 panic（横扫修复）：8 字节预算回退到
 /// 字符边界，不撕裂多字节字符。
 #[test]
 fn test_short_id_cjk_truncates_at_char_boundary() {
@@ -326,7 +326,7 @@ fn test_format_event_rpc_call_directions_and_status() {
     );
 }
 
-/// Startup-time entries from `logger::log_rpc("register_handler", ...)` have
+/// Startup-time entries from `logger::log_rpc("register_handler",...)` have
 /// direction values other than "outbound"/"inbound". These must be hidden
 /// from the dashboard (historically they were; my reader change must not
 /// accidentally surface them as inbound).
@@ -352,7 +352,7 @@ fn test_format_event_rpc_call_unknown_direction_hidden() {
 }
 
 // ============================================================
-// S4 coverage: aggregation filters, trace limits, log-reading
+// coverage: aggregation filters, trace limits, log-reading
 // edge lines, format_event arms
 // ============================================================
 

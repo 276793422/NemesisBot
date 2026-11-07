@@ -3,7 +3,7 @@
 #[test]
 fn test_constants_values() {
     // Test that constants have expected values
-    // （BUG-20261029-184：零消费死常量已删除，仅钉活常量单一真相源值。）
+    // （零消费死常量已删除，仅钉活常量单一真相源值。）
     assert_eq!(crate::CLUSTER_CONTINUATION_PREFIX, "cluster_continuation:");
     assert_eq!(
         crate::constants::SUBAGENT_CONTINUATION_PREFIX,

@@ -32,14 +32,14 @@
 //! ```
 //!
 //! `export_tool!` 展开 = 以工程 `wit/` 为合同生成绑定 → `export!($ty)`；
-//! 生成类型短名可在工程内 `use exports::nemesis::plugin::tool::*`。
+//! 生成类型短名可在工程内 `use exports::nemesis::plugin::tool:*`。
 //! 观察者插件同理用 [`export_observer!`]（实现
-//! `exports::nemesis::plugin::observer::Guest::observe`）。
+//! `exports::nemesis::plugin::observer:Guest::observe`）。
 //!
 //! # 诚实边界（v0 合同）
 //!
 //! - guest 无任意文件系统/网络访问：唯一 IO 面 = 宿主能力面（[`host`]）；
-//!   持久化写 [`host::data_dir_path`] 返回的 WASI 挂载点（仅本插件可见）。
+//!   持久化写 [`host::data_dir_path`] 返回的 WASI 挂载点（仅本插件可）。
 //! - 观察者收到的事件为宿主脱敏投影：v1 一律结构化元数据、无内容体。
 //! - workspace-write 能力**不在 v0 合同**（挂账记录于实施计划 §十二；
 //!   guest 需要写工作区时走 [`host::tool_invoke`] 调宿主写类工具，照常过
@@ -50,7 +50,7 @@
 /// 工具插件一键导出（crate 根调用；工程须有 `wit/plugin.wit` 合同副本）。
 ///
 /// 展开顺序：生成 `plugin-tool` world 绑定（`exports::nemesis::plugin::tool`
-/// 与 `nemesis::plugin::host` 导入模块），随后 `export!($ty)` 收尾。
+/// 与 `nemesis::plugin:host` 导入模块），随后 `export!($ty)` 收尾。
 /// 片段用 `ident`：宏链逐层转发，`ty` 片段无法再次匹配内层 `ident`。
 /// `runtime_path` 钉到本 crate：生成代码的运行时钩子解析到 SDK 再导出，
 /// 插件工程**无需直接依赖 wit-bindgen**。
@@ -82,11 +82,11 @@ macro_rules! export_observer {
     };
 }
 
-/// 循环策略插件一键导出（2026-10-22 批 2；crate 根调用；工程须有
+/// 循环策略插件一键导出（crate 根调用；工程须有
 /// `wit/plugin.wit` 合同副本）。
 ///
-/// 展开顺序：生成 `plugin-loop-policy` world 绑定（`exports::nemesis::
-/// plugin::loop_policy` 与 `nemesis::plugin::host` 导入模块）→
+/// 展开顺序：生成 `plugin-loop-policy` world 绑定（`exports::nemesis:
+/// plugin::loop_policy` 与 `nemesis::plugin:host` 导入模块）→
 /// `export!($ty)`。`runtime_path` 语义同 [`export_tool!`]。
 #[macro_export]
 macro_rules! export_loop_policy {
@@ -100,13 +100,13 @@ macro_rules! export_loop_policy {
     };
 }
 
-/// 面板插件一键导出（2026-10-31 面板扩展批；crate 根调用；工程须有
+/// 面板插件一键导出（面板扩展批；crate 根调用；工程须有
 /// `wit/plugin.wit` 合同副本）。
 ///
 /// 展开顺序：生成 `plugin-panel` world 绑定（`exports::nemesis::plugin::ui`
-/// 与 `nemesis::plugin::host` 导入模块）→ `export!($ty)`。
+/// 与 `nemesis::plugin:host` 导入模块）→ `export!($ty)`。
 /// `runtime_path` 语义同 [`export_tool!`]。面板 guest 实现
-/// `exports::nemesis::plugin::ui::Guest::handle_ui_command(input: String)
+/// `exports::nemesis::plugin::ui:Guest::handle_ui_command(input: String)
 /// -> Result<String, host::HostError>`：入参投影
 /// `{"command":...,"args":{...},"context":{"slug":...}}`，出参为回复 JSON
 /// 串（约定对象；业务失败 `{"error":"..."}` 形态，不 trap）。
@@ -122,11 +122,11 @@ macro_rules! export_ui {
     };
 }
 
-/// flow 步骤插件一键导出（2026-11-03 guest step 批；crate 根调用；工程须有
+/// flow 步骤插件一键导出（guest step 批；crate 根调用；工程须有
 /// `wit/plugin.wit` 合同副本）。
 ///
 /// 展开顺序：生成 `plugin-flow-step` world 绑定
-/// （`exports::nemesis::plugin::flow_step` 与 `nemesis::plugin::host` 导入
+/// （`exports::nemesis::plugin::flow_step` 与 `nemesis::plugin:host` 导入
 /// 模块）→ `export!($ty)`。`runtime_path` 语义同 [`export_tool!`]。
 /// flow-step guest 实现两个出口：
 /// - `get_step_metadata() -> Result<StepMetadata, host::HostError>`：
@@ -136,7 +136,7 @@ macro_rules! export_ui {
 ///   json-string 进出。入参投影
 ///   `{"op","args","instance":{...},"steps":{...},"board_issue","attempts",
 ///   "session_key"}`；出参为四态生命周期 JSON
-///   `{"status":"done"|"running"|"failed"|"skipped", ...}`（其余字段 =
+///   `{"status":"done"|"running"|"failed"|"skipped",...}`（其余字段 =
 ///   artifacts 自由载荷；幂等/重试责任在 guest，宿主只管投递与记账）。
 #[macro_export]
 macro_rules! export_step {
@@ -150,16 +150,16 @@ macro_rules! export_step {
     };
 }
 
-/// 组合面板+步骤插件一键导出（2026-11-03 组合 world 批；crate 根调用；
+/// 组合面板+步骤插件一键导出（组合 world 批；crate 根调用；
 /// 工程须有 `wit/plugin.wit` 合同副本）。
 ///
-/// 展开顺序：生成 `plugin-panel-flow-step` world 绑定（`exports::nemesis::
+/// 展开顺序：生成 `plugin-panel-flow-step` world 绑定（`exports::nemesis:
 /// plugin::ui` 与 `exports::nemesis::plugin::flow_step` 及
-/// `nemesis::plugin::host` 导入模块）→ `export!($ty)`。`runtime_path`
+/// `nemesis::plugin:host` 导入模块）→ `export!($ty)`。`runtime_path`
 /// 语义同 [`export_tool!`]。组合 guest 必须同时实现两个 Guest trait：
-/// `exports::nemesis::plugin::ui::Guest::handle_ui_command`（Panel 帧，
+/// `exports::nemesis::plugin::ui:Guest::handle_ui_command`（Panel 帧，
 /// 有 secret-set / config-set 写面）与
-/// `exports::nemesis::plugin::flow_step::Guest`（`get_step_metadata` /
+/// `exports::nemesis::plugin::flow_step:Guest`（`get_step_metadata` /
 /// `run_step`，FlowStep 帧——构造期即无写面，写通道只在 ui 帧授予）。
 #[macro_export]
 macro_rules! export_panel_step {
@@ -206,8 +206,8 @@ pub mod host;
 pub use wit_bindgen::generate;
 
 /// 生成代码的运行时钩子再导出（`runtime_path` 钉到本 crate——生成代码里的
-/// `nemesis_plugin_sdk::run_ctors_once` / `::maybe_link_cabi_realloc` /
-/// `::Cleanup` 解析到这里）。仅导出当前合同实际引用的钩子；WIT 演进引入
+/// `nemesis_plugin_sdk::run_ctors_once` / `:maybe_link_cabi_realloc` /
+/// `:Cleanup` 解析到这里）。仅导出当前合同实际引用的钩子；WIT 演进引入
 /// flags/map/async 时需按 wit-bindgen 的路径约定补再导出（`bitflags` /
 /// `Map` / `WitMap` / `async_support`）。钩子在 wit-bindgen 侧是
 /// wasm32-only，宿主目标编译本 SDK 时随之隐藏（guest 组件只编 wasm）。
@@ -219,7 +219,7 @@ pub use event::{ObserverEvent, parse_event};
 
 /// 工具插件需要实现的 Guest trait 路径（生成于插件 crate）。
 ///
-/// `exports::nemesis::plugin::tool::Guest`（`get_metadata` / `execute`）。
+/// `exports::nemesis::plugin::tool:Guest`（`get_metadata` / `execute`）。
 /// 记录类型同模块：`ToolMetadata` / `ToolInput`（含 `ToolContext`）/
 /// `ToolOutput`；宿主错误 `crate::host::HostError`。
 pub mod guide {
@@ -231,9 +231,9 @@ pub mod guide {
     pub const LOOP_POLICY_GUEST: &str = "exports::nemesis::plugin::loop_policy::Guest";
     /// 面板插件 Guest trait（生成后位于插件 crate）。
     pub const UI_GUEST: &str = "exports::nemesis::plugin::ui::Guest";
-    /// flow 步骤插件 Guest trait（生成后位于插件 crate；2026-11-03 批）。
+    /// flow 步骤插件 Guest trait（生成后位于插件 crate； 批）。
     pub const FLOW_STEP_GUEST: &str = "exports::nemesis::plugin::flow_step::Guest";
-    /// 组合面板+步骤插件 Guest traits（生成后位于插件 crate；2026-11-03
+    /// 组合面板+步骤插件 Guest traits（生成后位于插件 crate；
     /// 组合 world 批；两个 trait 都要实现，缺一编译失败）。
     pub const PANEL_STEP_GUESTS: &str =
         "exports::nemesis::plugin::ui::Guest + exports::nemesis::plugin::flow_step::Guest";
@@ -266,7 +266,7 @@ pub mod types {
     /// 循环策略三出口（单 json-string 进出；出参统一支持
     /// `{"verdict":"builtin"}` = 单次显式回退宿主内置逻辑）：
     ///
-    /// - `compact-check`：`{"point":"trigger"|"exec", ...}`（入参投影见
+    /// - `compact-check`：`{"point":"trigger"|"exec",...}`（入参投影见
     ///   WIT 合同注释；trigger 出 `compact|skip|builtin`，exec 出
     ///   `summary|skip|builtin`）。
     /// - `judge-final`：入 `{session_key, content, turns_used,
@@ -276,14 +276,14 @@ pub mod types {
     ///   `valid | fixed{args} | reject{message} | builtin`。
     pub struct LoopPolicyDoc;
 
-    /// 面板单出口（2026-10-31 面板扩展批）：`handle-ui-command`，单
+    /// 面板单出口（面板扩展批）：`handle-ui-command`，单
     /// json-string 进出——入 `{"command":...,"args":{...},
     /// "context":{"slug":...}}`；出回复 JSON 串（约定对象；业务失败
     /// `{"error":"..."}` 形态，非 trap）。guest 可经 `host::tool_invoke`
     /// 执行动作（过宿主安全 8 层与审批）。
     pub struct PanelDoc;
 
-    /// flow 步骤双出口（2026-11-03 guest step 批）：
+    /// flow 步骤双出口（guest step 批）：
     ///
     /// - `get-step-metadata`（无参）：自报 `kinds` 词表（本插件可执行的
     ///   步骤 op 名单，不含 `plugin:<slug>:` 前缀）——安装期对账 +
@@ -294,7 +294,7 @@ pub mod types {
     ///   origin_type,origin_id},"steps":{<id>:{status,error,attempts}},
     ///   "board_issue","attempts","session_key"}`（`args` 已完成
     ///   `{{token}}` 渲染；不含图片字节与凭据）。出参四态生命周期 JSON：
-    ///   `{"status":"done"|"running"|"failed"|"skipped", ...}`——其余
+    ///   `{"status":"done"|"running"|"failed"|"skipped",...}`——其余
     ///   字段 = artifacts 自由载荷（done/skipped 落盘、failed 取
     ///   `error` 字段文本走 on_fail、running 保持 Running 下轮重投）。
     ///   **幂等/重试责任在 guest**：宿主每 tick 重投（`attempts` 计数

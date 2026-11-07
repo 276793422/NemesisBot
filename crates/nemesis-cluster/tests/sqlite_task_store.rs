@@ -1,4 +1,4 @@
-//! P1 统一任务层：SqliteTaskStore 过 TaskStore trait 的集群侧集成回归。
+//! 统一任务层：SqliteTaskStore 过 TaskStore trait 的集群侧集成回归。
 //!
 //! 覆盖三条链路：
 //! 1. trait 面逐方法语义（create/get/update/条件更新/delete/list）——
@@ -6,7 +6,7 @@
 //! 2. `TaskManager::with_store(SqliteTaskStore)` 生产换装链路——
 //!    create→assign→complete 全走 tasks.db，重启（重开库）后任务可读；
 //! 3. gateway 杀进程重启验收的最小等价：重开 TaskDb 后 pending/在途
-//!    状态原样恢复（P1 验收门「在途任务状态可恢复」的单元级锚点）。
+//!    状态原样恢复（验收门「在途任务状态可恢复」的单元级锚点）。
 
 use nemesis_cluster::{InMemoryTaskStore, TaskManager, TaskStore};
 use nemesis_types::cluster::{Task, TaskStatus};
@@ -155,7 +155,7 @@ fn task_manager_over_sqlite_persists_across_reopen() {
 }
 
 /// 在途恢复：assign 到 Running 后进程死亡，重开库仍见 Running
-/// （P1 验收门「在途任务状态可恢复」——恢复轮询向 B 端 query 的前提）。
+/// （验收门「在途任务状态可恢复」——恢复轮询向 B 端 query 的前提）。
 #[test]
 fn in_flight_running_state_survives_reopen() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -184,7 +184,7 @@ fn in_flight_running_state_survives_reopen() {
 }
 
 /// 语义护栏：SqliteTaskStore 与 InMemoryTaskStore 对同一操作序列的
-/// 可观测行为一致（P1 计划要求「语义逐条镜像」的回归锁）。
+/// 可观测行为一致（计划要求「语义逐条镜像」的回归锁）。
 #[test]
 fn sqlite_and_inmemory_behavioral_parity() {
     let (_dir, path) = temp_db();
@@ -248,7 +248,7 @@ fn sqlite_and_inmemory_behavioral_parity() {
 }
 
 // ===========================================================================
-// 4. `Cluster::with_workspace` 生产换装链路（P1 验收门「fail-closed」锚点）
+// 4. `Cluster::with_workspace` 生产换装链路（验收门「fail-closed」锚点）
 // ===========================================================================
 
 mod with_workspace_wiring {

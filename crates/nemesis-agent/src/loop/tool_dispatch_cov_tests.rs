@@ -1,5 +1,5 @@
-// loop/tool_dispatch.rs 覆盖率补充测试（is_lsp_write_call / F1 plan 写
-// 放行 / F-U3-2 工作副本路径基准重写 / dispatch 终态三臂：成功、工具报
+// loop/tool_dispatch.rs 覆盖率补充测试（is_lsp_write_call / plan 写
+// 放行 / F- 工作副本路径基准重写 / dispatch 终态三臂：成功、工具报
 // 错、未知工具）。
 //
 // 安全管线后续层（limits 审批 / deny 回灌 / guardian 语义二审）依赖
@@ -152,7 +152,7 @@ fn plan_write_allowed_table() {
     // 相对路径：plans/ 内放行，外拦。
     assert!(al.plan_mode_write_allowed("write_file", r#"{"path":"plans/plan-a.md"}"#));
     assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"src/lib.rs"}"#));
-    // plans 前缀必须是路径分量（plans-x/ 不是 plans/）。
+    // plans 前缀必须是路径分量（plans-x/ 不是 plans）。
     assert!(!al.plan_mode_write_allowed("write_file", r#"{"path":"plans-x/a.md"}"#));
 
     // 绝对路径：落在 <root>/plans 内放行，外拦。
@@ -325,7 +325,7 @@ async fn dispatch_ok_tool_returns_result() {
     assert_eq!(out, "stub ok");
 }
 
-/// M1（2026-10-27 整改批次一）：工具 panic 被隔离为结构化失败——
+/// 工具 panic 被隔离为结构化失败——
 /// handle_tool_call 正常返回（loop task 不被 unwind 炸掉），结果带
 /// "Tool error:" + "tool panicked" 双锚（tool_result_indicates_error 等
 /// 下游守卫按既有失败语义识别），且 loop 后续调用照常工作。
@@ -427,7 +427,7 @@ async fn dispatch_rewrites_paths_before_tool_sees_them() {
 }
 
 // ---------------------------------------------------------------------------
-// wave5c：A6 format-on-save 路径收集臂（write_file/edit_file 单路径 +
+// wave5c： format-on-save 路径收集臂（write_file/edit_file 单路径 +
 // multiedit 去重保序）+ 注册工具失败臂
 // ---------------------------------------------------------------------------
 
@@ -503,7 +503,7 @@ fn rewrite_paths_tolerates_non_string_path_slot() {
 }
 
 // ---------------------------------------------------------------------------
-// 压测①a（2026-09-30）：dispatch 层 detached 工具闸（修2 2026-11-04 起经
+// 压测①a：dispatch 层 detached 工具闸（经
 // [`environment_constraint_refusal`] 统一注册点裁决；本组实例 fence 恒空
 // = 纯 detached 臂，语义与原 detached_tool_refusal 逐字节一致）
 // ---------------------------------------------------------------------------
@@ -526,7 +526,7 @@ fn detached_gate_no_tools_refuses_everything() {
 fn detached_gate_allowlist_refuses_outside_only() {
     let inst = AgentInstance::new(cov_config());
     inst.set_detached_allowed_tools(Some(vec!["read_file".to_string()]));
-    // 白名单外拒绝（NB-54 实证的 exec 越白名单形态）。
+    // 白名单外拒绝（实证的 exec 越白名单形态）。
     let r = super::tool_dispatch::environment_constraint_refusal(&inst, "exec");
     assert!(r.is_some(), "白名单外必须拒绝");
     assert!(r.unwrap().contains("allowed tool set"));

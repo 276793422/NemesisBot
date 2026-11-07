@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::types::{ChatOptions, Message, ToolDefinition};
-// PathBuf 唯一使用者是 Windows 形态的 .cmd 批处理夹具——不门控则
+// PathBuf 唯一使用者是 Windows 形态的.cmd 批处理夹具——不门控则
 // Linux 上 unused import 撞 clippy -D warnings。
 #[cfg(windows)]
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ fn provider_with(command: &str) -> CodexCliProvider {
 
 // Windows 形态夹具（.cmd 批处理 + cmd 语法体）——Linux 无 cmd 且该文件
 // 无执行位，spawn 直接 Permission denied。消费方全在下方 Windows 形态
-// 用例 → Linux 下门控防死代码。（2026-09-02 约定）
+// 用例 → Linux 下门控防死代码。（约定）
 #[cfg(windows)]
 fn temp_dir(name: &str) -> PathBuf {
     let n = std::time::SystemTime::now()
@@ -145,7 +145,7 @@ async fn chat_nonexistent_command_reports_spawn_failure() {
 }
 
 /// 成功退出但 stdout 为空 → 落终局 parse（332），返回空内容响应。
-#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded，2026-09-02 约定）
+#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded， 约定）
 #[tokio::test]
 async fn chat_empty_stdout_success_exit_falls_to_final_parse() {
     let bat = write_batch("empty-out", "exit /b 0\r\n");
@@ -159,7 +159,7 @@ async fn chat_empty_stdout_success_exit_falls_to_final_parse() {
 }
 
 /// .bat 假 CLI 全链路：JSONL 输出 → content + usage + stop。
-#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded，2026-09-02 约定）
+#[cfg(windows)] // Windows-form CLI test（.cmd 批处理夹具，Linux nightly: excluded， 约定）
 #[tokio::test]
 async fn chat_success_via_fake_batch() {
     let bat = write_batch(
@@ -199,7 +199,7 @@ fn build_tools_prompt_renders_function_tools() {
 }
 
 /// agent_message 文本内嵌 tool_calls JSON → 提取为工具调用（224/229 的
-/// tool_calls 两臂）+ 正文剥离。名字须命中白名单（BUG-20261103-338）。
+/// tool_calls 两臂）+ 正文剥离。名字须命中白名单。
 #[test]
 fn parse_agent_message_with_embedded_tool_calls() {
     let provider = provider_with("codex");
@@ -224,8 +224,8 @@ fn parse_agent_message_with_embedded_tool_calls() {
 }
 
 // ============================================================
-// BUG-20261103-338：文档性 `{"tool_calls"` JSON 不得劫持成幻影工具调用
-// （BUG-20261025-16 同款白名单不变量，codex-cli lane 侧回归锁）。
+// 文档性 `{"tool_calls"` JSON 不得劫持成幻影工具调用
+// （同款白名单不变量，codex-cli lane 侧回归锁）。
 // ============================================================
 
 /// 非白名单名字的文档性 JSON → 不劫持：finish 维持 stop、正文原文保留。

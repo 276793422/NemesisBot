@@ -20,7 +20,7 @@ fn test_url_encode_component_encodes_at_and_reserved() {
 
 #[test]
 fn test_url_encode_component_non_ascii_is_utf8_bytes() {
-    // Non-ASCII is encoded as UTF-8 bytes (支 = E6 94 AF).
+    // Non-ASCII is encoded as UTF-8 bytes (支 = 94 AF).
     assert_eq!(url_encode_component("支"), "%E6%94%AF");
 }
 

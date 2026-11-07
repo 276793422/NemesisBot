@@ -1,6 +1,6 @@
-// G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
+// (devtool-upgrade)：subagent 后台化 + 完成回灌测试。
 //
-// 覆盖面（对应实施计划 G4 验收）：
+// 覆盖面（对应实施计划 验收）：
 // ① schema：background 可选参数（不在 required）；
 // ② SpawnFn 第 8 参透传——background=true / 缺省 false 到闭包；
 // ③ `__BG_SPAWN__` marker → 续行快照 inline 落内存 + 中间回复 + 回合收尾；

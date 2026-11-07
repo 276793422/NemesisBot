@@ -8,8 +8,8 @@
  * 状态机（boardMeta TRANSITIONS，镜像 crates/nemesis-board state_machine）：
  * backlog → in_progress → done；终态无出边。
  */
-import { expect, test } from '@playwright/test'
-import { newAuthedPage } from './helpers'
+import { expect, test } from './fixtures'
+import { gotoRoute, newAuthedPage } from './helpers'
 import { BASE_URL } from './env'
 
 test('看板 UI 全路径：建单 → 状态转移 → 评论 → 时间线 → 看板列卡片', async ({ browser }) => {
@@ -18,7 +18,7 @@ test('看板 UI 全路径：建单 → 状态转移 → 评论 → 时间线 →
 
   // hash 路由（createWebHashHistory）——path 形态 /board 会匹配 `/`（chat），
   // 首版失败的根因；必须走 /#/board。
-  await page.goto(`${BASE_URL}/#/board`)
+  await gotoRoute(page, `/#/board`)
   // .first()：8 个页签 tab 同类名，strict mode 下裸 locator 直接违反唯一性。
   await expect(page.locator('.tabs .tab').first()).toBeVisible({ timeout: 20_000 })
 

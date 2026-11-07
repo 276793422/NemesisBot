@@ -26,7 +26,11 @@ export default defineConfig({
     // 复检实测累积 ~4MB/167 个文件、实际引用仅 ~33 个）。static/ 内容 100% 由
     // 本构建产出（三个 rollup 入口 + public/ 拷贝），可安全清空重建。
     emptyOutDir: true,
-    chunkSizeWarningLimit: 600,
+    // 1200：vendor-echarts（echarts+zrender 固有体积，实测 ~1.0MB）是刻意
+    // 的懒加载 chunk（echartsLoader dynamic import，chart 面板首访才拉），
+    // 默认 600 的警告针对首屏载荷，对懒加载 chunk 不适用。非抑制——
+    // 若真有新的超限 chunk 出现，警告仍会在 1200 以上如实报。
+    chunkSizeWarningLimit: 1200,
     rollupOptions: {
       input: {
         main: resolve(__dirname, 'index.html'),

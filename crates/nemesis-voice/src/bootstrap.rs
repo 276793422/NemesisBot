@@ -112,7 +112,7 @@ pub fn run(_config_path: &Path) -> Result<bool> {
     bail!("Voice pipeline is only supported on Windows")
 }
 
-/// 运行库安装进度事件（2026-10-25 本地模型页进度条）：下载/解压阶段经回调
+/// 运行库安装进度事件（本地模型页进度条）：下载/解压阶段经回调
 /// 上抛，调用方（voice.rs install_runtime）桥到 SSE `voice-setup` progress 事件。
 /// pct=None = 总长未知（content_length 缺席），前端退化为不确定条+文本。
 #[derive(Debug, Clone)]
@@ -314,11 +314,11 @@ fn format_speed(bytes_per_sec: f64) -> String {
 
 /// 清空并重建解压目录。上一次运行的残留（先前清理被 AV/索引器瞬时句柄
 /// 打败而遗留）会让 tar 增量解压出「新旧混合」的库目录——清理必须成功
-/// 才能继续（BUG-20261030-195）。
+/// 才能继续。
 #[cfg(all(target_os = "windows", feature = "download"))]
 fn prepare_extract_dir(dir: &Path) -> Result<()> {
     // 韧性删除（退避重试）+ loud 失败：带着残留目录继续解压 = 新旧混合库，
-    // 比中止更糟（BUG-20261030-195）。NotFound 视为成功（首次下载）。
+    // 比中止更糟。NotFound 视为成功（首次下载）。
     nemesis_utils::fsutil::remove_dir_all_retry(dir)
         .with_context(|| format!("清理解压目录失败: {}", dir.display()))?;
     fs::create_dir_all(dir).with_context(|| "创建解压目录失败")?;
@@ -340,7 +340,7 @@ async fn try_download_and_extract(
     let archive_path = temp_dir.join(&archive_name);
     let part_path = temp_dir.join(format!("{}.part", archive_name));
 
-    // Use .part file for download; only promote to final name on success
+    // Use.part file for download; only promote to final name on success
     let need_download =
         !archive_path.exists() || fs::metadata(&archive_path).map(|m| m.len()).unwrap_or(0) == 0;
 
@@ -461,7 +461,7 @@ async fn try_download_and_extract(
             downloaded as f64 / (1024.0 * 1024.0)
         );
 
-        // Promote .part → final name only after successful download
+        // Promote.part → final name only after successful download
         nemesis_utils::fsutil::remove_file_retry(&archive_path)?;
         fs::rename(&part_path, &archive_path)
             .with_context(|| "Failed to rename downloaded file")?;
@@ -484,8 +484,8 @@ async fn try_download_and_extract(
 
     let status = {
         // CREATE_NO_WINDOW：gateway 托盘/无控制台运行（release windows 子
-        // 系统，2026-09-21）时，console 子进程 tar 会各自弹新控制台（输出
-        // 经 .output() 收集，不受影响）。
+        // 系统）时，console 子进程 tar 会各自弹新控制台（输出
+        // 经.output() 收集，不受影响）。
         #[cfg(target_os = "windows")]
         {
             use std::os::windows::process::CommandExt;
@@ -533,7 +533,7 @@ async fn try_download_and_extract(
 // ---------------------------------------------------------------------------
 // AEC 库下载（Windows only）—— 与 sherpa 运行时独立。
 // 从 thewh1teagle/aec 的 GitHub release 下预编译包，解压**只取 aec.dll**
-// （丢弃 13MB 的静态 .lib）。
+// （丢弃 13MB 的静态.lib）。
 // ---------------------------------------------------------------------------
 
 /// 下载 AEC 共享库到 `dst_dir`，返回解压后的 `aec.dll` 路径。
@@ -546,7 +546,7 @@ async fn try_download_and_extract(
 /// [`aec_staging_dir`]（跨启动缓存复用），测试传 pid 派生目录做隔离
 /// （与 `download_runtime_libs` 的 staging 透传同模式——曾因内部硬编码
 /// 生产目录，本机真实下载的缓存归档让「不可达代理」测试 0.09s 假成功，
-/// 实录 2026-10-25）。
+///
 #[cfg(all(target_os = "windows", feature = "download"))]
 pub fn download_aec_lib(dst_dir: &Path, proxy_url: &str, staging_dir: &Path) -> Result<PathBuf> {
     let dst_dir = dst_dir.to_path_buf();

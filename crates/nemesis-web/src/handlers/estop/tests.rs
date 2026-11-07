@@ -35,6 +35,7 @@ fn make_ctx(estop: Option<Arc<nemesis_agent::estop::EstopState>>) -> RequestCont
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop,
+        background_registry: None,
         cron: None,
         board: None,
         signature_verify: None,

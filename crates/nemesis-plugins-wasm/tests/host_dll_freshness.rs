@@ -1,6 +1,6 @@
 //! 壳 DLL 陈旧复发回归锁（2026-10-24）。
 //!
-//! 实录：plugin_bridge 21 测试集体红、错误全是 `NotAvailable("wasm host
+//! plugin_bridge 21 测试集体红、错误全是 `NotAvailable("wasm host
 //! engine init failed: ")`（冒号后**空串**）——不是宿主代码回归，是
 //! `plugins/plugin-wasm` 壳 DLL 陈旧（独立 CARGO_TARGET_DIR、非 workspace
 //! member，不随 workspace 重编自动更新），宿主侧「engine_init 失败路径落
@@ -65,7 +65,7 @@ fn host_dll_engine_init_null_callbacks_sets_error_slot() {
 
         let err_ptr = last_error();
         // 陈旧 DLL 的失败路径不落错误槽 → 此处 NULL → 宿主 unwrap_or_default
-        // 吞成空串（实录故障形态）。非空 = 失败原因可见 = 修复已在 DLL 内。
+        // 吞成空串（案例故障形态）。非空 = 失败原因可见 = 修复已在 DLL 内。
         assert!(
             !err_ptr.is_null(),
             "engine_init 失败后错误槽为空：装载的壳 DLL 与源码不符（陈旧——\

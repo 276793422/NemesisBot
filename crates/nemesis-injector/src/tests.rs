@@ -1,4 +1,4 @@
-//! launch_and_inject shellcode 镜像装配测试（BUG-20261103-342）。
+//! launch_and_inject shellcode 镜像装配测试。
 
 use super::*;
 

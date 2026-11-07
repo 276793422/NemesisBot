@@ -972,6 +972,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "comment-gate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "sha2",
+ "syn 2.0.117",
+]
+
+[[package]]
 name = "compact_str"
 version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4358,23 +4368,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "uuid",
-]
-
-[[package]]
-name = "nemesis-session"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "dashmap",
- "nemesis-utils",
- "parking_lot",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 

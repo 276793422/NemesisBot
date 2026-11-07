@@ -1,4 +1,4 @@
-//! T8（多模态 goal 2026-09-03）上传端点 + media 引用解析 + TTL 清扫测试。
+//! （多模态 goal 2026-09-03）上传端点 + media 引用解析 + TTL 清扫测试。
 //!
 //! 覆盖 goal 验证清单：未鉴权 401 / 非白名单扩展名 400 / magic 伪装 415 /
 //! 成功 200 + 文件落盘可读回 / 超限 413 / `resolve_media_ref` 穿越拒绝 /
@@ -22,7 +22,7 @@ use std::time::Instant;
 use tower::ServiceExt;
 
 /// 模块级共享锁：串行化所有重定向 PathManager 单例的测试。
-/// 2026-09-23：并入全 crate 共享的 `test_home::HOME_RACE_LOCK`——模块内
+/// 并入全 crate 共享的 `test_home::HOME_RACE_LOCK`——模块内
 /// 私有锁挡不住跨模块 chat_log 单例读写的竞态窗口。
 fn uploads_state_lock() -> parking_lot::ReentrantMutexGuard<'static, ()> {
     crate::test_home::lock_home()
@@ -80,6 +80,7 @@ fn make_state(auth_token: &str) -> std::sync::Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -107,7 +108,7 @@ fn png_bytes() -> Vec<u8> {
     v
 }
 
-/// 最小合法 JPEG：FF D8 FF 前缀（sniff 只看前缀）。
+/// 最小合法 JPEG：FF FF 前缀（sniff 只看前缀）。
 fn jpeg_bytes() -> Vec<u8> {
     let mut v = vec![0xFF, 0xD8, 0xFF, 0xE0];
     v.extend_from_slice(b"fake-jpeg-payload");
@@ -235,7 +236,7 @@ async fn upload_stores_file_and_refs_resolve() {
     let stored = std::path::PathBuf::from(json["path"].as_str().unwrap());
     assert!(stored.starts_with(&uploads_dir));
 
-    // 文件落盘且字节逐位一致（写后即落盘：std::fs::write 关 fd 即 flush）。
+    // 文件落盘且字节逐位一致（写后即落盘：std::fs:write 关 fd 即 flush）。
     assert_eq!(std::fs::read(&stored).unwrap(), payload);
 
     // 上传返回的 id 可被 resolve_media_ref 解析回同一路径（WSAPI 闭环）。
@@ -245,8 +246,8 @@ async fn upload_stores_file_and_refs_resolve() {
     );
 }
 
-// F-C（2026-09-04 四轮盲审）：落盘扩展名按**内容**定，不信 `?name=` 声明——
-// JPEG 字节命名 .png 若按 name 落盘，下游水合按扩展名定 media_type 时
+// F-C（四轮盲审）：落盘扩展名按**内容**定，不信 `?name=` 声明——
+// JPEG 字节命名.png 若按 name 落盘，下游水合按扩展名定 media_type 时
 // content/type 失配。
 #[tokio::test]
 async fn fc_upload_stored_extension_follows_content_not_name() {
@@ -254,7 +255,7 @@ async fn fc_upload_stored_extension_follows_content_not_name() {
     let dir = tempfile::tempdir().unwrap();
     let _guard = RedirectHomeGuard::to(dir.path());
 
-    // JPEG 字节 + .png 声明 → 落盘 .jpg（内容说了算）。
+    // JPEG 字节 +.png 声明 → 落盘.jpg（内容说了算）。
     let resp = post_upload(
         test_router(make_state("")),
         Some("ignored"),
@@ -268,7 +269,7 @@ async fn fc_upload_stored_extension_follows_content_not_name() {
     let id = json["id"].as_str().unwrap();
     assert!(id.ends_with(".jpg"), "JPEG 字节必须落盘为 .jpg: id={id}");
 
-    // .jpeg 声明同样归一为内容判定的 .jpg（与 C3 URL 下载命名一致）。
+    // .jpeg 声明同样归一为内容判定的.jpg（与 URL 下载命名一致）。
     let resp = post_upload(
         test_router(make_state("")),
         Some("ignored"),
@@ -284,7 +285,7 @@ async fn fc_upload_stored_extension_follows_content_not_name() {
         "jpeg 声明归一为 .jpg"
     );
 
-    // PNG 字节 + .jpg 声明 → 反向同样按内容落 .png。
+    // PNG 字节 +.jpg 声明 → 反向同样按内容落.png。
     let resp = post_upload(
         test_router(make_state("")),
         Some("ignored"),

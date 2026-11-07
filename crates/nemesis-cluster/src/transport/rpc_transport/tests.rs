@@ -144,7 +144,7 @@ fn test_rpc_transport_error_display() {
 }
 
 // ============================================================
-// S4 coverage: error-response conversion, connection-closed
+// coverage: error-response conversion, connection-closed
 // during receive, and the receive timeout arm.
 // ============================================================
 

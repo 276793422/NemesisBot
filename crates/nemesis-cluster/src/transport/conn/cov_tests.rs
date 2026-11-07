@@ -1,7 +1,7 @@
 // transport/conn.rs 覆盖率补充测试（读循环缓冲淹没丢弃 / 读侧心跳帧跳过 /
 // 坏帧 read error warn / 心跳任务拍 / 写错误 warn / close 拒发 + 幂等）。
 // 空闲超时断链臂由 tests.rs::test_tcp_conn_idle_timeout_closes_connection
-// 专门钉死（T1 后空闲超时在读循环强制执行，本套件 idle_timeout 拉长避免
+// 专门钉死（后空闲超时在读循环强制执行，本套件 idle_timeout 拉长避免
 // 中途断链干扰后续步骤）。
 //
 // 豁免：写循环 encrypt_frame 失败臂——AES-256-GCM 加密对任意
@@ -71,7 +71,7 @@ async fn tcpconn_loop_arms_full_sweep() {
         .unwrap();
     assert_eq!(got.expect("首帧必达").action, "ping");
 
-    // ② 读侧心跳帧（T2）：server 发合法心跳 → read loop parse 成功刷新
+    // ② 读侧心跳帧：server 发合法心跳 → read loop parse 成功刷新
     // 活跃时间后必须跳过——不计丢弃、不进 recv channel。
     let dropped_before = conn.dropped_count();
     let hb = WireMessage::new_heartbeat("cov-server");

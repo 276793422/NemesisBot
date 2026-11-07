@@ -52,9 +52,7 @@ fn update_executor_preserves_allow_network_across_sibling_edits() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// P5: overview（平台自适应总览）+ set_config（逐字段开关变更）
-// ---------------------------------------------------------------------------
+// overview（平台自适应总览）+ set_config（逐字段开关变更）
 
 /// Same AppState scaffold as hooks/models tests (agent_loop None etc.).
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
@@ -104,6 +102,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -158,7 +157,7 @@ async fn overview_shape_and_live_executor_switches() {
         assert!(v["backend_probe"]["start_exe_present"].is_boolean());
         assert!(v["backend_probe"]["sbiesvc_running"].is_boolean());
         assert!(v["backend_probe"]["engine_owned"].is_boolean());
-        // 挂载路径去重（2026-09-08）：原 status/check 的探测数据内联进
+        // 挂载路径去重：原 status/check 的探测数据内联进
         // overview——前端挂载只发 overview + pending，这些字段是契约
         assert!(v["backend_probe"]["sbiesvc_state"].is_string());
         assert!(v["backend_probe"]["sbiedrv_state"].is_string());
@@ -246,11 +245,9 @@ async fn set_config_merges_field_by_field() {
         .expect_err("empty payload must be rejected");
 }
 
-// ---------------------------------------------------------------------------
-// Phase 3 批次 18（2026-08-25）：parse_selection / current_executor 回退 /
+// parse_selection / current_executor 回退 /
 // home_of / 只读探测命令（status/check/pending）/ set_network 缺参。
 // 真 Sandboxie 交互（install/start/stop/open_box 提权子进程）→ 结构性豁免。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn parse_selection_variants() {
@@ -426,16 +423,14 @@ async fn unknown_sandbox_command_rejected() {
     assert!(err.contains("unknown sandbox command"), "err: {err}");
 }
 
-// ---------------------------------------------------------------------------
-// G7 (D2)：sandbox.self_test —— 无用户态后端路径（Windows 恒定；Linux 上
-// landlock/bwrap 可用性随环境变，真机拦截证据由 R2 验收覆盖，不在单测伪造）。
-// ---------------------------------------------------------------------------
+// sandbox.self_test —— 无用户态后端路径（Windows 恒定；Linux 上
+// landlock/bwrap 可用性随环境变，真机拦截证据由 验收覆盖，不在单测伪造）。
 
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn self_test_without_userland_backend_reports_unsupported() {
     use nemesis_sandbox::backend::detect_backend;
-    // P1：detect_backend 带网络选型入参；本测试只关心「有没有后端」，
+    // detect_backend 带网络选型入参；本测试只关心「有没有后端」，
     // 两态等价（Windows 恒 None）。
     if detect_backend(false).is_some() {
         eprintln!("skip self_test unsupported: userland backend unexpectedly present");

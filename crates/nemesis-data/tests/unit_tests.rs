@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// 唯一性 = 进程 id + 进程内单调计数器。不能用时间戳命名：全量 workspace
 /// 满载并行时，同一 test binary 的测试线程可能落在同一计时精度窗口
 /// （Windows ~100ns）拿到相同值 → 两个测试打开同一个 db 文件、断言随机
-/// 错乱（2026-08-31 unit_tests 全量跑偶发 1 failed、单跑 15 轮不复现）。
+/// 错乱（unit_tests 全量跑偶发 1 failed、单跑 15 轮不复现）。
 fn temp_db_path() -> PathBuf {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let mut path = std::env::temp_dir();

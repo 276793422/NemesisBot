@@ -1,4 +1,4 @@
-//! Model capability tier (small-model-tool-robustness plan, Phase 4a).
+//! Model capability tier (small-model-tool-robustness plan, a).
 //!
 //! A per-model size/capability classification that drives tool-set size,
 //! validation-retry budget, and format-repair gating. Stored on each model
@@ -7,7 +7,7 @@
 //!
 //! Design note: when detection is unsure, we default to [`ModelTier::Big`] (full
 //! toolset). Wrongly withholding tools from a strong model is unrecoverable;
-//! wrongly over-provisioning a weak model is caught by Phase 2 schema validation
+//! wrongly over-provisioning a weak model is caught by schema validation
 //! and degrades gracefully.
 
 use serde::{Deserialize, Serialize};
@@ -42,14 +42,14 @@ impl ModelTier {
         }
     }
 
-    /// Phase 2 validation-retry budget for this tier — how many consecutive
+    /// validation-retry budget for this tier — how many consecutive
     /// schema-violating tool calls to tolerate before stopping the loop.
     /// Smaller models get more rope, since they stumble more often.
     ///
-    /// Big 1→2（P2C，2026-09-12 双端真机 NB-15 根修）：并行工具调用批
+    /// Big 1→2（P2C， 双端真机 根修）：并行工具调用批
     /// （单次 LLM 响应多个 tool_calls）已成常态，批内每个畸形调用各 +1——
     /// budget=1 时首个坏调用即停轮，模型从未见到结构化错误回灌就终结
-    /// （NB-15：glm 单响应 2 个 exec 调用全错，第一发就烧光预算）。2 给
+    /// （glm 单响应 2 个 exec 调用全错，第一发就烧光预算）。2 给
     /// 强模型一次「看到错误 → 下轮自纠」的机会；真正的死循环仍由
     /// turn_guard ⑥ 兜底，不会因放宽预算而空转。
     pub fn validation_retry_budget(self) -> u32 {
@@ -75,7 +75,7 @@ impl std::fmt::Display for ModelTier {
 }
 
 /// Hints gathered by the auto-detection chain. All optional; detection is
-/// best-effort. (Phase 4b will extend this with backend-metadata and probe
+/// best-effort. (b will extend this with backend-metadata and probe
 /// results.)
 #[derive(Debug, Clone, Default)]
 pub struct TierHint {
@@ -134,7 +134,7 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
     Some(n as u32)
 }
 
-/// `model_list` 条目定位（单一真相源，2026-10-20）：active 别名对 `model_name`
+/// `model_list` 条目定位（统一定义）：active 别名对 `model_name`
 /// / `model` 字段的**精确**匹配优先；未命中回落 **bare-suffix**——`model`
 /// 字段末段与 active 别名末段相等（`"glm-4.7"` ↔ `"zhipu/glm-4.7"`）。
 ///
@@ -143,7 +143,7 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
 /// CLI `model add --default` 写的 `agents.defaults.llm` 也是裸名，两条路在此
 /// 汇合）。自定义别名条目（`model_name` ≠ 裸名，Dashboard 加模型表单允许）
 /// 在纯精确匹配下全族失联——per-model 键（tier / vision / context_window /
-/// compact_context_tokens / …）静默回落默认。2026-10-20 真浏览器 E2E 实证：
+/// compact_context_tokens / …）静默回落默认。 真浏览器 E2E 实证：
 /// `context_window: 131072` 被无视、压缩观测落价目表值。bare-suffix 语义与
 /// `nemesis_data` 价目表 lookup 的第 3 级对齐；多条目同裸名按数组序先到先得
 /// （与精确匹配、价目表一致）。
@@ -213,7 +213,7 @@ pub fn resolve_active_tier(cfg: &serde_json::Value, active_alias: &str) -> Model
 /// Pure (no IO); `AgentLoop::current_max_tokens` reads config.json fresh and
 /// hands the parsed value here. Mirrors [`resolve_active_tier`].
 ///
-/// BUG-20261029-144：0/负值按缺席处理（`.filter(|v| *v > 0)`，与 resolver
+/// 0/负值按缺席处理（`.filter(|v| *v > 0)`，与 resolver
 /// 家族 `resolve_context_window`/`resolve_agents_default_max_tokens` 等同款）。
 /// 缺 filter 时 Some(0) 经 run_loop `unwrap_or(DEFAULT_MAX_TOKENS)` 直达请求体
 /// `max_tokens: 0`（provider 400 要求 ≥1，agent 全瘫且伪装成模型故障）；
@@ -227,7 +227,7 @@ pub fn resolve_max_output_tokens(cfg: &serde_json::Value, active_alias: &str) ->
         .filter(|v| *v > 0)
 }
 
-/// M6-1（2026-10-10 机制加固）：resolve `agents.defaults.max_tool_iterations`
+/// （机制加固）：resolve `agents.defaults.max_tool_iterations`
 /// from config.json. Mirrors the fresh-read resolver family
 /// ([`resolve_max_output_tokens`] et al.): None = key absent / config not a
 /// JSON object — caller falls back to the startup value. Negative values are
@@ -240,11 +240,11 @@ pub fn resolve_max_tool_iterations(cfg: &serde_json::Value) -> Option<i64> {
         .and_then(|v| v.as_i64())
 }
 
-/// §6.2（2026-10-12 无人值守）：`agents.defaults.max_output_ceiling` 缺席
+/// （无人值守）：`agents.defaults.max_output_ceiling` 缺席
 /// 时的默认封顶（256K——覆盖主流思考型模型单轮烧穿量级的稳妥上限）。
 pub const MAX_OUTPUT_CEILING_DEFAULT: u64 = 262_144;
 
-/// §6.2：翻倍阶梯封顶解析（nemesis-agent loop 翻倍阶梯的单一真相源）。
+/// 翻倍阶梯封顶解析（nemesis-agent loop 翻倍阶梯的统一定义）。
 /// `agents.defaults.max_output_ceiling`，0 / 缺席 / 非法（负数、非数字）→
 /// 默认 [`MAX_OUTPUT_CEILING_DEFAULT`]（0 不表示「不限」——翻倍阶梯没有
 /// 不限形态，封顶失守 = 成本无界，惯例与 `max_tool_iterations` 0=不限 相反）。
@@ -258,10 +258,10 @@ pub fn resolve_max_output_ceiling(cfg: &serde_json::Value) -> u64 {
 }
 
 /// 主轮 max_tokens 最终回退值（条目 `max_output_tokens` 与
-/// `agents.defaults.max_tokens` 均未声明时）。2026-10-23 P0：旧值 8192 是
+/// `agents.defaults.max_tokens` 均未声明时）。：旧值 8192 是
 /// 小模型时代遗产——思考型模型思考 token 计入 max_tokens + agent 大参数
-/// 工具调用必然撞顶（docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md，
-/// 同根因 2026-08-10 已爆发过一次并预言复发）。64K 起步，条目仍可按
+/// 工具调用必然撞顶（max-tokens-8192截断撞顶复发，
+/// 同根因 已爆发过一次并预言复发）。64K 起步，条目仍可按
 /// per-model `max_output_tokens` 覆盖。
 pub const DEFAULT_MAX_TOKENS: i64 = 65_536;
 
@@ -276,23 +276,23 @@ pub fn resolve_agents_default_max_tokens(cfg: &serde_json::Value) -> Option<i64>
         .filter(|n| *n > 0)
 }
 
-/// E5（2026-10-15 收尾保障）：`agents.defaults.pre_pause_probe.timeout_secs`
+/// `agents.defaults.pre_pause_probe.timeout_secs`
 /// 缺席 / 0 / 非法时的默认墙钟（240s——热缓存 cargo check 数秒级，冷启动
 /// 大仓留足余量；不设上限内「不限」形态，探针必须中止有界）。
 pub const PRE_PAUSE_PROBE_DEFAULT_TIMEOUT_SECS: u64 = 240;
 
-/// E5（2026-10-15 收尾保障）：预算暂停前编译探针的解析结果（单一真相源
+/// 预算暂停前编译探针的解析结果（统一定义
 /// [`resolve_pre_pause_probe`] 的返回类型）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PrePauseProbeSettings {
-    /// 默认开（用户拍板 2026-10-15：诚实树状态注记是默认体验）。
+    /// 默认开（诚实树状态注记是默认体验）。
     pub enabled: bool,
     /// 单次探针墙钟上限（秒）。0 / 非法 → 默认 240。
     pub timeout_secs: u64,
 }
 
-/// E5：`agents.defaults.pre_pause_probe` 解析（nemesis-agent loop 暂停路径
-/// 的单一真相源）。对象缺席 = 默认开 + 默认墙钟；`enabled` 缺席 = 开
+/// `agents.defaults.pre_pause_probe` 解析（nemesis-agent loop 暂停路径
+/// 的统一定义）。对象缺席 = 默认开 + 默认墙钟；`enabled` 缺席 = 开
 /// （只有显式 `false` 关闭）；`timeout_secs` 0 / 负数 / 非数字 → 默认。
 pub fn resolve_pre_pause_probe(cfg: &serde_json::Value) -> PrePauseProbeSettings {
     let node = cfg
@@ -312,7 +312,7 @@ pub fn resolve_pre_pause_probe(cfg: &serde_json::Value) -> PrePauseProbeSettings
     }
 }
 
-/// H4 (U16 half): resolve the per-model `reasoning_effort` tier for the
+/// (half): resolve the per-model `reasoning_effort` tier for the
 /// active model alias. Mirrors [`resolve_max_output_tokens`]: finds the
 /// matching `model_list[]` entry and returns its `reasoning_effort` string
 /// ("off"|"low"|"medium"|"high"); None/empty → None (send nothing).
@@ -329,7 +329,7 @@ pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> 
     }
 }
 
-/// U16 (sixth batch): resolve the per-model `context_window` (input token
+/// (sixth batch): resolve the per-model `context_window` (input token
 /// capacity) for the active model alias. Mirrors
 /// [`resolve_max_output_tokens`]. `None` → caller keeps its default (the
 /// historical 32000 hardcoded in `AgentInstance`). Written by `model add`
@@ -341,7 +341,7 @@ pub fn resolve_context_window(cfg: &serde_json::Value, active_alias: &str) -> Op
         .filter(|w| *w > 0)
 }
 
-/// Per-model 绝对压缩点（2026-10-20 压缩点一等公民化）：`compact_context_tokens`
+/// Per-model 绝对压缩点（压缩点一等公民化）：`compact_context_tokens`
 /// 键——设了就「到点即压」（不乘窗口比例），解决「模型支持 1M 但要在 200K 压
 /// 一次」的表达缺口。镜像 [`resolve_context_window`] 的形态；`None` = 未设
 /// （调用方回落 窗口×75% 既有行为）。钳制（min(值, 真实窗口)）在组合层
@@ -353,7 +353,7 @@ pub fn resolve_compact_context_tokens(cfg: &serde_json::Value, active_alias: &st
         .filter(|w| *w > 0)
 }
 
-/// T4 (U1): resolve the per-model `summarizer_prefix_reuse` flag for the
+/// resolve the per-model `summarizer_prefix_reuse` flag for the
 /// active model alias. Mirrors [`resolve_max_output_tokens`]. `None` when
 /// unset/entry missing (caller's default applies = keep the prefix-reuse
 /// shape); `Some(false)` opts this model's summarizer out of prefix reuse —
@@ -371,10 +371,10 @@ pub fn resolve_summarizer_prefix_reuse(
 }
 
 // ============================================================================
-// Vision capability（多模态 goal T10，2026-09-03）
+// Vision capability（多模态 goal）
 // ============================================================================
 
-/// T10（多模态 goal）：vision 能力解析结果——`supported` 决定图片是否进
+/// （多模态 goal）：vision 能力解析结果——`supported` 决定图片是否进
 /// 请求，`source` 记录判定来源（诊断/展示用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VisionResolution {
@@ -387,7 +387,7 @@ pub struct VisionResolution {
 /// vision 判定来源。解析序（钉死）：`User > Probe > Name > DefaultAllow`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisionSource {
-    /// config.json 条目 `vision`——用户钉死，最大权威（L8：宽容解析，
+    /// config.json 条目 `vision`——用户钉死，最大权威（宽容解析，
     /// 接受 "yes"/"no"/"true"/"false" 任意大小写及 JSON 布尔）。
     User,
     /// `model probe` 第 8 题实测（条目 `vision_probe` bool）。
@@ -419,7 +419,7 @@ pub fn vision_default_allow() -> VisionResolution {
     }
 }
 
-/// L8（2026-09-04 四轮盲审）：`vision` 钉死值的宽容解析（`None` = 非钉死值，
+/// （四轮盲审）：`vision` 钉死值的宽容解析（`None` = 非钉死值，
 /// 走后续解析层）。接受：`"yes"/"no"`（任意大小写/首尾空白）、JSON 布尔
 /// `true/false`、`"true"/"false"`；其余（空串/垃圾值）返回 None。
 fn parse_vision_pin(v: &serde_json::Value) -> Option<bool> {
@@ -434,7 +434,7 @@ fn parse_vision_pin(v: &serde_json::Value) -> Option<bool> {
     }
 }
 
-/// T10：名字关键词视觉识别。**只判"支持"**（命中返回 true），认不出一律
+/// 名字关键词视觉识别。**只判"支持"**（命中返回 true），认不出一律
 /// 返回 false（由调用方落到默认放行）——检测链永不产生"不支持"结论，避免
 /// 把用户的 VL 模型误判成纯文本（provider 4xx 才是兜底真相）。
 ///
@@ -467,12 +467,12 @@ pub fn detect_vision_from_name(name: &str) -> bool {
     false
 }
 
-/// T10（多模态 goal）：解析 active 模型的 vision 能力。镜像
+/// （多模态 goal）：解析 active 模型的 vision 能力。镜像
 /// [`resolve_active_tier`] 的条目查找（`model_name` 或 `model` 匹配），条目
 /// 额外读 `real_name` 参与名字识别。
 ///
 /// 解析序（钉死）：
-/// 1. 条目 `vision`——用户钉死，直接采信（L8：大小写不敏感 + 布尔宽容）；
+/// 1. 条目 `vision`——用户钉死，直接采信（大小写不敏感 + 布尔宽容）；
 /// 2. 条目 `vision_probe`（`model probe` 第 8 题实测 bool）——true/false 均
 ///    采信（实测 > 猜测）；
 /// 3. 名字关键词（[`detect_vision_from_name`]，model_name / model /
@@ -486,7 +486,7 @@ pub fn resolve_active_vision(cfg: &serde_json::Value, active_alias: &str) -> Vis
     };
 
     // 1) 用户钉死。
-    // L8（2026-09-04 四轮盲审）：钉死值宽容解析——手改 config 用大写
+    // （四轮盲审）：钉死值宽容解析——手改 config 用大写
     // （"Yes"/"NO"）或 JSON 布尔（`"vision": true`）不该被静默忽略落回
     // 名字识别/默认放行（用户明确表达了意图）。
     match entry.get("vision").map(parse_vision_pin) {
@@ -504,7 +504,7 @@ pub fn resolve_active_vision(cfg: &serde_json::Value, active_alias: &str) -> Vis
         }
         _ => {}
     }
-    // 2) 探针实测（D9）。
+    // 2) 探针实测。
     if let Some(measured) = entry.get("vision_probe").and_then(|v| v.as_bool()) {
         return VisionResolution {
             supported: measured,
@@ -609,7 +609,7 @@ fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
 }
 
 /// Tool names exposed to the model at each tier (small-model-tool-robustness
-/// plan, Phase 3). An empty slice means "no filtering" — Tier A (Big) and
+/// plan,). An empty slice means "no filtering" — Tier A (Big) and
 /// unresolved Auto see the full toolset. Tier C (Mini) sees a core 13; Tier B
 /// (Normal) a mid ~23 set. Tools not present at runtime are simply skipped.
 ///
@@ -618,7 +618,7 @@ fn detect_tier_from_keywords(name: &str) -> Option<ModelTier> {
 /// for another agent — a Mini-class model gets better results doing the work
 /// with its core tools than mis-scoping a delegation prompt. Big/Auto are
 /// unaffected (empty slice = full toolset).
-/// L1 (U19): `lsp` likewise Normal+ — it needs 4 exact parameters (enum op +
+/// `lsp` likewise Normal+ — it needs 4 exact parameters (enum op +
 /// 0-based UTF-16 line/character), which Mini-class models fumble.
 pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
     match tier {
@@ -636,7 +636,7 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "memory_search",
             "cli_reference",
             "cron",
-            // L10-建设（改进项三期 2026-11-02）：惰性 schema 供给的取回工具。
+            // 建设：惰性 schema 供给的取回工具。
             // mini 强制惰性（AgentLoop::current_lazy_tool_schema）——拿不到
             // 取 schema 的工具 = 惰性断供，惰性可达的档位必含。big/Auto 全量
             // 供给时它不出现（build_tool_defs 供给闸按 lazy 旗标钉死，同
@@ -648,7 +648,7 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "read_file",
             "write_file",
             "edit_file",
-            // A7（2026-09-06）：批量编辑。Mini 不给——edits 数组 schema 对
+            // 批量编辑。Mini 不给——edits 数组 schema 对
             // 小模型是参数陷阱（数组内嵌对象），单文件场景 edit_file 已覆盖
             // （2026-11-06 起 edit_file action=append 一并承载追加，append_file
             // 并入后白名单不再单列）。
@@ -678,33 +678,33 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "claude_code",
             "codex_delegate",
             "lsp",
-            // H1（2026-09-05）：todo 清单工具。Mini 不给——小模型把清单
+            // todo 清单工具。Mini 不给——小模型把清单
             // 更新和任务执行混在一轮里容易烧轮次。
             "todowrite",
-            // B4（2026-09-05）：后台进程三件套。Mini 不给——job_id 跨调用
+            // 后台进程三件套。Mini 不给——job_id 跨调用
             // 记账 + offset 分页读输出对 9-35B 模型是纯轮次消耗，exec 的
             // 600s cap 已覆盖小模型的绝大多数场景。
             "background_start",
             "background_output",
             "background_kill",
-            // L11（2026-11-03）：steer 动词随家族同档——Normal+（Mini 同样
+            // steer 动词随家族同档——Normal+（Mini 同样
             // 不给：job_id 记账 + 中途操控是比 start 更高的多轮纪律要求）。
             "background_steer",
-            // C8（2026-09-06）：构建/测试运行器。Mini 不给——长构建 + 聚焦
+            // 构建/测试运行器。Mini 不给——长构建 + 聚焦
             // 回灌的检索（read_file spill）是小模型轮次陷阱；exec 已覆盖。
             "run_checks",
-            // F7（2026-09-06）：结构化提问。Mini 不给——向用户发选项卡并
+            // 结构化提问。Mini 不给——向用户发选项卡并
             // 阻塞等答是高信任交互，小模型容易在琐碎选择上滥用。
             "question",
-            // N2（2026-10-13）：计划审批卡。Mini 不给——与 question 同款
+            // 计划审批卡。Mini 不给——与 question 同款
             // 高信任交互（且批准动作翻转 plan→build 模式），小模型在琐碎
             // 场景滥用审批卡会打断用户。
             "present_plan",
-            // N5（2026-10-13）：交付物登记。Mini 不给——结果面产物指引需要
+            // 交付物登记。Mini 不给——结果面产物指引需要
             // 判断「什么值得用户看」，小模型容易把中间产物全量上报稀释价值；
             // 误登记只污染展示面（无副作用），normal/big 放行。
             "present_files",
-            // L10-建设（改进项三期 2026-11-02）：惰性 schema 供给默认在
+            // 建设：惰性 schema 供给默认在
             // normal 档开启——取回工具随档必含（同 mini 侧注释；lazy 关闭
             // 时由供给闸隐藏，白名单成员无害）。
             "tools_schema_get",
@@ -713,13 +713,13 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
     }
 }
 
-/// LLM 协议选择器（2026-09-11）：模型条目 `protocol` 字段的 canonical 值集
-/// 与归一。单一真相源——写入侧（dashboard models handler / CLI `model add
+/// LLM 协议选择器：模型条目 `protocol` 字段的 canonical 值集
+/// 与归一。单一权威定义——写入侧（dashboard models handler / CLI `model add
 /// --protocol`）用它校验归一，factory 消费同值集钉死 wire 协议：
 /// - `anthropic`（用户可写别名 `claude`）：Claude 消息协议（POST /v1/messages + x-api-key）
 /// - `openai`（别名 `chat-completions`）：OpenAI 兼容（POST /chat/completions + Bearer）
 /// - `responses`：OpenAI Responses API
-/// - `images-openai`（集群专业职能框架 M4）：图像生成（POST /v1/images/generations，
+/// - `images-openai`（集群专业职能框架）：图像生成（POST /v1/images/generations，
 ///   b64_json）。**不是对话协议**——factory/默认模型槽/probe 对它 loud 拒绝；
 ///   唯一消费点 = `generate_image` 工具（`tools.image_gen` 配置）。
 ///
@@ -737,13 +737,13 @@ pub fn normalize_model_protocol(input: &str) -> Result<String, String> {
     }
 }
 
-/// 图像协议判定（M4 单一谓词）：四道守卫与 generate_image 消费点共用，
+/// 图像协议判定（单一谓词）：四道守卫与 generate_image 消费点共用，
 /// 防「图像条目混进对话模型槽」各处散写 `== "images-openai"`。
 pub fn is_image_protocol(protocol: &str) -> bool {
     protocol.trim().eq_ignore_ascii_case("images-openai")
 }
 
-/// 模型角色声明（2026-10-13 N6）：模型条目 `role` 字段的 canonical 值集
+/// 模型角色声明：模型条目 `role` 字段的 canonical 值集
 /// 与归一。声明「这个模型是干什么用的」，让 default 对话模型槽的写入侧
 /// 有客观依据拒绝错配条目（防杂务模型霸占主对话槽——曾用 `agents.defaults.llm`
 /// 指向 8B flash 提速 /compact，首轮对话也跟着掉智）：
@@ -767,7 +767,7 @@ pub fn normalize_model_role(input: &str) -> Result<String, String> {
     }
 }
 
-/// 对话角色判定（N6 单一谓词）：默认对话模型槽各守卫共用。
+/// 对话角色判定（单一谓词）：默认对话模型槽各守卫共用。
 /// 空串（缺省）与 `conversation` 均为对话形态。
 pub fn is_conversation_role(role: &str) -> bool {
     let r = role.trim().to_lowercase();

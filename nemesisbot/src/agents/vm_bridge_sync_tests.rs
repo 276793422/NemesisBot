@@ -1,7 +1,7 @@
-//! B9-3 —— vm_bridge.rs 同步目标解析伴生测试（零内联纪律）。
+//! —— vm_bridge.rs 同步目标解析伴生测试（零内联纪律）。
 //!
-//! 覆盖 [`super::vm_bridge::resolve_project_entry`]（id 精确 / 名称回退 /
-//! 未注册诚实报错）与 [`super::vm_bridge::resolve_sync_target`] 的
+//! 覆盖 [`super::vm_bridge:resolve_project_entry`]（id 精确 / 名称回退 /
+//! 未注册诚实报错）与 [`super::vm_bridge:resolve_sync_target`] 的
 //! 「管理器未装配」臂（测试进程无 gateway 装配，`MANAGER_SLOT` 恒 None——
 //! gateway/runtime.rs 之外的唯一写入点不存在，断言确定性成立）。管理器
 //! 在场 + 非 VM 档两臂依赖真实 AgentManager 运行态，归 IT / cluster-uat。

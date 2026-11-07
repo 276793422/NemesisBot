@@ -1,4 +1,4 @@
-//! 名册发现循环（M2，拍板 7）：register/members HTTP 往返搬入插件——宿主
+//! 名册发现循环（M2，决策 7）：register/members HTTP 往返搬入插件——宿主
 //! 只保留成员入册漏斗与注册表（集群状态是宿主的）。拉到的全量成员经
 //! vtable `notify_members` 推宿主（`{"members":[...]}` 全量包，宿主自过滤）。
 //!

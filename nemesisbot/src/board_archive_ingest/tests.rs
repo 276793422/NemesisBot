@@ -1,7 +1,7 @@
-//! P4/E4 合并触发单测（看板项目档案 goal 合并批）。
+//! 合并触发单测（看板项目档案 goal 合并批）。
 //!
 //! 场景矩阵：非管线不接管 / 在途等待→写回腿收敛 / failed superseded /
-//! 真合并 common 文件 / 空集宽容 / E8 基线失配丢弃 / 冲突停车 / estop
+//! 真合并 common 文件 / 空集宽容 / 基线失配丢弃 / 冲突停车 / estop
 //! 挂起→release 补跑 / ingest 登记→触发全链。
 //!
 //! 隔离：PLACED/MERGED 是模块级 static（跨测试共享同进程）——各测试用
@@ -46,7 +46,7 @@ fn fixture(name: &str) -> Fixture {
     store.ensure_default_channels().unwrap();
 
     // 项目档案目录：脚手架 + git 仓库 + 基线文件 common.h（init commit =
-    // E2 派发下发的基线）。
+    // 派发下发的基线）。
     let project_root = dir.join("proj");
     nemesis_board::archive::ensure_scaffold(&project_root, 1, "p", "active").unwrap();
     nemesis_board::git_repo::ensure_repo(&project_root).unwrap();
@@ -224,7 +224,7 @@ fn waiting_dispatch_then_writeback_converges() {
     );
 }
 
-/// 终态失败派发的变更集按 E8 superseded 丢弃 + 审计（决策流卡在案）。
+/// 终态失败派发的变更集按 superseded 丢弃 + 审计（决策流卡在案）。
 #[test]
 fn failed_dispatch_superseded_discards_changeset() {
     let f = fixture("failed");
@@ -272,7 +272,7 @@ fn failed_dispatch_superseded_discards_changeset() {
 }
 
 /// 真合并：基线上的改动落仓库 + 转 in_review + 系统评论 + 审计；重入幂等
-/// （MERGED 集合防线——D5 重推/重复触发不再二次合并二次评审）。
+/// （MERGED 集合防线—— 重推/重复触发不再二次合并二次评审）。
 #[test]
 fn changeset_merges_and_enters_review_idempotent() {
     let f = fixture("merge");
@@ -342,7 +342,7 @@ fn empty_changeset_tolerated() {
     );
 }
 
-/// E8 归属校验：变更集申报基线 ≠ 派发基线（旧轮次/换人迟到）→ 丢弃+审计。
+/// 归属校验：变更集申报基线 ≠ 派发基线（旧轮次/换人迟到）→ 丢弃+审计。
 #[test]
 fn e8_baseline_mismatch_discarded() {
     let f = fixture("e8");
@@ -515,8 +515,8 @@ fn ingest_registers_and_merge_converges() {
     );
 }
 
-/// F-U6-1 orphan 去重：无处安置的滞留档案每轮 D5 sweep 重灌重试，同
-/// (task, reason) 只记首次——重复 ingest 不再重复入账（U6 实测每分钟 13
+/// F- orphan 去重：无处安置的滞留档案每轮 sweep 重灌重试，同
+/// (task, reason) 只记首次——重复 ingest 不再重复入账（实测每分钟 13
 /// 条刷屏 965 条的根修）。
 #[test]
 fn orphan_note_deduped_across_sweep_retries() {
@@ -543,7 +543,7 @@ fn orphan_note_deduped_across_sweep_retries() {
     std::fs::create_dir_all(inbox.join("files")).unwrap();
     std::fs::write(inbox.join("files").join("log.md"), b"x").unwrap();
 
-    // 模拟 D5 sweep 每轮重灌：同 task 连续 ingest 两次。
+    // 模拟 sweep 每轮重灌：同 task 连续 ingest 两次。
     ingest_landed(&f.store, tid, &inbox);
     ingest_landed(&f.store, tid, &inbox);
 
@@ -562,11 +562,11 @@ fn orphan_note_deduped_across_sweep_retries() {
     );
 }
 
-// ---- S-O1 合并停车人工重试（2026-09-16 showcase 复跑实证）----
+// ---- S- 合并停车人工重试（showcase 复跑实证）----
 
 /// 造真实安置形态的 placement 目录：records/<n>/execution/<ts>/ 根下直接
 /// 是 transfer manifest.json（TransferBegin 凭据）+ changeset/ + 执行记录。
-/// 与 make_placed_with_changeset 的区别：不加 placed- 子目录层（retry 扫描
+/// 与 make_placed_with_changeset 的区别：不加 placed 子目录层（retry 扫描
 /// 的是 execution/<ts>/ 本身）。
 fn place_ts_dir(
     project_root: &Path,
@@ -626,7 +626,7 @@ fn place_ts_dir(
 }
 
 /// 模拟重启后形态：placement 目录在档案树里（records/<n>/execution/<ts>/，
-/// 内含 transfer manifest.json 凭据 + changeset/），但 PLACED/MERGED 注册表
+/// 内含 transfer manifest.json 凭据 + changeset），但 PLACED/MERGED 注册表
 /// 均为空——retry_merge_for_issue 凭凭据反查 task 重新走合并触发。
 #[test]
 fn retry_merge_recovers_parked_changeset_after_registry_loss() {
@@ -715,7 +715,7 @@ fn retry_merge_skips_foreign_task_bindings() {
 }
 
 // ===========================================================================
-// Coverage 追加（2026-09-24）：ingest_landed 守卫臂与收件凭据、
+// Coverage 追加：ingest_landed 守卫臂与收件凭据、
 // note_overlimit 出卡与 Done 回滚、note_missing_block、sweep_missing_archives
 // 双腿（fake transport 注入）、ghost 基线、冻结期交付登记（FrozenDeferred）、
 // 停车臂（目录缺失/仓库 ensure 失败/变更集损坏）、冲突明细渲染、retry 守卫
@@ -1000,7 +1000,7 @@ fn sweep_ghost_baseline_without_dispatch_row() {
     );
 }
 
-/// P5/F3 冻结期交付：变更集不合入，登记待补合并队列 + ⏸ 评论 + 状态不动。
+/// 冻结期交付：变更集不合入，登记待补合并队列 + ⏸ 评论 + 状态不动。
 #[test]
 fn sweep_frozen_project_defers_changeset() {
     let f = fixture("frozen-defer");
@@ -1324,7 +1324,7 @@ async fn sweep_sweep_missing_archives_leg2_transport_matrix() {
     );
     assert!(seen.lock().await.is_empty(), "queued 不记 no_archive");
 
-    // (b) no_archive：记账去重，第二轮不再拉。
+    // (b) no_archive：记账去重，不再拉。
     let f = fixture("d5-noarchive");
     f.store
         .insert_dispatch("t-d5n", f.issue_id, "node-b", &Actor::agent("node-a"))
@@ -1364,7 +1364,7 @@ async fn sweep_sweep_missing_archives_leg2_transport_matrix() {
     sweep_missing_archives(&f.store, &f.deps.workspace, &fake, &seen).await;
     assert_eq!(fake.call_count(), 0, "在途派发本来就没有档案");
 
-    // (e) 本地派发（worker_id="self"）→ 不拉（无远端 worker；真机教训：
+    // (e) 本地派发（worker_id="self"）→ 不拉（无远端 worker；真机
     // 对 "self" 发 transfer_pull = peer unresolvable 每 sweep 周期永续 WARN）。
     let f = fixture("d5-self");
     f.store
@@ -1581,7 +1581,7 @@ fn sweep_replay_refreezes_on_new_conflict() {
 }
 
 /// finish_merged_review：单据已被别处推进（已是 in_review）→ transition
-/// 失败让位，仍返回 Merged 不炸（P5 冲突硬解共用收口的让位语义）。
+/// 失败让位，仍返回 Merged 不炸（冲突硬解共用收口的让位语义）。
 #[test]
 fn sweep_finish_merged_review_yields_when_already_in_review() {
     let f = fixture("finish-yield");
@@ -1606,7 +1606,7 @@ fn sweep_finish_merged_review_yields_when_already_in_review() {
 
 // ===========================================================================
 // wave4 追加（coverage）：残余臂——WaitingChangeset 内入口臂、ingest 档案
-// 复制失败 orphan、D5「收件箱滞留算在路上」不空拉、冲突 auto 档移交硬解
+// 复制失败 orphan、「收件箱滞留算在路上」不空拉、冲突 auto 档移交硬解
 // （含旗标读取失败回落 human）、三方合并执行失败停车、replay 未知项目 Err。
 // ===========================================================================
 
@@ -1659,7 +1659,7 @@ fn sweep_ingest_copy_failure_orphans_and_keeps_inbox() {
     assert!(inbox.exists(), "无处安置的档案留在收件箱");
 }
 
-/// D5 腿 2：master 收件箱还滞留着该任务的档案 =「在路上」，腿 1 已处理，
+/// 腿 2：master 收件箱还滞留着该任务的档案 =「在路上」，腿 1 已处理，
 /// 不对 worker 空拉。
 #[tokio::test]
 async fn sweep_d5_skips_pull_when_inbox_still_holding_archive() {
@@ -1801,7 +1801,7 @@ fn sweep_merge_execution_error_parks() {
         .transition_issue(f.issue_id, IssueStatus::InProgress, &Actor::agent("node-a"))
         .unwrap();
     f.store.finish_dispatch(tid, dispatch_state::DONE).unwrap();
-    // DB 基线 = 变更集申报基线 = 合法格式但不存在的 commit —— E8 通过，
+    // DB 基线 = 变更集申报基线 = 合法格式但不存在的 commit —— 通过，
     // merge_changeset 在 find_commit 一步失败。
     let ghost = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
     f.store.set_dispatch_baseline(tid, ghost).unwrap();
@@ -1828,7 +1828,7 @@ fn sweep_replay_unknown_project_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// wave5 round2（2026-09-25）：ingest_landed / note_missing_block / sweep 腿 2
+// wave5：ingest_landed / note_missing_block / sweep 腿 2
 // / 合并前置 commit 失败 / resume 人工解 commit 失败的 Err 臂补测。
 // 纯文件系统故障注入（记录文件改名/加锁/只读/index.lock），零进程零端口。
 // ---------------------------------------------------------------------------

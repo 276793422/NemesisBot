@@ -6,7 +6,7 @@
 //!
 //! Requirements:
 //!   1. plugin_onnx.dll: cd plugins/plugin-onnx && cargo build --release
-//!   2. Test model:       bash test-tools/plugin-onnx-test/scripts/setup-test.sh
+//!   2. Test model: bash test-tools/plugin-onnx-test/scripts/setup-test.sh
 
 use std::collections::HashMap;
 
@@ -28,10 +28,10 @@ fn make_entry(id: &str, content: &str) -> VectorEntry {
 
 #[test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 fn it_onnx_embedding_pipeline() {
@@ -54,10 +54,10 @@ fn it_onnx_embedding_pipeline() {
 
 #[tokio::test]
 // Ignored (ONNX): requires plugin_onnx.dll in target/{debug,release}/plugins/
-// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM-L6-v2) under
+// AND the embedding model (model.onnx + tokenizer.json, all-MiniLM--v2) under
 // test-data/memory-e2e/ or crates/nemesis-memory/models/. ONNX Runtime can't
 // re-init after free → MUST run single-threaded. Setup + run:
-//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh   # downloads model (~90MB)
+//   bash test-tools/plugin-onnx-test/scripts/setup-test.sh # downloads model (~90MB)
 //   cargo test -p nemesis-memory -- --ignored --test-threads=1 <test_name>
 #[ignore]
 async fn it_onnx_vector_store_with_manager() {
@@ -111,12 +111,12 @@ async fn it_onnx_vector_store_with_manager() {
 
 #[test]
 // Ignored (ONNX): requires plugin_onnx.dll + model files (same setup as the
-// tests above). V2 (B4 memory auto-inject) calibration: pins the cosine
+// tests above). (memory auto-inject) calibration: pins the cosine
 // assumptions the gateway inject pipeline relies on —
 //   * the VectorStore query threshold is 0.7 (gateway with_config StoreConfig)
 //   * prefetch_memory_context's MIN_SCORE bar is 0.35 (loop.rs)
 // so a related Q/A pair must clear 0.7 and an unrelated query must stay
-// below 0.35 with the default medium model (all-MiniLM-L6-v2). If a model
+// below 0.35 with the default medium model (all-MiniLM--v2). If a model
 // or tier swap changes these numbers, the e2e pair below must be re-tuned.
 // MUST run single-threaded (shared ONNX runtime): -- --ignored --test-threads=1
 #[ignore]
@@ -125,7 +125,7 @@ fn it_onnx_auto_inject_similarity_calibration() {
 
     let embed = __test_fixture::shared_embed_func().expect("shared plugin not available");
 
-    // Exactly the strings the V2 e2e (test-tools/e2e-tests/v_batch.rs) sends.
+    // Exactly the strings the e2e (test-tools/e2e-tests/v_batch.rs) sends.
     let stored = "My favorite project codename is FALCON-77.";
     let related = "What is my favorite project codename? <MEM_CHECK>";
     let unrelated = "What is the capital of France? <MEM_CHECK>";

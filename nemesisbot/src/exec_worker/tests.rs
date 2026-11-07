@@ -1,4 +1,4 @@
-//! exec_worker 测试：U11 用户态沙盒路径决策表（纯函数，跨平台）。
+//! exec_worker 测试： 用户态沙盒路径决策表（纯函数，跨平台）。
 //! 真实行为断言（landlock 写外拒/写内放行）在 `tests/executor.rs` 的
 //! Linux e2e（cfg linux）里。
 
@@ -62,7 +62,7 @@ mod userland_plan {
 }
 
 // ---------------------------------------------------------------------------
-// P5-2：engage 的严格模式改判（fail-closed）与默认 fail-open
+// engage 的严格模式改判（fail-closed）与默认 fail-open
 // ---------------------------------------------------------------------------
 // Windows 上 detect_backend() 恒 None（设计契约，Sandboxie 承担）→ engage
 // 确定走 Plain 路径，strict 的 bail/不 bail 可确定性断言。**必须** cfg
@@ -293,7 +293,7 @@ mod dispatch_protocol {
 }
 
 // =========================================================================
-// P3 T2：serve_line × journal 幂等语义（协议主体层）。
+// serve_line × journal 幂等语义（协议主体层）。
 // - v2 请求：响应回显 v=2 + call_id，dispatch 结果记账；重发同 call_id =
 //   replay 命中（工具不重执行、结果逐字节一致）
 // - v1 请求：响应保持 v1 字节形态（无 v/call_id 键），journal 不记空 id
@@ -415,7 +415,7 @@ mod serve_journal {
     }
 
     // -----------------------------------------------------------------
-    // R2 两相账 replay 分类（2026-10-18 三方复评）。
+    // 两相账 replay 分类（三方复评）。
     // -----------------------------------------------------------------
 
     fn v2_req_tool(call_id: &str, tool: &str) -> String {
@@ -530,7 +530,7 @@ mod serve_journal {
     }
 
     // -----------------------------------------------------------------
-    // F2（二轮复评 2026-10-18）：意图未可靠落盘 → 有副作用工具拒绝 dispatch。
+    // （二轮复评）：意图未可靠落盘 → 有副作用工具拒绝 dispatch。
     // -----------------------------------------------------------------
 
     /// 意图落盘失败（`.runtime` 被文件占位）+ 非只读工具 → 诚实拒绝，工具
@@ -605,7 +605,7 @@ mod serve_journal {
 
 /// run() 前置守卫：workspace env 缺失必须干净报错（而不是进 stdio 循环挂死）。
 /// GLOBAL_STATE_LOCK：remove_var 是进程级环境操作，与其它 env 测试互斥。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 async fn run_requires_workspace_env() {
     let _guard = crate::GLOBAL_STATE_LOCK
@@ -624,17 +624,17 @@ async fn run_requires_workspace_env() {
 }
 
 // =========================================================================
-// S11d 补测（quality-hardening goal 冲刺 S11）：executor_main 粘合层。
+// 补测（quality-hardening goal 冲刺）：executor_main 粘合层。
 // - stdio 传输：无 PIPE/无 SANDBOX 标记 → register_shared_tools + stdio_loop
 //   （cargo test 的 stdin 是管道 EOF → 立即干净退出）。
-// - 沙盒标记：fail-open（warn+Continue）与 P5-2 严格模式（engage Err →
+// - 沙盒标记：fail-open（warn+Continue）与 严格模式（engage Err →
 //   emit_error_response 一行协议错误 + Ok 退出，不读 stdin）。
 // - Windows 具名管道传输：run() 全链（server 假 gateway 一来一回 + EOF）。
 // =========================================================================
 
 // 整 mod Windows 形态（3/3 测试全走 Windows 进程边界；sandbox 项另有
 // feature 双门控，随 mod 一并消失于 Linux）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod executor_main_glue {
     use super::*;
 
@@ -689,7 +689,7 @@ mod executor_main_glue {
         dir
     }
 
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     async fn run_stdio_transport_registers_tools_and_exits_on_eof() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -732,8 +732,8 @@ mod executor_main_glue {
         let mut env = ExecEnvGuard::set(tmp.path());
         env.set_marker_and_home(home.path());
 
-        // P5-2：engage Err（严格模式拒绝）→ emit_error_response（stdout 一行
-        // 协议错误，libtest 捕获）→ Ok(()) —— 不读 stdin、不挂死。
+        // engage Err（严格模式拒绝）→ emit_error_response（stdout 一行
+        // 协议错误，libtest 捕获）→ Ok() —— 不读 stdin、不挂死。
         run()
             .await
             .expect("engage failure must exit Ok after emitting the error line");
@@ -808,9 +808,9 @@ mod pipe_transport_via_run {
 }
 
 // =========================================================================
-// wave_b（覆盖率补测 2026-08-27）：pipe_loop 的读错误臂（exec_worker.rs:358）
+// wave_b（覆盖率补测）：pipe_loop 的读错误臂（exec_worker.rs:358）
 // ——tokio lines() 对非 UTF-8 行返回 InvalidData → pipe_loop 上抛
-// "pipe read: ..."（区别于 Ok(None) 的干净 EOF 退出）。沿用上面同一套
+// "pipe read:..."（区别于 Ok(None) 的干净 EOF 退出）。沿用上面同一套
 // 具名管道 + worker 线程夹具；全程零子进程、零生产端口。
 // =========================================================================
 #[cfg(windows)]
@@ -870,7 +870,7 @@ mod wave_b {
 }
 
 // =========================================================================
-// P21（2026-09-25）：沙盒拒绝台账钩子（sandbox_denial 模块）。
+// 沙盒拒绝台账钩子（sandbox_denial 模块）。
 // - active_backend_label：无沙盒 None / PIPE 单独存在不算标签 / env→后端名
 // - on_tool_error：无沙盒不改写不记账；非拒绝错误透传；拒绝错误 → 可自纠
 //   文案 + 台账一行合法 JSON（workspace 取自 env）
@@ -1036,13 +1036,13 @@ mod sandbox_denial_hooks {
 // （exec_worker.rs ~380-388）——libtest 内进程的 stdin 是死的、无法注入多行，
 // 只能按 gateway 生产同款 spawn 形态（ROLE=executor + 绝对路径 WORKSPACE、
 // 不带任何 CLI 参数 = main() 短路在 clap 之前）喂两条协议请求：
-//   ① 坏 JSON 行      → {"ok":false,...,"error":"bad request line: ..."}
-//   ② 未知工具合法行   → {"ok":false,...,"error":"unknown tool: r10_no_such_tool"}
+//   ① 坏 JSON 行 → {"ok":false,...,"error":"bad request line:..."}
+//   ② 未知工具合法行 → {"ok":false,...,"error":"unknown tool: r10_no_such_tool"}
 // 然后关 stdin 让子进程在 EOF 干净退出（退码 0）。全程看门狗限时强杀保护。
 //
 // 隔离：WORKSPACE 指向独立 tempdir 绝对路径；显式 env_remove 掉 PIPE/SANDBOX/
 // REEXEC/HOME 四个干扰键，绝不触任何真实 home。不占任何端口。
-// 仅 Windows：resolve_nemesisbot_bin 解析 .exe（与其他子进程测试同门）。
+// 仅 Windows：resolve_nemesisbot_bin 解析.exe（与其他子进程测试同门）。
 // =========================================================================
 #[cfg(windows)]
 mod wave_r10_stdio_subprocess {
@@ -1096,7 +1096,7 @@ mod wave_r10_stdio_subprocess {
             s
         });
 
-        // 写两条协议请求后关 stdin → 子进程处理两行 → EOF → run_loop Ok(()) 退出
+        // 写两条协议请求后关 stdin → 子进程处理两行 → EOF → run_loop Ok() 退出
         let bad_line = "{ definitely broken json";
         let req = serde_json::json!({
             "tool": "r10_no_such_tool",
@@ -1130,7 +1130,7 @@ mod wave_r10_stdio_subprocess {
             "exactly one response per request line expected, got:\n{lines:?}"
         );
 
-        // 行①：坏 JSON → "bad request line: ..." 且 ok=false
+        // 行①：坏 JSON → "bad request line:..." 且 ok=false
         let r1: serde_json::Value = serde_json::from_str(&lines[0])
             .unwrap_or_else(|e| panic!("response line 1 not JSON ({e}): {:?}", lines[0]));
         assert_eq!(r1["ok"], serde_json::json!(false), "{r1}");
@@ -1179,7 +1179,7 @@ mod wave_r10_stdio_subprocess {
 }
 
 // ---------------------------------------------------------------------------
-// B1（2026-10-31 项目 home 收编）：围栏第二根 env 解析
+// （项目 home 收编）：围栏第二根 env 解析
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1207,7 +1207,7 @@ fn parse_extra_roots_env_multi() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG 修复 2026-11-04：围栏 restrict 镜像 env 解析（缺省 true；显式 "0"
+// BUG 修复：围栏 restrict 镜像 env 解析（缺省 true；显式 "0"
 // = false；其余值视同 true——省 env 不含语义，不静默纠偏）。
 // ---------------------------------------------------------------------------
 

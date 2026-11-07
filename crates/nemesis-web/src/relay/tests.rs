@@ -1,4 +1,4 @@
-//! 反向桥批次一测试：帧协议 + 中继状态机（goal：反向桥与多设备汇聚）。
+//! 反向桥测试：帧协议 + 中继状态机（goal：反向桥与多设备汇聚）。
 //!
 //! 端到端 HTTP/WS 隧道测试（真 server + mock 桥设备）见 `http_tests.rs`。
 
@@ -10,9 +10,7 @@ use super::server::{RelayServer, handle_control_frame};
 use base64::Engine as _;
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
-// A1. 帧编解码 round-trip（全部变体）
-// ---------------------------------------------------------------------------
+// . 帧编解码 round-trip（全部变体）
 
 #[test]
 fn frame_round_trip_all_variants() {
@@ -141,9 +139,7 @@ fn frame_decode_garbage_is_err() {
     assert!(decode_frame("{\"type\":\"unknown_kind\"}").is_err());
 }
 
-// ---------------------------------------------------------------------------
-// A2. 请求重序列化（serialize_http_request）
-// ---------------------------------------------------------------------------
+// . 请求重序列化（serialize_http_request）
 
 #[test]
 fn serialize_get_request_no_body() {
@@ -209,9 +205,7 @@ fn serialize_strips_hop_by_hop_but_keeps_upgrade() {
     assert!(!text.contains("keep-alive"));
 }
 
-// ---------------------------------------------------------------------------
-// A3. 响应头解析 + chunked 解码
-// ---------------------------------------------------------------------------
+// . 响应头解析 + chunked 解码
 
 #[test]
 fn parse_response_head_ok() {
@@ -262,16 +256,14 @@ fn chunked_decoder_split_feed_across_boundaries() {
 
 #[test]
 fn chunked_decoder_extension_ignored() {
-    // 块大小行允许 `;` 后的扩展（RFC 9112 §7.1）。
+    // 块大小行允许 `;` 后的扩展（RFC 9112）。
     let mut d = ChunkedDecoder::new();
     let out = d.feed(b"5;name=val\r\nabcde\r\n0\r\n\r\n");
     assert_eq!(out, b"abcde");
     assert!(d.is_finished());
 }
 
-// ---------------------------------------------------------------------------
-// A4. WS 帧编解码（ws_codec）
-// ---------------------------------------------------------------------------
+// . WS 帧编解码（ws_codec）
 
 mod ws_codec_tests {
     use super::super::ws_codec::{encode_client_frame, parse_server_frame};
@@ -280,7 +272,7 @@ mod ws_codec_tests {
     #[test]
     fn client_frame_text_masked_round_trip() {
         let frame = encode_client_frame(&Message::Text("你好 bridge".into()));
-        // client 帧必须带 mask 位（RFC 6455 §5.3——否则设备侧 tungstenite 拒收）。
+        // client 帧必须带 mask 位（RFC 6455 ——否则设备侧 tungstenite 拒收）。
         assert_eq!(frame[1] & 0x80, 0x80);
         let (msg, consumed) = parse_server_frame(&frame).unwrap();
         assert_eq!(consumed, frame.len());
@@ -359,9 +351,7 @@ mod ws_codec_tests {
     }
 }
 
-// ---------------------------------------------------------------------------
 // B. 中继状态机（RelayServer）
-// ---------------------------------------------------------------------------
 
 /// 测试脚手架：注册一台假设备并持有其下行帧接收端。
 struct FakeDevice {
@@ -459,7 +449,7 @@ fn multi_device_concurrent_and_directed_send() {
     let mut a = register_fake(&relay, "node-aaa", "tok", "A 机");
     let mut b = register_fake(&relay, "node-bbb", "tok", "B 机");
     let mut c = register_fake(&relay, "node-ccc", "tok", "C 机");
-    // 三期批次八：注册即广播 member_sync——排空注册触发的帧再断言业务。
+    // 三期：注册即广播 member_sync——排空注册触发的帧再断言业务。
     for d in [&mut a, &mut b, &mut c] {
         while d.outbound_rx.try_recv().is_ok() {}
     }
@@ -585,7 +575,7 @@ fn heartbeat_timeout_kicks_device() {
 fn reserved_frames_go_through_control_dispatch_without_effect() {
     let relay = std::sync::Arc::new(RelayServer::new("tok".to_string(), true));
     let mut d = register_fake(&relay, "node-aaa", "tok", "A 机");
-    // 三期批次八：注册即广播——先排空，再验证预留帧不产生新下行。
+    // 三期：注册即广播——先排空，再验证预留帧不产生新下行。
     while d.outbound_rx.try_recv().is_ok() {}
     // 二/三期预留帧：一期收到即忽略（不 panic、不投递、不路由）。
     handle_control_frame(
@@ -609,7 +599,7 @@ fn reserved_frames_go_through_control_dispatch_without_effect() {
 fn heartbeat_control_frame_replies_pong() {
     let relay = std::sync::Arc::new(RelayServer::new("tok".to_string(), true));
     let mut d = register_fake(&relay, "node-aaa", "tok", "A 机");
-    // 三期批次八：注册即广播——排空后心跳的 Pong 才是队列首帧。
+    // 三期：注册即广播——排空后心跳的 Pong 才是队列首帧。
     while d.outbound_rx.try_recv().is_ok() {}
     handle_control_frame(BridgeFrame::Heartbeat, &relay, "node-aaa");
     match d.outbound_rx.try_recv().expect("心跳应回 pong") {
@@ -618,9 +608,7 @@ fn heartbeat_control_frame_replies_pong() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// C. 二期身份交换（goal 批次五）：身份事件 + 老格式兼容
-// ---------------------------------------------------------------------------
+// C. 二期身份交换（goal）：身份事件 + 老格式兼容
 
 use super::identity::{BridgeClusterIdentity, BridgeIdentityEvent, BridgeIdentitySink};
 
@@ -773,9 +761,7 @@ fn hub_node_id_setter_round_trip() {
     assert_eq!(relay.hub_node_id(), "node-hub-1");
 }
 
-// ---------------------------------------------------------------------------
-// 三期批次八：member_sync 广播（快照闭包 / --relay 设备表摘要 / gate 关跳过）
-// ---------------------------------------------------------------------------
+// 三期：member_sync 广播（快照闭包 / --relay 设备表摘要 / gate 关跳过）
 
 #[test]
 fn member_sync_broadcast_three_sources() {
@@ -808,7 +794,7 @@ fn member_sync_broadcast_three_sources() {
         other => panic!("应收到 MemberSync，得到 {other:?}"),
     }
 
-    // 形态二：未注入快照（--relay）→ 广播自身桥设备表摘要。
+    // 形态二：未注入快照（relay）→ 广播自身桥设备表摘要。
     let relay = RelayServer::new("tok".to_string(), true);
     let mut dev = register_fake(&relay, "bridge-b", "tok", "B 机");
     relay.broadcast_member_sync();

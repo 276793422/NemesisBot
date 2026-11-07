@@ -344,7 +344,7 @@ fn test_list_mixed_kinds() {
 
 #[tokio::test]
 async fn test_fd3_registry_load_restores_artifacts() {
-    // F-D3: registry.load() must restore prior artifacts from disk (the gateway
+    // F-: registry.load() must restore prior artifacts from disk (the gateway
     // calls this at startup so learned artifacts survive restarts).
     use nemesis_types::forge::{Artifact, ArtifactKind, ArtifactStatus};
     let dir = tempfile::tempdir().unwrap();
@@ -546,7 +546,7 @@ fn test_auto_save_on_remove_with_path() {
     assert!(parsed.is_empty());
 }
 
-// --- S8 coverage additions (quality-hardening goal 冲刺 S8) ---
+// --- coverage additions (quality-hardening goal 冲刺) ---
 
 #[test]
 fn test_s8_increment_version_three_part_non_numeric_patch() {
@@ -567,7 +567,7 @@ fn test_s8_add_existing_non_numeric_patch_version_bumps_with_suffix() {
     assert_eq!(registry.get(&id).unwrap().version, "0.1.0rc1.1");
 }
 
-/// BUG-20261029-188 红证：replace（版本 bump）= 新一代产物，评估账本
+/// 红证：replace（版本 bump）= 新一代产物，评估账本
 /// （usage_count/success_rate/consecutive_observing_rounds/last_degraded_at/
 /// last_efficacy）是 per-version 状态，必须重置——旧实现跨代残留会让重建
 /// （Degraded/Archived 重蒸馏、dedup 过期重建）的新版本带着旧时代的

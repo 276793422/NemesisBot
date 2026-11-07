@@ -71,6 +71,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -245,7 +246,7 @@ async fn agt_update_field_proxy_default_detection_by_model_and_alias() {
     );
 }
 
-/// BUG-20261030-223 回归锁：update_field 改**默认模型**的构造期消费字段
+/// 回归锁：update_field 改**默认模型**的构造期消费字段
 /// （protocol/proxy/stream）补跑运行时热切时，必须经 projects bridge
 /// 通知项目 loop（set_default / rename 两处同款）——漏接 = 项目 loop
 /// 保持旧 wire 配置直至重启。

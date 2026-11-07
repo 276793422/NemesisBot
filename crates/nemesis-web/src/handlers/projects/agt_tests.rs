@@ -7,7 +7,7 @@
 //!
 //! 结构性豁免（见报告）：
 //! - open_in_file_manager（190-215）：spawn 的是 explorer/open/xdg-open
-//!   ——在宿主桌面真实弹窗口（违反 AGENTS.md 后台纪律：绝不弹窗）；错误
+//!   在宿主桌面真实弹窗口（违反 AGENTS.md 后台纪律：绝不弹窗）；错误
 //!   臂要求系统常驻二进制 spawn 失败，无平台无关触发手段。测试不碰。
 
 use super::*;

@@ -2,8 +2,8 @@
 //! （334 行：`Some(Err(e))` → 带上下文的 Err）。
 //!
 //! 手法：SQLite 动态类型——绕过类型化 insert API，直接往 status_code
-//! （INTEGER affinity）塞非数值 TEXT，row.get::<_, i64> 解码即失败。
-//! tempfile 不在本 crate dev-deps，沿本目录惯例用 `std::env::temp_dir`。
+//! （INTEGER affinity）塞非数值 TEXT，row.get:<_, i64> 解码即失败。
+//! tempfile 不在本 crate dev-deps，沿本目录惯例用 `std::env:temp_dir`。
 
 use super::*;
 use std::path::PathBuf;

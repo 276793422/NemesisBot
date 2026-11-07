@@ -1,4 +1,4 @@
-//! 桥设备集群身份交换（goal 二期批次五）。
+//! 桥设备集群身份交换（goal 二期）。
 //!
 //! 设计要点：relay 模块（nemesis-web）**零依赖** nemesis-cluster——身份
 //! 事件经无类型回调槽 [`BridgeIdentitySink`] 抛给宿主进程，注册进

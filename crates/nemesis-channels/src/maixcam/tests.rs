@@ -1,6 +1,6 @@
 use super::*;
 
-/// W4c：测试用 bus sender（BUG #14 修复后构造函数需要）。
+/// 测试用 bus sender（修复后构造函数需要）。
 fn w4c_test_bus() -> tokio::sync::broadcast::Sender<InboundMessage> {
     tokio::sync::broadcast::channel(16).0
 }
@@ -1225,7 +1225,7 @@ fn test_process_message_person_detected_full_content_format() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：BUG #14 回归——TCP 设备行必须发布 InboundMessage 到
+// 补测： 回归——TCP 设备行必须发布 InboundMessage 到
 // bus（修复前解析结果直接丢弃）；连接/断开计数；stop 后 accept 循环退出
 // ===========================================================================
 
@@ -1365,7 +1365,7 @@ async fn test_w4c_maixcam_stop_ends_accept_loop() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): bind-failure error arm / reader break after stop /
+// coverage: bind-failure error arm / reader break after stop /
 // no-receiver publish warn / StatusUpdate + Unknown classify arms (TCP path)
 // ===========================================================================
 
@@ -1450,7 +1450,7 @@ async fn s2_maixcam_reader_arms_and_break_after_stop() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 }
 
-// ---- BUG-20261102-300：停摆设备写必须有界（串行派发管线冻结面） ----
+// ----：停摆设备写必须有界（串行派发管线冻结面） ----
 
 /// 永不完成的 writer（poll_write 恒 Pending）——停摆设备的确定性替身。
 /// Windows loopback TCP 的缓冲自调连显式 SO_SNDBUF/SO_RCVBUF 收窄都不认

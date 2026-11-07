@@ -1,4 +1,4 @@
-//! 修6 守卫单测：终止原因单调、真实进程树收杀、drop RAII 兜底、会话级 sweep。
+//! 守卫单测：终止原因单调、真实进程树收杀、drop RAII 兜底、会话级 sweep。
 
 use super::*;
 #[cfg(target_os = "windows")]

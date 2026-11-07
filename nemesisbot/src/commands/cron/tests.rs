@@ -182,12 +182,12 @@ fn enable_disable_dispatch_updates_envelope() {
 }
 
 // -----------------------------------------------------------------------
-// BUG-20261028-102：toggle 吞错——此前 enable_job 的**所有** Err（死排程
+// toggle 吞错——此前 enable_job 的**所有** Err（死排程
 // 闸 loud 拒绝 / 收尾落盘失败）都被 CLI 打印成 "Job not found."。现对齐
 // Remove 臂三态语义：not found = 打印级 Ok；其余 Err 必须冒泡。
 // -----------------------------------------------------------------------
 
-/// 死排程闸（BUG-20261025-30）的 loud 拒绝必须以 Err 冒泡到 CLI 顶层，
+/// 死排程闸的 loud 拒绝必须以 Err 冒泡到 CLI 顶层，
 /// 不能被伪装成「任务不存在」。死表达式：2 月无 30 日，任何年份都不触发。
 #[test]
 fn enable_dead_schedule_gate_error_surfaces() {
@@ -232,13 +232,13 @@ fn enable_write_failure_denied_by_readonly_store_surfaces_error() {
             r.is_err(),
             "readonly store → 收尾写入被拒 → Err（此前被吞成 not found）"
         );
-        // 服务层 BUG #16 回滚：盘上 enabled 保持 false（禁用态未被顶掉）。
+        // 服务层 回滚：盘上 enabled 保持 false（禁用态未被顶掉）。
         assert!(!read_store(&home).jobs[0].enabled);
     });
 }
 
 // -----------------------------------------------------------------------
-// R7（coverage-95 goal）：Add/Remove 的 store-已存在读臂 + 写失败臂。
+// （coverage-95 goal）：Add/Remove 的 store-已存在读臂 + 写失败臂。
 // - Add 在 store 已存在时必须读旧内容做合并（此前只测过空新建）；
 // - {home}/workspace 是普通文件时保存失败 → ? 上抛 Err；
 // - store 文件只读（Windows READONLY attr / unix 目录 0555）时 Remove 的
@@ -281,10 +281,10 @@ fn allow_write(p: &std::path::Path) {
 
 /// POSIX 侧测试助手：临时把目录设为只读，Drop 恢复原模式。cron 收尾
 /// 保存走 `write_file_atomic`（同目录 tmp + rename 覆盖），POSIX 语义
-/// 只看目录写权限——store 文件 0o444 拦不住（2026-09-24 nightly run
+/// 只看目录写权限——store 文件 0o444 拦不住（nightly run
 /// 36001616750 实证假红），拦父目录才是 POSIX 下「保存必失败」的
 /// 正确构造；Windows 上 readonly 属性本身即拒绝 replace，无需此件。
-/// 同款先例：commands::cors::tests::wave_a::DenyDirWrite。
+/// 同款commands::cors:tests::wave_a:DenyDirWrite。
 #[cfg(unix)]
 struct DenyDirWrite(std::path::PathBuf, std::fs::Permissions);
 
@@ -405,7 +405,7 @@ fn wave_b_add_on_missing_store_still_creates_fresh_store() {
 }
 
 // ===========================================================================
-// 跨层回归锁（BUG 修复核心，docs/REPORT/2026-10-13_cron-store-format-
+// 跨层回归锁（BUG 修复核心，docs/REPORT/-13_cron-store-format-
 // split-cli-vs-gateway-fix.md 方向 3）：旧 CLI 裸数组 store → CLI add 迁移
 // 合并 → gateway 侧 CronService 直接可见。修复前这个场景是「gateway 启动
 // WARN + 空 store + 首次保存把 CLI 任务顶掉」。
@@ -522,7 +522,7 @@ mod cross_layer {
 // （state/gateway.json + /api/health），只在**确认** gateway 在跑时拦。
 // ===========================================================================
 mod live_gateway_guard {
-    // GLOBAL_STATE_LOCK 必须横跨 .await 持有：NEMESISBOT_HOME 是进程全局，
+    // GLOBAL_STATE_LOCK 必须横跨.await 持有：NEMESISBOT_HOME 是进程全局，
     // 守卫探活的 await 期间同样不能让其他测试看到本测试的 home。单线程
     // tokio 测试 runtime + 探活目标是不碰锁的本地应答线程，无死锁面。
     #![allow(clippy::await_holding_lock)]
@@ -659,7 +659,7 @@ fn add_huge_every_is_honest_error_and_not_created() {
 }
 
 // ===========================================================================
-// 保留命名空间 CLI 变更闸（BUG-20261101-293）：board-ap:/memory-dreaming:
+// 保留命名空间 CLI 变更闸：board-ap:/memory-dreaming:
 // 系统作业由 autopilot 规则 / memory.dreaming 配置拥有真相源，CLI 删除/停用
 // 后要到下次 gateway 启动同步才重建（期间规则侧「已挂载」状态说谎）——
 // loud 拒绝并指路专属管理面；普通任务的 Remove/Disable 语义不变。

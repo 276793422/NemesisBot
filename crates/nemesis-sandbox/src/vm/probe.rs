@@ -126,7 +126,7 @@ pub fn probe_whpx() -> AccelProbe {
 }
 
 // ---------------------------------------------------------------------------
-// B2：环境自举状态机（安装卡三步的渲染态——每态带可执行下一步）
+// 环境自举状态机（安装卡三步的渲染态——每态带可执行下一步）
 // ---------------------------------------------------------------------------
 
 use super::install::{CpuVendor, DismFeatureState};
@@ -134,7 +134,7 @@ use super::install::{CpuVendor, DismFeatureState};
 /// QEMU 二进制在场状态（安装卡第 1 步）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QemuPresence {
-    /// 安装目录与 PATH 都没有（→ 一键安装）。
+    /// 安装目录与 PATH 都没有（一键安装）。
     Absent,
     /// 关键文件缺（半装态/系统装了个瘸的——missing 列缺什么）。
     Partial { missing: Vec<String> },
@@ -170,10 +170,10 @@ pub fn find_binary_dir_on_path(name: &str) -> Option<PathBuf> {
 }
 
 /// QEMU 在场分类（安装卡第 1 步渲染态；二进制名单与探针目录全部出自矩阵
-/// 条目 [`super::qemu_config::QemuPlatformEntry`]——安装与探针同源消费，
+/// 条目 [`super::qemu_config:QemuPlatformEntry`]——安装与探针同源消费，
 /// 不再硬编码）。探测顺序：
 /// 1) `install_dir`（自举链落位目录，优先——对齐
-///    [`super::assembly::resolve_qemu_binary`] 顺序）；
+///    [`super::assembly:resolve_qemu_binary`] 顺序）；
 /// 2) pacman 条目（`pacman` 字段非空）→ MSYS2 CLANGARM64 落位目录
 ///    （`<msys2>/clangarm64/bin`，source=`"msys2"`）；
 /// 3) PATH（用户/包管理器自装，source=`"path"`）。
@@ -253,7 +253,7 @@ pub enum AccelBootstrap {
 /// 加速器引导态的事实面（采集器产出；分类器纯消费——单测钉死每态）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HostAccelFacts {
-    /// `std::env::consts::OS`（"windows" / "linux" / 其他）。
+    /// `std::env:consts::OS`（"windows" / "linux" / 其他）。
     pub os: &'static str,
     /// `/dev/kvm` 在场（Linux）。
     pub kvm_dev_exists: bool,

@@ -43,7 +43,7 @@ fn chunks_single_and_tiny() {
 }
 
 // ---------------------------------------------------------------------------
-// parse_sha512_sidecar：上游 sidecar 格式（`<hex>  <filename>`）
+// parse_sha512_sidecar：上游 sidecar 格式（`<hex> <filename>`）
 // ---------------------------------------------------------------------------
 
 const KNOWN_SHA512: &str = "5bcf9eed634e8575a37b74f445af41a2fe4106da512d0c30c368301d4c105037fdfab40a5287367a28a957624cddebbc8c07e16c88ab6634f554cdf3d16bf543";
@@ -179,7 +179,7 @@ fn dirs_default_pins_parallel_and_relative_layout() {
 }
 
 // ---------------------------------------------------------------------------
-// B2：DISM 状态解析 / CPU vendor / 引导命令构造（纯函数，不真跑 sudo/DISM）
+// DISM 状态解析 / CPU vendor / 引导命令构造（纯函数，不真跑 sudo/DISM）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -254,7 +254,7 @@ fn pm_install_command_shapes_pinned() {
 }
 
 /// 二进制名单单一真相源（矩阵化）：宿主条目 binaries 前两项 = (system, img)，
-/// 与平台形态一致（Windows 带 .exe）。
+/// 与平台形态一致（Windows 带.exe）。
 #[test]
 fn required_binaries_names_match_host_matrix_entry() {
     use crate::vm::qemu_config;
@@ -264,7 +264,7 @@ fn required_binaries_names_match_host_matrix_entry() {
     let (sys, img) = qemu_config::required_binaries_for(e).expect("binaries 对");
     assert_ne!(sys, img);
     if cfg!(target_os = "windows") {
-        // windows 键（任一 arch）带 .exe 后缀。
+        // windows 键（任一 arch）带.exe 后缀。
         assert!(
             sys.ends_with(".exe") && img.ends_with(".exe"),
             "{sys} / {img}"
@@ -294,7 +294,7 @@ fn detect_linux_pm_matches_host_shape() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-278：零超时下载在半死上游上永久挂死——read_timeout 回归测试。
+// 零超时下载在半死上游上永久挂死——read_timeout 回归测试。
 // 头等待（HEAD 探测）原完全无保护，body 间隔靠 120s tokio 超时（测试等不
 // 起）；客户端层 read_timeout（测试态 400ms）两种形态都秒级兜住。经真实
 // ranged_download 跑，等待必须秒级以内。
@@ -382,7 +382,7 @@ async fn ranged_download_errors_on_body_stall_instead_of_hanging() {
     assert_stall_timeouts(err, started.elapsed());
 }
 
-// --- BUG-20261101-280：钉值诊断预览必须字符安全 ---
+// ---：钉值诊断预览必须字符安全 ---
 
 #[test]
 fn bug280_pin_preview_multibyte_safe() {

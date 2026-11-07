@@ -22,7 +22,7 @@ fn input<'a>(thread_kind: &'a str, content: &'a str, sender: &'a str) -> WakeInp
     }
 }
 
-/// BUG-20261029-169 红证：@all / @role: 的 fallback token 提取不带词边界
+/// 红证：@all / @role: 的 fallback token 提取不带词边界
 /// ——尾随 ASCII 标点被吃进 token，`@role:qa,` / `@all,` 匹配失败静默
 /// not_found（roster 形态 @id/@name 有词边界不受影响——同源语义漂移）。
 #[test]
@@ -155,7 +155,7 @@ fn test_rule4_issue_comment_routes_to_assignee() {
     assert_eq!(plan.skipped[0].reason, "not_found");
 }
 
-/// 规则④发送者排除（BUG-20261025-17）：worker 在自己被派的单上发进度/
+/// 规则④发送者排除：worker 在自己被派的单上发进度/
 /// 交付评论（无 @）→ 指派节点就是发送者本人，按 push_target_or_skip 同
 /// 语义 skip(sender)——否则 worker 被自己的消息唤醒，自问自答循环烧线程
 /// 额度。人类发送者 id 不在节点表，天然不受影响（同测对照）。
@@ -237,7 +237,7 @@ fn test_mention_extraction_edges() {
 }
 
 /// worker 侧 board.sync 过滤共用的 [`mentions_node`]（与规则①②同一匹配
-/// 语义——单一真相源）与 [`has_mentions`] 事件标签判定。
+/// 语义——统一定义）与 [`has_mentions`] 事件标签判定。
 #[test]
 fn test_mentions_node_and_has_mentions() {
     // @id / @name 大小写不敏感。
@@ -309,7 +309,7 @@ fn test_mentions_node_and_has_mentions() {
 }
 
 // ---------------------------------------------------------------------------
-// goal P1/F2：@all 群发（用户拍板计入）。
+// goal /：@all 群发（计入）。
 // ---------------------------------------------------------------------------
 
 /// @all：唤醒全部在线其他节点；发送者本人排除；离线 → skipped(offline)。
@@ -371,7 +371,7 @@ fn test_mentions_node_at_all_matches_any_node() {
 }
 
 // ---------------------------------------------------------------------------
-// 名册感知 @ 解析：含空格节点名可被 @整体点名（2026-10-23 用户实录：
+// 名册感知 @ 解析：含空格节点名可被 @整体点名（用户
 // "@Product Manager" 旧解析截成 token "Product" → not_found 无法点名）。
 // ---------------------------------------------------------------------------
 

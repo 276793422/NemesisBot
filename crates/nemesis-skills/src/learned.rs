@@ -1,4 +1,4 @@
-//! 学得技能 manifest（N3，2026-10-13 机会项）：`<workspace>/skills/.learned.json`。
+//! 学得技能 manifest（2026-10-13）：`<workspace>/skills/.learned.json`。
 //!
 //! `skill_manage`（agent 程序性记忆）创建的技能**不进** `skills.lock.json`
 //! ——那是 registry 安装记账（带 source/commit/逐文件哈希）。学得技能只有
@@ -6,7 +6,7 @@
 //! 轻量账本：`{name, created_at_ms, description}`，供
 //! WSAPI `skills.learned_list` / `skills.learned_remove` 管理面与 learn
 //! 技能提示回查。文件缺失 = 空 manifest（首个学得技能落盘时创建）；
-//! 损坏 = 备份 .bak 后按空表继续（对齐 `lockfile` 口径）。
+//! 损坏 = 备份.bak 后按空表继续（对齐 `lockfile` 口径）。
 //!
 //! `learned_remove` 的护栏 = **manifest 成员资格**：只删 manifest 里记着
 //! 的技能目录——防止管理面误删 registry 装的技能（那些走 `skills.uninstall`）。
@@ -63,8 +63,8 @@ impl LearnedManifest {
         }
     }
 
-    /// 从 workspace 读取；文件缺失/损坏按空表处理（损坏时备份 .bak 再降级，
-    /// 对齐 `lockfile::SkillsLockfile::load` 口径——不备份就丢排查证据）。
+    /// 从 workspace 读取；文件缺失/损坏按空表处理（损坏时备份.bak 再降级，
+    /// 对齐 `lockfile::SkillsLockfile:load` 口径——不备份就丢排查证据）。
     pub fn load(workspace: &Path) -> Self {
         let path = learned_manifest_path(workspace);
         if !path.exists() {
@@ -97,7 +97,7 @@ impl LearnedManifest {
         }
     }
 
-    /// 写回 workspace（原子写：tmp + rename；Windows 下 `std::fs::rename`
+    /// 写回 workspace（原子写：tmp + rename；Windows 下 `std::fs:rename`
     /// 带 MOVEFILE_REPLACE_EXISTING，可覆盖已存在文件）。
     pub fn save(&self, workspace: &Path) -> Result<(), String> {
         let path = learned_manifest_path(workspace);
@@ -107,7 +107,7 @@ impl LearnedManifest {
         }
         let data = serde_json::to_string_pretty(self)
             .map_err(|e| format!("failed to serialize learned manifest: {}", e))?;
-        // BUG-20261025-51：委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩）。
+        // 委托唯一临时名权威 helper（固定 `.json.tmp` 并发互踩）。
         nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), data.as_bytes(), 0o644)
             .map_err(|e| format!("failed to commit learned manifest: {}", e))
     }

@@ -23,15 +23,15 @@ pub mod vault_ref;
 pub use commands::{CommandEntry, CommandsConfig, load_commands_config, save_commands_config};
 pub use hot_reload::HotReloader;
 
-// P0 vault（B1，2026-09-22 计划）：`vault:<alias>` 引用的前缀常量、全局
+// vault（计划）：`vault:<alias>` 引用的前缀常量、全局
 // 解析器钩子与通用秘密字段解析（channel/cluster/MCP 消费点共用）。
 pub use vault_ref::{
     VAULT_PREFIX, VaultResolver, clear_global_vault_resolver, global_vault_resolver,
     is_secret_reference, resolve_secret_field, resolve_vault_reference, set_global_vault_resolver,
 };
 
-// L26②（2026-11-02 三期）：vault 别名域绑定（alias→(工具,槽位) 白名单）
-// 的配置 loader 与判定——dispatch 凭据闸 v2 臂的单一真相源。
+// ②（三期）：vault 别名域绑定（alias→(工具,槽位) 白名单）
+// 的配置 loader 与判定——dispatch 凭据闸 v2 臂的统一定义。
 pub use vault_domain::{
     DomainBinding, DomainVerdict, DomainViolation, VAULT_DOMAIN_CONFIG_FILE, VaultDomainConfig,
     vault_domain_config_path_in,
@@ -187,17 +187,17 @@ pub struct Config {
     pub executor: Option<ExecutorSeparationConfig>,
     #[serde(default)]
     pub debug: Option<DebugConfig>,
-    /// 托管 Agent 看板旗标（W2 P4；None = 全默认——超时兜底 3600s）。
+    /// 托管 Agent 看板旗标（None = 全默认——超时兜底 3600s）。
     #[serde(default)]
     pub board: Option<BoardFlagConfig>,
-    /// 使用统计保留策略（A3；None = 全默认——30 天 rollup，无条数上限）。
+    /// 使用统计保留策略（None = 全默认——30 天 rollup，无条数上限）。
     #[serde(default)]
     pub usage: Option<UsageConfig>,
-    /// PTY 内嵌终端（L8；None = 全默认——**enabled=false 关**，双闸的另一闸
+    /// PTY 内嵌终端（None = 全默认——**enabled=false 关**，双闸的另一闸
     /// 是 `terminal` cargo feature）。
     #[serde(default)]
     pub terminal: Option<TerminalConfig>,
-    /// 项目注册表参数（L6++ 对话/项目双分组；None = 全默认——上限 4）。
+    /// 项目注册表参数（对话/项目双分组；None = 全默认——上限 4）。
     #[serde(default)]
     pub projects: Option<ProjectsConfig>,
     /// 反向桥配置（None = 全默认——服务端接入门不开放、客户端不连接）。
@@ -206,7 +206,7 @@ pub struct Config {
     /// Dashboard 前端表现（皮肤等；None = 全默认——内置 static 皮肤）。
     #[serde(default)]
     pub ui: Option<UiConfig>,
-    /// 行动代理 connector 注册表（PLAN 行动代理 P0；None = 全默认——
+    /// 行动代理 connector 注册表（PLAN 行动代理；None = 全默认——
     /// enabled=true，预算 fail-closed：资金限额 0=拒绝所有）。
     #[serde(default)]
     pub connectors: Option<ConnectorsConfig>,
@@ -215,25 +215,25 @@ pub struct Config {
     /// `ziwei` cargo feature）。见 [`ZiweiConfig`]。
     #[serde(default)]
     pub ziwei: Option<ZiweiConfig>,
-    /// 健康监测旗标（M2；None = 全默认——磁盘水位开，warn 5GB / critical
+    /// 健康监测旗标（None = 全默认——磁盘水位开，warn 5GB / critical
     /// 1GB / 60s；critical 只升级告警面不做自动 estop）。见
     /// [`HealthFlagConfig`]。
     #[serde(default)]
     pub health: Option<HealthFlagConfig>,
-    /// 日志六族 TTL 清扫（M7/M8 + 回收站 2026-10-30；None = 全默认——
+    /// 日志六族 TTL 清扫（/ + 回收站；None = 全默认——
     /// session_logs 30d / boundary 30d / request_logs 14d / terminal 7d /
     /// event_ledger 30d / trash 90d；0 = 该族关闭清扫）。见
     /// [`LogsTtlConfig`]。
     #[serde(default)]
     pub logs: Option<LogsTtlConfig>,
-    /// checkpoint gc（M6；None = 全默认——**enabled=false 总闸关**，删错 =
+    /// checkpoint gc（None = 全默认——**enabled=false 总闸关**，删错 =
     /// 回退网失效宁默认关；keep_turns 200 / keep_days 7）。见
     /// [`CheckpointConfig`]。
     #[serde(default)]
     pub checkpoint: Option<CheckpointConfig>,
     /// WASM 插件宿主开关段（`plugins.wasm.enabled`，缺省 true）。typed
-    /// 字段化保证 save_config 往返不丢键（P32 cache_warmer 同款预防，
-    /// BUG-20261105-008）：本键由 `crate::plugin_wasm::runtime_enabled`
+    /// 字段化保证 save_config 往返不丢键（cache_warmer 同款预防，
+    /// ）：本键由 `crate::plugin_wasm:runtime_enabled`
     /// 经原始 JSON pointer 消费、全仓无写入点（手编 config.json 是唯一
     /// 设置途径）——不建模则任何 typed 保存（dashboard config/models/
     /// skills/profile 事务、save_live、ConfigStore::update 等）静默抹掉
@@ -242,7 +242,7 @@ pub struct Config {
     pub plugins: Option<PluginsHostConfig>,
 }
 
-/// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；BUG-20261105-008
+/// `config.json` 的 `"plugins"` 段（WASM 插件宿主开关面；
 /// typed 字段化——先前该段不被顶层 [`Config`] 建模，typed 保存静默丢弃
 /// 整段。plugin_wasm.rs 模块注释早已点名该机制（panel_llm 因此落 side
 /// file），主闸 `plugins.wasm.enabled` 却仍留在裸读面）。段内未建模键经
@@ -251,7 +251,7 @@ pub struct Config {
 #[serde(default)]
 pub struct PluginsHostConfig {
     /// WASM 插件子系统运行期总闸（缺省 true = 未表态放行；显式 false =
-    /// 禁用。消费方 `crate::plugin_wasm::runtime_enabled` 原始 pointer
+    /// 禁用。消费方 `crate::plugin_wasm:runtime_enabled` 原始 pointer
     /// 现读，本字段只保证保存面不丢键）。
     #[serde(default = "default_plugins_wasm_enabled")]
     pub wasm: PluginsWasmHostConfig,
@@ -280,10 +280,8 @@ fn default_plugins_wasm_enabled() -> PluginsWasmHostConfig {
     PluginsWasmHostConfig { enabled: true }
 }
 
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：按配置域分文件。纯代码搬家，行为零变更；
-// 各子模块 pub 项经 pub use 保持原 nemesis_config:: 路径不变。
-// ---------------------------------------------------------------------------
+// 机械拆分：按配置域分文件。纯代码搬家，行为零变更；
+// 各子模块 pub 项经 pub use 保持原 nemesis_config:路径不变。
 #[path = "sections/agents.rs"]
 mod agents;
 #[path = "sections/board.rs"]
@@ -323,7 +321,7 @@ impl Config {
     /// Get the workspace path from config.
     pub fn workspace_path(&self) -> String {
         let ws = &self.agents.defaults.workspace;
-        // BUG-20261102-319：`~\` 反斜杠形态与 `~/` 同判（展开）——此前只认
+        // `~\` 反斜杠形态与 `~/` 同判（展开）——此前只认
         // `~/`，nemesis-path 四个 resolve_*_config_path 消费方对 `~\mybots`
         // 拿到字面量落 cwd 下 `~` 目录。默认拼法 `~\.nemesisbot\workspace`
         // 在加载期已被 adjust_paths_for_environment 换成绝对路径，这里兜的
@@ -381,7 +379,7 @@ impl Config {
         // WebSocket channel: populate SyncToWeb from SyncTo
         self.channels.websocket.sync_to_web = !self.channels.websocket.sync_to.is_empty();
 
-        // AOR 批三 5.1：autonomy=autonomous 前置要求 unlimited_mode=true——
+        // autonomy=autonomous 前置要求 unlimited_mode=true——
         // 防「监察环自动重派开着、评审 FAIL 却转人工」的矛盾态。加载期矛盾
         // 诚实降级为 assisted + WARN（安全方向回退，网关不被一个旗标卡死——
         // 沙盒未就绪回退 Layer 1 同款先例）；面板保存路径硬拒（nemesis-web
@@ -405,7 +403,7 @@ impl Config {
     pub fn adjust_paths_for_environment(&mut self) {
         let expected_workspace = WorkspaceResolver::resolve(false).join("workspace");
 
-        // Check if workspace is using a default path. BUG-20261025-77：旧
+        // Check if workspace is using a default path.：旧
         // `ends_with(".nemesisbot/workspace")` 把任何以该后缀结尾的绝对路径
         // （如项目内自定义 D:/bots/proj/.nemesisbot/workspace）误判成默认
         // 形态、每次加载强改回默认；且 Windows 下 save_config 落盘的反斜杠
@@ -442,7 +440,7 @@ fn default_security_action() -> String {
 fn default_approval_timeout() -> i64 {
     300
 }
-// 死键恢复区（2026-09-16 用户指令恢复保留，未接线，见 SecurityConfig 字段区注释）
+// 死键恢复区（用户指令恢复保留，未接线，见 SecurityConfig 字段区注释）
 fn default_max_pending() -> i64 {
     100
 }
@@ -474,8 +472,8 @@ fn default_prompt_system() -> String {
     "pro".to_string()
 }
 fn default_max_tokens() -> i64 {
-    // 单一真相源：nemesis-types capability（2026-10-23 P0，8192→64K，
-    // docs/BUG/2026-10-23_max-tokens-8192截断撞顶复发.md）
+    // 统一定义：nemesis-types capability（8192→64K，
+    // max-tokens-8192截断撞顶复发）
     nemesis_types::capability::DEFAULT_MAX_TOKENS
 }
 fn default_temperature() -> f64 {
@@ -484,7 +482,7 @@ fn default_temperature() -> f64 {
 fn default_max_tool_iterations() -> i64 {
     100
 }
-/// E1 (2026-09-05 拍板): default concurrent mode is **queue** — busy sessions
+/// default concurrent mode is **queue** — busy sessions
 /// park messages in the per-session inbox instead of bouncing them (devtool
 /// upgrade: multi-entry coding agent needs turn-end continuation, not
 /// rejection). Applies ONLY when config.json omits the key (serde default);
@@ -501,12 +499,12 @@ fn default_queue_size() -> i64 {
     8
 }
 
-/// W6：优雅停机 drain 预算缺省 30s（0=跳过；见 [`AgentDefaults::shutdown_drain_secs`]）。
+/// 优雅停机 drain 预算缺省 30s（0=跳过；见 [`AgentDefaults::shutdown_drain_secs`]）。
 fn default_shutdown_drain_secs() -> u64 {
     30
 }
 
-/// D-4（2026-09-23 多会话并行清账）：单 loop 并发 turn 上限缺省 8。泵统一
+/// D-4（多会话并行清账）：单 loop 并发 turn 上限缺省 8。泵统一
 /// 后跨会话并发是结构不变量，此缺省给极端场景一个有界并发兜底；0 显式
 /// 关闭限制。
 fn default_max_concurrent_turns() -> i64 {
@@ -515,12 +513,12 @@ fn default_max_concurrent_turns() -> i64 {
 fn default_spill_retention_days() -> i64 {
     7
 }
-/// 429 重试环默认次数（2026-09-17 裁决④：对齐业界口径，默认 10）。
+/// 429 重试环默认次数（对齐业界口径，默认 10）。
 fn default_rate_limit_retries() -> i64 {
     10
 }
 
-/// P5（能力扩展 WS2 compaction）：逐字尾巴 token 预算缺省值（单一真相源：
+/// （compaction）：逐字尾巴 token 预算缺省值（统一定义：
 /// serde 缺省 / raw-JSON 解析 / Default impl 三方共用）。对齐业界通行的
 /// keepRecentTokens=20000 口径。
 pub const DEFAULT_COMPACT_KEEP_RECENT_TOKENS: i64 = 20_000;
@@ -530,7 +528,7 @@ fn default_compact_keep_recent_tokens() -> i64 {
     DEFAULT_COMPACT_KEEP_RECENT_TOKENS
 }
 
-/// P5：raw config JSON 读取 `agents.defaults.compact_keep_recent_tokens`。
+/// raw config JSON 读取 `agents.defaults.compact_keep_recent_tokens`。
 ///
 /// AgentLoop 的 compact 域走 fresh-read raw JSON（同 `current_max_tokens`
 /// 模式，运行中改键下一轮生效），不经过 typed `Config`——键路径与缺省值
@@ -610,7 +608,7 @@ fn default_mcp_timeout() -> i64 {
 // ============================================================================
 
 // Single shared process-global-state lock for ALL tests in this crate that touch
-// `std::env::set_var` / `set_current_dir` / load config (which reads env). These
+// `std::env:set_var` / `set_current_dir` / load config (which reads env). These
 // mutate/read PROCESS-GLOBAL state, so under parallel test execution they race:
 // a writer in one test module pollutes the env a reader in another module sees.
 // Both `tests` and `extra_tests` `use super::GLOBAL_STATE_LOCK` so they share
@@ -639,21 +637,21 @@ mod extra_tests;
 #[cfg(test)]
 mod mcp_serde_tests;
 
-// P5（能力扩展 WS2）：compact_keep_recent_tokens 配置面（serde 缺省 /
+// compact_keep_recent_tokens 配置面（serde 缺省 /
 // roundtrip / raw-JSON 解析）测试。
 #[cfg(test)]
 mod ws2_compact_config_tests;
 
-// dispatch_fallback 三档化（2026-09-29）：旧布尔保真 + 字符串档位 serde
+// dispatch_fallback 三档化：旧布尔保真 + 字符串档位 serde
 // 兼容测试。
 #[cfg(test)]
 mod dispatch_fallback_mode_tests;
 
-// 自治模式总开关（AOR 批三 5.1）：serde 缺省 / 矛盾态加载期降级测试。
+// 自治模式总开关：serde 缺省 / 矛盾态加载期降级测试。
 #[cfg(test)]
 mod autonomy_tests;
 
-// P5（桌面级 VM）：executor.vm 段配置面（serde 缺省铁律 / roundtrip /
+// （桌面级 VM）：executor.vm 段配置面（serde 缺省铁律 / roundtrip /
 // validate loud 拒绝）测试。
 #[cfg(test)]
 mod vm_config_tests;

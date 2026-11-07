@@ -1,5 +1,5 @@
-//! B4（devtool-upgrade 阶段 3）：网关级后台进程注册表 + 四动词工具
-//! （start / output / kill / steer，steer 为 L11 2026-11-03 扩展）。
+//! （devtool-upgrade）：网关级后台进程注册表 + 四动词工具
+//! （start / output / kill / steer，steer 为 2026-11-03 扩展）。
 //!
 //! 起一个长跑进程拿到句柄，随后分页读输出、随时终止、（可选）经 stdin
 //! 活管道中途注入输入。此前唯一的异步形态
@@ -10,7 +10,7 @@
 //! 跨 AgentLoop 重启存活；注册表 Drop 时给所有存活任务发 kill 旗标（监督
 //! 任务 ≤200ms 内收尸），`kill_on_drop(true)` 兜底 runtime 关停路径。
 //!
-//! **不进 [`MOVE_TOOLS`](crate::remote_executor_tool::MOVE_TOOLS)**：executor
+//! **不进 [`MOVE_TOOLS`](crate::remote_executor_tool:MOVE_TOOLS)**：executor
 //! 分离是 per-call 子进程，一次调用后退出——在子进程里起后台任务，句柄必然
 //! 随子进程孤儿化。因此四动词固定在 gateway 进程内跑（与 `exec_async` 同一
 //! 决策，见 remote_executor_tool.rs 顶部注记），`exec_worker` 侧不注入注册表
@@ -19,14 +19,14 @@
 //! 安全：`background_start` 语义等同 `exec`（起进程）→ 8 层管线按
 //! ProcessExec 审查命令本体；`background_output` / `background_kill` 只操作
 //! 本注册表内的自有任务（命令已在 start 时过闸，读缓冲/杀自属子进程不构成
-//! 新的攻击面）→ 显式映射 `Internal`（LOW）。`background_steer`（L11，
+//! 新的攻击面）→ 显式映射 `Internal`（LOW）。`background_steer`（
 //! 2026-11-03）：向自有任务 stdin 注入文本 = 操控进程行为，风险与起进程
-//! 同级 → 显式映射 `ProcessExec`（exec 类审批口径对齐，清单拍板项）；steer
-//! 文本作为工具入参照常过注入检测层。W5 盲点修复后管线未知名 =
+//! 同级 → 显式映射 `ProcessExec`（exec 类审批口径对齐，清单既定项）；steer
+//! 文本作为工具入参照常过注入检测层。 盲点修复后管线未知名 =
 //! CRITICAL fail-closed，不再有「未知名放行」分支可搭（types.rs 表内
 //! 显式条目，例外语义保留但不再依赖兜底行为）。
 //!
-//! stdin 活管道（L11，2026-11-03）：`start(.., steerable=true)` 保留 child
+//! stdin 活管道（2026-11-03）：`start(.., steerable=true)` 保留 child
 //! stdin（此前恒 `Stdio::null()`），`background_steer` 向其写字节（text +
 //! 换行 + flush）。registry 层只管字节——协议帧封装（stream-json /
 //! app-server 帧协议）是 delegate_registry 的职责，不在本层重复。缺省
@@ -53,7 +53,7 @@ use nemesis_path::paths::canonicalize_for_compare;
 use crate::context::RequestContext;
 use crate::r#loop::Tool;
 
-/// 注册表默认任务上限（B4 验收：16 上限拒绝）。满员时优先淘汰最旧的
+/// 注册表默认任务上限（验收：16 上限拒绝）。满员时优先淘汰最旧的
 /// **已完成**任务（输出仍可读期间照常挤占——超出 16 就得腾地方），全部
 /// 在跑才拒绝新任务。
 pub const DEFAULT_MAX_JOBS: usize = 16;
@@ -70,7 +70,7 @@ const SUPERVISE_INTERVAL: Duration = Duration::from_millis(200);
 /// `background_kill` 等待子进程退出的上限（超时如实报 still running）。
 const KILL_WAIT: Duration = Duration::from_secs(5);
 
-/// A2 停止阶梯的宽限窗：优雅停（POSIX=进程组 SIGTERM）后等自然退出的
+/// 停止阶梯的宽限窗：优雅停（POSIX=进程组 SIGTERM）后等自然退出的
 /// 时长。必须小于 [`KILL_WAIT`]（5s）——阶梯 3s 宽限 + 强杀生效（~0.5s）
 /// 要落在 kill() 的等待窗内，否则调用方会在升级到强杀之前误报 stubborn。
 pub(crate) const STOP_GRACE: Duration = Duration::from_secs(3);
@@ -102,8 +102,8 @@ impl JobStatus {
 /// 的字节数。offset 分页坐标基于 `produced` 空间：读 offset 若小于 `dropped`
 /// 则自动钳到 `dropped`（数据已丢，调用方从 `dropped_bytes` 得知）。
 ///
-/// `pub(crate)`（2026-10-18）：delegate_registry（A3 委派三动词）复用同一
-/// 环形缓冲语义——delegate 条目是「带 stdin 写口的 B4 条目 + 协议抽取」，
+/// `pub(crate)`：delegate_registry（委派三动词）复用同一
+/// 环形缓冲语义——delegate 条目是「带 stdin 写口的 条目 + 协议抽取」，
 /// 缓冲语义必须逐字节一致（offset 坐标跨工具族可迁移）。
 #[derive(Debug, Default)]
 pub(crate) struct OutputBuffer {
@@ -168,7 +168,7 @@ struct JobEntry {
     /// kill 请求旗标（监督任务看到即树杀；注册表 Drop 同步置位）。
     /// pid 由监督任务闭包持有（Drop 路径无法异步树杀，用不上）。
     kill_flag: Arc<AtomicBool>,
-    /// stdin 活管道（L11）：Some = steerable 启动且未关闭；None = 非可操控
+    /// stdin 活管道：Some = steerable 启动且未关闭；None = 非可操控
     /// 启动（null stdin）或已关闭。写入队列 = 本 Mutex 的锁队列。
     stdin: Arc<Mutex<Option<tokio::process::ChildStdin>>>,
     /// 是否以 steerable=true 启动（区分「没开过 stdin」与「开过但已断」
@@ -236,6 +236,47 @@ impl BackgroundProcessRegistry {
         self.jobs.lock().await.len()
     }
 
+    /// 全量任务投影（WSAPI `background.list` 消费；按 id 倒序 = 新任务在前）。
+    /// 只投影元数据与产出计数，不含输出内容（内容走 [`Self::output`] 按单调
+    /// 坐标分页拉）。终态任务把 exit_code/success/killed 平铺进行（与
+    /// [`Self::output`] 的终态平铺同构）。
+    pub async fn list(&self) -> Vec<serde_json::Value> {
+        let jobs = self.jobs.lock().await;
+        let mut ids: Vec<u64> = jobs.keys().copied().collect();
+        ids.sort_unstable_by(|a, b| b.cmp(a));
+        let mut rows = Vec::with_capacity(ids.len());
+        for id in ids {
+            let job = &jobs[&id];
+            let running = job.is_running().await;
+            let buf = job.output.lock().await;
+            let mut row = serde_json::json!({
+                "id": id,
+                "command": job.cmd,
+                "cwd": job.cwd,
+                "started_at_unix": job
+                    .started_at
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                "running": running,
+                "steerable": job.steerable,
+                "total_bytes": buf.produced,
+                "dropped_bytes": buf.dropped,
+            });
+            let status = job.status.lock().await;
+            if !running
+                && let Some(s) = status.as_ref()
+                && let Some(obj) = s.to_json().as_object()
+            {
+                for (k, v) in obj {
+                    row[k.as_str()] = v.clone();
+                }
+            }
+            rows.push(row);
+        }
+        rows
+    }
+
     /// 起一个后台任务。`command` 经平台 shell 解释（cmd /C 或 sh -c）。
     /// `steerable=false` → stdin 恒 null（旧行为，读 stdin 的命令即刻 EOF）；
     /// `steerable=true` → stdin 活管道（[`Self::steer`] 可注入，任务不读
@@ -274,7 +315,7 @@ impl BackgroundProcessRegistry {
         let mut child = build_platform_shell(command)
             .current_dir(cwd)
             .stdin(if steerable {
-                // L11：活管道——保留写半端供 background_steer 注入。
+                // 活管道——保留写半端供 background_steer 注入。
                 std::process::Stdio::piped()
             } else {
                 std::process::Stdio::null()
@@ -296,7 +337,7 @@ impl BackgroundProcessRegistry {
             None
         }));
 
-        // B4 同 exec 的 B2 教训：管道必须由独立任务并发排干——否则长输出
+        // 同 exec 的 管道必须由独立任务并发排干——否则长输出
         // 写满 ~64KB 管道缓冲会把子进程卡死在 write 上。stdout/stderr 合流
         // 追加进同一缓冲（保持产出顺序交错，与终端观感一致）。
         spawn_pump(child.stdout.take(), output.clone());
@@ -370,6 +411,9 @@ impl BackgroundProcessRegistry {
             "running": running,
             "command": job.cmd,
             "cwd": job.cwd,
+            // steerable 随 output 面透出：UI 详情态据此决定是否渲染 stdin
+            // 注入框（与 start()/list() 同源，不另设查询命令）。
+            "steerable": job.steerable,
             "started_at_unix": job
                 .started_at
                 .duration_since(std::time::UNIX_EPOCH)
@@ -447,7 +491,7 @@ impl BackgroundProcessRegistry {
         }
     }
 
-    /// steer（L11，2026-11-03）：向运行中任务的 stdin 写入 `text`（字节级
+    /// steer：向运行中任务的 stdin 写入 `text`（字节级
     /// ——registry 层不做协议帧封装；text 后补换行 + flush，行协议 CLI 直读）。
     /// 并发 steer 经 stdin Mutex 的锁队列串行落盘，不交错撕裂。
     ///
@@ -500,10 +544,10 @@ impl BackgroundProcessRegistry {
 }
 
 /// 监督任务：轮询 try_wait → 记录终态；见 kill 旗标跑一次停止阶梯
-/// （优雅停→宽限窗→强杀升级，A2），再以 start_kill 兜底直杀 shell
+/// （优雅停→宽限窗→强杀升级），再以 start_kill 兜底直杀 shell
 /// （阶梯指令丢失时至少不漏直接子进程）。
 ///
-/// `pub(crate)`（2026-10-18）：delegate_registry 复用同一监督语义（kill
+/// `pub(crate)`：delegate_registry 复用同一监督语义（kill
 /// 旗标 + 自然退出收尸）；delegate 侧另有独立的墙钟上限 watch 任务只置
 /// 旗标，不重复实现树杀循环。
 pub(crate) async fn supervise(
@@ -517,7 +561,7 @@ pub(crate) async fn supervise(
         if kill_flag.load(Ordering::Relaxed) {
             if !kill_sent {
                 kill_sent = true;
-                // A2 停止阶梯：优雅停 → 宽限窗 → 强杀升级（内含等待，
+                // 停止阶梯：优雅停 → 宽限窗 → 强杀升级（内含等待，
                 // 只跑一次；此后每轮仅剩收尸轮询 + start_kill 兜底）。
                 stop_ladder(pid, &child, STOP_GRACE).await;
             }
@@ -542,8 +586,8 @@ pub(crate) async fn supervise(
 
 /// 排干管道追加进共享输出缓冲（stdout/stderr 各一个任务）。
 ///
-/// `pub(crate)`（2026-10-18）：delegate_registry 复用（delegate 子进程同样
-/// 必须并发排干，否则 64KB 管道缓冲写满卡死子进程——B2 教训同源）。
+/// `pub(crate)`：delegate_registry 复用（delegate 子进程同样
+/// 必须并发排干，否则 64KB 管道缓冲写满卡死子进程—— 教训同源）。
 pub(crate) fn spawn_pump(
     pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
     output: Arc<Mutex<OutputBuffer>>,
@@ -567,7 +611,7 @@ pub(crate) fn spawn_pump(
 /// Windows 用 `cmd /C` + `raw_arg`（`.arg()` 的自动加引号会打碎 cmd.exe
 /// 自己的引号处理），Unix 用 `sh -c`。stdin 由调用方决定。
 ///
-/// 额外两条（树杀前提，B4）：
+/// 额外两条（树杀前提）：
 /// - Unix `process_group(0)`：子进程自成一进程组（pgid == pid），树杀用
 ///   `kill -- -PGID` 一锅端（shell 的孙进程不会孤儿化）。
 /// - Windows `CREATE_NO_WINDOW`：后台任务不该弹控制台窗口（网关以托盘/
@@ -588,8 +632,8 @@ pub(crate) fn build_platform_shell(command: &str) -> tokio::process::Command {
         c.process_group(0);
         c
     };
-    // T4 环境凭据剥离（BUG-20261029-178）：本函数自注释「与 ExecTool /
-    // AsyncExecTool 同语义」——语义含 T4 剥离，此前漏接（后台命令与前台
+    // 环境凭据剥离：本函数自注释「与 ExecTool /
+    // AsyncExecTool 同语义」——语义含 剥离，此前漏接（后台命令与前台
     // exec 同为 LLM 驱动 spawn，echo 环境即可读凭据）。
     let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
     if stripped > 0 {
@@ -598,12 +642,12 @@ pub(crate) fn build_platform_shell(command: &str) -> tokio::process::Command {
     c
 }
 
-/// 停止阶梯第一段：优雅停。
+/// 停止阶梯：优雅停。
 ///
 /// - POSIX：向进程组发 SIGTERM（shell 捕获后优雅收尾、子树随之退出；
 ///   默认处理同样直接终止）。
 /// - Windows：控制台子进程没有真优雅终止通道（`taskkill` 无 `/F` 靠
-///   窗口消息，控制台程序基本无效）——第一段即树杀强杀，宽限窗实际
+///   窗口消息，控制台程序基本无效）——即树杀强杀，宽限窗实际
 ///   演变为「强杀后的收尸等待」（诚实边界，不虚报优雅语义）。
 ///
 /// `pub(crate)`：delegate_registry 经 supervise 共用同一阶梯。
@@ -619,12 +663,12 @@ pub(crate) async fn graceful_stop(pid: u32) {
     tree_kill(pid).await;
 }
 
-/// 停止阶梯第二段：强杀升级（优雅段超窗后的兜底）。
+/// 停止阶梯：强杀升级（优雅段超窗后的兜底）。
 ///
 /// - POSIX：向进程组发 SIGKILL——此前缺失（[`tree_kill`] 对 POSIX 只发
 ///   TERM，trap/僵死进程永不升级，`start_kill` 只杀 shell 本体会漏孙
 ///   进程）。
-/// - Windows：复用树杀（幂等；第一段已是强杀，走到这里说明进程连 `/F`
+/// - Windows：复用树杀（幂等；已是强杀，走到这里说明进程连 `/F`
 ///   都还没死透——多补一轮，`stop_ladder` 末尾另有 `start_kill` 兜底）。
 pub(crate) async fn force_kill(pid: u32) {
     #[cfg(not(target_os = "windows"))]
@@ -637,13 +681,13 @@ pub(crate) async fn force_kill(pid: u32) {
     tree_kill(pid).await;
 }
 
-/// A2 子进程停止阶梯（**长命进程路径专用**：background 任务与 delegate
+/// 子进程停止阶梯（**长命进程路径专用**：background 任务与 delegate
 /// 经 [`supervise`] 共用；exec 等 per-call 短命子进程保持 [`tree_kill`]
 /// 直杀语义，避免过度工程）：优雅停 → 宽限窗内轮询等自然退出 → 超窗
 /// 强杀升级 → `start_kill` 兜底直杀 shell 本体。
 ///
 /// 调用方随后照常 try_wait 收尸记录终态（真相源不变）。指令丢失一律
-/// 忽略错误——收尸才是真相源（与 tree_kill 同纪律）；PID 复用窗口同
+/// 忽略错误——收尸才为权威依据（与 tree_kill 同纪律）；PID 复用窗口同
 /// tree_kill（毫秒级固有竞态，不做缓解）。
 pub(crate) async fn stop_ladder(
     pid: u32,
@@ -677,10 +721,10 @@ pub(crate) async fn stop_ladder(
 ///   `build_platform_shell` 的 process_group(0)）。
 ///
 /// 指令丢失（进程已退/PID 复用/kill 不存在）一律忽略错误——调用方随后
-/// 的 try_wait 收尸才是真相源。PID 复用窗口（进程退出→树杀之间）是平台
+/// 的 try_wait 收尸才为权威依据。PID 复用窗口（进程退出→树杀之间）是平台
 /// 固有竞态，量级为毫秒且后果止于误杀同名树，不做缓解。
 ///
-/// `pub(crate)`（2026-10-15）：exec/run_checks/run_script 的超时收尸共用
+/// `pub(crate)`：exec/run_checks/run_script 的超时收尸共用
 /// 同一树杀（此前 start_kill 只杀 shell 本体，cargo/rustc 等整棵子树存活
 /// ——产品验证实验 #1 实证：run_checks 声明 600s 超时后 cargo 树继续跑了
 /// 25 分钟直到手工杀树）。Unix 侧前提是 spawn 时 `process_group(0)`
@@ -704,7 +748,7 @@ pub(crate) async fn tree_kill(pid: u32) {
 }
 
 // ---------------------------------------------------------------------------
-// 四动词工具（start / output / kill / steer，L11 2026-11-03）
+// 四动词工具（start / output / kill / steer）
 // ---------------------------------------------------------------------------
 
 /// cwd 解析 + 工作区边界（与 `ExecTool` 同形态：相对 cwd join workspace，
@@ -712,7 +756,7 @@ pub(crate) async fn tree_kill(pid: u32) {
 /// 返回**解析后的绝对路径**——`Command::current_dir` 对相对路径按父进程
 /// cwd 解释，与工作区基准脱钩（exec 侧传原始串是历史行为，这里不复制）。
 ///
-/// `pub(crate)`（2026-10-18）：delegate_registry 的 delegate_start 复用同一
+/// `pub(crate)`：delegate_registry 的 delegate_start 复用同一
 /// 语义（子代理工作目录与后台任务同规约束）。
 pub(crate) fn resolve_cwd(
     workspace: &str,
@@ -831,7 +875,7 @@ impl Tool for BackgroundOutputTool {
         })
     }
 
-    /// 纯读自有缓冲（U5 并行读池安全）。
+    /// 纯读自有缓冲（并行读池安全）。
     fn is_read_only(&self) -> bool {
         true
     }
@@ -891,10 +935,10 @@ impl Tool for BackgroundKillTool {
     }
 }
 
-/// `background_steer`（L11，2026-11-03）：向运行中后台任务的 stdin 注入文本。
+/// `background_steer`：向运行中后台任务的 stdin 注入文本。
 ///
 /// 安全档 = ProcessExec（exec 类审批口径对齐——注入指令 = 操控进程，风险
-/// 同级，见 nemesis-security types.rs L11 注记）；steer 文本作为工具入参
+/// 同级，见 nemesis-security types.rs 注记）；steer 文本作为工具入参
 /// 照常过注入检测层（dispatch 瀑布自动覆盖，工具内不重复扫描）。
 pub struct BackgroundSteerTool {
     registry: Arc<BackgroundProcessRegistry>,

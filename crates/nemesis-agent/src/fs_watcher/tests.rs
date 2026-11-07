@@ -1,4 +1,4 @@
-//! I1 (devtool-upgrade 阶段 3) fs-watcher tests.
+//! (devtool-upgrade) fs-watcher tests.
 //!
 //! Timing: watcher tests use a short debounce (150ms) and poll with a 5s
 //! cap — notify delivers well within that on both Windows
@@ -38,7 +38,7 @@ fn test_is_ignored_builtins() {
     assert!(is_ignored(&rel("target/debug/foo.exe"), &[]));
     assert!(is_ignored(&rel("logs/sessions/x.jsonl"), &[]));
     assert!(is_ignored(&rel("sub/deep/uploads/img.png"), &[]));
-    // M9（2026-10-27 整改批次五）：构建产物/虚拟环境目录扩充进共享真相表。
+    // 构建产物/虚拟环境目录扩充进共享真相表。
     assert!(is_ignored(&rel("build/out.o"), &[]));
     assert!(is_ignored(&rel("out/objs.o"), &[]));
     assert!(is_ignored(&rel("bin/app.exe"), &[]));
@@ -164,6 +164,52 @@ fn test_self_write_window_expires() {
     drop(map);
     arc.push_external_change("a.txt");
     assert_eq!(arc.drain_external_changes(), vec!["a.txt".to_string()]);
+}
+
+#[test]
+fn test_self_write_absolute_path_window_match() {
+    // BUG-20261106-032：工具层 resolve_workspace_path 原样接受绝对路径，
+    // agent 用绝对路径（反斜杠 + 大小写漂移的常见拼法）写文件是常态——
+    // 自写登记的 key 必须折算成 workspace-relative 才能拦下 watcher 的
+    // rel 事件，否则刚写的文件被谎报为「外部修改（非本会话操作）」。
+    let dir = tempfile::tempdir().unwrap();
+    let arc = test_loop();
+    arc.set_workspace_root(dir.path().to_path_buf());
+    let abs = format!("{}\\SRC\\A.rs", dir.path().display());
+    arc.note_self_write(&abs);
+    // watcher 事件形态：strip workspace 根后的 rel 路径。
+    arc.push_external_change("src/a.rs");
+    assert!(
+        arc.drain_external_changes().is_empty(),
+        "绝对路径形态的自写登记必须拦下 watcher rel 事件"
+    );
+}
+
+#[test]
+fn test_self_write_dot_relative_window_match() {
+    // BUG-20261106-032 对照臂：`./` 前缀相对形态同样失配（归一不清洗
+    // `.` 组件）——登记 key 必须与 watcher 事件的 rel 形态一致。
+    let arc = test_loop();
+    arc.note_self_write("./src/b.rs");
+    arc.push_external_change("src/b.rs");
+    assert!(
+        arc.drain_external_changes().is_empty(),
+        "`./` 前缀形态必须匹配"
+    );
+    // 根前缀不误剥（`<root>2` 与 `<root>` 是不同目录——组件级 strip 语义，
+    // 字符级 strip_prefix 会把 `2/z.rs` 误剥成兄弟路径匹配）。
+    let dir = tempfile::tempdir().unwrap();
+    let arc2 = test_loop();
+    arc2.set_workspace_root(dir.path().to_path_buf());
+    let sibling = format!("{}2\\z.rs", dir.path().display());
+    arc2.note_self_write(&sibling);
+    arc2.push_external_change("2/z.rs");
+    let drained = arc2.drain_external_changes();
+    assert_eq!(
+        drained,
+        vec!["2/z.rs".to_string()],
+        "根前缀组件级误剥必须回落不匹配"
+    );
 }
 
 // --- end-to-end: watcher fires through the loop ---

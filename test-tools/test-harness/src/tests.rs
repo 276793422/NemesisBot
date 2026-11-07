@@ -5,7 +5,7 @@ use std::sync::Mutex;
 // parallel `pass/fail/skip` increment races with `reset_counters()`+`get_counters()`
 // and the reset assertion can see (1,1,1) instead of (0,0,0); symmetrically, a
 // parallel naked `reset_counters()` wipes the locked test's increments mid-window
-// (`failed: 0`, Windows CI 实录 2026-09-02). The contract is bilateral: EVERY
+// (`failed: 0`, Windows CI 案例 2026-09-02). The contract is bilateral: EVERY
 // test that touches the counters (increment or reset) must hold this lock.
 static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -207,6 +207,57 @@ fn floor_char_boundary_ascii_and_multibyte() {
     assert_eq!(super::floor_char_boundary(&s, 200), 199);
     // 切点恰在边界 → 原样返回。
     assert_eq!(super::floor_char_boundary(&s, 198), 198);
+}
+
+/// BUG-20261106-012 回归锁辅助：现场编译一个「忽略一切参数、不读 stdin、
+/// 睡 60s」的微型 sleeper。现成 Windows 工具都不行——`--local` 恒前缀让
+/// ping/cmd/whoami 类要么 usage 快退要么直接退出，永远构造不出「stdin 写
+/// 阻塞在管道缓冲上」的目标场景；rustc 在跑 cargo test 的机器上恒存在，
+/// 5 行源码秒级编译，TempDir 随测试结束自清理。
+#[cfg(windows)]
+fn compile_stdin_sleeper(dir: &Path) -> PathBuf {
+    let src = dir.join("sleeper.rs");
+    std::fs::write(
+        &src,
+        "fn main() { std::thread::sleep(std::time::Duration::from_secs(60)); }",
+    )
+    .unwrap();
+    let out = dir.join("sleeper.exe");
+    let st = std::process::Command::new("rustc")
+        .args(["--edition", "2021", "-o"])
+        .arg(&out)
+        .arg(&src)
+        .output()
+        .expect("rustc must exist on a machine running cargo test");
+    assert!(
+        st.status.success(),
+        "rustc failed: {}",
+        String::from_utf8_lossy(&st.stderr)
+    );
+    out
+}
+
+/// BUG-20261106-012 回归锁：stdin 写入必须在 timeout 保护圈内。
+/// sleeper 不读 stdin + 200KB 输入远超 OS 管道缓冲 → write_all 阻塞。
+/// 修复前该写入在 timeout 圈外，整个 runner 永久挂死（kill_on_drop 也不
+/// 触发——Child 尚未被 drop）；修复后 2s 超时触发 → future drop → Child
+/// drop → kill_on_drop 收尸，诚实返回 exit -2，耗时有界。
+#[cfg(windows)]
+#[tokio::test]
+async fn run_cli_with_stdin_timeout_covers_stdin_write_phase() {
+    let ws = TestWorkspace::new().unwrap();
+    let fixture = tempfile::TempDir::new().unwrap();
+    let sleeper = compile_stdin_sleeper(fixture.path());
+    let started = std::time::Instant::now();
+    let out = ws
+        .run_cli_with_stdin(&sleeper, &[], &"x".repeat(200_000), 2)
+        .await;
+    let elapsed = started.elapsed();
+    assert_eq!(out.exit_code, -2, "timeout arm, stderr: {}", out.stderr);
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "stdin write phase must sit under the timeout guard, took {elapsed:?}"
+    );
 }
 
 /// BUG-20261105-029 回归锁：`http_get_json` 对非 2xx 响应的预览截断曾用裸

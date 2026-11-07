@@ -1,10 +1,10 @@
-// G1（2026-10-18 三方复评整改批三）：per-loop 附加闸槽测试。
+// per-loop 附加闸槽测试。
 //
 // 覆盖面：
 // ① `extra_hidden_tools` 合并语义——`current_hidden_tools` 单点合并（记录
 //    tool_policy 折算面 ∪ config `agents.hidden_tools`），重叠去重、两源
 //    各自生效；供给闸 `build_tool_defs` 对合并表生效；
-// ② `tier_override` 钉死语义——`Some` = 记录档位唯一真相源
+// ② `tier_override` 钉死语义——`Some` = 记录档位唯一依据
 //    （`refresh_active_tier` 短路：config 重解析 / 换模型都不覆盖）；
 //    `None` = 回落 config 驱动；档位供给闸随钉死生效（mini 白名单收窄）。
 //
@@ -219,7 +219,7 @@ async fn tier_override_narrows_tool_supply() {
 }
 
 // ---------------------------------------------------------------------------
-// ③ F4（二轮复评 2026-10-18）：tool_policy allow 白名单槽——活性双闸
+// ③ （二轮复评）：tool_policy allow 白名单槽——活性双闸
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -264,7 +264,7 @@ async fn tool_policy_allow_live_gate_supply_and_dispatch() {
         "dispatch 必须拦白名单外工具，实际: {out}"
     );
 
-    // F4 核心修复面：白名单挂好后**热注册**新工具（模拟 MCP 热加载）——
+    // 核心修复面：白名单挂好后**热注册**新工具（模拟 MCP 热加载）——
     // 旧折算只吃注册期快照会漏拦；现读槽值必须天然落闸。
     agent_loop.register_tool("echo_gamma".to_string(), Box::new(G1EchoTool));
     let names = def_names(&agent_loop.build_tool_defs());

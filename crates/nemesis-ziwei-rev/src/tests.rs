@@ -1,6 +1,6 @@
-//! nemesis-ziwei-rev 单测（M3）。
+//! nemesis-ziwei-rev 单测。
 //!
-//! 夹具 = 手工构造的 PE32+ 最小镜像（x64）：.text 带调用图/立即数/
+//! 夹具 = 手工构造的 + 最小镜像（x64）：.text 带调用图/立即数/
 //! rip 相对引用，.rdata 带导出表/导入表/字符串——pe/disasm/funcs/xref/
 //! candidates/crtsigs/package/snapshot/diff 九模块全链路验证。
 
@@ -62,8 +62,8 @@ pub(crate) fn rdata_blob() -> Vec<u8> {
 
 /// .text 内容（0x100 字节；base rva 0x1000）。
 /// 0x1000: call 0x1008; 0x1005-7: nop×3; 0x1008: mov eax,0x5A6B7C8D;
-/// 0x100D: mov rax,[rip+0x10DC]（→0x20F0 串）; 0x1014: call [rip+0x1096]
-/// （→IAT 0x20B0）; 0x101A: ret; 0x1020: nop×8 + ret（nopsled）。
+/// 0x100D: mov rax,[rip+0x10DC]（0x20F0 串）; 0x1014: call [rip+0x1096]
+/// （IAT 0x20B0）; 0x101A: ret; 0x1020: nop×8 + ret（nopsled）。
 pub(crate) fn text_blob() -> Vec<u8> {
     let mut b = vec![0xCC; 0x100];
     let mut p = 0usize;
@@ -83,7 +83,7 @@ pub(crate) fn text_blob() -> Vec<u8> {
     b
 }
 
-/// 完整 PE 文件字节（DOS + PE + 2 节头 + .text@0x200 + .rdata@0x400）。
+/// 完整 PE 文件字节（DOS + PE + 2 节头 +.text@0x200 +.rdata@0x400）。
 pub(crate) fn test_pe_file() -> Vec<u8> {
     let mut f = vec![0u8; 0x600];
     f[0] = b'M';
@@ -96,7 +96,7 @@ pub(crate) fn test_pe_file() -> Vec<u8> {
     f[0x88..0x8C].copy_from_slice(&0x67000000u32.to_le_bytes()); // timestamp
     f[0x94..0x96].copy_from_slice(&0xF0u16.to_le_bytes()); // optional size
     f[0x96..0x98].copy_from_slice(&0x0022u16.to_le_bytes()); // characteristics
-    // Optional @0x98（PE32+，240 字节）
+    // Optional @0x98（+，240 字节）
     let opt = 0x98usize;
     f[opt..opt + 2].copy_from_slice(&0x20Bu16.to_le_bytes()); // magic
     f[opt + 16..opt + 20].copy_from_slice(&0x1000u32.to_le_bytes()); // entry
@@ -416,7 +416,7 @@ fn package_prompt_and_annotations() {
     assert_eq!(snip.lines().count(), 4, "3 条 + 截断注记");
 }
 
-// ── 种子补充（.pdata / nopsled，M3 验收驱动）──────────────────────────
+// ── 种子补充（.pdata / nopsled， 验收驱动）──────────────────────────
 
 #[test]
 fn pdata_absent_returns_none_and_nopsled_seeds_found() {
@@ -431,7 +431,7 @@ fn pdata_absent_returns_none_and_nopsled_seeds_found() {
 #[test]
 fn pdata_seeds_function_starts() {
     let mut file = test_pe_file();
-    // dd[3] = (0x2140, 24)：指向 .rdata 空闲区的小型 RUNTIME_FUNCTION 表
+    // dd[3] = (0x2140, 24)：指向.rdata 空闲区的小型 RUNTIME_FUNCTION 表
     let dd = 0x98 + 112;
     file[dd + 24..dd + 28].copy_from_slice(&0x2140u32.to_le_bytes());
     file[dd + 28..dd + 32].copy_from_slice(&24u32.to_le_bytes());
@@ -498,11 +498,11 @@ fn snapshot_save_latest_sweep_roundtrip() {
     let _ = nemesis_utils::fsutil::remove_dir_all_retry(&root);
 }
 
-// ── pe 32 位导入表（BUG-20261105-017）─────────────────────────────────
+// ── pe 32 位导入表─────────────────────────────────
 
-/// PE32（machine 0x14C）最小镜像：.rdata 含普通导入表 + 延迟导入表，
+/// （machine 0x14C）最小镜像：.rdata 含普通导入表 + 延迟导入表，
 /// thunk 数组混合「名字导入 + 序号导入」两个 32 位槽。
-/// 布局（RVA；节 .rdata @0x2000 → 文件 0x200，0x200 字节）：
+/// 布局（RVA；节.rdata @0x2000 → 文件 0x200，0x200 字节）：
 /// - 0x2000 普通导入描述符（OFT=0x2068, name=0x2088, FT=0x2078）；
 ///   0x2014 终止项（零）
 /// - 0x2028 延迟导入描述符（attrs=1 RVA 形态；name=0x2088, IAT=0x2078,
@@ -522,16 +522,16 @@ fn test_pe32_file() -> Vec<u8> {
     // COFF @0x84
     w16(&mut f, 0x84, 0x14C); // machine = i386
     w16(&mut f, 0x86, 1); // 1 节
-    w16(&mut f, 0x94, 0xE0); // optional size = 224（PE32 标准长）
+    w16(&mut f, 0x94, 0xE0); // optional size = 224（标准长）
     w16(&mut f, 0x96, 0x0022); // characteristics
-    // Optional @0x98（PE32，magic 0x10B）
+    // Optional @0x98（magic 0x10B）
     let opt = 0x98usize;
     w16(&mut f, opt, 0x10B);
     w32(&mut f, opt + 16, 0x1000); // entry
-    w32(&mut f, opt + 28, 0x400000); // image base（u32，PE32）
+    w32(&mut f, opt + 28, 0x400000); // image base（u32）
     w32(&mut f, opt + 32, 0x1000); // sect align
     w32(&mut f, opt + 36, 0x200); // file align
-    let dd = opt + 96; // PE32 数据目录起点
+    let dd = opt + 96; // 数据目录起点
     w32(&mut f, dd + 8, 0x2000); // [1] import dir rva
     w32(&mut f, dd + 12, 0x28);
     w32(&mut f, dd + 13 * 8, 0x2028); // [13] delay import dir rva
@@ -569,7 +569,7 @@ fn test_pe32_file() -> Vec<u8> {
     f
 }
 
-/// BUG-20261105-017：32 位 PE 的导入/延迟导入 thunk 语义——4 字节槽
+/// 32 位 PE 的导入/延迟导入 thunk 语义——4 字节槽
 /// （stride ×4）、u32 读、序号旗标 0x8000_0000。混合名字+序号两槽必须
 /// 都被认出，IAT 槽 RVA 按 stride 递增（旧 64 位读法会把两槽拼成一个
 /// u64、漏序号导入、后续槽位 RVA 翻倍）。

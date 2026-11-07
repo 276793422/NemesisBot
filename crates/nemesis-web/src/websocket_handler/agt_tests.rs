@@ -24,9 +24,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-// ---------------------------------------------------------------------------
 // run_send_writer：假 sink + 双通道直驱
-// ---------------------------------------------------------------------------
 
 /// 假 sink：把喂进来的 Text 帧记进共享表，flush/close 全部成功。
 struct AgtVecSink(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
@@ -133,9 +131,7 @@ async fn agt_writer_hi_piggyback_takes_frames_beyond_batch() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // handle_chat_send：无效 media 注记 + workflow_edit metadata
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_chat_send_invalid_media_notes_and_workflow_edit_metadata() {
@@ -180,9 +176,7 @@ fn agt_chat_send_invalid_media_notes_and_workflow_edit_metadata() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // broadcast_to_session：debug! 字段求值
-// ---------------------------------------------------------------------------
 
 /// 最小 tracing subscriber：放行 DEBUG 及以上，使 debug! 宏的字段表达式
 /// 真正求值（无 subscriber 时宏在字段求值前短路）。
@@ -212,7 +206,7 @@ fn agt_broadcast_to_session_debug_fields_evaluated() {
     assert!(res.is_err(), "无注册队列必须 Err");
 }
 
-/// BUG-20261029-185 红证：content_preview 字节切片落在多字节字符中间 panic。
+/// 红证：content_preview 字节切片落在多字节字符中间 panic。
 ///
 /// 34 个中文字符 = 102 字节，`&content[..102.min(100)]` 的字节 100 恰在
 /// 第 34 个字符（字节 99-101）内部 → 修复前 panic（byte index 100 is not

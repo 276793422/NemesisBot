@@ -23,7 +23,7 @@
 #[cfg(feature = "security")]
 use parking_lot::RwLock;
 
-/// 重定向跳数上限（GitHub release 资产 → S3 一跳即可，5 跳宽裕）。
+/// 重定向跳数上限（GitHub release 资产 → 一跳即可，5 跳宽裕）。
 const FETCH_MAX_HOPS: usize = 5;
 const FETCH_UA: &str = "nemesisbot-release-fetch";
 const FETCH_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -48,12 +48,12 @@ pub fn set_ssrf_guard(guard: Option<nemesis_security::ssrf::Guard>) {
 }
 
 /// 不跟随重定向的下载 client（Policy::none：SSRF 闸只校验发出去的那一跳，
-/// 自动跟跳 = `302 → 内网` 绕闸——image_attach A1 同判例，循环在调用方）。
+/// 自动跟跳 = `302 → 内网` 绕闸——image_attach 同判例，循环在调用方）。
 /// `total_timeout` = 整体墙钟上限；None = 不设（大包流式落盘用——300MB 包
 /// × 慢链路会撞固定墙钟假超时，连接停滞由 `download_to_file` 的 per-chunk
 /// 空闲超时兜底）。
 ///
-/// `proxy` = 下载代理（2026-10-31 批C：更新页独立下载代理）。Some → 只走
+/// `proxy` = 下载代理（批C：更新页独立下载代理）。Some → 只走
 /// 该代理（`ClientBuilder::proxy()` 本身即关 auto_sys_proxy 的系统探测——
 /// 「就这个代理」语义要脆）；解析失败 = **诚实 Err 上抛**（此前
 /// `.unwrap_or_default()` 静默直连是隐患：配置了代理却无声走系统默认）。
@@ -70,7 +70,7 @@ fn fetch_client(
         let proxied =
             reqwest::Proxy::all(p).map_err(|e| format!("下载代理地址无效（{p}）：{e}"))?;
         // builder.proxy() 自带 auto_sys_proxy=false（reqwest client.rs:1414）
-        // ——显式代理 = 「就这个代理」，环境变量/系统代理探测一并关掉。
+        // 显式代理 = 「就这个代理」，环境变量/系统代理探测一并关掉。
         builder = builder.proxy(proxied);
     }
     if let Some(t) = total_timeout {
@@ -112,7 +112,7 @@ fn pinned_fetch_client(
 /// 返回最终成功响应（body 未读）——`fetch_bytes` 整包读内存、
 /// `download_to_file` 流式落盘分别消费。
 ///
-/// 代理与 SSRF 闸的语义（2026-10-31 批C）：闸**每跳照常跑**——闸做的是
+/// 代理与 SSRF 闸的语义（批C）：闸**每跳照常跑**——闸做的是
 /// URL 级校验（目标是否在允许面内），代理不改变「请求打向哪」的裁决；
 /// 拦截照旧诚实 Err。但闸解析出的 IP **不再用于钉定连接**（resolve 条目
 /// 作用在本进程到目标的直连上；代理生效时连接由代理侧建立、DNS 也由
@@ -303,11 +303,11 @@ pub(crate) struct ReleaseAsset {
     pub name: String,
     pub url: String,
     /// GitHub API 申报字节数（bytes；异常载荷缺省 None）——下载进度条的
-    /// total 优先源（早于 Content-Length，S3 预签 URL 也稳定给数）。
+    /// total 优先源（早于 Content-Length， 预签 URL 也稳定给数）。
     pub size: Option<u64>,
 }
 
-/// Release 元信息（L9 check / apply 同源解析：免下主包即可读 tag/名/body
+/// Release 元信息（check / apply 同源解析：免下主包即可读 tag/名/body
 /// commit/附件）。字段集即列表 API 单条的最小投影。
 #[cfg_attr(
     not(any(feature = "skins", feature = "plugins-wasm", feature = "selfupdate")),
@@ -461,7 +461,7 @@ pub(crate) async fn fetch_release_for_asset(
 
 /// 官方 Release 指定附件下载：同源解析 → SSRF 闸逐跳下载。找不到附件 =
 /// 诚实报错（CI 尚未产出）。消费方=skins / plugins-wasm devkit（selfupdate
-/// apply 的 R1 单候选链已改为复用早闸解析的列表直连 `fetch_bytes`，不再经
+/// apply 的 单候选链已改为复用早闸解析的列表直连 `fetch_bytes`，不再经
 /// 此函数）——裸构建无人调用，条件放行 dead_code。
 #[cfg_attr(
     not(any(feature = "skins", feature = "plugins-wasm")),

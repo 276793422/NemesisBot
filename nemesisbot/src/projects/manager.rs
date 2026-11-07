@@ -1,13 +1,13 @@
-//! 项目 loop 生命周期管理器（L6++ M2，2026-09-08）。
+//! 项目 loop 生命周期管理器（2026-09-08）。
 //!
 //! 职责：按 projects registry 启动每个项目的常驻 AgentLoop（per-call mpsc
 //! 入站通道，与主 loop 的 adapter 同构），维护「会话 → 项目」归属索引，提供
-//! 优雅停机。bus 路由消费（主桥 skip 谓词 + 项目调度转发）在 G3 接线；本模块
+//! 优雅停机。bus 路由消费（主桥 skip 谓词 + 项目调度转发）在 接线；本模块
 //! 只提供路由纯函数与索引数据。
 //!
-//! 归属真相源 = meta sidecar（`{session_stem}.meta.json` 的 project_id/
-//! project_path，G1 落地）；owner_index 是启动期从 sidecar 扫出的内存缓存，
-//! M4 的 sessions.create / fork 增量维护。
+//! 归属权威 = meta sidecar（`{session_stem}.meta.json` 的 project_id/
+//! project_path， 落地）；owner_index 是启动期从 sidecar 扫出的内存缓存，
+//! 的 sessions.create / fork 增量维护。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,14 +26,14 @@ use crate::agent_factory::SharedResources;
 mod tests;
 
 // ---------------------------------------------------------------------------
-// 路由决策纯函数（G2 门测试对象；G3 主桥 skip 谓词与项目调度共用）
+// 路由决策纯函数（门测试对象； 主桥 skip 谓词与项目调度共用）
 // ---------------------------------------------------------------------------
 
-/// 一条入站消息的去向。三值与 impl plan M2 的桥过滤语义一一对应：
+/// 一条入站消息的去向。三值与 impl plan 的桥过滤语义一一对应：
 /// - `System`：`channel=="system"` 的系统消息（cluster_continuation /
 ///   heartbeat 等内部回灌）——项目调度丢弃，主桥照常消费（系统语义只属于
 ///   主 loop）。**例外**：后台子代理完成回灌（[`owned_subagent_continuation`]）
-///   带 parent session_key，按归属路由回派发它的 loop（D7，2026-11-03）。
+///   带 parent session_key，按归属路由回派发它的 loop。
 /// - `ToProject(pid)`：归属索引命中——项目调度转发到对应项目 loop，主桥 skip。
 /// - `ToMain`：无归属（对话组会话 / 纯新会话）——主桥放行，项目调度丢弃。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,7 +43,7 @@ pub enum RouteDecision {
     System,
 }
 
-/// 子代理可见性（D7）：后台子代理完成回灌识别——`system` 通道 +
+/// 子代理可见性：后台子代理完成回灌识别——`system` 通道 +
 /// `SUBAGENT_CONTINUATION_PREFIX` sender + parent session_key 非空。这类
 /// 消息不走「system 只归主 loop」的老语义：后台子代理由哪个 loop 派发
 /// （session_key 即派发会话），完成消息就路由回哪个 loop（该 loop 的
@@ -57,9 +57,9 @@ pub fn owned_subagent_continuation(msg: &InboundMessage) -> bool {
 }
 
 /// 桥过滤纯函数：`owner` 是归属索引对该消息 session_key 的查询结果
-/// （None = 无绑定）。可穷举测试（G2 门）。
+/// （None = 无绑定）。可穷举测试（门）。
 pub fn route_decision(msg: &InboundMessage, owner: Option<&str>) -> RouteDecision {
-    // D7：子代理完成回灌先于 System 臂——按 parent 会话归属路由。
+    // 子代理完成回灌先于 System 臂——按 parent 会话归属路由。
     if owned_subagent_continuation(msg) {
         return match owner {
             Some(pid) => RouteDecision::ToProject(pid.to_string()),
@@ -69,7 +69,7 @@ pub fn route_decision(msg: &InboundMessage, owner: Option<&str>) -> RouteDecisio
     if msg.channel == "system" {
         return RouteDecision::System;
     }
-    // history 只读查询豁免（BUG 2026-09-23 第二道防线）：历史数据本就全在
+    // history 只读查询豁免（第二道防线）：历史数据本就全在
     // 主 workspace `logs/session_logs/`，与项目 loop 的存亡/忙闲无关——即使
     // 会话带项目归属，history 也必须回主 loop 路径（主 loop 的
     // handle_history_request 就地读 chat_log 应答），绝不能被项目路由劫持
@@ -98,7 +98,7 @@ pub fn session_key_from_stem(stem: &str) -> String {
 }
 
 /// session_key → chat_log/meta 文件 stem（[`session_key_from_stem`] 的
-/// 正向逆变换）：白名单消毒（SAN-05 单一真相源）。web 形态
+/// 正向逆变换）：白名单消毒（SAN-05 统一定义）。web 形态
 /// `agent:main:session:{sid}` 自然还原成带 `agent_main_session_` 前缀的
 /// stem；IM 会话 naive 还原（与 chat_log 落盘约定一致）；B 端含 `/` 复合
 /// 键映射为平面 stem（SAN-01——旧 `replace(':')` 会嵌套出目录）。
@@ -193,7 +193,7 @@ impl ProjectLoopManager {
                 return Ok(());
             }
         }
-        // B2 时序返工（2026-10-31 项目 home 收编真机 E2E）：loop 构建前
+        // 时序返工（项目 home 收编真机 E2E）：loop 构建前
         // 同步本条项目镜像记录——运行期 projects.create 此前从不走 boot
         // seed 的批量 sync，记录缺位使 from_project 拿不到 home_path，
         // home 面（围栏第二根/记忆隔离/plan 产物根/checkpoint 随迁）整体
@@ -218,7 +218,7 @@ impl ProjectLoopManager {
             self.session_store.clone(),
         )
         .map_err(|e| format!("构建项目 loop 失败: {e}"))?;
-        // B9 commit 闸（turn 末 VM→宿主回传 + 基线刷新）：全项目 loop 无差别
+        // commit 闸（turn 末 VM→宿主回传 + 基线刷新）：全项目 loop 无差别
         // 注册（触发期自检——VM 档是 agents 表运行期属性，非 VM 项目零开销
         // 穿越；supervisor 未装配时同样零开销穿越）。
         #[cfg(feature = "vm")]
@@ -237,7 +237,7 @@ impl ProjectLoopManager {
         });
         let mut state = self.state.lock().unwrap();
         if state.contains_key(&entry.id) {
-            // 极小窗口的双 spawn（Phase 1 单调用方不触发）；输者清理自己。
+            // 极小窗口的双 spawn（单调用方不触发）；输者清理自己。
             drop(state);
             agent_loop.stop();
             agent_loop.clear_session_busy();
@@ -285,7 +285,7 @@ impl ProjectLoopManager {
         Ok(())
     }
 
-    /// 停止单个项目 loop（先摘表再停——路由摘除语义，G3/G4 复用）。
+    /// 停止单个项目 loop（先摘表再停——路由摘除语义，/ 复用）。
     /// 返回是否确有对应实例被停止。
     pub fn stop_project(&self, project_id: &str) -> bool {
         let handle = self.state.lock().unwrap().remove(project_id);
@@ -316,7 +316,7 @@ impl ProjectLoopManager {
         self.state.lock().unwrap().keys().cloned().collect()
     }
 
-    /// 停机 drain 面快照（BUG-20261025-33）：全部在跑项目 loop 的 Arc，
+    /// 停机 drain 面快照：全部在跑项目 loop 的 Arc，
     /// 供 gateway teardown 与主 loop 同一窗口 begin_shutdown_drain +
     /// 联合 gauge 轮询（此前只 drain 主 loop，项目会话在途 turn 停机即杀）。
     pub fn drain_snapshot(&self) -> Vec<Arc<nemesis_agent::r#loop::AgentLoop>> {
@@ -355,8 +355,8 @@ impl ProjectLoopManager {
         }
     }
 
-    /// 项目会话绑定（G4 sessions.create 带 project_id）：校验项目存在 +
-    /// 目录在 → 烧 sidecar project 字段（真相源 chat_log，与 G1 读取端
+    /// 项目会话绑定（sessions.create 带 project_id）：校验项目存在 +
+    /// 目录在 → 烧 sidecar project 字段（真相源 chat_log，与 读取端
     /// 同一格式）+ 登记内存索引。返回绑定到的条目。
     pub fn bind_session(
         &self,
@@ -381,7 +381,7 @@ impl ProjectLoopManager {
         Ok(entry)
     }
 
-    /// 取运行中项目 loop 的 Arc（G3 项目调度 / G4 WSAPI 消费）。
+    /// 取运行中项目 loop 的 Arc（项目调度 / WSAPI 消费）。
     pub fn project_loop(&self, project_id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
         self.state
             .lock()
@@ -395,16 +395,16 @@ impl ProjectLoopManager {
     }
 
     // ------------------------------------------------------------------
-    // 路由（M3，2026-09-08）
+    // 路由
     // ------------------------------------------------------------------
 
-    /// 启动项目调度订阅（M3）。**全进程只允许 1 个**（幂等闸，重复调用
+    /// 启动项目调度订阅。**全进程只允许 1 个**（幂等闸，重复调用
     /// 直接返回）。订阅后 bus inbound 的 fan-out WARN 属预期——主桥 +
     /// 本调度是故意并存的多订阅者，隔离语义靠「主桥 skip 谓词 + 本调度
     /// 丢弃非项目消息」这一对互补过滤实现。
     ///
     /// 桥内语义（`route_one`）：`channel=="system"` 与无归属消息丢弃
-    /// （主 loop 已消费；例外 = 子代理完成回灌按归属路由，D7）；归属命中
+    /// （主 loop 已消费；例外 = 子代理完成回灌按归属路由）；归属命中
     /// 转发进对应项目 mpsc；归属命中但目标不可用（inactive/已移除/loop
     /// 刚停）→ 回诚实出站错误，不静默丢。
     pub fn start_routing(self: &Arc<Self>) {
@@ -419,7 +419,7 @@ impl ProjectLoopManager {
                 match rx.recv().await {
                     Ok(msg) => mgr.route_one(&msg).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        // P2-1：接收侧真实丢失计入 bus 指标（丢的是项目
+                        // 接收侧真实丢失计入 bus 指标（丢的是项目
                         // 会话消息，用户侧表现为项目 loop 未响应）。
                         mgr.bus.record_inbound_lagged(n);
                         warn!("[ProjectLoops] 项目调度 lagged by {n} message(s)");
@@ -436,7 +436,7 @@ impl ProjectLoopManager {
     pub(crate) async fn route_one(&self, msg: &InboundMessage) {
         // system 永不进项目 loop（热路径短路，与 route_decision 首臂一致
         // ——cluster_continuation 等系统回灌即使 session_key 带项目归属也
-        // 只归主 loop 消费）。例外（D7）：后台子代理完成回灌按 parent
+        // 只归主 loop 消费）。例外：后台子代理完成回灌按 parent
         // 会话归属路由——项目 loop 派发的子代理，快照在该 loop 的
         // continuation manager 里，只有它能续行。
         if msg.channel == "system" && !owned_subagent_continuation(msg) {
@@ -446,7 +446,7 @@ impl ProjectLoopManager {
         let RouteDecision::ToProject(pid) = route_decision(msg, owner.as_deref()) else {
             return; // ToMain：主桥放行，这里丢弃
         };
-        // B9 开工闸（VM 档项目）：投递前确保 VM 内工作副本与宿主一致。
+        // 开工闸（VM 档项目）：投递前确保 VM 内工作副本与宿主一致。
         // 拦截/冲突都扣住消息（不出半就绪的工作副本给 agent 撞，不出半
         // 裁决的冲突面给 agent 撞）。非 VM 档项目零开销直通。
         #[cfg(feature = "vm")]
@@ -472,10 +472,10 @@ impl ProjectLoopManager {
         }
     }
 
-    /// B9 开工闸：项目档位为 vm 时，消息投递前做「宿主变更清单 + 嫌疑
-    /// 文件三方对比 + 批量推进」（[`crate::vm_sync::open_work_gate`]——
+    /// 开工闸：项目档位为 vm 时，消息投递前做「宿主变更清单 + 嫌疑
+    /// 文件三方对比 + 批量推进」（[`crate::vm_sync:open_work_gate`]——
     /// 基线在册且宿主无变更 = 零传输直通；首次 = 开工全量同步，分钟级
-    /// 一次性成本；§4.2 ④ 的开工闸语义——**轮边界批量对齐**，不做透明
+    /// 一次性成本； ④ 的开工闸语义——**轮边界批量对齐**，不做透明
     /// 按需 fill）。双改冲突（宿主≠基线 且 VM≠基线）原样上抛，由
     /// [`Self::spawn_conflict_resolution`] 接管（审批卡三选项，文件粒度
     /// 隔离）。
@@ -552,7 +552,7 @@ impl ProjectLoopManager {
         }
     }
 
-    /// B9 开工闸拦截消息的诚实出站报错（`send_unroutable_error` 同款
+    /// 开工闸拦截消息的诚实出站报错（`send_unroutable_error` 同款
     /// 形态；刻意不写 chat_log——消息未进任何 loop，路由层保持纯转发
     /// 语义）。
     #[cfg(feature = "vm")]
@@ -569,7 +569,7 @@ impl ProjectLoopManager {
             .publish_outbound(OutboundMessage::new(&msg.channel, &msg.chat_id, &content));
     }
 
-    /// B9 冲突裁决任务派发（`route_one` 冲突臂）：扣留消息，后台逐文件
+    /// 冲突裁决任务派发（`route_one` 冲突臂）：扣留消息，后台逐文件
     /// 发审批卡；全部裁决收场后回注消息（任何一卡取消/超时 = 整轮取消，
     /// 诚实出站告知）。任务只捕获 'static 克隆，不借 `&self`。
     #[cfg(feature = "vm")]
@@ -605,7 +605,7 @@ impl ProjectLoopManager {
     /// ② 会话 sidecar 的 project_path 尾段（项目已移除、注册表名字已
     /// 不可得时，从烧入会话的绑定路径恢复可辨识名）→ ③ pid 兜底。
     /// bus 路由（send_unroutable_error）与 WSAPI（ProjectsBridge
-    /// display_label 覆写）共用，单一真相源。
+    /// display_label 覆写）共用，统一定义。
     pub fn display_label(&self, pid: &str, session_key: &str) -> String {
         if let Some(p) = registry::list_projects(&self.registry_path)
             .into_iter()
@@ -665,7 +665,7 @@ impl ProjectLoopManager {
     /// 主桥 skip 谓词（装配进 `AgentLoopServiceAdapter`）：只有
     /// `route_decision` 判 ToProject 的消息才跳过主 loop——system 永不
     /// 跳过（系统回灌语义只属于主 loop），无归属消息照常进主 loop。
-    /// 例外（D7）：归属命中的子代理完成回灌跳过主 loop（由项目 loop 消费）。
+    /// 例外：归属命中的子代理完成回灌跳过主 loop（由项目 loop 消费）。
     pub(crate) fn bridge_should_skip(&self, msg: &InboundMessage) -> bool {
         // 热路径短路（与 route_decision 首臂一致，省一次 owner 查询/兜底读）；
         // 子代理回灌例外放行到 route_decision 裁决。
@@ -723,17 +723,17 @@ impl ProjectLoopManager {
         }
     }
 
-    /// 增量登记（M4 sessions.create / fork 接线时调用）。
+    /// 增量登记（sessions.create / fork 接线时调用）。
     pub fn remember_session(&self, session_key: &str, project_id: &str) {
         self.owner_index
             .write()
             .insert(session_key.to_string(), project_id.to_string());
     }
 
-    /// 摘除会话归属（M3 方法就绪；G4 WSAPI sessions.delete/clear 经
+    /// 摘除会话归属（方法就绪； WSAPI sessions.delete/clear 经
     /// ProjectsBridge 联动接线）。返回是否确有**内存索引**绑定被移除。
     ///
-    /// 两级动作（G4 起完整语义）：
+    /// 两级动作（起完整语义）：
     /// ① 摘内存索引；
     /// ② 同步清 sidecar 的 project 字段（title/血缘/manual 保留）——否则
     ///    [`Self::owner_of`] 的 sidecar 兜底会把绑定「复活」。delete 路径
@@ -747,7 +747,7 @@ impl ProjectLoopManager {
 
     /// 查归属（主桥谓词 + 项目调度共用）。两级：
     /// ① 内存索引（启动扫描 + remember/回填维护）；
-    /// ② **miss 兜底回读 meta sidecar**（M3：防 fork 等未通知路径漏索引
+    /// ② **miss 兜底回读 meta sidecar**（防 fork 等未通知路径漏索引
     /// ——fork 继承绑定但绕过 sessions.create）；命中后回填索引，后续
     /// 消息走纯内存查询。sidecar 缺失/损坏/无 project_id = None（落对话组）。
     pub fn owner_of(&self, session_key: &str) -> Option<String> {
@@ -791,13 +791,13 @@ impl ProjectLoopManager {
 }
 
 // ---------------------------------------------------------------------------
-// ProjectsBridge 实现（G4）：trait 定义在 nemesis-web（依赖方向：web 不
+// ProjectsBridge 实现：trait 定义在 nemesis-web（依赖方向：web 不
 // 依赖 nemesisbot），gateway 装配期把本 manager 装进 `PROJECTS_BRIDGE` 槽，
 // projects.* WSAPI 与 resolve_session_loop 全部经此 trait 触达。
 // ---------------------------------------------------------------------------
 
 impl ProjectLoopManager {
-    /// 模型配置热切联动（BUG 2026-09-21）：项目 loop 在 gateway 装配期经
+    /// 模型配置热切联动：项目 loop 在 gateway 装配期经
     /// `start_all` 一次性 spawn，`spawn_project` 幂等永不重建——主 loop 的
     /// `models.set_default` 热切从未触达项目 loop。典型症状：先起网关后配
     /// LLM（对话模式热切即好），项目模式永远 NullProvider「未配置模型」。
@@ -927,13 +927,13 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
         project_id: &str,
     ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
         // 只解除分组（registry 摘条目）+ stop loop。会话 sidecar 的归属
-        // **保留**——前端据此把会话落「已移除」灰组（§3.4-F4），发送走
+        // **保留**——前端据此把会话落「已移除」灰组，发送走
         // 路由层「不可用」诚实报错。
         let entry = registry::remove_project(&self.registry_path, project_id)
             .map_err(|e| format!("{e:#}"))?;
         self.stop_project(project_id);
         // agents 镜像记录随注册表摘除同步清理（投影不活过真相源条目；
-        // B2 后镜像带 home_path，孤儿=幽灵记录+无主 home 目录）。清理失败
+        // 后镜像带 home_path，孤儿=幽灵记录+无主 home 目录）。清理失败
         // warn 降级不阻塞摘除——孤儿镜像是卫生问题，remove 的用户语义
         // （解除分组）已由 registry 摘除达成。home 目录保留在盘。
         if let Some(mgr) = crate::agents::manager()
@@ -976,7 +976,7 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
         project_id: &str,
         trusted: bool,
     ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
-        // 注册表先写（真相源；损坏 loud 拒绝）。
+        // 注册表先写（权威定义；损坏 loud 拒绝）。
         let entry = registry::set_project_trust(&self.registry_path, project_id, trusted)
             .map_err(|e| format!("{e:#}"))?;
         // 热更新在跑 loop（区块逐 build 重渲染，下一轮即生效；无残留）。
@@ -1040,10 +1040,10 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
 }
 
 // ---------------------------------------------------------------------------
-// B9 开工闸裁决值 + 冲突裁决任务（'static 后台编排；route_one 冲突臂派发）
+// 开工闸裁决值 + 冲突裁决任务（'static 后台编排；route_one 冲突臂派发）
 // ---------------------------------------------------------------------------
 
-/// B9（VM 项目工作副本）开工闸裁决值：`Pass` = 直通/对齐完成；
+/// （VM 项目工作副本）开工闸裁决值：`Pass` = 直通/对齐完成；
 /// `Blocked` = 诚实拦截（消息不投递）；`Conflicts` = 双改冲突，扣留
 /// 消息转人工逐文件裁决。
 #[cfg(feature = "vm")]
@@ -1054,7 +1054,7 @@ enum GateVerdict {
 }
 
 /// 冲突审批卡超时（秒）。逐文件一卡，用户不答 = 整轮取消（不悄悄
-/// 选边——plan §4.3）。
+/// 选边——plan）。
 #[cfg(feature = "vm")]
 const CONFLICT_ASK_TIMEOUT_SECS: u64 = 300;
 
@@ -1072,7 +1072,7 @@ fn next_conflict_question_id() -> String {
     )
 }
 
-/// B9 冲突裁决三选一（每文件一张卡；多选/非候选/超时 = 取消）。
+/// 冲突裁决三选一（每文件一张卡；多选/非候选/超时 = 取消）。
 #[cfg(feature = "vm")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConflictChoice {
@@ -1149,9 +1149,9 @@ struct ConflictResolutionTask {
     bus: Arc<nemesis_bus::MessageBus>,
 }
 
-/// 冲突裁决编排（plan §4.3 + H3 停车语义）：**挂起表先于裁决落**（全部
+/// 冲突裁决编排（plan + 停车语义）：**挂起表先于裁决落**（全部
 /// 冲突文件的前置挂起——裁决卡挂着的三百秒窗口内，turn 末回传/手动
-/// commit 的 H3 过滤靠它保护宿主改动不被 VM 版覆盖；落盘失败 = 整轮取
+/// commit 的 过滤靠它保护宿主改动不被 VM 版覆盖；落盘失败 = 整轮取
 /// 消，连卡都不发）→ 逐文件一张审批卡（三选项，spawn_blocking 阻塞等
 /// 答）→ ① 记入 host-wins 清单（`apply_conflict_host_wins` 应用时解挂）
 /// / ② 前置条目保留（不进 VM；此后宿主重新改动该文件 = 手动合并完成，
@@ -1159,7 +1159,7 @@ struct ConflictResolutionTask {
 /// 照**（撤销本轮前置——回到「下轮开工闸重新检出重新问」的旧语义，也
 /// 不吞掉更早轮次遗留的旧条目）。① 逐条落盘（独立 internal_call + 基
 /// 线增量刷新；单条失败不拦其余，诚实汇总——失败条的挂起条目留在表
-/// 里，H3 过滤继续保护该文件）→ 回注消息。取消臂诚实出站告知且不改任
+/// 里， 过滤继续保护该文件）→ 回注消息。取消臂诚实出站告知且不改任
 /// 何工作区文件（挂起表恢复快照 = 状态无痕）。
 ///
 /// broker 缺席（headless / 无人值守未接线）= 取消语义：不能悄悄选边。
@@ -1224,7 +1224,7 @@ async fn run_conflict_resolution(t: ConflictResolutionTask) {
             Ok(Ok(nemesis_types::agent::QuestionOutcome::Timeout)) => {
                 classify_conflict_answer(None)
             }
-            // 急停强制了结（循环干预阶梯，2026-10-24）：无裁决 = 保守取消
+            // 急停强制了结（循环干预阶梯）：无裁决 = 保守取消
             // 本轮同步（文件挂起状态保持原样，下轮恢复后重裁）。
             Ok(Ok(nemesis_types::agent::QuestionOutcome::Cancelled)) => (
                 ConflictChoice::Cancel,

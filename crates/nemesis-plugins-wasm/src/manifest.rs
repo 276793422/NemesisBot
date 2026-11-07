@@ -61,17 +61,17 @@ pub enum PluginKind {
     Tool,
     /// 观察者插件（world `plugin-observer`）。
     Observer,
-    /// 循环策略插件（world `plugin-loop-policy`；2026-10-22 样板工程批 4）。
+    /// 循环策略插件（world `plugin-loop-policy`； 样板工程）。
     Policy,
-    /// 面板插件（world `plugin-panel`；2026-10-31 面板扩展批）——Dashboard
+    /// 面板插件（world `plugin-panel`； 面板扩展批）——Dashboard
     /// 「定制」分组页面：骨架由 `[[ui]]` 段声明、宿主预置组件渲染，命令
     /// 通道 `handle-ui-command`；流程剧本由 `[[flow]]` 段声明、宿主 flow
     /// 引擎执行。可带 guest 载荷（动作翻译），也可纯声明式（无载荷）。
     Panel,
-    /// flow 步骤插件（world `plugin-flow-step`；2026-11-03 guest step 批）
+    /// flow 步骤插件（world `plugin-flow-step`； guest step 批）
     /// ——flow 模板步骤的插件执行体：模板步骤 `kind = "plugin:<slug>:<op>"`
-    /// 引用，宿主 flow tick 每轮投递 run-step。幂等责任在插件（拍板 1）；
-    /// 安装期审一次运行期不弹卡（拍板 2）。
+    /// 引用，宿主 flow tick 每轮投递 run-step。幂等责任在插件；
+    /// 安装期审一次运行期不弹卡。
     FlowStep,
 }
 
@@ -109,7 +109,7 @@ pub struct ManifestPermissions {
     /// 凭据名声明（x-secret；进入 vault 别名约定）。
     #[serde(default, rename = "x-secret")]
     pub x_secret: Vec<String>,
-    /// 面板帧 llm-complete 声明（2026-11-01 决策 C）。仅 `kind=panel`
+    /// 面板帧 llm-complete 声明（决策 C）。仅 `kind=panel`
     /// 消费（build_frame 授予面）；还须宿主总闸
     /// `panel_llm_enabled(config_dir)` 打开才生效——双闸任一缺 = 帧内
     /// 恒 unavailable。policy 帧不受此键影响（其 llm 授予走 kind 硬规则）。
@@ -117,8 +117,8 @@ pub struct ManifestPermissions {
     pub x_llm: bool,
 }
 
-/// 面板视图词汇表（v1 六种；2026-10-31 面板扩展批，chart 加入 =
-/// 2026-11-01 决策 A）。
+/// 面板视图词汇表（v1 六种； 面板扩展批，chart 加入 =
+/// 决策 A）。
 ///
 /// 骨架由宿主预置组件渲染，插件永不自带 HTML/JS（三方任意前端代码 =
 /// XSS/凭据窃取面）。超出词汇表的呈现诉求等 v2 iframe 沙盒通道；
@@ -254,7 +254,7 @@ pub struct FlowStep {
     /// 步骤参数（如 connector id、op id、模板变量；语义由 step kind 定）。
     #[serde(default)]
     pub args: BTreeMap<String, String>,
-    /// 运行条件（2026-11-01 决策 B）：单比较表达式 `{{token}} <op> <值>`，
+    /// 运行条件（决策 B）：单比较表达式 `{{token}} <op> <值>`，
     /// op ∈ == != > >= < <=；左侧先过 token 插值（含 `steps.<id>.<field>`）
     /// 再求值；两侧都能转数字按数值比，否则按字符串比。求值假 = 步骤记
     /// **skipped** 并同 tick 顺延到下一步；表达式畸形（算不出布尔）= 步骤
@@ -263,7 +263,7 @@ pub struct FlowStep {
     pub when: String,
 }
 
-/// flow 模板状态回写声明（`[flow.template.on-transition]` 表；2026-11-02
+/// flow 模板状态回写声明（`[flow.template.on-transition]` 表；
 /// 外循环域剥离批 C-2）。board 单状态转移 → 按声明拼 connector op——op 名
 /// 与 args 形状（`issue_comment` + `{owner,repo,index,body}` 之类）全部是
 /// 域知识，只在模板里；宿主只提供 token 插值与 origin 坐标解析原语。
@@ -298,7 +298,7 @@ pub struct FlowTemplate {
     #[serde(default)]
     pub steps: Vec<FlowStep>,
     /// 本模板绑定的来源类型（TaskOrigin.origin_type；回写订阅匹配键 + 导入
-    /// 建单的 origin_type 透传。空 = 不参与回写订阅。2026-11-02 外循环域
+    /// 建单的 origin_type 透传。空 = 不参与回写订阅。 外循环域
     /// 剥离批 C-1/C-2）。
     #[serde(default)]
     pub origin_type: String,
@@ -350,16 +350,16 @@ pub struct PluginManifest {
     pub limits: BTreeMap<String, u64>,
     /// 实例配置声明（键 → 描述（旧形态）或 描述+缺省值；x-secret 键不在
     /// 此——凭据面分离）。缺省值供 flow 剧本 `{{config.<key>}}` 未配置时
-    /// 回落（2026-11-03 实例配置参数化批）。
+    /// 回落（实例配置参数化批）。
     #[serde(default)]
     pub config_schema: BTreeMap<String, ConfigSchemaEntry>,
-    /// 面板页面声明（仅 `kind=panel` 可声明；2026-10-31 面板扩展批）。
+    /// 面板页面声明（仅 `kind=panel` 可声明； 面板扩展批）。
     #[serde(default, rename = "ui")]
     pub ui: UiSection,
-    /// flow 剧本模板声明（仅 `kind=panel` 可声明；2026-10-31 面板扩展批）。
+    /// flow 剧本模板声明（仅 `kind=panel` 可声明； 面板扩展批）。
     #[serde(default)]
     pub flow: FlowSection,
-    /// 接管声明（内置工具名清单；2026-10-23 工具接管层）。仅 `kind=tool`
+    /// 接管声明（内置工具名清单； 工具接管层）。仅 `kind=tool`
     /// 可声明；deny-list 命中 parse 拒绝。声明 = 安装审批卡 + wasm.list
     /// 徽标双留痕，激活还要过「目标在 loop 注册表在场」闸（agent_factory 8d）。
     #[serde(default)]
@@ -605,7 +605,7 @@ impl PluginManifest {
             return Err(PluginError::Manifest("version exceeds 64 chars".into()));
         }
         // egress allowlist 形态：host 或 host:port；或 `{{config.<key>}}`
-        // 整条目 token（2026-11-03 自持写通道批）——引用键必须在 config-schema
+        // 整条目 token（自持写通道批）——引用键必须在 config-schema
         // 声明内（渲染白名单 = 声明键），且不得引用 x-secret 键（凭据不进
         // allowlist；渲染表只有普通键）。`{{` 混入非整条目 token 形态 =
         // loud 拒（嵌套/部分替换不做——deny-by-default 不留模糊面）。
@@ -661,7 +661,7 @@ impl PluginManifest {
             }
         }
         // config-schema 键不与 x-secret 冲突（同名键语义分裂）；`x-` 前缀
-        // 是保留命名空间（凭据面 = x-secret 声明）——配置键冒用 x- 前缀
+        // 是保留命名空间（凭据面 = x-secret 声明）——配置键冒用 x 前缀
         // 等于把明文缺省值当凭据声明，loud 拒绝。
         for key in self.config_schema.keys() {
             if key.starts_with("x-") {
@@ -680,7 +680,7 @@ impl PluginManifest {
                 )));
             }
         }
-        // policy kind 权限收紧（2026-10-22 批 4）：循环策略组件决策纯计算面
+        // policy kind 权限收紧：循环策略组件决策纯计算面
         // ——无凭据（x-secret）、无直网（egress/allow-private）。数据来源只
         // 有宿主投影入参 + config-get + workspace-read + llm-complete +
         // tool-invoke（借道原生工具过安全 8 层全闸）。
@@ -701,7 +701,7 @@ impl PluginManifest {
                 ));
             }
         }
-        // x-llm 声明位校验（2026-11-01 决策 C）：仅 panel 可声明——tool/
+        // x-llm 声明位校验（决策 C）：仅 panel 可声明——tool/
         // observer 帧无 llm 消费面（callbacks 闸按 kind 拒），policy 帧
         // llm 走 kind 硬规则授予（声明了也是死键 = manifest 写错信号）。
         if self.permissions.x_llm && *self.kind != PluginKind::Panel {
@@ -710,7 +710,7 @@ impl PluginManifest {
                 self.kind.as_str()
             )));
         }
-        // 接管声明校验（2026-10-23 工具接管层）：仅 tool kind；目标名形态 +
+        // 接管声明校验（工具接管层）：仅 tool kind；目标名形态 +
         // deny-list（宿主特权语义——沙盒内 guest 无法诚实兑现，接管一律拒）。
         if !self.takeover.is_empty() {
             if *self.kind != PluginKind::Tool {
@@ -736,7 +736,7 @@ impl PluginManifest {
                 }
             }
         }
-        // ui/flow 段位校验（2026-10-31 面板扩展批）：仅 kind=panel 可声明
+        // ui/flow 段位校验（面板扩展批）：仅 kind=panel 可声明
         // （其他 kind 带段 = manifest 写错的信号，loud 拒）；纯声明式（无
         // 载荷）必须至少声明一个页面——零声明零载荷的包装无意义。
         let is_panel = *self.kind == PluginKind::Panel;
@@ -825,7 +825,7 @@ impl PluginManifest {
                         )));
                     }
                     // 内置六原语词表，或插件步骤引用 plugin:<slug>:<op>
-                    // （2026-11-03 guest step 批；引用目标存在性与 op 词表
+                    // （guest step 批；引用目标存在性与 op 词表
                     // 成员资格在运行期路由对账——manifest 期只校验形态）。
                     if !FLOW_STEP_KINDS.contains(&step.kind.as_str())
                         && parse_plugin_step_ref(&step.kind).is_none()
@@ -924,7 +924,7 @@ fn validate_view(view: &UiView) -> Result<(), PluginError> {
             )));
         }
     }
-    // chart 视图（2026-11-01 决策 A）：图表类型 + X 轴字段 + 系列定义，
+    // chart 视图（决策 A）：图表类型 + X 轴字段 + 系列定义，
     // 数据仍走 bind 投影行（与 table 同源）；专用段与其他词汇互斥。
     if view.kind == "chart" {
         if !CHART_TYPES.contains(&view.chart.as_str()) {
@@ -1052,7 +1052,7 @@ fn validate_on_fail(template_id: &str, step: &FlowStep) -> Result<(), PluginErro
     )))
 }
 
-/// when 条件形态静态校验（2026-11-01 决策 B）：非空时必须含比较算子
+/// when 条件形态静态校验（决策 B）：非空时必须含比较算子
 /// 且两侧非空。算子匹配按二字优先（`>=` 不被 `>` 吞掉）。token 插值与
 /// 求值在运行期（token 值装配期不可知），这里只抓拼写级畸形。
 fn validate_when(template_id: &str, step: &FlowStep) -> Result<(), PluginError> {

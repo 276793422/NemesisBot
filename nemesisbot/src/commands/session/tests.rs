@@ -1,4 +1,4 @@
-//! `session` CLI 测试（M4 补测，quality-hardening goal 2026-08-25）。
+//! `session` CLI 测试（补测，quality-hardening goal 2026-08-25）。
 //!
 //! 分支本体（fork_session/row_user_turn_count/verbatim 复制/键唯一性）在
 //! `crates/nemesis-agent/src/session_fork/tests.rs`（8 测试）与 web 侧
@@ -16,7 +16,7 @@ use super::*;
 
 /// --local 指向不存在 home 时：拒绝执行（home 不一致守卫），且**不创建**
 /// `.nemesisbot`（create_dir_all 在守卫之后才轮到）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
 async fn run_local_missing_home_bails_without_creating() {
@@ -70,7 +70,7 @@ fn interactive_pick_non_tty_defaults_to_full_fork() {
 }
 
 // ===========================================================================
-// list_sessions（S11c，quality-hardening goal 冲刺 S11）—— 纯 home 参数化
+// list_sessions（quality-hardening goal 冲刺）—— 纯 home 参数化
 // 读路径：sessions 目录扫描 + StoredSession 反序列化过滤 + jsonl 缺失显示
 // 0/0 分支（read_chat_log 走进程级单例 home，唯一 key 读不到 → 空行列表，
 // 确定性）。run()/show_turns 的成功路径结构性豁免（单例 jsonl，见文件头注）。
@@ -113,7 +113,7 @@ mod list_sessions_arm {
             session_json("agent:main:session:s2", "这是摘要"),
         )
         .unwrap();
-        // 坏 JSON（反序列化失败跳过）与非 .json 后缀（扩展名过滤跳过）。
+        // 坏 JSON（反序列化失败跳过）与非.json 后缀（扩展名过滤跳过）。
         std::fs::write(dir.join("broken.json"), "not json{{{").unwrap();
         std::fs::write(dir.join("ignored.txt"), "{}").unwrap();
         // 孤儿目录条目（read_dir 里的目录也算 entry；扩展名不是 json → skip）。
@@ -126,7 +126,7 @@ mod list_sessions_arm {
 
     #[test]
     fn unreadable_session_file_is_skipped_via_read_to_string() {
-        // 路径是目录但扩展名 .json：read_to_string Err → skip（不 panic）。
+        // 路径是目录但扩展名.json：read_to_string Err → skip（不 panic）。
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join(".nemesisbot");
         let dir = home.join("workspace").join("sessions");
@@ -136,16 +136,16 @@ mod list_sessions_arm {
 }
 
 // ===========================================================================
-// R7（coverage-95 goal，2026-08-27）：run() 成功路径——经 singleton 重定向。
+// （coverage-95 goal）：run() 成功路径——经 singleton 重定向。
 // 文件头上方的「结构性豁免」判断被 `nemesis-path` 新增的 `set_home_dir()`
-// 运行时缝推翻：`crate::tests::singleton_test_home()` 把进程级单例永久指向
+// 运行时缝推翻：`crate::tests:singleton_test_home()` 把进程级单例永久指向
 // 测试沙箱，`EnvHomeGuard` 让 resolve_home(local=false) 解析到同一 home，
 // 守卫（pm_home == home）通过，run() 的 List/Show/Fork 全链路可测。
 // 纪律：每测试先拿 GLOBAL_STATE_LOCK；key 全部带 r7 前缀防跨测试撞车。
 // ===========================================================================
 
 // 整 mod Windows 形态（8/8 测试 + 专属 helper 全走 Windows CLI 进程边界）。
-#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
 mod r7_success_paths {
     use super::*;
     use crate::tests::{EnvHomeGuard, singleton_test_home};
@@ -195,7 +195,7 @@ mod r7_success_paths {
     }
 
     /// run(List, local=false)：env home 与单例一致 → 守卫放行 → 空会话表 Ok。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_list_via_env_home_ok_empty() {
@@ -210,7 +210,7 @@ mod r7_success_paths {
     }
 
     /// run(Show)：有 jsonl 的会话 → 轮次表打印 Ok。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_show_prints_turn_table_ok() {
@@ -232,7 +232,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork) 全量：源 jsonl 逐行复制到新 key + store 落盘 + boundary 事件。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_fork_full_flow_copies_jsonl_and_creates_store() {
@@ -268,7 +268,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork --at 1)：只保留第 1 轮（2 行）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_fork_at_turn_1_keeps_prefix_only() {
@@ -301,7 +301,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork) 源不存在：明确报错（jsonl 为空 → fork_session Err → run Err）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_fork_missing_source_errors() {
@@ -325,7 +325,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork) 源只有 assistant 行：没有 user 轮 → 报错。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_fork_source_without_user_turns_errors() {
@@ -359,7 +359,7 @@ mod r7_success_paths {
 
     /// run(Show) 对不存在的会话走 run() 入口（show_turns bail 在 tests 顶部
     /// 已有直接调用版本；这里钉 run() 分发臂）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_show_missing_session_dispatches_to_error() {
@@ -384,7 +384,7 @@ mod r7_success_paths {
     /// run(Show) 对「只有 assistant 行」的会话：CLI 层 show_turns 自己的
     /// zero-user-turn bail（上面 fork 测试报错来自 nemesis-agent 的
     /// fork_session；这里是 commands/session.rs 的同义 bail 臂）。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_show_zero_user_turns_errors_from_cli_bail() {
@@ -413,12 +413,12 @@ mod r7_success_paths {
         assert!(err.to_string().contains("没有完整 user 轮次"), "got: {err}");
     }
 
-    /// F5（2026-09-27）：fork 全流程过分支摘要通道——6 轮源 --at 2 → 遗弃
+    /// fork 全流程过分支摘要通道——6 轮源 --at 2 → 遗弃
     /// 4 轮（≥3 阈值，通道真正走到 config/small_model 解析）。singleton
     /// home 无 config.json → 内嵌默认不含 small_model → 诚实跳过注记打印；
     /// fork 本体不受影响照常成功（保留前缀 4 行 verbatim）。钉的是「通道
     /// 进得去、出得来、不 panic、不阻断分叉」。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 串行化进程级单例（纪律，故意跨 await）
     async fn run_fork_with_dropped_turns_exercises_summary_channel_and_succeeds() {
@@ -453,7 +453,7 @@ mod r7_success_paths {
 }
 
 // ===========================================================================
-// F5（2026-09-27）：CLI 分支摘要生成（generate_branch_summary_cli）——纯
+// CLI 分支摘要生成（generate_branch_summary_cli）——纯
 // 函数面：home 显式传参、无进程级状态依赖，闸门注记文案逐字钉死。LLM 执
 // 行路径不在本文件触网（prepare_branch_summary_with 的 provider 侧由
 // nemesis-agent ws9_lineage_tests 的 fake provider 覆盖；这里只到「不触网
@@ -507,7 +507,7 @@ async fn branch_summary_cli_small_model_unconfigured_notes_skip() {
     );
 }
 
-/// BUG-20261030-224 回归锁：完整闸门链（≥3 轮遗弃 + small_model 已配置 +
+/// 回归锁：完整闸门链（≥3 轮遗弃 + small_model 已配置 +
 /// provider 构造成功）必须在**运行时上下文内**走到执行段而不 panic——
 /// 生产入口 async_main → run_command 在 runtime worker 上调用本命令，
 /// 旧实现自建嵌套 runtime + block_on，tokio enter_runtime 检测到嵌套
@@ -542,7 +542,7 @@ async fn branch_summary_cli_full_gate_chain_runs_inside_runtime_context() {
 //   断言文案与源码 bail! 字符串逐字对应（"没有完整 user 轮次"），
 //   不需要重复用例。
 // - 行 199-201 + 203-212（interactive_pick 的 TTY 门控后交互体）：
-//   EXEMPT —— 这些行被 `std::io::stdin().is_terminal()` 守卫包裹；
+//   EXEMPT —— 这些行被 `std::io:stdin().is_terminal()` 守卫包裹；
 //   cargo test 的 stdin 是管道恒走 Ok(None) 早退（上方
 //   interactive_pick_non_tty_defaults_to_full_fork 已钉该守卫本身）。
 //   想进门控体只能伪造 TTY（进程注入/伪终端 spawn），属豁免类：

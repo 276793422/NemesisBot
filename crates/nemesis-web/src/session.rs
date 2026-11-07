@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::watch;
 
-// ---------------------------------------------------------------------------
 // Auth method (how a WebSocket session authenticated)
-// ---------------------------------------------------------------------------
 
 /// How a WebSocket session authenticated.
 ///
@@ -41,9 +39,7 @@ pub enum AuthMethod {
     },
 }
 
-// ---------------------------------------------------------------------------
 // Session
-// ---------------------------------------------------------------------------
 
 /// Session metadata (no WebSocket dependency for portability).
 #[derive(Debug, Clone)]
@@ -57,9 +53,7 @@ pub struct Session {
     pub auth_method: AuthMethod,
 }
 
-// ---------------------------------------------------------------------------
 // Internal entry: session + optional send queue
-// ---------------------------------------------------------------------------
 
 /// Internal session entry that includes the optional send queue.
 /// Not exposed to callers directly.
@@ -69,13 +63,11 @@ struct SessionEntry {
     send_queue: Option<Arc<SendQueue>>,
 }
 
-// ---------------------------------------------------------------------------
 // Session manager
-// ---------------------------------------------------------------------------
 
 /// Manages all active WebSocket sessions.
 ///
-/// BUG-20261029-141：`sessions`/`send_queues` 必须 `Arc<DashMap>`——
+/// `sessions`/`send_queues` 必须 `Arc<DashMap>`——
 /// `DashMap::clone()` 是**逐 shard 深拷贝**（dashmap 6.1.0 `impl Clone`
 /// 对每 shard 内层 HashMap 做 `(*shard).clone()`，Clone bound 要求
 /// `K: Clone, V: Clone` 即证据），旧实现 `self.sessions.clone()` 给
@@ -99,7 +91,7 @@ impl SessionManager {
 
     /// 测试专用：自定义 cleanup 拍间隔。生产 `new` 恒 300s 一拍（测试等不起，
     /// 同 `evict_inactive` 直驱注释的理由）；本构造器把「线程生命周期」变成
-    /// 可测对象（BUG-20261029-141：逐出落真表 + shutdown 终止线程的行为锁）。
+    /// 可测对象（逐出落真表 + shutdown 终止线程的行为锁）。
     #[cfg(test)]
     pub fn new_with_cleanup_interval(timeout: Duration, cleanup_interval: Duration) -> Self {
         Self::build(timeout, cleanup_interval)
@@ -199,13 +191,13 @@ impl SessionManager {
         );
 
         // Try send queue first (thread-safe)
-        // BUG-20261025-84：先 clone Arc 归还 DashMap 分片读守卫，再进入
+        // 先 clone Arc 归还 DashMap 分片读守卫，再进入
         // 背压 await。旧写法 Ref 守卫跨越 `queue.send().await`——hi 通道
         // 满（慢客户端）时该 await 可等待任意久（「满则背压等待，绝不
         // 丢」），同分片的全部写操作（remove_session / set_send_queue /
         // evict_inactive 的 remove）停摆到慢客户端消费为止；而
         // `evict_inactive` 跑在单线程 cleanup runtime 上，撞同分片 =
-        // GC 线程整体冻结（全部会话逐出停摆）。同库纪律先例：
+        // GC 线程整体冻结（全部会话逐出停摆）。同库纪律
         // chat_event_log「广播前放锁：publish 内部可能再取全局资源，
         // 不持锁跨调用」。broadcast_droppable 走同步 try_send 非阻塞，
         // 守卫只持有微秒级，不需同改。
@@ -233,7 +225,7 @@ impl SessionManager {
     /// 可丢帧广播（非阻塞）：与 [`Self::broadcast`] 同查找逻辑，但走
     /// SendQueue 的 lo 通道——**满即丢，绝不等待**。调用前提：帧已落
     /// `chat_event_log` 环（带 seq），丢失可被前端 `chat.sync` 补拉自愈；
-    /// 未落环的帧必须走 `broadcast`。慢客户端隔离墙（BUG 2026-09-22）。
+    /// 未落环的帧必须走 `broadcast`。慢客户端隔离墙（BUG）。
     pub fn broadcast_droppable(&self, session_id: &str, message: &[u8]) -> Result<(), String> {
         if let Some(queue) = self.send_queues.get(session_id) {
             self.touch_session(session_id);
@@ -274,7 +266,7 @@ impl SessionManager {
 
     /// Shutdown all sessions.
     ///
-    /// BUG-20261029-141：真正终止 cleanup 线程——旧实现 `stop_cleanup`
+    /// 真正终止 cleanup 线程——旧实现 `stop_cleanup`
     /// 永不 Some，`abort()` 是死路径，线程永续。send(true) 后线程在
     /// `select!` 的 cancel 臂（或下一拍前的兜底检查）退出。
     pub async fn shutdown(&self) {
@@ -288,7 +280,7 @@ impl SessionManager {
     /// Uses std::thread with an embedded tokio runtime to avoid requiring
     /// a tokio runtime at construction time.
     ///
-    /// BUG-20261029-141 两处根修：
+    /// 两处根修：
     /// 1. 映射走 `Arc::clone` 共享真表（旧 `DashMap::clone` 是深拷贝，
     ///    线程迭代一张永远为空的私有快照，逐出从不落真表）；
     /// 2. 取消经 watch 通道——shutdown send(true) 或 manager drop
@@ -333,7 +325,7 @@ impl SessionManager {
 
     /// 逐出非活跃会话并**关闭其仍存活的发送队列**（返回逐出数）。
     ///
-    /// 为什么逐出必须断连（2026-10-24）：cleanup 的本意是 GC 死连接的残骸，
+    /// 为什么逐出必须断连：cleanup 的本意是 GC 死连接的残骸，
     /// 但 WS 连接 halves 在 handler 手里——只删映射不断连，会产生僵尸态：
     /// socket 仍活、入站照收（WSAPI 响应走 dispatch 捕获的队列照常送达），
     /// 而一切会话路由的帧（agent 回复 send_to_session / user 回声 / 历史
@@ -379,14 +371,12 @@ fn generate_session_id() -> String {
     id[..16].to_string()
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): stats /
+// (, quality-hardening goal 冲刺 web): stats /
 // all_sessions / shutdown / no-queue broadcast arms.
 #[cfg(test)]
 mod s10b_tests;

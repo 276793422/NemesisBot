@@ -37,7 +37,7 @@ async fn test_http_transport_send_not_connected() {
 // SSE parsing unit tests
 // ---------------------------------------------------------------------------
 
-/// 旧 `extract_sse_data` 的测试替身（第十四轮：生产解析拆成
+/// 旧 `extract_sse_data` 的测试替身（生产解析拆成
 /// `sse_data_payload` + `response_payload`，后者过滤无 `id` 的 JSON-RPC
 /// 通知）。本替身保持旧测试的提取语义钉死不变：无 data 报错、响应照常
 /// 提取、通知/垃圾载荷同样报错（旧测试面没有通知形态输入）。
@@ -109,7 +109,7 @@ fn test_extract_sse_data_ignores_comments() {
     assert_eq!(result.id, serde_json::Value::Number(6.into()));
 }
 
-// BUG-20261025-56：id + method 并存 = server→client 请求（JSON-RPC 响应
+// id + method 并存 = server→client 请求（JSON-RPC 响应
 // 永不携带 method）。旧形态：serde 忽略未知 method 字段 → 被解析成
 // result=None 的「响应」返回——id 撞车即被吞成本请求的空成功。
 #[test]
@@ -283,7 +283,7 @@ async fn test_connect_sets_connected_flag() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：send() 真实 HTTP 往返（wiremock）——JSON 分支 /
+// 补测：send() 真实 HTTP 往返（wiremock）——JSON 分支 /
 // 空体 / 解析失败 / SSE 流 / 会话 ID 回传 / 202 / 5xx / 连接失败 / 缺 content-type
 // ===========================================================================
 
@@ -373,7 +373,7 @@ async fn test_w4c_http_send_sse_stream_parsed() {
 
 #[tokio::test]
 async fn bug56_http_sse_server_request_before_response_is_skipped() {
-    // BUG-20261025-56：SSE 流里 server→client 请求（id+method 并存，id=9
+    // SSE 流里 server→client 请求（id+method 并存，id=9
     // 与我方请求撞车）先于真响应。旧形态：被解析成 result=None 的「响应」
     // 返回 → 断言 unwrap panic；修复后：跳过，第二个事件正常返回。
     let server = MockServer::start().await;
@@ -516,7 +516,7 @@ async fn test_w4c_http_send_without_content_type_still_parses_json() {
 }
 
 // ===========================================================================
-// S1 补测（2026-08-26）：SSE LF 分隔（"\n\n"）/ 空流 EOF / 响应体截断读取失败
+// 补测：SSE LF 分隔（"\n\n"）/ 空流 EOF / 响应体截断读取失败
 // ===========================================================================
 
 #[tokio::test]
@@ -590,7 +590,7 @@ async fn test_s1_http_send_truncated_body_maps_read_failure() {
 }
 
 // ===========================================================================
-// 收官批 B 段（2026-10-15）：McpServerConfig.headers 消费化——解析规则 /
+// 收官批 B 段：McpServerConfig.headers 消费化——解析规则 /
 // vault:/env: 引用现查 / 保留头过滤 / Debug 掩码 / wiremock 头实发。
 // 全局 vault 解析器槽位是进程单例：与 stdio 测试共用 VAULT_SLOT_LOCK。
 // ===========================================================================
@@ -847,7 +847,7 @@ async fn test_b_close_clears_resolved_headers_and_reconnect_refreshes() {
 }
 
 // ===========================================================================
-// 第十二轮复查（2026-10-15）：SSE 事件边界 CRLF + 无 data 事件跳过
+// 复查：SSE 事件边界 CRLF + 无 data 事件跳过
 // ===========================================================================
 
 // -- take_complete_event 单元（边界逻辑直接钉死）--
@@ -940,7 +940,7 @@ async fn test_w4c_http_sse_crlf_comment_then_data() {
     t.close().await.unwrap();
 }
 
-// ------------------------- R14（2026-10-16）：JSON-RPC 通知过滤 ---------
+// -------------------------：JSON-RPC 通知过滤 ---------
 
 #[test]
 fn r14_response_payload_classification() {
@@ -989,7 +989,7 @@ async fn r14_test_w4c_http_sse_notification_then_data() {
 
     let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
     t.connect().await.unwrap();
-    // 旧实现：首个 data 载荷直接 from_str::<TransportResponse>，通知无 id
+    // 旧实现：首个 data 载荷直接 from_str:<TransportResponse>，通知无 id
     // → "missing field `id`" 整个请求硬失败；新实现：通知跳过 → 取到响应。
     let resp = t.send(&w4c_request("x", 11), 5000).await.unwrap();
     assert_eq!(resp.id, serde_json::Value::Number(11.into()));
@@ -1021,7 +1021,7 @@ async fn r14_test_w4c_http_sse_notification_only_ended_without_data() {
 }
 
 // ---------------------------------------------------------------------------
-// sanitize_url_for_log（2026-10-21 自查 #1：query 凭据不得进错误串）
+// sanitize_url_for_log（自查 #1：query 凭据不得进错误串）
 // ---------------------------------------------------------------------------
 
 #[test]

@@ -23,11 +23,16 @@ const routes: RouteRecordRaw[] = [
   { path: '/mcp', name: 'mcp', component: () => import('../views/McpView.vue') },
   // 2026-08-29：管理分组新增页（MCP 之后）。Hook 页自设置页迁移；
   // 命令/插件为实页（命令=slash 命令 CRUD，插件=三 Tab 含 WASM）。
-  // 子代理任务页（2026-11-03 子代理可见性）：spawn/后台/集群委派台账 + 事件环回放。
+  // 执行单元复合页（2026-11-07 布局重构）：子代理 + 后台任务两 TAB
+  // （?tab=subagents|processes，默认子代理）；旧深链路由 redirect 保兼容。
   { path: '/hooks', name: 'hooks', component: () => import('../views/HookView.vue') },
   { path: '/commands', name: 'commands', component: () => import('../views/CommandsView.vue') },
   { path: '/plugins', name: 'plugins', component: () => import('../views/PluginsView.vue') },
-  { path: '/subagents', name: 'subagents', component: () => import('../views/SubagentsView.vue') },
+  { path: '/executors', name: 'executors', component: () => import('../views/ExecutorsView.vue') },
+  // 旧路由 redirect：query 全透传——聊天迷你 tail「完整输出→」深链
+  // /processes?focus= 与历史工作块 spawn 行钻取 /subagents?focus= 不破。
+  { path: '/subagents', redirect: (to) => ({ path: '/executors', query: { ...to.query, tab: 'subagents' } }) },
+  { path: '/processes', redirect: (to) => ({ path: '/executors', query: { ...to.query, tab: 'processes' } }) },
   { path: '/channels', name: 'channels', component: () => import('../views/ChannelsView.vue') },
   // 行动连接器（2026-10-14 AI 原生行动代理）：只读面——连接器注册表 +
   // 行动回执（行动账本）+ 纸面券商模拟账本（WSAPI connectors 模块）。

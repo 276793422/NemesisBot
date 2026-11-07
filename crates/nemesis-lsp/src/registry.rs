@@ -1,4 +1,4 @@
-//! Language → language-server mapping + PATH probe (L1 / U19).
+//! Language → language-server mapping + PATH probe.
 //!
 //! One row per language family; each row names the server command the
 //! manager spawns (`--stdio` servers get the flag baked into `args`).
@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 /// Languages we can route to a server. One `Lang` per distinct server
-/// process type (TypeScript covers .ts/.tsx/.js/.jsx — same
+/// process type (TypeScript covers.ts/.tsx/.js/.jsx — same
 /// typescript-language-server).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Lang {
@@ -34,7 +34,7 @@ impl Lang {
         }
     }
 
-    /// C1：`textDocument/didOpen` 的 `languageId` 字段值（LSP 规范要求
+    /// `textDocument/didOpen` 的 `languageId` 字段值（LSP 规范要求
     /// 语言标识符，与 [`Self::label`] 的展示形态不同——TS/C 是多语言家族）。
     pub fn lsp_language_id(self) -> &'static str {
         match self {

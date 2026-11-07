@@ -350,7 +350,7 @@ fn test_set_broadcast_interval() {
     assert_eq!(service.config.interval, Duration::from_secs(60));
 }
 
-/// T6② 回归（2026-10-17）：set_broadcast_interval 必须落到广播线程读取的
+/// ② 回归：set_broadcast_interval 必须落到广播线程读取的
 /// 共享秒数上（旧实现只改 config，线程 spawn 时按值捕获——运行中改动
 /// 无效，文档 "next broadcast cycle" 是谎话）。亚秒值按 1s 下限。
 #[test]
@@ -410,7 +410,7 @@ fn test_null_callbacks_node_id() {
 }
 
 // ============================================================
-// S4 coverage: message-handler closure arms over real UDP,
+// coverage: message-handler closure arms over real UDP,
 // address() accessors, send_announce fallbacks, broadcast tick
 // ============================================================
 
@@ -770,7 +770,7 @@ fn test_discovery_broadcast_thread_periodic_announce() {
     assert!(!service.is_running());
 }
 
-// -- 定向单播（U1-5 根修 2026-09-15：异端口拓扑 announce 失聪）--
+// -- 定向单播（根修：异端口拓扑 announce 失聪）--
 
 /// peer_udp_endpoints 缺省实现 = 空（纯广播，行为同旧版）。
 #[test]
@@ -862,7 +862,7 @@ fn test_send_announce_with_no_endpoints_no_unicast_noise() {
     send_announce_with(&sock, 11949, None, &cb);
 }
 
-// -- A1 P3：announce 携带 iroh_id（UDP 往返保全 + 缺省不带字段语义）--
+// --：announce 携带 iroh_id（UDP 往返保全 + 缺省不带字段语义）--
 
 /// FixedEndpointCallbacks 变体：带自报 iroh 漫游身份（默认方法覆写）。
 struct FixedRoamingCallbacks(Vec<String>, Option<String>, Vec<String>);
@@ -953,7 +953,7 @@ fn test_announce_carries_roaming_id_roundtrip() {
 
 /// 自建中继完整拨号地址 announce 往返：`roaming_overlay_addresses()` 有值
 /// → 接收端 addresses 含 `iroh:<hex>@<relay_url>`（LAN IP 之后池尾追加，
-/// 不抢直连优先级）；空 = addresses 不含 iroh 形态（N0 形态行为不变）。
+/// 不抢直连优先级）；空 = addresses 不含 iroh 形态（形态行为不变）。
 #[test]
 fn test_announce_carries_relay_qualified_overlay_address() {
     let hex = crate::roaming::random_valid_iroh_hex();

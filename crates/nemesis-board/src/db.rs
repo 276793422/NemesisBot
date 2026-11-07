@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS attachment (
 CREATE INDEX IF NOT EXISTS idx_attachment_issue ON attachment(issue_id);
 "#;
 
-/// v2（W2 P2 派发链路）：issue → peer_chat task 绑定表。task_id 主键
+/// v2（派发链路）：issue → peer_chat task 绑定表。task_id 主键
 /// （peer_chat_callback 写回路由键）；state ∈ dispatched/done/failed。
 const SCHEMA_V2: &str = r#"
 CREATE TABLE IF NOT EXISTS issue_dispatch (
@@ -110,9 +110,9 @@ CREATE TABLE IF NOT EXISTS issue_dispatch (
 CREATE INDEX IF NOT EXISTS idx_dispatch_issue ON issue_dispatch(issue_id);
 "#;
 
-/// v3（W2 P3 收件箱）：站内通知表。收件人是多态 Actor（recipient_type +
-/// recipient_id）；P3 只做 store + dashboard 收件箱（inbox.list 按 admin 收，
-/// MVP 单管理员语义），经 21 通道的站外投递留 P4。
+/// v3（收件箱）：站内通知表。收件人是多态 Actor（recipient_type +
+/// recipient_id）； 只做 store + dashboard 收件箱（inbox.list 按 admin 收，
+/// MVP 单管理员语义），经 21 通道的站外投递留 。
 const SCHEMA_V3: &str = r#"
 CREATE TABLE IF NOT EXISTS notification (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -130,7 +130,7 @@ CREATE INDEX IF NOT EXISTS idx_notification_recipient
     ON notification(recipient_type, recipient_id, read);
 "#;
 
-/// v4（W2 P4 autopilot）：定时自动化规则表。run 历史不单独建表——触发的
+/// v4（autopilot）：定时自动化规则表。run 历史不单独建表——触发的
 /// issue 带 origin=autopilot/{id}，按 origin 反查。cron_job_id 回存 live
 /// CronService 对应 job id（`board-ap:{id}` 名字约定）。
 const SCHEMA_V4: &str = r#"
@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS autopilot (
 );
 "#;
 
-/// v5（Swarm M1 任务拆解）：issue 加 planner 派发需求两列（角色/标签，
+/// v5（Swarm 任务拆解）：issue 加 planner 派发需求两列（角色/标签，
 /// JSON 数组落 TEXT）+ 批内依赖表（补派触发器双向查询：dependents_of /
 /// dependencies_of 都走索引，不用 JSON LIKE）。ALTER 只在 user_version
 /// 升 5 时执行一次，新旧库统一路径。
@@ -168,15 +168,15 @@ CREATE TABLE IF NOT EXISTS issue_dependency (
 CREATE INDEX IF NOT EXISTS idx_issue_dependency_dep ON issue_dependency(depends_on);
 "#;
 
-/// v6（Swarm M2 本地保存）：讨论频道三表 + 任务资产索引。全部
+/// v6（Swarm 本地保存）：讨论频道三表 + 任务资产索引。全部
 /// CREATE TABLE IF NOT EXISTS（幂等，旧库 ALTER-free）。设计：
-/// `docs/PLAN/2026-09-09_swarm-impl-plan.md` §4.1。
+/// `swarm-impl-plan` 。
 ///  - `channel_member.last_seen_message_id` 是未读游标：补拉与前端翻页
 ///    共用同一 after_id 语义。
-///  - `channel_message.mtype`：text / system（M3 信封落地后扩展）。
+///  - `channel_message.mtype`：text / system（信封落地后扩展）。
 ///  - `asset` 只存索引（ref/sha256/size/path），实体落
-///    `workspace/board/assets/<ref>`（§4.2）；不设 TTL，随 issue 删除
-///    级联清理（M2 清扫只管 channel_message）。
+///    `workspace/board/assets/<ref>`；不设 TTL，随 issue 删除
+///    级联清理（清扫只管 channel_message）。
 const SCHEMA_V6: &str = r#"
 CREATE TABLE IF NOT EXISTS channel (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -223,9 +223,9 @@ CREATE TABLE IF NOT EXISTS asset (
 CREATE INDEX IF NOT EXISTS idx_asset_origin ON asset(origin_issue);
 "#;
 
-/// v7（swarm M3）：上行幂等去重表 + 统一 seq 台账。
+/// v7（swarm）：上行幂等去重表 + 统一 seq 台账。
 ///
-/// - `msg_dedup`：`board.comment.post` 幂等双保险的落库层（G12）——
+/// - `msg_dedup`：`board.comment.post` 幂等双保险的落库层——
 ///   `(origin_node, client_msg_id)` 唯一；`first_response` 缓存首响
 ///   JSON，重发原样返回，不重复落库。
 /// - `seq_ledger`：master 单调序号台账（wake.post 下发 + board.sync
@@ -253,10 +253,10 @@ CREATE INDEX IF NOT EXISTS idx_seq_ledger_thread
     ON seq_ledger(thread_kind, thread_id);
 "#;
 
-/// v8（swarm M4.5 §6.5）：团队经验层——`team_memory` 表。验收 agent 蒸馏
+/// v8（swarm.5）：团队经验层——`team_memory` 表。验收 agent 蒸馏
 /// 的结构化经验条目（唯一写闸），派发/planner 注入的检索源。`scope` 是
 /// 检索键（模块/技术栈标签）；`deprecated` 走软删（旧经验与实际冲突时
-/// 标记不覆盖，§6.5.4）。
+/// 标记不覆盖）。
 const SCHEMA_V8: &str = r#"
 CREATE TABLE IF NOT EXISTS team_memory (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -274,23 +274,23 @@ CREATE INDEX IF NOT EXISTS idx_team_memory_scope
     ON team_memory(scope);
 "#;
 
-/// v9（全自动流转 P3/D2）：autopilot 加 auto_plan 列（触发建单后自动
+/// v9（全自动流转）：autopilot 加 auto_plan 列（触发建单后自动
 /// planner 拆解）。ALTER 只在 user_version 升 9 时执行一次；DEFAULT 0
 /// 让存量规则行为不变（不自动拆解）。
 const SCHEMA_V9: &str = r#"
 ALTER TABLE autopilot ADD COLUMN auto_plan INTEGER NOT NULL DEFAULT 0;
 "#;
 
-/// v10（全自动流转 P4/F3 修复）：project 加 acceptance_criteria 列。此前
+/// v10（全自动流转 / 修复）：project 加 acceptance_criteria 列。此前
 /// project.create 的 AC 只在 auto_start=true 时透传给自动拆解父单——项目
-/// 自身无处可存，F3 收口验收聚合父单 AC 时项目级标准被静默丢弃（前端表单
+/// 自身无处可存， 收口验收聚合父单 AC 时项目级标准被静默丢弃（前端表单
 /// 占位文案承诺「完成判定会参考」，属承诺与行为不符）。DEFAULT '' 让存量
 /// 项目行为不变（空 = 不参与验收聚合）。
 const SCHEMA_V10: &str = r#"
 ALTER TABLE project ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
 "#;
 
-/// v11（看板项目档案 goal P1/A2b 取消单清理出口）：issue 加 hidden 列。
+/// v11（看板项目档案 goal / 取消单清理出口）：issue 加 hidden 列。
 /// hidden = 取消单「永久收起」标记（列表页「清理」批量打标；任何前端
 /// 表面都不再出现，即使「显示已取消」开关打开）——board.db 仍保留行，
 /// 审计链完整（不做物理删除，与 goal §一 Out 硬删除边界一致）。
@@ -299,7 +299,7 @@ const SCHEMA_V11: &str = r#"
 ALTER TABLE issue ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
 "#;
 
-/// v12（看板项目档案 goal P2/B1）：project 加 directory 列。项目档案目录
+/// v12（看板项目档案 goal）：project 加 directory 列。项目档案目录
 /// 绝对路径（字符串原样存，比较时走 nemesis-path 的 canonicalize_for_compare）。
 /// 绑定不可变：只在 create_project 时写入，此后任何 patch 都不改它（改名
 /// 不改目录）。NULL = 存量项目/未绑定目录——不参与档案管线（不回填，
@@ -308,7 +308,7 @@ const SCHEMA_V12: &str = r#"
 ALTER TABLE project ADD COLUMN directory TEXT;
 "#;
 
-/// v13（看板项目档案 goal P4/E8 变更集归属）：task_id → 派发时 master 下发
+/// v13（看板项目档案 goal / 变更集归属）：task_id → 派发时 master 下发
 /// 的基线 commit hex。worker 回传变更集按 `base_commit` 对照本表裁决归属
 /// （≠ 活跃 dispatch 轮次的基线 = superseded 丢弃 + 审计）。基线在
 /// dispatch_issue_core 基线推送成功后写入；无基线行 = 该派发未参与档案
@@ -321,7 +321,7 @@ CREATE TABLE IF NOT EXISTS dispatch_baseline (
 );
 "#;
 
-/// v14（看板项目档案 goal P5/F2+F3 冲突漏斗）：project 加冲突冻结标志 +
+/// v14（看板项目档案 goal / 冲突漏斗）：project 加冲突冻结标志 +
 /// 待补合并队列。`conflict_frozen` = 项目域冻结（真冲突 human 档停车；冻结
 /// 只限本项目，派发闸在 dispatch_issue_core，不动 ProjectStatus 状态机）。
 /// `pending_merges` = 冻结期在途交付的未合入变更集队列（JSON 数组，按完成
@@ -331,7 +331,7 @@ ALTER TABLE project ADD COLUMN conflict_frozen INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE project ADD COLUMN pending_merges TEXT NOT NULL DEFAULT '[]';
 "#;
 
-/// v15（UAT U5 F-U5-1：autopilot 验收标准）：定时规则加 `acceptance_criteria`
+/// v15（UAT F-：autopilot 验收标准）：定时规则加 `acceptance_criteria`
 /// 列，触发建单时透传给 issue——此前 autopilot 建的单永远无验收标准，评审
 /// 必然「验收标准（未提供）」转人工，全自动定时任务链在评审段必断。DEFAULT ''
 /// 让存量规则行为不变（空 = 不填，评审保守转人工语义不变）。
@@ -339,7 +339,7 @@ const SCHEMA_V15: &str = r#"
 ALTER TABLE autopilot ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
 "#;
 
-/// v16（能力扩展 P34 重派决策量化）：worker × 任务类型指纹记账两表。
+/// v16（重派决策量化）：worker × 任务类型指纹记账两表。
 /// - `worker_fingerprint`：(worker, task_type) → 成功/总数计数（评审定案
 ///   upsert 累加；三档 prefer/avoid/neutral 判定的数据源）。
 /// - `fingerprint_counted`：记账幂等台账（task_id 主键——同一派发轮的
@@ -365,20 +365,20 @@ CREATE TABLE IF NOT EXISTS fingerprint_counted (
 );
 "#;
 
-/// v17（集群专业职能框架 M2）：issue 加派发需求职能列（slug TEXT，NULL =
+/// v17（集群专业职能框架）：issue 加派发需求职能列（slug TEXT，NULL =
 /// 不限职能）。沿 v5 派发需求两列的 ALTER 既有模式。
 const SCHEMA_V17: &str = r#"
 ALTER TABLE issue ADD COLUMN required_profession TEXT;
 "#;
 
-/// v18（NB-122 批 2026-10-16）：issue 加环境能力硬条件列（JSON 数组
+/// v18（16）：issue 加环境能力硬条件列（JSON 数组
 /// TEXT，NULL/空数组 = 无能力需求）。沿 v17 的 ALTER 既有模式；JSON
 /// 形态与 required_tags 同款（store 层空数组写 NULL、读取宽容解析）。
 const SCHEMA_V18: &str = r#"
 ALTER TABLE issue ADD COLUMN required_capabilities TEXT;
 "#;
 
-/// v19（G4 交付证据契约，2026-10-18 批六）：issue 加交付证据要求列
+/// v19（交付证据契约）：issue 加交付证据要求列
 /// （INTEGER 0/1，0 = 不要求）。沿 v17/v18 的 ALTER 既有模式；建单时
 /// store 层按 `has_file_anchor` 谓词自动置位（无人工 patch 面），评审
 /// 门据此在 PASS 前强制校验交付记录在场。
@@ -386,7 +386,7 @@ const SCHEMA_V19: &str = r#"
 ALTER TABLE issue ADD COLUMN requires_evidence INTEGER NOT NULL DEFAULT 0;
 "#;
 
-/// v20（P6-R1 backend 派发闸，2026-10-21）：issue 加派发需求运行时后端列
+/// v20（backend 派发闸）：issue 加派发需求运行时后端列
 /// （TEXT，值域 `process`|`vm`，NULL/空 = 无需求不过闸）。沿 v17 单值
 /// ALTER 既有模式；matcher 硬条件按精确匹配 + fail-closed（节点未宣告
 /// = 排除），与 capabilities 硬条件 5 同款、刻意不同于 tier 闸 fail-open。
@@ -394,7 +394,7 @@ const SCHEMA_V20: &str = r#"
 ALTER TABLE issue ADD COLUMN required_backend TEXT;
 "#;
 
-/// v21（外循环域剥离批 C-1，2026-11-02）：issue 加 origin_meta 列（TEXT，
+/// v21（外循环域剥离批 C-1）：issue 加 origin_meta 列（TEXT，
 /// JSON object 字符串；`''` = 空 map）。来源坐标映射（owner/repo/number 等）
 /// 在建单时由来源方写入，board 只存取不解释；v1 旧单空 map → 消费方（flow
 /// 模板 on_transition 回写）按模板 parse 表达式兜底。
@@ -402,7 +402,7 @@ const SCHEMA_V21: &str = r#"
 ALTER TABLE issue ADD COLUMN origin_meta TEXT NOT NULL DEFAULT '';
 "#;
 
-/// v22（三期 L23 定时任务父子上下文语义，2026-11-03）：autopilot 加可选
+/// v22（三期 定时任务父子上下文语义）：autopilot 加可选
 /// 父会话绑定列（TEXT，空串 = 未绑定 = 现行行为零变化）。绑定的规则触发
 /// 时先验父会话存活（jsonl 在档且非空）：存活 = 建单继承父会话近段上下文
 /// （description 注入，plan/派发/评审三条既有链路自动看到）+ 单据可溯源
@@ -413,23 +413,23 @@ const SCHEMA_V22: &str = r#"
 ALTER TABLE autopilot ADD COLUMN session_key TEXT NOT NULL DEFAULT '';
 "#;
 
-/// v23（AOR 批二a ④ 派发代际号，2026-11-04）：issue_dispatch 加 `generation`
+/// v23（a ④ 派发代际号）：issue_dispatch 加 `generation`
 /// 列（INTEGER，首派 0、第 N 次重派 N-1——插入时按该 issue 已有派发行数
 /// COUNT 计算，重派列值随派发下行、worker 写回原样回声）。写回闸用途：
-/// 旧代派发的迟到回调与新一代派发冲突时诚实拒绝（防终态覆盖污染），是批三
+/// 旧代派发的迟到回调与新一代派发冲突时诚实拒绝（防终态覆盖污染），是
 /// 监察重估超时重派的前置闸。DEFAULT 0 让存量行天然视为首派（旧行为兼容）。
 const SCHEMA_V23: &str = r#"
 ALTER TABLE issue_dispatch ADD COLUMN generation INTEGER NOT NULL DEFAULT 0;
 "#;
 
-/// v24（BUG-20261105-012 自检取证路由持久层）：selfcheck 在途路由表。
+/// v24（自检取证路由持久层）：selfcheck 在途路由表。
 /// selfcheck 派发刻意不写 issue_dispatch（那是正式派发的写回路由键，写了
 /// 会被 Route 0 当交付写回推进状态）——但纯内存注册表在 gateway 重启后
 /// 清零，worker 取证回调 miss 后 master 仍回 Ok("received")，worker 侧
 /// `send_callback_or_persist` 见送达成功即销毁唯一持久副本，取证证据从此
 /// 不存在于任何介质，单据永久卡死 in_review。本表 = 路由键持久化 +
 /// 二段验收状态机（status/response 为 NULL = 回调未到；非空 = 已路由待
-/// 二段完成，完成删行）。`worker_id` 供 G5 式 query_task_result 恢复轮询。
+/// 二段完成，完成删行）。`worker_id` 供 式 query_task_result 恢复轮询。
 const SCHEMA_V24: &str = r#"
 CREATE TABLE IF NOT EXISTS selfcheck_pending (
     task_id    TEXT PRIMARY KEY,
@@ -443,7 +443,7 @@ CREATE TABLE IF NOT EXISTS selfcheck_pending (
 CREATE INDEX IF NOT EXISTS idx_selfcheck_pending_issue ON selfcheck_pending(issue_id);
 "#;
 
-/// L20 门面迁移链（v1-v23 数组化；语义与原散装 if 链等价：每步原子
+/// 门面迁移链（v1-v23 数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[BoardStore] {note}`，门面按序跳过已应用步）。
 const fn mig(
     version: i32,
@@ -564,7 +564,7 @@ static BOARD_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
     ),
 ];
 
-/// L20 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
+/// 单一装配点描述（`nemesis_utils::sqlite_preflight::open_sqlite_store`
 /// 门面；busy_timeout 让 CLI 与 gateway 并开同库时写写冲突退避重试而不是
 /// 立刻报 SQLITE_BUSY——board.db 支持多进程读）。
 static BOARD_STORE: nemesis_utils::sqlite_preflight::StoreSpec =
@@ -583,7 +583,7 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
             .map_err(|e| format!("Failed to create board directory: {e}"))?;
     }
     // 装配序（能力准入/WAL/漂移对账/迁移前备份/原子迁移链）单一真相源在
-    // 共享件 sqlite_preflight::open_sqlite_store（L20 门面）。
+    // 共享件 sqlite_preflight::open_sqlite_store（门面）。
     nemesis_utils::sqlite_preflight::open_sqlite_store(
         db_path,
         &BOARD_STORE,

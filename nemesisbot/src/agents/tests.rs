@@ -1,4 +1,4 @@
-//! AgentManager 行为用例（P2）：两阶段创建 / main 幂等 seed / sweep 收敛 /
+//! AgentManager 行为用例：两阶段创建 / main 幂等 seed / sweep 收敛 /
 //! 项目镜像 / 删除守卫。全部走 tempdir 真文件 + 内存可开的 tasks.db。
 
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ fn selfbuilt_params(name: &str) -> CreateAgentParams {
     }
 }
 
-// R2 回归锁（原诊断探针翻转）+ F2 适配（2026-10-21 三轮复评）：删除联动
+// 回归锁（原诊断探针翻转）+ 适配（三轮复评）：删除联动
 // VM 后端收敛——remove 无条件走 evict_agent_prepare（运行实例冷停出
 // running_agents；本 mock 镜像真实语义：prepare 摘清单、commit 记墓碑、
 // abort 无操作），删除成功后旧实例不再在运行清单且身份入墓碑。
@@ -96,7 +96,7 @@ async fn remove_converges_attached_vm_backend_instance() {
     mgr.remove(&record.agent_id).await.unwrap();
     assert!(mgr.get(&record.agent_id).unwrap().is_none());
     assert!(!vm.running_agents().contains(&record.agent_id));
-    // F2：删除成功 = 永久墓碑落地（旧身份不可再唤醒的语义锚）。
+    // 删除成功 = 永久墓碑落地（旧身份不可再唤醒的语义锚）。
     assert!(
         vm.tombstones.lock().unwrap().contains(&record.agent_id),
         "删除成功必须提交永久墓碑"
@@ -104,7 +104,7 @@ async fn remove_converges_attached_vm_backend_instance() {
     vm.sleep_agent(&record.agent_id).await.unwrap();
 }
 
-// F2 回归锁（原三轮复评诊断探针翻转，2026-10-21）：DB 删除失败 = 临时拒绝
+// 回归锁（原三轮复评诊断探针翻转）：DB 删除失败 = 临时拒绝
 // 态解除、永久墓碑不落——记录仍在册的身份**可再唤醒**。旧行为（探针实证）：
 // evict_agent 先落永久墓碑再删库，DELETE 触发器注入失败后 ensure_running
 // 报「已删除（VM 身份已逐出）」——记录在册但身份永久不可唤醒直到重启。
@@ -157,7 +157,7 @@ async fn failed_delete_releases_evicting_state_record_still_wakeable() {
     );
 }
 
-// F2 配套：**成功路径**墓碑语义保持——删除成功后旧身份不可再唤醒
+// 配套：**成功路径**墓碑语义保持——删除成功后旧身份不可再唤醒
 // （「已删除」拒绝仍在；与上例合起来钉死两段式的两臂）。
 #[cfg(feature = "vm")]
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn successful_delete_still_tombstones_vm_identity() {
     );
 }
 
-// -- P5 第 4 步：runtime_backend 档位面 --------------------------------------
+// -- 第 4 步：runtime_backend 档位面 --------------------------------------
 
 #[test]
 fn create_rejects_illegal_runtime_backend_and_defaults_process() {
@@ -206,7 +206,7 @@ fn create_rejects_illegal_runtime_backend_and_defaults_process() {
     assert_eq!(rec.runtime_backend, "vm");
 }
 
-// P6-R4（D4 预留）：principal 落库回归锁——create 持久化主体标识，重开
+// （预留）：principal 落库回归锁——create 持久化主体标识，重开
 // manager（同 db）读回一致；缺省空串 = 未绑定。纯预留：无任何闸读取。
 #[test]
 fn create_persists_principal_for_persistence_source_of_truth() {
@@ -279,7 +279,7 @@ fn two_phase_create_produces_active_record_and_materialized_home() {
     assert!(memory.is_dir(), "记忆目录未物化: {}", memory.display());
     // 命名空间规则：selfbuilt 独占域。
     assert_eq!(rec.memory_namespace, format!("agents/{}", rec.agent_id));
-    // 隔离根语义：exec_root=自己 home（跨 agent home 互不可见）。
+    // 隔离根语义：exec_root=自己 home（跨 agent home 互不可）。
     assert_eq!(PathBuf::from(&rec.exec_root), home);
     assert_eq!(PathBuf::from(&rec.home_path), home);
 }
@@ -296,7 +296,7 @@ fn create_rejects_bad_inputs_without_leaving_records() {
     assert!(mgr.create_agent(selfbuilt_params("ok")).is_ok());
 }
 
-/// R4（2026-10-18 三方复评）管理面集成锁：remove 联动常驻执行体停机——
+/// （三方复评）管理面集成锁：remove 联动常驻执行体停机——
 /// create → wake（真 spawn）→ remove → 槽空 + 记录删。真二进制 + 真 spawn
 /// （二进制解析纪律与 runtime/tests.rs sup_real_child 同源：debug 槽专用）。
 /// 持 GLOBAL_STATE_LOCK 跨 await 是刻意的测试串行化（同 agents_ws_tests
@@ -539,7 +539,7 @@ fn three_kinds_coexist_without_cross_talk() {
     );
 }
 
-// -- 凭据 vault 别名（P2：vault:agent/<id>/<name>）--
+// -- 凭据 vault 别名（vault:agent/<id>/<name>）--
 
 #[test]
 fn credential_alias_format() {

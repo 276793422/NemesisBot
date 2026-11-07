@@ -1,4 +1,4 @@
-//! S10b (quality-hardening goal 冲刺, web 批次 2): WsRouter::dispatch's
+//! (quality-hardening goal 冲刺, web): WsRouter::dispatch's
 //! send-failure arm — a SendQueue whose receiver is dropped makes the response
 //! send fail; dispatch must warn and return without panicking.
 
@@ -66,6 +66,7 @@ fn make_ctx() -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

@@ -1,4 +1,4 @@
-//! AOR 批三 5.3：重规划器（replanner）编排层。
+//! 重规划器（replanner）编排层。
 //!
 //! 纯逻辑层（schema/解析/校验/渲染）在 `nemesis_board::replan`（与
 //! planner/review 同构）；本模块负责 LLM 调用编排、触发点挂接与
@@ -63,7 +63,7 @@ struct ProposalState {
     version: u64,
 }
 
-/// 剥离 assisted 建议评论的 @提及前缀（BUG-20261105-010）：assisted 模式
+/// 剥离 assisted 建议评论的 @提及前缀：assisted 模式
 /// 落盘形态是 `@<creator> {PROPOSAL_COMMENT_PREFIX}…`（mention 必须在
 /// 开头才有提醒语义），识别处 `starts_with` 对其直接失配 → 去重闸永久
 /// 失效 + 版本号恒 v1。只剥一次 `@<id> ` 形态，无前缀原样返回。
@@ -112,7 +112,7 @@ fn proposal_state(
     })
 }
 
-// ---------- 起草 in-flight 去重（BUG-20261105-011）----------
+// ---------- 起草 in-flight 去重----------
 
 /// 起草中根单集合（进程内）。去重闸检查与建议落盘之间隔着分钟级 LLM
 /// 起草，评审 FAIL / sweep ticker / 收口评审等多触发源可在窗口内对同一
@@ -412,7 +412,7 @@ pub(crate) async fn draft_replan_proposal(
     };
     // 去重闸：最新建议/拒绝类系统评论比最新人工评论新 = 建议仍在声，
     // 不重复起草（人工表态后自动放行下一轮）。
-    // in-flight 去重（BUG-20261105-011）：去重闸读的是评论表，而本任务
+    // in-flight 去重：去重闸读的是评论表，而本任务
     // 的建议要等分钟级 LLM 起草完才落盘——窗口内并发触发（评审 FAIL 与
     // sweep ticker 同根单齐发）会双双读到 pending=false。同根单同时只放
     // 一个起草在飞，guard 在所有返回路径上 RAII 释放。
@@ -525,7 +525,7 @@ fn autonomous_execute(
     trigger_source: &str,
     cfg: &nemesis_config::BoardReplanConfig,
 ) -> Result<(), String> {
-    // EST-03 同款长跑复查（2026-11-05 R528）：起草入口查过一次 estop，但
+    // EST-03 同款长跑复查：起草入口查过一次 estop，但
     // 起草到执行之间隔着分钟级评审 LLM——发起时未生效不代表结束时仍未
     // 生效。急停生效中不做任何自治动作（本模块不变量；config 侧
     // BoardAutonomy 文档同钉「estop 与外部熔断权不受此字段影响」）：建议

@@ -653,7 +653,7 @@ fn test_connection_connect_to_invalid_addr() {
 }
 
 // ============================================================
-// S4 coverage: read/write loop arms, heartbeat, idle timeout
+// coverage: read/write loop arms, heartbeat, idle timeout
 // (enforced in the read loop), accessors, Debug
 // ============================================================
 
@@ -893,7 +893,7 @@ async fn test_tcp_conn_write_error_closes_write_loop() {
     );
 }
 
-/// T1 回归（2026-10-17）：空闲超时必须**真正关闭连接**。旧的独立 idle
+/// 回归：空闲超时必须**真正关闭连接**。旧的独立 idle
 /// monitor 只 warn 不 close——对端还开着 socket 的窗口内 `receive()` 就要
 /// 返回 None，只能来自本端空闲断链（recv_tx 随读循环退出而 drop），
 /// 而非对端 EOF；修复前此调用会一直挂到对端 500ms 后关 socket。
@@ -935,7 +935,7 @@ async fn test_tcp_conn_idle_timeout_closes_connection() {
     let _ = peer.await;
 }
 
-/// T2 回归（2026-10-17）：心跳帧必须是合法 `WireMessage`
+/// 回归：心跳帧必须是合法 `WireMessage`
 ///（type="heartbeat"），经统一组帧链路发出。旧实现裸塞 4 字节零载荷，
 /// 对端再包长度前缀后 JSON parse 必败刷 WARN 且不刷新活跃时间。
 #[tokio::test]

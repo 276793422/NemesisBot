@@ -17,9 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-// -----------------------------------------------------------------------
 // Test infrastructure (mirror of tests.rs)
-// -----------------------------------------------------------------------
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
@@ -61,6 +59,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -116,6 +115,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -158,9 +158,7 @@ fn make_config_with_engine(
     cfg
 }
 
-// -----------------------------------------------------------------------
 // Module metadata
-// -----------------------------------------------------------------------
 
 #[test]
 fn test_module_name() {
@@ -168,9 +166,7 @@ fn test_module_name() {
     assert_eq!(handler.module_name(), "scanner");
 }
 
-// -----------------------------------------------------------------------
 // Unknown command
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_unknown_command_returns_error() {
@@ -189,9 +185,7 @@ async fn test_unknown_command_returns_error() {
     );
 }
 
-// -----------------------------------------------------------------------
 // require_workspace error paths
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_no_workspace_status() {
@@ -228,9 +222,7 @@ async fn test_no_workspace_enable() {
     assert!(err.contains("workspace not configured"));
 }
 
-// -----------------------------------------------------------------------
 // config.get
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_config_get_missing_config_dir_loads_defaults() {
@@ -275,9 +267,7 @@ async fn test_config_get_with_engines() {
     assert_eq!(result["engines"]["clamav"]["address"], "127.0.0.1:3310");
 }
 
-// -----------------------------------------------------------------------
 // config.save
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_config_save_creates_config_dir() {
@@ -334,9 +324,7 @@ async fn test_config_save_missing_data() {
     assert_eq!(err, "missing data");
 }
 
-// -----------------------------------------------------------------------
 // status
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_status_empty() {
@@ -397,9 +385,7 @@ async fn test_status_missing_config_returns_error() {
     );
 }
 
-// -----------------------------------------------------------------------
 // check
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_check_all_engines_pending_when_no_path() {
@@ -550,9 +536,7 @@ async fn test_check_db_status_uses_data_dir() {
     assert_eq!(result["state"]["db_status"], "ready");
 }
 
-// -----------------------------------------------------------------------
 // enable
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_enable_missing_data() {
@@ -640,9 +624,7 @@ async fn test_enable_idempotent_does_not_duplicate() {
     assert!(engines[0]["enabled"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // disable
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_disable_missing_data() {
@@ -705,9 +687,7 @@ async fn test_disable_case_insensitive() {
     assert!(!engines[0]["enabled"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // add
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_add_missing_data() {
@@ -791,9 +771,7 @@ async fn test_add_with_custom_url_and_address() {
     assert_eq!(engines[0]["address"], "127.0.0.1:9999");
 }
 
-// -----------------------------------------------------------------------
 // engine.update_config
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_engine_update_config_missing_data() {
@@ -893,9 +871,7 @@ async fn test_engine_update_config_applies_url_change() {
     );
 }
 
-// -----------------------------------------------------------------------
 // test (scan)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_cmd_test_missing_data() {
@@ -975,9 +951,7 @@ async fn test_cmd_test_stub_engine_scan_file() {
     assert!(!result["infected"].as_bool().unwrap());
 }
 
-// -----------------------------------------------------------------------
 // cancel
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_cancel_missing_data() {
@@ -1018,14 +992,12 @@ async fn test_cancel_no_active_operation() {
     );
 }
 
-// -----------------------------------------------------------------------
 // install / update_db — async dispatchers
 //
 // These commands spawn background tasks that perform real downloads. We
 // only validate the synchronous preflight (missing name, missing data)
 // and the "already in progress" path here. The happy path is left
 // covered by the integration-level e2e tests.
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_install_missing_data() {
@@ -1177,9 +1149,7 @@ async fn test_cancel_update_db_op_by_suffix_key() {
     let _ = cancelled;
 }
 
-// -----------------------------------------------------------------------
 // build_engine_response merge behavior (indirect via cmd_check)
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_engine_response_preserves_custom_engine_fields() {
@@ -1242,10 +1212,8 @@ async fn test_status_sorts_engines_alphabetically() {
     assert_eq!(names, vec!["alpha", "clamav", "zeta"]);
 }
 
-// -----------------------------------------------------------------------
-// Wave-5 覆盖率补：非对象引擎 raw（null）走遍 as_object()/as_object_mut()
+// Wave-5 覆盖率补：非对象引擎 raw（null）走遍 as_object/as_object_mut
 // 的 None 跳过臂——真实配置都是对象，此前只有对象分支被覆盖。
-// -----------------------------------------------------------------------
 
 /// status：引擎 raw 是 null → build_engine_response 只回 name/enabled 基础
 /// 字段（as_object() None，无字段可并入），不 panic。
@@ -1348,12 +1316,10 @@ async fn test_install_null_engine_raw_fails_without_network() {
     assert!(entry.get("state").is_none(), "{:?}", entry);
 }
 
-// ---------------------------------------------------------------------------
-// 事务入口并发回归钉（2026-10-13 横扫七期）：config.scanner.json 此前九个
+// 事务入口并发回归钉（横扫七期）：config.scanner.json 此前九个
 // 写臂全部裸 RMW（与 mcp.rs 同款漏网——helper 名带 scanner 前缀，模式匹配
 // 落空），现收敛到 update_scanner_config（锁在入口内）。两线程并发改
 // **不同字段**（engine patch vs enable），两个变更都必须存活。
-// ---------------------------------------------------------------------------
 
 #[test]
 fn scanner_update_entries_serialized_both_mutations_survive() {

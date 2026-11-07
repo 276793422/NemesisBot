@@ -4,7 +4,7 @@
 //! collection intervals, reflection budgets, learning parameters, etc.
 //!
 //! Matches Go's ForgeConfig 1:1, including:
-//! - `TraceConfig` (Phase 5 conversation-level traces)
+//! - `TraceConfig` (conversation-level traces)
 //! - All fields in CollectionConfig, StorageConfig, ReflectionConfig, etc.
 //! - `LoadForgeConfig` / `SaveForgeConfig` file I/O
 
@@ -18,16 +18,16 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub enabled: bool,
 
-    /// 失败重放自动入库开关（自进化升级 C 线，2026-10-14）：false（默认）
+    /// 失败重放自动入库开关（自进化升级 C 线）：false（默认）
     /// = 重放用例进待审区需确认；true = 自动进回归集。
     #[serde(default)]
     pub replay_auto_ingest: bool,
 
-    /// A 线行为回归可调键（自进化升级，2026-10-14）。
+    /// A 线行为回归可调键（自进化升级）。
     #[serde(default)]
     pub test: TestConfig,
 
-    /// D 线微优化可调键（SPO 精简版，2026-10-14）。
+    /// D 线微优化可调键（SPO 精简版）。
     #[serde(default)]
     pub optimize: OptimizeConfig,
 
@@ -51,18 +51,18 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub validation: ValidationConfig,
 
-    /// Trace collection configuration (Phase 5).
+    /// Trace collection configuration.
     #[serde(default)]
     pub trace: TraceConfig,
 
-    /// Learning configuration (Phase 6 closed-loop).
+    /// Learning configuration (closed-loop).
     #[serde(default)]
     pub learning: LearningConfig,
 }
 
 /// Collection subsystem configuration.
 ///
-/// 2026-10-22 对称清理：`enabled` / `buffer_size` / `flush_interval_secs` /
+/// 对称清理：`enabled` / `buffer_size` / `flush_interval_secs` /
 /// `max_experiences_per_day` / `interval_secs` 五个 write-only 键随聚合线
 /// 移除——flush 循环、每日限额与「采集间隔」的唯一消费者就是被删的
 /// collector_loop / append_aggregated（interval_secs 生前唯一消费点是 CLI
@@ -117,7 +117,7 @@ pub struct StorageConfig {
 
     /// Maximum age of reflection reports before cleanup (days).
     ///
-    /// ⚠ 保留键（2026-10-15 核实未消费）：报告清理尚未实施，改它无效果。
+    /// ⚠ 保留键（核实未消费）：报告清理尚未实施，改它无效果。
     #[serde(default = "default_max_report_age")]
     pub max_report_age_days: u64,
 
@@ -157,7 +157,7 @@ pub struct ReflectionConfig {
 
     /// Minimum number of experiences required before running reflection.
     ///
-    /// ⚠ 保留键（2026-10-15 核实未消费）：反思循环对 ≥1 条经验即运行，
+    /// ⚠ 保留键（核实未消费）：反思循环对 ≥1 条经验即运行，
     /// 此闸未实施——且默认值 10 已被 auto-create 序列化进存量盘上配置，
     /// 接线会让存量部署 cycle 停摆到攒够条数，动它需连默认值一起重估。
     #[serde(default = "default_min_experiences")]
@@ -171,15 +171,15 @@ pub struct ReflectionConfig {
 
     /// LLM budget tokens per reflection.
     ///
-    /// ⚠ 保留键（2026-10-15 核实未消费）：实际预算统一走
-    /// `reflector_llm::AUX_FORGE_MAX_TOKENS`（8192，2026-09-28 事故后上调
+    /// ⚠ 保留键（核实未消费）：实际预算统一走
+    /// `reflector_llm::AUX_FORGE_MAX_TOKENS`（8192， 事故后上调
     /// ——低预算被 thinking 系模型烧穿、真机草稿全空），接线会重引该风险。
     #[serde(default = "default_llm_budget")]
     pub llm_budget_tokens: u32,
 
     /// Maximum age of reflection reports (days).
     ///
-    /// ⚠ 保留键（2026-10-15 核实未消费）：与 `storage.max_report_age_days`
+    /// ⚠ 保留键（核实未消费）：与 `storage.max_report_age_days`
     /// 重复且同样未实施，报告清理落地时二者需去重。
     #[serde(default = "default_max_report_age")]
     pub max_report_age_days: u64,
@@ -295,7 +295,7 @@ fn default_timeout() -> u64 {
     60
 }
 
-/// A 线行为回归可调键（自进化升级，2026-10-14）。
+/// A 线行为回归可调键（自进化升级）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestConfig {
     /// judge 层缺省分阈值（用例未显式声明 threshold 时生效；0.0-1.0）。
@@ -342,7 +342,7 @@ fn default_optimize_budget() -> u32 {
     2000
 }
 
-/// Trace collection configuration (Phase 5: conversation-level traces).
+/// Trace collection configuration (conversation-level traces).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceConfig {
     /// Whether trace collection is enabled.
@@ -355,7 +355,7 @@ pub struct TraceConfig {
 
     /// Minimum number of traces required for analysis (0 = no floor).
     ///
-    /// 2026-10-23 验证轮四接线：此前该键零消费者（死键）。窗口内轨迹少
+    /// 验证轮四接线：此前该键零消费者（死键）。窗口内轨迹少
     /// 于 N 条不做实效分析（样本太少结论即噪声）；0 = 不设下限（护栏
     /// 默认关）。
     #[serde(default = "default_min_traces")]
@@ -377,10 +377,10 @@ fn default_max_trace_age() -> u64 {
 }
 
 fn default_min_traces() -> usize {
-    0 // 护栏默认关（0=不限）；2026-10-23 验证轮四接线——此前该键零消费者
+    0 // 护栏默认关（0=不限）； 验证轮四接线——此前该键零消费者
 }
 
-/// Learning configuration for Phase 6 closed-loop learning.
+/// Learning configuration for closed-loop learning.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LearningConfig {
     /// Whether learning is enabled.
@@ -421,8 +421,8 @@ pub struct LearningConfig {
 
     /// Token budget for Skill draft generation (default 2000).
     ///
-    /// ⚠ 保留键（2026-10-15 核实未消费）：实际预算统一走
-    /// `reflector_llm::AUX_FORGE_MAX_TOKENS`（8192，2026-09-28 事故后上调
+    /// ⚠ 保留键（核实未消费）：实际预算统一走
+    /// `reflector_llm::AUX_FORGE_MAX_TOKENS`（8192， 事故后上调
     /// ——低预算被 thinking 系模型烧穿、真机两稿全空），接线会重引该风险。
     #[serde(default = "default_learning_llm_budget")]
     pub llm_budget_tokens: u32,

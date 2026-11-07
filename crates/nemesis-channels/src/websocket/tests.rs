@@ -794,7 +794,7 @@ async fn test_websocket_send_when_running_no_client() {
 }
 
 #[tokio::test(start_paused = true)]
-// BUG-20261103-344 横向同族红证：静默 TCP 连接（不发 HTTP 升级请求——
+// 横向同族红证：静默 TCP 连接（不发 HTTP 升级请求——
 // 本地扫描/挂死客户端形态）旧实现内联 await accept_hdr_async，永久冻结
 // accept 循环，通道对一切后续客户端失联。不变量：静默连接按单连接墙钟
 // 上限淘汰，真客户端照常完成升级并收到欢迎帧。
@@ -866,7 +866,7 @@ async fn test_websocket_send_with_active_client() {
 
     // Read welcome message
     let welcome = read.next().await.unwrap().unwrap();
-    // BUG-20261030-192：出站按 chat_id 归属校验，chat_id 必须用欢迎帧里
+    // 出站按 chat_id 归属校验，chat_id 必须用欢迎帧里
     // 的真实 client_id（服务端秒级时间戳），不能用字面量。Text 载荷是
     // JSON——先反序列化取 content，再从文本里抠 id（对 JSON 原文 split 会
     // 捞进尾随 JSON 垃圾）。
@@ -1471,7 +1471,7 @@ async fn test_websocket_start_stop_multiple_cycles() {
 }
 
 // ===========================================================================
-// W4c 补测（2026-08-25）：auth 分支的 wrong-path 校验、Close/Binary/Ping/Err
+// 补测：auth 分支的 wrong-path 校验、Close/Binary/Ping/Err
 // 四类帧的 reader 分支、断开后 active_conn 清理（后续 send 报 no client）
 // ===========================================================================
 
@@ -1667,7 +1667,7 @@ async fn test_w4c_ws_abrupt_drop_cleans_active_connection() {
 }
 
 // ===========================================================================
-// S2 coverage (2026-08-26): start() bind failure + send() dead send-queue
+// coverage: start() bind failure + send() dead send-queue
 // ===========================================================================
 
 /// `start()` on a port already bound by another listener must return
@@ -1723,7 +1723,7 @@ async fn s2_websocket_send_dead_sender_returns_disconnected_err() {
 }
 
 // ===========================================================================
-// BUG-20261030-192 (R244): send() 必须校验 chat_id 归属——断线重连后旧
+// send() 必须校验 chat_id 归属——断线重连后旧
 // 会话的迟到回复不得串到接管单槽的新客户端（入站按 websocket:{client_id}
 // 精确寻址，出站此前完全忽略 chat_id → 跨会话串台）。
 // ===========================================================================
@@ -1811,7 +1811,7 @@ async fn bug192_send_non_prefixed_chat_id_delivers() {
 }
 
 // ===========================================================================
-// BUG-20261031-232 (R291): websocket 单槽连接身份与归属校验的地基缺陷。
+// websocket 单槽连接身份与归属校验的地基缺陷。
 // ①client_id 秒级时间戳——同秒断开重连（网络抖动自动重连）生成相同 ID，
 //   而 192 出站归属校验与 reader 断开清理都以它为身份依据（碰撞 = 旧连
 //   接迟到回复被当作新连接合法回复投递）；②send() 归属校验与投递是两次

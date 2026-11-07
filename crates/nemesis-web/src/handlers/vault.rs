@@ -1,5 +1,5 @@
 //! Vault（凭据 vault）WSAPI — `vault.list` / `vault.set` / `vault.remove` /
-//! `vault.status` / `vault.unlock`（S3c，2026-10-09 高优差距批次；配套 S3a
+//! `vault.status` / `vault.unlock`（2026-10-09 高优差距批次；配套
 //! 的 `vault:` 别名注入，让 Dashboard 能管理模型/通道凭据的别名）。
 //!
 //! 语义与 `nemesisbot vault` CLI（nemesisbot/src/commands/vault.rs）同源：
@@ -32,11 +32,11 @@ use std::path::{Path, PathBuf};
 
 pub struct VaultHandler;
 
-/// vault 写路径互斥（RMW 串行锁，2026-10-24）：`set`/`remove` 是
+/// vault 写路径互斥（RMW 串行锁）：`set`/`remove` 是
 /// 「open→内存改→save 整文件」的读改写序列，而 WSAPI 每条消息独立
 /// `tokio::spawn` 派发（websocket_handler dispatch）——并发 set∥set /
 /// set∥remove 各持旧快照互相整文件覆盖，先落盘的条目**静默丢失**（无任何
-/// 报错）。与 share.rs `SHARE_LOCK`（2026-10-13 RMW 横扫同款）同一缺陷类，
+/// 报错）。与 share.rs `SHARE_LOCK`（RMW 横扫同款）同一缺陷类，
 /// vault 当时漏网。只罩进程内并发面；跨进程（CLI ∥ gateway）仍可能竞——
 /// 与 share 面同一诚实边界（单用户操作速率，现实触发面即 Dashboard 双发/
 /// 双标签页）。`list`/`status`/`unlock` 不落盘，不入锁。
@@ -190,7 +190,7 @@ impl ModuleHandler for VaultHandler {
                 // 令能不能开」——所以成功与否都只回布尔/错误，口令不落日志。
                 // 无口令请求：dpapi 模式（Windows 默认，口令不参与）open 即
                 // 解锁 = 恒真；argon2 模式没口令就无从验证 = 诚实报错
-                //（2026-10-13 修复：原实现把口令检查放在开店之前，dpapi 下
+                //（修复：原实现把口令检查放在开店之前，dpapi 下
                 // 无口令 unlock 永远报「未提供口令」，与模式语义矛盾）。
                 let pw = data
                     .as_ref()
@@ -217,11 +217,9 @@ impl ModuleHandler for VaultHandler {
     }
 }
 
-// ---------------------------------------------------------------------------
 // 共享辅助（供 handler 与测试复用；passphrase 显式传参，测试不碰进程 env）
-// ---------------------------------------------------------------------------
 
-/// vault 文件路径 = `<workspace>/config/vault.enc`（nemesis-path 单一真相源，
+/// vault 文件路径 = `<workspace>/config/vault.enc`（nemesis-path 统一定义，
 /// 与 CLI / 网关解析器同一条）。
 pub(crate) fn vault_path(ctx: &RequestContext) -> Result<PathBuf, String> {
     let ws = ctx

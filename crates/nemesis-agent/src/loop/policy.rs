@@ -1,11 +1,11 @@
-//! 循环流程策略 trait 层（WASM 样板工程批 1：Rust trait 化）。
+//! 循环流程策略 trait 层（WASM 样板工程：Rust trait 化）。
 //!
-//! 切分原则见盘点文档 `docs/INFO/2026-10-22_agent-loop外部定制点全景盘点.md`：
+//! 切分原则见盘点文档 `agent-loop外部定制点全景盘点`：
 //! **骨架**（安全 8 层调用点 / estop / 审计链 / checkpoint 协议 / 量化上限）
 //! 不可替换；**流程策略**（压缩、终答裁决、参数校验、标题生成）经本层依赖
 //! 倒置——宿主在固定策略点调槽，槽内实现可替换。
 //!
-//! ## 哨兵 Builtin 模式（批 1 的核心设计）
+//! ## 哨兵 Builtin 模式（的核心设计）
 //!
 //! 三个策略槽恒持一个实现，默认 = **零逻辑哨兵**（裁决恒返 `Builtin`，
 //! 宿主走原有代码路径）。既有逻辑**全部留在宿主**：组件给出显式裁决时，
@@ -14,11 +14,11 @@
 //! 「Builtin 实现拿不到每轮状态（`TurnGuard` 等）」的状态捕获问题——trait
 //! 入参只是纯数据投影，真正有状态的判定留在宿主。
 //!
-//! ## 二期 WASM 对接边界（批 2-4）
+//! ## 二期 WASM 对接边界
 //!
 //! 本层 trait 签名 = 对外合同雏形；JSON 投影（截断 / 脱敏 / 序列化）在桥
 //! 边界（PolicyBridge）做，trait 本身保持内部工效学（引用传递零克隆）。
-//! 标题回调是**单点回调形态对照**（D5）：不做 WASM 化，`Option` 槽
+//! 标题回调是**单点回调形态对照**：不做 WASM 化，`Option` 槽
 //! （`None` = 内置小模型路径）——哨兵模式对它不成立，因为内置实现依赖
 //! 宿主侧 `small_model` 资源，零逻辑哨兵无法自持。
 
@@ -85,7 +85,7 @@ pub struct ValidationInput {
     pub args_json: String,
 }
 
-/// 校验裁决。宿主映射到 [`crate::args_validator::Outcome`]：
+/// 校验裁决。宿主映射到 [`crate::args_validator:Outcome`]：
 /// `Valid`/`Fixed` 直通；`Reject` 按 schema violation 类（class `"B"`）回灌
 /// 模型并计入 validation_failures（遥测类暂复用 `"B"`，专用类随 WASM
 /// 合同批引入）。
@@ -139,7 +139,7 @@ pub struct CompactTriggerInput {
     pub window: usize,
     /// 当前摘要覆盖边界 `c`（0 = 无摘要）。
     pub covers_up_to: usize,
-    /// 新折叠边界 `new_c`（P5 token 预算 + 工具对齐回退后）。
+    /// 新折叠边界 `new_c`（token 预算 + 工具对齐回退后）。
     pub new_boundary: usize,
 }
 
@@ -166,7 +166,7 @@ pub struct CompactExecInput<'a> {
     pub model: &'a str,
 }
 
-/// 执行裁决。`Summary` = 采用该文本（宿主照跑无进展守卫 B2 / covers 推进 /
+/// 执行裁决。`Summary` = 采用该文本（宿主照跑无进展守卫 / covers 推进 /
 /// 通知 / hooks 全套）；`Skip` = 本轮不出摘要（同内置「无可摘要内容」路径：
 /// loud warn + covers 不推进）；`Builtin` = 内置 provider 摘要链。
 #[derive(Debug)]
@@ -199,17 +199,17 @@ impl CompactPolicy for BuiltinCompactPolicy {
 }
 
 // ---------------------------------------------------------------------------
-// TitleCallback —— 会话标题生成（盘点 #20；D5 单点回调形态对照）
+// TitleCallback —— 会话标题生成（盘点 #20； 单点回调形态对照）
 // ---------------------------------------------------------------------------
 
 /// 标题生成入参。
 pub struct TitleInput {
     pub session_key: String,
-    /// 首条 user 消息（宿主已按 `E7_TITLE_INPUT_MAX_CHARS` 截断）。
+    /// 首条 user 消息（宿主已按 `_TITLE_INPUT_MAX_CHARS` 截断）。
     pub first_user_message: String,
 }
 
-/// 标题生成回调（D5：单点回调形态对照样例——不做 WASM 化）。
+/// 标题生成回调（单点回调形态对照样例——不做 WASM 化）。
 ///
 /// 与三策略槽的**哨兵模式不同**，本槽是 `Option`（`None` = 内置小模型
 /// 路径）：内置实现依赖宿主侧 `small_model` 资源，零逻辑哨兵无法自持；

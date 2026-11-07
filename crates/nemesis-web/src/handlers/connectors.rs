@@ -1,15 +1,15 @@
-//! connector 数据面 WSAPI（行动代理 P0，2026-10-14；管理面 2026-10-19）。
+//! connector 数据面 WSAPI（行动代理，2026-10-14；管理面 2026-10-19）。
 //!
 //! 命令：`connectors.list`（registry 状态）/ `connectors.receipts.list`
-//! （凭条流水）/ `connectors.undo`（E3 页内撤销）/ `connectors.create` /
+//! （凭条流水）/ `connectors.undo`（页内撤销）/ `connectors.create` /
 //! `connectors.set_enabled` / `connectors.remove`（Dashboard 管理面三命令，
 //! 逻辑在 nemesis-connectors registry）/ `paperbroker.ledger`（纸面账本）
-//! ——M3 e2e 断言面、CLI 查询（`connector list` /
+//! e2e 断言面、CLI 查询（`connector list` /
 //! `connector receipts`）与 Dashboard ConnectorsView 的同一数据面（回执/
 //! 账本单点不双写，读皆直读存储）。
 //!
 //! 执行纪律：常规执行入口是 agent 的 `connector_invoke` 工具（走完整安全
-//! 管线）；E3 撤销（`connectors.undo`）是唯一例外写入口——但它不直连
+//! 管线）； 撤销（`connectors.undo`）是唯一例外写入口——但它不直连
 //! executor，而是经 [`resolve_session_loop`] 拿到会话归属的 AgentLoop 后
 //! 走 `handle_tool_call` 完整 dispatch 瀑布（安全 8 层/审批/审计照常，
 //! 撤销本身也是账）。
@@ -40,12 +40,12 @@ fn enabled_now(ctx: &RequestContext) -> bool {
         .unwrap_or(true)
 }
 
-/// 单 connector → JSON（校验通过形态）。trust 徽标随行（M1 消费面收口：
+/// 单 connector → JSON（校验通过形态）。trust 徽标随行（消费面收口：
 /// 前端徽标三态 verified/community/unsigned；损坏条目由调用方置 null）。
-/// workspace config.mcp.json 已注册 server 的工具前缀集（M4b 在位探测）。
+/// workspace config.mcp.json 已注册 server 的工具前缀集（在位探测）。
 /// 前缀形态与 nemesis-mcp adapter 挂载面同源：`mcp_{sanitize(name)}_`。
 /// config 缺失/不可解析 = 空集（没有 server 在场，tool 绑定全部视为未就绪
-/// ——诚实展示，不假装可用）。
+/// 诚实展示，不假装可用）。
 fn registered_mcp_prefixes(workspace: &Path) -> Vec<String> {
     let path = nemesis_path::resolve_mcp_config_path_in_workspace(workspace);
     match nemesis_config::load_mcp_config(&path) {
@@ -58,7 +58,7 @@ fn registered_mcp_prefixes(workspace: &Path) -> Vec<String> {
     }
 }
 
-/// tool 绑定在位判定（M4b）：绑定工具名被任一已注册前缀覆盖 = 就绪。
+/// tool 绑定在位判定：绑定工具名被任一已注册前缀覆盖 = 就绪。
 /// 无 tool 绑定的 connector 返回 null（探测不适用——http/action/script
 /// 绑定不挂 MCP）。
 fn tool_bindings_ready(
@@ -133,10 +133,10 @@ fn connector_json(
         "base_url": c.base_url,
         "dir": dir_name,
         "ops": ops,
-        // M4b 在位探测：tool 绑定的 MCP server 是否注册（null=无 tool 绑定
+        // 在位探测：tool 绑定的 MCP server 是否注册（null=无 tool 绑定
         // 不适用）。false = 列表诚实展示「MCP 未注册」，不假装可用。
         "mcp_ready": tool_bindings_ready(c, mcp_prefixes),
-        // B2：独占接管面——声明的独占 server 清单 + per-tool 策略行
+        // 独占接管面——声明的独占 server 清单 + per-tool 策略行
         // （mirrors[].policy = default|exempt|blocked，前端三态选择器）。
         "exclusive_mcp": c.exclusive_mcp,
         "mirrors": exclusive_rows,
@@ -144,7 +144,7 @@ fn connector_json(
     })
 }
 
-/// 主 loop 的 MCP 工具快照行（name + parameters + B3 hints）。loop 不在
+/// 主 loop 的 MCP 工具快照行（name + parameters + hints）。loop 不在
 /// 场 = 空表（镜像行只剩 sidecar 记录的例外，args_schema 缺席——诚实展示）。
 struct McpToolRow {
     name: String,
@@ -170,7 +170,7 @@ fn main_loop_mcp_tools(ctx: &RequestContext) -> Vec<McpToolRow> {
         .collect()
 }
 
-/// B2：单 connector 的独占接管 per-tool 策略行（Dashboard 三态选择器数据
+/// 单 connector 的独占接管 per-tool 策略行（Dashboard 三态选择器数据
 /// 面）。行 = 独占前缀命中的**当下在场**工具（policy 按当下 sidecar 裁）
 /// ∪ sidecar 记录但当下不在场的例外（server 离线也可见可撤——例外是用户
 /// 显式意志，不因 server 重启消失）。按工具名字典序。
@@ -191,16 +191,16 @@ fn exclusive_tool_rows(
         .iter()
         .map(|s| registry::exclusive_prefix(s))
         .collect();
-    // G1 隐藏标记（边界补强 2026-10-20）：config hidden 是绝对闸（任何
+    // 隐藏标记（边界补强）：config hidden 是绝对闸（任何
     // 出处都拒），被隐藏的工具三态选择器形同虚设——行照列（管理面全量
-    // 可见）但带 `hidden_by_config` 标记，前端灰显提示先去解除隐藏。
+    // 可）但带 `hidden_by_config` 标记，前端灰显提示先去解除隐藏。
     let hidden_by_config =
         |name: &str| main_loop.is_some_and(|l| l.tool_matches_hidden_config(name));
     let mut rows: Vec<Value> = mcp_tools
         .iter()
         .filter(|t| prefixes.iter().any(|p| t.name.starts_with(p.as_str())))
         .map(|t| {
-            // B3：镜像基线档位随行（前端 risk 徽标 + 确认卡提示）。
+            // 镜像基线档位随行（前端 risk 徽标 + 确认卡提示）。
             let (risk, class, confirm) = mirror_baseline(t.read_only_hint, t.destructive_hint);
             json!({
                 "id": t.name,
@@ -261,7 +261,7 @@ fn cmd_list(ctx: &RequestContext) -> Result<Option<Value>, String> {
                     "id": dir_name,
                     "dir": dir_name,
                     "enabled": false,
-                    // M1：损坏条目无有效清单可评估——trust 置 null（不是
+                    // 损坏条目无有效清单可评估——trust 置 null（不是
                     // "unsigned"：没解析出的清单谈不上「未签名」的判断）。
                     "trust": Value::Null,
                     "error": l.error.clone().unwrap_or_else(|| "未知损坏".to_string()),
@@ -337,21 +337,21 @@ fn cmd_ledger(ctx: &RequestContext) -> Result<Option<Value>, String> {
     })))
 }
 
-/// E3（收官批 2026-10-15）页内撤销：`connectors.undo {receipt_id,
+/// （收官-15）页内撤销：`connectors.undo {receipt_id,
 /// session_key?}`。按凭条+当下清单三分派：
 /// - read 类 → 诚实说明（不改变外部状态，无需撤销）；
 /// - write + 清单声明 undo（域 C）→ 反向 op：凭条主键值回填 arg，经
 ///   [`resolve_session_loop`] → `handle_tool_call` 完整 dispatch 瀑布
 ///   （安全 8 层/审批/审计照常——撤销本身也是账）；**结果按行动账本
-///   新凭条结构化判定**（R5）：反向 op 的凭条 `outcome == "executed"`
+///   新凭条结构化判定**：反向 op 的凭条 `outcome == "executed"`
 ///   才 `undone: true`，不嗅探文本；
-/// - write 无 undo 声明（域 B）→ 会话级 `undo_last_turn`（E3a busy 闸
+/// - write 无 undo 声明（域 B）→ 会话级 `undo_last_turn`（busy 闸
 ///   守门；需要 session_key——凭条有记录用凭条的，否则取入参）。**只
 ///   回退本地会话**，外部副作用未被撤销——`undone: false` 如实标注。
 ///
 /// 仅 `executed` 凭条可撤销；registry 按当下裁决（op 已删/清单已改 =
 /// 诚实拒，不凭旧行为猜）。响应统一 `{receipt_id, undone, via,
-/// capability, reason?}`（R5 能力建模：`capability = reverse_op |
+/// capability, reason?}`（能力建模：`capability = reverse_op |
 /// local_rewind | none`）。
 async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
     let ws = workspace_of(ctx)?;
@@ -411,7 +411,7 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         })));
     }
 
-    // 撤销防重（边界补强 2026-10-20）：反向 op 重复执行会叠加外部副作用
+    // 撤销防重（边界补强）：反向 op 重复执行会叠加外部副作用
     // （双退款形态）；域 B 会话回退重复执行 = 级联回退越来越新的轮次
     // （误伤面）——已发起过撤销的凭条两条域一律拒绝再撤。标记在域 C 反
     // 向 op 发起执行后 / 域 B 回退成功后落（域 C 无论成败——反向 op 可能
@@ -425,7 +425,7 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         ));
     }
 
-    // 域 C：清单声明 undo → 反向 op（凭条主键值回填）。R5：结果按行动
+    // 域 C：清单声明 undo → 反向 op（凭条主键值回填）。：结果按行动
     // 账本新凭条结构化判定——不嗅探文本。
     if let Some(undo) = &op.undo {
         let key_value = r.receipt_value.clone().ok_or_else(|| {
@@ -454,10 +454,10 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
             nemesis_agent::context::RequestContext::new("web", &ctx.chat_id, "dashboard-undo", &sk);
         let result_text = loop_ref.handle_tool_call(&call, &tool_ctx).await;
         let after = receipt::list_receipts(&ws, 500, None)?;
-        // 撤销防重落标记（边界补强 2026-10-20）：无论 verdict 成败——反向
+        // 撤销防重落标记（边界补强）：无论 verdict 成败——反向
         // op 已发起执行，可能已在对端生效，重复发起会叠加副作用（标记在
         // 判定后、返回前落，Ok 带撤销凭条 id 供审计）。
-        // BUG-20261105-023：凭条绑定派发 args（digest 匹配）——旧形态按
+        // 凭条绑定派发 args（digest 匹配）——旧形态按
         // (connector, op, 「新出现」) 认领，并发双撤销互认对方凭条。
         let expected_digest = nemesis_connectors::receipt::args_digest(&json!({
             (undo.arg.as_str()): key_value,
@@ -494,9 +494,9 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
         }));
     }
 
-    // 域 B：write 无 undo 声明 → 会话级 rewind_last_turn。R5：只回退
+    // 域 B：write 无 undo 声明 → 会话级 rewind_last_turn。：只回退
     // 本地会话，外部副作用未被撤销——undone=false 如实标注（不宣称
-    // 「撤销完成」）。防重标记同落（边界补强 2026-10-20 四轮补口）：
+    // 「撤销完成」）。防重标记同落（边界补强 四轮补口）：
     // rewind_last_turn 无凭条→轮次关联（恒回退当下最后一轮），同一凭条
     // 反复 undo = 逐轮级联回退、误伤后续无关轮次——回退成功后落标记，
     // 同凭条第二次 undo 走上方防重闸拒绝。
@@ -534,14 +534,14 @@ async fn cmd_undo(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
     })))
 }
 
-/// R5 撤销判定（纯函数，便于三臂单测）：对比反向 op 派发前后的行动账本
+/// 撤销判定（纯函数，便于三臂单测）：对比反向 op 派发前后的行动账本
 /// 快照，只认「新增凭条 + `outcome == "executed"` + args digest 与本次
 /// 派发一致」为撤销成功。不嗅探文本——派发回显是给人看的，账才是结构化
 /// 真相。
 ///
 /// - `Ok(undo_receipt_id)`：新凭条已 executed，`undone: true`；
 /// - `Err(reason)`：新凭条 outcome 非 executed（被拦/失败），digest 不匹配
-///   （并发撤销互认防护，BUG-20261105-023），或压根没落新凭条——外部状态
+///   （并发撤销互认防护），或压根没落新凭条——外部状态
 ///   未撤销，`undone: false`。
 fn undo_ledger_verdict(
     before: &std::collections::HashSet<String>,
@@ -575,12 +575,12 @@ fn undo_ledger_verdict(
         .unwrap_or_else(|| Err("反向 op 未落新凭条（被拦或执行失败）——外部状态未撤销".to_string()))
 }
 
-/// Dashboard 管理面（2026-10-19）：`connectors.create {dir_name, toml}` /
+/// Dashboard 管理面：`connectors.create {dir_name, toml}` /
 /// `connectors.set_enabled {dir, enabled}` / `connectors.remove {dir}`。
 /// 逻辑在 nemesis-connectors registry（[`registry::create_connector`] 等三
 /// 函数），此处只做参数抽取——热生效免费：`scan_connectors` 每次重读目录，
 /// 下一次 `connectors.list` / `connector_invoke` 即见，零重启。语义注记：
-/// 新装条目默认启用与否由清单自身的 `enabled` 键决定；启停（A3-a）恒写
+/// 新装条目默认启用与否由清单自身的 `enabled` 键决定；启停（a）恒写
 /// sidecar、清单字节不动——签名条目可正常启停。
 fn cmd_create(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
     let ws = workspace_of(ctx)?;
@@ -630,9 +630,9 @@ fn cmd_remove(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value
     })))
 }
 
-/// B4（2026-10-19 总开关）：`connectors.set_master {enabled}` —— 写
+/// （总开关）：`connectors.set_master {enabled}` —— 写
 /// config.json `connectors.enabled`（raw RMW，只动这一键）。热生效免费：
-/// 供给闸与 dispatch 闸每次现读 config（F8 hidden_tools 同族），无需重启。
+/// 供给闸与 dispatch 闸每次现读 config（hidden_tools 同族），无需重启。
 /// 闸只裁 connector_find/connector_invoke 两把治理工具——原生 MCP/文件等
 /// 工具不受影响（连接器≠闸门，A 批正名后的架构语义）。
 fn cmd_set_master(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<Value>, String> {
@@ -657,7 +657,7 @@ fn cmd_set_master(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<V
     Ok(Some(json!({ "ok": true, "enabled": enabled })))
 }
 
-/// B2（2026-10-19 独占接管）：`connectors.tool_policy {connector, tool,
+/// （独占接管）：`connectors.tool_policy {connector, tool,
 /// policy}` —— per-tool 例外表 sidecar 写（`config/connector_state/<id>
 /// .json`）。`exempt` = 恢复原生直调（用户显式放弃这一个接口的监管）；
 /// `blocked` = 原生照隐 + 镜像不提供（能力对 agent 消失）；`default` =
@@ -685,7 +685,7 @@ fn cmd_tool_policy(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<
         "blocked" => nemesis_connectors::state::ToolPolicy::Blocked,
         other => return Err(format!("未知 policy `{other}`（default|exempt|blocked）")),
     };
-    // 在册校验（边界补强 2026-10-20）：id 不在注册表 = 拒绝（typo 防护，
+    // 在册校验（边界补强）：id 不在注册表 = 拒绝（typo 防护，
     // 不写幽灵 sidecar）。成员资格证明按清单 id 匹配当下扫描结果。
     let in_registry = registry::scan_connectors(&ws)
         .iter()
@@ -705,8 +705,8 @@ fn cmd_tool_policy(ctx: &RequestContext, data: Option<&Value>) -> Result<Option<
 
 /// connector 数据面 handler（`connectors.list` / `connectors.receipts.list` /
 /// `connectors.undo` / `connectors.create` / `connectors.set_enabled` /
-/// `connectors.remove` / `connectors.set_master`（B4 总开关）/
-/// `connectors.tool_policy`（B2 per-tool 例外表））。
+/// `connectors.remove` / `connectors.set_master`（总开关）/
+/// `connectors.tool_policy`（per-tool 例外表））。
 pub struct ConnectorsHandler;
 
 #[async_trait::async_trait]

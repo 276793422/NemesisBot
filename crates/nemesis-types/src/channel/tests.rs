@@ -498,7 +498,7 @@ fn test_channel_user_debug() {
 }
 
 // ---------------------------------------------------------------------------
-// I5（devtool-upgrade 阶段 7）：打开文件上下文清洗/解析
+// （devtool-upgrade）：打开文件上下文清洗/解析
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -560,7 +560,7 @@ fn test_open_files_from_metadata_missing_or_garbage_is_empty() {
     assert!(open_files_from_metadata(&md).is_empty());
 }
 
-// -- P6-R4（D4 预留）：principal 映射 ---------------------------------------
+// -- -（预留）：principal 映射 ---------------------------------------
 
 #[test]
 fn test_principal_for_channel_composite_shape() {

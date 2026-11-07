@@ -22,7 +22,7 @@
 //! （不给下游拿坏材料签出废证书的机会）。`from_json` + `validate` 分离是为了
 //! 测试可注入时钟。
 //!
-//! # 与 [`KeyHierarchy`](crate::keygen::KeyHierarchy) 的关系
+//! # 与 [`KeyHierarchy`](crate::keygen:KeyHierarchy) 的关系
 //! 全量装载语义不变（严格三级俱全，空字段诚实拒绝）——revoke-server 等既有
 //! 消费方零改动。分包是纯增量。
 
@@ -124,9 +124,9 @@ fn check_valid_at(c: &Certificate, now: u64, what: &str) -> Result<()> {
 }
 
 /// 含私钥材料的 JSON 落盘（unix 0600；Windows 沿用用户目录 ACL 默认收敛）。
-/// `pub(crate)`：全量包 [`crate::keygen::KeyHierarchy::save`] 同源消费——
+/// `pub(crate)`：全量包 [`crate::keygen:KeyHierarchy::save`] 同源消费——
 /// 全量包敏感度最高（三级私钥俱全），裸 `fs::write` 会落 umask 默认权限
-/// （Linux 常态 0644 = 同机其他用户可读），BUG-20261104-378。
+/// （Linux 常态 0644 = 同机其他用户可读），。
 pub(crate) fn save_private_json(j: &KeyHierarchyJson, path: &str) -> Result<()> {
     let json = serde_json::to_vec_pretty(j)?;
     #[cfg(unix)]

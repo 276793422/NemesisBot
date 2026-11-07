@@ -616,7 +616,7 @@ fn test_mcp_list_tool_description_and_params() {
     assert!(d.contains("MCP tools"));
     let p = t.parameters();
     assert_eq!(p["type"], "object");
-    // 唯一可选属性 name（W7：按名查单个工具的完整 schema）。
+    // 唯一可选属性 name（按名查单个工具的完整 schema）。
     let props = p["properties"].as_object().unwrap();
     assert_eq!(props.len(), 1, "仅 name 一个属性: {props:?}");
     assert!(props.contains_key("name"));
@@ -1427,7 +1427,7 @@ async fn test_spi_tool_unknown_action_on_linux() {
 async fn test_i2c_tool_write_without_confirm() {
     let t = I2CTool::default();
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
-    // 地址用白名单内的 0x38（同上：5=0x05 属保留段，P8 后会被策略先拒）
+    // 地址用白名单内的 0x38（同上：5=0x05 属保留段， 后会被策略先拒）
     let r = t
         .execute(r#"{"action": "write", "address": 56}"#, &ctx)
         .await;
@@ -1612,7 +1612,7 @@ async fn test_forge_bridge_unknown_tool_name_returns_err() {
 }
 
 // ===========================================================================
-// H1 (U12): CronTool continue_session
+// CronTool continue_session
 // ===========================================================================
 
 #[tokio::test]
@@ -1672,7 +1672,7 @@ async fn test_cron_create_continue_session_uses_ext() {
     }
 }
 
-/// T3 (U12): continue_session + max_rounds — the budget lands in the job
+/// continue_session + max_rounds — the budget lands in the job
 /// payload (explicit tier, default 10 when omitted, ignored when not
 /// continuing the session).
 #[tokio::test]
@@ -1739,7 +1739,7 @@ async fn test_cron_create_continue_session_max_rounds() {
 }
 
 // ===========================================================================
-// I4 (U13 half): Codex tool registration gate
+// (half): Codex tool registration gate
 // ===========================================================================
 
 #[test]

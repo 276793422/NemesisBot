@@ -1,5 +1,5 @@
 // ssrf.rs 覆盖率补充测试（DNS 解析后 IP 落入封锁集的 ResolvesToBlocked 臂
-// ——localhost → 127.0.0.1/::1 必中 loopback 封锁）。
+// ——localhost → 127.0.0.1/:1 必中 loopback 封锁）。
 //
 // 豁免（死防御 / 解析器行为性不可达，仅记录不硬凑）：
 // - 208 / 271（BlockedScheme 臂）：resolver::parse_url 在 76-78 已把 scheme
@@ -48,7 +48,7 @@ fn localhost_resolution_hits_resolves_to_blocked() {
             || crate::resolver::is_reserved_ip(ip)
     });
     if !has_blocked {
-        // 全局地址环境（罕见）：无 Blocked IP 可打，跳过断言。
+        // 全局地址环境（罕）：无 Blocked IP 可打，跳过断言。
         return;
     }
 

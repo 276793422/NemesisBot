@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 /// Single LLM request log entry.
 ///
-/// A3（2026-08-31）补明细字段：`pricing_model`（实际命中的价目条目名——
+/// 补明细字段：`pricing_model`（实际命中的价目条目名——
 /// 配置名 `zhipu/glm-4.7` 与价目条目 `glm-4.7` 分离，排查计价命中用）、
 /// 分项成本、`first_token_ms`（`None` = 未测量——provider trait 无流式
 /// 通路）、`session_key`（会话过滤/聚合）。`latency_ms` 即该请求耗时
@@ -45,7 +45,7 @@ pub struct RequestLog {
     pub session_key: String,
 }
 
-/// 请求明细查询过滤器（A3 请求明细 tab；时间范围/分页之外的正交条件）。
+/// 请求明细查询过滤器（请求明细 tab；时间范围/分页之外的正交条件）。
 /// `None`/空串 = 不过滤该维度。`model` 与 `session_key` 做子串匹配
 /// （LIKE %v%——排查时按片段定位比精确名更顺手），`status` 精确匹配。
 #[derive(Debug, Clone, Default)]
@@ -94,13 +94,13 @@ pub struct DailyRollup {
     pub avg_latency_ms: f64,
 }
 
-/// Prompt-length 阶梯价单档（L3，2026-10-12 内部专项 T0）：`input_tokens`
+/// Prompt-length 阶梯价单档（内部专项）：`input_tokens`
 /// 达到 `min_prompt_tokens` 后整套价目切换到本档；`None` 的价目字段继承
 /// 基础价（部分覆盖场景——只调输出价、其余沿用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PriceTier {
     /// 生效阈值：`input_tokens >= min_prompt_tokens` 即命中；多条命中取
-    /// `min_prompt_tokens` 最大的一档（pi S3 语义：长上下文按段计价）。
+    /// `min_prompt_tokens` 最大的一档（pi 语义：长上下文按段计价）。
     pub min_prompt_tokens: i64,
     /// 阶梯输入价（$/M）。`None` = 继承基础价。
     #[serde(default)]
@@ -134,7 +134,7 @@ pub struct ModelPricing {
     /// Provider-qualified or historic names resolving to this entry.
     #[serde(default)]
     pub aliases: Vec<String>,
-    /// Prompt-length 阶梯价（L3）。`None`/缺省 = 单一价（旧行为，零迁移）。
+    /// Prompt-length 阶梯价。`None`/缺省 = 单一价（旧行为，零迁移）。
     /// 解析语义见 [`PriceTier`]：命中档价目覆盖基础价，`None` 字段继承。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_tiers: Option<Vec<PriceTier>>,
@@ -154,10 +154,10 @@ pub struct UsageSummary {
     pub cache_hit_rate: f64,
 }
 
-/// 单会话的用量聚合（M5 会话级 cost/context 常驻）。
+/// 单会话的用量聚合（会话级 cost/context 常驻）。
 ///
 /// `input_tokens` = 完整输入口径（prompt + cache_creation + cache_read，
-/// R2 2026-10-22 补全——prompt 列是 provider 非缓存纯输入，聚合 SQL 把
+/// 补全——prompt 列是 provider 非缓存纯输入，聚合 SQL 把
 /// 缓存两列加回）；`requests` 是落库的 LLM 请求条数。
 /// 会话无任何请求时全零（不是错误——`logs.session_usage` 对
 /// 空/外部通道会话诚实返回零值）。
@@ -169,7 +169,7 @@ pub struct SessionUsageAgg {
     pub total_cost_usd: f64,
 }
 
-/// 单模型的工具健康聚合（P2B `models.health`，2026-09-12 NB-15 根修配套）。
+/// 单模型的工具健康聚合（P2B `models.health`， 根修配套）。
 ///
 /// `failure_rate` = validation_failures / tool_calls（无调用 = 0.0）。
 /// `hint` 是消费侧（WSAPI handler）按阈值追加的处置建议——数据层只出
@@ -180,8 +180,8 @@ pub struct ModelToolHealth {
     pub tool_calls: i64,
     pub validation_failures: i64,
     pub failure_rate: f64,
-    /// A2（2026-10-21 引入）：窗口内 loop-guard 事件数
-    /// （⑥/④/⑤/⑤′/⑦/⑧/T1）。`#[serde(default)]` 兼容旧前端/旧调用方。
+    /// （引入）：窗口内 loop-guard 事件数
+    /// （⑥/④/⑤/⑤′/⑦/⑧）。`#[serde(default)]` 兼容旧前端/旧调用方。
     #[serde(default)]
     pub guard_events: i64,
     pub hint: Option<String>,

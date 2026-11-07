@@ -1,4 +1,4 @@
-//! T6 (U20) tests for the `logs.history_search` / `logs.history_reindex`
+//! tests for the `logs.history_search` / `logs.history_reindex`
 //! WSAPI commands. NOT security-gated: these commands depend only on
 //! nemesis-agent (non-optional dep).
 //!
@@ -55,10 +55,10 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         cluster_log_dir: None,
         workflow_engine: None,
         // AppState dual-declares these two fields (workflow-gated real /
-        // `Arc<()>` stub — api_handlers.rs). This module deliberately has NO
+        // `Arc<>` stub — api_handlers.rs). This module deliberately has NO
         // feature gate (history commands depend only on nemesis-agent), so the
         // fields must be built per-combo: without the workflow feature the
-        // stubs get `Arc::new(())` (fixes `cargo test -p nemesis-web`
+        // stubs get `Arc::new` (fixes `cargo test -p nemesis-web`
         // zero-feature compile, broken since this file landed in dd2e522).
         #[cfg(feature = "workflow")]
         chat_secret_store: std::sync::Arc::new(
@@ -72,6 +72,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

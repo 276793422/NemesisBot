@@ -55,17 +55,30 @@ impl ModuleHandler for LogsHandler {
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
+        // BUG-20261106-024：本 handler 的列表/详情命令全是同步全量扫描
+        // （目录树 walk + 逐文件读 + 逐行 JSON parse / SHA-256 重算），
+        // 直跑 tokio worker 会占住 worker（BUG-20261102-302 同族——该轮
+        // 横向排查只扫了 read_chat_log/scan_session_logs 调用点，本文件
+        // 其余命令不在其范围）。spawn_blocking 移出，session_list 同款
+        // 纪律。重活一律 `LogsHandler.<cmd>`（unit struct 无状态，与
+        // self 等价）；session_usage 的 data_store 点查（有索引）不在此列。
         match cmd {
             "requests" => {
                 let limit = opt_u64(&data, "limit", 50);
                 let offset = opt_u64(&data, "offset", 0);
-                self.requests(workspace, limit, offset)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.requests(&ws, limit, offset))
+                    .await
+                    .map_err(|e| format!("logs.requests task join failed: {e}"))?
             }
             "request_detail" => {
                 let data = data.ok_or("missing data")?;
                 let id = crate::handlers::get_str(&data, "id")
                     .or_else(|_| crate::handlers::get_str(&data, "session"))?;
-                self.request_detail(workspace, &id)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.request_detail(&ws, &id))
+                    .await
+                    .map_err(|e| format!("logs.request_detail task join failed: {e}"))?
             }
             "cluster_task_list" => {
                 let limit = opt_u64(&data, "limit", 50);
@@ -75,7 +88,14 @@ impl ModuleHandler for LogsHandler {
                     .and_then(|d| d.get("device_id"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.cluster_task_list(ctx, workspace, limit, offset, device_filter)
+                // local_node_id 只碰 ctx（便宜），先取再进阻塞线程。
+                let local = local_node_id(ctx);
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.cluster_task_list(local, &ws, limit, offset, device_filter)
+                })
+                .await
+                .map_err(|e| format!("logs.cluster_task_list task join failed: {e}"))?
             }
             "cluster_task_detail" => {
                 let data = data.ok_or("missing data")?;
@@ -83,8 +103,15 @@ impl ModuleHandler for LogsHandler {
                 let perspective = data
                     .get("perspective")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("self");
-                self.cluster_task_detail(ctx, workspace, &task_id, perspective)
+                    .unwrap_or("self")
+                    .to_string();
+                let local = local_node_id(ctx);
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.cluster_task_detail(local, &ws, &task_id, &perspective)
+                })
+                .await
+                .map_err(|e| format!("logs.cluster_task_detail task join failed: {e}"))?
             }
             "security" => {
                 let limit = opt_u64(&data, "limit", 50);
@@ -94,16 +121,29 @@ impl ModuleHandler for LogsHandler {
                     .and_then(|d| d.get("risk_level"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.security(workspace, limit, offset, risk_level.as_deref())
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.security(&ws, limit, offset, risk_level.as_deref())
+                })
+                .await
+                .map_err(|e| format!("logs.security task join failed: {e}"))?
             }
             #[cfg(feature = "security")]
             "chain_list" => {
                 let limit = opt_u64(&data, "limit", 100);
                 let offset = opt_u64(&data, "offset", 0);
-                self.chain_list(workspace, limit, offset)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.chain_list(&ws, limit, offset))
+                    .await
+                    .map_err(|e| format!("logs.chain_list task join failed: {e}"))?
             }
             #[cfg(feature = "security")]
-            "chain_verify" => self.chain_verify(workspace),
+            "chain_verify" => {
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.chain_verify(&ws))
+                    .await
+                    .map_err(|e| format!("logs.chain_verify task join failed: {e}"))?
+            }
             "session_list" => {
                 let limit = opt_u64(&data, "limit", 50);
                 let offset = opt_u64(&data, "offset", 0);
@@ -143,7 +183,10 @@ impl ModuleHandler for LogsHandler {
             "injection_summary" => {
                 let data = data.ok_or("missing data")?;
                 let session = crate::handlers::get_str(&data, "session")?;
-                self.injection_summary(workspace, &session)
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || LogsHandler.injection_summary(&ws, &session))
+                    .await
+                    .map_err(|e| format!("logs.injection_summary task join failed: {e}"))?
             }
             "replay_verify" => {
                 let data = data.ok_or("missing data")?;
@@ -161,20 +204,40 @@ impl ModuleHandler for LogsHandler {
                     .get("trace_id")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                self.replay_verify(
-                    ctx,
-                    workspace,
-                    &session,
-                    round,
-                    request_id.as_deref(),
-                    trace_id.as_deref(),
-                )
+                // store 解析只碰 ctx（便宜），重活（台账读 + 指纹扫 200 目录
+                // + 逐字节比对）移阻塞线程。
+                let store = replay_store_from_ctx(ctx)?;
+                let ws = workspace.to_string();
+                tokio::task::spawn_blocking(move || {
+                    LogsHandler.replay_verify(
+                        store,
+                        &ws,
+                        &session,
+                        round,
+                        request_id.as_deref(),
+                        trace_id.as_deref(),
+                    )
+                })
+                .await
+                .map_err(|e| format!("logs.replay_verify task join failed: {e}"))?
             }
             // G3: spill 状态卡。`spill_status` 只读聚合 spill 树（文件数/
             // 字节/最老 mtime + 保留天数配置）；`spill_cleanup` 按配置保留
             // 期立即清理一次并返回删除数。依赖仅 nemesis-agent（非可选）。
-            "spill_status" => self.spill_status(ctx),
-            "spill_cleanup" => self.spill_cleanup(ctx),
+            "spill_status" => {
+                let root = Self::spill_root_for(ctx)
+                    .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+                tokio::task::spawn_blocking(move || LogsHandler.spill_status(&root))
+                    .await
+                    .map_err(|e| format!("logs.spill_status task join failed: {e}"))?
+            }
+            "spill_cleanup" => {
+                let root = Self::spill_root_for(ctx)
+                    .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+                tokio::task::spawn_blocking(move || LogsHandler.spill_cleanup(&root))
+                    .await
+                    .map_err(|e| format!("logs.spill_cleanup task join failed: {e}"))?
+            }
             // T6 (U20): cross-session full-text search over session_logs.
             // Fresh-first: the mtime-incremental reindex runs before the
             // query so newly appended messages are findable (the FTS arm
@@ -188,9 +251,13 @@ impl ModuleHandler for LogsHandler {
                     return Err("query must not be empty".to_string());
                 }
                 let limit = opt_u64(&Some(data), "limit", 20);
-                self.history_search(&query, limit)
+                tokio::task::spawn_blocking(move || LogsHandler.history_search(&query, limit))
+                    .await
+                    .map_err(|e| format!("logs.history_search task join failed: {e}"))?
             }
-            "history_reindex" => self.history_reindex(),
+            "history_reindex" => tokio::task::spawn_blocking(move || LogsHandler.history_reindex())
+                .await
+                .map_err(|e| format!("logs.history_reindex task join failed: {e}"))?,
             _ => Err(format!("unknown command: logs.{}", cmd)),
         }
     }
@@ -608,6 +675,29 @@ fn local_node_id(ctx: &RequestContext) -> Option<String> {
     }
 }
 
+/// replay_verify 的 store 解析（只碰 ctx，便宜）：live loop 的 store 优先
+/// （fork 可见性），否则盘载回退——与 fork API 同一裁决。调用方在 async
+/// 侧解析完毕，再把 Arc 交给阻塞线程做重活（BUG-20261106-024）。
+fn replay_store_from_ctx(
+    ctx: &RequestContext,
+) -> Result<std::sync::Arc<nemesis_agent::session::SessionStore>, String> {
+    if let Some(al) = ctx.state.agent_loop.read().as_ref()
+        && let Some(s) = al.session_store()
+    {
+        return Ok(s.clone());
+    }
+    let home = crate::handlers::require_home(ctx)?;
+    // home 是 home 根：先经 nemesis-path 转 workspace 再取
+    // sessions 目录（勿把 home 直接当 workspace 传入）。
+    Ok(std::sync::Arc::new(
+        nemesis_agent::session::SessionStore::new_with_storage(
+            nemesis_path::resolve_sessions_dir_in_workspace(&nemesis_path::workspace_dir(
+                Path::new(home),
+            )),
+        ),
+    ))
+}
+
 // ---------------------------------------------------------------------------
 // Markdown helpers (for *.request.md / *.response.md / *.Local.md)
 // ---------------------------------------------------------------------------
@@ -964,7 +1054,7 @@ impl LogsHandler {
 
     fn cluster_task_list(
         &self,
-        ctx: &RequestContext,
+        local: Option<String>,
         workspace: &str,
         limit: usize,
         offset: usize,
@@ -980,7 +1070,6 @@ impl LogsHandler {
             })));
         }
 
-        let local = local_node_id(ctx);
         let device_dirs: Vec<PathBuf> = if let Some(ref dev) = device_filter {
             // SAN-05 家族契约：id 形参数进路径前过白名单消毒（同文件
             // cluster_task_detail 的 task_id、request_detail 的 id 同纪律）。
@@ -1040,13 +1129,12 @@ impl LogsHandler {
 
     fn cluster_task_detail(
         &self,
-        ctx: &RequestContext,
+        local: Option<String>,
         workspace: &str,
         task_id: &str,
         perspective: &str,
     ) -> Result<Option<serde_json::Value>, String> {
         let root = cluster_log_dir(workspace);
-        let local = local_node_id(ctx);
         let sanitized_target = sanitize_session_key(task_id);
 
         let mut candidates: Vec<(PathBuf, String)> = Vec::new();
@@ -1645,9 +1733,11 @@ impl LogsHandler {
     /// when omitted the dir is auto-resolved by fingerprint: latest dir whose
     /// envelope carries the requested round AND the ledger record's exact
     /// role sequence (scanned newest-first, capped — audit path, not hot).
+    /// store 由调用方先经 [`replay_store_from_ctx`] 解析（BUG-20261106-024：
+    /// 只碰 ctx 的便宜部分留在 async 侧，重活整体进阻塞线程）。
     fn replay_verify(
         &self,
-        ctx: &RequestContext,
+        store: std::sync::Arc<nemesis_agent::session::SessionStore>,
         workspace: &str,
         session: &str,
         round: usize,
@@ -1720,27 +1810,9 @@ impl LogsHandler {
             })));
         };
 
-        // Session store: live loop's store first (fork visibility), else the
-        // disk-backed fallback — same resolution as the fork API.
-        let store: std::sync::Arc<nemesis_agent::session::SessionStore> = match ctx
-            .state
-            .agent_loop
-            .read()
-            .as_ref()
-            .and_then(|al| al.session_store())
-        {
-            Some(s) => s.clone(),
-            None => {
-                let home = crate::handlers::require_home(ctx)?;
-                // home 是 home 根：先经 nemesis-path 转 workspace 再取
-                // sessions 目录（勿把 home 直接当 workspace 传入）。
-                std::sync::Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
-                    nemesis_path::resolve_sessions_dir_in_workspace(&nemesis_path::workspace_dir(
-                        Path::new(home),
-                    )),
-                ))
-            }
-        };
+        // Session store resolution moved to [`replay_store_from_ctx`] —
+        // the caller resolves it (ctx access only) before the blocking
+        // thread picks up the heavy scan/verify work.
         // Store lookups key on the RAW session key; the ledger record carries
         // it (the request `session` param is the sanitized file stem).
         let store_key = if rec.session_key.is_empty() {
@@ -1832,11 +1904,11 @@ impl LogsHandler {
     }
 
     /// G3 (spill 状态卡): read-only spill-tree aggregate + the retention
-    /// config so the card can explain what cleanup WOULD do.
-    fn spill_status(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let root = Self::spill_root_for(ctx)
-            .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
-        let st = nemesis_agent::spill::status(&root);
+    /// config so the card can explain what cleanup WOULD do. root 由调用方
+    /// 先经 [`Self::spill_root_for`] 解析（BUG-20261106-024：树 walk 移
+    /// 阻塞线程）。
+    fn spill_status(&self, root: &Path) -> Result<Option<serde_json::Value>, String> {
+        let st = nemesis_agent::spill::status(root);
         let retention_days = spill_retention_days();
         Ok(Some(serde_json::json!({
             "root": root.display().to_string(),
@@ -1850,16 +1922,14 @@ impl LogsHandler {
 
     /// G3 (spill 状态卡): run one retention sweep NOW (config retention; 0 =
     /// disabled → no-op) and return the deleted count plus the fresh status.
-    fn spill_cleanup(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let root = Self::spill_root_for(ctx)
-            .ok_or_else(|| "cannot resolve spill root (no home)".to_string())?;
+    fn spill_cleanup(&self, root: &Path) -> Result<Option<serde_json::Value>, String> {
         let retention_days = spill_retention_days();
         let deleted = if retention_days == 0 {
             0
         } else {
-            nemesis_agent::spill::cleanup_expired(&root, retention_days)
+            nemesis_agent::spill::cleanup_expired(root, retention_days)
         };
-        let st = nemesis_agent::spill::status(&root);
+        let st = nemesis_agent::spill::status(root);
         Ok(Some(serde_json::json!({
             "deleted": deleted,
             "retention_days": retention_days,
@@ -2421,6 +2491,7 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
     let mut in_args = false;
     let mut in_result = false;
     let mut in_error = false;
+    let mut in_duration = false;
 
     let flush = |out: &mut Vec<serde_json::Value>,
                  name: &mut String,
@@ -2486,6 +2557,7 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
             in_args = false;
             in_result = false;
             in_error = false;
+            in_duration = false;
             continue;
         }
         if !in_op {
@@ -2514,11 +2586,16 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
             in_args = false;
             in_result = false;
             in_error = false;
-            // parse "0.022s" on this line
+            in_duration = true;
+            // BUG-20261106-023：写入端（request_logger.rs `### Duration
+            // \n{:.3}s\n\n`）的值在标题的**下一行**。内联形态（`###
+            // Duration 0.02s`）是旧夹具/手写日志的宽容臂——解析成功就地
+            // 消费；失败则旗保持立起，留给下一行的值行消费。
             if let Some(rest) = trimmed.strip_prefix("### Duration") {
                 let s = rest.trim().trim_end_matches('s');
                 if let Ok(f) = s.parse::<f64>() {
                     current_duration_ms = (f * 1000.0) as u64;
+                    in_duration = false;
                 }
             }
             continue;
@@ -2538,10 +2615,21 @@ fn parse_local_tool_results(content: &str) -> Vec<serde_json::Value> {
             in_args = false;
             in_result = false;
             in_error = false;
+            in_duration = false;
             continue;
         }
         // Strip code fences
         if trimmed.starts_with("```") {
+            continue;
+        }
+        // BUG-20261106-023：Duration 值行（两行形态的下一行）。无论解析
+        // 成败都消费该行并清旗——坏值行不得落进正文累积。
+        if in_duration {
+            in_duration = false;
+            let s = trimmed.trim_end_matches('s');
+            if let Ok(f) = s.parse::<f64>() {
+                current_duration_ms = (f * 1000.0) as u64;
+            }
             continue;
         }
         // Field headers

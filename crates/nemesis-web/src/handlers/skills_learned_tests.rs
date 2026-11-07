@@ -1,9 +1,9 @@
-//! N3 learned-skills manifest（2026-10-13 机会项）WSAPI 面测试。
+//! learned-skills manifest（2026-10-13）WSAPI 面测试。
 //!
 //! 覆盖：`skills.learned_list`（空账/有条目 + on_disk 幽灵核对）、
 //! `skills.learned_remove`（happy 清目录+账目 / 非 manifest 成员拒绝
 //! （registry 技能保护面）/ 路径穿越拒绝 / 缺参校验）、commands()
-//! 清单收录（L1 漂移闸）。
+//! 清单收录（漂移闸）。
 
 use super::skills::SkillsHandler;
 use crate::ws_router::ModuleHandler;
@@ -52,6 +52,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -68,14 +69,12 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
-/// 造一个 manifest 条目（便捷：直接调 nemesis_skills::learned::record_learned）。
+/// 造一个 manifest 条目（便捷：直接调 nemesis_skills::learned:record_learned）。
 fn seed_learned(ws: &Path, name: &str, desc: &str) {
     nemesis_skills::learned::record_learned(ws, name, desc).unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// commands() 清单（L1 漂移闸）
-// ---------------------------------------------------------------------------
+// commands 清单（漂移闸）
 
 #[test]
 fn commands_list_includes_learned_surface() {
@@ -84,9 +83,7 @@ fn commands_list_includes_learned_surface() {
     assert!(handler.commands().contains(&"learned_remove"));
 }
 
-// ---------------------------------------------------------------------------
 // learned_list
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn learned_list_empty_without_manifest() {
@@ -126,9 +123,7 @@ async fn learned_list_reports_on_disk_flag() {
     assert!(!ghost["on_disk"].as_bool().unwrap(), "幽灵条目必须如实标记");
 }
 
-// ---------------------------------------------------------------------------
 // learned_remove
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn learned_remove_happy_clears_dir_and_manifest() {

@@ -1,6 +1,6 @@
-//! keygen v4 单测：生成 → 签名 → 链验证闭环 + keys.json v2 持久化 + D4 profile。
+//! keygen v4 单测：生成 → 签名 → 链验证闭环 + keys.json v2 持久化 + profile。
 //!
-//! goal S1-3 判据：keygen → 签名 → 验证闭环绿（certutil -dump 抽查见 goal §七记录）。
+//! goal 判据：keygen → 签名 → 验证闭环绿（certutil -dump 抽查见 goal §七记录）。
 
 use super::*;
 use crate::cert::verify_chain;
@@ -11,7 +11,7 @@ const NOW: u64 = 1_700_000_000;
 fn generate_then_chain_verifies() {
     let kh = generate_at(NOW).unwrap();
     let anchor = kh.root_anchor_fingerprint();
-    // 锚口径 = SHA-256(根证书 DER)（S4-2 同源）。
+    // 锚口径 = SHA-256(根证书 DER)（同源）。
     assert_eq!(anchor, kh.root_cert.sha256_fingerprint());
     // 闭环：keygen 产物直接过 v4 链验证（起点 / leaf 尾点——链窗口被最短命
     // 的 leaf（3y）卡住，10y/30y 时点验链诚实 Expired，另测）。
@@ -64,7 +64,7 @@ fn d4_profile_and_spans() {
         );
     }
 
-    // D4 跨度：根 30y / 发行锚 10y / leaf 3y（回拨 1h 只影响起点）。
+    // 跨度：根 30y / 发行锚 10y / leaf 3y（回拨 1h 只影响起点）。
     let span = |c: &Certificate| {
         let v = &c.parsed().unwrap().tbs_certificate.validity;
         v.not_after.to_unix_duration().as_secs() - v.not_before.to_unix_duration().as_secs()
@@ -103,7 +103,7 @@ fn keys_json_v2_roundtrip() {
     verify_chain(&kh2.chain(), &kh2.root_anchor_fingerprint(), NOW).unwrap();
 }
 
-/// BUG-20261104-378 回归锁：全量包 save 必须与 bundle 三类型化 saver 同源走
+/// 回归锁：全量包 save 必须与 bundle 三类型化 saver 同源走
 /// save_private_json——unix 下私钥文件 0600（新文件 + 覆盖收紧存量宽权限
 /// 文件双形态）。Windows 形态编译期消失（ACL 前提不同），红实证在 WSL/Linux。
 #[cfg(unix)]
@@ -184,7 +184,7 @@ fn generate_smoke_real_clock() {
     verify_chain(&kh.chain(), &kh.root_anchor_fingerprint(), now).unwrap();
 }
 
-/// 外部工具抽查导出（S1-3 判据：certutil -dump 抽查自产链字段）。
+/// 外部工具抽查导出（判据：certutil -dump 抽查自产链字段）。
 ///
 /// `#[ignore]`：有磁盘副作用，仅显式触发——
 /// `cargo test -p nemesis-verify dump_chain_for_external_inspection -- --ignored --nocapture`
@@ -207,7 +207,7 @@ fn dump_chain_for_external_inspection() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：from_json 分包形态拒绝——证书 hex 字段空串
+// AGT 覆盖率批次：from_json 分包形态拒绝——证书 hex 字段空串
 //（require_cert_hex 空串臂）+ 坏 hex 解码臂 + 版本不符臂。
 // ---------------------------------------------------------------------------
 

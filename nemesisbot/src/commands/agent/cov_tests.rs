@@ -23,7 +23,7 @@ mod wave5 {
     /// REPL 测试的 stdin 前置守卫：交互终端（rustyline 会等真输入）直接
     /// 跳过；「打开但永不 EOF」的宿主管道（编排器后台 shell）同样必须跳过
     /// ——rustyline 首次 readline 永久阻塞，会从单测挂死升级成整个测试
-    /// 进程死锁（docs/REPORT/2026-10-13_stdin-eof-assumption-test-deadlock-
+    /// 进程死锁（docs/REPORT/-13_stdin-eof-assumption-test-deadlock-
     /// fix.md）。只有确认 EOF 可达（读得 0 字节）才真正执行。读出数据或
     /// 出错同样保守跳过（数据读完若无 EOF 仍会阻塞）。探针线程在永不 EOF
     /// 的宿主里会泄漏一条阻塞读（持有 stdin 锁）——同宿主后续探针因此

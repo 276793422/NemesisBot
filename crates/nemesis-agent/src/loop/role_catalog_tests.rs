@@ -1,4 +1,4 @@
-// 角色目录与分档供给（2026-09-28）：`agents.roles.hidden` / visible_roles /
+// 角色目录与分档供给：`agents.roles.hidden` / visible_roles /
 // spawn role dispatch 闸 / fork `inherit_context` dispatch 改写测试。
 //
 // 覆盖面：
@@ -384,13 +384,13 @@ async fn runtime_flip_unhides_role_without_restart() {
     let ctx = RequestContext::new("web", "chat1", "session1", "sess1");
     let tc = spawn_call(r#"{"role": "fork", "task": "x"}"#);
 
-    // 阶段 1：隐藏 → 拒。
+    // 隐藏 → 拒。
     std::fs::write(&cfg_path, r#"{"agents": {"roles": {"hidden": ["fork"]}}}"#).unwrap();
     agent_loop.set_config_path(cfg_path.clone());
     let out = agent_loop.handle_tool_call(&tc, &ctx).await;
     assert!(out.contains("not available"), "实际: {out}");
 
-    // 阶段 2：改盘解除 → 下一轮 round start 发布新代（L18 世代化）→ 角色闸
+    // 改盘解除 → 下一轮 round start 发布新代（世代化）→ 角色闸
     // 放行（spawn 未注册 → Unknown tool 文案）。
     std::fs::write(&cfg_path, r#"{"agents": {"roles": {"hidden": []}}}"#).unwrap();
     agent_loop.check_config_reload();

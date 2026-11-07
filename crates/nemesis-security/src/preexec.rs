@@ -1,6 +1,6 @@
-//! L6 pre-exec 脚本内容扫描（2026-10-12 内部专项 T1）。
+//! pre-exec 脚本内容扫描（2026-10-12 内部专项）。
 //!
-//! 8 层管线全部只看 `invocation.args`——磁盘既有脚本（`exec bash ./setup.sh`）
+//! 8 层管线全部只看 `invocation.args`——磁盘既有脚本（`exec bash./setup.sh`）
 //! 的**内容**在执行前零检查：脚本可含注入样载荷（jailbreak 指令、下载器、
 //! 递归删除）而不触发任何一层。本模块在 exec/spawn 进 ABAC 前，从命令行
 //! 提取脚本文件路径，读取内容过注入检测（复用 [`crate::injection`] 的
@@ -10,7 +10,7 @@
 //!   ABAC 升格强制人工审批（审批卡）——**误报出路**，非纯硬拦；
 //! - 文件缺失 → 放行（exec 自会报错，不是安全事件）；
 //! - 二进制（首 8KB 含 NUL）→ 跳过（文本检测器对字节流无意义）；
-//! - `bash -c "…"` 内联形态不受影响（args 本身对 Layer 1/2 可见）。
+//! - `bash -c "…"` 内联形态不受影响（args 本身对 Layer 1/2 可）。
 //!
 //! 已知边界（诚实声明）：`curl … | bash` 管道形态**不在覆盖内**（内容不落
 //! 盘不进上下文，由下载层 + 工具输出复扫间接覆盖）；相对路径只按注入的
@@ -70,7 +70,7 @@ impl PreExecScanner {
         }
     }
 
-    /// 注入相对路径解析根（security_setup 构造期调用；与 D1 保护路径同源
+    /// 注入相对路径解析根（security_setup 构造期调用；与 保护路径同源
     /// 的 workspace root）。
     pub fn set_workspace_root(&self, root: &str) {
         *self.workspace_root.write() = root.trim().to_string();
@@ -149,7 +149,7 @@ impl PreExecScanner {
 }
 
 /// 命令行分词：按空白切 + 剥成对引号。内联载荷（`-c "code"`）的碎片
-/// 由 [`is_plausible_path`] / 扩展名检查自然过滤（带 `;|&<>()$` 等结构
+/// 由 [`is_plausible_path`] / 扩展名检查自然过滤（带 `;|&<>$` 等结构
 /// 字符的 token 不是可信路径）。
 fn tokenize(command: &str) -> Vec<String> {
     command

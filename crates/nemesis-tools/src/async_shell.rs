@@ -235,7 +235,7 @@ impl Tool for AsyncExecTool {
         let cwd = match args["working_dir"].as_str() {
             Some(d) if !d.is_empty() => {
                 let p = PathBuf::from(d);
-                // BUG-20261025-55：restrict 侧此前完全不看 args working_dir
+                // restrict 侧此前完全不看 args working_dir
                 // ——任意绝对路径即可把工作目录钉到工作区外（cwd 边界失效）。
                 // 对齐 ExecTool/ShellTool 同款双侧归一化检查。
                 if self.restrict {
@@ -279,7 +279,7 @@ impl Tool for AsyncExecTool {
             ("sh", "-c")
         };
 
-        // T4（扩展计划 D2a）：spawn 前剥继承环境中的凭据类变量
+        // （扩展计划）：spawn 前剥继承环境中的凭据类变量
         // （security.sanitize_child_env 可关，默认开）。
         let mut spawn_cmd = tokio::process::Command::new(shell);
         spawn_cmd.arg(flag).arg(command).current_dir(&cwd);

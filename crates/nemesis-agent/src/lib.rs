@@ -24,18 +24,18 @@ pub mod background_registry;
 pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;
-/// 会话回收站（2026-10-30）：sessions.delete 默认移入 `logs/trash/sessions/`
+/// 会话回收站：sessions.delete 默认移入 `logs/trash/sessions/`
 /// 三件套改名副本 + trash.json 清单；恢复/彻底删除/TTL 清扫读侧在
 /// nemesis-web sessions handler + nemesisbot sweeper。
 pub mod chat_trash;
 pub mod checkpoint;
-/// ②typed checks 块捕获（诚实边界收口 2026-10-19）：检查类工具（exec /
+/// typed checks 块捕获：检查类工具（exec /
 /// run_checks）真实执行后的管线侧确定性记账——交付证据 `$.delivery.checks`
 /// 的捕获源，见模块头诚实边界。
 pub mod checks_capture;
-// P30（WS14）Canvas widget：```canvas 块检出 + JS 语法预检（终答判定处消费）。
+// Canvas widget：```canvas 块检出 + JS 语法预检（终答判定处消费）。
 pub mod canvas;
-/// T2（内部专项总计划 L1 codemode）：`code_run` QuickJS 脚本工具——脚本内
+/// （codemode）：`code_run` QuickJS 脚本工具——脚本内
 /// tool() 过完整 dispatch 瀑布；编译闸 `codemode` feature + 运行闸
 /// `agents.codemode.enabled`（默认开，Tools 页可关，开关热生效）+
 /// min_tier big 双闸。**非 Android
@@ -44,30 +44,30 @@ pub mod canvas;
 #[cfg(all(feature = "codemode", not(target_os = "android")))]
 pub mod code_run;
 pub mod context;
-/// A3 委派持续操控（2026-10-18）：delegate 四工具 + 协议 adapter（claude
+/// 委派持续操控：delegate 四工具 + 协议 adapter（claude
 /// stream-json / codex app-server）。运行闸 `agents.delegate.enabled`（默认
-/// 关）+ CLI 在场探测；复用 B4 后台注册表复用件；estop 联动。
+/// 关）+ CLI 在场探测；复用 后台注册表复用件；estop 联动。
 pub mod delegate_registry;
 pub mod discipline;
 pub mod estop;
 pub mod event_ledger;
-/// 修6（BUG-C 执行体面，2026-11-04）：同步 exec 族子进程树守卫 +
+/// （执行体面）：同步 exec 族子进程树守卫 +
 /// 会话级注册表——Windows Job Object / Unix 进程组，estop/超时/drop
 /// 收整棵后代树；会话级 sweep（`kill_session_trees`）供 estop 联动。
 /// 只收同步 exec 族（exec / run_script / run_checks 注入内核），
-/// B4 background_start 不碰。
+/// background_start 不碰。
 pub mod exec_tree;
 pub mod executor_pipe;
 pub mod executor_transport;
 pub mod formatter;
 pub mod fs_watcher;
-/// BUG-20261025-37：guardian（LLM 安全法官）语义二审决策表单一真相源——
+/// guardian（LLM 安全法官）语义二审决策表单一权威定义——
 /// dispatch 内联块与 LSP rename 合成写闸同源消费（此前只活在 dispatch，
 /// 合成闸缺席且文档声称继承）。
 #[cfg(feature = "security")]
 pub mod guardian_gate;
 pub mod history;
-// U20 会话全文检索（FTS5）——随 history-search feature（rusqlite）进出。
+// 会话全文检索（FTS5）——随 history-search feature（rusqlite）进出。
 #[cfg(feature = "history-search")]
 pub mod history_search;
 pub mod hooks;
@@ -81,7 +81,7 @@ pub mod r#loop;
 pub mod loop_continuation;
 pub mod loop_executor;
 pub mod loop_tools;
-/// L13-b（2026-11-03 三期）：任务 mandate 执行面守卫——marker + 纯裁决
+/// b（三期）：任务 mandate 执行面守卫——marker + 纯裁决
 /// （loop 侧接线在 `r#loop::mandate_guard`）。
 pub mod mandate_guard;
 pub mod mcp_bridge;
@@ -98,47 +98,47 @@ pub mod request_logger_observer;
 pub mod ringbuffer;
 pub mod session;
 pub mod session_fork;
-/// L14（2026-11-01）：会话执行统计 sink——loop 内部计数（重试/校验失败/
+/// 会话执行统计 sink——loop 内部计数（重试/校验失败/
 /// 压缩成功）上抛宿主聚合器的 trait 面。
 pub mod session_stats;
 pub mod skills_digest;
 pub mod spill;
-/// 子代理任务注册表（子代理可见性 P1）：三形态统一台账 + 落盘 + 取消面。
+/// 子代理任务注册表（子代理可见性）：三形态统一台账 + 落盘 + 取消面。
 pub mod subagent_registry;
 pub mod todo_closeout;
-/// P8（集群无人值守硬化 A2）：会话 token 预算闸——marker 文案单一真相源 +
+/// （集群无人值守硬化）：会话 token 预算闸——marker 文案统一定义 +
 /// per-session 累计账本（loop 侧接线在 `r#loop::token_budget`）。
 pub mod token_budget;
 pub mod tool_adapter;
 pub mod tool_doc_folding;
 pub mod tool_event_hook;
-/// T1（扩展计划 D3）：工具收据——防幻觉执行证明（HMAC-SHA256）。
+/// （扩展计划）：工具收据——防幻觉执行证明（HMAC-SHA256）。
 pub mod tool_receipts;
 pub mod turn_guard;
-/// L8（内部专项总计划重评估）：工具调用三态 WAL（崩溃恢复续轮）。
+/// （重评估）：工具调用三态 WAL（崩溃恢复续轮）。
 pub mod turn_wal;
 pub mod types;
 pub mod user_profile;
 /// Work 时间线（ChatPanel 长任务时间线改造）：turn 级「叙述+工具」累加器，
-/// 落盘随行 + `chat.work_current` 活查询（2026-10-30）。
+/// 落盘随行 + `chat.work_current` 活查询。
 pub mod work_timeline;
 pub mod workspace_instructions;
-/// WS9/P22：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
+/// ：workspace 级写租约（文件锁 + 持有者 sidecar；写类工具包装）。
 pub mod workspace_lease;
 
 #[cfg(test)]
 mod history_tests;
 
 #[cfg(test)]
-/// P8（集群无人值守硬化 A2）：token 预算账本（seed 防双计/增量/隔离/软闩/
+/// （集群无人值守硬化）：token 预算账本（seed 防双计/增量/隔离/软闩/
 /// 容量上限/文案 marker）测试（独立测试文件）。
 mod token_budget_tests;
 
 #[cfg(test)]
-/// WS9/P22：租约互斥/宽限/死进程释放/开关旁路测试（独立测试文件）。
+/// ：租约互斥/宽限/死进程释放/开关旁路测试（独立测试文件）。
 mod workspace_lease_tests;
 
-// S9 (quality-hardening goal 冲刺 S9): 测试共享 helper（thread-local tracing
+// 测试共享 helper（thread-local tracing
 // subscriber），声明式挂载指向独立文件，无内联测试。
 #[cfg(test)]
 mod test_support;

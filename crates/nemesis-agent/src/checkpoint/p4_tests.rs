@@ -1,4 +1,4 @@
-//! P4（2026-10-17 交付门）：交付分支捕获测试。
+//! （2026-10-17）：交付分支捕获测试。
 //!
 //! - `capture_delivery_branch`：git 形态 happy path（base 指定 / 空树
 //!   基线）/ 同名 force 覆盖 / 危险分支名拒绝 / JSON 形态诚实 Err。
@@ -133,8 +133,8 @@ fn capture_rejects_unsafe_branch_names() {
 #[test]
 fn capture_on_json_backend_errs_honestly() {
     let dir = tempfile::tempdir().unwrap();
-    // 无 .git 的工作区 → JSON 回落 → 诚实 Err（不为无 .git 工作区造
-    // standalone 影子——可审分支只有在有真实 .git 可合入时才有行动意义）。
+    // 无.git 的工作区 → JSON 回落 → 诚实 Err（不为无.git 工作区造
+    // standalone 影子——可审分支只有在有真实.git 可合入时才有行动意义）。
     let store = CheckpointStore::new(None, dir.path().to_path_buf());
     assert_eq!(store.backend(), CheckpointBackend::Json);
     let err = store
@@ -196,7 +196,7 @@ fn capture_does_not_disturb_workspace() {
     let store = CheckpointStore::new(None, root.clone());
 
     store.capture_delivery_branch(None, "run-t6").unwrap();
-    // 工作区文件原样；真实 .git 未被影子写入污染（影子在 logs/ 下）。
+    // 工作区文件原样；真实.git 未被影子写入污染（影子在 logs/ 下）。
     assert_eq!(
         std::fs::read_to_string(root.join("keep.txt")).unwrap(),
         "untouched\n"
@@ -211,7 +211,7 @@ fn capture_does_not_disturb_workspace() {
 }
 
 // ---------------------------------------------------------------------------
-// ②typed 证据块（诚实边界收口 2026-10-19）：delivery.files 清单
+// typed 证据块：delivery.files 清单
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -233,7 +233,7 @@ fn capture_files_entries_cover_all_kinds_with_old_sha() {
     let cap = store
         .capture_delivery_branch(Some(&base), "run-tf1")
         .unwrap();
-    // 计数含删除（3 形态全计），R5 清单同样含全部形态（删除入清单，
+    // 计数含删除（3 形态全计）， 清单同样含全部形态（删除入清单，
     // old_sha256 承载证据）。
     assert_eq!(cap.files_changed, 3);
     assert_eq!(cap.files.len(), 3, "add/modify/delete 三条目");
@@ -324,7 +324,7 @@ fn capture_files_empty_serializes_as_empty_array() {
     assert!(cap.files.is_empty());
     assert!(!cap.files_truncated);
 
-    // R5：files 恒序列化——空清单 = 「零文件变更」的派生事实（与「字段
+    // files 恒序列化——空清单 = 「零文件变更」的派生事实（与「字段
     // 缺席」语义不同）；files_truncated 仍只 true 时序列化。
     let json = serde_json::to_value(&cap).unwrap();
     assert_eq!(
@@ -358,7 +358,7 @@ fn capture_files_truncates_at_max_with_honest_flag() {
     assert_eq!(cap.files_changed, FILES_MAX + 30, "计数不受清单截断影响");
 }
 
-// 回归锁（2026-10-25，P3 发布链实证）：capture patch 必须能被
+// 回归锁（发布链实证）：capture patch 必须能被
 // `Diff::from_buffer` 回读并 apply 到基线副本——print 回调对 context/add/
 // del 三类漏补 origin 前缀字节时，patch 是不可解析的残文（"invalid patch
 // hunk"），发布链在 git 半边第一跳就断。此测试把「patch 字节 = 合法
@@ -380,7 +380,7 @@ fn capture_patch_roundtrips_through_diff_from_buffer_and_apply() {
         .capture_delivery_branch(Some(&base), "run-rt")
         .expect("capture");
 
-    // 基线副本：与 base 内容一致（a.txt=v1，无 src/）。autocrlf 钉 false
+    // 基线副本：与 base 内容一致（a.txt=v1，无 src）。autocrlf 钉 false
     // （生产副本由 clone_repo 同款钉死；全局 gitconfig 的 autocrlf=true 会
     // 在 apply 落盘时 smudge 出 CRLF，破坏字节精确断言）。
     let scratch = tempfile::tempdir().unwrap();

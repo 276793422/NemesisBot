@@ -798,7 +798,7 @@ fn test_evaluate_exact_baseline_neutral() {
     assert_eq!(result.verdict, "neutral");
 }
 
-// ---- S8 coverage batch ---- (quality-hardening goal 冲刺 S8)
+// ---- coverage batch ---- (quality-hardening goal 冲刺)
 
 #[test]
 fn test_s8_evaluate_outcomes_all_traces_outside_window_returns_empty() {
@@ -826,7 +826,7 @@ fn test_s8_evaluate_outcomes_all_traces_outside_window_returns_empty() {
 
 #[test]
 fn test_s8_evaluate_outcomes_window_respects_timestamp_offset() {
-    // 2026-10-22 验证轮二回归锁：窗口过滤必须全量偏移感知解析 start_time。
+    // 验证轮二回归锁：窗口过滤必须全量偏移感知解析 start_time。
     // 旧实现 `[..19]` 截断后硬贴 "Z"——把 -05:00 挂钟读成 UTC，时刻被平移
     // -5h。本例真值 = now-166h（7 天=168h 窗内），旧解析得 now-171h（窗
     // 外）→ 旧代码空 outcomes；新代码解析回真值 → 产出 1 条 outcome。
@@ -859,7 +859,7 @@ fn test_s8_evaluate_outcomes_window_respects_timestamp_offset() {
 
 #[test]
 fn test_s8_evaluate_outcomes_min_traces_guard() {
-    // 2026-10-23 验证轮四回归锁：`min_traces_for_analysis` 此前零消费者
+    // 验证轮四回归锁：`min_traces_for_analysis` 此前零消费者
     // （死键）。接线语义 = 窗口内轨迹少于 N 条不做实效分析（样本太少，
     // 结论即噪声），0 = 不设下限（护栏默认关）。双臂对照：min=5 时 2 条
     // 窗内轨迹被闸掉；min=0 时同样轨迹照常产出 outcome——证明空结果
@@ -1018,7 +1018,7 @@ fn test_s8_try_deprecate_unparseable_degraded_timestamp_still_degrades() {
     assert_eq!(updated.status, ArtifactStatus::Degraded);
 }
 
-// ---- S8 Wave 2 ----
+// ---- Wave 2 ----
 
 /// try_deprecate with a last_degraded_at OLDER than the cooldown window: the
 /// cooldown no longer blocks and the artifact is degraded again.
@@ -1046,7 +1046,7 @@ fn test_s8_try_deprecate_expired_cooldown_degrades() {
     assert!(delta.num_minutes() < 1, "delta: {:?}", delta);
 }
 
-// ---- build_conversation_traces（审计 P0-F2，2026-10-22）----
+// ---- build_conversation_traces（审计）----
 
 fn make_trace_event(
     event_type: &str,
@@ -1202,7 +1202,7 @@ fn test_build_conversation_traces_missing_tool_field_skips_step() {
 
 #[test]
 fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
-    // R554 回归锁：evaluate_outcomes 此前对 insufficient_data outcome 无条件
+    // 回归锁：evaluate_outcomes 此前对 insufficient_data outcome 无条件
     // 写回 last_efficacy——滚动窗口把 after 样本滚出窗后（样本 <
     // min_samples），无结论快照（verdict=insufficient_data + success 全 0
     // 假零）会周期性覆盖上次有效 verdict 快照，Dashboard 实效列与裁决数据
@@ -1217,7 +1217,7 @@ fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
     artifact.tool_signature = vec!["file_read".to_string()];
     let id = registry.add(artifact);
 
-    // 第一轮：5 条足样本（全部成功、无信号）→ improvement=0.4 > 0.1 →
+    // 5 条足样本（全部成功、无信号）→ improvement=0.4 > 0.1 →
     // positive + 快照写回。
     let good_traces: Vec<_> = (0..5)
         .map(|_| make_trace(2, 100, &["file_read"], false))
@@ -1234,9 +1234,9 @@ fn test_evaluate_outcomes_insufficient_does_not_overwrite_efficacy() {
         .expect("有效评估必须写回快照");
     assert_eq!(first.verdict, "positive");
 
-    // 第二轮：一条不匹配签名的轨迹（recent_traces 非空——零轨迹会在窗口
+    // 一条不匹配签名的轨迹（recent_traces 非空——零轨迹会在窗口
     // 过滤处提前返回，走不到 artifact 循环）→ after_traces 空 →
-    // insufficient_data outcome 照常产出，但快照必须保持第一轮的值。
+    // insufficient_data outcome 照常产出，但快照必须保持的值。
     let mismatched = vec![make_trace(2, 100, &["other_tool"], false)];
     let outcomes = monitor.evaluate_outcomes(&mismatched);
     assert_eq!(outcomes.len(), 1);

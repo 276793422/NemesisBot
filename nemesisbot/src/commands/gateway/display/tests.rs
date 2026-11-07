@@ -60,7 +60,7 @@ fn w6_select_advertised_lan_ip_all_loopback_returns_none() {
     assert_eq!(select_advertised_lan_ip(&ips, &[]), None);
 }
 
-// BUG-20261025-29 回归锁：浏览器启动命令不得经过 shell（与 nemesis-auth
+// 回归锁：浏览器启动命令不得经过 shell（与 nemesis-auth
 // oauth.rs 同型修复）。旧实现 `cmd /c start {url}` + raw_arg 让 URL 里的
 // 字面 `&` 成为 cmd 命令分隔符——URL 在第一个 & 处被截断、余段被当命令执行。
 // 不变量：程序是 explorer（非 shell）、完整 URL 是唯一参数。

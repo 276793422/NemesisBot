@@ -53,7 +53,7 @@ pub struct WebSocketClient {
     /// Wrapped in Arc so it can be shared with the spawned read task.
     dispatcher: Arc<Dispatcher>,
     /// Pending request-response channels, keyed by message ID.
-    /// (BUG #21, quality-hardening goal 冲刺 S7) 单一真相源：pending map
+    /// (, quality-hardening goal 冲刺) 统一定义：pending map
     /// 从 ClientState 挪成客户端级字段，与读循环共享同一个 map。原来
     /// call() 写 state.pending、读循环查 connect() 时克隆出的另一个 map，
     /// connect() 之后发起的 call() 的响应永远查不到 -> 全部 30s 超时。
@@ -138,7 +138,7 @@ impl WebSocketClient {
 
         // Spawn read task
         let read_id = self.id.clone();
-        // (BUG #21) 读循环与 call() 共享同一个客户端级 pending map；
+        // 读循环与 call() 共享同一个客户端级 pending map；
         // 不再在每次 connect() 时新建 map 并做一次性 drain。
         let pending_map = self.pending.clone();
         let dispatcher = self.dispatcher.clone();
@@ -394,7 +394,7 @@ impl WebSocketClient {
         // Create a pending channel
         let (tx, rx) = oneshot::channel();
         {
-            // (BUG #21) 插入与读循环共享的 pending map，响应才能路由回来。
+            // 插入与读循环共享的 pending map，响应才能路由回来。
             self.pending.lock().insert(msg_id.clone(), tx);
         }
 
@@ -451,7 +451,7 @@ impl WebSocketClient {
         state.connected = false;
         state.send_tx = None;
         drop(state);
-        // (BUG #21) pending 挂起请求随连接关闭一并作废。
+        // pending 挂起请求随连接关闭一并作废。
         self.pending.lock().clear();
     }
 

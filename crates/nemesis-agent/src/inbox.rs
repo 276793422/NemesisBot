@@ -1,4 +1,4 @@
-//! Per-session message inbox (I1 / U7).
+//! Per-session message inbox.
 //!
 //! Two FIFO queues per session key:
 //! - `next_turn`: messages that start a NEW conversation turn after the
@@ -8,7 +8,7 @@
 //!   user marks urgent is injected BEFORE the next LLM call of the running
 //!   turn, so「! 别删」lands in time).
 //!
-//! NOT persisted (per roadmap P1.1 scope cut): a restart loses queued
+//! NOT persisted (per roadmap.1 scope cut): a restart loses queued
 //! messages. Acceptable trade-off, revisit when session events are
 //! persisted.
 //!
@@ -24,7 +24,7 @@ use std::sync::Arc;
 pub const DEFAULT_QUEUE_SIZE: usize = 8;
 
 /// A message parked in the inbox. Round-5 simplification: wraps the ORIGINAL
-/// `InboundMessage` whole (H3's passthrough fields — media, correlation id,
+/// `InboundMessage` whole ('s passthrough fields — media, correlation id,
 /// metadata, voice flag, sender id — all ride for free) plus the session's
 /// queue key. A struct-level field copy of InboundMessage would need hand-
 /// maintained mapping blocks in loop.rs at every enqueue/drain site and drift
@@ -36,7 +36,7 @@ pub struct QueuedMessage {
     pub msg: nemesis_types::channel::InboundMessage,
     /// Queue-receipt timestamp (diagnostics only).
     pub timestamp: String,
-    /// A5（2026-10-21 引入）：队列优先级。High 在 next_turn
+    /// （引入）：队列优先级。High 在 next_turn
     /// 队内插队（现有 High 连续段之后、第一个 Normal 之前——High 之间保持
     /// FIFO），且不受软水位约束。来源 = 消息 `metadata["priority"]`
     /// （[`priority_of`] 单点解析；WSAPI `chat.send` / 通道入站可选携带，
@@ -44,7 +44,7 @@ pub struct QueuedMessage {
     pub priority: MessagePriority,
 }
 
-/// A5（2026-10-21 引入）：队列消息优先级。借鉴前代实现
+/// （引入）：队列消息优先级。借鉴前代实现
 /// 抢占调度的 `waiting.push_front` 语义——被让路的消息回到队首而非队尾。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MessagePriority {
@@ -84,7 +84,7 @@ pub fn is_steer_message(content: &str) -> bool {
 /// message must reach the model marker-free on ALL three arrival timings:
 /// injected in-turn (steer claim, run_loop.rs), replayed post-turn
 /// (transfer to next-turn, inbox.rs), and admitted while idle
-/// (`process_admitted` pre-persist strip, F2 2026-09-27 — Steer mode only;
+/// (`process_admitted` pre-persist strip, — Steer mode only;
 /// in Queue/Reject modes the prefix has never been a signal, busy or idle,
 /// so it stays literal there). This is the SINGLE owner of the strip rule:
 /// `is_steer_message` and this fn share the marker set, so classification
@@ -111,7 +111,7 @@ pub enum EnqueueOutcome {
     QueuedForNextStep,
     /// Both queues full — refused.
     Rejected,
-    /// A5：软水位拒绝——队列未到硬上限但已达软水位（容量的 90%），
+    /// 软水位拒绝——队列未到硬上限但已达软水位（容量的 90%），
     /// 普通优先级消息暂缓接收（High 与 steer 插话不受软水位约束）。
     RejectedSoft,
 }
@@ -177,7 +177,7 @@ impl Inbox {
         if total >= self.capacity {
             return EnqueueOutcome::Rejected;
         }
-        // A5 软水位：到达容量的 90% 后普通优先级消息不再入队（硬上限
+        // 软水位：到达容量的 90% 后普通优先级消息不再入队（硬上限
         // 语义不变——所有消息到硬上限一律拒）；High 与 steer 插话不受
         // 软水位约束——高优先级的意义就在满载时段仍能进来。`.max(1)`
         // 防 capacity=1 时 soft_limit=0 把普通消息全拒死。
@@ -189,7 +189,7 @@ impl Inbox {
             q.next_step.push_back(msg);
             EnqueueOutcome::QueuedForNextStep
         } else if priority.is_high() {
-            // A5 插队：High 插到 next_turn 现有 High 连续段之后、第一个
+            // 插队：High 插到 next_turn 现有 High 连续段之后、第一个
             // Normal 之前（High 之间保持 FIFO；与前代实现抢占的
             // `waiting.push_front` 同型——让路的消息回队首而非队尾）。
             let insert_at = q
@@ -272,7 +272,7 @@ impl Inbox {
         self.capacity
     }
 
-    /// C4（2026-10-24 cron 合闸）：会话队列里是否已有同一 cron job 的待处
+    /// （cron 合闸）：会话队列里是否已有同一 cron job 的待处
     /// 理消息（next_turn + next_step 都算）。cron 触发间隔小于轮次处理时长
     /// 时，无合闸的 FIFO 会无限积压（每 tick 一条、每条一轮 LLM 全量上下
     /// 文重发）；admission 的 busy 闸用本判定丢弃同 job 重复 tick，把积压

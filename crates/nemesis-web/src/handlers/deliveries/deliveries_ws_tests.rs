@@ -1,5 +1,5 @@
-//! `deliveries.*` WSAPI 用例（P4-c）：未装配诚实报错 / 各命令臂经 bridge /
-//! list 视图不带 patch 体 / L1 `commands()` 清单。进程级 bridge 槽是共享
+//! `deliveries.*` WSAPI 用例（c）：未装配诚实报错 / 各命令臂经 bridge /
+//! list 视图不带 patch 体 / `commands()` 清单。进程级 bridge 槽是共享
 //! 态——全部用例持 [`DELIVERIES_BRIDGE_TEST_LOCK`] 串行（同 AGENTS_BRIDGE
 //! 家族纪律）。
 // 持锁跨 await 是刻意的测试串行化（槽位置换必须覆盖整个 handler await
@@ -60,6 +60,7 @@ fn make_ctx() -> RequestContext {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,

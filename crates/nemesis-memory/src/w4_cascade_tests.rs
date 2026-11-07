@@ -1,4 +1,4 @@
-//! W4（2026-10-25 加固）：memory_forget 谱系传导
+//! （2026-10-25 加固）：memory_forget 谱系传导
 //! 测试——删除源条目时 merge 派生条目连带**归档**（`META_DREAM_ARCHIVED`，
 //! 归档非删除）；审批 preview 批准前列出派生明细；拒绝则什么都不动。
 //!
@@ -308,7 +308,7 @@ async fn tool_forget_unknown_id_honest_not_found_without_cascade_note() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261025-34 回归锁：向量镜像参与下的分诊与谱系可见性
+// 回归锁：向量镜像参与下的分诊与谱系可见性
 // ---------------------------------------------------------------------------
 
 /// 带（假 embed）向量镜像的 manager——镜像写入总开关显式打开（生产形态）。
@@ -329,7 +329,7 @@ fn vector_mem_manager(storage_path: &std::path::Path) -> MemoryManager {
 
 #[tokio::test]
 async fn tool_delete_episodic_id_routes_to_episodic_delete_not_cascade() {
-    // BUG-20261025-34①：append_episode 会把 episodic 记录以同 id 写入向量
+    // ①：append_episode 会把 episodic 记录以同 id 写入向量
     // 镜像，get() 的向量 fallback 看得见它——此前分类只判 is_some()，
     // episodic 目标被误送 forget_with_cascade：级联只删向量镜像，episodic
     // 本体永不清除却报告「已删除」。修复后必须按 typ 分流进 episodic 专删。
@@ -379,7 +379,7 @@ async fn tool_delete_episodic_id_routes_to_episodic_delete_not_cascade() {
 
 #[tokio::test]
 async fn cascade_finds_merge_derived_surviving_only_in_vector_mirror() {
-    // BUG-20261025-34②：生产 keyword store 是 per-run 内存态，重启后历史
+    // ②：生产 keyword store 是 per-run 内存态，重启后历史
     // merge-derived 条目只活在向量镜像里。list_derived_of 此前只扫 keyword
     // store → 级联静默 no-op（源删了、派生成无主孤儿）。修复后扫描面 =
     // 合并视图（list_all_entries），与 run_sweep 口径对齐。

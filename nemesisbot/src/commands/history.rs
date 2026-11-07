@@ -1,4 +1,4 @@
-//! `nemesisbot history search` — U20 (sixth batch) CLI over the session
+//! `nemesisbot history search` — (sixth batch) CLI over the session
 //! full-text index (`nemesis_agent::history_search`).
 
 use crate::common;
@@ -58,9 +58,9 @@ pub async fn run(action: HistoryAction, local: bool) -> Result<()> {
     Ok(())
 }
 
-// R7（coverage-95 goal，2026-08-27）：声明式测试挂载，无内联测试。
+// （coverage-95 goal）：声明式测试挂载，无内联测试。
 // run() 两分支经 nemesis_agent::history_search 的进程级单例读写索引库；
-// 单例 home 由 tests 侧 crate::tests::singleton_test_home() 重定向到测试
+// 单例 home 由 tests 侧 crate::tests:singleton_test_home() 重定向到测试
 // 沙箱（nemesis-path 的 set_home_dir 运行时缝），成功路径可测，见 tests.rs。
 #[cfg(test)]
 mod tests;

@@ -78,7 +78,7 @@ pub struct UserProfile {
 /// - **首 sweep**：`min(锚点, now-24h)` 通常落锚点之前，`max` 夹回锚点
 ///   （仅向前不回溯）；启用已超 24h 的存量用户首 sweep 也只扫近 24h
 ///   （不回溯挖陈年历史）；
-/// - **稳态**：滚动 24h——统计规则（R1/R2 的 n≥10 闸）需要足够大的样本
+/// - **稳态**：滚动 24h——统计规则（/ 的 n≥10 闸）需要足够大的样本
 ///   窗，小时级增量批对稀疏用户永远凑不齐；
 /// - **停机补漏**：水线停在几天前 → 窗口下探到水线（补齐停机期证据，
 ///   锚点兜底防越界）；
@@ -111,7 +111,7 @@ pub fn profile_path(workspace: &Path) -> PathBuf {
 ///
 /// 只读展示类调用方可用 [`load_profile`] 的容错形态；**任何读取后回写
 /// 的路径（sweep/veto/forget/pin/enable）必须用本函数**——损坏静默当空
-/// 再 save 会把全量习惯清空（四路评审 B-F3 根修）。
+/// 再 save 会把全量习惯清空（四路评审 B- 根修）。
 pub fn try_load_profile(workspace: &Path) -> Result<UserProfile, String> {
     let path = profile_path(workspace);
     let content = match std::fs::read_to_string(&path) {
@@ -137,7 +137,7 @@ pub fn save_profile(workspace: &Path, profile: &UserProfile) -> Result<(), Strin
 
 /// [`save_profile`] 的锁内版：调用方**已持** [`nemesis_config::config_write_lock`]
 /// 时使用（锁不可重入——锁内函数再走 `save_profile` 会自死锁；四路评审
-/// B-F4 根修配套）。
+/// B- 根修配套）。
 pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<(), String> {
     let path = profile_path(workspace);
     if let Some(parent) = path.parent() {
@@ -153,7 +153,7 @@ pub fn save_profile_locked(workspace: &Path, profile: &UserProfile) -> Result<()
 ///
 /// `max_entries` = 注入条目上限，**由调用方从 config 现读传入**
 /// （`UserProfileConfig::max_entries_or(MAX_ENTRIES)`）——sweep 侧按同一
-/// config 值截断（BUG-20261025-20：此前本函数内嵌硬编码 [`prune_and_cap`]
+/// config 值截断（此前本函数内嵌硬编码 [`prune_and_cap`]
 /// (=10)，`max_entries` 配 >10 的用户 disable→enable 循环后习惯被静默
 /// 截回 10，与配置矛盾）。
 pub fn enable_profile(workspace: &Path, max_entries: usize) -> Result<UserProfile, String> {
@@ -235,7 +235,7 @@ pub fn upsert_habit(profile: &mut UserProfile, mut entry: HabitEntry) {
     for existing in profile.habits.iter_mut() {
         if existing.category == entry.category && norm(&existing.content) == norm(&entry.content) {
             // max 后钳制：LLM 反思通道候选可能带 >1.0 的越界置信度（四路
-            // 评审 B-F2 根修）。
+            // 评审 B- 根修）。
             existing.confidence = existing.confidence.max(entry.confidence).clamp(0.0, 1.0);
             existing.hits += 1;
             if !entry.last_seen.is_empty() {
@@ -294,7 +294,7 @@ pub fn render_section(profile: &UserProfile) -> String {
     for h in entries {
         let pin_mark = if h.pinned { " [pinned]" } else { "" };
         // 换行折叠：content 若夹带 \r\n 会伪造注入行结构（四路评审
-        // B-F2 根修——反思维护内容统一压成单行）。
+        // B- 根修——反思维护内容统一压成单行）。
         let one_line = h.content.replace(['\r', '\n'], " ");
         lines.push(format!("- [{}] {}{pin_mark}", h.category, one_line));
     }
@@ -312,7 +312,7 @@ pub fn veto_habit(workspace: &Path, content_sub: &str) -> Result<bool, String> {
     if content_sub.trim().is_empty() {
         return Err("veto 匹配子串为空（会命中全部条目），拒绝执行".into());
     }
-    // RMW 全程持锁（四路评审 B-F4 根修）；损坏画像 = Err 不回写。
+    // RMW 全程持锁（四路评审 B- 根修）；损坏画像 = Err 不回写。
     let _serial = nemesis_config::config_write_lock();
     let mut p = try_load_profile(workspace)?;
     let needle = content_sub.to_lowercase();
@@ -374,9 +374,9 @@ pub fn set_pinned(workspace: &Path, content_sub: &str, pinned: bool) -> Result<b
 ///
 /// 输入 = 近期会话的用户消息列表（仅 enabled_at 之后的数据由调用方过滤）。
 /// 规则（v1 确定性集，纯函数可单测）：
-/// - R1 语言：消息 ≥10 条且中文字符占比 >0.7 → 中文交流习惯；
-/// - R2 简洁：平均用户长度 <40 字 → 简洁交互习惯；
-/// - R3 纠正：纠正前缀（不对/不，/我意思是/别/不要）频次 ≥3 →
+/// - 语言：消息 ≥10 条且中文字符占比 >0.7 → 中文交流习惯；
+/// - 简洁：平均用户长度 <40 字 → 简洁交互习惯；
+/// - 纠正：纠正前缀（不对/不，/我意思是/别/不要）频次 ≥3 →
 ///   「先确认理解再动手」习惯。
 pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
     let mut out = Vec::new();
@@ -386,7 +386,7 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
     }
     let now = now.to_string();
 
-    // R1 语言。
+    // 语言。
     let total_chars: usize = user_messages.iter().map(|m| m.chars().count()).sum();
     if total_chars > 0 {
         let cjk: usize = user_messages
@@ -412,7 +412,7 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
         }
     }
 
-    // R2 简洁。
+    // 简洁。
     let avg_len = total_chars as f64 / n as f64;
     if n >= 10 && avg_len < 40.0 {
         out.push(HabitEntry {
@@ -427,7 +427,7 @@ pub fn stat_candidates(user_messages: &[String], now: &str) -> Vec<HabitEntry> {
         });
     }
 
-    // R3 纠正前缀。
+    // 纠正前缀。
     const PREFIXES: &[&str] = &["不对", "不，", "不是的", "我意思是", "别", "不要"];
     let corrections = user_messages
         .iter()

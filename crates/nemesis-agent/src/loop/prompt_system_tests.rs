@@ -1,4 +1,4 @@
-// prompt-pack pro（M3）：`prompt_system` 双体系闸门测试。
+// prompt-pack pro：`prompt_system` 双体系闸门测试。
 //
 // 覆盖面：
 // ① Classic 默认——tool_defs 描述恒为注册表原文（classic 字节不变承诺的
@@ -153,7 +153,7 @@ fn switching_back_to_classic_restores_registry_descriptions() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑤ DetachedOpts.role 消费链路（prompt-pack pro M4）
+// ⑤ DetachedOpts.role 消费链路（prompt-pack pro）
 // ---------------------------------------------------------------------------
 
 /// 捕获 system 消息的迷你 provider（验证 role 模板进入请求的首条 system）。
@@ -218,7 +218,7 @@ async fn detached_role_overlays_persona_in_system_prompt() {
 }
 
 // ---------------------------------------------------------------------------
-// ⑥ 快照注入节闸门（M4：输入数据声明 + 外部来源降权）
+// ⑥ 快照注入节闸门（输入数据声明 + 外部来源降权）
 // ---------------------------------------------------------------------------
 
 fn build_digest(al: &AgentLoop) -> String {

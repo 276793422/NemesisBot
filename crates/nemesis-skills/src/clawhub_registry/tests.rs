@@ -50,15 +50,15 @@ fn test_urlencoding() {
     assert_eq!(urlencoding::encode("a/b"), "a%2Fb");
 }
 
-// BUG-20261030-207 回归锁：encode 必须按 UTF-8 字节迭代做百分号编码。
+// 回归锁：encode 必须按 UTF-8 字节迭代做百分号编码。
 // 旧实现按 char 迭代并 `c as u8` 截断——'中'(U+4E2D) 被编码成 "%2D"('-')、
-// 'é'(U+00E9) 被编码成 "%E9"（孤立尾字节，非法 UTF-8 序列），搜索词/slug/
+// 'é'(U+00E9) 被编码成 "%"（孤立尾字节，非法 UTF-8 序列），搜索词/slug/
 // cursor 四个消费点全部静默损坏（中文查询变乱码查询、非 ASCII slug 404）。
 #[test]
 fn test_urlencoding_non_ascii_utf8_bytes() {
-    // '中' = UTF-8 E4 B8 AD（旧实现输出 "%2D" = '-'）
+    // '中' = UTF-8 AD（旧实现输出 "%2D" = '-'）
     assert_eq!(urlencoding::encode("中"), "%E4%B8%AD");
-    // 'é' = UTF-8 C3 A9（旧实现输出 "%E9"，孤立尾字节）
+    // 'é' = UTF-8 （旧实现输出 "%"，孤立尾字节）
     assert_eq!(urlencoding::encode("café"), "caf%C3%A9");
     // 混合 ASCII 与多字节：只有非 unreserved 字节被编码
     assert_eq!(
@@ -1864,7 +1864,7 @@ async fn test_download_and_install_zip_wrong_content_type_falls_back_to_github()
 }
 
 // ============================================================
-// S5 coverage: ZIP download error arms, empty-version default,
+// coverage: ZIP download error arms, empty-version default,
 // get_skill_content fallback trigger arms, extract_zip edges,
 // move_dir_contents write-failure arm
 // ============================================================
@@ -2138,7 +2138,7 @@ fn test_move_dir_contents_write_fails_when_dest_path_is_directory() {
 
 #[test]
 fn with_urls_backfills_empty_values_with_defaults() {
-    // 2026-09-23 BUG 清账类 D：回填下沉 with_urls 唯一 chokepoint——
+    // BUG 清账类 D：回填下沉 with_urls 唯一 chokepoint——
     // registry.rs 直构造路径（serde 缺省空串）不再漏出空 URL。
     let registry = ClawHubRegistry::with_urls("", "", "");
     assert_eq!(registry.base_url, "https://clawhub.ai");
@@ -2151,7 +2151,7 @@ fn with_urls_backfills_empty_values_with_defaults() {
     assert_eq!(custom.convex_url, "https://c.convex.cloud");
 }
 
-/// R62 回归钉：穿越条目拒绝。旧实现只有 canonicalize-if-Ok 检查——穿越
+/// 回归钉：穿越条目拒绝。旧实现只有 canonicalize-if-Ok 检查——穿越
 /// 路径经过不存在的中间目录时（新装目录的常态正是父目录缺席）检查被
 /// 静默跳过，`newdir/../../../evil.txt` 落到 target 之外。
 #[test]
@@ -2182,7 +2182,7 @@ fn test_extract_zip_rejects_traversal_through_missing_dir() {
     assert!(!root.join("evil.txt").exists());
 }
 
-/// R62 回归钉：Windows 盘符前缀条目（"C:/evil.txt"）——Path::join 绝对
+/// 回归钉：Windows 盘符前缀条目（"C:/evil.txt"）——Path::join 绝对
 /// 形态换底逃逸。混入一个普通条目使公共前缀剥离失效（全 C: 前缀会被
 /// find_common_prefix 当单层目录剥掉，单条目形态到不了检查点）。
 #[test]
@@ -2209,12 +2209,13 @@ fn test_extract_zip_rejects_drive_prefix_entry() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-20261101-273 回归锁：下载/解压双闸（恶意源防护）。
+// 回归锁：下载/解压双闸（恶意源防护）。
 // ---------------------------------------------------------------------------
 
 // 下载侧：read_body_capped 必须在读入**过程中**拒绝超限 body——旧 bytes()
 // 全量吞完才检查，恶意源在检查前已把任意大 body 灌进内存。wiremock 回
-// 1MB body、cap 64KB → 中途断开报错。
+// 1MB body、cap 64KB → 中途断开报错。（BUG-20261107-005：实现已提升为
+// workspace 共享 nemesis_utils::http_cap，测试改打共享版；语义不变。）
 #[tokio::test]
 async fn read_body_capped_aborts_oversized_body_mid_read() {
     let server = wiremock::MockServer::start().await;
@@ -2229,7 +2230,9 @@ async fn read_body_capped_aborts_oversized_body_mid_read() {
         .await;
     let registry = ClawHubRegistry::new();
     let response = registry.client.get(server.uri()).send().await.unwrap();
-    let err = read_body_capped(response, 64 * 1024).await.unwrap_err();
+    let err = nemesis_utils::http_cap::read_body_capped(response, 64 * 1024)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("exceeds limit"), "{err}");
 }
 
@@ -2248,7 +2251,9 @@ async fn read_body_capped_passes_small_body() {
         .await;
     let registry = ClawHubRegistry::new();
     let response = registry.client.get(server.uri()).send().await.unwrap();
-    let body = read_body_capped(response, 64 * 1024).await.unwrap();
+    let body = nemesis_utils::http_cap::read_body_capped(response, 64 * 1024)
+        .await
+        .unwrap();
     assert_eq!(body, small);
 }
 

@@ -1,11 +1,11 @@
-//! Envelope 单测：v4 CMS SignedData（S2-1）+ v4 locator footer（S2-3）+ ELF/raw
-//! 载体（S3-4）。（v3 字节结构测试段随 v3 代码块 S5-3 整体删除——v3 形态的
+//! Envelope 单测：v4 CMS SignedData+ v4 locator footer+ ELF/raw
+//! 载体。（v3 字节结构测试段随 v3 代码块 整体删除——v3 形态的
 //! 破坏性钉死改由 verify/view tests 的 footer 字节字面量用例承担。）
 
 use super::*;
 
 // ---------------------------------------------------------------------------
-// S2-1：CMS SignedData（Authenticode 形态；构造 → 解析 roundtrip + 密码学自洽）
+// CMS SignedData（Authenticode 形态；构造 → 解析 roundtrip + 密码学自洽）
 // ---------------------------------------------------------------------------
 
 use cms::content_info::ContentInfo;
@@ -32,7 +32,7 @@ fn cms_test_build() -> (Vec<u8>, crate::keygen::KeyHierarchy) {
 }
 
 /// 解析 ContentInfo → SignedData（content 是 [0] EXPLICIT 剥壳后的 ANY——
-/// to_der() 重组完整 TLV 才能喂 from_der，S0-6 坑位 5e）。
+/// to_der() 重组完整 TLV 才能喂 from_der， 坑位 5e）。
 fn cms_parse(der: &[u8]) -> SignedData {
     let ci = ContentInfo::from_der(der).expect("ContentInfo parse");
     assert_eq!(
@@ -47,7 +47,7 @@ fn signed_data_roundtrip_authenticode_form() {
     let (der, _h) = cms_test_build();
     let sd = cms_parse(&der);
 
-    // Authenticode 钉 version=1（cms builder 原生 V3 → 构造后类型化改写）
+    // Authenticode 钉 version=1（cms builder 原生 → 构造后类型化改写）
     assert_eq!(
         format!("{:?}", sd.version),
         "V1",
@@ -68,7 +68,7 @@ fn signed_data_roundtrip_authenticode_form() {
         der::Tag::Sequence,
         "MS form: no OCTET STRING wrapper"
     );
-    // P0 实证约束（S0-4）：证书集必须含全部三级（含根）
+    // 实证约束：证书集必须含全部三级（含根）
     assert_eq!(
         sd.certificates.as_ref().map(|c| c.0.as_slice().len()),
         Some(3usize),
@@ -100,7 +100,7 @@ fn signed_data_roundtrip_authenticode_form() {
         );
     }
 
-    // messageDigest 语义 = SHA256(eContent 内容体无头)（osslsigncode 同口径，S0-6 实测命中）
+    // messageDigest 语义 = SHA256(eContent 内容体无头)（osslsigncode 同口径， 实测命中）
     let md = attrs
         .iter()
         .find(|a| a.oid == OID_ATTR_MESSAGE_DIGEST)
@@ -158,7 +158,7 @@ fn signed_data_deterministic() {
 
 #[test]
 fn cms_signature_verifies_over_signed_attrs() {
-    // RFC 5652 §5.4：SignerInfo.signature 对 signedAttrs 验签，签名消息 = SET OF
+    // RFC 5652：SignerInfo.signature 对 signedAttrs 验签，签名消息 = SET OF
     // （0x31）形态的 attrs DER。cms 的 SetOfAttrs::to_der() 直接产 SET OF 形态
     //（IMPLICIT [0] 只在 SignerInfo 编码层），无需手工换 tag。
     let (der, h) = cms_test_build();
@@ -205,7 +205,7 @@ fn signed_data_without_opus_omits_opus_attr() {
     assert!(attrs.iter().any(|a| a.oid == OID_ATTR_CONTENT_TYPE));
 }
 
-/// 与 S0-3 osslsigncode 产物字段级对比（goal S2-1 判据之二）。
+/// 与 osslsigncode 产物字段级对比（goal 判据之二）。
 ///
 /// 默认路径 = 本机 spike 产物（仓库外）；可用 `NEMESIS_OSSLSIG_DER` 覆盖。
 /// 显式运行：`cargo test -p nemesis-verify compare_with_osslsigncode -- --ignored`
@@ -219,7 +219,7 @@ fn compare_with_osslsigncode_artifact() {
         std::fs::read(&path).unwrap_or_else(|e| panic!("osslsig.der 不可读（{path}）: {e}"));
     let sd = cms_parse(&bytes);
 
-    // 结构形态逐字段对齐（S0-6 asn1parse 对比结论的结构化复刻）
+    // 结构形态逐字段对齐（asn1parse 对比结论的结构化复刻）
     assert_eq!(
         format!("{:?}", sd.version),
         "V1",
@@ -235,8 +235,8 @@ fn compare_with_osslsigncode_artifact() {
         der::Tag::Sequence,
         "MS form: SEQUENCE direct"
     );
-    // osslsig.der = S0-3 主样本形态：osslsigncode 全链签名（leaf+issuing+root，
-    // spike README S0-3 行「全链签名」；S0-4 缺根对照是另做的 test-signed.exe）
+    // osslsig.der = 主样本形态：osslsigncode 全链签名（leaf+issuing+root，
+    // spike README 行「全链签名」； 缺根对照是另做的 test-signed.exe）
     assert_eq!(
         sd.certificates.as_ref().map(|c| c.0.as_slice().len()),
         Some(3usize),
@@ -258,7 +258,7 @@ fn compare_with_osslsigncode_artifact() {
             "attr {want} missing in {oids:?}"
         );
     }
-    // messageDigest 语义命中：SHA256(eContent 内容体) == 属性值（S0-6 实测 7624F011... 同口径）
+    // messageDigest 语义命中：SHA256(eContent 内容体) == 属性值（实测 7624F011... 同口径）
     let md = attrs
         .iter()
         .find(|a| a.oid.to_string() == "1.2.840.113549.1.9.4")
@@ -277,7 +277,7 @@ fn compare_with_osslsigncode_artifact() {
 }
 
 // ---------------------------------------------------------------------------
-// S2-2：SignedData 解析（结构 + 自洽；畸形输入诚实失败）
+// SignedData 解析（结构 + 自洽；畸形输入诚实失败）
 // ---------------------------------------------------------------------------
 
 use cms::content_info::CmsVersion;
@@ -343,7 +343,7 @@ fn parsed_signature_roundtrip_fields() {
 
     // messageDigest 属性 = SHA256(eContent Any 内容体（剥头，der Any.value() 语义）)；
     // 与 content_digest（SPC 内嵌入的摘要字段）是两个不同层面。osslsig.der 同口径
-    // （S2-1 对比测试钉死），构造/解析两侧 der-crate 语义天然一致
+    // （对比测试钉死），构造/解析两侧 der-crate 语义天然一致
     let spc_der = build_spc_indirect_data(&cms_test_digest()).unwrap();
     let any = der::Any::from_der(spc_der.as_slice()).unwrap();
     let expect_md: [u8; 32] = sha2::Sha256::digest(any.value()).into();
@@ -441,7 +441,7 @@ fn parse_rejects_non_der_ecdsa_signature() {
 }
 
 // ---------------------------------------------------------------------------
-// S2-3：v4 locator footer（ELF/raw 载体 roundtrip + crafted-footer 诚实失败）
+// v4 locator footer（ELF/raw 载体 roundtrip + crafted-footer 诚实失败）
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -458,7 +458,7 @@ fn v4_footer_roundtrip_fields() {
 
 #[test]
 fn v4_parse_rejects_v3_magic() {
-    // v3 footer（magic NMBSIG\x03\x00）不是 v4 footer（v3 构造器已随 S5-3 删除，
+    // v3 footer（magic NMBSIG\x03\x00）不是 v4 footer（v3 构造器已随 删除，
     // 钉死用字节内联）
     let mut f = [0u8; 64];
     f[0..8].copy_from_slice(b"NMBSIG\x03\x00");
@@ -520,7 +520,7 @@ fn v4_roundtrip_raw() {
 #[test]
 fn v4_roundtrip_elf_overlay() {
     // ELF 形态建模：envelope 追加在 overlay（overlay_start = 原文件长度 L = content_len；
-    // 真实 L 由 codec 计算，S3/S4 接线）
+    // 真实 L 由 codec 计算，/ 接线）
     let content: Vec<u8> = (0..5_000u32).map(|i| (i % 241) as u8).collect();
     let file = v4_attach(&content, FORMAT_TAG_ELF);
     let fo = find_footer_v4(&file, content.len(), &[]).expect("v4 footer found");
@@ -598,13 +598,13 @@ fn v4_extract_rejects_footer_offset_out_of_bounds() {
 }
 
 // ---------------------------------------------------------------------------
-// S3-4：ELF/raw 载体接 v4 footer（codec 接线：sign_carrier_v4 / extract_carrier_v4
+// ELF/raw 载体接 v4 footer（codec 接线：sign_carrier_v4 / extract_carrier_v4
 // 签名→验证闭环；ELF64 LE / ELF32 BE 双轴 + overlay 域外性 + 载体契约诚实失败）
 // ---------------------------------------------------------------------------
 
 use crate::codec::ExecutableCodec;
 
-/// S3-4 夹具：最小 ELF（头 + 1 个 PT_LOAD 覆盖结构区）→ L = 结构区末尾，
+/// 夹具：最小 ELF（头 + 1 个 PT_LOAD 覆盖结构区）→ L = 结构区末尾，
 /// 追加 pattern overlay（overlay 不入保护域）。返回 (elf, L)。
 fn s34_min_elf(is64: bool, le: bool) -> (Vec<u8>, usize) {
     fn put16(b: &mut [u8], off: usize, v: u16, le: bool) {
@@ -652,7 +652,7 @@ fn s34_min_elf(is64: bool, le: bool) -> (Vec<u8>, usize) {
     (b, l)
 }
 
-/// S3-4 夹具：内容 digest → 真 CMS（同 v4_attach，但 digest 由调用方定）。
+/// 夹具：内容 digest → 真 CMS（同 v4_attach，但 digest 由调用方定）。
 fn s34_cms_for(digest: &[u8; 32]) -> Vec<u8> {
     let h = crate::keygen::generate().expect("keygen");
     build_signed_data(
@@ -780,7 +780,7 @@ fn carrier_honest_failures() {
 }
 
 // ---------------------------------------------------------------------------
-// AGT 覆盖率批次（2026-09-24）：opus None 臂 / spc_string・spc_link 解码臂 /
+// AGT 覆盖率批次：opus None 臂 / spc_string・spc_link 解码臂 /
 // append_nested_signature 诚实失败臂（host 非 signedData / signerInfos≠1 /
 // 已含嵌套 / 既有 unsigned_attrs 插入臂）/ enumerate 深度上限与坏 contentType /
 // parse_signed_data 剩余结构臂（SPC 摘要算法・长度 / 非 Certificate 证书项 /

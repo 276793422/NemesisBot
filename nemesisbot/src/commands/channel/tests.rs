@@ -63,7 +63,7 @@ fn test_set_channel_config_new_channel() {
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-    // 布尔键强制转 JSON bool（BUG #41 同族根修）：写成字符串 "true" 会让
+    // 布尔键强制转 JSON bool（同族根修）：写成字符串 "true" 会让
     // typed Config 的 `enabled: bool` 解析整份 config 直接炸
     // （IT profile/cli 实证：invalid type: string "true", expected a boolean）。
     assert_eq!(
@@ -74,7 +74,7 @@ fn test_set_channel_config_new_channel() {
 
 #[test]
 fn test_set_channel_config_string_key_true_stays_string() {
-    // E-F4 根修回归锁：字符串键的合法值恰好是 "true"/"1" 时不得被毒化成
+    // E- 根修回归锁：字符串键的合法值恰好是 "true"/"1" 时不得被毒化成
     // JSON bool——旧实现对一切键无差别强制，auth_token="true" 会落盘成
     // true（读侧 as_str() 取空、typed 解析炸）。布尔强制只认布尔键。
     let tmp = TempDir::new().unwrap();
@@ -91,7 +91,7 @@ fn test_set_channel_config_string_key_true_stays_string() {
 
 #[test]
 fn test_set_channel_config_bool_key_value_set_extended() {
-    // E-F4 配套：布尔键值集扩展 yes/no/on/off/1/0（大小写不敏感）；
+    // E- 配套：布尔键值集扩展 yes/no/on/off/1/0（大小写不敏感）；
     // 布尔键 + 值集外的值原样落串（typed 读侧 loud 报错，不静默猜值）。
     let tmp = TempDir::new().unwrap();
     let cfg = make_config(&tmp);
@@ -371,7 +371,7 @@ fn test_set_channel_config_empty_value() {
 fn test_get_channel_config_numeric_value_returns_text() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_config(&tmp);
-    // BUG #41 修复后端口落 JSON 数字；get 侧按原文回显（非数字才回 "(not set)"）
+    // 修复后端口落 JSON 数字；get 侧按原文回显（非数字才回 "(not set)"）
     let val = get_channel_config(&cfg, "web", "port");
     assert_eq!(val.as_deref(), Some("8080"));
 }
@@ -1225,7 +1225,7 @@ fn test_format_token_for_channel_display() {
 }
 
 // =========================================================================
-// run() 端到端分支覆盖（S11 覆盖率冲刺）
+// run() 端到端分支覆盖（覆盖率冲刺）
 //
 // 策略：NEMESISBOT_HOME 指向临时目录（resolve_home 优先级 2），
 // config.json 全程只读写临时 home 下的 {tmp}/.nemesisbot/config.json。
@@ -1410,10 +1410,10 @@ fn test_run_disable_unknown_and_no_config() {
 }
 
 // -------------------------------------------------------------------------
-// BUG-20261030-216 / BUG-20261030-217 回归
+// / 回归
 // -------------------------------------------------------------------------
 
-// BUG-20261030-216 回归：非 ASCII auth_token 的 setup 预览必须走 char
+// 回归：非 ASCII auth_token 的 setup 预览必须走 char
 // boundary 安全切片——此前裸 &token[..4.min(len)]，多字节字符中间切 →
 // CLI panic（「密码12345678」16 字节，[..4] 落在「码」内部）。EOF 驱动
 // 保留现有值，token 预览打印执行即触发红证路径。
@@ -1451,7 +1451,7 @@ fn test_run_websocket_setup_non_ascii_token_no_panic() {
     );
 }
 
-// BUG-20261030-217 回归：config 存在但 channels 键整体缺席时 Enable 必须
+// 回归：config 存在但 channels 键整体缺席时 Enable 必须
 // 自动建路径写盘——此前手搓 pointer_mut 两分支都不命中，配置未写入却打印
 // "Channel enabled"（假成功）。
 #[test]
@@ -1747,7 +1747,7 @@ fn test_run_web_host_and_port() {
     .unwrap();
     let web = &read_main_cfg(&th.home)["channels"]["web"];
     assert_eq!(web["host"], serde_json::json!("127.0.0.1"));
-    // BUG #41 修复后端口必须落为 JSON 数字（typed 读侧 i64 / as_u64 才能读到）
+    // 修复后端口必须落为 JSON 数字（typed 读侧 i64 / as_u64 才能读到）
     assert_eq!(web["port"], serde_json::json!(49152));
 }
 
@@ -1919,7 +1919,7 @@ fn test_run_websocket_setup_interactive_eof_defaults() {
         cfg["channels"]["websocket"]["host"],
         serde_json::json!("10.0.0.5")
     );
-    // 同步到 web：session_id 生成（ws- 前缀）
+    // 同步到 web：session_id 生成（ws 前缀）
     let session = cfg["channels"]["web"]["session_id"].as_str().unwrap();
     assert!(session.starts_with("ws-"));
     assert_eq!(cfg["channels"]["web"]["port"], serde_json::json!(49001));
@@ -2029,7 +2029,7 @@ fn test_run_websocket_set_validations() {
     )
     .unwrap_err();
     assert!(err.to_string().contains("cannot be 0"));
-    // 合法端口写入（BUG #41 修复后落 JSON 数字）
+    // 合法端口写入（修复后落 JSON 数字）
     run(
         ChannelAction::WebSocket {
             action: WebSocketAction::Set {
@@ -2296,8 +2296,8 @@ fn test_run_external_set_and_get() {
 //   - Status web 短 auth_token（raw 掩码臂）/ 非对象条目（字段转储跳过）
 //   - Web Status 短 token 与无 token 条目；Web Config 短 token 与非对象条目
 //   - WebSocket Setup：预置 auth_token 的保留与同步到 web 臂；
-//     websocket 条目为非对象时 enabling 被静默跳过（可疑点 C1）
-//   - External Setup：external 条目为非对象同样静默跳过（可疑点 C1）
+//     websocket 条目为非对象时 enabling 被静默跳过（可疑点）
+//   - External Setup：external 条目为非对象同样静默跳过（可疑点）
 // =========================================================================
 
 mod wave_b {
@@ -2494,7 +2494,7 @@ mod wave_b {
         assert!(web["session_id"].as_str().unwrap().starts_with("ws-"));
     }
 
-    /// WebSocket Setup：websocket 条目是字符串（配置损坏）→ BUG #42 修复后
+    /// WebSocket Setup：websocket 条目是字符串（配置损坏）→ 修复后
     /// 第一个写点即 loud bail，命令返回 Err 且文件一字节不动。
     #[test]
     fn wave_b_websocket_setup_non_object_ws_entry_loud_bails_untouched() {
@@ -2554,22 +2554,22 @@ mod wave_b {
 
 // =========================================================================
 // wave_c（覆盖率补测 C 波）：非对象条目拒绝臂 + External Test 探测臂。
-//   - Enable / Disable 已知通道、但该条目是非对象（损坏配置）→ BUG #42
+//   - Enable / Disable 已知通道、但该条目是非对象（损坏配置）→
 //     修复后 loud bail 且文件原样保留（此前是静默跳过仍报成功）；
 //   - ExternalAction::Test 的半配置形态：只配 output 不配 input →
 //     不双双为空早退，而走 "Input program: not configured" 侧臂；
-//   - 探测程序存在且可启动（绝对路径，同 S11b EDITOR 豁免裁定：无窗口、
+//   - 探测程序存在且可启动（绝对路径，同 EDITOR 豁免裁定：无窗口、
 //     立即退出）→ input/output 两槽的 spawn-Ok → kill/wait → OK 臂；
 //   - input 槽存在但是目录 → spawn Err → FAILED 臂；output 槽未配置 →
 //     "Output program: not configured" 侧臂。
-//   另含 BUG #41 回归：端口数字落盘 + read_port_flex 对旧字符串盘的容错读。
+//   另含 回归：端口数字落盘 + read_port_flex 对旧字符串盘的容错读。
 // 豁免：Setup/Auth/交互式提示里需要用户真实键入的赋值臂（stdin 无法注入）。
 // =========================================================================
 
 mod wave_c {
     use super::*;
 
-    /// Enable 已知通道、条目为字符串：BUG #42 修复后 loud bail、文件不动。
+    /// Enable 已知通道、条目为字符串： 修复后 loud bail、文件不动。
     #[test]
     fn wc_enable_non_object_entry_loud_bails_untouched() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2619,7 +2619,7 @@ mod wave_c {
         assert_eq!(read_main_cfg(&th.home), original);
     }
 
-    /// BUG #41 显示侧回归：read_port_flex 对旧字符串端口如实报告而非落默认。
+    /// 显示侧回归：read_port_flex 对旧字符串端口如实报告而非落默认。
     #[test]
     fn wc_read_port_flex_tolerates_legacy_string_and_number() {
         let n = serde_json::json!(49152);
@@ -2727,7 +2727,7 @@ mod wave_c {
 
     /// output 槽存在但是目录（path.exists()==true 但 spawn 失败）→
     /// output 侧 FAILED 臂（input 槽用真实可执行文件走 OK，保证执行
-    /// 流推进到第二段 spawn 块的 Err 分支）。
+    /// 流推进到 spawn 块的 Err 分支）。
     #[test]
     fn wc_external_test_output_slot_directory_spawn_failed_after_input_ok() {
         let _guard = crate::GLOBAL_STATE_LOCK
@@ -2759,7 +2759,7 @@ mod wave_c {
 }
 
 // =========================================================================
-// r10（覆盖率补测批 2026-08-27）：channel 交互式子命令 A 类 miss 行收口。
+// r10（覆盖率补测-27）：channel 交互式子命令 A 类 miss 行收口。
 // 此前交互分支（Auth/Clear/Setup）只有 EOF 默认/取消侧——wave_c 豁免区把
 // "需要用户真实键入的赋值臂" 判为 stdin 无法注入；本批换 r9 同款武器
 // （test_harness::run_cli_with_stdin 管道喂完整答案序列）点亮：
@@ -3109,7 +3109,7 @@ mod r10_interactive_flows {
 }
 
 // ---------------------------------------------------------------------------
-// cov 补测（2026-09-25）：`read_port_flex` 四臂（数字 / 数字字符串 /
+// cov 补测：`read_port_flex` 四臂（数字 / 数字字符串 /
 // 非数字字符串回退默认 / 缺失或他型回退默认）。此前只有 list/websocket
 // 成功路径间接命中两臂，函数本体无直测。
 // ---------------------------------------------------------------------------

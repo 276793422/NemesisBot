@@ -119,14 +119,14 @@ pub fn parse_observe(out_json: &str) -> Result<Result<(), HostErr>, HostErr> {
     if v.is_null() {
         Ok(Ok(()))
     } else {
-        // 宽和面：observe 返回类型是 result<(), host-error>，正常成功
+        // 宽和面：observe 返回类型是 result<, host-error>，正常成功
         // payload 恒 null；非 null 视为形态漂移（不失败，warn 由调用方落）。
         Ok(Ok(()))
     }
 }
 
 // ---------------------------------------------------------------------------
-// 循环策略点（2026-10-22 样板工程批 2）：get-policy-metadata 结果 + 三策略
+// 循环策略点（样板工程）：get-policy-metadata 结果 + 三策略
 // 出口（result<json-string, host-error>——ok payload = guest 回的 JSON 字符串）。
 // ---------------------------------------------------------------------------
 
@@ -171,7 +171,7 @@ pub fn parse_json_string_result(out_json: &str) -> Result<Result<String, HostErr
 }
 
 // ---------------------------------------------------------------------------
-// flow 步骤（2026-11-03 guest step 批）：get-step-metadata 结果；run-step
+// flow 步骤（guest step 批）：get-step-metadata 结果；run-step
 // 出口与策略点同形（result<json-string, host-error>），复用
 // [`parse_json_string_result`]。
 // ---------------------------------------------------------------------------

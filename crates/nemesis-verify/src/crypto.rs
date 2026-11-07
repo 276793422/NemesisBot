@@ -1,6 +1,6 @@
 //! 签名原语（**v4：ECDSA P-256 + SHA-256，RFC 6979 确定式签名**）。
 //!
-//! v4 为 Authenticode 格式对齐迁移（goal `docs/PLAN/2026-09-12_authenticode-v4-goal.md`）：
+//! v4 为 Authenticode 格式对齐迁移（goal `authenticode-v4-goal`）：
 //! WinVerifyTrust 的接受集为 RSA/ECDSA，Ed25519 算法级不被识别（报「签名无效」而非干净
 //! UNTRUSTEDROOT），故算法层迁移至 ECDSA P-256 + SHA-256。签名经 `ecdsa` crate 的
 //! `Signer<Signature>` 实现，**默认即 RFC 6979 确定式 nonce**（同消息两次签名字节一致）。

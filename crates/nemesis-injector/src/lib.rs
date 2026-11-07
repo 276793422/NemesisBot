@@ -124,7 +124,7 @@ fn put64(p: &mut [u8], off: usize, v: u64) {
     p[off..off + 8].copy_from_slice(&v.to_le_bytes());
 }
 
-/// 注入 DLL 路径装配校验（单一真相源：launch 预检与 shellcode 装配同源）。
+/// 注入 DLL 路径装配校验（统一定义：launch 预检与 shellcode 装配同源）。
 ///
 /// - **ASCII**：shellcode 走 `LoadLibraryA`（ANSI 语义）——非 ASCII 的 UTF-8
 ///   字节序列按本机代码页解读必变成别的路径 → 目标内加载失败 → shellcode
@@ -132,7 +132,7 @@ fn put64(p: &mut [u8], off: usize, v: u64) {
 /// - **长度**：路径数据窗容量 = `OFF_DATA_NAME - OFF_DATA_DLLPATH - 1`（255，
 ///   留 NUL）——超限的旧实现按 `min` 静默截断，且尾字节/NUL 会覆写
 ///   OFF_DATA_NAME 的 "Run\0" 名字区 → 目标内 GetProcAddress 失败 → 同型
-///   `jmp self` 死循环。BUG-20261103-342 红线。
+///   `jmp self` 死循环。 红线。
 fn validate_dll_path(dll_path: &str) -> Result<(), InjectError> {
     const DLLPATH_MAX: usize = OFF_DATA_NAME - OFF_DATA_DLLPATH - 1; // 255
     let bytes = dll_path.as_bytes();

@@ -1,8 +1,8 @@
-//! [`super`] 检查证据捕获单元测试（②typed checks 块，2026-10-19）。
+//! [`super`] 检查证据捕获单元测试（typed checks 块，2026-10-19）。
 
 use super::*;
 
-// R4 回归锁（原 review 探针反转）：真实命令失败必须分类为 ok=false。
+// 回归锁（原 review 探针反转）：真实命令失败必须分类为 ok=false。
 #[tokio::test]
 async fn nonzero_exec_is_classified_failed() {
     use crate::r#loop::Tool;
@@ -19,7 +19,7 @@ async fn nonzero_exec_is_classified_failed() {
     );
 }
 
-// R4 回归锁：成功输出**中途**打印 `Tool error:` 字样不误判（前缀而非 contains）。
+// 回归锁：成功输出**中途**打印 `Tool error:` 字样不误判（前缀而非 contains）。
 #[test]
 fn successful_output_mentioning_tool_error_is_not_misjudged() {
     let output = "all checks passed\nnote: fixture echoes the literal string Tool error: end";
@@ -117,7 +117,7 @@ fn classify_result_executed_vs_refused() {
     );
 }
 
-// R4：run_checks 阶段状态行判据（行首 ✗/⏱ = 失败；缩进回显不误判）。
+// run_checks 阶段状态行判据（行首 ✗/⏱ = 失败；缩进回显不误判）。
 #[test]
 fn classify_result_run_checks_stage_lines() {
     // 全部通过：既有 ▶ 行、无 ✗/⏱ 行首。
@@ -139,7 +139,7 @@ fn classify_result_run_checks_stage_lines() {
     );
 }
 
-// R4：record_check 端到端——run_checks 失败阶段（✗ 行首）记 ok=false。
+// record_check 端到端——run_checks 失败阶段（✗ 行首）记 ok=false。
 #[test]
 fn record_check_run_checks_failed_stage_recorded_as_evidence() {
     let map: ChecksCaptureMap = RwLock::new(HashMap::new());

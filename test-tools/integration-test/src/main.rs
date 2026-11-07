@@ -786,7 +786,7 @@ async fn main() -> Result<()> {
     .await
     {
         Ok(_) => {
-            // Post-bind 身份核验（2026-10-16 撞口实录）：precheck 之后、bind
+            // Post-bind 身份核验（2026-10-16 撞口案例）：precheck 之后、bind
             // 之前的秒级窗口可能被其他套件的节点抢跑 web 端口——health 200
             // 来自自家 gateway，但 web 面已是别人的。核对 LISTEN 持有者 PID。
             if let Err(msg) = verify_gateway_web_identity(WEB_PORT, gateway.id()) {

@@ -1,4 +1,4 @@
-//! logs.rs 安全面覆盖（Phase 3 批次 18，2026-08-25）。
+//! logs.rs 安全面覆盖（2026-08-25）。
 //!
 //! 覆盖：`parse_security_audit_file`（管道格式、decision 映射、畸形行跳过）、
 //! `security` 命令（多文件合并、risk_level 过滤、时间倒序、分页、_source_file）、
@@ -57,6 +57,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -73,9 +74,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     }
 }
 
-// -----------------------------------------------------------------------
 // parse_security_audit_file（管道格式直测）
-// -----------------------------------------------------------------------
 
 #[test]
 fn parse_security_audit_file_full_and_edge_lines() {
@@ -124,9 +123,7 @@ fn parse_security_audit_file_missing_file_returns_empty() {
     assert!(parse_security_audit_file(&path).is_empty());
 }
 
-// -----------------------------------------------------------------------
 // security 命令（多文件合并 / 过滤 / 排序 / 分页）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn security_command_merges_files_filters_sorts_and_paginates() {
@@ -206,9 +203,7 @@ async fn security_command_missing_dir_returns_empty() {
     assert_eq!(r["entries"], serde_json::json!([]));
 }
 
-// -----------------------------------------------------------------------
 // chain_list / chain_verify（真实 AuditChain 夹具）
-// -----------------------------------------------------------------------
 
 /// 在 <ws>/logs/security_logs/ 下用真实 AuditChain 生成 4 条事件，
 /// max_events_per_segment=2 → 主文件 2 条 + audit_chain_seg0002.jsonl 2 条。
@@ -361,9 +356,7 @@ async fn chain_verify_valid_and_tampered() {
     assert_eq!(r["total_segments"], 0);
 }
 
-// -----------------------------------------------------------------------
 // read_meta_title sidecar
-// -----------------------------------------------------------------------
 
 #[test]
 fn read_meta_title_variants() {
@@ -391,9 +384,7 @@ fn read_meta_title_variants() {
     assert_eq!(read_meta_title(&jsonl).as_deref(), Some("我的会话"));
 }
 
-// -----------------------------------------------------------------------
 // markdown helper 直测
-// -----------------------------------------------------------------------
 
 #[test]
 fn extract_md_header_direct_variants() {

@@ -54,7 +54,7 @@ fn extract_interpreter_payloads_drives_wrapper_scan() {
     assert!(extract_interpreter_payloads(&normalize_exec_command("python script.py")).is_empty());
 }
 
-/// bin_key 取 basename（2026-10-13 复检批）：绝对路径解释器必须命中 WRAPPERS 表，
+/// bin_key 取 basename（复检批）：绝对路径解释器必须命中 WRAPPERS 表，
 /// 否则 `C:\...\cmd.exe /c <恶意载荷>` 会因 key 带目录而漏扫。
 #[test]
 fn extract_interpreter_payloads_full_path_interpreter_hits_wrappers() {
@@ -80,8 +80,8 @@ fn extract_interpreter_payloads_full_path_interpreter_hits_wrappers() {
 }
 
 // ---------------------------------------------------------------------------
-// exec_rule_segments / exec_rule_bucket_match（闭环批 2026-10-13 上移的
-// 单一真相源——auditor 执行管线与 security.rs CLI 预览共用，桶语义在此
+// exec_rule_segments / exec_rule_bucket_match（闭环-13 上移的
+// 单一权威定义——auditor 执行管线与 security.rs CLI 预览共用，桶语义在此
 // 钉死：deny=任一段/整串兜底、allow=全段、空段显式不命中、env 逃生堵死）
 // ---------------------------------------------------------------------------
 
@@ -113,8 +113,8 @@ fn exec_bucket_deny_any_segment_and_env_escape_blocked() {
 
 /// 显式 env 形 deny 规则命中本尊形态（未剥整串臂）：pattern 侧剥 env 的
 /// 只有 target，带 env 头的 pattern 只能靠未剥整串命中其字面输入——§九
-/// D1 F4 声称的三臂联合在上移单一真相源时曾丢失（多角度审计批 D5 抓回、
-/// D8 独立收敛），此锁钉死不丢第二次。
+/// 声称的三臂联合在上移单一真相源时曾丢失（多角度审计批 抓回、
+/// 独立收敛），此锁钉死不丢第二次。
 #[test]
 fn exec_bucket_deny_env_form_pattern_matches_literal_target() {
     assert!(
@@ -158,7 +158,7 @@ fn exec_rule_segments_trims_via_command_segments() {
     assert_eq!(segs, vec!["cargo build", "rm x"]);
 }
 
-/// D12-2 回归锁：pattern 侧与 target 侧同管道归一化——手写 shell 拟形
+/// 回归锁：pattern 侧与 target 侧同管道归一化——手写 shell 拟形
 /// deny 规则（引号包裹/多余空白）曾只做小写不剥引号不并空白，对归一化
 /// 后的 target 永不命中 = 静默死规则 fail-open，且安装期零告警。
 #[test]
@@ -178,7 +178,7 @@ fn exec_bucket_pattern_side_normalized_same_pipeline_as_target() {
     assert!(allow_match("cargo   build *", "cargo build --release"));
 }
 
-/// D12-1 回归锁：路径通配转义完备——字面 `.` 曾被当正则任意字符
+/// 回归锁：路径通配转义完备——字面 `.` 曾被当正则任意字符
 /// （`*.key` 命中无点号文件 `testXkey`），`?` 曾被当可选量词。
 #[test]
 fn wildcard_path_pattern_escapes_literal_dot_and_question() {

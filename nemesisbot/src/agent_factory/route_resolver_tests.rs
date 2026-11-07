@@ -1,4 +1,4 @@
-//! BUG-20261025-50：路由 config → 生产 RouteResolver 映射测试（无 feature
+//! 路由 config → 生产 RouteResolver 映射测试（无 feature
 //! 门——纯映射逻辑默认构建必跑）。覆盖：缺省 config 与 new_bus 硬编码默认
 //! 同形（零回归锚）、session.dm_scope 生效、bindings 映射与路由、agents.list
 //! 对未知绑定 agent 的默认回退、guild/team 空串 → 无约束（account 级可命中）。
@@ -100,7 +100,7 @@ fn r50_agents_list_coerces_unknown_binding_agent_to_default() {
     assert_eq!(route.session_key, "agent:main:telegram:group:g-1");
 }
 
-/// guild/team 空串 = 无约束（→ Option None）：不带 peer 元数据的消息可落
+/// guild/team 空串 = 无约束（Option None）：不带 peer 元数据的消息可落
 /// account 级绑定，而不是被 Some("") 死绑置换。
 #[test]
 fn r50_guild_empty_string_maps_to_no_constraint() {

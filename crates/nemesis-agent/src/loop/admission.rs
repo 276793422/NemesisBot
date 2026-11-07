@@ -1,11 +1,11 @@
 //! 入站门控：ConcurrentMode/GateOutcome/TurnAdmission/SessionBusyState/SentInRoundTracker、parse_approval_reply、route/gate/process_direct/heartbeat/inbound_message、会话忙/取消/收件箱族、persist_busy_refusal。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 use super::*;
 
 /// Concurrent request handling mode.
 ///
-/// D (2026-09-23 多会话并行清账)：本枚举**只决定忙时会话处置语义**，不再
+/// D (多会话并行清账)：本枚举**只决定忙时会话处置语义**，不再
 /// 决定泵调度——泵已统一为「gate 内联 + turn spawn」（跨会话并发、同会话
 /// 保序，任何模式下成立；`run_bus_impl`）。历史版本里 Reject 曾意味着泵级
 /// 串行（上一条 turn 不结束下一条消息不出队），导致主 loop 上一个长 turn
@@ -19,14 +19,14 @@ pub enum ConcurrentMode {
     /// Queue messages when session is busy — processed after the current turn.
     Queue,
     /// Queue + steer: `!`-prefixed messages are injected into the RUNNING
-    /// turn before its next LLM call (I1 / U7). The prefix is a routing
+    /// turn before its next LLM call. The prefix is a routing
     /// signal on every timing: busy → claim/transfer strips it; idle →
-    /// `process_admitted` strips it pre-persist (F2). `!!` escapes to a
+    /// `process_admitted` strips it pre-persist. `!!` escapes to a
     /// literal `!` (single-strip rule, shell convention).
     Steer,
 }
 
-/// V5 (2026-08-23): outcome of the synchronous inbound gate (`gate_inbound`).
+/// outcome of the synchronous inbound gate (`gate_inbound`).
 #[derive(Debug)]
 pub(crate) enum GateOutcome {
     /// `cluster_continuation` marker — the pump handles it inline via
@@ -35,12 +35,12 @@ pub(crate) enum GateOutcome {
     /// Short-circuit reply (busy receipt / busy bounce / queue-full / slash
     /// command response). No session was acquired.
     Immediate { agent_id: String, response: String },
-    /// C4（2026-10-24 cron 合闸）：同 job 重复 tick 在 busy 闸被丢弃——
+    /// （cron 合闸）：同 job 重复 tick 在 busy 闸被丢弃——
     /// 无回执、无落盘（cron tick 是系统自消息，D-2 用户消息留痕契约不适
     /// 用；触发真相源在 cron 服务自身日志 + 触发账本）。泵侧只 debug 记
     /// 一笔。job id 走 tracing 字段。
     Coalesced { cron_job_id: String },
-    /// E6 (2026-09-05): `/compact` / `/clear` — 会话维护命令。gate 的同步
+    /// `/compact` / `/clear` — 会话维护命令。gate 的同步
     /// 短路点拿不到 instance（LLM 摘要是 async），但会话已在此获取（防
     /// 并发回合与压缩互相踩摘要推进）；pump/serial tail 派发到
     /// `handle_maintenance`，回执经 `finish_message` 走正常出站路径。
@@ -49,7 +49,7 @@ pub(crate) enum GateOutcome {
         session_key: String,
         receipt: String,
     },
-    /// K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发——
+    /// (devtool-upgrade): 用户直发远程编码任务派发——
     /// `/build <task> repo:<node>`。会话已在 gate 获取（Maintenance 同款，
     /// 防并发回合踩会话）；tail 走 `process_user_dispatch`：经
     /// `handle_tool_call` 全管线（安全 8 层 / estop / Plan 闸）提交
@@ -68,20 +68,20 @@ pub(crate) enum GateOutcome {
     Admitted(TurnAdmission),
 }
 
-/// V5: admission minted by the gate — everything the turn tail needs that
+/// admission minted by the gate — everything the turn tail needs that
 /// the gate acquired on the message's behalf.
 #[derive(Debug)]
 pub(crate) struct TurnAdmission {
     pub(crate) agent_id: String,
     pub(crate) session_key: String,
     pub(crate) cancel_token: tokio_util::sync::CancellationToken,
-    /// E3：本回合在 `begin_turn_checkpoint`（Admitted 构造点）begin 的
+    /// 本回合在 `begin_turn_checkpoint`（Admitted 构造点）begin 的
     /// checkpoint turn 序号（无 store 挂载时 None）。随 admission 穿针到
-    /// 行落盘点——不能落盘时反查 `cur`（BUG-20261028-121 后 begin 只在
+    /// 行落盘点——不能落盘时反查 `cur`（后 begin 只在
     /// 真回合发生，指针归属稳定；该防御注释保留说明历史形态）。
     cp_turn: Option<usize>,
 }
-/// K4 (b): IM 审批卡回执语法——`/approve <id>` / `/deny <id>`（id 为审批
+/// (b): IM 审批卡回执语法——`/approve <id>` / `/deny <id>`（id 为审批
 /// 卡给出的短编号，6~12 位十六进制字符）。命中返回静态确认文案（gate
 /// Immediate 短路，不进 agent）；格式不符返回 None 落普通轮。真实裁决与
 /// 无效 id 的诚实提示由 gateway 审批回执 watcher 负责。
@@ -150,7 +150,7 @@ impl SentInRoundTracker {
 /// 注释记录过这类事故形态）。只负责释放；排队消息的排空是 async，由
 /// under_history_gate 在 drop 后显式做。
 ///
-/// R294（BUG-20261031-235）扩展为共用守卫：turn 任务体（process_admitted /
+/// 扩展为共用守卫：turn 任务体（process_admitted /
 /// 维护泵臂 / process_user_dispatch）同款事故形态——任务体任何一点 panic
 /// 跳过尾巴显式 release，会话从此永久 busy 直到 agent 重启。守卫在任务体
 /// 头部构造；正常路径在**原释放点**（drain 之前）显式 drop（= 旧的
@@ -182,7 +182,7 @@ impl AgentLoop {
     /// Clear all session busy states.
     ///
     /// Called after a forced stop (task abort) to release sessions that were
-    /// mid-processing when the agent was killed.  Without this, those sessions
+    /// mid-processing when the agent was killed. Without this, those sessions
     /// remain permanently locked ("busy") and all subsequent messages for them
     /// are rejected.
     pub fn clear_session_busy(&self) {
@@ -404,12 +404,12 @@ impl AgentLoop {
         // 自定义 slash 命令改写（改写型，见 rewrite_custom_command）：在闸门
         // 之前原地展开为提示词，让消息以最终形态走正常会话/LLM 流程。内置
         // 命令不受影响（rewrite 跳过内置名，gate 内的短路检查照常先行）。
-        // K3：async 化（`` !`cmd` `` 注入 + 技能回落），模板注入命令在闸门
+        // async 化（`` !`cmd` `` 注入 + 技能回落），模板注入命令在闸门
         // 前执行完毕——进闸的消息永远是最终形态。
         let mut msg = msg.clone();
         self.rewrite_custom_command(&mut msg).await;
-        // V5 (2026-08-23): gate first (sync classification + session
-        // acquire), then the matching tail. D (2026-09-23)：bus 泵已统一为
+        // gate first (sync classification + session
+        // acquire), then the matching tail. D：bus 泵已统一为
         // gate+spawn（`run_bus_impl`），本入口不再服务泵——仅存量的直调方
         // （tests、process_admitted 无 reinject 时的 inline 排队回退）继续
         // 经此进入，行为与 gate 语义一致（含 D-2 忙回绝留痕）。
@@ -417,7 +417,7 @@ impl AgentLoop {
             GateOutcome::Continuation(task_id) => ("__continuation__".to_string(), task_id, None),
             GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
             GateOutcome::Coalesced { cron_job_id } => {
-                // C4（2026-10-24 cron 合闸）：串行回退路径同语义——静默丢弃，
+                // （cron 合闸）：串行回退路径同语义——静默丢弃，
                 // 空串让调用方 finish_message 早退（零出站零落盘）。
                 debug!(
                     cron_job_id = %cron_job_id,
@@ -445,7 +445,7 @@ impl AgentLoop {
                 node_id,
                 session_key,
             } => {
-                // K4: 用户直发远程编码任务派发——串行路径内联执行（ACK 等
+                // 用户直发远程编码任务派发——串行路径内联执行（ACK 等
                 // 待可阻塞泵，与 Maintenance 的 LLM 摘要同理由）。收据/快照/
                 // 错误回复都在 process_user_dispatch 内部完成；返回空串让
                 // 调用方的 finish_message 早退。
@@ -458,10 +458,10 @@ impl AgentLoop {
         }
     }
 
-    /// Gate-head receipt log shared by every gated path (V5: extracted
+    /// Gate-head receipt log shared by every gated path (extracted
     /// verbatim from the head of the pre-split `process_inbound_message`).
     ///
-    /// BUG-20261028-121：本函数只剩「观测日志」一个职责——检查点 begin
+    /// 本函数只剩「观测日志」一个职责——检查点 begin
     /// 已拆出（[`Self::begin_turn_checkpoint`]，只在 Admitted 构造点调用）。
     /// 旧实现在这里无条件 `begin_for_session`，导致 slash 回执/维护命令/
     /// busy 弹回/steer 插话这些「非回合消息」也换掉当前会话的 cur 指针
@@ -480,12 +480,12 @@ impl AgentLoop {
     /// so writer-tool changes during this message can be rewound). No-op when
     /// no store is attached. Returns the minted checkpoint turn number.
     ///
-    /// BUG-20261028-121：调用点唯一——`gate_inbound` 的 `Admitted` 构造处
+    /// 调用点唯一——`gate_inbound` 的 `Admitted` 构造处
     /// （session_key 已裁决、busy/slash/maintenance/system/continuation/
     /// steer 全部短路之后）。排队消息在 drain 时重新过闸，会以队首身份
     /// 走到本函数，归属不受影响。
     ///
-    /// R31：checkpoint 条目带会话归属（`begin_for_session`）——会话级回退
+    /// checkpoint 条目带会话归属（`begin_for_session`）——会话级回退
     /// 据此把截断/冲突预检收窄到本会话。
     fn begin_turn_checkpoint(
         &self,
@@ -500,7 +500,7 @@ impl AgentLoop {
         Some(cp_turn)
     }
 
-    /// Resolve (agent_id, session_key) for a message (V5: extracted verbatim
+    /// Resolve (agent_id, session_key) for a message (extracted verbatim
     /// from the routing block of the pre-split `process_inbound_message`).
     pub(crate) fn route_message(
         &self,
@@ -535,7 +535,7 @@ impl AgentLoop {
                 parent_peer_id,
                 guild_id: msg.metadata.get("guild_id").cloned(),
                 team_id: msg.metadata.get("team_id").cloned(),
-                // BUG-20261025-50 接线：identity_links 来自 set_identity_links
+                // 接线：identity_links 来自 set_identity_links
                 // （config session.identity_links），不再恒传空表。
                 identity_links: self.identity_links.clone(),
             };
@@ -580,15 +580,15 @@ impl AgentLoop {
         (agent_id, session_key)
     }
 
-    /// Synchronous inbound gate (V5 / B5 真机揭的接线 bug，2026-08-23):
+    /// Synchronous inbound gate (/ 真机揭的接线 bug，):
     /// 生产 pump（`run_bus_*`）原是纯串行消费者——`process_inbound_message`
     /// 把整个回合 await 到底才 recv 下一条消息，busy 闸门对用户消息永远
-    /// 不可达（U7 inbox 因此在真机上从未生效，只有单测手动占住 session
+    /// 不可达（inbox 因此在真机上从未生效，只有单测手动占住 session
     /// 验证过）。Queue/Steer 模式下 pump 现在同步跑这个闸门（同 session
     /// 保序：忙时的第二条消息必见 busy → 入队/回执），回合在独立 task
     /// 里并发跑；Reject 模式维持原串行路径（行为零变化）。
     ///
-    /// D-2（2026-09-23 多会话并行清账）：忙时回绝的诚实留痕。被弹回
+    /// D-2（多会话并行清账）：忙时回绝的诚实留痕。被弹回
     /// （Reject）或因 inbox 满被拒（Queue/Steer）的消息此前零落盘——前端
     /// 切会话即「消失」，违反诚实失败契约。user 行 + 回绝回实行**成对**
     /// 落盘（无悬空 user 行，jsonl 轮次完整；重建上下文时模型能看到「这
@@ -601,7 +601,7 @@ impl AgentLoop {
         session_key: &str,
         bounce: &str,
     ) {
-        // BUG-20261031-231：会话 jsonl 重写窗口（rewind/redo 机体以进闸
+        // 会话 jsonl 重写窗口（rewind/redo 机体以进闸
         // 时刻的快照整文件重写）内跳过落盘——此刻追加的留痕行会被截断
         // 静默吞掉（不在 undo 条目里，redo 无法恢复）。刻意取舍：瞬态
         // 回执照发（调用方不变），留痕的持久化让位于重写一致性；warn 保
@@ -656,7 +656,7 @@ impl AgentLoop {
         }
     }
 
-    /// L22（2026-11-03 snooze 排队）：排队回执落盘（system 行，单行**不**
+    /// （snooze 排队）：排队回执落盘（system 行，单行**不**
     /// 成对——被排队的消息没有被拒绝，user 行由重放处理时的
     /// process_admitted 早落盘物化，此刻成对写会在恢复后复制 user 行）。
     /// 重写窗口内跳过（同 persist_busy_refusal 纪律——写了会被截断吞掉，
@@ -675,7 +675,7 @@ impl AgentLoop {
     /// 本体）留给 tail。slash 命令在这里同步执行并短路（原路径在 busy
     /// 检查前同步返回；且命令可能有副作用，tail 不得重跑）。
     pub(crate) fn gate_inbound(&self, msg: &nemesis_types::channel::InboundMessage) -> GateOutcome {
-        // 观测日志对全部消息保留（BUG-20261028-121：检查点 begin 已拆到
+        // 观测日志对全部消息保留（检查点 begin 已拆到
         // Admitted 构造点——非回合消息不再换 cur 指针）。
         self.log_gate_receipt(msg);
 
@@ -694,7 +694,7 @@ impl AgentLoop {
                 );
                 return GateOutcome::Continuation(task_id.to_string());
             }
-            // G4 (devtool-upgrade 阶段 3)：后台 subagent 完成回灌 —— 与集群
+            // (devtool-upgrade)：后台 subagent 完成回灌 —— 与集群
             // 续行同构：同走 dispatch_continuation → handle_cluster_continuation
             // （快照加载 + 续行 + 持久化 + 自清，全复用零新路径）。
             if msg
@@ -719,7 +719,7 @@ impl AgentLoop {
             return GateOutcome::Ungated;
         }
 
-        // E6 (2026-09-05): /compact /clear — 会话维护命令。gate 同步短路点
+        // /compact /clear — 会话维护命令。gate 同步短路点
         // 拿不到 instance（摘要 LLM 是 async），所以 mint 一个 Maintenance
         // outcome 交给 tail；会话在此获取（维护期间并发用户消息走 busy
         // 闸），尾巴负责释放。先于普通 slash 检查（维护命令有副作用，不是
@@ -740,8 +740,8 @@ impl AgentLoop {
             };
         }
 
-        // K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发——
-        // `/build <task> repo:<node>`。先于 F1 精确匹配（带参形态与裸
+        // (devtool-upgrade): 用户直发远程编码任务派发——
+        // `/build <task> repo:<node>`。先于 精确匹配（带参形态与裸
         // `/build` 天然互斥）；会话在此获取（Maintenance 同款，防并发回
         // 合踩会话）。session_key 用 route_message 现取。
         if let Some((task_text, node_id)) = parse_user_dispatch(&msg.content) {
@@ -759,7 +759,7 @@ impl AgentLoop {
             };
         }
 
-        // K4 (b) (devtool-upgrade 阶段 7): IM 审批卡回执短路——
+        // (b) (devtool-upgrade): IM 审批卡回执短路——
         // `/approve <id>` / `/deny <id>`。真实裁决由 gateway 的审批回执
         // watcher（bus 订阅方）完成；loop 侧只做静态确认，**吞掉**这条
         // 消息不让 agent 对「同意 xxx」式回执起一轮无意义对话（裁决结果
@@ -772,7 +772,7 @@ impl AgentLoop {
             };
         }
 
-        // F1 (devtool-upgrade 阶段 4): /plan /build — 模式切换命令。与普通
+        // (devtool-upgrade): /plan /build — 模式切换命令。与普通
         // slash 同为 gate 同步短路（改的是 loop 级 RwLock，无 async），但要
         // 先于 handle_command_with_context（那是静态回复表，不带 chat_id，
         // 而模式切换要发布带路由信息的 ModeChanged 事件）。session_key 用
@@ -785,7 +785,7 @@ impl AgentLoop {
             };
             let (agent_id, session_key) = self.route_message(msg);
             self.set_mode_with_event(want, &session_key, &msg.chat_id);
-            // B4（2026-10-31 项目 home 收编）：回执写明实际放行目录绝对路径
+            // （项目 home 收编）：回执写明实际放行目录绝对路径
             // （项目会话 = home/plans，主会话 = workspace/plans）——切 plan
             // 即知计划产物落哪，不用等一次拒绝回灌。
             let response = match want {
@@ -806,9 +806,9 @@ impl AgentLoop {
             return GateOutcome::Immediate { agent_id, response };
         }
 
-        // 件4（2026-09-24 三合一收口 §6）：`/discipline on|off [理由]` —
+        // 件4：`/discipline on|off [理由]` —
         // 纪律参与切换。与 /plan /build 同为 gate 同步短路（改 loop 级共享
-        // 态，无 async）；会话键 route_message 现取（D3：交互会话 = 会话键
+        // 态，无 async）；会话键 route_message 现取（交互会话 = 会话键
         // 态）。off 带理由 → waive 入审计（`.discipline/waive-audit.jsonl`）。
         // 子系统未启用（总开关 false）→ 诚实提示，不改状态。
         let trimmed = msg.content.trim();
@@ -867,7 +867,7 @@ impl AgentLoop {
 
         let (agent_id, session_key) = self.route_message(msg);
 
-        // L22（2026-11-03 snooze 排队，拍板「暂停期入站消息=排队（恢复后
+        // （snooze 排队，「暂停期入站消息=排队（恢复后
         // 投递）」）：暂停中的会话，turn 候选消息落 `.pending` sidecar，到
         // 期唤醒/手动恢复后由 replay hook 经 reinject 通道重放投递。管理
         // 动词（slash/maintenance/approval 回执/system/continuation）都已
@@ -926,10 +926,10 @@ impl AgentLoop {
             }
         }
 
-        // Session busy check — I1 (U7) mode-aware:
+        // Session busy check — mode-aware:
         //   Reject: session-level busy disposition — immediate BUSY_MESSAGE
         //   bounce, WITH honest trace (user row + busy bounce row appended
-        //   to chat_log; D-2 2026-09-23 — bounced messages used to vanish
+        //   to chat_log; D-2 — bounced messages used to vanish
         //   without any trace). The pump no longer serializes on this mode.
         //   Queue/Steer: park the message in the session inbox instead of
         //   bouncing. The running turn claims it (steer: next LLM call; queue:
@@ -942,7 +942,7 @@ impl AgentLoop {
                         "[AgentLoop] Session busy, returning busy message: session_key={}, mode={:?}",
                         session_key, self.concurrent_mode
                     );
-                    // D-2（2026-09-23 多会话并行清账）：诚实留痕（见
+                    // D-2（多会话并行清账）：诚实留痕（见
                     // persist_busy_refusal）——被弹回的消息此前零落盘。
                     self.persist_busy_refusal(msg, &session_key, BUSY_MESSAGE);
                     return GateOutcome::Immediate {
@@ -951,7 +951,7 @@ impl AgentLoop {
                     };
                 }
                 ConcurrentMode::Queue | ConcurrentMode::Steer => {
-                    // C4（2026-10-24 cron 合闸，docs/BUG/2026-10-24_cron触发
+                    // （cron 合闸，docs/BUG/-24_cron触发
                     // 无合闸队列积压.md）：同 job 已有排队中的 tick → 丢弃本
                     // tick。触发间隔 < 轮时长时无合闸 FIFO 无限积压（实测：
                     // 30s 采集任务积压 6 轮、删除后幽灵排空 2 分钟、累计烧
@@ -982,8 +982,8 @@ impl AgentLoop {
                             voice_playback: msg.voice_playback,
                         },
                         timestamp: chrono::Local::now().to_rfc3339(),
-                        // A5（2026-10-21 引入）：优先级随消息
-                        // metadata 解析（单点 [`crate::inbox::priority_of`]）。
+                        // （引入）：优先级随消息
+                        // metadata 解析（单点 [`crate::inbox:priority_of`]）。
                         priority: crate::inbox::priority_of(msg),
                     };
                     // Second-pass review fix: the `!`-prefix steer channel
@@ -996,7 +996,7 @@ impl AgentLoop {
                         self.concurrent_mode == ConcurrentMode::Steer,
                     ) {
                         crate::inbox::EnqueueOutcome::QueuedForNextTurn => {
-                            // R294（BUG-20261031-236）：入队后复查 busy——
+                            // 入队后复查 busy——
                             // 回合可能恰在本闸 busy 判定与入队之间完成
                             // （竞态孤儿），就地 kick 排空，防无限期滞留。
                             self.kick_orphaned_queue_if_idle(&session_key);
@@ -1039,7 +1039,7 @@ impl AgentLoop {
                             };
                         }
                         crate::inbox::EnqueueOutcome::RejectedSoft => {
-                            // A5（2026-10-21 引入）：软水位拒
+                            // （引入）：软水位拒
                             // 绝——未到硬上限，普通优先级暂缓；文案与「已满」
                             // 区分（用户可感知的信号不同：稍后重试大概率能进，
                             // 高优先级可用 metadata priority=high 走插队）。
@@ -1059,11 +1059,11 @@ impl AgentLoop {
             }
         }
 
-        // Create a cancellation token for this session (V5: minted in the
+        // Create a cancellation token for this session (minted in the
         // gate so the spawned turn tail starts with everything the
         // pre-split monolith had at this point).
         let cancel_token = self.create_cancel_token(&session_key);
-        // BUG-20261028-121：检查点 begin 只在此处（真回合准入）发生——
+        // 检查点 begin 只在此处（真回合准入）发生——
         // session_key 已裁决，slash 回执/maintenance/busy 弹回/steer 插话/
         // system/continuation 都已在前面短路，不会换掉当前会话的 cur
         // 指针（运行中回合的变更快照归属稳定）。
@@ -1076,7 +1076,7 @@ impl AgentLoop {
         })
     }
 
-    /// R294（BUG-20261031-236）：busy 判定与入队之间的竞态孤儿封口。闸的
+    /// busy 判定与入队之间的竞态孤儿封口。闸的
     /// busy 分支里 try_acquire 失败与 enqueue_for_mode 之间是纯同步区间，
     /// 但多线程 runtime 上运行中回合的尾巴（release + drain）在另一个
     /// worker 并行——若它完整落在该区间内，消息入队时已无在途回合：drain
@@ -1119,7 +1119,7 @@ impl AgentLoop {
     }
 
     /// Ungated tail: system (non-continuation) + history-request handling
-    /// (V5: extracted verbatim from the pre-split monolith's early returns).
+    /// (extracted verbatim from the pre-split monolith's early returns).
     pub(crate) async fn process_ungated(
         &self,
         msg: &nemesis_types::channel::InboundMessage,
@@ -1141,7 +1141,7 @@ impl AgentLoop {
         (String::new(), String::new(), None)
     }
 
-    /// Admitted turn tail (V5): preprocess → run turn → cleanup/release →
+    /// Admitted turn tail: preprocess → run turn → cleanup/release →
     /// inbox drain. The session is ALREADY acquired and the cancel token
     /// minted by `gate_inbound`; this fn owns release + reinject (the drain
     /// block runs unconditionally after the turn so an admitted session can
@@ -1158,7 +1158,7 @@ impl AgentLoop {
             cp_turn,
         } = admission;
 
-        // R294（BUG-20261031-235）：busy 释放 RAII 化。回合体任何一点
+        // busy 释放 RAII 化。回合体任何一点
         // panic（provider 响应解析/预处理/落盘/封印——工具执行已被
         // tool_dispatch 的 catch_unwind 单独包住，其余部分没有）展开时
         // 跳过尾巴 release，会话从此永久 busy：Reject 全拒、Queue/Steer
@@ -1166,14 +1166,14 @@ impl AgentLoop {
         // 点显式 drop（= 旧 release_session），panic 路径由展开 Drop 兜底。
         let _busy_guard = SessionBusyGuard::new(self, &session_key);
 
-        // F2（2026-09-27）：空闲态 steer 信号剥除——`!`/`！` 前缀是路由信
+        // 空闲态 steer 信号剥除——`!`/`！` 前缀是路由信
         // 号不是内容，busy 态的两条消费路径（回合内 claim / 迟到 transfer）
         // 都已剥标记，唯独空闲直进 turn 的第三条时序把 `!` 字面量随内容送
         // 进模型：同一条消息因到达时机不同模型看到两个形态。这里 mode-aware
         // 补齐（仅 Steer 模式——Queue/Reject 下 `!` 从来不是信号，busy 时
         // 同样不剥，两边一致保持字面量）；剥除走单一真相源
         // strip_steer_marker（剥一位：`!!x` → `!x` 即字面 `!` 转义，与
-        // shell 惯例同构）。剥除在 B1 早落盘之前：jsonl user 行与模型所见
+        // shell 惯例同构）。剥除在 早落盘之前：jsonl user 行与模型所见
         // 同为无标记形态，不产生「历史带 `!`、上下文没有」的漂移。
         let raw = msg;
         let msg: std::borrow::Cow<'_, nemesis_types::channel::InboundMessage>;
@@ -1189,7 +1189,7 @@ impl AgentLoop {
 
         let voice_playback = msg.voice_playback.unwrap_or(false);
 
-        // B1（2026-09-22 聊天切会话竞态）：user 行落盘从 run_agent_loop_internal
+        // （聊天切会话竞态）：user 行落盘从 run_agent_loop_internal
         // 开头提前到本点——预处理（expand_at_files / fetch_url_media /
         // attach_turn_images）之前，「消息被系统接纳」即落盘。turn 进行中
         // （分钟级）用户切走路由再切回，前端 loadHistory 立即能拉到本轮
@@ -1202,10 +1202,10 @@ impl AgentLoop {
         // user 行时点提前。cron 元数据在 gate 前已随 metadata 到位，照读。
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
-        // B1×self-heal 交互修复（agent-bench context_integrity 实证，2026-09-25）：
+        // ×self-heal 交互修复（agent-bench context_integrity 实证）：
         // 先物化 store 条目、再落 chat_log user 行。新会话若 store 内存+盘双缺失，
         // get_or_create_instance 会走 rebuild_from_chat_log 自愈重建——而 chat_log
-        // 此刻已含本轮 user 行（下面的 B1 早落盘），重建把它回放进模型上下文，
+        // 此刻已含本轮 user 行（下面的 早落盘），重建把它回放进模型上下文，
         // run_with_trace 随后再 add 一次 → 首轮请求里用户消息出现两次，且随
         // turn 末 store 全量保存固化为整会话 off-by-one。get_or_create 内存命中
         // 即短路：先行物化 = 重建分支不可达；空条目只进内存不落盘（无垃圾文件）。
@@ -1231,8 +1231,8 @@ impl AgentLoop {
                 },
             );
             if !log_existed {
-                // P6-R4（D4 预留）：会话首建即绑 principal（`{channel}/
-                // {sender_id}`，映射单一真相源）。只写不读——多租户闸不做，
+                // （预留）：会话首建即绑 principal（`{channel}/
+                // {sender_id}`，映射统一定义）。只写不读——多租户闸不做，
                 // 消费方出现前不得据它分叉行为；无主体来源（cron/heartbeat/
                 // system）映射为空串，不落盘。
                 let principal =
@@ -1242,10 +1242,10 @@ impl AgentLoop {
             }
         }
 
-        // I2（@文件引用）：内联被引用文件内容。相对路径以 workspace 根为基准
+        // （@文件引用）：内联被引用文件内容。相对路径以 workspace 根为基准
         // 解析（与 read_file 同源，不再是 cwd 漂移基准）；安全闸与图片附加
         // 同一套管线（挂真实 SecurityPlugin 时 Layer 7 block_in_place，
-        // multi_thread runtime 为生产前提——同 T5 注释）。
+        // multi_thread runtime 为生产前提——同 注释）。
         let at_base = self
             .workspace_root
             .read()
@@ -1260,12 +1260,12 @@ impl AgentLoop {
             #[cfg(not(feature = "security"))]
             None,
         );
-        // T5（多模态，goal 2026-09-03）：统一图片附加——文本点名路径（T4 检测）
-        // + media 引用（T7/T8/T9 落盘产物）统一过安全闸（8 层管线全跑）产出
+        // （多模态，goal）：统一图片附加——文本点名路径（检测）
+        // + media 引用（// 落盘产物）统一过安全闸（8 层管线全跑）产出
         // **路径引用**；失败/拒绝诚实注明合并进轮次文本。注意：挂了真实
         // SecurityPlugin 时管线 Layer 7 会 block_in_place，须 multi_thread
         // runtime（gateway 生产 runtime 即是）。
-        // T9：URL media 先经 fetch_url_media 预取（SSRF 闸 + http-pool 下载 →
+        // URL media 先经 fetch_url_media 预取（SSRF 闸 + http-pool 下载 →
         // uploads 落盘改写为本地路径引用），再统一走同步附加链；失败注记随
         // 附加注记一并合并进轮次文本。
         let ws_for_uploads = self.workspace_root.read().clone();
@@ -1284,7 +1284,7 @@ impl AgentLoop {
             None,
         )
         .await;
-        // J6：超限图片降采样开关（默认开）——产物落同一 uploads 目录（TTL 复用）。
+        // 超限图片降采样开关（默认开）——产物落同一 uploads 目录（TTL 复用）。
         let downscale_dir = self.current_image_downscale().then(|| uploads_dir.clone());
         let attach = crate::image_attach::attach_turn_images(
             &processed_content,
@@ -1304,7 +1304,7 @@ impl AgentLoop {
         }
         .merge_into_text(processed_content);
         let image_refs = attach.ref_strings();
-        // T3 (U12): per-fire tool-round budget set by the gateway cron fire
+        // per-fire tool-round budget set by the gateway cron fire
         // handler from the job's max_rounds payload. Absent/unparsable → None
         // → the turn runs under the global max_turns.
         let cron_max_rounds = msg
@@ -1312,7 +1312,7 @@ impl AgentLoop {
             .get("cron_max_rounds")
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|v| *v > 0);
-        // I5：本轮客户端上报的打开文件进 per-turn 状态（渲染在 build_messages
+        // 本轮客户端上报的打开文件进 per-turn 状态（渲染在 build_messages
         // 的 merged digest；出轮即清——与下方 run 后的 clear 词法配对，cron/
         // heartbeat/continuation 等非 process_admitted 路径天然读不到）。
         *self.pending_open_files.write() =
@@ -1339,10 +1339,10 @@ impl AgentLoop {
         // Clean up cancellation token and release session.
         self.remove_cancel_token(&session_key);
         // release 经守卫 Drop（与旧显式 release_session 等价；panic 展开
-        // 路径由守卫兜底，见上方 BUG-20261031-235 注）。必须在 drain 之前
+        // 路径由守卫兜底，见上方 注）。必须在 drain 之前
         // ——重注入的队首要能通过 gate 的 busy 判定拿到会话。
         drop(_busy_guard);
-        // P20（2026-09-25 能力扩展）：turn 收尾封印——本 turn 声明过的每个
+        // turn 收尾封印——本 turn 声明过的每个
         // 变更路径读现盘内容哈希，作为「变更后指纹」记进该 turn 的
         // checkpoint（rewind 冲突预检的比对基线）。无 store / 无 turn
         // （cp_turn None）= no-op；幂等。放 release 之后：封印只读盘 + 写
@@ -1353,14 +1353,14 @@ impl AgentLoop {
         {
             cp.seal_turn(turn);
         }
-        // I5：轮结束清打开文件状态（与上方 set 词法配对，防跨轮陈旧泄漏）。
+        // 轮结束清打开文件状态（与上方 set 词法配对，防跨轮陈旧泄漏）。
         self.pending_open_files.write().clear();
         // 对话生成：轮结束清 workflow_edit 目标（同款配对）。
         *self.pending_workflow_edit.write() = None;
 
-        // I1 (U7) post-turn inbox handling：单一真相源在
+        // post-turn inbox handling：单一真相源在
         // `drain_next_turn_queue`（steer 转回 + 队首重注入 + 空队列清理）。
-        // 2026-09-28 真模型验证发现：此块此前只存在于本尾部，/compact
+        // 真模型验证发现：此块此前只存在于本尾部，/compact
         // /clear 与 /build 派发尾巴只释放会话不排空——维护期间排队的消息
         // 永久滞留 next_turn。提取为共享方法供三处尾巴对称调用。
         self.drain_next_turn_queue(&session_key).await;
@@ -1371,15 +1371,15 @@ impl AgentLoop {
         }
     }
 
-    /// 轮尾收件箱排空（I1/U7）：`process_admitted` / Maintenance（/compact
-    /// /clear）/ UserDispatch（/build）三类尾巴共用的单一真相源。
+    /// 轮尾收件箱排空：`process_admitted` / Maintenance（/compact
+    /// /clear）/ UserDispatch（/build）三类尾巴共用的统一定义。
     ///   - 未消费的 next-step（steer）消息一律转回 next-turn 队列——取消的
     ///     轮与「逃逸舱没赶上」的正常轮同语义（second-pass review fix），
     ///     转出即成为下一轮输入，不丢失、不陈旧。
     ///   - 已完成轮若有排队 next-turn 消息：取队首经正常入站路径重注入
     ///     （fresh busy acquire），会话此时已释放，天然串行于本轮之后。
     ///
-    /// 2026-09-28 真模型验证发现：此前此块只存在于 process_admitted 尾部，
+    /// 真模型验证发现：此前此块只存在于 process_admitted 尾部，
     /// 分钟级维护（LLM 摘要）与远程派发（RPC ACK 等待）期间排队的消息在
     /// 维护/派发尾巴 release_session 后永久滞留 next_turn——直到下一条
     /// 新消息到来才被捎带排空（相对新消息顺序失真），无新消息则永不处理
@@ -1396,7 +1396,7 @@ impl AgentLoop {
                     session_key,
                     head.msg.content.len()
                 );
-                // ROUND-5 REVIEW FIX: re-inject the queued head into the
+                // REVIEW FIX: re-inject the queued head into the
                 // agent's own inbound mpsc (the same one `run_bus_*`
                 // consumes) instead of recursing inline. The normal consumer
                 // then applies the SAME post-processing as any other message:
@@ -1406,7 +1406,7 @@ impl AgentLoop {
                 // reply raw — an rpc-channel queued reply lost its prefix
                 // (RPCChannel::send drops unprefixed replies) and a FAILED
                 // queued turn produced no user-visible output at all.
-                // H3 (full review): the queued message wraps the ORIGINAL
+                // (full review): the queued message wraps the ORIGINAL
                 // InboundMessage whole (round-5), so replaying is a clone
                 // with only the session_key normalized to this queue's key.
                 //
@@ -1514,7 +1514,7 @@ impl AgentLoop {
         // message, and release_session kept busy while queue_length>0 → the
         // session could deadlock (no turn ever acquires to drain the
         // counter). Busy-queueing lives in `crate::inbox` (FIFO per session),
-        // driven by `gate_inbound`'s busy branch — reachable since V5's
+        // driven by `gate_inbound`'s busy branch — reachable since 's
         // gate-in-pump restructure (the gate runs before the turn task is
         // spawned, so a busy session is detected while its turn is still
         // running). (queue_length stays 0, so release_session naturally sets
@@ -1551,7 +1551,7 @@ impl AgentLoop {
         map.get(session_key).map_or(0, |s| s.queue_length)
     }
 
-    /// 会话历史闸（BUG-HUNT R6，2026-10-23）：WSAPI 破坏性会话操作
+    /// 会话历史闸：WSAPI 破坏性会话操作
     /// （消息级回退/撤销/重做、chat.compact/clear、sessions.clear/delete）
     /// 的真互斥入口。旧的「`is_session_busy` peek 后直接动手」存在
     /// check-then-act 窗口——检查与落盘之间新消息可被正常 admit（gate 只
@@ -1575,7 +1575,7 @@ impl AgentLoop {
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, String>>,
     {
-        // BUG-20261028-96：集群续行在途检查。续行回调走 dispatch_continuation
+        // 集群续行在途检查。续行回调走 dispatch_continuation
         // （inline/spawned）不经 session_busy——session_busy 只覆盖轮次生命
         // 周期；而续行最终落库会 append chat_log + 保存会话，与截断/回退
         // 竞争（redo 行数守卫被续行新行击穿；append 撞 truncate rename =
@@ -1601,7 +1601,7 @@ impl AgentLoop {
         out
     }
 
-    /// U7 dashboard visibility (G1): one-call snapshot of a session's inbox
+    /// dashboard visibility: one-call snapshot of a session's inbox
     /// state for the `agent.inbox_status` WSAPI command. Read-only — claims
     /// and transfers stay exclusively in the turn lifecycle paths.
     pub fn inbox_status(&self, session_key: &str) -> crate::inbox::InboxStatus {
@@ -1619,7 +1619,7 @@ impl AgentLoop {
         }
     }
 
-    /// P4（能力扩展 WS8）测试支撑：共享 inbox 句柄——跨 crate（nemesis-web）
+    /// 测试支撑：共享 inbox 句柄——跨 crate（nemesis-web）
     /// 测试播种队列条目用（crate 内测试直引私有字段即可，无需此访问器）。
     /// doc-hidden：非公开 API 承诺，仅供测试生态使用，运行时路径不得依赖。
     #[doc(hidden)]
@@ -1687,12 +1687,12 @@ impl AgentLoop {
 }
 
 // ---------------------------------------------------------------------------
-// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// 自由函数归位（c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
 /// Pre-set（预置）会话键判定——非空且带已知会话键族前缀时 route_message /
-/// pump 原样采纳，跳过重路由。单一真相源（BUG-20261028-114：此前散布的
-/// `starts_with("agent:")` 检查漏接 G1 agent 实体键族 `agents:{id}:session:
+/// pump 原样采纳，跳过重路由。单一真相源（此前散布的
+/// `starts_with("agent:")` 检查漏接 agent 实体键族 `agents:{id}:session:
 /// {sid}`——`agents:` 不匹配 `agent:`（第 6 字节 `s` vs `:`），agents.send
 /// 的会话身份被静默替换成路由键（缺省 `agent:main:main`），回复错落主 DM
 /// 会话、agent 会话视图只有 user 行没有回复）。
@@ -1700,10 +1700,10 @@ impl AgentLoop {
 /// 键族清单：
 /// - `agent:` —— 路由族（`agent:{agent}:{rest}`；web 主会话/项目键
 ///   `agent:main:session:{sid}`、cron/ProcessDirect 预置）
-/// - `agents:` —— G1 agent 实体族（`agents:{agent_id}:session:{sid}`，web
+/// - `agents:` —— agent 实体族（`agents:{agent_id}:session:{sid}`，web
 ///   `agent_session_key` 构造、`agent_owner_of` 解析）
 /// - `board_dispatch:` —— 本地派发族（`board_dispatch:{task_id}`，本地
-///   执行器 submit 发布；按任务隔离会话。BUG 2026-11-05：缺此族时
+///   执行器 submit 发布；按任务隔离会话。BUG：缺此族时
 ///   resolver 把键覆盖成路由缺省 `agent:main:main`，派发轮污染主会话）
 pub(crate) fn is_preset_session_key(session_key: &str) -> bool {
     !session_key.is_empty()

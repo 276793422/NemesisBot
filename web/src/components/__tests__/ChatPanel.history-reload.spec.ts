@@ -71,7 +71,9 @@ function lastRequestId(): string {
 function prepareSession() {
   const sessionStore = useSessionStore()
   sessionStore.sessions = [
-    { id: 's1', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'A', model: '' },
+    // s1 非零计数：2026-11-07 起切换已知零消息会话跳过重拉——「切回 s1 重拉
+    // 落地」的断言需要目标行非零（挂载首拉走 onMounted 无条件路径，不受影响）。
+    { id: 's1', channel: 'web', startTime: '', lastTime: '', messageCount: 3, firstMessage: 'A', model: '' },
   ] as any
   sessionStore.currentId = 's1'
 }
@@ -198,7 +200,9 @@ describe('历史加载失败：可见失败态与有限自动重试（BUG ③）
     prepareSession()
     const sessionStore = useSessionStore()
     sessionStore.sessions.push(
-      { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'B', model: '' } as any,
+      // s2 非零计数：2026-11-07 起切换已知零消息会话跳过重拉——本测试测
+      // 「s2 历史请求蒸发 → 失败态」，目标行必须非零才有请求发出。
+      { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 3, firstMessage: 'B', model: '' } as any,
     )
     vi.useFakeTimers()
     const w = mount(ChatPanel)
@@ -235,7 +239,9 @@ describe('历史加载失败：可见失败态与有限自动重试（BUG ③）
     prepareSession()
     const sessionStore = useSessionStore()
     sessionStore.sessions.push(
-      { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 0, firstMessage: 'B', model: '' } as any,
+      // s2 非零计数：2026-11-07 起切换已知零消息会话跳过重拉——本测试测
+      // 「切 s2 后 #2 在飞 + 迟到 timer 不误杀」，目标行必须非零才有 #2。
+      { id: 's2', channel: 'web', startTime: '', lastTime: '', messageCount: 3, firstMessage: 'B', model: '' } as any,
     )
     vi.useFakeTimers()
     const w = mount(ChatPanel)

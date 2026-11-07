@@ -1,11 +1,11 @@
-//! voice.rs 非豁免行覆盖（quality-hardening goal 冲刺 S10a，2026-08-25）。
+//! voice.rs 非豁免行覆盖（quality-hardening goal 冲刺，2026-08-25）。
 //!
-//! 与 wweb2_tests 同款子模块声明以获得私有项访问。聚焦 VE1 豁免范围之外的：
+//! 与 wweb2_tests 同款子模块声明以获得私有项访问。聚焦 豁免范围之外的：
 //! WSAPI dispatch 提取臂、start/stop 状态机（通过注入会话/令牌到全局状态）、
 //! 配置读写（config.toml / config.voice.json / config.chat.json）、
 //! 纯逻辑 helper（handle_tts_failure / punctuate_if_loaded）、push 广播 spawn 路径。
 //!
-//! 不触碰：真音频 DLL、模型下载、真麦克风（VE1 范围见台账 §9.4）。
+//! 不触碰：真音频 DLL、模型下载、真麦克风（范围见台账）。
 //!
 //! 竞态纪律（env-test-race-lock-pattern）：voice.rs 的全局 OnceLock 状态是
 //! 进程级共享的，所有会注入/清空全局状态的本模块测试 + wweb2_tests 的
@@ -77,6 +77,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -118,9 +119,7 @@ async fn clear_session_states() {
     *setup_cancel().lock().unwrap() = None;
 }
 
-// -----------------------------------------------------------------------
 // WSAPI dispatch：提取错误 / 未知命令 / workspace 缺失
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn dispatch_missing_data_and_missing_fields() {
@@ -203,9 +202,7 @@ async fn dispatch_unknown_command_and_missing_workspace() {
     );
 }
 
-// -----------------------------------------------------------------------
 // stop_setup：有 / 无进行中的 setup 令牌
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn stop_setup_with_and_without_token() {
@@ -233,9 +230,7 @@ async fn stop_setup_with_and_without_token() {
     clear_session_states().await;
 }
 
-// -----------------------------------------------------------------------
 // config.toml / config.voice.json / config.chat.json 读写
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn config_get_missing_then_present() {
@@ -385,9 +380,7 @@ async fn chat_config_get_creates_default_and_set_roundtrips() {
     assert_eq!(got["max_len"], 200);
 }
 
-// -----------------------------------------------------------------------
 // 状态查询类命令
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn engine_status_all_idle_and_dialogue_flag_false() {
@@ -426,9 +419,9 @@ async fn speakers_lists_kokoro_table() {
 
 #[tokio::test]
 async fn devices_tolerant_of_host_audio_stack() {
-    // 【2026-09-02 CI nemesis-web 0xc0000005】本测试与 voice_extra_tests 的
+    // 【 CI nemesis-web 0xc0000005】本测试与 voice_extra_tests 的
     // devices_returns_object 同经 cmd_devices() 穿透调用
-    // nemesis_voice::audio::list_devices() → cpal host 设备枚举。本轮 CI 实证：
+    // nemesis_voice::audio:list_devices() → cpal host 设备枚举。本轮 CI 实证：
     // 同进程内**第一次**枚举调用正常返回（本测试过），**第二次**调用挂死 +
     // 进程 native ACCESS_VIOLATION（voice crate 二连崩同族雷，时序/状态依赖）。
     // CI=true 且未 opt-in 时 SKIP（与 nemesis-voice audio::tests 的
@@ -456,9 +449,7 @@ async fn devices_tolerant_of_host_audio_stack() {
     }
 }
 
-// -----------------------------------------------------------------------
 // STT start/stop 状态机（注入会话）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn stt_start_already_running_then_engine_load_fails_fast() {
@@ -507,9 +498,7 @@ async fn stt_stop_both_arms() {
     clear_session_states().await;
 }
 
-// -----------------------------------------------------------------------
 // engine_start / engine_stop 分派
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn engine_start_dispatch_all_four_arms() {
@@ -608,9 +597,7 @@ async fn engine_stop_all_four_arms() {
     );
 }
 
-// -----------------------------------------------------------------------
 // pipeline start/stop
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn pipeline_start_unsupported_model_and_engine_not_loaded() {
@@ -691,9 +678,7 @@ async fn pipeline_stop_all_three_arms() {
     clear_session_states().await;
 }
 
-// -----------------------------------------------------------------------
 // dictation（stt_to_input）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn stt_to_input_start_prechecks_and_stop_arms() {
@@ -744,9 +729,7 @@ async fn stt_to_input_start_prechecks_and_stop_arms() {
     clear_session_states().await;
 }
 
-// -----------------------------------------------------------------------
 // dialogue 模式
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn stt_dialogue_start_prechecks_and_timeout_extraction() {
@@ -854,9 +837,7 @@ async fn stt_dialogue_reset_both_arms() {
     clear_session_states().await;
 }
 
-// -----------------------------------------------------------------------
 // TTS playback stop
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn tts_playback_stop_both_arms() {
@@ -895,9 +876,7 @@ async fn tts_playback_stop_both_arms() {
     clear_session_states().await;
 }
 
-// -----------------------------------------------------------------------
 // speaker register / test
-// -----------------------------------------------------------------------
 
 fn make_registration(start_time: std::time::Instant, samples: Vec<f32>) -> SpeakerRegistration {
     SpeakerRegistration {
@@ -1093,9 +1072,7 @@ async fn speaker_remove_and_threshold_via_dispatch() {
     assert!(err.contains("between 0.0 and 1.0"), "err: {err}");
 }
 
-// -----------------------------------------------------------------------
 // voice_shutdown：注入会话后的取消臂
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn voice_shutdown_cancels_injected_sessions_and_clears_state() {
@@ -1129,9 +1106,7 @@ async fn voice_shutdown_cancels_injected_sessions_and_clears_state() {
     clear_session_states().await;
 }
 
-// -----------------------------------------------------------------------
 // 纯逻辑 helper
-// -----------------------------------------------------------------------
 
 #[test]
 fn handle_tts_failure_three_branches() {
@@ -1157,9 +1132,7 @@ fn punctuate_without_engine_returns_text_verbatim() {
     assert_eq!(punctuate_if_loaded(""), "");
 }
 
-// -----------------------------------------------------------------------
 // push 广播 spawn 路径（session 不存在 → warn 臂）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn push_helpers_broadcast_to_missing_session_take_warn_arm() {
@@ -1191,9 +1164,7 @@ fn noop_tts_input_listen_is_a_noop() {
     input.listen(Box::new(|_: &str| panic!("NoopTtsInput must never fire")));
 }
 
-// -----------------------------------------------------------------------
 // 辅助 trait：让 Option 处理更可读（仅测试用）
-// -----------------------------------------------------------------------
 
 trait UnwrapErrOr<T> {
     fn unwrap_err_or(self, msg: impl std::fmt::Display) -> T;
@@ -1208,14 +1179,12 @@ impl<T> UnwrapErrOr<String> for Result<T, String> {
     }
 }
 
-// -----------------------------------------------------------------------
-// S10a 补充批次 2：llvm-cov 复测后仍缺的臂
-// -----------------------------------------------------------------------
+// 补充：llvm-cov 复测后仍缺的臂
 
 #[tokio::test]
 async fn status_probes_model_subdirs_with_and_without_onnx() {
     // check_model_subdir_any / has_onnx_file 的 true 与 false 路径：
-    // stt 子目录带 .onnx → ready=true；tts 子目录只有 txt → ready=false；
+    // stt 子目录带.onnx → ready=true；tts 子目录只有 txt → ready=false；
     // 其余目录缺席 → exists-false 臂（已覆盖，此处保持断言完整）。
     let _guard = voice_state_lock().lock().unwrap_or_else(|e| e.into_inner());
     clear_session_states().await;

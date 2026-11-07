@@ -16,7 +16,7 @@ use async_trait::async_trait;
 #[cfg(windows)]
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-// 注意：本文件同时用了 tokio::io::AsyncWriteExt 与 std::io::Write——
+// 注意：本文件同时用了 tokio::io:AsyncWriteExt 与 std::io:Write——
 // ZipWriter 的 write_all 走完全限定调用（见 zip_bytes），不引入歧义 import。
 
 // ---------------------------------------------------------------------------
@@ -327,7 +327,7 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
     dir
 }
 
-#[cfg(windows)] // Windows-form test（夹具写 clamd.exe，Linux 探测名是 clamd，2026-09-02 约定）
+#[cfg(windows)] // Windows-form test（夹具写 clamd.exe，Linux 探测名是 clamd， 约定）
 #[test]
 fn detect_install_path_found_and_missing() {
     let engine = ClamAVEngine::new(ClamAVEngineConfig::default());
@@ -476,7 +476,7 @@ fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
 }
 
 #[cfg(windows)]
-// Windows-form test（zip 内容/探测目标都是 clamd.exe，Linux 探测名是 clamd，2026-09-02 约定）
+// Windows-form test（zip 内容/探测目标都是 clamd.exe，Linux 探测名是 clamd， 约定）
 #[tokio::test]
 async fn download_success_extracts_and_detects_install_path() {
     let body = zip_bytes(&[("clamav/clamd.exe", b"fake clamd exe")]);
@@ -567,7 +567,7 @@ async fn download_fails_when_temp_file_uncreatable() {
 #[tokio::test]
 async fn download_cancellation_aborts_mid_stream() {
     // 只回头不回体 → 客户端流挂起 → 取消令牌打断（cancel 臂）。
-    // 取消定在 100ms——早于测试态 read_timeout 的 400ms 窗（BUG-20261101-278
+    // 取消定在 100ms——早于测试态 read_timeout 的 400ms 窗（
     // 后客户端层也有 stall 检测：若拖到 400ms 才取消，超时错误臂会与取消臂
     // 竞速假红；提前取消让 cancel 臂确定性胜出，两者覆盖面互不挤压）。
     let port = spawn_http_server(vec![Resp::Stall]).await;

@@ -18,14 +18,14 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
-// F5（2026-09-22 审计修复）：SMTP/IMAP IO 超时。此前 connect/read/write 全部
+// （审计修复）：SMTP/IMAP IO 超时。此前 connect/read/write 全部
 // 无超时——黑洞服务器（不回 SYN 或收包不应答）会让调用永久挂起；而
 // dispatch_loop 是单循环串行 await，一条挂死 = 全通道出站永久停摆。
 // 超时后 io::Error(TimedOut) 沿既有 map_err 通道变成诚实错误返回。
 const CONNECT_TIMEOUT_SECS: u64 = 15;
 const IO_TIMEOUT_SECS: u64 = 30;
 
-/// 包一层超时：超时映射 `io::ErrorKind::TimedOut`，调用方既有 `.map_err`
+/// 包一层超时：超时映射 `io::ErrorKind:TimedOut`，调用方既有 `.map_err`
 /// 照常拿到带上下文的错误（错误面文案 = `{what} timed out after Ns`）。
 async fn io_timeout<T>(
     what: &str,
@@ -101,18 +101,18 @@ struct EmailMessageInfo {
 
 /// Email channel using IMAP polling and SMTP sending.
 pub struct EmailChannel {
-    /// Arc 共享进轮询任务（allow-list 检查在 spawn 侧执行，BUG-20261031-244）。
+    /// Arc 共享进轮询任务（allow-list 检查在 spawn 侧执行）。
     base: Arc<BaseChannel>,
     config: EmailConfig,
     running: Arc<parking_lot::RwLock<bool>>,
     seen_uids: Arc<parking_lot::RwLock<HashMap<String, bool>>>,
     /// Maps chat_id -> EmailMessageInfo for reply routing.
     ///
-    /// BUG-20261029-142：必须 `Arc<DashMap>`——裸 `DashMap::clone()` 是逐
+    /// 必须 `Arc<DashMap>`——裸 `DashMap::clone()` 是逐
     /// shard 深拷贝，start() 交给 IMAP 轮询任务的副本与 send() 读的原表
     /// 分叉，回复线索写入恒不可见（Re: 主题静默落默认值）。
     sender_map: Arc<dashmap::DashMap<String, EmailMessageInfo>>,
-    /// Message bus sender for publishing inbound emails（BUG-20261031-244）。
+    /// Message bus sender for publishing inbound emails。
     ///
     /// 与 external/qq/matrix 通道同构：收件必须发布到总线进 agent loop。
     /// 此前本通道构造器没有 bus 参数，轮询循环收到邮件只标已读即丢弃。
@@ -239,7 +239,7 @@ impl EmailChannel {
     /// Builds a full email message for SMTP.
     pub fn build_smtp_message(from: &str, to: &str, subject: &str, body: &str) -> String {
         let date = chrono::Utc::now().to_rfc2822();
-        // BUG-20261031-244 加固臂：RFC 5322 头部值是单行的——from/to/subject
+        // 加固臂：RFC 5322 头部值是单行的——from/to/subject
         // 一旦混入 CR/LF 即构成头部注入（当前数据流经 IMAP 行解析不可达，
         // 但本函数是 pub 编码单一入口，纵深防御在编码点收敛；body 区由
         // SMTP dot-stuffing 负责，不受此影响）。CR/LF 直接剥除。
@@ -570,14 +570,14 @@ impl EmailChannel {
         let config = self.config.clone();
         let seen_uids = self.seen_uids.clone();
         let sender_map = self.sender_map.clone();
-        // BUG-20261031-244：收件发布面需要 allow-list 与 bus，一并共享进任务。
+        // 收件发布面需要 allow-list 与 bus，一并共享进任务。
         let base = Arc::clone(&self.base);
         let bus_sender = self.bus_sender.clone();
 
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(config.poll_interval));
-            // BUG-20261101-264：默认 Burst 在挂起恢复后把错过的 tick 逐个补发
+            // 默认 Burst 在挂起恢复后把错过的 tick 逐个补发
             // ——IMAP 服务器被密集轮询。Delay 从当前时刻重排。
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut rx = rx;
@@ -619,8 +619,8 @@ impl EmailChannel {
                                                 }
                                             }
 
-                                            // FETCH body（BUG-20261031-244：失败必须
-                                            // 告警——此前 .ok() 吞错，正文丢失无任何
+                                            // FETCH body（失败必须
+                                            // 告警——此前.ok() 吞错，正文丢失无任何
                                             // 痕迹；取不到就不发布，避免造出空内容
                                             // 幻影会话。已入 seen_uids，下轮不会重处理）
                                             let body_cmd = format!("{} (BODY[TEXT])", seq);
@@ -666,7 +666,7 @@ impl EmailChannel {
                                                 ))
                                                 .await;
 
-                                            // BUG-20261031-244：收件必须发布到总线进
+                                            // 收件必须发布到总线进
                                             // agent loop——此前整条收件路径到「标已读 +
                                             // debug 日志」为止，正文取了即丢（_body 未
                                             // 消费），bus 从未接线（构造器无 bus 参数），
@@ -716,7 +716,7 @@ impl EmailChannel {
                             }
                             let _ = conn.send_command("LOGOUT").await;
                         } else {
-                            // BUG-20261031-244：连接/认证失败不得静默——此前
+                            // 连接/认证失败不得静默——此前
                             // `if let Ok` 吞掉全部失败，IMAP 凭据错/网络断时
                             // 通道表现为「永远没有新邮件」，零日志可查。
                             warn!(
@@ -741,7 +741,7 @@ pub struct ImapConnection {
 impl ImapConnection {
     /// Reads a single line from the IMAP connection.
     ///
-    /// F5：这里是全部 IMAP 读的咽喉（greeting / poll / send_command* 都走它），
+    /// 这里是全部 IMAP 读的咽喉（greeting / poll / send_command* 都走它），
     /// 包一层超时即覆盖全部读路径。
     pub async fn read_line(&mut self) -> std::io::Result<String> {
         let mut line = String::new();

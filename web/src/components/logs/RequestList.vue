@@ -22,6 +22,12 @@ const search = ref('')
 const modelFilter = ref('all')
 const expandedIterations = ref<Set<string>>(new Set())
 
+// 模型过滤选项从数据派生（BUG-20261106-028 横向）：此前硬编码两个字面量
+// （glm-4.7/claude-sonnet-4-5），而实际记录的 model 串带 provider 前缀
+// （如 zhipu/glm-4.7）——字面量对旗舰配置恒不命中=选了过滤不出任何条目。
+// 对齐 SecurityAudit.allOperations / ClusterTaskList.allNodes 的家族模式。
+const allModels = computed(() => Array.from(new Set(props.requests.map(r => r.model))).sort())
+
 const filtered = computed(() => {
   let result = props.requests
   if (search.value) {
@@ -84,8 +90,7 @@ watch(
         >
         <select class="form-select" v-model="modelFilter">
           <option value="all">全部模型</option>
-          <option value="glm-4.7">glm-4.7</option>
-          <option value="claude-sonnet-4-5">claude-sonnet-4-5</option>
+          <option v-for="m in allModels" :key="m" :value="m">{{ m }}</option>
         </select>
       </div>
 

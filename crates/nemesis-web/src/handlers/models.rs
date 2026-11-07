@@ -44,7 +44,7 @@ impl ModuleHandler for ModelsHandler {
             "catalog_info",
             "catalog_update",
             "health",
-            // 代理设置页（2026-09-17）：per-model 代理总览 + 进程环境变量 +
+            // 代理设置页：per-model 代理总览 + 进程环境变量 +
             // lane 支持说明。只读——编辑走模型管理 add/update_field。
             "proxy_overview",
         ]
@@ -86,24 +86,24 @@ impl ModuleHandler for ModelsHandler {
                 let name = crate::handlers::get_str(&data, "name")?;
                 self.test(home, &name, &data).await
             }
-            // 明文 key 一步迁移（2026-10-27）：页面内一键迁 credentials.yaml /
+            // 明文 key 一步迁移：页面内一键迁 credentials.yaml /
             // vault——免 CLI 免重启（保值迁移 + key 引用每操作零缓存解析 ⇒
             // 运行中 provider 行为逐字节不变，无需热切）。
             "migrate_keys" => {
                 let data = data.ok_or("missing data")?;
                 Self::migrate_keys(home, ctx, &data)
             }
-            // P3-2 (2026-08-24 UI entry gap): model attribute editor.
+            // (UI entry gap): model attribute editor.
             "update_field" => {
                 let data = data.ok_or("missing data")?;
                 self.update_field(home, &data, ctx)
             }
             "catalog_info" => self.catalog_info(home),
             "catalog_update" => self.catalog_update(home).await,
-            // P2B（2026-09-12 NB-15 根修配套）：模型工具健康（近 N 天
+            // P2B（根修配套）：模型工具健康（近 N 天
             // 工具调用 / 参数校验失败 + 阈值建议）。
             "health" => self.health(ctx, data),
-            // 代理设置页（2026-09-17）：只读总览。
+            // 代理设置页：只读总览。
             "proxy_overview" => self.proxy_overview(home),
             _ => Err(format!("unknown command: models.{}", cmd)),
         }
@@ -114,9 +114,7 @@ fn config_path(home: &str) -> PathBuf {
     super::config::config_path(home)
 }
 
-// ---------------------------------------------------------------------------
-// 明文 key 一步迁移（2026-10-27）：models.migrate_keys
-// ---------------------------------------------------------------------------
+// 明文 key 一步迁移：models.migrate_keys
 //
 // 模型页 banner 检测到 inline 明文 key 时的一键迁移入口，取代「复制 CLI
 // 命令 + 重启」的旧指引。保值迁移（明文 sk-x → yaml:/vault: 引用，运行时
@@ -127,7 +125,7 @@ fn config_path(home: &str) -> PathBuf {
 //
 // 语义与 CLI（`nemesisbot credentials import` / `nemesisbot vault migrate`）
 // 共用同一核心（nemesis-config / nemesis-security 里的 raw Value 函数，
-// 2026-10-27 下沉）：同值别名复用、异值 `__N` 后缀绝不覆盖、`vault:` 引用
+// 下沉）：同值别名复用、异值 `__N` 后缀绝不覆盖、`vault:` 引用
 // 绝不被降级搬迁、`yaml:` 断引用 fail loud。
 impl ModelsHandler {
     /// `models.migrate_keys {target: "yaml"|"vault", passphrase?}`。
@@ -238,10 +236,10 @@ impl ModelsHandler {
         };
         let mode = store.mode().to_string();
 
-        // BUG-20261028-119：creds 在闭包**外**加载、闭包内借可变引用搬家，
+        // creds 在闭包**外**加载、闭包内借可变引用搬家，
         // 回写挪到 config 提交成功之后（跨文件提交顺序：config 提交是事务
         // 点，事务点之前只许准备（vault 落盘），不许销毁回退物（yaml 别名）
-        // ——闭包内删别名 + 提交失败 = config 仍指 `yaml:<alias>` 但别名已
+        // 闭包内删别名 + 提交失败 = config 仍指 `yaml:<alias>` 但别名已
         // 删的永久断链，重试落 yaml_broken 死路）。
         let mut creds = if cred_path.exists() {
             Some(
@@ -324,7 +322,7 @@ impl ModelsHandler {
 }
 
 /// 健康建议阈值（纯函数，单测直测）：数据层只出事实（计数），建议在此
-/// 统一追加——P2B 原规则（参数校验失败率 ≥20% 且调用 ≥10）+ A2（2026-10-21
+/// 统一追加——P2B 原规则（参数校验失败率 ≥20% 且调用 ≥10）+ （
 /// 前代实现思路引入）守卫事件规则（近窗口 loop-guard nudge ≥5 = 模型
 /// 「原地打转」信号）。校验失败优先级更高（直接的能力证据），守卫事件
 /// 只在无校验建议时给出。
@@ -346,9 +344,9 @@ fn apply_health_hints(rows: &mut [nemesis_data::ModelToolHealth], days: i64) {
     }
 }
 
-/// DISABLED (P3-2, 2026-08-24): typed save is no longer called — every
+/// DISABLED: typed save is no longer called — every
 /// `model_list` mutation here goes through raw RMW
-/// ([`super::config::update_raw_config`]) because a typed round-trip DROPS
+/// ([`super::config:update_raw_config`]) because a typed round-trip DROPS
 /// the tier/size/real_name/context_window extras. Kept (not deleted) per the
 /// code-change discipline: safe to revive only for sections whose keys the
 /// typed `Config` fully models.
@@ -373,12 +371,12 @@ struct SwapParams {
     protocol: String,
     /// Per-model 单请求超时秒数（P3A 超时对齐）。0 = lane 默认 600s。
     timeout_secs: u64,
-    /// Per-model 出站代理 URL（代理接线修复 2026-09-17）。空 = 不代理。
+    /// Per-model 出站代理 URL（代理接线修复）。空 = 不代理。
     proxy: String,
-    /// per-model 流式开关（2026-10-13 stream 键）："yes"/"no"/""(auto)。
+    /// per-model 流式开关（stream 键）："yes"/"no"/""(auto)。
     /// 构造期消费——热切重设默认后生效。
     stream_mode: String,
-    /// per-model 缓存断点显式化（B13）：仅 anthropic lane 消费，构造期消费。
+    /// per-model 缓存断点显式化：仅 anthropic lane 消费，构造期消费。
     cache_breakpoints: bool,
 }
 
@@ -396,18 +394,18 @@ impl ModelsHandler {
             .map(|m| m.model_name.clone())
             .unwrap_or_default();
         // 引用归属判定（ref_owner，resolver 同序）：复制体共享模型串时默认
-        // 徽标只落归属那一行，不再双标（2026-10-27 隐患修复）。
+        // 徽标只落归属那一行，不再双标（隐患修复）。
         let pairs: Vec<(String, String)> = config
             .model_list
             .iter()
             .map(|m| (m.model_name.clone(), m.model.clone()))
             .collect();
         let default_owner = ref_owner(&pairs, &default_llm);
-        // P3-2: tier/size/real_name/context_window live as RAW-JSON extra keys
+        // tier/size/real_name/context_window live as RAW-JSON extra keys
         // the typed ModelConfig deliberately doesn't model (typed round-trip
         // would drop them) — read them from the file for the attribute editor.
         let raw_by_name = read_raw_model_entries(home);
-        // P3-2: attach the models.dev catalog hit (same exact-key lookup as
+        // attach the models.dev catalog hit (same exact-key lookup as
         // `model add` auto-fill) so the UI can show the catalog-provided
         // context_window as a fillable default.
         let catalog = read_catalog(home);
@@ -439,7 +437,7 @@ impl ModelsHandler {
                     "model": m.model,
                     "api_base": m.api_base,
                     "api_key": if m.api_key.is_empty() { String::new() } else { mask_sensitive(&m.api_key) },
-                    // G4 (U15): source badge WITHOUT the value — env/yaml carry
+                    // source badge WITHOUT the value — env/yaml carry
                     // only the reference name, inline only the marker.
                     "key_source": nemesis_config::credentials::classify_key_source(&m.api_key),
                     "proxy": m.proxy,
@@ -449,14 +447,14 @@ impl ModelsHandler {
                     // Raw extras (absent in file → null; frontend treats null as unset).
                     "model_tier": raw.get("model_tier").cloned().unwrap_or(serde_json::Value::Null),
                     "reasoning_effort": raw.get("reasoning_effort").cloned().unwrap_or(serde_json::Value::Null),
-                    // per-model 流式开关（2026-10-13 stream 键；缺省/空 = auto）。
+                    // per-model 流式开关（stream 键；缺省/空 = auto）。
                     "stream": raw.get("stream").cloned().unwrap_or(serde_json::Value::Null),
                     "model_size_b": raw.get("model_size_b").cloned().unwrap_or(serde_json::Value::Null),
                     "real_name": raw.get("real_name").cloned().unwrap_or(serde_json::Value::Null),
                     "context_window": raw.get("context_window").cloned().unwrap_or(serde_json::Value::Null),
-                    // per-model 绝对压缩点（2026-10-20 compact_context_tokens；缺省 = 窗口×75%）。
+                    // per-model 绝对压缩点（compact_context_tokens；缺省 = 窗口×75%）。
                     "compact_context_tokens": raw.get("compact_context_tokens").cloned().unwrap_or(serde_json::Value::Null),
-                    // T2b（扩展计划 D4）：fallback 链声明（字符串数组，回显
+                    // （扩展计划）：fallback 链声明（字符串数组，回显
                     // only——编辑走 config.json / attr 编辑器；装配点
                     // agent_factory::wrap_fallback_chain）。
                     "fallback_to": raw.get("fallback_to").cloned().unwrap_or(serde_json::Value::Null),
@@ -467,14 +465,14 @@ impl ModelsHandler {
         Ok(Some(serde_json::json!({ "models": models })))
     }
 
-    /// 代理设置页（2026-09-17）：per-model 代理配置总览 + 进程环境变量
+    /// 代理设置页：per-model 代理配置总览 + 进程环境变量
     /// 代理 + lane 支持说明。只读——编辑走模型管理 add/update_field
     /// （proxy 字段）或 config.json，保存后 set_default 热切/下一轮
     /// config 重读生效。
     fn proxy_overview(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
         let config = super::config::load_config(home)?;
         let default_llm = config.agents.defaults.llm.clone();
-        // 归属判定与 list() 同源（ref_owner，resolver 同序；2026-10-27 隐患修复）。
+        // 归属判定与 list() 同源（ref_owner，resolver 同序； 隐患修复）。
         let pairs: Vec<(String, String)> = config
             .model_list
             .iter()
@@ -518,7 +516,7 @@ impl ModelsHandler {
                 "all_proxy": env_or(&["ALL_PROXY", "all_proxy"]),
                 "no_proxy": env_or(&["NO_PROXY", "no_proxy"]),
             },
-            // 代理接线修复（2026-09-17）后各 lane 的 per-model proxy 支持：
+            // 代理接线修复后各 lane 的 per-model proxy 支持：
             // 三个 HTTP lane（factory create_provider）全接线；CLI 型 lane
             // 是本地子进程，走进程环境变量。
             "lane_support": [
@@ -544,23 +542,23 @@ impl ModelsHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         let model_name = crate::handlers::get_str(data, "name")?;
         let model = crate::handlers::get_str(data, "model")?;
-        // 模型 identifier 形态校验（BUG-20261104-361）：此前 WSAPI add 零校验，
+        // 模型 identifier 形态校验：此前 WSAPI add 零校验，
         // `../../etc/passwd` 等穿越形态可落盘。宽松档（裸名合法——dashboard
         // 既有契约，见 add_persists_protocol_and_normalizes_alias 回归钉）+
         // 段级穿越/反斜杠/控制字符拒绝，与 CLI `model add` 严格档共享同一
-        // 段级检查内核（单一真相源）。model_name 显示名是自由文本语义不在
+        // 段级检查内核。model_name 显示名是自由文本语义不在
         // 此校验（出口有 sanitize_csv/sanitize_path_segment）。
         nemesis_utils::sanitize::validate_model_entry_name(&model)?;
         let api_key = crate::handlers::get_str(data, "key")?;
         let api_base = crate::handlers::get_opt_str(data, "base_url").unwrap_or_default();
         let proxy = crate::handlers::get_opt_str(data, "proxy").unwrap_or_default();
-        // LLM 协议选择器（2026-09-11）：可选显式协议，缺省 = 自动推断（空串）。
-        // 值集校验/归一走单一真相源；未知值 loud 拒绝。
+        // LLM 协议选择器：可选显式协议，缺省 = 自动推断（空串）。
+        // 值集校验/归一走单一权威定义；未知值 loud 拒绝。
         let protocol = nemesis_types::capability::normalize_model_protocol(
             &crate::handlers::get_opt_str(data, "protocol").unwrap_or_default(),
         )?;
-        // per-model 流式开关（2026-10-13 stream 键）：可选，缺省不写键 = auto。
-        // 归一走单一真相源 normalize_stream_value（与 CLI --stream / 配置解析
+        // per-model 流式开关（stream 键）：可选，缺省不写键 = auto。
+        // 归一走统一定义 normalize_stream_value（与 CLI --stream / 配置解析
         // 同源），非法值 loud 拒绝（显式提交是当次意志，不做静默纠偏）。
         let stream_raw = crate::handlers::get_opt_str(data, "stream").unwrap_or_default();
         let stream = if stream_raw.is_empty() {
@@ -612,7 +610,7 @@ impl ModelsHandler {
                 entry["stream"] = serde_json::Value::String(stream);
             }
 
-            // U16 parity: auto-fill context_window / max_output_tokens from the
+            // parity: auto-fill context_window / max_output_tokens from the
             // models.dev catalog cache on an exact-key hit (silent no-op without
             // a cache — `model catalog-update` / the dashboard button fills it).
             if let Some(cat) = read_catalog(home)
@@ -631,15 +629,15 @@ impl ModelsHandler {
         })
     }
 
-    /// 模型配置复制（2026-10-27 五项增强 ②）：同族模型不必重新填写——
+    /// 模型配置复制（五项增强 ②）：同族模型不必重新填写——
     /// 深拷贝整条目（含 api_key / proxy / 全部 raw extras）改 `model_name`
     /// 追加到列表尾。
     ///
-    /// **可选 `new_model`**（2026-10-27 漏项补救）：复制时直接换实际调用的
+    /// **可选 `new_model`**（漏项补救）：复制时直接换实际调用的
     /// LLM ID（`model` 字段）——「复制 → 换模型」一步到位，不用复制完再
     /// 改一次名。协议/流式随体复制不跟动（同供应商场景正确）。
     ///
-    /// **必须服务端做**：`models.list` 对 api_key 脱敏（F2），前端拿不到
+    /// **必须服务端做**：`models.list` 对 api_key 脱敏，前端拿不到
     /// 原文 key——前端拼装复制体会把 key 丢掉。raw RMW 保留兄弟条目的
     /// 未类型化 extras（同 add/delete 的理由）。新条目不自动设默认
     /// （复制 ≠ 想切换；要切换用户点「设为默认」）。
@@ -696,12 +694,12 @@ impl ModelsHandler {
         })
     }
 
-    /// 模型改名（2026-10-27 五项增强 ③）：改条目 `model_name` +
+    /// 模型改名（五项增强 ③）：改条目 `model_name` +
     /// 同趟同步全部指向旧名的引用（agents.defaults.llm / agents.small_model /
     /// tools.image_gen.model；`gateway.default_model` 键不存在——默认模型
     /// 唯一存储就是 agents.defaults.llm，启动 get_effective_llm 只读它）。
     ///
-    /// **可选 `new_model`**（2026-10-27 漏项补救：用户原话「改名（含模型名）」
+    /// **可选 `new_model`**（漏项补救：用户原话「改名（含模型名）」
     /// 指的是实际调用的 LLM ID——复制/改名只动 model_name 别名的话换不了
     /// 模型，全产品面 update_field / CLI 也无改 `model` 串的入口）：同趟
     /// RMW 一并改 `model` 字段。协议/流式是独立字段不跟动（同供应商场景
@@ -709,9 +707,9 @@ impl ModelsHandler {
     ///
     /// 引用匹配走 `ref_owner`（resolver 同序归属判定）：精确 model_name
     /// 命中压倒模型串/别名软匹配——复制体共享模型串时认领不了指向原始
-    /// 条目名的引用（2026-10-27 偷默认指针/假热切实障的闸门）。改到
+    /// 条目名的引用（偷默认指针/假热切实障的闸门）。改到
     /// **当前默认模型** =
-    /// 允许 + 热切（2026-10-27 用户拍板方案 B：「保证用户能用，改错了是
+    /// 允许 + 热切（方案 B：「保证用户能用，改错了是
     /// 用户的问题，严格执行用户想法」）：defaults.llm 已在 RMW 里同步成
     /// 新名，闭包后走 apply_runtime_swap（set_default 同一 chokepoint，
     /// 从 config 重解析——`model` 串一并生效），项目 loop 经 bridge 同步。
@@ -769,7 +767,7 @@ impl ModelsHandler {
             // 引用归属普查（ref_owner，resolver 同序）：每处引用独立判「指向
             // 的是不是被改名条目」——精确 model_name 命中压倒模型串/别名软
             // 匹配，复制体共享模型串时认领不了指向原始条目名的引用（否则
-            // defaults.llm 会被偷给复制体 + 凭空热切，2026-10-27 实障）。
+            // defaults.llm 会被偷给复制体 + 凭空热切， 实障）。
             let pairs: Vec<(String, String)> = list_ro
                 .iter()
                 .map(|m| {
@@ -850,7 +848,7 @@ impl ModelsHandler {
             // 下次启动 get_effective_llm → resolve_model_config 找不到模型直接失败。
             // 归属判定与 list() 同源（ref_owner，resolver 同序）：defaults.llm
             // 为空沿用 list[0] 位置兜底；复制体共享模型串时精确名命中压倒软
-            // 匹配——删的不是运行时默认就放行（2026-10-27 隐患修复，此前
+            // 匹配——删的不是运行时默认就放行（隐患修复，此前
             // first_name 位置臂无条件生效，默认在别处时第一条也删不掉）。
             let default_llm = cfg
                 .get("agents")
@@ -929,7 +927,7 @@ impl ModelsHandler {
                 .iter()
                 .position(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
                 .ok_or_else(|| format!("model '{}' not found", name))?;
-            // 集群专业职能框架 M4 守卫②：图像协议条目唯一消费点 = generate_image
+            // 集群专业职能框架 守卫②：图像协议条目唯一消费点 = generate_image
             // 工具，不能坐上 agent 默认对话模型槽（写盘前 loud 拒绝，不产生半状态）。
             {
                 let proto = list[idx]
@@ -943,7 +941,7 @@ impl ModelsHandler {
                     ));
                 }
             }
-            // 声明式模型角色（2026-10-13 N6）守卫②：utility/classifier 条目对话
+            // 声明式模型角色守卫②：utility/classifier 条目对话
             // 形态但不是默认对话槽合法形态（杂务消费走 agents.small_model）。
             {
                 let role = list[idx].get("role").and_then(|v| v.as_str()).unwrap_or("");
@@ -982,11 +980,11 @@ impl ModelsHandler {
         })?;
 
         // Runtime provider swap so the change takes effect immediately.
-        // 唯一 chokepoint（2026-09-22 方案A）：展示三字段 + 统一默认槽 +
+        // 唯一 chokepoint（方案A）：展示三字段 + 统一默认槽 +
         // 主 loop + Forge 全在 apply_runtime_swap 内。
         Self::apply_runtime_swap(&final_cfg, name, ctx)?;
 
-        // 模型热切联动（BUG 2026-09-21）：项目 loop 不经上面的 agent_loop
+        // 模型热切联动（BUG）：项目 loop 不经上面的 agent_loop
         // 槽——gateway 装配期一次性 spawn 后永不再读 config。通知 bridge 用
         // 盘上 config 同步全部在跑项目 loop（default no-op；未装配 / 解析
         // 失败时项目 loop 保持现状，见 ProjectLoopManager::reload_providers）。
@@ -999,7 +997,7 @@ impl ModelsHandler {
         ))
     }
 
-    /// 运行期热切（唯一 chokepoint，2026-09-22 方案A）：`set_default` 与
+    /// 运行期热切（唯一 chokepoint， 方案A）：`set_default` 与
     /// `update_field` 的 protocol/proxy-命中-当前默认分支共用。
     ///
     /// 与启动路径（agent_factory::build_agent_loop）同源：typed 解析 +
@@ -1023,9 +1021,9 @@ impl ModelsHandler {
     ) -> Result<(), String> {
         let swap = Self::canonical_swap_params(cfg, name)?;
 
-        // 概览页同步（BUG 2026-09-21）：/api/status 的 model 三字段是 AppState
+        // 概览页同步（BUG）：/api/status 的 model 三字段是 AppState
         // 快照，写点只有启动 set_model_info 与 agent start 的 update_model_info
-        // ——热换 provider 后概览页仍显示老模型。config 已写成功，展示应跟着走
+        // 热换 provider 后概览页仍显示老模型。config 已写成功，展示应跟着走
         // （不依赖 agent_loop 存在）；swap 与启动路径同源解析
         // （canonical_swap_params → resolve_model_config），形态一致。
         *ctx.state.model_name.lock() = swap.model.clone();
@@ -1051,7 +1049,7 @@ impl ModelsHandler {
         };
         match nemesis_providers::factory::create_provider(&factory_cfg) {
             Ok(provider) => {
-                // T2b（扩展计划 D4）：热切与启动同源——被切模型的
+                // （扩展计划）：热切与启动同源——被切模型的
                 // `fallback_to` 链在热切路径同样装配（否则启动有链、热切
                 // 后链静默消失直至重启）。装配语义单点
                 // providers::assemble_fallback_chain，级别解析同
@@ -1089,7 +1087,7 @@ impl ModelsHandler {
         Ok(())
     }
 
-    /// T2b：热切路径的 fallback 链装配——解析被切模型条目的
+    /// 热切路径的 fallback 链装配——解析被切模型条目的
     /// `fallback_to` 别名并交由 `providers::assemble_fallback_chain`
     /// 装配（启动路径 agent_factory::wrap_fallback_chain 同源单点）。
     /// config 不是合法 typed 形态 / 键缺失 / 级别为空 = 原样返回 primary
@@ -1155,7 +1153,7 @@ impl ModelsHandler {
     /// Resolve the runtime-swap parameters for a model entry the same way the
     /// startup path does (`agent_factory::build_agent_loop` → typed
     /// `resolve_model_config`): provider-prefixed `llm_ref`, de-prefixed model
-    /// name, api_key 引用（yaml:/env:）解析、api_base 默认推断、显式协议。
+    /// name, api_key 引用（yaml:/env）解析、api_base 默认推断、显式协议。
     fn canonical_swap_params(
         raw_cfg: &serde_json::Value,
         name: &str,
@@ -1178,12 +1176,12 @@ impl ModelsHandler {
         })
     }
 
-    /// 模型连通性测试（2026-10-27 五项增强 ①：stub → 真实现）。
+    /// 模型连通性测试（五项增强 ①：stub → 真实现）。
     ///
     /// 与真实使用**同源**：`canonical_swap_params`（= set_default 热切 /
     /// 启动装配的同一解析链）解析条目 → factory 同源构造 provider → 发一个
     /// `max_tokens=16` 的 "ping" 最小对话请求。协议 lane（anthropic/openai/
-    /// responses）、流式配置、api_key 引用（env:/yaml:/vault:）全部与
+    /// responses）、流式配置、api_key 引用（env:/yaml:/vault）全部与
     /// 生产一致——测过 = 真能用，不做裸 HTTP 简化版。
     ///
     /// 返回值形态（前端圆点状态机的唯一输入）：
@@ -1193,7 +1191,7 @@ impl ModelsHandler {
     ///   connect/format/overloaded/other），走 nemesis-utils 错误分类器
     ///   （与 agent loop 同源词表）；
     /// - 配置类失败（resolve/构造失败，如缺 key）也返回 fail 而非命令错误
-    ///   ——一键测试时逐模型染红点比整体报错有用。
+    ///   一键测试时逐模型染红点比整体报错有用。
     ///
     /// 超时：HTTP lane 默认 30s 硬顶、CLI 型 lane（spawn 成本）60s——
     /// 不用 provider 默认 600s（测试要快失败）；data.timeout_secs 可覆盖
@@ -1319,7 +1317,7 @@ impl ModelsHandler {
         }
     }
 
-    /// P3-2 (2026-08-24 UI entry gap): per-field attribute editor for one
+    /// (UI entry gap): per-field attribute editor for one
     /// `model_list[]` entry.
     ///
     /// tier/size/real_name/context_window are RAW-JSON extra keys the typed
@@ -1373,7 +1371,7 @@ impl ModelsHandler {
                 serde_json::Value::Number(n.into())
             }
             "compact_context_tokens" => {
-                // per-model 绝对压缩点（2026-10-20）：数字 = 到点即压（不乘
+                // per-model 绝对压缩点：数字 = 到点即压（不乘
                 // 比例）；0 / 空串 = 清除（回窗口×75% 默认链）。清除以 Null
                 // 作哨兵，应用闭包里「移键」落盘——写 Null 会留 `"key": null`
                 // 字节垃圾；resolver 对缺席本就按 None 处理。超过真实窗口时
@@ -1405,16 +1403,16 @@ impl ModelsHandler {
                 serde_json::Value::String(s.trim().to_string())
             }
             "protocol" => {
-                // LLM 协议选择器（2026-09-11）：空串 = 清除（自动推断）；
+                // LLM 协议选择器：空串 = 清除（自动推断）；
                 // claude 别名归一为 anthropic；未知值 loud 拒绝。
                 let s = value.as_str().ok_or("protocol must be a string")?;
                 let normalized = nemesis_types::capability::normalize_model_protocol(s)?;
                 serde_json::Value::String(normalized)
             }
             "stream" => {
-                // per-model 流式开关（2026-10-13 stream 键）：空串/auto =
+                // per-model 流式开关（stream 键）：空串/auto =
                 // 清除（跟随 lane 默认）；yes/no（别名 true/false）归一写盘；
-                // 未知值 loud 拒绝——归一走单一真相源 normalize_stream_value
+                // 未知值 loud 拒绝——归一走统一定义 normalize_stream_value
                 // （与 CLI --stream / 配置解析同源）。构造期消费：改默认模型
                 // 需 set_default 热切或重启生效（前端标注同口径）。
                 let s = value.as_str().ok_or("stream must be a string")?.trim();
@@ -1431,7 +1429,7 @@ impl ModelsHandler {
                 }
             }
             "proxy" => {
-                // 代理设置页（2026-09-17）：空串 = 清除（直连）；非空做
+                // 代理设置页：空串 = 清除（直连）；非空做
                 // 前缀校验（reqwest Proxy::all 支持的形态），彻底校验留给
                 // provider 构造（非法 warn 回落直连，不阻断）。注意：代理
                 // 在 provider 构造时消费——改默认模型的代理后需 set_default
@@ -1463,7 +1461,7 @@ impl ModelsHandler {
                 // 判定走 ref_owner（resolver 同序），权威是 agents.defaults.llm
                 // （get_effective_llm），不含 list[0] 位置臂。复制体共享模型串时
                 // 精确名命中压倒软匹配——改的不是运行时默认就绝不假热切、不
-                // 造成内存/磁盘默认分叉（2026-10-27 隐患修复）。
+                // 造成内存/磁盘默认分叉（隐患修复）。
                 let default_llm = cfg
                     .pointer("/agents/defaults/llm")
                     .and_then(|v| v.as_str())
@@ -1525,15 +1523,15 @@ impl ModelsHandler {
                 Ok((entry_is_default, entry_model_name, cfg.clone()))
             })?;
 
-        // 统一默认槽联动（2026-09-22 方案A）：protocol/proxy/stream 在 provider
+        // 统一默认槽联动（方案A）：protocol/proxy/stream 在 provider
         // 构造时消费——改的是当前默认模型时补跑运行时热切（此前只有前端
         // 代理页自动跟发 set_default 打补丁，模型页改 protocol 后 workflow/
-        // 集群/SSE 侧槽全是旧 provider；stream 同为构造期消费，2026-10-14
+        // 集群/SSE 侧槽全是旧 provider；stream 同为构造期消费，
         // 补进热切联动）。tier/effort/size/real_name/context_window 走
         // agent loop 的 config mtime 重读，不经此处。
         if matches!(field.as_str(), "protocol" | "proxy" | "stream") && entry_is_default {
             Self::apply_runtime_swap(&final_cfg, &entry_model_name, ctx)?;
-            // 模型热切联动（BUG 2026-09-21 同族）：update_field 改默认模型
+            // 模型热切联动（BUG 同族）：update_field 改默认模型
             // 的构造期消费字段时，项目 loop 同样要经 bridge 同步——
             // set_default / rename 两处同款（漏接 = 项目 loop 保持旧
             // protocol/proxy/stream 直至重启）。
@@ -1546,7 +1544,7 @@ impl ModelsHandler {
         })))
     }
 
-    /// P2B（2026-09-12 NB-15 根修配套）：模型工具健康视图——近 `days` 天
+    /// P2B（根修配套）：模型工具健康视图——近 `days` 天
     /// 每模型 工具调用数 / 参数校验失败数 / 失败率；样本足够（tool_calls
     /// ≥ 10）且失败率 ≥ 20% 时给 tier 校准建议（`model probe` / `model
     /// set-tier` / 换出 worker 池）。阈值是启发式护栏（P2A 闸的长期数据
@@ -1575,14 +1573,14 @@ impl ModelsHandler {
         Ok(Some(serde_json::json!({ "days": days, "models": rows })))
     }
 
-    /// P3-2: catalog cache status for the models page header (no spawn, no
+    /// catalog cache status for the models page header (no spawn, no
     /// network — reads the cache file directly; the file shape
     /// matches the CLI's `catalog.rs` cache).
     ///
-    /// 路径唯一真相源 = `nemesis_path::models_catalog_cache_path`
+    /// 路径唯一依据 = `nemesis_path::models_catalog_cache_path`
     /// （`<home>/workspace/data/models_catalog.json`；与 CLI `model
-    /// catalog-update` 共用同一函数——2026-08-24 L2 曾抓到过一次读写路径分叉，
-    /// 2026-08-28 从 home 根迁入 workspace/data 后路径收进 nemesis-path，
+    /// catalog-update` 共用同一函数—— 曾抓到过一次读写路径分叉，
+    /// 从 home 根迁入 workspace/data 后路径收进 nemesis-path，
     /// 读取时自动 rename legacy 文件）。
     fn catalog_info(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
         let home_pb = std::path::PathBuf::from(home);
@@ -1603,7 +1601,7 @@ impl ModelsHandler {
         })))
     }
 
-    /// P3-2: refresh the models.dev catalog by spawning the CLI
+    /// refresh the models.dev catalog by spawning the CLI
     /// (`nemesisbot model catalog-update`) — the fetch/parse/mirror-fallback
     /// logic lives in the binary's `catalog.rs`, so the subprocess is the
     /// single source of truth (same shape as the sandbox handler's
@@ -1641,7 +1639,7 @@ impl ModelsHandler {
     }
 }
 
-// --- P3-2 helpers -----------------------------------------------------------
+// helpers -----------------------------------------------------------
 
 /// ProviderType → 前端展示标签（models.test 的 lane 字段）。
 fn lane_label(t: nemesis_providers::factory::ProviderType) -> &'static str {
@@ -1656,7 +1654,7 @@ fn lane_label(t: nemesis_providers::factory::ProviderType) -> &'static str {
     }
 }
 
-/// 错误文本 → 粗分类 kind（models.test 的 kind 字段）。单一真相源 =
+/// 错误文本 → 粗分类 kind（models.test 的 kind 字段）。单一权威 =
 /// nemesis-utils 错误分类器（与 agent loop / fallback 同源词表）；
 /// Timeout 细分 connect（连接建立失败 = 端点死了，与慢响应不同门）。
 fn error_kind(msg: &str) -> &'static str {
@@ -1680,13 +1678,13 @@ fn error_kind(msg: &str) -> &'static str {
     }
 }
 
-/// 引用归属判定（2026-10-27 隐患修复）：defaults.llm 等引用值指向哪个
+/// 引用归属判定（隐患修复）：defaults.llm 等引用值指向哪个
 /// 条目——与 resolve_model_config 的解析顺序同语义（启动 get_effective_llm
 /// 真正走的就是那个顺序，勿在此分叉出第二套判定）：
 /// ① 引用值精确命中某条目 model_name → 唯一指认该条目（复制体共享模型
 ///    串时不得越过精确名认领引用——此前「身份集三形态任一命中」的宽匹配
 ///    把默认指针偷给复制体、双行同标默认、假热切，实障根因）；
-/// ② 无精确名命中 → 模型串软匹配，取首个命中（resolver 第二段同为首
+/// ② 无精确名命中 → 模型串软匹配，取首个命中（resolver 同为首
 ///    命中：运行时 resolve 出谁，谁就算数）；
 /// ③ 仍无 → 别名（model 末段）软匹配首命中（CLI 设别名的遗留形态）；
 /// ④ 全不命中 → None（引用是推断臂形态，不属任何条目）。
@@ -1729,7 +1727,7 @@ fn read_raw_model_entries(
 }
 
 /// In-memory shape of the CLI's catalog cache (`{version, fetched_at,
-/// entries: [{key, context_window, ...}]}`) — only the fields `list` needs.
+/// entries: [{key, context_window,...}]}`) — only the fields `list` needs.
 struct CatalogLite {
     entries: Vec<CatalogLiteEntry>,
 }
@@ -1742,7 +1740,7 @@ struct CatalogLiteEntry {
 }
 
 fn read_catalog(home: &str) -> Option<CatalogLite> {
-    // 与 catalog_info 同源：路径唯一真相源 =
+    // 与 catalog_info 同源：路径唯一依据 =
     // `nemesis_path::models_catalog_cache_path`（见 catalog_info 的注释）。
     let home_pb = std::path::PathBuf::from(home);
     let path = nemesis_path::models_catalog_cache_path(&home_pb);
@@ -1777,24 +1775,24 @@ fn read_catalog(home: &str) -> Option<CatalogLite> {
 #[cfg(test)]
 mod tests;
 
-// S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): pin the DISABLED
+// (, quality-hardening goal 冲刺 web): pin the DISABLED
 // typed-save helper's behavior (see its doc comment above).
 #[cfg(test)]
 mod s10b_tests;
 
-// AGT 覆盖率批次（2026-09-24）：Default+命令表、proxy_overview 全身、
+// AGT 覆盖率批次：Default+命令表、proxy_overview 全身、
 // update_field 的 proxy 非法前缀拒绝臂与默认判定的 model 串/别名命中臂。
 // 结构性豁免见 agt_tests 文件头注。
 #[cfg(test)]
 mod agt_tests;
 
-// 五项增强批（2026-10-27）：models.copy 深拷贝、models.rename 引用同步+
+// 五项增强批：models.copy 深拷贝、models.rename 引用同步+
 // 活跃默认热切、models.test 真实现（假端点 ok/timeout 臂 + images/配置失败
 // 不触网臂）。
 #[cfg(test)]
 mod copy_rename_tests;
 
-// 明文 key 一步迁移（2026-10-27）：models.migrate_keys（yaml/vault 双臂
+// 明文 key 一步迁移：models.migrate_keys（yaml/vault 双臂
 // 端到端 + 原子性 + 断引用 + 幂等 + feature 裁剪形态诚实报错）。
 #[cfg(test)]
 mod migrate_keys_tests;

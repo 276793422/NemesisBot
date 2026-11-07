@@ -97,7 +97,7 @@ impl EditorAccessState {
         )
     }
 
-    /// 围栏闸门（2026-11-01 BUG 修复单一真相源）：工具层
+    /// 围栏闸门（BUG 修复统一定义）：工具层
     /// `WorkspaceBoundary` 在界外路径拒绝前问本闸，判定与
     /// [`Self::evaluate`] **完全同源**（直接委托 evaluate，同一套
     /// full/ext/roots 判据）——两层裁决不再分叉。`is_write_delete` =

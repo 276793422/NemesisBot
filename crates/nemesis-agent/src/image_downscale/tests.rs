@@ -1,4 +1,4 @@
-//! J6 单测：降采样闸决策矩阵（Keep/Replaced/诚实 Err 三态 + 复用 + alpha 铺白）。
+//! 单测：降采样闸决策矩阵（Keep/Replaced/诚实 Err 三态 + 复用 + alpha 铺白）。
 //! 阈值经 `Limits` 注入小数值，免合成 25MB 实体文件（attach 层集成不做——
 //! 接线 None 分支由既有 attach 测试钉住）。
 
@@ -164,7 +164,7 @@ fn rejects_gif_honestly() {
 }
 
 // ---------------------------------------------------------------------------
-// BUG-HUNT R33：动画 WebP 与 GIF 同原则——image-webp 对 ANMF 文件解码第一帧
+// 动画 WebP 与 GIF 同原则——image-webp 对 ANMF 文件解码第一帧
 // 成功，原实现只拦 GIF，动画 WebP 撞闸后被静默重编码成静态 JPEG（动画帧丢
 // 失 = 模块 doc 钉死的「静默语义变更」）。修复 = 头部采样窗口 12→4096 +
 // webp_is_animated（VP8X animation 旗标 / ANMF fourcc）诚实拒绝。
@@ -397,9 +397,9 @@ fn downscale_reports_honest_err_when_ladder_exhausted() {
     assert!(err.contains("仍超过"), "{err}");
 }
 
-// BUG-20261025-81 回归锁：输入文件字节超过 Limits.max_input_bytes → 诚实
+// 回归锁：输入文件字节超过 Limits.max_input_bytes → 诚实
 // Err 且不进入解码读入（旧形态对合法图片头 + 巨量垃圾尾部的文件会
-// `fs::read` 整包进内存——URL 侧 S1 修的是同族问题，本地路径漏网）。
+// `fs::read` 整包进内存——URL 侧 修的是同族问题，本地路径漏网）。
 #[test]
 fn test_input_bytes_cap_honest_reject() {
     let dir = TempDir::new("input_bytes_cap");
@@ -419,7 +419,7 @@ fn test_input_bytes_cap_honest_reject() {
     assert!(err.contains("降采样输入上限"), "{err}");
 }
 
-// BUG-20261025-81 对照臂：文件字节在阀内 → 闸照常走后续链路（阀不误伤）。
+// 对照臂：文件字节在阀内 → 闸照常走后续链路（阀不误伤）。
 #[test]
 fn test_input_bytes_cap_not_triggered_under_limit() {
     let dir = TempDir::new("input_bytes_ok");

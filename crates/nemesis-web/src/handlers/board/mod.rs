@@ -1,4 +1,4 @@
-//! Board handler — managed-agent 看板（W2 P1；P2 加角色门控）。
+//! Board handler — managed-agent 看板（加角色门控）。
 //!
 //! 所有命令经 `AppState.board` 的 [`nemesis_board::BoardService`]（gateway 在
 //! `board` feature 开启时注入；未注入时统一报 "board service not available"）。
@@ -16,8 +16,8 @@ use crate::handlers::{get_opt_str, get_str, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use base64::Engine;
 use nemesis_board::BoardStore;
-// ⏸ 暂缓评论去重标记（闭环批 2026-10-13 从本文件上移）：停车判定 SQL
-// 与 sweep 落评论共用单一真相源，消灭跨 crate 字面量漂移面。
+// ⏸ 暂缓评论去重标记（闭环-13 从本文件上移）：停车判定 SQL
+// 与 sweep 落评论共用统一定义，消灭跨 crate 字面量漂移面。
 use nemesis_board::PARK_NOTICE_MARK;
 use nemesis_board::assignment::{Actor, AssignmentType};
 use nemesis_board::models::{
@@ -47,8 +47,8 @@ fn require_board(ctx: &RequestContext) -> Result<Arc<BoardStore>, String> {
 /// ⚠ 不用 WS `session_id`：session 每次页面加载/重连都换新（session.rs
 /// `generate_session_id` 随机 16 hex），会以新身份落订阅表（`issue_subscriber`
 /// 唯一键含 subscriber_id，去重失效）并永久累积——而通知按订阅者扇出，
-/// 同一事件给 admin 落 N 份，收件箱同一条消息重复 N 次（2026-10-16 实录：
-/// NB-121 一次验收失败收件箱 6 份，18 个历史 admin 身份）。board.db 是
+/// 同一事件给 admin 落 N 份，收件箱同一条消息重复 N 次（
+/// 一次验收失败收件箱 6 份，18 个历史 admin 身份）。board.db 是
 /// 节点本地数据、单管理员语义（inbox 面向 admin 通配），固定 id 即可让
 /// 订阅 ON CONFLICT 去重生效；鉴权在 WS token 层，与此 id 无关。
 fn ctx_actor(_ctx: &RequestContext) -> Actor {
@@ -173,14 +173,14 @@ impl ModuleHandler for BoardHandler {
         let store = require_board(ctx)?;
         let actor = ctx_actor(ctx);
         match cmd {
-            // --- issue ---
+            // issue ---
             "issue.list" => {
                 let data = data.ok_or("missing data")?;
                 let issues = store.list_issues(&build_filter(&data)?)?;
                 let total = issues.len();
-                // goal P1/C2：逐单附环节（issue_stage 单一真相源）——前端
+                // goal /：逐单附环节（issue_stage 统一定义）——前端
                 // 子单行环节徽标数据源；加法变更，旧前端兼容。
-                // §1.1 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
+                // 拆解运行期投影（cluster 编译时）：命中 RUNNING_PLANS
                 // 的单附 `planning: {elapsed_secs, attempt, phase}`（纯展示叠
                 // 加，不改 issue 状态机——backlog 语义不变）。phase=
                 // planning（planner LLM 运行中）/ dispatching（auto_confirm
@@ -207,7 +207,7 @@ impl ModuleHandler for BoardHandler {
                         .collect()
                 };
                 let mut rows = Vec::with_capacity(issues.len());
-                // 依赖徽标批量投影（2026-10-15）：边集 + 轻投影各一次查询，
+                // 依赖徽标批量投影：边集 + 轻投影各一次查询，
                 // 不逐单 dependencies_of（N+1；规模不设限——全表读千行毫秒级）。
                 // briefs 是全表（不带 filter），上游被 exclude 过滤掉也照常投影。
                 let briefs = store.issue_briefs()?;
@@ -216,7 +216,7 @@ impl ModuleHandler for BoardHandler {
                 for (issue_id, dep_id) in store.all_dependency_edges()? {
                     deps_by_issue.entry(issue_id).or_default().push(dep_id);
                 }
-                // 决策可见性投影（2026-10-15）：停车档案一次性扫 + PLAN_CACHE
+                // 决策可见性投影：停车档案一次性扫 + PLAN_CACHE
                 // 一次快照，per-issue 只做 map 命中与一条 last_system_comment
                 // 查询（仅 in_progress 单，indexed）。
                 let handoffs = scan_live_handoffs();
@@ -296,7 +296,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "issue": issue_to_view(&store, &issue)? }),
                 ))
             }
-            // 决策面板数据源（决策可见性批 2026-10-15）：`issue.decision
+            // 决策面板数据源（决策可见性-15）：`issue.decision
             // {number|id}` → needs_user / plan_ready / attention 投影 +
             // 停车档案全量（verdict_chain / environment / attempted /
             // resume_entry，详情页「更多上下文」折叠）+ 在线节点清单（重派
@@ -363,7 +363,7 @@ impl ModuleHandler for BoardHandler {
                     "online_nodes": online_nodes,
                 })))
             }
-            // U-C（2026-10-12 §9.3）：单子全链路时间线（可追溯查询面——终结
+            // U-C：单子全链路时间线（可追溯查询面——终结
             // 「人查 4 个库」）。聚合入口与 dossier timeline.md 同源
             // （nemesis-board::timeline）；集群侧事件（任务结果 / 续行快照
             // 在场）在此注入。按 (ts, source_rank) 升序。
@@ -424,7 +424,7 @@ impl ModuleHandler for BoardHandler {
                 let issue = store.create_issue(build_new_issue(&data, actor.clone())?)?;
                 let mut out =
                     serde_json::json!({ "created": true, "issue": issue_to_view(&store, &issue)? });
-                // F5 件①：建单警示——验收标准含 `[CHECK] re:` 锚点时提醒
+                // 件①：建单警示——验收标准含 `[CHECK] re:` 锚点时提醒
                 // 锚点下放纪律（叶子单直接执行不受影响；本单日后被 AI 拆解
                 // 成父单则父层无交付文本，锚点必须由子单继承才可核验）。
                 if nemesis_board::has_content_regex_anchor(
@@ -434,7 +434,7 @@ impl ModuleHandler for BoardHandler {
                         "验收标准含 [CHECK] re: 锚点：本单若后续被 AI 拆解为父单，父单层没有交付文本可核验该锚点（验收必败）——拆解时请确保至少一个子单继承该锚点。直接执行（不拆解）的单不受影响。"
                     );
                 }
-                // W2.5 接线补全（2026-10-17 NB-125 用户反馈）：列表页创建
+                // .5 接线补全（用户反馈）：列表页创建
                 // 弹窗把指派目标内联在 create 请求里，此前自动派发钩子只接
                 // 在 issue.assign 命令上——board.auto_dispatch=true 且创建
                 // 即指派 worker 时同样发车，否则「创建+选目标」永远静默
@@ -475,7 +475,7 @@ impl ModuleHandler for BoardHandler {
                     None => (None, None),
                 };
                 let issue = store.assign_issue(id, assignee, assignee_id, &actor)?;
-                // 自动派发接口（W2.5 预留，默认关；board.auto_dispatch=true
+                // 自动派发接口（.5 预留，默认关；board.auto_dispatch=true
                 // 且指派给 worker 时触发）。触发后重取 issue，响应反映派发
                 // 推进的 in_progress 态。
                 #[cfg(feature = "cluster")]
@@ -505,7 +505,7 @@ impl ModuleHandler for BoardHandler {
                 if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
                     archive_handoff_best_effort(&issue.number);
                 }
-                // M1 补派触发器 + 父单收口（子单落定后联动；错误只 warn）。
+                // 补派触发器 + 父单收口（子单落定后联动；错误只 warn）。
                 #[cfg(feature = "cluster")]
                 if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
                     on_issue_settled(&store, ctx.state.cluster.as_ref(), id, &actor);
@@ -514,7 +514,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "changed": true, "issue": issue_to_view(&store, &issue)? }),
                 ))
             }
-            // 看板拖拽（W2 P3）：状态转移 + 列内排序一个原子操作（同列重排
+            // 看板拖拽：状态转移 + 列内排序一个原子操作（同列重排
             // 只改 position；跨列走状态机）。
             "issue.move" => {
                 let data = data.ok_or("missing data")?;
@@ -532,7 +532,7 @@ impl ModuleHandler for BoardHandler {
                 if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
                     archive_handoff_best_effort(&issue.number);
                 }
-                // M1 补派触发器 + 父单收口（跨列拖到 done/cancelled 同样落定）。
+                // 补派触发器 + 父单收口（跨列拖到 done/cancelled 同样落定）。
                 #[cfg(feature = "cluster")]
                 if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
                     on_issue_settled(&store, ctx.state.cluster.as_ref(), id, &actor);
@@ -541,20 +541,20 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "moved": true, "issue": issue_to_view(&store, &issue)? }),
                 ))
             }
-            // 派发到远端 worker（W2 P2）：issue → peer_chat，task_id ↔ issue
+            // 派发到远端 worker：issue → peer_chat，task_id ↔ issue
             // 绑定入 issue_dispatch 表；worker 回报经 peer_chat_callback 由
             // gateway 写回看板（成功 → 结果评论 + in_review，失败 → 失败评论）。
             "issue.dispatch" => issue_dispatch(&store, actor, ctx, data).await,
-            // 取消进行中的派发（W2 P4）：A 侧派发/issue 双终态 + 下行
+            // 取消进行中的派发：A 侧派发/issue 双终态 + 下行
             // task_cancel 让 worker abort。赢竞态才动账（worker 恰好回报则
             // 拒绝取消，issue 保持写回的状态）。响应带 cascade_cancelled
-            //（C3：被级联取消的子单编号清单）。
+            //（被级联取消的子单编号清单）。
             "issue.cancel" => issue_cancel(&store, actor, ctx, data).await,
-            // 只撤派发、单据存活（B14）：与 issue.cancel（连单终杀）互补——
+            // 只撤派发、单据存活：与 issue.cancel（连单终杀）互补——
             // 派错节点换人重派 / worker 假死不等超时 sweep 的轻量出口。
             // issue 状态不动（可直接重派），写回幂等早退兜住迟到回报。
             "issue.cancel_dispatch" => issue_cancel_dispatch(&store, actor, ctx, data).await,
-            // reopen（发现④ 2026-09-15）：cancelled → backlog 唯一终态
+            // reopen（发现④）：cancelled → backlog 唯一终态
             // 出口，自动追加审计评论 + 解除 hidden；与 CLI `issue reopen`
             // 共用 store.reopen_issue 单一后端。
             "issue.reopen" => {
@@ -570,11 +570,11 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "reopened": true, "issue": issue_to_view(&store, &issue)? }),
                 ))
             }
-            // AI 拆解（Swarm M1）：confirm 缺省/false = 异步跑 planner（返回
+            // AI 拆解（Swarm）：confirm 缺省/false = 异步跑 planner（返回
             // plan_id，结果经 board.plan_ready/failed push）；confirm:true =
             // 按 plan_id 落库 + 依赖闸派发波 + 父单联动。
             "issue.plan" => issue_plan(&store, actor, ctx, data).await,
-            // 验收标准 AI 起草（NB-101 AC 缺失根修的人工面）：草稿只回前端
+            // 验收标准 AI 起草（AC 缺失根修的人工面）：草稿只回前端
             // 预填，不落库——用户编辑后走既有 issue.update 保存（AI 只起草，
             // 落库决定权在用户）。父单（汇总子单材料）与子单/独立单通用。
             "issue.draft_ac" => {
@@ -612,11 +612,11 @@ impl ModuleHandler for BoardHandler {
             // 工具面），结论异步落回本单系统评论。人的聊天路径（「继续 NB-x」）
             // 保留——那是人对自己会话的选择；自动化从此走这扇门。
             "board.resume" => board_resume(store, ctx, data.as_ref()).await,
-            // P11 观测面：plan 预览查询（list 全量存活按 issue_id 可选过滤 /
+            // 观测面：plan 预览查询（list 全量存活按 issue_id 可选过滤 /
             // get 单查；TTL 惰性过滤与插入点同判据）。
             "plan.list" => plan_list(&store, data),
             "plan.get" => plan_get(data),
-            // 取消单清理（P1/A2b）：批量给已取消单打 hidden 标记（永久收起，
+            // 取消单清理：批量给已取消单打 hidden 标记（永久收起，
             // 列表面无放行口）。只认 status=cancelled——混入非取消单整体拒绝
             //（不是跳过，语义诚实）；前端二次确认后调用；逐单写
             // issue_bulk_archive 审计。
@@ -634,7 +634,7 @@ impl ModuleHandler for BoardHandler {
                     "issues": issues,
                 })))
             }
-            // --- autopilot（W2 P4 定时派活）---
+            // autopilot（定时派活）---
             "autopilot.list" => {
                 let autopilots = store.list_autopilots()?;
                 Ok(Some(serde_json::json!({ "autopilots": autopilots })))
@@ -646,7 +646,7 @@ impl ModuleHandler for BoardHandler {
                     .get("enabled")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
-                // 语法 + 语义双闸（BUG-20261025-18）：解析通过但永不匹配的
+                // 语法 + 语义双闸：解析通过但永不匹配的
                 // 表达式在写 store 前拒绝，不留「已创建」的静默僵尸规则。
                 validate_autopilot_schedule(&cron_expr, enabled)?;
                 let ap = store.create_autopilot(&nemesis_board::NewAutopilot {
@@ -662,16 +662,16 @@ impl ModuleHandler for BoardHandler {
                     project_id: data.get("project_id").and_then(|v| v.as_i64()),
                     target: get_opt_str(&data, "target").unwrap_or_default(),
                     enabled,
-                    // 全自动流转 D2：建单后自动 planner 拆解（默认 false，
+                    // 全自动流转：建单后自动 planner 拆解（默认 false，
                     // 存量前端不传时行为不变）。
                     auto_plan: data
                         .get("auto_plan")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
-                    // F-U5-1：验收标准（触发建单透传；空 = 不填）。
+                    // F-：验收标准（触发建单透传；空 = 不填）。
                     acceptance_criteria: get_opt_str(&data, "acceptance_criteria")
                         .filter(|s| !s.trim().is_empty()),
-                    // L23：父会话绑定（空/空白 = 不绑定）。
+                    // 父会话绑定（空/空白 = 不绑定）。
                     session_key: get_opt_str(&data, "session_key")
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty()),
@@ -691,7 +691,7 @@ impl ModuleHandler for BoardHandler {
                     .get("id")
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: id")?;
-                // 语法 + 语义双闸（BUG-20261025-18）：按「合并后的有效
+                // 语法 + 语义双闸：按「合并后的有效
                 // cron + 有效 enabled」在写 store 前校验——改 cron 成死
                 // 表达式、或把存量死规则 enable，都在此拒绝且 store 不动。
                 let old = store.get_autopilot(id)?;
@@ -716,9 +716,9 @@ impl ModuleHandler for BoardHandler {
                         target: get_opt_str(&data, "target"),
                         enabled: data.get("enabled").and_then(|v| v.as_bool()),
                         auto_plan: data.get("auto_plan").and_then(|v| v.as_bool()),
-                        // F-U5-1：验收标准（Some("") = 清空；缺省 = 不改）。
+                        // F-：验收标准（Some("") = 清空；缺省 = 不改）。
                         acceptance_criteria: get_opt_str(&data, "acceptance_criteria"),
-                        // L23：父会话绑定（Some("") = 解除绑定；缺省 = 不改）。
+                        // 父会话绑定（Some("") = 解除绑定；缺省 = 不改）。
                         session_key: get_opt_str(&data, "session_key")
                             .map(|s| s.trim().to_string()),
                     },
@@ -743,7 +743,7 @@ impl ModuleHandler for BoardHandler {
             // 手动触发一次（到点自动触发走 gateway on_job → 同一
             // fire_autopilot 核心）。
             "autopilot.run" => {
-                // F-U4-5：急停中拒绝手动触发（target 非空的规则会发车）。
+                // F-：急停中拒绝手动触发（target 非空的规则会发车）。
                 refuse_dispatch_when_estopped(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
@@ -754,7 +754,7 @@ impl ModuleHandler for BoardHandler {
                 let out = {
                     #[cfg(feature = "cluster")]
                     {
-                        // D2：WSAPI 有现成 moderator/事件上下文——包即抛槽
+                        // WSAPI 有现成 moderator/事件上下文——包即抛槽
                         // 传入（槽空 = agent 未运行，auto_plan 走诚实降级）。
                         let auto_plan_ctx = AutoPlanContext {
                             moderator_slot: {
@@ -804,7 +804,7 @@ impl ModuleHandler for BoardHandler {
                 let issues = store.list_issues_by_origin("autopilot", &id.to_string(), limit)?;
                 Ok(Some(serde_json::json!({ "issues": issues })))
             }
-            // --- comment / activity ---
+            // comment / activity ---
             "comment.add" => {
                 let data = data.ok_or("missing data")?;
                 let issue_id = data
@@ -819,7 +819,7 @@ impl ModuleHandler for BoardHandler {
                     parent_id: data.get("parent_id").and_then(|v| v.as_i64()),
                     ctype: CommentType::Comment,
                 })?;
-                // M5（2026-10-10 集群无人值守硬化）：审批回执回源——
+                // （集群无人值守硬化）：审批回执回源——
                 // `/approve|/deny <短号>` 评论转发远程审批（短号在注册表才
                 // 动作；失败留痕为系统评论）。异步旁路，不阻塞本响应。
                 #[cfg(feature = "cluster")]
@@ -857,7 +857,7 @@ impl ModuleHandler for BoardHandler {
                 let activity = store.list_activity(issue_id)?;
                 Ok(Some(serde_json::json!({ "activity": activity })))
             }
-            // --- subscriber ---
+            // subscriber ---
             "subscriber.add" => {
                 let data = data.ok_or("missing data")?;
                 let issue_id = data
@@ -889,12 +889,12 @@ impl ModuleHandler for BoardHandler {
                 let subscribers = store.list_subscribers(issue_id)?;
                 Ok(Some(serde_json::json!({ "subscribers": subscribers })))
             }
-            // --- project / attachment / stats ---
+            // project / attachment / stats ---
             "project.list" => {
                 let projects = store.list_projects()?;
                 Ok(Some(serde_json::json!({ "projects": projects })))
             }
-            // 项目进度聚合（goal P1/C1+C2）：带 project_id = 单项目（含逐单
+            // 项目进度聚合（goal /+）：带 project_id = 单项目（含逐单
             // 环节数据）；不带 = 全项目摘要（前端列表页一次拉取）。
             "project.progress" => {
                 let project_id = data
@@ -906,8 +906,8 @@ impl ModuleHandler for BoardHandler {
                     None => Ok(Some(project_progress_all(&store)?)),
                 }
             }
-            // D（goal P2）项目级恢复发车：入口项目上一键重试全部可派未派子单
-            // （拍板①：派发顺序由 AI/依赖闸自行决定）。estop 中拒绝（护栏）。
+            // D（goal）项目级恢复发车：入口项目上一键重试全部可派未派子单
+            // （派发顺序由 AI/依赖闸自行决定）。estop 中拒绝（护栏）。
             "project.resume" => {
                 let data = data.ok_or("missing data")?;
                 let project_id = data
@@ -928,9 +928,9 @@ impl ModuleHandler for BoardHandler {
                 {
                     return Err("⛔ 急停（E-STOP）生效中：恢复发车被拒绝（先释放急停）".to_string());
                 }
-                // as_ref 借用而非 clone：feature 关时字段退化为 Option<()>（Copy），
+                // as_ref 借用而非 clone：feature 关时字段退化为 Option<>（Copy），
                 // `.clone()` 会撞 clippy clone_on_copy（裁剪构建 clippy -p 现实告警）；
-                // 两个 cfg 臂的 project_resume 形参（&Arc<Cluster> / &()）都恰好收借用。
+                // 两个 cfg 臂的 project_resume 形参（&Arc<Cluster> / &）都恰好收借用。
                 let cluster = ctx
                     .state
                     .cluster
@@ -950,22 +950,22 @@ impl ModuleHandler for BoardHandler {
             }
             "project.create" => {
                 let data = data.ok_or("missing data")?;
-                // 全自动流转 P3/F1：可选验收标准 + 自动启动。保守默认
+                // 全自动流转 /：可选验收标准 + 自动启动。保守默认
                 // （auto_start=false）——存量前端建项目行为不变。
                 let acceptance_criteria = get_opt_str(&data, "acceptance_criteria");
                 let auto_start = data
                     .get("auto_start")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                // 看板项目档案 goal P2/B1-B2：可选目录入参（None = 自动分配
+                // 看板项目档案 goal /-：可选目录入参（None = 自动分配
                 // `<workspace>/board-projects/<安全化名>/`）。解析/安全化/
                 // 重叠拒绝/四件套脚手架都在 `archive::resolve_project_directory`
                 // + `ensure_scaffold`（绑定不可变，此后无修改入口）。
                 let workspace = require_workspace(ctx)?;
                 let name = get_str(&data, "name")?;
-                // 同名预检（2026-10-11 用户实测）：项目名有 UNIQUE 约束，
+                // 同名预检（用户实测）：项目名有 UNIQUE 约束，
                 // 重名此前透传裸 `UNIQUE constraint failed: project.name`
-                // ——用户看不懂也无处查。中文提示 + 现状指引；UNIQUE 约束
+                // 用户看不懂也无处查。中文提示 + 现状指引；UNIQUE 约束
                 // 仍在兜底并发窗口。
                 if store.list_projects()?.iter().any(|p| p.name == name) {
                     return Err(format!(
@@ -1005,7 +1005,7 @@ impl ModuleHandler for BoardHandler {
                     "project": project,
                     "directory": dir_path.to_string_lossy(),
                 });
-                // F5 件①：建项目警示——项目层永远没有交付文本（收口评审
+                // 件①：建项目警示——项目层永远没有交付文本（收口评审
                 // 的锚点核验对象是汇总摘要），AC 写 `[CHECK] re:` 锚点在
                 // 项目层不可自动核验；应下放到具体任务单。
                 if nemesis_board::has_content_regex_anchor(
@@ -1016,7 +1016,7 @@ impl ModuleHandler for BoardHandler {
                     );
                 }
                 if auto_start {
-                    // F-U4-5：自动开工链终点是拆解发车（plan 链 A1 波），
+                    // F-：自动开工链终点是拆解发车（plan 链 波），
                     // 急停中拒绝整段。项目照建已是事实——响应体照常返回，
                     // auto_start 字段注明拒绝（与非 cluster 降级路径同形），
                     // 不用 `?` 把已建项目信息吞成裸 Err。
@@ -1054,7 +1054,7 @@ impl ModuleHandler for BoardHandler {
                 }
                 Ok(Some(out))
             }
-            // 项目字段级更新（W2 P3）：归档走 status="archived"（软删除）。
+            // 项目字段级更新：归档走 status="archived"（软删除）。
             "project.update" => {
                 let data = data.ok_or("missing data")?;
                 reject_nested_patch(&data)?;
@@ -1070,10 +1070,10 @@ impl ModuleHandler for BoardHandler {
                     acceptance_criteria: get_opt_str(&data, "acceptance_criteria"),
                 };
                 let project = store.update_project(id, &patch)?;
-                // C 里程碑 5（看板项目档案 goal P2）：状态/名称投影回
+                // C 里程碑 5（看板项目档案 goal）：状态/名称投影回
                 // project.json（失败静默——投影可重建，不阻塞管理操作）。
                 nemesis_board::archive_writer::sync_project_manifest(&store, id);
-                // F9（看板项目档案 P6）：人工收口 → completed 落定即触发
+                // （看板项目档案）：人工收口 → completed 落定即触发
                 // AI 收口总结（异步；hook 未注册/生成失败均不阻塞管理操作）。
                 if patch.status.as_deref() == Some("completed")
                     && project.status == "completed"
@@ -1085,7 +1085,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "updated": true, "project": project }),
                 ))
             }
-            // 看板项目档案 P6（F10）：打开档案目录。只放行 board 项目注册表
+            // 看板项目档案：打开档案目录。只放行 board 项目注册表
             // （board.db Project.directory——绑定不可变、无修改入口）已知路径，
             // 前端不可传任意路径；系统文件管理器打开（复用 projects 模块的
             // open_in_file_manager：CREATE_NO_WINDOW spawn 不等待）。
@@ -1106,7 +1106,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "opened": true, "directory": dir }),
                 ))
             }
-            // 附件上传（W2 P3）：base64 内容 → workspace/board/files/ 存文件
+            // 附件上传：base64 内容 → workspace/board/files/ 存文件
             // + 元数据入表。storage_path 记 workspace 相对路径（可移植）。
             "attachment.add" => {
                 let data = data.ok_or("missing data")?;
@@ -1146,8 +1146,8 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "added": true, "attachment": attachment }),
                 ))
             }
-            // 附件下载（W2 P3）：读文件回 base64（MVP 经 WS 传小文件；大文件
-            // 走 HTTP 静态路由留 P4 评估）。
+            // 附件下载：读文件回 base64（MVP 经 WS 传小文件；大文件
+            // 走 HTTP 静态路由留 评估）。
             "attachment.get" => {
                 let data = data.ok_or("missing data")?;
                 let id = data
@@ -1164,8 +1164,8 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "attachment": attachment, "content": content }),
                 ))
             }
-            // 收件箱（W2 P3）：站内通知列表（store 事件钩子产生；经通道的
-            // 站外投递留 P4）。MVP 单管理员语义：admin 通知全员可见。
+            // 收件箱：站内通知列表（store 事件钩子产生；经通道的
+            // 站外投递留）。MVP 单管理员语义：admin 通知全员可见。
             "inbox.list" => {
                 let data = data.unwrap_or(serde_json::Value::Null);
                 let unread_only = data
@@ -1212,7 +1212,7 @@ impl ModuleHandler for BoardHandler {
                 let attachments = store.list_attachments(issue_id)?;
                 Ok(Some(serde_json::json!({ "attachments": attachments })))
             }
-            // --- channel（Swarm M3 批次 E：讨论频道）---
+            // channel（Swarm 批次 E：讨论频道）---
             "channel.list" => {
                 let channels = store.list_channels()?;
                 Ok(Some(serde_json::json!({ "channels": channels })))
@@ -1272,7 +1272,7 @@ impl ModuleHandler for BoardHandler {
                     .collect();
                 Ok(Some(serde_json::json!({ "by_status": map })))
             }
-            // --- audit（全自动流转 P5/E2：决策流视图）---
+            // audit（全自动流转 /：决策流视图）---
             "audit.list" => {
                 let data = data.unwrap_or(serde_json::json!({}));
                 let limit = data
@@ -1280,7 +1280,7 @@ impl ModuleHandler for BoardHandler {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(50)
                     .clamp(1, 500) as u32;
-                // F-U6-1：offset 翻页——刷屏类记录挤占 limit 窗口时仍可翻到最新。
+                // F-：offset 翻页——刷屏类记录挤占 limit 窗口时仍可翻到最新。
                 let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 let action = data
                     .get("action")
@@ -1304,7 +1304,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "rolled_back": true, "issue": issue }),
                 ))
             }
-            // S-O1：合并停车人工重试（按 issue 扫档案树未合并 placement 重走合并）。
+            // S-：合并停车人工重试（按 issue 扫档案树未合并 placement 重走合并）。
             "audit.retry_merge" => {
                 let data = data.ok_or("missing data")?;
                 let id = data
@@ -1323,12 +1323,12 @@ impl ModuleHandler for BoardHandler {
                 );
                 Ok(Some(result))
             }
-            // M5-1（2026-10-10 机制加固）：评审重触发——卡 in_review 的单子
+            // （机制加固）：评审重触发——卡 in_review 的单子
             // 人工一键重入验收评审。number（NB-N）优先、id 兜底；非
             // in_review 诚实拒绝（评审链内有竞态守卫，这里是入口闸）。
             "review.retrigger" => {
                 let data = data.ok_or("missing data")?;
-                // 项目收口复评臂（2026-10-17 NB-101 project_escalate_human
+                // 项目收口复评臂（project_escalate_human
                 // 死路根修）：`{"project_id": N}` 直接重触项目收口评审。
                 // 前置闸与评审侧同源：项目存在、未终结、全顶层父单 done。
                 if let Some(project_id) = data.get("project_id").and_then(|v| v.as_i64()) {
@@ -1367,7 +1367,7 @@ impl ModuleHandler for BoardHandler {
                         actor.kind,
                         actor.id
                     );
-                    // 留痕：项目无 comment 载体（F3 惯例），系统注记落全部
+                    // 留痕：项目无 comment 载体（惯例），系统注记落全部
                     // 顶层父单；消费掉的停车档案照常归档。
                     for p in &tops {
                         let _ = store.add_comment(NewComment {
@@ -1401,7 +1401,7 @@ impl ModuleHandler for BoardHandler {
                         issue.status.as_str()
                     ));
                 }
-                // 打回重开（2026-10-16 用户裁决）：最近 auto_decide =
+                // 打回重开（用户裁决）：最近 auto_decide =
                 // parent_escalate_human 的单，retrigger = 人工打回升级——
                 // 返工轮数预算重置（board_meta 纪元键），自动验收重新开始。
                 // 必须先于 hook 落定：评审侧防抖守卫读活动流（admin 评论
@@ -1423,7 +1423,7 @@ impl ModuleHandler for BoardHandler {
                 let hook = REVIEW_RETRIGGER_HOOK.get().ok_or(
                     "评审重触发钩子未安装（gateway 未装配 board 评审依赖或非 master 节点）",
                 )?;
-                // 留痕：人工触发记录进单据（决策流/审计可见）——必须在
+                // 留痕：人工触发记录进单据（决策流/审计可）——必须在
                 // hook 发车之前落库（评审侧循环升级防抖守卫靠「升级后有
                 // admin 活动」放行人工复评）。
                 tracing::info!(
@@ -1452,7 +1452,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "retriggered": true, "issue": issue.number, "escalated_reopen": escalated }),
                 ))
             }
-            // U-B（2026-10-12 无人值守）：端点不可用封存观测 + 手动放行。
+            // U-B（无人值守）：端点不可用封存观测 + 手动放行。
             // status = 状态机快照 + 待续做中断档案清单（不 load 内容）。
             "unavailable.status" => {
                 let mut snap = super::board_unavailable::snapshot_json();
@@ -1481,7 +1481,7 @@ impl ModuleHandler for BoardHandler {
                     serde_json::json!({ "released": true, "was_frozen": was }),
                 ))
             }
-            // --- config（全自动流转 P1/A4：配置 TAB 读写 board 段旗标）---
+            // config（全自动流转 /：配置 TAB 读写 board 段旗标）---
             "config.get" => {
                 let home = ctx.home.as_deref().ok_or("home 未解析")?;
                 let cfg =
@@ -1498,7 +1498,7 @@ impl ModuleHandler for BoardHandler {
                 let value = data.get("value").ok_or("missing field: value")?;
                 board_config_set(ctx, &key, value)
             }
-            // --- 任务档案导出（2026-09-29 goal：统一整合任务全部记录）---
+            // 任务档案导出（goal：统一整合任务全部记录）---
             "dossier.export" => {
                 let data = data.ok_or("missing data")?;
                 let store = require_board(ctx)?;
@@ -1543,7 +1543,7 @@ impl ModuleHandler for BoardHandler {
                     "notes": outcome.notes,
                 })))
             }
-            // --- P3 外循环（交付发布，2026-10-25）---
+            // 外循环（交付发布）---
             "delivery.publish" => {
                 let data = data.ok_or("missing data")?;
                 let bridge = crate::handlers::deliveries::delivery_publish_bridge().ok_or(
@@ -1557,7 +1557,7 @@ impl ModuleHandler for BoardHandler {
     }
 }
 
-/// 全自动流转 P1（A4）：board 配置段白名单写入。typed 改字段 → 重序列化
+/// 全自动流转：board 配置段白名单写入。typed 改字段 → 重序列化
 /// round-trip 验证（与 `config.set_field` 同契约：字段没活下来就 loud 拒绝，
 /// 不谎报 updated）→ live/盘双路保存。白名单外键拒绝（配置页不作为任意
 /// 配置写入口）。保存后热生效：消费点（load_board_flags/plan 自动发车/
@@ -1569,7 +1569,7 @@ fn board_config_set(
 ) -> Result<Option<serde_json::Value>, String> {
     let home = ctx.home.as_deref().ok_or("home 未解析")?;
     // 锁在 update_config 内——typed 改字段 → round-trip 验证 → 落盘全程
-    // 串行（live 缓存优先视图由共享入口承担，2026-10-13 闭包事务收口）。
+    // 串行（live 缓存优先视图由共享入口承担， 闭包事务收口）。
     super::config::update_config(home, |config| {
         let board = config.board.get_or_insert_with(Default::default);
 
@@ -1583,7 +1583,7 @@ fn board_config_set(
             "auto_close_parent" => board.auto_close_parent = need_bool(value)?,
             "unlimited_mode" => {
                 let v = need_bool(value)?;
-                // AOR 批三 5.1 矛盾态硬拒（关闭方向）：autonomy=autonomous
+                // 矛盾态硬拒（关闭方向）：autonomy=autonomous
                 // 前置要求 unlimited_mode=true——先切回 assisted 才允许关。
                 if !v && board.autonomy == nemesis_config::BoardAutonomy::Autonomous {
                     return Err(
@@ -1592,7 +1592,7 @@ fn board_config_set(
                 }
                 board.unlimited_mode = v;
             }
-            // AOR 批三 5.1 自治模式总开关（"assisted"|"autonomous"；默认
+            // 自治模式总开关（"assisted"|"autonomous"；默认
             // assisted=现状零回归）。矛盾态硬拒（开启方向）：autonomous
             // 前置要求 unlimited_mode=true——先开 unlimited 再切 autonomous
             // （加载期矛盾态走诚实降级，见 nemesis-config
@@ -1608,19 +1608,19 @@ fn board_config_set(
                 }
                 board.autonomy = next;
             }
-            // P5/F1 冲突漏斗全局开关（false=human 档：冻结转人工）。
+            // / 冲突漏斗全局开关（false=human 档：冻结转人工）。
             "conflict_auto_resolve" => board.conflict_auto_resolve = need_bool(value)?,
-            // P34 重派决策量化（灰度默认关；true = D3 换节点重派叠加
+            // 重派决策量化（灰度默认关；true = 换节点重派叠加
             // worker × 任务类型成功率指纹三档权重）。
             "fingerprint_weighting" => board.fingerprint_weighting = need_bool(value)?,
-            // 2026-09-29 三档化：off/role/full（默认 role=丢职能保角色）；
-            // 旧布尔 false/true 兼容接收（→off/full），写盘统一为字符串档位。
+            // 三档化：off/role/full（默认 role=丢职能保角色）；
+            // 旧布尔 false/true 兼容接收（off/full），写盘统一为字符串档位。
             "dispatch_fallback" => {
                 board.dispatch_fallback = serde_json::from_value(value.clone()).map_err(|e| {
                     format!("dispatch_fallback 需要 \"off\"|\"role\"|\"full\"（或旧布尔）: {e}")
                 })?;
             }
-            // D0（goal P2）派发准入：单 worker 在途派发上限（非负整数；0=不限）。
+            // （goal）派发准入：单 worker 在途派发上限（非负整数；0=不限）。
             "worker_max_inflight" => {
                 board.worker_max_inflight = value
                     .as_i64()
@@ -1641,18 +1641,18 @@ fn board_config_set(
                 };
             }
             "review.selfcheck" => board.review.selfcheck = need_bool(value)?,
-            // G4（2026-10-18 批六）交付证据契约总闸：开启后所有单子验收
+            // 交付证据契约总闸：开启后所有单子验收
             // PASS 前置校验交付记录在场，缺失 = FAIL「缺交付证据」。
             "review.require_delivery_evidence" => {
                 board.review.require_delivery_evidence = need_bool(value)?;
             }
-            // P2 必检计划闸（SKIP≠PASS，2026-10-25）：开启后任务文本反引号
+            // 必检计划闸（SKIP≠PASS）：开启后任务文本反引号
             // 命令 = 必检计划，评审收口对账 delivery.checks——计划内没跑或
             // 失败 = PASS 降级 FAIL。
             "review.require_check_plan" => {
                 board.review.require_check_plan = need_bool(value)?;
             }
-            // M7（2026-10-10）：exec 锚点开关 + 超时（默认关=诚实 skipped 注记，
+            // exec 锚点开关 + 超时（默认关=诚实 skipped 注记，
             // 不进结果组；开=锚点命令在项目根执行，exit 0=过）。
             "review.exec_anchors_enabled" => board.review.exec_anchors_enabled = need_bool(value)?,
             "review.exec_anchor_timeout_secs" => {
@@ -1661,7 +1661,7 @@ fn board_config_set(
                     .ok_or("review.exec_anchor_timeout_secs 需要非负整数")?;
             }
             "review.auto_close_project" => board.review.auto_close_project = need_bool(value)?,
-            // 必需检查契约（项 B「必需的必须跑」，2026-10-22 拍板）：whole-map
+            // 必需检查契约（项 B「必需的必须跑」）：whole-map
             // 键——value = 整个 {匹配键: [必需锚点 id 列表]} 对象（匹配键可含
             // 点，per-rule 点后缀键不可行；UI 每次 load→edit→save 全 map）。
             // 空数组规则拒绝（空规则无意义，直接摘除该键）；空 id 拒绝（不做
@@ -1692,7 +1692,7 @@ fn board_config_set(
                 board.review.required_checks = rules;
             }
             "plan.auto_confirm" => board.plan.auto_confirm = need_bool(value)?,
-            // 任务档案（2026-09-29）：项目收口自动导出（默认开）。
+            // 任务档案：项目收口自动导出（默认开）。
             "dossier.auto_on_complete" => board.dossier.auto_on_complete = need_bool(value)?,
             "plan.model" => {
                 board.plan.model = if value.is_null() {
@@ -1716,7 +1716,7 @@ fn board_config_set(
                     u32::try_from(value.as_u64().ok_or("review.max_turns 需要非负整数")?)
                         .map_err(|_| "review.max_turns 超出 u32 范围")?;
             }
-            // 连续 UNSURE 停车阈值（0=不限；用户 2026-10-15：设置页缺旋钮）。
+            // 连续 UNSURE 停车阈值（0=不限；用户：设置页缺旋钮）。
             "review.max_unsure_streak" => {
                 board.review.max_unsure_streak = u32::try_from(
                     value
@@ -1750,7 +1750,7 @@ fn board_config_set(
                 )
                 .map_err(|_| "超出 u32 范围")?;
             }
-            // F2（2026-10-12）：送达失败自动重试熔断上限（0=关=无限重试；
+            // 送达失败自动重试熔断上限（0=关=无限重试；
             // unlimited_mode 视为 0；按本单 ⛔ 标记评论终身累计计数）。
             "budget.max_send_retries" => {
                 board.budget.max_send_retries = u32::try_from(
@@ -1810,7 +1810,7 @@ fn board_config_set(
                 )
                 .map_err(|_| "超出 u32 范围")?;
             }
-            // B1（职能→评审预设查表）：review.professions.<slug>.<field>
+            // （职能→评审预设查表）：review.professions.<slug>.<field>
             // （slug 大小写归一后写入 map，与查表侧 to_ascii_lowercase 对齐；
             // slug 语法走 nemesis-prompts 单一校验源）。逐维度 Option 覆盖：
             // 只写显式提供的维度，其余沿用内置/全局。
@@ -1896,14 +1896,14 @@ fn board_config_set(
         }
 
         // round-trip 验证：typed 重序列化后字段必须仍在且值一致（防 typed
-        // 结构与键清单漂移时谎报 updated——config.set_field G6 契约同款）。
+        // 结构与键清单漂移时谎报 updated——config.set_field 契约同款）。
         let reserialized =
             serde_json::to_value(&*config).map_err(|e| format!("config 重序列化失败：{e}"))?;
         let Some(board_json) = reserialized.get("board") else {
             return Err("board 段 round-trip 丢失（typed 结构漂移）".to_string());
         };
         let leaf = key.rsplit('.').next().unwrap_or(key);
-        // B1：review.professions.<slug>.<field> 四段键 → 嵌套四跳定位
+        // review.professions.<slug>.<field> 四段键 → 嵌套四跳定位
         // （slug 与写入侧同样归一小写后再核）。
         let persisted = if let Some(rest) = key.strip_prefix("review.professions.") {
             let mut seg = rest.rsplit('.');
@@ -1947,7 +1947,7 @@ fn board_config_set(
             _ => {}
         }
 
-        // M6-2 rebase（P5 clobber 根修）：update_config 的进程级写锁只串行
+        // rebase（clobber 根修）：update_config 的进程级写锁只串行
         // 进程内写者，跨进程写者（CLI model add、手工编辑）不在其列——落盘
         // 前以磁盘最新内容为底、只保留本闭包改过的 board 段；磁盘读失败 =
         // Err 不落盘（fail-closed，绝不拿陈旧快照重建磁盘）。
@@ -1960,7 +1960,7 @@ fn board_config_set(
     Ok(Some(serde_json::json!({ "updated": true, "key": key })))
 }
 
-/// B1：职能预设条目三维度全空时顺手删除（null 清除维度的收尾；防
+/// 职能预设条目三维度全空时顺手删除（null 清除维度的收尾；防
 /// `professions` map 积灰全空条目）。
 fn drop_if_empty(
     map: &mut std::collections::HashMap<String, nemesis_config::BoardProfessionReviewPreset>,
@@ -1971,7 +1971,7 @@ fn drop_if_empty(
     }
 }
 
-/// M6-2 rebase（P5 clobber 根修）：以磁盘最新 config.json 为底、只保留
+/// rebase（clobber 根修）：以磁盘最新 config.json 为底、只保留
 /// `mutated` 的 board 段，返回合并结果。磁盘读失败 = Err（调用方不落盘，
 /// fail-closed——绝不拿陈旧快照重建磁盘）。
 fn rebase_board_onto_disk(
@@ -1987,15 +1987,13 @@ fn rebase_board_onto_disk(
 #[cfg(test)]
 mod tests;
 
-// L23（三期 2026-11-03）：父会话绑定专项测试（home 单例隔离 + fire 裁决 +
+// （三期）：父会话绑定专项测试（home 单例隔离 + fire 裁决 +
 // 级联暂停 + WSAPI 绑定面 roundtrip）。
 #[cfg(test)]
 mod l23_tests;
 
-// ---------------------------------------------------------------------------
-// 2026-11-05 机械拆分：按域分文件。纯代码搬家，行为零变更；
-// 各子模块项经 pub use 保持原 handlers::board:: 路径不变。
-// ---------------------------------------------------------------------------
+// 机械拆分：按域分文件。纯代码搬家，行为零变更；
+// 各子模块项经 pub use 保持原 handlers::board:路径不变。
 mod cascade;
 mod dispatch;
 mod plan;

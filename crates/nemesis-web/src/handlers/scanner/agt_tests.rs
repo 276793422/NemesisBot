@@ -8,7 +8,7 @@
 //!   为空回退 `clamav_path/database`——两条路都因 freshclam.exe 缺失立即
 //!   Err（`find_executable` 是纯 join，无 PATH 回退，无网络）
 //!
-//! 结构性豁免（台账 §9.4 延续）：真下载 / 真下载库 / clamd 引擎扫描、
+//! 结构性豁免（台账 延续）：真下载 / 真下载库 / clamd 引擎扫描、
 //! spawn 包装层的进度/取消竞态臂、`cfg!(windows)` 的非 Windows 常量假臂。
 
 use super::*;
@@ -56,6 +56,7 @@ fn agt_make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -87,9 +88,7 @@ fn agt_read_cfg(ws: &std::path::Path) -> serde_json::Value {
     serde_json::from_str(&raw).unwrap()
 }
 
-// -----------------------------------------------------------------------
 // 模块接口面
-// -----------------------------------------------------------------------
 
 #[test]
 fn agt_scanner_default_and_module_surface() {
@@ -109,9 +108,7 @@ fn agt_scanner_default_and_module_surface() {
     assert_eq!(sorted.len(), before, "duplicate command in table");
 }
 
-// -----------------------------------------------------------------------
 // enable：空 state 引擎注入 PENDING 并落盘
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_enable_injects_pending_state_for_empty_engine() {
@@ -176,9 +173,7 @@ async fn agt_enable_injects_pending_state_for_empty_engine() {
     );
 }
 
-// -----------------------------------------------------------------------
 // update_db_inner：data_dir 双臂（freshclam.exe 缺失即 Err，无网络）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_update_db_inner_prefers_data_dir_and_fails_without_freshclam() {

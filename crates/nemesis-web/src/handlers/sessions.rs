@@ -552,7 +552,23 @@ impl ModuleHandler for SessionsHandler {
                     Some(raw) => {
                         let sid = nemesis_agent::session::SessionStore::sanitize_session_id(raw);
                         let key = format!("agent:main:session:{sid}");
-                        if nemesis_agent::chat_log::chat_log_exists(&key) {
+                        // session_occupied（非裸 jsonl）：meta-only 残留键同样
+                        // 拒绝——meta 写入是 upsert，导入复用会继承陈旧
+                        // allow_all/branch_summary/title（BUG-20261106-038）。
+                        // store 面（内存 + 盘）同查：store json 是
+                        // get_or_create 磁盘回落的优先源（live store file
+                        // always wins），store-only 残留键（detach 的 store
+                        // json 删除为单发 remove_file 无重试）被导入会复活被
+                        // 删会话的全部 LLM 上下文——横向排查同根同修。
+                        let store_taken = {
+                            let guard = ctx.state.agent_loop.read();
+                            guard
+                                .as_ref()
+                                .and_then(|al| al.session_store())
+                                .map(|s| s.contains(&key) || s.file_exists(&key))
+                                .unwrap_or(false)
+                        };
+                        if store_taken || nemesis_agent::chat_log::session_occupied(&key) {
                             return Err(format!("会话已存在: {sid}（导入不覆盖既有会话）"));
                         }
                         sid

@@ -19,7 +19,7 @@ impl AuthStore {
             creds: RwLock::new(HashMap::new()),
         };
         if let Err(e) = store.load() {
-            // BUG-20261025-39：构造期加载失败不能静默——盘上文件损坏时调用方
+            // 构造期加载失败不能静默——盘上文件损坏时调用方
             // 只看到空 store，下次 save 会以「空 + 新条目」覆盖盘上残留，
             // 其余 provider 的 token 无声丢失。loud 留痕让损失可追溯。
             tracing::warn!(
@@ -84,12 +84,12 @@ impl AuthStore {
     fn persist(&self) -> Result<(), String> {
         let data = serde_json::to_string_pretty(&*self.creds.read().unwrap())
             .map_err(|e| format!("serialize: {}", e))?;
-        // BUG-20261025-39：auth.json 存 OAuth access/refresh token（bearer
-        // 凭据），落盘必须原子写 + 0o600（对齐 TrustStore 的 REL-002 纪律）。
-        // 此前裸 std::fs::write 非原子：进程中断撕裂 = 半截 JSON，构造期
+        // auth.json 存 OAuth access/refresh token（bearer
+        // 凭据），落盘必须原子写 + 0o600（对齐 TrustStore 的 纪律）。
+        // 此前裸 std::fs:write 非原子：进程中断撕裂 = 半截 JSON，构造期
         // load 失败（现在会 loud）→ 空 store → 下次 save 覆盖即全量丢失；
         // 且默认权限在 Unix 下按 umask 常为 0644 世界可读。
-        // write_file_atomic 自带父目录创建，错误统一 "atomic write ..." 前缀。
+        // write_file_atomic 自带父目录创建，错误统一 "atomic write..." 前缀。
         nemesis_utils::write_file_atomic(&self.path, data.as_bytes(), 0o600)
             .map_err(|e| format!("write: {e}"))
     }

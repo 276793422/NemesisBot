@@ -1,5 +1,5 @@
-//! WavSource 切块/重采样测试（W7 注入面）。WAV 编解码本体在 wav_tests；
-//! MicSource 依赖真实采集设备，结构性豁免（台账 §9.4 同款）。
+//! WavSource 切块/重采样测试（注入面）。WAV 编解码本体在 wav_tests；
+//! MicSource 依赖真实采集设备，结构性豁免（台账 同款）。
 
 use super::*;
 use std::fs;

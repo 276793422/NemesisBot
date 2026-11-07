@@ -1,4 +1,4 @@
-//! Tests for skills-catalog digest injection (H3 / P2.2).
+//! Tests for skills-catalog digest injection (/.2).
 
 use super::*;
 
@@ -43,7 +43,7 @@ fn test_digest_message_replacement_semantics() {
 
 #[test]
 fn test_digest_state_inject_only_on_change() {
-    // I2 semantics: the injection is NOT persisted in history, so every
+    // semantics: the injection is NOT persisted in history, so every
     // build must re-emit the digest message — byte-identically when
     // unchanged (stable re-emission preserves the provider prefix), and
     // with fresh content when changed.
@@ -153,7 +153,7 @@ fn test_skills_digest_injected_when_changed() {
     ]);
 
     // First build: digest injected (catalog never seen for this session).
-    // H5 merge: the message is wrapped in <system-reminder>.
+    // merge: the message is wrapped in <system-reminder>.
     let m1 = agent_loop.build_messages(&instance);
     assert!(
         m1.iter().any(|m| {
@@ -164,7 +164,7 @@ fn test_skills_digest_injected_when_changed() {
         "first build injects the catalog (system-reminder wrapped)"
     );
     // Second build, same catalog: the digest message RE-APPEARS
-    // byte-identically (I2 stable re-emission — injection is not persisted,
+    // byte-identically (stable re-emission — injection is not persisted,
     // so each build re-sends it; identical bytes keep the prefix).
     let m2 = agent_loop.build_messages(&instance);
     assert_eq!(

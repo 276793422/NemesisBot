@@ -1,12 +1,12 @@
-//! 纪律闭环（2026-09-24 HOOK 三合一收口件4 —— 钩子系统第一个**内部策略
+//! 纪律闭环（2026-09-24 HOOK —— 钩子系统第一个**内部策略
 //! 消费者**）。Rust 原生模块，不经 hooks.json 方言（声明闸/证伪预算是
 //! 内建策略，不是用户可编排的脚本）。
 //!
-//! # 语义（计划 §6.1）
+//! # 语义（计划）
 //!
-//! **参与开关**（D3）：任务描述含 `[discipline:bugfix]` marker（拆解 prompt
+//! **参与开关**：任务描述含 `[discipline:bugfix]` marker（拆解 prompt
 //! 对 bug 类子单追加/用户手加）或聊天命令 `/discipline on|off`（交互会话 =
-//! 会话键态）。总开关 `agents.discipline.enabled` 默认 **false**（D5 灰度
+//! 会话键态）。总开关 `agents.discipline.enabled` 默认 **false**（灰度
 //! ——关 = 整个子系统不注册不生效）。
 //!
 //! **声明闸**（内部 ToolHook，首位注册）：参与中 + 工具 ∈
@@ -17,24 +17,27 @@
 //! 由 edit_file 条目一并承载。
 //!
 //! **证伪执行**（内部 LifecycleHook）：参与中 + 有声明 + 证伪未跑或上次
-//! 未过 → on_turn_end 先跑 `falsification_cmd`（走既有 ExecTool 管线：
-//! 工作区边界/超时/管道收尸全适用）→ 结果落 `.discipline/falsification-{n}.json`
+//! 未过 → on_turn_end 先跑 `falsification_cmd`（**规则层安全管线前置**
+//! [BUG-20261106-042：模型 authored 命令与主循环 exec 同源过闸——命令守卫/
+//! 注入/凭据/DLP/ABAC/SSRF；approval/guardian 弹窗类不含，无人值守 hook
+//! 对齐 workflow 适配器先例] + 既有 ExecTool 管线：工作区边界/超时/管道
+//! 收尸全适用）→ 结果落 `.discipline/falsification-{n}.json`
 //! （run/命令/成败/输出节选）并作为 feedback 注入（`TurnEndDecision::Continue`）。
 //! 通过后后续轮次不再续（条件「未跑或上次未过」转假）；重新参与
 //! （marker prompt / `/discipline` off→on）即进度归零——同会话下一轮
 //! 纪律任务拿满新预算，不因上轮残留被静默跳过。
 //!
-//! **预算双帽（诚实注记）**：自有 [`MAX_FALSIFICATION_RUNS`]（D4：耗尽 =
+//! **预算双帽（诚实注记）**：自有 [`MAX_FALSIFICATION_RUNS`]（耗尽 =
 //! 停车升级不静默——warn + falsification-{n}.json 留盘供看板评审注记；
 //! 交互会话的失败反馈早已逐轮可见 = 交还用户）+ 循环侧
-//! [`crate::hooks::MAX_TURN_END_CONTINUES`]（本钩子**首位注册**，纪律续轮
+//! [`crate::hooks:MAX_TURN_END_CONTINUES`]（本钩子**首位注册**，纪律续轮
 //! 计入共享帽——全局轮数有界，代价是与 Stop 方言续轮互相挤占）。
 //!
 //! **逃生门（全路径留痕）**：`/discipline off [理由]`（带理由时追加
 //! `.discipline/waive-audit.jsonl`）；estop 触发 → fail-open 整体停用；
 //! 证伪命令执行失败 → 失败事实回灌模型（升级而非绕行——预算照扣）。
 //!
-//! # 覆盖面诚实边界（计划 §6.2 原文）
+//! # 覆盖面诚实边界（计划 原文）
 //!
 //! - v1 闸面 = 四文件变更工具；**exec 不闸**（读写分类不可靠，诚实不硬拦
 //!   ——模型可用 exec 绕过闸写文件，本闸防的是「顺手改」不是对抗）。
@@ -58,7 +61,7 @@ use crate::hooks::{
 };
 use crate::r#loop::Tool;
 
-/// 任务描述 marker（D3）：出现即该会话进入纪律参与态。
+/// 任务描述 marker：出现即该会话进入纪律参与态。
 pub const DISCIPLINE_MARKER: &str = "[discipline:bugfix]";
 
 /// 声明目录（workspace 相对）。
@@ -67,7 +70,7 @@ pub const DISCIPLINE_DIR: &str = ".discipline";
 /// 声明规范文件（`.discipline/` 下）。
 pub const DECLARATION_FILE: &str = "declaration.json";
 
-/// 自有证伪预算（D4）：每会话最多跑 2 次证伪；耗尽 = 停车升级不静默。
+/// 自有证伪预算：每会话最多跑 2 次证伪；耗尽 = 停车升级不静默。
 pub const MAX_FALSIFICATION_RUNS: u32 = 2;
 
 /// 单次证伪超时（秒）——走 ExecTool 的 timeout 参数（上限 600，取 120：
@@ -77,7 +80,7 @@ const FALSIFICATION_TIMEOUT_SECS: u64 = 120;
 /// falsification-{n}.json 里的输出节选上限（字符）。
 const FALSIFICATION_OUTPUT_EXCERPT: usize = 2000;
 
-/// 闸面工具集（计划 §6.2 v1）：三文件变更工具。名字与
+/// 闸面工具集（计划 v1）：三文件变更工具。名字与
 /// `config_watch.rs::PLAN_MODE_WRITE_TOOLS` 的文件子集一致（注册名真相源
 /// 在 registry 构建）。2026-11-06：append_file 并入 edit_file（action=append），
 /// 追加写面由 edit_file 条目一并承载。
@@ -160,7 +163,7 @@ struct FalsificationProgress {
 /// 纪律闭环共享态（每 loop 一份，工厂构造注入）。锁全部短临界区（无
 /// await 持锁），钩子/gate 各自从 loop 槽借 Arc。
 pub struct DisciplineState {
-    /// `agents.discipline.enabled`（D5 总开关）。false = 全链路惰性。
+    /// `agents.discipline.enabled`（总开关）。false = 全链路惰性。
     enabled: bool,
     /// workspace 根（声明/证伪产物/审计落盘基准）。
     workspace: PathBuf,
@@ -410,11 +413,30 @@ impl ToolHook for DisciplineGateHook {
 /// 跑证伪（未跑或上次未过 → Continue 注入结果；通过/预算耗尽 → Stop）。
 pub struct DisciplineFalsificationHook {
     state: Arc<DisciplineState>,
+    /// BUG-20261106-042：证伪 exec 前置**规则层**安全管线（命令守卫/注入/
+    /// 凭据/DLP/ABAC/SSRF——approval/guardian 弹窗类不含，无人值守 hook
+    /// 场景对齐 workflow 工具适配器 tool_adapter.rs 的既定设计决策）。
+    /// None = 未装配（security feature 关闭/裸构建测试路径）→ 跳过检查。
+    #[cfg(feature = "security")]
+    security: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
 }
 
 impl DisciplineFalsificationHook {
     pub fn new(state: Arc<DisciplineState>) -> Self {
-        Self { state }
+        Self {
+            state,
+            #[cfg(feature = "security")]
+            security: None,
+        }
+    }
+
+    /// 工厂装配：带 security 插件句柄（证伪 exec 前跑规则层管线）。
+    #[cfg(feature = "security")]
+    pub fn new_with_security(
+        state: Arc<DisciplineState>,
+        security: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
+    ) -> Self {
+        Self { state, security }
     }
 }
 
@@ -447,8 +469,8 @@ impl LifecycleHook for DisciplineFalsificationHook {
         if prog.last_passed {
             return TurnEndDecision::Stop;
         }
-        // 预算耗尽（D4 停车升级不静默）：warn + 产物留盘（看板评审注记/
-        // 交互反馈逐轮可见），放行收尾——绝不无限续轮。
+        // 预算耗尽（停车升级不静默）：warn + 产物留盘（看板评审注记/
+        // 交互反馈逐轮可），放行收尾——绝不无限续轮。
         if prog.runs >= MAX_FALSIFICATION_RUNS {
             tracing::warn!(
                 "[discipline] falsification budget exhausted ({} runs, last_passed={}) — escalating: session {}",
@@ -460,34 +482,108 @@ impl LifecycleHook for DisciplineFalsificationHook {
         }
 
         let run = prog.runs + 1;
-        let passed = self
+        let outcome = self
             .run_falsification(&end.session_key, run, &decl.falsification_cmd)
             .await;
+        let passed = matches!(outcome, FalsificationOutcome::Passed);
         self.state.record_progress(&end.session_key, passed);
         let remaining = MAX_FALSIFICATION_RUNS - run;
-        let feedback = if passed {
-            format!(
+        let feedback = match &outcome {
+            FalsificationOutcome::Passed => format!(
                 "✅ [纪律] 证伪通过（第 {run}/{MAX_FALSIFICATION_RUNS} 次）：`{}` exit 0——假设未被证伪。\
                  请核对 `.discipline/falsification-{run}.json` 并收尾：下一条消息将正常结束，不再续轮。",
                 decl.falsification_cmd
-            )
-        } else {
-            format!(
+            ),
+            FalsificationOutcome::Failed => format!(
                 "❌ [纪律] 证伪失败（第 {run}/{MAX_FALSIFICATION_RUNS} 次）：`{}` 非零退出——假设被证伪。\
                  请依据输出修正修复或声明（输出节选已落 `.discipline/falsification-{run}.json`）。\
                  剩余证伪预算 {remaining} 次；耗尽即停车升级（看板注记/交还用户）。",
                 decl.falsification_cmd
-            )
+            ),
+            // BUG-20261106-042：安全规则层拦截——命令未执行，反馈如实说
+            // 「拦截」而非谎称「非零退出」（记录留盘供评审注记）。
+            #[cfg(feature = "security")]
+            FalsificationOutcome::SecurityBlocked(text) => format!(
+                "⛔ [纪律] 证伪命令被安全策略拦截（第 {run}/{MAX_FALSIFICATION_RUNS} 次，命令未执行）：\n\
+                 {text}\n\
+                 请修正声明中的 falsification_cmd；剩余证伪预算 {remaining} 次；耗尽即停车升级（看板注记/交还用户）。"
+            ),
         };
         TurnEndDecision::Continue { feedback }
     }
 }
 
+/// 证伪执行结果三态（BUG-20261106-042）：安全拦截单独成态，反馈文案
+/// 如实区分「命令没跑（被拦）」与「跑了但失败」。输出 text 已在
+/// [`DisciplineFalsificationHook::run_falsification`] 内落盘
+/// falsification-{n}.json，变体不携带（反馈按既有形态指路记录文件）。
+enum FalsificationOutcome {
+    /// exit 0——假设未被证伪。
+    Passed,
+    /// 非零退出 / 超时 / 启动失败——假设被证伪。
+    Failed,
+    /// 规则层安全管线拦截（text = ⛔ SECURITY BLOCKED 反馈）。命令未执行。
+    /// security feature 关闭 = 无检查可拦 = 变体不进编译（ caller 臂同门）。
+    #[cfg(feature = "security")]
+    SecurityBlocked(String),
+}
+
 impl DisciplineFalsificationHook {
-    /// 跑一次证伪命令（走既有 ExecTool 管线：工作区边界/超时/管道收尸全
-    /// 适用；**不经 loop 分发**——hook 无 registry 句柄，security 限额类
-    /// 分发闸不适用，诚实注记）。返回是否通过（exit 0）。
-    async fn run_falsification(&self, session_key: &str, run: u32, command: &str) -> bool {
+    /// 跑一次证伪命令。规则层安全管线前置（BUG-20261106-042：模型 authored
+    /// 的 falsification_cmd 与主循环 exec 同源过闸——命令守卫/注入/凭据/DLP/
+    /// ABAC/SSRF 规则面；**不含** approval/guardian 弹窗类，无人值守 hook
+    /// 场景对齐 workflow 工具适配器 tool_adapter.rs 既定决策）；拦截 → 命令
+    /// 不执行。放行后走既有 ExecTool 管线：工作区边界/超时/管道收尸全适用
+    /// （**不经 loop 分发**——hook 无 registry 句柄，审批/guardian 弹窗类
+    /// 分发闸不适用，诚实注记）。返回三态结果。
+    async fn run_falsification(
+        &self,
+        session_key: &str,
+        run: u32,
+        command: &str,
+    ) -> FalsificationOutcome {
+        // 规则层安全管线（拦截面与主循环 dispatch 前置检查同源）。
+        #[cfg(feature = "security")]
+        if let Some(ref security) = self.security {
+            let invocation = nemesis_security::types::ToolInvocation {
+                tool_name: "exec".to_string(),
+                args: serde_json::json!({
+                    "command": command,
+                    "timeout": FALSIFICATION_TIMEOUT_SECS,
+                }),
+                user: "discipline-hook".to_string(),
+                source: "discipline".to_string(),
+                metadata: std::collections::HashMap::new(),
+            };
+            let (allowed, deny) = security.execute(&invocation);
+            if !allowed {
+                let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
+                    layer: "unknown",
+                    policy: "security_pipeline".to_string(),
+                    summary: "operation denied by security policy".to_string(),
+                    suggestion: None,
+                });
+                let text = format!(
+                    "⛔ SECURITY BLOCKED [layer:{}|policy:{}] — The security policy denied this operation: {}{}",
+                    info.layer,
+                    info.policy,
+                    info.summary,
+                    info.suggestion
+                        .as_deref()
+                        .map(|s| format!("\n建议：{s}"))
+                        .unwrap_or_default()
+                );
+                tracing::warn!(
+                    session = session_key,
+                    layer = info.layer,
+                    policy = %info.policy,
+                    "[discipline] 证伪命令被安全规则层拦截（未执行）"
+                );
+                self.state
+                    .write_falsification_record(session_key, run, command, false, &text);
+                return FalsificationOutcome::SecurityBlocked(text);
+            }
+        }
         let exec = crate::loop_tools::ExecTool::new(
             &self.state.workspace().to_string_lossy(),
             self.state.restrict_exec(),
@@ -508,8 +604,8 @@ impl DisciplineFalsificationHook {
             approval_ref: None,
         };
         let outcome = exec.execute(&args, &ctx).await;
-        // 成败判定走 loop_tools 单一真相源 [`crate::loop_tools::exec_output_passed`]
-        // （B2 协议：非零退出 `Ok("Exit code: N…")` 与超时收尸
+        // 成败判定走 loop_tools 统一定义 [`crate::loop_tools:exec_output_passed`]
+        // （协议：非零退出 `Ok("Exit code: N…")` 与超时收尸
         // `Ok("Command timed out …")` 皆失败形态；Err 仅进程无法启动——
         // 同败。超时误判通过的缺陷收口当日复核修复）。
         let passed = match &outcome {
@@ -522,7 +618,11 @@ impl DisciplineFalsificationHook {
         };
         self.state
             .write_falsification_record(session_key, run, command, passed, &text);
-        passed
+        if passed {
+            FalsificationOutcome::Passed
+        } else {
+            FalsificationOutcome::Failed
+        }
     }
 }
 

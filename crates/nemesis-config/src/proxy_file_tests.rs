@@ -188,9 +188,9 @@ fn selfupdate_proxy_empty_is_none() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ==================== BUG-20261103-333 回归锁 ====================
+// ==================== 回归锁 ====================
 //
-// save_env/save_selfupdate 旧形态的 config_write_lock 只罩 write() 落盘段，
+// save_env/save_selfupdate 旧形态的 config_write_lock 只罩 write 落盘段，
 // RMW 的 read_for_write 在锁外——两个并发 proxy.save 请求（WSAPI 每帧独立
 // spawn）交错时后写者以自己读的旧底整体覆盖先写者（CONFIG_WRITE_LOCK 纪律
 // 注释明文描述的丢失更新形态）。修复 = 锁提到 save 臂首行覆盖整段 RMW

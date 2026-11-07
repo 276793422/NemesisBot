@@ -1,11 +1,11 @@
-//! scanner.rs 纯逻辑覆盖（Phase 3 批次 18，2026-08-25）。
+//! scanner.rs 纯逻辑覆盖（2026-08-25）。
 //!
 //! 子模块（非 sibling）以访问私有项。覆盖：`cmd_cancel` 三态匹配（精确 /
 //! update-db 前缀 / 无活跃操作）、`install_engine_inner` 与 `update_db_inner`
 //! 的**网络前**早期错误臂、`mark_op_started` 去重、`format_bytes` 边界、
 //! `make_download_progress_cb` 的 SSE 事件发布。
 //!
-//! 结构性豁免（台账 §9.4）：真实下载（install/download）、freshclam 病毒库
+//! 结构性豁免（台账）：真实下载（install/download）、freshclam 病毒库
 //! 更新、clamd 引擎创建与扫描——需要真网络/真引擎，走既有 graceful-failure
 //! 测试（scanner_more_tests::test_cmd_test_clamav_engine_creation_fails_gracefully）。
 
@@ -55,6 +55,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -85,9 +86,7 @@ fn noop_progress() -> Arc<dyn Fn(u64, u64) + Send + Sync> {
     Arc::new(|_written: u64, _total: u64| {})
 }
 
-// -----------------------------------------------------------------------
 // format_bytes
-// -----------------------------------------------------------------------
 
 #[test]
 fn format_bytes_boundaries() {
@@ -100,9 +99,7 @@ fn format_bytes_boundaries() {
     assert_eq!(format_bytes(1024 * 1024 + 512 * 1024), "1.5 MB");
 }
 
-// -----------------------------------------------------------------------
 // mark_op 去重
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn mark_op_dedup_then_finish_allows_restart() {
@@ -120,9 +117,7 @@ async fn mark_op_dedup_then_finish_allows_restart() {
     mark_op_finished(key).await;
 }
 
-// -----------------------------------------------------------------------
 // cmd_cancel 三态
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn cmd_cancel_no_active_op_errors() {
@@ -183,9 +178,7 @@ async fn cmd_cancel_missing_name_field() {
     assert!(err.contains("missing field: name"), "err: {err}");
 }
 
-// -----------------------------------------------------------------------
 // install / update_db 命令层
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn cmd_install_missing_name_field() {
@@ -238,9 +231,7 @@ async fn cmd_update_db_rejects_while_op_in_progress() {
     active_ops().lock().await.remove(key);
 }
 
-// -----------------------------------------------------------------------
 // install_engine_inner / update_db_inner 网络前早期错误臂
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn install_engine_inner_early_errors() {
@@ -322,9 +313,7 @@ async fn update_db_inner_early_errors() {
     assert_eq!(err, "engine not installed (no clamav_path)");
 }
 
-// -----------------------------------------------------------------------
 // make_download_progress_cb（SSE 事件）
-// -----------------------------------------------------------------------
 
 #[tokio::test]
 async fn download_progress_cb_publishes_percentage_event() {

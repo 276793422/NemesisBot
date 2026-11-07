@@ -3,15 +3,13 @@
 //! 根因背景：用户实盘 config.mcp.json 出现 `"env": null`（LLM 代写）时，
 //! Dashboard 侧严格解析直接崩溃（"invalid type: null, expected a
 //! sequence"），而 MCP runtime（当时的 nemesis-mcp 私有结构）却一切正常
-//! ——双真相源让同一份文件呈现两种命运。收敛后本文件钉住宽容契约：
+//! 双真相源让同一份文件呈现两种命运。收敛后本文件钉住宽容契约：
 //! `null`/map/标量形状的列表字段、`timeout`/`timeout_secs` 双键、Claude
 //! Desktop `mcpServers` 外部形状、空/残缺配置，全部可解析。
 
 use super::*;
 
-// ---------------------------------------------------------------------------
 // 用户实盘文件形状（回归锚点）
-// ---------------------------------------------------------------------------
 
 /// 用户实盘崩溃文件的精确形状：全局 `timeout` + per-server `timeout_secs`
 /// 双键并存 + `"env": null` + `"args": []`。收敛前 Dashboard 在此崩溃。
@@ -44,9 +42,7 @@ fn user_live_file_with_null_env_parses() {
     assert_eq!(s.timeout_secs, 30, "timeout_secs alias must be accepted");
 }
 
-// ---------------------------------------------------------------------------
 // 列表字段宽容（env/args/headers/tags 同一 helper）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn env_map_shape_converts_to_kv_list() {
@@ -82,9 +78,7 @@ fn env_scalar_becomes_single_element() {
     assert_eq!(cfg.env, vec!["A=1".to_string()]);
 }
 
-// ---------------------------------------------------------------------------
 // timeout 双键 + 宽容
-// ---------------------------------------------------------------------------
 
 #[test]
 fn timeout_key_and_alias_both_accepted() {
@@ -114,9 +108,7 @@ fn global_timeout_tolerant() {
     assert_eq!(b.timeout, 30);
 }
 
-// ---------------------------------------------------------------------------
 // Claude Desktop 外部形状
-// ---------------------------------------------------------------------------
 
 #[test]
 fn claude_desktop_mcpservers_map_shape() {
@@ -151,9 +143,7 @@ fn mcpservers_array_shape_accepted() {
     assert_eq!(cfg.servers[0].name, "a");
 }
 
-// ---------------------------------------------------------------------------
 // 空/残缺配置容忍
-// ---------------------------------------------------------------------------
 
 #[test]
 fn empty_and_partial_configs_tolerated() {
@@ -167,9 +157,7 @@ fn empty_and_partial_configs_tolerated() {
     assert!(b.servers.is_empty());
 }
 
-// ---------------------------------------------------------------------------
 // 序列化契约（线上键名稳定）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn serialize_emits_timeout_wire_key_and_roundtrips() {
@@ -199,7 +187,7 @@ fn mcp_config_roundtrip_lossless() {
     assert_eq!(parsed, cfg);
 }
 
-/// G2（2026-10-18 批四）：`browser_profile` 键——缺省 false（存量配置零
+/// `browser_profile` 键——缺省 false（存量配置零
 /// 迁移）；true round-trip 无损；false 序列化跳过（存量 config.mcp.json
 /// 字节稳定，typed save 不新增噪音键）。
 #[test]
@@ -224,9 +212,7 @@ fn mcp_server_browser_profile_serde_roundtrip() {
     assert_eq!(back, opted);
 }
 
-// ---------------------------------------------------------------------------
 // Builder
-// ---------------------------------------------------------------------------
 
 #[test]
 fn builder_methods_match_legacy_nemesis_mcp_api() {
@@ -241,9 +227,7 @@ fn builder_methods_match_legacy_nemesis_mcp_api() {
     assert_eq!(cfg.timeout_secs, 60);
 }
 
-// ---------------------------------------------------------------------------
 // 真实 loader 端到端（Dashboard 同路径）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn load_mcp_config_end_to_end_with_null_env() {
@@ -278,11 +262,9 @@ fn load_mcp_config_claude_desktop_shape_via_loader() {
     assert_eq!(cfg.servers[0].name, "fs");
 }
 
-// ---------------------------------------------------------------------------
-// validate_mcp_header_line（2026-10-15 第十二轮：头行语法单一真相源——
+// validate_mcp_header_line（头行语法单一权威定义——
 // CLI `mcp add` / Dashboard server.add·update 写入面 / HTTP transport
 // 运行期 WARN 跳过同源）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn header_line_accepts_valid_forms() {
@@ -328,11 +310,9 @@ fn header_line_rejects_empty_or_padded_reference_names() {
     assert!(validate_mcp_header_line("X-Key: yaml: a").is_err());
 }
 
-// ---------------------------------------------------------------------------
-// validate_mcp_env_line（2026-10-15 第十三轮：env 行语法单一真相源——
+// validate_mcp_env_line（env 行语法单一权威定义——
 // CLI `mcp add` / Dashboard server.add·update 写入面 / stdio 运行期
 // resolved_env WARN 跳过同源）
-// ---------------------------------------------------------------------------
 
 #[test]
 fn env_line_accepts_valid_forms() {

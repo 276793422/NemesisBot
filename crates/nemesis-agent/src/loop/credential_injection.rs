@@ -1,7 +1,7 @@
-//! 凭据别名最后一刻注入（P0 vault 计划 C1/C2，2026-09-22 计划 §3）。
+//! 凭据别名最后一刻注入（vault 计划 /，2026-09-22 计划）。
 //!
 //! 通用机制原则：本模块不认识任何业务名词（不知道"webhook"、"api_key"是
-//! 什么）——工具通过 [`crate::loop::Tool::credential_arg_keys`] **声明**自己
+//! 什么）——工具通过 [`crate::loop:Tool::credential_arg_keys`] **声明**自己
 //! 参数里承载凭据别名的槽位；机制只在 dispatch 瀑布最内层、`execute` 调用
 //! 前的一瞬，把槽位里的 `vault:<alias>` 改写成真值（copy 语义）。
 //!
@@ -14,17 +14,17 @@
 //! 同链路，见 nemesis_config::vault_ref）；非 vault 值（模型传的字面量）
 //! 原样通过（向后兼容，工具自行决定语义）。解析失败 → 结构化错误
 //! [`CredentialInjectionError`]（Display = 人类可读错误串，fail loud），
-//! 调用方可选接凭据发卡恢复 [`try_card_recovery`]（L25，2026-11-02）：
+//! 调用方可选接凭据发卡恢复 [`try_card_recovery`]（2026-11-02）：
 //! broker 在场时发凭据卡 → Stored 后原地重注入续行；缺席/被拒/超时走
 //! 原错误串零回归。
 //!
-//! L26（2026-11-02）扩展：①错误串 oracle 收敛——「别名不存在」根因的
+//! （2026-11-02）扩展：①错误串 oracle 收敛——「别名不存在」根因的
 //! message 通用化「凭据引用无效」，不给探测方存在性裁决（其余环境级
 //! 根因原文透传）；②[`find_declared_vault_references`] 供 dispatch 凭据
 //! 闸（tool_dispatch，注入前）做闸面探测——真值出域前的人工同意面。
 //! 槽位遍历经 [`walk_declared_slots`] 单点收拢，注入与检测零漂移。
 //!
-//! S3a 扩展：声明槽位为**对象**时递归改写其字符串叶子（string→string
+//! 扩展：声明槽位为**对象**时递归改写其字符串叶子（string→string
 //! 结构，如 web_fetch 的 `headers`）——顶层键是业务分组、凭据活在叶值里。
 //! 深度恒 1 层（声明键 → 对象 → 字符串叶），不做任意深度递归：声明的
 //! 是「这个槽承载凭据」，更深的嵌套声明不出来，宁缺毋滥。
@@ -36,7 +36,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// 发卡等待超时（秒）：与 auth 恢复卡 `B4_CREDENTIAL_CARD_TIMEOUT_SECS` 对齐。
+/// 发卡等待超时（秒）：与 auth 恢复卡 `_CREDENTIAL_CARD_TIMEOUT_SECS` 对齐。
 const CARD_TIMEOUT_SECS: u64 = 300;
 /// 发卡防滥用占位 TTL：同 `(session_key, alias)` 在窗内至多一张卡。
 const CARD_GUARD_TTL: Duration = Duration::from_secs(600);
@@ -47,7 +47,7 @@ const CARD_GUARD_HARD_CAP: usize = 4096;
 /// 发卡 request_id 序号（进程单调，唯一性不依赖时钟）。
 static CARD_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// 凭据注入失败的结构化错误（L25）。`Display` 产出与 legacy 错误串**逐字
+/// 凭据注入失败的结构化错误。`Display` 产出与 legacy 错误串**逐字
 /// 节一致**的文案（既有模型可读契约零回归）；结构化字段供发卡流程取
 /// 别名/槽位。`alias` 为空 = 空 `vault:` 引用形态（发不出卡）。
 #[derive(Debug, Clone)]
@@ -104,7 +104,7 @@ pub fn inject_credential_aliases_structured(
     })
 }
 
-/// 声明槽位的通用遍历（L26 抽取：槽位形态契约单点收拢于此）。对每个
+/// 声明槽位的通用遍历（抽取：槽位形态契约单点收拢于此）。对每个
 /// 声明键下的字符串槽值调用 `visit(字段路径, 槽值)`——字段路径为顶层键
 /// 或 `键.叶键` 形态。形态 = 顶层 string 槽 | 对象叶深度恒 1（声明键 →
 /// 对象 → 字符串叶）；非字符串/对象槽位与缺席键跳过（工具的 schema 校验
@@ -139,7 +139,7 @@ fn walk_declared_slots<E>(
     Ok(())
 }
 
-/// L26：检测声明槽位值中的 `vault:` 引用（dispatch 凭据闸的闸面探测）。
+/// 检测声明槽位值中的 `vault:` 引用（dispatch 凭据闸的闸面探测）。
 /// **只查声明槽**——未声明槽位里的 `vault:` 子串不进闸面（闸位精确性；
 /// 字面量明文凭据是凭据扫描层 Layer 4 的管辖面，闸不扩大）。返回
 /// `(字段路径, 别名)` 列表，别名 = 剥 `vault:` 前缀（空别名形态保留：
@@ -168,7 +168,7 @@ pub fn find_declared_vault_references(tool: &dyn Tool, args: &str) -> Vec<(Strin
     refs
 }
 
-/// oracle 收敛（L26）：resolver Err 含 marker [`ALIAS_NOT_FOUND_MARKER`]
+/// oracle 收敛：resolver Err 含 marker [`ALIAS_NOT_FOUND_MARKER`]
 /// （跨 crate 事实契约，源 = nemesis-security vault.rs `AliasNotFound`
 /// Display；pin 测试钉住）→ 通用化「凭据引用无效」，不给探测方存在性
 /// 裁决、不回显别名。其余根因（vault 文件缺失 / 打开失败 / 已锁定 /
@@ -206,7 +206,7 @@ fn resolve_slot_value(field: &str, slot: &mut String) -> Result<(), CredentialIn
 }
 
 // ---------------------------------------------------------------------------
-// L25（2026-11-02）：发卡恢复 + 防滥用占位
+// 发卡恢复 + 防滥用占位
 // ---------------------------------------------------------------------------
 
 /// 发卡防滥用占位表：`(session_key, alias)` → 占位时刻。同一会话对同一
@@ -268,7 +268,7 @@ impl Default for CredentialCardGuard {
     }
 }
 
-/// 注入失败的发卡恢复（L25）：broker 在场 → 发凭据卡（service=工具名、
+/// 注入失败的发卡恢复：broker 在场 → 发凭据卡（service=工具名、
 /// key_name=别名）→ Stored 后**重跑整个 args 注入**（多槽一致性）返回
 /// 续行参数；`None` = 走原错误路径（broker 缺席 / 空别名 / guard 冷却 /
 /// Denied / 超时 / broker Err / 重注入再失败——每次 attempt 至多一张卡）。

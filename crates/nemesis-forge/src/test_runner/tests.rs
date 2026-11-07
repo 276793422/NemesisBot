@@ -264,7 +264,7 @@ fn test_detect_mcp_language_unknown() {
     assert!(super::detect_mcp_language("unknown code").is_empty());
 }
 
-// ---- S8 coverage batch: MCP/parse/bracket helpers ---- (quality-hardening goal 冲刺 S8)
+// ---- coverage batch: MCP/parse/bracket helpers ---- (quality-hardening goal 冲刺)
 
 #[test]
 fn test_s8_default_impl_constructs_runner() {
@@ -297,7 +297,7 @@ fn test_s8_mcp_undetectable_language_reports_unknown_lang() {
 
 #[test]
 fn test_s8_mcp_python_missing_tool_registration_and_run_entry() {
-    // Python detected (has "def "), has Server( → check 3 passes;
+    // Python detected (has "def "), has Server(→ check 3 passes;
     // no tool registration and no run entry → errors 410/416; the
     // `||` chains on 406-408 and 414 are all evaluated (all false).
     let runner = TestRunner::new();
@@ -429,7 +429,7 @@ fn test_s8_check_function_completeness_python_body_errors() {
 
 #[test]
 fn test_s8_mcp_python_structure_ok_but_completeness_fails() {
-    // Structure passes (Server( + @server.tool + .run() present) but the
+    // Structure passes (Server(+ @server.tool +.run() present) but the
     // first def has an unindented body → check-4 error in validate_mcp_tests.
     let runner = TestRunner::new();
     let content = "def setup():\nx = 1\ns = Server(\"x\")\n@server.tool\nt.run()\n";

@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { mount, type VueWrapper } from '@vue/test-utils'
 import { describe, it, expect } from 'vitest'
 import SessionList from '../SessionList.vue'
 import { makeSession } from './fixtures'
@@ -38,5 +38,53 @@ describe('SessionList 详情面板', () => {
     })
     expect(wrapper.emitted('select')).toBeTruthy()
     expect(wrapper.emitted('select')![0]).toEqual(['web_chat1'])
+  })
+})
+
+describe('SessionList 时间过滤器（BUG-20261106-028）', () => {
+  const listItemIds = (wrapper: VueWrapper<any>) =>
+    wrapper.findAll('.list-item .item-id').map(n => n.text())
+
+  it('默认 all 显示全部；选「今天」隐藏非今日会话', async () => {
+    const stale = makeSession({ id: 'web_stale', messages: [] }) // fixture 固定 2026-06-27，恒为非今日
+    const fresh = makeSession({ id: 'web_fresh', lastTime: new Date().toISOString(), messages: [] })
+    const wrapper = mount(SessionList, {
+      props: { sessions: [stale, fresh], selectedId: null, requests: [] },
+    })
+    expect(listItemIds(wrapper)).toEqual(['web_stale', 'web_fresh'])
+    await wrapper.find('select.form-select').setValue('today')
+    expect(listItemIds(wrapper)).toEqual(['web_fresh'])
+  })
+
+  it('「今天」窗口用 48h 前时间戳隐藏（与运行日期无关的确定性断言）', async () => {
+    const twoDaysAgo = makeSession({
+      id: 'web_2d',
+      lastTime: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+      messages: [],
+    })
+    const wrapper = mount(SessionList, {
+      props: { sessions: [twoDaysAgo], selectedId: null, requests: [] },
+    })
+    await wrapper.find('select.form-select').setValue('today')
+    expect(listItemIds(wrapper)).toEqual([])
+  })
+
+  it('选「本周」：本周时间戳可见、fixture 旧日期（恒上上周以前）隐藏', async () => {
+    const fresh = makeSession({ id: 'web_fresh', lastTime: new Date().toISOString(), messages: [] })
+    const stale = makeSession({ id: 'web_stale', messages: [] })
+    const wrapper = mount(SessionList, {
+      props: { sessions: [fresh, stale], selectedId: null, requests: [] },
+    })
+    await wrapper.find('select.form-select').setValue('week')
+    expect(listItemIds(wrapper)).toEqual(['web_fresh'])
+  })
+
+  it('不可解析 lastTime 不过滤（诚实降级，不因格式意外隐藏条目）', async () => {
+    const bad = makeSession({ id: 'web_bad', lastTime: 'not-a-timestamp', messages: [] })
+    const wrapper = mount(SessionList, {
+      props: { sessions: [bad], selectedId: null, requests: [] },
+    })
+    await wrapper.find('select.form-select').setValue('today')
+    expect(listItemIds(wrapper)).toEqual(['web_bad'])
   })
 })

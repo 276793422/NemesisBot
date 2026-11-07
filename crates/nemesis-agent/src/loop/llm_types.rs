@@ -1,6 +1,6 @@
 //! LLM 消息/响应/Provider trait（LlmMessage/LlmResponse/LlmProvider）、观察者消息值提取、chat_call_bounded、wait_estop_engaged。
 //!
-//! P1 自 `loop.rs` 物理搬迁（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §3.2）；语义零变化。
+//! 自 `loop.rs` 物理搬迁；语义零变化。
 #[cfg(not(target_os = "linux"))]
 use super::prelude::*;
 use super::*;
@@ -15,7 +15,7 @@ pub struct LlmMessage {
     /// Reasoning content from thinking-mode models, passed back to the API.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
-    /// T5/T6（多模态，goal 2026-09-03）：本条消息携带的图片（已水合的
+    /// （多模态，goal）：本条消息携带的图片（已水合的
     /// base64 字节）。历史存储只留路径引用（`ConversationTurn.image_refs`），
     /// build_messages 组包时经 `hydrate_image_refs` 每轮重读填充；文件已删
     /// → 占位文本进 content。旧请求重放/下游适配器忽略此字段即纯文本路径，
@@ -24,11 +24,11 @@ pub struct LlmMessage {
     pub images: Vec<crate::image_attach::LlmImage>,
 }
 
-/// F-J（2026-09-04 四轮盲审）：observer 事件里 images[].data 的省略标记。
+/// F-J（四轮盲审）：observer 事件里 images[].data 的省略标记。
 pub const OBSERVER_IMAGE_DATA_MARKER: &str =
     "[图片字节已省略：observer 事件不落 base64，路径见 path]";
 
-/// observer 事件的 messages 序列化（F-J 单一真相源）。
+/// observer 事件的 messages 序列化（F-J 统一定义）。
 ///
 /// build_messages 水合后的 `LlmMessage.images[].data` 是完整图片 base64
 /// （单图 ≤25MB、每消息 ≤8 张）。逐轮 `serde_json::to_value` 若原样发射，
@@ -73,11 +73,11 @@ pub struct LlmResponse {
     pub finished: bool,
     /// Reasoning content from thinking-mode models.
     pub reasoning_content: Option<String>,
-    /// §6.2（2026-10-12 无人值守）：provider 归一化的停止原因
+    /// （无人值守）：provider 归一化的停止原因
     /// （"stop"/"length"/...，anthropic/openai lane 均已归一）。翻倍阶梯
     /// （[`super::length_escalation`]）的判定输入；None = 适配器未提供。
     pub finish_reason: Option<String>,
-    /// §6.2：翻倍阶梯实际生效的最后一次 max_tokens（仅当本调用发生过翻倍
+    /// 翻倍阶梯实际生效的最后一次 max_tokens（仅当本调用发生过翻倍
     /// 重试才 Some）——`handle_length_continuation` 的 token_cap 判定与触顶
     /// 文案用它取代 st.chat_opts 的陈旧配置值。
     pub escalated_to: Option<u64>,
@@ -109,7 +109,7 @@ pub trait LlmProvider: Send + Sync {
         tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String>;
 
-    /// L10（2026-10-13 内部专项 T3）：流式增量 lane。语义与 [`Self::chat`]
+    /// （内部专项）：流式增量 lane。语义与 [`Self::chat`]
     /// 完全一致（同参同返回），额外在**内容增量**到达时同步回调 `on_delta`
     /// （合并窗口在 sink 侧，实现方可按块直呼）。默认实现忽略回调、直接
     /// 委托 `chat()`——非流式 provider / CLI 型 provider / 测试桩行为字节
@@ -135,7 +135,7 @@ pub trait LlmProvider: Send + Sync {
         self.chat(model, messages, options, tools).await
     }
 
-    /// Provider 标识名（BUG-20261029-149：gateway heartbeat 降级判定——
+    /// Provider 标识名（gateway heartbeat 降级判定——
     /// NullProvider 返回 "null" 时心跳安静跳过，热切真实模型后自动恢复）。
     /// 默认空串：测试桩与不关心该判定的实现无需逐一实现。
     fn name(&self) -> &str {
@@ -144,7 +144,7 @@ pub trait LlmProvider: Send + Sync {
 }
 
 impl AgentLoop {
-    /// BUG 2026-09-21 ②A：单次上游调用统一包超时——挂死连接（429/网络
+    /// 单次上游调用统一包超时——挂死连接（429/网络
     /// 黑洞后不回响应体）按超时失败计，不再无限等待（实测挂死 27 分钟）。
     /// 四个调用点（首捕 / 429 重试环 / transient 环 / hook 重呼）统一走
     /// 这里；`call_timeout` = 0 关闭超时（退回旧行为）。超时文案带
@@ -174,7 +174,7 @@ impl AgentLoop {
     /// receiver is wired (`None` → pending, i.e. the select arm never fires).
     ///
     /// Extracted verbatim from the estop arm of the primary LLM-call select
-    /// (K1b, U14) — the post-LLM hook retry re-call needs the identical
+    /// — the post-LLM hook retry re-call needs the identical
     /// subscribe-window-safe wait (if already engaged at subscribe time,
     /// return immediately instead of waiting for the NEXT change).
     pub(crate) async fn wait_estop_engaged(rx: Option<&mut tokio::sync::watch::Receiver<bool>>) {
@@ -199,7 +199,7 @@ impl AgentLoop {
 }
 
 // ---------------------------------------------------------------------------
-// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// 自由函数归位（c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
 /// Format messages for log output, truncating long content.

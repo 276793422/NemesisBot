@@ -198,9 +198,10 @@ describe('chat store work timeline (2026-10-30)', () => {
 })
 
 // M6（2026-09-07）：行号推导——E3 rewind 菜单的 message_index 数据源。
-// chat_log 只存 user/assistant 行（与渲染消息 1:1），历史批次行号连续
-// （oldest_index + j），live 行从锚顺序递增；error/system 是纯前端渲染
-// 不占行。
+// chat_log 与渲染消息按「占行」对应（BUG-20261106-037 修正语义）：user/
+// assistant 恒占行；后端落盘的 system 行（busy 排队回执/compact 注记）
+// 也占行、随历史批次编号；纯前端渲染的 error/system 不占行。历史批次行号
+// 连续（oldest_index + j），live 行从锚顺序递增。
 
 function msg(role: 'user' | 'assistant' | 'error' | 'system', content: string, rowIndex?: number) {
   return { role, content, timestamp: 't', ...(rowIndex !== undefined ? { rowIndex } : {}) }
@@ -238,6 +239,40 @@ describe('chat store rowIndex (M6)', () => {
     expect(store.messages[3].rowIndex).toBeUndefined()
     expect(store.messages[4].rowIndex).toBe(2)
     expect(store.messages[5].rowIndex).toBe(3)
+  })
+
+  it('backend system row in history occupies a raw row (BUG-20261106-037)', () => {
+    const store = useChatStore()
+    // busy 排队回执/compact 注记是后端落盘的 system 行、占 raw 行——历史
+    // 批次编号 0..4（含 system@2），live 锚必须推到 5。修复前锚只数
+    // user/assistant（=4）→ live 行标签 4/5 与历史 a2@4 撞号，rewind 按
+    // 标签切会把历史轮误删（或被后端「不是 user 行」拒绝）。
+    store.prependHistory(
+      [
+        msg('user', 'q1'),
+        msg('assistant', 'a1'),
+        msg('system', '排队回执'),
+        msg('user', 'q2'),
+        msg('assistant', 'a2'),
+      ],
+      0,
+    )
+    expect(store.messages.map(m => m.rowIndex)).toEqual([0, 1, 2, 3, 4])
+    store.addMessage(msg('user', 'q3'))
+    store.addMessage(msg('assistant', 'a3'))
+    expect(store.messages[5].rowIndex).toBe(5)
+    expect(store.messages[6].rowIndex).toBe(6)
+  })
+
+  it('resync batch with backend system row keeps live numbering aligned', () => {
+    const store = useChatStore()
+    store.replaceMessages([
+      msg('user', 'q1', 0),
+      msg('assistant', 'a1', 1),
+      msg('system', 'compact 注记', 2),
+    ])
+    store.addMessage(msg('user', 'q2'))
+    expect(store.messages[3].rowIndex).toBe(3)
   })
 
   it('load-older batch re-derives the anchor (older rows prepended, live continues)', () => {
@@ -504,5 +539,81 @@ describe('chat store anchorFreshSession (M6-fix)', () => {
     // justCreated 分支语义：新会话服务端 jsonl 必为空——视图内行就是 0..n-1。
     store.anchorFreshSession()
     expect(store.messages.map(m => m.rowIndex)).toEqual([0, 1, 2])
+  })
+})
+
+// 2026-11-07 充分测试战役（webkit 全量实录根修）：会话级输入草稿表。
+// reset() 是后台恢复路径（SSE resync / gap 全量重载 / 路由重挂载补偿）与
+// 切会话共用的状态重建入口——后台路径不得抹用户正在输入的草稿（实录：
+// 前序 spec 遗留的 gateway 侧异步工作完成 → chat.activity → 防抖全刷 →
+// reset → fill 后发送钮恒 disabled，webkit 全量 4 例）。reset 不碰 input；
+// input 生命周期显式化：carryInput 切会话（旧草稿入表/新草稿出表）、
+// clearInput 发送链与模块边界、dropSessionState/dropAllSessionState 清表。
+describe('chat store session draft map (2026-11-07)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('reset preserves input (background rebuild must not wipe the draft)', () => {
+    const store = useChatStore()
+    store.input = '正在输入的草稿'
+    store.reset()
+    expect(store.input).toBe('正在输入的草稿')
+  })
+
+  it('carryInput parks the old draft and restores the target draft', () => {
+    const store = useChatStore()
+    store.input = 'A 会话的草稿'
+    store.carryInput('sid-a', 'sid-b')
+    expect(store.input).toBe('') // sid-b 无历史草稿 → 空白起步
+    store.input = 'B 会话的草稿'
+    store.carryInput('sid-b', 'sid-a')
+    expect(store.input).toBe('A 会话的草稿') // 切回 A 草稿复现
+    store.carryInput('sid-a', 'sid-b')
+    expect(store.input).toBe('B 会话的草稿')
+  })
+
+  it('carryInput tolerates null session ids (bootstrap / logout edges)', () => {
+    const store = useChatStore()
+    store.input = 'some draft'
+    store.carryInput(null, 'sid-1')
+    // null 旧会话不入表（无处可落）；初始选定不得洗用户已打的草稿——
+    // ChatView 初始 switchTo 晚于用户输入时，旧语义把草稿洗成空白 →
+    // 发送钮恒 disabled（2026-11-07 webkit 全量竞速实录根修）
+    expect(store.input).toBe('some draft')
+    store.carryInput('sid-1', null)
+    expect(store.input).toBe('')
+  })
+
+  it('carryInput with null oldSid restores a parked draft if the target has one', () => {
+    const store = useChatStore()
+    store.carryInput('sid-1', 'sid-2')
+    store.input = 'sid-2 存稿'
+    store.carryInput('sid-2', 'sid-1')
+    // 回到无会话态再初始选定 sid-2：恢复其存稿
+    store.carryInput(null, 'sid-2')
+    expect(store.input).toBe('sid-2 存稿')
+  })
+
+  it('dropSessionState clears the draft so a recreated session id starts clean', () => {
+    const store = useChatStore()
+    store.input = 'draft for sid-x'
+    store.carryInput('sid-x', 'sid-y')
+    store.dropSessionState('sid-x')
+    store.input = 'draft for sid-y'
+    store.carryInput('sid-y', 'sid-x')
+    expect(store.input).toBe('') // 复用 id 不得复活已删会话的草稿
+  })
+
+  it('dropAllSessionState clears every draft (logout)', () => {
+    const store = useChatStore()
+    store.input = 'draft a'
+    store.carryInput('sid-a', 'sid-b')
+    store.input = 'draft b'
+    store.carryInput('sid-b', 'sid-a')
+    store.input = 'live draft'
+    store.dropAllSessionState()
+    store.carryInput('sid-a', 'sid-b')
+    expect(store.input).toBe('')
   })
 })

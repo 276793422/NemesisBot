@@ -133,7 +133,7 @@ fn buy_rejects_invalid_input() {
     assert!(l.buy("A", 1.0, -1.0, TS).is_err(), "price<0");
 }
 
-/// BUG-20261105-022：sell 与 buy 同款价格/数量闸——负价卖出缺闸时
+/// sell 与 buy 同款价格/数量闸——负价卖出缺闸时
 /// proceeds 为负直接扣现金（账本可被推成负余额）；NaN 价也拒。
 #[test]
 fn sell_rejects_invalid_input() {

@@ -11,7 +11,7 @@ use tracing::{info, warn};
 /// layout under `{home}/workspace/workflow/`.
 ///
 /// Legacy layout (pre-refactor):
-///   {home}/workflow/{wf}_{exec}.jsonl         -> executions/
+///   {home}/workflow/{wf}_{exec}.jsonl -> executions/
 ///   {home}/workflow/checkpoints/{exec}/{cp}.json -> checkpoints/
 ///
 /// New layout (post-refactor):

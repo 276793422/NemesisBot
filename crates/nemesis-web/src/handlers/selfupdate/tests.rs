@@ -54,6 +54,7 @@ fn make_ctx() -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        background_registry: None,
         signature_verify: None,
         skills_install_gate: None,
         session_stats: None,
@@ -74,8 +75,8 @@ fn make_ctx() -> RequestContext {
 #[test]
 fn module_and_command_manifest() {
     assert_eq!(SelfupdateHandler.module_name(), "selfupdate");
-    // 2026-10-21 两段式：新增 download / cancel_download（下载与安装分离）。
-    // 2026-10-30 完整性检查：integrity（只读比对已验签基线）。
+    // 两段式：新增 download / cancel_download（下载与安装分离）。
+    // 完整性检查：integrity（只读比对已验签基线）。
     assert_eq!(
         SelfupdateHandler.commands(),
         &[
@@ -116,8 +117,8 @@ async fn status_shape_is_honest_when_unwired() {
     assert_eq!(out["commit_known"], false);
     assert!(out["journal_phase"].is_null());
     assert_eq!(out["wired"], false);
-    // 平台支持契约=apply_supported 的双平台集（2026-10-22 CI Linux 覆盖
-    // job 实录：自更新扩 Linux 后此处仍钉单 windows，Linux 上恒假红）。
+    // 平台支持契约=apply_supported 的双平台集（CI Linux 覆盖
+    // job 自更新扩 Linux 后此处仍钉单 windows，Linux 上恒假红）。
     assert_eq!(
         out["platform_supported"],
         cfg!(any(target_os = "windows", target_os = "linux"))
@@ -125,7 +126,7 @@ async fn status_shape_is_honest_when_unwired() {
     assert_eq!(out["download"]["phase"], "idle");
     assert!(out["pending"].is_null());
     assert!(out["cached_check"].is_null());
-    // apply 失败反馈面（2026-10-23 挂死修复）：未装配 = 无在案失败；基准
+    // apply 失败反馈面（挂死修复）：未装配 = 无在案失败；基准
     // 探测在测试进程 exe 目录恒 false（无 applied_manifest.json）。
     assert!(out["last_apply_error"].is_null());
     assert_eq!(out["sequence_baseline_present"], false);

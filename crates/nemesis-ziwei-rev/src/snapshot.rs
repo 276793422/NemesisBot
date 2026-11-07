@@ -1,4 +1,4 @@
-//! snapshot —— 配置期内存快照存储（T3.4，纯 fs）。
+//! snapshot —— 配置期内存快照存储（.4，纯 fs）。
 //!
 //! 布局：`<workspace>/ziwei/setup/<profile_id>/snapshots/<unixms>/`
 //! ├── meta.json（模块基址/machine/节表/来源 PID/exe 路径）

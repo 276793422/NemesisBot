@@ -1,4 +1,4 @@
-//! P4 bugfix-flow 样板工程全链真机验收（面板 + flow 剧本 + connector 三件套）。
+//! bugfix-flow 样板工程全链真机验收（面板 + flow 剧本 + connector 三件套）。
 //!
 //! 单节点 gateway（cluster 关 / security 开但四层放行 / 无 MockAi——本链零 LLM，
 //! fixloop 只观察不生成）+ 手搓 mock Gitea（TcpListener 按路由回 JSON，wire
@@ -12,7 +12,7 @@
 //!    诚实边界，测试手工照做）→ board 项目建档（模板 land 步 `project` 绑定的
 //!    同名项目，与活体环境同构）→ spawn gateway（load_all 装载 enabled 插件 +
 //!    flow 引擎桥装配）。
-//! 2. **声明面锚点**：`ui.registry` → slug/route/payload/7 视图全中（P4 钉死）。
+//! 2. **声明面锚点**：`ui.registry` → slug/route/payload/7 视图全中（钉死）。
 //! 3. **六步剧本全链**（ui.invoke 全串透传宿主引擎）：手动 fetch（幂等）→
 //!    board_land 落单（board_issue 产物）→ **窗口期**：看板单 in_progress + 面板
 //!    confirm 人工闸（gate 未确认时 tick 跳过 fixloop——in_progress 先行无竞态）
@@ -44,7 +44,7 @@ use super::r9_live_tests::{
     install_home_config, live_gate, live_gateway_config, spawn_gateway, wait_for_web_port,
 };
 
-/// 样板插件 slug（plugin.toml 单一真相源，此处仅作路径/寻址键）。
+/// 样板插件 slug（plugin.toml 统一定义，此处仅作路径/寻址键）。
 const PLUGIN_SLUG: &str = "bugfix-flow";
 
 /// 剧本模板 id（flow:// 绑定的 template 段）。
@@ -56,7 +56,7 @@ const EXT_KEY: &str = "42";
 
 /// 安全配置（connector_flow.rs e2e 先例同款姿势）：SSRF 层**开着**带
 /// allowed_hosts 白名单放行回环 mock——层关 = guard=None = connector http
-/// 绑定 fail-closed 全拒（首跑实录）；放行内网端点走白名单，不 gut 整层。
+/// 绑定 fail-closed 全拒（首跑）；放行内网端点走白名单，不 gut 整层。
 /// guardian 关（零 LLM 链）；default_action=allow 直通；其余层保持默认开启
 /// ——connector op 照常过真实闸门。
 const SECURITY_CFG: &str = r#"{
@@ -197,7 +197,7 @@ fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
 // 装配小组件
 // ---------------------------------------------------------------------------
 
-/// 仓库根（CARGO_MANIFEST_DIR = nemesisbot/）。
+/// 仓库根（CARGO_MANIFEST_DIR = nemesisbot）。
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
@@ -267,7 +267,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 /// 手工 connector 装配（v1 诚实边界：插件装配不自动注册 connector——样板
 /// README 同款步骤）。op 定义镜像真实 `workspace/connectors/gitea/`（wire
 /// 形态逐字节同源：path/index 整数 schema/receipt），**不含
-/// `[connector.credentials]`**：缺凭据会触发 B4 阻塞审批卡，mock 无需鉴权。
+/// `[connector.credentials]`**：缺凭据会触发 阻塞审批卡，mock 无需鉴权。
 /// base 指向本测试 mock 端口。
 fn write_test_connector(ws: &TestWorkspace, gitea_port: u16) {
     let dir = ws.home().join("workspace").join("connectors").join("gitea");
@@ -431,7 +431,7 @@ async fn poll_detail(
 // 全链测试
 // ---------------------------------------------------------------------------
 
-/// P4 全链：装配 → 声明面锚点 → fetch 幂等 → 六步剧本（双人工闸 + 诚实缺口）
+/// 全链：装配 → 声明面锚点 → fetch 幂等 → 六步剧本（双人工闸 + 诚实缺口）
 /// → report 回帖 → dossier → guest 血肉面。
 #[tokio::test]
 async fn flow_live_full_chain() {
@@ -468,7 +468,7 @@ async fn flow_live_full_chain() {
     )
     .expect("write config.security.json");
 
-    // CLI 装配漏斗：install（--allow-unsigned → lockfile trust=review-required，
+    // CLI 装配漏斗：install（allow-unsigned → lockfile trust=review-required，
     // 启动装载豁免无签名）+ enable（盘上开关；安装≠加载）。
     let payload_dir = plugins_dir.join(PLUGIN_SLUG);
     run_cli(
@@ -513,7 +513,7 @@ async fn flow_live_full_chain() {
 
     let mut ws_stream = ws_connect(web_port, &token).await.expect("ws connect");
 
-    // ---- A1 声明面锚点：ui.registry 投影（P4 钉死形态）----
+    // ---- 声明面锚点：ui.registry 投影（钉死形态）----
     let reg = wsapi(&mut ws_stream, "plugins", "ui.registry", json!({}))
         .await
         .expect("ui.registry");
@@ -544,7 +544,7 @@ async fn flow_live_full_chain() {
         views.len()
     );
 
-    // ---- A2 手动 fetch + 幂等 ----
+    // ---- 手动 fetch + 幂等 ----
     let f1 = ui_invoke(&mut ws_stream, "flow://bugfix-pipeline/fetch", json!({}))
         .await
         .expect("fetch #1");
@@ -561,7 +561,7 @@ async fn flow_live_full_chain() {
         "refetch must be idempotent: {f2}"
     );
 
-    // ---- A3 list 投影：实例已物化 ----
+    // ---- list 投影：实例已物化 ----
     let list = ui_invoke(&mut ws_stream, "flow://bugfix-pipeline/list", json!({}))
         .await
         .expect("list");
@@ -574,7 +574,7 @@ async fn flow_live_full_chain() {
         "title 投影: {list}"
     );
 
-    // ---- A3.5 board 项目建档：模板 land 步声明 `project =
+    // ----.5 board 项目建档：模板 land 步声明 `project =
     // "gitea/p0admin/durfmt"`——项目不存在 = land 诚实失败（宿主不猜）。
     // 与活体环境同构：先建档再 land。auto_start 缺省 false：只建档不触发
     // plan/派发链（本链零 LLM）。
@@ -587,7 +587,7 @@ async fn flow_live_full_chain() {
     .await
     .expect("project.create (land 绑定)");
 
-    // ---- A4 board_land 落单（首 tick ~20s 启动延迟 + tick 5s）----
+    // ---- board_land 落单（首 tick ~20s 启动延迟 + tick 5s）----
     let d = poll_detail(
         &mut ws_stream,
         "land completes (board_issue artifact)",
@@ -606,7 +606,7 @@ async fn flow_live_full_chain() {
     assert_eq!(step_status(&d, 0), "ok", "fetch step done");
     assert_eq!(step_status(&d, 1), "ok", "land step done: {d}");
 
-    // ---- A5 看板单核验（engine 经 WSAPI 同库可见）----
+    // ---- 看板单核验（engine 经 WSAPI 同库可）----
     let got = wsapi(
         &mut ws_stream,
         "board",
@@ -624,7 +624,7 @@ async fn flow_live_full_chain() {
         .to_string();
     assert!(st == "todo" || st == "backlog", "land initial status: {st}");
 
-    // ---- A6/A7 窗口期：in_progress 先行 + confirm 人工闸 ----
+    // ---- / 窗口期：in_progress 先行 + confirm 人工闸 ----
     // gate 未确认时 tick 跳过 fixloop（awaiting_gate）——两写之间无竞态：
     // in_progress 落定前任何 tick 都不会触发 fixloop 派发（单节点派发必失败
     // 会停车），confirm 后 start_fixloop 读到 InProgress 走观察臂。
@@ -645,7 +645,7 @@ async fn flow_live_full_chain() {
     .expect("confirm fixloop gate");
     assert_eq!(c1["ok"].as_bool(), Some(true), "confirm reply: {c1}");
 
-    // ---- A8 fixloop 观察态：running 后置 in_review → Completed(delivered) ----
+    // ---- fixloop 观察态：running 后置 in_review → Completed(delivered) ----
     poll_detail(
         &mut ws_stream,
         "fixloop running",
@@ -662,7 +662,7 @@ async fn flow_live_full_chain() {
     .await
     .expect("issue.status in_review");
 
-    // ---- A9 fixloop 完成 → regress 前置：置 done ----
+    // ---- fixloop 完成 → regress 前置：置 done ----
     poll_detail(&mut ws_stream, "fixloop ok", Duration::from_secs(60), |d| {
         step_status(d, 2) == "ok"
     })
@@ -676,13 +676,13 @@ async fn flow_live_full_chain() {
     .await
     .expect("issue.status done");
 
-    // ---- A10 regress（check_regress：done → accepted）----
+    // ---- regress（check_regress：done → accepted）----
     poll_detail(&mut ws_stream, "regress ok", Duration::from_secs(60), |d| {
         step_status(d, 3) == "ok"
     })
     .await;
 
-    // ---- A11/A12 publish 闸确认 → 单节点诚实缺口（on_fail=continue 落 gap 账）----
+    // ---- / publish 闸确认 → 单节点诚实缺口（on_fail=continue 落 gap 账）----
     let c2 = ui_invoke(
         &mut ws_stream,
         "flow://bugfix-pipeline/confirm",
@@ -728,7 +728,7 @@ async fn flow_live_full_chain() {
         "gap error: {gaps:?}"
     );
 
-    // ---- A13 report：dossier 导出 + token 回帖 → 实例 done ----
+    // ---- report：dossier 导出 + token 回帖 → 实例 done ----
     poll_detail(
         &mut ws_stream,
         "report ok (instance done)",
@@ -750,7 +750,7 @@ async fn flow_live_full_chain() {
         "board_issue projection: {list}"
     );
 
-    // ---- A14 mock Gitea 收到回帖：token 全替换（零 {{ 残留）----
+    // ---- mock Gitea 收到回帖：token 全替换（零 {{ 残留）----
     {
         let log = gitea.log.lock().expect("mock gitea log");
         assert!(
@@ -786,10 +786,10 @@ async fn flow_live_full_chain() {
         );
     }
 
-    // ---- A15 dossier 目录（report 步骤导出产物；wait_for_dossier 内部断言）----
+    // ---- dossier 目录（report 步骤导出产物；wait_for_dossier 内部断言）----
     let _dossier = wait_for_dossier(&home, Duration::from_secs(30)).await;
 
-    // ---- A16 看板单终态 done（外部系统侧状态由测试驱动，引擎只观察）----
+    // ---- 看板单终态 done（外部系统侧状态由测试驱动，引擎只观察）----
     let got2 = wsapi(
         &mut ws_stream,
         "board",
@@ -804,7 +804,7 @@ async fn flow_live_full_chain() {
         "final issue: {got2}"
     );
 
-    // ---- A17 guest 血肉面：wasm guest → host tool-invoke → connector ----
+    // ---- guest 血肉面：wasm guest → host tool-invoke → connector ----
     let g = ui_invoke(&mut ws_stream, "gitea_get", json!({ "key": EXT_KEY }))
         .await
         .expect("guest gitea_get");
@@ -824,7 +824,7 @@ async fn flow_live_full_chain() {
         "guest reply: {g}"
     );
 
-    // ---- A18 timeline 投影：步骤事件 + publish 缺口事件 ----
+    // ---- timeline 投影：步骤事件 + publish 缺口事件 ----
     let tl = ui_invoke(&mut ws_stream, "flow://bugfix-pipeline/timeline", json!({}))
         .await
         .expect("timeline");

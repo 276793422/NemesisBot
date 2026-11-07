@@ -19,9 +19,7 @@ use crate::relay::protocol::{ACCESS_CHECK_TIMEOUT_SECS, BridgeFrame};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-// ---------------------------------------------------------------------------
 // cluster_frame_sink 槽
-// ---------------------------------------------------------------------------
 
 struct AgtSink;
 impl ClusterFrameSink for AgtSink {
@@ -43,9 +41,7 @@ fn agt_cluster_frame_sink_slot_roundtrip() {
     assert!(relay.cluster_frame_sink().is_some(), "注入后取用命中");
 }
 
-// ---------------------------------------------------------------------------
 // authenticate_device：门未配置 / 开关关闭 / 空 name 回落
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_authenticate_gate_disabled_and_empty_name() {
@@ -77,9 +73,7 @@ fn agt_authenticate_gate_disabled_and_empty_name() {
     assert_eq!(devices[0].name, "bare-node", "空 name 回落 node_id");
 }
 
-// ---------------------------------------------------------------------------
 // send_to_device：队列满 / 通道关闭
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_send_to_device_full_and_closed() {
@@ -109,9 +103,7 @@ fn agt_send_to_device_full_and_closed() {
     assert!(!relay.send_to_device("ghost", BridgeFrame::Pong, 10));
 }
 
-// ---------------------------------------------------------------------------
 // access_check：下行投递失败 + 超时
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn agt_access_check_send_failure_and_timeout() {
@@ -146,9 +138,7 @@ async fn agt_access_check_send_failure_and_timeout() {
     drop(rx);
 }
 
-// ---------------------------------------------------------------------------
 // maintenance_tick：关闭早退 + 超龄 conn 清理
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_maintenance_tick_disabled_and_conn_expiry() {
@@ -180,9 +170,7 @@ fn agt_maintenance_tick_disabled_and_conn_expiry() {
     assert!(relay.conns.contains_key(&8), "新鲜 conn 不清");
 }
 
-// ---------------------------------------------------------------------------
 // handle_control_frame 数据面防御臂 + decode_or_warn 失败臂
-// ---------------------------------------------------------------------------
 
 #[test]
 fn agt_control_frame_dataplane_defense_and_decode_warn() {

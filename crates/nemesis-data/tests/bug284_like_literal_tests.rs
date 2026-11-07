@@ -1,6 +1,6 @@
-//! BUG-20261101-284：`query_logs` 用户搜索词 LIKE 字面化回归测试。
+//! `query_logs` 用户搜索词 LIKE 字面化回归测试。
 //!
-//! 口径对齐 board R221/BUG-163：`model` / `session_key` 是用户可输入的
+//! 口径对齐 board /BUG-163：`model` / `session_key` 是用户可输入的
 //! 子串搜索词，`%`/`_` 不转义时按 SQL LIKE 通配符解释——搜字面 `_`
 //! 误命中无关行、搜字面 `%` 变全量。转义 + `ESCAPE '\'` 成对后，
 //! 搜索词只能按字面命中。

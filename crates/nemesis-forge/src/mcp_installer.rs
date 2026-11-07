@@ -1,10 +1,10 @@
 //! MCP installer - manages MCP server registration in config.mcp.json.
 //!
-//! 单一真相源对齐（2026-10-16 P1 整改）：本模块不再持有本地影子 schema。
+//! 单一真相源对齐（2026-10-16）：本模块不再持有本地影子 schema。
 //! 旧 `MCPConfig/MCPServerConfig {name, command, args}` 三字段形态的 RMW
 //! 会把盘上既有条目的 url/transport_type/headers/env 等字段整体剥掉，
 //! 且与 `nemesis-config`（Dashboard/CLI/运行期同一真相源）三套形状并存。
-//! 现在直接复用 `nemesis_config::{McpConfig, McpServerConfig}`（宽容解析
+//! 现在直接复用 `nemesis_config:{McpConfig, McpServerConfig}`（宽容解析
 //! 与 typed round-trip 保未知键），读写走 nemesis-config 的
 //! `load_mcp_config`/`save_mcp_config`（原子写 0600），写路径持
 //! [`nemesis_config::config_write_lock`] 写串行锁覆盖整段 RMW（防与
@@ -73,7 +73,7 @@ impl MCPInstaller {
     }
 
     /// Uninstall (remove) an MCP server. 幂等：目标不存在时照常成功，且
-    /// **不重写文件**（P1-b，2026-10-16 复查）：McpConfig 顶层无 flatten
+    /// **不重写文件**（b， 复查）：McpConfig 顶层无 flatten
     /// extra，no-op 重写会把宽容解析不认识的外来顶层键整体剥掉（旧实现
     /// 只在确实移除时才写盘，本函数恢复该语义；形状归一化只在真实卸载时
     /// 发生）。

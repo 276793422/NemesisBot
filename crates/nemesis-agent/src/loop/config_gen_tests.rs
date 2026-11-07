@@ -1,4 +1,4 @@
-//! L18 配置热发布世代化测试：绑定发布 / 执行钉代（嵌套不跨代）/ CAS
+//! 配置热发布世代化测试：绑定发布 / 执行钉代（嵌套不跨代）/ CAS
 //! retryable / last-known-good / 缺省回落 / 代号单调性 / 重绑换源 / 并发烟测。
 //!
 //! 独立测试文件（生产文件只保留声明行，仓库 2026-08-25 纪律）；provider 桩
@@ -93,7 +93,7 @@ fn l18_unchanged_check_is_noop() {
     let loop_ = fresh_loop();
     loop_.set_config_path(path);
     assert_eq!(loop_.config_generation_seq(), 1);
-    // 无盘上变化：重复 round start 零发布（内容闸短路；BUG-20261103 起
+    // 无盘上变化：重复 round start 零发布（内容闸短路； 起
     // 闸从 mtime 等值改内容比对——Windows 粗时钟同 tick 写 mtime 不可分辨）。
     loop_.check_config_reload();
     loop_.check_config_reload();
@@ -265,7 +265,7 @@ fn l18_rebind_switches_generation_source() {
     let loop_ = fresh_loop();
     loop_.set_config_path(p1);
     assert!(!loop_.current_image_downscale());
-    // 重绑到另一文件（测试先例：tool_doc_folding 多配置换绑）→ 强制发布换源。
+    // 重绑到另一文件（测试tool_doc_folding 多配置换绑）→ 强制发布换源。
     let p2 = write_config(dir.path(), "config2.json", cfg_with(true, 9));
     loop_.set_config_path(p2);
     assert!(loop_.current_image_downscale(), "重绑后读者见新源");
