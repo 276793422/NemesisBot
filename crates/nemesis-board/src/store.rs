@@ -3009,12 +3009,14 @@ impl BoardStore {
         if n.cron.trim().is_empty() {
             return Err("autopilot cron must not be empty".to_string());
         }
+        // mode 值闸（create 臂；空串归一 live，未知值 loud 拒绝）。
+        let mode = crate::models::validate_autopilot_mode(&n.mode)?;
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
         conn.execute(
             "INSERT INTO autopilot
-             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, session_key, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)",
+             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, session_key, mode, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)",
             params![
                 n.name,
                 n.cron,
@@ -3027,6 +3029,7 @@ impl BoardStore {
                 n.auto_plan as i64,
                 n.acceptance_criteria.as_deref().unwrap_or(""),
                 n.session_key.as_deref().unwrap_or(""),
+                mode,
                 now,
             ],
         )
@@ -3107,11 +3110,16 @@ impl BoardStore {
             .session_key
             .clone()
             .unwrap_or(old.session_key.clone().unwrap_or_default());
+        // mode patch（update 臂；Some(v) = 改，None = 保持；值闸同 create）。
+        let mode = match &patch.mode {
+            Some(v) => crate::models::validate_autopilot_mode(v)?,
+            None => old.mode.clone(),
+        };
         conn.execute(
             "UPDATE autopilot
              SET name = ?2, cron = ?3, title = ?4, description = ?5, priority = ?6,
                  project_id = ?7, target = ?8, enabled = ?9, auto_plan = ?10,
-                 acceptance_criteria = ?11, session_key = ?12, updated_at = ?13
+                 acceptance_criteria = ?11, session_key = ?12, mode = ?13, updated_at = ?14
              WHERE id = ?1",
             params![
                 id,
@@ -3126,6 +3134,7 @@ impl BoardStore {
                 auto_plan as i64,
                 acceptance_criteria,
                 session_key,
+                mode,
                 Self::now(),
             ],
         )
@@ -3149,8 +3158,12 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let n = conn
             .execute(
-                "UPDATE autopilot SET cron_job_id = ?2, updated_at = ?3 WHERE id = ?1",
-                params![id, cron_job_id, Self::now()],
+                // 簿记写入不碰 updated_at（它是内容/授权版本，B33 血统戳
+                // `rule:{id}@{updated_at}` 的语义锚点）：cron job id 回存
+                // 在每次 gateway 启动同步都会发生，bump 会让版本号无内容
+                // 漂移，在途单子的旧版血统就回查不到规则当时的身份了。
+                "UPDATE autopilot SET cron_job_id = ?2 WHERE id = ?1",
+                params![id, cron_job_id],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {
@@ -3160,11 +3173,16 @@ impl BoardStore {
     }
 
     /// 触发落账：last_run_at = now。
+    ///
+    /// 不碰 updated_at（同 [`Self::set_autopilot_cron_job`] 的版本语义）：
+    /// 每次 fire 都 bump 会让 `rule:{id}@{updated_at}` 血统戳逐次漂移——
+    /// 版本应只随内容/授权状态变化（create / update_autopilot），不随
+    /// 触发变化。
     pub fn mark_autopilot_run(&self, id: i64) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let n = conn
             .execute(
-                "UPDATE autopilot SET last_run_at = ?2, updated_at = ?2 WHERE id = ?1",
+                "UPDATE autopilot SET last_run_at = ?2 WHERE id = ?1",
                 params![id, Self::now()],
             )
             .map_err(|e| e.to_string())?;
@@ -4417,6 +4435,14 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
     let acceptance_criteria: String = row.get("acceptance_criteria")?;
     // 父会话绑定列，同款空串归一 None。
     let session_key: String = row.get("session_key")?;
+    // 触发模式列（v25；DB DEFAULT 'live' 与 serde default 同步——空串也
+    // 归一 live，防手工改库留下的空值放大成未知态）。
+    let mode: String = row.get("mode")?;
+    let mode = if mode.trim().is_empty() {
+        crate::models::AUTOPILOT_MODE_LIVE.to_string()
+    } else {
+        mode
+    };
     Ok(Autopilot {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -4430,6 +4456,7 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
         auto_plan: auto_plan != 0,
         acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
         session_key: Some(session_key).filter(|s| !s.trim().is_empty()),
+        mode,
         cron_job_id: row.get("cron_job_id")?,
         last_run_at: row.get("last_run_at")?,
         created_at: row.get("created_at")?,

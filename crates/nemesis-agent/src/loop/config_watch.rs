@@ -351,6 +351,23 @@ impl AgentLoop {
             .unwrap_or(true)
     }
 
+    /// B36：worker 职能工具供给裁剪开关 `board.worker.tool_trim.enabled`
+    /// 世代快照读（同上——以 config.json 为准，改键下轮生效，无需重启）。
+    /// 缺省 **false**（D5 拍板：做成开关，默认关 = 零行为变化；CATALOG
+    /// 的 tool_trim 声明常在，开闸才生效）。pub：cluster_agent（nemesisbot）
+    /// 任务装配消费，跨 crate。
+    pub fn current_worker_tool_trim(&self) -> bool {
+        let Some(v) = self.config_generation() else {
+            return false;
+        };
+        v.get("board")
+            .and_then(|b| b.get("worker"))
+            .and_then(|w| w.get("tool_trim"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+    }
+
     /// 超限图片自动降采样开关（世代快照读；默认**开**，
     /// 极性与 doom_loop_approval 相反——读不到/键缺失按开处理，保持降采样
     /// 能力可用；不阻塞轮次）。

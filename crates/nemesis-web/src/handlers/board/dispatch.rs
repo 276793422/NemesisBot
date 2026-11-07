@@ -1010,13 +1010,15 @@ pub(super) fn link_project_on_dispatch(store: &Arc<BoardStore>, project_id: Opti
 #[cfg(feature = "cluster")]
 static PARK_SWEEP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 准入停车评论标记（与 PARK_NOTICE_MARK 分开：原因不同、去重不互斥）。
-#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
-const INFLIGHT_NOTICE_MARK: &str = "在途派发已达上限";
+/// pub：gateway sweep 监察环（nemesisbot）自治重派前置闸（B37 人优先
+/// 槽位）同款去重标记——两处共用一个标记，互见即去重（同一「目标满载」
+/// 事实不双写评论），跨 crate。
+pub const INFLIGHT_NOTICE_MARK: &str = "在途派发已达上限";
 
-/// 准入判定（纯函数，单测直测）：目标 worker 在途派发数 ≥ 上限（上限
-/// >0 时）= 满，自动派发不派、留 backlog 等承接。
-#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
-pub(super) fn inflight_full(
+/// 准入判定（纯函数，单测直测）：目标 worker 在途派发数达到上限（上限
+/// 大于 0 时）= 满，自动派发不派、留 backlog 等承接。pub：gateway sweep
+/// 监察环（nemesisbot）自治重派闸同源消费（B37 人优先槽位），跨 crate。
+pub fn inflight_full(
     load: &std::collections::HashMap<String, usize>,
     target: &str,
     cap: i64,

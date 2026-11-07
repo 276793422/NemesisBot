@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import BoardTabs from '../components/board/BoardTabs.vue'
 import BoardKanban from '../components/board/BoardKanban.vue'
 import IssueListView from './IssueListView.vue'
 import BoardDagView from '../components/board/BoardDagView.vue'
 import ProjectPanel from '../components/board/ProjectPanel.vue'
 import InboxPanel from '../components/board/InboxPanel.vue'
+import BoardNeedsHumanPanel from '../components/board/BoardNeedsHumanPanel.vue'
 import AutopilotPanel from '../components/board/AutopilotPanel.vue'
 import DiscussionPanel from '../components/board/DiscussionPanel.vue'
 import AuditPanel from '../components/board/AuditPanel.vue'
@@ -13,13 +14,16 @@ import BoardConfigPanel from '../components/board/BoardConfigPanel.vue'
 import { useToast } from '../composables/useToast'
 import { on as sseOn, off as sseOff } from '../composables/useSSE'
 import { usePlanning, fmtElapsed, ABNORMAL_SECS } from '../composables/usePlanning'
+import { useWSAPI } from '../composables/useWSAPI'
+import { useBoardChanged } from '../composables/useBoardChanged'
 
 // 托管 Agent 看板容器（W2 P3/P4）：项目 / 列表 / 看板（Kanban 拖拽） /
-// 流程图（全景 DAG，2026-10-15） / 收件箱 / 自动化 / 讨论 / 决策流（P5/E2） /
-// 配置 九个页签（顺序=使用依赖链，见 BoardTabs.vue）。结构同 ClusterView
-// （页签容器 + components/board/ 子组件）。
+// 流程图（全景 DAG，2026-10-15） / 收件箱 / 需要人的事（B35 注意力经济） /
+// 自动化 / 讨论 / 决策流（P5/E2） / 配置 十个页签（顺序=使用依赖链，见
+// BoardTabs.vue）。结构同 ClusterView（页签容器 + components/board/ 子组件）。
 
-// 默认落「项目」页签——排序即依赖链：没有项目就没有列表/看板可看。
+// 默认落「项目」页签（D4 拍板：落地不变）——需要人的信号走页签徽标
+// 提示，点击进泳道页。
 const activeTab = ref('projects')
 
 const tabMap: Record<string, any> = {
@@ -28,11 +32,27 @@ const tabMap: Record<string, any> = {
   dag: BoardDagView,
   projects: ProjectPanel,
   inbox: InboxPanel,
+  needs_human: BoardNeedsHumanPanel,
   autopilot: AutopilotPanel,
   discussion: DiscussionPanel,
   audit: AuditPanel,
   config: BoardConfigPanel,
 }
+
+// B35 页签徽标：需要人介入的信号总数（board.needs_human.list 一次拉；
+// board-changed 推送时静默换新——与各面板同源刷新节奏）。
+const { request } = useWSAPI()
+const needsHuman = ref(0)
+async function loadNeedsHuman() {
+  try {
+    const r = await request('board', 'board.needs_human.list', {})
+    needsHuman.value = r?.total || 0
+  } catch (e) {
+    console.warn('[BoardView] needs_human badge refresh failed:', e)
+  }
+}
+onMounted(loadNeedsHuman)
+useBoardChanged(() => loadNeedsHuman())
 
 // 拆解运行期可观测（2026-10-11「停着」事故）：planner 单次 4~7 分钟此前
 // 零反馈，用户体感=「停着」。容器层挂 plan_started 全局 toast——auto_start
@@ -77,7 +97,7 @@ const { list: planningList, elapsed } = usePlanning()
           </template>
         </div>
       </div>
-      <BoardTabs v-model="activeTab" />
+      <BoardTabs v-model="activeTab" :needs-human="needsHuman" />
       <div style="margin-top:var(--space-4)">
         <component :is="tabMap[activeTab]" />
       </div>

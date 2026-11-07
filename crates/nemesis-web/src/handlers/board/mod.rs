@@ -121,6 +121,7 @@ impl ModuleHandler for BoardHandler {
             "plan.list",
             "plan.get",
             "issue.bulk_archive",
+            "board.needs_human.list",
             "autopilot.list",
             "autopilot.create",
             "autopilot.update",
@@ -634,6 +635,13 @@ impl ModuleHandler for BoardHandler {
                     "issues": issues,
                 })))
             }
+            // B35「需要人的事」聚合面（注意力经济：四组一次返回——
+            // escalated 待裁决 / fused 冻结 / plan_failed 拆解失败 /
+            // shadow 影子待 promote；避免前端四处信号连发拉全量列表）。
+            "board.needs_human.list" => {
+                let handoffs = scan_live_handoffs();
+                Ok(Some(aggregate_needs_human(&store, &handoffs)?))
+            }
             // autopilot（定时派活）---
             "autopilot.list" => {
                 let autopilots = store.list_autopilots()?;
@@ -649,6 +657,14 @@ impl ModuleHandler for BoardHandler {
                 // 语法 + 语义双闸：解析通过但永不匹配的
                 // 表达式在写 store 前拒绝，不留「已创建」的静默僵尸规则。
                 validate_autopilot_schedule(&cron_expr, enabled)?;
+                // B34（D3 拍板）：新建规则默认影子模式（首轮触发只建单
+                // 留痕不派发）；显式传 mode:"live" 才直上全真，非法值
+                // loud 拒绝（校验单点在 models::validate_autopilot_mode，
+                // 与 CLI/store 同源）。
+                let mode = match data.get("mode").and_then(|v| v.as_str()) {
+                    None | Some("") => nemesis_board::models::AUTOPILOT_MODE_SHADOW.to_string(),
+                    Some(m) => nemesis_board::models::validate_autopilot_mode(m)?,
+                };
                 let ap = store.create_autopilot(&nemesis_board::NewAutopilot {
                     name: get_str(&data, "name")?.to_string(),
                     title: get_str(&data, "title")?.to_string(),
@@ -675,6 +691,8 @@ impl ModuleHandler for BoardHandler {
                     session_key: get_opt_str(&data, "session_key")
                         .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty()),
+                    // B34 触发模式（D3：缺省影子）。
+                    mode,
                 })?;
                 // cron 已注入 → 即时登记并回填 cron_job_id；未注入（单测/
                 // 极简构建）→ 启动同步兜底。
@@ -721,6 +739,13 @@ impl ModuleHandler for BoardHandler {
                         // 父会话绑定（Some("") = 解除绑定；缺省 = 不改）。
                         session_key: get_opt_str(&data, "session_key")
                             .map(|s| s.trim().to_string()),
+                        // B34：mode 切换（影子⇄全真双向；缺省 = 不改；
+                        // 非法值 loud 拒绝）。
+                        mode: data
+                            .get("mode")
+                            .and_then(|v| v.as_str())
+                            .map(nemesis_board::models::validate_autopilot_mode)
+                            .transpose()?,
                     },
                 )?;
                 arm_autopilot_job(ctx, &store, &ap)?;
@@ -1627,6 +1652,12 @@ fn board_config_set(
                     .filter(|v| *v >= 0)
                     .ok_or("worker_max_inflight 需要非负整数")?;
             }
+            // （B36）职能工具供给裁剪总开关（D5 拍板做成开关，默认
+            // false=零行为变化；true = B 端按 CATALOG tool_trim 声明裁面，
+            // 下轮任务装配 fresh-read 生效）。
+            "worker.tool_trim.enabled" => {
+                board.worker.tool_trim.enabled = need_bool(value)?;
+            }
             "dispatch_fallback_target" => {
                 board.dispatch_fallback_target = if value.is_null() {
                     None
@@ -1881,6 +1912,7 @@ fn board_config_set(
                  auto_close_parent / unlimited_mode / autonomy / conflict_auto_resolve / dispatch_fallback / \
                  dispatch_fallback_target / fingerprint_weighting / \
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
+                 worker.tool_trim.enabled / \
                  plan.auto_confirm / plan.model / review.max_turns / \
                  review.max_unsure_streak / review.selfcheck / \
                  review.require_delivery_evidence / \
@@ -1917,6 +1949,13 @@ fn board_config_set(
                     .and_then(|e| e.get(f)),
                 _ => None,
             }
+        } else if let Some(field) = key.strip_prefix("worker.tool_trim.") {
+            // B36 三段键：board.worker.tool_trim.<field> 三跳定位
+            // （通用两跳臂只认 parent.leaf 形态，够不到这层）。
+            board_json
+                .get("worker")
+                .and_then(|w| w.get("tool_trim"))
+                .and_then(|t| t.get(field))
         } else {
             match leaf {
                 "plan" | "discussion" | "backup" | "review" | "budget" => board_json.get(leaf),

@@ -27,6 +27,11 @@ pub struct ProfessionMeta {
     pub artifacts: &'static [&'static str],
     /// 职能契约正文（编译期嵌入）。
     pub contract: &'static str,
+    /// 供给裁剪清单（B36；声明常在、`board.worker.tool_trim.enabled` 开闸
+    /// 才生效）：该职能任务下从执行面补集白名单裁掉的工具名。保守声明——
+    /// 只裁「该职能**确定不需要**」的执行型工具，宁少勿多（裁错了 =
+    /// worker 完不成任务按阻塞上报，重派也救不回裁剪决策）。空 = 不裁。
+    pub tool_trim: &'static [&'static str],
 }
 
 /// 内置职能目录（6 职能 + dev:cpp 样板）。
@@ -43,6 +48,8 @@ pub const CATALOG: &[ProfessionMeta] = &[
         min_tier: "normal",
         artifacts: &["docs/prd.md"],
         contract: include_str!("contracts/product.md"),
+        // PRD 撰写不需要执行命令与版本管理。
+        tool_trim: &["exec", "async_shell", "git"],
     },
     ProfessionMeta {
         slug: "ui-design",
@@ -52,6 +59,8 @@ pub const CATALOG: &[ProfessionMeta] = &[
         min_tier: "normal",
         artifacts: &["design/ui-spec.md", "design/prototype.html"],
         contract: include_str!("contracts/ui_design.md"),
+        // 设计工件不需要版本管理操作。
+        tool_trim: &["git"],
     },
     ProfessionMeta {
         slug: "architecture",
@@ -61,6 +70,7 @@ pub const CATALOG: &[ProfessionMeta] = &[
         min_tier: "big",
         artifacts: &["docs/architecture.md"],
         contract: include_str!("contracts/architecture.md"),
+        tool_trim: &[],
     },
     ProfessionMeta {
         slug: "dev",
@@ -70,6 +80,7 @@ pub const CATALOG: &[ProfessionMeta] = &[
         min_tier: "normal",
         artifacts: &[],
         contract: include_str!("contracts/dev.md"),
+        tool_trim: &[],
     },
     ProfessionMeta {
         slug: "dev:cpp",
@@ -83,6 +94,7 @@ pub const CATALOG: &[ProfessionMeta] = &[
         min_tier: "big",
         artifacts: &[],
         contract: include_str!("contracts/dev.md"),
+        tool_trim: &[],
     },
     ProfessionMeta {
         slug: "test-whitebox",
@@ -92,6 +104,7 @@ pub const CATALOG: &[ProfessionMeta] = &[
         min_tier: "normal",
         artifacts: &["docs/test-report-whitebox.md"],
         contract: include_str!("contracts/test_whitebox.md"),
+        tool_trim: &[],
     },
     ProfessionMeta {
         slug: "test-blackbox",
@@ -101,6 +114,8 @@ pub const CATALOG: &[ProfessionMeta] = &[
         min_tier: "normal",
         artifacts: &["docs/test-report-blackbox.md"],
         contract: include_str!("contracts/test_blackbox.md"),
+        // 黑盒测试不读改源码仓库（版本操作无用；执行类保留——跑被测程序需要）。
+        tool_trim: &["git"],
     },
 ];
 

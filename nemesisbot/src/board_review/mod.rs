@@ -2337,7 +2337,10 @@ async fn review_issue(
 
 /// 决策审计：`auto_decide` 活动落库（决策流视图 `board.audit.list` 的
 /// 数据源；`rollback_decision` 只认本 action）。details = JSON：
-/// `{decision, verdict,..extra}`。失败只 warn（审计是增值动作，不炸验收）。
+/// `{decision, verdict,..extra}` 合并 + B33 授权血统（单子带 origin 时
+/// 附 `origin_type`/`origin_id`；autopilot 单附 `rule`=`{id}@{updated_at}`
+/// 血统戳，从单子行读、不随规则现状态漂移，D1）。失败只 warn（审计是
+/// 增值动作，不炸验收）。
 /// 冲突四审计（conflict/conflict_auto_resolve/conflict_redispatch/
 /// conflict_switch_worker）同走本漏斗——board 冲突防线与验收共用单一审计。
 /// d：同一漏斗同步落交付账本（review 行 + issue scope 分支闭环，
@@ -2357,6 +2360,32 @@ pub(crate) fn record_auto_decide(
             obj.insert(k.clone(), v.clone());
         }
     }
+    // B33 授权血统（D1 拍板：血统从单子 origin 读，非规则现状态）——
+    // 单子出生时 origin_meta 已烧入 `rule_version={id}@{updated_at}` 与
+    // `mode`（见 plan.rs autopilot_new_issue），本漏斗统一把它带上审计行：
+    // 重派/验收/转人工沿用旧授权延续语义，血统戳取自单子行（不可变），
+    // 规则后续改名/停用/编辑都不追溯在途。autopilot 单额外带 `rule`
+    // 血统字段（`{id}@{updated_at}` 形态）；其余来源带 origin_type/
+    // origin_id；无 origin 的手工单/旧单不写字段（诚实缺席，不伪造）。
+    let issue_fetched = store.get_issue(issue_id).ok();
+    if let (Some(obj), Some(origin)) = (
+        details.as_object_mut(),
+        issue_fetched.as_ref().and_then(|i| i.origin.as_ref()),
+    ) {
+        obj.insert(
+            "origin_type".to_string(),
+            serde_json::Value::String(origin.origin_type.clone()),
+        );
+        obj.insert(
+            "origin_id".to_string(),
+            serde_json::Value::String(origin.origin_id.clone()),
+        );
+        if origin.origin_type == "autopilot"
+            && let Some(v) = origin.origin_meta.get("rule_version")
+        {
+            obj.insert("rule".to_string(), serde_json::Value::String(v.clone()));
+        }
+    }
     if let Err(e) = store.add_activity(
         issue_id,
         &Actor::agent(node_id),
@@ -2367,9 +2396,9 @@ pub(crate) fn record_auto_decide(
     }
     // C 里程碑 4（看板项目档案 goal）：评审决策 → docs/review/NB-xx.md +
     // timeline。写失败不阻塞评审（writer 内部 WARN+审计）；存量项目静默跳过。
-    if let Ok(issue) = store.get_issue(issue_id) {
+    if let Some(issue) = issue_fetched.as_ref() {
         nemesis_board::archive_writer::write_review_milestone(
-            store, &issue, node_id, decision, verdict, &details,
+            store, issue, node_id, decision, verdict, &details,
         );
     }
     // d：交付账本闭环（review 行 + auto_accept/redispatch 分支裁决）。

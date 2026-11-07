@@ -176,3 +176,114 @@ pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssu
     }
     Ok(ni)
 }
+
+// B35「需要人的事」（注意力经济：聚合面只显示需要人的信号，避免前端
+// 四处信号四连发拉全量）---
+
+/// 单子级「需要人」归组（排他，优先级 escalated > fused > plan_failed；
+/// 终态 done/cancelled 一律不归组——已收口的单不需要人）。
+/// 判据（最后一条 system 评论是转人工/熔断类终态动作的落点，之后不会再有
+/// system 评论直到人工介入，子串判据可靠）：
+/// - 🤷 评审侧无法定案/故障转人工（board_review 三落点共用的标记）
+/// - 🛑 自治重派熔断冻结停车（sweep 冻结漏斗标记）
+/// - 「拆解失败」/「拆解超时」planner 链耗尽（可手动重拆或人工建子单）
+fn needs_human_group_for(
+    last_system_comment: Option<&str>,
+    status: nemesis_board::IssueStatus,
+) -> Option<&'static str> {
+    use nemesis_board::IssueStatus;
+    if matches!(status, IssueStatus::Done | IssueStatus::Cancelled) {
+        return None;
+    }
+    let c = last_system_comment?;
+    if c.contains('🤷') {
+        Some("escalated")
+    } else if c.contains('🛑') {
+        Some("fused")
+    } else if c.contains("拆解失败") || c.contains("拆解超时") {
+        Some("plan_failed")
+    } else {
+        None
+    }
+}
+
+/// 截断系统评论为 reason 摘要（单行 + 160 字上限）。
+fn truncate_reason(c: &str) -> String {
+    let one_line: String = c
+        .chars()
+        .map(|ch| if ch.is_whitespace() { ' ' } else { ch })
+        .collect();
+    one_line.chars().take(160).collect()
+}
+
+/// B35 聚合（四组一次返回）：
+/// - **escalated 待裁决**：停车档案在场（✋ 强信号，与 needs_user 同源投影；
+///   状态闸 InReview|InProgress——档案是漏归档残留则不亮牌）或最后
+///   system 评论含 🤷。
+/// - **fused 冻结**：最后 system 评论含 🛑（重派熔断，转人工处置）。
+/// - **plan_failed 拆解失败**：最后 system 评论含「拆解失败」/「拆解超时」。
+/// - **shadow 影子待 promote**（规则维度，B34/D2-D3 拍板产物）：mode=shadow
+///   且触发过（last_run_at 在场）且启用的规则——单子历史按 origin 反查，
+///   这里给规则清单。
+pub(super) fn aggregate_needs_human(
+    store: &BoardStore,
+    handoffs: &std::collections::HashMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, String> {
+    let issues = store.list_issues(&nemesis_board::models::IssueFilter::default())?;
+    let mut escalated = Vec::new();
+    let mut fused = Vec::new();
+    let mut plan_failed = Vec::new();
+    for issue in &issues {
+        // ① 待裁决：档案在场（needs_user_projection 自带状态闸）优先。
+        let nu = needs_user_projection(handoffs, issue);
+        let last_sys = store.last_system_comment(issue.id)?;
+        let group = if nu.is_some() {
+            Some("escalated")
+        } else {
+            needs_human_group_for(last_sys.as_deref(), issue.status)
+        };
+        let Some(group) = group else { continue };
+        let row = serde_json::json!({
+            "id": issue.id,
+            "number": issue.number,
+            "title": issue.title,
+            "status": issue.status.as_str(),
+            "priority": issue.priority,
+            "reason": last_sys.as_deref().map(truncate_reason).unwrap_or_default(),
+            "needs_user": nu,
+        });
+        match group {
+            "escalated" => escalated.push(row),
+            "fused" => fused.push(row),
+            _ => plan_failed.push(row),
+        }
+    }
+    let shadow: Vec<serde_json::Value> = store
+        .list_autopilots()?
+        .into_iter()
+        .filter(|ap| {
+            ap.enabled
+                && ap.mode == nemesis_board::models::AUTOPILOT_MODE_SHADOW
+                && ap.last_run_at.is_some()
+        })
+        .map(|ap| {
+            serde_json::json!({
+                "id": ap.id,
+                "name": ap.name,
+                "title": ap.title,
+                "cron": ap.cron,
+                "last_run_at": ap.last_run_at,
+            })
+        })
+        .collect();
+    let total = escalated.len() + fused.len() + plan_failed.len() + shadow.len();
+    Ok(serde_json::json!({
+        "groups": {
+            "escalated": escalated,
+            "fused": fused,
+            "plan_failed": plan_failed,
+            "shadow": shadow,
+        },
+        "total": total,
+    }))
+}

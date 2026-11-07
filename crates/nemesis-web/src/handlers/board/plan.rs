@@ -2371,7 +2371,18 @@ pub(super) fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) 
         origin: Some(nemesis_board::models::TaskOrigin {
             origin_type: "autopilot".to_string(),
             origin_id: ap.id.to_string(),
-            origin_meta: Default::default(),
+            // B33 授权血统：单子出生即钉「哪条规则哪一版授权了它」——
+            // rule_version=`{id}@{updated_at}`（updated_at 版本语义靠簿记写入
+            // 不 bump 维持，见 store.rs mark_autopilot_run 注释）；mode 记
+            // 触发时授权形态（live|shadow）。board 不解释这两个键的语义，
+            // 只保证透传与可回查；规则后续演进不追溯在途（D1：重派沿用
+            // 单子血统，不读规则现状态）。
+            origin_meta: [
+                ("rule_version".to_string(), autopilot_rule_version(ap)),
+                ("mode".to_string(), ap.mode.clone()),
+            ]
+            .into_iter()
+            .collect(),
         }),
         ..NewIssue::default()
     };
@@ -2381,6 +2392,80 @@ pub(super) fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) 
         ni.assignee_id = Some(target.to_string());
     }
     ni
+}
+
+/// B33 授权血统版本戳：`{id}@{updated_at}`。updated_at 只随内容/授权
+/// （mode）patch 推进——启动同步重登记 cron job 与每次 fire 的 mark_run
+/// 簿记都不 bump（见 store.rs 同名注释），保证同一版本内时间戳稳定。
+fn autopilot_rule_version(ap: &nemesis_board::Autopilot) -> String {
+    format!("{}@{}", ap.id, ap.updated_at)
+}
+
+/// B34（D2 拍板）：影子 fire 的决策意图一句话——这条规则若为 live 会做什么。
+/// 三个面：直派 target / 自动拆解 auto_plan / 仅建单。
+fn autopilot_decision_intent(ap: &nemesis_board::Autopilot) -> String {
+    let target = ap.target.trim();
+    if !target.is_empty() {
+        if target.eq_ignore_ascii_case("self") {
+            return "建单 + 本机执行（target=self）".to_string();
+        }
+        return format!("建单 + 派发给节点 {target}");
+    }
+    if ap.auto_plan {
+        return "建单 + 自动拆解派发（auto_plan）".to_string();
+    }
+    "仅建单（无派发目标、未开自动拆解）".to_string()
+}
+
+/// B34（D2 拍板补充）：影子 fire 本地留痕（`<workspace>/logs/autopilot_shadow/`）。
+/// 每次影子触发追加一行 JSON（规则 id@版本、时间、决策意图、单子编号）——
+/// 看板单可被清理，本地文件给影子历史不可删的持久层（工作区根未装配 =
+/// `handoff_workspace_root()` None，诚实跳过只留看板评论；写盘失败 WARN
+/// 不炸影子建单主流程）。
+fn write_autopilot_shadow_trace(
+    issue: &nemesis_board::Issue,
+    ap: &nemesis_board::Autopilot,
+    intent: &str,
+) {
+    let Some(ws) = handoff_workspace_root() else {
+        return;
+    };
+    let dir = ws.join("logs").join("autopilot_shadow");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("[Board] 影子留痕目录创建失败 {}: {e}", dir.display());
+        return;
+    }
+    let line = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(),
+        "rule": ap.id.to_string(),
+        "rule_version": autopilot_rule_version(ap),
+        "rule_name": ap.name,
+        "mode": ap.mode,
+        "intent": intent,
+        "issue_id": issue.id,
+        "issue_number": issue.number,
+    });
+    let file = dir.join(format!("rule_{}.jsonl", ap.id));
+    use std::io::Write as _;
+    if let Err(e) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .and_then(|mut f| writeln!(f, "{line}"))
+    {
+        tracing::warn!("[Board] 影子留痕写盘失败 {}: {e}", file.display());
+    }
+}
+
+/// board 旗标现读（`{home}/config/config.json` 的 `board` 段）。home 缺失
+/// （CLI 手跑）/读取失败 = None——调用方按缺省兜底，与 [`plan_chain_cfg`]
+/// 同款缺省方向（配置读不到不炸主流程）。pub：gateway sweep 监察环
+/// （nemesisbot）自治重派 inflight 闸同源消费，跨 crate。
+pub fn board_flags_from_home(
+    home: Option<&std::path::Path>,
+) -> Option<nemesis_config::BoardFlagConfig> {
+    home.and_then(|h| nemesis_config::load_config(&h.join("config.json")).ok())
+        .and_then(|c| c.board)
 }
 
 // （三期）：autopilot 父会话绑定
@@ -2630,13 +2715,85 @@ pub fn fire_autopilot(
         new_issue = inject_parent_context(new_issue, block);
     }
     let issue = store.create_issue(new_issue)?;
+    // B34 影子模式（D2 拍板：方案 A + 看板必须有内容 + 本地文件留痕）：
+    // shadow 规则 fire = 建单 + 决策意图评论 + 本地留痕，零外部动作
+    // （不派发不拆解）。estop 前置闸与父会话裁决照常走（影子也是 agent
+    // 活动纪律的一部分），mark_autopilot_run 照常落账（触发历史真实），
+    // 仅执行面降级。promote（autopilot.update mode=live）后与本函数 live
+    // 路径全同。
+    if ap.mode == nemesis_board::models::AUTOPILOT_MODE_SHADOW {
+        use nemesis_board::models::{CommentType, NewComment};
+        let intent = autopilot_decision_intent(ap);
+        let _ = store.add_comment(NewComment {
+            issue_id: issue.id,
+            author: Actor::system("autopilot"),
+            content: format!(
+                "🎭 影子模式（shadow）：规则「{}」（rule:{}）本次触发**未执行**外部动作。决策意图：{intent}。确认行为符合预期后切 mode=live 转全真。",
+                ap.name,
+                autopilot_rule_version(ap)
+            ),
+            parent_id: None,
+            ctype: CommentType::System,
+        });
+        write_autopilot_shadow_trace(&issue, ap, &intent);
+        store.mark_autopilot_run(ap.id)?;
+        return Ok(serde_json::json!({
+            "ran": true,
+            "shadow": true,
+            "issue_id": issue.id,
+            "issue_number": issue.number,
+            "dispatch": Option::<serde_json::Value>::None,
+            "auto_plan": serde_json::json!(null),
+        }));
+    }
     let dispatch = if target.is_empty() {
         None
     } else {
-        Some(
-            dispatch_issue_core(store, cluster, issue.id, &target, actor, None)
-                .map_err(|e| format!("issue #{} 已创建但派发失败: {e}", issue.number))?,
-        )
+        // B37 人优先槽位（D6 拍板 b 形态——批量侧让路）：autopilot fire 的
+        // 直派是批量注入面，与子单自动派发同一准入闸（worker_max_inflight，
+        // 0=不限）。满载 = 本单不派、留 todo + ⏸ 停车评论（含
+        // PARK_NOTICE_MARK → 停车场 sweep 候选，节点空闲后自动重试）；
+        // 人的交互消息不经看板派发链，永不被批量挤出。配置读取走规则 home
+        // （AutoPlanContext.home；CLI 手跑 None = 缺省 1，与
+        // dispatch_subissue_auto_with_config 的 board_cfg=None 同兜底）。
+        let board_cfg = auto_plan.and_then(|c| board_flags_from_home(Some(&c.home)));
+        let cap = board_cfg
+            .as_ref()
+            .map(|c| c.worker_max_inflight)
+            .unwrap_or(1);
+        let canonical = cluster
+            .and_then(|c| c.canonical_peer_id(&target))
+            .unwrap_or_else(|| target.clone());
+        let load = store.count_active_dispatch_by_worker().unwrap_or_default();
+        if inflight_full(&load, &canonical, cap) {
+            let inflight = load.get(&canonical).copied().unwrap_or(0);
+            tracing::warn!(
+                "[Board] autopilot fire issue={}（rule:{}）派发暂缓：{canonical} 在途 {inflight}/{cap}",
+                issue.id,
+                ap.id
+            );
+            let _ = store.add_comment(nemesis_board::NewComment {
+                issue_id: issue.id,
+                author: Actor::system("board"),
+                content: format!(
+                    "⏸ {PARK_NOTICE_MARK}（人优先槽位：{canonical} 在途派发 {inflight}/{cap}）：批量让路，节点空闲或新节点上线后自动重试"
+                ),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            });
+            Some(serde_json::json!({
+                "dispatched": false,
+                "parked": "inflight_full",
+                "target": canonical,
+                "inflight": inflight,
+                "cap": cap,
+            }))
+        } else {
+            Some(
+                dispatch_issue_core(store, cluster, issue.id, &target, actor, None)
+                    .map_err(|e| format!("issue #{} 已创建但派发失败: {e}", issue.number))?,
+            )
+        }
     };
     // 无显式 assignee（target 空）+ 规则开 auto_plan → 自动拆解。
     let auto_plan_out = if target.is_empty() && ap.auto_plan {
@@ -2793,6 +2950,33 @@ pub fn fire_autopilot(
         new_issue = inject_parent_context(new_issue, block);
     }
     let issue = store.create_issue(new_issue)?;
+    // B34 影子模式：与 cluster 版同语义（建单 + 意图评论 + 本地留痕，零
+    // 外部动作）。本编译形态本就无派发/拆解，影子只多「不建单动作」这层
+    // 意图——评论照落，留痕照写。
+    if ap.mode == nemesis_board::models::AUTOPILOT_MODE_SHADOW {
+        let intent = autopilot_decision_intent(ap);
+        let _ = store.add_comment(NewComment {
+            issue_id: issue.id,
+            author: Actor::system("autopilot"),
+            content: format!(
+                "🎭 影子模式（shadow）：规则「{}」（rule:{}）本次触发**未执行**外部动作。决策意图：{intent}。确认行为符合预期后切 mode=live 转全真。",
+                ap.name,
+                autopilot_rule_version(ap)
+            ),
+            parent_id: None,
+            ctype: CommentType::System,
+        });
+        write_autopilot_shadow_trace(&issue, ap, &intent);
+        store.mark_autopilot_run(ap.id)?;
+        return Ok(serde_json::json!({
+            "ran": true,
+            "shadow": true,
+            "issue_id": issue.id,
+            "issue_number": issue.number,
+            "dispatch": Option::<serde_json::Value>::None,
+            "auto_plan": serde_json::json!(null),
+        }));
+    }
     let auto_plan_skipped = ap.auto_plan;
     if auto_plan_skipped {
         let _ = store.add_comment(NewComment {
