@@ -3141,3 +3141,111 @@ async fn clamav_download_errors_on_body_stall_mid_stream() {
     );
     assert!(err.contains("download read failed"), "{err}");
 }
+
+// -------------------------------------------------------------------------
+// BUG-20261107-010：scanner 配置键声名未读取——max_file_size 在
+// create_engine 静默丢弃（恒用 50M 默认）、scan_extensions/skip_extensions
+// 无生产消费点（链级 rules 恒空全扫）。修复 = scanner_config_from_raw
+// 纯函数 + load_from_full_config 接线 apply_config_rules。
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_scanner_config_from_raw_consumes_max_file_size() {
+    let raw = serde_json::json!({
+        "address": "127.0.0.1:9999",
+        "enabled": false,
+        "timeout_secs": 5,
+        "max_file_size": 1024
+    });
+    let cfg = scanner_config_from_raw(&raw);
+    assert_eq!(cfg.address, "127.0.0.1:9999");
+    assert!(!cfg.enabled);
+    assert_eq!(cfg.timeout, std::time::Duration::from_secs(5));
+    assert_eq!(cfg.max_file_size, 1024);
+
+    // 缺键回落默认（max_file_size 默认 50MB）。
+    let cfg = scanner_config_from_raw(&serde_json::json!({}));
+    assert_eq!(cfg.max_file_size, 50 * 1024 * 1024);
+    assert_eq!(cfg.address, "127.0.0.1:3310");
+    assert!(cfg.enabled);
+}
+
+#[tokio::test]
+async fn test_apply_config_rules_gates_scan_file() {
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(InfectedMock));
+    chain.configs.insert(
+        "clamav".to_string(),
+        serde_json::json!({"skip_extensions": [".txt"]}),
+    );
+
+    // 接线前（rules 恒空）全扫：InfectedMock 恒感染。
+    let r = chain.scan_file(Path::new("/tmp/a.txt")).await;
+    assert!(r.blocked);
+
+    chain.apply_config_rules();
+    // 跳过清单生效：规则闸在引擎之前——InfectedMock 恒感染，clean 即证明
+    // 文件根本没进引擎。
+    let r = chain.scan_file(Path::new("/tmp/a.txt")).await;
+    assert!(r.clean, "skip 命中时不应触碰引擎");
+    assert!(!r.blocked);
+    // 非跳过扩展名照常扫。
+    let r = chain.scan_file(Path::new("/tmp/b.exe")).await;
+    assert!(r.blocked);
+
+    // 内容臂不受扩展名规则影响（保持全覆盖——安全面不收窄）。
+    let r = chain.scan_content(b"EICAR-test-string").await;
+    assert!(r.blocked);
+}
+
+#[tokio::test]
+async fn test_apply_config_rules_no_extension_keys_scans_all() {
+    // 配置无扩展名键 → 空规则 = 全扫（与既有行为一致，无意外收窄）。
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(InfectedMock));
+    chain
+        .configs
+        .insert("clamav".to_string(), serde_json::json!({"address": "x"}));
+    chain.apply_config_rules();
+    let r = chain.scan_file(Path::new("/tmp/a.txt")).await;
+    assert!(r.blocked);
+}
+
+#[tokio::test]
+async fn test_load_from_full_config_wires_extension_rules() {
+    // 生产装配路径端到端：load_from_full_config 之后规则已接线。
+    let mut full = ScannerFullConfig::default();
+    full.engines.insert(
+        "clamav".to_string(),
+        serde_json::json!({"skip_extensions": [".md"]}),
+    );
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(InfectedMock));
+    chain.load_from_full_config(&full);
+    let r = chain.scan_file(Path::new("/tmp/note.md")).await;
+    assert!(r.clean, "skip_extensions 应经 load_from_full_config 生效");
+    let r = chain.scan_file(Path::new("/tmp/x.exe")).await;
+    assert!(r.blocked);
+}
+
+#[test]
+fn test_extension_rules_accept_dot_and_bare_forms() {
+    // 带点出厂形态（config.scanner.default.json / commands 默认值）。
+    let rules = ExtensionRules::new(vec![], vec![".txt".to_string(), ".md".to_string()]);
+    assert!(!rules.should_scan_file(Path::new("/tmp/a.txt")));
+    assert!(!rules.should_scan_file(Path::new("/tmp/B.MD"))); // 大小写不敏感
+    assert!(rules.should_scan_file(Path::new("/tmp/x.exe")));
+
+    // 裸形态（既有测试/调用方口径）。
+    let rules = ExtensionRules::new(vec![], vec!["txt".to_string()]);
+    assert!(!rules.should_scan_file(Path::new("/tmp/a.txt")));
+
+    // 白名单带点形态：只扫列出的扩展名。
+    let rules = ExtensionRules::new(vec![".exe".to_string()], vec![]);
+    assert!(rules.should_scan_file(Path::new("/tmp/a.exe")));
+    assert!(!rules.should_scan_file(Path::new("/tmp/a.txt")));
+
+    // 无扩展名文件：黑名单模式照扫（conservative）。
+    let rules = ExtensionRules::new(vec![], vec![".txt".to_string()]);
+    assert!(rules.should_scan_file(Path::new("/tmp/README")));
+}

@@ -1650,6 +1650,108 @@ async fn test_plugin_execute_layer7_blocks_infected_edit_file_new_text() {
     assert!(e.summary.contains("new_text"), "{}", e.summary);
 }
 
+// BUG-20261107-009 红证①：run_script 脚本本体是顶层 script 键（exec.rs
+// schema required 键，spawn 直接执行）——Layer 7 内容键循环此前不含
+// script = run_script 脚本内容完全绕过病毒扫描（write_file/edit_file 拦
+// 得住的 run_script 拦不住；BUG-20261029-171/20261102-310 同族漂移在
+// 扫描面第三次复发）。content-only 引擎隔离内容臂：file 臂恒干净，命中
+// 必来自 script 键扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_blocks_infected_run_script_content() {
+    let plugin = make_plugin();
+    install_content_only_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "run_script".to_string(),
+        args: serde_json::json!({
+            "interpreter": "bash",
+            "script": "X5O!P%@AP[EICAR]"
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("virus scanner"), "{}", e.summary);
+    assert!(e.summary.contains("script"), "{}", e.summary);
+}
+
+// BUG-20261107-009 红证②：run_script 载荷内嵌可执行路径（`bash -c
+// ./tools/implant` 的 implant）此前零扫描——extract_paths exec 臂无
+// run_script。MockVirus 全拦引擎下路径臂先于内容臂：命中消息带路径
+// token（修复前无臂 → 唯一可能命中来自内容臂，消息是 script 键名），
+// 路径断言同时证明补臂生效与内容臂兜底并存。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_scans_run_script_path_tokens() {
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "run_script".to_string(),
+        args: serde_json::json!({
+            "interpreter": "bash",
+            "script": "./tools/implant --silent"
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("./tools/implant"), "{}", e.summary);
+}
+
+// BUG-20261107-009 红证③：background_start 的 command 与 exec 完全同形
+// （types.rs 归 ProcessExec——「命令本体照常过 8 层管线」承诺），此前
+// extract_paths exec 臂无 background_start = 后台命令的可执行路径 token
+// 不进病毒扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_scans_background_start_command() {
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "background_start".to_string(),
+        args: serde_json::json!({"command": "/tmp/implant.exe --serve"}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("/tmp/implant.exe"), "{}", e.summary);
+}
+
+// BUG-20261107-009 红证④：mcp_discover stdio 臂（LLM 可控 command spawn，
+// BUG-20261102-296 投影 process_exec 过管线——投影只写 metadata，管线
+// 看到的 tool_name 仍是 mcp_discover）此前 extract_paths 无臂 = MCP
+// server 二进制路径不进病毒扫描。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
+async fn test_plugin_execute_layer7_scans_mcp_discover_command() {
+    let plugin = make_plugin();
+    install_infected_chain(&plugin).await;
+    let inv = ToolInvocation {
+        tool_name: "mcp_discover".to_string(),
+        args: serde_json::json!({"command": "/tmp/evilserver.exe", "args": ["--stdio"]}),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, err) = plugin.execute(&inv);
+    assert!(!allowed);
+    let e = err.expect("virus block reason");
+    assert_eq!(e.layer, "virus");
+    assert!(e.summary.contains("/tmp/evilserver.exe"), "{}", e.summary);
+}
+
 #[tokio::test]
 #[cfg(feature = "scanner")]
 async fn test_plugin_scan_invocation_detects_threat() {
