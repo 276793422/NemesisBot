@@ -788,6 +788,56 @@ fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
     assert_eq!(now, canonical.to_string_lossy().to_string());
 }
 
+// BUG-20261107-013 回归锁：PATH 存在但含非 UTF-8 字节时 var() 报
+// NotUnicode，旧实现把它与「无 PATH」同臂处理 → 整条用户 PATH 被清成
+// 只剩 exe 目录（工具解析面静默塌缩）。var_os + lossy 修复后：存在的
+// PATH 永不进「无 PATH」臂——病态条目降级 U+FFFD 保留，exe 目录照常
+// 追加。Windows 形态用未配对代理对（WTF-8 经 set_var 可进进程 env，
+// var() 必报 NotUnicode、var_os 可读）构造触发面。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[test]
+fn ensure_exe_in_path_preserves_non_utf8_path_entries() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let canonical =
+        std::fs::canonicalize(std::env::current_exe().unwrap().parent().unwrap()).unwrap();
+    let saved = std::env::var_os("PATH");
+
+    // 未配对代理对 U+D800 + 正常后缀 "abc"：var() 读不出，var_os 读得出。
+    let weird = <std::ffi::OsString as std::os::windows::ffi::OsStringExt>::from_wide(&[
+        0xD800, 'a' as u16, 'b' as u16, 'c' as u16,
+    ]);
+    unsafe { std::env::set_var("PATH", &weird) };
+    // 前置自证：var() 确实读不出（std 若改为内部 lossy，测试前提失效须响亮报出）。
+    assert!(
+        std::env::var("PATH").is_err(),
+        "precondition: var() must fail on non-UTF8 PATH"
+    );
+
+    let modified = ensure_exe_in_path();
+    let now = std::env::var_os("PATH")
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+
+    // 无论原先有无 PATH，测完必须恢复（防毒化后续测试）。
+    match &saved {
+        Some(v) => unsafe { std::env::set_var("PATH", v) },
+        None => unsafe { std::env::remove_var("PATH") },
+    }
+
+    assert!(modified, "exe dir must be appended");
+    assert!(
+        now.contains("abc"),
+        "existing (pathological) PATH entry must survive, got {now:?}"
+    );
+    assert!(
+        now.contains(&canonical.to_string_lossy().to_string()),
+        "exe dir must be present, got {now:?}"
+    );
+}
+
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn resolve_home_exe_dir_and_cwd_marker_branches() {

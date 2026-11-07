@@ -27,9 +27,14 @@ pub fn ensure_exe_in_path() -> bool {
         Err(_) => exe_dir,
     };
 
-    let path_var = match std::env::var("PATH") {
-        Ok(v) => v,
-        Err(_) => {
+    // var_os 而非 var：PATH 存在但含非 UTF-8 字节（Unix 合法；Windows 为
+    // 未配对代理对经 WTF-8）时 var() 报 NotUnicode——若与 NotPresent 同臂
+    // 处理，下面会把整条用户 PATH 清成只剩 exe 目录（工具解析面静默塌缩，
+    // 且与本分支注释「No PATH at all」的前提矛盾）。var_os + lossy：存在
+    // 的 PATH 永不进此臂；病态字节降级为 U+FFFD 只损失该条目自身。
+    let path_var = match std::env::var_os("PATH") {
+        Some(v) => v.to_string_lossy().into_owned(),
+        None => {
             // No PATH at all — just set it
             // SAFETY: This runs during gateway startup, single-threaded init phase.
             // No other threads are reading or writing the PATH environment variable.
