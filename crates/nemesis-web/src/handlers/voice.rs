@@ -60,6 +60,44 @@ fn install_locks() -> &'static std::sync::Mutex<std::collections::HashSet<String
     INSTANCE.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
+// BUG-20261107-018：引擎加载串行闸。engine_state 的 std Mutex 只保护指针
+// 读写，不覆盖「检查 → spawn_blocking 秒级加载 → 回写」窗口——并发 start
+// 全部过闸、各自构造完整引擎（SenseVoice 一份数百 MB 起，lang_remedy 翻倍），
+// 末者覆盖写 + punct/aec 状态被多任务竞争写。tokio Mutex 跨整个 start 函数
+// 持有（含 await 与 spawn_blocking 等待）：第二个调用者在闸上等待，拿到闸时
+// 引擎已加载 → already_loaded fast-path；失败路径闸随 guard 释放，可重试。
+#[cfg(target_os = "windows")]
+pub(crate) fn stt_engine_gate() -> &'static Mutex<()> {
+    static INSTANCE: OnceLock<Mutex<()>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(target_os = "windows")]
+fn tts_engine_gate() -> &'static Mutex<()> {
+    static INSTANCE: OnceLock<Mutex<()>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(()))
+}
+
+#[cfg(target_os = "windows")]
+fn speaker_engine_gate() -> &'static Mutex<()> {
+    static INSTANCE: OnceLock<Mutex<()>> = OnceLock::new();
+    INSTANCE.get_or_init(|| Mutex::new(()))
+}
+
+/// BUG-20261107-018：会话槽原子占位——锁内 check+set 合一。check 与 set
+/// 分离时，中间的任何 await（引擎加载、resolve_session_loop、乃至
+/// lock().await 自身的挂起点）都是并发切换点：两个并发 start 双双过闸，
+/// 各起一套管线 / 末者覆盖槽位。返回 false = 已有会话在跑（value 被丢弃）。
+#[cfg(target_os = "windows")]
+pub(crate) async fn try_insert<T>(slot: &Mutex<Option<T>>, value: T) -> bool {
+    let mut guard = slot.lock().await;
+    if guard.is_some() {
+        return false;
+    }
+    *guard = Some(value);
+    true
+}
+
 #[cfg(target_os = "windows")]
 fn model_label(model: &str) -> &str {
     match model {
@@ -1780,12 +1818,19 @@ impl VoiceHandler {
         let session_id = ctx.session_id.clone();
         let session_mgr = ctx.state.session_manager.clone();
 
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
+        // BUG-20261107-018：占位原子化——早检（函数头）与占位之间隔着引擎
+        // 加载 await，双 start 双双过早检会各起一套麦克风管线（双采集 +
+        // 末者覆盖）。
+        if !try_insert(
+            stt_state(),
+            SttSession {
                 cancel: cancel.clone(),
                 dialogue_output: None,
-            });
+            },
+        )
+        .await
+        {
+            return Err("STT dictation already running".to_string());
         }
 
         let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
@@ -1949,6 +1994,10 @@ impl VoiceHandler {
         voice_dir: &std::path::Path,
         config_dir: &std::path::Path,
     ) -> Result<Option<serde_json::Value>, String> {
+        // BUG-20261107-018：闸跨整个函数持有（含 spawn_blocking 等待），
+        // 并发 start 序列化——后者拿到闸时引擎已加载，走 already_loaded
+        // fast-path，不再各自构造完整引擎。
+        let _gate = stt_engine_gate().lock().await;
         {
             let guard = stt_engine_state().lock().unwrap();
             if guard.is_some() {
@@ -2086,6 +2135,8 @@ impl VoiceHandler {
         &self,
         voice_dir: &std::path::Path,
     ) -> Result<Option<serde_json::Value>, String> {
+        // BUG-20261107-018：同 cmd_stt_engine_start——闸序列化并发加载。
+        let _gate = tts_engine_gate().lock().await;
         {
             let guard = tts_engine_state().lock().unwrap();
             if guard.is_some() {
@@ -2153,6 +2204,9 @@ impl VoiceHandler {
         voice_dir: &std::path::Path,
         config_dir: &std::path::Path,
     ) -> Result<Option<serde_json::Value>, String> {
+        // BUG-20261107-018：同 cmd_stt_engine_start——闸序列化并发加载
+        //（ensure_speaker_engine 的 register/test 前置自动加载同受益）。
+        let _gate = speaker_engine_gate().lock().await;
         {
             let guard = speaker_engine_state().lock().unwrap();
             if guard.is_some() {
@@ -2562,21 +2616,19 @@ impl VoiceHandler {
                 return Err("未注册声纹，请先录制声纹".to_string());
             }
 
-            // Check not already testing
-            {
-                let state = speaker_test_state().lock().await;
-                if state.is_some() {
-                    return Err("测试已在进行中".to_string());
-                }
-            }
-
+            // BUG-20261107-018：占位原子化——check 与 set 之间隔着两次
+            // lock().await 挂起点，双测试会话旧代码里双双过闸、末者覆盖。
             let cancel = CancellationToken::new();
-            {
-                let mut state = speaker_test_state().lock().await;
-                *state = Some(SpeakerTestSession {
+            if !try_insert(
+                speaker_test_state(),
+                SpeakerTestSession {
                     cancel: cancel.clone(),
                     auto_loaded_stt,
-                });
+                },
+            )
+            .await
+            {
+                return Err("测试已在进行中".to_string());
             }
 
             let session_id = ctx.session_id.to_string();
@@ -2850,12 +2902,19 @@ impl VoiceHandler {
         let session_id = ctx.session_id.clone();
         let session_mgr = ctx.state.session_manager.clone();
 
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
+        // BUG-20261107-018：占位原子化——check 与 set 之间虽无长 await，
+        // 两次 lock().await 本身就是挂起点，无条件覆盖写会让并发双 start
+        // 双双占槽、各起一套管线（前者成幽灵采集）。
+        if !try_insert(
+            stt_state(),
+            SttSession {
                 cancel: cancel.clone(),
                 dialogue_output: None,
-            });
+            },
+        )
+        .await
+        {
+            return Err("STT pipeline already running".to_string());
         }
 
         let output: Box<dyn SttOutput> = Box::new(WsSttOutput {
@@ -2938,12 +2997,18 @@ impl VoiceHandler {
         let session_id = ctx.session_id.clone();
         let session_mgr = ctx.state.session_manager.clone();
 
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
+        // BUG-20261107-018：占位原子化（同 cmd_stt_pipeline_start——两次
+        // lock().await 挂起点之间无条件覆盖 = 并发双 start 双管线）。
+        if !try_insert(
+            stt_state(),
+            SttSession {
                 cancel: cancel.clone(),
                 dialogue_output: None,
-            });
+            },
+        )
+        .await
+        {
+            return Err("STT already running. Stop current session first.".to_string());
         }
 
         let sid_clone = session_id.clone();
@@ -3075,7 +3140,6 @@ impl VoiceHandler {
                 }
             }
         }
-        crate::voice_relay::set_relay_registration(registration);
 
         let cancel = CancellationToken::new();
         let session_id = ctx.session_id.clone();
@@ -3104,18 +3168,28 @@ impl VoiceHandler {
             })),
         });
 
+        // BUG-20261107-018：占位原子化（锁内 check+set 合一），且先于一切
+        // 全局副作用——relay 注册是全局单槽，双 start 并发时败者若先覆写
+        // 注册再在会话槽竞争落败，会留下指向自己 session 的孤儿注册。
+        // 占位成功者独占后续全部全局写；函数头部的早检只是 fast-path。
+        if !try_insert(
+            stt_state(),
+            SttSession {
+                cancel: cancel.clone(),
+                dialogue_output: Some(dialogue_output.clone()),
+            },
+        )
+        .await
+        {
+            return Err("STT already running. Stop current session first.".to_string());
+        }
+
+        crate::voice_relay::set_relay_registration(registration);
+
         // Store dialogue output for reset command
         {
             let mut ds = dialogue_state().lock().await;
             *ds = Some(dialogue_output.clone());
-        }
-
-        {
-            let mut state = stt_state().lock().await;
-            *state = Some(SttSession {
-                cancel: cancel.clone(),
-                dialogue_output: Some(dialogue_output.clone()),
-            });
         }
 
         let output: Box<dyn SttOutput> = Box::new(DialogueSttOutputWrapper {
