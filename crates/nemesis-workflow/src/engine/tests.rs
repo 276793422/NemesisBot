@@ -240,6 +240,134 @@ async fn test_cancel_nonexistent_execution() {
 }
 
 // -----------------------------------------------------------------------
+// 墙钟保险丝 + cancel_all_running（A 批批 4 回归锁 #10/#11）
+// -----------------------------------------------------------------------
+
+/// 墙钟看门狗（回归锁 #11）：budget=1 + delay 10_000s → 看门狗到点 fire
+/// cancel token → 调度器取消路径收口 → **终态 Failed + 原因注记**（PLAN
+/// 口径；与用户主动取消的 Cancelled 区分）。注记必须点名墙钟超时并带
+/// 预算秒数（账本 settle 按它入账，审计面可辨）。
+#[tokio::test]
+async fn test_wall_clock_watchdog_fails_execution_with_note() {
+    let engine = WorkflowEngine::new_arc();
+    engine.set_wall_clock_budget_secs(1);
+
+    let mut slow = make_node("slow", "delay", vec![]);
+    slow.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("wallclock_wf", vec![slow]))
+        .unwrap();
+
+    let engine_bg = engine.clone();
+    tokio::spawn(async move {
+        let _ = engine_bg.run("wallclock_wf", HashMap::new(), None).await;
+    });
+
+    // 轮询终态（看门狗 ~1s fire；上限 6s 余量足够）。
+    let mut final_state = None;
+    let mut final_err = None;
+    for _ in 0..300 {
+        let execs = engine.list_executions(Some("wallclock_wf")).await;
+        if let Some(e) = execs.first() {
+            match e.state {
+                ExecutionState::Failed | ExecutionState::Cancelled | ExecutionState::Completed => {
+                    final_state = Some(e.state);
+                    final_err = e.error.clone();
+                    break;
+                }
+                _ => {}
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        final_state,
+        Some(ExecutionState::Failed),
+        "墙钟超时必须落 Failed（区别于用户取消的 Cancelled）"
+    );
+    let err = final_err.expect("Failed 必须带原因注记");
+    assert!(
+        err.contains("wall clock budget exceeded"),
+        "注记必须点名墙钟超时: {err}"
+    );
+    assert!(err.contains("1s"), "注记必须带预算秒数: {err}");
+}
+
+/// cancel_all_running（estop watcher 消费面，回归锁 #10 引擎半边）：只取消
+/// Running/Waiting——已终态（Completed）的执行不动；返回实际取消的 id。
+/// 快工作流（delay 0s，budget 默认 0=关）正常跑完，同时钉住「默认关不误伤」。
+#[tokio::test]
+async fn test_cancel_all_running_only_touches_active_executions() {
+    let engine = WorkflowEngine::new_arc();
+
+    let mut fast = make_node("fast", "delay", vec![]);
+    fast.config
+        .insert("seconds".to_string(), serde_json::json!(0));
+    engine
+        .register_workflow(make_workflow("all_fast_wf", vec![fast]))
+        .unwrap();
+
+    let mut slow = make_node("slow", "delay", vec![]);
+    slow.config
+        .insert("seconds".to_string(), serde_json::json!(10_000u64));
+    engine
+        .register_workflow(make_workflow("all_slow_wf", vec![slow]))
+        .unwrap();
+
+    // 快工作流同步跑完（budget 默认 0=看门狗关，正常 Completed）。
+    let fast_exec = engine
+        .run("all_fast_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+    assert_eq!(fast_exec.state, ExecutionState::Completed);
+
+    // 慢工作流后台跑，等进 Running。
+    let engine_bg = engine.clone();
+    tokio::spawn(async move {
+        let _ = engine_bg.run("all_slow_wf", HashMap::new(), None).await;
+    });
+    let slow_id = {
+        let mut found = None;
+        for _ in 0..100 {
+            let execs = engine.list_executions(Some("all_slow_wf")).await;
+            if let Some(e) = execs.iter().find(|e| e.state == ExecutionState::Running) {
+                found = Some(e.id.clone());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        found.expect("慢执行应在 2s 内进入 Running")
+    };
+
+    let cancelled = engine.cancel_all_running().await;
+    assert_eq!(
+        cancelled,
+        vec![slow_id.clone()],
+        "只应取消 Running 的慢执行（快执行已 Completed 不动）"
+    );
+
+    let slow_after = engine
+        .get_execution(&slow_id)
+        .await
+        .expect("慢执行必须存在");
+    assert_eq!(
+        slow_after.state,
+        ExecutionState::Cancelled,
+        "被取消的执行落 Cancelled 终态"
+    );
+    let fast_after = engine
+        .get_execution(&fast_exec.id)
+        .await
+        .expect("快执行必须存在");
+    assert_eq!(
+        fast_after.state,
+        ExecutionState::Completed,
+        "已终态执行不得被 cancel_all_running 触碰"
+    );
+}
+
+// -----------------------------------------------------------------------
 // resume_execution tests
 // -----------------------------------------------------------------------
 
@@ -1488,6 +1616,9 @@ async fn test_trigger_source_agent_tool_carries_recursion_depth() {
     let trigger = TriggerSource::AgentTool {
         tool_call_id: "tc_abc".to_string(),
         recursion_depth: 2,
+        session_key: String::new(),
+        chat_id: String::new(),
+        sender_id: String::new(),
     };
     let execution = engine
         .run("agent_wf", HashMap::new(), Some(trigger))
@@ -1498,6 +1629,7 @@ async fn test_trigger_source_agent_tool_carries_recursion_depth() {
         Some(TriggerSource::AgentTool {
             tool_call_id,
             recursion_depth,
+            ..
         }) => {
             assert_eq!(tool_call_id, "tc_abc");
             assert_eq!(recursion_depth, 2);
@@ -4992,6 +5124,9 @@ async fn test_run_async_recursion_limit_does_not_orphan_cancel_token() {
             Some(TriggerSource::AgentTool {
                 tool_call_id: "tc-1".to_string(),
                 recursion_depth: MAX_RECURSION_DEPTH + 1,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
             }),
         )
         .await

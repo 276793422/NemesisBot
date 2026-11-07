@@ -16,6 +16,36 @@ use regex::Regex;
 
 use crate::types::NodeResult;
 
+/// Execution identity carried by one workflow run — who triggered it and
+/// from where (安全闸补齐 A4 归因穿透).
+///
+/// Filled by the engine at `run_async` from the execution's trigger source
+/// and consumed by node executors: the tool node's secure executor turns it
+/// into audit attribution (`wf_instance` / `wf_node_id` / `wf_name` /
+/// `wf_trigger` / `wf_depth` metadata) and into the per-call request context
+/// that routes approval cards back to the triggering conversation and makes
+/// session-scoped approval exemptions work. All-empty identity = legacy/test
+/// paths constructed via [`WorkflowContext::new`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkflowIdentity {
+    /// The execution this run belongs to (audit attribution).
+    pub execution_id: String,
+    /// Workflow name being executed.
+    pub workflow_name: String,
+    /// Human-readable trigger label (`"agent-tool"` / `"cron"` / `"chat"` /
+    /// ...; see [`crate::types::TriggerSource::label`]).
+    pub trigger_label: String,
+    /// Triggering session key — drives the session-scoped approval
+    /// exemptions (session allow-all).
+    pub session_key: String,
+    /// Triggering chat id — approval cards route back to this conversation.
+    pub chat_id: String,
+    /// Triggering sender id.
+    pub sender_id: String,
+    /// Agent-tool recursion depth at trigger time (0 for other triggers).
+    pub recursion_depth: u32,
+}
+
 /// Holds the execution state for a single workflow run.
 ///
 /// Provides variable storage, node results, and template resolution.
@@ -29,6 +59,9 @@ pub struct WorkflowContext {
     node_results: RwLock<HashMap<String, NodeResult>>,
     /// Workflow input data.
     input: HashMap<String, serde_json::Value>,
+    /// Per-run execution identity (who/where triggered; see
+    /// [`WorkflowIdentity`]). Default = empty (legacy/test paths).
+    identity: WorkflowIdentity,
 }
 
 impl Clone for WorkflowContext {
@@ -39,18 +72,42 @@ impl Clone for WorkflowContext {
             variables: RwLock::new(vars),
             node_results: RwLock::new(results),
             input: self.input.clone(),
+            identity: self.identity.clone(),
         }
     }
 }
 
 impl WorkflowContext {
     /// Create a new workflow execution context.
+    ///
+    /// Identity is left empty — this is the legacy/test constructor. The
+    /// engine fills identity via [`Self::new_with_identity`].
     pub fn new(input: HashMap<String, serde_json::Value>) -> Self {
         Self {
             variables: RwLock::new(HashMap::new()),
             node_results: RwLock::new(HashMap::new()),
             input,
+            identity: WorkflowIdentity::default(),
         }
+    }
+
+    /// Create a new workflow execution context with a filled execution
+    /// identity (安全闸补齐 A4：归因/审批路由/会话豁免的身份随行).
+    pub fn new_with_identity(
+        identity: WorkflowIdentity,
+        input: HashMap<String, serde_json::Value>,
+    ) -> Self {
+        Self {
+            variables: RwLock::new(HashMap::new()),
+            node_results: RwLock::new(HashMap::new()),
+            input,
+            identity,
+        }
+    }
+
+    /// Per-run execution identity (who/where triggered this run).
+    pub fn identity(&self) -> &WorkflowIdentity {
+        &self.identity
     }
 
     /// Set a workflow variable to any JSON-serialisable value.

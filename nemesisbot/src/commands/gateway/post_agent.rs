@@ -825,6 +825,14 @@ pub(crate) async fn init_post_agent(
                         }
                     });
                 }
+                // workflow 引擎 estop 联动挂点（A 批批 4）：急停触发 → 引擎
+                // 全部 Running/Waiting 执行取消（落 Cancelled 终态）；释放不
+                // 动作——被取消的执行不自动复活，显式 resume 才续（诚实终态）。
+                #[cfg(feature = "workflow")]
+                crate::commands::gateway::workflow_secure_executor::spawn_estop_watcher(
+                    &workflow_engine,
+                    &shared_resources.estop,
+                );
                 // WSAPI agents.* 同点接线（同一 Manager 实例；web 侧 trait
                 // + 槽，实现落本 crate——依赖方向 nemesisbot→nemesis-web）。
                 // 先注入 loop manager 再装 bridge（bridge 的

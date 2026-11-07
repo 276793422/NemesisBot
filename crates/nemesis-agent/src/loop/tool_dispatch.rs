@@ -330,7 +330,7 @@ impl AgentLoop {
         batch_id: Option<&str>,
     ) -> String {
         let result = self
-            .handle_tool_call_at_depth_impl(tool_call, context, depth, batch_id)
+            .handle_tool_call_at_depth_impl(tool_call, context, depth, batch_id, &[])
             .await;
         checks_capture::record_check(
             &self.checks_capture,
@@ -342,13 +342,77 @@ impl AgentLoop {
         result
     }
 
+    /// workflow 工具节点调度入口（A4 归因穿透 + A1 五闸补齐）：attrib 附加
+    /// 元数据通道。workflow 引擎的 tool 节点经
+    /// [`crate::loop_tools::WorkflowRunTool`] 触发的工具调用在此进完整
+    /// dispatch 瀑布（estop/hidden/min-tier/plan/安全管线/审批/guardian，
+    /// 闸序单一真相源零重实现），同时把 workflow 实例/节点身份
+    /// （wf_instance/wf_node_id/wf_name/wf_trigger/wf_depth）append 进
+    /// `ToolInvocation.metadata`——审计链与审批卡可辨触发源头。空键跳过
+    /// （诚实缺省）；`batch_id` 恒 None（workflow 节点无并行批）。
+    ///
+    /// args_validator 臂在本入口内补齐（LLM 循环路径在 tool_batch/tool_defs
+    /// 调用方 dispatch 前校验，本入口面向程序化调用方，校验只能收在这里）：
+    /// Fixed 应用改写后继续（与循环两臂同语义）；Invalid 回结构化错误文本
+    /// （workflow 节点侧无模型自纠，诚实失败交引擎处置）。tier_allowed_tools
+    /// 白名单刻意不在本入口：那是供给侧选型防混淆闸（模型挑工具），workflow
+    /// 模板作者显式点名工具，不受活跃模型档位白名单约束；执行面的档位闸 =
+    /// 插件 min-tier 声明（impl 内，正常生效）。
+    pub async fn handle_tool_call_with_attrib(
+        &self,
+        tool_call: &ToolCallInfo,
+        context: &RequestContext,
+        depth: usize,
+        attrib: &[(String, String)],
+    ) -> String {
+        // args_validator 臂（A1）：schema 缺失（未注册工具等）= Valid 透传，
+        // 由 impl 的「工具不存在」错误兜底。
+        let effective = match self.check_tool_args(tool_call).await {
+            crate::args_validator::Outcome::Valid => std::borrow::Cow::Borrowed(tool_call),
+            crate::args_validator::Outcome::Fixed(fixed_args) => {
+                info!(
+                    "[AgentLoop] Auto-fixed args for tool '{}' (workflow node call, id={})",
+                    tool_call.name, tool_call.id
+                );
+                std::borrow::Cow::Owned(ToolCallInfo {
+                    id: tool_call.id.clone(),
+                    name: tool_call.name.clone(),
+                    arguments: fixed_args,
+                })
+            }
+            crate::args_validator::Outcome::Invalid { message, .. } => {
+                warn!(
+                    "[AgentLoop] Arg validation failed for tool '{}' (workflow node call, id={}): {}",
+                    tool_call.name, tool_call.id, message
+                );
+                return format!(
+                    "Error: args validation failed for tool '{}': {message}. Do NOT retry; the workflow template arguments are invalid.",
+                    tool_call.name
+                );
+            }
+        };
+        let result = self
+            .handle_tool_call_at_depth_impl(&effective, context, depth, None, attrib)
+            .await;
+        checks_capture::record_check(
+            &self.checks_capture,
+            &context.session_key,
+            &effective.name,
+            &effective.arguments,
+            &result,
+        );
+        result
+    }
+
     /// [`Self::handle_tool_call_at_depth`] 的原实现（闸门瀑布 + 执行）。
+    /// `attrib` = 调用方附加元数据键值对（workflow 归因等；空键跳过）。
     async fn handle_tool_call_at_depth_impl(
         &self,
         tool_call: &ToolCallInfo,
         context: &RequestContext,
         depth: usize,
         batch_id: Option<&str>,
+        attrib: &[(String, String)],
     ) -> String {
         // dispatch 入口打点。around-hook 链在安全段
         // （审批/提问等待，可达数分钟）之后才构建，钩子自身计时会把等待漏在
@@ -940,6 +1004,14 @@ impl AgentLoop {
                                 .filter(|s| !s.is_empty())
                             {
                                 m.insert("connector_receipt_ctx".to_string(), rc.to_string());
+                            }
+                        }
+                        // A4 归因穿透：调用方附加键值对（workflow 实例/节点
+                        // 身份等）append 进 metadata——审计链与审批卡可辨
+                        // 触发源头；空键跳过（诚实缺省）。
+                        for (k, v) in attrib {
+                            if !k.is_empty() {
+                                m.insert(k.clone(), v.clone());
                             }
                         }
                         m

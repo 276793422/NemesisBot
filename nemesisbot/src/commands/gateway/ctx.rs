@@ -474,6 +474,16 @@ impl GatewayCtx {
             // Load all workflow definitions from {home}/workspace/workflow/definitions/.
             engine.set_workflow_defs_dir(workflow_defs_dir.clone());
 
+            // 墙钟保险丝（A 批批 4）：`workflow.wall_clock_budget_secs`
+            // （缺省 3600，0=关）——超时执行由引擎看门狗 fire cancel token，
+            // 调度器按取消路径收口落 Failed + 原因注记（诚实可见，非静默杀）。
+            engine.set_wall_clock_budget_secs(
+                cfg.workflow
+                    .clone()
+                    .unwrap_or_default()
+                    .wall_clock_budget_secs,
+            );
+
             // 统一执行世界：workflow script 节点（无 registry 的装配路径）、
             // per-node `sandbox: false` 的受守卫直跑、引擎控制面写盘（persist/
             // delete 根外拒绝）都经同一个 ExecutionWorld。executor 分离开（默认）

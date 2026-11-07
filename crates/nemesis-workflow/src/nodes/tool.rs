@@ -56,6 +56,24 @@ impl NodeExecutor for ToolNodeExecutor {
     }
 }
 
+/// workflow 工具节点的安全执行通道（A 批五闸补齐）。
+///
+/// 由宿主侧（gateway）实现：把工具调用转交 AgentLoop dispatch 瀑布
+/// （estop/hidden/tier/plan 写闸/安全 8 层管线+审批/args_validator 闸序
+/// 单一真相源），workflow 工具节点不再直连裸 `ToolRegistry`。`None`
+/// （未接线）时回退旧直连路径并一次性 loud warn——诚实地暴露缺口，
+/// 不静默。
+#[async_trait]
+pub trait SecureExecutor: Send + Sync {
+    async fn execute(
+        &self,
+        node_id: &str,
+        tool_name: &str,
+        args: &serde_json::Value,
+        identity: &crate::context::WorkflowIdentity,
+    ) -> nemesis_tools::types::ToolResult;
+}
+
 /// Real tool node executor that delegates to `nemesis_tools::ToolRegistry`.
 ///
 /// Looks up the tool by name and invokes it with resolved args. Tool errors
@@ -68,11 +86,31 @@ impl NodeExecutor for ToolNodeExecutor {
 ///   resolved against the executor context
 pub struct RealToolNodeExecutor {
     tools: Arc<nemesis_tools::registry::ToolRegistry>,
+    /// 安全执行通道（gateway 接线后 Some）；None = 直连裸注册表（旧路径）。
+    secure: Option<std::sync::Arc<dyn SecureExecutor>>,
+    /// 未接线告警只发一次（每 executor 一条，不随节点调用刷屏）。
+    warned_no_secure: std::sync::Once,
 }
 
 impl RealToolNodeExecutor {
     pub fn new(tools: Arc<nemesis_tools::registry::ToolRegistry>) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            secure: None,
+            warned_no_secure: std::sync::Once::new(),
+        }
+    }
+
+    /// 宿主侧接线入口：注册带安全执行通道的 executor（覆盖裸注册表直连）。
+    pub fn new_with_secure_executor(
+        tools: Arc<nemesis_tools::registry::ToolRegistry>,
+        secure: std::sync::Arc<dyn SecureExecutor>,
+    ) -> Self {
+        Self {
+            tools,
+            secure: Some(secure),
+            warned_no_secure: std::sync::Once::new(),
+        }
     }
 
     pub fn tools(&self) -> &Arc<nemesis_tools::registry::ToolRegistry> {
@@ -86,7 +124,7 @@ impl NodeExecutor for RealToolNodeExecutor {
         &self,
         node: &NodeDef,
         context: &HashMap<String, serde_json::Value>,
-        _wf_ctx: &WorkflowContext,
+        wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let started = Local::now();
 
@@ -116,7 +154,23 @@ impl NodeExecutor for RealToolNodeExecutor {
             Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
         };
 
-        let tool_result = self.tools.execute(tool_name, &resolved_args).await;
+        // A 批五闸补齐：宿主接线了安全执行通道 → 全部工具调用过 dispatch
+        // 瀑布（estop/hidden/tier/plan/安全管线/审批/args_validator）；
+        // 未接线 → 旧直连路径 + 一次性 loud warn（诚实暴露缺口）。
+        let tool_result = if let Some(secure) = &self.secure {
+            secure
+                .execute(&node.id, tool_name, &resolved_args, wf_ctx.identity())
+                .await
+        } else {
+            self.warned_no_secure.call_once(|| {
+                tracing::warn!(
+                    "[workflow] tool node executing WITHOUT the secure dispatch channel \
+                     (estop/tier/plan/security pipeline bypassed) — wire \
+                     RealToolNodeExecutor::new_with_secure_executor on the host side"
+                );
+            });
+            self.tools.execute(tool_name, &resolved_args).await
+        };
 
         Ok(tool_result_to_node_result(
             &node.id,

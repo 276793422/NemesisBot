@@ -176,6 +176,9 @@ async fn over_max_recursion_depth_is_rejected_at_engine_entry() {
             Some(TriggerSource::AgentTool {
                 tool_call_id: "tc-over".to_string(),
                 recursion_depth: MAX_RECURSION_DEPTH + 1,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
             }),
         )
         .await
@@ -202,6 +205,9 @@ async fn at_max_recursion_depth_is_accepted() {
             Some(TriggerSource::AgentTool {
                 tool_call_id: "tc-at".to_string(),
                 recursion_depth: MAX_RECURSION_DEPTH,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
             }),
         )
         .await

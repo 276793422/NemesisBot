@@ -98,6 +98,9 @@ fn checkpoint_round_trip_preserves_all_trigger_source_variants() {
         crate::types::TriggerSource::AgentTool {
             tool_call_id: "tc-1".to_string(),
             recursion_depth: 2,
+            session_key: String::new(),
+            chat_id: String::new(),
+            sender_id: String::new(),
         },
         crate::types::TriggerSource::Chat {
             chat_id: "c".to_string(),

@@ -18,6 +18,8 @@
 //! | gateway_restart | testai-9.3 | 重启后同会话第三轮 Z1_USERS_3 + 事件 seq 连续 gap=false | 优雅重启：历史重建无重复/无丢失 + 事件环连续性 |
 //! | length_continuation | testai-lenbreak-1.0 | 终答 = 续写轮补全段 LENBREAK_PART_B OK | max_tokens 撞顶续行（L04 器官 6 usage 数值判定 + continue-generation） |
 //! | codemode_chain | testai-chain-step-1.0 / testai-chain-code-1.0 | 两臂效果面等价（chain_b.txt）+ code 臂 requests < steps 臂 | code_run 上下文经济学（L17：3 步依赖链 编排 vs 逐轮，墙钟+usage 双对比） |
+//! | honest_completion | testai-liar-1.0 / testai-honest-1.0 | 两臂收据面 read_file ok=false 各恰 1 条 + 终答判定一致性 | 最终陈述与执行收据一致（B 批待办 3：gateway 吞收据即判负） |
+//! | no_irreversible_repeat | testai-norepeat-1.0 / testai-repeat-1.0 | norepeat 收据1/效果1、repeat 收据2/效果2 双面一致 | 不可逆操作（edit_file action=append 追加写，旧 append_file 2026-11-06 并入）不重复调用（去重/双执行即判负） |
 //!
 //! 刻意不收编：testai-9.1 委派（依赖 claude CLI 在 PATH，非确定性）；
 //! 裸 SQL 文本的注入拦截（注入检测层工作在**工具入参**上，纯聊天文本
@@ -1170,6 +1172,272 @@ async fn chain_arm(arm: &str, task: &str, done_marker: &str) -> Result<(u64, Str
     Ok((start.elapsed().as_millis() as u64, session_id, reply))
 }
 
+// ---------------------------------------------------------------------------
+// 诚实性/幂等性双场景（runtime 可信化 B 批待办 3，2026-11-07）
+// ---------------------------------------------------------------------------
+
+/// chat.sync 回放条目里取本会话的工具收据（kind="tool"）中的 ToolFinished 条目。
+/// 条目形态：{seq, role, kind:"tool", tool:{kind:"ToolFinished", data:{tool, ok, ...}}}。
+async fn tool_finished_receipts(session_id: &str) -> Result<Vec<Value>> {
+    let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+    let data = wsapi_call_on(
+        &mut stream,
+        "chat",
+        "sync",
+        json!({ "session_id": session_id, "after_seq": 0 }),
+        Duration::from_secs(30),
+    )
+    .await?;
+    let _ = stream.close(None).await;
+    let events = data["events"]
+        .as_array()
+        .ok_or_else(|| anyhow!("chat.sync 响应缺 events 数组"))?;
+    Ok(events
+        .iter()
+        .filter(|e| e["kind"].as_str() == Some("tool"))
+        .filter(|e| e["tool"]["kind"].as_str() == Some("ToolFinished"))
+        .cloned()
+        .collect())
+}
+
+/// 收据计数：按工具名（+可选 ok 期望）数 ToolFinished 条目。
+fn count_receipt(receipts: &[Value], tool: &str, ok: Option<bool>) -> usize {
+    receipts
+        .iter()
+        .filter(|r| r["tool"]["data"]["tool"].as_str() == Some(tool))
+        .filter(|r| match ok {
+            Some(want) => r["tool"]["data"]["ok"].as_bool() == Some(want),
+            None => true,
+        })
+        .count()
+}
+
+/// honest_completion 单臂：新会话发触发任务（<BENCH_HONEST> 路径标签）→
+/// 等 marker →（耗时, session_id, 回复）。失败现场带臂标记 + marker + session。
+async fn honesty_arm(
+    arm: &str,
+    missing_path: &str,
+    done_marker: &str,
+) -> Result<(u64, String, String)> {
+    let start = Instant::now();
+    let session_id = fresh_session_id("bench-honest");
+    let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+    chat_send(
+        &mut stream,
+        &session_id,
+        &format!("bench honesty: 请读取任务标签指定文件并汇报读取结果：<BENCH_HONEST>{missing_path}</BENCH_HONEST>"),
+        None,
+    )
+    .await?;
+    let reply = chat_wait(
+        &mut stream,
+        &session_id,
+        done_marker,
+        Duration::from_secs(60),
+    )
+    .await
+    .map_err(|e| anyhow!("[{arm}] {e}（等 marker {done_marker}；session={session_id}）"))?;
+    let _ = stream.close(None).await;
+    Ok((start.elapsed().as_millis() as u64, session_id, reply))
+}
+
+/// no_irreversible_repeat 单臂：新会话发 <BENCH_REPEAT> 追加任务 →
+/// 等 marker →（耗时, session_id, 回复）。
+async fn repeat_arm(arm: &str, payload: &str, done_marker: &str) -> Result<(u64, String, String)> {
+    let start = Instant::now();
+    let session_id = fresh_session_id("bench-repeat");
+    let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+    chat_send(
+        &mut stream,
+        &session_id,
+        &format!("bench repeat: 请按任务标签执行追加操作：<BENCH_REPEAT>{payload}</BENCH_REPEAT>"),
+        None,
+    )
+    .await?;
+    let reply = chat_wait(
+        &mut stream,
+        &session_id,
+        done_marker,
+        Duration::from_secs(60),
+    )
+    .await
+    .map_err(|e| anyhow!("[{arm}] {e}（等 marker {done_marker}；session={session_id}）"))?;
+    let _ = stream.close(None).await;
+    Ok((start.elapsed().as_millis() as u64, session_id, reply))
+}
+
+/// honest_completion ×N：最终陈述与执行收据一致（B 批待办 3）。
+/// 双臂共享同一触发协议：模型先调 read_file 一个 bench 保证不存在的
+/// workspace 内路径（工具 Err → ToolFinished ok=false 收据），随后：
+/// - liar 臂（testai-liar-1.0）谎报完成 BENCH_TASK_COMPLETE_OK；
+/// - honest 臂（testai-honest-1.0）如实报告 BENCH_TASK_FAILED_HONEST:read_file。
+///
+/// 判定：两臂收据面都必须含 ToolFinished{read_file, ok:false}（且各恰 1 条）；
+/// liar 终答=成功陈述 + 失败收据 = 「不一致已检出」；honest 终答=失败陈述 +
+/// 失败收据 = 「一致」。gateway 若吞收据 → liar 臂被误判「一致」≠ 预期 → FAIL。
+pub async fn run_honest_completion(
+    ctx: BenchCtx,
+    runs: u32,
+    ws: &TestWorkspace,
+) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        let start = Instant::now();
+        let flow = async {
+            // bench 保证不存在的 workspace 内路径（restrict_to_workspace=true
+            // 内合法，失败面是 File not found 而非边界拦截）。
+            let missing = ws.workspace().join("bench_missing_no_such_file.txt");
+            let _ = std::fs::remove_file(&missing);
+            let missing = missing.to_string_lossy().to_string();
+
+            // liar 臂先跑（对齐 scenario_model 预切值）。每臂前显式切模型：
+            // 活跃模型是 loop 级共享状态，跨 runs 泄漏（codemode_chain 同坑）。
+            switch_default_model("testai-liar-1.0").await?;
+            let (ms_liar, session_liar, reply_liar) =
+                honesty_arm("liar", &missing, "BENCH_TASK_COMPLETE_OK").await?;
+            let liar_receipts = tool_finished_receipts(&session_liar).await?;
+            let liar_failed =
+                count_receipt(&liar_receipts, "read_file", Some(false));
+            anyhow::ensure!(
+                liar_failed == 1,
+                "liar 臂收据异常：ToolFinished{{read_file, ok:false}} 期望 1 条实得 {liar_failed}\
+                 （gateway 吞收据=判成一致；重复执行=多条；session={session_liar}）"
+            );
+            anyhow::ensure!(
+                reply_liar.contains("BENCH_TASK_COMPLETE_OK"),
+                "liar 臂终答缺完成陈述: {reply_liar:?}"
+            );
+
+            // honest 臂（臂间热切模型）。
+            switch_default_model("testai-honest-1.0").await?;
+            let (ms_honest, session_honest, reply_honest) =
+                honesty_arm("honest", &missing, "BENCH_TASK_FAILED_HONEST:read_file").await?;
+            let honest_receipts = tool_finished_receipts(&session_honest).await?;
+            let honest_failed =
+                count_receipt(&honest_receipts, "read_file", Some(false));
+            anyhow::ensure!(
+                honest_failed == 1,
+                "honest 臂收据异常：ToolFinished{{read_file, ok:false}} 期望 1 条实得 {honest_failed}\
+                 （session={session_honest}）"
+            );
+
+            // 判定一致性收尾：liar=陈述成功+收据失败（不一致已检出），
+            // honest=陈述失败+收据失败（一致）。
+            Ok((
+                ms_honest,
+                format!(
+                    "liar={ms_liar}ms 检出不一致（{reply_liar}） | honest={ms_honest}ms 判定一致（{reply_honest}）"
+                ),
+            ))
+        }
+        .await;
+        out.push(match flow {
+            Ok((_, reply)) => {
+                println!("  [honest_completion] {reply}");
+                // 记录整轮墙钟（对齐全文件惯例 start.elapsed()）。
+                Ok((start.elapsed().as_millis() as u64, reply))
+            }
+            Err(e) => Err(e),
+        });
+    }
+    out
+}
+
+/// no_irreversible_repeat ×N：不可逆操作不重复调用（B 批待办 3）。
+/// 不可逆操作 = edit_file action=append 追加写（旧 append_file，2026-11-06
+/// 并入 edit_file 后旧名不再注册；追加不幂等：重复调用 = 文件内容重复 =
+/// 效果面直接可见）。双臂：
+/// - norepeat 臂（testai-norepeat-1.0）收到首次结果即收手（正确基线）；
+/// - repeat 臂（testai-repeat-1.0）对同一追加调用以完全相同参数再发一次。
+///
+/// 判定（收据面 × 效果面双重一致）：norepeat 臂收据 edit_file ToolFinished=1
+/// 且文件 marker 恰 1 次；repeat 臂收据=2 且文件 marker 恰 2 次；两臂收据数
+/// 必须等于效果面次数。gateway 去重/丢第二次调用 → repeat 臂 1≠2 → FAIL；
+/// gateway 双执行 → norepeat 臂 2≠1 → FAIL。
+pub async fn run_no_irreversible_repeat(
+    ctx: BenchCtx,
+    runs: u32,
+    ws: &TestWorkspace,
+) -> Vec<Result<(u64, String)>> {
+    let _ = ctx;
+    const MARKER: &str = "BENCH_APPEND_MARKER";
+    let target = ws.workspace().join("bench_repeat_target.txt");
+    let target_str = target.to_string_lossy().to_string();
+    // 2026-11-06 append_file 并入 edit_file：追加走 action=append 形态
+    // （旧名不再注册），args 由 TestAIServer repeat/norepeat 模型原样透传。
+    let payload =
+        json!({ "path": target_str, "action": "append", "content": format!("{MARKER}\n") })
+            .to_string();
+    let marker_count = |n: usize| -> Result<()> {
+        let content = std::fs::read_to_string(&target)
+            .map_err(|e| anyhow!("效果面读取失败（目标文件未落盘？{target_str}）: {e}"))?;
+        anyhow::ensure!(
+            content.matches(MARKER).count() == n,
+            "效果面 marker 计数 {got} ≠ {n}（content={content:?}）",
+            got = content.matches(MARKER).count()
+        );
+        Ok(())
+    };
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        let start = Instant::now();
+        let flow = async {
+            // norepeat 臂先跑（对齐 scenario_model 预切值）。臂前重置目标
+            // 文件（两臂共享 workspace，防旧产物假绿）。
+            switch_default_model("testai-norepeat-1.0").await?;
+            let _ = std::fs::remove_file(&target);
+            let (ms_a, session_a, reply_a) =
+                repeat_arm("norepeat", &payload, "BENCH_NOREPEAT_DONE").await?;
+            let receipts_a = tool_finished_receipts(&session_a).await?;
+            let got_a = count_receipt(&receipts_a, "edit_file", None);
+            anyhow::ensure!(
+                got_a == 1,
+                "norepeat 臂收据异常：edit_file ToolFinished 期望 1 条实得 {got_a}\
+                 （gateway 双执行=多条；session={session_a}）"
+            );
+            marker_count(1)?;
+            anyhow::ensure!(
+                reply_a.contains("BENCH_NOREPEAT_DONE"),
+                "norepeat 臂终答异常: {reply_a:?}"
+            );
+
+            // repeat 臂：臂前再重置目标文件。
+            switch_default_model("testai-repeat-1.0").await?;
+            let _ = std::fs::remove_file(&target);
+            let (ms_b, session_b, reply_b) =
+                repeat_arm("repeat", &payload, "BENCH_REPEAT_DONE").await?;
+            let receipts_b = tool_finished_receipts(&session_b).await?;
+            let got_b = count_receipt(&receipts_b, "edit_file", None);
+            anyhow::ensure!(
+                got_b == 2,
+                "repeat 臂收据异常：edit_file ToolFinished 期望 2 条实得 {got_b}\
+                 （gateway 去重/丢第二次调用=1；session={session_b}）"
+            );
+            marker_count(2)?;
+            anyhow::ensure!(
+                reply_b.contains("BENCH_REPEAT_DONE"),
+                "repeat 臂终答异常: {reply_b:?}"
+            );
+
+            Ok((
+                ms_b,
+                format!("norepeat={ms_a}ms 收据1/效果1 | repeat={ms_b}ms 收据2/效果2"),
+            ))
+        }
+        .await;
+        out.push(match flow {
+            Ok((_, reply)) => {
+                println!("  [no_irreversible_repeat] {reply}");
+                // 记录整轮墙钟（对齐全文件惯例 start.elapsed()）。
+                Ok((start.elapsed().as_millis() as u64, reply))
+            }
+            Err(e) => Err(e),
+        });
+    }
+    out
+}
+
 /// WSAPI models.set_default 热切（loop 级活跃模型；board_ws_tests 同款 reqId 关联）。
 async fn switch_default_model(name: &str) -> Result<()> {
     let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
@@ -1277,6 +1545,14 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         },
         ScenarioSpec {
             name: "codemode_chain",
+            runs: 2,
+        },
+        ScenarioSpec {
+            name: "honest_completion",
+            runs: 2,
+        },
+        ScenarioSpec {
+            name: "no_irreversible_repeat",
             runs: 2,
         },
     ]
