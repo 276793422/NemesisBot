@@ -1472,6 +1472,11 @@ mod recovery_classifier_tests;
 // 令牌是唯一出口）。
 #[cfg(test)]
 mod recovery_stop_tests;
+// BUG-20261107-026 回归锁：恢复环 cancel/estop 中断面——环顶闸
+// （engaged → 零调用）/ 退避与限流 sleep 可打断 / 在途重呼调用可打断
+// （Err(Done) 终局 + 快照清理 + 不再发新调用）。
+#[cfg(test)]
+mod recovery_estop_tests;
 // 恢复环 tool_defs 供给闸回归锁：三恢复环重试请求的
 // 工具面必须与主链路 effective_tool_defs 同源（hidden/tier 等供给闸在
 // 恢复重试上同样生效）。

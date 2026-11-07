@@ -3704,7 +3704,12 @@ impl BoardStore {
         if retention_days <= 0 {
             return Ok(0);
         }
-        let cutoff = Self::now() - retention_days * 24 * 3600;
+        // 受检乘法（BUG-20261107-025 横向扫；同族先例：turn-wal TTL /
+        // user_profile decay saturating_mul）——retention_days 是 config
+        // 来源 i64（只挡 <=0 无上界），`*24*3600` 溢出在 debug panic（每日
+        // 维护任务假死）/ release 环绕 → cutoff 漂移误删全表或漏扫。饱和
+        // 语义 = 「保留窗荒谬大 → 什么都不删」（诚实极端值行为）。
+        let cutoff = Self::now() - retention_days.saturating_mul(24 * 3600);
         let n = self
             .conn
             .lock()

@@ -73,6 +73,7 @@ async fn stop_cancels_transient_retry_backoff_sleep() {
     let context = RequestContext::new("web", "rl-chat", "rl-sender", "agent:main:session:rlstop");
 
     let started = std::time::Instant::now();
+    let cancel = tokio_util::sync::CancellationToken::new();
     let task = {
         let agent_loop = agent_loop.clone();
         tokio::spawn(async move {
@@ -83,6 +84,8 @@ async fn stop_cancels_transient_retry_backoff_sleep() {
                     &provider,
                     "test-model",
                     &opts,
+                    &cancel,
+                    None,
                     std::time::Duration::from_secs(2), // ≥1s → 退避形态
                     "upstream deadline exceeded".to_string(),
                 )
@@ -95,7 +98,8 @@ async fn stop_cancels_transient_retry_backoff_sleep() {
 
     let (maybe_resp, last_err) = task
         .await
-        .expect("retry task must not panic (停机窗口 timer 注册回归锁)");
+        .expect("retry task must not panic (停机窗口 timer 注册回归锁)")
+        .expect("stop 退出走 Ok 耗尽路径");
 
     let elapsed = started.elapsed();
     assert!(
@@ -126,6 +130,7 @@ async fn stopped_loop_skips_transient_retry_entirely() {
     let context = RequestContext::new("web", "rl-chat", "rl-sender", "agent:main:session:rlstop");
 
     let started = std::time::Instant::now();
+    let cancel = tokio_util::sync::CancellationToken::new();
     let (maybe_resp, last_err) = agent_loop
         .retry_transient(
             &instance,
@@ -133,10 +138,13 @@ async fn stopped_loop_skips_transient_retry_entirely() {
             &provider,
             "test-model",
             &opts,
+            &cancel,
+            None,
             std::time::Duration::from_millis(500), // <1s 也一样：顶闸不看退避资格
             "upstream deadline exceeded".to_string(),
         )
-        .await;
+        .await
+        .expect("stop 退出走 Ok 耗尽路径");
 
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
     assert!(maybe_resp.is_none());
@@ -196,6 +204,7 @@ async fn stop_cancels_rate_limit_retry_wait_sleep() {
     let context = RequestContext::new("web", "rl-chat", "rl-sender", "agent:main:session:rlstop");
 
     let started = std::time::Instant::now();
+    let cancel = tokio_util::sync::CancellationToken::new();
     let task = {
         let agent_loop = agent_loop.clone();
         tokio::spawn(async move {
@@ -206,6 +215,8 @@ async fn stop_cancels_rate_limit_retry_wait_sleep() {
                     &provider,
                     "test-model",
                     &opts,
+                    &cancel,
+                    None,
                     "status 429 rate limited (retry_after=3)".to_string(),
                 )
                 .await
@@ -217,7 +228,8 @@ async fn stop_cancels_rate_limit_retry_wait_sleep() {
 
     let (maybe_resp, last_err) = task
         .await
-        .expect("rate-limit retry task must not panic (停机窗口 timer 注册回归锁)");
+        .expect("rate-limit retry task must not panic (停机窗口 timer 注册回归锁)")
+        .expect("stop 退出走 Ok 耗尽路径");
 
     let elapsed = started.elapsed();
     assert!(
@@ -254,6 +266,7 @@ async fn stopped_loop_skips_rate_limit_retry_entirely() {
     let context = RequestContext::new("web", "rl-chat", "rl-sender", "agent:main:session:rlstop");
 
     let started = std::time::Instant::now();
+    let cancel = tokio_util::sync::CancellationToken::new();
     let (maybe_resp, last_err) = agent_loop
         .retry_rate_limited(
             &context,
@@ -261,9 +274,12 @@ async fn stopped_loop_skips_rate_limit_retry_entirely() {
             &provider,
             "test-model",
             &opts,
+            &cancel,
+            None,
             "status 429 rate limited (retry_after=3)".to_string(),
         )
-        .await;
+        .await
+        .expect("stop 退出走 Ok 耗尽路径");
 
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
     assert!(maybe_resp.is_none());

@@ -104,6 +104,29 @@ fn decay_respects_configured_days() {
     assert_eq!(p.habits[0].status, STATUS_DECAYING);
 }
 
+#[test]
+fn decay_absurd_config_days_saturates_instead_of_overflow() {
+    // 回归锁（BUG-20261107-025）：config 来源 decay_days 只挡 0/负无上界
+    // （decay_days_or），合法可解析的荒谬大值经 `*2` 溢出——debug panic /
+    // release 环绕为负 → days > 负数恒真 → 全部条目误判 expired 被
+    // prune 清空（静默毁数据）。饱和语义 = 永不衰减（诚实极端值）。
+    let now = chrono::Local::now();
+    let mut p = UserProfile::default();
+    let mut h = habit("不该被误杀的习惯", 0.9);
+    h.last_seen = now.to_rfc3339();
+    p.habits = vec![h];
+    // 5e18：serde 合法 i64，×2 溢出 i64::MAX（≈9.22e18）。
+    decay_sweep_with_days(&mut p, now, 5_000_000_000_000_000_000);
+    assert_eq!(p.habits[0].status, STATUS_ACTIVE);
+    // i64::MAX 本体同面（saturating_mul 封顶后比较恒假）。
+    let mut p2 = UserProfile::default();
+    let mut h2 = habit("极限值也不误杀", 0.8);
+    h2.last_seen = (now - chrono::Duration::days(3650)).to_rfc3339();
+    p2.habits = vec![h2];
+    decay_sweep_with_days(&mut p2, now, i64::MAX);
+    assert_eq!(p2.habits[0].status, STATUS_ACTIVE);
+}
+
 // ---- 渲染 ----
 
 #[test]

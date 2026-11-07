@@ -26,6 +26,16 @@ use super::*;
 pub(crate) const STREAM_PARTIAL_SEPARATOR: &str = "\n\n--- 以下为中断前已生成的部分内容 ---\n";
 pub(crate) const STREAM_TOOL_CALLS_TRUNCATED_MARK: &str = "，工具调用已截断（不可拼接续写）";
 
+/// cancel/estop 打断终局与 sink 补帧文案单一真相源（BUG-20261107-026）。
+/// 打断面共七处 select/检查点（首呼、凭据卡重试、hook 重呼、三恢复环的
+/// 环顶/sleep/调用），文案必须逐字节一致——此前三处内联副本（wait_
+/// estop_engaged 同款防漂移抽取先例），恢复环接入后位点更多，收拢成常量。
+pub(crate) const CANCEL_DONE_MSG: &str = "已取消";
+pub(crate) const CANCEL_SINK_MSG: &str = "已取消（用户中断）";
+pub(crate) const ESTOP_DONE_MSG: &str =
+    "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。";
+pub(crate) const ESTOP_SINK_MSG: &str = "已急停（E-STOP），LLM 调用已中断";
+
 /// 流中断 partial 提取纯函数。
 ///
 /// 从错误串解析 partial 与 tool_calls 截断标记：
@@ -125,9 +135,9 @@ impl AgentLoop {
             _ = cancel_token.cancelled() => {
                 info!("[AgentLoop] LLM call cancelled while waiting for response, turns_used={}", turns_used);
                 if let Some(sink) = &stream_sink {
-                    sink.error("已取消（用户中断）");
+                    sink.error(CANCEL_SINK_MSG);
                 }
-                return Err(AgentEvent::Done("已取消".to_string()));
+                return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
             }
             // 急停：watch 翻成 engaged 才 resolve。（起该等待逻辑抽成
             // wait_estop_engaged 共享——hook 重呼路径用同一段，防漂移。）
@@ -137,12 +147,9 @@ impl AgentLoop {
                     turns_used
                 );
                 if let Some(sink) = &stream_sink {
-                    sink.error("已急停（E-STOP），LLM 调用已中断");
+                    sink.error(ESTOP_SINK_MSG);
                 }
-                return Err(AgentEvent::Done(
-                    "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
-                        .to_string(),
-                ));
+                return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
             }
         };
 
@@ -276,6 +283,8 @@ impl AgentLoop {
                             turns_used,
                             round_start,
                             &active_provider,
+                            cancel_token,
+                            stream_sink.as_deref(),
                             err,
                         )
                         .await
@@ -354,27 +363,45 @@ impl AgentLoop {
                         )
                     );
 
+                    // BUG-20261107-026：环接入 cancel/estop 中断面后，
+                    // Err = 中断终局事件（Done 取消/急停），直接上抛给骨架
+                    // push + 结束本 turn（与首呼两臂同型）；Ok 走既有耗尽
+                    // 终局路径。
                     let (maybe_resp, last_err) = if is_rate_limit_error || classified_rate_limit {
-                        self.retry_rate_limited(
-                            context,
-                            instance,
-                            &active_provider,
-                            active_model,
-                            chat_opts,
-                            err,
-                        )
-                        .await
+                        match self
+                            .retry_rate_limited(
+                                context,
+                                instance,
+                                &active_provider,
+                                active_model,
+                                chat_opts,
+                                cancel_token,
+                                stream_sink.as_deref(),
+                                err,
+                            )
+                            .await
+                        {
+                            Ok(pair) => pair,
+                            Err(ev) => return Err(ev),
+                        }
                     } else if is_transient_error || classified_transient {
-                        self.retry_transient(
-                            instance,
-                            context,
-                            &active_provider,
-                            active_model,
-                            chat_opts,
-                            first_call_failed_after,
-                            err,
-                        )
-                        .await
+                        match self
+                            .retry_transient(
+                                instance,
+                                context,
+                                &active_provider,
+                                active_model,
+                                chat_opts,
+                                cancel_token,
+                                stream_sink.as_deref(),
+                                first_call_failed_after,
+                                err,
+                            )
+                            .await
+                        {
+                            Ok(pair) => pair,
+                            Err(ev) => return Err(ev),
+                        }
                     } else {
                         (None, err.clone())
                     };
@@ -460,6 +487,7 @@ impl AgentLoop {
             &active_provider,
             chat_opts,
             cancel_token,
+            stream_sink.as_deref(),
             turns_used,
             response,
         )
@@ -470,6 +498,10 @@ impl AgentLoop {
     /// 搬入）。环内逐次 force_compression → 重建消息 → 重呼；重呼成功返回
     /// `Ok`；两次耗尽则完成原耗尽尾部（observer 错误事件 + history 落账 +
     /// capture flush + vision 兜底提示）后 `Err(Error(格式化文案))`。
+    ///
+    /// BUG-20261107-026：环接入 cancel/estop 中断面——环顶闸（取消/急停后
+    /// 不再 force_compression 推进 summary cache、不再发新调用）+ 重呼 select
+    /// 臂（在途调用可打断，sink 补 error 帧同首呼纪律）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn retry_after_context_error(
         &self,
@@ -483,8 +515,13 @@ impl AgentLoop {
         turns_used: u32,
         round_start: std::time::Instant,
         active_provider: &Arc<dyn LlmProvider>,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        stream_sink: Option<&ProviderStreamSink>,
         err: String,
     ) -> Result<LlmResponse, AgentEvent> {
+        // 订阅急停（首呼同款：owned Receiver 不借 guard；None=未接线 →
+        // 等待臂永不 resolve）。
+        let mut estop_rx = self.security.subscribe();
         // Attempt up to 2 retries with progressive history compression.
         let mut retry_count = 0u32;
         let max_retries = 2u32;
@@ -498,6 +535,15 @@ impl AgentLoop {
         );
 
         while retry_count < max_retries {
+            // BUG-20261107-026：环顶中断闸——取消/急停后不再推进压缩状态
+            // （force_compression 是有副作用的：summary cache 逐次前进），
+            // 也不再发新调用。
+            if cancel_token.is_cancelled() {
+                return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+            }
+            if self.security.is_engaged() {
+                return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
+            }
             // Force-compress: advance the summary cache (tail → SMALL_K_FORCE,
             // then → 0 on a second pass). History is not mutated.
             // B29（2026-11-06 设计 §1.2 D3，G4 根修）：消费 force_compression
@@ -547,17 +593,40 @@ impl AgentLoop {
 
             // ②A：压缩重试环内调用同样包超时（挂死连接有限
             // 重试后终局，不无限挂）。
-            match self
-                .chat_call_escalating(
+            // BUG-20261107-026：重呼包 cancel/estop 臂（与首呼同构）——
+            // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
+            // error 帧让前端流半开收口（首呼臂同款纪律）。
+            let chat_result = tokio::select! {
+                result = self.chat_call_escalating(
                     self.current_provider_call_timeout_secs(),
                     active_provider,
                     active_model,
                     compressed_messages,
                     Some(chat_opts.clone()),
                     retry_tool_defs,
-                )
-                .await
-            {
+                ) => result,
+                _ = cancel_token.cancelled() => {
+                    info!(
+                        "[AgentLoop] LLM context retry call cancelled, retry_count={}",
+                        retry_count
+                    );
+                    if let Some(sink) = stream_sink {
+                        sink.error(CANCEL_SINK_MSG);
+                    }
+                    return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+                }
+                _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                    info!(
+                        "[AgentLoop] E-stop engaged during LLM context retry call, retry_count={}",
+                        retry_count
+                    );
+                    if let Some(sink) = stream_sink {
+                        sink.error(ESTOP_SINK_MSG);
+                    }
+                    return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
+                }
+            };
+            match chat_result {
                 Ok(resp) => {
                     got_response = Some(resp);
                     break;
@@ -710,9 +779,9 @@ impl AgentLoop {
             _ = cancel_token.cancelled() => {
                 info!("[AgentLoop] LLM retry (credential card) cancelled, turns_used={}", st.turns_used);
                 if let Some(sink) = &stream_sink {
-                    sink.error("已取消（用户中断）");
+                    sink.error(CANCEL_SINK_MSG);
                 }
-                return Some(Err(AgentEvent::Done("已取消".to_string())));
+                return Some(Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string())));
             }
             _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
                 info!(
@@ -720,12 +789,9 @@ impl AgentLoop {
                     st.turns_used
                 );
                 if let Some(sink) = &stream_sink {
-                    sink.error("已急停（E-STOP），LLM 调用已中断");
+                    sink.error(ESTOP_SINK_MSG);
                 }
-                return Some(Err(AgentEvent::Done(
-                    "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
-                        .to_string(),
-                )));
+                return Some(Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string())));
             }
         };
         match chat_result {
@@ -802,9 +868,14 @@ impl AgentLoop {
 
     /// 器官 4b：429 限流预算环（原 is_rate_limit_error 臂整体搬入）。梯子 +
     /// Retry-After 取 max + 显式进度 + 实时快照 + 预算硬上限（②B）；调用全
-    /// 部包超时（②A）。成功返回 `(Some(resp), 最终 last_err)`；次数/预算
-    /// 耗尽返回 `(None, 终局文案)`（「终局诚实」结构化标注，文案
+    /// 部包超时（②A）。成功返回 `Ok((Some(resp), 最终 last_err))`；次数/
+    /// 预算耗尽返回 `Ok((None, 终局文案))`（「终局诚实」结构化标注，文案
     /// 逐字节保持）。
+    ///
+    /// BUG-20261107-026：环接入 cancel/estop 中断面（三检查点：环顶 + 等待
+    /// sleep 臂 + 调用 select 臂）——急停后不再发新调用/白等梯子，Err =
+    /// 中断终局事件直接上抛；中断出口与既有 stop 出口同守「环出口统一清
+    /// 快照」不变量。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn retry_rate_limited(
         &self,
@@ -813,8 +884,12 @@ impl AgentLoop {
         active_provider: &Arc<dyn LlmProvider>,
         active_model: &str,
         chat_opts: &crate::types::ChatOptions,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        stream_sink: Option<&ProviderStreamSink>,
         err: String,
-    ) -> (Option<LlmResponse>, String) {
+    ) -> Result<(Option<LlmResponse>, String), AgentEvent> {
+        // 订阅急停（首呼同款）。
+        let mut estop_rx = self.security.subscribe();
         let mut last_err = err;
         let mut maybe_resp: Option<LlmResponse> = None;
         let max_retries = self.current_rate_limit_retries().max(0) as u32;
@@ -834,10 +909,20 @@ impl AgentLoop {
             // 秒等待，僵尸环会继续烧预算并重发调用）。
             if self.stop_token.is_cancelled() {
                 self.clear_rate_limit_status(&context.session_key);
-                return (
+                return Ok((
                     None,
                     "[AgentLoop] stopped; LLM rate-limit retry aborted".to_string(),
-                );
+                ));
+            }
+            // BUG-20261107-026：取消/急停环顶闸（stop 同位同型）——急停后
+            // 不再发新调用，也不吃预算干等梯子。
+            if cancel_token.is_cancelled() {
+                self.clear_rate_limit_status(&context.session_key);
+                return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+            }
+            if self.security.is_engaged() {
+                self.clear_rate_limit_status(&context.session_key);
+                return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
             }
             // ②B：进入下一轮等待+调用前先看预算——预算是
             // 硬上限，超了直接终局（sleep 也要算进去，
@@ -909,14 +994,26 @@ impl AgentLoop {
             // 臂序铁律：cancelled 第一——select! 按书写顺序 poll，sleep
             // 在前的话停机后被唤醒的 poll 会先注册 timer（panic 点），
             // 轮不到 cancelled 臂。
+            // BUG-20261107-026：取消/急停臂（急停不打断限流梯子 = 急停后
+            // 环白等最长 900s 预算并在醒后继续发调用——中断面缺口主点位）。
             tokio::select! {
                 _ = self.stop_token.cancelled() => {
                     self.clear_rate_limit_status(&context.session_key);
-                    return (
+                    return Ok((
                         None,
                         "[AgentLoop] stopped during LLM rate-limit retry backoff; call aborted"
                             .to_string(),
-                    );
+                    ));
+                }
+                // BUG-20261107-026：取消/急停臂（急停不打断限流梯子 = 急停后
+                // 环白等最长 900s 预算并在醒后继续发调用——中断面缺口主点位）。
+                _ = cancel_token.cancelled() => {
+                    self.clear_rate_limit_status(&context.session_key);
+                    return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+                }
+                _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                    self.clear_rate_limit_status(&context.session_key);
+                    return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
                 }
                 _ = tokio::time::sleep(std::time::Duration::from_secs(wait)) => {}
             }
@@ -929,16 +1026,36 @@ impl AgentLoop {
             // （不回响应体）时不再无限等待（实测挂死 27
             // 分钟）；超时按该次重试失败计，走既有环
             // （次数/预算双重有界）。
-            let call_result = self
-                .chat_call_escalating(
+            // BUG-20261107-026：调用包 cancel/estop 臂（与首呼同构）；
+            // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
+            // error 帧让前端流半开收口。
+            let call_result = tokio::select! {
+                result = self.chat_call_escalating(
                     call_timeout,
                     active_provider,
                     active_model,
                     r_msgs,
                     Some(chat_opts.clone()),
                     r_tools,
-                )
-                .await;
+                ) => result,
+                // BUG-20261107-026：调用包 cancel/estop 臂（与首呼同构）；
+                // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
+                // error 帧让前端流半开收口。
+                _ = cancel_token.cancelled() => {
+                    self.clear_rate_limit_status(&context.session_key);
+                    if let Some(sink) = stream_sink {
+                        sink.error(CANCEL_SINK_MSG);
+                    }
+                    return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+                }
+                _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                    self.clear_rate_limit_status(&context.session_key);
+                    if let Some(sink) = stream_sink {
+                        sink.error(ESTOP_SINK_MSG);
+                    }
+                    return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
+                }
+            };
             match call_result {
                 Ok(resp) => {
                     maybe_resp = Some(resp);
@@ -969,12 +1086,15 @@ impl AgentLoop {
                 format!("{label}，已重试 {retries} 次：{}", last_err)
             };
         }
-        (maybe_resp, last_err)
+        Ok((maybe_resp, last_err))
     }
 
     /// 器官 4c：transient 退避环（原 is_transient_error 臂整体搬入）。P3B
     /// 撞墙检测 + 退避资格（<1s 立即拒绝不退避，≥1s 按 1s/2s/4s 退避）+
-    /// 调用包超时。返回 `(Option, 最终 last_err)`。
+    /// 调用包超时。成功/耗尽返回 `Ok((Option, 最终 last_err))`。
+    ///
+    /// BUG-20261107-026：环接入 cancel/estop 中断面（三检查点同限流环）；
+    /// Err = 中断终局事件直接上抛。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn retry_transient(
         &self,
@@ -983,9 +1103,13 @@ impl AgentLoop {
         active_provider: &Arc<dyn LlmProvider>,
         active_model: &str,
         chat_opts: &crate::types::ChatOptions,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        stream_sink: Option<&ProviderStreamSink>,
         first_call_failed_after: std::time::Duration,
         err: String,
-    ) -> (Option<LlmResponse>, String) {
+    ) -> Result<(Option<LlmResponse>, String), AgentEvent> {
+        // 订阅急停（首呼同款）。
+        let mut estop_rx = self.security.subscribe();
         let mut last_err = err;
         let mut maybe_resp: Option<LlmResponse> = None;
         info!(
@@ -1038,10 +1162,18 @@ impl AgentLoop {
             // 令牌——立即拒绝形态（backoff_eligible=false，无 sleep）也会在
             // stop 后继续盲试，闸必须在环顶而不是只在退避处。
             if self.stop_token.is_cancelled() {
-                return (
+                return Ok((
                     None,
                     "[AgentLoop] stopped; LLM transient retry aborted".to_string(),
-                );
+                ));
+            }
+            // BUG-20261107-026：取消/急停环顶闸（stop 同位同型）——立即
+            // 拒绝形态（无 sleep 可打断）同样必须在这里挡住。
+            if cancel_token.is_cancelled() {
+                return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+            }
+            if self.security.is_engaged() {
+                return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
             }
             retries += 1;
             // transient 环每次重试发起计入会话统计（含最终失败的重试
@@ -1067,11 +1199,19 @@ impl AgentLoop {
                 let backoff = std::time::Duration::from_secs(1u64 << (retries - 1).min(2));
                 tokio::select! {
                     _ = self.stop_token.cancelled() => {
-                        return (
+                        return Ok((
                             None,
                             "[AgentLoop] stopped during LLM transient retry backoff; call aborted"
                                 .to_string(),
-                        );
+                        ));
+                    }
+                    // BUG-20261107-026：取消/急停臂——急停后不再白等退避
+                    // 梯子，立即中断本 turn。
+                    _ = cancel_token.cancelled() => {
+                        return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+                    }
+                    _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                        return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
                     }
                     _ = tokio::time::sleep(backoff) => {}
                 }
@@ -1099,17 +1239,35 @@ impl AgentLoop {
             }
             let r_tools = self.effective_tool_defs(instance);
             let attempt_start = std::time::Instant::now();
-            match self
-                .chat_call_escalating(
+            // BUG-20261107-026：调用包 cancel/estop 臂（与首呼同构）；
+            // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
+            // error 帧让前端流半开收口。
+            let chat_result = tokio::select! {
+                result = self.chat_call_escalating(
                     call_timeout,
                     active_provider,
                     active_model,
                     r_msgs,
                     Some(chat_opts.clone()),
                     r_tools,
-                )
-                .await
-            {
+                ) => result,
+                // BUG-20261107-026：调用包 cancel/estop 臂（与首呼同构）；
+                // chat future 被 drop 时包装器 Err 臂没机会跑，sink 显式补
+                // error 帧让前端流半开收口。
+                _ = cancel_token.cancelled() => {
+                    if let Some(sink) = stream_sink {
+                        sink.error(CANCEL_SINK_MSG);
+                    }
+                    return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+                }
+                _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                    if let Some(sink) = stream_sink {
+                        sink.error(ESTOP_SINK_MSG);
+                    }
+                    return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
+                }
+            };
+            match chat_result {
                 Ok(resp) => {
                     let mut resp = resp;
                     // 拼接出完整文本（partial 是失败请求已产出的工作
@@ -1153,13 +1311,15 @@ impl AgentLoop {
                 }
             }
         }
-        (maybe_resp, last_err)
+        Ok((maybe_resp, last_err))
     }
 
     /// 器官 4d：LLM post-hooks 受守卫终裁（原 run_loop.rs 982-1123 搬入）。
     /// Allow 采纳终稿；Block → `Err(Done(HOOK BLOCKED…))`；Retry 预算内重建
     /// 消息（# Hook feedback 注入）+ 全量 defs 折叠重呼，重呼 cancel/estop
     /// 臂与首呼同构（`Err`）；重呼失败 fail-open 保留原响应。
+    /// `stream_sink`：重呼两臂的 sink 补帧（BUG-20261107-026——chat future
+    /// 被 drop 时包装器 Err 臂不跑，显式补 error 帧同首呼纪律）。
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_llm_post_hooks_guarded(
         &self,
@@ -1170,6 +1330,7 @@ impl AgentLoop {
         active_provider: &Arc<dyn LlmProvider>,
         chat_opts: &crate::types::ChatOptions,
         cancel_token: &tokio_util::sync::CancellationToken,
+        stream_sink: Option<&ProviderStreamSink>,
         turns_used: u32,
         mut response: LlmResponse,
     ) -> Result<LlmResponse, AgentEvent> {
@@ -1258,17 +1419,23 @@ impl AgentLoop {
                             ) => res,
                             _ = cancel_token.cancelled() => {
                                 info!("[AgentLoop] Hook retry call cancelled, turns_used={}", turns_used);
-                                return Err(AgentEvent::Done("已取消".to_string()));
+                                // sink 补帧（BUG-20261107-026：此前两臂都缺
+                                // ——chat future 被 drop 时包装器 Err 臂不跑，
+                                // 首呼/凭据卡臂补了、这里漏了，同款纪律）。
+                                if let Some(sink) = &stream_sink {
+                                    sink.error(CANCEL_SINK_MSG);
+                                }
+                                return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
                             }
                             _ = Self::wait_estop_engaged(r_estop_rx.as_mut()) => {
                                 info!(
                                     "[AgentLoop] E-stop engaged during hook retry call, turns_used={}",
                                     turns_used
                                 );
-                                return Err(AgentEvent::Done(
-                                    "⛔ 已急停 (E-STOP) — LLM 调用已中断。发送 `nemesisbot estop --release` 恢复。"
-                                        .to_string(),
-                                ));
+                                if let Some(sink) = &stream_sink {
+                                    sink.error(ESTOP_SINK_MSG);
+                                }
+                                return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
                             }
                         };
                         match r {

@@ -231,8 +231,11 @@ fn derive_from_entry_name(entry: &str) -> Option<(u64, String)> {
 // ---------------------------------------------------------------------------
 
 /// 同卷 rename 短重试（Windows 瞬时句柄：AV/索引器/杀软扫打开是常态不是
-/// 异常）。目标已存在时 Windows rename 也会失败——恢复冲突检测靠前置检查，
-/// 不靠 rename 竞态裁决。重试耗尽诚实 Err（调用方上浮，不静默丢件）。
+/// 异常）。std::fs::rename 两平台都覆盖已存在目标（Windows =
+/// MoveFileExW + MOVEFILE_REPLACE_EXISTING）；真正失败的形态是目标被
+/// share-mode 占用（AV 抓着）——重试等句柄松手，恒占用时耗尽诚实 Err。
+/// 恢复冲突检测靠前置检查（rename 会静默覆盖 live 会话 = 吞件），不靠
+/// rename 竞态裁决。重试耗尽诚实 Err（调用方上浮，不静默丢件）。
 fn move_file_retry(from: &Path, to: &Path) -> Result<(), String> {
     if !from.exists() {
         return Ok(()); // 缺席 = 跳过（boundary/meta 是 lazy 创建）
@@ -358,6 +361,12 @@ pub fn trash_chat_log_in(
     let raw =
         serde_json::to_string_pretty(&manifest).map_err(|e| format!("清单序列化失败: {e}"))?;
     std::fs::write(entry.join("trash.json"), raw).map_err(|e| format!("清单写入失败: {e}"))?;
+
+    // FTS 懒索引：jsonl 已离开 session_logs，摘除索引登记——同键复用（复合
+    // 通道键同节点同 chat 重开真实可达）的增量插入不得以旧 DB 行为基线推
+    // seq（与 delete_chat_log 的级联清理同族；见 history_search::invalidate_session）。
+    #[cfg(feature = "history-search")]
+    crate::history_search::invalidate_session(session_key);
 
     // 返回实际占位条目名：同毫秒双删时第二删落在 `name-2` 槽位，返回循环前
     // 的 `name` 会让调用方拿到第一删的名字——按名 purge/restore 会误指前删
@@ -652,8 +661,9 @@ pub fn trash_restore_in(
         // 目标键 live todo 先清：它只可能是已删会话的孤儿残留（BUG① 形态，
         // 2026-11-05 之前旧条目恢复时必撞）或本事务上次半途已移走的半成品
         //（后者 todo_src 已不在条目内，走不进本分支）。restore 语义 = 条目
-        // 内容为准；不先清则 Windows rename 目标已存在直接失败 → 恢复卡死。
-        // todo 不参与冲突判定（meta/jsonl 才是会话存在性权威）。
+        // 内容为准（rename 两平台都会覆盖已存在目标——显式清是语义声明与
+        // 失败面收窄，不是防覆盖）。todo 不参与冲突判定（meta/jsonl 才是
+        // 会话存在性权威）。
         let live = loc.todo_path(&target_key);
         if live.exists() {
             nemesis_utils::fsutil::remove_file_retry(&live)

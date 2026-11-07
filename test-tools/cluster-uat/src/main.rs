@@ -6820,7 +6820,7 @@ async fn main() {
                             "T30",
                             format!(
                                 "③转人工评论应携带锚点失败明细: {}",
-                                trunc(&escalate_seg, 400)
+                                trunc(escalate_seg, 400)
                             ),
                         );
                     }

@@ -171,12 +171,32 @@ fn b30_cap_counts_chars_not_bytes_cjk_safe() {
 
 /// X1 同构判定（[`cap_prune_matches_recompute`]）：同构 → gate 不记投影
 /// （纯重算照常）；不同构 → 必须记（否则重算 None/异形回灌不一致文本）。
+/// 判定按「gate 是否裁 × 重算是否裁」四象限（BUG-20261107-027 修复后
+/// 双向覆盖）。
 #[test]
 fn b30_cap_prune_matches_recompute_predicate() {
-    // gate 未裁：cap=0 或 ≤cap → 同构（无裁剪发生）。
-    assert!(cap_prune_matches_recompute(0, 1_000_000), "cap=0 未裁");
+    // 双方都不裁：cap=0 关闭 / total ≤ cap 且 total ≤ 8192 → 同构（全文）。
+    assert!(
+        cap_prune_matches_recompute(0, 5_000),
+        "cap=0 小结果双方不裁"
+    );
     assert!(cap_prune_matches_recompute(8000, 8000), "恰好 ≤cap 未裁");
-    // 缺省 cap 深超限：头尾未收缩且重算也裁 → 同构（投影不记）。
+    assert!(
+        cap_prune_matches_recompute(20_000, 8_000),
+        "大 cap 且 ≤8192 双方都不裁"
+    );
+    // gate 未裁但重算会裁（BUG-20261107-027 修复点；修复前两断言误钉
+    // true——重算按 const 8192 对 10_000/1_000_000 字符都会裁）：
+    // cap=0 关闭 / cap 放大（8192 < total ≤ cap）方向必须记投影。
+    assert!(
+        !cap_prune_matches_recompute(0, 1_000_000),
+        "cap=0 未裁但重算会裁 → 不同构（会话内缩水防线）"
+    );
+    assert!(
+        !cap_prune_matches_recompute(20_000, 10_000),
+        "8192 < total ≤ cap 全文放行 → 不同构（必记投影）"
+    );
+    // 缺省 cap 深超限：双方都裁且头尾未收缩 → 同构（投影不记）。
     assert!(
         cap_prune_matches_recompute(8000, 40_000),
         ">8192 深超限与 legacy 同形"
@@ -186,7 +206,7 @@ fn b30_cap_prune_matches_recompute_predicate() {
         !cap_prune_matches_recompute(8000, 8100),
         "灰区必须记投影（UNDO 泄漏防线）"
     );
-    // 预算收缩（小 cap）：头尾异形 → 不同构（必记）。
+    // 预算收缩（小 cap）：双方都裁但头尾异形 → 不同构（必记）。
     assert!(
         !cap_prune_matches_recompute(4000, 40_000),
         "小 cap 头尾异形"
@@ -195,11 +215,6 @@ fn b30_cap_prune_matches_recompute_predicate() {
     assert!(
         cap_prune_matches_recompute(20_000, 40_000),
         "大 cap 头尾封顶 3600 与重算同形"
-    );
-    // 大 cap 但结果落在 (8192, cap]：gate 未裁（≤cap），重算也未裁 → 同构。
-    assert!(
-        cap_prune_matches_recompute(20_000, 10_000),
-        "gate 未裁即同构"
     );
 }
 
