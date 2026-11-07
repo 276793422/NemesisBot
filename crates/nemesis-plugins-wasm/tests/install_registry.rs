@@ -1074,6 +1074,10 @@ async fn runtime_master_gate_hot_toggle_blocks_tool_and_panel_entries() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let ws = tmp.path().join("workspace");
     std::fs::create_dir_all(&ws).expect("mkdir workspace");
+    // 壳 crate 独立 workspace，CI 的 build --workspace 不产出 host DLL；
+    // 直构 manager 不经 fresh_manager，须自行 ensure（2026-11-08 CI 实锤：
+    // 全新 checkout 无开发路径 DLL，构造即 NotAvailable）。
+    common::ensure_host_dll();
     let mgr = Arc::new(
         PluginManager::new_with_dirs(
             &ws,
