@@ -131,6 +131,8 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'connectors.max_ops_per_hour': { label: '每小时操作上限（0=不限）', type: 'number', range: { min: 0, max: 10_000, step: 1 } },
   'connectors.finance.max_order_qty': { label: '单笔下单数量上限（0=拒绝所有）', type: 'number', range: { min: 0, max: 1_000_000, step: 1 } },
   'connectors.finance.max_orders_per_day': { label: '每日下单笔数上限（0=拒绝所有）', type: 'number', range: { min: 0, max: 10_000, step: 1 } },
+  // ---- workflow ----
+  'workflow.wall_clock_budget_secs': { label: '墙钟保险丝（秒，0=关）', type: 'number', range: { min: 0, max: 86400, step: 60 } },
 }
 
 /** 通道显示名（`channels.<id>.*` 分组标题用）。 */
@@ -183,7 +185,7 @@ const PAGE_TITLES: Record<string, string> = {
   agents: 'Agent 默认', executor: '执行体隔离', terminal: '内嵌终端', gateway: '网关',
   tools: '工具', heartbeat: '心跳', devices: '设备', logging: '日志', security: '安全',
   skills: '技能', forge: 'Forge', cluster: '集群', memory: '记忆', mcp: 'MCP',
-  channels: '通道', connectors: '行动连接器',
+  channels: '通道', connectors: '行动连接器', workflow: '工作流',
 }
 
 /** 编译期默认值按路径查找（drift 测试同时保证此查找不落空）。 */
