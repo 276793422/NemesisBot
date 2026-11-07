@@ -19,7 +19,7 @@
 //! | length_continuation | testai-lenbreak-1.0 | 终答 = 续写轮补全段 LENBREAK_PART_B OK | max_tokens 撞顶续行（L04 器官 6 usage 数值判定 + continue-generation） |
 //! | codemode_chain | testai-chain-step-1.0 / testai-chain-code-1.0 | 两臂效果面等价（chain_b.txt）+ code 臂 requests < steps 臂 | code_run 上下文经济学（L17：3 步依赖链 编排 vs 逐轮，墙钟+usage 双对比） |
 //! | honest_completion | testai-liar-1.0 / testai-honest-1.0 | 两臂收据面 read_file ok=false 各恰 1 条 + 终答判定一致性 | 最终陈述与执行收据一致（B 批待办 3：gateway 吞收据即判负） |
-//! | no_irreversible_repeat | testai-norepeat-1.0 / testai-repeat-1.0 | norepeat 收据1/效果1、repeat 收据2/效果2 双面一致 | 不可逆工具（append_file）不重复调用（去重/双执行即判负） |
+//! | no_irreversible_repeat | testai-norepeat-1.0 / testai-repeat-1.0 | norepeat 收据1/效果1、repeat 收据2/效果2 双面一致 | 不可逆操作（edit_file action=append 追加写，旧 append_file 2026-11-06 并入）不重复调用（去重/双执行即判负） |
 //!
 //! 刻意不收编：testai-9.1 委派（依赖 claude CLI 在 PATH，非确定性）；
 //! 裸 SQL 文本的注入拦截（注入检测层工作在**工具入参**上，纯聊天文本
@@ -1344,13 +1344,14 @@ pub async fn run_honest_completion(
     out
 }
 
-/// no_irreversible_repeat ×N：不可逆工具不重复调用（B 批待办 3）。
-/// 不可逆操作 = append_file（追加写不幂等：重复调用 = 文件内容重复 =
+/// no_irreversible_repeat ×N：不可逆操作不重复调用（B 批待办 3）。
+/// 不可逆操作 = edit_file action=append 追加写（旧 append_file，2026-11-06
+/// 并入 edit_file 后旧名不再注册；追加不幂等：重复调用 = 文件内容重复 =
 /// 效果面直接可见）。双臂：
 /// - norepeat 臂（testai-norepeat-1.0）收到首次结果即收手（正确基线）；
-/// - repeat 臂（testai-repeat-1.0）对同一 append_file 以完全相同参数再发一次。
+/// - repeat 臂（testai-repeat-1.0）对同一追加调用以完全相同参数再发一次。
 ///
-/// 判定（收据面 × 效果面双重一致）：norepeat 臂收据 append_file ToolFinished=1
+/// 判定（收据面 × 效果面双重一致）：norepeat 臂收据 edit_file ToolFinished=1
 /// 且文件 marker 恰 1 次；repeat 臂收据=2 且文件 marker 恰 2 次；两臂收据数
 /// 必须等于效果面次数。gateway 去重/丢第二次调用 → repeat 臂 1≠2 → FAIL；
 /// gateway 双执行 → norepeat 臂 2≠1 → FAIL。
@@ -1363,7 +1364,11 @@ pub async fn run_no_irreversible_repeat(
     const MARKER: &str = "BENCH_APPEND_MARKER";
     let target = ws.workspace().join("bench_repeat_target.txt");
     let target_str = target.to_string_lossy().to_string();
-    let payload = json!({ "path": target_str, "content": format!("{MARKER}\n") }).to_string();
+    // 2026-11-06 append_file 并入 edit_file：追加走 action=append 形态
+    // （旧名不再注册），args 由 TestAIServer repeat/norepeat 模型原样透传。
+    let payload =
+        json!({ "path": target_str, "action": "append", "content": format!("{MARKER}\n") })
+            .to_string();
     let marker_count = |n: usize| -> Result<()> {
         let content = std::fs::read_to_string(&target)
             .map_err(|e| anyhow!("效果面读取失败（目标文件未落盘？{target_str}）: {e}"))?;
@@ -1385,10 +1390,10 @@ pub async fn run_no_irreversible_repeat(
             let (ms_a, session_a, reply_a) =
                 repeat_arm("norepeat", &payload, "BENCH_NOREPEAT_DONE").await?;
             let receipts_a = tool_finished_receipts(&session_a).await?;
-            let got_a = count_receipt(&receipts_a, "append_file", None);
+            let got_a = count_receipt(&receipts_a, "edit_file", None);
             anyhow::ensure!(
                 got_a == 1,
-                "norepeat 臂收据异常：append_file ToolFinished 期望 1 条实得 {got_a}\
+                "norepeat 臂收据异常：edit_file ToolFinished 期望 1 条实得 {got_a}\
                  （gateway 双执行=多条；session={session_a}）"
             );
             marker_count(1)?;
@@ -1403,10 +1408,10 @@ pub async fn run_no_irreversible_repeat(
             let (ms_b, session_b, reply_b) =
                 repeat_arm("repeat", &payload, "BENCH_REPEAT_DONE").await?;
             let receipts_b = tool_finished_receipts(&session_b).await?;
-            let got_b = count_receipt(&receipts_b, "append_file", None);
+            let got_b = count_receipt(&receipts_b, "edit_file", None);
             anyhow::ensure!(
                 got_b == 2,
-                "repeat 臂收据异常：append_file ToolFinished 期望 2 条实得 {got_b}\
+                "repeat 臂收据异常：edit_file ToolFinished 期望 2 条实得 {got_b}\
                  （gateway 去重/丢第二次调用=1；session={session_b}）"
             );
             marker_count(2)?;

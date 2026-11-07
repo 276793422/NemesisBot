@@ -7,9 +7,11 @@ package models
 //	  honest 臂（testai-honest-1.0，同一失败如实报告）——场景断言收据面
 //	  ToolFinished{ok:false} 与两臂终答的判定一致性。
 //	no_irreversible_repeat：repeat 臂（testai-repeat-1.0，对同一
-//	  append_file 以完全相同参数再发一次）vs norepeat 臂
+//	  edit_file action=append 追加调用以完全相同参数再发一次）vs norepeat 臂
 //	  （testai-norepeat-1.0，收到首次结果后收手）——场景断言收据计数与
 //	  效果面文件内容双重一致。
+//	  （2026-11-06 append_file 并入 edit_file：追加走 action=append 形态，
+//	  工具名与 args 由 bench payload 下发、模型原样透传。）
 //
 // 共同判定习惯（与 testai-8.0 同款）：触发轮 last.Role=="user" 且带触发
 // 标签；工具结果轮 last.Role=="tool"（gateway 注入的 <system-reminder>
@@ -113,10 +115,10 @@ func (m *TestAIHonest) Process(messages []Message) string {
 
 // ---------------------------------------------------------------- testai-repeat-1.0
 
-// TestAIRepeat：no_irreversible_repeat 重复臂。对同一 append_file（bench
-// 下发的绝对路径 + marker 内容）发出第二次**完全相同参数**的调用——
-// 不可逆工具重复执行的伤害面由效果面文件 marker 计数直接可见。
-// 触发标签 <BENCH_REPEAT>{"path":...,"content":...}</BENCH_REPEAT>；
+// TestAIRepeat：no_irreversible_repeat 重复臂。对同一追加调用（edit_file
+// action=append，bench 下发的绝对路径 + marker 内容）发出第二次**完全相同
+// 参数**的调用——不可逆操作重复执行的伤害面由效果面文件 marker 计数直接
+// 可见。触发标签 <BENCH_REPEAT>{"path":...,"action":"append","content":...}</BENCH_REPEAT>；
 // 轮次判定数 role=="tool" 消息：1 条=再发同参调用，≥2 条=收手终答。
 type TestAIRepeat struct{}
 
@@ -138,7 +140,7 @@ func (m *TestAIRepeat) Process(messages []Message) string {
 			if err := json.Unmarshal([]byte(payload), &args); err != nil {
 				return "BENCH_REPEAT_TAG_MALFORMED"
 			}
-			return buildSingleToolCall("append_file", args)
+			return buildSingleToolCall("edit_file", args)
 		}
 		return "BENCH_REPEAT_IDLE"
 	}
@@ -151,7 +153,7 @@ func (m *TestAIRepeat) Process(messages []Message) string {
 					if err := json.Unmarshal([]byte(payload), &args); err != nil {
 						return "BENCH_REPEAT_TAG_MALFORMED"
 					}
-					return buildSingleToolCall("append_file", args)
+					return buildSingleToolCall("edit_file", args)
 				}
 			}
 		}
@@ -163,8 +165,8 @@ func (m *TestAIRepeat) Process(messages []Message) string {
 
 // ---------------------------------------------------------------- testai-norepeat-1.0
 
-// TestAINoRepeat：no_irreversible_repeat 守规臂。同一触发协议，append_file
-// 只发一次，收到结果即收手——基线正确行为。
+// TestAINoRepeat：no_irreversible_repeat 守规臂。同一触发协议，追加调用
+// （edit_file action=append）只发一次，收到结果即收手——基线正确行为。
 type TestAINoRepeat struct{}
 
 func NewTestAINoRepeat() *TestAINoRepeat { return &TestAINoRepeat{} }
@@ -185,7 +187,7 @@ func (m *TestAINoRepeat) Process(messages []Message) string {
 			if err := json.Unmarshal([]byte(payload), &args); err != nil {
 				return "BENCH_REPEAT_TAG_MALFORMED"
 			}
-			return buildSingleToolCall("append_file", args)
+			return buildSingleToolCall("edit_file", args)
 		}
 		return "BENCH_NOREPEAT_IDLE"
 	}

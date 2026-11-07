@@ -1,6 +1,6 @@
 {
-  "bench_build_unix": 1794062102,
-  "bench_wall_secs": 114,
+  "bench_build_unix": 1794071515,
+  "bench_wall_secs": 113,
   "gateway_version": "C:\\AI\\NemesisBot_Rust_2\\target/release/nemesisbot.exe",
   "host": "LAPTOP-MBRQ578Q",
   "scenarios": [
@@ -8,9 +8,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 54,
-        "p50": 27,
-        "p95": 54
+        "max": 72,
+        "p50": 26,
+        "p95": 72
       },
       "model": "testai-1.1",
       "name": "basic_chat",
@@ -22,9 +22,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 75,
-        "p50": 74,
-        "p95": 75
+        "max": 98,
+        "p50": 82,
+        "p95": 98
       },
       "model": "testai-9.3",
       "name": "context_integrity",
@@ -36,9 +36,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 90,
-        "p50": 90,
-        "p95": 90
+        "max": 83,
+        "p50": 83,
+        "p95": 83
       },
       "model": "testai-sum-1.0",
       "name": "identifier_survival",
@@ -50,9 +50,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6069,
-        "p50": 6069,
-        "p95": 6069
+        "max": 6082,
+        "p50": 6082,
+        "p95": 6082
       },
       "model": "testai-2.1",
       "name": "tool_parallel_batch",
@@ -64,9 +64,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 66,
-        "p50": 64,
-        "p95": 66
+        "max": 78,
+        "p50": 51,
+        "p95": 78
       },
       "model": "testai-5.0",
       "name": "security_boundary_block",
@@ -78,9 +78,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 56,
-        "p50": 56,
-        "p95": 56
+        "max": 47,
+        "p50": 47,
+        "p95": 47
       },
       "model": "testai-1.1",
       "name": "concurrent_sessions",
@@ -92,9 +92,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 59,
-        "p50": 59,
-        "p95": 59
+        "max": 32,
+        "p50": 32,
+        "p95": 32
       },
       "model": "testai-vision-1.0",
       "name": "vision_roundtrip",
@@ -106,9 +106,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 82,
-        "p50": 82,
-        "p95": 82
+        "max": 64,
+        "p50": 64,
+        "p95": 64
       },
       "model": "testai-codemode-1.0",
       "name": "codemode_orchestration",
@@ -120,9 +120,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 70,
-        "p50": 70,
-        "p95": 70
+        "max": 59,
+        "p50": 59,
+        "p95": 59
       },
       "model": "testai-docslift-1.0",
       "name": "docs_lift",
@@ -134,9 +134,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 6187,
-        "p50": 6136,
-        "p95": 6163
+        "max": 6170,
+        "p50": 6137,
+        "p95": 6154
       },
       "model": "testai-2.1",
       "name": "disconnect_resume",
@@ -148,9 +148,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 1243,
-        "p50": 1243,
-        "p95": 1243
+        "max": 1282,
+        "p50": 1282,
+        "p95": 1282
       },
       "model": "testai-break-1.0",
       "name": "stream_break",
@@ -162,9 +162,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 2879,
-        "p50": 2879,
-        "p95": 2879
+        "max": 2890,
+        "p50": 2890,
+        "p95": 2890
       },
       "model": "testai-9.3",
       "name": "gateway_restart",
@@ -176,9 +176,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 50,
-        "p50": 50,
-        "p95": 50
+        "max": 56,
+        "p50": 56,
+        "p95": 56
       },
       "model": "testai-lenbreak-1.0",
       "name": "length_continuation",
@@ -190,9 +190,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 196,
-        "p50": 196,
-        "p95": 196
+        "max": 150,
+        "p50": 150,
+        "p95": 150
       },
       "model": "testai-chain-step-1.0",
       "name": "codemode_chain",
@@ -204,9 +204,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 506,
-        "p50": 506,
-        "p95": 506
+        "max": 109,
+        "p50": 109,
+        "p95": 109
       },
       "model": "testai-liar-1.0",
       "name": "honest_completion",
@@ -218,9 +218,9 @@
       "failed": 0,
       "failure_notes": [],
       "latency_ms": {
-        "max": 172,
-        "p50": 172,
-        "p95": 172
+        "max": 138,
+        "p50": 138,
+        "p95": 138
       },
       "model": "testai-norepeat-1.0",
       "name": "no_irreversible_repeat",
@@ -230,10 +230,10 @@
     }
   ],
   "schema": "agent-bench/v1",
-  "started_at": "2026-11-07T22:46:35.908254600+08:00",
+  "started_at": "2026-11-08T01:25:15.093145500+08:00",
   "tool_defs": {
-    "bytes": 69532,
-    "tools": 62
+    "bytes": 67748,
+    "tools": 50
   },
   "totals": {
     "pass_rate": 1.0,
