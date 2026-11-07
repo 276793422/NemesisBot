@@ -841,13 +841,18 @@ async fn ws_tunnel_up_buf_cap_closes_connection_on_impossible_frame_flood() {
     };
     assert!(!reason.is_empty(), "断连必须带原因：{reason}");
 
-    // 浏览器侧 socket 随泵收口关闭。
+    // 浏览器侧 socket 随泵收口关闭。Windows 关闭形态二象：优雅 FIN=Ok(0)；
+    // 有在途数据时中止式 RST=ConnectionReset——两者都证明连接已关闭
+    // （负载下 RST/FIN 竞速），只拒「读到了数据」与超时。
     let mut chunk = [0u8; 64];
     let n = tokio::time::timeout(std::time::Duration::from_secs(10), browser.read(&mut chunk))
         .await
-        .expect("读浏览器关闭超时")
-        .expect("读失败");
-    assert_eq!(n, 0, "浏览器连接应已关闭");
+        .expect("读浏览器关闭超时");
+    match n {
+        Ok(0) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {}
+        other => panic!("浏览器连接应已关闭，得到 {other:?}"),
+    }
 }
 
 // ⑥ 状态页 ws token 门

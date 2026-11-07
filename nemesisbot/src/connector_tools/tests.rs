@@ -28,7 +28,9 @@ kind = "rest"
 description = "零账号纸面下单 demo"
 
 [connector.http]
-base = "https://quotes.example.com"
+# 必拒回环端口：TCP connect 即刻失败（无监听），断言走 "error" 臂不依赖
+# 外部 DNS 行为——公司解析器对 example.com 通配应答会拖到 30s 超时改判 "unknown"。
+base = "http://127.0.0.1:1"
 
 [[op]]
 id = "quote"
@@ -541,7 +543,7 @@ async fn test_receipt_without_ctx_approval_ref_stays_none() {
     let tool = invoke_tool(ws, &config);
 
     // ctx.approval_ref 缺省 None（直通路径）——凭条不得伪造审批引用。
-    // quote 走真实 HTTP（测试环境必然失败）——顺带覆盖 error 臂：错误凭条同样无引用。
+    // quote 走必拒回环端口（见 MIXED_MANIFEST 注记）——顺带覆盖 error 臂：错误凭条同样无引用。
     let out = tool
         .execute(
             r#"{"connector":"paper-broker","op":"quote","args":{"symbol":"AAPL"}}"#,
