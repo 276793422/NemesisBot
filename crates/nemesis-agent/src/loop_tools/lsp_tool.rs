@@ -373,6 +373,27 @@ impl LspTool {
 /// 消息**自带已落盘清单**（此前 `?` 直接返回丢现场——
 /// 模型只看到第 N 个文件的 IO 失败，不知道前 N-1 个已改，半改名状态不可
 /// 见无法补救；闸已全过，失败只可能是 IO 层）。
+/// 合成 write_file 调用的**审批路由键**（K4b 与 dispatch 同源）：管线层 3
+/// 从 invocation metadata 提取这三个键构造 ApprovalContext——审批卡按发起
+/// 对话路由（IM 通道卡片回源，见 ChannelApprovalManager 的 chat_id 寻址）、
+/// 审批续执行（respond_stale）按 session_key 回灌原会话。此前 gate_and_write
+/// 构造 invocation 时 metadata 为空 HashMap，rename 落盘的审批卡在这两条
+/// 路径上全瞎（guardian 二审的 ctx 是单独填的，两侧不对称暴露这是遗漏）。
+#[cfg(feature = "security")]
+pub(crate) fn approval_routing_metadata(
+    context: &RequestContext,
+) -> std::collections::HashMap<String, String> {
+    let mut m = std::collections::HashMap::new();
+    m.insert("approval_chat_id".to_string(), context.chat_id.clone());
+    m.insert("approval_sender_id".to_string(), context.user.clone());
+    // 审批续执行（2026-10-22）：重启补裁按它把裁决消息回灌原会话。
+    m.insert(
+        "approval_session_key".to_string(),
+        context.session_key.clone(),
+    );
+    m
+}
+
 #[cfg(feature = "security")]
 async fn gate_and_write(
     files: &[AppliedFileEdit],
@@ -415,7 +436,9 @@ async fn gate_and_write(
                 args: args.clone(),
                 user: String::new(),
                 source: context.channel.clone(),
-                metadata: std::collections::HashMap::new(),
+                // K4b：审批路由键随行（与 dispatch 构造点同一组键，见
+                // approval_routing_metadata 的 doc）。
+                metadata: approval_routing_metadata(context),
             };
             let (allowed, deny) = security.execute(&invocation);
             if !allowed {

@@ -1091,7 +1091,13 @@ impl SecurityPlugin {
                 // 同族漂移在扫描面复发）。old_text 刻意不扫
                 // ——它是待删除文本（须已存在于文件中），拦截其删除是反向
                 // 语义。
-                for content_key in &["content", "data", "body", "html", "new_text"] {
+                // BUG-20261107-009：script 在列——run_script 待执行脚本是
+                // 顶层 script 键（exec.rs schema required 键，spawn 直接执行），
+                // 缺键 = run_script 脚本内容完全绕过病毒扫描（exec 拦得住的
+                // 路径 token 与脚本本体都拦不住；BUG-20261029-171/20261102-310
+                // 同族漂移在扫描面第三次复发）。old_text 类比：无「待删除键」
+                // 在此不适用——script 是唯一待执行载荷。
+                for content_key in &["content", "data", "body", "html", "new_text", "script"] {
                     if let Some(content) = args.get(*content_key).and_then(|v| v.as_str())
                         && !content.is_empty()
                     {

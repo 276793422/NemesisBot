@@ -500,7 +500,10 @@ pub fn default_config() -> Config {
             },
             maixcam: MaixCamConfig {
                 host: "0.0.0.0".to_string(),
-                port: 18790,
+                // 与 MaixCamConfig 类型缺省（8888）对齐——旧值 18790 与
+                // gateway.port 出厂值撞号，maixcam 使能即绑定冲突
+                // （BUG-20261107-015）。
+                port: 8888,
                 ..Default::default()
             },
             line: LineConfig {

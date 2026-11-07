@@ -1,23 +1,26 @@
 //! 证书与证书链（**v4：X.509 v3 解析 + 链验证**，Authenticode 对齐）。
 //!
-//! # 信任链
+//! # 信任链（D4）
 //! ```text
 //! 根私钥（离线，30y 自签）→ 根证书（默认不安装，SHA-256 指纹作编译期锚）
 //!   └签→ 发行锚 CA（10y，opt-in 可安装）→ leaf 代码签名证书（3y，EKU codeSigning）
 //!           └签→ exe（CMS SignedData 证书集带全链，P2）
 //! ```
 //!
-//! # 链终止条件（根锚口径）
-//! **SHA-256(根证书 DER) == 编译期根锚指纹**。/ 实证：嵌入根 ≠ 信任根
+//! # 链终止条件（S4-2 根锚口径）
+//! **SHA-256(根证书 DER) == 编译期根锚指纹**。S0-4/S0-5 实证：嵌入根 ≠ 信任根
 //! （Windows 链引擎只认 Root store 中的自签根），全链嵌入只为链引擎提供终止点，
 //! 信任由锚指纹钉死——自方 verifier 恒锚定编译期根，与目标机安装状态无关。
 //!
 //! # 逐级验证内容（`verify_chain`）
 //! - 有效期 `not_before <= now <= not_after`
+//! - 签发者 CA 资格：BC.ca=true 且 KU 含 keyCertSign（RFC 5280 §6.1.4(k)/(l)，
+//!   终端证书不可作签发者——BUG-20261107-011 补齐）
+//! - pathLenConstraint：issuer 之下、leaf 之上的中间 CA 数 ≤ pathLen
 //! - AKI/SKI 匹配（两者在场时必须一致；X.509 扩展可省略，省略时跳过匹配）
-//! - 逐级 ECDSA-/SHA-256 签名（只认自家套件 `1.2.840.10045.4.3.2`）
+//! - 逐级 ECDSA-P256/SHA-256 签名（只认自家套件 `1.2.840.10045.4.3.2`）
 //! - 根必须自签（AKI==SKI 或 AKI 缺省 + 自签名验过）且 SHA-256(DER) 匹配锚
-//! - leaf 必带 codeSigning EKU `1.3.6.1.5.5.7.3.3`
+//! - leaf 必带 codeSigning EKU `1.3.6.1.5.5.7.3.3`（D4）
 //!
 //! # 签名验证字节口径
 //! 对证书 DER 中 **TBS 原始字节段**（byte-exact 切片，不重编码——防非规范 DER
@@ -25,7 +28,7 @@
 //!
 //! # 依赖
 //! `x509-cert` 0.2（re-export `der`/`spki`）声明式类型 + `p256` 原语；零字节级手撸
-//! DER，零 C ABI。
+//! DER（D8），零 C ABI。
 
 use der::asn1::{GeneralizedTime, ObjectIdentifier, OctetString, Utf8StringRef};
 use der::{Any, Decode, Encode, Header, Reader, SliceReader};
@@ -47,14 +50,14 @@ use x509_cert::time::{Time, Validity};
 
 use crate::crypto;
 
-/// ecdsa-with-SHA256（唯一接受的证书签名套件）。
+/// ecdsa-with-SHA256（唯一接受的证书签名套件，D2）。
 pub const OID_ECDSA_WITH_SHA256: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.2");
 /// id-ecPublicKey。
 pub const OID_EC_PUBLIC_KEY: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.2.1");
 /// secp256r1 / prime256v1（P-256 命名曲线参数）。
 pub const OID_P256: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.3.1.7");
-/// id-kp-codeSigning（leaf 必带）。
+/// id-kp-codeSigning（D4 leaf 必带）。
 pub const OID_EKU_CODE_SIGNING: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.3");
 /// id-at-commonName（2.5.4.3）。
@@ -74,14 +77,14 @@ pub const OID_CE_AUTHORITY_KEY_IDENTIFIER: ObjectIdentifier =
 /// id-ce-extKeyUsage（2.5.29.37）。
 pub const OID_CE_EXT_KEY_USAGE: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.37");
 
-/// X.509 证书（DER 保存 + 访问器）。原始 DER 是唯一依据（访问器每次独立解析）。
+/// X.509 证书（DER 保存 + 访问器）。原始 DER 是唯一真相源（访问器每次独立解析）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Certificate {
-    /// 完整 DER 编码（指纹计算 / 回传 / 重解析的唯一依据）。
+    /// 完整 DER 编码（指纹计算 / 回传 / 重解析的唯一真相源）。
     der: Vec<u8>,
 }
 
-/// 证书链验证错误（v4）。verify 层把它们映射进 `VerifyOutcome`。
+/// 证书链验证错误（v4）。verify 层（S4-1）把它们映射进 `VerifyOutcome`。
 #[derive(Debug, PartialEq)]
 pub enum ChainError {
     Empty,
@@ -99,7 +102,11 @@ pub enum ChainError {
     Expired,
     /// 证书签名验不过。
     BadSignature,
-    /// leaf 缺 codeSigning EKU。
+    /// 签发者无 CA 资格（缺 BasicConstraints.ca=true 或 KU 无 keyCertSign）。
+    IssuerNotCa,
+    /// BasicConstraints.pathLenConstraint 违规（签发者之下中间 CA 数超限）。
+    PathLenExceeded,
+    /// leaf 缺 codeSigning EKU（D4）。
     MissingCodeSigningEku,
 }
 
@@ -114,6 +121,8 @@ impl std::fmt::Display for ChainError {
             ChainError::NoRootForIssuer => write!(f, "no trusted root for issuer"),
             ChainError::Expired => write!(f, "certificate expired"),
             ChainError::BadSignature => write!(f, "bad certificate signature"),
+            ChainError::IssuerNotCa => write!(f, "issuer certificate is not a CA"),
+            ChainError::PathLenExceeded => write!(f, "path length constraint exceeded"),
             ChainError::MissingCodeSigningEku => write!(f, "missing codeSigning EKU"),
         }
     }
@@ -136,7 +145,7 @@ impl Certificate {
         &self.der
     }
 
-    /// 证书 SHA-256 指纹（根锚口径：SHA-256(根证书 DER)）。
+    /// 证书 SHA-256 指纹（根锚口径：SHA-256(根证书 DER)，S4-2）。
     pub fn sha256_fingerprint(&self) -> [u8; 32] {
         sha2::Sha256::digest(&self.der).into()
     }
@@ -234,6 +243,32 @@ impl Certificate {
             .unwrap_or(false)
     }
 
+    /// BasicConstraints 扩展（在场时）——签发者资格判据之一（CA 标志 + pathLen）。
+    pub fn ca_constraints(&self) -> Result<Option<BasicConstraints>, ChainError> {
+        let cert = self.parsed()?;
+        match cert
+            .tbs_certificate
+            .get::<BasicConstraints>()
+            .map_err(|e| ChainError::Malformed(format!("BC ext: {e}")))?
+        {
+            Some((_, bc)) => Ok(Some(bc)),
+            None => Ok(None),
+        }
+    }
+
+    /// KeyUsage 扩展（在场时）——签发者资格判据之二（keyCertSign 位）。
+    pub fn key_usage_flags(&self) -> Result<Option<KeyUsage>, ChainError> {
+        let cert = self.parsed()?;
+        match cert
+            .tbs_certificate
+            .get::<KeyUsage>()
+            .map_err(|e| ChainError::Malformed(format!("KU ext: {e}")))?
+        {
+            Some((_, ku)) => Ok(Some(ku)),
+            None => Ok(None),
+        }
+    }
+
     /// 是否在有效期 `[not_before, not_after]` 内（unix 秒）。
     pub fn is_valid_at(&self, now_unix: u64) -> Result<bool, ChainError> {
         let cert = self.parsed()?;
@@ -243,7 +278,7 @@ impl Certificate {
         Ok(now_unix >= nb && now_unix <= na)
     }
 
-    /// 是否带 codeSigning EKU（leaf 必带）。
+    /// 是否带 codeSigning EKU（D4 leaf 必带）。
     pub fn has_code_signing_eku(&self) -> Result<bool, ChainError> {
         let cert = self.parsed()?;
         match cert
@@ -307,9 +342,9 @@ impl Certificate {
 
 /// 验证证书链（v4）。
 ///
-/// `chain` = `[leaf, issuing_ca,..., root]`（leaf 在前，**含根**—— 实证约束：
+/// `chain` = `[leaf, issuing_ca, ..., root]`（leaf 在前，**含根**——S0-4 实证约束：
 /// 嵌入根 ≠ 信任根，仅为链引擎提供终止点）。终止条件 = SHA-256(根 DER) 匹配
-/// `root_anchor_fp`（编译期根锚， 口径）。
+/// `root_anchor_fp`（编译期根锚，S4-2 口径）。
 pub fn verify_chain(
     chain: &[Certificate],
     root_anchor_fp: &[u8; 32],
@@ -319,13 +354,28 @@ pub fn verify_chain(
         return Err(ChainError::Empty);
     }
 
-    // 逐级：有效期 + AKI/SKI + 逐级签名。
+    // 逐级：有效期 + AKI/SKI + 签发者 CA 资格 + 逐级签名。
     for (i, cert) in chain.iter().enumerate() {
         if !cert.is_valid_at(now_unix)? {
             return Err(ChainError::Expired);
         }
         if i + 1 < chain.len() {
             let issuer = &chain[i + 1];
+            // 签发者资格（RFC 5280 §6.1.4(k)/(l)；BUG-20261107-011：此前缺失
+            // ——锚定信任树内的合法终端证书可被持有者当签发者用（自造「伪中间
+            // + 伪 leaf」全真签名链），无限扩展信任子树且伪证书不入 CRL 管辖）。
+            // issuer 必须 BC.ca=true 且 KU 含 keyCertSign；v3 证书无 BC 扩展 =
+            // 终端实体，无 KU 扩展一并拒（fail-closed，keygen 生成侧 CA 恒带 KU）。
+            let (bc, _ku) = match (issuer.ca_constraints()?, issuer.key_usage_flags()?) {
+                (Some(bc), Some(ku)) if bc.ca && ku.0.contains(KeyUsages::KeyCertSign) => (bc, ku),
+                _ => return Err(ChainError::IssuerNotCa),
+            };
+            // pathLenConstraint：issuer（位置 j=i+1）之下、leaf 之上的中间 CA
+            // 数 = j-1 = i，不得超过 pathLen（发行锚 pathLen=0 语义：其下不得
+            // 再插中间 CA——三级链是本系统 profile 的唯一合法深度）。
+            if bc.path_len_constraint.is_some_and(|p| i > p as usize) {
+                return Err(ChainError::PathLenExceeded);
+            }
             // AKI/SKI 匹配（cert 无 AKI 时跳过——X.509 扩展可省略）。
             if let Some(aki) = cert.aki()? {
                 match issuer.ski()? {
@@ -346,7 +396,7 @@ pub fn verify_chain(
         return Err(ChainError::NoRootForIssuer);
     }
 
-    // leaf 职责约束：codeSigning EKU。
+    // leaf 职责约束：codeSigning EKU（D4）。
     if !chain[0].has_code_signing_eku()? {
         return Err(ChainError::MissingCodeSigningEku);
     }
@@ -598,7 +648,7 @@ fn subject_public_key_info(
     })
 }
 
-/// SKI 值（SHA-256(公钥 uncompressed 65B)——与 [`crate::crypto:key_fp`] 同口径，
+/// SKI 值（SHA-256(公钥 uncompressed 65B)——与 [`crate::crypto::key_fp`] 同口径，
 /// AKI/SKI 匹配内洽）。
 pub fn ski_value(vk: &VerifyingKey) -> Result<Vec<u8>, ChainError> {
     let point = vk.as_affine().to_encoded_point(false);

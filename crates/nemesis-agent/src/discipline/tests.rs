@@ -277,8 +277,11 @@ async fn falsification_fail_budget_exhaustion_escalates() {
 /// BUG-20261106-042 回归：证伪命令触发安全规则层（rm -rf 命中命令守卫）→
 /// Continue 反馈 ⛔ SECURITY BLOCKED、**命令未执行**（tripwire 文件不存在）、
 /// 记录仍落盘（passed=false，审计 trail 完整）。
+/// multi_thread flavor 同型防御：放行臂进扫描层必经 block_in_place（仅
+/// multi-thread runtime 合法），本测试现走 deny 短路幸免——扫描顺序一变
+/// 即同病，两臂一起挂 flavor 前移防线。
 #[cfg(feature = "security")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn falsification_security_blocked_never_executes() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
 
@@ -309,8 +312,13 @@ async fn falsification_security_blocked_never_executes() {
 
 /// BUG-20261106-042 回归：良性证伪命令在规则层放行后照常执行——通过路径
 /// 不受新闸影响（放行不误伤）。
+/// multi_thread flavor（本测试即修复本体）：放行臂进扫描层走 block_in_place
+/// （pipeline.rs，仅 multi-thread runtime 合法），#[tokio::test] 默认
+/// current_thread 必 panic「can call blocking only when running on the
+/// multi-threaded runtime」——2026-11-07 coverage 42261243237 首战实录
+/// （0fb7271c 新测试，3567 过 1 失败，CI 唯一红点）。
 #[cfg(feature = "security")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn falsification_security_allows_benign_passthrough() {
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
 

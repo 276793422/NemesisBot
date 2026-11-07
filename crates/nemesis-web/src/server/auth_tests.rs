@@ -1,9 +1,9 @@
-//! （2026-09-22 审计修复）：统一 REST 鉴权中间件测试。
+//! F1（2026-09-22 审计修复）：统一 REST 鉴权中间件测试。
 //!
 //! 覆盖三块：
 //! 1. `auth_exempt_path` 豁免清单真值表（含近邻前缀不误豁免）；
 //! 2. `extract_request_token` 三载体（头 → 查询参数 → Bearer）与空值跳过；
-//! 3. `build_router` + `tower::ServiceExt:oneshot` 端到端：非空 token 下
+//! 3. `build_router` + `tower::ServiceExt::oneshot` 端到端：非空 token 下
 //!    `/api/status` 无/错 token 401、三载体正确 token 200、豁免路径不过闸、
 //!    `workflow_chat=` 只豁免 WS 路径（其余路径照常 401）、空 expected token
 //!    恒放行（默认部署零影响）。
@@ -29,15 +29,30 @@ fn test_auth_exempt_path_truth_table() {
     assert!(auth_exempt_path("/api/sdk/export"));
     assert!(auth_exempt_path("/api/sdk/pip"));
     // 豁免：webhook 回调（外部服务 GitHub/Slack 等裸调；自有安全层 =
-    // 可选 HMAC + per-IP 限流 + 审计；缺陷 11 修复）
+    // 可选 HMAC + per-IP 限流 + 审计；缺陷 11 修复 2026-09-23）
     assert!(auth_exempt_path("/api/workflow/webhook/webhook_flow"));
     assert!(auth_exempt_path("/api/workflow/webhook/a/b"));
+    // 豁免：relay 自有信任边界（设备 hello token / 设备访问令牌 cookie /
+    // admin cookie 各自把关；BUG-20261107-006：全量形态同样挂 route_layer，
+    // 此前漏列 = dashboard token 非空时 relay 整体 401）
+    assert!(auth_exempt_path("/bridge"));
+    assert!(auth_exempt_path("/d/dev1"));
+    assert!(auth_exempt_path("/d/dev1/"));
+    assert!(auth_exempt_path("/d/dev1/any/path"));
+    assert!(auth_exempt_path("/relay"));
+    assert!(auth_exempt_path("/relay/login"));
+    assert!(auth_exempt_path("/api/relay/status"));
 
     // 不豁免：控制面 REST
     assert!(!auth_exempt_path("/api/status"));
     assert!(!auth_exempt_path("/api/config"));
     assert!(!auth_exempt_path("/api/chat/stream"));
-    // OpenAI 兼容端点触发 agent 执行——与 dashboard
+    // 不豁免：批次三【中继通道】dashboard 端点（与 /api/status 同信任边界，
+    // relay 未注入时也要能诚实报错——绝不进豁免清单）
+    assert!(!auth_exempt_path("/api/relay/overview"));
+    assert!(!auth_exempt_path("/api/relay/enabled"));
+    assert!(!auth_exempt_path("/api/relay/client/reconnect"));
+    // S5（2026-10-09）：OpenAI 兼容端点触发 agent 执行——与 dashboard
     // 同一信任边界，绝不进豁免清单（Bearer 头本就被中间件接受）。
     assert!(!auth_exempt_path("/v1/chat/completions"));
     assert!(!auth_exempt_path("/"));
@@ -55,6 +70,14 @@ fn test_auth_exempt_path_near_miss_prefixes_not_exempt() {
     assert!(!auth_exempt_path("/api/sdkfoo/x"));
     // 精确匹配不认子路径/尾随斜杠变体
     assert!(!auth_exempt_path("/health/"));
+    // relay 路径近邻不误豁免（前缀边界）
+    assert!(!auth_exempt_path("/bridgeX"));
+    assert!(!auth_exempt_path("/bridgehax"));
+    assert!(!auth_exempt_path("/relayx"));
+    assert!(!auth_exempt_path("/relay/loginx"));
+    assert!(!auth_exempt_path("/api/relay/statusx"));
+    assert!(!auth_exempt_path("/api/relay/status/extra"));
+    assert!(!auth_exempt_path("/dxx"));
 }
 
 // ============================================================
@@ -202,7 +225,7 @@ async fn test_auth_exempt_health_passes_without_token() {
 
 #[tokio::test]
 async fn test_auth_share_endpoint_passes_auth_layer() {
-    // 分享：token 即凭据——不持 dashboard token 也不该 401；
+    // L4 分享：token 即凭据——不持 dashboard token 也不该 401；
     // 未知分享号按 share 语义 404（非 401 即证明过了鉴权闸）。
     let resp = router_oneshot("/api/share/nonexistent-token", None, None).await;
     assert_ne!(resp.status(), 401);
@@ -211,7 +234,7 @@ async fn test_auth_share_endpoint_passes_auth_layer() {
 
 #[tokio::test]
 async fn test_auth_workflow_chat_query_does_not_bypass_other_paths() {
-    // workflow_chat= 豁免只对 WS 路径成立（复核 收敛）——其余
+    // workflow_chat= 豁免只对 WS 路径成立（复核 2026-09-22 收敛）——其余
     // 路径拼上该查询键**不得**绕过 auth 闸（否则任何端点皆可旁路）。
     let resp = router_oneshot("/api/status?workflow_chat=1", None, None).await;
     assert_eq!(resp.status(), 401);
@@ -225,6 +248,84 @@ async fn test_auth_workflow_chat_upgrade_on_ws_path_bypasses() {
     // 过了 auth 闸（否则是 401）。
     let resp = router_oneshot("/ws?workflow_chat=0&pwd=x", None, None).await;
     assert_eq!(resp.status(), 400);
+}
+
+// ============================================================
+// relay 自有信任边界（BUG-20261107-006）
+// ============================================================
+
+/// 非空 dashboard token + **注入 relay** 的 router（全量 gateway hub 形态，
+/// web_init.rs set_relay 路径）+ oneshot 请求（可选带 token 头）。
+async fn relay_router_oneshot(uri: &str, token_header: Option<&str>) -> axum::response::Response {
+    let config = WebServerConfig {
+        auth_token: "sekret".to_string(),
+        ..Default::default()
+    };
+    let mut server = WebServer::new(config);
+    server.set_relay(std::sync::Arc::new(crate::relay::RelayServer::new(
+        "bridge-token".to_string(),
+        true,
+    )));
+    let app = server.build_router();
+    let mut builder = axum::http::Request::builder().uri(uri);
+    if let Some(t) = token_header {
+        builder = builder.header("x-auth-token", t);
+    }
+    use tower::ServiceExt;
+    app.oneshot(builder.body(axum::body::Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_auth_relay_out_of_band_paths_not_dashboard_gated() {
+    // 设备/管理员只持 relay 自有凭据（hello token / 设备 cookie / admin
+    // cookie），不持 dashboard token——relay 自有信任边界的路由面不得被
+    // 统一鉴权 401（server.rs build_router 注释：挂上会把 relay 整体 401）。
+    // - /relay：无 admin cookie → 登录页 200；
+    // - /d/dev1/：设备未桥入 → relay 语义 503（设备离线页）；
+    // - /bridge：普通 GET（无 Upgrade 头）→ WebSocketUpgrade 提取器 400，
+    //   同 test_auth_workflow_chat_upgrade_on_ws_path_bypasses 判别法。
+    for (label, uri, expected) in [
+        ("relay 状态页登录", "/relay", 200),
+        ("设备隧道入口", "/d/dev1/", 503),
+        ("桥 WS 升级（提取器拒裸 GET）", "/bridge", 400),
+    ] {
+        let resp = relay_router_oneshot(uri, None).await;
+        assert_eq!(
+            resp.status(),
+            expected,
+            "{label} 必须过 auth 闸到达 relay 自有语义（{expected}），401 = 漏豁免"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_auth_relay_status_api_reaches_own_admin_gate() {
+    // /api/relay/status 豁免 dashboard 闸后，无 admin cookie 由 relay 自己的
+    // admin gate 出 401（响应体是 relay 语义而非 auth middleware 的
+    // {"error":"unauthorized"} JSON——判别法：带 dashboard token 仍 401，
+    // 因为 handler 只认 admin cookie 不认 dashboard token）。
+    let resp = relay_router_oneshot("/api/relay/status", Some("sekret")).await;
+    assert_eq!(
+        resp.status(),
+        401,
+        "带 dashboard token 也必须 401（admin cookie 才是 /api/relay/status 的凭据）"
+    );
+}
+
+#[tokio::test]
+async fn test_auth_relay_dashboard_family_stays_gated() {
+    // 批次三端点（overview/enabled/client/reconnect）是 dashboard 信任边界
+    // （build_router 注释：与 /api/status 同语义）——不持 dashboard token
+    // 必须 401（回归锁：不得随 relay 豁免一起放开）。
+    for (label, uri) in [
+        ("overview", "/api/relay/overview"),
+        ("client/reconnect", "/api/relay/client/reconnect"),
+    ] {
+        let resp = relay_router_oneshot(uri, None).await;
+        assert_eq!(resp.status(), 401, "{label} 必须留在 dashboard 鉴权下");
+    }
 }
 
 #[tokio::test]
@@ -243,7 +344,7 @@ async fn test_auth_empty_expected_token_allows_all() {
 }
 
 // ============================================================
-// LLM 代理调用方 key 回落臂（LLM代理调用方key管理）
+// LLM 代理调用方 key 回落臂（2026-11-03 LLM代理调用方key管理 P3）
 // ============================================================
 
 /// 带代理 key 表的 router + oneshot（workspace 指向临时目录，key 文件由
@@ -321,8 +422,8 @@ async fn test_proxy_key_disabled_rejected_without_restart() {
     // 禁用即失效（热生效：同一 router 不重建）。
     nemesis_config::proxy_keys_file::set_enabled(&dir.path().join("config"), "bot-a", false)
         .unwrap();
-    // 原 sleep(20ms)「不赌 mtime 粒度」仍是赌——Windows CI
-    // 20ms 内文件时间可同 tick（禁用未生效 → 放行 → GET 打 POST-only
+    // BUG-20261103：原 sleep(20ms)「不赌 mtime 粒度」仍是赌——Windows CI 实录
+    // 20ms 内文件时间可同 tick（shard9 禁用未生效 → 放行 → GET 打 POST-only
     // completions 回 405 顶掉 401）。缓存已改内容比对（proxy_keys.rs），写盘
     // 即刻生效不依赖任何钟，sleep 撤除让测试同时钉住零延迟热生效语义。
     let resp = proxy_router_oneshot(&dir, "/v1/chat/completions", Some("nbk_aaa")).await;

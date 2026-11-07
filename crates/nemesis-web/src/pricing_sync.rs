@@ -10,6 +10,9 @@ use nemesis_data::{PRICE_MIRROR_URLS, PricingMeta, PricingStore, parse_litellm_j
 
 const USER_AGENT: &str = concat!("NemesisBot/", env!("CARGO_PKG_VERSION"));
 const FETCH_TIMEOUT_SECS: u64 = 60;
+/// 价目表响应体上限（BUG-20261107-005 流式累计闸）。全量 LiteLLM 表
+/// ~10MB 级，64MB 留足余量不误伤，只防失控源内存放大。
+const MAX_PRICE_TABLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// 同步结果。
 #[derive(Debug, Clone, serde::Serialize)]
@@ -122,13 +125,18 @@ async fn try_fetch_url(store: &PricingStore, url: &str) -> Result<PricingSyncRes
     // 不走 resp.text()（按响应头 charset 解码，被干扰的响应头会让完好的
     // 字节也解码失败——真机实证的 "error decoding response body" 根因）；
     // LiteLLM 表是 UTF-8 JSON，直取字节。
-    let raw_bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            let _ = store.record_failed_fetch(url);
-            return Err(format!("价目表读取失败（保留旧表）: {e}"));
-        }
-    };
+    // BUG-20261107-005：旧 `bytes()` 无上限全量读入——镜像链条目/用户
+    // `--url` 均可指向失控源，GB 级 body 在解析前已灌进内存。换用共享
+    // 流式累计闸（读入中途超限即断）。全量 LiteLLM 表 ~10MB 级，64MB
+    // 上限留足余量不误伤，只防内存放大。
+    let raw_bytes =
+        match nemesis_utils::http_cap::read_body_capped(resp, MAX_PRICE_TABLE_BYTES).await {
+            Ok(b) => b,
+            Err(e) => {
+                let _ = store.record_failed_fetch(url);
+                return Err(format!("价目表读取失败（保留旧表）: {e}"));
+            }
+        };
     let raw = String::from_utf8_lossy(&raw_bytes);
 
     let entries = match parse_litellm_json(&raw) {

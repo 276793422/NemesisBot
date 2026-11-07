@@ -95,6 +95,15 @@ async fn err_handler() -> impl IntoResponse {
     StatusCode::INTERNAL_SERVER_ERROR
 }
 
+async fn huge_handler() -> impl IntoResponse {
+    // 仅比 MAX_PRICE_TABLE_BYTES 多 1 字节：客户端必须在读入中途断开
+    // （BUG-20261107-005），不会读完全量。loopback 传 64MB 亚秒级。
+    (
+        StatusCode::OK,
+        vec![b'x'; super::MAX_PRICE_TABLE_BYTES as usize + 1],
+    )
+}
+
 async fn spawn_server() -> String {
     let state = FixtureState::default();
     let app = Router::new()
@@ -104,6 +113,7 @@ async fn spawn_server() -> String {
         .route("/updated", get(updated_handler))
         .route("/broken", get(broken_handler))
         .route("/err", get(err_handler))
+        .route("/huge", get(huge_handler))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -219,7 +229,7 @@ async fn malformed_payload_keeps_old_table() {
         store.lookup("test-model-a").unwrap().input_cost_per_million,
         1.0
     );
-    // 回归锁（旧形态必红：解析失败不刷 meta，source_url
+    // BUG-20261025-62 回归锁（旧形态必红：解析失败不刷 meta，source_url
     // 仍指上次成功的 /table）：解析失败同样要留下尝试痕迹。
     let meta = store.meta();
     assert!(
@@ -236,7 +246,7 @@ async fn malformed_payload_keeps_old_table() {
     );
 }
 
-// 回归锁（旧形态必红：网络级失败零留痕，meta 全 None）：
+// BUG-20261025-62 回归锁（旧形态必红：网络级失败零留痕，meta 全 None）：
 // 连接拒绝（send Err 路径）也要 record_failed_fetch——受限网络下最常见的
 // 失败形态（连接被重置/超时）此前完全不留尝试痕迹，「上次尝试时间」恒旧。
 #[tokio::test]
@@ -257,8 +267,43 @@ async fn network_failure_records_failed_fetch() {
     );
 }
 
-// 镜像链：None → 链式回落；ETag 不跨镜像附带
+// BUG-20261107-005 回归锁（旧 `bytes()` 形态必红：64MB+1 全量灌进内存
+// 后才核对上限；新形态在读入中途即断）。降级契约同步钉死：旧表不动 +
+// meta 留痕。
+#[tokio::test]
+async fn oversized_body_aborts_and_keeps_old_table() {
+    let base = spawn_server().await;
+    let store = tmp_store("oversize");
+    fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
+
+    let err = fetch_and_replace(&store, Some(&format!("{base}/huge")))
+        .await
+        .unwrap_err();
+    assert!(err.contains("exceeds limit"), "err: {err}");
+    assert!(err.contains("aborted mid-read"), "err: {err}");
+    assert_eq!(
+        store.lookup("test-model-a").unwrap().input_cost_per_million,
+        1.0,
+        "oversize failure must keep old table"
+    );
+    assert!(
+        store
+            .meta()
+            .source_url
+            .as_deref()
+            .unwrap_or("")
+            .ends_with("/huge"),
+        "oversize failure must record source_url, got {:?}",
+        store.meta().source_url
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 镜像链（2026-09-07）：None → 链式回落；ETag 不跨镜像附带
 // （测试注入本地 URL，受限网络下不打外网）
+// ---------------------------------------------------------------------------
 
 use super::fetch_chain;
 
@@ -296,7 +341,7 @@ async fn etag_not_sent_across_mirrors() {
     let base = spawn_server().await;
     let store = tmp_store("chain-etag");
 
-    // 先从 /table 成功拿到 etag 。
+    // 先从 /table 成功拿到 etag V1。
     fetch_and_replace(&store, Some(&format!("{base}/table")))
         .await
         .unwrap();

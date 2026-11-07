@@ -137,6 +137,28 @@ async fn ttl_stale_interrupted_not_resumed() {
 }
 
 #[tokio::test]
+async fn ttl_absurd_huge_saturates_and_resumes_instead_of_mass_stale() {
+    // BUG-20261107-017 回归锁：ttl_secs=u64::MAX 旧代码 `* 1000` 溢出
+    //（debug panic / release 回绕成微小 cutoff → 近期断头调用全判超龄误丢）。
+    // saturating 后 cutoff=0 → 全部在窗内 → 正常续轮。
+    let dir = tmp_dir("ttl-sat");
+    let wal = TurnWal::open(&dir)
+        .expect("open")
+        .with_limits(DEFAULT_MAX_BYTES, u64::MAX);
+    let c = call("fresh");
+    wal.log(&c, STATE_STARTED, "recent work", None);
+
+    let candidates = wal.recover_and_finalize();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "饱和 TTL 下断头调用应续轮: {candidates:?}"
+    );
+    assert_eq!(candidates[0].record.call_id, "call-fresh");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn rotation_keeps_newest_generation_and_recovery_spans_both() {
     let dir = tmp_dir("rotate");
     // max_bytes 压到很小强制轮转；TTL 长给足。

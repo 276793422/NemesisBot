@@ -287,7 +287,11 @@ impl TurnWal {
         if bad > 0 {
             tracing::warn!("[TurnWal] 恢复扫描跳过 {bad} 条坏行");
         }
-        let ttl_cutoff = now_ms().saturating_sub(self.ttl_secs * 1000);
+        // BUG-20261107-017：受检换算（同族 BUG-20261024-11 cron --every 先例、
+        // spill.rs retention saturating_mul 先例）——u64 乘法溢出 debug panic /
+        // release 回绕成微小 cutoff，recover_and_finalize 会把近期断头调用全判
+        // 超龄误丢。saturating 后语义 = 「TTL 荒谬大 → 全部在窗内」。
+        let ttl_cutoff = now_ms().saturating_sub(self.ttl_secs.saturating_mul(1000));
 
         // (session_key, call_id) → 最新一条非收尾记录。BUG-20261106-004：
         // 分组键必须是二元组——call_id 是模型回传的 id，跨会话可碰撞

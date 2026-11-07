@@ -124,7 +124,7 @@ fn handle_nb_bus(
     }
 
     let reply = match env.op.as_str() {
-        "comment.post" => handle_comment_post(deps, &env),
+        "comment.post" => handle_comment_post(deps, &env, rpc_from_node(&payload)),
         "comment.list" => handle_comment_list(deps, &env),
         "sync" => handle_sync(deps, &env),
         "claimable.list" => handle_claimable_list(deps, &env, rpc_from_node(&payload)),
@@ -517,8 +517,27 @@ fn fallback_envelope(payload: &serde_json::Value) -> Envelope {
     }
 }
 
-/// `board.comment.post`：幂等 → 额度 → 落库 → 异步裁决投递。
-fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse {
+/// `board.comment.post`：身份闸 → 幂等 → 额度 → 落库 → 异步裁决投递。
+///
+/// 身份闸（BUG-20261107-008）：worker 上行身份必须与传输层一致——
+/// swarm-impl-plan 原始契约「身份从帧的 `_rpc.from` 取（伪造不了），落库
+/// author=agent{from_node}」；信封 body 里的 `sender` 字段是客户端可断言
+/// 的冗余投影，不是信任锚。不校验则 worker 可（a）轮换 sender.id 绕额度
+/// 三闸（额度按 sender.id 记账）、（b）sender.type="admin" 冒充人类发言
+/// （actor_label 信任标签进全集群 LLM 上下文）、（c）冒名其他节点污染
+/// 溯源。worker 正常发送侧（cluster_agent build_comment_post_envelope）
+/// 恒发 `{type:"agent", id:self_node_id}`，校验零误伤；dashboard 本地
+/// 发言走 from_local 旁路（web 层登录鉴权）不经本函数。
+fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> EnvelopeResponse {
+    if from_node.is_empty() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                "missing _rpc.from (sender identity)",
+            ),
+        );
+    }
     let body = &env.body;
     let client_msg_id = match envelope::client_msg_id(body) {
         Some(id) => id.to_string(),
@@ -569,6 +588,19 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
             EnvelopeError::new(envelope::error_code::VALIDATION, "missing sender.id"),
         );
     };
+    // 身份一致性闸（BUG-20261107-008）：sender.type 只认 agent（admin/system
+    // 只能本地产生），sender.id 必须等于传输层身份。
+    if sender_type != "agent" || sender_id != from_node {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                format!(
+                    "sender 身份与传输层不一致（要求 agent/{from_node}，收到 {sender_type}/{sender_id}）"
+                ),
+            ),
+        );
+    }
     let Some(content) = body
         .get("content")
         .and_then(|v| v.as_str())

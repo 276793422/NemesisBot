@@ -2214,7 +2214,8 @@ fn test_extract_zip_rejects_drive_prefix_entry() {
 
 // 下载侧：read_body_capped 必须在读入**过程中**拒绝超限 body——旧 bytes()
 // 全量吞完才检查，恶意源在检查前已把任意大 body 灌进内存。wiremock 回
-// 1MB body、cap 64KB → 中途断开报错。
+// 1MB body、cap 64KB → 中途断开报错。（BUG-20261107-005：实现已提升为
+// workspace 共享 nemesis_utils::http_cap，测试改打共享版；语义不变。）
 #[tokio::test]
 async fn read_body_capped_aborts_oversized_body_mid_read() {
     let server = wiremock::MockServer::start().await;
@@ -2229,7 +2230,9 @@ async fn read_body_capped_aborts_oversized_body_mid_read() {
         .await;
     let registry = ClawHubRegistry::new();
     let response = registry.client.get(server.uri()).send().await.unwrap();
-    let err = read_body_capped(response, 64 * 1024).await.unwrap_err();
+    let err = nemesis_utils::http_cap::read_body_capped(response, 64 * 1024)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("exceeds limit"), "{err}");
 }
 
@@ -2248,7 +2251,9 @@ async fn read_body_capped_passes_small_body() {
         .await;
     let registry = ClawHubRegistry::new();
     let response = registry.client.get(server.uri()).send().await.unwrap();
-    let body = read_body_capped(response, 64 * 1024).await.unwrap();
+    let body = nemesis_utils::http_cap::read_body_capped(response, 64 * 1024)
+        .await
+        .unwrap();
     assert_eq!(body, small);
 }
 

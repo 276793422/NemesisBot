@@ -44,6 +44,14 @@ pub struct StdioTransport {
     /// 注入（普通 MCP 零变化）；裸 `new()` 构造恒 false（一次性探测不塞
     /// 身份）。
     browser_profile_opt_in: bool,
+    /// BUG-20261107-012：写阶段帧脏标记。send 的写阶段（write_all+flush）
+    /// 被调用方取消（外层 tokio timeout drop future——注册路径 adapter 外层
+    /// 超时恒小于本 transport 内层超时，BUG-20261105-037 的内层写超时断链
+    /// 在该路径不可达）时，请求行可能只落了一半、管道帧已脏而断链不触发。
+    /// 写开始置 true、正常返回臂显式复位；取消 = 复位不执行 = 残留，下一
+    /// 次 send 开头检测到即诚实断链，绝不往半行残留后追写下一条请求。
+    /// connect() 重建子进程时复位（新管道帧干净）。
+    write_interrupted: bool,
 }
 
 impl StdioTransport {
@@ -61,6 +69,7 @@ impl StdioTransport {
             connected: false,
             browser_profile: None,
             browser_profile_opt_in: false,
+            write_interrupted: false,
         }
     }
 
@@ -289,6 +298,9 @@ impl Transport for StdioTransport {
         self.stdin = Some(Mutex::new(stdin));
         self.stdout = Some(Mutex::new(BufReader::new(stdout)));
         self.connected = true;
+        // BUG-20261107-012：新子进程 = 新管道，旧帧脏标记作废（否则残留
+        // 标记会让重连后的第一次 send 误断链）。
+        self.write_interrupted = false;
 
         Ok(())
     }
@@ -322,6 +334,20 @@ impl Transport for StdioTransport {
             return Err(TransportError::not_connected());
         }
 
+        // BUG-20261107-012：上次请求的写入被调用方取消在中途（外层 tokio
+        // timeout drop future——注册路径 adapter 外层超时恒小于本 transport
+        // 内层超时，下方 BUG-20261105-037 的内层写超时断链在该路径不可达）
+        // 时，请求行可能只落了一半、管道帧已脏。检测到残留标记 = 帧脏 →
+        // 诚实断链，绝不往半行残留后追写下一条请求。
+        if self.write_interrupted {
+            self.write_interrupted = false;
+            let _ = self.close().await;
+            return Err(TransportError::new(
+                -2,
+                "previous request write was interrupted mid-frame (caller cancelled); connection torn down",
+            ));
+        }
+
         // Serialize the request.
         let mut line = serde_json::to_string(request).map_err(|e| {
             TransportError::send_failed(format!("failed to serialize request: {e}"))
@@ -348,14 +374,21 @@ impl Transport for StdioTransport {
             writer.write_all(line.as_bytes()).await?;
             writer.flush().await
         };
+        // 写开始即置脏标记：write_all/flush 被取消（外层 drop future）时
+        // 下方复位不会执行，标记残留到下一次 send 开头被检测（见上）。
+        // 三个正常返回臂都显式复位——写 IO 错误臂复位是安全的（管道破裂
+        // 后写句柄已坏，下次写立刻失败，不存在「往半行后拼接」的通路）。
+        self.write_interrupted = true;
         match timeout(effective_timeout, write_fut).await {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => self.write_interrupted = false,
             Ok(Err(e)) => {
+                self.write_interrupted = false;
                 return Err(TransportError::send_failed(format!(
                     "failed to write to stdin: {e}"
                 )));
             }
             Err(_) => {
+                self.write_interrupted = false;
                 // 写超时 = 请求行可能只落了一半，管道帧已脏——诚实断链
                 // （close 杀子进程 + 清 stdin/stdout），后续 send 走
                 // not_connected 快速失败，绝不往脏帧上追写下一条请求。

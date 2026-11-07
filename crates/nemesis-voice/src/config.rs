@@ -151,12 +151,26 @@ fn default_speaker_model() -> String {
     "3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced".into()
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SpeakerConfig {
     #[serde(default = "default_speaker_model")]
     pub model_name: String,
     #[serde(default)]
     pub num_threads: u32,
+}
+
+// BUG-20261107-016：非零 serde 字段默认 → 手写 impl Default（同文件
+// SttStreamConfig/PunctConfig 先例纪律）。derive 零值会让整段缺席路径
+//（AppConfig 的 `#[serde(default)] speaker` / `load_or_default` 兜底 /
+// `AppConfig::default()` 模板）拿到空 model_name，ensure_speaker_model
+// 报「Speaker model ''」误导性错误；收敛后三路同源 default_speaker_model。
+impl Default for SpeakerConfig {
+    fn default() -> Self {
+        Self {
+            model_name: default_speaker_model(),
+            num_threads: 0,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]

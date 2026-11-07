@@ -43,7 +43,7 @@ impl ClawHubRegistry {
     /// 空 URL 回填默认值是本函数的职责（唯一 chokepoint）：配置层
     /// （serde 缺省空串）与 `registry.rs` 直构造两条路径都从这里过，
     /// 避免 `new_from_config` 回填、直构造不回填的分叉——后者曾让
-    /// 空 base_url 直达 reqwest 报 "builder error"（BUG 清账类 D）。
+    /// 空 base_url 直达 reqwest 报 "builder error"（2026-09-23 BUG 清账类 D）。
     pub fn with_urls(base_url: &str, convex_url: &str, convex_site_url: &str) -> Self {
         Self {
             base_url: if base_url.is_empty() {
@@ -151,7 +151,7 @@ impl ClawHubRegistry {
             registry_name: "clawhub".to_string(),
             author: detail.owner.handle,
             downloads: detail.skill.stats.downloads as i64,
-            // clawhub convex 元数据无发布时间字段（诚实边界：unknown）。
+            // clawhub convex 元数据无发布时间字段（P16 诚实边界：unknown）。
             published_at: None,
         })
     }
@@ -555,11 +555,14 @@ impl ClawHubRegistry {
             }
         }
 
-        // 下载侧流式累计闸：旧 `bytes()` 全量吞完才查
+        // 下载侧流式累计闸（BUG-20261101-273）：旧 `bytes()` 全量吞完才查
         // 50MB——顺序倒置，恶意/被攻陷源在检查前已把任意大 body 灌进内存
         // （与 zip_util::read_entry_capped「拒绝发生在读入过程本身」同一
-        // 哲学）。chunk() 分块拉取，累计超限在读入中途即断。
-        let body = read_body_capped(response, MAX_ZIP_BODY_BYTES).await?;
+        // 哲学）。BUG-20261107-005 收口：实现提升为 workspace 共享单一
+        // 真相源（nemesis_utils::http_cap），本处换用共享版。
+        let body = nemesis_utils::http_cap::read_body_capped(response, MAX_ZIP_BODY_BYTES)
+            .await
+            .map_err(NemesisError::Other)?;
 
         // Extract ZIP to target directory.
         extract_zip_to_dir(&body, target_dir)?;
@@ -580,30 +583,6 @@ const MAX_ZIP_BODY_BYTES: u64 = 50 * 1024 * 1024;
 /// 比常见 3~10x、理论 >1000:1——炸弹条目靠本闸在撑爆磁盘前拒绝。正常
 /// 技能包（SKILL.md/脚本，KB 级条目）远低于此，不误伤。
 const MAX_TOTAL_UNCOMPRESSED_BYTES: u64 = 200 * 1024 * 1024;
-
-/// 下载响应体分块读入 + 累计上限（下载侧）。
-///
-/// 不用 `bytes()`：它把 body 全量吞进内存后调用方才能检查大小——检查在
-/// 读入之后，防不了读入过程本身。`chunk()` 逐块拉取累计，超 `cap` 立即
-/// 断开连接返回错误（恶意源的巨大 body 在撑内存前被拒）。
-async fn read_body_capped(mut response: reqwest::Response, cap: u64) -> Result<Vec<u8>> {
-    let mut body: Vec<u8> = Vec::new();
-    let mut total: u64 = 0;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| NemesisError::Other(format!("failed to read ZIP response: {}", e)))?
-    {
-        total += chunk.len() as u64;
-        if total > cap {
-            return Err(NemesisError::Other(format!(
-                "ZIP download exceeds limit (>{cap} bytes); aborted mid-read",
-            )));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
-}
 
 /// Extract a ZIP archive to a directory, flattening a single top-level directory if present.
 fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
@@ -704,7 +683,7 @@ fn extract_zip_to_dir_capped(data: &[u8], target_dir: &str, total_cap: u64) -> R
 
         // Write file.
         let mut output = std::fs::File::create(&dest_path).map_err(NemesisError::Io)?;
-        // 解压总量闸（解压侧）：累计实际解压字节，超限
+        // 解压总量闸（BUG-20261101-273 解压侧）：累计实际解压字节，超限
         // 拒绝——zip-slip 闸管路径，本闸管体量。
         let n = std::io::copy(&mut file, &mut output).map_err(NemesisError::Io)?;
         total_uncompressed += n;

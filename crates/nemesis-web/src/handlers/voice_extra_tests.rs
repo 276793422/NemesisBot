@@ -678,4 +678,90 @@ mod voice_extra_tests {
             .unwrap_err();
         assert!(err.contains("missing field: content"));
     }
+
+    // -------------------------------------------------------------------
+    // BUG-20261107-018 回归锁：引擎加载串行闸 + 会话槽原子占位。
+    // -------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn try_insert_is_atomic_under_concurrency() {
+        use crate::handlers::voice::try_insert;
+        // 8 个并发 claim 恰好一个成功；胜者值在槽内；后续 claim 全部失败。
+        //（注意：断言之间不得持有槽锁——tokio Mutex 非重入，本测试首个
+        // 版本曾在持锁状态下调 try_insert 把自己永久阻塞。）
+        let slot = Arc::new(tokio::sync::Mutex::new(None::<u32>));
+        let handles: Vec<_> = (0..8u32)
+            .map(|i| {
+                let slot = slot.clone();
+                tokio::spawn(async move { try_insert(&slot, i).await })
+            })
+            .collect();
+        let mut wins = 0usize;
+        let mut winner: Option<u32> = None;
+        for (i, h) in handles.into_iter().enumerate() {
+            if h.await.expect("join") {
+                wins += 1;
+                winner = Some(i as u32);
+            }
+        }
+        assert_eq!(wins, 1, "并发 claim 必须恰好一个成功");
+        assert_eq!(
+            slot.lock().await.as_ref(),
+            winner.as_ref(),
+            "胜者值必须在槽内"
+        );
+        // 已占位：后续 claim 失败且不覆盖（旧无条件覆盖写形态在这里翻车）。
+        assert!(!try_insert(&slot, 99u32).await, "占位后 claim 必须失败");
+        assert_eq!(
+            slot.lock().await.as_ref(),
+            winner.as_ref(),
+            "失败 claim 不得覆盖现有值"
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_start_blocked_while_gate_held() {
+        // 闸持有期间 engine_start 必须阻塞（无闸的旧代码：检查锁一放就
+        // 直通 spawn_blocking，双 start 各自构造完整引擎）。无 config.toml
+        // 的临时 workspace → 闸放行后诚实报 config not found，全程不触碰
+        // 真实模型。走 handle_cmd 真实派发路径（engine_start → stt 臂）。
+        use crate::handlers::voice::stt_engine_gate;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = make_ctx(&dir);
+        // spawn 要求 'static：手工构造 owned 副本（RequestContext 全 owned 字段）。
+        let task_ctx = RequestContext {
+            session_id: ctx.session_id.clone(),
+            chat_id: ctx.chat_id.clone(),
+            workspace: ctx.workspace.clone(),
+            home: ctx.home.clone(),
+            state: ctx.state.clone(),
+            auth_method: crate::session::AuthMethod::default(),
+        };
+
+        let _hold = stt_engine_gate().lock().await;
+        let h = tokio::spawn(async move {
+            let handler = VoiceHandler::new();
+            handler
+                .handle_cmd(
+                    "engine_start",
+                    Some(serde_json::json!({ "model": "stt" })),
+                    &task_ctx,
+                )
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !h.is_finished(),
+            "闸持有期间 engine_start 必须阻塞（若已结束=闸缺失，并发加载回归）"
+        );
+        drop(_hold);
+        let res = h
+            .await
+            .expect("join")
+            .expect_err("无 config.toml 应诚实失败");
+        assert!(
+            res.contains("config.toml not found"),
+            "闸放行后应继续原路径报错: {res}"
+        );
+    }
 }

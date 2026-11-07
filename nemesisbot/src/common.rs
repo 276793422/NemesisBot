@@ -27,9 +27,14 @@ pub fn ensure_exe_in_path() -> bool {
         Err(_) => exe_dir,
     };
 
-    let path_var = match std::env::var("PATH") {
-        Ok(v) => v,
-        Err(_) => {
+    // var_os 而非 var：PATH 存在但含非 UTF-8 字节（Unix 合法；Windows 为
+    // 未配对代理对经 WTF-8）时 var() 报 NotUnicode——若与 NotPresent 同臂
+    // 处理，下面会把整条用户 PATH 清成只剩 exe 目录（工具解析面静默塌缩，
+    // 且与本分支注释「No PATH at all」的前提矛盾）。var_os + lossy：存在
+    // 的 PATH 永不进此臂；病态字节降级为 U+FFFD 只损失该条目自身。
+    let path_var = match std::env::var_os("PATH") {
+        Some(v) => v.to_string_lossy().into_owned(),
+        None => {
             // No PATH at all — just set it
             // SAFETY: This runs during gateway startup, single-threaded init phase.
             // No other threads are reading or writing the PATH environment variable.
@@ -407,6 +412,98 @@ pub const LOG_DEBUG: u32 = 1;
 pub const LOG_QUIET: u32 = 2;
 pub const LOG_NO_CONSOLE: u32 = 4;
 
+/// `logging.general` 段的解析结果（BUG-20261107-007：解析提为纯函数——
+/// 装配侧与测试共用同一真相源。此前写侧（log.rs）与读侧（init 装配）各自
+/// 维护键表/值表：`enabled` 键写而不读（`log general disable` 宣称生效
+/// 实际无效）；`FATAL` 写侧接受、读侧不识（静默落 INFO，宽松方向）。
+#[derive(Debug, PartialEq)]
+pub(crate) struct GeneralLoggingSettings {
+    /// 总开关（`enabled` 键；缺省 true。false = 不装配任何日志层，
+    /// 与 `--quiet` 同款早退语义）。
+    pub enabled: bool,
+    pub enable_console: bool,
+    pub level: tracing::Level,
+    /// 文件路径（已解析：相对路径锚定 home/workspace）。None = 不装文件层。
+    pub file: Option<String>,
+}
+
+impl Default for GeneralLoggingSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            enable_console: true,
+            level: tracing::Level::INFO,
+            file: None,
+        }
+    }
+}
+
+/// 日志级别字符串 → tracing 级别（lenient：未识别落 INFO）。
+///
+/// `FATAL` 映射 ERROR：tracing 无 FATAL 级，而 CLI（`log general level`）
+/// 接受 FATAL 写盘——此前读侧映射表不识该值，静默落 INFO（比 ERROR 宽松
+/// 两级，与用户「只要致命错」意图完全相反）。ERROR 是 tracing 可表达的
+/// 最严档。
+pub(crate) fn resolve_general_level(s: &str) -> tracing::Level {
+    match s.to_uppercase().as_str() {
+        "DEBUG" | "TRACE" => tracing::Level::DEBUG,
+        "INFO" => tracing::Level::INFO,
+        "WARN" | "WARNING" => tracing::Level::WARN,
+        "ERROR" | "FATAL" => tracing::Level::ERROR,
+        _ => tracing::Level::INFO,
+    }
+}
+
+/// 解析 config 的 `logging.general` 段成 [`GeneralLoggingSettings`]。
+///
+/// 文件不存在 / 读取失败 / JSON 损坏 / `logging.general` 缺席时整体保持
+/// 缺省（与既有 if-let 链语义一致）；单键类型不符时该键跳过（as_bool/
+/// as_str 失败 = 保留缺省值）。纯解析：不装 subscriber、不碰全局状态。
+pub(crate) fn parse_general_logging(config_path: &Path) -> GeneralLoggingSettings {
+    let mut settings = GeneralLoggingSettings::default();
+    if !config_path.exists() {
+        return settings;
+    }
+    let Ok(data) = nemesis_utils::fsutil::read_config_string(config_path) else {
+        return settings;
+    };
+    let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) else {
+        return settings;
+    };
+    let Some(logging) = cfg.get("logging").and_then(|v| v.get("general")) else {
+        return settings;
+    };
+
+    if let Some(enabled) = logging.get("enabled").and_then(|v| v.as_bool()) {
+        settings.enabled = enabled;
+    }
+    if let Some(console) = logging.get("enable_console").and_then(|v| v.as_bool()) {
+        settings.enable_console = console;
+    }
+    if let Some(lvl) = logging.get("level").and_then(|v| v.as_str()) {
+        settings.level = resolve_general_level(lvl);
+    }
+    // File path — resolve relative paths against the workspace directory
+    // (config_path's parent is the home dir; workspace is home/workspace).
+    // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
+    if let Some(fp) = logging.get("file").and_then(|v| v.as_str())
+        && !fp.is_empty()
+    {
+        let p = std::path::Path::new(fp);
+        let resolved = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("workspace")
+                .join(p)
+        };
+        settings.file = Some(resolved.to_string_lossy().into_owned());
+    }
+    settings
+}
+
 /// Initialize the logger based on configuration and CLI overrides.
 ///
 /// Reads log configuration from the main config file, then applies
@@ -422,49 +519,10 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
     // stderr behaviour when no subscriber is present.
     install_panic_hook();
 
-    let mut level = tracing::Level::INFO;
-    let mut enable_console = true;
-    let mut file_path: Option<String> = None;
-
-    // Read from config file if it exists
-    if config_path.exists()
-        && let Ok(data) = nemesis_utils::fsutil::read_config_string(config_path)
-        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-        && let Some(logging) = cfg.get("logging").and_then(|v| v.get("general"))
-    {
-        // Console switch
-        if let Some(console) = logging.get("enable_console").and_then(|v| v.as_bool()) {
-            enable_console = console;
-        }
-        // Log level
-        if let Some(lvl) = logging.get("level").and_then(|v| v.as_str()) {
-            level = match lvl.to_uppercase().as_str() {
-                "DEBUG" | "TRACE" => tracing::Level::DEBUG,
-                "INFO" => tracing::Level::INFO,
-                "WARN" | "WARNING" => tracing::Level::WARN,
-                "ERROR" => tracing::Level::ERROR,
-                _ => tracing::Level::INFO,
-            };
-        }
-        // File path — resolve relative paths against the workspace directory
-        // (config_path's parent is the home dir; workspace is home/workspace).
-        // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
-        if let Some(fp) = logging.get("file").and_then(|v| v.as_str())
-            && !fp.is_empty()
-        {
-            let p = std::path::Path::new(fp);
-            let resolved = if p.is_absolute() {
-                p.to_path_buf()
-            } else {
-                config_path
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new("."))
-                    .join("workspace")
-                    .join(p)
-            };
-            file_path = Some(resolved.to_string_lossy().into_owned());
-        }
-    }
+    let settings = parse_general_logging(config_path);
+    let mut level = settings.level;
+    let mut enable_console = settings.enable_console;
+    let file_path = settings.file.clone();
 
     // Check CLI argument overrides
     let mut override_flags: u32 = 0;
@@ -488,8 +546,10 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
     }
 
     // Apply configuration
-    if override_flags & LOG_QUIET != 0 {
-        // Quiet mode: use no-op subscriber
+    if override_flags & LOG_QUIET != 0 || !settings.enabled {
+        // Quiet mode（CLI --quiet 显式，或 config general.enabled=false——
+        // BUG-20261107-007：此前该键写而不读，`log general disable` 宣称
+        // 生效实际无效）: use no-op subscriber
         return override_flags;
     }
 

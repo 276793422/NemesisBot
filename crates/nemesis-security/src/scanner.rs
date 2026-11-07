@@ -22,7 +22,7 @@ use tracing::{debug, warn};
 // Status constants
 // ---------------------------------------------------------------------------
 
-/// 引擎库下载 stall 检测窗——见 ClamAVEngine::download
+/// 引擎库下载 stall 检测窗（BUG-20261101-278）——见 ClamAVEngine::download
 /// 内注释。测试态 400ms：stall 回归测试经真实 download() 跑，等待必须秒级。
 #[cfg(not(test))]
 const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -654,7 +654,7 @@ impl InstallableEngine for ClamAVEngine {
         // Create target directory
         std::fs::create_dir_all(dir).map_err(|e| format!("failed to create directory: {}", e))?;
 
-        // reqwest::get 内部 Client::new() 零超时——病毒库
+        // BUG-20261101-278：reqwest::get 内部 Client::new() 零超时——病毒库
         // CDN 半死（TCP 已建但不发数据）时这里永久挂死，且在下方 cancel
         // select 之外、取消令牌救不了。read_timeout 只惩罚响应分片间隔
         // （stall 形态），慢速但流动的合法大文件下载（~200MB 的 main.cvd）
@@ -1249,7 +1249,7 @@ impl VirusScanner for ClamavScannerWrapper {
                         duration: format!("{:?}", start.elapsed()),
                     };
                 }
-                // Still failing → fail-open (clean on unavailable).
+                // Still failing → G5 fail-open (clean on unavailable).
                 ScanResult {
                     path: path.to_string_lossy().to_string(),
                     infected: false,
@@ -1343,23 +1343,35 @@ impl VirusScanner for ClamavScannerWrapper {
 /// Instantiate a `VirusScanner` by engine name.
 ///
 /// Currently only "clamav" and "stub" are recognized.
+/// 从 per-engine 原始 JSON 配置构建引擎扫描配置
+/// （BUG-20261107-010：max_file_size 此前在此静默丢弃——默认配置与
+/// Dashboard 均可写该键，但生产装配恒用 ScannerConfig::default 50M，
+/// 「声名未读取」家族；提取为纯函数便于直测映射）。
+fn scanner_config_from_raw(config: &serde_json::Value) -> crate::clamav::scanner::ScannerConfig {
+    let mut scanner_config = crate::clamav::scanner::ScannerConfig::default();
+    // Apply config overrides if provided
+    if let Some(addr) = config.get("address").and_then(|v| v.as_str()) {
+        scanner_config.address = addr.to_string();
+    }
+    if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
+        scanner_config.enabled = enabled;
+    }
+    if let Some(timeout) = config.get("timeout_secs").and_then(|v| v.as_u64()) {
+        scanner_config.timeout = std::time::Duration::from_secs(timeout);
+    }
+    if let Some(size) = config.get("max_file_size").and_then(|v| v.as_u64()) {
+        scanner_config.max_file_size = size;
+    }
+    scanner_config
+}
+
 pub fn create_engine(
     name: &str,
     config: &serde_json::Value,
 ) -> Result<Box<dyn VirusScanner>, String> {
     match name {
         "clamav" => {
-            let mut scanner_config = crate::clamav::scanner::ScannerConfig::default();
-            // Apply config overrides if provided
-            if let Some(addr) = config.get("address").and_then(|v| v.as_str()) {
-                scanner_config.address = addr.to_string();
-            }
-            if let Some(enabled) = config.get("enabled").and_then(|v| v.as_bool()) {
-                scanner_config.enabled = enabled;
-            }
-            if let Some(timeout) = config.get("timeout_secs").and_then(|v| v.as_u64()) {
-                scanner_config.timeout = std::time::Duration::from_secs(timeout);
-            }
+            let scanner_config = scanner_config_from_raw(config);
 
             let mut wrapper = ClamavScannerWrapper::new(scanner_config);
 
@@ -1422,13 +1434,22 @@ impl ExtensionRules {
             .to_lowercase();
 
         // Whitelist mode: only scan listed extensions.
+        // 配置值两种形态并存（默认 json 与 CLI 出厂值带点 ".txt"，部分调用
+        // 方用裸形态 "txt"）——比较侧统一去点归一（BUG-20261107-010：此前
+        // 带点配置与无点 ext 永不相等，白名单/跳过清单静默失效）。
         if !self.scan_extensions.is_empty() {
-            return self.scan_extensions.iter().any(|e| e.to_lowercase() == ext);
+            return self
+                .scan_extensions
+                .iter()
+                .any(|e| e.trim_start_matches('.').to_lowercase() == ext);
         }
 
         // Blacklist mode: skip listed extensions.
         if !self.skip_extensions.is_empty()
-            && self.skip_extensions.iter().any(|e| e.to_lowercase() == ext)
+            && self
+                .skip_extensions
+                .iter()
+                .any(|e| e.trim_start_matches('.').to_lowercase() == ext)
         {
             return false;
         }
@@ -1790,7 +1811,7 @@ impl ScanChain {
                     }
                 }
             }
-            // multiedit 待写内容内嵌 edits[].new_text
+            // BUG-20261029-171：multiedit 待写内容内嵌 edits[].new_text
             // （顶层无 content 键，写系 content 臂取不到；本函数头的
             // file_path 扩展名闸读顶层 path/save_path，对 multiedit 恒空
             // 不适用）——逐条扫 new_text，不过扩展名闸（over-approve，
@@ -1847,7 +1868,14 @@ impl ScanChain {
                     paths.push(path.to_string());
                 }
             }
-            "exec" | "shell" | "exec_async" | "process_exec" | "execute_command" => {
+            // BUG-20261107-009：background_start（command 与 exec 完全同形，
+            // types.rs 归 ProcessExec——「命令本体照常过 8 层管线」承诺）与
+            // mcp_discover stdio 臂（BUG-20261102-296 投影 process_exec）此前
+            // 无臂 = 命令里的可执行路径 token 不进病毒扫描（BUG-20261028-118
+            // 纪律：白名单式 match 表新 ProcessExec 工具必须同步补臂——该次
+            // 修了 extract_target/ABAC/Layer 2，Layer 7 本表漏改）。
+            "exec" | "shell" | "exec_async" | "process_exec" | "execute_command"
+            | "background_start" | "mcp_discover" => {
                 if let Some(cmd) = args.get("command").and_then(|v| v.as_str()) {
                     for part in cmd.split_whitespace() {
                         if part.contains('/') || part.contains('\\') || part.contains('.') {
@@ -1856,9 +1884,20 @@ impl ScanChain {
                     }
                 }
             }
-            // multiedit 载荷内嵌 edits[].path（顶层无
+            // run_script 载荷是 script 键（脚本源码，内嵌可执行路径同样该扫
+            // ——`bash -c './implant'` 的 implant 此前零扫描）。
+            "run_script" => {
+                if let Some(script) = args.get("script").and_then(|v| v.as_str()) {
+                    for part in script.split_whitespace() {
+                        if part.contains('/') || part.contains('\\') || part.contains('.') {
+                            paths.push(part.to_string());
+                        }
+                    }
+                }
+            }
+            // BUG-20261029-171：multiedit 载荷内嵌 edits[].path（顶层无
             // path/file_path 键），缺臂 = 目标文件不进路径扫描。
-            // 在 extract_target（ABAC/审计面）修过同族
+            // BUG-20261028-118 在 extract_target（ABAC/审计面）修过同族
             // 漂移，本表漏改——同类白名单式 match 表新工具必须同步补臂。
             "multiedit" => {
                 if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
@@ -1955,6 +1994,20 @@ impl ScanChain {
 
             self.engines.push(engine);
         }
+
+        // BUG-20261107-010：接线扩展名规则。scan_extensions/skip_extensions
+        // 此前声名未读取——链级 rules 恒空（全扫），配置的跳过清单对
+        // scan_file 路径扫描静默失效（get_extension_rules 只有测试调用）。
+        // 内容臂 scan_content 无规则闸，不受影响（保持全覆盖）。
+        self.apply_config_rules();
+    }
+
+    /// 从已存引擎原始配置重新推导扩展名规则（scan_extensions/skip_extensions）。
+    ///
+    /// 生产装配（load_from_full_config）与配置热更新后调用；配置无扩展名键
+    /// 时落空规则 = 全扫（与默认行为一致，不意外收窄扫描面）。
+    pub fn apply_config_rules(&mut self) {
+        self.rules = self.get_extension_rules();
     }
 
     /// Get extension rules from the first engine config that has ClamAV-style

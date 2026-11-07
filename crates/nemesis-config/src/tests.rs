@@ -1058,6 +1058,91 @@ fn test_web_channel_enabled_default_paths_converge() {
     );
 }
 
+/// BUG-20261107-014 回归锁：AgentsConfig 的 serde 双路径默认值必须收敛。
+///
+/// 路径 A：`agents` 段整体缺席（含顶层 `{}`）→ Config.agents 字段级
+/// `#[serde(default)]` 回落结构体 Default；路径 B：`agents` 段在场但各键
+/// 缺席 → 字段级 serde 默认（default_true / default_prompt_system / …）；
+/// 路径 C：出厂硬编码默认 `default_config()`。修复前 A 路 derive 零值
+/// （6 开关=false、prompt_system=""、executor_tool_timeout_secs=0）与
+/// B/C 路（默认开 / "pro" / 1800）相反——精简 config.json（agents 段缺席）
+/// 会让装配期 typed 直读（如 WS9/P22 写租约）静默走关，typed save 往返
+/// 再把 false 烤进文件翻转 fresh-read 层「缺键=默认开」的语义
+/// （WebChannelConfig 手写收敛，BUG-20261028-109 同纪律）。
+#[test]
+fn test_agents_config_fn_default_paths_converge() {
+    let a = Config::default();
+    let b: Config = serde_json::from_str(r#"{"agents": {}}"#).unwrap();
+    let c = default_config();
+    assert_eq!(a.agents.turn_wal, b.agents.turn_wal);
+    assert!(a.agents.turn_wal, "turn WAL 默认开（L8 落地拍板）");
+    assert_eq!(
+        a.agents.provider_stream_events,
+        b.agents.provider_stream_events
+    );
+    assert!(
+        a.agents.provider_stream_events,
+        "provider 流式观测默认开（L10）"
+    );
+    assert_eq!(a.agents.image_downscale, b.agents.image_downscale);
+    assert_eq!(a.agents.image_downscale, c.agents.image_downscale);
+    assert!(a.agents.image_downscale, "图片降采样默认开（J6）");
+    assert_eq!(a.agents.lease_enabled, b.agents.lease_enabled);
+    assert_eq!(a.agents.lease_enabled, c.agents.lease_enabled);
+    assert!(a.agents.lease_enabled, "workspace 写租约默认开（WS9/P22）");
+    assert_eq!(a.agents.stream_concat_retry, b.agents.stream_concat_retry);
+    assert!(a.agents.stream_concat_retry, "L29 流断拼接默认开");
+    assert_eq!(
+        a.agents.profession_tool_fence,
+        b.agents.profession_tool_fence
+    );
+    assert!(a.agents.profession_tool_fence, "职能工具围栏默认开");
+    assert_eq!(a.agents.prompt_system, b.agents.prompt_system);
+    assert_eq!(a.agents.prompt_system, c.agents.prompt_system);
+    assert_eq!(a.agents.prompt_system, "pro");
+    assert_eq!(
+        a.agents.executor_tool_timeout_secs,
+        b.agents.executor_tool_timeout_secs
+    );
+    assert_eq!(
+        a.agents.executor_tool_timeout_secs,
+        c.agents.executor_tool_timeout_secs
+    );
+    assert_eq!(a.agents.executor_tool_timeout_secs, 1800);
+}
+
+/// BUG-20261107-014 同批（防御性收敛）：logging 两子结构手写 Default 与
+/// 字段级 serde 默认同值。当前两字段均 Option 包裹、反序列化路径不可达
+/// derive（`general: {}` 空对象走字段级默认，缺席走 None）——本锁防未来
+/// 有人给 Option 换非 Option 或加 `#[serde(default)]` 时复发。
+#[test]
+fn test_logging_sub_configs_default_match_serde() {
+    let g = GeneralLogConfig::default();
+    let g2: GeneralLogConfig = serde_json::from_str("{}").unwrap();
+    assert!(g.enabled);
+    assert!(g.enable_console);
+    assert_eq!(g.level, "INFO");
+    assert_eq!(g.enabled, g2.enabled);
+    assert_eq!(g.enable_console, g2.enable_console);
+    assert_eq!(g.level, g2.level);
+
+    let l = LlmLogConfig::default();
+    let l2: LlmLogConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(l.detail_level, "full");
+    assert_eq!(l.detail_level, l2.detail_level);
+}
+
+/// BUG-20261107-015 回归锁：maixcam 出厂端口与 gateway 出厂端口不撞号。
+#[test]
+fn test_default_config_maixcam_port_not_collide_gateway() {
+    let cfg = default_config();
+    assert_eq!(cfg.channels.maixcam.port, 8888);
+    assert_ne!(
+        cfg.channels.maixcam.port, cfg.gateway.port,
+        "出厂默认 maixcam 监听端口不得与 gateway HTTP 端口撞号（使能即绑定冲突）"
+    );
+}
+
 #[test]
 fn test_gateway_config_default() {
     let gateway = GatewayConfig::default();
@@ -1426,15 +1511,17 @@ fn test_llm_log_config_default() {
     let cfg = LlmLogConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.log_dir.is_empty());
-    assert_eq!(cfg.detail_level, ""); // Default trait gives empty string, serde default gives "full"
+    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值（"full"）。
+    assert_eq!(cfg.detail_level, "full");
 }
 
 #[test]
 fn test_general_log_config_default() {
     let cfg = GeneralLogConfig::default();
-    assert!(!cfg.enabled); // Default trait gives false, serde default gives true
-    assert!(!cfg.enable_console); // Default trait gives false, serde default gives true
-    assert_eq!(cfg.level, ""); // Default trait gives empty string, serde default gives "INFO"
+    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值。
+    assert!(cfg.enabled);
+    assert!(cfg.enable_console);
+    assert_eq!(cfg.level, "INFO");
 }
 
 #[test]
@@ -2662,9 +2749,10 @@ fn test_model_config_all_fields() {
 #[test]
 fn test_general_log_config_defaults_v2() {
     let cfg = GeneralLogConfig::default();
-    assert!(!cfg.enabled); // Default trait gives false, serde default gives true
-    assert!(!cfg.enable_console); // Default trait gives false
-    assert!(cfg.level.is_empty()); // Default trait gives "", serde default gives "INFO"
+    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值。
+    assert!(cfg.enabled);
+    assert!(cfg.enable_console);
+    assert_eq!(cfg.level, "INFO");
     assert!(cfg.file.is_empty());
 }
 
@@ -2673,7 +2761,8 @@ fn test_llm_log_config_defaults_v2() {
     let cfg = LlmLogConfig::default();
     assert!(!cfg.enabled);
     assert!(cfg.log_dir.is_empty());
-    assert!(cfg.detail_level.is_empty());
+    // BUG-20261107-014 手写 Default 收敛后与字段级 serde 默认同值（"full"）。
+    assert_eq!(cfg.detail_level, "full");
 }
 
 #[test]

@@ -202,6 +202,11 @@ pub fn decode_tree_blob_paths(body: &[u8], dir_prefix: &str) -> Result<Vec<Strin
 }
 
 /// Download a single file from a URL with size limit.
+///
+/// BUG-20261107-005：旧形态 `bytes()` 全量读入内存**之后**才核对 `max_size`
+/// ——核对前恶意/失控源已把任意大 body 灌进内存（GitHub raw blob 上限
+/// 100MB = 10x 放大；自搭 raw 兼容源无上限）。换用共享流式累计闸
+/// （BUG-20261101-273 哲学的 workspace 单一真相源），超限在读入中途即断。
 pub async fn download_file(client: &Client, url: &str, max_size: u64) -> Result<Vec<u8>> {
     let response = client
         .get(url)
@@ -219,20 +224,9 @@ pub async fn download_file(client: &Client, url: &str, max_size: u64) -> Result<
         )));
     }
 
-    let body = response
-        .bytes()
+    nemesis_utils::http_cap::read_body_capped(response, max_size)
         .await
-        .map_err(|e| NemesisError::Other(format!("failed to read response: {}", e)))?;
-
-    if body.len() as u64 > max_size {
-        return Err(NemesisError::Other(format!(
-            "response too large: {} bytes (max {})",
-            body.len(),
-            max_size
-        )));
-    }
-
-    Ok(body.to_vec())
+        .map_err(NemesisError::Other)
 }
 
 /// GitHub Trees API response.

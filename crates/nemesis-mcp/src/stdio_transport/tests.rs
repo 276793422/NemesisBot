@@ -536,6 +536,122 @@ async fn test_small_payload_write_completes_then_read_times_out() {
     t.close().await.unwrap();
 }
 
+/// BUG-20261107-012：外层取消打断写中途——注册路径（adapter execute）外层
+/// 超时恒小于 transport 内层超时（超时阶梯纪律：外层先到），BUG-20261105-037
+/// 的内层写超时断链在该路径不可达。server 不读 stdin + 请求 >> 管道缓冲时
+/// write_all 卡死后被外层 timeout drop → 请求行只落一半、帧脏且无断链 →
+/// 下次 send 追写在半行后面（子进程 JSON 解析必败 → 该 server 全部后续
+/// 调用永久神秘超时，Arc 共享 client 不 drop、连接残留）。修复后：写阶段
+/// 置 write_interrupted 标记（取消 = 复位不执行 = 残留），下次 send 开头
+/// 检测到 → 诚实断链 + 专用报错。
+#[tokio::test]
+async fn bug012_outer_cancel_during_write_tears_down_on_next_send() {
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), "import time; time.sleep(30)".to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let big_req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        // ~1MB >> OS 管道缓冲（Windows 匿名管道 ~4-64KB），server 不读 →
+        // write_all 卡住（与 BUG-037 测试同形态）。
+        params: Some(serde_json::json!({ "blob": "x".repeat(1_000_000) })),
+    };
+    // 外层 400ms 取消（内层 timeout_ms 传 5000 不会自己超时）——生产注册
+    // 路径的超时阶梯形态（外层恒先到，内层断链臂不可达）。
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_millis(400),
+        t.send(&big_req, 5_000),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "外层取消必须发生（server 不读 stdin，写必卡满外层预算）"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "外层取消必须即时返回，took {:?}",
+        started.elapsed()
+    );
+    // 取消此刻 transport 表面仍 connected（BUG-037 断链臂未跑——缺陷形态
+    // 本体：Arc 共享 client 不 drop，连接残留脏帧）。
+    assert!(t.is_connected());
+
+    // 下一次 send：检测到写中断残留 → 诚实断链 + 专用报错（非静默追写）。
+    let req2 = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(2.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let err = t.send(&req2, 1_000).await.unwrap_err();
+    assert!(
+        err.message.contains("interrupted mid-frame"),
+        "got: {}",
+        err.message
+    );
+    assert!(!t.is_connected(), "检测到帧脏必须断链");
+
+    // 断链后再 send：not_connected（-1）快速失败。
+    let err2 = t.send(&req2, 1_000).await.unwrap_err();
+    assert_eq!(err2.code, -1, "got: {}", err2.message);
+    t.close().await.unwrap();
+}
+
+/// 对照面：外层取消发生在读阶段（小载荷写得进、卡在读循环）——写已完成、
+/// 标记已复位，下次 send 必须不触发断链（正常走写+读 → 读侧超时）。证
+/// write_interrupted 只对真写中断触发，不误伤读超时后的正常续用（残留的
+/// 旧响应由 R39 id 匹配闸兜住）。
+#[tokio::test]
+async fn bug012_outer_cancel_during_read_does_not_flag_dirty_frame() {
+    let mut t = StdioTransport::new(
+        "python",
+        vec!["-c".to_string(), "import time; time.sleep(30)".to_string()],
+        vec![],
+    );
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: Some(serde_json::json!({ "k": "v" })),
+    };
+    // 小载荷写瞬时完成 → 外层 150ms 取消落在读循环（内层 5000 未到）。
+    let result =
+        tokio::time::timeout(std::time::Duration::from_millis(150), t.send(&req, 5_000)).await;
+    assert!(result.is_err(), "外层取消必须发生在读阶段");
+    assert!(t.is_connected(), "读阶段取消不得断链");
+
+    // 下一次 send：无写中断残留 → 正常写+读 → 读侧超时（server 不答），
+    // 绝不能报 "interrupted mid-frame"（误断链 = 误伤正常续用）。
+    let req2 = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(2.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let err = t.send(&req2, 600).await.unwrap_err();
+    assert!(
+        err.message.contains("request timed out"),
+        "got: {}",
+        err.message
+    );
+    assert!(t.is_connected(), "读超时不断链");
+    t.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn test_w4c_stdio_garbage_line_skipped_times_out() {
     // 起（devtool-upgrade）：服务器回一行非 JSON → 跳过继续读
