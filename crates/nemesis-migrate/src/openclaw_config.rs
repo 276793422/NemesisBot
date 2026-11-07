@@ -81,7 +81,9 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
             "telegram": {"enabled": false},
             "feishu": {"enabled": false},
             "discord": {"enabled": false},
-            "maixcam": {"enabled": false, "host": "0.0.0.0", "port": 18790},
+            // port 8888 = MaixCamConfig 类型缺省；旧值 18790 与 gateway 出厂
+            // 端口撞号（BUG-20261107-015），迁移落到的新工作区不带入冲突。
+            "maixcam": {"enabled": false, "host": "0.0.0.0", "port": 8888},
             "qq": {"enabled": false},
             "dingtalk": {"enabled": false},
             "web": {"enabled": true, "host": "0.0.0.0", "port": 8080, "path": "/ws", "heartbeat_interval": 30, "session_timeout": 3600}

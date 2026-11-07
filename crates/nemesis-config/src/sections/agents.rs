@@ -4,7 +4,7 @@
 
 use super::*;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentsConfig {
     #[serde(default)]
     pub defaults: AgentDefaults,
@@ -162,6 +162,50 @@ pub struct AgentsConfig {
     /// Some(true) 显式表态照常保留（BUG-20261105-008）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lazy_tool_schema: Option<bool>,
+}
+
+/// 手写 Default（不 derive）：本结构 8 个直接字段带非零 serde 字段默认
+/// （turn_wal / provider_stream_events / image_downscale / lease_enabled /
+/// stream_concat_retry / profession_tool_fence = default_true，
+/// prompt_system = "pro"，executor_tool_timeout_secs = 1800），derive 只给
+/// 零值。分叉点 = 「agents 段整体缺席」的 config 经 Config 字段级
+/// `#[serde(default)]` 回落走进 `Default::default()`，与「段在场但键缺席」
+/// 的字段级 serde 路径各走各的（BUG-20261107-014：文档/fresh-read 层口径
+/// 同说「默认开」，typed 层却拿到关；typed save 往返还会把 false 烤进
+/// 文件，翻转 fresh-read 层「缺键=默认开」的语义）。手写与 FsWatcherConfig
+/// 同款纪律：缺省值只认 serde default fn 单一真相源。
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self {
+            defaults: AgentDefaults::default(),
+            list: Vec::new(),
+            claude_code_tool: ClaudeCodeToolConfig::default(),
+            codex_tool: CodexToolConfig::default(),
+            lsp_tool: LspToolConfig::default(),
+            tool_doc_folding: ToolDocFoldingConfig::default(),
+            subagent: SubagentConfig::default(),
+            fs_watcher: FsWatcherConfig::default(),
+            codemode: CodeModeConfig::default(),
+            delegate: DelegateToolConfig::default(),
+            turn_wal: default_true(),
+            provider_stream_events: default_true(),
+            hidden_tools: Vec::new(),
+            mcp_lazy_supply: false,
+            roles: RolesConfig::default(),
+            small_model: None,
+            guardian_model: None,
+            doom_loop_approval: false,
+            image_downscale: default_true(),
+            lease_enabled: default_true(),
+            discipline: DisciplineConfig::default(),
+            prompt_system: default_prompt_system(),
+            cache_warmer: CacheWarmerConfig::default(),
+            executor_tool_timeout_secs: default_executor_tool_timeout_secs(),
+            stream_concat_retry: default_true(),
+            profession_tool_fence: default_true(),
+            lazy_tool_schema: None,
+        }
+    }
 }
 
 /// `agents.executor_tool_timeout_secs` 缺键默认（30 分钟）。
