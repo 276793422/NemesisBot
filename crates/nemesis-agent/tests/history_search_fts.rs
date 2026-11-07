@@ -373,3 +373,46 @@ fn test_delete_invalidates_recreated_session_baseline() {
 
     delete_chat_log(&k);
 }
+
+/// 回归锁（BUG-20261107-023 同族对称面）：软删（trash_chat_log）把 jsonl
+/// 移出 session_logs 后，FTS 增量钩子不得再以旧 DB 行为基线推 seq——同键
+/// 复用（复合通道键同节点同 chat 重开真实可达）的重建会话第一行若按旧
+/// MAX(seq)+1 插入，seq 与文件行号错位。trash 成功后必须摘除索引登记
+/// （与 delete_chat_log 的级联 invalidate 同族）。
+#[test]
+fn test_trash_invalidates_incremental_baseline() {
+    let _g = family_guard();
+    let k = fresh_session("trashinv");
+    append_chat_log(&k, "user", "trashed incarnation deltic");
+    reindex_session_logs();
+
+    let entry = nemesis_agent::chat_trash::trash_chat_log(&k, "single")
+        .expect("trash succeeds")
+        .expect("material moved");
+    // 同键重建（复合键复用形态）：增量钩子必须诚实让位（登记已摘）。
+    append_chat_log(&k, "user", "reincarnated after trash eurynome");
+    let hits = search("eurynome", 10);
+    assert!(
+        hits.is_empty(),
+        "post-trash append must wait for full reindex, got {hits:?}"
+    );
+
+    // 全量重建：seq = 新文件行号 0；旧 incarnation 的内容随条目离开
+    // session_logs，孤儿清扫不再应答。
+    reindex_session_logs();
+    let stem = k.replace(':', "_");
+    let hits: Vec<_> = search("eurynome", 50)
+        .into_iter()
+        .filter(|h| h.session_key == stem)
+        .collect();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].seq, 0);
+    assert!(
+        search("deltic", 50).iter().all(|h| h.session_key != stem),
+        "trashed incarnation's rows must be purged"
+    );
+
+    // 清场：回收站条目 + 重建的 live jsonl。
+    nemesis_agent::chat_trash::trash_purge(&entry).unwrap();
+    delete_chat_log(&k);
+}
