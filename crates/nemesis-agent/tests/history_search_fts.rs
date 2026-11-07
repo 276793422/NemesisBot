@@ -26,8 +26,11 @@
 //! first. Pure helpers (`cjk_bigrams` / `render_hits` / empty-query
 //! short-circuit) remain unit-tested in `src/history_search/tests.rs`.
 
-use nemesis_agent::chat_log::{append_chat_log, delete_chat_log};
-use nemesis_agent::history_search::{reindex_session_logs, search};
+use nemesis_agent::chat_log::{
+    append_chat_log, clear_chat_log, delete_chat_log, truncate_chat_log_rows,
+};
+use nemesis_agent::history_search::{append_guard, reindex_session_logs, search};
+use std::io::BufRead;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -201,6 +204,172 @@ fn test_index_append_incremental() {
     // mismatch in index_append stayed masked — ghost rows answered the
     // query while the real append was never indexed).
     assert_eq!(hits[0].session_key, k.replace(':', "_"));
+
+    delete_chat_log(&k);
+}
+
+/// The chat_log append path holds the index mutex across file-write +
+/// incremental insert. Regression lock: a reindex racing that window must
+/// BLOCK (not observe the "written but not yet indexed" state and then let
+/// index_append re-insert the same line at a phantom MAX(seq)+1).
+/// Deterministic — the shared mutex, not timing, forces the ordering; the
+/// only timed part waits for the spawned thread to reach reindex and is
+/// allowed to overshoot (a weak "blocked" assert can only over-pass, the
+/// "completes after drop" join is the hard half).
+#[test]
+fn test_append_guard_excludes_reindex() {
+    let _g = family_guard();
+    let k = fresh_session("race");
+    append_chat_log(&k, "user", "race guard probe quux");
+    reindex_session_logs();
+
+    let mut guard = append_guard().expect("index lock healthy");
+    guard.index_append(&k, "assistant", "locked append frobnicate", "");
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let h = std::thread::spawn(move || {
+        tx.send(()).ok(); // reindex entered
+        reindex_session_logs();
+        tx.send(()).ok(); // reindex finished
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("reindex thread started");
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        rx.recv_timeout(std::time::Duration::from_millis(200))
+            .is_err(),
+        "reindex must block while the append guard is held"
+    );
+    drop(guard);
+    h.join().expect("reindex thread joins");
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("reindex completes after guard drop");
+
+    // The locked variant indexed the row exactly once (and the racing
+    // reindex — which re-read the unchanged file — must not have doubled it).
+    let stem = k.replace(':', "_");
+    let hits: Vec<_> = search("frobnicate", 50)
+        .into_iter()
+        .filter(|h| h.session_key == stem)
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "locked append indexed exactly once: {hits:?}"
+    );
+
+    delete_chat_log(&k);
+}
+
+/// After a truncation the incremental hook's MAX(seq)+1 baseline is stale
+/// (DB rows no longer match file line numbers). The hook must skip until
+/// the next full reindex — pre-fix it inserted the appended row at a
+/// phantom seq (pointing at no file line) and the truncated-away content
+/// kept answering queries until the session's next append healed it.
+#[test]
+fn test_truncate_invalidates_incremental_baseline() {
+    let _g = family_guard();
+    let k = fresh_session("trunc");
+    let stem = k.replace(':', "_");
+    append_chat_log(&k, "user", "ancient line doomed qvex");
+    append_chat_log(&k, "assistant", "second line slorvex also doomed");
+    reindex_session_logs();
+
+    // Keep only the first row (rewind-style truncation).
+    let path = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{stem}.jsonl"));
+    let first = {
+        let f = std::fs::File::open(&path).unwrap();
+        std::io::BufReader::new(f).lines().next().unwrap().unwrap()
+    };
+    let kept: Vec<serde_json::Value> = vec![serde_json::from_str(&first).unwrap()];
+    let written = truncate_chat_log_rows(&k, &kept);
+    assert_eq!(written, 1);
+
+    // Append after truncation: the hook must NOT touch the DB (baseline
+    // invalidated). Pre-fix this produced a phantom row searchable before
+    // any reindex.
+    append_chat_log(&k, "user", "fresh tail after truncate zorph");
+    let hits = search("zorph", 10);
+    assert!(
+        hits.is_empty(),
+        "post-truncate append must wait for full reindex, got {hits:?}"
+    );
+
+    // Full rebuild: searchable with the CORRECT seq (file line 1), and the
+    // truncated-away content is gone.
+    reindex_session_logs();
+    let hits: Vec<_> = search("zorph", 50)
+        .into_iter()
+        .filter(|h| h.session_key == stem)
+        .collect();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].seq, 1, "seq must match the file line index");
+    assert!(
+        search("slorvex", 50).iter().all(|h| h.session_key != stem),
+        "truncated-away content must be purged"
+    );
+
+    delete_chat_log(&k);
+}
+
+/// Same contract as truncation, through `clear_chat_log` (separate write
+/// path): after a clear the hook must skip until the next full reindex.
+#[test]
+fn test_clear_invalidates_incremental_baseline() {
+    let _g = family_guard();
+    let k = fresh_session("clr");
+    append_chat_log(&k, "user", "pre-clear content doomleaf");
+    reindex_session_logs();
+
+    clear_chat_log(&k).expect("clear succeeds");
+    append_chat_log(&k, "user", "post-clear first row mendicorn");
+    let hits = search("mendicorn", 10);
+    assert!(
+        hits.is_empty(),
+        "post-clear append must wait for full reindex, got {hits:?}"
+    );
+
+    reindex_session_logs();
+    let stem = k.replace(':', "_");
+    let hits: Vec<_> = search("mendicorn", 50)
+        .into_iter()
+        .filter(|h| h.session_key == stem)
+        .collect();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].seq, 0);
+
+    delete_chat_log(&k);
+}
+
+/// Deleting a session then recreating the SAME key: the old DB rows must
+/// not serve as the incremental hook's baseline (pre-fix the recreated
+/// session's first append landed at the stale MAX(seq)+1 — a phantom seq
+/// that no file line matches).
+#[test]
+fn test_delete_invalidates_recreated_session_baseline() {
+    let _g = family_guard();
+    let k = fresh_session("recreate");
+    append_chat_log(&k, "user", "first incarnation blenko");
+    reindex_session_logs();
+    delete_chat_log(&k);
+
+    append_chat_log(&k, "user", "second incarnation cruft");
+    let hits = search("cruft", 10);
+    assert!(
+        hits.is_empty(),
+        "post-delete append must wait for full reindex, got {hits:?}"
+    );
+
+    reindex_session_logs();
+    let stem = k.replace(':', "_");
+    let hits: Vec<_> = search("cruft", 50)
+        .into_iter()
+        .filter(|h| h.session_key == stem)
+        .collect();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].seq, 0);
 
     delete_chat_log(&k);
 }
