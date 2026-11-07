@@ -6,6 +6,12 @@
 //! [`TurnWal::recover_and_finalize`] 扫描补写 interrupted 收尾行并返回续轮
 //! 候选（pump 据此合成续轮消息，走正常 gate/admission 流程回到原会话）。
 //!
+//! 崩溃恢复分流（2026-11-07 runtime 可信化待办 1）：started 后失联的调用
+//! 若命中 [`is_irreversible_call`] 不可逆清单（副作用出本机 / 重放=双执行），
+//! 补写 unknown 收尾行且**不产续轮候选**——续轮消息会指示模型「必要时重新
+//! 执行该工具」，对不可逆工具等于盲目重放；这类调用转人工确认。幂等工具
+//! 行为不变（interrupted + 续轮）。
+//!
 //! 诚实边界：纯 `write` + `flush`（无 fsync）——数据落 OS 页缓存，进程级
 //! 崩溃（taskkill /F、panic abort）可靠；**断电/内核崩溃不保**。要顶断电
 //! 得每行 fsync（毫秒级 × 每调用三行），对热路径不可接受，故不做。
@@ -29,11 +35,37 @@ pub const DEFAULT_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// 默认恢复 TTL（秒）：7 天——跨过它的工作区中断不再自动续轮。
 pub const DEFAULT_TTL_SECS: u64 = 7 * 24 * 3600;
 
-/// WAL 记录状态三态 + 恢复期补写的收尾态。
+/// WAL 记录状态：运行态三态 + 恢复期补写的两种收尾态。
 pub const STATE_ADMITTED: &str = "admitted";
 pub const STATE_STARTED: &str = "started";
 pub const STATE_FINISHED: &str = "finished";
 pub const STATE_INTERRUPTED: &str = "interrupted";
+/// 恢复期收尾（不可逆工具专用）：started 后失联且命中不可逆清单——执行
+/// 状态不可知，重放=双执行，补 unknown 留痕且不产续轮候选（转人工）。
+pub const STATE_UNKNOWN: &str = "unknown";
+
+/// 不可逆工具判定（单一真相源，恢复期消费）。清单**从窄不从宽**：只列
+/// 「副作用出本机 / 崩溃瞬间执行状态不可知 / 重放造成双执行」的工具。
+/// 本地文件/进程类操作（`MOVE_TOOLS` 家族）有 checkpoint 兜底、重放无害或
+/// 可观察回滚，**不进清单**——误伤会把可自动续轮的会话推进人工队列。
+///
+/// 五态映射（PLAN 待办 1）：admitted=Prepared（未执行，可安全续轮）、
+/// started=Executing（崩溃失联→本判定分unknown/幂等续轮两臂）、
+/// finished{ok}=Succeeded|Failed。
+pub fn is_irreversible_call(tool: &str, args_preview: &str) -> bool {
+    match tool {
+        // cluster_rpc：派发远端任务（B 端可能已开始 LLM 处理，重复派发 =
+        // 远端双执行）；message：出站消息可能已投递，重发 = 用户收两条；
+        // connector_invoke：外部系统 op（Gitea 回帖等）可能已生效；
+        // mcp_call：第三方 MCP 工具，副作用面不可知（含外部写）。
+        "cluster_rpc" | "message" | "connector_invoke" | "mcp_call" => true,
+        // git 只有 push 出网（远端状态变更）；本地 commit/分支操作有
+        // checkpoint 兜底可安全重放。args_preview 是序列化参数，subcommand
+        // 位于前部（200 字符截断内）。
+        "git" => args_preview.contains("push"),
+        _ => false,
+    }
+}
 
 /// 单个工具调用的一次状态迁移记录。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -306,7 +338,7 @@ impl TurnWal {
         for rec in &records {
             let key = (rec.session_key.clone(), rec.call_id.clone());
             match rec.state.as_str() {
-                STATE_FINISHED | STATE_INTERRUPTED => {
+                STATE_FINISHED | STATE_INTERRUPTED | STATE_UNKNOWN => {
                     finished.insert(key);
                 }
                 STATE_ADMITTED | STATE_STARTED => {
@@ -315,9 +347,18 @@ impl TurnWal {
                 _ => {}
             }
         }
+        // 执行已开始过的调用集合（unrcoverable 与否的判定面）：同组内最新
+        // 记录可能是 admitted，但只要出现过 started 就说明执行真实开始过
+        // （状态只前进不回退）。
+        let started_keys: std::collections::HashSet<(String, String)> = records
+            .iter()
+            .filter(|r| r.state == STATE_STARTED)
+            .map(|r| (r.session_key.clone(), r.call_id.clone()))
+            .collect();
 
         let mut candidates = Vec::new();
-        let mut appended_interrupted: Vec<WalRecord> = Vec::new();
+        let mut appended_terminal: Vec<WalRecord> = Vec::new();
+        let mut unknown_count = 0usize;
         let mut stale = 0usize;
         // HashMap 迭代序随机——按发生时间排序后消费（多断头调用时续轮候选
         // 顺序跨平台/跨运行确定；同会话串行下多候选必跨会话，排序保日志
@@ -334,10 +375,27 @@ impl TurnWal {
             }
             let mut done = rec.clone();
             done.ts_ms = now_ms();
+            if started_keys.contains(&key) && is_irreversible_call(&rec.tool, &rec.args_preview) {
+                // 不可逆工具执行已开始、结果不可知：重放=双执行，补 unknown
+                // 收尾且**不产续轮候选**（转人工确认副作用）。loud WARN——
+                // 静默吞掉会让副作用悬案无人知晓。
+                done.state = STATE_UNKNOWN.to_string();
+                done.ok = None;
+                self.append_record(done.clone());
+                appended_terminal.push(done);
+                unknown_count += 1;
+                tracing::warn!(
+                    "[TurnWal] 不可逆工具 `{}` 崩溃时执行状态不可知（session={}，args={}）——补 unknown 收尾、不自动续轮，请人工确认副作用是否已生效",
+                    rec.tool,
+                    rec.session_key,
+                    rec.args_preview
+                );
+                continue;
+            }
             done.state = STATE_INTERRUPTED.to_string();
             done.ok = Some(false);
             self.append_record(done.clone());
-            appended_interrupted.push(done);
+            appended_terminal.push(done);
             candidates.push(ResumeCandidate { record: rec });
         }
         if stale > 0 {
@@ -346,16 +404,21 @@ impl TurnWal {
                 self.ttl_secs
             );
         }
+        if unknown_count > 0 {
+            tracing::warn!(
+                "[TurnWal] {unknown_count} 个不可逆工具断头调用标记 unknown（无续轮候选）"
+            );
+        }
 
-        // drain：当前文件重写为仅含 interrupted 留痕行（旧扫描读到的 +
-        // 本次新补的——append 发生在快照读取之后，二者并集才完整）；
-        // .old 删除。
-        let mut all_interrupted: Vec<&WalRecord> = records
+        // drain：当前文件重写为仅含收尾留痕行（interrupted + unknown；旧
+        // 扫描读到的 + 本次新补的——append 发生在快照读取之后，二者并集才
+        // 完整）；.old 删除。
+        let mut all_terminal: Vec<&WalRecord> = records
             .iter()
-            .filter(|r| r.state == STATE_INTERRUPTED)
+            .filter(|r| r.state == STATE_INTERRUPTED || r.state == STATE_UNKNOWN)
             .collect();
-        all_interrupted.extend(appended_interrupted.iter());
-        let interrupted_lines: Vec<String> = all_interrupted
+        all_terminal.extend(appended_terminal.iter());
+        let terminal_lines: Vec<String> = all_terminal
             .iter()
             .map(|r| serde_json::to_string(r).unwrap_or_default())
             .collect();
@@ -365,10 +428,10 @@ impl TurnWal {
                 Err(poisoned) => poisoned.into_inner(),
             };
             *guard = None;
-            let body = if interrupted_lines.is_empty() {
+            let body = if terminal_lines.is_empty() {
                 String::new()
             } else {
-                let mut s = interrupted_lines.join("\n");
+                let mut s = terminal_lines.join("\n");
                 s.push('\n');
                 s
             };

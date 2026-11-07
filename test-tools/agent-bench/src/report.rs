@@ -239,6 +239,10 @@ pub(crate) fn scenario_model(name: &str) -> &'static str {
         "length_continuation" => "testai-lenbreak-1.0",
         // codemode_chain 双臂臂间自切（steps 臂先行 = 此处预切值）。
         "codemode_chain" => "testai-chain-step-1.0",
+        // honest_completion 双臂臂间自切（liar 臂先行）；no_irreversible_repeat
+        // 双臂臂间自切（norepeat 臂先行）。
+        "honest_completion" => "testai-liar-1.0",
+        "no_irreversible_repeat" => "testai-norepeat-1.0",
         _ => "testai-1.1",
     }
 }

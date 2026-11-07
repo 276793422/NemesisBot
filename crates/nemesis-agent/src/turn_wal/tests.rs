@@ -291,3 +291,98 @@ async fn rotation_failure_does_not_kill_wal_or_drop_lines() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// 不可逆工具恢复分流（2026-11-07 runtime 可信化待办 1）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn irreversible_call_predicate_narrow_list() {
+    // 清单四工具 + git push 嗅探命中。
+    assert!(is_irreversible_call("cluster_rpc", "{}"));
+    assert!(is_irreversible_call("message", "{}"));
+    assert!(is_irreversible_call("connector_invoke", "{}"));
+    assert!(is_irreversible_call("mcp_call", "{}"));
+    assert!(is_irreversible_call(
+        "git",
+        r#"{"args":"push origin main"}"#
+    ));
+    // git 本地操作不命中（checkpoint 兜底，可安全续轮）。
+    assert!(!is_irreversible_call("git", r#"{"args":"commit -m x"}"#));
+    assert!(!is_irreversible_call("git", r#"{"args":"status"}"#));
+    // 本地写/读族不命中——误伤会把可自动续轮的会话推进人工队列。
+    assert!(!is_irreversible_call("write_file", "{}"));
+    assert!(!is_irreversible_call("exec", "curl https://x"));
+    assert!(!is_irreversible_call("read_file", "{}"));
+    assert!(!is_irreversible_call("", "{}"));
+}
+
+/// started 后失联 + 不可逆清单命中 → unknown 收尾、零候选（不盲目重放）、
+/// 幂等（二次恢复仍零候选）。
+#[tokio::test]
+async fn irreversible_started_call_marked_unknown_no_candidate() {
+    let dir = tmp_dir("irr-unknown");
+    let wal = TurnWal::open(&dir).expect("open");
+    let mut c = call("irr");
+    c.tool = "cluster_rpc".into();
+    wal.log(&c, STATE_ADMITTED, r#"{"node":"B","task":"x"}"#, None);
+    wal.log(&c, STATE_STARTED, r#"{"node":"B","task":"x"}"#, None);
+
+    let candidates = wal.recover_and_finalize();
+    assert!(
+        candidates.is_empty(),
+        "不可逆断头调用不得产续轮候选（重放=双执行）: {candidates:?}"
+    );
+    let lines = read_lines(wal.path());
+    assert_eq!(lines.len(), 1, "应恰好补一行 unknown 留痕");
+    assert_eq!(lines[0].state, STATE_UNKNOWN);
+    assert_eq!(lines[0].tool, "cluster_rpc");
+    assert_eq!(lines[0].ok, None, "unknown = 结果不可知，ok 不得是 false");
+    // 幂等：二次恢复零候选（unknown 算收尾态）。
+    let again = wal.recover_and_finalize();
+    assert!(again.is_empty(), "二次恢复应幂等: {again:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 不可逆工具但只有 admitted（执行从未开始）→ 仍走续轮（无副作用可重放）。
+#[tokio::test]
+async fn irreversible_admitted_only_still_resumes() {
+    let dir = tmp_dir("irr-admitted");
+    let wal = TurnWal::open(&dir).expect("open");
+    let mut c = call("irr-adm");
+    c.tool = "message".into();
+    wal.log(&c, STATE_ADMITTED, "hello", None);
+
+    let candidates = wal.recover_and_finalize();
+    assert_eq!(
+        candidates.len(),
+        1,
+        "未开始执行的不可逆调用可安全续轮: {candidates:?}"
+    );
+    assert_eq!(candidates[0].record.state, STATE_ADMITTED);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// git 差分：push 断头 → unknown 不续轮；本地 git 断头 → 正常续轮。
+#[tokio::test]
+async fn git_push_vs_local_git_split() {
+    let dir = tmp_dir("git-split");
+    let wal = TurnWal::open(&dir).expect("open");
+    let mut push = call("push");
+    push.tool = "git".into();
+    push.call_id = "call-git-push".into();
+    wal.log(&push, STATE_STARTED, r#"{"args":"push origin main"}"#, None);
+    let mut local = call("local");
+    local.tool = "git".into();
+    local.call_id = "call-git-local".into();
+    wal.log(&local, STATE_STARTED, r#"{"args":"commit -m wip"}"#, None);
+
+    let candidates = wal.recover_and_finalize();
+    assert_eq!(candidates.len(), 1, "本地 git 断头应续轮: {candidates:?}");
+    assert_eq!(candidates[0].record.call_id, "call-git-local");
+    let lines = read_lines(wal.path());
+    let unknowns: Vec<_> = lines.iter().filter(|l| l.state == STATE_UNKNOWN).collect();
+    assert_eq!(unknowns.len(), 1, "push 断头应恰一行 unknown");
+    assert_eq!(unknowns[0].call_id, "call-git-push");
+    let _ = std::fs::remove_dir_all(&dir);
+}
