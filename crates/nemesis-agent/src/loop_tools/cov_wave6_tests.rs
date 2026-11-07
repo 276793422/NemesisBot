@@ -11,8 +11,9 @@
 //! - SkillManage 审批 Err / JoinError / patch 安全拦截 / write_file 父目录是文件
 //! - GitTool commit spawn 失败 / mcp_discover args 数组混合类型
 //! - register_shared_tools：spawn_slot 共享槽 / claude+codex 探针 / lsp 双
-//!   manager 形态 / workflow 三件套 / 收尾 info!（capture_logs 罩住参数行）
-//! - WorkflowCreate 决策表 + WorkflowCapabilitiesTool
+//!   manager 形态 / workflow 单工具（2026-11-06 三合一）/ 收尾 info!
+//!   （capture_logs 罩住参数行）
+//! - WorkflowTool action=create 决策表 + action=capabilities
 
 use super::*;
 use crate::context::RequestContext as _Ctx;
@@ -773,28 +774,30 @@ fn register_shared_tools_workflow_trio_and_final_info() {
         ..Default::default()
     };
     let tools = register_shared_tools(&cfg);
-    assert!(tools.contains_key("workflow_run"));
-    assert!(tools.contains_key("workflow_create"));
-    assert!(tools.contains_key("workflow_capabilities"));
+    // 2026-11-06 三合一：旧 workflow_run/create/capabilities 三键收编为单 "workflow"。
+    assert!(tools.contains_key("workflow"));
+    assert!(!tools.contains_key("workflow_run"));
+    assert!(!tools.contains_key("workflow_create"));
+    assert!(!tools.contains_key("workflow_capabilities"));
 }
 
 // ---------------------------------------------------------------------------
-// WorkflowCreateTool 决策表 + WorkflowCapabilitiesTool
+// WorkflowTool action=create 决策表 + action=capabilities
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "workflow")]
-fn covw6_create(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> WorkflowCreateTool {
-    WorkflowCreateTool::new(engine)
+fn covw6_create(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> WorkflowTool {
+    WorkflowTool::new(engine)
 }
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn workflow_create_missing_definition_and_schema_mismatch() {
+async fn workflow_action_create_missing_definition_and_schema_mismatch() {
     let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
     let tool = covw6_create(engine);
 
     let err = tool
-        .execute(&serde_json::json!({}).to_string(), &ctx())
+        .execute(&serde_json::json!({"action":"create"}).to_string(), &ctx())
         .await
         .err()
         .unwrap();
@@ -803,7 +806,8 @@ async fn workflow_create_missing_definition_and_schema_mismatch() {
     // nodes 不是数组 → schema mismatch 回灌。
     let err = tool
         .execute(
-            &serde_json::json!({"definition": {"name":"x","nodes":"nope"}}).to_string(),
+            &serde_json::json!({"action":"create","definition": {"name":"x","nodes":"nope"}})
+                .to_string(),
             &ctx(),
         )
         .await
@@ -817,13 +821,14 @@ async fn workflow_create_missing_definition_and_schema_mismatch() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn workflow_create_rejects_blank_name_and_missing_defs_dir() {
+async fn workflow_action_create_rejects_blank_name_and_missing_defs_dir() {
     let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
     let tool = covw6_create(engine.clone());
 
     let err = tool
         .execute(
-            &serde_json::json!({"definition": {"name":"   ","nodes":[]}}).to_string(),
+            &serde_json::json!({"action":"create","definition": {"name":"   ","nodes":[]}})
+                .to_string(),
             &ctx(),
         )
         .await
@@ -834,7 +839,8 @@ async fn workflow_create_rejects_blank_name_and_missing_defs_dir() {
     // defs dir 未配置 → 草稿无处落，诚实报错。
     let err = tool
         .execute(
-            &serde_json::json!({"definition": {"name":"covwf","nodes":[]}}).to_string(),
+            &serde_json::json!({"action":"create","definition": {"name":"covwf","nodes":[]}})
+                .to_string(),
             &ctx(),
         )
         .await
@@ -848,7 +854,7 @@ async fn workflow_create_rejects_blank_name_and_missing_defs_dir() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn workflow_create_saves_draft_and_reports_payload() {
+async fn workflow_action_create_saves_draft_and_reports_payload() {
     let tmp = tempfile::tempdir().unwrap();
     let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
     engine.set_workflow_defs_dir(tmp.path().join("defs"));
@@ -857,6 +863,7 @@ async fn workflow_create_saves_draft_and_reports_payload() {
     let out = tool
         .execute(
             &serde_json::json!({
+                "action": "create",
                 "definition": {
                     "name": "covw6_wf",
                     "description": "covw6 draft",
@@ -878,11 +885,14 @@ async fn workflow_create_saves_draft_and_reports_payload() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn workflow_capabilities_renders_capability_table() {
-    let tool = WorkflowCapabilitiesTool;
+async fn workflow_action_capabilities_renders_capability_table() {
+    let tool = WorkflowTool::new(Arc::new(nemesis_workflow::engine::WorkflowEngine::new()));
     assert!(!tool.description().is_empty());
     assert!(tool.parameters().is_object());
 
-    let out = tool.execute("{}", &ctx()).await.unwrap();
+    let out = tool
+        .execute(r#"{"action":"capabilities"}"#, &ctx())
+        .await
+        .unwrap();
     assert!(out.contains("node"), "got: {out}");
 }

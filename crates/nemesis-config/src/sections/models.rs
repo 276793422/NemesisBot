@@ -177,8 +177,14 @@ impl ImageGenConfig {
 
 /// GPIO 白名单：I2C 地址访问策略（`tools.hardware` 段）。
 /// 空段列表 = 内置默认（可自由寻址空间 0x08-0x77）；deny 优先于 allow。
+/// 2026-11-06：新增 `enabled` 总闸（默认 false）——i2c/spi 工具显式开才
+/// 注册，桌面/服务器部署不再为硬件长尾付出工具面存在感。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HardwareToolsConfig {
+    /// 硬件总线工具（i2c/spi）注册总闸。默认 false（用户拍板 2026-11-06
+    /// 默认关）；IoT/嵌入式场景在 `tools.hardware.enabled = true` 显式开。
+    #[serde(default)]
+    pub enabled: bool,
     /// 允许的 7 位地址段 `[[lo, hi],...]`（闭区间）；空 = 内置默认 0x08-0x77。
     #[serde(default)]
     pub i2c_allow_ranges: Vec<(u8, u8)>,

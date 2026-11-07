@@ -168,8 +168,10 @@ pub(super) fn binary_file_summary(path: &Path) -> String {
 pub enum FenceOpFamily {
     /// 读族：read_file / list_dir（及只读消费方：LSP、诊断回灌钩子）。
     Read,
-    /// 写删族：write_file / edit_file / multiedit / append_file /
+    /// 写删族：write_file / edit_file（含 action=append）/ multiedit /
     /// delete_file / create_dir / delete_dir（及 format-on-save 钩子）。
+    /// 2026-11-06：append_file 并入 edit_file（action=append），append 分支
+    /// 同走本族闸。
     WriteDelete,
 }
 
@@ -180,7 +182,7 @@ impl FenceOpFamily {
     }
 }
 
-/// write_file / edit_file / append_file 的工作区边界。
+/// write_file / edit_file（含 action=append）的工作区边界。
 ///
 /// 安全 8 层管线之外的第二道闸（纵深防御，不单靠管线）：管线按操作语义
 /// 拦截，本边界保证写路径落点不出工作区。`restrict=false` 时形同未设界
@@ -624,10 +626,14 @@ pub(crate) fn apply_edit_to_content(
     })
 }
 
-/// A tool that edits a file by replacing old_text with new_text.
+/// A tool that edits a file — action-discriminated（2026-11-06 二合一收编）：
 ///
-/// By default old_text must occur exactly once; `replace_all=true` replaces
-/// every occurrence.
+/// - `action = "edit"`（缺省，兼容旧调用形态）：精确替换 old_text →
+///   new_text。By default old_text must occur exactly once;
+///   `replace_all=true` replaces every occurrence.
+/// - `action = "append"`：把 content 追加到文件末尾（旧 `append_file`
+///   工具收编，执行逻辑逐字节搬运——create 缺失父目录 + append 模式打开 +
+///   flush）。
 ///
 /// 可携带工作区边界（`with_boundary`，生产形态）；
 /// `default()` 无界（基线注册 / 测试形态，行为同边界引入前）。
@@ -648,9 +654,7 @@ impl EditFileTool {
 #[async_trait]
 impl Tool for EditFileTool {
     fn description(&self) -> String {
-        "Edit a file by replacing old_text with new_text. By default old_text must \
-         occur exactly once; set replace_all=true to replace every occurrence."
-            .to_string()
+        "Edit a file on disk. action=\"edit\" (default): replace old_text with new_text — by default old_text must occur exactly once, set replace_all=true to replace every occurrence. action=\"append\": append content to the end of the file (creating it if missing).".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -658,15 +662,53 @@ impl Tool for EditFileTool {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Path to the file to edit"},
-                "old_text": {"type": "string", "description": "Exact text to find and replace"},
-                "new_text": {"type": "string", "description": "Replacement text"},
-                "replace_all": {"type": "boolean", "description": "Replace every occurrence of old_text instead of requiring a unique match (default: false)"}
+                "action": {"type": "string", "enum": ["edit", "append"], "description": "Which edit mode to use. Default: edit."},
+                "old_text": {"type": "string", "description": "(action=edit) Exact text to find and replace"},
+                "new_text": {"type": "string", "description": "(action=edit) Replacement text"},
+                "replace_all": {"type": "boolean", "description": "(action=edit) Replace every occurrence of old_text instead of requiring a unique match (default: false)"},
+                "content": {"type": "string", "description": "(action=append) Content to append to the end of the file"}
             },
-            "required": ["path", "old_text", "new_text"]
+            "required": ["path"]
         })
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        // action 判别（缺省 = edit，旧调用形态 {path, old_text, new_text}
+        // 逐字节兼容——旧 schema required 三字段，此处以显式校验补位）。
+        let val: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid JSON arguments: {}", e))?;
+        let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("edit");
+        match action {
+            "edit" => self.execute_edit(args).await,
+            "append" => self.execute_append(args).await,
+            other => Err(format!(
+                "unknown action '{other}' — expected 'edit' or 'append'"
+            )),
+        }
+    }
+
+    fn preview(&self, args: &str) -> Option<FileChange> {
+        let val: serde_json::Value = serde_json::from_str(args).ok()?;
+        let path = val.get("path")?.as_str()?.to_string();
+        let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("edit");
+        let kind = if action == "append" {
+            // append 分支允许目标不存在（create=true），按存在性如实申报。
+            if Path::new(&path).exists() {
+                FileChangeKind::Modify
+            } else {
+                FileChangeKind::Create
+            }
+        } else {
+            // edit 分支要求文件已存在（execute errors otherwise）。
+            FileChangeKind::Modify
+        };
+        Some(FileChange { path, kind })
+    }
+}
+
+impl EditFileTool {
+    /// action=edit（旧 EditFileTool::execute 原样搬运，行为零变更）。
+    async fn execute_edit(&self, args: &str) -> Result<String, String> {
         let (path, old_text, new_text, replace_all) = extract_edit_args(args)?;
 
         // 工作区边界（纵深防御，不单靠安全 8 层管线）。
@@ -720,13 +762,47 @@ impl Tool for EditFileTool {
         Ok(format!("{}\n```diff\n{}```", header, diff))
     }
 
-    fn preview(&self, args: &str) -> Option<FileChange> {
-        let (path, _old_text, _new_text, _replace_all) = extract_edit_args(args).ok()?;
-        // edit_file requires the file to exist (execute errors otherwise).
-        Some(FileChange {
-            path,
-            kind: FileChangeKind::Modify,
-        })
+    /// action=append（旧 AppendFileTool::execute 原样搬运，行为零变更）。
+    async fn execute_append(&self, args: &str) -> Result<String, String> {
+        let (path, content) = extract_path_and_content(args)?;
+
+        // A5（2026-09-04）：工作区边界（纵深防御，不单靠安全 8 层管线）。
+        let path = match &self.boundary {
+            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
+            None => PathBuf::from(&path),
+        };
+        let path = path.as_path();
+
+        // Create parent directories if needed.
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create directories: {}", e))?;
+        }
+
+        // Use OpenOptions for append mode.
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+
+        file.write_all(content.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to append to file: {}", e))?;
+        // tokio fs::File 的 write_all 只提交到后台任务，不 flush 则数据可能
+        // 尚未写入文件（drop 不等待未完成 IO）。
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
+
+        Ok(format!(
+            "Appended {} bytes to {}",
+            content.len(),
+            path.display()
+        ))
     }
 }
 
@@ -997,88 +1073,6 @@ impl Tool for MultiEditTool {
                 kind: FileChangeKind::Modify,
             })
             .collect()
-    }
-}
-
-/// A tool that appends content to the end of a file.
-/// A tool that appends content to the end of a file.
-///
-/// 可携带工作区边界（`with_boundary`，生产形态）；
-/// `default()` 无界（基线注册 / 测试形态，行为同边界引入前）。
-#[derive(Default)]
-pub struct AppendFileTool {
-    boundary: Option<Arc<WorkspaceBoundary>>,
-}
-
-impl AppendFileTool {
-    /// 带工作区边界的生产形态。
-    pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
-        Self {
-            boundary: Some(boundary),
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for AppendFileTool {
-    fn description(&self) -> String {
-        "Append content to the end of a file".to_string()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Path to the file"},"content":{"type":"string","description":"Content to append"}},"required":["path","content"]})
-    }
-
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let (path, content) = extract_path_and_content(args)?;
-
-        // 工作区边界（纵深防御，不单靠安全 8 层管线）。
-        let path = match &self.boundary {
-            Some(b) => validate_workspace_path(&path, b, FenceOpFamily::WriteDelete)?,
-            None => PathBuf::from(&path),
-        };
-        let path = path.as_path();
-
-        // Create parent directories if needed.
-        if let Some(parent) = path.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create directories: {}", e))?;
-        }
-
-        // Use OpenOptions for append mode.
-        use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .await
-            .map_err(|e| format!("Failed to open file: {}", e))?;
-
-        file.write_all(content.as_bytes())
-            .await
-            .map_err(|e| format!("Failed to append to file: {}", e))?;
-        // tokio fs::File 的 write_all 只提交到后台任务，不 flush 则数据可能
-        // 尚未写入文件（drop 不等待未完成 IO）。
-        file.flush()
-            .await
-            .map_err(|e| format!("Failed to flush file: {}", e))?;
-
-        Ok(format!(
-            "Appended {} bytes to {}",
-            content.len(),
-            path.display()
-        ))
-    }
-
-    fn preview(&self, args: &str) -> Option<FileChange> {
-        let (path, _content) = extract_path_and_content(args).ok()?;
-        let kind = if Path::new(&path).exists() {
-            FileChangeKind::Modify
-        } else {
-            FileChangeKind::Create
-        };
-        Some(FileChange { path, kind })
     }
 }
 

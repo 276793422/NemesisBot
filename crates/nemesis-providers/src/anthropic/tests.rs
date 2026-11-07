@@ -2244,3 +2244,94 @@ fn test_parse_response_empty_thinking_block_none() {
     let resp = parse_response(&data);
     assert_eq!(resp.reasoning_content, None);
 }
+
+// ---------------------------------------------------------------------------
+// S15（2026-11-06 三方对比整改）prompt-cache TTL 可观测：gap 判定纯函数
+// 契约 + build_request_body 集成（断点开 = 时间戳被换新；断点关 = 块整体
+// 不进，观测面与请求路径同闸）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn s15_cache_ttl_gap_warn_pure_contract() {
+    // 首次请求（prev=0）恒不预警——无前序就无「闲置」语义。
+    assert_eq!(cache_ttl_gap_warn(0, 1_000_000), None);
+    // 时间倒流 / 同刻（时钟回拨防御）不预警。
+    assert_eq!(cache_ttl_gap_warn(1_000_000, 999_999), None);
+    assert_eq!(cache_ttl_gap_warn(1_000_000, 1_000_000), None);
+    // gap < TTL 不预警。
+    assert_eq!(
+        cache_ttl_gap_warn(1_000_000, 1_000_000 + PROMPT_CACHE_TTL_SECS - 1),
+        None
+    );
+    // gap == TTL 预警（闲置恰好到期即失效，>= 语义）。
+    assert_eq!(
+        cache_ttl_gap_warn(1_000_000, 1_000_000 + PROMPT_CACHE_TTL_SECS),
+        Some(PROMPT_CACHE_TTL_SECS)
+    );
+    // gap > TTL 带真实 gap。
+    assert_eq!(
+        cache_ttl_gap_warn(1_000_000, 1_000_000 + PROMPT_CACHE_TTL_SECS + 130),
+        Some(PROMPT_CACHE_TTL_SECS + 130)
+    );
+}
+
+#[test]
+fn s15_build_request_body_updates_timestamp_when_breakpoints_on() {
+    let mut cfg = AnthropicConfig::default();
+    cfg.cache_breakpoints = true;
+    let provider = AnthropicProvider::new(cfg);
+    // 首次 build：prev=0 不预警，但时间戳被换新（>0）。
+    assert_eq!(
+        provider
+            .last_request_ts
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    let _ = provider.build_request_body(
+        &[Message {
+            role: "user".to_string(),
+            content: "hi".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        }],
+        &[],
+        "claude-x",
+        &ChatOptions::default(),
+    );
+    assert!(
+        provider
+            .last_request_ts
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0,
+        "断点开：build_request_body 必须换新 last_request_ts（S15 观测面接线）"
+    );
+
+    // 断点关：块整体不进，时间戳保持 0（观测面与功能面同闸）。
+    let mut cfg_off = AnthropicConfig::default();
+    cfg_off.cache_breakpoints = false;
+    let provider_off = AnthropicProvider::new(cfg_off);
+    let _ = provider_off.build_request_body(
+        &[Message {
+            role: "user".to_string(),
+            content: "hi".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        }],
+        &[],
+        "claude-x",
+        &ChatOptions::default(),
+    );
+    assert_eq!(
+        provider_off
+            .last_request_ts
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "断点关：不进观测块，last_request_ts 保持 0"
+    );
+}

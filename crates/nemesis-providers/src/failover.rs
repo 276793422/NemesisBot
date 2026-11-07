@@ -133,6 +133,31 @@ impl FailoverError {
         }
     }
 
+    /// S16（2026-11-06 三方对比整改）：流断路径的诚实 usage 下界估计。
+    ///
+    /// 流中断时上游 usage 终帧未到达（usage 只随 finish_reason 终帧透传），
+    /// 该轮真实消耗对账本不可见。本方法从已接收的 partial 给出**下界估计**
+    /// ：`tokens ≈ chars/4` 向上取整（英文近似下界；CJK≈1 char/token 会低
+    /// 估——估计语义是「至少消耗了这么多」，不是精确值，消费端落账必须以
+    /// estimated 注记表达，不得当实测值）；空 partial → `None`（服务端缓冲
+    /// 可能已有未 flush 产出，报 0 不诚实）；其余变体恒 `None`（无 partial
+    /// 依据）。输入侧（prompt 处理先于流式开始，输入 token 必已消耗）本层
+    /// 不可知——消费端以 usage_missing 注记表达，不造数。
+    ///
+    /// 账本消费点：organ-5 observer（nemesis-agent 边界，接线挂 B29/B30
+    /// 设计文档同窗）；proxy lane 错误行已自带 500+error_message（Display
+    /// 携带 partial），不依赖本方法。
+    pub fn estimated_output_tokens(&self) -> Option<u64> {
+        match self {
+            FailoverError::StreamInterrupted {
+                partial_content, ..
+            } if !partial_content.is_empty() => {
+                Some((partial_content.chars().count() as u64).div_ceil(4))
+            }
+            _ => None,
+        }
+    }
+
     /// Create from HTTP status code.
     ///
     /// `retry_after`：调用方从响应头解析的 `Retry-After` 秒数（见
@@ -180,15 +205,19 @@ impl FailoverError {
             // 400（真相源归 Format）与未收录状态码：保持 Unknown 原文案
             // 形态——两类均不可重试（无行为差异），"status N: {body}" 是
             // loop 侧 is_context_error 词表的消费面，不做无行为收益的
-            // 变体迁移。
-            Some(LlmErrorClass::Format) | None => FailoverError::Unknown {
-                provider: provider.to_string(),
-                message: format!(
-                    "status {}: {}",
-                    status,
-                    body.chars().take(200).collect::<String>()
-                ),
-            },
+            // 变体迁移。ContextOverflow 同臂（真相源状态表恒不产出，编译
+            // 期穷尽要求在场；若未来状态表收录 overflow 码，body 仍随
+            // message 保留，B29 文案族对 message 匹配照常命中，两条路同判）。
+            Some(LlmErrorClass::Format | LlmErrorClass::ContextOverflow) | None => {
+                FailoverError::Unknown {
+                    provider: provider.to_string(),
+                    message: format!(
+                        "status {}: {}",
+                        status,
+                        body.chars().take(200).collect::<String>()
+                    ),
+                }
+            }
         }
     }
 }
@@ -292,6 +321,13 @@ pub fn classify_message_error(provider: &str, model: &str, msg: &str) -> Failove
         },
         Some(LlmErrorClass::Billing) => FailoverError::Billing {
             provider: provider.to_string(),
+        },
+        // B29/D1：上下文溢出归 Unknown 携带原文（不新增 FailoverError
+        // 变体——换 provider 大概率同溢，不轮转语义正确；loop 层靠分类
+        // 结果/文案族路由进响应式压缩，不靠 Failover 变体）。
+        Some(LlmErrorClass::ContextOverflow) => FailoverError::Unknown {
+            provider: provider.to_string(),
+            message: msg.to_string(),
         },
         Some(LlmErrorClass::Format) | None => FailoverError::Unknown {
             provider: provider.to_string(),

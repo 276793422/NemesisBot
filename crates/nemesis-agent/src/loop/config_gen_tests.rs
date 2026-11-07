@@ -172,6 +172,59 @@ fn l18_missing_file_no_generation_readers_fall_back() {
     assert!(loop_.config_generation().is_none());
     assert!(loop_.current_image_downscale(), "缺省开");
     assert_eq!(loop_.current_rate_limit_retries(), 10);
+    // B30：无代 → 缺省 8000（`agents.tool_result_cap` 缺省，拍板③）。
+    assert_eq!(
+        loop_.current_tool_result_cap(),
+        nemesis_config::DEFAULT_TOOL_RESULT_CAP,
+        "无代读者回落缺省 8000"
+    );
+}
+
+/// B30（2026-11-06 三方对比整改）：`agents.tool_result_cap` 世代快照读接线
+/// ——绑定即见值 / 盘上改键不发布不生效 / round start 发布后生效 / 0=关
+/// 透传（gate 侧语义：prune 闸全关）。resolver 单一真相源在 nemesis-config
+/// （b30_raw_json_resolver_matches_typed_surface 钉死），此处只钉 L18 接线。
+#[test]
+fn b30_tool_result_cap_generation_snapshot_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let loop_ = fresh_loop();
+    let write_with_mtime = |v: i64| {
+        let mut f = std::fs::File::create(&path).unwrap();
+        use std::io::Write;
+        let cfg = serde_json::json!({"agents": {"tool_result_cap": v}});
+        f.write_all(serde_json::to_string(&cfg).unwrap().as_bytes())
+            .unwrap();
+        let seq = if v < 0 { 100 } else { v as u64 };
+        f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seq * 3600))
+            .unwrap();
+    };
+    write_with_mtime(4000);
+    loop_.set_config_path(path.clone());
+    assert_eq!(
+        loop_.current_tool_result_cap(),
+        4000,
+        "绑定即发布，读者见值"
+    );
+    // 盘上改键（round 内）不发布 → 持旧代。
+    write_with_mtime(0);
+    assert_eq!(loop_.current_tool_result_cap(), 4000, "round 内读者持旧代");
+    loop_.check_config_reload();
+    assert_eq!(
+        loop_.current_tool_result_cap(),
+        0,
+        "发布后 0=关透传（gate 侧全关 prune 闸）"
+    );
+    // 键缺席（负值是钳 0 不是缺省——resolver 语义）→ resolver 缺省 8000。
+    let mut f = std::fs::File::create(&path).unwrap();
+    use std::io::Write;
+    f.write_all(br#"{"agents": {"image_downscale": true}}"#)
+        .unwrap();
+    f.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(200 * 3600))
+        .unwrap();
+    drop(f);
+    loop_.check_config_reload();
+    assert_eq!(loop_.current_tool_result_cap(), 8000, "键缺席回落缺省");
 }
 
 #[test]

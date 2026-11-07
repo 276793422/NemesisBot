@@ -442,16 +442,17 @@ async fn list_directory_rejects_file_and_reports_empty_dir() {
     assert!(out.contains("empty") || out.contains("Empty"), "out: {out}");
 }
 
-/// Append/Delete/CreateDir/DeleteDir 四件套成功路径（绝对路径，不碰 cwd）。
+/// Append(=edit_file action=append)/Delete/CreateDir/DeleteDir 四件套成功路径（绝对路径，不碰 cwd）。
 #[tokio::test]
 async fn file_mutation_tools_success_paths() {
     let dir = tempfile::tempdir().unwrap();
     let p = |name: &str| dir.path().join(name).to_string_lossy().to_string();
 
     // append：创建 + 追加 + flush（"Appended N bytes"）。
-    let out = AppendFileTool::default()
+    let out = EditFileTool::default()
         .execute(
-            &serde_json::json!({ "path": p("log.txt"), "content": "more\n" }).to_string(),
+            &serde_json::json!({ "path": p("log.txt"), "content": "more\n", "action": "append" })
+                .to_string(),
             &cov_ctx(),
         )
         .await

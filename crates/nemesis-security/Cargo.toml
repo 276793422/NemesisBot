@@ -49,6 +49,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 zip = { version = "9", optional = true, default-features = false, features = ["deflate"] }
 base64 = "0.22"
 walkdir = "2"
+# S13（2026-11-06）：exec 命令归一化 NFKC 兼容折叠（全角/圈号/数学字体→ASCII
+# 语义形态），防同形异码借字节差异绕过 blocklist/审计桶匹配
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

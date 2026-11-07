@@ -169,8 +169,9 @@ pub async fn run(
             ));
             // Minimal workflow engine — no load_workflows/spawn_cron (no
             // background). new_arc（非 new）：注册真实 sub_workflow 执行器，
-            // workflow_run 触发的含子工作流节点的 workflow 可真实执行
-            // （new() 的 stub 会让该类节点恒 Failed "no engine configured"）。
+            // workflow 工具（action=run）触发的含子工作流节点的 workflow
+            // 可真实执行（new() 的 stub 会让该类节点恒 Failed "no engine
+            // configured"）。
             #[cfg(feature = "workflow")]
             let workflow_engine = nemesis_workflow::engine::WorkflowEngine::new_arc();
             let cron_service = Arc::new(std::sync::Mutex::new(

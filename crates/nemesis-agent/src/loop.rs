@@ -1551,6 +1551,17 @@ mod tool_dispatch_sec_cov_tests;
 // 空流零帧、error 截断终态、包装器合成增量与真实流两臂。
 #[cfg(test)]
 mod provider_stream_tests;
+// S16（2026-11-06 B29/B30 设计 §3）流中断终局 estimated 账本行：头行解析
+// 纯函数（防伪造）/ providers estimated_output_tokens 跨锚互证 / 终局行
+// 三态（estimated / usage_missing / 零行）落账断言。
+#[cfg(test)]
+mod stream_ledger_tests;
+
+// S8（2026-11-06 B29/B30 设计 §4）aux 杂务账本归因：title/summary/branch_
+// summary 三族落账行断言（usage 在场=真实 token 计价 / 缺失=estimated 注
+// 记零计价）+ 失败路径零行 + 重试成功恰一行。
+#[cfg(test)]
+mod aux_ledger_tests;
 
 // rewind 冲突预检（外部修改拒绝 + force 强
 // 过 + redo 往返）编排测试。用例全部 git 形态（stage_sealed_two_turns

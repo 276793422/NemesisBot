@@ -223,16 +223,17 @@ async fn test_edit_file_tool_fuzzy_total_failure_falls_back_to_not_found() {
 }
 
 #[tokio::test]
-async fn test_append_file_tool() {
+async fn test_edit_file_append_action() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("append_test.txt");
     tokio::fs::write(&file_path, "Line 1\n").await.unwrap();
 
-    let tool = AppendFileTool::default();
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
-        "content": "Line 2\n"
+        "content": "Line 2\n",
+        "action": "append"
     })
     .to_string();
 
@@ -244,15 +245,16 @@ async fn test_append_file_tool() {
 }
 
 #[tokio::test]
-async fn test_append_file_creates_new_file() {
+async fn test_edit_file_append_creates_new_file() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("new_file.txt");
 
-    let tool = AppendFileTool::default();
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
-        "content": "New content"
+        "content": "New content",
+        "action": "append"
     })
     .to_string();
 
@@ -378,15 +380,15 @@ async fn test_sleep_tool_zero_duration() {
 #[test]
 fn test_register_default_tools_count() {
     let tools = register_default_tools();
-    // +1 = multiedit。
-    assert_eq!(tools.len(), 11);
+    // A7（2026-09-06）：+1 = multiedit；2026-11-06：-1 = append_file 并入
+    // edit_file（action=append），基线回落 10。
+    assert_eq!(tools.len(), 10);
     assert!(tools.contains_key("message"));
     assert!(tools.contains_key("read_file"));
     assert!(tools.contains_key("write_file"));
     assert!(tools.contains_key("list_dir"));
     assert!(tools.contains_key("edit_file"));
     assert!(tools.contains_key("multiedit"));
-    assert!(tools.contains_key("append_file"));
     assert!(tools.contains_key("delete_file"));
     assert!(tools.contains_key("create_dir"));
     assert!(tools.contains_key("delete_dir"));
@@ -1274,11 +1276,12 @@ async fn test_append_to_new_file() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("append_new.txt");
 
-    let tool = AppendFileTool::default();
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
-        "content": "first line"
+        "content": "first line",
+        "action": "append"
     })
     .to_string();
 
@@ -2069,7 +2072,6 @@ fn test_register_default_tools_has_expected_tools() {
     assert!(tools.contains_key("create_dir"));
     assert!(tools.contains_key("sleep"));
     assert!(tools.contains_key("edit_file"));
-    assert!(tools.contains_key("append_file"));
     assert!(tools.contains_key("delete_file"));
     assert!(tools.contains_key("delete_dir"));
 }
@@ -2121,8 +2123,9 @@ fn test_register_shared_tools_without_workspace() {
     let config = SharedToolConfig::default();
     let tools = register_shared_tools(&config);
     assert!(tools.contains_key("web_fetch"));
-    assert!(tools.contains_key("i2c"));
-    assert!(tools.contains_key("spi"));
+    // 2026-11-06：i2c/spi 默认关（hardware_tools_enabled 总闸），不注册。
+    assert!(!tools.contains_key("i2c"));
+    assert!(!tools.contains_key("spi"));
     assert!(!tools.contains_key("exec"));
 }
 
@@ -2372,6 +2375,7 @@ async fn test_no_forge_tools_without_executor() {
         ..Default::default()
     };
     let tools = register_shared_tools(&config);
+    assert!(!tools.contains_key("forge"));
     assert!(!tools.contains_key("forge_reflect"));
 }
 
@@ -3037,7 +3041,9 @@ fn test_register_shared_tools_with_forge() {
         ..Default::default()
     };
     let tools = register_shared_tools(&config);
-    assert!(tools.contains_key("forge_reflect"));
+    // 2026-11-06 单工具收编：8 个 `forge_*` 旧名合并为单个 `forge`（action 判别字段）。
+    assert!(tools.contains_key("forge"));
+    assert!(!tools.contains_key("forge_reflect"));
 }
 
 // =========================================================================
@@ -3300,16 +3306,17 @@ async fn test_edit_file_tool_with_multiple_replacements() {
 }
 
 #[tokio::test]
-async fn test_append_file_tool_with_existing_content() {
+async fn test_edit_file_append_with_existing_content() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("existing_append.txt");
     tokio::fs::write(&file_path, "First line").await.unwrap();
 
-    let tool = AppendFileTool::default();
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
-        "content": "\nSecond line"
+        "content": "\nSecond line",
+        "action": "append"
     })
     .to_string();
 
@@ -3477,7 +3484,7 @@ fn test_register_default_tools_tool_names() {
         "write_file",
         "list_dir",
         "edit_file",
-        "append_file",
+        "multiedit",
         "delete_file",
         "create_dir",
         "delete_dir",
@@ -4104,11 +4111,11 @@ fn test_cluster_rpc_params_required_fields() {
 }
 
 // ===========================================================================
-// WorkflowRunTool tests
+// WorkflowTool tests（action=run 分支；2026-11-06 三合一收编）
 // ===========================================================================
 
 /// Builds a workflow engine wired with a stub LLM provider that ignores
-/// prompts and returns a fixed string. Used to exercise WorkflowRunTool
+/// prompts and returns a fixed string. Used to exercise WorkflowTool
 /// end-to-end without standing up the full gateway.
 #[cfg(feature = "workflow")]
 async fn build_test_engine_with_workflow(
@@ -4182,13 +4189,13 @@ async fn build_test_engine_with_workflow(
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn test_workflow_run_executes_named_workflow() {
+async fn test_workflow_action_run_executes_named_workflow() {
     let (engine, _) = build_test_engine_with_workflow("hello").await;
-    let tool = WorkflowRunTool::new(engine);
+    let tool = WorkflowTool::new(engine);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let out = tool
-        .execute(r#"{"workflow": "hello"}"#, &ctx)
+        .execute(r#"{"action": "run", "workflow": "hello"}"#, &ctx)
         .await
         .expect("tool should succeed");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -4199,14 +4206,17 @@ async fn test_workflow_run_executes_named_workflow() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn test_workflow_run_records_agent_tool_trigger() {
+async fn test_workflow_action_run_records_agent_tool_trigger() {
     use nemesis_workflow::types::TriggerSource;
 
     let (engine, _) = build_test_engine_with_workflow("wf").await;
-    let tool = WorkflowRunTool::new(engine.clone());
+    let tool = WorkflowTool::new(engine.clone());
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
-    let out = tool.execute(r#"{"workflow": "wf"}"#, &ctx).await.unwrap();
+    let out = tool
+        .execute(r#"{"action": "run", "workflow": "wf"}"#, &ctx)
+        .await
+        .unwrap();
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
     let exec_id = v["execution_id"].as_str().unwrap().to_string();
 
@@ -4231,13 +4241,13 @@ async fn test_workflow_run_records_agent_tool_trigger() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn test_workflow_run_rejects_missing_workflow_param() {
+async fn test_workflow_action_run_rejects_missing_workflow_param() {
     let (engine, _) = build_test_engine_with_workflow("wf").await;
-    let tool = WorkflowRunTool::new(engine);
+    let tool = WorkflowTool::new(engine);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let err = tool
-        .execute(r#"{"input": {}}"#, &ctx)
+        .execute(r#"{"action": "run", "input": {}}"#, &ctx)
         .await
         .expect_err("missing workflow should error");
     assert!(
@@ -4249,14 +4259,14 @@ async fn test_workflow_run_rejects_missing_workflow_param() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn test_workflow_run_rejects_recursion_depth_exceeded() {
+async fn test_workflow_action_run_rejects_recursion_depth_exceeded() {
     let (engine, _) = build_test_engine_with_workflow("wf").await;
     // Pretend we're already at the max depth — the next call must be rejected.
-    let tool = WorkflowRunTool::with_starting_depth(engine, nemesis_workflow::MAX_RECURSION_DEPTH);
+    let tool = WorkflowTool::with_starting_depth(engine, nemesis_workflow::MAX_RECURSION_DEPTH);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let err = tool
-        .execute(r#"{"workflow": "wf"}"#, &ctx)
+        .execute(r#"{"action": "run", "workflow": "wf"}"#, &ctx)
         .await
         .expect_err("recursion limit should be enforced");
     assert!(
@@ -4268,24 +4278,225 @@ async fn test_workflow_run_rejects_recursion_depth_exceeded() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn test_workflow_run_returns_schema_with_input_property() {
+async fn test_workflow_action_run_returns_schema_with_input_property() {
     let (engine, _) = build_test_engine_with_workflow("wf").await;
-    let tool = WorkflowRunTool::new(engine);
+    let tool = WorkflowTool::new(engine);
     let params = tool.parameters();
     assert_eq!(params["type"], "object");
+    // action 判别字段必填，枚举四臂（2026-11-07 增 apply）。
+    let required = params["required"].as_array().unwrap();
+    assert!(required.iter().any(|r| r == "action"));
+    assert_eq!(
+        params["properties"]["action"]["enum"],
+        serde_json::json!(["run", "create", "apply", "capabilities"])
+    );
     assert!(params["properties"]["workflow"]["type"] == "string");
     assert_eq!(params["properties"]["input"]["type"], "object");
-    let required = params["required"].as_array().unwrap();
-    assert!(required.iter().any(|r| r == "workflow"));
+    assert_eq!(params["properties"]["definition"]["type"], "object");
 }
 
 // ===========================================================================
-// Gap 3: full agent_node → WorkflowRunTool chain
+// WorkflowTool action=apply（2026-11-07）：create→apply→run 全链路不再卡
+// 人工应用；与 WSAPI workflow.draft_apply 同一 DraftStore::apply 路径。
+// ===========================================================================
+
+#[cfg(feature = "workflow")]
+fn apply_test_definition(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "name": name,
+        "description": "apply-action test flow",
+        "version": "1.0.0",
+        "triggers": [],
+        "nodes": [
+            {"id": "n1", "node_type": "delay", "config": {}, "depends_on": []}
+        ],
+        "edges": []
+    })
+}
+
+#[cfg(feature = "workflow")]
+#[tokio::test]
+async fn test_workflow_action_apply_registers_draft_and_clears_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+    engine.set_workflow_defs_dir(tmp.path().join("defs"));
+    let tool = WorkflowTool::new(engine.clone());
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    // create 只落草稿，不注册。
+    let out = tool
+        .execute(
+            &serde_json::json!({"action": "create", "definition": apply_test_definition("applied_flow")})
+                .to_string(),
+            &ctx,
+        )
+        .await
+        .expect("create should succeed");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["status"], "draft_saved");
+    assert!(
+        engine.get_workflow("applied_flow").is_none(),
+        "create must NOT register the workflow"
+    );
+
+    // apply 登记：注册表可见 + 草稿清理 + replaced_existing=false。
+    let out = tool
+        .execute(r#"{"action": "apply", "workflow": "applied_flow"}"#, &ctx)
+        .await
+        .expect("apply should succeed");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["status"], "applied");
+    assert_eq!(v["name"], "applied_flow");
+    assert_eq!(v["replaced_existing"], false);
+    assert!(
+        engine.get_workflow("applied_flow").is_some(),
+        "apply must register the workflow"
+    );
+    assert!(
+        !tmp.path().join("drafts").join("applied_flow.yaml").exists(),
+        "draft file must be removed after apply"
+    );
+    assert!(
+        v["hint"].as_str().unwrap().contains("action=run"),
+        "hint should point to run, got: {}",
+        v["hint"]
+    );
+}
+
+#[cfg(feature = "workflow")]
+#[tokio::test]
+async fn test_workflow_action_apply_missing_draft_is_honest_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+    engine.set_workflow_defs_dir(tmp.path().join("defs"));
+    let tool = WorkflowTool::new(engine);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let err = tool
+        .execute(r#"{"action": "apply", "workflow": "no_such_draft"}"#, &ctx)
+        .await
+        .expect_err("apply on missing draft must fail honestly");
+    assert!(
+        err.contains("apply draft 'no_such_draft'"),
+        "error should name the draft, got: {err}"
+    );
+}
+
+#[cfg(feature = "workflow")]
+#[tokio::test]
+async fn test_workflow_action_apply_missing_defs_dir_is_honest_error() {
+    let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+    let tool = WorkflowTool::new(engine);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let err = tool
+        .execute(r#"{"action": "apply", "workflow": "whatever"}"#, &ctx)
+        .await
+        .expect_err("apply without defs dir must fail honestly");
+    assert!(
+        err.contains("definitions directory is not configured"),
+        "got: {err}"
+    );
+}
+
+#[cfg(feature = "workflow")]
+#[tokio::test]
+async fn test_workflow_action_apply_over_existing_backs_up_history() {
+    use nemesis_workflow::types::{Edge, NodeDef};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+    engine.set_workflow_defs_dir(tmp.path().join("defs"));
+
+    // 预置一个同名已注册工作流（apply 将覆盖它）。必须走 persist_workflow
+    // （注册 + 写 defs/<name>.yaml）而非 register_workflow：生产持久注册表
+    // 条目恒有盘上文件（启动加载读文件 / persist 写文件），replaced_existing
+    // 以磁盘文件为真相源——纯内存注册是测试才有的形态。
+    let existing = nemesis_workflow::types::Workflow {
+        name: "over_flow".to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![],
+        nodes: vec![NodeDef {
+            id: "n1".to_string(),
+            node_type: "delay".to_string(),
+            config: std::collections::HashMap::new(),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        }],
+        edges: Vec::<Edge>::new(),
+        variables: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
+    };
+    engine.persist_workflow(existing).unwrap();
+
+    let tool = WorkflowTool::new(engine.clone());
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+
+    let out = tool
+        .execute(
+            &serde_json::json!({"action": "create", "definition": apply_test_definition("over_flow")})
+                .to_string(),
+            &ctx,
+        )
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        v["existing_definition"], true,
+        "create should warn about the collision"
+    );
+
+    let out = tool
+        .execute(r#"{"action": "apply", "workflow": "over_flow"}"#, &ctx)
+        .await
+        .expect("apply over existing should succeed");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["replaced_existing"], true);
+    assert!(
+        v["backup_file"].as_str().unwrap().starts_with("over_flow."),
+        "backup_file should carry the stem prefix, got: {}",
+        v["backup_file"]
+    );
+    // 备份是文件条目级断言（非目录存在性）。
+    let hist = tmp.path().join("defs").join(".history");
+    let entries: Vec<String> = std::fs::read_dir(&hist)
+        .expect("history dir must exist")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        entries.iter().any(|n| n.starts_with("over_flow.")),
+        "history backup entry missing, got: {entries:?}"
+    );
+    assert!(
+        v["hint"].as_str().unwrap().contains("replaced"),
+        "hint should flag the replacement, got: {}",
+        v["hint"]
+    );
+}
+
+#[test]
+#[cfg(feature = "workflow")]
+fn test_workflow_action_apply_operation_override_is_internal() {
+    let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
+    let tool = WorkflowTool::new(engine);
+    let ov = tool
+        .operation_override(r#"{"action": "apply", "workflow": "x"}"#)
+        .expect("apply must project an override");
+    assert_eq!(ov.op_type, "internal");
+    assert!(tool.operation_override(r#"{"action": "bogus"}"#).is_none());
+}
+
+// ===========================================================================
+// Gap 3: full agent_node → WorkflowTool (action=run) chain
 // ===========================================================================
 //
 // Verifies the end-to-end path that gateway.rs wires up in production:
 // an `agent` workflow node invokes AgentRunner, which (simulating an LLM
-// tool call) invokes WorkflowRunTool on a second workflow. Tests that:
+// tool call) invokes WorkflowTool (action=run) on a second workflow. Tests that:
 //   - the chain actually fires (both workflows complete)
 //   - the inner execution's trigger_source carries AgentTool { recursion_depth: 1 }
 //   - the inner execution's CallFrame had parent_execution_id == outer.id
@@ -4336,10 +4547,10 @@ impl NodeExecutor for CaptureStackExecutor {
     }
 }
 
-/// Stub AgentRunner that simulates an LLM deciding to call `workflow_run`
-/// on the inner workflow. Records the call-stack state at entry so we can
-/// confirm the outer frame was on top before WorkflowRunTool pushed the
-/// inner frame.
+/// Stub AgentRunner that simulates an LLM deciding to call `workflow`
+/// (action=run) on the inner workflow. Records the call-stack state at entry
+/// so we can confirm the outer frame was on top before WorkflowTool pushed
+/// the inner frame.
 #[cfg(feature = "workflow")]
 struct StubAgentRunner {
     engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
@@ -4362,27 +4573,31 @@ impl AgentRunner for StubAgentRunner {
         // agent_node is running inside the outer workflow's frame.
         *self.stack_at_entry.lock().unwrap() = Some(self.engine.call_stack().snapshot());
 
-        // Simulate the agent invoking workflow_run via WorkflowRunTool.
-        let tool = WorkflowRunTool::new(Arc::clone(&self.engine));
+        // Simulate the agent invoking workflow (action=run) via WorkflowTool.
+        let tool = WorkflowTool::new(Arc::clone(&self.engine));
         let ctx = RequestContext::new("test", "chat", "user", "session");
-        let args = serde_json::json!({ "workflow": self.inner_workflow }).to_string();
+        let args = serde_json::json!({
+            "action": "run",
+            "workflow": self.inner_workflow
+        })
+        .to_string();
         let out = tool
             .execute(&args, &ctx)
             .await
-            .map_err(|e| format!("WorkflowRunTool failed inside StubAgentRunner: {e}"))?;
+            .map_err(|e| format!("WorkflowTool failed inside StubAgentRunner: {e}"))?;
 
         // Record the inner execution_id so the test can look it up later.
         let v: serde_json::Value = serde_json::from_str(&out)
-            .map_err(|e| format!("WorkflowRunTool returned invalid JSON: {e}"))?;
+            .map_err(|e| format!("WorkflowTool returned invalid JSON: {e}"))?;
         let id = v["execution_id"]
             .as_str()
-            .ok_or("WorkflowRunTool response missing execution_id")?
+            .ok_or("WorkflowTool response missing execution_id")?
             .to_string();
         *self.inner_exec_id.lock().unwrap() = Some(id);
 
         Ok(AgentRunResult {
             response: "ran inner workflow".to_string(),
-            tools_used: vec!["workflow_run".to_string()],
+            tools_used: vec!["workflow".to_string()],
         })
     }
 }
@@ -4434,7 +4649,7 @@ fn gap3_wf(name: &str, nodes: Vec<NodeDef>) -> Workflow {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
+async fn gap3_agent_node_to_workflow_tool_run_full_chain() {
     use nemesis_providers::failover::FailoverError;
     use nemesis_providers::router::LLMProvider;
     use nemesis_providers::types::{ChatOptions, LLMResponse, Message, ToolDefinition};
@@ -4450,7 +4665,7 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
             _options: &ChatOptions,
         ) -> Result<LLMResponse, FailoverError> {
             // The agent_node never actually drives an LLM here — the
-            // StubAgentRunner ignores the prompt and calls WorkflowRunTool
+            // StubAgentRunner ignores the prompt and calls WorkflowTool
             // directly. This stub exists only to satisfy the engine ctor.
             Ok(LLMResponse {
                 content: "stub".to_string(),
@@ -4473,7 +4688,7 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
 
     // Build the engine with a stub LLM provider (the LLM doesn't actually
     // drive the agent — the StubAgentRunner ignores the prompt and calls
-    // WorkflowRunTool directly).
+    // WorkflowTool directly).
     let provider = Arc::new(LocalStubProvider) as Arc<dyn nemesis_providers::router::LLMProvider>;
     let tools_registry = Arc::new(nemesis_tools::registry::ToolRegistry::new());
     let engine = nemesis_workflow::engine::WorkflowEngine::new_integrated(
@@ -4550,7 +4765,7 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
         .lock()
         .unwrap()
         .clone()
-        .expect("WorkflowRunTool must have returned an inner execution_id");
+        .expect("WorkflowTool must have returned an inner execution_id");
     let inner_exec = engine
         .get_execution(&inner_id)
         .await
@@ -4570,7 +4785,7 @@ async fn gap3_agent_node_to_workflow_run_tool_full_chain() {
             assert!(!tool_call_id.is_empty(), "tool_call_id must be populated");
             assert_eq!(
                 *recursion_depth, 1,
-                "first agent-mediated workflow_run must record depth=1"
+                "first agent-mediated workflow run (action=run) must record depth=1"
             );
         }
         other => panic!("expected AgentTool trigger, got {:?}", other),
@@ -4711,9 +4926,9 @@ async fn run_script_missing_args_errors() {
 }
 
 // ---------------------------------------------------------------------------
-// batch 5 — loop_tools gap tests (RunScriptTool arms, AsyncExecTool spawn
-// error, grep_recursive filters, GitTool fresh-repo arms, WorkflowRunTool
-// input typing, HistorySearchTool arg validation). Appended.
+// W3a batch 5 — loop_tools gap tests (RunScriptTool arms, AsyncExecTool spawn
+// error, grep_recursive filters, GitTool fresh-repo arms, WorkflowTool
+// input typing, HistorySearchTool arg validation). Appended 2026-08-25.
 // ---------------------------------------------------------------------------
 
 fn script_ctx() -> RequestContext {
@@ -5063,25 +5278,31 @@ async fn git_tool_log_with_extra_args_and_branch() {
     );
 }
 
-// --- WorkflowRunTool input typing -------------------------------------------
+// --- WorkflowTool (action=run) input typing ---------------------------------
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn workflow_run_input_type_arms() {
+async fn workflow_action_run_input_type_arms() {
     let (engine, _) = build_test_engine_with_workflow("wf-input").await;
-    let tool = WorkflowRunTool::new(engine);
+    let tool = WorkflowTool::new(engine);
     let ctx = script_ctx();
 
     // input as a non-object must be rejected.
     let err = tool
-        .execute(r#"{"workflow":"wf-input","input":[1,2]}"#, &ctx)
+        .execute(
+            r#"{"action":"run","workflow":"wf-input","input":[1,2]}"#,
+            &ctx,
+        )
         .await
         .expect_err("array input must be rejected");
     assert!(err.contains("must be an object"), "got: {err}");
 
     // input: null is treated as "no input" and must succeed.
     let out = tool
-        .execute(r#"{"workflow":"wf-input","input":null}"#, &ctx)
+        .execute(
+            r#"{"action":"run","workflow":"wf-input","input":null}"#,
+            &ctx,
+        )
         .await
         .expect("null input must be accepted");
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
@@ -5136,9 +5357,10 @@ fn history_search_tool_metadata() {
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn workflow_create_tool_surfaces_lint_warnings_in_hints() {
-    // 计划类 C：DraftSummary.warnings 进工具响应 hints，
-    // 生成器按「修了重存」回路当轮自纠。
+async fn workflow_action_create_surfaces_lint_warnings_in_hints() {
+    // 2026-09-23 计划类 C：DraftSummary.warnings 进工具响应 hints，
+    // 生成器按「修了重存」回路当轮自纠。（2026-11-06 三合一收编后走
+    // WorkflowTool action=create 分支。）
     use nemesis_providers::router::LLMProvider;
     use nemesis_workflow::engine::WorkflowEngine;
 
@@ -5174,9 +5396,10 @@ async fn workflow_create_tool_surfaces_lint_warnings_in_hints() {
     );
     engine.set_workflow_defs_dir(defs);
 
-    let tool = WorkflowCreateTool::new(engine);
+    let tool = WorkflowTool::new(engine);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
+        "action": "create",
         "definition": {
             "name": "risky-wf",
             "description": "generated",

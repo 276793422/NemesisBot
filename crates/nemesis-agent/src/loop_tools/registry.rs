@@ -15,8 +15,7 @@ use super::misc::ForgeBridgeTool;
 /// - `read_file` - Read a file from disk
 /// - `write_file` - Write content to a file on disk
 /// - `list_dir` - List the contents of a directory
-/// - `edit_file` - Edit a file by replacing old text with new text
-/// - `append_file` - Append content to the end of a file
+/// - `edit_file` - Edit a file (action=edit 精确替换 / action=append 追加)
 /// - `delete_file` - Delete a file from disk
 /// - `create_dir` - Create a directory (and parents)
 /// - `delete_dir` - Remove a directory
@@ -32,10 +31,6 @@ pub fn register_default_tools() -> HashMap<String, Box<dyn Tool>> {
     );
     tools.insert("edit_file".to_string(), Box::new(EditFileTool::default()));
     tools.insert("multiedit".to_string(), Box::new(MultiEditTool::default()));
-    tools.insert(
-        "append_file".to_string(),
-        Box::new(AppendFileTool::default()),
-    );
     tools.insert(
         "delete_file".to_string(),
         Box::new(DeleteFileTool::default()),
@@ -104,7 +99,8 @@ pub struct SharedToolConfig {
     /// 自建 manager（`LspTool::new` 兜底，旧行为——测试/独立 runner 用）。
     #[cfg(feature = "lsp")]
     pub lsp_manager: Option<Arc<nemesis_lsp::LspManager>>,
-    /// Forge tool executor for self-learning tools (forge_reflect, forge_create, etc).
+    /// Forge tool executor for the merged `forge` self-learning tool
+    /// (8 旧 `forge_*` 名收编为单工具多 action，2026-11-06)。
     #[cfg(feature = "forge")]
     pub forge_executor: Option<Arc<nemesis_forge::forge_tools::ForgeToolExecutor>>,
     #[cfg(not(feature = "forge"))]
@@ -122,7 +118,8 @@ pub struct SharedToolConfig {
     pub memory_executor: Option<()>,
     /// Snapshot of registered MCP tools for McpListTool.
     pub mcp_tool_snapshot: Option<Arc<parking_lot::RwLock<Vec<McpToolSnapshotEntry>>>>,
-    /// Workflow engine reference for the `workflow_run` agent tool.
+    /// Workflow engine reference for the `workflow` agent tool（run/create/
+    /// capabilities 三合一单工具，2026-11-06）。
     /// `None` means workflows aren't wired in (tool stays unregistered).
     #[cfg(feature = "workflow")]
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,
@@ -145,8 +142,8 @@ pub struct SharedToolConfig {
     #[cfg(not(feature = "security"))]
     #[allow(dead_code)]
     pub security: Option<()>,
-    /// 文件工具工作区边界（write_file / edit_file /
-    /// append_file 纵深防御，不单靠安全 8 层管线）。None = 不设界（基线
+    /// A5（2026-09-04）：文件工具工作区边界（write_file / edit_file 纵深
+    /// 防御，不单靠安全 8 层管线）。None = 不设界（基线
     /// 注册 / 测试形态）。executor 子进程按同根注入（NEMESISBOT_EXECUTOR_
     /// WORKSPACE），保证 Layer-1 分离后写路径仍受同一边界约束。
     pub workspace_boundary: Option<Arc<WorkspaceBoundary>>,
@@ -167,7 +164,11 @@ pub struct SharedToolConfig {
     /// `WebQuestionBroker`）。None = 不注册该工具（headless / exec_worker /
     /// register_default_tools 基线形态——模型看不到一个只会失败的调用）。
     pub question_broker: Option<QuestionBrokerSlot>,
-    /// （三批合并）：GPIO/I2C 地址访问策略（`tools.hardware`
+    /// 2026-11-06：硬件总线工具（i2c/spi）注册总闸（config
+    /// `tools.hardware.enabled`，默认 false——桌面/服务器部署不注册，
+    /// IoT/嵌入式场景显式开）。
+    pub hardware_tools_enabled: bool,
+    /// P8（2026-09-25 三批合并）：GPIO/I2C 地址访问策略（`tools.hardware`
     /// 段，agent_factory 从 config 构造）。None = 内置默认白名单
     /// （可自由寻址空间 0x08-0x77）。loop_tools 桩与 nemesis-tools 真实
     /// 实现共用同一 `HardwarePolicy` 统一定义。
@@ -234,6 +235,7 @@ impl std::fmt::Debug for SharedToolConfig {
                 "question_broker",
                 &self.question_broker.as_ref().map(|_| "QuestionBrokerSlot"),
             )
+            .field("hardware_tools_enabled", &self.hardware_tools_enabled)
             .field(
                 "hardware_policy",
                 &self.hardware_policy.as_ref().map(|_| "HardwarePolicy"),
@@ -275,12 +277,15 @@ impl std::fmt::Debug for SharedToolConfig {
 pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<dyn Tool>> {
     let mut tools = register_default_tools();
 
-    // 配置了工作区边界时，write/edit/append 换成带界的
+    // A5（2026-09-04）：配置了工作区边界时，write/edit 换成带界的
     // 生产形态（纵深防御，不单靠安全 8 层管线）。无界（测试 / 基线注册）
     // 保持 register_default_tools 的默认形态。
     // FT：读族 5 工具（read_file/list_dir/delete_file/
     // create_dir/delete_dir）同批换带界形态——相对路径锚定工作区根 +
     // restrict 时第二道闸（delete 族是破坏性操作，此前完全无闸）。
+    // 2026-11-06：append_file 并入 edit_file（action=append），原 append
+    // 的带界形态由 edit_file::with_boundary 一并承载（append 分支同走
+    // FenceOpFamily::WriteDelete）。
     if let Some(ref boundary) = config.workspace_boundary {
         tools.insert(
             "write_file".to_string(),
@@ -293,10 +298,6 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert(
             "multiedit".to_string(),
             Box::new(MultiEditTool::with_boundary(boundary.clone())),
-        );
-        tools.insert(
-            "append_file".to_string(),
-            Box::new(AppendFileTool::with_boundary(boundary.clone())),
         );
         tools.insert(
             "read_file".to_string(),
@@ -493,13 +494,26 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // Hardware tools (I2C / SPI - Linux only, no-op on other platforms).
     // I2C 带地址策略（config `tools.hardware` 段；None = 内置默认
     // 白名单 0x08-0x77——Default 形态同样拒绝保留段，不因未配置而裸奔）。
-    let hw_policy = config
-        .hardware_policy
-        .clone()
-        .map(|p| (*p).clone())
-        .unwrap_or_else(nemesis_tools::hardware::HardwarePolicy::builtin);
-    tools.insert("i2c".to_string(), Box::new(I2CTool::with_policy(hw_policy)));
-    tools.insert("spi".to_string(), Box::new(SPITool));
+    //
+    // ⚠️ 刻意默认关，不是遗漏（2026-11-06 用户拍板，勿当 bug 修回）：
+    // i2c/spi 只在 Linux + 真实硬件总线存在的 IoT/嵌入式场景有意义；
+    // 桌面/服务器部署注册它们 = 工具表白白多两行 schema + 小模型选型
+    // 噪声，且绝大多数宿主根本没有 /dev/i2c-*，注册了也只会调用失败。
+    // 不要因为「这里 if 看起来漏了什么」而把它改回默认注册。
+    //
+    // 开启方式：workspace/config/config.json 显式加
+    //   "tools": { "hardware": { "enabled": true } }
+    // 注册后仍受 hardware_policy 地址白名单约束（默认可自由寻址空间
+    // 0x08-0x77，保留段恒拒）。
+    if config.hardware_tools_enabled {
+        let hw_policy = config
+            .hardware_policy
+            .clone()
+            .map(|p| (*p).clone())
+            .unwrap_or_else(nemesis_tools::hardware::HardwarePolicy::builtin);
+        tools.insert("i2c".to_string(), Box::new(I2CTool::with_policy(hw_policy)));
+        tools.insert("spi".to_string(), Box::new(SPITool));
+    }
 
     // Exec tool + Async exec tool (mirrors Go's ExecTool + AsyncExecTool).
     if let Some(ref workspace) = config.workspace {
@@ -734,26 +748,19 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // 在 schema_lazy 旗标，dispatch 拦截渲染 registry 真实 schema 并记账）。
     tools.insert("tools_schema_get".to_string(), Box::new(ToolsSchemaGetTool));
 
-    // Workflow tools — lets the agent trigger registered workflows, and
-    // (对话生成) save AI-generated definitions as drafts / query capabilities.
+    // Workflow tool — 单工具多 action（2026-11-06 三合一收编，对齐 forge
+    // 形态；2026-11-07 增 apply 成四动作）：action=run 触发已注册工作流 /
+    // action=create（对话生成）把 AI 生成的定义存草稿 / action=apply 把草稿
+    // 登记进引擎（与工作流页应用按钮同一 DraftStore::apply 路径）/ action=
+    // capabilities 查节点类型与 config 字段清单。
     #[cfg(feature = "workflow")]
     {
         if let Some(ref engine) = config.workflow_engine {
             tools.insert(
-                "workflow_run".to_string(),
-                Box::new(WorkflowRunTool::new(engine.clone())),
+                "workflow".to_string(),
+                Box::new(WorkflowTool::new(engine.clone())),
             );
-            tools.insert(
-                "workflow_create".to_string(),
-                Box::new(WorkflowCreateTool::new(engine.clone())),
-            );
-            tools.insert(
-                "workflow_capabilities".to_string(),
-                Box::new(WorkflowCapabilitiesTool),
-            );
-            info!(
-                "[AgentTools] Registered workflow_run/workflow_create/workflow_capabilities tools"
-            );
+            info!("[AgentTools] Registered workflow tool (action=run/create/apply/capabilities)");
         }
     }
 
@@ -794,7 +801,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
 }
 
 // ===========================================================================
-// WorkflowRunTool — lets the agent invoke a registered workflow by name.
+// WorkflowTool — agent 侧工作流单工具（run/create/apply/capabilities 四动作）。
 // ===========================================================================
 /// Register extended tools including web search, memory, and skills.
 ///
@@ -837,6 +844,7 @@ pub fn register_extended_tools(
         todo: None,
         background_registry: None,
         question_broker: None,
+        hardware_tools_enabled: false,
         hardware_policy: None,
         workspace_lease: None,
         plan_present: None,

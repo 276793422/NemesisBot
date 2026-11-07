@@ -1,0 +1,1 @@
+Forge 自学习单工具（8 个旧 forge_* 收编，action 判别）：reflect=经验反思报告 / create=建产物（技能/脚本/MCP）/ update=带版本更新 / list=列产物状态 / evaluate=三阶段质量评估 / build_mcp=构建/安装 MCP（子模式走 mode）/ share=反思报告分享集群对端 / learning_status=闭环学习状态。

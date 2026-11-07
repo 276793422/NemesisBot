@@ -4,9 +4,9 @@
 //!
 //! 分派按 **args 字段形态**（content / old_text+new_text / edits[] /
 //! command）而非工具名——挂起点收到的 operation 是 op_type 字符串，
-//! write_file/edit_file/append_file/multiedit 四工具全部折叠为 `file_write`
-//! （`tool_to_operation`），工具名在那里不可得；args 形态是工具 schema 的
-//! 稳定面。
+//! write_file/edit_file/multiedit 三工具全部折叠为 `file_write`
+//! （`tool_to_operation`；2026-11-06 append_file 并入 edit_file 后旧名
+//! 消失），工具名在那里不可得；args 形态是工具 schema 的稳定面。
 //!
 //! preview 是**快照非授权面**：批准的仍是操作本身；预览必须忠实于将执行
 //! 的内容，不做净化（净化的预览会造成批准内容 ≠ 执行内容的假象）。
@@ -41,6 +41,17 @@ pub fn build_preview(
     // 分派表按序首中（一次只产一种 preview，不拼接）。
     if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
         return build_multiedit_preview(workspace, edits);
+    }
+    // edit_file action=append（2026-11-06 append_file 并入）：追加语义，
+    // 必须在 write 臂之前判——args 形态同为 path+content，落到 write 臂
+    // 会把追加内容误渲染成整文件替换（误导审批人）。
+    if args.get("action").and_then(|v| v.as_str()) == Some("append")
+        && let (Some(path), Some(content)) = (
+            args.get("path").and_then(|v| v.as_str()),
+            args.get("content").and_then(|v| v.as_str()),
+        )
+    {
+        return build_append_preview(workspace, path, content);
     }
     if let (Some(path), Some(new_text)) = (
         args.get("path").and_then(|v| v.as_str()),
@@ -80,6 +91,8 @@ fn resolve_preview_path(workspace: Option<&std::path::Path>, path: &str) -> std:
 
 /// write_file / append_file（args 形态 `path` + `content`）：读现盘 vs 新
 /// 内容的 unified diff；文件不存在 = 全量新增；二进制/大文件 = 注记形态。
+/// （2026-11-06 起此臂实际只服务 write_file——append 形态已被上一臂截获，
+/// 但 args 形态判别保留兜底：无 action 键的 path+content 仍落这里。）
 fn build_write_preview(
     workspace: Option<&std::path::Path>,
     path: &str,
@@ -109,7 +122,7 @@ fn build_write_preview(
                     "text",
                 ));
             }
-            match std::fs::read(p) {
+            match std::fs::read(&p) {
                 Err(e) => Some((
                     truncate_preview(&format!(
                         "读取当前文件失败：{e}\n将写入的新内容如下：\n{}",
@@ -129,6 +142,67 @@ fn build_write_preview(
                     }
                     let old = String::from_utf8_lossy(&bytes);
                     let body = unified_diff(&old, new_content, path);
+                    Some((truncate_preview(&body), "diff"))
+                }
+            }
+        }
+    }
+}
+
+/// edit_file action=append（2026-11-06 append_file 并入后的追加形态）：
+/// diff = 现盘 vs 现盘 + 追加内容；文件不存在 = 全量新增（与 append 的
+/// create 语义一致）；二进制/大文件 = 注记形态。坐标系与其余三臂同源
+/// （resolve_preview_path——BUG-20261106-033 同族：相对路径按 workspace
+/// 解析，不按进程 cwd）。
+fn build_append_preview(
+    workspace: Option<&std::path::Path>,
+    path: &str,
+    appended: &str,
+) -> Option<(String, &'static str)> {
+    let p = resolve_preview_path(workspace, path);
+    match std::fs::metadata(&p) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let body = unified_diff("", appended, path);
+            Some((truncate_preview(&body), "diff"))
+        }
+        Err(e) => Some((
+            truncate_preview(&format!(
+                "读取当前文件失败：{e}\n将追加的内容如下：\n{}",
+                fence(appended)
+            )),
+            "text",
+        )),
+        Ok(meta) => {
+            if meta.len() + appended.len() as u64 > MAX_DIFF_SOURCE_BYTES {
+                return Some((
+                    format!(
+                        "目标文件较大（{}），diff 预览略——请谨慎确认目标路径。",
+                        human_size(meta.len())
+                    ),
+                    "text",
+                ));
+            }
+            match std::fs::read(&p) {
+                Err(e) => Some((
+                    truncate_preview(&format!(
+                        "读取当前文件失败：{e}\n将追加的内容如下：\n{}",
+                        fence(appended)
+                    )),
+                    "text",
+                )),
+                Ok(bytes) => {
+                    if is_binary(&bytes) {
+                        return Some((
+                            format!(
+                                "二进制文件（{}），不产 diff——请确认目标路径。",
+                                human_size(meta.len())
+                            ),
+                            "text",
+                        ));
+                    }
+                    let old = String::from_utf8_lossy(&bytes);
+                    let after = format!("{old}{appended}");
+                    let body = unified_diff(&old, &after, path);
                     Some((truncate_preview(&body), "diff"))
                 }
             }

@@ -13,6 +13,8 @@ import { mount, flushPromises } from '@vue/test-utils'
 //    （历史对话不丢）后清除条目；已死 → 直接新建，绝不 set_binding；
 // 4. draft_apply 成功 → applied 事件触发原地重绑（demo 键指向当前会话 +
 //    释放 __new__ 键 + 目标切到正式工作流名）。
+// 5. tool_event(workflow 完成) → 草稿列表自动刷新；旧注册名 workflow_create
+//    不触发（2026-11-06 三合一收编回归钉：单工具 `workflow` + action 判别）。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -27,6 +29,7 @@ vi.mock('../../composables/useWebSocket', () => ({
 import WorkflowAgentGen from '../workflow/WorkflowAgentGen.vue'
 import agentGenSource from '../workflow/WorkflowAgentGen.vue?raw'
 import { useSessionStore } from '../../stores/session'
+import { addMessageHandler } from '../../composables/useWebSocket'
 
 // localStorage shim（node26/jsdom 无 --localstorage-file 时全局缺失）。
 function ensureLocalStorage(): void {
@@ -204,5 +207,32 @@ describe('WorkflowAgentGen 服务端会话绑定', () => {
     expect(agentGenSource).toMatch(
       /\.gen-chat > :deep\(\.page-chat\) \{[\s\S]*?min-height:\s*0[\s\S]*?flex-direction:\s*column/,
     )
+  })
+
+  it('tool_event(workflow 完成) → 草稿列表刷新；旧名 workflow_create 不触发（三合一收编回归钉）', async () => {
+    const wrapper = await mountGen()
+    // onMounted 注册的最新 handler 即本面板的 tool_event 入口。
+    const handler = vi.mocked(addMessageHandler).mock.calls.at(-1)?.[0] as
+      | ((f: any) => void)
+      | undefined
+    expect(handler).toBeTypeOf('function')
+
+    const draftListCalls = () =>
+      requestMock.mock.calls.filter(
+        ([m, c]: any[]) => m === 'workflow' && c === 'draft_list',
+      ).length
+    const baseline = draftListCalls()
+
+    // ToolStarted / 旧注册名 workflow_create / 其他工具完成 → 都不刷新。
+    handler!({ type: 'push', cmd: 'tool_event', data: { kind: 'ToolStarted', data: { tool: 'workflow', call_id: 'c0', args_preview: '{"action":"create"}' } } })
+    handler!({ type: 'push', cmd: 'tool_event', data: { kind: 'ToolFinished', data: { tool: 'workflow_create', call_id: 'c1', ok: true, duration_ms: 5 } } })
+    handler!({ type: 'push', cmd: 'tool_event', data: { kind: 'ToolFinished', data: { tool: 'exec', call_id: 'c2', ok: true, duration_ms: 5 } } })
+    expect(draftListCalls()).toBe(baseline)
+
+    // 单工具 `workflow`（action 判别）完成 → 刷新。
+    handler!({ type: 'push', cmd: 'tool_event', data: { kind: 'ToolFinished', data: { tool: 'workflow', call_id: 'c3', ok: true, duration_ms: 5 } } })
+    expect(draftListCalls()).toBe(baseline + 1)
+
+    wrapper.unmount()
   })
 })

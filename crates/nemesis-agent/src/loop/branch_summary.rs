@@ -59,7 +59,14 @@ pub fn prepare_branch_summary(
         );
         return None;
     };
-    prepare_branch_summary_with(provider, model, session_key, dropped_rows, dropped_turns)
+    prepare_branch_summary_with(provider, model, session_key, dropped_rows, dropped_turns).map(
+        |mut prepared| {
+            // S8：gateway 形态回填账本归因（data_store 从 loop 带出；同模块
+            // 私有字段可直接赋值）。CLI 形态（`_with`）保持 None = 不落账。
+            prepared.data_store = run_loop.data_store.clone();
+            prepared
+        },
+    )
 }
 
 /// CLI 形态的摘要 prepared 构造——调用方**自带**
@@ -86,6 +93,9 @@ pub fn prepare_branch_summary_with(
         model,
         prompt: build_branch_summary_prompt(&transcript),
         session_key: session_key.to_string(),
+        // S8：CLI 形态默认不落账（gateway 形态经 prepare_branch_summary
+        // 回填）。字段私有，外部无从注入其他形态。
+        data_store: None,
     })
 }
 
@@ -98,6 +108,9 @@ pub struct PreparedBranchSummary {
     model: String,
     prompt: String,
     session_key: String,
+    /// S8（2026-11-06 B29/B30 设计 §4）：aux 账本归因。`None` = 不落账
+    /// （CLI 形态；gateway 形态由 [`prepare_branch_summary`] 回填）。
+    data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
 }
 
 impl PreparedBranchSummary {
@@ -105,10 +118,18 @@ impl PreparedBranchSummary {
         // 杂务旁路护栏（重试版）：aux 预算 + 显式禁思考 + 墙钟超时 + 空输出
         // 单次重试——与 标题/compact 摘要同一治理面（此前本调用点是裸调
         // provider.chat 的漏网之鱼）。失败/超时/空输出 → None（调用方诚实
-        // 跳过，绝不阻塞主流程）。
-        let text = crate::r#loop::guarded_llm_call_retrying(
+        // 跳过，绝不阻塞主流程）。S8：成功路径落 aux 账本行
+        // （`aux_kind="branch_summary"`，session_key 如实携带）。
+        let ledger = crate::r#loop::AuxLedger {
+            aux_kind: "branch_summary",
+            model: &self.model,
+            session_key: Some(&self.session_key),
+            data_store: self.data_store.as_ref(),
+        };
+        let text = crate::r#loop::guarded_llm_call_retrying_ledgered(
             "branch-summary",
             crate::r#loop::AUX_SUMMARY_TIMEOUT,
+            ledger,
             || {
                 let prompt = self.prompt.clone();
                 let model = self.model.clone();
@@ -131,7 +152,10 @@ impl PreparedBranchSummary {
                             Vec::new(),
                         )
                         .await
-                        .map(|r| r.content)
+                        .map(|r| crate::r#loop::AuxOutcome {
+                            content: r.content,
+                            usage: r.usage,
+                        })
                 }
             },
         )

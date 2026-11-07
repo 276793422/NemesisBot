@@ -1033,9 +1033,12 @@ pub fn run(action: ForgeAction, local: bool) -> Result<()> {
                 let spec = nemesis_forge::skill_tests::parse_skill_tests(&candidate.content)
                     .map_err(anyhow::Error::msg)?;
                 if let Some(spec) = spec {
+                    // S8：CLI 进程不持 gateway data_store → None = judge
+                    // 调用不落 aux 账本（对齐 branch_summary CLI 边界）。
                     let caller = nemesis_web::handlers::forge::resolve_judge_caller(
                         &home.to_string_lossy(),
                         &workspace.to_string_lossy(),
+                        None,
                     )
                     .map_err(anyhow::Error::msg)?;
                     let threshold = forge_judge_threshold(&home);
@@ -1139,10 +1142,12 @@ async fn cmd_test(home: &std::path::Path, name: &str, test_filter: Option<&str>)
         anyhow::bail!("no test matching filter '{:?}'", test_filter);
     }
 
-    // judge caller：回落链解析（web 侧单一真相源实现）。
+    // judge caller：回落链解析（web 侧单一真相源实现）。S8：CLI 进程不持
+    // gateway data_store → None = judge 调用不落 aux 账本（CLI 边界）。
     let caller = nemesis_web::handlers::forge::resolve_judge_caller(
         &home.to_string_lossy(),
         &workspace.to_string_lossy(),
+        None,
     )
     .map_err(anyhow::Error::msg)?;
     // 执行层缺省阈值（forge.test.judge_threshold，用例未显式声明时生效）。

@@ -295,12 +295,12 @@ category = "subsystems"
 default = true
 
 # NOTE: `workflow` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/workflow + nemesis-web/workflow）。
-# Class C 内核裁剪。关闭后 DAG 工作流引擎整包不编译；workflow_run 工具、`nemesisbot workflow` 命令、
+# Class C 内核裁剪。关闭后 DAG 工作流引擎整包不编译；`workflow` 工具、`nemesisbot workflow` 命令、
 # Workflow Dashboard、/workflow/chat 独立聊天页、message/event 触发器随之不可用。
 [[feature]]
 id = "workflow"
 label = "DAG 工作流"
-desc = "DAG 工作流引擎（`nemesisbot workflow` + workflow_run 工具 + Workflow Dashboard + /workflow/chat + 触发器）。IoT/无工作流场景建议关闭；裁后整包不编译"
+desc = "DAG 工作流引擎（`nemesisbot workflow` + `workflow` 工具 + Workflow Dashboard + /workflow/chat + 触发器）。IoT/无工作流场景建议关闭；裁后整包不编译"
 category = "subsystems"
 default = true
 

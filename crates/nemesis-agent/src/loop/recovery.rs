@@ -239,11 +239,28 @@ impl AgentLoop {
                 let is_stream_interrupted =
                     err_lower.starts_with("stream interrupted from provider");
                 let is_transport_connect_error = err_lower.contains("connect error");
+                // B29（2026-11-06 设计 §1.2 D2）：触发条件 = 分类器
+                // ContextOverflow ∪ 收窄后词表（token/context/length）。
+                // - 并集：providers 侧 classify 已把 overflow 文案族
+                //   （"prompt is too long"/中文「输入长度超出」等，单一
+                //   真相源 nemesis-utils::llm_error_class）归入
+                //   ContextOverflow——词表盲区由分类器补齐（G3）；
+                // - 词表去 "invalid"（G2 根修）：Format 类错误
+                //   （"invalid request format: ..."）不再误入压缩环承受
+                //   2 次必败重呼 + summary cache 被强制推进的破坏性副作用；
+                //   含 invalid 的 overflow 文案由 D1 文案族覆盖
+                //   （如 invalid_request_error: prompt is too long）。
+                //   三词保留 = 未知 provider 文案兜底双保险。
+                let classified_overflow = matches!(
+                    &classified,
+                    Some(nemesis_utils::llm_error_class::LlmErrorClass::ContextOverflow)
+                );
                 let is_context_error = !is_stream_interrupted
                     && !is_transport_connect_error
-                    && ["token", "context", "length", "invalid"]
-                        .iter()
-                        .any(|keyword| err_lower.contains(keyword));
+                    && (classified_overflow
+                        || ["token", "context", "length"]
+                            .iter()
+                            .any(|keyword| err_lower.contains(keyword)));
 
                 if is_context_error {
                     // 器官 4a：context 压缩重试环（recovery.rs 方法）。
@@ -382,6 +399,19 @@ impl AgentLoop {
                             raw_response_body: None,
                         })
                         .await;
+                        // S16（2026-11-06 B29/B30 设计 §3）：流中断终局轮
+                        // estimated 账本行——partial 非空 = ceil(N/4) 估算
+                        // 注记行；空 partial = usage_missing 注记行；头行
+                        // 解析失败零行不造数。token 列全 0 → 不入计价。
+                        if is_stream_interrupted {
+                            self.record_stream_interrupted_ledger_row(
+                                context,
+                                trace_id,
+                                active_model,
+                                &last_err,
+                                error_duration,
+                            );
+                        }
                         // StreamInterrupted 终局 history 瘦身——只取
                         // Display 头行（首个 \n 之前，仅 provider/model/reason
                         // 元信息）进 history；partial 全文不进模型上下文
@@ -468,16 +498,32 @@ impl AgentLoop {
         );
 
         while retry_count < max_retries {
+            // Force-compress: advance the summary cache (tail → SMALL_K_FORCE,
+            // then → 0 on a second pass). History is not mutated.
+            // B29（2026-11-06 设计 §1.2 D3，G4 根修）：消费 force_compression
+            // 的返回值（bool 在参数化形态 force_compression_opts；prefer_small
+            // =false 维持自动路径主模型语义，N2 注记同源）——false = 无可推进
+            // 内容（tail 已到底/边界不可前移，未触达 LLM），上下文未变，重呼
+            // 注定同败（纯烧 token）→ 不再重呼，直接落既有耗尽臂（retry_err
+            // 保持最后一次真实观测的错误，首轮即无进展时就是原 overflow 原文）。
+            // 语义诚实：压缩已到底还报 overflow，重试改变不了任何输入。
+            if !self
+                .force_compression_opts(instance, false, &context.session_key)
+                .await
+            {
+                warn!(
+                    "[AgentLoop] Compression no-progress (context unchanged), skipping doomed re-call (attempt {})",
+                    retry_count + 1
+                );
+                break;
+            }
             retry_count += 1;
             // 上下文错误环每次重试发起计入会话统计（三环同口径）。
+            // 无进展早停轮不计（未发起的调用不是 retry，统计与调用事实对齐）。
             self.bump_session_stats(
                 &context.session_key,
                 crate::session_stats::StatCounter::Retries,
             );
-
-            // Force-compress: advance the summary cache (tail → SMALL_K_FORCE,
-            // then → 0 on a second pass). History is not mutated.
-            self.force_compression(instance, &context.session_key).await;
 
             // Rebuild messages from compressed history.
             let mut compressed_messages = self.build_messages(instance);

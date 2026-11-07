@@ -833,7 +833,7 @@ async fn main() -> Result<()> {
     // sleep/message 工具无确定性驱动模型，已移除——单测覆盖仍在）
     all_results.extend(tool_tests::test_tool_read_file(&ws).await);
     all_results.extend(tool_tests::test_tool_write_file(&ws).await);
-    all_results.extend(tool_tests::test_tool_append_file(&ws).await);
+    all_results.extend(tool_tests::test_tool_edit_file_append(&ws).await);
     all_results.extend(tool_tests::test_tool_list_dir(&ws).await);
     all_results.extend(tool_tests::test_tool_create_delete_dir(&ws).await);
     all_results.extend(tool_tests::test_tool_delete_file(&ws).await);

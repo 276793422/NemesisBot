@@ -41,7 +41,8 @@ fn move_tools_is_the_expected_set() {
             "edit_file",
             // batch edit_file — contained identically.
             "multiedit",
-            "append_file",
+            // 2026-11-06: append_file merged into edit_file (action=append) —
+            // the append write surface rides the edit_file entry.
             "delete_file",
             "create_dir",
             "delete_dir",

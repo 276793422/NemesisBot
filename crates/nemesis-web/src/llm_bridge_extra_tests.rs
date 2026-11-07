@@ -492,7 +492,58 @@ async fn forge_bridge_empty_content_with_tools_is_error() {
     assert_eq!(mock.calls(), 2);
 }
 
-// reasoning_effort 透传（补测： 只钉了 CLI/WSAPI 侧，这里钉
+#[tokio::test]
+async fn forge_bridge_chat_writes_aux_ledger_row() {
+    // S8（2026-11-06 B29/B30 设计 §4）：bridge 带 data_store → judge/评审
+    // 调用成功路径落 forge_review 账本行（usage 真实直搬；不入价目表 =
+    // 全零 + 空名，与 organ-5 同源口径）。
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ds = Arc::new(
+        nemesis_data::DataStore::open(&dir.path().join("s8_forge.db")).expect("open datastore"),
+    );
+    let mock = Arc::new(MockProvider::new("judge-model", "mock"));
+    mock.set_response(text_response("评审结论"));
+    let bridge = ForgeProviderBridge::new(mock.clone(), "judge-model".to_string())
+        .with_data_store(Some(ds.clone()));
+
+    let out = bridge.chat("s", "u", Some(100)).await.unwrap();
+    assert_eq!(out, "评审结论");
+
+    let (rows, total) = ds
+        .query_logs(
+            0,
+            i64::MAX,
+            1,
+            50,
+            &nemesis_data::LogFilter {
+                model: None,
+                status: None,
+                session_key: None,
+            },
+        )
+        .expect("query");
+    assert_eq!(total, 1, "恰好一条 forge_review 账本行: {rows:?}");
+    let row = &rows[0];
+    assert_eq!(
+        row.provider_type, "forge_review",
+        "provider_type = aux_kind"
+    );
+    assert!(
+        row.trace_id.starts_with("aux-forge_review-"),
+        "trace_id 前缀: {}",
+        row.trace_id
+    );
+    assert_eq!(row.model, "judge-model");
+    assert_eq!(row.input_tokens, 5);
+    assert_eq!(row.output_tokens, 10);
+    assert_eq!(row.status_code, 200);
+    assert!(!row.is_streaming);
+    assert!(row.error_message.is_none(), "usage 在场无 estimated 注记");
+    assert_eq!(row.session_key, "", "forge 评审无会话归因 = 空串");
+}
+
+// ---------------------------------------------------------------------------
+// H4 reasoning_effort 透传（M8 补测：L2 只钉了 CLI/WSAPI 侧，这里钉
 // adapter 最后一跳 —— agent ChatOptions → provider ChatOptions 的字段搬运）
 
 #[tokio::test]

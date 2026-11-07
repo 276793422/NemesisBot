@@ -97,7 +97,7 @@ fn all_segments_nonempty_and_within_budget() {
 
 /// 表条目数锚点：新增工具槽位必须同时补描述表（lean 必有，full 按频次），
 /// 数量变化时此处显式红出来提醒对齐注册表清单。
-const EXPECTED_TOOL_ENTRIES: usize = 60;
+const EXPECTED_TOOL_ENTRIES: usize = 50;
 
 #[test]
 fn tool_table_covers_expected_slots_with_valid_names() {

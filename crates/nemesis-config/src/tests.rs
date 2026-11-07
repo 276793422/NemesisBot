@@ -681,7 +681,9 @@ fn test_full_config_roundtrip() {
             guardian_model: None,
             doom_loop_approval: false,
             image_downscale: true,
-            // / 写租约开关（serde 缺省 true）——全字段初始化器补齐。
+            // B30 工具结果统一 cap（serde 缺省 8000）——全字段初始化器补齐。
+            tool_result_cap: crate::default_tool_result_cap(),
+            // 写租约开关（serde 缺省 true）——全字段初始化器补齐。
             lease_enabled: true,
             // /（内部专项批次：codemode / turn WAL / provider
             // 流事件开关）——全字段初始化器补齐（值对齐 lib.rs Default）。

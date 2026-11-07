@@ -109,4 +109,89 @@ impl AgentLoop {
             self.record_session_tokens(&context.session_key, delta);
         }
     }
+
+    /// S16（2026-11-06 B29/B30 设计 §3）：流中断终局轮的 estimated /
+    /// usage_missing 账本行（organ-5 唯一第二写入点，与
+    /// [`Self::record_round_usage`] 并列——两个 RequestLog 写入方同住）。
+    ///
+    /// 终局 interrupted 轮 provider 未回传 usage，但 partial 全文携带真实
+    /// 产出信息（providers 侧 `estimated_output_tokens` 契约）：
+    /// - partial 非空（N>0）：写 **estimated 行**——`ceil(N/4)` 输出 token
+    ///   估算进 error_message 注记；token 列全 0 → 计价自然为 0（估算值
+    ///   绝不冒充实测入价，§7 口径：无 estimated 处理的消费方按 usage
+    ///   缺失跳过，诚实盲区优于错账）；
+    /// - partial 为空（N=0）：写 **usage_missing 行**——服务端缓冲可能
+    ///   持有未冲刷输出，报 0 是撒谎；
+    /// - 头行解析失败（Display 契约破坏）：零行不造数。
+    ///
+    /// 输入侧不可知 → 不造数（§3 口径）。调用点：recovery.rs 终局臂
+    /// （stream-interrupted 全量漏斗到 transient 环耗尽的唯一落点）。
+    pub(crate) fn record_stream_interrupted_ledger_row(
+        &self,
+        context: &RequestContext,
+        trace_id: &str,
+        model: &str,
+        err_text: &str,
+        latency: std::time::Duration,
+    ) {
+        let Some(ref ds) = self.data_store else {
+            return;
+        };
+        let Some(n) = parse_stream_interrupted_received_chars(err_text) else {
+            return;
+        };
+        let error_message = if n == 0 {
+            "[usage_missing] stream interrupted: 服务端未回传用量且缓冲未冲刷，本轮输出无法量化"
+                .to_string()
+        } else {
+            let est = (n as u64).div_ceil(4);
+            format!(
+                "[estimated] stream interrupted: partial 已接收 {n} 字符 ≈ {est} output tokens（估算值不入计价；provider 未回传实测 usage）"
+            )
+        };
+        let log = nemesis_data::RequestLog {
+            id: 0,
+            trace_id: trace_id.to_string(),
+            model: model.to_string(),
+            provider_type: String::new(),
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_read_tokens: 0,
+            total_cost_usd: 0.0,
+            latency_ms: latency.as_millis() as i64,
+            status_code: 500,
+            error_message: Some(error_message),
+            is_streaming: true,
+            created_at: chrono::Local::now().timestamp(),
+            pricing_model: String::new(),
+            input_cost_usd: 0.0,
+            output_cost_usd: 0.0,
+            cache_creation_cost_usd: 0.0,
+            cache_read_cost_usd: 0.0,
+            first_token_ms: None,
+            session_key: context.session_key.clone(),
+        };
+        if let Err(e) = ds.insert_request_log(&log) {
+            tracing::warn!("[AgentLoop] Failed to record stream-interrupted ledger row: {e}");
+        }
+    }
+}
+
+/// S16：从流中断错误文本解析「已接收 N 字符」的 N（partial 字符数）。
+///
+/// 只锚 **头行**（首个 `\n` 之前）——头行只含 provider/model/reason 元
+/// 信息（providers 侧 Display 契约，failover.rs），partial 全文是模型
+/// 生成的任意文本、可含伪造的「已接收 999 字符」片段，不参与匹配
+/// （L02 头行前缀锚同款防污染纪律）。任一环节失配（前缀缺 / 锚缺 /
+/// 非数字）→ `None`（fail-closed，不猜）。N=0 合法（空 partial），
+/// 语义归调用方（[`AgentLoop::record_stream_interrupted_ledger_row`]
+/// 落 usage_missing 行）。
+pub(crate) fn parse_stream_interrupted_received_chars(err_text: &str) -> Option<usize> {
+    let head = err_text.lines().next()?;
+    let rest = head.strip_prefix("stream interrupted from provider")?;
+    let start = rest.find("已接收 ")? + "已接收 ".len();
+    let tail = &rest[start..];
+    let end = tail.find(" 字符")?;
+    tail[..end].parse::<usize>().ok()
 }

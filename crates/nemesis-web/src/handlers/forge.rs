@@ -79,10 +79,14 @@ impl ModuleHandler for ForgeHandler {
                 let data = data.ok_or("missing data")?;
                 self.config_save(home, &data, ctx)
             }
-            "reflect" => self.reflect(home, workspace).await,
+            // S8：评审/反思走 aux 账本——data_store 穿线（None = 不落账）。
+            "reflect" => {
+                self.reflect(home, workspace, ctx.state.data_store.clone())
+                    .await
+            }
             "test" => {
                 let data = data.ok_or("missing data")?;
-                forge_test_cmd(home, workspace, &data)
+                forge_test_cmd(home, workspace, &data, ctx.state.data_store.clone())
             }
 
             // 失败重放（C 线）：提取/待审列表/确认入库（执行面归 CLI）。
@@ -558,6 +562,7 @@ impl ForgeHandler {
         &self,
         home: &str,
         workspace: &str,
+        data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
     ) -> Result<Option<serde_json::Value>, String> {
         let fd = forge_dir(workspace);
         let exp_file = fd.join("experiences").join("experiences.jsonl");
@@ -600,7 +605,7 @@ impl ForgeHandler {
         // false，不假报）。
         let forge_cfg = load_forge_config(workspace);
         let caller = if forge_cfg.reflection.use_llm {
-            resolve_judge_caller(home, workspace)?
+            resolve_judge_caller(home, workspace, data_store.as_ref())?
         } else {
             None
         };
@@ -1105,11 +1110,13 @@ mod s10b_tests;
 mod agt_tests;
 
 /// `forge.test`：对 workspace/skills/<name> 执行 frontmatter tests 段。
-/// judge 层走杂务模型回落链（resolve_judge_caller）。
+/// judge 层走杂务模型回落链（resolve_judge_caller）。S8：data_store 穿线
+/// 供 aux 账本归因（None = 不落账）。
 fn forge_test_cmd(
     home: &str,
     workspace: &str,
     data: &serde_json::Value,
+    data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
 ) -> Result<Option<serde_json::Value>, String> {
     use nemesis_forge::skill_tests as st;
 
@@ -1153,7 +1160,7 @@ fn forge_test_cmd(
     }
 
     // judge caller：回落链解析（judge_model → small_model → 主模型）。
-    let caller = resolve_judge_caller(home, workspace)?;
+    let caller = resolve_judge_caller(home, workspace, data_store.as_ref())?;
     // 执行层缺省阈值（forge.test.judge_threshold，用例未显式声明时生效）。
     let forge_cfg = nemesis_forge::config::load_forge_config(
         &Path::new(workspace)
@@ -1239,6 +1246,7 @@ fn forge_replay_list(workspace: &str) -> Result<Option<serde_json::Value>, Strin
 pub fn resolve_judge_caller(
     home: &str,
     workspace: &str,
+    data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
 ) -> Result<Option<std::sync::Arc<dyn nemesis_forge::reflector_llm::LLMCaller>>, String> {
     let cfg = crate::handlers::config::load_config(home)?;
     let forge_cfg = load_forge_config(workspace);
@@ -1265,7 +1273,7 @@ pub fn resolve_judge_caller(
     arms.push(String::new()); // 臂 3：默认模型（resolve 语义见下）
 
     for arm in &arms {
-        match build_caller_for_ref(&cfg, arm, workspace) {
+        match build_caller_for_ref(&cfg, arm, workspace, data_store) {
             Ok(Some(caller)) => return Ok(Some(caller)),
             Ok(None) => {
                 // 解析失败降下一臂——warn 留痕（臂名空串 = 默认模型）。
@@ -1281,11 +1289,13 @@ pub fn resolve_judge_caller(
 }
 
 /// 按模型引用构造 LLMCaller（空串 = 当前默认模型）。解析/构造失败 =
-/// `Ok(None)`（回落链消费）。
+/// `Ok(None)`（回落链消费）。S8：data_store 经 [`crate::ForgeProviderBridge::with_data_store`]
+/// 挂 aux 账本（None = 不落账）。
 fn build_caller_for_ref(
     cfg: &nemesis_config::Config,
     model_ref: &str,
     workspace: &str,
+    data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
 ) -> Result<Option<std::sync::Arc<dyn nemesis_forge::reflector_llm::LLMCaller>>, String> {
     let llm_ref = if model_ref.is_empty() {
         nemesis_config::get_effective_llm(Some(cfg))
@@ -1310,10 +1320,10 @@ fn build_caller_for_ref(
         headers: std::collections::HashMap::new(),
     };
     match nemesis_providers::factory::create_provider(&factory_cfg) {
-        Ok(provider) => Ok(Some(std::sync::Arc::new(crate::ForgeProviderBridge::new(
-            provider,
-            resolution.model_name.clone(),
-        )))),
+        Ok(provider) => Ok(Some(std::sync::Arc::new(
+            crate::ForgeProviderBridge::new(provider, resolution.model_name.clone())
+                .with_data_store(data_store.cloned()),
+        ))),
         Err(_) => Ok(None),
     }
 }

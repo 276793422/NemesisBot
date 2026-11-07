@@ -2058,11 +2058,12 @@ impl AgentLoop {
     ) -> Option<ToolCallInfo> {
         let base = context.tool_path_base.as_ref()?;
         // 单 `path` 参数的文件面工具（相对 path → base.join）。
+        // 2026-11-06：append_file 并入 edit_file（action=append），追加路径
+        // 的基准重写由 edit_file 条目一并承载。
         const PATH_ARG_TOOLS: &[&str] = &[
             "read_file",
             "write_file",
             "edit_file",
-            "append_file",
             "list_dir",
             "file_exists",
             "create_dir",

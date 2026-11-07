@@ -6803,18 +6803,25 @@ async fn main() {
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 let t = comments_text(&mut ws, fail_issue).await;
                 if t.contains("重派预算已耗尽") {
-                    // AOR 批一c §③（c8e36a7a，2026-11-04）后转人工评论的差距面
-                    // = 条目清单（「逐条差距：- [fail] [anchor] … 证据：…」，
-                    // render_gap_with_criteria 替代自由文本 gap——42153577678
-                    // core 实录：锚点明细 UAT30FAILNEEDLE 在场，仅旧字面头
-                    // 「客观锚点检查失败」退场）。断言按新契约对齐：清单头 +
-                    // 锚点原文（criterion 携带 [CHECK] re:UAT30FAILNEEDLE）。
-                    if !t.contains("逐条差距")
-                        || !t.contains("UAT30FAILNEEDLE")
-                    {
+                    // 锚点明细断言收在转人工评论自身段（--- 分隔），不依赖
+                    // 全评论池——❌ 重派评论也带 needle，全池断言会掩盖转人
+                    // 工评论缺明细。双格式兼容：AOR 条目化后携带「逐条差距」
+                    // 条目（[anchor] 标记 + 证据），旧格式回落 gap 原文（客
+                    // 观锚点检查失败…）。
+                    let escalate_seg = t
+                        .split("\n---\n")
+                        .find(|s| s.contains("重派预算已耗尽"))
+                        .unwrap_or_default();
+                    let detail_present = escalate_seg.contains("客观锚点检查失败")
+                        || (escalate_seg.contains("[anchor]")
+                            && escalate_seg.contains("证据："));
+                    if !detail_present || !escalate_seg.contains("UAT30FAILNEEDLE") {
                         return fail(
                             "T30",
-                            format!("③转人工评论应携带锚点失败明细（AOR 条目清单）: {}", trunc(&t, 400)),
+                            format!(
+                                "③转人工评论应携带锚点失败明细: {}",
+                                trunc(&escalate_seg, 400)
+                            ),
                         );
                     }
                     break;

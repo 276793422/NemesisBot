@@ -338,9 +338,9 @@ pub fn build_agent_loop(
         ));
         agent_loop.set_discipline(discipline_state);
     }
-    // 对话生成：工作流引擎引用——workflow_edit 命名会话渲染
-    // 当前定义块用（workflow_create/capabilities 工具经 SharedToolConfig
-    // 各自持有引擎 Arc，此处只服务 loop 的 section 渲染）。
+    // 对话生成（2026-09-22）：工作流引擎引用——workflow_edit 命名会话渲染
+    // 当前定义块用（workflow 工具经 SharedToolConfig 持有引擎 Arc，
+    // 此处只服务 loop 的 section 渲染）。
     #[cfg(feature = "workflow")]
     if let Some(ref wf_engine) = shared.workflow_engine {
         agent_loop.set_workflow_engine(wf_engine.clone());
@@ -717,7 +717,9 @@ pub fn build_agent_loop(
     #[cfg(feature = "forge")]
     {
         if let Some(ref forge) = shared.forge {
-            let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone());
+            // S8：Forge 评审/反思走 aux 账本（shared.data_store 归因）。
+            let bridge = ForgeProviderBridge::new(provider_arc.clone(), model_name.clone())
+                .with_data_store(shared.data_store.clone());
             forge.set_provider(Arc::new(bridge));
             // A 线行为回归执行器注入（同点级联到 pipeline 的回归闸）。
             let test_runner: Arc<dyn nemesis_forge::skill_tests::SkillTestRunner> = Arc::new(
@@ -727,14 +729,22 @@ pub fn build_agent_loop(
             // Stage 2 judge 层杂务模型回落链（与 CLI/WSAPI 的 judge 口径
             // 同源：judge_model → small_model → 主模型；chat 现场解析，
             // 模型热切即时生效）。
-            forge.set_judge_caller(Arc::new(crate::forge_test_runner::ChainJudgeCaller::new(
-                shared.home.clone(),
-                crate::common::workspace_path(&shared.home),
-            )));
+            forge.set_judge_caller(Arc::new(
+                crate::forge_test_runner::ChainJudgeCaller::new(
+                    shared.home.clone(),
+                    crate::common::workspace_path(&shared.home),
+                )
+                // S8：judge 调用落 aux 账本（与上方 bridge 同源归因）。
+                .with_data_store(shared.data_store.clone()),
+            ));
             // web 槽（forge.test WSAPI 消费；PROJECTS_BRIDGE 同款槽模式）。
             nemesis_web::handlers::forge::set_forge_test_runner(test_runner);
             // B 线画像 sweep（OnceLock 一次守卫；enabled=false 时 sweep 内部 no-op）。
-            crate::profile_service::ensure_sweep_spawned(shared.home.clone());
+            // S8：反思通道的 LLM 调用同落 aux 账本（data_store 随任务带出）。
+            crate::profile_service::ensure_sweep_spawned(
+                shared.home.clone(),
+                shared.data_store.clone(),
+            );
             info!(
                 "[AgentFactory] Forge provider updated to model {}",
                 model_name

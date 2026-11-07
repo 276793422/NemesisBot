@@ -1455,7 +1455,9 @@ pub(crate) fn collect_file_ops_ledger(messages: &[&crate::types::ConversationTur
                         push(&mut out, &mut index, p, "write");
                     }
                 }
-                "edit_file" | "append_file" => {
+                // 2026-11-06：append_file 并入 edit_file（action=append），
+                // 账本按 edit 记（追加路径基准重写由 edit_file 臂一并承载）。
+                "edit_file" => {
                     if let Some(p) = arg_path(&args) {
                         push(&mut out, &mut index, p, "edit");
                     }

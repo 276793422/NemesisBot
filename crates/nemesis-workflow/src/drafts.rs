@@ -1,7 +1,8 @@
 //! Draft store for AI-generated workflow definitions (对话生成 two-phase flow).
 //!
-//! `workflow_create` writes drafts; applying is a separate explicit step
-//! (draft = zero side effects on registered workflows). Drafts live in
+//! The `workflow` agent tool (action=create) writes drafts; applying is a
+//! separate explicit step (draft = zero side effects on registered
+//! workflows). Drafts live in
 //! `<defs_dir>/../drafts/` as `<sanitized-name>.yaml` — same serializer as
 //! real definitions so a draft's bytes are exactly what `persist_workflow`
 //! would write.
@@ -31,8 +32,8 @@ pub struct DraftSummary {
     /// Validation errors (empty when `valid`).
     pub validation_errors: Vec<String>,
     /// 语义 lint 结果（warning 通道，不阻断 apply）——「能跑但大概率不合
-    /// 意图」的提示，见 [`crate::lint`]。生成器据 workflow_create 响应的
-    /// hints 当轮自纠。
+    /// 意图」的提示，见 [`crate::lint`]。生成器据 `workflow` 工具
+    /// action=create 响应的 hints 当轮自纠。
     #[serde(default)]
     pub warnings: Vec<String>,
     pub node_count: usize,
@@ -236,7 +237,11 @@ impl DraftStore {
             let hist_dir = self.defs_dir.join(".history");
             std::fs::create_dir_all(&hist_dir)
                 .map_err(|e| format!("create history dir {:?}: {}", hist_dir, e))?;
-            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            // Millisecond precision: two applies inside the same second must
+            // not silently overwrite each other's backup (fs::copy replaces
+            // the destination) — an agent iterating create→apply without
+            // runs can easily produce rapid consecutive applies.
+            let ts = chrono::Local::now().format("%Y%m%d_%H%M%S%3f");
             let backup_name = format!("{}.{}.yaml", stem, ts);
             std::fs::copy(&existing, hist_dir.join(&backup_name))
                 .map_err(|e| format!("backup {:?}: {}", existing, e))?;

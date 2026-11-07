@@ -139,8 +139,9 @@ impl Drop for RedoInflightGuard<'_> {
 
 impl AgentLoop {
     /// Attach a checkpoint store for the edit safety net. When set, every writer
-    /// tool call (write_file/edit_file/append_file/delete_file) snapshots the
-    /// file's pre-edit content before execution, so a rewind can restore it.
+    /// tool call (write_file/edit_file（含 action=append）/delete_file)
+    /// snapshots the file's pre-edit content before execution, so a rewind can
+    /// restore it.
     pub fn set_checkpoint_store(&self, store: Arc<crate::checkpoint::CheckpointStore>) {
         *self.security.checkpoint_store.write() = Some(store);
     }

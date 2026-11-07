@@ -26,6 +26,9 @@ pub enum LlmErrorClass {
     Format,
     /// 上游过载（5xx 状态码形态）——可重试。
     Overloaded,
+    /// 上下文溢出（prompt 超出模型窗口，B29/D1 2026-11-06）——重试无意义，
+    /// loop 层消费方据此路由进响应式压缩（复用既有 force 压缩入口）。
+    ContextOverflow,
 }
 
 /// 把 provider 错误文本分类为 [`LlmErrorClass`]；`None` = 分类不出（调用方
@@ -42,6 +45,15 @@ pub fn classify_llm_error(error_msg: &str) -> Option<LlmErrorClass> {
     // 错误值同样可被伪造/污染。
     if msg.starts_with("stream interrupted from provider") {
         return Some(LlmErrorClass::Timeout);
+    }
+
+    // B29/D1（2026-11-06）上下文溢出文案族：高特异性短语，先于 image 维度
+    // 与状态码判定——400+overflow body 由 from_status 包成
+    // Unknown{message: "status 400: <body 前 200 字>"}，body 在 message 里，
+    // 文案族对 message 匹配照常命中，状态码与文案两条路同判。归
+    // ContextOverflow = 重试无意义 + loop 层路由进响应式压缩（器官 4a）。
+    if is_context_overflow(&msg) {
+        return Some(LlmErrorClass::ContextOverflow);
     }
 
     // Image dimension/size errors: non-retriable format error.
@@ -275,6 +287,51 @@ pub fn is_connect_error(msg: &str) -> bool {
         "failed to resolve",
     ];
     PATTERNS.iter().any(|p| msg.contains(p))
+}
+
+/// 上下文溢出（prompt 超出模型窗口）文案族判定（B29/D1 2026-11-06）。
+///
+/// 单一真相源：loop 层词表臂（recovery，D2 接线挂协调窗）与 providers 层
+/// 分派表（`classify_error` / `classify_message_error`）共用本函数。大小写
+/// 不敏感 contains，内部自行 lowercase（与 [`is_connect_error`] 同款纪律
+/// ——调用方可能传原始大小写文本）。
+///
+/// 家族表语义分级：高特异性短语独立成立；`input length` / `exceeds the
+/// maximum` 两族是泛词，**双词同现**防裸误配（`input length` 须与
+/// exceed/limit 同现；`exceeds the maximum` 须与 token/context/prompt
+/// 同现——否则 "image exceeds the maximum size" 这类图像错误会被误吸进
+/// 压缩环，白受必败重呼，正是 B29 要消灭的 G2 误路由形态）。
+pub fn is_context_overflow(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    const FAMILIES: &[&str] = &[
+        "context length",
+        "context_length",
+        "maximum context",
+        "max context",
+        "prompt is too long",
+        "prompt too long",
+        "too many input tokens",
+        "input tokens exceed",
+        "token count exceed",
+        "reduce the length",
+        // 中文族（无词界问题，contains 安全）。
+        "超出模型上下文",
+        "输入长度超出",
+        "上下文长度",
+    ];
+    if FAMILIES.iter().any(|p| m.contains(p)) {
+        return true;
+    }
+    // 泛词双词同现（防裸误配）。
+    if m.contains("input length") && (m.contains("exceed") || m.contains("limit")) {
+        return true;
+    }
+    if m.contains("exceeds the maximum")
+        && (m.contains("token") || m.contains("context") || m.contains("prompt"))
+    {
+        return true;
+    }
+    false
 }
 
 fn contains_any(msg: &str, patterns: &[&str]) -> bool {
