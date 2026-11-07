@@ -92,8 +92,11 @@ async fn test_scan_hook_scan_tool_invocation_edit_file_no_content() {
     assert!(result);
 }
 
+/// 2026-11-06：append_file 并入 edit_file（action=append），写面扫描由
+/// edit_file 臂承载——旧名落 `_ => Ok(true)` 直通臂（回归锁：防有人把
+/// 旧 match 臂抄回来）。
 #[tokio::test]
-async fn test_scan_hook_scan_tool_invocation_append_file_no_content() {
+async fn test_scan_hook_legacy_append_file_name_passthrough() {
     let scanner = Arc::new(Scanner::new(ScannerConfig::default()));
     let hook = ScanHook::new(scanner);
     let args = serde_json::json!({});
@@ -102,6 +105,33 @@ async fn test_scan_hook_scan_tool_invocation_append_file_no_content() {
         .await
         .unwrap();
     assert!(result);
+}
+
+/// edit_file action=append（旧 append_file 的写形态）带 content → 走
+/// scan_write_args 扫描臂。config 的 enabled 缺省开——content 非空会真实
+/// 连 clamd（write_file 同款），必须挂 fake clamd；直连默认地址在无 clamd
+/// 环境连接拒绝 → Err（初版误以为 default 未启用引擎会放行，实测翻车）。
+#[tokio::test]
+async fn test_scan_hook_scan_tool_invocation_edit_file_append_content() {
+    let addr = serve_clamd(noop_responder(), "stream: OK\n").await;
+    let hook = hook_on(&addr);
+    let args = serde_json::json!({"path": "a.txt", "action": "append", "content": "tail"});
+    let result = hook.scan_tool_invocation("edit_file", &args).await.unwrap();
+    assert!(result);
+}
+
+/// 同臂感染侧：INSTREAM 回 FOUND → Err("virus detected in content: ...")。
+#[tokio::test]
+async fn test_scan_hook_scan_tool_invocation_edit_file_append_infected() {
+    let addr = serve_clamd(noop_responder(), "stream: Bad.Append FOUND\n").await;
+    let hook = hook_on(&addr);
+    let args = serde_json::json!({"path": "a.log", "action": "append", "content": "evil"});
+    let err = hook
+        .scan_tool_invocation("edit_file", &args)
+        .await
+        .unwrap_err();
+    assert!(err.contains("virus detected in content"), "{err}");
+    assert!(err.contains("Bad.Append"), "{err}");
 }
 
 #[tokio::test]

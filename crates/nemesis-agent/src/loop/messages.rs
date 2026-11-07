@@ -399,7 +399,8 @@ impl AgentLoop {
     /// 对话生成：渲染 workflow_edit 会话的 merged-digest section。
     ///
     /// - `_new`（workflow_name=None）：能力表 + 两阶段引导（先查
-    ///   workflow_capabilities，产出走 workflow_create 草稿，人工在 UI 应用）。
+    ///   workflow 工具 action=capabilities，产出走 action=create 草稿，
+    ///   人工在 UI 应用）。
     /// - 命名会话：先给当前定义 YAML（引擎未装配或工作流不存在时诚实注明，
     ///   不编造），再给同款引导。
     ///
@@ -441,13 +442,13 @@ impl AgentLoop {
                 ));
             }
             (None, _) => {
-                out.push_str("## 目标：新建工作流\n\n先用 workflow_capabilities 工具查看可用的节点类型、config 字段与结构规则，再动手写定义。\n\n");
+                out.push_str("## 目标：新建工作流\n\n先用 workflow 工具（action=capabilities）查看可用的节点类型、config 字段与结构规则，再动手写定义。\n\n");
             }
         }
         out.push_str(
             "## 产出流程（两阶段，必须遵守）\n\n\
-             1. 用 workflow_capabilities 查看节点/触发器能力表（每次会话至少一次）。\n\
-             2. 把完整定义交给 workflow_create 工具——它只落**草稿**，不会影响任何已注册工作流。\n\
+             1. 用 workflow 工具（action=capabilities）查看节点/触发器能力表（每次会话至少一次）。\n\
+             2. 把完整定义交给 workflow 工具（action=create）——它只落**草稿**，不会影响任何已注册工作流。\n\
              3. 草稿保存后把结果告诉用户：用户需要在「工作流页 → 对话生成 → 草稿面板」点「应用」草稿才真正生效。\n\
              4. 响应里 validation_errors 非空时，修正定义并用同名重新保存。\n\n\
              (本 section 每轮由系统注入；修改工作流不在此处直接执行——执行仍走安全策略。)",

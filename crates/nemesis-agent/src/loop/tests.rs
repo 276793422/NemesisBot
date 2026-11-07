@@ -9415,6 +9415,79 @@ fn test_projection_summary_mode_and_override() {
     );
 }
 
+/// BUG-20261107-027 回归锁：cap 放大/关闭方向的 X1 会话内一致性。
+/// gate 全文放行（cap=0 关闭 / 8192 < total ≤ cap）且 total 落在
+/// (8192, 65536)（重算会裁、spill 不接的窗口）时，gate 必须把全文记成
+/// 投影——否则下一轮请求/重放的 `model_facing_content` 按 const 8192
+/// 重算出裁剪形态，与 dispatch 轮实际回灌的全文静默不一致（会话内缩水）。
+/// 本测试按 gate 的真实决策链（`prune_tool_result_with_cap` +
+/// `cap_prune_matches_recompute`，与 tool_batch.rs 同序）模拟 cap=0 与
+/// cap=20000 两个洞口场景，断言请求侧所见逐字节等于 dispatch 侧全文。
+#[test]
+fn test_b30_cap_passthrough_records_projection_for_session_consistency() {
+    let big: String = "M".repeat(10_000); // (8192, 65536) 窗口
+    let total = big.chars().count();
+    for cap in [0usize, 20_000] {
+        // dispatch 轮 gate 的真实决策链（tool_batch.rs 两臂同构谓词）。
+        let gate = crate::prune::prune_tool_result_with_cap(&big, "exec", false, cap);
+        let projection = match &gate {
+            Some(pruned) if !crate::prune::cap_prune_matches_recompute(cap, total) => {
+                Some(pruned.clone())
+            }
+            None if !crate::prune::cap_prune_matches_recompute(cap, total) => {
+                Some(big.clone()) // 修复点：全文放行方向记投影=全文
+            }
+            _ => None,
+        };
+        assert!(
+            projection.as_deref() == Some(big.as_str()),
+            "cap={cap}: (8192, cap] 窗口全文放行必须记投影=全文"
+        );
+        // gate 产物进历史（history 存原文 + 投影），请求侧重放必须逐字节
+        // 复现 dispatch 所见（不是 const 重算的裁剪形态）。
+        let mut caller = x1_loop_turn("assistant", "calling");
+        caller.tool_calls = vec![crate::types::ToolCallInfo {
+            id: "tc_cap".to_string(),
+            name: "exec".to_string(),
+            arguments: "{}".to_string(),
+        }];
+        let mut tool_turn = x1_loop_turn("tool", &big);
+        tool_turn.tool_call_id = Some("tc_cap".to_string());
+        tool_turn.tool_name = Some("exec".to_string());
+        tool_turn.tool_result_projection = projection;
+        let history = vec![caller, tool_turn];
+        let projected = super::project_history_for_request(&history, None);
+        let seen = projected
+            .iter()
+            .find(|t| t.role == "tool")
+            .expect("tool turn present")
+            .content
+            .clone();
+        assert_eq!(
+            seen, big,
+            "cap={cap}: 请求侧必须逐字节复现 dispatch 全文（会话内一致性）"
+        );
+    }
+    // 镜像契约（既有语义，防误改）：投影 None + total > 8192 的 turn 重算
+    // 就是裁剪形态——所以 gate 全文放行方向才必须记投影。
+    let mut caller = x1_loop_turn("assistant", "calling");
+    caller.tool_calls = vec![crate::types::ToolCallInfo {
+        id: "tc_rec".to_string(),
+        name: "exec".to_string(),
+        arguments: "{}".to_string(),
+    }];
+    let mut bare = x1_loop_turn("tool", &big);
+    bare.tool_call_id = Some("tc_rec".to_string());
+    bare.tool_name = Some("exec".to_string());
+    let bare_history = vec![caller, bare];
+    let projected = super::project_history_for_request(&bare_history, None);
+    let seen = projected.iter().find(|t| t.role == "tool").unwrap();
+    assert!(
+        seen.content.chars().count() < total && seen.content.contains("exec"),
+        "投影 None 的 10000 字符 turn 重算为有界形态（记录义务的依据）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // (refinement): merged-snapshot `# Runtime Policy` section —
 // approval wiring / guardian judge presence / live capability tier, all
@@ -10212,7 +10285,6 @@ fn rewrite_relative_file_paths_into_base() {
         "read_file",
         "write_file",
         "edit_file",
-        "append_file",
         "list_dir",
         "file_exists",
         "create_dir",

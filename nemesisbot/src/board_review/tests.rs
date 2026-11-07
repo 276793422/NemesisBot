@@ -2509,6 +2509,80 @@ fn record_auto_decide_writes_action_word_and_details_shape() {
     assert!(details.get("gap").is_some(), "extra 键合并进 details");
 }
 
+/// B33 授权血统（D1）：`record_auto_decide` 从单子 origin 读血统——
+/// autopilot 单 details 带 `rule`（建单时烧入 origin_meta 的
+/// `rule_version={id}@{updated_at}`，取自单子行不可变，不随规则现状态
+/// 漂移——重派沿用旧授权延续语义）+ `origin_type`/`origin_id`；
+/// 无 origin 的手工单不写字段（诚实缺席，不伪造）。
+#[test]
+fn record_auto_decide_carries_issue_origin_lineage() {
+    use nemesis_board::{NewIssue, models::TaskOrigin};
+    let (deps, _ws) = review_deps("audit-lineage");
+    let mut ap_ni = NewIssue {
+        title: "autopilot 单".into(),
+        ..Default::default()
+    };
+    ap_ni.origin = Some(TaskOrigin {
+        origin_type: "autopilot".into(),
+        origin_id: "7".into(),
+        origin_meta: [
+            ("rule_version".to_string(), "7@1731000000".to_string()),
+            ("mode".to_string(), "live".to_string()),
+        ]
+        .into_iter()
+        .collect(),
+    });
+    let ap_issue = deps.store.create_issue(ap_ni).unwrap();
+    let hand_issue = deps
+        .store
+        .create_issue(NewIssue {
+            title: "手工单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    record_auto_decide(
+        &deps,
+        ap_issue.id,
+        "redispatch",
+        "FAIL",
+        serde_json::json!({}),
+    );
+    record_auto_decide(
+        &deps,
+        hand_issue.id,
+        "auto_accept",
+        "PASS",
+        serde_json::json!({}),
+    );
+
+    let rows = deps
+        .store
+        .list_recent_activity(500, Some("auto_decide"))
+        .unwrap();
+    assert_eq!(rows.len(), 2);
+    let by_issue = |id: i64| {
+        rows.iter()
+            .find(|r| r.activity.issue_id == id)
+            .expect("issue 对应审计行在场")
+    };
+    let ap_details: serde_json::Value =
+        serde_json::from_str(by_issue(ap_issue.id).activity.details.as_deref().unwrap()).unwrap();
+    assert_eq!(ap_details["origin_type"], "autopilot");
+    assert_eq!(ap_details["origin_id"], "7");
+    assert_eq!(ap_details["rule"], "7@1731000000", "血统戳 = 建单时版本");
+    let hand_details: serde_json::Value =
+        serde_json::from_str(by_issue(hand_issue.id).activity.details.as_deref().unwrap()).unwrap();
+    assert!(
+        hand_details.get("rule").is_none(),
+        "无 origin 手工单不带血统字段（诚实缺席）：{hand_details}"
+    );
+    assert!(
+        hand_details.get("origin_type").is_none(),
+        "无 origin 手工单不带 origin 字段：{hand_details}"
+    );
+}
+
 // ---------- 二期：token 预算维度（board.budget.max_tokens_per_parent）----------
 
 /// 纯聚合：父链全部派发行的 worker 回传用量求和。回归锚（run 4 真机

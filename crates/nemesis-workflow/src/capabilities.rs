@@ -1,8 +1,8 @@
 //! AI workflow generator capability declaration (对话生成).
 //!
 //! Single source of truth for the node types / trigger types the
-//! `workflow_create` agent tool may emit, plus the config fields each node
-//! executor actually reads. Two consumers:
+//! `workflow` agent tool (action=create) may emit, plus the config fields
+//! each node executor actually reads. Two consumers:
 //!
 //! - `WorkflowCapabilitiesTool` (agent-facing): renders this table as a
 //!   compact prompt block so the LLM generates valid definitions on the
@@ -48,8 +48,8 @@ pub struct TriggerCapability {
     pub config_notes: String,
 }
 
-/// Full capability declaration returned by `workflow_capabilities` and
-/// rendered into the `workflow_create` tool bootstrap.
+/// Full capability declaration returned by the `workflow` tool
+/// (action=capabilities) and rendered into its action=create bootstrap.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeneratorCapabilities {
     pub node_types: Vec<NodeCapability>,

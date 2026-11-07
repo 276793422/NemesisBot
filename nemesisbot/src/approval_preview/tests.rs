@@ -49,6 +49,40 @@ fn dispatch_write_form_path_content() {
 }
 
 #[test]
+fn dispatch_append_form_diffs_against_existing_tail() {
+    // 2026-11-06 append_file 并入 edit_file：{path, action:"append", content}
+    // 形态必须走 append 臂——diff = 现盘 vs 现盘+追加（write 臂会把追加
+    // 内容误渲染成整文件替换，回归锁）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("log.txt");
+    std::fs::write(&p, "line1\n").unwrap();
+    let args = serde_json::json!({
+        "path": p.to_str().unwrap(), "action": "append", "content": "line2\n"
+    });
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains(" line1"), "现盘内容保持无前缀变化: {text}");
+    assert!(text.contains("+line2"), "追加行以新增行渲染: {text}");
+    assert!(
+        !text.contains("-line1"),
+        "追加不得把现盘内容标成删除: {text}"
+    );
+}
+
+#[test]
+fn dispatch_append_form_new_file_is_full_add() {
+    // 追加目标不存在 = 全量新增（与 append 的 create 语义一致）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("fresh.txt");
+    let args = serde_json::json!({
+        "path": p.to_str().unwrap(), "action": "append", "content": "seed\n"
+    });
+    let (text, fmt) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains("+seed"));
+}
+
+#[test]
 fn dispatch_edit_form_old_new_text() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("e.txt");
@@ -399,5 +433,33 @@ fn relative_multiedit_resolved_against_workspace() {
     assert!(
         old_text.contains("old_text 未命中"),
         "None（旧行为）对照臂：读不到现盘 → 误报未命中：{old_text}"
+    );
+}
+
+#[test]
+fn relative_append_resolved_against_workspace() {
+    // append 臂与其余三臂同坐标系（合并补齐：BUG-033 修复只接了
+    // write/edit/multiedit 三臂，append 臂遗留 raw path 直读 = 同族假
+    // diff——相对路径按 cwd 读不到现盘 → 追加被误渲染成全量新增）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("logs").join("app.log");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "line1\n").unwrap();
+    let args = serde_json::json!({
+        "path": "logs/app.log", "action": "append", "content": "line2\n"
+    });
+    let (text, fmt) = build_preview(Some(dir.path()), "file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains(" line1"), "现盘内容保持无前缀变化：{text}");
+    assert!(text.contains("+line2"), "{text}");
+    assert!(
+        !text.contains("@@ -0,0"),
+        "读到现盘 = 追加不是全量新增：{text}"
+    );
+    // 对照臂（红）：None = cwd 直读 → 现盘文件不存在 → 全量新增假 diff。
+    let (old_text, _) = build_preview(None, "file_write", "t", &args).unwrap();
+    assert!(
+        old_text.contains("@@ -0,0 +1,1 @@"),
+        "None（旧行为）对照臂：cwd 无此文件 → 全量新增：{old_text}"
     );
 }

@@ -163,6 +163,7 @@ async fn run_retry(
         "l29-sender",
         "agent:main:session:l29concat",
     );
+    let cancel = tokio_util::sync::CancellationToken::new();
     // first_call_failed_after < 1s = 立即拒绝形态（不退避，测试零等待）。
     agent_loop
         .retry_transient(
@@ -171,10 +172,13 @@ async fn run_retry(
             provider,
             "test-model",
             &opts,
+            &cancel,
+            None,
             std::time::Duration::from_millis(5),
             first_err,
         )
         .await
+        .expect("拼接续写走 Ok 路径（无中断）")
 }
 
 /// 拼接续写主线：首轮流中断（partial 非空、无 tc）→ 重试请求尾部追加

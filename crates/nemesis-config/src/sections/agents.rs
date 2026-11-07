@@ -100,6 +100,16 @@ pub struct AgentsConfig {
     /// 运行时改键下一轮生效。
     #[serde(default = "default_true")]
     pub image_downscale: bool,
+    /// B30（2026-11-06 三方对比整改）：工具结果统一 cap（字符数，默认
+    /// 8000，**0=关**）。dispatch 后跨工具兜底封顶——超 cap 截断 + 诚实
+    /// 注记（`[结果截断: 原 N 字符]`），与 per-tool 语义窗口（read_file
+    /// 行限 / exec 输出量限）正交叠加不替代。loop 侧 fresh-read（读法
+    /// 统一 `resolve_tool_result_cap`，每次 dispatch 现读 config.json），
+    /// 运行时改键下一轮生效。typed 字段意义 = 防 typed save_config
+    /// round-trip 静默抹键（vision 键 2026-09-03 同类回归；AgentsConfig
+    /// 无 flatten extra）。
+    #[serde(default = "default_tool_result_cap")]
+    pub tool_result_cap: u64,
     /// ：workspace 写租约开关。默认**开**——主 loop / 项目 loop /
     /// executor 子进程的写类工具经 workspace 级文件锁互斥（宽限 30s 超时
     /// 诚实拒绝；持有进程死亡 OS 自动释放）。**装配期消费**（gateway/
@@ -162,11 +172,12 @@ pub struct AgentsConfig {
     pub lazy_tool_schema: Option<bool>,
 }
 
-/// 手写 Default（不 derive）：本结构 8 个直接字段带非零 serde 字段默认
+/// 手写 Default（不 derive）：本结构 9 个直接字段带非零 serde 字段默认
 /// （turn_wal / provider_stream_events / image_downscale / lease_enabled /
 /// stream_concat_retry / profession_tool_fence = default_true，
-/// prompt_system = "pro"，executor_tool_timeout_secs = 1800），derive 只给
-/// 零值。分叉点 = 「agents 段整体缺席」的 config 经 Config 字段级
+/// prompt_system = "pro"，executor_tool_timeout_secs = 1800，
+/// tool_result_cap = 8000），derive 只给零值。分叉点 = 「agents 段整体缺席」
+/// 的 config 经 Config 字段级
 /// `#[serde(default)]` 回落走进 `Default::default()`，与「段在场但键缺席」
 /// 的字段级 serde 路径各走各的（BUG-20261107-014：文档/fresh-read 层口径
 /// 同说「默认开」，typed 层却拿到关；typed save 往返还会把 false 烤进
@@ -194,6 +205,7 @@ impl Default for AgentsConfig {
             guardian_model: None,
             doom_loop_approval: false,
             image_downscale: default_true(),
+            tool_result_cap: default_tool_result_cap(),
             lease_enabled: default_true(),
             discipline: DisciplineConfig::default(),
             prompt_system: default_prompt_system(),

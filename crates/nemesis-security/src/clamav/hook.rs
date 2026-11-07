@@ -21,8 +21,10 @@ impl ScanHook {
         tool_name: &str,
         args: &serde_json::Value,
     ) -> Result<bool, String> {
+        // 2026-11-06：append_file 并入 edit_file（action=append），写面扫描
+        // 由 edit_file 臂一并承载。
         match tool_name {
-            "write_file" | "edit_file" | "append_file" => self.scan_write_args(args).await,
+            "write_file" | "edit_file" => self.scan_write_args(args).await,
             "download" => self.scan_download_args(args).await,
             "exec" | "execute_command" => self.scan_exec_args(args).await,
             _ => Ok(true),

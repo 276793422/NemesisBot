@@ -651,3 +651,141 @@ fn rate_limit_display_label_distinguishes_overload() {
     );
     assert_eq!(rate_limit_display_label(""), "上游限流");
 }
+
+// -- BUG-20261107-020：单次等待钳入剩余预算 ----------------------------------
+
+/// 恒返限流错误（Retry-After 由 err_text 携带）。
+struct AlwaysRateLimitedWithRetryAfter {
+    err_text: String,
+}
+
+#[async_trait]
+impl LlmProvider for AlwaysRateLimitedWithRetryAfter {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Err(self.err_text.clone())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn huge_retry_after_is_capped_to_remaining_budget() {
+    // 红证：Retry-After 3600s > 预算 30s——修复前循环顶预算检查只看
+    // 「已消耗」，管不住本次将睡多久 → 一次 sleep(3600) 直接突破预算硬
+    // 上限（turn 挂到上游指定时刻）。修复后等待被钳到剩余预算（30s），
+    // 下一轮循环顶预算检查按既有路径终局。
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"agents": {"defaults": {
+            "rate_limit_retries": 10,
+            "rate_limit_budget_secs": 30,
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+
+    let provider = AlwaysRateLimitedWithRetryAfter {
+        err_text: "rate limited by provider codex/gpt-test (retry_after=3600s)".to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_config_path(cfg_path);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let errs: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errs.iter().any(|m| m.contains("总时长超过 30 秒预算")),
+        "钳制后下一轮循环顶预算检查必须终局: {errs:?}"
+    );
+    // 进度通知显示的是钳制后的等待秒数（30s），不是上游的 3600s。
+    let mut progresses = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            progresses.push(msg.content);
+        }
+    }
+    assert_eq!(progresses.len(), 1, "只应有一轮重试进度: {progresses:?}");
+    assert!(
+        progresses[0].contains("等待 30 秒"),
+        "等待必须钳到剩余预算（30s）而非上游 3600s: {}",
+        progresses[0]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn retry_after_within_budget_is_honored_exactly() {
+    // 对照面（裁决⑧「遵从上游」不变）：Retry-After 600s ≤ 预算 900s
+    // 剩余——精确遵从（等待 600s），一次重试后成功恢复。
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"agents": {"defaults": {
+            "rate_limit_retries": 10,
+            "rate_limit_budget_secs": 900,
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+
+    let provider = RateLimitedThenSuccess {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        fail_times: 1,
+        err_text: "rate limited by provider codex/gpt-test (retry_after=600s)".to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    agent_loop.set_config_path(cfg_path);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "预算内 Retry-After 必须遵从上游并恢复: {events:?}"
+    );
+    let mut progresses = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            progresses.push(msg.content);
+        }
+    }
+    assert_eq!(progresses.len(), 1, "进度通知: {progresses:?}");
+    assert!(
+        progresses[0].contains("等待 600 秒"),
+        "预算内的上游要求必须精确遵从（600s）: {}",
+        progresses[0]
+    );
+}

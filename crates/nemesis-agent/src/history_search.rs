@@ -156,6 +156,37 @@ fn with_conn<R>(
     Some(f(conn, &mut st.indexed))
 }
 
+/// 增量插入的互斥句柄：`chat_log` 的 append 持它跨「文件写入 + 索引插行」，
+/// 让 reindex / 查询（同锁互斥）永远看不到「已写盘、未插行」的中间态。
+/// 若不持锁，reindex 的 mtime 采样在锁外、全量重读在锁内——append 落进
+/// 该缝隙时 reindex 已把新行按文件行号索引进去，随后的增量插入仍按
+/// MAX(seq)+1 再插一行同内容（seq 指向不存在的行号）；且 racing reindex
+/// 已登记新 mtime，后续 reindex 恒跳过该文件，幻影重复行跨查询存活到
+/// 该会话下一次 append 才自愈。锁毒化时 [`append_guard`] 返回 None，调用方
+/// 回落无锁的 [`index_append`]（best-effort，下次全量 reindex 自愈）。
+pub struct AppendGuard(std::sync::MutexGuard<'static, Option<IndexState>>);
+
+/// 取增量插入互斥句柄。None = 锁毒化（进程内历史 panic），调用方回落
+/// [`index_append`]。
+pub fn append_guard() -> Option<AppendGuard> {
+    INDEX.lock().ok().map(AppendGuard)
+}
+
+impl AppendGuard {
+    /// 持锁形态的单行增量插入（语义与 [`index_append`] 相同；宿主持有的
+    /// 互斥已覆盖本调用，锁内不可再走 [`with_conn`]——std Mutex 不可重入）。
+    pub fn index_append(&mut self, session_key: &str, role: &str, content: &str, timestamp: &str) {
+        let stem = nemesis_utils::sanitize::sanitize_path_segment(session_key);
+        let Some(st) = self.0.as_mut() else {
+            return;
+        };
+        let Some(conn) = st.conn.as_mut() else {
+            return;
+        };
+        append_index_row(conn, &mut st.indexed, &stem, role, content, timestamp);
+    }
+}
+
 /// Full/lazy (re)index of `session_logs/*.jsonl`. mtime-incremental: files
 /// whose mtime matches the recorded value are skipped. Returns the number of
 /// rows indexed this call (0 = everything fresh).
@@ -274,30 +305,53 @@ fn insert_row(
 /// reindex picks the row up. Track seq by file line count only when the
 /// index already knows the file; otherwise skip (full reindex handles it).
 pub fn index_append(session_key: &str, role: &str, content: &str, timestamp: &str) {
-    // Namespace: the DB rows and the `indexed` map are keyed by FILE STEM
-    // (colons replaced) — same as reindex_session_logs, since chat_log
-    // writes `<stem>.jsonl`. fix: this used to look up the RAW
-    // session key, so for the normal production key form (`chan:chat:user`,
-    // always contains ':') the "file already indexed" check never matched
-    // and the incremental hook silently never fired — masked until the
-    // orphan-row purge stopped stale rows from satisfying the tests.
-    // SAN-01/SAN-05：与 chat_log 落盘同源的白名单消毒（stem 即文件名）。
-    let stem = nemesis_utils::sanitize::sanitize_path_segment(session_key);
-    let _ = with_conn(|conn, indexed| {
-        if !indexed.contains_key(&stem) {
-            return; // never full-indexed — first query reindexes everything
-        }
-        let seq: i64 = conn
-            .query_row(
-                "SELECT COALESCE(MAX(seq), -1) + 1 FROM history_fts WHERE session_key = ?1",
-                rusqlite::params![stem],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        let v = serde_json::json!({"role": role, "content": content, "timestamp": timestamp});
-        if let Err(e) = insert_row(conn, &stem, seq as usize, &v) {
-            tracing::warn!("[history_search] index_append failed: {e}");
-        }
+    let stem = stem_of(session_key);
+    let _ =
+        with_conn(|conn, indexed| append_index_row(conn, indexed, &stem, role, content, timestamp));
+}
+
+/// SAN-01/SAN-05：与 chat_log 落盘同源的白名单消毒（stem 即文件名）。
+fn stem_of(session_key: &str) -> String {
+    nemesis_utils::sanitize::sanitize_path_segment(session_key)
+}
+
+/// 单行增量插入的共享实现（`index_append` 与 `AppendGuard::index_append`
+/// 同源）。`indexed` 不含本会话 = 从未被全量索引（或整体重写/删除后登记
+/// 已被 [`invalidate_session`] 摘除），诚实让位——下一次全量 reindex 会
+/// 连本行一起索引。
+fn append_index_row(
+    conn: &mut Connection,
+    indexed: &mut std::collections::HashMap<String, std::time::SystemTime>,
+    stem: &str,
+    role: &str,
+    content: &str,
+    timestamp: &str,
+) {
+    if !indexed.contains_key(stem) {
+        return;
+    }
+    let seq: i64 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(seq), -1) + 1 FROM history_fts WHERE session_key = ?1",
+            rusqlite::params![stem],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let v = serde_json::json!({"role": role, "content": content, "timestamp": timestamp});
+    if let Err(e) = insert_row(conn, stem, seq as usize, &v) {
+        tracing::warn!("[history_search] index_append failed: {e}");
+    }
+}
+
+/// 会话日志被整体重写或删除（截断回退、清空、删除）后摘除其索引登记：
+/// 增量插入按 MAX(seq)+1 推 seq，重写后 DB 里的旧行 seq 与新文件行号已
+/// 失配——继续增量插会把新行插到与文件行号错位的 seq 上，且重写掉的旧
+/// 内容仍留在检索结果里。摘除登记后增量插入按「从未全量索引」短路，
+/// 落盘态由下一次全量 reindex 重建（消费方查询前恒先 reindex，自愈即时）。
+pub fn invalidate_session(session_key: &str) {
+    let stem = stem_of(session_key);
+    let _ = with_conn(|_, indexed| {
+        indexed.remove(&stem);
     });
 }
 

@@ -26,6 +26,9 @@ interface Autopilot {
   acceptance_criteria: string | null
   session_key: string | null
   enabled: boolean
+  // B34 触发模式（D3 拍板：新建默认 shadow）：live=全真 / shadow=影子
+  // （触发只建单 + 决策意图评论 + 本地留痕，不派发不拆解）。
+  mode: string
   cron_job_id: string | null
   last_run_at: number | null
   created_at: number
@@ -58,6 +61,7 @@ const form = ref({
   acceptance_criteria: '',
   session_key: '',
   enabled: true,
+  mode: 'shadow',
 })
 
 // run 历史弹窗。
@@ -80,7 +84,8 @@ async function load(silent = false) {
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', auto_plan: false, acceptance_criteria: '', session_key: '', enabled: true }
+  // D3 拍板：新建默认影子模式（首轮触发只建单留痕不派发）。
+  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', auto_plan: false, acceptance_criteria: '', session_key: '', enabled: true, mode: 'shadow' }
   showForm.value = true
 }
 
@@ -97,6 +102,7 @@ function openEdit(ap: Autopilot) {
     acceptance_criteria: ap.acceptance_criteria || '',
     session_key: ap.session_key || '',
     enabled: ap.enabled,
+    mode: ap.mode || 'live',
   }
   showForm.value = true
 }
@@ -149,14 +155,32 @@ async function runNow(ap: Autopilot) {
   busy.value = true
   try {
     const r = await request('board', 'autopilot.run', { id: ap.id })
-    toast.success(
-      r?.dispatch
-        ? `已建单 ${r.issue_number} 并派发`
-        : `已建单 ${r.issue_number}（未配置派发目标）`,
-    )
+    if (r?.shadow) {
+      toast.info(`影子触发：已建单 ${r.issue_number}（决策意图已留评论，未派发未拆解）`)
+    } else if (r?.dispatch?.parked === 'inflight_full') {
+      toast.warn(`已建单 ${r.issue_number}；节点在途派发满载，已停车待自动重试（人优先槽位）`)
+    } else if (r?.dispatch) {
+      toast.success(`已建单 ${r.issue_number} 并派发`)
+    } else {
+      toast.success(`已建单 ${r.issue_number}（未配置派发目标）`)
+    }
     await load()
   } catch (e: any) {
     toast.error('运行失败: ' + e)
+  } finally {
+    busy.value = false
+  }
+}
+
+// B34：影子规则转全真（D3 的 promote 路径——确认行为符合预期后直上）。
+async function promote(ap: Autopilot) {
+  busy.value = true
+  try {
+    await request('board', 'autopilot.update', { id: ap.id, mode: 'live' })
+    toast.success(`规则「${ap.name}」已转全真`)
+    await load()
+  } catch (e: any) {
+    toast.error('转全真失败: ' + e)
   } finally {
     busy.value = false
   }
@@ -236,6 +260,12 @@ useBoardChanged(() => load(true))
               <span class="badge" :class="ap.enabled ? 'badge-success' : 'badge-neutral'">
                 {{ ap.enabled ? '启用' : '停用' }}
               </span>
+              <span
+                v-if="ap.mode === 'shadow'"
+                class="badge badge-warning"
+                title="影子模式：触发只建单留痕不派发；确认行为后转全真"
+                data-test="shadow-badge"
+              >影子</span>
             </td>
             <td class="muted">{{ ap.last_run_at ? fmtTime(ap.last_run_at) : '从未运行' }}</td>
             <td class="actions-cell">
@@ -244,6 +274,13 @@ useBoardChanged(() => load(true))
               <button class="btn btn-sm" @click="openEdit(ap)">编辑</button>
               <button class="btn btn-sm" @click="toggle(ap)">{{ ap.enabled ? '停用' : '启用' }}</button>
               <button class="btn btn-sm btn-danger" @click="remove(ap)">删除</button>
+              <button
+                v-if="ap.mode === 'shadow'"
+                class="btn btn-sm btn-success"
+                :disabled="busy"
+                data-test="promote-btn"
+                @click="promote(ap)"
+              >转全真</button>
             </td>
           </tr>
         </tbody>
@@ -304,6 +341,16 @@ useBoardChanged(() => load(true))
           </label>
           <div class="muted" style="margin-top: var(--space-1); margin-bottom: var(--space-2);">
             配置了派发目标时拆解无意义（直接派给指定节点）；拆解后是否自动发车由「配置」页 board.plan.auto_confirm 控制
+          </div>
+          <div class="form-group">
+            <label class="form-label">触发模式</label>
+            <select class="form-input" v-model="form.mode" data-test="mode-select">
+              <option value="shadow">影子模式（推荐起步：触发只建单 + 决策意图评论 + 本地留痕，不派发不拆解）</option>
+              <option value="live">全真模式（触发即建单并派发/拆解）</option>
+            </select>
+            <div class="muted" style="margin-top: var(--space-1);">
+              影子规则的行为确认无误后，在列表「转全真」一键切 live；转正前后触发历史连续（last_run_at 照常落账）
+            </div>
           </div>
           <label class="muted" style="display: flex; align-items: center; gap: var(--space-1); cursor: pointer;">
             <input type="checkbox" v-model="form.enabled" />

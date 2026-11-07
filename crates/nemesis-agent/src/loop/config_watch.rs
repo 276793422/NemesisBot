@@ -28,36 +28,50 @@ pub(crate) const E7_TITLE_MAX_CHARS: usize = 24;
 /// `prompt::render_title_prompt`（格式约束 + 双向删减规则 + 数据非指令
 /// 防护）；清洗兜底仍由 [`sanitize_generated_title`] 负责。调用走杂务
 /// 旁路护栏（`bypass_llm`：限 token + 超时 + 空输出校验 + 重试版护栏
-/// ——空输出/瞬态失败同窗口重试一次，采样抖动兜底）。
+/// ——空输出/瞬态失败同窗口重试一次，采样抖动兜底）。S8：成功路径落
+/// aux 账本行（`aux_kind="title"`，session_key 如实携带；data_store/
+/// session_key 为 None = 不落账，CLI 形态）。
 pub(crate) async fn generate_title_from_first_message(
     provider: &dyn LlmProvider,
     model: &str,
     first_user: &str,
+    data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
+    session_key: Option<&str>,
 ) -> Option<String> {
     let prompt = crate::prompt::render_title_prompt(first_user, E7_TITLE_MAX_CHARS);
-    let content = guarded_llm_call_retrying("auto-title", AUX_TITLE_TIMEOUT, || {
-        let prompt = prompt.clone();
-        async move {
-            provider
-                .chat(
-                    model,
-                    vec![LlmMessage {
-                        role: "user".to_string(),
-                        content: prompt,
-                        tool_calls: None,
-                        tool_call_id: None,
-                        reasoning_content: None,
-                        images: Vec::new(),
-                    }],
-                    Some(aux_chat_options(AUX_TITLE_MAX_TOKENS)),
-                    Vec::new(),
-                )
-                .await
-                .map(|r| r.content)
-        }
-    })
-    .await
-    .ok()?;
+    let ledger = AuxLedger {
+        aux_kind: "title",
+        model,
+        session_key,
+        data_store,
+    };
+    let content =
+        guarded_llm_call_retrying_ledgered("auto-title", AUX_TITLE_TIMEOUT, ledger, || {
+            let prompt = prompt.clone();
+            async move {
+                provider
+                    .chat(
+                        model,
+                        vec![LlmMessage {
+                            role: "user".to_string(),
+                            content: prompt,
+                            tool_calls: None,
+                            tool_call_id: None,
+                            reasoning_content: None,
+                            images: Vec::new(),
+                        }],
+                        Some(aux_chat_options(AUX_TITLE_MAX_TOKENS)),
+                        Vec::new(),
+                    )
+                    .await
+                    .map(|r| AuxOutcome {
+                        content: r.content,
+                        usage: r.usage,
+                    })
+            }
+        })
+        .await
+        .ok()?;
     sanitize_generated_title(&content)
 }
 
@@ -146,7 +160,8 @@ fn diag_is_fresh(path: &std::path::Path, collected_at: std::time::SystemTime) ->
 
 /// 从工具 args 提取诊断回灌目标路径（保序去重）。
 /// - `multiedit`：`edits[].path`（同文件多条编辑去重，保首次出现序）。
-/// - 其余（write_file/edit_file/append_file）：顶层 `path` 单文件。
+/// - 其余（write_file/edit_file，含 edit_file action=append——2026-11-06
+///   append_file 并入）：顶层 `path` 单文件。
 ///
 /// path 缺失/形态不符 → 空表（调用方诚实跳过回灌）。纯函数，不碰 IO。
 #[cfg_attr(not(feature = "lsp"), allow(dead_code))]
@@ -240,7 +255,8 @@ impl AgentLoop {
     /// [`Self::resolve_summary_provider`]，锁序纪律同一处）；调用治理（墙钟
     /// 超时 + 空输出拒绝 + 单次重试 + 显式禁思考）与标题/摘要杂务同走
     /// bypass_llm 护栏。首个 nemesisbot 侧消费点 = connector monitor 语义
-    /// 变化摘要（收官批）。无工具、单条 user 消息、非流式。
+    /// 变化摘要（收官批）。无工具、单条 user 消息、非流式。成功路径
+    /// 落 aux 账本行（`aux_kind="summary"`；无 data_store = 不落账）。
     pub async fn chore_completion(
         &self,
         label: &str,
@@ -254,7 +270,13 @@ impl AgentLoop {
             );
         }
         let (provider, model) = self.resolve_summary_provider(true);
-        guarded_llm_call_retrying(label, AUX_SUMMARY_TIMEOUT, || {
+        let ledger = AuxLedger {
+            aux_kind: "summary",
+            model: &model,
+            session_key: None,
+            data_store: self.data_store.as_ref(),
+        };
+        guarded_llm_call_retrying_ledgered(label, AUX_SUMMARY_TIMEOUT, ledger, || {
             let prompt = prompt.clone();
             let model = model.clone();
             let provider = provider.clone();
@@ -274,7 +296,10 @@ impl AgentLoop {
                         Vec::new(),
                     )
                     .await
-                    .map(|r| r.content)
+                    .map(|r| AuxOutcome {
+                        content: r.content,
+                        usage: r.usage,
+                    })
             }
         })
         .await
@@ -326,6 +351,23 @@ impl AgentLoop {
             .unwrap_or(true)
     }
 
+    /// B36：worker 职能工具供给裁剪开关 `board.worker.tool_trim.enabled`
+    /// 世代快照读（同上——以 config.json 为准，改键下轮生效，无需重启）。
+    /// 缺省 **false**（D5 拍板：做成开关，默认关 = 零行为变化；CATALOG
+    /// 的 tool_trim 声明常在，开闸才生效）。pub：cluster_agent（nemesisbot）
+    /// 任务装配消费，跨 crate。
+    pub fn current_worker_tool_trim(&self) -> bool {
+        let Some(v) = self.config_generation() else {
+            return false;
+        };
+        v.get("board")
+            .and_then(|b| b.get("worker"))
+            .and_then(|w| w.get("tool_trim"))
+            .and_then(|t| t.get("enabled"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false)
+    }
+
     /// 超限图片自动降采样开关（世代快照读；默认**开**，
     /// 极性与 doom_loop_approval 相反——读不到/键缺失按开处理，保持降采样
     /// 能力可用；不阻塞轮次）。
@@ -337,6 +379,16 @@ impl AgentLoop {
             .and_then(|a| a.get("image_downscale"))
             .and_then(|b| b.as_bool())
             .unwrap_or(true)
+    }
+
+    /// B30（2026-11-06 三方对比整改）：`agents.tool_result_cap` 世代快照读
+    /// （L18 模式；config.json 唯一真相源，dashboard/CLI 改键下轮生效）。
+    /// 键路径 / 缺省 8000 / 负数钳 0 的单一真相源在
+    /// `nemesis_config::resolve_tool_result_cap`（typed 字段同源）——此处
+    /// 整段复用，不自建散表。无 config_path / 无代 = 缺省。0 = 关：prune
+    /// 闸不裁（spill 层不受影响——那是可恢复性机制，不是封顶闸）。
+    pub(crate) fn current_tool_result_cap(&self) -> usize {
+        nemesis_config::resolve_tool_result_cap(self.config_generation().as_deref())
     }
 
     /// 429 重试环：`agents.defaults.rate_limit_retries` 世代快照读
@@ -604,8 +656,9 @@ impl AgentLoop {
         // 「可变更外部状态」同语义，plan 模式一并拦。
         "run_checks",
         "write_file",
+        // 2026-11-06：append_file 并入 edit_file（action=append），plan 闸
+        // 拦截面由 edit_file 条目一并承载。
         "edit_file",
-        "append_file",
         "delete_file",
         "create_dir",
         "delete_dir",
@@ -659,7 +712,7 @@ impl AgentLoop {
     /// 路径提取见 [`extract_diag_feedback_paths`]。
     #[cfg_attr(not(feature = "lsp"), allow(dead_code))]
     pub(crate) const DIAGNOSTICS_WRITE_TOOLS: &'static [&'static str] =
-        &["write_file", "edit_file", "append_file", "multiedit"];
+        &["write_file", "edit_file", "multiedit"];
 
     /// 读 `agents.defaults.diagnostics_loop`（世代快照读，同
     /// `current_tool_doc_folding` 的世代化模式——dashboard/CLI 可在网

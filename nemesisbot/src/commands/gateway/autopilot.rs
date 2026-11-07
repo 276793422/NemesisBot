@@ -275,6 +275,89 @@ pub(crate) fn sweep_dispatch_timeouts(
         } else {
             format!("派发超时（{timeout_secs}s 无回报）")
         };
+        // ---- B37 人优先槽位（D6 拍板 b 形态）：自治重派前置闸 ----
+        // 目标 worker 若已满载（在途派发 ≥ `board.worker_max_inflight`），
+        // 本 tick **不 fail 不重派**（record 保持 active）：超时只是观测
+        // 阈值，worker 可能仍在跑原任务；一旦 fail，issue 停在 in_progress
+        //（状态机不允 in_progress→todo），而停车场候选只捞 backlog/todo
+        // —— fail 之后再想停车就是死胡同。满载 skip + 去重 ⏸ 评论，下
+        // tick 目标空闲自然走正常处置链。负载按「fail 后」口径算：被清扫
+        // 记录自己占的槽先扣除（fail 正要释放它），否则单记录超时会被自己
+        // 顶满的 cap 永久卡死。TOCTOU 小窗可接受——闸是 load-shedding
+        // 启发式，不是正确性不变量（真派发还过 dispatch_issue_core 的
+        // estop/状态/在途闸）。estop 已含在 autonomous 判定里。
+        if autonomous {
+            let cap = nemesis_web::handlers::board::board_flags_from_home(Some(&deps.home))
+                .map(|c| c.worker_max_inflight)
+                .unwrap_or(1);
+            if cap > 0 {
+                // 前置目标预选（与下方自治臂同款判定）：换节点类先挑候选
+                //（此刻本 round 的 ⛔ 还没落，fail_class 只含此前轮次；
+                // sweep_fail_settle 不写 fail_class 标记行 → 预选与臂内
+                // 判定同源同值）；瞬态/无分类按原 worker 重试。
+                let switch_pre = offline_triggered
+                    || matches!(
+                        latest_fail_class(
+                            &store.list_comments(record.issue_id).unwrap_or_default()
+                        ),
+                        Some(f) if redispatch_policy(f) != FailClassPolicy::TransientRetry
+                    );
+                let tentative = if switch_pre {
+                    store
+                        .get_issue(record.issue_id)
+                        .ok()
+                        .and_then(|i| pick_sweep_switch_target(deps, &i, &record.worker_id))
+                } else {
+                    Some(record.worker_id.clone())
+                };
+                if let Some(tentative) = tentative {
+                    // 身份口径统一（dispatch_subissue_auto 同款）：归一化到
+                    // 节点 id 后再查负载——防 name/id 双键分裂计数。
+                    let canonical = cluster
+                        .canonical_peer_id(&tentative)
+                        .unwrap_or_else(|| tentative.clone());
+                    let rec_key = cluster
+                        .canonical_peer_id(&record.worker_id)
+                        .unwrap_or_else(|| record.worker_id.clone());
+                    let mut load = store.count_active_dispatch_by_worker().unwrap_or_default();
+                    if let Some(slot) = load.get_mut(&rec_key) {
+                        *slot = slot.saturating_sub(1);
+                    }
+                    if nemesis_web::handlers::board::inflight_full(&load, &canonical, cap) {
+                        // 去重：最后一条 system 评论已是满载暂缓说明 → 不
+                        // 重复落（20s 一 tick，不刷屏；与 dispatch_subissue_auto
+                        // 共用 INFLIGHT_NOTICE_MARK，互见即去重）。
+                        let already_noted = store
+                            .last_system_comment(record.issue_id)
+                            .ok()
+                            .flatten()
+                            .map(|c| c.contains(nemesis_web::handlers::board::INFLIGHT_NOTICE_MARK))
+                            .unwrap_or(false);
+                        if !already_noted {
+                            let _ = store.add_comment(nemesis_board::NewComment {
+                                issue_id: record.issue_id,
+                                author: nemesis_board::Actor::system("board-sweep"),
+                                content: format!(
+                                    "⏸ {}（{canonical} 在途 {inflight}/{cap}）：自动派发暂缓，监察环本 tick 不失败不重派，目标空闲后自动重估（task {}）",
+                                    nemesis_web::handlers::board::INFLIGHT_NOTICE_MARK,
+                                    record.task_id,
+                                    inflight = load.get(&canonical).copied().unwrap_or(0),
+                                ),
+                                parent_id: None,
+                                ctype: nemesis_board::CommentType::System,
+                            });
+                        }
+                        warn!(
+                            "[Board][Sweep] task {} 目标 {canonical} 在途派发已满（{}/{}），本 tick 暂缓失败处置",
+                            record.task_id,
+                            load.get(&canonical).copied().unwrap_or(0),
+                            cap
+                        );
+                        continue;
+                    }
+                }
+            }
+        }
         // 竞态闸（双闸之一， 代际扩展）：赢者才能收尾/自治。
         let rec = match store.fail_dispatch_checked(&record.task_id, &reason, record.generation) {
             Ok(Some(rec)) => Some(rec),

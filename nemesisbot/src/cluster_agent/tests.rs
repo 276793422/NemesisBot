@@ -3450,6 +3450,151 @@ fn task_prompt_fence_switch_off_disables_but_yaml_still_stripped() {
     assert!(prompt.contains("# 执行职能：产品经理"), "{prompt}");
 }
 
+// ---------------------------------------------------------------------------
+// B36：职能工具供给裁剪 trim（board.worker.tool_trim.enabled；D5 拍板做成
+// 开关，默认关 = 零行为变化）。装配语义测试：声明常在、开闸才生效。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn apply_tool_trim_preserves_exempt_and_drops_declared() {
+    // question 豁免恒保（worker 向人求助的通道不裁）；声明工具被裁；
+    // 未声明的照常保留；trim 缺席 = 原样返回。
+    let base: Vec<String> = ["question", "exec", "git", "read_file"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let out = super::apply_tool_trim(base.clone(), Some(&["exec", "git"]));
+    assert_eq!(out, vec!["question".to_string(), "read_file".to_string()]);
+    let out = super::apply_tool_trim(base, None);
+    assert_eq!(out.len(), 4, "trim 缺席零裁剪");
+}
+
+#[test]
+fn task_prompt_tool_trim_off_is_zero_change() {
+    // 默认态（无 config / enabled 缺省 false）：product 围栏白名单原样
+    // （含 git——trim 声明在但闸关着不生效）。
+    let agent_loop = make_loop_without_session_store();
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("product")),
+    );
+    assert_eq!(cfg.tools, expected_default_fence(), "关闸零裁剪");
+    assert_eq!(cfg.tool_fence_profession.as_deref(), Some("product"));
+}
+
+#[test]
+fn task_prompt_tool_trim_on_subtracts_from_fence_whitelist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_config_path(write_switch_config(
+        tmp.path(),
+        r#"{"board":{"worker":{"tool_trim":{"enabled":true}}}}"#,
+    ));
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("product")),
+    );
+    // product trim 声明 = exec/async_shell/git；fence 白名单只含 git → 裁 1。
+    let expected: Vec<String> = expected_default_fence()
+        .into_iter()
+        .filter(|t| t != "git")
+        .collect();
+    assert_eq!(cfg.tools, expected, "trim 从围栏白名单补集裁掉 git");
+    assert_eq!(
+        cfg.tool_fence_profession.as_deref(),
+        Some("product"),
+        "trim 臂照常写职能标注（拒绝文案 who 子句）"
+    );
+}
+
+#[test]
+fn task_prompt_tool_trim_no_fence_slug_narrows_full_registry() {
+    // 裸 AgentLoop::new 不跑工具装配（l10 同款前置条件）——测试自插桩，
+    // 模拟生产注册表含 git/exec/read_file 的形态。
+    struct TrimStubTool;
+    #[async_trait::async_trait]
+    impl nemesis_agent::r#loop::Tool for TrimStubTool {
+        async fn execute(
+            &self,
+            _args: &str,
+            _context: &nemesis_agent::context::RequestContext,
+        ) -> Result<String, String> {
+            Ok("trim-stub-ok".to_string())
+        }
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut agent_loop = make_loop_without_session_store();
+    for name in ["git", "exec", "read_file", "question"] {
+        agent_loop.register_tool(name.to_string(), Box::new(TrimStubTool));
+    }
+    agent_loop.set_config_path(write_switch_config(
+        tmp.path(),
+        r#"{"board":{"worker":{"tool_trim":{"enabled":true}}}}"#,
+    ));
+    // test-blackbox：契约无围栏块（fail-open 臂）+ trim 声明 = git。
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("test-blackbox")),
+    );
+    // 注册表是 HashMap（键序不定）——按集合语义断言（排序后比较）。
+    let mut got = cfg.tools.clone();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "exec".to_string(),
+            "question".to_string(),
+            "read_file".to_string()
+        ],
+        "trim 臂：全注册表 − git（question 豁免恒保）"
+    );
+    assert_eq!(cfg.tool_fence_profession.as_deref(), Some("test-blackbox"));
+
+    // 对照组：同 slug 关闸 = 零变化（不写 tools，fail-open 原样）。
+    let mut agent_loop2 = make_loop_without_session_store();
+    for name in ["git", "exec", "read_file"] {
+        agent_loop2.register_tool(name.to_string(), Box::new(TrimStubTool));
+    }
+    let cfg2 = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop2,
+        &prof_task(Some("test-blackbox")),
+    );
+    assert!(cfg2.tools.is_empty());
+    assert!(cfg2.tool_fence_profession.is_none());
+}
+
+#[test]
+fn task_prompt_tool_trim_unknown_or_undeclared_slug_zero_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_config_path(write_switch_config(
+        tmp.path(),
+        r#"{"board":{"worker":{"tool_trim":{"enabled":true}}}}"#,
+    ));
+    // 未知 slug（非内置）无 trim 声明 = 零变化。
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("ghost:team")),
+    );
+    assert!(cfg.tools.is_empty(), "未知职能零裁剪");
+    assert!(cfg.tool_fence_profession.is_none());
+
+    // dev:cpp 内置但 trim 声明为空 = 同样零变化。
+    let cfg = super::task_system_prompt(
+        &make_test_config(),
+        &agent_loop,
+        &prof_task(Some("dev:cpp")),
+    );
+    assert!(cfg.tools.is_empty(), "空 trim 声明零裁剪");
+    assert!(cfg.tool_fence_profession.is_none());
+}
+
 #[test]
 fn task_prompt_fence_switch_default_on_and_explicit_on() {
     let tmp = tempfile::tempdir().unwrap();

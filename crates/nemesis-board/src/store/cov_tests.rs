@@ -378,6 +378,7 @@ fn autopilot_patch_validation_and_partial_update() {
             auto_plan: false,
             acceptance_criteria: None,
             session_key: None,
+            mode: crate::models::AUTOPILOT_MODE_LIVE.to_string(),
         })
         .unwrap();
 

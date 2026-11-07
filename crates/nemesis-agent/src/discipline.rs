@@ -10,10 +10,11 @@
 //! ——关 = 整个子系统不注册不生效）。
 //!
 //! **声明闸**（内部 ToolHook，首位注册）：参与中 + 工具 ∈
-//! {write_file, edit_file, append_file, delete_file} 且路径不在
+//! {write_file, edit_file（含 action=append）, delete_file} 且路径不在
 //! `.discipline/**` 且无有效声明 → `HookDecision::Block`（文案即纪律提示：
 //! 六字段 schema）。`.discipline/**` 豁免——否则鸡生蛋（首次写声明本身
-//! 被闸）。
+//! 被闸）。2026-11-06：append_file 并入 edit_file（action=append），闸面
+//! 由 edit_file 条目一并承载。
 //!
 //! **证伪执行**（内部 LifecycleHook）：参与中 + 有声明 + 证伪未跑或上次
 //! 未过 → on_turn_end 先跑 `falsification_cmd`（**规则层安全管线前置**
@@ -79,10 +80,11 @@ const FALSIFICATION_TIMEOUT_SECS: u64 = 120;
 /// falsification-{n}.json 里的输出节选上限（字符）。
 const FALSIFICATION_OUTPUT_EXCERPT: usize = 2000;
 
-/// 闸面工具集（计划 v1）：四文件变更工具。名字与
+/// 闸面工具集（计划 v1）：三文件变更工具。名字与
 /// `config_watch.rs::PLAN_MODE_WRITE_TOOLS` 的文件子集一致（注册名真相源
-/// 在 registry 构建）。
-const GATED_TOOLS: &[&str] = &["write_file", "edit_file", "append_file", "delete_file"];
+/// 在 registry 构建）。2026-11-06：append_file 并入 edit_file（action=append），
+/// 追加写面由 edit_file 条目一并承载。
+const GATED_TOOLS: &[&str] = &["write_file", "edit_file", "delete_file"];
 
 // ---------------------------------------------------------------------------
 // 声明规范文件

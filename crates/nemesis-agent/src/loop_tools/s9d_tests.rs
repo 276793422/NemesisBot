@@ -9,8 +9,8 @@
 //! - 363-365 ListDirectoryTool::is_read_only。
 //! - 496/514/519-526 EditFileTool：读目录失败；readonly 写失败（探针
 //!   门控）；preview。
-//! - 550/560/573-581 AppendFileTool：建目录失败；路径是目录 → 打开失败；
-//!   preview 双臂。
+//! - 550/560/573-581 edit_file action=append（旧 AppendFileTool，2026-11-06
+//!   并入）：建目录失败；路径是目录 → 打开失败；preview 双臂。
 //! - 614/619-625/651 DeleteFileTool：readonly 删除失败（探针门控）；
 //!   不存在 / 是目录臂；preview。
 //! - 684 DeleteDirTool：含 readonly 文件的目录删除失败（探针门控）+
@@ -23,7 +23,7 @@
 //! - 3205-3206 SkillManageTool::do_create：SKILL.md 被目录占位 → 写失败
 //!   回滚臂。
 //! - 3368/3468/3525/5155/5167/5196/5131-5133：各工具无效 JSON 参数臂 +
-//!   WorkflowRunTool input 三臂/description/未知工作流失败。
+//!   WorkflowTool action=run input 三臂/description/未知工作流失败。
 //! - 3490-3492 GrepTool::is_read_only。
 //! - 3571/3597/3603/3617/3630 grep_recursive：预满提前返回 / glob 过滤 /
 //!   >1MB 跳过 / 超长多字节行截断 / 行循环封顶（私有函数直调）。
@@ -227,36 +227,36 @@ async fn edit_file_tool_read_error_write_error_and_preview() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-// ---------- AppendFileTool 550/560/573-581 ----------
+// ---------- EditFileTool action=append（旧 AppendFileTool 550/560/573-581） ----------
 
 #[tokio::test]
-async fn append_file_tool_error_arms_and_preview() {
+async fn edit_file_append_error_arms_and_preview() {
     let ws = temp_ws("af");
     let blocker = ws.join("blocker_file");
     std::fs::write(&blocker, "x").unwrap();
 
     // 550：parent 是文件 → create_dir_all 失败。
-    let args =
-        serde_json::json!({"path": ps(&blocker.join("leaf.txt")), "content": "hi"}).to_string();
-    let out = super::AppendFileTool::default()
-        .execute(&args, &ctx())
-        .await;
+    let args = serde_json::json!({"path": ps(&blocker.join("leaf.txt")), "content": "hi", "action": "append"})
+        .to_string();
+    let out = super::EditFileTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to create directories"));
 
     // 560：目标是目录 → 打开失败。
-    let args = serde_json::json!({"path": ps(&ws), "content": "hi"}).to_string();
-    let out = super::AppendFileTool::default()
-        .execute(&args, &ctx())
-        .await;
+    let args =
+        serde_json::json!({"path": ps(&ws), "content": "hi", "action": "append"}).to_string();
+    let out = super::EditFileTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to open file"));
 
     // 573-581：preview Modify（已存在）与 Create（不存在）。
     let existing = ws.join("exists.txt");
     std::fs::write(&existing, "x").unwrap();
-    let a1 = serde_json::json!({"path": ps(&existing), "content": "y"}).to_string();
-    let a2 = serde_json::json!({"path": ps(&ws.join("fresh.txt")), "content": "y"}).to_string();
-    assert!(super::AppendFileTool::default().preview(&a1).is_some());
-    assert!(super::AppendFileTool::default().preview(&a2).is_some());
+    let a1 =
+        serde_json::json!({"path": ps(&existing), "content": "y", "action": "append"}).to_string();
+    let a2 =
+        serde_json::json!({"path": ps(&ws.join("fresh.txt")), "content": "y", "action": "append"})
+            .to_string();
+    assert!(super::EditFileTool::default().preview(&a1).is_some());
+    assert!(super::EditFileTool::default().preview(&a2).is_some());
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -560,13 +560,13 @@ async fn git_tool_invalid_json() {
     let _ = std::fs::remove_dir_all(&ws);
 }
 
-// ---------- WorkflowRunTool 5131-5133/5155/5167/5196 ----------
+// ---------- WorkflowTool action=run 5131-5133/5155/5167/5196 ----------
 
 #[cfg(feature = "workflow")]
 #[tokio::test]
-async fn workflow_run_tool_metadata_and_input_arms() {
+async fn workflow_action_run_metadata_and_input_arms() {
     let engine = std::sync::Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
-    let tool = super::WorkflowRunTool::new(engine);
+    let tool = super::WorkflowTool::new(engine);
     assert!(!tool.description().is_empty());
 
     // 5155：无效 JSON。
@@ -575,7 +575,10 @@ async fn workflow_run_tool_metadata_and_input_arms() {
 
     // 5167：input 是对象 → map 收集；未知工作流 → 5196 错误臂。
     let out = tool
-        .execute(r#"{"workflow":"no_such_flow","input":{"a":1}}"#, &ctx())
+        .execute(
+            r#"{"action":"run","workflow":"no_such_flow","input":{"a":1}}"#,
+            &ctx(),
+        )
         .await;
     assert!(
         out.unwrap_err().contains("failed to execute"),
@@ -583,7 +586,9 @@ async fn workflow_run_tool_metadata_and_input_arms() {
     );
 
     // input 非 object → 类型错误臂。
-    let out = tool.execute(r#"{"workflow":"x","input":5}"#, &ctx()).await;
+    let out = tool
+        .execute(r#"{"action":"run","workflow":"x","input":5}"#, &ctx())
+        .await;
     assert!(out.unwrap_err().contains("must be an object"));
 }
 

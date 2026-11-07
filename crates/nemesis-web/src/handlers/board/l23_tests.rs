@@ -62,6 +62,7 @@ fn new_ap(name: &str, session_key: Option<String>, enabled: bool) -> nemesis_boa
         auto_plan: false,
         acceptance_criteria: None,
         session_key,
+        mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
     }
 }
 

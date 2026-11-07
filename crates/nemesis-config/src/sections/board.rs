@@ -224,6 +224,8 @@ pub struct BoardFlagConfig {
     pub unavailable: BoardUnavailableConfig,
     /// 重规划器配置（`board.replan` 段）。
     pub replan: BoardReplanConfig,
+    /// worker 执行面配置（`board.worker` 段；B36 工具供给裁剪开关）。
+    pub worker: BoardWorkerConfig,
 }
 
 impl Default for BoardFlagConfig {
@@ -252,8 +254,29 @@ impl Default for BoardFlagConfig {
             fingerprint_weighting: false,
             unavailable: BoardUnavailableConfig::default(),
             replan: BoardReplanConfig::default(),
+            worker: BoardWorkerConfig::default(),
         }
     }
+}
+
+/// worker 执行面配置（`board.worker` 段；B36）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardWorkerConfig {
+    /// 职能工具供给裁剪开关（D5 拍板：做成开关，默认 false = 零行为变化）。
+    /// true 时 B 端按职能 CATALOG 声明的 `tool_trim` 清单从执行面**补集**
+    /// 白名单里裁掉对应工具（声明常在、开闸才生效——关闸时 CATALOG 声明
+    /// 不产生任何行为）。经 config mtime 热感知（check_config_reload 同链），
+    /// 改动无需重启。
+    pub tool_trim: BoardToolTrimConfig,
+}
+
+/// 职能工具供给裁剪（`board.worker.tool_trim` 段）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardToolTrimConfig {
+    /// 开关本体（默认 false = 零行为变化，D5）。
+    pub enabled: bool,
 }
 
 /// 重规划器配置（`config.json` 的 `board.replan` 段）。

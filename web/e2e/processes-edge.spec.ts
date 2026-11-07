@@ -156,6 +156,12 @@ test('后台进程边角：多任务排序/丢弃徽标/上滚暂停/暗色主�
   await page.goto(BASE_URL)
   // 点击 + toHaveURL 包 toPass 重试环（processes-visual 同款）：nav-item
   // 点击偶发被吞（Vue 重渲染竞速），内层 5s 短窗给外层重试机会重发点击。
+  // 9ae5fee1 导航分组默认收起：执行单元在「管理」组内，首态收起 → 先点组
+  // 标题幂等展开（is-collapsed 才点，重试重入不会二次点击把组收回）。
+  const mgmtToggle = page.locator('.nav-section-toggle', { hasText: '管理' })
+  if (await mgmtToggle.evaluate((el) => el.classList.contains('is-collapsed'))) {
+    await mgmtToggle.click()
+  }
   await expect(async () => {
     await page.locator('.nav-item', { hasText: '执行单元' }).click()
     await expect(page).toHaveURL(/\/executors/, { timeout: 5_000 })

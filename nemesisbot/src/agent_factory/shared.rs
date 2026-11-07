@@ -379,13 +379,16 @@ pub(super) fn build_shared_tool_config(
         // background process trio — gateway-level registry
         // singleton (survives agent restarts, kills residual children on drop).
         background_registry: Some(Arc::clone(&shared.background_registry)),
+        // 2026-11-06：硬件总线工具（i2c/spi）注册总闸（`tools.hardware`
+        // 段 `enabled` 键，默认关）。
+        hardware_tools_enabled: cfg.tools.hardware.enabled,
         // （三批合并）：GPIO/I2C 地址白名单（config
         // `tools.hardware` 段；空段列表 = 内置默认 0x08-0x77）。
         hardware_policy: Some(Arc::new(nemesis_tools::hardware::HardwarePolicy {
             i2c_allow_ranges: cfg.tools.hardware.i2c_allow_ranges.clone(),
             i2c_deny_ranges: cfg.tools.hardware.i2c_deny_ranges.clone(),
         })),
-        // /：workspace 写租约（`agents.lease_enabled` 默认开）——
+        // workspace 写租约（`agents.lease_enabled` 默认开）——
         // 装配期消费：Some = register_shared_tools 把写类工具换成租约守
         // 卫包装（跨主 loop / 项目 loop / executor 子进程互斥写）。持
         // 有者名带进程 PID，前端 system.lease_status 展示。

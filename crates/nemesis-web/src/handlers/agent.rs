@@ -258,9 +258,9 @@ impl AgentHandler {
         }
     }
 
-    /// `agent.rewind {turn}` — restore the workspace to the start of the given
-    /// turn (the edit safety net). Returns the paths written back and deleted.
-    /// 可选 session_id——项目会话回退项目目录文件（项目 loop 的
+    /// `agent.rewind {turn, session_id}` — restore the workspace to the start
+    /// of the given turn (the edit safety net). Returns the paths written back
+    /// and deleted. session_id 指向项目会话时回退项目目录文件（项目 loop 的
     /// checkpoint 影子库在主 workspace `logs/project_checkpoints/<pid>/`）。
     async fn rewind(
         &self,
@@ -273,33 +273,27 @@ impl AgentHandler {
             .and_then(|v| v.as_u64())
             .ok_or("turn is required")? as usize;
         // 历史手术面统一持会话闸（rewind_to_message/undo/
-        // redo/delete/clear/compact 同族纪律， 家族一致性）——旧形态裸调
+        // redo/delete/clear/compact 同族纪律）——旧形态裸调
         // al.rewind(turn)，与在途轮次的会话落库/jsonl 写入并发竞争。
-        let (session_key, agent_loop) = match data
+        // session_id 必填：旧 None 分支以 WS 连接 id
+        // （ctx.session_id = 每连接随机 16-hex，不是聊天会话 id）伪造会话键，
+        // 会话闸的两道防线（集群续行在途检查 + per-key busy 锁）对不存在的
+        // 键恒空转，与真实会话在飞回合的互斥消失；且恢复按主 loop 全局
+        // turn 序号走，调用方拿连接 id 无从对应。对齐同族纪律
+        // （chat.compact/clear、sessions.rewind_to_message 均必填
+        // session_id）：缺失诚实报错。首方前端从不调 agent.rewind（消息级
+        // 回退走 sessions.rewind_to_message），收紧零破坏。
+        let sid = data
             .get("session_id")
             .and_then(|v| v.as_str())
+            .map(str::trim)
             .filter(|s| !s.is_empty())
-        {
-            Some(sid) => {
-                let session_key = format!(
-                    "agent:main:session:{}",
-                    nemesis_agent::session::SessionStore::sanitize_session_id(sid)
-                );
-                let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
-                (session_key, Some(al))
-            }
-            None => {
-                // 缺省 = 当前聊天会话（chat.rs sync 同构缺省形态）。
-                let session_key = format!(
-                    "agent:main:session:{}",
-                    nemesis_agent::session::SessionStore::sanitize_session_id(&ctx.session_id)
-                );
-                (session_key, ctx.state.agent_loop.read().clone())
-            }
-        };
-        let Some(al) = agent_loop else {
-            return Err("Agent not running".to_string());
-        };
+            .ok_or("missing session_id (agent.rewind is session-scoped)")?;
+        let session_key = format!(
+            "agent:main:session:{}",
+            nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+        );
+        let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
         let report = al
             .under_history_gate(&session_key, "回退", || al.rewind(turn))
             .await?;

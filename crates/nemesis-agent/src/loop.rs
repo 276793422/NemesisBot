@@ -1472,6 +1472,11 @@ mod recovery_classifier_tests;
 // 令牌是唯一出口）。
 #[cfg(test)]
 mod recovery_stop_tests;
+// BUG-20261107-026 回归锁：恢复环 cancel/estop 中断面——环顶闸
+// （engaged → 零调用）/ 退避与限流 sleep 可打断 / 在途重呼调用可打断
+// （Err(Done) 终局 + 快照清理 + 不再发新调用）。
+#[cfg(test)]
+mod recovery_estop_tests;
 // 恢复环 tool_defs 供给闸回归锁：三恢复环重试请求的
 // 工具面必须与主链路 effective_tool_defs 同源（hidden/tier 等供给闸在
 // 恢复重试上同样生效）。
@@ -1568,6 +1573,17 @@ mod cancel_linkage_tests;
 // 空流零帧、error 截断终态、包装器合成增量与真实流两臂。
 #[cfg(test)]
 mod provider_stream_tests;
+// S16（2026-11-06 B29/B30 设计 §3）流中断终局 estimated 账本行：头行解析
+// 纯函数（防伪造）/ providers estimated_output_tokens 跨锚互证 / 终局行
+// 三态（estimated / usage_missing / 零行）落账断言。
+#[cfg(test)]
+mod stream_ledger_tests;
+
+// S8（2026-11-06 B29/B30 设计 §4）aux 杂务账本归因：title/summary/branch_
+// summary 三族落账行断言（usage 在场=真实 token 计价 / 缺失=estimated 注
+// 记零计价）+ 失败路径零行 + 重试成功恰一行。
+#[cfg(test)]
+mod aux_ledger_tests;
 
 // rewind 冲突预检（外部修改拒绝 + force 强
 // 过 + redo 往返）编排测试。用例全部 git 形态（stage_sealed_two_turns

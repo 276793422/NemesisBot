@@ -1167,10 +1167,18 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
 })
 
 describe('BoardTabs（页签顺序）', () => {
-  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 流程图 → 收件箱 → 自动化 → 讨论 → 决策流 → 配置', () => {
+  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 流程图 → 收件箱 → 需要人的事 → 自动化 → 讨论 → 决策流 → 配置', () => {
     const w = mount(BoardTabs, { props: { modelValue: 'projects' } })
     const labels = w.findAll('button').map((b) => b.text())
-    expect(labels).toEqual(['项目', '列表', '看板', '流程图', '收件箱', '自动化', '讨论', '决策流', '配置'])
+    expect(labels).toEqual(['项目', '列表', '看板', '流程图', '收件箱', '需要人的事', '自动化', '讨论', '决策流', '配置'])
+  })
+
+  it('B35：needs_human 徽标只在信号数 > 0 时显示', () => {
+    const zero = mount(BoardTabs, { props: { modelValue: 'needs_human', needsHuman: 0 } })
+    expect(zero.find('[data-test="needs-human-badge"]').exists()).toBe(false)
+    const some = mount(BoardTabs, { props: { modelValue: 'needs_human', needsHuman: 3 } })
+    expect(some.find('[data-test="needs-human-badge"]').exists()).toBe(true)
+    expect(some.find('[data-test="needs-human-badge"]').text()).toBe('3')
   })
 
   it('点击页签 emit update:modelValue', async () => {

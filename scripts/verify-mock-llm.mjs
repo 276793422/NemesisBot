@@ -6,7 +6,7 @@
  *   - POST /v1/chat/completions
  *     · 按「最后一条 user 消息的路由标记」分派（e2e specs 与旧脚本共用）：
  *         - 最后一条消息 role=tool        → 最终文本回复（工具轮次收尾）
- *         - 最后一条 user 含 E2E_WF_GEN   → workflow_create 工具调用
+ *         - 最后一条 user 含 E2E_WF_GEN   → workflow 工具调用（action=create）
  *           （definition 为一份合法的 cron+http+llm 小工作流，过 DAG 校验）
  *         - 最后一条 user 含 E2E_TOOL_EXEC → exec 工具调用（审批卡 e2e 用；
  *           命令含 E2E_APPROVAL_MARKER，由 e2e workspace 的安全 ask 规则拦审批）
@@ -88,7 +88,7 @@ function lastUserText(body) {
 function routeRequest(body) {
   if (lastRole(body) === 'tool') return 'final'
   const text = lastUserText(body)
-  if (text.includes('E2E_WF_GEN')) return 'workflow_create'
+  if (text.includes('E2E_WF_GEN')) return 'wf_create'
   if (text.includes('E2E_TOOL_EXEC')) return 'exec_tool'
   // SPAWN2 必须先于 SPAWN 判——'E2E_TOOL_SPAWN2' 包含 'E2E_TOOL_SPAWN' 子串。
   if (text.includes('E2E_TOOL_SPAWN2')) return 'spawn_tool_2'
@@ -109,7 +109,7 @@ function recordEvidence(body) {
   if (!EVIDENCE) return
   const text = JSON.stringify(body?.messages ?? [])
   const hasSection = text.includes('Workflow Editor Session')
-  const hasCapabilities = text.includes('workflow_capabilities') || text.includes('node_type')
+  const hasCapabilities = text.includes('action=capabilities') || text.includes('node_type')
   const hasTargetYaml = text.includes('trigger_type')
   const hasOpenFiles = text.includes('Open Files (client-reported)')
   const line = `${new Date().toISOString()} last_role=${lastRole(body)} route=${routeRequest(body)} wf_edit_section=${hasSection} yaml_like=${hasTargetYaml} caps_like=${hasCapabilities} open_files=${hasOpenFiles} msgs=${(body?.messages ?? []).length}\n`
@@ -151,7 +151,7 @@ function messagePayload(route, body) {
       usage: { prompt_tokens: 800, completion_tokens: 60, total_tokens: 860 },
     }
   }
-  if (route === 'workflow_create') {
+  if (route === 'wf_create') {
     return {
       ...base,
       choices: [
@@ -165,8 +165,8 @@ function messagePayload(route, body) {
                 id: 'call_mock_1',
                 type: 'function',
                 function: {
-                  name: 'workflow_create',
-                  arguments: JSON.stringify({ definition: DEFINITION }),
+                  name: 'workflow',
+                  arguments: JSON.stringify({ action: 'create', definition: DEFINITION }),
                 },
               },
             ],

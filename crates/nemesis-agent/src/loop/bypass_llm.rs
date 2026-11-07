@@ -132,6 +132,10 @@ where
 /// 不触发。超时仍包在重试外层（总墙钟预算 = timeout，不随重试放大）；
 /// 最终结果再过一次 [`guarded_llm_call`] 的完整校验（幂等，兜住归一外的
 /// 形态）。
+///
+/// S8：无账本载荷的旧签名——委托 [`guarded_llm_call_retrying_ledgered`]（
+/// [`AuxLedger::disabled`] 不落账），护栏/重试/文案行为逐字节零变化
+/// （bypass_llm_tests 回归钉死）。
 pub async fn guarded_llm_call_retrying<F, Fut>(
     label: &str,
     timeout: Duration,
@@ -141,19 +145,201 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<String, String>>,
 {
-    // 归一在闭包体内完成（future 只持有已产出的 Fut，不借环境——保住
-    // FnMut 的可重复调用性）。
-    let attempt = || {
+    guarded_llm_call_retrying_ledgered(label, timeout, AuxLedger::disabled(), move || {
         let r = make_call();
         async move {
+            r.await.map(|content| AuxOutcome {
+                content,
+                usage: None,
+            })
+        }
+    })
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// S8（2026-11-06 B29/B30 设计 §4）：杂务调用账本落账
+// ---------------------------------------------------------------------------
+
+/// 杂务调用的产出形态：文本 + 可选实测 usage。provider 回传 usage 时原样
+/// 携带（实测口径入账/计价），缺失时 `None`（账本行按 estimated 注记口径
+/// 诚实降级，不造数）。
+pub struct AuxOutcome {
+    pub content: String,
+    pub usage: Option<crate::loop_executor::ObserverUsageInfo>,
+}
+
+/// 杂务调用的账本归因载荷（设计 §4.2：复用 `insert_request_log` 同一真相
+/// 源，不新增 observer 事件类型）。`aux_kind` 四族：`title` / `summary` /
+/// `branch_summary` / `forge_review`（调用点传入）；同一值写 RequestLog 的
+/// `provider_type` 列（organ-5 主链路恒空串——非空即杂务，单一判别列，
+/// 用量统计据此分家）。[`AuxLedger::disabled`] = 不落账：旧签名
+/// [`guarded_llm_call_retrying`] 以此形态委托 ledgered 版，行为零变化。
+pub struct AuxLedger<'a> {
+    pub aux_kind: &'a str,
+    pub model: &'a str,
+    pub session_key: Option<&'a str>,
+    pub data_store: Option<&'a std::sync::Arc<nemesis_data::DataStore>>,
+}
+
+impl AuxLedger<'_> {
+    pub fn disabled() -> Self {
+        Self {
+            aux_kind: "",
+            model: "",
+            session_key: None,
+            data_store: None,
+        }
+    }
+}
+
+/// [`guarded_llm_call_retrying`] 的落账版：护栏/重试/超时/归一语义与旧
+/// 签名**逐字节相同**（S8 纪律：不改变 aux 通道任何既有行为——重试/超时/
+/// 模型回落链零变化，只在成功返回处补一次账本写入）；差异仅两处——尝试
+/// 闭包产出 [`AuxOutcome`]（带 usage），成功路径落 RequestLog（失败/超时/
+/// 空输出不落账——成功专用轻量可见性，与 organ-5 主链路及 S16 终局行
+/// 互补）。
+pub async fn guarded_llm_call_retrying_ledgered<F, Fut>(
+    label: &str,
+    timeout: Duration,
+    ledger: AuxLedger<'_>,
+    mut make_call: F,
+) -> Result<String, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<AuxOutcome, String>>,
+{
+    // 账本计时从首次尝试起（覆盖重试窗口的总墙钟，与护栏超时语义一致）。
+    let started = std::time::Instant::now();
+    // usage 槽位：成功尝试把实测 usage 带出重试链（失败尝试不写、重试成功
+    // 覆盖——槽位与最终 Ok 恒一致）；文本归一成 String 形态复用旧护栏原样
+    // （超时/空输出归一/文案单一真相源 [`guarded_llm_call`]，不因落账分叉
+    // 第二套臂）。锁不跨 await（语句内即释放），async 语境安全。
+    let usage_slot = std::sync::Mutex::new(None::<crate::loop_executor::ObserverUsageInfo>);
+    // 归一在闭包体内完成（future 只持有已产出的 Fut，不借环境——保住
+    // FnMut 的可重复调用性）；文案与旧签名逐字节一致（bypass_llm_tests 钉）。
+    let attempt = || {
+        let r = make_call();
+        // 槽位按引用进 future（async move 搬所有权会把外层闭包降级 FnOnce）。
+        let slot = &usage_slot;
+        async move {
             match r.await {
-                Ok(c) if c.trim().is_empty() => {
+                Ok(out) if out.content.trim().is_empty() => {
                     tracing::warn!("[bypass:{label}] 模型返回空输出，按失败处理");
                     Err(format!("[bypass:{label}] 空输出，按失败处理"))
                 }
-                other => other,
+                Ok(out) => {
+                    *slot.lock().expect("aux usage slot poisoned") = out.usage;
+                    Ok(out.content)
+                }
+                Err(e) => Err(e),
             }
         }
     };
-    guarded_llm_call(label, timeout, with_one_retry(label, attempt)).await
+    let result = guarded_llm_call(label, timeout, with_one_retry(label, attempt)).await;
+    if let Ok(content) = &result {
+        // guard 先绑定（guard 临时值活到语句尾，链式 .as_ref() 会悬垂）。
+        let usage_guard = usage_slot.lock().expect("aux usage slot poisoned");
+        write_aux_ledger_row(&ledger, usage_guard.as_ref(), content, started.elapsed());
+    }
+    result
+}
+
+/// 杂务成功调用落一条账本行（`insert_request_log` 同一真相源）。usage
+/// 在场 = 实测口径（token 列真实值 + `compute_cost_breakdown` 计价，与
+/// organ-5 `record_round_usage` 同一套公式）；usage 缺失 = estimated 注记
+/// 行（字符数 + `ceil/4` 估算、token/计价列全 0——估算值绝不冒充实测入
+/// 计价，§7 口径：estimated 行只进用量可见性不进计价总额）。空输出永远
+/// 到不了这里（护栏已按失败处理）→ 无需 usage_missing 臂。
+fn write_aux_ledger_row(
+    ledger: &AuxLedger<'_>,
+    usage: Option<&crate::loop_executor::ObserverUsageInfo>,
+    content: &str,
+    latency: std::time::Duration,
+) {
+    let Some(ds) = ledger.data_store else {
+        return;
+    };
+    let error_message = match usage {
+        Some(_) => None,
+        None => {
+            let n = content.chars().count();
+            let est = (n as u64).div_ceil(4);
+            Some(format!(
+                "[estimated] {}: 输出 {n} 字符 ≈ {est} output tokens（估算值不入计价；provider 未回传实测 usage）",
+                ledger.aux_kind
+            ))
+        }
+    };
+    let (input_tokens, output_tokens, cache_creation, cache_read, pricing) = if let Some(u) = usage
+    {
+        let cache_creation = u.cache_creation_tokens.unwrap_or(0);
+        let cache_read = u.cache_read_tokens.or(u.cached_tokens).unwrap_or(0);
+        let breakdown = ds.compute_cost_breakdown(
+            ledger.model,
+            u.prompt_tokens,
+            u.completion_tokens,
+            cache_creation,
+            cache_read,
+        );
+        let empty = nemesis_data::CostBreakdown::default();
+        let bd = breakdown.as_ref().unwrap_or(&empty);
+        (
+            u.prompt_tokens,
+            u.completion_tokens,
+            cache_creation,
+            cache_read,
+            (
+                bd.total_cost_usd,
+                bd.pricing_model.clone(),
+                bd.input_cost_usd,
+                bd.output_cost_usd,
+                bd.cache_creation_cost_usd,
+                bd.cache_read_cost_usd,
+            ),
+        )
+    } else {
+        (0, 0, 0, 0, (0.0, String::new(), 0.0, 0.0, 0.0, 0.0))
+    };
+    let (
+        total_cost_usd,
+        pricing_model,
+        input_cost_usd,
+        output_cost_usd,
+        cache_creation_cost_usd,
+        cache_read_cost_usd,
+    ) = pricing;
+    let log = nemesis_data::RequestLog {
+        id: 0,
+        trace_id: format!(
+            "aux-{}-{}",
+            ledger.aux_kind,
+            chrono::Local::now().timestamp_millis()
+        ),
+        model: ledger.model.to_string(),
+        provider_type: ledger.aux_kind.to_string(),
+        input_tokens,
+        output_tokens,
+        cache_creation_tokens: cache_creation,
+        cache_read_tokens: cache_read,
+        total_cost_usd,
+        latency_ms: latency.as_millis() as i64,
+        status_code: 200,
+        error_message,
+        is_streaming: false,
+        created_at: chrono::Local::now().timestamp(),
+        pricing_model,
+        input_cost_usd,
+        output_cost_usd,
+        cache_creation_cost_usd,
+        cache_read_cost_usd,
+        first_token_ms: None,
+        session_key: ledger.session_key.unwrap_or("").to_string(),
+    };
+    if let Err(e) = ds.insert_request_log(&log) {
+        tracing::warn!(
+            "[bypass:{}] Failed to record aux ledger row: {e}",
+            ledger.aux_kind
+        );
+    }
 }

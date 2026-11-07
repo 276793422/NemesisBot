@@ -745,8 +745,9 @@ impl DataStore {
     /// Retention sweep（保留策略，可配置）：把 `retention_days` 天前的
     /// 明细行 rollup 进 `daily_rollups` 后删除（`None` = 跳过按天清理，
     /// 对应 config `usage.retention_days = 0`）；`max_rows` 给定时再按
-    /// created_at 最旧优先裁掉超额行（防膨胀；聚合已由按天步做掉，
-    /// 仅裁增量）。返回删除的总行数。
+    /// created_at 最旧优先裁掉超额行（防膨胀；BUG-20261107-021 起被裁行
+    /// **先聚合再删**——旧形态直接删，保留窗内的行从未进 daily_rollups
+    /// 也永远不会进，永久史账少记）。返回删除的总行数。
     ///
     /// 挂载点在 gateway 周期任务（启动时 + 每 6h）；此前 `rollup_old_logs`
     /// 从未被生产调用（只有测试），本次一并接上。
@@ -767,63 +768,40 @@ impl DataStore {
         retention_days: Option<i64>,
         max_rows: Option<i64>,
     ) -> Result<u64, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut deleted_total: u64 = 0;
 
         if let Some(days) = retention_days.filter(|d| *d > 0) {
-            // cutoff 对齐 UTC 日界（floor 到当日 0 点，与下方 GROUP BY 的
-            // strftime '%Y-%m-%d' unixepoch 同族）。未对齐的 cutoff 会把
-            // 「cutoff 所在日」切成**部分聚合**写入 daily_rollups，而
-            // INSERT OR REPLACE 是整行覆盖——gateway 每 6h 一轮 sweep，
-            // 同一边界日被前后多轮 sweep 分批 rollup+删除，前几轮的贡献
-            // 被最后一轮 REPLACE 静默抹掉（永久史账系统性少记，明细已删
-            // 不可恢复）。对齐后每个 (date, model) 至多被完整 rollup 一次
-            // （写入即终态，REPLACE 仅 crash 重放时以同值重写），边界日
-            // 整日顺延到下一轮，语义 = 「最后一个完整 UTC 日之前的明细
-            // rollup 后删除」。
+            // cutoff 对齐 UTC 日界（floor 到当日 0 点，与 GROUP BY 的
+            // strftime '%Y-%m-%d' unixepoch 同族）。BUG-20261107-021 之后
+            // 对齐不再是正确性必需（聚合改加法合并 + 事务原子，同日多批
+            // 贡献累加、crash 重放不可能），保留对齐只为批次边界整齐、
+            // 与 2026-10-24 的回归锁语义连续。
             let cutoff = (chrono::Local::now().timestamp() - days * 86400) / 86400 * 86400;
-
-            conn.execute(
-                "INSERT OR REPLACE INTO daily_rollups
-                    (date, model, request_count, success_count, input_tokens, output_tokens,
-                     cache_creation_tokens, cache_read_tokens, total_cost_usd, avg_latency_ms)
-                 SELECT
-                    strftime('%Y-%m-%d', created_at, 'unixepoch'),
-                    model,
-                    COUNT(*),
-                    SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END),
-                    COALESCE(SUM(input_tokens), 0),
-                    COALESCE(SUM(output_tokens), 0),
-                    COALESCE(SUM(cache_creation_tokens), 0),
-                    COALESCE(SUM(cache_read_tokens), 0),
-                    COALESCE(SUM(total_cost_usd), 0.0),
-                    COALESCE(AVG(CASE WHEN status_code = 200 THEN latency_ms END), 0.0)
-                 FROM request_logs
-                 WHERE created_at < ?1
-                 GROUP BY strftime('%Y-%m-%d', created_at, 'unixepoch'), model",
-                params![cutoff],
-            )
-            .map_err(|e| format!("rollup insert: {e}"))?;
-
-            let deleted = conn
-                .execute(
-                    "DELETE FROM request_logs WHERE created_at < ?1",
-                    params![cutoff],
-                )
-                .map_err(|e| format!("rollup delete: {e}"))?;
-            deleted_total += deleted as u64;
+            deleted_total += sweep_step(
+                &mut conn,
+                "created_at < ?1",
+                "DELETE FROM request_logs WHERE created_at < ?1",
+                cutoff,
+            )?;
         }
 
-        // 条数上限：超出部分按最旧优先直接删（聚合已由按天步覆盖）。
+        // 条数上限：超出部分按最旧优先**先聚合再裁**（BUG-20261107-021）。
+        // 旧形态直接删——按天步只聚合 `created_at < cutoff`（保留窗之外），
+        // 超限裁的是窗内行，从未进 daily_rollups 也永远不会进（正是
+        // cutoff 对齐设计要防的「永久史账系统性少记」形态）。裁剪集 =
+        // `ORDER BY created_at DESC, id DESC` 落在最新 cap 行之后的全部行
+        // （id 决胜平 tie 确定性）；rollup 与 DELETE 用同一子查询、同一
+        // 事务，聚合集合 = 删除集合恒等。
         if let Some(cap) = max_rows.filter(|c| *c > 0) {
-            let deleted = conn
-                .execute(
-                    "DELETE FROM request_logs WHERE id NOT IN
-                        (SELECT id FROM request_logs ORDER BY created_at DESC LIMIT ?1)",
-                    params![cap],
-                )
-                .map_err(|e| format!("max_rows trim: {e}"))?;
-            deleted_total += deleted as u64;
+            const TRIM_WHERE: &str = "id IN (SELECT id FROM request_logs \
+                 ORDER BY created_at DESC, id DESC LIMIT -1 OFFSET ?1)";
+            deleted_total += sweep_step(
+                &mut conn,
+                TRIM_WHERE,
+                &format!("DELETE FROM request_logs WHERE {TRIM_WHERE}"),
+                cap,
+            )?;
         }
 
         if deleted_total > 0 {
@@ -836,6 +814,75 @@ impl DataStore {
 
         Ok(deleted_total)
     }
+}
+
+/// 聚合 SQL 头（列清单，截至 `WHERE `；按天步与裁剪步共用单一真相源）。
+#[cfg(feature = "usage-store")]
+const ROLLUP_SQL_HEAD: &str = "INSERT INTO daily_rollups
+    (date, model, request_count, success_count, input_tokens, output_tokens,
+     cache_creation_tokens, cache_read_tokens, total_cost_usd, avg_latency_ms)
+ SELECT
+    strftime('%Y-%m-%d', created_at, 'unixepoch'),
+    model,
+    COUNT(*),
+    SUM(CASE WHEN status_code = 200 THEN 1 ELSE 0 END),
+    COALESCE(SUM(input_tokens), 0),
+    COALESCE(SUM(output_tokens), 0),
+    COALESCE(SUM(cache_creation_tokens), 0),
+    COALESCE(SUM(cache_read_tokens), 0),
+    COALESCE(SUM(total_cost_usd), 0.0),
+    COALESCE(AVG(CASE WHEN status_code = 200 THEN latency_ms END), 0.0)
+ FROM request_logs
+ WHERE ";
+
+/// 聚合 SQL 尾：加法合并 upsert（BUG-20261107-021）。同一 (date, model)
+/// 可被多批合法贡献（裁剪步劈日 + 按天步收尾），各批计数/token/成本累加；
+/// `avg_latency_ms` 按 success_count 加权平均（两批 success 均值的合并
+/// 均值；success 全零保 0.0）。全行覆盖的 INSERT OR REPLACE 已退役。
+#[cfg(feature = "usage-store")]
+const ROLLUP_UPSERT_TAIL: &str = "
+ GROUP BY strftime('%Y-%m-%d', created_at, 'unixepoch'), model
+ ON CONFLICT(date, model) DO UPDATE SET
+    request_count = request_count + excluded.request_count,
+    success_count = success_count + excluded.success_count,
+    input_tokens = input_tokens + excluded.input_tokens,
+    output_tokens = output_tokens + excluded.output_tokens,
+    cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+    cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+    total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+    avg_latency_ms = CASE
+        WHEN daily_rollups.success_count + excluded.success_count > 0 THEN
+            (daily_rollups.avg_latency_ms * daily_rollups.success_count
+                + excluded.avg_latency_ms * excluded.success_count)
+            / (daily_rollups.success_count + excluded.success_count)
+        ELSE 0.0
+    END";
+
+/// 单个 sweep 步：聚合 + 删除**同一事务**（BUG-20261107-021）。事务原子
+/// 性使 crash 重放不可能——已删行绝不会被二次聚合（删除本身就是水位线，
+/// 无需水位表）；步骤内部任一语句失败整体回滚，绝不出现「rollup 已写、
+/// 明细仍在」或反向半态。
+#[cfg(feature = "usage-store")]
+fn sweep_step(
+    conn: &mut Connection,
+    rollup_where: &str,
+    delete_sql: &str,
+    param: i64,
+) -> Result<u64, String> {
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("retention sweep tx: {e}"))?;
+    tx.execute(
+        &format!("{ROLLUP_SQL_HEAD}{rollup_where}{ROLLUP_UPSERT_TAIL}"),
+        params![param],
+    )
+    .map_err(|e| format!("rollup upsert: {e}"))?;
+    let deleted = tx
+        .execute(delete_sql, params![param])
+        .map_err(|e| format!("sweep delete: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("retention sweep commit: {e}"))?;
+    Ok(deleted as u64)
 }
 
 /// Row → [`RequestLog`]（列序与 query_logs / get_request_log 的 SELECT 一致）。

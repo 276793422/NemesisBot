@@ -1,7 +1,7 @@
 //! 工具描述分档查表。
 //!
-//! 描述两档：lean（1-2 句精修，60 槽位全有）+ full（一句定位 + 用法要点 +
-//! 何时不用 + 兄弟工具路由，高频 24 个）。档位→文本的选取纯查表；模型能力
+//! 描述两档：lean（1-2 句精修，50 槽位全有）+ full（一句定位 + 用法要点 +
+//! 何时不用 + 兄弟工具路由，高频 38 个）。档位→文本的选取纯查表；模型能力
 //! 档位（ModelTier）→ 描述档位的映射留在消费方 nemesis-agent（依赖
 //! nemesis-types，本 crate 保持零依赖）。
 //!
@@ -29,15 +29,10 @@ pub fn first_sentence(text: &str) -> &str {
     }
 }
 
-/// 工具描述查表：(工具名, lean 文案, Option<full> 文案)。60 个命名槽位
-/// 全有 lean，高频 24 个另有 full；查表未命中由调用方回落注册表原文
+/// 工具描述查表：(工具名, lean 文案, Option<full> 文案)。50 个命名槽位
+/// 全有 lean，高频 38 个另有 full；查表未命中由调用方回落注册表原文
 /// （forge/board/动态 MCP 工具自然回落，分批补表）。
 static TOOL_DESCRIPTIONS: &[(&str, &str, Option<&str>)] = &[
-    (
-        "append_file",
-        include_str!("tools/append_file.lean.md"),
-        Some(include_str!("tools/append_file.md")),
-    ),
     (
         "background_kill",
         include_str!("tools/background_kill.lean.md"),
@@ -129,42 +124,7 @@ static TOOL_DESCRIPTIONS: &[(&str, &str, Option<&str>)] = &[
         include_str!("tools/find_skills.lean.md"),
         Some(include_str!("tools/find_skills.md")),
     ),
-    (
-        "forge_build_mcp",
-        include_str!("tools/forge_build_mcp.lean.md"),
-        None,
-    ),
-    (
-        "forge_create",
-        include_str!("tools/forge_create.lean.md"),
-        None,
-    ),
-    (
-        "forge_evaluate",
-        include_str!("tools/forge_evaluate.lean.md"),
-        None,
-    ),
-    (
-        "forge_learning_status",
-        include_str!("tools/forge_learning_status.lean.md"),
-        None,
-    ),
-    ("forge_list", include_str!("tools/forge_list.lean.md"), None),
-    (
-        "forge_reflect",
-        include_str!("tools/forge_reflect.lean.md"),
-        None,
-    ),
-    (
-        "forge_share",
-        include_str!("tools/forge_share.lean.md"),
-        None,
-    ),
-    (
-        "forge_update",
-        include_str!("tools/forge_update.lean.md"),
-        None,
-    ),
+    ("forge", include_str!("tools/forge.lean.md"), None),
     (
         "git",
         include_str!("tools/git.lean.md"),
@@ -289,20 +249,12 @@ static TOOL_DESCRIPTIONS: &[(&str, &str, Option<&str>)] = &[
         include_str!("tools/web_search.lean.md"),
         Some(include_str!("tools/web_search.md")),
     ),
+    // 2026-11-06 三合一：workflow_run/create/capabilities → 单 `workflow`
+    // 工具（action 判别），描述三合一。
     (
-        "workflow_capabilities",
-        include_str!("tools/workflow_capabilities.lean.md"),
-        None,
-    ),
-    (
-        "workflow_create",
-        include_str!("tools/workflow_create.lean.md"),
-        None,
-    ),
-    (
-        "workflow_run",
-        include_str!("tools/workflow_run.lean.md"),
-        Some(include_str!("tools/workflow_run.md")),
+        "workflow",
+        include_str!("tools/workflow.lean.md"),
+        Some(include_str!("tools/workflow.md")),
     ),
     (
         "write_file",

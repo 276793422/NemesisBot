@@ -49,16 +49,23 @@ impl ModuleHandler for ChatHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         // L2（devtool-upgrade 阶段 6）：WS chat 帧断线补拉——useWebSocket
         // 重连点调用。只读 + 不依赖 AgentLoop（提前返回，不占 loop 句柄）。
-        // session_id 缺省取本连接会话；after_seq 缺省 0（重放窗口内全量）。
+        // session_id 必填；after_seq 缺省 0（重放窗口内全量）。
         // 环形缓冲按 **agent 会话键** 记录（chat_id 是连接级 id，重连即变；
         // OutboundMeta.session_key 随行盖章），这里同构变换出键再查。
+        // 旧 None 回落 ctx.session_id（WS 连接 id，非聊天
+        // 会话 id）——对不存在的键 replay 恒空且 gap:false，漏传 session_id
+        // 的调用方会把「没补到任何事件」误当「已同步」，L2 断线窗口静默丢帧。
+        // 必填诚实报错（首方前端 useWebSocket 两个调用点均显式传 session_id，
+        // 零破坏）。
         if cmd == "sync" {
             let sync_session = data
                 .as_ref()
                 .and_then(|d| d.get("session_id"))
                 .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| ctx.session_id.clone());
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .ok_or("missing session_id (chat.sync replays a specific session)")?
+                .to_string();
             let session_key = format!(
                 "agent:main:session:{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(&sync_session)

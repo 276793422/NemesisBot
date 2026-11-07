@@ -548,6 +548,28 @@ pub fn resolve_compact_keep_recent_tokens(cfg: Option<&serde_json::Value>) -> us
     .map(|n| n.max(0) as usize)
     .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT_TOKENS as usize)
 }
+
+/// B30（2026-11-06 三方对比整改）：工具结果统一 cap 缺省值（单一真相源：
+/// serde 缺省 / raw-JSON 解析两方共用）。对齐业界通行 8K 字符封顶口径。
+pub const DEFAULT_TOOL_RESULT_CAP: usize = 8_000;
+
+/// [`DEFAULT_TOOL_RESULT_CAP`] 的 serde 缺省函数形态（typed 字段 u64）。
+fn default_tool_result_cap() -> u64 {
+    DEFAULT_TOOL_RESULT_CAP as u64
+}
+
+/// B30：raw config JSON 读取 `agents.tool_result_cap`。
+///
+/// AgentLoop 的 dispatch 后整形点走 fresh-read raw JSON（同
+/// `resolve_compact_keep_recent_tokens` 模式，运行中改键下一轮生效），不
+/// 经过 typed `Config`——键路径与缺省值必须和 typed 字段单源，这里就是
+/// 那个单源。缺键/缺段/非数 → 缺省 8000；**0 = 关**（跨工具兜底封顶关
+/// 闭，per-tool 语义窗口照常）；负数无语义 → 钳 0（关闭）。
+pub fn resolve_tool_result_cap(cfg: Option<&serde_json::Value>) -> usize {
+    cfg.and_then(|v| v.get("agents")?.get("tool_result_cap")?.as_i64())
+        .map(|n| n.max(0) as usize)
+        .unwrap_or(DEFAULT_TOOL_RESULT_CAP)
+}
 fn default_gateway_host() -> String {
     "0.0.0.0".to_string()
 }
@@ -609,6 +631,9 @@ mod tests;
 
 #[cfg(test)]
 mod bridge_serde_tests;
+
+#[cfg(test)]
+mod tool_result_cap_tests;
 
 #[cfg(test)]
 mod extra_tests;

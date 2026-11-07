@@ -16,13 +16,14 @@ use super::diagnostics_feedback_tests::{cfg_enabled, plant_fake_gopls};
 use nemesis_config::DiagnosticsLoopConfig;
 
 // ---------------------------------------------------------------------------
-// 触发臂扩展（append_file / multiedit）
+// 触发臂扩展（edit_file（含 action=append，2026-11-06 append_file 并入
+// 后由 edit_file 条目承载）/ multiedit）
 // ---------------------------------------------------------------------------
 
-/// append_file 命中触发臂：ERROR 照常回灌（与 write_file/edit_file 同款
-/// touch→wait→回灌路径）。
+/// edit_file（含 action=append）命中触发臂：ERROR 照常回灌（与
+/// write_file/multiedit 同款 touch→wait→回灌路径）。
 #[tokio::test]
-async fn append_file_triggers_feedback() {
+async fn edit_file_triggers_feedback() {
     let (dir, _path) = plant_fake_gopls("error");
     let mgr = nemesis_lsp::LspManager::new(Some(Duration::from_secs(30)), None);
     let go = dir.path().join("main.go");
@@ -30,7 +31,7 @@ async fn append_file_triggers_feedback() {
     let (out, _) = AgentLoop::apply_diagnostics_feedback(
         Some(&mgr),
         cfg_enabled(),
-        "append_file",
+        "edit_file",
         &[go.to_str().unwrap()],
         &[],
         "appended",
@@ -42,6 +43,27 @@ async fn append_file_triggers_feedback() {
         out.contains("[LSP] 1 error(s) detected in"),
         "缺回灌头: {out}"
     );
+    let _ = mgr.shutdown_all().await;
+}
+
+/// 旧 `append_file` 工具名已并入 edit_file（2026-11-06），不在触发枚举表
+/// ——恒原样返回（回归锁：防有人把旧名单抄回来）。
+#[tokio::test]
+async fn legacy_append_file_name_no_longer_triggers() {
+    let mgr = nemesis_lsp::LspManager::new(Some(Duration::from_secs(30)), None);
+
+    let (out, anchors) = AgentLoop::apply_diagnostics_feedback(
+        Some(&mgr),
+        cfg_enabled(),
+        "append_file",
+        &["whatever.go"],
+        &[],
+        "unchanged",
+    )
+    .await;
+
+    assert_eq!(out, "unchanged", "旧名不触发回灌");
+    assert!(anchors.is_empty());
     let _ = mgr.shutdown_all().await;
 }
 
@@ -80,10 +102,6 @@ fn extract_paths_single_file_tool() {
     );
     assert_eq!(
         extract_diag_feedback_paths("edit_file", &args),
-        vec!["src/main.rs".to_string()]
-    );
-    assert_eq!(
-        extract_diag_feedback_paths("append_file", &args),
         vec!["src/main.rs".to_string()]
     );
 }

@@ -303,7 +303,10 @@ fn workflow_edit_new_session_renders_capability_guidance() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(joined.contains("新建工作流"), "got: {joined}");
-    assert!(joined.contains("workflow_capabilities"), "got: {joined}");
+    assert!(
+        joined.contains("workflow 工具（action=capabilities）"),
+        "got: {joined}"
+    );
 }
 
 /// 命名会话 + 引擎装配且工作流存在 → 渲染当前定义 YAML。

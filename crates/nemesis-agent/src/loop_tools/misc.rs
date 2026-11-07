@@ -673,7 +673,9 @@ impl Tool for SPITool {
 // Tool registration
 // ===========================================================================
 /// Bridge tool that wraps a ForgeToolExecutor tool call into the agent's Tool trait.
-/// Each instance wraps a single forge tool name (e.g. "forge_reflect").
+/// 2026-11-06 单工具收编：注册面只插一个实例（name = "forge"，action 判别
+/// 字段在 args 里）；executor 侧做 `forge_` 前缀归一，旧名调用（存量测试）
+/// 经本桥仍可用。
 #[cfg(feature = "forge")]
 pub(super) struct ForgeBridgeTool {
     name: String,

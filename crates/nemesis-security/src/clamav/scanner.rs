@@ -151,8 +151,9 @@ impl Scanner {
         if !self.config.enabled {
             return false;
         }
+        // 2026-11-06：append_file 并入 edit_file（action=append）。
         match operation {
-            "write_file" | "edit_file" | "append_file" => self.config.scan_on_write,
+            "write_file" | "edit_file" => self.config.scan_on_write,
             "download" => self.config.scan_on_download,
             "exec" | "execute_command" => self.config.scan_on_exec,
             _ => false,

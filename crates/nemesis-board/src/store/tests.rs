@@ -986,10 +986,14 @@ fn test_dispatch_generation_v22_legacy_db_upgrades_existing_rows_to_zero() {
             .unwrap();
     }
     {
-        // 手工降级：去列 + 回拨 user_version（模拟 v22 存量库）。
+        // 手工降级：去列 + 回拨 user_version（模拟 v22 存量库）。降级必须
+        // 完备——schema 要真还原成 v22 形态，否则「库体 v25 + 版本号 22」
+        // 的混合态重开时迁移会撞重复列（v25 加 mode 列先例：测试库已带
+        // mode，谎报 22 → duplicate column）。后续每加一列这里同步补。
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "ALTER TABLE issue_dispatch DROP COLUMN generation;
+             ALTER TABLE autopilot DROP COLUMN mode;
              PRAGMA user_version = 22;",
         )
         .unwrap();
@@ -1880,6 +1884,7 @@ fn new_ap(name: &str) -> NewAutopilot {
         auto_plan: false,
         acceptance_criteria: None,
         session_key: None,
+        mode: crate::models::AUTOPILOT_MODE_LIVE.to_string(),
     }
 }
 
@@ -1943,6 +1948,80 @@ fn test_autopilot_crud_and_validation() {
     assert!(store.remove_autopilot(ap.id).unwrap());
     assert!(!store.remove_autopilot(ap.id).unwrap());
     assert!(store.get_autopilot(ap.id).is_err());
+    cleanup(&dir);
+}
+
+// B33/B34（授权快照升级）：autopilot.mode 字段——v25 迁移默认 live、
+// shadow 落库 round-trip、promote（update 改 live）、非法值双闸 loud 拒绝、
+// 簿记写入（mark_run/set_cron_job）不漂移 updated_at 版本。
+#[test]
+fn test_autopilot_mode_shadow_and_lineage_version() {
+    let (store, dir) = temp_store("autopilot-mode");
+
+    // 存量/缺省形态：mode 缺省构造 = live（serde default 同源语义）。
+    let live_ap = store.create_autopilot(&new_ap("live规则")).unwrap();
+    assert_eq!(live_ap.mode, crate::models::AUTOPILOT_MODE_LIVE);
+
+    // shadow 建档 + round-trip。
+    let mut shadow_n = new_ap("影子规则");
+    shadow_n.mode = crate::models::AUTOPILOT_MODE_SHADOW.to_string();
+    let shadow_ap = store.create_autopilot(&shadow_n).unwrap();
+    assert_eq!(shadow_ap.mode, crate::models::AUTOPILOT_MODE_SHADOW);
+    assert_eq!(store.get_autopilot(shadow_ap.id).unwrap().mode, "shadow");
+
+    // 非法值 create/update 双闸 loud 拒绝。
+    let mut bad = new_ap("坏模式");
+    bad.mode = "pilot".into();
+    assert!(store.create_autopilot(&bad).is_err());
+    assert!(
+        store
+            .update_autopilot(
+                live_ap.id,
+                &AutopilotPatch {
+                    mode: Some("pilot".into()),
+                    ..Default::default()
+                },
+            )
+            .is_err()
+    );
+
+    // promote：shadow → live 走 patch（WSAPI autopilot.update 同源）。
+    let promoted = store
+        .update_autopilot(
+            shadow_ap.id,
+            &AutopilotPatch {
+                mode: Some(crate::models::AUTOPILOT_MODE_LIVE.into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(promoted.mode, "live");
+
+    // B33 版本语义：updated_at 只随内容/授权 patch 变化——触发落账与
+    // cron job 簿记写入都不 bump（否则在途单子的 `rule:{id}@{updated_at}`
+    // 血统戳逐次漂移，旧版身份回查不到）。
+    let before = store.get_autopilot(live_ap.id).unwrap().updated_at;
+    store.mark_autopilot_run(live_ap.id).unwrap();
+    store
+        .set_autopilot_cron_job(live_ap.id, Some("job-x"))
+        .unwrap();
+    let after_bookkeeping = store.get_autopilot(live_ap.id).unwrap();
+    assert_eq!(after_bookkeeping.updated_at, before);
+    assert!(after_bookkeeping.last_run_at.is_some());
+    assert_eq!(after_bookkeeping.cron_job_id.as_deref(), Some("job-x"));
+    // 内容 patch 照常推进版本。
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    store
+        .update_autopilot(
+            live_ap.id,
+            &AutopilotPatch {
+                title: Some("改名".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let after_patch = store.get_autopilot(live_ap.id).unwrap().updated_at;
+    assert!(after_patch > before, "内容 patch 必须推进版本号");
     cleanup(&dir);
 }
 
@@ -2441,6 +2520,38 @@ fn test_sweep_channel_messages_respects_retention() {
             .list_channel_messages(dev.id, 0, 100)
             .unwrap()
             .is_empty()
+    );
+    cleanup(&dir);
+}
+
+/// 回归锁（BUG-20261107-025 横向扫）：config 来源 retention_days 只挡 <=0
+/// 无上界，`*24*3600` 无受检乘法——debug panic（每日维护任务假死）/
+/// release 环绕 → cutoff 漂移（误删全表或漏扫）。饱和语义 = 荒谬大保留窗
+/// 什么都不删。
+#[test]
+fn test_sweep_channel_messages_absurd_retention_saturates() {
+    let (store, dir) = temp_store("sweep-saturate");
+    store.ensure_default_channels().unwrap();
+    let dev = store.get_channel_by_name("#dev").unwrap().unwrap();
+    store
+        .append_channel_message(NewChannelMessage {
+            channel_id: dev.id,
+            sender: sys_actor(),
+            content: "幸存消息".into(),
+            parent_id: None,
+            mtype: String::new(),
+        })
+        .unwrap();
+
+    // 2e14 天：serde 合法 i64，×86400 溢出 i64::MAX（≈9.2e18 / 86400 ≈ 1.07e14）。
+    assert_eq!(
+        store.sweep_channel_messages(200_000_000_000_000).unwrap(),
+        0
+    );
+    assert_eq!(
+        store.list_channel_messages(dev.id, 0, 100).unwrap().len(),
+        1,
+        "饱和语义 = 荒谬大保留窗什么都不删"
     );
     cleanup(&dir);
 }

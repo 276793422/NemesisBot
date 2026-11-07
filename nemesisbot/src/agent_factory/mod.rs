@@ -97,7 +97,7 @@ pub struct SharedResources {
     #[allow(dead_code)]
     pub memory_manager: Option<()>,
     pub enabled_channels: Vec<String>,
-    /// Workflow engine reference — when set, registers the `workflow_run`
+    /// Workflow engine reference — when set, registers the `workflow`
     /// agent tool. None keeps the tool absent (e.g., during tests).
     #[cfg(feature = "workflow")]
     pub workflow_engine: Option<Arc<nemesis_workflow::engine::WorkflowEngine>>,

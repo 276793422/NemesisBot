@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 24;
+const SCHEMA_VERSION: i32 = 25;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -443,7 +443,15 @@ CREATE TABLE IF NOT EXISTS selfcheck_pending (
 CREATE INDEX IF NOT EXISTS idx_selfcheck_pending_issue ON selfcheck_pending(issue_id);
 "#;
 
-/// 门面迁移链（v1-v23 数组化；语义与原散装 if 链等价：每步原子
+/// v25（触发模式 / B33-B34 授权快照升级）：autopilot.mode 列
+/// （live|shadow；serde default live 与本 DEFAULT 同步——存量规则行为
+/// 零变化）。shadow = record-only 起步坡道（建单+意图评论+本地留痕，
+/// 不派发不拆解）；promote = update mode 回 live。
+const SCHEMA_V25: &str = r#"
+ALTER TABLE autopilot ADD COLUMN mode TEXT NOT NULL DEFAULT 'live';
+"#;
+
+/// 门面迁移链（数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[BoardStore] {note}`，门面按序跳过已应用步）。
 const fn mig(
     version: i32,
@@ -561,6 +569,11 @@ static BOARD_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
         24,
         SCHEMA_V24,
         "Database migrated to v24 (BUG-20261105-012: selfcheck_pending 取证路由持久层)",
+    ),
+    mig(
+        25,
+        SCHEMA_V25,
+        "Database migrated to v25 (autopilot.mode 触发模式: live|shadow)",
     ),
 ];
 

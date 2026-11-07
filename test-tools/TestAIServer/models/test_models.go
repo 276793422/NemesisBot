@@ -525,6 +525,10 @@ func (m *TestAI50) Process(messages []Message) string {
 	if req.Operation == "file_append" && req.Content != "" {
 		args["content"] = req.Content
 	}
+	// 2026-11-06 append_file 并入 edit_file：追加操作改走 edit_file 的 action=append 形态。
+	if req.Operation == "file_append" {
+		args["action"] = "append"
+	}
 
 	// 如果有风险级别，添加到参数中
 	if req.RiskLevel != "" {
@@ -538,7 +542,7 @@ func (m *TestAI50) Process(messages []Message) string {
 		"file_read":   "read_file",
 		"file_write":  "write_file",
 		"file_delete": "delete_file",
-		"file_append": "append_file", // 假设有这个工具
+		"file_append": "edit_file", // 2026-11-06 append_file 并入 edit_file（action=append 由上方 args 注入）
 		"dir_create":  "create_dir",
 		"dir_delete":  "delete_dir",
 		"dir_list":    "list_dir",

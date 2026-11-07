@@ -353,11 +353,11 @@ impl Drop for LeaseAcquisition {
 
 /// ：需要租约的写类工具清单（v1）。`exec` **不在账**——见模块
 /// 文档「接线」小节的诚实边界（命令面包装拦不到效果面，不做假拦截）。
-pub const LEASE_WRITE_TOOLS: [&str; 7] = [
+/// 2026-11-06：append_file 并入 edit_file（action=append），6 项。
+pub const LEASE_WRITE_TOOLS: [&str; 6] = [
     "write_file",
     "edit_file",
     "multiedit",
-    "append_file",
     "create_dir",
     "delete_file",
     "delete_dir",

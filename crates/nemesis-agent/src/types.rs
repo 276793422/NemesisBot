@@ -86,13 +86,17 @@ pub struct ConversationTurn {
     /// recorded at tool time ONLY when it cannot be recomputed from
     /// `content` later — the spill tier (the locator path embeds a
     /// wall-clock stamp), any turn-guard nudge decoration (⑤/⑤′/⑥ —
-    /// dynamic per-turn state), and 's spawn-hinted prune text (the hint
-    /// flag is registry state, not turn data). `None` ⇒ the projection
-    /// recomputes `prune_tool_result(content, tool_name, false)`, a pure
-    /// deterministic function, so replay/branch rebuilds recompute rather
-    /// than consult the injection ledger. Idempotence: prune output stays
-    /// under the inline threshold, and old sessions' tool content is
-    /// already pruned, so projecting an already-projected turn is a no-op.
+    /// dynamic per-turn state), B3's spawn-hinted prune text (the hint
+    /// flag is registry state, not turn data), and B30 cap-pruned forms
+    /// (`agents.tool_result_cap` is dispatch-time state, not derivable
+    /// from history — a cap-pruned text ≤ the const recompute threshold
+    /// would recompute to `None` and leak the full original). `None` ⇒ the
+    /// projection recomputes `prune_tool_result(content, tool_name, false)`,
+    /// a pure deterministic function at the const default, so replay/branch
+    /// rebuilds recompute rather than consult the injection ledger.
+    /// Idempotence: prune output stays under the inline threshold, and old
+    /// sessions' tool content is already pruned, so projecting an
+    /// already-projected turn is a no-op.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_result_projection: Option<String>,
     /// （多模态，goal）：本 turn 附带的图片路径引用（路径

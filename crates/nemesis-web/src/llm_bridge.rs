@@ -503,12 +503,27 @@ impl ProviderAdapter {
 pub struct ForgeProviderBridge {
     provider: Arc<dyn nemesis_providers::router::LLMProvider>,
     model: String,
+    /// S8（2026-11-06 B29/B30 设计 §4）：aux 账本归因——Forge 评审/反思成
+    /// 功调用落 RequestLog（`provider_type="forge_review"`）。`None` =
+    /// 不落账（测试/探针形态）。
+    data_store: Option<Arc<nemesis_data::DataStore>>,
 }
 
 #[cfg(feature = "forge")]
 impl ForgeProviderBridge {
     pub fn new(provider: Arc<dyn nemesis_providers::router::LLMProvider>, model: String) -> Self {
-        Self { provider, model }
+        Self {
+            provider,
+            model,
+            data_store: None,
+        }
+    }
+
+    /// S8：挂账本（生产接线：gateway 装配点 shared.data_store + forge
+    /// handler 经 resolve_judge_caller 链穿线）。
+    pub fn with_data_store(mut self, ds: Option<Arc<nemesis_data::DataStore>>) -> Self {
+        self.data_store = ds;
+        self
     }
 }
 
@@ -555,15 +570,24 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             extra: HashMap::new(),
         };
 
-        // 杂务旁路护栏（nemesis_agent::loop:bypass_llm，重试版）：墙钟超时
-        // + 空输出校验 + 空输出/瞬态失败同窗口重试一次——Forge 评审/反思/
-        // 草稿是千 token 级短输出，挂死连接不拖住后台学习循环；空文本不再
-        // 当成功结果透传（下游本就把空串当无效），采样抖动由重试兜底。
+        // 杂务旁路护栏（nemesis_agent::loop::bypass_llm，重试落账版）：墙钟
+        // 超时 + 空输出校验 + 空输出/瞬态失败同窗口重试一次——Forge 评审/
+        // 反思/草稿是千 token 级短输出，挂死连接不拖住后台学习循环；空文本
+        // 不再当成功结果透传（下游本就把空串当无效），采样抖动由重试兜底。
+        // S8：成功路径落 aux 账本行（usage 字段 providers/agent 两侧同名
+        // 直搬，不丢维度）。
+        let ledger = nemesis_agent::r#loop::AuxLedger {
+            aux_kind: "forge_review",
+            model: &self.model,
+            session_key: None,
+            data_store: self.data_store.as_ref(),
+        };
         let model = self.model.clone();
         let provider = self.provider.clone();
-        nemesis_agent::r#loop::guarded_llm_call_retrying(
+        nemesis_agent::r#loop::guarded_llm_call_retrying_ledgered(
             "forge-llm",
             nemesis_agent::r#loop::AUX_FORGE_TIMEOUT,
+            ledger,
             move || {
                 let messages = messages.clone();
                 let options = options.clone();
@@ -574,7 +598,19 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
                         .chat(&messages, &[], &model, &options)
                         .await
                         .map_err(|e| format!("{:?}", e))
-                        .map(|r| r.content)
+                        .map(|r| nemesis_agent::r#loop::AuxOutcome {
+                            content: r.content,
+                            usage: r.usage.map(|u| {
+                                nemesis_agent::loop_executor::ObserverUsageInfo {
+                                    prompt_tokens: u.prompt_tokens,
+                                    completion_tokens: u.completion_tokens,
+                                    total_tokens: u.total_tokens,
+                                    cached_tokens: u.cached_tokens,
+                                    cache_creation_tokens: u.cache_creation_tokens,
+                                    cache_read_tokens: u.cache_read_tokens,
+                                }
+                            }),
+                        })
                 }
             },
         )

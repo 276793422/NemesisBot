@@ -75,20 +75,20 @@ impl fmt::Display for ExecutionState {
 /// Origin of a workflow execution. First-class concept borrowed from n8n's
 /// Trigger Node model (decision 2 in the integration plan).
 ///
-/// `AgentTool` carries a `recursion_depth` so deeply nested workflow_run calls
-/// can be rejected once they exceed `MAX_RECURSION_DEPTH` (decision 6 from the
-/// Spike phase, see `WorkflowCallStack`).
+/// `AgentTool` carries a `recursion_depth` so deeply nested `workflow` tool
+/// run calls can be rejected once they exceed `MAX_RECURSION_DEPTH` (decision
+/// 6 from the Spike phase, see `WorkflowCallStack`).
 ///
-/// Maximum nesting depth for workflow_run tool calls (decision 6 from the
-/// Spike phase). Depth counts the number of `AgentTool` frames on the call
-/// stack:
+/// Maximum nesting depth for `workflow` tool (action=run) calls (decision 6
+/// from the Spike phase). Depth counts the number of `AgentTool` frames on the
+/// call stack:
 ///   - 0 = top-level workflow (no AgentTool ancestor)
-///   - 1 = workflow_run invoked from an agent at top level
-///   - 2 = workflow_run → workflow with agent → workflow_run
+///   - 1 = run invoked from an agent at top level
+///   - 2 = run → workflow with agent → run
 ///   - 3 = one more level (the limit)
 ///
 /// Once a new call would push depth past this limit, the call is rejected.
-/// The limit exists because each workflow_run call blocks an LLM-driven tool
+/// The limit exists because each run call blocks an LLM-driven tool
 /// iteration, and deep nesting can stack up tokio tasks + memory quickly.
 pub const MAX_RECURSION_DEPTH: u32 = 3;
 
@@ -104,10 +104,10 @@ pub enum TriggerSource {
         #[serde(default)]
         payload: serde_json::Value,
     },
-    /// Triggered by an agent invoking the `workflow_run` tool.
+    /// Triggered by an agent invoking the `workflow` tool (action=run).
     AgentTool {
         tool_call_id: String,
-        /// Increments on each nested workflow_run call. Stage 1c
+        /// Increments on each nested run call. Stage 1c
         /// `WorkflowCallStack` rejects calls past `MAX_RECURSION_DEPTH`.
         #[serde(default)]
         recursion_depth: u32,
@@ -249,9 +249,9 @@ pub struct NodeDef {
     pub timeout: Option<String>,
     /// Marks this node as a workflow output source. When set, the node's
     /// `output` is merged into the workflow's final result returned to
-    /// callers (decision 5 in the integration plan, used by `workflow_run`
-    /// agent tool). If no node is marked terminal, leaf nodes (no
-    /// downstream edges) are used as fallback.
+    /// callers (decision 5 in the integration plan, surfaced by the
+    /// `workflow` tool's run action). If no node is marked terminal, leaf
+    /// nodes (no downstream edges) are used as fallback.
     #[serde(default)]
     pub is_terminal: bool,
 }
@@ -326,7 +326,7 @@ impl Workflow {
     /// - Returns `Value::Null` when no terminal/leaf node produced output.
     ///
     /// Decision 5 in the integration plan: surfaces workflow results back to
-    /// the LLM via the `workflow_run` agent tool.
+    /// the LLM via the `workflow` tool's run action.
     pub fn compute_output(&self, node_results: &HashMap<String, NodeResult>) -> serde_json::Value {
         let terminal_ids: Vec<&str> = self
             .nodes

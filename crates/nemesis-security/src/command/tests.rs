@@ -646,3 +646,49 @@ fn normalize_variants_hit_same_blocklist_entry() {
         );
     }
 }
+
+#[test]
+fn nfkc_homoglyph_variants_hit_same_blocklist_entry() {
+    // S13（2026-11-06）：NFKC 兼容折叠——全角/数学字体/圈号同形异码折到
+    // ASCII 语义形态后必须命中同一条 blocklist 条目（原文小写候选打不中
+    // 的字节差异形态由归一化候选兜住；折叠只作用于匹配候选，不下发命令）。
+    let guard = Guard::new(true);
+    for cmd in [
+        "ｒｍ -ｒｆ /data", // 全角（U+FF32..）
+        "𝐫𝐦 -𝐫𝐟 /data",     // 数学粗体（U+1D400 block，<font> 分解）
+        "ⓡⓜ -rf /data",     // 圈号（<circle> 分解）
+    ] {
+        let r = guard.check(cmd);
+        assert!(r.is_err(), "`{cmd}` must be blocked after NFKC fold");
+        assert!(
+            r.unwrap_err().to_string().contains("rm_rf"),
+            "`{cmd}` must hit the rm_rf entry"
+        );
+    }
+}
+
+#[test]
+fn nfkc_fold_folds_to_ascii_semantic_form() {
+    // 归一化产物断言：全角命令名折到 ASCII（与 shell 眼中的"不可执行"无关，
+    // 守卫按语义形态匹配，方向 fail-closed）。
+    assert_eq!(
+        crate::matcher::normalize_exec_command("ｒｍ -ｒｆ /data"),
+        "rm -rf /data"
+    );
+    assert_eq!(
+        crate::matcher::normalize_exec_command("𝐫𝐦  -𝐫𝐟 /data"),
+        "rm -rf /data"
+    );
+}
+
+#[test]
+fn nfkc_fold_preserves_ascii_identity_and_benign_input() {
+    // 无回归面：ASCII 输入 NFKC 恒等（既有行为零漂移）；良性全角折到
+    // ASCII 后仍走安全路径放行。
+    assert_eq!(
+        crate::matcher::normalize_exec_command("RM -RF /data"),
+        "rm -rf /data"
+    );
+    let guard = Guard::new(true);
+    assert!(guard.check("ｅｃｈｏ ｈｉ").is_ok());
+}
