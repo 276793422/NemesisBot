@@ -674,3 +674,98 @@ fn dedup_insert_skips_duplicate_trace_id() {
 
     let _ = std::fs::remove_file(path);
 }
+
+/// BUG-20261107-021 回归锁（主洞）：max_rows 裁剪步必须**先聚合再删**。
+/// 旧形态直接删——按天步只聚合保留窗之外的行，超限裁的是窗内行，从未进
+/// daily_rollups 也永远不会进 → 永久史账系统性少记。本测试在旧代码下红：
+/// 被裁 3 行的 input_tokens 必须可查于 daily_rollups，且恰好等于被裁集合
+/// （保留行不得计入——聚合集合 = 删除集合恒等）。
+#[test]
+fn retention_sweep_trim_rows_are_rolled_up_before_delete() {
+    let (store, path) = open_store("w4_trim_rollup");
+    let now = chrono::Local::now().timestamp();
+    // 4 行同日、时间递增；cap=1 → 最旧 3 行被裁（窗内行，按天步永远碰不到）。
+    let mut trimmed_input = 0i64;
+    for i in 0..4 {
+        let mut log = w4_log("m/t", now - 100 + i, "s", 200);
+        log.input_tokens = 10 * (i + 1);
+        if i < 3 {
+            trimmed_input += log.input_tokens;
+        }
+        store.insert_request_log(&log).unwrap();
+    }
+    let deleted = store.retention_sweep(None, Some(1)).expect("trim sweep");
+    assert_eq!(deleted, 3, "cap=1：4 行裁掉最旧 3 行");
+    let (_, total) = store
+        .query_logs(0, now + 86400, 1, 10, &LogFilter::default())
+        .expect("query after trim");
+    assert_eq!(total, 1, "只保留最新 1 行");
+
+    // 被裁 3 行的贡献必须在 daily_rollups（裸 SQL 验证），且恰好等于被裁
+    // 集合的 input_tokens（保留行不得计入）。
+    let raw = rusqlite::Connection::open(path.to_string_lossy().as_ref()).unwrap();
+    let (rows, sum_input): (i64, i64) = raw
+        .query_row(
+            "SELECT COUNT(*), COALESCE(SUM(input_tokens), 0) FROM daily_rollups \
+             WHERE model = 'm/t'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert!(
+        rows >= 1,
+        "被裁行必须有 rollup 行（跨 UTC 日界的极端时刻容许多行）"
+    );
+    assert_eq!(
+        sum_input, trimmed_input,
+        "rollup 必须恰好覆盖被裁 3 行的 input_tokens（多记/少记都算败）"
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// BUG-20261107-021 回归锁（合并语义）：同一 (date, model) 被多批聚合必须
+/// **加法合并**（裁剪步劈日 + 后续批次追加），`avg_latency_ms` 按
+/// success_count 加权平均。旧全行覆盖 REPLACE 会把先批贡献抹掉（批 2 覆盖
+/// 后只剩批 2 的值）。本测试在旧代码下红（旧代码批 1 根本不产生 rollup，
+/// 批 2 REPLACE 后 input=50 而非 250）。
+#[test]
+fn retention_sweep_multi_batch_rollups_accumulate() {
+    let (store, path) = open_store("w4_accum");
+    let now = chrono::Local::now().timestamp();
+    // 批 1：3 行 input=100 / latency=100；cap=1 → 最旧 2 行被裁（留最新 1 行）。
+    for i in 0..3 {
+        let mut log = w4_log("m/a", now - 60 + i, "s", 200);
+        log.input_tokens = 100;
+        log.latency_ms = 100;
+        store.insert_request_log(&log).unwrap();
+    }
+    let d1 = store.retention_sweep(None, Some(1)).expect("batch 1 trim");
+    assert_eq!(d1, 2, "批 1 裁掉最旧 2 行");
+    // 批 2：插 1 行 input=50 / latency=300，比批 1 保留行更旧 → cap=1 时被裁。
+    let mut b = w4_log("m/a", now - 70, "s", 200);
+    b.input_tokens = 50;
+    b.latency_ms = 300;
+    store.insert_request_log(&b).unwrap();
+    let d2 = store.retention_sweep(None, Some(1)).expect("batch 2 trim");
+    assert_eq!(d2, 1, "批 2 裁掉更旧的 b 行");
+
+    // 加法合并守恒：input 100+100 + 50 = 250；success 3；
+    // 加权 avg = (100*2 + 300*1)/3 ≈ 166.67（REPLACE 会得到 50/300）。
+    let raw = rusqlite::Connection::open(path.to_string_lossy().as_ref()).unwrap();
+    let (sum_input, sum_succ, weighted_avg): (i64, i64, f64) = raw
+        .query_row(
+            "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(success_count), 0), \
+             COALESCE(SUM(avg_latency_ms * success_count) / NULLIF(SUM(success_count), 0), 0.0) \
+             FROM daily_rollups WHERE model = 'm/a'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(sum_input, 250, "两批贡献必须累加（REPLACE 只会剩后批 50）");
+    assert_eq!(sum_succ, 3);
+    assert!(
+        (weighted_avg - 500.0 / 3.0).abs() < 1e-6,
+        "avg_latency_ms 必须按 success_count 加权合并：got {weighted_avg}"
+    );
+    let _ = std::fs::remove_file(path);
+}
