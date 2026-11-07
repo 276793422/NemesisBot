@@ -117,7 +117,7 @@ impl Tool for WorkflowTool {
             .ok_or_else(|| {
                 "parameter 'action' (one of run/create/apply/capabilities) is required".to_string()
             })? {
-            "run" => self.run(args_value).await,
+            "run" => self.run(args_value, context).await,
             "create" => self.create(args_value).await,
             "apply" => self.apply(args_value).await,
             "capabilities" => Ok(nemesis_workflow::capabilities::render_for_prompt()),
@@ -153,7 +153,11 @@ impl Tool for WorkflowTool {
 #[cfg(feature = "workflow")]
 impl WorkflowTool {
     /// action=run（旧 WorkflowRunTool::execute 原样搬运，行为零变更）。
-    async fn run(&self, args_value: serde_json::Value) -> Result<String, String> {
+    async fn run(
+        &self,
+        args_value: serde_json::Value,
+        context: &RequestContext,
+    ) -> Result<String, String> {
         let workflow_name = args_value
             .get("workflow")
             .and_then(|v| v.as_str())
