@@ -147,6 +147,7 @@ async fn transient_retry_respects_supply_gate() {
     let opts = crate::types::ChatOptions::default();
 
     // 首败 <1s → backoff_eligible=false → 零退避，测试毫秒级。
+    let cancel = tokio_util::sync::CancellationToken::new();
     let (maybe_resp, last_err) = agent_loop
         .retry_transient(
             &instance,
@@ -154,10 +155,13 @@ async fn transient_retry_respects_supply_gate() {
             &(std::sync::Arc::new(provider.clone()) as std::sync::Arc<dyn LlmProvider>),
             "test-model",
             &opts,
+            &cancel,
+            None,
             std::time::Duration::from_millis(500),
             "upstream deadline exceeded".to_string(),
         )
-        .await;
+        .await
+        .expect("供给闸环走 Ok 路径（无中断）");
 
     assert!(maybe_resp.is_some(), "1 败 + 1 成功必须恢复: {last_err}");
     let lists = provider.tool_lists();
@@ -182,6 +186,7 @@ async fn rate_limit_retry_respects_supply_gate() {
     let instance = AgentInstance::new(gate_config());
     let context = RequestContext::new("web", "chat1", "user1", "agent:main:session:rgrl");
 
+    let cancel = tokio_util::sync::CancellationToken::new();
     let (maybe_resp, last_err) = agent_loop
         .retry_rate_limited(
             &context,
@@ -189,9 +194,12 @@ async fn rate_limit_retry_respects_supply_gate() {
             &(std::sync::Arc::new(provider.clone()) as std::sync::Arc<dyn LlmProvider>),
             "test-model",
             &crate::types::ChatOptions::default(),
+            &cancel,
+            None,
             "rate limited by provider p/m (retry_after=5)".to_string(),
         )
-        .await;
+        .await
+        .expect("供给闸限流环走 Ok 路径（无中断）");
 
     assert!(maybe_resp.is_some(), "1 败 + 1 成功必须恢复: {last_err}");
     let lists = provider.tool_lists();
@@ -222,6 +230,7 @@ async fn context_retry_respects_supply_gate() {
     }
     let context = RequestContext::new("web", "chat1", "user1", "agent:main:session:rgctx");
 
+    let cancel = tokio_util::sync::CancellationToken::new();
     let result = agent_loop
         .retry_after_context_error(
             &instance,
@@ -234,6 +243,8 @@ async fn context_retry_respects_supply_gate() {
             0,
             std::time::Instant::now(),
             &(std::sync::Arc::new(recall_llm.clone()) as std::sync::Arc<dyn LlmProvider>),
+            &cancel,
+            None,
             "ctx length exceeded: simulated".to_string(),
         )
         .await;
