@@ -12,6 +12,27 @@ use std::collections::HashMap;
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250929";
 
+/// S15（2026-11-06 三方对比整改）：Anthropic ephemeral prompt cache 的默认
+/// TTL（5 分钟）。断点闲置超过该值后下一轮请求 cache 命中失效，重建按
+/// cache_creation 计价——只做可观测（WARN 一行），不做任何行为干预。
+pub const PROMPT_CACHE_TTL_SECS: i64 = 300;
+
+/// S15：断点闲置 gap 的预警判定（纯函数，测试钉契约）。`prev_ts == 0`
+/// （实例首次请求，无前序）恒 None；gap < TTL 恒 None；`gap >= TTL` 返回
+/// `Some(gap)`。调用方以 swap 语义取 prev（每次请求换新时间戳）——每个
+/// 过期回合恰好一行 WARN，天然限频。
+fn cache_ttl_gap_warn(prev_ts: i64, now_ts: i64) -> Option<i64> {
+    if prev_ts <= 0 || now_ts <= prev_ts {
+        return None;
+    }
+    let gap = now_ts - prev_ts;
+    if gap >= PROMPT_CACHE_TTL_SECS {
+        Some(gap)
+    } else {
+        None
+    }
+}
+
 /// Anthropic provider configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicConfig {
@@ -95,6 +116,10 @@ pub struct AnthropicProvider {
     config: AnthropicConfig,
     client: reqwest::Client,
     token_source: Option<Box<dyn Fn() -> Result<String, String> + Send + Sync>>,
+    /// S15：上次请求的 UNIX 秒（0 = 尚未发过请求）。swap 语义驱动 cache
+    /// TTL 闲置预警（见 [`cache_ttl_gap_warn`]）；per-instance 不用全局
+    /// static——测试隔离 + 多实例互不串扰。
+    last_request_ts: std::sync::atomic::AtomicI64,
 }
 
 impl AnthropicProvider {
@@ -108,6 +133,7 @@ impl AnthropicProvider {
             config,
             client,
             token_source: None,
+            last_request_ts: std::sync::atomic::AtomicI64::new(0),
         }
     }
 
@@ -122,6 +148,7 @@ impl AnthropicProvider {
             config,
             client,
             token_source: Some(token_source),
+            last_request_ts: std::sync::atomic::AtomicI64::new(0),
         }
     }
 
@@ -313,6 +340,27 @@ impl AnthropicProvider {
         // system → messages；messages 区变动频繁，不打断点）。缺省关 =
         // 本分支整体不进，请求体字节与现网一致（回归锁测试钉死）。
         if self.config.cache_breakpoints {
+            // S15（2026-11-06）：cache 断点闲置预警——上一请求距今超过
+            // ephemeral TTL（300s）时本轮断点命中预期失效（重建按
+            // cache_creation 计价）。swap 语义：每个过期回合恰好一行
+            // WARN；断点关闭（cache_breakpoints=false）时无缓存可过期，
+            // 整块不进（含观测），请求路径零额外开销。
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let prev = self
+                .last_request_ts
+                .swap(now, std::sync::atomic::Ordering::Relaxed);
+            if let Some(gap) = cache_ttl_gap_warn(prev, now) {
+                tracing::warn!(
+                    gap_secs = gap,
+                    ttl_secs = PROMPT_CACHE_TTL_SECS,
+                    "prompt cache 断点闲置 {}s ≥ TTL {}s——本轮 cache 命中预期失效（重建按 cache_creation 计价）",
+                    gap,
+                    PROMPT_CACHE_TTL_SECS
+                );
+            }
             if let Some(last_tool) = body
                 .get_mut("tools")
                 .and_then(|v| v.as_array_mut())

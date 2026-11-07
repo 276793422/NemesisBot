@@ -1688,8 +1688,10 @@ impl ScanChain {
             return (true, None);
         }
 
+        // 2026-11-06：append_file 并入 edit_file（action=append），content
+        // 面扫描由 edit_file 臂一并承载。
         match tool_name {
-            "write_file" | "edit_file" | "append_file" => {
+            "write_file" | "edit_file" => {
                 if let Some(content) = args.get("content").and_then(|v| v.as_str())
                     && !content.is_empty()
                 {
@@ -1830,8 +1832,8 @@ impl ScanChain {
         let mut paths = Vec::new();
 
         match tool_name {
-            "file_write" | "file_edit" | "file_append" | "write_file" | "edit_file"
-            | "append_file" => {
+            // 2026-11-06：append_file 并入 edit_file（action=append）。
+            "file_write" | "file_edit" | "file_append" | "write_file" | "edit_file" => {
                 if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
                     paths.push(path.to_string());
                 }

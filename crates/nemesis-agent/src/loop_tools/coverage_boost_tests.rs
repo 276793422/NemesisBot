@@ -383,7 +383,6 @@ mod tool_registration_tests {
         assert!(tools.contains_key("write_file"));
         assert!(tools.contains_key("list_dir"));
         assert!(tools.contains_key("edit_file"));
-        assert!(tools.contains_key("append_file"));
         assert!(tools.contains_key("delete_file"));
         assert!(tools.contains_key("create_dir"));
         assert!(tools.contains_key("delete_dir"));

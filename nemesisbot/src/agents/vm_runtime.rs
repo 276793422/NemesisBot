@@ -1849,7 +1849,10 @@ pub(crate) const VM_GUEST_TOOLS: [&str; 8] = [
     "exec",
     "read_file",
     "write_file",
-    "append_file",
+    // 2026-11-06 append_file 并入 edit_file（action=append）：追加能力由
+    // edit_file 条目承载；guest dispatch 对 action=edit 诚实拒绝（guest
+    // 未实现精确替换，与收编前 VM 档行为一致）。
+    "edit_file",
     "list_dir",
     "create_dir",
     "delete_file",

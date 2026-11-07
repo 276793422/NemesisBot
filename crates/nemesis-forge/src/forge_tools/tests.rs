@@ -5,17 +5,10 @@ use crate::config::ForgeConfig;
 #[test]
 fn test_forge_tool_definitions() {
     let tools = forge_tool_definitions();
-    assert_eq!(tools.len(), 8);
-
-    let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-    assert!(names.contains(&"forge_reflect"));
-    assert!(names.contains(&"forge_create"));
-    assert!(names.contains(&"forge_update"));
-    assert!(names.contains(&"forge_list"));
-    assert!(names.contains(&"forge_evaluate"));
-    assert!(names.contains(&"forge_build_mcp"));
-    assert!(names.contains(&"forge_share"));
-    assert!(names.contains(&"forge_learning_status"));
+    // 2026-11-06 单工具收编：8 个 forge_* 名收成一个 `forge` 工具
+    // （action 判别字段），工具表不再为 forge 付 8 个名字。
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].name, "forge");
 }
 
 #[test]
@@ -230,6 +223,30 @@ async fn test_execute_unknown_tool() {
     assert!(result.content.contains("Unknown forge tool"));
 }
 
+// 2026-11-06 单工具收编回归锁：合并名 `forge` 走 args.action 判别字段；
+// 旧名 `forge_<action>` 前缀归一零迁移；缺 action 诚实报错带有效值清单。
+#[tokio::test]
+async fn test_execute_merged_name_dispatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let forge = Arc::new(Forge::new(ForgeConfig::default(), dir.path().to_path_buf()));
+    let executor = ForgeToolExecutor::new(forge);
+
+    // 合并名 + action=list：与旧名 forge_list 等效。
+    let merged = executor
+        .execute("forge", &serde_json::json!({"action": "list"}))
+        .await;
+    assert!(merged.success, "merged name + action=list should work");
+    let legacy = executor.execute("forge_list", &serde_json::json!({})).await;
+    assert!(legacy.success, "legacy name normalization should work");
+    assert_eq!(merged.content, legacy.content);
+
+    // 合并名缺 action → 诚实报错（带有效 action 清单）。
+    let missing = executor.execute("forge", &serde_json::json!({})).await;
+    assert!(!missing.success);
+    assert!(missing.content.contains("Unknown forge tool"));
+    assert!(missing.content.contains("valid actions"));
+}
+
 #[tokio::test]
 async fn test_execute_update_and_list() {
     let dir = tempfile::tempdir().unwrap();
@@ -398,7 +415,7 @@ async fn test_execute_build_mcp_install_action() {
             "forge_build_mcp",
             &serde_json::json!({
                 "id": id,
-                "action": "install"
+                "mode": "install"
             }),
         )
         .await;
@@ -675,22 +692,15 @@ fn test_forge_tool_result_serialization_roundtrip() {
 #[test]
 fn test_forge_tool_definitions_count() {
     let defs = forge_tool_definitions();
-    // Should have 8 tools: reflect, create, update, list, evaluate, build_mcp, share, learning_status
-    assert_eq!(defs.len(), 8);
+    // 2026-11-06 收编后应只有 1 个工具（8 个旧名 → action 判别字段）。
+    assert_eq!(defs.len(), 1);
 }
 
 #[test]
 fn test_forge_tool_definitions_names() {
     let defs = forge_tool_definitions();
     let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
-    assert!(names.contains(&"forge_reflect"));
-    assert!(names.contains(&"forge_create"));
-    assert!(names.contains(&"forge_update"));
-    assert!(names.contains(&"forge_list"));
-    assert!(names.contains(&"forge_evaluate"));
-    assert!(names.contains(&"forge_build_mcp"));
-    assert!(names.contains(&"forge_share"));
-    assert!(names.contains(&"forge_learning_status"));
+    assert_eq!(names, vec!["forge"]);
 }
 
 #[test]
@@ -1157,7 +1167,7 @@ async fn test_execute_build_mcp_uninstall_action() {
             "forge_build_mcp",
             &serde_json::json!({
                 "id": id,
-                "action": "uninstall"
+                "mode": "uninstall"
             }),
         )
         .await;
@@ -1361,7 +1371,7 @@ async fn test_execute_build_mcp_build_action() {
             "forge_build_mcp",
             &serde_json::json!({
                 "id": id,
-                "action": "build"
+                "mode": "build"
             }),
         )
         .await;
@@ -2828,7 +2838,7 @@ async fn test_s8_build_mcp_validation_errors() {
     let r3 = executor
         .execute(
             "forge_build_mcp",
-            &serde_json::json!({"id": "mcp-bmmcp", "action": "bogus"}),
+            &serde_json::json!({"id": "mcp-bmmcp", "mode": "bogus"}),
         )
         .await;
     assert!(!r3.success);
@@ -2857,7 +2867,7 @@ async fn test_s8_build_mcp_build_action_active() {
     let result = executor
         .execute(
             "forge_build_mcp",
-            &serde_json::json!({"id": "mcp-buildmcp", "action": "build"}),
+            &serde_json::json!({"id": "mcp-buildmcp", "mode": "build"}),
         )
         .await;
     assert!(result.success, "content: {}", result.content);
@@ -2889,7 +2899,7 @@ async fn test_s8_build_mcp_install_go_and_fallback() {
     let inst = executor
         .execute(
             "forge_build_mcp",
-            &serde_json::json!({"id": "mcp-instgo", "action": "install"}),
+            &serde_json::json!({"id": "mcp-instgo", "mode": "install"}),
         )
         .await;
     assert!(inst.success, "content: {}", inst.content);
@@ -2912,7 +2922,7 @@ async fn test_s8_build_mcp_install_go_and_fallback() {
     let fallback = executor
         .execute(
             "forge_build_mcp",
-            &serde_json::json!({"id": "mcp-instgo", "action": "install"}),
+            &serde_json::json!({"id": "mcp-instgo", "mode": "install"}),
         )
         .await;
     assert!(fallback.success, "content: {}", fallback.content);
@@ -2932,7 +2942,7 @@ async fn test_s8_build_mcp_install_go_and_fallback() {
     let repaired = executor
         .execute(
             "forge_build_mcp",
-            &serde_json::json!({"id": "mcp-instgo", "action": "install"}),
+            &serde_json::json!({"id": "mcp-instgo", "mode": "install"}),
         )
         .await;
     assert!(repaired.success, "content: {}", repaired.content);
@@ -2969,7 +2979,7 @@ async fn test_s8_build_mcp_install_unwritable_config() {
     let result = executor
         .execute(
             "forge_build_mcp",
-            &serde_json::json!({"id": "mcp-dirconf", "action": "install"}),
+            &serde_json::json!({"id": "mcp-dirconf", "mode": "install"}),
         )
         .await;
     assert!(!result.success);
@@ -3000,7 +3010,7 @@ async fn test_s8_build_mcp_uninstall_variants() {
         .await;
     assert!(mcp.success);
     let config_path = dir.path().join("config").join("config.mcp.json");
-    let args = serde_json::json!({"id": "mcp-unimcp", "action": "uninstall"});
+    let args = serde_json::json!({"id": "mcp-unimcp", "mode": "uninstall"});
 
     // No config file at all (config dir may not exist either).
     let r1 = executor.execute("forge_build_mcp", &args).await;

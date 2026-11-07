@@ -153,6 +153,8 @@ impl AgentLoop {
             return None;
         }
         let key = session_key.to_string();
+        // S8：账本归因随任务带出（data_store clone + session_key 如实传递）。
+        let data_store = self.data_store.clone();
         Some(tokio::spawn(async move {
             let title = if let Some(cb) = callback {
                 cb.generate_title(&crate::r#loop::policy::TitleInput {
@@ -161,7 +163,14 @@ impl AgentLoop {
                 })
                 .await
             } else if let Some((provider, model)) = builtin {
-                generate_title_from_first_message(provider.as_ref(), &model, &first).await
+                generate_title_from_first_message(
+                    provider.as_ref(),
+                    &model,
+                    &first,
+                    data_store.as_ref(),
+                    Some(&key),
+                )
+                .await
             } else {
                 None
             };

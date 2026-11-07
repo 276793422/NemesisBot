@@ -183,7 +183,7 @@ fn build_completed_reply_with_workflow(
     }
 
     // Use Workflow::compute_output for terminal merging semantics — this
-    // matches what workflow_run agent tool returns to its caller.
+    // matches what the `workflow` tool's run action returns to its caller.
     let merged = workflow.compute_output(&exec.node_results);
 
     // Agent node output signature is {"response": "..."}. If merged is an

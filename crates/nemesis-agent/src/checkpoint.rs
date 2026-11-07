@@ -1,6 +1,7 @@
 //! Checkpoint store — snapshot-based edit safety net.
 //!
-//! Before a writer tool (`write_file`/`edit_file`/`append_file`/`delete_file`)
+//! Before a writer tool (`write_file`/`edit_file`（含 action=append）/
+//! `delete_file`)
 //! changes a file, the agent records the file's pre-edit content here, keyed to
 //! the current user turn. A rewind can then restore the workspace to an earlier
 //! turn — restoring code, or (caller-side) the conversation, or both.

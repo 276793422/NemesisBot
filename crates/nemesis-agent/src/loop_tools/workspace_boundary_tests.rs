@@ -5,7 +5,7 @@
 //!   绝对、`..` 穿越逃逸、restrict=false 全放行、平台归一化（Windows 大小
 //!   写不敏感 / Unix symlink 界内可达 + symlink 逃逸拒绝）。
 //! - 工具级带界形态：write_file 拒外放内、覆盖回执 + diff 块、新建无
-//!   覆盖标记、同内容覆盖无 diff 块；edit_file / append_file 拒外。
+//!   覆盖标记、同内容覆盖无 diff 块；edit_file（含 action=append）拒外。
 //! - 无界默认形态向后兼容锚：`::default()` 照旧可写界外（基线注册 / 既有
 //!   测试不变）。
 //! - `register_shared_tools` 注入接线：带界 config 注册出的 write_file
@@ -275,13 +275,14 @@ async fn edit_file_with_boundary_denies_outside() {
 }
 
 #[tokio::test]
-async fn append_file_with_boundary_denies_outside() {
+async fn edit_file_append_with_boundary_denies_outside() {
     let root = temp_dir("af_out");
     let other = temp_dir("af_other");
     let target = other.join("t.txt");
     std::fs::write(&target, "keep\n").unwrap();
-    let args = serde_json::json!({"path": ps(&target), "content": "more\n"}).to_string();
-    let tool = super::AppendFileTool::with_boundary(Arc::new(boundary(&root, true)));
+    let args = serde_json::json!({"path": ps(&target), "content": "more\n", "action": "append"})
+        .to_string();
+    let tool = super::EditFileTool::with_boundary(Arc::new(boundary(&root, true)));
     let err = tool.execute(&args, &ctx()).await.unwrap_err();
     assert!(err.contains("access denied"), "{err}");
     assert_eq!(

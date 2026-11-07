@@ -22,7 +22,7 @@
 | `aux_prompts.rs`（`#[path]` 挂 `aux` 模块——`aux` 是 Windows 保留设备名，文件名须避开） | aux 调用文本：压缩指令/合并模板/标题生成/粘贴数据段/外部通道段 | nemesis-agent |
 | `subagents.rs` | `SubagentRole` 十角色模板 + `render_system_prompt` + `slug`/`from_slug`/`catalog`（spawn schema 单一真相源） | nemesis-agent |
 | `slash.rs` | 内置 slash 深度模板（security-review/code-review/debug/fix，`lookup`+`expand`）——斜杠=提示词模板机制的产品内置层 | nemesis-agent（rewrite 链第 3 段） |
-| `tools.rs` | `TOOL_DESCRIPTIONS` 60 条（lean/full 双档 `.md`）+ `description_for` + `first_sentence`（权威实现） | nemesis-agent（经 tier 门控） |
+| `tools.rs` | `TOOL_DESCRIPTIONS` 53 条（lean/full 双档 `.md`）+ `description_for` + `first_sentence`（权威实现） | nemesis-agent（经 tier 门控） |
 | `guardian.rs` | `GUARDIAN_PROMPT`（LLM judge 语义二审） | nemesis-security |
 | `forge.rs` | `quality_review_prompt` + 两个 reviewer system prompt + 技能/脚本生成四 prompt（author×2/generator/fixer） | nemesis-forge |
 | `board.rs` | planner/review（含 `ReviewTier` 分层 + `render_precedents_block` 判例块）/project_summary/conflict_resolver | nemesis-board、nemesisbot |

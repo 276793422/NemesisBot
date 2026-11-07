@@ -1490,8 +1490,11 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
 
             // -----------------------------------------------------------------
             // 对话生成（2026-09-22）：能力表 + 草稿面板五命令。
-            // 草稿的写路径只有 workflow_create agent 工具；这里的 draft_apply
-            // 是唯一把草稿转正的入口（人工在 UI 点「应用」）。
+            // 草稿的写路径是 `workflow` agent 工具的 action=create（2026-11-06
+            // 三合一收编）；转正（登记进引擎注册表）统一走 DraftStore::apply，
+            // 三条平行入口同源：本 handler 的 draft_apply（人工在 UI 点「应
+            // 用」）、agent 工具的 action=apply（2026-11-07）、工作流页草稿
+            // 面板的「应用」按钮（同 draft_apply）。
             // -----------------------------------------------------------------
             "capabilities" => Ok(Some(
                 serde_json::to_value(nemesis_workflow::capabilities::capabilities())

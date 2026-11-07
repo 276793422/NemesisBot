@@ -160,12 +160,12 @@ pub async fn test_tool_write_file(ws: &TestWorkspace) -> Vec<TestResult> {
 }
 
 // ---------------------------------------------------------------------------
-// Test: append_file tool（testai-5.0 操作面无 edit_file；同族变更类操作
-// 由 append_file 顶上——edit_file 行为覆盖在 crate 单测）
+// Test: edit_file 追加形态（action=append；testai-5.0 的 file_append 操作
+// 已映射到 edit_file + action=append——2026-11-06 append_file 并入 edit_file）
 // ---------------------------------------------------------------------------
 
-pub async fn test_tool_append_file(ws: &TestWorkspace) -> Vec<TestResult> {
-    let suite = "tool/append_file";
+pub async fn test_tool_edit_file_append(ws: &TestWorkspace) -> Vec<TestResult> {
+    let suite = "tool/edit_file_append";
     let mut results = Vec::new();
     print_suite_header(suite);
 
@@ -179,7 +179,7 @@ pub async fn test_tool_append_file(ws: &TestWorkspace) -> Vec<TestResult> {
     .await
     {
         Ok((_reply, events)) => {
-            results.push(assert_tool_ok(suite, "executed", &events, "append_file"));
+            results.push(assert_tool_ok(suite, "executed", &events, "edit_file"));
             match std::fs::read_to_string(&test_file) {
                 Ok(c) if c.contains("line1") && c.contains("IT append 2") => {
                     results.push(pass(

@@ -2,8 +2,8 @@
 //!
 //! 与 `engine::validate_workflow`（error 通道，管结构合法性）分离：lint 是
 //! **warning 通道**，管「能跑但大概率不合意图」的语义陷阱。规则结论经
-//! `DraftSummary.warnings` 透传到草稿面板 / wsapi / `workflow_create` 工具
-//! 响应的 hints——生成器按工具描述的「有错修了重存」回路当轮自纠。
+//! `DraftSummary.warnings` 透传到草稿面板 / wsapi / `workflow` 工具
+//! （action=create）响应的 hints——生成器按工具描述的「有错修了重存」回路当轮自纠。
 //!
 //! 新 pitfall 的接入方式：加一条规则函数，无需动任何消费方。
 

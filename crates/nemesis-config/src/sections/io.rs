@@ -468,6 +468,8 @@ pub fn default_config() -> Config {
             guardian_model: None,
             doom_loop_approval: false,
             image_downscale: true,
+            // B30 工具结果统一 cap（serde 缺省 8000）——全字段初始化器补齐。
+            tool_result_cap: default_tool_result_cap(),
             lease_enabled: true,
             codemode: CodeModeConfig::default(),
             delegate: DelegateToolConfig::default(),

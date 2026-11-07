@@ -4,8 +4,10 @@
 //! - `exec` ↔ `nemesis-agent::loop_tools::ExecTool`（stdout / "(no output)" /
 //!   "Exit code: N\nstdout: ...\nstderr: ..."；spawn 失败与超时为 Err）；
 //! - 文件工具 ↔ `nemesis-tools/src/filesystem.rs`（"wrote N bytes to ..."、
-//!   "created directory: ..."、"deleted file: ..." 等）+ append_file 对齐
-//!   `loop_tools::AppendFileTool`（"Appended N bytes to ..."）。
+//!   "created directory: ..."、"deleted file: ..." 等）+ edit_file
+//!   action=append 对齐宿主 edit_file append 分支（"Appended N bytes to ..."；
+//!   2026-11-06 append_file 并入 edit_file 后旧工具名消失，追加能力由
+//!   edit_file 的 append 分支承载）。
 //!
 //! 差异（刻意，guest 栖息地语义）：
 //! - shell 恒 `sh -c`（musl Linux）；宿主直跑（Windows 测试形态）退
@@ -48,7 +50,10 @@ pub(crate) async fn dispatch(
         "exec" => exec(&val, workspace).await,
         "read_file" => read_file(&val, workspace).await,
         "write_file" => write_file(&val, workspace).await,
-        "append_file" => append_file(&val, workspace).await,
+        // 2026-11-06 append_file 并入 edit_file：追加走 action=append；
+        // action=edit（精确替换）guest 仍未实现，诚实拒绝（与收编前 VM
+        // 档行为一致——彼时 edit_file 整体不在子集内同样被拒）。
+        "edit_file" => edit_file(&val, workspace).await,
         "list_dir" => list_dir(&val, workspace).await,
         "create_dir" => create_dir(&val, workspace).await,
         "delete_file" => delete_file(&val, workspace).await,
@@ -63,11 +68,13 @@ pub(crate) async fn dispatch(
         "hash_tree" => crate::bulk::hash_tree(&val, workspace).await,
         // B9-2 内部方法（开工闸宿主删除传播）。
         "bulk_delete" => crate::bulk::bulk_delete(&val, workspace).await,
-        // 诚实拒绝未实现项（edit_file/multiedit/grep/git 往后续补）。
+        // 诚实拒绝未实现项（edit_file action=edit / multiedit / grep / git
+        // 往后续补）。
         other => Err(format!(
-            "unknown tool: {other} (guest subset: exec, read_file, write_file, append_file, \
-             list_dir, create_dir, delete_file, delete_dir; internal: bulk_write, bulk_read, \
-             bulk_read_chunk, hash_tree, bulk_delete; browser bridge: browser)"
+            "unknown tool: {other} (guest subset: exec, read_file, write_file, edit_file \
+             [action=append], list_dir, create_dir, delete_file, delete_dir; internal: \
+             bulk_write, bulk_read, bulk_read_chunk, hash_tree, bulk_delete; browser bridge: \
+             browser)"
         )),
     }
 }
@@ -241,7 +248,21 @@ async fn write_file(val: &serde_json::Value, workspace: &Path) -> Result<String,
     Ok(format!("wrote {} bytes to {}", content.len(), path_str))
 }
 
-async fn append_file(val: &serde_json::Value, workspace: &Path) -> Result<String, String> {
+/// edit_file 二形态（2026-11-06 append_file 并入后）：
+/// - `action = "append"`：追加（旧 append_file 实现逐字节搬运，文案同形
+///   "Appended N bytes to ..."——模型对 guest 与宿主无感知差异）。
+/// - `action = "edit"`（缺省）：精确替换 guest **未实现**，诚实拒绝并
+///   指路 read_file + write_file——静默实现一套降级匹配语义反而制造
+///   guest/宿主行为分裂。
+async fn edit_file(val: &serde_json::Value, workspace: &Path) -> Result<String, String> {
+    let action = val.get("action").and_then(|v| v.as_str()).unwrap_or("edit");
+    if action != "append" {
+        return Err(format!(
+            "edit_file action='{action}' is not implemented in the guest subset yet \
+             (only action=append is supported) — use read_file + write_file to \
+             rewrite the file instead"
+        ));
+    }
     let path_str = arg_path(val)?.to_string();
     let content = val
         .get("content")

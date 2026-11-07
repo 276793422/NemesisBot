@@ -288,3 +288,98 @@ fn l02_non_prefixed_text_with_stream_word_not_short_circuited() {
     // "invalid request" → Format（词表既有行为，不被 L02 短路劫持）。
     assert_eq!(classify_llm_error(msg), Some(LlmErrorClass::Format));
 }
+
+// ---- B29/D1（2026-11-06）上下文溢出文案族 ----
+
+#[test]
+fn context_overflow_family_forms_are_classified() {
+    // 高特异性短语族（各厂商真实文案形态）。
+    let positives = [
+        // OpenAI 兼容 lane 经典形态。
+        "This model's maximum context length is 8192 tokens",
+        "context_length_exceeded",
+        // Anthropic 形态。
+        "prompt is too long: 250000 tokens > 200000 maximum",
+        "your prompt too long for this model",
+        // 通用变体。
+        "maximum context length exceeded",
+        "max context window reached",
+        "too many input tokens",
+        "input tokens exceed the model limit",
+        // s-less 超集（exceeds/exceeded/exceeding 全命中）。
+        "token count exceeds allowed maximum",
+        // 泛词双词同现族（exceeds the maximum + token/context/prompt）。
+        "number of tokens exceeds the maximum allowed",
+        "the context exceeds the maximum supported size",
+        "reduce the length of your messages",
+        // input length + exceed/limit。
+        "input length exceeds limit",
+        "input length limit reached",
+        // 中文厂商文案族。
+        "输入长度超出模型上限",
+        "请求超出模型上下文窗口",
+        "上下文长度超限",
+    ];
+    for msg in positives {
+        assert_eq!(
+            classify_llm_error(msg),
+            Some(LlmErrorClass::ContextOverflow),
+            "溢出文案族应归 ContextOverflow：{msg}"
+        );
+    }
+    // 大小写混合（真相源内部自 lowercase，调用方传原始大小写文本同判）。
+    assert!(is_context_overflow("Your Prompt Is Too Long"));
+}
+
+#[test]
+fn context_overflow_negatives_do_not_misclassify() {
+    // G2 失败模式回归锁：泛词不得裸误配——图像/凭据/限流等既有分类不被劫持。
+    // "image exceeds the maximum size" 缺 token/context/prompt 同现 → 不入族
+    // （否则图像错误被误吸进压缩环，白受必败重呼）。
+    assert!(!is_context_overflow(
+        "image exceeds the maximum size of 25 mb"
+    ));
+    assert_eq!(
+        classify_llm_error("image exceeds the maximum size of 25 mb"),
+        Some(LlmErrorClass::Format)
+    );
+    // 裸 "exceeds the maximum" 无主题词 → 不入族。
+    assert!(!is_context_overflow("value exceeds the maximum"));
+    // 裸 "input length" 无 exceed/limit → 不入族。
+    assert!(!is_context_overflow("please check your input length"));
+    // 空串/无关文本。
+    assert!(!is_context_overflow(""));
+    assert!(!is_context_overflow("totally unknown thing"));
+    // 既有分类不被劫持（auth 负例是词表内部 proven：matches_auth 有
+    // "invalid token"/"expired"，溢出族不含这些词）。
+    assert_eq!(
+        classify_llm_error("invalid token provided"),
+        Some(LlmErrorClass::Auth)
+    );
+    assert_eq!(
+        classify_llm_error("invalid api key"),
+        Some(LlmErrorClass::Auth)
+    );
+    assert_eq!(
+        classify_llm_error("invalid request format: unknown field `foo`"),
+        Some(LlmErrorClass::Format)
+    );
+    assert_eq!(
+        classify_llm_error("request timeout"),
+        Some(LlmErrorClass::Timeout)
+    );
+    assert_eq!(
+        classify_llm_error("too many requests"),
+        Some(LlmErrorClass::RateLimit)
+    );
+}
+
+#[test]
+fn l02_short_circuit_still_precedes_overflow_family() {
+    // L02 头行前缀锚必须仍最先行——partial 尾段携带的溢出文案不得把流中断
+    // 误吸进压缩环（流中断是瞬态可重试，溢出是确定性失败，处置相反）。
+    let display = stream_interrupted_display(
+        "上游说 prompt is too long: 999999 tokens > 8192 maximum context",
+    );
+    assert_eq!(classify_llm_error(&display), Some(LlmErrorClass::Timeout));
+}

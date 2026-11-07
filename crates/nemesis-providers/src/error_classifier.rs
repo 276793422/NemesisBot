@@ -46,6 +46,14 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
             // 状态码形态带真值；纯文案形态（原实现约定）= 0。
             status: extract_http_status(&msg).unwrap_or(0),
         },
+        // B29/D1（2026-11-06）：上下文溢出不新增 FailoverError 变体（L02
+        // 拍板④先例——波及面最小），归 Unknown 携带原文：换 provider 大概率
+        // 同溢，Unknown 不轮转语义正确；loop 层靠分类结果/文案族路由进
+        // 响应式压缩，不靠 Failover 变体。
+        LlmErrorClass::ContextOverflow => FailoverError::Unknown {
+            provider: provider.to_string(),
+            message: error_msg.to_string(),
+        },
     })
 }
 
@@ -58,7 +66,8 @@ pub fn classify_reason(error_msg: &str) -> Option<FailoverReason> {
         LlmErrorClass::Billing => FailoverReason::Billing,
         LlmErrorClass::Timeout => FailoverReason::Timeout,
         LlmErrorClass::Auth => FailoverReason::Auth,
-        LlmErrorClass::Format => FailoverReason::Format,
+        // 溢出与 Format 同门（重试无意义、不轮转）——轮转语义按 Format。
+        LlmErrorClass::Format | LlmErrorClass::ContextOverflow => FailoverReason::Format,
     })
 }
 

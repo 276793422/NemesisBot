@@ -5,7 +5,7 @@
  * 左侧：ChatPanel（普通 chat 模块 + `moduleData.workflow_edit` 透传）。
  *   每条消息都带 `workflow_edit: { workflow_name }` 元数据 → 后端
  *   AgentLoop 在 system 区注入「工作流编辑会话」摘要（当前 YAML 或
- *   capabilities 引导），AI 用 workflow_create 工具产草稿。
+ *   capabilities 引导），AI 用 workflow 工具（action=create）产草稿。
  *   会话本体就是普通会话——D-3（2026-09-23 多会话并行清账）起经
  *   `:session-id` prop 钉死给 ChatPanel（effectiveSid），**不再抢写全局
  *   currentId**：主聊天页的选中/视图/busy 态与本面板彻底隔离，「保存工作
@@ -20,7 +20,7 @@
  * 「＋新建工作流」目标全局共用一条会话。旧 localStorage 映射
  * （nemesisbot_wf_agentGen_sids）只作一次性迁移源：目标会话仍存活则
  * setBinding 收编进服务端，陈旧则弃用——零本地状态。
- * 草稿列表刷新：TAB 进入 / 目标切换 / tool_event(workflow_create 完成)。
+ * 草稿列表刷新：TAB 进入 / 目标切换 / tool_event(workflow 完成)。
  */
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useWorkflowStore } from '../../stores/workflow'
@@ -169,7 +169,11 @@ function onWsMessage(frame: { type?: string; cmd?: string; data?: any }) {
   if (frame.type !== 'push' || frame.cmd !== 'tool_event') return
   const payload = frame.data
   if (payload?.kind !== 'ToolFinished') return
-  if (payload.data?.tool !== 'workflow_create') return
+  // 三合一收编（2026-11-06）后注册名是单工具 `workflow`（action 判别字段）。
+  // ToolFinished 载荷无 args，只能按工具名匹配——run/capabilities 完成也
+  // 触发一次无害的 draft_list 刷新。旧 `workflow_create` 过滤器在收编后
+  // 匹配不到任何事件（草稿面板不再自动刷新），2026-11-07 修复。
+  if (payload.data?.tool !== 'workflow') return
   void store.fetchDrafts(true)
 }
 

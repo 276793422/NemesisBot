@@ -15,8 +15,13 @@ use nemesis_agent::user_profile::{self, stat_candidates, upsert_habit};
 
 static SWEEP_SPAWNED: OnceLock<()> = OnceLock::new();
 
-/// gateway 装配点调用：保证 sweep 任务只 spawn 一份。
-pub fn ensure_sweep_spawned(home: PathBuf) {
+/// gateway 装配点调用：保证 sweep 任务只 spawn 一份。S8：`data_store`
+/// 随任务带出——反思通道的 LLM 调用落 aux 账本（forge_review 归因族，
+/// 经 judge 回落链 → ForgeProviderBridge 同一链路）。
+pub fn ensure_sweep_spawned(
+    home: PathBuf,
+    data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
+) {
     if SWEEP_SPAWNED.set(()).is_err() {
         return; // 已 spawn（loop 重建多次调用只生效一次）
     }
@@ -39,7 +44,8 @@ pub fn ensure_sweep_spawned(home: PathBuf) {
             let h = home.clone();
             let s = sweeps;
             let rh = handle.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || sweep_once(&h, s, &rh))
+            let ds = data_store.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || sweep_once(&h, s, &rh, ds.as_ref()))
                 .await
                 .unwrap_or_else(|e| Err(format!("sweep task panicked: {e}")))
             {
@@ -66,7 +72,12 @@ fn load_scan_interval_secs(home: &Path) -> u64 {
 /// （锁 + fresh load + upsert + 衰减 + 截断 + 水线 + 落盘）内落到锁内
 /// 新读的画像上——锁外修改的本地副本不回写，锁内 fresh load 消灭 RMW
 /// 读改写窗口。
-pub fn sweep_once(home: &Path, sweeps: u64, rt: &tokio::runtime::Handle) -> Result<usize, String> {
+pub fn sweep_once(
+    home: &Path,
+    sweeps: u64,
+    rt: &tokio::runtime::Handle,
+    data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
+) -> Result<usize, String> {
     let cfg = nemesis_config::load_config(&crate::common::config_path(home))
         .map_err(|e| format!("load config: {e}"))?;
     let Some(up_cfg) = cfg.user_profile.as_ref() else {
@@ -97,7 +108,7 @@ pub fn sweep_once(home: &Path, sweeps: u64, rt: &tokio::runtime::Handle) -> Resu
     let reflect_every = up_cfg.reflect_every_sweeps_or(20) as u64;
     if sweeps.is_multiple_of(reflect_every)
         && !messages.is_empty()
-        && let Some(caller) = build_caller(home, &workspace)?
+        && let Some(caller) = build_caller(home, &workspace, data_store)?
     {
         match reflect_semantic_habits(
             &caller,
@@ -266,10 +277,12 @@ fn reflect_semantic_habits(
 fn build_caller(
     home: &Path,
     workspace: &Path,
+    data_store: Option<&std::sync::Arc<nemesis_data::DataStore>>,
 ) -> Result<Option<std::sync::Arc<dyn nemesis_forge::reflector_llm::LLMCaller>>, String> {
     nemesis_web::handlers::forge::resolve_judge_caller(
         &home.to_string_lossy(),
         &workspace.to_string_lossy(),
+        data_store,
     )
 }
 

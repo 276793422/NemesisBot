@@ -49,6 +49,40 @@ fn dispatch_write_form_path_content() {
 }
 
 #[test]
+fn dispatch_append_form_diffs_against_existing_tail() {
+    // 2026-11-06 append_file 并入 edit_file：{path, action:"append", content}
+    // 形态必须走 append 臂——diff = 现盘 vs 现盘+追加（write 臂会把追加
+    // 内容误渲染成整文件替换，回归锁）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("log.txt");
+    std::fs::write(&p, "line1\n").unwrap();
+    let args = serde_json::json!({
+        "path": p.to_str().unwrap(), "action": "append", "content": "line2\n"
+    });
+    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains(" line1"), "现盘内容保持无前缀变化: {text}");
+    assert!(text.contains("+line2"), "追加行以新增行渲染: {text}");
+    assert!(
+        !text.contains("-line1"),
+        "追加不得把现盘内容标成删除: {text}"
+    );
+}
+
+#[test]
+fn dispatch_append_form_new_file_is_full_add() {
+    // 追加目标不存在 = 全量新增（与 append 的 create 语义一致）。
+    let dir = tempfile::tempdir().unwrap();
+    let p = dir.path().join("fresh.txt");
+    let args = serde_json::json!({
+        "path": p.to_str().unwrap(), "action": "append", "content": "seed\n"
+    });
+    let (text, fmt) = build_preview("file_write", "t", &args).unwrap();
+    assert_eq!(fmt, "diff");
+    assert!(text.contains("+seed"));
+}
+
+#[test]
 fn dispatch_edit_form_old_new_text() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("e.txt");

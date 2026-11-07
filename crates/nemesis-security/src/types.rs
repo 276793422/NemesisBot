@@ -420,7 +420,8 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
     }
     match tool_name {
         "read_file" | "file_exists" => Some(OperationType::FileRead),
-        "write_file" | "edit_file" | "append_file" | "multiedit" => {
+        // 2026-11-06：append_file 并入 edit_file（action=append），写档同族。
+        "write_file" | "edit_file" | "multiedit" => {
             Some(OperationType::FileWrite)
         }
         "delete_file" => Some(OperationType::FileDelete),
@@ -476,8 +477,12 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // ABAC 规则 → default action 兜底，默认配置放行）。
         "todowrite" => Some(OperationType::FileWrite),
         // 对话生成（2026-09-22）：workflow_create 落草稿 YAML 到 workspace
-        // workflow/drafts/（写文件语义）。
-        "workflow_create" => Some(OperationType::FileWrite),
+        // workflow/drafts/（写文件语义）。2026-11-06 三合一：单 `workflow`
+        // 工具按 action 投影精确分档（create=file_write / run、capabilities
+        // =internal，见 WorkflowTool::operation_override）；静态表只兜底
+        // args 畸形 / action 缺失的调用——按写能力分支主导的安全过度分类
+        // 挂 FileWrite。
+        "workflow" => Some(OperationType::FileWrite),
         // 图像生成（集群专业职能框架 M4）：出站请求发往装配期解析的固定
         // 端点（prompt 为载荷）+ 结果落工作区 images/（工具内构造性钉死，
         // 拒 `..`/绝对路径）。归 NetworkRequest（MEDIUM）让注入检测/凭据
@@ -504,12 +509,13 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "memory_forget" => Some(OperationType::FileDelete),
         // 进程内编排/查询/交互面（LOW）：纯会话机制（发消息/睡眠/问答卡/
         // 子代理编排——其内部工具调用各自过闸）、静态表查询、B4 自有任务
-        // 读写、工作流触发（节点各自过闸）。这些工具没有外部副作用面，
-        // 挂 exec/network 档名实不符；Internal = LOW 且全 8 层照跑
-        // （注入检测/凭据扫描/DLP/审计链不再像修复前那样整体跳过）。
+        // 读写（工作流触发的 internal 档经 WorkflowTool::operation_override
+        // 按 action 投影，2026-11-06 三合一后不再走本静态表）。这些工具没有
+        // 外部副作用面，挂 exec/network 档名实不符；Internal = LOW 且全 8 层
+        // 照跑（注入检测/凭据扫描/DLP/审计链不再像修复前那样整体跳过）。
         "message" | "sleep" | "question" | "subagent" | "skills_list" | "skills_info"
-        | "cli_reference" | "history_search" | "mcp_list" | "workflow_run"
-        | "workflow_capabilities" | "memory_search" | "memory_list" | "background_output"
+        | "cli_reference" | "history_search" | "mcp_list"
+        | "memory_search" | "memory_list" | "background_output"
         | "background_kill"
         // A3（委派持续操控）：send/output/stop 只操控本注册表内的自有子
         // 代理（进程已在 delegate_start 时过闸；steer 文本作为工具入参照
@@ -529,12 +535,7 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
 /// Extract target from tool arguments.
 pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
     match tool_name {
-        "read_file"
-        | "write_file"
-        | "edit_file"
-        | "append_file"
-        | "delete_file"
-        | "board_evidence_read" => args
+        "read_file" | "write_file" | "edit_file" | "delete_file" | "board_evidence_read" => args
             .get("path")
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -579,6 +580,21 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|a| a.first())
             .and_then(|e| e.get("path"))
             .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+        // 2026-11-06 三合一：workflow 工具 target = 任务对象名（action=run
+        // 取 `workflow`；action=create 取 definition.name——草稿落盘对象；
+        // 2026-11-07 增 apply：取 `workflow`（登记的草稿名，同 run 槽位）——
+        // 审计链/按对象名匹配的 ABAC 规则可见；FileWrite 兜底档不得空
+        // target，同 run_script/multiedit 纪律）。capabilities 无对象 → ""。
+        "workflow" => args
+            .get("workflow")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                args.get("definition")
+                    .and_then(|d| d.get("name"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("")
             .to_string(),
         "download" | "upload" | "http_request" | "web_request" | "web_fetch" | "web_search"

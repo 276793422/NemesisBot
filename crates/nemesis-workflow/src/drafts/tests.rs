@@ -157,6 +157,101 @@ fn apply_over_existing_backs_up_to_history() {
 }
 
 #[test]
+fn rapid_reapplies_keep_distinct_history_backups() {
+    // Two applies inside the same second must not overwrite each other's
+    // .history/ backup (fs::copy replaces the destination silently) — an
+    // agent iterating create→apply without runs produces rapid consecutive
+    // applies. The backup timestamp carries milliseconds, so each apply
+    // keeps its own backup and the OLDER one survives verbatim.
+    let root = temp_dir("backup-ms");
+    let defs = root.join("definitions");
+    std::fs::create_dir_all(&defs).unwrap();
+    let store = DraftStore::new(root.join("drafts"), defs.clone());
+
+    let engine = crate::engine::WorkflowEngine::new();
+    engine.set_workflow_defs_dir(defs.clone());
+
+    // v1 (1 node) registered through the normal path.
+    engine.persist_workflow(sample_workflow("hot")).unwrap();
+
+    // v2 (2 nodes) and v3 (3 nodes) applied back-to-back.
+    //
+    // The 5ms sleep is part of the fixture, not a delay tactic: it
+    // guarantees the two backup timestamps land in distinct milliseconds
+    // (a sub-millisecond gap could coincidentally straddle zero ms
+    // distance and fail the fixed code), while staying far inside the
+    // same second — which is exactly the window the old second-resolution
+    // timestamp collided in.
+    let mut wf2 = sample_workflow("hot");
+    wf2.nodes.push(NodeDef {
+        id: "n2".into(),
+        node_type: "delay".into(),
+        config: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("seconds".to_string(), serde_json::json!(1));
+            m
+        },
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    });
+    store.save(&wf2).unwrap();
+    let a1 = store.apply(&engine, "hot").unwrap();
+    assert!(a1.replaced_existing);
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let mut wf3 = wf2.clone();
+    wf3.nodes.push(NodeDef {
+        id: "n3".into(),
+        node_type: "delay".into(),
+        config: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("seconds".to_string(), serde_json::json!(2));
+            m
+        },
+        depends_on: vec![],
+        retry_count: 0,
+        timeout: None,
+        is_terminal: false,
+    });
+    store.save(&wf3).unwrap();
+    let a2 = store.apply(&engine, "hot").unwrap();
+    assert!(a2.replaced_existing);
+
+    // Both backups survive with distinct names AND distinct contents:
+    // a1's backup holds v1 (1 node), a2's holds v2 (2 nodes).
+    assert_ne!(
+        a1.backup_file.as_ref(),
+        a2.backup_file.as_ref(),
+        "distinct backup names"
+    );
+    let hist = defs.join(".history");
+    let names: Vec<std::path::PathBuf> = std::fs::read_dir(&hist)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(names.len(), 2, "both backups must survive: {:?}", names);
+    let parse = |name: &str| -> Workflow {
+        serde_yaml::from_str(&std::fs::read_to_string(hist.join(name)).unwrap()).unwrap()
+    };
+    assert_eq!(
+        parse(a1.backup_file.as_deref().unwrap()).nodes.len(),
+        1,
+        "a1's backup must hold v1"
+    );
+    assert_eq!(
+        parse(a2.backup_file.as_deref().unwrap()).nodes.len(),
+        2,
+        "a2's backup must hold v2"
+    );
+
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
 fn discard_is_idempotent() {
     let root = temp_dir("discard");
     let store = DraftStore::new(root.join("drafts"), root.join("definitions"));

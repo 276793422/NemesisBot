@@ -1072,8 +1072,10 @@ impl ModelsHandler {
                     #[cfg(feature = "forge")]
                     {
                         if let Some(ref forge) = ctx.state.forge {
+                            // S8：热切同步也挂 aux 账本（与启动装配同源）。
                             let bridge =
-                                ForgeProviderBridge::new(provider.clone(), swap.model.clone());
+                                ForgeProviderBridge::new(provider.clone(), swap.model.clone())
+                                    .with_data_store(ctx.state.data_store.clone());
                             forge.set_provider(Arc::new(bridge));
                             tracing::info!(model = %swap.model, "[Models] Forge provider updated");
                         }
@@ -1672,6 +1674,8 @@ fn error_kind(msg: &str) -> &'static str {
         }
         Some(LlmErrorClass::Format) => "format",
         Some(LlmErrorClass::Overloaded) => "overloaded",
+        // B29/D1：上下文溢出单列 kind（前端可辨识，不冒充 format）。
+        Some(LlmErrorClass::ContextOverflow) => "context_overflow",
         None => "other",
     }
 }

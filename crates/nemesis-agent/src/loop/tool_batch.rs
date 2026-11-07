@@ -365,10 +365,11 @@ impl AgentLoop {
         // 反馈与工具结果同走一条模型可见管线（gate/spill/projection 都作
         // 用于装饰后的文本）。失败路径全部静默（开关关 / 非触发写工具 /
         // 无 manager / 无服务器 / 同步失败 / 无 ERROR）——永不拖垮工具调用。
-        // P2（能力扩展 WS3）：触发臂扩到 append_file/multiedit（枚举表
-        // DIAGNOSTICS_WRITE_TOOLS 单一真相源）；路径提取按 args 形态分派
-        // （multiedit = edits[].path）。P3：跨文件聚合 + stale 过滤（状态
-        // 按 session_key 隔离在 diagnostics_touched）。
+        // P2（能力扩展 WS3）：触发臂扩到 multiedit（枚举表
+        // DIAGNOSTICS_WRITE_TOOLS 单一真相源；2026-11-06 append_file 并入
+        // edit_file（action=append），触发由 edit_file 条目一并承载）；路径
+        // 提取按 args 形态分派（multiedit = edits[].path）。P3：跨文件聚合
+        // + stale 过滤（状态按 session_key 隔离在 diagnostics_touched）。
         #[cfg(feature = "lsp")]
         let result = if tool_succeeded
             && Self::DIAGNOSTICS_WRITE_TOOLS.contains(&tc.name.as_str())
@@ -427,6 +428,11 @@ impl AgentLoop {
         let hint_subagent = self.tools.read().contains_key("spawn");
         let mut spill_applied = false;
         let mut prune_hinted = false;
+        // B30（2026-11-06 三方对比整改）：cap 世代快照读（fresh-read，改键
+        // 下轮生效）。0 = 关：prune 闸不裁；spill 层不受影响——那是可恢复
+        // 性机制（≥65536 落盘 + locator），不是封顶闸。
+        let tool_result_cap = self.current_tool_result_cap();
+        let mut prune_applied = false;
         let gate_text: String = {
             let spill_root = self.spill_root.read().clone();
             let spilled = spill_root.as_ref().and_then(|root| {
@@ -461,14 +467,28 @@ impl AgentLoop {
                     spill_applied = true;
                     text
                 }
-                None => match crate::prune::prune_tool_result(&result, &tc.name, hint_subagent) {
+                None => match crate::prune::prune_tool_result_with_cap(
+                    &result,
+                    &tc.name,
+                    hint_subagent,
+                    tool_result_cap,
+                ) {
                     Some(pruned) => {
                         info!(
-                            "[AgentLoop] tool result pruned: '{}' result exceeded {} chars",
-                            tc.name,
-                            crate::prune::MAX_TOOL_RESULT_INLINE_CHARS
+                            "[AgentLoop] tool result pruned: '{}' result exceeded {} chars (agents.tool_result_cap)",
+                            tc.name, tool_result_cap
                         );
                         prune_hinted = hint_subagent;
+                        // B30/X1：unhinted cap 裁剪与 const 纯重算**不同构**
+                        // 时才记投影（缺省 cap=8000 下 >8192 深超限与 legacy
+                        // 逐字节同形 → 纯重算照常，ledger 零漂移；灰区
+                        // ≤8192 或头尾预算收缩 → 必须记，否则重算 None/异形
+                        // 会把不一致文本回进上下文）。
+                        prune_applied = !hint_subagent
+                            && !crate::prune::cap_prune_matches_recompute(
+                                tool_result_cap,
+                                result.chars().count(),
+                            );
                         pruned
                     }
                     None => result,
@@ -512,12 +532,15 @@ impl AgentLoop {
         // model-facing text cannot be recomputed from the original
         // later: the spill tier (locator path embeds a wall-clock
         // stamp), any guard-nudge decoration (⑤/⑤′/⑥ — dynamic
-        // per-turn state), or B3's spawn-hinted prune (the hint flag
-        // is registry state, not turn data). Otherwise None and
-        // build_messages recomputes the pure prune (deterministic,
-        // ledger-free).
+        // per-turn state), B3's spawn-hinted prune (the hint flag
+        // is registry state, not turn data), or a B30 cap-pruned
+        // form (`agents.tool_result_cap` is dispatch-time state — a
+        // cap-pruned text under the const recompute threshold would
+        // otherwise recompute to None and leak the full original).
+        // Otherwise None and build_messages recomputes the pure prune
+        // at the const default (deterministic, ledger-free).
         let projection: Option<String> =
-            if spill_applied || guard_nudged || nudge6.is_some() || prune_hinted {
+            if spill_applied || guard_nudged || nudge6.is_some() || prune_hinted || prune_applied {
                 Some(match &nudge6 {
                     Some(nudge) => format!("{}\n{}", gate_text, nudge),
                     None => gate_text.clone(),

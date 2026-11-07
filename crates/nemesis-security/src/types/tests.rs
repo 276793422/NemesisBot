@@ -56,7 +56,9 @@ fn test_tool_to_operation_generate_image_classified() {
 /// W5 盲点修复回归钉：内置表补齐后，此前搭「未知名放行」便车的工具全部
 /// 有具名档——multiedit/run_checks 与 exec 同族，background_* 例外语义
 /// 显式保留（Internal=LOW），纯编排面（message/sleep/question/subagent/
-/// workflow_run/mcp_list 等）落 Internal 而非误挂执行档。
+/// mcp_list 等）落 Internal 而非误挂执行档。2026-11-06 三合一：workflow
+/// 工具静态档 = FileWrite（兜底过度分类；per-action 精确档走
+/// WorkflowTool::operation_override 投影，见下方用例）。
 #[test]
 fn test_tool_to_operation_inventory_complete() {
     // 补齐的执行/写族。
@@ -131,8 +133,6 @@ fn test_tool_to_operation_inventory_complete() {
         "cli_reference",
         "history_search",
         "mcp_list",
-        "workflow_run",
-        "workflow_capabilities",
         "memory_search",
         "memory_list",
     ] {
@@ -346,10 +346,17 @@ fn test_tool_to_operation_all_mappings() {
         tool_to_operation("edit_file"),
         Some(OperationType::FileWrite)
     );
+    // 2026-11-06：append_file 并入 edit_file（action=append），写档同族；
+    // 旧名从静态表移除（回归锁：防抄回旧名单）。
+    assert_eq!(tool_to_operation("append_file"), None);
+    // 2026-11-06 三合一：workflow 静态兜底档 = FileWrite（过度分类）。
     assert_eq!(
-        tool_to_operation("append_file"),
+        tool_to_operation("workflow"),
         Some(OperationType::FileWrite)
     );
+    assert_eq!(tool_to_operation("workflow_run"), None);
+    assert_eq!(tool_to_operation("workflow_create"), None);
+    assert_eq!(tool_to_operation("workflow_capabilities"), None);
     assert_eq!(
         tool_to_operation("delete_file"),
         Some(OperationType::FileDelete)

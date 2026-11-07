@@ -436,7 +436,8 @@ pub const TAKEOVER_DENIED_TOOLS: &[&str] = &[
     "list_dir",
     "edit_file",
     "multiedit",
-    "append_file",
+    // 2026-11-06：append_file 并入 edit_file（action=append），与 MOVE_TOOLS
+    // 同步摘除（drift 断言钉两清单相等）。
     "delete_file",
     "move_file",
     "copy_file",

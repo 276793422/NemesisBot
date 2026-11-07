@@ -649,9 +649,10 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "write_file",
             "edit_file",
             // A7（2026-09-06）：批量编辑。Mini 不给——edits 数组 schema 对
-            // 小模型是参数陷阱（数组内嵌对象），单文件场景 edit_file 已覆盖。
+            // 小模型是参数陷阱（数组内嵌对象），单文件场景 edit_file 已覆盖
+            // （2026-11-06 起 edit_file action=append 一并承载追加，append_file
+            // 并入后白名单不再单列）。
             "multiedit",
-            "append_file",
             "delete_file",
             "list_dir",
             "create_dir",
@@ -669,7 +670,11 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "skills_list",
             "skills_info",
             "mcp_list",
-            "workflow_run",
+            // 2026-11-06 三合一：workflow_run/create/capabilities → 单
+            // `workflow` 工具（对话生成，2026-09-22 起入 Normal）。Mini
+            // 不给——完整 DAG 定义生成是长结构输出，小模型 schema 错误
+            // 率高，且草稿写入是写文件语义（与 write_file 同档考虑）。
+            "workflow",
             "claude_code",
             "codex_delegate",
             "lsp",
@@ -691,11 +696,6 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             // F7（2026-09-06）：结构化提问。Mini 不给——向用户发选项卡并
             // 阻塞等答是高信任交互，小模型容易在琐碎选择上滥用。
             "question",
-            // 对话生成（2026-09-22）：工作流草稿两件套。Mini 不给——完整
-            // DAG 定义生成是长结构输出，小模型 schema 错误率高，且草稿写入
-            // 是写文件语义（与 write_file 同档考虑）。
-            "workflow_create",
-            "workflow_capabilities",
             // N2（2026-10-13）：计划审批卡。Mini 不给——与 question 同款
             // 高信任交互（且批准动作翻转 plan→build 模式），小模型在琐碎
             // 场景滥用审批卡会打断用户。

@@ -4,6 +4,7 @@
 //! Matches the Go implementation in `module/security/matcher.go`.
 
 use regex::Regex;
+use unicode_normalization::UnicodeNormalization;
 
 /// Check if a target matches a pattern with wildcard support.
 ///
@@ -139,12 +140,17 @@ pub fn match_command_pattern(pattern: &str, command: &str) -> bool {
 }
 
 /// 归一化 exec 目标用于 ABAC 匹配（CMD-05，2026-09-16 横扫存量加固）：
-/// 剥引号（`"`/`'`/`` ` ``——shell 会剥，留下的引号曾打断两侧匹配，
+/// NFKC 兼容折叠（S13，2026-11-06：全角 `ＲＭ`、圈号 `ⓡ`、数学字体 `𝐫`、
+/// 组合字符分解序列统一折到 ASCII/合成语义形态——同形异码借字节差异绕过
+/// blocklist/审计桶匹配的口子；用 NFKC 而非 NFC，全角/圈号只有兼容折叠才
+/// 打得到）、剥引号（`"`/`'`/`` ` ``——shell 会剥，留下的引号曾打断两侧匹配，
 /// `rm "-rf"` 绕过）、合并空白、统一小写（`--Recursive` 大小写绕过）。
-/// 审计日志保留原文；规则匹配只看归一化形态。`command.rs` 的
-/// `simplify_command` 委托本函数（CMD-11①：写了没人调的归一化基础接线）。
+/// 审计日志保留原文；规则匹配只看归一化形态。折叠只作用于匹配候选，
+/// 不回写真正下发的命令串。`command.rs` 的 `simplify_command` 委托本函数
+/// （CMD-11①：写了没人调的归一化基础接线）。
 pub fn normalize_exec_command(command: &str) -> String {
-    let collapsed: String = command.split_whitespace().collect::<Vec<_>>().join(" ");
+    let folded: String = command.nfkc().collect();
+    let collapsed: String = folded.split_whitespace().collect::<Vec<_>>().join(" ");
     let no_quotes: String = collapsed
         .chars()
         .filter(|c| *c != '"' && *c != '\'' && *c != '`')

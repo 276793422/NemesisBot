@@ -1,8 +1,10 @@
 //! Forge tools - agent tool definitions and Execute logic for the self-learning system.
 //!
-//! Defines tools that can be registered with the agent's tool registry:
-//! forge_reflect, forge_create, forge_update, forge_list, forge_evaluate,
-//! forge_build_mcp, forge_share, forge_learning_status.
+//! Defines tools that can be registered with the agent's tool registry.
+//! 2026-11-06 单工具收编：8 个旧 `forge_*` 名（reflect / create / update /
+//! list / evaluate / build_mcp / share / learning_status）合并为单个
+//! `forge` 工具 + `action` 判别字段；executor 侧对旧名做 `forge_` 前缀
+//! 归一（存量测试与调用方不迁移仍可用）。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -57,103 +59,42 @@ impl ForgeToolResult {
 }
 
 /// Returns all forge tool definitions.
+///
+/// 2026-11-06 收编为单工具多 action 形态（用户拍板，对齐 board_issue /
+/// skills_ops 哲学）：8 个 `forge_*` 工具名收成一个 `forge` 工具，
+/// 子命令走 `action` 判别字段。`ForgeToolExecutor::execute` 同步做
+/// `forge_` 前缀归一（旧名仍被接受——存量测试/调用点零迁移）。
 pub fn forge_tool_definitions() -> Vec<ForgeTool> {
-    vec![
-        ForgeTool {
-            name: "forge_reflect".into(),
-            description: "Analyze recent experience data and generate insights".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "period": {"type": "string", "default": "today", "description": "Analysis period: today, week, all"},
-                    "focus": {"type": "string", "default": "all", "description": "Focus type: skill, script, mcp, all"},
+    vec![ForgeTool {
+        name: "forge".into(),
+        description: "Forge self-learning: reflect on experience, create/update/evaluate artifacts, build MCP servers, share reports, view learning status".into(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["reflect", "create", "update", "list", "evaluate", "build_mcp", "share", "learning_status"],
+                    "description": "Sub-command: reflect=analyze experience; create=new artifact; update=edit artifact; list=list artifacts; evaluate=quality check; build_mcp=build/install/uninstall MCP; share=share reflection report; learning_status=view status",
                 },
-            }),
-        },
-        ForgeTool {
-            name: "forge_create".into(),
-            description: "Create a new forge artifact (skill/script/mcp)".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string", "enum": ["skill", "script", "mcp"]},
-                    "name": {"type": "string"},
-                    "content": {"type": "string"},
-                    "description": {"type": "string"},
-                    "test_cases": {"type": "array", "description": "Test cases (required for script/mcp types)"},
-                    "category": {"type": "string", "default": "utils"},
-                    "language": {"type": "string", "default": "python", "description": "Language for MCP: python or go"},
-                },
-                "required": ["type", "name", "content"],
-            }),
-        },
-        ForgeTool {
-            name: "forge_update".into(),
-            description: "Update an existing forge artifact with version tracking".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "content": {"type": "string"},
-                    "change_description": {"type": "string"},
-                    "rollback_version": {"type": "string", "description": "Rollback to a specific version"},
-                },
-                "required": ["id"],
-            }),
-        },
-        ForgeTool {
-            name: "forge_list".into(),
-            description: "List all forge artifacts and their status".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string", "default": "all"},
-                    "status": {"type": "string", "description": "Filter by status: draft, active, deprecated"},
-                },
-            }),
-        },
-        ForgeTool {
-            name: "forge_evaluate".into(),
-            description: "Evaluate forge artifact quality with 3-stage validation".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                },
-                "required": ["id"],
-            }),
-        },
-        ForgeTool {
-            name: "forge_build_mcp".into(),
-            description: "Build/validate/install an MCP server".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string"},
-                    "action": {"type": "string", "enum": ["build", "install", "uninstall"], "default": "build"},
-                },
-                "required": ["id"],
-            }),
-        },
-        ForgeTool {
-            name: "forge_share".into(),
-            description: "Share the latest reflection report with cluster peers".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "report_path": {"type": "string"},
-                },
-            }),
-        },
-        ForgeTool {
-            name: "forge_learning_status".into(),
-            description: "View closed-loop learning status and recent cycles".into(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {},
-            }),
-        },
-    ]
+                "period": {"type": "string", "default": "today", "description": "reflect: Analysis period: today, week, all"},
+                "focus": {"type": "string", "default": "all", "description": "reflect: Focus type: skill, script, mcp, all"},
+                "type": {"type": "string", "enum": ["skill", "script", "mcp"], "description": "create: artifact kind; list: filter by kind (default all)"},
+                "name": {"type": "string", "description": "create: artifact name"},
+                "content": {"type": "string", "description": "create: artifact content; update: new content"},
+                "description": {"type": "string", "description": "create: artifact description"},
+                "test_cases": {"type": "array", "description": "create: Test cases (required for script/mcp types)"},
+                "category": {"type": "string", "default": "utils", "description": "create: artifact category"},
+                "language": {"type": "string", "default": "python", "description": "create: Language for MCP: python or go"},
+                "id": {"type": "string", "description": "update/evaluate/build_mcp: artifact id"},
+                "change_description": {"type": "string", "description": "update: change description"},
+                "rollback_version": {"type": "string", "description": "update: Rollback to a specific version"},
+                "status": {"type": "string", "description": "list: Filter by status: draft, active, deprecated"},
+                "mode": {"type": "string", "enum": ["build", "install", "uninstall"], "default": "build", "description": "build_mcp: sub-mode"},
+                "report_path": {"type": "string", "description": "share: reflection report path"},
+            },
+            "required": ["action"],
+        }),
+    }]
 }
 
 // ---------------------------------------------------------------------------
@@ -556,17 +497,27 @@ impl ForgeToolExecutor {
     }
 
     /// Execute a tool by name with the provided arguments.
+    ///
+    /// 名字归一（2026-11-06 单工具收编配套）：带 `forge_` 前缀的旧工具名
+    /// 直接剥前缀映射到 action（存量测试/调用点零迁移）；合并后的裸名
+    /// `forge` 从 args 的 `action` 判别字段取子命令。
     pub async fn execute(&self, tool_name: &str, args: &serde_json::Value) -> ForgeToolResult {
-        match tool_name {
-            "forge_reflect" => self.execute_reflect(args).await,
-            "forge_create" => self.execute_create(args).await,
-            "forge_update" => self.execute_update(args).await,
-            "forge_list" => self.execute_list(args).await,
-            "forge_evaluate" => self.execute_evaluate(args).await,
-            "forge_build_mcp" => self.execute_build_mcp(args).await,
-            "forge_share" => self.execute_share(args).await,
-            "forge_learning_status" => self.execute_learning_status(args).await,
-            _ => ForgeToolResult::err(format!("Unknown forge tool: {}", tool_name)),
+        let action = tool_name
+            .strip_prefix("forge_")
+            .unwrap_or_else(|| args["action"].as_str().unwrap_or(""));
+        match action {
+            "reflect" => self.execute_reflect(args).await,
+            "create" => self.execute_create(args).await,
+            "update" => self.execute_update(args).await,
+            "list" => self.execute_list(args).await,
+            "evaluate" => self.execute_evaluate(args).await,
+            "build_mcp" => self.execute_build_mcp(args).await,
+            "share" => self.execute_share(args).await,
+            "learning_status" => self.execute_learning_status(args).await,
+            _ => ForgeToolResult::err(format!(
+                "Unknown forge tool: {} (action: {:?}; valid actions: reflect, create, update, list, evaluate, build_mcp, share, learning_status)",
+                tool_name, action
+            )),
         }
     }
 
@@ -1240,7 +1191,10 @@ impl ForgeToolExecutor {
 
     async fn execute_build_mcp(&self, args: &serde_json::Value) -> ForgeToolResult {
         let id = args["id"].as_str().unwrap_or("").to_string();
-        let action = args["action"].as_str().unwrap_or("build").to_string();
+        // 2026-11-06 单工具收编：`action` 让位给合并工具的 action 判别字段，
+        // build_mcp 子模式改读 `mode`（旧 `forge_build_mcp` 独立工具时代该
+        // 参数叫 action）。
+        let action = args["mode"].as_str().unwrap_or("build").to_string();
 
         if id.is_empty() {
             return ForgeToolResult::err("id is required");
@@ -1398,7 +1352,7 @@ impl ForgeToolExecutor {
                         Some(path) => path,
                         None => {
                             return ForgeToolResult::err(
-                                "No reflection report found. Run forge_reflect first.",
+                                "No reflection report found. Run forge (action=reflect) first.",
                             );
                         }
                     }

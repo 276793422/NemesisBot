@@ -33,10 +33,12 @@ fn test_should_scan_edit_file() {
     assert!(scanner.should_scan("edit_file"));
 }
 
+/// 2026-11-06：append_file 并入 edit_file（action=append），写档扫描面由
+/// edit_file 条目承载；旧名不再触发（回归锁：防有人把旧名单抄回来）。
 #[test]
-fn test_should_scan_append_file() {
+fn test_should_scan_legacy_append_file_no_longer_triggers() {
     let scanner = Scanner::new(test_config());
-    assert!(scanner.should_scan("append_file"));
+    assert!(!scanner.should_scan("append_file"));
 }
 
 #[test]

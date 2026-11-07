@@ -462,29 +462,34 @@ async fn test_forge_bridge_tool_execute_list_success() {
         forge_executor: Some(executor),
         ..Default::default()
     });
-    let forge_list = tools
-        .get("forge_list")
-        .expect("forge_list should be registered");
+    // 2026-11-06 单工具收编：注册名是 `forge`，子命令走 action 判别字段。
+    let forge_tool = tools.get("forge").expect("forge should be registered");
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
-    let result = forge_list.execute("{}", &ctx).await;
+    let result = forge_tool.execute(r#"{"action": "list"}"#, &ctx).await;
     assert!(result.is_ok(), "expected Ok, got: {:?}", result);
 }
 
 #[cfg(feature = "forge")]
 #[tokio::test]
-async fn test_forge_bridge_tool_execute_unknown_name_returns_err() {
+async fn test_forge_bridge_tool_invalid_json_missing_action_is_err() {
     let executor = make_forge_executor();
-    // Create a bridge via a forged name; use register_shared_tools then look up forge_reflect
     let tools = register_shared_tools(&SharedToolConfig {
         forge_executor: Some(executor),
         ..Default::default()
     });
-    // forge_reflect exists; pass invalid JSON to make args_value Null (still Ok path)
-    let forge_reflect = tools.get("forge_reflect").unwrap();
+    let forge_tool = tools.get("forge").unwrap();
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
-    // Pass invalid JSON so serde falls back to Null — should still produce a reflection.
-    let result = forge_reflect.execute("not json", &ctx).await;
-    assert!(result.is_ok());
+    // 非法 JSON → args 退化为 Null → action 缺失 → 诚实报错（收编前旧名
+    // forge_reflect 对 Null args 也能出 reflection，收编后缺判别字段必须
+    // 显式失败，不许静默猜子命令）。
+    let result = forge_tool.execute("not json", &ctx).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("valid actions"),
+        "err should list actions: {}",
+        err
+    );
 }
 
 #[cfg(feature = "forge")]
@@ -495,24 +500,24 @@ async fn test_forge_bridge_tool_description_and_parameters() {
         forge_executor: Some(executor),
         ..Default::default()
     });
-    // Every forge bridge must expose a non-empty description and an object parameters.
-    let forge_names: Vec<&str> = tools
-        .keys()
-        .map(|s| s.as_str())
-        .filter(|s| s.starts_with("forge_"))
-        .collect();
+    // 2026-11-06 收编后注册面只有单个 `forge` 工具（旧 8 名不再注册）。
     assert!(
-        forge_names.len() >= 5,
-        "expected multiple forge tools, got {:?}",
-        forge_names
+        tools.contains_key("forge"),
+        "merged forge tool should be registered"
     );
-    for name in forge_names {
-        let t = tools.get(name).unwrap();
-        let d = t.description();
-        assert!(!d.is_empty(), "{} has empty description", name);
-        let p = t.parameters();
-        assert!(p.is_object(), "{} parameters not object", name);
-    }
+    assert!(
+        !tools.keys().any(|k| k.starts_with("forge_")),
+        "legacy forge_* names must no longer register, got: {:?}",
+        tools
+            .keys()
+            .filter(|k| k.starts_with("forge_"))
+            .collect::<Vec<_>>()
+    );
+    let t = tools.get("forge").unwrap();
+    let d = t.description();
+    assert!(!d.is_empty(), "forge has empty description");
+    let p = t.parameters();
+    assert!(p.is_object(), "forge parameters not object");
 }
 
 #[cfg(feature = "forge")]
@@ -524,9 +529,9 @@ async fn test_forge_bridge_tool_create_validation_failure() {
         forge_executor: Some(executor),
         ..Default::default()
     });
-    let forge_create = tools.get("forge_create").unwrap();
+    let forge_tool = tools.get("forge").unwrap();
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
-    let result = forge_create.execute("{}", &ctx).await;
+    let result = forge_tool.execute(r#"{"action": "create"}"#, &ctx).await;
     assert!(result.is_err());
 }
 
@@ -1020,8 +1025,24 @@ fn test_register_shared_tools_with_cron_service_present() {
 }
 
 #[test]
-fn test_register_shared_tools_includes_i2c_spi_always() {
+fn test_register_shared_tools_i2c_spi_gated_off_by_default() {
+    // 2026-11-06：i2c/spi 走 `hardware_tools_enabled` 总闸，默认关（用户拍板
+    // 桌面/服务器部署不为硬件长尾付出工具面存在感）——缺省不注册。
     let tools = register_shared_tools(&SharedToolConfig::default());
+    assert!(
+        !tools.contains_key("i2c"),
+        "i2c must NOT register by default (hardware_tools_enabled=false)"
+    );
+    assert!(
+        !tools.contains_key("spi"),
+        "spi must NOT register by default"
+    );
+
+    // 显式开闸 → 恢复注册 + 元数据完好。
+    let tools = register_shared_tools(&SharedToolConfig {
+        hardware_tools_enabled: true,
+        ..Default::default()
+    });
     assert!(tools.contains_key("i2c"));
     assert!(tools.contains_key("spi"));
     let i2c = tools.get("i2c").unwrap();

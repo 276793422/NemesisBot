@@ -379,6 +379,9 @@ pub(super) fn build_shared_tool_config(
         // B4 (2026-09-05): background process trio — gateway-level registry
         // singleton (survives agent restarts, kills residual children on drop).
         background_registry: Some(Arc::clone(&shared.background_registry)),
+        // 2026-11-06：硬件总线工具（i2c/spi）注册总闸（`tools.hardware`
+        // 段 `enabled` 键，默认关）。
+        hardware_tools_enabled: cfg.tools.hardware.enabled,
         // P8（2026-09-25 三批合并）：GPIO/I2C 地址白名单（config
         // `tools.hardware` 段；空段列表 = 内置默认 0x08-0x77）。
         hardware_policy: Some(Arc::new(nemesis_tools::hardware::HardwarePolicy {

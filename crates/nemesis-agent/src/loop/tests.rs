@@ -10208,7 +10208,6 @@ fn rewrite_relative_file_paths_into_base() {
         "read_file",
         "write_file",
         "edit_file",
-        "append_file",
         "list_dir",
         "file_exists",
         "create_dir",

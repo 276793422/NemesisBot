@@ -382,11 +382,25 @@ async fn replay_once(home: &Path, case: &TestCase) -> Result<ExecutionTranscript
 pub struct ChainJudgeCaller {
     home: PathBuf,
     workspace: PathBuf,
+    /// S8（2026-11-06 B29/B30 设计 §4）：aux 账本归因。judge 调用经
+    /// ForgeProviderBridge 落账需要 gateway 侧 data_store；CLI 进程不持
+    /// （`new` 缺省 None = 不落账，对齐 branch_summary CLI 边界）。
+    data_store: Option<std::sync::Arc<nemesis_data::DataStore>>,
 }
 
 impl ChainJudgeCaller {
     pub fn new(home: PathBuf, workspace: PathBuf) -> Self {
-        Self { home, workspace }
+        Self {
+            home,
+            workspace,
+            data_store: None,
+        }
+    }
+
+    /// gateway 装配点注入账本归因（与 ForgeProviderBridge 同款 builder 形态）。
+    pub fn with_data_store(mut self, ds: Option<std::sync::Arc<nemesis_data::DataStore>>) -> Self {
+        self.data_store = ds;
+        self
     }
 }
 
@@ -401,6 +415,7 @@ impl nemesis_forge::reflector_llm::LLMCaller for ChainJudgeCaller {
         let caller = nemesis_web::handlers::forge::resolve_judge_caller(
             &self.home.to_string_lossy(),
             &self.workspace.to_string_lossy(),
+            self.data_store.as_ref(),
         )?
         .ok_or_else(|| "judge caller chain resolved to none (all arms failed)".to_string())?;
         caller.chat(system_prompt, user_prompt, max_tokens).await

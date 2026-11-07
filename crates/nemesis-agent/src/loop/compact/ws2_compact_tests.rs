@@ -441,7 +441,9 @@ fn p7_ledger_tool_mappings_and_dedup() {
         turn("system", "s"),
         assistant_tool_call("write_file", r#"{"path":"/a.rs"}"#),
         assistant_tool_call("edit_file", r#"{"path":"/b.rs"}"#),
-        assistant_tool_call("append_file", r#"{"path":"/c.log"}"#),
+        // 2026-11-06：append_file 并入 edit_file——追加（action=append）
+        // 路径由 edit_file 臂记 kind=edit。
+        assistant_tool_call("edit_file", r#"{"path":"/c.log","action":"append"}"#),
         assistant_tool_call("delete_file", r#"{"path":"/d.tmp"}"#),
         assistant_tool_call(
             "multiedit",

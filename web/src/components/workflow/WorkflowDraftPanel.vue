@@ -6,12 +6,13 @@
  * 每条提供三个动作：
  *   - 画布预览：draft_get → store.enterDraftPreview（画布第三数据态，
  *     只读渲染 + diff 高亮，palette/交互禁用）
- *   - ✓ 应用：draft_apply（唯一转正入口；同名已注册定义会被备份到
+ *   - ✓ 应用：draft_apply（转正入口之一，与 agent 工具 action=apply
+ *     同一后端 DraftStore::apply 路径；同名已注册定义会被备份到
  *     .history/ 后替换——应用前显式确认）
  *   - ✕ 放弃：draft_discard（幂等；确认后丢弃）
  *
  * 刷新时机：TAB 进入 / 目标切换（父组件触发）/ tool_event 提醒（父组件
- * 监听 workflow_create 工具完成后触发）。
+ * 监听 workflow 工具完成触发；ToolFinished 无 args，按工具名匹配）。
  */
 import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'

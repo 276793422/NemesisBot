@@ -1855,11 +1855,12 @@ impl WorkflowEngine {
         // 1c-F2: push a call-stack frame for this execution. The depth comes
         // from the trigger source (AgentTool-triggered runs carry a depth;
         // everything else is 0). Push can reject if a caller bypassed the
-        // WorkflowRunTool's pre-check and tried to start at depth > MAX.
+        // WorkflowTool's pre-check and tried to start at depth > MAX.
         let recursion_depth =
             crate::call_stack::CallFrame::depth_from_trigger(&execution.trigger_source);
         // If we're already inside a workflow run (sub_workflow node, or an
-        // agent_node that re-invoked workflow_run), link this new frame to
+        // agent_node that re-invoked the workflow tool's run action), link
+        // this new frame to
         // the current top of the stack as its parent. Top-level invocations
         // (stack empty) have no parent.
         //

@@ -152,3 +152,54 @@ async fn happy_path_with_finish_reason_unchanged() {
     assert_eq!(resp.content, "你好，世界");
     assert_eq!(resp.finish_reason, "stop");
 }
+
+// ---------------------------------------------------------------------------
+// S16（2026-11-06 三方对比整改）截断路径 usage 记账：两臂中断错误的诚实
+// usage 下界估计在场（账本消费端挂 B29/B30 设计文档同窗——本层保证数据
+// 不缺位，谁拿到错误谁就能给出估计）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn s16_err_arm_interrupt_carries_usage_estimate() {
+    // Err 臂中断：partial 6 chars → Some(2)；空 partial 臂 → None。
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send(Ok(chunk("部分输"))).await.unwrap();
+    tx.send(Err(unknown_err())).await.unwrap();
+    drop(tx);
+    let err = collect_stream_response("p", "m", rx).await.unwrap_err();
+    assert_eq!(
+        err.estimated_output_tokens(),
+        Some(1),
+        "Err 臂中断必须携带 usage 下界估计（ceil(3/4)=1）: {err:?}"
+    );
+    assert!(
+        err.is_retriable(),
+        "S16 不改轮转语义：中断仍可重试（估计只是附加数据面）"
+    );
+
+    // None 臂（channel 关闭无终态）同样携带估计。
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send(Ok(chunk("半截输出文本"))).await.unwrap();
+    drop(tx);
+    let err = collect_stream_response("p", "m", rx).await.unwrap_err();
+    assert_eq!(
+        err.estimated_output_tokens(),
+        Some(2),
+        "None 臂中断同样携带估计（ceil(6/4)=2）: {err:?}"
+    );
+
+    // happy path 走 LlmResponse（usage 走正常透传），错误估计面无关——
+    // 此处只断言成功路径不出错即可。
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send(Ok(chunk("ok"))).await.unwrap();
+    tx.send(Ok(StreamChunk {
+        delta: String::new(),
+        finish_reason: Some("stop".to_string()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    drop(tx);
+    let resp = collect_stream_response("p", "m", rx).await.unwrap();
+    assert_eq!(resp.finish_reason, "stop");
+}

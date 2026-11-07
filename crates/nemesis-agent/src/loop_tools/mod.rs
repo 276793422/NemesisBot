@@ -2,8 +2,8 @@
 //!
 //! Provides `register_default_tools()` which creates and returns a HashMap
 //! of built-in tools (message, read_file, write_file, list_dir,
-//! edit_file, append_file, delete_file, create_dir, delete_dir, sleep)
-//! that can be registered with an `AgentLoopExecutor`.
+//! edit_file [action=edit/append], delete_file, create_dir, delete_dir,
+//! sleep) that can be registered with an `AgentLoopExecutor`.
 //!
 //! Also provides additional tools:
 //! - Web search (Brave, DuckDuckGo, Perplexity)

@@ -112,9 +112,30 @@ async fn write_read_delete_file_roundtrip() {
     let p: ExecutorResponseWire = serde_json::from_str(resp.trim()).unwrap();
     assert!(p.ok && p.result == "hello guest", "{resp}");
 
-    let resp = send(&agent, "append_file", r#"{"path":"a/b.txt","content":"!"}"#).await;
+    // 2026-11-06 append_file 并入 edit_file：追加走 action=append。
+    let resp = send(
+        &agent,
+        "edit_file",
+        r#"{"path":"a/b.txt","action":"append","content":"!"}"#,
+    )
+    .await;
     let p: ExecutorResponseWire = serde_json::from_str(resp.trim()).unwrap();
     assert!(p.ok && p.result.contains("Appended 1 bytes"), "{resp}");
+
+    // action=edit（精确替换）guest 未实现 → 诚实拒绝（回归锁：防静默
+    // 降级实现或误报 unknown tool）。
+    let resp = send(
+        &agent,
+        "edit_file",
+        r#"{"path":"a/b.txt","old_text":"guest","new_text":"world"}"#,
+    )
+    .await;
+    let p: ExecutorResponseWire = serde_json::from_str(resp.trim()).unwrap();
+    assert!(!p.ok, "{resp}");
+    assert!(
+        p.error.contains("not implemented in the guest subset"),
+        "{resp}"
+    );
 
     let resp = send(&agent, "read_file", r#"{"path":"a/b.txt"}"#).await;
     let p: ExecutorResponseWire = serde_json::from_str(resp.trim()).unwrap();

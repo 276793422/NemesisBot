@@ -38,8 +38,9 @@ use crate::r#loop::{FileChange, Tool};
 ///
 /// Kept local (STAY) because they need gateway objects (bus / vector store /
 /// scheduler / engine / registries): `message`, `cluster_rpc`, `cron`,
-/// `memory_*`, `find_skills` / `install_skill` / `skill_manage`, `workflow_run`,
-/// `forge_bridge`, `mcp_*`.
+/// `memory_*`, `find_skills` / `install_skill` / `skill_manage`, `workflow`,
+/// `forge_bridge`, `mcp_*`（2026-11-06 workflow_run/create/capabilities 三合一
+/// 为单 `workflow` 工具）。
 ///
 /// Note: `exec_async` (background processes) is intentionally NOT here — a
 /// per-call child exits after one tool call, so a background-process handle it
@@ -65,7 +66,8 @@ pub const MOVE_TOOLS: &[&str] = &[
     // A7 (2026-09-06): multiedit is a batch edit_file — same write surface,
     // contained identically (in-memory apply + write-all happens in the child).
     "multiedit",
-    "append_file",
+    // 2026-11-06：append_file 并入 edit_file（action=append），追加的写面
+    // 由 edit_file 条目一并承载（同罩隔离/沙盒）。
     "delete_file",
     "create_dir",
     "delete_dir",

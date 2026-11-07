@@ -4,7 +4,7 @@
 
 use super::*;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentsConfig {
     #[serde(default)]
     pub defaults: AgentDefaults,
@@ -102,6 +102,16 @@ pub struct AgentsConfig {
     /// 运行时改键下一轮生效。
     #[serde(default = "default_true")]
     pub image_downscale: bool,
+    /// B30（2026-11-06 三方对比整改）：工具结果统一 cap（字符数，默认
+    /// 8000，**0=关**）。dispatch 后跨工具兜底封顶——超 cap 截断 + 诚实
+    /// 注记（`[结果截断: 原 N 字符]`），与 per-tool 语义窗口（read_file
+    /// 行限 / exec 输出量限）正交叠加不替代。loop 侧 fresh-read（读法
+    /// 统一 `resolve_tool_result_cap`，每次 dispatch 现读 config.json），
+    /// 运行时改键下一轮生效。typed 字段意义 = 防 typed save_config
+    /// round-trip 静默抹键（vision 键 2026-09-03 同类回归；AgentsConfig
+    /// 无 flatten extra）。
+    #[serde(default = "default_tool_result_cap")]
+    pub tool_result_cap: u64,
     /// WS9/P22：workspace 写租约开关。默认**开**——主 loop / 项目 loop /
     /// executor 子进程的写类工具经 workspace 级文件锁互斥（宽限 30s 超时
     /// 诚实拒绝；持有进程死亡 OS 自动释放）。**装配期消费**（gateway/
@@ -162,6 +172,50 @@ pub struct AgentsConfig {
     /// Some(true) 显式表态照常保留（BUG-20261105-008）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lazy_tool_schema: Option<bool>,
+}
+
+// 手写 Default（不 derive，同 AgentDefaults/CacheWarmerConfig/FsWatcherConfig
+// 先例）：`Config.agents` 是字段级 `#[serde(default)]`，顶层 JSON 缺 `agents`
+// 键时整个节从本 impl 填充——derive 零值会把所有 `default = "default_*"`
+// 字段塌成 0/false（turn_wal 关、provider_stream_events 关、image_downscale
+// 关、lease_enabled 关、stream_concat_retry 关、profession_tool_fence 关、
+// executor_tool_timeout_secs=0=关、tool_result_cap=0=关——语义全反转）。
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        Self {
+            defaults: AgentDefaults::default(),
+            list: Vec::new(),
+            claude_code_tool: ClaudeCodeToolConfig::default(),
+            codex_tool: CodexToolConfig::default(),
+            lsp_tool: LspToolConfig::default(),
+            tool_doc_folding: ToolDocFoldingConfig::default(),
+            subagent: SubagentConfig::default(),
+            fs_watcher: FsWatcherConfig::default(),
+            codemode: CodeModeConfig::default(),
+            delegate: DelegateToolConfig::default(),
+            turn_wal: true,
+            provider_stream_events: true,
+            hidden_tools: Vec::new(),
+            mcp_lazy_supply: false,
+            roles: RolesConfig::default(),
+            small_model: None,
+            guardian_model: None,
+            doom_loop_approval: false,
+            image_downscale: true,
+            tool_result_cap: default_tool_result_cap(),
+            lease_enabled: true,
+            discipline: DisciplineConfig::default(),
+            // 空串 = 未配置 = pro（from_config 语义；与 serde 缺省函数的
+            // "pro" 字面量消费面等价。保持既有 pin：
+            // nemesis-agent/src/prompt/tests.rs 断言 default() → 空串 → Pro）。
+            prompt_system: String::new(),
+            cache_warmer: CacheWarmerConfig::default(),
+            executor_tool_timeout_secs: default_executor_tool_timeout_secs(),
+            stream_concat_retry: true,
+            profession_tool_fence: true,
+            lazy_tool_schema: None,
+        }
+    }
 }
 
 /// `agents.executor_tool_timeout_secs` 缺键默认（30 分钟）。
