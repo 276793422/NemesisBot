@@ -149,6 +149,22 @@ async fn http_error_reported_at_final_url() {
     );
 }
 
+#[tokio::test]
+async fn oversized_body_aborts_mid_read_bug_20261108_026() {
+    // BUG-20261108-026：>10MB 响应体必须在**读入中途**拒绝（共享流式累计闸
+    // `nemesis_utils::http_cap::read_body_capped`），而不是 `bytes()` 全量
+    // 缓冲进内存之后才核对——后者核对前恶意源已把任意大 body 灌进网关。
+    // 断言子串取自 http_cap 错误消息契约（模块文档明示 `exceeds limit`）。
+    let big = "a".repeat(10 * 1024 * 1024 + 1);
+    let (base, counter) = spawn_raw_server(vec![("/big", ok(&big))]);
+    let tool = WebFetchTool::new(50000);
+    let err = run_fetch(&tool, &format!("{}/big", base))
+        .await
+        .expect_err(">10MB body must be rejected at the streaming download gate");
+    assert!(err.contains("exceeds limit"), "got: {err}");
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+}
+
 // ---------------------------------------------------------------------------
 // security 路径（SSRF 闸逐跳复查）
 // ---------------------------------------------------------------------------
