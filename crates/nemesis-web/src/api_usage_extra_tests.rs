@@ -415,6 +415,27 @@ async fn logs_page_below_one_becomes_one() {
 }
 
 #[tokio::test]
+async fn logs_negative_page_size_becomes_one() {
+    // BUG-20261108-025 回归锁：page_size 只 .min(100) 钳上界的半截钳制
+    // 让负值透传 store → LIMIT -N 是 SQLite「无上限」语义（时间窗全量
+    // 单次返回）。clamp(1, 100) 后 -1 必须落 1。
+    let (_dir, ds) = open_store();
+    let now = now_ts();
+    let state = make_state_with_store(ds);
+    let q = Query(LogsQuery {
+        start: Some(now - 3600),
+        end: Some(now),
+        page: None,
+        page_size: Some(-1),
+        model: None,
+        status: None,
+        session: None,
+    });
+    let Json(v) = handle_api_usage_logs(State(state), q).await;
+    assert_eq!(v["data"]["pageSize"], 1);
+}
+
+#[tokio::test]
 async fn logs_default_range_used() {
     let (_dir, ds) = open_store();
     let state = make_state_with_store(ds);

@@ -388,7 +388,13 @@ impl DataStore {
     ) -> Result<(Vec<RequestLog>, i64), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
 
-        let offset = (page.max(1) - 1) * page_size;
+        // store 层分页边界对称防护：page 有 .max(1)（下界），page_size 此前
+        // 只有 API 层 .min(100) 钳上界——负值透传时 LIMIT -N 是 SQLite
+        // 「无上限」语义（BUG-20261108-025）。乘法升 i64：page×page_size
+        // 大页值（API query 参数可任意 poke）在 i32 域溢出，release 回绕出
+        // 负 OFFSET（SQLite 视 0 → 静默回第一页）/debug panic。
+        let page_size = page_size.max(1);
+        let offset = (page.max(1) - 1) as i64 * page_size as i64;
 
         // WHERE 动态拼装：时间范围恒在（?1/?2），过滤条件按需追加。
         // 参数占位序号 = 绑定序（1-based），与 params_vec 压入顺序一致。

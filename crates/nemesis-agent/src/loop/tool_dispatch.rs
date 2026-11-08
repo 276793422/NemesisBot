@@ -406,13 +406,16 @@ impl AgentLoop {
 
     /// [`Self::handle_tool_call_at_depth`] 的原实现（闸门瀑布 + 执行）。
     /// `attrib` = 调用方附加元数据键值对（workflow 归因等；空键跳过）。
+    /// 下划线前缀：唯一消费点（metadata 归因穿透）在 security cfg 块内，
+    /// feature 关掉的构建组合（workspace 级 default-features = false 的
+    /// 单独 -p 构建）下参数变 unused——下划线两种 cfg 都零警告。
     async fn handle_tool_call_at_depth_impl(
         &self,
         tool_call: &ToolCallInfo,
         context: &RequestContext,
         depth: usize,
         batch_id: Option<&str>,
-        attrib: &[(String, String)],
+        _attrib: &[(String, String)],
     ) -> String {
         // dispatch 入口打点。around-hook 链在安全段
         // （审批/提问等待，可达数分钟）之后才构建，钩子自身计时会把等待漏在
@@ -1009,7 +1012,7 @@ impl AgentLoop {
                         // A4 归因穿透：调用方附加键值对（workflow 实例/节点
                         // 身份等）append 进 metadata——审计链与审批卡可辨
                         // 触发源头；空键跳过（诚实缺省）。
-                        for (k, v) in attrib {
+                        for (k, v) in _attrib {
                             if !k.is_empty() {
                                 m.insert(k.clone(), v.clone());
                             }
