@@ -183,3 +183,31 @@ async fn b384_backoff_wait_returns_false_on_cancel() {
         start.elapsed()
     );
 }
+
+// ---------------------------------------------------------------------------
+// 回归锁（BUG-20261108-019）：出站 token 自愈骨架的被拒判定——只有
+// HTTP 非 2xx（token 过期 wire 形态）触发刷新重试；传输层错误与空槽
+// 错误前缀不同，不得触发（防无限刷新循环）。
+
+#[test]
+fn b019_is_send_rejected_matches_http_rejection_only() {
+    assert!(FeishuChannel::is_send_rejected(&NemesisError::Channel(
+        "feishu send error: {\"code\":99991663,\"msg\":\"invalid access token for over 2 hours\"}"
+            .to_string()
+    )));
+    assert!(
+        !FeishuChannel::is_send_rejected(&NemesisError::Channel(
+            "feishu send failed: connection refused".to_string()
+        )),
+        "传输层错误不触发 token 刷新重试"
+    );
+    assert!(
+        !FeishuChannel::is_send_rejected(&NemesisError::Channel(
+            "no access token available".to_string()
+        )),
+        "空槽错误不触发重试（空槽由发送前惰性补种兜底）"
+    );
+    assert!(!FeishuChannel::is_send_rejected(&NemesisError::Timeout(
+        "x".to_string()
+    )));
+}

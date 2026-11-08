@@ -212,7 +212,15 @@ impl FeishuChannel {
     }
 
     /// Sends a text message to a Feishu chat.
+    ///
+    /// token 失效自愈骨架包装：见 [`Self::send_with_fresh_token`]。
     pub async fn send_text_message(&self, chat_id: &str, text: &str) -> Result<()> {
+        self.send_with_fresh_token(|| self.send_text_once(chat_id, text))
+            .await
+    }
+
+    /// 单次发送尝试（token 自愈重试的原始请求）。
+    async fn send_text_once(&self, chat_id: &str, text: &str) -> Result<()> {
         let token = self.access_token.read().clone();
         if token.is_empty() {
             return Err(NemesisError::Channel(
@@ -245,6 +253,38 @@ impl FeishuChannel {
         }
 
         Ok(())
+    }
+
+    /// 出站 token 自愈骨架：tenant_access_token 有效期约 2h，共享槽唯一
+    /// 写入点 = start() 的一次 refresh（receive loop 内获取的 token 是局部
+    /// 变量，不写回槽）——过期后出站恒被拒且无任何刷新机制。现发送前
+    /// 空槽惰性补种（start() 时 auth 失败只 warn 不阻断启动，槽可能一直
+    /// 为空）；发送被拒（HTTP 非 2xx）刷新一次 token 重试一次；重试仍
+    /// 失败保留原始错误（非 token 类失败如 chat_id 不存在多打一次请求，
+    /// 无害）。
+    async fn send_with_fresh_token<F, Fut>(&self, send_once: F) -> Result<()>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        if self.access_token.read().is_empty() {
+            self.refresh_token().await?;
+        }
+        match send_once().await {
+            Err(e) if Self::is_send_rejected(&e) => {
+                debug!(error = %e, "[FeishuChannel] send rejected, refreshing token and retrying once");
+                self.refresh_token().await?;
+                send_once().await
+            }
+            r => r,
+        }
+    }
+
+    /// 发送被拒判定：HTTP 非 2xx（token 过期的 wire 形态）——传输层错误
+    /// 前缀不同（"feishu send failed"）与空槽错误（"no access token
+    /// available"）不触发重试。
+    fn is_send_rejected(e: &NemesisError) -> bool {
+        matches!(e, NemesisError::Channel(m) if m.starts_with("feishu send error"))
     }
 
     /// Extracts sender ID from a Feishu event sender.
