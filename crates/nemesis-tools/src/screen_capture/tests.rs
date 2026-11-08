@@ -953,3 +953,81 @@ async fn s2_window_capture_disconnected_mcp_falls_back_to_powershell() {
         result.for_llm
     );
 }
+
+// ============================================================
+// Window find-part builder (title/hwnd → PowerShell snippet).
+// The title is interpolated into PowerShell single-quoted strings;
+// the failure diagnostic must stay single-quoted — a double-quoted
+// diagnostic would expand `$var`/`$(...)` from a benign title
+// (e.g. a browser tab "$100 off") on the lookup-failure path.
+// ============================================================
+
+#[test]
+fn test_build_window_find_part_hwnd_takes_precedence() {
+    let part = ScreenCaptureTool::build_window_find_part("HWND(0x1234)", "ignored title");
+    assert!(part.contains("[IntPtr]0x1234"), "got: {}", part);
+    assert!(!part.contains("MainWindowTitle"), "got: {}", part);
+
+    let plain = ScreenCaptureTool::build_window_find_part("0xABCD", "");
+    assert!(plain.contains("[IntPtr]0xABCD"), "got: {}", plain);
+}
+
+#[test]
+fn test_build_window_find_part_title_in_single_quotes() {
+    let part = ScreenCaptureTool::build_window_find_part("", "Calculator");
+    assert!(part.contains("-like '*Calculator*'"), "got: {}", part);
+    // The failure diagnostic must be single-quoted (no double-quote
+    // interpolation context for title data).
+    assert!(
+        part.contains("Write-Error 'Window not found: Calculator'"),
+        "got: {}",
+        part
+    );
+    assert!(
+        !part.contains("Write-Error \"Window not found"),
+        "got: {}",
+        part
+    );
+}
+
+#[test]
+fn test_build_window_find_part_title_metachars_stay_literal() {
+    // A title containing PS double-quote interpolation metachars must be
+    // embedded inertly: `'` doubled for the single-quote context, `$` never
+    // in a double-quoted string.
+    let part = ScreenCaptureTool::build_window_find_part("", "it's $100 (off)");
+    assert!(part.contains("-like '*it''s $100 (off)*'"), "got: {}", part);
+    assert!(
+        part.contains("Write-Error 'Window not found: it''s $100 (off)'"),
+        "got: {}",
+        part
+    );
+    // No double-quoted string may contain interpolated title data.
+    for line in part.lines() {
+        if line.contains("$100") || line.contains("it''s") {
+            assert!(
+                !line.contains("\"Window not found"),
+                "title leaked into double-quoted context: {}",
+                line
+            );
+        }
+    }
+}
+
+#[test]
+fn test_build_window_find_part_hwnd_prefixes_normalized() {
+    // BUG (found by this test): "HWND(0x1234)" previously produced
+    // `[IntPtr]0x0x1234` — a doubled 0x is an invalid PowerShell literal,
+    // so every hwnd-based PowerShell window capture failed at script parse.
+    // All four accepted input shapes must normalize to the same snippet.
+    for hwnd in ["HWND(0x1234)", "HWND(1234)", "0x1234", "1234"] {
+        let part = ScreenCaptureTool::build_window_find_part(hwnd, "");
+        assert!(
+            part.contains("[IntPtr]0x1234"),
+            "hwnd {:?} → {}",
+            hwnd,
+            part
+        );
+        assert!(!part.contains("0x0x"), "hwnd {:?} → {}", hwnd, part);
+    }
+}

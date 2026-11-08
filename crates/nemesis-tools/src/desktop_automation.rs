@@ -76,6 +76,27 @@ struct WindowInfo {
     height: i64,
 }
 
+/// Escape SendKeys metachars (`+ ^ % ~ ( ) { }`) for literal typing.
+///
+/// Per the SendKeys escape syntax each metachar is wrapped in braces
+/// (`{` → `{{}`, `}` → `{}}`); a single pass keeps already-produced braces
+/// intact regardless of input order, so `{ENTER}` types the literal seven
+/// characters instead of pressing Enter and an unbalanced `{` no longer
+/// makes SendWait throw.
+fn escape_sendkeys(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '+' | '^' | '%' | '~' | '(' | ')' | '{' | '}') {
+            out.push('{');
+            out.push(c);
+            out.push('}');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Desktop tool provides desktop UI automation for Windows.
 ///
 /// Supports two execution backends:
@@ -442,8 +463,14 @@ Start-Sleep -Milliseconds 50
 
     /// Type text using PowerShell SendKeys.
     async fn standalone_type_text(&self, text: &str) -> ToolResult {
-        // Escape single quotes for PowerShell
-        let escaped = text.replace('\'', "''");
+        // SendKeys metachars (+^%~(){}) must be brace-escaped first — text
+        // containing braces (code/JSON) is otherwise interpreted as key
+        // sequences ({ENTER} presses Enter; unbalanced `{` throws), and
+        // %/^/+ become Alt/Ctrl/Shift modifiers. PowerShell single-quote
+        // escaping comes second (orthogonal — the SendKeys escape emits no
+        // quotes).
+        let sendkeys = escape_sendkeys(text);
+        let escaped = sendkeys.replace('\'', "''");
 
         let script = format!(
             r#"
