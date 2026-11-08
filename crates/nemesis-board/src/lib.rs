@@ -21,6 +21,7 @@ pub mod check_plan;
 pub mod db;
 pub mod dossier;
 pub mod fail_streak;
+pub mod feedback;
 pub mod fingerprint;
 pub mod finish;
 pub mod git_repo;
@@ -39,7 +40,9 @@ pub mod state_machine;
 pub mod store;
 pub mod team_memory;
 pub mod timeline;
+pub mod touchpoint;
 pub mod watcher;
+pub mod wrapup;
 
 pub use ac_gen::generate_acceptance_criteria;
 pub use anchor::{
@@ -74,6 +77,7 @@ pub use fail_streak::{
     FAIL_STREAK_THRESHOLD, FailStreakLedger, StreakOutcome, UNSURE_SIGNATURE, failure_signature,
     unsure_gate_trips,
 };
+pub use feedback::{VerdictOutcome, process_final_verdict_comment};
 pub use fingerprint::{
     FINGERPRINT_MIN_SAMPLES, FingerprintTier, TASK_TYPE_BUCKETS, apply_fingerprint_weights,
     classify_tier, task_type_of, tier_note,
@@ -88,7 +92,8 @@ pub use models::{
     ActivityLog, Attachment, Autopilot, AutopilotPatch, BoardAsset, Channel, ChannelMember,
     ChannelMessage, Comment, CommentType, Issue, IssueFilter, IssuePatch, IssueStatus, NewAsset,
     NewAutopilot, NewChannel, NewChannelMessage, NewComment, NewIssue, NewNotification,
-    Notification, Project, ProjectPatch, SelfcheckPendingRow, TaskOrigin, channel_message_type,
+    NewTouchpoint, Notification, PlaytestPendingRow, Project, ProjectPatch, SelfcheckPendingRow,
+    TaskOrigin, Touchpoint, TouchpointKind, TouchpointStatus, channel_message_type,
     notification_kind,
 };
 pub use node_perf::{
@@ -117,3 +122,8 @@ pub use team_memory::{
     MAX_MATCHED_EXPERIENCES, match_experiences, render_dispatch_experience_section,
     render_planner_experience_strings,
 };
+pub use touchpoint::{
+    TouchpointAuditEvent, append_audit_event, can_transition as can_transition_touchpoint,
+    default_action_for,
+};
+pub use wrapup::render_project_report;

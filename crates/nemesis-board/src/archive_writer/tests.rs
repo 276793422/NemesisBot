@@ -27,7 +27,7 @@ fn fixture(store: &BoardStore, name: &str) -> (i64, Issue, PathBuf) {
     let root = temp_root(name);
     crate::archive::ensure_scaffold(&root, 0, name, "active").expect("scaffold");
     let project = store
-        .create_project(name, "", None, "", "", Some(root.to_str().unwrap()))
+        .create_project(name, "", None, "", "", Some(root.to_str().unwrap()), None)
         .unwrap();
     let issue = store
         .create_issue(NewIssue {
@@ -55,6 +55,7 @@ fn plan_milestone_writes_docs_plan_md_with_dependencies() {
             required_tags: vec!["rust".into()],
             acceptance_criteria: "[CHECK] file:out/a.md exists".into(),
             depends_on: vec![],
+            milestone: true,
         },
         PlannedSubIssue {
             required_profession: String::new(),
@@ -66,6 +67,7 @@ fn plan_milestone_writes_docs_plan_md_with_dependencies() {
             required_tags: vec![],
             acceptance_criteria: String::new(),
             depends_on: vec![0],
+            milestone: false,
         },
     ];
     write_plan_milestone(&store, &issue, &subs);
@@ -130,7 +132,7 @@ fn dispatch_and_delivery_and_review_milestones_land_in_records() {
 fn milestones_silently_skip_legacy_projects_without_directory() {
     let store = temp_store("legacy");
     let project = store
-        .create_project("存量", "", None, "", "", None)
+        .create_project("存量", "", None, "", "", None, None)
         .unwrap();
     let issue = store
         .create_issue(NewIssue {

@@ -138,6 +138,11 @@ const createForm = ref({
   assigneeId: '',
   projectId: '' as number | '',
   acceptance: '',
+  // 人工触点体系 P3a（2026-11-07）：体验档位（'' = 标准缺省不传；
+  // 'experience' = 体验型——后端 build_new_issue 落 quality 字段，规格+
+  // 原型两触点只在体验型挂卡）+ 无人值守三态（'' = 继承项目/全局不传）。
+  quality: '' as '' | 'experience',
+  unattended: '' as '' | 'true' | 'false',
 })
 
 // --- 数据加载 ---
@@ -249,6 +254,8 @@ function openCreate() {
     assigneeId: '',
     projectId: '',
     acceptance: '',
+    quality: '',
+    unattended: '',
   }
   showCreate.value = true
 }
@@ -271,6 +278,10 @@ async function submitCreate() {
     }
     if (createForm.value.acceptance.trim()) payload.acceptance_criteria = createForm.value.acceptance.trim()
     if (createForm.value.projectId !== '') payload.project_id = createForm.value.projectId
+    // 人工触点体系 P3a：缺键即缺省（后端 build_new_issue 只在有值时落
+    // quality/unattended——存量前端零感）。
+    if (createForm.value.quality) payload.quality = createForm.value.quality
+    if (createForm.value.unattended !== '') payload.unattended = createForm.value.unattended === 'true'
     if (createForm.value.assigneeType) {
       payload.assignee_type = createForm.value.assigneeType
       payload.assignee_id =
@@ -511,6 +522,24 @@ onMounted(refresh)
               <option :value="2">高</option>
               <option :value="3">紧急</option>
             </select>
+          </div>
+          <!-- 人工触点体系 P3a：质量档 + 无人值守三态（缺键 = 继承项目/全局） -->
+          <div class="form-group">
+            <label class="form-label">质量档</label>
+            <select class="form-select" v-model="createForm.quality" style="max-width: 160px;">
+              <option value="">标准</option>
+              <option value="experience">体验型</option>
+            </select>
+            <p class="form-hint">体验型单子会额外挂「规格确认 + 原型评审」两个人工触点（看板评审中列出现轻卡，可进统一工作台裁决）。</p>
+          </div>
+          <div class="form-group">
+            <label class="form-label">无人值守</label>
+            <select class="form-select" v-model="createForm.unattended" style="max-width: 200px;">
+              <option value="">继承项目/全局</option>
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+            <p class="form-hint">开启后触点不等人，倒计时到点按默认动作继续（可随时在工作台提前介入）。</p>
           </div>
           <div class="form-group">
             <label class="form-label">指派（可选）</label>

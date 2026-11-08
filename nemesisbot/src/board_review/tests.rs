@@ -242,6 +242,7 @@ fn settle_deps_with_store(
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     };
@@ -358,6 +359,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
             selfcheck: SelfcheckRegistry::new(),
+            playtest: crate::board_review::PlaytestRegistry::new(),
             #[cfg(feature = "security")]
             security_slot: None,
         };
@@ -395,6 +397,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     };
@@ -444,6 +447,7 @@ fn review_deps_taskdb(name: &str) -> (BoardReviewDeps, std::path::PathBuf) {
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     };
@@ -1713,7 +1717,7 @@ async fn estop_parks_project_review_with_kind() {
     let (deps, _ws) = review_deps("estop-project");
     let pid = deps
         .store
-        .create_project("急停项目", "", None, "", "", None)
+        .create_project("急停项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     deps.estop.trigger();
@@ -1775,7 +1779,7 @@ async fn f3_config_gate_skips_project_review() {
     // 默认 false → 双保险第二闸拦住。
     let pid = deps
         .store
-        .create_project("默认关项目", "", None, "", "", None)
+        .create_project("默认关项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let reviewed = review_project_completion(&deps, pid).await.unwrap();
@@ -1804,7 +1808,7 @@ async fn f3_non_done_parent_and_cancelled_child_skip_review() {
     // ① 存在非 done 顶层父单（竞态防御复核）→ 跳过。
     let pid = deps
         .store
-        .create_project("竞态项目", "", None, "", "", None)
+        .create_project("竞态项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     deps.store
@@ -1826,7 +1830,7 @@ async fn f3_non_done_parent_and_cancelled_child_skip_review() {
     // ② cancelled 子单 = 范围缺口 → 转人工跳过（即便父单全 done）。
     let pid2 = deps
         .store
-        .create_project("缺口项目", "", None, "", "", None)
+        .create_project("缺口项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let parent = deps
@@ -1869,7 +1873,7 @@ fn f3_fixture(deps: &BoardReviewDeps, name: &str) -> (i64, nemesis_board::Issue)
     use nemesis_board::NewIssue;
     let pid = deps
         .store
-        .create_project(name, "", None, "", "", None)
+        .create_project(name, "", None, "", "", None, None)
         .unwrap()
         .id;
     let parent = deps
@@ -2820,6 +2824,7 @@ async fn project_anchor_check_reads_leaf_subissue_deliveries() {
             "",
             "[CHECK] re:叶子交付关键词XYZ",
             None,
+            None,
         )
         .unwrap();
 
@@ -2912,7 +2917,15 @@ async fn project_anchor_fail_escalates_with_deduped_comment() {
     let reviewer = Actor::agent("node-a");
     let project = deps
         .store
-        .create_project("去重", "d", None, "", "[CHECK] re:不存在关键词XYZ", None)
+        .create_project(
+            "去重",
+            "d",
+            None,
+            "",
+            "[CHECK] re:不存在关键词XYZ",
+            None,
+            None,
+        )
         .unwrap();
 
     let parent = deps
@@ -3710,7 +3723,7 @@ fn test_build_summary_facts_lists_issues_last_comment_and_decisions() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
     let project = store
-        .create_project("总结项目", "描述X", None, "", "", None)
+        .create_project("总结项目", "描述X", None, "", "", None, None)
         .unwrap();
     let parent = store
         .create_issue(nemesis_board::NewIssue {
@@ -3848,6 +3861,7 @@ async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
             "",
             "",
             Some(archive_dir.to_str().unwrap()),
+            None,
         )
         .unwrap();
     // active → in_progress → completed（状态机两步；run_project_summary
@@ -3898,6 +3912,7 @@ async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     };
@@ -4079,11 +4094,11 @@ fn replay_guard_project_conclusion_probe() {
     // 引用完整性闸（系统性检查）后 create_issue 校验 project 存在——
     // fixture 必须先建真实项目再用其 id。
     let proj7 = store
-        .create_project("重放项目7", "", None, "📌", "", None)
+        .create_project("重放项目7", "", None, "📌", "", None, None)
         .unwrap()
         .id;
     let proj9 = store
-        .create_project("重放项目9", "", None, "📌", "", None)
+        .create_project("重放项目9", "", None, "📌", "", None, None)
         .unwrap()
         .id;
     let mk = |title: &str, pid: i64| -> i64 {
@@ -4899,7 +4914,7 @@ async fn sweep_merged_changeset_and_discipline_evidence_injected() {
     let (root, _base) = git_project_root("merged-inject");
     let project = deps
         .store
-        .create_project("p", "d", None, "", "", Some(root.to_str().unwrap()))
+        .create_project("p", "d", None, "", "", Some(root.to_str().unwrap()), None)
         .unwrap();
 
     // 变更集内容：文本文件（带内容节选）+ 二进制（只列清单）+ 纪律产物。
@@ -5003,7 +5018,7 @@ async fn sweep_merged_changeset_content_beyond_old_snippet_cap_is_injected() {
     let (root, _base) = git_project_root("blob-cap");
     let project = deps
         .store
-        .create_project("p", "d", None, "", "", Some(root.to_str().unwrap()))
+        .create_project("p", "d", None, "", "", Some(root.to_str().unwrap()), None)
         .unwrap();
 
     let mut body =
@@ -7498,7 +7513,7 @@ async fn project_llm_pass_completes_and_records_per_parent() {
     write_board_config(&deps.home, r#"{"review":{"auto_close_project":true}}"#);
     let pid = deps
         .store
-        .create_project("语义收口项目", "", None, "", "", None)
+        .create_project("语义收口项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let parent = done_top_parent(&deps, pid, "语义收口父单");
@@ -7532,7 +7547,7 @@ async fn project_llm_parse_failure_comments_all_parents() {
     write_board_config(&deps.home, r#"{"review":{"auto_close_project":true}}"#);
     let pid = deps
         .store
-        .create_project("评审失败项目", "", None, "", "", None)
+        .create_project("评审失败项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let p1 = done_top_parent(&deps, pid, "失败项目父单A");
@@ -7581,7 +7596,7 @@ async fn replay_stuck_reviews_replays_all_three_kinds() {
     // 队列里 (kind,id) 三元组 id 互不碰撞才能逐一断言）。
     let pid = deps
         .store
-        .create_project("重放项目", "", None, "", "", None)
+        .create_project("重放项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let _parent_done_id = done_top_parent(&deps, pid, "重放项目父单").id;
@@ -7942,6 +7957,7 @@ async fn run_project_summary_success_writes_summary_doc() {
             "",
             "",
             Some(root.to_str().unwrap()),
+            None,
         )
         .unwrap()
         .id;
@@ -8482,6 +8498,7 @@ mod w5r2parent {
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
             selfcheck: SelfcheckRegistry::new(),
+            playtest: crate::board_review::PlaytestRegistry::new(),
             #[cfg(feature = "security")]
             security_slot: None,
         };
@@ -8591,6 +8608,7 @@ mod w5r2parent {
                 "",
                 "",
                 Some(proj_dir.to_str().unwrap()),
+                None,
             )
             .unwrap();
         let parent = w5_issue(
@@ -8717,7 +8735,7 @@ mod w5r2parent {
         );
         let pid = deps
             .store
-            .create_project("已完成项目", "", None, "", "", None)
+            .create_project("已完成项目", "", None, "", "", None, None)
             .unwrap()
             .id;
         deps.store
@@ -8755,7 +8773,7 @@ mod w5r2parent {
         );
         let pid0 = deps
             .store
-            .create_project("无单项目", "", None, "", "", None)
+            .create_project("无单项目", "", None, "", "", None, None)
             .unwrap()
             .id;
         let reviewed = review_project_completion(&deps, pid0).await.unwrap();
@@ -8770,7 +8788,7 @@ mod w5r2parent {
         );
         let pid = deps2
             .store
-            .create_project("汇总段项目", "", None, "", "", None)
+            .create_project("汇总段项目", "", None, "", "", None, None)
             .unwrap()
             .id;
         let parent = w5_issue(&deps2.store, "已done父单", None, Some(pid), "");
@@ -8807,7 +8825,7 @@ mod w5r2parent {
         let (deps, _ws) = w5_deps("summary-guards");
         let pid = deps
             .store
-            .create_project("守卫项目", "", None, "", "", None)
+            .create_project("守卫项目", "", None, "", "", None, None)
             .unwrap()
             .id;
 
@@ -8832,6 +8850,7 @@ mod w5r2parent {
                 "",
                 "",
                 Some("Z:/definitely/not/here-nb-w5"),
+                None,
             )
             .unwrap()
             .id;
@@ -8873,6 +8892,7 @@ mod w5r2parent {
                 "",
                 "",
                 Some(archive.to_str().unwrap()),
+                None,
             )
             .unwrap()
             .id;
@@ -8920,6 +8940,7 @@ mod w5r2parent {
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
             selfcheck: SelfcheckRegistry::new(),
+            playtest: crate::board_review::PlaytestRegistry::new(),
             #[cfg(feature = "security")]
             security_slot: None,
         };
@@ -8957,6 +8978,7 @@ mod w5r2parent {
                 "",
                 "",
                 Some(archive.to_str().unwrap()),
+                None,
             )
             .unwrap()
             .id;
@@ -9009,7 +9031,7 @@ mod w5r2parent {
         let (deps, _ws) = w5_deps("summary-spawn-fail");
         let pid = deps
             .store
-            .create_project("派发总结项目", "", None, "", "", None)
+            .create_project("派发总结项目", "", None, "", "", None, None)
             .unwrap()
             .id;
         let parent = w5_issue(&deps.store, "顶层父单", None, Some(pid), "");
@@ -9091,7 +9113,15 @@ async fn subissue_file_anchor_passes_via_project_dir_fallback() {
     .unwrap();
     let project = deps
         .store
-        .create_project("双根", "d", None, "", "", Some(proj_dir.to_str().unwrap()))
+        .create_project(
+            "双根",
+            "d",
+            None,
+            "",
+            "",
+            Some(proj_dir.to_str().unwrap()),
+            None,
+        )
         .unwrap();
 
     let issue = deps
@@ -9551,7 +9581,7 @@ async fn project_defect_gate_blocks_completion() {
     let creator = nemesis_board::Actor::agent("node-a");
     let pid = deps
         .store
-        .create_project("缺陷项目", "", None, "", "", None)
+        .create_project("缺陷项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let parent = deps

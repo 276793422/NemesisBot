@@ -90,6 +90,10 @@ pub(crate) struct ClusterWiring {
     /// 凭本表识别取证任务并路由到二段验收；评审任务与回调闭包共享）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_selfcheck_registry: crate::board_review::SelfcheckRegistry,
+    /// 试玩取证路由表（原型机器行为闸，触点体系 P3b；与 selfcheck
+    /// 同源同形态：内存表 + playtest_pending 持久兜底，回调/sweep 共享）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub board_playtest_registry: crate::board_review::PlaytestRegistry,
 }
 
 /// Step 9a：集群基础设施装配（计划）。Cluster 对象与 adapter refs
@@ -199,6 +203,11 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_selfcheck_registry =
         crate::board_review::SelfcheckRegistry::with_store(board_store.clone());
+    // /：试玩取证路由表（原型机器行为闸，触点体系 P3b）——内存表
+    // + board store playtest_pending 持久兜底，与 selfcheck 同形态。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let board_playtest_registry =
+        crate::board_review::PlaytestRegistry::with_store(board_store.clone());
     #[cfg(feature = "cluster")]
     {
         // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份；
@@ -1176,6 +1185,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let sweep_estop = estop.clone();
             let sweep_estop_parked = board_estop_parked.clone();
             let sweep_selfcheck = board_selfcheck_registry.clone();
+            let sweep_playtest = board_playtest_registry.clone();
             // d：评审结论→交付账本闭环的审计插件槽（同回调侧
             // security_slot_for_cb 的惰性 get() 语义）。
             #[cfg(feature = "security")]
@@ -1276,12 +1286,16 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                         estop: sweep_estop.clone(),
                         estop_parked: sweep_estop_parked.clone(),
                         selfcheck: sweep_selfcheck.clone(),
+                        playtest: sweep_playtest.clone(),
                         #[cfg(feature = "security")]
                         security_slot: Some(security_slot_for_sweep.clone()),
                     };
                     // 自检取证路由持久层兜底（臂 A
                     // 二段残留重放 + 臂 B 恢复轮询/超龄收口）。
                     crate::board_review::sweep_selfcheck_pending(&sweep_deps).await;
+                    // /：试玩取证路由兜底（臂 A 定案残留重放 + 臂 B
+                    // 恢复轮询/超龄收口；estop 冻结在函数内自闸）。
+                    crate::board_review::sweep_playtest_pending(&sweep_deps).await;
                     // 派发超时 sweep：0=用户显式关（selfcheck 兜底臂
                     // 不受此闸——见上注）。
                     if timeout_secs == 0 {
@@ -1366,6 +1380,75 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             info!("[Gateway] Board park sweep ticker armed (interval=30s)");
         }
 
+        // --- 人工触点超时 sweep ticker（看板人工触点体系 P1）---
+        // 触点挂卡后的三拍兜底（提醒/默认收口/checkpoint 硬顶）全在
+        // sweep_touchpoint_timeouts_with_config 内闭环（estop 短路也在内
+        // ——release 后按绝对 deadline 判定，停机不白等）。ticker 只管
+        // 节拍与 config 热读：30s 固定间隔 + mtime 缓存（同派发 sweep
+        // 模式——config 未变不重读，改文件下个 tick 热生效）；候选空时
+        // 近零成本（一条 pending 列表 SQL）。无人值守默认态下这是流程
+        // 不卡死的唯一保险丝——无条件装配（挂卡面不受
+        // dispatch_timeout_secs=0 影响，那是派发族的闸）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            let tp_store = board_store.clone();
+            let tp_home = home.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // mtime 缓存（BoardAttendanceConfig Clone；startup 兜底 =
+                // 全默认，与 touchpoints::live_attendance_config 同语义）。
+                let mut att_cache: Option<(
+                    std::time::SystemTime,
+                    nemesis_config::BoardAttendanceConfig,
+                )> = None;
+                loop {
+                    ticker.tick().await;
+                    let Some(store) = tp_store.as_ref() else {
+                        continue;
+                    };
+                    let att = {
+                        let path = tp_home.join("config.json");
+                        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                        match (mtime, att_cache.take()) {
+                            (Some(t), Some((cached_t, cfg))) if t == cached_t => {
+                                att_cache = Some((t, cfg.clone()));
+                                cfg
+                            }
+                            _ => {
+                                let parsed = nemesis_config::load_config(&path)
+                                    .ok()
+                                    .and_then(|c| c.board)
+                                    .map(|b| b.attendance)
+                                    .unwrap_or_default();
+                                if let Some(t) = mtime {
+                                    att_cache = Some((t, parsed.clone()));
+                                }
+                                parsed
+                            }
+                        }
+                    };
+                    use nemesis_web::handlers::board::touchpoints as tp_mod;
+                    let stats = tp_mod::sweep_touchpoint_timeouts_with_config(
+                        &att,
+                        store,
+                        tp_mod::now_ms(),
+                    );
+                    if stats != tp_mod::TouchpointSweepStats::default() {
+                        info!(
+                            "[Gateway] 触点 sweep：检查 {} 提醒 {} 默认收口 {} checkpoint 等待 {} 熔断通报 {}",
+                            stats.checked,
+                            stats.reminded,
+                            stats.defaulted,
+                            stats.parked,
+                            stats.cap_noticed
+                        );
+                    }
+                }
+            });
+            info!("[Gateway] Touchpoint sweep ticker armed (interval=30s)");
+        }
+
         // --- Now that Cluster is Arc-wrapped, wire up the real callback handler ---
         // Routes callbacks to the correct destination:
         // 1. If the callback matches a ClusterAgent child task (nested cluster_rpc),
@@ -1411,6 +1494,9 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             // /：取证路由表随回调闭包（selfcheck 命中判定）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let selfcheck_for_cb = board_selfcheck_registry.clone();
+            // /：试玩取证路由表随回调闭包（playtest 命中判定）。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let playtest_for_cb = board_playtest_registry.clone();
             #[cfg(not(feature = "board"))]
             #[allow(unused_variables)]
             let board_store_for_cb: Option<()> = None;
@@ -1432,6 +1518,8 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
             let delivery_estop_parked = estop_parked_for_cb.clone();
             #[cfg(all(feature = "board", feature = "cluster"))]
             let delivery_selfcheck = selfcheck_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_playtest = playtest_for_cb.clone();
             // d：交付账本闭环的审计插件槽（同族惰性 get() 语义）。
             #[cfg(all(feature = "board", feature = "cluster", feature = "security"))]
             let delivery_security_slot = security_slot_for_cb.clone();
@@ -1555,10 +1643,73 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             estop: estop_for_cb.clone(),
                             estop_parked: estop_parked_for_cb.clone(),
                             selfcheck: selfcheck_for_cb.clone(),
+                            playtest: playtest_for_cb.clone(),
                             #[cfg(feature = "security")]
                             security_slot: Some(security_slot_for_cb.clone()),
                         },
                         sc_issue_id,
+                        status.to_string(),
+                        fail_text.to_string(),
+                        Some(task_id.to_string()),
+                    );
+                    // TaskManager 状态收口（同 Route 3 语义）。
+                    let result_value = serde_json::json!({
+                        "status": status,
+                        "response": response,
+                        "source_node": source_node,
+                    });
+                    if status == "error" {
+                        cluster_for_cb.fail_task(task_id, fail_text);
+                    } else {
+                        cluster_for_cb.complete_task(task_id, result_value);
+                    }
+                    return Ok(serde_json::json!({"status": "received", "task_id": task_id}));
+                }
+
+                // /: 试玩取证拦截（先于一切路由，镜像 selfcheck）：命中
+                // PlaytestRegistry 的 task_id 是试玩取证任务，路由落地
+                // playtest_pending 后 spawn 机器闸定案（挂卡/重派/熔断
+                // 全在定案链内）。TaskManager 收口照常——试玩任务也是
+                // submit_peer_chat 登记的，不收口留 ghost pending。
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                let playtest_issue_id = if task_id.is_empty() {
+                    None
+                } else {
+                    playtest_for_cb.take(task_id)
+                };
+                #[cfg(any(not(feature = "board"), not(feature = "cluster")))]
+                let _playtest_issue_id: Option<i64> = None;
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                if let Some(pt_issue_id) = playtest_issue_id {
+                    info!(
+                        "[Gateway] peer_chat_callback playtest branch: task_id={}, issue={}",
+                        task_id, pt_issue_id
+                    );
+                    // 路由落地持久行——status/取证内容烧入 playtest_pending
+                    //（定案完成前 gateway 崩溃由 sweep 臂 A 重放；重复回调
+                    // 不覆盖已烧入证据）。
+                    if let Some(pt_store) = board_store_for_cb.as_ref()
+                        && let Err(e) = pt_store.mark_playtest_routed(task_id, status, fail_text)
+                    {
+                        warn!("[Gateway] 试玩路由落地失败（task {task_id}）：{e}");
+                    }
+                    crate::board_review::spawn_prototype_verdict(
+                        crate::board_review::BoardReviewDeps {
+                            store: board_store_for_cb.clone().expect(
+                                "playtest armed implies store present",
+                            ),
+                            workspace: workspace_for_cb.clone(),
+                            home: home_for_cb.clone(),
+                            moderator_loop: moderator_loop_for_cb.clone(),
+                            cluster: cluster_for_cb.clone(),
+                            estop: estop_for_cb.clone(),
+                            estop_parked: estop_parked_for_cb.clone(),
+                            selfcheck: selfcheck_for_cb.clone(),
+                            playtest: playtest_for_cb.clone(),
+                            #[cfg(feature = "security")]
+                            security_slot: Some(security_slot_for_cb.clone()),
+                        },
+                        pt_issue_id,
                         status.to_string(),
                         fail_text.to_string(),
                         Some(task_id.to_string()),
@@ -1619,6 +1770,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             estop: estop_for_cb.clone(),
                             estop_parked: estop_parked_for_cb.clone(),
                             selfcheck: selfcheck_for_cb.clone(),
+                            playtest: playtest_for_cb.clone(),
                             #[cfg(feature = "security")]
                             security_slot: Some(security_slot_for_cb.clone()),
                         },
@@ -1788,6 +1940,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                                     estop: delivery_estop.clone(),
                                     estop_parked: delivery_estop_parked.clone(),
                                     selfcheck: delivery_selfcheck.clone(),
+                                    playtest: delivery_playtest.clone(),
                                     #[cfg(feature = "security")]
                                     security_slot: Some(delivery_security_slot.clone()),
                                 },
@@ -2083,5 +2236,7 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
         board_estop_parked,
         #[cfg(all(feature = "board", feature = "cluster"))]
         board_selfcheck_registry,
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        board_playtest_registry,
     })
 }

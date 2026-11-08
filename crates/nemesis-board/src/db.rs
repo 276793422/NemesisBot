@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 24;
+const SCHEMA_VERSION: i32 = 27;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -443,6 +443,69 @@ CREATE TABLE IF NOT EXISTS selfcheck_pending (
 CREATE INDEX IF NOT EXISTS idx_selfcheck_pending_issue ON selfcheck_pending(issue_id);
 "#;
 
+/// v27（触点体系 P3b 机器行为闸）：`playtest_pending` 表与
+/// `selfcheck_pending` 同形态（同缺陷谱系根修）——试玩取证派发不写
+/// issue_dispatch（Route 0 会当交付写回），路由键以本表持久化；worker
+/// 回调烧入 status/response 后由机器行为闸定案臂消费，完成删行。
+/// `worker_id` 供 query_task_result 恢复轮询。gateway 重启后内存注册表
+/// 清零 = 两臂 sweep 兜底（同 selfcheck）。
+const SCHEMA_V27: &str = r#"
+CREATE TABLE IF NOT EXISTS playtest_pending (
+    task_id    TEXT PRIMARY KEY,
+    issue_id   INTEGER NOT NULL REFERENCES issue(id),
+    worker_id  TEXT NOT NULL DEFAULT '',
+    status     TEXT,
+    response   TEXT,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_playtest_pending_issue ON playtest_pending(issue_id);
+"#;
+
+/// v25（看板人工触点体系）：`board_touchpoints` 表存触点语义字段
+/// （deadline / 机器默认动作载荷 / veto 计数 / human_input / audit[]）；
+/// 触点单本体是普通 issue（状态机/评论/任务树全现成），本表不重复存。
+/// - `issue.quality`：质量档（''=标准 / `experience`=体验型——体验型才挂
+///   规格确认 + 原型里程碑两触点）。
+/// - `issue.unattended`：任务级无人值守覆盖（NULL=继承项目；0/1=显式覆盖
+///   ——沿用 conflict_frozen 的 Option 形态：None 是「未表态」，不是 false）。
+/// - `project.unattended`：项目级默认（NULL=按 config board.attendance.mode）。
+///   就地翻转「别再问我」→ 项目置 1（系统管理，ProjectPatch 不含）。
+///
+/// `deadline_ms` 是**绝对时刻**（epoch ms）：estop 冻结 sweep 期间停机不白
+/// 等（release 后按真实墙钟判定，已过线立即按默认动作收口）。
+const SCHEMA_V25: &str = r#"
+CREATE TABLE IF NOT EXISTS board_touchpoints (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id    INTEGER NOT NULL REFERENCES issue(id),
+    project_id  INTEGER,
+    kind        TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    deadline_ms INTEGER NOT NULL,
+    payload     TEXT NOT NULL DEFAULT '',
+    human_input TEXT NOT NULL DEFAULT '',
+    veto_rounds INTEGER NOT NULL DEFAULT 0,
+    audit       TEXT NOT NULL DEFAULT '[]',
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_touchpoint_issue ON board_touchpoints(issue_id);
+CREATE INDEX IF NOT EXISTS idx_touchpoint_status ON board_touchpoints(status);
+
+ALTER TABLE issue ADD COLUMN quality TEXT NOT NULL DEFAULT '';
+ALTER TABLE issue ADD COLUMN unattended INTEGER;
+ALTER TABLE project ADD COLUMN unattended INTEGER;
+"#;
+
+/// v26（触点体系 P3）：`issue.milestone` 原型里程碑单标记。planner 拆解
+/// 体验型任务时把首个可运行构建的子单标 1——其评审链（AutoAccept /
+/// SuggestManual 两臂）先过机器行为闸再挂原型触点卡，不复用 Done 直通。
+/// 父单非 experience 档时 confirm_plan 落库前归一清零（无消费方）。
+const SCHEMA_V26: &str = r#"
+ALTER TABLE issue ADD COLUMN milestone INTEGER NOT NULL DEFAULT 0;
+"#;
+
 /// 门面迁移链（v1-v23 数组化；语义与原散装 if 链等价：每步原子
 /// migrate_step + 成功日志 `[BoardStore] {note}`，门面按序跳过已应用步）。
 const fn mig(
@@ -561,6 +624,21 @@ static BOARD_MIGRATIONS: &[nemesis_utils::sqlite_preflight::Migration] = &[
         24,
         SCHEMA_V24,
         "Database migrated to v24 (BUG-20261105-012: selfcheck_pending 取证路由持久层)",
+    ),
+    mig(
+        25,
+        SCHEMA_V25,
+        "Database migrated to v25 (human touchpoints: board_touchpoints + issue.quality/unattended + project.unattended)",
+    ),
+    mig(
+        26,
+        SCHEMA_V26,
+        "Database migrated to v26 (human touchpoints P3: issue.milestone 里程碑单)",
+    ),
+    mig(
+        27,
+        SCHEMA_V27,
+        "Database migrated to v27 (human touchpoints P3b: playtest_pending 机器行为闸路由层)",
     ),
 ];
 

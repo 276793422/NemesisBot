@@ -1993,7 +1993,7 @@ async fn auto_dispatch_on_without_cluster_leaves_trace_comment() {
 
 /// 取 ctx 里 board store 的 Arc。
 #[cfg(feature = "cluster")]
-fn store_of(ctx: &RequestContext) -> Arc<BoardStore> {
+pub(super) fn store_of(ctx: &RequestContext) -> Arc<BoardStore> {
     ctx.state.board.as_ref().unwrap().store().clone()
 }
 
@@ -2024,6 +2024,7 @@ fn sub(title: &str, deps: Vec<usize>) -> nemesis_board::PlannedSubIssue {
         required_capabilities: vec![],
         acceptance_criteria: format!("- [ ] {title} 验收"),
         depends_on: deps,
+        milestone: false,
     }
 }
 
@@ -3353,7 +3354,7 @@ async fn test_link_project_on_dispatch_transitions_and_guards() {
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
     let pid = store
-        .create_project("联动项目", "", None, "", "", None)
+        .create_project("联动项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     // ① project_id=None → 不联动。
@@ -3393,7 +3394,7 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
     let pid = store
-        .create_project("继承项目", "", None, "", "", None)
+        .create_project("继承项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let parent = store
@@ -3418,6 +3419,7 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
             required_capabilities: vec![],
             acceptance_criteria: String::new(),
             depends_on: Vec::new(),
+            milestone: false,
         }],
         &nemesis_board::Actor::system("board"),
         &[],
@@ -3477,7 +3479,7 @@ fn f3_project_with_parents(
 ) -> i64 {
     use nemesis_board::models::IssueStatus;
     let pid = store
-        .create_project(name, "", None, "", "", None)
+        .create_project(name, "", None, "", "", None, None)
         .unwrap()
         .id;
     let creator = nemesis_board::Actor::agent("node-a");
@@ -3514,7 +3516,7 @@ async fn test_project_completion_eligible_matrix() {
 
     // 空项目（无顶层父单）→ false。
     let empty = store
-        .create_project("空项目", "", None, "", "", None)
+        .create_project("空项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     assert!(!project_completion_eligible(&store, empty));
@@ -3529,7 +3531,7 @@ async fn test_project_completion_eligible_matrix() {
 
     // 子单 done 但父单未 done → false（只有顶层父单是触发面）。
     let pid = store
-        .create_project("子done项目", "", None, "", "", None)
+        .create_project("子done项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let creator = nemesis_board::Actor::agent("node-a");
@@ -5011,7 +5013,7 @@ fn test_project_progress_counts_stage_and_rows() {
     let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
     let actor = nemesis_board::Actor::admin("test-session");
     let project = store
-        .create_project("进度测试", "d", None, "", "", None)
+        .create_project("进度测试", "d", None, "", "", None, None)
         .unwrap();
 
     let new = |title: &str| nemesis_board::NewIssue {
@@ -5136,7 +5138,7 @@ fn test_project_progress_empty_and_stage_priority() {
     let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
     let actor = nemesis_board::Actor::admin("test-session");
     let project = store
-        .create_project("空项目", "", None, "", "", None)
+        .create_project("空项目", "", None, "", "", None, None)
         .unwrap();
 
     // 空项目 → 未拆解
@@ -5507,6 +5509,9 @@ fn bare_issue(role: Option<&str>, tags: &[&str]) -> nemesis_board::Issue {
         required_backend: None,
         required_capabilities: vec![],
         requires_evidence: false,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
         created_at: 0,
         updated_at: 0,
     }
@@ -5575,7 +5580,7 @@ async fn project_resume_no_match_carries_b1_detail() {
     let cluster = offline_cluster(&dir, "node-master");
 
     let project = store
-        .create_project("恢复明细", "", None, "", "", None)
+        .create_project("恢复明细", "", None, "", "", None, None)
         .unwrap();
     let child = store
         .create_issue(nemesis_board::NewIssue {
@@ -5649,7 +5654,7 @@ async fn test_dispatch_issue_core_rejects_frozen_project() {
     let dir = unique_dir("dispatch-frozen-gate");
     let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
     let pid = store
-        .create_project("冻结闸项目", "", None, "", "", None)
+        .create_project("冻结闸项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let mut ni = nemesis_board::NewIssue {
@@ -5947,7 +5952,7 @@ fn test_project_progress_projects_archive_integrity_projection() {
 
     // 未绑定档案目录 → archive_integrity=null（诚实缺省，前端隐藏徽章）。
     let bare = store
-        .create_project("无档案项目", "", None, "", "", None)
+        .create_project("无档案项目", "", None, "", "", None, None)
         .unwrap();
     let out = super::project_progress(&store, bare.id).unwrap();
     assert!(
@@ -5972,6 +5977,7 @@ fn test_project_progress_projects_archive_integrity_projection() {
             "",
             "",
             Some(archive.to_str().unwrap()),
+            None,
         )
         .unwrap();
     let out = super::project_progress(&store, bound.id).unwrap();
@@ -6426,7 +6432,7 @@ fn agt_project_progress_stage_matrix_and_priority() {
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
     let proj = store
-        .create_project("环节矩阵", "", None, "", "", None)
+        .create_project("环节矩阵", "", None, "", "", None, None)
         .unwrap();
     let mk = |title: &str| nemesis_board::NewIssue {
         title: title.to_string(),
@@ -6511,7 +6517,7 @@ fn agt_project_progress_stage_matrix_and_priority() {
     // 各 stage 优先级单独验证：只建对应环节的单 → stage 命中对应臂
     let stage_of_only = |tag: &str, want: &str| {
         let p2 = store
-            .create_project(&format!("只含{tag}"), "", None, "", "", None)
+            .create_project(&format!("只含{tag}"), "", None, "", "", None, None)
             .unwrap();
         let i = store
             .create_issue(nemesis_board::NewIssue {
@@ -6574,7 +6580,7 @@ fn agt_project_progress_stage_matrix_and_priority() {
     stage_of_only("done", "已完成");
     // 空项目 → 未拆解；project_id 不存在 → get_project Err 臂（1070）也走通
     let empty = store
-        .create_project("空项目", "", None, "", "", None)
+        .create_project("空项目", "", None, "", "", None, None)
         .unwrap();
     assert_eq!(
         super::project_progress(&store, empty.id).unwrap()["stage"].as_str(),
@@ -6946,7 +6952,7 @@ async fn agt_project_retrigger_arm_gates_hook_and_trace() {
     let store = store_of(&ctx);
     let actor = Actor::admin("agt");
     let pid = store
-        .create_project("复评项目", "", None, "", "", None)
+        .create_project("复评项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     let parent = store
@@ -7019,7 +7025,7 @@ async fn agt_project_retrigger_arm_gates_hook_and_trace() {
 
     // ④ 非 done 顶层父单 → 诚实拒绝（先收口父单再复评项目）。
     let pid2 = store
-        .create_project("复评项目2", "", None, "", "", None)
+        .create_project("复评项目2", "", None, "", "", None, None)
         .unwrap()
         .id;
     let _parent2 = store
@@ -8177,7 +8183,7 @@ async fn agt_dispatch_gates_matrix() {
 
     // 冲突冻结闸
     let proj = store
-        .create_project("冻结项目", "", None, "", "", None)
+        .create_project("冻结项目", "", None, "", "", None, None)
         .unwrap();
     let frozen = store
         .create_issue(nemesis_board::NewIssue {
@@ -8221,7 +8227,7 @@ async fn agt_dispatch_gates_matrix() {
     // 弃派（「派发中止」）；未装配先跑 = 联动 link_project_on_dispatch 只
     // warn，派发照走（注入 client 后同步成功）。两臂都是诚实路径。
     let ghost_project = store
-        .create_project("矩阵幽灵项目", "", None, "", "", None)
+        .create_project("矩阵幽灵项目", "", None, "", "", None, None)
         .unwrap();
     let ghost_proj = store
         .create_issue(nemesis_board::NewIssue {
@@ -8256,7 +8262,7 @@ async fn agt_project_resume_frozen_replay_refreeze_and_candidate_filter() {
     let cluster = offline_cluster(&dir, "node-a");
     let actor = Actor::admin("agt");
     let proj = store
-        .create_project("恢复项目", "", None, "", "", None)
+        .create_project("恢复项目", "", None, "", "", None, None)
         .unwrap();
     let mk = |title: &str| nemesis_board::NewIssue {
         title: title.to_string(),
@@ -8599,6 +8605,7 @@ async fn agt_push_dispatch_baseline_paths() {
             "",
             "",
             Some(proj_dir.to_str().unwrap()),
+            None,
         )
         .unwrap();
     let mk = |title: &str, pid: Option<i64>| nemesis_board::NewIssue {
@@ -8613,7 +8620,7 @@ async fn agt_push_dispatch_baseline_paths() {
     // 数据形态（push_dispatch_baseline 的 get_project Err 防御臂只对存量
     // 幽灵行有意义）。
     let ghost_proj = store
-        .create_project("将被删的项目", "", None, "", "", None)
+        .create_project("将被删的项目", "", None, "", "", None, None)
         .unwrap();
     let ghost_issue = store
         .create_issue(mk("幽灵项目", Some(ghost_proj.id)))
@@ -8651,7 +8658,7 @@ async fn agt_push_dispatch_baseline_paths() {
 
     // ④ 项目无 directory → 直通
     let plain_proj = store
-        .create_project("无目录项目", "", None, "", "", None)
+        .create_project("无目录项目", "", None, "", "", None, None)
         .unwrap();
     let plain_issue = store
         .create_issue(mk("无目录", Some(plain_proj.id)))
@@ -8896,6 +8903,7 @@ async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
         required_capabilities: vec![],
         acceptance_criteria: String::new(),
         depends_on: Vec::new(),
+        milestone: false,
     };
     let err = super::confirm_plan(&store, None, &parent, vec![bad], &actor, &[]).unwrap_err();
     assert!(err.contains("title must not be empty"), "{err}");
@@ -9483,6 +9491,7 @@ async fn w5_handler_misc_arms() {
             "",
             "",
             Some(&dir.join("bp-w5").to_string_lossy()),
+            None,
         )
         .unwrap();
     let created = dispatch(
@@ -9764,6 +9773,7 @@ async fn w5_project_auto_start_with_agent_and_empty_name() {
             "",
             "",
             Some(&dir.join("bp-w5-start").to_string_lossy()),
+            None,
         )
         .unwrap();
 
@@ -10906,21 +10916,22 @@ async fn project_create_duplicate_name_friendly_error() {
 /// BUG-② 派发闸后**读侧也入册**：`dispatch_issue_core` 会
 /// 读 PLAN_CACHE/RUNNING_PLANS 拦「挂有未确认计划的父单」——所有走到
 /// 派发路径的测试（含只读负例）必须持本锁，否则其他测试的残留条目按
-/// issue id 撞库误拦（9 个派发测试并行假红）。
-static PLAN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// issue id 撞库误拦（9 个派发测试并行假红）。`pub(super)`：touchpoint_tests
+/// 的规格闸链测试（P2）消费同一组全局，同锁串行。
+pub(super) static PLAN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 派发闸读的两个进程级全局的开场清残留（cluster 门控；无 feature 编译为
 /// 空调用）。持 PLAN_TEST_LOCK 期间调用——plan 链测试按设计会留条目
 ///（superseded mock 中途摘除后不回填等），不清则后续派发测试按 issue id
 /// 撞库确定性误拦（首 个派发测试假红）。
 #[cfg(feature = "cluster")]
-fn clear_plan_globals() {
+pub(super) fn clear_plan_globals() {
     super::PLAN_CACHE.lock().clear();
     super::RUNNING_PLANS.lock().clear();
 }
 
 #[cfg(not(feature = "cluster"))]
-fn clear_plan_globals() {}
+pub(super) fn clear_plan_globals() {}
 
 /// superseded 双闸专用 mock：LLM 返回前先摘 RUNNING_PLANS 条目——模拟超时
 /// 监视已判定超时并摘除、旧链 LLM future 不可取消仍在飞的形态。

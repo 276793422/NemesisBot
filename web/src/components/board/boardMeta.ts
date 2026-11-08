@@ -220,3 +220,142 @@ export function needsUserBadge(nu: IssueRow['needs_user']): { text: string; titl
     title: `停车待裁决：${label}${nu?.hint ? ' — ' + nu.hint : ''}`,
   }
 }
+
+// ---------------------------------------------------------------------------
+// 人工触点（看板人工触点体系 P1-P4；镜像 crates/nemesis-board/src/models.rs
+// TouchpointKind/TouchpointStatus serde 序列化 + touchpoint.rs
+// default_action_for）。列表归看板（轻卡/过滤片），页面归工作台
+// （WorkbenchView /workbench/:kind/:id——后端 workbench.get/respond）。
+// ---------------------------------------------------------------------------
+
+/** 触点承载行（board.touchpoint.list 行形态：touchpoint 全量 serde + 承载单投影）。 */
+export interface TouchpointRow {
+  touchpoint: {
+    id: number
+    issue_id: number
+    project_id: number | null
+    kind: 'spec' | 'prototype' | string
+    status:
+      | 'pending'
+      | 'confirmed'
+      | 'timeout_defaulted'
+      | 'vetoed_local'
+      | 'vetoed_spec'
+      | 'cancelled'
+      | 'parked_sync'
+      | string
+    deadline_ms: number
+    payload: string
+    human_input: string | null
+    veto_rounds: number
+  }
+  issue_number: string
+  issue_title: string
+  issue_status: string
+  overdue: boolean
+}
+
+/** kind → 人话徽标（与后端 kind_label 同表）。 */
+export const TOUCHPOINT_KIND_LABEL: Record<string, string> = {
+  spec: '🎯 规格确认',
+  prototype: '🧪 原型评审',
+}
+
+export function touchpointKindLabel(kind: string): string {
+  return TOUCHPOINT_KIND_LABEL[kind] || '🎯 触点'
+}
+
+/** 触点状态 → 人话（未知兜底原文——后端新增状态先于前端发布时不炸渲染）。 */
+export const TOUCHPOINT_STATUS_LABEL: Record<string, string> = {
+  pending: '待处理',
+  confirmed: '已确认',
+  timeout_defaulted: '已按默认继续',
+  vetoed_local: '否决 · 返工中',
+  vetoed_spec: '否决 · 待改规格',
+  cancelled: '已取消',
+  parked_sync: '挂起',
+}
+
+export function touchpointStatusLabel(s: string): string {
+  return TOUCHPOINT_STATUS_LABEL[s] || s
+}
+
+/** 超时默认动作 → 人话（镜像 touchpoint.rs default_action_for 值域）。 */
+export const TOUCHPOINT_DEFAULT_ACTION_LABEL: Record<string, string> = {
+  proceed_with_draft: '按草案继续',
+  proceed_current_version: '按当前版继续',
+}
+
+export function touchpointDefaultActionLabel(a: string): string {
+  return TOUCHPOINT_DEFAULT_ACTION_LABEL[a] || a
+}
+
+/**
+ * 截止倒计时（触点卡/工作台头部共用）：deadline_ms 相对 now 的剩余。
+ * 返回 {text, urgent, overdue}：>1h 显「Xh Ym」，≤1h 显「Ym」并 urgent
+ * （橙），过期显「已超时」。deadline_ms<=0 = 永不超时（无人值守直通卡
+ * 等无倒计时形态），显示「—」。
+ */
+export function touchpointCountdown(
+  deadlineMs: number,
+  nowMs: number = Date.now(),
+): { text: string; urgent: boolean; overdue: boolean } {
+  if (!deadlineMs || deadlineMs <= 0) return { text: '—', urgent: false, overdue: false }
+  const remain = deadlineMs - nowMs
+  if (remain <= 0) return { text: '已超时', urgent: true, overdue: true }
+  const mins = Math.floor(remain / 60000)
+  if (mins < 60) return { text: `⏱${mins}m`, urgent: true, overdue: false }
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return { text: `⏱${h}h${m ? m + 'm' : ''}`, urgent: false, overdue: false }
+}
+
+/**
+ * 触点卡一句话摘要（卡面**限死**：徽标+标题+倒计时+摘要+父单号，绝不渲染
+ * 规格正文）。prototype 有显式 summary 字段直接用；spec 从载荷元数据合成
+ * （假设/验收条数——是计数不是内容，不泄正文）。
+ */
+export function touchpointCardSummary(row: TouchpointRow): string {
+  let p: any = null
+  try {
+    p = JSON.parse(row.touchpoint.payload || '{}')
+  } catch {
+    return ''
+  }
+  if (row.touchpoint.kind === 'prototype') {
+    return typeof p?.summary === 'string' && p.summary ? p.summary : ''
+  }
+  const na = Array.isArray(p?.assumptions) ? p.assumptions.length : null
+  const nc = Array.isArray(p?.acceptance_checks) ? p.acceptance_checks.length : null
+  if (na == null && nc == null) return ''
+  const parts: string[] = []
+  if (na != null) parts.push(`假设 ${na} 条`)
+  if (nc != null) parts.push(`验收 ${nc} 条`)
+  return parts.join(' · ')
+}
+
+/** 触点卡/工作台统一跳转路径（route param kind 与后端 kind_of strip_prefix 对齐）。 */
+export function workbenchPath(row: TouchpointRow): string {
+  return `/workbench/touchpoint-${row.touchpoint.kind}/${row.touchpoint.id}`
+}
+
+/** 里程碑状态点（ProjectPanel 纯投影：latest 触点状态 → 状态点语义）。 */
+export function milestoneDot(status: string): { glyph: string; label: string; cls: string } {
+  switch (status) {
+    case 'pending':
+      return { glyph: '●', label: '进行中', cls: 'ms-active' }
+    case 'confirmed':
+      return { glyph: '✓', label: '通过', cls: 'ms-pass' }
+    case 'timeout_defaulted':
+      return { glyph: '↷', label: '超时默认', cls: 'ms-timeout' }
+    case 'vetoed_local':
+    case 'vetoed_spec':
+      return { glyph: '✗', label: '否决返工中', cls: 'ms-veto' }
+    case 'parked_sync':
+      return { glyph: '⏸', label: '挂起', cls: 'ms-parked' }
+    case 'cancelled':
+      return { glyph: '✕', label: '已取消', cls: 'ms-cancelled' }
+    default:
+      return { glyph: '○', label: status || '未知', cls: 'ms-unknown' }
+  }
+}

@@ -647,6 +647,11 @@ mod ws2_compact_config_tests;
 #[cfg(test)]
 mod dispatch_fallback_mode_tests;
 
+// 人工触点考勤（board.attendance）：serde 缺省 / mode 归一 / kind 等待窗
+// 测试。
+#[cfg(test)]
+mod attendance_tests;
+
 // 自治模式总开关：serde 缺省 / 矛盾态加载期降级测试。
 #[cfg(test)]
 mod autonomy_tests;

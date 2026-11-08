@@ -119,6 +119,7 @@ fn test_project_export_records_inbox_usage() {
             "🚀",
             "验收",
             Some(archive.to_str().unwrap()),
+            None,
         )
         .expect("project");
     let a = store
@@ -212,7 +213,15 @@ fn test_missing_archive_dir_note_and_error_paths() {
     let (store, dir) = temp_store("gap");
     let ws = temp_dir("ws");
     let project = store
-        .create_project("孤儿", "", None, "x", "", Some("Z:/definitely/not/exist"))
+        .create_project(
+            "孤儿",
+            "",
+            None,
+            "x",
+            "",
+            Some("Z:/definitely/not/exist"),
+            None,
+        )
         .expect("project");
     let _a = store
         .create_issue(NewIssue {
@@ -234,7 +243,7 @@ fn test_missing_archive_dir_note_and_error_paths() {
     // 编号不存在 → Err；空项目 → Err。
     assert!(export_issue_tree(&store, "NB-99999", &ws, &ws.join("out"), &NO_USAGE).is_err());
     let empty = store
-        .create_project("空项目", "", None, "x", "", None)
+        .create_project("空项目", "", None, "x", "", None, None)
         .unwrap();
     assert!(export_project(&store, empty.id, &ws, &ws.join("out"), &NO_USAGE).is_err());
 

@@ -224,6 +224,8 @@ pub struct BoardFlagConfig {
     pub unavailable: BoardUnavailableConfig,
     /// 重规划器配置（`board.replan` 段）。
     pub replan: BoardReplanConfig,
+    /// 人工触点考勤（看板人工触点体系；`board.attendance` 段）。
+    pub attendance: BoardAttendanceConfig,
 }
 
 impl Default for BoardFlagConfig {
@@ -252,6 +254,100 @@ impl Default for BoardFlagConfig {
             fingerprint_weighting: false,
             unavailable: BoardUnavailableConfig::default(),
             replan: BoardReplanConfig::default(),
+            attendance: BoardAttendanceConfig::default(),
+        }
+    }
+}
+
+/// 人工触点考勤配置（`board.attendance` 段；看板人工触点体系）。
+/// 三条设计公理：①无人值守是默认态人工是增强态（机器永不死锁）；②关门
+/// 不锁门（超时关门不锁门；迟到输入=变更管理走评论，不重开触点）；③
+/// 否决=注入方向（否决轮数耗尽 → parked_sync 熔断转人工，不无限返工）。
+/// 状态机/存储在 `nemesis_board::touchpoint`（board_touchpoints 表）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardAttendanceConfig {
+    /// 全局考勤模式（默认 `"unattended"` = 无人值守）。
+    /// - `unattended`：触点超时即按默认动作收口（spec→按草案继续 /
+    ///   prototype→按当前版本继续），绝不因等人停流程；
+    /// - `checkpoint`：有人值守检查点——触点超时不按默认继续，转
+    ///   parked_sync 等人（体验型任务 + 用户在场时用）。
+    ///
+    /// 任务级 `issue.unattended`（`Some(bool)`）覆盖项目级，项目级
+    /// `project.unattended` 覆盖全局；`None` = 未表态逐级继承。
+    pub mode: String,
+    /// 规格确认触点等待窗（默认 43200 = 12 小时；0 = 不超时）。deadline_ms
+    /// 为绝对纪元毫秒——estop 冻结 sweep 期间停机不白等（恢复后立即收口，
+    /// 不从恢复时刻重算）。
+    pub spec_timeout_secs: u64,
+    /// 原型评审触点等待窗（默认 14400 = 4 小时；0 = 不超时）。
+    pub prototype_timeout_secs: u64,
+    /// 否决轮数上限（默认 2）：同单触点 `vetoed_local`/`vetoed_spec` 累计
+    /// 达到上限 → 复验回卡后直接 parked_sync 熔断转人工（0 = 不限，不
+    /// 建议——无限返工违背公理③）。计数存储在触点行 `veto_rounds` 列；
+    /// 上限判断在消费方（web sweep/responder）现读本配置。
+    pub veto_max_rounds: u32,
+    /// 停车场熔断兜底窗（默认 259200 = 3 天；0 = 不兜底）：触点落
+    /// parked_sync 超过该时长 → 定期通报（通知不自动恢复——恢复只走
+    /// 显式回滚/人工 respond 路径）。
+    pub blocking_cap_secs: u64,
+}
+
+impl Default for BoardAttendanceConfig {
+    fn default() -> Self {
+        Self {
+            mode: "unattended".into(),
+            spec_timeout_secs: 43_200,
+            prototype_timeout_secs: 14_400,
+            veto_max_rounds: 2,
+            blocking_cap_secs: 259_200,
+        }
+    }
+}
+
+impl BoardAttendanceConfig {
+    /// 考勤模式归一（大小写不敏感；未知值 loud 报错不做静默纠偏——
+    /// 与 CLI flag「当次意志」语义一致；缺省空串视作 unattended）。
+    /// 显式 `std::result::Result`：crate 级 `Result<T>` 别名绑死
+    /// `ConfigError`，本函数的错误是调用方透传文案不是配置错误。
+    pub fn normalized_mode(&self) -> std::result::Result<AttendanceMode, String> {
+        AttendanceMode::parse(&self.mode)
+    }
+
+    /// 按 kind 取等待窗秒数（kind = `touchpoint.kind.as_str()` 的
+    /// `"spec"`/`"prototype"`；未知值回落 spec 窗——调用方类型层已保证值域）。
+    pub fn timeout_secs_for(&self, kind: &str) -> u64 {
+        match kind {
+            "prototype" => self.prototype_timeout_secs,
+            _ => self.spec_timeout_secs,
+        }
+    }
+}
+
+/// 考勤模式值域（`board.attendance.mode`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttendanceMode {
+    /// 无人值守：超时按默认动作收口（默认态）。
+    Unattended,
+    /// 有人值守检查点：超时转 parked_sync 等人。
+    Checkpoint,
+}
+
+impl AttendanceMode {
+    pub fn parse(raw: &str) -> std::result::Result<Self, String> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "unattended" => Ok(AttendanceMode::Unattended),
+            "checkpoint" => Ok(AttendanceMode::Checkpoint),
+            other => Err(format!(
+                "board.attendance.mode 非法值 \"{other}\"（合法：unattended | checkpoint）"
+            )),
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AttendanceMode::Unattended => "unattended",
+            AttendanceMode::Checkpoint => "checkpoint",
         }
     }
 }

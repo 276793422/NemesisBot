@@ -720,6 +720,9 @@ fn start_board_land(
         required_profession: None,
         required_capabilities: Vec::new(),
         required_backend: None,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
     })?;
     Ok(json!({ "board_issue": issue.number, "board_issue_id": issue.id, "landed": "created" }))
 }

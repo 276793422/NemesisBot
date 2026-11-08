@@ -53,6 +53,24 @@ pub(super) fn issue_to_view(
                 }),
             );
         }
+        // 人工触点投影（P1 看板层轻徽标）：最近一条触点（含终态——超时
+        // 横条要能显示「已按默认动作收口」）。轻量面不含 payload/audit/
+        // human_input（重正文归工作台 workbench.get 单独取）；None 不插键
+        // （无触点单 = undefined falsy，存量单零感）。
+        if let Ok(Some(tp)) = store.get_latest_touchpoint_by_issue(issue.id) {
+            obj.insert(
+                "latest_touchpoint".to_string(),
+                serde_json::json!({
+                    "id": tp.id,
+                    "kind": tp.kind.as_str(),
+                    "status": tp.status.as_str(),
+                    "deadline_ms": tp.deadline_ms,
+                    "veto_rounds": tp.veto_rounds,
+                    "created_at": tp.created_at,
+                    "updated_at": tp.updated_at,
+                }),
+            );
+        }
     }
     Ok(v)
 }
@@ -143,6 +161,13 @@ pub fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssu
         ni.assignee = Some(at);
         ni.assignee_id = Some(aid);
     }
+    // 人工触点体系（P1）：质量档（标准/体验型——体验型才挂规格+原型
+    // 两触点）+ 任务级无人值守覆盖（None=继承项目/全局；Some=显式表态）。
+    // 缺键即缺省——存量前端/工具建单行为字节不变。
+    if let Some(q) = get_opt_str(data, "quality") {
+        ni.quality = q;
+    }
+    ni.unattended = data.get("unattended").and_then(|v| v.as_bool());
     // 职能 slug 直建单面（planner 之外的手工入口；空串/空白 = 不限）。
     if let Some(p) = get_opt_str(data, "required_profession") {
         ni.required_profession = (!p.trim().is_empty()).then_some(p);

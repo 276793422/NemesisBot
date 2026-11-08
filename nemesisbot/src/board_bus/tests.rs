@@ -3373,6 +3373,9 @@ fn new_issue_shape() -> nemesis_board::Issue {
         required_backend: None,
         requires_evidence: false,
         hidden: false,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
         created_at: 0,
         updated_at: 0,
     }

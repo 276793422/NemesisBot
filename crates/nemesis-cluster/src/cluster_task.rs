@@ -136,6 +136,14 @@ pub struct ClusterTask {
 /// （[`ClusterWorkQueue::submit_priority`]）。改文案两处同源。
 pub const SELFCHECK_PROMPT_MARKER: &str = "[取证请求 board_selfcheck:";
 
+/// 试玩取证 marker（触点体系 P3 机器行为闸，与
+/// [`SELFCHECK_PROMPT_MARKER`] 同源同形态）：master 评审链
+/// （nemesisbot `board_review::prototype_gate`）构造试玩+红队取证 prompt
+/// 的头部形态；worker 侧 PeerChatHandler 据此判定试玩任务走优先通道
+/// （原型里程碑单的评审在 master 侧挂起等待，插队理由与取证同款）。
+/// 改文案两处同源。
+pub const PLAYTEST_PROMPT_MARKER: &str = "[试玩取证 board_playtest:";
+
 /// FIFO work queue backed by an mpsc channel.
 ///
 /// Producers (PeerChatHandler, callback handler) submit task IDs;

@@ -348,6 +348,7 @@ fn board_store_with_project(copy_root: &Path) -> Arc<BoardStore> {
             "📦",
             "ac",
             Some(copy_root.to_str().unwrap()),
+            None,
         )
         .unwrap();
     let issue = store

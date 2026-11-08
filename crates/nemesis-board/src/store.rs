@@ -17,9 +17,10 @@ use crate::models::{
     ActivityLog, Attachment, Autopilot, AutopilotPatch, BoardAsset, Channel, ChannelMember,
     ChannelMessage, Comment, CommentType, DispatchRecord, Issue, IssueFilter, IssuePatch,
     IssueStatus, LedgerEntry, NewAsset, NewAutopilot, NewChannel, NewChannelMessage, NewComment,
-    NewIssue, NewNotification, NewTeamMemory, Notification, PostedMessage, Project, ProjectPatch,
-    SelfcheckPendingRow, Subscriber, TeamMemoryEntry, channel_message_type, dispatch_state,
-    notification_kind, thread_kind,
+    NewIssue, NewNotification, NewTeamMemory, NewTouchpoint, Notification, PlaytestPendingRow,
+    PostedMessage, Project, ProjectPatch, SelfcheckPendingRow, Subscriber, TeamMemoryEntry,
+    Touchpoint, TouchpointStatus, channel_message_type, dispatch_state, notification_kind,
+    thread_kind,
 };
 
 /// Thread-safe SQLite board store.
@@ -117,6 +118,14 @@ impl BoardStore {
 
     fn now() -> i64 {
         chrono::Utc::now().timestamp()
+    }
+
+    /// 触点行专用时钟：epoch **毫秒**（`board_touchpoints` 的
+    /// deadline_ms / created_at / updated_at 与 audit ts_ms 同族毫秒——
+    /// 绝对 deadline 是 sweep 锚点，秒/毫秒混写会让提醒拍按千倍偏差
+    /// 误判；issue/comment 等老表保持秒口径不动）。
+    fn now_ms() -> i64 {
+        chrono::Utc::now().timestamp_millis()
     }
 
     // -----------------------------------------------------------------------
@@ -228,8 +237,8 @@ impl BoardStore {
                 parent_issue_id, project_id, due_date, position,
                 acceptance_criteria, origin_type, origin_id, origin_meta,
                 required_role, required_tags, required_profession, required_capabilities,
-                required_backend, requires_evidence, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?24)",
+                required_backend, requires_evidence, quality, unattended, milestone, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?27)",
             params![
                 number,
                 new.title,
@@ -261,6 +270,9 @@ impl BoardStore {
                     .map(str::trim)
                     .filter(|s| !s.is_empty()),
                 requires_evidence,
+                new.quality.trim(),
+                new.unattended.map(|b| b as i64),
+                new.milestone as i64,
                 now,
             ],
         )
@@ -1813,6 +1825,7 @@ impl BoardStore {
         icon: &str,
         acceptance_criteria: &str,
         directory: Option<&str>,
+        unattended: Option<bool>,
     ) -> Result<Project, String> {
         if name.trim().is_empty() {
             return Err("project name must not be empty".to_string());
@@ -1820,8 +1833,8 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
         conn.execute(
-            "INSERT INTO project (name, description, status, priority, lead_type, lead_id, icon, acceptance_criteria, directory, created_at)
-             VALUES (?1, ?2, 'active', 1, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO project (name, description, status, priority, lead_type, lead_id, icon, acceptance_criteria, directory, unattended, created_at)
+             VALUES (?1, ?2, 'active', 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 name,
                 description,
@@ -1830,6 +1843,7 @@ impl BoardStore {
                 icon,
                 acceptance_criteria,
                 directory,
+                unattended.map(|b| b as i64),
                 now,
             ],
         )
@@ -2001,6 +2015,234 @@ impl BoardStore {
         )
         .map_err(|e| format!("pop_pending_merge: {e}"))?;
         Ok(Some(head))
+    }
+
+    // -----------------------------------------------------------------------
+    // 人工触点（v25；表 board_touchpoints；状态机见 touchpoint 模块）
+    // -----------------------------------------------------------------------
+
+    /// 挂卡（新触点；status 恒从 pending 起，deadline 由调用方按 config
+    /// 超时换算成绝对 epoch ms——estop 冻结期间停机不白等）。
+    pub fn create_touchpoint(&self, new: &NewTouchpoint) -> Result<Touchpoint, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now_ms();
+        conn.execute(
+            "INSERT INTO board_touchpoints
+                (issue_id, project_id, kind, status, deadline_ms, payload, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6, ?6)",
+            params![
+                new.issue_id,
+                new.project_id,
+                new.kind.as_str(),
+                new.deadline_ms,
+                new.payload,
+                now,
+            ],
+        )
+        .map_err(|e| format!("create_touchpoint: {e}"))?;
+        let id = conn.last_insert_rowid();
+        drop(conn); // 释放锁再 get（防持锁重入死锁）
+        self.get_touchpoint(id)?
+            .ok_or_else(|| format!("create_touchpoint: 刚建触点 {id} 回读丢失"))
+    }
+
+    /// 按 id 取触点；不存在 = None。
+    pub fn get_touchpoint(&self, id: i64) -> Result<Option<Touchpoint>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT * FROM board_touchpoints WHERE id = ?1",
+            params![id],
+            row_to_touchpoint,
+        )
+        .optional()
+        .map_err(|e| format!("get_touchpoint: {e}"))
+    }
+
+    /// 单子当前触点（id 最大一条，任意状态；看板徽标/工作台入口投影用）。
+    pub fn get_latest_touchpoint_by_issue(
+        &self,
+        issue_id: i64,
+    ) -> Result<Option<Touchpoint>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT * FROM board_touchpoints WHERE issue_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![issue_id],
+            row_to_touchpoint,
+        )
+        .optional()
+        .map_err(|e| format!("get_latest_touchpoint_by_issue: {e}"))
+    }
+
+    /// 单子触点史（版本对照 v1/v2 用；id 升序）。
+    pub fn list_touchpoints_by_issue(&self, issue_id: i64) -> Result<Vec<Touchpoint>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM board_touchpoints WHERE issue_id = ?1 ORDER BY id ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![issue_id], row_to_touchpoint)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 全部 pending 触点（超时 sweep 输入；sweep 自行按 deadline_ms 过滤）。
+    pub fn list_pending_touchpoints(&self) -> Result<Vec<Touchpoint>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT * FROM board_touchpoints WHERE status = 'pending' ORDER BY deadline_ms ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], row_to_touchpoint)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 按状态列触点（blocked_sync 滞留超 cap 通报 sweep 用；updated_at
+    /// 升序——最早滞留的先通报）。
+    pub fn list_touchpoints_by_status(
+        &self,
+        status: TouchpointStatus,
+    ) -> Result<Vec<Touchpoint>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM board_touchpoints WHERE status = ?1 ORDER BY updated_at ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![status.as_str()], row_to_touchpoint)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 触点状态转移（写前过状态机 [`crate::touchpoint::can_transition`]；
+    /// 否决出路 veto_rounds +1）。`human_input` 写入 human_input 列
+    /// （确认/超时 = 空串；修订/否决 = 结构化 JSON，结构由 web 漏斗定义）。
+    pub fn transition_touchpoint(
+        &self,
+        id: i64,
+        to: TouchpointStatus,
+        human_input: &str,
+    ) -> Result<Touchpoint, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let current: Touchpoint = conn
+            .query_row(
+                "SELECT * FROM board_touchpoints WHERE id = ?1",
+                params![id],
+                row_to_touchpoint,
+            )
+            .optional()
+            .map_err(|e| format!("transition_touchpoint: {e}"))?
+            .ok_or_else(|| format!("touchpoint {id} not found"))?;
+        if !crate::touchpoint::can_transition(current.status, to) {
+            return Err(format!(
+                "触点 {id} 非法转移 {} → {}（状态机拒绝）",
+                current.status, to
+            ));
+        }
+        let veto_delta = if matches!(
+            to,
+            TouchpointStatus::VetoedLocal | TouchpointStatus::VetoedSpec
+        ) {
+            1
+        } else {
+            0
+        };
+        conn.execute(
+            "UPDATE board_touchpoints
+             SET status = ?1, human_input = ?2, veto_rounds = veto_rounds + ?3,
+                 updated_at = ?4
+             WHERE id = ?5",
+            params![to.as_str(), human_input, veto_delta, Self::now_ms(), id],
+        )
+        .map_err(|e| format!("transition_touchpoint: {e}"))?;
+        drop(conn);
+        self.get_touchpoint(id)?
+            .ok_or_else(|| format!("transition_touchpoint: 转移后回读触点 {id} 丢失"))
+    }
+
+    /// 否决后重挂（vetoed_* → pending；换 deadline + 换 payload（v2），
+    /// human_input 保留上一轮——完整历史在审计与单据评论里）。
+    pub fn rehang_touchpoint(
+        &self,
+        id: i64,
+        deadline_ms: i64,
+        payload: &str,
+    ) -> Result<Touchpoint, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let current: Touchpoint = conn
+            .query_row(
+                "SELECT * FROM board_touchpoints WHERE id = ?1",
+                params![id],
+                row_to_touchpoint,
+            )
+            .optional()
+            .map_err(|e| format!("rehang_touchpoint: {e}"))?
+            .ok_or_else(|| format!("touchpoint {id} not found"))?;
+        if !matches!(
+            current.status,
+            TouchpointStatus::VetoedLocal | TouchpointStatus::VetoedSpec
+        ) {
+            return Err(format!(
+                "触点 {id} 状态 {} 不可重挂（只有否决态回 pending）",
+                current.status
+            ));
+        }
+        conn.execute(
+            "UPDATE board_touchpoints
+             SET status = 'pending', deadline_ms = ?1, payload = ?2, updated_at = ?3
+             WHERE id = ?4",
+            params![deadline_ms, payload, Self::now_ms(), id],
+        )
+        .map_err(|e| format!("rehang_touchpoint: {e}"))?;
+        drop(conn);
+        self.get_touchpoint(id)?
+            .ok_or_else(|| format!("rehang_touchpoint: 重挂后回读触点 {id} 丢失"))
+    }
+
+    /// 追加审计事件（append-only；坏数组诚实拒绝不静默重置——
+    /// 见 [`crate::touchpoint::append_audit_event`]）。
+    pub fn append_touchpoint_audit(
+        &self,
+        id: i64,
+        event: crate::touchpoint::TouchpointAuditEvent,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let audit: String = conn
+            .query_row(
+                "SELECT audit FROM board_touchpoints WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("append_touchpoint_audit 读: {e}"))?;
+        let next = crate::touchpoint::append_audit_event(&audit, event)?;
+        conn.execute(
+            "UPDATE board_touchpoints SET audit = ?1, updated_at = ?2 WHERE id = ?3",
+            params![next, Self::now_ms(), id],
+        )
+        .map_err(|e| format!("append_touchpoint_audit: {e}"))?;
+        Ok(())
+    }
+
+    /// 置位/解除项目无人值守（系统管理字段，刻意不走 ProjectPatch——
+    /// 对齐 [`BoardStore::set_project_conflict_frozen`] 先例；None=继承
+    /// 全局 attendance.mode，Some(bool)=显式覆盖）。
+    pub fn set_project_unattended(
+        &self,
+        id: i64,
+        unattended: Option<bool>,
+    ) -> Result<Project, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE project SET unattended = ?1 WHERE id = ?2",
+            params![unattended.map(|b| b as i64), id],
+        )
+        .map_err(|e| format!("set_project_unattended: {e}"))?;
+        drop(conn);
+        self.get_project(id)
     }
 
     // -----------------------------------------------------------------------
@@ -2728,6 +2970,115 @@ impl BoardStore {
                 |r| r.get(0),
             )
             .map_err(|e| format!("has_selfcheck_pending_for_issue: {e}"))?;
+        Ok(n > 0)
+    }
+
+    // 试玩取证路由持久层（表 `playtest_pending`，P3b 机器行为闸）
+    //
+    // 与 selfcheck_pending 同形态（同缺陷谱系同根修）：试玩派发不写
+    // issue_dispatch，路由键持久化；status/response 是定案状态机
+    // （NULL=回调未到，Some=已烧入待定案臂消费，完成删行）。写侧失败一律
+    // Err 由调用方 warn 降级，绝不阻断回调路由。
+    // -----------------------------------------------------------------------
+
+    /// 登记（试玩派发成功后与内存注册表同批写）。
+    pub fn register_playtest_pending(
+        &self,
+        task_id: &str,
+        issue_id: i64,
+        worker_id: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO playtest_pending (task_id, issue_id, worker_id, status, response, created_at)
+             VALUES (?1, ?2, ?3, NULL, NULL, ?4)",
+            params![task_id, issue_id, worker_id, chrono::Utc::now().timestamp()],
+        )
+        .map_err(|e| format!("register_playtest_pending: {e}"))?;
+        Ok(())
+    }
+
+    /// 路由落地（worker 试玩回调被路由时烧入 status/response）：只覆写
+    /// `status IS NULL` 的行——首个回调定案，重复回调不覆盖已烧入的报告。
+    /// 返回 false = 行不存在或已路由。
+    pub fn mark_playtest_routed(
+        &self,
+        task_id: &str,
+        status: &str,
+        response: &str,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE playtest_pending SET status = ?1, response = ?2
+                 WHERE task_id = ?3 AND status IS NULL",
+                params![status, response, task_id],
+            )
+            .map_err(|e| format!("mark_playtest_routed: {e}"))?;
+        Ok(n > 0)
+    }
+
+    /// 路由兜底查（gateway 重启后内存注册表 miss 时）：只认未路由行
+    /// （status IS NULL）——已路由行的重复回调走 Route 0 miss（Ok 短路）。
+    pub fn get_pending_playtest_route(&self, task_id: &str) -> Result<Option<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT issue_id FROM playtest_pending
+             WHERE task_id = ?1 AND status IS NULL",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("get_pending_playtest_route: {e}"))
+    }
+
+    /// 全量在途行（sweep 两臂的数据源）。
+    pub fn list_playtest_pending(&self) -> Result<Vec<PlaytestPendingRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT task_id, issue_id, worker_id, status, response, created_at
+                 FROM playtest_pending ORDER BY rowid ASC",
+            )
+            .map_err(|e| format!("list_playtest_pending: {e}"))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PlaytestPendingRow {
+                    task_id: r.get(0)?,
+                    issue_id: r.get(1)?,
+                    worker_id: r.get(2)?,
+                    status: r.get(3)?,
+                    response: r.get(4)?,
+                    created_at: r.get(5)?,
+                })
+            })
+            .map_err(|e| format!("list_playtest_pending: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("list_playtest_pending: {e}"))
+    }
+
+    /// 定案臂完成删行（sweep 恢复重放与回调正常路径共用）。
+    pub fn delete_playtest_pending(&self, task_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM playtest_pending WHERE task_id = ?1",
+            params![task_id],
+        )
+        .map_err(|e| format!("delete_playtest_pending: {e}"))?;
+        Ok(())
+    }
+
+    /// 同 issue 是否仍有在途试玩（含已路由待定案——跨重启的重入闸，
+    /// 内存注册表重启清零后由本查询兜底）。
+    pub fn has_playtest_pending_for_issue(&self, issue_id: i64) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM playtest_pending WHERE issue_id = ?1",
+                params![issue_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| format!("has_playtest_pending_for_issue: {e}"))?;
         Ok(n > 0)
     }
 
@@ -4522,6 +4873,13 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
         required_capabilities,
         requires_evidence: row.get::<_, i64>("requires_evidence")? != 0,
         hidden: row.get::<_, i64>("hidden")? != 0,
+        quality: row
+            .get::<_, Option<String>>("quality")?
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        unattended: row.get::<_, Option<i64>>("unattended")?.map(|v| v != 0),
+        milestone: row.get::<_, i64>("milestone")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -4554,6 +4912,29 @@ fn row_to_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityLog> {
         action: row.get("action")?,
         details: row.get("details")?,
         created_at: row.get("created_at")?,
+    })
+}
+
+fn row_to_touchpoint(row: &rusqlite::Row<'_>) -> rusqlite::Result<Touchpoint> {
+    let kind = crate::models::TouchpointKind::parse(&row.get::<_, String>("kind")?)
+        .unwrap_or(crate::models::TouchpointKind::Spec);
+    let status = TouchpointStatus::parse(&row.get::<_, String>("status")?)
+        .unwrap_or(TouchpointStatus::Pending);
+    Ok(Touchpoint {
+        id: row.get("id")?,
+        issue_id: row.get("issue_id")?,
+        project_id: row.get("project_id")?,
+        kind,
+        status,
+        deadline_ms: row.get("deadline_ms")?,
+        payload: row.get::<_, Option<String>>("payload")?.unwrap_or_default(),
+        human_input: row
+            .get::<_, Option<String>>("human_input")?
+            .unwrap_or_default(),
+        veto_rounds: row.get("veto_rounds")?,
+        audit: row.get::<_, Option<String>>("audit")?.unwrap_or_default(),
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
     })
 }
 
@@ -4599,6 +4980,7 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
             );
             Default::default()
         }),
+        unattended: row.get::<_, Option<i64>>("unattended")?.map(|v| v != 0),
         created_at: row.get("created_at")?,
     })
 }

@@ -243,7 +243,7 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
         }
         IssueAction::Comment { issue, content } => {
             let id = resolve_issue_id(&store, &issue)?;
-            store
+            let comment = store
                 .add_comment(NewComment {
                     issue_id: id,
                     author: actor,
@@ -253,6 +253,17 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
                 })
                 .map_err(err)?;
             println!("评论已添加");
+            // （终判 👍/👎，计划 §8）：CLI 评论同过终判闸（与 WSAPI 同
+            // 源语义）；失败 eprintln 不阻塞——反馈是增值动作。
+            if let Err(e) = nemesis_board::process_final_verdict_comment(
+                &store,
+                id,
+                comment.id,
+                &comment.author.kind,
+                &comment.content,
+            ) {
+                eprintln!("终判处理失败（不影响评论）：{e}");
+            }
         }
         IssueAction::Projects => {
             for p in store.list_projects().map_err(err)? {
