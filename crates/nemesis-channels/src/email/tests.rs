@@ -556,3 +556,31 @@ fn test_build_smtp_message_flattens_crlf_in_headers() {
         "body region must pass through untouched, got: {msg}"
     );
 }
+
+/// BUG-20261108-021 回归锁：seen_uids 去重图容量帽。
+/// 此前 mark_seen 与轮询内联插入只增不删——键为机器键（每封收件
+/// Message-ID），长驻进程随收件量线性增长永不回收 = 内存慢漏。
+/// 家族先例（mastodon/nostr/signal 10000→5000 修剪）对齐后：
+/// 超帽必须修剪有界（本测 11000 次插入后断言 ≤ 10000）。
+#[test]
+fn test_seen_uids_capped_no_unbounded_growth() {
+    let config = EmailConfig {
+        imap_host: "imap.test.local".to_string(),
+        smtp_host: "smtp.test.local".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        ..Default::default()
+    };
+    let channel = EmailChannel::new(config, test_sender()).expect("channel construct");
+    let total = EmailChannel::SEEN_UIDS_MAX_ENTRIES + 1000;
+    for i in 0..total {
+        channel.mark_seen(&format!("<cap-{i}@test.local>"));
+    }
+    let len = channel.seen_uids.read().len();
+    assert!(
+        len <= EmailChannel::SEEN_UIDS_MAX_ENTRIES,
+        "seen_uids must stay capped at {}, got {len} after {total} inserts",
+        EmailChannel::SEEN_UIDS_MAX_ENTRIES
+    );
+    assert!(len > 0, "prune must not drain the map to empty");
+}

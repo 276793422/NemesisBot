@@ -218,10 +218,33 @@ impl EmailChannel {
         }
     }
 
+    /// seen_uids 去重图容量帽。键为机器键（每封收件的 Message-ID 一条目），
+    /// 无淘汰则随收件量线性增长、永不回收 = 长驻进程内存慢漏。
+    /// 家族纪律对齐（mastodon/nostr/signal 同款 10000→5000 修剪；bluesky 500
+    /// 全清）：超帽修剪 5000 条（HashMap 任意序）——去重语义只需覆盖近期
+    /// 重投递窗口，保护窗缩短为最近约 5000 封，可接受。
+    const SEEN_UIDS_MAX_ENTRIES: usize = 10_000;
+    const SEEN_UIDS_PRUNE_COUNT: usize = 5_000;
+
+    /// 超帽修剪（两个插入点共用：mark_seen + start_poll_loop 内联插入）。
+    fn prune_seen_uids(map: &mut HashMap<String, bool>) {
+        if map.len() > Self::SEEN_UIDS_MAX_ENTRIES {
+            let keys: Vec<String> = map
+                .keys()
+                .take(Self::SEEN_UIDS_PRUNE_COUNT)
+                .cloned()
+                .collect();
+            for key in keys {
+                map.remove(&key);
+            }
+        }
+    }
+
     /// Marks a message ID as seen.
     pub fn mark_seen(&self, message_id: &str) {
         let mut map = self.seen_uids.write();
         map.insert(message_id.to_string(), true);
+        Self::prune_seen_uids(&mut map);
     }
 
     /// Checks if a message ID has been seen.
@@ -616,6 +639,7 @@ impl EmailChannel {
                                                 }
                                                 if !message_id.is_empty() {
                                                     map.insert(message_id.clone(), true);
+                                                    Self::prune_seen_uids(&mut map);
                                                 }
                                             }
 
