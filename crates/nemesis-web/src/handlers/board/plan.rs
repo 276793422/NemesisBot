@@ -1045,6 +1045,68 @@ pub(super) async fn run_ac_draft(
     sanitize_ac_draft(&raw)
 }
 
+// ---------------------------------------------------------------------------
+// P2 规格蒸馏（触点一）：体验型任务的规划入口在拆解前先蒸馏规格草案
+// 挂卡等人确认。闸判定与规格烧录在 touchpoints.rs（纯函数/store 操作），
+// 本侧只做 LLM 调用与分支落账。
+// ---------------------------------------------------------------------------
+
+/// 蒸馏 user prompt：原始愿望 + 已有验收参考（纯函数，单测钉契约）。
+#[cfg(feature = "cluster")]
+fn build_spec_distill_prompt(issue: &nemesis_board::Issue) -> String {
+    format!(
+        "原始愿望（看板单据 {}「{}」）：\n{}\n\n已有验收参考（可并入，不必照抄）：{}\n\n请蒸馏这份体验型产品的规格草案。",
+        issue.number,
+        issue.title,
+        issue.description.trim(),
+        issue.acceptance_criteria.as_deref().unwrap_or("（未填写）")
+    )
+}
+
+/// 规格蒸馏单次调用（与 run_ac_draft 同形态：no_tools 单轮、planner
+/// 模型换槽）。**从不 Err**——LLM 失败/输出不可解析都回落「原文即草案」
+/// （无人值守是默认态，蒸馏是增强不是闸门；distilled=false 审计可辨）。
+#[cfg(feature = "cluster")]
+async fn run_spec_distill(
+    agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    issue: &nemesis_board::Issue,
+    model_swap: Option<(
+        std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
+        String,
+    )>,
+) -> super::touchpoints::DistilledSpec {
+    let prompt = build_spec_distill_prompt(issue);
+    match agent_loop
+        .run_detached(
+            &prompt,
+            nemesis_agent::r#loop::DetachedOpts {
+                system_prompt: Some(nemesis_prompts::board::SPEC_DISTILL_SYSTEM_PROMPT),
+                no_tools: true,
+                max_turns: 1,
+                label: Some("board-spec-distill"),
+                model_swap: model_swap.as_ref(),
+                ..Default::default()
+            },
+        )
+        .await
+    {
+        Ok(raw) => super::touchpoints::parse_distill_output(&raw).unwrap_or_else(|| {
+            tracing::warn!(
+                "[Board] 规格蒸馏输出不可解析 issue={}（回退：原文即草案）",
+                issue.id
+            );
+            super::touchpoints::fallback_spec(issue)
+        }),
+        Err(e) => {
+            tracing::warn!(
+                "[Board] 规格蒸馏失败 issue={}：{e}（回退：原文即草案）",
+                issue.id
+            );
+            super::touchpoints::fallback_spec(issue)
+        }
+    }
+}
+
 // 停车续做正门（主会话污染根修）：停车注释原指引「对本节点说
 // 『继续 NB-x』可读档续做」——自动化操作员照办就会把任务流量写进用户聊天
 // 会话（admission matched_by=default / 显式指到主会话同罪），指令与 bot
@@ -1273,9 +1335,10 @@ pub(super) struct PlanChainEnv {
 
 /// `board.plan` 段现读（home 缺失/读取失败 = 缺省值；不 fail-closed——
 /// 超时/重试上限走缺省是安全方向，与 auto_confirm 的 fail-closed 语义
-/// 不同：发车是副作用，超时监视只是兜底）。
+/// 不同：发车是副作用，超时监视只是兜底）。pub(super)：touchpoints
+/// 恢复钩子续跑（P2 触点一）同链消费。
 #[cfg(feature = "cluster")]
-fn plan_chain_cfg(home: Option<&std::path::Path>) -> nemesis_config::BoardPlanConfig {
+pub(super) fn plan_chain_cfg(home: Option<&std::path::Path>) -> nemesis_config::BoardPlanConfig {
     home.and_then(|h| {
         nemesis_config::load_config(&std::path::Path::new(h).join("config.json")).ok()
     })
@@ -1375,11 +1438,12 @@ pub(super) fn board_plan_model_swap(
 /// RUNNING_PLANS 摘除）——停车而非无限烧 LLM。
 ///
 /// 设计注记（四入口覆盖面）：fire-and-forget 三入口（WSAPI `issue.plan` /
-/// autopilot `auto_plan` / 项目 `auto_start`）+ 重启恢复走本函数；
+/// autopilot `auto_plan` / 项目 `auto_start`）+ 重启恢复 + 触点恢复钩子
+/// （P2 规格确认续跑，touchpoints 侧同链消费）走本函数；
 /// agent 工具 `board_issue plan` 是同步 await 形态（agent 自盯结果，LLM
 /// 调用受 provider 600s 超时 + parse 3 轮上限约束），不挂后台监视。
 #[cfg(feature = "cluster")]
-fn spawn_plan_chain(
+pub(super) fn spawn_plan_chain(
     env: Arc<PlanChainEnv>,
     plan_id: String,
     attempt: u32,
@@ -1722,16 +1786,36 @@ pub async fn execute_plan_chain(
         );
     }
     let ub_cfg = super::super::board_unavailable::unavailable_cfg(home);
+    // 人工触点 P2 规格闸（体验型 quality=experience 才非 Skip）：有人值守
+    // + 无终态规格 → 蒸馏挂卡提前返回（不拆解）；无人值守/已有终态规格
+    // → 规格烧进单据后照常进 planner。判定 Err 透传（诚实失败不静默放行）。
+    let spec_gate = {
+        use super::touchpoints::SpecGateAction;
+        match super::touchpoints::spec_gate_decision(store, &issue)? {
+            SpecGateAction::Skip => ("planning", None),
+            SpecGateAction::WaitPending(tp) => {
+                ("awaiting-human", Some(SpecGateAction::WaitPending(tp)))
+            }
+            SpecGateAction::DistillWait => ("spec-distill", Some(SpecGateAction::DistillWait)),
+            SpecGateAction::DistillProceed => {
+                ("spec-distill", Some(SpecGateAction::DistillProceed))
+            }
+            SpecGateAction::ProceedWithSpec(tp) => {
+                ("planning", Some(SpecGateAction::ProceedWithSpec(tp)))
+            }
+        }
+    };
     // 拆解运行期可观测（「停着」事故）：running 条目（guard 摘除）
     // + `board.plan_started` SSE + 父单「已开始拆解」评论。planner 单次
-    // 4~7 分钟且此前全程零反馈，用户体感=「停着」。
+    // 4~7 分钟且此前全程零反馈，用户体感=「停着」。phase 随规格闸分支
+    // （spec-distill / awaiting-human 透出到运行横幅）。
     RUNNING_PLANS.lock().insert(
         plan_id.to_string(),
         RunningPlan {
             issue_id: issue.id,
             started_at: started,
             attempt,
-            phase: "planning",
+            phase: spec_gate.0,
         },
     );
     let _running_guard = RunningPlanGuard {
@@ -1747,6 +1831,125 @@ pub async fn execute_plan_chain(
                 "attempt": attempt,
             }),
         );
+    }
+    // 规格触点分支（P2）：等人臂提前返回（拆解评论不发——发「已开始自动
+    // 拆解」就是说谎）；进拆解臂把规格烧进单据后照常走 planner。
+    {
+        use super::touchpoints::SpecGateAction;
+        match spec_gate.1 {
+            None | Some(SpecGateAction::Skip) => {}
+            Some(SpecGateAction::WaitPending(tp)) => {
+                return Ok(serde_json::json!({
+                    "status": "waiting_human",
+                    "touchpoint_id": tp.id,
+                    "kind": "spec",
+                    "phase": "awaiting-human",
+                    "message": "规格草案已在等待人工确认（重复触发幂等早退，不重复挂卡）",
+                }));
+            }
+            Some(SpecGateAction::DistillWait) => {
+                let _ = store.add_comment(NewComment {
+                    issue_id: issue.id,
+                    author: Actor::system("board"),
+                    content: "📐 体验型任务：先蒸馏规格草案供你确认（工作台 /workbench 处理；确认后自动继续拆解，超时按草案发车）".to_string(),
+                    parent_id: None,
+                    ctype: CommentType::System,
+                });
+                let swap = board_plan_model_swap(home);
+                let spec = run_spec_distill(&agent_loop, &issue, swap).await;
+                let tp_cfg = super::touchpoints::live_attendance_config();
+                let deadline = super::touchpoints::deadline_from_cfg(
+                    super::touchpoints::now_ms(),
+                    &tp_cfg,
+                    nemesis_board::models::TouchpointKind::Spec,
+                );
+                let tp = super::touchpoints::create_touchpoint_card(
+                    store,
+                    &actor,
+                    issue.id,
+                    issue.project_id,
+                    nemesis_board::models::TouchpointKind::Spec,
+                    &super::touchpoints::spec_payload(&spec),
+                    deadline,
+                )?;
+                if let Err(e) = store.transition_issue(issue.id, IssueStatus::InReview, &actor) {
+                    tracing::warn!(
+                        "[Board] 规格挂卡后承载单转 in_review 失败 issue={}: {e}",
+                        issue.id
+                    );
+                }
+                return Ok(serde_json::json!({
+                    "status": "waiting_human",
+                    "touchpoint_id": tp.id,
+                    "kind": "spec",
+                    "distilled": spec.distilled,
+                    "phase": "spec-distill",
+                    "message": "规格草案已挂卡，等待人工确认；确认/超时默认后自动续跑拆解",
+                }));
+            }
+            Some(SpecGateAction::DistillProceed) => {
+                let swap = board_plan_model_swap(home);
+                let spec = run_spec_distill(&agent_loop, &issue, swap).await;
+                // 假设清单落账（计划 §2 超时默认发车同款纪律：直通即默认
+                // 动作，假设清单必须可回查）。
+                let assumptions = if spec.assumptions.is_empty() {
+                    "—".to_string()
+                } else {
+                    spec.assumptions
+                        .iter()
+                        .enumerate()
+                        .map(|(i, a)| format!("{}. {}", i + 1, a))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+                let _ = store.add_comment(NewComment {
+                    issue_id: issue.id,
+                    author: Actor::system("board"),
+                    content: format!(
+                        "📐 无人值守：规格已蒸馏（不等待确认，直通拆解）\n\n**假设清单**\n{assumptions}"
+                    ),
+                    parent_id: None,
+                    ctype: CommentType::System,
+                });
+                // 触点照常记档并按默认收口（无人值守是默认态，全程留痕；
+                // 汇报包的替决假设清单读它）。失败只 warn——蒸馏链照常。
+                if let Err(e) = super::touchpoints::create_and_default_touchpoint(
+                    store,
+                    &actor,
+                    issue.id,
+                    issue.project_id,
+                    nemesis_board::models::TouchpointKind::Spec,
+                    &super::touchpoints::spec_payload(&spec),
+                ) {
+                    tracing::warn!("[Board] 无人值守规格触点记档失败 issue={}: {e}", issue.id);
+                }
+                if let Err(e) =
+                    super::touchpoints::apply_spec_to_issue(store, &issue, &spec.version, &spec)
+                {
+                    tracing::warn!("[Board] 无人值守规格烧录失败 issue={}: {e}", issue.id);
+                }
+            }
+            Some(SpecGateAction::ProceedWithSpec(tp)) => {
+                match super::touchpoints::spec_from_payload(&tp.payload) {
+                    Some(spec) => {
+                        if let Err(e) = super::touchpoints::apply_spec_to_issue(
+                            store,
+                            &issue,
+                            &spec.version,
+                            &spec,
+                        ) {
+                            tracing::warn!("[Board] 已确认规格烧录失败 issue={}: {e}", issue.id);
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            "[Board] 终态规格触点 payload 缺 spec tp={}：跳过烧录照常拆解",
+                            tp.id
+                        );
+                    }
+                }
+            }
+        }
     }
     let _ = store.add_comment(NewComment {
         issue_id: issue.id,
@@ -2244,6 +2447,10 @@ pub fn confirm_plan(
         // required_backend 已在 parse_plan 归一（严格臂校验写回/宽和臂非法
         // 置空），此处只做空白防波；不参与职能降级（backend 闸与职能正交）。
         let backend = sub.required_backend.trim();
+        // 里程碑单标记归一（触点体系 P3）：只有父单是体验型（experience
+        // 档）才落库 planner 的 milestone 标记——父单非体验档时该标记
+        // 无消费方，清零（防上游误标把普通单挂进原型闸）。
+        let milestone = parent.quality.trim().eq_ignore_ascii_case("experience") && sub.milestone;
         let created = store.create_issue(nemesis_board::NewIssue {
             title: sub.title.clone(),
             description: sub.description.clone(),
@@ -2257,6 +2464,7 @@ pub fn confirm_plan(
             // 子单归属父单所在项目（首派联动读子单的 project_id 推进
             // 项目 active→in_progress；缺继承则联动早退、项目永远 active）。
             project_id: parent.project_id,
+            milestone,
             origin: Some(nemesis_board::TaskOrigin {
                 origin_type: "planner".to_string(),
                 origin_id: parent.number.clone(),
@@ -2265,6 +2473,17 @@ pub fn confirm_plan(
             creator: actor.clone(),
             ..nemesis_board::NewIssue::default()
         })?;
+        if milestone {
+            // 里程碑单标记留痕：评审链会先跑机器行为闸（试玩+红队）再
+            // 挂原型卡，不走 Done 直通——单上可见，防「为什么它卡评审」。
+            let _ = store.add_comment(nemesis_board::NewComment {
+                issue_id: created.id,
+                author: nemesis_board::Actor::system("board"),
+                content: "🎯 里程碑单：完成后先过机器行为闸（试玩+红队取证）再挂原型卡等人工把玩，不直接进验收。".to_string(),
+                parent_id: None,
+                ctype: nemesis_board::CommentType::System,
+            });
+        }
         if downgraded && let Some((_, original)) = downgrades.iter().find(|(di, _)| *di == idx) {
             let _ = store.add_comment(nemesis_board::NewComment {
                 issue_id: created.id,

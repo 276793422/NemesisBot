@@ -253,6 +253,9 @@ pub fn parse_replan(raw: &str) -> Result<ReplanOutput, ReplanParseError> {
             required_capabilities: Vec::new(),
             acceptance_criteria: a.acceptance_criteria.clone(),
             depends_on: a.depends_on.clone(),
+            // v1 重规划不引入里程碑声明（新补子单不是首个可运行构建；
+            // 里程碑闸只服务首次拆解产出的原型单）。
+            milestone: false,
         })
         .collect();
     if !add_plan.is_empty() {
@@ -291,6 +294,7 @@ pub fn replan_adds_as_planned(output: &ReplanOutput) -> Vec<PlannedSubIssue> {
             required_capabilities: Vec::new(),
             acceptance_criteria: a.acceptance_criteria.trim().to_string(),
             depends_on: a.depends_on.clone(),
+            milestone: false,
         })
         .collect()
 }

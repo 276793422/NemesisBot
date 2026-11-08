@@ -404,7 +404,10 @@ impl PeerChatHandler {
             // 压测②（三设备）：取证任务（board 评审链的
             // board_selfcheck 取证请求）走优先通道插队——评审在 master
             // 侧挂起等待，被正式任务串行队列堵住会把评审链拖长数十分钟。
-            let is_selfcheck = content.contains(crate::cluster_task::SELFCHECK_PROMPT_MARKER);
+            // 触点体系 P3：试玩+红队取证（board_playtest）同款理由同通道
+            // （原型里程碑单评审挂起等待机器行为闸结论）。
+            let is_selfcheck = content.contains(crate::cluster_task::SELFCHECK_PROMPT_MARKER)
+                || content.contains(crate::cluster_task::PLAYTEST_PROMPT_MARKER);
             let cluster_task = ClusterTask {
                 task_id: task_id.clone(),
                 source: TaskSource {

@@ -27,7 +27,7 @@ fn fixture(store: &BoardStore, name: &str) -> (i64, Issue, PathBuf) {
     let root = temp_root(name);
     crate::archive::ensure_scaffold(&root, 0, name, "active").expect("scaffold");
     let project = store
-        .create_project(name, "", None, "", "", Some(root.to_str().unwrap()))
+        .create_project(name, "", None, "", "", Some(root.to_str().unwrap()), None)
         .unwrap();
     let issue = store
         .create_issue(NewIssue {
@@ -130,7 +130,7 @@ fn sync_manifest_early_returns_are_silent() {
 
     // 无目录项目。
     let no_dir = store
-        .create_project("无目录", "", None, "", "", None)
+        .create_project("无目录", "", None, "", "", None, None)
         .unwrap();
     sync_project_manifest(&store, no_dir.id);
 
@@ -138,7 +138,15 @@ fn sync_manifest_early_returns_are_silent() {
     let empty = temp_root("sync-empty");
     std::fs::create_dir_all(&empty).unwrap();
     let with_empty = store
-        .create_project("空目录", "", None, "", "", Some(empty.to_str().unwrap()))
+        .create_project(
+            "空目录",
+            "",
+            None,
+            "",
+            "",
+            Some(empty.to_str().unwrap()),
+            None,
+        )
         .unwrap();
     sync_project_manifest(&store, with_empty.id);
 

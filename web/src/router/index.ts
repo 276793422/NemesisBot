@@ -64,6 +64,11 @@ const routes: RouteRecordRaw[] = [
   // 交付审核（P4 人审闭环，2026-10-25）：交付账本查询/裁决/发布留痕。
   // 发布命令（delivery.publish，flow 模板声明驱动）挂在 board 模块——与看板同 feature 门控。
   ...(import.meta.env.VITE_FEATURE_BOARD !== 'false' ? [{ path: '/deliveries', name: 'deliveries', component: () => import('../views/DeliveriesView.vue') }] : []),
+  // 统一工作台（人工触点体系 P2，2026-11-07）：/workbench/touchpoint-{kind}/{id}
+  // （kind=spec|prototype——前缀形态与后端 kind_of strip_prefix 对齐）。
+  // 触点详情/裁决重页（规格全文/原型报告 markdown + 决定史 + 粘性操作条）。
+  // board feature 门控（workbench.get/respond 挂 board 模块）。
+  ...(import.meta.env.VITE_FEATURE_BOARD !== 'false' ? [{ path: '/workbench/:kind/:id', name: 'workbench', component: () => import('../views/WorkbenchView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_CLUSTER !== 'false' ? [{ path: '/cluster', name: 'cluster', component: () => import('../views/ClusterView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') }] : []),
   // L7c (2026-10-13)：凭据 Vault 管理页（后端 vault handler 挂 security

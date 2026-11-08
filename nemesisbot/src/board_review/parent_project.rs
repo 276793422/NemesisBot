@@ -1324,6 +1324,9 @@ pub(super) fn apply_project_review_outcome(
                 // 任务档案自动导出（goal）：同源触发，内部自守门
                 //（auto_on_complete 旗标默认开；失败父单评论留痕不阻塞收口）。
                 crate::board_review::spawn_project_dossier(deps.clone(), project.id);
+                // 项目汇报包（计划 §8）：同源触发，纯聚合渲染不受
+                // estop/tier 闸；失败父单评论留痕不阻塞收口。
+                crate::board_review::spawn_project_report(deps.clone(), project.id);
             }
         }
         verdict @ (nemesis_board::ReviewVerdict::Fail | nemesis_board::ReviewVerdict::Unsure) => {
@@ -1839,6 +1842,91 @@ pub(crate) fn spawn_project_dossier(deps: BoardReviewDeps, project_id: i64) {
             );
         }
     });
+}
+
+/// 项目汇报包（计划 §8）：项目收口后机器自动产出六节 markdown 报告
+///（做了什么/替决假设清单/红队迷路/行为闸/预算/复核清单）。纯 store
+/// +账本聚合（LLM 零参与，不受 estop/tier 闸——汇报是事实面不是 agent
+/// 活动）。落点：顶层父单系统评论（8KB 截断）+ inbox `report_ready`
+/// 通知；dossier 归档 `report.md` 由导出核心自嵌。失败父单评论留痕
+///（dossier_fail_note 同款），不阻塞收口。
+pub(crate) fn spawn_project_report(deps: BoardReviewDeps, project_id: i64) {
+    let store = deps.store.clone();
+    let cluster = deps.cluster.clone();
+    spawn_watched(store, cluster, None, "项目汇报包", async move {
+        if let Err(e) = run_project_report(&deps, project_id) {
+            warn!("[BoardReview] 项目 {project_id} 汇报包生成失败（不阻塞收口）: {e}");
+            dossier_fail_note(&deps, project_id, &e);
+        } else {
+            info!("[BoardReview] 项目 {project_id} 汇报包已生成（父单评论 + inbox 通知）");
+        }
+    });
+}
+
+/// 汇报包主体：usage 聚合（与 dossier 同口径——全部派发，不筛
+/// completed；账本缺席 = 零行，渲染层诚实缺席）→ 纯渲染 → 落点。
+fn run_project_report(deps: &BoardReviewDeps, project_id: i64) -> Result<(), String> {
+    let store = deps.store.as_ref();
+    let issues = store.list_issues(&nemesis_board::models::IssueFilter {
+        project_id: Some(project_id),
+        ..Default::default()
+    })?;
+    let ds = deps
+        .moderator_loop
+        .read()
+        .clone()
+        .and_then(|l| l.data_store());
+    let mut usage_rows: Vec<(String, String, i64, i64)> = Vec::new();
+    for i in &issues {
+        // 与 dossier usage.csv 同口径：只列账本有账的派发（缺账 = 缺行
+        // 诚实，不造零行假象）；全部派发不筛 completed（与 dossier 一致）。
+        for d in store.list_dispatches(i.id)?.into_iter() {
+            if d.task_id.trim().is_empty() {
+                continue;
+            }
+            let Some(agg) = ds
+                .as_ref()
+                .and_then(|ds| ds.aggregate_session_usage_by_task(&d.task_id).ok())
+            else {
+                continue;
+            };
+            usage_rows.push((
+                d.task_id.clone(),
+                d.worker_id.clone(),
+                agg.input_tokens,
+                agg.output_tokens,
+            ));
+        }
+    }
+    let report = nemesis_board::render_project_report(store, project_id, &usage_rows)?;
+    let project = store.get_project(project_id)?;
+    // 顶层父单系统评论（8KB 截断——聊天面装得下；全文走 dossier 归档
+    // 与工作台）。与 dossier_fail_note 同款：逐父单落，失败不炸链。
+    let comment = nemesis_utils::string_utils::truncate(&report, 8 * 1024);
+    let top_parents: Vec<i64> = issues
+        .iter()
+        .filter(|i| i.parent_issue_id.is_none())
+        .map(|i| i.id)
+        .collect();
+    for pid in &top_parents {
+        let _ = store.add_comment(NewComment {
+            issue_id: *pid,
+            author: Actor::agent(deps.cluster.node_id()),
+            content: comment.clone(),
+            parent_id: None,
+            ctype: CommentType::System,
+        });
+    }
+    if let Err(e) = store.notify(nemesis_board::models::NewNotification {
+        recipient: Actor::admin("dashboard"),
+        kind: nemesis_board::models::notification_kind::REPORT_READY.to_string(),
+        title: format!("项目汇报包：{}", project.name),
+        content: "📋 收口汇报包已生成（做了什么/替决假设/迷路报告/行为闸/预算/复核清单）。全文见父单评论与 dossier 归档 report.md。".to_string(),
+        issue_id: top_parents.first().copied(),
+    }) {
+        warn!("[BoardReview] 项目 {project_id} 汇报包 inbox 通知失败（评论已落）: {e}");
+    }
+    Ok(())
 }
 
 /// dossier 导出主体：DataStore 从 moderator_loop 后置解（未装配 = 无账，

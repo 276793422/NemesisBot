@@ -53,6 +53,7 @@ fn test_input_defaults() {
     assert_eq!(ni.creator.kind, "admin");
     assert!(ni.title.is_empty());
     assert!(ni.assignee.is_none());
+    assert!(!ni.milestone);
 
     let filter = IssueFilter::default();
     assert!(filter.status.is_none());
@@ -93,6 +94,9 @@ fn test_issue_serde_roundtrip() {
         required_capabilities: vec!["chrome".into()],
         requires_evidence: true,
         hidden: false,
+        quality: "experience".into(),
+        unattended: Some(false),
+        milestone: true,
         created_at: 1_756_000_000,
         updated_at: 1_756_500_000,
     };
@@ -101,6 +105,7 @@ fn test_issue_serde_roundtrip() {
     assert_eq!(back.number, "NB-7");
     assert_eq!(back.status, IssueStatus::InProgress);
     assert_eq!(back.origin.as_ref().unwrap().origin_type, "autopilot");
+    assert!(back.milestone);
 }
 
 // ---------------------------------------------------------------------------

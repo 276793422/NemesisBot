@@ -125,6 +125,8 @@ pub(crate) async fn init_post_agent(
     let board_estop_parked = cluster.board_estop_parked.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_selfcheck_registry = cluster.board_selfcheck_registry.clone();
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let board_playtest_registry = cluster.board_playtest_registry.clone();
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     // 注记：None 前向声明随 迁入本函数——赋值在下方 ClusterService
     // Adapter 构建（四元组消费点）。
@@ -174,6 +176,7 @@ pub(crate) async fn init_post_agent(
                 estop: shared_resources.estop.clone(),
                 estop_parked: board_estop_parked.clone(),
                 selfcheck: board_selfcheck_registry.clone(),
+                playtest: board_playtest_registry.clone(),
                 // d：评审结论→交付账本闭环的审计插件槽。
                 #[cfg(feature = "security")]
                 security_slot: Some(ctx.outbound_dlp_slot.clone()),
@@ -262,6 +265,7 @@ pub(crate) async fn init_post_agent(
                 estop: shared_resources.estop.clone(),
                 estop_parked: board_estop_parked.clone(),
                 selfcheck: board_selfcheck_registry.clone(),
+                playtest: board_playtest_registry.clone(),
                 // d：同上——项目收口钩子的审计插件槽。
                 #[cfg(feature = "security")]
                 security_slot: Some(ctx.outbound_dlp_slot.clone()),
@@ -320,6 +324,9 @@ pub(crate) async fn init_post_agent(
                     // 任务档案自动导出（goal）：人工收口路径同源
                     // 触发（自动 PASS 路径在 apply_project_review_outcome）。
                     crate::board_review::spawn_project_dossier((*sum_deps).clone(), project_id);
+                    // 项目汇报包（计划 §8）：人工收口路径同源触发
+                    //（自动 PASS 路径在 apply_project_review_outcome）。
+                    crate::board_review::spawn_project_report((*sum_deps).clone(), project_id);
                 }),
             ) {
                 warn!("[Gateway] Board project summary hook register failed: {e}");
@@ -597,6 +604,7 @@ pub(crate) async fn init_post_agent(
                 shared_resources.estop.clone(),
                 board_estop_parked.clone(),
                 board_selfcheck_registry.clone(),
+                board_playtest_registry.clone(),
                 local_dispatch_task_db,
                 #[cfg(feature = "security")]
                 Some(ctx.outbound_dlp_slot.clone()),

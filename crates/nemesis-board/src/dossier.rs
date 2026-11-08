@@ -7,6 +7,8 @@
 //! ```text
 //! <out>/<NB-N|项目名>_<ts>/
 //! ├── README.md            总览：任务树、状态、档案清单、缺口注记
+//! ├── report.md            项目汇报包（树内单据同属一个项目时自嵌；
+//! │                        混合树诚实缺席）
 //! ├── timeline.md          人读时间线（board.db 活动/评论 + 项目档案
 //! │                        timeline.jsonl 合并，按时间排序）
 //! ├── audit/               原始记录（jsonl，机器可读全量）
@@ -283,13 +285,31 @@ fn export_core(
     }
     std::fs::write(root.join("usage.csv"), csv).map_err(|e| format!("写 usage.csv 失败: {e}"))?;
 
+    // ---- report.md（项目汇报包自嵌，计划 §8；仅树内全部单据同属一个
+    // 项目才渲染——混合树无项目身份，诚实缺席）。渲染/写盘失败只注记
+    // 不炸导出——汇报包是增值面，档案主体（时间线/审计/记录）照常。
+    let project_id = issues
+        .first()
+        .and_then(|i| i.project_id)
+        .filter(|pid| issues.iter().all(|i| i.project_id == Some(*pid)));
+    let mut report_written = false;
+    if let Some(pid) = project_id {
+        match crate::wrapup::render_project_report(store, pid, &usage_rows) {
+            Ok(report) => match std::fs::write(root.join("report.md"), &report) {
+                Ok(()) => report_written = true,
+                Err(e) => notes.push(format!("汇报包 report.md 写盘失败：{e}")),
+            },
+            Err(e) => notes.push(format!("汇报包渲染失败：{e}")),
+        }
+    }
+
     // ---- timeline.md ----
     let timeline_md = render_timeline(store, &by_id, &issues, archive_root.as_deref())?;
     std::fs::write(root.join("timeline.md"), timeline_md)
         .map_err(|e| format!("写 timeline.md 失败: {e}"))?;
 
     // ---- README.md ----
-    let readme = render_readme(store, &issues, title, &notes, &usage_rows);
+    let readme = render_readme(store, &issues, title, &notes, &usage_rows, report_written);
     std::fs::write(root.join("README.md"), readme)
         .map_err(|e| format!("写 README.md 失败: {e}"))?;
 
@@ -512,6 +532,7 @@ fn render_readme(
     title: &str,
     notes: &[String],
     usage_rows: &[(String, String, i64, i64)],
+    report_written: bool,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -586,6 +607,12 @@ fn render_readme(
         "- `inbox-unplaced/` — 收件箱里尚未安置的执行档案（诚实可见）"
     );
     let _ = writeln!(out, "- `usage.csv` — per-task token 用量");
+    if report_written {
+        let _ = writeln!(
+            out,
+            "- `report.md` — 项目汇报包（做了什么/替决假设/迷路报告/行为闸/预算/复核清单）"
+        );
+    }
     out
 }
 

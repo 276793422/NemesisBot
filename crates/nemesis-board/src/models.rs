@@ -177,6 +177,21 @@ pub struct SelfcheckPendingRow {
     pub created_at: i64,
 }
 
+/// 试玩取证路由行（表 `playtest_pending`，P3b 机器行为闸）——与
+/// [`SelfcheckPendingRow`] 同形态：派发不写 issue_dispatch，路由键持久化
+/// + 回调状态机（NULL = 回调未到；Some = 已烧入待定案臂消费，完成删行）。
+pub struct PlaytestPendingRow {
+    pub task_id: String,
+    pub issue_id: i64,
+    /// 派发目标节点 id（worker；恢复轮询目标）。
+    pub worker_id: String,
+    /// 回调状态（"ok"/"error"；NULL = 回调未到）。
+    pub status: Option<String>,
+    /// 回调试玩报告正文（与 status 同批烧入）。
+    pub response: Option<String>,
+    pub created_at: i64,
+}
+
 // ---------------------------------------------------------------------------
 // 实体
 // ---------------------------------------------------------------------------
@@ -239,6 +254,22 @@ pub struct Issue {
     /// 即使「显示已取消」开关打开。board.db 仍保留行（审计链完整）。
     #[serde(default)]
     pub hidden: bool,
+    /// 质量档（v25 列；看板人工触点体系）：'' = 标准（默认，无触点）/
+    /// `experience` = 体验型（规格确认 + 原型里程碑两触点）。空串/未知值
+    /// 均按标准档处理（读取宽容，写入收口在 WSAPI issue.create）。
+    #[serde(default)]
+    pub quality: String,
+    /// 任务级无人值守覆盖（v25 列）：None = 继承项目/配置默认；
+    /// Some(true/false) = 显式覆盖。沿 conflict_frozen 的 Option 形态——
+    /// None 是「未表态」，不是 false。
+    #[serde(default)]
+    pub unattended: Option<bool>,
+    /// 原型里程碑单标记（v26 列；触点体系 P3）：planner 拆解体验型
+    /// 任务时把首个可运行构建的子单标为里程碑单——其评审链先过机器
+    /// 行为闸再挂原型触点卡。父单非 experience 档时该标记无消费方
+    /// （confirm_plan 落库前归一清零）。
+    #[serde(default)]
+    pub milestone: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -408,6 +439,13 @@ pub struct Project {
     /// 刻意不含。
     #[serde(default)]
     pub pending_merges: Vec<PendingMerge>,
+    /// 项目级无人值守默认（v25 列；看板人工触点体系）：None = 按 config
+    /// `board.attendance.mode` 全局默认；Some(true) = 本项目一路走到底
+    /// （触点只记档不等待）；Some(false) = 本项目强制人工检查点。就地翻转
+    /// （规格确认卡「别再问我」）走系统管理 setter（`set_project_unattended`），
+    /// ProjectPatch 刻意不含（无人值守是任务声明，不是随手 patch 面）。
+    #[serde(default)]
+    pub unattended: Option<bool>,
     pub created_at: i64,
 }
 
@@ -424,6 +462,153 @@ pub struct PendingMerge {
     pub reason: String,
     /// 登记时刻（epoch ms）。
     pub parked_at_ms: i64,
+}
+
+// ---------------------------------------------------------------------------
+// 人工触点（看板人工触点体系，v25；表 `board_touchpoints`）
+// ---------------------------------------------------------------------------
+
+/// 触点种类（`board_touchpoints.kind`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpointKind {
+    /// 规格点火：规划入口的规格蒸馏产物确认（确认前不拆解）。
+    Spec,
+    /// 原型里程碑：首个可运行构建，过机器行为闸后人工方向校验。
+    Prototype,
+}
+
+impl TouchpointKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TouchpointKind::Spec => "spec",
+            TouchpointKind::Prototype => "prototype",
+        }
+    }
+    /// 数据库字符串 → 枚举（命名避开 `FromStr::from_str` 歧义，clippy 纪律）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "spec" => Some(TouchpointKind::Spec),
+            "prototype" => Some(TouchpointKind::Prototype),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for TouchpointKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// 触点状态（`board_touchpoints.status`；触点自己的状态机，见
+/// [`crate::touchpoint`]——不污染 issue 通用状态机，对齐审计回滚先例）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpointStatus {
+    /// 等人（deadline 前的唯一活态）。
+    Pending,
+    /// 人工确认。
+    Confirmed,
+    /// 超时按机器默认动作收口（沉默 = 显式审计事件）。
+    TimeoutDefaulted,
+    /// 局部否决（返工）——返工完成后机器闸复验，复验通过回 pending
+    /// （勾「改完再看」）或直接继续。
+    VetoedLocal,
+    /// 改规格否决——按依赖图裁剪未开工受影响子单后重拆重派。
+    VetoedSpec,
+    /// 人工取消（整单取消）。
+    Cancelled,
+    /// 震荡熔断停车（同一范围连续 veto_max_rounds 次否决且无机械进展
+    /// → 整单停车标「需同步沟通」）。
+    ParkedSync,
+}
+
+impl TouchpointStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TouchpointStatus::Pending => "pending",
+            TouchpointStatus::Confirmed => "confirmed",
+            TouchpointStatus::TimeoutDefaulted => "timeout_defaulted",
+            TouchpointStatus::VetoedLocal => "vetoed_local",
+            TouchpointStatus::VetoedSpec => "vetoed_spec",
+            TouchpointStatus::Cancelled => "cancelled",
+            TouchpointStatus::ParkedSync => "parked_sync",
+        }
+    }
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pending" => Some(TouchpointStatus::Pending),
+            "confirmed" => Some(TouchpointStatus::Confirmed),
+            "timeout_defaulted" => Some(TouchpointStatus::TimeoutDefaulted),
+            "vetoed_local" => Some(TouchpointStatus::VetoedLocal),
+            "vetoed_spec" => Some(TouchpointStatus::VetoedSpec),
+            "cancelled" => Some(TouchpointStatus::Cancelled),
+            "parked_sync" => Some(TouchpointStatus::ParkedSync),
+            _ => None,
+        }
+    }
+    /// 终态（no self-transition；恢复只经显式回滚路径，不在状态机内；
+    /// timeout_defaulted 的迟到输入走评论进变更管理，不重开触点）。
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            TouchpointStatus::Confirmed
+                | TouchpointStatus::TimeoutDefaulted
+                | TouchpointStatus::Cancelled
+                | TouchpointStatus::ParkedSync
+        )
+    }
+}
+
+impl std::fmt::Display for TouchpointStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// 触点行（表 `board_touchpoints`）。触点单本体 = 普通 issue（本表只存
+/// 触点语义字段，不重复单据已有的状态机/评论/任务树）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Touchpoint {
+    pub id: i64,
+    /// 承载触点单的 issue id（触点卡/决定史评论全在这张单上）。
+    pub issue_id: i64,
+    /// 归属项目（冗余自 issue.project_id，超时 sweep 按项目过滤用）。
+    pub project_id: Option<i64>,
+    pub kind: TouchpointKind,
+    pub status: TouchpointStatus,
+    /// 绝对 deadline（epoch ms）：estop/停机不白等（release 后按真实墙钟
+    /// 判定，已过线立即按默认动作收口）。
+    pub deadline_ms: i64,
+    /// 触点载荷 JSON（spec=规格正文/假设清单/体验验收条款/版本号；
+    /// prototype=红队报告/playtest 摘要/资产清单）。结构由挂卡方定义，
+    /// board 只存取不解释。
+    #[serde(default)]
+    pub payload: String,
+    /// 人工输入 JSON（确认=空/修订=结构化 delta/否决=范围+原因+改完再看）。
+    #[serde(default)]
+    pub human_input: String,
+    /// 同范围否决轮数（veto_max_rounds 熔断计数器）。
+    #[serde(default)]
+    pub veto_rounds: i64,
+    /// 审计事件数组 JSON（沉默/迟到输入都是显式事件）。
+    #[serde(default)]
+    pub audit: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// 建触点的输入（[`crate::store:BoardStore::create_touchpoint`]）。
+#[derive(Debug, Clone)]
+pub struct NewTouchpoint {
+    pub issue_id: i64,
+    pub project_id: Option<i64>,
+    pub kind: TouchpointKind,
+    /// 绝对 deadline（epoch ms）；调用方按 config 超时换算。
+    pub deadline_ms: i64,
+    /// 初始载荷 JSON（空 = 超时后由默认动作兜底）。
+    pub payload: String,
 }
 
 /// 附件元数据（表 `attachment`； 只记录元数据，文件上传）。
@@ -456,6 +641,15 @@ pub mod notification_kind {
     /// 重规划建议被策略闸拒绝（autonomous 模式下建议动作
     /// 超约束被拒 → 冻结 + 审计评论 + 本通知显形——宁可停不可闯）。
     pub const REPLAN_BLOCKED: &str = "replan_blocked";
+    /// 人工触点挂卡（规格/原型等待确认；收件人 = admin，挂卡即回执——
+    /// 系统评论不触发评论通知，触点三拍显式 notify）。
+    pub const TOUCHPOINT_PENDING: &str = "touchpoint_pending";
+    /// 触点等待提醒（T+10min 一拍；audit `remind` 幂等去重）。
+    pub const TOUCHPOINT_REMIND: &str = "touchpoint_remind";
+    /// 触点超时通报（按默认继续 / 转同步沟通，已落系统评论）。
+    pub const TOUCHPOINT_TIMEOUT: &str = "touchpoint_timeout";
+    /// 项目汇报包就绪（收口自动产出；收件人 = admin，正文含报告摘要）。
+    pub const REPORT_READY: &str = "report_ready";
 }
 
 /// 站内通知（表 `notification`；收件人是多态 Actor）。
@@ -515,6 +709,13 @@ pub struct NewIssue {
     /// 派发需求运行时后端：`process`|`vm`，精确匹配 + fail-closed
     /// （不参与松弛）；None/空 = 无需求不过闸。
     pub required_backend: Option<String>,
+    /// 质量档（'' = 标准 / `experience` = 体验型；触点体系挂卡依据）。
+    pub quality: String,
+    /// 任务级无人值守覆盖（None = 继承项目/配置默认）。
+    pub unattended: Option<bool>,
+    /// 原型里程碑单标记（planner 拆解产出；confirm_plan 按父单质量档
+    /// 归一落库——父单非 experience 档时清零）。
+    pub milestone: bool,
 }
 
 impl Default for NewIssue {
@@ -536,6 +737,9 @@ impl Default for NewIssue {
             required_profession: None,
             required_capabilities: Vec::new(),
             required_backend: None,
+            quality: String::new(),
+            unattended: None,
+            milestone: false,
         }
     }
 }

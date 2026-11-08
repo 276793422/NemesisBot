@@ -159,6 +159,7 @@ impl ModuleHandler for BoardHandler {
             "config.set",
             "dossier.export",
             "delivery.publish",
+            "touchpoint.list",
         ]
     }
 
@@ -173,6 +174,10 @@ impl ModuleHandler for BoardHandler {
         require_workspace(ctx)?;
         let store = require_board(ctx)?;
         let actor = ctx_actor(ctx);
+        // P2：触点恢复钩子装配（install-once；首个 board 命令即装，之后
+        // 零开销 OnceLock 早退）——确认/超时默认后 spec→规划链续跑的桥。
+        #[cfg(feature = "cluster")]
+        touchpoints::ensure_touchpoint_resume_hook_installed(ctx.state.clone());
         match cmd {
             // issue ---
             "issue.list" => {
@@ -217,6 +222,17 @@ impl ModuleHandler for BoardHandler {
                 for (issue_id, dep_id) in store.all_dependency_edges()? {
                     deps_by_issue.entry(issue_id).or_default().push(dep_id);
                 }
+                // 人工触点徽标批量投影（P1）：活卡一次查询，per-issue 只做
+                // map 命中（同依赖徽标模式，不 N+1）。同一单多个活卡取最早
+                // deadline 的（list 按 deadline 升序 + 首见覆盖）——「评审中」
+                // 列置顶排序 + 触点卡渲染的数据源。
+                let mut pending_tp_by_issue: std::collections::HashMap<
+                    i64,
+                    nemesis_board::models::Touchpoint,
+                > = std::collections::HashMap::new();
+                for tp in store.list_pending_touchpoints()? {
+                    pending_tp_by_issue.entry(tp.issue_id).or_insert(tp);
+                }
                 // 决策可见性投影：停车档案一次性扫 + PLAN_CACHE
                 // 一次快照，per-issue 只做 map 命中与一条 last_system_comment
                 // 查询（仅 in_progress 单，indexed）。
@@ -253,6 +269,20 @@ impl ModuleHandler for BoardHandler {
                         // 强信号：停车等裁决（✋ 待你决策徽标数据源）。
                         if let Some(nu) = needs_user_projection(&handoffs, issue) {
                             obj.insert("needs_user".to_string(), nu);
+                        }
+                        // 人工触点（P1）：活卡轻投影（badge/置顶/倒计时数据源；
+                        // 全量触点走 touchpoint.list / workbench.get）。None
+                        // 不插键（无卡单前端零感）。
+                        if let Some(tp) = pending_tp_by_issue.get(&issue.id) {
+                            obj.insert(
+                                "touchpoint".to_string(),
+                                serde_json::json!({
+                                    "id": tp.id,
+                                    "kind": tp.kind.as_str(),
+                                    "deadline_ms": tp.deadline_ms,
+                                    "veto_rounds": tp.veto_rounds,
+                                }),
+                            );
                         }
                         // 中信号：拆解完成等确认发车（📋 计划待确认徽标数据源）。
                         #[cfg(feature = "cluster")]
@@ -839,6 +869,18 @@ impl ModuleHandler for BoardHandler {
                     parent_id: data.get("parent_id").and_then(|v| v.as_i64()),
                     ctype: CommentType::Comment,
                 })?;
+                // （终判 👍/👎，计划 §8）：人类评论过终判闸——命中则按
+                // Done 子树完成派发入 worker 画像 + 系统回执。失败只
+                // warn：反馈是增值动作，不阻塞评论主链路。
+                if let Err(e) = nemesis_board::process_final_verdict_comment(
+                    store.as_ref(),
+                    issue_id,
+                    comment.id,
+                    &comment.author.kind,
+                    &content,
+                ) {
+                    tracing::warn!("[Board] 终判处理失败（issue {issue_id}）：{e}");
+                }
                 // （集群无人值守硬化）：审批回执回源——
                 // `/approve|/deny <短号>` 评论转发远程审批（短号在注册表才
                 // 动作；失败留痕为系统评论）。异步旁路，不阻塞本响应。
@@ -993,6 +1035,10 @@ impl ModuleHandler for BoardHandler {
                     ));
                 }
                 let requested_dir = get_opt_str(&data, "directory");
+                // 人工触点体系：可选无人值守开关（None=未表态，继承
+                // 全局 attendance.mode；Some(bool)=显式覆盖）。缺键即
+                // None——存量前端建项目行为不变。
+                let unattended = data.get("unattended").and_then(|v| v.as_bool());
                 let existing_dirs: Vec<std::path::PathBuf> = store
                     .list_projects()?
                     .into_iter()
@@ -1017,6 +1063,7 @@ impl ModuleHandler for BoardHandler {
                     &get_opt_str(&data, "icon").unwrap_or_default(),
                     acceptance_criteria.as_deref().unwrap_or(""),
                     Some(&dir_path.to_string_lossy()),
+                    unattended,
                 )?;
                 // manifest 回填真实 project_id（脚手架先建，id 后生成）。
                 nemesis_board::sync_project_manifest(&store, project.id);
@@ -1572,6 +1619,12 @@ impl ModuleHandler for BoardHandler {
                 let outcome = bridge.publish(&data).await?;
                 Ok(Some(outcome))
             }
+            // 人工触点（P1）：看板侧列表（触点卡徽标/过滤片数据源；
+            // 页面动作走 workbench.get/respond——列表归看板，页面归工作台）。
+            "touchpoint.list" => {
+                let data = data.unwrap_or(serde_json::json!({}));
+                Ok(Some(touchpoints::list_touchpoints(&store, &data)?))
+            }
             _ => Err(format!("unknown command: board.{}", cmd)),
         }
     }
@@ -2026,12 +2079,22 @@ mod tests;
 #[cfg(test)]
 mod l23_tests;
 
+// 人工触点漏斗测试（P1：respond 五动作 / sweep 三拍 / 取数面 /
+// workbench 路由壳 / 恢复钩子）。
+#[cfg(test)]
+mod touchpoint_tests;
+
 // 机械拆分：按域分文件。纯代码搬家，行为零变更；
 // 各子模块项经 pub use 保持原 handlers::board:路径不变。
 mod cascade;
 mod dispatch;
 mod plan;
 mod views;
+
+// 触点漏斗单独 pub：nemesisbot 侧（P2 resume hook 装配 + gateway sweep
+// ticker）与 workbench handler 直达此模块（不复经 board::* 再导出——
+// 漏斗面是跨 crate 契约，不是 board handler 的别名面）。
+pub mod touchpoints;
 
 pub use cascade::*;
 pub use dispatch::*;

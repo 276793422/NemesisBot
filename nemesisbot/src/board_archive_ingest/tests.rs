@@ -56,7 +56,15 @@ fn fixture(name: &str) -> Fixture {
         .unwrap();
 
     let project = store
-        .create_project("p", "d", None, "", "", Some(project_root.to_str().unwrap()))
+        .create_project(
+            "p",
+            "d",
+            None,
+            "",
+            "",
+            Some(project_root.to_str().unwrap()),
+            None,
+        )
         .unwrap();
     let issue = store
         .create_issue(NewIssue {
@@ -84,6 +92,7 @@ fn fixture(name: &str) -> Fixture {
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     };
@@ -840,7 +849,7 @@ fn sweep_ingest_landed_guards_and_missing_blocks() {
     // (c) 项目无档案目录（存量项目）→ 静默跳过。
     let project_c = f
         .store
-        .create_project("p-guard", "d", None, "", "", None)
+        .create_project("p-guard", "d", None, "", "", None, None)
         .unwrap();
     let issue_c = f
         .store
@@ -1041,7 +1050,7 @@ fn sweep_merge_park_arms() {
     let f = fixture("park-nodir");
     let project = f
         .store
-        .create_project("p-nodir", "d", None, "", "", None)
+        .create_project("p-nodir", "d", None, "", "", None, None)
         .unwrap();
     let issue = f
         .store
@@ -1084,6 +1093,7 @@ fn sweep_merge_park_arms() {
             "",
             "",
             Some(not_a_repo.to_str().unwrap()),
+            None,
         )
         .unwrap();
     let issue2 = f2
@@ -1234,7 +1244,7 @@ fn sweep_retry_merge_for_issue_guards() {
     // 项目无目录。
     let project_nd = f
         .store
-        .create_project("p-nd", "d", None, "", "", None)
+        .create_project("p-nd", "d", None, "", "", None, None)
         .unwrap();
     let issue_nd = f
         .store
@@ -1404,7 +1414,7 @@ fn sweep_replay_pending_guards() {
     // 冻结但项目无目录 → Err。
     let project = f
         .store
-        .create_project("p-nd2", "d", None, "", "", None)
+        .create_project("p-nd2", "d", None, "", "", None, None)
         .unwrap();
     f.store
         .set_project_conflict_frozen(project.id, true)
@@ -1970,7 +1980,7 @@ mod w5r2 {
         // issue 绑定无目录项目（存量项目）。
         let p_nd = f
             .store
-            .create_project("p-w5b-nd", "d", None, "", "", None)
+            .create_project("p-w5b-nd", "d", None, "", "", None, None)
             .unwrap();
         let i_nd = f
             .store

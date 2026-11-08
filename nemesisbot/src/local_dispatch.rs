@@ -50,6 +50,7 @@ pub(crate) struct GatewayLocalExecutor {
     /// estop 冻结停车的 (种类, issue_id) 队列（与评审闭包共享同一份）。
     estop_parked: Arc<std::sync::Mutex<Vec<(crate::board_review::ParkedKind, i64)>>>,
     selfcheck: crate::board_review::SelfcheckRegistry,
+    playtest: crate::board_review::PlaytestRegistry,
     /// 交付账本连接（根修）：completed 收口捕获落账
     /// `{task_id}:branch`（publish 查账键）。打不开 = 捕获缺席可观测，
     /// 不炸装配。
@@ -81,6 +82,7 @@ impl GatewayLocalExecutor {
         estop: Arc<nemesis_agent::estop::EstopState>,
         estop_parked: Arc<std::sync::Mutex<Vec<(crate::board_review::ParkedKind, i64)>>>,
         selfcheck: crate::board_review::SelfcheckRegistry,
+        playtest: crate::board_review::PlaytestRegistry,
         task_db: Option<Arc<nemesis_taskstore::TaskDb>>,
         #[cfg(feature = "security")] security_slot: Option<
             Arc<std::sync::OnceLock<Option<Arc<nemesis_security::pipeline::SecurityPlugin>>>>,
@@ -97,6 +99,7 @@ impl GatewayLocalExecutor {
             estop,
             estop_parked,
             selfcheck,
+            playtest,
             task_db,
             #[cfg(feature = "security")]
             security_slot,
@@ -207,6 +210,7 @@ impl GatewayLocalExecutor {
                     estop: self.estop.clone(),
                     estop_parked: self.estop_parked.clone(),
                     selfcheck: self.selfcheck.clone(),
+                    playtest: self.playtest.clone(),
                     #[cfg(feature = "security")]
                     security_slot: self.security_slot.clone(),
                 },

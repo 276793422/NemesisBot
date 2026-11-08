@@ -175,6 +175,9 @@ fn user_prompt_carries_intent_and_three_stages() {
         required_capabilities: vec![],
         requires_evidence: false,
         hidden: false,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
         created_at: 0,
         updated_at: 0,
     };
@@ -241,6 +244,7 @@ pub(crate) fn resolver_deps(name: &str) -> crate::board_review::BoardReviewDeps 
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: crate::board_review::SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     }
@@ -248,7 +252,9 @@ pub(crate) fn resolver_deps(name: &str) -> crate::board_review::BoardReviewDeps 
 
 /// 建一个绑定项目的 issue（fallback_freeze 冻结要有 project_id 才有落点）。
 fn issue_with_project(store: &nemesis_board::BoardStore, title: &str) -> nemesis_board::Issue {
-    let project = store.create_project("p", "d", None, "", "", None).unwrap();
+    let project = store
+        .create_project("p", "d", None, "", "", None, None)
+        .unwrap();
     store
         .create_issue(NewIssue {
             title: title.to_string(),
@@ -734,6 +740,9 @@ fn user_prompt_absent_side_truncation_and_criteria() {
         required_capabilities: vec![],
         requires_evidence: false,
         hidden: false,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
         created_at: 0,
         updated_at: 0,
     };
@@ -876,7 +885,15 @@ pub(crate) fn issue_on_git_project(
 
     let project = deps
         .store
-        .create_project("硬解项目", "d", None, "", "", Some(root.to_str().unwrap()))
+        .create_project(
+            "硬解项目",
+            "d",
+            None,
+            "",
+            "",
+            Some(root.to_str().unwrap()),
+            None,
+        )
         .unwrap();
     let issue = deps
         .store
@@ -1047,7 +1064,7 @@ async fn run_resolver_project_root_missing_freezes_honestly() {
     // 项目无档案目录 → 硬解产出无处落盘 → 诚实冻结（不伪造成功）。
     let project = deps
         .store
-        .create_project("无档案项目", "d", None, "", "", None)
+        .create_project("无档案项目", "d", None, "", "", None, None)
         .unwrap();
     let issue = deps
         .store
@@ -1106,6 +1123,7 @@ async fn run_resolver_commit_failure_redispatch_gate_freezes() {
             "",
             "",
             Some(root.to_str().unwrap()),
+            None,
         )
         .unwrap();
     let issue = deps

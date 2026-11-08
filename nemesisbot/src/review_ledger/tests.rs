@@ -44,6 +44,7 @@ fn deps_with_issue(dir_name: &str) -> (BoardReviewDeps, nemesis_board::Issue) {
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     };
