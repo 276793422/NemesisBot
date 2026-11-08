@@ -134,7 +134,7 @@ fn execute_with_empty_slot_fails_honestly() {
     let tool = BoardIssueTool::new(
         store,
         None,
-        Arc::new(std::sync::OnceLock::new()), // 永不填充
+        Arc::new(parking_lot::RwLock::new(None)), // 永不填充
         dir.clone(),
         None,
     );

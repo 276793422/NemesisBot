@@ -105,6 +105,7 @@ async fn init_services_full_phase_with_device_and_board_sync_arms() {
             auto_plan: false,
             acceptance_criteria: None,
             session_key: None,
+            mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
         })
         .expect("种 autopilot 规则");
 
@@ -415,6 +416,7 @@ mod wave6 {
                 auto_plan: false,
                 acceptance_criteria: None,
                 session_key: None,
+                mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
             })
             .expect("种规则");
         let cron = ctx.cron_service.clone();

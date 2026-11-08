@@ -252,6 +252,78 @@ fn l6_correct_condition_refs_stay_silent() {
     assert!(lint(&w).is_empty(), "{:?}", lint(&w));
 }
 
+/// 回归（缺陷 15 同类清账）：condition / loop 节点自身的 condition
+/// 表达式引用 condition 节点幻觉字段，与条件边同等草稿期预警（此前
+/// lint_edge_conditions 只扫 edges，节点表达式零预警）。
+#[test]
+fn l6_condition_and_loop_node_expressions_hallucinated_field_warns() {
+    let w = wf(
+        vec![
+            node("check", "condition", serde_json::json!({})),
+            node(
+                "gate",
+                "condition",
+                serde_json::json!({"condition": "!{{check.passed}}"}),
+            ),
+            node(
+                "n1",
+                "loop",
+                serde_json::json!({
+                    "max_iterations": 3,
+                    "condition": "{{check.passed}} != \"x\"",
+                    "nodes": []
+                }),
+            ),
+        ],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    let warnings = lint(&w);
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("节点 gate（condition）的 condition 表达式")
+            && warnings[0].contains("check.passed")
+            && warnings[0].contains("{{check.condition_result}}"),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[1].contains("节点 n1（loop）的 condition 表达式")
+            && warnings[1].contains("check.passed"),
+        "{warnings:?}"
+    );
+}
+
+/// 不误伤：condition / loop 表达式引用真实字段或变量保持静默。
+#[test]
+fn l6_node_expression_correct_refs_stay_silent() {
+    let w = wf(
+        vec![
+            node("check", "condition", serde_json::json!({})),
+            node(
+                "gate",
+                "condition",
+                serde_json::json!({"condition": "{{check.condition_result}}"}),
+            ),
+            node(
+                "n1",
+                "loop",
+                serde_json::json!({
+                    "max_iterations": 3,
+                    "condition": "{{attempts}} < 5",
+                    "nodes": []
+                }),
+            ),
+        ],
+        vec![TriggerConfig {
+            trigger_type: "cron".into(),
+            config: HashMap::new(),
+        }],
+    );
+    assert!(lint(&w).is_empty(), "{:?}", lint(&w));
+}
+
 #[test]
 fn no_warnings_for_clean_workflow() {
     let w = wf(

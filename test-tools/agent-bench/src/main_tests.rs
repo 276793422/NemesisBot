@@ -22,7 +22,8 @@ fn missing_models_empty_served_reports_all() {
     assert_eq!(missing.len(), REQUIRED_AI_MODELS.len());
 }
 
-/// 陈旧二进制形态（10-22 exe：有基础/codemode 模型，缺 L21 断流与 chain 对）
+/// 陈旧二进制形态（10-22 exe：有基础/codemode 模型，缺 L21 断流与 chain 对；
+/// aadf9a27 起又缺诚实性 liar/honest 与不可逆重复 norepeat/repeat 两对）
 /// → 精确差集，不多不少。
 #[test]
 fn missing_models_stale_server_reports_exact_missing() {
@@ -45,6 +46,10 @@ fn missing_models_stale_server_reports_exact_missing() {
             "testai-chain-code-1.0",
             "testai-break-1.0",
             "testai-heal-1.0",
+            "testai-liar-1.0",
+            "testai-honest-1.0",
+            "testai-norepeat-1.0",
+            "testai-repeat-1.0",
         ]
     );
 }

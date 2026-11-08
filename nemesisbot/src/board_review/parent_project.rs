@@ -355,7 +355,7 @@ pub(super) async fn review_parent_issue(
         }
         // 色审议需要评审 agent 在场；锚点短路 FAIL 是确定性判定，loop
         // 未就绪也成立（明细评论照常落库，人工兜底可）。
-        let Some(agent_loop) = deps.moderator_loop.get() else {
+        let Some(agent_loop) = deps.moderator_loop.read().clone() else {
             warn!("[BoardReview] 父单 {parent_id} 主 agent 未就绪，跳过收口验收（人工兜底）");
             return Ok(false);
         };
@@ -374,7 +374,7 @@ pub(super) async fn review_parent_issue(
             None
         };
         match run_review_panel(
-            agent_loop,
+            &agent_loop,
             &prompt,
             ReviewToolMode::NoTools,
             eff_review.checkers,
@@ -1111,7 +1111,7 @@ pub(super) async fn review_project_completion(
                 nemesis_board::render_anchor_summary(&anchor_results)
             ));
         }
-        let Some(agent_loop) = deps.moderator_loop.get() else {
+        let Some(agent_loop) = deps.moderator_loop.read().clone() else {
             warn!("[BoardReview] 项目 {project_id} 主 agent 未就绪，跳过收口验收（人工兜底）");
             return Ok(false);
         };
@@ -1126,7 +1126,7 @@ pub(super) async fn review_project_completion(
             None
         };
         match run_review_panel(
-            agent_loop,
+            &agent_loop,
             &prompt,
             ReviewToolMode::NoTools,
             cfg.review.checkers,
@@ -1871,7 +1871,11 @@ fn run_project_report(deps: &BoardReviewDeps, project_id: i64) -> Result<(), Str
         project_id: Some(project_id),
         ..Default::default()
     })?;
-    let ds = deps.moderator_loop.get().and_then(|l| l.data_store());
+    let ds = deps
+        .moderator_loop
+        .read()
+        .clone()
+        .and_then(|l| l.data_store());
     let mut usage_rows: Vec<(String, String, i64, i64)> = Vec::new();
     for i in &issues {
         // 与 dossier usage.csv 同口径：只列账本有账的派发（缺账 = 缺行
@@ -1931,7 +1935,11 @@ fn export_project_dossier(
     deps: &BoardReviewDeps,
     project_id: i64,
 ) -> Result<nemesis_board::dossier::DossierOutcome, String> {
-    let ds = deps.moderator_loop.get().and_then(|l| l.data_store());
+    let ds = deps
+        .moderator_loop
+        .read()
+        .clone()
+        .and_then(|l| l.data_store());
     let usage_of = move |task_id: &str| {
         let ds = ds.as_ref()?;
         ds.aggregate_session_usage_by_task(task_id).ok().map(|agg| {
@@ -2050,8 +2058,8 @@ pub(super) async fn run_project_summary(
     let root = project_archive_root(project.directory.as_deref())?;
     let agent_loop = deps
         .moderator_loop
-        .get()
-        .cloned()
+        .read()
+        .clone()
         .ok_or("主 agent 未就绪，收口总结跳过")?;
     // tier 闸拒 mini（同冲突硬解；提示切模型后……无自动重试入口——下次
     // 收口的项目会再试，本单诚实留痕）。

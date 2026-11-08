@@ -838,6 +838,15 @@ pub struct Autopilot {
     /// 零变化。DB 列 v22 迁移（空串归一 None）。
     #[serde(default)]
     pub session_key: Option<String>,
+    /// 触发模式（DB 列 v25 迁移，serde default live = 存量规则行为零变化）：
+    /// - [`AUTOPILOT_MODE_LIVE`]：全真执行（建单 + 派发/拆解）；
+    /// - [`AUTOPILOT_MODE_SHADOW`]：影子（record-only）——只建单 + 决策意图
+    ///   评论 + 本地留痕，不派发不拆解（新规则起步坡道；promote = 改回
+    ///   live）。
+    ///
+    /// 未知值 store 层 loud 拒绝（create/update 双闸），不用静默纠偏。
+    #[serde(default = "default_autopilot_mode")]
+    pub mode: String,
     pub enabled: bool,
     /// live CronService 对应 job 的 id（`board-ap:{id}` 名字约定）。
     /// CronService 不支持指定 job id（add_job_ext 返回随机 id），只能注册
@@ -868,6 +877,8 @@ pub struct NewAutopilot {
     pub acceptance_criteria: Option<String>,
     /// 三期：父会话绑定（同 [`Autopilot::session_key`]）。None = 不绑定。
     pub session_key: Option<String>,
+    /// 触发模式（同 [`Autopilot::mode`]；空串 store 归一为 live）。
+    pub mode: String,
 }
 
 /// 部分更新 autopilot 字段的 patch（None = 不改；cron_job_id/last_run_at
@@ -890,6 +901,31 @@ pub struct AutopilotPatch {
     /// 三期：`Some(v)` = 改父会话绑定（`Some("")` = 清空绑定；None =
     /// 不改）。
     pub session_key: Option<String>,
+    /// 触发模式：`Some(v)` = 改 mode（promote 路径 shadow→live 走这里；
+    /// None = 不改）。非法值 store 层 loud 拒绝。
+    pub mode: Option<String>,
+}
+
+/// 触发模式值集（单一真相源；store create/update 双闸校验）。
+pub const AUTOPILOT_MODE_LIVE: &str = "live";
+/// 影子模式值（record-only 起步坡道；见 [`Autopilot::mode`]）。
+pub const AUTOPILOT_MODE_SHADOW: &str = "shadow";
+
+/// mode serde default（存量规则零变化）。
+fn default_autopilot_mode() -> String {
+    AUTOPILOT_MODE_LIVE.to_string()
+}
+
+/// mode 值校验（create/update 双闸共用；空串 = live 归一，未知值拒绝）。
+pub fn validate_autopilot_mode(mode: &str) -> Result<String, String> {
+    match mode.trim() {
+        "" => Ok(AUTOPILOT_MODE_LIVE.to_string()),
+        m if m == AUTOPILOT_MODE_LIVE => Ok(AUTOPILOT_MODE_LIVE.to_string()),
+        m if m == AUTOPILOT_MODE_SHADOW => Ok(AUTOPILOT_MODE_SHADOW.to_string()),
+        other => Err(format!(
+            "autopilot mode 需要 \"{AUTOPILOT_MODE_LIVE}\"|\"{AUTOPILOT_MODE_SHADOW}\"，收到 \"{other}\""
+        )),
+    }
 }
 
 // ---------------------------------------------------------------------------

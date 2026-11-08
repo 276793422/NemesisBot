@@ -1743,10 +1743,29 @@ fn test_external_config_default() {
 
 #[test]
 fn test_maixcam_config_default() {
+    // 缺省收敛出厂真相源（BUG-20261108-010）：host/port 与出厂模板、
+    // 硬编码 default_config、通道侧类型缺省四处同值（8888:0.0.0.0）。
     let cfg = MaixCamConfig::default();
     assert!(!cfg.enabled);
-    assert!(cfg.host.is_empty());
-    assert_eq!(cfg.port, 0);
+    assert_eq!(cfg.host, "0.0.0.0");
+    assert_eq!(cfg.port, 8888);
+}
+
+#[test]
+fn test_maixcam_serde_default_matches_factory_paths() {
+    // serde 缺省路径必须与出厂真相源同值（BUG-20261108-010）：旧形态
+    // config 侧 serde 缺省 port=0/host=""，存量 config（channels 段在场面
+    // maixcam 键缺席）使能即 `TcpListener::bind("0.0.0.0:0")` 成功落 OS
+    // 临时端口——状态「运行中」而设备永远连不上（静默死通道）。
+    let cfg: ChannelsConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(cfg.maixcam.port, 8888, "maixcam 键缺席 = 出厂端口");
+    assert_eq!(cfg.maixcam.host, "0.0.0.0", "maixcam 键缺席 = 出厂监听址");
+    assert!(!cfg.maixcam.enabled);
+    // maixcam 键在场而 port/host 缺席（手写局部键形态）：
+    let partial: ChannelsConfig =
+        serde_json::from_str(r#"{"maixcam": {"enabled": true}}"#).unwrap();
+    assert_eq!(partial.maixcam.port, 8888);
+    assert_eq!(partial.maixcam.host, "0.0.0.0");
 }
 
 #[test]
@@ -3842,6 +3861,50 @@ fn test_profession_review_preset_family_fallback_and_exact_wins() {
             .checkers,
         1,
         "精确键压过 family"
+    );
+}
+
+#[test]
+fn test_profession_review_preset_config_key_case_insensitive() {
+    // config 键大小写不敏感（文档口径「键=职能 slug，大小写不敏感」）：
+    // 用户手写键 "Product"/"DEV" 也要命中——旧实现只在查询侧 lowercase，
+    // 键面 verbatim 精确匹配，键的大小写漂移 = 预设静默忽略（无 warn 无报错）。
+    let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": {
+            "professions": { "Product": { "checkers": 3 } }
+        }
+    }))
+    .unwrap();
+    let product = cfg.review.resolve_for_profession(Some("product"));
+    assert_eq!(
+        product.checkers, 3,
+        "config 键 Product 命中（大小写不敏感）"
+    );
+    assert_eq!(product.max_turns, 0, "未写维度沿用内置");
+    assert!(product.selfcheck, "未写维度沿用内置");
+
+    // family 键大写：dev 键写 "DEV"，dev:cpp 查询落 family 命中。
+    let cfg2: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": { "professions": { "DEV": { "checkers": 4 } } }
+    }))
+    .unwrap();
+    let cpp = cfg2.review.resolve_for_profession(Some("dev:cpp"));
+    assert_eq!(cpp.checkers, 4, "family 键 DEV 命中（大小写不敏感）");
+
+    // 精确键仍压过 family（键面大小写混排时优先级语义不变）。
+    let cfg3: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": {
+            "professions": {
+                "DEV": { "checkers": 4 },
+                "Dev:Cpp": { "checkers": 1 }
+            }
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        cfg3.review.resolve_for_profession(Some("dev:cpp")).checkers,
+        1,
+        "精确键压过 family（大小写不敏感匹配下语义不变）"
     );
 }
 

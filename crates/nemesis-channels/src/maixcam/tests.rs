@@ -5,9 +5,20 @@ fn w4c_test_bus() -> tokio::sync::broadcast::Sender<InboundMessage> {
     tokio::sync::broadcast::channel(16).0
 }
 
+/// 本机回环 + 临时端口（port 0 = bind 时内核分配，无 TOCTOU）——bind
+/// 传播后 start() 真实 bind，并行测试不得撞 8888 默认端口（撞真实部署
+/// + 互撞，测试隔离纪律）。
+fn w4c_ephemeral_config() -> MaixCamConfig {
+    MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port: 0,
+        allow_from: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn test_maixcam_channel_lifecycle() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     assert_eq!(ch.name(), "maixcam");
 
@@ -88,7 +99,7 @@ fn test_build_command() {
 
 #[tokio::test]
 async fn test_send_no_clients() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
 
@@ -104,7 +115,7 @@ async fn test_send_no_clients() {
 
 #[tokio::test]
 async fn test_send_with_clients() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     ch.connect_client();
@@ -359,7 +370,7 @@ async fn test_send_not_running() {
 
 #[tokio::test]
 async fn test_stop_clears_state() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     ch.connect_client();
@@ -433,13 +444,17 @@ fn test_process_message_with_coordinates() {
 
 #[tokio::test]
 async fn test_start_stop_multiple_cycles() {
-    let config = MaixCamConfig::default();
+    // port 0：每轮 start 各拿一个全新临时端口——bind 传播后同实例重启
+    // 不与上一轮（可能尚未完全退出）的监听 socket 竞争同端口
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     for _ in 0..3 {
         ch.start().await.unwrap();
         assert!(*ch.running.read());
         ch.stop().await.unwrap();
         assert!(!*ch.running.read());
+        // 等上一轮 accept 任务退出释放 socket 再重启（cancel 是异步生效）
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 
@@ -453,7 +468,7 @@ fn test_deserialize_status_with_data() {
 
 #[tokio::test]
 async fn test_send_queues_when_no_writers_but_has_count() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     // Manually set client count but don't add writers
@@ -640,7 +655,7 @@ fn test_deserialize_minimal_message() {
 
 #[tokio::test]
 async fn test_stop_clears_writers() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     assert!(*ch.running.read());
@@ -663,7 +678,7 @@ fn test_listen_addr_custom() {
 
 #[tokio::test]
 async fn test_send_no_clients_returns_error() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     // client_count = 0, client_writers empty -> should error
@@ -781,7 +796,7 @@ fn test_maixcam_command_serialize() {
 
 #[tokio::test]
 async fn test_start_stop_clears_writers_and_queue() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     ch.connect_client();
@@ -914,7 +929,7 @@ fn test_status_with_no_data() {
 
 #[tokio::test]
 async fn test_send_with_queued_messages_and_no_writers() {
-    let config = MaixCamConfig::default();
+    let config = w4c_ephemeral_config();
     let ch = MaixCamChannel::new(config, w4c_test_bus()).unwrap();
     ch.start().await.unwrap();
     // Set client count > 0 but no writers
@@ -1376,10 +1391,12 @@ fn s2_enable_tracing() {
         .try_init();
 }
 
-/// start() with a port already owned by another listener: the spawned accept
-/// task's bind fails and the error arm fires (task returns, no panic).
+/// BUG-C 回归锁（原 s2_maixcam_bind_failure_logs_error_and_returns，语义
+/// 随修复反转）：bind 失败必须从 start() 传播——旧形态 bind 在后台任务里
+/// error 后照常返回 Ok，入站能力归零而状态面显示运行中（wechat/wecom
+/// 同族已修，maixcam 漏网）。
 #[tokio::test]
-async fn s2_maixcam_bind_failure_logs_error_and_returns() {
+async fn test_bug_maixcam_bind_failure_propagates_from_start() {
     s2_enable_tracing();
     // Keep this std listener alive for the whole test so the port stays taken.
     let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -1392,11 +1409,14 @@ async fn s2_maixcam_bind_failure_logs_error_and_returns() {
         allow_from: vec![],
     };
     let ch = MaixCamChannel::new(config, bus).unwrap();
-    ch.start().await.unwrap();
 
-    // Let the spawned task attempt the (failing) bind.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    ch.stop().await.unwrap();
+    let err = ch.start().await.expect_err(
+        "bind failure must propagate from start(), not be swallowed by the background task",
+    );
+    assert!(
+        err.to_string().contains("bind"),
+        "error must mention bind, got: {err}"
+    );
     drop(listener);
 }
 
@@ -1544,8 +1564,10 @@ async fn test_bug300_write_payload_with_timeout_ok_on_writable() {
 
 /// 建一对「本地 socket、对端 accept 后故意不读」的连接：返回客户端侧写
 /// 半部（停摆设备形态的 writer），对端握住 socket 到测试运行时结束。
+/// 生产注册面已改 into_split 的 OwnedWriteHalf（split 借用型无法入
+/// 'static DashMap），测试同款构造。
 #[cfg(unix)]
-async fn stalled_writer_pair() -> tokio::io::WriteHalf<tokio::net::TcpStream> {
+async fn stalled_writer_pair() -> tokio::net::tcp::OwnedWriteHalf {
     // 显式收窄两侧缓冲（SO_RCVBUF 必须 bind 前设置才参与窗口缩放协商；
     // Linux 尊重收窄——4KB SNDBUF + 4KB 窗口 << 256MB 载荷 → 必然挂起）。
     let socket = tokio::net::TcpSocket::new_v4().unwrap();
@@ -1565,7 +1587,7 @@ async fn stalled_writer_pair() -> tokio::io::WriteHalf<tokio::net::TcpStream> {
         client.set_send_buffer_size(4096).unwrap();
         client.connect(addr).await.unwrap()
     };
-    let (_rd, wr) = tokio::io::split(stream);
+    let (_rd, wr) = stream.into_split();
     wr
 }
 
@@ -1601,8 +1623,10 @@ fn stalled_test_channel() -> MaixCamChannel {
 async fn test_bug300_targeted_write_times_out_on_stalled_device() {
     let ch = stalled_test_channel();
     ch.start().await.unwrap();
-    ch.client_writers
-        .insert("dev1".to_string(), stalled_writer_pair().await);
+    ch.client_writers.insert(
+        "dev1".to_string(),
+        std::sync::Arc::new(tokio::sync::Mutex::new(stalled_writer_pair().await)),
+    );
 
     let t0 = std::time::Instant::now();
     let result = ch
@@ -1627,8 +1651,10 @@ async fn test_bug300_targeted_write_times_out_on_stalled_device() {
 async fn test_bug300_broadcast_write_bounded_on_stalled_device() {
     let ch = stalled_test_channel();
     ch.start().await.unwrap();
-    ch.client_writers
-        .insert("dev1".to_string(), stalled_writer_pair().await);
+    ch.client_writers.insert(
+        "dev1".to_string(),
+        std::sync::Arc::new(tokio::sync::Mutex::new(stalled_writer_pair().await)),
+    );
 
     let t0 = std::time::Instant::now();
     let result = ch
@@ -1645,4 +1671,108 @@ async fn test_bug300_broadcast_write_bounded_on_stalled_device() {
         "broadcast must be bounded per device, took {elapsed:?}"
     );
     ch.stop().await.unwrap();
+}
+
+// ===========================================================================
+// BUG 回归锁：出站管线死代码（BUG-D）+ 计数下溢守卫（BUG-E）
+// ===========================================================================
+
+/// BUG-D 回归锁：设备连接后 write half 必须注册进 client_writers，
+/// 出站定向写必须真正到达设备。修复前 `let (reader, _) =
+/// stream.into_split()` 把 write half 直接丢弃——client_writers 生产路径
+/// 零 insert，出站定向/广播分支是死代码：send 走 count>0 的 queue 分支
+/// 假装成功，bot 回复永远到不了设备。
+#[tokio::test]
+async fn test_bug_maixcam_outbound_reaches_connected_device() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        allow_from: vec![],
+    };
+    let ch = MaixCamChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 设备连接 + 发一条检测事件（驱动 reader 任务注册 write half）
+    let mut dev = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    dev.write_all(b"{\"type\":\"person_detected\",\"data\":{\"score\":0.9}}\n")
+        .await
+        .unwrap();
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("timed out: device detection must publish to the bus")
+        .unwrap();
+    assert_eq!(inbound.channel, "maixcam");
+
+    // reader 任务是顺序执行：bus publish 之前 write half 已注册，
+    // 此断言此刻必然确定性成立（旧代码恒 false）
+    assert!(
+        ch.client_writers.contains_key("default"),
+        "write half must be registered under \"default\"（与 classify_message \
+         硬编码 chat_id、send 按 msg.chat_id 查表三方同键）"
+    );
+
+    // 出站定向写：命令 JSON 必须真正到达设备（旧代码设备侧 5s 超时红）
+    let msg = OutboundMessage {
+        channel: "maixcam".to_string(),
+        chat_id: "default".to_string(),
+        content: "take photo".to_string(),
+        message_type: String::new(),
+        meta: Default::default(),
+    };
+    ch.send(msg)
+        .await
+        .expect("directed outbound write must succeed");
+
+    let mut line = String::new();
+    let mut dev_reader = tokio::io::BufReader::new(dev);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        dev_reader.read_line(&mut line),
+    )
+    .await
+    .expect(
+        "timed out: device must receive the bot command（修复前 write half \
+                 被丢弃，出站管线死代码，设备永远收不到回复）",
+    )
+    .expect("device read failed");
+
+    let cmd: serde_json::Value =
+        serde_json::from_str(line.trim()).expect("command line must be JSON");
+    assert_eq!(cmd["type"], "command");
+    assert_eq!(cmd["message"], "take photo");
+    assert_eq!(cmd["chat_id"], "default");
+
+    ch.stop().await.unwrap();
+}
+
+/// BUG-E 回归锁：`dec_client_count` 的 0 守卫。stop() 强制清零
+/// （`*count = 0`）后，已连接的 reader 随 running=false 退出也会走递减
+/// 路径——无守卫减法 0-1 在 debug 下 panic、release 下 wrap 成
+/// usize::MAX（状态面显示天文数字）。disconnect_client 与 reader 退出
+/// 路径共用此单一真相源。
+#[test]
+fn test_bug_dec_client_count_guards_underflow() {
+    let count = parking_lot::RwLock::new(0usize);
+    dec_client_count(&count);
+    assert_eq!(*count.read(), 0, "0 递减必须被守卫（不下溢）");
+
+    *count.write() = 3;
+    dec_client_count(&count);
+    assert_eq!(*count.read(), 2, "正常递减");
+    dec_client_count(&count);
+    dec_client_count(&count);
+    assert_eq!(*count.read(), 0, "递减到 0");
+    dec_client_count(&count);
+    assert_eq!(*count.read(), 0, "0 以下不再减");
 }

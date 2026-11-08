@@ -39,7 +39,7 @@ fn deps_with_issue(dir_name: &str) -> (BoardReviewDeps, nemesis_board::Issue) {
         store,
         workspace: dir.clone(),
         home: dir,
-        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),

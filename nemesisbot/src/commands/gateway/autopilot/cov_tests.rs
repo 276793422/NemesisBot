@@ -36,6 +36,7 @@ fn new_ap(name: &str, target: &str, enabled: bool) -> nemesis_board::NewAutopilo
         auto_plan: false,
         acceptance_criteria: None,
         session_key: None,
+        mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
     }
 }
 
@@ -180,7 +181,7 @@ fn mk_deps(
         store: store.clone(),
         workspace: tmp.path().to_path_buf(),
         home: tmp.path().to_path_buf(),
-        moderator_loop: std::sync::Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: std::sync::Arc::new(parking_lot::RwLock::new(None)),
         cluster: cluster.clone(),
         estop: std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -620,4 +621,143 @@ fn sweep_autonomous_offline_no_switch_candidates_falls_back_to_review() {
         "必须有离线定性 + 无候选回落评论，实际：{:?}",
         comments.iter().map(|c| &c.content).collect::<Vec<_>>()
     );
+}
+
+// ---------------------------------------------------------------------------
+// cov 补测：B37 人优先槽位（D6 拍板 b 形态）——自治重派前置闸。目标
+// worker 满载（在途 ≥ worker_max_inflight，缺省 1）时本 tick 不 fail 不
+// 重派（record 保持 active + 去重 ⏸ 评论）。
+// ---------------------------------------------------------------------------
+
+/// 满载夹具：同 worker 两笔在途——一笔「别单占用槽」+ 一笔「被清扫对象」。
+/// 负载按 fail 后口径（被清扫记录自扣）→ 剩 1 ≥ cap 1 = 满载。
+fn seed_inflight_fixture(store: &nemesis_board::BoardStore) -> i64 {
+    let other = cov_issue(store);
+    store
+        .insert_dispatch(
+            "cov-full-other",
+            other,
+            "worker-x",
+            &nemesis_board::Actor::system("cov"),
+        )
+        .unwrap();
+    let issue_id = cov_issue(store);
+    store
+        .transition_issue(
+            issue_id,
+            nemesis_board::IssueStatus::InProgress,
+            &nemesis_board::Actor::system("cov"),
+        )
+        .unwrap();
+    store
+        .insert_dispatch(
+            "cov-full-1",
+            issue_id,
+            "worker-x",
+            &nemesis_board::Actor::system("cov"),
+        )
+        .unwrap();
+    issue_id
+}
+
+/// 满载前置闸：本 tick 不失败不重派（record 保持 active）+ ⏸ 暂缓评论
+/// 落单 + 二次 sweep 去重不刷屏。对照既有
+/// `sweep_autonomous_timeout_replay_dispatch_error_falls_back_to_review`
+/// （单记录独占 worker：自扣后 0 < cap → 闸放行）——那是「自扣防 livelock」
+/// 的回归锚。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn sweep_autonomous_target_inflight_full_defers_fail_with_dedup() {
+    let (tmp, store) = temp_store();
+    let issue_id = seed_inflight_fixture(&store);
+    let cluster = offline_cluster(tmp.path());
+    let deps = mk_deps(&tmp, &store, &cluster);
+    let for_review = sweep_dispatch_timeouts(&deps, 0, true, 2);
+
+    assert!(
+        for_review.is_empty(),
+        "满载 tick 不得失败/回流：{for_review:?}"
+    );
+    let rec = store.get_dispatch("cov-full-1").unwrap().expect("记录仍在");
+    assert_eq!(
+        rec.state,
+        nemesis_board::models::dispatch_state::DISPATCHED,
+        "满载 tick 不得把被清扫记录标失败（worker 可能仍在跑）"
+    );
+    assert_eq!(
+        store.list_active_dispatches().unwrap().len(),
+        2,
+        "两笔在途都保持 active"
+    );
+    let comments = store.list_comments(issue_id).unwrap();
+    assert!(
+        comments.iter().any(|c| {
+            c.content.contains("在途派发已达上限") && c.content.contains("自动派发暂缓")
+        }),
+        "必须有满载暂缓评论，实际：{:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains('⛔') || c.content.contains('🛑')),
+        "满载 tick 不得落失败/冻结评论，实际：{:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    // 二次 sweep（同状态）：同因 ⏸ 只落一条（last_system_comment 去重）。
+    sweep_dispatch_timeouts(&deps, 0, true, 2);
+    let comments = store.list_comments(issue_id).unwrap();
+    let n = comments
+        .iter()
+        .filter(|c| c.content.contains("在途派发已达上限"))
+        .count();
+    assert_eq!(n, 1, "同因暂缓评论必须去重，实际 {n} 条");
+}
+
+/// cap=0（`board.worker_max_inflight=0` = 不限，旧行为）：闸完全不设防，
+/// 超时照常失败 → 同 worker 重试（offline Cluster 无 RPC → 回落评审链）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn sweep_autonomous_unlimited_cap_gate_inert() {
+    let (tmp, store) = temp_store();
+    let issue_id = seed_inflight_fixture(&store);
+    // home/config.json 带 board.worker_max_inflight=0（board_flags_from_home
+    // 每次现读——世代快照同链，测试直接写盘即可）。
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"board":{"worker_max_inflight":0}}"#,
+    )
+    .unwrap();
+    let cluster = offline_cluster(tmp.path());
+    let deps = mk_deps(&tmp, &store, &cluster);
+    let for_review = sweep_dispatch_timeouts(&deps, 0, true, 2);
+
+    assert_eq!(
+        for_review,
+        vec![issue_id],
+        "cap=0 不限 → 不设闸，重派失败回落评审链"
+    );
+    let rec = store.get_dispatch("cov-full-1").unwrap().expect("记录仍在");
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
+}
+
+/// assisted（autonomous=false）不设闸：满载也照常失败回流（人工在场模式，
+/// 评审链自己处置——D6 让路只作用于无人值守批量面）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn sweep_assisted_mode_skips_inflight_gate() {
+    let (tmp, store) = temp_store();
+    // 夹具已把本单推 in_progress（回流闸需要）。
+    let issue_id = seed_inflight_fixture(&store);
+    let cluster = offline_cluster(tmp.path());
+    let deps = mk_deps(&tmp, &store, &cluster);
+    let for_review = sweep_dispatch_timeouts(&deps, 0, false, 2);
+
+    assert_eq!(
+        for_review,
+        vec![issue_id],
+        "assisted 不设闸：照常回流评审链"
+    );
+    let rec = store.get_dispatch("cov-full-1").unwrap().expect("记录仍在");
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
 }

@@ -11,7 +11,7 @@
 //! 的评审 spawn 在单测里自然跳过，断言聚焦 store/仓库/评论状态。
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use nemesis_board::assignment::Actor;
 use nemesis_board::models::{IssueStatus, NewIssue, dispatch_state};
@@ -87,7 +87,7 @@ fn fixture(name: &str) -> Fixture {
         store: store.clone(),
         workspace: dir.clone(),
         home: dir,
-        moderator_loop: Arc::new(OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),

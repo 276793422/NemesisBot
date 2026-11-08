@@ -271,6 +271,24 @@ impl Default for TerminalConfig {
     }
 }
 
+/// workflow 引擎运行期参数（`config.json` 的 `workflow` 段；A 批批 4。
+/// None = 全默认——墙钟保险丝 3600s）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct WorkflowRuntimeConfig {
+    /// 墙钟保险丝：workflow 执行超过该秒数即取消（调度器按取消路径收口，
+    /// 执行落 Failed + 原因注记，区别于用户取消的 Cancelled）。`0 = 关`。默认 3600。
+    pub wall_clock_budget_secs: u64,
+}
+
+impl Default for WorkflowRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            wall_clock_budget_secs: 3600,
+        }
+    }
+}
+
 /// 日志十六族 TTL 清扫（`config.json` 的 `logs` 段；M7/M8 统一清扫器，
 /// 2026-10-27 整改批次三；2026-11-06 三轮横扫补 gateway/cluster_logs/eval、
 /// capture/dreaming/calibration/deliveries 与 heartbeat/ziwei/

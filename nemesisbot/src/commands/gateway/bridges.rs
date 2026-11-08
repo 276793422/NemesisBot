@@ -532,15 +532,28 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
 /// only returns the final response string. If/when we surface tool-call
 /// events, this struct can be extended to capture them without breaking the
 /// trait contract.
+///
+/// Loop 解析走 gateway 级动态槽（BUG-20261108-012）：agent stop→start 重建
+/// 后解析到最新 loop（旧 persona/工具面不残留）；槽空 = agent 停机窗口，
+/// 诚实报错（此前静态绑定初始 Arc——重启后打死旧实例）。
 #[cfg(feature = "workflow")]
 pub(crate) struct GatewayAgentRunner {
-    agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>,
+    loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
 }
 
 #[cfg(feature = "workflow")]
 impl GatewayAgentRunner {
-    pub(crate) fn new(agent_loop: Arc<nemesis_agent::r#loop::AgentLoop>) -> Self {
-        Self { agent_loop }
+    pub(crate) fn new(
+        loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
+    ) -> Self {
+        Self { loop_ref }
+    }
+
+    /// 解析当前主 loop：None = agent 停机窗口（stop 后 / start 前）。
+    pub(crate) fn resolve_loop(&self) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>, String> {
+        self.loop_ref.read().clone().ok_or_else(|| {
+            "agent 已停止（agent loop 停机窗口），workflow agent 节点无法执行".to_string()
+        })
     }
 }
 
@@ -572,7 +585,8 @@ impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
         }
 
         let session_key = format!("workflow:{}", agent_id);
-        let response = self.agent_loop.process_direct(prompt, &session_key).await?;
+        let agent_loop = self.resolve_loop()?;
+        let response = agent_loop.process_direct(prompt, &session_key).await?;
 
         Ok(nemesis_workflow::nodes::AgentRunResult {
             response,

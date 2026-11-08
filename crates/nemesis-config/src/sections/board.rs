@@ -226,6 +226,8 @@ pub struct BoardFlagConfig {
     pub replan: BoardReplanConfig,
     /// 人工触点考勤（看板人工触点体系；`board.attendance` 段）。
     pub attendance: BoardAttendanceConfig,
+    /// worker 执行面配置（`board.worker` 段；B36 工具供给裁剪开关）。
+    pub worker: BoardWorkerConfig,
 }
 
 impl Default for BoardFlagConfig {
@@ -255,6 +257,7 @@ impl Default for BoardFlagConfig {
             unavailable: BoardUnavailableConfig::default(),
             replan: BoardReplanConfig::default(),
             attendance: BoardAttendanceConfig::default(),
+            worker: BoardWorkerConfig::default(),
         }
     }
 }
@@ -350,6 +353,26 @@ impl AttendanceMode {
             AttendanceMode::Checkpoint => "checkpoint",
         }
     }
+}
+
+/// worker 执行面配置（`board.worker` 段；B36）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardWorkerConfig {
+    /// 职能工具供给裁剪开关（D5 拍板：做成开关，默认 false = 零行为变化）。
+    /// true 时 B 端按职能 CATALOG 声明的 `tool_trim` 清单从执行面**补集**
+    /// 白名单里裁掉对应工具（声明常在、开闸才生效——关闸时 CATALOG 声明
+    /// 不产生任何行为）。经 config mtime 热感知（check_config_reload 同链），
+    /// 改动无需重启。
+    pub tool_trim: BoardToolTrimConfig,
+}
+
+/// 职能工具供给裁剪（`board.worker.tool_trim` 段）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardToolTrimConfig {
+    /// 开关本体（默认 false = 零行为变化，D5）。
+    pub enabled: bool,
 }
 
 /// 重规划器配置（`config.json` 的 `board.replan` 段）。
@@ -502,13 +525,13 @@ impl BoardReviewConfig {
             return out;
         };
         let lower = slug.to_ascii_lowercase();
-        let preset = self.professions.get(&lower).or_else(|| {
+        let preset = profession_preset_lookup(&self.professions, &lower).or_else(|| {
             // 裸 family 回落：`dev:cpp` 无精确键 → `dev` 键（无冒号时精确
             // 查找已覆盖，不重复取）。
             let family = lower.split(':').next().unwrap_or(&lower);
             (family != lower)
                 .then_some(family)
-                .and_then(|f| self.professions.get(f))
+                .and_then(|f| profession_preset_lookup(&self.professions, f))
         });
         let builtin = builtin_profession_presets()
             .into_iter()
@@ -541,6 +564,20 @@ impl BoardReviewConfig {
         }
         out
     }
+}
+
+/// config 职能预设键查找（大小写不敏感——文档口径「键=职能 slug，大小写
+/// 不敏感」，与派发 matcher / `required_checks` 标签交集 /
+/// `dispatch_fallback_target` 钉住匹配同款纪律）。键是用户手写 JSON 键，
+/// 不在写入点归一（board.config.set 白名单不覆盖本嵌套 map），匹配侧统一
+/// 宽和：trim + ASCII 大小写不敏感。线性扫描（职能目录 ≤17 项，开销可忽略）。
+fn profession_preset_lookup<'a>(
+    map: &'a std::collections::HashMap<String, BoardProfessionReviewPreset>,
+    key: &str,
+) -> Option<&'a BoardProfessionReviewPreset> {
+    map.iter()
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
 }
 
 /// 代码内置职能预设（config `board.review.professions` 同名键逐维度

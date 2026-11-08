@@ -1641,6 +1641,21 @@ impl AgentLoop {
     pub fn cancel_session(&self, session_key: &str) -> bool {
         if let Some(token) = self.cancel_tokens.get(session_key) {
             token.cancel();
+            // 审批等待联动（B 批待办 2-③）：turn 取消 → 该会话在途审批卡
+            // 立即以拒绝收场（drain 送拒绝裁决唤醒阻塞中的裁决等待）→
+            // 工具不执行；迟到批准只落台账幂等记账（先到先得落空），
+            // 不再产生执行效果。槽空（无审批面形态：CLI/测试 stub）=
+            // no-op。estop 全量清理（gateway watcher）与会话 clear 定向
+            // 清理（chat.rs）是另两个独立挂点，走同一 responder 槽。
+            if let Some(responder) = self.approval_responder() {
+                let closed = responder.resolve_orphans_for_session(session_key, "turn cancelled");
+                if closed > 0 {
+                    info!(
+                        "[AgentLoop] session cancel closed {} pending approval card(s): {}",
+                        closed, session_key
+                    );
+                }
+            }
             info!(
                 "[AgentLoop] Session cancellation requested: {}",
                 session_key
@@ -1656,10 +1671,26 @@ impl AgentLoop {
     ///
     /// Returns the number of sessions that were cancelled.
     pub fn cancel_all_sessions(&self) -> usize {
+        // 先收键再逐个取消：DashMap 迭代持分片锁，审批 drain 不能在迭代
+        // 锁内做（responder 实现体可能回调 loop 状态）。逐会话 drain 与
+        // cancel_session 同语义（同 reason），覆盖全局停止按钮（不带
+        // session_id 的 agent.cancel）路径。
+        let keys: Vec<String> = self.cancel_tokens.iter().map(|e| e.key().clone()).collect();
         let mut count = 0;
-        for entry in self.cancel_tokens.iter() {
-            entry.value().cancel();
-            count += 1;
+        for session_key in &keys {
+            if let Some(token) = self.cancel_tokens.get(session_key) {
+                token.cancel();
+                count += 1;
+            }
+            if let Some(responder) = self.approval_responder() {
+                let closed = responder.resolve_orphans_for_session(session_key, "turn cancelled");
+                if closed > 0 {
+                    info!(
+                        "[AgentLoop] session cancel closed {} pending approval card(s): {}",
+                        closed, session_key
+                    );
+                }
+            }
         }
         if count > 0 {
             info!("[AgentLoop] Cancelled {} active session(s)", count);

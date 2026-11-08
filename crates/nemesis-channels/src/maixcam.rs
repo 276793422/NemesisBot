@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
@@ -66,8 +65,17 @@ pub struct MaixCamChannel {
     running: Arc<parking_lot::RwLock<bool>>,
     client_count: Arc<parking_lot::RwLock<usize>>,
     outbound_queue: parking_lot::RwLock<Vec<OutboundMessage>>,
-    /// Active TCP connections: chat_id -> write half.
-    client_writers: dashmap::DashMap<String, tokio::io::WriteHalf<TcpStream>>,
+    /// Active TCP connections: chat_id -> write half（into_split 的
+    /// OwnedWriteHalf）。Arc<DashMap> 外层：spawn_tcp_server 需把同一张表
+    /// move 进 reader 任务——DashMap 的 Clone 是**逐条目深拷贝**而非共享，
+    /// 裸字段 clone 会让 reader 的 insert 落进副本、send 查的原始表永远
+    /// 为空（出站管线仍旧死代码）。内层 Arc+tokio::Mutex 双包：send 出站
+    /// 先把 Arc 克隆出 DashMap 锁、再 lock 拿 &mut 写（DashMap 分片锁不得
+    /// 跨 await——写超时 30s 会把并发取锁方全部阻塞；tokio::Mutex 本身就
+    /// 是为 guard 跨 await 设计的异步感知锁，写期间串行化同一 socket 的
+    /// 并发写）。
+    client_writers:
+        Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<tokio::net::tcp::OwnedWriteHalf>>>>,
     /// Cancellation sender for the accept loop.
     cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
 }
@@ -89,7 +97,7 @@ impl MaixCamChannel {
             running: Arc::new(parking_lot::RwLock::new(false)),
             client_count: Arc::new(parking_lot::RwLock::new(0)),
             outbound_queue: parking_lot::RwLock::new(Vec::new()),
-            client_writers: dashmap::DashMap::new(),
+            client_writers: Arc::new(dashmap::DashMap::new()),
             cancel_tx: parking_lot::Mutex::new(None),
         })
     }
@@ -111,10 +119,7 @@ impl MaixCamChannel {
 
     /// Decrements client count.
     pub fn disconnect_client(&self) {
-        let mut count = self.client_count.write();
-        if *count > 0 {
-            *count -= 1;
-        }
+        dec_client_count(&self.client_count);
     }
 
     /// Processes a MaixCam message.
@@ -208,24 +213,27 @@ impl MaixCamChannel {
     }
 
     /// Spawns a TCP accept loop that listens for MaixCam device connections.
-    fn spawn_tcp_server(&self) {
+    ///
+    /// bind 在 spawn **之前**完成并把失败传播给调用方（wechat/wecom 同款）——
+    /// 此前 bind 失败只在后台任务里 error，start() 照常报成功，入站能力
+    /// 归零而状态面显示运行中。
+    async fn spawn_tcp_server(&self) -> Result<()> {
         let addr = format!("{}:{}", self.config.host, self.config.port);
         let running = self.running.clone();
         let client_count = self.client_count.clone();
+        let client_writers = self.client_writers.clone();
         let bus_sender = self.bus_sender.clone();
 
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
         *self.cancel_tx.lock() = Some(cancel_tx);
 
-        tokio::spawn(async move {
-            let listener = match TcpListener::bind(&addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    error!(addr = %addr, error = %e, "[MaixCamChannel] failed to bind MaixCam TCP listener");
-                    return;
-                }
-            };
+        let listener = tokio::net::TcpListener::bind(&addr).await.map_err(|e| {
+            NemesisError::Channel(format!(
+                "[MaixCamChannel] failed to bind MaixCam TCP listener {addr}: {e}"
+            ))
+        })?;
 
+        tokio::spawn(async move {
             info!(addr = %addr, "[MaixCamChannel] TCP server listening");
             let mut cancel_rx = cancel_rx;
 
@@ -237,18 +245,30 @@ impl MaixCamChannel {
                     }
                     result = listener.accept() => {
                         match result {
-                            Ok((stream, peer)) => {
-                                debug!(peer = %peer, "[MaixCamChannel] device connected");
+                            Ok((stream, peer)) => {                                debug!(peer = %peer, "[MaixCamChannel] device connected");
                                 *client_count.write() += 1;
 
                                 // Spawn per-connection reader
                                 let running = running.clone();
                                 let client_count = client_count.clone();
+                                let client_writers = client_writers.clone();
                                 let bus_sender = bus_sender.clone();
                                 let peer_str = peer.to_string();
 
                                 tokio::spawn(async move {
-                                    let (reader, _) = stream.into_split();
+                                    // write half 注册进 client_writers（key 与
+                                    // classify_message 硬编码 chat_id="default"、
+                                    // send 按 msg.chat_id 查表三方同键——MaixCam
+                                    // 协议无设备 id 握手，单设备假设；重连时
+                                    // insert 覆盖旧 half 自愈，断开不 remove
+                                    // 避免误删重连后的新注册，stop 统一 clear）。
+                                    // 修复前 write half 被直接丢弃——出站定向/
+                                    // 广播分支死代码，bot 回复永远到不了设备。
+                                    let (reader, writer) = stream.into_split();
+                                    client_writers.insert(
+                                        "default".to_string(),
+                                        Arc::new(tokio::sync::Mutex::new(writer)),
+                                    );
                                     let mut reader = BufReader::new(reader);
                                     let mut line = String::new();
 
@@ -308,7 +328,9 @@ impl MaixCamChannel {
                                         }
                                     }
 
-                                    *client_count.write() -= 1;
+                                    // 计数下溢守卫：单一真相源 dec_client_count
+                                    //（0 守卫，stop() 清零后 reader 退出不减到负）。
+                                    dec_client_count(&client_count);
                                 });
                             }
                             Err(e) => {
@@ -319,6 +341,18 @@ impl MaixCamChannel {
                 }
             }
         });
+        Ok(())
+    }
+}
+
+/// 连接计数递减（0 守卫防下溢）。`disconnect_client` 与 reader 退出路径
+/// 共用——stop() 会强制清零（`*count = 0`），此时已连接的 reader 随
+/// running=false 退出也会走这里：无守卫减法 0-1 在 debug 下 panic、
+/// release 下 wrap 成 usize::MAX（状态面显示天文数字）。
+fn dec_client_count(count: &parking_lot::RwLock<usize>) {
+    let mut c = count.write();
+    if *c > 0 {
+        *c -= 1;
     }
 }
 
@@ -384,17 +418,29 @@ impl MaixCamChannel {
                 .map_err(|e| NemesisError::Channel(format!("MaixCam serialize error: {e}")))?;
             let payload = format!("{json}\n");
 
-            if let Some(mut writer) = self.client_writers.get_mut(&msg.chat_id) {
-                Self::write_payload_with_timeout(&mut *writer, &payload, timeout)
+            // 先把 Arc 克隆出 DashMap 锁、再 lock 拿 &mut 写（锁不跨 await）
+            if let Some(writer) = self
+                .client_writers
+                .get_mut(&msg.chat_id)
+                .map(|g| Arc::clone(g.value()))
+            {
+                let mut guard = writer.lock().await;
+                Self::write_payload_with_timeout(&mut *guard, &payload, timeout)
                     .await
                     .map_err(|e| NemesisError::Channel(format!("MaixCam write error: {e}")))?;
                 return Ok(());
             }
 
             // Broadcast to all（best-effort 语义保持：单设备失败不拦整体，
-            // 但每设备写有界——不再被停摆设备冻死派发管线）
-            for mut entry in self.client_writers.iter_mut() {
-                let _ = Self::write_payload_with_timeout(&mut *entry, &payload, timeout).await;
+            // 但每设备写有界——不再被停摆设备冻死派发管线；快照收集在锁外写）
+            let writers: Vec<_> = self
+                .client_writers
+                .iter()
+                .map(|e| Arc::clone(e.value()))
+                .collect();
+            for writer in writers {
+                let mut guard = writer.lock().await;
+                let _ = Self::write_payload_with_timeout(&mut *guard, &payload, timeout).await;
             }
             return Ok(());
         }
@@ -431,7 +477,7 @@ impl Channel for MaixCamChannel {
         self.base.set_enabled(true);
 
         // Spawn the TCP server
-        self.spawn_tcp_server();
+        self.spawn_tcp_server().await?;
 
         info!("[MaixCamChannel] channel started");
         Ok(())

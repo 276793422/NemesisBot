@@ -1055,6 +1055,149 @@ async fn panel_declarative_register_and_invoke_honest_error() {
     assert!(err.to_string().contains("not loaded"), "{err}");
 }
 
+// ---------------------------------------------------------------------------
+// 运行期总闸热翻（BUG-20261108-002）：execute_tool / invoke_ui manager 入口
+// 自闸——config 翻关后六个 guest 执行入口必须全热停，面板通道此前漏接
+//（其余五口已有闸），刷新 UI 照常执行 guest handle-ui-command。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn runtime_master_gate_hot_toggle_blocks_tool_and_panel_entries() {
+    use nemesis_plugins_wasm::PluginTrustState;
+    use nemesis_plugins_wasm::registry::ToolMetaSnapshot;
+    use nemesis_plugins_wasm::runtime::ExecContext;
+
+    // 壳 crate 独立 workspace，CI 的 build --workspace 不产出 host DLL；
+    // 直构 manager 不经 fresh_manager，须自行 ensure（2026-11-08 CI 实锤：
+    // 全新 checkout 无开发路径 DLL，构造即 NotAvailable）。
+    // ensure 必须先于建目录（2026-11-08 CI 实锤二连）：冷缓存壳构建
+    // ~8 分钟，建目录在前会把 mkdir→build_dirs canonicalize 暴露成
+    // 8 分钟窗口，窗口内 workspace 目录消失 → "workspace root: os
+    // error 3"；ensure 在前则窗口缩至亚秒，与其余 fresh_manager 用例
+    // 同序。
+    common::ensure_host_dll();
+    // workspace 必须是 tmp 的子目录：runtime_enabled 读
+    // `<workspace_root.parent()>/config.json`（fresh_manager 形态的 parent
+    // 是共享 Temp，不能在此形态下写 config.json——污染并行测试的缺省 true
+    // 读面）。
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ws = tmp.path().join("workspace");
+    std::fs::create_dir_all(&ws).expect("mkdir workspace");
+    let mgr = Arc::new(
+        PluginManager::new_with_dirs(
+            &ws,
+            &ws.join("plugins_wasm"),
+            PluginLimits::default(),
+            Arc::new(NoSecrets),
+        )
+        .expect("manager"),
+    );
+
+    // 注册面不受总闸影响（闸裁执行面不裁注册面）：声明式面板（component=0）
+    // + tool（component=1 伪造句柄——只走闸面，不期待执行成功）。
+    let manifest = PluginManifest::parse(&panel_manifest_raw("gate-panel", "main", false))
+        .expect("parse")
+        .0;
+    mgr.register(
+        manifest,
+        PluginTrustState::ReviewRequired,
+        0,
+        None,
+        None,
+        None,
+    )
+    .expect("register panel");
+    let raw = format!(
+        "wasm-sha256 = \"{}\"\napi-version = 1\nslug = \"gate-tool\"\nkind = \"tool\"\n\
+         name = \"GateTool\"\nversion = \"0.1.0\"\ndescription = \"d\"\n",
+        "a".repeat(64)
+    );
+    let manifest = PluginManifest::parse(&raw).expect("parse").0;
+    let meta = ToolMetaSnapshot {
+        name: "plugin.gate-tool.run".into(),
+        base: "run".into(),
+        title: "Run".into(),
+        description: "d".into(),
+        parameters_json: "{}".into(),
+        operation_type: "read".into(),
+        min_tier: "big".into(),
+    };
+    mgr.register(
+        manifest,
+        PluginTrustState::ReviewRequired,
+        1,
+        Some(meta),
+        None,
+        None,
+    )
+    .expect("register tool");
+
+    // 闸开（缺省 true）：面板走声明式诚实报错——本断言同时钉住闸序
+    //（闸在 component 检查前，闸关时同一面板先报 master gate）。
+    let err = mgr
+        .invoke_ui("gate-panel", r#"{"command":"go"}"#.to_string())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("is declarative"), "{err}");
+
+    // 翻关：真相源① = <workspace 父目录>/config.json 的
+    // /plugins/wasm/enabled。
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":false}}}"#,
+    )
+    .expect("write config.json");
+
+    let err = mgr
+        .execute_tool(
+            "plugin.gate-tool.run",
+            "{}".to_string(),
+            ExecContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("runtime master gate"),
+        "execute_tool 必须被运行期总闸拦下: {err}"
+    );
+    let err = mgr
+        .invoke_ui("gate-panel", r#"{"command":"go"}"#.to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("runtime master gate"),
+        "invoke_ui（面板命令通道）必须被运行期总闸拦下: {err}"
+    );
+
+    // 开关改回即时恢复：错误不再来自总闸（tool 落到伪造句柄的执行错误、
+    // 面板落回声明式诚实报错）。
+    std::fs::write(
+        tmp.path().join("config.json"),
+        r#"{"plugins":{"wasm":{"enabled":true}}}"#,
+    )
+    .expect("write config.json");
+    let err = mgr
+        .execute_tool(
+            "plugin.gate-tool.run",
+            "{}".to_string(),
+            ExecContext::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        !err.to_string().contains("runtime master gate"),
+        "开关改回必须即时恢复: {err}"
+    );
+    let err = mgr
+        .invoke_ui("gate-panel", r#"{"command":"go"}"#.to_string())
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("is declarative"),
+        "开关改回必须即时恢复: {err}"
+    );
+}
+
 #[test]
 fn panel_route_collision_rejected_across_plugins() {
     use nemesis_plugins_wasm::PluginTrustState;
@@ -2169,6 +2312,50 @@ fn egress_config_token_manifest_validation() {
     assert!(parse_manifest_with_egress("\"example.com\"", "", "").is_ok());
     let err = parse_manifest_with_egress("\"*.example.com\"", "", "").unwrap_err();
     assert!(err.contains("invalid egress"), "{err}");
+}
+
+#[test]
+fn egress_ipv6_entry_forms_validate_and_matcher_align() {
+    use nemesis_plugins_wasm::egress::allowlisted;
+
+    // validate 矩阵：三分形态全放行（此前 `split(':').count() > 2` 把全部
+    // 手写 IPv6 条目 loud 拒，bracketed 钉端口臂成死代码）。
+    assert!(parse_manifest_with_egress("\"[2001:db8::9]:443\"", "", "").is_ok());
+    assert!(parse_manifest_with_egress("\"[::1]\"", "", "").is_ok());
+    assert!(parse_manifest_with_egress("\"2001:db8::9\"", "", "").is_ok());
+    assert!(parse_manifest_with_egress("\"example.com:443\"", "", "").is_ok());
+    // 畸形臂 loud 拒：bracketed 缺右括号 / 非 IPv6 主机 / 空端口尾巴 /
+    // 裸含冒号垃圾 / 非 hex IPv6。
+    let err = parse_manifest_with_egress("\"[2001:db8::9\"", "", "").unwrap_err();
+    assert!(err.contains("invalid egress"), "{err}");
+    let err = parse_manifest_with_egress("\"[example.com]:443\"", "", "").unwrap_err();
+    assert!(err.contains("invalid egress"), "{err}");
+    let err = parse_manifest_with_egress("\"[::1]:\"", "", "").unwrap_err();
+    assert!(err.contains("invalid egress"), "{err}");
+    let err = parse_manifest_with_egress("\"host::junk\"", "", "").unwrap_err();
+    assert!(err.contains("invalid egress"), "{err}");
+    let err = parse_manifest_with_egress("\"2001:db8::zz\"", "", "").unwrap_err();
+    assert!(err.contains("invalid egress"), "{err}");
+
+    // 对齐面：validate 放行的形态必须被 `allowlisted` 按文档语义命中
+    //（deny-by-default 的完整闭环 = 能声明 ⇔ 能匹配，否则死条目）。
+    let pol = |entries: &[&str]| {
+        EgressPolicy::from_permissions(entries.iter().map(|s| s.to_string()).collect(), false)
+    };
+    // bracketed 钉端口：只命中钉住的端口。
+    let p = pol(&["[2001:db8::9]:443"]);
+    assert!(allowlisted(&p, "2001:db8::9", 443));
+    assert!(!allowlisted(&p, "2001:db8::9", 8443));
+    // bracketed 裸形态 = 任意端口。
+    let p = pol(&["[::1]"]);
+    assert!(allowlisted(&p, "::1", 9999));
+    // 裸 IPv6 字面量 = 任意端口。
+    let p = pol(&["2001:db8::9"]);
+    assert!(allowlisted(&p, "2001:db8::9", 80));
+    // 既有 host:port 语义对照（v4/域名钉端口不受 IPv6 扩展影响）。
+    let p = pol(&["example.com:443"]);
+    assert!(allowlisted(&p, "example.com", 443));
+    assert!(!allowlisted(&p, "example.com", 80));
 }
 
 #[test]

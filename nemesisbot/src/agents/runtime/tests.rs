@@ -447,6 +447,26 @@ mod sup_real_child {
             .map_err(|e| e.to_string())
     }
 
+    /// exec_cmd 的满载重试臂（2026-11-08 CI shard3 实锤）：timer 按墙钟
+    /// 过期，runtime 线程被整段饿停 ~10.3s 后恢复的瞬间，1s 预算的 timer
+    /// 与 echo 响应同时 ready，select 随机裁决把任意预算翻成假超时——
+    /// 预算挡不住饿停竞速，只有重试能吸收。仅对「timed out」假红重试；
+    /// 协议/错位类错误立即透传（那才是被锁回归，重试会稀释判别力）。
+    async fn exec_cmd_load_safe(
+        sup: &AgentRuntimeSupervisor,
+        exec_root: &std::path::Path,
+        cmd: &str,
+    ) -> Result<String, String> {
+        let mut attempt = 0;
+        loop {
+            match exec_cmd(sup, exec_root, cmd).await {
+                Ok(out) => return Ok(out),
+                Err(m) if attempt < 3 && m.contains("timed out") => attempt += 1,
+                other => return other,
+            }
+        }
+    }
+
     /// 日常链路：常驻执行体跑通一次工具调用；杀掉子进程后下一次调用自动
     /// 重建（journal/ home 即状态）；home 重定向生效（USERPROFILE 指 home）；
     /// exec_root 双根拆分生效（工具 cwd = exec_root ≠ agent home）。
@@ -1004,8 +1024,11 @@ mod sup_real_child {
         // current_thread runtime，timer 推进依赖测试线程被 OS 调度——全量
         // 并发满载下若线程饥饿 >（载荷-预算）秒，超时判定会晚于 ping 完成
         // → Ok 假红（全量）。载荷 11s vs 预算 1s =
-        // 翻转需饥饿 >10s，全量并发下不可达（ping -n 4≈3s 的旧值在满载
-        // 机上余量不足）。
+        // 翻转需饥饿 >10s（ping -n 4≈3s 的旧值在满载机上余量不足）。
+        // 2026-11-08 CI shard3 实锤：饿停 ~10.3s 已贴着余量上限——本臂
+        // 侥幸赢下竞速（Err 在 ping 完成前返回），但重建臂被同一竞速翻成
+        // 假超时 → 后续断言走 exec_cmd_load_safe（预算挡不住饿停竞速，
+        // timer 恢复瞬间与响应同时 ready，select 随机裁决）。
         match exec_cmd(&sup, &exec_root, "ping -n 12 127.0.0.1 > nul").await {
             Err(m) => assert!(
                 m.contains("timed out"),
@@ -1016,8 +1039,11 @@ mod sup_real_child {
 
         // 判死是同步收尾（start_kill+wait 在错误返回前完成）：下一次调用
         // 必须成功——旧 BUG 在此读到迟到响应 → Protocol/call_id 错位失败，
-        // 且此后每次调用都读上一次的响应，永久报废。
-        let out = exec_cmd(&sup, &exec_root, "echo after-timeout")
+        // 且此后每次调用都读上一次的响应，永久报废。假超时（满载饿停
+        // 竞速，见 exec_cmd_load_safe）经重试吸收；错位/协议错误不在重试
+        // 面、立即透传红——判别力不变（旧 BUG 形态重试全灭）。每次假超
+        // 时自身走 fail_poisoned→杀→重建，重试的就是被测机制本身。
+        let out = exec_cmd_load_safe(&sup, &exec_root, "echo after-timeout")
             .await
             .expect("超时判死后下一次调用应走重建拿干净会话");
         assert!(out.contains("after-timeout"), "{out}");
@@ -1026,8 +1052,9 @@ mod sup_real_child {
         let pid2 = sup.slot_pid("agent-a").await.expect("pid after rebuild");
         assert_ne!(pid, pid2, "超时判死后应重建出全新进程");
 
-        // 重建后的会话健康：再来一次快调用确认链路稳定。
-        let out = exec_cmd(&sup, &exec_root, "echo stable-after-rebuild")
+        // 重建后的会话健康：再来一次快调用确认链路稳定（同走重试臂，
+        // 理由同上——该断言不在回归锁核心面，但满载假红同样会挡闸）。
+        let out = exec_cmd_load_safe(&sup, &exec_root, "echo stable-after-rebuild")
             .await
             .expect("重建会话应持续可用");
         assert!(out.contains("stable-after-rebuild"), "{out}");

@@ -443,7 +443,18 @@ pub fn resolve_peer_rpc_port(peer_entry: &toml::Value, udp_port: u16) -> u16 {
         .and_then(|v| v.as_integer())
         .filter(|v| *v > 0 && *v <= u16::MAX as i64)
         .map(|v| v as u16)
-        .unwrap_or_else(|| if udp_port > 0 { udp_port + 10000 } else { 0 })
+        .unwrap_or_else(|| {
+            // udp+10000 约定推导。加法必须在约定域内（≤ u16::MAX-10000）：
+            // 手写 peers.toml 声明 55536..65535 的合法 UDP 端口时，裸加法
+            // release 静默回绕（60000→4464 错连到他方服务）、debug panic。
+            // 越域 = 约定外输入，诚实回落 0（0 = 未定，与 udp==0 臂同义，
+            // 由 announce 到达时的推导臂接管——G14 闸挡 0 直连）。
+            if udp_port > 0 && udp_port <= u16::MAX - 10000 {
+                udp_port + 10000
+            } else {
+                0
+            }
+        })
 }
 
 /// 构造 `[peers.X]` 条目子表（条目形态统一定义：`append_peer_to_file_with_name`

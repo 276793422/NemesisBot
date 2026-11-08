@@ -1096,6 +1096,15 @@ fn load_profession_assets(
 /// 哨兵形态（豁免通道之外全禁的最小可表示集——AgentConfig 以「非空白名单」
 /// 表达「围了」，空表是「没围」，两者不可混同）。无围栏块的职能（dev:*/
 /// test-* fail-open）不写 tools = 不围，零行为变化。
+///
+/// （B36）：职能工具供给裁剪 trim——`board.worker.tool_trim.enabled`
+/// fresh-read（缺省 false = 零行为变化，D5 拍板做成开关）开闸且内置
+/// CATALOG 对该 slug 声明了 `tool_trim` 清单时，从工具面**补集白名单**
+/// 裁掉声明工具（base = fence 白名单，否则全注册表；question 豁免恒保
+/// ——worker 向人求助的通道不裁）。与 fence 正交叠加：两者都写
+/// `tool_fence_profession`（拒绝文案走既有 profession_fence_refusal_for）。
+/// 用户自定义职能（非内置）无 trim 声明 = 零变化。讨论轮不裁（见
+/// `discussion_tool_fence`——讨论不是单一职能任务）。
 fn task_system_prompt(
     config: &AgentConfig,
     agent_loop: &AgentLoop,
@@ -1141,19 +1150,57 @@ fn task_system_prompt(
         Some(prefix) if !prefix.trim().is_empty() => format!("{prefix}\n\n---\n\n{suffix}"),
         _ => suffix,
     });
-    // 围栏写入（fresh-read 开关；白名单是闸的权威判据，职能标注只管
-    // 拒绝文案）。显式全禁（Some(空)）→ question 哨兵形态，见 fn 纪律注。
-    if let Some(allowed) = fence_tools
-        && agent_loop.current_profession_tool_fence()
-    {
+    // 工具面装配（先算后用）：fence 白名单打底（开关开且契约有围栏块），
+    // 否则全注册表；trim 开闸 + CATALOG 有声明 → 从面里裁掉声明工具。
+    // 显式全禁（Some(空)）→ question 哨兵形态（已是最大裁剪，trim 不叠加）。
+    let trim = agent_loop
+        .current_worker_tool_trim()
+        .then(|| nemesis_prompts::professions::meta::find_builtin(&slug))
+        .flatten()
+        .map(|meta| meta.tool_trim)
+        .filter(|t| !t.is_empty());
+    let fence_whitelist = agent_loop
+        .current_profession_tool_fence()
+        .then_some(fence_tools)
+        .flatten();
+    if let Some(allowed) = fence_whitelist {
         cfg.tools = if allowed.is_empty() {
             vec![nemesis_agent::r#loop::FENCE_EXEMPT_TOOLS[0].to_string()]
         } else {
-            allowed
+            apply_tool_trim(allowed, trim)
         };
+        cfg.tool_fence_profession = Some(slug);
+    } else if let Some(trim) = trim {
+        let before = agent_loop.tools().len();
+        let all: Vec<String> = agent_loop.tools().keys().cloned().collect();
+        cfg.tools = apply_tool_trim(all, Some(trim));
+        let trimmed_to = cfg.tools.len();
+        tracing::info!(
+            task_id = %task.task_id,
+            slug = %slug,
+            from = before,
+            to = trimmed_to,
+            "[ClusterAgent] tool_trim applied (no fence block): supply whitelist narrowed by profession declaration"
+        );
         cfg.tool_fence_profession = Some(slug);
     }
     cfg
+}
+
+/// B36：从工具白名单裁掉职能声明的 `tool_trim` 清单（question 豁免恒保
+/// ——FENCE_EXEMPT_TOOLS 成员不受裁剪）。trim 缺席（关闸/无声明）= 原样
+/// 返回（零行为变化）。裁剪只动供给面白名单；调用面的诚实拒绝文案由
+/// `tool_fence_profession` 标注走既有派发闸，无需此处额外注记。
+fn apply_tool_trim(base: Vec<String>, trim: Option<&'static [&'static str]>) -> Vec<String> {
+    let Some(trim) = trim else {
+        return base;
+    };
+    base.into_iter()
+        .filter(|t| {
+            nemesis_agent::r#loop::FENCE_EXEMPT_TOOLS.contains(&t.as_str())
+                || !trim.contains(&t.as_str())
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

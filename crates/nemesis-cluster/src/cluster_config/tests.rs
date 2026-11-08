@@ -965,6 +965,18 @@ fn test_resolve_peer_rpc_port_edge_cases() {
             "invalid rpc_port value {bad} must be ignored"
         );
     }
+
+    // BUG-20261108-023 回归锁：udp+10000 约定域上界守卫。
+    // 此前裸加法在 udp_port > 55535 时 release 静默回绕（60000→4464
+    // 错连他方服务）/ debug panic——合法 u16 端口走约定推导必须诚实
+    // 回落 0（未定，announce 推导臂接管），约定域内行为不变。
+    let no_field = toml::Value::Table(toml::value::Table::new());
+    // 边界内最大值：55535 + 10000 = 65535 恰好不溢出
+    assert_eq!(resolve_peer_rpc_port(&no_field, 55535), 65535);
+    // 越域：60000 裸加法会回绕成 4464，修复后诚实回落 0
+    assert_eq!(resolve_peer_rpc_port(&no_field, 60000), 0);
+    // u16 上界本身
+    assert_eq!(resolve_peer_rpc_port(&no_field, u16::MAX), 0);
 }
 
 // -- load_peer_udp_endpoints（根修：异端口拓扑定向单播）--

@@ -31,8 +31,9 @@ pub struct BoardIssueTool {
     /// 集群引用（单节点 cluster.enabled=false 时 None——create/plan 仍可用，
     /// 派发诚实失败落系统评论，与 WSAPI issue.plan 同语义）。
     cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
-    /// planner moderator 槽（gateway 在主 agent 建成后填充；先建槽后填模式）。
-    moderator_slot: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// planner moderator 槽（gateway 级动态解析槽共享克隆；写者唯一 =
+    /// AgentLoopServiceAdapter，agent 重启后解析到最新 loop）。
+    moderator_slot: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     /// home 目录（`board.plan.auto_confirm` 旗标现读）。
     home: std::path::PathBuf,
     /// SSE 事件 hub（plan_ready/plan_failed 推送；None = 不推）。
@@ -44,7 +45,7 @@ impl BoardIssueTool {
     pub fn new(
         store: Arc<nemesis_board::BoardStore>,
         cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
-        moderator_slot: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+        moderator_slot: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
         home: std::path::PathBuf,
         hub: Option<Arc<nemesis_web::events::EventHub>>,
     ) -> Self {
@@ -60,8 +61,8 @@ impl BoardIssueTool {
     /// 解析后的 moderator loop（tier 闸 + plan 链共用）。
     fn moderator(&self) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>, String> {
         self.moderator_slot
-            .get()
-            .cloned()
+            .read()
+            .clone()
             .ok_or_else(|| "board 服务未就绪（moderator agent 未运行），请稍后再试".to_string())
     }
 

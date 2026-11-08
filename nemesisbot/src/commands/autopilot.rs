@@ -9,7 +9,9 @@
 use crate::common;
 use anyhow::Result;
 use nemesis_board::BoardStore;
-use nemesis_board::models::{AutopilotPatch, NewAutopilot};
+use nemesis_board::models::{
+    AUTOPILOT_MODE_LIVE, AUTOPILOT_MODE_SHADOW, AutopilotPatch, NewAutopilot,
+};
 
 #[derive(clap::Subcommand)]
 pub enum AutopilotAction {
@@ -44,6 +46,11 @@ pub enum AutopilotAction {
         /// clear/删除后规则自动暂停。空 = 不绑定，行为与旧版一致）
         #[arg(long, default_value = "")]
         session_key: String,
+        /// 直上全真模式（live）。缺省 = 影子模式（shadow，D3 拍板）：首轮
+        /// 触发只建单 + 决策意图评论 + 本地留痕，不派发不拆解；确认行为
+        /// 后 `autopilot update <id> --live` 转全真
+        #[arg(long)]
+        live: bool,
         /// 创建为停用状态（默认启用）
         #[arg(long)]
         disabled: bool,
@@ -72,6 +79,12 @@ pub enum AutopilotAction {
         /// 绑定发起会话 session_key（提供即覆盖；`--session-key ""` = 解除绑定）
         #[arg(long)]
         session_key: Option<String>,
+        /// 切到全真模式（live；影子转正。与 --shadow 互斥）
+        #[arg(long)]
+        live: bool,
+        /// 切到影子模式（shadow；live 回退观测。与 --live 互斥）
+        #[arg(long)]
+        shadow: bool,
     },
     /// Enable a rule
     Enable { id: i64 },
@@ -109,9 +122,15 @@ fn print_autopilot(ap: &nemesis_board::Autopilot) {
         .map(|t| format!("{t}"))
         .unwrap_or_else(|| "从未运行".to_string());
     println!(
-        "#{} [{}] {} — cron `{}` 标题 `{}` 目标 {}（{}；最近运行: {last_run}）{}",
+        "#{} [{}] [{}] {} — cron `{}` 标题 `{}` 目标 {}（{}；最近运行: {last_run}）{}",
         ap.id,
         if ap.enabled { "启用" } else { "停用" },
+        // B34 触发模式显示（D3：新规则默认影子）。
+        if ap.mode == AUTOPILOT_MODE_SHADOW {
+            "影子"
+        } else {
+            "全真"
+        },
         ap.name,
         ap.cron,
         ap.title,
@@ -154,12 +173,19 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             target,
             acceptance_criteria,
             session_key,
+            live,
             disabled,
         } => {
             // 语法 + 语义双闸：解析通过但永不匹配的
             // 表达式在写 store 前拒绝，与 WSAPI 同一校验单点。
             nemesis_web::handlers::board::validate_autopilot_schedule(&cron, !disabled)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // D3 拍板：新规则默认影子起步，显式 --live 才直上全真。
+            let mode = if live {
+                AUTOPILOT_MODE_LIVE
+            } else {
+                AUTOPILOT_MODE_SHADOW
+            };
             let ap = store
                 .create_autopilot(&NewAutopilot {
                     name,
@@ -175,12 +201,20 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
                     // 父会话绑定（CLI 空串 = 不绑定）。
                     session_key: Some(session_key).filter(|s| !s.trim().is_empty()),
+                    mode: mode.to_string(),
                 })
                 .map_err(err)?;
-            println!(
-                "已创建 autopilot #{}（cron 挂载于 gateway 启动同步时生效）",
-                ap.id
-            );
+            if mode == AUTOPILOT_MODE_SHADOW {
+                println!(
+                    "已创建 autopilot #{}（影子模式：触发只建单留痕不派发；确认行为后 `autopilot update {} --live` 转全真；cron 挂载于 gateway 启动同步时生效）",
+                    ap.id, ap.id
+                );
+            } else {
+                println!(
+                    "已创建 autopilot #{}（全真模式；cron 挂载于 gateway 启动同步时生效）",
+                    ap.id
+                );
+            }
             print_autopilot(&ap);
         }
         AutopilotAction::Update {
@@ -194,6 +228,8 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             target,
             acceptance_criteria,
             session_key,
+            live,
+            shadow,
         } => {
             // 语法 + 语义双闸：按「合并后的有效
             // cron + 有效 enabled」校验，与 WSAPI 同一校验单点。
@@ -202,6 +238,15 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             let eff_enabled = old.enabled;
             nemesis_web::handlers::board::validate_autopilot_schedule(&eff_cron, eff_enabled)
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
+            // B34 模式切换（影子⇄全真双向；不提供 = 不改）。
+            let mode = match (live, shadow) {
+                (true, true) => {
+                    return Err(anyhow::anyhow!("--live 与 --shadow 互斥，一次只切一个方向"));
+                }
+                (true, false) => Some(AUTOPILOT_MODE_LIVE.to_string()),
+                (false, true) => Some(AUTOPILOT_MODE_SHADOW.to_string()),
+                (false, false) => None,
+            };
             let ap = store
                 .update_autopilot(
                     id,
@@ -218,6 +263,10 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                         acceptance_criteria,
                         // `--session-key ""` = 解除绑定；不提供 = 不改。
                         session_key: session_key.map(|s| s.trim().to_string()),
+                        // 模式切换走 update_autopilot 的 validate（update
+                        // 判 mode 是推进授权版本的内容 patch——updated_at
+                        // bump → 血统版本戳推进，语义正确）。
+                        mode,
                     },
                 )
                 .map_err(err)?;
@@ -268,6 +317,13 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
         }
         AutopilotAction::Run { id } => {
             let ap = store.get_autopilot(id).map_err(err)?;
+            // B34：影子留痕落 `<workspace>/logs/autopilot_shadow/`——gateway
+            // 启动时已装配工作区根，CLI 手跑此前缺位，这里补装（幂等，
+            // 重复装配保留首份；未装 = 影子只留看板评论不留本地文件）。
+            {
+                let ws = common::workspace_path(&common::resolve_home(local));
+                nemesis_web::handlers::board::install_handoff_workspace(ws);
+            }
             let out = {
                 #[cfg(feature = "cluster")]
                 {
@@ -288,8 +344,21 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     .and_then(|v| v.as_str())
                     .unwrap_or("?")
             );
-            if out.get("dispatch").is_some() {
-                println!("（本次为仅建单：CLI 进程不连集群；到点自动触发由 gateway 派发）");
+            if out.get("shadow") == Some(&serde_json::Value::Bool(true)) {
+                println!(
+                    "（影子模式：仅建单 + 决策意图评论 + 本地留痕，未派发未拆解；确认行为后 `autopilot update {id} --live` 转全真）"
+                );
+            } else {
+                let dispatch = out.get("dispatch");
+                if dispatch
+                    .and_then(|d| d.get("parked"))
+                    .and_then(|v| v.as_str())
+                    == Some("inflight_full")
+                {
+                    println!("（人优先槽位：节点在途派发满载，本单已停车待自动重试）");
+                } else if dispatch.is_some() {
+                    println!("（本次为仅建单：CLI 进程不连集群；到点自动触发由 gateway 派发）");
+                }
             }
         }
         AutopilotAction::Runs { id } => {

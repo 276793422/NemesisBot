@@ -637,15 +637,57 @@ impl PluginManifest {
                 }
                 continue;
             }
+            // 字面条目形态三分（与 egress.rs `allowlisted` 匹配器同语法，
+            // 模块文档 = 单一真相源）：`[ipv6]` / `[ipv6]:port`（bracketed
+            // 钉端口）、`host:port`（host 段无冒号，v4/域名）、裸含冒号 =
+            // 整串 IPv6 字面量（任意端口）。此前 `split(':').count() > 2`
+            // 把全部手写 IPv6 条目 loud 拒——配置渲染对 IPv6+显式端口丢弃
+            // 从严，手写 bracketed 是钉端口语义唯一入口，被 validate 拒绝后
+            // 成死代码，与匹配器/文档矛盾（fail-closed 功能缺陷）。
             let e = entry.to_lowercase();
-            if e.is_empty()
-                || e.starts_with('.')
-                || e.contains('/')
-                || e.contains('*')
-                || e.split(':').count() > 2
-            {
+            if e.is_empty() || e.starts_with('.') || e.contains('/') || e.contains('*') {
                 return Err(PluginError::Manifest(format!(
                     "invalid egress entry (exact host or host:port only): {entry}"
+                )));
+            }
+            let form_ok = if let Some(rest) = e.strip_prefix('[') {
+                // bracketed：`[ipv6]` 或 `[ipv6]:port`；缺右括号 / 右括号后
+                // 非纯数字端口 / 内部 host 非 IPv6 字面量 = 形态不合法
+                // （bracketed 是 RFC 3986 的 IPv6 专用形态；域名钉端口走
+                // host:port 臂）。
+                match rest.split_once(']') {
+                    Some((h, "")) => h.parse::<std::net::Ipv6Addr>().is_ok(),
+                    Some((h, tail))
+                        if tail.len() > 1
+                            && tail.starts_with(':')
+                            && tail[1..].chars().all(|c| c.is_ascii_digit()) =>
+                    {
+                        h.parse::<std::net::Ipv6Addr>().is_ok()
+                    }
+                    _ => false,
+                }
+            } else {
+                match e.rsplit_once(':') {
+                    // host:port（host 段无冒号 + 纯数字端口）：v4/域名钉端口。
+                    // 端口 >u16 不在此拒——匹配器侧解析失败不命中，语义等价。
+                    Some((h, p))
+                        if !h.contains(':')
+                            && !p.is_empty()
+                            && p.chars().all(|c| c.is_ascii_digit()) =>
+                    {
+                        true
+                    }
+                    // 其余含冒号形态 = 裸 IPv6 字面量候选：必须整体可解析
+                    // （含 `host::port` 这类既非 host:port 又非合法地址的
+                    // 垃圾——旧闸放行成静默永不命中的死条目，现 loud 拒）。
+                    _ if e.contains(':') => e.parse::<std::net::IpAddr>().is_ok(),
+                    // 无冒号：域名/v4 字面量，字符级规则已覆盖。
+                    _ => true,
+                }
+            };
+            if !form_ok {
+                return Err(PluginError::Manifest(format!(
+                    "invalid egress entry (host / host:port / [ipv6]:port / bare ipv6): {entry}"
                 )));
             }
         }

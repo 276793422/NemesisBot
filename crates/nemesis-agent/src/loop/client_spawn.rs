@@ -260,7 +260,14 @@ impl AgentLoop {
                     );
                     if let Some(ref store) = self.session_store {
                         store.add_message(parent_session_key, "assistant", &note);
-                        let _ = store.save(parent_session_key);
+                        // save 失败 warn 对齐同文件 181/223 两臂（全仓唯一
+                        // let _ = .save 静默形态；失败注记路径上下文丢失本就
+                        // 异常，静默吞错 = 磁盘故障零痕迹）。
+                        if let Err(e) = store.save(parent_session_key) {
+                            tracing::warn!(
+                                "[client_spawn] session store save failed for {parent_session_key}: {e}"
+                            );
+                        }
                     }
                 }
                 self.emit_subagent_reply_landed(

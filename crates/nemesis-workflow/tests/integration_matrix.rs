@@ -434,6 +434,9 @@ async fn agent_tool_trigger_sets_recursion_depth() {
             Some(TriggerSource::AgentTool {
                 tool_call_id: "tc_1".to_string(),
                 recursion_depth: 1,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
             }),
         )
         .await

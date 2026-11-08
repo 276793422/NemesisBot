@@ -1472,6 +1472,11 @@ mod recovery_classifier_tests;
 // 令牌是唯一出口）。
 #[cfg(test)]
 mod recovery_stop_tests;
+// BUG-20261107-026 回归锁：恢复环 cancel/estop 中断面——环顶闸
+// （engaged → 零调用）/ 退避与限流 sleep 可打断 / 在途重呼调用可打断
+// （Err(Done) 终局 + 快照清理 + 不再发新调用）。
+#[cfg(test)]
+mod recovery_estop_tests;
 // 恢复环 tool_defs 供给闸回归锁：三恢复环重试请求的
 // 工具面必须与主链路 effective_tool_defs 同源（hidden/tier 等供给闸在
 // 恢复重试上同样生效）。
@@ -1547,6 +1552,23 @@ mod recovery_concat_tests;
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
 mod tool_dispatch_sec_cov_tests;
+// workflow 工具节点 dispatch 入口五闸回归锁（A 批，非 security 面）：
+// estop / plan 写闸 / hidden_tools / 插件 min-tier / args_validator
+// 经 handle_tool_call_with_attrib 全部生效（PLAN 回归锁 2-6）。
+#[cfg(test)]
+mod workflow_gate_tests;
+// workflow 工具节点 dispatch 入口安全面回归锁（A 批，PLAN 回归锁 7/8/9）：
+// 审批卡路由回触发会话（管线 + guardian 双通路 ApprovalContext 捕获）+
+// guardian deny 节点失败。
+#[cfg(all(test, feature = "security"))]
+mod workflow_attrib_gate_tests;
+// B 批待办 2 确定性并发回归锁（barrier/channel 驱动零 sleep）：Queue 模式
+// 旧 turn 失败收尾不破坏已排队新 turn（场景②）+ 取消与审批卡 drain 联动
+// （场景③：单元层 drain 参数 + security 集成层全链「阻塞审批→取消→拒绝
+// →工具不执行→迟到批准落空」）。场景①由 cancel_during_tool_execution_
+// breaks_turn 钉住。
+#[cfg(test)]
+mod cancel_linkage_tests;
 // provider 流式输出 lane 覆盖：sink 合并窗/相位序列、
 // 空流零帧、error 截断终态、包装器合成增量与真实流两臂。
 #[cfg(test)]

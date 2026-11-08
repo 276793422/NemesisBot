@@ -1076,3 +1076,72 @@ fn test_bug282_corrupt_conversation_file_warns_and_restores_without_context() {
     assert_eq!(restored.status, TaskStatus::WaitingRemote);
     assert!(restored.conversation.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261108-015：cancel_task「读状态→写 Cancelled」两步分离竞态
+// （LOW-4 / BUG-20261029-140 同族第三成员——回调注入、出队两处已原子化，
+// cancel_task 本体漏网）。
+//
+// 不变量：cancel 与 begin_execution 对同一 Pending 任务的并发裁决必须
+// 互斥且诚实——
+//   cancel 先赢 → QueuedCancelled + begin 必见 Cancelled（任务确实没跑）；
+//   begin 先赢 → Started + cancel 必须如实命中 Running 分支（RunningCancelled
+//   + token 发射）。
+// 旧两步实现的可观察违反：begin 的 get_mut 恰落在 cancel 的 get 与
+// update_status 之间 → cancel 返回 QueuedCancelled（「不会再执行」）但任务
+// 已 Started 且 token 永不发射——取消失约、LLM token 白烧。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_cancel_vs_begin_execution_atomic_invariant() {
+    for i in 0..300 {
+        let dir = tempfile::tempdir().unwrap();
+        let list = std::sync::Arc::new(ClusterTaskList::new(dir.path()));
+        list.create_task(make_task("t-race", TaskStatus::Pending));
+
+        let token = tokio_util::sync::CancellationToken::new();
+        list.register_cancel_token("t-race", token.clone());
+
+        let list_begin = list.clone();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let barrier_cancel = barrier.clone();
+
+        let (begin_out, cancel_out) = std::thread::scope(|s| {
+            let hb = s.spawn(move || {
+                barrier.wait();
+                list_begin.begin_execution("t-race")
+            });
+            let hc = s.spawn(move || {
+                barrier_cancel.wait();
+                list.cancel_task("t-race")
+            });
+            (hb.join().unwrap(), hc.join().unwrap())
+        });
+
+        match (begin_out, cancel_out) {
+            // cancel 先赢：任务必须真的没被执行（begin 见 Cancelled 快照）。
+            (DequeueOutcome::Cancelled(_), CancelOutcome::QueuedCancelled) => {}
+            // begin 先赢：cancel 必须如实报告 Running 分支并发射 token。
+            (DequeueOutcome::Started(_), CancelOutcome::RunningCancelled) => {
+                assert!(
+                    token.is_cancelled(),
+                    "iter {i}: RunningCancelled must fire the token"
+                );
+            }
+            // 违反不变量（旧两步实现竞态窗口的可观察形态）：
+            // QueuedCancelled 承诺「不会再执行」，任务却已 Started 且
+            // token 无人发射——取消失约。
+            (DequeueOutcome::Started(_), CancelOutcome::QueuedCancelled) => {
+                panic!(
+                    "iter {i}: cancel returned QueuedCancelled ('will not run') \
+                     but begin_execution already Started — 取消承诺失约（两步分离竞态）"
+                );
+            }
+            (other_begin, other_cancel) => {
+                panic!(
+                    "iter {i}: unexpected outcomes: begin={other_begin:?} cancel={other_cancel:?}"
+                );
+            }
+        }
+    }
+}

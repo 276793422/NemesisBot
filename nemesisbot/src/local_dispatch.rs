@@ -44,7 +44,7 @@ pub(crate) struct GatewayLocalExecutor {
     board_store: Option<Arc<nemesis_board::BoardStore>>,
     workspace: PathBuf,
     home: PathBuf,
-    moderator_loop: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
     estop: Arc<nemesis_agent::estop::EstopState>,
     /// estop 冻结停车的 (种类, issue_id) 队列（与评审闭包共享同一份）。
@@ -77,7 +77,7 @@ impl GatewayLocalExecutor {
         board_store: Option<Arc<nemesis_board::BoardStore>>,
         workspace: PathBuf,
         home: PathBuf,
-        moderator_loop: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+        moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
         cluster: Arc<nemesis_cluster::cluster::Cluster>,
         estop: Arc<nemesis_agent::estop::EstopState>,
         estop_parked: Arc<std::sync::Mutex<Vec<(crate::board_review::ParkedKind, i64)>>>,
@@ -253,7 +253,7 @@ impl GatewayLocalExecutor {
         };
 
         let reply = tokio::select! {
-            r = capture_reply(&mut rx, &session_key) => r,
+            r = capture_reply(&mut rx, &self.bus, &session_key) => r,
             _ = wait_estop(&mut estop_rx) => {
                 // estop 触发：诚实 FAILED 写回（不静默吞）——estop_parked
                 // 停车机制自然接管后续复评恢复。
@@ -378,10 +378,12 @@ impl LocalDispatchExecutor for GatewayLocalExecutor {
 /// 的出站是系统回执（busy 排队 ⏳ / slash 确认 / 压缩·限流进度等，生产者
 /// 打标统一定义）—— queue-ack 被当终局回复 → 57ms 空交付
 /// completed，真回复随后无人认领成孤儿。跳过回执继续等真回复。Lagged
-/// 继续等（丢帧只影响中间流量——最终回复是最后一条，等下一条匹配即可）；
-/// Closed = 网关停机。
+/// 继续等（丢帧只影响中间流量——最终回复是最后一条，等下一条匹配即可）
+/// 并记入 bus 出站 lagged 指标（7 个订阅点统一记账纪律）；Closed = 网关
+/// 停机。
 async fn capture_reply(
     rx: &mut tokio::sync::broadcast::Receiver<OutboundMessage>,
+    bus: &MessageBus,
     session_key: &str,
 ) -> Option<String> {
     loop {
@@ -395,6 +397,7 @@ async fn capture_reply(
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                bus.record_outbound_lagged(n);
                 tracing::warn!("[LocalDispatch] 出站流 lagged（丢 {n} 帧），继续等待");
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,

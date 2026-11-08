@@ -421,38 +421,53 @@ impl ClusterTaskList {
     ///   WaitingRemote 的迟到回调由 inject_callback 的取消守卫拦下）。
     /// - Running → 标 Cancelled + token.cancel()（agent loop 尽快中断）。
     /// - Completed/Failed/Cancelled → AlreadyTerminal（幂等无操作）。
+    ///
+    /// 原子裁决（BUG-20261108-015，inject_callback LOW-4 / begin_execution
+    /// BUG-20261029-140 同族第三成员）：旧实现「get 读快照 → update_status
+    /// 写 Cancelled」两步分离，begin_execution 的原子 get_mut 落在窗口内时
+    /// 先赢得 Pending→Running，本方基于过期快照仍走排队分支覆盖为
+    /// Cancelled 并返回 QueuedCancelled——承诺「不会再执行」为假、任务已
+    /// Started 且 token 永不发射。现把「状态判定 + 转移 + 分支回报」收进
+    /// 单个 get_mut 临界区：cancel 与 begin 谁先拿锁谁赢，败方读到胜方
+    /// 结果如实分派（QueuedCancelled ⟺ 任务确实没被执行；RunningCancelled
+    /// ⟺ token 必发射）。token 发射在临界区外——running_tokens 是独立
+    /// DashMap 无锁序交叉，remove 与 unregister_cancel_token 竞态幂等
+    /// （拿不到即对方已清，跳过无害）；guard 持有期间不做任何可能 iter
+    /// 本 map 的调用（LOW-4 纪律）。
     pub fn cancel_task(&self, task_id: &str) -> CancelOutcome {
-        let status = self.tasks.get(task_id).map(|t| t.status);
-        let Some(status) = status else {
-            return CancelOutcome::NotFound;
+        let mut should_cancel_token = false;
+        let outcome = match self.tasks.get_mut(task_id) {
+            None => CancelOutcome::NotFound,
+            Some(mut task) => match task.status {
+                TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
+                    CancelOutcome::AlreadyTerminal {
+                        status: task.status.to_string(),
+                    }
+                }
+                TaskStatus::Pending | TaskStatus::WaitingRemote => {
+                    let was = task.status;
+                    task.status = TaskStatus::Cancelled;
+                    tracing::info!(
+                        task_id = %task_id,
+                        "[ClusterTaskList] Cancelled queued task (was {was})"
+                    );
+                    CancelOutcome::QueuedCancelled
+                }
+                TaskStatus::Running => {
+                    task.status = TaskStatus::Cancelled;
+                    should_cancel_token = true;
+                    CancelOutcome::RunningCancelled
+                }
+            },
         };
-        match status {
-            TaskStatus::Completed | TaskStatus::Failed | TaskStatus::Cancelled => {
-                CancelOutcome::AlreadyTerminal {
-                    status: status.to_string(),
-                }
-            }
-            TaskStatus::Pending | TaskStatus::WaitingRemote => {
-                self.update_status(task_id, TaskStatus::Cancelled);
-                tracing::info!(
-                    task_id = %task_id,
-                    "[ClusterTaskList] Cancelled queued task (was {})",
-                    status
-                );
-                CancelOutcome::QueuedCancelled
-            }
-            TaskStatus::Running => {
-                self.update_status(task_id, TaskStatus::Cancelled);
-                if let Some((_, token)) = self.running_tokens.remove(task_id) {
-                    token.cancel();
-                }
-                tracing::info!(
-                    task_id = %task_id,
-                    "[ClusterTaskList] Cancelled running task (token fired)"
-                );
-                CancelOutcome::RunningCancelled
-            }
+        if should_cancel_token && let Some((_, token)) = self.running_tokens.remove(task_id) {
+            token.cancel();
+            tracing::info!(
+                task_id = %task_id,
+                "[ClusterTaskList] Cancelled running task (token fired)"
+            );
         }
+        outcome
     }
 
     /// 出队执行原子化（inject_callback 的 LOW-4 同族）：

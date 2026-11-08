@@ -188,7 +188,7 @@ fn resume_plan_chain(deps: &UnavailableProbeDeps, issue_id: i64) -> bool {
     let Ok(issue) = deps.review.store.get_issue(issue_id) else {
         return false;
     };
-    let Some(agent_loop) = deps.review.moderator_loop.get().cloned() else {
+    let Some(agent_loop) = deps.review.moderator_loop.read().clone() else {
         return false;
     };
     nemesis_web::handlers::board::respawn_plan_chain(

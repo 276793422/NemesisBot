@@ -3,7 +3,8 @@
 //! `agents.stream_concat_retry` 默认开，显式 false 回退「重试从头」。
 //!
 //! 覆盖：extract 纯函数四态 / 拼接行为（messages 追加 + 内容前拼）/ 开关
-//! 关回退 / tc 标记不可续 / 重试再撞中断新 partial 覆盖 / 常量字面量互锚。
+//! 关回退 / tc 标记不可续 / 重试再撞中断 partial 合并（续写片段累积 /
+//! 复述识别防重复，BUG-20261107-028）/ 常量字面量互锚。
 //!
 //! 自造 provider（兄弟测试模块不能互相 import）。
 
@@ -163,6 +164,7 @@ async fn run_retry(
         "l29-sender",
         "agent:main:session:l29concat",
     );
+    let cancel = tokio_util::sync::CancellationToken::new();
     // first_call_failed_after < 1s = 立即拒绝形态（不退避，测试零等待）。
     agent_loop
         .retry_transient(
@@ -171,10 +173,13 @@ async fn run_retry(
             provider,
             "test-model",
             &opts,
+            &cancel,
+            None,
             std::time::Duration::from_millis(5),
             first_err,
         )
         .await
+        .expect("拼接续写走 Ok 路径（无中断）")
 }
 
 /// 拼接续写主线：首轮流中断（partial 非空、无 tc）→ 重试请求尾部追加
@@ -312,8 +317,8 @@ async fn truncated_tool_calls_partial_not_concatenated() {
     assert_ne!(tail[0].0, "assistant", "tc 形态重试请求不得追加前缀");
 }
 
-/// 重试再撞流中断 → 新 partial 覆盖旧值（更长 = 更接近完整），成功后拼
-/// 新 partial。
+/// 重试再撞流中断 + 模型违约复述前缀（new 以 prev 开头）→ 按重生成取 new
+/// 单独值防重复（BUG-20261107-028 合并语义的识别分支），成功后拼 new。
 #[tokio::test]
 async fn repeated_stream_break_updates_partial() {
     let _logs = capture_logs();
@@ -354,6 +359,98 @@ async fn repeated_stream_break_updates_partial() {
     let tails = scripted.last_tail.lock().unwrap();
     let tail = &tails[2];
     assert_eq!(tail[0].1, "第一段第二段");
+}
+
+/// 重试再撞流中断（主形态：带前缀重试产出纯续写片段，STREAM_CONTINUE_
+/// PROMPT「no recap」契约）→ 新 partial **累积**在旧前缀后（BUG-20261107-028：
+/// 此前覆盖语义把「第一段」从最终拼接产物静默丢掉），成功轮拼累积全量。
+#[tokio::test]
+async fn repeated_stream_break_accumulates_continuation_fragment() {
+    let _logs = capture_logs();
+    let scripted = std::sync::Arc::new(ScriptedStream::new(vec![
+        // 重试#1 请求带 assistant("第一段") 前缀；模型续写产出「第二段」
+        // 后流再断——本次流的 partial 只有续写片段（不含前缀）。
+        Err(stream_err("第二段", false)),
+        ok_resp("第三段"),
+    ]));
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let config = AgentConfig {
+        model: "test-model".to_string(),
+        system_prompt: Some("You are a test assistant.".to_string()),
+        max_turns: 5,
+        tools: vec![],
+        models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
+    };
+    let agent_loop = std::sync::Arc::new(AgentLoop::new_bus(
+        Box::new(ScriptedStream::new(vec![])),
+        config,
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    ));
+    let (maybe_resp, _err) = run_retry(
+        &agent_loop,
+        &(scripted.clone() as _),
+        stream_err("第一段", false),
+    )
+    .await;
+    let resp = maybe_resp.expect("重试成功必须有响应");
+    assert_eq!(
+        resp.content, "第一段第二段第三段",
+        "续写片段必须累积在前缀后（覆盖语义会丢「第一段」）"
+    );
+    // 第二次重试请求尾部 assistant 前缀 = 累积全量（第一段+第二段）。
+    let tails = scripted.last_tail.lock().unwrap();
+    let tail = &tails[1];
+    assert_eq!(tail[0].1, "第一段第二段");
+}
+
+/// 中途撞非流中断（timeout 等）→ partial 重置；随后从头重试再撞流中断 →
+/// 新 partial 独立生效（不与已重置的旧前缀合并，BUG-20261107-028 None 臂）。
+#[tokio::test]
+async fn partial_reset_then_fresh_break_stands_alone() {
+    let _logs = capture_logs();
+    let scripted = std::sync::Arc::new(ScriptedStream::new(vec![
+        // 重试#1：timeout（extract None）→ partial 重置。
+        Err("upstream deadline exceeded".to_string()),
+        // 重试#2（从头）：撞流中断，产出全新 partial。
+        Err(stream_err("从头重生成", false)),
+        ok_resp("后续"),
+    ]));
+    let (tx, _rx) = tokio::sync::mpsc::channel(16);
+    let config = AgentConfig {
+        model: "test-model".to_string(),
+        system_prompt: Some("You are a test assistant.".to_string()),
+        max_turns: 5,
+        tools: vec![],
+        models: std::collections::HashMap::new(),
+        tool_fence_profession: None,
+    };
+    let agent_loop = std::sync::Arc::new(AgentLoop::new_bus(
+        Box::new(ScriptedStream::new(vec![])),
+        config,
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    ));
+    let (maybe_resp, _err) = run_retry(
+        &agent_loop,
+        &(scripted.clone() as _),
+        stream_err("第一段", false),
+    )
+    .await;
+    let resp = maybe_resp.expect("重试成功必须有响应");
+    assert_eq!(
+        resp.content, "从头重生成后续",
+        "重置后新 partial 独立生效，不得与已重置旧前缀合并"
+    );
+    // 第三次调用尾部 assistant 前缀 = 新 partial 单独值。
+    let tails = scripted.last_tail.lock().unwrap();
+    let tail = &tails[2];
+    assert_eq!(tail[0].1, "从头重生成");
 }
 
 /// 非流中断 transient（timeout 等）进入重试环 → 无拼接行为（对照）。

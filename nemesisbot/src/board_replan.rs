@@ -399,7 +399,7 @@ pub(crate) async fn draft_replan_proposal(
     let cfg = &flags.replan;
     let assisted = flags.autonomy != nemesis_config::BoardAutonomy::Autonomous;
     // 评审引擎（主 loop 后置装配桥）：未就绪诚实跳过。
-    let Some(agent_loop) = deps.moderator_loop.get() else {
+    let Some(agent_loop) = deps.moderator_loop.read().clone() else {
         info!("[BoardReplan] 评审引擎未就绪，跳过起草（issue {trigger_issue_id}）");
         return Ok(false);
     };
@@ -440,7 +440,7 @@ pub(crate) async fn draft_replan_proposal(
 
     // ---- 起草 ----
     let mut prompt = build_replan_user_prompt(&root, &children, store, &trigger_note);
-    let output = run_replan_llm(agent_loop, &mut prompt).await?;
+    let output = run_replan_llm(&agent_loop, &mut prompt).await?;
 
     // ---- 建议评论落盘（assisted/autonomous 共同面）----
     let proposal_comment = nemesis_board::replan::render_proposal_comment(

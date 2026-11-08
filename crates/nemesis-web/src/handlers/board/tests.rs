@@ -3135,6 +3135,7 @@ async fn test_board_config_set_profession_preset_roundtrip() {
 fn p3_ap(store: &BoardStore, name: &str, auto_plan: bool) -> nemesis_board::Autopilot {
     store
         .create_autopilot(&nemesis_board::NewAutopilot {
+            mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
             name: name.to_string(),
             cron: "0 9 * * *".to_string(),
             title: "周期任务 {date}".to_string(),
@@ -3175,6 +3176,7 @@ async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
     let actor = nemesis_board::Actor::admin("admin");
 
     let n = nemesis_board::NewAutopilot {
+        mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
         name: "带标准".to_string(),
         cron: "0 9 * * *".to_string(),
         title: "周期任务 {date}".to_string(),
@@ -3244,7 +3246,7 @@ async fn test_fire_autopilot_auto_plan_true_empty_slot_degrades_with_comment() {
     let store = ctx.state.board.as_ref().unwrap().store().clone();
     let actor = nemesis_board::Actor::admin("admin");
     let ap_ctx = AutoPlanContext {
-        moderator_slot: Arc::new(std::sync::OnceLock::new()), // 永不填充
+        moderator_slot: Arc::new(parking_lot::RwLock::new(None)), // 永不填充
         home: dir.clone(),
         hub: None,
         cluster: None,
@@ -6623,6 +6625,9 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("dispatch_fallback", serde_json::json!("role")),
         ("fingerprint_weighting", serde_json::json!(true)),
         ("worker_max_inflight", serde_json::json!(3)),
+        // B36：职能工具供给裁剪开关 round-trip（默认 false=关）。
+        ("worker.tool_trim.enabled", serde_json::json!(true)),
+        ("worker.tool_trim.enabled", serde_json::json!(false)),
         ("dispatch_fallback_target", serde_json::json!("node-fix")),
         ("dispatch_fallback_target", serde_json::json!(null)),
         ("review.selfcheck", serde_json::json!(true)),
@@ -6664,6 +6669,11 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
     for (key, value, why) in [
         ("worker_max_inflight", serde_json::json!(-1), "非负整数"),
         ("worker_max_inflight", serde_json::json!("x"), "非负整数"),
+        (
+            "worker.tool_trim.enabled",
+            serde_json::json!("yes"),
+            "需要布尔值",
+        ),
         (
             "dispatch_fallback_target",
             serde_json::json!(3),
@@ -7130,6 +7140,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
     // 造缺失：另一条规则不登记（cron_job_id 留空）
     let missing = store
         .create_autopilot(&nemesis_board::NewAutopilot {
+            mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
             name: "缺登记".into(),
             title: "t".into(),
             cron: "*/11 * * * *".into(),
@@ -7160,6 +7171,7 @@ async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
     // 只跳过该条（per-rule 隔离），其余规则照常挂载，整体不 Err。
     let dead = store
         .create_autopilot(&nemesis_board::NewAutopilot {
+            mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
             name: "存量死规则".into(),
             title: "t".into(),
             cron: "0 0 30 2 *".into(),
@@ -7253,6 +7265,7 @@ async fn agt_autopilot_validate_and_issues_listing() {
     // update 把启用规则 cron 改成死表达式 → 拒绝且 store 值不变（先验后写）。
     let good = store
         .create_autopilot(&nemesis_board::NewAutopilot {
+            mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
             name: "好规则".into(),
             title: "t".into(),
             cron: "*/5 * * * *".into(),
@@ -9071,6 +9084,7 @@ async fn w5_autopilot_target_assignee_and_fire_dispatch_fail() {
     let actor = Actor::admin("w5");
     let ap = store
         .create_autopilot(&nemesis_board::NewAutopilot {
+            mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
             name: "带目标".to_string(),
             cron: "0 9 * * *".to_string(),
             title: "周期任务 {date}".to_string(),
@@ -9824,15 +9838,12 @@ async fn w5_fire_autopilot_plan_chain_filled_slot() {
     let store = store_of(&ctx);
     let actor = Actor::admin("w5");
     let ap = p3_ap(&store, "w5-slot", true);
-    let slot = Arc::new(std::sync::OnceLock::new());
-    assert!(
-        slot.set(Arc::new(AgentLoop::new(
-            Box::new(AgtGoodPlannerProvider),
-            AgentConfig::default(),
-        )))
-        .is_ok(),
-        "槽应空，装配一次即成功"
-    );
+    // 动态解析槽（RwLock 无 OnceLock 的 set-once 语义，直接填充）。
+    let slot = Arc::new(parking_lot::RwLock::new(None::<Arc<AgentLoop>>));
+    *slot.write() = Some(Arc::new(AgentLoop::new(
+        Box::new(AgtGoodPlannerProvider),
+        AgentConfig::default(),
+    )));
     let ap_ctx = super::AutoPlanContext {
         moderator_slot: slot,
         home: dir.clone(),
@@ -12822,6 +12833,7 @@ fn autopilot_orphan_sweep_spares_user_collision_names_and_sweeps_real_orphans() 
 
     // ② 两条真规则：一条存活，一条随后从 store 删除（造真孤儿）。
     let mk_ap = |name: &str| nemesis_board::NewAutopilot {
+        mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
         name: name.to_string(),
         cron: "0 9 * * *".to_string(),
         title: "周期任务 {date}".to_string(),
@@ -12889,4 +12901,161 @@ fn autopilot_id_from_job_name_shape_unit() {
     assert_eq!(autopilot_id_from_job_name("my-board-ap:5"), None);
     assert_eq!(autopilot_id_from_job_name("board-ap:"), None);
     assert_eq!(autopilot_id_from_job_name("memory-dreaming:sweep"), None);
+}
+
+/// B35 聚合口径：escalated（档案在场 / 🤷 评论兜底）、fused（🛑）、
+/// plan_failed（拆解失败/超时）、shadow（影子规则待 promote）四组各就位；
+/// 终态排除 + 排他归组（escalated 优先）+ 未触发组为空。
+#[test]
+fn aggregate_needs_human_four_groups() {
+    use nemesis_board::models::{AUTOPILOT_MODE_SHADOW, CommentType, NewComment};
+    let dir = unique_dir("needs-human-agg");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+    let actor = nemesis_board::assignment::Actor::system("board");
+    let mk_issue = |title: &str| {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: title.into(),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    let sys_comment = |id: i64, content: &str| {
+        store
+            .add_comment(NewComment {
+                issue_id: id,
+                author: actor.clone(),
+                content: content.into(),
+                parent_id: None,
+                ctype: CommentType::System,
+            })
+            .unwrap();
+    };
+
+    // escalated：in_review + 停车档案在场（needs_user 同源）。
+    let e = mk_issue("档案待裁决");
+    store
+        .transition_issue(e.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(e.id, IssueStatus::InReview, &actor)
+        .unwrap();
+    // escalated 备份信号：in_progress + 🤷 评论（评审侧故障转人工）。
+    let e2 = mk_issue("评审故障转人工");
+    store
+        .transition_issue(e2.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    sys_comment(e2.id, "🤷 验收 agent 无法定案，请人工裁决");
+    // fused：🛑 冻结评论。
+    let f = mk_issue("重派熔断");
+    sys_comment(f.id, "🛑 连续失败超限；冻结转人工处置。（task t-1）");
+    // plan_failed：拆解失败评论。
+    let p = mk_issue("拆解失败");
+    sys_comment(
+        p.id,
+        "❌ planner 拆解失败（链内重试已耗尽）：核查模型端点后手动重拆",
+    );
+    // 终态排除：done + 🛑 也不入组。
+    let done = mk_issue("已收口但带熔断评论");
+    sys_comment(done.id, "🛑 冻结");
+    store
+        .transition_issue(done.id, IssueStatus::Done, &actor)
+        .unwrap();
+    // 干净单不入组。
+    let _clean = mk_issue("正常在跑");
+    // 排他归组：档案在场 + 🛑 评论并存 → escalated（优先级）。
+    let both = mk_issue("档案与熔断并存");
+    store
+        .transition_issue(both.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(both.id, IssueStatus::InReview, &actor)
+        .unwrap();
+    sys_comment(both.id, "🛑 冻结转人工处置");
+
+    let mut handoffs = std::collections::HashMap::new();
+    handoffs.insert(e.number.clone(), handoff_map_entry(&e.number, "budget"));
+    handoffs.insert(
+        both.number.clone(),
+        handoff_map_entry(&both.number, "budget"),
+    );
+    let out = super::aggregate_needs_human(&store, &handoffs).unwrap();
+    let g = &out["groups"];
+    let esc = g["escalated"].as_array().unwrap();
+    assert_eq!(
+        esc.len(),
+        3,
+        "escalated 应收档案单 + 🤷 单 + 并存单：{esc:?}"
+    );
+    let numbers: Vec<&str> = esc.iter().map(|r| r["number"].as_str().unwrap()).collect();
+    assert!(numbers.contains(&e.number.as_str()));
+    assert!(numbers.contains(&e2.number.as_str()));
+    assert!(numbers.contains(&both.number.as_str()));
+    // needs_user 投影只在档案在场单上非 null。
+    let e_row = esc
+        .iter()
+        .find(|r| r["number"] == e.number.as_str())
+        .unwrap();
+    assert_eq!(e_row["needs_user"]["stop_kind"], "budget");
+    let e2_row = esc
+        .iter()
+        .find(|r| r["number"] == e2.number.as_str())
+        .unwrap();
+    assert!(e2_row["needs_user"].is_null());
+    let fu = g["fused"].as_array().unwrap();
+    assert_eq!(fu.len(), 1, "fused 只收 🛑 非终态单：{fu:?}");
+    assert_eq!(fu[0]["number"], f.number.as_str());
+    assert!(
+        fu[0]["reason"].as_str().unwrap().contains("冻结"),
+        "reason 摘要应来自最后 system 评论"
+    );
+    let pf = g["plan_failed"].as_array().unwrap();
+    assert_eq!(pf.len(), 1, "plan_failed 只收拆解失败单：{pf:?}");
+    assert_eq!(pf[0]["number"], p.number.as_str());
+    // shadow：影子规则触发过才入组；live 规则 / 未触发的影子规则不入。
+    let sh_id = store
+        .create_autopilot(&nemesis_board::NewAutopilot {
+            name: "影子规则".into(),
+            cron: "0 9 * * *".into(),
+            title: "shadow {date}".into(),
+            description: String::new(),
+            priority: 1,
+            project_id: None,
+            target: String::new(),
+            enabled: true,
+            auto_plan: false,
+            acceptance_criteria: None,
+            session_key: None,
+            mode: AUTOPILOT_MODE_SHADOW.to_string(),
+        })
+        .unwrap()
+        .id;
+    let live_id = store
+        .create_autopilot(&nemesis_board::NewAutopilot {
+            name: "全真规则".into(),
+            cron: "0 10 * * *".into(),
+            title: "live {date}".into(),
+            description: String::new(),
+            priority: 1,
+            project_id: None,
+            target: String::new(),
+            enabled: true,
+            auto_plan: false,
+            acceptance_criteria: None,
+            session_key: None,
+            mode: nemesis_board::models::AUTOPILOT_MODE_LIVE.to_string(),
+        })
+        .unwrap()
+        .id;
+    store.mark_autopilot_run(sh_id).unwrap();
+    store.mark_autopilot_run(live_id).unwrap();
+    let out2 = super::aggregate_needs_human(&store, &handoffs).unwrap();
+    let sh = out2["groups"]["shadow"].as_array().unwrap();
+    assert_eq!(sh.len(), 1, "shadow 只收触发过的影子规则：{sh:?}");
+    assert_eq!(sh[0]["name"], "影子规则");
+    assert_eq!(
+        out2["total"], 6,
+        "3 escalated + 1 fused + 1 plan_failed + 1 shadow——实际 {out2}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

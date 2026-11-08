@@ -659,34 +659,24 @@ async fn m4_runtime_live_on_dummy_draw() {
     ev.log_line(&format!("[capture.jsonl] 回流 {} 条", stored.len()));
 
     // ── ④ 2 级链收敛：feed_render::chain0 与顶层 1:1 ──
-    let chain_out =
-        nemesis_ziwei::runtime::invoke_hook_capture(&sess, &ws, id, "feed_render", None, 200)
-            .await
-            .expect("invoke_hook_capture feed_render");
-    assert_eq!(chain_out["hooks_active"], 2, "顶层+链点双武装：{chain_out}");
-    assert!(
-        chain_out["anchors_skipped"].as_array().unwrap().is_empty(),
-        "链锚不应被跳过：{chain_out}"
-    );
-    let hooks_now = attached.hooks();
-    let id_top = hooks_now
-        .iter()
-        .find(|h| h.semantic == "feed_render")
-        .expect("顶层绑定")
-        .id as u64;
-    let id_chain = hooks_now
-        .iter()
-        .find(|h| h.semantic == "feed_render::chain0")
-        .expect("链点绑定")
-        .id as u64;
-    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-    // 排空共享环（防两批之间残留导致计数不齐），统计两 id 事件数。
-    // 原「空轮即 break」单趟 drain 会切在链点事件对的交付缝
-    // 里——链点事件在顶层事件处理之后落盘，慢机上顶层已入环、链点尾巴未
-    // 落时空轮提前判静，1:1 收敛差一条假红（CI top=3255
-    // chain=3254；本文件 ⑤ 退订段 69464270 同族前科）。同房规改法：poll
-    // 至安静（5s 预算）+ 稳定窗补一拍排尾；链点真丢事件时安静照常到达但
-    // 计数仍不齐，断言检测力不变。
+    // 配平排空 + 溢出重测臂（2026-11-08 CI shard1 实锤第四次同族红，根因
+    // 升级）。判据沿革：BUG-20261103 单空轮即断（top=3255/chain=3254）→
+    // BUG-20261106 双空轮+稳定窗尾拍（10525/10523）→ 双空轮+尾拍仍被
+    // >400ms 交付缝击穿（14797/14796）→ 配平判据根治「在途缝」后，极端
+    // 争用下又红一次（9468/9466）：同批用例 SLOW >540s 的 shard 里，单拍
+    // poll（管道往返+capture.jsonl 回写）被拖到秒级，拍间墙钟隙超过环充
+    // 满时间（RING_CAP 4096 ÷ 双钩产速 ~666/s ≈ 6s）→ payload 环「拒新
+    // 留旧」溢出，溢出窗起止边界劈开 top→chain 配对（链点恒后到），留下
+    // ±1~2 永久赤字——判据没错，错在把溢出污染的计数当有效样本。
+    // dropped 逐 poll 读即清零（payload swap(0)），③ 段早有累计检查先例，
+    // ④ 此前漏检。修复：排空全程累计 dropped，见溢出立即弃窗重臂重测
+    // （≤3 次，溢出窗早退不烧满预算）；零溢出仍不配平才定谳真链丢失，
+    // 立即跳出断言红——检测力不变。
+    // 第五修（2026-11-08 R676 审计）：重臂「干净基线」声明不成立——
+    // hook_start 幂等分支不发 hook_set（DLL 复位只在真装载），单次
+    // capture 排环 ≤1024 < 环容 4096，残留 >1024 时新窗继承劈窗赤字 →
+    // 零溢出定谳假红。补：重臂后显式排空到空循环 + 排空期 dropped>0
+    // 弃臂早退（详见重臂处注释）。
     fn count_by_id(evs: &[serde_json::Value], id_top: u64, id_chain: u64, cnt: &mut (u64, u64)) {
         for e in evs {
             match e["id"].as_u64() {
@@ -696,50 +686,94 @@ async fn m4_runtime_live_on_dummy_draw() {
             }
         }
     }
-    let mut cnt = (0u64, 0u64);
-    let mut quiet_streak = 0u32;
-    for _ in 0..50 {
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        let pull = sess.poll_captures(id).await.expect("chain poll");
-        let evs = pull["events"].as_array().cloned().unwrap_or_default();
-        let empty = evs.is_empty();
-        count_by_id(&evs, id_top, id_chain, &mut cnt);
-        // BUG-20261106：单次空轮即判静仍会切在链点事件对的交付缝——draw
-        // 密集时（CI shard1 实录 top=10525 chain=10523，批量为 BUG-20261103
-        // 形态 3255 的 3 倍）顶层已入环、链点尾巴 >200ms 未落，稳定窗单拍
-        // 补排仍差 2 条假红。同族前科：BUG-20261103 本④段、69464270 ⑤段。
-        // 房规加严：连续两个空轮（间隔 200ms）方判安静；链点真丢事件时
-        // 安静照常到达但计数仍不齐，断言检测力不变。
-        if empty {
-            quiet_streak += 1;
-            if quiet_streak >= 2 {
+    let (mut id_top, mut id_chain) = (0u64, 0u64);
+    let mut hooks_active = serde_json::Value::Null;
+    let (mut cnt_top, mut cnt_chain) = (0u64, 0u64);
+    let mut win_dropped = 0u64;
+    let mut attempts = 0usize;
+    let mut converged = false;
+    for _attempt in 0..3 {
+        attempts += 1;
+        // （重）武装双钩：幂等订阅——hook_start 宿主侧 already=true 不发
+        // hook_set，DLL 侧「read 追平 write + 清 dropped」复位只在真装载
+        // 时执行；单次 capture 排环上限 1024 < 环容 4096，上一窗「拒新留
+        // 旧」溢出弃窗后环内可残留 >1024 条含 top↔chain 劈开配对的赤字
+        // （top 恒先进环、链点后到被拒），残留混入本窗计数会让零溢出定
+        // 谳误判真链丢失（假红）。故重臂后显式循环 poll 排空到空（事件
+        // 丢弃不计入本窗），这才是真正的干净基线；排空读到 dropped>0 =
+        // 环仍在溢出（极端争用未退），本窗必然再被污染，弃臂早退省预算。
+        let chain_out =
+            nemesis_ziwei::runtime::invoke_hook_capture(&sess, &ws, id, "feed_render", None, 200)
+                .await
+                .expect("invoke_hook_capture feed_render");
+        assert_eq!(chain_out["hooks_active"], 2, "顶层+链点双武装：{chain_out}");
+        assert!(
+            chain_out["anchors_skipped"].as_array().unwrap().is_empty(),
+            "链锚不应被跳过：{chain_out}"
+        );
+        hooks_active = chain_out["hooks_active"].clone();
+        let hooks_now = attached.hooks();
+        id_top = hooks_now
+            .iter()
+            .find(|h| h.semantic == "feed_render")
+            .expect("顶层绑定")
+            .id as u64;
+        id_chain = hooks_now
+            .iter()
+            .find(|h| h.semantic == "feed_render::chain0")
+            .expect("链点绑定")
+            .id as u64;
+        let mut rearmed_dropped = 0u64;
+        for _ in 0..16 {
+            let drain = sess.poll_captures(id).await.expect("rearm drain poll");
+            rearmed_dropped += drain["dropped"].as_u64().unwrap_or(0);
+            if drain["count"].as_u64().unwrap_or(0) == 0 {
                 break;
             }
-        } else {
-            quiet_streak = 0;
+        }
+        if rearmed_dropped > 0 {
+            win_dropped = rearmed_dropped;
+            continue; // 排空期间仍溢出：本窗必被污染，弃臂早退
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        let mut cnt = (0u64, 0u64);
+        let mut dropped = 0u64;
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            let pull = sess.poll_captures(id).await.expect("chain poll");
+            dropped += pull["dropped"].as_u64().unwrap_or(0);
+            let evs = pull["events"].as_array().cloned().unwrap_or_default();
+            count_by_id(&evs, id_top, id_chain, &mut cnt);
+            if dropped > 0 {
+                break; // 溢出污染本窗计数，弃窗早退（重臂重测）
+            }
+            if evs.is_empty() && cnt.0 == cnt.1 {
+                break; // 配平排净（无在途尾巴）
+            }
+        }
+        (cnt_top, cnt_chain) = cnt;
+        win_dropped = dropped;
+        if dropped == 0 {
+            // 零溢出窗即定谳：配平=收敛；不配平=真链丢失（预算 50 拍，
+            // 末拍即比较，无尾隙），断言红证据干净。
+            converged = cnt.0 == cnt.1;
+            break;
         }
     }
-    // 稳定窗：安静后仍可能有在途链点尾巴，补一拍再排一次。
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let tail = sess.poll_captures(id).await.expect("chain tail poll");
-    count_by_id(
-        tail["events"].as_array().map(Vec::as_slice).unwrap_or(&[]),
-        id_top,
-        id_chain,
-        &mut cnt,
+    assert!(
+        converged,
+        "2 级链 1:1 收敛（每顶层调用恰好一次链点）：top={cnt_top} chain={cnt_chain} \
+         窗dropped={win_dropped} 尝试{attempts}（dropped>0=payload 环溢出污染计数，\
+         重臂重测后仍无干净收敛窗——连窗溢出或真链丢失，见段注）"
     );
-    let (cnt_top, cnt_chain) = cnt;
     assert!(cnt_top >= 50, "顶层 feed_render 应批量命中：{cnt_top}");
-    assert_eq!(
-        cnt_top, cnt_chain,
-        "2 级链 1:1 收敛（每顶层调用恰好一次链点）：top={cnt_top} chain={cnt_chain}"
-    );
     ev.log(
         "④ 2 级链收敛",
         &serde_json::json!({
-            "hooks_active": chain_out["hooks_active"],
+            "hooks_active": hooks_active,
             "id_top": id_top, "id_chain": id_chain,
             "cnt_top": cnt_top, "cnt_chain": cnt_chain,
+            "dropped": win_dropped, "attempts": attempts,
         }),
     );
     sess.hook_stop(id, "feed_render").await.expect("stop top");

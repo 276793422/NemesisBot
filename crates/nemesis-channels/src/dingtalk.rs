@@ -386,6 +386,27 @@ impl DingTalkChannel {
         }
     }
 
+    /// 循环尾退避等待：睡满 `backoff` 返回 true；等待期间取消被触发
+    /// （oneshot 完成，含 sender 侧 drop）返回 false。
+    /// 循环尾旧形态 `select! { sleep => {}, async {} => {} }`
+    /// 空 async 臂首个 poll 即 Ready，select 恒立即返回，退避 sleep 被完全
+    /// 短路（断连后零间隔重连锤击钉钉网关）。抽成独立函数以便单测锁语义。
+    async fn backoff_wait(
+        backoff: std::time::Duration,
+        cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
+    ) -> bool {
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => true,
+            _ = cancel_rx => false,
+        }
+    }
+
+    /// poll 响应空载判定：204 No Content 或空 body = 网关无事件正常态
+    /// （安静跳过，不进解析、不留痕）。
+    fn poll_response_is_empty(status: u16, body: &str) -> bool {
+        status == 204 || body.trim().is_empty()
+    }
+
     /// Spawns the Stream Mode connection loop.
     fn spawn_stream_loop(&self) {
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
@@ -517,6 +538,18 @@ impl DingTalkChannel {
                                                         let status = resp.status();
                                                         let body_text =
                                                             resp.text().await.unwrap_or_default();
+                                                        // 204 No Content / 空 body = 网关无事
+                                                        // 件正常态，安静跳过——此前 204 落进
+                                                        // 解析臂，空 body 双重解析失败 = 每秒
+                                                        // 一条 "unparseable body, events
+                                                        // dropped" 警告洪水（下方非 2xx 臂的
+                                                        // 204 豁免是永假死条件）。
+                                                        if Self::poll_response_is_empty(
+                                                            status.as_u16(),
+                                                            &body_text,
+                                                        ) {
+                                                            continue;
+                                                        }
                                                         if let Ok(events) =
                                                             serde_json::from_str::<Vec<StreamEvent>>(
                                                                 &body_text,
@@ -552,9 +585,12 @@ impl DingTalkChannel {
                                                     }
                                                     Ok(resp) => {
                                                         let status = resp.status();
-                                                        if status.as_u16() != 204 {
-                                                            warn!(status = %status, "[DingTalkChannel] stream poll returned non-200");
-                                                        }
+                                                        // 非 2xx = token 过期（401）或网关错
+                                                        // 误：break 回外层重拿 token 重连——
+                                                        // 此前只 warn 不 break，token 过期后
+                                                        // 每秒 warn 且永不自愈，收件永久中断。
+                                                        warn!(status = %status, "[DingTalkChannel] stream poll returned non-success, reconnecting");
+                                                        break;
                                                     }
                                                     Err(e) => {
                                                         warn!(error = %e, "[DingTalkChannel] stream poll failed");
@@ -587,9 +623,12 @@ impl DingTalkChannel {
                     break;
                 }
 
-                tokio::select! {
-                    _ = tokio::time::sleep(backoff) => {}
-                    _ = async {} => {}
+                // 循环尾退避：旧形态 `select! { sleep => {}, async {} => {} }` 空
+                // async 臂首个 poll 即 Ready，select 恒立即返回，退避 sleep 被完全
+                // 短路（断连后零间隔重连）。外层所有失败路径（auth 失败/token 空/
+                // stream open 失败/connect 失败）此前都经此位点零间隔重连。
+                if !Self::backoff_wait(backoff, &mut cancel_rx).await {
+                    break;
                 }
 
                 backoff = (backoff * 2).min(MAX_BACKOFF);

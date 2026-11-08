@@ -21,7 +21,9 @@ async fn test_line_channel_lifecycle() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        // bind 传播后 start() 真实 bind——临时端口避免并行测试互撞 8080
+        //（port 0 映射 8080，测试隔离纪律）
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -287,7 +289,7 @@ async fn test_start_stop_clears_reply_tokens() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -304,16 +306,22 @@ async fn test_start_stop_idempotent() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
     ch.start().await.unwrap();
-    ch.start().await.unwrap(); // second start should be fine
     assert!(*ch.running.read());
 
+    // bind 传播后：同端口二次 start 必须诚实报错（旧形态 bind 失败被
+    // 后台任务吞掉，start 报 Ok 且残留第二个僵尸 accept 循环）
+    assert!(
+        ch.start().await.is_err(),
+        "double start on the same port must fail loudly"
+    );
+
     ch.stop().await.unwrap();
-    ch.stop().await.unwrap(); // second stop should be fine
+    ch.stop().await.unwrap(); // double stop should be fine
     assert!(!*ch.running.read());
 }
 
@@ -591,7 +599,7 @@ async fn test_send_with_reply_token_uses_reply() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -617,7 +625,7 @@ async fn test_send_push_message_on_no_token() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -692,7 +700,7 @@ async fn test_start_stop_running_state() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -848,7 +856,7 @@ async fn test_send_uses_push_when_no_reply_token() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1305,7 +1313,7 @@ async fn test_line_channel_is_running_trait() {
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
-        webhook_port: 0,
+        webhook_port: find_free_port(),
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
@@ -1350,8 +1358,10 @@ async fn test_line_send_with_reply_token_consumed_in_lifecycle() {
 
 #[tokio::test]
 async fn test_line_default_port_when_zero() {
-    // When webhook_port == 0, the trait impl uses 8080 internally.
-    // We just verify the spawn completes without panic.
+    // When webhook_port == 0, start() falls back to 8080。bind 传播后：
+    // 8080 空闲 → Ok（成功 bind 并服务）；8080 被占（如本机 TestAIServer
+    // 或并行任务）→ Err 且信息点名 8080——两种结果都证明 fallback 落在
+    // 8080，且不再有「bind 失败静默假装成功」的旧形态。
     let config = LineConfig {
         channel_access_token: "token".to_string(),
         channel_secret: "secret".to_string(),
@@ -1359,9 +1369,13 @@ async fn test_line_default_port_when_zero() {
         allow_from: Vec::new(),
     };
     let ch = LineChannel::new(config, test_bus()).unwrap();
-    ch.start().await.unwrap();
-    // Wait briefly to ensure spawned task attempted bind
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    match ch.start().await {
+        Ok(()) => {}
+        Err(e) => assert!(
+            e.to_string().contains("8080"),
+            "fallback must target port 8080, got: {e}"
+        ),
+    }
     ch.stop().await.unwrap();
 }
 
@@ -1822,4 +1836,65 @@ async fn s2_line_webhook_accept_loop_breaks_after_stop() {
         .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     drop(s);
+}
+
+// ===========================================================================
+// BUG 回归锁：非 UTF-8 header 偏移 panic 面（BUG-A）+ bind 失败传播（BUG-B）
+// ===========================================================================
+
+/// BUG-A 回归锁：header 区含非 UTF-8 字节 + 分隔符贴尾（空 body）——
+/// 旧形态用 `from_utf8_lossy` 字符串的 `find("\r\n\r\n")` 偏移去切**原始
+/// 字节**：每个非法字节被替换成 3 字节 U+FFFD（膨胀 +2/字节），字符串
+/// 偏移大于真实字节偏移，`&request_data[idx + 4..n]` 越界 → per-connection
+/// 任务 panic（客户端读不到任何响应）。panic 点在验签之前——任何能摸到
+/// 监听端口的进程无需 secret 即可稳定触发。修复后按原始字节 windows(4)
+/// 定位：本请求无签名头 → 401（fail-closed），绝不 panic。
+#[tokio::test]
+async fn test_bug_line_non_utf8_header_no_panic_unsigned_401() {
+    let port = find_free_port();
+    let (ch, _bus) = s2_line_channel(port);
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // 3 个非法字节 → lossy 膨胀 +6；分隔符在原始偏移 n-4 → 字符串偏移
+    // n+2 → 旧形态切片 [n+6..n] 必越界 panic
+    let mut raw = b"POST / HTTP/1.1\r\nX-Pad: ".to_vec();
+    raw.extend_from_slice(&[0xFF, 0xFE, 0xFF]);
+    raw.extend_from_slice(b"\r\n\r\n");
+
+    let response = send_raw_http(port, &raw).await;
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "non-UTF-8 header must not panic the handler; unsigned -> 401, got: {response:?}"
+    );
+
+    ch.stop().await.unwrap();
+}
+
+/// BUG-B 回归锁：bind 失败必须从 start() 传播给调用方。旧形态 bind 在
+/// tokio::spawn 内，失败只 warn+return，start() 照常报 Ok——入站能力
+/// 归零而状态面显示运行中（wechat.rs 同族注释明说的旧坑，line 漏网）。
+#[tokio::test]
+async fn test_bug_line_bind_failure_propagates_from_start() {
+    // 占住一个端口（存活到测试结束），start() 必须拿到 Err。blocker 绑
+    // 0.0.0.0 与被测 bind 同族地址——Windows 弱绑定语义下 0.0.0.0:P 可在
+    // 127.0.0.1:P 被占时照常 bind 成功，同族地址才在两平台确定性冲突。
+    let blocker = std::net::TcpListener::bind(("0.0.0.0", 0)).unwrap();
+    let port = blocker.local_addr().unwrap().port();
+
+    let config = LineConfig {
+        channel_access_token: "token".to_string(),
+        channel_secret: "secret".to_string(),
+        webhook_port: port,
+        allow_from: Vec::new(),
+    };
+    let ch = LineChannel::new(config, test_bus()).unwrap();
+
+    let err = ch.start().await.expect_err(
+        "bind failure must propagate from start(), not be swallowed by the background task",
+    );
+    assert!(
+        err.to_string().contains("bind"),
+        "error must mention bind, got: {err}"
+    );
 }

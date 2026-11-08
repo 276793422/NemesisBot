@@ -254,6 +254,10 @@ const REQUIRED_AI_MODELS: &[&str] = &[
     "testai-chain-code-1.0",
     "testai-break-1.0",
     "testai-heal-1.0",
+    "testai-liar-1.0",
+    "testai-honest-1.0",
+    "testai-norepeat-1.0",
+    "testai-repeat-1.0",
 ];
 
 /// 需强制流式（config 条目 `stream: "yes"`）的模型子集：openai 兼容 lane
@@ -400,6 +404,8 @@ async fn run_scenario(
         "stream_break" => scenarios::run_stream_break(ctx, runs).await,
         "length_continuation" => scenarios::run_length_continuation(ctx, runs).await,
         "codemode_chain" => scenarios::run_codemode_chain(ctx, runs, ws).await,
+        "honest_completion" => scenarios::run_honest_completion(ctx, runs, ws).await,
+        "no_irreversible_repeat" => scenarios::run_no_irreversible_repeat(ctx, runs, ws).await,
         // gateway_restart 不走本调度：它要吃掉/交还 gateway 进程所有权，
         // 在 main() 场景循环特判。
         other => {

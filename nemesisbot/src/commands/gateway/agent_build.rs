@@ -83,7 +83,7 @@ pub(crate) async fn init_agent(
     let workflow_tool_registry = ctx.workflow_tool_registry.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_store = ctx.board_store.clone();
-    #[cfg(all(feature = "board", feature = "cluster"))]
+    #[cfg(any(feature = "board", feature = "cluster", feature = "workflow"))]
     let board_moderator_loop = ctx.board_moderator_loop.clone();
     // web wiring 影子：event_hub 读借用（门=唯一消费点 board_event_hub）。
     #[cfg(all(feature = "board", feature = "cluster"))]
@@ -303,8 +303,9 @@ pub(crate) async fn init_agent(
         background_registry,
         plugin_manager,
         // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
-        // 主 agent；store=None 时工具不注册）。moderator 槽此刻还空，agent
-        // 建成后:board_moderator_loop.set 填充——工具调用时读槽即得。
+        // 主 agent；store=None 时工具不注册）。moderator 槽 = gateway 级
+        // 动态解析槽（AgentLoopServiceAdapter start 填 Some / stop 写
+        // None）——工具调用时读槽即得，agent 重启后自动跟随。
         #[cfg(all(feature = "board", feature = "cluster"))]
         board_store: board_store.clone(),
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -384,10 +385,14 @@ pub(crate) async fn init_agent(
     // workflow `tool` node can invoke them. The registry was created empty
     // during workflow init above; here we wrap each agent tool in an
     // `AgentToolAdapter` (the two `Tool` traits are incompatible) and register
-    // it. Each adapted tool runs the 8-layer security rule pipeline per call —
-    // no interactive approval popup, no guardian LLM judge — so batch
-    // workflows run unattended while still respecting workspace isolation and
-    // the other rule layers.
+    // it. Each adapted tool runs the same 8-layer security pipeline as the
+    // agent path (Layers 1-8, audit chain included) — including the ABAC
+    // approval arm: on RequireApproval the shared approval manager pops the
+    // interactive card and blocks until a verdict or timeout auto-deny. The
+    // dispatch-layer gates (estop / args_validator / hidden_tools / tier /
+    // plan-mode write gate) and the guardian judge are NOT on this path —
+    // they live in the agent loop's tool dispatch and are restored via the
+    // secure-executor closure (docs/PLAN workflow 安全闸补齐计划).
     #[cfg(feature = "workflow")]
     {
         let tools_guard = agent_loop.tools();
@@ -411,14 +416,39 @@ pub(crate) async fn init_agent(
         );
     }
 
+    // workflow `tool` 节点安全执行通道（A 批五闸补齐）：把 AgentLoop 的
+    // dispatch 瀑布（estop/hidden/tier/plan 写闸/安全 8 层+审批/guardian/
+    // args_validator，闸序单一真相源零重实现）接到 tool 节点——替换引擎
+    // 构造期装的裸注册表直连 executor。归因（wf_instance/wf_node_id/
+    // wf_name/wf_trigger/wf_depth）与审批回源（chat_id/sender_id/
+    // session_key）随行；上方桥接注册表仍供 script 节点注册表车道使用
+    // （AgentToolAdapter → RemoteExecutorTool 隔离执行链不变）。
+    #[cfg(feature = "workflow")]
+    {
+        workflow_engine.set_tool_executor(Arc::new(
+            nemesis_workflow::nodes::RealToolNodeExecutor::new_with_secure_executor(
+                workflow_tool_registry.clone(),
+                Arc::new(
+                    super::workflow_secure_executor::WorkflowSecureExecutor::new(
+                        board_moderator_loop.clone(),
+                    ),
+                ),
+            ),
+        ));
+        info!(
+            "[Gateway] Workflow tool nodes wired to the agent dispatch waterfall (secure executor)"
+        );
+    }
+
     // Wire up `agent` workflow nodes (milestone 1b-). Each workflow run
     // that hits an `agent` node will route through this runner, which
     // namespaces session keys under `workflow:{agent_id}` so workflow
     // sessions don't collide with human user sessions.
     #[cfg(feature = "workflow")]
     {
-        workflow_engine
-            .register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
+        workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(
+            board_moderator_loop.clone(),
+        )));
         info!("[Gateway] Workflow agent runner registered");
 
         // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor

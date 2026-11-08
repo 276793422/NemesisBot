@@ -461,8 +461,24 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             #[cfg(feature = "channels-maixcam")]
             maixcam: if cfg.channels.maixcam.enabled {
                 Some(nemesis_channels::maixcam::MaixCamConfig {
-                    host: cfg.channels.maixcam.host.clone(),
-                    port: cfg.channels.maixcam.port as u16,
+                    host: if cfg.channels.maixcam.host.is_empty() {
+                        // 缺省收敛（BUG-20261108-010）：存量 config 显式
+                        // 空串/host 键缺席的旧形态落出厂监听址。
+                        nemesis_channels::maixcam::MaixCamConfig::default().host
+                    } else {
+                        cfg.channels.maixcam.host.clone()
+                    },
+                    port: if cfg.channels.maixcam.port == 0 {
+                        // 显式 0 = 已中毒旧形态（typed save 全字段落盘把
+                        // serde 缺省 0 烤进文件）——bind(":0") 成功落 OS
+                        // 临时端口，状态运行中而设备永远连不上（静默死
+                        // 通道）。归一通道侧类型缺省（单一真相源 8888）。
+                        // 生产无合法 0 用途：设备推送型 TCP 服务端口的
+                        // 临时端口对设备不可见（line 通道 0→8080 同款先例）。
+                        nemesis_channels::maixcam::MaixCamConfig::default().port
+                    } else {
+                        cfg.channels.maixcam.port as u16
+                    },
                     allow_from: cfg.channels.maixcam.allow_from.clone(),
                 })
             } else {

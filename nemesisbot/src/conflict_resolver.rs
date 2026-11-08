@@ -114,7 +114,7 @@ async fn run_resolver(
         return;
     }
     // LLM 通道就绪闸：主 agent 未装配无法硬解 → human 档兜底（诚实）。
-    let Some(agent_loop) = deps.moderator_loop.get().cloned() else {
+    let Some(agent_loop) = deps.moderator_loop.read().clone() else {
         fallback_freeze(&deps, &issue, &task_id, "主 agent 未就绪，无法硬解，转人工");
         return;
     };

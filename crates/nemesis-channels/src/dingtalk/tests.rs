@@ -217,3 +217,63 @@ fn test_session_webhook_shared_between_task_clone_and_read_path() {
         "webhook written via the task-side clone must be visible to the send() read path (BUG-20261029-143)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 回归锁（BUG-20261108-017）：循环尾退避等待必须真的睡满时长，且可被取消
+// 打断。旧形态 `select! { sleep => {}, async {} => {} }` 空 async 臂立即
+// Ready，sleep 被完全短路（断连后零间隔重连锤击钉钉网关）；feishu 同族
+// 已修，此处为横向扫描漏网位点。
+
+#[tokio::test]
+async fn b017_backoff_wait_sleeps_full_duration_without_cancel() {
+    let (_tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    let start = std::time::Instant::now();
+    let slept = DingTalkChannel::backoff_wait(std::time::Duration::from_millis(50), &mut rx).await;
+    assert!(slept, "无取消时必须返回 true（睡满）");
+    assert!(
+        start.elapsed() >= std::time::Duration::from_millis(45),
+        "退避等待被短路，实际只等了 {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn b017_backoff_wait_returns_false_on_cancel() {
+    let (tx, mut rx) = tokio::sync::oneshot::channel::<()>();
+    let start = std::time::Instant::now();
+    drop(tx); // sender 侧 drop → oneshot 立即完成（取消语义含 drop）
+    let slept = DingTalkChannel::backoff_wait(std::time::Duration::from_secs(3600), &mut rx).await;
+    assert!(!slept, "取消触发时必须返回 false（打断退避）");
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "取消未能打断退避等待，实际耗时 {:?}",
+        start.elapsed()
+    );
+}
+
+// 回归锁（BUG-20261108-017）：poll 空载判定——204/空 body 是网关无事件
+// 正常态，必须安静跳过而非落进解析臂打双重解析失败警告洪水。
+
+#[test]
+fn b017_poll_response_is_empty_semantics() {
+    assert!(
+        DingTalkChannel::poll_response_is_empty(204, ""),
+        "204 必须判空载"
+    );
+    assert!(
+        DingTalkChannel::poll_response_is_empty(200, ""),
+        "200 空 body 必须判空载"
+    );
+    assert!(
+        DingTalkChannel::poll_response_is_empty(200, "  \n\t"),
+        "纯空白 body 必须判空载"
+    );
+    assert!(
+        !DingTalkChannel::poll_response_is_empty(200, "[]"),
+        "有内容的 200（空事件数组）不是空载，照常解析"
+    );
+    assert!(
+        !DingTalkChannel::poll_response_is_empty(500, "server error"),
+        "非 2xx 不在此判定内（走 break 重连臂）"
+    );
+}

@@ -99,23 +99,36 @@ fn cap_head_budget(cap: usize, hint_subagent: bool) -> usize {
     ((cap.saturating_sub(reserve)) / 2).min(PRUNE_HEAD_CHARS)
 }
 
-/// B30：gate 侧 cap 裁剪（unhinted 形态）产物是否与 types.rs 纯重算路径
-/// （[`prune_tool_result`]，const 8192/3600/3600）**同构**。
+/// B30：gate 侧 cap 整形结果（unhinted 形态，含「未裁全文放行」）是否与
+/// types.rs 纯重算路径（[`prune_tool_result`]，const 8192/3600/3600）
+/// **同构**。
 ///
-/// - `cap=0` 或 `total_chars ≤ cap` → gate 未裁，走重算即所见 → `true`；
-/// - gate 已裁时：输出逐字节同构 ⟺ 头尾预算未收缩（half==3600）**且**
-///   重算也裁（total > 8192——否则重算返回 `None`，全文泄漏）。
+/// 按双方是否裁剪分四种象限判定（BUG-20261107-027 修复前只覆盖一半）：
+///
+/// - 双方都不裁（gate 未裁 ⟺ `cap=0 | total ≤ cap`；重算未裁 ⟺
+///   `total ≤ 8192`）→ 全文即所见即重算 → `true`；
+/// - 双方都裁 → 输出逐字节同构 ⟺ 头尾预算未收缩（half==3600）；
+/// - **gate 未裁但重算会裁**（cap 放大/关闭方向：cap=0 或 8192 < total ≤
+///   cap）→ gate 回灌全文、重算产出裁剪形态 → `false`（必记投影=全文，
+///   否则下一轮请求/replay 静默缩水）；
+/// - gate 裁但重算不裁（缺省 cap 灰区 8001..=8192）→ `false`（必记，
+///   否则重算 `None` 泄漏全文）。
 ///
 /// 同构 ⇒ gate 不记 `tool_result_projection`（X1 纯重算语义照常，ledger
 /// 面对老会话/replay 零漂移）；不同构 ⇒ gate 必须记录（cap 是 dispatch
 /// 时点状态，不可由 history 重导出）。hinted 形态不适用（调用方
-/// `prune_hinted` 恒记）。
+/// `prune_hinted` 恒记）；gate 未裁分支的 gate_text 本就不含 hint 后缀，
+/// 重算亦 unhinted，判定与 hint 无关。
 pub fn cap_prune_matches_recompute(cap: usize, total_chars: usize) -> bool {
-    if cap == 0 || total_chars <= cap {
-        return true;
+    let gate_pruned = cap != 0 && total_chars > cap;
+    let recompute_prunes = total_chars > MAX_TOOL_RESULT_INLINE_CHARS;
+    match (gate_pruned, recompute_prunes) {
+        (false, false) => true,
+        (true, true) => cap_head_budget(cap, false) == PRUNE_HEAD_CHARS,
+        // 方向异构（单侧裁）：两个方向都必须记投影——既有灰区语义 +
+        // BUG-20261107-027 的 cap 放大/关闭方向。
+        (false, true) | (true, false) => false,
     }
-    let half = cap_head_budget(cap, false);
-    half == PRUNE_HEAD_CHARS && total_chars > MAX_TOOL_RESULT_INLINE_CHARS
 }
 
 /// 共享实现（缺省入口与 cap 参数化入口同源；`head`/`tail` 由调用方按

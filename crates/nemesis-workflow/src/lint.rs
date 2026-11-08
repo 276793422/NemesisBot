@@ -35,6 +35,7 @@ pub fn lint(wf: &Workflow) -> Vec<String> {
         );
     }
     lint_edge_conditions(wf, &mut warnings);
+    lint_node_condition_expressions(wf, &mut warnings);
     warnings
 }
 
@@ -161,26 +162,69 @@ fn lint_edge_conditions(wf: &Workflow, warnings: &mut Vec<String>) {
         let Some(cond) = edge.condition.as_deref() else {
             continue;
         };
-        for (head, field) in placeholder_refs(cond) {
-            let Some(node_type) = node_types.get(head.as_str()) else {
-                // 引用的首段不是节点 id：变量/触发器入参，运行期把关。
-                continue;
-            };
-            let Some(field) = field else {
-                // `{{节点id}}` 整体输出，合法。
-                continue;
-            };
-            if node_type == &"condition" && field != "condition_result" {
-                // 占位符原文用独立 format 构造，避免 format! 花括号转义错数。
-                let bad = format!("{{{{{}.{}}}}}", head, field);
-                let good = format!("{{{{{}.condition_result}}}}", head);
-                warnings.push(format!(
-                    "条件边 {}→{} 引用了 {}——condition 节点的输出字段是 \
-                     condition_result，不存在字段 {:?}，运行期会因解析不到直接 \
-                     Failed。改用 {}",
-                    edge.from_node, edge.to_node, bad, field, good
-                ));
-            }
+        lint_condition_field_hallucination(
+            &format!("条件边 {}→{} ", edge.from_node, edge.to_node),
+            cond,
+            &node_types,
+            warnings,
+        );
+    }
+}
+
+/// condition / loop 节点自身的 `condition` 表达式走同一规则（缺陷 15
+/// 同类清账：能力表 condition 节点示例本身就是 `!{{check.passed}}` 形态，
+/// 草稿期与条件边同等预警，双保险才完整）。loop 表达式引用 body 内联
+/// 子节点不在 wf.nodes 里，静态不可判（首段查不到节点 id 自然跳过），
+/// 交运行期守卫。
+fn lint_node_condition_expressions(wf: &Workflow, warnings: &mut Vec<String>) {
+    let node_types: std::collections::HashMap<&str, &str> = wf
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.node_type.as_str()))
+        .collect();
+    for node in &wf.nodes {
+        if !matches!(node.node_type.as_str(), "condition" | "loop") {
+            continue;
+        }
+        let Some(cond) = node.config.get("condition").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        lint_condition_field_hallucination(
+            &format!("节点 {}（{}）的 condition 表达式 ", node.id, node.node_type),
+            cond,
+            &node_types,
+            warnings,
+        );
+    }
+}
+
+/// 字段幻觉检查的单一规则（lint_edge_conditions 与
+/// lint_node_condition_expressions 共用）：占位符首段是本 workflow 的
+/// condition 节点且字段名不是 condition_result → 预警。
+fn lint_condition_field_hallucination(
+    site: &str,
+    cond: &str,
+    node_types: &std::collections::HashMap<&str, &str>,
+    warnings: &mut Vec<String>,
+) {
+    for (head, field) in placeholder_refs(cond) {
+        let Some(node_type) = node_types.get(head.as_str()) else {
+            // 引用的首段不是节点 id：变量/触发器入参，运行期把关。
+            continue;
+        };
+        let Some(field) = field else {
+            // `{{节点id}}` 整体输出，合法。
+            continue;
+        };
+        if node_type == &"condition" && field != "condition_result" {
+            // 占位符原文用独立 format 构造，避免 format! 花括号转义错数。
+            let bad = format!("{{{{{}.{}}}}}", head, field);
+            let good = format!("{{{{{}.condition_result}}}}", head);
+            warnings.push(format!(
+                "{site}引用了 {bad}——condition 节点的输出字段是 \
+                 condition_result，不存在字段 {field:?}，运行期会因解析不到直接 \
+                 Failed。改用 {good}"
+            ));
         }
     }
 }

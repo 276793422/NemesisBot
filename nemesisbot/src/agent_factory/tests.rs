@@ -1965,7 +1965,7 @@ fn anchor_root_contract_single_source() {
         // 装配点契约：post_agent.rs 用 workspace_dir() 填 BoardReviewDeps。
         workspace: shared.workspace_dir(),
         home: home.clone(),
-        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster: Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
             node_id: "n1".to_string(),
             bind_address: "127.0.0.1:0".to_string(),

@@ -784,3 +784,64 @@ fn purge_all_clears_live_todo_orphans_too() {
     assert!(!t.loc.todo_path(&k).exists(), "批量清空须同样清 live 孤儿");
     assert!(!t.entry_dir(&entry).exists());
 }
+
+/// 行为锁：boundary 残留覆盖语义。目标键 boundary 残留（log/meta 缺席 =
+/// 不构成冲突，恢复照常放行）被条目版本覆盖落位——std::fs::rename 两平台
+/// 都替换已存在目标（Windows = MoveFileExW + MOVEFILE_REPLACE_EXISTING），
+/// 冲突前置检查（log/meta）必要性正依赖该语义（否则恢复静默吞 live 会话）；
+/// boundary 作为审计 sidecar 被覆盖是刻意语义（「恢复覆盖之」）。锁住两平台
+/// 行为一致，防未来有人按「rename 目标存在即失败」的错误假设改设计。
+#[test]
+fn restore_succeeds_with_stale_boundary_residue_at_target() {
+    let t = TempTrash::new("stale-boundary");
+    let key = make_session(&t, "staleb", "残留恢复", &["restored body"]);
+    // 先给目标键放一条 boundary（会随 trash 一起进条目——作为条目内容的基座）。
+    put_boundary(&t, &key, "turn_end");
+    let entry = trash_chat_log_in(&t.loc, &key, "single").unwrap().unwrap();
+    // 条目内 boundary 保持真实审计行；目标键再造外部残留（log/meta 缺席，
+    // 不触发冲突拦截——正是修复前 Windows 卡死的形态）。
+    put_boundary(&t, &key, "stale_residue");
+
+    let out = trash_restore_in(&t.loc, &entry, None).expect("残留不得卡死恢复");
+    assert_eq!(out["restored"], serde_json::json!(key));
+    assert_eq!(read_msgs(&t, &key).len(), 1, "消息完整");
+    let boundary = std::fs::read_to_string(t.loc.boundary_path(&key)).unwrap();
+    assert!(
+        !boundary.contains("stale_residue"),
+        "目标残留必须被条目版本覆盖: {boundary}"
+    );
+    assert!(boundary.contains("turn_end"), "条目版本落位: {boundary}");
+    assert!(!t.entry_dir(&entry).exists(), "条目清掉");
+}
+
+/// 续作半成品保留锁：目标 boundary 已是本事务上次移入的半成品（源缺席）
+/// 时，续作按缺席跳过 + 完成性验证兜底——半成品原样保留、meta 补齐、条目
+/// 清掉，不丢件不重移。
+#[test]
+fn restore_resume_keeps_inflight_boundary_half_moved() {
+    let t = TempTrash::new("resume-boundary");
+    let key = make_session(&t, "resumeb", "半途boundary", &["s1"]);
+    put_boundary(&t, &key, "turn_end");
+    let entry = trash_chat_log_in(&t.loc, &key, "single").unwrap().unwrap();
+    // 手工构造半成品：chat + boundary 已到目标键，meta 留条目 + 事务标记。
+    std::fs::rename(t.entry_dir(&entry).join("chat.jsonl"), t.loc.log_path(&key)).unwrap();
+    std::fs::rename(
+        t.entry_dir(&entry).join("boundary.jsonl"),
+        t.loc.boundary_path(&key),
+    )
+    .unwrap();
+    std::fs::write(
+        t.entry_dir(&entry).join(RESTORE_MARKER_FILE),
+        serde_json::json!({ "target_key": key }).to_string(),
+    )
+    .unwrap();
+
+    let out = trash_restore_in(&t.loc, &entry, None).expect("续作须完成");
+    assert_eq!(out["restored"], serde_json::json!(key));
+    let boundary = std::fs::read_to_string(t.loc.boundary_path(&key)).unwrap();
+    assert!(
+        boundary.contains("turn_end"),
+        "半成品 boundary 必须原样保留（不得被清场误删）: {boundary}"
+    );
+    assert!(!t.entry_dir(&entry).exists(), "条目清掉");
+}

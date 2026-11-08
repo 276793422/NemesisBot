@@ -179,6 +179,9 @@ async fn agent_tool_trigger_records_depth_in_call_stack_frame() {
             Some(TriggerSource::AgentTool {
                 tool_call_id: "tc1".to_string(),
                 recursion_depth: MAX_RECURSION_DEPTH,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
             }),
         )
         .await
@@ -193,6 +196,9 @@ async fn agent_tool_trigger_records_depth_in_call_stack_frame() {
             Some(TriggerSource::AgentTool {
                 tool_call_id: "tc2".to_string(),
                 recursion_depth: MAX_RECURSION_DEPTH + 1,
+                session_key: String::new(),
+                chat_id: String::new(),
+                sender_id: String::new(),
             }),
         )
         .await

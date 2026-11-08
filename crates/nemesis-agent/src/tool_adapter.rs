@@ -23,10 +23,25 @@
 //!
 //! The workflow path previously bypassed the 8-layer security pipeline
 //! entirely (`nemesis-workflow` has zero references to `nemesis-security`).
-//! The adapter runs `SecurityPlugin::execute` — the **rule pipeline only**,
-//! matching the agent path's pre-execution check. It deliberately does NOT
-//! trigger the interactive approval popup nor the guardian LLM judge, so batch
-//! workflows run unattended (per the workflow tool-node design decision).
+//! The adapter runs `SecurityPlugin::execute` — the same rule pipeline the
+//! agent path uses, Layers 1-8 including the audit chain (allowed calls are
+//! appended too). Behavior on `RequireApproval` is **not** bypassed: the ABAC
+//! layer's approval arm calls the shared approval manager synchronously, so
+//! in a gateway deployment (WebApprovalManager always mounted) HIGH/CRITICAL
+//! operations pop the interactive approval card and block until a verdict or
+//! timeout (auto-deny). Two of the three approval-exemption mechanisms apply
+//! on this path today — the pattern memory rules (`approval_rules.json`) and
+//! the do-not-disturb auto-approve switch — while session-scope allow-all
+//! does not yet (the synthetic context below carries an empty session key;
+//! execution-context plumbing fills it — see `WorkflowContext` identity).
+//!
+//! What this path deliberately does NOT carry (agent-loop dispatch-layer
+//! gates, all absent here): estop freeze check, `args_validator` schema
+//! repair/feedback, `hidden_tools` supply/dispatch gates, model-tier
+//! allowlist, and plan-mode write gating — plus the guardian LLM judge.
+//! These live in `loop/tool_dispatch.rs`, which workflow tool nodes do not
+//! traverse; they are restored at the executor level via the secure-executor
+//! closure (see `docs/PLAN` workflow 安全闸补齐计划, batches 3-4).
 
 // Only used inside the `#[cfg(feature = "security")]` execute block below —
 // gate the import so security-off builds stay warning-free.
@@ -45,9 +60,13 @@ use crate::r#loop::Tool as AgentTool;
 /// `nemesis_tools::Tool:execute(&self, args)` does not receive per-call
 /// workflow context (node id / execution id / trigger user). We therefore
 /// synthesize a static context. The security check operates on `tool_name +
-/// args` (the actual operation), which is what matters; threading
-/// per-execution context (via `ToolRegistry::execute_with_full_context`) is a
-/// future enhancement.
+/// args` (the actual operation), which is what matters. Note the
+/// `ToolRegistry::execute_with_full_context` side-channel is NOT a viable
+/// route here: it keys context by tool name (concurrent calls to the same
+/// tool overwrite each other) and this adapter never reads it. The real fix
+/// is execution-context identity via `WorkflowContext` (per-execution), fed
+/// through the secure-executor closure — see `docs/PLAN` workflow 安全闸补齐
+/// 计划, batch 2.
 fn workflow_request_context() -> RequestContext {
     RequestContext::new("workflow", "workflow", "workflow", "workflow")
 }
@@ -108,9 +127,12 @@ impl nemesis_tools::registry::Tool for AgentToolAdapter {
     }
 
     async fn execute(&self, args: &serde_json::Value) -> nemesis_tools::types::ToolResult {
-        // 8-layer security pipeline (rule layers only). `execute` auto-allows
-        // when security is disabled or the tool is unknown to the classifier,
-        // so this never spuriously blocks benign/unknown tools.
+        // 8-layer security pipeline (same as the agent path: rule layers +
+        // audit chain + the ABAC approval arm, which pops the interactive
+        // card via the shared approval manager on RequireApproval — see the
+        // module docs). `execute` auto-allows when security is disabled or
+        // the tool is unknown to the classifier, so this never spuriously
+        // blocks benign/unknown tools.
         #[cfg(feature = "security")]
         {
             if let Some(ref security) = self.security {

@@ -692,7 +692,8 @@ impl AnthropicProvider {
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
-                // 事件边界双形态（\n\n / \r\n\r\n，SSE 规范行终止三态）。
+                // 事件边界全形态（规范行终止 LF/CR/CRLF 三态逐行独立；
+                // 单一真相源 stream_util::next_event_boundary）。
                 while let Some((pos, sep)) = crate::stream_util::next_event_boundary(&buffer) {
                     let block = buffer[..pos].to_string();
                     buffer = buffer[pos + sep..].to_string();

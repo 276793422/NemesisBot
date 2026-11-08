@@ -120,6 +120,7 @@ async fn context_retry_exhausts_bounded_then_fails_loud() {
 
     // 2 轮 × (摘要 + 重呼) 全失败——脚本耗尽后的 Err fallback 恰好兜底，
     // 不需要预填脚本。
+    let cancel = tokio_util::sync::CancellationToken::new();
     let result = agent_loop
         .retry_after_context_error(
             &instance,
@@ -132,6 +133,8 @@ async fn context_retry_exhausts_bounded_then_fails_loud() {
             0,
             std::time::Instant::now(),
             &(Arc::new(llm.clone()) as Arc<dyn LlmProvider>),
+            &cancel,
+            None,
             CTX_ERR.to_string(),
         )
         .await;
@@ -197,6 +200,7 @@ async fn context_retry_recovers_when_recall_succeeds() {
     llm.queue_err("summarizer retry still down");
     llm.queue_ok("recovered after compression");
 
+    let cancel = tokio_util::sync::CancellationToken::new();
     let result = agent_loop
         .retry_after_context_error(
             &instance,
@@ -209,6 +213,8 @@ async fn context_retry_recovers_when_recall_succeeds() {
             0,
             std::time::Instant::now(),
             &(Arc::new(llm.clone()) as Arc<dyn LlmProvider>),
+            &cancel,
+            None,
             CTX_ERR.to_string(),
         )
         .await;

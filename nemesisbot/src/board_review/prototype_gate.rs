@@ -318,7 +318,7 @@ pub(crate) async fn run_prototype_gate(
         return Ok(true);
     }
     // 主持人 LLM 缺席 = 基础设施失败面。
-    let Some(moderator) = deps.moderator_loop.get().cloned() else {
+    let Some(moderator) = deps.moderator_loop.read().clone() else {
         return gate_infra_arm(deps, &issue, "主持人 LLM 未装配，机器闸未执行").await;
     };
     // 出题（解析重试 ×3）。

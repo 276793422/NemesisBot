@@ -208,6 +208,16 @@ impl Transport for HttpTransport {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            // MCP Streamable HTTP 会话生命周期：server 终止会话（重启/过期）
+            // 后，对携带 Mcp-Session-Id 的请求按规范回 404。识别「带会话 id
+            // 的 404」= 会话过期（无会话 id 的 404 = 端点/路径错，保持旧错误
+            // 形态）：清掉本地残留会话 id + 报 session_expired，client 层据此
+            // 重握手建新会话。无此识别时已挂载工具在 server 重启后对每个调用
+            // 永久 404（无任何层会重握手/重挂载）。
+            if status.as_u16() == 404 && self.session_id.is_some() {
+                self.session_id = None;
+                return Err(TransportError::session_expired());
+            }
             return Err(TransportError::send_failed(format!(
                 "HTTP {} from MCP server: {}",
                 status,
@@ -387,17 +397,12 @@ fn response_payload(json_str: &str) -> Result<SsePayload, TransportError> {
 /// Take one complete event from the head of the buffer (returns the event
 /// text and the remaining buffer); None when no complete event exists.
 ///
-/// Event terminators `\n\n` and `\r\n\r\n` are both recognized; when both
-/// are present, whichever appears first wins (within a pure CRLF boundary,
-/// `\n\n` cannot match falsely — `\r\n\r\n` has no two consecutive `\n`).
+/// 边界判定单一真相源在 `nemesis_utils::sse::next_event_boundary`
+/// （规范行终止 LF/CR/CRLF 三态逐行独立；本处旧内联只认 `\n\n` 与
+/// `\r\n\r\n` 两形态，CR-only/混合行尾的 MCP server 零事件解析）。
 fn take_complete_event(buffer: &str) -> Option<(String, String)> {
-    let lf = buffer.find("\n\n");
-    let crlf = buffer.find("\r\n\r\n");
-    match (lf, crlf) {
-        (Some(a), Some(b)) if b < a => Some((buffer[..b].to_string(), buffer[b + 4..].to_string())),
-        (Some(a), _) => Some((buffer[..a].to_string(), buffer[a + 2..].to_string())),
-        _ => crlf.map(|b| (buffer[..b].to_string(), buffer[b + 4..].to_string())),
-    }
+    nemesis_utils::sse::next_event_boundary(buffer)
+        .map(|(pos, sep)| (buffer[..pos].to_string(), buffer[pos + sep..].to_string()))
 }
 
 /// Join an SSE event's `data:` fields (multi-line concatenated with `\n`);
