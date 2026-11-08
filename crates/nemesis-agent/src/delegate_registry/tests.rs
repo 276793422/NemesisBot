@@ -1353,3 +1353,80 @@ async fn rpc_round_reassembles_response_line_split_across_polls() {
         "thread.id present (codex_handshake downstream consumer): {resp}"
     );
 }
+
+/// BUG-20261108-027 同族位点回归锁（delegate output，两缺陷一并钉）：
+/// ① 字节洞——raw.next_offset 旧形态恒报 produced()，chunk 却只含
+///    [offset, offset+MAX_CHUNK_BYTES) 窗；produced 超窗时按 next_offset
+///    分页的调用方（工具描述明示该用法）永久跳过中段字节。现
+///    next_offset = offset + 实际返回字节（钳 dropped 后），多轮分页
+///    无洞拼回全量。
+/// ② 劈字符——MAX_CHUNK_BYTES 窗口劈开 CJK 三字节字符时，运行中 chunk
+///    不渲染替换符，尾部不完整字节留待下轮拼接出完整字符。
+/// 静默真进程（fake CLI 等输入无 stdout）+ 直接向 OutputBuffer 注入合成
+/// 字节（确定性构造劈边界场景，进程自身输出不污染断言）。
+#[tokio::test]
+async fn delegate_output_no_byte_hole_split_cjk_composes_bug_20261108_027() {
+    use crate::background_registry::MAX_CHUNK_BYTES;
+    let _serial = TEST_LOCK.lock().await;
+    let dir = unique_temp_dir("utf8hole");
+    let cli = make_fake_echo_cli(&dir);
+    let mgr = Arc::new(DelegateManager::new());
+    let started = mgr
+        .start(
+            DelegateProtocolKind::ClaudeStreamJson,
+            &cli,
+            None,
+            dir.to_string_lossy().as_ref(),
+            None,
+            "",
+            Default::default(),
+            Duration::MAX,
+        )
+        .await
+        .expect("start ok");
+    let id = started["delegate_id"].as_u64().unwrap();
+
+    // 注入 (窗口-2) ASCII 前缀 + 半截「你」（E4 BD 恰落在 8KB 窗口末两
+    // 字节）：produced 超窗（字节洞场景）且边界劈在字符中间（劈字符场景）。
+    let out_buf = {
+        let entries = mgr.entries.lock().await;
+        entries.get(&id).expect("delegate entry").output.clone()
+    };
+    out_buf
+        .lock()
+        .await
+        .append(&vec![b'a'; MAX_CHUNK_BYTES - 2]);
+    out_buf.lock().await.append(&[0xE4, 0xBD]);
+
+    // 第一轮：前缀整段返回，E4 BD 被截住不进 chunk（无替换符）；
+    // next_offset = 8190 停在字符边界——不跳报 produced=8192（字节洞证据）。
+    let first = mgr.output(id, 0).await.expect("first poll");
+    let chunk1 = first["raw"]["chunk"].as_str().unwrap();
+    let ret1 = first["raw"]["bytes_returned"].as_u64().unwrap();
+    let off1 = first["raw"]["next_offset"].as_u64().unwrap();
+    assert_eq!(ret1, (MAX_CHUNK_BYTES - 2) as u64, "prefix fully returned");
+    assert!(
+        !chunk1.contains('\u{FFFD}'),
+        "running delegate must withhold the split tail: {chunk1:?}"
+    );
+    assert_eq!(
+        off1, ret1,
+        "next_offset must advance by returned bytes only, never jump to produced"
+    );
+
+    // 注入尾字节 → 第二轮续读拼回完整「你」（无洞无替换符）。
+    out_buf.lock().await.append(&[0xA0]);
+    let second = mgr.output(id, off1).await.expect("second poll");
+    let chunk2 = second["raw"]["chunk"].as_str().unwrap();
+    assert_eq!(
+        chunk2, "你",
+        "split char must compose across polls: {chunk2:?}"
+    );
+    assert_eq!(
+        second["raw"]["next_offset"].as_u64(),
+        Some(off1 + 3),
+        "page cursor lands exactly at produced after full consumption"
+    );
+
+    mgr.stop(id).await.expect("stop ok");
+}

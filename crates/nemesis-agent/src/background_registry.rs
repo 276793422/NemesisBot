@@ -154,6 +154,33 @@ impl OutputBuffer {
         let end = (start + MAX_CHUNK_BYTES).min(self.buf.len());
         (self.buf[start..end].to_vec(), skipped)
     }
+
+    /// 分页 `next_offset` 单一真相源：钳到保留窗口起点后加本 chunk 实际
+    /// 消费字节。`produced()` 不能当 next_offset——`read_chunk` 只返回至
+    /// 多 [`MAX_CHUNK_BYTES`] 窗，坐标跳 produced 会让按 next_offset 分页
+    /// 的调用方永久跳过中段字节（字节洞）。
+    pub(crate) fn next_read_offset(&self, offset: u64, consumed: usize) -> u64 {
+        offset.max(self.dropped) + consumed as u64
+    }
+}
+
+/// chunk 尾部的 UTF-8 消费安全长度：[`MAX_CHUNK_BYTES`] 字节窗口可能把
+/// 多字节字符劈在窗口边界，尾部不完整序列（`from_utf8` 报 `error_len ==
+/// None`）此刻 lossy 转换会渲染成替换符，而它本可与**后续**输出拼成完整
+/// 字符。返回「本 chunk 可安全消费的字节数」——截到 `valid_up_to`，剩余
+/// 字节留给下一次 `read_chunk`（字节坐标单调，不丢不重）。
+/// 中段真非法序列（`error_len == Some`，二进制/非 UTF-8 输出）不截：
+/// lossy 诚实降级为替换符，且保证每轮必有推进。
+pub(crate) fn utf8_safe_len(chunk: &[u8]) -> usize {
+    match std::str::from_utf8(chunk) {
+        Ok(_) => chunk.len(),
+        // 尾部不完整序列（error_len() == None）：截到 valid_up_to（整段只有
+        // 一个不完整序列时 = 0，空消费——等下一轮与后续字节拼齐）。
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        // 中段真非法序列（error_len() == Some）：不截——lossy 诚实降级为
+        // 替换符，且保证每轮必有推进（二进制/非 UTF-8 输出不能卡住 tail）。
+        _ => chunk.len(),
+    }
 }
 
 /// 注册表中的单个任务条目。
@@ -403,9 +430,20 @@ impl BackgroundProcessRegistry {
                 id
             )
         })?;
-        let buf = job.output.lock().await;
-        let (chunk, skipped) = buf.read_chunk(offset);
         let running = job.is_running().await;
+        let buf = job.output.lock().await;
+        let (mut chunk, skipped) = buf.read_chunk(offset);
+        // BUG-20261108-027：运行中把尾部不完整 UTF-8 序列截到字符边界——
+        // MAX_CHUNK_BYTES 字节窗口劈开多字节字符时，lossy 转换会把「本可
+        // 与后续输出拼完整」的尾巴渲染成替换符（CJK 输出高频命中）。截掉
+        // 的字节留在缓冲区由下一轮 offset 重读拼接（next_offset 只推进
+        // 已消费字节，坐标单调不丢不重）。终态不截：没有后续输出可拼接，
+        // 且「追平即停」的轮询语义要求终态推进到底（next_offset ==
+        // total_bytes），未完成序列按既有语义诚实渲染替换符。
+        if running {
+            let safe = utf8_safe_len(&chunk);
+            chunk.truncate(safe);
+        }
         let mut payload = serde_json::json!({
             "job_id": id,
             "running": running,
@@ -422,7 +460,7 @@ impl BackgroundProcessRegistry {
             "total_bytes": buf.produced,
             "dropped_bytes": buf.dropped,
             "offset": offset,
-            "next_offset": offset.max(buf.dropped) + chunk.len() as u64,
+            "next_offset": buf.next_read_offset(offset, chunk.len()),
             "chunk": String::from_utf8_lossy(&chunk),
         });
         if skipped {

@@ -1215,3 +1215,44 @@ time.sleep(30)
     );
     t.close().await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261108-028：stdio 行读无帽——崩溃/被替换的 MCP 服务器一行无限
+// 输出打爆网关内存（stdout 响应行 16MB 帽 fail-closed；stderr 排水 64KB
+// 帽截断注记不死）。read_line_capped 语义的游标级单测在
+// nemesis-utils/src/line_cap/tests.rs（实现单一真相源同址）；本文件只留
+// 真子进程 e2e 锁 send 面的帽错接线。
+// ---------------------------------------------------------------------------
+
+/// 真子进程 e2e：崩溃/被替换的 MCP 服务器吐一行 >16MB。修复前
+/// read_line 无界积累 17MB → 当 banner 跳过 → 干等满 deadline（内存爆炸
+/// + 慢）；修复后读满帽即 fail-closed（帽错消息 + 立即返回），不再积累、
+/// 不再吞帽等超时。
+#[tokio::test]
+async fn bug028_oversized_response_line_fails_fast_with_cap_error() {
+    let script = r#"
+import sys, time
+sys.stdout.write("x" * (17 * 1024 * 1024) + "\n")
+sys.stdout.flush()
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let err = t.send(&req, 60_000).await.unwrap_err();
+    assert!(
+        err.message.contains("byte cap"),
+        "超帽行必须 fail-closed 报帽错（非无界积累后吞掉等超时）: {}",
+        err.message
+    );
+    t.close().await.unwrap();
+}

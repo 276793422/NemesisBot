@@ -699,8 +699,23 @@ impl DelegateManager {
     pub async fn output(&self, id: u64, offset: u64) -> Result<serde_json::Value, String> {
         let entry = self.entry(id).await?;
         let output = entry.output.lock().await;
-        let (chunk, clamped) = output.read_chunk(offset);
-        let next_offset = output.produced();
+        let running = entry.is_running_sync();
+        let (mut chunk, clamped) = output.read_chunk(offset);
+        // BUG-20261108-027 同族位点（两处一并修）：
+        // ① 劈字符——MAX_CHUNK_BYTES 窗口劈开多字节 UTF-8 时 lossy 渲染替
+        //    换符。运行中截尾部不完整序列（与 background_registry::output
+        //    同源语义：截掉的字节留缓冲由下轮 offset 拼接）；终态不截（无
+        //    后续输出可拼接，且推进到底才满足分页终止判定）。
+        // ② 字节洞——next_offset 旧形态恒报 produced()，但 chunk 只含
+        //    [offset, offset+MAX_CHUNK_BYTES) 窗；produced - offset > 窗口
+        //    时按「上一轮 raw.next_offset」分页的调用方（工具描述明示此用
+        //    法）永久跳过中段字节。改用与 background 同源算式：钳 dropped
+        //    后加实际返回字节。
+        if running {
+            let safe = crate::background_registry::utf8_safe_len(&chunk);
+            chunk.truncate(safe);
+        }
+        let next_offset = output.next_read_offset(offset, chunk.len());
         // 全缓冲协议抽取（缓冲上限 256KB，逐行 parse 成本可忽略；guard 持有
         // 期间无 await）。两种协议都走同一循环——协议差异封装在
         // extract_assistant_texts/extract_session_id 内（codex 的

@@ -358,6 +358,31 @@ async fn test_privmsg_query_chat_id_takes_sender_nick() {
     ch.stop().await.unwrap();
 }
 
+/// BUG-20261108-028 横向同族回归锁：恶意/故障 IRC 服务器吐一行 >16KB
+/// 毒丸，读循环必须带帽丢弃跳过（游标对齐下一行行首、连接保活），后续
+/// PRIVMSG 照常发布——修复前裸 read_line 把毒丸无界积累进内存（OOM 面）。
+#[tokio::test]
+async fn test_oversized_line_dropped_and_loop_survives() {
+    let poison = "x".repeat(17 * 1024) + "\r\n";
+    let script = vec![
+        poison,
+        ":alice!u@h PRIVMSG #test :after poison\r\n".to_string(),
+    ];
+    let addr = spawn_fake_irc(&script).await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let ch = IRCChannel::new(irc_config_for(addr, Vec::new()), tx).unwrap();
+    ch.start().await.unwrap();
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("loop must survive the poison line and publish the PRIVMSG within 5s")
+        .unwrap();
+    assert_eq!(inbound.sender_id, "alice");
+    assert_eq!(inbound.content, "after poison");
+
+    ch.stop().await.unwrap();
+}
+
 /// allow-list：非空白名单时不在名单内的发送者被拦——零总线发布。
 /// 名单匹配发送者昵称（IRCConfig.allow_from 语义 "Allowed sender IDs"）。
 #[tokio::test]
@@ -397,7 +422,7 @@ async fn spawn_fake_irc_interactive() -> (
     std::net::SocketAddr,
     tokio::sync::oneshot::Receiver<Vec<String>>,
 ) {
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let (tx, rx) = tokio::sync::oneshot::channel();

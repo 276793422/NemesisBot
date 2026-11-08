@@ -1379,6 +1379,54 @@ async fn test_w4c_maixcam_stop_ends_accept_loop() {
     assert!(!ch.is_running());
 }
 
+/// BUG-20261108-028 横向同族回归锁：故障/被替换的设备吐一行 >1MB 毒丸，
+/// 读循环必须带帽丢弃跳过（游标对齐下一行行首、连接保活），后续合法
+/// 消息照常发布——修复前裸 read_line 把毒丸无界积累进内存（OOM 面）。
+#[tokio::test]
+async fn test_oversized_line_dropped_and_loop_survives() {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let (bus, mut rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
+    let config = MaixCamConfig {
+        host: "127.0.0.1".to_string(),
+        port,
+        allow_from: vec![],
+    };
+    let ch = MaixCamChannel::new(config, bus).unwrap();
+    ch.start().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let mut dev = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    // 毒丸行（1MB+1KB 无换行）+ 行尾 + 后续合法消息。
+    let poison = vec![b'x'; 1024 * 1024 + 1024];
+    dev.write_all(&poison).await.unwrap();
+    dev.write_all(b"\n").await.unwrap();
+    dev.write_all(
+        br#"{"type":"person_detected","timestamp":1234.5,"data":{"class_name":"person","score":0.9}}"#,
+    )
+    .await
+    .unwrap();
+    dev.write_all(b"\n").await.unwrap();
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("loop must survive the poison line and publish the valid message within 5s")
+        .unwrap();
+    assert!(
+        inbound.content.contains("Person detected!"),
+        "got: {}",
+        inbound.content
+    );
+
+    ch.stop().await.unwrap();
+}
+
 // ===========================================================================
 // coverage: bind-failure error arm / reader break after stop /
 // no-receiver publish warn / StatusUpdate + Unknown classify arms (TCP path)

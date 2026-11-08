@@ -14,7 +14,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{debug, error, info, warn};
 
@@ -22,6 +22,13 @@ use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
+
+use nemesis_utils::line_cap::read_line_capped;
+
+/// 单行字节帽（BUG-20261108-028）：裸 read_line 把整行无界积累进内存才
+/// 返回——恶意/故障 IRC 服务器一行无限输出打爆宿主内存。RFC 1459 行上限
+/// 512 字节（message-tags 扩展也不过数 KB），16KB 远超任何合法行。
+const MAX_IRC_LINE_BYTES: usize = 16 * 1024;
 
 /// IRC channel configuration.
 #[derive(Debug, Clone)]
@@ -400,7 +407,6 @@ impl IRCChannel {
 
                         // Read loop
                         let mut reader = BufReader::new(reader);
-                        let mut line = String::new();
 
                         loop {
                             tokio::select! {
@@ -417,17 +423,28 @@ impl IRCChannel {
                                     *writer_slot.lock() = None;
                                     return;
                                 }
-                                result = reader.read_line(&mut line) => {
+                                result = read_line_capped(&mut reader, MAX_IRC_LINE_BYTES) => {
                                     match result {
-                                        Ok(0) => {
+                                        Ok(None) => {
                                             warn!("[IRCChannel] connection closed");
                                             *writer_slot.lock() = None;
                                             break;
                                         }
-                                        Ok(_) => {
-                                            let trimmed = line.trim_end_matches("\r\n").trim_end_matches('\n');
+                                        Ok(Some((raw, truncated))) => {
+                                            // 带帽读（BUG-20261108-028）：超长毒丸行
+                                            // 丢弃跳过（游标已对齐下一行行首），连接
+                                            // 保活——IRC 合法行 ≤ 数 KB，超帽 = 对端
+                                            // 异常输出而非协议行。
+                                            if truncated {
+                                                warn!(
+                                                    cap = MAX_IRC_LINE_BYTES,
+                                                    "[IRCChannel] oversized line dropped"
+                                                );
+                                                continue;
+                                            }
+                                            let buf = String::from_utf8_lossy(&raw).into_owned();
+                                            let trimmed = buf.trim_end_matches("\r\n").trim_end_matches('\n');
                                             if trimmed.is_empty() {
-                                                line.clear();
                                                 continue;
                                             }
 
@@ -441,7 +458,6 @@ impl IRCChannel {
                                                     ),
                                                 )
                                                 .await;
-                                                line.clear();
                                                 continue;
                                             }
 
@@ -539,7 +555,6 @@ impl IRCChannel {
                                                 }
                                                 _ => {}
                                             }
-                                            line.clear();
                                         }
                                         Err(e) => {
                                             error!(error = %e, "[IRCChannel] read error");

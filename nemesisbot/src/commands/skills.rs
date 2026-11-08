@@ -803,7 +803,10 @@ fn cmd_show(skills_dir: &std::path::Path, name: &str) -> Result<()> {
 
         // List files in directory
         if let Ok(entries) = std::fs::read_dir(&skill_dir) {
-            let files: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+            // read_dir 纪律同款（plugin trust-list 先例）：目录枚举序是平台
+            // 实现细节，文件清单展示显式排序跨平台稳定。
+            let mut files: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+            files.sort_by_key(|e| e.file_name());
             if !files.is_empty() {
                 println!("  Files:");
                 for f in &files {

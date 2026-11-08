@@ -729,3 +729,97 @@ async fn build_platform_shell_strips_sensitive_env() {
         "敏感变量必须被 T4 剥离，不得进入后台命令环境: {text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261108-027：chunk 边界劈开多字节 UTF-8 字符 → 替换符 mojibake
+// ---------------------------------------------------------------------------
+
+/// 静默长跑命令（无 stdout 输出）：e2e 测试需要向运行中任务的缓冲注入
+/// 合成字节，真实进程若同时产出会污染劈字符的确定性断言。
+fn silent_cmd() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "ping -n 30 127.0.0.1 > nul"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "sleep 30"
+    }
+}
+
+/// `utf8_safe_len` 判定矩阵：完整 UTF-8 全长消费；尾部不完整序列截到
+/// 合法前缀末尾（整段就是半截 → 0）；中段真非法序列不截（lossy 诚实
+/// 降级 + 保证推进）。
+#[test]
+fn utf8_safe_len_matrix_bug_20261108_027() {
+    use super::utf8_safe_len;
+    // 完整 UTF-8（ASCII / CJK / emoji 混排）→ 全长。
+    assert_eq!(utf8_safe_len("ab".as_bytes()), 2);
+    assert_eq!(utf8_safe_len("你好".as_bytes()), 6);
+    assert_eq!(utf8_safe_len("x🦀z".as_bytes()), "x🦀z".len());
+    // 「你」= E4 BD A0 劈尾：合法前缀 + 尾部不完整序列 → 截到前缀末尾。
+    assert_eq!(utf8_safe_len(&[0x61, 0xE4, 0xBD]), 1); // 'a' + 半个你
+    assert_eq!(utf8_safe_len(&[0xE4, 0xBD]), 0); // 整段就是半截 → 空消费
+    assert_eq!(utf8_safe_len(&[0xE4]), 0);
+    // emoji 🦀 = F0 9F A6 80 劈在各中段 → 整段属于不完整序列 → 0。
+    assert_eq!(utf8_safe_len(&[0xF0, 0x9F]), 0);
+    assert_eq!(utf8_safe_len(&[0xF0, 0x9F, 0xA6]), 0);
+    // 中段真非法序列（error_len Some）不截：continuation 字节开头（头部
+    // 钳制落进字符中间的诚实降级面）与裸非法字节。
+    assert_eq!(utf8_safe_len(&[0xBD, 0xA0]), 2);
+    assert_eq!(utf8_safe_len(&[0x61, 0xFF, 0x62]), 3);
+}
+
+/// e2e 回归锁（真实运行中任务 + 注入合成字节）：劈在轮询边界的 CJK
+/// 三字节字符必须跨轮拼回完整字符，不得渲染替换符；运行中 next_offset
+/// 停在字符边界（不越过半截字节），终态语义（推进到底）由既有
+/// offset_paging_covers_output / output_cap_drops_head_keeps_tail 覆盖。
+#[tokio::test]
+async fn split_cjk_char_composes_across_polls_bug_20261108_027() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start(silent_cmd(), "/", false).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+
+    // 向运行中任务的输出缓冲注入「你」的前两个字节（绕过真实进程输出
+    // 时机的非确定性，确定性构造「字符劈在 chunk 边界」场景）。
+    let output_buf = {
+        let jobs = reg.jobs.lock().await;
+        jobs.get(&id).expect("job entry").output.clone() // Arc<Mutex<OutputBuffer>> —— guard 必须先放（output 会再锁 jobs）
+    };
+    output_buf.lock().await.append(&[0xE4, 0xBD]);
+
+    // 第一轮：尾部不完整序列被截住——不渲染替换符，offset 不越过半截
+    // 字节（等下一轮与后续输出拼齐）。
+    let first = reg.output(id, 0).await.expect("first poll");
+    let chunk1 = first["chunk"].as_str().unwrap().to_string();
+    let off1 = first["next_offset"].as_u64().unwrap();
+    let total1 = first["total_bytes"].as_u64().unwrap();
+    assert_eq!(
+        total1, 2,
+        "silent cmd must produce no output of its own: total={total1}"
+    );
+    assert!(
+        !chunk1.contains('\u{FFFD}'),
+        "running job must not render the split tail: {chunk1:?}"
+    );
+    assert_eq!(
+        off1,
+        total1 - 2,
+        "next_offset must stop before the incomplete 3-byte char"
+    );
+
+    // 注入剩余字节：字符拼齐后下一轮读回完整「你」。
+    output_buf.lock().await.append(&[0xA0]);
+    let second = reg.output(id, off1).await.expect("second poll");
+    let chunk2 = second["chunk"].as_str().unwrap();
+    assert_eq!(
+        chunk2, "你",
+        "split char must compose across polls: {chunk2:?}"
+    );
+    assert_eq!(second["next_offset"].as_u64(), Some(off1 + 3));
+
+    // 收尾：树杀长跑命令，不留挂任务。
+    let result = reg.kill(id).await.expect("kill within KILL_WAIT");
+    assert_eq!(result["killed"].as_bool(), Some(true));
+}

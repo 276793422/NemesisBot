@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -16,6 +16,13 @@ use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
+
+use nemesis_utils::line_cap::read_line_capped;
+
+/// 单行字节帽（BUG-20261108-028）：裸 read_line 把整行无界积累进内存才
+/// 返回——失控的 input 脚本（打印无换行的死循环输出）打爆宿主内存。
+/// 消息行是聊天文本（远小于此），1MB 已远超任何合法行。
+const MAX_EXTERNAL_LINE_BYTES: usize = 1024 * 1024;
 
 /// External channel configuration.
 #[derive(Debug, Clone)]
@@ -148,7 +155,6 @@ impl ExternalChannel {
             };
 
             let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
             let mut cancel_rx = cancel_rx;
 
             loop {
@@ -158,13 +164,23 @@ impl ExternalChannel {
                         let _ = child.kill().await;
                         return;
                     }
-                    result = reader.read_line(&mut line) => {
+                    result = read_line_capped(&mut reader, MAX_EXTERNAL_LINE_BYTES) => {
                         match result {
-                            Ok(0) => {
+                            Ok(None) => {
                                 info!("[ExternalChannel] input EXE closed stdout");
                                 break;
                             }
-                            Ok(_) => {
+                            Ok(Some((raw, truncated))) => {
+                                // 带帽读（BUG-20261108-028）：超长毒丸行丢弃跳过
+                                //（游标已对齐下一行行首），reader 任务保活。
+                                if truncated {
+                                    warn!(
+                                        cap = MAX_EXTERNAL_LINE_BYTES,
+                                        "[ExternalChannel] oversized line dropped"
+                                    );
+                                    continue;
+                                }
+                                let line = String::from_utf8_lossy(&raw).into_owned();
                                 let trimmed = line.trim();
                                 if !trimmed.is_empty() {
                                     debug!(line = %trimmed, "[ExternalChannel] received from input EXE");
@@ -198,7 +214,6 @@ impl ExternalChannel {
                                         );
                                     }
                                 }
-                                line.clear();
                             }
                             Err(e) => {
                                 error!(error = %e, "[ExternalChannel] error reading from input EXE");

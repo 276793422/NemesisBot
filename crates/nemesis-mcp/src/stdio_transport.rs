@@ -6,7 +6,7 @@
 
 use async_trait::async_trait;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 use tokio::time::{Duration, timeout};
@@ -281,12 +281,16 @@ impl Transport for StdioTransport {
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(async move {
                 let mut reader = BufReader::new(stderr);
-                let mut line = String::new();
                 loop {
-                    line.clear();
-                    match reader.read_line(&mut line).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
+                    // 带帽读（BUG-20261108-028）：超帽行截断注记后继续——
+                    // 排水任务不因失控超长行死亡，内存峰值受 64KB 约束。
+                    match read_line_capped(&mut reader, MAX_STDERR_LINE_BYTES).await {
+                        Ok(None) | Err(_) => break,
+                        Ok(Some((raw, truncated))) => {
+                            let mut line = String::from_utf8_lossy(&raw).into_owned();
+                            if truncated {
+                                line.push_str("...[line truncated]");
+                            }
                             tracing::debug!(target: "mcp_stdio_stderr", "{}", line.trim_end());
                         }
                     }
@@ -432,25 +436,39 @@ impl Transport for StdioTransport {
         let response_line = {
             let mut reader = stdout.lock().await;
             loop {
-                let mut buf = String::new();
                 let remaining = deadline
                     .checked_duration_since(tokio::time::Instant::now())
                     .unwrap_or_default();
                 if remaining.is_zero() {
                     return Err(TransportError::timeout());
                 }
-                timeout(remaining, reader.read_line(&mut buf))
-                    .await
-                    .map_err(|_| TransportError::timeout())?
-                    .map_err(|e| {
-                        TransportError::send_failed(format!("failed to read from stdout: {e}"))
-                    })?;
+                // 带帽读（BUG-20261108-028）：超帽 = 畸形响应行，诚实报错
+                // ——单行 JSON-RPC 远低于此，超帽即服务器输出不可信。
+                let read = timeout(
+                    remaining,
+                    read_line_capped(&mut *reader, MAX_RESPONSE_LINE_BYTES),
+                )
+                .await
+                .map_err(|_| TransportError::timeout())?
+                .map_err(|e| {
+                    TransportError::send_failed(format!("failed to read from stdout: {e}"))
+                })?;
 
-                if buf.is_empty() {
-                    return Err(TransportError::send_failed(
-                        "connection closed (EOF from MCP server)",
-                    ));
+                let (raw, truncated) = match read {
+                    Some(pair) => pair,
+                    None => {
+                        return Err(TransportError::send_failed(
+                            "connection closed (EOF from MCP server)",
+                        ));
+                    }
+                };
+                if truncated {
+                    return Err(TransportError::send_failed(format!(
+                        "response line exceeds {} byte cap (server output untrusted)",
+                        MAX_RESPONSE_LINE_BYTES
+                    )));
                 }
+                let buf = String::from_utf8_lossy(&raw).into_owned();
 
                 match classify_line(&buf) {
                     LineKind::Response => {
@@ -526,6 +544,20 @@ impl Drop for StdioTransport {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 带帽单行读（BUG-20261108-028；实现单一真相源 nemesis-utils::line_cap，
+// nemesis-channels 四通道同源消费）
+// ---------------------------------------------------------------------------
+
+/// stdio 单行字节帽。威胁模型对齐 nemesis-lsp `MAX_LSP_HEADER_LINE_BYTES`
+/// 的既有注释：崩溃/被替换的 MCP 服务器一行无限输出会打爆网关内存——
+/// `read_line` 无法设帽（它把整行无界积累进 buf 才返回）。响应行是单行
+/// JSON-RPC（大工具结果也远低于此，超帽即畸形不可信）；stderr 是日志行。
+const MAX_RESPONSE_LINE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_STDERR_LINE_BYTES: usize = 64 * 1024;
+
+use nemesis_utils::line_cap::read_line_capped;
 
 // ===========================================================================
 // Tests
