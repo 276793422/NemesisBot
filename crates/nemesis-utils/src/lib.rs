@@ -28,6 +28,10 @@ pub mod pipe_cap;
 pub mod platform;
 pub mod sanitize;
 pub mod skills;
+// SSE 事件边界定位单一真相源（原 nemesis-providers/nemesis-mcp
+// 各自内联双形态扫描；规范行终止三态逐行独立，CR-only/混合行尾
+// 此前零事件解析）。
+pub mod sse;
 // 存储世代化迁移链骨架（四条铁律的代码化
 // 模板——零接线，未来破坏性格式变更时按设计文档契约接线）。
 pub mod storage_gen;

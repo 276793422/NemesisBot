@@ -387,17 +387,12 @@ fn response_payload(json_str: &str) -> Result<SsePayload, TransportError> {
 /// Take one complete event from the head of the buffer (returns the event
 /// text and the remaining buffer); None when no complete event exists.
 ///
-/// Event terminators `\n\n` and `\r\n\r\n` are both recognized; when both
-/// are present, whichever appears first wins (within a pure CRLF boundary,
-/// `\n\n` cannot match falsely — `\r\n\r\n` has no two consecutive `\n`).
+/// 边界判定单一真相源在 `nemesis_utils::sse::next_event_boundary`
+/// （规范行终止 LF/CR/CRLF 三态逐行独立；本处旧内联只认 `\n\n` 与
+/// `\r\n\r\n` 两形态，CR-only/混合行尾的 MCP server 零事件解析）。
 fn take_complete_event(buffer: &str) -> Option<(String, String)> {
-    let lf = buffer.find("\n\n");
-    let crlf = buffer.find("\r\n\r\n");
-    match (lf, crlf) {
-        (Some(a), Some(b)) if b < a => Some((buffer[..b].to_string(), buffer[b + 4..].to_string())),
-        (Some(a), _) => Some((buffer[..a].to_string(), buffer[a + 2..].to_string())),
-        _ => crlf.map(|b| (buffer[..b].to_string(), buffer[b + 4..].to_string())),
-    }
+    nemesis_utils::sse::next_event_boundary(buffer)
+        .map(|(pos, sep)| (buffer[..pos].to_string(), buffer[pos + sep..].to_string()))
 }
 
 /// Join an SSE event's `data:` fields (multi-line concatenated with `\n`);

@@ -628,7 +628,7 @@ fn handle_sse_event(ev: &serde_json::Value) -> SseOutcome {
 /// 流自然结束仍无终态事件（中途断流）= 补全不完整，按 Timeout 计——
 /// 诚实不可交付，且重试环可安全重抽。
 fn parse_sse_text(text: &str, model: &str) -> Result<crate::types::LLMResponse, FailoverError> {
-    // 事件分隔符按协议是空行；容忍 \n\n 与 \r\n\r\n 两种形态
+    // 事件分隔符按协议是空行；规范行终止 LF/CR/CRLF 三态逐行独立
     //（判定逻辑单一真相源在 stream_util::next_event_boundary）。
     let mut rest = text;
     while !rest.is_empty() {

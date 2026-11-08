@@ -664,8 +664,9 @@ impl HttpProvider {
                 // 不逐 chunk 独立 lossy（那会把半个字符换成 U+FFFD）。
                 crate::stream_util::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes);
 
-                // Process complete SSE lines. 事件边界双形态（\n\n / \r\n\r\n，
-                // SSE 规范行终止三态；CRLF-only 上游按单一 \n\n 扫描零事件）。
+                // Process complete SSE lines. 事件边界全形态（规范行终止
+                // LF/CR/CRLF 三态逐行独立；判定单一真相源在
+                // stream_util::next_event_boundary → nemesis_utils::sse）。
                 while let Some((pos, sep)) = crate::stream_util::next_event_boundary(&buffer) {
                     let block = buffer[..pos].to_string();
                     buffer = buffer[pos + sep..].to_string();
