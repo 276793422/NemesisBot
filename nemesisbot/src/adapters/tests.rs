@@ -56,6 +56,66 @@ async fn test_health_server_adapter_start_idempotent() {
     assert!(adapter.stop().is_ok());
 }
 
+#[cfg(feature = "health")]
+#[tokio::test]
+async fn test_health_server_adapter_restart_rebinds_after_stop() {
+    // 生命周期轴回归锁：adapter 此前 spawn 裸 start()（不接停机通道）、
+    // stop() 只翻旗标——旧 serve 任务永生占端口，BotService restart 链
+    // （persona 切换 / config 保存重启）此后每次 start 都 bind 失败
+    // （Address already in use）。修复后 stop 必须真释放端口、同端口
+    // 重启必须能重新服务。
+    let port = 18797;
+    let health_server = Arc::new(nemesis_health::server::HealthServer::new(
+        make_health_config(port),
+    ));
+    let adapter = HealthServerAdapter::new(Arc::clone(&health_server));
+
+    assert!(adapter.start().is_ok());
+    let url = format!("http://127.0.0.1:{port}/live");
+    let mut served = false;
+    for _ in 0..100 {
+        if let Ok(resp) = reqwest::get(&url).await
+            && resp.status().is_success()
+        {
+            served = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(served, "首次 start 后 /live 应可服务");
+
+    assert!(adapter.stop().is_ok());
+    // 修复核心断言：stop 后监听端口必须释放（旧缺陷下旧任务仍持有，
+    // 此探针恒失败直至超时）。
+    let mut released = false;
+    for _ in 0..100 {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        released,
+        "stop() 后端口 {port} 应已释放（serve 任务优雅退出）"
+    );
+
+    // restart 契约：同端口重新 start，再次可服务（旧缺陷下 bind 失败永不恢复）。
+    assert!(adapter.start().is_ok());
+    let mut reserved = false;
+    for _ in 0..100 {
+        if let Ok(resp) = reqwest::get(&url).await
+            && resp.status().is_success()
+        {
+            reserved = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(reserved, "stop→start 后 /live 应重新可服务");
+    let _ = adapter.stop();
+}
+
 // -------------------------------------------------------------------------
 // HeartbeatServiceAdapter construction
 // -------------------------------------------------------------------------

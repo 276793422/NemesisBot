@@ -48,7 +48,12 @@ impl LifecycleService for HealthServerAdapter {
         }
         let inner = self.inner.clone();
         tokio::spawn(async move {
-            if let Err(e) = inner.start().await {
+            // start_with_shutdown（非裸 start()）：stop() 靠 inner 的 oneshot
+            // 触发 serve 优雅退出并释放监听端口——BotService restart 链
+            // （persona 切换 / config 保存重启）依赖 stop→start 可重绑。
+            // 裸 start() 不接停机通道，旧 serve 任务永生占端口，后续每次
+            // start 都 bind 失败（Address already in use）且 stop 恒无效。
+            if let Err(e) = inner.start_with_shutdown().await {
                 tracing::error!("[Main] Health server error: {}", e);
             }
         });
@@ -56,7 +61,8 @@ impl LifecycleService for HealthServerAdapter {
     }
 
     fn stop(&self) -> Result<(), String> {
-        // Health server stops when the process exits
+        // 优雅停机：oneshot tx 已被 take = 未在跑/已停，天然 no-op（幂等）。
+        self.inner.stop();
         self.started.store(false, Ordering::SeqCst);
         Ok(())
     }
