@@ -775,7 +775,14 @@ impl NostrEventProcessor {
         // 的陈旧 DM 可能被当新消息回灌——超窗丢弃（时钟偏差容忍：只查过期，
         // 不拒未来时间戳）。
         const MAX_EVENT_AGE_SECS: i64 = 600;
-        let age_secs = chrono::Utc::now().timestamp() - event.created_at;
+        // created_at 走 relay JSON 直解（i64 无界；签名/id 验证只锁内容完整
+        // 性不约束时间域——任何 Nostr 用户可对 i64::MIN 合法签名）。裸减法
+        // 在极端值溢出：debug panic 杀事件处理任务；release 回绕成巨大负
+        // age → 反而**绕过新鲜度闸**。saturating_sub：极旧侧饱和 i64::MAX
+        // → 超窗丢弃（诚实语义）；未来时间戳侧负 age 语义不变。
+        let age_secs = chrono::Utc::now()
+            .timestamp()
+            .saturating_sub(event.created_at);
         if age_secs > MAX_EVENT_AGE_SECS {
             debug!(
                 event_id = %event.id,

@@ -494,6 +494,15 @@ impl Default for DiscoveryConfig {
 /// 该值时限频 WARN —— 漂移过大会让 announce 过期判断失真。
 pub const DRIFT_WARN_THRESHOLD_SECS: i64 = 60;
 
+/// 本地时钟与对端时间戳的漂移秒数。对端 `timestamp` 走 wire serde 直解
+///（`i64` 无界），裸 `(local - peer).abs()` 在 peer ≈ `i64::MIN` 时减法
+/// 溢出（debug panic 打死 UDP 监听/健康探测任务；release 回绕让 abs 再
+/// 翻车）。`i64::abs_diff` 在 u64 域全值域无溢出——比较侧
+/// `> DRIFT_WARN_THRESHOLD_SECS as u64` 收窄安全（阈值恒为小正数）。
+pub fn drift_secs(local_ts: i64, peer_ts: i64) -> u64 {
+    local_ts.abs_diff(peer_ts)
+}
+
 /// WARN 限频闸门：同一 key（node_id）在一个 cooldown 窗口内只放行一条
 /// WARN 日志，防止广播风暴或持续漂移刷屏日志。
 ///
@@ -663,8 +672,8 @@ impl DiscoveryService {
                 super::message::DiscoveryMessageType::Announce => {
                     // 时钟漂移预警 —— announce timestamp 与本地时钟偏差过大会
                     // 让过期判断失真，限频 WARN 提示对端校时。
-                    let drift = (chrono::Utc::now().timestamp() - msg.timestamp).abs();
-                    if drift > DRIFT_WARN_THRESHOLD_SECS && drift_gate.admit(&msg.node_id) {
+                    let drift = drift_secs(chrono::Utc::now().timestamp(), msg.timestamp);
+                    if drift > DRIFT_WARN_THRESHOLD_SECS as u64 && drift_gate.admit(&msg.node_id) {
                         tracing::warn!(
                             node_id = %msg.node_id,
                             drift_secs = drift,

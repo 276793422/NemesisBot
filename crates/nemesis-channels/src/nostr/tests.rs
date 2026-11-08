@@ -719,3 +719,46 @@ async fn test_send_requires_running_and_recipient() {
     assert!(ch2.send(no_rcpt).await.is_err(), "空 chat_id 出站应报错");
     ch2.stop().await.unwrap();
 }
+
+/// 回归锁（BUG-20261109-002 缺陷 D，横向排查同族）：created_at 走 relay
+/// JSON 直解（i64 无界；签名只锁内容完整性不约束时间域——任意 Nostr
+/// 用户可对 i64::MIN 出合法签名事件）。裸减法 `now - created_at` 在极值
+/// 溢出：debug panic 杀事件处理任务；release 回绕成巨大负 age → 绕过
+/// 新鲜度闸（伪造陈旧事件当新消息回灌）。saturating_sub 修后极旧值必须
+/// 被闸诚实丢弃。
+#[test]
+fn test_processor_drops_event_with_extreme_created_at() {
+    let bot = NostrKeys::from_hex_secret(&random_secret_hex()).unwrap();
+    let peer = NostrKeys::from_hex_secret(&random_secret_hex()).unwrap();
+
+    let (bus, mut rx) = broadcast::channel(16);
+    let processor = NostrEventProcessor {
+        keys: bot.clone(),
+        x_only_pub: bot.x_only_public_key().to_string(),
+        base: BaseChannel::with_allow_list("nostr", vec![peer.x_only_public_key().to_string()]),
+        seen_events: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+        bus_sender: bus,
+    };
+
+    // i64::MIN：合法签名（build_dm_event 按值签名）但时间域极端——修复前
+    // 裸减法溢出（debug panic / release 回绕负 age 漏闸）。
+    let crafted = build_dm_event(&peer, bot.x_only_public_key(), "forged-ancient", i64::MIN)
+        .expect("极值 created_at 的事件应能正常构造（签名不约束时间域）");
+    processor.process_relay_event(&crafted);
+    assert!(
+        rx.try_recv().is_err(),
+        "i64::MIN created_at 的事件必须被新鲜度闸丢弃（不得 panic 也不得进总线）"
+    );
+
+    // i64::MAX（未来侧）：负 age 语义 = 不拒未来时间戳，但白名单闸仍生效
+    // ——该臂只验证不 panic + 不进总线（未来事件超窗判定交由上层语义）。
+    let future = build_dm_event(&peer, bot.x_only_public_key(), "forged-future", i64::MAX)
+        .expect("未来极值 created_at 构造");
+    processor.process_relay_event(&future);
+    let delivered = rx.try_recv();
+    // 未来时间戳 age 为负、不超 600s 窗 → 走正常投递臂（时钟偏差容忍语义）。
+    assert!(
+        delivered.is_ok(),
+        "未来极值 created_at 不超窗：按既有语义正常投递（时钟偏差容忍：只查过期）"
+    );
+}

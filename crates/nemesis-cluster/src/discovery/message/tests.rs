@@ -977,3 +977,71 @@ fn mandate_pubkey_absent_defaults_none() {
     );
     msg.validate().expect("legacy announce still validates");
 }
+
+/// 回归锁（BUG-20261109-002 缺陷 A）：wire serde 直解的 timestamp 无界
+/// i64，`age_secs` 裸减法在 ts ≈ i64::MIN 时溢出（debug panic / release
+/// 回绕翻转过期判定）。saturating_sub 饱和侧 = 巨大正 age → 过期丢弃。
+#[test]
+fn age_secs_extreme_peer_timestamps_do_not_overflow() {
+    let mut msg = DiscoveryMessage::new_announce(
+        "extreme-node",
+        "ExtremeNode",
+        vec!["10.0.0.1".into()],
+        9000,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    // i64::MIN：裸 `now - ts` 溢出；饱和后 age = i64::MAX（巨大正 age）。
+    msg.timestamp = i64::MIN;
+    let age = msg.age_secs();
+    assert_eq!(
+        age,
+        i64::MAX,
+        "MIN timestamp saturates to huge positive age"
+    );
+    assert!(
+        msg.is_expired_with_threshold(120),
+        "huge positive age must be judged expired (honest drop)"
+    );
+
+    // i64::MAX：now - MAX 为巨大负 age（时钟回拨语义，不溢出）。
+    msg.timestamp = i64::MAX;
+    let age = msg.age_secs();
+    assert!(age < 0, "future-dated timestamp yields negative age");
+    assert!(
+        !msg.is_expired_with_threshold(120),
+        "negative age must not be judged expired (clock-rollback semantics)"
+    );
+
+    // 常规近端时间戳：age ≈ 0。
+    msg.timestamp = now_unix();
+    assert_eq!(msg.age_secs(), 0);
+}
+
+/// validate 不校验 timestamp 值域（版本/node_id/name/addresses/port 才是
+/// validate 职责）——极端 timestamp 必须由 age_secs/drift 的饱和算术兜住，
+/// 本测试钉住该分工（防止未来把时间校验误认为已在 validate 覆盖）。
+#[test]
+fn validate_passes_on_extreme_timestamp() {
+    let raw = serde_json::json!({
+        "version": "1.0",
+        "type": "announce",
+        "node_id": "extreme-ts",
+        "name": "ExtremeTs",
+        "addresses": ["10.0.0.1"],
+        "rpc_port": 9000,
+        "role": "worker",
+        "category": "development",
+        "tags": [],
+        "capabilities": [],
+        "timestamp": i64::MIN
+    });
+    let msg: DiscoveryMessage =
+        serde_json::from_value(raw).expect("wire serde accepts unbounded i64 timestamp");
+    msg.validate().expect("validate does not police timestamps");
+    let _ = msg.age_secs(); // must not panic
+}

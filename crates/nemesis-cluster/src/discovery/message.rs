@@ -301,8 +301,13 @@ impl DiscoveryMessage {
     }
 
     /// 消息年龄（当前 Unix 时间 − 消息时间戳，秒）。时钟回拨时可为负。
+    ///
+    /// `timestamp` 走 wire serde 直解（`i64` 无界，validate 不校验时间域）
+    /// ——裸减法在 peer ≈ `i64::MIN` 时溢出（debug panic 杀 UDP 监听任务
+    /// /release 回绕翻转过期判定）。`saturating_sub` 饱和侧 = 巨大正 age
+    /// → 过期丢弃（诚实语义）；时钟回拨侧负 age 语义不变。
     pub fn age_secs(&self) -> i64 {
-        now_unix() - self.timestamp
+        now_unix().saturating_sub(self.timestamp)
     }
 
     /// Serialize the message to JSON bytes, mirroring Go's `DiscoveryMessage.Bytes()`.

@@ -73,8 +73,9 @@ impl Cluster {
                                         .and_then(|r| r.get("timestamp"))
                                         .and_then(|t| t.as_i64())
                                     {
-                                        let drift = (chrono::Utc::now().timestamp() - ts).abs();
-                                        if drift > crate::discovery::DRIFT_WARN_THRESHOLD_SECS
+                                        let drift =
+                                            crate::discovery::drift_secs(chrono::Utc::now().timestamp(), ts);
+                                        if drift > crate::discovery::DRIFT_WARN_THRESHOLD_SECS as u64
                                             && probe_drift_gate().admit(&node_id)
                                         {
                                             tracing::warn!(

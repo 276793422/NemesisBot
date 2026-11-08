@@ -9,7 +9,7 @@ pub use crypto::{decrypt_data, derive_key, encrypt_data};
 pub(crate) use discovery::build_announce_from_callbacks;
 pub use discovery::{
     AnnounceWarnGate, ClusterCallbacks, DRIFT_WARN_THRESHOLD_SECS, DiscoveryConfig, DiscoveryError,
-    DiscoveryService,
+    DiscoveryService, drift_secs,
 };
 pub use listener::{
     DecryptDropSource, DecryptDropSummary, DiscoveryAction, UdpListener, handle_discovery_message,
