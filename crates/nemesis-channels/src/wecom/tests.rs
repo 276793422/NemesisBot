@@ -733,3 +733,39 @@ async fn test_callback_allow_list_filter() {
 
     ch.stop().await.unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// 错误串凭据脱敏（BUG-20261109-006 同族横向修复）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_outbound_transport_error_redacts_webhook_key() {
+    // 群机器人 webhook URL 官方形态内嵌 ?key=；传输失败时 reqwest 错误
+    // Display 带完整 URL，错误串不得把 key 值带出。
+    let (tx, _rx) = broadcast::channel(16);
+    let ch = WeComChannel::new(
+        outbound_only_config("http://127.0.0.1:9/cgi-bin/webhook/send?key=PLACEHOLDER".to_string()),
+        tx,
+    )
+    .unwrap();
+
+    let msg = OutboundMessage::new("wecom", "group-a", "hello");
+    let err = ch
+        .send_webhook(
+            "http://127.0.0.1:9/cgi-bin/webhook/send?key=SECRET-WEBHOOK-KEY-42",
+            &msg,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        !err.contains("SECRET-WEBHOOK-KEY-42"),
+        "webhook key 泄漏进错误串: {err}"
+    );
+    assert!(err.contains("key=<redacted>"), "脱敏占位缺失: {err}");
+    // host/path 保留诊断价值
+    assert!(
+        err.contains("127.0.0.1:9/cgi-bin/webhook/send"),
+        "诊断信息丢失: {err}"
+    );
+}

@@ -277,3 +277,36 @@ fn b017_poll_response_is_empty_semantics() {
         "非 2xx 不在此判定内（走 break 重连臂）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 错误串凭据脱敏（BUG-20261109-006 同族横向修复）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_direct_reply_transport_error_redacts_access_token() {
+    // sessionWebhook URL 官方形态内嵌 ?access_token=；传输失败错误串不得带出。
+    let config = DingTalkConfig {
+        client_id: "test-id".to_string(),
+        client_secret: "test-secret".to_string(),
+        allow_from: Vec::new(),
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = DingTalkChannel::new(config, tx).unwrap();
+
+    let err = ch
+        .send_direct_reply(
+            "http://127.0.0.1:9/robot/send?access_token=SECRET-AT-77",
+            "hello",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        !err.contains("SECRET-AT-77"),
+        "access_token 泄漏进错误串: {err}"
+    );
+    assert!(
+        err.contains("access_token=<redacted>"),
+        "脱敏占位缺失: {err}"
+    );
+}

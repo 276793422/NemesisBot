@@ -233,7 +233,12 @@ impl DingTalkChannel {
             .json(&reply)
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("dingtalk reply failed: {e}")))?;
+            .map_err(|e| {
+                // sessionWebhook URL 内嵌 access_token（官方形态），错误串须脱敏
+                NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                    "dingtalk reply failed: {e}"
+                )))
+            })?;
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -260,7 +265,12 @@ impl DingTalkChannel {
             .json(&reply)
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("dingtalk text reply failed: {e}")))?;
+            .map_err(|e| {
+                // sessionWebhook URL 内嵌 access_token（官方形态），错误串须脱敏
+                NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                    "dingtalk text reply failed: {e}"
+                )))
+            })?;
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
