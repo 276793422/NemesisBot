@@ -304,7 +304,18 @@ impl McpClient {
             }
         });
 
-        let resp = self.send_request("initialize", Some(init_params)).await?;
+        // initialize 握手走裸发送（无会话可过期，恢复臂不适用——递归
+        // 结构性排除，恢复逻辑只住在 send_request 外层）。
+        let request = {
+            let id = self.alloc_id();
+            TransportRequest {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: Some(serde_json::Value::Number(id.into())),
+                method: "initialize".to_string(),
+                params: Some(init_params),
+            }
+        };
+        let resp = self.send_request_raw(request).await?;
 
         if let Some(err) = &resp.error {
             return Err(ClientError::Server(err.clone()));
@@ -353,6 +364,12 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC request via the transport and return the response.
+    ///
+    /// 会话过期恢复（Streamable HTTP）：server 侧会话已终止（重启/TTL 过期，
+    /// transport 报 session_expired）→ 重置传输 + 重新 initialize 建新会话 +
+    /// 原请求重试一次。恢复逻辑只在本层——握手内部走
+    /// [`Self::send_request_raw`]（无恢复臂），结构上不可能递归；恢复失败 →
+    /// 诚实返回原始会话过期错误（warn 留痕），绝不静默吞。
     async fn send_request(
         &mut self,
         method: &str,
@@ -367,16 +384,60 @@ impl McpClient {
             jsonrpc: JSONRPC_VERSION.to_string(),
             id: Some(serde_json::Value::Number(id.into())),
             method: method.to_string(),
-            params,
+            // clone 供会话过期恢复臂的重试复用（恢复路径罕见，成本可忽略；
+            // params 载荷相对一次 JSON-RPC 往返本身可忽略）。
+            params: params.clone(),
         };
 
+        match self.send_request_raw(request).await {
+            Ok(resp) => Ok(resp),
+            Err(ClientError::Transport(e)) if e.is_session_expired() => {
+                tracing::warn!(
+                    method = %method,
+                    "[McpClient] server session expired; reconnecting and re-initializing"
+                );
+                if let Err(re) = self.reinitialize().await {
+                    tracing::warn!("[McpClient] session recovery failed: {re}");
+                    return Err(ClientError::Transport(TransportError::new(
+                        e.code,
+                        format!("{e}; session recovery also failed: {re}"),
+                    )));
+                }
+                // 重试一次（恢复成功后原请求照常重发）。
+                let id2 = self.alloc_id();
+                let retry = TransportRequest {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: Some(serde_json::Value::Number(id2.into())),
+                    method: method.to_string(),
+                    params,
+                };
+                self.send_request_raw(retry).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 无恢复臂的裸发送（传输 send + 响应转换）。initialize 握手与会话
+    /// 恢复臂的重试都走这里——恢复逻辑只住在 [`Self::send_request`]。
+    async fn send_request_raw(
+        &mut self,
+        request: TransportRequest,
+    ) -> ClientResult<JSONRPCResponse> {
         let transport_resp = self
             .transport
             .send(&request, self.request_timeout_ms)
             .await?;
-        let mcp_resp = transport::from_transport_response(&transport_resp);
+        Ok(transport::from_transport_response(&transport_resp))
+    }
 
-        Ok(mcp_resp)
+    /// 会话恢复：重置传输（HttpTransport close 清会话 id + 解析头现查重取），
+    /// 重新 initialize 握手（含 initialized 通知）。仅由 send_request 的
+    /// session_expired 恢复臂调用。
+    async fn reinitialize(&mut self) -> ClientResult<()> {
+        self.transport.close().await?;
+        self.initialized = false;
+        self.do_initialize().await?;
+        Ok(())
     }
 
     /// Send a JSON-RPC notification (no id, no response expected).

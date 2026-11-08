@@ -208,6 +208,16 @@ impl Transport for HttpTransport {
 
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
+            // MCP Streamable HTTP 会话生命周期：server 终止会话（重启/过期）
+            // 后，对携带 Mcp-Session-Id 的请求按规范回 404。识别「带会话 id
+            // 的 404」= 会话过期（无会话 id 的 404 = 端点/路径错，保持旧错误
+            // 形态）：清掉本地残留会话 id + 报 session_expired，client 层据此
+            // 重握手建新会话。无此识别时已挂载工具在 server 重启后对每个调用
+            // 永久 404（无任何层会重握手/重挂载）。
+            if status.as_u16() == 404 && self.session_id.is_some() {
+                self.session_id = None;
+                return Err(TransportError::session_expired());
+            }
             return Err(TransportError::send_failed(format!(
                 "HTTP {} from MCP server: {}",
                 status,
