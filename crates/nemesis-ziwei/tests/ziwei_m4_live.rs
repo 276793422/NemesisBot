@@ -681,12 +681,15 @@ async fn m4_runtime_live_on_dummy_draw() {
         .id as u64;
     tokio::time::sleep(std::time::Duration::from_millis(600)).await;
     // 排空共享环（防两批之间残留导致计数不齐），统计两 id 事件数。
-    // 原「空轮即 break」单趟 drain 会切在链点事件对的交付缝
-    // 里——链点事件在顶层事件处理之后落盘，慢机上顶层已入环、链点尾巴未
-    // 落时空轮提前判静，1:1 收敛差一条假红（CI top=3255
-    // chain=3254；本文件 ⑤ 退订段 69464270 同族前科）。同房规改法：poll
-    // 至安静（5s 预算）+ 稳定窗补一拍排尾；链点真丢事件时安静照常到达但
-    // 计数仍不齐，断言检测力不变。
+    // 配平排空（2026-11-08 CI shard1 实锤第三次同族假红）：链点事件恒在
+    // 顶层事件之后交付，cnt_top == cnt_chain 才是真排净（无在途尾巴）；
+    // 安静但未配平只是在途缝，继续 poll。前科链：BUG-20261103 单空轮即
+    // 断（top=3255/chain=3254）→ BUG-20261106 双空轮+稳定窗尾拍
+    // （top=10525/chain=10523）→ 本次双空轮+尾拍仍被 >400ms 交付缝击穿
+    // （top=14797/chain=14796）——安静启发式每加高一档就被更密的 draw
+    // 击穿一次（69464270 ⑤段同族），改配平判据根治。预算 50 拍×200ms
+    // =10s；耗尽仍不配平 = 链点真丢事件，落到断言红——检测力不变，
+    // 仅失败路径多付排空预算。
     fn count_by_id(evs: &[serde_json::Value], id_top: u64, id_chain: u64, cnt: &mut (u64, u64)) {
         for e in evs {
             match e["id"].as_u64() {
@@ -697,37 +700,15 @@ async fn m4_runtime_live_on_dummy_draw() {
         }
     }
     let mut cnt = (0u64, 0u64);
-    let mut quiet_streak = 0u32;
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         let pull = sess.poll_captures(id).await.expect("chain poll");
         let evs = pull["events"].as_array().cloned().unwrap_or_default();
-        let empty = evs.is_empty();
         count_by_id(&evs, id_top, id_chain, &mut cnt);
-        // BUG-20261106：单次空轮即判静仍会切在链点事件对的交付缝——draw
-        // 密集时（CI shard1 实录 top=10525 chain=10523，批量为 BUG-20261103
-        // 形态 3255 的 3 倍）顶层已入环、链点尾巴 >200ms 未落，稳定窗单拍
-        // 补排仍差 2 条假红。同族前科：BUG-20261103 本④段、69464270 ⑤段。
-        // 房规加严：连续两个空轮（间隔 200ms）方判安静；链点真丢事件时
-        // 安静照常到达但计数仍不齐，断言检测力不变。
-        if empty {
-            quiet_streak += 1;
-            if quiet_streak >= 2 {
-                break;
-            }
-        } else {
-            quiet_streak = 0;
+        if evs.is_empty() && cnt.0 == cnt.1 {
+            break;
         }
     }
-    // 稳定窗：安静后仍可能有在途链点尾巴，补一拍再排一次。
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let tail = sess.poll_captures(id).await.expect("chain tail poll");
-    count_by_id(
-        tail["events"].as_array().map(Vec::as_slice).unwrap_or(&[]),
-        id_top,
-        id_chain,
-        &mut cnt,
-    );
     let (cnt_top, cnt_chain) = cnt;
     assert!(cnt_top >= 50, "顶层 feed_render 应批量命中：{cnt_top}");
     assert_eq!(
