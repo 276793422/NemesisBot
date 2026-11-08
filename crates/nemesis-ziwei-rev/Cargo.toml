@@ -15,5 +15,9 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+# 孤儿清扫回归测试（BUG-20261109-005）：回拨 .tmp 目录 mtime 模拟陈旧崩溃孤儿
+filetime = "0.2"
+
 [lints]
 workspace = true

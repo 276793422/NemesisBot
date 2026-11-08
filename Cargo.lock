@@ -4681,6 +4681,7 @@ dependencies = [
 name = "nemesis-ziwei-rev"
 version = "0.1.0"
 dependencies = [
+ "filetime",
  "hex",
  "iced-x86",
  "nemesis-utils",

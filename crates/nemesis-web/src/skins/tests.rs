@@ -1086,3 +1086,42 @@ fn sanitize_css_urls_import_and_escape_bypasses_neutered() {
         "a{content:\"\u{201C}\"}"
     );
 }
+
+// ── install 失败路径零 tmp 孤儿（BUG-20261109-005 回归锁）────────────
+// tmp 名 `.{id}.nbskin.tmp{pid}_{n}` 计数唯一：错误臂漏清 = 永久孤儿累积。
+
+fn install_tmp_orphans(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .expect("dir exists")
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.contains(".tmp"))
+        .collect()
+}
+
+/// ① 目标名被目录占用 → 移除旧包臂失败（remove_file 对目录报错）→
+///    tmp 已清 → Err；② happy path 落盘后零 tmp 残留。（tmp 写臂与 forge
+///    registry 写臂同形，失败注入由 forge 测试覆盖。）
+#[test]
+fn install_bytes_failure_paths_leave_no_tmp_orphans() {
+    let _lock = ANCHOR_ENV_LOCK.lock();
+    let _no_anchor = AnchorEnvGuard::set(None);
+    let dir = tempdir();
+    let skins_str = dir.path().to_str().unwrap();
+
+    // ① 旧包名被目录占用：overwrite=true 走到移除旧包臂 → 失败 → 清 tmp
+    std::fs::create_dir(dir.path().join("orb2.nbskin")).unwrap();
+    let err = install_bytes(skins_str, &theme_zip_bytes("orb2"), true).unwrap_err();
+    assert!(err.contains("移除旧包失败"), "{err}");
+    assert!(
+        install_tmp_orphans(dir.path()).is_empty(),
+        "移除旧包失败臂必须清 tmp 残留"
+    );
+
+    // ② 正常安装：落定后目录内只有 .nbskin 正式包，无 .tmp 残留
+    install_bytes(skins_str, &theme_zip_bytes("alpha2"), false).expect("lands");
+    assert!(
+        install_tmp_orphans(dir.path()).is_empty(),
+        "正常安装不得残留 .tmp"
+    );
+}

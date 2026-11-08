@@ -178,7 +178,9 @@ impl Registry {
         // 横扫族 C 四轮（2026-11-06）：同步自动持久化失败不再静默——rename
         // 失败 = 内存态有、盘上 index 陈旧，重启丢注册且 tmp 孤儿（计数器
         // 唯一名不会覆盖）无任何线索。三臂（序列化/tmp 写/rename）失败均
-        // WARN 留痕；rename 失败时清掉 tmp 残留（resilient，其内部 WARN 兜底）。
+        // WARN 留痕；tmp 写与 rename 失败时都清掉 tmp 残留（resilient，其
+        // 内部 WARN 兜底）——计数器唯一名不会被下次保存覆盖，漏清 = 永久
+        // 孤儿累积（BUG-20261109-005：tmp 写臂此前漏清）。
         let json = match serde_json::to_string_pretty(&*arts) {
             Ok(j) => j,
             Err(e) => {
@@ -193,6 +195,7 @@ impl Registry {
                 error = %e,
                 "[ForgeRegistry] index tmp write failed — auto-persist skipped"
             );
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
             return;
         }
         if let Err(e) = std::fs::rename(&tmp, &self.config.index_path) {
@@ -218,10 +221,17 @@ impl Registry {
             serde_json::to_string_pretty(&*arts)
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
         };
-        // F-: atomic write (unique temp + rename).
+        // F-: atomic write (unique temp + rename). 计数器唯一名 = 错误路径
+        // 漏清即永久孤儿（BUG-20261109-005）——tmp 写与 rename 失败都清残留。
         let tmp = atomic_tmp_path(&self.config.index_path);
-        tokio::fs::write(&tmp, &json).await?;
-        tokio::fs::rename(&tmp, &self.config.index_path).await?;
+        if let Err(e) = tokio::fs::write(&tmp, &json).await {
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
+            return Err(e);
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, &self.config.index_path).await {
+            let _ = nemesis_utils::fsutil::remove_file_resilient(&tmp);
+            return Err(e);
+        }
         Ok(())
     }
 
