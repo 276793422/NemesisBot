@@ -2157,3 +2157,62 @@ fn shipped_jira_gitlab_flow_template_passes_validate_template() {
         t.origin_id
     );
 }
+
+// --- BUG-20261108-031：步骤记账落盘失败不再完全静默（warn + 降级登记）。
+// 修复前五处 `let _ = flows.save(inst)` 全吞——磁盘满/权限问题运维不可见，
+// 断点续跑悄悄失效。创建路径（run_sync_all 的 `save(&inst)?`）错误传播
+// 语义不变。 ---
+
+/// save 必失败的工作区：root 挂在一个**已存在的文件**下面——
+/// `template_dir` 的 `create_dir_all` 撞 ENOTDIR 跨平台稳定失败。
+fn store_under_file(tag: &str) -> FlowStore {
+    let mut dir = std::env::temp_dir();
+    dir.push(format!(
+        "flow-engine-blocker-{}-{}-{tag}",
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    std::fs::write(&dir, b"blocker").expect("create blocker file");
+    // FlowStore::new 在 workspace 上拼 logs/flows——这里手工构造同构实例：
+    // root = <已有文件>/logs/flows，save 时 create_dir_all 必失败。
+    FlowStore {
+        root: dir.join("logs").join("flows"),
+    }
+}
+
+#[test]
+fn save_flow_step_failure_is_observed_not_silent() {
+    let flows = store_under_file("observed");
+    let inst = inst_with_steps("t-observed", &[("s1", "fetch", "", "")]);
+    // 修复前：let _ = 全吞，无任何信号。修复后：warn + 降级登记。
+    // 不 panic、不阻塞（尽力而为语义保持），且降级表出现 flow_engine 记录。
+    save_flow_step(&flows, &inst);
+    let snap = nemesis_utils::degraded::snapshot();
+    let hit = snap.iter().find(|d| d.kind == "flow_engine");
+    assert!(
+        hit.is_some(),
+        "save 失败必须进降级登记表（kind=flow_engine）"
+    );
+    let hit = hit.unwrap();
+    assert!(
+        hit.detail.contains("t-observed"),
+        "登记 detail 必须带实例现场: {}",
+        hit.detail
+    );
+}
+
+#[test]
+fn save_flow_step_success_leaves_no_degraded_entry() {
+    // 对照：正常保存（真实临时工作区）不产生降级登记。
+    let ws = temp_ws("happy-save");
+    let flows = FlowStore::new(&ws);
+    let inst = inst_with_steps("t-happy", &[("s1", "fetch", "", "")]);
+    save_flow_step(&flows, &inst);
+    assert!(
+        !nemesis_utils::degraded::snapshot()
+            .iter()
+            .any(|d| d.kind == "flow_engine" && d.detail.contains("t-happy")),
+        "成功保存不得进降级登记表"
+    );
+    let _ = std::fs::remove_dir_all(&ws);
+}
