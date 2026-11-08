@@ -271,4 +271,22 @@ pub struct ExecConfig {
     pub enable_deny_patterns: bool,
     #[serde(default)]
     pub custom_deny_patterns: Vec<String>,
+    /// exec 同步阻塞超时上限（秒）。0/缺省 = 600（旧行为字节不变）；
+    /// 配正数时生效且下限保护（<30 视作 30，防止部署侧配出必然超时）。
+    /// 上限高度 = estop 残留窗口（estop 只拒新 dispatch 不打断在飞
+    /// exec，超时收尸是唯一在飞终止原语），属部署主权参数——LLM 侧
+    /// `timeout` 参数语义不变（缺省 30，超过上限被 clamp）。
+    #[serde(default)]
+    pub max_timeout_secs: u64,
+}
+
+impl ExecConfig {
+    /// 生效上限（0/缺省 → 600；<30 → 30 下限保护）。
+    pub fn effective_max_timeout_secs(&self) -> u64 {
+        if self.max_timeout_secs == 0 {
+            600
+        } else {
+            self.max_timeout_secs.max(30)
+        }
+    }
 }

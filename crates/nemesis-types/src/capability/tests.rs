@@ -451,6 +451,21 @@ fn tier_lists_background_tools() {
     assert!(tier_allowed_tools(ModelTier::Big).is_empty());
 }
 
+// [SEALED 2026-11-08] exec_async 已封存（registry 注册点同步封存）——
+// 白名单面必须与注册面一致消失，防止「白名单还在、注册缺席」的静默断供
+// 或「注册复活、白名单缺席」的半态恢复。
+#[test]
+fn tier_lists_do_not_contain_sealed_exec_async() {
+    assert!(
+        !tier_allowed_tools(ModelTier::Mini).contains(&"exec_async"),
+        "exec_async is sealed (2026-11-08) — must NOT be in Mini whitelist"
+    );
+    assert!(
+        !tier_allowed_tools(ModelTier::Normal).contains(&"exec_async"),
+        "exec_async is sealed (2026-11-08) — must NOT be in Normal whitelist"
+    );
+}
+
 #[test]
 fn test_resolve_reasoning_effort_tiers() {
     let cfg = serde_json::json!({

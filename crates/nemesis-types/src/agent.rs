@@ -347,6 +347,27 @@ pub enum AgentEvent {
         /// `denied`（用户拒绝）/ `timeout`（超时无人提交）。
         decision: String,
     },
+    /// exec 执行中输出流事件（2026-11-08 子进程实时输出与完成唤醒）：
+    /// `exec` 工具的 stdout/stderr 排水任务旁挂节流 tee（300ms 窗）发布；
+    /// web pump 走**默认 tool_event 通用路径**（session_id 注入 + 落环 +
+    /// WS push + SSE），前端把 `tail` 挂到本会话最后一个 running 的 exec
+    /// 行实时渲染——执行中可见中间输出（行业对照 openclaw/gemini-cli/codex
+    /// 三家同形态）。`call_id` 置空：工具层拿不到 dispatch 的 call_id
+    /// （ToolEventHook 层私有），前端按「会话内最后一个 running exec」
+    /// 归属；并行执行时归最新启动行（v1 简化）。`tail` 是**替换式**尾窗
+    /// （最近 ≤2048 字符，非增量 append）；`total_bytes` 是进程累计产出
+    /// 字节数（节流窗之间被丢弃的中间字节不补发，全文以工具返回值为权威）。
+    ToolOutput {
+        session_key: String,
+        chat_id: String,
+        /// 恒空串（见上注——dispatch call_id 工具层不可见）。
+        call_id: String,
+        tool: String,
+        /// 替换式输出尾窗（lossy utf8，≤2048 字符）。
+        tail: String,
+        /// 进程累计产出字节数（单调）。
+        total_bytes: u64,
+    },
 }
 
 /// H1（devtool-upgrade 阶段 2）：单条 todo（todowrite 全量提交语义）。
@@ -412,6 +433,8 @@ impl AgentEvent {
             | AgentEvent::SessionCreated { .. } => "",
             // 委派回执绑定父会话（pump 专用臂定向推房间，不经默认路径）。
             AgentEvent::SubagentReplyLanded { chat_id, .. } => chat_id,
+            // exec 执行中输出流绑定发起会话（走默认 tool_event 通用路径）。
+            AgentEvent::ToolOutput { chat_id, .. } => chat_id,
         }
     }
 
@@ -438,6 +461,8 @@ impl AgentEvent {
             AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
             // 凭据卡是进程级全局卡，无会话上下文。
             AgentEvent::CredentialRequested { .. } | AgentEvent::CredentialResolved { .. } => None,
+            // exec 执行中输出流绑发起会话。
+            AgentEvent::ToolOutput { session_key, .. } => Some(session_key),
         }
     }
 
@@ -460,6 +485,7 @@ impl AgentEvent {
             AgentEvent::DeliverablesRegistered { .. } => "DeliverablesRegistered",
             AgentEvent::CredentialRequested { .. } => "CredentialRequested",
             AgentEvent::CredentialResolved { .. } => "CredentialResolved",
+            AgentEvent::ToolOutput { .. } => "ToolOutput",
         }
     }
 }

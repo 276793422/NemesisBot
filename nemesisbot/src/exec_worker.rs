@@ -244,7 +244,9 @@ async fn run_loop(workspace: &str) -> Result<()> {
         } else {
             None
         },
-        ..Default::default()
+        ..Default::default() // （..Default 含 exec_output_tx=None，2026-11-08）：executor 分离
+                             // 路径 exec 不流式——子进程无 gateway 事件通道（哑执行，观测面在
+                             // gateway 侧）；ToolOutput 流式只在主进程装配形态生效。
     };
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);
     debug!("[executor] registered {} tools", tools.len());

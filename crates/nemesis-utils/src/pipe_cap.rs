@@ -84,5 +84,29 @@ pub async fn drain_capped_async<R: tokio::io::AsyncRead + Unpin>(mut pipe: R) ->
     tb.finish()
 }
 
+/// 异步排干 + 旁路观测（2026-11-08 子进程实时输出与完成唤醒）：与
+/// [`drain_capped_async`] 同一累积路径（返回值逐字节一致），每读到原始
+/// chunk 额外调一次 `on_chunk`（同步回调，不得阻塞——回调里做节流/截窗，
+/// 不做 IO）。exec 执行中输出流的 tee 用：观测面零侵入返回值路径。
+pub async fn drain_capped_async_tee<R, F>(mut pipe: R, mut on_chunk: F) -> Vec<u8>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: FnMut(&[u8]),
+{
+    use tokio::io::AsyncReadExt;
+    let mut tb = TailBuf::new();
+    let mut chunk = [0u8; CHUNK];
+    loop {
+        match pipe.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                on_chunk(&chunk[..n]);
+                tb.push(&chunk[..n]);
+            }
+        }
+    }
+    tb.finish()
+}
+
 #[cfg(test)]
 mod tests;

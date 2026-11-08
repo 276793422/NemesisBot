@@ -632,7 +632,10 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "edit_file",
             "list_dir",
             "exec",
-            "exec_async",
+            // [SEALED 2026-11-08] exec_async 封存（registry 注册点同步封存）
+            // —— fire-and-forget 旁路 background_start 完成唤醒路径，见
+            // loop_tools/registry.rs 封存注记。恢复 = 三面一起取消注释。
+            // "exec_async",
             "grep",
             "git",
             "web_fetch",
@@ -661,7 +664,11 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "create_dir",
             "delete_dir",
             "exec",
-            "exec_async",
+            // [SEALED 2026-11-08] exec_async 封存（registry 注册点同步封存）
+            // —— fire-and-forget 旁路 background_start 完成唤醒路径（B4
+            // 四件套 + 完成唤醒已全覆盖其用例），见 loop_tools/registry.rs
+            // 封存注记。恢复 = 三面一起取消注释。
+            // "exec_async",
             "grep",
             "git",
             "web_fetch",

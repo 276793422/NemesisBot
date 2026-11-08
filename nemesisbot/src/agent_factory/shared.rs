@@ -379,6 +379,14 @@ pub(super) fn build_shared_tool_config(
         // background process trio — gateway-level registry
         // singleton (survives agent restarts, kills residual children on drop).
         background_registry: Some(Arc::clone(&shared.background_registry)),
+        // exec 执行中输出流（2026-11-08）：与 ToolEventHook 同一
+        // broadcast——exec 排水 tee 的 ToolOutput 事件经 web pump 默认
+        // tool_event 路径到 Dashboard。None（headless 形态）= exec 旧行为。
+        exec_output_tx: shared.agent_event_tx.clone(),
+        // exec timeout 上限（2026-11-08 config 化）：`tools.exec.
+        // max_timeout_secs`（0/缺省 = 600 旧行为；>0 部署主权上限）。
+        exec_max_timeout_secs: (cfg.tools.exec.max_timeout_secs > 0)
+            .then_some(cfg.tools.exec.max_timeout_secs),
         // 2026-11-06：硬件总线工具（i2c/spi）注册总闸（`tools.hardware`
         // 段 `enabled` 键，默认关）。
         hardware_tools_enabled: cfg.tools.hardware.enabled,

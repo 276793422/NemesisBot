@@ -1399,6 +1399,18 @@ fn test_exec_config_default() {
     let cfg = ExecConfig::default();
     assert!(!cfg.enable_deny_patterns);
     assert!(cfg.custom_deny_patterns.is_empty());
+    // 2026-11-08：timeout 上限 config 化——缺省 0 = 生效 600（旧行为
+    // 字节不变）；<30 下限保护防部署侧配出必然超时。
+    assert_eq!(cfg.max_timeout_secs, 0);
+    assert_eq!(cfg.effective_max_timeout_secs(), 600);
+    let mut custom = ExecConfig::default();
+    custom.max_timeout_secs = 1800;
+    assert_eq!(custom.effective_max_timeout_secs(), 1800);
+    custom.max_timeout_secs = 2;
+    assert_eq!(custom.effective_max_timeout_secs(), 30, "下限保护");
+    // serde 缺键 round-trip：不带该键的 JSON 反序列化不炸且落缺省。
+    let parsed: ExecConfig = serde_json::from_str("{}").expect("missing key must default");
+    assert_eq!(parsed.effective_max_timeout_secs(), 600);
 }
 
 #[test]

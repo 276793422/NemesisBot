@@ -36,6 +36,91 @@ fn timeout_capped_at_600() {
 }
 
 // ---------------------------------------------------------------------------
+// exec_timeout_secs_capped 纯函数层（2026-11-08 config 化：
+// `tools.exec.max_timeout_secs` 部署主权上限）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn timeout_capped_custom_cap_clamps() {
+    // cap=2：模型请求 100 也被 clamp 到 2（部署上限优先于模型请求）。
+    assert_eq!(super::exec_timeout_secs_capped(Some(100), 2), 2);
+    assert_eq!(super::exec_timeout_secs_capped(Some(5), 2), 2);
+    // cap=1800（部署放宽）：600 旧写死上限不再是天花板。
+    assert_eq!(super::exec_timeout_secs_capped(Some(1000), 1800), 1000);
+    assert_eq!(super::exec_timeout_secs_capped(Some(999_999), 1800), 1800);
+    // 缺省 30 也受 cap 钳制（cap 是绝对天花板——否则 cap<30 的部署可被
+    // 缺省值绕过；config 侧 effective_max_timeout_secs 的 30 下限保护
+    // 保证经 config 路径 cap 恒 ≥30，此处 unit 钉纯函数语义）。
+    assert_eq!(super::exec_timeout_secs_capped(None, 2), 2);
+    assert_eq!(super::exec_timeout_secs_capped(None, 1800), 30);
+}
+
+// ---------------------------------------------------------------------------
+// schema description 动态上限（部署侧可见性）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn schema_description_reflects_cap() {
+    // 默认构造：600 旧行为文案。
+    assert!(
+        tool().parameters()["properties"]["timeout"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("max 600"),
+        "default cap text must stay 600"
+    );
+    // 链式覆写后 description 同步（模型能看到当前部署的真实上限）。
+    let capped = tool().with_max_timeout_secs(1800);
+    assert!(
+        capped.parameters()["properties"]["timeout"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("max 1800"),
+        "custom cap must surface in schema description"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// execute 集成层：部署上限压制模型请求（config 化端到端）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn deploy_cap_overrides_model_request() {
+    // cap=2 + 模型请求 timeout=100：实际在 2s 收尸（部署上限优先）。
+    // SPIN_CMD 纯 shell 内建死循环无孙进程（见 PARTIAL_CMD 注记）。
+    let out = tool()
+        .with_max_timeout_secs(2)
+        .execute(
+            &serde_json::json!({"command": SPIN_CMD, "timeout": 100}).to_string(),
+            &ctx(),
+        )
+        .await
+        .expect("timeout must be Ok");
+    assert!(
+        out.contains("timed out after 2 seconds"),
+        "deploy cap must clamp model's 100s request to 2s: {out}"
+    );
+}
+
+#[tokio::test]
+async fn default_cap_unchanged_byte_identical_behavior() {
+    // 默认构造（无 config 注入）：模型请求 999999 仍被 clamp 到 600 语义
+    // ——这里用 2s 请求验证正常透传（不真等 600s），上限 clamp 行为由
+    // 纯函数层测试覆盖；本测试钉「默认构造路径零行为漂移」。
+    let out = tool()
+        .execute(
+            &serde_json::json!({"command": SPIN_CMD, "timeout": 1}).to_string(),
+            &ctx(),
+        )
+        .await
+        .expect("timeout must be Ok");
+    assert!(
+        out.contains("timed out after 1 seconds"),
+        "default-construction path must behave exactly as before: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // tail_chars 纯函数层（多字节安全尾部截取）
 // ---------------------------------------------------------------------------
 

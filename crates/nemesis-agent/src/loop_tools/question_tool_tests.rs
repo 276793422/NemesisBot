@@ -73,6 +73,7 @@ impl QuestionAsker for MockBroker {
 #[test]
 fn register_with_broker_inserts_question_tool() {
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         question_broker: Some(slot_with(Arc::new(MockBroker::timeout()))),
         ..Default::default()
     };

@@ -114,11 +114,15 @@ static TOOL_DESCRIPTIONS: &[(&str, &str, Option<&str>)] = &[
         include_str!("tools/exec.lean.md"),
         Some(include_str!("tools/exec.md")),
     ),
-    (
-        "exec_async",
-        include_str!("tools/exec_async.lean.md"),
-        Some(include_str!("tools/exec_async.md")),
-    ),
+    // [SEALED 2026-11-08] exec_async 封存（registry 注册点同步封存）——
+    // fire-and-forget 旁路 background_start 完成唤醒路径（GUI 引导已吸收进
+    // background_start 提示词）。资产文件 exec_async.md/.lean.md 留盘不动。
+    // 恢复 = 取消本条注释（与 registry/capability 三面一起）。
+    // (
+    //     "exec_async",
+    //     include_str!("tools/exec_async.lean.md"),
+    //     Some(include_str!("tools/exec_async.md")),
+    // ),
     (
         "find_skills",
         include_str!("tools/find_skills.lean.md"),
