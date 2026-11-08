@@ -670,6 +670,26 @@ fn scratch_ra_project() -> Option<(tempfile::TempDir, std::path::PathBuf)> {
 /// 预算更稳、结果更可复现。
 static RA_SERIAL: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
+/// RA 用例的 env 保护闸：与 `crate::r#loop::diagnostics_feedback_tests::
+/// FAKE_ENV_LOCK` 共用同一把进程 env 锁。diagnostics 的 bare-PATH 用例
+/// 会把进程 PATH 置成系统目录再恢复——RA 用例 precheck 探针通过后、
+/// spawn 查找前的窗口撞上该窗口即假红「not found on PATH」（实录
+/// 2026-11-08：全量并行 rename 用例挂，隔离复跑恒绿）。RA 用例只读
+/// PATH 不改写，闸纯互斥（Drop 即释放）；guard 藏 struct 避 clippy
+/// await_holding_lock（同 diagnostics PathRestore 模式，`_lock` 命名
+/// 同源——持有即用途，下划线豁免 dead_code）。
+struct RaEnvGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+fn acquire_ra_env_guard() -> RaEnvGuard {
+    RaEnvGuard {
+        _lock: crate::r#loop::diagnostics_feedback_tests::FAKE_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    }
+}
+
 /// 重试总预算（重试循环的墙钟总闸，P2-2）：旧实现 120 次循环名义「60s 预算」，
 /// 实际单次 execute 自身可拖 60s（LspTool 内层超时），最坏总墙钟
 /// 120×60s+60s——RA 卡死时套件挂半小时级。总闸一次包全程：每次尝试
@@ -774,6 +794,7 @@ async fn execute_rename_end_to_end_with_rust_analyzer() {
         .acquire()
         .await
         .expect("RA_SERIAL semaphore closed");
+    let _ra_env = acquire_ra_env_guard();
     if !skip_unless_ra_available() {
         return;
     }
@@ -816,6 +837,7 @@ async fn execute_code_action_reports_honestly_with_rust_analyzer() {
         .acquire()
         .await
         .expect("RA_SERIAL semaphore closed");
+    let _ra_env = acquire_ra_env_guard();
     if !skip_unless_ra_available() {
         return;
     }
@@ -852,6 +874,7 @@ async fn execute_hover_formats_real_server_response_with_rust_analyzer() {
         .acquire()
         .await
         .expect("RA_SERIAL semaphore closed");
+    let _ra_env = acquire_ra_env_guard();
     if !skip_unless_ra_available() {
         return;
     }

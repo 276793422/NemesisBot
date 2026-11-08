@@ -552,6 +552,53 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     }
                 }
             }
+
+            // B39：保存时轻校验（WSAPI models.add 同源，probe_model_entry
+            // SaveCheck 深度：HTTP lane 5s ping / CLI 型 lane 诚实 skip）。
+            // 校验失败不拒存——条目已落盘，结果一行三态如实打印。
+            {
+                let probe_home = cfg_path
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                match nemesis_web::handlers::models::probe_model_entry(
+                    &probe_home,
+                    &model_name_alias,
+                    nemesis_web::handlers::models::ProbeDepth::SaveCheck,
+                )
+                .await
+                {
+                    Ok(v) => {
+                        let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("other");
+                        let lane = v.get("lane").and_then(|s| s.as_str()).unwrap_or("?");
+                        match status {
+                            "ok" => {
+                                let latency =
+                                    v.get("latency_ms").and_then(|s| s.as_u64()).unwrap_or(0);
+                                println!("  验证：连通（{lane}，{latency}ms）");
+                            }
+                            "skipped" => {
+                                let detail = v.get("detail").and_then(|s| s.as_str()).unwrap_or("");
+                                println!("  验证：跳过（{detail}）");
+                            }
+                            "unsupported" => {
+                                println!("  验证：图像生成条目，不做对话验证");
+                            }
+                            other => {
+                                let kind =
+                                    v.get("kind").and_then(|s| s.as_str()).unwrap_or("other");
+                                let detail = v.get("detail").and_then(|s| s.as_str()).unwrap_or("");
+                                println!("  验证：失败（{other}/{kind}，{lane}）——{detail}");
+                                println!(
+                                    "    条目已保存；请检查 key / 端点配置\
+                                    （Dashboard 模型管理页可一键复测）"
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => println!("  验证：未执行（{e}）"),
+                }
+            }
         }
         ModelAction::List { verbose } => {
             println!("Configured Models");

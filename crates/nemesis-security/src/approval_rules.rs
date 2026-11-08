@@ -103,6 +103,9 @@ pub fn rule_permitted_for(op: &str, risk: &str) -> bool {
 /// - op 必须相等；
 /// - pattern 以 ` *` 结尾 → token 前缀匹配（`cargo test *` 命中
 ///   `cargo test` 与 `cargo test --release`，不命中 `cargo publish`）；
+///   **B26 读侧臂**：命令段含敏感 flag（[`command_arity::SENSITIVE_FLAGS`])
+///   而 pattern 前缀不含 → 不命中（重新审批）——破坏力升级维度必须是
+///   pattern 的显式组成部分，存量粗 pattern 对 flag 命令自动失效；
 ///   exec 类操作额外要求**复合命令全段命中**（CMD-12）：`cd *` 不得
 ///   罩住 `cd /tmp && rm -rf y` 的删除段——按顶层段切分后逐段做
 ///   token 前缀匹配，任一段不命中即不放行；存量时期按旧语义写入的
@@ -135,6 +138,19 @@ pub fn matches_rule(rule_op: &str, rule_pattern: &str, op: &str, target: &str) -
                 // 写侧归约剥了读侧没剥 = 规则永远弹卡。
                 let seg_tokens_v = crate::command_arity::tokenize_command(seg);
                 let seg_tokens = crate::command_arity::strip_env_tokens(&seg_tokens_v);
+                // B26 读侧臂：命令含敏感 flag 而 pattern 前缀不含该
+                // flag → 不命中（走重新审批）。原始洞：批准不含 flag 的
+                // `git push origin main` 产出的存量粗 pattern
+                // `git push *`，不再放行后续 `git push origin main
+                // --force`。收紧方向安全（只可能更严），存量规则不改写；
+                // flag 命名真相源与写侧细化共用
+                // [`command_arity::SENSITIVE_FLAGS`]。
+                if crate::command_arity::sensitive_flags_in(seg_tokens)
+                    .iter()
+                    .any(|f| !prefix_tokens.iter().any(|p| p == f))
+                {
+                    return false;
+                }
                 seg_tokens.len() >= prefix_tokens.len()
                     && seg_tokens
                         .iter()
@@ -294,6 +310,8 @@ pub fn persist_auto_allow_rule(
     Ok(Some(pattern))
 }
 
+#[cfg(test)]
+mod b26_flag_tests;
 #[cfg(test)]
 mod cov_tests;
 #[cfg(test)]

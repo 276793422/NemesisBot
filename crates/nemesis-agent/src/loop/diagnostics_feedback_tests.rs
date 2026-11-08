@@ -16,8 +16,11 @@ use super::AgentLoop;
 use nemesis_config::DiagnosticsLoopConfig;
 
 /// Process-global env writers must share one lock（env-test-race-lock-pattern）。
-/// pub(super)：diagnostics_session_tests 同挂 PATH，必须共用同一把锁。
-pub(super) static FAKE_ENV_LOCK: Mutex<()> = Mutex::new(());
+/// pub(crate)：diagnostics_session_tests 同挂 PATH 必须共用同一把锁；
+/// loop_tools::lsp_tool::cov_tests 的 RA 端到端用例读 PATH（precheck 探针 +
+/// spawn 查找），也共用本锁——bare-PATH 用例的窗口撞上 RA 查找会假红
+/// （实录 2026-11-08：全量并行 rename 用例「not found on PATH」，隔离恒绿）。
+pub(crate) static FAKE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Holds the env lock and restores PATH on drop（即使断言失败也恢复）。
 pub(super) struct PathRestore {

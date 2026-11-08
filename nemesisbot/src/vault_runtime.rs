@@ -18,12 +18,42 @@ use std::path::Path;
 
 /// 在 nemesisbot 各启动路径调用（与 set_global_credentials_path 同点）。
 /// 只注册解析器闭包（捕获 vault 路径），不做 IO；后装覆盖先装。
+/// B4（2026-11-08）：同点注册全局**写入器**——question 凭据形态的收取
+/// 通道（读/写同一 vault 文件、同一路径拼接点，与 WASM 插件 secret-set
+/// 的自持写通道同源语义）。
 pub fn install(home: &Path) {
     let ws = crate::common::workspace_path(home);
     let path = nemesis_path::resolve_vault_path_in_workspace(&ws);
+    let rpath = path.clone();
     nemesis_config::set_global_vault_resolver(std::sync::Arc::new(move |alias| {
-        resolve_alias(&path, alias)
+        resolve_alias(&rpath, alias)
     }));
+    let wpath = path;
+    nemesis_config::set_global_vault_writer(std::sync::Arc::new(move |alias, value| {
+        write_alias_at(&wpath, alias, value)
+    }));
+}
+
+/// 写入裸别名凭据（每次现开现写现存盘，与解析侧「现查无缓存」同纪律）。
+/// upsert 语义（`VaultStore::set` 保留 created_at）；vault 文件缺失 = 按
+/// 平台默认模式自动建库（DPAPI 免口令；argon2id 无 env 口令 = 诚实 Err）。
+/// domain 记 `agent`——与 `plugin`（WASM secret-set）并列的来源标记。
+/// 值不落日志：错误串只含别名与根因，不含 value。
+pub fn write_alias_at(path: &Path, alias: &str, value: &str) -> Result<(), String> {
+    let mut store =
+        open_or_create_unlocked_at(path).map_err(|e| format!("凭据写入失败（{alias}）：{e}"))?;
+    store
+        .set(
+            alias,
+            value,
+            "agent",
+            "session credential (question secret field)",
+        )
+        .map_err(|e| format!("凭据写入失败（{alias}）：vault 写入: {e}"))?;
+    store
+        .save()
+        .map_err(|e| format!("凭据写入失败（{alias}）：vault 保存: {e}"))?;
+    Ok(())
 }
 
 /// `vault:<alias>` → secret。错误带补救指引（vault_ref 约定：fail loud，

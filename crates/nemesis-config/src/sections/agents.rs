@@ -653,6 +653,16 @@ pub struct AgentDefaults {
     /// config.json），运行中改键下一轮生效。
     #[serde(default = "default_compact_keep_recent_tokens")]
     pub compact_keep_recent_tokens: i64,
+    /// B17（2026-11-08 七轮调研落地批次③）：任务边界压缩开关。
+    /// **true = 轮末触发点从压缩点（trigger，默认路径窗口 75%）提前到
+    /// soft 位（trigger ×2/3，默认路径窗口 50%）**——压缩永远发生在任务
+    /// 边界（此刻最终回复已出、下一任务未开始）且带足余量，中途撞
+    /// overflow 应急链的概率随之坍缩。默认 off：压缩行为变更影响所有
+    /// 会话，试点验证后再议默认值（计划文档「拒绝的设计」⑧钦定）。
+    /// loop 侧 fresh-read（同 `compact_keep_recent_tokens` 模式），运行中
+    /// 改键下一轮生效。
+    #[serde(default)]
+    pub compact_boundary: bool,
     /// （集群无人值守硬化）：会话 token 预算——单会话累计
     /// 用量（input+cache_read+output，与 aggregate_session_usage 账本同
     /// 口径）上限。**0 = 关（默认）**，注意与 `max_tool_iterations` 的
@@ -706,6 +716,7 @@ impl Default for AgentDefaults {
             format_on_save: FormatOnSaveConfig::default(),
             rate_limit_retries: default_rate_limit_retries(),
             compact_keep_recent_tokens: default_compact_keep_recent_tokens(),
+            compact_boundary: false,
             session_token_budget: 0,
             shutdown_drain_secs: default_shutdown_drain_secs(),
             max_output_ceiling: default_max_output_ceiling(),

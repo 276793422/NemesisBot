@@ -553,8 +553,8 @@ fn write_catalog(home: &std::path::Path, entries_json: &str) {
     .unwrap();
 }
 
-#[test]
-fn add_preserves_sibling_extras_and_autofills_catalog() {
+#[tokio::test]
+async fn add_preserves_sibling_extras_and_autofills_catalog() {
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path(), SEED);
     write_catalog(
@@ -563,10 +563,15 @@ fn add_preserves_sibling_extras_and_autofills_catalog() {
     );
     let h = ModelsHandler::new();
 
+    // base_url 钉死本机死端口：B39 起 add 写盘后跑保存时轻校验（SaveCheck
+    // ping）——无 base_url 会按推断默认端点发起真实网络请求，测试必须
+    // 密闭（本机拒绝连接毫秒级失败，断言只看落盘内容不看 verify）。
     h.add(
         &home_str(&dir),
-        &serde_json::json!({ "name": "gpt5", "model": "openai/gpt-5", "key": "sk-5" }),
+        &serde_json::json!({ "name": "gpt5", "model": "openai/gpt-5", "key": "sk-5",
+            "base_url": "http://127.0.0.1:1" }),
     )
+    .await
     .unwrap()
     .unwrap();
 
@@ -592,6 +597,7 @@ fn add_preserves_sibling_extras_and_autofills_catalog() {
             &home_str(&dir),
             &serde_json::json!({ "name": "gpt5", "model": "openai/gpt-5", "key": "x" })
         )
+        .await
         .is_err()
     );
 }
@@ -1051,8 +1057,8 @@ fn canonical_swap_params_unknown_name_errors_loud() {
 
 // LLM 协议选择器：add / update_field 的 protocol 契约 ---
 
-#[test]
-fn add_persists_protocol_and_normalizes_alias() {
+#[tokio::test]
+async fn add_persists_protocol_and_normalizes_alias() {
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path(), SEED);
     let h = ModelsHandler::new();
@@ -1065,6 +1071,7 @@ fn add_persists_protocol_and_normalizes_alias() {
             "base_url": "http://127.0.0.1:15721", "protocol": "claude"
         }),
     )
+    .await
     .unwrap()
     .unwrap();
     let new = read_config_raw(dir.path())["model_list"]
@@ -1083,8 +1090,8 @@ fn add_persists_protocol_and_normalizes_alias() {
     );
 }
 
-#[test]
-fn add_without_protocol_stays_empty_and_invalid_rejected() {
+#[tokio::test]
+async fn add_without_protocol_stays_empty_and_invalid_rejected() {
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path(), SEED);
     let h = ModelsHandler::new();
@@ -1092,8 +1099,10 @@ fn add_without_protocol_stays_empty_and_invalid_rejected() {
     // 缺省 = 自动推断（空串落盘，与其他默认空字段一致）。
     h.add(
         &home_str(&dir),
-        &serde_json::json!({ "name": "auto1", "model": "zhipu/glm-4.7", "key": "k" }),
+        &serde_json::json!({ "name": "auto1", "model": "zhipu/glm-4.7", "key": "k",
+            "base_url": "http://127.0.0.1:1" }),
     )
+    .await
     .unwrap()
     .unwrap();
     let new = read_config_raw(dir.path())["model_list"]
@@ -1111,6 +1120,7 @@ fn add_without_protocol_stays_empty_and_invalid_rejected() {
             &home_str(&dir),
             &serde_json::json!({ "name": "bad", "model": "x/y", "key": "k", "protocol": "grpc" }),
         )
+        .await
         .unwrap_err();
     assert!(err.contains("grpc"), "got: {err}");
     assert!(
@@ -1124,8 +1134,8 @@ fn add_without_protocol_stays_empty_and_invalid_rejected() {
 
 // per-model 流式开关（stream 键）：add / update_field 契约 ---
 
-#[test]
-fn add_persists_stream_and_rejects_invalid() {
+#[tokio::test]
+async fn add_persists_stream_and_rejects_invalid() {
     let dir = tempfile::tempdir().unwrap();
     write_config(dir.path(), SEED);
     let h = ModelsHandler::new();
@@ -1134,9 +1144,11 @@ fn add_persists_stream_and_rejects_invalid() {
     h.add(
         &home_str(&dir),
         &serde_json::json!({
-            "name": "s1", "model": "test/testai-1.1", "key": "k", "stream": "true"
+            "name": "s1", "model": "test/testai-1.1", "key": "k", "stream": "true",
+            "base_url": "http://127.0.0.1:1"
         }),
     )
+    .await
     .unwrap()
     .unwrap();
     let new = read_config_raw(dir.path())["model_list"]
@@ -1162,6 +1174,7 @@ fn add_persists_stream_and_rejects_invalid() {
             &home_str(&dir),
             &serde_json::json!({ "name": "bad", "model": "x/y", "key": "k", "stream": "maybe" }),
         )
+        .await
         .unwrap_err();
     assert!(err.contains("Invalid stream"), "got: {err}");
     assert!(

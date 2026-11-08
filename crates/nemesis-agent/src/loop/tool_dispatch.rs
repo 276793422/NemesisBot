@@ -716,12 +716,53 @@ impl AgentLoop {
             }
         }
 
+        // B18：内置工具 tier 白名单 dispatch 闸（对齐 hidden double gate
+        // 形态）——供给闸（build_tool_defs tier 臂）之外的第二道闸：供给
+        // 只滤 defs 清单、registry 不摘除，mini/normal 硬编调用白名单外
+        // 内置工具会直接执行。判定共用单一真相源 `tier_supplies_tool`
+        // （防两臂失配）。min_tier 声明工具（WASM 插件）已由上方秩闸
+        // 裁决，此处按同一函数重判幂等；registry 未命中（Unknown tool
+        // 分支）`unwrap_or(true)` 不归本闸。位置在 plugin min-tier 之后、
+        // security 之前：档位拒绝不付 judge/scanner 成本。
+        //
+        // workflow 工具节点豁免白名单臂（channel="workflow"，上游
+        // workflow_gate_tests ④ 钉死的语义）：那是程序化模板调用（模板
+        // 作者显式点名工具），不是模型选型——按会话活跃档位拒之会打断
+        // 小模型档下的合法工作流。插件 min-tier 臂照常（执行面能力下限，
+        // 上方秩闸已裁决，此处幂等重判）。
+        {
+            let tools_guard = self.tools.read();
+            let declared_min = tools_guard.get(&tool_call.name).map(|t| t.min_tier());
+            let tier = *self.tier.read();
+            let mcp_lazy = self.current_mcp_lazy_supply();
+            let workflow_node = context.channel == "workflow";
+            let supplied = declared_min
+                .map(|min| {
+                    (min.is_none() && workflow_node)
+                        || tier_supplies_tool(min, &tool_call.name, tier, mcp_lazy)
+                })
+                .unwrap_or(true);
+            if !supplied {
+                warn!(
+                    "[AgentLoop] Tool {} refused (tier whitelist).",
+                    tool_call.name
+                );
+                return format!(
+                    "Error: Tool '{}' is not in the tool whitelist for the active model's tier. Inform the user; they can switch to a bigger model via /model.",
+                    tool_call.name
+                );
+            }
+        }
+
         // 角色目录闸（角色目录与分档供给）：spawn `role` 的
         // dispatch 端权威检查——schema 枚举恒全量（稳定契约， 双闸同模
         // 型），出界（未知 / tier 分档外 / `agents.roles.hidden` 隐藏）在这
         // 里拒绝。位置在 工具隐藏闸之后、Plan 闸之前：角色拒绝不必付
         // Plan/security 成本。陈旧 prompt cache 窗口里模型仍可能带出界角色，
-        // dispatch 现读 config + tier 即时裁决。
+        // dispatch 现读 config + tier 即时裁决。（B18 起 spawn 在
+        // mini/normal 档不在 tier 白名单，硬调先死在上方白名单闸——本闸的
+        // tier 分档臂在其可达档位（Big/Auto）恒全通过，保留作纵深防御 +
+        // 供给面口径同源。）
         if tool_call.name == "spawn"
             && let Some(err) = self.check_spawn_role(&tool_call.arguments)
         {
@@ -1623,6 +1664,20 @@ impl AgentLoop {
                                         }
                                     }
                                 };
+                            // B4（2026-11-08 批次④）会话凭据占位符：声明槽
+                            // 注入之后、execute 之前——安全 8 层已在上方跑完
+                            //（各层看到占位符原文，Layer 4 不误拦、审计落
+                            // 原文），此处展开值只进 execute 入参；明文清单
+                            // 带回供结果掩码。作用域闸（只解析本会话别名）
+                            // 是防外泄主防线，见 session_secrets 模块文档。
+                            let (exec_args, session_secrets) =
+                                match crate::r#loop::session_secrets::expand_session_placeholders(
+                                    &exec_args,
+                                    &ctx.session_key,
+                                ) {
+                                    Ok(v) => v,
+                                    Err(e) => return e,
+                                };
                             // 工具 panic 隔离。
                             // 工具在 agent loop task 内联执行，release
                             // panic=unwind 下任一工具 panic 会沿 unwind 炸掉整
@@ -1662,6 +1717,24 @@ impl AgentLoop {
                                         "tool panicked: {msg} (partial side effects possible)"
                                     ))
                                 }
+                            };
+                            // B4 结果掩码（纵深，尽力而为）：本调用展开过的
+                            // 凭据明文在结果中出现即遮蔽——Ok/Err 双臂都掩
+                            //（错误串也可能回显入参片段）；空清单零成本直通。
+                            let exec = match exec {
+                                Ok(r) if !session_secrets.is_empty() => {
+                                    Ok(crate::r#loop::session_secrets::mask_secrets_in_result(
+                                        &r,
+                                        &session_secrets,
+                                    ))
+                                }
+                                Err(e) if !session_secrets.is_empty() => {
+                                    Err(crate::r#loop::session_secrets::mask_secrets_in_result(
+                                        &e,
+                                        &session_secrets,
+                                    ))
+                                }
+                                other => other,
                             };
                             match exec {
                                 Ok(result) => {
@@ -1765,8 +1838,24 @@ impl AgentLoop {
                             }
                         }
                         None => {
+                            // B18：Unknown tool 轻归因——前缀嗅探把「真未
+                            // 注册」与「类别性缺席」分开（hidden/tier/plan
+                            // 三闸拦的都是 registry 命中的工具，到不了此
+                            // 分支，不在此重复归因）。
                             warn!("[AgentLoop] Unknown tool: {}", call.name);
-                            format!("Error: Unknown tool '{}'", call.name)
+                            if call.name.starts_with("mcp_") {
+                                format!(
+                                    "Error: Unknown tool '{}'. It looks like an MCP tool: the MCP server may not be connected/discovered yet. Call mcp_list to see available tools, or inform the user.",
+                                    call.name
+                                )
+                            } else if call.name.starts_with("plugin.") {
+                                format!(
+                                    "Error: Unknown tool '{}'. It looks like a WASM plugin tool: the plugin may not be installed or is disabled. Inform the user.",
+                                    call.name
+                                )
+                            } else {
+                                format!("Error: Unknown tool '{}'", call.name)
+                            }
                         }
                     }
                 })

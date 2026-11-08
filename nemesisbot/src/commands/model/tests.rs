@@ -2403,7 +2403,11 @@ mod r9_subprocess {
         // model add 要求 config.json 已存在（101 行 read_to_string）。
         std::fs::write(ws.config_path(), "{}").unwrap();
 
-        let mock = MockAiServer::start(perfect_probe_script()).expect("mock ai server");
+        // 脚本头部垫 1 条 Text：下方 add 触发 B39 SaveCheck ping（FIFO 弹
+        // 一条，200 即可）；其后 7 条 ToolCall 供 probe 七题。
+        let mut script = vec![MockAiReply::Text("pong".into())];
+        script.extend(perfect_probe_script());
+        let mock = MockAiServer::start(script).expect("mock ai server");
 
         let bin = resolve_nemesisbot_bin().expect("release binary");
         let base = format!("{}/v1", mock.base_url());
@@ -2455,10 +2459,15 @@ mod r9_subprocess {
             "7/7 全对应评 Big，实际 probe 输出：\n{}",
             probe.stdout
         );
-        // 确实消费完整脚本：chat 次数 ≥7（若有 models-list GET 只多不少），
-        // 剩余 0 证明恰好 7 次调度（GET 不出队，FIFO 正好被 7 题耗尽）。
-        assert!(mock.hits() >= 7, "至少 7 次 HTTP 往返");
-        assert_eq!(mock.remaining(), 0, "脚本必须正好耗尽（一题一条）");
+        // 确实消费完整脚本：add 的 B39 SaveCheck ping（1）+ probe 七题（7）
+        // = 8 次出队调度（models-list GET 不出队只多不少），剩余 0 证明
+        // 脚本恰好按序耗尽。
+        assert!(mock.hits() >= 8, "至少 8 次 HTTP 往返（ping + 七题）");
+        assert_eq!(
+            mock.remaining(),
+            0,
+            "脚本必须正好耗尽（ping 一条 + 七题各一条）"
+        );
 
         // tier 落盘：config.json 条目 model_tier == "big"。
         let cfg = read_cfg(&ws);
@@ -2650,7 +2659,11 @@ mod r10_subprocess {
         std::fs::create_dir_all(ws.home()).unwrap();
         std::fs::write(ws.config_path(), "{}").unwrap();
 
-        let mock = MockAiServer::start(perfect_probe_script()).expect("mock ai server");
+        // 脚本头部垫 1 条 Text：下方 add 触发 B39 SaveCheck ping（FIFO 弹
+        // 一条，200 即可）；其后 7 条 ToolCall 供 probe 七题。
+        let mut script = vec![MockAiReply::Text("pong".into())];
+        script.extend(perfect_probe_script());
+        let mock = MockAiServer::start(script).expect("mock ai server");
         let bin = resolve_nemesisbot_bin().expect("release binary");
         let base = format!("{}/v1", mock.base_url());
 
@@ -2694,7 +2707,7 @@ mod r10_subprocess {
             probe.stderr
         );
         assert!(probe.stdout_contains("能力探针报告"));
-        assert_eq!(mock.remaining(), 0, "七题脚本必须恰好耗尽");
+        assert_eq!(mock.remaining(), 0, "SaveCheck ping + 七题脚本恰好耗尽");
 
         // 语义：写回目标 = llm_ref（空名时 = 生效默认模型
         // 别名 r10p/empty-name）→ update_model_entry 命中该条目 → tier 落盘。
@@ -3206,8 +3219,15 @@ mod w5b2 {
         let th = s11b_temp_home_env();
         super::s11b_write_cfg(&th.home, serde_json::json!({}));
 
-        // mock AI server 先起（Add 只登记 base，不发请求）。
-        let mock = MockAiServer::start(w5_perfect_probe_script()).expect("mock ai server");
+        // mock AI server 先起。脚本头部垫 2 条 Text：①首次 Add 与②重复
+        // Add（更新臂）各触发一次 B39 SaveCheck ping（无工具轻校验请求，
+        // FIFO 各弹一条，200 即可）；其后 7 条 ToolCall 留给③ Probe 七题。
+        let mut script = vec![
+            MockAiReply::Text("pong".into()),
+            MockAiReply::Text("pong".into()),
+        ];
+        script.extend(w5_perfect_probe_script());
+        let mock = MockAiServer::start(script).expect("mock ai server");
         let base = format!("{}/v1", mock.base_url());
 
         // ① Add + --default：走 alias 拆分（2 => parts[1]）+ defaults.llm

@@ -243,6 +243,7 @@ impl WsApi {
 const REQUIRED_AI_MODELS: &[&str] = &[
     "testai-1.1",
     "testai-9.3",
+    "testai-9.2",
     "testai-sum-1.0",
     "testai-2.1",
     "testai-5.0",
@@ -394,6 +395,7 @@ async fn run_scenario(
             scenarios::run_security_boundary_block(ctx, runs, ws, security_target).await
         }
         "concurrent_sessions" => scenarios::run_concurrent_sessions(ctx, runs).await,
+        "saturating_human_priority" => scenarios::run_saturating_human_priority(ctx, runs).await,
         "vision_roundtrip" => {
             scenarios::run_vision_roundtrip(ctx, runs, &ws.workspace().join("bench_image.png"))
                 .await

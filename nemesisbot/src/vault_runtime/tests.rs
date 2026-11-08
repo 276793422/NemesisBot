@@ -262,3 +262,56 @@ fn open_or_create_argon2_without_passphrase_fails_loud() {
         restore_passphrase_env();
     });
 }
+
+// ===========================================================================
+// B4（2026-11-08 批次④）write_alias_at：question 凭据形态收取通道的
+// 落盘面——写入后经同源解析面可读回（roundtrip）。
+// ===========================================================================
+
+/// 写入 → 同一 vault 文件读回（install 的全局 resolver 同源）；再写同
+/// 别名 = upsert 覆盖（VaultStore::set 语义）。domain 记 agent。
+#[test]
+fn write_alias_at_roundtrip_and_upsert() {
+    with_runtime_lock(|| {
+        restore_passphrase_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let vp = nemesis_path::resolve_vault_path_in_workspace(&crate::common::workspace_path(
+            tmp.path(),
+        ));
+        // 缺文件自动建库（DPAPI 免口令 / argon2 走 env 口令）。
+        write_alias_at(&vp, "agent/sess-1/api_key", "sk-first").unwrap();
+        install(tmp.path());
+        assert_eq!(
+            nemesis_config::resolve_vault_reference("vault:agent/sess-1/api_key")
+                .unwrap()
+                .unwrap(),
+            "sk-first"
+        );
+        // upsert：同别名覆盖。
+        write_alias_at(&vp, "agent/sess-1/api_key", "sk-second").unwrap();
+        assert_eq!(
+            nemesis_config::resolve_vault_reference("vault:agent/sess-1/api_key")
+                .unwrap()
+                .unwrap(),
+            "sk-second"
+        );
+        restore_passphrase_env();
+    });
+}
+
+/// vault 目录不存在：create_dir_all 兜住（workspace 刚建、无 config/ 的
+/// 冷启动形态）。
+#[test]
+fn write_alias_at_creates_missing_dir() {
+    with_runtime_lock(|| {
+        restore_passphrase_env();
+        let tmp = tempfile::tempdir().unwrap();
+        let vp = nemesis_path::resolve_vault_path_in_workspace(&crate::common::workspace_path(
+            tmp.path(),
+        ));
+        std::fs::remove_dir_all(vp.parent().unwrap()).ok();
+        write_alias_at(&vp, "agent/s2/k", "v").unwrap();
+        assert!(vp.exists());
+        restore_passphrase_env();
+    });
+}

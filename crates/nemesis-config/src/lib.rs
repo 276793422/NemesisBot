@@ -26,8 +26,10 @@ pub use hot_reload::HotReloader;
 // vault（计划）：`vault:<alias>` 引用的前缀常量、全局
 // 解析器钩子与通用秘密字段解析（channel/cluster/MCP 消费点共用）。
 pub use vault_ref::{
-    VAULT_PREFIX, VaultResolver, clear_global_vault_resolver, global_vault_resolver,
-    is_secret_reference, resolve_secret_field, resolve_vault_reference, set_global_vault_resolver,
+    VAULT_PREFIX, VaultResolver, VaultWriter, clear_global_vault_resolver,
+    clear_global_vault_writer, global_vault_resolver, global_vault_writer, is_secret_reference,
+    resolve_secret_field, resolve_vault_reference, set_global_vault_resolver,
+    set_global_vault_writer, write_vault_secret,
 };
 
 // ②（三期）：vault 别名域绑定（alias→(工具,槽位) 白名单）
@@ -547,6 +549,23 @@ pub fn resolve_compact_keep_recent_tokens(cfg: Option<&serde_json::Value>) -> us
     })
     .map(|n| n.max(0) as usize)
     .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT_TOKENS as usize)
+}
+
+/// B17（2026-11-08 七轮调研落地批次③）：raw config JSON 读取
+/// `agents.defaults.compact_boundary`（任务边界压缩开关）。
+///
+/// 与 [`resolve_compact_keep_recent_tokens`] 同模式——AgentLoop compact
+/// 域 fresh-read raw JSON，键路径与缺省值必须和 typed 字段单源，这里就是
+/// 那个单源。缺键/缺段/非布尔 → 缺省 **false**（off；压缩行为变更先试点，
+/// 计划文档钦定）。
+pub fn resolve_compact_boundary(cfg: Option<&serde_json::Value>) -> bool {
+    cfg.and_then(|v| {
+        v.get("agents")?
+            .get("defaults")?
+            .get("compact_boundary")?
+            .as_bool()
+    })
+    .unwrap_or(false)
 }
 
 /// B30（2026-11-06 三方对比整改）：工具结果统一 cap 缺省值（单一真相源：

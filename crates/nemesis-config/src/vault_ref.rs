@@ -42,6 +42,47 @@ pub fn global_vault_resolver() -> Option<VaultResolver> {
     GLOBAL_VAULT_RESOLVER.read().clone()
 }
 
+/// vault 别名写入函数：`(裸别名, 值)` -> Ok / 人类可读错误。裸别名 =
+/// 不带 `vault:` 前缀（`agent/<会话>/<名>` 形态）。与解析器同约束：
+/// 实现须无阻塞交互（无 TTY 提示）；**值不落日志、不落错误串**是实现的
+/// 纪律（本 crate 的错误透传实现方给的文案，不二次加工）。
+pub type VaultWriter = Arc<dyn Fn(&str, &str) -> std::result::Result<(), String> + Send + Sync>;
+
+static GLOBAL_VAULT_WRITER: RwLock<Option<VaultWriter>> = RwLock::new(None);
+
+/// 安装全局 vault 写入器（幂等：后装覆盖先装）。B4 会话凭据收取
+///（question 凭据形态）用——nemesis-agent 无法依赖 vault 实现层
+///（依赖环同解析器），走同一「全局槽 + 上层装配注入」模式。
+/// 测试用 [`clear_global_vault_writer`] 复位。
+pub fn set_global_vault_writer(writer: VaultWriter) {
+    *GLOBAL_VAULT_WRITER.write() = Some(writer);
+}
+
+/// Reset the global writer (test hygiene, mirrors the resolver slot).
+pub fn clear_global_vault_writer() {
+    *GLOBAL_VAULT_WRITER.write() = None;
+}
+
+/// 当前全局写入器（诊断/测试用）。
+pub fn global_vault_writer() -> Option<VaultWriter> {
+    GLOBAL_VAULT_WRITER.read().clone()
+}
+
+/// 写入裸别名凭据（question 凭据形态消费点）。`Err` = 未装写入器（进程
+/// 未装配 vault 写面）或写入失败——调用方必须向上传播，不得静默。
+/// 值只进 vault，不落日志。
+pub fn write_vault_secret(bare_alias: &str, value: &str) -> std::result::Result<(), String> {
+    let writer = GLOBAL_VAULT_WRITER.read().clone();
+    match writer {
+        Some(w) => w(bare_alias, value),
+        None => Err(format!(
+            "本进程未安装 vault 写入通道，无法接收凭据 \
+            （headless/通道形态不支持凭据索要；请在有 Dashboard 的 gateway 会话中收取，\
+             或用 `nemesisbot vault set {bare_alias}` 预存）"
+        )),
+    }
+}
+
 /// 若 `value` 是 `vault:` 引用则解析之。
 ///
 /// 返回 `None` = 不是 vault 引用（前缀不相交，调用方继续自己的链路）；

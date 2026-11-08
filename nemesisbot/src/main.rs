@@ -231,6 +231,10 @@ mod security_setup;
 /// 人类闸=编排内 CRITICAL 审批卡）。主 loop 专属注册，编译闸=selfupdate。
 #[cfg(feature = "selfupdate")]
 mod selfupdate_tool;
+/// B38：残留会话组归档提示 sweep——灰组（项目已移除）/ inactive 组
+/// （注册表在、项目目录消失）纯扫描 + 报告（logs/maintenance/
+/// session-groups.json），零删除（会话是用户数据），启动扫一次 + 每 6h 一拍。
+mod session_group_sweeper;
 /// 会话执行统计聚合器（事件泵 + loop sink + 读侧）。
 mod session_stats;
 /// vault（计划）：进程级 `vault:<alias>` 解析器注入。
