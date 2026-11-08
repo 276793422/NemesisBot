@@ -7,13 +7,20 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tracing::{debug, info, warn};
 
 use nemesis_types::channel::{InboundMessage, OutboundMessage};
 use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
+
+use nemesis_utils::line_cap::read_line_capped;
+
+/// 单行字节帽（BUG-20261108-028）：裸 read_line 把整行无界积累进内存才
+/// 返回——故障固件/被替换的设备一行无限输出打爆宿主内存。设备消息是
+/// 小 JSON 事件，1MB 已远超任何合法行。
+const MAX_MAIXCAM_LINE_BYTES: usize = 1024 * 1024;
 
 /// MaixCam channel configuration.
 #[derive(Debug, Clone)]
@@ -270,19 +277,31 @@ impl MaixCamChannel {
                                         Arc::new(tokio::sync::Mutex::new(writer)),
                                     );
                                     let mut reader = BufReader::new(reader);
-                                    let mut line = String::new();
 
                                     loop {
                                         if !*running.read() {
                                             break;
                                         }
-                                        line.clear();
-                                        match reader.read_line(&mut line).await {
-                                            Ok(0) => {
+                                        match read_line_capped(&mut reader, MAX_MAIXCAM_LINE_BYTES).await {
+                                            Ok(None) => {
                                                 info!(peer = %peer_str, "[MaixCamChannel] device disconnected");
                                                 break;
                                             }
-                                            Ok(_) => {
+                                            Ok(Some((raw, truncated))) => {
+                                                // 带帽读（BUG-20261108-028）：超长毒丸行
+                                                // 丢弃跳过（游标已对齐下一行行首），连接
+                                                // 保活——设备合法消息是小 JSON，超帽 =
+                                                // 异常输出（解析也会失败，跳过对齐既有
+                                                // parse-fail 容忍语义）。
+                                                if truncated {
+                                                    warn!(
+                                                        peer = %peer_str,
+                                                        cap = MAX_MAIXCAM_LINE_BYTES,
+                                                        "[MaixCamChannel] oversized line dropped"
+                                                    );
+                                                    continue;
+                                                }
+                                                let line = String::from_utf8_lossy(&raw).into_owned();
                                                 let trimmed = line.trim();
                                                 if !trimmed.is_empty() {
                                                     debug!(peer = %peer_str, data = %trimmed, "[MaixCamChannel] data");

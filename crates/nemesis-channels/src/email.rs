@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
@@ -18,12 +18,26 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
+use nemesis_utils::line_cap::read_line_capped;
+
 // （审计修复）：SMTP/IMAP IO 超时。此前 connect/read/write 全部
 // 无超时——黑洞服务器（不回 SYN 或收包不应答）会让调用永久挂起；而
 // dispatch_loop 是单循环串行 await，一条挂死 = 全通道出站永久停摆。
 // 超时后 io::Error(TimedOut) 沿既有 map_err 通道变成诚实错误返回。
 const CONNECT_TIMEOUT_SECS: u64 = 15;
 const IO_TIMEOUT_SECS: u64 = 30;
+
+/// SMTP 单行字节帽（BUG-20261108-028）：裸 read_line 把整行无界积累进
+/// 内存才返回——被替换/恶意的邮件服务器一行无限输出打爆宿主内存。
+/// RFC 5321 状态行 ≤512 字节，64KB 远超任何合法行。
+const MAX_SMTP_LINE_BYTES: usize = 64 * 1024;
+
+/// IMAP 单行字节帽（BUG-20261108-028）：本实现的 FETCH literal 正文按行
+/// 流经 read_line（send_command_multi 按行收集到 tagged 完成行为止），
+/// 合法邮件正文行可达数十 KB（未折行的 base64/HTML），8MB 远超之。
+/// 超帽截断续收（游标对齐下一行行首，连接保活）——病理邮件正文降级为
+/// 截断版 + warn，对端失控输出不再无界入内存。
+const MAX_IMAP_LINE_BYTES: usize = 8 * 1024 * 1024;
 
 /// 包一层超时：超时映射 `io::ErrorKind:TimedOut`，调用方既有 `.map_err`
 /// 照常拿到带上下文的错误（错误面文案 = `{what} timed out after Ns`）。
@@ -38,6 +52,28 @@ async fn io_timeout<T>(
             std::io::ErrorKind::TimedOut,
             format!("{what} timed out after {}s", dur.as_secs()),
         )),
+    }
+}
+
+/// 带帽读一行 SMTP 协议行（BUG-20261108-028）。超帽 = 对端异常输出，
+/// 协议行失效 → Err（SMTP 状态行 ≤512 字节，帽内全部合法行）；
+/// EOF → Ok("")（对齐裸 read_line Ok(0) 的既有空串语义——调用方状态行
+/// 检查本就把空串当失败处理）。
+async fn smtp_read_line<R>(reader: &mut R) -> std::io::Result<String>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    match read_line_capped(reader, MAX_SMTP_LINE_BYTES).await? {
+        None => Ok(String::new()),
+        Some((raw, truncated)) => {
+            if truncated {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "SMTP response line exceeds cap",
+                ));
+            }
+            Ok(String::from_utf8_lossy(&raw).into_owned())
+        }
     }
 }
 
@@ -384,13 +420,12 @@ impl EmailChannel {
 
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
-        let mut buf = String::new();
 
-        // Read greeting
-        io_timeout(
+        // Read greeting（带帽读，BUG-20261108-028）
+        let buf = io_timeout(
             "SMTP read greeting",
             std::time::Duration::from_secs(IO_TIMEOUT_SECS),
-            reader.read_line(&mut buf),
+            smtp_read_line(&mut reader),
         )
         .await
         .map_err(|e| NemesisError::Channel(format!("SMTP read greeting failed: {e}")))?;
@@ -462,12 +497,11 @@ impl EmailChannel {
         .await
         .map_err(|e| NemesisError::Channel(format!("SMTP write terminator failed: {e}")))?;
 
-        // Read response
-        buf.clear();
-        io_timeout(
+        // Read response（带帽读，BUG-20261108-028）
+        let buf = io_timeout(
             "SMTP read DATA response",
             std::time::Duration::from_secs(IO_TIMEOUT_SECS),
-            reader.read_line(&mut buf),
+            smtp_read_line(&mut reader),
         )
         .await
         .map_err(|e| NemesisError::Channel(format!("SMTP read DATA response failed: {e}")))?;
@@ -487,7 +521,7 @@ impl EmailChannel {
     async fn smtp_command<W, R>(&self, writer: &mut W, reader: &mut R, command: &str) -> Result<()>
     where
         W: AsyncWriteExt + Unpin,
-        R: AsyncBufReadExt + Unpin,
+        R: tokio::io::AsyncBufRead + Unpin,
     {
         io_timeout(
             "SMTP write command",
@@ -497,22 +531,20 @@ impl EmailChannel {
         .await
         .map_err(|e| NemesisError::Channel(format!("SMTP write failed: {e}")))?;
 
-        let mut buf = String::new();
-        io_timeout(
+        let mut buf = io_timeout(
             "SMTP read",
             std::time::Duration::from_secs(IO_TIMEOUT_SECS),
-            reader.read_line(&mut buf),
+            smtp_read_line(reader),
         )
         .await
         .map_err(|e| NemesisError::Channel(format!("SMTP read failed: {e}")))?;
 
         // Check for multi-line responses (EHLO)
         while buf.len() >= 4 && buf.as_bytes()[3] == b'-' {
-            buf.clear();
-            io_timeout(
+            buf = io_timeout(
                 "SMTP read multi-line",
                 std::time::Duration::from_secs(IO_TIMEOUT_SECS),
-                reader.read_line(&mut buf),
+                smtp_read_line(reader),
             )
             .await
             .map_err(|e| NemesisError::Channel(format!("SMTP read multi-line failed: {e}")))?;
@@ -766,15 +798,30 @@ impl ImapConnection {
     /// Reads a single line from the IMAP connection.
     ///
     /// 这里是全部 IMAP 读的咽喉（greeting / poll / send_command* 都走它），
-    /// 包一层超时即覆盖全部读路径。
+    /// 包一层超时即覆盖全部读路径。带帽读（BUG-20261108-028）：裸
+    /// read_line 把整行无界积累进内存才返回——被替换/恶意的邮件服务器
+    /// 一行无限输出打爆宿主内存；超帽截断续收（FETCH literal 正文按行
+    /// 流经本咽喉，8MB 帽内全部合法正文行不受影响）。EOF：裸 read_line
+    /// 返回 Ok("")，send_command* 收集循环把空行当 untagged 响应无限快转
+    /// push（服务器断连 → Vec 无界增长 + 死循环）——改映射
+    /// UnexpectedEof 让收集循环诚实失败走下轮重连。
     pub async fn read_line(&mut self) -> std::io::Result<String> {
-        let mut line = String::new();
-        io_timeout(
+        let (raw, truncated) = io_timeout(
             "IMAP read",
             std::time::Duration::from_secs(IO_TIMEOUT_SECS),
-            self.reader.read_line(&mut line),
+            read_line_capped(&mut self.reader, MAX_IMAP_LINE_BYTES),
         )
-        .await?;
+        .await?
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed")
+        })?;
+        if truncated {
+            warn!(
+                cap = MAX_IMAP_LINE_BYTES,
+                "[EmailChannel] IMAP oversized line truncated"
+            );
+        }
+        let mut line = String::from_utf8_lossy(&raw).into_owned();
         // Strip CRLF
         if line.ends_with("\r\n") {
             line.truncate(line.len() - 2);

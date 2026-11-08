@@ -16,6 +16,10 @@ pub mod fsutil;
 #[cfg(feature = "http")]
 pub mod http_cap;
 pub mod http_retry;
+// 带帽单行读（横扫角度 B 续——行帧形态）：外部流行读统一实现，
+// 裸 read_line 无界积累防 OOM；nemesis-mcp stdio 与 nemesis-channels
+// 四通道同源消费，帽值调用方按协议传入。
+pub mod line_cap;
 pub mod llm_error_class;
 // http 门控：media 模块核心是 reqwest 下载——未启用 `http`
 // feature 的消费方（nemesis-guest musl 交叉构建）不编译本模块。
