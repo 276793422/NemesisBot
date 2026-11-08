@@ -222,6 +222,25 @@ fn extract_timeout_secs(extra: &std::collections::BTreeMap<String, serde_json::V
     0
 }
 
+/// 活跃模型条目的 per-model 请求超时秒数（agent recovery 外层包裹超时的
+/// 跟随消费，BUG-20261108-030）：条目查找与
+/// `nemesis_types::capability::resolve_active_tier` 同口径
+/// （[`nemesis_types::capability::find_model_entry`]：`model_name`/`model`
+/// 精确 → bare-suffix 回落）；键解析与 [`extract_timeout_secs`] 同源
+/// （`timeout_secs` 优先、别名 `timeout`，0/缺省/非 u64 = 0）。找不到条目
+/// = 0（caller 落 lane 默认）。纯函数无 IO。
+pub fn resolve_active_timeout_secs(cfg: &serde_json::Value, active_alias: &str) -> u64 {
+    let Some(entry) = nemesis_types::capability::find_model_entry(cfg, active_alias) else {
+        return 0;
+    };
+    for key in ["timeout_secs", "timeout"] {
+        if let Some(n) = entry.get(key).and_then(|v| v.as_u64()) {
+            return n;
+        }
+    }
+    0
+}
+
 /// per-model 流式开关提取（stream 键）：读模型条目 extra 的
 /// `stream`。值集归一到 "yes" / "no" / ""（auto）：
 /// - 布尔 `true` / 字符串 "yes"/"true"（大小写不敏感）→ "yes"；

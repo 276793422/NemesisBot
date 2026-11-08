@@ -147,7 +147,10 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
 /// `context_window: 131072` 被无视、压缩观测落价目表值。bare-suffix 语义与
 /// `nemesis_data` 价目表 lookup 的第 3 级对齐；多条目同裸名按数组序先到先得
 /// （与精确匹配、价目表一致）。
-pub(crate) fn find_model_entry<'a>(
+/// `pub`：nemesis-config 的 `resolve_active_timeout_secs`（recovery 外层
+/// 包裹超时跟随 provider 请求超时）复用同款条目查找口径——活跃条目定位
+/// 单一真相源，per-model 键解析不各行其是。
+pub fn find_model_entry<'a>(
     cfg: &'a serde_json::Value,
     active_alias: &str,
 ) -> Option<&'a serde_json::Value> {

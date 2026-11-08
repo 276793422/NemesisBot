@@ -85,7 +85,10 @@ pub struct FactoryConfig {
 }
 
 /// 全 lane 统一的单请求默认超时（超时阶梯最内层；外层链见 CLAUDE.md）。
-const DEFAULT_TIMEOUT_SECS: u64 = 600;
+/// `pub`：nemesis-agent recovery 外层包裹超时缺省跟随本值 + 余量
+///（`config_watch::current_provider_call_timeout_secs`）——外层必须大于
+/// 内层，lane 默认上调时外层自动跟进，不再各自维护魔数。
+pub const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
 /// 0（未设置）落 lane 默认，>0 透传用户显式配置。
 fn effective_timeout(configured: u64) -> u64 {
