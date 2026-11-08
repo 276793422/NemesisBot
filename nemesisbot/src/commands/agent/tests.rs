@@ -1716,8 +1716,14 @@ mod r9_repl {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_hello_then_quit_returns_mock_reply() {
-        let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
-            .expect("mock ai server starts");
+        // B39 SaveCheck ping：夹具 model add 保存后会向 mock 发一次验存
+        // ping（无工具轻校验，只看 200）——脚本头部垫一条 Text 供它弹，
+        // MARKER 留给 REPL hello。
+        let srv = MockAiServer::start(vec![
+            MockAiReply::Text("pong".into()),
+            MockAiReply::Text(MARKER.to_string()),
+        ])
+        .expect("mock ai server starts");
         let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
         let out = ws
             .run_cli_with_stdin(&bin, &["agent"], "hello\nquit\n", 60)
@@ -1751,8 +1757,13 @@ mod r9_repl {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_eof_without_quit_hits_eof_goodbye_arm() {
-        let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
-            .expect("mock ai server starts");
+        // B39 SaveCheck ping：同 hello 测——脚本头部垫一条供夹具 add 的
+        // 验存 ping 弹走，MARKER 留给 REPL hello。
+        let srv = MockAiServer::start(vec![
+            MockAiReply::Text("pong".into()),
+            MockAiReply::Text(MARKER.to_string()),
+        ])
+        .expect("mock ai server starts");
         let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
         // 无 quit 收尾：脚本耗尽后 stdin 关闭 → rustyline Eof → Goodbye 臂。
         let out = ws.run_cli_with_stdin(&bin, &["agent"], "hello\n", 60).await;
@@ -1780,6 +1791,10 @@ mod r9_repl {
         // 拒绝——比静默通过更响。slash 命令不应产生任何 LLM 调用。
         let srv = MockAiServer::start(vec![]).expect("mock ai server starts");
         let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
+        // B39 SaveCheck ping：夹具 model add 保存后会向 mock 发一次验存
+        // ping（空脚本下 500，add 仍成功——ping 是 best-effort）。基线取
+        // 夹具之后，断言语义不变：REPL 期间（slash 路径）零 LLM 调用。
+        let baseline_hits = srv.hits();
         let out = ws
             .run_cli_with_stdin(&bin, &["agent"], "/bogus\nquit\n", 60)
             .await;
@@ -1803,7 +1818,11 @@ mod r9_repl {
             "循环必须继续吃掉后续 quit:\n{}",
             out.stdout
         );
-        assert_eq!(srv.hits(), 0, "slash 命令路径不允许触发任何 LLM 调用");
+        assert_eq!(
+            srv.hits(),
+            baseline_hits,
+            "slash 命令路径不允许触发任何 LLM 调用"
+        );
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)
@@ -1816,6 +1835,9 @@ mod r9_repl {
         // 并继续循环直到 quit。
         let srv = MockAiServer::start(vec![]).expect("mock ai server starts");
         let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
+        // B39 SaveCheck ping：同未知命令测——基线取夹具之后（含 add 的
+        // 验存 ping），断言 REPL 期间（slash 三件套路径）零 LLM 调用。
+        let baseline_hits = srv.hits();
         let out = ws
             .run_cli_with_stdin(&bin, &["agent"], "/history\n/status\n/clear\nquit\n", 60)
             .await;
@@ -1844,7 +1866,7 @@ mod r9_repl {
             "四条输入都被顺序消费:\n{}",
             out.stdout
         );
-        assert_eq!(srv.hits(), 0, "slash 命令不应打到 mock");
+        assert_eq!(srv.hits(), baseline_hits, "slash 命令不应打到 mock");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, sweep)

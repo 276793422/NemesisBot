@@ -23,6 +23,10 @@ import {
  * - 表单卡（fields 非空）：每字段一行——text 单行输入 / select 下拉；
  *   required 字段标红星，提交按钮在必填齐活前置灰。options/multi 不参与
  *   语义。
+ * B4（凭据形态，2026-11-08 批次④）：`type: "secret"` 字段渲染密码输入
+ * （autocomplete off）；提交后值只走 question.respond → 服务端直写
+ * vault 会话作用域别名，前端不留存（草稿随卡清除），agent 上下文只见
+ * 掩码占位。
  */
 
 const { pendingQuestions, now, respondTo, respondForm } = useQuestions()
@@ -126,10 +130,20 @@ function remaining(q: PendingQuestion): number {
           <template v-if="isForm(q)">
             <div v-for="f in q.fields" :key="f.key" class="question-field">
               <label class="question-field-label">
-                <span>{{ f.label }}<template v-if="f.required"> <span class="required-mark">*</span></template></span>
+                <span>{{ f.type === 'secret' ? '🔑 ' : '' }}{{ f.label }}<template v-if="f.required"> <span class="required-mark">*</span></template></span>
                 <input
                   v-if="f.type === 'text'"
                   type="text"
+                  class="question-field-input"
+                  :value="formDraftFor(q)[f.key] ?? ''"
+                  @input="formDraftFor(q)[f.key] = ($event.target as HTMLInputElement).value"
+                />
+                <!-- B4 凭据形态：密码输入；值提交后不入对话上下文（服务端
+                     直写 vault 会话作用域别名），草稿随卡清除。 -->
+                <input
+                  v-else-if="f.type === 'secret'"
+                  type="password"
+                  autocomplete="off"
                   class="question-field-input"
                   :value="formDraftFor(q)[f.key] ?? ''"
                   @input="formDraftFor(q)[f.key] = ($event.target as HTMLInputElement).value"

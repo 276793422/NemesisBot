@@ -1318,11 +1318,17 @@ mod m5_hook_boundary_tests;
 // pub：接管 wrapper（bot 层）需在 execute 入口自调注入——
 // dispatch 层读槽位与 execute 之间的翻位竞态要求「注入+路径决策」同点原子。
 pub mod credential_injection;
+// B4（2026-11-08 批次④）：会话作用域凭据占位符（`{{vault:<alias>}}`
+// 模板展开 + 结果掩码）——question 凭据形态收取的会话内凭据的使用侧。
+pub mod session_secrets;
 // vault（计划）：声明式量化风险限制（滑动窗口 + 超限升级）。
 pub mod limits;
 // vault：注入机制测试（纯函数 + loop 级四表面防泄漏）。
 #[cfg(test)]
 mod credential_injection_tests;
+// B4 会话凭据占位符测试（展开/作用域闸/掩码纯函数 + 收取侧掩码占位）。
+#[cfg(test)]
+mod session_secrets_tests;
 // ②（三期）：dispatch 凭据闸 v2——别名域绑定 loop 级测试
 // （出域拒绝零执行 / 域内直过 / 顶槽盖叶 / 精确叶收窄 / 无绑定 v1 零回归 /
 // 配置缺席与损坏 fail-secure）。
@@ -1364,8 +1370,10 @@ mod delegate_registry_tests;
 #[cfg(test)]
 mod e6_maintenance_tests;
 // (devtool-upgrade)：编辑后诊断回灌测试（fake LSP server）。
+// pub(crate)：FAKE_ENV_LOCK 被 loop_tools::lsp_tool::cov_tests 的 RA 端到端
+// 用例共用（进程 PATH 是全局态，跨模块必须共一把 env 锁）。
 #[cfg(all(test, feature = "lsp"))]
-mod diagnostics_feedback_tests;
+pub(crate) mod diagnostics_feedback_tests;
 // /：诊断回灌触发臂扩展 + 跨文件聚合 + stale 过滤测试。
 #[cfg(all(test, feature = "lsp"))]
 mod diagnostics_session_tests;
@@ -1391,6 +1399,10 @@ mod tool_fence_tests;
 // 按秩过滤 + dispatch 拦截）测试。
 #[cfg(test)]
 mod min_tier_tests;
+// B18 工具缺失归因：内置 tier 白名单 dispatch 闸（单一真相源
+// `tier_supplies_tool` 两臂共用）+ Unknown tool 轻归因测试。
+#[cfg(test)]
+mod b18_tier_gate_tests;
 // 角色目录与分档供给：`agents.roles.hidden` fresh-read /
 // visible_roles 单一裁决 / spawn role dispatch 闸 / fork inherit_context
 // dispatch 改写测试。

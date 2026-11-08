@@ -1123,6 +1123,96 @@ pub(crate) async fn run_runtime(
         // ——loop 重建路径由 start() 重放，重启后 question.respond /
         // doom-loop escalation 审批卡照常可达。
         agent_adapter.wire_question_broker(broker.clone(), broker.clone());
+        // B39：启动缺 key 主动提问——检测在装配期（默认模型条目在
+        // model_list 里存在且解析出的 api_key 空；yaml:/vault: 引用已解
+        // 引用），发问延后到 broker 就绪（本块已接线）异步发出。表单形态
+        // 单可选 api_key 字段，timeout_secs=0 永不超时（estop 经上方
+        // cancel_pending_all watcher 同样了结本卡）；应答非空 key →
+        // runtime_fill_model_key 写盘 + 热切（apply_runtime_swap 唯一
+        // chokepoint + 项目 loop bridge）。空应答/取消/解析失败 = no-op
+        // （INFO，启动流程不受影响）。条目不存在（推断 fallback 形态）
+        // 不发卡——启动路径 loud warn + Dashboard banner 已覆盖；
+        // estop 已在急停态同样跳过（ watcher 只了结已 pending 的卡）。
+        // headless（run/acp）形态不进 gateway runtime，天然无此卡。
+        {
+            let default_model = nemesis_config::get_effective_llm(Some(&cfg));
+            let entry_present = cfg.model_list.iter().any(|m| m.model_name == default_model);
+            let resolved_no_key = nemesis_config::resolve_model_config(&cfg, &default_model)
+                .map(|r| r.api_key.is_empty())
+                .unwrap_or(false);
+            if entry_present && resolved_no_key && !shared_resources.estop.is_engaged() {
+                let question = format!(
+                    "默认模型 \"{name}\" 未配置 API key，对话将无法调用模型。\
+请在下方填入该模型的 API key；留空提交 = 稍后处理\
+（可随时在 模型管理 页补填后「设为默认」生效）。",
+                    name = default_model
+                );
+                let request = nemesis_types::agent::QuestionRequest {
+                    question_id: format!(
+                        "startup-missing-key-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis())
+                            .unwrap_or(0)
+                    ),
+                    question,
+                    options: Vec::new(),
+                    multi: false,
+                    fields: vec![nemesis_types::agent::QuestionField {
+                        key: "api_key".to_string(),
+                        label: format!("{default_model} API key"),
+                        field_type: "text".to_string(),
+                        required: false,
+                        options: Vec::new(),
+                    }],
+                    chat_id: "system".to_string(),
+                    session_key: String::new(),
+                    timeout_secs: 0,
+                    bypass_auto_approve: false,
+                };
+                let broker_for_ask = broker.clone();
+                let home_for_ask = home.to_string_lossy().to_string();
+                let model_for_ask = default_model.clone();
+                // QuestionAsker trait 作用域内引入（ask 是 trait 方法）。
+                use nemesis_types::agent::QuestionAsker;
+                tokio::spawn(async move {
+                    let outcome = broker_for_ask.ask(request);
+                    match outcome {
+                        Ok(nemesis_types::agent::QuestionOutcome::AnsweredForm(values)) => {
+                            let Some(key) = values
+                                .get("api_key")
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                            else {
+                                info!(
+                                    "[Gateway] 启动缺 key 提问：留空 = 稍后处理（模型管理页可补填）"
+                                );
+                                return;
+                            };
+                            let Some(state) = nemesis_web::server::running_app_state() else {
+                                warn!("[Gateway] 启动缺 key 提问：web 状态不可用，key 未写入");
+                                return;
+                            };
+                            match nemesis_web::handlers::models::runtime_fill_model_key(
+                                &home_for_ask,
+                                &model_for_ask,
+                                key,
+                                state,
+                            ) {
+                                Ok(()) => info!(
+                                    "[Gateway] 启动缺 key 提问：key 已写入并热切生效（model={model_for_ask}）"
+                                ),
+                                Err(e) => warn!("[Gateway] 启动缺 key 提问：写入失败：{e}"),
+                            }
+                        }
+                        Ok(_) => info!(
+                            "[Gateway] 启动缺 key 提问：未作答/已了结——稍后可在模型管理页补填"
+                        ),
+                        Err(e) => warn!("[Gateway] 启动缺 key 提问：broker 错误：{e}"),
+                    }
+                });
+            }
+        }
         // 循环干预阶梯（2026-10-24）：急停挂钩——无超时终级卡（escalation
         // 停车问询，timeout_secs=0）会停在等答态跨普通停机窗口存续，estop
         // 触发时必须强制了结：等待的 loop 醒来（Cancelled→诚实收尾）、前端
@@ -1290,6 +1380,13 @@ pub(crate) async fn run_runtime(
     // 改 config 重启生效。
     let logs_ttl = crate::logs_sweeper::LogsTtl::from_config(cfg.logs.as_ref());
     crate::logs_sweeper::spawn_logs_sweeper(logs_ttl);
+
+    // B38（2026-11-08 七轮调研落地批次②）：残留会话组归档提示 sweep——
+    // 灰组（项目已移除）/ inactive 组（注册表在、项目目录消失）纯扫描 +
+    // 报告（logs/maintenance/session-groups.json 滚动覆盖）+ 有残留 WARN，
+    // 零删除（会话是用户数据，处置由用户显式进行）。启动扫一次 + 每 6h
+    // 一拍，与 logs/uploads sweeper 同拍。
+    crate::session_group_sweeper::spawn_session_group_sweeper();
 
     // M6（2026-10-27 整改批次五）：checkpoint gc 周期拍（第二触发点；第一
     // 触发点在 truncate_from_scoped 后）。默认关（checkpoint.gc.enabled），

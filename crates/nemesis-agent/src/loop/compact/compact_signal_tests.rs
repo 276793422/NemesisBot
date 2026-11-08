@@ -775,3 +775,168 @@ async fn noop_prefix_gate_blocks_then_opens_as_history_grows() {
     assert_eq!(failures_after, Some(0), "全程零失败记账");
     let _ = std::fs::remove_file(&cfg_path);
 }
+
+// ---------------------------------------------------------------------------
+// B17（2026-11-08 七轮调研落地批次③）：任务边界压缩——轮末触发点提前
+// ---------------------------------------------------------------------------
+
+/// B17 配置助手：keep + `agents.defaults.compact_boundary` 开关二合一
+/// （`boundary=None` = 键不写 = 缺省 off；条目带 context_window=100 →
+/// trigger=75、soft=50）。
+fn boundary_config(tag: &str, keep: usize, boundary: Option<bool>) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "nemesis_test_compact_boundary_{tag}_{}.json",
+        std::process::id()
+    ));
+    let mut defaults = serde_json::json!({ "compact_keep_recent_tokens": keep });
+    if let Some(b) = boundary {
+        defaults["compact_boundary"] = serde_json::json!(b);
+    }
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "agents": {"defaults": defaults},
+            "model_list": [{"model_name": "test-model", "context_window": 100}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    path
+}
+
+/// 软位夹具：system(4 tok) + 5 × user/assistant(各 10 tok) → tail 估算
+/// 54 ∈ [soft=50, trigger=75)——边界压缩开启必触发、关闭（现状）必不触发的
+/// 窗口区间。
+fn soft_band_history() -> AgentInstance {
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100); // trigger = 75, soft = 50
+    instance.set_history(vec![
+        turn("system", "sys prompt"),
+        turn("user", &"x".repeat(25)),
+        turn("assistant", &"x".repeat(25)),
+        turn("user", &"x".repeat(25)),
+        turn("assistant", &"x".repeat(25)),
+        turn("user", &"x".repeat(25)),
+    ]);
+    instance
+}
+
+/// 纯函数三臂：off → 触发点与压缩点重合（现状逐位一致）；on → soft 位；
+/// soft 的既有定义（trigger ×2/3）不因本批漂移。
+#[test]
+fn b17_turn_end_effective_trigger_pure_arms() {
+    assert_eq!(
+        turn_end_effective_trigger(false, 75),
+        75,
+        "off = 行为与现状一致（触发点=压缩点）"
+    );
+    assert_eq!(
+        turn_end_effective_trigger(true, 75),
+        50,
+        "on = soft 位（trigger ×2/3）"
+    );
+    assert_eq!(
+        turn_end_effective_trigger(true, 90),
+        90 * 2 / 3,
+        "soft 定义沿用 trigger ×2/3"
+    );
+}
+
+/// 开关 on + 信号达 soft 位 → 轮末触发（摘要被采用）。
+#[tokio::test]
+async fn b17_boundary_on_compacts_at_soft_band() {
+    let (provider, calls) = QueueProvider::boxed(vec![Ok("SUMMARY".to_string())]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = boundary_config("on", 10, Some(true));
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = soft_band_history(); // 估算 54 ∈ [50, 75)
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "54 ≥ soft 50 → 摘要调用发生（触发点提前生效）"
+    );
+    let cache = instance
+        .get_summary_cache()
+        .expect("软位触发，摘要应被采用");
+    // keep=10 只装最后一条（10 tok），covers = len-1 = 5。
+    assert_eq!(cache.covers_up_to, 5);
+    assert_eq!(cache.text, "SUMMARY");
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// 开关 off（缺省）+ 同一信号 → 不触发、provider 不被调（行为与现状
+/// 逐位一致：54 < trigger 75）。
+#[tokio::test]
+async fn b17_boundary_off_keeps_legacy_threshold() {
+    let (provider, calls) = QueueProvider::boxed(vec![]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = boundary_config("off", 10, None);
+    agent_loop.set_config_path(cfg_path.clone());
+    let instance = soft_band_history();
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    assert!(
+        instance.get_summary_cache().is_none(),
+        "54 < 75 不触发（缺省 off 与现状一致）"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "provider 不被调");
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+/// 开关 on 但信号低于 soft 位 → 不触发（提前到 soft 不等于逢轮必压；
+/// 34 < 50）。
+#[tokio::test]
+async fn b17_below_soft_no_trigger_even_boundary_on() {
+    let (provider, calls) = QueueProvider::boxed(vec![]);
+    let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        provider,
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let cfg_path = boundary_config("below", 10, Some(true));
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100);
+    instance.set_history(vec![
+        turn("system", "sys prompt"),
+        turn("user", &"x".repeat(25)),
+        turn("assistant", &"x".repeat(25)),
+        turn("user", &"x".repeat(25)),
+    ]); // 估算 34 < soft 50
+
+    agent_loop
+        .maybe_update_summary(&instance, "s", "web", "c")
+        .await;
+
+    assert!(instance.get_summary_cache().is_none(), "低于 soft 不触发");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "provider 不被调");
+    let _ = std::fs::remove_file(&cfg_path);
+}

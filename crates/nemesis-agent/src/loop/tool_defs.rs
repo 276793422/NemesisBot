@@ -374,10 +374,6 @@ impl AgentLoop {
     /// behaviour and avoids unnecessary prompt variation between requests.
     pub(crate) fn build_tool_defs(&self) -> Vec<crate::types::ToolDefinition> {
         let tools_guard = self.tools.read();
-        // (small-model-tool-robustness): tier-based toolset.
-        // Empty allowed-list (Big/Auto) = show everything; Mini/Normal
-        // see a restricted set to reduce small-model cognitive load.
-        let allowed = nemesis_types::capability::tier_allowed_tools(*self.tier.read());
         // (devtool-upgrade): third filter layer — config
         // `agents.hidden_tools` removes tools from the model's supply
         // entirely (dispatch re-checks the same list: double gate). Read
@@ -418,24 +414,15 @@ impl AgentLoop {
         names
             .into_iter()
             .filter(|name| {
-                // WASM 插件 min-tier 供给闸（插件体系复查 #2）：
-                // 声明了最低档的工具绕过 tier 白名单、按档位秩比较
-                // （active ≥ min 才供给）——mini/normal 白名单本就不含
-                // `plugin.*` 名，逐名收录不可扩展，秩比较是唯一可行语义。
-                // 无档位声明的工具走原白名单路径，行为不变。
-                match tools_guard.get(name.as_str()).and_then(|t| t.min_tier()) {
-                    Some(min) => active_tier_rank(*self.tier.read()) >= plugin_min_tier_rank(min),
-                    // lazy on 时 tier 白名单对 meta 两件套放行（mcp_call
-                    // 调用 + mcp_list 查询， 补查询面——
-                    // mcp_call 的描述与错误臂都指路 mcp_list，缺它两步流程
-                    // 无工具可用；内层真实工具名在 dispatch 重走瀑布
-                    // 时仍受内层校验）。
-                    None => {
-                        allowed.is_empty()
-                            || allowed.contains(&name.as_str())
-                            || (mcp_lazy && matches!(name.as_str(), "mcp_call" | "mcp_list"))
-                    }
-                }
+                // tier 供给判定（B18 单一真相源 `tier_supplies_tool`——
+                // dispatch 白名单闸共用本判定，防两臂失配）。原内联形态
+                // （插件 min-tier 供给闸：声明最低档的工具绕过 tier 白名单
+                // 按档位秩比较——mini/normal 白名单本就不含 `plugin.*` 名，
+                // 逐名收录不可扩展；无声明工具走白名单路径）语义不变。
+                tools_guard
+                    .get(name.as_str())
+                    .map(|t| tier_supplies_tool(t.min_tier(), name, *self.tier.read(), mcp_lazy))
+                    .unwrap_or(false)
             })
             .filter(|name| !tool_name_matches_hidden(&hidden, name))
             // 总开关关 → 连接器治理工具双名下线（名字真相源
@@ -912,6 +899,31 @@ pub(crate) fn active_tier_rank(tier: nemesis_types::capability::ModelTier) -> u8
         ModelTier::Mini => 0,
         ModelTier::Normal => 1,
         ModelTier::Big | ModelTier::Auto => 2,
+    }
+}
+
+/// 内置工具 tier 供给判定（B18 单一真相源——供给闸 [`AgentLoop::
+/// build_tool_defs`] 的 tier 臂与 dispatch 白名单闸共用，防两臂失配：
+/// 供给看得见而 dispatch 拒、或 dispatch 放行供给面没有的工具）。
+/// min_tier 声明工具（WASM 插件）按档位秩比较；无声明工具按档位白名单
+/// ——空 = 不过滤全放行（Big/Auto），mcp_lazy 时 meta 两件套豁免
+/// （mcp_call 调用 + mcp_list 查询，补两步流程面——mcp_call 的描述与
+/// 错误臂都指路 mcp_list，缺它两步流程无工具可用；内层真实工具名在
+/// dispatch 重走瀑布时仍受内层校验）。
+pub(crate) fn tier_supplies_tool(
+    min_tier: Option<&str>,
+    name: &str,
+    tier: nemesis_types::capability::ModelTier,
+    mcp_lazy: bool,
+) -> bool {
+    match min_tier {
+        Some(min) => active_tier_rank(tier) >= plugin_min_tier_rank(min),
+        None => {
+            let allowed = nemesis_types::capability::tier_allowed_tools(tier);
+            allowed.is_empty()
+                || allowed.contains(&name)
+                || (mcp_lazy && matches!(name, "mcp_call" | "mcp_list"))
+        }
     }
 }
 

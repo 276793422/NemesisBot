@@ -115,3 +115,68 @@ fn is_secret_reference_prefix_dispatch() {
     assert!(!super::is_secret_reference("Bearer vault:x")); // 内嵌不算整值引用
     assert!(!super::is_secret_reference(""));
 }
+
+// ===========================================================================
+// B4（2026-11-08 批次④）全局写入器槽位：question 凭据形态的收取通道。
+// 与 resolver 槽位同模式（None = 诚实报错；后装覆盖先装）。
+// ===========================================================================
+
+/// 写入器未安装：write_vault_secret 诚实报错（带 CLI 预存指引），不是
+/// 静默成功。
+#[test]
+fn writer_unset_errors_loud() {
+    let _g = GLOBAL_LOCK.lock();
+    let _c = Cleanup;
+    clear_global_vault_writer();
+    let err = write_vault_secret("agent/s1/key", "v").unwrap_err();
+    assert!(err.contains("未安装"), "got: {err}");
+    assert!(err.contains("vault set"), "应带 CLI 预存指引: {err}");
+}
+
+/// 安装后写入生效：闭包收到裸别名与原值；别名空值照样透传（空别名/
+/// 空值校验归 vault 层，本槽只做通道）。
+#[test]
+fn writer_receives_alias_and_value() {
+    let _g = GLOBAL_LOCK.lock();
+    let _c = Cleanup;
+    clear_global_vault_writer(); // 前测 panic 泄漏防御
+    let got = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+    let sink = got.clone();
+    set_global_vault_writer(Arc::new(move |alias, value| {
+        sink.lock().push((alias.to_string(), value.to_string()));
+        Ok(())
+    }));
+    write_vault_secret("agent/s1/api_key", "sk-test").unwrap();
+    write_vault_secret("empty-alias-ok", "").unwrap();
+    clear_global_vault_writer();
+    assert_eq!(
+        got.lock().clone(),
+        vec![
+            ("agent/s1/api_key".to_string(), "sk-test".to_string()),
+            ("empty-alias-ok".to_string(), String::new()),
+        ]
+    );
+}
+
+/// 写入失败透传：vault 层错误原样上抛（fail loud，不包糖衣）。
+#[test]
+fn writer_error_propagates() {
+    let _g = GLOBAL_LOCK.lock();
+    let _c = Cleanup;
+    clear_global_vault_writer(); // 前测 panic 泄漏防御
+    set_global_vault_writer(Arc::new(|_alias, _value| Err("vault 已锁定".to_string())));
+    let err = write_vault_secret("a", "v").unwrap_err();
+    clear_global_vault_writer();
+    assert!(err.contains("vault 已锁定"), "got: {err}");
+}
+
+/// 清除后回到 None 臂（槽位生命周期对称）。
+#[test]
+fn writer_clear_restores_none() {
+    let _g = GLOBAL_LOCK.lock();
+    let _c = Cleanup;
+    set_global_vault_writer(Arc::new(|_, _| Ok(())));
+    clear_global_vault_writer();
+    assert!(global_vault_writer().is_none());
+    assert!(write_vault_secret("x", "y").is_err());
+}

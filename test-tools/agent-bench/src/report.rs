@@ -228,6 +228,10 @@ pub(crate) fn scenario_model(name: &str) -> &'static str {
         "identifier_survival" => "testai-sum-1.0",
         "tool_parallel_batch" => "testai-2.1",
         "security_boundary_block" => "testai-5.0",
+        // B37 饱和场景：饱和臂（B5_BUSY 工具回合）与人消息臂共用同一
+        // loop 级默认模型——testai-9.2 无标记文本的确定性提示语回复
+        // 就是人消息 oracle。
+        "saturating_human_priority" => "testai-9.2",
         "vision_roundtrip" => "testai-vision-1.0",
         "codemode_orchestration" => "testai-codemode-1.0",
         "docs_lift" => "testai-docslift-1.0",

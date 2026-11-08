@@ -6,7 +6,8 @@
 //    合法键 → 解析 + trim + 跳过空项；
 // ② `visible_roles` 单一裁决——tier 分档（standalone loop tier=Big 全量）
 //    − 配置隐藏集，与 `roles.list` 口径同源；
-// ③ dispatch 角色闸——未知 slug 诚实拒绝列全目录；分档外拒绝列可见集；
+// ③ dispatch 角色闸——未知 slug 诚实拒绝列全目录；分档外在 mini/normal
+//    档由 B18 白名单闸先拦（spawn 不在白名单，见 b18_tier_gate_tests）；
 //    配置隐藏拒绝；缺省/空 role 放行（旧行为）；
 // ④ fork `inherit_context` 改写——真值时 task 前置 `<INHERITED_CONTEXT>`
 //    数据块（含数据非指令护栏）+ 标志摘除；预算截断字符边界安全；无历史
@@ -226,6 +227,10 @@ async fn role_gate_follows_tier_downgrade() {
     let cfg = write_config(&dir, r#"{"defaults": {}}"#);
     agent_loop.set_config_path(cfg);
     // 模拟 mini 档（dispatch 闸按 tier 供给裁决，不是全量直通）。
+    // 本 loop 未注册 spawn 工具 → B18 白名单闸 registry 未命中放行，
+    // 硬调到达角色闸——正好隔离验证角色闸自身的分档过滤臂（生产形态
+    // spawn 常驻 registry，mini/normal 硬调先死在白名单闸，见
+    // b18_tier_gate_tests::b18_dispatch_refuses_off_whitelist_builtin_at_mini）。
     *agent_loop.tier.write() = nemesis_types::capability::ModelTier::Mini;
 
     let ctx = RequestContext::new("web", "chat1", "session1", "sess1");

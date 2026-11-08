@@ -39,8 +39,9 @@ export function isTerminalQuestion(q: Pick<PendingQuestion, 'timeout_secs'>): bo
 export interface QuestionField {
   key: string
   label: string
-  /** text = 单行输入；select = 从 options 单选下拉。 */
-  type: 'text' | 'select' | string
+  /** text = 单行输入；select = 从 options 单选下拉；secret = 密码输入
+   *  （B4 凭据形态：值提交后直写 vault 会话作用域别名，不入对话上下文）。 */
+  type: 'text' | 'select' | 'secret' | string
   required?: boolean
   options?: string[]
 }

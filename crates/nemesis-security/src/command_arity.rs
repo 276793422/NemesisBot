@@ -13,9 +13,17 @@
 //!    未命中 → 退首 token。
 //! 4. 剩余 token 数 ≤ 保留数 → 原样输出整个命令（不加 ` *`，
 //!    此时命令本身已是完整可枚举 pattern）；否则截断补 ` *`。
+//! 5. 敏感 flag 细化（B26）：命令行含 [`SENSITIVE_FLAGS`] 而保留前缀
+//!    不含 → 把 flag 插入 pattern 前缀尾部再补 ` *`（`git push origin
+//!    main --force` → `git push --force *`）——破坏力升级维度必须成为
+//!    pattern 的显式组成部分，否则「批准过一次 push」就罩住后续 force
+//!    push。读侧对称臂在 `approval_rules::matches_rule`（flag 命令不
+//!    命中无 flag pattern）。
 //!
 //! 已知边界：大小写敏感（`Git` ≠ `git`）；`cmd /c`、`powershell -Command`
-//! 等 shell 包装不展开（包装内命令按首 token 退化）。
+//! 等 shell 包装不展开（包装内命令按首 token 退化）；引号值恰好撞
+//! flag 名（`git commit -m "--force"`）会被判敏感——宁可多细化（多弹
+//! 一次卡，安全方向）不做引号态追踪。
 
 /// 命令分词：按空白切分，识别单/双引号（引号剥除、内容保留）。
 /// 引号内空白不切分；引号内反斜杠不转义（照字面保留）。
@@ -251,6 +259,28 @@ fn is_env_assignment(token: &str) -> bool {
     first_ok && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
+/// 敏感 flag 表（B26，单一真相源——写侧 [`reduce_command`] 细化与读侧
+/// `approval_rules::matches_rule` 排除共用）：把既有命令从安全形态升级
+/// 为破坏形态的**长标志**。初版只收三件，宁窄勿宽；短标志 `-f` 明确
+/// 暂缓（`grep -f` / `ffmpeg -f` / `xargs -f` 等大量命令的 `-f` 不是
+/// force 语义，全局敏感 = 审批疲劳反噬机制信任；后续实测破坏场景再
+/// 按命令族特判）。
+pub(crate) static SENSITIVE_FLAGS: &[&str] = &["--force", "--hard", "--no-verify"];
+
+/// 收集 token 序列中的敏感 flag（按出现顺序，去重）。读侧匹配端在
+/// **tokenize + 剥 env 头之后**调用（与归约端口径一致）。
+pub(crate) fn sensitive_flags_in(tokens: &[String]) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for t in tokens {
+        if let Some(f) = SENSITIVE_FLAGS.iter().find(|f| *f == t)
+            && !out.contains(f)
+        {
+            out.push(*f);
+        }
+    }
+    out
+}
+
 /// 剥 token 序列头部的 `VAR=value` 环境变量前缀（统一定义：
 /// 写侧 [`reduce_command`] 与读侧 `approval_rules::matches_rule` 都在
 /// **tokenize 之后**剥——在原串上剥的 [`strip_env_assignments`] 看见的
@@ -288,10 +318,26 @@ pub fn reduce_command(cmd: &str) -> String {
     if rest.len() <= keep {
         rest.join(" ")
     } else {
-        format!("{} *", rest[..keep].join(" "))
+        let prefix = &rest[..keep];
+        // B26 写侧臂：命令含敏感 flag 而保留前缀不含 → flag 插入前缀
+        // 尾部（`git push origin main --force` → `git push --force *`）。
+        // flag 已在 prefix（`git push --force x`）或无 flag → 原形态。
+        let missing: Vec<&str> = sensitive_flags_in(rest)
+            .into_iter()
+            .filter(|f| !prefix.iter().any(|t| t == f))
+            .collect();
+        if missing.is_empty() {
+            format!("{} *", prefix.join(" "))
+        } else {
+            let mut full: Vec<&str> = prefix.iter().map(String::as_str).collect();
+            full.extend(missing);
+            format!("{} *", full.join(" "))
+        }
     }
 }
 
+#[cfg(test)]
+mod b26_flag_tests;
 #[cfg(test)]
 mod cov_tests;
 #[cfg(test)]

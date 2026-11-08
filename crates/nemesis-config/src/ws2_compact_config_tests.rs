@@ -84,3 +84,60 @@ fn ws2_raw_json_resolver_matches_typed_surface() {
         20000
     );
 }
+
+// ---------------------------------------------------------------------------
+// B17（2026-11-08 七轮调研落地批次③）：`agents.defaults.compact_boundary`
+// 配置面（serde 缺省 / roundtrip / raw-JSON 解析）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn b17_serde_default_is_off_when_key_absent() {
+    let cfg: Config = serde_json::from_str("{}").expect("empty config parses");
+    assert!(
+        !cfg.agents.defaults.compact_boundary,
+        "缺键 = off（压缩行为变更先试点，计划文档钦定）"
+    );
+    // Default impl 同源（手写 Default 不走 serde，两处必须一致）。
+    assert!(!AgentDefaults::default().compact_boundary);
+}
+
+#[test]
+fn b17_typed_roundtrip_preserves_explicit_values() {
+    for v in [false, true] {
+        let src = serde_json::json!({
+            "agents": {"defaults": {"compact_boundary": v}}
+        });
+        let cfg: Config = serde_json::from_value(src).expect("parses");
+        assert_eq!(cfg.agents.defaults.compact_boundary, v);
+        let out = serde_json::to_value(&cfg).expect("serializes");
+        assert_eq!(
+            out["agents"]["defaults"]["compact_boundary"].as_bool(),
+            Some(v),
+            "显式 {v} 必须在 save roundtrip 后保留"
+        );
+    }
+}
+
+#[test]
+fn b17_raw_json_resolver_matches_typed_surface() {
+    // 缺 config / 缺 agents / 缺 defaults / 缺键 → 缺省 off。
+    assert!(!resolve_compact_boundary(None));
+    assert!(!resolve_compact_boundary(Some(&serde_json::json!({}))));
+    assert!(!resolve_compact_boundary(Some(&serde_json::json!({
+        "agents": {"defaults": {}}
+    }))));
+    // 显式两值原样读出。
+    assert!(resolve_compact_boundary(Some(&serde_json::json!({
+        "agents": {"defaults": {"compact_boundary": true}}
+    }))));
+    assert!(!resolve_compact_boundary(Some(&serde_json::json!({
+        "agents": {"defaults": {"compact_boundary": false}}
+    }))));
+    // 类型怪（字符串/数字）→ off，不炸不猜（严格布尔，无 truthy 纠偏）。
+    assert!(!resolve_compact_boundary(Some(&serde_json::json!({
+        "agents": {"defaults": {"compact_boundary": "yes"}}
+    }))));
+    assert!(!resolve_compact_boundary(Some(&serde_json::json!({
+        "agents": {"defaults": {"compact_boundary": 1}}
+    }))));
+}
