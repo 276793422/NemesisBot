@@ -3921,6 +3921,9 @@ async fn main() {
                 "autopilot.create",
                 json!({
                     "name": "uat-autopilot-t16",
+                    // 3756e60d 起 mode 缺省=shadow（只建 issue 不派发），
+                    // 本测试验的是 live 派发链，显式声明。
+                    "mode": "live",
                     "cron": "* * * * *",
                     "title": format!("{} 定时站会 {{date}}", marker),
                     "description": "cluster-uat T16 每分钟规则",
@@ -6925,6 +6928,9 @@ async fn main() {
                     "autopilot.create",
                     json!({
                         "name": "uat-autopilot-t31",
+                        // 3756e60d 起 mode 缺省=shadow（只建 issue 不派发），
+                        // 本测试验的是 auto_plan→拆解→发车 live 链，显式声明。
+                        "mode": "live",
                         "cron": "0 3 * * *",
                         "title": format!("{} 周期单 {{date}}", marker),
                         "description": "cluster-uat T31 auto_plan 建单自动拆解发车",
