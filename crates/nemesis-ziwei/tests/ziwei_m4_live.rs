@@ -672,6 +672,11 @@ async fn m4_runtime_live_on_dummy_draw() {
     // ④ 此前漏检。修复：排空全程累计 dropped，见溢出立即弃窗重臂重测
     // （≤3 次，溢出窗早退不烧满预算）；零溢出仍不配平才定谳真链丢失，
     // 立即跳出断言红——检测力不变。
+    // 第五修（2026-11-08 R676 审计）：重臂「干净基线」声明不成立——
+    // hook_start 幂等分支不发 hook_set（DLL 复位只在真装载），单次
+    // capture 排环 ≤1024 < 环容 4096，残留 >1024 时新窗继承劈窗赤字 →
+    // 零溢出定谳假红。补：重臂后显式排空到空循环 + 排空期 dropped>0
+    // 弃臂早退（详见重臂处注释）。
     fn count_by_id(evs: &[serde_json::Value], id_top: u64, id_chain: u64, cnt: &mut (u64, u64)) {
         for e in evs {
             match e["id"].as_u64() {
@@ -689,8 +694,14 @@ async fn m4_runtime_live_on_dummy_draw() {
     let mut converged = false;
     for _attempt in 0..3 {
         attempts += 1;
-        // （重）武装双钩：幂等订阅；invoke_hook_capture 顺带排环 + 清
-        // dropped（hook_start 复位），给本窗一个干净基线。
+        // （重）武装双钩：幂等订阅——hook_start 宿主侧 already=true 不发
+        // hook_set，DLL 侧「read 追平 write + 清 dropped」复位只在真装载
+        // 时执行；单次 capture 排环上限 1024 < 环容 4096，上一窗「拒新留
+        // 旧」溢出弃窗后环内可残留 >1024 条含 top↔chain 劈开配对的赤字
+        // （top 恒先进环、链点后到被拒），残留混入本窗计数会让零溢出定
+        // 谳误判真链丢失（假红）。故重臂后显式循环 poll 排空到空（事件
+        // 丢弃不计入本窗），这才是真正的干净基线；排空读到 dropped>0 =
+        // 环仍在溢出（极端争用未退），本窗必然再被污染，弃臂早退省预算。
         let chain_out =
             nemesis_ziwei::runtime::invoke_hook_capture(&sess, &ws, id, "feed_render", None, 200)
                 .await
@@ -712,6 +723,18 @@ async fn m4_runtime_live_on_dummy_draw() {
             .find(|h| h.semantic == "feed_render::chain0")
             .expect("链点绑定")
             .id as u64;
+        let mut rearmed_dropped = 0u64;
+        for _ in 0..16 {
+            let drain = sess.poll_captures(id).await.expect("rearm drain poll");
+            rearmed_dropped += drain["dropped"].as_u64().unwrap_or(0);
+            if drain["count"].as_u64().unwrap_or(0) == 0 {
+                break;
+            }
+        }
+        if rearmed_dropped > 0 {
+            win_dropped = rearmed_dropped;
+            continue; // 排空期间仍溢出：本窗必被污染，弃臂早退
+        }
         tokio::time::sleep(std::time::Duration::from_millis(600)).await;
         let mut cnt = (0u64, 0u64);
         let mut dropped = 0u64;
