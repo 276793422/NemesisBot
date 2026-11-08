@@ -528,6 +528,92 @@ async fn test_send_and_receive_all_addresses_fail() {
 }
 
 // ===========================================================================
+// ResponseLost：请求已送达但响应丢失 → fallback 不重发同一请求
+// （BUG-20261109-004 回归锁：重复执行防线）
+// ===========================================================================
+
+/// 「读完整请求帧后不回响应直接断连」服务器——模拟对端已受理请求但响应
+/// 丢失（连接中途断开）。requests 计数 = 送达次数。
+async fn spawn_read_then_drop_server() -> EchoServer {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let req_clone = Arc::clone(&requests);
+
+    let handle = tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut len_buf = [0u8; 4];
+            if sock.read_exact(&mut len_buf).await.is_err() {
+                return;
+            }
+            let len = u32::from_be_bytes(len_buf) as usize;
+            let mut buf = vec![0u8; len];
+            if sock.read_exact(&mut buf).await.is_err() {
+                return;
+            }
+            req_clone.fetch_add(1, Ordering::SeqCst);
+            // 请求帧已完整收到——不回响应，直接断连（响应丢失形态）。
+            drop(sock);
+        }
+    });
+
+    EchoServer {
+        addr,
+        _handle: handle,
+        requests,
+    }
+}
+
+#[tokio::test]
+async fn test_response_lost_stops_fallback_resend() {
+    // 首地址（MultiAddrResolver 无本地接口 → select_best_address 取首个）
+    // = 请求已送达但响应丢失；次地址 = 真响应服务器——若「按未送达重发」
+    // 旧缺陷仍在，fallback 会命中它返回 Ok，重复执行防线失效。
+    let drop_server = spawn_read_then_drop_server().await;
+    let echo = spawn_response_server(RPCResponse {
+        id: "req-lost".into(),
+        result: Some(serde_json::json!({"ok": true})),
+        error: None,
+    })
+    .await;
+
+    let resolver = Arc::new(MultiAddrResolver {
+        addresses: vec![drop_server.addr.clone(), echo.addr.clone()],
+        port: 0,
+        online: true,
+    });
+    let client = RpcClient::with_resolver(resolver);
+    let req = make_request(ActionType::Known(KnownAction::Ping));
+
+    let result = client
+        .call_with_timeout("peer", req, Duration::from_secs(10))
+        .await;
+    match result {
+        Err(RpcClientError::ResponseLost(msg)) => {
+            assert!(
+                msg.contains("recv from"),
+                "expected recv-phase loss, got: {msg}"
+            );
+        }
+        other => panic!("expected ResponseLost (no fallback resend), got: {other:?}"),
+    }
+    // 关键断言：次地址零请求——同一请求未被向 fallback 重发。
+    assert_eq!(echo.requests.load(Ordering::SeqCst), 0);
+    // 首地址确实收到过一次完整请求帧（「已送达响应丢失」形态成立的前提）。
+    assert_eq!(drop_server.requests.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_response_lost_failure_category_and_display() {
+    let err = RpcClientError::ResponseLost("recv from 1.2.3.4:5: eof".into());
+    // 分类对齐「节点不可达」组：上层按自身语义用新请求重试仍有意义
+    //（board 派发 sweep 形态），⛔ 评论口径不因本变体分裂。
+    assert_eq!(err.failure_category(), "节点不可达");
+    assert!(err.to_string().contains("Response lost"));
+    assert!(format!("{:?}", err).contains("ResponseLost"));
+}
+
+// ===========================================================================
 // AEAD encrypted roundtrip
 // ===========================================================================
 
@@ -684,7 +770,7 @@ async fn spawn_garbage_server(payload: Vec<u8>) -> EchoServer {
 }
 
 #[tokio::test]
-async fn test_malformed_response_returns_serialization_error() {
+async fn test_malformed_response_returns_response_lost_error() {
     let server = spawn_garbage_server(b"not valid json at all".to_vec()).await;
 
     let resolver = Arc::new(MultiAddrResolver {
@@ -700,11 +786,14 @@ async fn test_malformed_response_returns_serialization_error() {
         .await;
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("decode") || msg.contains("Connection"));
+    // 响应已收到但解不出来（协议漂移/坏帧）→ ResponseLost：请求已送达，
+    // 重发同一请求 = 重复执行。
+    assert!(msg.contains("decode"), "got: {msg}");
+    assert!(msg.contains("Response lost"), "got: {msg}");
 }
 
 #[tokio::test]
-async fn test_empty_response_returns_connection_error() {
+async fn test_empty_response_returns_response_lost_error() {
     // Server immediately closes connection after reading request — recv returns EOF.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -732,7 +821,10 @@ async fn test_empty_response_returns_connection_error() {
     let result = client
         .call_with_timeout("peer", req, Duration::from_secs(5))
         .await;
-    assert!(result.is_err());
+    match result {
+        Err(RpcClientError::ResponseLost(msg)) => assert!(msg.contains("recv from"), "got: {msg}"),
+        other => panic!("expected ResponseLost, got {:?}", other),
+    }
 }
 
 // ===========================================================================
@@ -1591,10 +1683,11 @@ async fn test_s4_auth_client_decrypt_garbage_response_fails() {
         .call_with_timeout("s4-peer", s4_make_request("s4-dec"), Duration::from_secs(5))
         .await;
     match result {
-        Err(RpcClientError::Connection(msg)) => {
+        // 请求已送达、响应解不出来（坏帧）→ ResponseLost（重复执行防线）。
+        Err(RpcClientError::ResponseLost(msg)) => {
             assert!(msg.contains("decrypt"), "{}", msg)
         }
-        other => panic!("expected Connection(decrypt ...), got {:?}", other),
+        other => panic!("expected ResponseLost(decrypt ...), got {:?}", other),
     }
     assert_eq!(server.requests.load(Ordering::SeqCst), 1);
 }

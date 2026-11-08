@@ -34,6 +34,15 @@ pub enum RpcClientError {
     Serialization(String),
     #[error("Response error: {0}")]
     RemoteError(String),
+    /// 请求帧已成功写出但响应未取得（recv/解密/解码失败，或阻塞线程中途
+    /// join 失败）。与 [`RpcClientError::Connection`] 的语义分界：对端
+    /// **很可能已收到并受理**本请求——多地址 fallback 与桥仲裁兜底不得把
+    /// 同一请求按「未送达」重发（peer_chat 任务类 handler 会重复执行；
+    /// 与 RemoteError「对端已应答不重试」同一设计意图，对「对端已受理」
+    /// 同样成立）。上层仍可按自身语义用**新请求**重试（board 派发 sweep
+    /// 即此形态）。
+    #[error("Response lost after send (request may have been delivered): {0}")]
+    ResponseLost(String),
     #[error("Rate limited: {0}")]
     RateLimited(String),
     #[error("Context cancelled")]
@@ -44,17 +53,19 @@ pub enum RpcClientError {
 
 impl RpcClientError {
     /// 派发失败分类（看板 ⛔ 评论可读性）：连接/网络面失败
-    /// →「节点不可达」（对端下线/网络断/超时/过载，重试有意义）；对端明确
+    /// →「节点不可达」（对端下线/网络断/超时/过载，重试有意义；含响应
+    /// 丢失——链路中途断，对端可能已受理，用新请求重试仍有意义）；对端明确
     /// 拒绝或协议失配 →「节点配置异常」（鉴权失败/版本不兼容，重试无意义，
     /// 要查配置）。序列化失败是我方请求构造问题，也归配置异常（协议不匹配
-    /// 表现一致）。放类型所有者处 = 分类口径统一定义。
+    /// 表现一致）。放类型所有处 = 分类口径统一定义。
     pub fn failure_category(&self) -> &'static str {
         match self {
             RpcClientError::Connection(_)
             | RpcClientError::Io(_)
             | RpcClientError::Timeout
             | RpcClientError::RateLimited(_)
-            | RpcClientError::Cancelled => "节点不可达",
+            | RpcClientError::Cancelled
+            | RpcClientError::ResponseLost(_) => "节点不可达",
             RpcClientError::RemoteError(_) | RpcClientError::Serialization(_) => "节点配置异常",
         }
     }
@@ -666,6 +677,8 @@ impl RpcClient {
                 if same_subnet {
                     // 同网段：直连优先。RemoteError = 对端已应答业务错误，
                     // 换路径重发无意义（对端 handler 会给出同样结果），不兜。
+                    // ResponseLost（BUG-20261109-004）= 请求已送达但响应丢失，
+                    // 兜桥重发同一请求 = 对端重复执行，同样不兜。
                     match self
                         .send_and_receive(&best_addr, &full_addresses, &request, io_timeout)
                         .await
@@ -673,6 +686,15 @@ impl RpcClient {
                         Ok(resp) => Ok(resp),
                         Err(RpcClientError::RemoteError(err)) => {
                             Err(RpcClientError::RemoteError(err))
+                        }
+                        Err(RpcClientError::ResponseLost(err)) => {
+                            tracing::warn!(
+                                peer_id = peer_id,
+                                action = ?request.action,
+                                error = %err,
+                                "[RpcClient] Direct path delivered request but lost response, not falling back to bridge (duplicate-execution guard)"
+                            );
+                            Err(RpcClientError::ResponseLost(err))
                         }
                         Err(direct_err) => {
                             tracing::warn!(
@@ -688,7 +710,8 @@ impl RpcClient {
                         }
                     }
                 } else {
-                    // 异网段：桥优先。RemoteError 同理不兜。
+                    // 异网段：桥优先。RemoteError 同理不兜；ResponseLost
+                    // 同门（请求已送达，兜直连重发 = 重复执行）。
                     match bridge_impl
                         .send_over_bridge(peer_id, wire_req, timeout)
                         .await
@@ -696,6 +719,15 @@ impl RpcClient {
                         Ok(wire_resp) => rpc_response_from_wire(&wire_resp),
                         Err(RpcClientError::RemoteError(err)) => {
                             Err(RpcClientError::RemoteError(err))
+                        }
+                        Err(RpcClientError::ResponseLost(err)) => {
+                            tracing::warn!(
+                                peer_id = peer_id,
+                                action = ?request.action,
+                                error = %err,
+                                "[RpcClient] Bridge path delivered request but lost response, not falling back to direct (duplicate-execution guard)"
+                            );
+                            Err(RpcClientError::ResponseLost(err))
                         }
                         Err(bridge_err) => {
                             tracing::warn!(
@@ -821,6 +853,18 @@ impl RpcClient {
                 );
                 return Err(RpcClientError::RemoteError(err));
             }
+            // 请求帧已写出但响应丢失（BUG-20261109-004）：对端很可能已受理
+            // 本请求——向同 peer 其他地址重发同一请求 = 重复执行。与
+            // RemoteError 同门：立即返回，不再兜底。
+            Err(RpcClientError::ResponseLost(err)) => {
+                tracing::warn!(
+                    addr = best_addr,
+                    request_id = %request.id,
+                    error = %err,
+                    "[RpcClient] Request delivered but response lost, not retrying fallbacks (duplicate-execution guard)"
+                );
+                return Err(RpcClientError::ResponseLost(err));
+            }
             Err(e) => {
                 tracing::debug!(
                     addr = best_addr,
@@ -856,6 +900,16 @@ impl RpcClient {
                         "[RpcClient] Fallback peer returned an error response"
                     );
                     return Err(RpcClientError::RemoteError(err));
+                }
+                // 响应丢失同门：后续地址不再重发同一请求（重复执行防线）。
+                Err(RpcClientError::ResponseLost(err)) => {
+                    tracing::warn!(
+                        addr = addr,
+                        request_id = %request.id,
+                        error = %err,
+                        "[RpcClient] Fallback address delivered request but lost response, stopping (duplicate-execution guard)"
+                    );
+                    return Err(RpcClientError::ResponseLost(err));
                 }
                 Err(e) => {
                     tracing::debug!(addr = addr, error = %e, "[RpcClient] Fallback address failed");
@@ -931,7 +985,9 @@ impl RpcClient {
             )
         })
         .await
-        .map_err(|e| RpcClientError::Connection(format!("blocking task join: {}", e)))?
+        // join 失败（blocking 线程 panic/被弃）时帧交换可能已完成写出——
+        // 按 ResponseLost 处理（宁可不重发，不重复执行）。
+        .map_err(|e| RpcClientError::ResponseLost(format!("blocking task join: {}", e)))?
     }
 
     /// iroh 叠加层帧交换（`iroh:<node_id_hex>`
@@ -1020,11 +1076,16 @@ impl RpcClient {
             dialer.close(conn_id);
         }
         let resp_bytes = recv_res
-            .map_err(|_| RpcClientError::Connection(format!("iroh recv timeout from {}", addr)))?
-            .map_err(|e| RpcClientError::Connection(format!("iroh recv from {}: {}", addr, e)))?;
+            .map_err(|_| {
+                // 帧已写出（与 TCP 路径同门）：recv 失败按 ResponseLost，
+                // 不给上层「未送达」错觉触发同请求重发。
+                RpcClientError::ResponseLost(format!("iroh recv timeout from {}", addr))
+            })?
+            .map_err(|e| RpcClientError::ResponseLost(format!("iroh recv from {}: {}", addr, e)))?;
 
-        let response: RPCResponse = Frame::decode_response(&resp_bytes)
-            .map_err(|e| RpcClientError::Serialization(format!("decode response: {}", e)))?;
+        let response: RPCResponse = Frame::decode_response(&resp_bytes).map_err(|e| {
+            RpcClientError::ResponseLost(format!("decode response from {}: {}", addr, e))
+        })?;
 
         if let Some(ref err) = response.error {
             tracing::error!(
@@ -1082,6 +1143,14 @@ impl RpcClient {
         conn.send(&wire_bytes)
             .map_err(|e| RpcClientError::Connection(format!("send to {}: {}", addr, e)))?;
 
+        // ---- 帧已写出（sent）----
+        // 此后任何失败（recv/解密/解码）都按 [`RpcClientError::ResponseLost`]
+        // 上报：请求可能已被对端受理，多地址 fallback / 桥仲裁兜底若按
+        // 「未送达」重发同一请求 = 对端重复执行（peer_chat 任务类 handler
+        // 的实害面）。send_and_receive 与 dispatch 桥仲裁臂据此停止兜底重发。
+        // 请求帧写出失败仍归 Connection——TCP 部分写只会留下不完整帧，
+        // 服务端 frame reader 等齐长度前缀才分发，不会触发 handler。
+
         tracing::debug!(
             addr = addr,
             request_id = %request.id,
@@ -1091,17 +1160,18 @@ impl RpcClient {
         // Receive response frame: [4-byte length][payload]
         let resp_data = conn
             .recv()
-            .map_err(|e| RpcClientError::Connection(format!("recv from {}: {}", addr, e)))?;
+            .map_err(|e| RpcClientError::ResponseLost(format!("recv from {}: {}", addr, e)))?;
         let resp_plaintext = if let Some(ref key) = cipher_key {
             decrypt_frame(&resp_data, key).map_err(|e| {
-                RpcClientError::Connection(format!("decrypt response from {}: {}", addr, e))
+                RpcClientError::ResponseLost(format!("decrypt response from {}: {}", addr, e))
             })?
         } else {
             resp_data
         };
 
-        let response: RPCResponse = Frame::decode_response(&resp_plaintext)
-            .map_err(|e| RpcClientError::Serialization(format!("decode response: {}", e)))?;
+        let response: RPCResponse = Frame::decode_response(&resp_plaintext).map_err(|e| {
+            RpcClientError::ResponseLost(format!("decode response from {}: {}", addr, e))
+        })?;
 
         // Check for remote error
         if let Some(ref err) = response.error {
