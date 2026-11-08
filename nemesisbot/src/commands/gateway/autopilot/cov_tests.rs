@@ -181,7 +181,7 @@ fn mk_deps(
         store: store.clone(),
         workspace: tmp.path().to_path_buf(),
         home: tmp.path().to_path_buf(),
-        moderator_loop: std::sync::Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: std::sync::Arc::new(parking_lot::RwLock::new(None)),
         cluster: cluster.clone(),
         estop: std::sync::Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),

@@ -3245,7 +3245,7 @@ async fn test_fire_autopilot_auto_plan_true_empty_slot_degrades_with_comment() {
     let store = ctx.state.board.as_ref().unwrap().store().clone();
     let actor = nemesis_board::Actor::admin("admin");
     let ap_ctx = AutoPlanContext {
-        moderator_slot: Arc::new(std::sync::OnceLock::new()), // 永不填充
+        moderator_slot: Arc::new(parking_lot::RwLock::new(None)), // 永不填充
         home: dir.clone(),
         hub: None,
         cluster: None,
@@ -9828,15 +9828,12 @@ async fn w5_fire_autopilot_plan_chain_filled_slot() {
     let store = store_of(&ctx);
     let actor = Actor::admin("w5");
     let ap = p3_ap(&store, "w5-slot", true);
-    let slot = Arc::new(std::sync::OnceLock::new());
-    assert!(
-        slot.set(Arc::new(AgentLoop::new(
-            Box::new(AgtGoodPlannerProvider),
-            AgentConfig::default(),
-        )))
-        .is_ok(),
-        "槽应空，装配一次即成功"
-    );
+    // 动态解析槽（RwLock 无 OnceLock 的 set-once 语义，直接填充）。
+    let slot = Arc::new(parking_lot::RwLock::new(None::<Arc<AgentLoop>>));
+    *slot.write() = Some(Arc::new(AgentLoop::new(
+        Box::new(AgtGoodPlannerProvider),
+        AgentConfig::default(),
+    )));
     let ap_ctx = super::AutoPlanContext {
         moderator_slot: slot,
         home: dir.clone(),

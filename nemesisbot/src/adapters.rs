@@ -187,6 +187,21 @@ struct AgentLoopState {
     agent_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
+/// 运行期 loop 级接线 stash（BUG-20261108-012 横向收尾）：gateway 装配
+/// 期打到**初始 loop 实例**上的 responder/broker setter（审批应答端 M7、
+/// question 应答端 + doom-loop asker F7/J5）。loop 重建路径（stop→start
+/// →factory）不会重放这些 setter——不 stash 的话重启后新 loop 的
+/// `approval_responder()`/`question_responder()` 恒 None，WSAPI
+/// approval.respond / question.respond 诚实报「未装配」，Dashboard 卡
+/// 有卡无答（阻塞端 auditor/broker 走 SharedResources 共享槽不受影响
+/// ——正是这种「半边槽化」让缺陷潜伏）。这里 stash 全量、start() 重放。
+#[derive(Default)]
+struct RuntimeWiring {
+    approval_responder: Option<Arc<dyn nemesis_types::agent::ApprovalResponder>>,
+    question_responder: Option<Arc<dyn nemesis_types::agent::QuestionResponder>>,
+    question_asker: Option<Arc<dyn nemesis_types::agent::QuestionAsker>>,
+}
+
 /// Adapter wrapping `nemesis_agent::AgentLoop` to implement the
 /// `nemesis_services::AgentLoopService` trait.
 ///
@@ -208,6 +223,10 @@ pub struct AgentLoopServiceAdapter {
     /// Shared reference with AppState — updated on each start/stop.
     agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     bus: Arc<nemesis_bus::MessageBus>,
+    /// 运行期接线 stash（见 [`RuntimeWiring`]）：wire_* 写入、start() 重放
+    /// 到重建出的新 loop。与 state 锁分离（wire_* 在 run_runtime 装配期
+    /// 调用，不与 start/stop 竞争同一把锁）。
+    runtime_wiring: std::sync::Mutex<RuntimeWiring>,
     /// 主桥 skip 谓词——命中=true 的消息**不喂主 loop**
     /// （由项目调度器转发进对应项目 loop）。装配期 set 一次（OnceLock），
     /// start() 每次读取 → loop stop/start 循环后谓词仍生效。默认未设置 =
@@ -240,6 +259,7 @@ impl AgentLoopServiceAdapter {
             shared,
             agent_loop_ref,
             bus,
+            runtime_wiring: std::sync::Mutex::new(RuntimeWiring::default()),
             skip_predicate: std::sync::OnceLock::new(),
             rt: tokio::runtime::Handle::current(),
         }
@@ -270,6 +290,58 @@ impl AgentLoopServiceAdapter {
     ) -> Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> {
         self.agent_loop_ref.clone()
     }
+
+    /// 装配审批应答端（run_runtime M7 块调用；替代直打 loop 实例的
+    /// `set_approval_responder`）。stash 进 [`RuntimeWiring`] + 立即打到
+    /// 当前 loop（若在运行）——stop→start 重建路径由 start() 重放，
+    /// 重启后 Dashboard 审批卡照常可答。
+    pub fn wire_approval_responder(
+        &self,
+        responder: Arc<dyn nemesis_types::agent::ApprovalResponder>,
+    ) {
+        self.runtime_wiring.lock().unwrap().approval_responder = Some(responder.clone());
+        if let Some(loop_arc) = self.state.lock().unwrap().agent_loop.clone() {
+            loop_arc.set_approval_responder(responder);
+            // 与 run_runtime 装配块同款（interactive reachability 进
+            // Runtime Policy 快照）；非 security 构建无此调用路径。
+            loop_arc.set_interactive_approval(true);
+        }
+    }
+
+    /// 装配 question 应答端 + doom-loop asker（run_runtime F7/J5 块调用；
+    /// 同一 WebQuestionBroker Arc 双槽）。stash + 打当前 loop，重启重放。
+    pub fn wire_question_broker(
+        &self,
+        responder: Arc<dyn nemesis_types::agent::QuestionResponder>,
+        asker: Arc<dyn nemesis_types::agent::QuestionAsker>,
+    ) {
+        {
+            let mut w = self.runtime_wiring.lock().unwrap();
+            w.question_responder = Some(responder.clone());
+            w.question_asker = Some(asker.clone());
+        }
+        if let Some(loop_arc) = self.state.lock().unwrap().agent_loop.clone() {
+            loop_arc.set_question_responder(responder);
+            loop_arc.set_question_asker(asker);
+        }
+    }
+
+    /// 把 stash 的运行期接线重放到重建出的 loop（start() 重建分支调用；
+    /// 预建分支同样调用无害——同值覆盖）。审批接线在场才置
+    /// interactive_approval（对齐装配块 cfg 语义：非 security 构建恒 false）。
+    fn replay_runtime_wiring(&self, loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>) {
+        let w = self.runtime_wiring.lock().unwrap();
+        if let Some(ref responder) = w.approval_responder {
+            loop_arc.set_approval_responder(responder.clone());
+            loop_arc.set_interactive_approval(true);
+        }
+        if let Some(ref responder) = w.question_responder {
+            loop_arc.set_question_responder(responder.clone());
+        }
+        if let Some(ref asker) = w.question_asker {
+            loop_arc.set_question_asker(asker.clone());
+        }
+    }
 }
 
 impl LifecycleService for AgentLoopServiceAdapter {
@@ -299,6 +371,12 @@ impl LifecycleService for AgentLoopServiceAdapter {
 
         // Update shared reference for WebServer/AppState.
         *self.agent_loop_ref.write() = Some(agent_loop.clone());
+
+        // BUG-20261108-012 横向收尾：重建分支（factory 新 loop）不经过
+        // run_runtime 装配块——审批应答端 / question broker 的 loop 级
+        // setter 在此重放，重启后 WSAPI approval.respond / question.respond
+        // 照常触达（阻塞端 auditor/broker 走共享槽本就不受影响）。
+        self.replay_runtime_wiring(&agent_loop);
 
         // Create a new mpsc channel for inbound messages
         let (agent_inbound_tx, agent_inbound_rx) =

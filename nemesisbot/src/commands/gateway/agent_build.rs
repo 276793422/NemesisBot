@@ -83,7 +83,7 @@ pub(crate) async fn init_agent(
     let workflow_tool_registry = ctx.workflow_tool_registry.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_store = ctx.board_store.clone();
-    #[cfg(all(feature = "board", feature = "cluster"))]
+    #[cfg(any(feature = "board", feature = "cluster", feature = "workflow"))]
     let board_moderator_loop = ctx.board_moderator_loop.clone();
     // web wiring 影子：event_hub 读借用（门=唯一消费点 board_event_hub）。
     #[cfg(all(feature = "board", feature = "cluster"))]
@@ -303,8 +303,9 @@ pub(crate) async fn init_agent(
         background_registry,
         plugin_manager,
         // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
-        // 主 agent；store=None 时工具不注册）。moderator 槽此刻还空，agent
-        // 建成后:board_moderator_loop.set 填充——工具调用时读槽即得。
+        // 主 agent；store=None 时工具不注册）。moderator 槽 = gateway 级
+        // 动态解析槽（AgentLoopServiceAdapter start 填 Some / stop 写
+        // None）——工具调用时读槽即得，agent 重启后自动跟随。
         #[cfg(all(feature = "board", feature = "cluster"))]
         board_store: board_store.clone(),
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -427,7 +428,11 @@ pub(crate) async fn init_agent(
         workflow_engine.set_tool_executor(Arc::new(
             nemesis_workflow::nodes::RealToolNodeExecutor::new_with_secure_executor(
                 workflow_tool_registry.clone(),
-                Arc::new(super::workflow_secure_executor::WorkflowSecureExecutor::new(&agent_loop)),
+                Arc::new(
+                    super::workflow_secure_executor::WorkflowSecureExecutor::new(
+                        board_moderator_loop.clone(),
+                    ),
+                ),
             ),
         ));
         info!(
@@ -441,8 +446,9 @@ pub(crate) async fn init_agent(
     // sessions don't collide with human user sessions.
     #[cfg(feature = "workflow")]
     {
-        workflow_engine
-            .register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
+        workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(
+            board_moderator_loop.clone(),
+        )));
         info!("[Gateway] Workflow agent runner registered");
 
         // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor

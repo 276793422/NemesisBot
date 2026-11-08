@@ -125,8 +125,15 @@ pub(crate) struct GatewayCtx {
     #[cfg(feature = "workflow")]
     pub chat_secret_store: Arc<nemesis_workflow::chat_secrets::ChatSecretStore>,
     // --- 晚绑定槽（原则 6：模式不变，集中收编）---
-    #[cfg(all(feature = "board", feature = "cluster"))]
-    pub board_moderator_loop: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// 当前主 AgentLoop 动态解析槽。写者唯一 = AgentLoopServiceAdapter
+    /// （start 写 Some / stop 写 None）；读者 = board 评审链（moderator）、
+    /// board_issue 工具、workflow agent 节点、workflow 工具执行体、web
+    /// 模型切换。agent stop→start 重建后全部读者解析到最新 loop
+    /// （BUG-20261108-012：此前 OnceLock 静态绑定初始 loop，重启后打死旧
+    /// 实例——旧 persona 缓存 + 孤儿 loop 泄漏）。门控放宽到 workflow：
+    /// workflow agent 节点/工具执行体也读此槽（无 board 时同样需要）。
+    pub board_moderator_loop:
+        Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub autopilot_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>>,
     /// Swarm 本节点对外 web 基址槽（PB-7 落槽、PB-5 资产签名读）。
@@ -738,12 +745,12 @@ impl GatewayCtx {
             ))
         };
 
-        // Swarm: 主持人裁决用主 AgentLoop 后置装配桥（nb_bus 注册早于
-        // agent_loop 构建；build 完成后 set()）。
-        #[cfg(all(feature = "board", feature = "cluster"))]
+        // Swarm/Workflow 共用：当前主 AgentLoop 动态解析槽（写者唯一 =
+        // AgentLoopServiceAdapter；读者见 struct 字段注释）。nb_bus 注册早于
+        // agent_loop 构建；adapter.start() 时填 Some、stop() 时写 None。
         let board_moderator_loop: std::sync::Arc<
-            std::sync::OnceLock<std::sync::Arc<nemesis_agent::r#loop::AgentLoop>>,
-        > = std::sync::Arc::new(std::sync::OnceLock::new());
+            parking_lot::RwLock<Option<std::sync::Arc<nemesis_agent::r#loop::AgentLoop>>>,
+        > = std::sync::Arc::new(parking_lot::RwLock::new(None));
 
         // Opt 2: conversation→WS router, shared between the cron fire handler
         // (lookup, here) and process_messages (bind, in the web server). Built
@@ -1463,7 +1470,6 @@ impl GatewayCtx {
             // 晚绑定槽
             #[cfg(feature = "security")]
             outbound_dlp_slot,
-            #[cfg(all(feature = "board", feature = "cluster"))]
             board_moderator_loop,
             #[cfg(all(feature = "board", feature = "cluster"))]
             autopilot_cluster_slot,

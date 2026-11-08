@@ -779,18 +779,13 @@ impl ModuleHandler for BoardHandler {
                 let out = {
                     #[cfg(feature = "cluster")]
                     {
-                        // WSAPI 有现成 moderator/事件上下文——包即抛槽
-                        // 传入（槽空 = agent 未运行，auto_plan 走诚实降级）。
+                        // WSAPI 有现成 moderator/事件上下文——直接共享
+                        // AppState 的动态解析槽（槽空 = agent 未运行，
+                        // auto_plan 走诚实降级；agent 重启后自动跟随，
+                        // BUG-20261108-012：此前本地 OnceLock 快照一次，
+                        // 重启后打死旧 loop）。
                         let auto_plan_ctx = AutoPlanContext {
-                            moderator_slot: {
-                                let slot: Arc<
-                                    std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>,
-                                > = Arc::new(std::sync::OnceLock::new());
-                                if let Some(loop_arc) = ctx.state.agent_loop.read().clone() {
-                                    let _ = slot.set(loop_arc);
-                                }
-                                slot
-                            },
+                            moderator_slot: ctx.state.agent_loop.clone(),
                             home: ctx
                                 .home
                                 .clone()

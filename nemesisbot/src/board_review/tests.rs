@@ -237,7 +237,7 @@ fn settle_deps_with_store(
         store,
         workspace: dir.clone(),
         home: dir,
-        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -353,7 +353,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
             store,
             workspace: workspace.clone(),
             home: dir,
-            moderator_loop: Arc::new(std::sync::OnceLock::new()),
+            moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
             cluster,
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -390,7 +390,7 @@ fn review_deps_ex(name: &str, seed_worker_nodes: bool) -> (BoardReviewDeps, std:
         store,
         workspace: workspace.clone(),
         home: dir,
-        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -439,7 +439,7 @@ fn review_deps_taskdb(name: &str) -> (BoardReviewDeps, std::path::PathBuf) {
         store,
         workspace: workspace.clone(),
         home: dir,
-        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -2733,8 +2733,8 @@ async fn e1_token_breach_gate_matrix_through_moderator_loop() {
     let (mut deps, _ws) = review_deps("e1-token-gate");
     let mut agent_loop = AgentLoop::new(Box::new(NullProvider), AgentConfig::default());
     agent_loop.set_data_store(ds);
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
-    let _ = deps.moderator_loop.set(Arc::new(agent_loop));
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
+    *deps.moderator_loop.write() = Some(Arc::new(agent_loop));
 
     let issue = issue_in_review(&deps.store, "token 闸矩阵", "", "交付");
     seed_dispatch(&deps.store, "tok-gate-1", issue.id, "node-b");
@@ -3960,7 +3960,7 @@ async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
         store: store.clone(),
         workspace: dir.clone(),
         home: dir.clone(),
-        moderator_loop: Arc::new(std::sync::OnceLock::new()), // 空槽 = 主 agent 未就绪
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)), // 空槽 = 主 agent 未就绪
         cluster: Arc::new(nemesis_cluster::cluster::Cluster::new(
             nemesis_cluster::types::ClusterConfig {
                 node_id: "node-a".to_string(),
@@ -4592,8 +4592,8 @@ async fn stale_review_anchor_fail_yields_to_manual_intervention() {
         store: deps.store.clone(),
         issue_id: issue.id,
     };
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
-    let _ = deps.moderator_loop.set(Arc::new(AgentLoop::new(
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
+    *deps.moderator_loop.write() = Some(Arc::new(AgentLoop::new(
         Box::new(provider),
         AgentConfig::default(),
     )));
@@ -4755,12 +4755,10 @@ fn attach_loop(
     deps: &BoardReviewDeps,
     provider: std::sync::Arc<dyn nemesis_agent::r#loop::LlmProvider>,
 ) {
-    let _ = deps
-        .moderator_loop
-        .set(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
-            Box::new(SharedLlm(provider)),
-            nemesis_agent::types::AgentConfig::default(),
-        )));
+    *deps.moderator_loop.write() = Some(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(SharedLlm(provider)),
+        nemesis_agent::types::AgentConfig::default(),
+    )));
 }
 
 /// 写 board 配置（deps.home/config.json；load_board_flags 现读真相源）。
@@ -5324,8 +5322,9 @@ async fn sweep_run_review_llm_call_failure_fails_immediately() {
         }),
     );
     let mut prompt = "评审一下".to_string();
+    let agent_loop = deps.moderator_loop.read().clone().unwrap();
     let err = run_review_llm(
-        deps.moderator_loop.get().unwrap(),
+        &agent_loop,
         &mut prompt,
         ReviewToolMode::NoTools,
         nemesis_prompts::board::ReviewTier::Thorough,
@@ -5357,8 +5356,9 @@ async fn sweep_run_review_llm_exhausts_three_parse_rounds() {
         }),
     );
     let mut prompt = "评审一下".to_string();
+    let agent_loop = deps.moderator_loop.read().clone().unwrap();
     let err = run_review_llm(
-        deps.moderator_loop.get().unwrap(),
+        &agent_loop,
         &mut prompt,
         ReviewToolMode::NoTools,
         nemesis_prompts::board::ReviewTier::Thorough,
@@ -5390,8 +5390,9 @@ async fn sweep_run_review_llm_retries_then_succeeds_and_readonly_mode() {
     );
     let mut prompt = "评审一下".to_string();
     // ReadOnly 模式（本机 worker 多轮取证面）照常走同一解析回灌。
+    let agent_loop = deps.moderator_loop.read().clone().unwrap();
     let out = run_review_llm(
-        deps.moderator_loop.get().unwrap(),
+        &agent_loop,
         &mut prompt,
         ReviewToolMode::ReadOnly { max_turns: 3 },
         nemesis_prompts::board::ReviewTier::Thorough,
@@ -5419,8 +5420,9 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
             on_call: None,
         }),
     );
+    let agent_loop = deps.moderator_loop.read().clone().unwrap();
     let out = run_review_panel(
-        deps.moderator_loop.get().unwrap(),
+        &agent_loop,
         "评审一下",
         ReviewToolMode::NoTools,
         1,
@@ -5434,7 +5436,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
     assert_eq!(out.verdict, nemesis_board::ReviewVerdict::Pass);
 
     // 多路（3 检查员）：PASS/PASS/FAIL 多数票 → Pass。
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
     attach_loop(
         &deps,
         Arc::new(ScriptedLlm {
@@ -5447,8 +5449,9 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
             on_call: None,
         }),
     );
+    let agent_loop = deps.moderator_loop.read().clone().unwrap();
     let out = run_review_panel(
-        deps.moderator_loop.get().unwrap(),
+        &agent_loop,
         "评审一下",
         ReviewToolMode::NoTools,
         3,
@@ -5462,7 +5465,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
     assert_eq!(out.verdict, nemesis_board::ReviewVerdict::Pass);
 
     // 多路全败（2 检查员 × 3 轮乱码）：返回末路错误。
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
     attach_loop(
         &deps,
         Arc::new(ScriptedLlm {
@@ -5471,8 +5474,9 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
             on_call: None,
         }),
     );
+    let agent_loop = deps.moderator_loop.read().clone().unwrap();
     let err = run_review_panel(
-        deps.moderator_loop.get().unwrap(),
+        &agent_loop,
         "评审一下",
         ReviewToolMode::NoTools,
         2,
@@ -5500,8 +5504,9 @@ async fn sweep_run_review_panel_overload_rejects_whole_batch_without_llm() {
         }),
     );
     let big = "x".repeat(super::PANEL_MAX_INPUT_BYTES + 1);
+    let agent_loop = deps.moderator_loop.read().clone().unwrap();
     let err = run_review_panel(
-        deps.moderator_loop.get().unwrap(),
+        &agent_loop,
         &big,
         ReviewToolMode::NoTools,
         3,
@@ -8404,8 +8409,8 @@ async fn w5_parse_failed_unlimited_escalates_without_redispatch() {
     let (mut deps, _ws) = review_deps("w5-parse-unl");
     write_board_cfg(&deps.home, serde_json::json!({ "unlimited_mode": true }));
     let agent_loop = AgentLoop::new(Box::new(JunkProvider), AgentConfig::default());
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
-    let _ = deps.moderator_loop.set(Arc::new(agent_loop));
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
+    *deps.moderator_loop.write() = Some(Arc::new(agent_loop));
 
     // 无锚点（AC 空）→ 进语义项 → JunkProvider 连续解析失败。
     let issue = issue_in_review(&deps.store, "解析失败续派", "", "交付");
@@ -8476,8 +8481,8 @@ async fn w5_parse_failed_guardrail_escalates_to_human() {
     // pin）。
     write_board_config(&deps.home, r#"{"review":{"failure_retries":0}}"#);
     let agent_loop = AgentLoop::new(Box::new(JunkProvider), AgentConfig::default());
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
-    let _ = deps.moderator_loop.set(Arc::new(agent_loop));
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
+    *deps.moderator_loop.write() = Some(Arc::new(agent_loop));
 
     let issue = issue_in_review(&deps.store, "解析失败转人工", "", "交付");
 
@@ -8551,7 +8556,7 @@ mod w5r2parent {
             store,
             workspace: workspace.clone(),
             home: dir.clone(),
-            moderator_loop: Arc::new(std::sync::OnceLock::new()),
+            moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
             cluster,
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -8989,7 +8994,7 @@ mod w5r2parent {
             store: deps.store.clone(),
             workspace: deps.workspace.clone(),
             home: deps.home.clone(),
-            moderator_loop: Arc::new(std::sync::OnceLock::new()),
+            moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
             cluster: deps.cluster.clone(),
             estop: Arc::new(nemesis_agent::estop::EstopState::new()),
             estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),

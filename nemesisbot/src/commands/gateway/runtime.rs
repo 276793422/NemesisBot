@@ -554,7 +554,9 @@ pub(crate) async fn run_runtime(
                     // 内联执行于 runtime worker——注册时捕获 Handle +
                     // block_in_place（gateway multi-thread runtime；acp.rs
                     // AcpApprovalManager 同款样板）。
-                    let invoke_loop = agent_loop.clone();
+                    // BUG-20261108-012 横向收尾：捕获动态槽而非初始 loop
+                    // ——agent 重启后解析到最新 loop；停机窗口槽空诚实拒。
+                    let invoke_loop_ref = ctx.board_moderator_loop.clone();
                     let invoke_ws = shared_resources.workspace_dir();
                     let invoke_home = home.clone();
                     let invoke_handle = tokio::runtime::Handle::current();
@@ -613,6 +615,11 @@ pub(crate) async fn run_runtime(
                             // master 端凭条 outcome 驱动；dispatch 层拒绝（estop/
                             // hidden/Plan/tier 闸）不落凭条（回执面诚实不造假 =
                             // null），master 按 ⛔ 前缀识别「未执行」镜像 error。
+                            // 槽空（agent 停机窗口）= Err 拒绝，不落凭条。
+                            let invoke_loop = invoke_loop_ref.read().clone().ok_or_else(|| {
+                                "agent loop 已停止（agent loop 停机窗口），connector_invoke 无法执行"
+                                    .to_string()
+                            })?;
                             let result_text = tokio::task::block_in_place(|| {
                                 invoke_handle.block_on(async {
                                     let call = nemesis_agent::types::ToolCallInfo {
@@ -689,7 +696,9 @@ pub(crate) async fn run_runtime(
             }
             // M7: dashboard 审批卡的响应端点经 AgentLoop 的 responder 槽触达
             // （nemesis-web approval handler 读 agent_loop.approval_responder()）。
-            agent_loop.set_approval_responder(responder);
+            // BUG-20261108-012 横向收尾：经 adapter wire（stash + 打当前
+            // loop）——loop 重建路径由 start() 重放，重启后审批卡照常可答。
+            agent_adapter.wire_approval_responder(responder);
             // WS4（P13）：技能装前审批门 bind 真身——web_server AppState 里的
             // LateWebSkillsGate（gateway.rs set_skills_install_gate 注入）经此
             // 挂上同一 web_mgr，技能安装卡与 auditor 审批共用 respond 通路。
@@ -705,9 +714,9 @@ pub(crate) async fn run_runtime(
                 gate.bind(web_mgr.clone());
                 info!("[Gateway] plugin install approval gate bound (W5-3)");
             }
-            // X2 (U8 refinement): reflect interactive-approval reachability
-            // in the merged context snapshot's `# Runtime Policy` section.
-            agent_loop.set_interactive_approval(true);
+            // X2 (U8 refinement)：interactive-approval reachability 进
+            // Runtime Policy 快照——已并入 wire_approval_responder（当前
+            // loop 与重建重放同源设置）。
             info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
             // L07（2026-11-01）：审批卡 estop 挂点——急停触发时全部未决卡
             // 立即关闭（等待方收到拒绝裁决、前端摘卡、台账留 orphaned 痕），
@@ -1110,8 +1119,10 @@ pub(crate) async fn run_runtime(
             shared_resources.agent_event_tx.clone(),
         ));
         *shared_resources.question_slot.write() = Some(broker.clone());
-        agent_loop.set_question_responder(broker.clone());
-        agent_loop.set_question_asker(broker.clone());
+        // BUG-20261108-012 横向收尾：经 adapter wire（stash + 打当前 loop）
+        // ——loop 重建路径由 start() 重放，重启后 question.respond /
+        // doom-loop escalation 审批卡照常可达。
+        agent_adapter.wire_question_broker(broker.clone(), broker.clone());
         // 循环干预阶梯（2026-10-24）：急停挂钩——无超时终级卡（escalation
         // 停车问询，timeout_secs=0）会停在等答态跨普通停机窗口存续，estop
         // 触发时必须强制了结：等待的 loop 醒来（Cancelled→诚实收尾）、前端

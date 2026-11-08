@@ -2661,9 +2661,9 @@ fn inject_parent_context(mut ni: NewIssue, block: String) -> NewIssue {
 /// 集群引用时诚实降级（子单留 todo + ⛔ 评论，单节点模式即此形态）。
 #[cfg(feature = "cluster")]
 pub struct AutoPlanContext {
-    /// planner 的 moderator AgentLoop 槽（空槽 = 未就绪，诚实降级见
-    /// `fire_autopilot` 内注释）。
-    pub moderator_slot: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// planner 的 moderator AgentLoop 槽（gateway 级动态解析槽共享克隆；
+    /// None = 停机窗口，诚实降级见 `fire_autopilot` 内注释）。
+    pub moderator_slot: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     /// home 目录（auto_confirm 旗标现读）。
     pub home: std::path::PathBuf,
     /// SSE 事件 hub（None = 不推事件）。
@@ -2890,7 +2890,7 @@ fn fire_autopilot_plan_chain(
             "reason": "auto_plan=true 但本入口无 moderator/事件上下文（CLI 手跑），未触发拆解",
         });
     };
-    let Some(agent_loop) = ap_ctx.moderator_slot.get().cloned() else {
+    let Some(agent_loop) = ap_ctx.moderator_slot.read().clone() else {
         tracing::warn!(
             "[Board] autopilot auto_plan issue={issue_id}：moderator loop 未就绪（agent 未装配完成），本轮跳过拆解",
         );

@@ -327,7 +327,7 @@ pub(crate) fn budget_breach(
 /// 维度 4 的全链 token 聚合入口：从评审依赖解出 master DataStore
 ///（评审 loop 未装配 / 未后置 → None = 该维诚实放行）。
 fn chain_token_usage(deps: &BoardReviewDeps, issue: &nemesis_board::Issue) -> Option<u64> {
-    let ds = deps.moderator_loop.get()?.data_store()?;
+    let ds = deps.moderator_loop.read().clone()?.data_store()?;
     Some(chain_token_usage_ds(
         ds.as_ref(),
         deps.store.as_ref(),

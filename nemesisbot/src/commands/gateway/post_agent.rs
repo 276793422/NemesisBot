@@ -131,13 +131,11 @@ pub(crate) async fn init_post_agent(
     #[cfg(feature = "cluster")]
     let mut cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>> = None;
 
-    // --- Swarm: 主持人裁决桥填装（nb_bus 注册早于 agent_loop 构建）---
-    #[cfg(all(feature = "board", feature = "cluster"))]
-    {
-        if board_moderator_loop.set(agent_loop.clone()).is_err() {
-            warn!("[Gateway] Board moderator loop already set");
-        }
-    }
+    // --- Swarm: 主持人裁决桥（nb_bus 注册早于 agent_loop 构建）---
+    // 槽填装由 AgentLoopServiceAdapter 唯一承担（start 写 Some / stop 写
+    // None）——装配期槽 None = 停机窗口的诚实态；评审链/工具运行期读槽
+    // 解析当前 loop（BUG-20261108-012：此前此处 OnceLock set 一次静态
+    // 绑定初始 loop，agent stop→start 后打死旧实例）。
 
     // --- 全自动流转：父单收口验收钩子注册 ---
     // sync_parent_status 子单全 done 路径 → 本钩子（读 auto_close_parent
@@ -389,7 +387,7 @@ pub(crate) async fn init_post_agent(
             // 单子自动重新发起拆解（开关 board.plan.restart_recover 默认开；
             // estop 挂起跳过；worker 镜像不跑）。评审重放同阶段、moderator
             // 槽已装配（119 set）。
-            if let Some(agent_loop) = replay_sweep_deps.moderator_loop.get().cloned() {
+            if let Some(agent_loop) = replay_sweep_deps.moderator_loop.read().clone() {
                 let recovered = nemesis_web::handlers::board::recover_interrupted_plans(
                     &replay_sweep_deps.store,
                     Some(cluster.clone()),
@@ -505,9 +503,12 @@ pub(crate) async fn init_post_agent(
         }
     }
 
-    // Create shared reference for WebServer model switching
-    let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =
-        Arc::new(parking_lot::RwLock::new(None));
+    // gateway 级动态解析槽（ctx 装配期创建的同一 Arc——workflow agent
+    // 节点/workflow 工具执行体/board 评审链/board_issue 工具/SharedResources
+    // 共享；写者唯一 = 本 adapter，start 写 Some / stop 写 None。
+    // BUG-20261108-012：此前此处另建私有槽，moderator 链的 OnceLock 静态
+    // 绑定初始 loop，agent stop→start 后打死旧实例）。
+    let agent_loop_ref = ctx.board_moderator_loop.clone();
 
     // Create AgentLoopServiceAdapter for tray start/stop control.
     // Passes the initial AgentLoop directly — no double construction.
@@ -1100,7 +1101,9 @@ pub(crate) async fn init_post_agent(
     )) {
         Ok(db) => {
             let flow_engine = std::sync::Arc::new(crate::flow_engine::FlowEngine::new(
-                agent_loop.clone(),
+                // BUG-20261108-012 横向收尾：传动态槽（agent 重启后 flow
+                // 节点 dispatch 跟随最新 loop）。
+                ctx.board_moderator_loop.clone(),
                 board_store
                     .clone()
                     .expect("board feature 已启用，board_store 必在"),

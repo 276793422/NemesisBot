@@ -4,7 +4,6 @@
 //! wake 投递路径安全 no-op）。
 
 use super::*;
-use std::sync::OnceLock;
 
 use nemesis_board::quota::{QuotaConfig, QuotaLedger};
 use nemesis_cluster::cluster::Cluster;
@@ -31,7 +30,7 @@ fn make_deps(store: Arc<nemesis_board::BoardStore>, quota: Arc<QuotaLedger>) -> 
         )),
         quota,
         cluster: Arc::new(cluster),
-        moderator_loop: Arc::new(OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
     }
 }
@@ -1049,7 +1048,7 @@ fn deps_with_workspace(
         workspace,
         quota: q,
         cluster: Arc::new(cluster),
-        moderator_loop: Arc::new(OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         now_ms: Arc::new(|| chrono::Utc::now().timestamp_millis()),
     }
 }
@@ -1100,12 +1099,10 @@ fn attach_scripted_moderator(deps: &MasterBusDeps, replies: &[&str], fallback: &
         script: std::sync::Mutex::new(replies.iter().map(|s| s.to_string()).collect()),
         fallback: fallback.to_string(),
     };
-    let _ = deps
-        .moderator_loop
-        .set(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
-            Box::new(llm),
-            nemesis_agent::types::AgentConfig::default(),
-        )));
+    *deps.moderator_loop.write() = Some(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(llm),
+        nemesis_agent::types::AgentConfig::default(),
+    )));
 }
 
 /// 主持人裁决测试的隔离前置（在每个 windows-gated async 测试体内联展开）：

@@ -236,7 +236,7 @@ pub(crate) fn resolver_deps(name: &str) -> crate::board_review::BoardReviewDeps 
         store,
         workspace,
         home: dir,
-        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -357,8 +357,8 @@ async fn run_resolver_rejects_mini_tier() {
     let issue = issue_with_project(deps.store.as_ref(), "mini 档硬解闸");
     let agent_loop = AgentLoop::new(Box::new(NullProvider), AgentConfig::default());
     agent_loop.set_tier(nemesis_types::capability::ModelTier::Mini);
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
-    let _ = deps.moderator_loop.set(Arc::new(agent_loop));
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
+    *deps.moderator_loop.write() = Some(Arc::new(agent_loop));
 
     super::run_resolver(
         deps.clone(),
@@ -845,12 +845,10 @@ pub(crate) fn attach_resolver_llm(
     deps: &crate::board_review::BoardReviewDeps,
     provider: Arc<ResolverLlm>,
 ) {
-    let _ = deps
-        .moderator_loop
-        .set(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
-            Box::new(SharedResolverLlm(provider)),
-            nemesis_agent::types::AgentConfig::default(),
-        )));
+    *deps.moderator_loop.write() = Some(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(SharedResolverLlm(provider)),
+        nemesis_agent::types::AgentConfig::default(),
+    )));
 }
 
 fn resolutions_json(path: &str, content: &str, reason: &str) -> String {

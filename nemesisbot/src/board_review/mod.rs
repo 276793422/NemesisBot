@@ -40,7 +40,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use nemesis_board::assignment::Actor;
 use nemesis_board::models::{CommentType, IssueStatus, NewComment};
@@ -76,8 +76,10 @@ pub struct BoardReviewDeps {
     /// home 根（config.json 读取：auto_review/auto_accept/max_redispatch
     /// 每次评审时从盘上现读，改配置即时生效，不取装配期快照）。
     pub home: PathBuf,
-    /// 主 AgentLoop 后置装配桥（nb_bus/主持人同款；评审任务运行时读）。
-    pub moderator_loop: Arc<OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// 主 AgentLoop 动态解析槽（gateway 级共享槽 Arc；写者唯一 =
+    /// AgentLoopServiceAdapter）。评审任务运行时读——agent stop→start 重建
+    /// 后自然跟随（BUG-20261108-012：此前 OnceLock 静态绑定初始 loop）。
+    pub moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     pub cluster: Arc<nemesis_cluster::cluster::Cluster>,
     /// 急停句柄（全自动流转 / 保险丝）：挂起时评审冻结（不跑 LLM、
     /// 不重派、不收口），issue 停车登记；release 后由
@@ -988,7 +990,7 @@ async fn review_issue(
         // 色审议需要评审 agent 在场——只有真正要跑 LLM 的路径才要求 loop
         // 就绪（锚点短路 FAIL 是确定性判定，loop 未就绪也成立，人工兜底
         // 照常能看见明细评论）。
-        let Some(agent_loop) = deps.moderator_loop.get() else {
+        let Some(agent_loop) = deps.moderator_loop.read().clone() else {
             warn!("[BoardReview] issue {issue_id} 主 agent 未就绪，跳过自动验收（人工兜底）");
             return Ok(false);
         };
@@ -1020,7 +1022,7 @@ async fn review_issue(
             }
         }
         match run_review_panel(
-            agent_loop,
+            &agent_loop,
             &prompt,
             tool_mode,
             eff_review.checkers,

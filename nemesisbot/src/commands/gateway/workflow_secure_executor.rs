@@ -13,18 +13,22 @@ use nemesis_agent::context::RequestContext;
 use nemesis_workflow::nodes::SecureExecutor;
 use tracing::warn;
 
-/// [`SecureExecutor`] 的 gateway 实现：持 `Weak<AgentLoop>`（loop 重建不死锁
-/// 旧引用，同 [`crate::plugin_bridge::GatewayHostInvoker`] 形态；upgrade 失败
-/// = loop 停机窗口，诚实报错绝不回退裸注册表——工具不幂等，静默双执行）。
+/// [`SecureExecutor`] 的 gateway 实现：持 gateway 级动态解析槽（与
+/// [`crate::plugin_bridge::GatewayHostInvoker`] 同域的「agent 重启后解析到
+/// 最新 loop」纪律；BUG-20261108-012：此前 `Weak<AgentLoop>` 被
+/// [`crate::commands::gateway::bridges::GatewayAgentRunner`] 等强引用保活，
+/// Weak 恒 upgrade 成功——agent stop→start 后仍打死旧 loop，旧 persona
+/// system prompt 缓存照常服务）。槽空 = 停机窗口，诚实报错绝不回退裸
+/// 注册表——工具不幂等，静默双执行。
 pub(crate) struct WorkflowSecureExecutor {
-    loop_ref: std::sync::Weak<nemesis_agent::r#loop::AgentLoop>,
+    loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
 }
 
 impl WorkflowSecureExecutor {
-    pub(crate) fn new(loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>) -> Self {
-        Self {
-            loop_ref: Arc::downgrade(loop_arc),
-        }
+    pub(crate) fn new(
+        loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
+    ) -> Self {
+        Self { loop_ref }
     }
 }
 
@@ -37,7 +41,7 @@ impl SecureExecutor for WorkflowSecureExecutor {
         args: &serde_json::Value,
         identity: &nemesis_workflow::WorkflowIdentity,
     ) -> nemesis_tools::types::ToolResult {
-        let Some(loop_arc) = self.loop_ref.upgrade() else {
+        let Some(loop_arc) = self.loop_ref.read().clone() else {
             warn!(
                 "[workflow-secure] tool node '{}' -> '{}' dropped: agent loop \
                  unavailable (shutting down?)",

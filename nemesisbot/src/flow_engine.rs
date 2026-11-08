@@ -1617,7 +1617,9 @@ pub(crate) fn json_path_first<'a>(v: &'a Value, path: &str) -> Option<&'a Value>
 // ---------------------------------------------------------------------------
 
 pub struct FlowEngine {
-    agent_loop: Arc<AgentLoop>,
+    /// gateway 级动态解析槽（BUG-20261108-012 横向收尾：此前持初始
+    /// loop 强 Arc，agent 重启后 dispatch 打死旧实例的工具面）。
+    agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<AgentLoop>>>>,
     store: Arc<BoardStore>,
     /// publish 复用 publish_task_delivery 的入参（任务 db 独立连接，多连接
     /// WAL 既有纪律）。
@@ -1663,7 +1665,7 @@ impl FlowEngine {
     /// 返回值，由调用方 warn 降级。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        agent_loop: Arc<AgentLoop>,
+        agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<AgentLoop>>>>,
         store: Arc<BoardStore>,
         db: Arc<nemesis_taskstore::TaskDb>,
         workspace: PathBuf,
@@ -1675,7 +1677,7 @@ impl FlowEngine {
         let plugins_dir = nemesis_plugins_wasm::registry::resolve_plugins_wasm_dir();
         let flows = FlowStore::new(&workspace);
         FlowEngine {
-            agent_loop,
+            agent_loop_ref,
             store,
             db,
             config_dir: workspace.join("config"),
@@ -2015,7 +2017,12 @@ impl FlowEngine {
             "flow-engine",
             "flow-engine",
         );
-        let text = self.agent_loop.handle_tool_call(&call, &ctx).await;
+        // BUG-20261108-012 横向收尾：动态解析槽（agent 重启后打到新实例；
+        // 槽空 = 停机窗口诚实报错）。
+        let agent_loop = self.agent_loop_ref.read().clone().ok_or_else(|| {
+            "agent loop 已停止（agent loop 停机窗口），flow 工具节点无法执行".to_string()
+        })?;
+        let text = agent_loop.handle_tool_call(&call, &ctx).await;
         if crate::connector_tools::is_tool_error(&text) {
             return Err(text);
         }
@@ -2132,16 +2139,30 @@ impl FlowEngine {
             KIND_REGRESS => poll_outcome(regress_outcome(&self.store, inst)),
             KIND_PUBLISH => match self.publish_protocol(inst, cur) {
                 Ok((args, protocol)) => {
-                    crate::publish::publish_task_delivery(
-                        &self.db,
-                        &self.store,
-                        &self.agent_loop,
-                        &self.workspace,
-                        &args,
-                        Some(&protocol),
-                        self.plugin_manager.as_ref(),
-                    )
-                    .await
+                    // BUG-20261108-012 横向收尾：动态解析槽；槽空 = 停机
+                    // 窗口，publish 节点诚实失败（下轮 tick 重投由引擎
+                    // 既有重试语义承接）。read guard 先落盘再 match——
+                    // 看护项临时 guard 会活过 match 体（含 await），future
+                    // 变 non-Send（spawn_tick_loop 的 tokio::spawn 拒收）。
+                    let resolved = self.agent_loop_ref.read().clone();
+                    match resolved {
+                        Some(agent_loop) => {
+                            crate::publish::publish_task_delivery(
+                                &self.db,
+                                &self.store,
+                                &agent_loop,
+                                &self.workspace,
+                                &args,
+                                Some(&protocol),
+                                self.plugin_manager.as_ref(),
+                            )
+                            .await
+                        }
+                        None => Err(
+                            "agent loop 已停止（agent loop 停机窗口），flow publish 节点无法执行"
+                                .to_string(),
+                        ),
+                    }
                 }
                 Err(e) => Err(e),
             },

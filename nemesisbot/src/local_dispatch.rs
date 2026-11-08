@@ -44,7 +44,7 @@ pub(crate) struct GatewayLocalExecutor {
     board_store: Option<Arc<nemesis_board::BoardStore>>,
     workspace: PathBuf,
     home: PathBuf,
-    moderator_loop: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
     estop: Arc<nemesis_agent::estop::EstopState>,
     /// estop 冻结停车的 (种类, issue_id) 队列（与评审闭包共享同一份）。
@@ -76,7 +76,7 @@ impl GatewayLocalExecutor {
         board_store: Option<Arc<nemesis_board::BoardStore>>,
         workspace: PathBuf,
         home: PathBuf,
-        moderator_loop: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+        moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
         cluster: Arc<nemesis_cluster::cluster::Cluster>,
         estop: Arc<nemesis_agent::estop::EstopState>,
         estop_parked: Arc<std::sync::Mutex<Vec<(crate::board_review::ParkedKind, i64)>>>,
