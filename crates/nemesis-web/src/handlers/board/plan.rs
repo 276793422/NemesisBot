@@ -1416,6 +1416,7 @@ pub(super) fn board_plan_model_swap(
         timeout_secs: resolution.timeout_secs,
         stream_mode: resolution.stream_mode.clone(),
         cache_breakpoints: resolution.cache_breakpoints,
+        extra_body: resolution.extra_body.clone(),
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };

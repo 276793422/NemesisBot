@@ -42,6 +42,7 @@ fn basic_config(base_url: String) -> HttpProviderConfig {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     }
 }
 
@@ -1278,6 +1279,7 @@ fn test_build_request_body_no_temperature_for_o_series_only() {
             temperature: Some(0.7),
             ..Default::default()
         },
+        false,
     );
     assert_eq!(body["temperature"], 0.7);
 
@@ -1289,6 +1291,7 @@ fn test_build_request_body_no_temperature_for_o_series_only() {
             temperature: Some(0.7),
             ..Default::default()
         },
+        false,
     );
     assert!(body2.get("temperature").is_none());
 }
@@ -1305,7 +1308,7 @@ fn test_build_request_body_sets_tool_choice_auto() {
         },
     };
 
-    let body = provider.build_request_body(&[], &[tool], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&[], &[tool], "gpt-4", &ChatOptions::default(), false);
     assert_eq!(body["tool_choice"], "auto");
 }
 
@@ -1313,7 +1316,7 @@ fn test_build_request_body_sets_tool_choice_auto() {
 fn test_build_request_body_no_tool_choice_without_tools() {
     let provider = HttpProvider::new(basic_config("https://api.test/v1".to_string()));
 
-    let body = provider.build_request_body(&[], &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&[], &[], "gpt-4", &ChatOptions::default(), false);
     assert!(body.get("tool_choice").is_none());
 }
 
@@ -1333,7 +1336,7 @@ fn test_build_request_body_includes_messages() {
         },
     ];
 
-    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default(), false);
     let arr = body["messages"].as_array().unwrap();
     assert_eq!(arr.len(), 2);
     assert_eq!(arr[0]["content"], "hello");

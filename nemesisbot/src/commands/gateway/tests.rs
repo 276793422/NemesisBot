@@ -5674,6 +5674,7 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
                 proxy: String::new(),
                 stream_mode: String::new(),
                 cache_breakpoints: false,
+                extra_body: serde_json::Value::Null,
             },
         )
         .0;

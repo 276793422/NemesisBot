@@ -19,6 +19,8 @@ pub mod codex_cli;
 pub mod codex_credentials;
 pub mod cooldown;
 pub mod default_slot;
+/// 强度翻译（U1）：reasoning_effort → openai 兼容请求体补丁（HttpCompat lane）。
+pub mod effort_translate;
 pub mod error_classifier;
 pub mod factory;
 pub mod fallback_provider;

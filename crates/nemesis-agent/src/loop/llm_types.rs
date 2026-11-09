@@ -135,6 +135,26 @@ pub trait LlmProvider: Send + Sync {
         self.chat(model, messages, options, tools).await
     }
 
+    /// （内部专项，B3 2026-11-09）：带**思考增量**的流式 lane。语义与
+    /// [`Self::chat_streamed`] 完全一致，额外在思考片段到达时同步回调
+    /// `on_reasoning_delta`（片段 = 新增文本，调用方拼接；终态
+    /// `reasoning_content` 仍随响应整体携带全文——回调面与终态面不重复）。
+    /// 默认实现忽略思考回调、委托 `chat_streamed`——CLI 型 provider、codex
+    /// lane（无增量形态）、全部测试桩行为字节不变，无需逐一实现。
+    async fn chat_streamed_with_reasoning(
+        &self,
+        model: &str,
+        messages: Vec<LlmMessage>,
+        options: Option<crate::types::ChatOptions>,
+        tools: Vec<crate::types::ToolDefinition>,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+        on_reasoning_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<LlmResponse, String> {
+        let _ = on_reasoning_delta;
+        self.chat_streamed(model, messages, options, tools, on_delta)
+            .await
+    }
+
     /// Provider 标识名（gateway heartbeat 降级判定——
     /// NullProvider 返回 "null" 时心跳安静跳过，热切真实模型后自动恢复）。
     /// 默认空串：测试桩与不关心该判定的实现无需逐一实现。

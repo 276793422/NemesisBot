@@ -65,6 +65,12 @@ pub struct ProviderResolution {
     /// 与现网完全一致（回归锁钉死）。其他 lane 忽略 + 构造期一次 WARN。
     #[serde(default)]
     pub cache_breakpoints: bool,
+    /// per-model 请求体逃生舱（2026-11-09 extra_body 键，U1 强度翻译配套）：
+    /// 模型条目 extra 的 `extra_body`（对象）。仅 HttpCompat lane 消费——
+    /// 构造请求体末段浅合并（显式键 > effort 自动翻译）。缺省 Null = 零
+    /// 合并。其他 lane 忽略 + 构造期一次 WARN。
+    #[serde(default)]
+    pub extra_body: serde_json::Value,
 }
 
 impl Default for ProviderResolution {
@@ -76,6 +82,7 @@ impl Default for ProviderResolution {
             timeout_secs: 0,
             stream_mode: String::new(),
             cache_breakpoints: false,
+            extra_body: serde_json::Value::Null,
             api_key: String::new(),
             api_base: String::new(),
             proxy: String::new(),
@@ -263,6 +270,19 @@ fn extract_cache_breakpoints(
         == Some("yes")
 }
 
+/// per-model 请求体逃生舱提取（2026-11-09 extra_body 键，U1 强度翻译配套）：
+/// 读模型条目 extra 的 `extra_body`。对象 → 原样克隆（HttpCompat lane 构造
+/// 请求体末段浅合并）；缺省/非对象形态（字符串/数组等）诚实忽略按无
+/// （Null）——配置层不做静默纠偏。
+fn extract_extra_body(
+    extra: &std::collections::BTreeMap<String, serde_json::Value>,
+) -> serde_json::Value {
+    match extra.get("extra_body") {
+        Some(v) if v.is_object() => v.clone(),
+        _ => serde_json::Value::Null,
+    }
+}
+
 fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
     let (provider_name, model_name) = if mc.model.contains('/') {
         let mut parts = mc.model.splitn(2, '/');
@@ -296,6 +316,7 @@ fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
         timeout_secs: extract_timeout_secs(&mc.extra),
         stream_mode: extract_stream_mode(&mc.extra),
         cache_breakpoints: extract_cache_breakpoints(&mc.extra),
+        extra_body: extract_extra_body(&mc.extra),
     })
 }
 

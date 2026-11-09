@@ -558,6 +558,7 @@ async fn mock_provider_at(uri: String) -> Arc<HttpProvider> {
         headers: std::collections::HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     }))
 }
 

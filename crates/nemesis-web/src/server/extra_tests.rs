@@ -1390,6 +1390,7 @@ async fn webserver_all_setters_assemble() {
                 headers: std::collections::HashMap::new(),
                 proxy: None,
                 preserve_prefix: false,
+                extra_body: serde_json::Value::Null,
             },
         ),
     ));

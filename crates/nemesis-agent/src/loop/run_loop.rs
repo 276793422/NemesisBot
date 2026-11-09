@@ -161,8 +161,14 @@ impl AgentLoop {
                 ),
                 temperature: Some(0.7),
                 // H4 (U16 half): per-model reasoning effort from config.json.
-                reasoning_effort: self
-                    .current_reasoning_effort_override(instance.detached_model_name().as_deref()),
+                // G3 (2026-11-09)：会话级 override（chat.set_effort）优先；
+                // 无 override（或已清除）回落 config 模型级解析，原路径
+                // 字节不变。杂务通道（aux 强制 off）走独立路径不受影响。
+                reasoning_effort: self.session_effort(&context.session_key).or_else(|| {
+                    self.current_reasoning_effort_override(
+                        instance.detached_model_name().as_deref(),
+                    )
+                }),
                 ..Default::default()
             },
         };

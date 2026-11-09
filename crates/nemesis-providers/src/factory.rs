@@ -82,6 +82,11 @@ pub struct FactoryConfig {
     /// lane 消费（system 尾 + tools 尾注入 ephemeral 断点）；其他 lane
     /// 忽略 + 构造期一次 WARN。语义对齐 protocol：构造期消费。
     pub cache_breakpoints: bool,
+    /// per-model 请求体逃生舱（2026-11-09 extra_body 键，U1 强度翻译配套）：
+    /// 来自模型条目 `extra_body` 字段（provider_resolver 透传）。仅
+    /// HttpCompat lane 消费（构造请求体末段浅合并，显式键 > effort 自动
+    /// 翻译）；其他 lane 忽略 + 构造期一次 WARN。缺省 Null = 零合并。
+    pub extra_body: serde_json::Value,
 }
 
 /// 全 lane 统一的单请求默认超时（超时阶梯最内层；外层链见 CLAUDE.md）。
@@ -232,6 +237,18 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
         });
     }
 
+    // extra_body 仅 HttpCompat lane 消费（U1 强度翻译逃生舱）；其他 lane
+    // 显式配置 = 配置对该 lane 无效，同款进程内一次 WARN，行为照旧。
+    static EXTRA_BODY_WARN: std::sync::Once = std::sync::Once::new();
+    if !cfg.extra_body.is_null() && !matches!(sel.provider_type, ProviderType::HttpCompat) {
+        EXTRA_BODY_WARN.call_once(|| {
+            tracing::warn!(
+                lane = ?sel.provider_type,
+                "模型条目 extra_body 仅 openai 兼容 lane 生效，当前 lane 忽略该配置"
+            );
+        });
+    }
+
     let provider: Arc<dyn LLMProvider> = match sel.provider_type {
         ProviderType::Anthropic => {
             let anthropic_cfg = AnthropicConfig {
@@ -292,6 +309,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 proxy: opt_proxy(cfg),
                 preserve_prefix: false,
                 stream_mode: cfg.stream_mode.clone(),
+                extra_body: cfg.extra_body.clone(),
             };
             Arc::new(HttpProvider::new(http_cfg))
         }

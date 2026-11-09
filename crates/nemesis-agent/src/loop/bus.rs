@@ -149,6 +149,7 @@ impl AgentLoop {
             registry: Some(registry),
             session_stats: parking_lot::RwLock::new(None),
             work_recorder: crate::work_timeline::WorkRecorder::default(),
+            effort_overrides: parking_lot::RwLock::new(HashMap::new()),
             state_manager: None,
             session_store: Some(session_store),
             chat_seq_lookup: parking_lot::RwLock::new(None),

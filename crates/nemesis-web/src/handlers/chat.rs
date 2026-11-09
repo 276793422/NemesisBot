@@ -34,6 +34,8 @@ impl ModuleHandler for ChatHandler {
             "context_status",
             "set_mode",
             "get_mode",
+            "set_effort",
+            "get_effort",
             "sync",
             "queue_status",
             "spawn",
@@ -156,6 +158,46 @@ impl ModuleHandler for ChatHandler {
                 "session_id": session_id,
                 "session_key": session_key,
                 "mode": mode.as_str(),
+            })));
+        }
+        // G3（2026-11-09）：会话级思考强度 override。data.effort =
+        // "off"|"low"|"medium"|"high"（设置）| null / 缺省（清除回落
+        // config 模型级值）。仅内存态（重启清空）；按会话分键——同 loop
+        // 其他会话不受牵连。生效点 = 下一轮 LLM 请求组装（chat_opts）。
+        if cmd == "set_effort" {
+            const LEGAL: [&str; 4] = ["off", "low", "medium", "high"];
+            let effort = data.as_ref().and_then(|d| d.get("effort"));
+            match effort {
+                None | Some(serde_json::Value::Null) => {
+                    // 清除：回落 config 模型级解析。
+                    agent_loop.set_session_effort(&session_key, None);
+                }
+                Some(serde_json::Value::String(s)) => {
+                    let v = s.trim().to_ascii_lowercase();
+                    if !LEGAL.contains(&v.as_str()) {
+                        return Err(format!(
+                            "unknown effort: {s:?} (expected \"off\" | \"low\" | \"medium\" | \"high\" | null)"
+                        ));
+                    }
+                    agent_loop.set_session_effort(&session_key, Some(v));
+                }
+                Some(other) => {
+                    return Err(format!("effort must be a string or null, got: {other}"));
+                }
+            }
+            return Ok(Some(serde_json::json!({
+                "session_id": session_id,
+                "session_key": session_key,
+                "effort": agent_loop.session_effort(&session_key),
+            })));
+        }
+        // G3：会话强度 override 只读查询。effort=null = 未设置（生效值为
+        // config 模型级解析，前端下拉显示「默认」）。
+        if cmd == "get_effort" {
+            return Ok(Some(serde_json::json!({
+                "session_id": session_id,
+                "session_key": session_key,
+                "effort": agent_loop.session_effort(&session_key),
             })));
         }
         // Work 时间线活查询（2026-10-30 ChatPanel 长任务时间线改造）：进行中

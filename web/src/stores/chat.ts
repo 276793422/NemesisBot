@@ -135,6 +135,29 @@ export const useChatStore = defineStore('chat', () => {
   // 不清会拿旧会话的大 seq 误抑新会话的轮），adopt 必须清（快照轮来自
   // 后端活累加器、与环 seq 无映射，接管后重新放行）。
   const roundTextSeqs = new Set<number>()
+  // B3（2026-11-09）流式思考增量：进行中 LLM 调用的思考实时缓冲（provider
+  // 流 think_start/think_delta/think_end 相位帧——ephemeral，不参与断线补拉
+  // 环，断线窗口内的思考只能靠轮发布后的 rounds 回看）。live 时间线内渲染为
+  // 增长中的思考卡（边想边长出来）；轮发布（RoundText 落地，含终答轮
+  // `("", reasoning)` 形态）即清——同一思考已随轮进入时间线（轮内折叠卡），
+  // live 卡让位，不双份展示。上限 8000 字符保留尾部（防超长思考撑爆响应式
+  // 缓冲；完整全文随轮落地后可见，live 卡只是增长中的过程视图）。清空点与
+  // pendingWork 同族：ingestWorkRoundText / flushPendingWork /
+  // adoptWorkSnapshot / replaceMessages / reset。
+  const liveThinking = ref('')
+  const LIVE_THINKING_CAP = 8000
+  function ingestLiveThinkingDelta(text: string) {
+    if (!text) return
+    // 首个思考片段顺带建 live 时间线槽（思考-only 轮此前无任何块可挂）——
+    // 空轮 flush 时按 rounds.length 判空不挂载，语义与工具事件建槽同构。
+    ensurePendingWork()
+    let s = liveThinking.value + text
+    if (s.length > LIVE_THINKING_CAP) s = s.slice(s.length - LIVE_THINKING_CAP)
+    liveThinking.value = s
+  }
+  function clearLiveThinking() {
+    if (liveThinking.value) liveThinking.value = ''
+  }
   // N5（2026-10-13 机会项）：进行中轮次的交付物缓冲（present_files 登记
   // 事件先于 assistant 回复帧到达——落盘后发布、回复帧最后发布，顺序由
   // 后端单 turn 串行保证；回复落地时 flush 挂载；reset 清空——语义同
@@ -320,6 +343,9 @@ export const useChatStore = defineStore('chat', () => {
     //（进行中内容由 work_current 活查询 + 环回放重建）。
     pendingWork.value = null
     roundTextSeqs.clear()
+    // B3：重同步后 live 思考不可信（同 pendingWork——进行中内容由
+    // work_current 活查询 + 环回放重建）。
+    clearLiveThinking()
     pendingDeliverables.value = []
     // M6：行号锚随消息列表重推——watchdog 路径（fresh 对象无行号）归 null
     // 诚实降级；resync 路径（带 oldest_index 行号）重推出正确锚。
@@ -377,6 +403,9 @@ export const useChatStore = defineStore('chat', () => {
    *  R575（BUG-20261106-005）：带 seq 时按幂等集去重——环回放与实时帧
    *  双通道投递同一事件只成一轮；无 seq（旧网关）不去重。 */
   function ingestWorkRoundText(content: string, reasoning?: string, seq?: number) {
+    // B3：轮发布即思考卡的让位信号——流式思考已随轮进入时间线（无论本帧
+    // 是否被 seq 去重抑制，live 缓冲都该清；重复帧到来时 live 早已清空）。
+    clearLiveThinking()
     if (!content && !reasoning) return
     if (typeof seq === 'number') {
       if (roundTextSeqs.has(seq)) return
@@ -441,6 +470,9 @@ export const useChatStore = defineStore('chat', () => {
     const w = pendingWork.value
     pendingWork.value = null
     roundTextSeqs.clear()
+    // B3：回复落地 = 本 turn 流式面收尾（异常路径 error 后无 RoundText 时
+    // live 思考卡在此兜底清空，正常路径已被轮发布清过——幂等）。
+    clearLiveThinking()
     return w && w.rounds.length ? w : undefined
   }
 
@@ -452,6 +484,9 @@ export const useChatStore = defineStore('chat', () => {
     // R575：快照轮来自后端活累加器，与环 seq 无映射——接管后幂等集必须
     // 重新放行（不清会拿旧集合误抑后续合法轮）。
     roundTextSeqs.clear()
+    // B3：快照不含 live 思考（sink 缓冲在 WorkRecorder 之外）——切走再切回
+    // 后旧 live 卡不可信，清空；流仍在跑则下一 think_delta 重建。
+    clearLiveThinking()
   }
 
   /** N5：收集交付物（`deliverables` push 帧，ChatPanel 按 session 过滤后
@@ -491,6 +526,8 @@ export const useChatStore = defineStore('chat', () => {
     todos.value = []
     pendingWork.value = null
     roundTextSeqs.clear()
+    // B3：会话切换丢掉上一会话的 live 思考（与 pendingWork 同生命周期）。
+    clearLiveThinking()
     pendingDeliverables.value = []
     agentMode.value = 'build'
     historyLoading.value = false
@@ -515,6 +552,7 @@ export const useChatStore = defineStore('chat', () => {
     todos,
     pendingWork,
     pendingDeliverables,
+    liveThinking,
     agentMode,
     commandDraft,
     inflightTurns,
@@ -535,6 +573,9 @@ export const useChatStore = defineStore('chat', () => {
     ingestWorkRoundText,
     ingestWorkToolStart,
     ingestWorkToolFinish,
+    /** B3：流式思考增量摄取 + 清空（ChatPanel think_* 相位帧入口）。 */
+    ingestLiveThinkingDelta,
+    clearLiveThinking,
     flushPendingWork,
     adoptWorkSnapshot,
     appendPendingDeliverables,

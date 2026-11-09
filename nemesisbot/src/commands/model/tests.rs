@@ -2553,6 +2553,7 @@ mod r9_subprocess {
             proxy: String::new(),
             stream_mode: String::new(),
             cache_breakpoints: false,
+            extra_body: serde_json::Value::Null,
             llm_ref: "r9p/repro-x".into(),
             api_key: "sk-r9".into(),
             api_base: format!("{}/v1", mock.base_url()),

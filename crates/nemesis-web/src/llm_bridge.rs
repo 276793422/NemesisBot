@@ -264,6 +264,25 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
         tools: Vec<nemesis_agent::types::ToolDefinition>,
         on_delta: &(dyn Fn(String) + Send + Sync),
     ) -> std::result::Result<nemesis_agent::r#loop::LlmResponse, String> {
+        // B3（2026-11-09）：无思考回调的消费方（provider_stream 缺省路径）
+        // 走 no-op 思考回调，真实逻辑单点在 chat_streamed_with_reasoning。
+        self.chat_streamed_with_reasoning(model, messages, options, tools, on_delta, &|_| {})
+            .await
+    }
+
+    /// B3（2026-11-09）：带思考增量的真实现。fragment chunk 契约（lane 侧
+    /// 放行：delta 空 + finish None + reasoning Some = 新增片段）在此消费——
+    /// `on_reasoning_delta` 逐片段回调；终态 chunk（finish_reason Some）只进
+    /// 聚合不进回调（全文覆盖兜底，回调面与终态面不重复）。
+    async fn chat_streamed_with_reasoning(
+        &self,
+        model: &str,
+        messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        options: Option<nemesis_agent::types::ChatOptions>,
+        tools: Vec<nemesis_agent::types::ToolDefinition>,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+        on_reasoning_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> std::result::Result<nemesis_agent::r#loop::LlmResponse, String> {
         let model_to_use = if model.is_empty() {
             &self.default_model
         } else {
@@ -358,6 +377,11 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
                     usage = c.usage;
                 }
                 if c.reasoning_content.is_some() {
+                    // B3：fragment chunk（delta 空 + finish None）→ 增量回调；
+                    // 终态 chunk 只进聚合（全文覆盖兜底，回调面不重复）。
+                    if c.delta.is_empty() && c.finish_reason.is_none() {
+                        on_reasoning_delta(c.reasoning_content.clone().unwrap_or_default());
+                    }
                     reasoning_content = c.reasoning_content;
                 }
                 // 终态块的归一化停止原因（输出翻倍阶梯判定输入）。

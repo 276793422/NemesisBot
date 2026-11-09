@@ -473,3 +473,287 @@ async fn wrapper_error_path_emits_error_frame() {
     assert_eq!(phases(&events), vec!["error"]);
     assert_eq!(texts(&events)[0], "upstream exploded");
 }
+
+// ===========================================================================
+// B3（2026-11-09）思考流相位：think_start（惰性首发）→ think_delta* →
+// think_end（finish/error 收口）。与正文流共用同一 seq 计数器（流内全局
+// 单调）；纯思考流（零正文）finish 走 think-only 臂——正文 end 帧不发，
+// think_end 照常收口；reset_for_new_stream 清思考相位状态。
+// ===========================================================================
+
+#[tokio::test]
+async fn think_phases_lazy_start_delta_end() {
+    let (sink, mut rx) = make_sink();
+
+    // 首思考片段：惰性 think_start + 立即冲刷（r_last_flush None → 到期）。
+    sink.on_reasoning_delta("短的");
+    // 第二片段进缓冲（<64 字符、150ms 窗内）。
+    sink.on_reasoning_delta("第二段思考");
+    // 纯思考流（零正文增量）finish：think-only 臂。
+    sink.finish();
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec!["think_start", "think_delta", "think_delta", "think_end"],
+        "惰性 think_start + 缓冲冲刷 + think_end 收口；纯思考流无正文 end 帧"
+    );
+    assert_eq!(texts(&events)[1], "短的");
+    assert_eq!(texts(&events)[2], "第二段思考");
+    let seqs: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            nemesis_types::agent::AgentEvent::ProviderStream { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(seqs, vec![0, 1, 2, 3], "共享 seq 计数器单调");
+}
+
+#[tokio::test]
+async fn mixed_content_and_think_share_seq_monotonic() {
+    let (sink, mut rx) = make_sink();
+
+    sink.on_delta("hello"); // start + delta
+    sink.on_reasoning_delta("思考"); // think_start + think_delta
+    // finish：正文 buf 空（首增量已冲）但 any_deltas=true → end 帧；
+    // 思考残余已冲 → think_end。
+    sink.finish();
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec![
+            "start",
+            "delta",
+            "think_start",
+            "think_delta",
+            "end",
+            "think_end"
+        ],
+        "正文与思考帧交错时相位正确"
+    );
+    let seqs: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            nemesis_types::agent::AgentEvent::ProviderStream { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    for (i, s) in seqs.iter().enumerate() {
+        assert_eq!(*s, i as u64, "seq 流内全局单调（正文与思考共享计数器）");
+    }
+}
+
+#[tokio::test]
+async fn error_path_flushes_residual_think_end() {
+    let (sink, mut rx) = make_sink();
+
+    sink.on_reasoning_delta("未完的思考");
+    sink.error("boom");
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec!["think_start", "think_delta", "think_end", "error"],
+        "error 收口前先补 think_end（前端思考卡不悬挂）"
+    );
+}
+
+#[tokio::test]
+async fn no_reasoning_zero_think_frames() {
+    let (sink, mut rx) = make_sink();
+
+    sink.on_delta("正文而已");
+    sink.finish();
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec!["start", "delta", "end"],
+        "零思考 = 零 think 帧（既有行为不变）"
+    );
+}
+
+#[tokio::test]
+async fn reset_for_new_stream_clears_think_state() {
+    let (sink, mut rx) = make_sink();
+
+    // 第一流：思考 → 收口。
+    sink.on_reasoning_delta("第一流的思考");
+    sink.finish();
+    // 重试 = 新流。
+    sink.reset_for_new_stream();
+    // 第二流：思考相位状态必须已清——think_start 重新惰性首发，seq 归零。
+    sink.on_reasoning_delta("第二流的思考");
+    sink.finish();
+
+    let events = recv_all(&mut rx);
+    let ps = phases(&events);
+    assert_eq!(
+        ps,
+        vec![
+            "think_start",
+            "think_delta",
+            "think_end",
+            "think_start",
+            "think_delta",
+            "think_end"
+        ],
+        "reset 后 think_start 重新惰性首发"
+    );
+    let seqs: Vec<u64> = events
+        .iter()
+        .filter_map(|e| match e {
+            nemesis_types::agent::AgentEvent::ProviderStream { seq, .. } => Some(*seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(seqs[3], 0, "第二流 seq 从 0 重开");
+    assert_eq!(texts(&events)[4], "第二流的思考");
+}
+
+// ---------------------------------------------------------------------------
+// StreamingLlmProvider 双回调接线：inner 覆写 chat_streamed_with_reasoning
+// → 思考片段进 sink（think 帧）；trait 缺省实现（忽略思考回调）→ 即使响应
+// 带 reasoning_content 也零 think 帧（合成增量只覆盖正文，不重复思考）。
+// ---------------------------------------------------------------------------
+
+struct ReasoningStreamProvider;
+
+#[async_trait]
+impl LlmProvider for ReasoningStreamProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        unreachable!("chat_streamed_with_reasoning 覆写后 chat 不应被调用")
+    }
+
+    async fn chat_streamed(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+        _on_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<LlmResponse, String> {
+        unreachable!("wrapper 应走 chat_streamed_with_reasoning")
+    }
+
+    async fn chat_streamed_with_reasoning(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+        on_delta: &(dyn Fn(String) + Send + Sync),
+        on_reasoning_delta: &(dyn Fn(String) + Send + Sync),
+    ) -> Result<LlmResponse, String> {
+        on_reasoning_delta("第一步".to_string());
+        on_delta("答".to_string());
+        on_reasoning_delta("第二步".to_string());
+        Ok(LlmResponse {
+            content: "答".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: Some("第一步第二步".to_string()),
+            usage: None,
+            finish_reason: None,
+            escalated_to: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn wrapper_real_stream_carries_think_frames() {
+    let (tx, _) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
+    let mut rx = tx.subscribe();
+    let sink = std::sync::Arc::new(ProviderStreamSink::new(
+        tx,
+        "web:main:s5".to_string(),
+        "web:conn5".to_string(),
+        "m".to_string(),
+    ));
+    let wrapper =
+        StreamingLlmProvider::new(std::sync::Arc::new(ReasoningStreamProvider), sink.clone());
+    let (messages, options, tools) = empty_args();
+    let resp = wrapper.chat("m", messages, options, tools).await.unwrap();
+    assert_eq!(resp.reasoning_content.as_deref(), Some("第一步第二步"));
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec![
+            "think_start",
+            "think_delta",
+            "start",
+            "delta",
+            "end",
+            "think_delta",
+            "think_end"
+        ],
+        "双回调接线：思考帧与正文帧同流交错；finish 先发正文 end、后冲刷残余\
+         思考（think_delta + think_end 收口）"
+    );
+    assert_eq!(texts(&events)[1], "第一步");
+    assert_eq!(texts(&events)[3], "答");
+    assert_eq!(texts(&events)[5], "第二步");
+}
+
+struct NonStreamWithReasoningProvider;
+
+#[async_trait]
+impl LlmProvider for NonStreamWithReasoningProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Ok(LlmResponse {
+            content: "全文".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: Some("思考全文".to_string()),
+            usage: None,
+            finish_reason: None,
+            escalated_to: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn wrapper_default_reasoning_path_no_think_frames() {
+    // trait 缺省实现忽略思考回调：非流式 provider 即使响应带
+    // reasoning_content 也零 think 帧（终态回复自带思考全文，不重复发射）。
+    let (tx, _) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
+    let mut rx = tx.subscribe();
+    let sink = std::sync::Arc::new(ProviderStreamSink::new(
+        tx,
+        "web:main:s6".to_string(),
+        "web:conn6".to_string(),
+        "m".to_string(),
+    ));
+    let wrapper = StreamingLlmProvider::new(
+        std::sync::Arc::new(NonStreamWithReasoningProvider),
+        sink.clone(),
+    );
+    let (messages, options, tools) = empty_args();
+    wrapper.chat("m", messages, options, tools).await.unwrap();
+
+    let events = recv_all(&mut rx);
+    assert_eq!(
+        phases(&events),
+        vec!["start", "delta", "end"],
+        "缺省思考路径零 think 帧"
+    );
+}

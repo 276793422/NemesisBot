@@ -120,6 +120,7 @@ fn provider_for(server: &MockServer) -> Arc<HttpProvider> {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     }))
 }
 

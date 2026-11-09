@@ -24,8 +24,12 @@ const props = withDefaults(
     work: WorkTimeline
     /** live=true：执行中（typing 区），默认展开 + 每秒走表。 */
     live?: boolean
+    /** B3（2026-11-09）流式思考增量：进行中 LLM 调用的思考实时缓冲
+     *  （store liveThinking；非空 = 渲染增长中的思考卡）。轮发布后思考
+     *  折叠进 rounds，本卡让位——单份展示不双份。 */
+    liveThinking?: string
   }>(),
-  { live: false },
+  { live: false, liveThinking: '' },
 )
 
 const emit = defineEmits<{ (e: 'grown'): void }>()
@@ -129,6 +133,14 @@ watch(
     if (props.live) emit('grown')
   },
 )
+// B3：流式思考增量增长同样贴底（思考卡是 live 面的一部分；delta 合并窗
+// ~64 字符/150ms 限频，不会逐字符触发）。
+watch(
+  () => props.liveThinking,
+  () => {
+    if (props.live) emit('grown')
+  },
+)
 </script>
 
 <template>
@@ -145,7 +157,9 @@ watch(
     </button>
     <div v-if="open" class="wt-body">
       <template v-for="(r, ri) in work.rounds" :key="ri">
-        <div v-if="r.text" class="wt-round-text">{{ r.text }}</div>
+        <!-- B4（2026-11-09）轮内时序修正：思考 → 应答 → 操作（真实时间流
+             顺序——思考先于叙述产生）。此前思考折叠卡排在叙述之后，与模型
+             实际产出顺序相反。 -->
         <!-- 思考链折叠卡（批次二）：原生 details 默认收起（用户决策：思考
              是可看不可刷的次级内容，65k 级长文不默认展开）；正文 pre-wrap，
              高度钳制滚动——万级 token 思考不撑爆时间线。 -->
@@ -153,6 +167,7 @@ watch(
           <summary>💭 思考过程</summary>
           <div class="wt-think-body">{{ r.reasoning }}</div>
         </details>
+        <div v-if="r.text" class="wt-round-text">{{ r.text }}</div>
         <div
           v-for="t in r.tools"
           :key="t.call_id"
@@ -181,6 +196,14 @@ watch(
           <ProcessOutputTail v-if="bgJob(t) >= 0" :job-id="bgJob(t)" compact />
         </div>
       </template>
+      <!-- B3 流式思考卡：轮尚未发布的进行中思考（live 态专用 prop）。默认
+           展开——「边想边长出来」是思考可看性的主视图（与已发布轮的折叠卡
+           相反：那是有完整全文后的回看面）。轮发布（RoundText）即清 store
+           缓冲，本卡让位给轮内折叠卡，单份展示不双份。 -->
+      <details v-if="liveThinking" class="wt-think wt-think-live" open>
+        <summary>💭 思考中<span class="wt-think-ellipsis">…</span></summary>
+        <div class="wt-think-body">{{ liveThinking }}</div>
+      </details>
     </div>
   </div>
 </template>
@@ -267,6 +290,17 @@ details.wt-think > summary:hover {
   padding: 4px 0 2px;
   border-top: 1px dashed var(--border);
   opacity: 0.9;
+}
+/* B3 流式思考卡（live）：轮未发布的增长中思考，默认展开 + 尾随省略号
+   呼吸动画（进行中语义，与「运行中」徽标同族）；正文钳制滚动同轮内卡。 */
+details.wt-think-live {
+  border-color: rgba(155, 127, 212, 0.45);
+}
+details.wt-think-live > summary {
+  color: #9b7fd4;
+}
+.wt-think-ellipsis {
+  animation: wt-pulse 1.2s ease-in-out infinite;
 }
 .wt-dot {
   display: inline-block;

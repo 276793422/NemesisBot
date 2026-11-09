@@ -149,6 +149,12 @@ pub struct HttpProviderConfig {
     /// 经 FactoryConfig.stream_mode 透传，构造期消费。
     #[serde(default)]
     pub stream_mode: String,
+    /// per-model 请求体逃生舱（2026-11-09 extra_body 键，U1 强度翻译配套）：
+    /// 模型条目 extra 的 `extra_body`（对象）。构造请求体末段浅合并到 body
+    /// 顶层——显式键 > effort 自动翻译（用户意志最大），可填任意厂商私有
+    /// 参数（不止思考）。缺省 Null = 零合并（请求体字节与现网一致）。
+    #[serde(default)]
+    pub extra_body: serde_json::Value,
 }
 
 // P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
@@ -240,12 +246,16 @@ impl HttpProvider {
     }
 
     /// Build request body for OpenAI-compatible API.
+    ///
+    /// `streaming`：本次请求是否流式（强度翻译消费——Qwen3 enable_thinking
+    /// 仅流式可开）。`chat_stream` 传 true，`chat` 传 false。
     fn build_request_body(
         &self,
         messages: &[Message],
         tools: &[ToolDefinition],
         model: &str,
         options: &ChatOptions,
+        streaming: bool,
     ) -> serde_json::Value {
         let normalized = if self.config.preserve_prefix {
             model.trim().to_string()
@@ -303,6 +313,20 @@ impl HttpProvider {
         // left on, the response carries `reasoning_content` (extracted at the parse
         // site below), stored on the turn and replayed — correct for thinking models.
 
+        // 强度翻译（U1，2026-11-09）：reasoning_effort 配置此前在本 lane 零
+        // 消费——配置静默无效、杂务省 token 闸（aux 强制 off）落空。厂商
+        // 保守翻译（GLM thinking / Qwen3 enable_thinking / DeepSeek 诚实跳过
+        // / 未知走官方 reasoning_effort）+ extra_body 显式逃生舱（键级覆盖
+        // 自动翻译）。effort 未配置 → 零注入，请求体与现网字节一致。
+        crate::effort_translate::apply_effort_to_body(
+            &mut body,
+            &normalized,
+            &self.config.base_url,
+            options.reasoning_effort.as_deref().unwrap_or(""),
+            streaming,
+            &self.config.extra_body,
+        );
+
         body
     }
 
@@ -341,7 +365,7 @@ impl HttpProvider {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let mut body = self.build_request_body(messages, tools, &model, options);
+        let mut body = self.build_request_body(messages, tools, &model, options, true);
         body["stream"] = serde_json::json!(true);
         // include_usage（2026-10-23 根修）：OpenAI 语义下流式 usage 只在请求
         // 带 stream_options.include_usage 时出现——终态 finish chunk 之后、
@@ -791,6 +815,20 @@ impl HttpProvider {
                                     accumulated_reasoning.push_str("\n\n");
                                 }
                                 accumulated_reasoning.push_str(&th);
+                                // B3（2026-11-09）：剥离段同契约即时放行——
+                                // fragment chunk（delta 空 + finish None +
+                                // reasoning Some = 新增片段）；终态 chunk 仍带
+                                // 全文覆盖兜底。
+                                let chunk = StreamChunk {
+                                    delta: String::new(),
+                                    tool_calls: vec![],
+                                    finish_reason: None,
+                                    usage: None,
+                                    reasoning_content: Some(th),
+                                };
+                                if tx.send(Ok(chunk)).await.is_err() {
+                                    return;
+                                }
                             }
                             cleaned
                         };
@@ -800,6 +838,18 @@ impl HttpProvider {
                             parsed["choices"][0]["delta"]["reasoning_content"].as_str()
                         {
                             accumulated_reasoning.push_str(rc);
+                            // B3：reasoning_content 增量同契约即时放行（此前
+                            // 全攒到终态一次发——high 档长思考期间界面静默）。
+                            let chunk = StreamChunk {
+                                delta: String::new(),
+                                tool_calls: vec![],
+                                finish_reason: None,
+                                usage: None,
+                                reasoning_content: Some(rc.to_string()),
+                            };
+                            if tx.send(Ok(chunk)).await.is_err() {
+                                return;
+                            }
                         }
 
                         let finish_reason = parsed["choices"][0]["finish_reason"]
@@ -1062,7 +1112,7 @@ impl LLMProvider for HttpProvider {
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
         );
-        let body = self.build_request_body(messages, tools, model, options);
+        let body = self.build_request_body(messages, tools, model, options, false);
 
         tracing::debug!(
             provider = %self.config.name,

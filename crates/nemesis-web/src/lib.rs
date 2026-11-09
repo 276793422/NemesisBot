@@ -132,3 +132,8 @@ mod llm_bridge_s10b_tests;
 // 裁决 + 三条真实 lane 判据钉死。
 #[cfg(test)]
 mod llm_bridge_stream_gate_tests;
+
+// B3（2026-11-09）思考增量消费面：fragment chunk 契约——片段进回调、
+// 终态全文只进聚合不重复进回调。
+#[cfg(test)]
+mod llm_bridge_reasoning_tests;

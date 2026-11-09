@@ -69,6 +69,7 @@ fn test_build_request_body() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -82,7 +83,7 @@ fn test_build_request_body() {
         extra: std::collections::HashMap::new(),
     }];
 
-    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default(), false);
     assert_eq!(body["model"], "gpt-4");
     assert_eq!(body["messages"][0]["role"], "user");
 }
@@ -103,6 +104,7 @@ fn test_deepseek_thinking_disabled_workaround_characterization() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -121,22 +123,33 @@ fn test_deepseek_thinking_disabled_workaround_characterization() {
     // reasoning_content, yet the API still required it to be replayed in
     // multi-turn history → HTTP 400 "reasoning_content must be passed back").
     // Thinking now runs normally so the response carries reasoning_content.
-    let body =
-        provider.build_request_body(&[], &tools, "deepseek-v4-flash", &ChatOptions::default());
+    let body = provider.build_request_body(
+        &[],
+        &tools,
+        "deepseek-v4-flash",
+        &ChatOptions::default(),
+        false,
+    );
     assert!(
         body.get("thinking").is_none(),
         "deepseek + tools must NOT disable thinking (workaround removed)"
     );
 
     // deepseek + NO tools → thinking NOT set (workaround is tools-gated).
-    let body = provider.build_request_body(&[], &[], "deepseek-v4-flash", &ChatOptions::default());
+    let body = provider.build_request_body(
+        &[],
+        &[],
+        "deepseek-v4-flash",
+        &ChatOptions::default(),
+        false,
+    );
     assert!(
         body.get("thinking").is_none(),
         "deepseek without tools should not set thinking"
     );
 
     // non-deepseek + tools → thinking NOT set.
-    let body = provider.build_request_body(&[], &tools, "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&[], &tools, "gpt-4", &ChatOptions::default(), false);
     assert!(
         body.get("thinking").is_none(),
         "non-deepseek models must never get thinking disabled"
@@ -155,6 +168,7 @@ fn test_build_request_with_tools() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -176,6 +190,7 @@ fn test_build_request_with_tools() {
             max_tokens: Some(1000),
             ..Default::default()
         },
+        false,
     );
     assert!(body.get("tools").is_some());
     assert_eq!(body["temperature"], 0.7);
@@ -225,10 +240,12 @@ fn test_build_request_body_normalizes_model() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
-    let body = provider.build_request_body(&[], &[], "openai/gpt-4", &ChatOptions::default());
+    let body =
+        provider.build_request_body(&[], &[], "openai/gpt-4", &ChatOptions::default(), false);
     assert_eq!(body["model"], "gpt-4");
 }
 
@@ -244,6 +261,7 @@ fn test_build_request_body_o1_no_temperature() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -255,6 +273,7 @@ fn test_build_request_body_o1_no_temperature() {
             temperature: Some(0.7),
             ..Default::default()
         },
+        false,
     );
     // o1 models should NOT have temperature
     assert!(body.get("temperature").is_none());
@@ -276,6 +295,7 @@ fn test_http_provider_config_serialization() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let json = serde_json::to_string(&config).unwrap();
     let deserialized: HttpProviderConfig = serde_json::from_str(&json).unwrap();
@@ -296,6 +316,7 @@ fn test_http_provider_config_with_proxy() {
         headers: HashMap::new(),
         proxy: Some("http://proxy:8080".to_string()),
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     // Should not panic when creating with proxy
     let _provider = HttpProvider::new(config);
@@ -317,6 +338,7 @@ fn test_http_provider_config_with_headers() {
         },
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let _provider = HttpProvider::new(config);
 }
@@ -407,6 +429,7 @@ fn test_build_request_body_completion_tokens() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -419,6 +442,7 @@ fn test_build_request_body_completion_tokens() {
             max_tokens: Some(4096),
             ..Default::default()
         },
+        false,
     );
     assert!(body.get("max_completion_tokens").is_some());
     assert!(body.get("max_tokens").is_none());
@@ -437,6 +461,7 @@ fn test_build_request_body_regular_max_tokens() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -449,6 +474,7 @@ fn test_build_request_body_regular_max_tokens() {
             max_tokens: Some(2048),
             ..Default::default()
         },
+        false,
     );
     assert!(body.get("max_tokens").is_some());
     assert!(body.get("max_completion_tokens").is_none());
@@ -467,6 +493,7 @@ fn test_build_request_body_top_p() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -478,6 +505,7 @@ fn test_build_request_body_top_p() {
             top_p: Some(0.9),
             ..Default::default()
         },
+        false,
     );
     assert_eq!(body["top_p"], 0.9);
 }
@@ -494,6 +522,7 @@ fn test_build_request_body_stop() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -505,6 +534,7 @@ fn test_build_request_body_stop() {
             stop: Some(vec!["stop1".to_string(), "stop2".to_string()]),
             ..Default::default()
         },
+        false,
     );
     assert!(body.get("stop").is_some());
 }
@@ -521,10 +551,11 @@ fn test_build_request_body_no_optional_fields() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
-    let body = provider.build_request_body(&[], &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&[], &[], "gpt-4", &ChatOptions::default(), false);
     assert!(body.get("temperature").is_none());
     assert!(body.get("max_tokens").is_none());
     assert!(body.get("top_p").is_none());
@@ -544,11 +575,12 @@ fn test_build_request_body_kimi_temperature() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
     // Kimi models should auto-set temperature=1.0 when not specified
-    let body = provider.build_request_body(&[], &[], "moonshot-v1", &ChatOptions::default());
+    let body = provider.build_request_body(&[], &[], "moonshot-v1", &ChatOptions::default(), false);
     // "moonshot" triggers Kimi logic
     assert_eq!(body["temperature"], 1.0);
 }
@@ -565,10 +597,12 @@ fn test_build_request_body_preserve_prefix() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: true,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
-    let body = provider.build_request_body(&[], &[], "openai/gpt-4", &ChatOptions::default());
+    let body =
+        provider.build_request_body(&[], &[], "openai/gpt-4", &ChatOptions::default(), false);
     assert_eq!(body["model"], "openai/gpt-4");
 }
 
@@ -584,6 +618,7 @@ fn test_build_request_body_o3_no_temperature() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -595,6 +630,7 @@ fn test_build_request_body_o3_no_temperature() {
             temperature: Some(0.5),
             ..Default::default()
         },
+        false,
     );
     assert!(body.get("temperature").is_none());
 }
@@ -611,6 +647,7 @@ fn test_default_model_and_name() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
     assert_eq!(provider.default_model(), "gpt-4o");
@@ -629,6 +666,7 @@ fn test_build_request_body_with_multiple_messages() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -671,7 +709,7 @@ fn test_build_request_body_with_multiple_messages() {
         },
     ];
 
-    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default(), false);
     assert_eq!(body["messages"].as_array().unwrap().len(), 4);
 }
 
@@ -757,6 +795,7 @@ async fn test_chat_stream_returns_channel() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -804,11 +843,12 @@ fn test_build_request_body_empty_model_stays_empty() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
     // Empty model string stays empty after normalize (no special handling)
-    let body = provider.build_request_body(&[], &[], "", &ChatOptions::default());
+    let body = provider.build_request_body(&[], &[], "", &ChatOptions::default(), false);
     assert_eq!(body["model"], "");
 }
 
@@ -824,6 +864,7 @@ fn test_build_request_body_with_stop_strings() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -835,6 +876,7 @@ fn test_build_request_body_with_stop_strings() {
             stop: Some(vec!["\n\n".to_string(), "END".to_string()]),
             ..Default::default()
         },
+        false,
     );
     let stop = body["stop"].as_array().unwrap();
     assert_eq!(stop.len(), 2);
@@ -892,6 +934,7 @@ fn test_http_provider_new_creates_client() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
     assert_eq!(provider.default_model(), "model");
@@ -916,6 +959,7 @@ fn test_http_provider_config_with_multiple_headers() {
         },
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
     assert_eq!(provider.name(), "test");
@@ -933,6 +977,7 @@ fn test_build_request_body_with_tool_calls_message() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -955,7 +1000,7 @@ fn test_build_request_body_with_tool_calls_message() {
         extra: std::collections::HashMap::new(),
     }];
 
-    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default(), false);
     let msg = &body["messages"][0];
     assert!(msg.get("tool_calls").is_some());
     let tc = msg["tool_calls"].as_array().unwrap();
@@ -975,6 +1020,7 @@ fn test_build_request_body_with_tool_result_message() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -988,7 +1034,7 @@ fn test_build_request_body_with_tool_result_message() {
         extra: std::collections::HashMap::new(),
     }];
 
-    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default(), false);
     let msg = &body["messages"][0];
     assert_eq!(msg["role"], "tool");
     assert_eq!(msg["tool_call_id"], "call_1");
@@ -1007,6 +1053,7 @@ fn test_build_request_body_kimi_with_custom_temperature() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1019,6 +1066,7 @@ fn test_build_request_body_kimi_with_custom_temperature() {
             temperature: Some(0.5),
             ..Default::default()
         },
+        false,
     );
     assert_eq!(body["temperature"], 0.5);
 }
@@ -1035,6 +1083,7 @@ fn test_http_provider_config_default_model_accessor() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: true,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
     assert_eq!(provider.default_model(), "custom-model");
@@ -1058,6 +1107,7 @@ async fn test_chat_connection_error() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1107,6 +1157,7 @@ async fn test_chat_http_401_error() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1141,6 +1192,7 @@ async fn test_chat_empty_model_uses_default() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1187,6 +1239,7 @@ async fn test_chat_stream_connection_error() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1242,6 +1295,7 @@ async fn test_chat_stream_empty_model_uses_default() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1285,6 +1339,7 @@ async fn test_chat_stream_with_tools() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1332,6 +1387,7 @@ async fn test_chat_stream_with_custom_options() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1379,6 +1435,7 @@ async fn test_chat_with_tools() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1420,6 +1477,7 @@ async fn test_chat_with_custom_options() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1459,6 +1517,7 @@ async fn test_chat_with_proxy_config() {
         headers: HashMap::new(),
         proxy: Some("http://proxy:8080".to_string()),
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1495,6 +1554,7 @@ async fn test_chat_with_custom_headers() {
         headers,
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1527,6 +1587,7 @@ async fn test_chat_stream_reasoning_model() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1695,6 +1756,7 @@ fn test_http_provider_config_default_timeout() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
 
     let provider = HttpProvider::new(config);
@@ -1714,6 +1776,7 @@ fn test_http_provider_config_socks_proxy() {
         headers: HashMap::new(),
         proxy: Some("socks5://proxy:1080".to_string()),
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
 
     // Should not panic when creating with SOCKS proxy
@@ -1732,6 +1795,7 @@ fn test_build_request_body_multiple_tools() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1754,7 +1818,7 @@ fn test_build_request_body_multiple_tools() {
         },
     ];
 
-    let body = provider.build_request_body(&[], &tools, "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&[], &tools, "gpt-4", &ChatOptions::default(), false);
     assert!(body.get("tools").is_some());
     assert_eq!(body["tool_choice"], "auto");
     let tools_array = body["tools"].as_array().unwrap();
@@ -1773,6 +1837,7 @@ fn test_build_request_body_glm_model() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1785,6 +1850,7 @@ fn test_build_request_body_glm_model() {
             max_tokens: Some(4096),
             ..Default::default()
         },
+        false,
     );
     assert!(body.get("max_completion_tokens").is_some());
     assert!(body.get("max_tokens").is_none());
@@ -1830,6 +1896,7 @@ fn test_build_request_body_with_system_and_user_messages() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1854,7 +1921,7 @@ fn test_build_request_body_with_system_and_user_messages() {
         },
     ];
 
-    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default(), false);
     let messages_array = body["messages"].as_array().unwrap();
     assert_eq!(messages_array.len(), 2);
     assert_eq!(messages_array[0]["role"], "system");
@@ -1877,6 +1944,7 @@ fn test_build_request_body_image_parts_openai_format() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
 
@@ -1898,7 +1966,7 @@ fn test_build_request_body_image_parts_openai_format() {
         extra: std::collections::HashMap::new(),
     }];
 
-    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default(), false);
     let content = body["messages"][0]["content"]
         .as_array()
         .expect("content 数组");
@@ -1930,6 +1998,7 @@ fn b_wire_provider(base_url: String) -> HttpProvider {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     })
 }
 
@@ -2164,6 +2233,7 @@ async fn test_b_chat_stream_silent_stall_hits_wall_clock_deadline() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     };
     let provider = HttpProvider::new(config);
     let messages = vec![Message {
@@ -2191,4 +2261,130 @@ async fn test_b_chat_stream_silent_stall_hits_wall_clock_deadline() {
             Ok(Some(Err(e))) => panic!("expected Timeout on wall-clock deadline, got: {e:?}"),
         }
     }
+}
+
+// ===========================================================================
+// B3（2026-11-09）思考增量 lane 契约：fragment chunk（delta 空 + finish
+// None + reasoning Some）= 新增片段即时放行；终态 chunk 仍带全文覆盖兜底。
+// 两发射源：delta.reasoning_content 字段（思考型模型）+ <think> 剥离器
+// （内联思考形态）。聚合侧最终结果与片段流之前完全一致。
+// ===========================================================================
+
+#[tokio::test]
+async fn test_b3_stream_reasoning_content_fragments_incremental() {
+    // delta.reasoning_content 形态：片段即时放行 + 终态全文兜底。
+    let server = MockServer::start().await;
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think part 1.\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"think part 2.\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"the answer\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    // 片段 chunk：delta 空 + finish None + reasoning Some，在终态之前。
+    let fragments: Vec<&StreamChunk> = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .filter(|c| {
+            c.delta.is_empty() && c.finish_reason.is_none() && c.reasoning_content.is_some()
+        })
+        .collect();
+    let frag_texts: Vec<&str> = fragments
+        .iter()
+        .map(|c| c.reasoning_content.as_deref().unwrap())
+        .collect();
+    assert_eq!(
+        frag_texts,
+        vec!["think part 1.", "think part 2."],
+        "两个 reasoning 片段按序即时放行"
+    );
+
+    // 正文不受影响。
+    let content: String = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .map(|c| c.delta.as_str())
+        .collect();
+    assert_eq!(content, "the answer");
+
+    // 终态帧仍带全文（覆盖兜底，聚合侧权威值）。
+    let fin = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .find(|c| c.finish_reason.is_some())
+        .expect("must have final chunk");
+    assert_eq!(fin.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(
+        fin.reasoning_content.as_deref(),
+        Some("think part 1.think part 2."),
+        "终态全文 = 片段拼接（权威覆盖）"
+    );
+}
+
+#[tokio::test]
+async fn test_b3_stream_think_stripper_emits_closed_block_fragment() {
+    // <think> 内联剥离形态：块闭合即交出思考片段（delta 空帧），净正文照常。
+    let server = MockServer::start().await;
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"<think>secret plan</think>visible answer\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: [DONE]\n\n"
+    );
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    // 剥离片段帧：思考文本走 reasoning，delta 恒空。
+    let fragments: Vec<&StreamChunk> = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .filter(|c| {
+            c.delta.is_empty() && c.finish_reason.is_none() && c.reasoning_content.is_some()
+        })
+        .collect();
+    assert_eq!(fragments.len(), 1, "闭合块一次交出");
+    assert_eq!(
+        fragments[0].reasoning_content.as_deref(),
+        Some("secret plan")
+    );
+
+    // 净正文照常流动。
+    let content: String = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .map(|c| c.delta.as_str())
+        .collect();
+    assert_eq!(content, "visible answer");
+
+    // 终态全文兜底（剥离段并入 accumulated_reasoning）。
+    let fin = chunks
+        .iter()
+        .filter_map(|c| c.as_ref().ok())
+        .find(|c| c.finish_reason.is_some())
+        .expect("must have final chunk");
+    assert_eq!(fin.reasoning_content.as_deref(), Some("secret plan"));
 }

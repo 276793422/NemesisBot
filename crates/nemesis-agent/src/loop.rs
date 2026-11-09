@@ -616,6 +616,12 @@ pub struct AgentLoop {
     /// 键分桶（BUG-20261106-039：spawn/评审/续行与父 turn 并发共用本
     /// loop）；无桶 = 喂入静默忽略，未装配路径零开销。
     work_recorder: crate::work_timeline::WorkRecorder,
+    /// 会话级强度 override（G3，2026-11-09）：session_key → reasoning_effort
+    /// （off/low/medium/high）。`chat.set_effort` 写入，仅内存态（重启清空
+    /// 回落 config 模型级值）；取值点 run_loop chat_opts 组装处，优先级
+    /// 会话 override > config 模型级。杂务通道（aux_chat_options 强制 off）
+    /// 独立路径不受影响。
+    effort_overrides: parking_lot::RwLock<HashMap<String, String>>,
     /// Path to config.json — the single source of truth for per-model
     /// `model_tier`. `None` in standalone mode (no config.json to watch). Set
     /// by `agent_factory`; used by `refresh_active_tier` / `check_config_reload`
@@ -987,6 +993,7 @@ impl AgentLoop {
             agent_event_tx: parking_lot::RwLock::new(None),
             session_stats: parking_lot::RwLock::new(None),
             work_recorder: crate::work_timeline::WorkRecorder::default(),
+            effort_overrides: parking_lot::RwLock::new(HashMap::new()),
             config_path: parking_lot::RwLock::new(None),
             extra_hidden_tools: parking_lot::RwLock::new(Vec::new()),
             exclusive_hidden_provider: parking_lot::RwLock::new(None),

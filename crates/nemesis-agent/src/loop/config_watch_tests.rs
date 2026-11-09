@@ -107,3 +107,54 @@ fn absent_key_still_none() {
     }));
     assert_eq!(override_of(&loop_, "m-plain"), None);
 }
+
+// ---- G3（2026-11-09）：会话级强度 override（chat.set_effort 链路后端）----
+
+#[test]
+fn session_effort_set_get_clear() {
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [{"model": "m/plain", "model_name": "m-plain"}]
+    }));
+    // 未设置 = None（前端下拉显示「默认」）。
+    assert_eq!(loop_.session_effort("web:s1"), None);
+    // 设置 → 读回。
+    loop_.set_session_effort("web:s1", Some("high".to_string()));
+    assert_eq!(loop_.session_effort("web:s1"), Some("high".to_string()));
+    // 清除（null 语义）→ 回落 None。
+    loop_.set_session_effort("web:s1", None);
+    assert_eq!(loop_.session_effort("web:s1"), None);
+}
+
+#[test]
+fn session_effort_isolated_by_key() {
+    // 会话隔离（用户拍板语义）：s1 设 off 不牵连 s2。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [{"model": "m/plain", "model_name": "m-plain"}]
+    }));
+    loop_.set_session_effort("web:s1", Some("off".to_string()));
+    loop_.set_session_effort("web:s2", Some("high".to_string()));
+    assert_eq!(loop_.session_effort("web:s1"), Some("off".to_string()));
+    assert_eq!(loop_.session_effort("web:s2"), Some("high".to_string()));
+    assert_eq!(loop_.session_effort("web:s3"), None);
+}
+
+#[test]
+fn session_effort_priority_over_config() {
+    // 取值优先级（run_loop chat_opts 组装同式）：会话 override > config
+    // 模型级 reasoning_effort。s1 有 override → off；s2 无 → config 的 high；
+    // 清除后回落 config 值。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [
+            {"model": "m/glm", "model_name": "test-model", "reasoning_effort": "high"}
+        ]
+    }));
+    let effective = |lk: &AgentLoop, key: &str| {
+        lk.session_effort(key)
+            .or_else(|| lk.current_reasoning_effort_override(None))
+    };
+    loop_.set_session_effort("web:s1", Some("off".to_string()));
+    assert_eq!(effective(&loop_, "web:s1"), Some("off".to_string()));
+    assert_eq!(effective(&loop_, "web:s2"), Some("high".to_string()));
+    loop_.set_session_effort("web:s1", None);
+    assert_eq!(effective(&loop_, "web:s1"), Some("high".to_string()));
+}

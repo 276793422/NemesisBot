@@ -1482,6 +1482,7 @@ fn dummy_provider() -> Arc<HttpProvider> {
         headers: std::collections::HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     }))
 }
 
@@ -1718,6 +1719,7 @@ async fn persona_generate_success_via_mock_llm() {
         headers: std::collections::HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     }));
     let ctx = ctx_ws_with_provider(
         &dir,

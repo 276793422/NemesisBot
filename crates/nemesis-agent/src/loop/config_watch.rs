@@ -1016,6 +1016,27 @@ impl AgentLoop {
         nemesis_types::capability::resolve_reasoning_effort(&v, &active)
     }
 
+    /// 会话级强度 override（G3，2026-11-09）：`chat.set_effort` 写入。
+    /// `Some(v)` = 设置（合法值集 off/low/medium/high，调用方校验）；
+    /// `None` = 清除回落 config 模型级值。仅内存态——重启清空。
+    pub fn set_session_effort(&self, session_key: &str, effort: Option<String>) {
+        let mut m = self.effort_overrides.write();
+        match effort {
+            Some(v) => {
+                m.insert(session_key.to_string(), v);
+            }
+            None => {
+                m.remove(session_key);
+            }
+        }
+    }
+
+    /// 会话级强度 override 读（`chat.get_effort` / 前端下拉初始化）。
+    /// None = 该会话未设置，生效值为 config 模型级解析。
+    pub fn session_effort(&self, session_key: &str) -> Option<String> {
+        self.effort_overrides.read().get(session_key).cloned()
+    }
+
     /// Resolve the active model's per-model output token cap (`max_output_tokens`)
     /// from config.json, used as the chat request's `max_tokens`. Reads config
     /// fresh each call (like `current_display_model`). Fallback chain

@@ -306,6 +306,7 @@ fn provider_for(base_url: String) -> Arc<HttpProvider> {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
     }))
 }
 

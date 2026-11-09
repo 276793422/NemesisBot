@@ -209,6 +209,40 @@ async function toggleAgentMode() {
   }
 }
 
+// --- G3: 会话级思考强度下拉（chat.get_effort 对齐 + chat.set_effort 切换；
+// 后端按会话分键——只影响当前会话，同 loop 其他会话不受牵连；仅内存态，
+// 重启后回落 config 模型级默认） ---
+const sessionEffort = ref('') // '' = 默认（无 override，跟随模型配置）
+
+/** 进会话 / 重连时对齐一次 override（失败保持当前值，不炸 UI）。 */
+function syncSessionEffort() {
+  if (!isDefaultChat.value) return
+  const sid = effectiveSid.value
+  if (!sid) return
+  request('chat', 'get_effort', { session_id: sid })
+    .then((data) => {
+      if (effectiveSid.value !== sid) return
+      sessionEffort.value = typeof data?.effort === 'string' ? data.effort : ''
+    })
+    .catch(() => {})
+}
+
+/** 下拉切换（乐观更新 + 失败回滚；'' = 清除 override 回落 config 默认）。 */
+async function onSessionEffortChange(e: Event) {
+  const v = (e.target as HTMLSelectElement).value
+  const prev = sessionEffort.value
+  sessionEffort.value = v
+  try {
+    await request('chat', 'set_effort', {
+      session_id: effectiveSid.value || '',
+      effort: v === '' ? null : v,
+    })
+  } catch (err) {
+    sessionEffort.value = prev
+    toast.error(String((err as Error)?.message ?? err))
+  }
+}
+
 /** 输入以 ! 开头且处于 steer 模式 → 提示将以插队发送。 */
 const showSteerHint = computed(
   () => steerEnabled.value && /^[!！]/.test(chatStore.input.trimStart()),
@@ -634,6 +668,31 @@ function handleWSMessage(data: any) {
         ),
       )
     }
+    return
+  }
+  // B3（2026-11-09）：provider 流式思考增量（think_start/think_delta/
+  // think_end 相位帧，ephemeral 不参与断线补拉）。只接 think_* 相位——正文
+  // start/delta/end 相位与 typing 指示/终答回复通路职责重叠（receive 帧
+  // 是权威终态），不重复消费。⚠ 帧内 seq 是 sink 流内计数器（每流从 0
+  // 重开），不是环 seq——严禁推进 lastChatSeq 补拉游标（与 tool_event
+  // 分支的本质差异）。会话过滤与 tool_event 同款。
+  if (data.type === 'push' && data.cmd === 'provider_stream_event') {
+    const p = data.data ?? {}
+    if (typeof p.session_id === 'string' && p.session_id.length > 0) {
+      if (effectiveSid.value && p.session_id !== effectiveSid.value) return
+    } else {
+      const expected = effectiveSid.value ? `web:${effectiveSid.value}` : null
+      if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
+    }
+    const phase = typeof p.phase === 'string' ? p.phase : ''
+    if (phase === 'think_start') {
+      // 新流（重试 = 新流）：上一 attempt 的思考残尾作废（与后端 sink
+      // reset_for_new_stream 同源语义）。
+      chatStore.clearLiveThinking()
+    } else if (phase === 'think_delta') {
+      if (typeof p.text === 'string' && p.text) chatStore.ingestLiveThinkingDelta(p.text)
+    }
+    // think_end：保留已累积内容供回看；轮发布（RoundText）时 store 清。
     return
   }
   // 委派回执落会话（2026-11-04 委派 UX fire-and-forget）：子代理回复（或
@@ -2654,6 +2713,7 @@ const unwatchStatus = watch(wsStatus, (val) => {
     initVoiceState()
     syncInboxMode()
     syncAgentMode()
+    syncSessionEffort()
   }
 })
 
@@ -2697,6 +2757,7 @@ const unwatchSession = watch(
       chatStore.anchorFreshSession()
       syncInboxMode()
       syncAgentMode()
+      syncSessionEffort()
       return
     }
     // HD：换会话 → 作废全部在飞历史请求（旧会话响应迟到时被围栏丢弃）。
@@ -2733,6 +2794,7 @@ const unwatchSession = watch(
     }
     syncInboxMode()
     syncAgentMode()
+    syncSessionEffort()
   },
 )
 
@@ -2806,7 +2868,7 @@ onMounted(() => {
 
   // F1: 挂载时对齐一次真实模式（徽标初值 build 是保守猜测）。
   syncAgentMode()
-
+  syncSessionEffort()
   // M5: 常驻条初拉 + 30s 兜底轮询（refreshUsage 内部自带 default-chat 守卫）。
   refreshUsage()
   usagePollTimer = setInterval(refreshUsage, 30000)
@@ -2986,16 +3048,18 @@ onUnmounted(() => {
            2026-10-30：过程可见面 = WorkTimelineBlock live 态（实时 push 与
            work_current 恢复共用 pendingWork 缓冲；新内容到达 grown 事件贴底）。 -->
       <div
-        v-if="streaming || pendingTurn || chatStore.pendingWork || chatStore.pendingDeliverables.length"
+        v-if="streaming || pendingTurn || chatStore.pendingWork || chatStore.liveThinking || chatStore.pendingDeliverables.length"
         class="message assistant"
       >
         <div class="message-avatar">NB</div>
         <div class="message-content">
           <!-- live 态时间线：执行中展开实时滚动；回复落地时随缓冲 flush
-               卸载，由落地消息上的折叠块接棒。 -->
+               卸载，由落地消息上的折叠块接棒。live-thinking = B3 流式思考
+               增量卡（边想边长出来；轮发布后折叠进 rounds，本卡让位）。 -->
           <WorkTimelineBlock
             v-if="chatStore.pendingWork"
             :work="chatStore.pendingWork"
+            :live-thinking="chatStore.liveThinking"
             live
             @grown="scrollToBottomIfNear()"
           />
@@ -3048,6 +3112,21 @@ onUnmounted(() => {
         <span class="mode-mark">{{ chatStore.agentMode === 'plan' ? '📋' : '🛠' }}</span>
         {{ chatStore.agentMode === 'plan' ? '计划' : '构建' }}
       </button>
+      <!-- G3（2026-11-09）：会话级思考强度下拉——只影响当前会话，默认跟随
+           模型配置；后端内存态，重启回落默认 -->
+      <select
+        v-if="isDefaultChat"
+        class="voice-btn effort-select"
+        :value="sessionEffort"
+        title="思考强度（会话级，仅本会话生效）：默认=跟随模型配置；off=关闭思考（省 token）；低/中/高=思考预算档位。重启后回落默认"
+        @change="onSessionEffortChange"
+      >
+        <option value="">思考·默认</option>
+        <option value="off">思考·关</option>
+        <option value="low">思考·低</option>
+        <option value="medium">思考·中</option>
+        <option value="high">思考·高</option>
+      </select>
       <!-- Full Access 放行开关（2026-09-20 用户裁决；运行时态，
            Agent 重启后自动关闭）——与设置页【编辑器】TAB 同一状态 -->
       <button
@@ -3590,6 +3669,15 @@ onUnmounted(() => {
   transition: all 0.15s;
   white-space: nowrap;
   line-height: 1;
+}
+/* G3: 会话级思考强度下拉——复用 voice-btn 基调，select 形态的少量修正 */
+.effort-select {
+  padding: 6px 8px;
+  appearance: auto;
+}
+.effort-select:focus {
+  outline: none;
+  border-color: var(--primary, #4a90d9);
 }
 .voice-btn-icon {
   width: 16px;

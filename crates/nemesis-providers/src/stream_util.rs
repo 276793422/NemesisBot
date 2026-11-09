@@ -7,9 +7,13 @@
 //! （agent loop / forge / workflow / compact / 集群 B 端等 12 处消费点自动受益）。
 //!
 //! chunk 契约（两条 lane 共同遵守）：文本增量走 `delta`；
-//! `tool_calls` / `usage` / `reasoning_content` / `finish_reason` 只在终态
-//! chunk 整表出现（流内部已各自累积完毕）——本聚合器对后四者做
-//! 「出现即覆盖」，不做增量合并。
+//! `tool_calls` / `usage` / `finish_reason` 只在终态 chunk 整表出现（流内部
+//! 已各自累积完毕）——本聚合器对后三者做「出现即覆盖」，不做增量合并。
+//! `reasoning_content` 自 B3（2026-11-09）起有**两种形态**：终态 chunk 带
+//! 全文（既有契约，覆盖兜底）+ fragment chunk（delta 空 + finish None +
+//! reasoning Some = 新增片段，思考增量放行）。片段在本聚合器里被「出现即
+//! 覆盖」暂收，终态全文到达即覆盖为权威全文——最终结果与片段流之前完全
+//! 一致（片段只是路过，不参与拼接）。
 
 use crate::failover::FailoverError;
 use crate::http_provider::StreamChunk;

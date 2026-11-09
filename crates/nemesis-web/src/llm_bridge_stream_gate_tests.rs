@@ -534,6 +534,7 @@ fn stream_preferred_lane_semantics() {
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,
+        extra_body: serde_json::Value::Null,
         stream_mode: stream.to_string(),
     };
     // openai 兼容 lane：auto（空）/no = 非流式，yes = 流式。

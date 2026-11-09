@@ -378,6 +378,9 @@ struct SwapParams {
     stream_mode: String,
     /// per-model 缓存断点显式化：仅 anthropic lane 消费，构造期消费。
     cache_breakpoints: bool,
+    /// per-model 请求体逃生舱（extra_body 键）：仅 HttpCompat lane 消费，
+    /// 构造期消费。缺省 Null = 零合并。
+    extra_body: serde_json::Value,
 }
 
 impl ModelsHandler {
@@ -1061,6 +1064,7 @@ impl ModelsHandler {
             timeout_secs: swap.timeout_secs,
             stream_mode: swap.stream_mode.clone(),
             cache_breakpoints: swap.cache_breakpoints,
+            extra_body: swap.extra_body.clone(),
             account_id: String::new(),
             headers: std::collections::HashMap::new(),
         };
@@ -1155,6 +1159,7 @@ impl ModelsHandler {
                         timeout_secs: fr.timeout_secs,
                         stream_mode: fr.stream_mode.clone(),
                         cache_breakpoints: fr.cache_breakpoints,
+                        extra_body: fr.extra_body.clone(),
                         account_id: String::new(),
                         headers: std::collections::HashMap::new(),
                     },
@@ -1190,6 +1195,7 @@ impl ModelsHandler {
             proxy: resolution.proxy,
             stream_mode: resolution.stream_mode,
             cache_breakpoints: resolution.cache_breakpoints,
+            extra_body: resolution.extra_body.clone(),
         })
     }
 
@@ -1661,6 +1667,7 @@ pub async fn probe_model_entry(
         timeout_secs: swap.timeout_secs,
         stream_mode: swap.stream_mode.clone(),
         cache_breakpoints: swap.cache_breakpoints,
+        extra_body: swap.extra_body.clone(),
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };

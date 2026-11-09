@@ -203,3 +203,65 @@ async fn s16_err_arm_interrupt_carries_usage_estimate() {
     let resp = collect_stream_response("p", "m", rx).await.unwrap();
     assert_eq!(resp.finish_reason, "stop");
 }
+
+// ---------------------------------------------------------------------------
+// B3（2026-11-09）片段 chunk 契约：fragment（delta 空 + finish None +
+// reasoning Some）在聚合器里「出现即覆盖」暂收，终态全文到达即覆盖为权威
+// 全文——片段只是路过，不参与拼接，最终结果与片段流之前完全一致。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reasoning_fragment_chunks_pass_through_finish_overrides() {
+    let (tx, rx) = tokio::sync::mpsc::channel(8);
+    tx.send(Ok(chunk("答"))).await.unwrap();
+    tx.send(Ok(StreamChunk {
+        reasoning_content: Some("片段一".into()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    tx.send(Ok(StreamChunk {
+        reasoning_content: Some("片段二".into()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    tx.send(Ok(chunk("案"))).await.unwrap();
+    // 终态帧：全文覆盖。
+    tx.send(Ok(StreamChunk {
+        finish_reason: Some("stop".into()),
+        reasoning_content: Some("片段一片段二".into()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    drop(tx);
+
+    let resp = collect_stream_response("p", "m", rx).await.unwrap();
+    assert_eq!(resp.content, "答案", "正文增量拼接不受片段帧干扰");
+    assert_eq!(
+        resp.reasoning_content.as_deref(),
+        Some("片段一片段二"),
+        "终态全文覆盖暂收的最后一个片段"
+    );
+    assert_eq!(resp.finish_reason, "stop");
+}
+
+#[tokio::test]
+async fn reasoning_fragment_only_stream_without_finish_maps_timeout() {
+    // 只发片段、无终态即断流：content 空 + tool_calls 空 → 旧行为 Timeout
+    // （片段不改变空流判定——片段不参与 content 拼接）。
+    let (tx, rx) = tokio::sync::mpsc::channel(4);
+    tx.send(Ok(StreamChunk {
+        reasoning_content: Some("只想了没说".into()),
+        ..Default::default()
+    }))
+    .await
+    .unwrap();
+    drop(tx);
+    let err = collect_stream_response("p", "m", rx).await.unwrap_err();
+    match err {
+        FailoverError::Timeout { .. } => {}
+        other => panic!("无终态空流仍须 Timeout: {other:?}"),
+    }
+}

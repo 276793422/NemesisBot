@@ -109,6 +109,51 @@ describe('chat store work timeline (2026-10-30)', () => {
     expect(rounds[0].tools[0]).toMatchObject({ ok: false, duration_ms: 5, result_preview: 'err' })
   })
 
+  // --- B3（2026-11-09）流式思考增量 ---
+  it('liveThinking: delta 累积 + 首 delta 建 live 槽；flush 判空不挂载', () => {
+    const store = useChatStore()
+    expect(store.liveThinking).toBe('')
+    store.ingestLiveThinkingDelta('想')
+    store.ingestLiveThinkingDelta('第二步')
+    expect(store.liveThinking).toBe('想第二步')
+    // 首 delta 顺带建 live 时间线槽（思考-only 轮此前无块可挂）。
+    expect(store.pendingWork).not.toBeNull()
+    expect(store.pendingWork?.rounds).toHaveLength(0)
+    // 纯思考直答 flush：零轮 = 不挂载 + live 清空。
+    expect(store.flushPendingWork()).toBeUndefined()
+    expect(store.liveThinking).toBe('')
+    expect(store.pendingWork).toBeNull()
+  })
+
+  it('liveThinking: 轮发布（RoundText）即清——思考随轮进时间线不双份', () => {
+    const store = useChatStore()
+    store.ingestLiveThinkingDelta('流式思考')
+    expect(store.liveThinking).toBe('流式思考')
+    store.ingestWorkRoundText('叙述', '流式思考')
+    expect(store.liveThinking).toBe('')
+    expect(store.pendingWork?.rounds[0]).toMatchObject({ text: '叙述', reasoning: '流式思考' })
+  })
+
+  it('liveThinking: 上限 8000 字符保留尾部', () => {
+    const store = useChatStore()
+    store.ingestLiveThinkingDelta('a'.repeat(7990))
+    store.ingestLiveThinkingDelta('b'.repeat(100))
+    expect(store.liveThinking.length).toBeLessThanOrEqual(8000)
+    expect(store.liveThinking.startsWith('a')).toBe(true)
+    expect(store.liveThinking.endsWith('b'.repeat(100))).toBe(true)
+  })
+
+  it('liveThinking: think_start 语义（clear）+ reset 清空', () => {
+    const store = useChatStore()
+    store.ingestLiveThinkingDelta('旧流的思考')
+    store.clearLiveThinking() // think_start：新流 reset
+    expect(store.liveThinking).toBe('')
+    store.ingestLiveThinkingDelta('新流')
+    store.reset()
+    expect(store.liveThinking).toBe('')
+    expect(store.pendingWork).toBeNull()
+  })
+
   it('Finished without Started is honestly ignored', () => {
     const store = useChatStore()
     store.ingestWorkRoundText('t')

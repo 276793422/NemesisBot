@@ -290,6 +290,7 @@ fn build_dream_llm(cfg: &nemesis_config::Config) -> Result<GatewayDreamLlm, Stri
         proxy: resolution.proxy.clone(),
         stream_mode: resolution.stream_mode.clone(),
         cache_breakpoints: resolution.cache_breakpoints,
+        extra_body: resolution.extra_body.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),

@@ -510,6 +510,7 @@ fn test_provider_resolution_serialization() {
         timeout_secs: 0,
         stream_mode: String::new(),
         cache_breakpoints: false,
+        extra_body: serde_json::Value::Null,
     };
     let json = serde_json::to_string(&pr).unwrap();
     let parsed: ProviderResolution = serde_json::from_str(&json).unwrap();

@@ -41,6 +41,11 @@ struct SinkState {
     last_flush: Option<std::time::Instant>,
     deltas_emitted: bool,
     started: std::time::Instant,
+    /// B3 思考流状态：增量缓冲 + 惰性 think_start 旗标（兼作「发过思考」
+    /// 判据）。与正文流共用同一 seq 计数器（流内全局单调）。
+    rbuf: String,
+    r_last_flush: Option<std::time::Instant>,
+    r_started: bool,
 }
 
 /// provider 流事件的发射 sink（每 `call_llm_with_recovery` 一个）。
@@ -74,6 +79,9 @@ impl ProviderStreamSink {
                 last_flush: None,
                 deltas_emitted: false,
                 started: std::time::Instant::now(),
+                rbuf: String::new(),
+                r_last_flush: None,
+                r_started: false,
             }),
             any_deltas: AtomicBool::new(false),
         }
@@ -111,12 +119,74 @@ impl ProviderStreamSink {
         }
     }
 
+    /// 思考增量入口（B3 2026-11-09，同步回调——provider 消费循环内直呼）。
+    /// 独立缓冲独立合并窗（与正文流同阈值），惰性 think_start →
+    /// think_delta*；收尾帧（think_end）由 finish/error 补发。
+    pub(crate) fn on_reasoning_delta(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let mut st = self.state.lock();
+        if !st.r_started {
+            // 首思考片段前发 think_start 帧（前端开思考卡）。
+            st.r_started = true;
+            let seq = st.seq;
+            st.seq += 1;
+            drop(st);
+            self.emit(seq, "think_start", "");
+            st = self.state.lock();
+        }
+        st.rbuf.push_str(text);
+        let due = st.rbuf.chars().count() >= FLUSH_CHARS
+            || st
+                .r_last_flush
+                .map(|t| t.elapsed().as_millis() as u64 >= FLUSH_MS)
+                .unwrap_or(true);
+        if due {
+            let seq = st.seq;
+            st.seq += 1;
+            let text = std::mem::take(&mut st.rbuf);
+            st.r_last_flush = Some(std::time::Instant::now());
+            drop(st);
+            self.emit(seq, "think_delta", &text);
+        }
+    }
+
+    /// 思考流收尾：冲刷残余思考缓冲 + think_end 帧（finish/error 共用）。
+    /// 未发过任何思考 = 无操作（零噪音）。
+    fn finish_reasoning(&self) {
+        let mut st = self.state.lock();
+        if !st.r_started {
+            return;
+        }
+        st.r_started = false;
+        let pending = !st.rbuf.is_empty();
+        let seq = st.seq;
+        st.seq += 1;
+        let text = std::mem::take(&mut st.rbuf);
+        drop(st);
+        if pending {
+            self.emit(seq, "think_delta", &text);
+            self.emit(seq + 1, "think_end", "");
+        } else {
+            self.emit(seq, "think_end", "");
+        }
+    }
+
     /// 调用成功收尾：冲刷残余缓冲 + `end` 帧（elapsed 自 sink 创建起）。
     /// 空流（纯 tool-call 轮零文本、零增量）不发帧——避免前端面板噪音。
+    /// B3：思考残余先冲（think_end 收口），正文/思考独立各自判空。
     pub(crate) fn finish(&self) {
         let mut st = self.state.lock();
         let pending = !st.buf.is_empty();
         if !pending && !self.any_deltas.load(Ordering::Relaxed) {
+            // 纯 tool-call 轮零正文——但思考可能发过（B3）：think_end 收口
+            // 仍要做，不能短路丢掉前端思考卡的收尾帧。
+            let think_only = st.r_started;
+            drop(st);
+            if think_only {
+                self.finish_reasoning();
+            }
             return;
         }
         let seq = st.seq;
@@ -130,10 +200,13 @@ impl ProviderStreamSink {
         } else {
             self.emit_with_elapsed(seq, "end", "", Some(elapsed));
         }
+        self.finish_reasoning();
     }
 
     /// 调用失败收尾：`error` 帧（text=诊断截断）。不补 end 帧——error 即终态。
+    /// B3：思考流照常收口（残余冲刷 + think_end），前端思考卡不悬挂。
     pub(crate) fn error(&self, msg: &str) {
+        self.finish_reasoning();
         let st = self.state.lock();
         let seq = st.seq;
         let elapsed = st.started.elapsed().as_millis() as u64;
@@ -162,6 +235,9 @@ impl ProviderStreamSink {
             last_flush: None,
             deltas_emitted: false,
             started: std::time::Instant::now(),
+            rbuf: String::new(),
+            r_last_flush: None,
+            r_started: false,
         };
         drop(st);
         self.any_deltas.store(false, Ordering::Relaxed);
@@ -223,9 +299,14 @@ impl LlmProvider for StreamingLlmProvider {
         self.sink.reset_for_new_stream();
         let sink = self.sink.clone();
         let on_delta = move |d: String| sink.on_delta(&d);
+        // B3（2026-11-09）：思考增量同路进 sink（think_start/think_delta/
+        // think_end 帧）。inner 未覆写 chat_streamed_with_reasoning（CLI 型/
+        // codex/测试桩）= 缺省实现忽略思考回调，行为与此前一致。
+        let rsink = self.sink.clone();
+        let on_reasoning = move |d: String| rsink.on_reasoning_delta(&d);
         match self
             .inner
-            .chat_streamed(model, messages, options, tools, &on_delta)
+            .chat_streamed_with_reasoning(model, messages, options, tools, &on_delta, &on_reasoning)
             .await
         {
             Ok(resp) => {

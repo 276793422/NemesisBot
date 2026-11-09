@@ -784,6 +784,21 @@ impl AnthropicProvider {
                                     if let Some(th) = delta.get("thinking").and_then(|v| v.as_str())
                                     {
                                         accumulated_reasoning.push_str(th);
+                                        // B3（2026-11-09）：思考增量即时放行——
+                                        // fragment chunk 契约（delta 空 + finish
+                                        // None + reasoning Some = 新增片段，聚合
+                                        // 侧拼接消费）；message_stop 终态 chunk
+                                        // 仍带全文覆盖兜底（出现即覆盖语义不变）。
+                                        let chunk = StreamChunk {
+                                            delta: String::new(),
+                                            tool_calls: vec![],
+                                            finish_reason: None,
+                                            usage: None,
+                                            reasoning_content: Some(th.to_string()),
+                                        };
+                                        if tx.send(Ok(chunk)).await.is_err() {
+                                            return;
+                                        }
                                     }
                                 }
                                 _ => {}
