@@ -926,3 +926,72 @@ fn telegram_api_base_trailing_slash_normalized() {
     assert_eq!(api.url_base, plain.url_base);
     assert_eq!(api.file_url_base, plain.file_url_base);
 }
+
+#[test]
+fn test_allowlist_username_case_insensitive() {
+    // BUG-20261109-032①：Telegram 用户名平台侧大小写不敏感（@Alice 与
+    // @alice 同一账号）——配置大小写手滑不得误拒合法用户
+    assert!(super::telegram_allowlisted(
+        &["@Alice".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+    assert!(super::telegram_allowlisted(
+        &["alice".to_string()],
+        "123|ALICE",
+        Some("ALICE")
+    ));
+    assert!(super::telegram_allowlisted(
+        &["ALICE".to_string()],
+        "999",
+        Some("alice")
+    ));
+}
+
+#[test]
+fn test_allowlist_no_numeric_prefix_collision() {
+    // BUG-20261109-032②：裸前缀臂已删——allowed "1234" 不得命中
+    // "123456|bob"（Telegram 顺序发号使数字前缀碰撞现实可得，
+    // 旧形态是越权放行）
+    assert!(!super::telegram_allowlisted(
+        &["1234".to_string()],
+        "123456|bob",
+        Some("bob")
+    ));
+    assert!(!super::telegram_allowlisted(
+        &["1234|alice".to_string()],
+        "123456|alice",
+        Some("alice")
+    ));
+}
+
+#[test]
+fn test_allowlist_compound_and_bare_id_forms() {
+    // 回归护栏：删臂后合法形态全保留——bare id 复合前缀 / 全复合精确 /
+    // 复合条目大小写漂移走用户名折叠臂
+    assert!(super::telegram_allowlisted(
+        &["123".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+    assert!(super::telegram_allowlisted(
+        &["123|alice".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+    assert!(super::telegram_allowlisted(
+        &["123|Alice".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+    assert!(!super::telegram_allowlisted(
+        &["456".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+    assert!(!super::telegram_allowlisted(
+        &["@carol".to_string()],
+        "123|alice",
+        Some("alice")
+    ));
+}

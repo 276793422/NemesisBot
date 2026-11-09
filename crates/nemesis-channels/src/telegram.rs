@@ -92,6 +92,57 @@ fn redact_token(msg: impl std::fmt::Display, token: &str) -> String {
     }
 }
 
+/// Telegram allowlist 判定（`handle_incoming_message` 抽出，单一真相源 +
+/// 单测可达）。sender_id 形态：`"id|username"` 复合 / `"id"` 裸数字。
+///
+/// 匹配臂（allow 条目 `a` 先剥前导 `@`）：
+/// - 复合身份全匹配：`sender_id == a`（条目写全 `"id|user"` 形态）
+/// - bare id 复合前缀：`sender_id.starts_with("{a}|")`（条目写裸 id，
+///   命中 `"id|任意用户名"`）
+/// - 用户名折叠匹配：`username.eq_ignore_ascii_case(a)`（条目写裸
+///   用户名，含大小写手滑形态）
+///
+/// BUG-20261109-032 修复两处：
+/// ① 用户名比较大小写折叠——Telegram 用户名平台侧大小写不敏感
+///   （@Alice 与 @alice 同一账号），此前 `u == a` 逐字节比较，
+///   配置大小写手滑即误拒合法用户；
+/// ② 删除裸前缀臂 `sender_id.starts_with(&format!("{a}"))`——它对
+///   `"id|user"` 复合形态产生越权放行（allowed `"1234"` 命中
+///   `"123456|xxx"`；Telegram 顺序发号使数字前缀碰撞现实可得），
+///   且对条目含复合身份时产生部分用户名匹配；合法形态已由精确
+///   `==` 与 `id|` 前缀臂完整覆盖，此臂唯一增量是错误放行。
+fn telegram_allowlisted(allow_from: &[String], sender_id: &str, username: Option<&str>) -> bool {
+    allow_from.iter().any(|a| {
+        let a = a.trim_start_matches('@');
+        // 全形态精确（条目写全 `"id|user"` 复合、裸 id sender、无用户名
+        // sender 形态）
+        if sender_id == a {
+            return true;
+        }
+        // 纯数字条目 = bare id（Telegram 用户 id 恒数字，用户名必含非数
+        // 字）：命中 `"id|任意用户名"` 复合 sender。`{a}|` 带分隔符前缀
+        // ——不带分隔符的裸 starts_with 会把 "1234" 命中到 "123456|..."
+        // （Telegram 顺序发号使数字前缀碰撞现实可得，BUG-20261109-032②
+        // 的越权放行臂，已删）
+        if !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()) {
+            return sender_id.starts_with(&format!("{a}|"));
+        }
+        match a.split_once('|') {
+            // 复合条目 `"id|user"`：id 段精确前缀 + 用户名段大小写折叠
+            // （复合身份的大小写漂移只可能落在用户名段——Telegram 用户
+            // 名平台侧大小写不敏感，数字 id 段恒精确）
+            Some((aid, auser)) if !aid.is_empty() && !auser.is_empty() => {
+                sender_id.starts_with(&format!("{aid}|"))
+                    && username.is_some_and(|u| u.eq_ignore_ascii_case(auser))
+            }
+            // `"id|"` 空用户名形态：按 bare id 处理
+            Some((aid, _)) if !aid.is_empty() => sender_id.starts_with(&format!("{aid}|")),
+            // 裸用户名条目（或畸形空 id）：大小写折叠
+            _ => username.is_some_and(|u| u.eq_ignore_ascii_case(a)),
+        }
+    })
+}
+
 /// Bot API 上下文（轮询任务构造一次，媒体链路共享）：方法 URL / 文件
 /// 下载 URL / token 脱敏三件单一真相源。文件下载命名空间是
 /// `{base}/file/bot{token}/{file_path}`（官方文档），与方法 URL
@@ -602,18 +653,11 @@ impl TelegramChannel {
         };
 
         // Check allow-list (empty = allow all)
-        if !allow_from.is_empty() {
-            let allowed = allow_from.iter().any(|a| {
-                let a = a.trim_start_matches('@');
-                sender_id == a
-                    || sender_id.starts_with(&format!("{a}|"))
-                    || sender_id.starts_with(&format!("{a}"))
-                    || user.username.as_ref().map_or(false, |u| u == a)
-            });
-            if !allowed {
-                debug!("[TelegramChannel] message rejected by allowlist (sender_id={sender_id})");
-                return;
-            }
+        if !allow_from.is_empty()
+            && !telegram_allowlisted(allow_from, &sender_id, user.username.as_deref())
+        {
+            debug!("[TelegramChannel] message rejected by allowlist (sender_id={sender_id})");
+            return;
         }
 
         let chat_id = format!("{}", msg.chat.id);
