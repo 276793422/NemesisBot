@@ -540,10 +540,25 @@ impl Default for DevicesConfig {
         }
     }
 }
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+/// 安全 8 层总开关段（`config.json` 的 `security` 段）。
+///
+/// `enabled` 缺省 true（BUG-20261109-035 收敛）：消费点全部
+/// `unwrap_or(true)`（段整体缺席 = 开，gateway tests 钉死该方向）；
+/// serde/Default 曾缺省 false——「段在键缺 = 关」与「段缺席 = 开」
+/// 方向相反，手写空段会静默旁路安全 8 层（fail-open）。出厂
+/// default_config() / config.default.json 显式 false 不受缺省影响
+/// （BUG-20261031-226 monitor_usb 同族先例）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityFlagConfig {
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+impl Default for SecurityFlagConfig {
+    /// 与 serde 字段级缺省 / 消费点 unwrap_or(true) 同向（缺省开）。
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 /// 用户习惯画像配置（B 线）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

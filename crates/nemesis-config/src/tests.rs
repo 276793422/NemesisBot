@@ -1433,7 +1433,21 @@ fn test_devices_config_default() {
 
 #[test]
 fn test_security_flag_config_default() {
+    // enabled 已与 serde 字段级缺省 / 消费点 unwrap_or(true) 收敛为 true
+    // （缺省开；出厂 default_config() 显式 false 不受缺省影响）。
     let cfg = SecurityFlagConfig::default();
+    assert!(cfg.enabled);
+}
+
+#[test]
+fn test_security_flag_config_missing_key_defaults_enabled() {
+    // BUG-20261109-035：段在键缺（手写空段）缺省开——与消费点
+    // unwrap_or(true)（段整体缺席 = 开）同向；显式 false 不受影响。
+    let cfg: SecurityFlagConfig = serde_json::from_str("{}").unwrap();
+    assert!(cfg.enabled);
+    let cfg: SecurityFlagConfig = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+    assert!(cfg.enabled);
+    let cfg: SecurityFlagConfig = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
     assert!(!cfg.enabled);
 }
 
