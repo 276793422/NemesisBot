@@ -995,3 +995,84 @@ fn test_allowlist_compound_and_bare_id_forms() {
         Some("alice")
     ));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261110-037：restart/重复 start 的双 poll 循环竞态回归。
+// 三个守卫面：start 幂等守卫 / stop 清旗标 / polling_loop 句柄替换+abort。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_start_guard_skips_when_already_running() {
+    // 幂等守卫：base 旗标为 true 时 start() 必须在任何网络调用前短路。
+    // 守卫若失效，会继续走 get_me() 对 dummy token 发真请求——离线 / 401
+    // 两种环境都返回 Err，测试即红。
+    let config = TelegramConfig {
+        token: "123456:ABC-DEF".to_string(),
+        ..Default::default()
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = TelegramChannel::new(config, tx).unwrap();
+    ch.base.set_running(true);
+
+    assert!(ch.start().await.is_ok());
+    assert!(
+        ch.poll_handle.lock().is_none(),
+        "守卫命中时不得 spawn poll 任务"
+    );
+}
+
+#[tokio::test]
+async fn test_stop_clears_running_flags() {
+    // stop 必须同时清本地旗标与 base 旗标——后者是 manager
+    // skip-if-running 守卫的判定面，漏清会让重启后的 start_all 永久跳过本通道。
+    let config = TelegramConfig {
+        token: "123456:ABC-DEF".to_string(),
+        ..Default::default()
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = TelegramChannel::new(config, tx).unwrap();
+    *ch.running.write() = true;
+    ch.base.set_running(true);
+
+    ch.stop().await.unwrap();
+    assert!(!*ch.running.read(), "本地旗标必须被 stop 清除");
+    assert!(
+        !ch.base.is_running(),
+        "base 旗标必须被 stop 清除（manager 守卫判定面）"
+    );
+}
+
+#[tokio::test]
+async fn test_polling_loop_replaces_and_aborts_previous_handle() {
+    // 二次 polling_loop 必须 abort 旧任务并替换句柄（restart 竞态的核心
+    // 修复面）。JoinHandle 不可 Clone（tokio 全版本），abort 判定用注入的
+    // victim 任务（300ms 后发送完成信号）做副作用观察：被生产代码 abort →
+    // future drop → done_tx drop → done_rx 收 Canceled；abort 缺失 → victim
+    // 完整执行 → 300ms 后收到 Ok(())。#[tokio::test] 默认单线程 runtime，
+    // 测试完全离线（victim/poll 任务均无网络依赖）。
+    let config = TelegramConfig {
+        token: "123456:ABC-DEF".to_string(),
+        ..Default::default()
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = TelegramChannel::new(config, tx).unwrap();
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    let victim = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let _ = done_tx.send(());
+    });
+    *ch.poll_handle.lock() = Some(victim);
+
+    ch.polling_loop(); // 必须 abort victim + 挂新句柄
+    assert!(ch.poll_handle.lock().is_some(), "新句柄必须在场");
+
+    match tokio::time::timeout(std::time::Duration::from_millis(800), done_rx).await {
+        Ok(Ok(())) => panic!("旧任务必须被 abort——victim 在 300ms 后完成（abort 缺失）"),
+        Ok(Err(_cancelled)) => {} // victim 被 abort → done_tx drop：预期
+        Err(_elapsed) => panic!("victim 既未完成也未取消，观察窗口设计错误"),
+    }
+
+    // 收尾：stop 兜底 abort 新任务。
+    ch.stop().await.unwrap();
+}
