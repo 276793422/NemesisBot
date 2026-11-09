@@ -5487,32 +5487,41 @@ async fn workflow_action_create_surfaces_lint_warnings_in_hints() {
 
 /// 探针变量守卫：构造期置位 + 开关钉 true，Drop 期撤销（测试 panic 也不
 /// 残留进程级环境）。变量名带 KEY（命中黑名单）/ 不带（对照组）。
-struct EnvProbeGuard;
+/// tag 入名（每测试独立后缀）：探针四测试（本文件三处 +
+/// background_registry 同族）在同一测试二进制里并行跑，进程环境同名只有
+/// 一份——快测试的 Drop 会 remove 掉慢测试（exec_async 3s+）名下的条目。
+/// ET 42559524697 实录：async 子进程 spawn 恰逢 sync 测试收尾 remove_var，
+/// SENS/PLAIN 双空（先绿后红的交错彩票）。
+struct EnvProbeGuard(&'static str);
 impl EnvProbeGuard {
-    fn set() -> Self {
+    fn set(tag: &'static str) -> Self {
         nemesis_utils::env_sanitize::set_child_env_sanitize_enabled(true);
-        unsafe { std::env::set_var("NB_BUG178_PROBE_KEY", "sensitive-marker") };
-        unsafe { std::env::set_var("NB_BUG178_PROBE_PLAIN", "plain-marker") };
-        Self
+        unsafe {
+            std::env::set_var(format!("NB_BUG178_PROBE_KEY_{tag}"), "sensitive-marker");
+            std::env::set_var(format!("NB_BUG178_PROBE_PLAIN_{tag}"), "plain-marker");
+        }
+        Self(tag)
     }
 }
 impl Drop for EnvProbeGuard {
     fn drop(&mut self) {
-        unsafe { std::env::remove_var("NB_BUG178_PROBE_KEY") };
-        unsafe { std::env::remove_var("NB_BUG178_PROBE_PLAIN") };
+        unsafe {
+            std::env::remove_var(format!("NB_BUG178_PROBE_KEY_{}", self.0));
+            std::env::remove_var(format!("NB_BUG178_PROBE_PLAIN_{}", self.0));
+        }
     }
 }
 
 #[tokio::test]
 async fn run_script_strips_sensitive_env_from_child() {
-    let _probe = EnvProbeGuard::set();
+    let _probe = EnvProbeGuard::set("SYNC");
     let tool = RunScriptTool::new(std::env::temp_dir().to_string_lossy().as_ref(), false);
     // 平台解释器惯例同 run_script_returns_structured_output（Windows 上
     // 裸 bash 会命中 System32 的 WSL 空壳）。
     #[cfg(windows)]
-    let args = r#"{"interpreter":"cmd","flag":"/C","script":"echo SENS=%NB_BUG178_PROBE_KEY% PLAIN=%NB_BUG178_PROBE_PLAIN%"}"#;
+    let args = r#"{"interpreter":"cmd","flag":"/C","script":"echo SENS=%NB_BUG178_PROBE_KEY_SYNC% PLAIN=%NB_BUG178_PROBE_PLAIN_SYNC%"}"#;
     #[cfg(not(windows))]
-    let args = r#"{"interpreter":"bash","flag":"-c","script":"echo SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN"}"#;
+    let args = r#"{"interpreter":"bash","flag":"-c","script":"echo SENS=$NB_BUG178_PROBE_KEY_SYNC PLAIN=$NB_BUG178_PROBE_PLAIN_SYNC"}"#;
     let result = tool
         .execute(args, &script_ctx())
         .await
@@ -5529,18 +5538,16 @@ async fn run_script_strips_sensitive_env_from_child() {
 
 #[tokio::test]
 async fn exec_async_strips_sensitive_env_from_child() {
-    let _probe = EnvProbeGuard::set();
+    let _probe = EnvProbeGuard::set("ASYNC");
     let tmp = TempDir::new().unwrap();
     let out_path = tmp.path().join("bug178_async_probe.txt");
     let tool = AsyncExecTool::new(&tmp.path().to_string_lossy(), false);
     // exec_async 不读输出 ≠ 不漏——子进程命令可自行把环境落盘（威胁
     // 模型内的标准走法），故用重定向文件做行为探针。
     #[cfg(windows)]
-    let command =
-        "echo SENS=%NB_BUG178_PROBE_KEY% PLAIN=%NB_BUG178_PROBE_PLAIN% > bug178_async_probe.txt";
+    let command = "echo SENS=%NB_BUG178_PROBE_KEY_ASYNC% PLAIN=%NB_BUG178_PROBE_PLAIN_ASYNC% > bug178_async_probe.txt";
     #[cfg(not(windows))]
-    let command =
-        "echo SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN > bug178_async_probe.txt";
+    let command = "echo SENS=$NB_BUG178_PROBE_KEY_ASYNC PLAIN=$NB_BUG178_PROBE_PLAIN_ASYNC > bug178_async_probe.txt";
     let args = serde_json::json!({
         "command": command,
         "working_dir": tmp.path().to_string_lossy(),
@@ -5596,7 +5603,7 @@ async fn git_tool_commit_hook_does_not_see_sensitive_env() {
     let hook = tmp.path().join(".git").join("hooks").join("pre-commit");
     std::fs::write(
         &hook,
-        "#!/bin/sh\necho \"SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN\" > hook_env.txt\n",
+        "#!/bin/sh\necho \"SENS=$NB_BUG178_PROBE_KEY_GIT PLAIN=$NB_BUG178_PROBE_PLAIN_GIT\" > hook_env.txt\n",
     )
     .unwrap();
     #[cfg(unix)]
@@ -5610,7 +5617,7 @@ async fn git_tool_commit_hook_does_not_see_sensitive_env() {
         "git add must succeed"
     );
 
-    let _probe = EnvProbeGuard::set();
+    let _probe = EnvProbeGuard::set("GIT");
     let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
     tool.execute(
         r#"{"action":"commit","message":"bug178 probe"}"#,

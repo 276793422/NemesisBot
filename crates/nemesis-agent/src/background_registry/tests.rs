@@ -704,14 +704,18 @@ async fn background_kill_ladder_terminates_stubborn_job_end_to_end() {
 /// 敏感探针变量必须剥、非敏感探针必须可见（探针管道自证）。
 #[tokio::test]
 async fn build_platform_shell_strips_sensitive_env() {
+    // 变量名带 _BG 后缀：与 loop_tools 探针四测试同二进制并行跑，同名
+    // 进程环境条目会被并行的快测试 Drop 拆走（ET 42559524697 交错实录），
+    // 每测试独立后缀根除互踩。
     nemesis_utils::env_sanitize::set_child_env_sanitize_enabled(true);
-    unsafe { std::env::set_var("NB_BUG178_PROBE_KEY", "sensitive-marker") };
-    unsafe { std::env::set_var("NB_BUG178_PROBE_PLAIN", "plain-marker") };
+    unsafe { std::env::set_var("NB_BUG178_PROBE_KEY_BG", "sensitive-marker") };
+    unsafe { std::env::set_var("NB_BUG178_PROBE_PLAIN_BG", "plain-marker") };
     #[cfg(windows)]
     let mut c =
-        build_platform_shell("echo SENS=%NB_BUG178_PROBE_KEY% PLAIN=%NB_BUG178_PROBE_PLAIN%");
+        build_platform_shell("echo SENS=%NB_BUG178_PROBE_KEY_BG% PLAIN=%NB_BUG178_PROBE_PLAIN_BG%");
     #[cfg(not(windows))]
-    let mut c = build_platform_shell("echo SENS=$NB_BUG178_PROBE_KEY PLAIN=$NB_BUG178_PROBE_PLAIN");
+    let mut c =
+        build_platform_shell("echo SENS=$NB_BUG178_PROBE_KEY_BG PLAIN=$NB_BUG178_PROBE_PLAIN_BG");
     c.stdout(std::process::Stdio::piped());
     let out = c
         .spawn()
@@ -719,8 +723,8 @@ async fn build_platform_shell_strips_sensitive_env() {
         .wait_with_output()
         .await
         .expect("wait ok");
-    unsafe { std::env::remove_var("NB_BUG178_PROBE_KEY") };
-    unsafe { std::env::remove_var("NB_BUG178_PROBE_PLAIN") };
+    unsafe { std::env::remove_var("NB_BUG178_PROBE_KEY_BG") };
+    unsafe { std::env::remove_var("NB_BUG178_PROBE_PLAIN_BG") };
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(
         text.contains("PLAIN=plain-marker"),
