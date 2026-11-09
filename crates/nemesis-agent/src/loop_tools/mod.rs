@@ -126,6 +126,10 @@ mod s9d_tests;
 // + register_shared_tools 注入接线测试。
 #[cfg(test)]
 mod workspace_boundary_tests;
+// ReadFileTool 读侧内存闸（20MB 帽）——超帽拒绝（含 offset/limit 分段）
+// / 帽内行为不变 / 分段切片回归。
+#[cfg(test)]
+mod fs_read_cap_tests;
 // todowrite 全量提交语义 + 原子落盘 + TodoUpdated 广播 +
 // 安全管线放行 + tier 供给测试。
 #[cfg(test)]
