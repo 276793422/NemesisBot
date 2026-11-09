@@ -27,19 +27,31 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Git commit hash (short)
-    let git_commit = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_default();
+    // Git commit hash (short)：显式 env 优先（构建脚本/CI 注入通道，
+    // build-android.bat 同款），缺席才本地跑 git rev-parse。
+    let git_commit = match std::env::var("NEMESISBOT_GIT_COMMIT") {
+        Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => Command::new("git")
+            .args(["rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()
+            .and_then(|o| {
+                if o.status.success() {
+                    Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default(),
+    };
+    if git_commit.is_empty() {
+        // 失败留痕：空串会被 cargo 缓存为 rustc-env 长期存活（版本显示
+        // 面静默丢 git 后缀），构建日志必须有痕可查。cargo:warning= 只在
+        // stdout 被 cargo 解析成构建警告，eprintln 无效。
+        println!(
+            "cargo:warning=nemesisbot build: git rev-parse 失败且无 NEMESISBOT_GIT_COMMIT 注入，版本信息将不含 git hash"
+        );
+    }
 
     // Build time (RFC 3339)
     let build_time = chrono::Local::now().to_rfc3339();
@@ -103,8 +115,25 @@ fn main() {
         None => println!("cargo:rustc-env=NEMESIS_ROOT_ANCHOR="),
     }
 
-    // Re-run build script if git HEAD changes
-    println!("cargo:rerun-if-changed=.git/HEAD");
+    // Re-run build script when git state changes（BUG-20261109-016 根修）。
+    //
+    // rerun-if-changed 路径相对**包根**（nemesisbot/）而非仓库根——旧声明
+    // `.git/HEAD` 实际指向 `nemesisbot/.git/HEAD`（不存在，cargo 对缺席
+    // 路径静默空操作）= commit/branch 从不触发重跑，NEMESISBOT_GIT_COMMIT
+    // 冻结在最后一次重跑时的值。且就算指到仓库根，`.git/HEAD` 在 commit
+    // 后也不变（符号引用，checkout 才变）——commit 落在 refs/heads/ 或
+    // packed-refs（gc 后 loose refs 收编）。三路全盯 + 显式 env 通道：
+    let repo_git = Path::new(&manifest_dir).join("../.git");
+    println!("cargo:rerun-if-changed={}", repo_git.join("HEAD").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_git.join("refs/heads").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        repo_git.join("packed-refs").display()
+    );
+    println!("cargo:rerun-if-env-changed=NEMESISBOT_GIT_COMMIT");
 
     // ------------------------------------------------------------------
     // 构建形态清单（system.features WSAPI 数据源）：解析
