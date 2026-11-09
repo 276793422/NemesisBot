@@ -321,15 +321,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- TAB 面板（挂 ExecutorsView 复合页内，旧 /subagents 路由已 redirect）：
+       无自身 page-header——页面级标题归宿主页；desc 降级为面板顶部说明行；
+       padding 与滚动由宿主 .page-body 提供（裸 div 仅作结构分组）。 -->
   <div class="page-subagents">
-    <div class="page-header">
-      <h2>子代理任务</h2>
-      <p class="page-desc">
-        Agent 派生的子执行环台账：内联 / 后台子代理 + 集群委派任务（A 端生命周期）。
-        台账落盘重启保留；对话事件环是进程内存态，重启后不可回放。
-      </p>
-    </div>
-    <div class="page-body">
+    <p class="page-desc">
+      Agent 派生的子执行环台账：内联 / 后台子代理 + 集群委派任务（A 端生命周期）。
+      台账落盘重启保留；对话事件环是进程内存态，重启后不可回放。
+    </p>
+    <div>
       <div class="subagent-filters">
         <select class="form-select" v-model="filterStatus" @change="loadList(); armListTimer()" style="max-width: 160px;">
           <option value="">全部状态</option>
@@ -501,7 +501,7 @@ onBeforeUnmount(() => {
 .page-desc {
   color: var(--text-muted);
   font-size: var(--text-sm);
-  margin-top: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 .subagent-filters {
   display: flex;

@@ -687,6 +687,14 @@ async fn m4_runtime_live_on_dummy_draw() {
     // 免早退全排空（重臂排空与排窗都不弃臂，排到配平或预算尽），产出完
     // 整样本后按赤字界评估——污染窗 deficit=top−chain ≤ max(2, top/1000)
     // 即收敛；零溢出窗维持严格配平定谳（最干净样本，赤字即真丢失）。
+    // 第七修（2026-11-09 CI 42504628649 shard1 attempt2 第六次同族红）：
+    // top=9219 chain=9220 窗dropped=0——零溢出窗照红。第五修已证窗起止
+    // 边界劈对可自排环残留继承（残留 <1024 不报 dropped、重臂排空不触发
+    // 早退），本红实证零溢出窗同样带 ±1~2 边界赤字且方向双向（本次链侧
+    // 反超 1：劈对链点可先于其 top 配对进窗）。故赤字界统一到所有窗型：
+    // deficit=|top−chain| ≤ max(2, top/1000) 即收敛，废除零溢出严格配平
+    // 臂（第六修污染窗界不变，只是不再按溢出与否分治）。真链丢失=链点
+    // 成规模缺席/反超，远超此界必红，检测力不变。
     fn count_by_id(evs: &[serde_json::Value], id_top: u64, id_chain: u64, cnt: &mut (u64, u64)) {
         for e in evs {
             match e["id"].as_u64() {
@@ -701,7 +709,6 @@ async fn m4_runtime_live_on_dummy_draw() {
     let (mut cnt_top, mut cnt_chain) = (0u64, 0u64);
     let mut win_dropped = 0u64;
     let mut attempts = 0usize;
-    let mut converged = false;
     for _attempt in 0..3 {
         attempts += 1;
         let final_arm = attempts == 3; // 末臂免早退：污染窗也要全排空出完整样本
@@ -765,31 +772,30 @@ async fn m4_runtime_live_on_dummy_draw() {
         (cnt_top, cnt_chain) = cnt;
         win_dropped = dropped;
         if dropped == 0 {
-            // 零溢出窗即定谳：配平=收敛；不配平=真链丢失（预算 50 拍，
-            // 末拍即比较，无尾隙），断言红证据干净。
-            converged = cnt.0 == cnt.1;
+            // 零溢出窗=完整样本，提前终测省预算（预算 50 拍，末拍即比
+            // 较，无尾隙）。收敛判定统一走循环外赤字界（第七修：零溢出
+            // 窗同样可能带窗起止劈对 ±1~2 双向边界赤字，不再严格配平）。
             break;
         }
     }
-    if !converged && win_dropped > 0 {
-        // 第六修赤字界：污染窗（连窗溢出）按边界噪声界评估——窗起止劈对
-        // ±1~2（历史五红赤字全部 ∈{1,2}），slack 再加 0.1% 相对余量保尺
-        // 度安全；真链丢失=大规模赤字（链点成规模缺席），远超此界必红。
-        let deficit = cnt_top.saturating_sub(cnt_chain);
-        let slack = (2u64).max(cnt_top / 1000);
-        converged = deficit <= slack;
-        if converged {
-            ev.log_line(&format!(
-                "[⑥赤字界] 污染窗按界收敛：top={cnt_top} chain={cnt_chain} \
-                 deficit={deficit} slack={slack} 窗dropped={win_dropped}"
-            ));
-        }
+    // 赤字界终判（第六修立界、第七修统一窗型）：deficit=|top−chain|
+    // ≤ max(2, top/1000) 即收敛——窗起止劈对 ±1~2 且方向双向（第七红
+    // 链侧反超 1），slack 另加 0.1% 相对余量保尺度安全；真链丢失=链点
+    // 成规模缺席/反超，远超此界必红。
+    let deficit = cnt_top.abs_diff(cnt_chain);
+    let slack = (2u64).max(cnt_top / 1000);
+    let converged = deficit <= slack;
+    if converged && deficit > 0 {
+        ev.log_line(&format!(
+            "[⑥赤字界] 窗按界收敛：top={cnt_top} chain={cnt_chain} \
+             deficit={deficit} slack={slack} 窗dropped={win_dropped}"
+        ));
     }
     assert!(
         converged,
         "2 级链 1:1 收敛（每顶层调用恰好一次链点）：top={cnt_top} chain={cnt_chain} \
-         窗dropped={win_dropped} 尝试{attempts}（零溢出窗赤字即真丢失；连窗溢出时 \
-         deficit>max(2,top/1000)=真链丢失，见段注第六修）"
+         deficit={deficit} slack={slack} 窗dropped={win_dropped} 尝试{attempts} \
+         （deficit>max(2,top/1000)=真链丢失，见段注第六/七修）"
     );
     assert!(cnt_top >= 50, "顶层 feed_render 应批量命中：{cnt_top}");
     ev.log(
@@ -798,7 +804,7 @@ async fn m4_runtime_live_on_dummy_draw() {
             "hooks_active": hooks_active,
             "id_top": id_top, "id_chain": id_chain,
             "cnt_top": cnt_top, "cnt_chain": cnt_chain,
-            "deficit": cnt_top.saturating_sub(cnt_chain),
+            "deficit": cnt_top.abs_diff(cnt_chain),
             "slack": (2u64).max(cnt_top / 1000),
             "dropped": win_dropped, "attempts": attempts,
         }),

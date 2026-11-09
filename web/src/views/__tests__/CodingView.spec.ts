@@ -88,7 +88,7 @@ describe('CodingView 加载', () => {
 })
 
 describe('CodingView 防抖保存', () => {
-  it('切开关 → 500ms 后一次性写 12 个字段（8 原有 + E2 并发模式 2 + N2 small_model + C6 auto_install）', async () => {
+  it('切开关 → 500ms 后一次性写 15 个字段（8 原有 + E2 并发模式 2 + N2 small_model + C6 auto_install + delegate 3 + claude_code permission_mode）', async () => {
     const w = await mountView()
     await w.findAll('input[type="checkbox"]')[0].setValue(false)
     await w.findAll('input[type="checkbox"]')[1].setValue(false)
@@ -99,7 +99,7 @@ describe('CodingView 防抖保存', () => {
 
     await vi.advanceTimersByTimeAsync(400)
     const writes = requestMock.mock.calls.filter(c => c[1] === 'set_field')
-    expect(writes.length).toBe(12)
+    expect(writes.length).toBe(15)
     const paths = writes.map(c => c[2].path)
     expect(paths).toContain('agents.lsp_tool.enabled')
     // C6 静默自举开关随批写入
@@ -115,6 +115,10 @@ describe('CodingView 防抖保存', () => {
     // E2 并发模式两字段
     expect(paths).toContain('agents.defaults.concurrent_request_mode')
     expect(paths).toContain('agents.defaults.queue_size')
+    // delegate 三键（配置页批次 4：委派持续操控）
+    expect(paths).toContain('agents.delegate.enabled')
+    expect(paths).toContain('agents.delegate.max_lifetime_secs')
+    expect(paths).toContain('agents.delegate.permission_mode')
     const lspWrite = writes.find(c => c[2].path === 'agents.lsp_tool.enabled')!
     expect(lspWrite[2].value).toBe(false)
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('重启 Agent'))).toBe(true)
@@ -126,7 +130,7 @@ describe('CodingView 防抖保存', () => {
     await vi.advanceTimersByTimeAsync(300)
     await w.findAll('input[type="checkbox"]')[0].setValue(true)
     await vi.advanceTimersByTimeAsync(600)
-    expect(requestMock.mock.calls.filter(c => c[1] === 'set_field').length).toBe(12)
+    expect(requestMock.mock.calls.filter(c => c[1] === 'set_field').length).toBe(15)
   })
 })
 

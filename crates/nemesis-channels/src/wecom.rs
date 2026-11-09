@@ -185,7 +185,11 @@ impl WeComChannel {
             .json(&body)
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("wecom webhook 请求失败: {e}")))?;
+            .map_err(|e| {
+                NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                    "wecom webhook 请求失败: {e}"
+                )))
+            })?;
 
         let status = resp.status();
         if !status.is_success() {
@@ -196,10 +200,12 @@ impl WeComChannel {
         }
 
         // 企业微信业务错误走 errcode != 0（HTTP 仍 200）
-        let payload: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| NemesisError::Channel(format!("wecom webhook 响应解析失败: {e}")))?;
+        let payload: serde_json::Value = resp.json().await.map_err(|e| {
+            // decode 错误 Display 同样内嵌完整 URL（reqwest 0.12 Decode 变体带 url）
+            NemesisError::Channel(crate::base::redact_url_secrets(format!(
+                "wecom webhook 响应解析失败: {e}"
+            )))
+        })?;
         let errcode = payload.get("errcode").and_then(|v| v.as_i64()).unwrap_or(0);
         if errcode != 0 {
             let errmsg = payload.get("errmsg").and_then(|v| v.as_str()).unwrap_or("");

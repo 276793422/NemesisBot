@@ -125,6 +125,7 @@ fn test_skills_digest_injected_when_changed() {
 
     let instance = crate::instance::AgentInstance::new(AgentConfig {
         system_prompt: Some("SYS".to_string()),
+        system_prompt_split: None,
         ..Default::default()
     });
     instance.set_history(vec![
@@ -212,6 +213,7 @@ fn test_skills_digest_empty_no_injection() {
 
     let instance = crate::instance::AgentInstance::new(AgentConfig {
         system_prompt: Some("SYS".to_string()),
+        system_prompt_split: None,
         ..Default::default()
     });
     instance.set_history(vec![

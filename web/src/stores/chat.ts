@@ -66,6 +66,11 @@ export interface WorkToolEntry {
   result_preview?: string
   /** 仍在执行（Started 已收 Finished 未收）。落盘形态省略。 */
   running?: boolean
+  /** 执行中输出尾窗（2026-11-08 ToolOutput 实时流；仅 running 条目携带，
+   *  Finished 时清除——终态以 result_preview 为准，避免双文本打架）。 */
+  live_tail?: string
+  /** 节流窗累计输出字节（与 live_tail 同源）。 */
+  live_total_bytes?: number
 }
 
 export interface WorkRoundEntry {
@@ -458,8 +463,32 @@ export const useChatStore = defineStore('chat', () => {
         t.duration_ms = durationMs
         t.result_preview = resultPreview || undefined
         delete t.running
+        delete t.live_tail
+        delete t.live_total_bytes
         w.ended_at_ms = Date.now()
         return
+      }
+    }
+  }
+
+  /** 摄取执行中输出尾窗（2026-11-08 ToolOutput：exec 流式尾窗实时推送，
+   *  替代「sleep+background_output 轮询」旧玩法）。call_id 置空（工具层
+   *  不可见 dispatch id）→ 倒序找**最后一个 running 条目**挂载（并行 exec
+   *  归属最新启动行，与旧 read-后台-输出语义一致）。无 running 条目诚实
+   *  忽略（事件早于 Started/晚于 Finished 的窗口缝隙）。 */
+  function ingestWorkToolOutput(tail: string, totalBytes: number) {
+    const w = pendingWork.value
+    if (!w) return
+    for (let i = w.rounds.length - 1; i >= 0; i--) {
+      const tools = w.rounds[i].tools
+      for (let j = tools.length - 1; j >= 0; j--) {
+        const t = tools[j]
+        if (t.running) {
+          t.live_tail = tail
+          t.live_total_bytes = totalBytes
+          w.ended_at_ms = Date.now()
+          return
+        }
       }
     }
   }
@@ -576,6 +605,7 @@ export const useChatStore = defineStore('chat', () => {
     /** B3：流式思考增量摄取 + 清空（ChatPanel think_* 相位帧入口）。 */
     ingestLiveThinkingDelta,
     clearLiveThinking,
+    ingestWorkToolOutput,
     flushPendingWork,
     adoptWorkSnapshot,
     appendPendingDeliverables,

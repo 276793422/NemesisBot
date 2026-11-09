@@ -47,6 +47,7 @@ fn tool_for(ws: &std::path::Path, bucket: TurnDeliverablesBucket) -> PresentFile
 fn register_with_workspace_and_bucket_inserts_present_files() {
     let bucket = fresh_bucket();
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace: Some(".".to_string()),
         turn_deliverables: Some(bucket),
         ..Default::default()
@@ -62,6 +63,7 @@ fn register_with_workspace_and_bucket_inserts_present_files() {
 fn register_without_bucket_omits_present_files() {
     // 只给 workspace 不给桶（register_default_tools 基线形态）→ 不注册。
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace: Some(".".to_string()),
         ..Default::default()
     };

@@ -60,6 +60,7 @@ fn d3_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["preview_tool".to_string()],
         models: std::collections::HashMap::new(),

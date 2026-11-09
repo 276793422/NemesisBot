@@ -301,15 +301,19 @@ impl AgentLoop {
             )
             .await;
 
-            // 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全）：
-            // provider 实报输入 token 进 compaction 混合触发信号缓存（完整
-            // 输入 = prompt + cache_creation + cache_read，P8 会话预算记账
-            // 同口径，`usage_full_input` 单一真相源）；无 usage 的 lane 不写
-            // = 纯估算诚实回落。
+            // 自查②（2026-10-18 B 级清零；R2 2026-10-22 口径补全；B2 实报
+            // 锚定）：provider 实报输入 token 进 compaction 混合触发信号
+            // 缓存（完整输入 = prompt + cache_creation + cache_read，P8 会
+            // 话预算记账同口径，`usage_full_input` 单一真相源）；锚点 =
+            // 此刻 history.len()——note 点在本轮 assistant turn 追加之前
+            // （handle_length_continuation / judge_final_answer 才追加），
+            // 恰为请求构建时长度，锚后切片只含新增轮次。无 usage 的 lane
+            // 不写 = 纯估算诚实回落。
             if let Some(ref usage) = response.usage {
                 self.note_compaction_provider_signal(
                     &context.session_key,
                     super::token_budget::usage_full_input(usage),
+                    instance.get_history().len(),
                 );
             }
 

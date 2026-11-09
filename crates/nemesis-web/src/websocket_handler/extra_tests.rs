@@ -27,6 +27,7 @@ fn make_state(
     ws_router: Option<Arc<crate::ws_router::WsRouter>>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

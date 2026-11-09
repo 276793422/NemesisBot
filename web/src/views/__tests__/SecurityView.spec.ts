@@ -210,3 +210,99 @@ describe('SecurityView 策略开关（D1/D2）', () => {
     w.unmount()
   })
 })
+
+// ── 批次 3（2026-11-08 配置页补全）：审批记忆规则条目级管理 + eval 规则 TAB。
+// 条目级走 approvals.add/remove/clear（与「总是允许」自动写入同一闸）；
+// eval 规则走 eval_rules.list/add/update/set_enabled/remove/reset（与 CLI
+// `eval rules *` 同源，真相源 nemesis-config::eval_rules）。本 spec 钉前端
+// 请求形态与渲染分支；后端契约由 security approvals/eval_rules handler 测试钉住。
+describe('SecurityView 审批记忆规则 + eval 规则 TAB（批次 3）', () => {
+  const evalRule = {
+    id: 'exfil-path', description: '可疑外传路径', level: 'high', enabled: true,
+    source: 'tool_trace', min_count: 1,
+    conditions: [{ field: 'path', op: 'contains', value: '/etc' }],
+  }
+
+  async function mountWithRules(opts: { approvalRules?: any[]; evalRules?: any[] } = {}) {
+    requestMock.mockReset()
+    requestMock.mockImplementation((_m: string, cmd: string, _d?: any) => {
+      if (cmd === 'config.get') return Promise.resolve(configResult())
+      if (cmd === 'approvals.status') return Promise.resolve({ injected: false })
+      if (cmd === 'config.save') return Promise.resolve({ saved: true })
+      if (cmd === 'audit') return Promise.resolve({ entries: [], total: 0 })
+      if (cmd === 'stats') return Promise.resolve({ total_events: 0, by_level: {} })
+      if (cmd === 'approvals.list') return Promise.resolve({ rules: opts.approvalRules ?? [] })
+      if (cmd === 'eval_rules.list') return Promise.resolve({ rules: opts.evalRules ?? [], version: 3 })
+      if (cmd === 'approvals.add') return Promise.resolve({ added: true, pattern: _d?.pattern })
+      if (cmd === 'eval_rules.add') return Promise.resolve({ added: true })
+      if (cmd === 'eval_rules.set_enabled') return Promise.resolve({ ok: true })
+      if (cmd === 'eval_rules.reset') return Promise.resolve({ rules: [], version: 1 })
+      return Promise.resolve({})
+    })
+    const w = mount(SecurityView)
+    await flushPromises()
+    return w
+  }
+
+  it('审批规则表：空表渲染空态；表单填 op/pattern → 添加 → approvals.add {op,pattern,action:allow} + 表单清空', async () => {
+    const w = await mountWithRules()
+    expect(w.find('[data-test="approval-rules-card"]').exists()).toBe(true)
+    expect(w.text()).toContain('暂无规则')
+    const opInput = w.find('input[placeholder*="操作类型"]')
+    const patInput = w.find('input[placeholder*="匹配 pattern"]')
+    await opInput.setValue('process_exec')
+    await patInput.setValue('cargo test *')
+    await w.findAll('button').find(b => b.text() === '添加')!.trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('security', 'approvals.add', { op: 'process_exec', pattern: 'cargo test *', action: 'allow' })
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('规则已添加'))).toBe(true)
+    expect((opInput.element as HTMLInputElement).value).toBe('') // 表单清空
+    w.unmount()
+  })
+
+  it('空 op 或 pattern → 本地拦截（不发 approvals.add）', async () => {
+    const w = await mountWithRules()
+    await w.find('input[placeholder*="匹配 pattern"]').setValue('cargo test *')
+    await w.findAll('button').find(b => b.text() === '添加')!.trigger('click')
+    await flushPromises()
+    expect(requestMock).not.toHaveBeenCalledWith('security', 'approvals.add', expect.anything())
+    expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('必填'))).toBe(true)
+    w.unmount()
+  })
+
+  it('eval 规则 TAB：列表渲染（table 行数 + 版本计数）；toggle 启用 → eval_rules.set_enabled {id,enabled}', async () => {
+    const w = await mountWithRules({ evalRules: [evalRule, { ...evalRule, id: 'rm-rf', enabled: false, level: 'critical' }] })
+    await w.findAll('button.tab').find(b => b.text() === '评估规则')!.trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="eval-rules-tab"]').exists()).toBe(true)
+    const rows = w.find('[data-test="eval-rules-table"]').findAll('tbody tr')
+    expect(rows).toHaveLength(2)
+    expect(w.text()).toContain('共 2 条，1 条启用')
+    const firstToggle = rows[0].find('input[type="checkbox"]')
+    await firstToggle.setValue(false)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('security', 'eval_rules.set_enabled', { id: 'exfil-path', enabled: false })
+    w.unmount()
+  })
+
+  it('eval 规则新增：modal 打开 → 填 id → eval-rule-save → eval_rules.add {rule}（conditions/level/source 完整载荷）', async () => {
+    const w = await mountWithRules()
+    await w.findAll('button.tab').find(b => b.text() === '评估规则')!.trigger('click')
+    await flushPromises()
+    await w.find('[data-test="eval-rule-new"]').trigger('click')
+    await flushPromises()
+    expect(w.find('[data-test="eval-rule-modal"]').exists()).toBe(true)
+    // 填必填 id + 条件字段（placeholder 精确定位：id=probe-aws-cli / field=字段路径）
+    const modal = w.find('[data-test="eval-rule-modal"]')
+    await modal.find('input[placeholder="probe-aws-cli"]').setValue('my-rule')
+    await modal.find('input[placeholder="字段路径（如 arguments.command）"]').setValue('command')
+    await w.find('[data-test="eval-rule-save"]').trigger('click')
+    await flushPromises()
+    const addCall = requestMock.mock.calls.find(c => c[1] === 'eval_rules.add')
+    expect(addCall).toBeTruthy()
+    expect(addCall![2].rule.id).toBe('my-rule')
+    expect(addCall![2].rule.conditions).toEqual([{ field: 'command', op: 'contains', value: '' }])
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('规则已添加'))).toBe(true)
+    w.unmount()
+  })
+})

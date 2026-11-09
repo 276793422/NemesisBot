@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkflowStore } from '../../stores/workflow'
 
-type TabId = 'list' | 'canvas' | 'history' | 'yaml' | 'agentGen'
+type TabId = 'list' | 'canvas' | 'history' | 'yaml' | 'agentGen' | 'settings'
 
 const props = defineProps<{
   modelValue: TabId
@@ -22,6 +22,7 @@ const counts = computed(() => ({
   history: runs.value.length,
   yaml: 0,
   agentGen: drafts.value.length,
+  settings: 0,
 }))
 
 const tabs: { id: TabId; label: string; icon: string }[] = [
@@ -30,6 +31,7 @@ const tabs: { id: TabId; label: string; icon: string }[] = [
   { id: 'canvas', label: '画布', icon: '🎯' },
   { id: 'history', label: '执行历史', icon: '📈' },
   { id: 'yaml', label: 'YAML', icon: '📝' },
+  { id: 'settings', label: '设置', icon: '⚙️' },
 ]
 
 function click(tab: TabId) {

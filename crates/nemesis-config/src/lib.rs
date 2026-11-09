@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 
 pub mod commands;
 pub mod credentials;
+pub mod eval_rules;
 pub mod hot_reload;
 pub mod plugin_wasm;
 pub mod plugins_native;
@@ -49,7 +50,8 @@ pub use provider_resolver::{
     ModelResolution, PROVIDER_PRESETS, ProviderPreset, ProviderResolution, ProviderResolver,
     ensure_conversation_role, find_model_by_name, find_provider_preset, get_default_api_base,
     get_effective_llm, get_model_by_name, infer_default_model, infer_provider_from_model,
-    normalize_stream_value, provider_preset_ids, resolve_model_config, resolve_model_resolution,
+    normalize_stream_value, provider_preset_ids, resolve_active_timeout_secs, resolve_model_config,
+    resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]
@@ -650,6 +652,9 @@ mod tests;
 
 #[cfg(test)]
 mod bridge_serde_tests;
+
+#[cfg(test)]
+mod eval_rules_tests;
 
 #[cfg(test)]
 mod tool_result_cap_tests;

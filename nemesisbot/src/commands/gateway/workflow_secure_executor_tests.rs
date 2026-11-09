@@ -110,6 +110,7 @@ fn wf_sec_loop(fail: Option<&'static str>) -> (Arc<AgentLoop>, Arc<std::sync::Mu
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: None,
+            system_prompt_split: None,
             max_turns: 1,
             tools: vec![],
             ..Default::default()

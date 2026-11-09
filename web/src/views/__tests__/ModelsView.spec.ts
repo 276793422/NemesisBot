@@ -708,3 +708,59 @@ describe('ModelsView 属性数字输入类型漂移（BUG-20261029-175）', () =
     w.unmount()
   })
 })
+
+describe('ModelsView 属性 api_base 行内编辑（批次 4 C-4）', () => {
+  async function openAttrs(w: ReturnType<typeof mount>) {
+    const attrBtn = w.findAll('button').find((b) => b.text() === '属性')!
+    await attrBtn.trigger('click')
+    await flushPromises()
+  }
+
+  it('api_base 填新 URL → 保存 → update_field {field: api_base, value}', async () => {
+    const updateCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })] }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'models' && cmd === 'update_field') { updateCalls.push(data); return { updated: true } }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await openAttrs(w)
+    const input = w.find('[data-test="attr-api-base"]')
+    expect((input.element as HTMLInputElement).value).toBe('https://api.openai.com/v1')
+    await input.setValue('https://api.example.com/v1')
+    await flushPromises()
+    const saveBtn = w.findAll('button').find((b) => b.text() === '保存属性')!
+    await saveBtn.trigger('click')
+    await flushPromises()
+    const apiBaseCalls = updateCalls.filter((c) => c.field === 'api_base')
+    expect(apiBaseCalls).toHaveLength(1)
+    expect(apiBaseCalls[0]).toEqual({ name: 'glm', field: 'api_base', value: 'https://api.example.com/v1' })
+    w.unmount()
+  })
+
+  it('api_base 清空 → value 空串（清除语义 = 回落 provider 前缀自动推断）', async () => {
+    const updateCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })] }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'models' && cmd === 'update_field') { updateCalls.push(data); return { updated: true } }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await openAttrs(w)
+    await w.find('[data-test="attr-api-base"]').setValue('  ')
+    await flushPromises()
+    const saveBtn = w.findAll('button').find((b) => b.text() === '保存属性')!
+    await saveBtn.trigger('click')
+    await flushPromises()
+    const apiBaseCalls = updateCalls.filter((c) => c.field === 'api_base')
+    expect(apiBaseCalls).toHaveLength(1)
+    expect(apiBaseCalls[0].value).toBe('') // 空串 = 清除（typed String 空串=未设）
+    w.unmount()
+  })
+})

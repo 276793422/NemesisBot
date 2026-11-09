@@ -198,6 +198,15 @@ impl CodingHandler {
                 // (empty → read_only fail-safe at spawn; NOT model-selectable).
                 "sandbox": cfg.agents.codex_tool.sandbox,
             },
+            // （委派持续操控）: delegate 四工具（delegate_start/send/output/stop）
+            // 开关与子代理生命上限。配置页批次 4 补全（与上方两个 CLI 委派
+            // 同区展示）；注册在 AgentLoop 装配期且要求至少一个 CLI 在场。
+            "delegate": {
+                "enabled": cfg.agents.delegate.enabled,
+                "max_lifetime_secs": cfg.agents.delegate.max_lifetime_secs,
+                // '' = 跟随子 CLI 自身默认档（passthrough，不越权 bypass）。
+                "permission_mode": cfg.agents.delegate.permission_mode,
+            },
             // edit→diagnostics feedback loop. Independent of `lsp` above
             // (loop on + lsp tool off is a legal, recommended default combo).
             "diagnostics": {

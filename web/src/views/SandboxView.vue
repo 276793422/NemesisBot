@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, defineAsyncComponent } from 'vue'
+import { ref, computed, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
@@ -96,7 +96,7 @@ function formatTs(ts: string): string {
 }
 
 // --- P5：executor 开关逐字段变更（Linux 联动 / 全平台 strict / Linux 联网） ---
-async function setExecutorCfg(fields: Record<string, boolean>, successMsg: string) {
+async function setExecutorCfg(fields: Record<string, boolean | number>, successMsg: string) {
   busy.value = 'set_config'
   try {
     const r = await request('sandbox', 'set_config', fields)
@@ -149,6 +149,48 @@ function toggleStrict() {
     )) return
   }
   setExecutorCfg({ strict: next }, `严格模式已${next ? '开启（fail-closed）' : '关闭（fail-open）'}`)
+}
+
+// --- DACL 定向档三键（配置页批次 5；executor.acl.{dacl, strict, max_files}）---
+// ⚠ 与上方「严格模式」（全局 executor.strict）是**两个键**：acl.strict 只在
+// ACL 档内部生效（ACL spawn 失败时 fail-closed），不触碰无 ACL 档的降级语义。
+// 三键全部 live 读（hook 每次调用时读 config）；dacl 开启后的受限令牌铸造是
+// 一次性的（含失败缓存）——铸造失败后关闭再开不会重铸，需重启 Agent。
+// Windows + acl feature 装配（overview.dacl 非 null）才显示卡片。
+const aclOn = computed(() => !!executorCfg.value?.acl?.dacl)
+const aclStrictOn = computed(() => !!executorCfg.value?.acl?.strict)
+const aclMaxFiles = computed(() => executorCfg.value?.acl?.max_files ?? 20000)
+const aclMaxFilesInput = ref('')
+watch(aclMaxFiles, (v: number) => { aclMaxFilesInput.value = String(v) }, { immediate: true })
+
+function toggleAclDacl() {
+  const next = !aclOn.value
+  if (next && !window.confirm(
+    '即将启用 DACL 定向档（半档隔离，实验性）：\n' +
+    '• executor.acl.dacl=true——executor 子进程换 write-restricted 受限令牌 + workspace 根 ACL 收窄\n' +
+    '• 强制完整性标签 No-Write-Up：对提权位置（如系统目录）拒绝写入\n' +
+    '• 是 Sandboxie 全隔离之下的**半档**，与全局严格模式（executor.strict）是两个键\n\n' +
+    '确认启用？'
+  )) return
+  setExecutorCfg({ acl_dacl: next }, `DACL 定向档已${next ? '开启' : '关闭'}`)
+}
+
+function toggleAclStrict() {
+  const next = !aclStrictOn.value
+  setExecutorCfg(
+    { acl_strict: next },
+    `ACL 档 fail-closed 已${next ? '开启' : '关闭'}${next && !aclOn.value ? '（提示：acl.dacl 未开，本键暂无实际效果）' : ''}`,
+  )
+}
+
+function saveAclMaxFiles() {
+  const n = parseInt(aclMaxFilesInput.value, 10)
+  if (Number.isNaN(n) || n < 1 || n > 4294967295) {
+    aclMaxFilesInput.value = String(aclMaxFiles.value)
+    toast.error('文件数上限须为 1-4294967295 整数')
+    return
+  }
+  setExecutorCfg({ acl_max_files: n }, `ACL 授予树文件数上限已设为 ${n}`)
 }
 
 async function install7z() {
@@ -508,6 +550,52 @@ onMounted(async () => {
               </div>
               <div style="padding-left: var(--space-4); margin-top: var(--space-1); font-size: var(--text-xs); color: var(--text-secondary);">
                 {{ strictHint }}
+              </div>
+            </div>
+
+            <!-- DACL 定向档三键（配置页批次 5；Windows + acl feature 装配才显示）。
+                 ⚠ 与上方「严格模式」（全局 executor.strict）是两个键——文案刻意区分。 -->
+            <div v-if="isWindows && daclCfg" style="border-top: 1px solid var(--border); padding-top: var(--space-4); margin-top: var(--space-4);" data-test="acl-card">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: var(--space-2);">
+                <span style="font-weight: 500;">DACL 定向档（executor.acl，实验性半档隔离）</span>
+                <button
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': aclOn }"
+                  data-test="acl-dacl-toggle"
+                  @click="toggleAclDacl"
+                  :disabled="!!busy"
+                >
+                  {{ aclOn ? '已开启' : '已关闭' }}
+                </button>
+              </div>
+              <div style="padding-left: var(--space-4); font-size: var(--text-sm); color: var(--text-secondary);">
+                <span :style="{ color: aclOn ? 'var(--success)' : 'var(--text-secondary)' }">{{ aclOn ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">
+                  {{ aclOn ? 'executor 子进程以 write-restricted 受限令牌运行 + workspace 根 ACL 收窄（No-Write-Up）' : '关闭：executor 子进程按现状路径执行' }}
+                </span>
+              </div>
+              <div style="padding-left: var(--space-4); margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+                <button
+                  class="btn btn-sm"
+                  :class="{ 'btn-primary': aclStrictOn }"
+                  data-test="acl-strict-toggle"
+                  @click="toggleAclStrict"
+                  :disabled="!!busy"
+                >
+                  ACL 档 fail-closed：{{ aclStrictOn ? '已开启' : '已关闭' }}
+                </button>
+                <span style="font-size: var(--text-xs); color: var(--text-secondary);">
+                  仅作用于 ACL 档内部（受限令牌铸造失败时拒绝执行而非降级）——与上方全局严格模式是两个键
+                </span>
+              </div>
+              <div style="padding-left: var(--space-4); margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;">
+                <span style="font-size: var(--text-sm); font-weight: 500;">授予树文件数上限</span>
+                <input class="form-input" type="number" min="1" style="max-width: 160px;" data-test="acl-max-files"
+                  v-model="aclMaxFilesInput" @change="saveAclMaxFiles" :disabled="!!busy">
+                <span style="font-size: var(--text-xs); color: var(--text-secondary);">给 workspace 根补 ACL 授予时最多改写的文件数（缺省 20000；超出截断留痕）</span>
+              </div>
+              <div style="padding-left: var(--space-4); margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary);">
+                三键均对后续工具调用实时生效（hook 每次调用读配置）；受限令牌铸造是一次性的——铸造失败后关闭再开不会重铸，需重启 Agent。是 Sandboxie 全隔离之下的半档，两者可叠加。
               </div>
             </div>
 

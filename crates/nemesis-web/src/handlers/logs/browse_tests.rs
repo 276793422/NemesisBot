@@ -18,6 +18,7 @@ use std::time::Instant;
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -281,6 +282,7 @@ async fn cluster_task_detail_perspective_with_real_local_node() {
         dir.path().to_path_buf(),
     ));
     ctx.state = Arc::new(crate::api_handlers::AppState {
+        cors_manager: None,
         cluster: Some(cluster.clone()),
         quic_relay: None,
         ..(*ctx.state).clone()

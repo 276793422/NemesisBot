@@ -84,70 +84,80 @@ pub fn resolve_posix_shell_path(interpreter: &str) -> String {
     }
 }
 
-/// Default deny patterns compiled from regex strings.
-/// These mirror the Go version's `defaultDenyPatterns`.
-fn default_deny_patterns() -> Vec<Regex> {
-    let patterns: &[&str] = &[
-        // Destructive file operations
-        r"\brm\s+-[rf]{1,2}\b",
-        r"\bdel\s+/[fq]\b",
-        r"\brmdir\s+/s\b",
-        r"\b(format|mkfs|diskpart)\b\s",
-        r"\bdd\s+if=",
-        r">\s*/dev/sd[a-z]\b",
-        // System control
-        r"\b(shutdown|reboot|poweroff)\b",
-        // Fork bomb
-        r":\(\)\s*\{.*\};\s*:",
-        // Command substitution
-        r"\$\([^)]+\)",
-        r"\$\{[^}]+\}",
-        r"`[^`]+`",
-        // Pipe to shell
-        r"\|\s*sh\b",
-        r"\|\s*bash\b",
-        // Chained rm
-        r";\s*rm\s+-[rf]",
-        r"&&\s*rm\s+-[rf]",
-        r"\|\|\s*rm\s+-[rf]",
-        // Redirection exploits
-        r">\s*/dev/null\s*>&?\s*\d?",
-        r"<<\s*(?i)EOF",
-        // Subshell data exfiltration
-        r"\$\(\s*cat\s+",
-        r"\$\(\s*curl\s+",
-        r"\$\(\s*wget\s+",
-        r"\$\(\s*which\s+",
-        // Privilege escalation
-        r"\bsudo\b",
-        r"\bchmod\s+[0-7]{3,4}\b",
-        r"\bchown\b",
-        r"\bpkill\b",
-        r"\bkillall\b",
-        r"\bkill\s+-[9]\b",
-        // Remote code execution
-        r"\bcurl\b.*\|\s*(sh|bash)",
-        r"\bwget\b.*\|\s*(sh|bash)",
-        // Package management
-        r"\bnpm\s+install\s+-g\b",
-        r"\bpip\s+install\s+--user\b",
-        r"\bapt\s+(install|remove|purge)\b",
-        r"\byum\s+(install|remove)\b",
-        r"\bdnf\s+(install|remove)\b",
-        // Container escape
-        r"\bdocker\s+run\b",
-        r"\bdocker\s+exec\b",
-        // Git force push
-        r"\bgit\s+push\b",
-        r"\bgit\s+force\b",
-        // Remote access
-        r"\bssh\b.*@",
-        // Code execution
-        r"\beval\b",
-        r"\bsource\s+.*\.sh\b",
-    ];
+/// Default exec deny patterns (raw regex strings) — **单一真相源**。
+///
+/// 【核实 2026-11-08】生产 `exec` / `exec_async` 工具走
+/// `nemesis-agent::loop_tools` 版实现（本 crate 的 `ShellTool` 当前无生产
+/// 注册路径，见其结构体注记）。deny 词表必须跨两处实现同源——否则
+/// 「词表防线在生产路径上长什么样」出现两套答案。公开为 `const` 供
+/// loop_tools 侧引用；本 crate 的 `default_deny_patterns()` 亦从此编译。
+/// 这些模式镜像 Go 版 `defaultDenyPatterns`。
+pub const DEFAULT_EXEC_DENY_PATTERNS: &[&str] = &[
+    // Destructive file operations
+    r"\brm\s+-[rf]{1,2}\b",
+    r"\bdel\s+/[fq]\b",
+    r"\brmdir\s+/s\b",
+    r"\b(format|mkfs|diskpart)\b\s",
+    r"\bdd\s+if=",
+    r">\s*/dev/sd[a-z]\b",
+    // System control
+    r"\b(shutdown|reboot|poweroff)\b",
+    // Fork bomb
+    r":\(\)\s*\{.*\};\s*:",
+    // Command substitution
+    r"\$\([^)]+\)",
+    r"\$\{[^}]+\}",
+    r"`[^`]+`",
+    // Pipe to shell
+    r"\|\s*sh\b",
+    r"\|\s*bash\b",
+    // Chained rm
+    r";\s*rm\s+-[rf]",
+    r"&&\s*rm\s+-[rf]",
+    r"\|\|\s*rm\s+-[rf]",
+    // Redirection exploits
+    r">\s*/dev/null\s*>&?\s*\d?",
+    r"<<\s*(?i)EOF",
+    // Subshell data exfiltration
+    r"\$\(\s*cat\s+",
+    r"\$\(\s*curl\s+",
+    r"\$\(\s*wget\s+",
+    r"\$\(\s*which\s+",
+    // Privilege escalation
+    r"\bsudo\b",
+    r"\bchmod\s+[0-7]{3,4}\b",
+    r"\bchown\b",
+    r"\bpkill\b",
+    r"\bkillall\b",
+    r"\bkill\s+-[9]\b",
+    // Remote code execution
+    r"\bcurl\b.*\|\s*(sh|bash)",
+    r"\bwget\b.*\|\s*(sh|bash)",
+    // Package management
+    r"\bnpm\s+install\s+-g\b",
+    r"\bpip\s+install\s+--user\b",
+    r"\bapt\s+(install|remove|purge)\b",
+    r"\byum\s+(install|remove)\b",
+    r"\bdnf\s+(install|remove)\b",
+    // Container escape
+    r"\bdocker\s+run\b",
+    r"\bdocker\s+exec\b",
+    // Git force push
+    r"\bgit\s+push\b",
+    r"\bgit\s+force\b",
+    // Remote access
+    r"\bssh\b.*@",
+    // Code execution
+    r"\beval\b",
+    r"\bsource\s+.*\.sh\b",
+];
 
-    patterns.iter().filter_map(|p| Regex::new(p).ok()).collect()
+/// Default deny patterns compiled from regex strings.
+fn default_deny_patterns() -> Vec<Regex> {
+    DEFAULT_EXEC_DENY_PATTERNS
+        .iter()
+        .filter_map(|p| Regex::new(p).ok())
+        .collect()
 }
 
 /// Shell command execution tool with safety validation.

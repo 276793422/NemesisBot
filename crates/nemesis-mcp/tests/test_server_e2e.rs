@@ -179,3 +179,63 @@ async fn http_transport_dispatch_reaches_http_endpoint() {
         "HTTP transport discovery must surface mock_tool; got {names:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// BUG-20261109-007 回归锁：SSE chunk 边界劈开多字节字符不得 U+FFFD。
+// ---------------------------------------------------------------------------
+//
+// mock SSE 端点把含 CJK 的 data 载荷劈成两个 TCP 写（中间 sleep 硬隔断，
+// 强制客户端两次 chunk 读），字符"中"（E4 B8 AD）跨写边界。修复前逐
+// chunk from_utf8_lossy 会把半个"中"换成 U+FFFD；修复后增量解码等全。
+
+#[tokio::test]
+async fn http_sse_chunk_split_multibyte_char_not_corrupted() {
+    use std::io::{Read as _, Write as _};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut s = stream;
+            let mut buf = [0u8; 8192];
+            let _ = s.read(&mut buf);
+            let body = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"mock\",\"version\":\"0\"},\"tools\":[{\"name\":\"mock_tool\",\"description\":\"中文能力说明\",\"inputSchema\":{\"type\":\"object\"}}]}}\r\n\r\n";
+            let head =
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+            // 找 CJK "中" 的字节偏移，把 E4 B8 / AD 劈成两次写。
+            let bytes = body.as_bytes();
+            let mid = body.find("中").unwrap() + 1; // 劈在"中"第 2 与第 3 字节之间
+            let _ = s.write_all(head.as_bytes());
+            let _ = s.write_all(&bytes[..mid]);
+            let _ = s.flush();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = s.write_all(&bytes[mid..]);
+            let _ = s.flush();
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config.mcp.json");
+    let url = format!("http://127.0.0.1:{port}/mcp");
+    let cfg = serde_json::json!({
+        "enabled": true,
+        "servers": [{ "name": "httptest", "transport_type": "http", "url": url }]
+    });
+    std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
+
+    let mut mgr = McpManager::new(cfg_path);
+    mgr.load_config().unwrap();
+    let server = mgr.list_servers()[0].clone();
+    let tools = mgr.discover_tools(&server).await.expect("http discover");
+
+    let tool = tools
+        .iter()
+        .find(|t| t.definition().name.ends_with("mock_tool"))
+        .expect("mock_tool must surface");
+    let desc = &tool.definition().description;
+    // adapter 会给描述加 [MCP:server] 前缀；关键断言：CJK 原文完整且无 U+FFFD。
+    assert!(
+        desc.contains("中文能力说明") && !desc.contains('\u{FFFD}'),
+        "SSE chunk 边界劈开 CJK 后描述必须无损, got: {desc}"
+    );
+}

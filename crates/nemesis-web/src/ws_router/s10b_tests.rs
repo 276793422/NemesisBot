@@ -31,6 +31,7 @@ impl ModuleHandler for EchoHandler {
 
 fn make_ctx() -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

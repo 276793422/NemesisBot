@@ -98,7 +98,10 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     // 显式 origin 列表 → 生产层；配置缺失/加载失败 → restrictive（同源限定，
     // fail-closed——旧「空列表 = allow-all」缺省把配置缺失静默变成 `*`）。
     // dashboard 与 API 同源服务，restrictive 不影响内建流。
-    let (cors_origins, cors_allow_all) = {
+    // 2026-11-08：manager 实例不再读完即弃——Arc 保留注入 WebServer，
+    // cors.* WSAPI（list/add/remove/toggle）真实现消费同一实例（与 CLI
+    // commands/cors.rs 同源；CorsLayer 仍启动时静态构建，改配置需重启生效）。
+    let (cors_origins, cors_allow_all, cors_manager) = {
         let cors_path = common::cors_config_path(&home);
         if cors_path.exists() {
             match nemesis_web::cors::CORSManager::new(&cors_path) {
@@ -106,7 +109,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                     let mgr_cfg = mgr.config();
                     if mgr_cfg.development_mode {
                         info!("[Gateway] CORS: development_mode enabled, allowing all origins");
-                        (vec![], true)
+                        (vec![], true, Some(std::sync::Arc::new(mgr)))
                     } else {
                         let origins = mgr.list_origins();
                         info!(
@@ -114,7 +117,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                             origins.len(),
                             cors_path.display()
                         );
-                        (origins, false)
+                        (origins, false, Some(std::sync::Arc::new(mgr)))
                     }
                 }
                 Err(e) => {
@@ -122,11 +125,13 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         "[Gateway] Failed to load CORS config: {} — CORS stays restrictive (same-origin only)",
                         e
                     );
-                    (vec![], false)
+                    (vec![], false, None)
                 }
             }
         } else {
-            (vec![], false)
+            // 配置缺失不惰性创建 manager（CLI `cors add` 才落默认文件）；
+            // WSAPI cors.* 走 None 诚实报错，与 restrictive 启动态一致。
+            (vec![], false, None)
         }
     };
     let static_files = crate::embedded::resolve_static_files();
@@ -150,6 +155,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         index_file: "index.html".to_string(),
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
+    // CORS 管理器注入（cors.* WSAPI 真实现）：与 skins 同款 setter 形态
+    // （不进 WebServerConfig——测试字面量装配面大）；None（配置缺失/加载
+    // 失败）不注入，WSAPI handler 诚实报错 not connected。
+    if let Some(mgr) = cors_manager {
+        web_server.set_cors_manager(mgr);
+    }
     // 皮肤包（.nbskin）装配：目录 = exe 同级 `skins/`（与 static/ 同策略，
     // 不落 home）；激活 id = config `ui.skin`（"default"/空 = 内置皮肤）。
     // setter 注入而非 WebServerConfig 字段——后者有大量测试字面量装配，

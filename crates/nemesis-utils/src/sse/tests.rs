@@ -131,3 +131,30 @@ fn boundary_chunk_split_cr_separator_reassembles() {
     acc.push('d');
     assert_eq!(next_event_boundary(&acc), Some((7, 2)));
 }
+
+// ---------------------------------------------------------------------------
+// push_chunk_incremental（BUG-20261109-007：nemesis-mcp 逐 chunk lossy 同族钉）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn push_chunk_cjk_split_across_chunks_survives() {
+    // "中" = E4 B8 AD，一字节一个 chunk（最恶劣劈法）。
+    let mut buf = String::new();
+    let mut pending = Vec::new();
+    super::push_chunk_incremental(&mut buf, &mut pending, &[0xE4]);
+    super::push_chunk_incremental(&mut buf, &mut pending, &[0xB8]);
+    super::push_chunk_incremental(&mut buf, &mut pending, &[0xAD]);
+    assert_eq!(buf, "中");
+    assert!(pending.is_empty());
+}
+
+#[test]
+fn push_chunk_invalid_byte_replaced_then_split_char_completes() {
+    // 真坏字节当场替换；紧随其后的劈开字符照常跨 chunk 补全。
+    let mut buf = String::new();
+    let mut pending = Vec::new();
+    super::push_chunk_incremental(&mut buf, &mut pending, &[0xFF, 0xE4]);
+    super::push_chunk_incremental(&mut buf, &mut pending, &[0xB8, 0xAD]);
+    assert_eq!(buf, "\u{FFFD}中");
+    assert!(pending.is_empty());
+}

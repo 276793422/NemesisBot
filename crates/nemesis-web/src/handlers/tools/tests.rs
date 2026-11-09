@@ -63,6 +63,7 @@ impl Tool for FakeTool {
 fn make_ctx(al: AgentLoop, dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

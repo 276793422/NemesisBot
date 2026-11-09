@@ -328,6 +328,85 @@ fn list_passthrough_compact_context_tokens() {
     assert!(models[1]["compact_context_tokens"].is_null(), "缺省 = null");
 }
 
+/// C-4（2026-11-08）：api_base 行内编辑——http(s) URL 落盘 /
+/// 空串=清除回前缀自动推断 / 非法前缀 loud 拒 / trim 归一 /
+/// 未知字段报错清单含新键。注意 api_base 是 typed String（空串=「未设」
+/// 语义），与 compact_context_tokens 的「移键」清除形态不同——空串写盘
+/// 而非移键（resolver 对空串同样按自动推断处理）。
+#[test]
+fn update_field_api_base_set_clear_reject() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+    let home = home_str(&dir);
+    let m1 = || read_config_raw(dir.path())["model_list"][0].clone();
+
+    // http/https URL 落盘（含 trim 归一）。
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "api_base", "value": "  http://127.0.0.1:8080/v1  " }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(m1()["api_base"], "http://127.0.0.1:8080/v1");
+
+    // https 同样接受。
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "api_base", "value": "https://api.example.com/v1" }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(m1()["api_base"], "https://api.example.com/v1");
+
+    // 空串 = 清除（写空串 = typed「未设」语义，回 provider 前缀自动推断）。
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "api_base", "value": "" }),
+        &make_ctx(&dir),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(m1()["api_base"], "", "空串清除必须写空串（typed 未设语义）");
+
+    // 非法前缀 loud 拒（socks 是 proxy 字段的职责，不是端点形态）。
+    for bad in [
+        serde_json::json!("socks5://127.0.0.1:1080"),
+        serde_json::json!("ftp://x"),
+        serde_json::json!("api.example.com/v1"),
+    ] {
+        let err = h
+            .update_field(
+                &home,
+                &serde_json::json!({ "name": "m1", "field": "api_base", "value": bad }),
+                &make_ctx(&dir),
+            )
+            .unwrap_err();
+        assert!(
+            err.contains("http://"),
+            "非法前缀须 loud 拒并提示合法形态，got: {err}"
+        );
+    }
+
+    // 拒绝路径不动文件。
+    assert_eq!(m1()["api_base"], "");
+
+    // 未知字段报错清单含 api_base（可发现性）。
+    let err = h
+        .update_field(
+            &home,
+            &serde_json::json!({ "name": "m1", "field": "no_such_field", "value": "x" }),
+            &make_ctx(&dir),
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("api_base"),
+        "未知字段错误须列出 api_base，got: {err}"
+    );
+}
+
 #[test]
 fn catalog_info_reports_cache_state() {
     let dir = tempfile::tempdir().unwrap();
@@ -487,6 +566,7 @@ pub(super) fn make_ctx(dir: &tempfile::TempDir) -> crate::ws_router::RequestCont
 
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -802,6 +882,7 @@ fn ctx_with_loop(dir: &tempfile::TempDir) -> crate::ws_router::RequestContext {
         nemesis_agent::types::AgentConfig::default(),
     );
     let state = crate::api_handlers::AppState {
+        cors_manager: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
         ..(*ctx.state).clone()
     };
@@ -876,6 +957,7 @@ fn set_default_syncs_forge_provider_bridge() {
         nemesis_agent::types::AgentConfig::default(),
     );
     let state = crate::api_handlers::AppState {
+        cors_manager: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(Some(Arc::new(al)))),
         forge: Some(forge),
         ..(*ctx.state).clone()

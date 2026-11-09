@@ -22,6 +22,7 @@ import { onMounted, onUnmounted, computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { useToast } from '../composables/useToast'
+import { useWSAPI } from '../composables/useWSAPI'
 import { useChatApi } from '../composables/useChatApi'
 import { useFileTreePanel } from '../composables/useFileTreePanel'
 // SB（2026-09-17）：订阅 `session.created`（会话 jsonl 首行落盘）→ force
@@ -48,6 +49,7 @@ const toast = useToast()
 const router = useRouter()
 const wfEditSessions = useWfEditSessions()
 const { openProjectDir, snooze, unsnooze, detach, importSession } = useChatApi()
+const { request } = useWSAPI()
 
 // 服务端绑定权威面（2026-10-19 修复）：`wf_agentgen:*` 绑定命中的存活
 // 会话一律视为工作流编辑会话。隐藏判定与 localStorage 登记取**并集**——
@@ -422,6 +424,34 @@ async function openDir(key: string) {
 // 新建项目 modal（F1）。
 const showProjectModal = ref(false)
 
+// ── projects.max 就近编辑（批次 3 配置页补全）：项目区标题条上的数字
+// 输入，撞上限报错处即可调；config.set_field 写 config.json projects.max，
+// 热生效于下次新建判定（typed round-trip，无需重启）。null = 读取失败隐藏。──
+const projectMax = ref<number | null>(null)
+
+async function loadProjectMax() {
+  try {
+    const cfg = await request('config', 'get')
+    projectMax.value = cfg?.projects?.max ?? 4
+  } catch {
+    projectMax.value = null
+  }
+}
+
+async function saveProjectMax() {
+  const v = projectMax.value
+  if (v == null || !Number.isFinite(v) || v < 1) {
+    projectMax.value = 4
+    return
+  }
+  try {
+    await request('config', 'set_field', { path: 'projects.max', value: Math.floor(v) })
+  } catch (e: any) {
+    toast.error('项目上限保存失败: ' + e)
+    await loadProjectMax()
+  }
+}
+
 const currentId = computed(() => sessionStore.currentId)
 // P3-1: fork dialog state (null = closed).
 const forkTarget = ref<{ id: string; title: string } | null>(null)
@@ -434,6 +464,7 @@ onMounted(async () => {
   await sessionStore.fetchList()
   // L6++：项目注册表（组头数据源；失败静默退化，见 store 注释）。
   await sessionStore.fetchProjects()
+  void loadProjectMax()
   // SB（2026-09-17）：会话物化事件 → force 刷新（绕过 5s 缓存——事件就是
   // 「列表已过期」的信号）。事件丢失由 ChatPanel 的 receive 帧兜底补拉。
   onSSE('session.created', onSessionCreated)
@@ -904,6 +935,22 @@ function relTime(ts: string): string {
       <div class="section-bar proj-section-bar">
         <span class="section-label">项目</span>
         <span class="section-spacer" />
+        <!-- projects.max 就近编辑（批次 3）：热生效于下次新建判定 -->
+        <label
+          v-if="projectMax !== null"
+          class="proj-max-edit"
+          title="项目数上限（projects.max）：超过上限时新建被拒；改动即时保存，热生效于下次新建"
+        >
+          <input
+            v-model.number="projectMax"
+            type="number"
+            min="1"
+            max="16"
+            data-test="project-max-input"
+            @change="saveProjectMax"
+            @click.stop
+          />
+        </label>
         <button class="project-create-btn" @click="showProjectModal = true" title="新建项目">＋</button>
       </div>
       <div v-if="sessionStore.projects.length === 0" class="section-empty">暂无项目——点「＋」注册一个目录</div>
@@ -1258,6 +1305,25 @@ function relTime(ts: string): string {
 }
 .project-create-btn:hover {
   background: var(--accent-muted);
+}
+/* projects.max 就近编辑（批次 3）：标题条内的迷你数字输入 */
+.proj-max-edit {
+  display: flex;
+  align-items: center;
+  margin-right: 4px;
+}
+.proj-max-edit input {
+  width: 40px;
+  padding: 1px 4px;
+  font-size: 11px;
+  text-align: center;
+  border: 1px solid var(--border-light);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+}
+.proj-max-edit input:focus {
+  color: var(--text-primary);
 }
 .section-empty {
   padding: 4px 8px 8px;

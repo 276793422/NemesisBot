@@ -390,6 +390,7 @@ fn test_resolve_log_file_path_llm_no_files() {
 #[test]
 fn test_app_state_session_manager_ref() {
     let state = AppState {
+        cors_manager: None,
         auth_token: "test".to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -621,6 +622,7 @@ fn test_resolve_log_file_path_general_app_log() {
 #[test]
 fn test_app_state_default_values() {
     let state = AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(5)),
         workspace: Some("/tmp".to_string()),
@@ -754,6 +756,7 @@ fn test_resolve_log_file_path_cluster_empty_directory() {
 fn make_test_state(workspace: Option<String>, auth_token: &str) -> Arc<AppState> {
     let home = workspace.clone();
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(2)),
         workspace,

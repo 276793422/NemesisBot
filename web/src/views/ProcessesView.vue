@@ -183,15 +183,15 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- TAB 面板（挂 ExecutorsView 复合页内，旧 /processes 路由已 redirect）：
+       无自身 page-header——页面级标题归宿主页；desc 降级为面板顶部说明行；
+       padding 与滚动由宿主 .page-body 提供（裸 div 仅作结构分组）。 -->
   <div class="page-processes">
-    <div class="page-header">
-      <h2>后台任务</h2>
-      <p class="page-desc">
-        Agent 用 background_start 启动的本机后台子进程：实时输出、stdin 注入、进程树停止。
-        输出缓冲有上限（超出丢弃头部）；注册表满员时自动淘汰最旧的已完成任务。
-      </p>
-    </div>
-    <div class="page-body">
+    <p class="page-desc">
+      Agent 用 background_start 启动的本机后台子进程：实时输出、stdin 注入、进程树停止。
+      输出缓冲有上限（超出丢弃头部）；注册表满员时自动淘汰最旧的已完成任务。
+    </p>
+    <div>
       <div class="proc-filters">
         <span v-if="hasRunning" class="badge badge-info">● {{ jobs.filter((j) => j.running).length }} 个运行中</span>
         <div style="flex: 1;"></div>
@@ -269,7 +269,7 @@ onBeforeUnmount(() => {
 .page-desc {
   color: var(--text-muted);
   font-size: var(--text-sm);
-  margin-top: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 .proc-filters {
   display: flex;

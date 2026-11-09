@@ -263,6 +263,7 @@ fn register_disabled_ignores_injected_manager() {
     use crate::loop_tools::SharedToolConfig;
     let mgr = std::sync::Arc::new(nemesis_lsp::LspManager::new(None, None));
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         lsp_tool_enabled: false,
         lsp_manager: Some(mgr),
         ..Default::default()

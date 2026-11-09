@@ -352,9 +352,40 @@ function wasmLoadBadge(p: WasmPluginRow): { dot: string; color: string; text: st
   return { dot: '○', color: 'var(--text-muted)', text: '未加载', badge: 'plugin-badge--off' }
 }
 
+// ── WASM 子系统总闸（批次 3 配置页补全）：config.json 的 plugins.wasm.enabled，
+// runtime_enabled 每次调用现读 = 真热生效；null = 读取失败隐藏开关。──
+const wasmGate = ref<boolean | null>(null)
+
+async function loadWasmGate() {
+  try {
+    const cfg = await request('config', 'get')
+    wasmGate.value = cfg?.plugins?.wasm?.enabled !== false // 缺省 true
+  } catch {
+    wasmGate.value = null
+  }
+}
+
+async function toggleWasmGate() {
+  const target = wasmGate.value === false
+  try {
+    await request('config', 'set_field', { path: 'plugins.wasm.enabled', value: target })
+    wasmGate.value = target
+    toast.success(
+      target
+        ? 'WASM 插件子系统已启用：插件工具调用立即恢复（热生效）'
+        : 'WASM 插件子系统已关闭：所有 WASM 插件工具调用立即被拒（热生效，插件列表仍可管理）'
+    )
+  } catch (e: any) {
+    toast.error('总闸写入失败: ' + e)
+  }
+}
+
 onMounted(() => {
   loadPlugins()
-  if (wasmFeatureEnabled) loadWasm()
+  if (wasmFeatureEnabled) {
+    loadWasm()
+    loadWasmGate()
+  }
 })
 </script>
 
@@ -396,6 +427,19 @@ onMounted(() => {
                 <code>plugins/</code> 平级、命名区分）。安装或手工放入后<strong>默认不加载</strong>；
                 每个插件用开关决定加载与否（长期记忆，重启后保持）。一个插件原则上一个功能。
               </p>
+              <!-- WASM 子系统总闸（批次 3）：plugins.wasm.enabled（config.json），
+                   runtime_enabled 每调用现读 = 真热生效；关闭后所有 WASM 插件
+                   工具调用立即被拒，列表仍可管理。 -->
+              <div v-if="wasmGate !== null" style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border-light); flex-wrap: wrap;" data-test="wasm-gate-row">
+                <label class="toggle-switch" title="WASM 子系统总闸：关闭后所有 WASM 插件工具调用立即被拒（热生效）；打开即恢复">
+                  <input data-test="wasm-gate-toggle" type="checkbox" :checked="wasmGate" @change="toggleWasmGate" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <span style="font-size: var(--text-sm); font-weight: 600;">WASM 子系统总闸</span>
+                <span style="font-size: var(--text-xs); color: var(--text-muted);">
+                  关闭后<strong>所有</strong> WASM 插件工具调用立即被拒（热生效，优先级高于下方逐插件开关与面板 LLM）；打开即恢复。
+                </span>
+              </div>
               <!-- 面板 LLM 总闸（2026-11-01 决策 C）：总闸 × manifest x-llm 声明双闸，
                    缺省关；此处即用户开关（热生效，不改 config 文件）。 -->
               <div v-if="panelLlm" style="display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) 0; border-bottom: 1px solid var(--border-light); margin-bottom: var(--space-3); flex-wrap: wrap;">

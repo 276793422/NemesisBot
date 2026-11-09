@@ -23,6 +23,7 @@ use std::time::Instant;
 fn make_ctx(dir: &Path) -> RequestContext {
     let ws = dir.to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -80,6 +81,7 @@ fn make_ctx(dir: &Path) -> RequestContext {
 /// workspace: None 的 ctx（workspace_of 错误分支）。
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

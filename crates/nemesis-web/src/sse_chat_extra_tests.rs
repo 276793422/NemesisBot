@@ -249,6 +249,7 @@ fn make_state(
     streaming_provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: "test-token".to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(".".to_string()),

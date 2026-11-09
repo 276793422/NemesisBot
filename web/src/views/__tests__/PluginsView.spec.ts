@@ -491,3 +491,61 @@ describe('面板 LLM 总闸开关（2026-11-01 决策 C：用户开关面，不�
     w.unmount()
   })
 })
+
+describe('PluginsView WASM 子系统总闸（批次 3）', () => {
+  function implWithCfg(cfg: any) {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(LIST)
+      if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
+      if (cmd === 'get') return Promise.resolve(cfg)
+      if (cmd === 'set_field') return Promise.resolve({ ok: true })
+      return Promise.resolve({})
+    })
+  }
+
+  it('config 缺 plugins.wasm 段 → 缺省开启（checked=true）', async () => {
+    implWithCfg({})
+    const w = await mountView()
+    await switchTab(w, 'WASM 插件')
+    const toggle = w.find('[data-test="wasm-gate-toggle"]')
+    expect(w.find('[data-test="wasm-gate-row"]').exists()).toBe(true)
+    expect((toggle.element as HTMLInputElement).checked).toBe(true)
+    w.unmount()
+  })
+
+  it('uncheck → set_field {path: plugins.wasm.enabled, value: false} + toast', async () => {
+    implWithCfg({})
+    const w = await mountView()
+    await switchTab(w, 'WASM 插件')
+    await w.find('[data-test="wasm-gate-toggle"]').setValue(false)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'plugins.wasm.enabled', value: false })
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('已关闭'))).toBe(true)
+    w.unmount()
+  })
+
+  it('已配置关 → checked=false；勾选 → value: true', async () => {
+    implWithCfg({ plugins: { wasm: { enabled: false } } })
+    const w = await mountView()
+    await switchTab(w, 'WASM 插件')
+    const toggle = w.find('[data-test="wasm-gate-toggle"]')
+    expect((toggle.element as HTMLInputElement).checked).toBe(false)
+    await toggle.setValue(true)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'plugins.wasm.enabled', value: true })
+    w.unmount()
+  })
+
+  it('config.get 失败 → 开关行隐藏（wasmGate=null 不渲染，不猜状态）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(LIST)
+      if (cmd === 'wasm.list') return Promise.resolve({ plugins: [] })
+      if (cmd === 'get') return Promise.reject(new Error('cfg down'))
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    await switchTab(w, 'WASM 插件')
+    expect(w.find('[data-test="wasm-gate-row"]').exists()).toBe(false)
+    w.unmount()
+  })
+})

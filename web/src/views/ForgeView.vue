@@ -214,6 +214,57 @@ async function loadConfig() {
   } catch { /* ignore */ }
 }
 
+// --- 高级配置 8 键（2026-11-08 配置页补全批次 2）---
+// config.forge.json side-file 读写走 forge.config.get/config.set 白名单面
+// （config.set_field 只写主 config.json 不覆盖 side-file）。整批一次保存：
+// 后端任一键非法整批拒绝，不落半批。
+const advConfig = ref<any>(null)
+const advOpen = ref(false)
+const advSaving = ref(false)
+const advDefaults = ref(false)
+
+async function loadAdvanced() {
+  try {
+    const data = await request('forge', 'config.get')
+    const c = data?.config && typeof data.config === 'object' ? { ...data.config } : {}
+    // 纵深防御：模板裸绑嵌套路径（advConfig.test.judge_model 等），后端
+    // 已做 defaults ⊕ raw 深合并，这里仍补齐 UI 消费段防任何形状缺口崩整页。
+    for (const k of ['test', 'optimize', 'collection', 'reflection', 'artifacts', 'validation']) {
+      if (!c[k] || typeof c[k] !== 'object') c[k] = {}
+    }
+    advConfig.value = c
+    advDefaults.value = data?.defaults === true
+  } catch (e: any) {
+    toast.error('加载高级配置失败: ' + e)
+  }
+}
+
+async function saveAdvanced() {
+  const c = advConfig.value
+  if (!c) return
+  advSaving.value = true
+  try {
+    await request('forge', 'config.set', {
+      values: {
+        replay_auto_ingest: c.replay_auto_ingest === true,
+        'reflection.use_llm': c.reflection?.use_llm === true,
+        'artifacts.auto_skill': c.artifacts?.auto_skill === true,
+        'validation.auto_validate': c.validation?.auto_validate === true,
+        'test.judge_model': c.test?.judge_model ?? null,
+        'test.judge_threshold': Number(c.test?.judge_threshold ?? 0.7),
+        'optimize.budget_tokens': Number(c.optimize?.budget_tokens ?? 2000),
+        'collection.max_experiences': Number(c.collection?.max_experiences ?? 500),
+      },
+    })
+    toast.success('高级设置已保存')
+    await loadAdvanced()
+  } catch (e: any) {
+    toast.error('保存失败: ' + e)
+  } finally {
+    advSaving.value = false
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Actions
 // ---------------------------------------------------------------------------
@@ -277,7 +328,10 @@ function switchTab(tab: string) {
   }
   else if (tab === 'cycles' && cycles.value.length === 0) loadCycles()
   else if (tab === 'artifacts' && artifacts.value.length === 0) loadArtifacts()
-  else if (tab === 'config' && !configData.value) loadConfig()
+  else if (tab === 'config') {
+    if (!configData.value) loadConfig()
+    if (!advConfig.value) loadAdvanced()
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -884,6 +938,102 @@ onUnmounted(() => {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 高级设置（config.forge.json side-file 8 键；2026-11-08 批次 2）-->
+        <div class="card" style="margin-top: var(--space-4);">
+          <div class="card-header" style="cursor: pointer; user-select: none;" data-test="forge-adv-toggle" @click="advOpen = !advOpen">
+            <h3>高级设置</h3>
+            <span style="font-size: var(--text-sm); color: var(--text-muted);">{{ advOpen ? '收起 ▲' : '展开 ▼' }}</span>
+          </div>
+          <div v-if="advOpen" class="card-body">
+            <div v-if="!advConfig" class="empty-state">
+              <p>加载中…</p>
+            </div>
+            <div v-else>
+              <div v-if="advDefaults" class="form-hint" style="margin-bottom: var(--space-3);">
+                以下为缺省值（config.forge.json 尚未生成，首次保存时自动创建）。
+              </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4);">
+                <!-- 四个开关 -->
+                <div style="display: flex; flex-direction: column; gap: var(--space-2);">
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: var(--text-secondary); position: relative; cursor: help;" title="失败重放用例自动进入待审区（否则只落报告待人工导入）。">
+                      重放自动入库
+                      <span style="font-size: var(--text-xs); color: var(--text-muted); margin-left: 2px;">?</span>
+                    </span>
+                    <label style="position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer;">
+                      <input v-model="advConfig.replay_auto_ingest" type="checkbox" style="opacity: 0; width: 0; height: 0;">
+                      <span style="position: absolute; inset: 0; border-radius: 10px; transition: background 0.2s;" :style="{ background: advConfig.replay_auto_ingest ? 'var(--success)' : 'var(--text-muted)' }"></span>
+                      <span style="position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;" :style="{ transform: advConfig.replay_auto_ingest ? 'translateX(18px)' : 'translateX(2px)' }"></span>
+                    </label>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: var(--text-secondary); position: relative; cursor: help;" title="反思阶段调用 LLM 提取模式（关=纯统计规则，省 token）。">
+                      反思用 LLM
+                      <span style="font-size: var(--text-xs); color: var(--text-muted); margin-left: 2px;">?</span>
+                    </span>
+                    <label style="position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer;">
+                      <input v-model="advConfig.reflection.use_llm" type="checkbox" style="opacity: 0; width: 0; height: 0;">
+                      <span style="position: absolute; inset: 0; border-radius: 10px; transition: background 0.2s;" :style="{ background: advConfig.reflection.use_llm ? 'var(--success)' : 'var(--text-muted)' }"></span>
+                      <span style="position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;" :style="{ transform: advConfig.reflection.use_llm ? 'translateX(18px)' : 'translateX(2px)' }"></span>
+                    </label>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: var(--text-secondary); position: relative; cursor: help;" title="工件部署后自动生成对应 SKILL.md 技能。">
+                      自动生成技能
+                      <span style="font-size: var(--text-xs); color: var(--text-muted); margin-left: 2px;">?</span>
+                    </span>
+                    <label style="position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer;">
+                      <input v-model="advConfig.artifacts.auto_skill" type="checkbox" style="opacity: 0; width: 0; height: 0;">
+                      <span style="position: absolute; inset: 0; border-radius: 10px; transition: background 0.2s;" :style="{ background: advConfig.artifacts.auto_skill ? 'var(--success)' : 'var(--text-muted)' }"></span>
+                      <span style="position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;" :style="{ transform: advConfig.artifacts.auto_skill ? 'translateX(18px)' : 'translateX(2px)' }"></span>
+                    </label>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: var(--text-secondary); position: relative; cursor: help;" title="技能写入时自动跑行为校验（可用 forge test 手动跑）。">
+                      自动校验
+                      <span style="font-size: var(--text-xs); color: var(--text-muted); margin-left: 2px;">?</span>
+                    </span>
+                    <label style="position: relative; display: inline-block; width: 36px; height: 20px; cursor: pointer;">
+                      <input v-model="advConfig.validation.auto_validate" type="checkbox" style="opacity: 0; width: 0; height: 0;">
+                      <span style="position: absolute; inset: 0; border-radius: 10px; transition: background 0.2s;" :style="{ background: advConfig.validation.auto_validate ? 'var(--success)' : 'var(--text-muted)' }"></span>
+                      <span style="position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s;" :style="{ transform: advConfig.validation.auto_validate ? 'translateX(18px)' : 'translateX(2px)' }"></span>
+                    </label>
+                  </div>
+                </div>
+                <!-- 数值/模型四项 -->
+                <div style="display: flex; flex-direction: column; gap: var(--space-3);">
+                  <div class="form-group">
+                    <label class="form-label">评审模型（test.judge_model）</label>
+                    <input
+                      v-model="advConfig.test.judge_model"
+                      class="form-input"
+                      placeholder="留空 = 自动回落（test.judge_model → agents.small_model → 主模型）"
+                    >
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">评审通过阈值（0~1）</label>
+                    <input v-model.number="advConfig.test.judge_threshold" class="form-input" type="number" step="0.05" min="0" max="1">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">微优化 token 预算</label>
+                    <input v-model.number="advConfig.optimize.budget_tokens" class="form-input" type="number" min="0" step="100">
+                  </div>
+                  <div class="form-group">
+                    <label class="form-label">经验最大保留条数</label>
+                    <input v-model.number="advConfig.collection.max_experiences" class="form-input" type="number" min="1" step="50">
+                  </div>
+                </div>
+              </div>
+              <div style="margin-top: var(--space-4); display: flex; align-items: center; gap: var(--space-3);">
+                <button class="btn btn-primary" :disabled="advSaving" data-test="forge-adv-save" @click="saveAdvanced">
+                  {{ advSaving ? '保存中…' : '保存高级设置' }}
+                </button>
+                <span style="font-size: var(--text-xs); color: var(--text-muted);">整批保存；任一键非法则整批拒绝，不落半批。</span>
               </div>
             </div>
           </div>

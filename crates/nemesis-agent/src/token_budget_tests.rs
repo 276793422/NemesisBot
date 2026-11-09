@@ -48,6 +48,7 @@ fn test_agent_config() -> crate::types::AgentConfig {
     crate::types::AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("test".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),

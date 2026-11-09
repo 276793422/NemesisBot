@@ -15,6 +15,12 @@ pub struct AgentConfig {
     pub model: String,
     /// System prompt injected at the start of every conversation.
     pub system_prompt: Option<String>,
+    /// 系统提示词分段视图（B4.5 构成计量拆分，2026-11-09 用户拍板 7 段）：
+    /// 启动冻结 prompt 里的 SKILL/MEMORY 注入段原文，供构成计量从全文中
+    /// 拆出。不落盘不序列化（skip）；反序列化缺省 None = 未拆分（按全文
+    /// 归系统提示词段）。
+    #[serde(default, skip_serializing)]
+    pub system_prompt_split: Option<SystemPromptSplit>,
     /// Maximum number of LLM tool-calling iterations per request.
     pub max_turns: u32,
     /// Names of tools available to this agent.
@@ -37,11 +43,26 @@ pub struct AgentConfig {
     pub models: HashMap<String, String>,
 }
 
+/// 系统提示词分段视图（B4.5）：启动冻结 prompt 中可分离的两个注入段原文。
+/// 由 [`crate::context::ContextBuilder::build_system_prompt_with_sections`]
+/// 在拼装时同步产出（单一真相源，全文字节不变）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SystemPromptSplit {
+    /// SKILL 注入面（`## Loaded Skills` 段原文；空 = 未装配技能）。
+    /// 机制口径：只算 system 注入面——对话中按需读取的 SKILL.md 全文是
+    /// 普通历史消息，归对话段（2026-11-09 用户拍板，不做归因近似）。
+    pub skills: String,
+    /// MEMORY 注入面（`## Memory Context` 段原文；当前生产装配路径
+    /// `memory_context` 无接线恒空——保留口径，启用即自动生效）。
+    pub memory: String,
+}
+
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             model: "gpt-4".to_string(),
             system_prompt: None,
+            system_prompt_split: None,
             max_turns: 100,
             tools: Vec::new(),
             tool_fence_profession: None,

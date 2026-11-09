@@ -14,6 +14,11 @@
 //   天然兼容（只清 focus、保留 tab）。
 // - TAB 切换 = 组件销毁/重建（轮询定时器随 onMounted/onBeforeUnmount 正确
 //   清理重建）；两 TAB 数据面本就独立（subagents vs background WSAPI）。
+// - 布局契约（2026-11-09 对齐全仓骨架）：本页是路由页根（page- 前缀拿
+//   `.main-content > [class^="page-"]` 的 flex+height:100%），page-header
+//   归宿主页；TAB 条用全局 .tabs/.tab 下划线式（components.css，与通道/
+//   看板页签等全仓一致）；两个面板 View 均无自身 page-header（标题层级
+//   = 大标题→TAB→内容，与 Scanner/Board 等同款）。
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import SubagentsView from './SubagentsView.vue'
@@ -40,46 +45,21 @@ function switchTab(t: Tab) {
 
 <template>
   <div class="page-executors">
-    <div class="exec-tabbar">
-      <button
-        v-for="t in TABS"
-        :key="t.key"
-        class="exec-tab"
-        :class="{ active: tab === t.key }"
-        @click="switchTab(t.key)"
-      >
-        {{ t.label }}
-      </button>
+    <div class="page-header"><h2>执行单元</h2></div>
+    <div class="page-body">
+      <div class="tabs">
+        <button
+          v-for="t in TABS"
+          :key="t.key"
+          class="tab"
+          :class="{ active: tab === t.key }"
+          @click="switchTab(t.key)"
+        >
+          {{ t.label }}
+        </button>
+      </div>
+      <SubagentsView v-if="tab === 'subagents'" />
+      <ProcessesView v-else />
     </div>
-    <SubagentsView v-if="tab === 'subagents'" />
-    <ProcessesView v-else />
   </div>
 </template>
-
-<style scoped>
-.exec-tabbar {
-  display: flex;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-}
-.exec-tab {
-  padding: var(--space-2) var(--space-4);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  background: var(--bg-primary);
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-.exec-tab:hover {
-  color: var(--text-primary);
-  border-color: var(--accent);
-}
-.exec-tab.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-  font-weight: 500;
-}
-</style>

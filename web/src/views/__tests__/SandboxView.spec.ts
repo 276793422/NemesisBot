@@ -251,3 +251,87 @@ describeGate('SandboxView 用户态开关（P5，env-on 构建）', () => {
     expect(strictBtn.attributes('disabled')).toBeUndefined()
   })
 })
+
+// ── DACL 定向档配置卡（配置页补全批次 5；Windows + overview.dacl 探针在场）──
+
+function windowsOverviewWithAcl(over: Record<string, unknown> = {}) {
+  return {
+    ...windowsOverview(),
+    executor: {
+      enabled: true, sandbox: false, strict: false, allow_network: false,
+      acl: { dacl: false, strict: false, max_files: 20000 },
+    },
+    dacl: {
+      engaged: false, availability: 'full', availability_reason: null,
+      workspace: 'C:\ws', workspace_sid: 'S-1-9-TEST', root_ace: null,
+    },
+    ...over,
+  }
+}
+
+describe('SandboxView DACL 配置卡（批次 5）', () => {
+  it('Windows + dacl 探针在场 → 卡片渲染三控件；与全局严格模式区分文案在场', async () => {
+    const w = await mountView(windowsOverviewWithAcl())
+    const card = w.find('[data-test="acl-card"]')
+    expect(card.exists()).toBe(true)
+    expect(card.find('[data-test="acl-dacl-toggle"]').exists()).toBe(true)
+    expect(card.find('[data-test="acl-strict-toggle"]').exists()).toBe(true)
+    expect((card.find('[data-test="acl-max-files"]').element as HTMLInputElement).value).toBe('20000')
+    // 两键区分语义必须可见（executor.acl.strict ≠ executor.strict）
+    expect(card.text()).toContain('两个键')
+    w.unmount()
+  })
+
+  it('Linux / 探针缺席 → 卡片不渲染', async () => {
+    const w = await mountView(linuxOverview())
+    expect(w.find('[data-test="acl-card"]').exists()).toBe(false)
+    const w2 = await mountView(windowsOverview()) // 无 dacl 键（老后端形态）
+    expect(w2.find('[data-test="acl-card"]').exists()).toBe(false)
+    w.unmount(); w2.unmount()
+  })
+
+  it('主开关：confirm 门 → set_config {acl_dacl:true}；取消不发', async () => {
+    const w = await mountView(windowsOverviewWithAcl())
+    const btn = w.find('[data-test="acl-dacl-toggle"]')
+
+    confirmMock.mockReturnValueOnce(false)
+    await btn.trigger('click')
+    expect(confirmMock).toHaveBeenCalled()
+    expect(requestMock.mock.calls.find(c => c[1] === 'set_config')).toBeUndefined()
+
+    confirmMock.mockReturnValueOnce(true)
+    await btn.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.find(c => c[1] === 'set_config')![2]).toEqual({ acl_dacl: true })
+    w.unmount()
+  })
+
+  it('ACL 档 fail-closed 开关：无 confirm 直接发 {acl_strict:true}', async () => {
+    const w = await mountView(windowsOverviewWithAcl())
+    await w.find('[data-test="acl-strict-toggle"]').trigger('click')
+    await flushPromises()
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(requestMock.mock.calls.find(c => c[1] === 'set_config')![2]).toEqual({ acl_strict: true })
+    w.unmount()
+  })
+
+  it('max_files：合法值发 {acl_max_files:N}；0 / 负数回退不发', async () => {
+    const w = await mountView(windowsOverviewWithAcl())
+    // 本版本 test-utils 的 setValue 对 text input 已触发 input+change 双事件
+    // （setValue 后再 trigger('change') 会双发）——只 setValue 即触发 handler。
+    const input = w.find('[data-test="acl-max-files"]')
+    await input.setValue('12345')
+    await flushPromises()
+    expect(requestMock.mock.calls.find(c => c[1] === 'set_config')![2]).toEqual({ acl_max_files: 12345 })
+
+    const calls0 = requestMock.mock.calls.filter(c => c[1] === 'set_config').length
+    const input2 = w.find('[data-test="acl-max-files"]')
+    await input2.setValue('0')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'set_config').length).toBe(calls0)
+    expect(useToast().toasts.some(t => t.type === 'error')).toBe(true)
+    // 回退显示为配置态（overview mock 静态返回 20000）
+    expect((w.find('[data-test="acl-max-files"]').element as HTMLInputElement).value).toBe('20000')
+    w.unmount()
+  })
+})

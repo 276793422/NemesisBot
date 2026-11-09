@@ -599,3 +599,90 @@ fn pe32_imports_use_32bit_thunk_semantics() {
         vec![("MsgA".to_string(), 0x2078), ("#5".to_string(), 0x207C),],
     );
 }
+
+// ── snapshot 错误路径零孤儿（BUG-20261109-005 回归锁）────────────────
+
+fn snapshot_meta_fixture(profile: &str) -> snapshot::SnapshotMeta {
+    snapshot::SnapshotMeta {
+        profile_id: profile.into(),
+        ts_rfc3339: "2026-11-09T00:00:00Z".into(),
+        pid: 42,
+        module_base: 0x140000000,
+        machine: 0x8664,
+        exe_path: r"C:\t\dummy.exe".into(),
+        sections: vec![],
+    }
+}
+
+fn snapshot_tmp_orphans(store_root: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(store_root)
+        .expect("store root exists")
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.starts_with(".tmp"))
+        .collect()
+}
+
+/// save 三臂与 sweep 孤儿清扫（BUG-20261109-005）：
+/// ① happy path 落盘后零 `.tmp` 残留（tmp 已 rename 转移）；
+/// ② 落定臂失败（ts 名被普通文件占用 → create_dir_all 失败）→
+///    `.tmp<ts>` 已清（ts 唯一名不会被下次保存覆盖，漏清 = 永久孤儿）；
+/// ③ sweep 清陈旧崩溃孤儿（mtime 回拨超宽限），宽限内新鲜孤儿保留，
+///    活快照不受影响。
+#[test]
+fn snapshot_save_failure_cleans_tmp_and_sweep_clears_crash_orphans() {
+    let root = std::env::temp_dir().join(format!("zwrev-snap-orphan-{}", std::process::id()));
+    let ws = root.join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let store = snapshot::SnapshotStore::new(&ws, "zw-orp");
+    let meta = snapshot_meta_fixture("zw-orp");
+    let store_root = ws
+        .join("ziwei")
+        .join("setup")
+        .join("zw-orp")
+        .join("snapshots");
+
+    // ① happy path：零 tmp 残留
+    store
+        .save(&meta, &[1, 2], &[(".text".into(), vec![3; 8])], 1000)
+        .unwrap();
+    assert!(
+        snapshot_tmp_orphans(&store_root).is_empty(),
+        "落盘成功不得残留 .tmp"
+    );
+
+    // ② 落定臂失败：ts 名被普通文件占用 → create_dir_all 失败 → 清 tmp → Err
+    std::fs::write(store_root.join("2000"), b"blocker").unwrap();
+    assert!(
+        store
+            .save(&meta, &[9], &[(".text".into(), vec![8; 8])], 2000)
+            .is_err(),
+        "落定臂失败必须返回 Err"
+    );
+    assert_eq!(
+        snapshot_tmp_orphans(&store_root),
+        Vec::<String>::new(),
+        "落定臂失败必须清 .tmp<ts> 残留"
+    );
+    std::fs::remove_file(store_root.join("2000")).unwrap();
+
+    // ③ 崩溃孤儿清扫：陈旧（回拨 2h > 1h 宽限）删，新鲜（宽限内）留
+    let orphan_old = store_root.join(".tmp1500");
+    std::fs::create_dir_all(&orphan_old).unwrap();
+    std::fs::write(orphan_old.join("headers.bin"), b"x").unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+    filetime::set_file_mtime(&orphan_old, filetime::FileTime::from_system_time(old)).unwrap();
+    let orphan_fresh = store_root.join(".tmp1600");
+    std::fs::create_dir_all(&orphan_fresh).unwrap();
+    let rep = store.sweep(std::time::Duration::from_secs(3600), 10);
+    assert!(!orphan_old.exists(), "陈旧崩溃孤儿必须被 sweep 清除");
+    assert!(
+        orphan_fresh.exists(),
+        "宽限内新鲜孤儿必须保留（绝不误删在写快照）"
+    );
+    assert!(store_root.join("1000").exists(), "活快照不受孤儿清扫影响");
+    assert_eq!(rep.expired, 1, "只有陈旧孤儿被清：{rep:?}");
+    assert_eq!(rep.kept, 1, "清扫报告：{rep:?}");
+
+    let _ = nemesis_utils::fsutil::remove_dir_all_retry(&root);
+}

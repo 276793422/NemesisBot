@@ -310,6 +310,11 @@ async fn parse_sse_response(
     mut response: reqwest::Response,
 ) -> Result<TransportResponse, TransportError> {
     let mut buffer = String::new();
+    // 增量 UTF-8 解码残尾（chunk 边界劈开的多字节字符；BUG-20261109-007：
+    // 此前逐 chunk from_utf8_lossy——CJK/emoji 劈在 TCP 分片边界即 U+FFFD，
+    // R38 在 nemesis-providers 修过的同族缺陷；判定单一真相源
+    // nemesis_utils::sse::push_chunk_incremental）。
+    let mut utf8_pending: Vec<u8> = Vec::new();
 
     loop {
         if let Some((event_text, rest)) = take_complete_event(&buffer) {
@@ -333,8 +338,16 @@ async fn parse_sse_response(
         })?;
 
         match chunk {
-            Some(bytes) => buffer.push_str(&String::from_utf8_lossy(&bytes)),
+            Some(bytes) => {
+                nemesis_utils::sse::push_chunk_incremental(&mut buffer, &mut utf8_pending, &bytes)
+            }
             None => {
+                // EOF：解码残尾（若有）按 lossy 落盘——流已断，尾随不完整
+                // 字符不可能再补全，宽容语义与旧实现一致。
+                if !utf8_pending.is_empty() {
+                    buffer.push_str(&String::from_utf8_lossy(&utf8_pending));
+                    utf8_pending.clear();
+                }
                 // EOF：残留内容按完整事件尽力提取（服务器最后事件不带空行
                 // 结尾的宽容路径）。残留是通知/垃圾/无 data = 流已结束且
                 // 没有响应——诚实报结束，不再把通知硬解析成

@@ -23,6 +23,7 @@ fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["calculator".to_string()],
         models: std::collections::HashMap::new(),
@@ -137,20 +138,22 @@ fn compact_point_config(tag: &str, keep: usize, compact: i64) -> std::path::Path
     path
 }
 
-/// 标准低估算历史：system(4 tok) + 7 × user/assistant(各 "x".repeat(25) = 10
-/// tok) → tail 估算 74 < threshold 75（context_window=100）——纯估算不触发。
+/// 标准低估算历史：system(4 tok) + 7 × user/assistant(各 "x".repeat(40) =
+/// 10 tok) → tail 估算 74 < threshold 75（context_window=100）——纯估算不触发。
+/// （2026-11-09 实报锚定 B1：估算公式 chars×2/5 → len/4，载荷长度按新公式
+/// 换算保持原 token 值，下游触发/边界算术逐位不变。）
 fn low_estimate_history() -> AgentInstance {
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100); // threshold = 75 tokens
     instance.set_history(vec![
-        turn("system", "sys prompt"),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
+        turn("system", "system prompt!"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
     ]);
     instance
 }
@@ -177,8 +180,9 @@ async fn provider_signal_pulls_trigger_above_estimate() {
     agent_loop.set_config_path(cfg_path.clone());
     let instance = low_estimate_history(); // 估算 74 < 75
 
-    // 实报 90（上一轮请求整请求输入）≥ 75 → 触发。
-    agent_loop.note_compaction_provider_signal("s", 90);
+    // 实报 90（上一轮请求整请求输入，锚点 at_len=8=当前历史长度=锚后零
+    // 增量）≥ 75 → 触发。
+    agent_loop.note_compaction_provider_signal("s", 90, 8);
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
         .await;
@@ -223,24 +227,42 @@ async fn no_provider_signal_falls_back_to_estimate() {
 }
 
 /// note 记账：写入 per-session 状态（同口径的值由调用方聚合，此处钉
-/// 存取往返与 None 起点）。
+/// 存取往返与 None 起点；B2 起 tokens 与 at_len 成对写入）。
 #[test]
 fn note_signal_roundtrip() {
     let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
-    let before = agent_loop
-        .compact_state
-        .lock()
-        .get("sess")
-        .and_then(|s| s.last_provider_prompt_tokens);
+    let before = {
+        let states = agent_loop.compact_state.lock();
+        states
+            .get("sess")
+            .map(|s| (s.last_provider_prompt_tokens, s.last_provider_prompt_at_len))
+    };
     assert_eq!(before, None, "起点 None = 纯估算");
 
-    agent_loop.note_compaction_provider_signal("sess", 1234);
-    let after = agent_loop
-        .compact_state
-        .lock()
-        .get("sess")
-        .and_then(|s| s.last_provider_prompt_tokens);
-    assert_eq!(after, Some(1234));
+    agent_loop.note_compaction_provider_signal("sess", 1234, 7);
+    let after = {
+        let states = agent_loop.compact_state.lock();
+        states
+            .get("sess")
+            .map(|s| (s.last_provider_prompt_tokens, s.last_provider_prompt_at_len))
+    };
+    assert_eq!(after, Some((Some(1234), Some(7))));
+}
+
+/// 零实报不写锚（2026-11-09 V3 真模型实测 glm@cc-switch 中继：流式 lane
+/// input 解析为 0 时若照写，锚点=0 → used 塌缩成纯增量估算——54 vs 真实
+/// 2.3 万）。note(0) 保持 None，与「无 usage lane 不调」同语义。
+#[test]
+fn zero_provider_signal_does_not_write_anchor() {
+    let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
+    agent_loop.note_compaction_provider_signal("s", 0, 8);
+    let st = {
+        let states = agent_loop.compact_state.lock();
+        states
+            .get("s")
+            .map(|s| (s.last_provider_prompt_tokens, s.last_provider_prompt_at_len))
+    };
+    assert_eq!(st, None, "零实报不算实报：不写锚，保持 None 纯估算回落");
 }
 
 /// 修复⑤（E2E 抓到）：auto 压缩成功采用后，provider 实报信号
@@ -266,7 +288,7 @@ async fn auto_adoption_clears_stale_provider_signal() {
     agent_loop.set_config_path(cfg_path.clone());
     let instance = low_estimate_history(); // 估算 74 < 75
 
-    agent_loop.note_compaction_provider_signal("s", 90); // 实报 90 ≥ 75 → 触发
+    agent_loop.note_compaction_provider_signal("s", 90, 8); // 实报 90 ≥ 75 → 触发
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
         .await;
@@ -275,14 +297,16 @@ async fn auto_adoption_clears_stale_provider_signal() {
         .get_summary_cache()
         .expect("实报拉起触发，摘要应被采用");
     assert_eq!(cache.covers_up_to, 7);
-    let stale = agent_loop
-        .compact_state
-        .lock()
-        .get("s")
-        .and_then(|s| s.last_provider_prompt_tokens);
+    let stale = {
+        let states = agent_loop.compact_state.lock();
+        states
+            .get("s")
+            .map(|s| (s.last_provider_prompt_tokens, s.last_provider_prompt_at_len))
+    };
     assert_eq!(
-        stale, None,
-        "压缩成功采用后 provider 实报信号必须作废（stale 实报会把 used 顶回压缩前水平）"
+        stale,
+        Some((None, None)),
+        "压缩成功采用后 provider 锚点必须成对作废（stale 实报会把 used 顶回压缩前水平）"
     );
     let _ = std::fs::remove_file(&cfg_path);
 }
@@ -306,21 +330,242 @@ async fn force_adoption_clears_stale_provider_signal() {
     for i in 0..10 {
         instance.add_user_message(&format!("msg_{i}")); // system + 10 = 11
     }
-    agent_loop.note_compaction_provider_signal("s", 99999);
+    agent_loop.note_compaction_provider_signal("s", 99999, 11); // system + 10 条 = 11
 
     agent_loop.force_compression(&instance, "s").await;
 
     let cache = instance.get_summary_cache().expect("force 摘要应被采用");
     assert_eq!(cache.text, "FORCE SUMMARY");
-    let stale = agent_loop
-        .compact_state
-        .lock()
-        .get("s")
-        .and_then(|s| s.last_provider_prompt_tokens);
+    let stale = {
+        let states = agent_loop.compact_state.lock();
+        states
+            .get("s")
+            .map(|s| (s.last_provider_prompt_tokens, s.last_provider_prompt_at_len))
+    };
     assert_eq!(
-        stale, None,
-        "force 压缩成功采用后 provider 实报信号必须作废"
+        stale,
+        Some((None, None)),
+        "force 压缩成功采用后 provider 锚点必须成对作废"
     );
+}
+
+// ---------------------------------------------------------------------------
+// B2 实报锚定：锚点 + 增量信号（compact_signal_components 单一真相源）
+// ---------------------------------------------------------------------------
+
+/// 锚点 + 增量精确断言：note(tokens=90, at_len=8) 锚点新鲜 → signal = 实报
+/// 原值；追加 2 轮（各 10 tok）→ signal = 90 + 20 = 110——旧尾部已被实报
+/// 按 provider 真值包含（不重复计数），切片恰好只含锚后新增轮次；max 单向
+/// 偏早口径废除后，误差每轮被新实报清零（双向收敛）。
+#[test]
+fn anchored_signal_is_anchor_plus_increment() {
+    let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
+    let instance = low_estimate_history(); // 8 turns，tail est 74
+    agent_loop.note_compaction_provider_signal("s", 90, 8);
+
+    {
+        let states = agent_loop.compact_state.lock();
+        let (signal, anchor, delta) =
+            compact_signal_components(states.get("s"), &instance.get_history(), 74);
+        assert_eq!(
+            (signal, anchor, delta),
+            (90, Some(90), 0),
+            "锚点新鲜（at_len==len）= 实报原值，零增量"
+        );
+    }
+
+    let mut hist = instance.get_history();
+    hist.push(turn("user", &"x".repeat(40))); // +10 tok
+    hist.push(turn("assistant", &"x".repeat(40))); // +10 tok
+    instance.set_history(hist);
+
+    let states = agent_loop.compact_state.lock();
+    let (signal, anchor, delta) =
+        compact_signal_components(states.get("s"), &instance.get_history(), 94);
+    assert_eq!(
+        (signal, anchor, delta),
+        (110, Some(90), 20),
+        "signal = 实报 90 + 锚后增量 20（旧尾部不重复计数）"
+    );
+}
+
+/// 切片钳位：at_len > history.len()（trim 裁剪/外部缩短形态）不 panic，
+/// 切片钳到 len → delta 0，signal = 实报原值（保守不低估）。
+#[test]
+fn anchored_signal_clamps_stale_at_len() {
+    let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
+    let instance = low_estimate_history(); // 8 turns < at_len=100
+    agent_loop.note_compaction_provider_signal("s", 500, 100);
+
+    let states = agent_loop.compact_state.lock();
+    let (signal, anchor, delta) =
+        compact_signal_components(states.get("s"), &instance.get_history(), 74);
+    assert_eq!(
+        (signal, anchor, delta),
+        (500, Some(500), 0),
+        "at_len > len 钳位到 len：零增量、实报原值、不 panic"
+    );
+}
+
+/// legacy 混合态 (Some(tokens), None)（热升级在途/老测试直写字段形态）：
+/// 保守 max(tail, tokens) 不倒退——双向都要验。
+#[test]
+fn legacy_mixed_state_keeps_conservative_max() {
+    let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
+    let instance = low_estimate_history(); // 8 turns，tail est 74
+    {
+        let mut states = agent_loop.compact_state.lock();
+        let st = states.entry("s".to_string()).or_default();
+        st.last_provider_prompt_tokens = Some(50);
+        st.last_provider_prompt_at_len = None;
+    }
+
+    let states = agent_loop.compact_state.lock();
+    // tail 74 > tokens 50 → signal = 74（tail 主导）。
+    let (signal, anchor, delta) =
+        compact_signal_components(states.get("s"), &instance.get_history(), 74);
+    assert_eq!((signal, anchor, delta), (74, Some(50), 0));
+    // tail 30 < tokens 50 → signal = 50（实报主导，保守不低估）。
+    let (signal, anchor, delta) =
+        compact_signal_components(states.get("s"), &instance.get_history(), 30);
+    assert_eq!((signal, anchor, delta), (50, Some(50), 0));
+}
+
+/// 无锚回落：无 compact_state 条目的新键（fork 出的新会话键天然无锚，
+/// 不继承父会话实报）→ 纯 tail 估算；无 usage lane（tokens=None）同路径。
+#[test]
+fn absent_anchor_falls_back_to_pure_estimate() {
+    let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
+    let instance = low_estimate_history(); // 8 turns，tail est 74
+    let states = agent_loop.compact_state.lock();
+
+    // fork 新键：条目不存在。
+    let (signal, anchor, delta) =
+        compact_signal_components(states.get("fork-new"), &instance.get_history(), 74);
+    assert_eq!((signal, anchor, delta), (74, None, 0));
+
+    // tokens=None（无 usage lane）同回落。
+    let mut states = states;
+    let st = states.entry("no-usage".to_string()).or_default();
+    st.last_provider_prompt_tokens = None;
+    st.last_provider_prompt_at_len = Some(8);
+    let (signal, anchor, delta) =
+        compact_signal_components(states.get("no-usage"), &instance.get_history(), 74);
+    assert_eq!((signal, anchor, delta), (74, None, 0));
+}
+
+/// 作废单点：invalidate_provider_anchor 双字段同置 None——auto/force 采纳
+/// 臂已有专属测试（上方），此测试钉 helper 本体（clear_session /
+/// rewind_from_cut 两个维护时点共用同一点）。
+#[test]
+fn invalidate_provider_anchor_clears_both_fields() {
+    let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
+    agent_loop.note_compaction_provider_signal("s", 90, 8);
+    let before = {
+        let states = agent_loop.compact_state.lock();
+        states
+            .get("s")
+            .map(|s| (s.last_provider_prompt_tokens, s.last_provider_prompt_at_len))
+    };
+    assert_eq!(before, Some((Some(90), Some(8))));
+
+    agent_loop.invalidate_provider_anchor("s");
+    let after = {
+        let states = agent_loop.compact_state.lock();
+        states
+            .get("s")
+            .map(|s| (s.last_provider_prompt_tokens, s.last_provider_prompt_at_len))
+    };
+    assert_eq!(after, Some((None, None)), "作废必须成对清空两字段");
+
+    // 作废后信号回落纯估算（下轮实报重注入前的诚实态）。
+    let instance = low_estimate_history();
+    let states = agent_loop.compact_state.lock();
+    let (signal, anchor, _) =
+        compact_signal_components(states.get("s"), &instance.get_history(), 74);
+    assert_eq!((signal, anchor), (74, None));
+}
+
+/// 观测面（session_context_status）：锚点分量 + 三态上报 + B4 构成分解。
+/// standalone 无 store → 实例按 `AgentInstance::new` 重建（种一条 system
+/// turn，len=1，26 字符 = 7 tok），used 仍走锚点实报（纯估算只会给 7——
+/// 锚点把 provider 真值带进观测面）；at_len 与重建后历史长度不等 = stale；
+/// at_len==1 == 重建后长度 = fresh；无锚键 = absent。
+#[test]
+fn context_status_exposes_anchor_components_and_state() {
+    let agent_loop = AgentLoop::new(QueueProvider::boxed(vec![]).0, test_config());
+
+    // stale：有锚，at_len=500 != 重建后 len=1（钳位 → 零增量，实报原值）。
+    agent_loop.note_compaction_provider_signal("s", 109_209, 500);
+    let v = agent_loop.session_context_status("s");
+    assert_eq!(v["used_tokens"], 109_209, "used = 锚点实报（非空历史估算）");
+    assert_eq!(v["anchor_tokens"], 109_209);
+    assert_eq!(v["delta_tokens"], 0);
+    assert_eq!(v["anchor_state"], "stale");
+    assert_eq!(v["provider_reported_tokens"], 109_209, "兼容字段保值");
+
+    // （B4.5 构成分解 7 段化，设计定稿 §7.2：七段合计 == 已用）锚点在 =
+    // 比例投影：est 分量（system 7 / tools 2 / mcp 2〔两者都零注册 → 各自
+    // 空组序列化 "[]" 同基线〕/ skill 0〔loader 未注入〕/ memory 0
+    // 〔workspace 未设，画像段空〕/ summary 0 / history 0——重建实例整条
+    // 历史就是种子 system turn）只定配比，绝对值按 used 实报切分；history
+    // 段兜尾舍入残差（本场景 est 历史为 0，段值 = 整除零头 1 ≠ 0，合计恒等）。
+    let bd = &v["breakdown"];
+    let est_sum = 7 + 2 + 2; // est_system + est_tools + est_mcp（skill/memory/summary/history 均 0）
+    let expect_sys = 109_209 * 7 / est_sum;
+    let expect_tls = 109_209 * 2 / est_sum;
+    assert_eq!(bd["system"], expect_sys);
+    assert_eq!(
+        bd["tools"], expect_tls,
+        "零注册工具 → builtin 组序列化 \"[]\" = 基线 1 + 结构字符补收 1 = 2 tok（按比例投影）"
+    );
+    assert_eq!(
+        bd["mcp"], expect_tls,
+        "mcp 组同为零注册 → 同 \"[]\" 基线 2 tok → 投影相等（配比相同的诚实产物）"
+    );
+    assert_eq!(bd["skill"], 0);
+    assert_eq!(bd["memory"], 0);
+    assert_eq!(bd["summary"], 0);
+    assert_eq!(
+        bd["history"].as_u64().unwrap(),
+        109_209 - expect_sys - 2 * expect_tls,
+        "history 段兜尾 = used − system − tools − mcp（合计恒 == used）"
+    );
+    let sum = [
+        "system", "tools", "mcp", "skill", "memory", "summary", "history",
+    ]
+    .iter()
+    .map(|k| bd[k].as_u64().unwrap())
+    .sum::<u64>();
+    assert_eq!(
+        sum,
+        v["used_tokens"].as_u64().unwrap(),
+        "构成合计与 used 严格一致（锚点态）"
+    );
+    assert_eq!(
+        bd["free"].as_u64().unwrap(),
+        v["window"].as_u64().unwrap() - v["used_tokens"].as_u64().unwrap(),
+        "free = window − used"
+    );
+
+    // fresh：at_len=1 == 重建后长度（system turn 在场）→ 零增量、实报原值。
+    agent_loop.note_compaction_provider_signal("fresh", 42, 1);
+    let v = agent_loop.session_context_status("fresh");
+    assert_eq!(v["used_tokens"], 42);
+    assert_eq!(v["anchor_tokens"], 42);
+    assert_eq!(v["delta_tokens"], 0);
+    assert_eq!(v["anchor_state"], "fresh");
+
+    // absent：无锚键 → 纯估算（重建实例 = system turn 7 tok）。
+    let v = agent_loop.session_context_status("other");
+    assert_eq!(v["anchor_state"], "absent");
+    assert_eq!(v["used_tokens"], 7);
+    assert_eq!(v["anchor_tokens"], serde_json::Value::Null);
+    // absent 构成：history 段 = 估算 − system 段 = 0（整条历史就是种子
+    // system turn）。
+    let bd = &v["breakdown"];
+    assert_eq!(bd["system"], 7);
+    assert_eq!(bd["history"], 0, "absent：used 全部落在 system 段");
 }
 
 // ---------------------------------------------------------------------------
@@ -336,17 +581,18 @@ async fn b2_no_progress_discard_then_pause() {
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100);
     instance.set_history(vec![
-        turn("system", "sys prompt"),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
+        turn("system", "system prompt!"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
     ]);
-    // 无进展摘要：120 tok（估算）≈ 1.4 × 压缩前信号 84 → saved 0 < 4。
+    // 无进展摘要：300 字符（估算 75 tok）+ 尾巴 10 = projected 85 ≥ 基线
+    // 84 → saved 0 < 4 → 弃用。
     let (provider, calls) = QueueProvider::boxed(vec![Ok("x".repeat(300)), Ok("x".repeat(300))]);
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let agent_loop = AgentLoop::new_bus(
@@ -402,15 +648,15 @@ async fn b2_effective_summary_adopted_and_counter_resets() {
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100);
     instance.set_history(vec![
-        turn("system", "sys prompt"),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
+        turn("system", "system prompt!"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
     ]);
     // 第 1 个回复无进展（弃用），第 2 个有效小摘要（采用）。
     let (provider, _calls) =
@@ -461,15 +707,15 @@ async fn b2_baseline_is_estimate_axis_not_inflated_provider_signal() {
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100);
     instance.set_history(vec![
-        turn("system", "sys prompt"),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
+        turn("system", "system prompt!"),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
     ]);
     let (provider, calls) = QueueProvider::boxed(vec![
         Ok("x".repeat(300)),       // 无进展摘要：est 120
@@ -486,10 +732,12 @@ async fn b2_baseline_is_estimate_axis_not_inflated_provider_signal() {
     );
     let cfg_path = keep_tokens_config("b2axis", 10);
     agent_loop.set_config_path(cfg_path.clone());
-    agent_loop.note_compaction_provider_signal("s", 2000);
+    // 锚点 at_len=9（system + 8 轮，锚后零增量）——实报 2000 纯作触发用，
+    // 守卫只认同轴估算（本测试的断言对象）。
+    agent_loop.note_compaction_provider_signal("s", 2000, 9);
 
-    // 第 1 轮：projected = 120(摘要) + 10(尾巴) = 130；基线 est_before =
-    // est("") + 84 = 84 → saved 0 < 5 → 必须弃用。旧实现 signal=2000 →
+    // 第 1 轮：projected = 75(摘要) + 10(尾巴) = 85；基线 est_before =
+    // est("") + 84 = 84 → saved 0 < 4 → 必须弃用。旧实现 signal=2000 →
     // saved 1870 ≥ 100 → 误采纳（本测试在旧实现下红）。
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
@@ -656,10 +904,10 @@ fn gate_passes_when_new_segment_has_valid_turn() {
 }
 
 /// 纯函数：新增段只有超限轮 → false（summarize 内部也会全跳过，闸门先行
-/// 免去失败记账）。window=100 → 单消息上限 50 tok（125 字符）。
+/// 免去失败记账）。window=100 → 单消息上限 50 tok（208 字符，len/4 口径）。
 #[test]
 fn gate_blocks_oversized_only_segment() {
-    let huge = "y".repeat(200); // 估算 80 tok > 50
+    let huge = "y".repeat(208); // 估算 52 tok > 50
     let history = vec![
         turn("system", "sys"),
         turn("user", &huge),
@@ -716,14 +964,15 @@ async fn noop_prefix_gate_blocks_then_opens_as_history_grows() {
     let cfg_path = keep_tokens_config("noop", 30);
     agent_loop.set_config_path(cfg_path.clone());
 
-    // 巨大 system（估算 100 tok）+ 1 组问答。tail 120 ≥ threshold 75 → 触发。
-    let huge_system = "S".repeat(250);
+    // 巨大 system（估算 100 tok = 400 字符）+ 1 组问答。tail 120 ≥
+    // threshold 75 → 触发。
+    let huge_system = "S".repeat(400);
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100);
     instance.set_history(vec![
         turn("system", &huge_system),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
     ]);
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
@@ -752,10 +1001,10 @@ async fn noop_prefix_gate_blocks_then_opens_as_history_grows() {
     // 历史长过尾巴预算（2 组问答，边界到 2）→ 闸门放开，摘要发生。
     instance.set_history(vec![
         turn("system", &huge_system),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
     ]);
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")
@@ -804,19 +1053,20 @@ fn boundary_config(tag: &str, keep: usize, boundary: Option<bool>) -> std::path:
     path
 }
 
-/// 软位夹具：system(4 tok) + 5 × user/assistant(各 10 tok) → tail 估算
-/// 54 ∈ [soft=50, trigger=75)——边界压缩开启必触发、关闭（现状）必不触发的
-/// 窗口区间。
+/// 软位夹具：system(3 tok) + 5 × user/assistant(各 10 tok) → tail 估算
+/// 53 ∈ [soft=50, trigger=75)——边界压缩开启必触发、关闭（现状）必不触发的
+/// 窗口区间。（token 口径 = B1 新公式 ASCII 快路 ceil(len/4)：
+/// "sys prompt"=3、"x"×40=10。）
 fn soft_band_history() -> AgentInstance {
     let mut instance = AgentInstance::new(test_config());
     instance.set_context_window(100); // trigger = 75, soft = 50
     instance.set_history(vec![
         turn("system", "sys prompt"),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
     ]);
     instance
 }
@@ -878,7 +1128,7 @@ async fn b17_boundary_on_compacts_at_soft_band() {
 }
 
 /// 开关 off（缺省）+ 同一信号 → 不触发、provider 不被调（行为与现状
-/// 逐位一致：54 < trigger 75）。
+/// 逐位一致：53 < trigger 75）。
 #[tokio::test]
 async fn b17_boundary_off_keeps_legacy_threshold() {
     let (provider, calls) = QueueProvider::boxed(vec![]);
@@ -901,14 +1151,14 @@ async fn b17_boundary_off_keeps_legacy_threshold() {
 
     assert!(
         instance.get_summary_cache().is_none(),
-        "54 < 75 不触发（缺省 off 与现状一致）"
+        "53 < 75 不触发（缺省 off 与现状一致）"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0, "provider 不被调");
     let _ = std::fs::remove_file(&cfg_path);
 }
 
 /// 开关 on 但信号低于 soft 位 → 不触发（提前到 soft 不等于逢轮必压；
-/// 34 < 50）。
+/// 33 < 50）。
 #[tokio::test]
 async fn b17_below_soft_no_trigger_even_boundary_on() {
     let (provider, calls) = QueueProvider::boxed(vec![]);
@@ -927,10 +1177,10 @@ async fn b17_below_soft_no_trigger_even_boundary_on() {
     instance.set_context_window(100);
     instance.set_history(vec![
         turn("system", "sys prompt"),
-        turn("user", &"x".repeat(25)),
-        turn("assistant", &"x".repeat(25)),
-        turn("user", &"x".repeat(25)),
-    ]); // 估算 34 < soft 50
+        turn("user", &"x".repeat(40)),
+        turn("assistant", &"x".repeat(40)),
+        turn("user", &"x".repeat(40)),
+    ]); // 估算 33 < soft 50
 
     agent_loop
         .maybe_update_summary(&instance, "s", "web", "c")

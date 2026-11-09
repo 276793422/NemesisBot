@@ -74,6 +74,7 @@ fn test_config() -> AgentConfig {
         // system turn——这里要让「store N 条 == instance 历史 N 条」的算术
         // 透明可断言，不带隐式 +1。
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["calculator".to_string()],
         models: std::collections::HashMap::new(),

@@ -109,6 +109,7 @@ fn l10_config() -> crate::types::AgentConfig {
         // system 节在位时 build_messages 才渲染 sections（ws9 同款前置条件
         // ——digest 注入点保护 system 前缀，无 system 节 = 无注入）。
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: HashMap::new(),

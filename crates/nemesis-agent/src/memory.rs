@@ -144,17 +144,12 @@ impl ConversationMemory {
     }
 }
 
-/// Estimate the token count for a string.
-///
-/// Uses a heuristic of approximately 2.5 characters per token (chars * 2 / 5),
-/// matching Go's `utf8.RuneCountInString(m.Content) * 2 / 5` formula.
-/// This correctly handles CJK and other multi-byte text, unlike byte-based
-/// division which overestimates by 3x for CJK content.
-///
-/// 已知边界：相对真实分词器（CJK ≈ 1 token/char）仍**低估 ~2.5 倍**，
-/// 详见 `session.rs::estimate_tokens` 的注记（不改估算器的理由同源）。
+/// Estimate the token count for a string——委托
+/// [`crate::session::estimate_tokens`] 单一真相源（五桶折算+密集补收，
+/// 2026-11-09 收编：此前是 chars×2/5 独立副本，公式换代会与本体的
+/// 双真相源漂移）。
 fn estimate_tokens(text: &str) -> usize {
-    text.chars().count() * 2 / 5
+    crate::session::estimate_tokens(text)
 }
 
 // ---------------------------------------------------------------------------

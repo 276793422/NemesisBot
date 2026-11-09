@@ -618,3 +618,83 @@ fn test_add_existing_resets_generation_ledger() {
     // created_at 保留首代出生时间
     assert_eq!(gen2.created_at, created_at_gen1);
 }
+
+// ── 错误路径零 tmp 孤儿（BUG-20261109-005 回归锁）─────────────────────
+// tmp 名 `{index}.{n}.tmp` 计数唯一：错误臂漏清 = 永久孤儿累积。
+
+fn registry_tmp_orphans(dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .expect("dir exists")
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|n| n.ends_with(".tmp"))
+        .collect()
+}
+
+/// save_sync rename 臂：index 路径被同名目录占用 → rename 失败
+/// （Windows MoveFileEx REPLACE_EXISTING 不能以文件替换目录 / unix EISDIR）
+/// → tmp 残留必须已清，内存态不回滚。
+#[test]
+fn save_sync_rename_failure_leaves_no_tmp_orphan() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.json");
+    std::fs::create_dir(&path).unwrap(); // 目录占用 index 名
+    let registry = Registry::new(RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    });
+    registry.add(make_artifact("orphan-check", ArtifactKind::Skill));
+    assert_eq!(registry.len(), 1, "save 失败不回滚内存态");
+    assert!(
+        registry_tmp_orphans(dir.path()).is_empty(),
+        "rename 失败臂必须清 tmp 残留"
+    );
+}
+
+/// save_sync tmp 写臂：父目录缺失 → write 失败 → 清理路径不 panic、无孤儿。
+#[test]
+fn save_sync_write_failure_leaves_no_panic_or_orphan() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing").join("registry.json"); // 父目录不存在
+    let registry = Registry::new(RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    });
+    registry.add(make_artifact("write-fail", ArtifactKind::Skill));
+    assert_eq!(registry.len(), 1);
+    assert!(
+        registry_tmp_orphans(dir.path()).is_empty(),
+        "tmp 写失败臂不得留孤儿"
+    );
+}
+
+/// async save rename 臂：同 rename-onto-directory 注入 → Err 且无孤儿。
+#[tokio::test]
+async fn save_rename_failure_leaves_no_tmp_orphan() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("registry.json");
+    std::fs::create_dir(&path).unwrap();
+    let registry = Registry::new(RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    });
+    registry.add(make_artifact("async-orphan", ArtifactKind::Skill));
+    assert!(registry.save().await.is_err(), "rename onto dir must fail");
+    assert!(
+        registry_tmp_orphans(dir.path()).is_empty(),
+        "async rename 失败臂必须清 tmp 残留"
+    );
+}
+
+/// async save tmp 写臂：父目录缺失 → Err 且无孤儿、不 panic。
+#[tokio::test]
+async fn save_write_failure_returns_err_and_leaves_no_orphan() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("missing").join("registry.json");
+    let registry = Registry::new(RegistryConfig {
+        index_path: path.to_string_lossy().to_string(),
+    });
+    registry.add(make_artifact("async-write-fail", ArtifactKind::Skill));
+    assert!(registry.save().await.is_err());
+    assert!(
+        registry_tmp_orphans(dir.path()).is_empty(),
+        "async tmp 写失败臂不得留孤儿"
+    );
+}

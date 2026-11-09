@@ -277,6 +277,7 @@ fn make_test_agent_loop() -> Arc<nemesis_agent::r#loop::AgentLoop> {
         nemesis_agent::types::AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("test".to_string()),
+            system_prompt_split: None,
             max_turns: 1,
             tools: vec![],
             ..Default::default()
@@ -678,6 +679,7 @@ mod wave4b {
             nemesis_agent::types::AgentConfig {
                 model: "test-model".to_string(),
                 system_prompt: Some("test".to_string()),
+                system_prompt_split: None,
                 max_turns: 1,
                 tools: vec![],
                 ..Default::default()

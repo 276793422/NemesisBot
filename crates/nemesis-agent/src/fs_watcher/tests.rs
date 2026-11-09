@@ -107,6 +107,7 @@ fn test_loop() -> std::sync::Arc<crate::r#loop::AgentLoop> {
     let config = crate::types::AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("test".to_string()),
+        system_prompt_split: None,
         max_turns: 3,
         tools: vec![],
         models: std::collections::HashMap::new(),

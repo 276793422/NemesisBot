@@ -123,7 +123,8 @@ fn estimated_tokens_calculation() {
     memory.add(make_turn("user", "World"));
 
     let tokens = memory.estimated_tokens();
-    // "Hello" = 5 chars, 5*2/5 = 2; "World" = 5 chars, 5*2/5 = 2; total = 4
+    // "Hello" = 5 chars, ceil(5/4) = 2; "World" = 5 chars, ceil(5/4) = 2;
+    // total = 4（B1 前旧公式 5*2/5 恰好同值，换算注释以现行公式为准）。
     assert_eq!(tokens, 4);
 }
 

@@ -310,6 +310,94 @@ pub fn persist_auto_allow_rule(
     Ok(Some(pattern))
 }
 
+/// 人工规则管理（Dashboard SecurityView 审批规则表单）：显式 upsert 一条
+/// 规则。与 [`persist_auto_allow_rule`] 的差异：pattern 由用户给出（不走
+/// target 归约），但仍过安装类闸 + 危级静态闸——[`crate::types::
+/// danger_level_of_slug`] 对未知 op fail-closed 判 CRITICAL，只有 exec 类
+/// 可豁免（与匹配侧 [`find_auto_allow_rule`] 同一门）：不过门的条目是
+/// **死条目**（匹配侧永不放行），写入侧 loud 拒绝。读侧死形态（裸 `*` /
+/// 空 token 前缀 ` *` / exec 复合 pattern）同样拒绝——[`matches_rule`]
+/// 对它们永不命中。锁序与写路径一致：RULES_WRITE_LOCK → config_write_lock。
+///
+/// 返回落盘的 pattern（trim 后）；`Err` = 校验拒绝或写盘失败。
+pub fn upsert_manual_rule(
+    path: &Path,
+    op: &str,
+    pattern: &str,
+    action: &str,
+) -> Result<String, String> {
+    let op = op.trim();
+    let pattern = pattern.trim();
+    if op.is_empty() {
+        return Err("op is empty".to_string());
+    }
+    if pattern.is_empty() {
+        return Err("pattern is empty".to_string());
+    }
+    // v1 语义：规则表只有 allow（deny 的记忆就是再次弹卡）。
+    if action != "allow" {
+        return Err(format!(
+            "unsupported action '{}': v1 rules are allow-only",
+            action
+        ));
+    }
+    if is_install_op(op) {
+        return Err(format!(
+            "install op '{}' never enters the rule table (the remembered directory is not the payload)",
+            op
+        ));
+    }
+    let risk = crate::types::danger_level_of_slug(op);
+    if !rule_permitted_for(op, &risk) {
+        return Err(format!(
+            "rule for '{}' is inert: {} operations always stay manual (only exec ops are exempt)",
+            op, risk
+        ));
+    }
+    // 读侧死形态预防：matches_rule 对这些 pattern 永不命中。
+    let dead_star = pattern == "*"
+        || (pattern.ends_with(" *")
+            && crate::command_arity::tokenize_command(
+                pattern.strip_suffix(" *").unwrap_or_default(),
+            )
+            .is_empty());
+    if dead_star {
+        return Err(format!(
+            "pattern '{}' can never match (catch-all forms are rejected)",
+            pattern
+        ));
+    }
+    if is_command_op(op) && crate::command_arity::command_segments(pattern).len() > 1 {
+        // 复合 pattern 无单一语义（CMD-12 同族）：分段匹配作用在 target 侧。
+        return Err(
+            "compound pattern is not supported: use single-segment prefix rules".to_string(),
+        );
+    }
+    let _w = RULES_WRITE_LOCK.lock();
+    let _cfg_serial = nemesis_config::config_write_lock();
+    let mut stored = load_rules(path);
+    upsert_rule(&mut stored, op, pattern);
+    save_rules(path, &stored)?;
+    Ok(pattern.to_string())
+}
+
+/// 人工删除规则（Dashboard SecurityView 行级删除）：按 (op, pattern) 精确
+/// 移除。返回移除条数（0 = 无此规则，诚实上报不报错、不写盘）。
+pub fn remove_manual_rule(path: &Path, op: &str, pattern: &str) -> Result<usize, String> {
+    let op = op.trim();
+    let pattern = pattern.trim();
+    let _w = RULES_WRITE_LOCK.lock();
+    let _cfg_serial = nemesis_config::config_write_lock();
+    let mut stored = load_rules(path);
+    let before = stored.len();
+    stored.retain(|r| !(r.op == op && r.pattern == pattern));
+    let removed = before - stored.len();
+    if removed > 0 {
+        save_rules(path, &stored)?;
+    }
+    Ok(removed)
+}
+
 #[cfg(test)]
 mod b26_flag_tests;
 #[cfg(test)]

@@ -29,6 +29,7 @@ fn make_state(
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -84,6 +85,7 @@ fn script_state(responses: Vec<LlmResponse>) -> Arc<AppState> {
             AgentConfig {
                 model: "test-model".to_string(),
                 system_prompt: Some("You are a test assistant.".to_string()),
+                system_prompt_split: None,
                 max_turns: 5,
                 ..Default::default()
             },
@@ -382,6 +384,7 @@ async fn tool_calls_counted_in_extension_metadata() {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: None,
+            system_prompt_split: None,
             max_turns: 5,
             tools: vec!["echotool".to_string()],
             models: Default::default(),

@@ -77,6 +77,7 @@ fn b18_loop() -> AgentLoop {
         models: std::collections::HashMap::new(),
 
         tool_fence_profession: None,
+        system_prompt_split: None,
     };
     AgentLoop::new(Box::new(B18MockProvider), cfg)
 }

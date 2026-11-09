@@ -1647,6 +1647,7 @@ fn test_register_shared_tools_default() {
 #[test]
 fn test_register_shared_tools_with_web() {
     let config = SharedToolConfig {
+        exec_output_tx: None,
         web_search: Some(WebSearchConfig {
             duckduckgo_enabled: true,
             ..Default::default()
@@ -1660,6 +1661,7 @@ fn test_register_shared_tools_with_web() {
 #[test]
 fn test_register_shared_tools_with_cluster() {
     let config = SharedToolConfig {
+        exec_output_tx: None,
         cluster_rpc: Some(ClusterRpcConfig {
             local_node_id: "n1".to_string(),
             timeout_secs: 60,
@@ -1674,6 +1676,7 @@ fn test_register_shared_tools_with_cluster() {
 #[test]
 fn test_register_shared_tools_with_spawn() {
     let config = SharedToolConfig {
+        exec_output_tx: None,
         spawn: Some(SpawnConfig {
             default_model: "test".to_string(),
             max_concurrent: 5,
@@ -1695,6 +1698,7 @@ fn make_cron_service() -> Arc<std::sync::Mutex<nemesis_cron::service::CronServic
 fn test_register_shared_tools_with_cron() {
     let cron_svc = make_cron_service();
     let config = SharedToolConfig {
+        exec_output_tx: None,
         cron_service: Some(cron_svc),
         ..Default::default()
     };
@@ -2132,12 +2136,48 @@ fn test_register_shared_tools_without_workspace() {
 #[test]
 fn test_register_shared_tools_with_workspace() {
     let config = SharedToolConfig {
+        exec_output_tx: None,
         workspace: Some("/tmp/test".to_string()),
         ..Default::default()
     };
     let tools = register_shared_tools(&config);
     assert!(tools.contains_key("exec"));
-    assert!(tools.contains_key("exec_async"));
+    // [SEALED 2026-11-08] exec_async 封存回归锁：注册点已注释（旁路
+    // background_start 完成唤醒路径，见 registry.rs 封存注记）——不得复活。
+    assert!(!tools.contains_key("exec_async"));
+}
+
+#[test]
+fn test_register_shared_tools_exec_max_timeout_wiring() {
+    // 2026-11-08 config 化：exec_max_timeout_secs 槽位贯通注册面——
+    // schema description 展示部署上限（模型可见），None = 600 旧行为。
+    let config = SharedToolConfig {
+        exec_output_tx: None,
+        exec_max_timeout_secs: Some(1800),
+        workspace: Some("/tmp/test".to_string()),
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&config);
+    let desc = tools.get("exec").unwrap().parameters()["properties"]["timeout"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(desc.contains("max 1800"), "custom cap must surface: {desc}");
+
+    let config = SharedToolConfig {
+        exec_output_tx: None,
+        workspace: Some("/tmp/test".to_string()),
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&config);
+    let desc = tools.get("exec").unwrap().parameters()["properties"]["timeout"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        desc.contains("max 600"),
+        "None must stay 600 default: {desc}"
+    );
 }
 
 #[test]
@@ -2371,6 +2411,7 @@ async fn test_cluster_rpc_tool_rejects_self_invocation() {
 #[tokio::test]
 async fn test_no_forge_tools_without_executor() {
     let config = SharedToolConfig {
+        exec_output_tx: None,
         forge_executor: None,
         ..Default::default()
     };
@@ -2963,6 +3004,7 @@ fn test_install_skill_tool_description_and_params() {
 fn test_register_shared_tools_with_skills_registry() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
     let config = SharedToolConfig {
+        exec_output_tx: None,
         skills_registry: Some(registry),
         workspace: Some("/tmp/test-workspace".to_string()),
         ..Default::default()
@@ -2976,6 +3018,7 @@ fn test_register_shared_tools_with_skills_registry() {
 fn test_register_shared_tools_with_skills_registry_no_workspace() {
     let registry = Arc::new(nemesis_skills::registry::RegistryManager::new_empty());
     let config = SharedToolConfig {
+        exec_output_tx: None,
         skills_registry: Some(registry),
         workspace: None,
         ..Default::default()
@@ -3037,6 +3080,7 @@ fn test_register_shared_tools_with_forge() {
     ));
     let executor = Arc::new(nemesis_forge::forge_tools::ForgeToolExecutor::new(forge));
     let config = SharedToolConfig {
+        exec_output_tx: None,
         forge_executor: Some(executor),
         ..Default::default()
     };
@@ -3053,6 +3097,7 @@ fn test_register_shared_tools_with_forge() {
 #[test]
 fn test_register_shared_tools_includes_complete_bootstrap() {
     let config = SharedToolConfig {
+        exec_output_tx: None,
         workspace: Some("/tmp/ws".to_string()),
         ..Default::default()
     };
@@ -3107,6 +3152,7 @@ fn test_urlencoding_empty() {
 #[test]
 fn test_shared_tool_config_clone() {
     let config = SharedToolConfig {
+        exec_output_tx: None,
         web_search: Some(WebSearchConfig::default()),
         ..Default::default()
     };

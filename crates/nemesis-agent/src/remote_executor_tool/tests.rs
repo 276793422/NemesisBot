@@ -833,3 +833,51 @@ fn env_pairs_writes_zero_when_restrict_child_false() {
         "restrict=false 必须写 RESTRICT=0（子进程围栏同相放开）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// exec deny 自定义词表透传（2026-11-08 接线激活）：只在自定义激活形态
+// 注入（Layer 1 分离形态下子进程词表与主进程同源——不透传则成为旁路）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn env_pairs_writes_deny_patterns_when_active() {
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false))
+        .with_deny_patterns(Some(vec![
+            "forbidden\\.exe".to_string(),
+            "second[0-9]+".to_string(),
+        ]));
+    let pairs = ch.env_pairs();
+    let got = pairs
+        .iter()
+        .find(|(k, _)| k == "NEMESISBOT_EXECUTOR_DENY_PATTERNS")
+        .expect("自定义激活形态必须写 env");
+    assert_eq!(
+        got.1, "forbidden\\.exe\u{1f}second[0-9]+",
+        "\\x1f 分隔 join"
+    );
+}
+
+#[test]
+fn env_pairs_omits_deny_patterns_when_none_or_empty() {
+    // None（默认/老网关）不写 env——子进程按内置默认词表装配，字节不变。
+    let ch = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false));
+    let pairs = ch.env_pairs();
+    assert!(
+        !pairs
+            .iter()
+            .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_DENY_PATTERNS"),
+        "None 形态不得写 env"
+    );
+
+    // 空 vec（开关开但词表空 = 默认词表形态）同样不写 env——两侧都落
+    // 内置默认词表，语义一致。
+    let ch2 = ExecutorChannel::new(PathBuf::from("/x/nb"), "/ws".into(), Arc::new(|| false))
+        .with_deny_patterns(Some(Vec::new()));
+    let pairs2 = ch2.env_pairs();
+    assert!(
+        !pairs2
+            .iter()
+            .any(|(k, _)| k == "NEMESISBOT_EXECUTOR_DENY_PATTERNS"),
+        "空 vec 形态（默认词表）不得写 env"
+    );
+}

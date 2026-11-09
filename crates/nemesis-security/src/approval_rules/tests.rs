@@ -443,3 +443,130 @@ fn quoted_env_prefix_hits_reduced_rule() {
         "cargo build"
     ));
 }
+
+// ---------- 人工规则管理（upsert_manual_rule / remove_manual_rule） ----------
+
+#[test]
+fn manual_rule_happy_exec_star_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    let stored = upsert_manual_rule(&path, "process_exec", " cargo test * ", "allow").unwrap();
+    assert_eq!(stored, "cargo test *", "pattern must be trimmed");
+    // 落盘可回读，且匹配侧真放行（非死条目的实证）
+    let rules = load_rules(&path);
+    assert_eq!(rules.len(), 1);
+    assert!(matches_rule(
+        "process_exec",
+        &rules[0].pattern,
+        "process_exec",
+        "cargo test --release"
+    ));
+    // 幂等 upsert：同 (op, pattern) 不增行
+    upsert_manual_rule(&path, "process_exec", "cargo test *", "allow").unwrap();
+    assert_eq!(load_rules(&path).len(), 1);
+}
+
+#[test]
+fn manual_rule_rejects_empty_and_non_allow() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    assert!(
+        upsert_manual_rule(&path, "  ", "x", "allow").is_err(),
+        "blank op"
+    );
+    assert!(
+        upsert_manual_rule(&path, "file_write", "   ", "allow").is_err(),
+        "blank pattern"
+    );
+    let err = upsert_manual_rule(&path, "file_write", "/tmp/a", "deny").unwrap_err();
+    assert!(
+        err.contains("allow-only"),
+        "v1 deny has no memory meaning, got: {err}"
+    );
+    assert!(!path.exists(), "rejected entries must not write the file");
+}
+
+#[test]
+fn manual_rule_rejects_install_op() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    let err = upsert_manual_rule(&path, "plugins.install", "/tmp/src", "allow").unwrap_err();
+    assert!(err.contains("never enters the rule table"), "got: {err}");
+    assert!(!path.exists());
+}
+
+#[test]
+fn manual_rule_rejects_critical_nonexec_and_unknown_op() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    // 静态 CRITICAL 非 exec：匹配侧永不放行 = 死条目，写入侧 loud 拒
+    let err = upsert_manual_rule(&path, "system_shutdown", "now", "allow").unwrap_err();
+    assert!(err.contains("always stay manual"), "got: {err}");
+    // 未知 op：danger_level_of_slug fail-closed CRITICAL → 同拒
+    let err = upsert_manual_rule(&path, "file_transmogrify", "x", "allow").unwrap_err();
+    assert!(
+        err.contains("CRITICAL"),
+        "fail-closed on unknown op, got: {err}"
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn manual_rule_rejects_read_side_dead_patterns() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    // 裸 `*` 与空 token 前缀 ` *`：matches_rule 永不命中
+    for pat in ["*", " *"] {
+        let err = upsert_manual_rule(&path, "process_exec", pat, "allow").unwrap_err();
+        assert!(err.contains("never match"), "pattern {pat:?}, got: {err}");
+    }
+    // exec 复合 pattern：分段匹配作用在 target 侧，pattern 侧无意义
+    let err = upsert_manual_rule(&path, "process_exec", "cd x && rm -rf y *", "allow").unwrap_err();
+    assert!(err.contains("compound"), "got: {err}");
+    assert!(!path.exists());
+}
+
+#[test]
+fn manual_rule_exact_exec_pattern_allowed() {
+    // 手写精确（无 ` *` 后缀）= 比前缀更窄的作用域，合法
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    upsert_manual_rule(&path, "process_exec", "cargo publish", "allow").unwrap();
+    let rules = load_rules(&path);
+    assert!(matches_rule(
+        "process_exec",
+        &rules[0].pattern,
+        "process_exec",
+        "cargo publish"
+    ));
+    assert!(!matches_rule(
+        "process_exec",
+        &rules[0].pattern,
+        "process_exec",
+        "cargo publish --dry-run"
+    ));
+}
+
+#[test]
+fn remove_manual_rule_counts_and_persists() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("approval_rules.json");
+    upsert_manual_rule(&path, "process_exec", "cargo test *", "allow").unwrap();
+    upsert_manual_rule(&path, "file_write", "/tmp/a.txt", "allow").unwrap();
+    assert_eq!(
+        remove_manual_rule(&path, "process_exec", "cargo test *").unwrap(),
+        1
+    );
+    let rules = load_rules(&path);
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].op, "file_write");
+    // 再删同一条 = 0，诚实上报不报错
+    assert_eq!(
+        remove_manual_rule(&path, "process_exec", "cargo test *").unwrap(),
+        0
+    );
+    // 不存在的文件上删除 = Ok(0) 且不 seed 落盘
+    let absent = dir.path().join("absent.json");
+    assert_eq!(remove_manual_rule(&absent, "file_write", "x").unwrap(), 0);
+    assert!(!absent.exists());
+}

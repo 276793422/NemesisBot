@@ -361,6 +361,25 @@ function applySendMode(text: string): string {
 // 刷新时机：进会话 / 响应落地（turn 完成）/ 30s 兜底轮询。
 const ctxPct = ref<number | null>(null)
 const sessCost = ref<number | null>(null)
+// B4.5 构成分解（chat.context_status breakdown/anchor_* 字段）：七段
+// 配色细分 used 填充 + 压缩竖线 + ●实报/○估算 叙事（2026-11-09 用户拍板
+// 7 段口径：系统提示词/工具/MCP/SKILL/MEMORY/摘要/对话，严格按注入机制
+// 拆分）。旧后端无 breakdown 时回落纯文本徽标（M5 原形态，pct_trigger 优先）。
+interface CtxBreakdown {
+  system: number
+  tools: number
+  mcp: number
+  skill: number
+  memory: number
+  summary: number
+  history: number
+  free: number
+}
+const ctxBreakdown = ref<CtxBreakdown | null>(null)
+const ctxAnchor = ref<{ tokens: number | null; delta: number; state: string } | null>(null)
+const ctxWindow = ref<number | null>(null)
+const ctxTriggerPct = ref<number | null>(null)
+const ctxTriggerTok = ref<number | null>(null)
 
 function refreshUsage() {
   if (!isDefaultChat.value) return
@@ -370,11 +389,43 @@ function refreshUsage() {
   request('chat', 'context_status', { session_id: sid })
     .then((data) => {
       if (effectiveSid.value !== sid) return
-      // 优先压缩点百分比 pct_trigger（「距压缩还有多远」，与 ≥80% hot
-      // 徽标语义贴合）；旧后端无该字段回落窗口 pct。
       const c = data?.context
-      ctxPct.value =
-        typeof c?.pct_trigger === 'number' ? c.pct_trigger : typeof c?.pct === 'number' ? c.pct : null
+      const pctWin = typeof c?.pct === 'number' ? c.pct : null
+      const bd = c?.breakdown
+      if (bd && typeof bd === 'object') {
+        // B4：breakdown 在场 = 构成条形态。% 切换 used/window 同口径
+        // （条形填充与标签一致；压缩点改由竖线表达位置）。
+        ctxPct.value = pctWin ?? (typeof c?.pct_trigger === 'number' ? c.pct_trigger : null)
+        ctxBreakdown.value = {
+          system: Number(bd.system) || 0,
+          tools: Number(bd.tools) || 0,
+          mcp: Number(bd.mcp) || 0,
+          skill: Number(bd.skill) || 0,
+          memory: Number(bd.memory) || 0,
+          summary: Number(bd.summary) || 0,
+          history: Number(bd.history) || 0,
+          free: Number(bd.free) || 0,
+        }
+        ctxAnchor.value = {
+          tokens: typeof c?.anchor_tokens === 'number' ? c.anchor_tokens : null,
+          delta: typeof c?.delta_tokens === 'number' ? c.delta_tokens : 0,
+          state: typeof c?.anchor_state === 'string' ? c.anchor_state : 'absent',
+        }
+        const win = typeof c?.window === 'number' ? c.window : null
+        ctxWindow.value = win
+        const trig = typeof c?.trigger === 'number' ? c.trigger : null
+        ctxTriggerTok.value = trig
+        ctxTriggerPct.value =
+          win && trig !== null && win > 0 ? Math.min(100, Math.max(0, (trig / win) * 100)) : null
+      } else {
+        // 旧后端/无 breakdown：M5 原口径（pct_trigger =「距压缩还有多远」优先）。
+        ctxPct.value = typeof c?.pct_trigger === 'number' ? c.pct_trigger : pctWin
+        ctxBreakdown.value = null
+        ctxAnchor.value = null
+        ctxWindow.value = null
+        ctxTriggerPct.value = null
+        ctxTriggerTok.value = null
+      }
     })
     .catch(() => {})
   request('logs', 'session_usage', { session_id: sid })
@@ -390,9 +441,124 @@ const unwatchUsage = watch(
   () => {
     ctxPct.value = null
     sessCost.value = null
+    ctxBreakdown.value = null
+    ctxAnchor.value = null
+    ctxWindow.value = null
+    ctxTriggerPct.value = null
+    ctxTriggerTok.value = null
+    usageTipShow.value = false
     refreshUsage()
   },
 )
+
+// B4.5 构成条（2026-11-09 展示面设计定稿 §7.1 + 7 段化拍板）：条 100% =
+// 窗口总长，段宽度 = 段值/窗口 × 100（used 段合计 = used/window = 填充；
+// 段值合计 == used 由后端比例投影保证）；空闲段（free）低对比铺满剩余。
+// 段顺序 = 用户拍板列举序：系统提示词 → 工具 → MCP → SKILL → MEMORY →
+// 摘要 → 对话。
+const usageSegments = computed(() => {
+  const bd = ctxBreakdown.value
+  const win = ctxWindow.value
+  if (!bd || !win || win <= 0) return []
+  const parts = [
+    { key: 'system', val: bd.system },
+    { key: 'tools', val: bd.tools },
+    { key: 'mcp', val: bd.mcp },
+    { key: 'skill', val: bd.skill },
+    { key: 'memory', val: bd.memory },
+    { key: 'summary', val: bd.summary },
+    { key: 'history', val: bd.history },
+  ]
+  return parts.map((p) => ({ key: p.key, pct: (p.val / win) * 100 }))
+})
+
+const freeSegPct = computed(() => {
+  const bd = ctxBreakdown.value
+  const win = ctxWindow.value
+  if (!bd || !win || win <= 0) return 0
+  return (bd.free / win) * 100
+})
+
+// 设计定稿 §7.1 文案警示：历史段逼近竖线（距触发点 ≤ 窗口 5%）转警示色
+// （取代 ≥80% 阈值作警示触发，hot 语义保留）；越过竖线 = 压缩 stuck/失败
+// 可见（红）；超窗口 = 条钳满格 + 红「超限」。触发点缺席回落 ≥80% hot。
+const usageHot = computed(() => {
+  const pct = ctxPct.value ?? 0
+  if (ctxTriggerPct.value !== null) return pct >= ctxTriggerPct.value - 5
+  return pct >= 80
+})
+const usageOver = computed(() => {
+  const pct = ctxPct.value ?? 0
+  return ctxTriggerPct.value !== null && pct > ctxTriggerPct.value
+})
+const usageOverLimit = computed(() => (ctxPct.value ?? 0) >= 100)
+
+// 锚点叙事角标：fresh=●实报锚定 / stale=◐增量在途 / absent=○估算。
+const anchorMark = computed(() => {
+  switch (ctxAnchor.value?.state) {
+    case 'fresh':
+      return '●'
+    case 'stale':
+      return '◐'
+    default:
+      return '○'
+  }
+})
+
+const fmtTok = (n: number): string => n.toLocaleString('en-US')
+
+// 设计定稿 §7.2 hover 明细（文字版，弹层挂左侧文案框）：七段（~ 估算
+// 口径）+ 已用/触发点（锚定口径头）+ 窗口行。迷你条 = ▉ 重复，宽度按
+// 段值占 used 比例（≤12 格）。
+const usageTipShow = ref(false)
+const usedTokens = computed(() => {
+  const bd = ctxBreakdown.value
+  if (!bd) return 0
+  return bd.system + bd.tools + bd.mcp + bd.skill + bd.memory + bd.summary + bd.history
+})
+function usageMiniBar(v: number): string {
+  const used = usedTokens.value
+  if (used <= 0 || v <= 0) return ''
+  const cells = Math.max(1, Math.min(12, Math.round((v / used) * 12)))
+  return '▉'.repeat(cells)
+}
+const usageTipRows = computed(() => {
+  const bd = ctxBreakdown.value
+  if (!bd) return []
+  return [
+    { key: 'system', label: '系统提示', val: `~${fmtTok(bd.system)} tok`, bar: usageMiniBar(bd.system) },
+    { key: 'tools', label: '工具定义', val: `~${fmtTok(bd.tools)} tok`, bar: usageMiniBar(bd.tools) },
+    { key: 'mcp', label: 'MCP', val: `~${fmtTok(bd.mcp)} tok`, bar: usageMiniBar(bd.mcp) },
+    { key: 'skill', label: 'SKILL', val: `~${fmtTok(bd.skill)} tok`, bar: usageMiniBar(bd.skill) },
+    { key: 'memory', label: 'MEMORY', val: `~${fmtTok(bd.memory)} tok`, bar: usageMiniBar(bd.memory) },
+    { key: 'summary', label: '历史摘要', val: `~${fmtTok(bd.summary)} tok`, bar: usageMiniBar(bd.summary) },
+    { key: 'history', label: '会话历史', val: `~${fmtTok(bd.history)} tok`, bar: usageMiniBar(bd.history) },
+  ]
+})
+const usageTipHead = computed(() => {
+  const bd = ctxBreakdown.value
+  const trig = ctxTriggerTok.value
+  if (!bd || trig === null) return ''
+  const used = usedTokens.value
+  const a = ctxAnchor.value
+  if (a?.state === 'stale') {
+    return `已用(实报 ${fmtTok(a.tokens ?? 0)} + 增量 ~${fmtTok(a.delta)}) / 触发点 ${fmtTok(trig)}`
+  }
+  if (a?.state === 'fresh') {
+    return `已用(实报锚定) ${fmtTok(a.tokens ?? used)} / 触发点 ${fmtTok(trig)}`
+  }
+  return `已用(~${fmtTok(used)} 估算) / 触发点 ${fmtTok(trig)}`
+})
+const usageTipWindow = computed(() => {
+  const win = ctxWindow.value
+  if (!win) return ''
+  const tp = ctxTriggerPct.value !== null ? Math.round(ctxTriggerPct.value) : null
+  const over = usageOver.value ? '；⚠ 已越过压缩线' : ''
+  const limit = usageOverLimit.value ? '；⚠ 超出窗口' : ''
+  return tp !== null
+    ? `窗口 ${fmtTok(win)}（触发点 = 窗口的 ${tp}%）${over}${limit}`
+    : `窗口 ${fmtTok(win)}${over}${limit}`
+})
 
 let usagePollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -600,6 +766,16 @@ function applyToolEventPayload(ev: any) {
       typeof p.duration_ms === 'number' ? p.duration_ms : 0,
       p.result_preview,
     )
+  } else if (ev?.kind === 'ToolOutput') {
+    // 2026-11-08 exec 执行中输出尾窗（ToolOutput 实时流）：call_id 置空
+    // （工具层不可见 dispatch id），store 侧倒序挂到最后一个 running 条目
+    // ——「sleep + background_output 轮询」旧玩法的前端替代面。
+    if (typeof p.tail === 'string' && p.tail) {
+      chatStore.ingestWorkToolOutput(
+        p.tail,
+        typeof p.total_bytes === 'number' ? p.total_bytes : 0,
+      )
+    }
   } else if (ev?.kind === 'ModeChanged') {
     // F1：模式切换事件（/plan /build slash 或 chat.set_mode 发布）——
     // 徽标实时刷新。会话过滤由调用方完成。
@@ -3290,10 +3466,64 @@ onUnmounted(() => {
          WorkTimelineBlock；后台 spawn 在轮次结束后仍持续可见）。 -->
     <SubagentDrawer :session-sid="effectiveSid || ''" />
 
-    <!-- M5: 会话级 context/cost 常驻条（与压缩压力同口径；turn 完成即刷 + 30s 兜底） -->
+    <!-- M5+B4: 会话级 context 构成条（2026-11-09 展示面设计定稿 §7：左固定
+         文案框 + 右全宽进度条；条 100% = 窗口、竖线 = 压缩线；文案框 hover
+         弹 §7.2 文字明细；turn 完成即刷 + 30s 兜底） -->
     <div v-if="isDefaultChat && ctxPct !== null" class="usage-strip">
-      <span class="usage-ctx" :class="{ hot: ctxPct >= 80 }">{{ ctxPct }}% context</span>
-      <template v-if="sessCost !== null && sessCost > 0"> · <span class="usage-cost">{{ fmtCost(sessCost) }}</span></template>
+      <template v-if="ctxBreakdown">
+        <span
+          class="usage-text"
+          :class="{ hot: usageHot, over: usageOver }"
+          @mouseenter="usageTipShow = true"
+          @mouseleave="usageTipShow = false"
+        >
+          <span v-if="ctxAnchor" class="usage-anchor-mark">{{ anchorMark }}</span
+          >{{ ctxPct }}% context<template v-if="sessCost !== null && sessCost > 0">
+            · <span class="usage-cost">{{ fmtCost(sessCost) }}</span></template
+          ><span v-if="usageOverLimit" class="usage-over-limit">超限</span>
+          <span v-if="usageTipShow" class="usage-tip">
+            <!-- 行首段色块：与构成条段色一一对应（复用 usage-seg-* 背景类，
+                 配色单一真相源；chip 不带基类 .usage-seg，不吃缝隙/高度规则） -->
+            <span v-for="row in usageTipRows" :key="row.key" class="usage-tip-row">
+              <span class="usage-tip-chip" :class="`usage-seg-${row.key}`"></span>
+              <span class="usage-tip-label">{{ row.label }}</span>
+              <span class="usage-tip-val">{{ row.val }}</span>
+              <span class="usage-tip-bar">{{ row.bar }}</span>
+            </span>
+            <span class="usage-tip-sep"></span>
+            <span class="usage-tip-row usage-tip-head">
+              <span>{{ usageTipHead }}</span>
+              <span class="usage-anchor-mark">{{ anchorMark }}</span>
+            </span>
+            <span class="usage-tip-row usage-tip-win">{{ usageTipWindow }}</span>
+          </span>
+        </span>
+        <span class="usage-bar">
+          <span
+            v-for="seg in usageSegments"
+            :key="seg.key"
+            class="usage-seg"
+            :class="`usage-seg-${seg.key}`"
+            :style="{ width: seg.pct + '%' }"
+          />
+          <!-- 空闲段（设计定稿 §7.1 第五段 · 空闲）：低对比铺满剩余 -->
+          <span class="usage-seg usage-seg-free" :style="{ width: freeSegPct + '%' }" />
+          <!-- 压缩点竖线（trigger 在窗口刻度上的位置） -->
+          <span
+            v-if="ctxTriggerPct !== null"
+            class="usage-trigger-line"
+            :style="{ left: ctxTriggerPct + '%' }"
+          />
+        </span>
+      </template>
+      <template v-else>
+        <!-- 旧后端/无 breakdown：M5 原样回落（pct_trigger 优先文案徽标） -->
+        <span class="usage-ctx" :class="{ hot: ctxPct >= 80 }"
+          ><span v-if="ctxAnchor" class="usage-anchor-mark">{{ anchorMark }}</span
+          >{{ ctxPct }}% context</span
+        >
+        <template v-if="sessCost !== null && sessCost > 0"> · <span class="usage-cost">{{ fmtCost(sessCost) }}</span></template>
+      </template>
     </div>
 
     <!-- Input -->
@@ -3616,17 +3846,153 @@ onUnmounted(() => {
   background: #f56c6c;
 }
 /* M5: 会话级 context/cost 常驻条 */
+/* B4（2026-11-09 设计定稿 §7）：一行 = 左固定文案框 + 右全宽进度条。 */
 .usage-strip {
-  padding: 3px 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
   font-size: var(--text-xs);
   color: var(--text-muted);
   background: var(--surface);
   border-top: 1px solid var(--border);
-  text-align: center;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
+/* 左侧固定文案框（hover 弹明细）；警示/越线变色 */
+.usage-text {
+  position: relative;
+  flex-shrink: 0;
+  cursor: default;
+}
+.usage-text.hot {
+  color: #e6a23c;
+}
+.usage-text.over {
+  color: #f56c6c;
+  font-weight: 600;
+}
+.usage-over-limit {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: #f56c6c;
+  background: rgba(245, 108, 108, 0.14);
+  font-weight: 600;
+}
+/* §7.2 hover 明细弹层（挂文案框，向上弹） */
+.usage-tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 250px;
+  padding: 8px 10px;
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  white-space: nowrap;
+  cursor: default;
+}
+.usage-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 行首段色块：8×8 圆角方块，背景由复用的 usage-seg-* 类提供 */
+.usage-tip-chip {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.usage-tip-label {
+  width: 56px;
+  color: var(--text-secondary);
+}
+.usage-tip-val {
+  min-width: 86px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.usage-tip-bar {
+  color: var(--accent);
+  letter-spacing: -1px;
+}
+.usage-tip-sep {
+  border-top: 1px solid var(--border);
+  margin: 3px 0;
+}
+.usage-tip-head {
+  color: var(--text-secondary);
+}
+.usage-tip-win {
+  color: var(--text-muted);
+}
+/* 右侧全宽进度条：100% = 窗口总长（设计定稿 §7.1）；实心横条体感
+   （2026-11-09 用户拍板调粗）。段间 2px 表面缝隙（stacked bar 规范的
+   secondary encoding——CVD 弱对靠缝隙+tooltip 文字标注兜底）。 */
+.usage-bar {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  height: 12px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--border);
+}
+.usage-seg {
+  height: 100%;
+  transition: width 300ms ease;
+}
+/* 缝隙用右缘描边（box 内容宽自动吸收，段总宽恒 100% 不溢出）；
+   末段（空闲）不带缝。 */
+.usage-seg + .usage-seg {
+  border-left: 2px solid var(--bg);
+}
+.usage-seg-system {
+  background: #909399;
+}
+.usage-seg-tools {
+  background: #9a6dd7;
+}
+.usage-seg-mcp {
+  background: #e6a23c;
+}
+.usage-seg-skill {
+  background: #2fbdd9;
+}
+.usage-seg-memory {
+  background: #e0648c;
+}
+.usage-seg-summary {
+  background: #409eff;
+}
+.usage-seg-history {
+  background: #67c23a;
+}
+/* 空闲段（· 空闲）：点状纹理低对比可见 */
+.usage-seg-free {
+  background: repeating-linear-gradient(90deg, var(--text-muted) 0 1px, transparent 1px 4px);
+  opacity: 0.35;
+}
+.usage-trigger-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #f56c6c;
+  opacity: 0.85;
+}
+.usage-anchor-mark {
+  margin-right: 2px;
+}
+/* 旧后端回落（无 breakdown）：M5 文案徽标原样 */
 .usage-strip .usage-ctx.hot {
   color: #e6a23c;
 }

@@ -1348,9 +1348,27 @@ impl ModelsHandler {
                 }
                 serde_json::Value::String(s.to_string())
             }
+            "api_base" => {
+                // 模型端点 URL（2026-11-08 C-4：ModelsView 行内编辑）。
+                // 空串 = 清除（回 provider 前缀自动推断——typed String
+                // 空串即「未设」语义，与 CLI `model add` 不带 --base 同形）；
+                // 非空要求 http(s):// 前缀（api_base 是 HTTP 端点，不接受
+                // socks 代理形态——那是 proxy 字段的职责）。彻底校验（URL
+                // 可解析、路径形态）留给 provider 构造。注意：api_base 在
+                // provider 构造时消费——改默认条目走既有热切联动（下方
+                // matches! 臂已并入）。
+                let s = value.as_str().ok_or("api_base must be a string")?.trim();
+                if !s.is_empty() && !s.starts_with("http://") && !s.starts_with("https://") {
+                    return Err(
+                        "api_base must start with http:// | https:// (or be empty to reset to provider-prefix auto-detection)"
+                            .to_string(),
+                    );
+                }
+                serde_json::Value::String(s.to_string())
+            }
             _ => {
                 return Err(format!(
-                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | compact_context_tokens | protocol | proxy | stream"
+                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | compact_context_tokens | protocol | proxy | stream | api_base"
                 ));
             }
         };
@@ -1425,13 +1443,16 @@ impl ModelsHandler {
                 Ok((entry_is_default, entry_model_name, cfg.clone()))
             })?;
 
-        // 统一默认槽联动（方案A）：protocol/proxy/stream 在 provider
-        // 构造时消费——改的是当前默认模型时补跑运行时热切（此前只有前端
-        // 代理页自动跟发 set_default 打补丁，模型页改 protocol 后 workflow/
-        // 集群/SSE 侧槽全是旧 provider；stream 同为构造期消费，
-        // 补进热切联动）。tier/effort/size/real_name/context_window 走
-        // agent loop 的 config mtime 重读，不经此处。
-        if matches!(field.as_str(), "protocol" | "proxy" | "stream") && entry_is_default {
+        // 统一默认槽联动（方案A）：protocol/proxy/stream/api_base 在
+        // provider 构造时消费——改的是当前默认模型时补跑运行时热切（此前
+        // 只有前端代理页自动跟发 set_default 打补丁，模型页改 protocol 后
+        // workflow/集群/SSE 侧槽全是旧 provider；stream 同为构造期消费，
+        // 补进热切联动；api_base C-4 行内编辑同口径）。tier/effort/size/
+        // real_name/context_window 走 agent loop 的 config mtime 重读，
+        // 不经此处。
+        if matches!(field.as_str(), "protocol" | "proxy" | "stream" | "api_base")
+            && entry_is_default
+        {
             Self::apply_runtime_swap(&final_cfg, &entry_model_name, ctx)?;
             // 模型热切联动（BUG 同族）：update_field 改默认模型
             // 的构造期消费字段时，项目 loop 同样要经 bridge 同步——

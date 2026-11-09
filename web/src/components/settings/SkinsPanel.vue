@@ -237,6 +237,42 @@ function decideConsent(allow: boolean) {
 }
 
 // ---------------------------------------------------------------------------
+// 「设为默认观感需已验证签名」策略开关（ui.skins.require_signed；配置页批次 5）
+// ---------------------------------------------------------------------------
+
+/** 信任决策闸（默认关）：开 = 「设为默认观感」拒绝非 verified 包；关 =
+ * 只在审批卡加警示行（签名状态照旧只是徽标，数据面不拦）。 */
+const requireSigned = ref(false)
+const requireSignedBusy = ref(false)
+
+async function loadRequireSigned() {
+  try {
+    const cfg = (await request('config', 'get')) as {
+      ui?: { skins?: { require_signed?: boolean } }
+    }
+    requireSigned.value = !!cfg?.ui?.skins?.require_signed
+  } catch {
+    // config 不可读 = 闸状态未知 → 保持 false（与服务端缺省同侧）
+  }
+}
+
+async function toggleRequireSigned(on: boolean) {
+  if (requireSignedBusy.value) return
+  requireSignedBusy.value = true
+  try {
+    await request('config', 'set_field', { path: 'ui.skins.require_signed', value: on })
+    requireSigned.value = on
+    toast.success(on
+      ? '已开启：非已验证签名的皮肤包将无法设为默认观感'
+      : '已关闭：未签名皮肤照常可设为默认观感（签名只是徽标）')
+  } catch (e: any) {
+    toast.error('开关保存失败: ' + e)
+    requireSigned.value = !on // 回滚 UI
+  }
+  requireSignedBusy.value = false
+}
+
+// ---------------------------------------------------------------------------
 // 下载皮肤（P2 verify-before-install 三入口）
 // ---------------------------------------------------------------------------
 
@@ -307,6 +343,7 @@ async function onFilePicked(ev: Event) {
 onMounted(() => {
   load()
   loadAllowScripts()
+  loadRequireSigned()
 })
 </script>
 
@@ -347,6 +384,18 @@ onMounted(() => {
       />
       允许皮肤携带脚本
       <span class="script-switch-hint">总闸（默认关）；开闸后每个带脚本包首次运行仍需逐包同意</span>
+    </label>
+
+    <!-- 信任决策闸（ui.skins.require_signed）：只约束「设为默认观感」这一个动作 -->
+    <label class="script-switch" data-test="require-signed-switch">
+      <input
+        type="checkbox"
+        :checked="requireSigned"
+        :disabled="requireSignedBusy"
+        @change="toggleRequireSigned(($event.target as HTMLInputElement).checked)"
+      />
+      设为默认观感需已验证签名
+      <span class="script-switch-hint">默认关；开启后非 ✅ 已验证的包无法设为默认（加载使用不受限，签名只是徽标）</span>
     </label>
 
     <!-- 脚本同意卡（P2a）：watch skinState.scriptPending；签名状态如实

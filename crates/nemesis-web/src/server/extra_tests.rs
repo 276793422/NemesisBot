@@ -1308,6 +1308,7 @@ fn test_resolve_static_dir_workspace_missing_static_subdir() {
 #[tokio::test]
 async fn test_handle_health_includes_running_and_sessions_reflects_state() {
     let state = Arc::new(crate::api_handlers::AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(7)),
         workspace: None,

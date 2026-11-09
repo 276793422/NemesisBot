@@ -22,7 +22,10 @@ use crate::ws_router::{ModuleHandler, RequestContext};
 use nemesis_ziwei::profile::{Primitive, ProfileStore};
 
 /// 门关拒绝文案（IT 契约断言串，改动须同步 integration-test）。
-pub const GATE_CLOSED_MSG: &str = "紫微系统未启用（config ziwei.enabled=false）";
+/// C-3 指引扩展：保留前缀（IT `contains` 断言 + 前端 `includes('未启用')`
+/// 检测兼容），附开闸入口 + 双闸分层语义（运行闸每请求现读 = 即时生效；
+/// 会话工具面装配在 gateway 启动期 = 重启生效）。
+pub const GATE_CLOSED_MSG: &str = "紫微系统未启用（config ziwei.enabled=false）——开启：Dashboard 配置页设 ziwei.enabled=true 或手改 workspace/config/config.json；开启后 CLI/WSAPI 即时生效（运行闸每请求现读），ziwei_* 会话工具面需重启 gateway 装配";
 
 /// 动态工具重注册钩子（gateway 装配时安装；签名 = workspace → 注册数）。
 type RefreshHook = Arc<dyn Fn(&std::path::Path) -> usize + Send + Sync>;

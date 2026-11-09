@@ -102,13 +102,25 @@ pub(crate) fn rate_limit_wait_secs(err: &str, attempt: u32) -> u64 {
     )
 }
 
-/// 单次上游调用超时默认 180s——429 后连接挂起（不回
-/// 响应体）时旧行为可挂任意久（实测 27 分钟缺口）。0 = 关闭超时（退回
-/// 旧行为）。`agents.defaults.provider_call_timeout_secs` 覆盖。
-/// （机制加固）：180→480——thinking 型模型 prefill 实测
-/// 212s 撞破 180s 闸（诚实调用被超时误杀）；仍低于 provider lane 默认
-/// 600s，超时阶梯不倒挂。
-pub const DEFAULT_PROVIDER_CALL_TIMEOUT_SECS: u64 = 480;
+/// provider lane 默认单请求超时（秒）。与
+/// `nemesis_providers::factory::DEFAULT_TIMEOUT_SECS`（超时阶梯最内层
+/// 真相源）同值——providers 是本 crate 的 **dev-dep**，lib 代码不可引用，
+/// 属刻意双写；`config_watch_tests::provider_lane_default_double_write_is_pinned`
+/// 钉住，漂移即红。跟随主语义见
+/// `config_watch::current_provider_call_timeout_secs`（per-model
+/// `timeout_secs` 加 [`PROVIDER_CALL_TIMEOUT_MARGIN_SECS`] 余量，缺条目
+/// 落本值同款加余量；显式 `agents.defaults.provider_call_timeout_secs`
+/// 直接采信，0 = 关）——超时阶梯纪律「外层必须大于内层」：旧恒定 480
+/// 低于内层 600，480~600s 的诚实慢响应被外层误杀（正是 180→480 加固想
+/// 消灭的「诚实调用被超时误杀」形态在 480~600 区间的残留），per-model
+/// timeout 放宽被静默截断（factory「>0 透传用户显式配置」契约违约）。
+pub(crate) const PROVIDER_LANE_DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+/// 外层包裹超时相对 provider 请求超时的余量：内层 HTTP 超时先放弃（错误
+/// 分类准确），外层只兜底防 provider 内部无超时路径。与集群 RPC client
+/// `SOCKET_IO_TIMEOUT_MARGIN`（socket = 外层 + 30s 回收阻塞线程）同款
+/// 「+30s 余量」先例形态。
+pub const PROVIDER_CALL_TIMEOUT_MARGIN_SECS: u64 = 30;
 /// 限流重试环总预算默认 900s（等待 + 调用累计）——
 /// 10 次上限只限次数不限总时长（实测 46 分钟无熔断）。0 = 不限。
 /// `agents.defaults.rate_limit_budget_secs` 覆盖。

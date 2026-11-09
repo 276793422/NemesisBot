@@ -12,7 +12,7 @@
  * 数据形状 = store WorkTimeline（后端 work_timeline.rs serde 镜像，
  * snake_case 原样）；本组件纯渲染不改数据。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import type { WorkTimeline, WorkToolEntry } from '../../stores/chat'
 import { toolLabel, spawnTaskFromArgs, jobIdFromPreview } from './workLabels'
@@ -141,6 +141,22 @@ watch(
     if (props.live) emit('grown')
   },
 )
+
+// --- exec 执行中输出尾窗（2026-11-08 ToolOutput 实时流）---
+// 内容级签名（不能用长度：稳态替换窗恒 2048 字符，长度不变内容在换）。
+// 变化 → 贴底信号 + 尾窗滚动条钉底（最新输出永远可见）。
+const liveTailSig = computed(() =>
+  props.work.rounds.flatMap(r => r.tools).map(t => t.live_tail ?? '').join('\u0000'),
+)
+const bodyEl = ref<HTMLElement | null>(null)
+watch(liveTailSig, () => {
+  if (props.live) emit('grown')
+  nextTick(() => {
+    bodyEl.value?.querySelectorAll('.wt-live-tail').forEach(el => {
+      el.scrollTop = el.scrollHeight
+    })
+  })
+})
 </script>
 
 <template>
@@ -155,7 +171,7 @@ watch(
       <span v-if="work.truncated" class="wt-badge wt-truncated">已截断</span>
       <span class="wt-caret">{{ open ? '▾' : '▸' }}</span>
     </button>
-    <div v-if="open" class="wt-body">
+    <div v-if="open" ref="bodyEl" class="wt-body">
       <template v-for="(r, ri) in work.rounds" :key="ri">
         <!-- B4（2026-11-09）轮内时序修正：思考 → 应答 → 操作（真实时间流
              顺序——思考先于叙述产生）。此前思考折叠卡排在叙述之后，与模型
@@ -188,6 +204,13 @@ watch(
             <span v-if="spawnTask(t)" class="wt-tool-args wt-tool-task">{{ spawnTask(t) }}</span>
             <span v-else-if="t.args_preview" class="wt-tool-args">{{ t.args_preview }}</span>
             <span class="wt-tool-dur">{{ formatToolMs(t.duration_ms) }}</span>
+          </div>
+          <!-- exec 执行中输出尾窗（2026-11-08 ToolOutput 实时流）：仅
+               running 且有尾窗时渲染——replacement 窗整体替换，终态由
+               result_preview 接棒（Finished 清 live_tail）。 -->
+          <div v-if="t.running && t.live_tail" class="wt-live-wrap">
+            <pre class="wt-live-tail">{{ t.live_tail }}</pre>
+            <div class="wt-live-meta">实时输出 · {{ t.live_total_bytes ?? 0 }}B</div>
           </div>
           <!-- background_start 内嵌迷你 live tail（compact：4KB 窗口 +
                「完整输出」深链 /executors?tab=processes&focus=<id>）；挂在行外——点击
@@ -417,5 +440,33 @@ details.wt-think-live > summary {
 }
 .wt-tool-bg:hover .wt-tool-label {
   color: var(--accent, #3b82f6);
+}
+/* exec 执行中输出尾窗（2026-11-08 ToolOutput 实时流）：等宽 pre-wrap +
+   高度钳制滚动，watch 钉底——最新输出永远可见；meta 行字节计数。 */
+.wt-live-wrap {
+  margin: 2px 0 2px 20px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.wt-live-tail {
+  margin: 0;
+  padding: 4px 8px;
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+  background: var(--bg-elev, rgba(128, 128, 128, 0.05));
+}
+.wt-live-meta {
+  padding: 2px 8px;
+  border-top: 1px dashed var(--border);
+  font-size: 10px;
+  color: var(--text-muted);
+  opacity: 0.75;
 }
 </style>

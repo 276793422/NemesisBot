@@ -46,6 +46,7 @@ fn n5_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["present_files".to_string()],
         models: std::collections::HashMap::new(),

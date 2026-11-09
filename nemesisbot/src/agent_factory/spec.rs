@@ -261,7 +261,7 @@ pub fn build_agent_loop_from_spec(
     //    不 load_skills（skills 是主 workspace 资产， 边界不进项目 loop）。
     //    prompt 体系与主 loop 同一开关（agents.prompt_system）。
     let prompt_system = nemesis_agent::prompt::PromptSystem::from_config(&cfg.agents);
-    let system_prompt = {
+    let (system_prompt, prompt_split) = {
         // persona_dir 覆盖在场 = 身份装配根换人格目录（IDENTITY/SOUL
         // 等从该目录读）；workspace 指令链/围栏仍锚 exec_root（下方
         // set_workspace_root 不受影响）。目录缺席 → ContextBuilder 自然
@@ -276,7 +276,7 @@ pub fn build_agent_loop_from_spec(
             context_builder.set_bootstrap_roots(vec![home.clone(), project_dir.clone()]);
         }
         context_builder.set_prompt_system(prompt_system);
-        context_builder.build_system_prompt(false)
+        context_builder.build_system_prompt_with_sections(false)
     };
     info!(
         project = %spec.display_name,
@@ -298,6 +298,7 @@ pub fn build_agent_loop_from_spec(
         } else {
             Some(system_prompt)
         },
+        system_prompt_split: Some(prompt_split),
         max_turns: if cfg.agents.defaults.max_tool_iterations <= 0 {
             0
         } else {

@@ -1974,6 +1974,7 @@ fn test_skills_loader_with_real_dirs() {
 #[test]
 fn test_shared_tool_config_web_search_field() {
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         web_search: Some(nemesis_agent::loop_tools::WebSearchConfig {
             brave_enabled: true,
             brave_api_key: Some("test".to_string()),
@@ -1989,6 +1990,7 @@ fn test_shared_tool_config_web_search_field() {
 fn test_shared_tool_config_skills_loader_field() {
     let loader = nemesis_skills::loader::SkillsLoader::new("/tmp", "/tmp/skills", "");
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_loader: Some(std::sync::Arc::new(loader)),
         ..Default::default()
     };
@@ -2000,6 +2002,7 @@ fn test_shared_tool_config_skills_registry_field() {
     let reg_config = nemesis_skills::types::RegistryConfig::default();
     let rm = nemesis_skills::registry::RegistryManager::new(reg_config);
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_registry: Some(std::sync::Arc::new(rm)),
         ..Default::default()
     };
@@ -2009,6 +2012,7 @@ fn test_shared_tool_config_skills_registry_field() {
 #[test]
 fn test_register_shared_tools_with_web_search() {
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         web_search: Some(nemesis_agent::loop_tools::WebSearchConfig {
             duckduckgo_enabled: true,
             ..Default::default()
@@ -2030,6 +2034,7 @@ fn test_register_shared_tools_with_web_search() {
 #[test]
 fn test_register_shared_tools_without_web_search() {
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         web_search: None,
         workspace: Some("/tmp".to_string()),
         ..Default::default()
@@ -2049,6 +2054,7 @@ fn test_register_shared_tools_without_web_search() {
 fn test_register_shared_tools_with_skills_loader() {
     let loader = nemesis_skills::loader::SkillsLoader::new("/tmp", "/tmp/skills", "");
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_loader: Some(std::sync::Arc::new(loader)),
         workspace: Some("/tmp".to_string()),
         ..Default::default()
@@ -2069,6 +2075,7 @@ fn test_register_shared_tools_with_skills_registry() {
     let reg_config = nemesis_skills::types::RegistryConfig::default();
     let rm = nemesis_skills::registry::RegistryManager::new(reg_config);
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_registry: Some(std::sync::Arc::new(rm)),
         workspace: Some("/tmp".to_string()),
         ..Default::default()
@@ -2418,6 +2425,7 @@ fn test_agent_config_custom_values() {
         model: "test-model".to_string(),
         max_turns: 50,
         system_prompt: Some("You are helpful".to_string()),
+        system_prompt_split: None,
         tools: vec![],
         ..Default::default()
     };
@@ -3086,6 +3094,7 @@ mod gateway_agent_runner_tests {
             AgentConfig {
                 model: "test-model".to_string(),
                 system_prompt: Some("test".to_string()),
+                system_prompt_split: None,
                 max_turns: 1,
                 tools: vec![],
                 ..Default::default()

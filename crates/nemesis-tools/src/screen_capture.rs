@@ -427,6 +427,38 @@ Write-Output "OK"
         )
     }
 
+    /// Build the PowerShell snippet that resolves `$handle` for a window
+    /// capture: by hex hwnd when given, otherwise by title substring match.
+    ///
+    /// Both title usages sit inside PowerShell **single-quoted** strings —
+    /// the `'` → `''` doubling is the correct (and sufficient) escaping
+    /// there. The lookup-failure diagnostic must stay single-quoted too:
+    /// PowerShell double-quoted strings expand `$var`, backtick escapes and
+    /// `$(...)` subexpressions, so a benign title containing `$` (e.g. a
+    /// browser tab "$100 off") would corrupt the error — or execute injected
+    /// script — on the failure path.
+    fn build_window_find_part(hwnd: &str, window_title: &str) -> String {
+        if !hwnd.is_empty() {
+            // Parse hwnd from "HWND(0x...)" format or plain hex (with or
+            // without the 0x prefix — the format! below adds its own, and a
+            // doubled 0x0x… is an invalid PowerShell literal that fails the
+            // whole script).
+            let hwnd_clean = hwnd
+                .trim_start_matches("HWND(")
+                .trim_end_matches(')')
+                .trim_start_matches("0x");
+            format!("$handle = [IntPtr]0x{}", hwnd_clean)
+        } else {
+            let escaped_title = window_title.replace('\'', "''");
+            format!(
+                r#"$proc = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{}*' -and $_.MainWindowHandle -ne 0 }} | Select-Object -First 1
+if (-not $proc) {{ Write-Error 'Window not found: {}'; exit 1 }}
+$handle = $proc.MainWindowHandle"#,
+                escaped_title, escaped_title
+            )
+        }
+    }
+
     /// Capture a window using PowerShell fallback (CopyFromScreen).
     ///
     /// The window must be visible and unobstructed for this to work.
@@ -443,19 +475,7 @@ Write-Output "OK"
             .replace('\'', "''");
         let fmt_enum = Self::image_format_enum(format);
 
-        let find_part = if !hwnd.is_empty() {
-            // Parse hwnd from "HWND(0x...)" format or plain hex
-            let hwnd_clean = hwnd.trim_start_matches("HWND(").trim_end_matches(')');
-            format!("$handle = [IntPtr]0x{}", hwnd_clean)
-        } else {
-            let escaped_title = window_title.replace('\'', "''");
-            format!(
-                r#"$proc = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{}*' -and $_.MainWindowHandle -ne 0 }} | Select-Object -First 1
-if (-not $proc) {{ Write-Error "Window not found: {}"; exit 1 }}
-$handle = $proc.MainWindowHandle"#,
-                escaped_title, escaped_title
-            )
-        };
+        let find_part = Self::build_window_find_part(hwnd, window_title);
 
         let script = format!(
             r#"

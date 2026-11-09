@@ -227,6 +227,22 @@ pub fn build_executor_channel_with_extra_roots(
     // live 探针——那两个是运行期可翻的开关，restrict 不是）。
     let restrict_child = config_handle.read().agents.defaults.restrict_to_workspace;
 
+    // exec deny 自定义词表镜像（2026-11-08 接线激活）——装配期一次读
+    // （与 restrict_child 同点同源：SharedToolConfig 的 exec_deny_* 也是
+    // 装配期值，重启才变，两侧不会漂移）。只在「开关开+词表非空」注入
+    // （with_deny_patterns 内部把空表折回 None = 子进程默认词表，与主
+    // 进程同语义）；executor 分离不透传 = Layer 1 成为词表旁路。
+    let deny_patterns_child = {
+        let cfg = config_handle.read();
+        let enabled = cfg.tools.exec.enable_deny_patterns;
+        let patterns = cfg.tools.exec.custom_deny_patterns.clone();
+        if enabled && !patterns.is_empty() {
+            Some(patterns)
+        } else {
+            None
+        }
+    };
+
     // Windows 盒缺位时的用户态 ACL 降级选型——**显式
     // `executor.backend = "acl"`** 且 AclBackend 本机可用才可顶（子进程
     // engage 同判据 opt-in 自装）。auto/未知值/不可用 → false 维持现状裸
@@ -510,7 +526,8 @@ pub fn build_executor_channel_with_extra_roots(
                 .with_extra_roots(extra_roots.clone())
                 .with_strict_gate(strict_gate)
                 .with_lease_child((lease_child_now)())
-                .with_restrict_child(restrict_child);
+                .with_restrict_child(restrict_child)
+                .with_deny_patterns(deny_patterns_child.clone());
             // DACL hook 挂载（盒在场时 agent 侧 start_exe 闸保证不咨询）。
             #[cfg(all(feature = "sandbox", windows))]
             let channel = match dacl_hook {
@@ -559,6 +576,7 @@ pub fn build_executor_channel_with_extra_roots(
         .with_strict_gate(strict_gate)
         .with_lease_child((lease_child_now)())
         .with_restrict_child(restrict_child)
+        .with_deny_patterns(deny_patterns_child)
         // Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，
         // 判定面不存在 → 现状不变）。
         .with_userland_fallback({

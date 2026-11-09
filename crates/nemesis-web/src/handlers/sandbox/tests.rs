@@ -65,6 +65,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -238,6 +239,52 @@ async fn set_config_merges_field_by_field() {
         .await
         .expect_err("non-bool must be rejected");
     assert!(err.contains("strict"), "err names the bad field: {err}");
+
+    // 3b) acl 三键逐字段合并（配置页批次 5）：acl_dacl/acl_strict 走 bool
+    // 合并、acl_max_files 走 u32；兄弟键与四个主开关保留。
+    let resp = h
+        .handle_cmd(
+            "set_config",
+            Some(serde_json::json!({
+                "acl_dacl": true,
+                "acl_strict": true,
+                "acl_max_files": 12345
+            })),
+            &ctx,
+        )
+        .await
+        .expect("set_config ok")
+        .expect("set_config returns a payload");
+    assert_eq!(resp["executor"]["acl"]["dacl"], true);
+    assert_eq!(resp["executor"]["acl"]["strict"], true);
+    assert_eq!(resp["executor"]["acl"]["max_files"], 12345);
+    // 主开关兄弟键保留（3) 后 enabled=false / sandbox=true / strict=true）
+    assert_eq!(resp["executor"]["enabled"], false);
+    assert_eq!(resp["executor"]["sandbox"], true);
+    assert_eq!(resp["executor"]["strict"], true);
+
+    // 3c) acl_max_files=0 / 非数 → 明确报错
+    let err = h
+        .handle_cmd(
+            "set_config",
+            Some(serde_json::json!({ "acl_max_files": 0 })),
+            &ctx,
+        )
+        .await
+        .expect_err("acl_max_files=0 must be rejected");
+    assert!(
+        err.contains("acl_max_files"),
+        "err names the bad field: {err}"
+    );
+    let err = h
+        .handle_cmd(
+            "set_config",
+            Some(serde_json::json!({ "acl_max_files": "many" })),
+            &ctx,
+        )
+        .await
+        .expect_err("non-u32 acl_max_files must be rejected");
+    assert!(err.contains("acl_max_files"));
 
     // 4) 空载荷 → 报错
     h.handle_cmd("set_config", Some(serde_json::json!({})), &ctx)

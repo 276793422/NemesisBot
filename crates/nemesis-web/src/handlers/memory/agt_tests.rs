@@ -34,6 +34,7 @@ fn agt_state(
     board: Option<nemesis_board::BoardService>,
 ) -> AppState {
     AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.to_string()),

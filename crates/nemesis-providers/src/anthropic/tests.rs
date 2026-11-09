@@ -846,6 +846,49 @@ async fn test_stream_yes_chat_aggregates_sse_into_llm_response() {
     assert_eq!(u.completion_tokens, 3);
 }
 
+/// cc-switch 等中继形态（2026-11-09 V3 真模型实测）：message_start.usage
+/// 只带 0，真实 input/cache 值在 message_delta.usage（累积口径）——
+/// 后到覆盖。不覆盖则 input=0 被当实报，零锚点把 used 塌缩成纯增量估算。
+#[tokio::test]
+async fn test_stream_delta_usage_overrides_message_start_zero() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({"stream": true})))
+        .respond_with(sse_response(concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hi\"}}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":16,\"output_tokens\":64,\"cache_read_input_tokens\":7}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut cfg = anth_config(&server.uri());
+    cfg.stream_mode = "yes".to_string();
+    let provider = AnthropicProvider::new(cfg);
+    let resp = provider
+        .chat(&anth_messages(), &[], "m", &ChatOptions::default())
+        .await
+        .unwrap();
+    let u = resp.usage.as_ref().expect("usage 聚合自 SSE");
+    assert_eq!(
+        u.prompt_tokens, 16,
+        "message_delta 累积 input 覆盖 message_start 的 0"
+    );
+    assert_eq!(u.completion_tokens, 64);
+    assert_eq!(
+        u.cache_read_tokens,
+        Some(7),
+        "message_delta cache 列同样覆盖"
+    );
+}
+
 /// auto（缺省）维持非流式现状：wire 上请求 body **不带** stream:true
 ///（stream:true 匹配器 expect(0)），走整包 JSON 响应路径。
 #[tokio::test]

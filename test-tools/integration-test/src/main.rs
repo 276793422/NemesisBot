@@ -13,6 +13,8 @@
 mod board_ws_tests;
 mod cli_tests;
 mod connectors_ws_tests;
+mod cors_ws_tests;
+mod eval_rules_ws_tests;
 mod forge_tests;
 mod gateway_tests;
 mod projects_ws_tests;
@@ -927,6 +929,19 @@ async fn main() -> Result<()> {
     // 紫微系统 M2（2026-10-23）：WSAPI 表面契约——门关拒绝面/热开闸/未装配
     // 诚实报，改工作区 config.json，套件结束删 ziwei 键恢复原状。
     all_results.extend(ziwei_ws_tests::test_ziwei_surface(&ws, &cfg.gateway_bin).await);
+
+    // CORS WSAPI 表面契约（2026-11-08 配置页补全 C-1）：运行相 manager 恒
+    // 连接（Phase 1 cli/cors 已落 cors.json）→ 钉连接态真语义（list 形状/
+    // add→list+落盘/remove/toggle 往返/非法 origin 拒绝）；not-connected
+    // 路径归 nemesis-web 单测。套件结束还原 dev-mode=false + 摘测试 origin。
+    all_results.extend(cors_ws_tests::test_cors_wsapi_surface(&ws, &cfg.gateway_bin).await);
+
+    // 条目级规则管理 WSAPI 表面契约（2026-11-08 配置页补全批次 3）：
+    // approvals.add/remove 同源闸（死条目 loud 拒）+ eval_rules CRUD/reset
+    // （nemesis-config::eval_rules 单一真相源，与 CLI 同一文件）。套件内
+    // 自清理（remove 自建条目 / reset 恢复默认集），无残留。
+    all_results
+        .extend(eval_rules_ws_tests::test_rules_mgmt_ws_surface(&ws, &cfg.gateway_bin).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an

@@ -49,6 +49,7 @@ impl AgentLoopService for MockAgentService {}
 
 fn make_ctx_with_agent(svc: Arc<dyn AgentLoopService>) -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -261,6 +262,7 @@ fn make_ctx_with_loop(workspace: Option<String>) -> RequestContext {
 /// 由调用方预装配 AgentLoop（带自备 CheckpointStore 等）再组 ctx。
 fn make_ctx_from_loop(al: Arc<AgentLoop>, workspace: Option<String>) -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: workspace.clone(),

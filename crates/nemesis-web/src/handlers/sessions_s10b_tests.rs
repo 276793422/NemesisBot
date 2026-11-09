@@ -86,6 +86,7 @@ fn make_ctx(dir: &tempfile::TempDir, with_store: bool) -> RequestContext {
         *agent_loop.get_mut() = Some(Arc::new(al));
     }
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

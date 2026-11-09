@@ -9,6 +9,9 @@
  *     （--permission-mode：default/accept_edits/plan/bypass_permissions）。
  *  3. Codex 委派 —— agents.codex_tool 开关 + 沙盒档
  *     （--sandbox：read_only/workspace_write/danger_full_access）。
+ *  3b. 委派持续操控 —— agents.delegate 三键（配置页批次 4）：delegate 四
+ *     工具开关 + 子代理生命上限（0=不限）+ claude permission-mode 透传
+ *     （''=跟随子 CLI 默认）。
  *  4. 诊断闭环 —— agents.defaults.diagnostics_loop（C4，编辑→诊断回灌
  *     闭环的独立开关；与 lsp_tool.enabled 解耦，闭环落地前先配）。
  *  5. 并发请求模式 —— agents.defaults.concurrent_request_mode（E2）：
@@ -57,6 +60,12 @@ const diagWaitMaxMs = ref(2000)
 // E2: 并发请求模式（agents.defaults.concurrent_request_mode + queue_size）
 const concurrentMode = ref('queue')
 const concurrentQueueSize = ref(8)
+// 委派持续操控（agents.delegate，配置页批次 4）：四工具开关 + 子代理
+// 生命上限 + claude permission-mode 透传。注册在 AgentLoop 装配期且要求
+// 至少一个 CLI（claude/codex）在 PATH——保存后重启 Agent 生效。
+const delegateEnabled = ref(false)
+const delegateMaxLifetime = ref(3600)
+const delegatePermissionMode = ref('')
 // N2: 小模型杂务通道（agents.small_model；唯一消费点 = 手动 /compact 摘要）
 const smallModel = ref('')
 const modelNameOptions = ref<string[]>([])
@@ -78,6 +87,9 @@ async function loadAll() {
     ccPermissionMode.value = cfg?.claude_code?.permission_mode || 'accept_edits'
     codexEnabled.value = cfg?.codex?.enabled ?? false
     codexSandbox.value = cfg?.codex?.sandbox || 'read_only'
+    delegateEnabled.value = cfg?.delegate?.enabled ?? false
+    delegateMaxLifetime.value = cfg?.delegate?.max_lifetime_secs ?? 3600
+    delegatePermissionMode.value = cfg?.delegate?.permission_mode ?? ''
     diagEnabled.value = cfg?.diagnostics?.enabled ?? false
     diagMaxErrors.value = cfg?.diagnostics?.max_errors ?? 20
     diagWaitMaxMs.value = cfg?.diagnostics?.wait_max_ms ?? 2000
@@ -111,6 +123,9 @@ function saveConfigDebounced() {
         setField('agents.claude_code_tool.permission_mode', ccPermissionMode.value),
         setField('agents.codex_tool.enabled', codexEnabled.value),
         setField('agents.codex_tool.sandbox', codexSandbox.value),
+        setField('agents.delegate.enabled', delegateEnabled.value),
+        setField('agents.delegate.max_lifetime_secs', delegateMaxLifetime.value),
+        setField('agents.delegate.permission_mode', delegatePermissionMode.value),
         setField('agents.defaults.diagnostics_loop.enabled', diagEnabled.value),
         setField('agents.defaults.diagnostics_loop.max_errors', diagMaxErrors.value),
         setField('agents.defaults.diagnostics_loop.wait_max_ms', diagWaitMaxMs.value),
@@ -179,6 +194,7 @@ async function copyInstallCommand(l: LspLang) {
 }
 
 watch([lspEnabled, lspAutoInstall, ccEnabled, ccPermissionMode, codexEnabled, codexSandbox,
+       delegateEnabled, delegateMaxLifetime, delegatePermissionMode,
        diagEnabled, diagMaxErrors, diagWaitMaxMs,
        concurrentMode, concurrentQueueSize, smallModel], () => {
   saveConfigDebounced()
@@ -304,6 +320,39 @@ onMounted(async () => {
                 <option value="danger_full_access">danger_full_access（完全访问，最危险）</option>
               </select>
             </div>
+          </div>
+        </div>
+
+        <!-- 卡 3b：委派持续操控（agents.delegate，配置页批次 4） -->
+        <div class="card">
+          <div class="card-header"><h3>委派持续操控（delegate）</h3></div>
+          <div style="padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3);">
+            <p class="muted">
+              开启后 Agent 获得 delegate 四工具（delegate_start/send/output/stop）：对子代理
+              <b>持续操控</b>——启动后可继续发话、读输出、按需停止，而不是一锤子委派。
+              需本机 <code>claude</code> 或 <code>codex</code> CLI 至少一个在 PATH；
+              生命上限到点由 watchdog 树杀并在输出流留下诚实标记。
+            </p>
+            <div class="settings-grid">
+              <div class="settings-label">启用 delegate 工具</div>
+              <label class="toggle-switch">
+                <input type="checkbox" v-model="delegateEnabled" data-test="delegate-enabled">
+                <span class="toggle-slider"></span>
+              </label>
+              <div class="settings-label">子代理生命上限（秒）</div>
+              <input type="number" class="form-input" v-model.number="delegateMaxLifetime"
+                data-test="delegate-max-lifetime"
+                :disabled="!delegateEnabled" min="0" step="300" style="max-width: 160px;">
+              <div class="settings-label">claude 危险档透传（permission-mode）</div>
+              <select class="form-select" v-model="delegatePermissionMode" :disabled="!delegateEnabled" data-test="delegate-permission-mode">
+                <option value="">跟随子 CLI 自身默认（不透传）</option>
+                <option value="default">default（每次都要确认）</option>
+                <option value="accept_edits">accept_edits（自动接受编辑）</option>
+                <option value="plan">plan（只读规划，不改文件）</option>
+                <option value="bypass_permissions">bypass_permissions（跳过全部确认，最危险）</option>
+              </select>
+            </div>
+            <p class="form-hint">生命上限 0 = 不限；默认 3600（1 小时）。危险档只透传给子 CLI，不代其绕过自身权限面。Agent 启动时注册——保存后重启 Agent 生效。</p>
           </div>
         </div>
 

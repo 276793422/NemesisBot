@@ -420,12 +420,46 @@ impl AgentLoop {
             .unwrap_or(default)
     }
 
-    /// 单次上游调用超时（秒）。0 = 关闭（旧行为）。
+    /// `agents.defaults.<key>` 世代快照读——Option 形态：`None` = 缺键
+    /// （caller 据此区分「未配置走跟随」与「显式配置直接采信」）。
+    pub(crate) fn agents_defaults_opt_u64(&self, key: &str) -> Option<u64> {
+        self.config_generation()?
+            .get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get(key))
+            .and_then(|n| n.as_u64())
+    }
+
+    /// 单次上游调用包裹超时（秒）。0 = 关闭（旧行为）。
+    ///
+    /// 语义三层（超时阶梯纪律：外层必须大于内层——CLAUDE.md）：
+    /// ① 显式配置 `agents.defaults.provider_call_timeout_secs`（含 0=关）
+    ///    直接采信——用户预算意志优先（与 tier `model_tier != auto` 同哲学）；
+    /// ② 缺省**跟随**活跃模型 provider 请求超时（per-model `timeout_secs`
+    ///    别名 `timeout`，解析与 ProviderResolution 构造同源
+    ///    `resolve_active_timeout_secs`）+ [`PROVIDER_CALL_TIMEOUT_MARGIN_SECS`]，
+    ///    内层 HTTP 超时先放弃（分类准确），外层纯兜底；
+    /// ③ 无代 / 条目缺席 / per-model 未设 → lane 默认 + 余量
+    ///    （= [`default_provider_call_timeout_secs`]）。
+    /// 旧默认恒 480：低于内层 600——480~600s 诚实慢响应被外层误杀、
+    /// per-model 放宽被静默截断（BUG-20261108-030）。
     pub(crate) fn current_provider_call_timeout_secs(&self) -> u64 {
-        self.agents_defaults_u64(
-            "provider_call_timeout_secs",
-            DEFAULT_PROVIDER_CALL_TIMEOUT_SECS,
-        )
+        if let Some(v) = self.agents_defaults_opt_u64("provider_call_timeout_secs") {
+            return v;
+        }
+        let provider_secs = match self.config_generation() {
+            Some(v) => {
+                let active = self.active_model.read().clone();
+                nemesis_config::resolve_active_timeout_secs(&v, &active)
+            }
+            None => 0,
+        };
+        let effective = if provider_secs > 0 {
+            provider_secs
+        } else {
+            crate::r#loop::rate_limit::PROVIDER_LANE_DEFAULT_TIMEOUT_SECS
+        };
+        effective.saturating_add(crate::r#loop::rate_limit::PROVIDER_CALL_TIMEOUT_MARGIN_SECS)
     }
 
     /// 限流重试环总预算（秒）。0 = 不限。

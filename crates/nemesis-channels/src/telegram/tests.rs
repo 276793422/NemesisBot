@@ -508,11 +508,16 @@ fn test_telegram_config_proxy_support() {
 
 /// 极简 mock Telegram Bot API：阻塞线程逐连接应答。
 /// - `POST …/getFile` → `{"ok":true,"result":{"file_path":"photos/<file>.jpg"}}`
-/// - `GET …/file/photos/<file>.jpg` → 传入的字节
-/// 返回 (api_url_base, 关闭句柄)。监听 127.0.0.1:0（系统分配端口）。
-fn spawn_mock_telegram_api(file_bytes: Vec<u8>) -> String {
+/// - `GET …/file/bot{token}/photos/<file>.jpg` → 传入的字节
+///
+/// 下载路径按**官方命名空间**严格匹配（`/file/bot{token}/` 前缀）——
+/// BUG-20261109-006 回归锁：此前代码拼成 `{bot{token}}/file/`（命名空间
+/// 交换），而本 mock 旧版用宽松 `contains("/file/")` 匹配把断链放行。
+/// 返回 (api_base, 关闭句柄)。监听 127.0.0.1:0（系统分配端口）。
+fn spawn_mock_telegram_api(file_bytes: Vec<u8>, token: &str) -> String {
     use std::io::{Read, Write};
 
+    let download_prefix = format!("/file/bot{token}/");
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let addr = listener.local_addr().expect("addr");
     std::thread::spawn(move || {
@@ -533,7 +538,8 @@ fn spawn_mock_telegram_api(file_bytes: Vec<u8>) -> String {
                     br#"{"ok":true,"result":{"file_id":"agg","file_path":"photos/nb_t7.jpg","file_size":1}}"#
                         .to_vec(),
                 )
-            } else if path.contains("/file/") {
+            } else if path.starts_with(&download_prefix) {
+                // 官方文件命名空间契约锁：/file/bot{token}/ 前缀必须精确在场
                 ("200 OK", file_bytes.clone())
             } else {
                 ("404 Not Found", b"{}".to_vec())
@@ -559,14 +565,17 @@ async fn t7_photo_download_lands_local_path_reference() {
     let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     png.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R']);
 
-    let base = spawn_mock_telegram_api(png.clone());
+    let base = spawn_mock_telegram_api(png.clone(), "123456:nb-t7-token");
+    let api = TelegramApi::new(&base, "123456:nb-t7-token");
     let uploads = tempfile::tempdir().expect("uploads tempdir");
 
     let client = reqwest::Client::new();
-    let att = TelegramChannel::fetch_photo_attachment(
+    let att = TelegramChannel::fetch_file_attachment(
         Some(&client),
-        Some(&base),
+        Some(&api),
         "AgAC-file/id.99",
+        "image",
+        "jpg",
         uploads.path(),
     )
     .await
@@ -629,10 +638,13 @@ async fn t7_photo_download_failure_returns_none() {
 
     let uploads = tempfile::tempdir().expect("uploads tempdir");
     let client = reqwest::Client::new();
-    let att = TelegramChannel::fetch_photo_attachment(
+    let api = TelegramApi::new(&format!("http://{addr}"), "t");
+    let att = TelegramChannel::fetch_file_attachment(
         Some(&client),
-        Some(&format!("http://{addr}")),
+        Some(&api),
         "bad_id",
+        "image",
+        "jpg",
         uploads.path(),
     )
     .await;
@@ -643,14 +655,58 @@ async fn t7_photo_download_failure_returns_none() {
 async fn t7_photo_download_without_http_returns_none() {
     // http 客户端缺失（轮询未起/代理未配）→ None（诚实降级，不 panic）。
     let uploads = tempfile::tempdir().expect("uploads tempdir");
-    let att = TelegramChannel::fetch_photo_attachment(
+    let api = TelegramApi::new("http://127.0.0.1:1", "t");
+    let att = TelegramChannel::fetch_file_attachment(
         None,
-        Some("http://127.0.0.1:1"),
+        Some(&api),
         "x",
+        "image",
+        "jpg",
         uploads.path(),
     )
     .await;
     assert!(att.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261109-006：URL 构造契约 + token 脱敏
+// ---------------------------------------------------------------------------
+
+/// 文件下载 URL 必须是官方命名空间 `{base}/file/bot{token}/{path}`——
+/// 此前三处拼成 `{base}/bot{token}/file/{path}`（命名空间交换），
+/// 照片/语音/音频/文档文件访问全部 404，被降级文案掩盖。
+#[test]
+fn telegram_api_file_url_uses_official_file_namespace() {
+    let api = TelegramApi::new("https://api.telegram.org", "123456:ABC-DEF");
+    assert_eq!(
+        api.file_url("photos/nb.jpg"),
+        "https://api.telegram.org/file/bot123456:ABC-DEF/photos/nb.jpg",
+        "文件下载必须走 /file/bot{{token}}/ 命名空间"
+    );
+    assert_eq!(
+        api.method_url("getFile"),
+        "https://api.telegram.org/bot123456:ABC-DEF/getFile",
+        "方法调用走 /bot{{token}}/ 命名空间"
+    );
+}
+
+/// reqwest 错误 Display 内嵌完整 URL（token 在路径里）——所有格式化
+/// 错误的位点必须过 redact_token；空 token（未配置）原样透传。
+#[test]
+fn redact_token_masks_bot_token_in_error_strings() {
+    let err =
+        "error sending request for url (https://api.telegram.org/bot123456:SECRET-TOK/sendMessage)";
+    let redacted = redact_token(err, "123456:SECRET-TOK");
+    assert!(
+        !redacted.contains("SECRET-TOK"),
+        "token 必须被脱敏: {redacted}"
+    );
+    assert!(
+        redacted.contains("/bot<redacted>/sendMessage"),
+        "形态可读（保留 URL 结构）: {redacted}"
+    );
+    // 空 token = 未配置，原样透传（不做无意义替换）
+    assert_eq!(redact_token("plain error", ""), "plain error");
 }
 
 // ---------------------------------------------------------------------------
@@ -685,10 +741,12 @@ async fn t7_voice_download_rejects_http_error_pages() {
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("voice.ogg");
+    let api = TelegramApi::new("http://127.0.0.1", "t");
     let err = TelegramChannel::download_voice_file(
         &http,
         &format!("http://127.0.0.1:{port}/file/bot/x.ogg"),
         &target,
+        &api,
     )
     .await
     .unwrap_err();
@@ -703,15 +761,39 @@ async fn t7_voice_download_writes_success_body() {
     let http = reqwest::Client::builder().no_proxy().build().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("voice.ogg");
+    let api = TelegramApi::new("http://127.0.0.1", "t");
     TelegramChannel::download_voice_file(
         &http,
         &format!("http://127.0.0.1:{port}/file/bot/x.ogg"),
         &target,
+        &api,
     )
     .await
     .expect("200 must download and write");
     let content = std::fs::read_to_string(&target).unwrap();
     assert_eq!(content, "OGGDUMMYBYTES");
+}
+
+#[tokio::test]
+async fn t7_voice_download_transport_error_is_redacted() {
+    // 传输层错误（连接拒绝）的 Display 带 URL（token 在路径里）——
+    // 上抛的 Err 串必须已脱敏（BUG-20261109-006）。
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("voice.ogg");
+    let api = TelegramApi::new("http://127.0.0.1", "123456:SECRET-VTOK");
+    let err = TelegramChannel::download_voice_file(
+        &http,
+        &format!("http://127.0.0.1:9/file/bot{}/x.ogg", "123456:SECRET-VTOK"),
+        &target,
+        &api,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        !err.contains("SECRET-VTOK"),
+        "传输错误串必须脱敏 token: {err}"
+    );
 }
 
 // ---------------------------------------------------------------------------

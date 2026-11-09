@@ -366,6 +366,10 @@ pub struct WebServer {
     /// 热翻。`skin_id()` 读快照。
     #[cfg(feature = "skins")]
     skin_id: Arc<parking_lot::RwLock<String>>,
+    /// CORS 管理器句柄（cors.* WSAPI 真实现）。`set_cors_manager` 注入
+    /// （不进 WebServerConfig——同 skins 理由：测试字面量装配面大），
+    /// build_router 时 clone 进 AppState。None = 未注入，handler 诚实报错。
+    cors_manager: Option<Arc<crate::cors::CORSManager>>,
 }
 
 impl WebServer {
@@ -423,6 +427,7 @@ impl WebServer {
             skins_dir: None,
             #[cfg(feature = "skins")]
             skin_id: Arc::new(parking_lot::RwLock::new("default".to_string())),
+            cors_manager: None,
         }
     }
 
@@ -614,6 +619,13 @@ impl WebServer {
         self.session_stats = Some(reader);
     }
 
+    /// 注入 CORS 管理器（gateway 启动装配；cors.* WSAPI 真实现）。
+    /// 与 skins 同款注入形态：不进 WebServerConfig，build_router 时
+    /// clone 进 AppState。
+    pub fn set_cors_manager(&mut self, mgr: Arc<crate::cors::CORSManager>) {
+        self.cors_manager = Some(mgr);
+    }
+
     /// Set the managed-agent board service (gateway injects when the `board`
     /// feature is enabled and the store opened successfully).
     #[cfg(feature = "board")]
@@ -756,6 +768,7 @@ impl WebServer {
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
             background_registry: self.background_registry.clone(),
+            cors_manager: self.cors_manager.clone(),
             signature_verify: self.signature_verify.clone(),
             skills_install_gate: self.skills_install_gate.clone(),
             session_stats: self.session_stats.clone(),

@@ -79,6 +79,58 @@ impl Default for TelegramConfig {
     }
 }
 
+/// reqwest 错误 Display 内嵌完整请求 URL（`... for url ({url})`），而
+/// Telegram 的 token 就在 URL 路径里（`/bot{token}/方法名`）——错误一进
+/// 日志/错误串 token 即泄漏。所有格式化 reqwest 错误的位点必须过本函数
+/// （BUG-20261109-006：泄漏面，与 URL 构造同族）。
+fn redact_token(msg: impl std::fmt::Display, token: &str) -> String {
+    let s = msg.to_string();
+    if token.is_empty() {
+        s
+    } else {
+        s.replace(token, "<redacted>")
+    }
+}
+
+/// Bot API 上下文（轮询任务构造一次，媒体链路共享）：方法 URL / 文件
+/// 下载 URL / token 脱敏三件单一真相源。文件下载命名空间是
+/// `{base}/file/bot{token}/{file_path}`（官方文档），与方法 URL
+/// `{base}/bot{token}/{method}` 不同（BUG-20261109-006：此前三处把
+/// 文件下载拼成 `{bot{token}}/file/{path}`，命名空间交换 = 照片/语音/
+/// 音频/文档文件访问全部 404，被降级文案掩盖）。
+struct TelegramApi {
+    /// `{api_base}/bot{token}`——API 方法调用基。
+    url_base: String,
+    /// `{api_base}/file/bot{token}`——文件下载基。
+    file_url_base: String,
+    /// token（redact 用，不进 URL 以外的地方）。
+    token: String,
+}
+
+impl TelegramApi {
+    fn new(api_base: &str, token: &str) -> Self {
+        TelegramApi {
+            url_base: format!("{api_base}/bot{token}"),
+            file_url_base: format!("{api_base}/file/bot{token}"),
+            token: token.to_string(),
+        }
+    }
+
+    fn method_url(&self, method: &str) -> String {
+        format!("{}/{}", self.url_base, method)
+    }
+
+    /// getFile 返回的 file_path → 下载 URL（token 在场，只给本地下
+    /// 载器用，不进 agent 上下文）。
+    fn file_url(&self, file_path: &str) -> String {
+        format!("{}/{}", self.file_url_base, file_path)
+    }
+
+    fn redact(&self, msg: impl std::fmt::Display) -> String {
+        redact_token(msg, &self.token)
+    }
+}
+
 /// Response from Telegram getUpdates API.
 #[derive(Debug, Deserialize)]
 struct GetUpdatesResponse {
@@ -398,12 +450,19 @@ impl TelegramChannel {
             }))
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("getUpdates request failed: {e}")))?;
+            .map_err(|e| {
+                NemesisError::Channel(redact_token(
+                    format!("getUpdates request failed: {e}"),
+                    &self.config.token,
+                ))
+            })?;
 
-        let body: GetUpdatesResponse = resp
-            .json()
-            .await
-            .map_err(|e| NemesisError::Channel(format!("getUpdates parse failed: {e}")))?;
+        let body: GetUpdatesResponse = resp.json().await.map_err(|e| {
+            NemesisError::Channel(redact_token(
+                format!("getUpdates parse failed: {e}"),
+                &self.config.token,
+            ))
+        })?;
 
         if !body.ok {
             return Err(NemesisError::Channel(
@@ -428,7 +487,7 @@ impl TelegramChannel {
         let transcriber = self.transcriber.read().clone();
 
         tokio::spawn(async move {
-            let api_url_base = format!("{}/bot{}", config.api_base, config.token);
+            let api = TelegramApi::new(&config.api_base, &config.token);
             let mut offset: i64 = 0;
             let mut backoff = std::time::Duration::from_secs(1);
             let max_backoff = std::time::Duration::from_secs(60);
@@ -438,7 +497,7 @@ impl TelegramChannel {
             while *running.read() {
                 // Build getUpdates request
                 let resp = http
-                    .post(format!("{api_url_base}/getUpdates"))
+                    .post(api.method_url("getUpdates"))
                     .json(&serde_json::json!({
                         "offset": offset,
                         "timeout": 30,
@@ -472,21 +531,29 @@ impl TelegramChannel {
                                             &base_allow_list,
                                             &transcriber,
                                             Some(&http),
-                                            Some(&api_url_base),
+                                            Some(&api),
                                         )
                                         .await;
                                     }
                                 }
                             }
                             Err(e) => {
-                                warn!("[TelegramChannel] getUpdates parse error: {e}");
+                                // reqwest decode 错误 Display 带 URL（token 在
+                                // 路径里）——先脱敏再落日志（BUG-20261109-006）。
+                                warn!(
+                                    "[TelegramChannel] getUpdates parse error: {}",
+                                    api.redact(e)
+                                );
                                 tokio::time::sleep(backoff).await;
                                 backoff = (backoff * 2).min(max_backoff);
                             }
                         }
                     }
                     Err(e) => {
-                        warn!("[TelegramChannel] getUpdates request error: {e}");
+                        warn!(
+                            "[TelegramChannel] getUpdates request error: {}",
+                            api.redact(e)
+                        );
                         tokio::time::sleep(backoff).await;
                         backoff = (backoff * 2).min(max_backoff);
                     }
@@ -514,7 +581,7 @@ impl TelegramChannel {
         allow_from: &[String],
         transcriber: &Option<Arc<dyn crate::base::VoiceTranscriber>>,
         http: Option<&reqwest::Client>,
-        api_url_base: Option<&str>,
+        api: Option<&TelegramApi>,
     ) {
         let user = match &msg.from {
             Some(u) => u,
@@ -571,9 +638,15 @@ impl TelegramChannel {
                 let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
                     &nemesis_path::default_path_manager().workspace(),
                 );
-                let attachment =
-                    Self::fetch_photo_attachment(http, api_url_base, &photo.file_id, &uploads_dir)
-                        .await;
+                let attachment = Self::fetch_file_attachment(
+                    http,
+                    api,
+                    &photo.file_id,
+                    "image",
+                    "jpg",
+                    &uploads_dir,
+                )
+                .await;
                 if let Some(ref att) = attachment {
                     media.push(att.clone());
                 }
@@ -601,49 +674,63 @@ impl TelegramChannel {
             }
 
             let voice_text =
-                match Self::transcribe_voice(transcriber, http, api_url_base, &voice.file_id).await
-                {
+                match Self::transcribe_voice(transcriber, http, api, &voice.file_id).await {
                     Some(text) => text,
                     None => "[voice]".to_string(),
                 };
             content.push_str(&voice_text);
         }
 
-        // Audio — resolve file_id to download URL
+        // Audio — 与照片同纪律：本地下盘（下载 URL 带 bot token，直接给
+        // agent 引用既无法水合又把 token 泄进会话上下文——BUG-20261109-006）。
         if let Some(ref audio) = msg.audio {
-            let file_url = Self::get_file_url(http, api_url_base, &audio.file_id).await;
-            if let Some(ref url) = file_url {
-                media.push(MediaAttachment {
-                    media_type: "audio".to_string(),
-                    url: url.clone(),
-                    data: None,
-                });
+            let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
+                &nemesis_path::default_path_manager().workspace(),
+            );
+            let attachment = Self::fetch_file_attachment(
+                http,
+                api,
+                &audio.file_id,
+                "audio",
+                "mp3",
+                &uploads_dir,
+            )
+            .await;
+            if let Some(ref att) = attachment {
+                media.push(att.clone());
             }
             if !content.is_empty() {
                 content.push('\n');
             }
             let name = audio.file_name.as_deref().unwrap_or("audio");
-            match &file_url {
+            match &attachment {
                 Some(_) => content.push_str(&format!("[audio: {name}]")),
                 None => content.push_str(&format!("[Audio received: {name}]")),
             }
         }
 
-        // Document — resolve file_id to download URL
+        // Document — 与照片/音频同纪律：本地下盘（理由同上）。
         if let Some(ref doc) = msg.document {
-            let file_url = Self::get_file_url(http, api_url_base, &doc.file_id).await;
-            if let Some(ref url) = file_url {
-                media.push(MediaAttachment {
-                    media_type: "document".to_string(),
-                    url: url.clone(),
-                    data: None,
-                });
+            let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
+                &nemesis_path::default_path_manager().workspace(),
+            );
+            let attachment = Self::fetch_file_attachment(
+                http,
+                api,
+                &doc.file_id,
+                "document",
+                "bin",
+                &uploads_dir,
+            )
+            .await;
+            if let Some(ref att) = attachment {
+                media.push(att.clone());
             }
             if !content.is_empty() {
                 content.push('\n');
             }
             let name = doc.file_name.as_deref().unwrap_or("document");
-            match &file_url {
+            match &attachment {
                 Some(_) => content.push_str(&format!("[file: {name}]")),
                 None => content.push_str(&format!("[Document received: {name}]")),
             }
@@ -707,56 +794,33 @@ impl TelegramChannel {
         }
     }
 
-    /// Resolve a Telegram file_id to a download URL via the Bot API's getFile endpoint.
+    /// （多模态，goal）：把 Telegram 文件（photo/audio/document）**下载落盘**
+    /// 成本地文件，返回路径形态的 `MediaAttachment`（供统一 attach 走安全
+    /// 闸 + 历史路径引用；Telegram 的下载 URL 需要 bot token，直接给 agent
+    /// 引用是无法水合的死链，且 token 会泄进会话上下文——必须本地方案，
+    /// BUG-20261109-006：audio/document 此前回传带 token 的远程 URL）。
     ///
-    /// Returns `Some(download_url)` on success, `None` if HTTP is unavailable or
-    /// the API call fails.
-    async fn get_file_url(
-        http: Option<&reqwest::Client>,
-        api_url_base: Option<&str>,
-        file_id: &str,
-    ) -> Option<String> {
-        let http = http?;
-        let api_url_base = api_url_base?;
-
-        let url = format!("{api_url_base}/getFile");
-        let resp = http
-            .post(&url)
-            .json(&serde_json::json!({"file_id": file_id}))
-            .send()
-            .await
-            .ok()?;
-
-        let body: serde_json::Value = resp.json().await.ok()?;
-        if body["ok"].as_bool() != Some(true) {
-            return None;
-        }
-        let file_path = body["result"]["file_path"].as_str()?;
-        Some(format!("{api_url_base}/file/{file_path}"))
-    }
-
-    /// （多模态，goal）：把 Telegram photo **下载落盘**成本地
-    /// 文件，返回路径形态的 `MediaAttachment`（供 统一 attach 走安全闸 +
-    /// 历史路径引用；Telegram 的下载 URL 需要 bot token，直接给 agent 引用
-    /// 是无法水合的死链——必须本地方案）。
-    ///
-    /// 流程：getFile 拿 file_path → 组下载 URL → 拉字节 → 写
+    /// 流程：getFile 拿 file_path → 组下载 URL（`{base}/file/bot{token}/`
+    /// 命名空间，BUG-20261109-006：此前拼成 `{bot{token}}/file/`，文件
+    /// 访问全部 404）→ 拉字节 → 写
     /// `uploads_dir/tg_{file_id sanitized}_{millis}.{ext}`（ext 抠自
-    /// file_path，白名单字母数字且 ≤5 位，缺省 jpg）。任一步失败返回
-    /// `None`，调用方降级为 "[Photo received]" 文案。写后即关 fd
-    /// （`std::fs:write`），返回前数据已落盘（纪律 4）。
-    async fn fetch_photo_attachment(
+    /// file_path，白名单字母数字且 ≤5 位，缺省 `default_ext`）。任一步
+    /// 失败返回 `None`，调用方降级为 received 文案。写后即关 fd
+    /// （`std::fs::write`），返回前数据已落盘（纪律 4）。
+    async fn fetch_file_attachment(
         http: Option<&reqwest::Client>,
-        api_url_base: Option<&str>,
+        api: Option<&TelegramApi>,
         file_id: &str,
+        media_type: &str,
+        default_ext: &str,
         uploads_dir: &std::path::Path,
     ) -> Option<MediaAttachment> {
         let http = http?;
-        let api_url_base = api_url_base?;
+        let api = api?;
 
         // Step 1: getFile → file_path
         let resp = http
-            .post(format!("{api_url_base}/getFile"))
+            .post(api.method_url("getFile"))
             .json(&serde_json::json!({"file_id": file_id}))
             .send()
             .await
@@ -767,9 +831,9 @@ impl TelegramChannel {
         }
         let file_path = body["result"]["file_path"].as_str()?;
 
-        // Step 2: download bytes
+        // Step 2: download bytes（官方文件命名空间：{base}/file/bot{token}/{path}）
         let bytes = http
-            .get(format!("{api_url_base}/file/{file_path}"))
+            .get(api.file_url(file_path))
             .send()
             .await
             .ok()?
@@ -791,7 +855,7 @@ impl TelegramChannel {
             .filter(|e| {
                 !e.is_empty() && e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric())
             })
-            .unwrap_or_else(|| "jpg".to_string());
+            .unwrap_or_else(|| default_ext.to_string());
         let sanitized: String = file_id
             .chars()
             .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
@@ -810,12 +874,13 @@ impl TelegramChannel {
 
         let path_str = dest.to_string_lossy().into_owned();
         info!(
-            "[TelegramChannel] photo downloaded to {} ({} bytes)",
+            "[TelegramChannel] {} downloaded to {} ({} bytes)",
+            media_type,
             path_str,
             bytes.len()
         );
         Some(MediaAttachment {
-            media_type: "image".to_string(),
+            media_type: media_type.to_string(),
             url: path_str,
             data: None,
         })
@@ -823,17 +888,19 @@ impl TelegramChannel {
 
     /// Download the voice file to `local_path`.
     ///
-    /// 状态码前置闸：非 2xx 诚实上抛 `HTTP <status>`，不把错误体落盘。
+    /// 状态码前置闸：非 2xx 诚实上抛 `HTTP <status>`，不把错误体落盘；
+    /// 传输层错误脱敏后上抛（reqwest Display 带 URL，token 在路径里）。
     async fn download_voice_file(
         http: &reqwest::Client,
         url: &str,
         local_path: &std::path::Path,
+        api: &TelegramApi,
     ) -> std::result::Result<(), String> {
-        let resp = http.get(url).send().await.map_err(|e| e.to_string())?;
+        let resp = http.get(url).send().await.map_err(|e| api.redact(e))?;
         if !resp.status().is_success() {
             return Err(format!("HTTP {}", resp.status()));
         }
-        let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+        let bytes = resp.bytes().await.map_err(|e| api.redact(e))?;
         std::fs::write(local_path, &bytes).map_err(|e| e.to_string())
     }
 
@@ -849,7 +916,7 @@ impl TelegramChannel {
     async fn transcribe_voice(
         transcriber: &Option<Arc<dyn crate::base::VoiceTranscriber>>,
         http: Option<&reqwest::Client>,
-        api_url_base: Option<&str>,
+        api: Option<&TelegramApi>,
         file_id: &str,
     ) -> Option<String> {
         let transcriber = transcriber.as_ref()?;
@@ -858,11 +925,11 @@ impl TelegramChannel {
         }
 
         let http = http?;
-        let api_url_base = api_url_base?;
+        let api = api?;
 
         // Step 1: Call getFile to get the file_path
         let file_resp = http
-            .post(format!("{api_url_base}/getFile"))
+            .post(api.method_url("getFile"))
             .json(&serde_json::json!({"file_id": file_id}))
             .send()
             .await;
@@ -872,7 +939,11 @@ impl TelegramChannel {
                 let body: serde_json::Value = match resp.json().await {
                     Ok(v) => v,
                     Err(e) => {
-                        warn!("[TelegramChannel] voice: getFile parse error: {e}");
+                        // reqwest decode 错误 Display 带 URL（token 在路径里）——脱敏（BUG-20261109-006）
+                        warn!(
+                            "[TelegramChannel] voice: getFile parse error: {}",
+                            api.redact(e)
+                        );
                         return Some("[voice (transcription failed)]".to_string());
                     }
                 };
@@ -892,13 +963,18 @@ impl TelegramChannel {
                 }
             }
             Err(e) => {
-                warn!("[TelegramChannel] voice: getFile request error: {e}");
+                warn!(
+                    "[TelegramChannel] voice: getFile request error: {}",
+                    api.redact(e)
+                );
                 return Some("[voice (transcription failed)]".to_string());
             }
         };
 
         // Step 2: Download the voice file to a temp path
-        let download_url = format!("{api_url_base}/file/{file_path}");
+        // （官方文件命名空间 {base}/file/bot{token}/{path}——此前拼成
+        // {bot{token}}/file/ 全部 404，转写永远失败；BUG-20261109-006）
+        let download_url = api.file_url(&file_path);
         let temp_dir = std::env::temp_dir().join("nemesisbot_telegram_voice");
         let _ = std::fs::create_dir_all(&temp_dir);
         let local_path = temp_dir.join(format!("{}.ogg", file_id));
@@ -906,7 +982,7 @@ impl TelegramChannel {
         // 下载先查状态码——此前 404/500 的 HTML/JSON
         // 错误体被当语音 OGG 落盘送转写，日志只见「transcription failed」，
         // 真实 HTTP 错误被掩盖（signal/image_attach 同款闸此处漏配）。
-        if let Err(e) = Self::download_voice_file(http, &download_url, &local_path).await {
+        if let Err(e) = Self::download_voice_file(http, &download_url, &local_path, api).await {
             warn!("[TelegramChannel] voice: download error: {e}");
             return Some("[voice (transcription failed)]".to_string());
         }
@@ -932,12 +1008,19 @@ impl TelegramChannel {
             .get(self.api_url("getMe"))
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("getMe request failed: {e}")))?;
+            .map_err(|e| {
+                NemesisError::Channel(redact_token(
+                    format!("getMe request failed: {e}"),
+                    &self.config.token,
+                ))
+            })?;
 
-        let body: GetMeResponse = resp
-            .json()
-            .await
-            .map_err(|e| NemesisError::Channel(format!("getMe parse failed: {e}")))?;
+        let body: GetMeResponse = resp.json().await.map_err(|e| {
+            NemesisError::Channel(redact_token(
+                format!("getMe parse failed: {e}"),
+                &self.config.token,
+            ))
+        })?;
 
         if !body.ok {
             return Err(NemesisError::Channel("getMe returned not ok".to_string()));
@@ -954,12 +1037,19 @@ impl TelegramChannel {
             .json(&params)
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("sendMessage failed: {e}")))?;
+            .map_err(|e| {
+                NemesisError::Channel(redact_token(
+                    format!("sendMessage failed: {e}"),
+                    &self.config.token,
+                ))
+            })?;
 
-        let body: SendMessageResponse = resp
-            .json()
-            .await
-            .map_err(|e| NemesisError::Channel(format!("sendMessage parse failed: {e}")))?;
+        let body: SendMessageResponse = resp.json().await.map_err(|e| {
+            NemesisError::Channel(redact_token(
+                format!("sendMessage parse failed: {e}"),
+                &self.config.token,
+            ))
+        })?;
 
         if !body.ok {
             return Err(NemesisError::Channel(
@@ -978,12 +1068,19 @@ impl TelegramChannel {
             .json(&params)
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("editMessageText failed: {e}")))?;
+            .map_err(|e| {
+                NemesisError::Channel(redact_token(
+                    format!("editMessageText failed: {e}"),
+                    &self.config.token,
+                ))
+            })?;
 
-        let body: EditMessageResponse = resp
-            .json()
-            .await
-            .map_err(|e| NemesisError::Channel(format!("editMessageText parse failed: {e}")))?;
+        let body: EditMessageResponse = resp.json().await.map_err(|e| {
+            NemesisError::Channel(redact_token(
+                format!("editMessageText parse failed: {e}"),
+                &self.config.token,
+            ))
+        })?;
 
         if !body.ok {
             // Edit can fail if message hasn't changed, treat as non-fatal

@@ -4,6 +4,7 @@ fn test_config(name: &str) -> AgentConfig {
     AgentConfig {
         model: format!("test-model-{}", name),
         system_prompt: Some(format!("You are {}.", name)),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),

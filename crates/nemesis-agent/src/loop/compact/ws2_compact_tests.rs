@@ -21,6 +21,7 @@ fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["calculator".to_string()],
         models: std::collections::HashMap::new(),
@@ -132,8 +133,8 @@ fn schema_reply() -> String {
 /// 纯函数：预算内尾巴 ≤ 预算；最后一条消息超预算也无条件保留（pi 语义）。
 #[test]
 fn p5_token_budget_boundary_respects_budget() {
-    // 每条 "x".repeat(100) → 100*2/5 = 40 tokens。
-    let mk = || turn("user", &"x".repeat(100));
+    // 每条 "x".repeat(160) → 160/4 = 40 tokens。
+    let mk = || turn("user", &"x".repeat(160));
     let history = vec![mk(), mk(), mk()]; // 3 × 40 tok
 
     // 预算 100：装下两条（80 ≤ 100），第三条会超 → 边界 1。
@@ -149,19 +150,19 @@ fn p5_token_budget_boundary_respects_budget() {
 /// 纯函数：预算边界落在 tool 结果上时 tool_safe_boundary 退回父 assistant。
 #[test]
 fn p5_boundary_backs_off_tool_pair() {
-    let mut a_tc = turn("assistant", &"x".repeat(100)); // 40 tok
+    let mut a_tc = turn("assistant", &"x".repeat(100)); // 25 tok
     a_tc.tool_calls = vec![crate::types::ToolCallInfo {
         id: "c1".to_string(),
         name: "t".to_string(),
         arguments: "{}".to_string(),
     }];
     let history = vec![
-        turn("system", "s"),            // 0（1 char → 0 tok）
-        turn("user", &"x".repeat(100)), // 1（40 tok）
-        a_tc,                           // 2（父 assistant，40 tok）
+        turn("system", "s"),            // 0（1 char → 1 tok）
+        turn("user", &"x".repeat(100)), // 1（25 tok）
+        a_tc,                           // 2（父 assistant，25 tok）
         turn("tool", &"x".repeat(5)),   // 3（5 chars → 2 tok）
     ];
-    // 预算 2：从尾装下 tool(2)，再试父 assistant(40) 会超 → raw=3 恰好落在
+    // 预算 2：从尾装下 tool(2)，再试父 assistant(25) 会超 → raw=3 恰好落在
     // tool 结果上 → tool_safe 退到父 assistant（2）。
     assert_eq!(token_budget_boundary(&history, 2), 3);
     assert_eq!(tool_safe_boundary(&history, 3), 2);

@@ -32,6 +32,7 @@ fn agt_ctx(
         workspace: Some(ws.clone()),
         home: Some(ws.clone()),
         state: std::sync::Arc::new(AppState {
+            cors_manager: None,
             auth_token: String::new(),
             session_count: std::sync::Arc::new(AtomicUsize::new(0)),
             workspace: Some(ws.clone()),

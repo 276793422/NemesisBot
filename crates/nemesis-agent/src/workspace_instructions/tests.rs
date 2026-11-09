@@ -155,6 +155,7 @@ fn test_touch_invalidates_digest_and_reinjects() {
     };
     let instance = AgentInstance::new(AgentConfig {
         system_prompt: Some("SYS".to_string()),
+        system_prompt_split: None,
         ..Default::default()
     });
     instance.set_history(mk_history());

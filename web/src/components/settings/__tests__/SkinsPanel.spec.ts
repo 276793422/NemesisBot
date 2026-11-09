@@ -525,3 +525,87 @@ describe('SkinsPanel', () => {
     w.unmount()
   })
 })
+
+// ── require_signed 策略开关（配置页补全批次 5；ui.skins.require_signed）──
+// 信任决策闸：只约束「设为默认观感」动作；加载使用不受限（签名只是徽标）。
+
+describe('SkinsPanel require_signed 开关（批次 5）', () => {
+  it('缺省关渲染 + 开启发 set_field ui.skins.require_signed', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'get') return Promise.resolve({}) // 段缺席 = 缺省关
+      if (cmd === 'set_field') {
+        expect(data).toEqual({ path: 'ui.skins.require_signed', value: true })
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+    expect((w.find('[data-test="require-signed-switch"] input').element as HTMLInputElement).checked).toBe(false)
+
+    await w.find('[data-test="require-signed-switch"] input').setValue(true)
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'ui.skins.require_signed', value: true })
+    expect(toastMock.success).toHaveBeenCalledWith(expect.stringContaining('无法设为默认观感'))
+    w.unmount()
+  })
+
+  it('已配置开 → 照实展示；关闭发 value:false', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'get') return Promise.resolve({ ui: { skins: { require_signed: true } } })
+      if (cmd === 'set_field') {
+        expect(data).toEqual({ path: 'ui.skins.require_signed', value: false })
+        return Promise.resolve({ ok: true })
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+    expect((w.find('[data-test="require-signed-switch"] input').element as HTMLInputElement).checked).toBe(true)
+
+    await w.find('[data-test="require-signed-switch"] input').setValue(false)
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'ui.skins.require_signed', value: false })
+    expect(toastMock.success).toHaveBeenCalledWith(expect.stringContaining('签名只是徽标'))
+    w.unmount()
+  })
+
+  it('set_field 失败 → error toast + UI 回滚（开关跟随 config 真相）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'get') return Promise.resolve({})
+      if (cmd === 'set_field') return Promise.reject(new Error('写入被拒'))
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    await w.find('[data-test="require-signed-switch"] input').setValue(true)
+    await flushPromises()
+
+    expect(toastMock.error).toHaveBeenCalledWith(expect.stringContaining('开关保存失败'))
+    w.unmount()
+    // 回滚断言用 fresh mount（:checked 绑定下组件内值 false→false 不触发 DOM
+    // 重渲染，与 allow_scripts 失败用例同款：开关态跟随 config 真相源）
+    const w2 = mountPanel()
+    await flushPromises()
+    expect((w2.find('[data-test="require-signed-switch"] input').element as HTMLInputElement).checked).toBe(false)
+    w2.unmount()
+  })
+
+  it('config.get 失败 → 静默保持关（与服务端缺省同侧），不炸面板', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'get') return Promise.reject(new Error('cfg down'))
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+    expect((w.find('[data-test="require-signed-switch"] input').element as HTMLInputElement).checked).toBe(false)
+    expect(toastMock.error).not.toHaveBeenCalled() // 读失败静默，不误报
+    w.unmount()
+  })
+})

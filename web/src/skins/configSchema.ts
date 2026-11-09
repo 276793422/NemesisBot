@@ -82,6 +82,8 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   // ---- terminal ----
   'terminal.enabled': { label: '启用内嵌终端', type: 'boolean' },
   'terminal.max_sessions': { label: '最大会话数', type: 'number', range: { min: 1, max: 32, step: 1 } },
+  // ---- workflow ----
+  'workflow.wall_clock_budget_secs': { label: '工作流墙钟保险丝（秒，0=关）', type: 'number', range: { min: 0, max: 604800, step: 60 } },
   // ---- gateway ----
   'gateway.host': { label: '监听地址', type: 'string' },
   'gateway.port': { label: '监听端口', type: 'number', range: { min: 1, max: 65535, step: 1 } },
@@ -94,6 +96,8 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'tools.web.perplexity.api_key': { label: 'Perplexity API Key', type: 'string', secret: true },
   'tools.web.perplexity.max_results': { label: 'Perplexity 结果数上限', type: 'number', range: { min: 1, max: 20, step: 1 } },
   'tools.cron.exec_timeout_minutes': { label: 'Cron 执行超时（分钟）', type: 'number', range: { min: 1, max: 720, step: 1 } },
+  // ---- tools.exec（exec 同步阻塞超时上限：0/缺省=600 旧行为，生效下限 30；estop 残留窗口唯一在飞终止原语，部署主权参数）----
+  'tools.exec.max_timeout_secs': { label: 'Exec 超时上限（秒，0=缺省600）', type: 'number', range: { min: 0, max: 3600, step: 30 } },
   // ---- heartbeat ----
   'heartbeat.enabled': { label: '启用心跳', type: 'boolean' },
   'heartbeat.interval': { label: '心跳间隔（秒）', type: 'number', range: { min: 5, max: 3600, step: 5 } },
@@ -131,8 +135,6 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'connectors.max_ops_per_hour': { label: '每小时操作上限（0=不限）', type: 'number', range: { min: 0, max: 10_000, step: 1 } },
   'connectors.finance.max_order_qty': { label: '单笔下单数量上限（0=拒绝所有）', type: 'number', range: { min: 0, max: 1_000_000, step: 1 } },
   'connectors.finance.max_orders_per_day': { label: '每日下单笔数上限（0=拒绝所有）', type: 'number', range: { min: 0, max: 10_000, step: 1 } },
-  // ---- workflow ----
-  'workflow.wall_clock_budget_secs': { label: '墙钟保险丝（秒，0=关）', type: 'number', range: { min: 0, max: 86400, step: 60 } },
 }
 
 /** 通道显示名（`channels.<id>.*` 分组标题用）。 */

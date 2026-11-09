@@ -48,6 +48,7 @@ fn make_state(with_asset_cfg: bool) -> AssetFixture {
     }
 
     let state = std::sync::Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: std::sync::Arc::new(AtomicUsize::new(0)),
         workspace: Some(dir.to_string_lossy().to_string()),

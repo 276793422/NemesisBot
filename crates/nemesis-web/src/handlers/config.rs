@@ -60,16 +60,16 @@ impl ModuleHandler for ConfigHandler {
                     .unwrap_or(serde_json::Value::Null);
                 self.set_field(home, &path, &value)
             }
-            "cors.list" => self.cors_list(),
+            "cors.list" => self.cors_list(ctx),
             "cors.add" => {
                 let data = data.ok_or("missing data")?;
                 let origin = crate::handlers::get_str(&data, "origin")?;
-                self.cors_add(&origin)
+                self.cors_add(ctx, &origin)
             }
             "cors.remove" => {
                 let data = data.ok_or("missing data")?;
                 let origin = crate::handlers::get_str(&data, "origin")?;
-                self.cors_remove(&origin)
+                self.cors_remove(ctx, &origin)
             }
             "cors.toggle" => {
                 let data = data.ok_or("missing data")?;
@@ -77,7 +77,7 @@ impl ModuleHandler for ConfigHandler {
                     .get("enabled")
                     .and_then(|v| v.as_bool())
                     .ok_or("missing or invalid 'enabled' field")?;
-                self.cors_toggle(enabled)
+                self.cors_toggle(ctx, enabled)
             }
             _ => Err(format!("unknown command: config.{}", cmd)),
         }
@@ -249,8 +249,36 @@ impl ConfigHandler {
                 .map_err(|e| format!("failed to serialize existing config: {}", e))?;
             let mut incoming = data.clone();
             crate::handlers::restore_masked_named_fields(&mut incoming, &existing)?;
-            *config = serde_json::from_value(incoming)
+            *config = serde_json::from_value(incoming.clone())
                 .map_err(|e| format!("invalid config data: {}", e))?;
+            // 与 set_field 同款 round-trip 校验（整档版）：typed reparse 会静默
+            // 忽略未建模键（serde 默认丢弃未知字段），曾出现「保存成功」但键蒸
+            // 发的静默丢数据。这里对 incoming 递归收集「信息承载叶子」在回读中
+            // 的丢失/归一——空值叶子豁免（typed config 大量 skip_serializing_if
+            // 空段，空值消失是无损语义）。有丢失 = loud 拒绝、闭包 Err 不落盘。
+            let reserialized = serde_json::to_value(&*config)
+                .map_err(|e| format!("failed to serialize config: {}", e))?;
+            let dropped = collect_dropped_paths(&incoming, &reserialized);
+            if !dropped.is_empty() {
+                let shown = dropped
+                    .iter()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let more = if dropped.len() > 10 {
+                    format!(" (+{} more)", dropped.len() - 10)
+                } else {
+                    String::new()
+                };
+                return Err(format!(
+                    "{} config key(s) would be silently dropped by the typed config: {}{}; \
+                     use config.set_field per key, or extend the typed model first",
+                    dropped.len(),
+                    shown,
+                    more
+                ));
+            }
             Ok(())
         })?;
         Ok(Some(serde_json::json!({ "saved": true })))
@@ -279,7 +307,7 @@ impl ConfigHandler {
                 .map_err(|e| format!("failed to serialize config: {}", e))?;
             match json_path_get(&reserialized, path) {
                 None => return Err(format!("unknown config field: {}", path)),
-                Some(actual) if actual != value => {
+                Some(actual) if actual != value && !numeric_normalized_equal(actual, value) => {
                     return Err(format!(
                         "config field {} did not round-trip (value rejected or normalized)",
                         path
@@ -292,29 +320,79 @@ impl ConfigHandler {
         Ok(Some(serde_json::json!({ "updated": true, "path": path })))
     }
 
-    fn cors_list(&self) -> Result<Option<serde_json::Value>, String> {
-        // CORSManager access would need to go through AppState
-        // For now, read from cors.json directly
+    /// CORS manager 句柄取用：None = gateway 未注入（headless/relay/测试
+    /// 装配）→ 诚实报错，不惰性创建（默认 cors.json 只由 CLI `cors add`
+    /// 落盘，WSAPI 面保持与 restrictive 启动态一致）。
+    fn cors_manager(
+        ctx: &RequestContext,
+    ) -> Result<std::sync::Arc<crate::cors::CORSManager>, String> {
+        ctx.state
+            .cors_manager
+            .clone()
+            .ok_or_else(|| "CORS manager not connected (gateway did not inject)".to_string())
+    }
+
+    /// 生效语义：CorsLayer 是 gateway 启动时静态构建，这里的写盘改动
+    /// **重启后生效**（与 CLI `cors` 子命令同语义）。
+    fn cors_list(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let mgr = Self::cors_manager(ctx)?;
+        let cfg = mgr.config();
+        Ok(Some(serde_json::json!({
+            "origins": mgr.list_origins(),
+            "allowed_origins": cfg.allowed_origins,
+            "allowed_methods": cfg.allowed_methods,
+            "allowed_headers": cfg.allowed_headers,
+            "allow_credentials": cfg.allow_credentials,
+            "max_age": cfg.max_age,
+            "allow_localhost": cfg.allow_localhost,
+            "development_mode": cfg.development_mode,
+            "allowed_cdn_domains": cfg.allowed_cdn_domains,
+            "allow_no_origin": cfg.allow_no_origin,
+        })))
+    }
+
+    fn cors_add(
+        &self,
+        ctx: &RequestContext,
+        origin: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        // 校验镜像 CLI `cors add`（commands/cors.rs）：非 CDN 形态必须带
+        // scheme 前缀。
+        if !origin.starts_with("http://") && !origin.starts_with("https://") {
+            return Err(format!(
+                "Invalid origin URL '{}'. Must start with http:// or https://",
+                origin
+            ));
+        }
+        let mgr = Self::cors_manager(ctx)?;
+        mgr.add_origin(origin)
+            .map_err(|e| format!("failed to add origin: {}", e))?;
+        Ok(Some(serde_json::json!({ "added": true, "origin": origin })))
+    }
+
+    fn cors_remove(
+        &self,
+        ctx: &RequestContext,
+        origin: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let mgr = Self::cors_manager(ctx)?;
+        mgr.remove_origin(origin)
+            .map_err(|e| format!("failed to remove origin: {}", e))?;
         Ok(Some(
-            serde_json::json!({ "origins": [], "message": "CORS manager not connected" }),
+            serde_json::json!({ "removed": true, "origin": origin }),
         ))
     }
 
-    fn cors_add(&self, _origin: &str) -> Result<Option<serde_json::Value>, String> {
+    fn cors_toggle(
+        &self,
+        ctx: &RequestContext,
+        enabled: bool,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let mgr = Self::cors_manager(ctx)?;
+        mgr.set_development_mode(enabled)
+            .map_err(|e| format!("failed to set development mode: {}", e))?;
         Ok(Some(
-            serde_json::json!({ "added": false, "message": "CORS manager not connected" }),
-        ))
-    }
-
-    fn cors_remove(&self, _origin: &str) -> Result<Option<serde_json::Value>, String> {
-        Ok(Some(
-            serde_json::json!({ "removed": false, "message": "CORS manager not connected" }),
-        ))
-    }
-
-    fn cors_toggle(&self, _enabled: bool) -> Result<Option<serde_json::Value>, String> {
-        Ok(Some(
-            serde_json::json!({ "toggled": false, "message": "CORS manager not connected" }),
+            serde_json::json!({ "toggled": true, "development_mode": enabled }),
         ))
     }
 }
@@ -404,3 +482,103 @@ fn json_path_get<'a>(json: &'a serde_json::Value, path: &str) -> Option<&'a serd
     }
     Some(current)
 }
+
+/// 数值归一等价：typed reparse 会把 JSON 整数合法收敛到浮点字段
+/// （`max_order_qty: f64` 收 `1` → 重序列化 `1.0`），serde_json 的
+/// `Number(1) != Number(1.0)`（PosInt vs Float）——语义相同的归一不能
+/// 误判成 round-trip 失败。仅两侧都是数字且 f64 值相等时放行。
+fn numeric_normalized_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    a.is_number() && b.is_number() && a.as_f64() == b.as_f64()
+}
+
+/// 「空值叶子」：值为 null / false / 空串的标量。typed config 大量
+/// `skip_serializing_if` 空段（空 map/空串/false/None），空值回读消失是
+/// 无损语义，不构成丢键。
+fn is_empty_leaf(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => true,
+        serde_json::Value::Bool(b) => !b,
+        serde_json::Value::String(s) => s.is_empty(),
+        _ => false,
+    }
+}
+
+/// 子树里是否含信息承载叶子（非空标量或非空集合）。
+fn subtree_has_payload(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Object(map) => map.values().any(subtree_has_payload),
+        serde_json::Value::Array(arr) => arr.iter().any(subtree_has_payload),
+        _ => !is_empty_leaf(v),
+    }
+}
+
+fn join_path(path: &str, seg: &str) -> String {
+    if path.is_empty() {
+        seg.to_string()
+    } else {
+        format!("{path}.{seg}")
+    }
+}
+
+/// 递归收集 `incoming` 中未在 typed 回读 `re` 里保真的「信息承载叶子」
+/// dot-path（与 [`json_path_get`] 同款寻址：数组段为数字下标）。对象按键
+/// 配对、数组按下标配对；叶子空值豁免（见 [`is_empty_leaf`]），其余叶子
+/// 回读缺失或不等 = 收集。用于 config.save 的 round-trip 校验，与
+/// set_field 的 "did not round-trip" 严格语义一致。
+fn collect_dropped_paths(incoming: &serde_json::Value, re: &serde_json::Value) -> Vec<String> {
+    let mut out = Vec::new();
+    walk_dropped(incoming, re, "", &mut out);
+    out
+}
+
+fn walk_dropped(
+    inc: &serde_json::Value,
+    re: &serde_json::Value,
+    path: &str,
+    out: &mut Vec<String>,
+) {
+    match inc {
+        serde_json::Value::Object(map) => {
+            for (key, iv) in map {
+                let child = join_path(path, key);
+                match re.get(key) {
+                    Some(rv) => walk_dropped(iv, rv, &child, out),
+                    // 整棵子树被 skip：仅当子树里有信息承载叶子才算丢键。
+                    None => {
+                        if subtree_has_payload(iv) {
+                            out.push(child);
+                        }
+                    }
+                }
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            if let Some(rarr) = re.as_array() {
+                for (i, iv) in arr.iter().enumerate() {
+                    let child = join_path(path, &i.to_string());
+                    match rarr.get(i) {
+                        Some(rv) => walk_dropped(iv, rv, &child, out),
+                        None => {
+                            if subtree_has_payload(iv) {
+                                out.push(child);
+                            }
+                        }
+                    }
+                }
+            } else if subtree_has_payload(inc) {
+                out.push(path.to_string());
+            }
+        }
+        _ => {
+            if is_empty_leaf(inc) {
+                return;
+            }
+            if re != inc {
+                out.push(path.to_string());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

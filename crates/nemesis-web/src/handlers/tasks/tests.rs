@@ -108,6 +108,7 @@ async fn make_ctx_with_cron(dir: &tempfile::TempDir) -> RequestContext {
         dir.path().join("cron_jobs.json").to_string_lossy().as_ref(),
     )));
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

@@ -20,6 +20,7 @@ use std::time::Instant;
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -76,6 +77,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -1387,4 +1389,243 @@ async fn test_forge_test_cmd_rejects_traversal_name() {
             "name={bad} 应被围栏拒绝: {err}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// forge.config.get / forge.config.set（2026-11-08 配置页补全批次 2：
+// config.forge.json side-file 白名单 8 键读写面）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_advanced_config_get_missing_file_returns_defaults() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    // side-file 缺席 → defaults=true + 全缺省投影。
+    let ctx = make_ctx(&dir);
+    let out = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["defaults"], true);
+    assert_eq!(out["config"]["replay_auto_ingest"], false);
+    // 8 键齐备（前端绑定面不缺键）。
+    for key in [
+        "replay_auto_ingest",
+        "test",
+        "optimize",
+        "reflection",
+        "artifacts",
+        "validation",
+        "collection",
+    ] {
+        assert!(out["config"].get(key).is_some(), "缺键 {key}");
+    }
+}
+
+#[tokio::test]
+async fn test_advanced_config_get_existing_file_raw_projection() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    // 深合并投影：raw 键优先不被抹掉（storage.path 未知键保留），
+    // 旧模板/手写最小集缺的段补 defaults 值（test 段整段缺席 →
+    // test.judge_threshold 落 0.7）——存量 side-file 不再炸裸绑 UI。
+    write_forge_config(
+        dir.path(),
+        serde_json::json!({
+            "replay_auto_ingest": true,
+            "storage": { "path": "/custom/forge" }
+        }),
+    );
+    let ctx = make_ctx(&dir);
+    let out = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["defaults"], false);
+    assert_eq!(out["config"]["replay_auto_ingest"], true);
+    assert_eq!(out["config"]["storage"]["path"], "/custom/forge");
+    // 缺段补 defaults：raw 无 test 段 → judge_threshold 落默认 0.7。
+    assert_eq!(out["config"]["test"]["judge_threshold"], 0.7);
+    // raw 键优先：raw 无该键时才落 defaults（replay_auto_ingest raw=true 不被覆盖）。
+    assert_eq!(out["config"]["validation"]["auto_validate"], true);
+}
+
+#[tokio::test]
+async fn test_advanced_config_set_creates_side_file_and_roundtrips() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    // side-file 缺席起步：set 应自动落盘并读回一致。
+    let ctx = make_ctx(&dir);
+    let data = serde_json::json!({
+        "values": {
+            "replay_auto_ingest": true,
+            "test.judge_model": "my-judge",
+            "test.judge_threshold": 0.8,
+            "optimize.budget_tokens": 4000,
+            "reflection.use_llm": true,
+            "artifacts.auto_skill": true,
+            "validation.auto_validate": false,
+            "collection.max_experiences": 800
+        }
+    });
+    let out = handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["saved"], true);
+    assert_eq!(out["updated"], 8);
+
+    let back = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(back["defaults"], false);
+    assert_eq!(back["config"]["replay_auto_ingest"], true);
+    assert_eq!(back["config"]["test"]["judge_model"], "my-judge");
+    assert_eq!(back["config"]["test"]["judge_threshold"], 0.8);
+    assert_eq!(back["config"]["optimize"]["budget_tokens"], 4000);
+    assert_eq!(back["config"]["reflection"]["use_llm"], true);
+    assert_eq!(back["config"]["artifacts"]["auto_skill"], true);
+    assert_eq!(back["config"]["validation"]["auto_validate"], false);
+    assert_eq!(back["config"]["collection"]["max_experiences"], 800);
+}
+
+#[tokio::test]
+async fn test_advanced_config_set_rejects_unknown_path_without_partial_write() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    write_forge_config(
+        dir.path(),
+        serde_json::json!({ "replay_auto_ingest": false }),
+    );
+    let ctx = make_ctx(&dir);
+    // 合法键 + 非法键混批 → 整批拒绝，盘上原值不动（不落半批）。
+    let data = serde_json::json!({
+        "values": {
+            "replay_auto_ingest": true,
+            "evil.path": 1
+        }
+    });
+    let err = handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("unknown forge config path"), "err={err}");
+    let fc_path = dir.path().join("config").join("config.forge.json");
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&fc_path).unwrap()).unwrap();
+    assert_eq!(on_disk["replay_auto_ingest"], false);
+}
+
+#[tokio::test]
+async fn test_advanced_config_set_rejects_out_of_range_values() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    let ctx = make_ctx(&dir);
+
+    // judge_threshold 越界 [0,1]。
+    let data = serde_json::json!({ "values": { "test.judge_threshold": 1.5 } });
+    let err = handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("[0, 1]"), "err={err}");
+
+    // budget_tokens=0 拒绝。
+    let data = serde_json::json!({ "values": { "optimize.budget_tokens": 0 } });
+    let err = handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("must be > 0"), "err={err}");
+
+    // bool 键喂字符串拒绝。
+    let data = serde_json::json!({ "values": { "reflection.use_llm": "yes" } });
+    let err = handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("expects a boolean"), "err={err}");
+
+    // 空批拒绝。
+    let data = serde_json::json!({ "values": {} });
+    let err = handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("empty"), "err={err}");
+}
+
+#[tokio::test]
+async fn test_advanced_config_set_empty_judge_model_normalizes_to_null() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    let ctx = make_ctx(&dir);
+    // 空串 / 空白串 → null（清除显式别名 = 回落自动链）。
+    let data = serde_json::json!({ "values": { "test.judge_model": "  " } });
+    handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let fc_path = dir.path().join("config").join("config.forge.json");
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&fc_path).unwrap()).unwrap();
+    assert!(on_disk["test"]["judge_model"].is_null());
+}
+
+#[tokio::test]
+async fn test_advanced_config_set_preserves_unrelated_keys() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    // 白名单 RMW 不得碰手改键（storage 全段原样保留）。
+    write_forge_config(
+        dir.path(),
+        serde_json::json!({
+            "replay_auto_ingest": false,
+            "storage": { "path": "/custom/forge", "max_bytes": 1024 }
+        }),
+    );
+    let ctx = make_ctx(&dir);
+    let data = serde_json::json!({ "values": { "replay_auto_ingest": true } });
+    handler
+        .handle_cmd("config.set", Some(data), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let fc_path = dir.path().join("config").join("config.forge.json");
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&fc_path).unwrap()).unwrap();
+    assert_eq!(on_disk["replay_auto_ingest"], true);
+    assert_eq!(on_disk["storage"]["path"], "/custom/forge");
+    assert_eq!(on_disk["storage"]["max_bytes"], 1024);
+}
+
+#[tokio::test]
+async fn test_advanced_config_set_missing_values_object() {
+    let handler = forge::ForgeHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path());
+    let ctx = make_ctx(&dir);
+    let err = handler
+        .handle_cmd("config.set", None, &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing"), "err={err}");
+    let err = handler
+        .handle_cmd("config.set", Some(serde_json::json!({"other": 1})), &ctx)
+        .await
+        .unwrap_err();
+    assert!(err.contains("values"), "err={err}");
 }

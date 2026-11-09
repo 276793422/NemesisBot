@@ -811,11 +811,33 @@ impl AnthropicProvider {
                             {
                                 stop_reason = Some(sr.to_string());
                             }
+                            // usage 累积口径：官方 API 与部分中继（cc-switch 等）
+                            // 的 message_start 只带 0/缺省，真实值（或最终累积值）
+                            // 在 message_delta.usage——后到覆盖，缺席保留
+                            // message_start 值（与 output_tokens 同语义）。
+                            if let Some(it) = parsed
+                                .pointer("/usage/input_tokens")
+                                .and_then(|v| v.as_i64())
+                            {
+                                input_tokens = Some(it);
+                            }
                             if let Some(ot) = parsed
                                 .pointer("/usage/output_tokens")
                                 .and_then(|v| v.as_i64())
                             {
                                 output_tokens = Some(ot);
+                            }
+                            if let Some(cc) = parsed
+                                .pointer("/usage/cache_creation_input_tokens")
+                                .and_then(|v| v.as_i64())
+                            {
+                                cache_creation = Some(cc);
+                            }
+                            if let Some(cr) = parsed
+                                .pointer("/usage/cache_read_input_tokens")
+                                .and_then(|v| v.as_i64())
+                            {
+                                cache_read = Some(cr);
                             }
                         }
                         "message_stop" => {

@@ -37,6 +37,7 @@ fn cov_mock_loop() -> AgentLoop {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("test".to_string()),
+            system_prompt_split: None,
             max_turns: 2,
             tools: vec![],
             models: std::collections::HashMap::new(),

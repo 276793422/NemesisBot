@@ -1239,8 +1239,8 @@ fn test_estimate_tokens_empty() {
 
 #[test]
 fn test_estimate_tokens_ascii() {
-    // "Hello world" = 11 chars, 11*2/5 = 4
-    assert_eq!(estimate_tokens("Hello world"), 4);
+    // "Hello world" = 11 chars ASCII 无密集形态 → ceil(11/4) = 3
+    assert_eq!(estimate_tokens("Hello world"), 3);
 }
 
 #[test]
@@ -2379,8 +2379,10 @@ fn test_conversation_memory_tokens_multiple_messages() {
         image_refs: Vec::new(),
     });
     let tokens = mem.estimated_tokens();
-    // "Hello world" (11 chars) -> 11*2/5=4, "Goodbye world" (13 chars) -> 13*2/5=5 => total 9
-    assert_eq!(tokens, 9);
+    // "Hello world" (11 chars) -> ceil(11/4)=3, "Goodbye world" (13 chars)
+    // -> ceil(13/4)=4 => total 7（2026-11-09 实报锚定 B1：估算公式
+    // chars×2/5 → len/4（div_ceil））。
+    assert_eq!(tokens, 7);
 }
 
 // ===========================================================================
@@ -2583,17 +2585,17 @@ fn test_force_compress_single() {
 fn test_estimate_tokens_long_text() {
     let text = "a".repeat(1000);
     let tokens = estimate_tokens(&text);
-    assert_eq!(tokens, 400); // 1000 * 2 / 5
+    assert_eq!(tokens, 250); // ASCII 无密集形态 → ceil(1000/4) = 250
 }
 
 #[test]
 fn test_estimate_tokens_single_char() {
-    assert_eq!(estimate_tokens("a"), 0); // 1 * 2 / 5 = 0 (integer)
+    assert_eq!(estimate_tokens("a"), 1); // ceil(1/4) = 1（向上取整）
 }
 
 #[test]
 fn test_estimate_tokens_three_chars() {
-    assert_eq!(estimate_tokens("abc"), 1); // 3 * 2 / 5 = 1
+    assert_eq!(estimate_tokens("abc"), 1); // ceil(3/4) = 1
 }
 
 // ===========================================================================

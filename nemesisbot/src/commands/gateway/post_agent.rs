@@ -386,31 +386,57 @@ pub(crate) async fn init_post_agent(
             // 启动重放（BUG-2 根修）：评审 spawn 纯内存、master 重启即
             // 丢——in_review 单据/父单/项目在重启后由这里扫描重触发。必须
             // 在三类钩子注册完成后调用（重放验收 PASS 会级联点火上层钩子）。
-            crate::board_review::replay_stuck_reviews(&replay_sweep_deps, &[]);
-            info!("[Gateway] Board stuck-review replay sweep done");
+            //
+            // （BUG-20261108-012 追修）moderator 槽自槽位重设计起由
+            // AgentLoopServiceAdapter::start()（init_services Step 14b，
+            // 晚于本块）填 Some——此处同步调用时槽恒空，重放评审全部
+            // 「主 agent 未就绪，跳过自动验收」（cluster-uat T45 实证：
+            // 两轮重放各在 skip 后 5-6ms 才见 provider/AgentLoop 就绪）、
+            // plan recovery 每次启动 skip。改为有界等槽后触发：Step 14b
+            // 在毫秒级后到达，正常路径一轮 100ms 轮询即过；adapter 未
+            // 启动则 30s 到期按原语义跳过（不阻塞启动）。
+            let sweep_task_deps = replay_sweep_deps.clone();
+            let sweep_cluster = cluster.clone();
+            let sweep_home = home.clone();
+            let sweep_hub = web_server.event_hub().clone();
+            tokio::spawn(async move {
+                let mut slot_wait_ms: u64 = 0;
+                let agent_loop = loop {
+                    if let Some(agent_loop) = sweep_task_deps.moderator_loop.read().clone() {
+                        break agent_loop;
+                    }
+                    if slot_wait_ms >= 30_000 {
+                        warn!(
+                            "[Gateway] Board stuck-review replay skipped: moderator loop 30s 未就绪（agent adapter 未启动）"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    slot_wait_ms += 100;
+                };
+                crate::board_review::replay_stuck_reviews(&sweep_task_deps, &[]);
+                info!("[Gateway] Board stuck-review replay sweep done");
 
-            // （无人值守闭环）：拆解中断恢复扫描——RUNNING_PLANS 内存
-            // 态、重启杀拆解任务，backlog/todo +「已开始自动拆解」评论态的
-            // 单子自动重新发起拆解（开关 board.plan.restart_recover 默认开；
-            // estop 挂起跳过；worker 镜像不跑）。评审重放同阶段、moderator
-            // 槽已装配（119 set）。
-            if let Some(agent_loop) = replay_sweep_deps.moderator_loop.read().clone() {
+                // （无人值守闭环）：拆解中断恢复扫描——RUNNING_PLANS 内存
+                // 态、重启杀拆解任务，backlog/todo +「已开始自动拆解」评论态的
+                // 单子自动重新发起拆解（开关 board.plan.restart_recover 默认开；
+                // estop 挂起跳过；worker 镜像不跑）。与评审重放同阶段，槽
+                // 就绪后执行（原「槽已装配（119 set）」注释随装配期 set 移除
+                // 一并失效，此处读到的槽必然已由 adapter start 填充）。
                 let recovered = nemesis_web::handlers::board::recover_interrupted_plans(
-                    &replay_sweep_deps.store,
-                    Some(cluster.clone()),
+                    &sweep_task_deps.store,
+                    Some(sweep_cluster),
                     agent_loop,
-                    Some(home.clone()),
-                    Some(web_server.event_hub().clone()),
-                    Some(replay_sweep_deps.estop.as_ref()),
+                    Some(sweep_home),
+                    Some(sweep_hub),
+                    Some(sweep_task_deps.estop.as_ref()),
                 );
                 if recovered > 0 {
                     info!(
                         "[Gateway] Board plan recovery: {recovered} interrupted plan(s) re-armed"
                     );
                 }
-            } else {
-                warn!("[Gateway] Board plan recovery skipped: moderator loop 未装配");
-            }
+            });
 
             // U-B（无人值守）：LLM 端点不可用恢复探针——封存期周期
             // 最小 completion 探测（TCP 通 ≠ LLM 活），解封边沿读中断档案

@@ -60,6 +60,7 @@ impl ProjectsBridge for AgtOneProjectBridge {
 
 fn agt_ctx(workspace: Option<String>) -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: workspace.clone(),

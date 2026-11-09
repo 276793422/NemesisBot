@@ -459,6 +459,7 @@ fn make_forge_executor() -> Arc<nemesis_forge::forge_tools::ForgeToolExecutor> {
 async fn test_forge_bridge_tool_execute_list_success() {
     let executor = make_forge_executor();
     let tools = register_shared_tools(&SharedToolConfig {
+        exec_output_tx: None,
         forge_executor: Some(executor),
         ..Default::default()
     });
@@ -474,6 +475,7 @@ async fn test_forge_bridge_tool_execute_list_success() {
 async fn test_forge_bridge_tool_invalid_json_missing_action_is_err() {
     let executor = make_forge_executor();
     let tools = register_shared_tools(&SharedToolConfig {
+        exec_output_tx: None,
         forge_executor: Some(executor),
         ..Default::default()
     });
@@ -497,6 +499,7 @@ async fn test_forge_bridge_tool_invalid_json_missing_action_is_err() {
 async fn test_forge_bridge_tool_description_and_parameters() {
     let executor = make_forge_executor();
     let tools = register_shared_tools(&SharedToolConfig {
+        exec_output_tx: None,
         forge_executor: Some(executor),
         ..Default::default()
     });
@@ -526,6 +529,7 @@ async fn test_forge_bridge_tool_create_validation_failure() {
     // Missing required fields should produce an Err from the executor.
     let executor = make_forge_executor();
     let tools = register_shared_tools(&SharedToolConfig {
+        exec_output_tx: None,
         forge_executor: Some(executor),
         ..Default::default()
     });
@@ -550,6 +554,7 @@ fn test_shared_tool_config_debug_minimal() {
 #[test]
 fn test_shared_tool_config_debug_with_web() {
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         web_search: Some(WebSearchConfig::default()),
         ..Default::default()
     };
@@ -565,6 +570,7 @@ fn test_shared_tool_config_debug_with_skills_and_memory() {
     let mgr = Arc::new(nemesis_memory::manager::MemoryManager::new(&mem_config));
     let exec = Arc::new(nemesis_memory::memory_tools::MemoryToolExecutor::new(mgr));
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         memory_executor: Some(exec),
         mcp_tool_snapshot: Some(Arc::new(parking_lot::RwLock::new(vec![]))),
         ..Default::default()
@@ -577,6 +583,7 @@ fn test_shared_tool_config_debug_with_skills_and_memory() {
 #[test]
 fn test_shared_tool_config_debug_with_workspace_and_cluster() {
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace: Some("/tmp/ws".to_string()),
         cluster_rpc: Some(ClusterRpcConfig::default()),
         spawn: Some(SpawnConfig {
@@ -1013,6 +1020,7 @@ fn test_register_shared_tools_with_cron_service_present() {
         nemesis_cron::service::CronService::new(":memory:"),
     ));
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         cron_service: Some(cron_svc),
         ..Default::default()
     };
@@ -1040,6 +1048,7 @@ fn test_register_shared_tools_i2c_spi_gated_off_by_default() {
 
     // 显式开闸 → 恢复注册 + 元数据完好。
     let tools = register_shared_tools(&SharedToolConfig {
+        exec_output_tx: None,
         hardware_tools_enabled: true,
         ..Default::default()
     });
@@ -1061,6 +1070,7 @@ fn test_register_shared_tools_with_mcp_snapshot_provided() {
         destructive_hint: None,
     }]));
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         mcp_tool_snapshot: Some(snap),
         ..Default::default()
     };
