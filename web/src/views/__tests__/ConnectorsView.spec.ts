@@ -406,3 +406,104 @@ describe('ConnectorsView B2 独占接管镜像表', () => {
     w.unmount()
   })
 })
+
+// ── 执行策略设置区（配置页补全批次 5；config.json connectors 段）──
+// 六键全部 live 读（后端每次执行 connectors_config 现读）——UI 只负责
+// set_field 写入 + 缺席段用同源 serde default 兜底展示。
+
+function withCfg(impl: Record<string, unknown>) {
+  requestMock.mockImplementation((_m: string, cmd: string) => {
+    if (cmd === 'list') return Promise.resolve({ connectors: [] })
+    if (cmd === 'receipts.list') return Promise.resolve({ receipts: [] })
+    if (cmd === 'get') return Promise.resolve(impl)
+    if (cmd === 'set_field') return Promise.resolve({ updated: true })
+    return Promise.resolve({})
+  })
+}
+
+describe('ConnectorsView 执行策略设置区（批次 5）', () => {
+  it('config 段缺席 → 同源缺省展示（限频 0 / script 60 / finance 0/0 / 远程开 / 签名关），块渲染', async () => {
+    withCfg({})
+    const w = await mountView()
+    const block = w.find('[data-test="conn-settings"]')
+    expect(block.exists()).toBe(true)
+    expect((w.find('[data-test="conn-max-ops"]').element as HTMLInputElement).value).toBe('0')
+    expect((w.find('[data-test="conn-script-timeout"]').element as HTMLInputElement).value).toBe('60')
+    expect((w.find('[data-test="conn-fin-qty"]').element as HTMLInputElement).value).toBe('0')
+    expect((w.find('[data-test="conn-fin-orders"]').element as HTMLInputElement).value).toBe('0')
+    expect(w.find('[data-test="conn-remote-invoke"]').text()).toContain('已开启')
+    expect(w.find('[data-test="conn-require-signed"]').text()).toContain('已关闭')
+    w.unmount()
+  })
+
+  it('已配置段 → 照实展示；限频改动发 set_field connectors.max_ops_per_hour', async () => {
+    withCfg({ connectors: { max_ops_per_hour: 10, script: { default_timeout_secs: 120 }, finance: { max_order_qty: 2.5, max_orders_per_day: 5 }, remote_invoke_enabled: false, require_signed: true } })
+    const w = await mountView()
+    expect((w.find('[data-test="conn-max-ops"]').element as HTMLInputElement).value).toBe('10')
+    expect((w.find('[data-test="conn-script-timeout"]').element as HTMLInputElement).value).toBe('120')
+    expect((w.find('[data-test="conn-fin-qty"]').element as HTMLInputElement).value).toBe('2.5')
+    expect((w.find('[data-test="conn-fin-orders"]').element as HTMLInputElement).value).toBe('5')
+    expect(w.find('[data-test="conn-remote-invoke"]').text()).toContain('已关闭')
+    expect(w.find('[data-test="conn-require-signed"]').text()).toContain('已开启')
+
+    const ops = w.find('[data-test="conn-max-ops"]')
+    await ops.setValue('30') // setValue 已触发 input+change（handler 单发）
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'connectors.max_ops_per_hour', value: 30 })
+    w.unmount()
+  })
+
+  it('非法输入回退不发请求：负数限频 / 超上限 script 超时 / 负数资金', async () => {
+    withCfg({})
+    const w = await mountView()
+    const ops = w.find('[data-test="conn-max-ops"]')
+    await ops.setValue('-1')
+    await flushPromises()
+    const st = w.find('[data-test="conn-script-timeout"]')
+    await st.setValue('601')
+    await flushPromises()
+    const fq = w.find('[data-test="conn-fin-qty"]')
+    await fq.setValue('-0.5')
+    await flushPromises()
+    expect(requestMock.mock.calls.filter(c => c[1] === 'set_field').length).toBe(0)
+    expect(useToast().toasts.filter(t => t.type === 'error').length).toBe(3)
+    w.unmount()
+  })
+
+  it('布尔开关：远程执行面 / 强制签名 → set_field 布尔翻转', async () => {
+    withCfg({})
+    const w = await mountView()
+    await w.find('[data-test="conn-remote-invoke"]').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'connectors.remote_invoke_enabled', value: false })
+    await w.find('[data-test="conn-require-signed"]').trigger('click')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'connectors.require_signed', value: true })
+    w.unmount()
+  })
+
+  it('资金限额整数也落 f64：saveFinQty 发数值（后端数值归一等价，1 → 1.0 由 typed 收敛）', async () => {
+    withCfg({})
+    const w = await mountView()
+    const fq = w.find('[data-test="conn-fin-qty"]')
+    await fq.setValue('3')
+    await flushPromises()
+    expect(requestMock).toHaveBeenCalledWith('config', 'set_field', { path: 'connectors.finance.max_order_qty', value: 3 })
+    w.unmount()
+  })
+
+  it('config.get 失败 → 设置块隐藏 + 诚实注记；主数据源不受影响', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve({ connectors: [] })
+      if (cmd === 'receipts.list') return Promise.resolve({ receipts: [] })
+      if (cmd === 'get') return Promise.reject(new Error('cfg down'))
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    expect(w.find('[data-test="conn-settings"]').exists()).toBe(false)
+    const err = w.find('[data-test="conn-settings-error"]')
+    expect(err.exists()).toBe(true)
+    expect(err.text()).toContain('cfg down')
+    w.unmount()
+  })
+})

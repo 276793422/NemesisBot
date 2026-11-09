@@ -194,6 +194,21 @@ fn restrict_from_env(v: Option<&std::ffi::OsStr>) -> bool {
     v != Some(std::ffi::OsStr::new("0"))
 }
 
+/// exec deny 自定义词表解析（2026-11-08 接线激活）：gateway 侧只在
+/// 自定义激活形态注入（`ExecutorChannel::env_pairs`），缺席 = None =
+/// 内置默认词表（现状）。分隔符 `\x1f`（unit separator，regex 词表不含
+/// 控制字符）。纯函数便于测试，不直接摸进程 env。
+fn deny_patterns_from_env(v: Option<std::ffi::OsString>) -> Option<Vec<String>> {
+    v.map(|raw| {
+        raw.to_string_lossy()
+            .split('\u{1f}')
+            .filter(|p| !p.is_empty())
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+    })
+    .filter(|patterns| !patterns.is_empty())
+}
+
 /// 工具循环（原 run() 主体）：注册共享工具集 + 选传输层。
 async fn run_loop(workspace: &str) -> Result<()> {
     // Same registry the gateway builds — zero drift between local and remote
@@ -211,6 +226,9 @@ async fn run_loop(workspace: &str) -> Result<()> {
     // 写死，用户 `restrict_to_workspace=false` 在 executor 分离形态下被
     // 子进程围栏二次收紧（gateway 侧放行、这里仍拒写的分叉）。
     let restrict = restrict_from_env(std::env::var_os("NEMESISBOT_EXECUTOR_RESTRICT").as_deref());
+    // exec deny 自定义词表（gateway 透传；缺席 = 默认词表，与主进程一致）。
+    let deny_patterns =
+        deny_patterns_from_env(std::env::var_os("NEMESISBOT_EXECUTOR_DENY_PATTERNS"));
     let cfg = SharedToolConfig {
         workspace: Some(workspace.to_string()),
         // 子进程侧同样设界——executor 工作区即边界根。
@@ -245,6 +263,18 @@ async fn run_loop(workspace: &str) -> Result<()> {
             None
         },
         ..Default::default()
+    };
+    // deny 词表接线（默认词表形态 = Default 的 false/空 = registry 走
+    // new 臂；自定义激活形态 = 显式传入，registry 走 new_with_config 臂——
+    // 与主进程同源）。
+    let cfg = if let Some(patterns) = deny_patterns {
+        SharedToolConfig {
+            exec_deny_custom_enabled: true,
+            exec_deny_custom_patterns: patterns,
+            ..cfg
+        }
+    } else {
+        cfg
     };
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);
     debug!("[executor] registered {} tools", tools.len());

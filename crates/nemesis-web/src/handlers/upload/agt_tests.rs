@@ -42,6 +42,7 @@ impl Drop for AgtRedirectHome {
 
 fn agt_state() -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

@@ -592,6 +592,7 @@ async fn test_process_messages_closed_channel() {
 #[tokio::test]
 async fn test_handle_health_endpoint() {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(3)),
         workspace: None,
@@ -640,6 +641,7 @@ async fn test_handle_health_endpoint() {
 #[tokio::test]
 async fn test_handle_health_not_running() {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -1183,6 +1185,7 @@ fn test_web_server_start_time() {
 #[tokio::test]
 async fn test_handle_health_with_model_state() {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(5)),
         workspace: Some("/test".to_string()),

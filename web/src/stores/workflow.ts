@@ -73,7 +73,7 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const draftPreviewDiff = ref<DraftDiff | null>(null)
 
   // === Lifecycle ===
-  const activeTab = ref<'list' | 'canvas' | 'history' | 'yaml' | 'agentGen'>('list')
+  const activeTab = ref<'list' | 'canvas' | 'history' | 'yaml' | 'agentGen' | 'settings'>('list')
 
   // === Computed ===
   const workflowByName = computed(() => {

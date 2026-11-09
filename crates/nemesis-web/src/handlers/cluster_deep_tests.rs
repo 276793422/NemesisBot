@@ -78,6 +78,7 @@ fn make_deep_ctx(
     service: Option<Arc<FakeClusterSvc>>,
 ) -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: ws.clone(),
@@ -1498,6 +1499,7 @@ fn ctx_ws_with_provider(
         std::fs::write(dir.path().join("config.json"), cfg).unwrap();
     }
     let state = AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

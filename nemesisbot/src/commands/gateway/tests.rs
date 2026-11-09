@@ -2418,6 +2418,7 @@ fn test_agent_config_custom_values() {
         model: "test-model".to_string(),
         max_turns: 50,
         system_prompt: Some("You are helpful".to_string()),
+        system_prompt_split: None,
         tools: vec![],
         ..Default::default()
     };
@@ -3086,6 +3087,7 @@ mod gateway_agent_runner_tests {
             AgentConfig {
                 model: "test-model".to_string(),
                 system_prompt: Some("test".to_string()),
+                system_prompt_split: None,
                 max_turns: 1,
                 tools: vec![],
                 ..Default::default()

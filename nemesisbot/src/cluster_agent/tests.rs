@@ -260,6 +260,7 @@ fn make_loop_with_session_store() -> (AgentLoop, std::sync::Arc<SessionStore>) {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("test".to_string()),
+            system_prompt_split: None,
             max_turns: 1,
             tools: vec![],
             ..Default::default()
@@ -274,6 +275,7 @@ fn make_test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("test".to_string()),
+        system_prompt_split: None,
         max_turns: 1,
         tools: vec![],
         ..Default::default()
@@ -291,6 +293,7 @@ fn make_loop_without_session_store() -> AgentLoop {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("test".to_string()),
+            system_prompt_split: None,
             max_turns: 1,
             tools: vec![],
             ..Default::default()
@@ -534,6 +537,7 @@ mod loop_e2e {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("cluster test".to_string()),
+            system_prompt_split: None,
             max_turns: 4,
             tools: vec!["cluster_rpc".to_string()],
             ..Default::default()
@@ -1224,6 +1228,7 @@ mod wave_b {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("cluster wave-b test".to_string()),
+            system_prompt_split: None,
             max_turns: 4,
             tools: if tools {
                 vec!["cluster_rpc".to_string()]
@@ -1687,6 +1692,7 @@ mod swarm_g4 {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("cluster g4".to_string()),
+            system_prompt_split: None,
             max_turns: 4,
             tools: vec![],
             ..Default::default()
@@ -2280,6 +2286,7 @@ mod wave_d {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("cluster wave-d".to_string()),
+            system_prompt_split: None,
             max_turns: 4,
             tools: vec!["cluster_rpc".to_string()],
             ..Default::default()

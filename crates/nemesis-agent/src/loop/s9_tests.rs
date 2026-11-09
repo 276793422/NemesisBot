@@ -99,6 +99,7 @@ fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -1589,12 +1590,12 @@ async fn maybe_update_summary_compaction_stuck_marks_paused() {
     let (_guard, buf) = capture_logs_to_buf();
     let instance = AgentInstance::new(test_config());
     // 空转前缀闸：单消息须在摘要上限内（window=100 → 50 tok →
-    // ≤125 字符）——超限轮整段被闸门判「无事可做」，烧不到失败计数；stuck
+    // ≤200 字符）——超限轮整段被闸门判「无事可做」，烧不到失败计数；stuck
     // 闩的真失败形态 = 有效尺寸轮 + LLM 失败（ErrProvider）。同时总 tail
     // 须超 keep_recent 预算（默认 20000）：600 轮 × 40 tok = 24000，边界
     // 才会推进（new_c > c），触发侧记账块才可达。
     let mut hist = vec![turn("system", "sys prompt")];
-    let body = "y".repeat(100);
+    let body = "y".repeat(160);
     for i in 0..600 {
         hist.push(turn(if i % 2 == 0 { "user" } else { "assistant" }, &body));
     }
@@ -2024,10 +2025,10 @@ fn big_history_store(
     let store = crate::session::SessionStore::new_with_storage(dir);
     let _ = store.get_or_create(key); // 可能在 tempdir 里触发一次自愈落盘，无妨
     let mut turns = vec![turn("system", "sys prompt")];
-    let body = "z".repeat(1500);
-    // 50×1500 字符 ≈ 30k tokens：超过 summarize 阈值（32k 窗 × 75% = 24k）
-    // 但前缀仍在单批摘要范围内（80k 字符/批）。300 轮会拆成多批 + 合并，
-    // 把 provider 队列烧穿。
+    let body = "z".repeat(2400);
+    // 50 条 × 2400 字符（2400/4 = 600 tok/条）≈ 30k tokens：超过 summarize
+    // 阈值（32k 窗 × 75% = 24k）；50 条 >10 → multipart（2 批 + 1 合并 =
+    // 3 次调用），provider 队列恰好备 3 份——条数再多会把队列烧穿。
     for i in 0..50 {
         turns.push(turn(if i % 2 == 0 { "user" } else { "assistant" }, &body));
     }

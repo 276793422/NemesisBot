@@ -79,6 +79,7 @@ fn ws9_config() -> AgentConfig {
         // system 节在位时 build_messages 才渲染 sections（replay 测试同款
         // 前置条件）——Branch Context 注入断言依赖它。
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),

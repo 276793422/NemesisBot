@@ -38,6 +38,7 @@ fn test_loop() -> AgentLoop {
         crate::AgentConfig {
             model: "test-model".to_string(),
             system_prompt: None,
+            system_prompt_split: None,
             max_turns: 3,
             tools: Vec::new(),
             models: std::collections::HashMap::new(),

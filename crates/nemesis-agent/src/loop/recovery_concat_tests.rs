@@ -151,6 +151,7 @@ async fn run_retry(
     let instance = AgentInstance::new(AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -195,6 +196,7 @@ async fn concat_retry_appends_partial_prefix_and_splices_result() {
     let config = AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -247,6 +249,7 @@ async fn concat_retry_disabled_falls_back_to_retry_from_scratch() {
     let config = AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -290,6 +293,7 @@ async fn truncated_tool_calls_partial_not_concatenated() {
     let config = AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -330,6 +334,7 @@ async fn repeated_stream_break_updates_partial() {
     let config = AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -372,6 +377,7 @@ async fn non_stream_transient_error_no_concat() {
     let config = AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),

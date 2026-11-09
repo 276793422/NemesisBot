@@ -158,6 +158,9 @@ pub struct AppState {
     /// 总数）。gateway 注入 nemesisbot 聚合器；None = 未装配（`sessions.stats`
     /// 诚实返回 unavailable）。
     pub session_stats: Option<Arc<dyn nemesis_agent::SessionStatsReader>>,
+    /// CORS 管理器句柄（cors.* WSAPI 真实现；gateway 启动装配注入）。
+    /// None = 未注入（headless/relay/测试装配）→ handler 诚实报错。
+    pub cors_manager: Option<Arc<crate::cors::CORSManager>>,
 }
 
 impl AppState {

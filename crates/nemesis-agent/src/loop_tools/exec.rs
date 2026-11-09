@@ -16,6 +16,55 @@ use super::*;
 pub struct ExecTool {
     workspace: String,
     restrict: bool,
+    /// 编译好的 deny 词表（2026-11-08 接线激活 `tools.exec.*`）。`new`
+    /// = 内置默认词表（`nemesis_tools::shell::DEFAULT_EXEC_DENY_PATTERNS`
+    /// 单一真相源）；`new_with_config` 接自定义词表（空表回落默认）。
+    /// **刻意不提供「清空全部词表」的构造形态**——shell 级词表是防御
+    /// 纵深的一道，全放行开关风险远大于收益。
+    deny_patterns: Vec<regex::Regex>,
+}
+
+/// 编译 deny 词表：`custom` 非空 = 自定义词表（无效 regex 跳过 + warn）；
+/// None / 空 = 内置默认词表。两个 exec 工具（同步/异步）共用同一编译
+/// 语义（nemesis-tools `ShellTool::new_with_config` 同款，但**收窄**：
+/// 不实现 Go 版 `enable=false` 的全放行臂——调用方永远拿不到空词表工具）。
+fn compile_deny_patterns(custom: Option<&[&str]>) -> Vec<regex::Regex> {
+    let (patterns, source): (&[&str], &str) = match custom {
+        Some(p) if !p.is_empty() => (p, "custom"),
+        _ => (
+            nemesis_tools::shell::DEFAULT_EXEC_DENY_PATTERNS,
+            "builtin default",
+        ),
+    };
+    let compiled: Vec<regex::Regex> = patterns
+        .iter()
+        .filter_map(|p| match regex::Regex::new(p) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                tracing::warn!("[Tools] invalid deny pattern {:?} ({}): {}", p, source, e);
+                None
+            }
+        })
+        .collect();
+    if compiled.is_empty() {
+        // 自定义词表全部编译失败 = 连一条防线都不剩——回落默认词表，
+        // 不静默变全放行。
+        tracing::warn!(
+            "[Tools] all {} deny patterns failed to compile — falling back to builtin defaults",
+            source
+        );
+        return nemesis_tools::shell::DEFAULT_EXEC_DENY_PATTERNS
+            .iter()
+            .filter_map(|p| regex::Regex::new(p).ok())
+            .collect();
+    }
+    if source == "custom" {
+        info!(
+            "[Tools] exec custom deny patterns active ({} entries)",
+            compiled.len()
+        );
+    }
+    compiled
 }
 
 impl ExecTool {
@@ -24,7 +73,36 @@ impl ExecTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
+            deny_patterns: compile_deny_patterns(None),
         }
+    }
+
+    /// Create an exec tool with a custom deny word-list (2026-11-08 接线
+    /// 激活 `tools.exec.*` 死键)。与 Go 版 `NewExecToolWithConfig` 的
+    /// **差异是刻意的**：Go 版 `enable=false` 清空全部词表全放行；这里
+    /// `custom` 空/None 一律回落内置默认词表，不存在全放行形态（装配侧
+    /// 语义「关 = 默认词表、开 + 非空 = 自定义」，见 SharedToolConfig 注）。
+    pub fn new_with_config(
+        workspace: &str,
+        restrict: bool,
+        custom_deny_patterns: Option<&[&str]>,
+    ) -> Self {
+        Self {
+            workspace: workspace.to_string(),
+            restrict,
+            deny_patterns: compile_deny_patterns(custom_deny_patterns),
+        }
+    }
+
+    /// deny 词表命中检查（大小写不敏感——命令统一小写后比对，regex 词表
+    /// 自带 `\b` 词边界与 `(?i)` 内联开关）。命中 = Some(首个命中的
+    /// pattern 原文)，供拒绝消息引用。
+    pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
+        let lowered = command.to_lowercase();
+        self.deny_patterns
+            .iter()
+            .find(|re| re.is_match(&lowered))
+            .map(|re| re.as_str().to_string())
     }
 }
 
@@ -52,6 +130,16 @@ impl Tool for ExecTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or("Missing 'command' argument")?;
+
+        // deny 词表检查（2026-11-08 接线激活）——spawn 前第一道 shell 级
+        // 词表闸（安全 8 层 pipeline 仍在 dispatch 前跑过，这里是工具层
+        // 纵深）。命中即拒，拒绝消息带 pattern 原文（模型可换方法）。
+        if let Some(hit) = self.deny_hit(command) {
+            return Err(format!(
+                "Command blocked by deny pattern: {}（命中危险命令词表，已拒绝执行）",
+                hit
+            ));
+        }
 
         let timeout_secs = exec_timeout_secs(val.get("timeout").and_then(|v| v.as_u64()));
 
@@ -1254,6 +1342,8 @@ impl Tool for RunScriptTool {
 pub struct AsyncExecTool {
     workspace: String,
     restrict: bool,
+    /// deny 词表（与 [`ExecTool`] 同源同语义——见 [`compile_deny_patterns`]）。
+    deny_patterns: Vec<regex::Regex>,
 }
 
 impl AsyncExecTool {
@@ -1261,7 +1351,30 @@ impl AsyncExecTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
+            deny_patterns: compile_deny_patterns(None),
         }
+    }
+
+    /// 自定义 deny 词表构造（2026-11-08 接线激活；语义见
+    /// [`ExecTool::new_with_config`]——无全放行形态）。
+    pub fn new_with_config(
+        workspace: &str,
+        restrict: bool,
+        custom_deny_patterns: Option<&[&str]>,
+    ) -> Self {
+        Self {
+            workspace: workspace.to_string(),
+            restrict,
+            deny_patterns: compile_deny_patterns(custom_deny_patterns),
+        }
+    }
+
+    pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
+        let lowered = command.to_lowercase();
+        self.deny_patterns
+            .iter()
+            .find(|re| re.is_match(&lowered))
+            .map(|re| re.as_str().to_string())
     }
 }
 
@@ -1283,6 +1396,14 @@ impl Tool for AsyncExecTool {
             .get("command")
             .and_then(|v| v.as_str())
             .ok_or("Missing 'command' argument")?;
+
+        // deny 词表检查（与 ExecTool 同源同语义——异步启动也是执行）。
+        if let Some(hit) = self.deny_hit(command) {
+            return Err(format!(
+                "Command blocked by deny pattern: {}（命中危险命令词表，已拒绝执行）",
+                hit
+            ));
+        }
 
         let cwd = val
             .get("working_dir")

@@ -52,6 +52,7 @@ fn agt_ctx(al: Option<Arc<AgentLoop>>) -> Ctx {
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

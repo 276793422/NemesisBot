@@ -96,6 +96,7 @@ fn e7_loop_with_small_model(response: &str) -> (AgentLoop, std::sync::Arc<TitleP
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: None,
+            system_prompt_split: None,
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
@@ -175,6 +176,7 @@ async fn e7_skips_without_small_model_or_real_title() {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: None,
+            system_prompt_split: None,
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),

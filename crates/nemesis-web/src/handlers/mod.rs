@@ -203,7 +203,8 @@ mod projects_tests;
 
 // (, quality-hardening goal 冲刺 web): shared path/file
 // utility arms (absolute/traversal rejection, canonicalize fallback, atomic
-// write fallback) + ConfigHandler error arms and CORS stubs.
+// write fallback) + ConfigHandler error arms and cors.* command behavior
+// (C-1 接真：None manager 诚实报错 + 真行为全链路落盘).
 #[cfg(test)]
 mod config_s10b_tests;
 #[cfg(test)]

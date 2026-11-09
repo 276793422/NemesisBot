@@ -604,6 +604,10 @@ impl AgentLoop {
         if let Some(store) = self.session_store() {
             store.clear_session(session_key);
         }
+        // （B2 实报锚定）历史被截断 → provider 锚点描述的整请求已不存在
+        // （at_len 指向的轮次可能已被剪掉），作废回落纯估算，下轮实报重注入
+        // （invalidate_provider_anchor 单点语义，与压缩采用/clear 同源）。
+        self.invalidate_provider_anchor(session_key);
 
         // /：回退谱系落盘（last_rewind）——截断成功后记录本会话丢
         // 掉了哪些行/轮（meta sidecar upsert；no-op 回退无谱系事实，不写）。

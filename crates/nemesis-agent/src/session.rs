@@ -1082,20 +1082,192 @@ fn sanitize_filename(key: &str) -> String {
 
 /// Estimate the token count for a string.
 ///
-/// Uses a heuristic of approximately 2.5 characters per token,
-/// which accounts for CJK characters and other overheads.
+/// 五桶折算 + 密集形态补收（实报锚定方案 Layer 2 统一保守版，2026-11-09；
+/// 验证证据：`docs/INFO/2026-11-09_估算公式V1离线对照验证.md`——纯折算差分
+/// 中位 5.9%，折算+补收 9.9% 有向偏保守；判定面/观测面/展示面同源消费本
+/// 函数）。
 ///
-/// # 已知边界：CJK 仍然低估（M6，2026-09-27 注记）
+/// 结构：先把文本折算成「加权字符数」再除 4（ASCII 4 chars/token 基准，
+/// 常见 CJK 1 token/字，罕见区按保守加权），再对机器形态密集串（长编码串/
+/// 纯数字组/JSON 结构符）补收差额。区间表描述的是**文字形态**（所有现代
+/// 分词器的共同行为），密集补收描述的是**编码本身的密度属性**（base64
+/// 6bit/字符、JSON 结构符独立成 token）——两者都不绑定任何一家的词表，
+/// 分词器换代不失效。
 ///
-/// 0.4 token/char 是**英文为主**文本的经验值。真实分词器对 CJK 大约
-/// 1 token/char（中文常见 1~1.5），即 CJK 为主的会话真实消耗约是本估算的
-/// **2.5 倍**——压缩闸（按本估算校准）会**晚触发**，极端时可能撞 provider
-/// 上限。刻意不改估算器：调系数会全局移动所有压缩阈值并影响 prompt cache
-/// 预热判定，牵连面大于收益；中文重度用户如遇撞限，调小上下文相关 config
-/// 阈值即可提前压缩。
+/// # 历史（2026-09-27 M6 注记的正式反转）
+///
+/// 旧实现 chars×2/5（0.4 token/char 英文经验值）对 CJK 低估 ~2.5 倍、对
+/// 机器形态文本低估 20-30%（`compact.rs` 在案实测 1.88 倍）。当时「刻意
+/// 不改估算器」的顾虑是调系数会全局移动压缩阈值并牵连 prompt cache 预热
+/// 判定；2026-11-09 实报锚定架构落地后，本函数只出现在「实报缺席」与
+/// 「增量窗口」两个补位场景（每轮被 provider usage 清零，永不作为真相源），
+/// 阈值漂移顾虑由锚点机制化解，本替换为该决策的正式反转。
 pub fn estimate_tokens(text: &str) -> usize {
-    let char_count = text.chars().count();
-    char_count * 2 / 5
+    // 加权字符数：ASCII 快路（len 即加权，零分类开销覆盖大部分纯文本）；
+    // 非 ASCII 逐字符按五桶加权。
+    let weighted: usize = if text.is_ascii() {
+        text.len()
+    } else {
+        text.chars()
+            .map(|ch| 1 + cjk_bucket_extra_weight(ch as u32))
+            .sum()
+    };
+    weighted.div_ceil(4) + dense_form_extra_tokens(text)
+}
+
+/// 五桶加权增量（桶权重 - 基础权重 1）。区间表移植自 openclaw
+/// `cjk-chars`（直系前身的最终形态）；桶序即匹配序（先命中先得，桶间
+/// 区间互不重叠）。
+fn cjk_bucket_extra_weight(cp: u32) -> usize {
+    const BUCKET1: [(u32, u32); 5] = [
+        (0x00B7, 0x00B7), // 间隔号
+        (0x3000, 0x319F), // CJK 标点/假名
+        (0x4E00, 0x9FA5), // 基本汉字
+        (0xAC00, 0xD7AF), // 谚文
+        (0xFF01, 0xFF60), // 全角形式
+    ];
+    const BUCKET2: [(u32, u32); 9] = [
+        (0x1100, 0x11FF), // 谚文字母
+        (0x2E80, 0x2FFF), // 部首/字形描述
+        (0x31A0, 0x4DFF), // 声调扩展/扩展 A/注音/番文
+        (0x9FA6, 0x9FFF), // 汉字扩展尾
+        (0xA000, 0xA4FF), // 彝文
+        (0xA700, 0xA707), // 声调字母
+        (0xA960, 0xA97F), // 谚文扩展 A
+        (0xD7B0, 0xD7FF), // 谚文扩展 B
+        (0xF900, 0xFAFF), // 兼容表意
+    ];
+    const BUCKET3: [(u32, u32); 9] = [
+        (0x02C7, 0x02C7), // 卡罗号
+        (0x02C9, 0x02CB), // 长音/双 GRAVE
+        (0x02D9, 0x02D9), // 上点
+        (0x02EA, 0x02EB), // 声调（闽语）
+        (0x0305, 0x0305), // 上划线
+        (0x0323, 0x0323), // 下点
+        (0xFE10, 0xFE4F), // 竖排标点
+        (0xFF61, 0xFFDC), // 半角片假名/半角谚文
+        (0xFFE0, 0xFFE6), // 半角全角符号
+    ];
+    const BUCKET4: [(u32, u32); 1] = [(0x1D360, 0x1D371)]; // 计数杆筹码
+    const BUCKET5: [(u32, u32); 7] = [
+        (0x16FE0, 0x16FFF), // 周易/太玄占
+        (0x17000, 0x18D0F), // 西夏文
+        (0x1AFF0, 0x1AFFF), // 注音扩展
+        (0x1B000, 0x1B2FF), // 假名补充/川盐符号
+        (0x1F200, 0x1F2FF), // 封闭 CJK 象形
+        (0x20000, 0x2FA1F), // CJK 扩展 B-F
+        (0x30000, 0x3347F), // CJK 扩展 G-H
+    ];
+    // 桶权重：常见 CJK ×4（1.0 token/字）、罕见 BMP ×12（3.0）、twoToken
+    // ×8（2.0）、补充区 ×12（3.0）、罕见补充 ×16（4.0）。
+    const EXTRA: [usize; 5] = [3, 11, 7, 11, 15];
+    for (i, table) in [
+        &BUCKET1[..],
+        &BUCKET2[..],
+        &BUCKET3[..],
+        &BUCKET4[..],
+        &BUCKET5[..],
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for &(lo, hi) in table {
+            if (lo..=hi).contains(&cp) {
+                return EXTRA[i];
+            }
+        }
+    }
+    0
+}
+
+/// 密集形态补收（差额制——只收超出 `chars/4` 基线的部分，与折算不重复
+/// 计费）。三类（单遍字节扫描，无 regex 依赖；密集形态字符全为 ASCII，
+/// UTF-8 多字节序列的各字节 ≥ 0x80 不会误命中）：
+/// - 长编码串 `[A-Za-z0-9+/_=-]{16,}`：切段逐段 ceil(len/4)（字母连段/
+///   1-3 位数字组/单字符），补收 = 分段和 − 串长/4 基线；
+/// - 短串内的 ≥4 位纯数字组：ceil(len/3) − len/4 基线（数字约 3 字符/
+///   token；≥4 位门槛防止 prose 里的短数字被误收）；
+/// - JSON 结构符 `{ } [ ] : ,`：每个 +3/4 token（实分词各占 1 token，
+///   基线只给 1/4）。
+fn dense_form_extra_tokens(text: &str) -> usize {
+    const B64_MIN_RUN: usize = 16;
+    const DIGIT_MIN_RUN: usize = 4;
+
+    let b = text.as_bytes();
+    let n = b.len();
+    let is_b64ish = |c: u8| {
+        c.is_ascii_alphanumeric() || c == b'+' || c == b'/' || c == b'_' || c == b'-' || c == b'='
+    };
+    let is_structural = |c: u8| matches!(c, b'{' | b'}' | b'[' | b']' | b':' | b',');
+
+    let mut extra = 0usize;
+    let mut struct_quarters = 0usize;
+    let mut i = 0usize;
+    while i < n {
+        let c = b[i];
+        if c >= 0x80 {
+            // UTF-8 多字节序列：逐字节跳过（任一字节都不满足 ASCII 谓词）。
+            i += 1;
+            continue;
+        }
+        if is_b64ish(c) {
+            let start = i;
+            while i < n && b[i] < 0x80 && is_b64ish(b[i]) {
+                i += 1;
+            }
+            let run_len = i - start;
+            if run_len >= B64_MIN_RUN {
+                // 长编码串：切段（字母连段 / 1-3 位数字组 / 单字符）逐段
+                // ceil(/4)，补收与基线的差额。
+                let mut j = start;
+                let mut dense = 0usize;
+                while j < i {
+                    let cj = b[j];
+                    if cj.is_ascii_alphabetic() {
+                        let s = j;
+                        while j < i && b[j].is_ascii_alphabetic() {
+                            j += 1;
+                        }
+                        dense += (j - s).div_ceil(4);
+                    } else if cj.is_ascii_digit() {
+                        let s = j;
+                        while j < i && b[j].is_ascii_digit() && j - s < 3 {
+                            j += 1;
+                        }
+                        dense += 1; // ceil(≤3 / 4) = 1
+                    } else {
+                        j += 1;
+                        dense += 1; // 单字符（+/=/- 等）独立成 token
+                    }
+                }
+                extra += dense.saturating_sub(run_len.div_ceil(4));
+            } else {
+                // 短串：只收内嵌 ≥4 位纯数字组的差额（prose 连字符词/
+                // 短标识符不误收）。
+                let mut j = start;
+                while j < i {
+                    if b[j].is_ascii_digit() {
+                        let s = j;
+                        while j < i && b[j].is_ascii_digit() {
+                            j += 1;
+                        }
+                        let d = j - s;
+                        if d >= DIGIT_MIN_RUN {
+                            extra += d.div_ceil(3).saturating_sub(d.div_ceil(4));
+                        }
+                    } else {
+                        j += 1;
+                    }
+                }
+            }
+        } else if is_structural(c) {
+            struct_quarters += 3; // 实分词 1 token − 基线 1/4 = 3/4
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    extra + struct_quarters / 4
 }
 
 /// Estimate the total token count for a list of conversation turns.

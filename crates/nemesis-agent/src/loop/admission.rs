@@ -328,6 +328,7 @@ impl AgentLoop {
         let config = AgentConfig {
             model: self.active_model.read().clone(),
             system_prompt: self.config.system_prompt.clone(),
+            system_prompt_split: None,
             max_turns: self.config.max_turns,
             tools: self.config.tools.clone(),
             tool_fence_profession: self.config.tool_fence_profession.clone(),

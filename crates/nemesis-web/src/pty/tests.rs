@@ -59,6 +59,7 @@ fn make_state(
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

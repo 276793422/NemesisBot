@@ -14,6 +14,7 @@ use std::time::Instant;
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -67,6 +68,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 /// Create a RequestContext without a workspace.
 fn make_ctx_no_workspace() -> RequestContext {
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -455,7 +457,9 @@ async fn test_config_save_and_get_roundtrip() {
     let ctx = make_ctx(&dir);
 
     let cfg_data = serde_json::json!({
-        "agents": { "default": { "model": "test" } },
+        // C-2 起 save 拒绝静默丢键：夹具用 typed 已知键（agents.default 非
+        // typed 字段，带载荷会被 round-trip 校验正确拦下）。
+        "agents": {},
         "bindings": [],
         "session": {},
         "channels": {},
@@ -478,44 +482,8 @@ async fn test_config_save_and_get_roundtrip() {
     assert_eq!(result["gateway"]["port"], 8080);
 }
 
-#[tokio::test]
-async fn test_config_cors_commands() {
-    let handler = config::ConfigHandler::new();
-    let dir = tempfile::tempdir().unwrap();
-    let ctx = make_ctx(&dir);
-
-    // cors.list
-    let result = handler
-        .handle_cmd("cors.list", None, &ctx)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(result["origins"].is_array());
-
-    // cors.add
-    let data = serde_json::json!({ "origin": "https://example.com" });
-    handler
-        .handle_cmd("cors.add", Some(data), &ctx)
-        .await
-        .unwrap()
-        .unwrap();
-
-    // cors.remove
-    let data = serde_json::json!({ "origin": "https://example.com" });
-    handler
-        .handle_cmd("cors.remove", Some(data), &ctx)
-        .await
-        .unwrap()
-        .unwrap();
-
-    // cors.toggle
-    let data = serde_json::json!({ "enabled": true });
-    handler
-        .handle_cmd("cors.toggle", Some(data), &ctx)
-        .await
-        .unwrap()
-        .unwrap();
-}
+// cors.* 行为覆盖收敛于 config_s10b_tests.rs（恒编译：None manager 诚实报错
+// + 真行为全链路落盘）——本 mod 是 workflow+security 门控，不再重复。
 
 // Models handler tests
 

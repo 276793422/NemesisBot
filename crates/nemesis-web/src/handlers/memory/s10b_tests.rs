@@ -45,6 +45,7 @@ fn make_ctx_mgr(dir: &tempfile::TempDir, data_dir: &std::path::Path) -> RequestC
 
 fn build_state(ws: &str, memory_manager: Option<Arc<MemoryManager>>) -> AppState {
     AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.to_string()),

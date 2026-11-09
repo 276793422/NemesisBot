@@ -17,6 +17,7 @@ use std::time::Instant;
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -113,6 +114,10 @@ async fn coding_config_reads_defaults_from_fresh_home() {
     // flip chain (serde default → Default impl → handler read side).
     assert_eq!(r["concurrent"]["mode"], "queue");
     assert_eq!(r["concurrent"]["queue_size"], 8);
+    // delegate 段（配置页批次 4）：默认关 / 生命上限 3600 / passthrough 空串。
+    assert_eq!(r["delegate"]["enabled"], false);
+    assert_eq!(r["delegate"]["max_lifetime_secs"], 3600);
+    assert_eq!(r["delegate"]["permission_mode"], "");
 }
 
 #[tokio::test]
@@ -127,6 +132,7 @@ async fn coding_config_reads_written_sections() {
             "claude_code_tool": { "enabled": true, "permission_mode": "plan" },
             "codex_tool": { "enabled": true, "sandbox": "workspace_write" },
             "lsp_tool": { "enabled": true },
+            "delegate": { "enabled": true, "max_lifetime_secs": 1800, "permission_mode": "accept_edits" },
             "defaults": {
                 "concurrent_request_mode": "steer",
                 "queue_size": 12
@@ -149,6 +155,10 @@ async fn coding_config_reads_written_sections() {
     // concurrent card read side (the shape config.set_field writes).
     assert_eq!(r["concurrent"]["mode"], "steer");
     assert_eq!(r["concurrent"]["queue_size"], 12);
+    // delegate card read side（配置页批次 4）。
+    assert_eq!(r["delegate"]["enabled"], true);
+    assert_eq!(r["delegate"]["max_lifetime_secs"], 1800);
+    assert_eq!(r["delegate"]["permission_mode"], "accept_edits");
 }
 
 #[tokio::test]

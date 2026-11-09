@@ -60,6 +60,7 @@ fn ps_loop() -> AgentLoop {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("You are a test assistant.".to_string()),
+            system_prompt_split: None,
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
@@ -194,6 +195,7 @@ async fn detached_role_overlays_persona_in_system_prompt() {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("你是个测试助手。".to_string()),
+            system_prompt_split: None,
             max_turns: 3,
             tools: vec![],
             models: std::collections::HashMap::new(),

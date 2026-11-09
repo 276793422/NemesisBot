@@ -388,6 +388,11 @@ pub(super) fn build_shared_tool_config(
             i2c_allow_ranges: cfg.tools.hardware.i2c_allow_ranges.clone(),
             i2c_deny_ranges: cfg.tools.hardware.i2c_deny_ranges.clone(),
         })),
+        // exec deny 自定义词表（config `tools.exec` 段；2026-11-08
+        // 接线激活——装配期一次读，重启才变。语义见 SharedToolConfig
+        // 字段注：开关开+词表非空=自定义词表，其余=内置默认词表）。
+        exec_deny_custom_enabled: cfg.tools.exec.enable_deny_patterns,
+        exec_deny_custom_patterns: cfg.tools.exec.custom_deny_patterns.clone(),
         // workspace 写租约（`agents.lease_enabled` 默认开）——
         // 装配期消费：Some = register_shared_tools 把写类工具换成租约守
         // 卫包装（跨主 loop / 项目 loop / executor 子进程互斥写）。持

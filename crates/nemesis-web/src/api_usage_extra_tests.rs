@@ -20,6 +20,7 @@ use std::time::Instant;
 
 fn make_state_no_data_store() -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,
@@ -62,6 +63,7 @@ fn make_state_no_data_store() -> Arc<AppState> {
 
 fn make_state_with_store(ds: Arc<DataStore>) -> Arc<AppState> {
     let s = AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

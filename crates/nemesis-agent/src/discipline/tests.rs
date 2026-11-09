@@ -579,6 +579,7 @@ fn gate_inbound_discipline_arm_toggles_and_reports_disabled() {
         crate::types::AgentConfig {
             model: "test-model".to_string(),
             system_prompt: None,
+            system_prompt_split: None,
             max_turns: 5,
             tools: Vec::new(),
             models: std::collections::HashMap::new(),

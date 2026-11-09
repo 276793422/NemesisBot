@@ -92,6 +92,7 @@ async fn seed_caches() {
 fn persona_ctx(dir: &tempfile::TempDir) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     let state = Arc::new(crate::api_handlers::AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

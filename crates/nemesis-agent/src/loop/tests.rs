@@ -162,6 +162,7 @@ fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -5020,6 +5021,7 @@ async fn test_force_compression_no_system_prompt() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
@@ -5551,7 +5553,7 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
     // the naive boundary lands on a tool result. Regression for the
     // boundary-splits-tool-pair info loss found in second-pass review.
     // naive 边界现在来自 token 预算（落盘 budget=250）。从尾部回退装下
-    // u5..u3+res(160tok) 后到 235，再加 parent "go"(25tok) 会超 250 → raw=4
+    // u5..u3+res(160tok) 后到 240，再加 parent "go"(26tok) 会超 250 → raw=4
     // 恰好落在 tool 结果上 → tool_safe_boundary 退到 3。
     let (outbound_tx, _) = tokio::sync::mpsc::channel(16);
     let provider = MockLlmProvider::new(vec![llm_text("SUMMARY")]);
@@ -5586,13 +5588,13 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         tool_result_projection: None,
         image_refs: Vec::new(),
     };
-    let pad = |tag: &str| format!("{tag} {}", "x".repeat(60));
+    let pad = |tag: &str| format!("{tag} {}", "x".repeat(101));
     instance.set_history(vec![
         turn("system", "sys", vec![], None),                 // 0
-        turn("user", &pad("u1"), vec![], None),              // 1 (~25 tok)
+        turn("user", &pad("u1"), vec![], None),              // 1 (26 tok)
         turn("user", &pad("u2"), vec![], None),              // 2
-        turn("assistant", &pad("go"), vec![tc("c1")], None), // 3 parent (~25 tok)
-        turn("tool", &"x".repeat(400), vec![], Some("c1")),  // 4 (~160 tok) raw new_c lands here
+        turn("assistant", &pad("go"), vec![tc("c1")], None), // 3 parent (26 tok)
+        turn("tool", &"x".repeat(640), vec![], Some("c1")),  // 4 (160 tok) raw new_c lands here
         turn("user", &pad("u3"), vec![], None),              // 5
         turn("assistant", "a2", vec![], None),               // 6
         turn("user", &pad("u4"), vec![], None),              // 7
@@ -6232,6 +6234,7 @@ fn test_build_messages_without_system_prompt() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),
@@ -7802,6 +7805,7 @@ fn test_handle_command_show_system_prompt_with_config() {
         AgentConfig {
             model: "test".to_string(),
             system_prompt: Some("You are a helpful assistant.".to_string()),
+            system_prompt_split: None,
             max_turns: 5,
             tools: vec![],
             models: std::collections::HashMap::new(),
@@ -8058,6 +8062,7 @@ fn test_build_messages_cache_no_system_prompt() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: Vec::new(),
         models: std::collections::HashMap::new(),

@@ -1,7 +1,8 @@
 //! (quality-hardening goal 冲刺, web): ConfigHandler error arms and
-//! CORS stubs the gated `mod tests` skips — missing config.json load failure,
-//! invalid save payload, empty-path / invalid-result set_field, and the four
-//! "CORS manager not connected" stub commands.
+//! CORS command behavior the gated `mod tests` skips — missing config.json
+//! load failure, invalid save payload, empty-path / invalid-result set_field,
+//! and the four cors.* commands（C-1 接真后：None manager 诚实报错 + 真行为
+//! 全链路落盘）。
 
 use crate::api_handlers::AppState;
 use crate::events::EventHub;
@@ -12,8 +13,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
-fn make_state(ws: Option<String>) -> Arc<AppState> {
+fn make_state_with_cors(
+    ws: Option<String>,
+    cors: Option<Arc<crate::cors::CORSManager>>,
+) -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: cors,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: ws.clone(),
@@ -58,7 +63,15 @@ fn make_state(ws: Option<String>) -> Arc<AppState> {
     })
 }
 
+fn make_state(ws: Option<String>) -> Arc<AppState> {
+    make_state_with_cors(ws, None)
+}
+
 fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
+    let ctx = make_ctx_raw(
+        dir,
+        make_state(Some(dir.path().to_string_lossy().to_string())),
+    );
     if with_config {
         let config = nemesis_config::Config::default();
         std::fs::write(
@@ -67,13 +80,17 @@ fn make_ctx(dir: &tempfile::TempDir, with_config: bool) -> RequestContext {
         )
         .unwrap();
     }
+    ctx
+}
+
+fn make_ctx_raw(dir: &tempfile::TempDir, state: Arc<AppState>) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();
     RequestContext {
         session_id: "s10b".to_string(),
         chat_id: "chat".to_string(),
         workspace: Some(ws.clone()),
         home: Some(ws),
-        state: make_state(Some(dir.path().to_string_lossy().to_string())),
+        state,
         auth_method: crate::session::AuthMethod::default(),
     }
 }
@@ -130,42 +147,124 @@ async fn config_set_field_empty_path_and_invalid_result_error() {
     assert!(err.contains("invalid config after field update"), "{err}");
 }
 
+// C-1 CORS 接真管理器：AppState.cors_manager = None（headless/测试装配）
+// → 四命令全部诚实报错，不假成功。
 #[tokio::test]
-async fn config_cors_stubs_report_not_connected() {
+async fn config_cors_without_manager_honest_errors() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir, true);
     let handler = ConfigHandler::new();
 
+    for (cmd, data) in [
+        ("cors.list", None),
+        (
+            "cors.add",
+            Some(serde_json::json!({ "origin": "https://x.com" })),
+        ),
+        (
+            "cors.remove",
+            Some(serde_json::json!({ "origin": "https://x.com" })),
+        ),
+        ("cors.toggle", Some(serde_json::json!({ "enabled": true }))),
+    ] {
+        let err = handler.handle_cmd(cmd, data, &ctx).await.unwrap_err();
+        assert!(err.contains("not connected"), "{cmd}: {err}");
+    }
+}
+
+// C-1 四命令真行为全链路：list 九键投影 / add scheme 校验+落盘 /
+// remove（含 no-op）/ toggle dev mode 落盘。cors.json 由 manager 原子写。
+#[tokio::test]
+async fn config_cors_real_manager_full_behavior() {
+    let dir = tempfile::tempdir().unwrap();
+    let cors_path = dir.path().join("cors.json");
+    let mgr = Arc::new(crate::cors::CORSManager::new(&cors_path).unwrap());
+    let ctx = make_ctx_raw(
+        &dir,
+        make_state_with_cors(Some(dir.path().to_string_lossy().to_string()), Some(mgr)),
+    );
+    let handler = ConfigHandler::new();
+
+    // 1) list：默认九键全投影 + origins 空（无 "message" 掩蔽字段）。
     let list = handler
         .handle_cmd("cors.list", None, &ctx)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(list["origins"].as_array().unwrap().len(), 0);
-    assert!(list["message"].as_str().unwrap().contains("not connected"));
+    assert_eq!(list["development_mode"], false);
+    assert_eq!(list["allow_localhost"], true);
+    assert_eq!(list["max_age"], 3600);
+    assert_eq!(list["allow_no_origin"], true);
+    assert!(list.get("message").is_none(), "{list}");
+
+    // 2) add：scheme 校验 loud 拒绝（镜像 CLI cors add），合法 origin 落盘。
+    let err = handler
+        .handle_cmd(
+            "cors.add",
+            Some(serde_json::json!({ "origin": "not-a-url" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("Must start with http://"), "{err}");
 
     let added = handler
         .handle_cmd(
             "cors.add",
-            Some(serde_json::json!({ "origin": "https://x.com" })),
+            Some(serde_json::json!({ "origin": "https://dash.example.com" })),
             &ctx,
         )
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(added["added"], false);
+    assert_eq!(added["added"], true);
+    let list = handler
+        .handle_cmd("cors.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        list["origins"],
+        serde_json::json!(["https://dash.example.com"])
+    );
+    // 盘上真实落盘（manager 原子写 cors.json，不只内存态）。
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cors_path).unwrap()).unwrap();
+    assert_eq!(
+        on_disk["allowed_origins"],
+        serde_json::json!(["https://dash.example.com"])
+    );
 
+    // 3) remove：移除命中 origin；再移除不存在的 origin = no-op 不报错。
     let removed = handler
         .handle_cmd(
             "cors.remove",
-            Some(serde_json::json!({ "origin": "https://x.com" })),
+            Some(serde_json::json!({ "origin": "https://dash.example.com" })),
             &ctx,
         )
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(removed["removed"], false);
+    assert_eq!(removed["removed"], true);
+    let removed = handler
+        .handle_cmd(
+            "cors.remove",
+            Some(serde_json::json!({ "origin": "https://gone.example.com" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(removed["removed"], true);
+    let list = handler
+        .handle_cmd("cors.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(list["origins"].as_array().unwrap().len(), 0);
 
+    // 4) toggle：development_mode 开 → list 回读 true + 盘上落盘。
     let toggled = handler
         .handle_cmd(
             "cors.toggle",
@@ -175,7 +274,11 @@ async fn config_cors_stubs_report_not_connected() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(toggled["toggled"], false);
+    assert_eq!(toggled["toggled"], true);
+    assert_eq!(toggled["development_mode"], true);
+    let on_disk: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&cors_path).unwrap()).unwrap();
+    assert_eq!(on_disk["development_mode"], true);
 }
 
 // agents.tool_doc_folding 开关 —— set_field 可写（typed round-trip），

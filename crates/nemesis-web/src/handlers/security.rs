@@ -148,7 +148,15 @@ impl ModuleHandler for SecurityHandler {
             "stats",
             "approvals.list",
             "approvals.clear",
+            "approvals.add",
+            "approvals.remove",
             "approvals.status",
+            "eval_rules.list",
+            "eval_rules.add",
+            "eval_rules.update",
+            "eval_rules.remove",
+            "eval_rules.set_enabled",
+            "eval_rules.reset",
             "session_allow",
             "session_allow_status",
             "signature_verify_status",
@@ -187,6 +195,78 @@ impl ModuleHandler for SecurityHandler {
             // 感知 clear）。
             "approvals.list" => self.approvals_list(workspace),
             "approvals.clear" => self.approvals_clear(workspace),
+            // 条目级管理（SecurityView 表单 + 行级删除）：写入/删除走
+            // nemesis-security 同源闸（安装类拒 + 危级静态闸 + 读侧死形态
+            // 拒）——人工写入与「总是允许」自动写入同一准入，无旁路。
+            "approvals.add" => {
+                let data = data.ok_or("missing data")?;
+                let op = data
+                    .get("op")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing op")?;
+                let pattern = data
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing pattern")?;
+                let action = data
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("allow");
+                let stored = nemesis_security::approval_rules::upsert_manual_rule(
+                    &approval_rules_path(workspace),
+                    op,
+                    pattern,
+                    action,
+                )?;
+                Ok(Some(
+                    serde_json::json!({ "added": true, "pattern": stored }),
+                ))
+            }
+            "approvals.remove" => {
+                let data = data.ok_or("missing data")?;
+                let op = data
+                    .get("op")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing op")?;
+                let pattern = data
+                    .get("pattern")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing pattern")?;
+                let removed = nemesis_security::approval_rules::remove_manual_rule(
+                    &approval_rules_path(workspace),
+                    op,
+                    pattern,
+                )?;
+                Ok(Some(serde_json::json!({ "removed": removed })))
+            }
+            // eval 评估规则管理（SecurityView 评估规则 TAB）。数据半边单一
+            // 真相源 nemesis-config::eval_rules（CLI 经 nemesisbot re-export
+            // 消费同一模块）；路径真相源 nemesis-path（与 CLI
+            // rules_file_path 同一拼接点）。写命令语义镜像 CLI（add 冲突拒、
+            // update/remove/set_enabled 不存在报错、reset 回内置默认集）。
+            "eval_rules.list" => self.eval_rules_list(workspace),
+            "eval_rules.add" => {
+                let rule = eval_rules_payload(data)?;
+                self.eval_rules_add(workspace, rule)
+            }
+            "eval_rules.update" => {
+                let rule = eval_rules_payload(data)?;
+                self.eval_rules_update(workspace, rule)
+            }
+            "eval_rules.remove" => {
+                let id = require_str_field(data.as_ref(), "id")?;
+                self.eval_rules_remove(workspace, id)
+            }
+            "eval_rules.set_enabled" => {
+                let id = require_str_field(data.as_ref(), "id")?;
+                let enabled = data
+                    .as_ref()
+                    .and_then(|d| d.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .ok_or("missing enabled")?;
+                self.eval_rules_set_enabled(workspace, id, enabled)
+            }
+            "eval_rules.reset" => self.eval_rules_reset(workspace),
             // 免打扰开关状态（运行期投影透传；config.get 的 approvals
             // 段是持久真相源，enabled 可能已被 config.save 热翻）。
             "approvals.status" => Ok(Some(Self::approvals_status())),
@@ -246,6 +326,12 @@ fn update_security_config<T>(
 /// 审批记忆规则表管理（list/clear）。路径唯一依据 nemesis-path。
 fn approval_rules_path(workspace: &str) -> PathBuf {
     nemesis_path::resolve_approval_rules_path_in_workspace(Path::new(workspace))
+}
+
+/// eval 评估规则表路径（CLI rules_file_path 经 nemesis-path 委托同一拼接点
+/// ——两端字节一致是硬契约）。
+fn eval_rules_path(workspace: &str) -> PathBuf {
+    nemesis_path::resolve_eval_rules_path_in_workspace(Path::new(workspace))
 }
 
 fn security_log_dir(workspace: &str) -> PathBuf {
@@ -560,6 +646,149 @@ impl SecurityHandler {
             serde_json::json!({ "cleared": true, "removed": removed }),
         ))
     }
+
+    // ── eval 评估规则管理（SecurityView 评估规则 TAB）──────────────────
+    //
+    // 数据半边单一真相源 nemesis-config::eval_rules；路径真相源
+    // nemesis-path。全部写命令 RMW 全程持 config 家族写串行锁（与
+    // update_security_config 同纪律：方法内不得再取锁）。运行中的 eval
+    // 每次评估现读盘，写入即对下一次评估生效（无热载问题）。
+
+    fn eval_rules_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        // 与 CLI list 同源：load_rules 缺文件时种子默认集（首访即见内置规则）。
+        let file = nemesis_config::eval_rules::load_rules(&eval_rules_path(workspace))
+            .map_err(|e| format!("failed to load eval rules: {e}"))?;
+        let json = serde_json::to_value(&file).map_err(|e| format!("failed to serialize: {e}"))?;
+        Ok(Some(json))
+    }
+
+    fn eval_rules_add(
+        &self,
+        workspace: &str,
+        rule: nemesis_config::eval_rules::Rule,
+    ) -> Result<Option<serde_json::Value>, String> {
+        nemesis_config::eval_rules::validate_rule(&rule)
+            .map_err(|e| format!("invalid rule: {e}"))?;
+        let path = eval_rules_path(workspace);
+        let _serial = nemesis_config::config_write_lock();
+        let mut file = nemesis_config::eval_rules::load_rules(&path)
+            .map_err(|e| format!("failed to load eval rules: {e}"))?;
+        // add 冲突拒绝（镜像 CLI cmd_add：改用 update 替换）。
+        if file.rules.iter().any(|r| r.id == rule.id) {
+            return Err(format!(
+                "rule '{}' already exists (use eval_rules.update to replace it)",
+                rule.id
+            ));
+        }
+        file.rules.push(rule.clone());
+        nemesis_config::eval_rules::save_rules(&path, &file)
+            .map_err(|e| format!("failed to save eval rules: {e}"))?;
+        Ok(Some(serde_json::json!({ "added": true, "id": rule.id })))
+    }
+
+    fn eval_rules_update(
+        &self,
+        workspace: &str,
+        rule: nemesis_config::eval_rules::Rule,
+    ) -> Result<Option<serde_json::Value>, String> {
+        nemesis_config::eval_rules::validate_rule(&rule)
+            .map_err(|e| format!("invalid rule: {e}"))?;
+        let path = eval_rules_path(workspace);
+        let _serial = nemesis_config::config_write_lock();
+        let mut file = nemesis_config::eval_rules::load_rules(&path)
+            .map_err(|e| format!("failed to load eval rules: {e}"))?;
+        let idx = file
+            .rules
+            .iter()
+            .position(|r| r.id == rule.id)
+            .ok_or_else(|| format!("rule '{}' not found", rule.id))?;
+        file.rules[idx] = rule.clone();
+        nemesis_config::eval_rules::save_rules(&path, &file)
+            .map_err(|e| format!("failed to save eval rules: {e}"))?;
+        Ok(Some(serde_json::json!({ "updated": true, "id": rule.id })))
+    }
+
+    fn eval_rules_remove(
+        &self,
+        workspace: &str,
+        id: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let path = eval_rules_path(workspace);
+        let _serial = nemesis_config::config_write_lock();
+        let mut file = nemesis_config::eval_rules::load_rules(&path)
+            .map_err(|e| format!("failed to load eval rules: {e}"))?;
+        let before = file.rules.len();
+        file.rules.retain(|r| r.id != id);
+        if file.rules.len() == before {
+            return Err(format!("rule '{id}' not found"));
+        }
+        nemesis_config::eval_rules::save_rules(&path, &file)
+            .map_err(|e| format!("failed to save eval rules: {e}"))?;
+        Ok(Some(serde_json::json!({ "removed": true, "id": id })))
+    }
+
+    fn eval_rules_set_enabled(
+        &self,
+        workspace: &str,
+        id: &str,
+        enabled: bool,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let path = eval_rules_path(workspace);
+        let _serial = nemesis_config::config_write_lock();
+        let mut file = nemesis_config::eval_rules::load_rules(&path)
+            .map_err(|e| format!("failed to load eval rules: {e}"))?;
+        let rule = file
+            .rules
+            .iter_mut()
+            .find(|r| r.id == id)
+            .ok_or_else(|| format!("rule '{id}' not found"))?;
+        rule.enabled = enabled;
+        nemesis_config::eval_rules::save_rules(&path, &file)
+            .map_err(|e| format!("failed to save eval rules: {e}"))?;
+        Ok(Some(serde_json::json!({ "id": id, "enabled": enabled })))
+    }
+
+    fn eval_rules_reset(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let path = eval_rules_path(workspace);
+        let _serial = nemesis_config::config_write_lock();
+        // 先 load（缺文件时种子——与 CLI cmd_reset 同语义）拿到将被替换的
+        // 条数；再以内置默认集覆写。UI 侧弹确认框（CLI 的交互确认在前端）。
+        let existing = nemesis_config::eval_rules::load_rules(&path)
+            .map_err(|e| format!("failed to load eval rules: {e}"))?;
+        let replaced = existing.rules.len();
+        let defaults =
+            nemesis_config::eval_rules::parse_rules(nemesis_config::eval_rules::DEFAULT_RULES_JSON)
+                .map_err(|e| format!("built-in default rules damaged: {e}"))?;
+        let count = defaults.rules.len();
+        nemesis_config::eval_rules::save_rules(&path, &defaults)
+            .map_err(|e| format!("failed to save eval rules: {e}"))?;
+        Ok(Some(
+            serde_json::json!({ "reset": true, "replaced": replaced, "count": count }),
+        ))
+    }
+}
+
+/// eval_rules.add/update 的 `data.rule` 载荷提取（单点：字段缺失/形态错
+/// 统一口径）。
+fn eval_rules_payload(
+    data: Option<serde_json::Value>,
+) -> Result<nemesis_config::eval_rules::Rule, String> {
+    let raw = data
+        .as_ref()
+        .and_then(|d| d.get("rule"))
+        .cloned()
+        .ok_or("missing rule")?;
+    serde_json::from_value(raw).map_err(|e| format!("invalid rule: {e}"))
+}
+
+/// 顶层字符串字段提取（id 等）。
+fn require_str_field<'a>(
+    data: Option<&'a serde_json::Value>,
+    field: &str,
+) -> Result<&'a str, String> {
+    data.and_then(|d| d.get(field))
+        .and_then(|v| v.as_str())
+        .ok_or(format!("missing {field}"))
 }
 
 // (, quality-hardening goal 冲刺 web): audit paging +
@@ -587,3 +816,9 @@ mod approval_auto_tests;
 // status 双臂 / 会话键推导与 chat.sync 字节一致。
 #[cfg(test)]
 mod session_allow_tests;
+
+// 条目级规则管理（批次 3）：approvals.add/remove（nemesis-security
+// upsert/remove_manual_rule 同源闸）+ eval_rules CRUD（数据半边
+// nemesis-config::eval_rules 同源，语义镜像 CLI eval rules *）。
+#[cfg(test)]
+mod rule_mgmt_tests;

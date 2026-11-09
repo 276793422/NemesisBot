@@ -294,6 +294,9 @@ impl AgentLoop {
         if let Some(ref store) = self.session_store {
             store.clear_session(session_key);
         }
+        // （B2 实报锚定）清空后历史为空，provider 锚点描述的整请求已不存在
+        // → 作废回落纯估算（invalidate_provider_anchor 单点语义）。
+        self.invalidate_provider_anchor(session_key);
         info!("[AgentLoop] Manual clear for {}", session_key);
         Ok("✓ 已清空会话历史".to_string())
     }

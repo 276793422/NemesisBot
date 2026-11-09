@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useToast } from '../composables/useToast'
 import { useUsageChanged } from '../composables/useUsageChanged'
+import { useWSAPI } from '../composables/useWSAPI'
 import { authedFetch } from '../lib/authFetch'
 import { toLocalInputValue } from '../utils/datetime'
 import VChart from 'vue-echarts'
@@ -265,6 +266,39 @@ function switchTab(t: TabId) {
   activeTab.value = t
   if (t === 'pricing') loadPricing()
   if (t === 'logs') loadLogs()
+  if (t === 'settings') loadRetention()
+}
+
+// —— 设置 tab（2026-11-08 配置页补全批次 2）：使用统计保留策略。
+// config.set_field 写 config.json 的 usage 段（typed）；retention sweep
+// 在 gateway 启动 + 每 6h 一拍 → 改动最迟 6h 生效。0 = 该维关闭限制。
+const { request } = useWSAPI()
+const usageRetentionDays = ref<number | null>(null)
+const usageMaxRows = ref<number | null>(null)
+
+async function loadRetention() {
+  try {
+    const cfg = await request('config', 'get')
+    usageRetentionDays.value = typeof cfg?.usage?.retention_days === 'number' ? cfg.usage.retention_days : 30
+    usageMaxRows.value = typeof cfg?.usage?.max_rows === 'number' ? cfg.usage.max_rows : 500000
+  } catch {
+    usageRetentionDays.value = 30
+    usageMaxRows.value = 500000
+  }
+}
+
+async function saveRetention(field: 'retention_days' | 'max_rows') {
+  const value = field === 'retention_days' ? usageRetentionDays.value : usageMaxRows.value
+  if (value === null || Number.isNaN(value) || value < 0) {
+    toast.error('须为 ≥0 整数（0 = 关闭该维限制）')
+    return
+  }
+  try {
+    await request('config', 'set_field', { path: `usage.${field}`, value })
+    toast.success(`已更新 usage.${field}（最迟 6 小时后生效）`)
+  } catch (e: any) {
+    toast.error('保存失败: ' + e)
+  }
 }
 
 // —— 请求明细 tab（A3） ——
@@ -1147,12 +1181,42 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Settings tab -->
+      <!-- Settings tab（2026-11-08 批次 2：保留策略接真；gateway 启动 +
+           每 6h 一拍 sweep → 改动最迟 6h 生效） -->
       <div v-if="activeTab === 'settings'" class="settings-placeholder">
         <div class="card">
-          <div class="card-body" style="text-align: center; padding: var(--space-10); color: var(--text-muted);">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="margin-bottom: var(--space-3); opacity: 0.3;"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
-            <p>设置功能开发中...</p>
+          <div class="card-header"><h3>数据保留策略</h3></div>
+          <div class="card-body">
+            <div style="padding: var(--space-3); margin-bottom: var(--space-4); background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
+              到期明细行先 rollup 聚合进日汇总（图表不受影响）再删除；条数超限按最旧优先直接裁。清扫在 gateway 启动 + 每 6 小时一拍执行——<strong>改动最迟 6 小时后生效</strong>。
+            </div>
+            <div class="form-group">
+              <label class="form-label">明细行保留天数（usage.retention_days）</label>
+              <input
+                class="form-input"
+                type="number"
+                min="0"
+                style="max-width: 200px;"
+                :value="usageRetentionDays ?? 30"
+                data-test="usage-retention-input"
+                @change="(e: any) => { usageRetentionDays = parseInt(e.target.value); saveRetention('retention_days') }"
+              >
+              <span class="form-hint">0 = 永不按天清理（仍受条数上限约束）；默认 30。</span>
+            </div>
+            <div class="form-group">
+              <label class="form-label">明细行条数上限（usage.max_rows）</label>
+              <input
+                class="form-input"
+                type="number"
+                min="0"
+                step="10000"
+                style="max-width: 200px;"
+                :value="usageMaxRows ?? 500000"
+                data-test="usage-max-rows-input"
+                @change="(e: any) => { usageMaxRows = parseInt(e.target.value); saveRetention('max_rows') }"
+              >
+              <span class="form-hint">超出按 created_at 最旧优先删除；0 = 无上限；默认 500000。</span>
+            </div>
           </div>
         </div>
       </div>

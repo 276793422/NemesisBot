@@ -114,3 +114,4 @@ test-tools/product-validation/evaluators/
 
 # pipeline-eval 运行产物（D4 评测驱动报告；程序在 test-tools/pipeline-eval/，产物不入库）
 .pipeline-eval/
+.tmp-b4-home/

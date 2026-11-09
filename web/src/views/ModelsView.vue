@@ -251,6 +251,7 @@ interface AttrDraft {
   compactCtx: string // '' = 自动（窗口 × 75%）
   protocol: string // '' = 自动识别（按名称前缀）
   stream: string // '' = auto（跟随 lane 默认）
+  apiBase: string // '' = 清除（回落 provider 前缀自动推断）
 }
 const attrDrafts = ref<Record<string, AttrDraft>>({})
 
@@ -422,6 +423,7 @@ function toggleAttrs(m: Model) {
       compactCtx: m.compact_context_tokens != null ? String(m.compact_context_tokens) : '',
       protocol: m.protocol || '',
       stream: m.stream || '',
+      apiBase: m.api_base || '',
     }
   }
   expandedAttrs.value = s
@@ -451,6 +453,7 @@ function dirtyFields(m: Model): string[] {
   if (ccStr !== asStr(d.compactCtx).trim()) out.push('compact_context_tokens')
   if ((m.protocol || '') !== d.protocol) out.push('protocol')
   if ((m.stream || '') !== d.stream) out.push('stream')
+  if ((m.api_base || '') !== asStr(d.apiBase).trim()) out.push('api_base')
   return out
 }
 
@@ -466,6 +469,7 @@ const FIELD_EFFECT: Record<string, string> = {
   compact_context_tokens: '即时生效（每轮压缩检查前重读配置）；留空 = 自动（窗口 × 75%）',
   protocol: '改默认模型立即生效（自动热切）；其他模型设为默认时生效；或重启后生效',
   stream: '改默认模型立即生效（自动热切）；其他模型设为默认时生效；或重启后生效',
+  api_base: '改默认模型立即生效（自动热切并重建连接）；其他模型设为默认时生效；或重启后生效',
 }
 
 /** P3-2: 保存属性 — 逐字段走后端 raw-JSON RMW（保留 config.json 其余键）。 */
@@ -490,6 +494,7 @@ async function saveAttrs(m: Model) {
     compact_context_tokens: asStr(d.compactCtx).trim(),
     protocol: d.protocol, // 空串 = 自动识别（后端接受空串清除，非 null）
     stream: d.stream, // 空串 = auto（后端接受空串清除，非 null）
+    api_base: asStr(d.apiBase).trim(), // 空串 = 清除（typed String 空串=未设=自动推断）
   }
   // v1 不支持写 null：清空场景跳过该字段，保存名单只含真正落盘的字段，
   // toast 如实反映（不能宣称保存了实际没写的字段）。
@@ -522,6 +527,7 @@ async function saveAttrs(m: Model) {
       compactCtx: fresh.compact_context_tokens != null ? String(fresh.compact_context_tokens) : '',
       protocol: fresh.protocol || '',
       stream: fresh.stream || '',
+      apiBase: fresh.api_base || '',
     }
   }
 }
@@ -801,6 +807,12 @@ onMounted(() => {
                   <option v-for="s in STREAM_OPTIONS" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>
                 <span class="attr-effect">{{ FIELD_EFFECT['stream'] }}</span>
+              </div>
+              <div class="attr-field attr-field--wide">
+                <label class="form-label">API 地址（api_base，改默认模型立即热切并重连）</label>
+                <input class="form-input" v-model="attrDrafts[m.model_name].apiBase" data-test="attr-api-base"
+                  placeholder="留空 = 按 provider 前缀自动推断（须 http:// 或 https:// 开头）" />
+                <span class="attr-effect">{{ FIELD_EFFECT['api_base'] }}</span>
               </div>
               <div class="attr-field">
                 <label class="form-label">能力档 tier</label>

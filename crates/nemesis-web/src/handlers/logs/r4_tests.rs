@@ -24,6 +24,7 @@ fn make_ctx_with_memory(dir: &tempfile::TempDir) -> RequestContext {
     let mem_cfg = nemesis_memory::manager::Config::new(dir.path());
     let mgr = Arc::new(nemesis_memory::manager::MemoryManager::new(&mem_cfg));
     let state = Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
@@ -299,6 +300,7 @@ async fn chain_list_prev_hash_break_reports_prev_mismatch() {
     let ctx = {
         let ws = dir.path().to_string_lossy().to_string();
         let state = Arc::new(AppState {
+            cors_manager: None,
             auth_token: String::new(),
             session_count: Arc::new(AtomicUsize::new(0)),
             workspace: Some(ws.clone()),

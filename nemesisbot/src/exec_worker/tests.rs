@@ -1232,3 +1232,46 @@ fn restrict_env_zero_disables() {
         "显式 \"0\" = 镜像主进程 restrict=false"
     );
 }
+
+// ---------------------------------------------------------------------------
+// exec deny 自定义词表 env 解析（2026-11-08 接线激活）：gateway 侧只在
+// 自定义激活形态注入（\x1f 分隔），缺席 = None = 内置默认词表。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deny_patterns_env_none_when_unset() {
+    assert!(
+        deny_patterns_from_env(None).is_none(),
+        "env 未设 = 默认词表形态（不注入 SharedToolConfig 自定义字段）"
+    );
+}
+
+#[test]
+fn deny_patterns_env_splits_on_unit_separator() {
+    let raw = std::ffi::OsString::from("forbidden\\.exe\u{1f}second[0-9]+\u{1f}third");
+    assert_eq!(
+        deny_patterns_from_env(Some(raw)),
+        Some(vec![
+            "forbidden\\.exe".to_string(),
+            "second[0-9]+".to_string(),
+            "third".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn deny_patterns_env_empty_segments_filtered() {
+    // 空段（尾分隔符 / 双分隔符）过滤，不产生无效空 pattern。
+    let raw = std::ffi::OsString::from("a\\.b\u{1f}\u{1f}c\u{1f}");
+    assert_eq!(
+        deny_patterns_from_env(Some(raw)),
+        Some(vec!["a\\.b".to_string(), "c".to_string()])
+    );
+}
+
+#[test]
+fn deny_patterns_env_all_empty_is_none() {
+    // 全空段 = 视同缺席（回落默认词表）——不是「自定义空表」形态。
+    let raw = std::ffi::OsString::from("\u{1f}\u{1f}");
+    assert!(deny_patterns_from_env(Some(raw)).is_none());
+}

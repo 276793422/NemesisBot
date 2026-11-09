@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 
 pub mod commands;
 pub mod credentials;
+pub mod eval_rules;
 pub mod hot_reload;
 pub mod plugin_wasm;
 pub mod plugins_native;
@@ -631,6 +632,9 @@ mod tests;
 
 #[cfg(test)]
 mod bridge_serde_tests;
+
+#[cfg(test)]
+mod eval_rules_tests;
 
 #[cfg(test)]
 mod tool_result_cap_tests;

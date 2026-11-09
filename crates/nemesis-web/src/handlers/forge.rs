@@ -61,6 +61,8 @@ impl ModuleHandler for ForgeHandler {
             "replay_list",
             "replay_confirm",
             "replay_extract",
+            "config.get",
+            "config.set",
         ]
     }
 
@@ -136,6 +138,17 @@ impl ModuleHandler for ForgeHandler {
             "learning.toggle" => {
                 let data = data.ok_or("missing data")?;
                 self.learning_toggle(home, workspace, &data, ctx)
+            }
+
+            // 高级配置写面（2026-11-08 配置页补全批次 2）：ForgeView 高级
+            // 折叠 8 键的读写（config.forge.json side-file；config.set_field
+            // 只写主 config.json 不覆盖 side-file）。路径白名单见
+            // [`FORGE_CONFIG_SET_PATHS`]——整档替换不提供（side-file 有 60+
+            // 键，逐键白名单防整档误写）。
+            "config.get" => forge_advanced_config_get(workspace),
+            "config.set" => {
+                let data = data.ok_or("missing data")?;
+                forge_advanced_config_set(workspace, &data)
             }
 
             // Artifacts (legacy, kept for compat)
@@ -1211,6 +1224,190 @@ pub fn load_forge_config(workspace: &str) -> nemesis_forge::config::ForgeConfig 
             .join("config")
             .join("config.forge.json"),
     )
+}
+
+/// `forge.config.set` 允许的 dot-path 白名单（8 键，2026-11-08 配置页补全
+/// 批次 2 用户拍板 B-5 裁剪：只铺这 8 键，其余 27+ 管线调优键不导出）。
+/// 值域检查在 [`forge_advanced_config_set`] 内逐路径做。
+const FORGE_CONFIG_SET_PATHS: &[&str] = &[
+    "replay_auto_ingest",
+    "test.judge_model",
+    "test.judge_threshold",
+    "optimize.budget_tokens",
+    "reflection.use_llm",
+    "artifacts.auto_skill",
+    "validation.auto_validate",
+    "collection.max_experiences",
+];
+
+/// defaults ⊕ raw 深合并（raw 优先；raw 独有键原样保留，不抹）。side-file
+/// 可能是旧版 onboard 模板或手写最小集（如缺 test/optimize 整段）——投影
+/// 补齐缺键让消费方拿到的对象总是全形，对齐 ForgeConfig 反序列化「缺段
+/// 用 default」语义（load_forge_config）；UI 显示值 = 生效值。
+fn deep_merge_over_defaults(
+    defaults: &serde_json::Value,
+    raw: &serde_json::Value,
+) -> serde_json::Value {
+    match (defaults, raw) {
+        (serde_json::Value::Object(d), serde_json::Value::Object(r)) => {
+            let mut out = d.clone();
+            for (k, rv) in r {
+                let merged = match out.get(k) {
+                    Some(dv) => deep_merge_over_defaults(dv, rv),
+                    None => rv.clone(),
+                };
+                out.insert(k.clone(), merged);
+            }
+            serde_json::Value::Object(out)
+        }
+        (_, r) => r.clone(),
+    }
+}
+
+/// `forge.config.get`：defaults ⊕ raw 深合并投影（缺失文件 = 缺省档）。
+/// 不做 typed round-trip——raw 的手改未知键在深合并中原样保留不被抹掉。
+fn forge_advanced_config_get(workspace: &str) -> Result<Option<serde_json::Value>, String> {
+    let path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
+    let defaults = serde_json::to_value(nemesis_forge::config::ForgeConfig::default())
+        .map_err(|e| format!("failed to serialize default forge config: {}", e))?;
+    if !path.exists() {
+        return Ok(Some(
+            serde_json::json!({ "config": defaults, "defaults": true }),
+        ));
+    }
+    let s = nemesis_utils::fsutil::read_config_string(&path)
+        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let raw: serde_json::Value =
+        serde_json::from_str(&s).map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let merged = deep_merge_over_defaults(&defaults, &raw);
+    Ok(Some(
+        serde_json::json!({ "config": merged, "defaults": false }),
+    ))
+}
+
+/// 白名单单键值域检查（类型 + 语义界）。返回规整后的值（judge_model 空
+/// 串规整为 null = 清除显式别名，回落 small_model → 主模型链）。
+fn validate_forge_config_value(
+    path: &str,
+    value: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let bad = |expect: &str| format!("config path `{path}` expects {expect}");
+    match path {
+        "replay_auto_ingest"
+        | "reflection.use_llm"
+        | "artifacts.auto_skill"
+        | "validation.auto_validate" => {
+            if !value.is_boolean() {
+                return Err(bad("a boolean"));
+            }
+            Ok(value.clone())
+        }
+        "test.judge_model" => {
+            // 字符串别名或 null（清除）；空串规整为 null（前端清空输入框
+            // 语义 = 回落自动链，不留空别名）。
+            if value.is_null() {
+                return Ok(serde_json::Value::Null);
+            }
+            let s = value
+                .as_str()
+                .ok_or_else(|| bad("a model alias string or null"))?;
+            let s = s.trim();
+            if s.is_empty() {
+                return Ok(serde_json::Value::Null);
+            }
+            Ok(serde_json::Value::String(s.to_string()))
+        }
+        "test.judge_threshold" => {
+            let f = value.as_f64().ok_or_else(|| bad("a number in [0, 1]"))?;
+            if !(0.0..=1.0).contains(&f) || !f.is_finite() {
+                return Err(bad("a number in [0, 1]"));
+            }
+            Ok(serde_json::json!(f))
+        }
+        "optimize.budget_tokens" | "collection.max_experiences" => {
+            let n = value
+                .as_u64()
+                .ok_or_else(|| bad("a non-negative integer"))?;
+            if n == 0 {
+                return Err(format!("config path `{path}` must be > 0"));
+            }
+            Ok(serde_json::json!(n))
+        }
+        _ => Err(format!(
+            "unknown forge config path: {path} (allowed: {})",
+            FORGE_CONFIG_SET_PATHS.join(", ")
+        )),
+    }
+}
+
+/// 在原始 JSON 对象上按 dot-path 设值（中间缺失段自动建 object）。
+/// 白名单外路径进不来（调用方先过 [`validate_forge_config_value`]）。
+fn set_forge_json_path(
+    root: &mut serde_json::Value,
+    path: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let parts: Vec<&str> = path.split('.').collect();
+    let mut current = root;
+    for (i, part) in parts.iter().enumerate() {
+        if !current.is_object() {
+            return Err(format!(
+                "forge config path `{path}`: parent node is not an object"
+            ));
+        }
+        if i == parts.len() - 1 {
+            current[part] = value;
+            return Ok(());
+        }
+        if !current[part].is_object() {
+            current[part] = serde_json::json!({});
+        }
+        current = &mut current[part];
+    }
+    Ok(())
+}
+
+/// `forge.config.set`：白名单逐键值域检查 → side-file RMW（同族写串行锁
+/// 在 update_json_file 内；缺失自动从缺省档落盘，learning.toggle 同款）。
+/// 请求形态 `{values: {<path>: <value>, ...}}`；任一键非法 = 整批拒绝
+/// （不落半批），Err 带具体路径。
+fn forge_advanced_config_set(
+    workspace: &str,
+    data: &serde_json::Value,
+) -> Result<Option<serde_json::Value>, String> {
+    let values = data
+        .get("values")
+        .and_then(|v| v.as_object())
+        .ok_or("missing or invalid 'values' object")?;
+    if values.is_empty() {
+        return Err("empty 'values' object".to_string());
+    }
+    let mut validated: Vec<(String, serde_json::Value)> = Vec::with_capacity(values.len());
+    for (path, value) in values {
+        if !FORGE_CONFIG_SET_PATHS.contains(&path.as_str()) {
+            return Err(format!(
+                "unknown forge config path: {path} (allowed: {})",
+                FORGE_CONFIG_SET_PATHS.join(", ")
+            ));
+        }
+        validated.push((path.clone(), validate_forge_config_value(path, value)?));
+    }
+
+    let forge_config_path =
+        nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
+    super::config::update_json_file(&forge_config_path, |root| {
+        for (path, value) in &validated {
+            set_forge_json_path(root, path, value.clone())?;
+        }
+        Ok(())
+    })?;
+    tracing::info!(
+        paths = %validated.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(","),
+        "[Forge] advanced config updated via dashboard"
+    );
+    Ok(Some(
+        serde_json::json!({ "saved": true, "updated": validated.len() }),
+    ))
 }
 
 /// `forge.replay_list`：失败重放待审区 + 已入库回归集全量。

@@ -89,6 +89,10 @@ mod git_tool_tests;
 // web_fetch 重定向循环 + SSRF 逐跳复查测试。
 #[cfg(test)]
 mod exec_timeout_tests;
+// exec deny 词表接线测试（2026-11-08 激活 tools.exec.* 死键：
+// 默认词表/替换语义/全无效回落/execute 拒绝面/异步同源）。
+#[cfg(test)]
+mod exec_deny_tests;
 #[cfg(test)]
 mod loop_tools_extra_tests;
 #[cfg(test)]

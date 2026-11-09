@@ -309,6 +309,13 @@ pub fn resolve_approval_rules_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("approval_rules.json")
 }
 
+/// `<workspace>/config/eval_rules.json` —— eval 评估规则表（CLI
+/// `eval rules *` 与 WSAPI `security.eval_rules.*` 统一管理；nemesisbot
+/// `rules_file_path(home)` 经本函数委托同一拼接点）。
+pub fn resolve_eval_rules_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("eval_rules.json")
+}
+
 /// `<workspace>/config/cors.json` —— CORS 配置（收编：原游离在
 /// `<home>/config/cors.json`，同 hooks.json 为路径大迁移漏网项）。
 pub fn resolve_cors_config_path_in_workspace(workspace: &Path) -> PathBuf {

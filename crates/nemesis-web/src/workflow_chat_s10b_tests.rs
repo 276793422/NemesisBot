@@ -25,6 +25,7 @@ use std::time::Instant;
 
 fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: None,

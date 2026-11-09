@@ -76,6 +76,7 @@ async fn handle_cmd_dispatches_bare_names_as_router_sends_them() {
 fn make_state(home: &std::path::Path, auth_token: &str) -> Arc<AppState> {
     let ws = home.to_string_lossy().to_string();
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

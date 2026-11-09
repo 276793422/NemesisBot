@@ -69,6 +69,7 @@ fn test_config() -> AgentConfig {
         model: "main-model".to_string(),
         // None：不带隐式 system turn，历史算术透明可断言。
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["calculator".to_string()],
         models: std::collections::HashMap::new(),

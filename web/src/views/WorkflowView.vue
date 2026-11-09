@@ -8,6 +8,7 @@ import WorkflowCanvas from '../components/workflow/WorkflowCanvas.vue'
 import WorkflowHistory from '../components/workflow/WorkflowHistory.vue'
 import WorkflowYaml from '../components/workflow/WorkflowYaml.vue'
 import WorkflowAgentGen from '../components/workflow/WorkflowAgentGen.vue'
+import WorkflowSettings from '../components/workflow/WorkflowSettings.vue'
 
 const store = useWorkflowStore()
 const { activeTab, listLoading } = storeToRefs(store)
@@ -43,6 +44,7 @@ watch(activeTab, (tab) => {
         <WorkflowCanvas v-else-if="activeTab === 'canvas'" />
         <WorkflowHistory v-else-if="activeTab === 'history'" />
         <WorkflowYaml v-else-if="activeTab === 'yaml'" />
+        <WorkflowSettings v-else-if="activeTab === 'settings'" />
       </div>
     </div>
   </div>

@@ -24,6 +24,7 @@ use std::time::Instant;
 
 fn build_state(ws: &str, forge: Option<Arc<nemesis_forge::forge::Forge>>) -> AppState {
     AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.to_string()),

@@ -1,5 +1,12 @@
 {
   "enabled": false,
+  "replay_auto_ingest": false,
+  "test": {
+    "judge_threshold": 0.7
+  },
+  "optimize": {
+    "budget_tokens": 2000
+  },
   "collection": {
     "sanitize_fields": ["api_key", "token", "password", "secret", "credential", "key"],
     "max_experiences": 10000

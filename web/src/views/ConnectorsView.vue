@@ -11,7 +11,7 @@
 // registry 无缓存扫描——增/删/改下一次 list 即见，零重启。
 // 领域数据不进框架页：纸面券商账本等 connector 专属数据走各自出口
 // （CLI `connector ledger`），框架页面只保留通用审计面（回执流水）。
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import {
@@ -96,6 +96,115 @@ async function toggleMaster() {
   } finally {
     masterBusy.value = false
   }
+}
+
+// ── 执行策略设置区（config.json `connectors` 段；配置页补全批次 5） ──
+// 六键全部逐次调用 live 读（connector_tools.rs 每次执行 connectors_config +
+// runtime.rs 派发闸现读）——改动即热生效，无需重启。
+// 展示纪律：config.get 对缺席段返回 null/缺键，前端用同源 serde default
+// 兜底（enabled=true / max_ops_per_hour=0 / finance None=全 0 /
+// remote_invoke_enabled=true / require_signed=false / script 60s）。
+const connCfg = ref<any>(null)
+const connCfgError = ref('')
+const settingsBusy = ref(false)
+const maxOpsInput = ref('')
+const scriptTimeoutInput = ref('')
+const finQtyInput = ref('')
+const finOrdersInput = ref('')
+
+const maxOpsPerHour = computed(() => connCfg.value?.connectors?.max_ops_per_hour ?? 0)
+const scriptTimeoutSecs = computed(() => connCfg.value?.connectors?.script?.default_timeout_secs ?? 60)
+const finMaxQty = computed(() => connCfg.value?.connectors?.finance?.max_order_qty ?? 0)
+const finOrdersPerDay = computed(() => connCfg.value?.connectors?.finance?.max_orders_per_day ?? 0)
+const remoteInvokeEnabled = computed(() => connCfg.value?.connectors?.remote_invoke_enabled !== false)
+const requireSigned = computed(() => connCfg.value?.connectors?.require_signed === true)
+
+watch([maxOpsPerHour, scriptTimeoutSecs, finMaxQty, finOrdersPerDay], () => {
+  maxOpsInput.value = String(maxOpsPerHour.value)
+  scriptTimeoutInput.value = String(scriptTimeoutSecs.value)
+  finQtyInput.value = String(finMaxQty.value)
+  finOrdersInput.value = String(finOrdersPerDay.value)
+}, { immediate: true })
+
+async function loadConnCfg() {
+  connCfgError.value = ''
+  try {
+    connCfg.value = await request('config', 'get', {})
+  } catch (e) {
+    // 设置区降级：主数据源（list/receipts）不受影响，仅隐藏设置块。
+    connCfgError.value = errMsg(e)
+  }
+}
+
+async function saveConnField(path: string, value: unknown, okMsg: string) {
+  if (settingsBusy.value) return
+  settingsBusy.value = true
+  try {
+    await request('config', 'set_field', { path, value })
+    toast.success(okMsg)
+    await loadConnCfg()
+  } catch (e) {
+    toast.error(errMsg(e))
+    await loadConnCfg() // 回滚显示为后端真相
+  } finally {
+    settingsBusy.value = false
+  }
+}
+
+function saveMaxOps(e: Event) {
+  const el = e.target as HTMLInputElement
+  const n = parseInt(el.value, 10)
+  if (Number.isNaN(n) || n < 0 || !Number.isInteger(n)) {
+    el.value = String(maxOpsPerHour.value)
+    toast.error('须为非负整数（0 = 限频关闭）')
+    return
+  }
+  saveConnField('connectors.max_ops_per_hour', n, n > 0 ? `限频已设为每小时 ${n} 次` : '限频已关闭')
+}
+
+function saveScriptTimeout(e: Event) {
+  const el = e.target as HTMLInputElement
+  const n = parseInt(el.value, 10)
+  if (Number.isNaN(n) || n < 0 || n > 600 || !Number.isInteger(n)) {
+    el.value = String(scriptTimeoutSecs.value)
+    toast.error('须为 0-600 整数（0 = 拒绝所有 script op）')
+    return
+  }
+  saveConnField('connectors.script.default_timeout_secs', n, n > 0 ? `script 缺省超时已设为 ${n}s` : 'script op 已全拒（超时 0）')
+}
+
+function saveFinQty(e: Event) {
+  const el = e.target as HTMLInputElement
+  const v = parseFloat(el.value)
+  if (Number.isNaN(v) || v < 0) {
+    el.value = String(finMaxQty.value)
+    toast.error('须为非负数（0 = 拒绝所有资金 op）')
+    return
+  }
+  saveConnField('connectors.finance.max_order_qty', v, v > 0 ? `单笔数量上限已设为 ${v}` : '资金 op 已全拒（fail-closed）')
+}
+
+function saveFinOrders(e: Event) {
+  const el = e.target as HTMLInputElement
+  const n = parseInt(el.value, 10)
+  if (Number.isNaN(n) || n < 0 || !Number.isInteger(n)) {
+    el.value = String(finOrdersPerDay.value)
+    toast.error('须为非负整数（0 = 拒绝所有资金 op）')
+    return
+  }
+  saveConnField('connectors.finance.max_orders_per_day', n, `日累计笔数上限已设为 ${n}`)
+}
+
+function toggleRemoteInvoke() {
+  const next = !remoteInvokeEnabled.value
+  saveConnField('connectors.remote_invoke_enabled', next,
+    next ? '远程执行面已开启' : '远程执行面已关闭（worker 拒绝 master 派发的 connector op）')
+}
+
+function toggleRequireSigned() {
+  const next = !requireSigned.value
+  saveConnField('connectors.require_signed', next,
+    next ? '已开启：unsigned connector 一律拒执行' : '已关闭：unsigned 只在审批卡警示（本地自签开发合法）')
 }
 
 function switchTab(t: TabId) {
@@ -301,7 +410,10 @@ async function refreshAll() {
   }
 }
 
-onMounted(refreshAll)
+onMounted(() => {
+  refreshAll()
+  loadConnCfg()
+})
 </script>
 
 <template>
@@ -365,6 +477,62 @@ onMounted(refreshAll)
                   ? '连接器治理面生效中——注册表子开关与 per-tool 例外可细调。'
                   : '已全关：connector_find / connector_invoke 对 agent 不可用（诚实报错），注册表子开关置灰；原生工具不受影响。' }}
               </span>
+            </div>
+            <!-- 执行策略设置区（config.json connectors 段；六键全部 live 读即热生效）。
+                 config.get 失败时整块隐藏（connCfgError 静默注记）——主数据源不受影响。 -->
+            <div
+              v-if="connCfg && !connCfgError"
+              class="conn-settings"
+              data-test="conn-settings"
+              style="margin-top: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-md);"
+            >
+              <div style="font-weight: 600; margin-bottom: var(--space-2);">
+                执行策略
+                <span style="font-weight: 400; font-size: var(--text-xs); color: var(--text-muted);">（config.json <code>connectors</code> 段；全部即时生效，无需重启）</span>
+              </div>
+              <div class="conn-setting-row">
+                <span class="conn-setting-label">连接器限频</span>
+                <input class="form-input conn-setting-num" type="number" min="0" data-test="conn-max-ops"
+                  v-model="maxOpsInput" @change="saveMaxOps" :disabled="settingsBusy">
+                <span class="conn-setting-hint">每个连接器每小时 op 上限（0 = 限频关闭）</span>
+              </div>
+              <div class="conn-setting-row">
+                <span class="conn-setting-label">script 缺省超时</span>
+                <input class="form-input conn-setting-num" type="number" min="0" max="600" data-test="conn-script-timeout"
+                  v-model="scriptTimeoutInput" @change="saveScriptTimeout" :disabled="settingsBusy">
+                <span class="conn-setting-hint">秒；0 = 拒绝所有 script op（上限 600 与 exec 工具闸对齐）</span>
+              </div>
+              <div class="conn-setting-row">
+                <span class="conn-setting-label">单笔数量上限</span>
+                <input class="form-input conn-setting-num" type="number" min="0" step="any" data-test="conn-fin-qty"
+                  v-model="finQtyInput" @change="saveFinQty" :disabled="settingsBusy">
+                <span class="conn-setting-hint">资金类 op；0 = 拒绝所有资金 op（fail-closed：不设限 = 不成交）</span>
+              </div>
+              <div class="conn-setting-row">
+                <span class="conn-setting-label">日累计笔数上限</span>
+                <input class="form-input conn-setting-num" type="number" min="0" data-test="conn-fin-orders"
+                  v-model="finOrdersInput" @change="saveFinOrders" :disabled="settingsBusy">
+                <span class="conn-setting-hint">UTC 自然日滚转；0 = 拒绝所有资金 op</span>
+              </div>
+              <div class="conn-setting-row">
+                <span class="conn-setting-label">远程执行面</span>
+                <button class="btn btn-sm" :class="remoteInvokeEnabled ? 'primary' : ''" data-test="conn-remote-invoke"
+                  :disabled="settingsBusy" @click="toggleRemoteInvoke">
+                  {{ remoteInvokeEnabled ? '已开启' : '已关闭' }}
+                </button>
+                <span class="conn-setting-hint">集群 worker 是否接受 master 派发的 connector op（凭据永不上线：worker 用自己的 vault 解锁）</span>
+              </div>
+              <div class="conn-setting-row">
+                <span class="conn-setting-label">强制签名</span>
+                <button class="btn btn-sm" :class="requireSigned ? 'primary' : ''" data-test="conn-require-signed"
+                  :disabled="settingsBusy" @click="toggleRequireSigned">
+                  {{ requireSigned ? '已开启' : '已关闭' }}
+                </button>
+                <span class="conn-setting-hint">开启 = unsigned connector 一律拒执行；关闭 = 只在审批卡加警示行（本地自签开发合法）</span>
+              </div>
+            </div>
+            <div v-else-if="connCfgError" style="margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-muted);" data-test="conn-settings-error">
+              执行策略区加载失败（config.get）：{{ connCfgError }}
             </div>
             <div style="margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-3);">
               <button class="btn primary" data-test="open-create" @click="openCreate">＋ 新建连接器</button>
@@ -646,6 +814,22 @@ code { background: var(--bg-secondary, rgba(0,0,0,0.05)); padding: 1px 4px; bord
 /* 概览/商城介绍段落节奏 */
 .conn-intro p { margin: 0 0 var(--space-2); font-size: var(--text-sm); line-height: 1.7; }
 .conn-intro p:last-child { margin-bottom: 0; }
+
+/* 执行策略设置区：标签 + 输入 + 提示三段式行 */
+.conn-setting-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-1) 0;
+}
+.conn-setting-label {
+  min-width: 9em;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+.conn-setting-num { max-width: 140px; }
+.conn-setting-hint { font-size: var(--text-xs); color: var(--text-muted); }
 
 /* 新建模态（骨架同 ProjectCreateModal；加宽适配 TOML 编辑） */
 .modal-backdrop {

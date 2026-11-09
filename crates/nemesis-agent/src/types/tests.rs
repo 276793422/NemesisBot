@@ -14,6 +14,7 @@ fn agent_config_serialization_roundtrip() {
     let config = AgentConfig {
         model: "claude-sonnet-4-6".to_string(),
         system_prompt: Some("You are helpful.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["search".to_string(), "calculator".to_string()],
         models: std::collections::HashMap::new(),
@@ -118,6 +119,7 @@ fn agent_config_with_empty_tools() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 1,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -138,6 +140,7 @@ fn agent_config_models_serde_roundtrip() {
     let config = AgentConfig {
         model: "deepseek-v4-flash".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 10,
         tools: vec![],
         models,

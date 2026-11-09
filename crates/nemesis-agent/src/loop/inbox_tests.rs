@@ -331,6 +331,7 @@ fn test_snapshot_user_role_not_system() {
     let lp = snapshot_loop();
     let instance = AgentInstance::new(AgentConfig {
         system_prompt: Some("SYS".to_string()),
+        system_prompt_split: None,
         ..Default::default()
     });
     instance.set_history(hist_with_user("hello"));
@@ -351,6 +352,7 @@ fn test_snapshot_time_changes_reinject_minimal() {
     let lp = snapshot_loop();
     let instance = AgentInstance::new(AgentConfig {
         system_prompt: Some("SYS".to_string()),
+        system_prompt_split: None,
         ..Default::default()
     });
     instance.set_history(hist_with_user("hello"));

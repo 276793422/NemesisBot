@@ -100,6 +100,7 @@ fn pp_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 6,
         tools: vec!["present_plan".to_string()],
         models: std::collections::HashMap::new(),

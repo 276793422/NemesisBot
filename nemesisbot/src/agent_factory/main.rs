@@ -85,7 +85,7 @@ pub fn build_agent_loop(
     // （Pre 段 → 人格文件 → 行为段池 → 环境段），classic 原路径字节不变。
     // 启动装配型：system prompt 随实例冻结，改键重启生效。
     let prompt_system = nemesis_agent::prompt::PromptSystem::from_config(&cfg.agents);
-    let system_prompt = {
+    let (system_prompt, prompt_split) = {
         let mut context_builder = nemesis_agent::context::ContextBuilder::new(&workspace_dir);
         context_builder.set_prompt_system(prompt_system);
         // 入口形态变体（gap ⑤）：Interactive 恒空（gateway 字节不变）；
@@ -99,7 +99,7 @@ pub fn build_agent_loop(
         if skills_dir.exists() {
             context_builder.load_skills(&skills_dir);
         }
-        context_builder.build_system_prompt(false)
+        context_builder.build_system_prompt_with_sections(false)
     };
     info!(
         "[AgentFactory] System prompt built ({} chars, prompt_system={:?})",
@@ -138,6 +138,7 @@ pub fn build_agent_loop(
         } else {
             cfg.agents.defaults.max_tool_iterations as u32
         },
+        system_prompt_split: Some(prompt_split),
         tools: Vec::new(),
         tool_fence_profession: None,
         models: std::collections::HashMap::new(),

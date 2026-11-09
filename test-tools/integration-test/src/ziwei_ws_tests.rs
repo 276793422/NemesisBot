@@ -16,6 +16,7 @@ use test_harness::*;
 use crate::ui_batch_series::WsApi;
 
 /// IT 契约断言串（与 `handlers/ziwei.rs` GATE_CLOSED_MSG 同步）。
+/// C-3 起断言只锁前缀（`contains`），后端追加的指引尾串不进断言。
 const GATE_CLOSED: &str = "紫微系统未启用（config ziwei.enabled=false）";
 
 fn config_path(ws: &TestWorkspace) -> std::path::PathBuf {

@@ -25,10 +25,20 @@ pub(crate) struct CompactState {
     /// （口径补全）：最近一次
     /// provider 实报的整请求完整输入 token（prompt + cache_creation +
     /// cache_read，与 会话预算记账同口径）。压缩触发
-    /// 比较的混合信号下界——字符估算（×2/5）与真实值偏差大时以实报为准
-    /// （取大者 = 偏早触发，安全侧）；无 usage 的 lane（claude-cli/
+    /// 比较的混合信号锚点——锚点在时判定/观测信号 = 实报 + 锚后增量估算
+    /// （见 [`compact_signal_components`]）；无 usage 的 lane（claude-cli/
     /// codex-cli）保持 None = 纯估算诚实回落。
     pub(crate) last_provider_prompt_tokens: Option<u64>,
+    /// （B2 实报锚定）：锚点时刻的会话历史长度。note 点在轮次 assistant
+    /// turn 追加**之前**（run_loop 器官 5 之后、handle_length_continuation /
+    /// judge_final_answer 之前），此刻 `history.len()` 恰为刚完成请求的
+    /// 构建时长度。与 [`Self::last_provider_prompt_tokens`] 同点写入、同点
+    /// 作废（[`Self::invalidate_provider_anchor`]）：信号 = 实报 +
+    /// est(history[at_len..])——旧尾部已被实报按 provider 真值包含，切片
+    /// 恰好只含锚后新增轮次，误差每轮被新实报清零（双向收敛，max 单向
+    /// 偏早口径废除）。None = legacy 混合态（热升级在途/老测试直写字段）
+    /// → 保守 max(tail, tokens) 不倒退。
+    pub(crate) last_provider_prompt_at_len: Option<usize>,
     /// 连续「压缩无进展」次数（摘要被守卫弃用
     /// = 无进展；成功采用即清零；达 [`COMPACT_NO_PROGRESS_LIMIT`] 与
     /// stuck 闩共用暂停语义）。手动 /compact（force_compression 路径）不
@@ -50,6 +60,40 @@ pub(crate) struct CompactState {
     /// system/超限轮（无可摘要内容）时跳过摘要并发一次性注记——不发注记
     /// 用户就面对「pct 长期 100% 却零解释」的无声态（本次事故的起点）。
     noop_noticed: bool,
+}
+
+/// （B2 实报锚定）压缩混合信号单一真相源：判定面
+/// [`AgentLoop::maybe_update_summary`] 与观测面
+/// [`AgentLoop::session_context_status`] 同源消费，防轴间口径漂移。
+///
+/// - 锚点全在 `(tokens, at_len)`：signal = tokens +
+///   est(history[at_len..])（切片钳位 `at_len.min(len)` 防缩短形态）。
+///   旧尾部已被实报按 provider 真值包含，切片恰好只含锚后新增轮次——
+///   不重复计数；新增轮的估算误差在下一轮实报 note 时整体清零（双向
+///   收敛：高估低估都不累积）。
+/// - legacy 混合态 `(Some(tokens), None)`（热升级在途/老测试直写）：
+///   保守 `max(tail, tokens)` 不倒退。
+/// - 无实报（无 usage lane / 新会话 / fork 出的新键）：纯 tail 估算。
+///
+/// 返回 `(signal, anchor_tokens, delta_tokens)`；`anchor_tokens = None`
+/// 即无锚点（delta 恒 0）。
+pub(crate) fn compact_signal_components(
+    st: Option<&CompactState>,
+    history: &[crate::types::ConversationTurn],
+    tail_tokens: usize,
+) -> (usize, Option<usize>, usize) {
+    let Some(st) = st else {
+        return (tail_tokens, None, 0);
+    };
+    let Some(tokens) = st.last_provider_prompt_tokens else {
+        return (tail_tokens, None, 0);
+    };
+    let anchor = tokens as usize;
+    let Some(at_len) = st.last_provider_prompt_at_len else {
+        return (tail_tokens.max(anchor), Some(anchor), 0);
+    };
+    let delta = estimate_tokens_for_turns_projected(&history[at_len.min(history.len())..]);
+    (anchor.saturating_add(delta), Some(anchor), delta)
 }
 
 /// ⑩ Summarize tier: at this fraction, trigger summarization.
@@ -560,19 +604,20 @@ impl AgentLoop {
         // size gates moved to build_messages, so the raw estimate would count
         // a 70KB original the provider only ever sees as a bounded locator.
         let tail_tokens = estimate_tokens_for_turns_projected(&history[c..]);
-        // 混合信号。provider 实报（整请求：
-        // system + tools + summary + tail）≥ tail 部分，取大者 = 偏早触发
-        // （安全侧）；实报来自上一轮请求（最新鲜的地面真值），无 usage 的
-        // lane 自然回落纯估算。软位/触发/失效判定/记账全部用同一信号，
-        // 守卫比较也用它——单一信号源防轴间口径漂移。
-        let provider_signal = self
-            .compact_state
-            .lock()
-            .get(session_key)
-            .and_then(|s| s.last_provider_prompt_tokens)
-            .map(|v| v as usize)
+        // 混合信号（B2 实报锚定，单一真相源 compact_signal_components）：
+        // 锚点在 = 实报 + 锚后增量估算（误差每轮被新实报清零，双向收敛）；
+        // legacy (Some, None) 保守 max；无 usage lane 回落纯估算。软位/
+        // 触发/失效判定/记账全部用同一信号，守卫比较只认同轴估算（见下方
+        // 无进展守卫）——单一信号源防轴间口径漂移。
+        let (signal, anchor_tokens, delta_tokens) = {
+            let states = self.compact_state.lock();
+            compact_signal_components(states.get(session_key), &history, tail_tokens)
+        };
+        // policy 槽入参的 provider 分量：锚点在 = anchor+delta（provider
+        // 真值 + 锚后增量投影），无锚 = 0（旧形态为裸存储值）。
+        let provider_signal = anchor_tokens
+            .map(|a| a.saturating_add(delta_tokens))
             .unwrap_or(0);
-        let signal = tail_tokens.max(provider_signal);
         // soft = 压缩点的 2/3：默认路径数学恒等旧形态（0.75w × 2/3 = 0.5w =
         // 旧 window×50%）；用户压缩点下 soft 随点走（沿用 window×50% 会在
         // 「1M 模型设 200K 压缩点」场景于 500K 才响——压缩点早过了）。
@@ -593,7 +638,7 @@ impl AgentLoop {
             history.len().saturating_sub(K_TARGET)
         };
         let new_c = tool_safe_boundary(&history, raw_new_c);
-        // 触发比较用混合信号（实报 ≥ tail，取大者早触发）。`new_c > c`
+        // 触发比较用混合信号（锚点实报 + 增量，双向收敛）。`new_c > c`
         // 闸保留——可折叠前缀没变化时（尾巴太短/工具与 system 占大头）摘要帮
         // 不上，交给 force_compression，不空转。
         let mut will_summarize = signal >= threshold && new_c > c;
@@ -932,12 +977,12 @@ impl AgentLoop {
                 // 压缩后即过时：混合触发与 context_status 的 max(估算,实报)
                 // 会拿旧实报把 used 顶回压缩前水平（E2E 实测：
                 // covers=6/est=181 而徽标 pct=100）。置 None = 纯估算回落
-                // （note_compaction_provider_signal 的既有语义），下一条
+                // （invalidate_provider_anchor 单点语义），下一条
                 // 消息的真实请求实报会重新注入。
                 if let Some(st) = self.compact_state.lock().get_mut(session_key) {
                     st.no_progress = 0;
-                    st.last_provider_prompt_tokens = None;
                 }
+                self.invalidate_provider_anchor(session_key);
                 // auto 压缩成功采用计入会话统计。
                 self.bump_session_stats(
                     session_key,
@@ -967,21 +1012,48 @@ impl AgentLoop {
         }
     }
 
-    /// （口径补全）：记录最近一次
+    /// （口径补全 + B2 实报锚定）：记录最近一次
     /// provider 实报的整请求完整输入 token（prompt + cache_creation +
-    /// cache_read，`usage_full_input` 统一定义），供
-    /// [`Self::maybe_update_summary`] 的混合触发信号使用。每次 LLM 响应后
-    /// 调用（run_loop 器官 5 之后）；无 usage 的调用方不调 = 信号保持
-    /// None = 纯估算回落。
-    pub(crate) fn note_compaction_provider_signal(&self, session_key: &str, total_input: u64) {
+    /// cache_read，`usage_full_input` 统一定义）及锚点时刻的历史长度，
+    /// 供 [`Self::maybe_update_summary`] 的混合触发信号与
+    /// [`Self::session_context_status`] 的观测口径使用（
+    /// [`compact_signal_components`] 单一真相源）。每次 LLM 响应后调用
+    /// （run_loop 器官 5 之后）——note 点在该轮 assistant turn 追加之前，
+    /// `at_len = history.len()` 恰为请求构建时长度；tokens 与 at_len 同点
+    /// 写入，作废走 [`Self::invalidate_provider_anchor`] 单点。无 usage 的
+    /// 调用方不调 = 信号保持 None = 纯估算回落。
+    pub(crate) fn note_compaction_provider_signal(
+        &self,
+        session_key: &str,
+        total_input: u64,
+        at_len: usize,
+    ) {
+        // 零实报不算实报：usage 结构在场但全输入为 0（流式 lane 未解析到
+        // input、畸形上游等）写锚会把 used 塌缩成纯增量估算（实测 glm@中继
+        // 全链 used 54 vs 真实 2.3 万）——与「无 usage lane 不调」同语义，
+        // 保持 None 纯估算回落。真实请求不存在 0 整输入（恒含 system+user）。
+        if total_input == 0 {
+            return;
+        }
         let mut states = self.compact_state.lock();
         if states.len() > SESSION_STATE_MAX_ENTRIES {
             states.clear();
         }
-        states
-            .entry(session_key.to_string())
-            .or_default()
-            .last_provider_prompt_tokens = Some(total_input);
+        let st = states.entry(session_key.to_string()).or_default();
+        st.last_provider_prompt_tokens = Some(total_input);
+        st.last_provider_prompt_at_len = Some(at_len);
+    }
+
+    /// （B2 实报锚定）作废 provider 锚点（tokens + at_len 同置 None）。
+    /// 锚点描述的是某一时刻的整请求，其状态被替换后即失真：压缩成功采用
+    /// （auto / force——实报含已折叠前缀）、rewind 截断、clear 清空四个
+    /// 时点都必须作废，回落纯估算；下一条消息的真实请求实报重新注入。
+    /// 单点实现——四处调用点共享同一语义，不各写一遍字段清单。
+    pub(crate) fn invalidate_provider_anchor(&self, session_key: &str) {
+        if let Some(st) = self.compact_state.lock().get_mut(session_key) {
+            st.last_provider_prompt_tokens = None;
+            st.last_provider_prompt_at_len = None;
+        }
     }
 
     /// （加固）：自动压缩事件 → 会话系统注记。落盘走
@@ -1131,9 +1203,7 @@ impl AgentLoop {
             self.bump_session_stats(session_key, crate::session_stats::StatCounter::Compactions);
             // 修复⑤：作废 provider 实报信号——与 auto 路径同款（实报描述
             // 压缩前整请求，压缩后对新状态失真；置 None 回落纯估算）。
-            if let Some(st) = self.compact_state.lock().get_mut(session_key) {
-                st.last_provider_prompt_tokens = None;
-            }
+            self.invalidate_provider_anchor(session_key);
             info!(
                 "[AgentLoop] Force-compressed: covers_up_to {} -> {} (verbatim tail {} -> {} messages)",
                 current_c,
@@ -1243,13 +1313,13 @@ impl AgentLoop {
 
     /// （devtool-upgrade）：会话级 context 占用快照（只读）。
     ///
-    /// 口径与 `maybe_update_summary` 的压缩压力测量**同一公式**：
-    /// `used` = max(摘要覆盖点之后的逐字尾部投影估算, provider 实报)——
-    /// token 实报化：判定面早已混合实报（同文件
-    /// maybe_update_summary 的 signal 公式），观测面对齐同源；CJK 载荷
-    /// 纯估算低估 1.88 倍实测（58,179 vs 实报 109,209），pct 会长期失真。
-    /// `window` = 三级解析链（config `context_window` → 价目表 → 实例
-    /// 默认）给出的窗口。`trigger`/`trigger_source`/`pct_trigger`
+    /// 口径与 `maybe_update_summary` 的压缩压力测量**同一公式**（B2 实报
+    /// 锚定后同为 [`compact_signal_components`] 单一真相源）：`used` =
+    /// 锚点在 ? 实报 + 锚后增量 : 尾部投影估算（legacy 无 at_len 保守
+    /// max）。token 实报化动机：CJK 载荷纯估算低估 1.88 倍实测（58,179
+    /// vs 实报 109,209），pct 会长期失真。`window` = 三级解析链（config
+    /// `context_window` → 价目表 → 实例默认）给出的窗口。
+    /// `trigger`/`trigger_source`/`pct_trigger`
     /// = 有效压缩点及其来源（`compact_context_tokens` 到点
     /// 即压 / 窗口×75%）。这样 Dashboard 显示的百分比就是「下一轮真实
     /// 占用」而不是另一套口径的近似值。
@@ -1270,21 +1340,168 @@ impl AgentLoop {
             .filter(|&c| c >= 1)
             .unwrap_or(0)
             .min(history.len());
-        // token 实报化：与判定面（maybe_update_summary signal）
-        // 同公式——provider 实报（上一轮整请求：system + tools + summary +
-        // tail）≥ 尾部估算，取大者 = 偏保守显示（安全侧）。无 usage 的
-        // lane / 新会话自然回落纯估算。
+        // token 实报锚定（B2）：与判定面（maybe_update_summary signal）
+        // 同公式单一真相源（compact_signal_components）——锚点在 = 实报 +
+        // 锚后增量（anchor_tokens/delta_tokens 分量上报，anchor_state 三态
+        // fresh/stale/absent 供前端叙事）；legacy (Some, None) 保守 max；
+        // 无 usage lane / 新会话 / fork 新键自然回落纯估算。
         let estimated = estimate_tokens_for_turns_projected(&history[covers..]);
-        let provider_reported = self
-            .compact_state
-            .lock()
-            .get(session_key)
-            .and_then(|s| s.last_provider_prompt_tokens)
-            .map(|v| v as usize)
-            .unwrap_or(0);
-        let used = estimated.max(provider_reported);
+        let (used, anchor_tokens, delta_tokens, anchor_state) = {
+            let states = self.compact_state.lock();
+            let st = states.get(session_key);
+            let (used, anchor_tokens, delta_tokens) =
+                compact_signal_components(st, &history, estimated);
+            // fresh = 锚点时刻 == 当前历史长度（自上轮实报后无新增轮次）；
+            // stale = 有锚但存在未重锚的增量/缩短（含 legacy 无 at_len）；
+            // absent = 无锚点（纯估算回落态）。
+            let anchor_state = match st.map(|s| {
+                (
+                    s.last_provider_prompt_tokens.is_some(),
+                    s.last_provider_prompt_at_len,
+                )
+            }) {
+                Some((true, Some(at))) if at == history.len() => "fresh",
+                Some((true, _)) => "stale",
+                _ => "absent",
+            };
+            (used, anchor_tokens, delta_tokens, anchor_state)
+        };
+        // 兼容字段：裸存储实报值（锚点 tokens；None → 0）。
+        let provider_reported = anchor_tokens.unwrap_or(0);
         let pct = (used * 100).checked_div(window).unwrap_or(0).min(100);
         let pct_trigger = (used * 100).checked_div(trig.trigger).unwrap_or(0).min(100);
+        // （B4.5 构成分解 7 段化，2026-11-09 用户拍板：严格按注入机制拆分。
+        // SKILL = 启动冻结 skills 段 + 每轮 merged snapshot 的技能目录 digest
+        // （都是注入面；对话中按需读取的 SKILL.md 全文是普通历史消息，归
+        // 对话段，不做归因近似）；MEMORY = 冻结 memory 段 + 用户画像段；
+        // MCP = 工具 defs 按 `mcp_` 前缀单独计量（插件工具 `plugin.` 归工具
+        // 段统一统计）。动态段在计量点稳态重渲染——与 build_messages_inner
+        // 消费同一底层渲染函数（单一真相源），不复制实现。）
+        // 锚点在（fresh/stale/legacy）= 比例投影：est 分量只定配比，绝对值
+        // 全部按 used 实报切分——历史段有消息时恒 > 0，合计恒 == used
+        // （history 段兜尾吸收整除舍入残差，逐项向下取整投影之和 ≤ used，
+        // 减法不下溢）。absent = 各段原值估算回落（used 口径本就不含
+        // tools 段，前端分开标注口径）。段值全部是估算（○）；used 本身
+        // 锚点在时为实报（●）——前端 tooltip 分开标注口径。
+        let est_system_full = history
+            .first()
+            .filter(|t| t.role == "system")
+            .map(|t| crate::session::estimate_tokens(&t.content))
+            .unwrap_or(0);
+        // 冻结面：启动装配经 AgentConfig 注入的分段原文（agent_factory
+        // build_system_prompt_with_sections 产出）。
+        let (est_skills_frozen, est_memory_frozen) = self
+            .config
+            .system_prompt_split
+            .as_ref()
+            .map(|s| {
+                (
+                    crate::session::estimate_tokens(&s.skills),
+                    crate::session::estimate_tokens(&s.memory),
+                )
+            })
+            .unwrap_or((0, 0));
+        // 系统提示词段 = system turn 全文 − 已单列的两个注入段（saturating：
+        // 分段估算之和与全文存在分隔符级微小偏差，钳 0 无害——est 只定配比；
+        // split 缺席（未接线构建路径）= 全文归系统提示词段）。
+        let est_system = est_system_full.saturating_sub(est_skills_frozen + est_memory_frozen);
+        // 动态面 1：每轮 merged snapshot 的技能目录 digest（loader + 技能
+        // 在场才有；空 = 0）。
+        let est_skills_digest = {
+            let loader = self.skills_loader.read().clone();
+            match loader {
+                Some(l) => {
+                    let infos = l.list_skills();
+                    if infos.is_empty() {
+                        0
+                    } else {
+                        let catalog = crate::skills_digest::catalog_from_skills_infos(&infos);
+                        crate::session::estimate_tokens(&crate::skills_digest::digest_message(
+                            &crate::skills_digest::render_skills_digest(&catalog),
+                        ))
+                    }
+                }
+                None => 0,
+            }
+        };
+        // 动态面 2：用户画像段（mtime 门控缓存渲染，同一方法单一真相源；
+        // 空 = 0）。
+        let est_user_profile = {
+            let section = self.user_profile_section_now();
+            if section.is_empty() {
+                0
+            } else {
+                crate::session::estimate_tokens(&section)
+            }
+        };
+        let est_skill_total = est_skills_frozen + est_skills_digest;
+        let est_memory = est_memory_frozen + est_user_profile;
+        // 工具段拆 MCP：`mcp_` 前缀单独一组（惰性供给形态下 `mcp_call` 也带
+        // 前缀，归属正确）。
+        let (est_tools, est_mcp) = {
+            let defs = self.build_tool_defs();
+            let (mcp_defs, builtin_defs): (Vec<_>, Vec<_>) = defs
+                .into_iter()
+                .partition(|d| d.function.name.starts_with("mcp_"));
+            let est_of = |ds: &[crate::types::ToolDefinition]| {
+                crate::session::estimate_tokens(&serde_json::to_string(ds).unwrap_or_default())
+            };
+            (est_of(&builtin_defs), est_of(&mcp_defs))
+        };
+        let est_summary = cache
+            .as_ref()
+            .map(|c| crate::session::estimate_tokens(&c.text))
+            .unwrap_or(0);
+        // 尾部估算在 covers==0 时混入种子 system turn（切片含 history[0]），
+        // 剔除避免 est 总量重复计 system（按全文剔除——拆分发生在全文之内）；
+        // covers ≥ 1 时切片不含 system turn，原值即纯历史尾部。
+        let est_history = if covers == 0 {
+            estimated.saturating_sub(est_system_full)
+        } else {
+            estimated
+        };
+        let (system_seg, skill_seg, memory_seg, tools_seg, mcp_seg, summary_seg, history_seg) =
+            if anchor_tokens.is_some() {
+                let est_sum = est_system
+                    + est_skill_total
+                    + est_memory
+                    + est_tools
+                    + est_mcp
+                    + est_summary
+                    + est_history;
+                if est_sum > 0 {
+                    // est_sum > 0 已守卫（闭包捕获，规避 manual_checked_ops 误报）。
+                    let ratio = |part: usize| used * part / est_sum;
+                    let sys = ratio(est_system);
+                    let skl = ratio(est_skill_total);
+                    let mem = ratio(est_memory);
+                    let tls = ratio(est_tools);
+                    let mcp = ratio(est_mcp);
+                    let smr = ratio(est_summary);
+                    (
+                        sys,
+                        skl,
+                        mem,
+                        tls,
+                        mcp,
+                        smr,
+                        used - sys - skl - mem - tls - mcp - smr,
+                    )
+                } else {
+                    (0, 0, 0, 0, 0, 0, used)
+                }
+            } else {
+                (
+                    est_system,
+                    est_skill_total,
+                    est_memory,
+                    est_tools,
+                    est_mcp,
+                    est_summary,
+                    estimated.saturating_sub(est_system_full),
+                )
+            };
+        let free_seg = window.saturating_sub(used);
         let json = serde_json::json!({
             "session_key": session_key,
             "used_tokens": used,
@@ -1292,6 +1509,14 @@ impl AgentLoop {
             // 回查用）。
             "estimated_tokens": estimated,
             "provider_reported_tokens": provider_reported,
+            // （B2 实报锚定）：锚点分量 + 三态——anchor_tokens= 实报锚点
+            // 值（null=无锚）、delta_tokens= 锚后新增轮次的当前估算、
+            // anchor_state: fresh（锚点新鲜，at_len==len）/ stale（有锚但
+            // 有未重锚增量）/ absent（纯估算回落）。前端叙事：●实报锚定 /
+            // ◐增量在途 / ○估算。
+            "anchor_tokens": anchor_tokens,
+            "delta_tokens": delta_tokens,
+            "anchor_state": anchor_state,
             "window": window,
             "pct": pct,
             "trigger": trig.trigger,
@@ -1303,6 +1528,20 @@ impl AgentLoop {
             "history_len": history.len(),
             "covers_up_to": covers,
             "summarized": cache.is_some(),
+            // （B4.5 构成分解，设计定稿 §7.2 + 7 段化拍板）：七段构成（tok）。
+            // 锚点在时比例投影、合计 = used（history 段兜尾舍入残差，有消息
+            // 恒 > 0）；free = 窗口剩余。前端构成条按段宽度细分窗口刻度，
+            // tooltip 逐段展示绝对值（~ 估算口径标注）。
+            "breakdown": {
+                "system": system_seg,
+                "tools": tools_seg,
+                "mcp": mcp_seg,
+                "skill": skill_seg,
+                "memory": memory_seg,
+                "summary": summary_seg,
+                "history": history_seg,
+                "free": free_seg,
+            },
             // （集群无人值守硬化； 口径补全）：会话累计
             // token（口径 = 完整输入（prompt + cache_creation + cache_read）
             // + output，与 session_token_budget 同源）。预算关闭时也可观测

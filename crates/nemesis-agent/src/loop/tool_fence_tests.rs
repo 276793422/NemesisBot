@@ -60,6 +60,7 @@ fn fence_config(tools: Vec<String>) -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools,
         models: std::collections::HashMap::new(),

@@ -364,8 +364,10 @@ impl AgentLoop {
 
     /// warm 重放成本保守估算（USD）。`None` = 价目表未命中（调用方保守
     /// 跳过）。口径：messages 文本 / tool_calls 参数 / 工具 defs schema 全
-    /// 按**全价 input** 计（token 估算同 `session::estimate_tokens` 的
-    /// chars×2/5），外加 1 个 output token——不假设任何 cache read 折扣。
+    /// 按**全价 input** 计（token 估算走 `session::estimate_tokens` 单一
+    /// 真相源——五桶折算+密集补收；2026-11-09 收编：此前是手写 chars×2/5
+    /// 独立副本，注释自称同 estimate_tokens 但实现是复制未调函数），外加
+    /// 1 个 output token——不假设任何 cache read 折扣。
     fn estimate_warm_cost_usd(
         &self,
         messages: &[LlmMessage],
@@ -373,21 +375,22 @@ impl AgentLoop {
         model: &str,
     ) -> Option<f64> {
         let store = self.pricing_store.read().clone()?;
-        let mut chars = 0usize;
+        let est = crate::session::estimate_tokens;
+        let mut tokens = 0usize;
         for m in messages {
-            chars += m.content.chars().count();
+            tokens += est(&m.content);
             if let Some(tcs) = &m.tool_calls {
                 for tc in tcs {
-                    chars += tc.arguments.chars().count();
+                    tokens += est(&tc.arguments);
                 }
             }
         }
         for t in tool_defs {
-            chars += t.function.name.chars().count();
-            chars += t.function.description.chars().count();
-            chars += t.function.parameters.to_string().chars().count();
+            tokens += est(&t.function.name);
+            tokens += est(&t.function.description);
+            tokens += est(&t.function.parameters.to_string());
         }
-        let input_tokens = (chars * 2 / 5).max(1) as i64;
+        let input_tokens = tokens.max(1) as i64;
         let breakdown = store.compute_cost_breakdown(model, input_tokens, 1, 0, 0)?;
         Some(breakdown.total_cost_usd)
     }

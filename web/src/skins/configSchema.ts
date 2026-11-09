@@ -82,6 +82,8 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   // ---- terminal ----
   'terminal.enabled': { label: '启用内嵌终端', type: 'boolean' },
   'terminal.max_sessions': { label: '最大会话数', type: 'number', range: { min: 1, max: 32, step: 1 } },
+  // ---- workflow ----
+  'workflow.wall_clock_budget_secs': { label: '工作流墙钟保险丝（秒，0=关）', type: 'number', range: { min: 0, max: 604800, step: 60 } },
   // ---- gateway ----
   'gateway.host': { label: '监听地址', type: 'string' },
   'gateway.port': { label: '监听端口', type: 'number', range: { min: 1, max: 65535, step: 1 } },

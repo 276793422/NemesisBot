@@ -228,8 +228,8 @@ fn test_estimate_tokens_empty() {
 
 #[test]
 fn test_estimate_tokens_ascii() {
-    // "Hello world" = 11 chars, 11*2/5 = 4
-    assert_eq!(estimate_tokens("Hello world"), 4);
+    // "Hello world" = 11 chars ASCII 无密集形态 → ceil(11/4) = 3
+    assert_eq!(estimate_tokens("Hello world"), 3);
 }
 
 #[test]
@@ -258,8 +258,90 @@ fn test_estimate_tokens_for_turns() {
             image_refs: Vec::new(),
         },
     ];
-    // "Hello" = 5 chars, "World" = 5 chars, total = 10, 10*2/5 = 4
+    // "Hello" → ceil(5/4) = 2, "World" → ceil(5/4) = 2, 逐轮求和 = 4
     assert_eq!(estimate_tokens_for_turns(&turns), 4);
+}
+
+// --- 五桶折算 + 密集补收口径表（2026-11-09 实报锚定 Layer 2）---
+
+#[test]
+fn test_estimate_tokens_common_cjk_one_token_per_char() {
+    // 常见 CJK（基本汉字/假名/谚文/全角）= 1 token/字
+    assert_eq!(estimate_tokens("你好"), 2);
+    assert_eq!(estimate_tokens("こんにちは世界"), 7); // 7 字全在桶 1
+    assert_eq!(estimate_tokens("안녕"), 2); // 谚文 AC00–D7AF 桶 1
+    assert_eq!(estimate_tokens("ｈｅｌｌｏ"), 5); // 全角 FF01–FF60 桶 1：5×4=20 → ceil(20/4)=5
+    assert_eq!(estimate_tokens(&"汉".repeat(1000)), 1000); // 千字文恰 1000 token
+}
+
+#[test]
+fn test_estimate_tokens_rare_buckets_conservative() {
+    // 罕见桶按保守加权：罕见 BMP ×12 → 3 token/字；补充区 ×16 → 4 token/字
+    let yi = "\u{A000}"; // 彝文（桶 2，权重 12）→ ceil(12/4) = 3
+    assert_eq!(estimate_tokens(yi), 3);
+    let ext_b = "\u{20000}"; // CJK 扩展 B（桶 5，权重 16）→ ceil(16/4) = 4
+    assert_eq!(estimate_tokens(ext_b), 4);
+    let vertical = "\u{FE10}"; // 竖排标点（桶 3 twoToken，权重 8）→ 2
+    assert_eq!(estimate_tokens(vertical), 2);
+    let counting_rod = "\u{1D360}"; // 计数杆（桶 4，权重 12）→ 3
+    assert_eq!(estimate_tokens(counting_rod), 3);
+}
+
+#[test]
+fn test_estimate_tokens_ascii_fast_path_untouched_by_dense() {
+    // 纯字母/空格 prose 走 len/4 基线，密集补收零收（连 ≥16 的长词切段
+    // 后 dense == len/4，差额为 0）
+    assert_eq!(estimate_tokens("internationalization"), 5); // ceil(20/4)=5
+    assert_eq!(estimate_tokens("the quick brown fox jumps"), 7); // 25 字符 ceil(25/4)=7，空格断串无补收
+}
+
+#[test]
+fn test_estimate_tokens_base64_long_run_extra() {
+    // 18 字母 + 2 填充符（连续 ≥16 的 b64ish 长串）：切段 letters(18)→
+    // ceil(18/4)=5、两个填充符各 1 → dense=7；基线 20/4=5 → 补收 2；
+    // base = ceil(20/4) = 5 → 总 7（真实 BPE 对 16-18 位随机串 ≈ 5-7）
+    let b64 = "abcdefghijklmnopqr==";
+    assert_eq!(estimate_tokens(b64), 7);
+    // 全字母长串（随机 base64 的字母段）不误收：dense == 基线 → 差额 0
+    assert_eq!(estimate_tokens(&"a".repeat(1000)), 250);
+    // ≥16 的纯字母长词（prose 罕见但合法）不误收：ceil/ceil 相等 → 0
+    assert_eq!(estimate_tokens("abcdefghijklmnopq"), 5); // ceil(17/4)
+}
+
+#[test]
+fn test_estimate_tokens_digit_runs() {
+    // 长数字串（32 位）：数字组 1-3 位分段 11 组 dense=11 − 基线 8 = 补收 3；
+    // base = ceil(32/4) = 8 → 总 11（数字约 3 字符/token）
+    let digits = "12345678901234567890123456789012";
+    assert_eq!(estimate_tokens(digits), 11);
+    // ≥4 位短数字组：ceil(4/3)=2 − 基线 1 = 补收 1；base = ceil(4/4)=1 → 2
+    assert_eq!(estimate_tokens("2026"), 2);
+    // 1-3 位短数字不收（prose 保护）："v1" 走基线
+    assert_eq!(estimate_tokens("v1"), 1);
+}
+
+#[test]
+fn test_estimate_tokens_json_structural_chars() {
+    // JSON 结构符 { } [ ] : , 各收 3/4 token 差额
+    // `{"key": "value"}`（16 字符）：结构符 { : } = 3 个 × 3/4 = 2（9
+    // quarters/4）；base = ceil(16/4) = 4 → 总 6（真实 BPE ≈ 6-7）
+    assert_eq!(estimate_tokens("{\"key\": \"value\"}"), 6);
+    // 纯 prose 标点（句号/逗号中文形式）不在结构符表，走普通折算
+    assert_eq!(estimate_tokens("你好，世界。"), 6); // 6 个桶 1 字符
+}
+
+#[test]
+fn test_estimate_tokens_empty_and_bounds() {
+    assert_eq!(estimate_tokens(""), 0);
+    // 单字符向上取整语义
+    assert_eq!(estimate_tokens("a"), 1);
+    assert_eq!(estimate_tokens("你"), 1);
+    // 混合中英不重复计费且单调
+    let mixed = "在 Rust 中 estimate_tokens 需要 usize";
+    let e = estimate_tokens(mixed);
+    assert!(e > 0);
+    // 估算单调不减（追加文本）
+    assert!(estimate_tokens(&format!("{mixed}更多内容")) >= e);
 }
 
 // --- Force compression tests ---
@@ -721,7 +803,7 @@ fn test_session_store_get_summary_nonexistent() {
 #[test]
 fn test_estimate_tokens_basic() {
     assert_eq!(estimate_tokens(""), 0);
-    // estimate_tokens uses char_count * 2 / 5, so needs at least 3 chars for > 0
+    // ASCII 无密集形态走 len/4 基线，11 chars > 4 → > 0
     assert!(estimate_tokens("hello world") > 0);
 }
 

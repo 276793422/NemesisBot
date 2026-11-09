@@ -610,13 +610,36 @@ impl ModuleHandler for SandboxHandler {
                 let sandbox = get_bool("sandbox")?;
                 let allow_network = get_bool("allow_network")?;
                 let strict = get_bool("strict")?;
+                // DACL 定向档三键（配置页批次 5；与全局 executor.strict 是
+                // 两个键——acl.strict 只作用于 ACL 档内部）。max_files 是
+                // u32 非 bool，单独取（0 = 诚实拒绝，缺省 20000）。
+                let acl_dacl = get_bool("acl_dacl")?;
+                let acl_strict = get_bool("acl_strict")?;
+                let acl_max_files = match d.get("acl_max_files") {
+                    None => None,
+                    Some(v) => {
+                        let n = v.as_u64().ok_or_else(|| {
+                            format!("set_config field 'acl_max_files' must be a u32, got: {v}")
+                        })?;
+                        if n == 0 || n > u32::MAX as u64 {
+                            return Err(format!(
+                                "set_config field 'acl_max_files' must be 1..={} (0 无意义，缺省 20000)",
+                                u32::MAX
+                            ));
+                        }
+                        Some(n as u32)
+                    }
+                };
                 if enabled.is_none()
                     && sandbox.is_none()
                     && allow_network.is_none()
                     && strict.is_none()
+                    && acl_dacl.is_none()
+                    && acl_strict.is_none()
+                    && acl_max_files.is_none()
                 {
                     return Err(
-                        "set_config requires at least one of { enabled, sandbox, allow_network, strict: bool }"
+                        "set_config requires at least one of { enabled, sandbox, allow_network, strict, acl_dacl, acl_strict: bool } or { acl_max_files: u32 }"
                             .into(),
                     );
                 }
@@ -632,6 +655,15 @@ impl ModuleHandler for SandboxHandler {
                     }
                     if let Some(v) = strict {
                         e.strict = v;
+                    }
+                    if let Some(v) = acl_dacl {
+                        e.acl.dacl = v;
+                    }
+                    if let Some(v) = acl_strict {
+                        e.acl.strict = v;
+                    }
+                    if let Some(v) = acl_max_files {
+                        e.acl.max_files = v;
                     }
                 })?;
                 let now = current_executor(&home);
@@ -649,9 +681,10 @@ impl ModuleHandler for SandboxHandler {
                         },
                     },
                     // enabled 决定装配期是否建通道（agent 重启才生效）；sandbox
-                    // /strict 是 live probe，下一次工具调用即生效。acl.dacl 同为
-                    // live（hook 每次调用时读 config）。
-                    "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict/acl.dacl 对后续工具调用实时生效",
+                    // /strict 是 live probe，下一次工具调用即生效。acl 三键同为
+                    // live（hook 每次调用时读 config；dacl 开启后的令牌铸造是
+                    // 一次性的——关了再开需重启 Agent 重新铸造）。
+                    "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict/acl 三键对后续工具调用实时生效",
                 })))
             }
             // 用户态沙盒自检（一次性子进程探针；Windows / 无后端

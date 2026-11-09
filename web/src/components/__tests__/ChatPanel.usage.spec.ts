@@ -172,4 +172,151 @@ describe('ChatPanel M5 用量常驻条', () => {
     expect(w2.find('.usage-ctx').text()).toBe('85% context')
     w2.unmount()
   })
+
+  // B4.5（2026-11-09 设计定稿 §7 构成分解 + 比例投影 + 7 段化拍板）：
+  // breakdown 在场 = 构成条形态——左文案框 + 右全宽条（100% = 窗口）、
+  // 七段含空闲、压缩竖线、hover 弹层。
+  it('B4.5 构成条：七段窗口刻度宽度 + 压缩竖线 75% + ◐锚标 + 空闲段；文案 = used/window 口径', async () => {
+    ctxResponse = {
+      context: {
+        pct: 50,
+        pct_trigger: 66,
+        window: 1000,
+        trigger: 750,
+        anchor_tokens: 400,
+        delta_tokens: 100,
+        anchor_state: 'stale',
+        breakdown: { system: 40, tools: 160, mcp: 60, skill: 30, memory: 10, summary: 100, history: 100, free: 500 },
+      },
+    }
+    usageResponse = { total_cost_usd: 0 }
+    installRequestMock()
+    const w = await mountPanelWithSession('s1')
+
+    const bar = w.find('.usage-bar')
+    expect(bar.exists()).toBe(true)
+    // 八段：used 七段 + 空闲段（设计定稿 §7.1 第五段语义保留）。
+    const segs = w.findAll('.usage-seg')
+    expect(segs.length).toBe(8)
+    // 段宽 = 段值/窗口 × 100（窗口刻度直读，非配比）：system 4% / tools 16% /
+    // mcp 6% / skill 3% / memory 1% / summary 10% / history 10% / free 50%，
+    // 合计 = 100%。
+    const widths = segs.map((s) => {
+      const m = /width:\s*([\d.]+)%/.exec(s.attributes('style') ?? '')
+      return m ? parseFloat(m[1]) : 0
+    })
+    expect(widths[0]).toBeCloseTo(4, 5)
+    expect(widths[1]).toBeCloseTo(16, 5)
+    expect(widths[2]).toBeCloseTo(6, 5)
+    expect(widths[3]).toBeCloseTo(3, 5)
+    expect(widths[4]).toBeCloseTo(1, 5)
+    expect(widths[5]).toBeCloseTo(10, 5)
+    expect(widths[6]).toBeCloseTo(10, 5)
+    expect(widths[7]).toBeCloseTo(50, 5)
+    expect(segs[7].classes()).toContain('usage-seg-free')
+    // 压缩竖线位置 = trigger/window = 75%。
+    expect(w.find('.usage-trigger-line').attributes('style')).toContain('left: 75%')
+    // 锚标 ◐（stale 增量在途）；% 标签 = used/window（50），不取 pct_trigger。
+    expect(w.find('.usage-anchor-mark').text()).toBe('◐')
+    expect(w.find('.usage-text').text()).toContain('50% context')
+    expect(w.find('.usage-text').classes()).not.toContain('hot')
+    // hover 文案框弹 §7.2 文字明细：七段（估算 ~，含 MCP/SKILL/MEMORY）+
+    // 已用/触发点 + 窗口行。
+    await w.find('.usage-text').trigger('mouseenter')
+    const tipText = w.find('.usage-tip').text()
+    expect(tipText).toContain('系统提示')
+    expect(tipText).toContain('~160 tok')
+    expect(tipText).toContain('MCP')
+    expect(tipText).toContain('~60 tok')
+    expect(tipText).toContain('SKILL')
+    expect(tipText).toContain('~30 tok')
+    expect(tipText).toContain('MEMORY')
+    expect(tipText).toContain('~10 tok')
+    expect(tipText).toContain('~100 tok')
+    expect(tipText).toContain('已用(实报 400 + 增量 ~100) / 触发点 750')
+    expect(tipText).toContain('窗口 1,000（触发点 = 窗口的 75%）')
+    await w.find('.usage-text').trigger('mouseleave')
+    expect(w.find('.usage-tip').exists()).toBe(false)
+    w.unmount()
+  })
+
+  // 设计定稿 §7.1 文案警示三态：逼近竖线（距触发点 ≤ 窗口 5%）= 警示色；
+  // 越过竖线 = 压缩 stuck 可见（红）；超窗口 = 钳满 + 红「超限」。
+  it('文案警示三态：逼近竖线 hot / 越线 over / 超窗口「超限」徽标', async () => {
+    usageResponse = { total_cost_usd: 0 }
+    installRequestMock()
+    const bd = { system: 40, tools: 160, summary: 0, history: 520, free: 280 }
+
+    // 逼近：pct 72 ≥ triggerPct 75 − 5 → hot（原 ≥80% 阈值不会触发 72）。
+    ctxResponse = {
+      context: { pct: 72, window: 1000, trigger: 750, anchor_state: 'stale', anchor_tokens: 700, delta_tokens: 20, breakdown: bd },
+    }
+    const w = await mountPanelWithSession('s1')
+    expect(w.find('.usage-text').classes()).toContain('hot')
+    expect(w.find('.usage-text').classes()).not.toContain('over')
+    w.unmount()
+
+    // 越线：pct 80 > triggerPct 75 → over（红）。
+    ctxResponse = {
+      context: { pct: 80, window: 1000, trigger: 750, anchor_state: 'stale', anchor_tokens: 780, delta_tokens: 20, breakdown: bd },
+    }
+    const w2 = await mountPanelWithSession('s1')
+    expect(w2.find('.usage-text').classes()).toContain('over')
+    await w2.find('.usage-text').trigger('mouseenter')
+    expect(w2.find('.usage-tip').text()).toContain('⚠ 已越过压缩线')
+    w2.unmount()
+
+    // 超窗口：pct 100（钳满）→「超限」徽标。
+    ctxResponse = {
+      context: { pct: 100, window: 1000, trigger: 750, anchor_state: 'stale', anchor_tokens: 990, delta_tokens: 10, breakdown: { system: 40, tools: 160, summary: 0, history: 800, free: 0 } },
+    }
+    const w3 = await mountPanelWithSession('s1')
+    expect(w3.find('.usage-over-limit').exists()).toBe(true)
+    expect(w3.find('.usage-over-limit').text()).toBe('超限')
+    w3.unmount()
+  })
+
+  it('B4 锚标三态：fresh ● / absent ○；旧形态（无 breakdown）不渲染条', async () => {
+    usageResponse = { total_cost_usd: 0 }
+    installRequestMock()
+
+    ctxResponse = {
+      context: {
+        pct: 3,
+        window: 1000,
+        trigger: 750,
+        anchor_tokens: 100,
+        delta_tokens: 0,
+        anchor_state: 'fresh',
+        breakdown: { system: 25, tools: 50, summary: 0, history: 25, free: 900 },
+      },
+    }
+    const w = await mountPanelWithSession('s1')
+    expect(w.find('.usage-anchor-mark').text()).toBe('●')
+    expect(w.find('.usage-bar').exists()).toBe(true)
+    w.unmount()
+
+    ctxResponse = {
+      context: {
+        pct: 3,
+        window: 1000,
+        trigger: 750,
+        anchor_tokens: null,
+        delta_tokens: 0,
+        anchor_state: 'absent',
+        breakdown: { system: 25, tools: 50, summary: 0, history: 0, free: 925 },
+      },
+    }
+    const w2 = await mountPanelWithSession('s1')
+    expect(w2.find('.usage-anchor-mark').text()).toBe('○')
+    w2.unmount()
+
+    // 旧后端形态（无 breakdown）：无条、无锚标，M5 徽标原样。
+    ctxResponse = { context: { pct: 85, pct_trigger: 95 } }
+    const w3 = await mountPanelWithSession('s1')
+    expect(w3.find('.usage-bar').exists()).toBe(false)
+    expect(w3.find('.usage-anchor-mark').exists()).toBe(false)
+    expect(w3.find('.usage-ctx').text()).toBe('95% context')
+    w3.unmount()
+  })
 })

@@ -4,6 +4,7 @@ fn test_config() -> AgentConfig {
     AgentConfig {
         model: "test-model".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec!["search".to_string()],
         models: std::collections::HashMap::new(),
@@ -143,6 +144,7 @@ fn new_instance_without_system_prompt() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -403,6 +405,7 @@ fn instance_clear_history_no_system_prompt() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -561,6 +564,7 @@ fn replace_tool_result_overwrites_async_placeholder() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -585,6 +589,7 @@ fn replace_tool_result_falls_back_to_push_when_no_match() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),
@@ -617,6 +622,7 @@ fn replace_tool_result_dedupes_multiple_matches() {
     let config = AgentConfig {
         model: "test".to_string(),
         system_prompt: None,
+        system_prompt_split: None,
         max_turns: 5,
         tools: vec![],
         models: std::collections::HashMap::new(),

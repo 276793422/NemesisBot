@@ -32,6 +32,7 @@ fn agt_ctx(
     let dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
     let ws = dir.path().to_string_lossy().to_string();
     let state = std::sync::Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: std::sync::Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),

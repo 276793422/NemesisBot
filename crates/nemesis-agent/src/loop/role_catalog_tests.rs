@@ -49,6 +49,7 @@ fn role_loop() -> AgentLoop {
         AgentConfig {
             model: "test-model".to_string(),
             system_prompt: Some("You are a test assistant.".to_string()),
+            system_prompt_split: None,
             max_turns: 5,
             tools: vec!["echo".to_string()],
             models: std::collections::HashMap::new(),

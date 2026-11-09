@@ -173,6 +173,19 @@ pub struct SharedToolConfig {
     /// （可自由寻址空间 0x08-0x77）。loop_tools 桩与 nemesis-tools 真实
     /// 实现共用同一 `HardwarePolicy` 统一定义。
     pub hardware_policy: Option<Arc<nemesis_tools::hardware::HardwarePolicy>>,
+    /// exec deny 自定义词表开关（config `tools.exec.enable_deny_patterns`，
+    /// 装配期一次读，重启才变；2026-11-08 接线激活——此前是死键）。
+    /// **接线语义刻意收窄（与 Go 版 `NewExecToolWithConfig` 的差异）**：
+    /// Go 版 `enable=false` 会清空全部 deny patterns 全放行；这里
+    /// `false`（含缺席默认）= **内置默认危险命令词表生效**（与接线前
+    /// 行为逐字节一致），`true` = 启用下方自定义词表（空表仍回落默认）。
+    /// **「全放行」不暴露为 config 面**——shell 级词表是防御纵深的一道，
+    /// 关闭它的开关风险远大于收益；真要放行单命令请走审批规则。
+    pub exec_deny_custom_enabled: bool,
+    /// exec deny 自定义词表（config `tools.exec.custom_deny_patterns`，
+    /// regex；仅 `exec_deny_custom_enabled = true` 时消费，非空 = 替换
+    /// 内置默认词表，空 = 回落内置默认）。
+    pub exec_deny_custom_patterns: Vec<String>,
     /// ：workspace 级写租约（`agents.lease_enabled` 默认开，
     /// agent_factory 构造）。Some 时 register_shared_tools 尾部把
     /// LEASE_WRITE_TOOLS 换成 LeaseGuardTool 委派包装（acquire → 执行 →
@@ -239,6 +252,11 @@ impl std::fmt::Debug for SharedToolConfig {
             .field(
                 "hardware_policy",
                 &self.hardware_policy.as_ref().map(|_| "HardwarePolicy"),
+            )
+            .field("exec_deny_custom_enabled", &self.exec_deny_custom_enabled)
+            .field(
+                "exec_deny_custom_patterns",
+                &self.exec_deny_custom_patterns.len(),
             )
             .field(
                 "workspace_lease",
@@ -518,14 +536,43 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // Exec tool + Async exec tool (mirrors Go's ExecTool + AsyncExecTool).
     if let Some(ref workspace) = config.workspace {
         let restrict = true; // restrict to workspace by default
-        tools.insert(
-            "exec".to_string(),
-            Box::new(ExecTool::new(workspace, restrict)),
-        );
-        tools.insert(
-            "exec_async".to_string(),
-            Box::new(AsyncExecTool::new(workspace, restrict)),
-        );
+        // exec deny 自定义词表接线（2026-11-08 激活死键）。语义见
+        // `exec_deny_custom_enabled` 字段注：仅「开关开 + 词表非空」走
+        // `new_with_config` 自定义臂；其余形态一律 `new`（内置默认词表，
+        // 与接线前行为逐字节一致）。Go 版 `enable=false` 的全放行臂
+        // **刻意不暴露**（默认缺席=false→默认词表，防护永不被 config 关闭）。
+        let deny_custom_active =
+            config.exec_deny_custom_enabled && !config.exec_deny_custom_patterns.is_empty();
+        let (exec, exec_async) = if deny_custom_active {
+            let patterns: Vec<&str> = config
+                .exec_deny_custom_patterns
+                .iter()
+                .map(|s| s.as_str())
+                .collect();
+            tracing::info!(
+                "[Tools] exec custom deny patterns active ({} entries)",
+                patterns.len()
+            );
+            (
+                ExecTool::new_with_config(workspace, restrict, Some(&patterns)),
+                AsyncExecTool::new_with_config(workspace, restrict, Some(&patterns)),
+            )
+        } else {
+            if config.exec_deny_custom_enabled {
+                // 开关开了但词表空：回落内置默认词表（与 new_with_config
+                // 空表臂同语义），warn 留痕——用户显式开过开关，值得一句。
+                tracing::warn!(
+                    "[Tools] tools.exec.enable_deny_patterns=true but custom_deny_patterns \
+                     is empty — falling back to builtin default deny patterns"
+                );
+            }
+            (
+                ExecTool::new(workspace, restrict),
+                AsyncExecTool::new(workspace, restrict),
+            )
+        };
+        tools.insert("exec".to_string(), Box::new(exec));
+        tools.insert("exec_async".to_string(), Box::new(exec_async));
 
         // run_script: interpreter-driven script execution for the workflow
         // `script` node. Listed in MOVE_TOOLS so executor separation / sandbox
@@ -846,6 +893,8 @@ pub fn register_extended_tools(
         question_broker: None,
         hardware_tools_enabled: false,
         hardware_policy: None,
+        exec_deny_custom_enabled: false,
+        exec_deny_custom_patterns: Vec::new(),
         workspace_lease: None,
         plan_present: None,
         turn_deliverables: None,

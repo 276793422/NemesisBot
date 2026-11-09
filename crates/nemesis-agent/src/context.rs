@@ -430,13 +430,28 @@ impl ContextBuilder {
     /// prompt-pack pro（`set_prompt_system`）改走 [`Self::build_system_prompt_pro`]；
     /// classic 原路径原字节，不动。
     pub fn build_system_prompt(&self, skip_bootstrap: bool) -> String {
+        self.build_system_prompt_with_sections(skip_bootstrap).0
+    }
+
+    /// 构建系统提示词并同步返回分段视图（B4.5 构成计量拆分）。
+    ///
+    /// 全文字节与 [`Self::build_system_prompt`] 完全一致——本方法是
+    /// 单一真相源，`build_system_prompt` 转发取全文。SKILL/MEMORY 两个
+    /// 可分离注入段在拼装处原文捕获（push 进 parts 的形态），供
+    /// `session_context_status` 的构成计量从全文中拆出
+    /// （2026-11-09 用户拍板 7 段口径，严格按注入机制区分）。
+    pub fn build_system_prompt_with_sections(
+        &self,
+        skip_bootstrap: bool,
+    ) -> (String, crate::types::SystemPromptSplit) {
         if self.prompt_system == crate::prompt::PromptSystem::Pro {
-            return self.build_system_prompt_pro(skip_bootstrap);
+            return self.build_system_prompt_pro_sections(skip_bootstrap);
         }
         info!(
             "[ContextBuilder] Building system prompt from workspace: {:?}",
             self.workspace
         );
+        let mut split = crate::types::SystemPromptSplit::default();
         let mut parts = Vec::new();
 
         // Bootstrap content (IDENTITY.md, SOUL.md, AGENT.md, TOOLS.md, USER.md, etc.)
@@ -454,6 +469,7 @@ impl ContextBuilder {
         // Skills section
         let skills_section = self.build_skills_section();
         if !skills_section.is_empty() {
+            split.skills = skills_section.clone();
             parts.push(skills_section);
         }
 
@@ -461,7 +477,9 @@ impl ContextBuilder {
         if let Some(ref memory) = self.memory_context
             && !memory.is_empty()
         {
-            parts.push(format!("## Memory Context\n\n{}", memory));
+            let section = format!("## Memory Context\n\n{}", memory);
+            split.memory = section.clone();
+            parts.push(section);
         }
 
         // Core identity section (time, environment, workspace) — dynamic, placed last
@@ -473,7 +491,7 @@ impl ContextBuilder {
             "[ContextBuilder] System prompt built, total length={}",
             result.len()
         );
-        result
+        (result, split)
     }
 
     /// pro 模式组装（prompt-pack）：Pre 段 → 人格文件 → tools → skills →
@@ -482,11 +500,15 @@ impl ContextBuilder {
     /// 段落来源 `crate::prompt` 段落池（静态全中文，编译期嵌入）；各段之间
     /// 维持 classic 的 "---" 分隔约定；启动构建后随会话冻结，prompt cache
     /// 语义不变。组装完成后过长度软预算（超限告警不截断）。
-    fn build_system_prompt_pro(&self, skip_bootstrap: bool) -> String {
+    fn build_system_prompt_pro_sections(
+        &self,
+        skip_bootstrap: bool,
+    ) -> (String, crate::types::SystemPromptSplit) {
         info!(
             "[ContextBuilder] Building system prompt (pro) from workspace: {:?}",
             self.workspace
         );
+        let mut split = crate::types::SystemPromptSplit::default();
         let mut parts = Vec::new();
 
         // Pre 层：身份与安全基座（先于用户自定义人格）+ 入口形态补充段
@@ -511,6 +533,7 @@ impl ContextBuilder {
         // Skills section
         let skills_section = self.build_skills_section();
         if !skills_section.is_empty() {
+            split.skills = skills_section.clone();
             parts.push(skills_section);
         }
 
@@ -518,7 +541,9 @@ impl ContextBuilder {
         if let Some(ref memory) = self.memory_context
             && !memory.is_empty()
         {
-            parts.push(format!("## Memory Context\n\n{}", memory));
+            let section = format!("## Memory Context\n\n{}", memory);
+            split.memory = section.clone();
+            parts.push(section);
         }
 
         // Post 层：行为准则段池（用户人格之后，可被人格细化但不越安全基线）。
@@ -537,7 +562,7 @@ impl ContextBuilder {
             "[ContextBuilder] System prompt (pro) built, total length={}",
             result.len()
         );
-        result
+        (result, split)
     }
 
     /// Build the core identity section with environment and workspace info.

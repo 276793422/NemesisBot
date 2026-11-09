@@ -17,6 +17,7 @@ use std::time::Instant;
 // 临时目录（auth 面从 state.workspace 推导 config 路径）。
 fn make_state(workspace: Option<String>) -> Arc<AppState> {
     Arc::new(AppState {
+        cors_manager: None,
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace,

@@ -448,7 +448,79 @@ function statusLabel(s: string): string {
   return s
 }
 
-onMounted(refresh)
+// ── 总闸 + 高级配置（批次 3 配置页补全）：config.set_field 直写 config.json
+// 的 ziwei 段（typed round-trip 校验），命令闸即时生效、工具面重启生效。──
+const ziweiEnabled = ref(false)
+const ziweiAdvOpen = ref(false)
+const ziweiAdvMsg = ref('')
+const ziweiAdv = ref({
+  allowed_targets: '',
+  payload_dir: '',
+  max_sessions: 4,
+  snapshots_ttl_days: 30,
+  runs_ttl_days: 7,
+})
+
+async function loadZiweiEnabled() {
+  const cfg = await request('config', 'get').catch(() => null)
+  ziweiEnabled.value = !!cfg?.ziwei?.enabled
+}
+
+async function loadZiweiAdvanced() {
+  const cfg = await request('config', 'get').catch(() => null)
+  const z = cfg?.ziwei ?? {}
+  ziweiAdv.value = {
+    allowed_targets: Array.isArray(z.allowed_targets) ? z.allowed_targets.join(', ') : '',
+    payload_dir: z.payload_dir ?? '',
+    max_sessions: z.max_sessions ?? 4,
+    snapshots_ttl_days: z.snapshots_ttl_days ?? 30,
+    runs_ttl_days: z.runs_ttl_days ?? 7,
+  }
+}
+
+async function toggleZiweiEnabled(on: boolean) {
+  ziweiAdvMsg.value = ''
+  try {
+    await request('config', 'set_field', { path: 'ziwei.enabled', value: on })
+    ziweiEnabled.value = on
+    if (on) {
+      // 开启后立即拉起主视图（status 不再报「未启用」）
+      await refresh()
+    }
+  } catch (e: any) {
+    ziweiAdvMsg.value = `✗ ${e}`
+    ziweiEnabled.value = !on // 失败还原开关
+  }
+}
+
+async function saveZiweiAdvanced() {
+  ziweiAdvMsg.value = ''
+  try {
+    const a = ziweiAdv.value
+    const targets = a.allowed_targets
+      .split(',')
+      .map((s: string) => s.trim())
+      .filter((s: string) => s.length > 0)
+    await request('config', 'set_field', { path: 'ziwei.allowed_targets', value: targets })
+    // payload_dir 留空 = 回落默认目录（Option<String> → null）
+    await request('config', 'set_field', {
+      path: 'ziwei.payload_dir',
+      value: a.payload_dir.trim().length > 0 ? a.payload_dir.trim() : null,
+    })
+    await request('config', 'set_field', { path: 'ziwei.max_sessions', value: Number(a.max_sessions) || 4 })
+    await request('config', 'set_field', { path: 'ziwei.snapshots_ttl_days', value: Number(a.snapshots_ttl_days) || 30 })
+    await request('config', 'set_field', { path: 'ziwei.runs_ttl_days', value: Number(a.runs_ttl_days) || 7 })
+    ziweiAdvMsg.value = '✓ 已保存'
+    await loadZiweiAdvanced() // 回读对账
+  } catch (e: any) {
+    ziweiAdvMsg.value = `✗ ${e}`
+  }
+}
+
+onMounted(() => {
+  refresh()
+  loadZiweiEnabled()
+})
 </script>
 
 <template>
@@ -462,11 +534,54 @@ onMounted(refresh)
     </div>
 
     <div v-if="gateClosed" class="banner banner-warn">
-      紫微系统未启用（config ziwei.enabled=false）。该功能涉及进入三方进程内部，默认关闭；
-      在设置中确认风险后手动开启。
+      <div>紫微系统未启用。该功能涉及进入三方进程内部，默认关闭。</div>
+      <!-- 开启指引由 gateMsg 承载（后端 GATE_CLOSED_MSG 单一真相源，
+           CLI/WSAPI/前端三面同串，避免前端另维护一份发散副本）。 -->
+      <div v-if="gateMsg" class="gate-hint">{{ gateMsg }}</div>
+      <div style="margin-top: var(--space-2);">
+        <button class="btn btn-sm btn-primary" data-test="ziwei-enable" @click="toggleZiweiEnabled(true)">立即启用</button>
+      </div>
     </div>
 
     <template v-else>
+      <!-- 总闸 + 高级配置（批次 3 配置页补全） -->
+      <div class="card" style="margin-bottom: var(--space-4);" data-test="ziwei-config-card">
+        <div class="card-header">
+          <h3>紫微总闸</h3>
+          <label class="gate-toggle">
+            <input
+              type="checkbox"
+              data-test="ziwei-enabled"
+              :checked="ziweiEnabled"
+              @change="toggleZiweiEnabled(($event.target as HTMLInputElement).checked)"
+            />
+            {{ ziweiEnabled ? '已启用' : '已关闭' }}
+          </label>
+        </div>
+        <div class="card-body">
+          <div class="hint" style="margin: 0 0 var(--space-2);">
+            命令闸（本页所有操作）关闭后即时拒绝；Agent 工具面（<code>ziwei_attach</code> 等）重启 gateway 后收敛。
+          </div>
+          <details @toggle="ziweiAdvOpen = ($event.target as HTMLDetailsElement).open">
+            <summary class="adv-summary">高级配置（允许目标 / 存储目录 / 会话与保留期）</summary>
+            <div v-if="ziweiAdvOpen" class="adv-grid">
+              <div class="hint" style="margin: 0;">
+                目录 / 会话上限 / 保留期在 gateway 启动装配期读取——改后需重启 gateway 生效；「预留」字段当前版本未消费（config 保留未来语义）。
+              </div>
+              <label>允许目标进程（逗号分隔）——预留：当前版本未生效<input v-model="ziweiAdv.allowed_targets" placeholder="预留下列白名单语义" /></label>
+              <label>快照目录（留空 = 默认 workspace/ziwei）<input v-model="ziweiAdv.payload_dir" placeholder="默认目录" /></label>
+              <label>并发会话上限 <input v-model.number="ziweiAdv.max_sessions" type="number" min="1" style="width: 90px;" /></label>
+              <label>快照保留天数——预留：当前版本未生效 <input v-model.number="ziweiAdv.snapshots_ttl_days" type="number" min="1" style="width: 90px;" /></label>
+              <label>运行记录保留天数 <input v-model.number="ziweiAdv.runs_ttl_days" type="number" min="1" style="width: 90px;" /></label>
+              <div style="display: flex; align-items: center; gap: var(--space-2);">
+                <button class="btn btn-sm btn-primary" data-test="ziwei-adv-save" @click="saveZiweiAdvanced">保存</button>
+                <span v-if="ziweiAdvMsg" style="font-size: var(--text-xs);">{{ ziweiAdvMsg }}</span>
+              </div>
+            </div>
+          </details>
+        </div>
+      </div>
+
       <div class="stat-row">
         <div class="stat-card">
           <div class="stat-num">{{ profiles.length }}</div>
@@ -728,6 +843,8 @@ onMounted(refresh)
 .subtitle { color: var(--text-secondary); margin-top: 4px; font-size: 13px; }
 .banner { padding: 10px 14px; border-radius: 8px; font-size: 13px; }
 .banner-warn { background: rgba(230, 162, 60, 0.12); border: 1px solid rgba(230, 162, 60, 0.4); color: var(--text-primary); }
+.gate-hint { margin-top: 6px; opacity: 0.85; line-height: 1.6; }
+.gate-hint code { padding: 1px 5px; border-radius: 4px; background: rgba(128, 128, 128, 0.15); font-size: 12px; }
 .stat-row { display: flex; gap: 12px; }
 .stat-card { flex: 1; padding: 12px 16px; border: 1px solid var(--border-color); border-radius: 8px; }
 .stat-num { font-size: 24px; font-weight: 600; }
@@ -771,4 +888,10 @@ onMounted(refresh)
 .llm-sugg, .sugg-chip { font-size: 12px; }
 .sugg-chip { display: inline-block; padding: 1px 8px; margin: 2px 4px 2px 0; border: 1px solid var(--border-color); border-radius: 10px; cursor: pointer; }
 .ann-form { margin-top: 6px; }
+/* 总闸 + 高级配置（批次 3） */
+.gate-toggle { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+.adv-summary { cursor: pointer; font-size: 13px; color: var(--text-secondary); user-select: none; }
+.adv-grid { display: flex; flex-direction: column; gap: 8px; padding: 10px 0 4px; }
+.adv-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-secondary); }
+.adv-grid input { padding: 4px 8px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-primary, transparent); color: var(--text-primary); }
 </style>

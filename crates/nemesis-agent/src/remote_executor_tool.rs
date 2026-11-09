@@ -193,6 +193,14 @@ pub struct ExecutorChannel {
     /// 侧据此放开围栏只读闸；true / 缺省 = 不设 env，子进程按 true 处理
     /// （老网关 spawn 的子进程字节不变）。
     pub restrict_child: bool,
+    /// exec deny 自定义词表透传（2026-11-08 接线激活）：`Some(patterns)`
+    /// 时 `env_pairs()` 写 `NEMESISBOT_EXECUTOR_DENY_PATTERNS`（\x1f 分隔，
+    /// executor 分离形态下子进程 deny 词表与主进程同源——不透传则
+    /// Layer 1 成为词表旁路）。主进程语义「开关开+词表非空才自定义，
+    /// 否则内置默认词表」在装配侧折算：只有**自定义激活**形态才注入
+    /// （词表缺席 = 子进程按现状内置默认词表装配，两侧一致）。
+    /// `None` = 老网关/测试/裸构造 = 子进程现状（内置默认词表）。
+    pub deny_patterns_child: Option<Vec<String>>,
     /// Per-call hard timeout (the child must respond within this).
     pub timeout: Duration,
 }
@@ -223,6 +231,7 @@ impl ExecutorChannel {
             dacl_spawn: None,
             extra_roots: Vec::new(),
             restrict_child: true,
+            deny_patterns_child: None,
             timeout: Duration::from_secs(24 * 3600),
         }
     }
@@ -237,6 +246,19 @@ impl ExecutorChannel {
     /// config 读主进程边界开关传入；true = 缺省不设 env，字节不变）。
     pub fn with_restrict_child(mut self, restrict: bool) -> Self {
         self.restrict_child = restrict;
+        self
+    }
+
+    /// exec deny 自定义词表透传（2026-11-08 接线激活）。gateway 装配侧
+    /// （exec_world）只把「自定义激活」形态传入（开关开 + 词表非空）；
+    /// `None` = 默认词表形态，不设 env（子进程按现状内置默认词表装配，
+    /// 老网关/测试/裸构造字节不变）。传空 vec 等价 None（两侧都落
+    /// 默认词表）。
+    pub fn with_deny_patterns(mut self, patterns: Option<Vec<String>>) -> Self {
+        self.deny_patterns_child = match patterns {
+            Some(p) if !p.is_empty() => Some(p),
+            _ => None,
+        };
         self
     }
 
@@ -343,6 +365,16 @@ impl ExecutorChannel {
                     tracing::warn!("[Executor] extra_roots env 编码失败（子进程围栏降级单根）: {e}")
                 }
             }
+        }
+        // exec deny 自定义词表透传（2026-11-08 接线激活）：只在
+        // 自定义激活形态注入（装配侧 with_deny_patterns 已折算）。
+        // 分隔符 = \x1f（ASCII unit separator）——regex 词表不含控制字符，
+        // join/parse 无歧义。缺席 = 子进程按内置默认词表装配（两侧一致）。
+        if let Some(patterns) = &self.deny_patterns_child {
+            env.push((
+                "NEMESISBOT_EXECUTOR_DENY_PATTERNS".to_string(),
+                patterns.join("\u{1f}"),
+            ));
         }
         env
     }
