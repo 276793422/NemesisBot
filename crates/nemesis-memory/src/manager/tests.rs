@@ -2084,3 +2084,41 @@ async fn agt_store_entry_swallows_vector_persist_error() {
     let r = mgr.search("match", None, 10).await.unwrap();
     assert_eq!(r.total, 1, "内存索引仍可查");
 }
+
+// R735 回归锁：cleanup_episodic 数字恐慌面。usize::MAX 修复前 `as i64`
+// 回绕成 -1，cutoff 落未来 → 一次调用全删情景记忆+向量库；
+// i64::MAX 级巨值修复前直接 Duration::days panic。
+#[tokio::test]
+async fn r735_cleanup_episodic_usize_max_keeps_recent_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    mgr.append_episode(Episode::new("s1".into(), "user".into(), "keep me".into()))
+        .await
+        .unwrap();
+
+    // 修复前回绕 -1 → cutoff = now + 1 天 → 今日条目被判过期全删。
+    let removed = mgr.cleanup_episodic(usize::MAX).await.unwrap();
+    assert_eq!(removed, 0, "钳到上界后近期条目不得被清，removed={removed}");
+
+    let sessions = mgr.get_session("s1").await.unwrap();
+    assert_eq!(sessions.len(), 1, "usize::MAX 不得清掉现存会话");
+}
+
+#[tokio::test]
+async fn r735_cleanup_episodic_i64_max_days_does_not_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+
+    mgr.append_episode(Episode::new("s1".into(), "user".into(), "keep me".into()))
+        .await
+        .unwrap();
+
+    // 修复前 Duration::days(i64::MAX as usize as i64) 进 panic 带。
+    let removed = mgr.cleanup_episodic(i64::MAX as usize).await.unwrap();
+    assert_eq!(removed, 0);
+    let sessions = mgr.get_session("s1").await.unwrap();
+    assert_eq!(sessions.len(), 1);
+}

@@ -940,6 +940,9 @@ impl Reflector {
             return 0;
         }
 
+        // 入口钳制（R735）：u64→i64 回绕负值 = cutoff 落未来 = 全删报告；
+        // 上界单一真相源 time_bounds::MAX_AGE_DAYS。
+        let max_age_days = max_age_days.min(nemesis_utils::time_bounds::MAX_AGE_DAYS as u64);
         let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days as i64);
         let mut deleted = 0;
 

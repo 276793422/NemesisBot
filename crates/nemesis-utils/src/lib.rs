@@ -53,6 +53,9 @@ pub mod workpool;
 #[cfg(feature = "sqlite-preflight")]
 pub mod sqlite_preflight;
 pub mod string_utils;
+// 年龄/保留天数输入上界钳制单一真相源（R735 数字恐慌面：
+// chrono Duration::days 恐慌带 + as-cast 回绕负 cutoff 全删带，统一收敛）。
+pub mod time_bounds;
 // 恒时 token 比较单一真相源（原 nemesis-web api_handlers
 // 私有件；web re-export 保路径，nemesis-channels websocket 升级闸跨 crate 消费）。
 pub mod verify;

@@ -573,7 +573,13 @@ impl MemoryToolExecutor {
             }
 
             "cleanup" => {
-                let older_than_days = args["older_than_days"].as_u64().unwrap_or(90) as usize;
+                // 上界钳制（R735 数字恐慌面）：older_than_days 是模型参数
+                // （提示词注入可携带任意 u64）——`as i64` 回绕成负值会让
+                // cutoff 落到未来（一次调用全删情景记忆+向量库），≥1.07e14
+                // 的值直接 Duration::days panic。钳到 100 年上界（单一真相
+                // 源 time_bounds::MAX_AGE_DAYS），正常取值恒等。
+                let older_than_days = (args["older_than_days"].as_u64().unwrap_or(90) as usize)
+                    .min(nemesis_utils::time_bounds::MAX_AGE_DAYS as usize);
                 if older_than_days == 0 {
                     return MemoryToolResult::err("older_than_days must be at least 1");
                 }

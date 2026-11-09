@@ -380,3 +380,26 @@ async fn test_cleanup_rewrite_content_and_no_tmp_residue() {
         .collect();
     assert!(leftovers.is_empty(), "tmp residue: {leftovers:?}");
 }
+
+// R735 回归锁：u64::MAX 修复前 `as i64` 回绕成 -1 → cutoff 落未来 =
+// 一次调用全删 trace；现钳到 time_bounds::MAX_AGE_DAYS，近期事件存活。
+#[tokio::test]
+async fn r735_cleanup_u64_max_does_not_panic_and_keeps_recent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("traces.jsonl");
+    let store = TraceStore::new(&path);
+
+    store
+        .append(&make_event_at("recent", chrono::Local::now()))
+        .await
+        .unwrap();
+
+    let removed = store.cleanup(u64::MAX).await.unwrap();
+    assert_eq!(
+        removed, 0,
+        "钳到上界后近期 trace 必须存活，removed={removed}"
+    );
+    let remaining = store.read_all().await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert!(remaining.iter().any(|e| e.event_type == "recent"));
+}

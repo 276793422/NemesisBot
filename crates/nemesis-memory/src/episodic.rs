@@ -290,7 +290,12 @@ impl EpisodicStore for FileEpisodicStore {
     }
 
     async fn cleanup(&self, older_than_days: usize) -> Result<usize, String> {
-        let cutoff = chrono::Local::now() - chrono::Duration::days(older_than_days as i64);
+        // 上界钳制（R735）：usize→i64 回绕负值 = cutoff 落未来（全删），
+        // 巨值 = Duration::days panic；单一真相源 time_bounds::MAX_AGE_DAYS。
+        let cutoff = chrono::Local::now()
+            - chrono::Duration::days(
+                older_than_days.min(nemesis_utils::time_bounds::MAX_AGE_DAYS as usize) as i64,
+            );
 
         let sessions = self.list_sessions().await?;
         let mut total_removed = 0;

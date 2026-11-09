@@ -173,6 +173,8 @@ impl DeploymentMonitor {
         let window_days = if window_days == 0 { 7 } else { window_days };
 
         // Filter traces within the observation window
+        // （window_days 是 u32：as i64 恒正，4.29e9 天 < Duration::days
+        // 恐慌带 ~1.07e14——无回绕/恐慌面，无需钳制。）
         let since = chrono::Local::now() - chrono::Duration::days(window_days as i64);
         let recent_traces: Vec<&ConversationTrace> = traces
             .iter()

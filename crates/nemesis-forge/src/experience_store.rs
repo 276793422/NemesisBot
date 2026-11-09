@@ -63,6 +63,10 @@ impl ExperienceStore {
 
     /// Remove experience files older than the specified number of days.
     pub async fn cleanup(&self, max_age_days: i64) -> std::io::Result<usize> {
+        // 入口钳制（R735）：负值（u64→i64 回绕产物）cutoff 落未来 = 全删，
+        // 钳到 0（cutoff=今天，破坏面收敛为「删今日以前」）；巨值钳到
+        // time_bounds::MAX_AGE_DAYS 防 Duration::days panic。
+        let max_age_days = max_age_days.clamp(0, nemesis_utils::time_bounds::MAX_AGE_DAYS);
         let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days);
         let cutoff_str = cutoff.format("%Y%m%d").to_string();
         let mut removed = 0usize;

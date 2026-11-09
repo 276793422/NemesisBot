@@ -1098,8 +1098,14 @@ impl MemoryManager {
     /// Cleanup episodes older than the given number of days. Also removes
     /// corresponding entries from the vector store.
     pub async fn cleanup_episodic(&self, older_than_days: usize) -> Result<usize, String> {
+        // 防御纵深（R735）：工具入口已钳，此处兜底其余调用方——usize→i64
+        // 回绕负值 = cutoff 落未来（全删），巨值 = Duration::days panic；
+        // 上界单一真相源 time_bounds::MAX_AGE_DAYS。
+        let cutoff = chrono::Local::now()
+            - chrono::Duration::days(
+                older_than_days.min(nemesis_utils::time_bounds::MAX_AGE_DAYS as usize) as i64,
+            );
         // Collect IDs that will be removed so we can also clean vector store.
-        let cutoff = chrono::Local::now() - chrono::Duration::days(older_than_days as i64);
         let sessions = self.episodic.list_sessions().await?;
         let mut ids_to_remove = Vec::new();
         for session_key in &sessions {

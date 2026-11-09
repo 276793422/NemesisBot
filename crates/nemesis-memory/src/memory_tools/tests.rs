@@ -2634,3 +2634,33 @@ async fn agt_list_graph_related_render_carries_created_at_date() {
         result.content
     );
 }
+
+// R735 回归锁：memory_forget cleanup 的 older_than_days 是模型参数
+// （提示词注入可携带任意 u64）——u64::MAX 修复前回绕成 -1 使 cutoff
+// 落未来（一次调用全删情景记忆+向量库）。工具入口钳到
+// time_bounds::MAX_AGE_DAYS 后必须诚实成功且不清数据。
+#[tokio::test]
+async fn r735_forget_cleanup_u64_max_days_success_without_wipe() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = crate::manager::Config::new(dir.path());
+    let mgr = Arc::new(MemoryManager::new(&config));
+    mgr.append_episode(crate::episodic::Episode::new(
+        "s1".into(),
+        "user".into(),
+        "keep me".into(),
+    ))
+    .await
+    .unwrap();
+    let executor = MemoryToolExecutor::new(mgr.clone());
+
+    let result = executor
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "cleanup", "older_than_days": u64::MAX}),
+        )
+        .await;
+    assert!(result.success, "got: {}", result.content);
+
+    let sessions = mgr.get_session("s1").await.unwrap();
+    assert_eq!(sessions.len(), 1, "u64::MAX 不得清掉现存会话");
+}

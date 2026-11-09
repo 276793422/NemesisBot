@@ -440,7 +440,16 @@ impl Forge {
 
     /// Run a single cleanup cycle for old data.
     async fn run_cleanup_cycle(&self) {
-        let max_age = self.config.storage.max_experience_age_days as i64;
+        // u64→i64 回绕防线（R735 数字恐慌面）：>i64::MAX 的配置值 `as i64`
+        // 回绕成负数 → cutoff 落到未来 → 经验/反思/循环三 store 全量删除；
+        // 巨值（≥1.07e14）直接 Duration::days panic。钳到 100 年上界（单一
+        // 真相源 time_bounds::MAX_AGE_DAYS）；store 入口另有兜底钳。0 保留
+        // 现语义（cutoff=今天，只留当日）。
+        let max_age = self
+            .config
+            .storage
+            .max_experience_age_days
+            .min(nemesis_utils::time_bounds::MAX_AGE_DAYS as u64) as i64;
 
         let store = crate::experience_store::ExperienceStore::from_forge_dir(&self.forge_dir);
         if let Ok(removed) = store.cleanup(max_age).await
@@ -468,7 +477,16 @@ impl Forge {
         // traces 目录只增不删。清理 Forge 实际持有的那个 store（未 init 时
         // 无写入，无需清理）。
         if let Some(store) = &self.trace_store
-            && let Ok(removed) = store.cleanup(self.config.trace.max_trace_age_days).await
+            && let Ok(removed) = store
+                .cleanup(
+                    // u64→i64 回绕防线（R735）：同 max_experience_age_days，
+                    // 钳到 100 年上界后再进 store。
+                    self.config
+                        .trace
+                        .max_trace_age_days
+                        .min(nemesis_utils::time_bounds::MAX_AGE_DAYS as u64),
+                )
+                .await
             && removed > 0
         {
             tracing::info!(removed, "[Forge] cleaned up old trace events");

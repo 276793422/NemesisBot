@@ -769,3 +769,15 @@ fn retention_sweep_multi_batch_rollups_accumulate() {
     );
     let _ = std::fs::remove_file(path);
 }
+
+// R735 回归锁：retention_days = i64::MAX 修复前 `days * 86400` 溢出
+//（debug panic / release 回绕出不可预测 cutoff）；现钳到
+// time_bounds::MAX_AGE_DAYS， sweep 正常返回。
+#[cfg(feature = "usage-store")]
+#[test]
+fn r735_retention_sweep_i64_max_no_overflow() {
+    let (store, path) = open_store("r735_retention");
+    let r = store.retention_sweep(Some(i64::MAX), None);
+    assert!(r.is_ok(), "got: {:?}", r);
+    let _ = std::fs::remove_file(path);
+}

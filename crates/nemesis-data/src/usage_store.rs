@@ -782,7 +782,14 @@ impl DataStore {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut deleted_total: u64 = 0;
 
-        if let Some(days) = retention_days.filter(|d| *d > 0) {
+        // 入口钳制（R735 数字恐慌面）：days 是 config 值——`days * 86400`
+        // 在 days > i64::MAX/86400（~1.07e14）时溢出（debug panic / release
+        // 回绕出不可预测 cutoff）。钳到 100 年上界（单一真相源
+        // time_bounds::MAX_AGE_DAYS），正常保留期恒等。
+        if let Some(days) = retention_days
+            .filter(|d| *d > 0)
+            .map(|d| d.min(nemesis_utils::time_bounds::MAX_AGE_DAYS))
+        {
             // cutoff 对齐 UTC 日界（floor 到当日 0 点，与 GROUP BY 的
             // strftime '%Y-%m-%d' unixepoch 同族）。BUG-20261107-021 之后
             // 对齐不再是正确性必需（聚合改加法合并 + 事务原子，同日多批

@@ -174,6 +174,9 @@ impl CycleStore {
     /// Walks the month-based directory structure and deletes JSONL files
     /// whose filename date is older than the cutoff.
     pub async fn cleanup(&self, max_age_days: i64) -> std::io::Result<usize> {
+        // 入口钳制（R735）：负值 cutoff 落未来 = 全删（钳到 0 收敛破坏面），
+        // 巨值 Duration::days panic；上界单一真相源 time_bounds::MAX_AGE_DAYS。
+        let max_age_days = max_age_days.clamp(0, nemesis_utils::time_bounds::MAX_AGE_DAYS);
         let cutoff = chrono::Local::now() - chrono::Duration::days(max_age_days);
         let cutoff_str = cutoff.format("%Y%m%d").to_string();
         let mut removed = 0usize;

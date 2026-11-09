@@ -565,3 +565,48 @@ async fn test_s8_append_empty_base_dir_takes_no_parent_branch() {
         let _ = tokio::fs::remove_file(cwd_file).await;
     }
 }
+
+// R735 回归锁：cleanup 入口钳制（单一真相源 time_bounds::MAX_AGE_DAYS）。
+// i64::MAX 修复前 Duration::days panic；i64::MIN 修复前负 cutoff 落未来
+// = 一次调用全删。钳 0 的诚实退化语义 =「删今日以前」，旧内容照常清。
+#[tokio::test]
+async fn r735_cleanup_i64_max_does_not_panic_and_keeps_recent() {
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let store = ExperienceStore::from_forge_dir(dir.path());
+    store
+        .append(&CollectedExperience {
+            experience: make_experience("t"),
+            dedup_hash: "h".into(),
+        })
+        .await
+        .unwrap();
+    let removed = store.cleanup(i64::MAX).await.unwrap();
+    assert_eq!(removed, 0, "钳到上界后近期经验必须存活，removed={removed}");
+}
+
+#[tokio::test]
+async fn r735_cleanup_i64_min_converges_to_delete_past_only() {
+    use crate::types::CollectedExperience;
+    let dir = tempfile::tempdir().unwrap();
+    let store = ExperienceStore::from_forge_dir(dir.path());
+    let mut old = make_experience("t");
+    old.timestamp = "2020-01-01T00:00:00+08:00".into();
+    store
+        .append(&CollectedExperience {
+            experience: old,
+            dedup_hash: "h".into(),
+        })
+        .await
+        .unwrap();
+    let removed = store.cleanup(i64::MIN).await.unwrap();
+    assert!(
+        removed >= 1,
+        "2020 旧经验应被清（钳 0 删今日以前），got {removed}"
+    );
+    assert_eq!(
+        store.read_all().await.unwrap().len(),
+        0,
+        "flat 文件中旧经验应被 trim"
+    );
+}
