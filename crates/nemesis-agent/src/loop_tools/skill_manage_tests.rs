@@ -630,3 +630,100 @@ async fn test_skill_manage_write_file_surface_content_security_checked() {
     let res = tool.execute(&wf2, &ctx()).await.unwrap();
     assert!(res.contains("Wrote"), "{}", res);
 }
+
+/// 目录链接创建（BUG-20261109-033 回归测试用）：Windows 降级链
+/// symlink_dir（开发者模式/管理员）→ junction（mklink /J，任何用户）；
+/// Unix 直接 symlink。与 tests.rs 的 make_dir_link 同族（跨测试文件不
+/// 共用，独立落一份）。
+#[cfg(windows)]
+fn make_dir_link_for_test(target: &Path, link: &Path) {
+    use std::os::windows::fs::symlink_dir;
+    if symlink_dir(target, link).is_ok() {
+        return;
+    }
+    let out = std::process::Command::new("cmd")
+        .args(["/c", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .expect("spawn cmd mklink");
+    assert!(
+        out.status.success(),
+        "创建目录链接失败: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[cfg(unix)]
+fn make_dir_link_for_test(target: &Path, link: &Path) {
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+/// BUG-20261109-033 回归锁：skill 目录内的目录链接（junction/symlink）
+/// 指向界外时，`link/evil.md` 词法在界内、解析后在界外——write_file
+/// 必须拒绝（修复前 join 结果不解析链接，词法 starts_with 放行写穿）。
+#[tokio::test]
+async fn test_skill_manage_write_file_symlink_escape_blocked() {
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    tool.execute(
+        &json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL})),
+        &ctx(),
+    )
+    .await
+    .unwrap();
+
+    // 界外目录 + skill 目录内的界外链接
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let skill_dir = tmp.path().join("skills").join("my-skill");
+    make_dir_link_for_test(&outside, &skill_dir.join("link"));
+
+    let wf = json_args(serde_json::json!(
+        {"action":"write_file","name":"my-skill","path":"link/evil.md","content":"evil"}
+    ));
+    let err = tool.execute(&wf, &ctx()).await.unwrap_err();
+    assert!(err.contains("escapes skill directory"), "{}", err);
+    assert!(
+        !outside.join("evil.md").exists(),
+        "界外文件不得因链接路径词法在界内而落盘"
+    );
+
+    // 界内链接（指向界内目录）不受影响——合法嵌套路径照常可达
+    let inside_dir = skill_dir.join("docs");
+    std::fs::create_dir_all(&inside_dir).unwrap();
+    make_dir_link_for_test(&inside_dir, &skill_dir.join("docs_link"));
+    let wf_ok = json_args(serde_json::json!(
+        {"action":"write_file","name":"my-skill","path":"docs_link/ok.md","content":"ok"}
+    ));
+    let res = tool.execute(&wf_ok, &ctx()).await.unwrap();
+    assert!(res.contains("Wrote"), "{}", res);
+    assert!(inside_dir.join("ok.md").exists());
+}
+
+/// BUG-20261109-033 回归锁（remove_file 臂）：同款链接逃逸在删除路径
+/// 同样拒绝。
+#[tokio::test]
+async fn test_skill_manage_remove_file_symlink_escape_blocked() {
+    let tmp = TempDir::new().unwrap();
+    let tool = tool_in(&tmp);
+    tool.execute(
+        &json_args(serde_json::json!({"action":"create","name":"my-skill","content":SAMPLE_SKILL})),
+        &ctx(),
+    )
+    .await
+    .unwrap();
+
+    let outside = tmp.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("victim.md"), "victim").unwrap();
+    let skill_dir = tmp.path().join("skills").join("my-skill");
+    make_dir_link_for_test(&outside, &skill_dir.join("link"));
+
+    let rf = json_args(serde_json::json!(
+        {"action":"remove_file","name":"my-skill","path":"link/victim.md"}
+    ));
+    let err = tool.execute(&rf, &ctx()).await.unwrap_err();
+    assert!(err.contains("escapes skill directory"), "{}", err);
+    assert!(outside.join("victim.md").exists(), "界外文件不得被删");
+}

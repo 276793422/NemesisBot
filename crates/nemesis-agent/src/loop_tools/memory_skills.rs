@@ -912,10 +912,16 @@ fn resolve_within(base: &Path, rel: &str) -> Result<PathBuf, String> {
             rel
         ));
     }
-    let canon_base = base
-        .canonicalize()
-        .map_err(|e| format!("cannot canonicalize skill dir: {}", e))?;
-    let canon_target = canon_base.join(rel_path);
+    // BUG-20261109-033：join 结果直接与 canon_base 做 starts_with 是词法
+    // 比较，不解析 symlink/junction——skill 目录内出现链接（agent 经
+    // exec 建 link 指向界外目录）时 `link/evil` 词法在界内、真实落点在
+    // 界外，write_file/remove_file 写穿围栏。改用 canonicalize_for_compare
+    // 双侧归一（解析链接；write 新文件的不存在尾段按最长存在祖先对齐，
+    // 与 WorkspaceBoundary / auditor::validate_path_internal 同族语义）。
+    // 返回归一路径给 IO 落点无变化（OS 层本就按链接解析落盘），变的只是
+    // 判定口径：表面路径在界内、解析后出界 = 拒绝。
+    let canon_base = canonicalize_for_compare(base);
+    let canon_target = canonicalize_for_compare(&base.join(rel_path));
     if !canon_target.starts_with(&canon_base) {
         return Err(format!("path escapes skill directory: {}", rel));
     }
