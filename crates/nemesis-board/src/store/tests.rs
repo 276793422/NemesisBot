@@ -757,6 +757,75 @@ fn test_comments_thread_and_subscribe() {
     cleanup(&dir);
 }
 
+#[test]
+fn test_comment_parent_endpoint_validated() {
+    let (store, dir) = temp_store("comment_parent_gate");
+    let a = store.create_issue(new_issue("甲单")).unwrap();
+    let b = store.create_issue(new_issue("乙单")).unwrap();
+    let root = store
+        .add_comment(NewComment {
+            issue_id: a.id,
+            author: admin(),
+            content: "根评论".into(),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+
+    // 同单合法父：OK（一层线程既有语义）。
+    let reply = store
+        .add_comment(NewComment {
+            issue_id: a.id,
+            author: Actor::agent("mgr"),
+            content: "合法回复".into(),
+            parent_id: Some(root.id),
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+    assert_eq!(reply.parent_id, Some(root.id));
+
+    // 悬空父（不存在的评论 id）：拒绝（此前静默入库 → 前端 repliesOf
+    // 按本单列表过滤后回复不可见）。
+    let err = store
+        .add_comment(NewComment {
+            issue_id: a.id,
+            author: admin(),
+            content: "悬空回复".into(),
+            parent_id: Some(999_999),
+            ctype: CommentType::Comment,
+        })
+        .unwrap_err();
+    assert!(
+        err.contains("parent comment 999999 not found"),
+        "got: {err}"
+    );
+
+    // 跨单父（乙单引用甲单的评论）：拒绝。
+    let err = store
+        .add_comment(NewComment {
+            issue_id: b.id,
+            author: admin(),
+            content: "跨单回复".into(),
+            parent_id: Some(root.id),
+            ctype: CommentType::Comment,
+        })
+        .unwrap_err();
+    assert!(err.contains("belongs to issue"), "got: {err}");
+
+    // 系统回复链（feedback 终判 ack 形态）不受影响：同单 Some 父照常入库。
+    let sys_reply = store
+        .add_comment(NewComment {
+            issue_id: a.id,
+            author: Actor::system("final-verdict"),
+            content: "终判 ack".into(),
+            parent_id: Some(reply.id),
+            ctype: CommentType::System,
+        })
+        .unwrap();
+    assert_eq!(sys_reply.parent_id, Some(reply.id));
+    cleanup(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // 订阅
 // ---------------------------------------------------------------------------
@@ -2487,6 +2556,65 @@ fn test_channel_message_append_list_and_cursor() {
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].member.id, "admin");
     assert_eq!(members[0].last_seen_message_id, m2.id);
+    cleanup(&dir);
+}
+
+#[test]
+fn test_channel_message_parent_endpoint_validated() {
+    let (store, dir) = temp_store("channel_parent_gate");
+    store.ensure_default_channels().unwrap();
+    let dev = store.get_channel_by_name("#dev").unwrap().unwrap();
+    let qa = store.get_channel_by_name("#qa").unwrap().unwrap();
+
+    let m1 = store
+        .append_channel_message(NewChannelMessage {
+            channel_id: dev.id,
+            sender: Actor::admin("admin"),
+            content: "根消息".to_string(),
+            parent_id: None,
+            mtype: String::new(),
+        })
+        .unwrap();
+
+    // 悬空父：拒绝。
+    let err = store
+        .append_channel_message(NewChannelMessage {
+            channel_id: dev.id,
+            sender: sys_actor(),
+            content: "悬空回复".to_string(),
+            parent_id: Some(999_999),
+            mtype: String::new(),
+        })
+        .unwrap_err();
+    assert!(
+        err.contains("parent message 999999 not found"),
+        "got: {err}"
+    );
+
+    // 跨频道父：拒绝（DiscussionPanel 按 parent_id !== null 画 ↳，跨频道
+    // 线程标记是误导）。
+    let err = store
+        .append_channel_message(NewChannelMessage {
+            channel_id: qa.id,
+            sender: sys_actor(),
+            content: "跨频道回复".to_string(),
+            parent_id: Some(m1.id),
+            mtype: String::new(),
+        })
+        .unwrap_err();
+    assert!(err.contains("belongs to channel"), "got: {err}");
+
+    // 同频道合法父：OK。
+    let m2 = store
+        .append_channel_message(NewChannelMessage {
+            channel_id: dev.id,
+            sender: Actor::agent("node-b"),
+            content: "合法线程回复".to_string(),
+            parent_id: Some(m1.id),
+            mtype: String::new(),
+        })
+        .unwrap();
+    assert_eq!(m2.parent_id, Some(m1.id));
     cleanup(&dir);
 }
 

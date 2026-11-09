@@ -4481,6 +4481,28 @@ fn append_channel_message_on(
     } else {
         new.mtype.clone()
     };
+    // parent_id 端点校验（同 add_comment_on：悬空 / 跨频道引用拒绝；
+    // 端点存在 + id 单调 = 结构性无环）。
+    if let Some(pid) = new.parent_id {
+        let parent_channel: Option<i64> = conn
+            .query_row(
+                "SELECT channel_id FROM channel_message WHERE id = ?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match parent_channel {
+            None => return Err(format!("parent message {pid} not found")),
+            Some(pch) if pch != new.channel_id => {
+                return Err(format!(
+                    "parent message {pid} belongs to channel {pch}, not {}",
+                    new.channel_id
+                ));
+            }
+            Some(_) => {}
+        }
+    }
     let now = BoardStore::now();
     conn.execute(
         "INSERT INTO channel_message
@@ -4525,6 +4547,30 @@ fn add_comment_on(conn: &Connection, new: &NewComment) -> Result<Comment, String
         .ok_or_else(|| format!("issue {} not found", new.issue_id))?;
     let issue_title = format!("{number} {title}");
     let assignee = at.zip(aid).map(|(k, i)| Actor::new(&k, &i));
+
+    // parent_id 端点校验：悬空 / 跨单引用照旧入库会让前端 repliesOf
+    // （按本单评论列表过滤 parent_id）静默吞掉回复。parent 必须已存在
+    // 且同单——插入 id 单调递增，「端点存在」同时结构性封死引用环。
+    if let Some(pid) = new.parent_id {
+        let parent_issue: Option<i64> = conn
+            .query_row(
+                "SELECT issue_id FROM comment WHERE id = ?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match parent_issue {
+            None => return Err(format!("parent comment {pid} not found")),
+            Some(pissue) if pissue != new.issue_id => {
+                return Err(format!(
+                    "parent comment {pid} belongs to issue {pissue}, not {}",
+                    new.issue_id
+                ));
+            }
+            Some(_) => {}
+        }
+    }
 
     let now = BoardStore::now();
     let id = insert_comment(
