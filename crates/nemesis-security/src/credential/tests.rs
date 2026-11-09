@@ -639,3 +639,204 @@ fn test_redact_preserves_bare_vault_reference() {
         "裸引用必须原样保留: {out_mixed}"
     );
 }
+
+/// secret_assignment 值段禁跨行（2026-11-10 误拦实录回归锁）：getpass 文案
+/// `password: "` 的闭引号与下一行 `JiraError("` 的开引号曾被 `[^'"]`（含 \n）
+/// 跨行配对，中间两行正常 Python 代码被当成"密钥值"硬拦（match 头4=pass
+/// 尾4=or("）。禁 \n 后不再命中；真密值单行出现，检测面零变化。
+#[test]
+fn test_secret_assignment_not_cross_line() {
+    let scanner = Scanner::new(true, "block");
+    // 实录形态最小化：文案闭引号 + 换行代码 + 开引号，中间 >8 个非引号字符。
+    let cross_line = concat!(
+        "password = getpass.getpass(\"Jira password: \")\n",
+        "    if not pwd:\n",
+        "        raise JiraError(\"bad credentials\")\n"
+    );
+    let result = scanner.scan_content(cross_line);
+    assert!(
+        !result.has_matches,
+        "跨行引号配对不得命中: {:?}",
+        result.matches
+    );
+    // 对照：同一行内的真密形态仍命中（修复不得收窄检测面）。
+    let inline = scanner.scan_content("password = \"correct horse battery staple\"");
+    assert!(inline.has_matches, "单行带空格真密必须仍命中");
+    let no_close =
+        scanner.scan_content("password: \"\n        raise JiraError(\"value under eight\"");
+    // 值段不足 8 字符的两个短引号段也不得因跨行拼接而命中。
+    assert!(
+        !no_close.has_matches,
+        "短引号段跨行拼接不得命中: {:?}",
+        no_close.matches
+    );
+}
+
+/// 2026-11-10 另一设备实录回归锁（6e611a0b 基线复现）：只读 Jira 客户端脚本
+/// write_file 被 credential_scanner 硬拦（1 credential detected）。根因 =
+/// secret_assignment 值段跨行吞换行符，getpass 文案闭引号与下一行 JiraError
+/// 开引号被配对（match 头4=pass 尾4=or("）。本测试用日志原文全文（6189 字节
+/// 逐字节还原）钉死：修复后必须零命中；修复前该原文实测命中。
+#[test]
+fn test_real_log_jira_client_write_not_flagged() {
+    const CONTENT: &str = r##""""Read-only client for internal Jira; credentials are supplied interactively or via stdin."""
+import argparse
+import getpass
+import http.cookiejar
+import json
+import re
+import ssl
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+BASE_URL = "https://tbjira.lenovo.com/issue"
+DEFAULT_PROXY = "http://127.0.0.1:10809"
+
+
+class JiraError(Exception):
+    pass
+
+
+class SameOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        old = urllib.parse.urlsplit(req.full_url)
+        new = urllib.parse.urlsplit(newurl)
+        if (old.scheme, old.netloc) != (new.scheme, new.netloc):
+            raise JiraError("Cross-origin redirect refused.")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+class JiraClient:
+    def __init__(self, proxy=DEFAULT_PROXY, insecure=False, timeout=30):
+        context = ssl.create_default_context()
+        if insecure:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        self.timeout = timeout
+        self.opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}),
+            urllib.request.HTTPSHandler(context=context),
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+            SameOriginRedirect(),
+        )
+
+    def request(self, path, data=None, expect_json=True):
+        request = urllib.request.Request(BASE_URL + path, data=data)
+        request.add_header("User-Agent", "SmartConnect-Jira-ReadOnly/1.0")
+        if expect_json:
+            request.add_header("Accept", "application/json")
+        try:
+            with self.opener.open(request, timeout=self.timeout) as response:
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            raise JiraError("Jira returned HTTP %s; no automatic login retry." % exc.code) from None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            # Avoid reflecting request details in errors.
+            raise JiraError("Network request failed; check proxy and connectivity.") from None
+        if not expect_json:
+            return None
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (ValueError, UnicodeError):
+            raise JiraError("Expected Jira JSON; received another response, possibly a login page.") from None
+
+    def login(self, username, password):
+        self.request("/login.jsp", expect_json=False)
+        form = urllib.parse.urlencode({
+            "os_username": username,
+            "os_password": password,
+            "os_destination": "/",
+            "login": "Log In",
+        }).encode("utf-8")
+        self.request("/login.jsp", data=form, expect_json=False)
+        identity = self.request("/rest/api/2/myself")
+        if not isinstance(identity, dict) or not (identity.get("name") or identity.get("key")):
+            raise JiraError("Authenticated identity was not confirmed.")
+
+    def issue(self, key):
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*-[0-9]+", key):
+            raise JiraError("Invalid issue key.")
+        query = urllib.parse.urlencode({"fields": "summary,status,issuetype,description,attachment,comment"})
+        result = self.request("/rest/api/2/issue/" + key + "?" + query)
+        if not isinstance(result, dict) or result.get("key", "").upper() != key.upper():
+            raise JiraError("Response did not contain the requested issue.")
+        return result
+
+
+def read_credentials(from_stdin):
+    if from_stdin:
+        try:
+            value = json.load(sys.stdin)
+        except (ValueError, UnicodeError):
+            raise JiraError("Credentials stdin must contain a JSON object.") from None
+        if not isinstance(value, dict):
+            raise JiraError("Credentials stdin must contain a JSON object.")
+        username, password = value.get("username"), value.get("password")
+    else:
+        if not sys.stdin.isatty():
+            raise JiraError("Interactive login needs a terminal; use stdin with a trusted launcher.")
+        username = input("Jira username: ").strip()
+        password = getpass.getpass("Jira password: ")
+    if not isinstance(username, str) or not username.strip() or not isinstance(password, str) or not password:
+        raise JiraError("Non-empty username and password are required.")
+    return username, password
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--issue", help="Issue key, e.g. SMARTCTONE-3429")
+    parser.add_argument("--proxy", default=DEFAULT_PROXY)
+    parser.add_argument("--insecure", action="store_true", help="Disable TLS verification for internal access")
+    parser.add_argument("--credentials-stdin", action="store_true", help="Read credential JSON from stdin, not argv")
+    parser.add_argument("--output", help="Save UTF-8 JSON to a new file; never overwrites")
+    args = parser.parse_args(argv)
+    if args.output and not args.issue:
+        parser.error("--output requires --issue")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    try:
+        username, password = read_credentials(args.credentials_stdin)
+        client = JiraClient(proxy=args.proxy, insecure=args.insecure)
+        client.login(username, password)
+        del username, password
+        result = {"authenticated": True, "base_url": BASE_URL}
+        if args.issue:
+            result["issue"] = client.issue(args.issue)
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.output:
+            with open(args.output, "x", encoding="utf-8") as stream:
+                stream.write(text + "\n")
+            print("Authentication confirmed; issue JSON saved.")
+        else:
+            print(text)
+        return 0
+    except (JiraError, OSError, EOFError, KeyboardInterrupt) as exc:
+        message = str(exc) if isinstance(exc, JiraError) else "Input cancelled or output file could not be created."
+        print("ERROR: " + message, file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+"##;
+    let scanner = Scanner::new(true, "block");
+    let result = scanner.scan_content(CONTENT);
+    assert!(
+        !result.has_matches,
+        "2026-11-10 实录原文不得再被误拦: {:?}",
+        result.matches
+    );
+    // 防修过头对照：同一原文注入单行真密后仍必须命中（检测面未收窄）。
+    let with_secret = CONTENT.replace(
+        "BASE_URL = ",
+        "password = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\" BASE_URL = ",
+    );
+    let flagged = scanner.scan_content(&with_secret);
+    assert!(
+        flagged.has_matches,
+        "原文+注入真密必须仍命中: {:?}",
+        flagged.matches
+    );
+}

@@ -308,7 +308,11 @@ fn get_credential_patterns() -> &'static CredentialPatterns {
             ("bearer_token", r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*"),
             ("basic_auth", r"(?i)Basic\s+[A-Za-z0-9+/]+=*"),
             // Generic secret assignment
-            ("secret_assignment", r#"(?i)(?:password|secret|token|api_key|apikey|private_key|access_key)\s*[=:]\s*['"][^'"]{8,}['"]"#),
+            // 值段禁跨行（[^'"\n]）：[^'"] 会连 \n 一起吞，getpass("Jira password: ")
+            // 的文案闭引号与下一行 JiraError(" 的开引号被跨行配对，中间两行正常代码
+            // 被当成"密钥值"误拦（2026-11-10 实录：只读 Jira 脚本写入被 credential_scanner
+            // 硬拦，复现 match=pass...or("）。密钥值单行内出现，禁 \n 无真实漏检面。
+            ("secret_assignment", r#"(?i)(?:password|secret|token|api_key|apikey|private_key|access_key)\s*[=:]\s*['"][^'"\n]{8,}['"]"#),
             // Heroku
             ("heroku_key", r"(?i)heroku\s*[=:]\s*[a-f0-9-]{36}"),
             // Netlify
