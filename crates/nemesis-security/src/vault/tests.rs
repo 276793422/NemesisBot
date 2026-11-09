@@ -45,40 +45,74 @@ fn create_retrying(path: &Path, mode: VaultMode, passphrase: Option<&str>) -> Va
     panic!("create 连续 3 次遇 rename 瞬态失败: {last_err}");
 }
 
+/// 外力瞬态第二臂的 body 级重跑（2026-11-09 coverage 42558777444 实录）：
+/// vault.enc 在 create 成功、save 落盘之后、open 之前被外力删掉（Linux
+/// coverage runner，`NotFound("/tmp/...")`）——create_retrying 管不了
+/// create 返回之后的窗口，且文件已灭时逐点重试无意义，只能整段重来。
+/// `f` 必须自包含（create 起步的完整流程）；临时目录按 attempt 换新。
+/// 只吞 panic 消息含 `rename:`/`NotFound(` 的瞬态臂，其余原样 resume
+/// ——断言失败照常红，断言力不变。
+fn vault_body_retried<T>(tag: &str, mut f: impl FnMut(&Path) -> T) -> T {
+    let mut last_msg = String::new();
+    for attempt in 0..3 {
+        let path = tmp_vault_path(&format!("{tag}-{attempt}"));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&path)));
+        match result {
+            Ok(v) => {
+                cleanup(&path);
+                return v;
+            }
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                    .unwrap_or_default();
+                if msg.contains("rename:") || msg.contains("NotFound(") {
+                    last_msg = msg;
+                } else {
+                    std::panic::resume_unwind(payload);
+                }
+            }
+        }
+    }
+    panic!("vault 测试连续 3 次遇外力瞬态（rename:/NotFound）: {last_msg}");
+}
+
 /// argon2 模式全流程：create → set → reopen（锁定）→ list 可见但 get 锁定 →
 /// 错误口令拒绝 → 正确口令解锁 → get 还原。
 #[test]
 fn argon2_roundtrip_lock_and_unlock() {
-    let path = tmp_vault_path("argon2-roundtrip");
-    {
-        let mut store = create_retrying(&path, VaultMode::Argon2id, Some("correct horse"));
-        assert!(store.is_unlocked());
-        store
-            .set("openai-main", "sk-SUPERSECRET123", "openai", "主力模型 key")
-            .unwrap();
-        store.save().unwrap();
-    }
-    // 重开：锁定态。
-    let store = VaultStore::open(&path).unwrap();
-    assert_eq!(store.mode(), VaultMode::Argon2id);
-    assert!(!store.is_unlocked());
-    // list 未解锁可用，只见元数据。
-    let listing = store.list();
-    assert_eq!(listing.len(), 1);
-    assert_eq!(listing[0].alias, "openai-main");
-    assert_eq!(listing[0].meta.domain, "openai");
-    // get 在锁定态 → Locked。
-    assert!(matches!(store.get("openai-main"), Err(VaultError::Locked)));
-    // 错误口令 → WrongPassphrase。
-    let mut store = store;
-    assert!(matches!(
-        store.unlock("wrong password"),
-        Err(VaultError::WrongPassphrase)
-    ));
-    // 正确口令 → 还原。
-    store.unlock("correct horse").unwrap();
-    assert_eq!(store.get("openai-main").unwrap(), "sk-SUPERSECRET123");
-    cleanup(&path);
+    vault_body_retried("argon2-roundtrip", |path| {
+        {
+            let mut store = create_retrying(path, VaultMode::Argon2id, Some("correct horse"));
+            assert!(store.is_unlocked());
+            store
+                .set("openai-main", "sk-SUPERSECRET123", "openai", "主力模型 key")
+                .unwrap();
+            store.save().unwrap();
+        }
+        // 重开：锁定态。
+        let store = VaultStore::open(path).unwrap();
+        assert_eq!(store.mode(), VaultMode::Argon2id);
+        assert!(!store.is_unlocked());
+        // list 未解锁可用，只见元数据。
+        let listing = store.list();
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].alias, "openai-main");
+        assert_eq!(listing[0].meta.domain, "openai");
+        // get 在锁定态 → Locked。
+        assert!(matches!(store.get("openai-main"), Err(VaultError::Locked)));
+        // 错误口令 → WrongPassphrase。
+        let mut store = store;
+        assert!(matches!(
+            store.unlock("wrong password"),
+            Err(VaultError::WrongPassphrase)
+        ));
+        // 正确口令 → 还原。
+        store.unlock("correct horse").unwrap();
+        assert_eq!(store.get("openai-main").unwrap(), "sk-SUPERSECRET123");
+    });
 }
 
 /// 创建后未 save（create 内部已 save）重开即丢——不，create 落盘；
