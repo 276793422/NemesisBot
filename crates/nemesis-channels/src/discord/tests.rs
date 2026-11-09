@@ -237,3 +237,24 @@ async fn discord_api_base_trailing_slash_normalized() {
     let ch2 = DiscordChannel::new_with_client(config2, tx.clone(), http).unwrap();
     assert_eq!(ch2.config.api_base, "https://discord.example.com/api");
 }
+
+/// 回归锁（BUG-20261109-023）：HELLO heartbeat_interval 钳位——缺失回落
+/// 45s、0/极小值钳 1s 下限（tokio interval period=0 panic → 心跳任务死
+/// → 永久断连循环）。
+#[test]
+fn test_sanitize_heartbeat_interval_ms() {
+    assert_eq!(super::sanitize_heartbeat_interval_ms(None), 45_000);
+    assert_eq!(super::sanitize_heartbeat_interval_ms(Some(0)), 1_000);
+    assert_eq!(super::sanitize_heartbeat_interval_ms(Some(1)), 1_000);
+    assert_eq!(super::sanitize_heartbeat_interval_ms(Some(999)), 1_000);
+    assert_eq!(super::sanitize_heartbeat_interval_ms(Some(41_250)), 41_250);
+}
+
+/// tokio `interval` zero-period panic 的行为前提守卫：修复依赖「period 0
+/// 必 panic」这一 tokio 契约（interval.rs 文档）——若未来 tokio 版本改
+/// 变该行为，此测试先红，提示重新评估钳位下限的必要性。
+#[tokio::test]
+#[should_panic(expected = "`period` must be non-zero")]
+async fn test_interval_zero_period_panics() {
+    let _ = tokio::time::interval(std::time::Duration::from_millis(0));
+}

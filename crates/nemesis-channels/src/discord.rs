@@ -452,8 +452,14 @@ impl DiscordChannel {
 
                     match op {
                         opcode::HELLO => {
-                            let interval =
-                                payload["d"]["heartbeat_interval"].as_u64().unwrap_or(45000);
+                            // 网关下发的 heartbeat_interval（毫秒）钳位：
+                            // `as_u64()` 只防缺键不防 0，tokio `interval`
+                            // period 为零 panic（文档明确行为）→ 心跳任务
+                            // 死 → 网关断连 → 重连 HELLO 再 panic = 永久
+                            // 断连循环。1s 下限（oauth <1→5 同口径先例）。
+                            let interval = sanitize_heartbeat_interval_ms(
+                                payload["d"]["heartbeat_interval"].as_u64(),
+                            );
                             debug!("[DiscordChannel] HELLO: heartbeat_interval={interval}ms");
 
                             // Spawn heartbeat task
@@ -663,10 +669,10 @@ impl DiscordChannel {
         let author_id = author["id"].as_str()?;
 
         // Filter out bot's own messages
-        if let Some(ref bid) = *bot_user_id.read().await {
-            if author_id == bid {
-                return None;
-            }
+        if let Some(ref bid) = *bot_user_id.read().await
+            && author_id == bid
+        {
+            return None;
         }
 
         // Filter out other bots
@@ -788,6 +794,14 @@ impl Channel for DiscordChannel {
 
         Ok(())
     }
+}
+
+/// HELLO `heartbeat_interval`（毫秒）钳位：缺失回落官方常见值 45_000；
+/// 0 钳到 1_000 下限——tokio `interval` period 为零时 panic（文档明确
+/// 行为，本仓回归锁守卫该行为前提），心跳任务死后网关断连、重连
+/// HELLO 再触发同款 panic = 永久断连循环。
+fn sanitize_heartbeat_interval_ms(raw: Option<u64>) -> u64 {
+    raw.unwrap_or(45_000).max(1_000)
 }
 
 // ---------------------------------------------------------------------------
