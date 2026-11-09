@@ -360,7 +360,14 @@ pub fn trash_chat_log_in(
     };
     let raw =
         serde_json::to_string_pretty(&manifest).map_err(|e| format!("清单序列化失败: {e}"))?;
-    std::fs::write(entry.join("trash.json"), raw).map_err(|e| format!("清单写入失败: {e}"))?;
+    // 原子写（write_file_atomic）：trash.json 是回收站条目的可见性清单，
+    // 半截 = 条目从列表静默消失（材料还在 entry 里但读不出清单）。
+    nemesis_utils::file::write_file_atomic(
+        &entry.join("trash.json").to_string_lossy(),
+        raw.as_bytes(),
+        0o644,
+    )
+    .map_err(|e| format!("清单写入失败: {e}"))?;
 
     // FTS 懒索引：jsonl 已离开 session_logs，摘除索引登记——同键复用（复合
     // 通道键同节点同 chat 重开真实可达）的增量插入不得以旧 DB 行为基线推
@@ -633,7 +640,15 @@ pub fn trash_restore_in(
             target_key: target_key.clone(),
         })
         .map_err(|e| format!("恢复标记序列化失败: {e}"))?;
-        std::fs::write(&marker_path, raw).map_err(|e| format!("恢复标记写入失败: {e}"))?;
+        // 原子写（write_file_atomic）：与 trash.json 同面——标记是恢复
+        // 事务锚点，读侧虽兜「读不出=全新恢复+覆写」（上方 561-563 注释），
+        // 原子化把「半截」形态从窗口里直接消除，协议不依赖时序巧合。
+        nemesis_utils::file::write_file_atomic(
+            &marker_path.to_string_lossy(),
+            raw.as_bytes(),
+            0o644,
+        )
+        .map_err(|e| format!("恢复标记写入失败: {e}"))?;
     }
 
     // 移回材料（boundary/meta/todo 缺席 = 跳过；续作时已移走的同样按缺席

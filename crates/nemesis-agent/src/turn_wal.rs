@@ -435,7 +435,14 @@ impl TurnWal {
                 s.push('\n');
                 s
             };
-            if let Err(e) = std::fs::write(&self.path, body) {
+            // 原子重写（write_file_atomic：sync 先于 rename，崩溃窗口内
+            // WAL 要么完整新内容要么旧文件，绝不半截——WAL 是 forge C 线
+            // 失败重放的数据源，半截 = 终态记录静默丢失）。
+            if let Err(e) = nemesis_utils::file::write_file_atomic(
+                &self.path.to_string_lossy(),
+                body.as_bytes(),
+                0o644,
+            ) {
                 tracing::warn!("[TurnWal] 恢复期 drain 重写失败: {e}");
             }
             // 兜底重开（同族）：写败/重开败任一发生都不许

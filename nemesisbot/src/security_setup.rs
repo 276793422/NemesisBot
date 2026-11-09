@@ -62,7 +62,13 @@ pub(crate) fn ensure_security_config(home: &std::path::Path) -> std::path::PathB
         );
         return path;
     }
-    match std::fs::write(&path, template) {
+    // 原子写（write_file_atomic）：自愈触发条件是「文件不存在」——裸写
+    // 半截的模板文件存在即挡住下次自愈，安全规则静默空载（读侧只有 warn）。
+    match nemesis_utils::file::write_file_atomic(
+        &path.to_string_lossy(),
+        template.as_bytes(),
+        0o644,
+    ) {
         Ok(()) => warn!(
             "[Security] {} 不存在：已从内嵌平台模板自动生成（F3 缺失自愈；如需自定义请编辑该文件）",
             path.display()

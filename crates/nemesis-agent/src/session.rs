@@ -937,7 +937,16 @@ impl SessionStore {
                                 serde_json::Value::String("agent:main:session:legacy".to_string());
                         }
                         if let Ok(out) = serde_json::to_string_pretty(&v)
-                            && std::fs::write(&legacy_json, out).is_ok()
+                            // 原子写（同文件 save 路径 756 行同源）：裸写半截
+                            // 的 legacy_json 会 satisfy exists() 闸——迁移入口
+                            // 条件 `main_json.exists() && !legacy_json.exists()`
+                            // 永不重真，迁移被永久跳过（旧 key 会话失联）。
+                            && nemesis_utils::file::write_file_atomic(
+                                &legacy_json.to_string_lossy(),
+                                out.as_bytes(),
+                                0o644,
+                            )
+                            .is_ok()
                         {
                             let _ = std::fs::remove_file(&main_json);
                             info!(

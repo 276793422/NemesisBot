@@ -343,17 +343,18 @@ impl FlowStore {
         self.instance_path(template, instance).is_file()
     }
 
-    /// 原子落盘（tmp + 换名）；删旧残留再 rename（Windows rename 语义）。
+    /// 原子落盘（[`nemesis_utils::file::write_file_atomic`]：唯一临时名 +
+    /// sync 先于 rename + 失败清理）。旧形态「固定 `json.tmp` + 先删旧再
+    /// 改名」是双反模式：并发 save 同实例在固定 tmp 上互踩产出坏混合体、
+    /// rename 把好文件顶成坏文件（subagent_registry 同族先例明令禁止）；
+    /// remove 成功而 rename 失败 = 实例文件整个丢失（Windows AV/打开句柄
+    /// 占用目标是常态不是异常）。
     pub fn save(&self, inst: &FlowInstance) -> Result<(), String> {
-        let dir = self.template_dir(&inst.template);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("flow dir: {e}"))?;
         let path = self.instance_path(&inst.template, &inst.instance);
-        let tmp = path.with_extension("json.tmp");
         let body =
             serde_json::to_string_pretty(inst).map_err(|e| format!("serialize flow: {e}"))?;
-        std::fs::write(&tmp, body).map_err(|e| format!("write flow tmp: {e}"))?;
-        let _ = std::fs::remove_file(&path);
-        std::fs::rename(&tmp, &path).map_err(|e| format!("rename flow: {e}"))
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
+            .map_err(|e| format!("save flow instance: {e}"))
     }
 
     pub fn load(&self, template: &str, instance: &str) -> Result<FlowInstance, String> {
@@ -593,7 +594,8 @@ impl FlowStore {
         v.get("status").and_then(|s| s.as_str()).map(str::to_string)
     }
 
-    /// 原子落回写游标（tmp + 换名，实例 save 同款 Windows 语义）。
+    /// 原子落回写游标（[`nemesis_utils::file::write_file_atomic`]，实例
+    /// save 同款反模式根修：固定 `json.tmp` 并发互踩 + 先删后改名丢失窗口）。
     fn save_transition_state(
         &self,
         template: &str,
@@ -601,13 +603,9 @@ impl FlowStore {
         status: &str,
     ) -> Result<(), String> {
         let path = self.transition_state_path(template, origin_id);
-        std::fs::create_dir_all(path.parent().ok_or("回写状态路径无父目录")?)
-            .map_err(|e| format!("回写状态目录: {e}"))?;
-        let tmp = path.with_extension("json.tmp");
         let body = json!({ "status": status, "ts_ms": now_ms() }).to_string();
-        std::fs::write(&tmp, body).map_err(|e| format!("write 回写状态 tmp: {e}"))?;
-        let _ = std::fs::remove_file(&path);
-        std::fs::rename(&tmp, &path).map_err(|e| format!("rename 回写状态: {e}"))
+        nemesis_utils::file::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o644)
+            .map_err(|e| format!("回写状态: {e}"))
     }
 }
 
