@@ -344,9 +344,13 @@ fn camel_to_snake(s: &str) -> String {
                 let prev = s.chars().nth(i - 1).unwrap();
                 if prev.is_lowercase() || prev.is_ascii_digit() {
                     result.push('_');
-                } else if prev.is_uppercase() && i + 1 < s.len() {
-                    let next = s.chars().nth(i + 1).unwrap();
-                    if next.is_lowercase() {
+                } else if prev.is_uppercase() {
+                    // BUG-20261109-031：末字符判断不能用字节长度守卫
+                    // （`i + 1 < s.len()`）——含多字节前缀的 key（如
+                    // `下载URL`，末字符 R 的 i+1=4 < 字节 len 8 但已达
+                    // 字符末尾）守卫通过而 nth 返回 None → unwrap panic。
+                    // 改用 Option 直取：None = c 是末字符，无需看 next。
+                    if s.chars().nth(i + 1).is_some_and(|next| next.is_lowercase()) {
                         result.push('_');
                     }
                 }

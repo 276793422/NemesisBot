@@ -652,3 +652,37 @@ fn test_merge_config_existing_without_channels() {
     assert_eq!(models[0]["model_name"], "m");
     assert!(existing.get("channels").is_none());
 }
+
+#[test]
+fn test_camel_to_snake_multibyte_prefix_upper_run_at_end_no_panic() {
+    // BUG-20261109-031：`i + 1 < s.len()` 是字节长度守卫——含多字节前缀
+    // 的 key（`下载URL`：末字符 R 的 i+1=4 < 字节 len 8，但已越字符末尾）
+    // 守卫通过而 chars().nth() 返回 None → unwrap panic，migrate 命令
+    // 遇用户配置里的中文混合 key 直接崩。修复后 None = 末字符，跳过
+    // next 判断（与旧代码 i+1 == len 时跳过的语义一致）。
+    // 修复前此测试在 camel_to_snake("下载URL") 处 panic。
+    assert_eq!(camel_to_snake("下载URL"), "下载url");
+    assert_eq!(camel_to_snake("中AB"), "中ab");
+    assert_eq!(camel_to_snake("设置AB"), "设置ab");
+}
+
+#[test]
+fn test_camel_to_snake_multibyte_upper_run_inside_still_inserts_underscore() {
+    // Some 分支行为保持：多字节前缀 + 大写串中段（next 是小写）仍插下划线
+    assert_eq!(camel_to_snake("设置ABc"), "设置a_bc");
+    // 纯 ASCII 既有断言不受影响（test_camel_to_snake 已覆盖），此处补
+    // 尾部大写串收尾形态（原 i+1 == len 分支：无 next，不插下划线）
+    assert_eq!(camel_to_snake("bridgeURL"), "bridge_url");
+    assert_eq!(camel_to_snake("apiKEY2"), "api_key2");
+}
+
+#[test]
+fn test_convert_keys_to_snake_chinese_mixed_key_no_panic() {
+    // e2e：convert_keys_to_snake 递归套在用户 OpenClaw 配置的每个 JSON
+    // key 上——中文混合 key 必须正常转换而非 panic
+    let input = serde_json::json!({"下载URL": "https://example.com", "myKey": 1});
+    let output = convert_keys_to_snake(&input);
+    let obj = output.as_object().unwrap();
+    assert!(obj.contains_key("下载url"));
+    assert!(obj.contains_key("my_key"));
+}
