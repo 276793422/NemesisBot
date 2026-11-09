@@ -90,7 +90,17 @@ impl SignalChannel {
 
         Ok(Self {
             base: BaseChannel::new("signal"),
-            config,
+            config: SignalConfig {
+                // api_url 尾斜杠归一：config 反序列化直通，用户从 signal-cli
+                // REST 文档/示例复制带尾斜杠 base（如 `http://127.0.0.1:8080/`）
+                // 时 receive_url/send 的 `format!("{}/v1/...")` 产生
+                // `//v1/receive/` 双斜杠——signal-cli-rest-api 服务路由精确
+                // 匹配 404，收发全挂（BUG-20261109-034，与 discord/telegram/
+                // qq 的 BUG-20261109-012 同族）。构造期写回 = 3 个拼接消费点
+                // （receive_url + send 两分支）的单一归一漏斗。
+                api_url: config.api_url.trim_end_matches('/').to_string(),
+                ..config
+            },
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 // 凭据随重定向跨主机泄漏防线（nemesis-utils::http_redirect
@@ -156,17 +166,12 @@ impl SignalChannel {
 
     /// Sends a message to a number or group.
     pub async fn send_signal_message(&self, to: &str, content: &str, is_group: bool) -> Result<()> {
-        let url = if is_group {
-            format!(
-                "{}/v2/send/{}",
-                self.config.api_url, self.config.phone_number
-            )
-        } else {
-            format!(
-                "{}/v2/send/{}",
-                self.config.api_url, self.config.phone_number
-            )
-        };
+        // URL 单一形态：is_group 只切换 payload 的 group/number 字段，
+        // 端点相同（原 if/else 两分支字节相同，clippy identical-blocks）。
+        let url = format!(
+            "{}/v2/send/{}",
+            self.config.api_url, self.config.phone_number
+        );
 
         let mut request = SignalSendRequest {
             message: content.to_string(),

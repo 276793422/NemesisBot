@@ -180,3 +180,39 @@ async fn test_signal_double_stop() {
     ch.stop().await.unwrap();
     ch.stop().await.unwrap();
 }
+
+/// BUG-20261109-034 回归锁：api_url 尾斜杠归一（构造期写回 = 3 个拼接
+/// 消费点单一漏斗，与 discord/telegram/qq 的 BUG-20261109-012 同族）。
+/// 用户从 signal-cli REST 文档复制带尾斜杠 base 时不得产生 `//v1/`
+/// 双斜杠（signal-cli-rest-api 路由精确匹配 404，收发全挂）。
+#[test]
+fn signal_api_url_trailing_slash_normalized() {
+    let config = SignalConfig {
+        api_url: "http://127.0.0.1:8080/".to_string(),
+        phone_number: "+1234567890".to_string(),
+        allow_from: Vec::new(),
+    };
+    let ch = SignalChannel::new(config, test_bus()).unwrap();
+    assert_eq!(
+        ch.config.api_url, "http://127.0.0.1:8080",
+        "api_url 尾斜杠必须在构造期归一"
+    );
+    assert!(
+        !ch.receive_url().contains("//v1"),
+        "receive_url 不得残留双斜杠: {}",
+        ch.receive_url()
+    );
+    assert_eq!(
+        ch.receive_url(),
+        "http://127.0.0.1:8080/v1/receive/+1234567890"
+    );
+
+    // 无尾斜杠形态行为不变（幂等）
+    let cfg2 = SignalConfig {
+        api_url: "http://127.0.0.1:8080".to_string(),
+        phone_number: "+1234567890".to_string(),
+        allow_from: Vec::new(),
+    };
+    let ch2 = SignalChannel::new(cfg2, test_bus()).unwrap();
+    assert_eq!(ch2.receive_url(), ch.receive_url());
+}
