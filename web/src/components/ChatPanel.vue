@@ -39,6 +39,8 @@ import WorkTimelineBlock from './chat/WorkTimelineBlock.vue'
 import SubagentDrawer from './chat/SubagentDrawer.vue'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
+// 滚动跟随（2026-11-09 滚动/焦点/选择批）：follow 三规则 + MutationObserver 贴底。
+import { useStickToBottom } from '../composables/useStickToBottom'
 import { escapeHtml, renderMarkdownHtml } from '../utils/markdown'
 import { planRegenerate, type RegenPlan } from '../utils/regenerate'
 import hljs from 'highlight.js/lib/core'
@@ -674,11 +676,23 @@ function concurrencyBadge(msg: { role: string; content: string }): { cls: string
   return null
 }
 
-function scrollToBottom() {
-  if (chatMessages.value) {
-    chatMessages.value.scrollTop = chatMessages.value.scrollHeight
-  }
-}
+// --- 滚动跟随（2026-11-09 滚动/焦点/选择批）---------------------------
+// useStickToBottom 三规则：滚轮上滚即时放弃跟随 / scroll 方向判定 /
+// 距底阈值恢复 + 跟随时内容变化贴底（MutationObserver 子树监听）。旧实现只靠
+// scroll 事件维护 flag，而内容增长不触发 scroll 事件——「回复到了却不滚」
+// 的根因；重灌/重同步用视口锚保位（capture/restore），不再无条件贴底。
+const {
+  follow: chatFollow,
+  unreadBelow,
+  stick: scrollToBottomIfNear,
+  jumpToBottom: scrollToBottom,
+  scrollToBottomSmooth,
+  captureViewportAnchor,
+  restoreViewportAnchor,
+  resetFollow: resetChatFollow,
+  attach: attachScrollFollow,
+  detach: detachScrollFollow,
+} = useStickToBottom(() => chatMessages.value)
 
 // --- BUG-3（2026-10-23 对话链路三缺陷）：失败待续状态条 -----------------
 // 错误收尾轮后用户「完全看不到任何可能让任务继续做下去的标记」。会话
@@ -702,24 +716,56 @@ function continueFailedTurn() {
 
 // Track whether user is near the bottom of the chat.
 // If user scrolled up to read history, don't auto-scroll on new messages.
-const userNearBottom = ref(true)
-
-function checkUserNearBottom() {
-  const el = chatMessages.value
-  if (!el) return
-  // Within 80px of bottom counts as "near bottom"
-  userNearBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-}
-
-function scrollToBottomIfNear() {
-  if (userNearBottom.value) {
-    scrollToBottom()
-  }
-}
+// （2026-11-09 滚动批：userNearBottom flag 由 useStickToBottom 的 follow
+//  取代——flag 只在 scroll 事件里重算而内容增长不触发 scroll，是「回复
+//  到了却不滚」的根因；此处旧实现整体移除。）
 
 function onChatAreaClick(ev: MouseEvent) {
+  // 2026-11-09 焦点批：消息区点击不再抢焦点——拖选结束松开鼠标必然派发
+  // click，无条件 focus 会把选区打掉（焦点进文本框 = 文档选区塌陷，Ctrl+C
+  // 复制的是输入框空缓冲）。回焦输入框的正道是键入路由（onGlobalKeydown）。
   onFileLinkClick(ev)
-  chatInput.value?.focus()
+}
+
+// 键入即聚焦：焦点不在任何可编辑元素时，可打印字符直接落入输入框
+//（首字符不丢——本地拼接 + preventDefault，不赌 keypress 落点）。
+// 消息区点击不抢焦点后的回焦正道。
+function onGlobalKeydown(e: KeyboardEvent) {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return
+  const target = e.target as HTMLElement | null
+  // 空格/Enter 在按钮/链接/菜单项上是激活语义，不劫持（含组合中的确认键）
+  if (
+    (e.key === ' ' || e.key === 'Enter') &&
+    target?.closest('button, a, [role="button"], [role="tab"], [role="menuitem"]')
+  ) {
+    return
+  }
+  // IME 按键（key='Process' 或 isComposing）：绝不代插、不 preventDefault——
+  // 组合内容归输入法。但组合「首击」落在非编辑元素上时（消息区点击不再抢
+  // 焦点的设计后果：焦点停在 body），同步把焦点搬进输入框，让随后的
+  // compositionstart 直接落在输入框——否则中文输入法用户在页面任意处打字，
+  // 拼音组合挂在 body 浮窗上、上屏即丢、焦点永不进输入框（2026-11-09
+  // 用户实测：纯英文键路由正常但挂输入法打字无效）。
+  const inEditable =
+    !!target &&
+    (target.tagName === 'INPUT' ||
+      target.tagName === 'TEXTAREA' ||
+      target.tagName === 'SELECT' ||
+      target.isContentEditable)
+  if (e.isComposing || e.key === 'Process') {
+    if (!inEditable && chatInput.value && chatMessages.value && chatMessages.value.offsetParent !== null) {
+      chatInput.value.focus()
+    }
+    return
+  }
+  if (e.key.length !== 1) return
+  if (inEditable) return
+  if (!chatInput.value) return
+  // 多面板共存（主聊天 + workflow 嵌入等）时只响应可见实例
+  if (chatMessages.value && chatMessages.value.offsetParent === null) return
+  chatStore.input += e.key
+  e.preventDefault()
+  chatInput.value.focus()
 }
 
 // 文件链接点击（问题 2，2026-10-19）：markdown linkify 产出的
@@ -1749,6 +1795,9 @@ function handleHistoryResponse(data: any) {
   // M6：rewind/redo 后的重同步（无条件 replace + oldest_index 重建行号）。
   if (pendingResync) {
     pendingResync = false
+    // 视口锚保位（2026-11-09 滚动批）：重灌不再无条件贴底——用户正读着
+    // 上文被拽到底已多次被点名；锚滑出（列表变短等）回落条件贴底。
+    const viewportAnchor = captureViewportAnchor()
     const rawMsgs: any[] = data.messages || []
     const oldest = typeof data.oldest_index === 'number' ? data.oldest_index : null
     chatStore.replaceMessages(
@@ -1766,7 +1815,9 @@ function handleHistoryResponse(data: any) {
     )
     chatStore.setBusy(effectiveSid.value, false)
     clearWatchdog()
-    nextTick(() => scrollToBottom())
+    nextTick(() => {
+      if (!restoreViewportAnchor(viewportAnchor)) scrollToBottomIfNear()
+    })
     // 重新生成的重发链在等这个响应（视图 replace 完成 = 可安全回显重发）。
     inflight.onDone?.()
     return
@@ -1796,6 +1847,8 @@ function handleHistoryResponse(data: any) {
       }
     }
     if (streaming.value && landed) {
+      // 视口锚保位（2026-11-09 滚动批）：重灌不再无条件贴底。
+      const viewportAnchor = captureViewportAnchor()
       chatStore.replaceMessages(
         rawMsgs.map((m: any) => ({
           role: m.role,
@@ -1813,7 +1866,9 @@ function handleHistoryResponse(data: any) {
       // 重灌只有文本行——从环回放挂回最后一轮工具卡(与 F5/切回的
       // primeSeqBaseline 同语义;重灌丢卡 = P1 修复的同族问题)。
       void replayToolsFromRing().catch(() => {})
-      nextTick(() => scrollToBottom())
+      nextTick(() => {
+        if (!restoreViewportAnchor(viewportAnchor)) scrollToBottomIfNear()
+      })
     } else if (streaming.value && watchdogAttempts < MAX_WATCHDOG_ATTEMPTS) {
       // Response not landed yet (maybe still running) — re-check later.
       armWatchdog()
@@ -2429,10 +2484,12 @@ async function sendValidated(content: string, media: { id: string }[]) {
     request('voice', 'stt_dialogue_reset').catch(() => {})
   }
 
-  nextTick(() => scrollToBottom())
+  // 2026-11-09 滚动批：发送后平滑滚到底回看回复（动画可被滚轮上滚打断，
+  // ChatGPT 同语义）；不再强制复位跟随 flag——旧写法把用户在上方的阅读态
+  // 一并打掉，之后所有新回复都会拽人。跟随态由 useStickToBottom 统一裁决。
+  nextTick(() => scrollToBottomSmooth())
   nextTick(() => {
     chatInput.value?.focus()
-    userNearBottom.value = true
   })
 }
 
@@ -2842,7 +2899,6 @@ function setupScrollListener() {
   scrollHandler = () => {
     const container = chatMessages.value
     if (!container) return
-    checkUserNearBottom()
     if (container.scrollTop <= 50 && chatStore.hasMoreHistory && !chatStore.historyLoading && chatStore.historyLoaded) {
       loadHistory()
     }
@@ -2952,6 +3008,7 @@ const unwatchSession = watch(
     resetHistoryLoadFailure()
     chatStore.reset()
     lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
+    resetChatFollow() // 换会话 → 跟随态回初值、未读清零（2026-11-09 滚动批）
     resetActivityLag() // 旧会话的 activity 残留状态（lag 游标/重试链/在途 timer）不带到新会话
     if (newId && wsStatus.value === 'connected') {
       // 2026-11-07 侧栏新建→秒发竞速修复之二（FF chat e2e 全量实录）：已知
@@ -3003,7 +3060,21 @@ onMounted(() => {
     if (chatMessages.value && scrollHandler) {
       chatMessages.value.addEventListener('scroll', scrollHandler)
     }
+    // 滚动跟随接线（scroll/wheel 监听 + 内容 ResizeObserver 贴底）。
+    attachScrollFollow()
+    // 键入即聚焦（2026-11-09 焦点批）：document 级 keydown 路由。
+    document.addEventListener('keydown', onGlobalKeydown)
   })
+
+  // 未读计数（2026-11-09 滚动批）：不在底部时新增消息计未读（回底浮钮
+  // 徽标）；首元素位移（前插历史/全量重灌）= 历史装载语义，不计。
+  watch(
+    () => [chatStore.messages.length, chatStore.messages[0]] as const,
+    ([n, first], [o, oldFirst]) => {
+      if (n <= o || first !== oldFirst) return
+      if (!chatFollow.value) unreadBelow.value += n - o
+    },
+  )
 
   // If not standalone, check if we need to connect
   if (!props.standalone) {
@@ -3054,6 +3125,8 @@ onUnmounted(() => {
   if (chatMessages.value && scrollHandler) {
     chatMessages.value.removeEventListener('scroll', scrollHandler)
   }
+  detachScrollFollow()
+  document.removeEventListener('keydown', onGlobalKeydown)
   removeMessageHandler(handleWSMessage)
   offSSE('resync', onSSEResync)
   offSSE('chat.activity', onChatActivity)
@@ -3269,6 +3342,16 @@ onUnmounted(() => {
             <div class="typing-indicator"><span></span><span></span><span></span></div>
           </div>
         </div>
+      </div>
+
+      <!-- 回到底部浮钮（2026-11-09 滚动批）：sticky 定位于滚动容器内——
+           放弃跟随时浮在可视区底缘（DSH ui-chat 同语义），点击平滑回底；
+           徽标 = 离底期间落下的新消息数（回底即清零）。 -->
+      <div v-if="!chatFollow" class="back-to-bottom-wrap">
+        <button class="back-to-bottom" type="button" title="回到底部" @click="scrollToBottomSmooth()">
+          <span v-if="unreadBelow > 0" class="btt-unread">{{ unreadBelow > 99 ? '99+' : unreadBelow }}</span>
+          <span class="btt-arrow">↓</span>
+        </button>
       </div>
     </div>
 
@@ -3705,6 +3788,73 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* ===== 2026-11-09 滚动/焦点/选择批 ===== */
+
+/* 回到底部浮钮：sticky 钉在滚动容器可视底缘（零高度包裹层 + 按钮绝对定位
+   上溢显示，不参与内容布局；不跟随时 v-if 出现）。
+   ⚠ 包裹层必须 display:block——flex 容器 height:0 会把子项交叉轴压扁成
+   线（playwright 实测按钮 36.5×10px），绝对定位脱离弹性布局才保得住形。 */
+.back-to-bottom-wrap {
+  position: sticky;
+  bottom: 0;
+  height: 0;
+  overflow: visible;
+  display: block;
+  z-index: 6;
+  pointer-events: none;
+}
+.back-to-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+.back-to-bottom:hover {
+  color: var(--text);
+  border-color: var(--border-light);
+}
+.btt-unread {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: #ffffff;
+  font-size: var(--text-xs);
+  line-height: 18px;
+  text-align: center;
+  font-weight: 600;
+}
+.btt-arrow {
+  font-size: var(--text-sm);
+  line-height: 1;
+}
+
+/* 时间行与徽章是 chrome 元素——拖选复制正文不应混入时间戳/徽标文本。 */
+.chat-messages .message-time,
+.chat-messages .msg-image-chip {
+  user-select: none;
+}
+
+/* 浏览器原生滚动锚定交给 useStickToBottom 统一裁决（前插历史走
+   scrollHeight delta 补偿，跟随时走 MutationObserver 贴底），避免双份
+   补偿互相打架。 */
+.chat-messages {
+  overflow-anchor: none;
+}
+
 /* L6++：项目 chip（欢迎语上方；弱化徽标，不做高亮以免与消息气泡争焦点） */
 .project-chip {
   display: inline-block;
