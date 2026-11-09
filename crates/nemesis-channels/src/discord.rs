@@ -156,6 +156,15 @@ impl DiscordChannel {
             ));
         }
 
+        // api_base 尾斜杠归一：config 反序列化直通，用户从文档复制带尾
+        // 斜杠的 base 会拼出 `//gateway` 双斜杠路径（上游归一行为不可赌，
+        // 404 即通道整体断链）。同族先例 = bluesky/mastodon 构造期归一
+        // （BUG-20261109-012）。所有 api_base 消费点的单一归一漏斗。
+        let config = DiscordConfig {
+            api_base: config.api_base.trim_end_matches('/').to_string(),
+            ..config
+        };
+
         let http = crate::base::outbound_http_client()?;
 
         Ok(Self {
@@ -186,6 +195,12 @@ impl DiscordChannel {
                 "discord bot token is required".to_string(),
             ));
         }
+
+        // api_base 尾斜杠归一（同 new；BUG-20261109-012）。
+        let config = DiscordConfig {
+            api_base: config.api_base.trim_end_matches('/').to_string(),
+            ..config
+        };
 
         Ok(Self {
             base: BaseChannel::new("discord"),

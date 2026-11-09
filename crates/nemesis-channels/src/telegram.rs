@@ -109,6 +109,11 @@ struct TelegramApi {
 
 impl TelegramApi {
     fn new(api_base: &str, token: &str) -> Self {
+        // api_base 尾斜杠归一：config 反序列化直通，用户从文档复制
+        // `https://api.telegram.org/` 会拼出 `//bot…` 双斜杠路径（上游
+        // 归一行为不可赌，404 即通道整体断链）。同族先例 = bluesky/
+        // mastodon 构造期归一（BUG-20261109-012）。
+        let api_base = api_base.trim_end_matches('/');
         TelegramApi {
             url_base: format!("{api_base}/bot{token}"),
             file_url_base: format!("{api_base}/file/bot{token}"),

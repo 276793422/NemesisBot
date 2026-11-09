@@ -904,3 +904,25 @@ fn bug280_message_preview_multibyte_safe() {
     assert_eq!(super::message_preview("hi"), "hi");
     assert_eq!(super::message_preview(""), "");
 }
+
+// BUG-20261109-012 回归锁：api_base 尾斜杠归一——config 反序列化直通，
+// 用户从文档复制带斜杠 base（`https://api.telegram.org/`）会拼出
+// `//bot…` 双斜杠路径，上游归一行为不可赌，404 即通道整体断链。
+#[test]
+fn telegram_api_base_trailing_slash_normalized() {
+    let api = TelegramApi::new("https://api.telegram.org/", "123:abc");
+    assert!(
+        api.url_base
+            .starts_with("https://api.telegram.org/bot123:abc"),
+        "url_base 不得残留双斜杠: {}",
+        api.url_base
+    );
+    assert!(
+        api.file_url_base
+            .starts_with("https://api.telegram.org/file/bot123:abc")
+    );
+    // 无尾斜杠形态幂等（归一前后一致）
+    let plain = TelegramApi::new("https://api.telegram.org", "123:abc");
+    assert_eq!(api.url_base, plain.url_base);
+    assert_eq!(api.file_url_base, plain.file_url_base);
+}

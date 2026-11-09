@@ -174,3 +174,22 @@ fn b018_is_send_rejected_matches_http_rejection_only() {
         "x".to_string()
     )));
 }
+
+// BUG-20261109-012 回归锁：api_base 尾斜杠归一（构造期写回 = 5 个消费点
+// 含 spawn 闭包捕获的单一漏斗）——双斜杠路径会让 accessToken/消息/gateway
+// 全部 404 断链。
+#[tokio::test]
+async fn qq_api_base_trailing_slash_normalized() {
+    let config = QQConfig {
+        app_id: "app".to_string(),
+        app_secret: "sec".to_string(),
+        api_base: "https://api.sgroup.qq.com/".to_string(),
+        ..Default::default()
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = QQChannel::new(config, tx).unwrap();
+    assert_eq!(
+        ch.config.api_base, "https://api.sgroup.qq.com",
+        "api_base 尾斜杠必须在构造期归一"
+    );
+}

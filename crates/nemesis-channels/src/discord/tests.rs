@@ -15,7 +15,7 @@ async fn test_discord_channel_lifecycle() {
         ..Default::default()
     };
     let (tx, _rx) = broadcast::channel(256);
-    let ch = DiscordChannel::new(config, tx).unwrap();
+    let ch = DiscordChannel::new(config, tx.clone()).unwrap();
     assert_eq!(ch.name(), "discord");
 
     // Note: start() will try to connect to Discord, so we don't test the
@@ -210,4 +210,30 @@ async fn test_discord_new_with_client_success() {
     let ch = DiscordChannel::new_with_client(config, tx, http).unwrap();
     assert_eq!(ch.name(), "discord");
     assert!(!*ch.running.read());
+}
+
+// BUG-20261109-012 回归锁：api_base 尾斜杠归一（构造期写回 = 4 个消费点
+// 单一漏斗）——双斜杠路径会让 gateway/bot 与消息 REST 全部 404 断链。
+#[tokio::test]
+async fn discord_api_base_trailing_slash_normalized() {
+    let config = DiscordConfig {
+        token: "test-token".to_string(),
+        api_base: "https://discord.com/api/v10/".to_string(),
+        ..Default::default()
+    };
+    let (tx, _rx) = broadcast::channel(256);
+    let ch = DiscordChannel::new(config, tx.clone()).unwrap();
+    assert_eq!(
+        ch.config.api_base, "https://discord.com/api/v10",
+        "api_base 尾斜杠必须在构造期归一"
+    );
+    // new_with_client 同漏斗
+    let config2 = DiscordConfig {
+        token: "t".to_string(),
+        api_base: "https://discord.example.com/api/".to_string(),
+        ..Default::default()
+    };
+    let http = crate::base::outbound_http_client().unwrap();
+    let ch2 = DiscordChannel::new_with_client(config2, tx.clone(), http).unwrap();
+    assert_eq!(ch2.config.api_base, "https://discord.example.com/api");
 }
