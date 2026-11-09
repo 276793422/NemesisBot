@@ -581,7 +581,12 @@ impl DataStore {
         task_id: &str,
     ) -> Result<SessionUsageAgg, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let pattern = format!("%/{task_id}");
+        // task_id 是 pub 自由参数：`%`/`_` 进 LIKE pattern 会被解释成
+        // 通配符 → 别的 task 的账算进本 task（dossier usage.csv 与
+        // token 预算保险丝消费此聚合 = 错账）。与上方 request_logs
+        // 过滤（BUG-163 口径）同源：escape_like + `ESCAPE '\'` 成对，
+        // pattern 开头的 `%` 是尾部锚定语义、刻意保留。
+        let pattern = format!("%/{}", nemesis_utils::sanitize::escape_like(task_id));
         let mut stmt = conn
             .prepare(
                 "SELECT
@@ -589,7 +594,7 @@ impl DataStore {
                     COALESCE(SUM(input_tokens + cache_creation_tokens + cache_read_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(total_cost_usd), 0.0)
-                 FROM request_logs WHERE session_key LIKE ?1",
+                 FROM request_logs WHERE session_key LIKE ?1 ESCAPE '\\'",
             )
             .map_err(|e| format!("prepare aggregate_session_usage_by_task: {e}"))?;
         stmt.query_row(params![pattern], |row| {

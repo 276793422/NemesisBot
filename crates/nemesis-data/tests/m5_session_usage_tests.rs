@@ -162,3 +162,43 @@ fn aggregate_by_task_suffix_sums_across_worker_identities() {
 
     let _ = fs::remove_file(&db_path);
 }
+
+/// 回归锁（BUG-20261109-022）：task_id 含 LIKE 通配符（`%`/`_`）时按
+/// 字面聚合——旧实现无转义，`%/tok%1` 的第二个 `%` 把邻居 task 的行
+/// 吸进本 task 聚合（dossier usage.csv / token 预算保险丝消费此聚合 =
+/// 错账）。escape_like + `ESCAPE '\'` 成对（BUG-163 口径）。
+#[test]
+fn aggregate_by_task_treats_wildcards_in_task_id_literally() {
+    let db_path = temp_db_path();
+    let store = DataStore::open(&db_path).expect("open db");
+
+    // 本 task（task_id = "tok%1"）的行 + 通配误吸形态的邻居行。
+    store
+        .insert_request_log(&log("cluster_rpc:worker-a/tok%1", 100, 0, 10, 0.5))
+        .expect("insert own row");
+    // `%/tok%1` 的第二个 % 按「任意串」解释时会把 /tokx1 也算进来。
+    store
+        .insert_request_log(&log("cluster_rpc:worker-a/tokx1", 900, 0, 0, 9.0))
+        .expect("insert percent-neighbor row");
+    // `_` 单字符通配同理：/tok_2 不得误吸 /tokx2。
+    store
+        .insert_request_log(&log("cluster_rpc:worker-a/tok_2", 50, 0, 0, 0.1))
+        .expect("insert underscore own row");
+    store
+        .insert_request_log(&log("cluster_rpc:worker-a/tokx2", 700, 0, 0, 7.0))
+        .expect("insert underscore-neighbor row");
+
+    let agg = store
+        .aggregate_session_usage_by_task("tok%1")
+        .expect("aggregate percent task");
+    assert_eq!(agg.requests, 1, "% 通配把邻居账吸进来了");
+    assert_eq!(agg.input_tokens, 100);
+
+    let agg2 = store
+        .aggregate_session_usage_by_task("tok_2")
+        .expect("aggregate underscore task");
+    assert_eq!(agg2.requests, 1, "_ 单字符通配误吸邻居行");
+    assert_eq!(agg2.input_tokens, 50);
+
+    let _ = fs::remove_file(&db_path);
+}
