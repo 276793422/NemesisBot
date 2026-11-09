@@ -209,12 +209,24 @@ impl QQChannel {
             .await
             .map_err(|e| NemesisError::Channel(format!("QQ auth failed: {e}")))?;
 
+        // status 闸（R736）：非 2xx 的失败响应体是合法 JSON（无 access_token
+        // 字段），typed 反序列化成功 + `unwrap_or_default()` 会把 auth 失败
+        // 吞成 Ok(空串)——HTTP 真因（401/403）消失，下游只剩误导性的
+        // "QQ access token not available"。显式回报 HTTP 状态。
+        let status = resp.status();
         let body: AccessTokenResponse = resp
             .json()
             .await
             .map_err(|e| NemesisError::Channel(format!("QQ auth parse failed: {e}")))?;
+        if !status.is_success() {
+            return Err(NemesisError::Channel(format!(
+                "QQ auth failed: HTTP {status}"
+            )));
+        }
 
-        let token = body.access_token.unwrap_or_default();
+        let token = body.access_token.filter(|t| !t.is_empty()).ok_or_else(|| {
+            NemesisError::Channel("QQ auth: no access_token in response".to_string())
+        })?;
         *self.access_token.write() = token.clone();
         Ok(token)
     }

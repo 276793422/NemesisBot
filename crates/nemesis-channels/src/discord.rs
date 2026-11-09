@@ -314,16 +314,28 @@ impl DiscordChannel {
     /// Gets the WebSocket gateway URL from the Discord API.
     async fn get_gateway_url(&self) -> Result<String> {
         let url = format!("{}/gateway/bot", self.config.api_base);
-        let resp: serde_json::Value = self
+        let resp = self
             .http
             .get(&url)
             .header("Authorization", format!("Bot {}", self.config.token))
             .send()
             .await
-            .map_err(|e| NemesisError::Channel(format!("discord gateway request failed: {e}")))?
+            .map_err(|e| NemesisError::Channel(format!("discord gateway request failed: {e}")))?;
+        // status 闸（R736）：Discord 401/403（token 失效/无 intent 授权）的
+        // 响应体是 `{"message": "401: Unauthorized", "code": 0}` 合法 JSON——
+        // 不查 status 会把真因吞成 "missing 'url' in gateway response"，
+        // token 过期事故被引向「API 变更了？」的排查方向。
+        let status = resp.status();
+        let resp: serde_json::Value = resp
             .json()
             .await
             .map_err(|e| NemesisError::Channel(format!("discord gateway parse failed: {e}")))?;
+        if !status.is_success() {
+            let msg = resp["message"].as_str().unwrap_or("unknown error");
+            return Err(NemesisError::Channel(format!(
+                "discord gateway failed: HTTP {status}: {msg}"
+            )));
+        }
 
         let ws_url = resp["url"].as_str().ok_or_else(|| {
             NemesisError::Channel("missing 'url' in gateway response".to_string())
