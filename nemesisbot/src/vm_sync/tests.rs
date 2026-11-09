@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use super::{
     BaselineManifest, DivergedEntry, FileSync, SyncExclusion, baseline_dir, case_gate_pairs,
-    diverged_verdict, host_fs_case_insensitive, load_baseline, pack_tar_blocking,
+    diverged_verdict, git_available, host_fs_case_insensitive, load_baseline, pack_tar_blocking,
     parse_index_modes, safe_rel, select_files,
 };
 
@@ -133,6 +133,28 @@ async fn select_files_git_respects_gitignore() {
         rels,
         vec![".gitignore", "a.rs"],
         "忽略文件/排除目录不应入选"
+    );
+}
+
+// BUG-20261109-011 回归锁：git_available 探针挂 CREATE_NO_WINDOW（黑窗
+// 纪律——release gateway 是 windows 子系统进程，console 子进程默认 flags
+// spawn 会被分配新可见 console）后功能不变——git 在场 = true。真 spawn
+// 验证 flags 配置不破坏进程启动（status/ls-files 位点由上面两个
+// select_files_git_* 集成测试同链覆盖）。
+#[tokio::test]
+async fn git_available_probe_survives_no_window_flags() {
+    // 环境纪律：工具在场 ≠ 可用，git 缺席 = 诚实 SKIP（不伪装失败）。
+    let Ok(out) = std::process::Command::new("git").arg("--version").output() else {
+        eprintln!("SKIP: git 无法启动（环境不满足）");
+        return;
+    };
+    if !out.status.success() {
+        eprintln!("SKIP: git --version 失败（环境不满足）");
+        return;
+    }
+    assert!(
+        git_available().await,
+        "git 在场时探针必须返回 true（creation_flags 配置不得破坏 spawn）"
     );
 }
 

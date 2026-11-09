@@ -73,8 +73,14 @@ pub async fn create_overlay(
             .map_err(|e| format!("overlay 父目录创建失败 {}: {e}", parent.display()))?;
     }
     let args = create_overlay_args(qemu_img, overlay, backing, size_gb)?;
-    let out = tokio::process::Command::new(&args[0])
-        .args(&args[1..])
+    let mut cmd = tokio::process::Command::new(&args[0]);
+    cmd.args(&args[1..]);
+    // 黑窗纪律：gateway 是 windows 子系统进程（无 console），qemu-img.exe
+    // 默认 flags spawn 会被分配新可见 console → 黑窗一闪。同族先例 =
+    // lifecycle.rs QEMU spawn（CREATE_NO_WINDOW）。
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    let out = cmd
         .output()
         .await
         .map_err(|e| format!("qemu-img 不可执行 {}: {e}", args[0]))?;

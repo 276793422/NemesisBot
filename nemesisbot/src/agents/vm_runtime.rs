@@ -484,6 +484,10 @@ async fn kill_pid(pid: u32) -> bool {
     let mut cmd = {
         let mut c = tokio::process::Command::new("taskkill");
         c.args(["/F", "/PID", &pid.to_string()]);
+        // release gateway 是 windows 子系统进程（无 console）：taskkill.exe
+        // 默认 flags spawn 会被分配新可见 console → 黑窗一闪（纪律见
+        // main.rs 头注；同族先例 vm/lifecycle.rs QEMU spawn）。
+        c.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
         c
     };
     #[cfg(not(windows))]

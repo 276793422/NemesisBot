@@ -63,8 +63,15 @@ pub fn whpx_dll_present() -> bool {
 /// QEMU 二进制实跑 trivial 探针：`<qemu> --version` 退出码 0 = 二进制在场
 /// 且可执行（返回版本首行）。错误信息带 stderr 现场（诊断自包含纪律）。
 pub async fn qemu_version_ok(qemu: &Path) -> Result<String, String> {
-    let out = tokio::process::Command::new(qemu)
-        .arg("--version")
+    let mut cmd = tokio::process::Command::new(qemu);
+    cmd.arg("--version");
+    // 黑窗纪律：gateway 是 windows 子系统进程（无 console），QEMU console
+    // 二进制默认 flags spawn 会分配新可见 console → 黑窗一闪。同族先例 =
+    // lifecycle.rs QEMU spawn（CREATE_NO_WINDOW）。探针被 Dashboard 横幅
+    // 与启动前置闸反复调用，每次闪窗 = 高频视觉污染。
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    let out = cmd
         .output()
         .await
         .map_err(|e| format!("QEMU 二进制不可执行 {}: {e}", qemu.display()))?;

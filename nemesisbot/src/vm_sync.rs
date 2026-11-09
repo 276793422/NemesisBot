@@ -466,17 +466,21 @@ async fn git_check_ignore(
         payload.extend_from_slice(r.as_bytes());
         payload.push(0);
     }
-    let mut child = tokio::process::Command::new("git")
-        .current_dir(root)
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.current_dir(root)
         .args(["check-ignore", "--stdin", "-z"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         // 10s 超时臂 = wait future 被 drop：不开 kill_on_drop 会泄漏挂死
         // 的 git 进程（慢机/句柄风暴下的僵尸源）。
-        .kill_on_drop(true)
-        .spawn()
-        .ok()?;
+        .kill_on_drop(true);
+    // release gateway 是 windows 子系统进程（无 console）：git.exe 以默认
+    // flags spawn 会被分配新可见 console → 黑窗一闪（纪律见 main.rs 头注；
+    // 同族先例 lifecycle.rs QEMU / remote_executor_tool.rs）。
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    let mut child = cmd.spawn().ok()?;
     use tokio::io::AsyncWriteExt;
     if child.stdin.as_mut()?.write_all(&payload).await.is_err() {
         return None;
@@ -606,13 +610,12 @@ async fn select_files(root: &Path) -> Result<(Vec<FileSync>, bool, &'static str)
 
 /// git 轻量探针（工具自身实跑 `git --version`——在场 ≠ 可用）。
 async fn git_available() -> bool {
-    let ok = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        tokio::process::Command::new("git")
-            .arg("--version")
-            .output(),
-    )
-    .await;
+    let mut probe = tokio::process::Command::new("git");
+    probe.arg("--version");
+    // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
+    #[cfg(target_os = "windows")]
+    probe.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    let ok = tokio::time::timeout(std::time::Duration::from_secs(10), probe.output()).await;
     matches!(ok, Ok(Ok(out)) if out.status.success())
 }
 
@@ -648,16 +651,15 @@ async fn select_files_git(root: &Path) -> Result<Vec<FileSync>, String> {
         let root = root.to_path_buf();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         async move {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(60),
-                tokio::process::Command::new("git")
-                    .current_dir(&root)
-                    .args(&args)
-                    .output(),
-            )
-            .await
-            .map_err(|_| "git 调用超时（60s）".to_string())?
-            .map_err(|e| format!("git 调用失败: {e}"))
+            let mut cmd = tokio::process::Command::new("git");
+            cmd.current_dir(&root).args(&args);
+            // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+            tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
+                .await
+                .map_err(|_| "git 调用超时（60s）".to_string())?
+                .map_err(|e| format!("git 调用失败: {e}"))
         }
     };
     let list = run(&[
@@ -1104,14 +1106,17 @@ async fn detect_host_changes(
         is_git: baseline.is_git,
     };
     if baseline.is_git && git_available().await {
-        let out = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            tokio::process::Command::new("git")
-                .current_dir(project_path)
-                .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-                .output(),
-        )
-        .await;
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.current_dir(project_path).args([
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ]);
+        // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        let out = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output()).await;
         match out {
             Ok(Ok(o)) if o.status.success() => {
                 let paths = parse_status_z(&o.stdout, &ex);
@@ -1365,16 +1370,16 @@ async fn push_files_to_vm(
         return Ok(BTreeMap::new());
     }
     let modes: HashMap<String, u32> = if is_git {
-        let out = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            tokio::process::Command::new("git")
-                .current_dir(project_path)
-                .args(["ls-files", "-s", "-z", "--cached"])
-                .output(),
-        )
-        .await
-        .map_err(|_| "git ls-files 超时（60s）".to_string())?
-        .map_err(|e| format!("git ls-files 失败: {e}"))?;
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.current_dir(project_path)
+            .args(["ls-files", "-s", "-z", "--cached"]);
+        // 黑窗纪律（release gateway 无 console）：见本模块 check-ignore 位点。
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+        let out = tokio::time::timeout(std::time::Duration::from_secs(60), cmd.output())
+            .await
+            .map_err(|_| "git ls-files 超时（60s）".to_string())?
+            .map_err(|e| format!("git ls-files 失败: {e}"))?;
         if out.status.success() {
             parse_index_modes(&out.stdout)
         } else {
