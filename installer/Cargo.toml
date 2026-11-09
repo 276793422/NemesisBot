@@ -1,0 +1,37 @@
+# NemesisBot 安装器独立 workspace（自包含模块：整体删除对外部零影响，
+# 见 docs/PLAN/2026-11-09_自研安装器计划.md §2 目录隔离契约）。
+#
+# 刻意【不是】根工作区成员：member 会在根 Cargo.toml 留引用，删目录 =
+# 全仓 cargo 命令报错，违反删除契约。先例：plugins/plugin-wasm、
+# plugins/plugin-roaming（均「自有 workspace、依赖自持」）。
+#
+# 依赖方向单向：core → ../../crates/nemesis-verify（path dep 只读外部
+# 源码）；windows/linux → core；外部项目零反向引用。
+# 根锁零污染：egui/ruzstd 等只进本目录 Cargo.lock。
+[workspace]
+members = ["core", "windows", "linux"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+tar = "0.4"
+# 压缩分工（计划 §3）：完整 zstd crate 只进 pack（构建机压缩，需 C 工具链）；
+# 安装器运行侧只解不压 → ruzstd 纯 Rust 解码器。
+zstd = "0.13"
+ruzstd = "0.7"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+
+[profile.release]
+# 与主仓 release 同形：安装器骨架不走 iotsmall（向导 GUI 需要 unwind 优雅降级）
+opt-level = 3
+lto = "thin"

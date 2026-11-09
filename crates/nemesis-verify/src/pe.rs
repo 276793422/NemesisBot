@@ -274,6 +274,19 @@ fn win_cert_entry_bytes(cms_der: &[u8]) -> Result<Vec<u8>, CodecError> {
     Ok(e)
 }
 
+/// 证书表对齐 pad（微软 Authenticode 语义：表 VA 8 对齐所需的尾部零填充
+/// **参与 Authenticode digest**——digest 排除域只有 [VA, end)，pad 在 VA 之前，
+/// 验证侧会把它算进去）。签发侧必须先用本函数补 pad、**再**对补齐后的字节算
+/// digest，最后把补齐字节交给 [`append_certificate_table`]（其内部 resize 对
+/// 已对齐输入为无操作）。跳过这一步 = 非 8 对齐长度的文件签发后验证必
+/// Tampered（验证 digest 多出签发时不存在 pad 字节；对齐长度的文件侥幸不触发）。
+pub fn pad_for_certificate_table(bytes: &[u8]) -> Vec<u8> {
+    let target = bytes.len().div_ceil(8) * 8;
+    let mut out = bytes.to_vec();
+    out.resize(target, 0);
+    out
+}
+
 /// 把 CMS DER 作为 Authenticode 证书表追加到**未签名** PE（写入路径）。
 ///
 /// 布局（signtool / osslsigncode 参照实证同口径，见 pe/tests.rs 交叉验证）：
@@ -282,6 +295,10 @@ fn win_cert_entry_bytes(cms_der: &[u8]) -> Result<Vec<u8>, CodecError> {
 /// `wCertificateType`(u16 LE = 0x0002) + bCertificate（CMS DER，尾部零 pad 到
 /// 8 对齐，dwLength 含 pad）；Security 表项写入（VA=新表文件偏移、Size=条目全
 /// 长度）；文件恰止于表尾（与全部参照一致）。
+///
+/// **digest 契约**：pad 参与 Authenticode digest——签发路径须先
+/// [`pad_for_certificate_table`] 再算 digest（[`crate::verify::sign_content_v4`]
+/// 已接线）；本函数对未对齐输入自行 resize 只保证布局正确，不保证 digest 一致。
 ///
 /// 边界（诚实失败）：
 /// - nrva < 5（无 Security 表项可写）→ Malformed（扩 Optional header 需搬

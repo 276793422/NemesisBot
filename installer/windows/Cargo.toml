@@ -1,0 +1,26 @@
+[package]
+name = "setup-windows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NemesisBot Windows 安装器骨架：egui 向导 + /S 静默 + HKCU ARP/Run 键"
+
+[[bin]]
+name = "nbsetup-win"
+path = "src/main.rs"
+
+[dependencies]
+setup-core = { path = "../core" }
+
+[target.'cfg(windows)'.dependencies]
+anyhow.workspace = true
+winreg = "0.55"
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+egui = "0.27"
+eframe = { version = "0.27", default-features = false, features = ["glow", "default_fonts"] }
+rfd = "0.14"
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(not(windows))'.dependencies]

@@ -1,0 +1,20 @@
+[package]
+name = "setup-linux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NemesisBot Linux 安装器：终端问答向导 + --silent + XDG 快捷方式 + systemd user unit"
+
+[[bin]]
+name = "nbsetup-linux"
+path = "src/main.rs"
+
+[dependencies]
+setup-core = { path = "../core" }
+anyhow.workspace = true
+
+[target.'cfg(linux)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
