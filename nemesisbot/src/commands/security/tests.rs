@@ -6,105 +6,106 @@
 
 use super::*;
 
-#[test]
-fn test_match_pattern_exact() {
-    assert!(match_pattern("test.exe", "test.exe"));
-    assert!(!match_pattern("test.exe", "other.exe"));
-}
-
-#[test]
-fn test_match_pattern_single_star() {
-    assert!(match_pattern("*.exe", "test.exe"));
-    assert!(!match_pattern("*.exe", "dir/test.exe"));
-    assert!(match_pattern("test*", "testFile"));
-}
-
-#[test]
-fn test_match_pattern_double_star() {
-    assert!(match_pattern("**/*.exe", "test.exe"));
-    assert!(match_pattern("**/*.exe", "dir/test.exe"));
-    assert!(match_pattern("**/*.exe", "a/b/c/test.exe"));
-    assert!(match_pattern("**", "anything"));
-}
-
-#[test]
-fn test_match_pattern_mixed() {
-    assert!(match_pattern("dir/*.log", "dir/test.log"));
-    assert!(!match_pattern("dir/*.log", "dir/sub/test.log"));
-    assert!(match_pattern("dir/**/*.log", "dir/sub/test.log"));
-}
-
 // -------------------------------------------------------------------------
-// match_pattern additional comprehensive tests
+// 预览路径臂语义组（BUG-20261109-013 回归锁）：preview_path_match 薄委托
+// match_path_rule，语义必须与 auditor 运行时逐条一致——无分隔符通配=全局
+// 匹配、`*` 不跨分隔符、`**` 跨、`?` 字面、Windows 折叠。此前本地 DP
+// 双拷贝在加粗三处与运行时分叉，测试钉死运行时形态防回退。
 // -------------------------------------------------------------------------
 
 #[test]
-fn test_match_pattern_question_mark() {
-    assert!(match_pattern("test?.exe", "test1.exe"));
-    assert!(match_pattern("?est.exe", "test.exe"));
-    assert!(!match_pattern("test?.exe", "test.exe")); // ? requires exactly one char
+fn test_preview_path_exact() {
+    assert!(preview_path_match("test.exe", "test.exe"));
+    assert!(!preview_path_match("test.exe", "other.exe"));
+    assert!(!preview_path_match("hello", "world"));
+    assert!(!preview_path_match("test.exe", "test.txt"));
 }
 
 #[test]
-fn test_match_pattern_empty_pattern() {
-    assert!(match_pattern("", ""));
-    assert!(!match_pattern("", "something"));
+fn test_preview_path_no_separator_wildcard_is_global() {
+    // 运行时语义（matcher.rs doctest 明文）：无 `/` 的通配 pattern 前缀
+    // `**` 全局匹配——`*.exe` 打得中任意深度子目录目标。本地 DP 旧实现
+    // 缺此特例（只认顶层），deny 规则预览漏判。
+    assert!(preview_path_match("*.exe", "test.exe"));
+    assert!(preview_path_match("*.exe", "dir/test.exe"));
+    assert!(preview_path_match("*.key", "/home/user/test.key"));
+    assert!(preview_path_match("test*", "testFile"));
+    assert!(preview_path_match("*test", "mytest"));
+    assert!(preview_path_match("*test*", "mytesting123"));
 }
 
 #[test]
-fn test_match_pattern_only_stars() {
-    assert!(match_pattern("*", "test"));
-    assert!(match_pattern("**", "test"));
-    // Single star does not cross path separators
-    assert!(!match_pattern("*", "a/b/c"));
-    assert!(match_pattern("**", "a/b/c")); // double star does
-    assert!(match_pattern("***", "a/b/c"));
+fn test_preview_path_single_star_no_cross_separator() {
+    assert!(!preview_path_match("dir/*", "dir/sub/file"));
+    assert!(preview_path_match("dir/*", "dir/file"));
+    assert!(!preview_path_match("dir/*.log", "dir/sub/test.log"));
+    assert!(preview_path_match("dir/*.log", "dir/test.log"));
+    assert!(preview_path_match("dir/**/*.log", "dir/sub/test.log"));
 }
 
 #[test]
-fn test_match_pattern_backslash_normalization() {
-    assert!(match_pattern("dir\\*.log", "dir/test.log"));
-    assert!(match_pattern("dir/*.log", "dir\\test.log"));
-    assert!(match_pattern("dir\\*.log", "dir\\test.log"));
+fn test_preview_path_double_star_crosses_separator() {
+    assert!(preview_path_match("**", "anything"));
+    assert!(preview_path_match("**", "a/b/c"));
+    assert!(preview_path_match("***", "a/b/c"));
+    assert!(preview_path_match("dir/**", "dir/file.txt"));
+    assert!(preview_path_match("dir/**", "dir/sub/file.txt"));
+    assert!(preview_path_match("dir/**", "dir/"));
+    assert!(preview_path_match("**/*.exe", "dir/test.exe"));
+    assert!(preview_path_match("**/*.exe", "a/b/c/test.exe"));
+    // 运行时语义：`**` → `.*` 不带「零目录」快捷，`**/x` 要求字面 `/`，
+    // 根级目标不命中——预览必须同样报不命中（本地 DP 旧实现的宽松形态
+    // 与运行时分叉，删）。
+    assert!(!preview_path_match("**/*.exe", "test.exe"));
+    assert!(!preview_path_match("**/test.log", "test.log"));
 }
 
 #[test]
-fn test_match_pattern_double_star_prefix() {
-    assert!(match_pattern("**/test.log", "test.log"));
-    assert!(match_pattern("**/test.log", "a/test.log"));
-    assert!(match_pattern("**/test.log", "a/b/c/test.log"));
+fn test_preview_path_question_mark_is_literal() {
+    // 运行时语义：引擎契约只认 `*`/`**`，`?` 与 `.` 一样按字面转义
+    // （matcher.rs wildcard_to_regex）。本地 DP 旧实现把 `?` 当单字符
+    // 通配——语义相反，预览分叉根源之一。
+    assert!(!preview_path_match("test?.exe", "test1.exe"));
+    assert!(!preview_path_match("?est.exe", "test.exe"));
+    assert!(preview_path_match("test?.exe", "test?.exe"));
 }
 
 #[test]
-fn test_match_pattern_double_star_suffix() {
-    assert!(match_pattern("dir/**", "dir/file.txt"));
-    assert!(match_pattern("dir/**", "dir/sub/file.txt"));
-    assert!(match_pattern("dir/**", "dir/"));
+fn test_preview_path_empty_pattern_exact() {
+    assert!(preview_path_match("", ""));
+    assert!(!preview_path_match("", "something"));
 }
 
 #[test]
-fn test_match_pattern_single_star_no_cross_separator() {
-    assert!(!match_pattern("dir/*", "dir/sub/file")); // single * should not cross /
-    assert!(match_pattern("dir/*", "dir/file"));
+fn test_preview_path_only_stars() {
+    assert!(preview_path_match("*", "test"));
+    assert!(preview_path_match("**", "test"));
+    // 无分隔符通配走全局臂：`*` 也跨目录（与 dir/* 的单星臂不同）。
+    assert!(preview_path_match("*", "a/b/c"));
+    assert!(preview_path_match("**", "a/b/c"));
 }
 
 #[test]
-fn test_match_pattern_exact_no_match() {
-    assert!(!match_pattern("hello", "world"));
-    assert!(!match_pattern("test.exe", "test.txt"));
+fn test_preview_path_backslash_normalized() {
+    assert!(preview_path_match("dir\\*.log", "dir/test.log"));
+    assert!(preview_path_match("dir/*.log", "dir\\test.log"));
+    assert!(preview_path_match("dir\\*.log", "dir\\test.log"));
 }
 
+#[cfg(windows)]
 #[test]
-fn test_match_pattern_case_sensitive() {
-    assert!(!match_pattern("TEST.exe", "test.exe"));
-    assert!(match_pattern("test.exe", "test.exe"));
+fn test_preview_path_windows_case_folding() {
+    // match_path_rule 的 Windows 折叠臂（auditor 同管道）：deny 规则
+    // `D:/Secrets/*` 此前对大小写变体目标预览漏判（fail-open 方向）。
+    assert!(preview_path_match("D:/Secrets/*", "d:/secrets/plan.md"));
+    assert!(preview_path_match("test.exe", "TEST.EXE"));
 }
 
+#[cfg(not(windows))]
 #[test]
-fn test_match_pattern_partial_star() {
-    assert!(match_pattern("test*", "testing123"));
-    assert!(match_pattern("*test", "mytest"));
-    assert!(match_pattern("*test*", "mytesting123"));
+fn test_preview_path_non_windows_case_sensitive() {
+    assert!(!preview_path_match("D:/Secrets/*", "d:/secrets/plan.md"));
+    assert!(!preview_path_match("test.exe", "TEST.EXE"));
 }
 
 // -------------------------------------------------------------------------
@@ -659,20 +660,20 @@ fn test_cmd_deny_no_file() {
 #[test]
 fn test_match_pattern_edge_cases() {
     // Empty inputs
-    assert!(match_pattern("", ""));
-    assert!(!match_pattern("", "x"));
+    assert!(preview_path_match("", ""));
+    assert!(!preview_path_match("", "x"));
 
     // Pattern longer than value
-    assert!(!match_pattern("test.exe.bak", "test.exe"));
+    assert!(!preview_path_match("test.exe.bak", "test.exe"));
 
-    // Multiple wildcards
-    assert!(match_pattern("*.*", "test.exe"));
-    assert!(match_pattern("*.*", "a.b"));
-    assert!(!match_pattern("*.*", "noext"));
+    // Multiple wildcards（无分隔符 → 全局臂）
+    assert!(preview_path_match("*.*", "test.exe"));
+    assert!(preview_path_match("*.*", "a.b"));
+    assert!(!preview_path_match("*.*", "noext"));
 
     // Consecutive stars
-    assert!(match_pattern("**/**", "a/b"));
-    assert!(match_pattern("**/**", "a/b/c/d"));
+    assert!(preview_path_match("**/**", "a/b"));
+    assert!(preview_path_match("**/**", "a/b/c/d"));
 }
 
 #[test]
@@ -840,29 +841,38 @@ fn test_cmd_deny_without_reason() {
 }
 
 // -------------------------------------------------------------------------
-// Additional match_pattern coverage
+// Additional preview_path_match coverage
 // -------------------------------------------------------------------------
 
 #[test]
 fn test_match_pattern_double_star_middle() {
-    // Pattern with ** in the middle
-    assert!(match_pattern("a/**/b", "a/x/y/z/b"));
-    assert!(match_pattern("a/**/b", "a/b"));
+    // Pattern with ** in the middle。运行时语义：`**` → `.*` 不含零目录
+    // 快捷，`a/**/b` 两侧字面 `/` 都得各自命中——零中间目录目标不命中
+    // （旧本地 DP 宽松形态与运行时分叉，已随 BUG-20261109-013 删）。
+    assert!(preview_path_match("a/**/b", "a/x/y/z/b"));
+    assert!(!preview_path_match("a/**/b", "a/b"));
 }
 
 #[test]
 fn test_match_pattern_complex_patterns() {
-    assert!(match_pattern("**/src/**/*.rs", "src/main.rs"));
-    assert!(match_pattern("**/src/**/*.rs", "src/lib/module.rs"));
-    assert!(match_pattern("*.exe", "malware.exe"));
-    assert!(!match_pattern("*.exe", "malware.txt"));
-    assert!(match_pattern("/tmp/**", "/tmp/session_123/output.log"));
+    // 运行时语义：pattern 含 `/` 时不走全局臂，`**/src/...` 的前导 `**/`
+    // 要求目标里 `src` 之前有字面 `/`——根相对目标不命中（钉死运行时形态）。
+    assert!(!preview_path_match("**/src/**/*.rs", "src/main.rs"));
+    assert!(!preview_path_match("**/src/**/*.rs", "src/lib/module.rs"));
+    // 前导 **/ 与中段 **/ 各需一个字面 `/`：`src` 前有目录、`src/` 后
+    // 还有目录层才命中。
+    assert!(!preview_path_match("**/src/**/*.rs", "repo/src/main.rs"));
+    assert!(preview_path_match("**/src/**/*.rs", "repo/src/lib/main.rs"));
+    assert!(preview_path_match("**/src/**/*.rs", "a/src/lib/module.rs"));
+    assert!(preview_path_match("*.exe", "malware.exe"));
+    assert!(!preview_path_match("*.exe", "malware.txt"));
+    assert!(preview_path_match("/tmp/**", "/tmp/session_123/output.log"));
 }
 
 #[test]
 fn test_match_pattern_unicode() {
-    assert!(match_pattern("*", "test"));
-    assert!(match_pattern("test", "test"));
+    assert!(preview_path_match("*", "test"));
+    assert!(preview_path_match("test", "test"));
 }
 
 // -------------------------------------------------------------------------
@@ -2550,25 +2560,26 @@ mod op_rules_cov {
 
     #[test]
     fn match_pattern_double_star_normalization_forms() {
-        // match_pattern_inner 的 `/**`、`/**/`、`**/` 归一三形 + 尾星 DP 填充。
+        // 运行时同款（match_path_rule）：`**` 跨段、`**/x` 前导通配要求
+        // 字面 `/`、单 `*` 段内匹配不跨分隔符（预览与 auditor 同管道）。
         assert!(
-            match_pattern("C:/repo/**", "C:/repo/a/b/c.txt"),
+            preview_path_match("C:/repo/**", "C:/repo/a/b/c.txt"),
             "尾 ** 跨段"
         );
         assert!(
-            match_pattern("C:/repo/**/x.txt", "C:/repo/a/x.txt"),
-            "/**/ 归一"
+            preview_path_match("C:/repo/**/x.txt", "C:/repo/a/x.txt"),
+            "/**/ 中段跨目录"
         );
         assert!(
-            match_pattern("**/secret.pem", "d:/keys/secret.pem"),
-            "**/ 归一"
+            preview_path_match("**/secret.pem", "d:/keys/secret.pem"),
+            "**/ 前导通配跨段"
         );
         assert!(
-            match_pattern("/data/*/log.txt", "/data/logs/log.txt"),
+            preview_path_match("/data/*/log.txt", "/data/logs/log.txt"),
             "单 * 段内匹配"
         );
         assert!(
-            !match_pattern("/data/*/log.txt", "/data/a/b/log.txt"),
+            !preview_path_match("/data/*/log.txt", "/data/a/b/log.txt"),
             "单 * 不得跨路径分隔符"
         );
     }

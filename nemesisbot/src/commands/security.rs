@@ -286,74 +286,15 @@ fn write_rules_config(security_cfg: &std::path::Path, cfg: &serde_json::Value) -
     Ok(())
 }
 
-/// Wildcard pattern matching.
-///
-/// - `*` matches any characters except path separators (`/` and `\`)
-/// - `**` matches any characters including path separators
-pub fn match_pattern(pattern: &str, target: &str) -> bool {
-    let pattern = pattern.replace('\\', "/");
-    let target = target.replace('\\', "/");
-    match_pattern_inner(&pattern, &target)
-}
-
-fn match_pattern_inner(pattern: &str, target: &str) -> bool {
-    // Normalize pattern: **/ and /** both become ** (standard glob behavior)
-    let normalized_pattern = pattern
-        .replace("/**/", "/**")
-        .replace("/**", "**")
-        .replace("**/", "**");
-
-    let p_chars: Vec<char> = normalized_pattern.chars().collect();
-    let t_chars: Vec<char> = target.chars().collect();
-    let p_len = p_chars.len();
-    let t_len = t_chars.len();
-
-    // Use DP approach: dp[pi][ti] = can pattern[pi..] match target[ti..]
-    let mut dp = vec![vec![false; t_len + 1]; p_len + 1];
-    dp[p_len][t_len] = true;
-
-    // Fill trailing stars
-    for pi in (0..p_len).rev() {
-        if p_chars[pi] == '*' {
-            dp[pi][t_len] = dp[pi + 1][t_len];
-        } else {
-            break;
-        }
-    }
-
-    for pi in (0..p_len).rev() {
-        for ti in (0..t_len).rev() {
-            let pc = p_chars[pi];
-            if pc == '?' {
-                dp[pi][ti] = dp[pi + 1][ti + 1];
-            } else if pc == '*' {
-                // Count consecutive stars
-                let mut star_end = pi + 1;
-                while star_end < p_len && p_chars[star_end] == '*' {
-                    star_end += 1;
-                }
-
-                if star_end - pi >= 2 {
-                    // ** matches zero or more chars (including separators)
-                    dp[pi][ti] = dp[star_end][ti] || dp[pi][ti + 1];
-                } else {
-                    // Single * matches any chars except separators
-                    if t_chars[ti] == '/' || t_chars[ti] == '\\' {
-                        dp[pi][ti] = dp[pi + 1][ti];
-                    } else {
-                        dp[pi][ti] = dp[pi + 1][ti] || dp[pi][ti + 1];
-                    }
-                }
-            } else if pc == t_chars[ti]
-                || (pc == '/' && t_chars[ti] == '\\')
-                || (pc == '\\' && t_chars[ti] == '/')
-            {
-                dp[pi][ti] = dp[pi + 1][ti + 1];
-            }
-        }
-    }
-
-    dp[0][0]
+/// `security rules test` 预览的路径臂匹配（file/registry 等路径型 op）。
+/// 刻意薄委托 [`nemesis_security::matcher::match_path_rule`]——与 auditor
+/// 执行管线同一真相源。此前本位置是一份本地 DP 双拷贝：缺「无分隔符通配
+/// = 全局匹配」特例（`*.key` 打不中子目录 deny 目标）、无 Windows 大小写
+/// 折叠（deny 规则被大小写变体预览漏判，fail-open 方向）、`?` 语义相反
+/// （预览当单字符通配 / 运行时按字面转义）——三类场景预览与真实判定分叉
+/// （闭环-13 只补了 exec 臂，路径半边漏网；回归锁 tests.rs 预览语义组）。
+fn preview_path_match(pattern: &str, target: &str) -> bool {
+    nemesis_security::matcher::match_path_rule(pattern, target)
 }
 
 // ---------------------------------------------------------------------------
@@ -652,9 +593,11 @@ fn cmd_rules_test(
     // 通配匹配）。无命中落 default_action。CMD-12 同款 + 复检批桶语义：
     // deny/ask = 任一段命中即拦（另并整串锚定兜底）；allow = 全部段
     // 命中才放；段先剥 env 前缀再匹配（与归约端同语义）。
-    // 闭环-13：段准备/桶匹配消费
-    // `matcher:{exec_rule_segments, exec_rule_bucket_match}`——与 auditor
-    // 执行管线同一真相源（此前是字节级双拷贝，漂移即预览与真实判定分叉）。
+    // 闭环-13：exec 段准备/桶匹配消费
+    // `matcher:{exec_rule_segments, exec_rule_bucket_match}`，路径臂消费
+    // `matcher::match_path_rule`（[`preview_path_match`] 薄委托）——两臂
+    // 与 auditor 执行管线同一真相源（此前是字节级双拷贝，漂移即预览与
+    // 真实判定分叉）。
     // 诚实边界：本预览**不含**解释器内层载荷扫描（auditor 内层载荷扫描的
     // glob_contains + 危险结构词表第二道）——`security rules test` 对
     // `python -c "os.system('rm -rf /')"` 可能显示无命中，运行时仍会被
@@ -670,7 +613,7 @@ fn cmd_rules_test(
                 &segs,
             )
         } else {
-            match_pattern(pattern, target)
+            preview_path_match(pattern, target)
         }
     };
 
