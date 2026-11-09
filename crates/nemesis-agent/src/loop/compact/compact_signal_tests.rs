@@ -566,6 +566,20 @@ fn context_status_exposes_anchor_components_and_state() {
     let bd = &v["breakdown"];
     assert_eq!(bd["system"], 7);
     assert_eq!(bd["history"], 0, "absent：used 全部落在 system 段");
+    // absent 展示口径（2026-11-09）：pct/free 按「全段合计」（含工具 defs）
+    // 推——标签与构成条一致、条加总恒等窗口；used_tokens 保持信号口径
+    // （纯历史估算，上面已断言 == 7）。
+    let abs_sum = 7 + 2 + 2; // est_system + est_tools + est_mcp（其余段 0）
+    assert_eq!(
+        bd["free"].as_u64().unwrap(),
+        v["window"].as_u64().unwrap() - abs_sum,
+        "absent：free = window − 全段合计（与构成条一致）"
+    );
+    assert_eq!(
+        v["pct"].as_u64().unwrap(),
+        (abs_sum * 100).div_ceil(v["window"].as_u64().unwrap()),
+        "absent：pct = ceil(全段合计/window)——有占用不显示 0%"
+    );
 }
 
 // ---------------------------------------------------------------------------

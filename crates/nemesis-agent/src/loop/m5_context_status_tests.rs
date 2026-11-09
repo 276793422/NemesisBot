@@ -1,11 +1,12 @@
 //! （devtool-upgrade）：`AgentLoop::session_context_status` 测试。
 //!
-//! 契约：与压缩压力测量**同一公式**（摘要覆盖点之后的逐字尾部 ×
-//! MODEL-FACING 投影估算 ÷ 三级解析链窗口），即显示的百分比 =
-//! 「下一轮真实占用」。注意 covers_up_to 是**含 system turn（index 0）
-//! 的全历史索引**（SummaryCache 不变量），system prompt 每请求必发，
-//! 计入 used 是正确口径。四个场景：空会话 / 无摘要全量 / 有摘要截尾 /
-//! covers 越界钳制。
+//! 契约：used_tokens 与压缩压力测量**同一公式**（摘要覆盖点之后的逐字尾部 ×
+//! MODEL-FACING 投影估算），即 used = 「下一轮真实占用」的信号口径。展示面
+//! （pct/free，2026-11-09 展示口径统一）按**全段合计**（含工具/mcp defs——
+//! 每请求都注入窗口），ceil 保证有占用不显示 0%。注意 covers_up_to 是
+//! **含 system turn（index 0）的全历史索引**（SummaryCache 不变量），
+//! system prompt 每请求必发，计入 used 是正确口径。四个场景：空会话 /
+//! 无摘要全量 / 有摘要截尾 / covers 越界钳制。
 
 use super::*;
 use crate::{ChatOptions, ToolDefinition};
@@ -51,6 +52,14 @@ fn expected_used(turns: &[crate::types::ConversationTurn]) -> usize {
     crate::session::estimate_tokens_for_turns_projected(turns)
 }
 
+/// absent 态展示口径（2026-11-09）：pct/free 按「全段合计」推——标签与
+/// 构成条一致、条加总恒等窗口。零注册 loop 的工具/mcp defs 基线各 2 tok
+/// （空注册序列化 "[]"），skill/memory/summary 段为 0，system turn 与
+/// 历史已在 estimated 内（covers==0 切片含 index 0）。
+fn expected_display_used(estimated: usize) -> usize {
+    estimated + 2 + 2
+}
+
 /// 实例重建后 index 0 恒为 config 的 system prompt（set_history 保留语义）。
 fn sys_turn() -> crate::types::ConversationTurn {
     crate::types::ConversationTurn {
@@ -82,9 +91,14 @@ fn empty_session_counts_only_system_prompt() {
     let used = expected_used(&[sys_turn()]);
     assert_eq!(
         st["used_tokens"], used,
-        "system prompt 每请求必发，计入占用"
+        "system prompt 每请求必发，计入占用（信号口径）"
     );
-    assert_eq!(st["pct"], (used * 100 / 128_000).min(100));
+    // 展示口径（2026-11-09）：pct = ceil(全段合计/window)——有占用不显示 0%
+    // （整数地板曾把 0.9% 显示成 0%）。
+    assert_eq!(
+        st["pct"],
+        (expected_display_used(used) * 100).div_ceil(128_000)
+    );
 }
 
 #[test]
@@ -112,7 +126,10 @@ fn history_from_store_measured_verbatim() {
     turns.extend(stored_turns(&store.get_or_create(key).messages));
     let used = expected_used(&turns);
     assert_eq!(st["used_tokens"], used);
-    assert_eq!(st["pct"], (used * 100 / 128_000).min(100));
+    assert_eq!(
+        st["pct"],
+        (expected_display_used(used) * 100).div_ceil(128_000)
+    );
 }
 
 #[test]
@@ -158,8 +175,15 @@ fn covers_clamped_into_history_bounds() {
     let st = al.session_context_status(key);
     assert_eq!(st["history_len"], 2, "system turn + 1 条播种消息");
     assert_eq!(st["covers_up_to"], 2, "covers 必须钳到 history.len()");
-    assert_eq!(st["used_tokens"], 0, "尾部为空 → 占用 0");
-    assert_eq!(st["pct"], 0);
+    assert_eq!(st["used_tokens"], 0, "尾部为空 → 信号口径占用 0");
+    // 展示口径：system turn 仍在 history[0]（est 段不随 covers 消失），加
+    // 工具/mcp defs 基线 → ceil ≥ 1，有占用不显示 0%。
+    let sys_only = expected_used(&[sys_turn()]);
+    assert_eq!(
+        st["pct"],
+        ((sys_only + 2 + 2) * 100).div_ceil(128_000),
+        "有占用不显示 0%"
+    );
 }
 
 /// （集群无人值守硬化）：`session_tokens_used` 观测字段。

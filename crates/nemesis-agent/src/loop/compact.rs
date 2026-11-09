@@ -1409,7 +1409,6 @@ impl AgentLoop {
         };
         // 兼容字段：裸存储实报值（锚点 tokens；None → 0）。
         let provider_reported = anchor_tokens.unwrap_or(0);
-        let pct = (used * 100).checked_div(window).unwrap_or(0).min(100);
         // B17：展示轴与触发轴同源（effective）——边界压缩开启时徽标的
         // 「距压缩还有多远」按提前后的触发点算（off 时二者相同，值零变化；
         // trigger_source 继续描述触发点推导来源，语义不变）。
@@ -1546,7 +1545,24 @@ impl AgentLoop {
                     estimated.saturating_sub(est_system_full),
                 )
             };
-        let free_seg = window.saturating_sub(used);
+        // （2026-11-09 展示口径统一）absent 态的 used（信号口径）= 纯历史尾部
+        // 估算，不含工具 defs——构成条却显示全部七段（工具 defs 每轮都占窗口），
+        // free/pct 若仍按 used 推，标签与条互相矛盾（条 ~3% vs 标签 0%——
+        // 2026-11-09 用户实测「明显有内容却是 0%」）且条加总超窗。展示面
+        // （pct/free）统一按全段合计：锚点态合计恒 == used（值零变化），absent
+        // 态合计 = est 各段原值和。used_tokens 字段保持信号口径不动（观测透明）。
+        let display_used = if anchor_tokens.is_some() {
+            used
+        } else {
+            system_seg + skill_seg + memory_seg + tools_seg + mcp_seg + summary_seg + history_seg
+        };
+        // ceil：有任何占用至少显示 1%——整数地板会把 8.4k/922k=0.9% 显示成 0%。
+        let pct = if display_used == 0 {
+            0
+        } else {
+            (display_used * 100).div_ceil(window).min(100)
+        };
+        let free_seg = window.saturating_sub(display_used);
         let json = serde_json::json!({
             "session_key": session_key,
             "used_tokens": used,
