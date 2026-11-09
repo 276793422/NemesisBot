@@ -419,6 +419,21 @@ fn configure_ports(home: &Path, web_port: u16, health_port: u16) -> Result<()> {
                 }),
             );
         }
+        // 2026-11-10 根修（ET 42696472895 xfer+core 各两连红，8 测同签名
+        // 一字不差复现）：CLI `model add`（含 --default 切换语义）保存面
+        // 同步跑 effort 探针（agents.probe_effort_on_save 默认开，7 请求
+        // + 对照判别），UAT 的 model add 又专打慢桩 testai-1.2（30s LLM
+        // 窗口是测试目的本身）——5s SaveCheck ping + 7×慢往返必爆
+        // test-harness run_cli 的 15s 预算（"Command timed out (15s)"）。
+        // WSAPI 保存面同探针挂后台（models.rs 拍板），CLI 路径的同步回执
+        // 是真实 UX 债（对真实慢端点 add 卡 5+7×latency 秒），归 probe
+        // 二期 owner 处理。UAT 测的是 add/switch 语义非探针行为（探针
+        // 有 nemesis-web 单测覆盖），故 fixture 层统一关闸；需要探针
+        // 回执的测试在 configure_ports 后自行回开该键。
+        let agents = obj.entry("agents".to_string()).or_insert(json!({}));
+        if let Some(a) = agents.as_object_mut() {
+            a.insert("probe_effort_on_save".to_string(), json!(false));
+        }
     }
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
