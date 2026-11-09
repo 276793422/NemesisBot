@@ -393,3 +393,98 @@ fn test_roaming_trust_mutate_surface_contract() {
     let snap = roaming_trust_payload(Path::new(ws)).unwrap();
     assert_eq!(snap["trusted"], serde_json::json!([a]));
 }
+
+fn make_task(
+    id: &str,
+    created_at: &str,
+    completed_at: Option<&str>,
+) -> nemesis_types::cluster::Task {
+    nemesis_types::cluster::Task {
+        id: id.into(),
+        status: TaskStatus::Completed,
+        action: String::new(),
+        peer_id: String::new(),
+        payload: serde_json::Value::Null,
+        result: None,
+        original_channel: String::new(),
+        original_chat_id: String::new(),
+        created_at: created_at.into(),
+        completed_at: completed_at.map(Into::into),
+    }
+}
+
+#[test]
+fn avg_completed_duration_secs_normal_mean() {
+    let a = make_task(
+        "a",
+        "2026-11-09T10:00:00+08:00",
+        Some("2026-11-09T10:00:30+08:00"),
+    );
+    let b = make_task(
+        "b",
+        "2026-11-09T10:00:00+08:00",
+        Some("2026-11-09T10:01:00+08:00"),
+    );
+    let avg = avg_completed_duration_secs(&[&a, &b]).unwrap();
+    assert!(
+        (avg - 45.0).abs() < 0.001,
+        "mean of 30s and 60s = 45s, got {avg}"
+    );
+}
+
+#[test]
+fn avg_completed_duration_secs_negative_sample_skipped_clock_rollback() {
+    // 回归锁（BUG-20261109-019）：时钟回拨（NTP 阶跃 / VM 挂起恢复）会让
+    // completed_at 早于 created_at——负均值进 Duration::from_secs_f64 是
+    // std 明确 panic 行为，panic 在概览页渲染 handler 里。负样本 skip
+    // （与 cluster/tasks.rs record_peer_task_stats 的 u64::try_from(ms).ok()
+    // 同语义），正样本照常参与均值。
+    let good = make_task(
+        "good",
+        "2026-11-09T10:00:00+08:00",
+        Some("2026-11-09T10:00:40+08:00"),
+    );
+    let rolled = make_task(
+        "rolled",
+        "2026-11-09T10:00:00+08:00",
+        Some("2026-11-09T09:59:50+08:00"), // 回拨 10s：done < created
+    );
+    let avg = avg_completed_duration_secs(&[&good, &rolled]).unwrap();
+    assert!(
+        (avg - 40.0).abs() < 0.001,
+        "negative sample skipped, got {avg}"
+    );
+}
+
+#[test]
+fn avg_completed_duration_secs_all_negative_or_missing_is_none() {
+    let rolled = make_task(
+        "r",
+        "2026-11-09T10:00:00+08:00",
+        Some("2026-11-09T09:59:00+08:00"),
+    );
+    assert!(
+        avg_completed_duration_secs(&[&rolled]).is_none(),
+        "all-negative → None (caller shows \"--\")"
+    );
+
+    let pending = make_task("p", "2026-11-09T10:00:00+08:00", None);
+    assert!(
+        avg_completed_duration_secs(&[&pending]).is_none(),
+        "missing completed_at → None"
+    );
+
+    let garbage = make_task("g", "not-a-timestamp", Some("also-bad"));
+    assert!(
+        avg_completed_duration_secs(&[&garbage]).is_none(),
+        "unparseable timestamps → None"
+    );
+
+    // 混合：垃圾样本 skip，不阻断其余样本。
+    let good = make_task(
+        "g2",
+        "2026-11-09T10:00:00+08:00",
+        Some("2026-11-09T10:00:10+08:00"),
+    );
+    assert!((avg_completed_duration_secs(&[&garbage, &good]).unwrap() - 10.0).abs() < 0.001);
+}

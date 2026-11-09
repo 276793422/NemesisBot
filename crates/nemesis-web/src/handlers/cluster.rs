@@ -307,6 +307,32 @@ fn role_display(role: NodeRole) -> &'static str {
     }
 }
 
+/// 集群概览页 avg_duration 的均值计算（秒）。
+///
+/// 负时长样本 skip：`completed_at` 与 `created_at` 同源本机时钟记，但系统
+/// 时钟回拨（NTP 阶跃校正 / 虚拟机挂起恢复 / w32time 大偏移修正）会让
+/// done < created——负均值进 `Duration::from_secs_f64` 是 std 明确 panic
+/// 行为，panic 在概览页渲染 handler 里 = 页面请求断连。样本级跳过与
+/// `cluster/tasks.rs record_peer_task_stats` 的 `u64::try_from(ms).ok()`
+/// 同语义（负样本不进统计）；无样本 / 全负 → None（调用方显示 "--"）。
+fn avg_completed_duration_secs(tasks: &[&nemesis_types::cluster::Task]) -> Option<f64> {
+    let durations: Vec<f64> = tasks
+        .iter()
+        .filter_map(|t| {
+            let created = chrono::DateTime::parse_from_rfc3339(&t.created_at).ok()?;
+            let completed_str = t.completed_at.as_ref()?;
+            let done = chrono::DateTime::parse_from_rfc3339(completed_str).ok()?;
+            let ms = (done - created).num_milliseconds();
+            u64::try_from(ms).ok().map(|ms| ms as f64 / 1000.0)
+        })
+        .collect();
+    if durations.is_empty() {
+        None
+    } else {
+        Some(durations.iter().sum::<f64>() / durations.len() as f64)
+    }
+}
+
 fn format_duration(d: std::time::Duration) -> String {
     let secs = d.as_secs();
     if secs == 0 {
@@ -805,24 +831,10 @@ impl ClusterHandler {
                 }
             };
 
-            // Average duration
-            let avg_duration = {
-                let durations: Vec<f64> = completed
-                    .iter()
-                    .filter_map(|t| {
-                        let created = chrono::DateTime::parse_from_rfc3339(&t.created_at).ok()?;
-                        let completed_str = t.completed_at.as_ref()?;
-                        let done = chrono::DateTime::parse_from_rfc3339(completed_str).ok()?;
-                        Some((done - created).num_seconds() as f64)
-                    })
-                    .collect();
-                if durations.is_empty() {
-                    "--".to_string()
-                } else {
-                    let avg = durations.iter().sum::<f64>() / durations.len() as f64;
-                    format_duration(std::time::Duration::from_secs_f64(avg))
-                }
-            };
+            // Average duration（负时长样本 skip，见 avg_completed_duration_secs）
+            let avg_duration = avg_completed_duration_secs(&completed)
+                .map(|avg| format_duration(std::time::Duration::from_secs_f64(avg)))
+                .unwrap_or_else(|| "--".to_string());
 
             // Health score: online_rate*40 + success_rate*40 + activity*20
             let online_rate = if total_nodes > 0 {
