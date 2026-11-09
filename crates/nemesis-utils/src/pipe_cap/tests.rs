@@ -63,3 +63,94 @@ async fn async_empty_pipe_is_empty() {
     let out = drain_capped_async(Cursor::new(Vec::<u8>::new())).await;
     assert!(out.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// run_capped_with_timeout（BUG-20261110-038 回归锁）
+// ---------------------------------------------------------------------------
+
+/// 大输出（>OS 管道缓冲 ~64KB）不假超时：修复前形态是「退出后才排干」，
+/// 子进程在 ~64KB 处阻塞在 write、永不退出 → 撞 deadline 假超时。修复后
+/// 运行期并发排干，大输出命令照常拿到完整（限内）结果。超时给 30s——
+/// 修复失效时本测试自然红（30s 后 Err → panic），正常路径 <2s。
+#[test]
+fn run_capped_big_output_no_hang() {
+    use super::run_capped_with_timeout;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    // 2500 行 × ~104B ≈ 260KB，稳超 64KB 管道缓冲。
+    let line = "A".repeat(100);
+    let started = Instant::now();
+    let out = if cfg!(windows) {
+        // cmd /C 单行 for /L（命令行直跑 %i；@echo 抑制命令回显只留输出）。
+        let script = format!("for /L %i in (1,1,2500) do @echo {}", line);
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/C").arg(&script);
+        run_capped_with_timeout(cmd, Duration::from_secs(30))
+    } else {
+        let script = format!(
+            "i=0; while [ $i -lt 2500 ]; do printf '%s\\n' '{}'; i=$((i+1)); done",
+            line
+        );
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(&script);
+        run_capped_with_timeout(cmd, Duration::from_secs(30))
+    };
+    let out = out.expect("大输出命令必须正常完成（修复后不被背压卡死）");
+    assert!(
+        out.status.success(),
+        "exit 非零: {:?} stderr={}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 260KB < 1MiB cap → 全量保真（无截断标记）。
+    assert!(
+        out.stdout.len() >= 250_000,
+        "stdout 应 ≥250KB，实际 {}",
+        out.stdout.len()
+    );
+    assert!(
+        !out.stdout.starts_with(b"[output capture capped"),
+        "未超 cap 不应有截断标记"
+    );
+    // 未撞超时（修复失效时这里已是 30s 后的 Err 分支，到不了）。
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "耗时 {:?}——疑似又被背压卡死",
+        started.elapsed()
+    );
+}
+
+/// 超时语义：真挂住的子进程在 deadline 强杀，返回 Err 且不悬挂
+/// （drain 线程随 EOF 收束，join 必然完成）。
+#[test]
+fn run_capped_timeout_kills_and_returns_err() {
+    use super::run_capped_with_timeout;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let started = Instant::now();
+    let out = if cfg!(windows) {
+        // ping 直接做被杀目标（不套 cmd /C）：TerminateProcess 杀 ping
+        // 自身 → 管道写端关闭 → drain 线程 EOF 收束。套 cmd 会留孤儿
+        // ping 持写端——那是实现已用收尾窗口兜底的场景，测试不混入。
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "30", "127.0.0.1"]);
+        run_capped_with_timeout(cmd, Duration::from_secs(2))
+    } else {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        run_capped_with_timeout(cmd, Duration::from_secs(2))
+    };
+    assert!(out.is_err(), "真挂住的子进程必须超时返回 Err");
+    assert!(
+        out.err().unwrap().contains("超时被强杀"),
+        "错误信息应带超时定性"
+    );
+    // join 已收束（否则本测试悬挂）；墙钟 ≈ timeout 量级。
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "强杀后应在秒级返回，实际 {:?}",
+        started.elapsed()
+    );
+}

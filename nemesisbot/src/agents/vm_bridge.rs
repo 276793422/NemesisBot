@@ -224,7 +224,7 @@ const WSL_TOOL_PROBE_SCRIPT: &str = "for t in qemu-img file curl wget apt-get; d
 #[cfg(windows)]
 pub(crate) fn wsl_spawn_probe() -> WslProbe {
     use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     const TIMEOUT: Duration = Duration::from_secs(3);
     // 后台探测不闪窗（CREATE_NO_WINDOW）。
@@ -232,34 +232,22 @@ pub(crate) fn wsl_spawn_probe() -> WslProbe {
 
     fn run(program: &str, args: &[&str], timeout: Duration) -> Option<(i32, Vec<u8>, Vec<u8>)> {
         use std::os::windows::process::CommandExt as _;
-        let mut child = Command::new(program)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .ok()?;
-        let stdout = child.stdout.take()?;
-        let stderr = child.stderr.take()?;
-        let deadline = Instant::now() + timeout;
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    // 有界排干（横扫角度 B）：1 MiB 丢头保尾。
-                    let out = nemesis_utils::pipe_cap::drain_capped_sync(stdout);
-                    let err = nemesis_utils::pipe_cap::drain_capped_sync(stderr);
-                    return Some((status.code().unwrap_or(-1), out, err));
-                }
-                Ok(None) if Instant::now() >= deadline => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return None;
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
-                Err(_) => return None,
-            }
-        }
+        // BUG-20261110-038：排干交给 run_capped_with_timeout 的并发排干线程
+        // （旧形态退出后才排干，大输出子进程阻塞在写 → 假超时）。WSL 探针
+        // 输出常规量小，但 wsl.exe 异常态（冷启动进度/转换提示走 stderr）
+        // 体量不受我方控制——形态修正，不再依赖「输出恰好小于管道缓冲」。
+        let out = nemesis_utils::pipe_cap::run_capped_with_timeout(
+            {
+                let mut cmd = Command::new(program);
+                cmd.args(args)
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .stdin(Stdio::null());
+                cmd
+            },
+            timeout,
+        )
+        .ok()?;
+        Some((out.status.code().unwrap_or(-1), out.stdout, out.stderr))
     }
 
     // ① 发行版清单（wsl.exe 管理命令 = UTF-16LE 输出）。
