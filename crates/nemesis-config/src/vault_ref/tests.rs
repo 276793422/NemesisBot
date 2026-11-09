@@ -180,3 +180,143 @@ fn writer_clear_restores_none() {
     assert!(global_vault_writer().is_none());
     assert!(write_vault_secret("x", "y").is_err());
 }
+
+// ===== strip_templates（2026-11-10 B4 会话凭据误拦修复：安全层模板豁免
+// 的单一语法判定点）。无全局槽位接触，无锁需求。 =====
+
+/// 完整模板剔除；模板前后文本保留。
+#[test]
+fn strip_templates_removes_complete_and_keeps_surroundings() {
+    assert_eq!(
+        strip_templates("password = \"{{vault:agent/s1/pw}}\""),
+        "password = \"\""
+    );
+    assert_eq!(strip_templates("a{{vault:x/y}}b{{vault:z}}c"), "abc");
+}
+
+/// 无模板 → 原样返回（零成本快速路径）。
+#[test]
+fn strip_templates_passthrough_without_head() {
+    assert_eq!(
+        strip_templates("plain password = \"secret\""),
+        "plain password = \"secret\""
+    );
+    assert_eq!(strip_templates(""), "");
+}
+
+/// 未闭合（`{{vault:x` 无 `}}`）→ HEAD 字面量保留，不豁免该段。
+#[test]
+fn strip_templates_keeps_unclosed_literal() {
+    assert_eq!(strip_templates("{{vault:x"), "{{vault:x");
+    assert_eq!(
+        strip_templates("a {{vault:x}} b {{vault:unclosed"),
+        "a  b {{vault:unclosed"
+    );
+}
+
+/// 空别名（trim 后空）→ 非法模板形态，原文保留。
+#[test]
+fn strip_templates_keeps_empty_alias() {
+    assert_eq!(strip_templates("{{vault:}}"), "{{vault:}}");
+    assert_eq!(strip_templates("{{vault:   }}"), "{{vault:   }}");
+}
+
+/// 嵌套畸形（内层提前闭合）→ 按最近 `}}` 判定该段为完整模板剔除，
+/// 余下尾随 `}}` 保留（该形态展开层越界报错 fail loud，安全层放行的
+/// 是无真值字面文本）。
+#[test]
+fn strip_templates_nested_form_strips_innermost_close() {
+    assert_eq!(strip_templates("{{vault:{{vault:x}}}}"), "}}");
+}
+
+/// 空串输入直通。
+#[test]
+fn strip_templates_empty_input() {
+    assert_eq!(strip_templates(""), "");
+}
+
+// ===== strip_reference_forms（2026-11-10 裸形态批：模板 + 裸引用 `vault:`
+// `<alias>` 双形态豁免的单一语法判定点。语义/防回退说明见函数主文档。）=====
+
+/// 裸引用剔除：带引号与无引号形态都剥干净，前后文保留。
+#[test]
+fn strip_reference_forms_removes_bare_ref() {
+    assert_eq!(
+        strip_reference_forms("password = \"vault:zope/main\""),
+        "password = \"\""
+    );
+    assert_eq!(
+        strip_reference_forms("password = vault:zope/main"),
+        "password = "
+    );
+    // 多级别名（含路径段）整个别名段一起剥。
+    assert_eq!(
+        strip_reference_forms("api_key: vault:openai-main"),
+        "api_key: "
+    );
+}
+
+/// 模板与裸引用组合：两条路径都剥（模板先剥，残余裸引用再剥）。
+#[test]
+fn strip_reference_forms_combined_forms() {
+    assert_eq!(
+        strip_reference_forms("a={{vault:x/y}} b=vault:z c=plain"),
+        "a= b= c=plain"
+    );
+}
+
+/// `vault:` 后无别名字符（空值/`{{vault:}}` 闭合位）→ 非引用形态原文保留。
+#[test]
+fn strip_reference_forms_keeps_empty_alias() {
+    assert_eq!(
+        strip_reference_forms("password = \"vault:\""),
+        "password = \"vault:\""
+    );
+    assert_eq!(
+        strip_reference_forms("password = \"{{vault:}}\""),
+        "password = \"{{vault:}}\""
+    );
+}
+
+/// 独立词元闸：`vault:` 前是别名字符 = 普通单词一部分（如 `myvault:`），
+/// 不剥——真秘密恰好内嵌 `vault:` 子串时残余仍满足规则照旧拦。
+#[test]
+fn strip_reference_forms_requires_standalone_token() {
+    assert_eq!(
+        strip_reference_forms("password = \"myvault:secret123456\""),
+        "password = \"myvault:secret123456\""
+    );
+    // 前置是标点/空白/行首 = 独立词元，正常剥。
+    assert_eq!(strip_reference_forms("vault:x/y"), "");
+    assert_eq!(strip_reference_forms("foo(\"vault:alias1\")"), "foo(\"\")");
+}
+
+/// 别名 charset 边界：别名段遇非别名字符断段，断点后的残余参与重扫
+///（`vault:abc$%^12345` 剥 `vault:abc` 后剩 `$%^12345`）——正是凭据扫描
+///「剥离后残余仍命中照旧拦」防线的输入形态。
+#[test]
+fn strip_reference_forms_alias_stops_at_non_alias_char() {
+    assert_eq!(
+        strip_reference_forms("password = \"vault:abc$%^12345\""),
+        "password = \"$%^12345\""
+    );
+    assert_eq!(strip_reference_forms("vault:x,y"), ",y");
+}
+
+/// CJK 别名（会话名经 sanitize_path_segment 可含 CJK）整段剥。
+#[test]
+fn strip_reference_forms_cjk_alias() {
+    assert_eq!(
+        strip_reference_forms("password = \"vault:agent/会话1/数据库密码\""),
+        "password = \"\""
+    );
+}
+
+/// 剥离残余保留：`vault:x` 前后的空格/文本原样（消费方重扫语义依赖此形态）。
+#[test]
+fn strip_reference_forms_preserves_gaps() {
+    assert_eq!(
+        strip_reference_forms("prefix vault:x suffix"),
+        "prefix  suffix"
+    );
+}

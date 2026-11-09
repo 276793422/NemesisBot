@@ -1343,6 +1343,10 @@ mod credential_injection_tests;
 // B4 会话凭据占位符测试（展开/作用域闸/掩码纯函数 + 收取侧掩码占位）。
 #[cfg(test)]
 mod session_secrets_tests;
+// B4 误拦修复（2026-11-10）管线级回归：Layer 4/5 模板豁免 → 展开 →
+// 结果掩码跨层协同（需 security feature）。
+#[cfg(all(test, feature = "security"))]
+mod session_secrets_pipeline_tests;
 // ②（三期）：dispatch 凭据闸 v2——别名域绑定 loop 级测试
 // （出域拒绝零执行 / 域内直过 / 顶槽盖叶 / 精确叶收窄 / 无绑定 v1 零回归 /
 // 配置缺席与损坏 fail-secure）。

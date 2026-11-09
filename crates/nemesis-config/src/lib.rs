@@ -27,10 +27,11 @@ pub use hot_reload::HotReloader;
 // vault（计划）：`vault:<alias>` 引用的前缀常量、全局
 // 解析器钩子与通用秘密字段解析（channel/cluster/MCP 消费点共用）。
 pub use vault_ref::{
-    VAULT_PREFIX, VaultResolver, VaultWriter, clear_global_vault_resolver,
-    clear_global_vault_writer, global_vault_resolver, global_vault_writer, is_secret_reference,
-    resolve_secret_field, resolve_vault_reference, set_global_vault_resolver,
-    set_global_vault_writer, write_vault_secret,
+    TEMPLATE_HEAD, TEMPLATE_TAIL, VAULT_PREFIX, VaultResolver, VaultWriter,
+    clear_global_vault_resolver, clear_global_vault_writer, global_vault_resolver,
+    global_vault_writer, is_secret_reference, resolve_secret_field, resolve_vault_reference,
+    set_global_vault_resolver, set_global_vault_writer, strip_reference_forms, strip_templates,
+    write_vault_secret,
 };
 
 // ②（三期）：vault 别名域绑定（alias→(工具,槽位) 白名单）

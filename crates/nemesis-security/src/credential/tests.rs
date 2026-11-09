@@ -435,3 +435,207 @@ fn scan_tool_output_match_and_clean_paths() {
     let clean = scanner.scan_tool_output("shell", "nothing sensitive in this output");
     assert!(!clean.has_matches);
 }
+
+// ===== 会话凭据模板豁免（2026-11-10 B4 误拦修复）：完整合法
+// `{{vault:<alias>}}` 引用不是明文秘密，赋值形态不得误拦；
+// 明文/混拼/并存/畸形形态照旧拦（匹配级后滤语义）。 =====
+
+/// 赋值结构 + 完整引用 → 豁免（secret_assignment 规则不再命中）。
+#[test]
+fn test_vault_template_reference_not_flagged() {
+    let scanner = Scanner::new(true, "block");
+    for content in [
+        "password = \"{{vault:agent/s1/pw}}\"",
+        "api_key: \"{{vault:agent/x/y}}\"",
+        "export TOKEN=\"{{vault:agent/s1/github}}\"",
+    ] {
+        let result = scanner.scan_content(content);
+        assert!(
+            !result.has_matches,
+            "vault reference {:?} must not be flagged: {:?}",
+            content, result.matches
+        );
+    }
+}
+
+/// 同位置明文秘密 → 照旧拦（豁免不弱化明文检测）。
+#[test]
+fn test_vault_template_plaintext_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let result = scanner.scan_content("password = \"hunter2secret\"");
+    assert!(result.has_matches, "plaintext secret must stay flagged");
+}
+
+/// 引用与真实秘密并存同串 → 照旧拦（每个匹配独立判定）。
+#[test]
+fn test_vault_template_coexisting_secret_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let content = "password = \"{{vault:agent/s1/pw}}\" github_token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"";
+    let result = scanner.scan_content(content);
+    assert!(
+        result.has_matches,
+        "coexisting real token must stay flagged"
+    );
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.pattern_name == "github_token"),
+        "github_token match expected: {:?}",
+        result.matches
+    );
+}
+
+/// 混拼（模板后接非模板尾巴 ≥8 字符，剔除后仍满足规则）→ 照旧拦。
+#[test]
+fn test_vault_template_mixed_tail_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let result = scanner.scan_content("password = \"{{vault:agent/s1/pw}}plain_suffix\"");
+    assert!(
+        result.has_matches,
+        "mixed plaintext tail must stay flagged: {:?}",
+        result.matches
+    );
+}
+
+/// 空别名 `{{vault:}}` → 畸形形态，原文保留 → 照旧拦（从严判定）。
+#[test]
+fn test_vault_template_empty_alias_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let result = scanner.scan_content("password = \"{{vault:}}\"");
+    assert!(
+        result.has_matches,
+        "malformed empty-alias form must stay flagged"
+    );
+}
+
+/// 未闭合 `{{vault:x` → 原文保留 → 照旧拦（从严判定，不豁免畸形）。
+#[test]
+fn test_vault_template_unclosed_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let result = scanner.scan_content("password = \"{{vault:unclosed and more text\"");
+    assert!(
+        result.has_matches,
+        "unclosed template form must stay flagged"
+    );
+}
+
+/// redact_content 豁免：纯模板引用原样保留（不替换为
+/// [REDACTED_CREDENTIAL]）——消费点 host_impl log_line 是无条件 redact，
+/// 引用原文打码只损毁可读性。
+#[test]
+fn test_redact_preserves_vault_template_reference() {
+    let scanner = Scanner::new(true, "block");
+    let content = "password = \"{{vault:agent/s1/pw}}\"";
+    let out = scanner.redact_content(content);
+    assert_eq!(out, content, "纯引用不得被打码: {out}");
+    assert!(!out.contains("[REDACTED_CREDENTIAL]"));
+}
+
+/// 混合内容：真秘密打码、模板引用原样保留（匹配级独立判定）。
+#[test]
+fn test_redact_mixed_secret_and_template() {
+    let scanner = Scanner::new(true, "block");
+    let content =
+        "password = \"{{vault:agent/s1/pw}}\" token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"";
+    let out = scanner.redact_content(content);
+    assert!(
+        out.contains("[REDACTED_CREDENTIAL]"),
+        "真秘密必须打码: {out}"
+    );
+    assert!(
+        out.contains("{{vault:agent/s1/pw}}"),
+        "模板引用必须原样保留: {out}"
+    );
+}
+
+// ===== 裸引用形态豁免（2026-11-10 裸形态批，用户拍板选 1）：裸
+// `vault:<alias>` 是配置文件合法写法，赋值形态不得误拦；非别名残余/
+// 内嵌词/并存真秘密照旧拦（匹配级后滤语义，单一真相源
+// nemesis_config::vault_ref::strip_reference_forms）。 =====
+
+/// 赋值结构 + 裸引用（带引号）→ 豁免。JSON 键值形态（`"api_key":
+/// "vault:x"`）本就不命中赋值正则（引号卡 `[=:]` 锚）；真实误拦面是
+/// TOML/YAML 配置的带引号行，这里按生产形态验收。
+#[test]
+fn test_bare_vault_reference_not_flagged() {
+    let scanner = Scanner::new(true, "block");
+    for content in [
+        "password = \"vault:zope/main\"",
+        "api_key: \"vault:openai-main\"",
+        "token = \"vault:agent/s1/github\"",
+    ] {
+        let result = scanner.scan_content(content);
+        assert!(
+            !result.has_matches,
+            "bare vault reference {:?} must not be flagged: {:?}",
+            content, result.matches
+        );
+    }
+}
+
+/// 边界：别名段遇非别名字符断段，残余 ≥8 字符仍满足规则 → 照旧拦
+///（「看起来像引用」不等于「整个值是引用」）。
+#[test]
+fn test_bare_vault_reference_nonalias_residue_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let result = scanner.scan_content("password = \"vault:abc$%^12345\"");
+    assert!(
+        result.has_matches,
+        "non-alias residue after strip must stay flagged: {:?}",
+        result.matches
+    );
+}
+
+/// 内嵌词（`myvault:x`——`vault:` 前是别名字符，非独立词元）→ 不剥 →
+/// 照旧拦（收窄「真秘密恰含 vault: 子串」的放过窗口）。
+#[test]
+fn test_bare_vault_reference_embedded_word_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let result = scanner.scan_content("password = \"myvault:secret123456\"");
+    assert!(result.has_matches, "embedded word form must stay flagged");
+}
+
+/// `vault:` 空尾 → 无别名字符不豁免 → 照旧拦（从严）；对照：连字符是
+/// 合法别名字符，`vault:plus-more` 豁免。
+#[test]
+fn test_bare_vault_reference_empty_alias_still_flagged() {
+    let scanner = Scanner::new(true, "block");
+    let hyphen = scanner.scan_content("password = \"vault:plus-more\"");
+    assert!(
+        !hyphen.has_matches,
+        "连字符别名必须豁免: {:?}",
+        hyphen.matches
+    );
+    let empty = scanner.scan_content("password = \"vault:      \"");
+    // `vault:` 后是空格（非别名字符）→ 空别名不豁免；值（`vault:`+空格）
+    // 9 字符过 8 字符门槛 → 仍命中。注：裸 `vault:`（6 字符）低于规则
+    // 长度下限本就不命中，测不到豁免路径，故用空格填充到达检测。
+    assert!(
+        empty.has_matches,
+        "empty-alias bare form (length-reachable) must stay flagged: {:?}",
+        empty.matches
+    );
+}
+
+/// redact_content 裸引用豁免：纯裸引用原样保留；并存真秘密照旧打码。
+#[test]
+fn test_redact_preserves_bare_vault_reference() {
+    let scanner = Scanner::new(true, "block");
+    let bare = "password = \"vault:zope/main\"";
+    let out = scanner.redact_content(bare);
+    assert_eq!(out, bare, "裸引用不得被打码: {out}");
+    assert!(!out.contains("[REDACTED_CREDENTIAL]"));
+
+    let mixed =
+        "password = \"vault:zope/main\" token = \"ghp_abcdefghijklmnopqrstuvwxyz0123456789\"";
+    let out_mixed = scanner.redact_content(mixed);
+    assert!(
+        out_mixed.contains("[REDACTED_CREDENTIAL]"),
+        "并存真秘密必须打码: {out_mixed}"
+    );
+    assert!(
+        out_mixed.contains("vault:zope/main"),
+        "裸引用必须原样保留: {out_mixed}"
+    );
+}

@@ -1669,10 +1669,12 @@ impl AgentLoop {
                                 };
                             // B4（2026-11-08 批次④）会话凭据占位符：声明槽
                             // 注入之后、execute 之前——安全 8 层已在上方跑完
-                            //（各层看到占位符原文，Layer 4 不误拦、审计落
-                            // 原文），此处展开值只进 execute 入参；明文清单
-                            // 带回供结果掩码。作用域闸（只解析本会话别名）
-                            // 是防外泄主防线，见 session_secrets 模块文档。
+                            //（各层看到占位符原文；Layer 4/DLP 的匹配级引用
+                            // 豁免让引用不被误拦、审计落原文，见
+                            // nemesis_config::vault_ref::strip_reference_forms），
+                            // 此处展开值只进 execute 入参；明文清单带回供
+                            // 结果掩码。作用域闸（只解析本会话别名）是防外泄
+                            // 主防线，见 session_secrets 模块文档。
                             let (exec_args, session_secrets) =
                                 match crate::r#loop::session_secrets::expand_session_placeholders(
                                     &exec_args,

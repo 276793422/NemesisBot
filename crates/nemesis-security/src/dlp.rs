@@ -210,6 +210,27 @@ impl DlpEngine {
             }
             for mat in rule.re.find_iter(&scan_text) {
                 let matched_text = mat.as_str();
+                // 引用豁免后滤（2026-11-10 B4 会话凭据误拦修复 + 裸形态批，
+                // 用户拍板；与 credential.rs Layer 4 同源同语义）：匹配文本
+                // 剔除全部 vault 引用形态（完整模板 `{{vault:<alias>}}` +
+                // 裸引用 `vault:<alias>`，含无引号形态）后对同一规则重扫
+                // ——仍命中才算真命中。`password = vault:zope/main` 是
+                // 配置文件合法写法不是 DLP 命中；明文/混拼/并存秘密照旧。
+                // ⚠ 勿删豁免 = 误报回归；根因/防回退/未来出路（数据式凭据
+                // 通道）全文见 nemesis_config::vault_ref::
+                // strip_reference_forms 文档。
+                // `VAULT_PREFIX`（`vault:`）是两类引用形态的公共子串——
+                // 守卫只查它即可全覆盖（裸引用不含 `{{vault:`，查
+                // TEMPLATE_HEAD 会漏掉无引号形态）；纯明文零成本短路。
+                if matched_text.contains(nemesis_config::vault_ref::VAULT_PREFIX)
+                    && !rule
+                        .re
+                        .is_match(&nemesis_config::vault_ref::strip_reference_forms(
+                            matched_text,
+                        ))
+                {
+                    continue;
+                }
                 // Post-match validator (Luhn / ID checksum): demote to Low if it fails,
                 // killing "right format, not a real number" false positives.
                 let confidence = match rule.validator {
@@ -242,6 +263,14 @@ impl DlpEngine {
             if let Ok(re) = Regex::new(&rule.pattern) {
                 for mat in re.find_iter(&scan_text) {
                     let matched_text = mat.as_str();
+                    // 引用豁免后滤（同上方静态规则臂，裸形态批切换）。
+                    if matched_text.contains(nemesis_config::vault_ref::VAULT_PREFIX)
+                        && !re.is_match(&nemesis_config::vault_ref::strip_reference_forms(
+                            matched_text,
+                        ))
+                    {
+                        continue;
+                    }
                     let confidence = rule.confidence;
                     let effective_action = self.config.action_for(confidence);
                     matches.push(DlpMatch {
@@ -311,6 +340,18 @@ impl DlpEngine {
 
         for rule in rules.iter() {
             for m in rule.re.find_iter(text) {
+                // 引用豁免后滤（2026-11-10 A 批 redact 面补齐 + 裸形态批，
+                // 与 scan_text 同源同语义）：纯引用跨度不进替换集——出站面
+                //（gateway outbound DLP）与输出复扫不再打码引用原文（模板
+                // 与裸引用形态）。仍命中（明文/混拼）照旧替换。
+                let matched = m.as_str();
+                if matched.contains(nemesis_config::vault_ref::VAULT_PREFIX)
+                    && !rule
+                        .re
+                        .is_match(&nemesis_config::vault_ref::strip_reference_forms(matched))
+                {
+                    continue;
+                }
                 spans.push((m.start(), m.end()));
             }
         }
@@ -323,6 +364,13 @@ impl DlpEngine {
             }
             if let Ok(re) = Regex::new(&rule.pattern) {
                 for m in re.find_iter(text) {
+                    // 引用豁免后滤（同上方静态规则臂，裸形态批切换）。
+                    let matched = m.as_str();
+                    if matched.contains(nemesis_config::vault_ref::VAULT_PREFIX)
+                        && !re.is_match(&nemesis_config::vault_ref::strip_reference_forms(matched))
+                    {
+                        continue;
+                    }
                     spans.push((m.start(), m.end()));
                 }
             }

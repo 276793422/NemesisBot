@@ -16,18 +16,22 @@
 //! 自己向用户索要的，能被会话内调用使用 = 与既有会话权限同级，不构成提权。
 //!
 //! 替换时机（顺序钉死）：安全 8 层管线全部跑完（各层看到占位符**原文**
-//! ——Layer 4 凭据扫描不会对合法使用误拦，审计链落占位符原文天然
-//! hash-only 干净）→ 本模块展开 → execute → 结果掩码。
+//! ——Layer 4 凭据扫描与 Layer 5 DLP 做**匹配级引用豁免**
+//!（[`nemesis_config::vault_ref::strip_reference_forms`]：命中文本剔除全部
+//! vault 引用形态——完整模板 `{{vault:...}}` **与裸引用 `vault:<alias>`**
+//! ——后重扫，仍命中才算真命中），引用不再被当明文秘密误拦（裸形态 =
+//! 配置文件合法写法，2026-11-10 用户拍板豁免；根因/防回退/未来出路见
+//! `strip_reference_forms` 文档），明文/混拼/并存秘密照旧拦；审计链落
+//! 占位符原文天然 hash-only 干净）→ 本模块展开（模板形态；裸形态引用
+//! 归 [`crate::loop::credential_injection`] 声明槽改写，不经此处）→
+//! execute → 结果掩码。
 //!
 //! 结果掩码是尽力而为（明文子串扫描，编码绕过不保证）；空值不掩
 //!（空串替换无意义）、按长度降序替换（长值优先，避免短值先替换破坏
 //! 长值匹配）。
 
+use nemesis_config::vault_ref::{TEMPLATE_HEAD, TEMPLATE_TAIL};
 use nemesis_utils::sanitize::sanitize_path_segment;
-
-/// 模板起始标记（`{{vault:<alias>}}`）。闭合标记 `}}`。
-const TEMPLATE_HEAD: &str = "{{vault:";
-const TEMPLATE_TAIL: &str = "}}";
 
 /// 结果掩码占位文本（历史/日志/工具结果中凭据值的替身）。
 pub const MASK_TEXT: &str = "[凭据已掩码]";

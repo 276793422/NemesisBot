@@ -913,3 +913,190 @@ fn test_china_id_valid_defensive_arms() {
     // 前 17 位含非数字 → to_digit None → false
     assert!(!china_id_valid("ABCDEFGHIJKLMNOPQR", 0, 18));
 }
+
+// ===== 会话凭据模板豁免（2026-11-10 B4 误拦修复）：完整合法
+// `{{vault:<alias>}}` 引用不构成 DLP 命中；明文/混拼/畸形照旧。
+// 均用默认 block 配置验收（Medium → block 不依赖宽松策略）。 =====
+
+/// secret_password_assignment（Medium→block）对完整引用不命中。
+#[test]
+fn test_vault_template_reference_not_blocked() {
+    let engine = DlpEngine::new(true, "block");
+    let result = engine.scan_text("password = \"{{vault:agent/s1/pw}}\"");
+    assert!(
+        !result.should_block,
+        "vault reference must not block: {:?}",
+        result.matches
+    );
+    assert!(!result.has_matches);
+}
+
+/// 同位置明文秘密 → 照旧 block。
+#[test]
+fn test_vault_template_plaintext_still_blocks() {
+    let engine = DlpEngine::new(true, "block");
+    let result = engine.scan_text("password = \"hunter2secret\"");
+    assert!(result.should_block, "plaintext secret must stay blocked");
+    assert!(
+        result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "secret_password_assignment"),
+        "secret_password_assignment match expected: {:?}",
+        result.matches
+    );
+}
+
+/// 混拼尾巴（剔除模板后仍满足规则）→ 照旧 block。
+#[test]
+fn test_vault_template_mixed_tail_still_blocks() {
+    let engine = DlpEngine::new(true, "block");
+    let result = engine.scan_text("password = \"{{vault:agent/s1/pw}}plain_suffix\"");
+    assert!(
+        result.should_block,
+        "mixed plaintext tail must stay blocked: {:?}",
+        result.matches
+    );
+}
+
+/// 动态规则臂同款豁免：引用形态不命中，明文命中。
+#[test]
+fn test_vault_template_dynamic_rule_exempt_and_block() {
+    let engine = DlpEngine::new(true, "block");
+    engine
+        .add_rule(DlpRule {
+            name: "custom_pw".to_string(),
+            category: "custom".to_string(),
+            pattern: r#"(?i)custom_pw\s*=\s*\S{8,}"#.to_string(),
+            enabled: true,
+            action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
+        })
+        .unwrap();
+
+    // 完整引用：剔除模板后无剩余载荷 → 不命中。
+    let ref_result = engine.scan_text("custom_pw = {{vault:agent/s1/pw}}");
+    assert!(
+        !ref_result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "custom_pw"),
+        "dynamic rule must exempt pure reference: {:?}",
+        ref_result.matches
+    );
+
+    // 明文：照旧命中。
+    let plain_result = engine.scan_text("custom_pw = hunter2secret_value");
+    assert!(
+        plain_result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "custom_pw"),
+        "dynamic rule must keep flagging plaintext"
+    );
+}
+
+/// redact_content 豁免：纯模板引用原样返回（gateway 出站 DLP 的
+/// 早退条件 = redact 后与原文相同——纯引用不再产生假审计）。
+#[test]
+fn test_redact_preserves_vault_template_reference() {
+    let engine = DlpEngine::new(true, "block");
+    let text = "password = \"{{vault:agent/s1/pw}}\"";
+    let out = engine.redact_content(text);
+    assert_eq!(out, text, "纯引用不得被打码: {out}");
+}
+
+/// 混合内容：真秘密 [REDACTED]、模板引用原样保留。
+#[test]
+fn test_redact_mixed_secret_and_template() {
+    let engine = DlpEngine::new(true, "block");
+    let text = "password = \"{{vault:agent/s1/pw}}\" pwd = hunter2secret_value";
+    let out = engine.redact_content(text);
+    assert!(out.contains("[REDACTED]"), "真秘密必须打码: {out}");
+    assert!(
+        out.contains("{{vault:agent/s1/pw}}"),
+        "模板引用必须原样保留: {out}"
+    );
+    assert!(!out.contains("hunter2secret_value"), "明文必须消失: {out}");
+}
+
+// ===== 裸引用形态豁免（2026-11-10 裸形态批，用户拍板选 1）：裸
+// `vault:<alias>` 是配置文件合法写法。DLP 独有面 = **无引号形态**——
+// secret_password_assignment 的值引号可选（`['"]?`），裸引用无引号也
+// 命中，模板批的豁免管不到这里。仍用默认 block 配置验收。 =====
+
+/// secret_password_assignment 对裸引用不命中（带引号 + **无引号**两形态）。
+#[test]
+fn test_bare_vault_reference_not_blocked() {
+    let engine = DlpEngine::new(true, "block");
+    for content in [
+        "password = \"vault:zope/main\"",
+        "password = vault:zope/main",
+        "passwd: vault:openai-main",
+    ] {
+        let result = engine.scan_text(content);
+        assert!(
+            !result.should_block,
+            "bare vault reference {:?} must not block: {:?}",
+            content, result.matches
+        );
+        assert!(!result.has_matches);
+    }
+}
+
+/// 边界：剥离后非别名残余仍满足规则 → 照旧 block。
+#[test]
+fn test_bare_vault_reference_nonalias_residue_still_blocks() {
+    let engine = DlpEngine::new(true, "block");
+    let result = engine.scan_text("password = \"vault:abc$%^12345\"");
+    assert!(
+        result.should_block,
+        "non-alias residue must stay blocked: {:?}",
+        result.matches
+    );
+}
+
+/// 动态规则臂裸引用同款豁免（引用剔除后无剩余载荷 → 不命中）。
+#[test]
+fn test_bare_vault_reference_dynamic_rule_exempt() {
+    let engine = DlpEngine::new(true, "block");
+    engine
+        .add_rule(DlpRule {
+            name: "custom_pw".to_string(),
+            category: "custom".to_string(),
+            pattern: r#"(?i)custom_pw\s*=\s*\S{8,}"#.to_string(),
+            enabled: true,
+            action: "block".to_string(),
+            confidence: DlpConfidence::Medium,
+        })
+        .unwrap();
+    let ref_result = engine.scan_text("custom_pw = vault:agent/s1/pw");
+    assert!(
+        !ref_result
+            .matches
+            .iter()
+            .any(|m| m.rule_name == "custom_pw"),
+        "dynamic rule must exempt bare reference: {:?}",
+        ref_result.matches
+    );
+}
+
+/// redact_content 裸引用豁免：原样保留；并存真秘密照旧打码。
+#[test]
+fn test_redact_preserves_bare_vault_reference() {
+    let engine = DlpEngine::new(true, "block");
+    let bare = "password = vault:zope/main";
+    let out = engine.redact_content(bare);
+    assert_eq!(out, bare, "裸引用不得被打码: {out}");
+
+    let mixed = "password = vault:zope/main pwd = hunter2secret_value";
+    let out_mixed = engine.redact_content(mixed);
+    assert!(
+        out_mixed.contains("[REDACTED]"),
+        "真秘密必须打码: {out_mixed}"
+    );
+    assert!(
+        out_mixed.contains("vault:zope/main"),
+        "裸引用必须原样保留: {out_mixed}"
+    );
+}

@@ -85,6 +85,27 @@ impl Scanner {
         for (name, re) in patterns {
             for cap in re.captures_iter(content) {
                 let full = cap.get(0).map(|m| m.as_str()).unwrap_or("");
+                // 引用豁免后滤（2026-11-10 B4 会话凭据误拦修复 + 裸形态批，
+                // 用户拍板）：匹配文本剔除全部 vault 引用形态（完整模板
+                // `{{vault:<alias>}}` + 裸引用 `vault:<alias>`）后对同一
+                // 规则重扫——仍命中才算真命中。`password =
+                // "{{vault:agent/x/y}}"` / `password = "vault:zope/main"`
+                // 剔除后不再命中 → 豁免（引用原文 ≠ 明文秘密）；明文、
+                // 混拼（残余仍满足规则）、同串并存的其他秘密照旧拦截。
+                // ⚠ 勿删豁免回到「命中即拦」= 误报回归；根因/防回退/未来
+                // 出路（数据式凭据通道）全文见
+                // nemesis_config::vault_ref::strip_reference_forms 文档。
+                // 语法判定/剔除单一真相源在 vault_ref（与 agent 侧展开共
+                // 享常量）；作用域/条目存在性仍归展开层，本层不查库不触
+                // 真值。
+                // `VAULT_PREFIX`（`vault:`）是两类引用形态的公共子串
+                //（模板 `{{vault:` 必含裸前缀）——守卫只查它即可全覆盖；
+                // 纯明文匹配零成本短路。
+                if full.contains(nemesis_config::vault_ref::VAULT_PREFIX)
+                    && !re.is_match(&nemesis_config::vault_ref::strip_reference_forms(full))
+                {
+                    continue;
+                }
                 let redacted = self.mask_value(full);
                 matches.push(CredentialMatch {
                     pattern_name: name.to_string(),
@@ -132,7 +153,24 @@ impl Scanner {
         let mut result = content.to_string();
 
         for (_name, re) in patterns {
-            result = re.replace_all(&result, "[REDACTED_CREDENTIAL]").to_string();
+            // 引用豁免后滤（2026-11-10 A 批 redact 面补齐 + 裸形态批，与
+            // scan_content 同源同语义）：vault 引用形态（模板 + 裸引用）
+            // 原样保留，不替换为 [REDACTED_CREDENTIAL]。消费点：工具输出
+            // 复扫改写臂（output_rescan）/ WASM 插件输出复扫（plugin_bridge）
+            // / 插件日志行脱敏（host_impl log_line，无条件 redact）——引用
+            // 原文不构成泄漏，打码只会损毁可读性。根因/防回退/未来出路
+            // 全文见 nemesis_config::vault_ref::strip_reference_forms 文档。
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let full = caps.get(0).map(|m| m.as_str()).unwrap_or("");
+                    if full.contains(nemesis_config::vault_ref::VAULT_PREFIX)
+                        && !re.is_match(&nemesis_config::vault_ref::strip_reference_forms(full))
+                    {
+                        return full.to_string();
+                    }
+                    "[REDACTED_CREDENTIAL]".to_string()
+                })
+                .to_string();
         }
 
         result

@@ -116,6 +116,147 @@ pub fn is_secret_reference(value: &str) -> bool {
     value.starts_with("env:") || value.starts_with("yaml:") || value.starts_with(VAULT_PREFIX)
 }
 
+/// 会话凭据模板起始标记（`{{vault:<alias>}}`）。单一真相源：安全层
+/// （nemesis-security 凭据扫描 / DLP 的模板豁免）与 agent 侧展开
+///（nemesis-agent `session_secrets`）共用本常量，防两套语法漂移。
+pub const TEMPLATE_HEAD: &str = "{{vault:";
+/// 会话凭据模板闭合标记。
+pub const TEMPLATE_TAIL: &str = "}}";
+
+/// 剔除字符串中全部**完整合法**的 `{{vault:<alias>}}` 模板子串。
+///
+/// [`strip_reference_forms`] 的模板半边（完整模板判定/剔除单一真相源）。
+/// 消费方式见 [`strip_reference_forms`] 文档。
+///
+/// 从严判定（安全层不查库不触真值，只认语法）：
+/// - 未闭合（`{{vault:x` 无 `}}`）→ 保留 `{{vault:` 原文继续扫——与
+///   agent 侧展开语义一致（按字面量保留，非合法模板形态）；
+/// - 别名 trim 后为空（`{{vault:   }}`）→ 保留原文（非法形态不豁免）；
+/// - 别名段嵌套/畸形（如 `{{vault:{{vault:x}}` 内层提前闭合）→ 按最近
+///   `}}` 闭合判定——该形态展开层会越界报错 fail loud，安全层放行的
+///   是纯字面文本（无真值），无泄漏窗口。
+pub fn strip_templates(s: &str) -> String {
+    if !s.contains(TEMPLATE_HEAD) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    loop {
+        let Some(head) = rest.find(TEMPLATE_HEAD) else {
+            out.push_str(rest);
+            break;
+        };
+        out.push_str(&rest[..head]);
+        let after = &rest[head + TEMPLATE_HEAD.len()..];
+        let Some(close) = after.find(TEMPLATE_TAIL) else {
+            // 未闭合：保留 HEAD 原文，从 HEAD 之后继续找（后续可能有合法模板）。
+            out.push_str(TEMPLATE_HEAD);
+            rest = after;
+            continue;
+        };
+        if after[..close].trim().is_empty() {
+            // 空别名：非法模板形态，原文保留（含 HEAD），从 HEAD 之后继续。
+            out.push_str(TEMPLATE_HEAD);
+            rest = after;
+            continue;
+        }
+        // 完整合法模板：剔除（不进输出）。
+        rest = &after[close + TEMPLATE_TAIL.len()..];
+    }
+    out
+}
+
+/// 裸引用 token 的别名字符判定（`vault:` 之后的连续段）。
+///
+/// 正 charset：字母数字（含 Unicode——会话名经 sanitize_path_segment 可
+/// 含 CJK）+ `_` `.` `/` `-`（别名段分隔与惯用连接符）。**遇空格/引号/
+/// 花括号/其他标点即断段**：断点后的残余参与重扫（真秘密的标点残余
+/// 照旧命中）；`vault:` 后无别名字符（空值 / `{{vault:}}` 闭合位）→
+/// 非引用形态，原文保留（从严）。
+fn is_alias_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '.' | '/' | '-')
+}
+
+/// 剔除字符串中全部 vault **引用形态**——完整模板 `{{vault:<alias>}}` +
+/// 裸引用 `vault:<alias>`——返回「假如这些引用都不存在」的文本。
+///
+/// ══ 为什么存在（B4 误拦修复 2026-11-10；裸形态用户拍板选 1）══
+///
+/// 安全层的明文秘密检测（nemesis-security 凭据扫描 `secret_assignment`
+/// / DLP `secret_password_assignment`）按「关键词 + =/: + 8+ 字符值」的
+/// 通用形态命中，而 vault 引用恰好长这样：
+///
+/// ```text
+/// password = "{{vault:agent/s1/pw}}"   （会话模板——B4 误拦实锤）
+/// password = "vault:zope/main"         （裸引用——配置文件合法写法）
+/// password = vault:zope/main           （裸引用无引号——DLP 也命中）
+/// ```
+///
+/// 别名串（无空格无引号 8+ 字符）在通用形态眼里与真密码不可区分。
+/// 不豁免 = 写 vault 引用配置（vault 自身的文档化用法）、模型回显引用
+/// 示例、插件日志引用原文，全被误拦/误打码。**不要删掉本豁免回到
+/// 「命中即拦」**：那是误报回归不是安全加固——引用文本无真值，拦它
+/// 防不了任何泄漏，只会打断合法流程。
+///
+/// ══ 已接受的代价（同一拍板）══
+///
+/// 裸形态豁免标准是「看起来像引用」而非「确定是引用」：真值形如
+/// `vault:` + 别名字符的明文秘密（如 `vault:abc123456`）会绕过上述两条
+/// **通用形态**规则。收窄措施：只认**独立词元**（`vault:` 前不能是别名
+/// 字符——`myvault:x` 不豁免）；剥离后残余仍满足规则照旧拦
+///（`vault:abc$%^12345` 剥到 `$%^12345` 仍命中）。固定结构规则（AKIA /
+/// GitHub token / JWT 等 30+ 条）不受影响。残留风险仍受输出掩码 /
+/// 审计链 / guardian 二审兜底。
+///
+/// ══ 未来出路（回查锚点）══
+///
+/// 当「数据式凭据通道」落地（deferred 问题三：凭据经 stdin 载荷/受控
+/// 环境注入，不再以文本形态进工具参数），引用形态从源码面消失，本函数
+/// 与全部豁免点可退役。届时按 `strip_reference_forms` 或「模板豁免」
+/// 检索即达全部位置：nemesis-security `credential.rs`
+///（scan_content / redact_content）+ `dlp.rs`（scan_text / redact_content
+/// 静态+动态臂）。
+///
+/// 消费方式（安全层唯一姿势）：对命中的匹配文本 strip 后按**同一规则**
+/// 重扫——仍命中才算真命中。模板半边的从严判定见 [`strip_templates`]。
+pub fn strip_reference_forms(s: &str) -> String {
+    let stripped = strip_templates(s);
+    if !stripped.contains(VAULT_PREFIX) {
+        return stripped;
+    }
+    let mut out = String::with_capacity(stripped.len());
+    let mut rest = stripped.as_str();
+    loop {
+        let Some(pos) = rest.find(VAULT_PREFIX) else {
+            out.push_str(rest);
+            break;
+        };
+        // 独立词元闸：`vault:` 前是别名字符（如 `myvault:`）→ 不是引用
+        // 形态，是普通单词的一部分——前缀与前置字符原样保留。
+        let standalone = pos == 0
+            || rest[..pos]
+                .chars()
+                .next_back()
+                .is_none_or(|c| !is_alias_char(c));
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + VAULT_PREFIX.len()..];
+        let alias_len: usize = after
+            .chars()
+            .take_while(|c| is_alias_char(*c))
+            .map(char::len_utf8)
+            .sum();
+        if !standalone || alias_len == 0 {
+            out.push_str(VAULT_PREFIX);
+            rest = after;
+        } else {
+            // 独立 `vault:<alias>`：前缀与别名段一起剔除（别名段就落在
+            // after 开头，跳 alias_len 字节）。
+            rest = &after[alias_len..];
+        }
+    }
+    out
+}
+
 /// 通用秘密字段解析：channel token / cluster token / MCP
 /// env、headers 等字段共用。前缀链与 `resolve_api_key_value` 对齐：
 /// `env:VAR` > `yaml:<alias>` > `vault:<alias>` > 字面量（向后兼容）。
