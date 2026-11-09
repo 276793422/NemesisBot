@@ -40,11 +40,22 @@ impl CycleStore {
 
     /// Append a cycle record to today's JSONL file (month-based directory).
     pub async fn append(&self, cycle: &LearningCycle) -> std::io::Result<()> {
-        // Parse started_at to determine the date for file naming
-        let date_str = &cycle.started_at.get(..10).unwrap_or("19700101");
+        // Parse started_at to determine the date for file naming.
+        // started_at 是 pub 自由 String（LearningCycle serde 契约），畸形值
+        // 必须整体归一而非逐段防御：旧代码 `get(..10).unwrap_or` 只防了前
+        // 10 字节越界/非边界，`[..6]` 在 clean 过短时仍越界 panic（如
+        // "---------X" → clean "X" 仅 1 字节），且含 '/' 等字符时
+        // join 会建出计划外嵌套目录。现要求 clean 恰为 8 位纯数字
+        // （YYYYMMDD，RFC3339 写入链的产物形态），否则回落 19700101——
+        // 与 get(..10) 既有 fallback 语义一致。
+        let date_str = cycle.started_at.get(..10).unwrap_or("19700101");
         let date_str_clean = date_str.replace('-', "");
-        let month_part = &date_str_clean[..6];
-        let day_part = &date_str_clean;
+        let (month_part, day_part) =
+            if date_str_clean.len() == 8 && date_str_clean.bytes().all(|b| b.is_ascii_digit()) {
+                (&date_str_clean[..6], date_str_clean.as_str())
+            } else {
+                ("197001", "19700101")
+            };
 
         let month_dir = self.base_dir.join(month_part);
         tokio::fs::create_dir_all(&month_dir).await?;

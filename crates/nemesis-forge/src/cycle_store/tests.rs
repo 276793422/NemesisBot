@@ -538,3 +538,51 @@ async fn test_cleanup_skips_non_jsonl_and_stray_entries() {
     assert!(old_month.join("notes.txt").exists());
     assert!(dir.path().join("stray.bin").exists());
 }
+
+#[tokio::test]
+async fn test_append_malformed_started_at_falls_back_instead_of_panicking() {
+    // Regression lock (BUG-20261109-018): 旧代码 `&date_str_clean[..6]` 在
+    // 畸形 started_at 下越界 panic（如 "---------X" → clean "X" 仅 1 字节），
+    // 含 '/' 时还会 join 出计划外嵌套目录。守卫升级后畸形值整体回落
+    // 19700101，与 get(..10) 既有 fallback 语义一致。
+    let dir = tempfile::tempdir().unwrap();
+    let store = CycleStore::from_base(dir.path());
+
+    // "20261109"（8 字节短串）旧代码同样落 fallback——get(..10) 对 len<10
+    // 越界返回 None，与 panic 无关；真正走正常臂的是 RFC3339 十字节形态。
+    for malformed in ["---------X", "abc", "a/b/c/d/e/f", "2026-11-0", "20261109"] {
+        let mut cycle = make_cycle("malformed");
+        cycle.started_at = malformed.into();
+        store
+            .append(&cycle)
+            .await
+            .unwrap_or_else(|e| panic!("started_at={malformed:?} append must not fail: {e}"));
+    }
+
+    // 全部落入 fallback 文件（get(..10) 对 len<10 或 clean 非 8 位数字都
+    // 归一 19700101；"20261109" 8 字节短串旧代码同样走 fallback）。
+    assert!(
+        dir.path().join("197001/19700101.jsonl").exists(),
+        "malformed started_at must fall back to 19700101 file"
+    );
+    // 目录形状不逃逸：base 下不出现计划外的子目录链（a/、2026- 等）。
+    let mut month_entries = tokio::fs::read_dir(dir.path()).await.unwrap();
+    let mut months = Vec::new();
+    while let Some(e) = month_entries.next_entry().await.unwrap() {
+        months.push(e.file_name().to_string_lossy().to_string());
+    }
+    months.sort();
+    assert_eq!(months, vec!["197001"], "no stray nested dirs");
+
+    // 正常臂对照：RFC3339 十字节形态 → 8 位 clean 数字 → 正常路径。
+    let normal = make_cycle("normal");
+    store.append(&normal).await.unwrap();
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    assert!(
+        dir.path()
+            .join(&today[..6])
+            .join(format!("{today}.jsonl"))
+            .exists(),
+        "RFC3339 started_at must take the normal path"
+    );
+}
