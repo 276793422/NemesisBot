@@ -187,6 +187,48 @@ async fn test_tcp_conn_close() {
 }
 
 #[tokio::test]
+async fn test_tcp_conn_task_death_marks_inactive() {
+    // 回归锁（任务死亡看门狗）：此前读/写任务退出（对端断开 → 读任务
+    // EOF break）不设 closed 旗标，is_active() 在显式 close 前恒真——
+    // Pool 三层验活（取用即验/归还验活/cleanup_dead，全部查 is_active）
+    // 会放行并循环回收「receive 恒 None 但 send 仍成功」的半死连接。
+    // 修复后任一关键任务退出即置 closed，is_active() 如实翻假。
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server_handle = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        drop(stream); // 对端立即断开 → 客户端读任务收到 EOF
+    });
+
+    let client_stream = TokioTcpStream::connect(addr).await.unwrap();
+    let mut conn = TcpConn::new(
+        client_stream,
+        TcpConnConfig {
+            node_id: "watchdog-test".into(),
+            address: addr.to_string(),
+            ..Default::default()
+        },
+    );
+    conn.start().await.unwrap();
+    assert!(conn.is_active());
+
+    server_handle.await.unwrap();
+
+    // 读任务 EOF 退出 → 看门狗置 closed → is_active 翻假（异步传播，2s 上限）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while conn.is_active() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "task death must surface via is_active() (watchdog wired)"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    // receive() 在读任务死亡后如常返回 None（既有语义不变）。
+    assert!(conn.receive().await.is_none());
+}
+
+#[tokio::test]
 async fn test_tcp_conn_auth_token() {
     // AEAD auth model: both ends derive the same AES-256-GCM key from the
     // shared token. The server's read loop decrypts inbound frames; an

@@ -486,7 +486,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
         // before being parsed as a WireMessage JSON. A wrong key (failed
         // authentication) surfaces as a decrypt error and closes the loop.
         let key_r = cipher_key;
+        // 任务退出信号：tx 随任务体 move 持有，任务结束（无论 break 原因 /
+        // panic unwind / close abort）tx drop → rx Err——任务死亡看门狗以此
+        // 感知关键任务退出（下方 watchdog）。
+        let (read_dead_tx, read_dead_rx) = tokio::sync::oneshot::channel::<()>();
+        let (write_dead_tx, write_dead_rx) = tokio::sync::oneshot::channel::<()>();
         let read_task = tokio::spawn(async move {
+            let _read_dead = read_dead_tx;
             let mut reader = AsyncFrameReader::with_capacity(read_half, 4096);
             loop {
                 if closed_r.load(Ordering::SeqCst) {
@@ -601,6 +607,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
         // loop's key decision (both derive from the same auth_token).
         let key_w = cipher_key;
         let write_task = tokio::spawn(async move {
+            let _write_dead = write_dead_tx;
             while let Some(data) = send_rx.recv().await {
                 if closed_w.load(Ordering::SeqCst) {
                     break;
@@ -678,6 +685,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> TcpConn<S> {
         if let Some(task) = heartbeat_task {
             self.tasks.push(task);
         }
+
+        // --- 任务死亡看门狗 ---
+        // 读/写任务任一退出（EOF / IO 错误 / 解密失败 / idle 超时 / abort）
+        // 即置 closed 旗标。此前任务死亡不设旗标：is_active()（= !closed
+        // && started）在显式 close() 前恒真——Pool 的三层验活（取用即验
+        // get_inner / 归还验活 return_connection / cleanup_dead 兜底）全部
+        // 查 is_active，会放行并循环回收「读任务已死（receive 恒 None）但
+        // 写通道尚通（send 仍成功）」的半死连接：每次使用必失败、失败归还
+        // 又入池，永不自愈。旗标如实反映任务死亡后三层验活恢复效力。
+        // 与 close() 的 CAS 幂等共存（谁先到谁生效，另一方 no-op）。
+        let closed_x = self.closed.clone();
+        let watchdog = tokio::spawn(async move {
+            tokio::select! {
+                _ = read_dead_rx => {},
+                _ = write_dead_rx => {},
+            }
+            closed_x.store(true, Ordering::SeqCst);
+        });
+        self.tasks.push(watchdog);
 
         self.started.store(true, Ordering::SeqCst);
         debug!(
