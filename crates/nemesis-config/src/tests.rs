@@ -1616,6 +1616,11 @@ fn test_config_post_process_for_compatibility() {
 #[test]
 fn test_config_post_process_no_sync() {
     let mut config = Config::default();
+    // websocket 缺省收敛出厂真相源后（BUG-20261109-017）带模板值
+    // sync_to=["web"]——本测试钉的是「清空 → 不推导 sync_to_web」联动，
+    // 显式置空模拟无同步意图（Default 本身现在忠于模板，推导为 true 是
+    // 对的，由 test_websocket_channel_config_default 覆盖）。
+    config.channels.websocket.sync_to = vec![];
     config.post_process_for_compatibility();
     assert!(!config.channels.external.sync_to_web);
     assert!(!config.channels.websocket.sync_to_web);
@@ -1739,10 +1744,33 @@ fn test_cron_tools_config_default() {
 
 #[test]
 fn test_websocket_channel_config_default() {
+    // 缺省收敛出厂真相源（BUG-20261109-017）：host/port/path/sync_to 与
+    // 出厂模板同值（127.0.0.1/49001/"/ws"/["web"]）。此前 derive 零值形态
+    // 使手编 enabled:true 的 config bind(":0") 静默落随机端口死通道。
     let cfg = WebSocketChannelConfig::default();
     assert!(!cfg.enabled);
-    assert!(cfg.host.is_empty());
+    assert_eq!(cfg.host, "127.0.0.1");
+    assert_eq!(cfg.port, 49001);
+    assert_eq!(cfg.path, "/ws");
+    assert_eq!(cfg.sync_to, vec!["web".to_string()]);
     assert!(!cfg.sync_to_web);
+}
+
+#[test]
+fn test_websocket_serde_default_matches_factory_paths() {
+    // serde 缺键双路径收敛（BUG-20261109-017）：段整体缺席走类型 Default、
+    // 段内字段缺席走字段级 default fn，两路必须落同一组出厂值。
+    let full_absent: WebSocketChannelConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(full_absent.host, "127.0.0.1");
+    assert_eq!(full_absent.port, 49001);
+    assert_eq!(full_absent.path, "/ws");
+    assert_eq!(full_absent.sync_to, vec!["web".to_string()]);
+    let partial: WebSocketChannelConfig = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+    assert!(partial.enabled);
+    assert_eq!(partial.host, "127.0.0.1");
+    assert_eq!(partial.port, 49001);
+    assert_eq!(partial.path, "/ws");
+    assert_eq!(partial.sync_to, vec!["web".to_string()]);
 }
 
 #[test]

@@ -82,7 +82,9 @@ async fn init_web_branch_matrix_via_assemble() {
     assert!(w.enabled_channels.is_empty());
     drop(w);
 
-    // 变体 C：websocket on（回环:0）→ Some 臂 + sync 目标登记。
+    // 变体 C：websocket on（回环:0）→ Some 臂 + sync 目标登记。port=0 经
+    // 转换臂归一落出厂端口 49001（BUG-20261109-017；装配面测试不真 bind，
+    // 无端口冲突）。
     ctx.cfg.channels.websocket.enabled = true;
     ctx.cfg.channels.websocket.host = "127.0.0.1".into();
     ctx.cfg.channels.websocket.port = 0;

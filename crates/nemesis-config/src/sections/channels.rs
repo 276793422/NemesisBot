@@ -330,27 +330,78 @@ impl Default for WebChannelConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSocketChannelConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
+    // 缺省收敛出厂真相源（BUG-20261109-017）：此前全字段 #[serde(default)]
+    // 落 derive 零值（host=""/port=0/path=""/sync_to=[]），与出厂模板
+    // （127.0.0.1/49001/"/ws"/["web"]）分叉——手编 `{"websocket":{"enabled":
+    // true}}` 会 bind(":0")，Windows 实测 bind 成功落 getaddrinfo("") 首址
+    // 随机端口（getaddrinfo 空串返回本机注册地址列表，含 IPv6 link-local），
+    // 通道状态「运行中」而客户端按 49001 连接永远失败（静默死通道 +
+    // SEC-001 回环承诺失效：监听面漂到非回环地址）。BUG-20261108-010
+    // maixcam 同族漏网臂（其横向排查表未含本位点）。
+    #[serde(default = "default_websocket_host")]
     pub host: String,
     // flexible_i64: 历史 CLI 把端口写成字符串，容忍两种磁盘形态
-    #[serde(default, deserialize_with = "deserialize_flexible_i64")]
+    #[serde(
+        default = "default_websocket_port",
+        deserialize_with = "deserialize_flexible_i64"
+    )]
     pub port: i64,
-    #[serde(default)]
+    #[serde(default = "default_websocket_path")]
     pub path: String,
     #[serde(default)]
     pub auth_token: String,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
-    #[serde(default)]
+    #[serde(
+        default = "default_websocket_sync_to",
+        deserialize_with = "deserialize_flexible_string_vec"
+    )]
     pub sync_to: Vec<String>,
     #[serde(default)]
     pub sync_to_web: bool,
     #[serde(default)]
     pub web_session_id: String,
+}
+
+fn default_websocket_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+/// 端口缺省 49001（BUG-20261109-017）：与出厂模板同源。生产无合法 0 用途：
+/// 独立监听面的临时端口对外部 WS 客户端不可见（maixcam 8888 / line 8080
+/// 归一同款先例）。
+fn default_websocket_port() -> i64 {
+    49001
+}
+
+fn default_websocket_path() -> String {
+    "/ws".to_string()
+}
+
+fn default_websocket_sync_to() -> Vec<String> {
+    vec!["web".to_string()]
+}
+
+impl Default for WebSocketChannelConfig {
+    /// 手写而非 derive（serde 双路径陷阱，MaixCamConfig 同款）：websocket 段
+    /// 整体缺席走这里、段内字段缺席走字段级 default fn，两路必须落同一组值。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: default_websocket_host(),
+            port: default_websocket_port(),
+            path: default_websocket_path(),
+            auth_token: String::new(),
+            allow_from: Vec::new(),
+            sync_to: default_websocket_sync_to(),
+            sync_to_web: false,
+            web_session_id: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

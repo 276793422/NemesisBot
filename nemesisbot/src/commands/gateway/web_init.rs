@@ -520,9 +520,32 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             },
             #[cfg(feature = "channels-websocket")]
             websocket: if cfg.channels.websocket.enabled {
+                // 缺省收敛（BUG-20261109-017）：存量 config 显式空串/0 的旧
+                // 形态（typed save 全字段落盘把 serde derive 缺省烤进文件）
+                // 落出厂监听址——bind(":0") 在 Windows 成功落 getaddrinfo("")
+                // 首址随机端口，状态运行中而客户端按 49001 连接永远失败
+                // （静默死通道；BUG-20261108-010 maixcam 同款归一）。真相源
+                // 取 config 侧手写 Default（与出厂模板同源）；通道侧类型
+                // Default 保持零值——通道层测试依赖它做 ephemeral 端口隔离，
+                // 不能当真值真相源。
+                let ws_defaults = nemesis_config::WebSocketChannelConfig::default();
                 Some(nemesis_channels::websocket::WebSocketChannelConfig {
-                    host: cfg.channels.websocket.host.clone(),
-                    port: nemesis_config::config_port_to_u16(cfg.channels.websocket.port, "channels.websocket.port")?,
+                    host: if cfg.channels.websocket.host.is_empty() {
+                        ws_defaults.host
+                    } else {
+                        cfg.channels.websocket.host.clone()
+                    },
+                    port: if cfg.channels.websocket.port == 0 {
+                        nemesis_config::config_port_to_u16(
+                            ws_defaults.port,
+                            "channels.websocket.port",
+                        )?
+                    } else {
+                        nemesis_config::config_port_to_u16(
+                            cfg.channels.websocket.port,
+                            "channels.websocket.port",
+                        )?
+                    },
                     path: cfg.channels.websocket.path.clone(),
                     // vault：auth_token 支持 vault:/env:/yaml: 引用。
                     // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
