@@ -92,8 +92,12 @@ impl Default for AnthropicConfig {
 /// 时 warn 回落直连（启动不能被一个坏代理 URL 杀死——与 HttpProvider
 /// 同策略）。
 fn build_client(timeout_secs: u64, proxy: Option<&str>) -> reqwest::Client {
-    let mut builder =
-        reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        // x-api-key 不在 reqwest 跨主机重定向剥离名单（只剥标准四头）——
+        // 302 会把 key 带去第三方主机。带凭据 client 统一同源跟随/跨源
+        // 终停（单一真相源 nemesis-utils::http_redirect）。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy());
     if let Some(proxy_url) = proxy
         && !proxy_url.is_empty()
     {

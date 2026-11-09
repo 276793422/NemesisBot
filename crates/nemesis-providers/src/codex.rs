@@ -44,8 +44,11 @@ fn default_true() -> bool {
 /// reqwest client 构造单一出口（timeout + 可选出站代理；非法代理 warn
 /// 回落直连——与 HttpProvider/Anthropic 同策略）。
 fn build_client(timeout_secs: u64, proxy: Option<&str>) -> reqwest::Client {
-    let mut builder =
-        reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+    let mut builder = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        // 凭据随重定向跨主机泄漏防线（与 anthropic/http_provider 同源：
+        // nemesis-utils::http_redirect——同源跟随/跨源终停）。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy());
     if let Some(proxy_url) = proxy
         && !proxy_url.is_empty()
     {

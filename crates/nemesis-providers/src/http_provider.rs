@@ -178,8 +178,12 @@ impl HttpProvider {
             timeout_secs = config.timeout_secs,
             "[Provider] Initialized HTTP provider"
         );
-        let mut builder =
-            reqwest::Client::builder().timeout(std::time::Duration::from_secs(config.timeout_secs));
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            // 凭据随重定向跨主机泄漏防线（nemesis-utils::http_redirect 单一
+            // 真相源——同源跟随/跨源终停；自定义 extra headers 同样不在
+            // reqwest 剥离名单）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy());
 
         // Configure HTTP proxy if specified.
         if let Some(ref proxy_url) = config.proxy {

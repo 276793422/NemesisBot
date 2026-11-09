@@ -124,6 +124,11 @@ pub async fn start(
         // 600s 对齐 provider lane 单请求超时阶梯（LLM 长回复合法形态）。
         client: reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(600))
+            // 代理面把真实云端 key 注入 x-api-key / Authorization 后外呼
+            // 上游——x-api-key 不在 reqwest 跨主机重定向剥离名单，上游 302
+            // 会把 key 带去第三方主机。同源跟随/跨源终停
+            // （nemesis-utils::http_redirect 单一真相源）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()?,
     };
 

@@ -16,6 +16,12 @@ pub mod fsutil;
 #[cfg(feature = "http")]
 pub mod http_cap;
 pub mod http_retry;
+// 跨主机重定向终止策略（BUG-20261109-014）：带凭据外呼 client 的重定向
+// 策略单一真相源——reqwest 默认跨主机只剥标准四头，自定义凭据头
+// （x-api-key 等）与 URL path token 会随 302 带去第三方主机。http 门控
+// 同 media/http_cap（reqwest 不进未启用方的依赖图）。
+#[cfg(feature = "http")]
+pub mod http_redirect;
 // 带帽单行读（横扫角度 B 续——行帧形态）：外部流行读统一实现，
 // 裸 read_line 无界积累防 OOM；nemesis-mcp stdio 与 nemesis-channels
 // 四通道同源消费，帽值调用方按协议传入。

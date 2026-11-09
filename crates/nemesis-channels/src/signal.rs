@@ -93,6 +93,9 @@ impl SignalChannel {
             config,
             http: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
+                // 凭据随重定向跨主机泄漏防线（nemesis-utils::http_redirect
+                // 同源跟随/跨源终停；signal 独立 builder 不走 base 共享面）。
+                .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
                 .build()
                 .map_err(|e| NemesisError::Channel(format!("HTTP client creation failed: {e}")))?,
             running: Arc::new(parking_lot::RwLock::new(false)),

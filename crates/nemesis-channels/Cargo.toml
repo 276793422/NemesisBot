@@ -42,7 +42,7 @@ wechat = []
 nemesis-types = { workspace = true }
 nemesis-path = { workspace = true }
 # BUG-20261104-368：websocket 升级闸恒时 token 比较走 nemesis-utils 单一真相源
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

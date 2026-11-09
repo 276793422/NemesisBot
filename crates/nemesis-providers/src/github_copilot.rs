@@ -51,6 +51,9 @@ impl GitHubCopilotProvider {
     pub fn new(config: GitHubCopilotConfig) -> Self {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(config.timeout_secs))
+            // 凭据随重定向跨主机泄漏防线（nemesis-utils::http_redirect 单一
+            // 真相源——同源跟随/跨源终停）。
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
             .build()
             .expect("failed to build HTTP client");
         Self { config, client }

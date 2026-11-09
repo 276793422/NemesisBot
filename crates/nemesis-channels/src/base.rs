@@ -460,7 +460,13 @@ impl BaseChannel {
 // 同上：default 构建形态无消费通道（telegram/whatsapp 在全 feature 下续链）。
 #[allow(dead_code)]
 pub(crate) fn outbound_http_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().timeout(std::time::Duration::from_secs(35))
+    // 凭据随重定向跨主机泄漏防线：自定义凭据头（dingtalk token 头等）与
+    // URL path token（telegram /bot<token>/）不在 reqwest 跨主机剥离名单，
+    // 302 会带去第三方主机。单一真相源 nemesis-utils::http_redirect
+    // （同源跟随/跨源终停；共享面单点 = 全通道受益）。
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(35))
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
 }
 
 /// [`outbound_http_builder`] 的直用形态（无 proxy 注入需求的通道）。

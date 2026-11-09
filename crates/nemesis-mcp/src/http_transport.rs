@@ -53,7 +53,13 @@ impl HttpTransport {
     pub fn with_headers(url: impl Into<String>, header_lines: Vec<String>) -> Self {
         Self {
             url: url.into(),
-            client: reqwest::Client::new(),
+            // 配置头可含鉴权/秘密（vault 引用现查）——默认跟随重定向会把它
+            // 们带去跨主机目标（reqwest 只剥标准四头）。同源跟随/跨源终停
+            // （nemesis-utils::http_redirect 单一真相源）。
+            client: reqwest::Client::builder()
+                .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+                .build()
+                .unwrap_or_default(),
             session_id: None,
             connected: false,
             header_lines,

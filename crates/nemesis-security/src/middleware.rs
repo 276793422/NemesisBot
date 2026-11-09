@@ -1377,7 +1377,14 @@ impl<'a> SecureNetworkWrapper<'a> {
     ) -> Result<HttpResponse, String> {
         self.check_network_upload(url)?;
 
-        let client = reqwest::Client::new();
+        // 网络出口统一重定向策略（nemesis-utils::http_redirect 单一真相源
+        // ——同源跟随/跨源终停）：check_network_* 之后对端 302 跨源不再
+        // 自动跟随——既不让请求自带头（模型/调用方可附鉴权头）泄去第三方
+        // 主机，也不给「过闸 URL 302 指内网」的 Layer 6 绕过留门。
+        let client = reqwest::Client::builder()
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .expect("failed to build HTTP client");
         let response = client
             .post(url)
             .header("Content-Type", content_type)
@@ -1409,7 +1416,14 @@ impl<'a> SecureNetworkWrapper<'a> {
     pub async fn do_request(&self, req: &HttpRequest) -> Result<HttpResponse, String> {
         self.check_network_request(&req.url)?;
 
-        let client = reqwest::Client::new();
+        // 网络出口统一重定向策略（nemesis-utils::http_redirect 单一真相源
+        // ——同源跟随/跨源终停）：check_network_* 之后对端 302 跨源不再
+        // 自动跟随——既不让请求自带头（模型/调用方可附鉴权头）泄去第三方
+        // 主机，也不给「过闸 URL 302 指内网」的 Layer 6 绕过留门。
+        let client = reqwest::Client::builder()
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .expect("failed to build HTTP client");
         let method = match req.method.to_uppercase().as_str() {
             "GET" => reqwest::Method::GET,
             "POST" => reqwest::Method::POST,
@@ -1462,7 +1476,14 @@ impl<'a> SecureNetworkWrapper<'a> {
     pub async fn dial_http(&self, url: &str) -> Result<u16, String> {
         let validated = self.check_network_request(url)?;
 
-        let client = reqwest::Client::new();
+        // 网络出口统一重定向策略（nemesis-utils::http_redirect 单一真相源
+        // ——同源跟随/跨源终停）：check_network_* 之后对端 302 跨源不再
+        // 自动跟随——既不让请求自带头（模型/调用方可附鉴权头）泄去第三方
+        // 主机，也不给「过闸 URL 302 指内网」的 Layer 6 绕过留门。
+        let client = reqwest::Client::builder()
+            .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
+            .build()
+            .expect("failed to build HTTP client");
         let response = client
             .head(&validated)
             .timeout(std::time::Duration::from_secs(10))

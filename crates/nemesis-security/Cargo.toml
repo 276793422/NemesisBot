@@ -22,7 +22,7 @@ nemesis-types = { workspace = true }
 nemesis-prompts = { workspace = true }
 nemesis-path = { workspace = true }
 nemesis-config = { workspace = true }
-nemesis-utils = { workspace = true }
+nemesis-utils = { workspace = true, features = ["http"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -73,6 +73,9 @@ pub async fn generate_image(
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(timeout_secs.max(1)))
+        // 凭据随重定向跨主机泄漏防线（nemesis-utils::http_redirect 单一
+        // 真相源——同源跟随/跨源终停）。
+        .redirect(nemesis_utils::http_redirect::no_cross_host_redirect_policy())
         .build()
         .map_err(|e| format!("HTTP client 构建失败: {e}"))?;
     let (mut status, mut text) = post_for_text(&client, &url, api_key, &body, timeout_secs).await?;

@@ -11,6 +11,8 @@ reqwest = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+# 重定向策略单一真相源（同源跟随/跨源终停——上游 302 不带走真实 key）
+nemesis-utils = { workspace = true, features = ["http"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
