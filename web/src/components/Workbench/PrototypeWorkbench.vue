@@ -11,6 +11,7 @@
 // 周期挂新卡）；confirm = 按当前版继续。
 import { computed, ref } from 'vue'
 import { renderMarkdownHtml } from '../../utils/markdown'
+import { safeExternalUrl } from '../../utils/url'
 import { parsePayload } from './registry'
 
 const props = defineProps<{
@@ -30,7 +31,13 @@ const machineGatePass = computed(() => machineGate.value === 'pass')
 const recheckReview = computed(() => payload.value.recheck_review != null)
 const playUrl = computed(() => {
   const u = payload.value.play_url
-  return typeof u === 'string' && u ? u : ''
+  // iframe 的 src 是 URL 属性绑定：payload 源自触点载荷（模型/流水线产物，
+  // 提示词注入可携带 javascript:/data: 伪 URL——iframe src 的 javascript:
+  // 在 about:blank 继承父 origin 执行 = Dashboard 域内脚本执行，持全量
+  // WSAPI 权限）。过 safeExternalUrl scheme 闸（BUG-20261101-274 同款约定
+  // 「href/src 属性绑定必过本闸」——Deliveries/Mcp 同源先例）；非 http(s)
+  // 返 '' → v-if 诚实缺席（与「后端不产该字段 = 不渲染」同一语义面）。
+  return typeof u === 'string' && u ? safeExternalUrl(u) : ''
 })
 
 // 否决面板（粘性条上方展开）
