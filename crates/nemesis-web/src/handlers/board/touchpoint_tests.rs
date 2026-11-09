@@ -18,9 +18,9 @@ use nemesis_config::BoardAttendanceConfig;
 
 use super::tests::{make_ctx_with_board, unique_dir};
 use super::touchpoints::{
-    TouchpointResume, create_and_default_touchpoint, create_touchpoint_card, deadline_from_cfg,
-    install_touchpoint_resume_hook, latest_rework_recheck, list_touchpoints, now_ms,
-    resolve_unattended, respond_touchpoint, sweep_touchpoint_timeouts_with_config,
+    TouchpointResume, blocking_cap_ms, create_and_default_touchpoint, create_touchpoint_card,
+    deadline_from_cfg, install_touchpoint_resume_hook, latest_rework_recheck, list_touchpoints,
+    now_ms, resolve_unattended, respond_touchpoint, sweep_touchpoint_timeouts_with_config,
     touchpoint_workbench_payload,
 };
 use crate::handlers::workbench::WorkbenchHandler;
@@ -129,6 +129,55 @@ fn test_deadline_from_cfg_per_kind() {
         deadline_from_cfg(now, &narrow, TouchpointKind::Spec),
         now + 10_000
     );
+}
+
+// 0 值语义（「0 = 不超时」）：返回 0（消费侧 deadline_ms <= 0 = 不设限
+// 惯例闸）——非裸加法吞成 now_ms（触点创建即超时，方向反转）。
+#[test]
+fn test_deadline_from_cfg_zero_means_no_timeout() {
+    let zero = BoardAttendanceConfig {
+        spec_timeout_secs: 0,
+        prototype_timeout_secs: 0,
+        ..Default::default()
+    };
+    assert_eq!(
+        deadline_from_cfg(1_700_000_000_000, &zero, TouchpointKind::Spec),
+        0
+    );
+    assert_eq!(
+        deadline_from_cfg(1_700_000_000_000, &zero, TouchpointKind::Prototype),
+        0
+    );
+}
+
+// 溢出安全：巨值秒数钳制——裸 `as i64 * 1000` 环绕成负（deadline 反向
+// 「已过期」）被钳为 saturating 不环绕。
+#[test]
+fn test_deadline_from_cfg_huge_secs_does_not_wrap_negative() {
+    let huge = BoardAttendanceConfig {
+        spec_timeout_secs: u64::MAX,
+        ..Default::default()
+    };
+    let now = 1_700_000_000_000i64;
+    let deadline = deadline_from_cfg(now, &huge, TouchpointKind::Spec);
+    assert!(
+        deadline > now,
+        "huge window must stay in the future, got {deadline}"
+    );
+}
+
+// blocking_cap 巨值钳制（checkpoint 硬顶 / parked 通报共用 helper）。
+#[test]
+fn test_blocking_cap_ms_huge_does_not_wrap_negative() {
+    let huge = BoardAttendanceConfig {
+        blocking_cap_secs: u64::MAX,
+        ..Default::default()
+    };
+    let ms = blocking_cap_ms(&huge);
+    assert!(ms > 0, "huge cap must stay positive, got {ms}");
+    let zero = BoardAttendanceConfig::default();
+    // 默认 3 天窗。
+    assert_eq!(blocking_cap_ms(&zero), 259_200 * 1000);
 }
 
 // ---------------------------------------------------------------------------

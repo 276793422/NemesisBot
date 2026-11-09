@@ -110,8 +110,30 @@ pub fn live_attendance_config() -> BoardAttendanceConfig {
 
 /// 按 kind 换算绝对 deadline（毫秒；`timeout_secs_for` 未知 kind 回落
 /// spec 窗——值域在类型层已保证，此处纵深防御）。
+///
+/// 0 值语义（配置声明「0 = 不超时」）：返回 `0`，交给消费侧既有的
+/// `deadline_ms <= 0 = 不设限` 惯例闸（timeout sweep / overdue 判定）。
+/// 此前裸加法把 0 吞成 `now_ms`（非零）——触点创建即超时，与声明
+/// 方向完全相反。
+///
+/// 溢出安全：秒值钳到 `i64::MAX/1000` 后 saturating——裸 `as i64 * 1000`
+/// 在巨值配置下环绕成负数，deadline 反向变「已过期」。
 pub fn deadline_from_cfg(now_ms: i64, cfg: &BoardAttendanceConfig, kind: TouchpointKind) -> i64 {
-    now_ms + (cfg.timeout_secs_for(kind.as_str()) as i64) * 1000
+    let secs = cfg.timeout_secs_for(kind.as_str());
+    if secs == 0 {
+        return 0;
+    }
+    let ms = (secs.min(i64::MAX as u64 / 1000) as i64).saturating_mul(1000);
+    now_ms.saturating_add(ms)
+}
+
+/// `blocking_cap_secs` → 毫秒（溢出安全，同 [`deadline_from_cfg`] 钳制
+/// 纪律）：裸 `as i64 * 1000` 在巨值下环绕成负——checkpoint 硬顶比较
+/// `deadline_ms + 负值 < now` 恒真 →「巨大兜底窗」反向变立即收口；
+/// parked_sync 滞留通报同病。钳制后巨大值 ≈ 永不到顶，与「0 = 关」
+/// 的极端值方向一致（0 值由调用方的 `> 0` / `== 0` 闸先拦，不进这里）。
+pub(crate) fn blocking_cap_ms(cfg: &BoardAttendanceConfig) -> i64 {
+    (cfg.blocking_cap_secs.min(i64::MAX as u64 / 1000) as i64).saturating_mul(1000)
 }
 
 /// 无人值守三态解析（计划 §4）：任务级 `Some` > 项目级 `Some` > 全局
@@ -758,7 +780,7 @@ pub fn sweep_touchpoint_timeouts_with_config(
             continue;
         }
         // checkpoint 死等语义：窗口到 → 通报转同步沟通等待；硬顶到 → 默认收口。
-        let cap_ms = cfg.blocking_cap_secs as i64 * 1000;
+        let cap_ms = blocking_cap_ms(cfg);
         if cfg.blocking_cap_secs > 0 && now_ms < tp.deadline_ms + cap_ms {
             if !audit_has(&tp.audit, "checkpoint_wait") {
                 if let Err(e) = store.append_touchpoint_audit(
@@ -795,7 +817,7 @@ pub fn sweep_touchpoint_timeouts_with_config(
             if cfg.blocking_cap_secs == 0 {
                 break; // 0 = 关（不通报）
             }
-            let cap_ms = cfg.blocking_cap_secs as i64 * 1000;
+            let cap_ms = blocking_cap_ms(cfg);
             if now_ms - tp.updated_at < cap_ms || audit_has(&tp.audit, "park_cap_notice") {
                 continue;
             }
