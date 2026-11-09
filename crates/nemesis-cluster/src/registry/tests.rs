@@ -1140,3 +1140,79 @@ fn test_probe_failure_counter_cleared_by_upsert() {
         "counter reset by upsert: one failure < threshold"
     );
 }
+
+/// 回归锁（BUG-20261109-020）：注册表查询返回必须按 (name, id) 字典序——
+/// HashMap 迭代序是进程随机种子（SipHash RandomState）+ rehash 历史的
+/// 实现细节，而查询结果直接进用户可见输出（Dashboard 节点列表/拓扑图
+/// 圆周布局按数组序布点）与 LLM prompt（cluster_rpc 候选逐条拼进参数
+/// 描述），无序 = 跨重启/跨 rehash 布局与 prompt 字节不可复现。
+#[test]
+fn test_list_queries_return_deterministic_name_id_order() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    // 插入序与 name 序刻意交错（HashMap 迭代序在任意形态下都不得泄漏）。
+    for id in ["delta", "alpha", "charlie", "bravo"] {
+        registry.upsert(make_node(id));
+    }
+    // 同名不同 id：name 序打平时 id 升序消歧（复合键全序）。
+    for id in ["zeta-2", "zeta-1"] {
+        let mut n = make_node(id);
+        n.base.name = "zeta".into();
+        registry.upsert(n);
+    }
+    // offline 节点：list_online/find_by_* 必须排除，list_peers 包含。
+    let mut off = make_node("offline-x");
+    off.status = NodeStatus::Offline;
+    registry.upsert(off);
+
+    let assert_name_id_sorted = |v: &[ExtendedNodeInfo]| {
+        for w in v.windows(2) {
+            assert!(
+                (w[0].base.name.as_str(), w[0].base.id.as_str())
+                    <= (w[1].base.name.as_str(), w[1].base.id.as_str()),
+                "相邻对乱序: {}({}) 应 <= {}({})",
+                w[0].base.name,
+                w[0].base.id,
+                w[1].base.name,
+                w[1].base.id
+            );
+        }
+    };
+
+    let all = registry.list_peers();
+    assert_eq!(all.len(), 7);
+    // 精确序：name 升序；同名 zeta 按 id 升序消歧；offline-x 在
+    // list_peers 里照常出现（只按 name/id 排，不按 status 过滤）。
+    let seq: Vec<String> = all
+        .iter()
+        .map(|n| format!("{}|{}", n.base.name, n.base.id))
+        .collect();
+    assert_eq!(
+        seq,
+        vec![
+            "node-alpha|alpha",
+            "node-bravo|bravo",
+            "node-charlie|charlie",
+            "node-delta|delta",
+            "node-offline-x|offline-x",
+            "zeta|zeta-1",
+            "zeta|zeta-2",
+        ]
+    );
+
+    let online = registry.list_online();
+    assert_eq!(online.len(), 6); // offline-x 被排除
+    assert_name_id_sorted(&online);
+
+    let excluding = registry.list_online_excluding("alpha");
+    assert_eq!(excluding.len(), 5);
+    assert!(excluding.iter().all(|n| n.base.id != "alpha"));
+    assert_name_id_sorted(&excluding);
+
+    let caps = registry.find_by_capability("llm");
+    assert_eq!(caps.len(), 6);
+    assert_name_id_sorted(&caps);
+
+    let caps_multi = registry.find_by_capabilities(&["llm".to_string()]);
+    assert_eq!(caps_multi.len(), 6);
+    assert_name_id_sorted(&caps_multi);
+}

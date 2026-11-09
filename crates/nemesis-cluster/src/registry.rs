@@ -16,6 +16,24 @@ use crate::types::{ExtendedNodeInfo, NodeStatus};
 /// band 物理不可达，远超任何合法语义。
 const MAX_THRESHOLD_SECS: u64 = 100 * 365 * 24 * 3600;
 
+/// 注册表查询返回统一按 (name, id) 字典序。HashMap 迭代序是进程种子
+/// 随机化（SipHash RandomState 每进程不同）+ rehash 历史的实现细节，
+/// 不是任何契约——本 registry 的查询结果直接进用户可见输出（Dashboard
+/// 节点列表/拓扑圆周布局按数组序布点）与 LLM prompt（cluster_rpc 候选
+/// 逐条拼进参数描述），无序 = 跨重启布局/列表/prompt 字节不可复现
+/// （prompt cache 前缀失效）。同族先例：`get_capabilities` 显式 sort、
+/// matcher `rank_peers` name 字典序终键兜底、`pick_auto_route_target`
+/// id 终键——确定性兜底惯例在，查询函数漏网。
+fn sorted(mut peers: Vec<ExtendedNodeInfo>) -> Vec<ExtendedNodeInfo> {
+    peers.sort_by(|a, b| {
+        a.base
+            .name
+            .cmp(&b.base.name)
+            .then(a.base.id.cmp(&b.base.id))
+    });
+    peers
+}
+
 /// Configuration for peer health-checking.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthConfig {
@@ -248,33 +266,39 @@ impl PeerRegistry {
         false
     }
 
-    /// List all known peers.
+    /// List all known peers (deterministic (name, id) order — see [`sorted`]).
     pub fn list_peers(&self) -> Vec<ExtendedNodeInfo> {
-        self.peers.lock().values().map(|e| e.info.clone()).collect()
+        sorted(self.peers.lock().values().map(|e| e.info.clone()).collect())
     }
 
-    /// List only online peers.
+    /// List only online peers (deterministic (name, id) order — see [`sorted`]).
     pub fn list_online(&self) -> Vec<ExtendedNodeInfo> {
-        self.peers
-            .lock()
-            .values()
-            .filter(|e| e.info.status == NodeStatus::Online)
-            .map(|e| e.info.clone())
-            .collect()
+        sorted(
+            self.peers
+                .lock()
+                .values()
+                .filter(|e| e.info.status == NodeStatus::Online)
+                .map(|e| e.info.clone())
+                .collect(),
+        )
     }
 
     /// List online peers excluding the specified node (typically the local node).
     ///
     /// Use this when building "RPC target candidates" lists for tools (cluster_rpc)
     /// to prevent the LLM from selecting the local node as a target, which would
-    /// cause a self-invocation loop.
+    /// cause a self-invocation loop. Deterministic (name, id) order — see [`sorted`].
     pub fn list_online_excluding(&self, exclude_node_id: &str) -> Vec<ExtendedNodeInfo> {
-        self.peers
-            .lock()
-            .values()
-            .filter(|e| e.info.status == NodeStatus::Online && e.info.base.id != exclude_node_id)
-            .map(|e| e.info.clone())
-            .collect()
+        sorted(
+            self.peers
+                .lock()
+                .values()
+                .filter(|e| {
+                    e.info.status == NodeStatus::Online && e.info.base.id != exclude_node_id
+                })
+                .map(|e| e.info.clone())
+                .collect(),
+        )
     }
 
     /// Return the number of registered peers.
@@ -287,30 +311,36 @@ impl PeerRegistry {
         self.peers.lock().is_empty()
     }
 
-    /// Find all online peers that have a specific capability.
+    /// Find all online peers that have a specific capability
+    /// (deterministic (name, id) order — see [`sorted`]).
     pub fn find_by_capability(&self, capability: &str) -> Vec<ExtendedNodeInfo> {
-        self.peers
-            .lock()
-            .values()
-            .filter(|e| {
-                e.info.status == NodeStatus::Online
-                    && e.info.capabilities.iter().any(|c| c == capability)
-            })
-            .map(|e| e.info.clone())
-            .collect()
+        sorted(
+            self.peers
+                .lock()
+                .values()
+                .filter(|e| {
+                    e.info.status == NodeStatus::Online
+                        && e.info.capabilities.iter().any(|c| c == capability)
+                })
+                .map(|e| e.info.clone())
+                .collect(),
+        )
     }
 
-    /// Find all online peers that have ANY of the specified capabilities.
+    /// Find all online peers that have ANY of the specified capabilities
+    /// (deterministic (name, id) order — see [`sorted`]).
     pub fn find_by_capabilities(&self, capabilities: &[String]) -> Vec<ExtendedNodeInfo> {
-        self.peers
-            .lock()
-            .values()
-            .filter(|e| {
-                e.info.status == NodeStatus::Online
-                    && e.info.capabilities.iter().any(|c| capabilities.contains(c))
-            })
-            .map(|e| e.info.clone())
-            .collect()
+        sorted(
+            self.peers
+                .lock()
+                .values()
+                .filter(|e| {
+                    e.info.status == NodeStatus::Online
+                        && e.info.capabilities.iter().any(|c| capabilities.contains(c))
+                })
+                .map(|e| e.info.clone())
+                .collect(),
+        )
     }
 
     /// Collect all unique capabilities across all nodes (online and offline).
