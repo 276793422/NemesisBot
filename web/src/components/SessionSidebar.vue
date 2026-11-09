@@ -6,8 +6,9 @@
  * UI conventions follow `components/logs/SessionList.vue` (selected highlight,
  * relative time, first-message-as-title).
  *
- * 2026-09-08 三块布局改版：顶部功能按钮区（新建对话 / 定时 / Skills /
- * 工作区）→ 中部项目区（项目=目录节点，组头折叠/计数/就地新建/溢出菜单）
+ * 2026-09-08 三块布局改版：顶部功能按钮区（新建对话 + 功能按钮，2026-11-10
+ * 扩为两行：行1 定时/Skills/MCP/命令、行2 批量/导入/工作区）→ 中部项目区
+ *（项目=目录节点，组头折叠/计数/就地新建/溢出菜单）
  * → 底部对话区（纯用户↔AI 会话）→ 末尾「已移除」灰组。会话行的全部操作
  * 收进 hover 显现的「⋯」菜单（替代旧的 6 个常驻按钮）；项目行菜单含
  * 打开目录（projects.open_dir，后端只放行注册表已知路径）。
@@ -70,7 +71,8 @@ function isWfEditSession(id: string): boolean {
 const fileTree = useFileTreePanel()
 
 // ---------------------------------------------------------------------------
-// 顶部功能区：新建对话 / 定时任务 / Skills / 工作区（文件树开合开关）
+// 顶部功能区（2026-11-10 两行布局）：新建对话 + 行1 定时/Skills/MCP/命令 +
+// 行2 批量/导入/工作区（文件树开合开关）。fn-btn flex:1 各行均分不溢出。
 // ---------------------------------------------------------------------------
 
 async function newChat() {
@@ -898,18 +900,17 @@ function relTime(ts: string): string {
 
 <template>
   <div class="session-sidebar">
-    <!-- 顶部功能区：新建对话 + 定时 / Skills / 工作区 -->
+    <!-- 顶部功能区：新建对话 + 两行按钮（行1 定时/Skills/MCP/命令；
+         行2 批量/导入/工作区。fn-btn flex:1 均分，两行各自铺满不溢出） -->
     <div class="sidebar-functions">
       <button class="fn-new-chat" @click="newChat" title="新对话">＋ 新建对话</button>
       <div class="fn-row">
         <button class="fn-btn" @click="gotoPage('/tasks')" title="定时任务">⏱ 定时</button>
         <button class="fn-btn" @click="gotoPage('/skills')" title="Skills">⬡ Skills</button>
-        <button
-          class="fn-btn"
-          :class="{ on: !fileTree.collapsed.value }"
-          @click="fileTree.toggle()"
-          title="工作区文件树"
-        >📁 工作区</button>
+        <button class="fn-btn" @click="gotoPage('/mcp')" title="MCP 服务器管理">⇄ MCP</button>
+        <button class="fn-btn" @click="gotoPage('/commands')" title="命令注册表">⌘ 命令</button>
+      </div>
+      <div class="fn-row">
         <!-- 批量管理（2026-10-30）：多选 + 批量进回收站 -->
         <button
           class="fn-btn"
@@ -920,6 +921,12 @@ function relTime(ts: string): string {
         >☑ 批量</button>
         <!-- L22（2026-11-03 跨设备移动）：导入会话（导出 JSON 重建） -->
         <button class="fn-btn" data-test="import-toggle" @click="triggerImport" title="导入会话：选择导出的 JSON 文件重建会话">⤓ 导入</button>
+        <button
+          class="fn-btn"
+          :class="{ on: !fileTree.collapsed.value }"
+          @click="fileTree.toggle()"
+          title="工作区文件树"
+        >📁 工作区</button>
         <input
           ref="importInput"
           type="file"

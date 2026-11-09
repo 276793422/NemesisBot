@@ -99,7 +99,7 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     w.unmount()
   })
 
-  it('顶部功能区：新建对话 / 定时 / Skills / 工作区四入口', async () => {
+  it('顶部功能区两行布局：行1 定时/Skills/MCP/命令，行2 批量/导入/工作区', async () => {
     const w = await mountWith([], [])
     // 新建对话 → store.create。
     createMock.mockResolvedValue({ session_id: 's9', title: '新对话' })
@@ -109,21 +109,34 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     const { useSessionStore } = await import('../../stores/session')
     expect(useSessionStore().currentId).toBe('s9')
 
-    // 定时 / Skills → 路由跳转。（2026-10-30 起第 4 个 fn-btn 是「☑ 批量」
-    // ——批量管理入口，行为归 batch spec；L22 起第 5 个是「⤓ 导入」
-    // ——跨设备移动入口，触发隐藏 file input。）
+    // 两行共 7 个 fn-btn（2026-11-10 布局：原 5 个单行溢出改两行 + 新增
+    // MCP/命令路由入口）。行1 [0-3]=定时/Skills/MCP/命令 → 路由跳转；
+    // 行2 [4-6]=批量/导入/工作区（批量归 batch spec、导入触发隐藏
+    // file input、工作区=文件树开合）。
+    const rows = w.findAll('.fn-row')
+    expect(rows).toHaveLength(2)
     const btns = w.findAll('.fn-btn').map((b: any) => b.text())
-    expect(btns).toHaveLength(5)
-    expect(btns[4]).toContain('导入')
+    expect(btns).toHaveLength(7)
+    expect(btns[0]).toContain('定时')
+    expect(btns[1]).toContain('Skills')
+    expect(btns[2]).toContain('MCP')
+    expect(btns[3]).toContain('命令')
+    expect(btns[4]).toContain('批量')
+    expect(btns[5]).toContain('导入')
+    expect(btns[6]).toContain('工作区')
     await w.findAll('.fn-btn')[0].trigger('click')
     expect(routerPushMock).toHaveBeenCalledWith('/tasks')
     await w.findAll('.fn-btn')[1].trigger('click')
     expect(routerPushMock).toHaveBeenCalledWith('/skills')
+    await w.findAll('.fn-btn')[2].trigger('click')
+    expect(routerPushMock).toHaveBeenCalledWith('/mcp')
+    await w.findAll('.fn-btn')[3].trigger('click')
+    expect(routerPushMock).toHaveBeenCalledWith('/commands')
 
     // 工作区 → 共享文件树单例开合（偏好持久化）。
-    await w.findAll('.fn-btn')[2].trigger('click')
+    await w.findAll('.fn-btn')[6].trigger('click')
     expect(localStorage.getItem('nb_filetree_collapsed')).toBe('0')
-    expect(w.findAll('.fn-btn')[2].classes()).toContain('on')
+    expect(w.findAll('.fn-btn')[6].classes()).toContain('on')
     w.unmount()
   })
 

@@ -38,6 +38,50 @@
   --accent-hover: #FF7A2E;
   --accent-muted: rgba(255, 92, 0, 0.15);
 
+  /* 组件样式别名槽（2026-11-10）：大量视图/组件样式引用了主题从未定义的
+     token——共 31 个名字、约 270+ 处静默无效（UpdateView 进度条透明 =
+     「百分比在涨但条不动」实锤；--danger 77 处删除按钮无红；--text-primary
+     81 处文字退化为继承色；--border-color 33 处边框消失等）。此处统一声明
+     别名指向既有 token，一处修复全量引用，且自动跟随各主题（亮色覆盖基础
+     token 后别名随之切换）。注意两点：
+     1) 个别调用点自带的 var(--x, fallback) 回退会被本槽覆盖为规范 token
+        （fallback 本就是作者对主题值的猜测，如 TerminalView 猜 #1d222c）；
+     2) 若未来某视图真需要独立语义的同名 token，改这里的指向或删行，
+        不要在新样式里继续引用未定义名字。
+     Sidebar 自更新长条的进度条刻意用独立蓝 #4a9eff（硬编码）不受本槽影响。 */
+  --primary: var(--accent);
+  --accent-bg: var(--accent-muted);
+  --bg-elev: var(--surface);
+  --bg-error: var(--error-bg);
+  --bg-hover: var(--surface-hover);
+  --bg-input: var(--surface);
+  --bg-inset: var(--bg-primary);
+  --bg-panel: var(--surface);
+  --bg-surface: var(--surface);
+  --bg-tertiary: var(--surface);
+  --bg-warning: var(--warning-bg);
+  --border-color: var(--border);
+  --border-error: var(--error);
+  --color-error: var(--error);
+  --color-info: var(--info);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --danger: var(--error);
+  --danger-bg: var(--error-bg);
+  --danger-text: var(--error);
+  --error-color: var(--error);
+  --info-border: var(--info);
+  --info-color: var(--info);
+  --space-1-5: 0.375rem;
+  --surface-alt: var(--bg-secondary);
+  --text-dim: var(--text-muted);
+  --text-error: var(--error);
+  --text-md: var(--text-base);
+  --text-primary: var(--text);
+  --warn: var(--warning);
+  --warning-border: var(--warning);
+  --warning-text: var(--warning);
+
   /* Primary button（皮肤契约槽：默认态取 accent，皮肤可整体改写。
      WorkBuddy 系皮肤用黑白反转按钮，见 skins/openlikebuddy） */
   --btn-primary-bg: var(--accent);
