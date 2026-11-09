@@ -535,16 +535,28 @@ impl Router {
     }
 
     /// Internal selection by policy applied to a slice of matching candidates.
+    ///
+    /// 浮点比较统一 `unwrap_or(Equal)`（同族先例：agent loop messages.rs /
+    /// memory vector store / web logs handler——`partial_cmp().unwrap()` 在
+    /// NaN 进比较器时 panic；Router 当前生产未接线，接线日即活，防御补齐）。
     fn select_by_policy(&self, policy: &Policy, matching: &[&Candidate]) -> Option<Candidate> {
         match policy {
             Policy::Cost => matching
                 .iter()
-                .min_by(|a, b| a.cost_per_1k.partial_cmp(&b.cost_per_1k).unwrap())
+                .min_by(|a, b| {
+                    a.cost_per_1k
+                        .partial_cmp(&b.cost_per_1k)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .cloned()
                 .cloned(),
             Policy::Quality => matching
                 .iter()
-                .max_by(|a, b| a.quality_score.partial_cmp(&b.quality_score).unwrap())
+                .max_by(|a, b| {
+                    a.quality_score
+                        .partial_cmp(&b.quality_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .cloned()
                 .cloned(),
             Policy::Latency => {
@@ -554,7 +566,9 @@ impl Router {
                     .min_by(|a, b| {
                         let ma = metrics.get_metrics(&a.provider);
                         let mb = metrics.get_metrics(&b.provider);
-                        ma.avg_latency_ms.partial_cmp(&mb.avg_latency_ms).unwrap()
+                        ma.avg_latency_ms
+                            .partial_cmp(&mb.avg_latency_ms)
+                            .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .cloned()
                     .cloned()
