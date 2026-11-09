@@ -74,6 +74,10 @@ pub trait Channel: Send + Sync {
 /// 掩掉值（`key=<redacted>`），非凭据参数原样保留诊断价值。
 ///
 /// 只匹配以 `?` 或 `&` 起头的参数名；值截至 `&`/空白/引号/`)`/串尾。
+// BUG-20261109-006 横向修复的先行 helper：单测已接（base/tests.rs），生产
+// 调用点（企业微信/钉钉 webhook 错误串格式化）随 006 系列后续提交接线；
+// lib 目标视角暂无调用方，allow 压 dead_code（接线后可摘）。
+#[allow(dead_code)]
 pub(crate) fn redact_url_secrets(msg: impl std::fmt::Display) -> String {
     // 前缀长的参数名在前（access_token= 先于 token=）；同名前缀残撞由
     // `?`/`&` 边界检查兜住（access_token= 中的 token= 前面是 `_`，不命中）。
