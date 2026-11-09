@@ -132,3 +132,19 @@ fn read_config_string_errors_on_missing_file() {
     let err = read_config_string(tmp.path().join("nope.json")).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
 }
+
+// ---- BUG-20261109-036：strip_bom 字符串级原语（BOM 非 whitespace，trim 不剥） ----
+
+#[test]
+fn strip_bom_strips_leading_bom() {
+    assert_eq!(super::strip_bom("\u{feff}{\"a\":1}"), "{\"a\":1}");
+    assert_eq!(super::strip_bom("\u{feff}---\n"), "---\n");
+}
+
+#[test]
+fn strip_bom_passthrough_without_bom() {
+    assert_eq!(super::strip_bom("{\"a\":1}"), "{\"a\":1}");
+    assert_eq!(super::strip_bom(""), "");
+    // BOM 只在前缀剥离——中间的 U+FEFF 不是本函数关注面。
+    assert_eq!(super::strip_bom("a\u{feff}b"), "a\u{feff}b");
+}

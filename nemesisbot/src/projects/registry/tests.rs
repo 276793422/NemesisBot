@@ -354,3 +354,26 @@ fn test_concurrent_create_and_trust_flip_no_lost_update() {
         );
     }
 }
+
+#[test]
+fn test_registry_accepts_utf8_bom_file() {
+    // BUG-20261109-036：注册表是用户可编辑资产（save 落 pretty JSON）——
+    // Windows 记事本「带 BOM 的 UTF-8」保存形态曾被裸 read_to_string 解析
+    // 失败，触发「已损坏请手动修复或删除」误导文案（文件完好，按提示删除
+    // = 静默清空用户数据）。读侧走 BOM 剥离 helper 后 BOM 文件正常解析；
+    // 真 BOM 损坏对照臂确认 loud 拒绝语义未被稀释。
+    let ws = tempfile::tempdir().unwrap();
+    let reg = registry_path(ws.path());
+    std::fs::create_dir_all(reg.parent().unwrap()).unwrap();
+    std::fs::write(
+        &reg,
+        format!("\u{feff}{}", serde_json::json!({"projects": []})),
+    )
+    .unwrap();
+    let loaded = try_load_projects(&reg).expect("BOM 前缀的合法注册表必须可读");
+    assert!(loaded.is_some(), "BOM 文件存在 → Some（非缺席）");
+
+    // 对照：BOM + 真损坏 JSON 仍 loud 拒绝（helper 只剥 BOM，不吞错误）。
+    std::fs::write(&reg, "\u{feff}{not-json").unwrap();
+    assert!(try_load_projects(&reg).is_err(), "真损坏仍必须 loud 拒绝");
+}

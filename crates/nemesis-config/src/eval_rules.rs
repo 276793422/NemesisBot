@@ -209,7 +209,10 @@ pub fn load_rules(path: &Path) -> Result<RulesFile> {
         .map_err(anyhow::Error::msg)
         .with_context(|| format!("seed default rules to {}", path.display()))?;
     }
-    let content = std::fs::read_to_string(path)
+    // BUG-20261109-036：用户可手工编辑（pretty JSON「便于手工编辑」是
+    // 本文件自己的注释）——读侧走 BOM 剥离 helper，Windows 记事本
+    // utf8BOM 保存形态不再误报「rules file is damaged」。
+    let content = nemesis_utils::fsutil::read_config_string(path)
         .with_context(|| format!("read rules file {}", path.display()))?;
     parse_rules(&content).with_context(|| format!("rules file {} is damaged", path.display()))
 }

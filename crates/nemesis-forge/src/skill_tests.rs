@@ -246,6 +246,10 @@ pub fn parse_skill_tests(content: &str) -> Result<Option<SkillTestsSpec>, String
 
 /// frontmatter 提取（`---` 围栏；无围栏 = 空）。
 fn extract_frontmatter(content: &str) -> String {
+    // BUG-20261109-036：首行 `trim` 不剥 BOM（`\u{FEFF}` 非 whitespace），
+    // BOM 前缀 SKILL.md 会被误判「无围栏」→ parse_skill_tests 回 Ok(None)
+    // = tests 段被当不存在，行为回归闸静默旁路（最坏失灵方向）。入口剥 BOM。
+    let content = nemesis_utils::fsutil::strip_bom(content);
     let mut lines = content.lines();
     if lines.next().map(str::trim) != Some("---") {
         return String::new();

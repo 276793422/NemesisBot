@@ -49,6 +49,10 @@ pub struct SkillMetadata {
 ///
 /// Supports Unix (`\n`), Windows (`\r\n`), and classic Mac (`\r`) line endings.
 pub fn extract_frontmatter(content: &str) -> String {
+    // BUG-20261109-036：`^` 锚定 haystack 开头，BOM（非 whitespace，trim
+    // 不剥）前缀会让正则不命中 → 调用方误判「无 frontmatter」静默丢
+    // description。入口剥 BOM（Windows 记事本保存形态）。
+    let content = nemesis_utils::fsutil::strip_bom(content);
     let re = Regex::new(r"(?s)^---[\r\n]+(.*?)[\r\n]+---").unwrap();
     if let Some(captures) = re.captures(content)
         && let Some(m) = captures.get(1)
@@ -492,7 +496,10 @@ impl SkillsLoader {
     /// Returns a map of key-value pairs and the remaining body text.
     fn parse_frontmatter(content: &str) -> (std::collections::HashMap<String, String>, String) {
         let mut map = std::collections::HashMap::new();
-        let trimmed = content.trim_start();
+        // BUG-20261109-036：`trim_start` 不剥 BOM（非 whitespace），BOM
+        // 前缀会让 `starts_with("---")` 误判「无 frontmatter」静默丢
+        // name/description。入口剥 BOM（同 extract_frontmatter）。
+        let trimmed = nemesis_utils::fsutil::strip_bom(content).trim_start();
 
         if !trimmed.starts_with("---") {
             return (map, content.to_string());
@@ -570,6 +577,10 @@ impl SkillsLoader {
 
     /// Strip frontmatter from SKILL.md content, returning only the body.
     fn strip_frontmatter(content: &str) -> String {
+        // BUG-20261109-036：同 extract_frontmatter——BOM 前缀让 `^---` 正则
+        // 失配，围栏剥不掉，load_skill 返回的正文带着 BOM+frontmatter 注入
+        // agent 上下文（提示污染）。与 extract 同入口剥 BOM，两者判定一致。
+        let content = nemesis_utils::fsutil::strip_bom(content);
         let re = Regex::new(r"(?s)^---[\r\n]+(.*?)[\r\n]+---[\r\n]*").unwrap();
         re.replace_all(content, "").to_string()
     }

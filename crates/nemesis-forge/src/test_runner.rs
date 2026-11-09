@@ -244,6 +244,10 @@ impl Default for TestRunner {
 
 /// Extract YAML/JSON frontmatter from content.
 fn extract_frontmatter(content: &str) -> String {
+    // BUG-20261109-036：`^---` 锚定 haystack 开头，BOM 前缀（Windows 记事本
+    // 保存形态，trim 不剥——非 whitespace）会让正则不命中，把带 BOM 的合法
+    // skill 误判「无 frontmatter」。入口剥 BOM。
+    let content = nemesis_utils::fsutil::strip_bom(content);
     match FRONTMATTER_RE.captures(content) {
         Some(caps) => caps
             .get(1)
@@ -255,6 +259,9 @@ fn extract_frontmatter(content: &str) -> String {
 
 /// Strip frontmatter block from content.
 fn strip_frontmatter(content: &str) -> String {
+    // 同 extract_frontmatter：入口剥 BOM，两个消费方对同一内容的
+    // frontmatter 判定保持一致（否则 extract 看得见、strip 剥不掉）。
+    let content = nemesis_utils::fsutil::strip_bom(content);
     FRONTMATTER_RE.replace_all(content, "").to_string()
 }
 

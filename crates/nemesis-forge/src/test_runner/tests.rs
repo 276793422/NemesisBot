@@ -450,3 +450,17 @@ fn test_s8_go_func_line_without_brace_or_paren_ending() {
     // the brace-on-next-line continue.
     assert!(check_function_completeness("package main\nfunc helper() int\n{\n}", "go").is_ok());
 }
+
+#[test]
+fn test_extract_frontmatter_bom_prefixed() {
+    // BUG-20261109-036：BOM 前缀（记事本保存形态）不再让 ^--- 正则失配。
+    let fm = super::extract_frontmatter("\u{feff}---\nname: test\n---\nBody");
+    assert_eq!(fm, "name: test");
+}
+
+#[test]
+fn test_strip_frontmatter_bom_prefixed() {
+    // 与 extract 同入口剥 BOM：extract 看得见的围栏，strip 必须剥得掉。
+    let body = super::strip_frontmatter("\u{feff}---\nname: test\n---\nBody");
+    assert_eq!(body, "Body");
+}

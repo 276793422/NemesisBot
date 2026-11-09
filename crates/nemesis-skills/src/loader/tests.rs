@@ -1581,3 +1581,55 @@ fn test_list_skills_sorted_by_name_within_source() {
     sorted.sort();
     assert_eq!(names, sorted, "同级技能列表必须按名字排序（跨平台确定序）");
 }
+
+// ---- BUG-20261109-036：BOM 前缀 SKILL.md 不再被误判「无 frontmatter」 ----
+
+#[test]
+fn test_extract_frontmatter_bom_prefixed() {
+    // \u{FEFF} 非 whitespace，trim 不剥；正则 ^--- 锚定 haystack 开头，
+    // 不剥 BOM 时整个 frontmatter 判定失败（记事本「带 BOM 的 UTF-8」
+    // 保存形态）。
+    let fm =
+        extract_frontmatter("\u{feff}---\nname: bom-skill\ndescription: BOM 前缀技能\n---\nBody");
+    assert!(fm.contains("name: bom-skill"), "{fm:?}");
+}
+
+#[test]
+fn test_scan_directory_bom_skill_md_keeps_metadata() {
+    // 端到端：scan_single_skill → parse_frontmatter（trim_start 同样不剥
+    // BOM）。不修时 name 回落目录名、description 静默丢空。
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("bom-skill");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "\u{feff}---\nname: bom-skill\ndescription: BOM 前缀技能\n---\n# BOM Skill\n",
+    )
+    .unwrap();
+
+    let skills = SkillsLoader::scan_directory(dir.path()).unwrap();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "bom-skill");
+    assert_eq!(skills[0].description, "BOM 前缀技能");
+}
+
+#[test]
+fn test_load_skill_bom_prefixed_strips_frontmatter() {
+    // BUG-20261109-036：strip_frontmatter 与 extract 同入口剥 BOM——
+    // load_skill 返回正文，不带 BOM+frontmatter（提示污染）。
+    let dir = tempfile::tempdir().unwrap();
+    let skill_dir = dir.path().join("skills").join("bom-body");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "\u{feff}---\nname: bom-body\ndescription: d\n---\nBODY-LINE\n",
+    )
+    .unwrap();
+
+    let root = dir.path().to_str().unwrap().to_string();
+    let loader = SkillsLoader::new(&root, &format!("{root}/global"), &format!("{root}/builtin"));
+    let body = loader.load_skill("bom-body").expect("loaded");
+    assert_eq!(body.trim(), "BODY-LINE");
+    assert!(!body.contains("name: bom-body"));
+    assert!(!body.contains('\u{feff}'));
+}

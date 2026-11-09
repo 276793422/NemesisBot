@@ -156,6 +156,17 @@ pub async fn remove_dir_all_retry_async(dir: impl AsRef<Path>) -> std::io::Resul
         .unwrap_or_else(|e| Err(std::io::Error::other(format!("spawn_blocking join: {e}"))))
 }
 
+/// 剥离前导 UTF-8 BOM（`\u{FEFF}`）——字符串级原语（[`read_config_string`]
+/// 的实现基础）。
+///
+/// BOM 不在 `char::is_whitespace` 内：`trim` / `trim_start` **不剥 BOM**，
+/// 任何锚定开头的解析逻辑（serde_json/toml 的「首字符必须是值」、
+/// SKILL.md frontmatter 的 `^---` 判定）都会被一个前导 BOM 破坏。需要
+/// 剥 BOM 的解析入口一律走本函数，不自拼 `strip_prefix`。
+pub fn strip_bom(content: &str) -> &str {
+    content.strip_prefix('\u{feff}').unwrap_or(content)
+}
+
 /// 读取配置文件文本并剥离前导 UTF-8 BOM（`\u{FEFF}`）。
 ///
 /// Windows 记事本「带 BOM 的 UTF-8」保存形态：serde_json / toml 解析器都
@@ -167,10 +178,7 @@ pub async fn remove_dir_all_retry_async(dir: impl AsRef<Path>) -> std::io::Resul
 /// 远程响应同款处理`nemesis-skills/src/modelscope_registry.rs`。
 pub fn read_config_string(path: impl AsRef<Path>) -> std::io::Result<String> {
     let content = std::fs::read_to_string(path)?;
-    Ok(content
-        .strip_prefix('\u{feff}')
-        .map(str::to_string)
-        .unwrap_or(content))
+    Ok(strip_bom(&content).to_string())
 }
 
 #[cfg(test)]

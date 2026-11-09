@@ -277,3 +277,15 @@ fn parse_judge_response_garbage_is_err() {
     assert!(parse_judge_response(r#"{"score": "high"}"#, 0.7).is_err());
     assert!(parse_judge_response(r#"{"score": 1.5}"#, 0.7).is_err());
 }
+
+#[test]
+fn parse_bom_prefixed_skill_md_parses_tests_section() {
+    // BUG-20261109-036 回归锁：首行 trim 不剥 BOM（\u{FEFF} 非
+    // whitespace），BOM 前缀 SKILL.md 曾被误判「无围栏」→ Ok(None) =
+    // tests 段当不存在，行为回归闸静默旁路（最坏失灵方向）。修复后必须
+    // 照常解析出用例。
+    let content = "\u{feff}---\nname: demo\ndescription: demo skill\ntests:\n  - name: 计划先行\n    turns:\n      - user: 重构登录\n    expect:\n      tools_called: [present_plan]\n      max_llm_turns: 4\n---\nbody";
+    let spec = parse_skill_tests(content).unwrap().expect("some");
+    assert_eq!(spec.tests.len(), 1);
+    assert_eq!(spec.tests[0].expect.tools_called, vec!["present_plan"]);
+}

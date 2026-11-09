@@ -179,3 +179,21 @@ fn save_rules_roundtrips_and_backs_up() {
     assert_eq!(loaded.rules.len(), 2);
     assert_eq!(loaded.rules[1].id, "v2");
 }
+
+#[test]
+fn load_rules_accepts_utf8_bom_file() {
+    // BUG-20261109-036：rules 文件是用户可编辑资产（pretty JSON「便于手工
+    // 编辑」）——Windows 记事本 utf8BOM 保存形态曾被裸 read_to_string 误报
+    // 「rules file is damaged」。读侧走 BOM 剥离 helper 后正常解析。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("eval_rules.json");
+    let body = serde_json::json!({
+        "version": CURRENT_RULES_VERSION,
+        "rules": [good_rule("bom1")]
+    })
+    .to_string();
+    std::fs::write(&path, format!("\u{feff}{body}")).unwrap();
+    let file = load_rules(Path::new(&path)).expect("BOM 前缀的合法规则文件必须可读");
+    assert_eq!(file.rules.len(), 1);
+    assert_eq!(file.rules[0].id, "bom1");
+}

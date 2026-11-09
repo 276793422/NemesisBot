@@ -74,7 +74,11 @@ pub fn registry_path(workspace: &Path) -> PathBuf {
 /// 读注册表。`Ok(None)` = 文件不存在（首次使用）；`Err` = 存在但损坏或不可
 /// 读——**写路径必须 loud 拒绝**（用空表覆盖损坏文件 = 静默清空用户数据）。
 pub fn try_load_projects(path: &Path) -> Result<Option<ProjectsFile>> {
-    let data = match std::fs::read_to_string(path) {
+    // BUG-20261109-036：注册表是用户可编辑资产（save_projects 落 pretty
+    // JSON）——读侧走 BOM 剥离 helper。裸读时 Windows 记事本 utf8BOM 保存
+    // 会解析失败，触发下方「已损坏请手动修复或删除」误导文案（文件完好，
+    // 用户按提示删除 = 恰是本函数注释要防的静默清空用户数据）。
+    let data = match nemesis_utils::fsutil::read_config_string(path) {
         Ok(d) => d,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
