@@ -232,7 +232,11 @@ impl EmailChannel {
             if let Some(rest) = resp.strip_prefix("* SEARCH ") {
                 for part in rest.split_whitespace() {
                     let p = part.trim();
-                    if !p.is_empty() {
+                    // 纯数字闸（R737 协议注入面）：seq 原样拼进
+                    // `STORE {seq} +FLAGS` / `FETCH {seq}` 命令流，IMAP 服务器
+                    // 返回畸形 token 即可注入任意后续命令。合法 SEARCH 响应的
+                    // token 恒为数字，非数字 token 丢弃。
+                    if !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) {
                         seq_nums.push(p.to_string());
                     }
                 }
@@ -463,17 +467,24 @@ impl EmailChannel {
         self.smtp_command(&mut writer, &mut reader, &pass_b64)
             .await?;
 
-        // MAIL FROM
+        // MAIL FROM / RCPT TO（envelope 命令注入面，R737）：CR/LF 剥除——
+        // envelope 值混入 CR/LF 即构成命令注入（可在 DATA 前引入额外
+        // MAIL FROM/RCPT TO）；对齐 build_smtp_message 的 header_safe 既有
+        // 纵深形态（头部已收敛，envelope 同面同收敛）。
         self.smtp_command(
             &mut writer,
             &mut reader,
-            &format!("MAIL FROM:<{}>", self.smtp_username()),
+            &format!("MAIL FROM:<{}>", smtp_envelope_safe(self.smtp_username())),
         )
         .await?;
 
         // RCPT TO
-        self.smtp_command(&mut writer, &mut reader, &format!("RCPT TO:<{to}>"))
-            .await?;
+        self.smtp_command(
+            &mut writer,
+            &mut reader,
+            &format!("RCPT TO:<{}>", smtp_envelope_safe(to)),
+        )
+        .await?;
 
         // DATA
         self.smtp_command(&mut writer, &mut reader, "DATA").await?;
@@ -596,15 +607,17 @@ impl EmailChannel {
             )));
         }
 
-        // Login
+        // Login（IMAP quoted 注入面，R737：用户名/密码含 `"`/`\`/CRLF 会
+        // 破坏 quoted string 边界——imap_quoted 转义 + 剥除）
         let login_cmd = format!(
-            "LOGIN \"{}\" \"{}\"",
-            self.config.imap_username, self.config.imap_password
+            "LOGIN {} {}",
+            imap_quoted(&self.config.imap_username),
+            imap_quoted(&self.config.imap_password)
         );
         conn.send_command(&login_cmd).await?;
 
         // Select mailbox
-        conn.send_command(&format!("SELECT \"{}\"", self.config.folder))
+        conn.send_command(&format!("SELECT {}", imap_quoted(&self.config.folder)))
             .await?;
 
         debug!(
@@ -924,15 +937,38 @@ async fn imap_connect_static(config: &EmailConfig) -> Result<ImapConnection> {
     }
 
     conn.send_command(&format!(
-        "LOGIN \"{}\" \"{}\"",
-        config.imap_username, config.imap_password
+        "LOGIN {} {}",
+        imap_quoted(&config.imap_username),
+        imap_quoted(&config.imap_password)
     ))
     .await?;
 
-    conn.send_command(&format!("SELECT \"{}\"", config.folder))
+    conn.send_command(&format!("SELECT {}", imap_quoted(&config.folder)))
         .await?;
 
     Ok(conn)
+}
+
+/// IMAP quoted string 编码（R737 协议注入面）：`"`/`\` 用 `\` 转义，
+/// CR/LF 直接剥除（quoted 内不允许换行——配置值含换行即非法，
+/// 剥除对齐 `build_smtp_message` 的 header_safe 既有形态）。
+fn imap_quoted(s: &str) -> String {
+    let escaped: String = s
+        .chars()
+        .filter(|&c| c != '\r' && c != '\n')
+        .map(|c| match c {
+            '"' | '\\' => format!("\\{c}"),
+            _ => c.to_string(),
+        })
+        .collect();
+    format!("\"{escaped}\"")
+}
+
+/// SMTP envelope 命令值安全化（R737 协议注入面）：CR/LF 直接剥除——
+/// envelope 值混入 CR/LF 即构成命令注入（DATA 前引入额外命令行）；
+/// 对齐 `build_smtp_message` 的 header_safe 既有形态。
+fn smtp_envelope_safe(v: &str) -> String {
+    v.chars().filter(|&c| c != '\r' && c != '\n').collect()
 }
 
 fn parse_search_results_static(responses: &[String]) -> Vec<String> {

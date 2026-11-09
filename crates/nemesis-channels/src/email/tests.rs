@@ -671,3 +671,41 @@ fn test_seen_uids_capped_no_unbounded_growth() {
     );
     assert!(len > 0, "prune must not drain the map to empty");
 }
+
+// ---- R737 协议注入面回归锁 ----
+
+#[test]
+fn test_r737_parse_search_results_rejects_non_numeric_tokens() {
+    // IMAP 服务器（或 MITM）返回畸形 token：不得原样进 STORE/FETCH 命令流。
+    let responses = vec![
+        "* SEARCH 1 2evil 3x,y".to_string(),
+        "* SEARCH".to_string(),
+        "* SEARCH 7".to_string(),
+    ];
+    let nums = EmailChannel::parse_search_results(&responses);
+    assert_eq!(nums, vec!["1", "7"], "非数字 token 必须丢弃");
+}
+
+#[test]
+fn test_r737_imap_quoted_escapes_protocol_metachars() {
+    assert_eq!(super::imap_quoted("INBOX"), "\"INBOX\"");
+    // `"` 与 `\` 用 `\` 转义（RFC 3501 quoted string）。
+    assert_eq!(super::imap_quoted(r#"a"b\c"#), "\"a\\\"b\\\\c\"");
+    // CR/LF 剥除——quoted 内不允许换行，含 CRLF 的密码/文件夹名不得破坏
+    // 协议流（注入后续命令）。
+    assert_eq!(
+        super::imap_quoted("bad\r\nSELECT \"x\""),
+        "\"badSELECT \\\"x\\\"\""
+    );
+}
+
+#[test]
+fn test_r737_smtp_envelope_safe_strips_crlf() {
+    assert_eq!(super::smtp_envelope_safe("a@b.com"), "a@b.com");
+    // envelope 值夹带 CRLF = DATA 前命令注入，必须剥除。
+    assert_eq!(
+        super::smtp_envelope_safe("victim@x.com>\r\nRCPT TO:<spam@y.com"),
+        "victim@x.com>RCPT TO:<spam@y.com"
+    );
+    assert_eq!(super::smtp_envelope_safe("a\rb@c\nd.com"), "ab@cd.com");
+}
