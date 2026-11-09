@@ -149,6 +149,27 @@ fn sign_content_v4_pe_roundtrip_valid() {
     assert!(crate::view::latest_sig_hash(&signed).is_some());
 }
 
+#[test]
+fn sign_content_v4_pe_unaligned_length_pad_in_digest() {
+    // 回归锁（NBSETUP1 安装包实证，2026-11-09）：文件长非 8 对齐时，证书表
+    // 对齐 pad 参与 Authenticode digest（微软语义——digest 排除域只有
+    // [VA, end)，pad 在 VA 之前）。签发侧若在 pad 前算 digest，验证侧（全
+    // 文件参与）会多出签发时看不到的 pad 字节 → 假 Tampered。旧实现只靠
+    // base_pe() 长度恰 8 对齐（0x600）侥幸全绿；本用例 +6 字节 overlay 把
+    // 长度掰成 ≡6 (mod 8)，修复前此用例必红。
+    let _g = TEST_LOCK.lock().unwrap(); // 走到第⑥步（吊销读 env），必须持锁
+    let h = V4Harness::new();
+    let mut pe = base_pe();
+    pe.extend_from_slice(b"UNALGN"); // +6 → 预签长度 ≡ 6 (mod 8)
+    assert_eq!(pe.len() % 8, 6, "夹具必须非 8 对齐");
+    let signed =
+        sign_content_v4(&pe, &h.h.leaf_sk, 45_000, &h.h.chain(), None).expect("sign unaligned pe");
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::Valid { signed_at, .. } => assert_eq!(signed_at, 45_000),
+        o => panic!("expected Valid（pad 参与 digest）, got {o:?}"),
+    }
+}
+
 // ===== 最小 ELF64 LE 构造（端口自 envelope/tests.rs s34_min_elf，模块私有不可跨文件）=====
 
 /// PT_LOAD 全覆盖形态：codec L = 全文件长（overlay 域为空）， 用它覆盖

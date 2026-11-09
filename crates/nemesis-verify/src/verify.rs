@@ -111,11 +111,19 @@ pub fn sign_content_v4(
     publisher: Option<&str>,
 ) -> Result<Vec<u8>> {
     let is_pe = codec::detect_format(content) == codec::FORMAT_TAG_PE;
-    let digest = v4_content_digest(content)?;
+    // PE 臂先补证书表对齐 pad 再算 digest（pad 参与 Authenticode digest，
+    // 见 pe::pad_for_certificate_table——pad 后算 digest 才与验证侧全文件
+    // 口径一致；非 8 对齐长度文件不补 = 签发后验证必假 Tampered）。
+    let pe_padded = if is_pe {
+        Some(crate::pe::pad_for_certificate_table(content))
+    } else {
+        None
+    };
+    let digest = v4_content_digest(pe_padded.as_deref().unwrap_or(content))?;
     let cms = envelope::build_signed_data(&digest, sk, signed_at, certs, publisher, None)?;
-    if is_pe {
+    if let Some(padded) = pe_padded {
         // append_certificate_table 返回 CodecError（pe 模块契约），统一到 anyhow
-        crate::pe::append_certificate_table(content, &cms).map_err(anyhow::Error::from)
+        crate::pe::append_certificate_table(&padded, &cms).map_err(anyhow::Error::from)
     } else {
         envelope::sign_carrier_v4(content, &cms)
     }

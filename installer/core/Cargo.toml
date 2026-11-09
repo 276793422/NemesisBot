@@ -1,0 +1,31 @@
+[package]
+name = "setup-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "NemesisBot 安装器共享核心：payload 格式 / 尾注 / manifest 校验 / v4 验签 / 释放引擎 / pack 工具"
+
+[lib]
+name = "setup_core"
+
+# 打包工具 bin（跨平台，构建机侧运行）：keygen / pack / inspect / sign
+[[bin]]
+name = "pack"
+path = "src/bin/pack.rs"
+
+[dependencies]
+# 与发行包同链的 v4 签名验签（跨 workspace path dep；workspace 继承按
+# nemesis-verify 自己的 workspace 根解析——编译实证见仓库首次接入记录）
+nemesis-verify = { path = "../../crates/nemesis-verify" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tar.workspace = true
+zstd.workspace = true
+ruzstd.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
