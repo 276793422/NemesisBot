@@ -1031,3 +1031,43 @@ fn test_build_window_find_part_hwnd_prefixes_normalized() {
         assert!(!part.contains("0x0x"), "hwnd {:?} → {}", hwnd, part);
     }
 }
+
+/// 回归锁（BUG-20261109-021）：`-like` 模式位的通配符必须字面化——
+/// 窗口标题含 `*`/`?`/`[`/`]` 时被解释成通配符（`[兼容模式]` 变字符集）
+/// → 匹配错位/误导性 Window not found。单引号转义只封字符串注入面，
+/// 通配符面要方括号包裹形态（本机 PowerShell 探针实证）。
+#[test]
+fn test_build_window_find_part_escapes_wildcards() {
+    // 方括号标题：模式位字面化，Write-Error 位保持可读原文。
+    let s = ScreenCaptureTool::build_window_find_part("", "记事本 [兼容模式]");
+    assert!(
+        s.contains("-like '*记事本 [[]兼容模式[]]*'"),
+        "模式位未字面化: {s}"
+    );
+    assert!(
+        s.contains("Window not found: 记事本 [兼容模式]"),
+        "错误消息位应保留原文: {s}"
+    );
+
+    // `*` 与 `?` 单字符通配符字面化。
+    let s = ScreenCaptureTool::build_window_find_part("", "app * beta?");
+    assert!(s.contains("-like '*app [*] beta[?]*'"), "got: {s}");
+
+    // 单引号保持 `''` 转义（字符串注入面，模式位与错误位都要）。
+    let s = ScreenCaptureTool::build_window_find_part("", "it's here");
+    assert!(s.contains("-like '*it''s here*'"), "got: {s}");
+    assert!(s.contains("Window not found: it''s here"), "got: {s}");
+
+    // 单遍映射：输入本身是通配符组合 `[*]` 时产物不得二次转义叠加
+    // （预期 `[[][*][]]`——每个输入字符恰好映射一次）。
+    let s = ScreenCaptureTool::build_window_find_part("", "[*]");
+    assert!(s.contains("-like '*[[][*][]]*'"), "got: {s}");
+}
+
+/// hwnd 分支不受标题转义影响（路径回归对照）。
+#[test]
+fn test_build_window_find_part_hwnd_branch_untouched() {
+    let s = ScreenCaptureTool::build_window_find_part("HWND(0x302ba)", "any [title]");
+    assert!(s.contains("$handle = [IntPtr]0x302ba"), "got: {s}");
+    assert!(!s.contains("-like"), "hwnd 分支不应含 -like: {s}");
+}

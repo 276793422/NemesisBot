@@ -449,12 +449,28 @@ Write-Output "OK"
                 .trim_start_matches("0x");
             format!("$handle = [IntPtr]0x{}", hwnd_clean)
         } else {
-            let escaped_title = window_title.replace('\'', "''");
+            // `-like` 模式位：单引号转义只封字符串注入面，`*`/`?`/`[`/`]`
+            // 仍是通配符（标题含 `[兼容模式]` 一类方括号时被解释成字符集
+            // → 匹配错位/找不到窗口）。字面化 = 方括号包裹（about_Wildcards
+            // 语义，本机探针实证 `[[]`/`[]]`/`[*]`/`[?]` 四形态），单遍
+            // char 映射防替换产物被二次转义。Write-Error 位是普通字符串
+            // 上下文，只需单引号转义，保持用户可读原文。
+            let quoted_title = window_title.replace('\'', "''");
+            let wildcard_title: String = window_title
+                .chars()
+                .flat_map(|c| match c {
+                    '\'' => vec!['\'', '\''],
+                    '[' => "[[]".chars().collect::<Vec<char>>(),
+                    ']' => "[]]".chars().collect::<Vec<char>>(),
+                    '*' => "[*]".chars().collect::<Vec<char>>(),
+                    '?' => "[?]".chars().collect::<Vec<char>>(),
+                    c => vec![c],
+                })
+                .collect();
             format!(
-                r#"$proc = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{}*' -and $_.MainWindowHandle -ne 0 }} | Select-Object -First 1
-if (-not $proc) {{ Write-Error 'Window not found: {}'; exit 1 }}
-$handle = $proc.MainWindowHandle"#,
-                escaped_title, escaped_title
+                r#"$proc = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*{wildcard_title}*' -and $_.MainWindowHandle -ne 0 }} | Select-Object -First 1
+if (-not $proc) {{ Write-Error 'Window not found: {quoted_title}'; exit 1 }}
+$handle = $proc.MainWindowHandle"#
             )
         }
     }
