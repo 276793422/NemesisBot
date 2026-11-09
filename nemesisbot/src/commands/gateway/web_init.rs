@@ -442,7 +442,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             web: if cfg.channels.web.enabled {
                 Some(nemesis_channels::web::WebChannelConfig {
                     host: cfg.channels.web.host.clone(),
-                    port: cfg.channels.web.port as u16,
+                    port: nemesis_config::config_port_to_u16(cfg.channels.web.port, "channels.web.port")?,
                     ws_path: cfg.channels.web.path.clone(),
                     // vault：auth_token 支持 vault:/env:/yaml: 引用。
                     // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
@@ -488,7 +488,10 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         // 临时端口对设备不可见（line 通道 0→8080 同款先例）。
                         nemesis_channels::maixcam::MaixCamConfig::default().port
                     } else {
-                        cfg.channels.maixcam.port as u16
+                        nemesis_config::config_port_to_u16(
+                            cfg.channels.maixcam.port,
+                            "channels.maixcam.port",
+                        )?
                     },
                     allow_from: cfg.channels.maixcam.allow_from.clone(),
                 })
@@ -509,7 +512,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         &cfg.channels.line.channel_secret,
                         "channels.line.channel_secret",
                     ),
-                    webhook_port: cfg.channels.line.webhook_port as u16,
+                    webhook_port: nemesis_config::config_port_to_u16(cfg.channels.line.webhook_port, "channels.line.webhook_port")?,
                     allow_from: cfg.channels.line.allow_from.clone(),
                 })
             } else {
@@ -519,7 +522,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             websocket: if cfg.channels.websocket.enabled {
                 Some(nemesis_channels::websocket::WebSocketChannelConfig {
                     host: cfg.channels.websocket.host.clone(),
-                    port: cfg.channels.websocket.port as u16,
+                    port: nemesis_config::config_port_to_u16(cfg.channels.websocket.port, "channels.websocket.port")?,
                     path: cfg.channels.websocket.path.clone(),
                     // vault：auth_token 支持 vault:/env:/yaml: 引用。
                     // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。

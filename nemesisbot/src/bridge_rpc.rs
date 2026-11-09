@@ -449,7 +449,14 @@ impl DeviceBridgeRpc {
                         .collect()
                 })
                 .unwrap_or_default();
-            let rpc_port = m.get("rpc_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            // hub 下发成员自报端口先在 u64 域验域再 cast（web handlers/cluster
+            // 同款习语）——裸 `as u16` 会把 70000 回绕成 4464，恰好穿过下游
+            // `rpc_port == 0` 哨兵闸错连他方服务。越域归 0 = 未上报哨兵。
+            let rpc_port = m
+                .get("rpc_port")
+                .and_then(|v| v.as_u64())
+                .filter(|p| *p > 0 && *p <= u16::MAX as u64)
+                .unwrap_or(0) as u16;
             let role = m
                 .get("role")
                 .and_then(|v| v.as_str())

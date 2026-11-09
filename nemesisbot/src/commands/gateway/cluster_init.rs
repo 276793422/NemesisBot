@@ -1107,9 +1107,14 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                             // 活，worker_sync_once 找不到 coordinator）。改为
                             // cluster 侧继承占位身份（payload 缺端口提示时传 0，
                             // 由占位端口派生）。
+                            // 远端自报端口先在 u64 域验域再 cast（web handlers/
+                            // cluster 同款习语）——裸 `as u16` 会把 70000 回绕成
+                            // 4464 穿过 0 哨兵闸，register_rpc_peer 落错端口。
+                            // 越域归 0 = 缺端口提示哨兵（由占位端口派生）。
                             let remote_rpc_port = payload
                                 .get("_source_rpc_port")
                                 .and_then(|v| v.as_u64())
+                                .filter(|p| *p > 0 && *p <= u16::MAX as u64)
                                 .unwrap_or(0)
                                 as u16;
                             cluster_ref.register_rpc_peer(&source_node_id, remote_rpc_port);

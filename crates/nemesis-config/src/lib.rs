@@ -145,6 +145,30 @@ where
 }
 
 // ============================================================================
+// Port normalization (config i64 fields -> assembly-domain u16)
+// ============================================================================
+
+/// config 端口字段的越域错误（`config_port_to_u16` 返回）。
+#[derive(Debug, thiserror::Error)]
+#[error("config {field} 端口越域: {value}（合法 0..=65535）")]
+pub struct PortRangeError {
+    pub field: String,
+    pub value: i64,
+}
+
+/// config 端口字段（`i64`——[`deserialize_flexible_i64`] 兼容历史 CLI 写入
+/// 的字符串形态）→ 装配域 `u16` 归一。越域（<0 / >65535）= 约定外输入，
+/// **loud 拒绝**：裸 `as u16` 会把 70000 静默回绕成 4464、-1 回绕成 65535，
+/// bind 到用户从未配置过的端口。Dashboard/CLI 保存面已有 u64 域验域习语
+/// （web handlers/cluster 同款），此防线管手编 config.json 直改路径。
+pub fn config_port_to_u16(value: i64, field: &str) -> std::result::Result<u16, PortRangeError> {
+    u16::try_from(value).map_err(|_| PortRangeError {
+        field: field.to_string(),
+        value,
+    })
+}
+
+// ============================================================================
 // Main Config struct - mirrors Go Config exactly
 // ============================================================================
 
@@ -658,6 +682,9 @@ mod eval_rules_tests;
 
 #[cfg(test)]
 mod tool_result_cap_tests;
+
+#[cfg(test)]
+mod port_normalization_tests;
 
 #[cfg(test)]
 mod extra_tests;

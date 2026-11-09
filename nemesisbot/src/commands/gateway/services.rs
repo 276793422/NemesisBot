@@ -321,7 +321,7 @@ pub(crate) async fn init_services(
         config_path: config_path.clone(),
         workspace: home.join("workspace"),
         gateway_host: cfg.gateway.host.clone(),
-        gateway_port: cfg.gateway.port as u16,
+        gateway_port: nemesis_config::config_port_to_u16(cfg.gateway.port, "gateway.port")?,
         llm_logging_enabled: cfg
             .logging
             .as_ref()

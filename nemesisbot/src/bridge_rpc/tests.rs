@@ -687,3 +687,45 @@ async fn hub_forward_unreachable_falls_to_honest_error() {
         .await;
     assert!(out.is_none(), "本机迟到响应丢弃");
 }
+
+/// BUG-20261109-015 回归锁：`member_sync` 成员自报 `rpc_port` 越域时必须
+/// 归 0 哨兵（未上报），不得裸 `as u16` 回绕——70000 wrap 成 4464 恰好
+/// 穿过 0 哨兵闸，registry 落 `10.0.0.9:4464` 错端口（后续 peer_chat
+/// 错连他方服务）。修复后地址回落裸地址（无端口后缀）。
+#[tokio::test]
+async fn member_sync_out_of_range_rpc_port_normalized_to_zero_sentinel() {
+    let server = test_server();
+    let (cluster, _tmp) = test_cluster();
+    let self_id = cluster.node_id().to_string();
+    let dev = Arc::new(DeviceBridgeRpc::new(
+        server,
+        self_id.clone(),
+        Some(cluster.clone()),
+    ));
+    let (up_tx, _up_rx) = tokio::sync::mpsc::unbounded_channel::<BridgeFrame>();
+    dev.attach_uplink(up_tx);
+
+    dev.handle_member_sync(&serde_json::json!({
+        "members": [
+            {"node_id": "node-evil", "name": "Evil", "online": true,
+             "via_bridge": true, "addresses": ["10.0.0.9"], "rpc_port": 70000,
+             "role": "worker", "category": "general",
+             "capabilities": [], "node_type": "agent"},
+        ]
+    }));
+
+    // 归 0 后走 G14 闸（rpc_port==0 = 畸形 announce 同类）→ 拒收入册：
+    // 修复前 wrap 4464 穿过闸入册 `10.0.0.9:4464`，后续 peer_chat 直连错端口。
+    assert!(
+        cluster
+            .list_nodes()
+            .iter()
+            .all(|n| n.base.id != "node-evil"),
+        "越域 rpc_port 归 0 哨兵 → G14 闸拒收入册（畸形自报同类）"
+    );
+    // 桥成员表独立于 registry 更新——经桥可达性不受直连拒收影响。
+    assert!(
+        BridgeSend::bridge_online(dev.as_ref(), "node-evil"),
+        "桥成员在表（经桥可达），registry 拒收不波及桥接通道"
+    );
+}
