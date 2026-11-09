@@ -38,11 +38,13 @@ pub(crate) enum PlaytestVerdict {
     InfraFail(String),
 }
 
-/// 里程碑单机器闸目标判定：`issue.milestone` 且质量档=experience。
+/// 里程碑单机器闸目标判定：`issue.milestone` 且质量档=experience
+/// （[`nemesis_board::models::Issue::is_experience_quality`] 单一真相源
+/// ——trim + 大小写不敏感，与规格闸/milestone 归一同口径）。
 /// quality 在建单时继承（`confirm_plan` 对非 experience 父单已把
 /// milestone 归一 false），因此无需回查父单。
 pub(crate) fn is_prototype_gate_target(issue: &nemesis_board::Issue) -> bool {
-    issue.milestone && issue.quality == "experience"
+    issue.milestone && issue.is_experience_quality()
 }
 
 /// 主持人出题 system prompt（检查员侧出题）：产出结构化试玩场景，

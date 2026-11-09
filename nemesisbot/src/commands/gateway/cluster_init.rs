@@ -662,6 +662,21 @@ pub(crate) async fn init_cluster(ctx: &GatewayCtx) -> Result<ClusterWiring> {
                 "[Gateway] mandate 密钥不可用（本节点不签名不宣告公钥；对端 verify 模式对缺失放行）: {e}"
             ),
         }
+        // mode 词表声明为「未知值按 verify 处理 + WARN（装配期）」——
+        // verify 是保守缺省，但用户想配 require（严格档）写错字时静默落
+        // verify 是 fail-open 方向的静默降级，必须 loud 可见（对齐
+        // InstructionTrust::from_policy 先例形态）。
+        {
+            let normalized = mandate_cfg.mode.trim().to_lowercase();
+            if !normalized.is_empty()
+                && !matches!(normalized.as_str(), "off" | "verify" | "require")
+            {
+                warn!(
+                    "[Gateway] mandate mode 未知值 '{}'，按 verify 处理（词表：off | verify | require）",
+                    mandate_cfg.mode
+                );
+            }
+        }
         handler.set_mandate_policy(nemesis_cluster::roaming::mandate::MandatePolicy {
             workspace: mandate_ws,
             mode: mandate_cfg.resolve_mode(),

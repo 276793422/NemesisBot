@@ -971,7 +971,7 @@ pub(super) fn spec_gate_decision(
     store: &BoardStore,
     issue: &nemesis_board::models::Issue,
 ) -> Result<SpecGateAction, String> {
-    if !issue.quality.trim().eq_ignore_ascii_case("experience") {
+    if !issue.is_experience_quality() {
         return Ok(SpecGateAction::Skip);
     }
     let attended = !resolve_unattended(store, issue, &live_attendance_config())?;

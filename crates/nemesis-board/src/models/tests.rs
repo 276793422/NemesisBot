@@ -108,6 +108,52 @@ fn test_issue_serde_roundtrip() {
     assert!(back.milestone);
 }
 
+// is_experience_quality：trim + 大小写不敏感（读取宽容 = quality 字段
+// 声明的既定语义）。单一真相源——规格闸/milestone 归一/原型机器闸三
+// 消费点同口径；此前的裸 `== "experience"`（原型闸）对 `"Experience"`
+// 档静默落空（同族解析漂移，BUG-20261109-010 横向修复）。
+#[test]
+fn is_experience_quality_trim_and_case_insensitive() {
+    let mk = |quality: &str| -> Issue {
+        Issue {
+            id: 1,
+            number: "NB-1".into(),
+            title: "t".into(),
+            description: String::new(),
+            status: IssueStatus::Todo,
+            priority: priority::MEDIUM,
+            assignee: None,
+            assignee_id: None,
+            creator: crate::assignment::Actor::admin("admin"),
+            parent_issue_id: None,
+            project_id: None,
+            due_date: None,
+            position: 0,
+            acceptance_criteria: None,
+            origin: None,
+            required_role: None,
+            required_tags: Vec::new(),
+            required_profession: None,
+            required_backend: None,
+            required_capabilities: Vec::new(),
+            requires_evidence: false,
+            hidden: false,
+            quality: quality.to_string(),
+            unattended: None,
+            milestone: false,
+            created_at: 0,
+            updated_at: 0,
+        }
+    };
+    assert!(mk("experience").is_experience_quality());
+    assert!(mk("Experience").is_experience_quality());
+    assert!(mk("EXPERIENCE").is_experience_quality());
+    assert!(mk("  experience  ").is_experience_quality());
+    assert!(!mk("").is_experience_quality(), "空串 = 标准档");
+    assert!(!mk("standard").is_experience_quality());
+    assert!(!mk("experiences").is_experience_quality());
+}
+
 // ---------------------------------------------------------------------------
 // Wave4 覆盖批次：is_terminal / allowed_targets 全臂。
 // ---------------------------------------------------------------------------

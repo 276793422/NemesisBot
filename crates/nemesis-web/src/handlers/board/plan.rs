@@ -2450,8 +2450,9 @@ pub fn confirm_plan(
         let backend = sub.required_backend.trim();
         // 里程碑单标记归一（触点体系 P3）：只有父单是体验型（experience
         // 档）才落库 planner 的 milestone 标记——父单非体验档时该标记
-        // 无消费方，清零（防上游误标把普通单挂进原型闸）。
-        let milestone = parent.quality.trim().eq_ignore_ascii_case("experience") && sub.milestone;
+        // 无消费方，清零（防上游误标把普通单挂进原型闸）。档位判定走
+        // `is_experience_quality` 单一真相源（与规格闸/原型闸同口径）。
+        let milestone = parent.is_experience_quality() && sub.milestone;
         let created = store.create_issue(nemesis_board::NewIssue {
             title: sub.title.clone(),
             description: sub.description.clone(),

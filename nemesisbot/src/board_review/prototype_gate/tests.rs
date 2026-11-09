@@ -221,3 +221,23 @@ fn gate_target_rejects_standard_quality_and_non_milestone() {
     assert!(!is_prototype_gate_target(&issue));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// 宽容口径钉（BUG-20261109-010 漂移修复）：档位判定走
+// `is_experience_quality` 单一真相源（trim + 大小写不敏感）——与规格闸/
+// milestone 归一同口径；此前裸 `== "experience"` 对 `"Experience"` 档
+// 静默落空（挂了规格触点却丢原型闸）。
+#[test]
+fn gate_target_accepts_experience_case_and_space_variants() {
+    for (name, quality) in [
+        ("upper", "Experience"),
+        ("shout", "EXPERIENCE"),
+        ("padded", "  experience  "),
+    ] {
+        let (dir, issue) = fixture_issue(name, quality, true);
+        assert!(
+            is_prototype_gate_target(&issue),
+            "quality {quality:?} must hit the prototype gate"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

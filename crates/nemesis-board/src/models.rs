@@ -274,6 +274,18 @@ pub struct Issue {
     pub updated_at: i64,
 }
 
+impl Issue {
+    /// 质量档是否为体验型（`experience`；trim + 大小写不敏感——读取宽容
+    /// 是 quality 字段声明的既定语义）。**单一真相源**：规格闸
+    /// （spec_gate_decision）、milestone 归一（confirm_plan）、原型机器闸
+    /// （is_prototype_gate_target）三消费点统一走此 helper——此前原型闸
+    /// 用裸 `== "experience"`（不 trim 不折叠大小写），`"Experience"` 档
+    /// 会挂上规格触点与里程碑标记却在原型闸静默落空（同族解析漂移）。
+    pub fn is_experience_quality(&self) -> bool {
+        self.quality.trim().eq_ignore_ascii_case("experience")
+    }
+}
+
 /// 任务来源（issue.origin_type + origin_id 的组合形状）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskOrigin {
