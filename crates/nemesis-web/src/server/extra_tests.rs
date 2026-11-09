@@ -918,6 +918,7 @@ async fn test_send_to_session_with_active_queue_succeeds() {
         None,
         None,
         None,
+        None,
     )
     .await;
     assert!(send_result.is_ok());
@@ -954,6 +955,7 @@ async fn test_send_to_session_includes_model_badge() {
         Some("deepseek/deepseek-v4-flash"),
         None,
         None,
+        None,
     )
     .await
     .unwrap();
@@ -971,6 +973,7 @@ async fn test_send_to_session_includes_model_badge() {
         &session.id,
         "assistant",
         "plain reply",
+        None,
         None,
         None,
         None,
@@ -997,6 +1000,7 @@ async fn test_send_to_session_includes_model_badge() {
         None,
         None,
         Some("node-b"),
+        None,
     )
     .await
     .unwrap();
@@ -1012,6 +1016,7 @@ async fn test_send_to_session_includes_model_badge() {
         &session.id,
         "assistant",
         "plain reply",
+        None,
         None,
         None,
         None,
@@ -1051,6 +1056,7 @@ async fn test_send_to_session_stamps_agent_session_id() {
         None,
         Some("agent:main:session:abc-123"),
         None,
+        None,
     )
     .await
     .unwrap();
@@ -1067,6 +1073,7 @@ async fn test_send_to_session_stamps_agent_session_id() {
         &session.id,
         "assistant",
         "plain reply",
+        None,
         None,
         None,
         None,

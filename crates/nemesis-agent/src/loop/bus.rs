@@ -183,6 +183,7 @@ impl AgentLoop {
             max_concurrent_turns: 0,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             compact_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            compaction_in_flight: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
             route_resolver: Some(RouteResolver::new(default_route_config)),
@@ -538,6 +539,7 @@ impl AgentLoop {
                     source_node: None,
                     task_id: None,
                     sync_via: None,
+                    note_kind: None,
                     // 回执标记由调用点声明语义（busy 排队/slash 确认=true，
                     // 终局回复=false）——消费方按会话键等终局回复时跳过回执。
                     receipt,
@@ -578,6 +580,7 @@ impl AgentLoop {
                 sync_via: None,
                 // 凭条卡 = connector 写类 op 回执，非回合产物（按会话键等
                 // 终局回复的消费方必须跳过）。
+                note_kind: None,
                 receipt: true,
             },
         };
@@ -823,7 +826,9 @@ impl AgentLoop {
                     // ⏳ 前置回执 = 系统回执（receipt=true）；其后真回复
                     // （可能是 LLM 摘要）= 终局（receipt=false）。
                     this.finish_message(&m, receipt, None, false, true).await;
-                    let response = this.handle_maintenance(kind, &session_key).await;
+                    let response = this
+                        .handle_maintenance(kind, &session_key, &m.channel, &m.chat_id)
+                        .await;
                     drop(_busy_guard);
                     // 排队消息排空（2026-09-28 真模型验证发现）：
                     // 分钟级维护期间排队的消息此前在维护尾巴

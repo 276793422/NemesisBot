@@ -476,6 +476,12 @@ pub struct AgentLoop {
     /// ⑩ Per-session compaction state for graded tiers (soft/summarize) and
     /// stuck self-check. See `maybe_summarize`.
     compact_state: Arc<parking_lot::Mutex<HashMap<String, CompactState>>>,
+    /// 压缩进行中登记（2026-11-09 刷新恢复方案 A）：compaction_start 徽标帧
+    /// 瞬态不落盘，刷新/断连后前端经 chat.context_status 查询本表恢复
+    /// 徽标 + 计时 + 流光。键 = session_key；真相源 = 后端（网关重启 =
+    /// 表空 = 诚实：压缩进程确实没了）。登记/摘除与徽标帧发射点同位，
+    /// 摘除走 guard Drop（panic 安全）。见 compact.rs `CompactionInFlight`。
+    compaction_in_flight: Arc<parking_lot::Mutex<HashMap<String, CompactionInFlight>>>,
     /// Channel manager reference (for channel listing commands).
     channel_manager_channels: parking_lot::Mutex<Vec<String>>,
     /// Tracks whether a message tool already sent a response this round.
@@ -934,6 +940,7 @@ impl AgentLoop {
             max_concurrent_turns: 0,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             compact_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            compaction_in_flight: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
             sent_in_round: SentInRoundTracker::new(),
             route_resolver: None,

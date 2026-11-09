@@ -296,9 +296,13 @@ impl ModuleHandler for ChatHandler {
         // （文件头「busy 闸」注记由此真正对 WSAPI 入口成立）。
         let receipt = match cmd {
             "compact" => {
+                // 徽标帧路由 = 发起连接房间 id（spawn 同款——连接级
+                // `web:{conn}` 才进得了 pump 房间表）；compaction_start
+                // 实时徽标由 compact_session_noticed 在摘要 LLM 之前发出。
+                let notice_chat_id = ctx.chat_id.clone();
                 agent_loop
                     .under_history_gate(&session_key, "压缩", || {
-                        agent_loop.compact_session(&session_key)
+                        agent_loop.compact_session_noticed(&session_key, "web", &notice_chat_id)
                     })
                     .await?
             }

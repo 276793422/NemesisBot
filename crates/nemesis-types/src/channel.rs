@@ -164,6 +164,13 @@ pub struct OutboundMeta {
     /// 一致。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub receipt: bool,
+    /// 压缩过程徽标（2026-11-09 压缩提示徽标化）：本出站是压缩过程的
+    /// 系统注记帧（开始/完成/暂停/预警），web 通道据此以 role="system" +
+    /// `note_kind` 帧键下发，前端渲染成与工具调用同族的折叠小徽标（实时
+    /// 与历史重载同形态）。None = 非注记帧，出站帧不带该键，role 维持
+    /// "assistant"（receipt 旧行为逐字节不变）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note_kind: Option<String>,
 }
 
 /// Outbound message from the agent engine to a channel.

@@ -36,6 +36,12 @@ export interface ChatMessage {
    *  （历史快照行不带 seq）。用于历史响应 last_seq 到达后剔除「先于
    *  快照渲染的重复 assistant 帧」。 */
   seq?: number
+  /** 压缩注记徽标（2026-11-09 徽标化改造）：后端 jsonl 行 / receive 帧 /
+   *  chat.sync 事件的 `note_kind` 透传。`"compaction"` = 已落盘的压缩注记
+   *  （软预警/完成结果/stuck 停用），渲染为折叠小徽标；`"compaction_start"`
+   *  = 进行中动画徽标（每次尝试必发、不落盘，成功/失败回执或 assistant
+   *  回复到场即移除）。缺省 = 普通消息。 */
+  noteKind?: string
 }
 
 /** N5：单条交付物（与后端 chat_log PresentedFile serde 字段对齐）。 */
@@ -391,6 +397,16 @@ export const useChatStore = defineStore('chat', () => {
     return false
   }
 
+  /** 压缩注记徽标（2026-11-09 徽标化）：移除进行中动画徽标
+   *  （noteKind="compaction_start"，不落盘的临时态）。完成回执
+   *  （noteKind="compaction"）或 assistant 回复到场时调用——回执可能被
+   *  后端限频闸抑制（同档 10min 窗口），assistant 到场兜底扫除，不留
+   *  悬挂动画。不占 jsonl 行（纯前端渲染），行号锚不受影响，无需重推。 */
+  function removeCompactRunningNotes() {
+    if (!messages.value.some(m => m.noteKind === 'compaction_start')) return
+    messages.value = messages.value.filter(m => m.noteKind !== 'compaction_start')
+  }
+
   // --- 2026-10-30 Work 时间线摄取（三路共用：实时 push / chat.sync 补拉 /
   // chat.work_current 活查询）---
 
@@ -592,6 +608,7 @@ export const useChatStore = defineStore('chat', () => {
     replaceMessages,
     dropAssistantBelowSeq,
     dropTailIfSame,
+    removeCompactRunningNotes,
     markInflightTurn,
     clearInflightTurn,
     inflightTurnOf,

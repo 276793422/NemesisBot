@@ -110,16 +110,26 @@ pub(crate) fn build_dispatch_snapshot_messages(
 impl AgentLoop {
     /// Dispatch a maintenance command to its implementation (shared by the
     /// serial tail and the spawned pump task).
+    ///
+    /// `channel`/`chat_id` = 发起方回执路由（Compact 臂的进行中徽标帧经
+    /// [`AgentLoop::compact_session_noticed`] 发给发起连接；Clear/Undo 不用）。
     pub(crate) async fn handle_maintenance(
         &self,
         kind: SessionMaintenance,
         session_key: &str,
+        channel: &str,
+        chat_id: &str,
     ) -> String {
         match kind {
-            SessionMaintenance::Compact => match self.compact_session(session_key).await {
-                Ok(receipt) => receipt,
-                Err(e) => format!("⚠ 压缩未完成：{e}"),
-            },
+            SessionMaintenance::Compact => {
+                match self
+                    .compact_session_noticed(session_key, channel, chat_id)
+                    .await
+                {
+                    Ok(receipt) => receipt,
+                    Err(e) => format!("⚠ 压缩未完成：{e}"),
+                }
+            }
             SessionMaintenance::Clear => match self.clear_session(session_key).await {
                 Ok(receipt) => receipt,
                 Err(e) => format!("⚠ 清空未完成：{e}"),

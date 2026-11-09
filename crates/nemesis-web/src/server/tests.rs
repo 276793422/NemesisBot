@@ -691,7 +691,17 @@ async fn test_handle_health_not_running() {
 async fn test_send_to_session_no_queue() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let result = send_to_session(&mgr, &session.id, "assistant", "hello", None, None, None).await;
+    let result = send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "hello",
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
     assert!(result.is_err());
     assert!(
         result
@@ -708,6 +718,7 @@ async fn test_send_to_session_nonexistent() {
         "nonexistent-session",
         "assistant",
         "hello",
+        None,
         None,
         None,
         None,
@@ -1138,6 +1149,7 @@ async fn test_send_to_session_nonexistent_session() {
         "nonexistent-id",
         "assistant",
         "hello world",
+        None,
         None,
         None,
         None,

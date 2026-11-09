@@ -435,7 +435,9 @@ impl AgentLoop {
                 // 随后；返回空串让调用方的 finish_message 早退（不重复发布）。
                 // ⏳ 前置回执打 receipt=true（系统回执非终局），真回复 false。
                 self.finish_message(&msg, receipt, None, false, true).await;
-                let response = self.handle_maintenance(kind, &session_key).await;
+                let response = self
+                    .handle_maintenance(kind, &session_key, &msg.channel, &msg.chat_id)
+                    .await;
                 self.release_session(&session_key);
                 self.finish_message(&msg, response, None, false, false)
                     .await;
@@ -1463,6 +1465,7 @@ impl AgentLoop {
                                     session_key: Some(session_key.to_string()),
                                     source_node: None,
                                     task_id: None,
+                                    note_kind: None,
                                     sync_via: None,
                                     // 队列重处理 = 终局形态（排队消息都是普通
                                     // 任务文本，重处理时 busy 忽略类 slash 已

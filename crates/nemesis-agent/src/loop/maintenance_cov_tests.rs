@@ -114,7 +114,12 @@ async fn handle_maintenance_compact_error_reports_failure() {
     let key = unique_key("compact_err");
 
     let reply = al
-        .handle_maintenance(super::maintenance::SessionMaintenance::Compact, &key)
+        .handle_maintenance(
+            super::maintenance::SessionMaintenance::Compact,
+            &key,
+            "web",
+            "web:test-conn",
+        )
         .await;
     assert!(reply.contains("压缩未完成"), "got: {reply}");
     assert!(
@@ -137,7 +142,12 @@ async fn handle_maintenance_clear_ok_receipt() {
     crate::chat_log::append_chat_log(&key, "user", "to be cleared");
 
     let reply = al
-        .handle_maintenance(super::maintenance::SessionMaintenance::Clear, &key)
+        .handle_maintenance(
+            super::maintenance::SessionMaintenance::Clear,
+            &key,
+            "web",
+            "web:test-conn",
+        )
         .await;
     assert_eq!(reply, "✓ 已清空会话历史");
     let (_, total, _, _) = crate::chat_log::read_chat_log(&key, 10, None);
@@ -163,7 +173,12 @@ async fn handle_maintenance_undo_rewinds_last_turn() {
     crate::chat_log::append_chat_log(&key, "assistant", "已下单（纸面）");
 
     let reply = al
-        .handle_maintenance(super::maintenance::SessionMaintenance::Undo, &key)
+        .handle_maintenance(
+            super::maintenance::SessionMaintenance::Undo,
+            &key,
+            "web",
+            "web:test-conn",
+        )
         .await;
     assert!(reply.contains("已撤销上一轮"), "got: {reply}");
     assert!(reply.contains("移除 2 条消息"), "got: {reply}");
@@ -187,7 +202,12 @@ async fn handle_maintenance_undo_error_reports_failure() {
     crate::chat_log::delete_chat_log(&key);
 
     let reply = al
-        .handle_maintenance(super::maintenance::SessionMaintenance::Undo, &key)
+        .handle_maintenance(
+            super::maintenance::SessionMaintenance::Undo,
+            &key,
+            "web",
+            "web:test-conn",
+        )
         .await;
     assert!(reply.contains("撤销未完成"), "got: {reply}");
     assert!(

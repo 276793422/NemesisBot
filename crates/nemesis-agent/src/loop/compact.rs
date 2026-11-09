@@ -52,14 +52,39 @@ pub(crate) struct CompactState {
     /// 内不重复注记；不同档位互不挤占（soft 预警与 summarize 触发是两个
     /// 事实）。
     last_auto_note: Option<(&'static str, i64)>,
-    /// 上一轮处于 stuck 暂停、本轮信号回落解除了暂停——下一次自动
-    /// 压缩注记按 [`CompactReason::StuckResume`] 档发（用户能看到「恢复」
-    /// 而非以为一切照旧）。
-    resumed_from_pause: bool,
     /// 空转前缀一次性注记闸（小窗口实测根修）：边界只覆盖
     /// system/超限轮（无可摘要内容）时跳过摘要并发一次性注记——不发注记
     /// 用户就面对「pct 长期 100% 却零解释」的无声态（本次事故的起点）。
     noop_noticed: bool,
+}
+
+/// 压缩进行中登记条目（2026-11-09 刷新恢复方案 A）：compaction_start
+/// 徽标帧是瞬态实时帧（刻意不落盘——历史只持久化完成结果），刷新/断连
+/// 后前端无从恢复。本表是「压缩是否正在跑」的**后端真相源**：前端经
+/// chat.context_status 查询投影，running 且本地无徽标 → 按服务端原钟
+/// 物化徽标（计时跨刷新连续，不归零）；not running 且本地有 → 摘除。
+/// 网关重启 = 表空 = 诚实（压缩进程确实没了，与 summarizing 槽同寿命）。
+#[derive(Clone)]
+pub(crate) struct CompactionInFlight {
+    /// 徽标文案（手动/自动两档标签原样——前端渲染同款剥前缀逻辑）。
+    pub label: String,
+    /// 开始时刻墙钟（本地时区 RFC3339，与 web 协议帧时间戳同形，
+    /// `Date.parse` 安全）——计时起点，跨刷新连续。
+    pub started_at: String,
+}
+
+/// [`CompactionInFlight`] 的 RAII guard：Drop 摘除登记——成功/失败/弃用/
+/// panic 各出口一致，无僵尸态（panic 路径 summarizing 槽会滞留是既有
+/// 行为，本表不跟随）。
+struct CompactionInFlightGuard {
+    registry: Arc<parking_lot::Mutex<HashMap<String, CompactionInFlight>>>,
+    session_key: String,
+}
+
+impl Drop for CompactionInFlightGuard {
+    fn drop(&mut self) {
+        self.registry.lock().remove(&self.session_key);
+    }
 }
 
 /// （B2 实报锚定）压缩混合信号单一真相源：判定面
@@ -273,8 +298,8 @@ pub(crate) fn turn_end_effective_trigger(boundary_on: bool, trigger: usize) -> u
 // （加固）：压缩原因档位 + 会话注记
 // ---------------------------------------------------------------------------
 
-/// 压缩事件档位：自动压缩向会话落系统注记时说明原因，用户不再只见
-/// 「Memory threshold reached」而不知为何（对齐诚实注记 `[...]` 族）。
+/// 压缩事件档位：自动压缩注记的限频/文案档位（注记 = 折叠小徽标，见
+/// [`AgentLoop::emit_compaction_note`]；触发细节在日志，用户面只留档位名）。
 /// 手动 /compact 的回执走 `compact_session` 返回值（行为不变），`Manual`
 /// 仅用于方言 PreCompact/PostCompact hook 标签（原 "manual" 字面量的
 /// 枚举化，输出不变）。
@@ -284,8 +309,6 @@ pub(crate) enum CompactReason {
     AutoSoft,
     /// summarize 档触发（自动压缩真正发生）。
     AutoSummarize,
-    /// stuck/no_progress 熔断暂停解除后的首次自动压缩。
-    StuckResume,
     /// 手动 /compact（compact_session；回执走返回值，不落注记）。
     Manual,
 }
@@ -305,7 +328,6 @@ impl CompactReason {
         match self {
             Self::AutoSoft => "压缩预警",
             Self::AutoSummarize => "自动压缩",
-            Self::StuckResume => "自动压缩·恢复",
             Self::Manual => "手动压缩",
         }
     }
@@ -315,7 +337,6 @@ impl CompactReason {
         match self {
             Self::AutoSoft => "soft",
             Self::AutoSummarize => "summarize",
-            Self::StuckResume => "stuck-resume",
             Self::Manual => "manual",
         }
     }
@@ -339,44 +360,72 @@ pub(crate) fn compaction_note_allowed(
     }
 }
 
-/// 注记文本（纯函数；含档位/信号/阈值/窗口来源四要素）。
-pub(crate) fn compaction_note_text(
-    reason: CompactReason,
+/// soft 预警注记文本（纯函数；含信号/阈值/窗口来源三要素——细节收进
+/// 前端徽标的展开面，折叠态只露「压缩预警」档位名）。
+pub(crate) fn compaction_soft_note_text(
     signal: usize,
     threshold: usize,
     window_source: &str,
 ) -> String {
-    let tail = match reason {
-        CompactReason::AutoSoft => "接近压缩点，到点将自动把较早历史折叠为摘要",
-        CompactReason::AutoSummarize => "正在把较早历史折叠为摘要，最近一段逐字保留",
-        CompactReason::StuckResume => "此前摘要无进展暂停已解除，重新尝试折叠较早历史为摘要",
-        CompactReason::Manual => "手动触发",
-    };
     format!(
-        "[{}] 压力信号 {} / {}（窗口来源 {}）——{}。",
-        reason.label(),
+        "[{}] 压力信号 {} / {}（窗口来源 {}）——接近压缩点，到点将自动把较早历史折叠为摘要。",
+        CompactReason::AutoSoft.label(),
         signal,
         threshold,
         window_source,
-        tail
     )
 }
+
+/// 压缩耗时片段（2026-11-09 用户需求：完成记录带耗时，历史里永久可查——
+/// 「压缩花了多久」此前只活在实时徽标，完成即丢）。<60s →「32 秒」；
+/// ≥1min →「1分32秒」。
+pub(crate) fn fmt_compact_elapsed(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs >= 60 {
+        format!("{}分{}秒", secs / 60, secs % 60)
+    } else {
+        format!("{secs} 秒")
+    }
+}
+
+/// 压缩完成注记文本（2026-11-09 压缩提示徽标化）：结果导向短句——历史里
+/// 这条是「本轮自动压缩发生了」的唯一持久痕迹（触发细节在日志）。`covered`
+/// = 本次新折叠条数，`kept` = 逐字保留尾巴条数，`elapsed` = 本次压缩耗时
+/// （从进行中徽标发出起测——用户看到「开始」到看到「完成」的真实间隔）。
+pub(crate) fn compaction_outcome_text(
+    covered: usize,
+    kept: usize,
+    elapsed: std::time::Duration,
+) -> String {
+    format!(
+        "[自动压缩] 已折叠较早历史为摘要（本次覆盖 {covered} 条，最近 {kept} 条原样保留，耗时 {}）。",
+        fmt_compact_elapsed(elapsed)
+    )
+}
+
+/// 压缩进行中徽标文本（2026-11-09 压缩提示徽标化）：每次尝试必发、
+/// **不落盘**——前端渲染为带流动竖条的进行中徽标，完成注记或最终回复到场
+/// 时移除。历史里持久化的只有完成结果（无「正在折叠」中间态）。
+pub(crate) const COMPACT_IN_PROGRESS_NOTE: &str = "[自动压缩] 正在折叠较早历史为摘要…";
+
+/// 手动 /compact 的进行中徽标文本（2026-11-09）：同 [`COMPACT_IN_PROGRESS_NOTE`]
+/// 形态，括号档位区别「自动/手动」——手动压缩三段 LLM 可达分钟级，是
+/// 「busy 挂死」体感的主要来源，徽标让用户一眼看出是在压缩而非卡死。
+pub(crate) const COMPACT_IN_PROGRESS_NOTE_MANUAL: &str = "[手动压缩] 正在折叠会话历史为摘要…";
+
+/// 无进展弃用回执文本（仅实时不落盘；历史零痕迹——弃用轮 covers 不推进，
+/// 重载后世界状态与压缩前一致）。
+pub(crate) const COMPACT_DISCARDED_NOTE: &str =
+    "[自动压缩] 摘要未取得有效进展，已弃用，稍后自动重试。";
+
+/// 摘要生成失败回执文本（仅实时不落盘，同 [`COMPACT_DISCARDED_NOTE`]）。
+pub(crate) const COMPACT_FAILED_NOTE: &str = "[自动压缩] 摘要未能生成，稍后自动重试。";
 
 /// 空转前缀一次性注记（小窗口实测根修）：触发点已过但边界
 /// 无可摘要内容（逐字尾巴预算覆盖全部对话轮，前缀只剩 system/超限轮）时
 /// 发。此前该状态静默——触发侧把空转当失败记账，两轮烧掉 stuck 闩暂停
 /// 自动压缩，且日志只有一条误导性 WARN（「LLM failure」——实际零 LLM 调用）。
 pub(crate) const COMPACT_NOOP_PREFIX_NOTE: &str = "[自动摘要无事可做] 上下文已过压缩触发点，但逐字保留尾巴已覆盖全部对话内容，没有可折叠的前缀（system 提示与超限单消息不可摘要）。本次跳过摘要且不计失败；若 context 百分比长期偏高，多为 system/工具常量超出窗口配置——调大 context_window 或调小 compact_keep_recent_tokens 可缓解。";
-
-/// 自动压缩注记的档位仲裁（resumed 标志位 → 档位；纯函数便于钉死
-/// 「恢复档一次性消费」由调用方负责清除的契约）。
-pub(crate) fn resolve_auto_note_reason(resumed_from_pause: bool) -> CompactReason {
-    if resumed_from_pause {
-        CompactReason::StuckResume
-    } else {
-        CompactReason::AutoSummarize
-    }
-}
 
 /// ⑩ Stuck limit: after this many consecutive ineffective summarizations,
 /// pause auto-summarization and warn.
@@ -713,7 +762,15 @@ impl AgentLoop {
                 }
             };
             if fire {
-                crate::chat_log::append_chat_log(session_key, "system", COMPACT_NOOP_PREFIX_NOTE);
+                // 徽标化（2026-11-09）：落盘 note_kind="compaction" + 实时
+                // 徽标帧（配置建议长文收进徽标展开面）。
+                self.persist_and_send_compaction_note(
+                    session_key,
+                    channel,
+                    chat_id,
+                    COMPACT_NOOP_PREFIX_NOTE,
+                )
+                .await;
             }
         }
 
@@ -786,13 +843,8 @@ impl AgentLoop {
                 }
             } else if signal < effective_threshold {
                 // Breathing room — clear the stuck latch (both axes).
-                // 解除的是真实的暂停闩（而非计数残留）时记恢复旗——
-                // 下一次自动压缩注记按 StuckResume 档发。
                 // B17：清闩轴与触发轴同源（effective）——触发点提前后
                 // 「回落到触发点以下」的判定跟着走，两轴不劈叉。
-                if st.stuck {
-                    st.resumed_from_pause = true;
-                }
                 st.consecutive_failures = 0;
                 st.stuck = false;
                 st.no_progress = 0;
@@ -806,15 +858,17 @@ impl AgentLoop {
         if soft_note_fired {
             self.emit_compaction_note(
                 session_key,
+                channel,
+                chat_id,
                 CompactReason::AutoSoft,
-                signal,
-                soft,
-                trig.window_source,
-            );
+                &compaction_soft_note_text(signal, soft, trig.window_source),
+            )
+            .await;
         }
-        // stuck 停用注记（false→true 转变沿一次性；锁外发送）。
+        // stuck 停用注记（false→true 转变沿一次性；锁外落盘 + 实时徽标帧）。
         if let Some(note) = stuck_note {
-            crate::chat_log::append_chat_log(session_key, "system", &note);
+            self.persist_and_send_compaction_note(session_key, channel, chat_id, &note)
+                .await;
         }
         if paused_stuck {
             return;
@@ -836,27 +890,27 @@ impl AgentLoop {
             map.insert(summarize_key.clone(), true);
         }
 
-        // summarize 档注记（拿到 summarizing 槽后才发——抢槽失败的并发
-        // 调用不重复注记）。StuckResume 档一次性消费恢复旗；摘要若随后失败
-        // 或被无进展守卫弃用，注记文本是「正在折叠」（触发事实成立），
-        // 失败细节有 warn 日志。
-        let note_reason = {
-            let mut states = self.compact_state.lock();
-            let st = states.entry(session_key.to_string()).or_default();
-            let resumed = st.resumed_from_pause;
-            st.resumed_from_pause = false;
-            resolve_auto_note_reason(resumed)
-        };
-        self.emit_compaction_note(
+        // 压缩进行中徽标（2026-11-09 压缩提示徽标化）：拿到 summarizing 槽后
+        // 每次尝试必发、**不落盘**（note_kind="compaction_start" → 前端渲染
+        // 为带流动竖条的进行中徽标，完成注记或最终回复到场时移除）。旧的
+        // summarize 档落盘注记（「正在折叠…」中间态）与此前的英文回执由此
+        // 取代——历史里持久化的只有完成结果（见下方成功臂）。
+        // 计时起点 = 徽标发出（用户看到「开始」的时刻）；成功臂把
+        // `compact_started.elapsed()` 写进完成注记（耗时永久可查）。
+        let compact_started = std::time::Instant::now();
+        // 刷新恢复登记（2026-11-09 方案 A）：与徽标帧同位登记（后端真相源，
+        // 见 `CompactionInFlight`）。摘除点刻意提前到摘要执行结束处（下方
+        // drop）——采用/回执是快段，先摘再发 ✓ 保证回执到场时后端已非
+        // running（30s 轮询不会在 ✓ 后复活徽标）。
+        let _in_flight = self.register_compaction_in_flight(session_key, COMPACT_IN_PROGRESS_NOTE);
+        self.send_compaction_receipt(
+            channel,
+            chat_id,
             session_key,
-            note_reason,
-            signal,
-            // B17：注记 threshold 槽随触发轴走（effective）——边界压缩
-            // 开启时显示提前后的触发点（54/50 语义自洽），off 时二者相同
-            // 字节零变化；policy 槽 input 仍用原 trigger（组件契约不变）。
-            effective_threshold,
-            trig.window_source,
-        );
+            "compaction_start",
+            COMPACT_IN_PROGRESS_NOTE,
+        )
+        .await;
 
         // New boundary already computed above (token budget, or the
         // legacy K_TARGET count fallback): cover everything except the
@@ -867,33 +921,9 @@ impl AgentLoop {
 
         let provider = self.provider.read().clone();
         let model = self.active_model.read().clone();
-        let outbound_tx = self.outbound_tx.clone();
         let summarizing_flag = self.summarizing.clone();
         let observer_mgr = self.observer_manager.clone();
-        let channel_owned = channel.to_string();
-        let chat_id_owned = chat_id.to_string();
         let clear_key = summarize_key.clone();
-
-        if !is_internal_channel(&channel_owned)
-            && let Some(ref tx) = outbound_tx
-        {
-            let outbound = nemesis_types::channel::OutboundMessage {
-                channel: channel_owned.clone(),
-                chat_id: chat_id_owned.clone(),
-                content: "Memory threshold reached. Optimizing conversation history...".to_string(),
-                message_type: String::new(),
-                meta: nemesis_types::channel::OutboundMeta {
-                    model: None,
-                    session_key: Some(clear_key.clone()),
-                    source_node: None,
-                    task_id: None,
-                    sync_via: None,
-                    // 压缩前置通知 = 系统进度回执，非回合产物。
-                    receipt: true,
-                },
-            };
-            let _ = tx.send(outbound).await;
-        }
 
         // 方言 PreCompact（观察型， 三段化扩展）：exit 2 不阻止压缩
         // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
@@ -947,6 +977,10 @@ impl AgentLoop {
             }
         };
 
+        // 摘要执行结束（最慢段完成）——登记先摘再进采用/回执快段（race-free
+        // 语义，见上方登记处注释）。
+        drop(_in_flight);
+
         if let Some(summary) = summary {
             // 无进展守卫——采用前用同轴估算比较
             // 压缩前后：基线 = 被折叠前的上下文（旧摘要 + 现尾巴），省幅不足
@@ -971,27 +1005,46 @@ impl AgentLoop {
                     "[AgentLoop] compaction no progress for {}: est_before={est_before} projected={} (saved {saved} < {min_save}); discarding summary, full history kept",
                     session_key, projected
                 );
-                let mut states = self.compact_state.lock();
-                let mut stuck_note: Option<String> = None;
-                if let Some(st) = states.get_mut(session_key) {
-                    st.no_progress += 1;
-                    if st.no_progress >= COMPACT_NO_PROGRESS_LIMIT && !st.stuck {
-                        st.stuck = true;
-                        warn!(
-                            "[AgentLoop] compaction paused for {}: {COMPACT_NO_PROGRESS_LIMIT} consecutive no-progress summarizations (manual /compact still available)",
-                            session_key
-                        );
-                        // BUG 可见性修复：同失效轴——停用态发
-                        // 一次性聊天注记，不留「98% 永不压缩」无解释态。
-                        stuck_note = Some(format!(
-                            "[自动压缩已暂停] 连续 {} 次摘要无进展（省幅不足阈值被弃用），自动压缩已暂停。可手动 /compact 强制压缩，或检查摘要模型/上下文窗口配置。",
-                            st.no_progress
-                        ));
+                // 锁作用域块化：守卫不得跨 await（生成器 Send 约束——
+                // parking_lot MutexGuard 非 Send），转变沿注记锁外发。
+                let stuck_note: Option<String> = {
+                    let mut states = self.compact_state.lock();
+                    let mut note: Option<String> = None;
+                    if let Some(st) = states.get_mut(session_key) {
+                        st.no_progress += 1;
+                        if st.no_progress >= COMPACT_NO_PROGRESS_LIMIT && !st.stuck {
+                            st.stuck = true;
+                            warn!(
+                                "[AgentLoop] compaction paused for {}: {COMPACT_NO_PROGRESS_LIMIT} consecutive no-progress summarizations (manual /compact still available)",
+                                session_key
+                            );
+                            // BUG 可见性修复：同失效轴——停用态发
+                            // 一次性聊天注记，不留「98% 永不压缩」无解释态。
+                            note = Some(format!(
+                                "[自动压缩已暂停] 连续 {} 次摘要无进展（省幅不足阈值被弃用），自动压缩已暂停。可手动 /compact 强制压缩，或检查摘要模型/上下文窗口配置。",
+                                st.no_progress
+                            ));
+                        }
                     }
-                }
-                drop(states);
+                    note
+                };
                 if let Some(note) = stuck_note {
-                    crate::chat_log::append_chat_log(session_key, "system", &note);
+                    self.persist_and_send_compaction_note(session_key, channel, chat_id, &note)
+                        .await;
+                }
+                // 无进展弃用回执（2026-11-09 徽标化）：仅实时不落盘——弃用是
+                // 重试途中的波折（covers 不推进，重载后世界状态与压缩前一致，
+                // 历史零痕迹）；限频防重试风暴刷屏（与成功完成注记同档位闸，
+                // 先到先得）。
+                if self.compaction_note_gate(session_key, CompactReason::AutoSummarize.note_tag()) {
+                    self.send_compaction_receipt(
+                        channel,
+                        chat_id,
+                        session_key,
+                        "compaction",
+                        COMPACT_DISCARDED_NOTE,
+                    )
+                    .await;
                 }
             } else {
                 instance.set_summary_cache(Some(crate::instance::SummaryCache {
@@ -1014,6 +1067,19 @@ impl AgentLoop {
                     session_key,
                     crate::session_stats::StatCounter::Compactions,
                 );
+                // 完成注记（2026-11-09 压缩提示徽标化）：结果导向短句，落盘
+                // + 实时同闸限频——历史里这条是「本轮自动压缩发生了」的唯一
+                // 持久痕迹（折叠小徽标，前端同时以此替换进行中动画徽标）。
+                let covered = new_c.saturating_sub(c);
+                let kept = history.len().saturating_sub(new_c);
+                self.emit_compaction_note(
+                    session_key,
+                    channel,
+                    chat_id,
+                    CompactReason::AutoSummarize,
+                    &compaction_outcome_text(covered, kept, compact_started.elapsed()),
+                )
+                .await;
             }
         } else {
             // 摘要静默失败修复：失败（或无可摘要内容）时绝不推进
@@ -1022,6 +1088,18 @@ impl AgentLoop {
                 "[AgentLoop] auto-summarization produced no summary for {} (LLM failure or no valid content); keeping full history, covers_up_to unchanged",
                 session_key
             );
+            // 失败回执（2026-11-09 徽标化）：仅实时不落盘（无事发生 = 历史
+            // 零痕迹），限频防重试风暴刷屏（同弃用回执闸）。
+            if self.compaction_note_gate(session_key, CompactReason::AutoSummarize.note_tag()) {
+                self.send_compaction_receipt(
+                    channel,
+                    chat_id,
+                    session_key,
+                    "compaction",
+                    COMPACT_FAILED_NOTE,
+                )
+                .await;
+            }
         }
 
         // 方言 PostCompact（观察型）：压缩尝试结束（成败皆触发）。
@@ -1082,41 +1160,94 @@ impl AgentLoop {
         }
     }
 
-    /// （加固）：自动压缩事件 → 会话系统注记。落盘走
-    /// chat_log（append 即持久、不触发 LLM 轮，role="system"——snooze 恢复
-    /// 行同款通道）；限频：同会话同档位 [`COMPACT_NOTE_RATELIMIT_MS`] 内
-    /// 不重复。锁内判定+记账、锁外落盘——本方法不得在已持 compact_state
-    /// 锁的调用栈里调（parking_lot 不可重入）。
-    pub(crate) fn emit_compaction_note(
+    /// （2026-11-09 压缩提示徽标化）：自动压缩注记单点出口——落盘走
+    /// chat_log（append_compaction_note，`note_kind="compaction"`，历史重载
+    /// =折叠小徽标）+ 同内容实时徽标帧（web 通道按 note_kind 映射
+    /// role="system"，不触发回合完成语义）。限频：同会话同档位
+    /// [`COMPACT_NOTE_RATELIMIT_MS`] 内不重复（落盘与实时同闸，两视图恒
+    /// 一致）。锁内判定+记账、锁外落盘——不得在已持 compact_state 锁的
+    /// 调用栈里调（parking_lot 不可重入）。
+    pub(crate) async fn emit_compaction_note(
         &self,
         session_key: &str,
+        channel: &str,
+        chat_id: &str,
         reason: CompactReason,
-        signal: usize,
-        threshold: usize,
-        window_source: &str,
+        content: &str,
     ) {
+        if self.compaction_note_gate(session_key, reason.note_tag()) {
+            self.persist_and_send_compaction_note(session_key, channel, chat_id, content)
+                .await;
+        }
+    }
+
+    /// 注记限频闸（锁内判定+记账）：emit 与仅实时回执共用的单一决策点。
+    /// 返回是否放行；放行即记账。
+    fn compaction_note_gate(&self, session_key: &str, tag: &'static str) -> bool {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or_default();
-        let allowed = {
-            let mut states = self.compact_state.lock();
-            if states.len() > SESSION_STATE_MAX_ENTRIES {
-                states.clear();
-            }
-            let st = states.entry(session_key.to_string()).or_default();
-            let ok = compaction_note_allowed(st.last_auto_note, reason.note_tag(), now_ms);
-            if ok {
-                st.last_auto_note = Some((reason.note_tag(), now_ms));
-            }
-            ok
-        };
-        if allowed {
-            crate::chat_log::append_chat_log(
-                session_key,
-                "system",
-                &compaction_note_text(reason, signal, threshold, window_source),
-            );
+        let mut states = self.compact_state.lock();
+        if states.len() > SESSION_STATE_MAX_ENTRIES {
+            states.clear();
+        }
+        let st = states.entry(session_key.to_string()).or_default();
+        let ok = compaction_note_allowed(st.last_auto_note, tag, now_ms);
+        if ok {
+            st.last_auto_note = Some((tag, now_ms));
+        }
+        ok
+    }
+
+    /// 落盘 + 实时徽标帧（无闸；一次性注记与限频放行后的共用出口）。
+    async fn persist_and_send_compaction_note(
+        &self,
+        session_key: &str,
+        channel: &str,
+        chat_id: &str,
+        content: &str,
+    ) {
+        crate::chat_log::append_compaction_note(session_key, content);
+        self.send_compaction_receipt(channel, chat_id, session_key, "compaction", content)
+            .await;
+    }
+
+    /// 实时压缩徽标帧（2026-11-09）：`receipt=true` + note_kind——web 通道
+    /// 映射 role="system"（不触发前端回合完成语义）且帧带 note_kind 键
+    /// （前端徽标渲染与 chat.sync 断线补拉同形态，切走切回不再变蓝字长文）。
+    /// meta.session_key 传原始会话键——环记录键与帧 session_id 都从它推导
+    /// （旧英文回执的 `main:{sk}` 变形键顺带修正）。内部通道不发（无徽标
+    /// 渲染面）；其余通道按普通文本送达（IM 用户照旧看到压缩进展）。
+    async fn send_compaction_receipt(
+        &self,
+        channel: &str,
+        chat_id: &str,
+        session_key: &str,
+        note_kind: &str,
+        content: &str,
+    ) {
+        if is_internal_channel(channel) {
+            return;
+        }
+        if let Some(ref tx) = self.outbound_tx {
+            let outbound = nemesis_types::channel::OutboundMessage {
+                channel: channel.to_string(),
+                chat_id: chat_id.to_string(),
+                content: content.to_string(),
+                message_type: String::new(),
+                meta: nemesis_types::channel::OutboundMeta {
+                    model: None,
+                    session_key: Some(session_key.to_string()),
+                    source_node: None,
+                    task_id: None,
+                    sync_via: None,
+                    note_kind: Some(note_kind.to_string()),
+                    // 压缩过程注记 = 系统进度回执，非回合产物。
+                    receipt: true,
+                },
+            };
+            let _ = tx.send(outbound).await;
         }
     }
 
@@ -1267,6 +1398,62 @@ impl AgentLoop {
     // manual session maintenance (/compact /clear)
     // -----------------------------------------------------------------------
 
+    /// 压缩进行中登记（2026-11-09 刷新恢复方案 A）：与 compaction_start
+    /// 徽标帧发射点同位调用（自动路径 maybe_update_summary / 手动路径
+    /// compact_session_noticed 两处）。返回 RAII guard，Drop 摘除。
+    /// `started_at` = 本地时区 RFC3339 墙钟（与 web 协议帧时间戳同形）——
+    /// 前端计时起点跨刷新连续（刷新时已压 40s → 恢复后显示 40 秒，不归零）。
+    fn register_compaction_in_flight(
+        &self,
+        session_key: &str,
+        label: &str,
+    ) -> CompactionInFlightGuard {
+        let entry = CompactionInFlight {
+            label: label.to_string(),
+            started_at: chrono::Local::now().to_rfc3339(),
+        };
+        self.compaction_in_flight
+            .lock()
+            .insert(session_key.to_string(), entry);
+        CompactionInFlightGuard {
+            registry: self.compaction_in_flight.clone(),
+            session_key: session_key.to_string(),
+        }
+    }
+
+    /// 手动压缩入口（带进行中徽标，2026-11-09 徽标化的手动路径对称面）：
+    /// 先发 `compaction_start` 实时徽标帧（不落盘），再走 [`Self::compact_session`]。
+    /// 手动 /compact 三段 LLM 可达分钟级——此前手动路径零进行中反馈，是
+    /// 「busy 挂死」体感的根因（自动路径在 summarizing 槽后已有同款发射，
+    /// 见 maybe_update_summary）。完成清扫由 finish_message 的 ✓/⚠ 回执
+    /// （role=assistant）到场承担，与自动路径共用前端谓词。
+    /// `channel`/`chat_id` = 发起方回执路由（slash 路径取 InboundMessage、
+    /// WSAPI 路径取连接房间 id；测试传空串——出站槽缺席时静默跳过）。
+    pub async fn compact_session_noticed(
+        &self,
+        session_key: &str,
+        channel: &str,
+        chat_id: &str,
+    ) -> Result<String, String> {
+        // 刷新恢复登记（2026-11-09 方案 A）：与徽标帧同位；compact_session
+        // 全出口（成功/Err/panic）由 guard Drop 覆盖。✓ 回执由调用方
+        // （finish_message / WSAPI handler）在本函数返回后发送——届时登记
+        // 已清，30s 轮询不会在 ✓ 后复活徽标（与自动路径同 race-free 语义）。
+        let _in_flight =
+            self.register_compaction_in_flight(session_key, COMPACT_IN_PROGRESS_NOTE_MANUAL);
+        self.send_compaction_receipt(
+            channel,
+            chat_id,
+            session_key,
+            "compaction_start",
+            COMPACT_IN_PROGRESS_NOTE_MANUAL,
+        )
+        .await;
+        let result = self.compact_session(session_key).await;
+        drop(_in_flight);
+        result
+    }
+
     /// 手动 compaction 入口。取（从 store 重建的）instance，调
     /// `force_compression` 推进摘要覆盖，再把新摘要持久化回 store（顺序同
     /// 回合末：先 summary+covers 后 history，见回合末块注释）。
@@ -1276,6 +1463,9 @@ impl AgentLoop {
     /// 无可推进内容（tail 已最简 / 边界无法前移）返回 Ok 诚实回执——
     /// 真模型验证发现此前该情形误报「LLM 调用失败」（根本没发起调用）。
     pub async fn compact_session(&self, session_key: &str) -> Result<String, String> {
+        // 计时起点 = 入口（用户感知的压缩时长：/compact 到 ✓ 回执的真实间隔）；
+        // 成功臂写进回执文本（2026-11-09 用户需求：耗时落盘永久可查）。
+        let started = std::time::Instant::now();
         let instance = self.get_or_create_instance(session_key);
         let history_len = instance.get_history().len();
         if history_len == 0 {
@@ -1347,8 +1537,10 @@ impl AgentLoop {
             session_key, cache.covers_up_to, kept
         );
         Ok(format!(
-            "✓ 已压缩：摘要覆盖前 {} 条，保留近 {} 条",
-            cache.covers_up_to, kept
+            "✓ 已压缩：摘要覆盖前 {} 条，保留近 {} 条（耗时 {}）",
+            cache.covers_up_to,
+            kept,
+            fmt_compact_elapsed(started.elapsed())
         ))
     }
 
@@ -1563,6 +1755,11 @@ impl AgentLoop {
             (display_used * 100).div_ceil(window).min(100)
         };
         let free_seg = window.saturating_sub(display_used);
+        // 压缩进行中登记投影（2026-11-09 刷新恢复方案 A）：前端 refreshUsage
+        // 同步——running 且本地无徽标 → 按服务端原钟物化徽标（计时跨刷新
+        // 连续）；not running 且本地有 → 摘除（完成回执可能在断连窗口错过，
+        // 30s 轮询兜底）。
+        let in_flight = self.compaction_in_flight.lock().get(session_key).cloned();
         let json = serde_json::json!({
             "session_key": session_key,
             "used_tokens": used,
@@ -1608,6 +1805,11 @@ impl AgentLoop {
             // + output，与 session_token_budget 同源）。预算关闭时也可观测
             // ——账目缺失路径从底账种入，与预算闸独立。
             "session_tokens_used": self.session_tokens_used(session_key),
+            // 压缩进行中（2026-11-09 刷新恢复方案 A）：running=false 时
+            // 后两字段为 null——前端三字段同读。
+            "compaction_running": in_flight.is_some(),
+            "compaction_started_at": in_flight.as_ref().map(|e| e.started_at.clone()),
+            "compaction_label": in_flight.map(|e| e.label),
         });
         json
     }

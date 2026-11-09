@@ -43,6 +43,7 @@ impl WebServerOps for MockWebServer {
         model: Option<&str>,
         _session_key: Option<&str>,
         source_node: Option<&str>,
+        _: Option<&str>,
     ) -> std::result::Result<(), String> {
         self.sent.lock().unwrap().push((
             session_id.to_string(),
@@ -179,6 +180,7 @@ async fn test_send_to_session_forwards_model_badge() {
             source_node: Some("node-b".to_string()),
             task_id: None,
             sync_via: None,
+            note_kind: None,
             receipt: false,
         },
     };
@@ -462,6 +464,7 @@ impl WebServerOps for FailingMockServer {
         _: &str,
         _: &str,
         _: &str,
+        _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
@@ -782,6 +785,7 @@ impl WebServerOps for FailStartServer {
         _: &str,
         _: &str,
         _: &str,
+        _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
@@ -1158,6 +1162,7 @@ impl WebServerOps for DeadSessionMockServer {
         session_id: &str,
         _: &str,
         _: &str,
+        _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,

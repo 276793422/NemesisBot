@@ -1,8 +1,8 @@
-//! （2026-10-25 加固）压缩注记域测试 + 压缩点解析窗口来源各臂。
+//! （2026-10-25 加固；2026-11-09 压缩提示徽标化改造）压缩注记域测试 +
+//! 压缩点解析窗口来源各臂。
 //!
-//! -注记限频（纯函数 + emit 集成）、注记文本
-//!   要素、summarize 触发落 role="system" jsonl 行、StuckResume 档仲裁、
-//!   hook 标签二值；
+//! - 注记限频（纯函数 + emit 集成）、soft 预警/完成注记文本要素、
+//!   jsonl `note_kind="compaction"` 键、hook 标签二值；
 //! - 窗口来源各臂：`resolve_compact_trigger` 的 window/source/
 //!   window_source/clamped_from 各形态（config/catalog/user/fallback）。
 //!   2026-11-05：三级链全 miss 时按 fallback 窗口（128k）照常
@@ -153,41 +153,42 @@ fn note_allowed_same_tag_rate_limited() {
 
 #[test]
 fn note_text_contains_elements() {
-    let t = compaction_note_text(CompactReason::AutoSummarize, 45_000, 96_000, "catalog");
-    assert!(t.starts_with("[自动压缩] "), "档位名打头: {t}");
+    let t = compaction_soft_note_text(45_000, 96_000, "catalog");
+    assert!(t.starts_with("[压缩预警] "), "档位名打头: {t}");
     assert!(
         t.contains("45000") && t.contains("96000"),
         "信号/阈值在文: {t}"
     );
     assert!(t.contains("窗口来源 catalog"), "窗口来源在文: {t}");
     assert!(t.ends_with("。"), "注记族句号收尾: {t}");
-    let soft = compaction_note_text(CompactReason::AutoSoft, 10, 20, "config");
-    assert!(soft.starts_with("[压缩预警] "));
-    let resume = compaction_note_text(CompactReason::StuckResume, 1, 2, "instance");
-    assert!(resume.starts_with("[自动压缩·恢复] "));
+    let outcome = compaction_outcome_text(6, 4, std::time::Duration::from_secs(95));
+    assert!(
+        outcome.starts_with("[自动压缩] "),
+        "完成注记档位名打头: {outcome}"
+    );
+    assert!(
+        outcome.contains("覆盖 6 条") && outcome.contains("4 条原样保留"),
+        "完成注记带覆盖/保留计数: {outcome}"
+    );
+    // 耗时片段（2026-11-09 用户需求）：完成记录永久可查压缩耗时。
+    assert!(outcome.contains("1分35秒"), "分钟级耗时格式化: {outcome}");
+    let secs = compaction_outcome_text(1, 1, std::time::Duration::from_secs(7));
+    assert!(secs.contains("7 秒"), "秒级耗时格式化: {secs}");
 }
 
 #[test]
-fn auto_note_reason_and_hook_kind() {
-    // 恢复旗 → StuckResume；常态 → AutoSummarize。
-    assert_eq!(resolve_auto_note_reason(true), CompactReason::StuckResume);
-    assert_eq!(
-        resolve_auto_note_reason(false),
-        CompactReason::AutoSummarize
-    );
+fn auto_note_hook_kind() {
     // hook 标签二值不变（方言消费方零影响）。
     assert_eq!(CompactReason::Manual.hook_kind(), "manual");
     assert_eq!(CompactReason::AutoSummarize.hook_kind(), "auto");
     assert_eq!(CompactReason::AutoSoft.hook_kind(), "auto");
-    assert_eq!(CompactReason::StuckResume.hook_kind(), "auto");
 }
 
 #[test]
 fn compact_state_defaults_for_new_note_fields() {
-    // 新字段默认态（子模块可见私有字段）：限频无记账、无恢复旗。
+    // 新字段默认态（子模块可见私有字段）：限频无记账。
     let st = CompactState::default();
     assert_eq!(st.last_auto_note, None);
-    assert!(!st.resumed_from_pause);
 }
 
 // ---------------------------------------------------------------------------
@@ -323,8 +324,17 @@ async fn fallback_window_still_auto_summarizes() {
     let _ = std::fs::remove_file(&cfg_path);
 }
 
+/// 读取会话全部 system 行（保留完整 jsonl 条目——note_kind 键断言用）。
+fn system_entries(key: &str) -> Vec<Value> {
+    let (rows, _, _, _) = crate::chat_log::read_chat_log(key, 200, None);
+    rows.iter()
+        .filter(|v| v.get("role").and_then(Value::as_str) == Some("system"))
+        .cloned()
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
-// 集成：summarize 触发落注记（soft + summarize 双档）
+// 集成：summarize 触发落注记（soft 预警 + 完成注记，2026-11-09 徽标化）
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -356,19 +366,38 @@ async fn auto_summarize_emits_soft_and_summarize_notes() {
 
     let cache = instance.get_summary_cache().expect("摘要应已采用");
     assert_eq!(cache.text, "SUMMARY");
-    let rows = system_rows(&key);
+    let rows = system_entries(&key);
+    let soft = rows.iter().find(|v| {
+        v.get("content")
+            .and_then(Value::as_str)
+            .map(|c| c.starts_with("[压缩预警] "))
+            .unwrap_or(false)
+    });
+    assert!(soft.is_some(), "soft 档注记在文: {rows:?}");
+    let outcome = rows.iter().find(|v| {
+        v.get("content")
+            .and_then(Value::as_str)
+            .map(|c| c.starts_with("[自动压缩] "))
+            .unwrap_or(false)
+    });
+    let outcome = outcome.expect("完成注记（结果导向）在文: {rows:?}");
+    let content = outcome
+        .get("content")
+        .and_then(Value::as_str)
+        .expect("content 字符串");
     assert!(
-        rows.iter().any(|r| r.starts_with("[压缩预警] ")),
-        "soft 档注记在文: {rows:?}"
+        content.contains("已折叠较早历史为摘要"),
+        "完成注记结果导向: {content}"
     );
-    let summarize = rows
-        .iter()
-        .find(|r| r.starts_with("[自动压缩] "))
-        .expect("summarize 档注记在文");
-    assert!(
-        summarize.contains("窗口来源 config"),
-        "注记带窗口来源: {summarize}"
-    );
+    // 徽标化核心契约（2026-11-09）：历史行带 note_kind="compaction"——前端
+    // 据此渲染折叠小徽标（不再蓝底长文）。
+    for row in [soft.unwrap(), outcome] {
+        assert_eq!(
+            row.get("note_kind").and_then(Value::as_str),
+            Some("compaction"),
+            "注记行必须带 note_kind 键: {row}"
+        );
+    }
 
     crate::chat_log::delete_chat_log(&key);
     let _ = std::fs::remove_file(&cfg_path);
@@ -442,12 +471,36 @@ async fn stuck_pause_emits_one_shot_chat_note() {
 async fn emit_note_rate_limited_per_reason() {
     let key = unique_key("ratelimit");
     let agent_loop = AgentLoop::new(Box::new(OnceProvider { reply: "S".into() }), test_config());
-    agent_loop.emit_compaction_note(&key, CompactReason::AutoSummarize, 100, 50, "config");
-    agent_loop.emit_compaction_note(&key, CompactReason::AutoSummarize, 110, 50, "config");
-    let rows = system_rows(&key);
+    agent_loop
+        .emit_compaction_note(
+            &key,
+            "web",
+            "c",
+            CompactReason::AutoSummarize,
+            &compaction_outcome_text(1, 1, std::time::Duration::from_secs(1)),
+        )
+        .await;
+    agent_loop
+        .emit_compaction_note(
+            &key,
+            "web",
+            "c",
+            CompactReason::AutoSummarize,
+            &compaction_outcome_text(2, 2, std::time::Duration::from_secs(2)),
+        )
+        .await;
+    let rows = system_entries(&key);
     assert_eq!(rows.len(), 1, "同档位限频：只落一条: {rows:?}");
-    agent_loop.emit_compaction_note(&key, CompactReason::AutoSoft, 30, 50, "config");
-    let rows = system_rows(&key);
+    agent_loop
+        .emit_compaction_note(
+            &key,
+            "web",
+            "c",
+            CompactReason::AutoSoft,
+            &compaction_soft_note_text(30, 50, "config"),
+        )
+        .await;
+    let rows = system_entries(&key);
     assert_eq!(rows.len(), 2, "不同档位随时可发: {rows:?}");
     crate::chat_log::delete_chat_log(&key);
 }
@@ -482,4 +535,127 @@ fn session_status_reports_window_fields() {
     assert_eq!(v["provider_reported_tokens"], 0);
     assert!(v["estimated_tokens"].is_u64());
     assert_eq!(v["used_tokens"], v["estimated_tokens"]);
+}
+
+// ---------------------------------------------------------------------------
+// 压缩进行中登记（2026-11-09 刷新恢复方案 A）
+// ---------------------------------------------------------------------------
+
+/// 登记生命周期 + context_status 投影：未登记三字段全否 → register →
+/// running=true（label/started_at 在文）→ guard drop → 全否（无僵尸态）。
+#[test]
+fn compaction_in_flight_registry_and_status_projection() {
+    let agent_loop = AgentLoop::new(Box::new(OnceProvider { reply: "S".into() }), test_config());
+    let key = "test:w1w2:inflight";
+    // 未登记：三字段全否。
+    let v = agent_loop.session_context_status(key);
+    assert_eq!(v["compaction_running"], false);
+    assert!(v["compaction_started_at"].is_null());
+    assert!(v["compaction_label"].is_null());
+    // 登记：投影 running + label + started_at（RFC3339 墙钟非空）。
+    let guard = agent_loop.register_compaction_in_flight(key, COMPACT_IN_PROGRESS_NOTE_MANUAL);
+    let v = agent_loop.session_context_status(key);
+    assert_eq!(v["compaction_running"], true);
+    assert_eq!(
+        v["compaction_label"].as_str().unwrap(),
+        COMPACT_IN_PROGRESS_NOTE_MANUAL
+    );
+    let started = v["compaction_started_at"].as_str().unwrap();
+    assert!(!started.is_empty(), "started_at 非空: {started}");
+    // Drop 摘除：全否——成功/失败/panic 各出口由 Drop 覆盖的语义底座。
+    drop(guard);
+    let v = agent_loop.session_context_status(key);
+    assert_eq!(v["compaction_running"], false);
+    assert!(v["compaction_started_at"].is_null());
+    assert!(v["compaction_label"].is_null());
+}
+
+/// 摘要 LLM 上带 gate 的 provider：放行前挂起——测试在 `maybe_update_summary`
+/// spawn 执行期间轮询 context_status，锁「摘要执行中登记在册、结束后摘除」
+/// 的接线点（刷新恢复的后端语义核心）。摘除点在摘要执行结束、采用/回执
+/// 之前（race-free：✓ 到场时后端已非 running，30s 轮询不复活徽标）。
+struct GateProvider {
+    gate: tokio::sync::watch::Receiver<bool>,
+}
+
+#[async_trait]
+impl LlmProvider for GateProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let mut rx = self.gate.clone();
+        while !*rx.borrow_and_update() {
+            if rx.changed().await.is_err() {
+                break;
+            }
+        }
+        Ok(LlmResponse {
+            finish_reason: None,
+            escalated_to: None,
+            content: "GATED SUMMARY".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn auto_summarize_in_flight_visible_during_and_cleared_after() {
+    let key = unique_key("inflight-auto");
+    let cfg_path = known_window_config("inflight-auto", 40);
+    let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+    let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = std::sync::Arc::new(AgentLoop::new_bus(
+        Box::new(GateProvider { gate: gate_rx }),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    ));
+    agent_loop.set_config_path(cfg_path.clone());
+    let mut instance = AgentInstance::new(test_config());
+    instance.set_context_window(100);
+    for _ in 0..6 {
+        instance.add_user_message(&"x".repeat(100));
+        instance.add_assistant_message(&"x".repeat(100), Vec::new(), None);
+    }
+
+    // spawn：maybe_update_summary 卡在摘要 LLM 的 gate 上。
+    let al2 = agent_loop.clone();
+    let key2 = key.clone();
+    let handle = tokio::spawn(async move {
+        al2.maybe_update_summary(&instance, &key2, "web", "c").await;
+    });
+
+    // 摘要执行期间：登记在册（running=true）。
+    let mut saw_running = false;
+    for _ in 0..150 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if agent_loop.session_context_status(&key)["compaction_running"] == true {
+            saw_running = true;
+            break;
+        }
+    }
+    assert!(saw_running, "摘要执行期间 context_status 投影 running=true");
+
+    // 放行 → 执行结束（登记先摘）→ 采用/回执快段 → 完成：running=false。
+    let _ = gate_tx.send(true);
+    handle.await.unwrap();
+    let v = agent_loop.session_context_status(&key);
+    assert_eq!(
+        v["compaction_running"], false,
+        "执行结束登记摘除（race-free：✓ 到场时已非 running）"
+    );
+
+    crate::chat_log::delete_chat_log(&key);
+    let _ = std::fs::remove_file(&cfg_path);
 }

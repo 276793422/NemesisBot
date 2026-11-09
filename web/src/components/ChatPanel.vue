@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted, onUnmounted, watch, computed } from 'vue'
+import { ref, reactive, nextTick, onMounted, onUnmounted, watch, computed } from 'vue'
 import { useChatStore, type ChatMessage } from '../stores/chat'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
@@ -428,6 +428,16 @@ function refreshUsage() {
         ctxTriggerPct.value = null
         ctxTriggerTok.value = null
       }
+      // 压缩进行中恢复（2026-11-09 方案 A）：后端登记表投影。三字段同读，
+      // 旧后端（无键）= undefined 不动本地状态。
+      const compRunning = typeof c?.compaction_running === 'boolean' ? c.compaction_running : null
+      if (compRunning !== null) {
+        syncCompactionRunning(
+          compRunning,
+          typeof c?.compaction_started_at === 'string' ? c.compaction_started_at : undefined,
+          typeof c?.compaction_label === 'string' ? c.compaction_label : undefined,
+        )
+      }
     })
     .catch(() => {})
   request('logs', 'session_usage', { session_id: sid })
@@ -674,6 +684,106 @@ function concurrencyBadge(msg: { role: string; content: string }): { cls: string
   if (msg.content.startsWith('⏳ 当前正在处理上一条消息')) return { cls: 'badge-info', label: '已排队' }
   if (msg.content.startsWith('⏳ 排队已满')) return { cls: 'badge-error', label: '排队满' }
   return null
+}
+
+// --- 压缩注记徽标（2026-11-09 徽标化）---------------------------------
+// 压缩过程注记不再渲染蓝底长文 system 条——与工具调用同族的折叠小徽标
+// （--info 蓝系，用户拍板「颜色就和现在一样，一眼看出是在解决问题」）。
+// 三路同源同一谓词同一渲染分支：实时帧 note_kind / 历史行 note_kind /
+// chat.sync 事件 note_kind。
+
+/** 旧数据兜底：note_kind 键引入前落盘的压缩注记（历史 jsonl 残留）——
+ *  文案前缀圈定压缩家族（busy 回执 ⏳ / [System:] 前缀不误入）。 */
+const COMPACT_NOTE_LEGACY_RE =
+  /^\[(自动压缩|自动压缩·恢复|压缩预警|自动摘要无事可做|自动压缩已暂停)\]/
+
+function isCompactNote(msg: ChatMessage): boolean {
+  if (msg.noteKind === 'compaction' || msg.noteKind === 'compaction_start') return true
+  return msg.role === 'system' && COMPACT_NOTE_LEGACY_RE.test(msg.content)
+}
+
+/** 进行中动画徽标（compaction_start 不落盘——完成回执/assistant 到场即移除，
+ *  见 removeCompactRunningNotes 调用点）。 */
+function isCompactNoteRunning(msg: ChatMessage): boolean {
+  return msg.noteKind === 'compaction_start'
+}
+
+/** 压缩进行中（实时态）：驱动 context 进度条流光特效（2026-11-09 用户点名——
+ *  特效挂输入框上方 usage 条，不挂消息流徽标）。compaction_start 实时帧在场
+ *  = true；✓ 回执到场扫除 → false → 特效停。切会话/刷新丢失 = 特效消失，
+ *  与瞬态徽标同语义。 */
+const compactionRunning = computed(() => chatStore.messages.some(isCompactNoteRunning))
+
+/** 压缩计时（2026-11-09 用户需求）：进行中徽标末尾实时显示已压缩时长。
+ *  起点 = 徽标帧时间戳（服务端盖章；sync 补拉同值→计时连续）；1s tick，
+ *  仅压缩期间跑表。完成回执的权威耗时由后端写入 ✓ 文本（落盘永久可查），
+ *  这里只是进行中的实时投影。 */
+const nowTick = ref(Date.now())
+let compactTickTimer: ReturnType<typeof setInterval> | null = null
+watch(
+  compactionRunning,
+  (on) => {
+    if (on && compactTickTimer === null) {
+      nowTick.value = Date.now()
+      compactTickTimer = setInterval(() => (nowTick.value = Date.now()), 1000)
+    } else if (!on && compactTickTimer !== null) {
+      clearInterval(compactTickTimer)
+      compactTickTimer = null
+    }
+  },
+  { immediate: true },
+)
+onUnmounted(() => {
+  if (compactTickTimer !== null) {
+    clearInterval(compactTickTimer)
+    compactTickTimer = null
+  }
+})
+function compactStartedAtMs(): number {
+  const m = chatStore.messages.find(isCompactNoteRunning)
+  const t = m?.timestamp ? Date.parse(m.timestamp) : NaN
+  return Number.isFinite(t) ? t : Date.now()
+}
+function compactElapsedLabel(): string {
+  const secs = Math.max(0, Math.round((nowTick.value - compactStartedAtMs()) / 1000))
+  return secs >= 60
+    ? `${Math.floor(secs / 60)}分${String(secs % 60).padStart(2, '0')}秒`
+    : `${secs} 秒`
+}
+
+/** 压缩进行中恢复（2026-11-09 方案 A）：后端登记表（compaction_in_flight）
+ *  经 chat.context_status 投影的同步端。running 且本地无徽标 → 按服务端
+ *  原钟物化进行中徽标（addMessage 同款形状，无 seq——非环内事件）；计时
+ *  起点 = 服务端 started_at（跨刷新连续：刷新时已压 40 秒 → 恢复后显示
+ *  40 秒，不归零）；not running 且本地有 → 摘除（30s 轮询兜底：完成回执
+ *  可能在断连窗口错过）。与实时 compaction_start 帧幂等（徽标在场 =
+ *  no-op，不重复物化）。 */
+function syncCompactionRunning(running: boolean, startedAt?: string, label?: string) {
+  const has = chatStore.messages.some(isCompactNoteRunning)
+  if (running && !has) {
+    chatStore.addMessage({
+      role: 'system',
+      content: label || '[自动压缩] 正在折叠较早历史为摘要…',
+      timestamp: startedAt || new Date().toISOString(),
+      noteKind: 'compaction_start',
+    })
+  } else if (!running && has) {
+    chatStore.removeCompactRunningNotes()
+  }
+}
+
+/** 徽标标签 = 去掉档位前缀的正文（「[自动压缩] 已折叠…」→「已折叠…」）。
+ *  折叠态 CSS 截断（ellipsis），点开看全文。 */
+function compactNoteLabel(msg: ChatMessage): string {
+  return msg.content.replace(/^\[[^\]]+\]\s*/, '')
+}
+
+/** 折叠/展开状态按消息对象身份记（reactive Set）——按索引记会被
+ *  prepend/清洗的列表变动错位。 */
+const expandedCompactNotes = reactive(new Set<ChatMessage>())
+function toggleCompactNote(msg: ChatMessage) {
+  if (expandedCompactNotes.has(msg)) expandedCompactNotes.delete(msg)
+  else expandedCompactNotes.add(msg)
 }
 
 // --- 滚动跟随（2026-11-09 滚动/焦点/选择批）---------------------------
@@ -983,6 +1093,20 @@ function handleWSMessage(data: any) {
           lastChatSeq = Math.max(lastChatSeq, data.data.seq)
         }
         const last = chatStore.messages[chatStore.messages.length - 1]
+        // 压缩注记徽标（2026-11-09 徽标化）：进行中动画徽标是临时态——完成
+        // 回执（note_kind=compaction）或 assistant 回复到场即移除（回执可能
+        // 被后端限频闸抑制，assistant 到场兜底扫除，不留悬挂动画）。注记帧
+        // role="system"，完成语义分支（下方 assistant 判定）天然不触发。
+        // ⏳ 前缀的 assistant 收据例外（2026-11-09 BUG：手动压缩进行中发消息
+        // → 排队回执「⏳ 当前正在处理上一条消息…」role=assistant——压缩正是
+        // 「上一条消息」，排队收据到场 ≠ 压缩结束，扫掉会让分钟级压缩窗口
+        // 重新失去反馈）。终局回复无 ⏳ 前缀，兜底扫除语义不变。
+        if (
+          data.data.note_kind === 'compaction' ||
+          (incomingRole === 'assistant' && !String(incomingContent ?? '').startsWith('⏳'))
+        ) {
+          chatStore.removeCompactRunningNotes()
+        }
         // Skip addMessage if the watchdog already recovered this exact
         // response from session_log (late-arriving live frame, same tail).
         const isDuplicateRecovery =
@@ -1011,6 +1135,9 @@ function handleWSMessage(data: any) {
             // A1：环 seq 随消息存档——历史响应 last_seq 到达后据此剔除
             // 「先于快照渲染」的重复 assistant 帧。
             seq: typeof data.data?.seq === 'number' ? data.data.seq : undefined,
+            // 压缩注记徽标（2026-11-09）：帧 note_kind 透传——compaction=静态
+            // 折叠徽标 / compaction_start=进行中动画徽标（不落盘，临时态）。
+            noteKind: data.data.note_kind,
             work,
             deliverables,
           })
@@ -1043,7 +1170,7 @@ function handleWSMessage(data: any) {
         // TTS playback: if enabled, send AI response to backend for synthesis
         // realtime 接力帧（voice_relayed）已由后端合成播放，前端跳过自身播放
         //（否则同一句话播两遍）。
-        if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content && !data.data.voice_relayed) {
+        if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content && !data.data.voice_relayed && !data.data.note_kind) {
           request('voice', 'tts_playback', { text: data.data.content }).catch(() => {})
         }
       } else if (data.cmd === 'history_response') {
@@ -1072,6 +1199,8 @@ function handleWSMessage(data: any) {
         chatStore.setBusy(effectiveSid.value, false)
         // B2：错误帧同样终结在飞轮次（后端拒绝/装配失败等）。
         chatStore.clearInflightTurn(effectiveSid.value)
+        // 压缩注记徽标（2026-11-09）：错误帧终结 turn——进行中动画徽标兜底扫除。
+        chatStore.removeCompactRunningNotes()
         clearWatchdog()
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
@@ -1302,6 +1431,15 @@ async function syncMissedChat() {
         ev.role === 'assistant' && chatStore.pendingDeliverables.length
           ? chatStore.flushPendingDeliverables()
           : undefined
+      // 压缩注记徽标（2026-11-09）：重放序列里完成回执/assistant 行也在
+      // 本批——按序处理时先扫掉进行中动画徽标（与 receive 分支同谓词，
+      // ⏳ 前缀收据例外同源：排队/维护收据不是压缩终局）。
+      if (
+        ev.note_kind === 'compaction' ||
+        (ev.role === 'assistant' && !String(ev.content ?? '').startsWith('⏳'))
+      ) {
+        chatStore.removeCompactRunningNotes()
+      }
       chatStore.addMessage({
         role: ev.role,
         content: ev.content,
@@ -1313,6 +1451,9 @@ async function syncMissedChat() {
         sourceNode: ev.source_node,
         // A1：环 seq 存档（与 receive 分支同字段——历史快照到货后剔除用）。
         seq: typeof ev.seq === 'number' ? ev.seq : undefined,
+        // 压缩注记徽标（2026-11-09）：环事件 note_kind 透传（重放窗口内
+        // compaction_start 也会重现，随后续回执/assistant 行到场扫除）。
+        noteKind: ev.note_kind,
         work,
         deliverables,
       })
@@ -1810,6 +1951,9 @@ function handleHistoryResponse(data: any) {
         imageCount: Array.isArray(m.images) ? m.images.length : undefined,
         deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
         work: m.work ?? undefined,
+        // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（compaction_start
+        // 不落盘，历史里只有静态注记）。
+        noteKind: m.note_kind,
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
     )
@@ -1859,6 +2003,8 @@ function handleHistoryResponse(data: any) {
           imageCount: Array.isArray(m.images) ? m.images.length : undefined,
           deliverables: Array.isArray(m.deliverables) ? m.deliverables : undefined,
           work: m.work ?? undefined,
+          // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传。
+          noteKind: m.note_kind,
         })),
       )
       chatStore.setBusy(effectiveSid.value, false)
@@ -1928,6 +2074,9 @@ function handleHistoryResponse(data: any) {
       // Work 时间线（2026-10-30）：已完成任务的过程折叠块数据源——历史行
       // `"work"` 键整行透传（后端整行透传链已验证，前端零转换）。
       work: m.work ?? undefined,
+      // 压缩注记徽标（2026-11-09）：历史行 note_kind 透传（jsonl 整行
+      // 透传链同一渲染分支——切走再切回看到的是同一枚折叠徽标，不蹦蓝底长文）。
+      noteKind: m.note_kind,
     }))
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
     chatStore.prependHistory(
@@ -3241,7 +3390,31 @@ onUnmounted(() => {
           <!-- 2026-10-30 Work 时间线：本 turn 的「叙述+工具」交错过程折叠块
                （历史行 work 键 / 实时 flush 挂载双路；默认收起，点开回看）。 -->
           <WorkTimelineBlock v-if="msg.work" :work="msg.work" />
-          <div class="message-bubble">
+          <!-- 压缩注记徽标（2026-11-09 徽标化）：压缩过程注记与工具调用同族的
+               折叠小徽标（--info 蓝系），替代旧蓝底长文 system 条。三路同源
+               （实时帧/历史行/sync 事件 note_kind + 旧数据前缀兜底）。
+               compaction_start = 进行中动画徽标（竖条流动，不落盘）——用户
+               一眼看出「在解决问题」；完成回执/assistant 到场即被扫除换装。
+               静态注记折叠单行截断，点击展开全文。 -->
+          <div
+            v-if="isCompactNote(msg)"
+            class="compact-note"
+            :class="{ running: isCompactNoteRunning(msg), expanded: expandedCompactNotes.has(msg) }"
+            :title="isCompactNoteRunning(msg) ? undefined : msg.content"
+            @click="!isCompactNoteRunning(msg) && toggleCompactNote(msg)"
+          >
+            <template v-if="isCompactNoteRunning(msg)">
+              <span class="compact-note-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+              <span class="compact-note-label">{{ compactNoteLabel(msg) }}</span>
+              <!-- 已压缩时长（2026-11-09 用户需求）：徽标文字末尾实时计时 -->
+              <span class="compact-note-timer">{{ compactElapsedLabel() }}</span>
+            </template>
+            <template v-else>
+              <span class="compact-note-glyph" aria-hidden="true">🗜️</span>
+              <span class="compact-note-label">{{ compactNoteLabel(msg) }}</span>
+            </template>
+          </div>
+          <div v-else class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <div v-else class="message-text">{{ msg.content }}</div>
             <span v-if="msg.imageCount" class="msg-image-chip" title="消息附带图片">📷 {{ msg.imageCount }}</span>
@@ -3581,7 +3754,7 @@ onUnmounted(() => {
             <span class="usage-tip-row usage-tip-win">{{ usageTipWindow }}</span>
           </span>
         </span>
-        <span class="usage-bar">
+        <span class="usage-bar" :class="{ compacting: compactionRunning }">
           <span
             v-for="seg in usageSegments"
             :key="seg.key"
@@ -4095,6 +4268,30 @@ onUnmounted(() => {
   overflow: hidden;
   background: var(--border);
 }
+/* 压缩进行中特效（2026-11-09 用户点名）：usage 条上叠一层 --info 流光，
+   自左向右循环扫过（1.1s/轮）；compaction_start 实时帧在场才挂 .compacting，
+   ✓ 回执扫除后恢复静态。overflow:hidden 裁掉扫入扫出，循环无缝。 */
+.usage-bar.compacting::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 40%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--info) 60%, transparent) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: usage-strip-sweep 1.1s linear infinite;
+  pointer-events: none;
+}
+@keyframes usage-strip-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
 .usage-seg {
   height: 100%;
   transition: width 300ms ease;
@@ -4404,6 +4601,119 @@ onUnmounted(() => {
   line-height: 1.5;
   opacity: 0.9;
 }
+
+/* ===== 压缩注记徽标（2026-11-09 徽标化）=====
+   压缩过程注记 = 与工具调用同族的折叠小徽标（--info 蓝系胶囊，颜色与旧
+   system 条同族），不再渲染蓝底长文。折叠态单行截断，点击展开全文；
+   compaction_start（进行中，不落盘）= 主题色竖条流动动画，用户一眼看出
+   「在解决问题」。 */
+.compact-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 折叠态小徽标形态（2026-11-09 实测修正）：长注记不撑满全宽——
+     560px 封顶（短文本自然收缩），展开态放开回 100% 看全文。 */
+  max-width: min(560px, 100%);
+  margin: 2px 0;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--info-bg);
+  color: var(--info);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  cursor: pointer;
+  user-select: none;
+}
+.compact-note:hover {
+  filter: brightness(1.15);
+}
+.compact-note.running {
+  cursor: default;
+}
+.compact-note.running:hover {
+  filter: none;
+}
+.compact-note-glyph {
+  flex: none;
+  font-size: 12px;
+}
+.compact-note-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+/* 已压缩时长（2026-11-09）：文字末尾实时计时片段，等宽数字防跳动 */
+.compact-note-timer {
+  flex: none;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.compact-note.expanded .compact-note-label {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-all;
+}
+.compact-note.expanded {
+  max-width: 100%;
+}
+.compact-note-bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 16px;
+  flex: none;
+}
+.compact-note-bars i {
+  width: 5px;
+  border-radius: 1.5px;
+  background: var(--info);
+  opacity: 0.4;
+  transform-origin: bottom;
+  animation: compact-bar-flow 1.2s ease-in-out infinite;
+}
+.compact-note-bars i:nth-child(1) { height: 8px; animation-delay: 0s; }
+.compact-note-bars i:nth-child(2) { height: 13px; animation-delay: 0.15s; }
+.compact-note-bars i:nth-child(3) { height: 16px; animation-delay: 0.3s; }
+.compact-note-bars i:nth-child(4) { height: 11px; animation-delay: 0.45s; }
+@keyframes compact-bar-flow {
+  0%, 100% { opacity: 0.35; transform: scaleY(0.6); }
+  50% { opacity: 1; transform: scaleY(1); }
+}
+/* v2 加醒目件（2026-11-09 用户实测「看不到特效」）：胶囊底部全宽流光条——
+   亮段自左向右循环扫过，1.1s 一轮；这是「一眼可见」的主动效，竖条呼吸退为辅助。 */
+.compact-note.running {
+  position: relative;
+  overflow: hidden;
+  padding-bottom: 5px;
+}
+.compact-note.running::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 1px;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--info) 35%,
+    var(--info) 65%,
+    transparent 100%
+  );
+  background-size: 45% 100%;
+  background-repeat: no-repeat;
+  animation: compact-strip-sweep 1.1s linear infinite;
+}
+@keyframes compact-strip-sweep {
+  from { background-position: -60% 0; }
+  to { background-position: 160% 0; }
+}
+/* 2026-11-09：刻意不设 prefers-reduced-motion 守卫——本徽标是「正在解决问题」
+   的瞬态状态指示（用户点名要求一眼可辨），不是装饰性动效；系统关动画时
+   照常播放（否则徽标退化为静态蓝字，状态不可辨）。 */
 
 /* M6: 消息级回退入口（时间行内，hover 显现不抢视觉） */
 .msg-actions {

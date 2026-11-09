@@ -2090,8 +2090,8 @@ async fn bus_flow_summary_success_notice_and_persist() {
 
     let outs = drain_outbound(&mut out_rx).await;
     assert!(
-        outs.iter().any(|c| c.contains("Memory threshold reached")),
-        "notice sent, got: {:?}",
+        outs.iter().any(|c| c.contains("正在折叠较早历史为摘要")),
+        "压缩进行中徽标回执照发（2026-11-09 徽标化，原英文回执废除）, got: {:?}",
         outs
     );
     assert!(
@@ -2144,8 +2144,13 @@ async fn bus_flow_summary_failure_warns_and_keeps_cache_empty() {
 
     let outs = drain_outbound(&mut out_rx).await;
     assert!(
-        outs.iter().any(|c| c.contains("Memory threshold reached")),
-        "notice still sent before the summarize attempt, got: {:?}",
+        outs.iter().any(|c| c.contains("正在折叠较早历史为摘要")),
+        "压缩进行中徽标回执照发（尝试前发出）, got: {:?}",
+        outs
+    );
+    assert!(
+        outs.iter().any(|c| c.contains("摘要未能生成")),
+        "失败回执照发（仅实时，2026-11-09 徽标化）, got: {:?}",
         outs
     );
     assert!(

@@ -604,6 +604,7 @@ impl WebServerOps for WebServerOpsAdapter {
         model: Option<&str>,
         session_key: Option<&str>,
         source_node: Option<&str>,
+        note_kind: Option<&str>,
     ) -> std::result::Result<(), String> {
         let sm = self.session_manager.clone();
         let sid = session_id.to_string();
@@ -611,6 +612,7 @@ impl WebServerOps for WebServerOpsAdapter {
         let model = model.map(|s| s.to_string());
         let session_key = session_key.map(|s| s.to_string());
         let source_node = source_node.map(|s| s.to_string());
+        let note_kind = note_kind.map(|s| s.to_string());
         let result = tokio::task::block_in_place(|| {
             self.rt.block_on(nemesis_web::server::send_to_session(
                 &sm,
@@ -620,6 +622,7 @@ impl WebServerOps for WebServerOpsAdapter {
                 model.as_deref(),
                 session_key.as_deref(),
                 source_node.as_deref(),
+                note_kind.as_deref(),
             ))
         });
         // （真机日志）：assistant 回复推送失败（会话无活动

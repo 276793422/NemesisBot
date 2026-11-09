@@ -285,7 +285,7 @@ impl ModuleHandler for AgentsHandler {
                     .unwrap_or("default");
                 let session_key = agent_session_key(&agent_id, session_id);
                 let _seq =
-                    crate::chat_event_log::record(&session_key, "user", &content, None, None);
+                    crate::chat_event_log::record(&session_key, "user", &content, None, None, None);
                 let msg = InboundMessage {
                     channel: "web".to_string(),
                     sender_id: "web".to_string(),

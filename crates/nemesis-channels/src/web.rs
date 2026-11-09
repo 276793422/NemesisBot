@@ -35,6 +35,10 @@ pub trait WebServerOps: Send + Sync {
     /// `source_node`（optional）为集群续行归属——实际干活的
     /// worker 节点名，web 前端据此渲染「节点 X」徽章；`None`（非集群回复）
     /// 不写帧键，与历史行为逐字节一致。
+    ///
+    /// `note_kind`（optional，2026-11-09 压缩提示徽标化）为压缩过程系统
+    /// 注记标记——实现方以 role="system" 下发并携带帧键，前端渲染折叠
+    /// 小徽标；`None` = 正常回合回复（role="assistant" 旧行为不变）。
     fn send_to_session(
         &self,
         session_id: &str,
@@ -43,6 +47,7 @@ pub trait WebServerOps: Send + Sync {
         model: Option<&str>,
         session_key: Option<&str>,
         source_node: Option<&str>,
+        note_kind: Option<&str>,
     ) -> std::result::Result<(), String>;
 
     /// Send history content to a specific session.
@@ -347,13 +352,22 @@ impl Channel for WebChannel {
             "[WebChannel] sending message to session"
         );
 
+        // 压缩过程注记帧（2026-11-09）：note_kind 在场 → role="system" +
+        // 帧键透传，前端渲染小徽标（不触发回合完成语义——压缩发生在轮中）。
+        // None = 正常回复，role="assistant" 逐字节不变。
+        let role = if msg.meta.note_kind.is_some() {
+            "system"
+        } else {
+            "assistant"
+        };
         if let Err(e) = srv.send_to_session(
             session_id,
-            "assistant",
+            role,
             &msg.content,
             msg.meta.model.as_deref(),
             msg.meta.session_key.as_deref(),
             msg.meta.source_node.as_deref(),
+            msg.meta.note_kind.as_deref(),
         ) {
             // （死会话软失败）：目标会话已不在（标签页关闭/
             // 重连换新 session id，ConvRouter latest-wins 残留旧绑定）——

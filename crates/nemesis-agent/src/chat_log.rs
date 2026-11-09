@@ -84,6 +84,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         None,
         meta.steer,
         meta.work,
+        None,
     );
 }
 
@@ -174,6 +175,7 @@ pub fn append_chat_log_with_model_and_node(
         source_node,
         false,
         None,
+        None,
     );
 }
 
@@ -204,6 +206,7 @@ pub fn append_chat_log_full(
         None,
         None,
         false,
+        None,
         None,
     );
 }
@@ -237,6 +240,30 @@ pub fn append_chat_log_full_with_images(
         None,
         false,
         None,
+        None,
+    );
+}
+
+/// 压缩注记追加入口（2026-11-09 压缩提示徽标化）：system 行 +
+/// `"note_kind": "compaction"` 展示形态标记——前端据此渲染折叠小徽标
+/// （与工具调用卡同视觉族）而非整段蓝底气泡；历史重载与实时帧同一渲染
+/// 分支。旧条目（无该键）由前端文案前缀兜底识别，落盘契约不迁移。
+pub fn append_compaction_note(session_key: &str, content: &str) {
+    write_chat_entry(
+        session_key,
+        "system",
+        content,
+        None,
+        None,
+        None,
+        &[],
+        &[],
+        &[],
+        None,
+        None,
+        false,
+        None,
+        Some("compaction"),
     );
 }
 
@@ -248,6 +275,8 @@ pub fn append_chat_log_full_with_images(
 /// `steer` true → extra `"steer": true` field (BUG-20261025-19 轮边界标记).
 /// `work` Some → extra `"work"` object field（2026-10-30 Work 时间线，turn
 /// 中间过程交错随行；直答/旧条目缺字段读侧宽容）.
+/// `note_kind` Some → extra `"note_kind"` 字段（2026-11-09 压缩注记徽标化
+/// ——前端据此渲染小徽标而非整段气泡，缺省不写键=旧条目照常解析）.
 #[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
     session_key: &str,
@@ -263,6 +292,7 @@ fn write_chat_entry(
     source_node: Option<&str>,
     steer: bool,
     work: Option<&WorkTimeline>,
+    note_kind: Option<&str>,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -330,6 +360,11 @@ fn write_chat_entry(
     // 直答/旧条目，读侧宽容（与 file_changes 同纪律）。
     if let Some(w) = work {
         entry["work"] = serde_json::to_value(w).unwrap_or(Value::Null);
+    }
+    // 压缩注记徽标（2026-11-09）：system 行的展示形态标记——前端据此渲染
+    // 折叠小徽标而非整段蓝底气泡。缺字段 = 旧行，前端走文案前缀兜底识别。
+    if let Some(kind) = note_kind {
+        entry["note_kind"] = serde_json::Value::String(kind.to_string());
     }
     // R100（BUG-20261025-25）：整行（含换行）先序列化成 String 再**单次**
     // write_all。此前 `writeln!(file, "{}", entry)` 对 Value 走 Display 的

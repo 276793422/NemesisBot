@@ -216,9 +216,17 @@ async fn compact_success_persists_summary_and_receipt() {
     let receipt = al.compact_session(&key).await.unwrap();
     // covers = 全量 - 保留尾（SMALL_K_FORCE）；纯文本无 tool 对，边界即 raw。
     let covers = 5 - SMALL_K_FORCE;
-    assert_eq!(
-        receipt,
-        format!("✓ 已压缩：摘要覆盖前 {covers} 条，保留近 {SMALL_K_FORCE} 条")
+    // 耗时后缀（2026-11-09）：完成记录带压缩耗时（前缀匹配——mock 压缩耗时
+    // ~0s，精确断言「0 秒」对慢机脆弱）。
+    assert!(
+        receipt.starts_with(&format!(
+            "✓ 已压缩：摘要覆盖前 {covers} 条，保留近 {SMALL_K_FORCE} 条"
+        )),
+        "unexpected receipt: {receipt}"
+    );
+    assert!(
+        receipt.contains("（耗时 ") && receipt.ends_with("）"),
+        "耗时后缀在文: {receipt}"
     );
     // 持久化契约：摘要 + covers 落 store（成功路径）。
     assert_eq!(store.get_summary(&key), "E6 SUMMARY TEXT");

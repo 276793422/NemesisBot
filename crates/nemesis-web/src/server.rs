@@ -2010,7 +2010,8 @@ pub async fn process_messages_with_router(
             continue;
         }
         if !msg.content.is_empty() && !is_history_request {
-            let seq = crate::chat_event_log::record(&session_key, "user", &msg.content, None, None);
+            let seq =
+                crate::chat_event_log::record(&session_key, "user", &msg.content, None, None, None);
             // L12：首投登记幂等键（seq = 本次环行原 seq）。
             if let Some(cmid) = client_msg_id {
                 crate::chat_dedup::insert(&session_key, cmid, seq);
@@ -2107,6 +2108,10 @@ pub async fn process_messages_with_router(
 /// `session_key`（L2，optional）是 agent 会话键——chat_event_log 环形缓冲的
 /// 记录键。缺省回退到 `session_id`（连接级 id；旧路径/无元数据帧仍可补拉，
 /// 只是跨连接补拉要靠会话键才寻址得到）。
+///
+/// `note_kind`（2026-11-09 压缩提示徽标化，optional）是压缩过程系统注记
+/// 标记——帧携带 `note_kind` 键，前端渲染成与工具调用同族的折叠小徽标
+/// （实时与历史重载同形态）；`None` 不写帧键，与历史行为逐字节一致。
 pub async fn send_to_session(
     session_manager: &SessionManager,
     session_id: &str,
@@ -2115,6 +2120,7 @@ pub async fn send_to_session(
     model: Option<&str>,
     session_key: Option<&str>,
     source_node: Option<&str>,
+    note_kind: Option<&str>,
 ) -> Result<(), String> {
     tracing::debug!(
         session_id = %session_id,
@@ -2142,6 +2148,11 @@ pub async fn send_to_session(
     if let Some(node) = source_node {
         data["source_node"] = serde_json::Value::String(node.to_string());
     }
+    // 压缩过程注记（2026-11-09）：帧带 note_kind——前端渲染折叠小徽标，
+    // 与历史重载（jsonl note_kind 键）同一渲染分支。
+    if let Some(kind) = note_kind {
+        data["note_kind"] = serde_json::Value::String(kind.to_string());
+    }
     // 语音 relay（realtime P1 G3）：语音对话进行中且热态开时，assistant 回复
     // 由后端接力 TTS。帧标 voice_relayed=true 让发起端跳过自身 tts_playback
     // （防双播）；广播成功后清洗入队播放。热态关/未注册 = false = 零改动。
@@ -2153,7 +2164,8 @@ pub async fn send_to_session(
     // 环形缓冲——`chat.sync {session_id, after_seq}` 断线补拉的数据源。
     // 记录键优先会话键（跨连接稳定），无元数据才退连接 id。
     let record_key = session_key.unwrap_or(session_id);
-    let seq = crate::chat_event_log::record(record_key, role, content, model, source_node);
+    let seq =
+        crate::chat_event_log::record(record_key, role, content, model, source_node, note_kind);
     data["seq"] = serde_json::json!(seq);
     let msg = crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(data));
     let data = msg
@@ -2694,14 +2706,23 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
                 let result = if msg.message_type == "history" {
                     send_history_to_session(&session_manager, session_id, &msg.content).await
                 } else {
+                    // 压缩过程注记帧（2026-11-09）：note_kind 在场 →
+                    // role="system"（不触发前端回合完成语义——压缩发生在
+                    // 轮中）；None = 正常回复，role="assistant" 逐字节不变。
+                    let role = if msg.meta.note_kind.is_some() {
+                        "system"
+                    } else {
+                        "assistant"
+                    };
                     send_to_session(
                         &session_manager,
                         session_id,
-                        "assistant",
+                        role,
                         &msg.content,
                         msg.meta.model.as_deref(),
                         msg.meta.session_key.as_deref(),
                         msg.meta.source_node.as_deref(),
+                        msg.meta.note_kind.as_deref(),
                     )
                     .await
                 };

@@ -48,6 +48,11 @@ pub struct ChatEvent {
     /// 断线补拉重放的帧同样携带「节点 X」徽章。缺省不写键（非集群回复）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_node: Option<String>,
+    /// 压缩过程注记（2026-11-09 压缩提示徽标化）：帧的 note_kind——
+    /// chat.sync 断线补拉重放时前端同样渲染折叠小徽标（实时与补拉同
+    /// 形态）。缺省不写键（普通 chat 行）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note_kind: Option<String>,
 }
 
 struct SessionLog {
@@ -130,6 +135,7 @@ fn insert_event(
     kind: Option<String>,
     tool: Option<serde_json::Value>,
     source_node: Option<&str>,
+    note_kind: Option<&str>,
 ) -> u64 {
     let mut table = logs().lock();
     let created = !table.map.contains_key(session_id);
@@ -152,6 +158,7 @@ fn insert_event(
         kind,
         tool,
         source_node: source_node.map(String::from),
+        note_kind: note_kind.map(String::from),
     });
     entry.buf.push_back(Arc::clone(&event));
     while entry.buf.len() > SESSION_REPLAY_CAP {
@@ -188,8 +195,18 @@ pub fn record(
     content: &str,
     model: Option<&str>,
     source_node: Option<&str>,
+    note_kind: Option<&str>,
 ) -> u64 {
-    insert_event(session_id, role, content, model, None, None, source_node)
+    insert_event(
+        session_id,
+        role,
+        content,
+        model,
+        None,
+        None,
+        source_node,
+        note_kind,
+    )
 }
 
 /// 记录一条工具事件（kind="tool"，`tool` 携带完整 push
@@ -203,6 +220,7 @@ pub fn record_tool(session_id: &str, tool: serde_json::Value) -> u64 {
         None,
         Some("tool".to_string()),
         Some(tool),
+        None,
         None,
     )
 }

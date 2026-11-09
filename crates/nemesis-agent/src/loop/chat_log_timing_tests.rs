@@ -7,18 +7,16 @@
 //! （既有 tests.rs::one_turn_appends_exactly_user_and_assistant_rows
 //! 继续守护完整轮的行数；本文件钉「进行中可见」的时序半边）。
 
-// 共享键测试持 std Mutex guard 跨 await（串行 chat_log 落盘窗口）——
-// 与 tests.rs 同款豁免（单线程测试进程内无害）。
-#![allow(clippy::await_holding_lock)]
+// （2026-11-09 串扰根治）共享键测试不再持文件级锁：进程单例 home 下的
+// agent_main_main.jsonl 是全部默认路由 bus 测试（s9_tests ~30+ 例、本文件
+// system 直调例）的公共落盘，无法独占——此前自备的 TIMING_SHARED_KEY_LOCK
+// 与 tests.rs 的 CHAT_LOG_INTEGRATION_LOCK 互不互斥、更拦不住不带锁的 s9
+// 写方，「恰好 2 行」文件全局断言在并发下天然脆弱（组合过滤跑挂三连复现
+// 实证，干净树同样复挂=预先存在）。现断言契约收窄到「本 turn 自己的行」：
+// 内容掺 run 级 nonce，跨次运行残留也不误配；顺序/前缀/角色配对契约
+// 原样保留。
 
 use super::*;
-
-/// 共享键（agent:main:main）chat_log 测试的串行锁。tests.rs 的
-/// CHAT_LOG_INTEGRATION_LOCK 非 pub 不可跨模块引用，自备等价锁
-/// （只串行本文件，不与 tests.rs 的锁互斥——但两者都用「先清理、
-/// 跑完断言、再清理」的独占窗口，交叉写入仅影响 >= 断言的场景，
-/// 本文件全部用恰好断言且窗口内完成，安全）。
-static TIMING_SHARED_KEY_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// 门控 provider：chat 挂起直到测试放行（watch 闸）——模拟分钟级
 /// LLM 轮次，用于断言「user 行在 LLM 返回之前已在 jsonl 里」。
@@ -196,12 +194,13 @@ async fn user_row_lands_while_llm_turn_in_progress() {
 
 /// system 直调路径（process_system_message，3936 同走
 /// `run_agent_loop_internal`）行为一致受益：完整轮仍恰好 +2 行、
-/// 首行 user（`[System:...]` 前缀原文）。共享键测试须持
-/// CHAT_LOG_INTEGRATION_LOCK 串行。
+/// 首行 user（`[System:...]` 前缀原文）。该路径在 commands.rs:47 强制
+/// 使用主会话键（忽略 msg.session_key）→ 落共享文件，断言按本 turn
+/// 自己的行（nonce 过滤）收窄，不依赖文件全局行数。
 #[tokio::test]
 async fn system_message_turn_appends_user_then_assistant_rows() {
-    let _lock = TIMING_SHARED_KEY_LOCK.lock().unwrap();
     let key = build_agent_main_session_key("main");
+    // best-effort 清理：并发写方持句柄时删除失败不碍事（nonce 断言免疫）。
     cleanup_timing_log(&key);
 
     let (_gate_tx, gate_rx) = tokio::sync::watch::channel(true); // 直接放行
@@ -217,11 +216,17 @@ async fn system_message_turn_appends_user_then_assistant_rows() {
     pin_known_window(&agent_loop);
 
     // system 消息格式：channel="system"、chat_id="origin_channel:origin_chat_id"。
+    // 内容掺 run 级 nonce：共享文件里本 turn 的行跨次运行也不误配。
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let content = format!("background result {nonce}");
     let msg = nemesis_types::channel::InboundMessage {
         channel: "system".to_string(),
         sender_id: "tester".to_string(),
         chat_id: "web:chat-sys".to_string(),
-        content: "background result".to_string(),
+        content: content.clone(),
         media: vec![],
         session_key: key.clone(),
         correlation_id: String::new(),
@@ -235,10 +240,26 @@ async fn system_message_turn_appends_user_then_assistant_rows() {
 
     let path = timing_log_path(&key);
     let rows = read_jsonl_rows(&path);
-    assert_eq!(rows.len(), 2, "system 完整轮 = 恰好 +2 行: {rows:?}");
-    assert_eq!(rows[0]["role"], "user");
-    assert_eq!(rows[0]["content"], "[System: tester] background result");
-    assert_eq!(rows[1]["role"], "assistant");
+    let mine: Vec<&serde_json::Value> = rows
+        .iter()
+        .filter(|r| {
+            r["content"].as_str() == Some(format!("[System: tester] {content}").as_str())
+                || r["content"].as_str() == Some("gated reply")
+        })
+        .collect();
+    assert_eq!(
+        mine.len(),
+        2,
+        "system 完整轮 = 本 turn 恰好 +2 行: {rows:?}"
+    );
+    assert_eq!(mine[0]["role"], "user");
+    assert_eq!(
+        mine[0]["content"],
+        format!("[System: tester] {content}"),
+        "首行必须带 [System:] 前缀原文"
+    );
+    assert_eq!(mine[1]["role"], "assistant");
+    assert_eq!(mine[1]["content"], "gated reply");
 
     cleanup_timing_log(&key);
 }
