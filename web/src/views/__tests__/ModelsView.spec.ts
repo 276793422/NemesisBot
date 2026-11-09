@@ -1,8 +1,9 @@
 // P10（能力扩展 WS5，2026-09-25）：模型管理页家族分组/筛选/折叠的组件级测试。
 // 后端家族真相源 = nemesis-config PROVIDER_PRESETS（P9）；本文件只钉前端
 // 分组渲染与筛选交互（卡片明细逻辑由既有页面行为覆盖，不在本测试范围）。
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, type DOMWrapper } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { useToast } from '../../composables/useToast'
 
 const requestMock = vi.fn()
 // 注意：本 spec 位于 src/views/__tests__/，src 只隔两层（与既有 view specs 一致）。
@@ -761,6 +762,246 @@ describe('ModelsView 属性 api_base 行内编辑（批次 4 C-4）', () => {
     const apiBaseCalls = updateCalls.filter((c) => c.field === 'api_base')
     expect(apiBaseCalls).toHaveLength(1)
     expect(apiBaseCalls[0].value).toBe('') // 空串 = 清除（typed String 空串=未设）
+    w.unmount()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 推理力度 effort 下拉（2026-11-09 7 档值域扩档）：属性编辑器选项集
+// ''(off)+EFFORT_TIERS 六个非 off 档；seed 自条目 reasoning_effort；
+// 保存发 update_field（off 以 'off' 发送，后端清键）。
+describe('ModelsView 推理力度 effort 下拉（7 档扩档）', () => {
+  async function openAttrs(w: ReturnType<typeof mount>) {
+    const attrBtn = w.findAll('button').find((b) => b.text() === '属性')!
+    await attrBtn.trigger('click')
+    await flushPromises()
+  }
+  function effortField(w: ReturnType<typeof mount>) {
+    return w
+      .find('.attr-editor')
+      .findAll('.attr-field')
+      .find((f) => f.find('.form-label').text().includes('推理力度'))!
+  }
+
+  it('属性编辑器 effort 下拉 7 项选项集；seed 自条目 reasoning_effort', async () => {
+    const w = await mountView([
+      modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7', reasoning_effort: 'high' }),
+    ])
+    await openAttrs(w)
+    const sel = effortField(w).find('select')
+    const values = sel.findAll('option').map((o) => (o.element as HTMLOptionElement).value)
+    expect(values).toEqual(['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+    expect((sel.element as HTMLSelectElement).value).toBe('high')
+    w.unmount()
+  })
+
+  it('改 xhigh 保存 → update_field {field:"reasoning_effort", value:"xhigh"}；off 保存发 "off"', async () => {
+    const updateCalls: any[] = []
+    requestMock.mockImplementation(async (module: string, cmd: string, data?: any) => {
+      if (module === 'models' && cmd === 'list') return { models: [modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7', reasoning_effort: 'high' })] }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      if (module === 'models' && cmd === 'update_field') { updateCalls.push(data); return { updated: true } }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    const w = mount(ModelsView)
+    await flushPromises()
+    await openAttrs(w)
+    const sel = effortField(w).find('select')
+    await sel.setValue('xhigh')
+    await flushPromises()
+    expect(w.find('.attr-dirty').text()).toContain('reasoning_effort')
+    const saveBtn = w.findAll('button').find((b) => b.text() === '保存属性')!
+    await saveBtn.trigger('click')
+    await flushPromises()
+    expect(updateCalls).toContainEqual({ name: 'glm', field: 'reasoning_effort', value: 'xhigh' })
+
+    // 切回 off（草稿 ''）→ 保存发 'off'（后端清键语义）。
+    await effortField(w).find('select').setValue('')
+    await saveBtn.trigger('click')
+    await flushPromises()
+    expect(updateCalls).toContainEqual({ name: 'glm', field: 'reasoning_effort', value: 'off' })
+    w.unmount()
+  })
+})
+
+// effort 探针（probe 二期，2026-11-09）：属性编辑器强度下拉 ✓/✗/? 标记
+// （后端方言映射随 models.list 下发，前端零重建）+ 强度重探按钮走
+// models.probe_effort 并刷新列表。
+describe('ModelsView effort 探针标记与重探（probe 二期）', () => {
+  const probed = modelRow({
+    model_name: 'probed',
+    model: 'vendor/model-x',
+    reasoning_effort: 'low',
+    effort_probe: { control: 'strict', probed_at: '2026-11-09T00:00:00Z' },
+    effort_marks: ['ok', 'unknown', 'ok', 'bad', 'unknown', 'unknown', 'ok'],
+    effort_notes: ['', '', '', 'status 400: unsupported value medium', '', '', ''],
+  })
+
+  async function mountExpanded(m: Record<string, unknown>) {
+    const w = await mountView([m])
+    // 展开属性编辑器（按 model_name 定位卡片）。
+    const name = String(m.model_name)
+    const card = w.findAll('.model-card').find((c) => c.text().includes(name))!
+    const attrBtn = card.findAll('button').find((b) => b.text().includes('属性'))!
+    await attrBtn.trigger('click')
+    await flushPromises()
+    return { w, card }
+  }
+
+  function effortOptions(card: DOMWrapper<Element>) {
+    return card
+      .findAll('select')
+      .flatMap((s) => s.findAll('option'))
+      .filter((o) => ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(o.element.value))
+  }
+
+  it('属性编辑器强度下拉渲染 ✓/✗/? 标记 + 拒绝原文 tooltip', async () => {
+    const { w, card } = await mountExpanded(probed)
+    const opts = effortOptions(card)
+    expect(opts).toHaveLength(6)
+    const byVal = (v: string) => opts.find((o) => o.element.value === v)!
+    expect(byVal('low').text()).toBe('low ✓')
+    expect(byVal('medium').text()).toBe('medium ✗')
+    expect(byVal('medium').attributes('title')).toContain('unsupported value medium')
+    expect(byVal('high').text()).toBe('high ?')
+    expect(byVal('max').text()).toBe('max ✓')
+    w.unmount()
+  })
+
+  it('stale=true → 下拉回落 ? + 卡片显失效提示', async () => {
+    const staleRow = modelRow({
+      model_name: 'probed',
+      model: 'vendor/model-x',
+      reasoning_effort: 'low',
+      effort_probe: { control: 'strict', stale: true, probed_at: '2026-11-09T00:00:00Z' },
+      effort_marks: ['ok', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown'],
+      effort_notes: ['', '', '', '', '', '', ''],
+    })
+    const { w, card } = await mountExpanded(staleRow)
+    const byVal = (v: string) => effortOptions(card).find((o) => o.element.value === v)!
+    expect(byVal('low').text()).toBe('low ?')
+    expect(card.text()).toContain('探针已失效')
+    w.unmount()
+  })
+
+  it('强度重探按钮 → models.probe_effort + 完成后刷新列表', async () => {
+    const w = await mountView([probed])
+    const card = w.findAll('.model-card').find((c) => c.text().includes('probed'))!
+    const probeBtn = card.findAll('button').find((b) => b.text().includes('强度重探'))!
+    let probeCalled = false
+    let listedAgain = false
+    requestMock.mockImplementation(async (module: string, cmd: string) => {
+      if (module === 'models' && cmd === 'probe_effort') {
+        probeCalled = true
+        return { status: 'ok', probe: { control: 'strict' } }
+      }
+      if (module === 'models' && cmd === 'list') {
+        if (probeCalled) listedAgain = true
+        return { models: [probed] }
+      }
+      if (module === 'models' && cmd === 'catalog_info') return { exists: false, fetched_at: '', entries: 0 }
+      if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    await probeBtn.trigger('click')
+    await flushPromises()
+    expect(probeCalled).toBe(true)
+    expect(listedAgain).toBe(true)
+    w.unmount()
+  })
+
+  it('无探针记录（marks 未知档）→ 未探测档渲染 ?（诚实未知）', async () => {
+    const noProbe = modelRow({
+      model_name: 'plain',
+      model: 'vendor/model-x',
+      reasoning_effort: 'low',
+      effort_marks: ['ok', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown', 'unknown'],
+      effort_notes: ['', '', '', '', '', '', ''],
+    })
+    const { w, card } = await mountExpanded(noProbe)
+    const byVal = (v: string) => effortOptions(card).find((o) => o.element.value === v)!
+    expect(byVal('low').text()).toBe('low ?')
+    expect(byVal('minimal').text()).toBe('minimal ?')
+    w.unmount()
+  })
+})
+
+// effort 自动修正（C · 探测后自动修正，拍板 2026-11-09）：卡片注记
+// 「已自动修正 from→to」+ 重探 toast 带修正结果——全程零手动填写。
+describe('ModelsView effort 自动修正注记（C）', () => {
+  it('effort_probe.auto_fix 在场 → 卡片显「已自动修正」注记', async () => {
+    const fixed = modelRow({
+      model_name: 'fixed',
+      model: 'sol/gpt-5.6-sol',
+      reasoning_effort: 'high',
+      effort_probe: {
+        control: 'strict',
+        probed_at: '2026-11-09T00:00:00Z',
+        auto_fix: { from: 'xhigh', to: 'high', at: '2026-11-09T01:00:00Z' },
+      },
+      effort_marks: ['unknown', 'unknown', 'ok', 'ok', 'bad', 'unknown', 'unknown'],
+      effort_notes: ['', '', '', '', 'status 400: no', '', ''],
+    })
+    const w = await mountView([fixed])
+    // 注记在属性编辑器内（与 stale 提示同位）——先展开。
+    const card = w.findAll('.model-card').find((c) => c.text().includes('fixed'))!
+    const attrBtn = card.findAll('button').find((b) => b.text().includes('属性'))!
+    await attrBtn.trigger('click')
+    await flushPromises()
+    expect(card.text()).toContain('已自动修正 xhigh→high')
+    expect(card.text()).toContain('就近取可接受档')
+    w.unmount()
+  })
+
+  it('无 auto_fix → 不渲染注记', async () => {
+    const plain = modelRow({
+      model_name: 'plain',
+      model: 'vendor/model-x',
+      reasoning_effort: 'low',
+      effort_probe: { control: 'strict', probed_at: '2026-11-09T00:00:00Z' },
+      effort_marks: ['ok', 'unknown', 'ok', 'unknown', 'unknown', 'unknown', 'unknown'],
+      effort_notes: ['', '', '', '', '', '', ''],
+    })
+    const w = await mountView([plain])
+    const card = w.findAll('.model-card').find((c) => c.text().includes('plain'))!
+    const attrBtn = card.findAll('button').find((b) => b.text().includes('属性'))!
+    await attrBtn.trigger('click')
+    await flushPromises()
+    expect(card.text()).not.toContain('已自动修正')
+    w.unmount()
+  })
+
+  it('重探 receipt 带 auto_fix → toast 提及修正结果', async () => {
+    const fixed = modelRow({
+      model_name: 'fixed',
+      model: 'sol/gpt-5.6-sol',
+      reasoning_effort: 'high',
+      effort_probe: { control: 'strict', probed_at: '2026-11-09T00:00:00Z' },
+      effort_marks: ['unknown', 'unknown', 'ok', 'ok', 'bad', 'unknown', 'unknown'],
+      effort_notes: ['', '', '', '', '', '', ''],
+    })
+    const w = await mountView([fixed])
+    const card = w.findAll('.model-card').find((c) => c.text().includes('fixed'))!
+    const probeBtn = card.findAll('button').find((b) => b.text().includes('强度重探'))!
+    requestMock.mockImplementation(async (module: string, cmd: string) => {
+      if (module === 'models' && cmd === 'probe_effort') {
+        return {
+          status: 'ok',
+          probe: { control: 'strict' },
+          auto_fix: { from: 'xhigh', to: 'high' },
+        }
+      }
+      if (module === 'models' && cmd === 'list') return { models: [fixed] }
+      throw new Error(`unexpected request ${module}.${cmd}`)
+    })
+    await probeBtn.trigger('click')
+    await flushPromises()
+    expect(
+      useToast().toasts.some(
+        (t) => t.type === 'success' && t.message.includes('已自动修正 xhigh→high'),
+      ),
+    ).toBe(true)
     w.unmount()
   })
 })

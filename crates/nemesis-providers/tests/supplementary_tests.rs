@@ -211,6 +211,7 @@ mod types_extra {
             top_p: Some(0.95),
             stop: Some(vec!["STOP".to_string(), "END".to_string()]),
             reasoning_effort: None,
+            per_request_extra_body: None,
             extra,
         };
         assert_eq!(opts.temperature.unwrap(), 0.5);

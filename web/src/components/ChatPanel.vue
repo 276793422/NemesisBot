@@ -216,6 +216,44 @@ async function toggleAgentMode() {
 // 重启后回落 config 模型级默认） ---
 const sessionEffort = ref('') // '' = 默认（无 override，跟随模型配置）
 
+// effort 探针标记（probe 二期）：挂载时拉一次 models.list 取默认模型的
+// effort_marks/effort_notes（后端 effort_wire_target 方言映射，前端零
+// 重建），会话强度下拉渲染 ✓/✗/?。拉取失败 = 空标记（诚实不标）。
+// EFFORT_TIERS 顺序与后端 capability::EFFORT_TIERS 对齐（7 档平行数组）。
+const EFFORT_TIERS_ORDER = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const effortMarks = ref<string[]>([])
+const effortNotes = ref<string[]>([])
+
+function effortMarkFor(value: string): string {
+  // 空数组 = models.list 拉取失败（无数据可比对）→ 不渲染标记（与
+  // 「探测过但未定」的 ? 相区分——前者是数据面不可用，后者是判定面未知）。
+  if (effortMarks.value.length === 0) return ''
+  const i = EFFORT_TIERS_ORDER.indexOf(value)
+  if (i < 0) return ''
+  const mark = effortMarks.value[i]
+  if (mark === 'ok') return ' ✓'
+  if (mark === 'bad') return ' ✗'
+  return ' ?'
+}
+function effortNoteFor(value: string): string {
+  const i = EFFORT_TIERS_ORDER.indexOf(value)
+  return (i >= 0 ? effortNotes.value[i] : '') || ''
+}
+
+async function loadEffortMarks() {
+  try {
+    const data = await request('models', 'list', {}, 8000)
+    const rows: Array<{ is_default?: boolean; effort_marks?: string[]; effort_notes?: string[] }> =
+      data?.models || []
+    const def = rows.find((m) => m.is_default)
+    effortMarks.value = def?.effort_marks || []
+    effortNotes.value = def?.effort_notes || []
+  } catch {
+    effortMarks.value = []
+    effortNotes.value = []
+  }
+}
+
 /** 进会话 / 重连时对齐一次 override（失败保持当前值，不炸 UI）。 */
 function syncSessionEffort() {
   if (!isDefaultChat.value) return
@@ -3193,6 +3231,9 @@ onMounted(() => {
   // 后注册覆盖语义会把主聊天页的皮肤动作路由进工作流会话）。
   if (isDefaultChat.value) {
     registerChatBridge({ send: sendMessage, stop: stopGeneration })
+    // effort 探针标记（probe 二期）：默认模型 effort_marks 拉取（失败=
+    // 空标记诚实不标，不打扰聊天主链路）。
+    void loadEffortMarks()
   }
 
   // Non-default module (e.g., workflow_chat) must NOT share conversation
@@ -3545,19 +3586,24 @@ onUnmounted(() => {
         {{ chatStore.agentMode === 'plan' ? '计划' : '构建' }}
       </button>
       <!-- G3（2026-11-09）：会话级思考强度下拉——只影响当前会话，默认跟随
-           模型配置；后端内存态，重启回落默认 -->
+           模型配置；后端内存态，重启回落默认。7 档值域扩档（2026-11-09）：
+           minimal/xhigh/max 对齐 OpenAI 官方枚举上界；端点不支持某档 =
+           400 带端点原文诚实透传 -->
       <select
         v-if="isDefaultChat"
         class="voice-btn effort-select"
         :value="sessionEffort"
-        title="思考强度（会话级，仅本会话生效）：默认=跟随模型配置；off=关闭思考（省 token）；低/中/高=思考预算档位。重启后回落默认"
+        title="思考强度（会话级，仅本会话生效）：默认=跟随模型配置；off=关闭思考（省 token）；极简/低/中/高/极高/最大=思考预算档位。✓=端点已验证接受，✗=端点拒绝（悬停看原文），?=未探测。重启后回落默认"
         @change="onSessionEffortChange"
       >
         <option value="">思考·默认</option>
         <option value="off">思考·关</option>
-        <option value="low">思考·低</option>
-        <option value="medium">思考·中</option>
-        <option value="high">思考·高</option>
+        <option :title="effortNoteFor('minimal') || undefined" value="minimal">思考·极简{{ effortMarkFor('minimal') }}</option>
+        <option :title="effortNoteFor('low') || undefined" value="low">思考·低{{ effortMarkFor('low') }}</option>
+        <option :title="effortNoteFor('medium') || undefined" value="medium">思考·中{{ effortMarkFor('medium') }}</option>
+        <option :title="effortNoteFor('high') || undefined" value="high">思考·高{{ effortMarkFor('high') }}</option>
+        <option :title="effortNoteFor('xhigh') || undefined" value="xhigh">思考·极高{{ effortMarkFor('xhigh') }}</option>
+        <option :title="effortNoteFor('max') || undefined" value="max">思考·最大{{ effortMarkFor('max') }}</option>
       </select>
       <!-- Full Access 放行开关（2026-09-20 用户裁决；运行时态，
            Agent 重启后自动关闭）——与设置页【编辑器】TAB 同一状态 -->

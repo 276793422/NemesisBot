@@ -140,6 +140,19 @@ fn session_effort_isolated_by_key() {
 }
 
 #[test]
+fn session_effort_accepts_extended_tiers() {
+    // 7 档值域扩档（2026-11-09）：override 是字符串直存，新档（minimal/
+    // xhigh/max）零 loop 改动即生效——值域校验收口在 WSAPI 入口层。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [{"model": "m/plain", "model_name": "m-plain"}]
+    }));
+    for tier in ["minimal", "xhigh", "max"] {
+        loop_.set_session_effort("web:s1", Some(tier.to_string()));
+        assert_eq!(loop_.session_effort("web:s1"), Some(tier.to_string()));
+    }
+}
+
+#[test]
 fn session_effort_priority_over_config() {
     // 取值优先级（run_loop chat_opts 组装同式）：会话 override > config
     // 模型级 reasoning_effort。s1 有 override → off；s2 无 → config 的 high；
@@ -236,5 +249,121 @@ fn provider_lane_default_double_write_is_pinned() {
     assert_eq!(
         crate::r#loop::rate_limit::PROVIDER_LANE_DEFAULT_TIMEOUT_SECS,
         nemesis_providers::factory::DEFAULT_TIMEOUT_SECS
+    );
+}
+
+// mark_effort_probe_stale_at ------------------------------------------------
+// effort 探针保鲜层③（2026-11-09）：真实使用 400 → effort_probe.stale
+// 标记。自由函数核直测（不必造 AgentLoop）。
+
+fn stale_write_config(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+    let p = dir.join("config.json");
+    std::fs::write(&p, body).unwrap();
+    p
+}
+
+#[test]
+fn stale_marks_target_entry_with_probe() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = stale_write_config(
+        dir.path(),
+        r#"{
+        "model_list": [
+            { "model_name": "m1", "model": "x/y", "effort_probe": { "accepted": ["low"], "control": "strict" } },
+            { "model_name": "m2", "model": "x/y", "effort_probe": { "accepted": ["high"], "control": "strict" } }
+        ]
+    }"#,
+    );
+    crate::r#loop::config_watch::mark_effort_probe_stale_at(&path, "m1");
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        cfg["model_list"][0]["effort_probe"]["stale"], true,
+        "目标条目被标"
+    );
+    assert_eq!(
+        cfg["model_list"][0]["effort_probe"]["accepted"],
+        serde_json::json!(["low"]),
+        "其余字段保留"
+    );
+    assert!(
+        cfg["model_list"][1]["effort_probe"]
+            .as_object()
+            .unwrap()
+            .get("stale")
+            .is_none(),
+        "兄弟条目不动"
+    );
+}
+
+#[test]
+fn stale_mark_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = stale_write_config(
+        dir.path(),
+        r#"{ "model_list": [ { "model_name": "m1", "effort_probe": { "accepted": [], "stale": true } } ] }"#,
+    );
+    let before = std::fs::read_to_string(&path).unwrap();
+    crate::r#loop::config_watch::mark_effort_probe_stale_at(&path, "m1");
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(before, after, "已 stale = 不重写盘（幂等）");
+}
+
+#[test]
+fn stale_no_probe_record_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = stale_write_config(
+        dir.path(),
+        r#"{ "model_list": [ { "model_name": "m1", "model": "x/y" } ] }"#,
+    );
+    let before = std::fs::read_to_string(&path).unwrap();
+    crate::r#loop::config_watch::mark_effort_probe_stale_at(&path, "m1");
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(before, after, "无 effort_probe = 无可失效判定，不写盘");
+}
+
+#[test]
+fn stale_missing_file_and_missing_name_no_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let ghost = dir.path().join("nope.json");
+    crate::r#loop::config_watch::mark_effort_probe_stale_at(&ghost, "m1"); // 文件缺 → 静默
+    let path = stale_write_config(dir.path(), r#"{ "model_list": [] }"#);
+    crate::r#loop::config_watch::mark_effort_probe_stale_at(&path, "ghost"); // 名缺 → 静默
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert!(after.contains(r#""model_list": []"#), "内容不变");
+}
+
+// 2026-11-10 live 冒烟抓出的时序缝回归锁 -------------------------------
+
+#[test]
+fn effort_reader_sees_autofix_after_republish() {
+    // C 自动修正写盘后，effort 读者必须经 check_config_reload 见到新值。
+    // 修复前 turn 开始的 chat_opts 读的是旧代——探测修了 config、请求仍
+    // 发旧档位（多花一轮 400+剥键，B 还会在已修对的配置上误标 stale）。
+    let (dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [
+            {"model": "test-model", "model_name": "test-model", "reasoning_effort": "minimal"}
+        ]
+    }));
+    // 绑定即发布（set_config_path force）——现行代 = minimal。
+    assert_eq!(
+        loop_.current_reasoning_effort_override(None),
+        Some("minimal".to_string()),
+        "绑定后现行代承载初始档位"
+    );
+
+    // C 自动修正：盘上 raw 改档（模拟 apply_effort_autofix 的写盘面）。
+    let path = dir.path().join("config.json");
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    raw["model_list"][0]["reasoning_effort"] = serde_json::json!("low");
+    std::fs::write(&path, serde_json::to_string(&raw).unwrap()).unwrap();
+
+    // 修复点：turn 开始的对账发布（run_loop TurnState 构造前新增）。
+    loop_.check_config_reload();
+    assert_eq!(
+        loop_.current_reasoning_effort_override(None),
+        Some("low".to_string()),
+        "写盘 + 对账发布后 effort 读者必须见新档位"
     );
 }

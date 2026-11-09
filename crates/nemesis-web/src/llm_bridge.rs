@@ -121,6 +121,8 @@ fn agent_options_to_provider(
             top_p: opts.top_p.map(|p| p as f64),
             stop: opts.stop,
             reasoning_effort: opts.reasoning_effort.clone(), // tier passes through
+            // per-request extra_body 仅 effort probe 消费（agent 层无此概念）。
+            per_request_extra_body: None,
             extra: HashMap::new(),
         },
         None => nemesis_providers::types::ChatOptions {
@@ -129,6 +131,7 @@ fn agent_options_to_provider(
             top_p: None,
             stop: None,
             reasoning_effort: None,
+            per_request_extra_body: None,
             extra: HashMap::new(),
         },
     }
@@ -591,6 +594,7 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             // 烧穿预算（真机 mt=500 间歇烧穿实证）。anthropic lane 映射为
             // thinking:{type:"disabled"}；openai-compat lane 过滤不透传。
             reasoning_effort: Some("off".to_string()),
+            per_request_extra_body: None,
             extra: HashMap::new(),
         };
 

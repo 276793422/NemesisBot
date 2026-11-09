@@ -34,6 +34,11 @@ interface Model {
   catalog_match?: CatalogMatch | null
   // G4 (U15)：key 来源分类（后端 classify_key_source，零明文）。
   key_source?: { kind: string; ref: string } | null
+  // effort 探针（probe 二期）：判定记录 + 与 EFFORT_TIERS 平行的
+  // ✓/✗/? 标记与拒绝原文注记（后端方言映射，前端零重建）。
+  effort_probe?: { stale?: boolean; probed_at?: string; control?: string; auto_fix?: { from: string; to: string; at?: string } | null } | null
+  effort_marks?: string[] | null
+  effort_notes?: string[] | null
 }
 
 const models = ref<Model[]>([])
@@ -92,9 +97,60 @@ function dotTitle(name: string): string {
   return d.status === 'testing' ? '测试中…' : '未测试'
 }
 
+// effort 探针标记（probe 二期）：models.list 随条目下发 effort_marks /
+// effort_notes（与 EFFORT_TIERS 平行数组，后端 effort_wire_target 方言
+// 映射，前端零重建）。off 档恒 NotSent（不发送=无验证对象），不渲染标记。
+const EFFORT_TIERS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+const PROBEABLE_TIERS = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+function effortMarkIdx(tier: string): number {
+  return EFFORT_TIERS.indexOf(tier)
+}
+function effortMark(m: Model, tier: string): string {
+  const i = effortMarkIdx(tier)
+  const mark = i >= 0 ? m.effort_marks?.[i] : undefined
+  if (mark === 'ok') return ' ✓'
+  if (mark === 'bad') return ' ✗'
+  return ' ?'
+}
+function effortNote(m: Model, tier: string): string {
+  const i = effortMarkIdx(tier)
+  return (i >= 0 ? m.effort_notes?.[i] : undefined) || ''
+}
+function effortStale(m: Model): boolean {
+  return m.effort_probe?.stale === true
+}
+/** C · 探测后自动修正注记（拍板 2026-11-09）：effort_probe.auto_fix 在场
+ * = 上次重探发现配置档位被端点拒绝，已自动改写为最近可接受档。 */
+function effortAutoFix(m: Model): string {
+  const fx = m.effort_probe?.auto_fix
+  return fx ? `已自动修正 ${fx.from}→${fx.to}（探测发现原档位被端点拒绝，就近取可接受档）` : ''
+}
+
+/** 强度档位手动重探（WSAPI models.probe_effort）：7 请求 + 对照判别，
+ * 完成后刷新列表（effort_marks 随 models.list 下发）。 */
+const effortProbing = ref<Set<string>>(new Set())
+async function probeEffort(name: string) {
+  effortProbing.value.add(name)
+  try {
+    const r = await request('models', 'probe_effort', { name })
+    if (r?.status === 'ok') {
+      // C · 探测后自动修正：receipt 带 auto_fix = 配置档位已被自动改写。
+      const fx = r.auto_fix ? `，已自动修正 ${r.auto_fix.from}→${r.auto_fix.to}` : ''
+      toast.success(`${name} 强度探针完成（对照=${r.probe?.control ?? '?'}）${fx}`)
+    } else {
+      toast.info(`${name} 强度探针：${r?.status ?? '?'}（${r?.detail || '未探测'}）`)
+    }
+  } catch (e: any) {
+    toast.error(`${name} 强度探针失败：${e}`)
+  } finally {
+    effortProbing.value.delete(name)
+    await loadModels()
+  }
+}
+
 /** ① 单模型测试——消费后端真实响应（ok/fail/unsupported 三态染点）。
- * quiet = 批量测试时跳过逐模型 toast（只染点，汇总 toast 兜底）。 */
-async function testModel(name: string, quiet = false) {
+ * quiet = 批量测试时跳过逐模型 toast（只染点，汇总 toast 兜底）。 */async function testModel(name: string, quiet = false) {
   setDot(name, { status: 'testing' })
   try {
     const data = await request('models', 'test', { name })
@@ -828,11 +884,16 @@ onMounted(() => {
                 <label class="form-label">推理力度 effort</label>
                 <select class="form-input" v-model="attrDrafts[m.model_name].effort">
                   <option value="">off（不发送）</option>
-                  <option value="low">low</option>
-                  <option value="medium">medium</option>
-                  <option value="high">high</option>
+                  <option
+                    v-for="t in PROBEABLE_TIERS"
+                    :key="t"
+                    :value="t"
+                    :title="effortNote(m, t) || undefined"
+                  >{{ t }}{{ effortMark(m, t) }}</option>
                 </select>
                 <span class="attr-effect">{{ FIELD_EFFECT['reasoning_effort'] }}</span>
+                <span v-if="effortStale(m)" class="attr-effect">⚠ 探针已失效（端点 400 打掉旧判定），保存或手动重探刷新</span>
+                <span v-if="effortAutoFix(m)" class="attr-effect">✔ {{ effortAutoFix(m) }}</span>
               </div>
               <div class="attr-field">
                 <label class="form-label">参数量（十亿参数，如 30 = 30B）</label>
@@ -880,6 +941,15 @@ onMounted(() => {
             </button>
             <button class="btn btn-sm btn-ghost" @click="toggleAttrs(m)">
               {{ expandedAttrs.has(m.model_name) ? '收起属性' : '属性' }}
+            </button>
+            <button
+              class="btn btn-sm btn-ghost"
+              title="强度档位探测：7 请求并发 + 对照判别，结果写盘后强度下拉即见 ✓/✗ 标记"
+              @click="probeEffort(m.model_name)"
+              :disabled="effortProbing.has(m.model_name)"
+            >
+              <span v-if="effortProbing.has(m.model_name)" class="spinner" style="width:14px;height:14px;"></span>
+              {{ effortProbing.has(m.model_name) ? '探测中...' : '强度重探' }}
             </button>
             <button class="btn btn-sm btn-ghost" title="整条配置深拷贝（含 Key），同供应商加模型" @click="openCopy(m)">复制</button>
             <button class="btn btn-sm btn-ghost" title="改名 / 换模型（引用自动同步；默认模型自动热切）" @click="openRename(m)">改名</button>

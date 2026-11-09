@@ -131,6 +131,13 @@ impl AgentLoop {
         // 喂入点在 emit_round_output 与 ToolEventHook（同点同源），取走
         // 在 turn.rs 最终回复落盘。
         self.work_recorder.begin(&context.session_key);
+        // turn 开始先对账发布 config 代（2026-11-10 live 冒烟抓出的时序缝）：
+        // chat_opts（effort/max_tokens）在下面 TurnState 构造时一次性读取
+        // config 代，而 round 开始的 check_config_reload 在循环内、晚于
+        // 构造——探针自动修正（C）运行中写盘后，本 turn 仍会发旧档位
+        // （多花一轮 400+剥键，B 还会在已修对的配置上误标 stale）。此处
+        // 先发布，round 开始的检查点继续兜 mid-turn 变化。
+        self.check_config_reload();
         let mut st = TurnState {
             turns_used: 0,
             validation_failures: 0,

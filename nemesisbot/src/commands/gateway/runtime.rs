@@ -1214,6 +1214,34 @@ pub(crate) async fn run_runtime(
                 });
             }
         }
+
+        // effort 探针保鲜层②（2026-11-09 拍板 §五）：启动超龄重探 sweep
+        // ——带强度档但 [无 effort_probe | stale | 超龄] 的条目串行后台
+        // 重探。`agents.probe_effort_refresh_days`（默认 30）= 0 整闸关闭；
+        // spawn 不阻塞启动——探测只写盘 effort_probe，结果下次 models.list
+        // 即见 ✓/✗ 标记。失败逐条 warn 不中断 sweep。
+        {
+            let home_sweep = home.to_string_lossy().to_string();
+            tokio::spawn(async move {
+                let candidates =
+                    nemesis_web::handlers::models::effort_probe_stale_entries(&home_sweep);
+                if candidates.is_empty() {
+                    return;
+                }
+                info!(
+                    "[Gateway] effort probe sweep: {} candidate(s): {:?}",
+                    candidates.len(),
+                    candidates
+                );
+                for name in candidates {
+                    if let Err(e) =
+                        nemesis_web::handlers::models::probe_effort_entry(&home_sweep, &name).await
+                    {
+                        warn!("[Gateway] effort probe sweep ({name}) failed: {e}");
+                    }
+                }
+            });
+        }
         // 循环干预阶梯（2026-10-24）：急停挂钩——无超时终级卡（escalation
         // 停车问询，timeout_secs=0）会停在等答态跨普通停机窗口存续，estop
         // 触发时必须强制了结：等待的 loop 醒来（Cancelled→诚实收尾）、前端

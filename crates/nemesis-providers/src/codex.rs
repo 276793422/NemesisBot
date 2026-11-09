@@ -242,18 +242,19 @@ impl CodexProvider {
         // reasoning.effort 此前被本 lane 完全忽略——aux_chat_options 发的
         // "off"（关思考省输出预算，压缩摘要等杂务调用）被静默丢弃，gpt-5 系
         // 默认 effort 会把 max_output_tokens 整个烧在思考上、正文为空
-        // （8192 摘要预算空文本四连）。翻译规则：low/medium/high 原样
-        // 透传；"off" → gpt 系用 minimal（该族支持的最低档）、o 系
+        // （8192 摘要预算空文本四连）。翻译规则：统一值域六档
+        // minimal/low/medium/high/xhigh/max（2026-11-09 扩档）原样透传；
+        // "off" → gpt 系用 minimal（该族支持的最低档）、o 系
         // （o3*/o4*，不支持 minimal）退 low；其余未知值不发字段（不猜，
         // 对齐 anthropic lane 的 unknown 语义——留给服务端默认）。
         // 词表漂移（真机实证）：gpt-6 系已砍掉 minimal（词表
         // low/medium/high/xhigh/max），部分代理还会把 minimal 映射成 none
         // 再发上游 → 400 unsupported_value。chat() 对该类错误按上游错误
         // 信息自带的权威词表降档重试一次（见 effort_downgrade_target），
-        // 不在静态翻译里按模型名猜代际。
+        // 不在静态翻译里按模型名猜代际——透传新档撞词表缺口也走同一自愈。
         if let Some(ref effort) = options.reasoning_effort {
             let translated = match effort.as_str() {
-                "low" | "medium" | "high" => Some(effort.as_str()),
+                "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => Some(effort.as_str()),
                 "off" => {
                     if model.starts_with("gpt-") {
                         Some("minimal")

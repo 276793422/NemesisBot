@@ -2035,7 +2035,7 @@ fn test_s11b_format_probe_report_direct() {
         ],
         vision_probe: Some(true),
     };
-    let s = super::format_probe_report("glm-4.7", &report, true);
+    let s = super::format_probe_report("glm-4.7", &report, true, None);
     assert!(s.contains("能力探针报告: glm-4.7"));
     assert!(s.contains("format=0.85"), "总分保留两位小数：{s}");
     assert!(s.contains("selection=0.71"));
@@ -2046,7 +2046,7 @@ fn test_s11b_format_probe_report_direct() {
     assert!(s.contains("vision=支持"), "T10 第 8 题视觉探针结论行：{s}");
     assert!(s.contains("已写入 config.json"), "wrote=true 分支：{s}");
     // wrote=false 必须如实标注未写入，不得谎称已写入
-    let s_not = super::format_probe_report("glm-4.7", &report, false);
+    let s_not = super::format_probe_report("glm-4.7", &report, false, None);
     assert!(s_not.contains("未写入"), "wrote=false 诚实分支：{s_not}");
     assert!(
         !s_not.contains("已写入 config.json"),
@@ -2061,7 +2061,7 @@ fn test_s11b_format_probe_report_direct() {
         per_task: vec![],
         vision_probe: None,
     };
-    let s2 = super::format_probe_report("m", &empty, true);
+    let s2 = super::format_probe_report("m", &empty, true, None);
     assert!(s2.contains("tier=mini"));
     assert!(s2.contains("vision=未定"), "未定分支：{s2}");
 }
@@ -2401,7 +2401,14 @@ mod r9_subprocess {
         let ws = TestWorkspace::new().expect("workspace");
         std::fs::create_dir_all(ws.home()).unwrap();
         // model add 要求 config.json 已存在（101 行 read_to_string）。
-        std::fs::write(ws.config_path(), "{}").unwrap();
+        // effort 保存面探针（二期）会对 add 发 8 个探测请求——本夹具 FIFO
+        // 仅 1+7 条脚本且逐条对账，探针会把队列吃 shifts 位令七题全错。
+        // effort 探测行为归 effort_probe_tests 专测（w5b2 同款纪律），显式关。
+        std::fs::write(
+            ws.config_path(),
+            r#"{"agents":{"probe_effort_on_save":false}}"#,
+        )
+        .unwrap();
 
         // 脚本头部垫 1 条 Text：下方 add 触发 B39 SaveCheck ping（FIFO 弹
         // 一条，200 即可）；其后 7 条 ToolCall 供 probe 七题。
@@ -2658,7 +2665,12 @@ mod r10_subprocess {
     async fn r10_probe_with_empty_name_resolves_effective_llm_and_persists_tier() {
         let ws = TestWorkspace::new().expect("workspace");
         std::fs::create_dir_all(ws.home()).unwrap();
-        std::fs::write(ws.config_path(), "{}").unwrap();
+        // effort 保存面探针会吃 FIFO（w5b2 同款纪律，见 probe_full_chain 注）。
+        std::fs::write(
+            ws.config_path(),
+            r#"{"agents":{"probe_effort_on_save":false}}"#,
+        )
+        .unwrap();
 
         // 脚本头部垫 1 条 Text：下方 add 触发 B39 SaveCheck ping（FIFO 弹
         // 一条，200 即可）；其后 7 条 ToolCall 供 probe 七题。
@@ -3218,7 +3230,14 @@ mod w5b2 {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
-        super::s11b_write_cfg(&th.home, serde_json::json!({}));
+        // 关保存面 effort 探测（默认开）：本链测试焦点是 add/dedup/probe/
+        // list/remove 的 CLI 编排，mock 是 FIFO 脚本队列（2 ping + 7 题脚本
+        // 恰好用尽）——add 附带的 effort 探测（8 请求）会把队列打穿，③ 的
+        // Probe 拿到空队列假红。effort 探测自身的行为归 effort_probe_tests。
+        super::s11b_write_cfg(
+            &th.home,
+            serde_json::json!({ "agents": { "probe_effort_on_save": false } }),
+        );
 
         // mock AI server 先起。脚本头部垫 2 条 Text：①首次 Add 与②重复
         // Add（更新臂）各触发一次 B39 SaveCheck ping（无工具轻校验请求，

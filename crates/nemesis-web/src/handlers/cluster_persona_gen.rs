@@ -627,6 +627,7 @@ async fn chat_json(
         top_p: None,
         stop: None,
         reasoning_effort: None,
+        per_request_extra_body: None,
         extra: std::collections::HashMap::new(),
     };
     let resp = provider

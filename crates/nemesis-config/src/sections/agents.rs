@@ -170,6 +170,17 @@ pub struct AgentsConfig {
     /// Some(true) 显式表态照常保留。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lazy_tool_schema: Option<bool>,
+    /// （思考强度 probe 二期，2026-11-09）：模型添加/保存时的思考强度
+    /// 档位自动探测开关（拍板③：添加时默认自动探测，config 键可关）。
+    /// 默认**开**；关 = 保存面零自动探测（手动 `model probe` /
+    /// `models.probe_effort` 不受影响——本键只管自动触发面）。
+    #[serde(default = "default_true")]
+    pub probe_effort_on_save: bool,
+    /// （思考强度 probe 二期）：gateway 启动超龄重探阈值（天，默认 30，
+    /// **0=关**）。只重探配了 `reasoning_effort` 且 `effort_probe` 缺失或
+    /// `probed_at` 超龄的条目（保鲜层②；后台错峰，不阻塞启动）。
+    #[serde(default = "default_probe_effort_refresh_days")]
+    pub probe_effort_refresh_days: u32,
 }
 
 /// 手写 Default（不 derive）：本结构 9 个直接字段带非零 serde 字段默认
@@ -214,8 +225,15 @@ impl Default for AgentsConfig {
             stream_concat_retry: default_true(),
             profession_tool_fence: default_true(),
             lazy_tool_schema: None,
+            probe_effort_on_save: default_true(),
+            probe_effort_refresh_days: default_probe_effort_refresh_days(),
         }
     }
+}
+
+/// `agents.probe_effort_refresh_days` 缺键默认（30 天超龄阈值）。
+pub(super) fn default_probe_effort_refresh_days() -> u32 {
+    30
 }
 
 /// `agents.executor_tool_timeout_secs` 缺键默认（30 分钟）。

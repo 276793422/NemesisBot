@@ -603,8 +603,17 @@ fn test_effort_anthropic_budget_mapping() {
     };
     // Fixed tier→budget map（max_tokens 给足余量——主循环默认底座 64K，
     // BUG-20261107-003 后映射值 ≥ max_tokens 会走钳制，不再是纯映射）。
-    for (tier, budget) in [("low", 1024), ("medium", 4096), ("high", 16384)] {
-        let b = mk(Some(tier), Some(65536));
+    // 2026-11-09 七档扩档阶梯：minimal=low=1024（API 思考预算下限）、
+    // xhigh=32768、max=65536（budget ≥ max_tokens 由钳制臂兜底）。
+    for (tier, budget) in [
+        ("minimal", 1024),
+        ("low", 1024),
+        ("medium", 4096),
+        ("high", 16384),
+        ("xhigh", 32768),
+        ("max", 65536),
+    ] {
+        let b = mk(Some(tier), Some(131072));
         assert_eq!(b["thinking"]["type"], "enabled", "tier {tier}");
         assert_eq!(b["thinking"]["budget_tokens"], budget, "tier {tier}");
     }

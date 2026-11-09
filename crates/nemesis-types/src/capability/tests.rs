@@ -485,6 +485,48 @@ fn test_resolve_reasoning_effort_tiers() {
     assert_eq!(resolve_reasoning_effort(&cfg, "d"), None);
 }
 
+#[test]
+fn effort_truth_source_contract_and_extended_tiers() {
+    // 值域单一真相源（2026-11-09 扩档 7 档）：off 居首、无重复；
+    // valid_effort 大小写不敏感 + trim；新档（minimal/xhigh/max）resolve
+    // 原样透传；大写形态不在 resolve 层归一（保存入口已归一）——防御臂
+    // None，垃圾不上 wire。
+    assert_eq!(EFFORT_TIERS.len(), 7);
+    assert_eq!(EFFORT_TIERS.first(), Some(&"off"));
+    let mut dedup = EFFORT_TIERS.to_vec();
+    dedup.sort_unstable();
+    dedup.dedup();
+    assert_eq!(dedup.len(), 7, "EFFORT_TIERS must not contain duplicates");
+    for t in EFFORT_TIERS {
+        assert!(valid_effort(t), "{t}");
+        assert!(valid_effort(&t.to_ascii_uppercase()), "case: {t}");
+    }
+    assert!(valid_effort("  High "));
+    assert!(!valid_effort(""));
+    assert!(!valid_effort("none"));
+    assert!(!valid_effort("zzz-not-a-tier"));
+
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "m1", "model": "x/m", "reasoning_effort": "minimal"},
+            {"model_name": "m2", "model": "x/m", "reasoning_effort": "xhigh"},
+            {"model_name": "m3", "model": "x/m", "reasoning_effort": "max"},
+            {"model_name": "m4", "model": "x/m", "reasoning_effort": "MAX"}
+        ]
+    });
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "m1").as_deref(),
+        Some("minimal")
+    );
+    assert_eq!(
+        resolve_reasoning_effort(&cfg, "m2").as_deref(),
+        Some("xhigh")
+    );
+    assert_eq!(resolve_reasoning_effort(&cfg, "m3").as_deref(), Some("max"));
+    // 大写 = 保存入口不应产生的形态 → 防御臂 None。
+    assert_eq!(resolve_reasoning_effort(&cfg, "m4"), None);
+}
+
 // ============================================================================
 // （多模态 goal）：vision 能力解析（解析序 User > Probe > Name > Default）
 // ============================================================================

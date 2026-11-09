@@ -44,6 +44,9 @@ impl ModuleHandler for ModelsHandler {
             "catalog_info",
             "catalog_update",
             "health",
+            // effort 探针手动重探（拍板 §五保鲜层④）：7 请求并发 + 对照
+            // 判别，结果写盘条目 effort_probe。
+            "probe_effort",
             // 代理设置页：per-model 代理总览 + 进程环境变量 +
             // lane 支持说明。只读——编辑走模型管理 add/update_field。
             "proxy_overview",
@@ -103,6 +106,13 @@ impl ModuleHandler for ModelsHandler {
             // P2B（根修配套）：模型工具健康（近 N 天
             // 工具调用 / 参数校验失败 + 阈值建议）。
             "health" => self.health(ctx, data),
+            // effort 探针手动重探（同 CLI `model probe` 的 effort 部分）。
+            "probe_effort" => {
+                let data = data.ok_or("missing data")?;
+                let name = crate::handlers::get_str(&data, "name")?;
+                let receipt = probe_effort_entry(home, &name).await?;
+                Ok(Some(receipt))
+            }
             // 代理设置页：只读总览。
             "proxy_overview" => self.proxy_overview(home),
             _ => Err(format!("unknown command: models.{}", cmd)),
@@ -461,6 +471,22 @@ impl ModelsHandler {
                     // only——编辑走 config.json / attr 编辑器；装配点
                     // agent_factory::wrap_fallback_chain）。
                     "fallback_to": raw.get("fallback_to").cloned().unwrap_or(serde_json::Value::Null),
+                    // effort 探针（二期）：原始判定记录（rejected 含端点
+                    // 原文，前端 tooltip 用）+ 按方言映射（effort_wire_target）
+                    // 渲染的 ✓/✗/? 标记（前端永不重建映射）。
+                    "effort_probe": raw.get("effort_probe").cloned().unwrap_or(serde_json::Value::Null),
+                    "effort_marks": effort_marks_for_entry(
+                        &m.model,
+                        &m.api_base,
+                        raw.get("extra_body").unwrap_or(&serde_json::Value::Null),
+                        raw.get("effort_probe").unwrap_or(&serde_json::Value::Null),
+                    ),
+                    "effort_notes": effort_notes_for_entry(
+                        &m.model,
+                        &m.api_base,
+                        raw.get("extra_body").unwrap_or(&serde_json::Value::Null),
+                        raw.get("effort_probe").unwrap_or(&serde_json::Value::Null),
+                    ),
                     "catalog_match": catalog_match,
                 })
             })
@@ -645,6 +671,20 @@ impl ModelsHandler {
             });
         if let Some(obj) = receipt.as_mut().and_then(|v| v.as_object_mut()) {
             obj.insert("verify".to_string(), verify);
+            obj.insert("effort_probe".to_string(), serde_json::json!("background"));
+        }
+        // effort 探针挂后台（拍板 §五保鲜层①）：开关 agents.probe_effort_on_save
+        // （默认开）允许时 spawn 后台探测——add 回执即刻返回，探针写盘
+        // effort_probe 后下次 models.list 即见 ✓/✗ 标记。失败只 warn 不回传
+        // （保存面不为探针背锅；结果面诚实：没写盘 = UI 恒 ?）。
+        if probe_effort_on_save_enabled(home) && tokio::runtime::Handle::try_current().is_ok() {
+            let home_bg = home.to_string();
+            let name_bg = model_name.clone();
+            tokio::spawn(async move {
+                if let Err(e) = probe_effort_entry(&home_bg, &name_bg).await {
+                    tracing::warn!("[Models] effort probe (add {name_bg}) failed: {e}");
+                }
+            });
         }
         Ok(receipt)
     }
@@ -1254,9 +1294,10 @@ impl ModelsHandler {
                     .as_str()
                     .ok_or("reasoning_effort must be a string")?
                     .to_lowercase();
-                if !matches!(s.as_str(), "off" | "low" | "medium" | "high") {
+                if !nemesis_types::capability::valid_effort(&s) {
                     return Err(format!(
-                        "Invalid effort '{s}'. Use one of: off | low | medium | high"
+                        "Invalid effort '{s}'. Use one of: {}",
+                        nemesis_types::capability::EFFORT_TIERS.join(" | ")
                     ));
                 }
                 // "off" clears the field (absent/empty = send nothing) — CLI parity.
@@ -1461,6 +1502,24 @@ impl ModelsHandler {
             if let Some(bridge) = crate::handlers::projects::projects_bridge() {
                 bridge.reload_provider_all();
             }
+        }
+        // effort 探针保鲜（拍板 §五层①）：请求面字段（reasoning_effort/
+        // protocol/proxy/stream/api_base）改动 = 旧 effort_probe 判定可能
+        // 已失真 → 后台重探。元数据字段（tier/size/real_name/context_window/
+        // compact_context_tokens）不上线不触发。开关与 add 同源。
+        if matches!(
+            field.as_str(),
+            "reasoning_effort" | "protocol" | "proxy" | "stream" | "api_base"
+        ) && probe_effort_on_save_enabled(home)
+            && tokio::runtime::Handle::try_current().is_ok()
+        {
+            let home_bg = home.to_string();
+            let name_bg = name.clone();
+            tokio::spawn(async move {
+                if let Err(e) = probe_effort_entry(&home_bg, &name_bg).await {
+                    tracing::warn!("[Models] effort probe (update_field {name_bg}) failed: {e}");
+                }
+            });
         }
         Ok(Some(serde_json::json!({
             "updated": true, "name": name, "field": field, "value": normalized,
@@ -1759,6 +1818,659 @@ pub async fn probe_model_entry(
     }
 }
 
+// ---------------------------------------------------------------------------
+// 思考强度档位主动探测（probe 二期，2026-11-09，已拍板方案 §五）
+//
+// 「未知模型档位确认走主动探测：探测前置到模型添加时，不撞 400 才知道」。
+// 判据 = HTTP 状态码（200 接受 / 4xx 拒绝），7 个并发 tiny 请求（6 个 wire
+// 值 + 1 个对照假值 `zzz-not-a-tier`；off 不探测 = 不发键任何端点都不会拒），
+// 输入合计 14 字符、max_tokens:1 钳死，成本趋近零。原始 wire 值经
+// `ChatOptions.per_request_extra_body` 送上线（级别最高——键级覆盖方言翻译
+// 与条目 extra_body 钉档），探测请求体与实机验证脚本字节同形。
+//
+// 对照判别（拍板原文）：对照假值被 400 → 端点严格校验 → 结果可信
+// （control=strict）；对照也 200 → 服务端不校验该键 → 「接受」全部作废，
+// 诚实标注未验证（control=ignore）——宽容端点 acceptance ≠ effective。
+//
+// 结果保存 = 条目 extra 键 `effort_probe`（与 vision_probe / model_tier
+// 同族同机制，per-model 元数据单一真相源在条目上）；写盘 raw RMW 整体
+// 覆盖（重探语义），typed round-trip 回归锁保证不被其他保存路径抹掉。
+//
+// 诚实边界（拍板 §五）：probe 只能测「标准键它认不认」，测不出私有方言
+// 键名；anthropic/codex/CLI 型 lane 不适用本探测（诚实 skip——anthropic
+// 预算映射依赖运行期 max_tokens，静态 tiny 探针测不准）。
+// ---------------------------------------------------------------------------
+
+/// 单档位探测判定（纯分类，无 IO——测试钉状态码判据）。
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum EffortProbeVerdict {
+    /// 请求 200：该 wire 值被端点接受。
+    Accepted,
+    /// 4xx 拒绝（错误原文截断存证，tooltip 挂端点原文）。
+    Rejected(String),
+    /// 传输类失败（网络/鉴权/限流/超时/5xx）——不说明词汇合法性，不写盘。
+    Inconclusive(String),
+}
+
+/// 错误 → 判定分类（纯函数）。生产分类器同源词表先行
+/// （auth/billing/rate-limit/timeout/overloaded = 未定，不让账户面问题
+/// 污染档位判定），其次 4xx 状态码 = 拒绝，其余 = 未定。
+pub(crate) fn classify_probe_error(msg: &str) -> EffortProbeVerdict {
+    use nemesis_utils::llm_error_class::{LlmErrorClass, classify_llm_error};
+    if let Some(class) = classify_llm_error(msg)
+        && !matches!(
+            class,
+            LlmErrorClass::Format | LlmErrorClass::ContextOverflow
+        )
+    {
+        return EffortProbeVerdict::Inconclusive(msg.to_string());
+    }
+    match nemesis_utils::llm_error_class::extract_http_status(msg) {
+        Some(code) if (400..500).contains(&code) => {
+            // 200 字符截断与 failover 层 body 摘要同宽（存证不膨胀）。
+            EffortProbeVerdict::Rejected(msg.chars().take(200).collect())
+        }
+        _ => EffortProbeVerdict::Inconclusive(msg.to_string()),
+    }
+}
+
+/// 探测候选 wire 值（6 个非 off 档位；off 不探测——不发键不会拒）。
+pub(crate) const EFFORT_PROBE_CANDIDATES: [&str; 6] =
+    ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// 对照假值（拍板 §五原文）：任何合法词表都不会收录的形态——它的判定
+/// 揭示端点校验风格（strict / ignore）。
+pub(crate) const EFFORT_PROBE_CONTROL: &str = "zzz-not-a-tier";
+
+/// 6 档判定 + 对照判定 → (`effort_probe` 记录 JSON, 摘要文案)。
+/// 纯函数（§五对照判别单一裁决点）；`None` = 探测不完整（对照传输类
+/// 失败），调用方不写盘、如实上报。
+pub(crate) fn aggregate_effort_probe(
+    results: &[(&'static str, EffortProbeVerdict)],
+    control: &EffortProbeVerdict,
+) -> Option<(serde_json::Value, String)> {
+    // 对照未定 = 整轮探测不可信（基准面没建立），不写盘。
+    let strict = match control {
+        EffortProbeVerdict::Accepted => false,
+        EffortProbeVerdict::Rejected(_) => true,
+        EffortProbeVerdict::Inconclusive(e) => {
+            tracing::warn!("[Models] effort probe control inconclusive: {e}");
+            return None;
+        }
+    };
+
+    let mut accepted: Vec<&str> = Vec::new();
+    let mut rejected = serde_json::Map::new();
+    let mut n_accepted_raw = 0usize;
+    for (wire, verdict) in results {
+        match verdict {
+            EffortProbeVerdict::Accepted => {
+                n_accepted_raw += 1;
+                // 对照=ignore（服务端不校验键）：「接受」全部作废
+                // （拍板原文——宽容端点 acceptance ≠ effective），只留
+                // 拒绝项与 control 标记。
+                if strict {
+                    accepted.push(wire);
+                }
+            }
+            EffortProbeVerdict::Rejected(body) => {
+                // 对照=ignore 时的 4xx 仍真实：端点忽略未知假值却拒绝
+                // 该已知值 = 它解析了档位词汇，拒绝成立。
+                rejected.insert((*wire).to_string(), serde_json::json!(body));
+            }
+            // 单档传输类失败：该档不进任何列表（UI 渲染 ? 未定）。
+            EffortProbeVerdict::Inconclusive(_) => {}
+        }
+    }
+
+    let probed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let control_label = if strict { "strict" } else { "ignore" };
+    let record = serde_json::json!({
+        "accepted": accepted,
+        "rejected": rejected,
+        "control": control_label,
+        "probed_at": probed_at,
+    });
+    let summary = if strict {
+        format!(
+            "对照=strict（端点严格校验）：接受 {}/6，拒绝 {}",
+            n_accepted_raw,
+            rejected.len()
+        )
+    } else {
+        format!(
+            "对照=ignore（服务端不校验 reasoning_effort 键，接受结果作废＝未验证）：\
+             原始接受 {n_accepted_raw}/6，真实拒绝 {}",
+            rejected.len()
+        )
+    };
+    Some((record, summary))
+}
+
+/// effort_probe 写回（raw RMW 整体覆盖；条目按 model_name 精确命中）。
+/// 与 CLI set-tier / probe 的条目写法同族——不动兄弟 extras。
+fn write_effort_probe(home: &str, name: &str, record: &serde_json::Value) -> Result<(), String> {
+    super::config::update_raw_config(home, |cfg| {
+        let list = cfg
+            .get_mut("model_list")
+            .and_then(|v| v.as_array_mut())
+            .ok_or("config.json has no model_list")?;
+        let entry = list
+            .iter_mut()
+            .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+            .ok_or_else(|| format!("model '{name}' not found"))?;
+        entry["effort_probe"] = record.clone();
+        Ok(())
+    })
+}
+
+/// `agents.probe_effort_on_save` 现读（保存面自动触发闸，默认开；
+/// config 读失败 = 保守按开——探测是只读行为，误关比误开的代价大）。
+///
+/// **直读磁盘 raw**（不走 [`super::config::load_config`] 的 live-first
+/// 路径）：CLI 进程本无 live store（磁盘即真相）；gateway 进程 live 与
+/// 磁盘同源（写路径都落盘）。走 live-first 会让「本进程早期装过全局
+/// ConfigStore 的任何测试」的配置冒充本 home 的磁盘配置——测试套件里
+/// 跨测试污染（w5b2 实录：闸读到别的测试的 live config，开关失灵）。
+/// 闸只关心一个布尔键，raw 读语义等价且免疫污染。
+pub fn probe_effort_on_save_enabled(home: &str) -> bool {
+    super::config::read_raw_config(home)
+        .ok()
+        .and_then(|raw| {
+            raw.get("agents")
+                .and_then(|a| a.get("probe_effort_on_save"))
+                .and_then(|v| v.as_bool())
+        })
+        .unwrap_or(true)
+}
+
+/// 探测后自动修正配置档位（拍板 2026-11-09：探测出当前档位被端点拒绝时
+/// **自动改写**为最近可接受档——绝不留手动填写；修正显式注记不静默）。
+///
+/// 语义：
+/// - 仅 strict（对照被 400 证实端点严格校验）且 accepted 非空时可判定；
+///   ignore（宽容端点）accepted 已作废清空 → None（无法判定不瞎修）。
+/// - 判定按方言映射后的 wire 目标（[`effort_wire_target`]）——当前档
+///   NotSent（off 族零注入）/ NotProbeable（私有键/钉档）→ None 不修正。
+/// - 候选 = 7 档（除 off）中 wire 目标 ∈ accepted 的档；取**档距最近**
+///   （EFFORT_TIERS 序下与当前档的 index 差），平距取更低档（保守方向）。
+/// - 钉档被拒（所有档同发钉值 ∉ accepted）→ 候选集空 → None：钉档是
+///   用户逃生舱，自动改它越权，诚实不修（UI 标 ? 提示）。
+fn effort_auto_fix_target(
+    model: &str,
+    api_base: &str,
+    extra_body: &serde_json::Value,
+    current_tier: &str,
+    accepted: &[String],
+) -> Option<(String, String)> {
+    use nemesis_providers::effort_translate::{EffortWireTarget, effort_wire_target};
+    let trimmed = current_tier.trim();
+    if trimmed.is_empty() || trimmed == "off" || accepted.is_empty() {
+        return None;
+    }
+    // 当前档必须确实被拒（ReasoningEffort 目标 ∉ accepted）才动。
+    let rejected_now = match effort_wire_target(model, api_base, trimmed, extra_body) {
+        EffortWireTarget::ReasoningEffort(w) => !accepted.iter().any(|a| a == w),
+        // off 族 / 私有键 / 钉档：探测数据不可判定，不动。
+        _ => false,
+    };
+    if !rejected_now {
+        return None;
+    }
+    let cur_idx = nemesis_types::capability::EFFORT_TIERS
+        .iter()
+        .position(|t| *t == trimmed)?;
+    let mut best: Option<(usize, &'static str)> = None;
+    for (i, tier) in nemesis_types::capability::EFFORT_TIERS
+        .iter()
+        .enumerate()
+        .skip(1)
+    // off 不参与（off = 不发键，不是「档位修正」目的地）
+    {
+        if let EffortWireTarget::ReasoningEffort(w) =
+            effort_wire_target(model, api_base, tier, extra_body)
+            && accepted.iter().any(|a| a == w)
+        {
+            let dist = i.abs_diff(cur_idx);
+            // 严格小于 = 平距保留先出现的更低档（保守方向）。
+            if best.is_none_or(|(d, _)| dist < d) {
+                best = Some((dist, tier));
+            }
+        }
+    }
+    best.map(|(_, t)| (trimmed.to_string(), t.to_string()))
+}
+
+/// 自动修正落盘（raw RMW）：改写 `reasoning_effort` + 在 `effort_probe`
+/// 记 `auto_fix` 显式注记（{from, to, at}）。条目按 model_name 精确命中，
+/// 不动兄弟 extras（与 [`write_effort_probe`] 同族写法）。
+fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<(), String> {
+    let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    super::config::update_raw_config(home, |cfg| {
+        let list = cfg
+            .get_mut("model_list")
+            .and_then(|v| v.as_array_mut())
+            .ok_or("config.json has no model_list")?;
+        let entry = list
+            .iter_mut()
+            .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+            .ok_or_else(|| format!("model '{name}' not found"))?;
+        entry["reasoning_effort"] = serde_json::json!(to);
+        // 注记挂 effort_probe 内（重探整体覆盖 record 时自然随旧记录消失
+        // ——新探测后要么再修（新注记）要么当前档合法（注记不再需要））。
+        if entry.get("effort_probe").is_some() {
+            entry["effort_probe"]["auto_fix"] = serde_json::json!({
+                "from": from, "to": to, "at": at,
+            });
+        }
+        Ok(())
+    })
+}
+
+/// effort 标记 + 拒绝原因注记（拍板 §五：UI 永不重建方言映射——标记与
+/// tooltip 原文都在后端按 effort_wire_target 映射好，前端只按下标取）。
+/// 返回数组与 EFFORT_TIERS（7 档）平行：`("ok"|"bad"|"unknown", note)`。
+///
+/// - NotSent（off/零注入方言）→ ok（nothing sent = nothing to reject）
+/// - NotProbeable（私有键方言 / extra_body 钉死任意值）→ unknown
+/// - ReasoningEffort(wire)：accepted 命中 → ok；rejected 命中 →
+///   bad + 端点原文（截 120 字符，tooltip 用）；都没命中 → unknown
+///
+/// 保鲜层③：effort_probe.stale=true → 判定记录整体作废（全 unknown），
+/// 等重探写盘刷新。
+fn effort_marks_and_notes(
+    model: &str,
+    api_base: &str,
+    extra_body: &serde_json::Value,
+    effort_probe: &serde_json::Value,
+) -> Vec<(&'static str, String)> {
+    use nemesis_providers::effort_translate::{EffortWireTarget, effort_wire_target};
+    let stale = effort_probe
+        .get("stale")
+        .is_some_and(|v| v.as_bool() == Some(true));
+    let accepted: Vec<&str> = if stale {
+        Vec::new()
+    } else {
+        effort_probe
+            .get("accepted")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default()
+    };
+    let rejected = if stale {
+        None
+    } else {
+        effort_probe.get("rejected").and_then(|v| v.as_object())
+    };
+    nemesis_types::capability::EFFORT_TIERS
+        .iter()
+        .map(
+            |tier| match effort_wire_target(model, api_base, tier, extra_body) {
+                EffortWireTarget::NotSent => ("ok", String::new()),
+                EffortWireTarget::NotProbeable => ("unknown", String::new()),
+                EffortWireTarget::ReasoningEffort(wire) => {
+                    if accepted.contains(&wire) {
+                        ("ok", String::new())
+                    } else if let Some(body) =
+                        rejected.and_then(|r| r.get(wire)).and_then(|v| v.as_str())
+                    {
+                        ("bad", body.chars().take(120).collect())
+                    } else {
+                        ("unknown", String::new())
+                    }
+                }
+            },
+        )
+        .collect()
+}
+
+/// 标记视图（list() 消费）：与 EFFORT_TIERS 平行的 ✓/✗/? 基座。
+pub(crate) fn effort_marks_for_entry(
+    model: &str,
+    api_base: &str,
+    extra_body: &serde_json::Value,
+    effort_probe: &serde_json::Value,
+) -> Vec<&'static str> {
+    effort_marks_and_notes(model, api_base, extra_body, effort_probe)
+        .into_iter()
+        .map(|(mark, _)| mark)
+        .collect()
+}
+
+/// 拒绝原因注记视图（list() 消费）：与 EFFORT_TIERS 平行的 tooltip
+/// 原文（仅 bad 档非空）。
+pub(crate) fn effort_notes_for_entry(
+    model: &str,
+    api_base: &str,
+    extra_body: &serde_json::Value,
+    effort_probe: &serde_json::Value,
+) -> Vec<String> {
+    effort_marks_and_notes(model, api_base, extra_body, effort_probe)
+        .into_iter()
+        .map(|(_, note)| note)
+        .collect()
+}
+
+/// effort 探针保鲜层②：gateway 启动 sweep 的候选选取（拍板 §五——
+/// 超龄重探，`agents.probe_effort_refresh_days` 默认 30，0=关）。判据：
+/// 条目带强度档（reasoning_effort 非空非 off）且 [无 effort_probe |
+/// stale=true | probed_at 超龄 | probed_at 缺失/解析失败]。images-openai
+/// 条目不进候选（probe_effort_entry 会 unsupported skip，白跑）。
+/// 读 config 失败 → 空表（启动 sweep 不该炸 gateway）。
+pub fn effort_probe_stale_entries(home: &str) -> Vec<String> {
+    let Ok(cfg) = super::config::load_config(home) else {
+        return Vec::new();
+    };
+    let days = cfg.agents.probe_effort_refresh_days;
+    if days == 0 {
+        return Vec::new();
+    }
+    let max_age = chrono::Duration::days(i64::from(days));
+    let raw_by_name = read_raw_model_entries(home).unwrap_or_default();
+    let mut out = Vec::new();
+    for m in &cfg.model_list {
+        let Some(raw) = raw_by_name.get(&m.model_name) else {
+            continue;
+        };
+        if raw.get("protocol").and_then(|v| v.as_str()) == Some("images-openai") {
+            continue;
+        }
+        let effort = raw
+            .get("reasoning_effort")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if effort.is_empty() || effort.eq_ignore_ascii_case("off") {
+            continue;
+        }
+        let needs = match raw.get("effort_probe") {
+            None => true,
+            Some(p) => {
+                if p.get("stale").and_then(|v| v.as_bool()) == Some(true) {
+                    true
+                } else {
+                    match p
+                        .get("probed_at")
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    {
+                        Some(t) => chrono::Utc::now().signed_duration_since(t) > max_age,
+                        None => true, // 无时间戳/解析失败 = 补探
+                    }
+                }
+            }
+        };
+        if needs {
+            out.push(m.model_name.clone());
+        }
+    }
+    out
+}
+
+/// 单模型思考强度档位探测执行体（probe 二期单一真相源）。三入口共用：
+/// WSAPI `models.probe_effort`（模型页按钮手动重探）/ add·update_field
+/// 保存面自动触发（`agents.probe_effort_on_save` 闸）/ CLI `model probe`
+/// 手动重探。
+///
+/// 回执形态（对齐 `probe_model_entry` 四态词汇）：
+/// `{name, status: ok|skipped|unsupported|fail, detail, lane?, probe?}`
+/// ——ok = 已写盘（`probe` 带完整记录）；skipped/unsupported = 诚实不测；
+/// fail = 基准请求失败（端点连普通 tiny 请求都服务不了，探测无意义）或
+/// 对照未定。Err 仅调用方级失败（读 config 失败 / 条目不存在）。
+pub async fn probe_effort_entry(home: &str, name: &str) -> Result<serde_json::Value, String> {
+    // 条目必须精确存在（防 resolve 推断臂造出假条目探测）。
+    let raw_cfg = super::config::read_raw_config(home)?;
+    let entry = raw_cfg
+        .get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|list| {
+            list.iter()
+                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+        })
+        .ok_or_else(|| format!("model '{name}' not found"))?;
+    let proto = entry
+        .get("protocol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if nemesis_types::capability::is_image_protocol(&proto) {
+        return Ok(serde_json::json!({
+            "name": name,
+            "status": "unsupported",
+            "detail": "图像生成条目不能对话探测（仅供 generate_image 工具消费）",
+            "lane": "images-openai",
+        }));
+    }
+
+    // 与 set_default 热切同源的解析 + lane 闸：只有 HttpCompat（openai
+    // 兼容）lane 适用标准键探测——其余 lane 诚实 skip（§五诚实边界）。
+    let swap = match ModelsHandler::canonical_swap_params(&raw_cfg, name) {
+        Ok(s) => s,
+        Err(e) => {
+            return Ok(serde_json::json!({
+                "name": name, "status": "fail", "kind": "config", "detail": e,
+            }));
+        }
+    };
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: swap.proxy.clone(),
+        llm_ref: swap.llm_ref.clone(),
+        api_key: swap.api_key.clone(),
+        api_base: swap.api_base.clone(),
+        workspace: String::new(),
+        connect_mode: swap.connect_mode.clone(),
+        protocol: swap.protocol.clone(),
+        timeout_secs: swap.timeout_secs,
+        stream_mode: swap.stream_mode.clone(),
+        cache_breakpoints: swap.cache_breakpoints,
+        extra_body: swap.extra_body.clone(),
+        account_id: String::new(),
+        headers: std::collections::HashMap::new(),
+    };
+    let (lane, provider) =
+        match nemesis_providers::factory::resolve_provider_selection(&factory_cfg) {
+            Ok(sel) => {
+                let label = lane_label(sel.provider_type);
+                if sel.provider_type != nemesis_providers::factory::ProviderType::HttpCompat {
+                    return Ok(serde_json::json!({
+                        "name": name, "status": "skipped", "lane": label,
+                        "detail": format!(
+                            "lane 不适用标准键探测（{}）——anthropic 预算映射依赖运行期 \
+                             max_tokens、CLI 型 lane 无 HTTP 请求面，静态 tiny 探针测不准",
+                            label
+                        ),
+                    }));
+                }
+                match nemesis_providers::factory::create_provider(&factory_cfg) {
+                    Ok(p) => (label, p),
+                    Err(e) => {
+                        return Ok(serde_json::json!({
+                            "name": name, "status": "fail", "kind": "config", "detail": e,
+                        }));
+                    }
+                }
+            }
+            Err(e) => {
+                return Ok(serde_json::json!({
+                    "name": name, "status": "fail", "kind": "config", "detail": e,
+                }));
+            }
+        };
+
+    // 基准请求（无 effort 键）：端点连普通 tiny 请求都服务不了（鉴权/
+    // 网络/形状问题）时整轮探测无意义——先建立基准面，之后每个 4xx 都
+    // 可归因到档位值本身（请求形状已被基准排除）。
+    let messages = vec![nemesis_providers::types::Message::text("user", "hi")];
+    let base_options = nemesis_providers::types::ChatOptions {
+        max_tokens: Some(1),
+        ..Default::default()
+    };
+    let baseline = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        provider.chat(&messages, &[], &swap.model, &base_options),
+    )
+    .await;
+    if !matches!(baseline, Ok(Ok(_))) {
+        let detail = match baseline {
+            Err(_) => "基准请求超时（30s）——端点无响应".to_string(),
+            Ok(Err(e)) => format!("基准请求失败（探测无意义，先修端点连通性）: {e}"),
+            Ok(Ok(_)) => unreachable!(),
+        };
+        tracing::warn!("[Models] effort probe baseline failed for {name}: {detail}");
+        return Ok(serde_json::json!({
+            "name": name, "status": "fail", "kind": "baseline", "lane": lane,
+            "detail": detail,
+        }));
+    }
+
+    // 7 个并发 tiny 请求（6 wire 值 + 对照假值）。max_tokens:1 钳死输出；
+    // 原始 wire 值走 per_request_extra_body 上线（不经方言翻译）。
+    // 单请求 30s 预算：拒绝（4xx）即时返回，接受但慢的推理端点给足
+    // 余量——超时按单档未定处理（不污染其他档）。
+    // 借用先行：async move 捕获的是引用值本身（Copy）——7 个 future 各持
+    // 同一借用的拷贝，底层 Arc/Vec 不移动。
+    let provider_ref = &provider;
+    let messages_ref = &messages;
+    let model_ref: &str = swap.model.as_str();
+    let tier_futs: Vec<_> = EFFORT_PROBE_CANDIDATES
+        .iter()
+        .map(|wire| {
+            let options = nemesis_providers::types::ChatOptions {
+                max_tokens: Some(1),
+                per_request_extra_body: Some(serde_json::json!({
+                    "reasoning_effort": wire,
+                })),
+                ..Default::default()
+            };
+            async move {
+                (
+                    *wire,
+                    fire_probe_request(provider_ref, messages_ref, model_ref, &options).await,
+                )
+            }
+        })
+        .collect();
+    let control_options = nemesis_providers::types::ChatOptions {
+        max_tokens: Some(1),
+        per_request_extra_body: Some(serde_json::json!({
+            "reasoning_effort": EFFORT_PROBE_CONTROL,
+        })),
+        ..Default::default()
+    };
+    let control_fut = async move {
+        (
+            "control" as &'static str,
+            fire_probe_request(provider_ref, messages_ref, model_ref, &control_options).await,
+        )
+    };
+    let (tier_outcomes, control_outcome) =
+        tokio::join!(futures::future::join_all(tier_futs), control_fut);
+
+    // 归类：control 单独拎出对照判定。
+    let mut tier_results: Vec<(&'static str, EffortProbeVerdict)> = Vec::new();
+    for (wire, outcome) in tier_outcomes {
+        let verdict = match outcome {
+            Ok(_) => EffortProbeVerdict::Accepted,
+            Err(e) => classify_probe_error(&e),
+        };
+        tier_results.push((wire, verdict));
+    }
+    let control_verdict = match control_outcome.1 {
+        Ok(_) => EffortProbeVerdict::Accepted,
+        Err(e) => classify_probe_error(&e),
+    };
+
+    // 对照判别聚合（拍板 §五）——None = 对照未定，不写盘。
+    let Some((record, summary)) = aggregate_effort_probe(&tier_results, &control_verdict) else {
+        let detail = "对照请求传输类失败（网络/鉴权/限流），探测不可信——未写盘";
+        tracing::warn!("[Models] effort probe inconclusive for {name}: {detail}");
+        return Ok(serde_json::json!({
+            "name": name, "status": "fail", "kind": "inconclusive", "lane": lane,
+            "detail": detail,
+        }));
+    };
+
+    write_effort_probe(home, name, &record)?;
+    // C · 探测后自动修正（拍板 2026-11-09「千万不能让用户手动去填」）：
+    // strict 判定下当前配置档位的 wire 目标被端点拒绝 → 自动改写为最近
+    // 可接受档（平距取低，保守方向），注记 effort_probe.auto_fix 留痕。
+    let control = record
+        .get("control")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let accepted: Vec<String> = record
+        .get("accepted")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let current_effort = entry
+        .get("reasoning_effort")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let auto_fix = if control == "strict" {
+        effort_auto_fix_target(
+            &swap.model,
+            &swap.api_base,
+            &swap.extra_body,
+            &current_effort,
+            &accepted,
+        )
+    } else {
+        None
+    };
+    if let Some((from, to)) = &auto_fix {
+        apply_effort_autofix(home, name, from, to)?;
+        tracing::warn!(
+            "[Models] effort auto-fix applied for {name}: {from} -> {to} (probe detected endpoint rejection)"
+        );
+    }
+    tracing::info!(
+        "[Models] effort probe written for {name}: control={}, accepted={:?}, rejected={}",
+        record
+            .get("control")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?"),
+        record.get("accepted").cloned().unwrap_or_default(),
+        record
+            .get("rejected")
+            .and_then(|v| v.as_object())
+            .map(|m| m.len())
+            .unwrap_or(0)
+    );
+    let mut receipt = serde_json::json!({
+        "name": name, "status": "ok", "lane": lane,
+        "probe": record, "detail": summary,
+    });
+    if let Some((from, to)) = &auto_fix {
+        receipt["auto_fix"] = serde_json::json!({ "from": from, "to": to });
+    }
+    Ok(receipt)
+}
+
+/// 单次探测请求（30s 墙钟预算 + 错误字符串化——分类在调用方纯函数侧）。
+async fn fire_probe_request(
+    provider: &std::sync::Arc<dyn nemesis_providers::router::LLMProvider>,
+    messages: &[nemesis_providers::types::Message],
+    model: &str,
+    options: &nemesis_providers::types::ChatOptions,
+) -> Result<(), String> {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        provider.chat(messages, &[], model, options),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("timeout (30s)".to_string()),
+    }
+}
+
 /// B39 启动缺 key 主动提问的应答执行体（nemesisbot runtime 装配期调用，
 /// pub 供跨 crate）：写 key 进 config 对应条目（raw RMW 保留兄弟 extras，
 /// 与 add/set_default 同一事务口）→ [`ModelsHandler::apply_runtime_swap`]
@@ -1931,3 +2643,10 @@ mod migrate_keys_tests;
 // runtime_fill_model_key 写盘+热切+条目不存在回滚。
 #[cfg(test)]
 mod b39_probe_tests;
+
+// effort 探针（probe 二期，2026-11-09）：判定纯函数（状态码分类/对照
+// 判别/记录写盘 round-trip + 重探覆盖）+ 标记/注记渲染矩阵（方言 ceil/
+// 私有键/stale/钉死）+ 启动 sweep 候选选取 + probe_effort_entry 回执形态
+// （缺条目/图像/非 HttpCompat skip/基准失败）+ list 标记面。
+#[cfg(test)]
+mod effort_probe_tests;

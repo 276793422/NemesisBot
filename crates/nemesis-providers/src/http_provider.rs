@@ -331,6 +331,17 @@ impl HttpProvider {
             &self.config.extra_body,
         );
 
+        // per-request extra_body（effort probe 专用，2026-11-09）：最末段
+        // 合并 = 级别最高（键级覆盖方言翻译与条目 extra_body）——探测请求
+        // 的原始 wire 值不被任何层改写。None = 无操作（生产链路零变化）。
+        if let Some(extra) = &options.per_request_extra_body
+            && let Some(map) = extra.as_object()
+        {
+            for (k, v) in map {
+                body[k] = v.clone();
+            }
+        }
+
         body
     }
 

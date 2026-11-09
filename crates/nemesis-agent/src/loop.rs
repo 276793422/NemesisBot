@@ -1512,6 +1512,11 @@ mod recovery_estop_tests;
 // 恢复重试上同样生效）。
 #[cfg(test)]
 mod recovery_supply_gate_tests;
+// effort 400 恢复面回归锁（拍板 2026-11-09 A/B）：retry_effort_stripped
+// 剥键回落单发语义（成功 = Ok(Some)+stale 落盘 / 失败 = Ok(None) 单发
+// / 急停环顶闸零调用）+ effort_probe_accepted_at 读核（None vs 空数组判别）。
+#[cfg(test)]
+mod recovery_effort_tests;
 // 中间轮正文事件（RoundText）发布语义测试（带叙述的
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]

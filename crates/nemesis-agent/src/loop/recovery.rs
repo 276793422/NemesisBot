@@ -367,7 +367,8 @@ impl AgentLoop {
                     // Err = 中断终局事件（Done 取消/急停），直接上抛给骨架
                     // push + 结束本 turn（与首呼两臂同型）；Ok 走既有耗尽
                     // 终局路径。
-                    let (maybe_resp, last_err) = if is_rate_limit_error || classified_rate_limit {
+                    let (maybe_resp, mut last_err) = if is_rate_limit_error || classified_rate_limit
+                    {
                         match self
                             .retry_rate_limited(
                                 context,
@@ -403,11 +404,73 @@ impl AgentLoop {
                             Err(ev) => return Err(ev),
                         }
                     } else {
-                        (None, err.clone())
+                        // B · 400 剥键回落重试（拍板 2026-11-09「千万不能
+                        // 让用户手动去填」）：请求带非空非 off 强度档且端点
+                        // 回 400（档位被拒）→ 剥掉 effort 键（= 端点默认
+                        // 档，保守方向）重试一发。成功 = 本 turn 恢复执行
+                        // 不中断；回落失败/闸拦 → 终局路径（错误文案由
+                        // 下方 A 增强附探测建议）。
+                        let effort_attached = chat_opts
+                            .reasoning_effort
+                            .as_deref()
+                            .is_some_and(|e| !e.is_empty() && e != "off");
+                        let effort_rejected_400 =
+                            nemesis_utils::llm_error_class::extract_http_status(&err) == Some(400);
+                        if effort_attached && effort_rejected_400 {
+                            match self
+                                .retry_effort_stripped(
+                                    instance,
+                                    context,
+                                    &active_provider,
+                                    active_model,
+                                    chat_opts,
+                                    cancel_token,
+                                    stream_sink.as_deref(),
+                                )
+                                .await
+                            {
+                                Ok(Some(resp)) => (Some(resp), String::new()),
+                                Ok(None) => (None, err.clone()),
+                                Err(ev) => return Err(ev),
+                            }
+                        } else {
+                            (None, err.clone())
+                        }
                     };
                     if let Some(resp) = maybe_resp {
                         resp
                     } else {
+                        // effort 探针保鲜层③（2026-11-09）：请求带强度档
+                        // 且端点回 400 → 旧探针判定失真（词表拒绝/方言失配/
+                        // 上游改校验），标 stale 让 UI 回落 ?。best-effort
+                        // ——标记失败不影响终局语义。
+                        if let Some(effort) = chat_opts.reasoning_effort.as_deref()
+                            && !effort.is_empty()
+                            && effort != "off"
+                            && nemesis_utils::llm_error_class::extract_http_status(&last_err)
+                                == Some(400)
+                        {
+                            // A · 400 文案附探测建议（拍板 2026-11-09）：
+                            // 标记前先读 accepted（标记只写 stale 位不碰
+                            // accepted，先后均可——读放前面是声明意图：
+                            // 建议取自撞 400 时的记录快照）。
+                            let accepted_hint = self.effort_probe_accepted(active_model);
+                            self.mark_effort_probe_stale(active_model);
+                            if let Some(accepted) = accepted_hint {
+                                if accepted.is_empty() {
+                                    // control=ignore：宽容端点，accepted 已
+                                    // 作废清空——改口「档位实际不生效」。
+                                    last_err.push_str(
+                                        "（实测：该端点不校验思考档位键，宽容型——档位实际不生效）",
+                                    );
+                                } else {
+                                    last_err.push_str(&format!(
+                                        "（实测可用思考档位：{}；或选 off 关闭思考档）",
+                                        accepted.join("/")
+                                    ));
+                                }
+                            }
+                        }
                         // Non-transient error, or transient retries exhausted.
                         warn!("[AgentLoop] LLM call failed: {}", last_err);
                         let error_round = turns_used + 1;
@@ -1087,6 +1150,92 @@ impl AgentLoop {
             };
         }
         Ok((maybe_resp, last_err))
+    }
+
+    /// B · 400 剥键回落重试（拍板 2026-11-09「千万不能让用户手动去填」）：
+    /// 调用方已确认 400 且请求带非空非 off 强度档——剥掉 `reasoning_effort`
+    /// 键（= off = 端点默认档，保守方向）重试**一发**，不循环（回落再撞
+    /// 400 说明问题不止档位键，盲试只是烧预算）。成功 = 本 turn 恢复执行
+    /// 并标 stale（UI 显「探针已失效，请重探」→ 重探走 C 自动修正闭环，
+    /// 不往 LLM 回复里掺注记文本）；失败 = `Ok(None)` 落回调用方终局
+    /// 路径（原 400 文案 + A 增强）。环顶三闸 + 调用包 cancel/estop 臂
+    /// 与 retry_transient 同型。
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn retry_effort_stripped(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        active_provider: &Arc<dyn LlmProvider>,
+        active_model: &str,
+        chat_opts: &crate::types::ChatOptions,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        stream_sink: Option<&ProviderStreamSink>,
+    ) -> Result<Option<LlmResponse>, AgentEvent> {
+        // 环顶三闸（stop/取消/急停后不再发起任何新调用）。
+        if self.stop_token.is_cancelled() {
+            return Ok(None);
+        }
+        if cancel_token.is_cancelled() {
+            return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+        }
+        if self.security.is_engaged() {
+            return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
+        }
+        let mut estop_rx = self.security.subscribe();
+        self.bump_session_stats(
+            &context.session_key,
+            crate::session_stats::StatCounter::Retries,
+        );
+        info!(
+            "[AgentLoop] effort 档位被端点拒绝（400），剥键回落重试一次：model={} effort={:?}",
+            active_model, chat_opts.reasoning_effort
+        );
+        let mut stripped = chat_opts.clone();
+        stripped.reasoning_effort = None;
+        let r_msgs = self.build_messages(instance);
+        let r_tools = self.effective_tool_defs(instance);
+        let call_timeout = self.current_provider_call_timeout_secs();
+        let chat_result = tokio::select! {
+            result = self.chat_call_escalating(
+                call_timeout,
+                active_provider,
+                active_model,
+                r_msgs,
+                Some(stripped),
+                r_tools,
+            ) => result,
+            // 调用包 cancel/estop 臂（与首呼/重试环同构）；chat future
+            // 被 drop 时包装器 Err 臂没机会跑，sink 显式补 error 帧让
+            // 前端流半开收口。
+            _ = cancel_token.cancelled() => {
+                if let Some(sink) = stream_sink {
+                    sink.error(CANCEL_SINK_MSG);
+                }
+                return Err(AgentEvent::Done(CANCEL_DONE_MSG.to_string()));
+            }
+            _ = Self::wait_estop_engaged(estop_rx.as_mut()) => {
+                if let Some(sink) = stream_sink {
+                    sink.error(ESTOP_SINK_MSG);
+                }
+                return Err(AgentEvent::Done(ESTOP_DONE_MSG.to_string()));
+            }
+        };
+        match chat_result {
+            Ok(resp) => {
+                // 回落成功也标 stale（保鲜层③）：端点刚证明它严格校验该
+                // 键（拒绝配置值），探针记录与之冲突时 UI 以 ? 提示重探
+                // ——重探后 C 自动修正配置，下一轮 check_config_reload
+                // 捡到新档位自愈。best-effort：标记失败不影响本 turn。
+                self.mark_effort_probe_stale(active_model);
+                Ok(Some(resp))
+            }
+            Err(e) => {
+                // 不吞也不换文案：终局仍展示原 400（根因更准），回落
+                // 失败只进日志现场。
+                info!("[AgentLoop] effort 剥键回落重试仍失败: {}", e);
+                Ok(None)
+            }
+        }
     }
 
     /// 器官 4c：transient 退避环（原 is_transient_error 臂整体搬入）。P3B

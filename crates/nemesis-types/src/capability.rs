@@ -315,10 +315,23 @@ pub fn resolve_pre_pause_probe(cfg: &serde_json::Value) -> PrePauseProbeSettings
     }
 }
 
+/// 统一思考强度值域（2026-11-09 值域扩档拍板：7 档，对齐 OpenAI
+/// `reasoning_effort` 官方枚举上界；`none` 不单列——`off` 即「关」语义 =
+/// 不发键）。**单一真相源**：WSAPI `chat.set_effort` 校验、`models
+/// update_field` 校验、`Effort::parse`（nemesis-providers）全部对齐本清单，
+/// 加档只改这里 + 各方言映射行。
+pub const EFFORT_TIERS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/// 统一值域校验（大小写不敏感，trim 容忍前后空白）。
+pub fn valid_effort(s: &str) -> bool {
+    EFFORT_TIERS.contains(&s.trim().to_ascii_lowercase().as_str())
+}
+
 /// (half): resolve the per-model `reasoning_effort` tier for the
 /// active model alias. Mirrors [`resolve_max_output_tokens`]: finds the
 /// matching `model_list[]` entry and returns its `reasoning_effort` string
-/// ("off"|"low"|"medium"|"high"); None/empty → None (send nothing).
+/// (one of [`EFFORT_TIERS`]); None/empty/"off" → None (send nothing);
+/// unknown values → None (defensive: garbage config never injects keys).
 pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> Option<String> {
     let e = find_model_entry(cfg, active_alias)
         .and_then(|m| m.get("reasoning_effort"))
@@ -327,7 +340,7 @@ pub fn resolve_reasoning_effort(cfg: &serde_json::Value, active_alias: &str) -> 
         .unwrap_or_default();
     match e.as_str() {
         "" | "off" => None,
-        tier @ ("low" | "medium" | "high") => Some(tier.to_string()),
+        tier if EFFORT_TIERS.contains(&tier) => Some(tier.to_string()),
         _ => None,
     }
 }

@@ -185,6 +185,7 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
             top_p: None,
             stop: None,
             reasoning_effort: None,
+            per_request_extra_body: None,
             extra: std::collections::HashMap::new(),
         };
         let resp = self

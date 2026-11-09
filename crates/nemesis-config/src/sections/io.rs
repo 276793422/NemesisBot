@@ -476,6 +476,8 @@ pub fn default_config() -> Config {
             stream_concat_retry: true,
             profession_tool_fence: true,
             lazy_tool_schema: None,
+            probe_effort_on_save: true,
+            probe_effort_refresh_days: default_probe_effort_refresh_days(),
             executor_tool_timeout_secs: default_executor_tool_timeout_secs(),
             defaults: AgentDefaults {
                 workspace: ws,

@@ -1292,6 +1292,106 @@ impl AgentLoop {
             self.sync_codemode_registration(&cm);
         }
     }
+
+    /// effort 探针保鲜层③（2026-11-09）：真实使用中端点对强度值打 400
+    /// （词表拒绝/方言失配/上游改了校验规则）→ 把该模型条目的
+    /// `effort_probe` 标 `stale: true`。读侧面（`effort_marks_for_entry`）
+    /// 见到 stale 即全档回落 ?（诚实未知），等重探（保存面/启动 sweep/
+    /// 手动 `model probe`）写盘刷新。
+    ///
+    /// best-effort：写失败（config 路径未知/盘 IO/并发写竞态）只 debug
+    /// ——失效标记绝不影响 agent turn 的终局语义。标记只加不清（重探
+    /// 是整记录覆盖写，stale 自然消失）。
+    pub(crate) fn mark_effort_probe_stale(&self, model_name: &str) {
+        let Some(path) = self.config_path.read().clone() else {
+            return;
+        };
+        mark_effort_probe_stale_at(&path, model_name);
+    }
+
+    /// A · 400 文案附探测建议（2026-11-09）的读侧：取该模型条目
+    /// `effort_probe.accepted`（原始 wire 值）。None = 无探针记录（无
+    /// 建议可附）；`Some(vec![])` = control=ignore 宽容端点（accepted
+    /// 已作废清空，建议文案据此改口「档位实际不生效」）。best-effort
+    /// 读盘：任何失败返回 None，绝不影响终局语义。
+    pub(crate) fn effort_probe_accepted(&self, model_name: &str) -> Option<Vec<String>> {
+        let path = self.config_path.read().clone()?;
+        effort_probe_accepted_at(&path, model_name)
+    }
+}
+
+/// [`AgentLoop::mark_effort_probe_stale`] 的自由函数核（单一真相源，
+/// 方法只供 config 路径；自由形态供单测直测——不必造 AgentLoop）。
+/// 读 → 找精确条目 → `effort_probe.stale=true`（幂等：已标过不重写）→
+/// 原子语义化写回。任何 IO/解析失败静默 return（best-effort 标记绝不
+/// 影响 agent turn）。
+pub(crate) fn mark_effort_probe_stale_at(path: &std::path::Path, model_name: &str) {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        debug!(
+            "[AgentLoop] effort stale mark: config unreadable at {}",
+            path.display()
+        );
+        return;
+    };
+    let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let Some(list) = cfg.get_mut("model_list").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    let mut marked = false;
+    for entry in list.iter_mut() {
+        let is_target = entry.get("model_name").and_then(|v| v.as_str()) == Some(model_name);
+        if !is_target {
+            continue;
+        }
+        if let Some(probe) = entry
+            .get_mut("effort_probe")
+            .and_then(|v| v.as_object_mut())
+        {
+            if probe.get("stale").and_then(|v| v.as_bool()) == Some(true) {
+                return; // 已标记过，不重复写盘
+            }
+            probe.insert("stale".into(), serde_json::Value::Bool(true));
+            marked = true;
+        }
+        break; // 精确命中（含无 effort_probe 条目）：不扫后续
+    }
+    if !marked {
+        return; // 条目无 effort_probe = 无可失效判定
+    }
+    if let Ok(pretty) = serde_json::to_string_pretty(&cfg)
+        && std::fs::write(path, pretty).is_err()
+    {
+        debug!(
+            "[AgentLoop] effort stale mark: config write failed at {}",
+            path.display()
+        );
+    }
+}
+
+/// [`AgentLoop::effort_probe_accepted`] 的自由函数核（单一真相源，方法
+/// 只供 config 路径；自由形态供单测直测——不必造 AgentLoop）。读 → 找
+/// 精确条目 → 取 `effort_probe.accepted` 数组。任何 IO/解析失败返回
+/// None（best-effort 建议绝不影响 agent turn）。
+pub(crate) fn effort_probe_accepted_at(
+    path: &std::path::Path,
+    model_name: &str,
+) -> Option<Vec<String>> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let cfg = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    let list = cfg.get("model_list")?.as_array()?;
+    let entry = list
+        .iter()
+        .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(model_name))?;
+    let accepted = entry
+        .get("effort_probe")?
+        .get("accepted")?
+        .as_array()?
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    Some(accepted)
 }
 
 /// 开关解析纯函数（统一定义，[`AgentLoop::current_stream_concat_retry`]

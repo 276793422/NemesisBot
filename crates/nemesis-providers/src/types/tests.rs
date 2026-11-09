@@ -359,6 +359,7 @@ fn test_chat_options_with_extra() {
         top_p: Some(0.9),
         stop: Some(vec!["END".to_string()]),
         reasoning_effort: None,
+        per_request_extra_body: None,
         extra,
     };
     assert_eq!(opts.temperature, Some(0.7));

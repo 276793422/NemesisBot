@@ -696,6 +696,10 @@ fn test_full_config_roundtrip() {
             stream_concat_retry: true,
             profession_tool_fence: true,
             lazy_tool_schema: None,
+            // 思考强度 probe 二期两键（serde 缺省 true/30）——全字段
+            // 初始化器补齐（值对齐 lib.rs Default）。
+            probe_effort_on_save: true,
+            probe_effort_refresh_days: 30,
             executor_tool_timeout_secs: 1800,
             defaults: AgentDefaults {
                 max_tokens: 256000,

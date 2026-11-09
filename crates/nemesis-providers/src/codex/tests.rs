@@ -204,8 +204,9 @@ fn test_build_request_body_reasoning_effort_translation() {
     );
     assert_eq!(body["reasoning"]["effort"], "low", "{}", body);
 
-    // 合法档原样透传。
-    for tier in ["low", "medium", "high"] {
+    // 合法档原样透传（2026-11-09 七档扩档：minimal/xhigh/max 入统一值域；
+    // 端点词表缺口由 effort_downgrade_target 自愈降档兜底）。
+    for tier in ["minimal", "low", "medium", "high", "xhigh", "max"] {
         let body = provider.build_request_body(
             &messages,
             &[],

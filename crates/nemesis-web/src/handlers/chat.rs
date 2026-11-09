@@ -161,11 +161,10 @@ impl ModuleHandler for ChatHandler {
             })));
         }
         // G3（2026-11-09）：会话级思考强度 override。data.effort =
-        // "off"|"low"|"medium"|"high"（设置）| null / 缺省（清除回落
-        // config 模型级值）。仅内存态（重启清空）；按会话分键——同 loop
+        // EFFORT_TIERS 七档之一（设置）| null / 缺省（清除回落 config
+        // 模型级值）。仅内存态（重启清空）；按会话分键——同 loop
         // 其他会话不受牵连。生效点 = 下一轮 LLM 请求组装（chat_opts）。
         if cmd == "set_effort" {
-            const LEGAL: [&str; 4] = ["off", "low", "medium", "high"];
             let effort = data.as_ref().and_then(|d| d.get("effort"));
             match effort {
                 None | Some(serde_json::Value::Null) => {
@@ -174,9 +173,10 @@ impl ModuleHandler for ChatHandler {
                 }
                 Some(serde_json::Value::String(s)) => {
                     let v = s.trim().to_ascii_lowercase();
-                    if !LEGAL.contains(&v.as_str()) {
+                    if !nemesis_types::capability::valid_effort(&v) {
                         return Err(format!(
-                            "unknown effort: {s:?} (expected \"off\" | \"low\" | \"medium\" | \"high\" | null)"
+                            "unknown effort: {s:?} (expected one of: {} | null)",
+                            nemesis_types::capability::EFFORT_TIERS.join(" | ")
                         ));
                     }
                     agent_loop.set_session_effort(&session_key, Some(v));

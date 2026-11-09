@@ -411,14 +411,19 @@ pub struct ChatOptions {
     pub top_p: Option<f64>,
     pub stop: Option<Vec<String>>,
     pub extra: HashMap<String, serde_json::Value>,
-    /// (half): reasoning-effort tier ("low"|"medium"|"high"; None =
-    /// send nothing). Providers translate as their wire format requires
-    /// (OpenAI-compatible: `reasoning_effort`; Anthropic: `thinking`
-    /// budget_tokens via a fixed tier→budget map). 杂务调用另有 "off"
-    /// （关思考省输出预算，见 bypass_llm::aux_chat_options）——各 lane
-    /// 自行翻译（anthropic=thinking disabled；codex=minimal/low；
-    /// openai_compat 不发，非法枚举防 400）。
+    /// (half): reasoning-effort tier（值域 = `nemesis_types::capability::
+    /// EFFORT_TIERS` 7 档单一真相源；None = send nothing）。Providers
+    /// translate as their wire format requires (OpenAI-compatible:
+    /// `reasoning_effort`；Anthropic: `thinking` budget_tokens via a fixed
+    /// tier→budget map). 杂务调用另有 "off"（关思考省输出预算，见
+    /// bypass_llm::aux_chat_options）——各 lane 自行翻译。
     pub reasoning_effort: Option<String>,
+    /// per-request extra_body 合并（effort probe 专用，2026-11-09）：None =
+    /// 无操作，生产链路零影响。Some(对象) 在 body 组装**最末段**浅合并——
+    /// 级别高于方言翻译与条目 extra_body 逃生舱（键级覆盖），让探测请求
+    /// 把**原始 wire 值**（含 `zzz-not-a-tier` 对照假值）字节精确送上线，
+    /// 不被方言翻译改写。仅 HttpCompat lane 消费。
+    pub per_request_extra_body: Option<serde_json::Value>,
 }
 
 /// Model configuration with primary model and fallback list.

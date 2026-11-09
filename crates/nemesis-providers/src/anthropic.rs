@@ -400,14 +400,20 @@ impl AnthropicProvider {
         // `thinking: {type: "disabled"}`——不发块的旧语义留给服务端默认，
         // 而 GLM 等兼容端点默认开思考，思考 token 计入 max_tokens 会烧穿
         // 杂务预算（真机 mt=64 5/5 空输出实证）。unknown 值
-        // 仍发空（不猜）。主循环 effort 只会是 low/medium/high/None。
+        // 仍发空（不猜）。主循环 effort = EFFORT_TIERS 七档（2026-11-09
+        // 值域扩档）或 None。
         if let Some(ref effort) = options.reasoning_effort {
             match effort.as_str() {
-                tier @ ("low" | "medium" | "high") => {
+                // 固定预算阶梯（×4 递进）：minimal 与 low 同 1024——API 思考
+                // 预算下限就是 1024，更低不诚实；xhigh/max 给顶档真实增量。
+                // budget ≥ max_tokens 的钳制由 thinking_budget_under_max 兜底。
+                tier @ ("minimal" | "low" | "medium" | "high" | "xhigh" | "max") => {
                     let mapped: i64 = match tier {
-                        "low" => 1024,
+                        "minimal" | "low" => 1024,
                         "medium" => 4096,
-                        _ => 16384,
+                        "high" => 16384,
+                        "xhigh" => 32768,
+                        _ => 65536,
                     };
                     if let Some(budget) = Self::thinking_budget_under_max(mapped, max_tokens) {
                         body["thinking"] = serde_json::json!({

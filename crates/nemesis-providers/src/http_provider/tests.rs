@@ -1407,6 +1407,7 @@ async fn test_chat_stream_with_custom_options() {
         top_p: Some(0.9),
         stop: Some(vec!["END".to_string()]),
         reasoning_effort: None,
+        per_request_extra_body: None,
         extra: HashMap::new(),
     };
 
@@ -1497,6 +1498,7 @@ async fn test_chat_with_custom_options() {
         top_p: Some(0.9),
         stop: Some(vec!["STOP".to_string()]),
         reasoning_effort: None,
+        per_request_extra_body: None,
         extra: HashMap::new(),
     };
 
@@ -2387,4 +2389,76 @@ async fn test_b3_stream_think_stripper_emits_closed_block_fragment() {
         .find(|c| c.finish_reason.is_some())
         .expect("must have final chunk");
     assert_eq!(fin.reasoning_content.as_deref(), Some("secret plan"));
+}
+
+// ---- per-request extra_body 合并（effort probe 消费面，2026-11-09 二期）----
+
+#[test]
+fn test_per_request_extra_body_overrides_config_pin_and_dialect() {
+    // 探测请求必须把原始 wire 值字节精确送上线：级别最高（键级覆盖方言
+    // 翻译与条目 extra_body 逃生舱）。三重覆盖验证：
+    // ① 方言翻译产物（GLM thinking 合流）被覆盖；
+    // ② 条目 extra_body 钉档被覆盖；
+    // ③ 对照假值 zzz-not-a-tier 原样通过（不被任何层清洗）。
+    let config = HttpProviderConfig {
+        stream_mode: String::new(),
+        name: "test".to_string(),
+        base_url: "https://open.bigmodel.cn/api/paas/v4".to_string(),
+        api_key: "k".to_string(),
+        default_model: "glm-5.3-flash".to_string(),
+        timeout_secs: 30,
+        headers: HashMap::new(),
+        proxy: None,
+        preserve_prefix: false,
+        // 条目逃生舱钉档（用户配置）——探测必须能盖过它。
+        extra_body: serde_json::json!({ "reasoning_effort": "low" }),
+    };
+    let provider = HttpProvider::new(config.clone());
+    let messages = vec![Message::text("user", "hi")];
+
+    let options = ChatOptions {
+        reasoning_effort: Some("high".to_string()), // 会触发方言翻译 high
+        per_request_extra_body: Some(serde_json::json!({ "reasoning_effort": "zzz-not-a-tier" })),
+        ..Default::default()
+    };
+    let body = provider.build_request_body(&messages, &[], "glm-5.3-flash", &options, false);
+    assert_eq!(
+        body["reasoning_effort"],
+        serde_json::json!("zzz-not-a-tier"),
+        "per-request 必须盖过方言翻译与条目钉档"
+    );
+
+    // None = 无操作：钉档照常赢过方言翻译（一期既有语义——extra_body
+    // 逃生舱级别高于方言合并；per-request 只在最末段再盖一层）。
+    let options_plain = ChatOptions {
+        reasoning_effort: Some("high".to_string()),
+        ..Default::default()
+    };
+    let body_plain =
+        provider.build_request_body(&messages, &[], "glm-5.3-flash", &options_plain, false);
+    assert_eq!(
+        body_plain["reasoning_effort"],
+        serde_json::json!("low"),
+        "无 per-request 时条目钉档保持最高（生产链路字节不变）"
+    );
+
+    // 无钉档 provider + None → 方言翻译正常生效（GLM ceil：high→high）。
+    let provider_nopin = HttpProvider::new(HttpProviderConfig {
+        extra_body: serde_json::Value::Null,
+        ..config.clone()
+    });
+    let body_dialect =
+        provider_nopin.build_request_body(&messages, &[], "glm-5.3-flash", &options_plain, false);
+    assert_eq!(
+        body_dialect["reasoning_effort"],
+        serde_json::json!("high"),
+        "无钉档时方言翻译产物不变（生产零影响回归面）"
+    );
+
+    // 无 reasoning_effort 配置 + None → 零注入（body 无该键；用无钉档
+    // provider——钉档自身会注入键，不能混用）。
+    let options_none = ChatOptions::default();
+    let body_none =
+        provider_nopin.build_request_body(&messages, &[], "glm-5.3-flash", &options_none, false);
+    assert!(body_none.get("reasoning_effort").is_none());
 }

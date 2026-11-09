@@ -46,22 +46,46 @@ pub fn apply_effort_to_body(
 // ---------------------------------------------------------------------------
 
 /// 统一档位（解析一次，词条免重复拆串；大小写不敏感，未知值不进词条）。
+/// 统一思考强度档位（2026-11-09 值域扩档：7 档对齐 OpenAI 官方枚举上界；
+/// `none` 不单列）。值域清单单一真相源 = `nemesis-types::capability::
+/// EFFORT_TIERS`（tests 契约钉住两侧同步）；方言 apply 按变体穷尽 match，
+/// 编译器穷尽检查 = 新增档位漏改方言必编译失败。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Effort {
+    /// 关（不发键；关不掉的方言族诚实跳过注入）。
     Off,
+    Minimal,
     Low,
     Medium,
     High,
+    XHigh,
+    Max,
 }
 
 impl Effort {
     fn parse(s: &str) -> Option<Self> {
-        match s.to_ascii_lowercase().as_str() {
+        match s.to_ascii_lowercase().trim() {
             "off" => Some(Self::Off),
+            "minimal" => Some(Self::Minimal),
             "low" => Some(Self::Low),
             "medium" => Some(Self::Medium),
             "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
             _ => None,
+        }
+    }
+
+    /// wire 值（OpenAI 官方枚举原样；fallback 词条恒等直传用）。
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 }
@@ -96,17 +120,22 @@ static REGISTRY: &[Dialect] = &[
         matches: is_deepseek_reasoner,
         apply: apply_silent,
     },
-    // GLM-5.x 恒思考族（2026-11-09 实机探测，bigmodel v4 端点）：glm-5
-    // 前缀（glm-5.3 / glm-5.3-flash 实测）不支持关闭思考——`thinking:
-    // {type:"disabled"}` 报 1210「该模型始终思考，不支持关闭思考；请使用
-    // low、high 或 max」。原生档位控制 = `thinking:{type:"enabled",level}`：
-    // vendor 无 medium，保序满射 low→low、medium→high、high→max。off =
-    // 关不掉，诚实跳过不发键（DeepSeek-R1 同款纪律；代价：杂务省 token 闸
-    // 在这族模型上无强制力——vendor 限制，非本层 bug）。
+    // GLM-5.x 恒思考族（2026-11-09 两轮实机校准，glm-5.3-flash @
+    // open.bigmodel.cn v4）：glm-5 前缀不支持关闭思考——`thinking:
+    // {type:"disabled"}` 报 1210「该模型始终思考…」。**档位控制走标准键
+    // `reasoning_effort`**：端点严格校验（词表外值 400，原文自带「请使用
+    // low、high 或 max」）且单调驱动思考量（reasoning 长度 low≈115 /
+    // high≈370 / max≈1000+ 字）；私有键 `thinking.level` 实测无效（假值
+    // 也 200 静默吞掉，思考长度无分层）——弃用。合法词表 {low, high, max}，
+    // 七档 ceil 合流：Minimal|Low→low、Medium|High→high、XHigh|Max→max
+    // （档位递增发出的值永不回退）。off = 关不掉，诚实跳过不发键
+    // （DeepSeek-R1 同款纪律；代价：杂务省 token 闸在这族模型上无强制力
+    // ——vendor 限制，非本层 bug）。注：config=high 的旧语义（旧表直送
+    // vendor max）随 7 档值域收拢为 vendor high，要顶档配 xhigh/max。
     Dialect {
         name: "glm-5-always-thinking",
         matches: is_glm5_always_thinking,
-        apply: apply_glm5_level,
+        apply: apply_glm5_effort,
     },
     // GLM（zhipu 开放平台 openai 兼容端点，glm-4.x 等可开关族）：
     // thinking:{type} 单开关，无细档——off 关、其余档开（诚实不细分）。
@@ -163,18 +192,20 @@ fn match_any(_model: &str, _base: &str) -> bool {
 /// 恒思考无开关族：任何档位零注入。
 fn apply_silent(_body: &mut Value, _effort: Effort, _streaming: bool) {}
 
-/// GLM-5.x 原生 level 档位（off 关不掉 → 诚实跳过）。
-fn apply_glm5_level(body: &mut Value, effort: Effort, _streaming: bool) {
+/// GLM-5.x 档位（off 关不掉 → 诚实跳过）。走标准键 `reasoning_effort`，
+/// vendor 词表 {low, high, max}（实机校准见 REGISTRY 注）：七档 ceil
+/// 合流入该词表——档位递增发出的值永不回退。
+fn apply_glm5_effort(body: &mut Value, effort: Effort, _streaming: bool) {
     if effort == Effort::Off {
         return;
     }
-    let level = match effort {
-        Effort::Low => "low",
-        Effort::Medium => "high",
-        // vendor 无 medium：medium 归 high；Off 臂不可达（上方已返回）。
-        _ => "max",
+    let wire = match effort {
+        Effort::Minimal | Effort::Low => "low",
+        Effort::Medium | Effort::High => "high",
+        Effort::XHigh | Effort::Max => "max",
+        Effort::Off => "max", // 不可达（上方已返回）。
     };
-    body["thinking"] = serde_json::json!({ "type": "enabled", "level": level });
+    body["reasoning_effort"] = serde_json::json!(wire);
 }
 
 /// GLM 可开关族单开关。
@@ -197,16 +228,13 @@ fn apply_qwen3_enable_thinking(body: &mut Value, effort: Effort, streaming: bool
     }
 }
 
-/// OpenAI 官方字段兜底。
+/// OpenAI 官方字段兜底：七档恒等直传（wire 值 = OpenAI 官方枚举原样；
+/// off 不发防 400）。端点不支持某档 = 400 带端点原文诚实透传（2026-11-09
+/// 实机：gpt-5.6-sol 接受 low/medium/high/xhigh/max、拒 minimal——直传
+/// 语义与「状态码判档位」probe 前提双实证）。
 fn apply_openai_effort(body: &mut Value, effort: Effort, _streaming: bool) {
     if effort != Effort::Off {
-        let wire = match effort {
-            Effort::Low => "low",
-            Effort::Medium => "medium",
-            Effort::High => "high",
-            Effort::Off => "off", // 不可达（上方已排除）。
-        };
-        body["reasoning_effort"] = serde_json::json!(wire);
+        body["reasoning_effort"] = serde_json::json!(effort.as_str());
     }
 }
 
@@ -225,16 +253,22 @@ fn translate_by_registry(
     let model_l = model.to_lowercase();
     let base_l = api_base.to_lowercase();
     if let Some(dialect) = REGISTRY.iter().find(|d| (d.matches)(&model_l, &base_l)) {
-        // 命中词条名落 debug 日志——实机排查「档位到底走了哪条方言」时
-        // 直接可查（gateway log 开 debug 即见）。
+        (dialect.apply)(body, effort, streaming);
+        // 映射结果观测（2026-11-09 值域扩档）：命中词条 + 统一档位 →
+        // 实际发出的 vendor 键值，一条 debug 全带出。合流静默（如 GLM
+        // high/xhigh/max 同发 high/max）在此直接可见，排查「档位到底发
+        // 了什么」不再需要抓包（gateway log 开 debug 即见）。
+        let vendor = ["reasoning_effort", "thinking", "enable_thinking"]
+            .iter()
+            .find_map(|k| body.get(*k).map(|v| format!("{k}={v}")));
         tracing::debug!(
             target: "provider::effort",
             dialect = dialect.name,
             model,
             tier = ?effort,
+            vendor = vendor.as_deref().unwrap_or("(none)"),
             "reasoning effort translated by dialect"
         );
-        (dialect.apply)(body, effort, streaming);
     }
 }
 
@@ -244,6 +278,65 @@ fn merge_extra_body(body: &mut Value, extra_body: &Value) {
     if let Some(obj) = extra_body.as_object() {
         for (k, v) in obj {
             body[k.as_str()] = v.clone();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wire 目标解析（effort probe 消费面，2026-11-09 二期）
+// ---------------------------------------------------------------------------
+
+/// 某配置档位经方言翻译后实际到达 wire 的形态（UI 标注marks与探测数据
+/// 对齐的单一裁决点——探测存的是**原始 wire 值**的判定，配置档位要经
+/// 方言映射换算后才能查表，映射知识必须住在本模块，不得在 UI 重建）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EffortWireTarget {
+    /// 不发任何键（off / deepseek-reasoner 等诚实跳过词条）——请求与档位
+    /// 无关，任何端点都不会因档位拒绝 → 标注恒 ✓。
+    NotSent,
+    /// 发标准键 `reasoning_effort`，值为合流后的 wire 值（GLM 合流：
+    /// minimal|low→low、medium|high→high、xhigh|max→max；兜底直传恒等）
+    /// → 直接查 effort_probe 判定表。
+    ReasoningEffort(&'static str),
+    /// 发私有键或被 extra_body 钉死（qwen3 enable_thinking 布尔、
+    /// 条目 extra_body 带 reasoning_effort 键的静态钉档）——reasoning_effort
+    /// 探测数据不适用 → 标注 ?（不猜）。
+    NotProbeable,
+}
+
+/// 解析配置档位在指定模型（+条目 extra_body）下的 wire 目标。
+///
+/// 实现纪律：**跑真实翻译路径后检查产物**（空 body + streaming=true 代表
+/// 流式放行分支），不在本函数重建第二份方言映射——方言表改了本函数自动
+/// 跟进，单一真相源不破。`extra_body` 为条目逃生舱（Null = 无）。
+pub fn effort_wire_target(
+    model: &str,
+    api_base: &str,
+    tier: &str,
+    extra_body: &Value,
+) -> EffortWireTarget {
+    let trimmed = tier.trim();
+    if trimmed.is_empty() || Effort::parse(trimmed) == Some(Effort::Off) {
+        return EffortWireTarget::NotSent;
+    }
+    let mut body = serde_json::json!({});
+    apply_effort_to_body(&mut body, model, api_base, trimmed, true, extra_body);
+    match body.get("reasoning_effort").and_then(|v| v.as_str()) {
+        // 方言产物必是 Effort::as_str() 的静态小写串 → parse 回查直接产
+        // &'static str（无生命周期花活）。回查失败 = extra_body 钉进来的
+        // 任意值（如 "turbo"）：钉档意味着档位→值映射已死但每档配置实际
+        // 都发这个钉值——按钉值查判定表反而是诚实语义（全部档位同标记），
+        // 仅在钉值本身不合法时才落 NotProbeable。
+        Some(wire) => match Effort::parse(wire) {
+            Some(e) => EffortWireTarget::ReasoningEffort(e.as_str()),
+            None => EffortWireTarget::NotProbeable,
+        },
+        None => {
+            if body.as_object().is_none_or(|m| m.is_empty()) {
+                EffortWireTarget::NotSent
+            } else {
+                EffortWireTarget::NotProbeable
+            }
         }
     }
 }

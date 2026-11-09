@@ -340,6 +340,7 @@ fn test_chat_options_defaults() {
         top_p: None,
         stop: None,
         reasoning_effort: None,
+        per_request_extra_body: None,
         extra: std::collections::HashMap::new(),
     };
     assert_eq!(provider_options.temperature, Some(0.7));
@@ -361,6 +362,7 @@ fn test_chat_options_from_agent_options() {
         top_p: top_p.map(|p| p as f64),
         stop: None,
         reasoning_effort: None,
+        per_request_extra_body: None,
         extra: std::collections::HashMap::new(),
     };
     assert_eq!(provider_options.temperature, Some(0.5));
@@ -1666,6 +1668,17 @@ mod r9_repl {
             "onboard default failed:\n--- stdout ---\n{}\n--- stderr ---\n{}",
             up.stdout, up.stderr
         );
+        // effort 保存面探针（二期）会对 add 发 8 个探测请求——本夹具 FIFO
+        // 仅 2 条脚本（pong + MARKER），探针会吃穿队列令 hello 撞 500 进
+        // transient 重试直至 CLI 60s 超时。effort 探测行为归 effort_probe_tests
+        // 专测（w5b2 同款纪律），显式关。
+        let cfg_p = ws.config_path();
+        let mut c: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_p).expect("config readable"))
+                .expect("config valid JSON");
+        c["agents"]["probe_effort_on_save"] = serde_json::Value::Bool(false);
+        std::fs::write(&cfg_p, serde_json::to_string_pretty(&c).unwrap()).unwrap();
+
         let add = ws
             .run_cli_with_timeout(
                 &bin,

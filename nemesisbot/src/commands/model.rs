@@ -598,6 +598,54 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     }
                     Err(e) => println!("  验证：未执行（{e}）"),
                 }
+                // effort 探针（probe 二期）：保存面自动触发（WSAPI add
+                // 同源闸 agents.probe_effort_on_save，默认开）。7 请求 +
+                // 对照判别，结果一行两态打印（ok=接受/拒绝档位清单；
+                // skip/fail=诚实原因）。
+                if nemesis_web::handlers::models::probe_effort_on_save_enabled(&probe_home) {
+                    match nemesis_web::handlers::models::probe_effort_entry(
+                        &probe_home,
+                        &model_name_alias,
+                    )
+                    .await
+                    {
+                        Ok(v) => {
+                            let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("?");
+                            if status == "ok" {
+                                let ctrl = v
+                                    .pointer("/probe/control")
+                                    .and_then(|s| s.as_str())
+                                    .unwrap_or("?");
+                                let acc: Vec<&str> = v
+                                    .pointer("/probe/accepted")
+                                    .and_then(|s| s.as_array())
+                                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                                    .unwrap_or_default();
+                                let rejected = v
+                                    .pointer("/probe/rejected")
+                                    .and_then(|s| s.as_object())
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
+                                // C · 探测后自动修正：receipt 带 auto_fix =
+                                // 配置档位已被自动改写（零手动），显式打印。
+                                let fixed = v
+                                    .pointer("/auto_fix/from")
+                                    .and_then(|s| s.as_str())
+                                    .zip(v.pointer("/auto_fix/to").and_then(|s| s.as_str()))
+                                    .map(|(f, t)| format!("；已自动修正 {f}→{t}"))
+                                    .unwrap_or_default();
+                                println!(
+                                    "  强度探针：接受 {acc:?}，拒绝 {rejected} 档（对照={ctrl}）{fixed}\
+                                    ——Dashboard 模型页强度下拉即见 ✓/✗ 标记"
+                                );
+                            } else {
+                                let detail = v.get("detail").and_then(|s| s.as_str()).unwrap_or("");
+                                println!("  强度探针：{status}（{detail}）");
+                            }
+                        }
+                        Err(e) => println!("  强度探针：未执行（{e}）"),
+                    }
+                }
             }
         }
         ModelAction::List { verbose } => {
@@ -1096,10 +1144,14 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let report = tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(run_probe(&home, &name))
             })?;
-            // run_probe 返回 (report, wrote)：wrote = tier/vision 写回是否
-            // 真正落盘（报告必须如实反映，不再无条件
-            // 宣称"已写入 config.json"）。
-            println!("{}", format_probe_report(&name, &report.0, report.1));
+            // run_probe 返回 (report, wrote, effort)：wrote = tier/vision
+            // 写回是否真正落盘（报告必须如实反映，不再无条件
+            // 宣称"已写入 config.json"）；effort = 档位探测回执（probe
+            // 二期，skip/fail 也如实展示）。
+            println!(
+                "{}",
+                format_probe_report(&name, &report.0, report.1, report.2.as_ref())
+            );
             // 生效 context_window + 来源标记——fallback 命中自然引导
             // 用户显式配置（catalog 未收录的小众模型手动钉死）。
             let probe_cfg = nemesis_utils::fsutil::read_config_string(&cfg_path)
@@ -1444,7 +1496,11 @@ where
 async fn run_probe(
     home: &std::path::Path,
     name: &str,
-) -> anyhow::Result<(nemesis_agent::probe::ProbeReport, bool)> {
+) -> anyhow::Result<(
+    nemesis_agent::probe::ProbeReport,
+    bool,
+    Option<serde_json::Value>,
+)> {
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -1503,10 +1559,23 @@ async fn run_probe(
         // 统一原子写入。
         write_config_atomic(&cfg_path, &cfg_val)?;
     }
-    Ok((report, wrote))
+    // effort 探针（probe 二期，2026-11-09）：能力探针收尾后同跑 7 请求
+    // 档位探测（同 WSAPI `models.probe_effort` 单一真相源），结果写盘
+    // effort_probe。回执原样上抛给报告格式化（skip/fail 也如实展示——
+    // 非 HttpCompat lane 诚实不可测是结论不是错误）。
+    let effort_receipt =
+        nemesis_web::handlers::models::probe_effort_entry(&home.to_string_lossy(), &model_name)
+            .await
+            .ok();
+    Ok((report, wrote, effort_receipt))
 }
 
-fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport, wrote: bool) -> String {
+fn format_probe_report(
+    name: &str,
+    r: &nemesis_agent::probe::ProbeReport,
+    wrote: bool,
+    effort: Option<&serde_json::Value>,
+) -> String {
     let mut s = format!("能力探针报告: {}\n", name);
     s.push_str(&format!(
         "  format={:.2}  selection={:.2}  schema={:.2}\n",
@@ -1540,6 +1609,37 @@ fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport, wrote:
         None => s.push_str(
             "\n  vision=未定（传输类失败，未写 vision_probe；可在 config.json 用 \"vision\": \"yes\"/\"no\" 手动钉）",
         ),
+    }
+    // effort 探针（probe 二期）结果段。
+    if let Some(e) = effort {
+        let status = e.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+        if status == "ok" {
+            s.push_str("\n  effort 探针=已写盘 effort_probe");
+            if let Some(ctrl) = e.pointer("/probe/control").and_then(|v| v.as_str()) {
+                s.push_str(&format!("（对照={ctrl}）"));
+            }
+            if let Some(acc) = e.pointer("/probe/accepted").and_then(|v| v.as_array()) {
+                let acc_s: Vec<&str> = acc.iter().filter_map(|v| v.as_str()).collect();
+                s.push_str(&format!("：接受 {:?}，", acc_s));
+            }
+            if let Some(rej) = e.pointer("/probe/rejected").and_then(|v| v.as_object()) {
+                let mut keys: Vec<&String> = rej.keys().collect();
+                keys.sort();
+                s.push_str(&format!(
+                    "拒绝 {keys:?}（Dashboard 模型页强度下拉即见 ✓/✗ 标记）",
+                ));
+            }
+            // C · 探测后自动修正：receipt 带 auto_fix = 配置档位已被自动改写。
+            if let (Some(f), Some(t)) = (
+                e.pointer("/auto_fix/from").and_then(|v| v.as_str()),
+                e.pointer("/auto_fix/to").and_then(|v| v.as_str()),
+            ) {
+                s.push_str(&format!("；已自动修正 {f}→{t}（就近取可接受档）"));
+            }
+        } else {
+            let detail = e.get("detail").and_then(|v| v.as_str()).unwrap_or("");
+            s.push_str(&format!("\n  effort 探针={status}（{detail}）"));
+        }
     }
     s
 }

@@ -625,6 +625,8 @@ fn bare_chat_options(state: &AppState, model: &str, req: &OpenAiChatRequest) -> 
         stop: req.stop.clone(),
         extra: Default::default(),
         reasoning_effort: None,
+        // per-request extra_body 仅 effort probe 消费（裸 lane 无此概念）。
+        per_request_extra_body: None,
     };
     let Some(home) = state.home.as_deref() else {
         return options;

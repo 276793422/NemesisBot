@@ -89,14 +89,24 @@ fn glm5_off_skips_honestly_no_key_sent() {
         let mut b = base_body();
         apply_effort_to_body(&mut b, model, "", "off", true, &serde_json::Value::Null);
         assert!(b.get("thinking").is_none(), "model={model}");
+        assert!(b.get("reasoning_effort").is_none(), "model={model}");
     }
 }
 
 #[test]
-fn glm5_levels_map_monotonically_to_vendor_low_high_max() {
-    // vendor 无 medium：low→low、medium→high、high→max（保序满射）。
-    let cases = [("low", "low"), ("medium", "high"), ("high", "max")];
-    for (tier, level) in cases {
+fn glm5_tiers_collapse_monotonically_to_vendor_low_high_max() {
+    // vendor 词表 {low, high, max}（2026-11-09 实机校准 reasoning_effort
+    // 标准键）：七档 ceil 合流，档位递增发出的值永不回退；弃用的私有键
+    // thinking 不再出现。
+    let cases = [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+    ];
+    for (tier, wire) in cases {
         let mut b = base_body();
         apply_effort_to_body(
             &mut b,
@@ -106,11 +116,8 @@ fn glm5_levels_map_monotonically_to_vendor_low_high_max() {
             true,
             &serde_json::Value::Null,
         );
-        assert_eq!(
-            b["thinking"],
-            json!({ "type": "enabled", "level": level }),
-            "tier={tier}"
-        );
+        assert_eq!(b["reasoning_effort"], json!(wire), "tier={tier}");
+        assert!(b.get("thinking").is_none(), "tier={tier}");
     }
 }
 
@@ -126,7 +133,7 @@ fn glm5_detected_by_model_name_alone() {
         true,
         &serde_json::Value::Null,
     );
-    assert_eq!(b["thinking"], json!({ "type": "enabled", "level": "max" }));
+    assert_eq!(b["reasoning_effort"], json!("high"));
 }
 
 #[test]
@@ -226,8 +233,11 @@ fn deepseek_reasoner_skips_all_tiers() {
 // ---- 未知厂商（OpenAI 官方字段直传）----
 
 #[test]
-fn unknown_vendor_high_passes_reasoning_effort() {
-    for tier in ["low", "medium", "high"] {
+fn unknown_vendor_passes_all_non_off_tiers() {
+    // OpenAI 官方枚举七档恒等直传（含 2026-11-09 新增 minimal/xhigh/max）；
+    // off 非官方合法值不发（防 400）。端点不支持某档 = 400 带端点原文
+    // 诚实透传（实机背书：gpt-5.6-sol 拒 minimal、收其余五档）。
+    for tier in ["minimal", "low", "medium", "high", "xhigh", "max"] {
         let mut b = base_body();
         apply_effort_to_body(
             &mut b,
@@ -354,10 +364,226 @@ fn unknown_tier_is_honest_zero_injection() {
 
 #[test]
 fn effort_parse_is_case_insensitive_and_total_for_known_values() {
-    // 词表解析统一在 Effort::parse（大小写不敏感）；未知值 None。
+    // 词表解析统一在 Effort::parse（大小写不敏感 + trim）；未知值 None。
     assert_eq!(Effort::parse("OFF"), Some(Effort::Off));
     assert_eq!(Effort::parse("High"), Some(Effort::High));
     assert_eq!(Effort::parse("medium"), Some(Effort::Medium));
     assert_eq!(Effort::parse("extreme"), None);
     assert_eq!(Effort::parse(""), None);
+}
+
+// ---- 值域扩档矩阵与真相源契约（2026-11-09：7 档 × 5 词条）----
+
+#[test]
+fn full_matrix_seven_tiers_x_five_dialects() {
+    // 7 档 × 5 词条 = 35 组合逐格钉住（翻译表单一真相；流式恒 true，
+    // qwen3 非流式跳过分支由专项用例覆盖）。每格断言：该写的键值 ==
+    // 期望；不该出现的键缺席。
+    let tiers = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let reps: [(&str, &str, &str); 5] = [
+        // (词条名, 代表模型, 代表 base)
+        ("deepseek-reasoner", "deepseek-reasoner", ""),
+        (
+            "glm-5-always-thinking",
+            "glm-5.3-flash",
+            "https://open.bigmodel.cn/api/paas/v4",
+        ),
+        ("glm-switchable", "glm-4.7", ""),
+        ("qwen3-hybrid-thinking", "qwen3-30b", ""),
+        (
+            "openai-official-fallback",
+            "gpt-5.6",
+            "https://api.openai.com/v1",
+        ),
+    ];
+    let mut cells = 0;
+    for tier in tiers {
+        for (dialect, model, base) in reps {
+            let mut b = base_body();
+            apply_effort_to_body(&mut b, model, base, tier, true, &serde_json::Value::Null);
+            let has = |k: &str| b.get(k).is_some();
+            match (dialect, tier) {
+                // 恒思考无开关族：全档零注入。
+                ("deepseek-reasoner", _) => {
+                    assert!(
+                        !has("reasoning_effort") && !has("thinking") && !has("enable_thinking"),
+                        "{dialect}/{tier}"
+                    );
+                }
+                // GLM-5.x：off 诚实跳过；其余 ceil 合流 {low, high, max}。
+                ("glm-5-always-thinking", "off") => {
+                    assert!(!has("reasoning_effort") && !has("thinking"));
+                }
+                ("glm-5-always-thinking", t) => {
+                    let want = if t == "minimal" || t == "low" {
+                        "low"
+                    } else if t == "medium" || t == "high" {
+                        "high"
+                    } else {
+                        "max"
+                    };
+                    assert_eq!(b["reasoning_effort"], json!(want), "{dialect}/{t}");
+                    assert!(!has("thinking"), "{dialect}/{t}（私有键已弃用）");
+                }
+                // GLM-4.x 可开关族：单开关，无细档。
+                ("glm-switchable", "off") => {
+                    assert_eq!(b["thinking"], json!({ "type": "disabled" }));
+                }
+                ("glm-switchable", _) => {
+                    assert_eq!(b["thinking"], json!({ "type": "enabled" }));
+                }
+                // Qwen3：布尔（流式全档 true）。
+                ("qwen3-hybrid-thinking", "off") => {
+                    assert_eq!(b["enable_thinking"], json!(false));
+                }
+                ("qwen3-hybrid-thinking", _) => {
+                    assert_eq!(b["enable_thinking"], json!(true));
+                }
+                // OpenAI 兜底：off 不发，其余恒等直传。
+                ("openai-official-fallback", "off") => {
+                    assert!(!has("reasoning_effort"));
+                }
+                ("openai-official-fallback", t) => {
+                    assert_eq!(b["reasoning_effort"], json!(t));
+                }
+                _ => unreachable!("unknown dialect in reps: {dialect}"),
+            }
+            cells += 1;
+        }
+    }
+    assert_eq!(cells, 35, "矩阵必须完整覆盖 7×5");
+}
+
+#[test]
+fn effort_parse_matches_capability_truth_source() {
+    // 词表单一真相源契约：nemesis-types::EFFORT_TIERS 每一项 parse 全收；
+    // 非 off 档 as_str()（fallback 直传 wire 值）与配置值逐字节相等——
+    // 两侧词表漂移在此钉死。解析容 trim + 大小写；词表外值不发明 wire 值。
+    use nemesis_types::capability::EFFORT_TIERS;
+    for t in EFFORT_TIERS {
+        let e = Effort::parse(t).unwrap_or_else(|| panic!("EFFORT_TIERS member {t:?} must parse"));
+        assert_eq!(e.as_str(), t);
+        let upper = t.to_ascii_uppercase();
+        assert_eq!(Effort::parse(&upper), Some(e), "case-insensitive: {t}");
+    }
+    assert_eq!(Effort::parse("  max  "), Some(Effort::Max), "trim 容忍");
+    for bad in ["extreme", "none", "zzz-not-a-tier"] {
+        assert_eq!(Effort::parse(bad), None, "garbage must not parse: {bad}");
+    }
+}
+
+// ---- wire 目标解析（二期 probe 消费面；marks 与探测数据对齐的裁决点）----
+
+use super::{EffortWireTarget, effort_wire_target};
+
+#[test]
+fn wire_target_off_and_silent_dialects_are_not_sent() {
+    let null = serde_json::Value::Null;
+    // off = 不发键（任何方言）。
+    for model in [
+        "gpt-5.6",
+        "glm-5.3-flash",
+        "glm-4.7",
+        "qwen3-30b",
+        "deepseek-reasoner",
+    ] {
+        assert_eq!(
+            effort_wire_target(model, "", "off", &null),
+            EffortWireTarget::NotSent,
+            "off must be NotSent: {model}"
+        );
+        assert_eq!(
+            effort_wire_target(model, "", "", &null),
+            EffortWireTarget::NotSent,
+            "空串（未配置）= NotSent: {model}"
+        );
+    }
+    // deepseek-reasoner 恒思考无开关：任何档位零注入。
+    for tier in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+        assert_eq!(
+            effort_wire_target("deepseek-reasoner", "", tier, &null),
+            EffortWireTarget::NotSent,
+            "deepseek 全档零注入: {tier}"
+        );
+    }
+    // trim + 大小写防御。
+    assert_eq!(
+        effort_wire_target("gpt-5.6", "", "  OFF  ", &null),
+        EffortWireTarget::NotSent
+    );
+}
+
+#[test]
+fn wire_target_fallback_is_identity() {
+    // 兜底直传：6 个非 off 档位原样到 wire。
+    let null = serde_json::Value::Null;
+    for tier in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+        assert_eq!(
+            effort_wire_target("gpt-5.6", "https://api.openai.com/v1", tier, &null),
+            EffortWireTarget::ReasoningEffort(tier),
+            "fallback identity: {tier}"
+        );
+    }
+}
+
+#[test]
+fn wire_target_glm5_ceil_collapse() {
+    // GLM 合流保序：minimal|low→low、medium|high→high、xhigh|max→max。
+    let null = serde_json::Value::Null;
+    let pairs = [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+    ];
+    for (tier, wire) in pairs {
+        assert_eq!(
+            effort_wire_target(
+                "glm-5.3-flash",
+                "https://open.bigmodel.cn/api/paas/v4",
+                tier,
+                &null
+            ),
+            EffortWireTarget::ReasoningEffort(wire),
+            "glm5 ceil: {tier} → {wire}"
+        );
+    }
+}
+
+#[test]
+fn wire_target_private_knob_dialects_are_not_probeable() {
+    // qwen3（enable_thinking 布尔）与 glm 可开关（thinking 单开关）：发的是
+    // 私有键，reasoning_effort 探测数据不适用 → ?（不猜）。
+    let null = serde_json::Value::Null;
+    for tier in ["low", "medium", "high", "xhigh", "max"] {
+        assert_eq!(
+            effort_wire_target("qwen3-30b", "", tier, &null),
+            EffortWireTarget::NotProbeable,
+            "qwen3: {tier}"
+        );
+        assert_eq!(
+            effort_wire_target("glm-4.7", "", tier, &null),
+            EffortWireTarget::NotProbeable,
+            "glm-switchable: {tier}"
+        );
+    }
+}
+
+#[test]
+fn wire_target_extra_body_pin_maps_all_tiers_to_pinned_value() {
+    // 条目 extra_body 钉档：档位→值映射被钉死，但每档配置实际都发钉值
+    // ——按钉值查判定表是诚实语义（全部档位同标记）。钉值合法时回查
+    // parse 产静态串；钉值本身不合法（任意字符串）才落 NotProbeable。
+    let pin_valid = json!({ "reasoning_effort": "xhigh" });
+    assert_eq!(
+        effort_wire_target("gpt-5.6", "", "low", &pin_valid),
+        EffortWireTarget::ReasoningEffort("xhigh")
+    );
+    let pin_garbage = json!({ "reasoning_effort": "turbo" });
+    assert_eq!(
+        effort_wire_target("gpt-5.6", "", "low", &pin_garbage),
+        EffortWireTarget::NotProbeable
+    );
 }
