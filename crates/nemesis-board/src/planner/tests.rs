@@ -825,3 +825,69 @@ fn system_prompt_declares_variant_and_finalize_rules() {
     // 需求模糊触发条件（何时拆变体——不拆变体的判据也要传达）。
     assert!(p.contains("需求模糊"), "变体触发条件（需求模糊判定）未声明");
 }
+
+// ---------------------------------------------------------------------------
+// 里程碑单标记（触点体系 P3）：milestone 字段解析 + 至多一个校验。
+// ---------------------------------------------------------------------------
+
+/// milestone 缺省 false（serde default）——旧形态拆解输出零迁移。
+#[test]
+fn milestone_defaults_false() {
+    let raw = r#"[{"title":"子任务","depends_on":[]}]"#;
+    let plan = super::parse_plan(raw).unwrap();
+    assert_eq!(plan.len(), 1);
+    assert!(!plan[0].milestone);
+}
+
+/// 恰一个 milestone = 合法，字段保真。
+#[test]
+fn milestone_single_is_legal() {
+    let raw = r#"[
+      {"title":"可运行原型","acceptance_criteria":"[CHECK] re:构建通过","milestone":true,"depends_on":[]},
+      {"title":"迭代打磨","depends_on":[0]}
+    ]"#;
+    let plan = super::parse_plan(raw).unwrap();
+    assert!(plan[0].milestone);
+    assert!(!plan[1].milestone);
+}
+
+/// 多个 milestone = 严格臂报错回灌（错误信息可自纠：指出数量与期望）。
+#[test]
+fn milestone_multiple_strict_errors() {
+    let raw = r#"[
+      {"title":"a","milestone":true,"depends_on":[]},
+      {"title":"b","milestone":true,"depends_on":[]},
+      {"title":"c","depends_on":[]}
+    ]"#;
+    let err = super::parse_plan(raw).unwrap_err();
+    assert!(err.message.contains("milestone"), "{}", err.message);
+    assert!(err.message.contains('2'), "{}", err.message);
+    assert!(err.message.contains("重新输出"), "{}", err.message);
+}
+
+/// 末轮宽和臂：保留首个 milestone，其余清零（不报错、计划照常落地）。
+#[test]
+fn milestone_multiple_lenient_keeps_first() {
+    let raw = r#"[
+      {"title":"a","milestone":true,"depends_on":[]},
+      {"title":"b","milestone":true,"depends_on":[]},
+      {"title":"c","milestone":true,"depends_on":[]}
+    ]"#;
+    let lp = super::parse_plan_lenient(raw).unwrap();
+    assert!(lp.plan[0].milestone);
+    assert!(!lp.plan[1].milestone);
+    assert!(!lp.plan[2].milestone);
+    // 里程碑降级不进 downgrades 台账（该台账语义是 required_profession 专属）。
+    assert!(lp.downgraded.is_empty());
+}
+
+/// planner 系统提示词声明 milestone 字段语义（schema + 纪律 14 +
+/// 自检 4；漏一条 = 提示词与解析器漂移）。
+#[test]
+fn system_prompt_declares_milestone_field() {
+    let p = super::super::planner_system_prompt();
+    assert!(p.contains("\"milestone\": false"), "schema 字段未声明");
+    assert!(p.contains("里程碑单（体验型任务专用）"), "纪律 14 未声明");
+    assert!(p.contains("## 📐 规格"), "体验型判据（规格小节）未声明");
+    assert!(p.contains("标了 milestone:true"), "自检 4 未声明");
+}

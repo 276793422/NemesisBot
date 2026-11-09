@@ -16,7 +16,7 @@ impl NodeExecutor for ConditionNodeExecutor {
         &self,
         node: &NodeDef,
         context: &HashMap<String, serde_json::Value>,
-        _wf_ctx: &WorkflowContext,
+        wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
         let now = Local::now();
         let condition = node
@@ -25,7 +25,24 @@ impl NodeExecutor for ConditionNodeExecutor {
             .and_then(|v| v.as_str())
             .unwrap_or("false");
 
-        let result = evaluate_condition(condition, context);
+        // 守卫求值（缺陷 15 同类清账）：幻觉字段 → 节点 Failed 点名，
+        // 不可证残留 → 条件按不成立（false），绝不静默选边。已完成集合
+        // 每次执行取一次快照。
+        let completed: std::collections::HashSet<String> = wf_ctx
+            .get_all_node_results()
+            .into_iter()
+            .filter(|(_, r)| r.state == ExecutionState::Completed)
+            .map(|(id, _)| id)
+            .collect();
+        let result = match eval_condition_with_falsifiability(
+            condition,
+            context,
+            &completed,
+            &format!("节点 {:?}（condition）的条件表达式", node.id),
+        ) {
+            Ok(r) => r,
+            Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+        };
 
         Ok(NodeResult {
             node_id: node.id.clone(),
@@ -713,6 +730,50 @@ fn is_truthy(val: &serde_json::Value) -> bool {
         serde_json::Value::Array(a) => !a.is_empty(),
         serde_json::Value::Object(o) => !o.is_empty(),
     }
+}
+
+/// 条件表达式守卫求值——缺陷 15「可证伪性二分」的单一真相源。三个生产
+/// 求值面共用：条件边（`scheduler::eval_edge_conditions`）、condition
+/// 节点（[`ConditionNodeExecutor`]）、loop 条件（LoopNodeExecutor /
+/// LoopNodeStub）。
+///
+/// `resolve_prompt_template` 对缺失键保留 `{{…}}` 原样，残留 = 不可解析
+/// 信号，按可证伪性分流：
+/// - `Err`：占位符首段命中 `completed`（已完成节点集合）——上游输出已
+///   完全落定、字段不存在可证 → 调用方必须诚实失败（节点 Failed / 执行
+///   Failed / loop_error），绝不静默选边（缺陷 15 语义，能力表对条件边
+///   明文承诺的行为）；
+/// - `Ok(false)`：不可证（未定义变量 / 未执行节点——被丢弃分支、可选
+///   触发器入参）→ 整条条件按不成立（保留 s12b 跳过语义）；
+/// - 无残留 → 正常 [`evaluate_condition`]。
+///
+/// `site` 是错误消息的位点描述（如 `节点 branch 的条件边`）。注意：上游
+/// 数据值本身含 `{{` 字面量时会误判为不可解析——可证臂落诚实 Failed、
+/// 不可证臂落 false，两个方向都确定，不产生垃圾真值（与条件边的既有
+/// 语义一致）。
+pub(crate) fn eval_condition_with_falsifiability(
+    condition: &str,
+    context: &HashMap<String, serde_json::Value>,
+    completed: &std::collections::HashSet<String>,
+    site: &str,
+) -> Result<bool, String> {
+    let resolved = resolve_prompt_template(condition, context);
+    if resolved.contains("{{") {
+        let provable = placeholder_refs(condition)
+            .iter()
+            .any(|(head, _)| completed.contains(head.as_str()));
+        if provable {
+            return Err(format!(
+                "{site}引用了已完成节点输出中不存在的字段（模板解析后仍残留 \
+                 {{{{…}}}}）：{:?}。请核对上游节点 id 与其输出字段名（condition 节点 \
+                 的输出字段是 condition_result）",
+                condition
+            ));
+        }
+        // 引用不可证伪：变量未提供/节点未执行 → 整条条件不成立。
+        return Ok(false);
+    }
+    Ok(evaluate_condition(condition, context))
 }
 
 // ---------------------------------------------------------------------------

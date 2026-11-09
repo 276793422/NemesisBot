@@ -703,6 +703,7 @@ async fn mcp_discover_filters_non_string_args_and_reports_spawn_error() {
 async fn register_shared_tools_spawn_slot_arm() {
     let _logs = capture_logs();
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         spawn: Some(SpawnConfig {
             default_model: "stub".into(),
             max_concurrent: 2,
@@ -730,6 +731,7 @@ async fn register_shared_tools_spawn_slot_arm() {
 async fn register_shared_tools_claude_and_codex_probes() {
     let _logs = capture_logs();
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         claude_code_tool_enabled: true,
         codex_tool_enabled: true,
         ..Default::default()
@@ -745,6 +747,7 @@ async fn register_shared_tools_lsp_both_manager_arms() {
     let _logs = capture_logs();
     // 臂 1：外部单例 manager（with_manager）。
     let cfg_ext = SharedToolConfig {
+        exec_output_tx: None,
         lsp_tool_enabled: true,
         lsp_manager: Some(Arc::new(nemesis_lsp::LspManager::new(
             None::<Duration>,
@@ -757,6 +760,7 @@ async fn register_shared_tools_lsp_both_manager_arms() {
 
     // 臂 2：自建 manager（LspTool::new 兜底）。
     let cfg_self = SharedToolConfig {
+        exec_output_tx: None,
         lsp_tool_enabled: true,
         ..Default::default()
     };
@@ -770,6 +774,7 @@ fn register_shared_tools_workflow_trio_and_final_info() {
     let _logs = capture_logs();
     let engine = Arc::new(nemesis_workflow::engine::WorkflowEngine::new());
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workflow_engine: Some(engine),
         ..Default::default()
     };

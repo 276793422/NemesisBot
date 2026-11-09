@@ -1000,3 +1000,30 @@ fn test_announce_carries_relay_qualified_overlay_address() {
         }
     }
 }
+
+/// 回归锁（BUG-20261109-002 缺陷 B/C 同根）：drift_secs 单一真相源在
+/// 对端 timestamp 极值域（wire serde 直解无界 i64）无溢出——裸
+/// `(a - b).abs()` 的两个翻车面：`MIN - MAX` 减法溢出、`(-diff).abs()`
+/// 在 diff = i64::MIN 时 abs 再翻车。abs_diff 全值域安全。
+#[test]
+fn drift_secs_extreme_timestamps_do_not_overflow() {
+    let now = chrono::Utc::now().timestamp();
+
+    // 对端塞 i64::MIN（裸减法 now - MIN 溢出面）。
+    assert_eq!(
+        drift_secs(now, i64::MIN),
+        (now as i128 - i64::MIN as i128) as u64
+    );
+    // 对端塞 i64::MAX（裸减法 now - MAX 为巨大负数，.abs() 面安全但该值
+    // 再进 i64 域比较即溢出侧语义）。
+    assert_eq!(
+        drift_secs(now, i64::MAX),
+        (i64::MAX as i128 - now as i128) as u64
+    );
+    // 双极值对撞（本地 i64::MIN / 对端 i64::MAX 理论形态）。
+    assert_eq!(drift_secs(i64::MIN, i64::MAX), u64::MAX);
+    // 常规小漂移。
+    assert_eq!(drift_secs(1_770_000_000, 1_770_000_061), 61);
+    // 阈值比较侧收窄（as u64）不翻转：极值漂移必然超阈值。
+    assert!(drift_secs(now, i64::MIN) > DRIFT_WARN_THRESHOLD_SECS as u64);
+}

@@ -126,7 +126,10 @@ pub async fn handle_api_usage_logs(
         .unwrap_or_else(|| chrono::Local::now().timestamp());
     let start = params.start.unwrap_or(end - 86400);
     let page = params.page.unwrap_or(1).max(1);
-    let page_size = params.page_size.unwrap_or(20).min(100);
+    // clamp(1, 100) 对齐 board/workflow_chat 家族形态（只 .min(100) 钳上界
+    // 的半截钳制 = BUG-20261108-025：负 page_size 透传 store 后 LIMIT -N
+    // 是 SQLite「无上限」语义，时间窗全量行单次返回）。
+    let page_size = params.page_size.unwrap_or(20).clamp(1, 100);
     let filter = nemesis_data::LogFilter {
         model: params.model.clone(),
         status: params.status,

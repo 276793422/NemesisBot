@@ -1532,3 +1532,81 @@ async fn bug31_read_resource_well_formed_still_ok() {
     assert_eq!(content.uri, "file:///ok.txt");
     assert_eq!(content.text.as_deref(), Some("still works"));
 }
+
+/// 会话过期恢复回归锁（BUG-20261108-016）：Streamable HTTP server 重启/
+/// 会话过期（带会话 id 的 404）后，此前无任何层重握手——已挂载工具对每个
+/// 调用永久 404。恢复链：send 报 session_expired → client 重置传输 +
+/// 重新 initialize 建新会话 + 原请求重试一次。判别性：旧实现（无恢复臂）
+/// call_tool 直接 Err，本测试红。
+#[tokio::test]
+async fn session_expired_triggers_reinitialize_and_retry() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    let init_result = serde_json::json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {},
+        "serverInfo": { "name": "test-server", "version": "1.0" }
+    });
+    // 首次握手 + 恢复后的重握手（initialize 各一次）。
+    mock.add_success("initialize", init_result.clone());
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    mock.add_success("initialize", init_result);
+    // 第一次 tools/call：传输层报会话过期（传输层 Err 才触发恢复臂——
+    // 响应内 JSON-RPC error 是协议级错误，语义分层）。
+    mock.add_send_failure(
+        "tools/call",
+        crate::transport::TransportError::session_expired(),
+    );
+    // 重试成功（恢复后第二次 tools/call 消费）。
+    mock.add_success(
+        "tools/call",
+        serde_json::json!({
+            "content": [{ "type": "text", "text": "recovered" }],
+            "isError": false
+        }),
+    );
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let result = client
+        .call_tool("echo", serde_json::json!({ "message": "hi" }))
+        .await
+        .expect("会话过期必须触发重握手恢复并重试成功，而不是把 404 原样抛给调用方");
+    assert!(!result.is_error);
+    assert_eq!(result.content[0].text.as_deref(), Some("recovered"));
+}
+
+/// 恢复失败（重握手也挂）诚实返回根因——绝不静默吞成「空成功」。
+#[tokio::test]
+async fn session_expired_recovery_failure_returns_honest_error() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "test-server", "version": "1.0" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    // 会话过期 + 重握手缺 initialize 响应 → 恢复失败。
+    mock.add_send_failure(
+        "tools/call",
+        crate::transport::TransportError::session_expired(),
+    );
+
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let err = client
+        .call_tool("echo", serde_json::json!({}))
+        .await
+        .expect_err("恢复失败必须报错（恢复根因或原始会话过期），不得静默");
+    // 本场景恢复根因 = mock 无第二次 initialize 响应（transport Err），
+    // send_request 按契约回传原始 session_expired；两者都是诚实传输层
+    // 错误形态，绝不可能是静默空成功。
+    assert!(
+        matches!(err, crate::client::ClientError::Transport(_)),
+        "恢复失败必须以传输层错误落面（本场景 = 原始 session_expired），实际: {err}"
+    );
+}

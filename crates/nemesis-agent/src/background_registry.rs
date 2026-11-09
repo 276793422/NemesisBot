@@ -67,6 +67,41 @@ pub const MAX_CHUNK_BYTES: usize = 8 * 1024;
 /// 监督任务轮询子进程退出的间隔。
 const SUPERVISE_INTERVAL: Duration = Duration::from_millis(200);
 
+/// 完成唤醒通告携带的输出尾部窗口（字节）。
+pub const COMPLETION_TAIL_BYTES: usize = 4 * 1024;
+
+/// `background_output wait_secs` 的钳制上限（秒）——工具调用不该长阻塞
+/// dispatch（完成等待的正常路径是完成唤醒，不是长轮询）。
+pub const MAX_OUTPUT_WAIT_SECS: u64 = 30;
+
+/// 完成唤醒的发起会话锚（2026-11-08 子进程实时输出与完成唤醒）：
+/// `background_start` 时从 [`RequestContext`] 捕获的三元组快照。任务退出
+/// 时 gateway 侧 watcher 据此合成 [`InboundMessage`](nemesis_types::channel::InboundMessage)
+/// （sender="system"）经 bus 走标准入站路径回灌发起会话——模型自动收到
+/// 完成通告与输出尾部，无需 sleep 轮询（行业对照：openclaw notifyOnExit
+/// 同款「完成后自动通知」形态）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobOrigin {
+    /// 发起通道（"web" 等——出站回复经同通道回投）。
+    pub channel: String,
+    /// 发起会话的 chat id。
+    pub chat_id: String,
+    /// 发起会话的 agent session key（round-trip 保会话归属）。
+    pub session_key: String,
+}
+
+/// 任务完成事件（completion sink 消费面）。`set_completion_sink` 的
+/// 接收端在 gateway 装配期取走并 spawn 常驻回灌任务。
+#[derive(Debug, Clone)]
+pub struct CompletionEvent {
+    pub job_id: u64,
+    pub status: JobStatus,
+    pub origin: JobOrigin,
+    /// 完成时刻的输出尾部（≤[`COMPLETION_TAIL_BYTES`] 字节，lossy utf8；
+    /// 全文仍可 `background_output` 分页读）。
+    pub tail: String,
+}
+
 /// `background_kill` 等待子进程退出的上限（超时如实报 still running）。
 const KILL_WAIT: Duration = Duration::from_secs(5);
 
@@ -154,6 +189,33 @@ impl OutputBuffer {
         let end = (start + MAX_CHUNK_BYTES).min(self.buf.len());
         (self.buf[start..end].to_vec(), skipped)
     }
+
+    /// 分页 `next_offset` 单一真相源：钳到保留窗口起点后加本 chunk 实际
+    /// 消费字节。`produced()` 不能当 next_offset——`read_chunk` 只返回至
+    /// 多 [`MAX_CHUNK_BYTES`] 窗，坐标跳 produced 会让按 next_offset 分页
+    /// 的调用方永久跳过中段字节（字节洞）。
+    pub(crate) fn next_read_offset(&self, offset: u64, consumed: usize) -> u64 {
+        offset.max(self.dropped) + consumed as u64
+    }
+}
+
+/// chunk 尾部的 UTF-8 消费安全长度：[`MAX_CHUNK_BYTES`] 字节窗口可能把
+/// 多字节字符劈在窗口边界，尾部不完整序列（`from_utf8` 报 `error_len ==
+/// None`）此刻 lossy 转换会渲染成替换符，而它本可与**后续**输出拼成完整
+/// 字符。返回「本 chunk 可安全消费的字节数」——截到 `valid_up_to`，剩余
+/// 字节留给下一次 `read_chunk`（字节坐标单调，不丢不重）。
+/// 中段真非法序列（`error_len == Some`，二进制/非 UTF-8 输出）不截：
+/// lossy 诚实降级为替换符，且保证每轮必有推进。
+pub(crate) fn utf8_safe_len(chunk: &[u8]) -> usize {
+    match std::str::from_utf8(chunk) {
+        Ok(_) => chunk.len(),
+        // 尾部不完整序列（error_len() == None）：截到 valid_up_to（整段只有
+        // 一个不完整序列时 = 0，空消费——等下一轮与后续字节拼齐）。
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        // 中段真非法序列（error_len() == Some）：不截——lossy 诚实降级为
+        // 替换符，且保证每轮必有推进（二进制/非 UTF-8 输出不能卡住 tail）。
+        _ => chunk.len(),
+    }
 }
 
 /// 注册表中的单个任务条目。
@@ -191,6 +253,11 @@ pub struct BackgroundProcessRegistry {
     next_id: AtomicU64,
     max_jobs: usize,
     max_output: usize,
+    /// 完成事件汇聚通道（2026-11-08）：gateway 装配期
+    /// [`Self::set_completion_sink`] 一次；None = 无唤醒面（基线/测试
+    /// 形态——`start_with_origin` 仍 spawn watcher，但 watcher 只在事件
+    /// 通道在场时才发送）。`OnceLock`：进程级装配一次语义，set 幂等。
+    completion_tx: Arc<std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CompletionEvent>>>,
 }
 
 impl Default for BackgroundProcessRegistry {
@@ -228,7 +295,34 @@ impl BackgroundProcessRegistry {
             next_id: AtomicU64::new(1),
             max_jobs,
             max_output,
+            completion_tx: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    /// 装配完成事件汇聚通道（gateway 装配期调用一次；幂等，重复 set
+    /// 以首次为准并如实返回）。接收端由调用方持 `UnboundedReceiver`
+    /// spawn 常驻回灌任务。
+    pub fn set_completion_sink(
+        &self,
+        tx: tokio::sync::mpsc::UnboundedSender<CompletionEvent>,
+    ) -> bool {
+        self.completion_tx.set(tx).is_ok()
+    }
+
+    /// 任务状态槽句柄（完成唤醒 watcher 消费；仅新路径使用）。
+    fn job_status_handle(&self, id: u64) -> Option<Arc<Mutex<Option<JobStatus>>>> {
+        self.jobs
+            .try_lock()
+            .ok()
+            .and_then(|jobs| jobs.get(&id).map(|j| j.status.clone()))
+    }
+
+    /// 任务输出缓冲句柄（完成唤醒 watcher 取尾部用；仅新路径使用）。
+    fn job_output_handle(&self, id: u64) -> Option<Arc<Mutex<OutputBuffer>>> {
+        self.jobs
+            .try_lock()
+            .ok()
+            .and_then(|jobs| jobs.get(&id).map(|j| j.output.clone()))
     }
 
     /// 当前任务数（含已完成——完成后条目保留至被淘汰/注册表销毁）。
@@ -403,9 +497,20 @@ impl BackgroundProcessRegistry {
                 id
             )
         })?;
-        let buf = job.output.lock().await;
-        let (chunk, skipped) = buf.read_chunk(offset);
         let running = job.is_running().await;
+        let buf = job.output.lock().await;
+        let (mut chunk, skipped) = buf.read_chunk(offset);
+        // BUG-20261108-027：运行中把尾部不完整 UTF-8 序列截到字符边界——
+        // MAX_CHUNK_BYTES 字节窗口劈开多字节字符时，lossy 转换会把「本可
+        // 与后续输出拼完整」的尾巴渲染成替换符（CJK 输出高频命中）。截掉
+        // 的字节留在缓冲区由下一轮 offset 重读拼接（next_offset 只推进
+        // 已消费字节，坐标单调不丢不重）。终态不截：没有后续输出可拼接，
+        // 且「追平即停」的轮询语义要求终态推进到底（next_offset ==
+        // total_bytes），未完成序列按既有语义诚实渲染替换符。
+        if running {
+            let safe = utf8_safe_len(&chunk);
+            chunk.truncate(safe);
+        }
         let mut payload = serde_json::json!({
             "job_id": id,
             "running": running,
@@ -422,7 +527,7 @@ impl BackgroundProcessRegistry {
             "total_bytes": buf.produced,
             "dropped_bytes": buf.dropped,
             "offset": offset,
-            "next_offset": offset.max(buf.dropped) + chunk.len() as u64,
+            "next_offset": buf.next_read_offset(offset, chunk.len()),
             "chunk": String::from_utf8_lossy(&chunk),
         });
         if skipped {
@@ -444,6 +549,113 @@ impl BackgroundProcessRegistry {
             }
         }
         Ok(payload)
+    }
+
+    /// 起一个带完成唤醒的后台任务（2026-11-08 子进程实时输出与完成唤醒）。
+    ///
+    /// 与 [`Self::start`] 同一装配路径（`start()` 原样保留、不签名变更——
+    /// 基线注册与既有测试继续走它）；origin 在场时：
+    /// 1. 覆盖返回 payload 的 `note`（旧 note 指引轮询，会重新诱发 sleep
+    ///    -poll 反模式；origin 路径的指引是「完成后自动通知，不要轮询」，
+    ///    openclaw notifyOnExit 同款话术）；
+    /// 2. spawn 完成唤醒 watcher：轮询任务终态（与 supervise 同拍 200ms，
+    ///    无 Notify 注册窗口竞态面），退出时取输出尾部（≤
+    ///    [`COMPLETION_TAIL_BYTES`] 字节）发 [`CompletionEvent`] 进
+    ///    completion sink——gateway 侧把它合成为 InboundMessage 经 bus
+    ///    走标准入站路径回灌发起会话（AgentLoop 零改动）。
+    ///
+    /// `origin = None` → 行为与 `start()` 完全一致（无 note 覆盖、无
+    /// watcher），调用方语义不变。
+    ///
+    /// `notify = false`（2026-11-09 完成唤醒可选化）：查看型 GUI（notepad
+    /// 等**用户自开自关**的进程）退出对 agent 无信息利益——唤醒一次 LLM
+    /// 报告「你关的东西关了」是纯噪声。受管但静默：不 spawn 完成唤醒
+    /// watcher（完成唤醒的唯一机制面就是 watcher，不 spawn = 零唤醒），
+    /// job 状态由 supervise 照常落账，`background_output`/`background_kill`
+    /// 管理能力完整保留；note/payload 显式标注静默语义。仅 origin 在场时
+    /// 生效（origin 缺席的基线路径本就无唤醒面，notify 被忽略、字节不变）。
+    /// 缺省 true = 现行为（开发服务器/长构建退出 = 崩溃信号，必须唤醒）。
+    pub async fn start_with_origin(
+        &self,
+        command: &str,
+        cwd: &str,
+        steerable: bool,
+        origin: Option<JobOrigin>,
+        notify: bool,
+    ) -> Result<serde_json::Value, String> {
+        let mut payload = self.start(command, cwd, steerable).await?;
+        let Some(origin) = origin else {
+            return Ok(payload);
+        };
+        if !notify {
+            payload["notify"] = serde_json::json!(false);
+            payload["note"] = serde_json::json!(
+                "job started with notify=false — no completion notice will be \
+                 delivered when it exits (the user manages its lifecycle); use \
+                 background_output to read output or check state, background_kill \
+                 to stop"
+            );
+            return Ok(payload);
+        }
+        payload["note"] = serde_json::json!(
+            "job started; when it exits a completion notice (with the recent output) \
+             is delivered back into this conversation automatically — do NOT \
+             sleep-poll background_output waiting for it to finish; read output \
+             with background_output only when you need it"
+        );
+        let job_id = payload.get("job_id").and_then(|v| v.as_u64());
+        if let Some(id) = job_id {
+            match (self.job_status_handle(id), self.job_output_handle(id)) {
+                (Some(status), Some(output)) => {
+                    tokio::spawn(completion_watcher(
+                        id,
+                        status,
+                        output,
+                        origin,
+                        Arc::clone(&self.completion_tx),
+                    ));
+                }
+                _ => {
+                    // 条目句柄取不到（理论竞态：jobs 锁正被别的调用方长持）
+                    // ——诚实降级：无 watcher = 无唤醒，不静默装没事。
+                    debug!(
+                        job = id,
+                        "[BackgroundRegistry] completion watcher not spawned (entry handles unavailable)"
+                    );
+                }
+            }
+        }
+        Ok(payload)
+    }
+
+    /// 分页读任务输出，可选阻塞等待任务退出（2026-11-08）。`wait_secs = 0`
+    /// → 行为与 [`Self::output`] 逐字节一致（即取即返）；>0 → 每
+    /// [`SUPERVISE_INTERVAL`] 复查一次任务状态，等**退出**（不是等新输出
+    /// ——退出才是模型要的状态翻转信号，见 PLAN 决策记录）或超窗，返回
+    /// 停止等待时刻的 output payload（含期间到达的新字节与终态平铺）。
+    /// 上限 [`MAX_OUTPUT_WAIT_SECS`]（30s）——工具调用不该长阻塞 dispatch。
+    pub async fn output_with_wait(
+        &self,
+        id: u64,
+        offset: u64,
+        wait_secs: u64,
+    ) -> Result<serde_json::Value, String> {
+        let clamped = wait_secs.min(MAX_OUTPUT_WAIT_SECS);
+        if clamped == 0 {
+            return self.output(id, offset).await;
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(clamped);
+        loop {
+            let payload = self.output(id, offset).await?;
+            let running = payload
+                .get("running")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !running || tokio::time::Instant::now() >= deadline {
+                return Ok(payload);
+            }
+            sleep(SUPERVISE_INTERVAL).await;
+        }
     }
 
     /// 终止任务：置旗标（监督任务 ≤[`SUPERVISE_INTERVAL`] 内树杀），随后
@@ -581,6 +793,40 @@ pub(crate) async fn supervise(
             return;
         }
         sleep(SUPERVISE_INTERVAL).await;
+    }
+}
+
+/// 完成唤醒 watcher（2026-11-08）：轮询任务终态（与 supervise 同拍；
+/// 状态槽写入者 = supervise，读侧 clone 快照不跨锁 await）→ 退出时取
+/// 输出尾部发 [`CompletionEvent`]。completion sink 未装配（基线/测试）
+/// → 只空等终态后返回，零副作用。
+async fn completion_watcher(
+    job_id: u64,
+    status: Arc<Mutex<Option<JobStatus>>>,
+    output: Arc<Mutex<OutputBuffer>>,
+    origin: JobOrigin,
+    completion_tx: Arc<std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<CompletionEvent>>>,
+) {
+    let final_status = loop {
+        let snap = status.lock().await.clone();
+        if let Some(s) = snap {
+            break s;
+        }
+        sleep(SUPERVISE_INTERVAL).await;
+    };
+    let tail = {
+        let buf = output.lock().await;
+        let start = buf.produced().saturating_sub(COMPLETION_TAIL_BYTES as u64);
+        let (chunk, _skipped) = buf.read_chunk(start);
+        String::from_utf8_lossy(&chunk).into_owned()
+    };
+    if let Some(tx) = completion_tx.get() {
+        let _ = tx.send(CompletionEvent {
+            job_id,
+            status: final_status,
+            origin,
+            tail,
+        });
     }
 }
 
@@ -803,10 +1049,16 @@ impl BackgroundStartTool {
 impl Tool for BackgroundStartTool {
     fn description(&self) -> String {
         "Start a long-running shell command in the background and return immediately \
-         with a job_id. Use for dev servers, watchers, builds, or any command that \
-         outlives a normal exec timeout. Read output incrementally with \
-         background_output; stop with background_kill. Pass steerable=true to keep \
-         a live stdin pipe and inject input later with background_steer."
+         with a job_id. Use for dev servers, watchers, builds, GUI apps (notepad, \
+         calc), or any command that outlives a normal exec timeout. When the job \
+         exits, a completion notice (with the recent output) is automatically \
+         delivered back into this conversation — do NOT sleep-poll background_output \
+         waiting for it to finish; read output incrementally with background_output \
+         only when you need it, and stop with background_kill. Pass steerable=true \
+         to keep a live stdin pipe and inject input later with background_steer. \
+         Pass notify=false for user-facing GUI apps the user opens and closes \
+         themselves (notepad, calc): no completion notice is delivered when they \
+         exit (the job stays manageable via background_output/background_kill)."
             .to_string()
     }
 
@@ -816,13 +1068,14 @@ impl Tool for BackgroundStartTool {
             "properties": {
                 "command": {"type": "string", "description": "Shell command to run in the background"},
                 "cwd": {"type": "string", "description": "Working directory (default: workspace root; confined to workspace)"},
-                "steerable": {"type": "boolean", "description": "Keep a live stdin pipe so the job can receive input via background_steer (default false)"}
+                "steerable": {"type": "boolean", "description": "Keep a live stdin pipe so the job can receive input via background_steer (default false)"},
+                "notify": {"type": "boolean", "description": "Deliver a completion notice into this conversation when the job exits (default true). Set false for user-facing GUI apps the user opens and closes themselves (notepad, calc) — their exit carries no information for you and notifying the chat is noise"}
             },
             "required": ["command"]
         })
     }
 
-    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+    async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
         let command = val
@@ -838,7 +1091,32 @@ impl Tool for BackgroundStartTool {
             .get("steerable")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let payload = self.registry.start(command, &cwd, steerable).await?;
+        // notify 缺省 true（开发服务器/长构建退出 = 崩溃信号）；仅显式
+        // boolean false 关闭。非法值（如字符串 "false"）→ 缺省 true，
+        // 不静默纠偏——schema 声明 boolean，模型发非布尔即按缺省走。
+        let notify = val.get("notify").and_then(|v| v.as_bool()).unwrap_or(true);
+        // [SEALED 2026-11-08] 旧模式（轮询形态）：不带 origin 起任务，返回
+        // payload 的 note 指引「poll background_output」——诱发模型
+        // background_output→sleep→再读 的空转循环（2026-11-08 用户实测
+        // notepad 场景）。保留备查；恢复 = 把下面 start_with_origin 调用
+        // 换回这行并删掉 origin 捕获段。
+        // let payload = self.registry.start(command, &cwd, steerable).await?;
+        // ── 新模式（完成自动唤醒）：捕获发起会话锚，任务退出后 gateway 经
+        // bus 走标准入站路径回灌完成通告（模型零轮询）。channel/chat_id
+        // 缺席（无会话上下文的调用形态）→ None = 旧模式行为。
+        let origin = if context.channel.is_empty() || context.chat_id.is_empty() {
+            None
+        } else {
+            Some(JobOrigin {
+                channel: context.channel.clone(),
+                chat_id: context.chat_id.clone(),
+                session_key: context.session_key.clone(),
+            })
+        };
+        let payload = self
+            .registry
+            .start_with_origin(command, &cwd, steerable, origin, notify)
+            .await?;
         Ok(payload.to_string())
     }
 }
@@ -860,7 +1138,10 @@ impl Tool for BackgroundOutputTool {
         "Read accumulated output from a background job started with background_start. \
          Pass the job_id; on repeated calls pass the previous response's next_offset \
          to get only new bytes. Response includes running/done status and exit code \
-         when the job has finished."
+         when the job has finished. Note: when a job exits you are notified \
+         automatically in this conversation — use wait_secs only if you deliberately \
+         want to block waiting for exit (capped at 30s); do not loop this call with \
+         sleeps."
             .to_string()
     }
 
@@ -869,13 +1150,15 @@ impl Tool for BackgroundOutputTool {
             "type": "object",
             "properties": {
                 "job_id": {"type": "integer", "description": "Job id returned by background_start"},
-                "offset": {"type": "integer", "description": "Byte offset to read from (default 0; use next_offset from the previous call)"}
+                "offset": {"type": "integer", "description": "Byte offset to read from (default 0; use next_offset from the previous call)"},
+                "wait_secs": {"type": "integer", "description": "Optional: block up to N seconds (max 30) waiting for the job to exit before returning (default 0 = return immediately)"}
             },
             "required": ["job_id"]
         })
     }
 
-    /// 纯读自有缓冲（并行读池安全）。
+    /// 纯读自有缓冲（并行读池安全）；wait_secs>0 的等待也只轮询自有
+    /// 状态槽，不产生新的攻击面。
     fn is_read_only(&self) -> bool {
         true
     }
@@ -888,7 +1171,21 @@ impl Tool for BackgroundOutputTool {
             .and_then(|v| v.as_u64())
             .ok_or("Missing 'job_id' argument")?;
         let offset = val.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
-        let payload = self.registry.output(job_id, offset).await?;
+        // [SEALED 2026-11-08] 旧模式：即取即返，等待语义缺失——模型想等
+        // 任务结束只能本工具与 sleep 交替空转（2026-11-08 用户实测）。保留
+        // 备查；恢复 = 把下面 output_with_wait 调用换回这行并删掉
+        // wait_secs 解析段（parameters 里的 wait_secs 属性一并还原）。
+        // let payload = self.registry.output(job_id, offset).await?;
+        // ── 新模式：wait_secs>0 阻塞等退出（≤30s 钳制），0 = 旧行为。
+        let wait_secs = val
+            .get("wait_secs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .min(crate::background_registry::MAX_OUTPUT_WAIT_SECS);
+        let payload = self
+            .registry
+            .output_with_wait(job_id, offset, wait_secs)
+            .await?;
         Ok(payload.to_string())
     }
 }

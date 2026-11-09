@@ -652,7 +652,12 @@ fn cmd_list(forge_dir: &std::path::Path, r#type: &str) -> Result<()> {
             let path = forge_dir.join(d);
             println!("  {}:", d);
             if path.exists() {
-                let entries: Vec<_> = std::fs::read_dir(&path)?.filter_map(|e| e.ok()).collect();
+                // read_dir 纪律同款（plugin trust-list 先例）：目录枚举序是
+                // 平台实现细节（NTFS 字典序 vs ext4 哈希序），列表展示显式
+                // 排序跨平台稳定。
+                let mut entries: Vec<_> =
+                    std::fs::read_dir(&path)?.filter_map(|e| e.ok()).collect();
+                entries.sort_by_key(|e| e.file_name());
                 if entries.is_empty() {
                     println!("    (none)");
                 } else {

@@ -154,7 +154,8 @@ fn capture_on_non_git_dir_is_false() {
 /// → 57ms 空交付 completed，真回复随后无人认领成孤儿。
 #[tokio::test]
 async fn capture_reply_skips_receipt_and_returns_final() {
-    let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+    let bus = MessageBus::with_capacity(8);
+    let mut rx = bus.subscribe_outbound();
     let session_key = "board_dispatch:t-receipt";
     let queued_ack = OutboundMessage {
         channel: "web".to_string(),
@@ -178,9 +179,9 @@ async fn capture_reply_skips_receipt_and_returns_final() {
             ..Default::default()
         },
     };
-    tx.send(queued_ack).unwrap();
-    tx.send(final_reply).unwrap();
-    let got = capture_reply(&mut rx, session_key).await;
+    bus.publish_outbound(queued_ack);
+    bus.publish_outbound(final_reply);
+    let got = capture_reply(&mut rx, &bus, session_key).await;
     assert_eq!(
         got.as_deref(),
         Some("修复完成：add() 已恢复加法 (DEMO-2 / NB-1)"),
@@ -192,7 +193,8 @@ async fn capture_reply_skips_receipt_and_returns_final() {
 /// 即返回——正常终局捕获语义不变。
 #[tokio::test]
 async fn capture_reply_first_final_match_returns_immediately() {
-    let (tx, mut rx) = tokio::sync::broadcast::channel(8);
+    let bus = MessageBus::with_capacity(8);
+    let mut rx = bus.subscribe_outbound();
     let session_key = "board_dispatch:t-final";
     let reply = OutboundMessage {
         channel: "web".to_string(),
@@ -205,7 +207,53 @@ async fn capture_reply_first_final_match_returns_immediately() {
             ..Default::default()
         },
     };
-    tx.send(reply).unwrap();
-    let got = capture_reply(&mut rx, session_key).await;
+    bus.publish_outbound(reply);
+    let got = capture_reply(&mut rx, &bus, session_key).await;
     assert_eq!(got.as_deref(), Some("终局回复"));
+}
+
+/// Lagged 接线回归锁：接收端被环形缓冲覆盖（慢消费者）时 recv 报
+/// Lagged(n)，capture_reply 必须把 n 记入 bus 出站 lagged 指标——7 个
+/// 生产订阅点统一记账纪律，本订阅点此前只 warn 不记账，全局 lagged
+/// 总量对本地派发链路的丢失恒少记（BUG-20261108-014）。
+#[tokio::test]
+async fn capture_reply_records_lagged_into_bus_metrics() {
+    let bus = MessageBus::with_capacity(4);
+    let mut rx = bus.subscribe_outbound();
+    let fill = |i: usize| OutboundMessage {
+        channel: "web".to_string(),
+        chat_id: "board".to_string(),
+        content: format!("fill {i}"),
+        message_type: String::new(),
+        meta: nemesis_types::channel::OutboundMeta {
+            session_key: Some("board_dispatch:t-lag".to_string()),
+            receipt: true,
+            ..Default::default()
+        },
+    };
+    // 容量 4 的环灌 5 条回执 + 1 条真回复：seq 3-6 仍在环内，
+    // 滑出覆盖的只有 seq 1-2 → 首 recv 报 Lagged(2)（tokio 语义：
+    // n 只计被覆盖丢失的条数，环内未读的不算），记账后继续 recv
+    // 依次消费 3-5（回执跳过）到 6 命中真回复。
+    for i in 0..5 {
+        bus.publish_outbound(fill(i));
+    }
+    bus.publish_outbound(OutboundMessage {
+        channel: "web".to_string(),
+        chat_id: "board".to_string(),
+        content: "终局回复".to_string(),
+        message_type: String::new(),
+        meta: nemesis_types::channel::OutboundMeta {
+            session_key: Some("board_dispatch:t-lag".to_string()),
+            receipt: false,
+            ..Default::default()
+        },
+    });
+    let got = capture_reply(&mut rx, &bus, "board_dispatch:t-lag").await;
+    assert_eq!(got.as_deref(), Some("终局回复"), "丢帧后仍须等到真回复");
+    assert_eq!(
+        bus.lagged_outbound(),
+        2,
+        "Lagged(n) 必须记入出站 lagged 指标"
+    );
 }

@@ -250,7 +250,9 @@ fn test_get_by_id_and_number_and_missing() {
 #[test]
 fn test_list_filters() {
     let (store, dir) = temp_store("filters");
-    let proj = store.create_project("P", "", None, "", "", None).unwrap();
+    let proj = store
+        .create_project("P", "", None, "", "", None, None)
+        .unwrap();
 
     let mut assigned = new_issue("被指派的");
     assigned.assignee = Some(AssignmentType::Worker);
@@ -795,18 +797,22 @@ fn test_projects_crud() {
     let (store, dir) = temp_store("projects");
     assert!(store.list_projects().unwrap().is_empty());
     let p = store
-        .create_project("主项目", "描述", Some(&admin()), "🚀", "", None)
+        .create_project("主项目", "描述", Some(&admin()), "🚀", "", None, None)
         .unwrap();
     assert_eq!(p.name, "主项目");
     assert_eq!(p.lead, Some(admin()));
     // 重名拒绝。
     assert!(
         store
-            .create_project("主项目", "", None, "", "", None)
+            .create_project("主项目", "", None, "", "", None, None)
             .is_err()
     );
     // 空名拒绝。
-    assert!(store.create_project("  ", "", None, "", "", None).is_err());
+    assert!(
+        store
+            .create_project("  ", "", None, "", "", None, None)
+            .is_err()
+    );
     assert_eq!(store.get_project(p.id).unwrap().icon, "🚀");
     assert_eq!(store.list_projects().unwrap().len(), 1);
     assert!(store.get_project(999).is_err());
@@ -986,14 +992,21 @@ fn test_dispatch_generation_v22_legacy_db_upgrades_existing_rows_to_zero() {
             .unwrap();
     }
     {
-        // 手工降级：去列 + 回拨 user_version（模拟 v22 存量库）。降级必须
-        // 完备——schema 要真还原成 v22 形态，否则「库体 v25 + 版本号 22」
-        // 的混合态重开时迁移会撞重复列（v25 加 mode 列先例：测试库已带
-        // mode，谎报 22 → duplicate column）。后续每加一列这里同步补。
+        // 手工降级：去列 + 回拨 user_version（模拟 v22 存量库——降级必须
+        // 完备，schema 要真还原成 v22 形态：后续迁移追加的列/表（v25 mode、
+        // v26 触点系、v27 milestone、v28 playtest）一并摘除，否则「库体
+        // 新 schema + 版本号 22」混合态重开时 ALTER...ADD COLUMN 撞
+        // duplicate column。后续每加一列/表这里同步补）。
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch(
             "ALTER TABLE issue_dispatch DROP COLUMN generation;
              ALTER TABLE autopilot DROP COLUMN mode;
+             ALTER TABLE issue DROP COLUMN quality;
+             ALTER TABLE issue DROP COLUMN unattended;
+             ALTER TABLE issue DROP COLUMN milestone;
+             ALTER TABLE project DROP COLUMN unattended;
+             DROP TABLE IF EXISTS board_touchpoints;
+             DROP TABLE IF EXISTS playtest_pending;
              PRAGMA user_version = 22;",
         )
         .unwrap();
@@ -1476,7 +1489,7 @@ fn test_notification_inbox_read_flow_and_admin_wildcard() {
 fn test_update_project_patch() {
     let (store, dir) = temp_store("project-patch");
     let p = store
-        .create_project("原项目", "说明", None, "🚀", "", None)
+        .create_project("原项目", "说明", None, "🚀", "", None, None)
         .unwrap();
 
     // 部分更新：status 归档 + 改 icon；其余字段不动。
@@ -1521,7 +1534,7 @@ fn test_update_project_patch() {
 
     // 改名撞 UNIQUE。
     store
-        .create_project("另一个", "", None, "", "", None)
+        .create_project("另一个", "", None, "", "", None, None)
         .unwrap();
     assert!(
         store
@@ -3159,7 +3172,7 @@ fn test_project_status_lenient_read_unknown_value() {
     // 不炸不拒读。
     let (store, dir) = temp_store("project-status-lenient");
     let pid = store
-        .create_project("老项目", "", None, "", "", None)
+        .create_project("老项目", "", None, "", "", None, None)
         .unwrap()
         .id;
     // 直接 SQL 改成词表外的值（模拟存量的自由字符串时代遗留数据）。
@@ -3232,12 +3245,13 @@ fn test_project_acceptance_criteria_roundtrip() {
             "🚀",
             "交付说明文本。\n<REVIEW_FAIL>",
             None,
+            None,
         )
         .unwrap();
     assert_eq!(p.acceptance_criteria, "交付说明文本。\n<REVIEW_FAIL>");
     // 缺省空串。
     let p2 = store
-        .create_project("无标准项目", "", None, "", "", None)
+        .create_project("无标准项目", "", None, "", "", None, None)
         .unwrap();
     assert_eq!(p2.acceptance_criteria, "");
     // patch 更新。
@@ -3510,7 +3524,7 @@ fn test_done_rollback_bypass_to_in_review() {
 fn test_issue_filter_exclusion_flags() {
     let (store, dir) = temp_store("filter-exclusion");
     let proj = store
-        .create_project("归档项目", "", None, "", "", None)
+        .create_project("归档项目", "", None, "", "", None, None)
         .unwrap();
     let mut in_proj = new_issue("项目子单");
     in_proj.project_id = Some(proj.id);
@@ -3671,7 +3685,7 @@ fn test_project_directory_bind_and_readback() {
     // 绑定写入 + 读回（create_project 唯一写入口）。目录字符串原样存
     // （store 不做平台化改写）。
     let p = store
-        .create_project("档案项目", "", None, "", "", Some("X:/archives/p1"))
+        .create_project("档案项目", "", None, "", "", Some("X:/archives/p1"), None)
         .unwrap();
     assert_eq!(p.directory.as_deref(), Some("X:/archives/p1"));
     let got = store.get_project(p.id).unwrap();
@@ -3686,7 +3700,7 @@ fn test_project_directory_bind_and_readback() {
     );
     // None = 存量形态。
     let legacy = store
-        .create_project("存量项目", "", None, "", "", None)
+        .create_project("存量项目", "", None, "", "", None, None)
         .unwrap();
     assert_eq!(legacy.directory, None);
     // 绑定不可变：update_project 改名不改目录，patch 无 directory 字段可写。
@@ -3717,7 +3731,7 @@ fn test_project_directory_bind_and_readback() {
 fn test_conflict_freeze_roundtrip_and_default_off() {
     let (store, dir) = temp_store("conflict-freeze");
     let p = store
-        .create_project("冻结项目", "", None, "", "", Some("X:/archives/fz"))
+        .create_project("冻结项目", "", None, "", "", Some("X:/archives/fz"), None)
         .unwrap();
     // 默认不冻结。
     assert!(!store.get_project(p.id).unwrap().conflict_frozen);
@@ -3736,7 +3750,7 @@ fn test_unfreeze_preserves_pending_merges() {
     // pop 消费；提前清空会让冻结期交付静默丢失。
     let (store, dir) = temp_store("unfreeze-keeps-queue");
     let p = store
-        .create_project("队列项目", "", None, "", "", Some("X:/archives/q"))
+        .create_project("队列项目", "", None, "", "", Some("X:/archives/q"), None)
         .unwrap();
     store
         .append_pending_merge(
@@ -3762,7 +3776,15 @@ fn test_unfreeze_preserves_pending_merges() {
 fn test_pending_merge_append_pop_fifo() {
     let (store, dir) = temp_store("pending-fifo");
     let p = store
-        .create_project("FIFO 项目", "", None, "", "", Some("X:/archives/fifo"))
+        .create_project(
+            "FIFO 项目",
+            "",
+            None,
+            "",
+            "",
+            Some("X:/archives/fifo"),
+            None,
+        )
         .unwrap();
     // 空队列 pop → None。
     assert!(store.pop_pending_merge(p.id).unwrap().is_none());
@@ -4672,7 +4694,9 @@ fn create_issue_rejects_dangling_parent_and_project() {
 #[test]
 fn create_issue_accepts_valid_refs() {
     let (store, dir) = temp_store("ref-valid-create");
-    let proj = store.create_project("p", "", None, "📦", "", None).unwrap();
+    let proj = store
+        .create_project("p", "", None, "📦", "", None, None)
+        .unwrap();
     let parent = store.create_issue(new_issue("父单")).unwrap();
     let child = store
         .create_issue(NewIssue {
@@ -5190,5 +5214,229 @@ fn selfcheck_pending_route_miss_returns_none() {
         None
     );
     assert_eq!(store.list_selfcheck_pending().unwrap().len(), 0);
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 人工触点 CRUD（v25；状态机见 touchpoint 模块测试）
+// ---------------------------------------------------------------------------
+
+fn new_touchpoint(issue_id: i64, project_id: Option<i64>) -> crate::models::NewTouchpoint {
+    crate::models::NewTouchpoint {
+        issue_id,
+        project_id,
+        kind: crate::models::TouchpointKind::Spec,
+        deadline_ms: 1_800_000_000_000,
+        payload: r#"{"version":"v1","body":"草案"}"#.into(),
+    }
+}
+
+#[test]
+fn touchpoint_create_and_roundtrip() {
+    let (store, dir) = temp_store("tp-create");
+    let issue = store.create_issue(new_issue("规格确认单")).unwrap();
+    let tp = store
+        .create_touchpoint(&new_touchpoint(issue.id, None))
+        .unwrap();
+    assert_eq!(tp.issue_id, issue.id);
+    assert_eq!(tp.kind, crate::models::TouchpointKind::Spec);
+    assert_eq!(tp.status, crate::models::TouchpointStatus::Pending);
+    assert_eq!(tp.veto_rounds, 0);
+    assert_eq!(tp.payload, r#"{"version":"v1","body":"草案"}"#);
+    let back = store.get_touchpoint(tp.id).unwrap().unwrap();
+    assert_eq!(back.id, tp.id);
+    assert_eq!(back.deadline_ms, 1_800_000_000_000);
+    assert!(back.audit.is_empty() || back.audit == "[]");
+    cleanup(&dir);
+}
+
+#[test]
+fn touchpoint_latest_and_history_queries() {
+    let (store, dir) = temp_store("tp-history");
+    let issue = store.create_issue(new_issue("原型单")).unwrap();
+    let mut input = new_touchpoint(issue.id, None);
+    input.kind = crate::models::TouchpointKind::Prototype;
+    let tp1 = store.create_touchpoint(&input).unwrap();
+    // 同单第二条触点（id 更大）= latest 命中新条。
+    let tp2 = store.create_touchpoint(&input).unwrap();
+    let latest = store
+        .get_latest_touchpoint_by_issue(issue.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(latest.id, tp2.id);
+    assert_ne!(latest.id, tp1.id);
+    let history = store.list_touchpoints_by_issue(issue.id).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].id, tp1.id);
+    assert_eq!(history[1].id, tp2.id);
+    // 无触点的单 = None / 空表。
+    let other = store.create_issue(new_issue("无关单")).unwrap();
+    assert!(
+        store
+            .get_latest_touchpoint_by_issue(other.id)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .list_touchpoints_by_issue(other.id)
+            .unwrap()
+            .is_empty()
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn touchpoint_transition_state_machine_and_veto_counter() {
+    let (store, dir) = temp_store("tp-transition");
+    let issue = store.create_issue(new_issue("触点流转单")).unwrap();
+    let tp = store
+        .create_touchpoint(&new_touchpoint(issue.id, None))
+        .unwrap();
+    // pending → vetoed_local：veto_rounds +1，human_input 落列。
+    let after_veto = store
+        .transition_touchpoint(
+            tp.id,
+            crate::models::TouchpointStatus::VetoedLocal,
+            r#"{"scope":"局部","reason":"按钮布局","rework_then_recheck":true}"#,
+        )
+        .unwrap();
+    assert_eq!(
+        after_veto.status,
+        crate::models::TouchpointStatus::VetoedLocal
+    );
+    assert_eq!(after_veto.veto_rounds, 1);
+    assert!(after_veto.human_input.contains("按钮布局"));
+    // vetoed_local → confirmed：状态机拒绝（必须先回 pending）。
+    let err = store
+        .transition_touchpoint(tp.id, crate::models::TouchpointStatus::Confirmed, "")
+        .unwrap_err();
+    assert!(err.contains("非法转移"), "{err}");
+    // 复验通过 → rehang 回 pending（换 deadline/payload）。
+    let rehung = store
+        .rehang_touchpoint(tp.id, 1_900_000_000_000, r#"{"version":"v2"}"#)
+        .unwrap();
+    assert_eq!(rehung.status, crate::models::TouchpointStatus::Pending);
+    assert_eq!(rehung.deadline_ms, 1_900_000_000_000);
+    assert_eq!(rehung.veto_rounds, 1, "重挂不清计数");
+    // pending → confirmed 终态；终态不可重挂/再转移。
+    let done = store
+        .transition_touchpoint(tp.id, crate::models::TouchpointStatus::Confirmed, "")
+        .unwrap();
+    assert!(done.status.is_terminal());
+    let err = store
+        .rehang_touchpoint(tp.id, 2_000_000_000_000, "{}")
+        .unwrap_err();
+    assert!(err.contains("不可重挂"), "{err}");
+    cleanup(&dir);
+}
+
+#[test]
+fn touchpoint_pending_listing_and_audit_append() {
+    let (store, dir) = temp_store("tp-sweep");
+    let i1 = store.create_issue(new_issue("单1")).unwrap();
+    let i2 = store.create_issue(new_issue("单2")).unwrap();
+    let t1 = store
+        .create_touchpoint(&new_touchpoint(i1.id, None))
+        .unwrap();
+    let mut input = new_touchpoint(i2.id, None);
+    input.deadline_ms = 1_700_000_000_000; // 更早 deadline 排前。
+    let t2 = store.create_touchpoint(&input).unwrap();
+    let pending = store.list_pending_touchpoints().unwrap();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].id, t2.id, "deadline 升序");
+    // 确认 t2 后 pending 只剩 t1。
+    store
+        .transition_touchpoint(t2.id, crate::models::TouchpointStatus::Confirmed, "")
+        .unwrap();
+    let pending = store.list_pending_touchpoints().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, t1.id);
+    // 审计追加 append-only。
+    store
+        .append_touchpoint_audit(
+            t1.id,
+            crate::touchpoint::TouchpointAuditEvent::new(
+                123,
+                "human:admin",
+                "remind",
+                "T+10min 提醒",
+            ),
+        )
+        .unwrap();
+    let back = store.get_touchpoint(t1.id).unwrap().unwrap();
+    let events: Vec<crate::touchpoint::TouchpointAuditEvent> =
+        serde_json::from_str(&back.audit).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "remind");
+    cleanup(&dir);
+}
+
+#[test]
+fn touchpoint_timeout_default_via_transition_and_cancel() {
+    let (store, dir) = temp_store("tp-timeout");
+    let i1 = store.create_issue(new_issue("超时单")).unwrap();
+    let i2 = store.create_issue(new_issue("取消单")).unwrap();
+    let t1 = store
+        .create_touchpoint(&new_touchpoint(i1.id, None))
+        .unwrap();
+    let t2 = store
+        .create_touchpoint(&new_touchpoint(i2.id, None))
+        .unwrap();
+    // sweep 超时收口：pending → timeout_defaulted（终态）。
+    let defaulted = store
+        .transition_touchpoint(t1.id, crate::models::TouchpointStatus::TimeoutDefaulted, "")
+        .unwrap();
+    assert_eq!(
+        defaulted.status,
+        crate::models::TouchpointStatus::TimeoutDefaulted
+    );
+    assert!(defaulted.status.is_terminal());
+    // 人工取消整单：pending → cancelled。
+    let cancelled = store
+        .transition_touchpoint(t2.id, crate::models::TouchpointStatus::Cancelled, "")
+        .unwrap();
+    assert!(cancelled.status.is_terminal());
+    cleanup(&dir);
+}
+
+#[test]
+fn project_unattended_setter_roundtrip() {
+    let (store, dir) = temp_store("proj-unattended");
+    let p = store
+        .create_project("触点项目", "", None, "", "", None, Some(true))
+        .unwrap();
+    assert_eq!(p.unattended, Some(true));
+    // 就地翻转 + 回 None（继承全局）。
+    let flipped = store.set_project_unattended(p.id, Some(false)).unwrap();
+    assert_eq!(flipped.unattended, Some(false));
+    let inherited = store.set_project_unattended(p.id, None).unwrap();
+    assert_eq!(inherited.unattended, None);
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 里程碑单标记（v26 列；触点体系 P3）：建单落库 + 回读保真。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn milestone_roundtrip_and_default() {
+    let (store, dir) = temp_store("milestone-roundtrip");
+    let marked = store
+        .create_issue(NewIssue {
+            milestone: true,
+            quality: "experience".into(),
+            ..new_issue("里程碑单")
+        })
+        .unwrap();
+    let plain = store.create_issue(new_issue("普通单")).unwrap();
+    assert!(
+        store.get_issue(marked.id).unwrap().milestone,
+        "milestone=true 落库后回读保真"
+    );
+    assert!(
+        !store.get_issue(plain.id).unwrap().milestone,
+        "缺省建单 milestone=false"
+    );
     cleanup(&dir);
 }

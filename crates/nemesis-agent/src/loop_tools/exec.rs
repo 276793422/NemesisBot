@@ -4,6 +4,81 @@
 
 use super::*;
 
+use std::collections::VecDeque;
+use std::time::Instant;
+
+/// exec 执行中输出流 hook（2026-11-08 子进程实时输出与完成唤醒）：
+/// 参数 (context, tail, total_bytes)。None = 旧行为（执行中输出不可见，
+/// 返回值路径不受影响——tee 只旁挂观测，不碰返回字节）。
+pub type ExecOutputHook = Arc<dyn Fn(&RequestContext, &str, u64) + Send + Sync>;
+
+/// 流式尾窗字符上限（lossy utf8；多字节安全截尾见 `tail_chars`）。
+pub(crate) const EXEC_TAIL_CHARS: usize = 2048;
+
+/// tee 节流间隔：发布面事件频率钳制（300ms 一窗；终 flush 不节流）。
+pub(crate) const EXEC_TEE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// 流式尾窗字节窗口：窗口内字节参与下一次发布；窗口外（更早）的字节被
+/// 丢弃——ToolOutput 是**易逝观测面**（替换式尾窗，非增量流），节流窗
+/// 之间的中间字节不补发，全文以工具返回值为权威源（loop 层 spill/prune
+/// 闸照常治理）。
+pub(crate) const EXEC_TEE_WINDOW_BYTES: usize = 16 * 1024;
+
+/// 单次 exec 调用的共享 tee 状态（stdout/stderr 两个排水任务各持
+/// `Arc<Mutex<_>>`，合流交错与终端观感一致）。字段只被排水任务触碰
+/// （std Mutex，无跨 await 持锁）。
+pub(crate) struct StreamTeeState {
+    hook: ExecOutputHook,
+    context: RequestContext,
+    window: VecDeque<u8>,
+    produced: u64,
+    last_emit: Instant,
+}
+
+impl StreamTeeState {
+    pub(crate) fn new(hook: ExecOutputHook, context: RequestContext) -> Self {
+        Self {
+            hook,
+            context,
+            window: VecDeque::new(),
+            produced: 0,
+            last_emit: Instant::now(),
+        }
+    }
+
+    /// 排水任务每读到一个原始 chunk 调一次：计数 + 进窗 + 节流发布。
+    fn feed(&mut self, chunk: &[u8]) {
+        if chunk.is_empty() {
+            return;
+        }
+        self.produced += chunk.len() as u64;
+        self.window.extend(chunk);
+        while self.window.len() > EXEC_TEE_WINDOW_BYTES {
+            self.window.pop_front();
+        }
+        let now = Instant::now();
+        if now.duration_since(self.last_emit) >= EXEC_TEE_INTERVAL {
+            self.last_emit = now;
+            self.emit();
+        }
+    }
+
+    /// 排水收尾（EOF）兜底 flush：节流窗内最后一段不丢。窗空则跳过
+    /// （零输出命令不发明空事件）。
+    fn finish(&mut self) {
+        if self.window.is_empty() {
+            return;
+        }
+        self.emit();
+    }
+
+    fn emit(&self) {
+        let bytes: Vec<u8> = self.window.iter().copied().collect();
+        let tail = tail_chars(&String::from_utf8_lossy(&bytes), EXEC_TAIL_CHARS);
+        (self.hook)(&self.context, &tail, self.produced);
+    }
+}
+
 /// A tool that executes shell commands.
 ///
 /// Mirrors Go's `ExecTool` which is registered as "exec" in the agent.
@@ -22,6 +97,12 @@ pub struct ExecTool {
     /// **刻意不提供「清空全部词表」的构造形态**——shell 级词表是防御
     /// 纵深的一道，全放行开关风险远大于收益。
     deny_patterns: Vec<regex::Regex>,
+    /// 执行中输出流 hook（2026-11-08）：None = 旧行为（默认构造——基线
+    /// 注册、executor 分离路径、全部既有测试逐字节不变）。
+    hook: Option<ExecOutputHook>,
+    /// timeout clamp 上限（2026-11-08 config 化；`tools.exec.max_timeout_secs`
+    /// 部署主权参数）。默认 600 = 旧行为字节不变；registry 按配置链式覆写。
+    max_timeout_secs: u64,
 }
 
 /// 编译 deny 词表：`custom` 非空 = 自定义词表（无效 regex 跳过 + warn）；
@@ -74,6 +155,8 @@ impl ExecTool {
             workspace: workspace.to_string(),
             restrict,
             deny_patterns: compile_deny_patterns(None),
+            hook: None,
+            max_timeout_secs: 600,
         }
     }
 
@@ -91,7 +174,38 @@ impl ExecTool {
             workspace: workspace.to_string(),
             restrict,
             deny_patterns: compile_deny_patterns(custom_deny_patterns),
+            hook: None,
+            max_timeout_secs: 600,
         }
+    }
+
+    /// 执行中输出流形态（2026-11-08 子进程实时输出与完成唤醒）：stdout/
+    /// stderr 排水任务旁挂节流 tee，执行中以 [`AgentEvent::ToolOutput`]
+    /// （nemesis-types）流出尾窗——Chat 页执行中可见中间输出。返回值
+    /// 路径字节不变（tee 只观测不改写）。
+    pub fn new_with_output_hook(workspace: &str, restrict: bool, hook: ExecOutputHook) -> Self {
+        Self {
+            workspace: workspace.to_string(),
+            restrict,
+            deny_patterns: compile_deny_patterns(None),
+            hook: Some(hook),
+            max_timeout_secs: 600,
+        }
+    }
+
+    /// timeout clamp 上限覆写（2026-11-08 config 化：`tools.exec.
+    /// max_timeout_secs`，0/缺省=600 旧行为）。链式——registry 构造后调用。
+    pub fn with_max_timeout_secs(mut self, cap: u64) -> Self {
+        self.max_timeout_secs = cap;
+        self
+    }
+
+    /// 执行中输出流 hook 链式覆写（与 `with_max_timeout_secs` 同款链式
+    /// 形态）：deny 词表活跃时与 `new_with_config` 组合——两个配置面
+    /// （词表 × hook）互不排斥。
+    pub fn with_output_hook(mut self, hook: ExecOutputHook) -> Self {
+        self.hook = Some(hook);
+        self
     }
 
     /// deny 词表命中检查（大小写不敏感——命令统一小写后比对，regex 词表
@@ -119,7 +233,7 @@ impl Tool for ExecTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Command to execute"},"timeout":{"type":"integer","description":"Timeout in seconds (default 30, max 600)"},"cwd":{"type":"string","description":"Working directory"}},"required":["command"]})
+        serde_json::json!({"type":"object","properties":{"command":{"type":"string","description":"Command to execute"},"timeout":{"type":"integer","description":format!("Timeout in seconds (default 30, max {})", self.max_timeout_secs)},"cwd":{"type":"string","description":"Working directory"}},"required":["command"]})
     }
 
     async fn execute(&self, args: &str, context: &RequestContext) -> Result<String, String> {
@@ -141,7 +255,10 @@ impl Tool for ExecTool {
             ));
         }
 
-        let timeout_secs = exec_timeout_secs(val.get("timeout").and_then(|v| v.as_u64()));
+        let timeout_secs = exec_timeout_secs_capped(
+            val.get("timeout").and_then(|v| v.as_u64()),
+            self.max_timeout_secs,
+        );
 
         let cwd = val
             .get("cwd")
@@ -198,8 +315,23 @@ impl Tool for ExecTool {
         //    一起 drop，残余输出照样丢。任务持管道所有权，与 wait 竞争无关；
         //    进程死后管道 EOF，任务自然收尾。（受限文件形态下 take 出 None，
         //    任务立即空返回；输出统一走 read_shell_output 出口。）
-        let out_task = tokio::spawn(drain_pipe(child.stdout.take()));
-        let err_task = tokio::spawn(drain_pipe(child.stderr.take()));
+        // [SEALED 2026-11-08] 旧模式（执行中不可见）：排水任务裸排干，exec
+        // 运行期间 Chat 页看不到任何中间输出（2026-11-08 用户实测 ping 场景
+        // ——行业对照 openclaw/gemini-cli/codex 三家执行中输出全部实时可见）。
+        // 保留备查；恢复 = 把下面 spawn_drain_pipe_tee 两行换回这两行。
+        // let out_task = tokio::spawn(drain_pipe(child.stdout.take()));
+        // let err_task = tokio::spawn(drain_pipe(child.stderr.take()));
+        // ── 新模式：hook 在场 → 排水任务旁挂节流 tee（300ms 窗），执行中
+        // 输出以 ToolOutput 事件流出（返回值路径字节不变）；hook=None →
+        // 走旧 drain_pipe，与旧实现逐字节一致。
+        let stream = self.hook.as_ref().map(|hook| {
+            Arc::new(std::sync::Mutex::new(StreamTeeState::new(
+                hook.clone(),
+                context.clone(),
+            )))
+        });
+        let out_task = spawn_drain_pipe_tee(child.stdout.take(), stream.clone());
+        let err_task = spawn_drain_pipe_tee(child.stderr.take(), stream);
 
         let output =
             tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await;
@@ -290,8 +422,18 @@ impl Tool for ExecTool {
 
 /// exec 超时解析——默认 30s、上限 600s（对齐
 /// nemesis-tools shell.rs 的 cap）。模型传 999999 之类不再被照单全收。
+/// （2026-11-08 config 化后生产路径改走 [`exec_timeout_secs_capped`]——
+/// 本函数成为 cap=600 的兼容薄壳，仅测试消费（旧断言零改动继续绿）；
+/// 部署侧改上限走 `tools.exec.max_timeout_secs`。）
+#[cfg(test)]
 pub(super) fn exec_timeout_secs(v: Option<u64>) -> u64 {
-    v.unwrap_or(30).min(600)
+    exec_timeout_secs_capped(v, 600)
+}
+
+/// exec 超时解析（带部署侧上限）：缺省 30s；请求值 clamp 到 `cap`
+/// （config `tools.exec.max_timeout_secs` 的生效值，0/缺省=600）。
+pub(super) fn exec_timeout_secs_capped(v: Option<u64>, cap: u64) -> u64 {
+    v.unwrap_or(30).min(cap)
 }
 
 /// ExecTool 输出成败判定的**统一定义**（协议消费者共用）：三种失败
@@ -541,6 +683,36 @@ pub(super) async fn drain_pipe(pipe: Option<impl tokio::io::AsyncRead + Unpin>) 
         Some(p) => nemesis_utils::pipe_cap::drain_capped_async(p).await,
         None => Vec::new(),
     }
+}
+
+/// 排水任务统一入口（2026-11-08）：tee 在场 → `drain_capped_async_tee`
+/// 旁挂观测（每次原始 chunk 进 [`StreamTeeState`]，EOF 后兜底 flush——
+/// 节流窗内最后一段不丢）；tee 缺失 → 与旧 `tokio::spawn(drain_pipe(..))`
+/// 逐字节一致。返回值路径两种形态完全相同（同一 TailBuf 累积）。
+pub(super) fn spawn_drain_pipe_tee(
+    pipe: Option<impl tokio::io::AsyncRead + Unpin + Send + 'static>,
+    tee: Option<Arc<std::sync::Mutex<StreamTeeState>>>,
+) -> tokio::task::JoinHandle<Vec<u8>> {
+    tokio::spawn(async move {
+        match (pipe, tee) {
+            (Some(p), Some(state)) => {
+                let out = nemesis_utils::pipe_cap::drain_capped_async_tee(p, |chunk| {
+                    // std Mutex 捕毒守卫：hook 面板闭包 panic 不炸排水任务
+                    // （观测面故障降级为「不再流式」，返回值路径不受影响）。
+                    if let Ok(mut st) = state.lock() {
+                        st.feed(chunk);
+                    }
+                })
+                .await;
+                if let Ok(mut st) = state.lock() {
+                    st.finish();
+                }
+                out
+            }
+            (Some(p), None) => nemesis_utils::pipe_cap::drain_capped_async(p).await,
+            (None, _) => Vec::new(),
+        }
+    })
 }
 
 /// 收管道读取任务的结果；兜 5s 上限（孙进程继承管道 EOF 不达时不再挂）。

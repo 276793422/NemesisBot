@@ -527,6 +527,93 @@ async fn test_poll_loop_blocks_disallowed_sender() {
     ch.stop().await.unwrap();
 }
 
+// ---- BUG-20261108-028：外部流行读无帽（IMAP 位点回归锁） ----
+
+/// 起一个在 SEARCH 响应里吐毒丸行的假 IMAP 服务器（骨架同 spawn_fake_imap）：
+/// SEARCH 响应 = 一行 8MB+1KB 无换行毒丸 + 正常结果——轮询必须带帽截断
+/// 续收（游标对齐、连接保活），后续 FETCH/STORE 照常完成。
+async fn spawn_fake_imap_with_poison() -> std::net::SocketAddr {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (stream, _) = match listener.accept().await {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let (rd, mut wr) = stream.into_split();
+        let mut rd = BufReader::new(rd);
+        let mut line = String::new();
+        if wr.write_all(b"* OK IMAP4rev1 ready\r\n").await.is_err() {
+            return;
+        }
+        loop {
+            line.clear();
+            if rd.read_line(&mut line).await.unwrap_or(0) == 0 {
+                break;
+            }
+            let resp = if line.contains("LOGIN") {
+                "NB001 OK LOGIN\r\n".to_string()
+            } else if line.contains("SELECT") {
+                "NB002 OK SELECT\r\n".to_string()
+            } else if line.contains("SEARCH") {
+                let mut resp = "x".repeat(8 * 1024 * 1024 + 1024);
+                resp.push_str("\r\n* SEARCH 1\r\nNB003 OK SEARCH\r\n");
+                resp
+            } else if line.contains("BODY[HEADER") {
+                "* 1 FETCH (BODY[HEADER.FIELDS (SUBJECT FROM MESSAGE-ID)] {68}\r\n\
+                 From: Alice <alice@example.com>\r\n\
+                 Subject: Hello there\r\n\
+                 Message-ID: <m1@example.com>\r\n\
+                 )\r\n\
+                 NB004 OK FETCH\r\n"
+                    .to_string()
+            } else if line.contains("BODY[TEXT]") {
+                "* 1 FETCH (BODY[TEXT] {10}\r\nHello body\r\n)\r\nNB005 OK FETCH\r\n".to_string()
+            } else if line.contains("STORE") {
+                "NB006 OK STORE\r\n".to_string()
+            } else if line.contains("LOGOUT") {
+                "NB007 OK LOGOUT\r\n".to_string()
+            } else {
+                "NB999 OK\r\n".to_string()
+            };
+            if wr.write_all(resp.as_bytes()).await.is_err() {
+                break;
+            }
+        }
+    });
+    addr
+}
+
+/// 毒丸行（>8MB 帽）不杀死轮询：SEARCH 阶段截断续收后协议游标对齐，
+/// 邮件照常取到并发布——修复前裸 read_line 把毒丸无界积累进内存（OOM 面，
+/// 帽内截断会烧 8MB×每毒丸行但受界）。带帽的语义级断言 = 轮询在毒丸后
+/// 仍完成整链（SEARCH→FETCH→STORE→发布），5s 内拿到 InboundMessage。
+#[tokio::test]
+async fn test_poll_loop_survives_oversized_line() {
+    let addr = spawn_fake_imap_with_poison().await;
+    let (tx, mut rx) = tokio::sync::broadcast::channel(16);
+    let config = EmailConfig {
+        imap_host: addr.ip().to_string(),
+        imap_port: addr.port(),
+        smtp_host: "smtp.example.com".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        poll_interval: 3600,
+        ..Default::default()
+    };
+    let ch = EmailChannel::new(config, tx).unwrap();
+    ch.start().await.unwrap();
+
+    let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+        .await
+        .expect("poll must survive the poison line and publish the email within 5s")
+        .unwrap();
+    assert_eq!(inbound.content, "Hello body");
+
+    ch.stop().await.unwrap();
+}
+
 /// 加固臂：build_smtp_message 是 pub 编码单一入口——from/to/subject 混入
 /// CR/LF 必须被拍平成单行（RFC 5322 头部值形态），注入的「头」退化为
 /// Subject 值内的普通文本；body 区不受影响（dot-stuffing 的辖区）。
@@ -555,4 +642,32 @@ fn test_build_smtp_message_flattens_crlf_in_headers() {
         msg.ends_with("line1\r\n.line2"),
         "body region must pass through untouched, got: {msg}"
     );
+}
+
+/// BUG-20261108-021 回归锁：seen_uids 去重图容量帽。
+/// 此前 mark_seen 与轮询内联插入只增不删——键为机器键（每封收件
+/// Message-ID），长驻进程随收件量线性增长永不回收 = 内存慢漏。
+/// 家族先例（mastodon/nostr/signal 10000→5000 修剪）对齐后：
+/// 超帽必须修剪有界（本测 11000 次插入后断言 ≤ 10000）。
+#[test]
+fn test_seen_uids_capped_no_unbounded_growth() {
+    let config = EmailConfig {
+        imap_host: "imap.test.local".to_string(),
+        smtp_host: "smtp.test.local".to_string(),
+        imap_username: "user".to_string(),
+        imap_password: "pass".to_string(),
+        ..Default::default()
+    };
+    let channel = EmailChannel::new(config, test_sender()).expect("channel construct");
+    let total = EmailChannel::SEEN_UIDS_MAX_ENTRIES + 1000;
+    for i in 0..total {
+        channel.mark_seen(&format!("<cap-{i}@test.local>"));
+    }
+    let len = channel.seen_uids.read().len();
+    assert!(
+        len <= EmailChannel::SEEN_UIDS_MAX_ENTRIES,
+        "seen_uids must stay capped at {}, got {len} after {total} inserts",
+        EmailChannel::SEEN_UIDS_MAX_ENTRIES
+    );
+    assert!(len > 0, "prune must not drain the map to empty");
 }

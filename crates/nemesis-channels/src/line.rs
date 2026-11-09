@@ -273,11 +273,14 @@ impl LineChannel {
             }
         }
 
-        // Find body after double CRLF
-        let body = if let Some(idx) = request_str.find("\r\n\r\n") {
-            &request_data[idx + 4..n]
-        } else {
-            &request_data[..n]
+        // Find body after double CRLF——按**原始字节**定位（windows 扫描），
+        // 不用 lossy 字符串偏移切原始字节：header 区含非 UTF-8 字节时
+        // from_utf8_lossy 的替换膨胀会让字符串偏移大于原始字节偏移，
+        // 切片越界 panic（可远程无认证触发——panic 点在验签之前）。
+        // wechat.rs handle_connection 同款纪律。
+        let body = match request_data.windows(4).position(|w| w == b"\r\n\r\n") {
+            Some(idx) => &request_data[idx + 4..n],
+            None => &request_data[..n],
         };
 
         // 签名闸（fail-closed）：LINE 平台发出的每个 webhook 都带
@@ -389,14 +392,18 @@ impl Channel for LineChannel {
             self.config.webhook_port
         };
 
+        // bind 在 spawn **之前**完成并把失败传播给调用方（wechat/wecom 同款）——
+        // 此前 bind 失败只在后台任务里 warn，start() 照常报成功，入站能力
+        // 归零而状态面显示运行中。
+        let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
+            .await
+            .map_err(|e| {
+                NemesisError::Channel(format!(
+                    "[LineChannel] webhook bind failed on port {port}: {e}"
+                ))
+            })?;
+
         tokio::spawn(async move {
-            let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
-                Ok(l) => l,
-                Err(e) => {
-                    warn!("[LineChannel] webhook bind failed on port {port}: {e}");
-                    return;
-                }
-            };
             info!("[LineChannel] webhook server listening on port {port}");
 
             loop {

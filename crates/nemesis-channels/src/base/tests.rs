@@ -1275,3 +1275,53 @@ fn outbound_http_client_builds_with_timeout() {
     // builder 形态（proxy 注入通道用）也必须可链式取用。
     let _builder = outbound_http_builder();
 }
+
+// ---------------------------------------------------------------------------
+// redact_url_secrets（BUG-20261109-006 同族横向修复：webhook URL 凭据脱敏）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn redact_url_secrets_masks_key_query_param() {
+    let msg = "wecom webhook 请求失败: error sending request for url (https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=SECRET-UUID-42)";
+    let out = super::redact_url_secrets(msg);
+    assert!(!out.contains("SECRET-UUID-42"));
+    assert!(out.contains("key=<redacted>"));
+    // host/path 保留诊断价值
+    assert!(out.contains("qyapi.weixin.qq.com/cgi-bin/webhook/send"));
+}
+
+#[test]
+fn redact_url_secrets_masks_access_token_and_bearer_shapes() {
+    let out = super::redact_url_secrets(
+        "dingtalk reply failed: error for url (https://oapi.dingtalk.com/robot/send?access_token=AT-99&x=1)",
+    );
+    assert!(!out.contains("AT-99"));
+    assert!(out.contains("access_token=<redacted>"));
+    // 非凭据参数原样保留
+    assert!(out.contains("x=1"));
+}
+
+#[test]
+fn redact_url_secrets_boundary_guards_prefix_collisions() {
+    // access_token= 中的 token= 子串（前面是 `_`）不得二次命中残撞
+    let out = super::redact_url_secrets("u?access_token=AAA&token=BBB");
+    assert_eq!(out, "u?access_token=<redacted>&token=<redacted>");
+    // webhook_key= 中的 key= 同理
+    let out2 = super::redact_url_secrets("u?webhook_key=KKK");
+    assert!(!out2.contains("KKK"));
+    assert!(out2.contains("webhook_key=<redacted>"));
+}
+
+#[test]
+fn redact_url_secrets_preserves_non_secret_strings() {
+    // 无凭据参数的普通字符串透传；含 "token" 字样但非 ?/& 起头参数不误伤
+    assert_eq!(super::redact_url_secrets("plain failure"), "plain failure");
+    assert_eq!(
+        super::redact_url_secrets("session token expired"),
+        "session token expired"
+    );
+    assert_eq!(
+        super::redact_url_secrets("u?foo=bar&baz=qux"),
+        "u?foo=bar&baz=qux"
+    );
+}

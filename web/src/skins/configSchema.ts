@@ -96,6 +96,8 @@ const FIELDS: Record<string, Omit<SchemaField, 'key' | 'default'>> = {
   'tools.web.perplexity.api_key': { label: 'Perplexity API Key', type: 'string', secret: true },
   'tools.web.perplexity.max_results': { label: 'Perplexity 结果数上限', type: 'number', range: { min: 1, max: 20, step: 1 } },
   'tools.cron.exec_timeout_minutes': { label: 'Cron 执行超时（分钟）', type: 'number', range: { min: 1, max: 720, step: 1 } },
+  // ---- tools.exec（exec 同步阻塞超时上限：0/缺省=600 旧行为，生效下限 30；estop 残留窗口唯一在飞终止原语，部署主权参数）----
+  'tools.exec.max_timeout_secs': { label: 'Exec 超时上限（秒，0=缺省600）', type: 'number', range: { min: 0, max: 3600, step: 30 } },
   // ---- heartbeat ----
   'heartbeat.enabled': { label: '启用心跳', type: 'boolean' },
   'heartbeat.interval': { label: '心跳间隔（秒）', type: 'number', range: { min: 5, max: 3600, step: 5 } },
@@ -185,7 +187,7 @@ const PAGE_TITLES: Record<string, string> = {
   agents: 'Agent 默认', executor: '执行体隔离', terminal: '内嵌终端', gateway: '网关',
   tools: '工具', heartbeat: '心跳', devices: '设备', logging: '日志', security: '安全',
   skills: '技能', forge: 'Forge', cluster: '集群', memory: '记忆', mcp: 'MCP',
-  channels: '通道', connectors: '行动连接器',
+  channels: '通道', connectors: '行动连接器', workflow: '工作流',
 }
 
 /** 编译期默认值按路径查找（drift 测试同时保证此查找不落空）。 */

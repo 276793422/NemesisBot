@@ -203,7 +203,8 @@ async fn dispatch_untouched_for_unregistered_and_undeclared() {
     );
     let ctx = RequestContext::new("web", "chat1", "session1", "sess1");
 
-    // 未注册工具不受影响，仍走原 Unknown tool 文案。
+    // 未注册工具不受秩闸影响：不进 min-tier 闸也不进 B18 白名单闸
+    // （registry 未命中 unwrap_or(true)），仍走原 Unknown tool 文案。
     let unknown = ToolCallInfo {
         id: "call_1".to_string(),
         name: "no_such_tool".to_string(),
@@ -212,7 +213,10 @@ async fn dispatch_untouched_for_unregistered_and_undeclared() {
     let out = agent_loop.handle_tool_call(&unknown, &ctx).await;
     assert!(out.contains("Unknown tool"), "实际: {out}");
 
-    // 无声明工具（min_tier=None）不进秩闸，Mini 档也照常执行。
+    // 无声明工具（min_tier=None）不进秩闸（无 "requires model tier" 文案
+    // ——秩闸只裁决声明工具），但 B18 起进 tier 白名单闸：Mini 档白名单
+    // 外的内置工具从「执行」变「拒绝」——白名单设计意图（小模型失控面），
+    // 安全方向收紧（b18_tier_gate_tests 详测）。
     *agent_loop.tier.write() = nemesis_types::capability::ModelTier::Mini;
     let plain = ToolCallInfo {
         id: "call_2".to_string(),
@@ -220,5 +224,12 @@ async fn dispatch_untouched_for_unregistered_and_undeclared() {
         arguments: "{}".to_string(),
     };
     let out = agent_loop.handle_tool_call(&plain, &ctx).await;
-    assert_eq!(out, "plugin_ok", "无声明工具不进秩闸，实际: {out}");
+    assert!(
+        out.contains("not in the tool whitelist"),
+        "Mini 档白名单外无声明工具由 B18 白名单闸拒（非秩闸文案），实际: {out}"
+    );
+    assert!(
+        !out.contains("requires model tier"),
+        "无声明工具不得进秩闸文案，实际: {out}"
+    );
 }

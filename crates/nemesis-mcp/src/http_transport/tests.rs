@@ -495,6 +495,72 @@ async fn test_w4c_http_session_id_echoed_on_subsequent_requests() {
     assert!(t.session_id.is_none());
 }
 
+/// 带会话 id 的 404 = 会话过期（BUG-20261108-016）：清残留 sid + 报
+/// session_expired，client 层据此重握手。无此识别时 sid 永久残留，
+/// server 重启后已挂载工具对每个调用永久 404。
+#[tokio::test]
+async fn test_http_404_with_session_clears_sid_and_reports_session_expired() {
+    let server = MockServer::start().await;
+    // 带 session 头的请求 → 404（server 终止会话的规范形态）
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .and(header("Mcp-Session-Id", "sid-dead"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("session not found"))
+        .mount(&server)
+        .await;
+    // 无 session 头的请求 → 200 + 指派会话
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("mcp-session-id", "sid-dead")
+                .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}})),
+        )
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
+    t.connect().await.unwrap();
+    let r1 = t.send(&w4c_request("initialize", 1), 5000).await.unwrap();
+    assert!(r1.result.is_some());
+    assert_eq!(t.session_id.as_deref(), Some("sid-dead"));
+
+    let err = t
+        .send(&w4c_request("tools/list", 2), 5000)
+        .await
+        .unwrap_err();
+    assert!(
+        err.is_session_expired(),
+        "带会话 id 的 404 必须报 session_expired，实际: {err}"
+    );
+    // 残留会话 id 必须已清（下次请求从无会话态开始，重握手建新会话）。
+    assert!(t.session_id.is_none());
+    t.close().await.unwrap();
+}
+
+/// 无会话 id 的 404 = 端点/路径错——保持旧 send_failed 形态，不误报
+/// 会话过期（识别闸只在 session_id 在场时生效）。
+#[tokio::test]
+async fn test_http_404_without_session_keeps_plain_send_failed() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/gone"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("no such endpoint"))
+        .mount(&server)
+        .await;
+
+    let mut t = HttpTransport::new(format!("{}/gone", server.uri()));
+    t.connect().await.unwrap();
+    let err = t
+        .send(&w4c_request("tools/list", 1), 5000)
+        .await
+        .unwrap_err();
+    assert!(!err.is_session_expired());
+    assert!(err.message.contains("HTTP 404"));
+    assert!(err.message.contains("no such endpoint"));
+    t.close().await.unwrap();
+}
+
 #[tokio::test]
 async fn test_w4c_http_send_without_content_type_still_parses_json() {
     // 无 content-type 头 → 按空串处理 → 走 JSON 解析分支

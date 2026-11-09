@@ -125,19 +125,19 @@ pub(crate) async fn init_post_agent(
     let board_estop_parked = cluster.board_estop_parked.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_selfcheck_registry = cluster.board_selfcheck_registry.clone();
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let board_playtest_registry = cluster.board_playtest_registry.clone();
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     // 注记：None 前向声明随 迁入本函数——赋值在下方 ClusterService
     // Adapter 构建（四元组消费点）。
     #[cfg(feature = "cluster")]
     let mut cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>> = None;
 
-    // --- Swarm: 主持人裁决桥填装（nb_bus 注册早于 agent_loop 构建）---
-    #[cfg(all(feature = "board", feature = "cluster"))]
-    {
-        if board_moderator_loop.set(agent_loop.clone()).is_err() {
-            warn!("[Gateway] Board moderator loop already set");
-        }
-    }
+    // --- Swarm: 主持人裁决桥（nb_bus 注册早于 agent_loop 构建）---
+    // 槽填装由 AgentLoopServiceAdapter 唯一承担（start 写 Some / stop 写
+    // None）——装配期槽 None = 停机窗口的诚实态；评审链/工具运行期读槽
+    // 解析当前 loop（BUG-20261108-012：此前此处 OnceLock set 一次静态
+    // 绑定初始 loop，agent stop→start 后打死旧实例）。
 
     // --- 全自动流转：父单收口验收钩子注册 ---
     // sync_parent_status 子单全 done 路径 → 本钩子（读 auto_close_parent
@@ -176,6 +176,7 @@ pub(crate) async fn init_post_agent(
                 estop: shared_resources.estop.clone(),
                 estop_parked: board_estop_parked.clone(),
                 selfcheck: board_selfcheck_registry.clone(),
+                playtest: board_playtest_registry.clone(),
                 // d：评审结论→交付账本闭环的审计插件槽。
                 #[cfg(feature = "security")]
                 security_slot: Some(ctx.outbound_dlp_slot.clone()),
@@ -264,6 +265,7 @@ pub(crate) async fn init_post_agent(
                 estop: shared_resources.estop.clone(),
                 estop_parked: board_estop_parked.clone(),
                 selfcheck: board_selfcheck_registry.clone(),
+                playtest: board_playtest_registry.clone(),
                 // d：同上——项目收口钩子的审计插件槽。
                 #[cfg(feature = "security")]
                 security_slot: Some(ctx.outbound_dlp_slot.clone()),
@@ -322,6 +324,9 @@ pub(crate) async fn init_post_agent(
                     // 任务档案自动导出（goal）：人工收口路径同源
                     // 触发（自动 PASS 路径在 apply_project_review_outcome）。
                     crate::board_review::spawn_project_dossier((*sum_deps).clone(), project_id);
+                    // 项目汇报包（计划 §8）：人工收口路径同源触发
+                    //（自动 PASS 路径在 apply_project_review_outcome）。
+                    crate::board_review::spawn_project_report((*sum_deps).clone(), project_id);
                 }),
             ) {
                 warn!("[Gateway] Board project summary hook register failed: {e}");
@@ -381,31 +386,57 @@ pub(crate) async fn init_post_agent(
             // 启动重放（BUG-2 根修）：评审 spawn 纯内存、master 重启即
             // 丢——in_review 单据/父单/项目在重启后由这里扫描重触发。必须
             // 在三类钩子注册完成后调用（重放验收 PASS 会级联点火上层钩子）。
-            crate::board_review::replay_stuck_reviews(&replay_sweep_deps, &[]);
-            info!("[Gateway] Board stuck-review replay sweep done");
+            //
+            // （BUG-20261108-012 追修）moderator 槽自槽位重设计起由
+            // AgentLoopServiceAdapter::start()（init_services Step 14b，
+            // 晚于本块）填 Some——此处同步调用时槽恒空，重放评审全部
+            // 「主 agent 未就绪，跳过自动验收」（cluster-uat T45 实证：
+            // 两轮重放各在 skip 后 5-6ms 才见 provider/AgentLoop 就绪）、
+            // plan recovery 每次启动 skip。改为有界等槽后触发：Step 14b
+            // 在毫秒级后到达，正常路径一轮 100ms 轮询即过；adapter 未
+            // 启动则 30s 到期按原语义跳过（不阻塞启动）。
+            let sweep_task_deps = replay_sweep_deps.clone();
+            let sweep_cluster = cluster.clone();
+            let sweep_home = home.clone();
+            let sweep_hub = web_server.event_hub().clone();
+            tokio::spawn(async move {
+                let mut slot_wait_ms: u64 = 0;
+                let agent_loop = loop {
+                    if let Some(agent_loop) = sweep_task_deps.moderator_loop.read().clone() {
+                        break agent_loop;
+                    }
+                    if slot_wait_ms >= 30_000 {
+                        warn!(
+                            "[Gateway] Board stuck-review replay skipped: moderator loop 30s 未就绪（agent adapter 未启动）"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    slot_wait_ms += 100;
+                };
+                crate::board_review::replay_stuck_reviews(&sweep_task_deps, &[]);
+                info!("[Gateway] Board stuck-review replay sweep done");
 
-            // （无人值守闭环）：拆解中断恢复扫描——RUNNING_PLANS 内存
-            // 态、重启杀拆解任务，backlog/todo +「已开始自动拆解」评论态的
-            // 单子自动重新发起拆解（开关 board.plan.restart_recover 默认开；
-            // estop 挂起跳过；worker 镜像不跑）。评审重放同阶段、moderator
-            // 槽已装配（119 set）。
-            if let Some(agent_loop) = replay_sweep_deps.moderator_loop.get().cloned() {
+                // （无人值守闭环）：拆解中断恢复扫描——RUNNING_PLANS 内存
+                // 态、重启杀拆解任务，backlog/todo +「已开始自动拆解」评论态的
+                // 单子自动重新发起拆解（开关 board.plan.restart_recover 默认开；
+                // estop 挂起跳过；worker 镜像不跑）。与评审重放同阶段，槽
+                // 就绪后执行（原「槽已装配（119 set）」注释随装配期 set 移除
+                // 一并失效，此处读到的槽必然已由 adapter start 填充）。
                 let recovered = nemesis_web::handlers::board::recover_interrupted_plans(
-                    &replay_sweep_deps.store,
-                    Some(cluster.clone()),
+                    &sweep_task_deps.store,
+                    Some(sweep_cluster),
                     agent_loop,
-                    Some(home.clone()),
-                    Some(web_server.event_hub().clone()),
-                    Some(replay_sweep_deps.estop.as_ref()),
+                    Some(sweep_home),
+                    Some(sweep_hub),
+                    Some(sweep_task_deps.estop.as_ref()),
                 );
                 if recovered > 0 {
                     info!(
                         "[Gateway] Board plan recovery: {recovered} interrupted plan(s) re-armed"
                     );
                 }
-            } else {
-                warn!("[Gateway] Board plan recovery skipped: moderator loop 未装配");
-            }
+            });
 
             // U-B（无人值守）：LLM 端点不可用恢复探针——封存期周期
             // 最小 completion 探测（TCP 通 ≠ LLM 活），解封边沿读中断档案
@@ -505,9 +536,12 @@ pub(crate) async fn init_post_agent(
         }
     }
 
-    // Create shared reference for WebServer model switching
-    let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =
-        Arc::new(parking_lot::RwLock::new(None));
+    // gateway 级动态解析槽（ctx 装配期创建的同一 Arc——workflow agent
+    // 节点/workflow 工具执行体/board 评审链/board_issue 工具/SharedResources
+    // 共享；写者唯一 = 本 adapter，start 写 Some / stop 写 None。
+    // BUG-20261108-012：此前此处另建私有槽，moderator 链的 OnceLock 静态
+    // 绑定初始 loop，agent stop→start 后打死旧实例）。
+    let agent_loop_ref = ctx.board_moderator_loop.clone();
 
     // Create AgentLoopServiceAdapter for tray start/stop control.
     // Passes the initial AgentLoop directly — no double construction.
@@ -596,6 +630,7 @@ pub(crate) async fn init_post_agent(
                 shared_resources.estop.clone(),
                 board_estop_parked.clone(),
                 board_selfcheck_registry.clone(),
+                board_playtest_registry.clone(),
                 local_dispatch_task_db,
                 #[cfg(feature = "security")]
                 Some(ctx.outbound_dlp_slot.clone()),
@@ -1100,7 +1135,9 @@ pub(crate) async fn init_post_agent(
     )) {
         Ok(db) => {
             let flow_engine = std::sync::Arc::new(crate::flow_engine::FlowEngine::new(
-                agent_loop.clone(),
+                // BUG-20261108-012 横向收尾：传动态槽（agent 重启后 flow
+                // 节点 dispatch 跟随最新 loop）。
+                ctx.board_moderator_loop.clone(),
                 board_store
                     .clone()
                     .expect("board feature 已启用，board_store 必在"),

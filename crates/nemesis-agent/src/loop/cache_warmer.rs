@@ -43,10 +43,10 @@ pub(crate) const WARM_TRIGGER_RATIO: f64 = 0.9;
 
 /// warm 扫描周期（秒）。轻量 tokio interval，不挂 cron（域）。
 pub(crate) const WARM_SCAN_INTERVAL_SECS: u64 = 60;
-
-/// 单次 warm 重放的调用超时（秒）。`max_tokens=1` 的重放只有 prefill
-/// 开销，120s 对超大上下文也宽裕；超时按失败处理（静默 debug）。
-pub(crate) const WARM_CALL_TIMEOUT_SECS: u64 = 120;
+// 单次 warm 重放的调用超时已并入主链语义（BUG-20261108-030 同族修复）：
+// warm 是 prefill 完成型调用，恒定 120s 上限低于 provider 内层超时
+// （600s / per-model），大上下文 prefill 必然失败——现跟随
+// `current_provider_call_timeout_secs()`（超时阶梯纪律：外层 > 内层）。
 
 /// warm 候选快照的会话数上限（每份快照 ≈ 一整个上下文的克隆，必须封顶；
 /// 超限淘汰 anchor 最旧的会话）。
@@ -327,7 +327,12 @@ impl AgentLoop {
             session_key, model, estimated, cost_limit_usd
         );
         let result = Self::chat_call_bounded(
-            WARM_CALL_TIMEOUT_SECS,
+            // 跟随主链外层包裹超时（BUG-20261108-030 同族修复）：warm 是
+            // prefill 完成型调用（max_tokens=1 的意义就是等 prefill 完成
+            // 暖 cache），大上下文 prefill 正是 >120s 高发区——恒定 120s
+            // 上限让该场景 warm 必然失败（无害但功能失效）。主请求能完成的
+            // prefill，warm 同样应该能完成（同 provider 同超时阶梯）。
+            self.current_provider_call_timeout_secs(),
             &provider,
             &model,
             messages,

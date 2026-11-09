@@ -61,7 +61,7 @@ impl ModuleHandler for ModelsHandler {
             "list" => self.list(home),
             "add" => {
                 let data = data.ok_or("missing data")?;
-                self.add(home, &data)
+                self.add(home, &data).await
             }
             "copy" => {
                 let data = data.ok_or("missing data")?;
@@ -535,7 +535,7 @@ impl ModelsHandler {
         })))
     }
 
-    fn add(
+    async fn add(
         &self,
         home: &str,
         data: &serde_json::Value,
@@ -578,7 +578,7 @@ impl ModelsHandler {
         // the typed ModelConfig does not model them, so a typed round-trip
         // would drop them (same reason the CLI `model add` is raw JSON).
         // 锁在 update_raw_config 内——探测/校验代码不可能忘锁。
-        super::config::update_raw_config(home, |cfg| {
+        let mut receipt = super::config::update_raw_config(home, |cfg| {
             let list = cfg
                 .get_mut("model_list")
                 .and_then(|v| v.as_array_mut())
@@ -626,7 +626,24 @@ impl ModelsHandler {
             Ok(Some(
                 serde_json::json!({ "added": true, "name": model_name }),
             ))
-        })
+        })?;
+
+        // B39：保存时轻校验（CLI `model add` 同源，`probe_model_entry`
+        // SaveCheck 深度）——**不拒存**：写盘已成功，探测结果（ok/fail/
+        // skipped/unsupported 四态）只如实附在回执 `verify` 字段。
+        // Err（调用方级失败，罕见）→ skipped 形态兜底，add 本身不失败。
+        let verify = probe_model_entry(home, &model_name, ProbeDepth::SaveCheck)
+            .await
+            .unwrap_or_else(|e| {
+                serde_json::json!({
+                    "name": model_name, "status": "skipped",
+                    "detail": format!("探测未执行：{e}"),
+                })
+            });
+        if let Some(obj) = receipt.as_mut().and_then(|v| v.as_object_mut()) {
+            obj.insert("verify".to_string(), verify);
+        }
+        Ok(receipt)
     }
 
     /// 模型配置复制（五项增强 ②）：同族模型不必重新填写——
@@ -1178,143 +1195,22 @@ impl ModelsHandler {
 
     /// 模型连通性测试（五项增强 ①：stub → 真实现）。
     ///
-    /// 与真实使用**同源**：`canonical_swap_params`（= set_default 热切 /
-    /// 启动装配的同一解析链）解析条目 → factory 同源构造 provider → 发一个
-    /// `max_tokens=16` 的 "ping" 最小对话请求。协议 lane（anthropic/openai/
-    /// responses）、流式配置、api_key 引用（env:/yaml:/vault）全部与
-    /// 生产一致——测过 = 真能用，不做裸 HTTP 简化版。
-    ///
-    /// 返回值形态（前端圆点状态机的唯一输入）：
-    /// `{name, status: ok|fail|unsupported, latency_ms, detail, kind, lane}`
-    /// - `unsupported`：images-openai 图像 lane（不能对话，不红不绿保持灰）；
-    /// - `kind`：fail 时的粗分类（config/auth/billing/rate_limit/timeout/
-    ///   connect/format/overloaded/other），走 nemesis-utils 错误分类器
-    ///   （与 agent loop 同源词表）；
-    /// - 配置类失败（resolve/构造失败，如缺 key）也返回 fail 而非命令错误
-    ///   一键测试时逐模型染红点比整体报错有用。
-    ///
-    /// 超时：HTTP lane 默认 30s 硬顶、CLI 型 lane（spawn 成本）60s——
-    /// 不用 provider 默认 600s（测试要快失败）；data.timeout_secs 可覆盖
-    /// （夹取 1..=120，测试与 UI 都用得上）。
+    /// B39 起核心逻辑整体下沉到 [`probe_model_entry`]（单一真相源——
+    /// `models.add` 保存时轻校验与 CLI `model add` 同源共用）；本方法只
+    /// 负责 WSAPI 形态：`data.timeout_secs` 覆盖（钳 1..=120）+ Option 包装。
     async fn test(
         &self,
         home: &str,
         name: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        // 条目必须按 model_name 精确存在（防 resolve 推断臂造出假条目测试）。
-        let raw_cfg = super::config::read_raw_config(home)?;
-        let entry_exists = raw_cfg
-            .get("model_list")
-            .and_then(|v| v.as_array())
-            .map(|list| {
-                list.iter()
-                    .any(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
-            })
-            .unwrap_or(false);
-        if !entry_exists {
-            return Err(format!("model '{}' not found", name));
-        }
-        let proto = raw_cfg
-            .get("model_list")
-            .and_then(|v| v.as_array())
-            .and_then(|list| {
-                list.iter()
-                    .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
-            })
-            .and_then(|m| m.get("protocol"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        if nemesis_types::capability::is_image_protocol(&proto) {
-            return Ok(Some(serde_json::json!({
-                "name": name,
-                "status": "unsupported",
-                "detail": "图像生成条目不能对话测试（仅供 generate_image 工具消费）",
-                "lane": "images-openai",
-            })));
-        }
-
-        // 与 set_default 热切同源的解析（typed resolve + key 引用解引用）。
-        let fail = |detail: String, kind: &str| {
-            Ok(Some(serde_json::json!({
-                "name": name, "status": "fail", "detail": detail, "kind": kind,
-            })))
-        };
-        let swap = match Self::canonical_swap_params(&raw_cfg, name) {
-            Ok(s) => s,
-            Err(e) => return fail(e, "config"),
-        };
-        let factory_cfg = nemesis_providers::factory::FactoryConfig {
-            proxy: swap.proxy.clone(),
-            llm_ref: swap.llm_ref.clone(),
-            api_key: swap.api_key.clone(),
-            api_base: swap.api_base.clone(),
-            workspace: String::new(),
-            connect_mode: swap.connect_mode.clone(),
-            protocol: swap.protocol.clone(),
-            timeout_secs: swap.timeout_secs,
-            stream_mode: swap.stream_mode.clone(),
-            cache_breakpoints: swap.cache_breakpoints,
-            account_id: String::new(),
-            headers: std::collections::HashMap::new(),
-        };
-        // lane 探测（纯函数，无网络）：CLI 型 lane 超时放宽（spawn 成本）。
-        let (lane, timeout_secs) =
-            match nemesis_providers::factory::resolve_provider_selection(&factory_cfg) {
-                Ok(sel) => {
-                    let cli = matches!(
-                        sel.provider_type,
-                        nemesis_providers::factory::ProviderType::ClaudeCli
-                            | nemesis_providers::factory::ProviderType::CodexCli
-                            | nemesis_providers::factory::ProviderType::GitHubCopilot
-                    );
-                    (lane_label(sel.provider_type), if cli { 60 } else { 30 })
-                }
-                Err(e) => return fail(e, "config"),
-            };
-        let timeout_secs = data
+        let override_secs = data
             .get("timeout_secs")
             .and_then(|v| v.as_u64())
-            .map(|v| v.clamp(1, 120))
-            .unwrap_or(timeout_secs);
-        let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
-            Ok(p) => p,
-            Err(e) => return fail(e, "config"),
-        };
-
-        // 最小对话 ping：max_tokens=16，费用可忽略。
-        let messages = vec![nemesis_providers::types::Message::text("user", "ping")];
-        let options = nemesis_providers::types::ChatOptions {
-            max_tokens: Some(16),
-            ..Default::default()
-        };
-        let started = std::time::Instant::now();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            provider.chat(&messages, &[], &swap.model, &options),
-        )
-        .await;
-        let latency_ms = started.elapsed().as_millis() as u64;
-        match result {
-            Err(_) => Ok(Some(serde_json::json!({
-                "name": name, "status": "fail", "kind": "timeout",
-                "detail": format!("测试超时（{}s）——端点无响应", timeout_secs),
-                "latency_ms": latency_ms, "lane": lane,
-            }))),
-            Ok(Ok(_resp)) => Ok(Some(serde_json::json!({
-                "name": name, "status": "ok",
-                "latency_ms": latency_ms, "lane": lane, "detail": "",
-            }))),
-            Ok(Err(e)) => {
-                let msg = e.to_string();
-                let kind = error_kind(&msg);
-                Ok(Some(serde_json::json!({
-                    "name": name, "status": "fail", "kind": kind,
-                    "detail": msg, "latency_ms": latency_ms, "lane": lane,
-                })))
-            }
-        }
+            .map(|v| v.clamp(1, 120));
+        probe_model_entry(home, name, ProbeDepth::Interactive(override_secs))
+            .await
+            .map(Some)
     }
 
     /// (UI entry gap): per-field attribute editor for one
@@ -1699,6 +1595,211 @@ fn error_kind(msg: &str) -> &'static str {
     }
 }
 
+// B39：保存时轻校验 + models.test 单一真相源
+//
+// `probe_model_entry` 三入口共用：WSAPI `models.test`（Interactive）、
+// `models.add` 写盘后轻校验（SaveCheck）、CLI `model add` 写盘后轻校验
+// （SaveCheck）。核心链与 set_default 热切 / 启动装配同源
+// （canonical_swap_params → FactoryConfig → resolve_provider_selection →
+// create_provider → max_tokens=16 ping）：协议 lane、流式配置、api_key
+// 引用（env:/yaml:/vault）全部与生产一致——测过 = 真能用。
+
+/// 探测深度（B39）。
+pub enum ProbeDepth {
+    /// `models.test` 语义：lane 默认超时（HTTP 30s / CLI 型 lane 60s——
+    /// spawn 成本），`Some(n)` 为调用方覆盖（已钳 1..=120）。
+    Interactive(Option<u64>),
+    /// 保存时轻校验语义：HTTP lane 固定 5s ping（轻校验不当长测）；
+    /// CLI 型 lane 诚实 skip（`status: "skipped"`）——spawn 成本恒超 5s，
+    /// 测了必假超时，运行期首报为准。
+    SaveCheck,
+}
+
+/// 保存时轻校验的 HTTP lane ping 预算（秒）——轻校验不当长测。
+const SAVE_CHECK_TIMEOUT_SECS: u64 = 5;
+
+/// 模型条目连通性探测核心（B39 单一真相源）。
+///
+/// 返回值形态（`models.test` 前端圆点状态机的唯一输入；保存轻校验的
+/// `verify` 字段同形）：
+/// `{name, status: ok|fail|skipped|unsupported, latency_ms, detail, kind, lane}`
+/// - `ok`：ping 成功（`latency_ms` + `lane`）；
+/// - `fail`：配置类（resolve/构造失败，如缺 key）或请求类失败——不拒存，
+///   只如实上报（`kind` 粗分类 config/auth/billing/rate_limit/timeout/
+///   connect/format/overloaded/other，走 nemesis-utils 错误分类器同源词表）；
+/// - `skipped`：仅 SaveCheck × CLI 型 lane（诚实 skip，理由在 `detail`）；
+/// - `unsupported`：images-openai 图像 lane（不能对话，不红不绿保持灰）。
+///
+/// Err 仅限调用方级失败（读 config 失败 / 条目不存在）——探测结果本身
+/// 恒 Ok（保存路径不因探测失败拒存，调用方也就无需区分）。
+pub async fn probe_model_entry(
+    home: &str,
+    name: &str,
+    depth: ProbeDepth,
+) -> Result<serde_json::Value, String> {
+    // 条目必须按 model_name 精确存在（防 resolve 推断臂造出假条目测试）。
+    let raw_cfg = super::config::read_raw_config(home)?;
+    let entry = raw_cfg
+        .get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|list| {
+            list.iter()
+                .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+        })
+        .ok_or_else(|| format!("model '{}' not found", name))?;
+    let proto = entry
+        .get("protocol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if nemesis_types::capability::is_image_protocol(&proto) {
+        return Ok(serde_json::json!({
+            "name": name,
+            "status": "unsupported",
+            "detail": "图像生成条目不能对话测试（仅供 generate_image 工具消费）",
+            "lane": "images-openai",
+        }));
+    }
+
+    // 与 set_default 热切同源的解析（typed resolve + key 引用解引用）。
+    let fail = |detail: String, kind: &str| {
+        Ok(serde_json::json!({
+            "name": name, "status": "fail", "detail": detail, "kind": kind,
+        }))
+    };
+    let swap = match ModelsHandler::canonical_swap_params(&raw_cfg, name) {
+        Ok(s) => s,
+        Err(e) => return fail(e, "config"),
+    };
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: swap.proxy.clone(),
+        llm_ref: swap.llm_ref.clone(),
+        api_key: swap.api_key.clone(),
+        api_base: swap.api_base.clone(),
+        workspace: String::new(),
+        connect_mode: swap.connect_mode.clone(),
+        protocol: swap.protocol.clone(),
+        timeout_secs: swap.timeout_secs,
+        stream_mode: swap.stream_mode.clone(),
+        cache_breakpoints: swap.cache_breakpoints,
+        account_id: String::new(),
+        headers: std::collections::HashMap::new(),
+    };
+    // lane 探测（纯函数，无网络）+ 按深度定超时：Interactive 用 lane
+    // 默认（CLI 型放宽）/覆盖值；SaveCheck 固定 5s，CLI 型诚实 skip。
+    let (lane, timeout_secs) =
+        match nemesis_providers::factory::resolve_provider_selection(&factory_cfg) {
+            Ok(sel) => {
+                let label = lane_label(sel.provider_type);
+                let cli = matches!(
+                    sel.provider_type,
+                    nemesis_providers::factory::ProviderType::ClaudeCli
+                        | nemesis_providers::factory::ProviderType::CodexCli
+                        | nemesis_providers::factory::ProviderType::GitHubCopilot
+                );
+                match depth {
+                    ProbeDepth::Interactive(ov) => (label, ov.unwrap_or(if cli { 60 } else { 30 })),
+                    ProbeDepth::SaveCheck => {
+                        if cli {
+                            return Ok(serde_json::json!({
+                                "name": name, "status": "skipped", "lane": label,
+                                "detail": "CLI 型 lane 保存时不做连通性校验\
+                                           （spawn 成本大于轻校验预算）——运行期首报为准",
+                            }));
+                        }
+                        (label, SAVE_CHECK_TIMEOUT_SECS)
+                    }
+                }
+            }
+            Err(e) => return fail(e, "config"),
+        };
+    let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
+        Ok(p) => p,
+        Err(e) => return fail(e, "config"),
+    };
+
+    // 最小对话 ping：max_tokens=16，费用可忽略。
+    let messages = vec![nemesis_providers::types::Message::text("user", "ping")];
+    let options = nemesis_providers::types::ChatOptions {
+        max_tokens: Some(16),
+        ..Default::default()
+    };
+    let started = std::time::Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(timeout_secs),
+        provider.chat(&messages, &[], &swap.model, &options),
+    )
+    .await;
+    let latency_ms = started.elapsed().as_millis() as u64;
+    match result {
+        Err(_) => Ok(serde_json::json!({
+            "name": name, "status": "fail", "kind": "timeout",
+            "detail": format!("测试超时（{}s）——端点无响应", timeout_secs),
+            "latency_ms": latency_ms, "lane": lane,
+        })),
+        Ok(Ok(_resp)) => Ok(serde_json::json!({
+            "name": name, "status": "ok",
+            "latency_ms": latency_ms, "lane": lane, "detail": "",
+        })),
+        Ok(Err(e)) => {
+            let msg = e.to_string();
+            let kind = error_kind(&msg);
+            Ok(serde_json::json!({
+                "name": name, "status": "fail", "kind": kind,
+                "detail": msg, "latency_ms": latency_ms, "lane": lane,
+            }))
+        }
+    }
+}
+
+/// B39 启动缺 key 主动提问的应答执行体（nemesisbot runtime 装配期调用，
+/// pub 供跨 crate）：写 key 进 config 对应条目（raw RMW 保留兄弟 extras，
+/// 与 add/set_default 同一事务口）→ [`ModelsHandler::apply_runtime_swap`]
+/// 唯一 chokepoint 热切（展示三字段 / provider / fallback 链 / default_slot
+/// / 主 loop / Forge）→ 项目 loop bridge 同步（set_default 同款）。
+/// `state` 由调用方经 `crate::server::running_app_state()` 取得（web 未
+/// 启动 = 调用方诚实降级，不进本函数）。
+/// Err = 写盘或解析失败；config 已写成功但热切解析失败时同样 Err 上抛
+/// ——与 set_default 口径一致，不静默吞。
+pub fn runtime_fill_model_key(
+    home: &str,
+    name: &str,
+    api_key: &str,
+    state: std::sync::Arc<crate::api_handlers::AppState>,
+) -> Result<(), String> {
+    let final_cfg = super::config::update_raw_config(home, |cfg| {
+        let list = cfg
+            .get_mut("model_list")
+            .and_then(|v| v.as_array_mut())
+            .ok_or("config.json has no model_list")?;
+        let entry = list
+            .iter_mut()
+            .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+            .ok_or_else(|| format!("model '{}' not found", name))?;
+        entry["api_key"] = serde_json::Value::String(api_key.to_string());
+        Ok(cfg.clone())
+    })?;
+
+    // system RequestContext（websocket_handler 构造先例同形）：本函数只在
+    // gateway runtime 装配期被调用，无真实 WS 会话——身份是「系统装配」。
+    let ctx = crate::ws_router::RequestContext {
+        session_id: "system".to_string(),
+        chat_id: "system".to_string(),
+        workspace: state.workspace.clone(),
+        home: state.home.clone(),
+        state,
+        auth_method: crate::session::AuthMethod::default(),
+    };
+    ModelsHandler::apply_runtime_swap(&final_cfg, name, &ctx)?;
+
+    // 模型热切联动：项目 loop 经 bridge 用盘上 config 同步（set_default
+    // 同款；未装配/解析失败 = no-op 诚实降级）。
+    if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+        bridge.reload_provider_all();
+    }
+    Ok(())
+}
+
 /// 引用归属判定（隐患修复）：defaults.llm 等引用值指向哪个
 /// 条目——与 resolve_model_config 的解析顺序同语义（启动 get_effective_llm
 /// 真正走的就是那个顺序，勿在此分叉出第二套判定）：
@@ -1817,3 +1918,9 @@ mod copy_rename_tests;
 // 端到端 + 原子性 + 断引用 + 幂等 + feature 裁剪形态诚实报错）。
 #[cfg(test)]
 mod migrate_keys_tests;
+
+// B39 保存时轻校验 + 启动缺 key 应答执行体：probe_model_entry 四态
+// （Err/skip/unsupported/死回环 connect fail）、add 回执 verify 不拒存、
+// runtime_fill_model_key 写盘+热切+条目不存在回滚。
+#[cfg(test)]
+mod b39_probe_tests;

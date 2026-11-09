@@ -134,18 +134,47 @@ pub struct DiscordConfig {
     pub sync_to: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MaixCamConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default = "default_maixcam_host")]
     pub host: String,
-    #[serde(default)]
+    #[serde(default = "default_maixcam_port")]
     pub port: i64,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
     #[serde(default)]
     pub sync_to: Vec<String>,
+}
+
+fn default_maixcam_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+/// 端口缺省 8888（BUG-20261108-010）：与出厂模板 / migrate 模板 / 硬编码
+/// `default_config()` / 通道侧 `nemesis_channels::maixcam::MaixCamConfig`
+/// 类型缺省四处真相源收敛——旧形态 serde 缺省 0（derive 零值），存量
+/// config（channels 段在场面 maixcam 键缺席）使能即
+/// `TcpListener::bind("0.0.0.0:0")` 成功落 OS 临时端口：bind 成功、通道
+/// 状态「运行中」、设备永远连不上（静默死通道；BUG-20261107-015 只修了
+/// 硬编码路径的撞号，serde 路径分叉漏网）。手写 Default 不用 derive——
+/// serde 缺键路径与「段整体缺席」路径必须落同一组值（同 AgentsConfig
+/// 手写 Default 纪律）。
+fn default_maixcam_port() -> i64 {
+    8888
+}
+
+impl Default for MaixCamConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: default_maixcam_host(),
+            port: default_maixcam_port(),
+            allow_from: Vec::new(),
+            sync_to: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

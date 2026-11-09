@@ -732,6 +732,16 @@ function applyToolEventPayload(ev: any) {
       typeof p.duration_ms === 'number' ? p.duration_ms : 0,
       p.result_preview,
     )
+  } else if (ev?.kind === 'ToolOutput') {
+    // 2026-11-08 exec 执行中输出尾窗（ToolOutput 实时流）：call_id 置空
+    // （工具层不可见 dispatch id），store 侧倒序挂到最后一个 running 条目
+    // ——「sleep + background_output 轮询」旧玩法的前端替代面。
+    if (typeof p.tail === 'string' && p.tail) {
+      chatStore.ingestWorkToolOutput(
+        p.tail,
+        typeof p.total_bytes === 'number' ? p.total_bytes : 0,
+      )
+    }
   } else if (ev?.kind === 'ModeChanged') {
     // F1：模式切换事件（/plan /build slash 或 chat.set_mode 发布）——
     // 徽标实时刷新。会话过滤由调用方完成。

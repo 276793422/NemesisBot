@@ -42,6 +42,81 @@ fn boundary_none_when_no_separator() {
     assert_eq!(next_event_boundary("data: x\r\n\r"), None);
 }
 
+#[test]
+fn boundary_cr_only_form() {
+    // CR-only 上游（规范行终止第三态）此前零事件解析——与 CRLF-only
+    // 同一威胁面（流式回复静默变空）。
+    assert_eq!(next_event_boundary("data: a\r\rdata: b"), Some((7, 2)));
+}
+
+#[test]
+fn boundary_mixed_line_endings() {
+    // SSE 规范允许逐行独立选终止符——数据行与空行可不同尾。
+    // 数据行 LF + 空行 CRLF。
+    assert_eq!(next_event_boundary("data: a\n\r\ndata: b"), Some((7, 3)));
+    // 数据行 CRLF + 空行 LF。
+    assert_eq!(next_event_boundary("data: a\r\n\ndata: b"), Some((7, 3)));
+    // 数据行 CR + 空行 CRLF。
+    assert_eq!(next_event_boundary("data: a\r\r\ndata: b"), Some((7, 3)));
+}
+
+#[test]
+fn boundary_trailing_cr_holds_back_for_all_forms() {
+    // 半包纪律对 CR 形态同样成立：尾随 \r 可能是 CR 终止符也可能是
+    // CRLF 前半，须等下一字节定谳（WHATWG 参考解析器同语义）。
+    assert_eq!(next_event_boundary("data: x\r"), None);
+    // 第二个 \r 仍不可判定（CR 边界 or CRLF 前半）——继续等待。
+    assert_eq!(next_event_boundary("data: x\r\r"), None);
+    // 第三字节非 \n → CR-only 边界确认。
+    assert_eq!(next_event_boundary("data: x\r\rd"), Some((7, 2)));
+    // 第三字节 \n → 实为 CR + CRLF 混合形态（数据行 CR + 空行 CRLF）。
+    assert_eq!(next_event_boundary("data: x\r\r\n"), Some((7, 3)));
+    // 补 \n → 实为单行 CRLF（非边界）。
+    assert_eq!(next_event_boundary("data: x\r\n"), None);
+    // 再补 \r 仍是半包（\r\n / \r\n 各半，既有钉）。
+    assert_eq!(next_event_boundary("data: x\r\n\r"), None);
+    assert_eq!(next_event_boundary("data: x\r\n\r\n"), Some((7, 4)));
+}
+
+#[test]
+fn boundary_spec_forms_stream_end_to_end_split() {
+    // 全形态整流事件切分：三态行尾的合法流与 LF 流切分结果逐块一致。
+    let split = |s: &str| {
+        let mut buf = s.to_string();
+        let mut out = Vec::new();
+        while let Some((pos, sep)) = next_event_boundary(&buf) {
+            out.push(buf[..pos].to_string());
+            buf = buf[pos + sep..].to_string();
+        }
+        (out, buf)
+    };
+    let expect = (
+        vec!["data: {\"a\":1}".to_string(), "data: {\"b\":2}".to_string()],
+        String::new(),
+    );
+    // LF-only。
+    assert_eq!(
+        split("data: {\"a\":1}\n\ndata: {\"b\":2}\n\n"),
+        expect.clone()
+    );
+    // CRLF-only（既有钉覆盖单边界，这里钉全流）。
+    assert_eq!(
+        split("data: {\"a\":1}\r\n\r\ndata: {\"b\":2}\r\n\r\n"),
+        expect.clone()
+    );
+    // 混合行尾（LF+CRLF / CRLF+LF）。
+    assert_eq!(split("data: {\"a\":1}\n\r\ndata: {\"b\":2}\r\n\n"), expect);
+    // CR-only：末事件尾随 \r\r 等下一字节定谳（流式半包语义，真实流
+    // 总有后续 chunk 或 EOF flush）——前面的事件照常切出。
+    assert_eq!(
+        split("data: {\"a\":1}\r\rdata: {\"b\":2}\r\r"),
+        (
+            vec!["data: {\"a\":1}".to_string()],
+            "data: {\"b\":2}\r\r".to_string()
+        )
+    );
+}
+
 fn feed(chunks: &[&[u8]]) -> String {
     let mut buf = String::new();
     let mut pending = Vec::new();

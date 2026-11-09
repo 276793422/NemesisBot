@@ -98,6 +98,11 @@ fn wf_sec_identity() -> WorkflowIdentity {
     }
 }
 
+/// gateway 级动态解析槽（生产 = GatewayCtx.board_moderator_loop 同型）。
+fn wf_sec_slot(loop_arc: &Arc<AgentLoop>) -> Arc<parking_lot::RwLock<Option<Arc<AgentLoop>>>> {
+    Arc::new(parking_lot::RwLock::new(Some(loop_arc.clone())))
+}
+
 fn wf_sec_loop(fail: Option<&'static str>) -> (Arc<AgentLoop>, Arc<std::sync::Mutex<SeenCall>>) {
     let seen = Arc::new(std::sync::Mutex::new(SeenCall::default()));
     let mut agent_loop = AgentLoop::new(
@@ -131,7 +136,8 @@ fn wf_sec_loop(fail: Option<&'static str>) -> (Arc<AgentLoop>, Arc<std::sync::Mu
 #[tokio::test]
 async fn executor_routes_identity_into_request_context_end_to_end() {
     let (loop_arc, seen) = wf_sec_loop(None);
-    let executor = super::workflow_secure_executor::WorkflowSecureExecutor::new(&loop_arc);
+    let executor =
+        super::workflow_secure_executor::WorkflowSecureExecutor::new(wf_sec_slot(&loop_arc));
 
     let result = executor
         .execute(
@@ -176,7 +182,8 @@ async fn executor_routes_identity_into_request_context_end_to_end() {
 #[tokio::test]
 async fn executor_maps_tool_failure_to_error_tool_result() {
     let (loop_arc, _seen) = wf_sec_loop(Some("kaboom"));
-    let executor = super::workflow_secure_executor::WorkflowSecureExecutor::new(&loop_arc);
+    let executor =
+        super::workflow_secure_executor::WorkflowSecureExecutor::new(wf_sec_slot(&loop_arc));
 
     let result = executor
         .execute(
@@ -199,32 +206,12 @@ async fn executor_maps_tool_failure_to_error_tool_result() {
 }
 
 // ---------------------------------------------------------------------------
-// ③ upgrade 失败：loop 停机窗口 → 诚实 error（绝不回退裸注册表）
+// ③ 槽空：loop 停机窗口 → 诚实 error（绝不回退裸注册表）
+// （BUG-20261108-012 后停机窗口唯一形态 = 槽 None——adapter stop 写空；
+// 旧的「drop 强引用 → Weak upgrade 失败」形态不再构成停机窗口：槽内
+// Arc 仍活。该语义由文件尾 execute_with_empty_slot_reports_loop_unavailable
+// 承担。）
 // ---------------------------------------------------------------------------
-
-/// loop Arc drop 后 upgrade 失败 → 诚实 error 文本；不回退裸注册表
-/// （工具不幂等，静默双执行红线）。
-#[tokio::test]
-async fn executor_upgrade_failure_is_honest_error() {
-    let (loop_arc, _seen) = wf_sec_loop(None);
-    let executor = super::workflow_secure_executor::WorkflowSecureExecutor::new(&loop_arc);
-    drop(loop_arc); // 模拟 agent loop 停机窗口（重建后旧 Weak 失效）。
-
-    let result = executor
-        .execute(
-            "node-e2e",
-            "wf_e2e_tool",
-            &serde_json::json!({}),
-            &wf_sec_identity(),
-        )
-        .await;
-    assert!(result.is_error, "停机窗口必须诚实报错: {}", result.for_llm);
-    assert!(
-        result.for_llm.contains("agent loop unavailable"),
-        "错误文案必须指明 loop 不可用（不静默、不回退）: {}",
-        result.for_llm
-    );
-}
 
 // ---------------------------------------------------------------------------
 // ④ estop 联动（PLAN 回归锁 #10）：急停触发 → 运行中 execution 全取消
@@ -332,5 +319,32 @@ async fn estop_watcher_cancels_running_workflow_executions() {
         e.state,
         nemesis_workflow::types::ExecutionState::Cancelled,
         "estop release 不复活被取消的执行（诚实终态）"
+    );
+}
+
+/// BUG-20261108-012 回归锁：槽空（adapter stop 后 / start 前）= 停机窗口，
+/// execute 诚实报错——绝不回退裸注册表（工具不幂等，静默双执行）。
+#[tokio::test]
+async fn execute_with_empty_slot_reports_loop_unavailable() {
+    let slot: Arc<parking_lot::RwLock<Option<Arc<AgentLoop>>>> =
+        Arc::new(parking_lot::RwLock::new(None));
+    let executor = super::workflow_secure_executor::WorkflowSecureExecutor::new(slot);
+    let result = executor
+        .execute(
+            "node-empty-slot",
+            "wf_empty_tool",
+            &serde_json::json!({}),
+            &wf_sec_identity(),
+        )
+        .await;
+    assert!(
+        result.is_error,
+        "槽空必须失败（停机窗口诚实报错）: {:?}",
+        result.for_llm
+    );
+    assert!(
+        result.for_llm.contains("agent loop unavailable"),
+        "错误必须指明 loop 不可用: {}",
+        result.for_llm
     );
 }

@@ -79,6 +79,7 @@ fn handle_with(
 #[test]
 fn register_with_handle_inserts_present_plan() {
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         plan_present: Some(handle_with(empty_slot()).0),
         ..Default::default()
     };

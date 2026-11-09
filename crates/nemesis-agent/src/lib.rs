@@ -144,6 +144,7 @@ mod workspace_lease_tests;
 mod test_support;
 
 pub use background_registry::BackgroundProcessRegistry;
+pub use background_registry::{CompletionEvent, JobOrigin};
 pub use capture_sink::{CaptureSink, SessionWriteCapture, ToolCapture};
 pub use context::RequestContext;
 pub use estop::EstopState;

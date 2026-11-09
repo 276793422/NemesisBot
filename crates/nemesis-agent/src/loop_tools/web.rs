@@ -481,24 +481,20 @@ impl WebFetchTool {
             .unwrap_or("")
             .to_string();
 
-        let body = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("failed to read response: {}", e))?;
-
         // Download guard against truly huge responses only (OOM / bandwidth
         // abuse). The user-facing bound is on the *extracted* text below, so
         // large real pages (e.g. baidu.com ~680KB HTML) succeed instead of
         // failing at the download stage. Previously this checked `max_size`
         // (50KB) on the raw body, which rejected almost every real webpage.
-        const DOWNLOAD_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
-        if body.len() > DOWNLOAD_LIMIT {
-            return Err(format!(
-                "Response too large: {} bytes (download limit: {} bytes)",
-                body.len(),
-                DOWNLOAD_LIMIT
-            ));
-        }
+        //
+        // BUG-20261108-026：旧形态 `bytes()` 全量读入内存**之后**才核对
+        // 10MB——核对前恶意/失控源已把任意大 body 灌进内存（BUG-20261107-005
+        // 横扫收口了 skills github_tree/github_registry 与价目表同步，本位
+        // 点漏网；同族 image 预取 S1 亦早已流式）。换共享流式累计闸
+        // `read_body_capped`，超限判定在每个 chunk 到达时——Err 即 drop
+        // response 断开连接，内存峰值 = 已到达的前缀而非全量 body。
+        const DOWNLOAD_LIMIT: u64 = 10 * 1024 * 1024; // 10 MB
+        let body = nemesis_utils::http_cap::read_body_capped(resp, DOWNLOAD_LIMIT).await?;
 
         let html = looks_like_html(&content_type, &body);
         let text = if html {

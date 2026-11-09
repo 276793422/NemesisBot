@@ -211,6 +211,7 @@ async fn register_shared_tools_wraps_write_tools_and_enforces() {
 
     // 被包装侧短宽限，避免测试等满 30s。
     let config = SharedToolConfig {
+        exec_output_tx: None,
         workspace_lease: Some(Arc::new(
             WorkspaceLease::new(dir.path(), "wrapped").with_grace(Duration::from_millis(300)),
         )),

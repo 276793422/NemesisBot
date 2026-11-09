@@ -1064,7 +1064,7 @@ pub fn delete_chat_log(session_key: &str) {
     // 扫 jsonl 会把「已删除」的会话复活。走 fsutil 韧性重试（NotFound 在
     // 重试原语内部已归一为成功），耗尽才 warn 留痕。
     let path = log_path(session_key);
-    let jsonl_removed = match nemesis_utils::fsutil::remove_file_retry(&path) {
+    let _jsonl_removed = match nemesis_utils::fsutil::remove_file_retry(&path) {
         Ok(()) => true,
         Err(e) => {
             tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
@@ -1073,8 +1073,11 @@ pub fn delete_chat_log(session_key: &str) {
     };
     // FTS 懒索引：jsonl 真删后摘除索引登记——同键重建会话的增量插入若仍
     // 按旧 DB 行推 seq，会插出与文件行号错位的幻影行。
+    // 下划线前缀：唯一消费点在 history-search cfg 块内，feature 关掉的
+    // 构建组合（如 -p nemesis-web 单独构建，workspace 级 default-features
+    // = false）下不 warns——删除 IO 本身两种 cfg 都必须执行，不能双声明。
     #[cfg(feature = "history-search")]
-    if jsonl_removed {
+    if _jsonl_removed {
         crate::history_search::invalidate_session(session_key);
     }
     let bpath = boundary_path(session_key);

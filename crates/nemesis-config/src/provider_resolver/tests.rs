@@ -1182,3 +1182,44 @@ fn test_resolve_model_config_prefixless_model_field_beats_inference_fallback() {
     assert_ne!(res.api_base, get_default_api_base("openai"));
     assert_eq!(res.api_base, "http://10.1.1.1:9999");
 }
+
+// --- BUG-20261108-030：活跃模型 per-model 请求超时解析（recovery 外层
+// 包裹超时跟随消费）。与 extract_timeout_secs 同源键语义
+// （timeout_secs 优先 / 别名 timeout / 0 缺席 / 非 u64 诚实忽略），
+// 条目查找与 resolve_active_tier 同口径。 ---
+
+#[test]
+fn test_resolve_active_timeout_secs_matches_and_fallbacks() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model": "p/slow", "model_name": "slow-alias", "timeout_secs": 900},
+            {"model": "p/alias", "model_name": "alias-only", "timeout": 700},
+            {"model": "p/plain", "model_name": "plain"}
+        ]
+    });
+    // 精确 model_name 匹配
+    assert_eq!(resolve_active_timeout_secs(&cfg, "slow-alias"), 900);
+    // 全名 model 匹配
+    assert_eq!(resolve_active_timeout_secs(&cfg, "p/slow"), 900);
+    // 别名 timeout 键
+    assert_eq!(resolve_active_timeout_secs(&cfg, "alias-only"), 700);
+    // bare-suffix 回落（find_model_entry 第 2 级）
+    assert_eq!(resolve_active_timeout_secs(&cfg, "slow"), 900);
+    // 键缺席 → 0（caller 落 lane 默认）
+    assert_eq!(resolve_active_timeout_secs(&cfg, "plain"), 0);
+    // 条目缺席 → 0
+    assert_eq!(resolve_active_timeout_secs(&cfg, "no-such"), 0);
+}
+
+#[test]
+fn test_resolve_active_timeout_secs_non_u64_honestly_ignored() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model": "p/bad", "model_name": "bad", "timeout_secs": "900"},
+            {"model": "p/neg", "model_name": "neg", "timeout_secs": -5}
+        ]
+    });
+    // 字符串 / 负数按未设置处理（配置层不做静默钳位，与 extract_timeout_secs 同语义）
+    assert_eq!(resolve_active_timeout_secs(&cfg, "bad"), 0);
+    assert_eq!(resolve_active_timeout_secs(&cfg, "neg"), 0);
+}

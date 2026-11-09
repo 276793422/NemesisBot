@@ -291,10 +291,26 @@ pub async fn create_tools_from_client_named(
     };
 
     let mut adapters: Vec<Box<dyn Tool>> = Vec::new();
+    // 同 server 工具名 sanitize 互撞检测（缺陷 17 同族——server 名前缀互撞
+    // 已有 sanitize_prefix_collisions 三面检测，server 内工具名层面此前无人管）：
+    // MCP 工具名允许 `.`/`-` 等字符，`file.read` 与 `file_read` sanitize 后
+    // 前缀名逐字节相同——无检测时注册 map 后到者覆盖，一个工具静默死亡且
+    // 名字路由到错误执行体（描述与行为错配）。处置对齐 缺陷 17 先例：
+    // 首个挂载（list_tools 顺序，确定性），后续丢弃 + loud warn。
+    let mut seen_prefixed: std::collections::HashSet<String> = Default::default();
 
     for mcp_tool in tools {
         let tool_name = sanitize_name(&mcp_tool.name);
         let prefixed_name = format!("mcp_{srv}_{tool_name}");
+        if !seen_prefixed.insert(prefixed_name.clone()) {
+            tracing::warn!(
+                server = %server_name,
+                tool = %mcp_tool.name,
+                prefixed = %prefixed_name,
+                "[McpManager] Tool names collide after sanitization — keeping the first listed tool, dropping this one; rename one on the server"
+            );
+            continue;
+        }
 
         let description = match &mcp_tool.description {
             Some(desc) => format!("[MCP:{server_name}] {desc}"),

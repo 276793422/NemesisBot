@@ -10,6 +10,7 @@
 //! | tool_parallel_batch | testai-2.1 | PARALLEL_DONE + 墙钟 <9s | 只读工具批并发执行 |
 //! | security_boundary_block | testai-5.0 | 出界写未落盘 | 工作区边界/安全管线拦截（效果面） |
 //! | concurrent_sessions | testai-1.1 | 4 会话全成功 | 并发会话隔离与调度 |
+//! | saturating_human_priority | testai-9.2 | N 路 /slow 饱和中人消息 <5s（B37） | 饱和批量下人消息延迟有界（turn 任务不被批量串行化挤占） |
 //! | vision_roundtrip | testai-vision-1.0 | VISION_OK:1 | 多模态图片上行链路 |
 //! | codemode_orchestration | testai-codemode-1.0 | CODEMODE_DONE:42 + out.txt="42" | code_run 脚本编排（read+write 单调用）|
 //! | docs_lift | testai-docslift-1.0 | A 臂 DOCS_MISSING + B 臂 DOCS_OK | 工作区指令水合（AGENTS.md → LLM 请求，L10 docs_lift）|
@@ -444,6 +445,175 @@ pub async fn run_concurrent_sessions(ctx: BenchCtx, _runs: u32) -> Vec<Result<(u
         results.push(Err(anyhow!("{failures}/{N} 会话失败")));
         results
     }
+}
+
+/// saturating_human_priority（B37，2026-11-08 批次④）：饱和批量下人消息
+/// 端到端延迟有界——concurrent_sessions 的饱和变体。
+///
+/// 装载：N 路独立会话各发 `<B5_BUSY>`（testai-9.2 → 单发 web_fetch
+/// `/slow?secs=8`，8s 工具回合挂住会话）打满在途 turn；settle 后经
+/// `agent.inbox_status` 探针确认 N 路全 busy（**饱和成立**），再注入 1 条
+/// 人消息（fresh session，testai-9.2 无标记文本 = 确定性提示语回复），
+/// 断言其端到端延迟 < [`HUMAN_BUDGET_MS`]。turn 任务并发执行（bus pump
+/// spawn 臂）被退化为串行（回归）时人消息将排到 ≳N×8s 之后——预算是
+/// 唯一 discriminating 断言。
+///
+/// 饱和探针不成立 = 环境不满足（编排层慢到 /slow 窗口外才就位等），
+/// 诚实 SKIP：打印原因，本轮按通过记账不判败——SKIP 不是产品回归，
+/// 判败会让基线 pass_rate 门假红（对齐环境敏感测试纪律：SKIP 必须注明
+/// 原因，且不能污染功能门）。
+pub async fn run_saturating_human_priority(ctx: BenchCtx, runs: u32) -> Vec<Result<(u64, String)>> {
+    const SATURATION_N: usize = 3;
+    const SETTLE_MS: u64 = 2_500;
+    const HUMAN_BUDGET_MS: u64 = 5_000;
+    const ROUND_TIMEOUT: Duration = Duration::from_secs(30);
+    let mut out = Vec::new();
+    for _ in 0..runs {
+        let base = format!("http://127.0.0.1:{}", ctx.ai_port);
+        let busy_payload = format!("<B5_BUSY>{base}</B5_BUSY>");
+        let start = Instant::now();
+
+        // 1) N 路饱和会话同时发车（session_id 先造好，探针要用）。
+        let sat_ids: Vec<String> = (0..SATURATION_N)
+            .map(|i| fresh_session_id(&format!("bench-sat-{i}")))
+            .collect();
+        let mut sat_handles = Vec::new();
+        for id in &sat_ids {
+            let session_id = id.clone();
+            let payload = busy_payload.clone();
+            sat_handles.push(tokio::spawn(async move {
+                let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+                chat_send(&mut stream, &session_id, &payload, None).await?;
+                let reply =
+                    chat_wait(&mut stream, &session_id, "B5_TURN1_DONE", ROUND_TIMEOUT).await?;
+                let _ = stream.close(None).await;
+                Ok::<String, anyhow::Error>(reply)
+            }));
+        }
+
+        // 2) settle：LLM 首轮（testai-9.2 即答 tool call）+ 工具下发进入
+        //    /slow?secs=8——此后 ~8s 内 N 路应全 busy。
+        tokio::time::sleep(Duration::from_millis(SETTLE_MS)).await;
+
+        // 3) 饱和探针：N 路 inbox_status 全 busy = 饱和成立。探针段整体
+        //    收敛为一个 Result（`?` 只在返回 Result 的 async block 里合法）：
+        //    连接/调用失败 = 基建错误判败，与「不饱和 = 环境 SKIP」分轨。
+        let probe_all_busy = async {
+            let mut probe = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let checked = async {
+                let mut all_busy = true;
+                for id in &sat_ids {
+                    let data = wsapi_call_on(
+                        &mut probe,
+                        "agent",
+                        "inbox_status",
+                        json!({ "session_id": id }),
+                        Duration::from_secs(10),
+                    )
+                    .await?;
+                    if !data.get("busy").and_then(|b| b.as_bool()).unwrap_or(false) {
+                        all_busy = false;
+                    }
+                }
+                Ok::<bool, anyhow::Error>(all_busy)
+            }
+            .await;
+            let _ = probe.close(None).await;
+            checked
+        }
+        .await;
+        let saturation = match probe_all_busy {
+            Ok(v) => v,
+            Err(e) => {
+                for h in sat_handles {
+                    let _ = h.await;
+                }
+                out.push(Err(anyhow!("饱和探针失败: {e:#}")));
+                continue;
+            }
+        };
+        if !saturation {
+            // 诚实 SKIP：不成立时延迟断言无从谈起（不饱和下人消息本来就
+            // 快，断言无 discriminating 力）。
+            println!(
+                "  SKIP  饱和不成立（inbox_status 探针 {} 路未全 busy，SETTLE_MS={SETTLE_MS}）\
+                 ——人消息延迟断言本轮无 discriminating 力，按通过记账",
+                sat_ids.len()
+            );
+            // 探针连接已在探针段内关闭（async block 收口）。
+            for h in sat_handles {
+                let _ = h.await;
+            }
+            out.push(Ok((0, "SKIP: saturation not established".to_string())));
+            continue;
+        }
+
+        // 4) 人消息：fresh session，确定性回复（testai-9.2 无标记文本回
+        //    提示语）——端到端计时。连接/发送收进同一 Result：连接失败 =
+        //    基建错误判败，不吞成「未获回复」模糊态。
+        let human_id = fresh_session_id("bench-human");
+        let human_wait = async {
+            let mut probe = ws_connect(WS_PORT, AUTH_TOKEN).await?;
+            let waited = async {
+                chat_send(&mut probe, &human_id, "bench 人消息", None).await?;
+                chat_wait(
+                    &mut probe,
+                    &human_id,
+                    "trigger a busy tool round",
+                    Duration::from_secs(15),
+                )
+                .await
+            }
+            .await;
+            let _ = probe.close(None).await;
+            waited
+        }
+        .await;
+        let human_ms = start.elapsed().as_millis() as u64; // 含饱和装载段
+        let reply = match human_wait {
+            Ok(r) => r,
+            Err(e) => {
+                for h in sat_handles {
+                    let _ = h.await;
+                }
+                out.push(Err(anyhow!("人消息未获回复: {e:#}")));
+                continue;
+            }
+        };
+
+        // 5) 断言：人消息端到端（发车起算）有界。
+        if human_ms >= HUMAN_BUDGET_MS {
+            for h in sat_handles {
+                let _ = h.await;
+            }
+            out.push(Err(anyhow!(
+                "人消息端到端 {human_ms}ms ≥{HUMAN_BUDGET_MS}ms：饱和批量把人消息\
+                 挤到了批量之后（turn 任务疑似被串行化，N={SATURATION_N}×/slow 8s）"
+            )));
+            continue;
+        }
+
+        // 6) 收尾：等饱和回合结束（join 不让跨 run 泄漏）。
+        let mut sat_fail = None;
+        for h in sat_handles {
+            match h.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => sat_fail = Some(anyhow!("饱和会话失败: {e:#}")),
+                Err(e) => sat_fail = Some(anyhow!("饱和任务 join 失败: {e}")),
+            }
+        }
+        if let Some(e) = sat_fail {
+            out.push(Err(e));
+            continue;
+        }
+        out.push(Ok((
+            human_ms,
+            format!(
+                "{SATURATION_N} 路饱和中人消息 {human_ms}ms（预算 {HUMAN_BUDGET_MS}ms）: {reply}"
+            ),
+        )));
+    }
+    out
 }
 
 /// vision_roundtrip ×N：1×1 PNG 经 data.media 上行，模型必须真的收到
@@ -1514,6 +1684,10 @@ pub fn default_catalog() -> Vec<ScenarioSpec> {
         ScenarioSpec {
             name: "concurrent_sessions",
             runs: 1,
+        },
+        ScenarioSpec {
+            name: "saturating_human_priority",
+            runs: 2,
         },
         ScenarioSpec {
             name: "vision_roundtrip",

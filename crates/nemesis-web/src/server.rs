@@ -205,6 +205,22 @@ impl Default for WebServerConfig {
 // Web server
 // ---------------------------------------------------------------------------
 
+// B39：启动后的 AppState 句柄（进程级 OnceLock，`build_router` 首次构造时
+// 存入）。gateway runtime 装配期（web server 已 start）经 `running_app_state()`
+// 取用——支撑「启动缺 key question」应答后的写盘+热切接线
+// （handlers::models::runtime_fill_model_key 需要 Arc<AppState> 构造
+// RequestContext，此前进程内拿不到）。全 Arc 共享槽语义：build_router 时
+// 点快照不冻结任何运行时状态（agent_loop/model_name 等全是共享 Arc 槽，
+// 后续 setter 更新同 Arc，句柄读到的永远是最新值）。
+static RUNNING_APP_STATE: std::sync::OnceLock<std::sync::Arc<AppState>> =
+    std::sync::OnceLock::new();
+
+/// 启动后的 AppState 句柄（B39）：`build_router` 已运行 → `Some`。
+/// 生产 gateway 单台单次构造；测试多实例以首台为准（OnceLock 语义）。
+pub fn running_app_state() -> Option<std::sync::Arc<AppState>> {
+    RUNNING_APP_STATE.get().cloned()
+}
+
 /// Web server. Owns the event hub, session manager, and message bus integration.
 pub struct WebServer {
     config: WebServerConfig,
@@ -761,6 +777,13 @@ impl WebServer {
         };
 
         let state = Arc::new(state);
+
+        // B39：进程级保留启动后的 AppState 句柄——gateway runtime 装配期
+        // （web server 已 start）经 `running_app_state()` 取用，支撑「启动
+        // 缺 key question」应答后的写盘+热切接线。此前 AppState 构造后即
+        // 移入 router，进程内无句柄。重复 build_router 以首次为准
+        // （OnceLock 幂等；测试多实例无害——生产 gateway 单台单次）。
+        let _ = RUNNING_APP_STATE.set(state.clone());
 
         // L8 PTY 内嵌终端：模块级会话管理器（terminal feature 门控；
         // 幂等 OnceLock，重复 build_router 不覆盖）。cwd 取自 config

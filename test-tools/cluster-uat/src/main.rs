@@ -1175,6 +1175,28 @@ fn b_outbox_state(ws_b: &TestWorkspace, task_id: &str) -> String {
         .unwrap_or_default()
 }
 
+/// B 发件箱收敛删除有界等待（end-ACK 假红防线，同 T-XFER-2 的 P4 修正款）。
+///
+/// master 的 transfer_end handler **同步**做 ingest（manifest 写盘）后才回
+/// ACK；B 收到 ACK 才删本地发件箱——「manifest 可见」与「条目删除」相隔
+/// 毫秒级，`wait_execution_landed` 的 2s 轮询踩进这个窗时，快照式单发断言
+/// 必假红（2026-11-09 ET 42531167975 T-XFER-3 实证：A 侧 39.963 manifest
+/// 可见 / B 侧 39.984 条目已删，检查恰落在两事件之间）。end ACK 丢失路径
+/// （.done 回执幂等重放）下删除还要再晚一个退避周期（~15s）。轮询等删除
+/// （45s > 退避 + 重推整链），超时才是真未闭环。
+async fn wait_b_outbox_cleared(ws_b: &TestWorkspace, task_id: &str, timeout_secs: u64) -> bool {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if b_outbox_entry(ws_b, task_id).is_none() {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 /// A 侧收件箱条目在场（landed.json 存在 = 完整落地未安置）。
 fn a_inbox_entry(ws_a: &TestWorkspace, task_id: &str) -> Option<std::path::PathBuf> {
     let dir = ws_a
@@ -3921,6 +3943,9 @@ async fn main() {
                 "autopilot.create",
                 json!({
                     "name": "uat-autopilot-t16",
+                    // 3756e60d 起 mode 缺省=shadow（只建 issue 不派发），
+                    // 本测试验的是 live 派发链，显式声明。
+                    "mode": "live",
                     "cron": "* * * * *",
                     "title": format!("{} 定时站会 {{date}}", marker),
                     "description": "cluster-uat T16 每分钟规则",
@@ -6925,6 +6950,9 @@ async fn main() {
                     "autopilot.create",
                     json!({
                         "name": "uat-autopilot-t31",
+                        // 3756e60d 起 mode 缺省=shadow（只建 issue 不派发），
+                        // 本测试验的是 auto_plan→拆解→发车 live 链，显式声明。
+                        "mode": "live",
                         "cron": "0 3 * * *",
                         "title": format!("{} 周期单 {{date}}", marker),
                         "description": "cluster-uat T31 auto_plan 建单自动拆解发车",
@@ -8883,7 +8911,7 @@ async fn main() {
             if a_inbox_entry(&ws_a, &task_id).is_some() {
                 return fail("T-XFER-1", "A 收件箱未清（ingest 未安置）");
             }
-            if b_outbox_entry(&ws_b, &task_id).is_some() {
+            if !wait_b_outbox_cleared(&ws_b, &task_id, 45).await {
                 return fail(
                     "T-XFER-1",
                     format!("B 发件箱未删（state='{}'）", b_outbox_state(&ws_b, &task_id)),
@@ -9090,8 +9118,8 @@ async fn main() {
             if a_inbox_entry(&ws_a, &task_id).is_some() {
                 return fail("T-XFER-3", "A 收件箱未清");
             }
-            if b_outbox_entry(&ws_b, &task_id).is_some() {
-                return fail("T-XFER-3", "B 发件箱未删（续收未闭环）");
+            if !wait_b_outbox_cleared(&ws_b, &task_id, 45).await {
+                return fail("T-XFER-3", "B 发件箱未删（续收未闭环，45s 宽限后仍未删）");
             }
             pass(
                 "T-XFER-3",
@@ -9464,8 +9492,8 @@ async fn main() {
                     break;
                 }
             }
-            if b_outbox_entry(&ws_b, &task_id).is_some() {
-                return fail("T-XFER-6", "补拉重传后 B 发件箱未删");
+            if !wait_b_outbox_cleared(&ws_b, &task_id, 45).await {
+                return fail("T-XFER-6", "补拉重传后 B 发件箱未删（45s 宽限后仍未删）");
             }
             if a_inbox_entry(&ws_a, &task_id).is_some() {
                 return fail("T-XFER-6", "A 收件箱未清");

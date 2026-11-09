@@ -2,7 +2,7 @@
 //! 平台：argon2 全平台；DPAPI 段挂 `#[cfg(windows)]`。
 
 use super::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn tmp_vault_path(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -21,14 +21,37 @@ fn cleanup(path: &Path) {
     }
 }
 
+/// `VaultStore::create` 带瞬态重试：CI runner 上的外力（AV 扫描/临时区保留
+/// 清理）会在 create 的 seal → save 原子写窗口内删掉 temp 目录，rename 报
+/// os error 3（cov_tests 同族：2026-11-06 shard7 首录，2026-11-09 shard9
+/// create_persists_immediately 再实录）。helper 契约
+/// （nemesis-utils/src/file.rs）明示 rename 遇外部占用"由调用方决定重试或
+/// 上报"，测试侧选重试。create 自带 create_dir_all 臂（父目录被外力删掉后
+/// 同路径重试即恢复现场，且 rename 瞬态臂下 vault.enc 尚未落盘、无残留），
+/// 换目录重试反而令调用侧缓存的第一手 path 失效。只吞 Io-rename 瞬态臂，
+/// 业务错误照常上抛——断言力不变。期望失败的 create（FileExists/Crypto 臂）
+/// 原子写根本不发生，不走此 helper。
+fn create_retrying(path: &Path, mode: VaultMode, passphrase: Option<&str>) -> VaultStore {
+    let mut last_err = String::new();
+    for _ in 0..3 {
+        match VaultStore::create(path, mode, passphrase) {
+            Ok(store) => return store,
+            Err(VaultError::Io(e)) if e.to_string().contains("rename:") => {
+                last_err = e.to_string();
+            }
+            Err(err) => panic!("create 失败（非瞬态 rename 噪声）: {err}"),
+        }
+    }
+    panic!("create 连续 3 次遇 rename 瞬态失败: {last_err}");
+}
+
 /// argon2 模式全流程：create → set → reopen（锁定）→ list 可见但 get 锁定 →
 /// 错误口令拒绝 → 正确口令解锁 → get 还原。
 #[test]
 fn argon2_roundtrip_lock_and_unlock() {
     let path = tmp_vault_path("argon2-roundtrip");
     {
-        let mut store =
-            VaultStore::create(&path, VaultMode::Argon2id, Some("correct horse")).unwrap();
+        let mut store = create_retrying(&path, VaultMode::Argon2id, Some("correct horse"));
         assert!(store.is_unlocked());
         store
             .set("openai-main", "sk-SUPERSECRET123", "openai", "主力模型 key")
@@ -63,7 +86,7 @@ fn argon2_roundtrip_lock_and_unlock() {
 #[test]
 fn create_persists_immediately() {
     let path = tmp_vault_path("create-persist");
-    VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    create_retrying(&path, VaultMode::Argon2id, Some("pw"));
     let store = VaultStore::open(&path).unwrap();
     assert!(store.list().is_empty());
     cleanup(&path);
@@ -73,7 +96,7 @@ fn create_persists_immediately() {
 #[test]
 fn create_rejects_existing_file() {
     let path = tmp_vault_path("create-exists");
-    VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    create_retrying(&path, VaultMode::Argon2id, Some("pw"));
     assert!(matches!(
         VaultStore::create(&path, VaultMode::Argon2id, Some("pw")),
         Err(VaultError::FileExists(_))
@@ -120,7 +143,7 @@ fn corrupted_file_honest_error() {
 #[test]
 fn set_overwrite_tracks_rotation() {
     let path = tmp_vault_path("rotate");
-    let mut store = VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
     store.set("a", "v1", "d", "first").unwrap();
     let created = store.list()[0].meta.created_at.clone();
     store.set("a", "v2", "d", "rotated").unwrap();
@@ -135,7 +158,7 @@ fn set_overwrite_tracks_rotation() {
 #[test]
 fn remove_semantics() {
     let path = tmp_vault_path("remove");
-    let mut store = VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
     store.set("a", "v", "", "").unwrap();
     assert!(store.remove("a").unwrap());
     assert!(!store.remove("a").unwrap());
@@ -147,7 +170,7 @@ fn remove_semantics() {
 #[test]
 fn invalid_alias_rejected() {
     let path = tmp_vault_path("bad-alias");
-    let mut store = VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
     assert!(matches!(
         store.set("", "v", "", ""),
         Err(VaultError::InvalidAlias(_))
@@ -168,7 +191,7 @@ fn invalid_alias_rejected() {
 fn ciphertext_bound_to_alias() {
     let path = tmp_vault_path("aad");
     {
-        let mut store = VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+        let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
         store.set("real", "secret-value", "", "").unwrap();
         store.save().unwrap();
     }
@@ -191,7 +214,7 @@ fn ciphertext_bound_to_alias() {
 fn plaintext_never_on_disk_or_in_listings() {
     let path = tmp_vault_path("no-leak");
     let secret = "sk-LEAKCHECK-9f8e7d6c";
-    let mut store = VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
     store.set("k", secret, "dom", "desc").unwrap();
     store.save().unwrap();
     // 落盘文件不含明文。
@@ -220,7 +243,7 @@ fn argon2_requires_passphrase() {
 fn dpapi_roundtrip_same_user() {
     let path = tmp_vault_path("dpapi-roundtrip");
     {
-        let mut store = VaultStore::create(&path, VaultMode::Dpapi, None).unwrap();
+        let mut store = create_retrying(&path, VaultMode::Dpapi, None);
         assert!(store.is_unlocked(), "dpapi 模式 create 即解锁");
         store
             .set("tg-token", "123456:ABC-DPAPI-SECRET", "telegram", "")
@@ -239,7 +262,7 @@ fn dpapi_roundtrip_same_user() {
 fn dpapi_corrupted_blob_honest_error() {
     use base64::Engine as _;
     let path = tmp_vault_path("dpapi-corrupt");
-    VaultStore::create(&path, VaultMode::Dpapi, None).unwrap();
+    create_retrying(&path, VaultMode::Dpapi, None);
     let raw = std::fs::read(&path).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&raw).unwrap();
     let blob_b64 = json["dpapi_blob"].as_str().unwrap().to_string();
@@ -269,7 +292,7 @@ fn dpapi_corrupted_blob_honest_error() {
 fn export_import_roundtrip_preserves_values_and_meta() {
     let src_path = tmp_vault_path("xfer-src");
     let dst_path = tmp_vault_path("xfer-dst");
-    let mut src = VaultStore::create(&src_path, VaultMode::Argon2id, Some("src-pw")).unwrap();
+    let mut src = create_retrying(&src_path, VaultMode::Argon2id, Some("src-pw"));
     src.set("agent/a1/k1", "secret-one", "openai", "主 key")
         .unwrap();
     src.set("agent/a1/k2", "secret-two", "anthropic", "")
@@ -286,7 +309,7 @@ fn export_import_roundtrip_preserves_values_and_meta() {
     assert!(!String::from_utf8_lossy(&blob).contains("secret-one"));
 
     // 错误口令拒绝。
-    let mut dst = VaultStore::create(&dst_path, VaultMode::Argon2id, Some("dst-pw")).unwrap();
+    let mut dst = create_retrying(&dst_path, VaultMode::Argon2id, Some("dst-pw"));
     assert!(matches!(
         dst.import_entries(&blob, "wrong-pass"),
         Err(VaultError::WrongPassphrase)
@@ -319,7 +342,7 @@ fn export_import_roundtrip_preserves_values_and_meta() {
 #[test]
 fn export_rejects_missing_alias_and_locked_store() {
     let path = tmp_vault_path("xfer-errs");
-    let mut store = VaultStore::create(&path, VaultMode::Argon2id, Some("pw")).unwrap();
+    let mut store = create_retrying(&path, VaultMode::Argon2id, Some("pw"));
     store.set("only", "v", "d", "").unwrap();
     store.save().unwrap();
     assert!(matches!(
@@ -338,7 +361,7 @@ fn export_rejects_missing_alias_and_locked_store() {
     unlocked.unlock("pw").unwrap();
     let blob = unlocked.export_entries(&["only".into()], "p2").unwrap();
     let dst_path = tmp_vault_path("xfer-errs-dst");
-    let dst_locked = VaultStore::create(&dst_path, VaultMode::Argon2id, Some("x")).unwrap();
+    let dst_locked = create_retrying(&dst_path, VaultMode::Argon2id, Some("x"));
     drop(unlocked);
     // dst create 后已解锁；重开成锁定态再试导入。
     drop(dst_locked);
@@ -374,7 +397,7 @@ fn migrate_store(tag: &str) -> (PathBuf, VaultStore) {
     } else {
         None
     };
-    let store = VaultStore::create(&vp, mode, pw).unwrap();
+    let store = create_retrying(&vp, mode, pw);
     (dir, store)
 }
 

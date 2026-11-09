@@ -83,7 +83,7 @@ pub(crate) async fn init_agent(
     let workflow_tool_registry = ctx.workflow_tool_registry.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_store = ctx.board_store.clone();
-    #[cfg(all(feature = "board", feature = "cluster"))]
+    #[cfg(any(feature = "board", feature = "cluster", feature = "workflow"))]
     let board_moderator_loop = ctx.board_moderator_loop.clone();
     // web wiring 影子：event_hub 读借用（门=唯一消费点 board_event_hub）。
     #[cfg(all(feature = "board", feature = "cluster"))]
@@ -231,6 +231,51 @@ pub(crate) async fn init_agent(
     // background_start); Drop raises kill flags so no spawned job outlives
     // the gateway.
     let background_registry = std::sync::Arc::new(nemesis_agent::BackgroundProcessRegistry::new());
+    // 完成唤醒回灌池（2026-11-08 子进程实时输出与完成唤醒）：background_start
+    // 捕获发起会话锚（JobOrigin）；任务退出 → completion_watcher 发
+    // CompletionEvent → 这里合成 InboundMessage（sender="system"）经 bus
+    // 走标准入站路径回灌发起会话——AgentLoop 零改动，模型自动收到完成通告
+    // 与输出尾部（替代 sleep 轮询；openclaw notifyOnExit 同形态）。
+    // estop 闸：estop 触发期间完成通告丢弃（诚实丢弃 + 日志，release 后
+    // 不补发）——急停冻结全部 agent 活动的语义含「不再投递新入站消息」。
+    // 通道生命周期 = gateway 进程：重启窗口内的完成通告丢失（与续行快照
+    // 启动期丢失同语义，诚实边界）。
+    let (completion_tx, mut completion_rx) =
+        tokio::sync::mpsc::unbounded_channel::<nemesis_agent::CompletionEvent>();
+    background_registry.set_completion_sink(completion_tx);
+    {
+        let wake_bus = bus.clone();
+        let wake_estop = estop.clone();
+        tokio::spawn(async move {
+            while let Some(ev) = completion_rx.recv().await {
+                if wake_estop.is_engaged() {
+                    info!(
+                        job = ev.job_id,
+                        "[BackgroundWake] estop engaged — completion notice dropped"
+                    );
+                    continue;
+                }
+                let status = &ev.status;
+                let content = format!(
+                    "Background job #{} finished: exit_code={:?}, success={}, killed={}.\n\
+                     --- 最近输出（尾部，全文可用 background_output 分页读）---\n{}",
+                    ev.job_id, status.exit_code, status.success, status.killed, ev.tail
+                );
+                let msg = nemesis_types::channel::InboundMessage {
+                    channel: ev.origin.channel,
+                    sender_id: "system".to_string(),
+                    chat_id: ev.origin.chat_id,
+                    content,
+                    media: Vec::new(),
+                    session_key: ev.origin.session_key,
+                    correlation_id: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                    voice_playback: None,
+                };
+                wake_bus.publish_inbound(msg);
+            }
+        });
+    }
     // 常驻执行体监督器单例（进程无关构造，execute 按需 spawn 子进程）。
     // exe/布局解析与 exec_world 通道装配同源（current_exe + common 路径单一
     // 真相源）；watchdog 是 manager 级任务，init_agent 一次性启动（死槽清理
@@ -303,8 +348,9 @@ pub(crate) async fn init_agent(
         background_registry,
         plugin_manager,
         // 全自动流转 /：board_issue 工具依赖（注册点在 build_agent_loop
-        // 主 agent；store=None 时工具不注册）。moderator 槽此刻还空，agent
-        // 建成后:board_moderator_loop.set 填充——工具调用时读槽即得。
+        // 主 agent；store=None 时工具不注册）。moderator 槽 = gateway 级
+        // 动态解析槽（AgentLoopServiceAdapter start 填 Some / stop 写
+        // None）——工具调用时读槽即得，agent 重启后自动跟随。
         #[cfg(all(feature = "board", feature = "cluster"))]
         board_store: board_store.clone(),
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -427,7 +473,11 @@ pub(crate) async fn init_agent(
         workflow_engine.set_tool_executor(Arc::new(
             nemesis_workflow::nodes::RealToolNodeExecutor::new_with_secure_executor(
                 workflow_tool_registry.clone(),
-                Arc::new(super::workflow_secure_executor::WorkflowSecureExecutor::new(&agent_loop)),
+                Arc::new(
+                    super::workflow_secure_executor::WorkflowSecureExecutor::new(
+                        board_moderator_loop.clone(),
+                    ),
+                ),
             ),
         ));
         info!(
@@ -441,8 +491,9 @@ pub(crate) async fn init_agent(
     // sessions don't collide with human user sessions.
     #[cfg(feature = "workflow")]
     {
-        workflow_engine
-            .register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
+        workflow_engine.register_agent_runner(Arc::new(GatewayAgentRunner::new(
+            board_moderator_loop.clone(),
+        )));
         info!("[Gateway] Workflow agent runner registered");
 
         // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor

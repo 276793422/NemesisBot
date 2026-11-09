@@ -1472,3 +1472,26 @@ fn r212_flatten_reaches_composite_nested_inside_properties() {
         "composite-inside-composite ($defs under anyOf) must be flattened"
     );
 }
+
+#[tokio::test]
+async fn test_w4c_named_tool_name_sanitize_collision_first_wins() {
+    // 同 server 工具名 sanitize 互撞（缺陷 17 同族）："file.read"/"file-read"/
+    // "file_read" sanitize 后前缀名逐字节相同 → 首个挂载（list_tools 顺序，
+    // 确定性），其余丢弃；不产出重名适配器（重名 = 注册 map 后到者覆盖 +
+    // 名字路由到错误执行体）。
+    let mock = MockClient::new(
+        "srv",
+        vec![
+            w4c_tool("file.read", Some("first"), serde_json::json!({})),
+            w4c_tool("file-read", Some("second"), serde_json::json!({})),
+            w4c_tool("file_read", Some("third"), serde_json::json!({})),
+        ],
+    );
+    let adapters = create_tools_from_client_named(Box::new(mock), "srv", 0)
+        .await
+        .unwrap();
+    assert_eq!(adapters.len(), 1);
+    let d = adapters[0].definition();
+    assert_eq!(d.name, "mcp_srv_file_read");
+    assert!(d.description.contains("[MCP:srv] first"));
+}

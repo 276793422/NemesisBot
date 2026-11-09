@@ -219,10 +219,13 @@ pub struct SharedResources {
     /// 可用，派发诚实失败落系统评论，与 WSAPI issue.plan 同语义）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
-    /// planner moderator 槽——先建槽后填模式（agent_loop 建成后 gateway
-    /// set，与 approval_slot/question_slot 同款；重启重建的 loop 共享同一槽）。
+    /// planner moderator 槽——gateway 级动态解析槽的共享克隆（写者唯一 =
+    /// AgentLoopServiceAdapter，start 写 Some / stop 写 None；与
+    /// approval_slot/question_slot 同款共享槽 Arc，重启重建的 loop 经槽
+    /// 自然跟随——BUG-20261108-012）。
     #[cfg(all(feature = "board", feature = "cluster"))]
-    pub board_moderator_slot: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    pub board_moderator_slot:
+        Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     /// home 目录（auto_confirm 旗标现读）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_home: std::path::PathBuf,
@@ -284,7 +287,7 @@ impl Default for SharedResources {
             #[cfg(all(feature = "board", feature = "cluster"))]
             board_cluster: None,
             #[cfg(all(feature = "board", feature = "cluster"))]
-            board_moderator_slot: Arc::new(std::sync::OnceLock::new()),
+            board_moderator_slot: Arc::new(parking_lot::RwLock::new(None)),
             #[cfg(all(feature = "board", feature = "cluster"))]
             board_home: PathBuf::default(),
             #[cfg(all(feature = "board", feature = "cluster"))]

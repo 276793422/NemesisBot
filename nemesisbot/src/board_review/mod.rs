@@ -40,7 +40,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use nemesis_board::assignment::Actor;
 use nemesis_board::models::{CommentType, IssueStatus, NewComment};
@@ -76,8 +76,10 @@ pub struct BoardReviewDeps {
     /// home 根（config.json 读取：auto_review/auto_accept/max_redispatch
     /// 每次评审时从盘上现读，改配置即时生效，不取装配期快照）。
     pub home: PathBuf,
-    /// 主 AgentLoop 后置装配桥（nb_bus/主持人同款；评审任务运行时读）。
-    pub moderator_loop: Arc<OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// 主 AgentLoop 动态解析槽（gateway 级共享槽 Arc；写者唯一 =
+    /// AgentLoopServiceAdapter）。评审任务运行时读——agent stop→start 重建
+    /// 后自然跟随（BUG-20261108-012：此前 OnceLock 静态绑定初始 loop）。
+    pub moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     pub cluster: Arc<nemesis_cluster::cluster::Cluster>,
     /// 急停句柄（全自动流转 / 保险丝）：挂起时评审冻结（不跑 LLM、
     /// 不重派、不收口），issue 停车登记；release 后由
@@ -90,6 +92,9 @@ pub struct BoardReviewDeps {
     /// 自检取证路由表（gateway 装配一份，callback 闭包与评审任务
     /// 共享）：task_id → issue_id。
     pub selfcheck: SelfcheckRegistry,
+    /// 试玩取证路由表（P3b 机器行为闸；gateway 装配一份，callback
+    /// 闭包与评审任务共享）：task_id → issue_id。形态与 selfcheck 同源。
+    pub playtest: PlaytestRegistry,
     /// d：评审结论 → 交付账本闭环的审计插件槽（cfg security；None =
     /// headless/测试形态）。槽位惰性 get()——装配期安全插件可能还没 set，
     /// 评审运行时才解析。
@@ -218,6 +223,124 @@ impl SelfcheckRegistry {
 
     pub(crate) fn has_inflight_review(&self, task_id: &str) -> bool {
         self.inflight_reviews
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(task_id)
+    }
+}
+
+/// 试玩取证在途注册表（P3b 机器行为闸）：与 [`SelfcheckRegistry`] 同源
+/// 同形态——试玩派发不写 `issue_dispatch`，worker 回调凭本表识别并路由到
+/// 定案臂；路由键同步落 board store `playtest_pending` 表（v27），gateway
+/// 重启后内存表清零由持久行 + 两臂 sweep 兜底。store 缺席（无 board
+/// feature 的测试形态）= 纯内存。std Mutex：持锁不跨 await。
+#[derive(Clone, Default)]
+pub struct PlaytestRegistry {
+    inner: Arc<std::sync::Mutex<HashMap<String, i64>>>,
+    /// 路由持久层（None = 纯内存；生产装配带 board store）。
+    store: Option<Arc<nemesis_board::BoardStore>>,
+    /// 本进程内定案臂在途集合（task_id）：sweep 恢复臂的重放判据——
+    /// 在途不重放（定案进行中防双跑）；进程重启后集合清零，残留行自然
+    /// 重放。std Mutex：持锁不跨 await。
+    inflight_verdicts: Arc<std::sync::Mutex<HashSet<String>>>,
+}
+
+impl PlaytestRegistry {
+    /// 纯内存形态（后仅测试使用——生产装配走
+    /// [`Self::with_store`] 挂持久层）。
+    #[cfg(test)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 生产装配形态（gateway 持 board store 时）。
+    pub fn with_store(store: Option<Arc<nemesis_board::BoardStore>>) -> Self {
+        Self {
+            store,
+            ..Self::default()
+        }
+    }
+
+    pub(crate) fn register(&self, task_id: String, issue_id: i64, worker_id: &str) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(task_id.clone(), issue_id);
+        // 路由键持久化：写失败 warn 降级（内存表照常 = 本进程内路由不受
+        // 影响；重启恢复面收窄但不阻断派发）。
+        if let Some(store) = self.store.as_ref()
+            && let Err(e) = store.register_playtest_pending(&task_id, issue_id, worker_id)
+        {
+            warn!("[BoardReview] playtest 路由持久化失败（task {task_id}）：{e}");
+        }
+    }
+
+    pub(crate) fn take(&self, task_id: &str) -> Option<i64> {
+        let memory_hit = self
+            .inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(task_id);
+        if memory_hit.is_some() {
+            return memory_hit;
+        }
+        // 重启恢复：内存表清零后持久行兜底路由。只认未
+        // 路由行（status IS NULL，store 层把关）——已路由行的重复回调不
+        // 二次触发定案臂。
+        let durable = self
+            .store
+            .as_ref()
+            .and_then(|s| s.get_pending_playtest_route(task_id).ok())
+            .flatten();
+        if durable.is_some() {
+            warn!(
+                "[BoardReview] playtest 路由内存表 miss，持久层兜底命中（task {task_id}，gateway 重启恢复）"
+            );
+        }
+        durable
+    }
+
+    /// 同 issue 是否已有在途试玩取证（防重入：门闸重派循环里反复挂起会
+    /// 重复发试玩任务）。内存表 ∪ 持久行（重启后内存表清零，持久行兜住
+    /// 跨重启重入——已路由待定案的行同样算在途）。
+    pub(crate) fn has_inflight(&self, issue_id: i64) -> bool {
+        let memory_hit = self
+            .inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .any(|&v| v == issue_id);
+        memory_hit
+            || self
+                .store
+                .as_ref()
+                .and_then(|s| s.has_playtest_pending_for_issue(issue_id).ok())
+                .unwrap_or(false)
+    }
+
+    /// 定案臂在途标记（本进程；sweep 恢复臂重放判据）。
+    pub(crate) fn mark_verdict_started(&self, task_id: &str) {
+        self.inner_mark_verdict(task_id, true);
+    }
+
+    pub(crate) fn mark_verdict_finished(&self, task_id: &str) {
+        self.inner_mark_verdict(task_id, false);
+    }
+
+    fn inner_mark_verdict(&self, task_id: &str, started: bool) {
+        let mut set = self
+            .inflight_verdicts
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if started {
+            set.insert(task_id.to_string());
+        } else {
+            set.remove(task_id);
+        }
+    }
+
+    pub(crate) fn has_inflight_verdict(&self, task_id: &str) -> bool {
+        self.inflight_verdicts
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .contains(task_id)
@@ -988,7 +1111,7 @@ async fn review_issue(
         // 色审议需要评审 agent 在场——只有真正要跑 LLM 的路径才要求 loop
         // 就绪（锚点短路 FAIL 是确定性判定，loop 未就绪也成立，人工兜底
         // 照常能看见明细评论）。
-        let Some(agent_loop) = deps.moderator_loop.get() else {
+        let Some(agent_loop) = deps.moderator_loop.read().clone() else {
             warn!("[BoardReview] issue {issue_id} 主 agent 未就绪，跳过自动验收（人工兜底）");
             return Ok(false);
         };
@@ -1020,7 +1143,7 @@ async fn review_issue(
             }
         }
         match run_review_panel(
-            agent_loop,
+            &agent_loop,
             &prompt,
             tool_mode,
             eff_review.checkers,
@@ -1558,13 +1681,29 @@ async fn review_issue(
     record_fingerprint_outcome(deps, &issue, &dispatches, output.verdict);
 
     let unlimited = cfg.unlimited_mode;
-    match decide_review_action(
+    let action = decide_review_action(
         output.verdict,
         round,
         cfg.max_redispatch,
         cfg.auto_accept,
         unlimited,
-    ) {
+    );
+    // 原型里程碑单机器行为闸（触点体系 P3b）：语义评审给出收货/待人工
+    // 结论时，先过机器行为闸（出题 → 交付 worker 试玩+红队取证 → 全过
+    // 才放行）。闸返回 true = 本轮周期已被消费（试玩挂起/卡已挂/在途
+    // 等待）；false = 让位（待决原型卡等人工 → 常规臂继续；estop 停车
+    // → AutoAccept/SuggestManual 臂自带的同名检查点接管）。
+    if matches!(
+        action,
+        ReviewAction::AutoAccept | ReviewAction::SuggestManual
+    ) && is_prototype_gate_target(&issue)
+    {
+        let gated = run_prototype_gate(deps, issue_id, round).await?;
+        if gated {
+            return Ok(true);
+        }
+    }
+    match action {
         ReviewAction::AutoAccept => {
             // EST-03（横扫加固）：评审 LLM 是长跑——发起时 estop
             // 可能尚未触发、结束时已挂起。收货落 done 前补一道检查点：挂起
@@ -2425,6 +2564,7 @@ mod decision;
 mod evidence;
 mod llm_review;
 mod parent_project;
+mod prototype_gate;
 mod selfcheck;
 
 // 各子模块项经 pub(crate) use 保持原 board_review:crate 内路径不变
@@ -2434,4 +2574,5 @@ pub(crate) use decision::*;
 pub(crate) use evidence::*;
 pub(crate) use llm_review::*;
 pub(crate) use parent_project::*;
+pub(crate) use prototype_gate::*;
 pub(crate) use selfcheck::*;

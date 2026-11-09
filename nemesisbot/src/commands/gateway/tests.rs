@@ -1974,6 +1974,7 @@ fn test_skills_loader_with_real_dirs() {
 #[test]
 fn test_shared_tool_config_web_search_field() {
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         web_search: Some(nemesis_agent::loop_tools::WebSearchConfig {
             brave_enabled: true,
             brave_api_key: Some("test".to_string()),
@@ -1989,6 +1990,7 @@ fn test_shared_tool_config_web_search_field() {
 fn test_shared_tool_config_skills_loader_field() {
     let loader = nemesis_skills::loader::SkillsLoader::new("/tmp", "/tmp/skills", "");
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_loader: Some(std::sync::Arc::new(loader)),
         ..Default::default()
     };
@@ -2000,6 +2002,7 @@ fn test_shared_tool_config_skills_registry_field() {
     let reg_config = nemesis_skills::types::RegistryConfig::default();
     let rm = nemesis_skills::registry::RegistryManager::new(reg_config);
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_registry: Some(std::sync::Arc::new(rm)),
         ..Default::default()
     };
@@ -2009,6 +2012,7 @@ fn test_shared_tool_config_skills_registry_field() {
 #[test]
 fn test_register_shared_tools_with_web_search() {
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         web_search: Some(nemesis_agent::loop_tools::WebSearchConfig {
             duckduckgo_enabled: true,
             ..Default::default()
@@ -2030,6 +2034,7 @@ fn test_register_shared_tools_with_web_search() {
 #[test]
 fn test_register_shared_tools_without_web_search() {
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         web_search: None,
         workspace: Some("/tmp".to_string()),
         ..Default::default()
@@ -2049,6 +2054,7 @@ fn test_register_shared_tools_without_web_search() {
 fn test_register_shared_tools_with_skills_loader() {
     let loader = nemesis_skills::loader::SkillsLoader::new("/tmp", "/tmp/skills", "");
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_loader: Some(std::sync::Arc::new(loader)),
         workspace: Some("/tmp".to_string()),
         ..Default::default()
@@ -2069,6 +2075,7 @@ fn test_register_shared_tools_with_skills_registry() {
     let reg_config = nemesis_skills::types::RegistryConfig::default();
     let rm = nemesis_skills::registry::RegistryManager::new(reg_config);
     let config = nemesis_agent::SharedToolConfig {
+        exec_output_tx: None,
         skills_registry: Some(std::sync::Arc::new(rm)),
         workspace: Some("/tmp".to_string()),
         ..Default::default()
@@ -3095,6 +3102,13 @@ mod gateway_agent_runner_tests {
         ))
     }
 
+    /// gateway 级动态解析槽（生产 = GatewayCtx.board_moderator_loop 同型）。
+    fn make_loop_slot(
+        reply: Result<LlmResponse, String>,
+    ) -> std::sync::Arc<parking_lot::RwLock<Option<std::sync::Arc<AgentLoop>>>> {
+        std::sync::Arc::new(parking_lot::RwLock::new(Some(make_loop(reply))))
+    }
+
     fn ok_response(content: &str) -> Result<LlmResponse, String> {
         Ok(LlmResponse {
             finish_reason: None,
@@ -3111,7 +3125,7 @@ mod gateway_agent_runner_tests {
 
     #[tokio::test]
     async fn run_direct_returns_final_response_with_workflow_session_key() {
-        let runner = GatewayAgentRunner::new(make_loop(ok_response("workflow done")));
+        let runner = GatewayAgentRunner::new(make_loop_slot(ok_response("workflow done")));
         let result = runner
             .run_direct("do the thing", "agent-1", 5, None)
             .await
@@ -3123,7 +3137,7 @@ mod gateway_agent_runner_tests {
     #[tokio::test]
     async fn run_direct_with_model_override_warns_and_uses_default() {
         // model=Some → 走 warn 分支（per-call 切换尚不支持），仍用默认模型完成。
-        let runner = GatewayAgentRunner::new(make_loop(ok_response("ok")));
+        let runner = GatewayAgentRunner::new(make_loop_slot(ok_response("ok")));
         let result = runner
             .run_direct("prompt", "agent-2", 3, Some("other-model"))
             .await
@@ -3133,12 +3147,51 @@ mod gateway_agent_runner_tests {
 
     #[tokio::test]
     async fn run_direct_propagates_loop_error() {
-        let runner = GatewayAgentRunner::new(make_loop(Err("llm dead".to_string())));
+        let runner = GatewayAgentRunner::new(make_loop_slot(Err("llm dead".to_string())));
         let err = runner
             .run_direct("prompt", "agent-3", 1, None)
             .await
             .expect_err("provider error must propagate");
         assert!(err.contains("llm dead"), "err: {err}");
+    }
+
+    /// BUG-20261108-012 回归锁（行为级）：agent stop→start 换 loop 后，
+    /// runner 必须解析到槽内**最新** loop——此前静态绑定初始 Arc，重启后
+    /// 打死旧实例（旧 persona system prompt 缓存照常服务）。
+    #[tokio::test]
+    async fn run_direct_resolves_current_loop_after_restart() {
+        let slot = make_loop_slot(ok_response("old-persona"));
+        let runner = GatewayAgentRunner::new(slot.clone());
+        let first = runner
+            .run_direct("p", "agent-4", 1, None)
+            .await
+            .expect("initial loop run");
+        assert_eq!(first.response, "old-persona");
+
+        // 模拟 stop→start：槽内换新 loop（新 persona 回复）。
+        *slot.write() = Some(make_loop(ok_response("new-persona")));
+        let second = runner
+            .run_direct("p", "agent-4", 1, None)
+            .await
+            .expect("restarted loop run");
+        assert_eq!(
+            second.response, "new-persona",
+            "重启后 runner 必须打到新 loop（旧 persona 不得残留）"
+        );
+    }
+
+    /// BUG-20261108-012 回归锁：槽空（adapter stop 后 / start 前）= 停机
+    /// 窗口，诚实报错而非打死旧 loop 继续服务。
+    #[tokio::test]
+    async fn run_direct_with_empty_slot_reports_stopped() {
+        let slot: std::sync::Arc<parking_lot::RwLock<Option<std::sync::Arc<AgentLoop>>>> =
+            std::sync::Arc::new(parking_lot::RwLock::new(None));
+        let runner = GatewayAgentRunner::new(slot);
+        let err = runner
+            .run_direct("p", "agent-5", 1, None)
+            .await
+            .expect_err("empty slot = stopped, must error");
+        assert!(err.contains("agent 已停止"), "err: {err}");
     }
 }
 
@@ -5678,7 +5731,7 @@ fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
         workflow_engine,
         workflow_tool_registry,
         chat_secret_store,
-        board_moderator_loop: std::sync::Arc::new(std::sync::OnceLock::new()),
+        board_moderator_loop: std::sync::Arc::new(parking_lot::RwLock::new(None)),
         autopilot_cluster_slot: std::sync::Arc::new(std::sync::OnceLock::new()),
         board_asset_url_slot: nemesis_board::AdvertisedUrl::default(),
         board_quota,

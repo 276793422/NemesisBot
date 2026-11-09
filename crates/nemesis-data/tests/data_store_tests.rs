@@ -422,6 +422,21 @@ fn test_query_logs_with_invalid_page() {
         .expect("Failed to query with negative page");
     assert_eq!(logs2.len(), 1);
 
+    // 负 page_size：LIMIT -N 在 SQLite 是「无上限」语义（BUG-20261108-025），
+    // 必须被钳为 1——只返回 1 行而不是全量。
+    let (logs3, _) = store
+        .query_logs(0, 2000000000, 1, -1, &LogFilter::default())
+        .expect("Failed to query with negative page_size");
+    assert_eq!(logs3.len(), 1);
+
+    // 大页值：offset 乘法必须在 i64 域（i32 溢出 = release 回绕负 OFFSET
+    // 被 SQLite 视 0 静默回第一页 / debug panic）。越界页 = 空结果不炸。
+    let (logs4, total4) = store
+        .query_logs(0, 2000000000, 2_147_483_647, 100, &LogFilter::default())
+        .expect("Failed to query with huge page");
+    assert_eq!(logs4.len(), 0);
+    assert_eq!(total4, 1);
+
     let _ = fs::remove_file(&db_path);
 }
 

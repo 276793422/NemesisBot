@@ -61,7 +61,10 @@ impl SnapshotStore {
     /// 落盘一份快照。返回目录。
     /// 原子纪律：全部内容先写进 `.tmp<ts>`，最后才创建 ts 目录并改名——
     /// 失败路径只可能残留 `.tmp*`（sweep 的数字名过滤天然跳过），绝不留
-    /// 空 ts 目录被 latest/sweep 误当活快照。
+    /// 空 ts 目录被 latest/sweep 误当活快照。错误路径（write_all /
+    /// create_dir_all / rename 三臂）自清 `.tmp<ts>` 残留；进程崩溃残留由
+    /// [`Self::sweep`] 按宽限清扫（BUG-20261109-005：此前 rename 臂漏清 +
+    /// 崩溃孤儿永不清扫，ts 唯一名 = 永久累积）。
     pub fn save(
         &self,
         meta: &SnapshotMeta,
@@ -96,8 +99,14 @@ impl SnapshotStore {
             let _ = nemesis_utils::fsutil::remove_dir_all_retry(&tmp);
             return Err(e);
         }
-        std::fs::create_dir_all(&dir)?;
-        std::fs::rename(&tmp, dir.join("data"))?;
+        if let Err(e) =
+            std::fs::create_dir_all(&dir).and_then(|_| std::fs::rename(&tmp, dir.join("data")))
+        {
+            // 落定臂失败同样清残留——`.tmp<ts>` ts 唯一名不会被下次保存
+            // 覆盖（下次保存 ts_ms 前进），漏清 = 永久孤儿。
+            let _ = nemesis_utils::fsutil::remove_dir_all_retry(&tmp);
+            return Err(e);
+        }
         Ok(dir)
     }
 
@@ -136,13 +145,13 @@ impl SnapshotStore {
     /// TTL + 快照目录总数上限清扫（超出上限删最旧；目录粒度）。
     pub fn sweep(&self, ttl: std::time::Duration, max_kept: usize) -> SweepReport {
         let mut report = SweepReport::default();
-        let entries = match std::fs::read_dir(&self.root) {
-            Ok(e) => e,
+        let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(&self.root) {
+            Ok(e) => e.flatten().collect(),
             Err(_) => return report,
         };
         let now = std::time::SystemTime::now();
         let mut dirs: Vec<(u64, PathBuf)> = entries
-            .flatten()
+            .iter()
             .filter_map(|e| {
                 let name = e.file_name().into_string().ok()?;
                 name.parse::<u64>().ok().map(|ts| (ts, e.path()))
@@ -170,6 +179,28 @@ impl SnapshotStore {
                 if nemesis_utils::fsutil::remove_dir_all_resilient(p) {
                     removed += 1;
                 }
+            }
+        }
+        // 崩溃孤儿清扫（BUG-20261109-005）：save 崩溃（create↔rename 窗口）
+        // 留下的 `.tmp<ts>` 目录此前被数字名过滤天然跳过、永不清理（ts 唯一
+        // 名也不被下次保存覆盖）。按 mtime 宽限删除——宽限取
+        // nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE（1h，与 write_file_atomic
+        // 同一协议）：绝不误删在写快照的临时目录，刚崩出来的新鲜孤儿留到
+        // 下一轮 sweep。计入 expired（清理面语义不变）。
+        for e in &entries {
+            let name = e.file_name().into_string().unwrap_or_default();
+            if !name.starts_with(".tmp") {
+                continue;
+            }
+            let p = e.path();
+            let age = std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .map(|m| now.duration_since(m).unwrap_or_default())
+                .unwrap_or_default();
+            if age > nemesis_utils::ATOMIC_TMP_ORPHAN_GRACE
+                && nemesis_utils::fsutil::remove_dir_all_resilient(&p)
+            {
+                removed += 1;
             }
         }
         report.expired = removed;

@@ -15,53 +15,10 @@ use crate::failover::FailoverError;
 use crate::http_provider::StreamChunk;
 use crate::types::LLMResponse;
 
-/// SSE 增量 UTF-8 解码：把一个网络 chunk 安全并入行缓冲 `buffer`
-/// 。`pending` 携带上一 chunk 留下的未完成尾随序列。
-///
-/// 逐 chunk 独立 `from_utf8_lossy` 会把被 chunk 边界劈开的多字节字符
-/// （CJK 3 字节 / emoji 4 字节）替换成 U+FFFD——TCP 分片边界是任意的，
-/// 长 CJK 回复几乎每个边界都可能烂字。这里分段扫描：尾部**不完整**序列
-/// （`error_len()==None`）留待与下一 chunk 拼接后整体解码；真坏字节
-/// （`error_len()==Some`）当场 lossy 替换后**从坏段之后继续扫**（同一
-/// chunk 里坏字节后面跟着的合法字符/残尾不受牵连）。`pending` 恒 ≤3
-/// 字节，有界。
-pub fn push_chunk_incremental(buffer: &mut String, pending: &mut Vec<u8>, bytes: &[u8]) {
-    let mut chunk = std::mem::take(pending);
-    chunk.extend_from_slice(bytes);
-    let mut pos = 0usize;
-    loop {
-        match std::str::from_utf8(&chunk[pos..]) {
-            Ok(s) => {
-                buffer.push_str(s);
-                pos = chunk.len();
-                break;
-            }
-            Err(e) => {
-                // valid_up_to()/error_len() 都相对 &chunk[pos..]，v/n 换算回绝对下标。
-                let v = pos + e.valid_up_to();
-                match e.error_len() {
-                    Some(n) => {
-                        // 合法前缀 [pos..v) + 坏段 [v..v+n)（U+FFFD）入缓冲，
-                        // 越过坏段继续扫（其后可能还有合法字符/残尾）。
-                        buffer.push_str(&String::from_utf8_lossy(&chunk[pos..v + n]));
-                        pos = v + n;
-                        if pos == chunk.len() {
-                            break;
-                        }
-                    }
-                    None => {
-                        // 尾部不完整（序列被 chunk 边界劈开）：合法前缀
-                        // [pos..v) 入缓冲，残尾 [v..) 留给下一 chunk。
-                        buffer.push_str(&String::from_utf8_lossy(&chunk[pos..v]));
-                        pos = v;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    *pending = chunk.split_off(pos);
-}
+/// SSE 增量 UTF-8 解码（2026-11-09 下沉单一真相源到 `nemesis_utils::sse`：
+/// nemesis-mcp HTTP/SSE 传输同族缺陷 BUG-20261109-007 一并修复，三 lane
+/// 经此路径消费；实现与文档见 nemesis-utils）。
+pub use nemesis_utils::sse::push_chunk_incremental;
 
 /// Consume a lane's `chat_stream` receiver and aggregate into a non-streaming
 /// `LLMResponse`.
@@ -150,24 +107,10 @@ pub async fn collect_stream_response(
     }
 }
 
-/// SSE 事件边界定位：返回 (块终点偏移, 分隔符字节长)。协议分隔符是空行，
-/// 同时容忍 `\n\n` 与 `\r\n\r\n` 两种行尾形态（SSE 规范行终止 LF/CR/CRLF
-/// 三态；CRLF-only 上游若按单一 `\n\n` 扫描将零事件解析——静默直到 EOF
-/// 兜底，内容全丢）。codex lane 原有语义抽成统一定义，三 lane 共用。
-pub fn next_event_boundary(buffer: &str) -> Option<(usize, usize)> {
-    match (buffer.find("\n\n"), buffer.find("\r\n\r\n")) {
-        (Some(a), Some(b)) => {
-            if a <= b {
-                Some((a, 2))
-            } else {
-                Some((b, 4))
-            }
-        }
-        (Some(a), None) => Some((a, 2)),
-        (None, Some(b)) => Some((b, 4)),
-        (None, None) => None,
-    }
-}
+/// SSE 事件边界定位单一真相源在 `nemesis_utils::sse`（2026-11-08 下沉：
+/// nemesis-mcp HTTP/SSE 传输同族缺陷一并修复，三 lane 经此路径消费）。
+/// 规范行终止 LF/CR/CRLF 三态逐行独立 + 贪婪 CRLF + 尾随 `\r` 半包等待。
+pub use nemesis_utils::sse::next_event_boundary;
 
 #[cfg(test)]
 mod tests;

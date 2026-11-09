@@ -108,3 +108,82 @@ fn absent_key_still_none() {
     }));
     assert_eq!(override_of(&loop_, "m-plain"), None);
 }
+
+// --- BUG-20261108-030：外层包裹超时跟随 provider 请求超时（超时阶梯
+// 纪律：外层必须大于内层）。显式配置直接采信（含 0=关）——用户预算
+// 意志优先；缺省跟随活跃模型 per-model timeout + 30s 余量。 ---
+
+#[test]
+fn provider_call_timeout_follows_per_model_timeout_plus_margin() {
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [
+            {"model": "slow/big", "model_name": "slow-big", "timeout_secs": 900}
+        ]
+    }));
+    loop_.set_active_model("slow-big");
+    assert_eq!(loop_.current_provider_call_timeout_secs(), 930);
+}
+
+#[test]
+fn provider_call_timeout_alias_timeout_key_same_semantics() {
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [
+            {"model": "slow/alias", "model_name": "slow-alias", "timeout": 700}
+        ]
+    }));
+    loop_.set_active_model("slow-alias");
+    assert_eq!(loop_.current_provider_call_timeout_secs(), 730);
+}
+
+#[test]
+fn provider_call_timeout_default_follows_lane_default_plus_margin() {
+    // 条目无 per-model timeout（= lane 默认 600）→ 外层 630。旧恒 480
+    // 低于内层 600：480~600s 的诚实慢响应被外层误杀、per-model 放宽被
+    // 静默截断。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "model_list": [
+            {"model": "plain/x", "model_name": "plain-x"}
+        ]
+    }));
+    loop_.set_active_model("plain-x");
+    assert_eq!(loop_.current_provider_call_timeout_secs(), 630);
+}
+
+#[test]
+fn provider_call_timeout_explicit_config_wins_over_following() {
+    // 显式配置（含低于内层的值）直接采信——用户预算意志优先
+    //（与 tier `model_tier != auto` 直接采信同哲学）。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "agents": {"defaults": {"provider_call_timeout_secs": 60}},
+        "model_list": [
+            {"model": "slow/big", "model_name": "slow-big", "timeout_secs": 900}
+        ]
+    }));
+    loop_.set_active_model("slow-big");
+    assert_eq!(loop_.current_provider_call_timeout_secs(), 60);
+}
+
+#[test]
+fn provider_call_timeout_explicit_zero_disables() {
+    // 0 = 关闭超时（旧行为），显式 0 优先于跟随。
+    let (_dir, loop_) = loop_with_config(serde_json::json!({
+        "agents": {"defaults": {"provider_call_timeout_secs": 0}},
+        "model_list": [
+            {"model": "slow/big", "model_name": "slow-big", "timeout_secs": 900}
+        ]
+    }));
+    loop_.set_active_model("slow-big");
+    assert_eq!(loop_.current_provider_call_timeout_secs(), 0);
+}
+
+#[test]
+fn provider_lane_default_double_write_is_pinned() {
+    // PROVIDER_LANE_DEFAULT_TIMEOUT_SECS 与 nemesis_providers::factory::
+    // DEFAULT_TIMEOUT_SECS（超时阶梯最内层真相源）是刻意双写——providers
+    // 是 dev-dep，lib 代码不可引用。factory 值变化必须同步本侧，否则
+    // 外层兜底与内层 lane 默认阶梯错位（外层 < 内层旧形态复发）。
+    assert_eq!(
+        crate::r#loop::rate_limit::PROVIDER_LANE_DEFAULT_TIMEOUT_SECS,
+        nemesis_providers::factory::DEFAULT_TIMEOUT_SECS
+    );
+}

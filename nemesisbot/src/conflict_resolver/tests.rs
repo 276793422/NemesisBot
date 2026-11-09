@@ -175,6 +175,9 @@ fn user_prompt_carries_intent_and_three_stages() {
         required_capabilities: vec![],
         requires_evidence: false,
         hidden: false,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
         created_at: 0,
         updated_at: 0,
     };
@@ -236,11 +239,12 @@ pub(crate) fn resolver_deps(name: &str) -> crate::board_review::BoardReviewDeps 
         store,
         workspace,
         home: dir,
-        moderator_loop: Arc::new(std::sync::OnceLock::new()),
+        moderator_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
         estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
         selfcheck: crate::board_review::SelfcheckRegistry::new(),
+        playtest: crate::board_review::PlaytestRegistry::new(),
         #[cfg(feature = "security")]
         security_slot: None,
     }
@@ -248,7 +252,9 @@ pub(crate) fn resolver_deps(name: &str) -> crate::board_review::BoardReviewDeps 
 
 /// 建一个绑定项目的 issue（fallback_freeze 冻结要有 project_id 才有落点）。
 fn issue_with_project(store: &nemesis_board::BoardStore, title: &str) -> nemesis_board::Issue {
-    let project = store.create_project("p", "d", None, "", "", None).unwrap();
+    let project = store
+        .create_project("p", "d", None, "", "", None, None)
+        .unwrap();
     store
         .create_issue(NewIssue {
             title: title.to_string(),
@@ -357,8 +363,8 @@ async fn run_resolver_rejects_mini_tier() {
     let issue = issue_with_project(deps.store.as_ref(), "mini 档硬解闸");
     let agent_loop = AgentLoop::new(Box::new(NullProvider), AgentConfig::default());
     agent_loop.set_tier(nemesis_types::capability::ModelTier::Mini);
-    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
-    let _ = deps.moderator_loop.set(Arc::new(agent_loop));
+    deps.moderator_loop = Arc::new(parking_lot::RwLock::new(None));
+    *deps.moderator_loop.write() = Some(Arc::new(agent_loop));
 
     super::run_resolver(
         deps.clone(),
@@ -734,6 +740,9 @@ fn user_prompt_absent_side_truncation_and_criteria() {
         required_capabilities: vec![],
         requires_evidence: false,
         hidden: false,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
         created_at: 0,
         updated_at: 0,
     };
@@ -845,12 +854,10 @@ pub(crate) fn attach_resolver_llm(
     deps: &crate::board_review::BoardReviewDeps,
     provider: Arc<ResolverLlm>,
 ) {
-    let _ = deps
-        .moderator_loop
-        .set(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
-            Box::new(SharedResolverLlm(provider)),
-            nemesis_agent::types::AgentConfig::default(),
-        )));
+    *deps.moderator_loop.write() = Some(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(SharedResolverLlm(provider)),
+        nemesis_agent::types::AgentConfig::default(),
+    )));
 }
 
 fn resolutions_json(path: &str, content: &str, reason: &str) -> String {
@@ -878,7 +885,15 @@ pub(crate) fn issue_on_git_project(
 
     let project = deps
         .store
-        .create_project("硬解项目", "d", None, "", "", Some(root.to_str().unwrap()))
+        .create_project(
+            "硬解项目",
+            "d",
+            None,
+            "",
+            "",
+            Some(root.to_str().unwrap()),
+            None,
+        )
         .unwrap();
     let issue = deps
         .store
@@ -1049,7 +1064,7 @@ async fn run_resolver_project_root_missing_freezes_honestly() {
     // 项目无档案目录 → 硬解产出无处落盘 → 诚实冻结（不伪造成功）。
     let project = deps
         .store
-        .create_project("无档案项目", "d", None, "", "", None)
+        .create_project("无档案项目", "d", None, "", "", None, None)
         .unwrap();
     let issue = deps
         .store
@@ -1108,6 +1123,7 @@ async fn run_resolver_commit_failure_redispatch_gate_freezes() {
             "",
             "",
             Some(root.to_str().unwrap()),
+            None,
         )
         .unwrap();
     let issue = deps

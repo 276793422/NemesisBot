@@ -56,6 +56,66 @@ async fn test_health_server_adapter_start_idempotent() {
     assert!(adapter.stop().is_ok());
 }
 
+#[cfg(feature = "health")]
+#[tokio::test]
+async fn test_health_server_adapter_restart_rebinds_after_stop() {
+    // 生命周期轴回归锁：adapter 此前 spawn 裸 start()（不接停机通道）、
+    // stop() 只翻旗标——旧 serve 任务永生占端口，BotService restart 链
+    // （persona 切换 / config 保存重启）此后每次 start 都 bind 失败
+    // （Address already in use）。修复后 stop 必须真释放端口、同端口
+    // 重启必须能重新服务。
+    let port = 18797;
+    let health_server = Arc::new(nemesis_health::server::HealthServer::new(
+        make_health_config(port),
+    ));
+    let adapter = HealthServerAdapter::new(Arc::clone(&health_server));
+
+    assert!(adapter.start().is_ok());
+    let url = format!("http://127.0.0.1:{port}/live");
+    let mut served = false;
+    for _ in 0..100 {
+        if let Ok(resp) = reqwest::get(&url).await
+            && resp.status().is_success()
+        {
+            served = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(served, "首次 start 后 /live 应可服务");
+
+    assert!(adapter.stop().is_ok());
+    // 修复核心断言：stop 后监听端口必须释放（旧缺陷下旧任务仍持有，
+    // 此探针恒失败直至超时）。
+    let mut released = false;
+    for _ in 0..100 {
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        released,
+        "stop() 后端口 {port} 应已释放（serve 任务优雅退出）"
+    );
+
+    // restart 契约：同端口重新 start，再次可服务（旧缺陷下 bind 失败永不恢复）。
+    assert!(adapter.start().is_ok());
+    let mut reserved = false;
+    for _ in 0..100 {
+        if let Ok(resp) = reqwest::get(&url).await
+            && resp.status().is_success()
+        {
+            reserved = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(reserved, "stop→start 后 /live 应重新可服务");
+    let _ = adapter.stop();
+}
+
 // -------------------------------------------------------------------------
 // HeartbeatServiceAdapter construction
 // -------------------------------------------------------------------------
@@ -799,4 +859,154 @@ mod wave4b {
         adapter.stop().expect("stop");
         assert!(!LifecycleService::is_running(&adapter));
     }
+}
+
+// =========================================================================
+// BUG-20261108-012 横向收尾回归锁：run_runtime 装配期的 loop 级接线
+// （审批应答端 M7 / question 应答端 F7 / doom-loop asker J5）必须跨
+// stop→start 重建存活——重建分支（factory 新 loop）不经 run_runtime，
+// 由 start() 重放 stash。否则重启后 WSAPI approval.respond /
+// question.respond 经新 loop 的 responder 槽触达恒 None = 诚实报
+// 「未装配」，Dashboard 卡有卡无答（阻塞端 auditor/broker 走
+// SharedResources 共享槽不受影响——正是这种半边槽化让缺陷潜伏）。
+// =========================================================================
+
+struct StubWiringResponder;
+
+impl nemesis_types::agent::ApprovalResponder for StubWiringResponder {
+    fn respond(
+        &self,
+        _request_id: &str,
+        _approved: bool,
+        _always: bool,
+        _note: Option<String>,
+    ) -> Result<bool, String> {
+        Err("stub".to_string())
+    }
+    fn pending(&self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+}
+
+impl nemesis_types::agent::QuestionResponder for StubWiringResponder {
+    fn respond(&self, _question_id: &str, _selected: Vec<String>) -> Result<bool, String> {
+        Err("stub".to_string())
+    }
+    fn respond_form(
+        &self,
+        _question_id: &str,
+        _values: &std::collections::BTreeMap<String, String>,
+    ) -> Result<bool, String> {
+        Err("stub".to_string())
+    }
+    fn pending(&self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+}
+
+impl nemesis_types::agent::QuestionAsker for StubWiringResponder {
+    fn ask(
+        &self,
+        _request: nemesis_types::agent::QuestionRequest,
+    ) -> Result<nemesis_types::agent::QuestionOutcome, String> {
+        Err("stub".to_string())
+    }
+}
+
+#[tokio::test]
+async fn runtime_wiring_survives_loop_rebuild() {
+    let bus = Arc::new(nemesis_bus::MessageBus::new());
+    let shared = make_test_shared(&bus);
+    let agent_loop = make_test_agent_loop();
+    let agent_loop_ref = Arc::new(parking_lot::RwLock::new(None));
+    let adapter = AgentLoopServiceAdapter::new(agent_loop, shared, bus, agent_loop_ref.clone());
+
+    adapter.start().expect("initial start (prebuilt)");
+
+    // 装配期接线（run_runtime 同形态）：wire_* 同时打当前 loop。
+    let stub: Arc<StubWiringResponder> = Arc::new(StubWiringResponder);
+    adapter.wire_approval_responder(stub.clone());
+    adapter.wire_question_broker(stub.clone(), stub);
+
+    let first = adapter.current().expect("loop running");
+    assert!(
+        first.approval_responder().is_some(),
+        "当前 loop 必须即时挂上审批应答端"
+    );
+    assert!(
+        first.question_responder().is_some(),
+        "当前 loop 必须即时挂上 question 应答端"
+    );
+
+    // stop → factory 重建分支。
+    adapter.stop().expect("stop");
+    adapter.start().expect("rebuild start (factory)");
+
+    let rebuilt = adapter.current().expect("rebuilt loop running");
+    assert!(
+        !Arc::ptr_eq(&first, &rebuilt),
+        "stop→start 必须重建出新 loop 实例（否则测的不是重建路径）"
+    );
+    assert!(
+        rebuilt.approval_responder().is_some(),
+        "重建 loop 必须重放审批应答端（BUG-20261108-012：否则 approval.respond 诚实报未装配，Dashboard 审批卡有卡无答）"
+    );
+    assert!(
+        rebuilt.question_responder().is_some(),
+        "重建 loop 必须重放 question 应答端（否则 question.respond 诚实报未装配，提问挂死到超时）"
+    );
+    // asker getter 是 pub(crate)，跨 crate 断言不到——与 responder 同一
+    // stash 同一重放路径，responder 在场即证明重放已跑。
+
+    // 再来一轮 stop→start：接线不丢（stash 不随 stop 清空）。
+    adapter.stop().expect("stop 2");
+    adapter.start().expect("rebuild start 2");
+    let rebuilt2 = adapter.current().expect("rebuilt loop 2 running");
+    assert!(
+        rebuilt2.approval_responder().is_some(),
+        "二次重建后审批应答端仍在"
+    );
+    assert!(
+        rebuilt2.question_responder().is_some(),
+        "二次重建后 question 应答端仍在"
+    );
+
+    adapter.stop().expect("final stop");
+}
+
+#[tokio::test]
+async fn wiring_after_stop_stashes_and_replays_on_rebuild() {
+    // wire 发生在 loop 缺位窗口（stop 后 / start 前）：wire_* 不炸、只
+    // stash；start()（factory 重建分支）把接线重放到重建出的 loop。
+    let bus = Arc::new(nemesis_bus::MessageBus::new());
+    let shared = make_test_shared(&bus);
+    let agent_loop = make_test_agent_loop();
+    let agent_loop_ref = Arc::new(parking_lot::RwLock::new(None));
+    let adapter = AgentLoopServiceAdapter::new(agent_loop, shared, bus, agent_loop_ref);
+
+    // 先 stop 清掉预建 loop → wire 落进 stash-only 窗口。
+    adapter.stop().expect("initial stop");
+    assert!(adapter.current().is_none());
+
+    let stub: Arc<StubWiringResponder> = Arc::new(StubWiringResponder);
+    adapter.wire_approval_responder(stub.clone());
+    adapter.wire_question_broker(stub.clone(), stub);
+    assert!(
+        adapter.current().is_none(),
+        "stash-only 窗口不得凭空造 loop"
+    );
+
+    // 重建（make_test_shared 的 home 无 config.json → NullProvider 降级
+    // 装配，Ok 语义见 lifecycle 重建测试）。
+    adapter.start().expect("rebuild start");
+    let rebuilt = adapter.current().expect("rebuilt loop running");
+    assert!(
+        rebuilt.approval_responder().is_some(),
+        "stash-only 接线必须经 start 重放"
+    );
+    assert!(
+        rebuilt.question_responder().is_some(),
+        "stash-only 接线必须经 start 重放"
+    );
+    adapter.stop().expect("stop");
 }

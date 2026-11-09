@@ -10,6 +10,11 @@ use super::*;
 /// - **表单形态**（`fields`）：多个 text 输入框 + select 下拉字段组成的
 ///   表单卡；回答以 object（键=字段 key）回灌。`fields` 非空时生效，
 ///   `options`/`multi` 被忽略。
+/// - **凭据形态**（B4，2026-11-08 批次④）：`type: "secret"` 字段——密码
+///   输入，值**不回灌上下文**，直写 vault 会话作用域别名
+///   `agent/<会话>/<key>`，回灌掩码占位 + `{{vault:<别名>}}` 使用指引；
+///   后续任意工具参数以占位符引用（展开/闸面见
+///   `loop::session_secrets`）。
 ///
 /// 回答以选中项原文 / 表单作答回灌，模型据此继续；超时回灌 "user did not
 /// answer, proceed with your best judgment"（不是错误——轮次照常推进）。
@@ -34,8 +39,8 @@ pub(crate) fn next_question_id() -> String {
 
 /// 解析并校验表单字段定义（工具入参 `fields` 数组 → `QuestionField`）。
 /// 校验：数量 ≤[`QUESTION_MAX_FIELDS`]、元素全为 object、key/label 非空且
-/// key 一次提问内唯一、type ∈ {text, select}、select 的 options 2-6 项非空、
-/// required 缺省 false。
+/// key 一次提问内唯一、type ∈ {text, select, secret}、select 的 options
+/// 2-6 项非空、required 缺省 false。
 fn parse_question_fields(
     v: &serde_json::Value,
 ) -> Result<Vec<nemesis_types::agent::QuestionField>, String> {
@@ -94,6 +99,15 @@ fn parse_question_fields(
         };
         match field_type {
             "text" => {}
+            "secret" => {
+                // B4 凭据形态：无选项；required 语义与 text 相同。
+                if !options.is_empty() {
+                    return Err(format!(
+                        "fields[{}] ({}) is secret: 'options' is not applicable",
+                        i, key
+                    ));
+                }
+            }
             "select" => {
                 if options.len() < 2 || options.len() > 6 {
                     return Err(format!(
@@ -112,7 +126,7 @@ fn parse_question_fields(
             }
             other => {
                 return Err(format!(
-                    "fields[{}] ({}) has unknown type '{}' (text|select)",
+                    "fields[{}] ({}) has unknown type '{}' (text|select|secret)",
                     i, key, other
                 ));
             }
@@ -140,8 +154,11 @@ impl Tool for QuestionTool {
          a small form of text inputs and select dropdowns when you need several pieces \
          of structured input at once. Returns the selected option text(s) or the form \
          answers as a JSON object; on timeout returns a note to proceed with your best \
-         judgment. Use when the answer materially changes what you do next. Do NOT use \
-         for trivial choices or free-form conversation."
+         judgment. secret-type fields collect credentials: the value is stored into the \
+         session-scoped credential vault and NEVER echoed into the conversation — later \
+         reference it in any tool argument with {{vault:agent/<session>/<key>}}. Use when \
+         the answer materially changes what you do next. Do NOT use for trivial choices \
+         or free-form conversation."
             .to_string()
     }
 
@@ -173,8 +190,10 @@ impl Tool for QuestionTool {
                         "properties": {
                             "key": {"type": "string", "description": "Answer key (unique, non-empty)"},
                             "label": {"type": "string", "description": "Display label"},
-                            "type": {"type": "string", "enum": ["text", "select"],
-                                     "description": "text = single-line input; select = pick one of options"},
+                            "type": {"type": "string", "enum": ["text", "select", "secret"],
+                                     "description": "text = single-line input; select = pick one of options; \
+                                     secret = masked credential input, stored to the session credential \
+                                     vault (never echoed) — reference later via {{vault:<alias>}}"},
                             "required": {"type": "boolean", "default": false,
                                          "description": "true = user must fill this field"},
                             "options": {"type": "array", "items": {"type": "string"},
@@ -182,8 +201,8 @@ impl Tool for QuestionTool {
                         },
                         "required": ["key", "label"]
                     },
-                    "description": "Form form: 1-8 fields (text inputs + selects). Takes \
-                                    precedence over options/multi."
+                    "description": "Form form: 1-8 fields (text inputs, selects, secret \
+                                    credential inputs). Takes precedence over options/multi."
                 }
             },
             "required": ["question"]
@@ -237,6 +256,12 @@ impl Tool for QuestionTool {
         } else {
             (Vec::new(), false)
         };
+        // B4 凭据形态：先记下哪些字段是 secret（fields 随 req move 走）。
+        let secret_keys: Vec<String> = fields
+            .iter()
+            .filter(|f| f.field_type == "secret")
+            .map(|f| f.key.clone())
+            .collect();
 
         let broker = {
             let guard = self.broker.read();
@@ -286,15 +311,54 @@ impl Tool for QuestionTool {
                 if values.is_empty() {
                     return Ok("User submitted the form with all fields empty.".to_string());
                 }
-                let obj: serde_json::Value = values
-                    .iter()
-                    .map(|(k, val)| (k.clone(), serde_json::Value::String(val.clone())))
-                    .collect::<serde_json::Map<String, serde_json::Value>>()
-                    .into();
-                Ok(format!(
+                // B4（2026-11-08 批次④）凭据形态：secret 字段值不回灌
+                // 上下文——直写 vault 会话作用域别名（agent/<会话>/<key>），
+                // 回灌掩码占位 + `{{vault:<别名>}}` 使用指引。写失败 fail
+                // loud（工具 Err），凭据永不落历史/session_log。
+                let scope =
+                    crate::r#loop::session_secrets::session_scope_prefix(&context.session_key);
+                let mut masked = serde_json::Map::new();
+                let mut stored: Vec<(String, String)> = Vec::new(); // (key, bare alias)
+                for (k, val) in values.iter() {
+                    if secret_keys.iter().any(|sk| sk == k) {
+                        if val.is_empty() {
+                            masked.insert(
+                                k.clone(),
+                                serde_json::Value::String(format!("[凭据未填写: {k}]")),
+                            );
+                        } else {
+                            let alias = format!("{scope}{k}");
+                            nemesis_config::write_vault_secret(&alias, val).map_err(|e| {
+                                format!("凭据入库失败（{k}）：{e}——凭据未落库，请重新索要")
+                            })?;
+                            masked.insert(
+                                k.clone(),
+                                serde_json::Value::String(
+                                    crate::r#loop::session_secrets::received_text(k),
+                                ),
+                            );
+                            stored.push((k.clone(), alias));
+                        }
+                    } else {
+                        masked.insert(
+                            k.clone(),
+                            serde_json::Value::String(val.clone()),
+                        );
+                    }
+                }
+                let obj: serde_json::Value = masked.into();
+                let mut reply = format!(
                     "User answered form: {}",
                     serde_json::to_string(&obj).unwrap_or_else(|_| "{}".to_string())
-                ))
+                );
+                if !stored.is_empty() {
+                    reply.push_str("\n\n以上凭据已存入凭据库（会话作用域），不会再次展示；\
+                        后续任意工具参数中以 {{vault:<别名>}} 占位符引用，值不经对话上下文：");
+                    for (k, alias) in &stored {
+                        reply.push_str(&format!("\n- {{{{vault:{alias}}}}}（{k}）"));
+                    }
+                }
+                Ok(reply)
             }
             nemesis_types::agent::QuestionOutcome::Timeout => {
                 Ok("No answer: user did not answer, proceed with your best judgment.".to_string())

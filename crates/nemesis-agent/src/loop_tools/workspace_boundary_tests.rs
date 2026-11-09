@@ -315,6 +315,7 @@ async fn register_shared_tools_inserts_bounded_write_file() {
     let root = temp_dir("reg");
     let other = temp_dir("reg_other");
     let cfg = super::SharedToolConfig {
+        exec_output_tx: None,
         workspace_boundary: Some(Arc::new(boundary(&root, true))),
         ..Default::default()
     };
@@ -460,6 +461,7 @@ async fn register_shared_tools_inserts_bounded_read_tools() {
     let root = temp_dir("ft_reg");
     std::fs::write(root.join("BOOT.md"), "bootstrap").unwrap();
     let cfg = super::SharedToolConfig {
+        exec_output_tx: None,
         workspace_boundary: Some(Arc::new(boundary(&root, true))),
         ..Default::default()
     };

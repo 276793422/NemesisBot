@@ -50,7 +50,7 @@ pub fn is_roaming_address(addr: &str) -> bool {
 
 // Re-export commonly used types
 pub use cluster_task::{
-    CancelOutcome, ClusterTask, ClusterTaskList, ClusterWorkQueue, SELFCHECK_PROMPT_MARKER,
-    TaskSource, TaskStatus,
+    CancelOutcome, ClusterTask, ClusterTaskList, ClusterWorkQueue, PLAYTEST_PROMPT_MARKER,
+    SELFCHECK_PROMPT_MARKER, TaskSource, TaskStatus,
 };
 pub use task_manager::{InMemoryTaskStore, TaskManager, TaskStore};

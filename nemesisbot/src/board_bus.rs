@@ -18,7 +18,7 @@
 #![cfg(all(feature = "board", feature = "cluster"))]
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use nemesis_board::Actor;
 use nemesis_board::arbitrator::{
@@ -39,9 +39,11 @@ pub struct MasterBusDeps {
     pub quota: Arc<QuotaLedger>,
     /// 集群编排（节点表投影 + RPC 下行）。
     pub cluster: Arc<nemesis_cluster::cluster::Cluster>,
-    /// 主 AgentLoop 后置装配桥：nb_bus 注册时 agent_loop 尚未构建
-    /// （gateway 装配顺序），构建完成后 `set()` 填入；主持人裁决经它直调。
-    pub moderator_loop: Arc<OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// 主 AgentLoop 动态解析槽（gateway 级共享槽 Arc；写者唯一 =
+    /// AgentLoopServiceAdapter，start 写 Some / stop 写 None）。主持人裁决
+    /// 经它解析当前 loop——agent stop→start 重建后自然跟随（
+    /// BUG-20261108-012：此前 OnceLock 静态绑定初始 loop）。
+    pub moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     /// G（goal）：master workspace 根——交付回传文件的落盘父目录
     /// （`board/files/issue_<id>/`，与附件通道同目录约定）。
     pub workspace: std::path::PathBuf,
@@ -1083,7 +1085,7 @@ struct DepsForTask {
     store: Arc<nemesis_board::BoardStore>,
     quota: Arc<QuotaLedger>,
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
-    moderator_loop: Arc<OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    moderator_loop: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
 }
 
 /// 新消息上下文（裁决 + wake 包组装的输入）。
@@ -1296,7 +1298,7 @@ async fn run_moderator(
     participant: bool,
     event_label: &str,
 ) -> Result<(), String> {
-    let Some(agent_loop) = deps.moderator_loop.get() else {
+    let Some(agent_loop) = deps.moderator_loop.read().clone() else {
         tracing::debug!(target: "board_bus", "[nb_bus] agent loop not ready, moderator skipped");
         return Ok(());
     };

@@ -10,7 +10,7 @@
 **决策路由**
 - 编译/测试/lint 等项目验证 → `run_checks`（输出去噪 + 全文存档），不要散跑命令再自己拼报告。
 - 读文件 → `read_file`；搜内容 → `grep`；列目录 → `list_dir`。不要拿 shell 拼 cat/grep/ls。
-- 后台常驻（dev server、watch、长构建）→ `background_start`；启动后不需要看输出的程序 → `exec_async`。
+- 后台常驻（dev server、watch、长构建）→ `background_start`；启动后不需要看输出、完成也无需唤醒的程序传 `notify=false`。
 - 多行脚本逻辑（变量、循环、条件分支）→ `run_script`，不要拼超长单行命令。
 
 **约束与边界**

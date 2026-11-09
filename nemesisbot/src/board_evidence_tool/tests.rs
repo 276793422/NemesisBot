@@ -128,7 +128,15 @@ async fn execute_resolves_issue_to_project_archive() {
     let archive = dir.join("proj-archive");
     std::fs::create_dir_all(&archive).unwrap();
     let project = store
-        .create_project("p", "d", None, "", "", Some(archive.to_str().unwrap()))
+        .create_project(
+            "p",
+            "d",
+            None,
+            "",
+            "",
+            Some(archive.to_str().unwrap()),
+            None,
+        )
         .unwrap();
     let issue = store
         .create_issue(nemesis_board::NewIssue {

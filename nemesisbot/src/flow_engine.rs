@@ -720,6 +720,9 @@ fn start_board_land(
         required_profession: None,
         required_capabilities: Vec::new(),
         required_backend: None,
+        quality: String::new(),
+        unattended: None,
+        milestone: false,
     })?;
     Ok(json!({ "board_issue": issue.number, "board_issue_id": issue.id, "landed": "created" }))
 }
@@ -1617,7 +1620,9 @@ pub(crate) fn json_path_first<'a>(v: &'a Value, path: &str) -> Option<&'a Value>
 // ---------------------------------------------------------------------------
 
 pub struct FlowEngine {
-    agent_loop: Arc<AgentLoop>,
+    /// gateway 级动态解析槽（BUG-20261108-012 横向收尾：此前持初始
+    /// loop 强 Arc，agent 重启后 dispatch 打死旧实例的工具面）。
+    agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<AgentLoop>>>>,
     store: Arc<BoardStore>,
     /// publish 复用 publish_task_delivery 的入参（任务 db 独立连接，多连接
     /// WAL 既有纪律）。
@@ -1663,7 +1668,7 @@ impl FlowEngine {
     /// 返回值，由调用方 warn 降级。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        agent_loop: Arc<AgentLoop>,
+        agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<AgentLoop>>>>,
         store: Arc<BoardStore>,
         db: Arc<nemesis_taskstore::TaskDb>,
         workspace: PathBuf,
@@ -1675,7 +1680,7 @@ impl FlowEngine {
         let plugins_dir = nemesis_plugins_wasm::registry::resolve_plugins_wasm_dir();
         let flows = FlowStore::new(&workspace);
         FlowEngine {
-            agent_loop,
+            agent_loop_ref,
             store,
             db,
             config_dir: workspace.join("config"),
@@ -2015,7 +2020,12 @@ impl FlowEngine {
             "flow-engine",
             "flow-engine",
         );
-        let text = self.agent_loop.handle_tool_call(&call, &ctx).await;
+        // BUG-20261108-012 横向收尾：动态解析槽（agent 重启后打到新实例；
+        // 槽空 = 停机窗口诚实报错）。
+        let agent_loop = self.agent_loop_ref.read().clone().ok_or_else(|| {
+            "agent loop 已停止（agent loop 停机窗口），flow 工具节点无法执行".to_string()
+        })?;
+        let text = agent_loop.handle_tool_call(&call, &ctx).await;
         if crate::connector_tools::is_tool_error(&text) {
             return Err(text);
         }
@@ -2132,16 +2142,30 @@ impl FlowEngine {
             KIND_REGRESS => poll_outcome(regress_outcome(&self.store, inst)),
             KIND_PUBLISH => match self.publish_protocol(inst, cur) {
                 Ok((args, protocol)) => {
-                    crate::publish::publish_task_delivery(
-                        &self.db,
-                        &self.store,
-                        &self.agent_loop,
-                        &self.workspace,
-                        &args,
-                        Some(&protocol),
-                        self.plugin_manager.as_ref(),
-                    )
-                    .await
+                    // BUG-20261108-012 横向收尾：动态解析槽；槽空 = 停机
+                    // 窗口，publish 节点诚实失败（下轮 tick 重投由引擎
+                    // 既有重试语义承接）。read guard 先落盘再 match——
+                    // 看护项临时 guard 会活过 match 体（含 await），future
+                    // 变 non-Send（spawn_tick_loop 的 tokio::spawn 拒收）。
+                    let resolved = self.agent_loop_ref.read().clone();
+                    match resolved {
+                        Some(agent_loop) => {
+                            crate::publish::publish_task_delivery(
+                                &self.db,
+                                &self.store,
+                                &agent_loop,
+                                &self.workspace,
+                                &args,
+                                Some(&protocol),
+                                self.plugin_manager.as_ref(),
+                            )
+                            .await
+                        }
+                        None => Err(
+                            "agent loop 已停止（agent loop 停机窗口），flow publish 节点无法执行"
+                                .to_string(),
+                        ),
+                    }
                 }
                 Err(e) => Err(e),
             },
@@ -2803,6 +2827,27 @@ impl FlowEngine {
 // 步骤记账（自由函数，单测钉死）
 // ---------------------------------------------------------------------------
 
+/// 步骤记账落盘（尽力而为）：失败 warn + 降级登记
+/// （`nemesis_utils::degraded`——M2 同款基建，gateway 泵到 SSE
+/// `system-alert` + `/ready` 健康面，10 分钟去抖内建）。记账失败不阻塞
+/// 流程执行（断点续跑降级为「重启丢记账」），但不再完全静默——磁盘满/
+/// 权限问题此前五处 `let _ =` 全吞，运维不可见（BUG-20261108-031）。
+/// 创建路径（`run_sync_all` 的 `flows.save(&inst)?`）不走此 helper：
+/// 那里的错误必须传播。
+fn save_flow_step(flows: &FlowStore, inst: &FlowInstance) {
+    if let Err(e) = flows.save(inst) {
+        tracing::warn!(
+            "[flow_engine] flow instance save failed ({}/{}): {e}",
+            inst.template,
+            inst.instance
+        );
+        nemesis_utils::degraded::report(
+            "flow_engine",
+            format!("save failed: {}/{} ({e})", inst.template, inst.instance),
+        );
+    }
+}
+
 /// 转运行态：status=Running + started_at 记账落盘。
 fn mark_running(flows: &FlowStore, inst: &mut FlowInstance) {
     if let Some(step) = inst.steps.get_mut(inst.current_step) {
@@ -2810,7 +2855,7 @@ fn mark_running(flows: &FlowStore, inst: &mut FlowInstance) {
         step.started_at_ms = Some(now_ms());
     }
     inst.updated_at_ms = now_ms();
-    let _ = flows.save(inst);
+    save_flow_step(flows, inst);
 }
 
 /// 完成：记账产物 + 游标推进。
@@ -2826,7 +2871,7 @@ fn complete_step(flows: &FlowStore, inst: &mut FlowInstance, artifacts: &Value) 
     }
     inst.current_step += 1;
     inst.updated_at_ms = now_ms();
-    let _ = flows.save(inst);
+    save_flow_step(flows, inst);
 }
 
 /// 失败：按 on_fail 分支（park_human / retry:N / continue）。
@@ -2866,7 +2911,7 @@ fn fail_step(flows: &FlowStore, inst: &mut FlowInstance, error: &str) {
             inst.current_step += 1; // 带隙续跑（步骤保持 Failed 态留痕）
         }
     }
-    let _ = flows.save(inst);
+    save_flow_step(flows, inst);
 }
 
 /// 条件步不成立（决策 B）：Skipped 留痕（条件式进 artifacts，面板可）
@@ -2879,7 +2924,7 @@ fn skip_step(flows: &FlowStore, inst: &mut FlowInstance, rendered_when: &str) {
     }
     inst.current_step += 1;
     inst.updated_at_ms = now_ms();
-    let _ = flows.save(inst);
+    save_flow_step(flows, inst);
 }
 
 /// plugin 步骤 guest 自报 skipped：when 假语义同款（Skipped + 游标同 tick
@@ -2892,7 +2937,7 @@ fn skip_step_with_payload(flows: &FlowStore, inst: &mut FlowInstance, payload: V
     }
     inst.current_step += 1;
     inst.updated_at_ms = now_ms();
-    let _ = flows.save(inst);
+    save_flow_step(flows, inst);
 }
 
 // ---------------------------------------------------------------------------

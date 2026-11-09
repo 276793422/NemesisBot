@@ -32,6 +32,11 @@ pub mod chat;
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
+// 统一工作台 WSAPI（workbench.get / workbench.respond）：触点文档级重页
+// 的取数与动作漏斗路由壳。随 `board` feature 进出（依赖 board store 与
+// board::touchpoints 漏斗）。
+#[cfg(feature = "board")]
+pub mod workbench;
 // QUIC 中继 WSAPI（与集群解耦）：quic.relay.*（服务端启停/配置/
 // 状态）+ quic.registry.members（服务端全量名册）。无 feature 闸——命令面
 // 恒注册（清单稳定，voice-capture/roaming 先例），feature 关 = handler
@@ -347,6 +352,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // 命令从 system.commands 表面消失）。
     #[cfg(feature = "board")]
     router.register(Arc::new(board::BoardHandler));
+    // 统一工作台（触点重页 /workbench/:kind/:id 的 WSAPI 面）同随 board
+    // feature 进出——漏斗与取数全委托 board::touchpoints（单一真相源）。
+    #[cfg(feature = "board")]
+    router.register(Arc::new(workbench::WorkbenchHandler));
     #[cfg(feature = "cluster")]
     {
         router.register(Arc::new(cluster::ClusterHandler::new()));

@@ -1987,3 +1987,43 @@ async fn s2_find_window_without_mcp_found_path_via_live_title() {
         needles
     );
 }
+
+// ============================================================
+// SendKeys metachar escaping (standalone type_text lane).
+// Pure-function tests only — standalone_type_text sends real
+// keystrokes and must never run in tests (structural exemption
+// documented above).
+// ============================================================
+
+#[test]
+fn test_escape_sendkeys_metachars_wrapped_in_braces() {
+    assert_eq!(escape_sendkeys("a+b"), "a{+}b");
+    assert_eq!(escape_sendkeys("50% off"), "50{%} off");
+    assert_eq!(escape_sendkeys("C^H"), "C{^}H");
+    assert_eq!(escape_sendkeys("a~b"), "a{~}b");
+    assert_eq!(escape_sendkeys("f(x)"), "f{(}x{)}");
+    assert_eq!(escape_sendkeys("plain text"), "plain text");
+    assert_eq!(escape_sendkeys(""), "");
+}
+
+#[test]
+fn test_escape_sendkeys_braces_are_literal() {
+    // `{ENTER}` previously pressed Enter; now it types the literal
+    // seven characters (braces doubled per SendKeys escape syntax).
+    assert_eq!(escape_sendkeys("{ENTER}"), "{{}ENTER{}}");
+    assert_eq!(escape_sendkeys("{"), "{{}");
+    assert_eq!(escape_sendkeys("}"), "{}}");
+    // Code shapes that previously misbehaved or threw (unbalanced brace).
+    assert_eq!(escape_sendkeys("fn f() { x }"), "fn f{(}{)} {{} x {}}");
+    assert_eq!(escape_sendkeys("a{b"), "a{{}b");
+}
+
+#[test]
+fn test_escape_sendkeys_then_ps_quote_orthogonal() {
+    // The composed escaping used by standalone_type_text: SendKeys escape
+    // emits no quotes, so PS single-quote doubling only sees original quotes.
+    let text = "it's {a+b}";
+    let sendkeys = escape_sendkeys(text);
+    let ps = sendkeys.replace('\'', "''");
+    assert_eq!(ps, "it''s {{}a{+}b{}}");
+}

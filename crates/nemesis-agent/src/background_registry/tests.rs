@@ -392,6 +392,7 @@ async fn registration_requires_registry() {
 
     // None → 四动词不注册（exec_worker / 基线形态）。
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace: Some(ws.clone()),
         background_registry: None,
         ..Default::default()
@@ -404,6 +405,7 @@ async fn registration_requires_registry() {
 
     // Some → 四动词齐全（起含 steer）。
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace: Some(ws),
         background_registry: Some(Arc::new(BackgroundProcessRegistry::new())),
         ..Default::default()
@@ -727,5 +729,460 @@ async fn build_platform_shell_strips_sensitive_env() {
     assert!(
         !text.contains("sensitive-marker"),
         "敏感变量必须被 T4 剥离，不得进入后台命令环境: {text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// BUG-20261108-027：chunk 边界劈开多字节 UTF-8 字符 → 替换符 mojibake
+// ---------------------------------------------------------------------------
+
+/// 静默长跑命令（无 stdout 输出）：e2e 测试需要向运行中任务的缓冲注入
+/// 合成字节，真实进程若同时产出会污染劈字符的确定性断言。
+fn silent_cmd() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "ping -n 30 127.0.0.1 > nul"
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        "sleep 30"
+    }
+}
+
+/// `utf8_safe_len` 判定矩阵：完整 UTF-8 全长消费；尾部不完整序列截到
+/// 合法前缀末尾（整段就是半截 → 0）；中段真非法序列不截（lossy 诚实
+/// 降级 + 保证推进）。
+#[test]
+fn utf8_safe_len_matrix_bug_20261108_027() {
+    use super::utf8_safe_len;
+    // 完整 UTF-8（ASCII / CJK / emoji 混排）→ 全长。
+    assert_eq!(utf8_safe_len("ab".as_bytes()), 2);
+    assert_eq!(utf8_safe_len("你好".as_bytes()), 6);
+    assert_eq!(utf8_safe_len("x🦀z".as_bytes()), "x🦀z".len());
+    // 「你」= E4 BD A0 劈尾：合法前缀 + 尾部不完整序列 → 截到前缀末尾。
+    assert_eq!(utf8_safe_len(&[0x61, 0xE4, 0xBD]), 1); // 'a' + 半个你
+    assert_eq!(utf8_safe_len(&[0xE4, 0xBD]), 0); // 整段就是半截 → 空消费
+    assert_eq!(utf8_safe_len(&[0xE4]), 0);
+    // emoji 🦀 = F0 9F A6 80 劈在各中段 → 整段属于不完整序列 → 0。
+    assert_eq!(utf8_safe_len(&[0xF0, 0x9F]), 0);
+    assert_eq!(utf8_safe_len(&[0xF0, 0x9F, 0xA6]), 0);
+    // 中段真非法序列（error_len Some）不截：continuation 字节开头（头部
+    // 钳制落进字符中间的诚实降级面）与裸非法字节。
+    assert_eq!(utf8_safe_len(&[0xBD, 0xA0]), 2);
+    assert_eq!(utf8_safe_len(&[0x61, 0xFF, 0x62]), 3);
+}
+
+/// e2e 回归锁（真实运行中任务 + 注入合成字节）：劈在轮询边界的 CJK
+/// 三字节字符必须跨轮拼回完整字符，不得渲染替换符；运行中 next_offset
+/// 停在字符边界（不越过半截字节），终态语义（推进到底）由既有
+/// offset_paging_covers_output / output_cap_drops_head_keeps_tail 覆盖。
+#[tokio::test]
+async fn split_cjk_char_composes_across_polls_bug_20261108_027() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start(silent_cmd(), "/", false).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+
+    // 向运行中任务的输出缓冲注入「你」的前两个字节（绕过真实进程输出
+    // 时机的非确定性，确定性构造「字符劈在 chunk 边界」场景）。
+    let output_buf = {
+        let jobs = reg.jobs.lock().await;
+        jobs.get(&id).expect("job entry").output.clone() // Arc<Mutex<OutputBuffer>> —— guard 必须先放（output 会再锁 jobs）
+    };
+    output_buf.lock().await.append(&[0xE4, 0xBD]);
+
+    // 第一轮：尾部不完整序列被截住——不渲染替换符，offset 不越过半截
+    // 字节（等下一轮与后续输出拼齐）。
+    let first = reg.output(id, 0).await.expect("first poll");
+    let chunk1 = first["chunk"].as_str().unwrap().to_string();
+    let off1 = first["next_offset"].as_u64().unwrap();
+    let total1 = first["total_bytes"].as_u64().unwrap();
+    assert_eq!(
+        total1, 2,
+        "silent cmd must produce no output of its own: total={total1}"
+    );
+    assert!(
+        !chunk1.contains('\u{FFFD}'),
+        "running job must not render the split tail: {chunk1:?}"
+    );
+    assert_eq!(
+        off1,
+        total1 - 2,
+        "next_offset must stop before the incomplete 3-byte char"
+    );
+
+    // 注入剩余字节：字符拼齐后下一轮读回完整「你」。
+    output_buf.lock().await.append(&[0xA0]);
+    let second = reg.output(id, off1).await.expect("second poll");
+    let chunk2 = second["chunk"].as_str().unwrap();
+    assert_eq!(
+        chunk2, "你",
+        "split char must compose across polls: {chunk2:?}"
+    );
+    assert_eq!(second["next_offset"].as_u64(), Some(off1 + 3));
+
+    // 收尾：树杀长跑命令，不留挂任务。
+    let result = reg.kill(id).await.expect("kill within KILL_WAIT");
+    assert_eq!(result["killed"].as_bool(), Some(true));
+}
+
+// ---------------------------------------------------------------------------
+// 完成唤醒 + wait 等待语义（2026-11-08 子进程实时输出与完成唤醒）
+// ---------------------------------------------------------------------------
+
+/// wait_secs=0 → 即取即返（旧行为字节不变）：长跑任务上立即返回 running=true。
+#[tokio::test]
+async fn output_with_wait_zero_returns_immediately() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start(long_cmd(), "/", false).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    let t0 = Instant::now();
+    let v = reg.output_with_wait(id, 0, 0).await.unwrap();
+    assert!(
+        t0.elapsed() < Duration::from_millis(500),
+        "wait_secs=0 must not block (elapsed {:?})",
+        t0.elapsed()
+    );
+    assert_eq!(v["running"].as_bool(), Some(true));
+    // 清理：不留 30s 的 ping 挂着。
+    reg.kill(id).await.unwrap();
+}
+
+/// wait_secs>0 → 阻塞等**退出**：echo 任务秒退，等待路径返回终态平铺
+/// （success=true）+ 全量 chunk。
+#[tokio::test]
+async fn output_with_wait_blocks_until_exit() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg
+        .start("echo wait_exit_marker_b4", "/", false)
+        .await
+        .unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    let v = reg.output_with_wait(id, 0, 10).await.unwrap();
+    assert_eq!(v["running"].as_bool(), Some(false));
+    assert_eq!(v["success"].as_bool(), Some(true));
+    let chunk = v["chunk"].as_str().unwrap();
+    assert!(chunk.contains("wait_exit_marker_b4"), "chunk: {}", chunk);
+}
+
+/// wait_secs>0 + 任务不退 → 超窗返回 running=true 的现势 payload（诚实
+/// 不编造终态）。
+#[tokio::test]
+async fn output_with_wait_times_out_with_running_payload() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let started = reg.start(long_cmd(), "/", false).await.unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    let v = reg.output_with_wait(id, 0, 2).await.unwrap();
+    assert_eq!(v["running"].as_bool(), Some(true));
+    assert!(v.get("success").is_none(), "未退出不得平铺 success");
+    reg.kill(id).await.unwrap();
+}
+
+/// 完成事件经 sink 送达：set_completion_sink → start_with_origin(origin) →
+/// 任务退出后 rx 收到 CompletionEvent（job_id/终态/origin 三元组/尾部）。
+#[tokio::test]
+async fn completion_event_delivered_via_sink() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
+    assert!(reg.set_completion_sink(tx), "首次 set 必须成功");
+    let origin = JobOrigin {
+        channel: "web".to_string(),
+        chat_id: "chat-9".to_string(),
+        session_key: "agent:main:session:s9".to_string(),
+    };
+    let started = reg
+        .start_with_origin(
+            "echo wake_tail_marker_b4",
+            "/",
+            false,
+            Some(origin.clone()),
+            true,
+        )
+        .await
+        .unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        .await
+        .expect("completion event within 15s")
+        .expect("channel open");
+    assert_eq!(ev.job_id, id);
+    assert!(ev.status.success);
+    assert!(!ev.status.killed);
+    assert_eq!(ev.origin, origin);
+    assert!(ev.tail.contains("wake_tail_marker_b4"), "tail: {}", ev.tail);
+    // 尾部窗口上限诚实：≤4KB 字节（lossy utf8 后字符数可略小）。
+    assert!(ev.tail.len() <= COMPLETION_TAIL_BYTES + 4);
+}
+
+/// sink 未装配（基线形态）→ start_with_origin 照常返回、无唤醒副作用
+/// （watcher 空等终态后静默返回——不 send 不 panic）。
+#[tokio::test]
+async fn completion_sink_absent_is_noop() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let origin = JobOrigin {
+        channel: "web".to_string(),
+        chat_id: "chat-n".to_string(),
+        session_key: String::new(),
+    };
+    let started = reg
+        .start_with_origin("echo noop_b4", "/", false, Some(origin), true)
+        .await
+        .unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    wait_done(&reg, id, 15).await;
+}
+
+/// note 覆盖矩阵：origin 在场 → 反轮询指引；origin 缺席 → 旧轮询指引
+/// （基线行为不变）。
+#[tokio::test]
+async fn start_with_origin_note_matrix() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let origin = JobOrigin {
+        channel: "web".to_string(),
+        chat_id: "chat-note".to_string(),
+        session_key: "sess-note".to_string(),
+    };
+    let with_o = reg
+        .start_with_origin("echo n1_b4", "/", false, Some(origin), true)
+        .await
+        .unwrap();
+    assert!(
+        with_o["note"]
+            .as_str()
+            .unwrap()
+            .contains("do NOT sleep-poll"),
+        "origin 在场必须给反轮询指引: {}",
+        with_o["note"]
+    );
+    let without_o = reg
+        .start_with_origin("echo n2_b4", "/", false, None, true)
+        .await
+        .unwrap();
+    assert!(
+        without_o["note"]
+            .as_str()
+            .unwrap()
+            .contains("poll background_output"),
+        "origin 缺席必须保持旧轮询指引（基线不变）: {}",
+        without_o["note"]
+    );
+    wait_done(&reg, with_o["job_id"].as_u64().unwrap(), 15).await;
+    wait_done(&reg, without_o["job_id"].as_u64().unwrap(), 15).await;
+}
+
+/// 工具层 e2e：background_start 工具从 RequestContext 捕获 origin →
+/// 完成事件带真实会话锚；返回 note 是反轮询指引。
+#[tokio::test]
+async fn background_start_tool_captures_origin_and_overrides_note() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = Arc::new(BackgroundProcessRegistry::new());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
+    reg.set_completion_sink(tx);
+    let cfg = SharedToolConfig {
+        workspace: Some("/".to_string()),
+        background_registry: Some(Arc::clone(&reg)),
+        exec_output_tx: None,
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&cfg);
+    let start_tool = tools.get("background_start").expect("registered");
+    let out_tool = tools.get("background_output").expect("registered");
+
+    let out = start_tool
+        .execute(r#"{"command": "echo tool_origin_b4"}"#, &ctx())
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let id = payload["job_id"].as_u64().unwrap();
+    assert!(
+        payload["note"]
+            .as_str()
+            .unwrap()
+            .contains("do NOT sleep-poll"),
+        "工具路径 note 必须被覆盖: {}",
+        payload["note"]
+    );
+
+    // output 工具 wait 路径：等退出 + 终态平铺。
+    let args = format!(r#"{{"job_id": {id}, "wait_secs": 10}}"#);
+    let out = out_tool.execute(&args, &ctx()).await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["running"].as_bool(), Some(false));
+    assert_eq!(v["success"].as_bool(), Some(true));
+
+    // 完成事件带工具 ctx() 的会话锚（web/chat1/user1/sess1 中的三元组）。
+    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        .await
+        .expect("completion event within 15s")
+        .expect("channel open");
+    assert_eq!(ev.job_id, id);
+    assert_eq!(ev.origin.channel, "web");
+    assert_eq!(ev.origin.chat_id, "chat1");
+    assert_eq!(ev.origin.session_key, "sess1");
+    assert!(ev.tail.contains("tool_origin_b4"), "tail: {}", ev.tail);
+}
+
+/// notify=false（2026-11-09 完成唤醒可选化）：受管但静默——退出不发
+/// CompletionEvent（watcher 未 spawn，sink 收不到任何事件）；payload
+/// 显式标注 notify=false 且 note 改静默指引；管理面（output 终态平铺）
+/// 不受影响。
+#[tokio::test]
+async fn notify_false_suppresses_completion_event() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = BackgroundProcessRegistry::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
+    assert!(reg.set_completion_sink(tx), "首次 set 必须成功");
+    let origin = JobOrigin {
+        channel: "web".to_string(),
+        chat_id: "chat-silent".to_string(),
+        session_key: "sess-silent".to_string(),
+    };
+    let started = reg
+        .start_with_origin("echo silent_b4", "/", false, Some(origin), false)
+        .await
+        .unwrap();
+    let id = started["job_id"].as_u64().unwrap();
+    assert_eq!(
+        started["notify"].as_bool(),
+        Some(false),
+        "payload 必须显式标注静默: {}",
+        started
+    );
+    assert!(
+        started["note"].as_str().unwrap().contains("notify=false"),
+        "note 必须是静默指引: {}",
+        started["note"]
+    );
+    wait_done(&reg, id, 15).await;
+    // 退出已确认，静默窗内不得有任何事件到达。
+    let quiet = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .is_err();
+    assert!(quiet, "notify=false 的 job 退出不得发 CompletionEvent");
+    // 管理面保留：终态照常平铺。
+    let v = reg.output(id, 0).await.unwrap();
+    assert_eq!(v["success"].as_bool(), Some(true));
+}
+
+/// 工具层 e2e：notify=false 经 execute 解析 → 静默生效（无完成事件），
+/// payload 标注与 note 指引同步落位。
+#[tokio::test]
+async fn background_start_tool_notify_false_suppresses_wake() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = Arc::new(BackgroundProcessRegistry::new());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
+    reg.set_completion_sink(tx);
+    let cfg = SharedToolConfig {
+        workspace: Some("/".to_string()),
+        background_registry: Some(Arc::clone(&reg)),
+        exec_output_tx: None,
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&cfg);
+    let start_tool = tools.get("background_start").expect("registered");
+    let out_tool = tools.get("background_output").expect("registered");
+
+    let out = start_tool
+        .execute(
+            r#"{"command": "echo tool_silent_b4", "notify": false}"#,
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let id = payload["job_id"].as_u64().unwrap();
+    assert_eq!(payload["notify"].as_bool(), Some(false));
+    assert!(
+        payload["note"].as_str().unwrap().contains("notify=false"),
+        "工具路径 note 必须是静默指引: {}",
+        payload["note"]
+    );
+
+    // output 工具 wait 路径：管理面保留（等退出 + 终态平铺）。
+    let args = format!(r#"{{"job_id": {id}, "wait_secs": 10}}"#);
+    let v = out_tool.execute(&args, &ctx()).await.unwrap();
+    let v: serde_json::Value = serde_json::from_str(&v).unwrap();
+    assert_eq!(v["running"].as_bool(), Some(false));
+    assert_eq!(v["success"].as_bool(), Some(true));
+
+    // 退出已确认，静默窗内零事件。
+    let quiet = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        .await
+        .is_err();
+    assert!(quiet, "工具路径 notify=false 不得发完成事件");
+}
+
+/// notify 非法值（非 boolean，如字符串 "false"）→ 落缺省 true：watcher
+/// 照常 spawn、事件照常送达；true 路径 payload 不加 notify 键（缺省
+/// 字节不变）。
+#[tokio::test]
+async fn background_start_tool_notify_non_bool_falls_back_to_true() {
+    let _serial = TEST_LOCK.lock().await;
+    let reg = Arc::new(BackgroundProcessRegistry::new());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompletionEvent>();
+    reg.set_completion_sink(tx);
+    let cfg = SharedToolConfig {
+        workspace: Some("/".to_string()),
+        background_registry: Some(Arc::clone(&reg)),
+        exec_output_tx: None,
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&cfg);
+    let start_tool = tools.get("background_start").expect("registered");
+
+    let out = start_tool
+        .execute(
+            r#"{"command": "echo tool_nb_b4", "notify": "false"}"#,
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let id = payload["job_id"].as_u64().unwrap();
+    assert!(
+        payload.get("notify").is_none(),
+        "true 路径 payload 不加 notify 键: {}",
+        payload
+    );
+    assert!(
+        payload["note"]
+            .as_str()
+            .unwrap()
+            .contains("do NOT sleep-poll"),
+        "落 true 时 note 是反轮询指引: {}",
+        payload["note"]
+    );
+    wait_done(&reg, id, 15).await;
+    let ev = tokio::time::timeout(Duration::from_secs(15), rx.recv())
+        .await
+        .expect("completion event within 15s")
+        .expect("channel open");
+    assert_eq!(ev.job_id, id);
+}
+
+/// schema 面：notify 参数在 properties 且 type=boolean，description 与
+/// 工具 description 都带引导（供给面可发现）。纯逻辑用例，不起进程。
+#[tokio::test]
+async fn background_start_schema_exposes_notify_param() {
+    let tool = BackgroundStartTool::new("/", false, Arc::new(BackgroundProcessRegistry::new()));
+    let schema = tool.parameters();
+    let notify = &schema["properties"]["notify"];
+    assert_eq!(notify["type"].as_str(), Some("boolean"));
+    assert!(
+        notify["description"]
+            .as_str()
+            .unwrap()
+            .contains("default true"),
+        "schema description 必须写明缺省 true"
+    );
+    assert!(
+        tool.description().contains("notify=false"),
+        "工具 description 必须带 notify=false 引导"
     );
 }

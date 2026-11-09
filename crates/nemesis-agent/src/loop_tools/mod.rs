@@ -93,6 +93,10 @@ mod exec_timeout_tests;
 // 默认词表/替换语义/全无效回落/execute 拒绝面/异步同源）。
 #[cfg(test)]
 mod exec_deny_tests;
+// exec 执行中输出流 tee（2026-11-08）：返回值路径不变 + EOF flush +
+// 窗丢头保尾 + 节流 + hook 装配 e2e + exec_output_tx 广播接线。
+#[cfg(test)]
+mod exec_stream_tee_tests;
 #[cfg(test)]
 mod loop_tools_extra_tests;
 #[cfg(test)]

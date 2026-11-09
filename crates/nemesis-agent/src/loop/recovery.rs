@@ -1134,7 +1134,8 @@ impl AgentLoop {
         // assistant(partial) + user(续写提示)（同族语义），成功后把
         // partial 前拼到续写段（history/出站只见完整文本；r_msgs 是局部
         // 变量不落 instance history，无重复 turn）。重试再撞流中断 → 新
-        // partial 覆盖（更长 = 更接近完整）。环外读取开关 + 首错解析一次。
+        // partial 合并（续写片段累积在前缀后；模型复述前缀则识别为重生成
+        // 防重复，BUG-20261107-028）。环外读取开关 + 首错解析一次。
         let concat_enabled = self.current_stream_concat_retry();
         let mut partial = if concat_enabled {
             extract_stream_partial(&last_err).filter(|p| !p.has_tool_calls)
@@ -1282,12 +1283,29 @@ impl AgentLoop {
                 }
                 Err(e) => {
                     last_err = e;
-                    // 每轮以「最新错误的 partial」为准——重试再撞流
-                    // 中断 → 新 partial 覆盖（更长 = 更接近完整）；撞其他
-                    // transient（timeout 等）→ extract None → 回退从头。
-                    // 不可续形态（tc 标记）同回退。
+                    // BUG-20261107-028：重试再撞流中断时新 partial 按「合并」
+                    // 语义更新，不再直接覆盖。带 assistant(prev) 前缀的请求
+                    // 再撞中断，新 partial 是续写片段（STREAM_CONTINUE_PROMPT
+                    // 「no recap」契约）而非完整重生成——覆盖会把 prev 从最终
+                    // 拼接产物静默丢掉（用户可见输出缺首段）；合并 = prev +
+                    // new。若模型违约复述了前缀（new 以 prev 开头），按重生
+                    // 成取 new 单独值防重复。prev 为 None（上轮从头重试）时
+                    // 新 partial 直接生效。撞其他 transient（timeout 等）→
+                    // extract None → 回退从头；不可续形态（tc 标记）同回退。
                     if concat_enabled {
-                        partial = extract_stream_partial(&last_err).filter(|p| !p.has_tool_calls);
+                        partial = match extract_stream_partial(&last_err)
+                            .filter(|p| !p.has_tool_calls)
+                        {
+                            Some(new) => match partial.take() {
+                                Some(prev) if new.content.starts_with(&prev.content) => Some(new),
+                                Some(prev) => Some(StreamPartial {
+                                    content: format!("{}{}", prev.content, new.content),
+                                    has_tool_calls: false,
+                                }),
+                                None => Some(new),
+                            },
+                            None => None,
+                        };
                     }
                     let failed_after = attempt_start.elapsed();
                     // 下一轮退避资格按本次实际耗时重判

@@ -622,7 +622,21 @@ jobs:
           if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
             echo "runner 未预装 NDK $NDK_VERSION，sdkmanager 安装..."
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION"
+            # sdkmanager 下载 NDK zip 偶发截断/损坏（2026-11-08 实锤 run
+            # 42391722262：Error on ZipFile unknown archive——同轮 linux/windows
+            # 包全绿 = 纯下载瞬态，非版本失效）→ 重试环：清半截解压再装，
+            # 3 次全败才红。
+            ok=0
+            for attempt in 1 2 3; do
+              if "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION"; then
+                ok=1
+                break
+              fi
+              echo "sdkmanager 安装失败（第 $attempt 次，多为 zip 下载截断），清残件重试..."
+              rm -rf "$ANDROID_HOME/ndk/$NDK_VERSION"
+              sleep 10
+            done
+            [ "$ok" = 1 ] || { echo "NDK $NDK_VERSION 连续 3 次安装失败"; exit 1; }
           fi
           NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
           {

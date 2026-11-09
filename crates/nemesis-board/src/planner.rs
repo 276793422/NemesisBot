@@ -72,6 +72,12 @@ pub struct PlannedSubIssue {
     pub acceptance_criteria: String,
     #[serde(default)]
     pub depends_on: Vec<usize>,
+    /// 原型里程碑单标记（触点体系 P3）：体验型任务拆解时标在首个可运行
+    /// 构建的子单上（至多一个）。父单非 experience 档时 confirm_plan
+    /// 落库前归一清零（该标记无消费方）。校验见 [`parse_plan`]（严格臂
+    /// >1 报错回灌自纠）/ [`parse_plan_lenient`]（末轮保留首个其余清零）。
+    #[serde(default)]
+    pub milestone: bool,
 }
 
 /// 解析失败的原因（`message` 直接回灌给 LLM，必须人读且指明怎么改）。
@@ -155,6 +161,17 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
                 });
             }
         }
+    }
+    // 里程碑单标记校验：至多一个（首个可运行构建）；0 个合法（无里程碑
+    // = 无原型触点，回退旧行为）。多个 → 回灌自纠（严格臂给 LLM 教训，
+    // 末轮宽和臂兜底降级）。
+    let milestone_count = plan.iter().filter(|s| s.milestone).count();
+    if milestone_count > 1 {
+        return Err(PlanParseError {
+            message: format!(
+                "milestone=true 的子任务有 {milestone_count} 个，最多只能标 1 个（首个可运行构建的里程碑单）。请只保留一个 milestone=true 后重新输出。"
+            ),
+        });
     }
     detect_cycle(&plan)?;
     analyze_shared_touch(&plan)?;
@@ -301,6 +318,20 @@ pub fn parse_plan_lenient(raw: &str) -> Result<LenientPlan, PlanParseError> {
                         "第 {i} 个子任务的 depends_on 包含自身（{dep}），不允许自引用。"
                     ),
                 });
+            }
+        }
+    }
+    // 宽和臂里程碑处理：保留首个，其余清零（严格臂前两轮已给过自纠
+    // 机会；多标不破坏派发，只多挂原型卡，降级不进 downgrades 台账——
+    // 该台账语义是 required_profession 专属）。
+    let mut first_milestone_seen = false;
+    for sub in plan.iter_mut() {
+        if sub.milestone {
+            if first_milestone_seen {
+                sub.milestone = false;
+                tracing::warn!("[Board] planner 末轮宽和：多余 milestone 标记清零（保留首个）");
+            } else {
+                first_milestone_seen = true;
             }
         }
     }

@@ -78,7 +78,7 @@ fn test_process_inbound_message() {
         media: None,
     };
 
-    let (sender, chat, content) = ch.process_inbound(&msg).unwrap();
+    let (sender, _chat, content) = ch.process_inbound(&msg).unwrap();
     assert_eq!(sender, "+1234567890");
     assert_eq!(content, "Hello");
 }

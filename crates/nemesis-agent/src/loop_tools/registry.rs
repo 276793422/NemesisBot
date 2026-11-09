@@ -160,6 +160,19 @@ pub struct SharedToolConfig {
     /// 必然孤儿，见 remote_executor_tool.rs 的 exec_async 注记；以及
     /// register_default_tools 基线/测试形态）。
     pub background_registry: Option<Arc<BackgroundProcessRegistry>>,
+    /// exec 执行中输出流事件通道（2026-11-08 子进程实时输出与完成唤醒）：
+    /// Some 时 exec 工具走 `new_with_output_hook` 装配——执行中 stdout/
+    /// stderr 以 `AgentEvent::ToolOutput` 经此 broadcast 流出（与
+    /// ToolEventHook / TodoUpdated 同一通道家族，web pump 默认路径消费）。
+    /// None = exec 旧行为（`ExecTool::new`，执行中输出不可见——基线注册/
+    /// 测试/executor 分离路径）。broadcast::Sender 是 Clone，hook 闭包
+    /// 直接持值。
+    pub exec_output_tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
+    /// exec 同步阻塞超时上限（`tools.exec.max_timeout_secs`，2026-11-08
+    /// config 化）。None = 600 默认（旧行为字节不变）；Some(n) = exec 的
+    /// timeout clamp 上限改为 n（部署主权参数——上限高度 = estop 残留
+    /// 窗口）。LLM 侧 `timeout` 参数语义不变（缺省 30，超上限 clamp）。
+    pub exec_max_timeout_secs: Option<u64>,
     /// question 工具的 broker 槽（gateway 装配后填
     /// `WebQuestionBroker`）。None = 不注册该工具（headless / exec_worker /
     /// register_default_tools 基线形态——模型看不到一个只会失败的调用）。
@@ -543,7 +556,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         // **刻意不暴露**（默认缺席=false→默认词表，防护永不被 config 关闭）。
         let deny_custom_active =
             config.exec_deny_custom_enabled && !config.exec_deny_custom_patterns.is_empty();
-        let (exec, exec_async) = if deny_custom_active {
+        let exec_base = if deny_custom_active {
             let patterns: Vec<&str> = config
                 .exec_deny_custom_patterns
                 .iter()
@@ -553,10 +566,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 "[Tools] exec custom deny patterns active ({} entries)",
                 patterns.len()
             );
-            (
-                ExecTool::new_with_config(workspace, restrict, Some(&patterns)),
-                AsyncExecTool::new_with_config(workspace, restrict, Some(&patterns)),
-            )
+            ExecTool::new_with_config(workspace, restrict, Some(&patterns))
         } else {
             if config.exec_deny_custom_enabled {
                 // 开关开了但词表空：回落内置默认词表（与 new_with_config
@@ -566,13 +576,54 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                      is empty — falling back to builtin default deny patterns"
                 );
             }
-            (
-                ExecTool::new(workspace, restrict),
-                AsyncExecTool::new(workspace, restrict),
-            )
+            ExecTool::new(workspace, restrict)
         };
-        tools.insert("exec".to_string(), Box::new(exec));
-        tools.insert("exec_async".to_string(), Box::new(exec_async));
+        // [SEALED 2026-11-08] 旧模式（执行中输出不可见）：裸 `ExecTool::new`
+        // 注册——exec 运行期间 Chat 页无中间输出。保留备查；恢复 = 把下面
+        // new_with_output_hook 分支换回这三行。
+        // tools.insert(
+        //     "exec".to_string(),
+        //     Box::new(ExecTool::new(workspace, restrict)),
+        // );
+        // ── 新模式（执行中输出流）：exec_output_tx 在场 → hook 闭包把
+        // 排水 tee 的尾窗以 ToolOutput 事件发进同一 broadcast（web pump
+        // 默认 tool_event 路径消费）；tx 缺席（基线/测试/exec_worker）→
+        // 旧行为构造，逐字节一致。
+        let exec_tool = if let Some(tx) = config.exec_output_tx.clone() {
+            exec_base.with_output_hook({
+                let tx = tx.clone();
+                Arc::new(move |ctx: &RequestContext, tail: &str, total_bytes: u64| {
+                    let _ = tx.send(nemesis_types::agent::AgentEvent::ToolOutput {
+                        session_key: ctx.session_key.clone(),
+                        chat_id: ctx.chat_id.clone(),
+                        // call_id 置空：dispatch call_id 工具层不可见
+                        // （ToolEventHook 层私有）——前端按「会话内最后
+                        // 一个 running exec 行」归属。
+                        call_id: String::new(),
+                        tool: "exec".to_string(),
+                        tail: tail.to_string(),
+                        total_bytes,
+                    });
+                })
+            })
+        } else {
+            exec_base
+        }
+        // timeout clamp 上限（2026-11-08 config 化）：None = 600 旧行为。
+        .with_max_timeout_secs(config.exec_max_timeout_secs.unwrap_or(600));
+        tools.insert("exec".to_string(), Box::new(exec_tool));
+        // [SEALED 2026-11-08] exec_async 封存（用户拍板，实现保留不删除）。
+        // 根因：fire-and-forget（管道只接不排，64KB 写满即死锁）+ 无
+        // job_id/kill/完成唤醒；描述文本「启动一个应用并立即返回」主动诱导
+        // 模型在 GUI 场景绕开 background_start 的完成唤醒路径（2026-11-08
+        // 用户亲测实录）。用例由 background_start/output/kill/steer +
+        // 完成唤醒全覆盖。恢复 = 取消下面注释（同步恢复 capability.rs
+        // mini/normal 白名单条目 + nemesis-prompts tools.rs 表条目——三面
+        // 一致才完整供给）。
+        // tools.insert(
+        //     "exec_async".to_string(),
+        //     Box::new(AsyncExecTool::new(workspace, restrict)),
+        // );
 
         // run_script: interpreter-driven script execution for the workflow
         // `script` node. Listed in MOVE_TOOLS so executor separation / sandbox
@@ -890,6 +941,8 @@ pub fn register_extended_tools(
         workspace_boundary: None,
         todo: None,
         background_registry: None,
+        exec_output_tx: None,
+        exec_max_timeout_secs: None,
         question_broker: None,
         hardware_tools_enabled: false,
         hardware_policy: None,

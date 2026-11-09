@@ -144,6 +144,23 @@ impl TransportError {
     pub fn timeout() -> Self {
         Self::new(-3, "request timed out")
     }
+
+    /// 会话过期（Streamable HTTP 专用）：server 侧会话已终止（重启/过期），
+    /// 对携带 Mcp-Session-Id 的请求按 MCP 规范回 404。transport 层只负责
+    /// 清掉本地残留会话 id 并诚实报「会话身份已失效」；重建会话（重新
+    /// initialize 握手）由 client 层据此错误码触发。
+    pub fn session_expired() -> Self {
+        Self::new(
+            -4,
+            "MCP session expired or invalid (server returned 404 for a session-carrying request)",
+        )
+    }
+
+    /// Whether this error signals an expired/invalid server-side session
+    /// （client 层据此触发重握手恢复；其他 transport 错误不触发）。
+    pub fn is_session_expired(&self) -> bool {
+        self.code == -4
+    }
 }
 
 impl std::fmt::Display for TransportError {
@@ -188,6 +205,11 @@ pub struct MockTransport {
     /// 每次 send() 收到的 timeout_ms（config `timeout`
     /// 内层接线咬合断言面，与 requests 同序）。
     timeouts_ms: Vec<u64>,
+    /// 排队的 send 级失败（method 匹配即让 send 返回该 Err，优先于
+    /// responses 查找——session 恢复回归测试支撑；response 级 JSON-RPC
+    /// 错误走 add_error，两者语义分层：传输层 Err 才触发 client 恢复臂，
+    /// 响应内 error 只是协议级错误）。
+    send_failures: Vec<(String, TransportError)>,
 }
 
 impl MockTransport {
@@ -200,6 +222,7 @@ impl MockTransport {
             responses: Vec::new(),
             requests: Vec::new(),
             timeouts_ms: Vec::new(),
+            send_failures: Vec::new(),
         }
     }
 
@@ -212,6 +235,7 @@ impl MockTransport {
             responses: Vec::new(),
             requests: Vec::new(),
             timeouts_ms: Vec::new(),
+            send_failures: Vec::new(),
         }
     }
 
@@ -249,6 +273,14 @@ impl MockTransport {
                 error: Some(TransportError::new(code, message)),
             },
         );
+    }
+
+    /// Queue a transport-level send failure for the given method（send 直接
+    /// 返回该 Err，优先于 responses 查找；一次消耗）。与 add_error 的分层：
+    /// 传输层 Err 才触发 client 的 session 恢复臂，响应内 error 是协议级
+    /// 错误。
+    pub fn add_send_failure(&mut self, method: impl Into<String>, error: TransportError) {
+        self.send_failures.push((method.into(), error));
     }
 
     /// Return all recorded requests and clear the log.
@@ -322,6 +354,16 @@ impl Transport for MockTransport {
             params: request.params.clone(),
         });
         self.timeouts_ms.push(timeout_ms);
+
+        // Send-level failures first（一次消耗，优先于 responses）。
+        if let Some(pos) = self
+            .send_failures
+            .iter()
+            .position(|(m, _)| *m == request.method)
+        {
+            let (_, err) = self.send_failures.remove(pos);
+            return Err(err);
+        }
 
         // Find the next matching response.
         let idx = self

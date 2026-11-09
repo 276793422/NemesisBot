@@ -229,7 +229,7 @@ fn rollback_rejects_non_auto_decide_activity() {
 fn append_pending_merge_dedupes_by_task_id() {
     let store = temp_store("merge-dedup");
     let project = store
-        .create_project("合并", "", None, "", "", None)
+        .create_project("合并", "", None, "", "", None, None)
         .unwrap();
     let entry = |reason: &str| PendingMerge {
         task_id: "task-1".to_string(),

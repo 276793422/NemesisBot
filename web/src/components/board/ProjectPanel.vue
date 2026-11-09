@@ -1,19 +1,24 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { useBoardChanged } from '../../composables/useBoardChanged'
 import { usePlanning, fmtElapsed, ABNORMAL_SECS } from '../../composables/usePlanning'
-import { fmtTime } from './boardMeta'
+import { fmtTime, milestoneDot, touchpointKindLabel, workbenchPath, type TouchpointRow } from './boardMeta'
 
 // 项目面板（W2 P3）：项目列表 + 创建 + 编辑（字段级 patch）+ 归档/恢复。
 // 归档 = project.update status="archived"（软删除；后端 project.update）。
 // C0（goal 2026-09-13）：状态徽章映射 ProjectStatus 完整四态（此前二元硬
 // 编码把 completed 也显示成「进行中」）；C4：列表分「进行中 / 已归档（折叠）」
 // 两组——已完结项目不碍眼、可恢复；不做硬删除（审计链完整性）。
+// 里程碑条（人工触点体系 P1）：进度格里按项目投影规格/原型触点最新状态点
+// （纯展示——数据全部来自 touchpoint.list {all:true} 按项目分组取每 kind
+// 最新一条；点击进统一工作台）。
 
 const { request } = useWSAPI()
 const toast = useToast()
+const router = useRouter()
 
 interface Project {
   id: number
@@ -48,6 +53,34 @@ const loading = ref(true)
 const projects = ref<Project[]>([])
 // C4：已归档分组默认折叠（活跃项目不被历史淹没；展开可恢复）。
 const showArchived = ref(false)
+// 里程碑条数据源：全状态触点（all:true = 7 状态并集），按项目分组投影。
+const tpAll = ref<TouchpointRow[]>([])
+
+/** 每项目每 kind 取最新一条（后端 deadline 升序 → 后写覆盖 = 最新机器周期）。 */
+const milestonesByProject = computed(() => {
+  const map: Record<number, { spec?: TouchpointRow; prototype?: TouchpointRow }> = {}
+  for (const row of tpAll.value) {
+    const pid = row.touchpoint.project_id
+    if (pid == null) continue
+    const slot = (map[pid] ||= {})
+    slot[row.touchpoint.kind === 'prototype' ? 'prototype' : 'spec'] = row
+  }
+  return map
+})
+
+/** 里程碑点投影（规格/原型两 slot；无触点项目返回空 = 不渲染条）。 */
+function milestonesOf(pid: number): { kind: string; label: string; row: TouchpointRow }[] {
+  const slot = milestonesByProject.value[pid]
+  if (!slot) return []
+  const out: { kind: string; label: string; row: TouchpointRow }[] = []
+  if (slot.spec) out.push({ kind: 'spec', label: '规格', row: slot.spec })
+  if (slot.prototype) out.push({ kind: 'prototype', label: '原型', row: slot.prototype })
+  return out
+}
+
+function openMilestone(row: TouchpointRow) {
+  router.push(workbenchPath(row))
+}
 
 // C1（goal P1）：项目进度聚合（board.project.progress 全项目摘要）。
 interface ProjectProgress {
@@ -203,11 +236,13 @@ async function load(silent = false) {
   try {
     // C1/C3：项目列表 + 进度摘要并行拉取；board-changed 推送时静默刷新
     // 实现「进度实时跳变」（决策②=事件推送）。第三路 issue.list 供拆解
-    // 在途聚合（失败不阻塞主加载）。
-    const [r, pr, il] = await Promise.all([
+    // 在途聚合（失败不阻塞主加载）。第四路触点列表供里程碑条（旧后端
+    // 无此命令 = 诚实降级为空，条不渲染）。
+    const [r, pr, il, tps] = await Promise.all([
       request('board', 'project.list', {}),
       request('board', 'project.progress', {}).catch(() => null),
       request('board', 'issue.list', {}).catch(() => null),
+      request('board', 'touchpoint.list', { all: true }).catch(() => null),
     ])
     projects.value = r?.projects || []
     const map: Record<number, ProjectProgress> = {}
@@ -216,6 +251,7 @@ async function load(silent = false) {
     const issueRows = il?.issues || []
     reconcile(issueRows)
     planningByProject.value = planningRows(issueRows)
+    tpAll.value = tps?.touchpoints || []
   } catch (e: any) {
     if (silent) console.warn('[ProjectPanel] silent refresh failed:', e)
     else toast.error('加载项目失败: ' + e)
@@ -347,6 +383,18 @@ useBoardChanged(() => load(true))
                   :class="{ abnormal: pp.abnormal }"
                   data-test="project-planning-row"
                 ><template v-if="pp.dispatching">🚗 {{ pp.issueNumber }} 拆解完成，发车派发中（已 {{ fmtElapsed(pp.elapsedSecs) }}）</template><template v-else>🧩 {{ pp.issueNumber }} AI 拆解中（已 {{ fmtElapsed(pp.elapsedSecs) }}<template v-if="pp.attempt > 1">，第 {{ pp.attempt }} 次尝试</template>）<template v-if="pp.abnormal">— 异常超时</template></template></div>
+                <!-- 里程碑条（人工触点体系 P1）：规格/原型触点最新状态点纯投影；
+                     点击进统一工作台。 -->
+                <div v-if="milestonesOf(p.id).length" class="milestone-strip" data-test="milestone-strip">
+                  <button
+                    v-for="m in milestonesOf(p.id)"
+                    :key="m.kind"
+                    class="ms-dot"
+                    :class="milestoneDot(m.row.touchpoint.status).cls"
+                    :title="`${touchpointKindLabel(m.kind)}：${milestoneDot(m.row.touchpoint.status).label} · 点击进工作台`"
+                    @click="openMilestone(m.row)"
+                  >{{ milestoneDot(m.row.touchpoint.status).glyph }} {{ m.label }}</button>
+                </div>
               </td>
               <td style="font-size: var(--text-sm); color: var(--text-muted);">{{ p.description || '—' }}</td>
               <td>
@@ -395,6 +443,16 @@ useBoardChanged(() => load(true))
                     style="margin-left: var(--space-1);"
                     :title="'档案缺失块：\n' + missingBlocks(p).join('\n')"
                   >⚠ 缺 {{ missingBlocks(p).length }} 块</span>
+                  <div v-if="milestonesOf(p.id).length" class="milestone-strip" data-test="milestone-strip-archived">
+                    <button
+                      v-for="m in milestonesOf(p.id)"
+                      :key="m.kind"
+                      class="ms-dot"
+                      :class="milestoneDot(m.row.touchpoint.status).cls"
+                      :title="`${touchpointKindLabel(m.kind)}：${milestoneDot(m.row.touchpoint.status).label} · 点击进工作台`"
+                      @click="openMilestone(m.row)"
+                    >{{ milestoneDot(m.row.touchpoint.status).glyph }} {{ m.label }}</button>
+                  </div>
                 </td>
                 <td style="font-size: var(--text-sm); color: var(--text-muted);">{{ p.description || '—' }}</td>
                 <td>
@@ -556,6 +614,46 @@ useBoardChanged(() => load(true))
 }
 .planning-row.abnormal {
   color: var(--warning-text, #8a6d00);
+}
+/* 里程碑条（人工触点体系 P1）：状态点语义色映射（ms-active=进行中蓝、
+   ms-pass=通过绿、ms-timeout=超时默认橙、ms-veto=否决返工红、挂起/取消灰）。
+   与 boardMeta milestoneDot() 的 cls 同名同表。 */
+.milestone-strip {
+  display: flex;
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  flex-wrap: wrap;
+}
+.ms-dot {
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 999px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.ms-dot.ms-active {
+  color: var(--info);
+  border-color: var(--info);
+}
+.ms-dot.ms-pass {
+  color: var(--success);
+  border-color: var(--success);
+}
+.ms-dot.ms-timeout {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+.ms-dot.ms-veto {
+  color: var(--error);
+  border-color: var(--error);
+}
+.ms-dot.ms-parked,
+.ms-dot.ms-cancelled,
+.ms-dot.ms-unknown {
+  color: var(--text-muted);
 }
 .archived-toggle {
   color: var(--text-muted);

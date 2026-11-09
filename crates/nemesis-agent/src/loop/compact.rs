@@ -257,6 +257,18 @@ pub fn resolve_compact_trigger(
     }
 }
 
+/// B17（2026-11-08 七轮调研落地批次③）：轮末有效触发点（纯函数）。
+/// 任务边界压缩开启时触发点提前到 soft 位（trigger ×2/3——soft 的既有
+/// 定义，默认路径数学恒等窗口 50%）；关闭时与压缩点重合（行为与现状
+/// 逐位一致）。只动触发时机，不动判定核心（混合信号/守卫/摘要链零变化）。
+pub(crate) fn turn_end_effective_trigger(boundary_on: bool, trigger: usize) -> usize {
+    if boundary_on {
+        trigger * 2 / 3
+    } else {
+        trigger
+    }
+}
+
 // ---------------------------------------------------------------------------
 // （加固）：压缩原因档位 + 会话注记
 // ---------------------------------------------------------------------------
@@ -623,6 +635,14 @@ impl AgentLoop {
         // 「1M 模型设 200K 压缩点」场景于 500K 才响——压缩点早过了）。
         let soft = trig.trigger * 2 / 3;
         let threshold = trig.trigger;
+        // B17 任务边界压缩：开启时轮末触发点提前到 soft 位——此刻最终回复
+        // 已出、下一任务未开始，压缩永远发生在任务边界且带足余量（中途撞
+        // overflow 应急链=cache 全失效重算的概率随之坍缩）。effective 只喂
+        // 内置触发判定与 stuck 清闩轴（下方 will_summarize / 清闩臂两处）；
+        // policy 槽 input 的 threshold 保持 trig.trigger 原语义（组件契约
+        // 不变）。
+        let effective_threshold =
+            turn_end_effective_trigger(self.current_compact_boundary(), trig.trigger);
 
         // new boundary — token budget (default) or legacy count fallback
         // (0), then back off any tool_call/result pair straddling it.
@@ -641,7 +661,8 @@ impl AgentLoop {
         // 触发比较用混合信号（锚点实报 + 增量，双向收敛）。`new_c > c`
         // 闸保留——可折叠前缀没变化时（尾巴太短/工具与 system 占大头）摘要帮
         // 不上，交给 force_compression，不空转。
-        let mut will_summarize = signal >= threshold && new_c > c;
+        // B17：比较轴 = effective_threshold（边界压缩开启时为 soft 位）。
+        let mut will_summarize = signal >= effective_threshold && new_c > c;
 
         // 循环策略槽（WASM 样板工程）：触发裁决开放（盘点 #17）。
         // Builtin = 保留内置式；Compact/Skip = 组件覆盖。stuck 闩 / soft
@@ -763,10 +784,12 @@ impl AgentLoop {
                 } else {
                     st.last_summary_tokens = signal;
                 }
-            } else if signal < threshold {
+            } else if signal < effective_threshold {
                 // Breathing room — clear the stuck latch (both axes).
                 // 解除的是真实的暂停闩（而非计数残留）时记恢复旗——
                 // 下一次自动压缩注记按 StuckResume 档发。
+                // B17：清闩轴与触发轴同源（effective）——触发点提前后
+                // 「回落到触发点以下」的判定跟着走，两轴不劈叉。
                 if st.stuck {
                     st.resumed_from_pause = true;
                 }
@@ -828,7 +851,10 @@ impl AgentLoop {
             session_key,
             note_reason,
             signal,
-            threshold,
+            // B17：注记 threshold 槽随触发轴走（effective）——边界压缩
+            // 开启时显示提前后的触发点（54/50 语义自洽），off 时二者相同
+            // 字节零变化；policy 槽 input 仍用原 trigger（组件契约不变）。
+            effective_threshold,
             trig.window_source,
         );
 
@@ -1111,6 +1137,21 @@ impl AgentLoop {
         nemesis_config::resolve_compact_keep_recent_tokens(cfg.as_ref())
     }
 
+    /// B17：`agents.defaults.compact_boundary`（任务边界压缩，默认 off）。
+    /// fresh-read（同 [`Self::current_compact_keep_recent_tokens`] 模式——
+    /// config.json 唯一依据，运行中改键下一轮生效）；键路径与缺省值的
+    /// 统一定义在 `nemesis_config::resolve_compact_boundary`（typed
+    /// `AgentDefaults` 字段同源）。
+    pub(crate) fn current_compact_boundary(&self) -> bool {
+        let cfg = self
+            .config_path
+            .read()
+            .clone()
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        nemesis_config::resolve_compact_boundary(cfg.as_ref())
+    }
+
     /// Force-compress by aggressively advancing the summary cache.
     ///
     /// Last-resort path used when the LLM reports a context error and the
@@ -1369,7 +1410,11 @@ impl AgentLoop {
         // 兼容字段：裸存储实报值（锚点 tokens；None → 0）。
         let provider_reported = anchor_tokens.unwrap_or(0);
         let pct = (used * 100).checked_div(window).unwrap_or(0).min(100);
-        let pct_trigger = (used * 100).checked_div(trig.trigger).unwrap_or(0).min(100);
+        // B17：展示轴与触发轴同源（effective）——边界压缩开启时徽标的
+        // 「距压缩还有多远」按提前后的触发点算（off 时二者相同，值零变化；
+        // trigger_source 继续描述触发点推导来源，语义不变）。
+        let effective = turn_end_effective_trigger(self.current_compact_boundary(), trig.trigger);
+        let pct_trigger = (used * 100).checked_div(effective).unwrap_or(0).min(100);
         // （B4.5 构成分解 7 段化，2026-11-09 用户拍板：严格按注入机制拆分。
         // SKILL = 启动冻结 skills 段 + 每轮 merged snapshot 的技能目录 digest
         // （都是注入面；对话中按需读取的 SKILL.md 全文是普通历史消息，归
@@ -1519,7 +1564,7 @@ impl AgentLoop {
             "anchor_state": anchor_state,
             "window": window,
             "pct": pct,
-            "trigger": trig.trigger,
+            "trigger": effective,
             "trigger_source": trig.source,
             // 窗口来源（config/catalog/instance/fallback-128k）——前端
             // 徽标可据此标注窗口口径。

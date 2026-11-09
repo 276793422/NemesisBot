@@ -173,6 +173,7 @@ async fn bug_project_fence_blocks_read_despite_full_access() {
     // 工具层：项目会话装配形态（root=项目目录，restrict=true，extra=[agent_home]，
     // 带开关闸——生产修复形态）。
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace_boundary: Some(Arc::new(project_boundary(&project, &agent_home, &editor))),
         ..Default::default()
     };
@@ -216,6 +217,7 @@ async fn bug_project_fence_blocks_write_despite_full_plus_ext() {
     assert_eq!(decision, SecurityDecision::Allowed, "{policy}");
 
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace_boundary: Some(Arc::new(project_boundary(&project, &agent_home, &editor))),
         ..Default::default()
     };
@@ -258,6 +260,7 @@ async fn bug_cluster_fence_blocks_write_despite_full_plus_ext() {
     assert_eq!(decision, SecurityDecision::Allowed, "{policy}");
 
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace_boundary: Some(Arc::new(cluster_boundary(&main_ws, &editor))),
         ..Default::default()
     };
@@ -301,6 +304,7 @@ async fn control_switches_off_fence_still_blocks() {
     assert_eq!(editor.snapshot(), (false, false));
 
     let cfg = SharedToolConfig {
+        exec_output_tx: None,
         workspace_boundary: Some(Arc::new(project_boundary(&project, &agent_home, &editor))),
         ..Default::default()
     };

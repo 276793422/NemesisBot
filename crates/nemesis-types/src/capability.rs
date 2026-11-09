@@ -147,7 +147,10 @@ pub fn parse_size_marker(s: &str) -> Option<u32> {
 /// `context_window: 131072` 被无视、压缩观测落价目表值。bare-suffix 语义与
 /// `nemesis_data` 价目表 lookup 的第 3 级对齐；多条目同裸名按数组序先到先得
 /// （与精确匹配、价目表一致）。
-pub(crate) fn find_model_entry<'a>(
+/// `pub`：nemesis-config 的 `resolve_active_timeout_secs`（recovery 外层
+/// 包裹超时跟随 provider 请求超时）复用同款条目查找口径——活跃条目定位
+/// 单一真相源，per-model 键解析不各行其是。
+pub fn find_model_entry<'a>(
     cfg: &'a serde_json::Value,
     active_alias: &str,
 ) -> Option<&'a serde_json::Value> {
@@ -629,7 +632,10 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "edit_file",
             "list_dir",
             "exec",
-            "exec_async",
+            // [SEALED 2026-11-08] exec_async 封存（registry 注册点同步封存）
+            // —— fire-and-forget 旁路 background_start 完成唤醒路径，见
+            // loop_tools/registry.rs 封存注记。恢复 = 三面一起取消注释。
+            // "exec_async",
             "grep",
             "git",
             "web_fetch",
@@ -658,7 +664,11 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "create_dir",
             "delete_dir",
             "exec",
-            "exec_async",
+            // [SEALED 2026-11-08] exec_async 封存（registry 注册点同步封存）
+            // —— fire-and-forget 旁路 background_start 完成唤醒路径（B4
+            // 四件套 + 完成唤醒已全覆盖其用例），见 loop_tools/registry.rs
+            // 封存注记。恢复 = 三面一起取消注释。
+            // "exec_async",
             "grep",
             "git",
             "web_fetch",
