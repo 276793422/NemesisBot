@@ -138,16 +138,20 @@ async fn run_approval_headless(expected: &str) -> Result<()> {
     println!("  Expected:  {}", expected);
     println!();
 
-    // 1. Create and start ProcessManager
-    let pm = create_process_manager().await?;
-    println!("  [1/5] ProcessManager started (WS port: {})", pm.ws_port());
-
-    // 2. Set headless env var so child process skips DLL/UI
-    // SAFETY: This is a test command. Setting env vars is safe in this context.
+    // 1. Set headless env var so child process skips DLL/UI——必须在
+    //    create_process_manager 之前：ProcessManager 起 WS server + 后台
+    //    monitor 任务后进程进入多线程运行态，set_var（edition 2024 unsafe，
+    //    并发 env 访问是 UB 面）需要单线程窗口。子进程在 spawn_child 时
+    //    继承 env，先于 manager 创建同样生效，语义不变。
+    // SAFETY: 命令早期，tokio 后台任务尚未拉起，进程内无并发 env 访问者。
     unsafe {
         std::env::set_var("NEMESISBOT_FORCE_HEADLESS", "1");
     }
-    println!("  [2/5] NEMESISBOT_FORCE_HEADLESS=1 set");
+    println!("  [1/5] NEMESISBOT_FORCE_HEADLESS=1 set");
+
+    // 2. Create and start ProcessManager
+    let pm = create_process_manager().await?;
+    println!("  [2/5] ProcessManager started (WS port: {})", pm.ws_port());
 
     // 3. Build approval data
     let request_id = format!("headless-{}", chrono::Local::now().timestamp_millis());
