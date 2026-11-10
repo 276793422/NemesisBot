@@ -735,7 +735,8 @@ fn apply_effort_autofix_roundtrip_and_receipt_shape() {
     }"#,
     );
     let h = home_str(&dir);
-    apply_effort_autofix(&h, "m1", "xhigh", "high").expect("autofix 写盘");
+    let applied = apply_effort_autofix(&h, "m1", "xhigh", "high").expect("autofix 写盘");
+    assert!(applied, "现值 == 快照 from → 正常修正返回 true");
 
     let cfg = read_config_raw(dir.path());
     let entry = &cfg["model_list"][0];
@@ -755,6 +756,43 @@ fn apply_effort_autofix_roundtrip_and_receipt_shape() {
     // 条目缺席 = 诚实报错（不造幻影写）。
     let err = apply_effort_autofix(&h, "ghost", "xhigh", "high");
     assert!(err.is_err());
+}
+
+#[test]
+fn apply_effort_autofix_yields_when_config_tier_changed_during_probe() {
+    // BUG-20261110-053：`from` 来自探测开始时的条目快照，落盘在探测之后
+    // （基准 + 7 并发最长约 60s；启动 sweep 串行多条窗口更长）——窗口内
+    // 用户可在 Dashboard/CLI 改档。落盘前校验磁盘现值仍 == from，不等 =
+    // 让位（用户意志 > 自动修正），条目零改动、注记不写。
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{
+        "agents": { "defaults": { "llm": "m1" } },
+        "model_list": [
+            { "model_name": "m1", "model": "sol/gpt-5.6-sol", "api_key": "k",
+              "reasoning_effort": "high",
+              "effort_probe": { "accepted": ["low", "high", "max"], "rejected": {},
+                                "control": "strict", "probed_at": "2026-11-09T00:00:00Z" } }
+        ]
+    }"#,
+    );
+    let h = home_str(&dir);
+    // 快照 from=xhigh（探测开始时的档）；探测期间用户已把磁盘现值改成 high。
+    let applied =
+        apply_effort_autofix(&h, "m1", "xhigh", "medium").expect("让位是 Ok(false) 不是 Err");
+    assert!(!applied, "现值 ≠ 快照 from → 让位返回 false");
+
+    let cfg = read_config_raw(dir.path());
+    let entry = &cfg["model_list"][0];
+    assert_eq!(entry["reasoning_effort"], "high", "用户刚改的档位不被覆盖");
+    assert!(
+        entry["effort_probe"].get("auto_fix").is_none(),
+        "让位时不写 auto_fix 注记（未发生修正不该留痕）"
+    );
+    // 兄弟 extras 不动。
+    assert_eq!(entry["model"], "sol/gpt-5.6-sol");
+    assert_eq!(entry["api_key"], "k");
 }
 
 // probe_effort_on_save_enabled（磁盘直读闸）--------------------------------

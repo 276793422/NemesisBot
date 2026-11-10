@@ -2044,7 +2044,15 @@ fn effort_auto_fix_target(
 /// 自动修正落盘（raw RMW）：改写 `reasoning_effort` + 在 `effort_probe`
 /// 记 `auto_fix` 显式注记（{from, to, at}）。条目按 model_name 精确命中，
 /// 不动兄弟 extras（与 [`write_effort_probe`] 同族写法）。
-fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<(), String> {
+///
+/// **前提校验（BUG-20261110-053）**：`from` 来自探测开始时的条目快照，而
+/// 探测（基准 + 7 并发，最长约 60s；启动 sweep 串行多条可达分钟级）期间
+/// 用户可在 Dashboard/CLI 改档——落盘在探测之后，直接无条件覆盖会把
+/// 用户刚改的新档抹掉（自动修正代劳 ≠ 越权覆盖用户意志）。因此闭包内
+/// 校验磁盘**现值**（trim 后）仍等于 `from` 才动笔；不等 = 让位（返回
+/// `Ok(false)`），条目零改动、注记不写。返回值 = 是否真正落盘修正
+/// （调用方据此决定 receipt 是否带 auto_fix）。
+fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<bool, String> {
     let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     super::config::update_raw_config(home, |cfg| {
         let list = cfg
@@ -2055,6 +2063,19 @@ fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<
             .iter_mut()
             .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
             .ok_or_else(|| format!("model '{name}' not found"))?;
+        let current = entry
+            .get("reasoning_effort")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim();
+        if current != from {
+            // 探测窗口内用户已改档（现值 ≠ 快照 from）：让位不覆盖。
+            tracing::info!(
+                "[Models] effort auto-fix skipped for {name}: config tier now '{current}' \
+                 (probe snapshot was '{from}') — user change wins"
+            );
+            return Ok(false);
+        }
         entry["reasoning_effort"] = serde_json::json!(to);
         // 注记挂 effort_probe 内（重探整体覆盖 record 时自然随旧记录消失
         // ——新探测后要么再修（新注记）要么当前档合法（注记不再需要））。
@@ -2063,7 +2084,7 @@ fn apply_effort_autofix(home: &str, name: &str, from: &str, to: &str) -> Result<
                 "from": from, "to": to, "at": at,
             });
         }
-        Ok(())
+        Ok(true)
     })
 }
 
@@ -2423,11 +2444,16 @@ pub async fn probe_effort_entry(home: &str, name: &str) -> Result<serde_json::Va
     } else {
         None
     };
+    let mut auto_fix_applied = false;
     if let Some((from, to)) = &auto_fix {
-        apply_effort_autofix(home, name, from, to)?;
-        tracing::warn!(
-            "[Models] effort auto-fix applied for {name}: {from} -> {to} (probe detected endpoint rejection)"
-        );
+        auto_fix_applied = apply_effort_autofix(home, name, from, to)?;
+        if auto_fix_applied {
+            tracing::warn!(
+                "[Models] effort auto-fix applied for {name}: {from} -> {to} (probe detected endpoint rejection)"
+            );
+        }
+        // applied=false = 探测窗口内用户改档，让位（apply_effort_autofix
+        // 内部已 info 留痕）——receipt 不带 auto_fix（前端不显示修正注记）。
     }
     tracing::info!(
         "[Models] effort probe written for {name}: control={}, accepted={:?}, rejected={}",
@@ -2446,7 +2472,7 @@ pub async fn probe_effort_entry(home: &str, name: &str) -> Result<serde_json::Va
         "name": name, "status": "ok", "lane": lane,
         "probe": record, "detail": summary,
     });
-    if let Some((from, to)) = &auto_fix {
+    if auto_fix_applied && let Some((from, to)) = &auto_fix {
         receipt["auto_fix"] = serde_json::json!({ "from": from, "to": to });
     }
     Ok(receipt)
