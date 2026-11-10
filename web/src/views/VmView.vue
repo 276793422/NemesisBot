@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import SecurityLayerHeader from '../components/security/SecurityLayerHeader.vue'
 
 // P5 第 4 步 ②：桌面级 VM 管理页。三页签（配置/镜像/实例）+
 // 探针横幅 + 档位建议。铁律：总开关默认关——建议是建议不是决定，
@@ -48,6 +49,15 @@ async function refreshDisplayStatus() {
 
 const probe = computed(() => overview.value?.probe ?? null)
 const enabled = computed(() => !!overview.value?.enabled)
+
+// 十层页面化（2026-11-10）：⑩ 虚拟化层共享页头（层号/职责/状态徽标）。
+const vmPlatformLabel = computed(() =>
+  probe.value?.platform === 'windows'
+    ? 'Windows · WHPX'
+    : probe.value?.platform === 'linux'
+      ? 'Linux · KVM'
+      : String(probe.value?.platform ?? '--'),
+)
 const cfg = computed(() => overview.value?.config ?? null)
 const suggestion = computed(() => overview.value?.suggestion ?? null)
 const sleepLine = computed(() => overview.value?.sleep_line ?? null)
@@ -600,10 +610,13 @@ onMounted(async () => {
 
 <template>
   <div class="page-vm">
-    <div class="page-header">
-      <h2>虚拟化</h2>
-      <span v-if="probe" class="platform-badge">{{ probe.platform === 'windows' ? 'Windows · WHPX' : probe.platform === 'linux' ? 'Linux · KVM' : probe.platform }}</span>
-    </div>
+    <SecurityLayerHeader
+      num="⑩"
+      title="虚拟化"
+      :duty="`执行体隔离的 VM 形态（vm feature）：高危执行环境跑进一次性桌面级虚拟机（WHPX/KVM），跑完即弃——宿主文件系统零接触。当前平台：${vmPlatformLabel}。`"
+      :status-label="overview ? (enabled ? '已启用' : '已关闭') : '不可用'"
+      :status-tone="!overview ? 'na' : enabled ? 'on' : 'off'"
+    />
     <div class="page-body">
 
       <!-- 平台总览加载失败 -->

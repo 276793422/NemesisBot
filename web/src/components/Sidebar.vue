@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter, useRoute } from 'vue-router'
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { useWSAPI } from '../composables/useWSAPI'
@@ -17,8 +17,11 @@ const auth = useAuthStore()
 // Full Access 激活徽标（只读呈现；开关本体在 useEditorMode 单例）。
 const { fullAccess } = useEditorMode()
 
-function navigate(page: string) {
-  router.push(page === 'chat' ? '/' : '/' + page)
+// 导航推 item.route 真路径（id 只是契约身份——安全组 layer/guardian/approval
+// 等条目 id 与路径不同形，旧「'/' + id」拼法对这些条目是死链；与皮肤契约
+// contract.ts navigate() 同一真相。chat 的 route 本就是 '/'）。
+function navigate(routePath: string) {
+  router.push(routePath)
   appStore.showMobileSidebar = false
 }
 
@@ -344,7 +347,7 @@ const visibleNavGroups = computed(() => {
 // 管理/配置/其他默认收起；导航进组内页面自动展开；状态持久化 localStorage。
 // 纯渲染层行为——navModel 契约（皮肤脚本编程面）不动。
 const NAV_COLLAPSE_KEY = 'nb_nav_collapsed_groups'
-const NAV_DEFAULT_COLLAPSED = ['管理', '配置', '其他']
+const NAV_DEFAULT_COLLAPSED = ['管理', '配置', '安全', '其他']
 const collapsedGroups = ref<Record<string, boolean>>(loadCollapsedGroups())
 
 function loadCollapsedGroups(): Record<string, boolean> {
@@ -382,12 +385,17 @@ function toggleGroup(title: string) {
 // 不带 immediate：本组页面上手动收起后刷新不反弹，跨页导航才触发。
 watch(
   () => route.path,
-  (path) => {
+  async (path) => {
     const hit = visibleNavGroups.value.find((g) => g.items.some((i) => i.route === path))
     if (hit && collapsedGroups.value[hit.title]) {
       collapsedGroups.value[hit.title] = false
       persistCollapsedGroups()
     }
+    // active 条目滚进可视区（安全组 14 条目把导航区撑出滚动窗——点进层页
+    // 后高亮项在折叠线下，侧栏看起来像导航失败）。jsdom 无 scrollIntoView，
+    // 可选调用兜底（测试环境静默跳过）。
+    await nextTick()
+    document.querySelector('.sidebar .nav-item.active')?.scrollIntoView?.({ block: 'nearest' })
   },
 )
 </script>
@@ -449,7 +457,7 @@ watch(
           :key="item.id"
           class="nav-item"
           :class="{ active: route.path === item.route }"
-          @click="navigate(item.id)"
+          @click="navigate(item.route)"
         >
           <span class="nav-icon">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path :d="item.icon"/></svg>

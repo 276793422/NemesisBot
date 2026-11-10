@@ -31,6 +31,13 @@ fn editor_access() -> Option<Arc<EditorAccessState>> {
     EDITOR_ACCESS.read().expect("editor access lock").clone()
 }
 
+/// 全局槽只读访问（security.overview 总览页聚合消费：Full Access /
+/// 外部写删只读态）。approval_auto_state 同款——跨 handler 复用同一 Arc，
+/// 未注入 = `None`（headless/降级形态，总览页诚实展示「未装配」）。
+pub fn editor_access_state() -> Option<Arc<EditorAccessState>> {
+    editor_access()
+}
+
 /// 槽置换口(仅测试):None = 恢复未装配形态。
 #[cfg(test)]
 pub(crate) fn set_editor_access_for_test(state: Option<Arc<EditorAccessState>>) {

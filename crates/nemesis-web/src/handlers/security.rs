@@ -160,6 +160,10 @@ impl ModuleHandler for SecurityHandler {
             "session_allow",
             "session_allow_status",
             "signature_verify_status",
+            // 十层页面化（2026-11-10）：总览聚合 + ② 黑名单/④ 凭据规则只读快照。
+            "overview",
+            "command_blocklist",
+            "credential_rules",
         ]
     }
 
@@ -295,6 +299,16 @@ impl ModuleHandler for SecurityHandler {
             // 签名验证状态（只读；无 set 命令——开关只走 config 且只读于
             // 启动，不开运行时写入口，少一个可篡改面）。
             "signature_verify_status" => Ok(Some(self.signature_verify_status(ctx))),
+            // ── 十层页面化（2026-11-10）────────────────────────────
+            // 总览页聚合快照（全部只读；层开关/审计计数/链/estop/Plan/
+            // Full Access/免打扰/签名/⑦ scanner/总闸/executor 十一段）。
+            "overview" => self.overview(ctx, workspace),
+            // 第②层页：内置命令黑名单只读快照（§2.7 核实：编译期静态表，
+            // 扩展 API 生产零接线——`extra_wired:false` 供层页诚实注记）。
+            "command_blocklist" => Ok(Some(Self::command_blocklist())),
+            // 第④层页：内置凭据规则名只读快照（§2.7 核实：32 条 OnceLock
+            // 纯硬编码，无 config 扩展面）。
+            "credential_rules" => Ok(Some(Self::credential_rules())),
             _ => Err(format!("unknown command: security.{}", cmd)),
         }
     }
@@ -766,6 +780,345 @@ impl SecurityHandler {
             serde_json::json!({ "reset": true, "replaced": replaced, "count": count }),
         ))
     }
+
+    // ── 十层页面化（2026-11-10）：总览聚合 + 只读快照 ─────────────────
+    //
+    // 边界（计划 §5.1）：security 域能知晓的（层开关/审计计数/审计链/
+    // estop/Plan/Full Access/免打扰/签名）+ ⑦ scanner（复用
+    // `api_handlers::load_scanner_status` 单一真相源）+ 主 config.json 的
+    // `security.enabled` 总闸与 `executor` 段（`read_raw_config`）——零跨
+    // feature 耦合，scanner/sandbox/vm 模块门控裁掉时本命令仍可用（对应
+    // 段落投影降级形态）。全部只读，无写入口。
+
+    /// `security.overview`：总览页聚合快照（十层启停态 + 按 policy 聚合的
+    /// 拦截计数 + 链在场态 + estop/Plan/Full Access/免打扰/签名快照）。
+    fn overview(
+        &self,
+        ctx: &RequestContext,
+        workspace: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        Ok(Some(serde_json::json!({
+            "layers": Self::layers_projection(workspace)?,
+            "intercepts": Self::audit_policy_aggregate(workspace)?,
+            "chain": Self::chain_snapshot(workspace),
+            "estop": Self::estop_snapshot(ctx),
+            "plan_mode": Self::plan_mode_snapshot(ctx),
+            "editor": Self::editor_snapshot(),
+            "approvals": Self::approvals_status(),
+            "signature": self.signature_verify_status(ctx),
+            "scanner": Self::scanner_snapshot(workspace),
+            "global": Self::global_switch_snapshot(ctx),
+            "executor": Self::executor_snapshot(ctx),
+        })))
+    }
+
+    /// 层开关投影——**raw JSON 直读，镜像 runtime 消费语义**。
+    ///
+    /// `apply_security_layer_switches`（security_setup.rs）只认
+    /// `layers.<name>.enabled` 显式 bool，缺席 = `SecurityPluginConfig::default()`
+    /// 构造引擎 = 启用；而 typed `SecurityLayerConfig.enabled` 的 serde
+    /// default 是 false——`{}` 形态部署经 typed 投影会误显示为关闭。
+    /// 本函数与 runtime 逐键对齐：缺席 = true、显式 bool = 该值。
+    /// 全部 layers.* 开关改动需重启网关生效（reload_config 假姿态，计划
+    /// §2.5），`effective: "restart"` 提示字段供前端标注生效时机；
+    /// `global.enabled`（主 config.json security.enabled 总闸）是例外，
+    /// 真热生效，另段投影。
+    fn layers_projection(workspace: &str) -> Result<serde_json::Value, String> {
+        let path = security_config_path(workspace);
+        let raw = match nemesis_utils::fsutil::read_config_string(&path) {
+            Ok(s) => serde_json::from_str::<serde_json::Value>(&s)
+                .map_err(|e| format!("invalid security config: {e}"))?,
+            // 缺文件 = 全默认（runtime ensure_security_config 自愈/构造期
+            // 默认同语义），不是错误。
+            Err(_) => serde_json::json!({}),
+        };
+        let layers = raw.get("layers");
+        let layer = |name: &str| layers.and_then(|l| l.get(name));
+        // 层开关缺席 = runtime 默认构造引擎 = 启用（raw 语义，非 typed）。
+        let flag = |name: &str| {
+            layer(name)
+                .and_then(|d| d.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+        };
+        let str_opt = |v: Option<&serde_json::Value>| -> Option<String> {
+            v.and_then(|x| x.as_str()).map(String::from)
+        };
+        // ① 注入阈值（CFG-06 同款语义）：配置在 [0,1] 才生效，否则默认
+        // 0.7（runtime 越界 warn + 保持 Default）。
+        let threshold_raw = layer("injection")
+            .and_then(|d| d.get("extra"))
+            .and_then(|x| x.get("threshold"))
+            .and_then(|v| v.as_f64());
+        let (threshold, threshold_configured) = match threshold_raw {
+            Some(t) if (0.0..=1.0).contains(&t) => (t, true),
+            _ => (0.7, false),
+        };
+        let dlp = layer("dlp");
+        let dlp_arr = |key: &str| -> Option<Vec<String>> {
+            dlp.and_then(|d| d.get(key))
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+        };
+        Ok(serde_json::json!({
+            "injection": {
+                "enabled": flag("injection"),
+                "threshold": threshold,
+                "threshold_configured": threshold_configured,
+            },
+            "command_guard": { "enabled": flag("command_guard") },
+            // ③ ABAC：无独立开关（跟总闸），auditor 构造期无条件装配。
+            "abac": { "standalone_switch": false },
+            "credential": { "enabled": flag("credential") },
+            "dlp": {
+                "enabled": dlp.and_then(|d| d.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(true),
+                "rules": dlp_arr("rules").unwrap_or_default(),
+                "action": str_opt(dlp.and_then(|d| d.get("action"))),
+                "low_confidence_action": str_opt(dlp.and_then(|d| d.get("low_confidence_action"))),
+                "inbound_action": str_opt(dlp.and_then(|d| d.get("inbound_action"))),
+            },
+            "ssrf": {
+                "enabled": flag("ssrf"),
+                "allowed_hosts": layer("ssrf")
+                    .and_then(|d| d.get("allowed_hosts"))
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|h| h.as_str().map(String::from)).collect::<Vec<_>>())
+                    .unwrap_or_default(),
+            },
+            // ⑧ 审计两开关：顶层键（runtime 构造期读取）；缺省 log=true /
+            // chain=false。
+            "audit": {
+                "log_file_enabled": raw.get("audit_log_file_enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+                "chain_enabled": raw.get("audit_chain_enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+            },
+            "default_action": raw.get("default_action").and_then(|v| v.as_str()).unwrap_or("deny"),
+            "effective": "restart",
+        }))
+    }
+
+    /// 审计事件按 policy 聚合（读全部 `*.jsonl` **排除 audit_chain.jsonl**
+    /// ——链段是 Merkle 记账不是审计事件；现有 `audit()`/`stats()` 不过滤，
+    /// 本聚合是层页过滤语义的聚合面）。policy ← JSONL 行 `policy_rule`
+    /// 字段（flatten_audit_entry 同源）；空 = "unknown" 桶。
+    fn audit_policy_aggregate(workspace: &str) -> Result<serde_json::Value, String> {
+        let log_dir = security_log_dir(workspace);
+        let mut total = 0u64;
+        let mut denied = 0u64;
+        // policy → (total, denied, last_ts)；BTreeMap 键序确定（重复审计
+        // 请求输出字节稳定，同 typed config 段纪律）。
+        let mut by_policy: std::collections::BTreeMap<String, (u64, u64, String)> =
+            std::collections::BTreeMap::new();
+        if log_dir.exists() {
+            let read_dir = std::fs::read_dir(&log_dir)
+                .map_err(|e| format!("failed to read security log dir: {}", e))?;
+            for entry in read_dir {
+                let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
+                let path = entry.path();
+                if path.file_name().and_then(|n| n.to_str()) == Some("audit_chain.jsonl") {
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+                    && let Ok(content) = std::fs::read_to_string(&path)
+                {
+                    for line in content.lines() {
+                        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+                            continue;
+                        };
+                        let flat = flatten_audit_entry(&val);
+                        let policy = flat
+                            .get("policy")
+                            .and_then(|v| v.as_str())
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or("unknown");
+                        let is_deny = flat.get("result").and_then(|v| v.as_str()) == Some("deny");
+                        let ts = flat.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
+                        total += 1;
+                        if is_deny {
+                            denied += 1;
+                        }
+                        let slot = by_policy.entry(policy.to_string()).or_default();
+                        slot.0 += 1;
+                        if is_deny {
+                            slot.1 += 1;
+                        }
+                        if slot.2.as_str() < ts {
+                            slot.2 = ts.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        let by_policy: serde_json::Map<String, serde_json::Value> = by_policy
+            .into_iter()
+            .map(|(k, (t, d, ts))| {
+                (
+                    k,
+                    serde_json::json!({ "total": t, "denied": d, "last_ts": ts }),
+                )
+            })
+            .collect();
+        Ok(serde_json::json!({
+            "total": total,
+            "denied": denied,
+            "by_policy": by_policy,
+        }))
+    }
+
+    /// 审计链在场态（轻量：文件行数 = 链段数；真 Merkle 校验走
+    /// `logs.chain_verify`，层页「校验」按钮消费——本快照只回答「链在不在」）。
+    fn chain_snapshot(workspace: &str) -> serde_json::Value {
+        let path = security_log_dir(workspace).join("audit_chain.jsonl");
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let segments = content.lines().filter(|l| !l.trim().is_empty()).count();
+                serde_json::json!({ "present": segments > 0, "segments": segments })
+            }
+            Err(_) => serde_json::json!({ "present": false, "segments": 0 }),
+        }
+    }
+
+    fn estop_snapshot(ctx: &RequestContext) -> serde_json::Value {
+        match ctx.state.estop.as_ref() {
+            Some(e) => serde_json::json!({ "injected": true, "engaged": e.is_engaged() }),
+            None => serde_json::json!({ "injected": false }),
+        }
+    }
+
+    fn plan_mode_snapshot(ctx: &RequestContext) -> serde_json::Value {
+        let guard = ctx.state.agent_loop.read();
+        match guard.as_ref() {
+            Some(loop_) => serde_json::json!({ "available": true, "mode": loop_.mode().as_str() }),
+            None => serde_json::json!({ "available": false, "mode": serde_json::Value::Null }),
+        }
+    }
+
+    /// Full Access / 外部写删只读态（editor.rs 槽透传；未注入 = headless/
+    /// 降级形态）。操作面在 SettingsView【编辑器】TAB 与 ChatPanel，总览
+    /// 只读呈现（用户拍板 2）。
+    fn editor_snapshot() -> serde_json::Value {
+        match crate::handlers::editor::editor_access_state() {
+            Some(state) => {
+                let (full_access, external_write) = state.snapshot();
+                serde_json::json!({
+                    "injected": true,
+                    "full_access": full_access,
+                    "external_write": external_write,
+                })
+            }
+            None => serde_json::json!({ "injected": false }),
+        }
+    }
+
+    /// ⑦ 病毒扫描层快照（`load_scanner_status` 单一真相源投影 + 计数；
+    /// scanner feature 裁掉时该模块不存在——本函数不依赖 scanner 模块，
+    /// 只读 config.scanner.json，裁剪形态照常投影 enabled:false）。
+    fn scanner_snapshot(workspace: &str) -> serde_json::Value {
+        let status = crate::api_handlers::load_scanner_status(workspace);
+        let engines = status.get("engines").and_then(|v| v.as_array());
+        let is_enabled =
+            |e: &serde_json::Value| e.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_ready =
+            |e: &serde_json::Value| e.get("state").and_then(|v| v.as_str()) == Some("ready");
+        serde_json::json!({
+            "enabled": status.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+            "total": engines.map(|a| a.len()).unwrap_or(0),
+            "enabled_count": engines.map(|a| a.iter().filter(|e| is_enabled(e)).count()).unwrap_or(0),
+            "ready_count": engines.map(|a| a.iter().filter(|e| is_ready(e)).count()).unwrap_or(0),
+        })
+    }
+
+    /// security.enabled 总闸（**主 config.json**，typed Config.security；
+    /// 缺省 true）。与层开关不同：总闸 runtime reload 真热生效——前端标
+    /// 「即时生效」。home 缺席/主 config 读不了 = `available:false`（诚实
+    /// 降级，不猜默认值冒充读到了）。
+    fn global_switch_snapshot(ctx: &RequestContext) -> serde_json::Value {
+        let Some(home) = ctx.state.home.as_deref() else {
+            return serde_json::json!({ "available": false });
+        };
+        match crate::handlers::config::read_raw_config(home) {
+            Ok(raw) => serde_json::json!({
+                "available": true,
+                "enabled": raw
+                    .get("security")
+                    .and_then(|s| s.get("enabled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true),
+            }),
+            Err(_) => serde_json::json!({ "available": false }),
+        }
+    }
+
+    /// 执行体隔离（⑨ 沙盒 / ⑩ 虚拟化的 config 面）：主 config.json
+    /// `executor` 段（enabled/sandbox）+ `executor.vm.enabled`。全部缺省
+    /// false（ExecutorSeparationConfig `#[serde(default)]`）。
+    fn executor_snapshot(ctx: &RequestContext) -> serde_json::Value {
+        let Some(home) = ctx.state.home.as_deref() else {
+            return serde_json::json!({ "available": false });
+        };
+        let Ok(raw) = crate::handlers::config::read_raw_config(home) else {
+            return serde_json::json!({ "available": false });
+        };
+        let executor = raw.get("executor");
+        let flag = |key: &str| -> bool {
+            executor
+                .and_then(|e| e.get(key))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+        serde_json::json!({
+            "available": true,
+            "enabled": flag("enabled"),
+            "sandbox": flag("sandbox"),
+            "vm": executor
+                .and_then(|e| e.get("vm"))
+                .and_then(|v| v.get("enabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        })
+    }
+
+    /// 第②层页数据：内置命令黑名单只读快照。§2.7 核实结论（2026-11-10）：
+    /// 内置表编译期静态（~60 条 OnceLock）；扩展 API（extra_patterns /
+    /// add_entry）存在但生产零接线（生产构造 `CommandGuard::new(true)`）——
+    /// `extra_wired:false` 让层页诚实注记「本期不开放编辑」，不谎报可编辑。
+    fn command_blocklist() -> serde_json::Value {
+        let entries: Vec<serde_json::Value> = nemesis_security::command::builtin_blocklist()
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "name": e.name,
+                    "category": e.category,
+                    "severity": e.severity,
+                    "platform": e.platform,
+                    "reason": e.reason,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "entries": entries,
+            "extra_wired": false,
+            "note": "内置黑名单为编译期静态表；扩展规则 API 存在但生产未接线，本期不开放编辑",
+        })
+    }
+
+    /// 第④层页数据：内置凭据规则名只读快照。§2.7 核实结论：32 条 OnceLock
+    /// 纯硬编码，无任何 config 扩展面；类别分组由前端按规则名映射
+    /// （Rust 侧无类别元数据）。
+    fn credential_rules() -> serde_json::Value {
+        let rules: Vec<serde_json::Value> =
+            nemesis_security::credential::builtin_credential_rules()
+                .into_iter()
+                .map(|name| serde_json::json!({ "name": name }))
+                .collect();
+        serde_json::json!({
+            "rules": rules,
+            "note": "内置规则表为编译期静态表（无 config 扩展面），只读呈现；类别分组由前端按规则名映射",
+        })
+    }
 }
 
 /// eval_rules.add/update 的 `data.rule` 载荷提取（单点：字段缺失/形态错
@@ -822,3 +1175,9 @@ mod session_allow_tests;
 // nemesis-config::eval_rules 同源，语义镜像 CLI eval rules *）。
 #[cfg(test)]
 mod rule_mgmt_tests;
+
+// 十层页面化（2026-11-10）：security.overview 聚合投影（层开关 raw
+// 语义/审计聚合排除链文件/chain/estop/plan/editor/scanner/global/executor
+// 降级臂）+ command_blocklist / credential_rules 只读快照契约。
+#[cfg(test)]
+mod overview_tests;
