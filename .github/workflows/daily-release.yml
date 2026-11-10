@@ -63,6 +63,7 @@ jobs:
             platform: linux
             binary: nemesisbot          # Linux 产物无后缀
             archive: nightly-linux.tar.gz
+            installer_archive: nightly-linux-setup.run
             plugins_archive: nightly-linux-plugins.tar.gz
             signserver_archive: nightly-signserver-linux.tar.gz
             signtools_archive: nightly-sign-tools-linux.tar.gz
@@ -70,6 +71,7 @@ jobs:
             platform: windows
             binary: nemesisbot.exe      # Windows 产物带 .exe
             archive: nightly-windows.zip
+            installer_archive: nightly-windows-setup.exe
             plugins_archive: nightly-windows-plugins.zip
             signserver_archive: nightly-signserver-windows.zip
             signtools_archive: nightly-sign-tools-windows.zip
@@ -90,6 +92,10 @@ jobs:
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
+        with:
+          # installer workspace（NBSETUP1 安装器骨架，独立 Cargo.lock/target）——
+          # 不加则 nightly 每轮冷编骨架（egui 冷编数分钟）
+          cache-directories: installer/target
 
       - name: Setup Node.js (Vue 前端)
         uses: actions/setup-node@v5
@@ -419,6 +425,48 @@ jobs:
             echo "staging-skins 无 .nbskin——跳过皮肤签名"
           fi
 
+      # ---- 安装包（NBSETUP1）：压缩包之外的纯新增分发形态（2026-11-11 拍板，
+      # 压缩包三主包与附属包一个不丢）。顺序关键：
+      # ① 在 Sign artifacts 之后——载荷二进制带 v4 签名进包（装完即带信任链）；
+      # ② 在 Package (tar/7z) 之前——share/icon.png 要随压缩包一起分发
+      #   （与本地 bin/bin_* 布局一致；pack 只读 staging，两包内容除 icon 外相同）。
+      - name: Add icon to staging (installer payload)
+        shell: bash
+        run: |
+          mkdir -p staging/share
+          cp web/public/favicon.png staging/share/icon.png
+
+      # 骨架构建：锚（NEMESIS_BUILD_ROOT_ANCHOR）已在 GITHUB_ENV（上方 Inject
+      # root anchor 步），经 nemesis-verify build.rs rerun-if-env-changed 自动
+      # 编译进骨架——与 bot 二进制同机制同值。平台定 Target（setup-windows 是
+      # win32 依赖，Linux 主机全量 cargo build 必炸 E0432——盲区实录
+      # installer/README.md；pack 是 setup-core 的 [[bin]]，`-p pack` 不存在）。
+      - name: Build installer skeleton
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "linux" ]; then
+            (cd installer && cargo build --release -p setup-linux -p setup-core)
+          else
+            (cd installer && cargo build --release -p setup-windows -p setup-core)
+          fi
+          ls -la installer/target/release/nbsetup-*
+
+      - name: Package installer (NBSETUP1)
+        shell: bash
+        env:
+          NMB_ISSUING_SK: ${{ secrets.NMB_ISSUING_SK_HEX }}
+          NMB_ISSUING_CERT: ${{ secrets.NMB_ISSUING_CERT_HEX }}
+        run: |
+          # 版本同本地脚本（git describe 末 tag，缺省 0.0.0.1——可溯源，2026-11-11 拍板）
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0.1")
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            SKELETON=installer/target/release/nbsetup-win.exe
+          else
+            SKELETON=installer/target/release/nbsetup-linux
+          fi
+          bash scripts/ci-sign-installer.sh staging "$SKELETON" \
+            "${{ matrix.installer_archive }}" "$VERSION" "${{ matrix.platform }}"
+
       - name: Package (Linux)
         if: matrix.platform == 'linux'
         run: tar -czf ${{ matrix.archive }} -C staging .
@@ -485,6 +533,13 @@ jobs:
         with:
           name: ${{ matrix.archive }}
           path: ${{ matrix.archive }}
+          retention-days: 7
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.installer_archive }}
+          path: ${{ matrix.installer_archive }}
           retention-days: 7
 
       - name: Upload plugins artifact
@@ -852,7 +907,8 @@ jobs:
           sha256sum nightly-linux.tar.gz nightly-windows.zip nightly-android.apk > SHA256SUMS.txt
           # plugins / signserver / sign-tools / locked-full / skins 包视构建
           # 情况可能缺席（non-fatal 或无锚/无产物跳过），在才计入校验和
-          for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip \
+          for f in nightly-windows-setup.exe nightly-linux-setup.run \
+                   nightly-linux-plugins.tar.gz nightly-windows-plugins.zip \
                    nightly-android-plugins.zip \
                    nightly-signserver-linux.tar.gz nightly-signserver-windows.zip \
                    nightly-sign-tools-linux.tar.gz nightly-sign-tools-windows.zip \
@@ -889,6 +945,8 @@ jobs:
           files: |
             artifacts/nightly-linux.tar.gz
             artifacts/nightly-windows.zip
+            artifacts/nightly-windows-setup.exe
+            artifacts/nightly-linux-setup.run
             artifacts/nightly-android.apk
             artifacts/nightly-linux-plugins.tar.gz
             artifacts/nightly-windows-plugins.zip
@@ -916,7 +974,9 @@ jobs:
 
             ### 下载
             - **Windows**: `nightly-windows.zip`（解压后运行 `nemesisbot.exe gateway`）
+            - **Windows 安装包**: `nightly-windows-setup.exe`（图形向导安装：目录选择/开始菜单与桌面快捷方式/开机自启/控制面板卸载入口；静默安装 `--silent`，卸载用安装目录内 `uninstall.exe`）
             - **Linux**: `nightly-linux.tar.gz`（解压后运行 `./nemesisbot gateway`）
+            - **Linux 安装包**: `nightly-linux-setup.run`（终端问答向导：`./nightly-linux-setup.run` 直接运行；静默 `--silent`，卸载 `--uninstall --dir <安装目录>`）
             - **Android**: `nightly-android.apk`（arm64-v8a；签名模式见 build-android job 日志——配置了 ANDROID_KEYSTORE_* Secrets 为正式签名（与本地 sign.bat 同源），未配置为 debug 签名兜底（覆盖安装需先卸载））
             - **VM 显示中继**: 已编译进 Windows/Linux 主二进制（vm-display）——主包内 `plugins/` 目录带 `plugin_vm.dll`/`libplugin_vm.so` 单文件（镜像构建脚本 + guest 双架构 musl ELF 已内嵌库内，首次构建镜像时自动释放），零额外安装
             - **Windows 插件包**: `nightly-windows-plugins.zip`（包内放插件 .dll：plugin_ui / plugin_onnx / plugin_wasm / plugin_roaming / eval_monitor_dll / plugin_vm；解压到 exe 旁 `plugins/` 即恢复布局）
@@ -931,6 +991,8 @@ jobs:
             > 签名说明：配置了 `NMB_ISSUING_*` Secrets 时全部本方二进制带 v4 签名
             > （ECDSA P-256 + X.509 三级链，包内附 `signatures.json` 清单与
             > `certs/root_cert.der` 根证书）；未配置时产物无签名但构建照常（fork 零门槛）。
+            > 安装包为两层签名（manifest blob 防载荷被换 + 整包外壳防安装器本体被改），
+            > 与二进制同一信任根、同一签发链（同一把当日叶证书）。
             > 验签：`exe-sign-tool verify --root-cert certs/root_cert.der --target nemesisbot.exe`。
 
             > plugins 包视 plugin 编译情况可能缺席（non-fatal）；主包内的 plugins/ 子目录不变。
