@@ -4,10 +4,12 @@
 //! 但 download_and_install 的树下载成功路径未盖）：
 //! - `download_and_install` 两层模式树下载成功（Trees API + raw 多文件落盘）
 //! - `download_and_install` 三层 slug 带 author（dir_prefix = skills/{author}/{slug}）
-//! - `download_and_install` 三层 slug 不带 author → 回退 legacy 单文件
+//! - `download_and_install` 三层 bare slug → 树反查 author 后树下载（BUG-20261111-066）
+//! - `download_and_install` 三层 bare slug 反查失败（树 500）→ 诚实回落 legacy 单文件
 //! - `download_and_install` 版本缺省链（version 空 + meta 空 → "main"）
 //! - `search` 三层 Trees API truncated=true 告警臂（仍正常返回）
-//! - `get_skill_content` {author} 模式的 URL 构造分支
+//! - `get_skill_content` {author} 模式的 URL 构造分支（复合 slug 逐段校验）
+//! - `get_skill_content` bare slug 树反查 + 遍历/多段拒绝（BUG-20261111-067）
 //! - `download_skill_tree` 公开包装器（api/raw 双 server）
 
 use super::*;
@@ -155,15 +157,71 @@ async fn test_download_and_install_author_slug_rejected_by_validation() {
 }
 
 #[tokio::test]
-async fn test_download_and_install_author_pattern_plain_slug_falls_back_to_legacy() {
+async fn test_download_and_install_author_pattern_plain_slug_resolves_via_tree() {
+    // BUG-20261111-066 主路径：三层 {author} 模式 + bare slug（search 产出
+    // 形态）→ 安装期拉树反查 author 拼复合键 → 树下载。旧行为是 legacy
+    // fallback 把字面 {author} 留 URL（GitHub raw 404，整源不可装）。
     let server = MockServer::start().await;
     let mut reg = GitHubRegistry::from_source(&author_config("octo/skills"));
     reg.base_url = server.uri();
-    // 注意：github_api index 的 get_skill_meta 不发 HTTP，meta 默认成功。
+    reg.set_github_api_url(&server.uri());
 
-    // 不带 author 的 slug 无法确定三层前缀 → 回退 legacy 单文件下载。
-    // build_skill_url 对 {author} 模式 + 无 author slug 只替换 {slug}，
-    // {author} 保持字面量；reqwest/url 会把花括号百分号编码（{→%7B }→%7D）。
+    let tree = tree_body(
+        &[
+            ("blob", "skills/anthropics/pdf/SKILL.md"),
+            ("blob", "skills/anthropics/pdf/reference.md"),
+            // 同 slug 异 author 的次要条目：search 去重保留首个，反查也取首个。
+            ("blob", "skills/other-org/pdf/SKILL.md"),
+        ],
+        false,
+    );
+    mount_tree_and_raw(
+        &server,
+        "octo/skills",
+        &tree,
+        &[
+            ("skills/anthropics/pdf/SKILL.md", "# tree skill"),
+            ("skills/anthropics/pdf/reference.md", "ref content"),
+        ],
+    )
+    .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("pdf");
+    let result = reg
+        .download_and_install("pdf", "", &target.to_string_lossy())
+        .await
+        .unwrap();
+
+    // 反查命中首个 author（anthropics）→ 复合键进树下载 → 前缀内文件全落盘。
+    assert_eq!(
+        std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
+        "# tree skill"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("reference.md")).unwrap(),
+        "ref content"
+    );
+    // github_api index 的 meta 无 HTTP 即成功 → latest_version="latest" 优先于 "main"。
+    assert_eq!(result.version, "latest");
+}
+
+#[tokio::test]
+async fn test_download_and_install_author_resolution_failure_falls_back_to_legacy() {
+    // 反查失败臂：树接口 500 → resolve_author=None → bare slug 透传 →
+    // skill_dir_prefix None → 诚实回落 legacy 单文件（字面 {author} 留 URL，
+    // reqwest/url 百分号编码 %7Bauthor%7D）。真实 GitHub 上这臂=404 失败，
+    // 不再是装到错误内容的静默问题。
+    let server = MockServer::start().await;
+    let mut reg = GitHubRegistry::from_source(&author_config("octo/skills"));
+    reg.base_url = server.uri();
+    reg.set_github_api_url(&server.uri());
+
+    Mock::given(method("GET"))
+        .and(path("/repos/octo/skills/git/trees/main"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&server)
+        .await;
     Mock::given(method("GET"))
         .and(path("/octo/skills/main/skills/%7Bauthor%7D/pdf/SKILL.md"))
         .respond_with(ResponseTemplate::new(200).set_body_string("# legacy skill"))
@@ -181,7 +239,6 @@ async fn test_download_and_install_author_pattern_plain_slug_falls_back_to_legac
         std::fs::read_to_string(target.join("SKILL.md")).unwrap(),
         "# legacy skill"
     );
-    // github_api index 的 meta 无 HTTP 即成功 → latest_version="latest" 优先于 "main"。
     assert_eq!(result.version, "latest");
 }
 
@@ -250,6 +307,8 @@ async fn test_search_three_layer_truncated_warn_still_returns_results() {
 
 #[tokio::test]
 async fn test_get_skill_content_author_pattern_builds_author_url() {
+    // 复合 author/slug 形态：两段各过 validator 后直用（预览调用方的显式
+    // author 形态，免一次树反查）；build_skill_url 照旧拼 author URL。
     let server = MockServer::start().await;
     let mut reg = GitHubRegistry::from_source(&author_config("octo/skills"));
     reg.base_url = server.uri();
@@ -264,6 +323,56 @@ async fn test_get_skill_content_author_pattern_builds_author_url() {
     assert_eq!(content.slug, "anthropics/pdf");
     assert_eq!(content.filename, "SKILL.md");
     assert_eq!(content.content, "# content here");
+}
+
+#[tokio::test]
+async fn test_get_skill_content_plain_slug_resolves_author_via_tree() {
+    // BUG-20261111-067 修复面：bare slug + 三层模式 → 树反查 author 后拼
+    // URL（旧行为字面 {author} 进 URL 必 404）。
+    let server = MockServer::start().await;
+    let mut reg = GitHubRegistry::from_source(&author_config("octo/skills"));
+    reg.base_url = server.uri();
+    reg.set_github_api_url(&server.uri());
+
+    let tree = tree_body(&[("blob", "skills/anthropics/pdf/SKILL.md")], false);
+    mount_tree_and_raw(
+        &server,
+        "octo/skills",
+        &tree,
+        &[("skills/anthropics/pdf/SKILL.md", "# content here")],
+    )
+    .await;
+
+    let content = reg.get_skill_content("pdf").await.unwrap();
+    assert_eq!(content.slug, "pdf");
+    assert_eq!(content.content, "# content here");
+}
+
+#[tokio::test]
+async fn test_get_skill_content_rejects_traversal_and_extra_segments() {
+    // BUG-20261111-067 回归锁：预览面此前裸插 build_skill_url 无校验——
+    // `..` 与三段以上路径可探配置仓库内任意路径。修复后：
+    // - `..` 逐段 validator 拒绝（不发 HTTP）
+    // - 三段以上拒绝（base 段含 `/`）
+    // - 空段拒绝
+    let reg = GitHubRegistry::from_source(&author_config("octo/skills"));
+
+    for bad in [
+        "../evil",
+        "anthropics/../secret",
+        "a/../../x",
+        "a/b/c",
+        "/leading",
+    ] {
+        let err = reg.get_skill_content(bad).await.unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("invalid slug"),
+            "slug '{}' 必须被拒绝，got: {}",
+            bad,
+            msg
+        );
+    }
 }
 
 #[tokio::test]
