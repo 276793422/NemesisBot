@@ -507,3 +507,78 @@ async fn r4_concurrent_session_snapshot_lands_in_own_session_bucket() {
         report.conflicts
     );
 }
+
+// BUG-20261110-047：同一文件以不同路径形态（绝对/相对、`\`/`/`）在同一
+// turn 内先后声明时，快照去重与 restore 基线去重此前用字面串比较——
+// 第二形态的 mid-turn 内容冒充第二份基线，restore 后写覆盖先写，rewind
+// 恢复到错误版本。去重键须走 comparable 形态归一（与 base_for_path 同款）。
+#[tokio::test]
+async fn path_form_variants_restore_lands_on_turn_start_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin(0, "abs then rel same file");
+    // 首 touch 走绝对路径（记录 pre-edit 内容 v0）。
+    let abs = root.join("mix.txt").to_string_lossy().to_string();
+    tokio::fs::write(&abs, "v0").await.unwrap();
+    store
+        .snapshot(&FileChange {
+            path: abs,
+            kind: FileChangeKind::Modify,
+        })
+        .await;
+    // 工具写入后，同文件以**相对路径**再声明——必须与首 touch 去重。
+    tokio::fs::write(root.join("mix.txt"), "v1").await.unwrap();
+    store
+        .snapshot(&FileChange {
+            path: "mix.txt".to_string(),
+            kind: FileChangeKind::Modify,
+        })
+        .await;
+
+    store.restore_code(0).await;
+    let restored = tokio::fs::read_to_string(root.join("mix.txt"))
+        .await
+        .unwrap();
+    assert_eq!(
+        restored, "v0",
+        "形态变体必须归一去重：restore 必须落在 turn-start 内容而非 mid-turn 内容"
+    );
+}
+
+#[tokio::test]
+async fn snapshot_seen_dedupes_path_form_variants() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin(0, "seen dedup forms");
+    let abs = root.join("s.txt").to_string_lossy().to_string();
+    tokio::fs::write(&abs, "v0").await.unwrap();
+    store
+        .snapshot(&FileChange {
+            path: abs,
+            kind: FileChangeKind::Modify,
+        })
+        .await;
+    tokio::fs::write(root.join("s.txt"), "v1").await.unwrap();
+    store
+        .snapshot(&FileChange {
+            path: "s.txt".to_string(),
+            kind: FileChangeKind::Modify,
+        })
+        .await;
+
+    // 同 turn 的 files 只能有首 touch 一条（turn-start 内容）；第二形态
+    // 不得冒充第二份基线（其内容是第一次写之后的 mid-turn 盘面）。
+    let guard = store.inner.lock();
+    let cp = guard.cur.get(&None).expect("begin 后 cur 桶必在");
+    let paths: Vec<&str> = cp.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        cp.files.len(),
+        1,
+        "同文件不同形态声明被记成多份基线: {paths:?}"
+    );
+    assert_eq!(cp.files[0].content.as_deref(), Some("v0"));
+}
