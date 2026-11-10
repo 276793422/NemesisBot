@@ -231,7 +231,11 @@ impl SkillSigner {
         })
     }
 
-    /// 递归收集（规范化相对路径, 绝对路径）清单；跳过隐藏文件与 `.signature`。
+    /// 递归收集（规范化相对路径, 绝对路径）清单；系统元数据条目跳过
+    /// （[`crate::types::is_metadata_entry`]——`.signature` 自引用必须排除，
+    /// 安装后落盘的 `.skill-origin.json` 同理；其余点开头文件照常入
+    /// manifest。BUG-20261111-065：旧 blanket 点前缀跳过让载荷文件置身
+    /// 签名之外）。
     fn collect_files(
         base: &Path,
         current: &Path,
@@ -242,9 +246,8 @@ impl SkillSigner {
             let entry = entry.map_err(NemesisError::Io)?;
             let path = entry.path();
 
-            // Skip hidden files and.signature.
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
+            if crate::types::is_metadata_entry(&name) {
                 continue;
             }
 

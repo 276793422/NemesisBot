@@ -125,7 +125,7 @@ fn test_remove_and_update() {
 }
 
 #[test]
-fn test_compute_dir_hashes_skips_dotfiles() {
+fn test_compute_dir_hashes_metadata_entries_narrowed() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = write_skill_dir(
         tmp.path(),
@@ -134,14 +134,44 @@ fn test_compute_dir_hashes_skips_dotfiles() {
     );
     std::fs::write(dir.join(".signature"), "{}").unwrap();
     std::fs::write(dir.join(".skill-origin.json"), "{}").unwrap();
+    std::fs::write(dir.join(".DS_Store"), "noise").unwrap();
+    // 载荷形态点文件照常记账（BUG-20261111-065——旧 blanket 点前缀跳过让
+    // 它置身 lockfile 记账与漂移检测之外）。
+    std::fs::write(dir.join(".payload.py"), "print('pwn')").unwrap();
 
     let hashes = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
-    assert_eq!(hashes.len(), 2);
+    assert_eq!(hashes.len(), 3);
     assert!(hashes.contains_key("SKILL.md"));
     assert!(hashes.contains_key("sub/ref.md"));
+    assert!(hashes.contains_key(".payload.py"));
     // 确定性：两次计算一致。
     let again = SkillsLockfile::compute_dir_hashes(&dir).unwrap();
     assert_eq!(hashes, again);
+}
+
+/// BUG-20261111-065：装后新增载荷形态点文件必须被漂移检测抓到（`.signature`
+/// / `.skill-origin.json` 名单内照常豁免——安装后落盘的记账文件不是漂移）。
+#[test]
+fn test_verify_drift_catches_dot_payload_but_not_origin_metadata() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_skill_dir(tmp.path(), "demo", &[("SKILL.md", "v1")]);
+    let mut lock = SkillsLockfile::new();
+    let hashes = SkillsLockfile::compute_dir_hashes(&tmp.path().join("skills/demo")).unwrap();
+    lock.record(LockedSkill {
+        slug: "demo".to_string(),
+        source: "s".to_string(),
+        commit: String::new(),
+        files: hashes,
+        installed_at: 1,
+        verified_state: "trusted".to_string(),
+    });
+    // 记账后装后投放：载荷点文件 = 漂移；origin 元数据 = 豁免。
+    std::fs::write(tmp.path().join("skills/demo/.payload.py"), "print('pwn')").unwrap();
+    std::fs::write(tmp.path().join("skills/demo/.skill-origin.json"), "{}").unwrap();
+
+    let report = lock.verify_drift(tmp.path(), "demo");
+    assert!(!report.clean, "{:?}", report.summary());
+    assert_eq!(report.new_files, vec![".payload.py".to_string()]);
 }
 
 #[test]

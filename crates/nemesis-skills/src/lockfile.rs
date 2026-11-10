@@ -120,8 +120,9 @@ impl SkillsLockfile {
         self.skills.get(slug)
     }
 
-    /// 计算技能目录内全部文件的 sha256（跳过点开头文件，与签名 manifest 同口径；
-    /// 按字节哈希，非 UTF-8 文件也能记账）。
+    /// 计算技能目录内全部文件的 sha256（系统元数据条目跳过，与签名 manifest
+    /// 同口径 [`crate::types::is_metadata_entry`]；按字节哈希，非 UTF-8 文件
+    /// 也能记账）。
     pub fn compute_dir_hashes(skill_dir: &Path) -> Result<BTreeMap<String, String>> {
         let mut out = BTreeMap::new();
         Self::walk(skill_dir, skill_dir, &mut out)?;
@@ -134,9 +135,11 @@ impl SkillsLockfile {
             let entry = entry.map_err(NemesisError::Io)?;
             let path = entry.path();
 
-            // 跳过隐藏文件与.signature/.skill-origin.json（点开头统一跳过）。
+            // 系统元数据条目跳过（.skill-origin.json 安装后落盘 + VCS/编辑器
+            // 噪音；其余点开头文件照常记账——BUG-20261111-065：旧 blanket
+            // 点前缀跳过让载荷文件置身漂移检测之外）。
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
+            if crate::types::is_metadata_entry(&name) {
                 continue;
             }
 
