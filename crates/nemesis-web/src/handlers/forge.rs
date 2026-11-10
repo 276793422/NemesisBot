@@ -462,6 +462,17 @@ impl ForgeHandler {
             }
         }
 
+        // BUG-20261110-057：read_dir 顺序是平台实现细节（NTFS 字典序 vs
+        // ext4 哈希序），skill_directories 直回前端且前端无客户端排序——
+        // ForgeView 渲染顺序与 BehaviorTestPanel 默认选中（skills[0]）跨
+        // 平台不稳定。显式排序钉死（skills.rs list 同族口径）。
+        skill_files.sort_by(|a, b| {
+            a["name"]
+                .as_str()
+                .unwrap_or("")
+                .cmp(b["name"].as_str().unwrap_or(""))
+        });
+
         Ok(Some(serde_json::json!({
             "artifacts": artifacts,
             "skill_directories": skill_files,
