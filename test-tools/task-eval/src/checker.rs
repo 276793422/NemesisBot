@@ -121,11 +121,20 @@ pub fn eval_step(
     }
 }
 
+/// exec 检查器脚本构造（纯函数，可测）：preamble 注入工作区根到 sys.path。
+/// Python 单引号字面量：' → \'（正斜杠化后无裸 \，转义安全）。旧形态
+/// r-string 反而无法承载 '——r'\'' 是反斜杠+两个引号而非转义，含 ' 的
+/// 工作区路径（Windows 用户名可含）必语法错，全部 exec 检查器报废。
+pub(crate) fn build_checker_script(ws: &Path, code: &str) -> String {
+    let ws_fwd = ws.to_string_lossy().replace('\\', "/");
+    let ws_lit = ws_fwd.replace('\'', "\\'");
+    format!("import sys\nsys.path.insert(0, '{ws_lit}')\n{code}")
+}
+
 /// exec 检查器：脚本落 `scratch`（preamble 注入工作区根到 sys.path），
 /// `python -I <script>`，cwd = 工作区，exit 0 = 过。
 fn run_python_checker(python: &str, code: &str, ws: &Path, scratch: &Path) -> StepOutcome {
-    let ws_fwd = ws.to_string_lossy().replace('\\', "/");
-    let script = format!("import sys\nsys.path.insert(0, r'{ws_fwd}')\n{code}");
+    let script = build_checker_script(ws, code);
     let script_path = scratch.join(format!(
         "checker_{}.py",
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()

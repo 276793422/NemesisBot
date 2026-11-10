@@ -684,6 +684,15 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// PowerShell 单引号字面量包裹：' → ''（同族先例
+/// installer/windows/src/ops.rs ps_quote、nemesis-board backup.rs SQL 同形态）。
+/// 含 ' 的路径（Windows 文件名合法字符）裸拼会提前闭合字符串——命令解析
+/// 错乱/功能必败。纯字符串逻辑不 cfg 门控，跨平台可测。
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn ps_sq(s: &std::ffi::OsStr) -> String {
+    format!("'{}'", s.to_string_lossy().replace('\'', "''"))
+}
+
 /// Download an engine from a URL and extract it.
 /// Returns the path to the directory containing the extracted files.
 ///
@@ -747,9 +756,9 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
                 {
                     use std::os::windows::process::CommandExt;
                     let ps_cmd = format!(
-                        "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
-                        archive_path.display(),
-                        target_dir.display()
+                        "Expand-Archive -Path {} -DestinationPath {} -Force",
+                        ps_sq(archive_path.as_os_str()),
+                        ps_sq(target_dir.as_os_str())
                     );
                     // PS 5.1 对坏 zip 的 quirk：异常进 error 流但进程 rc=0
                     // （前手工实证；vs2026 CI 镜像起已改非零退出）
