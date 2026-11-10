@@ -29,6 +29,14 @@ pub(crate) fn debug_secret_value(v: &str) -> &'static str {
 
 /// `Option<String>` 凭据字段：None / Some("") = 未配置 `<empty>`，
 /// Some(非空) = `<redacted>`。
+///
+/// cfg 门：`opt_secret` 宏臂目前仅 email/irc/onebot 三个 feature 门模块
+/// 使用（nemesisbot 默认通道集不含它们），default workspace build 下宏臂
+/// 零展开、本函数只剩 `#[cfg(test)]` 引用——lib 目标视为 dead_code，
+/// clippy `-D warnings` 门禁红（BUG-20261111-073）。新增 opt_secret 用户
+/// 时必须把对应 feature 并入本 cfg 列表（漏并会在 feature-on 构建
+/// 编译期报函数缺失，属可见失败，不会静默假成功）。
+#[cfg(any(feature = "email", feature = "irc", feature = "onebot", test))]
 pub(crate) fn debug_secret_option(v: Option<&str>) -> &'static str {
     match v {
         Some(s) if !s.is_empty() => "<redacted>",
