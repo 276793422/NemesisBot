@@ -51,6 +51,14 @@ pub const PARK_NOTICE_MARK: &str = "自动派发暂缓";
 /// = 停滞徽标静默失效）。
 pub const STALL_MARKER: &str = "⚠ 执行档案迟迟未落地";
 
+/// msg_dedup 幂等缓存行 TTL（秒）。缓存行（含缓存的首响 JSON）随上行
+/// 发言只增不减——created_at 列自 v7 建表就位但从未有消费方；家族对照
+/// （chat_dedup LRU 128 + FIFO 256 / task_result_store 7d TTL /
+/// transfer dedup 随 sweep 清）全都有逐出，本表是唯一漏网。重试风暴的
+/// 时间尺度是秒级分钟级，7 天窗口对幂等语义绰绰有余（chat_dedup 同款
+/// 「幂等窗口有限是可接受语义，防的是重试风暴而非永久唯一性约束」口径）。
+const MSG_DEDUP_TTL_SECS: i64 = 7 * 24 * 3600;
+
 /// 送达失败重试退避阶梯：第 n 次失败后等 `min(1800, 60 * 2^(n-1))`
 /// 秒再重试——1m→2m→4m→8m→16m→30m 封顶。0 次失败 = 0（尚未失败立即可试）。
 /// 纯函数单测钉死；调用方（sweep）拿 DB 派生的失败次数喂入。
@@ -100,6 +108,19 @@ impl BoardStore {
             [],
         )
         .map_err(|e| format!("seed issue_counter: {e}"))?;
+        // msg_dedup 幂等缓存 TTL 清扫（BUG-20261110-042，best-effort：清扫
+        // 失败不阻断开库——缓存多活几天无害）。open 是全进程唯一开库咽喉
+        // 点（gateway 常驻 + CLI 短命进程都过这里），放这里 = 单点覆盖。
+        match conn.execute(
+            "DELETE FROM msg_dedup WHERE created_at < ?1",
+            params![Self::now() - MSG_DEDUP_TTL_SECS],
+        ) {
+            Ok(n) if n > 0 => tracing::info!(
+                "board: swept {n} expired msg_dedup rows (TTL {MSG_DEDUP_TTL_SECS}s)"
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("board: msg_dedup TTL sweep failed (non-fatal): {e}"),
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             asset_signing: std::sync::OnceLock::new(),

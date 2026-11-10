@@ -5568,3 +5568,49 @@ fn milestone_roundtrip_and_default() {
     );
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// msg_dedup TTL 清扫（BUG-20261110-042）：open 时过期缓存行（>7 天）被删、
+// 窗口内行保留——幂等缓存有界化。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_msg_dedup_ttl_sweep_on_open() {
+    let (store, dir) = temp_store("msg-dedup-ttl");
+    let db_path = dir.join("board.db");
+    // 直塞两行缓存：一条过期（8 天前）、一条新鲜（现在）。
+    let now = BoardStore::now();
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "INSERT INTO msg_dedup (origin_node, client_msg_id, first_response, created_at)
+             VALUES ('node-a', 'old-row', '{}', ?1)",
+            [now - 8 * 24 * 3600],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO msg_dedup (origin_node, client_msg_id, first_response, created_at)
+             VALUES ('node-a', 'fresh-row', '{}', ?1)",
+            [now],
+        )
+        .unwrap();
+    }
+    drop(store);
+    // 重开 → open 内 TTL 清扫应删过期行、留新鲜行。
+    let store2 = BoardStore::open(&db_path, "NB").unwrap();
+    let conn = store2.conn.lock().unwrap();
+    let remaining: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT client_msg_id FROM msg_dedup ORDER BY client_msg_id")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    assert_eq!(
+        remaining,
+        vec!["fresh-row"],
+        "过期行必须被清扫，窗口内行保留"
+    );
+}
