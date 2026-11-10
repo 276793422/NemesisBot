@@ -2011,6 +2011,70 @@ fn test_deny_info_layer_dlp() {
     };
     let info = assert_deny_elements(plugin.execute(&inv), "dlp", "dlp_engine");
     assert_eq!(info.suggestion.as_deref(), Some("脱敏后重试"));
+    // BUG-20261110-046 伴生缺陷：deny 消息必须自带命中明细（规则名[掩码值]）。
+    assert!(
+        info.summary.contains("matches: private_key_rsa["),
+        "deny 消息须附命中明细，实际: {}",
+        info.summary
+    );
+}
+
+/// BUG-20261110-046 伴生修复：命中明细截前 8 条，超出追加 `…(+N)` 尾注
+///（不静默吞掉溢出命中）。
+#[test]
+fn test_dlp_match_detail_truncation_note() {
+    let mk = |i: usize| crate::dlp::DlpMatch {
+        rule_name: format!("rule_{i}"),
+        category: "credential".to_string(),
+        count: 1,
+        severity: crate::dlp::DlpSeverity::High,
+        confidence: crate::dlp::DlpConfidence::High,
+        effective_action: "block".to_string(),
+        masked_value: "xx****yy".to_string(),
+        start_position: i,
+    };
+    let matches: Vec<_> = (0..10).map(mk).collect();
+    let detail = super::dlp_match_detail(&matches);
+    assert!(detail.contains("rule_7["), "前 8 条在场: {detail}");
+    assert!(!detail.contains("rule_8["), "第 9 条必须截断: {detail}");
+    assert!(detail.ends_with("…(+2)"), "截断尾注在场: {detail}");
+
+    let short: Vec<_> = (0..3).map(mk).collect();
+    assert!(
+        !super::dlp_match_detail(&short).contains('…'),
+        "未超限不得带尾注"
+    );
+}
+
+/// BUG-20261110-046 管线入口全量复放：被拦 write_file 的**原始载荷**
+/// 从 `SecurityPlugin::execute`（agent loop dispatch 的真实入口）重放
+/// ——Layer 4（凭据扫描）+ Layer 5（DLP）+ 入站闸串联裁决。修复前本
+/// 用例在 Layer 5 被 deny（实录 = `commit 22c94836/` 日志 04.Local.md
+/// 逐字现场：write_file `tools/jira/jira_client.py`）；修复后放行。
+/// `default_action: "allow"` 对齐实录事实——生产里该操作已过权限面
+/// （拦点在 DLP 而非 ABAC），其余安全开关取默认（凭据扫描+DLP 全开）。
+/// `#[tokio::test(multi_thread)]`：放行臂会走到 Layer 7 扫描的
+/// `block_in_place`（同 197 行注记的坑位）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_bug046_real_payload_pipeline_allows_write() {
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+    let payload = include_str!("../../tests/fixtures/2026-11-10_bug046_jira_client_payload.py");
+    let inv = ToolInvocation {
+        tool_name: "write_file".to_string(),
+        args: serde_json::json!({
+            "path": "tools/jira/jira_client.py",
+            "content": payload,
+        }),
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        metadata: Default::default(),
+    };
+    let (allowed, deny) = plugin.execute(&inv);
+    assert!(allowed, "实录载荷必须放行，实际 deny: {:?}", deny);
+    assert!(deny.is_none(), "不得携带 DenyInfo: {:?}", deny);
 }
 
 #[test]

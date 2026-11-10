@@ -34,7 +34,14 @@ use super::run_relay;
 /// 逐消息调用（agent 产出的唯一漏斗，channels manager 不重复过滤）。
 /// 槽空（init_agent 装配前，此窗口不可能有出站流量）= 直通；
 /// `Some(None)`（安全关闭）或无 DLP 引擎 = 直通；
-/// 命中规则 → 内容替换为脱敏文本 + 审计链留痕（operation=
+/// **改写闸（BUG-20261110-046 邻域复查补齐）**：仅当存在 enforcing 档
+/// 命中（effective_action = block/redact，即 High/Medium 置信，或
+/// low_confidence_action 显式配置为 block/redact）才授权改写；纯观测档
+///（Low/log，IP/邮箱/电话）直通不改写——出站打码是脱敏不是内容审查，
+/// 观测档命中改写会把正常回复里的地址/联系方式打成 [REDACTED]。
+/// 与 `nemesis-agent/src/loop/output_rescan.rs` 出侧语义同源（出侧改写
+/// 必须由明确配置授权，不比入参侧更激进）。
+/// 命中 enforcing 档 → 内容替换为脱敏文本 + 审计链留痕（operation=
 /// `dlp_outbound_redact`，reason=命中摘要，不落原始内容）。
 #[cfg(feature = "security")]
 fn apply_outbound_dlp(
@@ -47,11 +54,25 @@ fn apply_outbound_dlp(
     let Some(dlp) = plugin.dlp_engine() else {
         return;
     };
+    let result = dlp.scan_text(&msg.content);
+    if !result.has_matches {
+        return;
+    }
+    if !result
+        .matches
+        .iter()
+        .any(|m| m.effective_action == "block" || m.effective_action == "redact")
+    {
+        tracing::debug!(
+            count = result.matches.len(),
+            "[Gateway] outbound DLP matches are observe-only, message passed through"
+        );
+        return;
+    }
     let redacted = dlp.redact_content(&msg.content);
     if redacted == msg.content {
         return;
     }
-    let summary = dlp.scan_text(&msg.content).summary;
     if let Some(chain) = plugin.audit_chain() {
         let _ = chain.append(
             "dlp_outbound_redact",
@@ -60,7 +81,7 @@ fn apply_outbound_dlp(
             "gateway_outbound_bridge",
             &format!("{}/{}", msg.channel, msg.chat_id),
             "redacted",
-            &summary,
+            &result.summary,
         );
     }
     info!(

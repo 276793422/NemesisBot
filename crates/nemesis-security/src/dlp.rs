@@ -305,11 +305,18 @@ impl DlpEngine {
                 .iter()
                 .filter(|m| m.effective_action == "block")
                 .count();
+            // BUG-20261110-046 伴生修复：按**去重规则数**计数——旧实现把
+            // match 条目数（rule,position 对）当 rule 数，同一规则多处命中
+            // 时虚报（2026-11-10 实录：3× secret_password_assignment +
+            // 1× ip_address_public 报成「across 4 rule(s)」，实为 2 条）。
+            let rule_count = matches
+                .iter()
+                .map(|m| m.rule_name.as_str())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
             format!(
                 "{} sensitive data pattern(s) detected across {} rule(s) ({} blocking)",
-                total,
-                matches.len(),
-                blocking
+                total, rule_count, blocking
             )
         } else {
             String::new()
@@ -625,6 +632,27 @@ fn china_id_valid(text: &str, start: usize, end: usize) -> bool {
     chars[17].to_ascii_uppercase() == expected
 }
 
+/// keyed-assignment 值段形态闸（BUG-20261110-046）：值段必须是**引号
+/// 字面量**（与 Layer 4 credential.rs secret_assignment 的 d405ff8b 修后
+/// 形态对齐）。未加引号的值 = 代码表达式/标识符拷贝
+///（`password = getpass.getpass(...)`、`password = value.get(...)`、
+/// `pwd = home_dir`）而非密钥字面量——降级 Low（不 block；redact 面仍
+/// 打码，裸值秘密出站掩码能力不回退）。2026-11-10 实录：只读 Jira
+/// 脚本三处 `password = <函数调用>` 被 Medium→block 硬拦——Layer 4
+/// 已修的同类误拦在 DLP 复发，因本族规则值段引号可选。
+fn value_is_quoted(text: &str, start: usize, end: usize) -> bool {
+    let Some(seg) = text.get(start..end) else {
+        return false;
+    };
+    let Some(sep) = seg.find(['=', ':']) else {
+        return false;
+    };
+    matches!(
+        seg[sep + 1..].trim_start().chars().next(),
+        Some('\'') | Some('"')
+    )
+}
+
 fn get_dlp_rules() -> &'static DlpRules {
     static RULES: OnceLock<DlpRules> = OnceLock::new();
     RULES.get_or_init(|| {
@@ -675,10 +703,13 @@ fn get_dlp_rules() -> &'static DlpRules {
             ("credential", "slack_token", r"xox[bopsa]-[0-9]{10,13}-[0-9]{10,13}-[a-zA-Z0-9]{24,34}", DlpConfidence::High, None),
             ("credential", "stripe_key", r"(?:sk|pk)_(?:test_|live_)[A-Za-z0-9]{24,}", DlpConfidence::High, None),
 
-            // Generic secrets patterns (4) — Medium (keyed assignment)
-            ("credential", "secret_password_assignment", r#"(?i)(?:password|passwd|pwd)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, None),
-            ("credential", "secret_token_assignment", r#"(?i)(?:token|bearer|access[_\-]?token|auth[_\-]?token|refresh[_\-]?token)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, None),
-            ("credential", "secret_key_assignment", r#"(?i)(?:secret[_\-]?key|client[_\-]?secret|shared[_\-]?secret|encryption[_\-]?key)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, None),
+            // Generic secrets patterns (4) — Medium (keyed assignment).
+            // 三条赋值规则挂 value_is_quoted 闸（BUG-20261110-046）：值段
+            // 无引号（代码表达式/裸标识符）降级 Low 不 block；引号字面量
+            // 保持 Medium 照拦（与 Layer 4 secret_assignment 同款形态约束）。
+            ("credential", "secret_password_assignment", r#"(?i)(?:password|passwd|pwd)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(value_is_quoted)),
+            ("credential", "secret_token_assignment", r#"(?i)(?:token|bearer|access[_\-]?token|auth[_\-]?token|refresh[_\-]?token)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(value_is_quoted)),
+            ("credential", "secret_key_assignment", r#"(?i)(?:secret[_\-]?key|client[_\-]?secret|shared[_\-]?secret|encryption[_\-]?key)\s*[=:]\s*['"]?[^\s'"]{8,}['"]?"#, DlpConfidence::Medium, Some(value_is_quoted)),
             ("credential", "authorization_header", r"(?i)authorization\s*:\s*(?:bearer|basic)\s+[A-Za-z0-9\-_.~+/]+=*", DlpConfidence::Medium, None),
         ];
 
