@@ -1,83 +1,123 @@
-//! Linux 安装/卸载运营链（计划 §5/§6）：
-//! - 纯内容构造器（.desktop / systemd unit / PATH 片段）跨平台编译，
-//!   测试在任意主机可跑；
-//! - IO/进程面（statvfs / pgrep / symlink / systemctl）`#[cfg(target_os = "linux")]`，
+//! Linux 安装/卸载运营链（计划 §5/§6）：实例闸 → 磁盘预检 → 安装引擎
+//! → spawn `nemesisbot system register/unregister`（系统集成）→ 启动；
+//! 卸载 = 先 spawn unregister（bot 还在盘上）→ 引擎卸载 + 副本摘除。
+//!
+//! 分工铁律（2026-11-10 拍板「安装器搬文件、bot 做集成」）：符号链接/
+//! .desktop/PATH 哨兵/systemd unit 等系统集成的**唯一实现住 bot**
+//! （nemesis-sysint）——安装器零第二实现，只负责 spawn 并把失败降为
+//! 警告（注册失败留白诚实，绝不回滚已落位产物）。
+//!
+//! 编译形态：
+//! - spawn 契约机制（SystemCall 系列）跨平台编译，测试任意主机可跑；
+//! - IO/进程面（statvfs / pgrep / 真实 spawn 链）`#[cfg(target_os = "linux")]`，
 //!   只在 Linux 编译与执行（Windows 上本 crate 走 stub main——诚实降级）。
 //!
 //! 纪律：
-//! - 快捷方式三件套 = `~/.local/bin` 符号链接 + XDG .desktop + PATH 注记
-//!   （`~/.profile` 带哨兵注释块，幂等可识别）；
-//! - systemd user unit 是 --autostart 可选项（best-effort：systemctl 缺席
-//!   → WARN 跳过，绝不失败整个安装）；
 //! - 运行实例闸 `pgrep -x nemesisbot`；磁盘闸 statvfs（探测最深存在祖先，
 //!   与 windows ops 同纪律）；
+//! - 卸载双形态：静默 `--uninstall` 保持全局实例闸（脚本可消费契约）；
+//!   向导确认卸载（[`run_uninstall_confirmed`]）= **路径级强制停止**
+//!   （只杀镜像落在本安装目录子树内的实例，2026-11-10 用户拍板——他处
+//!   部署/开发 checkout 的同名进程绝不误杀）；
 //! - 卸载副本 `uninstall`（无扩展名，平台惯例）由核心引擎落位；
-//! - 退出码契约与 windows 形态一致：0/1/2/3/4/5/6（ops::exit_code_of）。
+//! - 退出码契约与 windows 形态一致：0/1/2/3/4/5/6（ops::exit_code_of；
+//!   静默闸与确认卸载后强停失败共用 6 域）。
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use setup_core::install::{InstallPlan, TypedFail};
+// ---------- 系统集成 spawn 契约（跨平台编译；唯一实现住 bot） ----------
 
-// ---------- 纯内容构造器（跨平台可测） ----------
-
-/// `~/.profile` PATH 注记哨兵（幂等识别标记）。
-pub const PATH_MARKER_BEGIN: &str = "# >>> NemesisBot installer PATH >>>";
-pub const PATH_MARKER_END: &str = "# <<< NemesisBot installer PATH <<<";
-
-/// PATH 注记块（~/.local/bin 前置）。
-pub fn path_snippet() -> String {
-    format!("{PATH_MARKER_BEGIN}\nexport PATH=\"$HOME/.local/bin:$PATH\"\n{PATH_MARKER_END}\n")
+/// 一条 `nemesisbot system …` 调用（exe + 参数；args[0..2] 恒 = 子命令）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SystemCall {
+    pub exe: PathBuf,
+    pub args: Vec<String>,
 }
 
-/// 是否需要追加 PATH 注记（已含哨兵 = 已写过；PATH 环境已精确含
-/// `local_bin` = 不需要；形近路径不算）。
-pub fn needs_path_append(path_env: &str, profile_content: &str, local_bin: &str) -> bool {
-    if profile_content.contains(PATH_MARKER_BEGIN) {
-        return false;
+impl std::fmt::Display for SystemCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.exe.display(), self.args.join(" "))
     }
-    !path_env.split(':').any(|p| p == local_bin)
 }
 
-/// XDG 桌面入口内容。
-pub fn desktop_entry_text(exec_path: &Path, icon_path: &Path) -> String {
-    format!(
-        "[Desktop Entry]\n\
-         Type=Application\n\
-         Name=NemesisBot\n\
-         Comment=NemesisBot Dashboard\n\
-         Exec={} dashboard\n\
-         Icon={}\n\
-         Terminal=false\n\
-         Categories=Development;\n",
-        shell_quote(&exec_path.to_string_lossy()),
-        icon_path.display()
-    )
+/// 系统集成执行注入点（生产 = [`run_system_call`] 真实 spawn；测试注入
+/// 假执行器记录调用/返回合成 Output——离线验证契约，不依赖真 bot 装配）。
+pub type SystemRunner<'a> = &'a dyn Fn(&SystemCall) -> Result<std::process::Output>;
+
+/// 构造 `system register` 调用（恒 spawn：与 Windows 形态同契约——是否
+/// 注册各项由 bot 侧裁决，`--no-shortcuts` 只关快捷方式三件套）。
+pub fn register_call(exe: &Path, dir: &Path, opts: &InstallOptions) -> SystemCall {
+    let mut args = vec![
+        "system".to_string(),
+        "register".to_string(),
+        "--dir".to_string(),
+        dir.to_string_lossy().into_owned(),
+    ];
+    if opts.autostart {
+        args.push("--autostart".into());
+    }
+    if opts.no_shortcuts {
+        args.push("--no-shortcuts".into());
+    }
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args,
+    }
 }
 
-/// systemd user unit 内容（Restart=on-failure 韧性重启）。
-pub fn systemd_unit_text(exec_path: &Path) -> String {
-    format!(
-        "[Unit]\n\
-         Description=NemesisBot Gateway\n\
-         After=network-online.target\n\
-         \n\
-         [Service]\n\
-         Type=simple\n\
-         ExecStart={} gateway\n\
-         Restart=on-failure\n\
-         RestartSec=5\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n",
-        shell_quote(&exec_path.to_string_lossy())
-    )
+/// 构造 `system unregister` 调用。
+pub fn unregister_call(exe: &Path, dir: &Path) -> SystemCall {
+    SystemCall {
+        exe: exe.to_path_buf(),
+        args: vec![
+            "system".to_string(),
+            "unregister".to_string(),
+            "--dir".to_string(),
+            dir.to_string_lossy().into_owned(),
+        ],
+    }
 }
 
-/// shell 单引号字面转义（' → '\''）。
-pub fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+/// 执行系统集成调用（普通 spawn；bot 自身已带控制台纪律）。
+pub fn run_system_call(call: &SystemCall) -> Result<std::process::Output> {
+    std::process::Command::new(&call.exe)
+        .args(&call.args)
+        .output()
+        .with_context(|| format!("spawn 系统集成失败: {call}"))
+}
+
+/// 执行并把非零退出降为警告串（Ok(Some(warn)) = 失败但降级；Ok(None) =
+/// 成功零警告；Err = spawn 本身失败）。与 windows 形态同语义。
+pub fn run_system_cmd(call: &SystemCall, runner: SystemRunner<'_>) -> Result<Option<String>> {
+    let out = runner(call)?;
+    if out.status.success() {
+        return Ok(None);
+    }
+    let mut stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if stderr.is_empty() {
+        stderr = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    }
+    let tail: String = stderr
+        .chars()
+        .rev()
+        .take(300)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    Ok(Some(format!(
+        "{} 退出码 {:?}{}",
+        call,
+        out.status.code(),
+        if tail.is_empty() {
+            String::new()
+        } else {
+            format!(": {tail}")
+        }
+    )))
 }
 
 /// 安装计划人读文本（与 windows ops::plan_text 同内容——两平台文案一致性）。
@@ -103,18 +143,6 @@ pub fn default_install_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".local/share").join("NemesisBot"))
 }
 
-/// `~/.local/bin` 符号链接目标路径。
-pub fn local_bin_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME 环境变量缺席")?;
-    Ok(PathBuf::from(home).join(".local/bin/nemesisbot"))
-}
-
-/// `~/.profile` 路径。
-pub fn profile_path() -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME 环境变量缺席")?;
-    Ok(PathBuf::from(home).join(".profile"))
-}
-
 /// 自身所在目录（uninstall 副本 = 安装目录）。
 pub fn own_install_dir() -> Result<PathBuf> {
     std::env::current_exe()?
@@ -128,34 +156,6 @@ pub fn own_dir_has_install_record() -> bool {
     own_install_dir()
         .map(|d| d.join("install.json").exists())
         .unwrap_or(false)
-}
-
-/// XDG 应用入口路径。
-pub fn desktop_entry_path() -> Result<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
-        && !xdg.trim().is_empty()
-    {
-        return Ok(PathBuf::from(xdg).join("applications/nemesisbot.desktop"));
-    }
-    let home = std::env::var("HOME").context("HOME 环境变量缺席")?;
-    Ok(PathBuf::from(home)
-        .join(".local/share/applications")
-        .join("nemesisbot.desktop"))
-}
-
-/// systemd user unit 路径（XDG_CONFIG_HOME 尊重 → $HOME/.config）。
-pub fn systemd_unit_path() -> Result<PathBuf> {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|s| !s.trim().is_empty());
-    let base = match base {
-        Some(b) => PathBuf::from(b),
-        None => {
-            let home = std::env::var("HOME").context("HOME 环境变量缺席")?;
-            PathBuf::from(home).join(".config")
-        }
-    };
-    Ok(base.join("systemd/user/nemesisbot.service"))
 }
 
 // ---------- 运营层类型化失败（与 windows 同构） ----------
@@ -200,6 +200,13 @@ pub fn exit_code_of(err: &anyhow::Error) -> i32 {
             TypedFail::DowngradeRejected { .. } => 1,
         };
     }
+    // 确认卸载强停后仍有存活（与静默闸同为「bot 正在运行」码域）。
+    if err
+        .downcast_ref::<setup_core::procs::BotsSurvive>()
+        .is_some()
+    {
+        return 6;
+    }
     if let Some(of) = err.downcast_ref::<OpsFail>() {
         return match of {
             OpsFail::Running(_) => 6,
@@ -239,6 +246,9 @@ pub type RunningCheck<'a> = &'a dyn Fn() -> Result<Vec<String>>;
 /// 目标路径所在卷剩余字节数（statvfs；目标不存在时探最深存在祖先）。
 #[cfg(target_os = "linux")]
 pub fn free_disk_bytes(path: &Path) -> Result<u64> {
+    // 宏导入收在 cfg(linux) 函数体内——Windows 编译看不见本函数，
+    // 顶部导入会在 Windows 形态报 unused（盲区纪律）。
+    use anyhow::anyhow;
     let mut probe = path.to_path_buf();
     loop {
         if probe.exists() {
@@ -267,128 +277,6 @@ pub fn free_disk_bytes(path: &Path) -> Result<u64> {
 /// 安装所需磁盘字节数（× 1.2 余量，与 windows 形态一致）。
 pub fn required_disk_bytes(manifest_total: u64) -> u64 {
     manifest_total + manifest_total / 5
-}
-
-/// 幂等重建符号链接（已指向同目标 = 不动；否则摘旧重建）。
-#[cfg(target_os = "linux")]
-pub fn install_symlink(link: &Path, target: &Path) -> Result<()> {
-    use std::os::unix::fs::symlink;
-    if let Some(parent) = link.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("建目录失败: {}", parent.display()))?;
-    }
-    // 幂等：已是正确符号链接则跳过。
-    if let Ok(meta) = std::fs::symlink_metadata(link)
-        && meta.file_type().is_symlink()
-        && std::fs::read_link(link).is_ok_and(|p| p == target)
-    {
-        return Ok(());
-    }
-    let _ = std::fs::remove_file(link);
-    symlink(target, link)
-        .with_context(|| format!("建符号链接失败: {} → {}", link.display(), target.display()))
-}
-
-/// 写 XDG .desktop 入口。
-#[cfg(target_os = "linux")]
-pub fn install_desktop_entry(install_dir: &Path) -> Result<PathBuf> {
-    let exec = install_dir.join("nemesisbot");
-    let icon = install_dir.join("share/icon.png");
-    let path = desktop_entry_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, desktop_entry_text(&exec, &icon))
-        .with_context(|| format!("写桌面入口失败: {}", path.display()))?;
-    Ok(path)
-}
-
-/// 写 systemd user unit + daemon-reload + enable（best-effort：systemctl
-/// 缺席 = WARN 跳过）。返回警告（空 = 完全成功）。
-#[cfg(target_os = "linux")]
-pub fn install_autostart(install_dir: &Path) -> Result<Vec<String>> {
-    let mut warnings = Vec::new();
-    let exec = install_dir.join("nemesisbot");
-    let path = systemd_unit_path()?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, systemd_unit_text(&exec))
-        .with_context(|| format!("写 systemd unit 失败: {}", path.display()))?;
-    let reload = std::process::Command::new("systemctl")
-        .args(["--user", "daemon-reload"])
-        .output();
-    match reload {
-        Ok(o) if o.status.success() => {
-            let enable = std::process::Command::new("systemctl")
-                .args(["--user", "enable", "nemesisbot.service"])
-                .output()
-                .context("systemctl enable 执行失败")?;
-            if !enable.status.success() {
-                warnings.push(format!(
-                    "systemctl enable 失败: {}",
-                    String::from_utf8_lossy(&enable.stderr).trim()
-                ));
-            }
-        }
-        Ok(o) => warnings.push(format!(
-            "systemctl --user daemon-reload 失败（自启未激活）: {}",
-            String::from_utf8_lossy(&o.stderr).trim()
-        )),
-        Err(_) => warnings
-            .push("systemctl 缺席（无 systemd 或 PATH 缺失），自启 unit 已写入但未激活".into()),
-    }
-    Ok(warnings)
-}
-
-/// 追加 PATH 注记到 ~/.profile（best-effort，返回警告或 None）。
-#[cfg(target_os = "linux")]
-pub fn install_path_snippet() -> Result<Option<String>> {
-    let path = profile_path()?;
-    let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let local_bin = local_bin_path()?;
-    if !needs_path_append(
-        &std::env::var("PATH").unwrap_or_default(),
-        &existing,
-        &local_bin.to_string_lossy(),
-    ) {
-        return Ok(None);
-    }
-    {
-        use std::io::Write;
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&path)?;
-        writeln!(f, "{}", path_snippet())?;
-    }
-    Ok(Some(
-        "~/.local/bin 已写入 ~/.profile PATH 注记（重登录生效）".into(),
-    ))
-}
-
-#[cfg(target_os = "linux")]
-pub fn remove_shortcut_artifacts() -> Vec<String> {
-    let mut notes = Vec::new();
-    if let Ok(p) = local_bin_path() {
-        let _ = std::fs::remove_file(&p);
-    }
-    if let Ok(p) = desktop_entry_path() {
-        let _ = std::fs::remove_file(&p);
-    }
-    if let Ok(p) = systemd_unit_path() {
-        let _ = std::process::Command::new("systemctl")
-            .args(["--user", "disable", "--now", "nemesisbot.service"])
-            .output();
-        if std::fs::remove_file(&p).is_ok() {
-            let _ = std::process::Command::new("systemctl")
-                .args(["--user", "daemon-reload"])
-                .output();
-        }
-    }
-    // PATH 注记保留（~/.profile 可能含用户手工编辑的邻近内容，自动摘除
-    // 有误伤面——哨兵块留在原地无害，README 诚实注记）。
-    notes
 }
 
 // ---------- 安装/卸载运营链 ----------
@@ -428,16 +316,18 @@ pub fn run_install(
     opts: &InstallOptions,
     progress: Option<&dyn Fn(setup_core::pkgfile::Progress)>,
 ) -> Result<InstallOutcome> {
-    run_install_with(opts, progress, &running_bots)
+    run_install_with(opts, progress, &running_bots, &run_system_call)
 }
 
-/// 注入形态（测试专用）：进程检测可替换——测试喂假 PID 清单离线模拟
-/// 全生命周期。生产入口 [`run_install`] 传真实检测。
+/// 注入形态（测试专用）：进程检测与系统集成执行都可替换——测试喂假
+/// PID 清单 + 假执行器，离线模拟全生命周期，不依赖机器实例状态、不
+/// spawn 真 bot。生产入口 [`run_install`] 传真实检测与 [`run_system_call`]。
 #[cfg(target_os = "linux")]
 pub fn run_install_with(
     opts: &InstallOptions,
     progress: Option<&dyn Fn(setup_core::pkgfile::Progress)>,
     running: RunningCheck<'_>,
+    system: SystemRunner<'_>,
 ) -> Result<InstallOutcome> {
     use setup_core::install::{self, SigPolicy};
 
@@ -496,28 +386,15 @@ pub fn run_install_with(
     };
     let res = install::perform(&opts.package, &core_opts, progress)?;
 
-    // ⑥ 快捷方式三件套 + 自启（非致命收集）。
+    // ⑥ 系统集成（spawn bot；非致命：失败降为 notes，不回滚——符号链接/
+    // .desktop/systemd 缺席是诚实留白，已落位产物绝不撤销）。恒 spawn：
+    // 与 Windows 形态同契约，--no-shortcuts 只由 bot 侧裁决快捷方式项。
     let mut notes = Vec::new();
-    if !opts.no_shortcuts {
-        let link = local_bin_path()?;
-        if let Err(e) = install_symlink(&link, &opts.target_dir.join("nemesisbot")) {
-            notes.push(format!("符号链接: {e:#}"));
-        }
-        if let Err(e) = install_desktop_entry(&opts.target_dir) {
-            notes.push(format!("桌面入口: {e:#}"));
-        }
-        match install_path_snippet() {
-            Ok(Some(note)) => notes.push(note),
-            Ok(None) => {}
-            Err(e) => notes.push(format!("PATH 注记: {e:#}")),
-        }
-    }
-    if opts.autostart
-        && let Err(e) = install_autostart(&opts.target_dir)
-    {
-        for w in e {
-            notes.push(format!("自启: {w}"));
-        }
+    let call = register_call(&opts.target_dir.join("nemesisbot"), &opts.target_dir, opts);
+    match run_system_cmd(&call, system) {
+        Ok(None) => {}
+        Ok(Some(w)) => notes.push(format!("系统集成注册（system register）: {w}")),
+        Err(e) => notes.push(format!("系统集成注册（system register）: {e:#}")),
     }
 
     // ⑦ 启动。
@@ -558,27 +435,133 @@ pub struct UninstallOutcome {
     pub deleted: usize,
     pub failures: Vec<(String, String)>,
     pub notes: Vec<String>,
+    /// 确认卸载链强制停止的运行实例数（静默闸路径恒 0）。
+    pub bots_stopped: usize,
 }
 
-/// 完整卸载运营链：实例闸 → 快捷方式三件套清理 → 引擎卸载 → 卸载副本摘除。
+/// 完整卸载运营链（静默 `--uninstall`）：全局实例闸 → spawn system
+/// unregister（bot 还在盘上）→ 引擎卸载 → 卸载副本摘除。
 #[cfg(target_os = "linux")]
 pub fn run_uninstall(install_dir: &Path) -> Result<UninstallOutcome> {
-    run_uninstall_with(install_dir, &running_bots)
+    run_uninstall_with(install_dir, &running_bots, &run_system_call)
 }
 
-/// 注入形态（测试专用）：同 [`run_install_with`]——假 PID 清单。
+/// 注入形态（测试专用）：同 [`run_install_with`]——假 PID 清单 + 假执行器。
 #[cfg(target_os = "linux")]
 pub fn run_uninstall_with(
     install_dir: &Path,
     running: RunningCheck<'_>,
+    system: SystemRunner<'_>,
 ) -> Result<UninstallOutcome> {
-    use setup_core::install;
-
     let running = running()?;
     if !running.is_empty() {
         return Err(anyhow::Error::new(OpsFail::Running(running)));
     }
-    let mut notes = remove_shortcut_artifacts();
+    uninstall_body(install_dir, system)
+}
+
+// ---------- 路径级强停（确认卸载链，2026-11-10 用户拍板） ----------
+
+/// 生产查询：/proc 扫描——readlink `/proc/<pid>/exe` 取镜像路径，basename
+/// == nemesisbot 即命中（readlink 尾注「 (deleted)」剪除后判名——二进制
+/// 被换名删除后仍在跑的形态）。无权限（他用户进程）readlink 失败 = 跳过
+/// （不可见即不可杀；Linux 无文件锁，其删除面由韧性删除如实兜底）。
+#[cfg(target_os = "linux")]
+pub fn running_bot_processes() -> Result<Vec<setup_core::procs::BotProcess>> {
+    let mut bots = Vec::new();
+    for entry in std::fs::read_dir("/proc")?.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(exe) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+            continue;
+        };
+        let path = exe.to_string_lossy().into_owned();
+        let base = path.strip_suffix(" (deleted)").unwrap_or(&path);
+        let is_bot = std::path::Path::new(base)
+            .file_name()
+            .map(|n| n == std::ffi::OsStr::new("nemesisbot"))
+            .unwrap_or(false);
+        if is_bot {
+            bots.push(setup_core::procs::BotProcess {
+                pid,
+                exe_path: base.to_owned(),
+            });
+        }
+    }
+    Ok(bots)
+}
+
+/// 生产终止：逐 PID `libc::kill(SIGKILL)`（不杀进程组——pgid 可能与用户
+/// shell 作业共享，误伤面不可接受；bot 的子进程若也是 nemesisbot 形态，
+/// 由查询面按镜像路径一并覆盖）。
+#[cfg(target_os = "linux")]
+pub fn kill_bot_pids(pids: &[u32]) -> Result<()> {
+    for pid in pids {
+        // ESRCH（已退出）忽略——权威判定在 core 停止编排的复核重查。
+        unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
+    }
+    Ok(())
+}
+
+/// 强停复核重试参数（生产）：10 次 × 300ms ≈ 3s 窗口（与 windows 形态一致）。
+const STOP_ATTEMPTS: u32 = 10;
+const STOP_RETRY: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// 强制停止本安装目录下的运行实例（确认卸载链第一步）。返回被停止清单
+/// （空 = 本目录没有实例）；他处实例（另一部署/开发 checkout）不涉杀。
+#[cfg(target_os = "linux")]
+pub fn stop_install_bots(install_dir: &Path) -> Result<Vec<setup_core::procs::BotProcess>> {
+    setup_core::procs::stop_bots_in_dir(
+        install_dir,
+        &running_bot_processes,
+        &kill_bot_pids,
+        STOP_ATTEMPTS,
+        STOP_RETRY,
+    )
+}
+
+/// 确认卸载链（向导确认后）：**路径级强制停止**本目录运行实例 →
+/// unregister → 引擎卸载 → 副本摘除。与静默闸的差异：无全局实例闸——
+/// 路径级判定已含在强停步骤内（他处实例不锁本目录文件）。
+#[cfg(target_os = "linux")]
+pub fn run_uninstall_confirmed(install_dir: &Path) -> Result<UninstallOutcome> {
+    let dir = install_dir.to_path_buf();
+    run_uninstall_confirmed_with(install_dir, &|| stop_install_bots(&dir), &run_system_call)
+}
+
+/// 确认卸载注入形态（测试专用）：假强停 + 假执行器。
+#[cfg(target_os = "linux")]
+pub type StopBots<'a> = &'a dyn Fn() -> Result<Vec<setup_core::procs::BotProcess>>;
+
+#[cfg(target_os = "linux")]
+pub fn run_uninstall_confirmed_with(
+    install_dir: &Path,
+    stop: StopBots<'_>,
+    system: SystemRunner<'_>,
+) -> Result<UninstallOutcome> {
+    // 强停必须先于一切删除动作（运行中的 bot 持有自身镜像）。
+    let stopped = stop()?;
+    let mut out = uninstall_body(install_dir, system)?;
+    out.bots_stopped = stopped.len();
+    Ok(out)
+}
+
+/// 卸载公共体（静默闸与确认链共用）：unregister → 引擎卸载 → 副本摘除
+/// → 剪壳。顺序即契约：注销先于引擎删除（删完再调 = 给死二进制发指令）。
+#[cfg(target_os = "linux")]
+fn uninstall_body(install_dir: &Path, system: SystemRunner<'_>) -> Result<UninstallOutcome> {
+    use setup_core::install;
+
+    // 系统集成注销必须先于引擎删除——bot 已落位才能执行注销；删完再调
+    // 就是给死二进制发指令（顺序即契约，测试注入执行器时断言本序）。
+    let mut notes = Vec::new();
+    let call = unregister_call(&install_dir.join("nemesisbot"), install_dir);
+    match run_system_cmd(&call, system) {
+        Ok(None) => {}
+        Ok(Some(w)) => notes.push(format!("系统集成注销（system unregister）: {w}")),
+        Err(e) => notes.push(format!("系统集成注销（system unregister）: {e:#}")),
+    }
     let (deleted, failures) = install::uninstall(install_dir)?;
     // 卸载副本（引擎只删 record.files 清单——副本不在清单，显式摘）。
     let copy = install_dir.join("uninstall");
@@ -587,11 +570,16 @@ pub fn run_uninstall_with(
     {
         notes.push(format!("卸载副本删除失败: {e}"));
     }
-    notes.push("~/.profile PATH 注记保留（手工摘除或忽略均可，哨兵块无副作用）".into());
+    // 副本摘除后目录已空则剪壳：引擎的空目录检查在副本摘除**前**跑过（副本
+    // 在场 = 判非空保留），不补这一刀会留空目录壳（2026-11-10 Linux 全链
+    // E2E 实录）。best-effort：目录非空（未知文件在场）删除失败静默保留，
+    // 与 Windows 自删脚本的 rd 空目录语义对齐。
+    let _ = std::fs::remove_dir(install_dir);
     Ok(UninstallOutcome {
         deleted,
         failures,
         notes,
+        bots_stopped: 0,
     })
 }
 

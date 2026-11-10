@@ -38,6 +38,7 @@ members = [
     "crates/nemesis-exec-protocol",
     "crates/nemesis-routing",
     "crates/nemesis-state",
+    "crates/nemesis-sysint",
     "crates/nemesis-taskstore",
     "crates/nemesis-utils",
     "crates/nemesis-injector",
@@ -257,6 +258,7 @@ nemesis-path = { path = "crates/nemesis-path" }
 nemesis-plugin = { path = "crates/nemesis-plugin" }
 nemesis-routing = { path = "crates/nemesis-routing" }
 nemesis-state = { path = "crates/nemesis-state" }
+nemesis-sysint = { path = "crates/nemesis-sysint" }
 nemesis-taskstore = { path = "crates/nemesis-taskstore" }
 nemesis-utils = { path = "crates/nemesis-utils" }
 nemesis-injector = { path = "crates/nemesis-injector" }

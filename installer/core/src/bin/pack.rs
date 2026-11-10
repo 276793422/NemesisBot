@@ -70,6 +70,8 @@ enum Cmd {
 }
 
 fn main() {
+    // 控制台 UTF-8（中文系统 GBK 控制台会把 UTF-8 stdout 打成乱码）。
+    setup_core::console::set_utf8_codepage();
     if let Err(e) = real_main() {
         eprintln!("[pack] 错误: {e:#}");
         let mut src = e.source();
@@ -108,7 +110,9 @@ fn real_main() -> anyhow::Result<()> {
                 zstd_level: level,
             })?;
             println!(
-                "打包完成: {}（{} 文件，payload {} → 压后 {:.1}MB，总长 {:.1}MB，压缩率 {:.0}%）",
+                // fmt_mb 自带「MB」后缀——占位用 {}（{:.1} 对字符串是截断，
+                // 会把「30.7MB」剪成「3」，2026-11-10 Linux E2E 实录）。
+                "打包完成: {}（{} 文件，payload {} → 压后 {}，总长 {}，压缩率 {:.0}%）",
                 out.display(),
                 stats.files,
                 fmt_mb(stats.uncompressed_total),

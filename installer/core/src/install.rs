@@ -378,6 +378,16 @@ fn perform_inner(
         let mut skeleton = vec![0u8; manifest.payload_offset as usize];
         pkg.read_exact(&mut skeleton)?;
         std::fs::write(staging.join(copy_name), &skeleton)?;
+        // Unix 执行位：副本是平台可执行（linux=uninstall），裸 write 按 umask
+        // 落 644 → 运行 rc 126「权限不够」（2026-11-10 Linux 全链 E2E 实录）。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                staging.join(copy_name),
+                std::fs::Permissions::from_mode(0o755),
+            )?;
+        }
     }
     std::fs::write(
         staging.join(RECORD_FILE),

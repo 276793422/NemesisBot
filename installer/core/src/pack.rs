@@ -3,7 +3,9 @@
 //!
 //! 纪律：
 //! - 文件收集**显式排序**（NTFS/ext4 目录序是平台实现细节——环境敏感清单）；
-//! - 编译中间物（pdb/lib/exp/ilk/obj）一律排除，绝不进 payload；
+//! - 编译中间物（pdb/lib/exp/ilk/obj）、测试工具目录（tests/）、皮肤目录
+//!   （skins/，支持在线下载，发行包不预置）与桌面/编辑器杂物（Thumbs.db
+//!   等）一律排除，绝不进 payload；
 //! - 必需文件缺席 **loud 拒绝打包**（绝不内嵌不完整载荷，计划 §7a ⑥）；
 //! - v1 不保留 Windows 特殊文件属性（hidden/system 在发行载荷中缺席，
 //!   README 诚实注记）；Unix 权限位经 manifest mode 保存。
@@ -20,6 +22,17 @@ use crate::manifest::{Manifest, ManifestFileEntry};
 
 /// 排除的编译中间物扩展名（小写匹配）。
 const EXCLUDED_EXTS: [&str; 5] = ["pdb", "lib", "exp", "ilk", "obj"];
+
+/// 排除的目录名（任何层级，小写匹配）。`tests/` 是构建脚本**故意** stage 进
+/// `bin/bin_*/tests/` 的测试工具（ai-server/cluster-test/integration-test/
+/// mcp-server，供本机开发流取用）——发行包边界在 pack 过滤（2026-11-10 用户
+/// 验收实录：16 文件包混入 ~16MB 测试 exe；不改 staging，删了会断开发流）。
+/// `skins/` 皮肤支持在线下载，发行包不预置（缺席 = 空表优雅降级，
+/// `scan_skins` 对目录缺席返回空表；用户拍板 2026-11-10）。
+const EXCLUDED_DIR_NAMES: [&str; 2] = ["tests", "skins"];
+
+/// 排除的杂物文件名（资源管理器/系统/编辑器误入包的经典产物，小写匹配）。
+const EXCLUDED_FILE_NAMES: [&str; 4] = ["thumbs.db", "desktop.ini", ".ds_store", ".gitignore"];
 
 /// 各平台必需文件（缺席 = loud 拒绝打包）。
 fn required_files(platform: &str) -> &'static [&'static str] {
@@ -44,14 +57,19 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
         let p = e.path();
+        let name = e.file_name().to_string_lossy().to_lowercase();
         if p.is_dir() {
+            if EXCLUDED_DIR_NAMES.contains(&name.as_str()) {
+                continue;
+            }
             walk(&p, out)?;
         } else {
             let ext = p
                 .extension()
                 .map(|x| x.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            if EXCLUDED_EXTS.contains(&ext.as_str()) {
+            if EXCLUDED_EXTS.contains(&ext.as_str()) || EXCLUDED_FILE_NAMES.contains(&name.as_str())
+            {
                 continue;
             }
             out.push(p);
@@ -159,7 +177,6 @@ pub fn run(opts: &PackOptions) -> Result<PackStats> {
             ));
         }
     }
-
     // ② manifest 条目（全量读入算 sha256——发行载荷 ≤ 几百 MB，一次读可承受；
     // tar 写入阶段用流式 append_data 不二次驻留）。
     let mut entries = Vec::new();
@@ -228,15 +245,19 @@ pub fn run(opts: &PackOptions) -> Result<PackStats> {
     let json = manifest.to_json_vec()?;
     let (blob, signed) = match &opts.sign_keys {
         Some(keys) => {
-            let kh = nemesis_verify::keygen::KeyHierarchy::load(
+            // SigningMaterial（非 KeyHierarchy）：sign 只需要叶私钥 + 全链三证书。
+            // CI mint-leaf 产出是 SignOnly 形态（root_sk 恒空——根私钥离线是设计
+            // 前提），KeyHierarchy::load 全量装载必拒；此 loader 与 exe-sign-tool
+            // sign 同源，本地全量 keys.json（Full 形态）同样容忍。
+            let mat = nemesis_verify::bundle::SigningMaterial::load(
                 keys.to_str()
                     .ok_or_else(|| anyhow!("keys 路径非 UTF-8: {}", keys.display()))?,
             )?;
             let signed = nemesis_verify::verify::sign_content_v4(
                 &json,
-                &kh.leaf_sk,
+                &mat.leaf_sk,
                 crate::pkgfile::now_unix(),
-                &kh.chain(),
+                &mat.chain(),
                 Some("NemesisBot Setup"),
             )?;
             (signed, true)
@@ -253,6 +274,14 @@ pub fn run(opts: &PackOptions) -> Result<PackStats> {
     out_file.write_all(&blob)?;
     out_file.write_all(&footer.encode())?;
     out_file.flush()?;
+    // Unix 执行位：包本体是「直接运行即安装器」的自执行形态（.run 惯例），
+    // File::create 按 umask 落 644 → 运行 rc 126（2026-11-10 Linux E2E 实录，
+    // 与卸载副本丢执行位同族）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&opts.out, std::fs::Permissions::from_mode(0o755))?;
+    }
     let out_len =
         payload_offset + payload_len + blob.len() as u64 + crate::format::FOOTER_SIZE as u64;
 
@@ -282,22 +311,36 @@ pub fn keygen(out: &Path) -> Result<String> {
 /// 原子写回（tmp + rename）。
 pub fn sign_file(file: &Path, keys: &Path) -> Result<()> {
     let content = std::fs::read(file)?;
-    let kh = nemesis_verify::keygen::KeyHierarchy::load(
+    // SigningMaterial（与 pack --sign 同 loader）：容忍 CI mint-leaf 的 SignOnly
+    // 分包形态与本地全量 keys.json（Full），要求只有叶私钥 + 全链三证书。
+    let mat = nemesis_verify::bundle::SigningMaterial::load(
         keys.to_str()
             .ok_or_else(|| anyhow!("keys 路径非 UTF-8: {}", keys.display()))?,
     )?;
     let signed = nemesis_verify::verify::sign_content_v4(
         &content,
-        &kh.leaf_sk,
+        &mat.leaf_sk,
         crate::pkgfile::now_unix(),
-        &kh.chain(),
+        &mat.chain(),
         Some("NemesisBot Setup"),
     )?;
     let tmp = file.with_extension("nbsetup-signing.tmp");
+    // 原子写回换 inode——unix 上保留原文件模式（包本体是可执行 .run；
+    // build --sign 链先 pack 后 pack sign，不保留则 ⑤ 的 755 被 ⑤b 打回 644）。
+    #[cfg(unix)]
+    let saved_mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(file)?.permissions().mode()
+    };
     {
         let mut f = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
         f.write_all(&signed)?;
         f.flush()?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(saved_mode))?;
     }
     std::fs::rename(&tmp, file)?;
     Ok(())

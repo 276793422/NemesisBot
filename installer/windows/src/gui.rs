@@ -312,6 +312,34 @@ fn request_close(ctx: &Context) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
 }
 
+/// 装载系统中文字体进 egui（默认字形集无 CJK——中文系统上向导文本全是
+/// 豆腐块，2026-11-10 用户实录）。候选按优先级探测，全部缺席（非中文
+/// 语言包系统）= 保持默认诚实降级。追加在族表**尾部** = 兜底语义：拉丁
+/// 字形仍走默认字体，CJK 字形落到中文字体。
+fn install_cjk_font(ctx: &egui::Context) {
+    const CANDIDATES: &[&str] = &[
+        "C:\\Windows\\Fonts\\msyh.ttc",   // 微软雅黑（Win10/11 中文标配）
+        "C:\\Windows\\Fonts\\simhei.ttf", // 黑体
+        "C:\\Windows\\Fonts\\simsun.ttc", // 宋体
+    ];
+    for path in CANDIDATES {
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let mut fonts = egui::FontDefinitions::default();
+        fonts
+            .font_data
+            .insert("nb_cjk".to_owned(), egui::FontData::from_owned(bytes));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            if let Some(list) = fonts.families.get_mut(&family) {
+                list.push("nb_cjk".to_owned());
+            }
+        }
+        ctx.set_fonts(fonts);
+        return;
+    }
+}
+
 /// GUI 安装向导入口（返回退出码）。检视失败直接错误对话框。
 pub fn run_install_wizard(package: std::path::PathBuf, default_dir: std::path::PathBuf) -> i32 {
     let info = match ops::inspect_package(&package) {
@@ -347,7 +375,14 @@ pub fn run_install_wizard(package: std::path::PathBuf, default_dir: std::path::P
             .with_title("NemesisBot 安装"),
         ..Default::default()
     };
-    let run_result = eframe::run_native("NemesisBot 安装", options, Box::new(|_cc| Box::new(app)));
+    let run_result = eframe::run_native(
+        "NemesisBot 安装",
+        options,
+        Box::new(|cc| {
+            install_cjk_font(&cc.egui_ctx);
+            Box::new(app)
+        }),
+    );
     if let Err(e) = run_result {
         eprintln!("GUI 运行失败: {e}");
         return 1;
@@ -355,12 +390,14 @@ pub fn run_install_wizard(package: std::path::PathBuf, default_dir: std::path::P
     exit_code.load(Ordering::SeqCst)
 }
 
-/// GUI 卸载入口（确认对话框 + 结果对话框；返回退出码）。
+/// GUI 卸载入口（确认对话框 + 结果对话框；返回退出码）。确认后走
+/// [`ops::run_uninstall_confirmed`]——路径级强制停止本目录运行实例
+/// （2026-11-10 用户拍板；他处部署不受影响）。
 pub fn run_uninstall_wizard(install_dir: &std::path::Path) -> i32 {
     let confirmed = rfd::MessageDialog::new()
         .set_title("卸载 NemesisBot")
         .set_description(format!(
-            "将从 {} 移除 NemesisBot。\n用户数据（~/.nemesisbot）与看板/日志保留。\n\n确定卸载？",
+            "将从 {} 移除 NemesisBot。\n用户数据（~/.nemesisbot）与看板/日志保留。\n正在运行的 NemesisBot 将被强制停止。\n\n确定卸载？",
             install_dir.display()
         ))
         .set_buttons(rfd::MessageButtons::YesNo)
@@ -368,9 +405,15 @@ pub fn run_uninstall_wizard(install_dir: &std::path::Path) -> i32 {
     if confirmed != rfd::MessageDialogResult::Yes {
         return 3;
     }
-    match ops::run_uninstall(install_dir) {
+    match ops::run_uninstall_confirmed(install_dir) {
         Ok(outcome) => {
             let mut msg = format!("卸载完成：删除 {} 个文件。", outcome.deleted);
+            if outcome.bots_stopped > 0 {
+                msg.push_str(&format!(
+                    "\n已强制停止 {} 个运行中的进程。",
+                    outcome.bots_stopped
+                ));
+            }
             if !outcome.failures.is_empty() {
                 msg.push_str(&format!(
                     "\n部分文件删除失败（可能被占用）：{:?}",

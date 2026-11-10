@@ -67,6 +67,9 @@ pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
 pub mod session;
+// 系统集成 CLI（system register/unregister/status/cert；安装器 spawn 契约面，
+// 恒编译——任何构建形态的安装器都要求 system 子命令在场）。
+pub mod system;
 #[cfg(feature = "ziwei")]
 pub mod ziwei;
 // 版本自切换通道 CLI（check/status 离线可用；apply 触发 gateway 侧编排）。

@@ -4417,6 +4417,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-sysint"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "hex",
+ "sha2",
+ "tempfile",
+ "windows-sys 0.59.0",
+ "winreg 0.55.0",
+]
+
+[[package]]
 name = "nemesis-taskstore"
 version = "0.1.0"
 dependencies = [
@@ -4747,6 +4760,7 @@ dependencies = [
  "nemesis-services",
  "nemesis-skills",
  "nemesis-state",
+ "nemesis-sysint",
  "nemesis-taskstore",
  "nemesis-tools",
  "nemesis-types",
@@ -5666,7 +5680,7 @@ dependencies = [
  "shared_library",
  "shell-words",
  "winapi",
- "winreg",
+ "winreg 0.10.1",
 ]
 
 [[package]]
@@ -8946,6 +8960,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
 dependencies = [
  "winapi",
+]
+
+[[package]]
+name = "winreg"
+version = "0.55.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

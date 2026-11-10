@@ -3,7 +3,7 @@ name = "setup-windows"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "NemesisBot Windows 安装器骨架：egui 向导 + /S 静默 + HKCU ARP/Run 键"
+description = "NemesisBot Windows 安装器骨架：egui 向导 + /S 静默 + spawn bot 系统集成"
 
 [[bin]]
 name = "nbsetup-win"
@@ -14,8 +14,13 @@ setup-core = { path = "../core" }
 
 [target.'cfg(windows)'.dependencies]
 anyhow.workspace = true
-winreg = "0.55"
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+] }
 egui = "0.27"
 eframe = { version = "0.27", default-features = false, features = ["glow", "default_fonts"] }
 rfd = "0.14"

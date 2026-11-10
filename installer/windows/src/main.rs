@@ -10,8 +10,16 @@
 //! 安装包 = 本 exe 自身（NBSETUP1 布局：骨架 + payload + manifest + 尾注）；
 //! `--package <file>` 为开发/测试覆盖入口。
 //!
+//! 子系统：release = GUI（windows_subsystem = "windows"）——双击零参数
+//! **无控制台黑框**（2026-11-10 用户诉求）；命令行入口在 main 最前面
+//! AttachConsole 回接父控制台（重定向形态不需要——句柄经 STARTUPINFO
+//! 直传），debug 构建保持控制台子系统（开发态 println 可见）。
+//!
 //! 退出码：0 成功 / 1 通用（含降级被拒）/ 2 完整性 / 3 取消 / 4 磁盘不足
 //! / 5 签名风险未确认 / 6 bot 正在运行（ops::exit_code_of 单点映射）。
+
+// GUI 子系统（仅 release）：双击无黑框。必须放在所有 item 之前。
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod gui;
 mod ops;
@@ -119,6 +127,13 @@ nbsetup-win — NemesisBot Windows 安装器
 ";
 
 fn main() {
+    // GUI 子系统下回接父控制台（双击 = 父无控制台，静默失败无害；
+    // --silent/--uninstall 从控制台启动 = stdout/stderr 落回原终端）。
+    // 必须先于任何 println!——Rust std 首次用 stdout 才取句柄，attach
+    // 后取到的才是控制台句柄。
+    setup_core::console::attach_parent_console();
+    // 控制台 UTF-8（中文系统 GBK 控制台会把 UTF-8 stdout 打成乱码）。
+    setup_core::console::set_utf8_codepage();
     let args = parse_args();
     if args.help {
         print!("{HELP}");

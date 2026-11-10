@@ -10,6 +10,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::Result;
 use sha2::{Digest, Sha256};
@@ -527,6 +528,332 @@ fn payload_sha256_recorded_in_manifest() -> Result<()> {
     assert_eq!(
         info.manifest.total_size, expected_total,
         "total_size 聚合口径"
+    );
+    Ok(())
+}
+
+// ===== 运行实例路径级识别与强制停止编排（procs 模块，跨平台） =====
+
+use crate::procs::{self, BotProcess};
+
+fn bot(pid: u32, path: &str) -> BotProcess {
+    BotProcess {
+        pid,
+        exe_path: path.into(),
+    }
+}
+
+#[test]
+fn bots_under_dir_scopes_subtree_and_boundary() {
+    let dir = if cfg!(windows) {
+        Path::new(r"C:\apps\NemesisBot")
+    } else {
+        Path::new("/opt/NemesisBot")
+    };
+    let in_bot = if cfg!(windows) {
+        bot(1, r"C:\apps\NemesisBot\nemesisbot.exe")
+    } else {
+        bot(1, "/opt/NemesisBot/nemesisbot")
+    };
+    let sibling = if cfg!(windows) {
+        bot(2, r"C:\apps\NemesisBot2\nemesisbot.exe")
+    } else {
+        bot(2, "/opt/NemesisBot2/nemesisbot")
+    };
+    let ancestor = if cfg!(windows) {
+        bot(3, r"C:\apps\nemesisbot.exe")
+    } else {
+        bot(3, "/opt/nemesisbot")
+    };
+    let unreadable = bot(4, "");
+    let elsewhere = if cfg!(windows) {
+        bot(5, r"D:\other\nemesisbot.exe")
+    } else {
+        bot(5, "/home/x/nemesisbot")
+    };
+    let scoped = procs::bots_under_dir(
+        &[
+            in_bot.clone(),
+            sibling,
+            ancestor,
+            unreadable.clone(),
+            elsewhere,
+        ],
+        dir,
+    );
+    // 前缀边界（NemesisBot2 不匹配）、祖先目录不匹配、路径不可读不归属——
+    // 只留子树内的那个。
+    assert_eq!(scoped, vec![in_bot], "只留目录子树内实例: {scoped:?}");
+}
+
+#[test]
+#[cfg(windows)]
+fn bots_under_dir_windows_case_insensitive_and_trailing_sep() {
+    let dir = Path::new(r"c:\APPS\NemesisBot\");
+    let got = procs::bots_under_dir(&[bot(7, r"C:\APPS\NEMESISBOT\nemesisbot.EXE")], dir);
+    assert_eq!(got.len(), 1, "大小写与尾分隔符均归一: {got:?}");
+}
+
+#[test]
+fn stop_bots_in_dir_kills_only_scoped_and_verifies() -> Result<()> {
+    let dir = Path::new("/t/NB");
+    let ours = bot(42, "/t/NB/nemesisbot");
+    let other = bot(99, "/elsewhere/nemesisbot");
+    let killed: std::sync::Mutex<Vec<Vec<u32>>> = std::sync::Mutex::new(Vec::new());
+    let query_counts = std::sync::atomic::AtomicUsize::new(0);
+    let query = || -> Result<Vec<BotProcess>> {
+        let n = query_counts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n == 0 {
+            // 首查：本目录 1 个 + 他处 1 个（scope 外不可杀）。
+            Ok(vec![ours.clone(), other.clone()])
+        } else {
+            // 复核：全清。
+            Ok(vec![other.clone()])
+        }
+    };
+    let kill = |pids: &[u32]| -> Result<()> {
+        killed.lock().expect("lock").push(pids.to_vec());
+        Ok(())
+    };
+    let stopped = procs::stop_bots_in_dir(dir, &query, &kill, 3, Duration::ZERO)?;
+    assert_eq!(stopped, vec![ours], "返回被停止清单");
+    assert_eq!(
+        killed.lock().expect("lock").as_slice(),
+        [&[42u32][..]],
+        "只杀 scope 内 PID"
+    );
+    Ok(())
+}
+
+#[test]
+fn stop_bots_in_dir_no_targets_skips_kill() -> Result<()> {
+    let killed = std::sync::atomic::AtomicBool::new(false);
+    let query = || -> Result<Vec<BotProcess>> { Ok(vec![bot(1, "/other/nemesisbot")]) };
+    let kill = |_: &[u32]| -> Result<()> {
+        killed.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    };
+    let stopped = procs::stop_bots_in_dir(Path::new("/t/NB"), &query, &kill, 3, Duration::ZERO)?;
+    assert!(stopped.is_empty(), "目录内无实例 = 空清单");
+    assert!(
+        !killed.load(std::sync::atomic::Ordering::SeqCst),
+        "无目标不调用 kill"
+    );
+    Ok(())
+}
+
+#[test]
+fn stop_bots_in_dir_survivors_after_retry_is_error() {
+    let dir = Path::new("/t/NB");
+    let ours = bot(7, "/t/NB/nemesisbot");
+    let query = || -> Result<Vec<BotProcess>> { Ok(vec![ours.clone()]) };
+    let kill = |_: &[u32]| -> Result<()> { Ok(()) }; // 假 kill 无效
+    let err = procs::stop_bots_in_dir(dir, &query, &kill, 3, Duration::ZERO)
+        .expect_err("复核不清零必须报错");
+    let survive = err
+        .downcast_ref::<procs::BotsSurvive>()
+        .expect("错误类型必须是 BotsSurvive");
+    assert_eq!(survive.0, vec![ours.clone()]);
+    assert!(
+        survive.to_string().contains("PID 7"),
+        "人读文本带 PID: {}",
+        survive
+    );
+}
+
+#[test]
+fn stop_bots_in_dir_retry_then_success() -> Result<()> {
+    let dir = Path::new("/t/NB");
+    let ours = bot(8, "/t/NB/nemesisbot");
+    let query_counts = std::sync::atomic::AtomicUsize::new(0);
+    let query = || -> Result<Vec<BotProcess>> {
+        let n = query_counts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n <= 1 {
+            // 首查 + 第一轮复核仍在（句柄释放瞬时窗口）。
+            Ok(vec![ours.clone()])
+        } else {
+            Ok(vec![])
+        }
+    };
+    let kill = |_: &[u32]| -> Result<()> { Ok(()) };
+    let stopped = procs::stop_bots_in_dir(dir, &query, &kill, 3, Duration::ZERO)?;
+    assert_eq!(stopped, vec![ours], "重试窗口内清零 = 成功");
+    Ok(())
+}
+
+// ===== Unix 执行位回归（2026-11-10 Linux 全链 E2E 实录：裸 write/原子写回
+// 按 umask 落 644，包本体与卸载副本运行 rc 126「权限不够」）——只在 unix
+// 编译执行（Windows 无执行位语义，诚实缺席）。=====
+
+#[test]
+#[cfg(unix)]
+fn pack_output_and_shell_sign_keep_exec_bit_on_unix() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir()?;
+    let payload_dir = tmp.path().join("payload");
+    make_payload(&payload_dir, "exec-bit")?;
+    let pkg = pack_into(tmp.path(), &payload_dir, "1.0.0", None, "execbit.pkg")?;
+
+    let mode = std::fs::metadata(&pkg)?.permissions().mode();
+    assert_eq!(
+        mode & 0o777,
+        0o755,
+        "pack 输出必须自带执行位（.run 直接运行形态）"
+    );
+
+    // 整包外壳签名（sign_file = tmp + rename 换 inode）不得打回 644。
+    let keys = make_keys(tmp.path(), "execbit")?;
+    pack::sign_file(&pkg, &keys.keys_path)?;
+    let mode_after = std::fs::metadata(&pkg)?.permissions().mode();
+    assert_eq!(
+        mode_after & 0o777,
+        0o755,
+        "外壳签名原子写回必须保留原执行位"
+    );
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn uninstall_copy_has_exec_bit_on_unix() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir()?;
+    let payload_dir = tmp.path().join("payload");
+    make_payload(&payload_dir, "copyexec")?;
+    // linux 平台包：必需文件闸要 `nemesisbot`（非 .exe）。
+    std::fs::write(payload_dir.join("nemesisbot"), "fake-linux-bot")?;
+    let out = tmp.path().join("linux.pkg");
+    std::fs::write(tmp.path().join("skeleton.bin"), SKELETON)?;
+    pack::run(&PackOptions {
+        payload_dir: payload_dir.clone(),
+        skeleton: tmp.path().join("skeleton.bin"),
+        out: out.clone(),
+        bot_version: "1.0.0".to_string(),
+        platform: "linux".to_string(),
+        sign_keys: None,
+        zstd_level: 3,
+    })?;
+
+    let target = tmp.path().join("target");
+    let res = install::perform(
+        &out,
+        &InstallOptions {
+            target_dir: target.clone(),
+            force_downgrade: false,
+            sig_policy: SigPolicy::Enforce { accept_risk: false },
+            keep_uninstall_copy: true,
+        },
+        None,
+    )?;
+    // 5 载荷（make_payload 4 件 + linux 必需的 nemesisbot）+ 卸载副本 + install.json。
+    assert_eq!(res.files_installed, 7);
+
+    let copy = target.join("uninstall");
+    let mode = std::fs::metadata(&copy)?.permissions().mode();
+    assert_eq!(
+        mode & 0o777,
+        0o755,
+        "卸载副本必须带执行位（linux 卸载入口）"
+    );
+    Ok(())
+}
+
+// ===== 提交窗口中途失败（升级 + 目标文件被独占锁定——Windows 杀软深扫/
+// 编辑器占用的真实形态）：staging 零残留、旧 install.json 完好、被锁文件
+// 字节未破坏；已 rename 的部分保持新版（半新半旧窗口）= 设计语义——不做
+// 备份回滚（IO 翻倍 + 丢同卷 rename 原子性），自愈路径 = 重试即修复重装
+// （install.json 是旧账本，plan() 正确裁决）。只在 Windows 编译执行
+// （share_mode 独占锁是 win32 语义）。=====
+#[test]
+#[cfg(windows)]
+fn commit_window_locked_target_file_fails_clean_and_record_survives() -> Result<()> {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let tmp = tempfile::tempdir()?;
+    let target = tmp.path().join("target");
+
+    // ① v1 全新安装落位（5 件 = 4 载荷 + install.json）。
+    let payload_v1 = tmp.path().join("payload_v1");
+    make_payload(&payload_v1, "v1-data")?;
+    let pkg_v1 = pack_into(tmp.path(), &payload_v1, "1.0.0", None, "v1.pkg")?;
+    install::perform(
+        &pkg_v1,
+        &install_opts(&target, SigPolicy::PreApproved),
+        None,
+    )?;
+    let v1_record = std::fs::read_to_string(target.join("install.json"))?;
+    let exe_v1_bytes = std::fs::read(target.join("nemesisbot.exe"))?;
+
+    // ② 锁定 nemesisbot.exe（share_mode=FILE_SHARE_READ：允许读、不允许
+    //    删/换名——rename-over 必失败 ERROR_SHARING_VIOLATION；share_mode(0)
+    //    会连本进程后续读断言一起挡掉，os error 32 实录）。
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(target.join("nemesisbot.exe"))?;
+
+    // ③ v2 升级安装 → 提交循环 rename 到被锁目标 → 失败。
+    let payload_v2 = tmp.path().join("payload_v2");
+    make_payload(&payload_v2, "v2-data")?;
+    let pkg_v2 = pack_into(tmp.path(), &payload_v2, "2.0.0", None, "v2.pkg")?;
+    let result = install::perform(
+        &pkg_v2,
+        &install_opts(&target, SigPolicy::PreApproved),
+        None,
+    );
+    assert!(result.is_err(), "锁定目标的升级提交必须失败");
+    assert!(
+        typed_of(&result.unwrap_err()).is_none(),
+        "失败是提交流 IO 错误，不是 Integrity 域"
+    );
+
+    // ④ 失败现场断言：
+    //    - staging 零残留；
+    let staging_left = std::fs::read_dir(&target)?.filter_map(|e| e.ok()).any(|e| {
+        e.file_name()
+            .to_string_lossy()
+            .starts_with(".nbsetup-stage")
+    });
+    assert!(!staging_left, "提交失败后 staging 必须清掉");
+    //    - 旧 install.json 完好（重试自愈的依据：plan() 走修复重装/升级裁决）；
+    assert_eq!(
+        std::fs::read_to_string(target.join("install.json"))?,
+        v1_record,
+        "install.json 哨兵最后提交——失败时旧账本必须原样"
+    );
+    //    - 被锁文件字节未破坏（rename 失败 = 目标原样）；
+    assert_eq!(
+        std::fs::read(target.join("nemesisbot.exe"))?,
+        exe_v1_bytes,
+        "被锁目标字节必须原样"
+    );
+    //    - 字母序在前的文件已 rename = 半新半旧窗口（诚实语义：无备份回滚）。
+    assert_eq!(
+        std::fs::read_to_string(target.join("README.md"))?,
+        "# synthetic payload",
+        "载荷公共文件照常提交"
+    );
+
+    // ⑤ 锁释放后重试 → 自愈（修复重装/升级成功，账本翻到 v2）。
+    drop(lock);
+    install::perform(
+        &pkg_v2,
+        &install_opts(&target, SigPolicy::PreApproved),
+        None,
+    )?;
+    // read_record 是私有面——账本版本用 serde_json 直读验证。
+    let record_after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(target.join("install.json"))?)?;
+    assert_eq!(
+        record_after["bot_version"], "2.0.0",
+        "重试自愈后账本=新版本"
+    );
+    assert_eq!(
+        std::fs::read(target.join("nemesisbot.exe"))?,
+        std::fs::read(payload_v2.join("nemesisbot.exe"))?,
+        "重试后 exe 翻到 v2 字节"
     );
     Ok(())
 }
