@@ -155,8 +155,15 @@ fn gate_and_hash(_security: Option<()>, path: &Path, _channel: &str) -> Result<S
 /// URL scheme 前缀判定（RFC 3986 §3.1：scheme 大小写不敏感——`HTTP://`
 /// 与 `http://` 等价）。字节级前缀比较会把大写形态误判成本地路径引用，
 /// 下游假报「文件不存在」（BUG-20261106-034）。
+/// 前缀截取走 `str::get`（BUG-20261110-046）：裸 `&url[..scheme.len()]`
+/// 在偏移落在多字节字符内部时直接 panic（media.url 用户可控，一条构造
+/// 消息即可打崩消息接纳任务）；`get` 返回 None = 非 char 边界 = 不可能
+/// 是 ASCII scheme 前缀，false 与语义精确一致。
 fn url_has_scheme(url: &str, scheme: &str) -> bool {
-    url.len() >= scheme.len() && url[..scheme.len()].eq_ignore_ascii_case(scheme)
+    match url.get(..scheme.len()) {
+        Some(prefix) => prefix.eq_ignore_ascii_case(scheme),
+        None => false,
+    }
 }
 
 fn is_http_url(url: &str) -> bool {

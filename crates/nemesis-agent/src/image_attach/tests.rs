@@ -916,6 +916,41 @@ fn url_scheme_case_insensitive_helpers() {
     assert!(!is_data_url("http://a"));
 }
 
+// ---------------------------------------------------------------------------
+// BUG-20261110-046：url_has_scheme 定长字节切片在多字节字符内部 panic
+// ---------------------------------------------------------------------------
+
+#[test]
+fn url_scheme_helpers_never_panic_on_multibyte_prefix() {
+    // 修复前：url[..scheme.len()] 字节切片在多字节字符内部直接 panic
+    // （byte index N is not a char boundary）。media.url 是用户可控字符串
+    // （chat.send {media:[{path:…}]} 经 resolve_media_ref 原样透传），
+    // 一条构造消息即可打崩 AgentLoop 消息接纳任务。
+    // "http://" = 7 字节："ab中图://x" 中「图」占 bytes 5-8 → 字节 7 在其内部。
+    assert!(!is_http_url("ab中图://x"));
+    // "https://" = 8 字节："ab😀中://x" 中「中」占 bytes 6-9 → 字节 7/8 均在其内部。
+    assert!(!is_http_url("ab😀中://x"));
+    // "data:" = 5 字节："ab😀xx" 中 😀 占 bytes 2-6 → 字节 5 在其内部。
+    assert!(!is_data_url("ab😀xx"));
+    // 修复后语义不变：真 scheme 前缀恒命中（ASCII 前缀自身保证边界对齐）。
+    assert!(is_http_url("http://a"));
+    assert!(is_data_url("data:image/png;base64,AA"));
+}
+
+#[test]
+fn attach_media_multibyte_url_completes_with_honest_note() {
+    // 端到端可达面：attach_turn_images 收到多字节前缀 media url 要完成
+    // 处理（当本地路径验真失败 → 诚实注记），不 panic。修复前
+    // is_http_url 当场打崩整条消息接纳路径。
+    let outcome = attach_turn_images("看图", &[media_ref("ab中图://x")], None, None, "web", None);
+    assert!(outcome.attached.is_empty());
+    assert!(
+        outcome.notes.iter().any(|n| n.contains("图片未附加")),
+        "应有诚实注记，got: {:?}",
+        outcome.notes
+    );
+}
+
 #[tokio::test]
 async fn t9_uppercase_scheme_url_prefetched() {
     // 大写 scheme URL 必须走正常预取链（mock server 实拉）：修复前被误判
