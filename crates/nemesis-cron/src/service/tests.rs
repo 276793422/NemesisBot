@@ -3089,6 +3089,67 @@ fn reserved_names_rejected_on_rename_paths_and_name_unchanged() {
 }
 
 #[test]
+fn internal_reserved_jobs_cannot_be_renamed_out() {
+    // BUG-20261111-069：改名**出**保留命名空间此前不设闸——内部作业
+    // （message 恒空，空 message 闸按当前名豁免）被改名成用户名后：
+    // ①豁免依据失真，enabled + 空 message 的用户名空转僵尸绕闸成立；
+    // ②autopilot/dreaming 同步按名查找挂载作业 miss → 重复装配（双
+    // 触发）。封死：当前名命中保留前缀 + 请求带 name = loud 拒绝
+    // （schedule/enabled patch 不受影响——sync 调用形态不传 name）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("cron.json").to_string_lossy().to_string();
+    let svc = CronService::new(&path);
+    let ap = svc
+        .add_job_internal(
+            "board-ap:11",
+            every_60s(),
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+
+    // update_job 改名出保留命名空间 loud 拒绝。
+    let err = svc
+        .update_job(&ap.id, Some("innocent-user-job"), None)
+        .unwrap_err();
+    assert!(err.contains("不可改名"), "update_job: {err}");
+
+    // patch_job 同闸（含 name+message 同 patch 的绕闸形态一并封死）。
+    let err = svc
+        .patch_job(
+            &ap.id,
+            &CronJobPatch {
+                name: Some("innocent-user-job".to_string()),
+                message: Some("".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+    assert!(err.contains("不可改名"), "patch_job: {err}");
+
+    // Err = 无副作用：名字 / message / enabled 原样保留。
+    let job = svc.get_job(&ap.id).unwrap();
+    assert_eq!(job.name, "board-ap:11");
+    assert!(job.enabled);
+    assert_eq!(job.payload.message, "");
+
+    // sync 调用形态不受影响：不带 name 的 patch 照常放行。
+    svc.patch_job(
+        &ap.id,
+        &CronJobPatch {
+            enabled: Some(true),
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| panic!("不带 name 的 patch 不得被改名闸拒绝: {e}"));
+}
+
+#[test]
 fn update_job_schedule_on_disabled_job_keeps_next_run_none() {
     // update_job 的 schedule 分支此前不带 enabled 守卫裸写
     // next_run（patch_job 有 `if job.enabled`）——禁用作业带上幻影「下次
@@ -4595,9 +4656,14 @@ fn cron_tick_loop_survives_handler_panic() {
         svc.arm();
         svc.start().await.unwrap();
     });
-    // tick 粒度是 1s（interval(Duration::from_secs(1))，首拍即触发）：留
-    // ~2.5s 窗口稳拿 ≥2 拍（1.2s 窗口实测调度抖动下只逮到 1 拍假红）。
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    // tick 粒度是 1s（interval(Duration::from_secs(1))，首拍即触发）：安静
+    // 机器 ~1s 即拿满 2 拍。旧固定 2.5s 窗在负载下假红（R812 实录：全量
+    // 并行 battery 两连红——fs 落盘拉伸拍距，1.2s→2.5s 的一次放宽已被
+    // 实证不够），改轮询等待：条件满足即走，负载下最多 10s 再定性。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while ticks.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
     svc.stop();
     let n = ticks.load(Ordering::SeqCst);
     assert!(
