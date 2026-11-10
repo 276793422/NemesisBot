@@ -241,7 +241,15 @@ impl SkillInstaller {
         let Ok(entries) = std::fs::read_dir(&root) else {
             return;
         };
-        let cutoff = std::time::SystemTime::now() - Duration::from_secs(24 * 3600);
+        // 时钟早于 epoch+24h（无 RTC 虚机/容器时钟漂到 1970-01-01）时
+        // checked_sub 返 None——裸减 `now - 24h` 在此场景 panic。cutoff
+        // 拿不到时跳过本轮清扫：best-effort 清扫（见函数文档）保守不删，
+        // 与同文件 new_install_tx 的 unwrap_or(0) 同一容错哲学。
+        let Some(cutoff) = std::time::SystemTime::now().checked_sub(Duration::from_secs(24 * 3600))
+        else {
+            debug!("sweeping skill staging skipped: system clock earlier than epoch+24h");
+            return;
+        };
         for ent in entries.flatten() {
             let stale = ent
                 .metadata()
