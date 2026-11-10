@@ -201,7 +201,7 @@ pub fn set_autostart_at(path: &str, target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 摘 Run 自启值（值缺席不报错）。
+/// 摘 Run 自启值（值缺席不报错；其余删除失败显式报——假报 removed 比失败更糟）。
 pub fn remove_autostart_at(path: &str) -> Result<()> {
     use winreg::RegKey;
     use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE};
@@ -209,8 +209,13 @@ pub fn remove_autostart_at(path: &str) -> Result<()> {
     let key = hkcu
         .open_subkey_with_flags(path, KEY_WRITE)
         .context("打开 Run 键失败")?;
-    let _ = key.delete_value(content::APP_NAME);
-    Ok(())
+    match key.delete_value(content::APP_NAME) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            Err(anyhow::Error::new(e).context(format!("删 Run 自启值失败: {}", content::APP_NAME)))
+        }
+    }
 }
 
 /// ARP 摘要读数（None = 键缺席）。

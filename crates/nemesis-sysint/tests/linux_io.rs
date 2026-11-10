@@ -264,3 +264,44 @@ fn facade_unregister_is_idempotent_with_empty_home() -> Result<()> {
     );
     Ok(())
 }
+
+// ---------- 删除失败必须说话（BUG-20261111-070 回归锁） ----------
+
+#[test]
+fn unregister_removal_failure_goes_to_warnings_not_false_removed() -> Result<()> {
+    let _env = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir()?;
+    let _guard = EnvGuard::redirect_home(tmp.path());
+
+    // 确定性制造「在场但删不掉」：条目建成目录 → remove_file 撞
+    // IsADirectory 必失败。删除失败必须进 warnings 且不得假报 removed
+    //（假成功会让卸载链退码 0 + 残留悬挂 symlink 指向已删安装目录）。
+    std::fs::create_dir_all(tmp.path().join(".local/bin/nemesisbot"))?;
+    std::fs::create_dir_all(tmp.path().join("applications/nemesisbot.desktop"))?;
+
+    let rep = unregister(Path::new("/opt/NemesisBot"));
+    assert!(
+        rep.warnings.iter().any(|w| w.contains("符号链接")),
+        "符号链接删除失败必须进 warnings: {:?}",
+        rep.warnings
+    );
+    assert!(
+        rep.warnings.iter().any(|w| w.contains("桌面入口")),
+        ".desktop 删除失败必须进 warnings: {:?}",
+        rep.warnings
+    );
+    assert!(
+        !rep.removed.iter().any(|r| r.contains("符号链接")),
+        "符号链接删除失败不得假报 removed: {:?}",
+        rep.removed
+    );
+    assert!(
+        !rep.removed.iter().any(|r| r.contains("桌面入口")),
+        ".desktop 删除失败不得假报 removed: {:?}",
+        rep.removed
+    );
+    // 条目原样保留（确实没删成）。
+    assert!(tmp.path().join(".local/bin/nemesisbot").is_dir());
+    assert!(tmp.path().join("applications/nemesisbot.desktop").is_dir());
+    Ok(())
+}

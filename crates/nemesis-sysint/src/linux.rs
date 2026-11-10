@@ -126,10 +126,10 @@ pub fn unregister(_install_dir: &Path) -> UnregisterReport {
     // ① symlink。
     if let Ok(p) = local_bin_path() {
         match std::fs::symlink_metadata(&p) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&p);
-                rep.removed.push("命令符号链接（~/.local/bin）".into());
-            }
+            Ok(_) => match std::fs::remove_file(&p) {
+                Ok(()) => rep.removed.push("命令符号链接（~/.local/bin）".into()),
+                Err(e) => rep.warnings.push(format!("符号链接删除: {e}")),
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => rep.warnings.push(format!("符号链接: {e}")),
         }
@@ -137,10 +137,10 @@ pub fn unregister(_install_dir: &Path) -> UnregisterReport {
     // ② .desktop。
     if let Ok(p) = desktop_entry_path() {
         match std::fs::symlink_metadata(&p) {
-            Ok(_) => {
-                let _ = std::fs::remove_file(&p);
-                rep.removed.push("桌面入口（XDG .desktop）".into());
-            }
+            Ok(_) => match std::fs::remove_file(&p) {
+                Ok(()) => rep.removed.push("桌面入口（XDG .desktop）".into()),
+                Err(e) => rep.warnings.push(format!("桌面入口删除: {e}")),
+            },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => rep.warnings.push(format!("桌面入口: {e}")),
         }
