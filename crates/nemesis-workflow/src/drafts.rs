@@ -273,6 +273,10 @@ impl DraftStore {
     fn load_workflow(&self, stem: &str) -> Result<Workflow, String> {
         let text = std::fs::read_to_string(self.draft_path(stem))
             .map_err(|e| format!("read draft {:?}: {}", stem, e))?;
+        // 深度闸（BUG-20261110-044 同族接线）：草稿可由模型生成写入
+        //（workflow_chat 辅助编辑），serde_yaml 深嵌套栈溢出闸同 SKILL.md。
+        nemesis_utils::yaml_depth::check_yaml_nesting_depth(&text)
+            .map_err(|e| format!("parse draft {:?}: {}", stem, e))?;
         serde_yaml::from_str(&text).map_err(|e| format!("parse draft {:?}: {}", stem, e))
     }
 

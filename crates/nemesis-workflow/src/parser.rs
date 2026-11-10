@@ -11,6 +11,13 @@ use crate::types::Workflow;
 
 /// Parse a YAML or JSON byte slice into a Workflow definition.
 pub fn parse(data: &[u8]) -> Result<Workflow, String> {
+    // YAML 嵌套深度词法闸（BUG-20261110-044 同族接线）：serde_yaml 0.9
+    // 递归下降对深嵌套栈溢出（abort 不可捕获）；工作流定义文件可被模型
+    // file-write 写入（defs/drafts 目录），与远端 SKILL.md 同一不可信
+    // 输入面。JSON 字节也过此门（YAML 1.2 超集）——合法 workflow 深度
+    // ≤10，64 上限不误伤（serde_json 直解路径另有原生 128 层递归闸）。
+    let text = String::from_utf8_lossy(data);
+    nemesis_utils::yaml_depth::check_yaml_nesting_depth(&text)?;
     // Try YAML first (YAML is a superset of JSON)
     serde_yaml::from_slice(data).map_err(|e| format!("parse error: {}", e))
 }
