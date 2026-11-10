@@ -1474,6 +1474,14 @@ fn render_inline(text: &str) -> String {
         idx += 1;
     }
 
+    // 奇数个孤立标记（「3 * 4 = 12」「wildcard * matches」）会让 <i> 悬空
+    // 不闭合——Telegram HTML parse mode 拒收不闭合标签，sendMessage 400
+    // → 整块回退纯文本，同块内全部格式（代码/加粗/链接）丢失。收尾补
+    // 闭合，输出恒平衡。
+    if in_italic {
+        out.push_str("</i>");
+    }
+
     out
 }
 

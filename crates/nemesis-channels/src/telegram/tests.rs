@@ -417,6 +417,24 @@ fn test_markdown_combined_bold_and_italic() {
     );
 }
 
+/// 奇数个孤立标记（BUG-20261111-063）：<i> 收尾必须补闭合——Telegram
+/// HTML parse mode 拒收不闭合标签，sendMessage 400 → 整块回退纯文本，
+/// 同块内全部格式丢失。
+#[test]
+fn test_markdown_odd_italic_marker_closes_dangling_tag() {
+    // 单个孤立 * → <i> 收尾闭合，输出恒平衡。
+    let result = TelegramChannel::markdown_to_telegram_html("3 * 4 = 12");
+    assert_eq!(result, "3 <i> 4 = 12</i>");
+
+    // 三个孤立标记：一开一合 + 悬空闭合。
+    let result = TelegramChannel::markdown_to_telegram_html("a * b * c * d");
+    assert_eq!(result, "a <i> b </i> c <i> d</i>");
+
+    // 孤立 _ 同处理。
+    let result = TelegramChannel::markdown_to_telegram_html("var _ foo");
+    assert_eq!(result, "var <i> foo</i>");
+}
+
 #[test]
 fn test_markdown_links_preserved() {
     let result = TelegramChannel::markdown_to_telegram_html("[text](url)");
