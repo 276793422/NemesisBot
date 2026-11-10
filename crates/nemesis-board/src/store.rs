@@ -51,6 +51,14 @@ pub const PARK_NOTICE_MARK: &str = "自动派发暂缓";
 /// = 停滞徽标静默失效）。
 pub const STALL_MARKER: &str = "⚠ 执行档案迟迟未落地";
 
+/// msg_dedup 幂等缓存行 TTL（秒）。缓存行（含缓存的首响 JSON）随上行
+/// 发言只增不减——created_at 列自 v7 建表就位但从未有消费方；家族对照
+/// （chat_dedup LRU 128 + FIFO 256 / task_result_store 7d TTL /
+/// transfer dedup 随 sweep 清）全都有逐出，本表是唯一漏网。重试风暴的
+/// 时间尺度是秒级分钟级，7 天窗口对幂等语义绰绰有余（chat_dedup 同款
+/// 「幂等窗口有限是可接受语义，防的是重试风暴而非永久唯一性约束」口径）。
+const MSG_DEDUP_TTL_SECS: i64 = 7 * 24 * 3600;
+
 /// 送达失败重试退避阶梯：第 n 次失败后等 `min(1800, 60 * 2^(n-1))`
 /// 秒再重试——1m→2m→4m→8m→16m→30m 封顶。0 次失败 = 0（尚未失败立即可试）。
 /// 纯函数单测钉死；调用方（sweep）拿 DB 派生的失败次数喂入。
@@ -100,6 +108,19 @@ impl BoardStore {
             [],
         )
         .map_err(|e| format!("seed issue_counter: {e}"))?;
+        // msg_dedup 幂等缓存 TTL 清扫（BUG-20261110-042，best-effort：清扫
+        // 失败不阻断开库——缓存多活几天无害）。open 是全进程唯一开库咽喉
+        // 点（gateway 常驻 + CLI 短命进程都过这里），放这里 = 单点覆盖。
+        match conn.execute(
+            "DELETE FROM msg_dedup WHERE created_at < ?1",
+            params![Self::now() - MSG_DEDUP_TTL_SECS],
+        ) {
+            Ok(n) if n > 0 => tracing::info!(
+                "board: swept {n} expired msg_dedup rows (TTL {MSG_DEDUP_TTL_SECS}s)"
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("board: msg_dedup TTL sweep failed (non-fatal): {e}"),
+        }
         Ok(Self {
             conn: Mutex::new(conn),
             asset_signing: std::sync::OnceLock::new(),
@@ -4481,6 +4502,28 @@ fn append_channel_message_on(
     } else {
         new.mtype.clone()
     };
+    // parent_id 端点校验（同 add_comment_on：悬空 / 跨频道引用拒绝；
+    // 端点存在 + id 单调 = 结构性无环）。
+    if let Some(pid) = new.parent_id {
+        let parent_channel: Option<i64> = conn
+            .query_row(
+                "SELECT channel_id FROM channel_message WHERE id = ?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match parent_channel {
+            None => return Err(format!("parent message {pid} not found")),
+            Some(pch) if pch != new.channel_id => {
+                return Err(format!(
+                    "parent message {pid} belongs to channel {pch}, not {}",
+                    new.channel_id
+                ));
+            }
+            Some(_) => {}
+        }
+    }
     let now = BoardStore::now();
     conn.execute(
         "INSERT INTO channel_message
@@ -4525,6 +4568,30 @@ fn add_comment_on(conn: &Connection, new: &NewComment) -> Result<Comment, String
         .ok_or_else(|| format!("issue {} not found", new.issue_id))?;
     let issue_title = format!("{number} {title}");
     let assignee = at.zip(aid).map(|(k, i)| Actor::new(&k, &i));
+
+    // parent_id 端点校验：悬空 / 跨单引用照旧入库会让前端 repliesOf
+    // （按本单评论列表过滤 parent_id）静默吞掉回复。parent 必须已存在
+    // 且同单——插入 id 单调递增，「端点存在」同时结构性封死引用环。
+    if let Some(pid) = new.parent_id {
+        let parent_issue: Option<i64> = conn
+            .query_row(
+                "SELECT issue_id FROM comment WHERE id = ?1",
+                params![pid],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        match parent_issue {
+            None => return Err(format!("parent comment {pid} not found")),
+            Some(pissue) if pissue != new.issue_id => {
+                return Err(format!(
+                    "parent comment {pid} belongs to issue {pissue}, not {}",
+                    new.issue_id
+                ));
+            }
+            Some(_) => {}
+        }
+    }
 
     let now = BoardStore::now();
     let id = insert_comment(

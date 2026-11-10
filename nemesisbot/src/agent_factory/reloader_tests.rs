@@ -64,9 +64,9 @@ fn reloader_for(home: &Path) -> ModelProviderReloader {
     }
 }
 
-/// 全局解析器槽位是进程单例——触及它的测试互斥（同
-/// nemesis-agent credential_injection_tests 纪律）。
-static VAULT_SLOT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+/// 全局解析器槽位是进程单例——触及它的测试统一互斥在 crate 根的
+/// `crate::VAULT_SLOT_LOCK`（BUG-20261110-049 同族：文件级 static 对
+/// 其他持锁测试互不互斥 = 假互斥）。
 
 #[test]
 fn fields_vault_alias_is_rotation() {
@@ -106,7 +106,9 @@ fn fields_missing_entry_or_config_still_proposes() {
 fn reload_patch_writes_vault_ref_and_rebuilds() {
     // rebuild 段 load_config 会解析刚写入的 `vault:` 引用——进程级 resolver
     // 槽装 stub（真实装配件是 vault_runtime::install，gateway 启动时挂）。
-    let _g = VAULT_SLOT_LOCK.lock();
+    let _g = crate::VAULT_SLOT_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
         Ok(format!("RESOLVED:{alias}"))
     }));

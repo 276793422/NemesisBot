@@ -29,6 +29,17 @@ pub(crate) fn resolve_tool_path(
 /// 相对路径锚定工作区根 + restrict 时工作区外拒绝（与写族
 /// [`WriteFileTool`] 同型）。`default()` 无界（基线注册/测试形态，行为同
 /// 边界引入前）。
+/// read_file 单次全量加载上限（字节）。下游 prune（≤8192 内联）/spill
+/// （≥65536 落盘）数字闸都作用在**已读进内存的结果串**上，救不了读侧：
+/// `read_to_string` 对 GB 级文件会在 spill 判定前把整个文件拉进 RAM →
+/// gateway OOM。帽值对齐家族口径 `search_code::MAX_GREP_SINGLE_FILE_BYTES`
+/// （20MB，同款「全量入内存仍需有界」理由）——grep 超限文案指路
+/// read_file 分段，两帽一致避免 16-20MB 死区；20MB ≫ exec 排水帽
+/// （1MB，`PIPE_CAPTURE_CAP_BYTES`），正常工具输出与 spill 文件恒在帽内
+/// 可回读。offset/limit 是字符口径全文定位，超帽文件分段同样需要全量
+/// 加载，故一并拒绝（诚实暴露而非假装支持）。
+const READ_FILE_MAX_BYTES: u64 = 20_000_000;
+
 #[derive(Default)]
 pub struct ReadFileTool {
     boundary: Option<Arc<WorkspaceBoundary>>,
@@ -46,7 +57,7 @@ impl ReadFileTool {
 #[async_trait]
 impl Tool for ReadFileTool {
     fn description(&self) -> String {
-        "Read the contents of a file. For large files (e.g. spill locator files), pass offset/limit to read a character-based segment instead of the whole file".to_string()
+        "Read the contents of a file. For large files (e.g. spill locator files), pass offset/limit to read a character-based segment instead of the whole file. Files above 20MB are rejected (use exec with head/tail/grep for byte-level access instead)".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -76,6 +87,19 @@ impl Tool for ReadFileTool {
 
         if !path.exists() {
             return Err(format!("File not found: {}", path.display()));
+        }
+
+        // 读侧内存闸：超帽文件拒绝（含 offset/limit 分段请求——字符口径
+        // 分段同样要全量加载，诚实报错并指引字节口径工具）。
+        let meta = tokio::fs::metadata(&path)
+            .await
+            .map_err(|e| format!("Failed to stat file: {}", e))?;
+        if meta.len() > READ_FILE_MAX_BYTES {
+            return Err(format!(
+                "File too large for read_file: {} bytes (cap 20MB). Even offset/limit segmentation loads the whole file — use exec with byte-level tools instead (head/tail/sed/grep), e.g. `exec head -c 65536 \"{}\"`",
+                meta.len(),
+                path.display()
+            ));
         }
 
         let content = match tokio::fs::read_to_string(&path).await {
@@ -318,8 +342,16 @@ impl Tool for WriteFileTool {
         };
 
         // 覆盖保护——已存在文件先读旧内容（读取失败按新建处理，不挡
-        // 写入），覆盖成功后附 unified diff。
-        let old_content = tokio::fs::read_to_string(&path).await.ok();
+        // 写入），覆盖成功后附 unified diff。超大旧文件跳过 diff 读
+        // （读侧内存闸同族，BUG-20261110-041：diff 只是展示面，不值得
+        // 为它全量加载 GB 级旧文件——写入本身不受影响，与「读取失败按
+        // 新建处理」语义一致）。
+        let old_content = match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.len() <= READ_FILE_MAX_BYTES => {
+                tokio::fs::read_to_string(&path).await.ok()
+            }
+            _ => None,
+        };
 
         // Create parent directories if needed.
         if let Some(parent) = path.parent() {
@@ -722,6 +754,19 @@ impl EditFileTool {
             return Err(format!("File not found: {}", path.display()));
         }
 
+        // 读侧内存闸（同 read_file，BUG-20261110-041）：编辑语义必须
+        // 全量加载后做字符串替换，超帽文件直接拒绝并指引字节口径工具。
+        let meta = tokio::fs::metadata(path)
+            .await
+            .map_err(|e| format!("Failed to stat file: {}", e))?;
+        if meta.len() > READ_FILE_MAX_BYTES {
+            return Err(format!(
+                "File too large for edit_file: {} bytes (cap 20MB). Editing requires loading the whole file — use exec with byte-level tools instead (sed/perl), e.g. `exec sed -i 's/old/new/g' \"{}\"`",
+                meta.len(),
+                path.display()
+            ));
+        }
+
         let content = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| format!("Failed to read file: {}", e))?;
@@ -943,6 +988,26 @@ impl Tool for MultiEditTool {
                 None => {
                     if !vpath.exists() {
                         let m = format!("File not found: {}", vpath.display());
+                        statuses.push(format!("  {}. {} — FAILED: {}", i + 1, e.path, m));
+                        return Err(format!(
+                            "multiedit aborted at {}: {}\n\nNo files were \
+                             modified. Edit status:\n{}",
+                            label,
+                            m,
+                            statuses.join("\n")
+                        ));
+                    }
+                    // 读侧内存闸（同 read_file，BUG-20261110-041）：编辑
+                    // 语义要求全量加载，超帽文件拒绝整批（原子性不变——
+                    // 与 File not found 同款 FAILED 状态 + abort）。
+                    let mlen = tokio::fs::metadata(&vpath).await.map(|m| m.len());
+                    if let Ok(len) = mlen
+                        && len > READ_FILE_MAX_BYTES
+                    {
+                        let m = format!(
+                            "File too large for multiedit: {} bytes (cap 20MB) — use exec with byte-level tools (sed/perl)",
+                            len
+                        );
                         statuses.push(format!("  {}. {} — FAILED: {}", i + 1, e.path, m));
                         return Err(format!(
                             "multiedit aborted at {}: {}\n\nNo files were \

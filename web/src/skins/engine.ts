@@ -21,6 +21,7 @@
 
 import { effectScope, nextTick, reactive, watchEffect, type EffectScope } from 'vue'
 import { sanitizeHtmlFragment } from '../utils/markdown'
+import { sanitizeCssUrls, URL_ATTRS } from './sanitize'
 import type { SkinProjection, SkinActionHandler, SkinFieldSink } from './types'
 
 /** 作用域链项：for 行变量（值快照——行响应性由整块重建承担）。 */
@@ -71,14 +72,17 @@ function resolveExpr(raw: string, local: Record<string, unknown>, env: Env, proj
   return neg ? !truthy(cur) : cur
 }
 
-/** `cls:path;cls2:path2` → 有序对（空白容忍；坏段忽略）。 */
+/** `cls:path;cls2:path2` → 有序对（空白容忍；坏段忽略）。分割取**最后一个**
+ * 冒号：值恒为 resolveExpr 路径（标识符+点，契约上无冒号），而属性名可含
+ * 冒号（`xlink:href:brand` 用首个冒号会裂成 name=xlink——拒绝名单条目
+ * 经 pair 语法不可达，BUG-20261110-051 镜像补齐连带修正）。 */
 function parsePairs(value: string): [string, string][] {
   return value
     .split(';')
     .map((seg) => seg.trim())
     .filter(Boolean)
     .map((seg) => {
-      const i = seg.indexOf(':')
+      const i = seg.lastIndexOf(':')
       if (i <= 0) return null
       return [seg.slice(0, i).trim(), seg.slice(i + 1).trim()] as [string, string]
     })
@@ -407,26 +411,25 @@ export class SkinStructureEngine {
 
     const attr = el.getAttribute('data-nb-attr')
     if (attr) {
-      // 绑定层二次拒绝：class 交 data-nb-class 管；on* 与 URL 属性是
-      // sanitize 属性黑名单的绑定侧镜像。
-      const BINDING_DENIED_ATTRS = new Set([
-        'href',
-        'src',
-        'xlink:href',
-        'action',
-        'formaction',
-        'poster',
-        'cite',
-        'srcset',
-      ])
+      // 绑定层二次拒绝（BUG-20261110-051）：拒绝名单以 sanitize.ts 的
+      // URL_ATTRS 为单一真相源（此前手抄 8 项子集 = 同一约束两处实现口径
+      // 漂移——清洗只在 parse 时跑静态属性，运行时绑定整值替换即可绕过
+      // 未镜像项）+ srcdoc（iframe 载体被剥，条目为纵深防御）。class 交
+      // data-nb-class 管；style 不拒绝（动态样式是合法能力）但值过
+      // sanitizeCssUrls 后才落属性——与静态清洗同闸：投影值攻击者可控
+      //（messages[].content 任意通道注入），裸值携带 background:url(http://…)
+      // 即外链信标，违反 CSS 外链零请求不变量。
+      const BINDING_DENIED_ATTRS = new Set([...URL_ATTRS, 'srcdoc'])
       const pairs = parsePairs(attr).filter(([name]) => {
         const n = name.toLowerCase()
         return n !== 'class' && !n.startsWith('on') && !BINDING_DENIED_ATTRS.has(n)
       })
       for (const [name, p] of pairs) {
+        const n = name.toLowerCase()
         watchEffect(() => {
           const v = resolveExpr(p, this.local, env, this.projection)
           if (v == null || v === false || v === '') el.removeAttribute(name)
+          else if (n === 'style') el.setAttribute(name, sanitizeCssUrls(String(v)))
           else el.setAttribute(name, String(v))
         })
       }

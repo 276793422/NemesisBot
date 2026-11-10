@@ -6,6 +6,7 @@ struct StubChannel {
     name: String,
     sent: Arc<parking_lot::RwLock<Vec<String>>>,
     started: Arc<parking_lot::RwLock<bool>>,
+    start_count: Arc<parking_lot::RwLock<u32>>,
 }
 
 impl StubChannel {
@@ -14,6 +15,7 @@ impl StubChannel {
             name: name.to_string(),
             sent: Arc::new(parking_lot::RwLock::new(Vec::new())),
             started: Arc::new(parking_lot::RwLock::new(false)),
+            start_count: Arc::new(parking_lot::RwLock::new(0)),
         }
     }
 
@@ -23,6 +25,10 @@ impl StubChannel {
 
     fn is_started(&self) -> bool {
         *self.started.read()
+    }
+
+    fn start_count(&self) -> u32 {
+        *self.start_count.read()
     }
 }
 
@@ -38,6 +44,7 @@ impl Channel for StubChannel {
 
     async fn start(&self) -> Result<()> {
         *self.started.write() = true;
+        *self.start_count.write() += 1;
         Ok(())
     }
 
@@ -111,6 +118,31 @@ async fn test_start_stop_all() {
     mgr.stop_all().await.unwrap();
     assert!(!ch1.is_started());
     assert!(!ch2.is_started());
+}
+
+// BUG-20261110-037：start_all 重复调用必须跳过已运行通道。无守卫时二次
+// start_all 会让无守卫的通道实现跑两次 start()——双 poll 循环并存、各自
+// 拉同一批上游事件（消息重复处理）。start 计数器是跳过的可观察面（started
+// 旗标翻不出差别）。stop → start 的正常重启路径不受守卫影响。
+#[tokio::test]
+async fn test_start_all_skips_already_running_channels() {
+    let mgr = Arc::new(ChannelManager::new());
+    let ch = Arc::new(StubChannel::new("a"));
+    mgr.register(ch.clone()).await.unwrap();
+
+    mgr.start_all().await.unwrap();
+    assert_eq!(ch.start_count(), 1);
+
+    // 二次 start_all：is_running=true → 必须跳过。
+    mgr.start_all().await.unwrap();
+    assert_eq!(ch.start_count(), 1, "已运行通道不得被二次 start");
+    assert!(ch.is_started());
+
+    // stop 后允许再次 start（正常重启语义不变）。
+    mgr.stop_all().await.unwrap();
+    assert!(!ch.is_started());
+    mgr.start_all().await.unwrap();
+    assert_eq!(ch.start_count(), 2, "stop 后重启必须照常 start");
 }
 
 /// send 首次调用阻塞在闸上的 stub：确定性制造「loop 占用在慢通道 send、

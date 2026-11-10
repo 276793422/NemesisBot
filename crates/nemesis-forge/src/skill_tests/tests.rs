@@ -107,6 +107,41 @@ fn parse_rejects_flow_nesting_bomb() {
 }
 
 #[test]
+fn parse_rejects_flow_bomb_after_plain_scalar_apostrophe() {
+    // BUG-20261110-044 回归锁：plain scalar 内的撇号（`it's`）曾把幻影
+    // 单引号跨行永久开启——后续所有行的 flow 括号被当字符串字面量跳过
+    // 计深，守卫被绕过（炸弹 0 深放行 → serde_yaml 递归栈溢出 abort）。
+    // 撇号行 + 下一行深 flow 炸弹：修复后必须被词法闸拒绝（报 nesting
+    // depth 而非 tests section malformed）。
+    let bomb = format!(
+        "desc: it's\ntests: {}",
+        "[".repeat(FRONTMATTER_MAX_NESTING_DEPTH + 1)
+    );
+    let content = format!("---\n{bomb}\n---\nbody");
+    let err = parse_skill_tests(&content).unwrap_err();
+    assert!(err.contains("nesting depth"), "{err}");
+}
+
+#[test]
+fn nesting_depth_counts_flow_after_plain_scalar_apostrophe_line() {
+    // 度量件直测：撇号行的下一行 flow 嵌套必须计入（修复前幻影引号
+    // 吞掉，报 0）。
+    let fm = format!("desc: it's\ntests: {}", "[".repeat(100));
+    assert!(
+        super::yaml_nesting_depth(&fm) >= 100,
+        "plain scalar 撇号后的下一行 flow 括号必须计深"
+    );
+}
+
+#[test]
+fn nesting_depth_multiline_quoted_content_counts_as_outer() {
+    // 逐行重置的保守方向：跨行引号标量的内容行按外层计深（只会多计，
+    // 上界估计器语义；真实深度 0 也报 ≥4 可接受——绝不漏计真实结构）。
+    let fm = "desc: \"line1\n[[[[";
+    assert!(super::yaml_nesting_depth(fm) >= 4);
+}
+
+#[test]
 fn parse_rejects_block_indent_bomb() {
     // 块式缩进炸弹：逐行加深缩进（每行 2 空格），flow 括号为零也必须
     // 触闸——缩进宽度 / 2 计深度。

@@ -1360,7 +1360,12 @@ impl CheckpointStore {
             return;
         };
         let seen = seen.entry(bucket).or_default();
-        if !seen.insert(change.path.clone()) {
+        // 去重键走 comparable 形态（BUG-20261110-047）：同一文件以不同
+        // 形态（绝对/相对、`\`/`/`）先后声明时必须归一去重——字面比较会
+        // 漏判，第二形态的 mid-turn 内容冒充第二份基线，restore 后写覆盖
+        // 先写，rewind 恢复到错误版本。与 base_for_path 同款归一。
+        let dedup_key = self.comparable_path_form(&change.path);
+        if !seen.insert(dedup_key) {
             return; // already snapshotted this turn
         }
         cp.files.push(FileSnap {
@@ -1502,8 +1507,11 @@ impl CheckpointStore {
         // 锁内收集 (path, sealed, sealed_hash) 快照，放锁后读盘比对
         // （锁纪律：不带着 inner 锁做文件 IO）。
         let mut last_declared: Vec<(String, bool, Option<String>)> = Vec::new();
-        // 其他会话声明的路径（保序去重）。
+        // 其他会话声明的路径（保序去重；去重键走 comparable 形态，
+        // BUG-20261110-047 同款归一——同文件双形态不得在 blocked 回执里
+        // 重复出现两条）。
         let mut other_paths: Vec<String> = Vec::new();
+        let mut other_seen: HashSet<String> = HashSet::new();
         // restore 同款守卫：from_turn 后无 checkpoint → no-op（锁内一次性赋值）。
         let has_post;
         {
@@ -1523,9 +1531,10 @@ impl CheckpointStore {
                 // last_declared（不重复出现在 unchecked/git-form 补充里）。
                 if is_other_session(&c.session, rewind_session) {
                     for p in paths {
-                        if !other_paths.contains(&p) {
-                            other_paths.push(p);
+                        if !other_seen.insert(self.comparable_path_form(&p)) {
+                            continue;
                         }
+                        other_paths.push(p);
                     }
                     continue;
                 }
@@ -1720,6 +1729,10 @@ impl CheckpointStore {
                 // 纯 JSON 时代记录（tree=None）维持原语义：None = 不存在须删除。
                 let git_mode = self.git.is_some();
                 let mut hybrid: Vec<(String, Option<String>)> = Vec::new();
+                // 最早基线去重走 comparable 形态（BUG-20261110-047，与快照
+                // 侧 seen 同款归一）——形态变体不归一会漏去重，mid-turn 内
+                // 容覆盖 turn-start 基线。
+                let mut hybrid_seen: HashSet<String> = HashSet::new();
                 for c in all.iter().filter(|c| c.turn >= from_turn) {
                     for f in &c.files {
                         if (git_mode || c.tree.is_some())
@@ -1728,7 +1741,7 @@ impl CheckpointStore {
                         {
                             continue; // 工作区内 None → tree 负责（或诚实 no-op）
                         }
-                        if hybrid.iter().any(|(p, _)| p == &f.path) {
+                        if !hybrid_seen.insert(self.comparable_path_form(&f.path)) {
                             continue;
                         }
                         hybrid.push((f.path.clone(), f.content.clone()));

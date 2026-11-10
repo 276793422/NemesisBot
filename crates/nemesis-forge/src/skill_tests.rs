@@ -28,7 +28,12 @@ pub const TURNS_MAX: usize = 6;
 /// frontmatter YAML 嵌套深度上限（DoS 闸）。tests 段
 /// 真实 schema（tests→case→turns/fixtures/expect）深度 ≤ 10，64 已是
 /// 荒谬余量（与 pipeline.rs 的 serde_json 128 层递归闸同族语义）。
-pub const FRONTMATTER_MAX_NESTING_DEPTH: usize = 64;
+/// 数值与度量件单一真相源在 `nemesis_utils::yaml_depth`
+///（BUG-20261110-044：度量件原为本模块私有件，晋升共享给
+/// nemesis-workflow YAML 解析面）。
+pub const FRONTMATTER_MAX_NESTING_DEPTH: usize = nemesis_utils::yaml_depth::YAML_MAX_NESTING_DEPTH;
+
+pub(crate) use nemesis_utils::yaml_depth::yaml_nesting_depth;
 
 /// 多轮脚本中的一轮用户消息。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -264,45 +269,10 @@ fn extract_frontmatter(content: &str) -> String {
     out.join("\n")
 }
 
-/// YAML 嵌套深度词法估计（DoS 闸的度量件）。
-///
-/// 双覆盖：flow 集合按括号字符计（引号内的 `[`/`{` 不计——引号里是
-/// 字面量，serde 不会为其递归）；块式嵌套按缩进宽度计（2 字符一级，
-/// tab 按单字符保守计入——block 炸弹靠逐行加深缩进绕不开）。
-/// 取二者最大值。只需上界正确，不求精确语义。
-fn yaml_nesting_depth(s: &str) -> usize {
-    let mut flow_cur = 0usize;
-    let mut flow_max = 0usize;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut indent_max = 0usize;
-    for line in s.lines() {
-        let indent = line.len() - line.trim_start().len();
-        indent_max = indent_max.max(indent);
-        for ch in line.chars() {
-            if let Some(q) = quote {
-                if escaped {
-                    escaped = false;
-                } else if ch == '\\' && q == '"' {
-                    escaped = true;
-                } else if ch == q {
-                    quote = None;
-                }
-                continue;
-            }
-            match ch {
-                '"' | '\'' => quote = Some(ch),
-                '[' | '{' => {
-                    flow_cur += 1;
-                    flow_max = flow_max.max(flow_cur);
-                }
-                ']' | '}' => flow_cur = flow_cur.saturating_sub(1),
-                _ => {}
-            }
-        }
-    }
-    flow_max.max(indent_max / 2)
-}
+// YAML 嵌套深度词法估计（DoS 闸的度量件）已晋升 `nemesis_utils::yaml_depth`
+// 单一真相源（BUG-20261110-044：plain scalar 撇号幻影引号跨行吞计深
+// 绕过守卫；晋升后 nemesis-workflow YAML 解析面同源消费）。本模块经
+// 顶部 `use` 引入。
 
 /// 格式约束校验（定稿数值）。
 fn validate_spec(spec: &SkillTestsSpec) -> Result<(), String> {

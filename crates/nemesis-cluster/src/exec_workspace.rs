@@ -676,46 +676,16 @@ fn kill_matching_cmdline(needle: &str, self_pid: u32) -> Result<Vec<u32>, String
 }
 
 /// 带超时的同步子进程运行（stdout/stderr 捕获；超时强杀）。
+///
+/// 实现委托 [`nemesis_utils::pipe_cap::run_capped_with_timeout`]（双管道
+/// 运行期并发排干——BUG-20261110-038 修复：旧形态在 `try_wait` 返回后
+/// 才排干，大输出子进程阻塞在写、永不退出 → 假超时强杀，残留进程清扫
+/// 防线整体失效）。
 fn run_with_timeout(
-    mut cmd: std::process::Command,
+    cmd: std::process::Command,
     timeout: std::time::Duration,
 ) -> Result<std::process::Output, String> {
-    use std::process::Stdio;
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // 有界排干（横扫角度 B）：1 MiB 丢头保尾，
-                // 输出体量不受我方控制。
-                let stdout = child
-                    .stdout
-                    .take()
-                    .map(nemesis_utils::pipe_cap::drain_capped_sync)
-                    .unwrap_or_default();
-                let stderr = child
-                    .stderr
-                    .take()
-                    .map(nemesis_utils::pipe_cap::drain_capped_sync)
-                    .unwrap_or_default();
-                return Ok(std::process::Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("子进程超时被强杀".into());
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(e) => return Err(format!("wait: {e}")),
-        }
-    }
+    nemesis_utils::pipe_cap::run_capped_with_timeout(cmd, timeout)
 }
 
 /// cluster_logs 反查：遍历设备目录找 `…_{task_id}` 执行记录，返回设备名。

@@ -60,6 +60,10 @@ pub mod time_bounds;
 // 私有件；web re-export 保路径，nemesis-channels websocket 升级闸跨 crate 消费）。
 pub mod verify;
 pub mod wait_ready;
+// YAML 嵌套深度词法估计单一真相源（BUG-20261110-044：原 nemesis-forge
+// 私有件——plain scalar 撇号幻影引号跨行吞计深绕过守卫；晋升后
+// nemesis-workflow YAML 解析面同源消费，serde_yaml 深嵌套栈溢出闸）。
+pub mod yaml_depth;
 pub mod zip_util;
 
 // Re-export the most commonly used functions

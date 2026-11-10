@@ -106,8 +106,13 @@ impl Tool for SlotTool {
     }
 }
 
-/// 全局解析器槽位是进程单例——触及它的测试互斥。
-pub(super) static VAULT_SLOT_LOCK: PlMutex<()> = PlMutex::new(());
+/// 全局解析器槽位是进程单例——**全 crate** 触及它的测试统一互斥在这把锁
+/// （BUG-20261110-049）：此前 loop 内四个测试文件各持有独立 static 锁
+/// （VAULT_SLOT_LOCK / 两个各自的 RESOLVER_LOCK / delegate_registry 无锁），
+/// 互不互斥 = 假互斥，并行负载下 resolver 闭包被交叉覆写消费（断言收到
+/// 别人测试的别名 / fs 类 setup 步骤偶发 panic 形态不一）。同 crate 新增
+/// 触槽测试一律 `use` 这把锁，禁止再造文件级 static。
+pub(crate) static VAULT_SLOT_LOCK: PlMutex<()> = PlMutex::new(());
 
 /// 槽位 vault: 引用改写为真值；非槽位字段不动。
 #[test]

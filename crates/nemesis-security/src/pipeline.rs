@@ -13,7 +13,7 @@ use crate::audit_log::{AuditLogConfig, AuditLogger};
 use crate::auditor::{AuditorConfig, OperationRequest, SecurityAuditor};
 use crate::command::Guard as CommandGuard;
 use crate::credential::{CredentialResult, Scanner as CredentialScanner};
-use crate::dlp::{DlpConfidence, DlpConfig, DlpEngine};
+use crate::dlp::{DlpConfidence, DlpConfig, DlpEngine, DlpMatch};
 use crate::injection::{Detector as InjectionDetector, InjectionConfig};
 use crate::integrity::{AuditChain, AuditChainConfig};
 // 第 7 层（病毒扫描）随 `scanner` feature 进出；关 = 该层诚实短路（构造时
@@ -80,6 +80,25 @@ fn deny_info(layer: &'static str, policy: &str, summary: impl Into<String>) -> D
         summary: summary.into(),
         suggestion: layer_suggestion(layer).map(|s| s.to_string()),
     }
+}
+
+/// DLP 命中明细（BUG-20261110-046 伴生缺陷修复）：`规则名[掩码值]` 列表
+///（截前 8 条，超出追加 `…(+N)` 尾注）。拦截/审计消息自带现场——此前
+/// deny 只嵌 summary 纯计数，2026-11-10 只读 Jira 脚本被 DLP 硬拦时
+/// agent 与维护者都无法定位命中规则，只能手工重放规则反推。pub(crate)
+/// 供 pipeline/tests.rs 直测截断尾注。
+pub(crate) fn dlp_match_detail(matches: &[DlpMatch]) -> String {
+    const MAX_DETAIL_ITEMS: usize = 8;
+    let mut detail = matches
+        .iter()
+        .take(MAX_DETAIL_ITEMS)
+        .map(|m| format!("{}[{}]", m.rule_name, m.masked_value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if matches.len() > MAX_DETAIL_ITEMS {
+        detail.push_str(&format!(" …(+{})", matches.len() - MAX_DETAIL_ITEMS));
+    }
+    detail
 }
 use std::sync::Arc;
 
@@ -968,6 +987,7 @@ impl SecurityPlugin {
                     });
                 }
                 if block {
+                    let detail = dlp_match_detail(&result.matches);
                     self.log_audit_event(
                         "denied",
                         &op_type.to_string(),
@@ -975,7 +995,7 @@ impl SecurityPlugin {
                         &invocation.source,
                         &target,
                         "HIGH",
-                        &format!("DLP: {}", result.summary),
+                        &format!("DLP: {} | matches: {}", result.summary, detail),
                         "dlp_engine",
                     );
                     return (
@@ -984,8 +1004,8 @@ impl SecurityPlugin {
                             "dlp",
                             "dlp_engine",
                             format!(
-                                "operation blocked by DLP: sensitive data detected ({})",
-                                result.summary
+                                "operation blocked by DLP: sensitive data detected ({}; matches: {})",
+                                result.summary, detail
                             ),
                         )),
                     );
@@ -998,7 +1018,11 @@ impl SecurityPlugin {
                     &invocation.source,
                     &target,
                     "MEDIUM",
-                    &format!("DLP (non-blocking): {}", result.summary),
+                    &format!(
+                        "DLP (non-blocking): {} | matches: {}",
+                        result.summary,
+                        dlp_match_detail(&result.matches)
+                    ),
                     "dlp_engine",
                 );
             }

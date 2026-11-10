@@ -45,8 +45,9 @@ const STRIP_ELEMENTS = new Set([
 
 /** URL 语义属性（值匹配 script scheme 时剥除；其余 URL 值放行——包作者
  * 可放自有 logo 资源；外链 CSS 面的零请求语义由 sanitizeCssUrls 承担，
- * 本表不拦外链 URL 本身）。 */
-const URL_ATTRS = new Set([
+ * 本表不拦外链 URL 本身）。**导出**：engine.ts 绑定层拒绝名单以本表为
+ * 单一真相源（BUG-20261110-051——两表漂移 = 运行时绑定旁路静态清洗）。 */
+export const URL_ATTRS = new Set([
   'href',
   'src',
   'xlink:href',

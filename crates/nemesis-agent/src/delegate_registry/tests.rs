@@ -1066,8 +1066,14 @@ fn empty_allowlist_is_noop_without_resolver() {
 fn env_allowlist_via_global_vault_resolver() {
     use nemesis_config::{clear_global_vault_resolver, set_global_vault_resolver};
 
-    // 复位纪律：先清槽防外部注入干扰，测完再清（本进程内只有 vault 用例
-    // 触全局槽，且都是 set→断言→clear 的同步短临界区，无 await 穿插）。
+    // 全局槽互斥走全 crate 统一的 VAULT_SLOT_LOCK（BUG-20261110-049）：
+    // 此前本测试无锁，注释声称「本进程内只有 vault 用例触全局槽」——
+    // 实际 loop 内另有三族锁各管各的，互不互斥 = 假互斥，并行负载下
+    // resolver 闭包被交叉覆写消费。
+    let _g = crate::r#loop::credential_injection_tests::VAULT_SLOT_LOCK.lock();
+
+    // 复位纪律：先清槽防外部注入干扰，测完再清（set→断言→clear 的
+    // 同步短临界区，无 await 穿插）。
     clear_global_vault_resolver();
     // 解析器未安装 → 诚实报错。
     let err = resolve_env_allowlist("unused", &["ANY_KEY".to_string()]).unwrap_err();

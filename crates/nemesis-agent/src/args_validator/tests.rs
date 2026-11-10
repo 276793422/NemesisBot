@@ -367,3 +367,44 @@ fn non_object_root_reports_actual_type_name() {
         _ => panic!("expected Invalid"),
     }
 }
+
+// BUG-20261110-048：validate 的 UnknownField 判定（nearest_field）走
+// case-insensitive 距离，而 try_autofix 的 rename 判定此前走 case-sensitive
+// 距离——case 变体字段（如 `PATH` vs `path`，case-sensitive 距离 4 > 2）
+// 被 validate 判为「有近邻可修」，autofix 却修不了，白耗一轮回灌自纠。
+// 两处判定必须同源（统一 case-insensitive），rename target 仍是 schema
+// 原样字段名。
+#[test]
+fn autofix_matches_case_insensitive_candidate_judgement() {
+    let s = sample_schema();
+    match check(&s, r#"{"PATH":"/tmp/a.txt"}"#) {
+        Outcome::Fixed(fixed) => {
+            let v: Value = serde_json::from_str(&fixed).unwrap();
+            assert_eq!(v.get("path").and_then(|x| x.as_str()), Some("/tmp/a.txt"));
+            assert!(v.get("PATH").is_none(), "旧键必须被改名: {v}");
+        }
+        other => panic!("case 变体应被 autofix 修复（validate 已判有近邻），got {other:?}"),
+    }
+}
+
+#[test]
+fn autofix_all_caps_variant_renames_to_schema_field() {
+    // `FILE_PATH` vs `file_path`：lowercase 距离 0（validate 判有近邻）、
+    // case-sensitive 距离 9（修复前 autofix 修不了）——BUG-20261110-048
+    // 的强红线形态；混合/全大写 case 变体一律按 schema 原样字段名修复，
+    // 无关键不受影响。
+    let schema = json!({
+        "type": "object",
+        "properties": {"file_path": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["file_path"]
+    });
+    match check(&schema, r#"{"FILE_PATH":"a.txt","content":"hi"}"#) {
+        Outcome::Fixed(fixed) => {
+            let v: Value = serde_json::from_str(&fixed).unwrap();
+            assert_eq!(v.get("file_path").and_then(|x| x.as_str()), Some("a.txt"));
+            assert!(v.get("FILE_PATH").is_none());
+            assert_eq!(v.get("content").and_then(|x| x.as_str()), Some("hi"));
+        }
+        other => panic!("全大写 case 变体应被 autofix 修复，got {other:?}"),
+    }
+}

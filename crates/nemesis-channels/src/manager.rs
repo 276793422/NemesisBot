@@ -331,6 +331,15 @@ impl ChannelManager {
 
         let mut started_count = 0u32;
         for (name, ch) in map.iter() {
+            // BUG-20261110-037：已运行通道跳过——start_all 被重复调用时，
+            // 无守卫的 start() 会让新旧 poll 循环并存、各自拉同一批上游
+            // 事件（消息重复处理）。旗标只对维护 set_running 的通道为真
+            // （telegram 037 已接线；未维护者恒 false → 不跳过，行为同旧），
+            // 守卫方向安全：只跳过确证在跑的。
+            if ch.is_running() {
+                info!(name = %name, "[ChannelManager] channel already running, skipping");
+                continue;
+            }
             info!(name = %name, "[ChannelManager] starting channel");
             if let Err(e) = ch.start().await {
                 error!(name = %name, error = %e, "[ChannelManager] failed to start channel");

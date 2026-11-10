@@ -1326,6 +1326,10 @@ impl AgentLoop {
 /// 原子语义化写回。任何 IO/解析失败静默 return（best-effort 标记绝不
 /// 影响 agent turn）。
 pub(crate) fn mark_effort_probe_stale_at(path: &std::path::Path, model_name: &str) {
+    // 与 config.json 其他写者（save_config / update_raw_config / CLI
+    // write_config_atomic）共用同一把写串行锁：无锁 RMW 的读旧快照回写
+    // 会与并发写者（dashboard 保存 / 探针重写）交错丢更新。
+    let _serial = nemesis_config::config_write_lock();
     let Ok(raw) = std::fs::read_to_string(path) else {
         debug!(
             "[AgentLoop] effort stale mark: config unreadable at {}",
@@ -1361,7 +1365,8 @@ pub(crate) fn mark_effort_probe_stale_at(path: &std::path::Path, model_name: &st
         return; // 条目无 effort_probe = 无可失效判定
     }
     if let Ok(pretty) = serde_json::to_string_pretty(&cfg)
-        && std::fs::write(path, pretty).is_err()
+        && nemesis_utils::write_file_atomic(&path.to_string_lossy(), pretty.as_bytes(), 0o600)
+            .is_err()
     {
         debug!(
             "[AgentLoop] effort stale mark: config write failed at {}",

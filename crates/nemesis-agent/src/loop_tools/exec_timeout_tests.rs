@@ -145,7 +145,7 @@ fn tail_chars_multibyte_safe() {
 // execute 集成层：超时路径
 // ---------------------------------------------------------------------------
 
-/// 平台各自的「先输出一行再死循环」命令——验证超时后残余 stdout 可读回。
+/// 「先输出一行再死循环」命令——验证超时后残余 stdout 可读回。
 ///
 /// 【为什么不能用 ping/sleep 等外部命令】exec 在 Windows 经 `cmd /C` 包裹、
 /// Linux 经 `sh -c` 包裹，外部命令是 shell 的**孙进程**且以 bInheritHandles
@@ -154,6 +154,12 @@ fn tail_chars_multibyte_safe() {
 /// 多久，harness 就等多久（本机 127.0.0.1 ICMP 限流时 `ping -n 30` 实测
 /// ~148s，测试看似挂死）。纯 shell 内建死循环无孙进程：kill shell 即全部
 /// 句柄关闭，无孤儿。
+///
+/// 【窗口为什么是 5 不是 1】BUG-20261110-050：断言的本质是「超时杀进程后
+/// 残余 stdout 能读回」这个机制，与窗口长短无关——窗口只是给 `echo` 一段
+/// 确定性完成的预算。取 1s 时在重载机上与 cmd shell 启动赛跑（全量 150s+
+/// 慢轮实录：echo 未赶上窗口 → 残余为空 → 断言假红），按「不按通常够大给
+/// 值」纪律给超限窗口。
 #[cfg(windows)]
 const PARTIAL_CMD: &str = "echo before-sleep & for /l %i in (0,0,1) do @rem";
 #[cfg(not(windows))]
@@ -169,13 +175,13 @@ const SPIN_CMD: &str = "while :; do :; done";
 async fn timeout_returns_partial_output_as_ok() {
     let out = tool()
         .execute(
-            &serde_json::json!({"command": PARTIAL_CMD, "timeout": 1}).to_string(),
+            &serde_json::json!({"command": PARTIAL_CMD, "timeout": 5}).to_string(),
             &ctx(),
         )
         .await
         .expect("timeout must be Ok (model-repairable), not Err");
     assert!(
-        out.contains("timed out after 1"),
+        out.contains("timed out after 5"),
         "should report timeout: {out}"
     );
     // 非空洞断言：该序列只可能来自 stdout 残余段（「Command was:」回显在

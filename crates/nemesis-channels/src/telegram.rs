@@ -321,7 +321,13 @@ pub struct TelegramChannel {
     http: reqwest::Client,
     running: Arc<parking_lot::RwLock<bool>>,
     placeholders: RwLock<HashMap<String, i64>>,
-    cancel_tx: parking_lot::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    /// 当前 poll 任务句柄。BUG-20261110-037：restart 序列（stop 置旗标
+    /// false → start 500ms 后置回 true）时旧任务可能仍在 getUpdates 30s
+    /// 长轮询内、醒来只见 true——双循环各自 offset=0 拉同一批 updates
+    /// （重复回复）。start 挂新任务前 abort 旧任务，双启动/重启竞态都
+    /// 确定性终止。旧 `cancel_tx` 机制从未被置 Some（stop 的 cancel 发送
+    /// 是永久空操作），已删除。
+    poll_handle: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     bot_username: Arc<RwLock<String>>,
     transcriber: parking_lot::RwLock<Option<Arc<dyn crate::base::VoiceTranscriber>>>,
     /// Thinking cancel signals: chat_id -> ThinkingCancel.
@@ -379,7 +385,7 @@ impl TelegramChannel {
             http,
             running: Arc::new(parking_lot::RwLock::new(false)),
             placeholders: RwLock::new(HashMap::new()),
-            cancel_tx: parking_lot::Mutex::new(None),
+            poll_handle: parking_lot::Mutex::new(None),
             bot_username: Arc::new(RwLock::new(String::new())),
             transcriber: parking_lot::RwLock::new(None),
             stop_thinking: dashmap::DashMap::new(),
@@ -410,7 +416,7 @@ impl TelegramChannel {
             http,
             running: Arc::new(parking_lot::RwLock::new(false)),
             placeholders: RwLock::new(HashMap::new()),
-            cancel_tx: parking_lot::Mutex::new(None),
+            poll_handle: parking_lot::Mutex::new(None),
             bot_username: Arc::new(RwLock::new(String::new())),
             transcriber: parking_lot::RwLock::new(None),
             stop_thinking: dashmap::DashMap::new(),
@@ -542,7 +548,7 @@ impl TelegramChannel {
         let base_allow_list = self.config.allow_from.clone();
         let transcriber = self.transcriber.read().clone();
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let api = TelegramApi::new(&config.api_base, &config.token);
             let mut offset: i64 = 0;
             let mut backoff = std::time::Duration::from_secs(1);
@@ -618,6 +624,16 @@ impl TelegramChannel {
 
             info!("[TelegramChannel] polling loop stopped");
         });
+
+        // BUG-20261110-037：挂新任务前确定性 abort 上一任务。restart 序列
+        // （stop 置旗标 false → 500ms → start 置回 true）时旧任务可能仍在
+        // getUpdates 30s 长轮询内、醒来只见 true 继续跑——双循环各自
+        // offset=0 拉同一批 updates（消息重复处理/竞争确认）。abort 保证
+        // 无论旧任务卡在哪个 await 点都立即终止；双 start 则被 start 顶部
+        // 守卫拦下，到不了这里。
+        if let Some(old) = self.poll_handle.lock().replace(handle) {
+            old.abort();
+        }
     }
 
     /// Processes a single incoming Telegram message and publishes to the bus.
@@ -1472,6 +1488,13 @@ impl Channel for TelegramChannel {
     }
 
     async fn start(&self) -> Result<()> {
+        // BUG-20261110-037：幂等启动守卫——重复 start（不经 stop）会双 poll
+        // 循环各自 offset=0 拉同一批 getUpdates（消息重复处理）。已运行时
+        // 诚实跳过。旗标读 base（trait is_running 契约面），start 成功才置位。
+        if self.base.is_running() {
+            info!("[TelegramChannel] already running; skipping duplicate start");
+            return Ok(());
+        }
         info!("[TelegramChannel] starting bot (polling mode)");
 
         let me = self.get_me().await?;
@@ -1484,6 +1507,10 @@ impl Channel for TelegramChannel {
 
         *self.running.write() = true;
         self.base.set_enabled(true);
+        // BUG-20261110-037：此前从未 set_running——trait is_running()（读
+        // base 旗标）恒 false，违反「start 成功后、stop 前为 running」契约，
+        // manager 的运行中守卫对本通道失效。
+        self.base.set_running(true);
 
         // Start long polling in background
         self.polling_loop();
@@ -1495,10 +1522,7 @@ impl Channel for TelegramChannel {
         info!("[TelegramChannel] stopping bot");
         *self.running.write() = false;
         self.base.set_enabled(false);
-
-        if let Some(tx) = self.cancel_tx.lock().take() {
-            let _ = tx.send(());
-        }
+        self.base.set_running(false);
 
         Ok(())
     }

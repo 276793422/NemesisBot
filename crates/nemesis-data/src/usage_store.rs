@@ -306,9 +306,16 @@ impl DataStore {
 
         let sql = match group_by {
             "hour" => {
+                // BUG-20261110-045：标签走本地墙钟（'localtime'）——前端选窗
+                // （「今天」=本地零点、datetime-local 自定义窗）都是本地语义，
+                // x 轴直接渲染 label；修复前 UTC 标签在非 UTC 时区整体平移
+                // 时区差。ts 保持 epoch 整点桶：整小时偏移时区（含 UTC+8）
+                // 本地小时边界与 epoch 整点重合；半时区偏移（如 +5:30）桶
+                // 瞬间与标签有 ≤30min 偏差——ts 仪表盘不消费（前端只透传
+                // label），按 epoch 对齐保留 API 稳定性。
                 r#"
                 SELECT
-                    strftime('%Y-%m-%dT%H:00:00', created_at, 'unixepoch') as label,
+                    strftime('%Y-%m-%dT%H:00:00', created_at, 'unixepoch', 'localtime') as label,
                     (created_at / 3600) * 3600 as ts,
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
@@ -321,10 +328,19 @@ impl DataStore {
                 GROUP BY ts ORDER BY ts"#
             }
             _ => {
+                // 日桶同 BUG-20261110-045 口径：label 与 ts 都对齐本地零点。
+                // ts 两层 strftime：内层产本地日期串，外层用 **'utc'** 修饰符
+                // 把「日期 00:00:00」按本地墙钟折算回 epoch（'utc' 的语义=
+                // 左侧值是本地时间、调整回 UTC；'%s' 会把内部值原样吐出，
+                // 用 'localtime' 会双重平移——回归锁 ts 断言当场抓出两次）。
+                // SQLite 核心修饰符；修复前 UTC 日切让 UTC+8 用户的日桶在
+                // 本地 16:00 翻日。存储层 daily_rollups 保持 UTC 日期键（无
+                // 读取消费方，存储规范不随显示口径动；明细 30 天保留窗内
+                // trends 只读 request_logs，永不与 rollup 混读）。
                 r#"
                 SELECT
-                    strftime('%Y-%m-%d', created_at, 'unixepoch') as label,
-                    (created_at / 86400) * 86400 as ts,
+                    strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime') as label,
+                    CAST(strftime('%s', strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime') || ' 00:00:00', 'utc') AS INTEGER) as ts,
                     COALESCE(SUM(input_tokens), 0),
                     COALESCE(SUM(output_tokens), 0),
                     COALESCE(SUM(cache_creation_tokens), 0),

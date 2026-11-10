@@ -483,3 +483,41 @@ fn test_validate_allows_top_level_human_review() {
     );
     assert!(validate(&wf).is_ok());
 }
+
+// BUG-20261110-044 同族接线回归锁：serde_yaml 深嵌套栈溢出闸 ------------
+
+#[test]
+fn test_parse_rejects_yaml_nesting_bomb() {
+    // serde_yaml 0.9 递归下降对深嵌套栈溢出（abort 不可捕获）——词法闸
+    // 必须在喂 serde_yaml 之前诚实拒绝。
+    let bomb = format!("name: x\ntests: {}", "[".repeat(200));
+    let err = parse(bomb.as_bytes()).unwrap_err();
+    assert!(err.contains("nesting depth"), "{err}");
+}
+
+#[test]
+fn test_parse_rejects_bomb_hidden_behind_apostrophe() {
+    // 度量件核心修复形态：plain scalar 撇号幻影引号曾跨行吞掉后续行
+    // 计深（守卫被绕过）——修复后炸弹必须被拒。
+    let bomb = format!("desc: it's\nnodes: {}", "[".repeat(200));
+    let err = parse(bomb.as_bytes()).unwrap_err();
+    assert!(err.contains("nesting depth"), "{err}");
+}
+
+#[test]
+fn test_parse_normal_workflow_still_parses() {
+    // 合法 workflow（嵌套 ≤3）不误伤。
+    let yaml = r#"
+name: normal_wf
+nodes:
+  - id: n1
+    node_type: llm
+    config:
+      prompt: "hello"
+    depends_on: []
+    retry_count: 0
+edges: []
+"#;
+    let wf = parse(yaml.as_bytes()).unwrap();
+    assert_eq!(wf.name, "normal_wf");
+}

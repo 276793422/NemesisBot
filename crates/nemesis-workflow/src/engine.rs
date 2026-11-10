@@ -121,11 +121,11 @@ fn sanitize_workflow_filename(name: &str) -> String {
 /// 读取 workflow 定义文件并返回其内容里的 workflow 名（
 /// 碰撞守卫辅助）。parse 失败返回 None——坏文件没有可辨认的属主。
 /// serde_yaml 可直接吃 JSON（YAML 1.2 超集），三种扩展名同一解析。
+/// 经 `parser::parse`（BUG-20261110-044 深度闸接线）——炸弹文件返
+/// None 跳过而非进程 abort。
 fn workflow_file_owner(path: &Path) -> Option<String> {
     let data = std::fs::read(path).ok()?;
-    serde_yaml::from_slice::<Workflow>(&data)
-        .ok()
-        .map(|w| w.name)
+    crate::parser::parse(&data).ok().map(|w| w.name)
 }
 
 /// [`scheduler::ProgressHook`] implementation that saves a checkpoint after

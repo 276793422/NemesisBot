@@ -333,6 +333,70 @@ fn stale_missing_file_and_missing_name_no_panic() {
     assert!(after.contains(r#""model_list": []"#), "内容不变");
 }
 
+#[test]
+fn stale_mark_holds_config_write_lock() {
+    // 锁参与证明（BUG-20261110-043 回归锁）：mark 的 RMW 必须持
+    // config_write_lock——否则与 dashboard 保存 / 探针重写交错丢更新。
+    // 主线程先持锁，mark 线程必须被挡住（文件不动）；释放后 mark 才落盘。
+    let dir = tempfile::tempdir().unwrap();
+    let path = stale_write_config(
+        dir.path(),
+        r#"{ "model_list": [ { "model_name": "m1", "effort_probe": { "accepted": ["low"] } } ] }"#,
+    );
+    let guard = nemesis_config::config_write_lock();
+    let p = path.clone();
+    let handle = std::thread::spawn(move || {
+        crate::r#loop::config_watch::mark_effort_probe_stale_at(&p, "m1");
+    });
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let blocked = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !blocked.contains("stale"),
+        "持锁期间 mark 不得落盘（无锁形态 = 回归）"
+    );
+    drop(guard);
+    handle.join().unwrap();
+    let after = std::fs::read_to_string(&path).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&after).unwrap();
+    assert_eq!(cfg["model_list"][0]["effort_probe"]["stale"], true);
+}
+
+#[test]
+fn stale_mark_concurrent_all_models_survive() {
+    // 并发 marks 互不吞：N 线程各标一个模型，锁串行化后全部在案——
+    // 无锁 RMW 的读旧快照回写会丢掉部分标记。
+    let dir = tempfile::tempdir().unwrap();
+    let entries: Vec<String> = (0..8)
+        .map(|i| format!(r#"{{ "model_name": "m{i}", "effort_probe": {{ "accepted": [] }} }}"#))
+        .collect();
+    let path = stale_write_config(
+        dir.path(),
+        &format!(r#"{{ "model_list": [{}] }}"#, entries.join(",")),
+    );
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let p = path.clone();
+        handles.push(std::thread::spawn(move || {
+            crate::r#loop::config_watch::mark_effort_probe_stale_at(&p, &format!("m{i}"));
+        }));
+    }
+    for h in handles {
+        h.join().unwrap();
+    }
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let marked = cfg["model_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["effort_probe"]["stale"] == true)
+        .count();
+    assert_eq!(
+        marked, 8,
+        "8 个并发标记必须全部存活（丢任何一个 = 无锁回写回归）"
+    );
+}
+
 // 2026-11-10 live 冒烟抓出的时序缝回归锁 -------------------------------
 
 #[test]

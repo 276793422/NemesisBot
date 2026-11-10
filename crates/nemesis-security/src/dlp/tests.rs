@@ -1100,3 +1100,121 @@ fn test_redact_preserves_bare_vault_reference() {
         "裸引用必须原样保留: {out_mixed}"
     );
 }
+
+// ===== keyed-assignment 值段形态闸（BUG-20261110-046）：值段无引号 =
+// 代码表达式/标识符拷贝，降级 Low 不 block；引号字面量保持 Medium 照拦。
+// 2026-11-10 实录：只读 Jira 脚本三处 `password = <函数调用>` 被
+// Medium→block 硬拦（Layer 4 d405ff8b 已修的同类误拦在 DLP 复发，
+// 因本族规则值段引号可选）。 =====
+
+/// 代码表达式赋值不 block（降级 Low）。命中形态取自 2026-11-10 被拦
+/// 内容（tools/jira/jira_client.py 实录）+ 无标点裸 RHS 标识符拷贝。
+#[test]
+fn test_code_expression_assignment_demoted_not_blocking() {
+    let engine = DlpEngine::new(true, "block");
+    for code in [
+        r#"password = value.get("username")"#,
+        r#"password = getpass.getpass("Jira password: ")"#,
+        "username, password = read_credentials(args.credentials_stdin)",
+        "pwd = home_dir",
+        "access_token = session_token",
+        "password: hunter2secret9",
+    ] {
+        let result = engine.scan_text(code);
+        assert!(
+            !result.should_block,
+            "代码表达式不得 block: {code:?} -> {:?}",
+            result.matches
+        );
+        assert!(
+            result
+                .matches
+                .iter()
+                .all(|m| m.confidence == DlpConfidence::Low),
+            "无引号值段必须降级 Low: {code:?} -> {:?}",
+            result.matches
+        );
+    }
+}
+
+/// 引号字面量赋值保持 Medium 照拦（单/双引号两形态；YAML 冒号形态同）。
+#[test]
+fn test_quoted_literal_assignment_still_blocks() {
+    let engine = DlpEngine::new(true, "block");
+    for line in [
+        r#"password = "hunter2secret""#,
+        "password = 'hunter2secret'",
+        r#"password: "hunter2secret9""#,
+        r#"token = "abc12345def""#,
+        r#"secret_key = "deadbeefcafe0123""#,
+    ] {
+        let result = engine.scan_text(line);
+        assert!(
+            result.should_block,
+            "引号字面量必须照拦: {line:?} -> {:?}",
+            result.matches
+        );
+    }
+}
+
+/// 裸值秘密：不 block（Low）但 redact 面照旧打码——掩码能力不回退。
+#[test]
+fn test_bare_secret_redacted_but_not_blocking() {
+    let engine = DlpEngine::new(true, "block");
+    let line = "pwd = hunter2secret_value";
+    let result = engine.scan_text(line);
+    assert!(
+        !result.should_block,
+        "裸值降级 Low 不 block: {:?}",
+        result.matches
+    );
+    let out = engine.redact_content(line);
+    assert!(!out.contains("hunter2secret_value"), "裸值必须打码: {out}");
+    assert!(out.contains("[REDACTED]"), "掩码占位应在场: {out}");
+}
+
+/// 全量复放锁（BUG-20261110-046）：2026-11-10 被拦 write_file 的**原始
+/// 载荷逐字**（只读 Jira 客户端脚本，取自 `commit 22c94836/` 日志
+/// 04.Local.md 的 args.content，JSON 转义还原；fixture 为合法 Python，
+/// py_compile 验过）。合成片段锁规则行为，本锁锁真实现场：三条
+/// `password = <代码表达式>` 降级 Low 不 block、唯一 `127.0.0.1`（
+/// ip_address_public）照旧 Low——修复后整包不拦。同时钉伴生修复：
+/// summary 按去重规则数计数（旧实现把 match 数当 rule 数，报
+/// 「across 4 rule(s)」实为 2 条规则——本次定位期误导源之一）。
+#[test]
+fn test_bug046_real_payload_replay_not_blocking() {
+    let engine = DlpEngine::new(true, "block");
+    let payload = include_str!("../../tests/fixtures/2026-11-10_bug046_jira_client_payload.py");
+    let result = engine.scan_text(payload);
+    let brief: Vec<(String, DlpConfidence)> = result
+        .matches
+        .iter()
+        .map(|m| (m.rule_name.clone(), m.confidence))
+        .collect();
+    assert!(!result.should_block, "实录载荷不得 block: {brief:?}");
+    assert!(
+        result
+            .matches
+            .iter()
+            .all(|m| m.confidence == DlpConfidence::Low),
+        "全部命中必须降级/保持 Low: {brief:?}"
+    );
+    // 4 命中位 = 3× secret_password_assignment（三处赋值表达式）+
+    // 1× ip_address_public（127.0.0.1 代理默认值），与被拦日志逐字一致。
+    assert_eq!(result.matches.len(), 4, "命中位漂移: {brief:?}");
+    assert_eq!(
+        result
+            .matches
+            .iter()
+            .filter(|m| m.rule_name == "secret_password_assignment")
+            .count(),
+        3,
+        "三条赋值命中缺位: {brief:?}"
+    );
+    // 去重后 2 条规则——summary 须报「across 2 rule(s)」。
+    assert!(
+        result.summary.contains("across 2 rule(s)"),
+        "summary 须按去重规则计数: {}",
+        result.summary
+    );
+}
