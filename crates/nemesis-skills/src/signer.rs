@@ -248,9 +248,18 @@ impl SkillSigner {
                 continue;
             }
 
-            if path.is_dir() {
+            // 链接条目（symlink/junction）不跟进也不进载荷——与 lockfile.rs
+            // /lint.rs 同口径（BUG-20261110-059 同族）：技能包内 symlink 可
+            // 指向安装主机任意文件，跟随读取即越界；目录环更是无限递归栈
+            // 溢出（entry.file_type() 不跟随链接，Path::is_dir() 会跟随）。
+            let ft = entry.file_type().map_err(NemesisError::Io)?;
+            if ft.is_symlink() {
+                continue;
+            }
+
+            if ft.is_dir() {
                 Self::collect_files(base, &path, out)?;
-            } else {
+            } else if ft.is_file() {
                 // 相对路径规范化：组件以 `/` 连接（Windows `\` 不进载荷，
                 // 签名跨平台可验）。
                 let relative = path

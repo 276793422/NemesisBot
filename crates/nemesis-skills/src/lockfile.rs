@@ -140,9 +140,20 @@ impl SkillsLockfile {
                 continue;
             }
 
-            if path.is_dir() {
+            // 链接条目（symlink/junction）不扫也不记账——与 lint.rs 同口径：
+            // 技能包内 symlink 可指向安装主机任意文件，跟随读取即越界；目录
+            // 环更是无限递归栈溢出（entry.file_type() 不跟随链接，Path::is_dir
+            // 会跟随——旧代码用后者，环目录直接打崩进程）。
+            let ft = entry.file_type().map_err(NemesisError::Io)?;
+            if ft.is_symlink() {
+                continue;
+            }
+
+            if ft.is_dir() {
                 Self::walk(base, &path, out)?;
-            } else {
+            } else if ft.is_file() {
+                // is_file() 过滤顺手封掉 fifo 等非常规文件的阻塞读
+                //（同 lint.rs 口径）。
                 let data = std::fs::read(&path).map_err(NemesisError::Io)?;
                 let mut hasher = Sha256::new();
                 hasher.update(&data);

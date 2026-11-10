@@ -226,6 +226,12 @@ fn recursively_add_directory<W: Write + std::io::Seek>(
         let entry = entry.map_err(|e| format!("failed to read dir entry: {}", e))?;
         let path = entry.path();
 
+        // 链接条目（symlink/junction）不跟进（BUG-20261110-059 同族）：
+        // Path::is_dir() 跟随链接，源目录内链接环下无限递归。
+        if entry.file_type().map(|t| t.is_symlink()).unwrap_or(true) {
+            continue;
+        }
+
         let relative = path
             .strip_prefix(base_dir)
             .map_err(|e| format!("failed to compute relative path: {}", e))?;

@@ -1733,7 +1733,16 @@ impl StaticFiles for DirectoryStaticFiles {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
+                    // 链接条目（symlink/junction）不跟进也不列举——目录内
+                    // junction 环下 Path::is_dir()（跟随链接）会无限递归栈
+                    // 溢出（entry.file_type() 不跟随链接）。
+                    let Ok(ft) = entry.file_type() else {
+                        continue;
+                    };
+                    if ft.is_symlink() {
+                        continue;
+                    }
+                    if ft.is_dir() {
                         walk(&path, base, files);
                     } else if let Ok(rel) = path.strip_prefix(base) {
                         files.push(rel.to_string_lossy().replace('\\', "/"));
