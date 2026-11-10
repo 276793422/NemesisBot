@@ -608,12 +608,27 @@ async fn test_verify_drift_reports_modification() {
 
 // 卸载路径安全：slug 只能是单一目录名（WSAPI 接线时加固——
 // 旧 web handler 有 resolve_path 围栏，installer 路径必须同强度）。
+// BUG-20261111-064：手写弱校验缺 `:` 拒绝——`C:foo` 盘符相对路径 join
+// 截断出 workspace 删任意目录；现与 install 同源 validator。
 #[tokio::test]
 async fn uninstall_rejects_path_traversal() {
     let tmp = tempfile::tempdir().unwrap();
     let installer = make_installer(tmp.path(), &wiremock::MockServer::start().await);
 
-    for bad in ["../escape", "a/b", r"a\b", "..", ".hidden", ""] {
+    for bad in [
+        "../escape",
+        "a/b",
+        r"a\b",
+        "..",
+        ".hidden",
+        "",
+        // 盘符相对路径（join 截断）与 NTFS ADS 分隔符。
+        "C:foo",
+        "c:evil",
+        "foo:bar",
+        // 尾点（Win32 静默剥离 → 删 `foo` 而 lockfile 键 `foo.` 永久漂移）。
+        "foo.",
+    ] {
         let err = installer
             .uninstall(bad)
             .expect_err("traversal must be rejected");
@@ -627,6 +642,35 @@ async fn uninstall_rejects_path_traversal() {
 
     // 未命中围栏的正常缺失技能仍是 NotFound（不是 Validation）。
     let err = installer.uninstall("ghost").unwrap_err();
+    assert!(
+        matches!(err, nemesis_types::error::NemesisError::NotFound(_)),
+        "err: {err:?}"
+    );
+}
+
+/// 横向排查补齐（BUG-20261111-064 同族回归锁）：get_origin_tracking 此前
+/// 裸 join 无校验，且被 skill_manage 工具在 install() 校验之前以 LLM 可控
+/// slug 调用——`..`/盘符相对名可读 workspace 外同名文件。修后入口拒绝
+///（不发任何 IO）。
+#[tokio::test]
+async fn get_origin_tracking_rejects_path_traversal() {
+    let tmp = tempfile::tempdir().unwrap();
+    let installer = make_installer(tmp.path(), &wiremock::MockServer::start().await);
+
+    for bad in ["../escape", "a/b", r"a\b", "..", "C:foo", "foo:bar", ""] {
+        let err = installer
+            .get_origin_tracking(bad)
+            .expect_err("traversal must be rejected");
+        match err {
+            nemesis_types::error::NemesisError::Validation(msg) => {
+                assert!(msg.contains("path traversal denied"), "msg: {msg}");
+            }
+            other => panic!("expected Validation error for {bad:?}, got {other:?}"),
+        }
+    }
+
+    // 正常缺失技能仍是 NotFound（不是 Validation）。
+    let err = installer.get_origin_tracking("ghost").unwrap_err();
     assert!(
         matches!(err, nemesis_types::error::NemesisError::NotFound(_)),
         "err: {err:?}"

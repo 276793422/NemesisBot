@@ -1181,14 +1181,21 @@ impl SkillInstaller {
 
     /// Uninstall a skill by name.
     pub fn uninstall(&self, skill_name: &str) -> Result<()> {
-        // 路径安全：slug 只能是单一目录名。拒绝路径分隔符 / `..` / 点开头
-        // （防止 `../../` 越出 workspace/skills 边界 remove_dir_all 任意目录）。
-        if skill_name.is_empty()
-            || skill_name.contains('/')
-            || skill_name.contains('\\')
-            || skill_name.contains("..")
-            || skill_name.starts_with('.')
-        {
+        // 路径安全：与 install 同源 validator（单一真相源，注释对称声明
+        // 此前名不副实）。BUG-20261111-064：此处曾手写弱校验缺 `:` 拒绝——
+        // `C:foo` 是盘符相对路径，`PathBuf::join` 遇带 prefix 成分整体截断
+        // 已有路径，`remove_dir_all` 删除逃出 workspace/skills 边界（落到
+        // gateway 进程 CWD 同盘任意单段目录）。validator 额外覆盖 64 字符
+        // 上限 / Windows 保留设备名 / 尾点尾空格（Win32 静默剥离致 lockfile
+        // 永久漂移）。点开头拒绝保留（validator 不拦点开头；卸载面维持
+        // 既有拒绝语义）。
+        validate_skill_identifier(skill_name).map_err(|e| {
+            NemesisError::Validation(format!(
+                "path traversal denied: invalid skill name '{}': {}",
+                skill_name, e
+            ))
+        })?;
+        if skill_name.starts_with('.') {
             return Err(NemesisError::Validation(format!(
                 "path traversal denied: invalid skill name '{}'",
                 skill_name
@@ -1332,6 +1339,16 @@ impl SkillInstaller {
 
     /// Read origin tracking metadata for a skill.
     pub fn get_origin_tracking(&self, skill_name: &str) -> Result<SkillOrigin> {
+        // 横向排查补齐（BUG-20261111-064 同族）：本函数裸 join 且被
+        // skill_manage 工具（skills_ops）在 install() 校验之前以 LLM 可控
+        // slug 调用——`..`/盘符相对名可读 workspace 外同名文件。与
+        // install/uninstall 同源 validator（单一真相源）。
+        validate_skill_identifier(skill_name).map_err(|e| {
+            NemesisError::Validation(format!(
+                "path traversal denied: invalid skill name '{}': {}",
+                skill_name, e
+            ))
+        })?;
         let origin_path = self
             .workspace
             .join("skills")
