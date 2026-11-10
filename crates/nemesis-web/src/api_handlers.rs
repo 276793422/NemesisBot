@@ -521,7 +521,9 @@ pub async fn handle_sdk_pip() -> axum::response::Response {
 // Internal helpers
 
 /// Load scanner status from the workspace config directory.
-fn load_scanner_status(workspace: &str) -> serde_json::Value {
+/// pub(crate)：security.overview（第⑦层总览聚合）复用同一解析——
+/// 单一真相源，scanner 层状态投影不再各写一份。
+pub(crate) fn load_scanner_status(workspace: &str) -> serde_json::Value {
     // 委托 nemesis-path 唯一拼接点。
     let scanner_config_path =
         nemesis_path::resolve_scanner_config_path_in_workspace(std::path::Path::new(workspace));

@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import SecurityLayerHeader from '../components/security/SecurityLayerHeader.vue'
 
 // G7 (D1)：用户态沙盒 UI 仅在 Linux 工具链构建中打包（build-linux.sh 导出
 // VITE_USERLAND_SANDBOX=1）。env 缺省时 import.meta.env.X 被静态替换为
@@ -40,6 +41,24 @@ const executorOn = computed(() => !!executorCfg.value?.enabled && !!executorCfg.
 const strictOn = computed(() => !!executorCfg.value?.strict)
 const allowNetworkCfg = computed(() => !!executorCfg.value?.allow_network)
 const sandboxReady = computed(() => !!overview.value?.ready)
+
+// 十层页面化（2026-11-10）：⑨ 沙盒隔离层共享页头（层号/职责/状态徽标）。
+// 状态 = executor 两开关（Layer 1 子进程剥离 / Layer 2 套盒）+ 引擎就绪；
+// 平台后缀进职责条（Windows=Sandboxie / Linux=landlock/bwrap / macOS=Seatbelt）。
+const platformLabel = computed(() =>
+  platform.value === 'windows'
+    ? 'Windows · Sandboxie'
+    : platform.value === 'linux'
+      ? 'Linux · 用户态沙盒（landlock/bwrap）'
+      : platform.value === 'macos'
+        ? 'macOS · Seatbelt'
+        : String(platform.value ?? ''),
+)
+const layerStatus = computed<{ label: string; tone: 'on' | 'off' | 'na' | 'warn' }>(() => {
+  if (!platform.value) return { label: '不可用', tone: 'na' }
+  if (!executorOn.value) return { label: '已关闭', tone: 'off' }
+  return sandboxReady.value ? { label: '运行中', tone: 'on' } : { label: '未就绪', tone: 'warn' }
+})
 const backends = computed<any[]>(() => overview.value?.backend_probe?.backends ?? [])
 const selectedBackend = computed(() => overview.value?.backend_probe?.selected ?? null)
 // D4 状态面（DACL 定向档 2026-09-27）：overview.dacl（Windows + acl feature
@@ -374,10 +393,13 @@ onMounted(async () => {
 
 <template>
   <div class="page-sandbox">
-    <div class="page-header">
-      <h2>沙盒</h2>
-      <span v-if="platform" class="platform-badge">{{ platform === 'windows' ? 'Windows · Sandboxie' : platform === 'linux' ? 'Linux · 用户态沙盒' : platform === 'macos' ? 'macOS · Seatbelt' : platform }}</span>
-    </div>
+    <SecurityLayerHeader
+      num="⑨"
+      title="沙盒隔离"
+      :duty="`第 9 层最终防御红线（sandbox feature）：LLM 高危操作剥离进独立子进程（executor.enabled，Layer 1），可再套内核级盒（executor.sandbox，Layer 2）——盒内写盘不落真盘，需 pending/commit 提交。当前平台：${platformLabel}。`"
+      :status-label="layerStatus.label"
+      :status-tone="layerStatus.tone"
+    />
     <div class="page-body">
 
       <!-- 平台信息加载失败（overview 是平台真相源） -->

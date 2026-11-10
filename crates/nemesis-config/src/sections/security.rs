@@ -230,6 +230,14 @@ pub struct SecurityLayerConfig {
     /// BTreeMap 键序确定（同 `ModelConfig.extra`，security 段字节稳定）。
     #[serde(default)]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+    /// SSRF 白名单域名（runtime `apply_security_layer_switches` 读
+    /// `layers.ssrf.allowed_hosts` **层对象顶层**）。此前 typed 无此字段——
+    /// security.config.get 反序列化丢弃、save 整档回存把它从磁盘抹掉
+    /// （CFG-01 同族 round-trip 删键 bug，2026-11-10 十层页面化时修复）。
+    /// 仅 SSRF 层消费；其他层带此键的部署同样 round-trip 保留（语义无害）。
+    /// skip_serializing_if = 空 Vec 不落盘，未配置的层保存一次字节不变。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

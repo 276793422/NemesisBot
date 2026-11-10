@@ -2,17 +2,17 @@ import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useToast } from '../../composables/useToast'
 
-// D1/D2（2026-09-16 横扫存量加固）：安全页策略开关下拉。
-// exec_unknown_policy（默认 allow）/ guardian_failure_policy（默认 ask）
-// —— 改值即整体 security.config.save 写回；保存失败回滚显示。
-// guardian_mode（同日无上下文 LLM 命令审计）：覆盖面开关，默认 off。
+// 人工审批专页 spec（十层页面化 2026-11-10，自旧 SecurityView.spec 迁移）：
+// §2 免打扰开关 / 审批记忆规则条目级管理 / eval 规则节（用户拍板 3：先挂
+// 本页，位置后议）。请求形态与渲染分支逐断言平移；后端契约由 security
+// approvals/eval_rules handler 测试钉住。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
   useWSAPI: () => ({ request: (...args: any[]) => requestMock(...args) }),
 }))
 
-import SecurityView from '../SecurityView.vue'
+import SecurityApprovalView from '../SecurityApprovalView.vue'
 
 function configResult() {
   return {
@@ -27,17 +27,17 @@ function configResult() {
 }
 
 // §2 免打扰（2026-10-11 无人值守计划 Part 2）审批自动批准开关。
-describe('SecurityView 免打扰开关（§2）', () => {
+describe('SecurityApprovalView 免打扰开关（§2）', () => {
   async function mountWith(cfg: any, status: any) {
     requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
       if (cmd === 'config.get') return Promise.resolve(cfg)
       if (cmd === 'approvals.status') return Promise.resolve(status)
       if (cmd === 'config.save') return Promise.resolve({ saved: true })
-      if (cmd === 'audit') return Promise.resolve({ entries: [], total: 0 })
-      if (cmd === 'stats') return Promise.resolve({ total_events: 0, by_level: {} })
+      if (cmd === 'approvals.list') return Promise.resolve({ rules: [] })
+      if (cmd === 'eval_rules.list') return Promise.resolve({ rules: [], version: 1 })
       return Promise.resolve({})
     })
-    const w = mount(SecurityView)
+    const w = mount(SecurityApprovalView)
     await flushPromises()
     return w
   }
@@ -94,129 +94,21 @@ beforeEach(() => {
   requestMock.mockImplementation((_m: string, cmd: string, _data: any) => {
     if (cmd === 'config.get') return Promise.resolve(configResult())
     if (cmd === 'config.save') return Promise.resolve({ saved: true })
-    if (cmd === 'audit') return Promise.resolve({ entries: [], total: 0 })
-    if (cmd === 'stats') return Promise.resolve({ total_events: 0, by_level: {} })
+    if (cmd === 'approvals.status') return Promise.resolve({ injected: false })
+    if (cmd === 'approvals.list') return Promise.resolve({ rules: [] })
+    if (cmd === 'eval_rules.list') return Promise.resolve({ rules: [], version: 1 })
     return Promise.resolve({})
   })
 })
 
 async function mountView() {
-  const w = mount(SecurityView)
+  const w = mount(SecurityApprovalView)
   await flushPromises()
   return w
 }
 
-function policySelect(w: { find: (s: string) => any }, key: string) {
-  return w.find(`select[data-test="${key}"]`)
-}
-
-describe('SecurityView 策略开关（D1/D2）', () => {
-  it('渲染三个下拉：值来自 config.get，各 3 个选项', async () => {
-    const w = await mountView()
-    const exec = policySelect(w, 'exec_unknown_policy')
-    const guardian = policySelect(w, 'guardian_failure_policy')
-    const mode = policySelect(w, 'guardian_mode')
-    expect(exec.exists()).toBe(true)
-    expect(guardian.exists()).toBe(true)
-    expect(mode.exists()).toBe(true)
-    expect((exec.element as HTMLSelectElement).value).toBe('allow')
-    expect((guardian.element as HTMLSelectElement).value).toBe('ask')
-    expect((mode.element as HTMLSelectElement).value).toBe('off')
-    expect(exec.findAll('option').length).toBe(3)
-    expect(guardian.findAll('option').length).toBe(3)
-    expect(mode.findAll('option').length).toBe(3)
-    w.unmount()
-  })
-
-  it('改值 → 整体 config.save 写回（含改后键 + 其余字段原样）', async () => {
-    const w = await mountView()
-    requestMock.mockClear()
-    await policySelect(w, 'exec_unknown_policy').setValue('deny')
-    await flushPromises()
-    const saveCalls = requestMock.mock.calls.filter(c => c[1] === 'config.save')
-    expect(saveCalls.length).toBe(1)
-    const payload = saveCalls[0][2]
-    expect(payload.exec_unknown_policy).toBe('deny')
-    // 整体写回：其余字段不被丢弃
-    expect(payload.default_action).toBe('allow')
-    expect(payload.dir_rules).toEqual({ create: [] })
-    expect(useToast().toasts.some(t => t.type === 'success')).toBe(true)
-    w.unmount()
-  })
-
-  it('保存失败 → 本地显示回滚 + error toast', async () => {
-    const w = await mountView()
-    requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
-      if (cmd === 'config.save') return Promise.reject(new Error('ws down'))
-      if (cmd === 'config.get') return Promise.resolve(configResult())
-      return Promise.resolve({})
-    })
-    await policySelect(w, 'guardian_failure_policy').setValue('deny')
-    await flushPromises()
-    expect((policySelect(w, 'guardian_failure_policy').element as HTMLSelectElement).value).toBe('ask')
-    expect(useToast().toasts.some(t => t.type === 'error')).toBe(true)
-    expect(useToast().toasts.some(t => t.type === 'success')).toBe(false)
-    w.unmount()
-  })
-
-  it('旧配置缺键 → 下拉显示后端 serde 默认（allow / ask / off），不空白', async () => {
-    requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
-      if (cmd === 'config.get') {
-        // Partial 化：模拟"旧配置缺键"要 delete 字段——推断类型的必有属性
-        // 不可 delete（vue-tsc TS2790），本用例语义就是缺键。
-        const c: Partial<ReturnType<typeof configResult>> = configResult()
-        delete c.exec_unknown_policy
-        delete c.guardian_failure_policy
-        delete c.guardian_mode
-        return Promise.resolve(c)
-      }
-      return Promise.resolve({})
-    })
-    const w = await mountView()
-    expect((policySelect(w, 'exec_unknown_policy').element as HTMLSelectElement).value).toBe('allow')
-    expect((policySelect(w, 'guardian_failure_policy').element as HTMLSelectElement).value).toBe('ask')
-    expect((policySelect(w, 'guardian_mode').element as HTMLSelectElement).value).toBe('off')
-    w.unmount()
-  })
-
-  it('guardian_mode 改值 → config.save 写回 + 成功 toast', async () => {
-    const w = await mountView()
-    requestMock.mockClear()
-    await policySelect(w, 'guardian_mode').setValue('critical')
-    await flushPromises()
-    const saveCalls = requestMock.mock.calls.filter(c => c[1] === 'config.save')
-    expect(saveCalls.length).toBe(1)
-    expect(saveCalls[0][2].guardian_mode).toBe('critical')
-    expect(useToast().toasts.some(t => t.type === 'success')).toBe(true)
-    w.unmount()
-  })
-
-  it('JSON 编辑模式下拉收起（由编辑器接管，显示提示）', async () => {
-    const w = await mountView()
-    expect(policySelect(w, 'exec_unknown_policy').exists()).toBe(true)
-    await w.findAll('button').find(b => b.text() === '编辑')!.trigger('click')
-    expect(policySelect(w, 'exec_unknown_policy').exists()).toBe(false)
-    expect(w.text()).toContain('JSON 编辑模式下')
-    w.unmount()
-  })
-
-  it('策略键不再重复出现在通用标量网格中', async () => {
-    const w = await mountView()
-    const grid = w.find('.settings-grid:not([data-test="policy-switches"])')
-    const keys = grid.findAll('.settings-key').map(k => k.text())
-    expect(keys).not.toContain('exec_unknown_policy')
-    expect(keys).not.toContain('guardian_failure_policy')
-    expect(keys).toContain('default_action')
-    w.unmount()
-  })
-})
-
-// ── 批次 3（2026-11-08 配置页补全）：审批记忆规则条目级管理 + eval 规则 TAB。
-// 条目级走 approvals.add/remove/clear（与「总是允许」自动写入同一闸）；
-// eval 规则走 eval_rules.list/add/update/set_enabled/remove/reset（与 CLI
-// `eval rules *` 同源，真相源 nemesis-config::eval_rules）。本 spec 钉前端
-// 请求形态与渲染分支；后端契约由 security approvals/eval_rules handler 测试钉住。
-describe('SecurityView 审批记忆规则 + eval 规则 TAB（批次 3）', () => {
+// ── 审批记忆规则 + eval 规则节（批次 3 迁移）──────────────────────────
+describe('SecurityApprovalView 审批记忆规则 + eval 规则', () => {
   const evalRule = {
     id: 'exfil-path', description: '可疑外传路径', level: 'high', enabled: true,
     source: 'tool_trace', min_count: 1,
@@ -229,8 +121,6 @@ describe('SecurityView 审批记忆规则 + eval 规则 TAB（批次 3）', () =
       if (cmd === 'config.get') return Promise.resolve(configResult())
       if (cmd === 'approvals.status') return Promise.resolve({ injected: false })
       if (cmd === 'config.save') return Promise.resolve({ saved: true })
-      if (cmd === 'audit') return Promise.resolve({ entries: [], total: 0 })
-      if (cmd === 'stats') return Promise.resolve({ total_events: 0, by_level: {} })
       if (cmd === 'approvals.list') return Promise.resolve({ rules: opts.approvalRules ?? [] })
       if (cmd === 'eval_rules.list') return Promise.resolve({ rules: opts.evalRules ?? [], version: 3 })
       if (cmd === 'approvals.add') return Promise.resolve({ added: true, pattern: _d?.pattern })
@@ -239,7 +129,7 @@ describe('SecurityView 审批记忆规则 + eval 规则 TAB（批次 3）', () =
       if (cmd === 'eval_rules.reset') return Promise.resolve({ rules: [], version: 1 })
       return Promise.resolve({})
     })
-    const w = mount(SecurityView)
+    const w = mount(SecurityApprovalView)
     await flushPromises()
     return w
   }
@@ -252,7 +142,7 @@ describe('SecurityView 审批记忆规则 + eval 规则 TAB（批次 3）', () =
     const patInput = w.find('input[placeholder*="匹配 pattern"]')
     await opInput.setValue('process_exec')
     await patInput.setValue('cargo test *')
-    await w.findAll('button').find(b => b.text() === '添加')!.trigger('click')
+    await w.find('[data-test="approval-rule-add"]').trigger('click')
     await flushPromises()
     expect(requestMock).toHaveBeenCalledWith('security', 'approvals.add', { op: 'process_exec', pattern: 'cargo test *', action: 'allow' })
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('规则已添加'))).toBe(true)
@@ -263,18 +153,16 @@ describe('SecurityView 审批记忆规则 + eval 规则 TAB（批次 3）', () =
   it('空 op 或 pattern → 本地拦截（不发 approvals.add）', async () => {
     const w = await mountWithRules()
     await w.find('input[placeholder*="匹配 pattern"]').setValue('cargo test *')
-    await w.findAll('button').find(b => b.text() === '添加')!.trigger('click')
+    await w.find('[data-test="approval-rule-add"]').trigger('click')
     await flushPromises()
     expect(requestMock).not.toHaveBeenCalledWith('security', 'approvals.add', expect.anything())
     expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('必填'))).toBe(true)
     w.unmount()
   })
 
-  it('eval 规则 TAB：列表渲染（table 行数 + 版本计数）；toggle 启用 → eval_rules.set_enabled {id,enabled}', async () => {
+  it('eval 规则节：列表渲染（table 行数 + 版本计数）；toggle 启用 → eval_rules.set_enabled {id,enabled}', async () => {
     const w = await mountWithRules({ evalRules: [evalRule, { ...evalRule, id: 'rm-rf', enabled: false, level: 'critical' }] })
-    await w.findAll('button.tab').find(b => b.text() === '评估规则')!.trigger('click')
-    await flushPromises()
-    expect(w.find('[data-test="eval-rules-tab"]').exists()).toBe(true)
+    expect(w.find('[data-test="eval-rules-card"]').exists()).toBe(true)
     const rows = w.find('[data-test="eval-rules-table"]').findAll('tbody tr')
     expect(rows).toHaveLength(2)
     expect(w.text()).toContain('共 2 条，1 条启用')
@@ -287,8 +175,6 @@ describe('SecurityView 审批记忆规则 + eval 规则 TAB（批次 3）', () =
 
   it('eval 规则新增：modal 打开 → 填 id → eval-rule-save → eval_rules.add {rule}（conditions/level/source 完整载荷）', async () => {
     const w = await mountWithRules()
-    await w.findAll('button.tab').find(b => b.text() === '评估规则')!.trigger('click')
-    await flushPromises()
     await w.find('[data-test="eval-rule-new"]').trigger('click')
     await flushPromises()
     expect(w.find('[data-test="eval-rule-modal"]').exists()).toBe(true)

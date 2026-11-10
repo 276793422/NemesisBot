@@ -44,13 +44,21 @@ pub enum CommandCategory {
 }
 
 /// Metadata for a blocklist entry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockEntry {
     pub name: &'static str,
     pub category: CommandCategory,
     pub severity: Severity,
     pub platform: Platform,
     pub reason: &'static str,
+}
+
+/// 内置黑名单只读快照（Dashboard 第②层页 `security.command_blocklist`
+/// 消费）。§2.7 核实结论（2026-11-10）：内置黑名单 = 硬编码静态表，
+/// 层页只读呈现；`extra_patterns`/`add_entry` 扩展面生产零接线（生产
+/// 构造是 `CommandGuard::new(true)`），层页诚实注记「本期不开放编辑」。
+pub fn builtin_blocklist() -> &'static [BlockEntry] {
+    get_blocklist_metadata()
 }
 
 /// Guard configuration.

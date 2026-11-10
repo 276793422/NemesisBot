@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { on as sseOn, off as sseOff } from '../composables/useSSE'
 import { useToast } from '../composables/useToast'
+import SecurityLayerHeader from '../components/security/SecurityLayerHeader.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -38,6 +39,14 @@ interface ScannerEngine {
 
 const activeTab = ref('engines')
 const engines = ref<ScannerEngine[]>([])
+
+// 十层页面化（2026-11-10）：⑦ 病毒扫描层共享页头（层号/职责/状态徽标，
+// 与六层配置驱动页同视觉入口）。
+const layerStatus = computed(() => {
+  const on = engines.value.filter((e) => e.enabled)
+  if (!on.length) return { label: '未启用', tone: 'off' as const }
+  return { label: `启用 ${on.length}/${engines.value.length}`, tone: 'on' as const }
+})
 const loading = ref(true)
 const scannerConfig = ref<any>({})
 const editing = ref(false)
@@ -352,7 +361,13 @@ onUnmounted(() => {
 
 <template>
   <div class="page-scanner">
-    <div class="page-header"><h2>扫描器管理</h2></div>
+    <SecurityLayerHeader
+      num="⑦"
+      title="病毒扫描"
+      duty="安全第 7 层（scanner feature，自 security 拆出独立子系统）：写/下载/执行前的病毒扫描链（ScanChain 多引擎），命中即拦；关层后第 7 层构造期 WARN 诚实短路，审计链照常。"
+      :status-label="layerStatus.label"
+      :status-tone="layerStatus.tone"
+    />
     <div class="page-body">
       <div v-if="loading" style="text-align: center; padding: var(--space-8);">
         <div class="spinner spinner-lg" style="margin: 0 auto;"></div>

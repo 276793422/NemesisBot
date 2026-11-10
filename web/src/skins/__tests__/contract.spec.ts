@@ -151,6 +151,16 @@ describe('导航模型与路由一致性（契约 vs router）', () => {
     }
   })
 
+  it('Sidebar 点击推 item.route 真路径（旧「/」+id 拼法对 layer/guardian/approval 等条目是死链 = 红）', () => {
+    // id 是契约身份不是路径（security-overview 的 route 是 /security-overview、
+    // layer-* 是 /security/layer/:layer、guardian/approval 带 /security 前缀）——
+    // 曾以「'/' + item.id」推导路由，安全组 9 条目点侧栏落 404 空页。
+    // 与 contract.ts navigate()（push item.route）保持同一真相。
+    const sidebar = readFileSync(resolve(import.meta.dirname, '../../components/Sidebar.vue'), 'utf8')
+    expect(sidebar).toContain('@click="navigate(item.route)"')
+    expect(sidebar).not.toContain('navigate(item.id)')
+  })
+
   it('data-nb-shell 容器标记在场（皮肤壳 CSS 的唯一合法锚点；标记消失 = 红）', () => {
     // 皮肤脚本（如 coraldusk-full）只许锚这四个标记，绝不引用宿主内部
     // 类名——宿主重构类名不破皮肤；删/改名标记必须过这道红。

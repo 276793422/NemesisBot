@@ -70,9 +70,24 @@ const routes: RouteRecordRaw[] = [
   // board feature 门控（workbench.get/respond 挂 board 模块）。
   ...(import.meta.env.VITE_FEATURE_BOARD !== 'false' ? [{ path: '/workbench/:kind/:id', name: 'workbench', component: () => import('../views/WorkbenchView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_CLUSTER !== 'false' ? [{ path: '/cluster', name: 'cluster', component: () => import('../views/ClusterView.vue') }] : []),
-  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security', name: 'security', component: () => import('../views/SecurityView.vue') }] : []),
+  // ── 安全域（十层页面化 2026-11-10）：总览 + 六配置驱动层页（同一
+  // SecurityLayerView 静态 props）+ ABAC/Guardian/Approval 独立视图，
+  // 全部挂 VITE_FEATURE_SECURITY（vault 原有同闸保持）。旧 SecurityView
+  // 四 tab 页退役；/security 深链 redirect 总览（tabs 是纯本地 state
+  // 不进 URL，无需 query 映射）。
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security-overview', name: 'security-overview', component: () => import('../views/SecurityOverviewView.vue') }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/injection', name: 'layer-injection', component: () => import('../views/SecurityLayerView.vue'), props: { layer: 'injection' } }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/command', name: 'layer-command', component: () => import('../views/SecurityLayerView.vue'), props: { layer: 'command' } }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/credential', name: 'layer-credential', component: () => import('../views/SecurityLayerView.vue'), props: { layer: 'credential' } }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/dlp', name: 'layer-dlp', component: () => import('../views/SecurityLayerView.vue'), props: { layer: 'dlp' } }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/ssrf', name: 'layer-ssrf', component: () => import('../views/SecurityLayerView.vue'), props: { layer: 'ssrf' } }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/abac', name: 'layer-abac', component: () => import('../views/SecurityAbacView.vue') }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/layer/audit', name: 'layer-audit', component: () => import('../views/SecurityLayerView.vue'), props: { layer: 'audit' } }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/guardian', name: 'guardian', component: () => import('../views/SecurityGuardianView.vue') }] : []),
+  ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/security/approval', name: 'approval', component: () => import('../views/SecurityApprovalView.vue') }] : []),
+  { path: '/security', redirect: '/security-overview' },
   // L7c (2026-10-13)：凭据 Vault 管理页（后端 vault handler 挂 security
-  // feature——与 SecurityView 同一 VITE_FEATURE_SECURITY 门控）。
+  // feature——与安全域同一 VITE_FEATURE_SECURITY 门控）。
   ...(import.meta.env.VITE_FEATURE_SECURITY !== 'false' ? [{ path: '/vault', name: 'vault', component: () => import('../views/VaultView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SCANNER !== 'false' ? [{ path: '/scanner', name: 'scanner', component: () => import('../views/ScannerView.vue') }] : []),
   ...(import.meta.env.VITE_FEATURE_SANDBOX !== 'false' ? [{ path: '/sandbox', name: 'sandbox', component: () => import('../views/SandboxView.vue') }] : []),

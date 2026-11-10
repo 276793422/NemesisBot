@@ -263,6 +263,17 @@ fn mask_keep_prefix(value: &str) -> String {
 
 type CredentialPatterns = Vec<(&'static str, Regex)>;
 
+/// 内置凭据规则名只读快照（Dashboard 第④层页 `security.credential_rules`
+/// 消费）。§2.7 核实结论（2026-11-10）：规则表纯硬编码（32 条 OnceLock，
+/// nemesis-web overview_tests 有 drift 锁），无任何 config 扩展面——层页
+/// 只读呈现，类别分组由前端按名字映射（Rust 侧无类别元数据）。
+pub fn builtin_credential_rules() -> Vec<&'static str> {
+    get_credential_patterns()
+        .iter()
+        .map(|(name, _)| *name)
+        .collect()
+}
+
 fn get_credential_patterns() -> &'static CredentialPatterns {
     static PATTERNS: OnceLock<CredentialPatterns> = OnceLock::new();
     PATTERNS.get_or_init(|| {

@@ -596,6 +596,51 @@ fn test_security_config_roundtrip() {
 }
 
 #[test]
+fn test_security_ssrf_allowed_hosts_roundtrip_preserved() {
+    // CFG-01 同族回归锁（2026-11-10 十层页面化）：typed SecurityLayerConfig
+    // 曾无 allowed_hosts 字段——反序列化丢弃 `layers.ssrf.allowed_hosts`、
+    // security.config.save 整档回存把它从磁盘抹掉。字段补齐后 round-trip
+    // 必须保持（runtime 读层对象顶层键）。
+    let json = r#"{
+        "default_action": "allow",
+        "layers": {
+            "ssrf": {
+                "enabled": true,
+                "allowed_hosts": ["127.0.0.1", "localhost"]
+            }
+        }
+    }"#;
+    let parsed: SecurityConfig = serde_json::from_str(json).unwrap();
+    let ssrf = parsed
+        .layers
+        .as_ref()
+        .unwrap()
+        .ssrf
+        .as_ref()
+        .expect("ssrf 层应反序列化在场");
+    assert_eq!(
+        ssrf.allowed_hosts,
+        vec!["127.0.0.1".to_string(), "localhost".to_string()]
+    );
+
+    // typed save → 回读：键必须还在（曾从磁盘抹掉）
+    let saved = serde_json::to_string(&parsed).unwrap();
+    let reread: SecurityConfig = serde_json::from_str(&saved).unwrap();
+    let ssrf2 = reread.layers.as_ref().unwrap().ssrf.as_ref().unwrap();
+    assert_eq!(ssrf2.allowed_hosts.len(), 2);
+    assert_eq!(ssrf2.allowed_hosts[0], "127.0.0.1");
+    assert_eq!(ssrf2.allowed_hosts[1], "localhost");
+
+    // 空白名单不落盘（skip_serializing_if）：未配置层保存一次字节不变
+    let bare: SecurityConfig = serde_json::from_str(r#"{"default_action": "deny"}"#).unwrap();
+    let out = serde_json::to_string(&bare).unwrap();
+    assert!(
+        !out.contains("allowed_hosts"),
+        "空 allowed_hosts 不应落盘：{out}"
+    );
+}
+
+#[test]
 fn test_skills_full_config_roundtrip() {
     let cfg = SkillsFullConfig {
         enabled: true,

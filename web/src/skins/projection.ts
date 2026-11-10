@@ -118,7 +118,7 @@ const NAV_MORE: { id: string; label: string; path: string }[] = [
   { id: 'forge', label: 'Forge', path: '/forge' },
   { id: 'board', label: '看板', path: '/board' },
   { id: 'cluster', label: '集群', path: '/cluster' },
-  { id: 'security', label: '安全', path: '/security' },
+  { id: 'security-overview', label: '安全', path: '/security-overview' },
   { id: 'scanner', label: '扫描器', path: '/scanner' },
   { id: 'sandbox', label: '沙盒', path: '/sandbox' },
   { id: 'terminal', label: '终端', path: '/terminal' },
@@ -138,9 +138,12 @@ const ITEM_FEATURE: Record<string, string> = {
   workflows: 'WORKFLOW',
   forge: 'FORGE',
   cluster: 'CLUSTER',
-  security: 'SECURITY',
-  scanner: 'SECURITY',
+  // scanner 挂独立 scanner feature（2026-09-28 从 security 拆出；与
+  // navModel.ITEM_FEATURE 同源——此表曾陈旧地写 security: 'SECURITY' /
+  // scanner: 'SECURITY'，2026-11-10 十层页面化对齐清理）。
+  scanner: 'SCANNER',
   sandbox: 'SANDBOX',
+  vm: 'VM',
   board: 'BOARD',
   terminal: 'TERMINAL',
 }
