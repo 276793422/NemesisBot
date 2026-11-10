@@ -375,7 +375,7 @@ mod linux_io {
         };
         let seq_sys = std::sync::Arc::clone(&seq);
         let sys_probe = target.clone();
-        let runner = move |call: &SystemCall| -> Result<std::process::Output> {
+        let runner = move |_call: &SystemCall| -> Result<std::process::Output> {
             assert!(
                 sys_probe.join("install.json").exists(),
                 "unregister 顺序契约保持"

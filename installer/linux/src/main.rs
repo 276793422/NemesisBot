@@ -196,6 +196,12 @@ fn silent_install(package: &std::path::Path, target: PathBuf, args: &Args) -> i3
                 o.files_installed,
                 o.install_dir.display()
             );
+            if o.workspace_skipped > 0 {
+                println!(
+                    "升级模式跳过 workspace 数据 {} 个文件（用户数据保留）",
+                    o.workspace_skipped
+                );
+            }
             if o.launched {
                 println!("Dashboard 已启动");
             }
@@ -354,7 +360,7 @@ fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) 
         force_downgrade: args.force,
         no_shortcuts: args.no_shortcuts,
         autostart,
-        launch: false,
+        launch: args.launch,
     };
     let progress = |p: setup_core::pkgfile::Progress| match p {
         setup_core::pkgfile::Progress::Hashing(f) => {
@@ -374,6 +380,12 @@ fn wizard_install(package: &std::path::Path, default_dir: PathBuf, args: &Args) 
                 o.files_installed,
                 o.install_dir.display()
             );
+            if o.workspace_skipped > 0 {
+                println!(
+                    "升级模式跳过 workspace 数据 {} 个文件（用户数据保留）",
+                    o.workspace_skipped
+                );
+            }
             for n in &o.notes {
                 eprintln!("[NOTE] {n}");
             }
