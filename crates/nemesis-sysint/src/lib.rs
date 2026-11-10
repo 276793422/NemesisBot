@@ -114,6 +114,7 @@ pub fn unregister(install_dir: &Path) -> UnregisterReport {
     {
         let _ = install_dir;
         UnregisterReport {
+            removed: vec![],
             warnings: vec!["本平台暂无系统集成实现（当前仅 Windows/Linux）".into()],
         }
     }
