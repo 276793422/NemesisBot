@@ -326,8 +326,8 @@ fn simulated_full_lifecycle_with_fake_process_list() -> Result<()> {
     assert_eq!(calls.lock().expect("lock").len(), 1, "闸拦路径不 spawn");
 
     // ③ 模拟「无实例」→ 卸载干净（record.files 载荷清空、标记摘除、空目录剪除；
-    //    卸载副本 = 卸载器自身职责——生产走延迟自删，测试宿主不是
-    //    uninstall.exe → 副本诚实残留）。假注销执行器断言**顺序契约**：
+    //    卸载副本摘除：测试宿主不是 uninstall.exe → 走显式删除路径；副本
+    //    自身运行形态才由延迟自删接手）。假注销执行器断言**顺序契约**：
     //    注销时 install.json（bot 账本）还在 = 先 unregister 后删文件。
     let un_calls = std::sync::Arc::new(Mutex::new(Vec::<SystemCall>::new()));
     let un_calls_in = std::sync::Arc::clone(&un_calls);
@@ -351,9 +351,10 @@ fn simulated_full_lifecycle_with_fake_process_list() -> Result<()> {
     assert!(!target.join("nemesisbot.exe").exists());
     assert!(!target.join("share").exists(), "空目录剪除");
     assert!(
-        target.join("uninstall.exe").exists(),
-        "副本残留 = 设计内（生产由延迟自删脚本接手）"
+        !target.join("uninstall.exe").exists(),
+        "副本摘除（宿主非副本形态 → 显式删除路径；BUG-20261111-071 回归锁）"
     );
+    assert!(!target.exists(), "副本摘除后目录空壳剪除");
     {
         let got = un_calls.lock().expect("lock");
         assert_eq!(got.len(), 1, "卸载只 spawn 一次 unregister: {got:?}");
@@ -628,4 +629,11 @@ fn self_delete_script_quotes_path_without_escape_artifacts() {
         "串内出现 \\\" 转义形态（cmd 语法错误根因）: {s}"
     );
     assert!(s.ends_with('"'), "rd 目录收尾引号闭合: {s}");
+}
+
+#[test]
+fn self_is_copy_predicate_false_in_test_host() {
+    // 测试宿主二进制不叫 uninstall.exe → 非副本形态（卸载走显式删除路径，
+    // 自删排程不触发——与 ③ 的副本摘除断言同判据）。
+    assert!(!self_is_uninstall_copy());
 }

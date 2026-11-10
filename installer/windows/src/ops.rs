@@ -632,6 +632,18 @@ fn uninstall_body(install_dir: &Path, system: SystemRunner<'_>) -> Result<Uninst
         Err(e) => warnings.push(format!("系统集成注销（system unregister）: {e:#}")),
     }
     let (deleted, failures) = install::uninstall(install_dir)?;
+    // 卸载副本摘除（与 Linux uninstall_body 对称——副本不在 record.files，
+    // 引擎不删）：自身 = 副本时进程镜像锁定删除必败，跳过由延迟自删接手；
+    // 从安装包本体跑 `--uninstall --dir D` 时副本无自删接手 → 显式摘除
+    // （否则残留 uninstall.exe 与目录壳）。
+    if !self_is_uninstall_copy()
+        && let Err(e) = setup_core::fsutil::delete_file(&install_dir.join("uninstall.exe"))
+    {
+        warnings.push(format!("卸载副本删除失败: {e}"));
+    }
+    // 副本摘除后目录已空则剪壳（与 Linux 形态同纪律；自身 = 副本时非空，
+    // 失败无害——自删脚本的 rd 接手）。
+    let _ = std::fs::remove_dir(install_dir);
     let self_delete_scheduled = schedule_self_delete();
     Ok(UninstallOutcome {
         deleted,
@@ -655,6 +667,17 @@ fn self_delete_script(self_path: &Path) -> String {
     script
 }
 
+/// 自身是否为 `uninstall.exe` 副本形态（自删排程与副本摘除跳过的共用判据）。
+fn self_is_uninstall_copy() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| {
+            p.file_name()
+                .map(|n| n.eq_ignore_ascii_case("uninstall.exe"))
+        })
+        .unwrap_or(false)
+}
+
 /// 自身延迟自删（仅 uninstall.exe 副本形态）。
 ///
 /// 引号纪律：脚本串必须走 `raw_arg` 原样上命令行——`args(["/C", script])` 会
@@ -666,11 +689,7 @@ fn schedule_self_delete() -> bool {
     let Ok(self_path) = std::env::current_exe() else {
         return false;
     };
-    let is_copy = self_path
-        .file_name()
-        .map(|n| n.eq_ignore_ascii_case("uninstall.exe"))
-        .unwrap_or(false);
-    if !is_copy {
+    if !self_is_uninstall_copy() {
         return false;
     }
     Command::new("cmd")

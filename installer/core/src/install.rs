@@ -358,7 +358,8 @@ fn perform_inner(
     }
 
     // ⑦ 安装记录写入 staging（哨兵最后提交）。files = 实际提交集（不含
-    // 升级跳过项；uninstall 副本若保留也入册）。
+    // 升级跳过项；uninstall 副本不入册——摘除归 bin 侧：Windows 延迟自删 /
+    // 显式删除，Linux 显式摘除）。
     let mut committed: Vec<String> = seen.difference(&skipped_workspace).cloned().collect();
     committed.sort();
     let record = InstallRecord {
