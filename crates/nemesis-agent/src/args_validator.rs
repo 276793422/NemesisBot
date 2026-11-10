@@ -220,10 +220,20 @@ pub fn try_autofix(schema: &Value, args: &Value) -> Option<Value> {
         if props.contains_key(key) {
             continue;
         }
-        // Ranked candidates within distance 2.
+        // Ranked candidates within distance 2. 距离判定与 validate 的
+        // nearest_field 同源（case-insensitive，BUG-20261110-048）——
+        // 否则 case 变体字段（`PATH` vs `path`）被 validate 判「有近邻」
+        // 报 UnknownField，autofix 却因 case-sensitive 距离超限修不了，
+        // 白耗一轮回灌自纠。rename target 仍是 schema 原样字段名。
+        let lower_key = key.to_lowercase();
         let mut candidates: Vec<(&String, usize)> = props
             .keys()
-            .map(|p| (p, edit_distance(p.as_str(), key.as_str())))
+            .map(|p| {
+                (
+                    p,
+                    edit_distance(p.to_lowercase().as_str(), lower_key.as_str()),
+                )
+            })
             .filter(|(_, d)| *d <= 2)
             .collect();
         candidates.sort_by_key(|(_, d)| *d);
