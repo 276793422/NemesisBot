@@ -256,6 +256,20 @@ pub(super) fn build_shared_tool_config(
     let spawn_slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
         Arc::new(std::sync::OnceLock::new());
 
+    // editor 开关（Full Access）围栏闸：文件围栏与 exec 族围栏共用同一把
+    // 闸（fence_gate 闭包内部委托 evaluate，与 pipeline 层同源同判）——
+    // 修复 editor 开关 × 工具层围栏两层不认账。写删族臂管界外写放行，
+    // 读族臂管 Full Access 整体放行（exec 族走这条臂）。无 security
+    // feature / auditor 缺席 = None = 围栏旧行为。
+    #[cfg(feature = "security")]
+    let editor_gate = shared
+        .security_plugin
+        .as_ref()
+        .and_then(|p| p.auditor().editor_access())
+        .map(|e| e.fence_gate());
+    #[cfg(not(feature = "security"))]
+    let editor_gate = None::<std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>;
+
     let config = nemesis_agent::SharedToolConfig {
         workspace: Some(workspace_dir.to_string_lossy().to_string()),
         // 文件工具工作区边界（write/edit/append 纵深
@@ -265,9 +279,9 @@ pub(super) fn build_shared_tool_config(
             root: workspace_dir.clone(),
             restrict: cfg.agents.defaults.restrict_to_workspace,
             extra_roots: Vec::new(),
-            // 主会话不接开关闸（暂不处理）：None = 围栏
-            // 旧行为，editor 开关只管审批层，与本围栏互不感知。
-            editor_gate: None,
+            // editor 开关（Full Access）闸：界外即将拒绝的分支先问一次
+            // （热生效，与审批层同一开关同一判定）。
+            editor_gate,
         })),
         // todowrite tool — workspace storage + TodoUpdated
         // broadcast（与 ToolEventHook 共用同一 sender；gateway 建、

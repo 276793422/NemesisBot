@@ -1125,6 +1125,10 @@ pub struct DelegateStartTool {
     /// 「passthrough」）。
     default_permission_mode: String,
     manager: Arc<DelegateManager>,
+    /// editor 开关（Full Access）围栏闸——resolve_cwd 界外 cwd 拒绝分支
+    /// 先问一次（与 background_start 同规，见
+    /// [`crate::loop_tools::EditorGate`]）。None = 旧行为。
+    editor_gate: Option<crate::loop_tools::EditorGate>,
 }
 
 impl DelegateStartTool {
@@ -1149,7 +1153,15 @@ impl DelegateStartTool {
             codex_path,
             default_permission_mode,
             manager,
+            editor_gate: None,
         }
+    }
+
+    /// editor 开关（Full Access）围栏闸链式注入（装配点从
+    /// `SharedToolConfig.workspace_boundary.editor_gate` 提取传入）。None = 旧行为。
+    pub fn with_editor_gate(mut self, gate: Option<crate::loop_tools::EditorGate>) -> Self {
+        self.editor_gate = gate;
+        self
     }
 }
 
@@ -1209,7 +1221,12 @@ impl Tool for DelegateStartTool {
         }
         .clone();
 
-        let cwd = resolve_cwd(&self.workspace, self.restrict, v["cwd"].as_str())?;
+        let cwd = resolve_cwd(
+            &self.workspace,
+            self.restrict,
+            v["cwd"].as_str(),
+            self.editor_gate.as_ref(),
+        )?;
         let prompt = v["prompt"].as_str().map(|s| s.to_string());
         let resume = v["resume_session_id"]
             .as_str()

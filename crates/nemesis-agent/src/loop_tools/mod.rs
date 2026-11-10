@@ -126,6 +126,11 @@ mod s9d_tests;
 // + register_shared_tools 注入接线测试。
 #[cfg(test)]
 mod workspace_boundary_tests;
+// editor 开关（Full Access）× exec 族围栏接线：四处围栏
+// （exec/run_script/exec_async/background_start）闸开/闸关/闸缺席矩阵
+// + resolve_cwd 闸矩阵 + registry 分发行为化继承。
+#[cfg(test)]
+mod exec_editor_gate_tests;
 // ReadFileTool 读侧内存闸（20MB 帽）——超帽拒绝（含 offset/limit 分段）
 // / 帽内行为不变 / 分段切片回归。
 #[cfg(test)]

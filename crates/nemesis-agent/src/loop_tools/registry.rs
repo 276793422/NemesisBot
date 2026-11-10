@@ -546,9 +546,25 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert("spi".to_string(), Box::new(SPITool));
     }
 
+    // editor 开关（Full Access）围栏闸提取（editor 开关 × exec 围栏两层
+    // 不认账修复）：文件围栏与 exec 族围栏（exec/run_script/background_start，
+    // 外加 delegate_start 装配点自取）同吃 boundary 槽里的同一把闸——
+    // boundary 在场才可能有 gate（项目/集群 loop 已各自接线该槽；主 loop
+    // 随 shared.rs 接线后同源覆盖，run/acp 经共享装配自动继承）。
+    // exec 族消费口径 = 整体放行族（loop_tools::cwd_gate_allows 注）。
+    let editor_gate = config
+        .workspace_boundary
+        .as_ref()
+        .and_then(|b| b.editor_gate.clone());
+
     // Exec tool + Async exec tool (mirrors Go's ExecTool + AsyncExecTool).
     if let Some(ref workspace) = config.workspace {
-        let restrict = true; // restrict to workspace by default
+        // exec 族围栏**恒上膛**：restrict 硬编码 true，不受 config
+        // agents.defaults.restrict_to_workspace 控制——部署改 config 关
+        // 不掉 exec 围栏，运行时唯一解锁 = editor 开关闸（上方 editor_gate
+        // 提取，消费口径见 loop_tools::cwd_gate_allows）。2026-11-10 事故
+        // 根因链一环（exec/run_script 共用本行；background_start 另有一行）。
+        let restrict = true;
         // exec deny 自定义词表接线（2026-11-08 激活死键）。语义见
         // `exec_deny_custom_enabled` 字段注：仅「开关开 + 词表非空」走
         // `new_with_config` 自定义臂；其余形态一律 `new`（内置默认词表，
@@ -610,7 +626,9 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             exec_base
         }
         // timeout clamp 上限（2026-11-08 config 化）：None = 600 旧行为。
-        .with_max_timeout_secs(config.exec_max_timeout_secs.unwrap_or(600));
+        // editor 开关围栏闸：链尾统一注入（None = 旧行为字节不变）。
+        .with_max_timeout_secs(config.exec_max_timeout_secs.unwrap_or(600))
+        .with_editor_gate(editor_gate.clone());
         tools.insert("exec".to_string(), Box::new(exec_tool));
         // [SEALED 2026-11-08] exec_async 封存（用户拍板，实现保留不删除）。
         // 根因：fire-and-forget（管道只接不排，64KB 写满即死锁）+ 无
@@ -632,7 +650,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         // node's output contract.
         tools.insert(
             "run_script".to_string(),
-            Box::new(RunScriptTool::new(workspace, restrict)),
+            Box::new(RunScriptTool::new(workspace, restrict).with_editor_gate(editor_gate.clone())),
         );
 
         // Bootstrap completion tool — deletes BOOTSTRAP.md after initialization.
@@ -660,14 +678,15 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         config.workspace.as_deref(),
         config.background_registry.as_ref(),
     ) {
+        // background_start 围栏恒上膛（同 exec/run_script 的 restrict=true
+        // 硬编码；config 关不掉，运行时唯一解锁 = editor 开关闸）。
         let restrict = true; // cwd confined to workspace, same as exec
         tools.insert(
             "background_start".to_string(),
-            Box::new(BackgroundStartTool::new(
-                workspace,
-                restrict,
-                Arc::clone(registry),
-            )),
+            Box::new(
+                BackgroundStartTool::new(workspace, restrict, Arc::clone(registry))
+                    .with_editor_gate(editor_gate.clone()),
+            ),
         );
         tools.insert(
             "background_output".to_string(),

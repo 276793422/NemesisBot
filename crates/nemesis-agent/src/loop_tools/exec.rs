@@ -12,6 +12,32 @@ use std::time::Instant;
 /// 返回值路径不受影响——tee 只旁挂观测，不碰返回字节）。
 pub type ExecOutputHook = Arc<dyn Fn(&RequestContext, &str, u64) + Send + Sync>;
 
+/// editor 开关（Full Access）围栏闸闭包类型——与文件围栏
+/// `WorkspaceBoundary::editor_gate` 同形同源（`EditorAccessState::
+/// fence_gate()` 产出，内部委托 evaluate，两层判定不分叉）。
+/// exec 族消费口径见 [`cwd_gate_allows`]。
+pub type EditorGate = Arc<dyn Fn(&str, bool) -> bool + Send + Sync>;
+
+/// exec 族 cwd 围栏 × editor 开关联合裁决（editor 开关 × exec 围栏两层
+/// 不认账修复）。Full Access 体系里 exec 族是「不分内外整体放行」族
+/// （nemesis-security editor_access.rs 设计原文），闭包读族臂
+/// （is_write_delete=false）正是该语义的载体——该臂不看路径参数。
+/// gate 缺席 = false（围栏维持拒绝；基线/测试/exec_worker 默认构造
+/// 旧行为字节不变）。gate 只能把拒绝翻成放行，界内检查与 restrict=false
+/// 路径都碰不到。
+pub(crate) fn cwd_gate_allows(gate: Option<&EditorGate>, target: &str) -> bool {
+    gate.map(|g| g(target, false)).unwrap_or(false)
+}
+
+/// exec 族界外拒绝消息（含解锁指引）。刻意不提「全部放行」——它解锁的
+/// 是审批层不是这道闸，写了会复刻用户困惑。
+pub(crate) fn cwd_denied_message(cwd: &str) -> String {
+    format!(
+        "Access denied: path '{}' is outside workspace（工作区外执行受限：可开启会话 Full Access 解锁，或将该目录注册为项目）",
+        cwd
+    )
+}
+
 /// 流式尾窗字符上限（lossy utf8；多字节安全截尾见 `tail_chars`）。
 pub(crate) const EXEC_TAIL_CHARS: usize = 2048;
 
@@ -103,6 +129,10 @@ pub struct ExecTool {
     /// timeout clamp 上限（2026-11-08 config 化；`tools.exec.max_timeout_secs`
     /// 部署主权参数）。默认 600 = 旧行为字节不变；registry 按配置链式覆写。
     max_timeout_secs: u64,
+    /// editor 开关（Full Access）围栏闸：界外 cwd 拒绝分支先问一次（见
+    /// [`cwd_gate_allows`]）。None = 旧行为（默认构造——基线注册、
+    /// executor 分离路径、全部既有测试逐字节不变）。
+    editor_gate: Option<EditorGate>,
 }
 
 /// 编译 deny 词表：`custom` 非空 = 自定义词表（无效 regex 跳过 + warn）；
@@ -157,6 +187,7 @@ impl ExecTool {
             deny_patterns: compile_deny_patterns(None),
             hook: None,
             max_timeout_secs: 600,
+            editor_gate: None,
         }
     }
 
@@ -176,6 +207,7 @@ impl ExecTool {
             deny_patterns: compile_deny_patterns(custom_deny_patterns),
             hook: None,
             max_timeout_secs: 600,
+            editor_gate: None,
         }
     }
 
@@ -190,6 +222,7 @@ impl ExecTool {
             deny_patterns: compile_deny_patterns(None),
             hook: Some(hook),
             max_timeout_secs: 600,
+            editor_gate: None,
         }
     }
 
@@ -205,6 +238,14 @@ impl ExecTool {
     /// （词表 × hook）互不排斥。
     pub fn with_output_hook(mut self, hook: ExecOutputHook) -> Self {
         self.hook = Some(hook);
+        self
+    }
+
+    /// editor 开关（Full Access）围栏闸链式注入（registry 从
+    /// `SharedToolConfig.workspace_boundary.editor_gate` 提取分发）。
+    /// None = 旧行为。
+    pub fn with_editor_gate(mut self, gate: Option<EditorGate>) -> Self {
+        self.editor_gate = gate;
         self
     }
 
@@ -277,11 +318,17 @@ impl Tool for ExecTool {
             };
             let resolved = canonicalize_for_compare(&target);
             let ws = canonicalize_for_compare(Path::new(&self.workspace));
-            if !resolved.starts_with(&ws) {
-                return Err(format!(
-                    "Access denied: path '{}' is outside workspace",
-                    cwd
-                ));
+            // ── exec 族工作区围栏（cwd 锚本会话工作区根）──
+            // editor 开关 × exec 围栏两层不认账修复（2026-11-10 事故：
+            // Full Access 开、exec 界外 cwd 0.003s 三连拒，无 SECURITY
+            // BLOCKED——审批层已放行、工具层围栏不认开关）。界外 cwd 先问
+            // 闸再拒：产线形态本围栏**恒上膛**（registry 硬编码
+            // restrict=true，config restrict_to_workspace 关不掉），editor
+            // 开关闸是唯一运行时解锁。闸口径 = 整体放行族（读族臂，路径
+            // 不参与判定，见 [`cwd_gate_allows`] 注）；闸缺席 / 闸判 false
+            // = 维持拒绝（旧行为，拒绝消息带解锁指引）。
+            if !resolved.starts_with(&ws) && !cwd_gate_allows(self.editor_gate.as_ref(), cwd) {
+                return Err(cwd_denied_message(cwd));
             }
         }
 
@@ -1264,6 +1311,8 @@ async fn run_one_stage_guarded(
 pub struct RunScriptTool {
     workspace: String,
     restrict: bool,
+    /// editor 开关（Full Access）围栏闸（见 [`ExecTool::editor_gate`]）。
+    editor_gate: Option<EditorGate>,
 }
 
 impl RunScriptTool {
@@ -1273,7 +1322,14 @@ impl RunScriptTool {
         Self {
             workspace: workspace.to_string(),
             restrict,
+            editor_gate: None,
         }
+    }
+
+    /// editor 开关（Full Access）围栏闸链式注入（同 [`ExecTool::with_editor_gate`]）。
+    pub fn with_editor_gate(mut self, gate: Option<EditorGate>) -> Self {
+        self.editor_gate = gate;
+        self
     }
 }
 
@@ -1346,11 +1402,17 @@ impl Tool for RunScriptTool {
             };
             let resolved = canonicalize_for_compare(&target);
             let ws = canonicalize_for_compare(Path::new(&self.workspace));
-            if !resolved.starts_with(&ws) {
-                return Err(format!(
-                    "Access denied: path '{}' is outside workspace",
-                    cwd
-                ));
+            // ── exec 族工作区围栏（cwd 锚本会话工作区根）──
+            // editor 开关 × exec 围栏两层不认账修复（2026-11-10 事故：
+            // Full Access 开、exec 界外 cwd 0.003s 三连拒，无 SECURITY
+            // BLOCKED——审批层已放行、工具层围栏不认开关）。界外 cwd 先问
+            // 闸再拒：产线形态本围栏**恒上膛**（registry 硬编码
+            // restrict=true，config restrict_to_workspace 关不掉），editor
+            // 开关闸是唯一运行时解锁。闸口径 = 整体放行族（读族臂，路径
+            // 不参与判定，见 [`cwd_gate_allows`] 注）；闸缺席 / 闸判 false
+            // = 维持拒绝（旧行为，拒绝消息带解锁指引）。
+            if !resolved.starts_with(&ws) && !cwd_gate_allows(self.editor_gate.as_ref(), cwd) {
+                return Err(cwd_denied_message(cwd));
             }
         }
 
@@ -1516,6 +1578,8 @@ pub struct AsyncExecTool {
     restrict: bool,
     /// deny 词表（与 [`ExecTool`] 同源同语义——见 [`compile_deny_patterns`]）。
     deny_patterns: Vec<regex::Regex>,
+    /// editor 开关（Full Access）围栏闸（见 [`ExecTool::editor_gate`]）。
+    editor_gate: Option<EditorGate>,
 }
 
 impl AsyncExecTool {
@@ -1524,6 +1588,7 @@ impl AsyncExecTool {
             workspace: workspace.to_string(),
             restrict,
             deny_patterns: compile_deny_patterns(None),
+            editor_gate: None,
         }
     }
 
@@ -1538,7 +1603,14 @@ impl AsyncExecTool {
             workspace: workspace.to_string(),
             restrict,
             deny_patterns: compile_deny_patterns(custom_deny_patterns),
+            editor_gate: None,
         }
+    }
+
+    /// editor 开关（Full Access）围栏闸链式注入（同 [`ExecTool::with_editor_gate`]）。
+    pub fn with_editor_gate(mut self, gate: Option<EditorGate>) -> Self {
+        self.editor_gate = gate;
+        self
     }
 
     pub(super) fn deny_hit(&self, command: &str) -> Option<String> {
@@ -1600,11 +1672,17 @@ impl Tool for AsyncExecTool {
             };
             let resolved = canonicalize_for_compare(&target);
             let ws = canonicalize_for_compare(Path::new(&self.workspace));
-            if !resolved.starts_with(&ws) {
-                return Err(format!(
-                    "Access denied: path '{}' is outside workspace",
-                    cwd
-                ));
+            // ── exec 族工作区围栏（cwd 锚本会话工作区根）──
+            // editor 开关 × exec 围栏两层不认账修复（2026-11-10 事故：
+            // Full Access 开、exec 界外 cwd 0.003s 三连拒，无 SECURITY
+            // BLOCKED——审批层已放行、工具层围栏不认开关）。界外 cwd 先问
+            // 闸再拒：产线形态本围栏**恒上膛**（registry 硬编码
+            // restrict=true，config restrict_to_workspace 关不掉），editor
+            // 开关闸是唯一运行时解锁。闸口径 = 整体放行族（读族臂，路径
+            // 不参与判定，见 [`cwd_gate_allows`] 注）；闸缺席 / 闸判 false
+            // = 维持拒绝（旧行为，拒绝消息带解锁指引）。
+            if !resolved.starts_with(&ws) && !cwd_gate_allows(self.editor_gate.as_ref(), cwd) {
+                return Err(cwd_denied_message(cwd));
             }
         }
 

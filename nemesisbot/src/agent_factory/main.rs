@@ -884,17 +884,32 @@ pub fn build_agent_loop(
             let delegate_manager =
                 Arc::new(nemesis_agent::delegate_registry::DelegateManager::new());
             delegate_manager.attach_estop(shared.estop.clone());
+            // delegate_start 的 cwd 围栏与 exec 族同规吃 editor 开关
+            // （Full Access）闸（resolve_cwd 同一语义；resolve_cwd 第二
+            // 调用方接线）。security 裁剪/auditor 缺席 = None 旧行为。
+            #[cfg(feature = "security")]
+            let delegate_editor_gate = shared
+                .security_plugin
+                .as_ref()
+                .and_then(|p| p.auditor().editor_access())
+                .map(|e| e.fence_gate());
+            #[cfg(not(feature = "security"))]
+            let delegate_editor_gate =
+                None::<std::sync::Arc<dyn Fn(&str, bool) -> bool + Send + Sync>>;
             agent_loop.register_plugin_tool(
                 "delegate_start".to_string(),
-                Arc::new(nemesis_agent::delegate_registry::DelegateStartTool::new(
-                    &shared.workspace_dir().to_string_lossy(),
-                    cfg.agents.defaults.restrict_to_workspace,
-                    cfg.agents.delegate.max_lifetime_secs,
-                    claude_path,
-                    codex_path,
-                    cfg.agents.delegate.permission_mode.clone(),
-                    delegate_manager.clone(),
-                )),
+                Arc::new(
+                    nemesis_agent::delegate_registry::DelegateStartTool::new(
+                        &shared.workspace_dir().to_string_lossy(),
+                        cfg.agents.defaults.restrict_to_workspace,
+                        cfg.agents.delegate.max_lifetime_secs,
+                        claude_path,
+                        codex_path,
+                        cfg.agents.delegate.permission_mode.clone(),
+                        delegate_manager.clone(),
+                    )
+                    .with_editor_gate(delegate_editor_gate),
+                ),
             );
             agent_loop.register_plugin_tool(
                 "delegate_send".to_string(),

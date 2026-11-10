@@ -9,12 +9,15 @@
 //!
 //! 修复形态：装配处把围栏 `editor_gate` 接到与 auditor **同一个**
 //! `EditorAccessState`（fence_gate 直接委托 evaluate，两层同一裁决源）。
-//! 本文件 6 测全绿即回归锁：
+//! 本文件全绿即回归锁：
 //! - 承诺半边 2 测：审批层认开关（与 editor_access/tests.rs 互证）；
 //! - 端到端 3 测（原 bug_*）：开关开 → 围栏放行（读族随 full，写删界外
 //!   随 full+ext）；
 //! - 对照 1 测：开关全关（闸在场上但判 false）→ 围栏照常拦——修复不得
 //!   把围栏变装饰。
+//! - exec 族事故重放 2 测（2026-11-10 追加）：exec 族围栏接入开关闸的
+//!   端到端——Full Access 开 → exec 界外 cwd 放行（事故形态）；全关 →
+//!   照常拒且消息带解锁指引。合成闸矩阵在 loop_tools/exec_editor_gate_tests.rs。
 //!
 //! 装配形态对齐生产（工具经 register_shared_tools 装配 = 生产同一装配函数）：
 //! - 项目会话（agent_factory::build_project_agent_loop， 2026-10-31）：
@@ -323,4 +326,97 @@ async fn control_switches_off_fence_still_blocks() {
     let _ = std::fs::remove_dir_all(&main_ws);
     let _ = std::fs::remove_dir_all(&project);
     let _ = std::fs::remove_dir_all(&agent_home);
+}
+
+// ---------------------------------------------------------------------------
+// exec 族事故重放（2026-11-10）：Full Access 开 → exec 界外 cwd 放行
+// ——事故形态：workspace=D:\Lenovo\...，exec git status --short --branch
+// cwd=D:\AI\NemesisBot_Rust，0.003s Access denied，无 SECURITY BLOCKED
+// （审批层已放行、工具层围栏不认开关）。修复后该形态必须翻绿。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bug_exec_blocks_outside_cwd_despite_full_access() {
+    let main_ws = temp_dir("bug4_main");
+    let outside = temp_dir("bug4_out");
+
+    // 真实开关态：Full Access 开（同事故会话的按钮动作）。
+    let editor = Arc::new(EditorAccessState::new());
+    editor.set_workspace_roots(vec![ps(&main_ws)]);
+    editor.set_flags(true, false);
+
+    // 审批层半边：exec 族在 Full Access 体系下整体放行（editor_access
+    // 设计原文「exec 族不分内外整体放行」，evaluate 走非写删族无条件臂）。
+    let (decision, _, policy) = editor
+        .evaluate(OperationType::ProcessExec, &ps(&outside))
+        .unwrap_or_else(|| panic!("审批层必须放行 exec 族"));
+    assert_eq!(decision, SecurityDecision::Allowed, "{policy}");
+
+    // 生产装配形态：workspace=主 ws + boundary（restrict=true，带闸）→
+    // register_shared_tools 同一装配函数（exec 经 boundary 槽继承闸）。
+    let cfg = SharedToolConfig {
+        workspace: Some(ps(&main_ws)),
+        exec_output_tx: None,
+        workspace_boundary: Some(Arc::new(cluster_boundary(&main_ws, &editor))),
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&cfg);
+    let exec = tools.get("exec").expect("exec 必须注册");
+    let out = exec
+        .execute(
+            &serde_json::json!({
+                "command": "echo incident-replay",
+                "cwd": ps(&outside),
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await;
+
+    assert!(
+        out.is_ok(),
+        "BUG：Full Access 开启时审批层已放行({policy})，exec 仍拒绝界外 cwd（事故形态）: {out:?}"
+    );
+    assert!(out.unwrap().contains("incident-replay"));
+
+    let _ = std::fs::remove_dir_all(&main_ws);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[tokio::test]
+async fn control_switches_off_exec_still_blocks_with_hint() {
+    // 对照组：开关全关 → exec 界外 cwd 照常拒绝（拒绝消息带解锁指引，
+    // 前缀 Access denied: ... outside workspace 不变——既有断言依赖）。
+    let main_ws = temp_dir("ctrl_exec_main");
+    let outside = temp_dir("ctrl_exec_out");
+
+    let editor = Arc::new(EditorAccessState::new());
+    editor.set_workspace_roots(vec![ps(&main_ws)]);
+    editor.set_flags(false, false);
+
+    let cfg = SharedToolConfig {
+        workspace: Some(ps(&main_ws)),
+        exec_output_tx: None,
+        workspace_boundary: Some(Arc::new(cluster_boundary(&main_ws, &editor))),
+        ..Default::default()
+    };
+    let tools = register_shared_tools(&cfg);
+    let exec = tools.get("exec").expect("exec 必须注册");
+    let err = exec
+        .execute(
+            &serde_json::json!({
+                "command": "echo should-not-run",
+                "cwd": ps(&outside),
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("Access denied"), "{err}");
+    assert!(err.contains("outside workspace"), "{err}");
+    assert!(err.contains("Full Access"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&main_ws);
+    let _ = std::fs::remove_dir_all(&outside);
 }

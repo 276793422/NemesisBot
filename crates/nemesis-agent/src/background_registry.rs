@@ -1002,12 +1002,15 @@ pub(crate) async fn tree_kill(pid: u32) {
 /// 返回**解析后的绝对路径**——`Command::current_dir` 对相对路径按父进程
 /// cwd 解释，与工作区基准脱钩（exec 侧传原始串是历史行为，这里不复制）。
 ///
-/// `pub(crate)`：delegate_registry 的 delegate_start 复用同一
+/// `gate`：editor 开关（Full Access）围栏闸——界外 cwd 拒绝分支先问一次
+/// （exec 族 = 整体放行族，见 `loop_tools::cwd_gate_allows` 注）。None =
+/// 旧行为。`pub(crate)`：delegate_registry 的 delegate_start 复用同一
 /// 语义（子代理工作目录与后台任务同规约束）。
 pub(crate) fn resolve_cwd(
     workspace: &str,
     restrict: bool,
     cwd: Option<&str>,
+    gate: Option<&crate::loop_tools::EditorGate>,
 ) -> Result<String, String> {
     let raw = cwd.unwrap_or(workspace);
     let target = if Path::new(raw).is_absolute() {
@@ -1018,11 +1021,15 @@ pub(crate) fn resolve_cwd(
     if restrict {
         let resolved = canonicalize_for_compare(&target);
         let ws = canonicalize_for_compare(Path::new(workspace));
-        if !resolved.starts_with(&ws) {
-            return Err(format!(
-                "Access denied: path '{}' is outside workspace",
-                raw
-            ));
+        // ── exec 族工作区围栏（background_start / delegate_start 共用）──
+        // 与 ExecTool 同形态同闸（editor 开关 × exec 围栏两层不认账修复）：
+        // 界外 cwd 先问闸再拒。产线形态**恒上膛**（registry/background
+        // 注册点硬编码 restrict=true，config 关不掉），editor 开关闸是唯一
+        // 运行时解锁。闸口径 = 整体放行族（读族臂，见
+        // [`crate::loop_tools::cwd_gate_allows`] 注）；闸缺席 / false =
+        // 维持拒绝（旧行为，消息带解锁指引）。
+        if !resolved.starts_with(&ws) && !crate::loop_tools::cwd_gate_allows(gate, raw) {
+            return Err(crate::loop_tools::cwd_denied_message(raw));
         }
     }
     Ok(target.to_string_lossy().to_string())
@@ -1033,6 +1040,8 @@ pub struct BackgroundStartTool {
     workspace: String,
     restrict: bool,
     registry: Arc<BackgroundProcessRegistry>,
+    /// editor 开关（Full Access）围栏闸（见 [`crate::loop_tools::EditorGate`]）。
+    editor_gate: Option<crate::loop_tools::EditorGate>,
 }
 
 impl BackgroundStartTool {
@@ -1041,7 +1050,15 @@ impl BackgroundStartTool {
             workspace: workspace.to_string(),
             restrict,
             registry,
+            editor_gate: None,
         }
+    }
+
+    /// editor 开关（Full Access）围栏闸链式注入（registry 从
+    /// `SharedToolConfig.workspace_boundary.editor_gate` 提取分发）。None = 旧行为。
+    pub fn with_editor_gate(mut self, gate: Option<crate::loop_tools::EditorGate>) -> Self {
+        self.editor_gate = gate;
+        self
     }
 }
 
@@ -1086,6 +1103,7 @@ impl Tool for BackgroundStartTool {
             &self.workspace,
             self.restrict,
             val.get("cwd").and_then(|v| v.as_str()),
+            self.editor_gate.as_ref(),
         )?;
         let steerable = val
             .get("steerable")
