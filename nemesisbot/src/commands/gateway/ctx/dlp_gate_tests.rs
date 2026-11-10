@@ -67,6 +67,43 @@ fn clean_message_byte_identical() {
     assert_eq!(msg.content, original);
 }
 
+/// 仅观测档命中（BUG-20261110-046 邻域复查修复）：Low/log 档（IP/邮箱）
+/// 直通不改写——旧行为把正常回复里的地址/联系方式打成 [REDACTED]。
+/// 出站打码必须由 enforcing 档（block/redact）授权，与 output_rescan
+/// 出侧语义同源。
+#[test]
+fn low_confidence_only_message_passthrough() {
+    let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
+    let slot = Slot::new();
+    let _ = slot.set(Some(plugin));
+    let original = "网关监听 http://127.0.0.1:49000，联系 user@example.com 反馈。";
+    let mut msg = OutboundMessage::new("web", "chat-1", original);
+    apply_outbound_dlp(&slot, &mut msg);
+    assert_eq!(
+        msg.content, original,
+        "观测档命中不得改写出站消息: {}",
+        msg.content
+    );
+}
+
+/// 混合命中（enforcing + 观测档）= 整体脱敏照旧（打码授权后遮蔽超集，
+/// 与 output_rescan redact_content 全文遮蔽同语义）。
+#[test]
+fn mixed_hits_still_redacted() {
+    let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
+    let slot = Slot::new();
+    let _ = slot.set(Some(plugin));
+    let secret = "AKIAIOSFODNN7EXAMPLE";
+    let original = format!("已部署到 10.0.0.5，key is {secret}");
+    let mut msg = OutboundMessage::new("web", "chat-1", &original);
+    apply_outbound_dlp(&slot, &mut msg);
+    assert!(
+        !msg.content.contains(secret),
+        "enforcing 命中必须遮蔽: {}",
+        msg.content
+    );
+}
+
 /// 审计链开启 = 脱敏同时落审计事件（入链且链校验通过；事件 reason 为
 /// 命中摘要，不含原始密钥）。
 #[test]
